@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as TOML from '@iarna/toml'
-import { IMAGE_SKILL_GROUP_NAMES } from './ai-chat-protocol'
+import { IMAGE_GROUP_MODEL_ORDER, IMAGE_SKILL_GROUP_NAMES } from './ai-chat-protocol'
 import { managedCliKeyProfiles, providerBaseUrls } from './catalog'
 import { writeCodexDesktopLocale } from './codex-desktop-locale'
 import { classifyCodexConfigProfile, codexConfigSnapshotPaths, saveProviderConfig, switchProviderToOfficialAccount } from './config-files'
@@ -13,6 +13,8 @@ import type { ManagedSkillKeys, StoredManagedCliKey } from './managed-cli-key-st
 import type { RelayBackendClient } from './relay-backend'
 import {
   BUNDLED_SKILL_NAME_LINE,
+  GEMINI_IMAGE_MODEL_PATTERN,
+  GROK_IMAGE_MODEL_PATTERN,
   OPENAI_IMAGE_MODEL_PATTERN,
   XINGMANG_AI_CODEX_SKILL_STATE_FILE,
   XINGMANG_AI_CONFIG_FILE,
@@ -41,6 +43,7 @@ import {
   resolveXingmangAiSkillDirectories,
   selectImageSkillGroup,
   selectXingmangAiImageModel,
+  selectXingmangAiImageModels,
   syncXingmangAiSkill,
   syncXingmangAiSkillCodexAvailability,
 } from './xingmang-ai-skill'
@@ -143,37 +146,81 @@ describe('xingmang-ai-skill', () => {
   })
 
   it('picks the newest OpenAI image model the account can use', () => {
+    expect(selectXingmangAiImageModel(['gpt-5.5', 'gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.6-flare'])).toBe('gpt-image-2.6-flare')
     expect(selectXingmangAiImageModel(['gpt-5.5', 'gpt-image-2', 'gpt-image-2.5-flare'])).toBe('gpt-image-2.5-flare')
     expect(selectXingmangAiImageModel(['gpt-image-2', 'gemini-3.1-flash-image'])).toBe('gpt-image-2')
     // Sunburst is slower and meant for careful edits: never the default while GPT Image 2 is there.
-    expect(selectXingmangAiImageModel(['gpt-image-2.5-sunburst', 'gpt-image-2'])).toBe(XINGMANG_AI_DEFAULT_IMAGE_MODEL)
+    expect(selectXingmangAiImageModel(['gpt-image-2.6-sunburst', 'gpt-image-2.5-sunburst', 'gpt-image-2'])).toBe(XINGMANG_AI_DEFAULT_IMAGE_MODEL)
+  })
+
+  it('orders every listed default model so a failed default falls through to the next one the account has', () => {
+    expect(selectXingmangAiImageModels([
+      'gpt-image-2.5-sunburst', 'gpt-image-2', 'gpt-image-2.6-sunburst', 'gpt-image-2.5-flare', 'gpt-image-2.6-flare', 'gpt-5.5',
+    ])).toEqual(['gpt-image-2.6-flare', 'gpt-image-2.5-flare', 'gpt-image-2', 'gpt-image-2.6-sunburst', 'gpt-image-2.5-sunburst'])
+    // Models the account does not list never enter the chain, so the script does not burn a request on them.
+    expect(selectXingmangAiImageModels(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])).toEqual(['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'])
   })
 
   it('falls back to another listed model the drawing script accepts instead of an absent gpt-image-2', () => {
     expect(selectXingmangAiImageModel(['gpt-image-1', 'gpt-image-2.5-sunburst'])).toBe('gpt-image-2.5-sunburst')
-    expect(selectXingmangAiImageModel([' gpt-image-1 ', 'gpt-image-1.5'])).toBe('gpt-image-1')
-    // gpt-image-1.5 is listed by some keys but not served; the automatic pick stays on the known names.
+    expect(selectXingmangAiImageModel(['gpt-image-1', 'gpt-image-2.6-sunburst', 'gpt-image-2.5-sunburst'])).toBe('gpt-image-2.6-sunburst')
+    // gpt-image-1 is retired upstream and gpt-image-1.5 is listed by some keys but not served:
+    // the automatic pick stays on the known names.
+    expect(selectXingmangAiImageModel([' gpt-image-1 ', 'gpt-image-1.5'])).toBeNull()
     expect(selectXingmangAiImageModel(['gpt-image-1.5', 'gpt-image-3', 'gemini-3.1-flash-image'])).toBeNull()
     expect(selectXingmangAiImageModel([])).toBeNull()
   })
 
-  it('recognizes image models with the same rule as both bundled drawing scripts', async () => {
+  it('keeps the AI chat image order in step with the drawing default chain', () => {
+    expect(IMAGE_GROUP_MODEL_ORDER.slice(0, XINGMANG_AI_IMAGE_MODEL_PREFERENCE.length + XINGMANG_AI_IMAGE_MODEL_FALLBACKS.length))
+      .toEqual([...XINGMANG_AI_IMAGE_MODEL_PREFERENCE, ...XINGMANG_AI_IMAGE_MODEL_FALLBACKS])
+    expect(IMAGE_GROUP_MODEL_ORDER).not.toContain('gpt-image-1')
+  })
+
+  it('recognizes image models with the same rules as both bundled drawing scripts', async () => {
     // A narrower script rule silently swapped models the desktop app wrote back to gpt-image-2 (#1059).
     for (const file of ['mcp-server.mjs', 'generate.mjs']) {
       const script = await readFile(path.join(bundledRoot, 'scripts', file), 'utf8')
-      expect(script, file).toContain(`/${OPENAI_IMAGE_MODEL_PATTERN.source}/${OPENAI_IMAGE_MODEL_PATTERN.flags}`)
+      for (const pattern of [OPENAI_IMAGE_MODEL_PATTERN, GEMINI_IMAGE_MODEL_PATTERN, GROK_IMAGE_MODEL_PATTERN]) {
+        expect(script, file).toContain(`/${pattern.source}/${pattern.flags}`)
+      }
       expect(script, file).not.toContain('ALLOWED_MODELS')
     }
     for (const model of [...XINGMANG_AI_IMAGE_MODEL_PREFERENCE, ...XINGMANG_AI_IMAGE_MODEL_FALLBACKS, 'gpt-image-3']) {
       expect(OPENAI_IMAGE_MODEL_PATTERN.test(model), model).toBe(true)
     }
+    for (const model of ['nano-banana-2', 'nano-banana-pro', 'gemini-3.1-flash-image', 'gemini-3-pro-image', 'gemini-3-pro-image-preview']) {
+      expect(GEMINI_IMAGE_MODEL_PATTERN.test(model), model).toBe(true)
+    }
+    for (const model of ['gemini-3.1-pro', 'gemini-image', 'nano-banana-', 'nano-banana-2/../x', 'gemini-3.1-flash-image:generateContent']) {
+      expect(GEMINI_IMAGE_MODEL_PATTERN.test(model), model).toBe(false)
+    }
+    for (const model of ['grok-imagine-image', 'grok-imagine-image-2.0', 'grok-imagine-image-quality']) {
+      expect(GROK_IMAGE_MODEL_PATTERN.test(model), model).toBe(true)
+    }
+    expect(GROK_IMAGE_MODEL_PATTERN.test('grok-imagine-video')).toBe(false)
   })
 
   it('keeps an OpenAI image model in the config and drops anything else', () => {
     const base = { baseUrl: XINGMANG_AI_DEFAULT_BASE_URL, group: IMAGE_SKILL_GROUP_NAMES[0] }
     expect(parseXingmangAiSkillConfig({ ...base, model: ' gpt-image-2.5-flare ' }).model).toBe('gpt-image-2.5-flare')
     expect(parseXingmangAiSkillConfig({ ...base, model: 'jimeng_high_aes_general_v21_L' }).model).toBeUndefined()
+    expect(parseXingmangAiSkillConfig({ ...base, model: 'nano-banana-2' }).model).toBeUndefined()
     expect(parseXingmangAiSkillConfig({ ...base, model: 42 }).model).toBeUndefined()
+  })
+
+  it('keeps the fallback chain as listed OpenAI models only and drops it without a default model', () => {
+    const base = { baseUrl: XINGMANG_AI_DEFAULT_BASE_URL, group: IMAGE_SKILL_GROUP_NAMES[0] }
+    expect(parseXingmangAiSkillConfig({
+      ...base,
+      model: 'gpt-image-2.6-flare',
+      fallbackModels: [' gpt-image-2.5-flare ', 'gpt-image-2.6-flare', 'nano-banana-2', 7, 'gpt-image-2', 'gpt-image-2'],
+    }).fallbackModels).toEqual(['gpt-image-2.5-flare', 'gpt-image-2'])
+    // An empty list is a real answer: the account has nothing else, so the script must not try gpt-image-2.
+    expect(parseXingmangAiSkillConfig({ ...base, model: 'gpt-image-2.6-flare', fallbackModels: [] }).fallbackModels).toEqual([])
+    expect(parseXingmangAiSkillConfig({ ...base, model: 'gpt-image-2.6-flare' })).not.toHaveProperty('fallbackModels')
+    expect(parseXingmangAiSkillConfig({ ...base, model: 'gpt-image-2.6-flare', fallbackModels: 'gpt-image-2' })).not.toHaveProperty('fallbackModels')
+    expect(parseXingmangAiSkillConfig({ ...base, fallbackModels: ['gpt-image-2'] })).not.toHaveProperty('fallbackModels')
   })
 
   it('omits both API keys from the renderer-safe config view', () => {
@@ -331,7 +378,7 @@ describe('xingmang-ai-skill', () => {
       warnings: [],
     })
     expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: partial')
-    expect(await readFile(path.join(directory, 'references.md'), 'utf8')).toContain('星芒中转')
+    expect(await readFile(path.join(directory, 'references.md'), 'utf8')).toContain('生图接口说明')
   })
 
   it('prefers packaged extraResources and falls back to the app path', async () => {
@@ -529,7 +576,24 @@ describe('xingmang-ai-skill', () => {
     for (const directory of resolveXingmangAiSkillDirectories(userHome)) {
       const parsed = parseXingmangAiSkillConfig(JSON.parse(await readFile(path.join(directory, XINGMANG_AI_CONFIG_FILE), 'utf8')))
       expect(parsed.model).toBe('gpt-image-2.5-flare')
+      expect(parsed.fallbackModels).toEqual(['gpt-image-2'])
     }
+  })
+
+  it('writes the whole default chain from both keys so the script falls through models the account has', async () => {
+    const userHome = await temporaryHome()
+    const { accountService } = loggedInAccount()
+    const fetchAvailableModels = vi.fn(async (apiKey: string) => (
+      apiKey === 'sk-test-image-group-secret-12345678'
+        ? ['gpt-image-2.6-sunburst', 'gpt-image-2', 'nano-banana-2']
+        : ['gpt-5.5', 'gpt-image-2.6-flare', 'gpt-image-2.5-sunburst', 'gpt-image-1']
+    ))
+
+    await syncXingmangAiSkill({ accountService, bundledRoot, userHome, fetchAvailableModels })
+
+    const written = JSON.parse(await readInstalledConfig(userHome))
+    expect(written.model).toBe('gpt-image-2.6-flare')
+    expect(written.fallbackModels).toEqual(['gpt-image-2', 'gpt-image-2.6-sunburst', 'gpt-image-2.5-sunburst'])
   })
 
   it('records gpt-image-2 when the account only has the older OpenAI image model', async () => {
@@ -542,7 +606,9 @@ describe('xingmang-ai-skill', () => {
 
     await syncXingmangAiSkill({ accountService, bundledRoot, userHome, fetchAvailableModels })
 
-    expect(parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome))).model).toBe('gpt-image-2')
+    const parsed = parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome)))
+    expect(parsed.model).toBe('gpt-image-2')
+    expect(parsed.fallbackModels).toEqual([])
   })
 
   it('records a listed fallback model when the account has neither preferred one', async () => {
@@ -568,6 +634,7 @@ describe('xingmang-ai-skill', () => {
     expect(result.ready).toBe(true)
     expect(result.directoryWarnings).toEqual([`没查到当前账号能用的图片模型，画图先用 ${XINGMANG_AI_DEFAULT_IMAGE_MODEL}`])
     expect(JSON.parse(await readInstalledConfig(userHome))).not.toHaveProperty('model')
+    expect(JSON.parse(await readInstalledConfig(userHome))).not.toHaveProperty('fallbackModels')
   })
 
   it('leaves the model out and only logs it when no key could list its models', async () => {
@@ -661,7 +728,7 @@ describe('xingmang-ai-skill', () => {
     expect(await readFile(
       path.join(resolveXingmangAiSkillDirectories(userHome)[0], 'SKILL.md'),
       'utf8',
-    )).toContain('星芒AI')
+    )).toContain('name: images')
   })
 
   it('refreshes a previously cleared config on the next login sync', async () => {

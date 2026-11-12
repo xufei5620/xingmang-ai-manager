@@ -40,7 +40,8 @@ export interface ConfigDialogProps {
   onOfficialQuota?(): void
   onClose(): void
   onRefresh(): Promise<void>
-  onSaved(warning?: string, outcome?: ConfigSaveOutcome): void
+  /** askCommandConfirmation：切回官方以后主进程说要问一句「要不要让官方 Claude Code 先问再执行？」（CommandConfirmationDialog）。 */
+  onSaved(warning?: string, outcome?: ConfigSaveOutcome, askCommandConfirmation?: boolean): void
   /**
    * 主进程已经把一把新的 Key（或官方登录）写进这个工具；原样沿用现有 Key 的保存不算。
    * 密钥页靠它收起「还在用刚撤销的密钥」（#546）。缺省 = 不通知（旧行为）。
@@ -357,8 +358,9 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     void run('保存配置', async () => {
       let markerWarning = ''
       let keyWritten = true
+      let askCommandConfirmation = false
       if (target.source === 'official') {
-        await api.official(tool, mode)
+        askCommandConfirmation = (await api.official(tool, mode)).askCommandConfirmation === true
         markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
       else if (target.source === 'manual') {
@@ -386,7 +388,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       if (!active.current) return
       // The host has committed the write. Close through the owner so feedback
       // survives this dialog's unmount; a later refresh cannot undo that save.
-      onSaved(markerWarning || undefined, mode === 'reset' ? 'reset' : target.source === 'official' && currentSource !== 'official' ? 'official' : 'saved')
+      onSaved(markerWarning || undefined, mode === 'reset' ? 'reset' : target.source === 'official' && currentSource !== 'official' ? 'official' : 'saved', askCommandConfirmation)
     })
   }
   function requestReset() {
@@ -436,7 +438,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     : usingCurrentKey
       ? { name: metadata?.current.name || '名称未确认', group: metadata?.current.group || '分组未确认', preview: metadata?.current.preview || native.apiKeyPreview || '密钥预览未提供' }
       : usingAutomaticKey
-        ? { name: metadata?.automatic.name || '正在读取', group: metadata?.automatic.group || '分组未确认', preview: '保存时准备或复用' }
+        ? { name: metadata?.automatic.name || '正在读取', group: metadata?.automatic.group || '分组还没读到', preview: '保存时自动准备' }
         : { name: selectedKey?.name || '密钥已不可用', group: selectedKey?.group || '分组未确认', preview: selectedKey?.maskedKey || '密钥预览未提供' }
   const automaticLabel = metadata
     ? '自动准备（推荐）'
@@ -488,13 +490,13 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       ? <Button variant="primary" icon={KeyRound} loading={busy === '改用当前账号'} onClick={() => void switchAccount()} testId="tool-switch-account">{signedIn ? switchLabel : '登录后改用我的账号'}</Button>
       : <Button onClick={() => change({ source: 'account' })}>{switchLabel}</Button>}</div></>}
       {/* 来源没确认时三张卡都不选中：一键改用当前账号最省事，没登录的人还能挑「自己填写密钥」。 */}
-      <div className="xm-field"><span className="v2-field-label">用哪个账号使用 AI</span><RadioCards label="用哪个账号使用 AI" testId="tool-source" value={draft.source} options={sourceCards} onChange={(value) => {
+      <div className="xm-field"><span className="v2-field-label">用哪个账号的额度</span><RadioCards label="用哪个账号的额度" testId="tool-source" value={draft.source} options={sourceCards} onChange={(value) => {
         if (value === 'account' || value === 'manual' || value === 'official') change({ source: value })
       }} />{officialNote && <p data-testid="tool-source-note">{officialNote}</p>}</div>
       {draft.source === 'unknown' ? null : draft.source === 'official' ? <><div className="v2-official-summary"><BrandIcon tool={tool} /><div><strong>{officialEmail || `使用 ${officialName}`}</strong><p>{officialEmail ? [officialPlan, '不扣当前账号余额'].filter(Boolean).join('，') : `还没登录。保存后打开 ${definition.name}，按提示登录官方账号`}</p></div><Pill tone={officialEmail ? 'ok' : 'warn'}>{officialEmail ? '已登录' : '待登录'}</Pill></div>
         {provider === 'codex' && officialEmail && onOfficialQuota && <div><DialogExitLink after={onOfficialQuota} testId="tool-official-quota">查看 ChatGPT 账号额度</DialogExitLink></div>}</> : <>
         {draft.source === 'account' ? <div className="v2-config-key">
-          <OptionPicker label="访问密钥" testId="tool-key-select" value={draft.keyId} options={keyOptions} disabled={!signedIn} onOpen={() => refreshKeyOptions()} onChange={(value) => change({ keyId: value })}
+          <OptionPicker label="密钥" testId="tool-key-select" value={draft.keyId} options={keyOptions} disabled={!signedIn} onOpen={() => refreshKeyOptions()} onChange={(value) => change({ keyId: value })}
             aside={<span className="v2-option-picker-aside"><Button variant="ghost" size="sm" icon={RefreshCw} aria-label="刷新密钥" title="刷新密钥" testId="tool-key-refresh" loading={keysLoading || metadataLoading} onClick={() => refreshKeyOptions(true)} disabled={!signedIn} /><DialogExitLink after={onKeys}>管理密钥</DialogExitLink></span>} />
           {usingCurrentKey && <p className="v2-field-note" data-testid="tool-key-summary">继续用现在这把密钥：{keyDescription.name} · {keyDescription.preview}</p>}
           {metadataError && <p role="alert">{metadataError}</p>}
@@ -512,7 +514,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
         <div className="xm-field"><span className="v2-field-label">Codex 界面语言</span><Segment label="Codex 界面语言" testId="tool-codex-language" activation="manual" value={locale?.installed ? locale.configuredLocale === 'zh-CN' ? 'zh-CN' : 'system' : ''}
           options={[{ value: 'zh-CN', label: '启用中文界面' }, { value: 'system', label: '跟随系统语言' }]} onChange={changeLocale} />
           {os === 'mac' ? <p className="v2-field-note">{macLocaleNote}</p> : <><p className="v2-field-note">中文界面只在从星芒打开 Codex 时生效；从开始菜单或任务栏直接打开还是英文。运行中的 Codex 会重新打开，请先保存手头的工作。</p>
-            <p className="v2-field-note">要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个本机通道，关掉 Codex 就关上。通道开着时，这台电脑上的其他程序和其他账户也能连上它、控制 Codex。和别人共用这台电脑的，或者不想要这个通道，选「跟随系统语言」即可。</p></>}</div>
+            <p className="v2-field-note">要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个本机通道，关掉 Codex 就关上。通道开着时，这台电脑上的其他程序和其他用户也能连上它、控制 Codex。和别人共用这台电脑的，或者不想要这个通道，选「跟随系统语言」即可。</p></>}</div>
         {localeText && <p role="status" data-testid="tool-locale-status">{localeText}</p>}
         <div className="v2-config-perm">{permission?.trustLevel === 'trusted' && <ShieldCheck size={15} aria-hidden="true" />}{permissionText && <span>{permissionText}</span>}
           <button type="button" className="v2-link-button" onClick={() => void run('查看文件夹权限', async () => { const result = await api.getPermissions(); if (active.current) setPermission(result) })}>查看文件夹权限</button>

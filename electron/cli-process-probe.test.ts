@@ -20,6 +20,7 @@ import {
   windowsCliProcessProbeModules,
   type CliProcessProbe,
 } from './cli-process-probe'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
@@ -60,7 +61,11 @@ describe('cli process probe', () => {
     // arbitrary code, so it travels as an environment variable instead (I1).
     expect(script).toContain(`$env:${cliProcessRootEnvironmentVariable}`)
     expect(script).toContain('[System.StringComparison]::OrdinalIgnoreCase')
-    expect(script).not.toMatch(/-match|-like/)
+    // The one -match left is the fixed ASCII check on the JSON this script
+    // prints, never on the path.
+    const escapeStatement = buildPowerShellJsonOutputStatements('$items | ConvertTo-Json -Compress')[1]
+    expect(script).toContain(escapeStatement)
+    expect(script.replace(escapeStatement, '')).not.toMatch(/-match|-like/)
     // The command line must stay inside PowerShell: other processes' arguments
     // can carry their own secrets, and nothing needs them over here (I13).
     expect(script).not.toContain('CommandLine = ')
@@ -329,9 +334,14 @@ describe('cli process probe', () => {
     const scan = scanPowerShell(buildWindowsCliProcessProbeScript())
     expect(scan.unterminated).toBe(false)
     expect(unbalancedBracket(scan.code)).toBeNull()
-    // No path is ever spliced into the text: the only literals are the module names and the
-    // empty-result JSON.
-    expect(scan.literals).toEqual([...windowsCliProcessProbeModules, '[]'])
+    // No path is ever spliced into the text: the only literals are the module names, the
+    // empty-result JSON and the fixed lines that keep it working in ConstrainedLanguage.
+    expect(scan.literals).toEqual([
+      ...scanPowerShell(powerShellUtf8OutputStatement).literals,
+      ...windowsCliProcessProbeModules,
+      '[]',
+      ...scanPowerShell(buildPowerShellJsonOutputStatements('$items').join('\n')).literals,
+    ])
     expect(scan.code).toContain(`$root = [string]$env:${cliProcessRootEnvironmentVariable}`)
     expect(scan.code).toContain("if (-not $root) { ''; exit 0 }")
     // A native CLI is its own image; a node-hosted one carries its entry script on the command
@@ -341,8 +351,10 @@ describe('cli process probe', () => {
     expect(scan.code).toContain('$image.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)')
     expect(scan.code).toContain('$commandLine.IndexOf($root, [System.StringComparison]::OrdinalIgnoreCase) -ge 0')
     expect(scan.code).toContain('Get-CimInstance Win32_Process')
-    // What the script emits is exactly what the parser reads back.
-    expect(scan.code).toContain('[pscustomobject]@{ ProcessId = $_.ProcessId; Name = [string]$_.Name; ExecutablePath = $image }')
+    // What the script emits is exactly what the parser reads back, as a hashtable:
+    // ConstrainedLanguage refuses [pscustomobject] and silently dropped every match.
+    expect(scan.code).toContain('@{ ProcessId = $_.ProcessId; Name = [string]$_.Name; ExecutablePath = $image }')
+    expect(scan.code).not.toMatch(/\[pscustomobject\]/i)
   })
 
   it.runIf(process.platform === 'win32')('asks the system PowerShell resolver when nothing is injected', async () => {

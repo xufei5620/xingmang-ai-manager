@@ -1,4 +1,5 @@
-import { requestRemoteJson, RemoteHttpError } from './codex-remote-http'
+import { randomUUID } from 'node:crypto'
+import { requestRemoteBytes, requestRemoteJson, RemoteHttpError, type RemoteBytesResponse, type RemoteJsonResponse } from './codex-remote-http'
 import {
   decodeFeishuFrame,
   encodeFeishuFrame,
@@ -7,15 +8,20 @@ import {
   type FeishuFrame,
 } from './codex-remote-feishu-frame'
 import { isRecord } from './input-guards'
+import { approvalOutcomeTitle, progressCardTitles, progressStepMarks, progressStopButton } from './codex-remote-text'
 import type {
   RemoteChannelAdapter,
   RemoteChannelDependencies,
   RemoteChannelHandlers,
+  RemoteChannelProblem,
   RemoteChannelStatus,
+  RemoteImageFetchResult,
   RemoteInbound,
+  RemoteApprovalOutcome,
   RemoteOutbound,
   RemoteOutboundApproval,
   RemotePeer,
+  RemoteProgressCard,
 } from './codex-remote-channel'
 
 // 飞书渠道：客户自己在飞书开放平台建一个企业自建应用（机器人），把 App ID、App Secret 填进星芒。
@@ -59,7 +65,27 @@ const endpointCodes = {
 // 开放平台接口里 tenant_access_token 失效的几种 code，碰到就换一个再发一次。
 const tokenInvalidCodes = new Set([99991661, 99991663, 99991668])
 
-const needsLoginMessage = 'App ID 或 App Secret 不对，或者应用被停用了，请在电脑上重新填。'
+// 发消息碰到这几个 code 是飞书那边一时忙不过来，等一会儿带同一个 uuid 再发（YKS-4）。照飞书文档：
+// 99991400 通用限流、230020 发消息限流（都说降低频率后重试）、1500 内部错误（稍后重试）、
+// 230049 消息正在发送中（上一次带同一个 uuid 的还没发完）。别的 code 是参数、权限、对方不收这类，重发也没用。
+const sendRetryCodes = new Set([99991400, 230020, 1500, 230049])
+/** 发消息遇到一时的失败，第 N 次重发前等多久；两次都不行就照原样报错。 */
+const sendRetryDelaysMs = [1_000, 4_000] as const
+
+/**
+ * 渠道停下来时电脑卡片上的三句（0.2.24 D23）。原来把飞书的原话、HTTP 状态码和「长连接」这类词照搬上屏，
+ * 客户不知道该重填、该关别处还是找客服；现在只说这三种，卡片按 problem 配「重新填写」「重新连接」「找客服」。
+ */
+export const feishuProblemMessages = {
+  credential: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。',
+  'connection-limit': '这个飞书应用在别处也连着，先关掉别处再试。',
+  other: '没连上，点「重新连接」再试；还不行点「找客服」。',
+} as const satisfies Record<RemoteChannelProblem, string>
+
+const needsLoginMessage = feishuProblemMessages.credential
+
+/** 保存凭据时飞书回的不是正常应答，红条上那句（D23 之后单批的「飞书保存改」）。 */
+export const feishuSaveFailedMessage = '飞书凭据没保存上。请核对 App ID 和 App Secret 有没有填错，再点一次「保存」；还不行请找客服。'
 
 export interface FeishuCredential {
   appId: string
@@ -73,9 +99,29 @@ export class FeishuAuthError extends Error {
   }
 }
 
+/** 换访问凭证时飞书回的应答里没有 code（多半是代理或网关的页面），带着 HTTP 状态好进日志。 */
+export class FeishuTokenResponseError extends Error {
+  constructor(readonly status: number) {
+    super(`飞书没有给出访问凭证（HTTP ${status}）`)
+    this.name = 'FeishuTokenResponseError'
+  }
+}
+
 const appIdPattern = /^cli_[A-Za-z0-9]{4,64}$/
 const appSecretPattern = /^[A-Za-z0-9]{8,128}$/
 const approvalNoncePattern = /^[A-Za-z0-9_-]{8,64}$/
+// 飞书消息编号（om_ 开头）。拼进更新卡片的接口路径之前先认一遍，不让奇怪的串改了路径。
+const feishuMessageIdPattern = /^om_[A-Za-z0-9_-]{1,128}$/
+/** 飞书消息里图片的 image_key（YF-14），形如 img_v3_02ab_…；别的样子不拿去拼地址。 */
+const feishuImageKeyPattern = /^img_[A-Za-z0-9_-]{1,200}$/
+/** 一条消息里最多认这么多张图，再多的当没有；底座自己还有一条每次最多几张的线。 */
+const maxImagesPerMessage = 20
+const imageRequestTimeoutMs = 30_000
+// 取消息里的图碰到这几个 code 是应用没开取图要的权限（YF-14）：照飞书文档，「获取消息中的资源文件」要
+// 「获取单聊、群组消息」这一类权限三选一，没开时开放平台回 99991672（应用身份）或 99991679（用户身份）。
+const imagePermissionCodes = new Set([99991672, 99991679])
+// 文件超过飞书自己的下载上限。
+const imageTooLargeCode = 234037
 
 /** 界面填进来的两串字：去掉两边空白，格式不对直接报能上屏的中文。 */
 export function validateFeishuCredentialInput(appId: unknown, appSecret: unknown): FeishuCredential {
@@ -146,7 +192,24 @@ export async function requestFeishuTenantToken(
     return { token, expiresAt: now + Math.max(60, expire - 300) * 1000 }
   }
   if (code !== null && code !== 0) throw new FeishuAuthError()
-  throw new Error(`飞书没有给出访问凭证（HTTP ${response.status}）`)
+  throw new FeishuTokenResponseError(response.status)
+}
+
+/**
+ * 保存凭据前拿去飞书换一次访问凭证：填错了当场说，不等打开遥控才发现连不上。飞书回的不是正常应答时，
+ * HTTP 状态只进日志，红条上只说 feishuSaveFailedMessage；凭据不对、连不上照旧是各自那句。
+ */
+export async function verifyFeishuCredential(
+  deps: Pick<RemoteChannelDependencies, 'fetch' | 'now' | 'log'>,
+  credential: FeishuCredential,
+): Promise<void> {
+  try {
+    await requestFeishuTenantToken(deps.fetch, credential, deps.now())
+  } catch (error) {
+    if (!(error instanceof FeishuTokenResponseError)) throw error
+    deps.log('warn', 'feishu.save-token-unexpected', { status: error.status })
+    throw new Error(feishuSaveFailedMessage)
+  }
 }
 
 export type FeishuEndpointResult =
@@ -226,7 +289,61 @@ function extractPostText(content: Record<string, unknown>): string | null {
   return text || null
 }
 
-/** 把飞书消息的 content（JSON 字符串）读成纯文字；读不出来是 null，底座回「暂时只支持文字」。 */
+/**
+ * 飞书消息里的图（YF-14）：图片消息是那一张，富文本（post）是按顺序的每个 img 节点。认不出的 key 不要。
+ */
+export function extractFeishuImageKeys(messageType: unknown, content: unknown): string[] {
+  if ((messageType !== 'image' && messageType !== 'post') || typeof content !== 'string' || content.length > maxEventBytes) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(content)
+  } catch {
+    return []
+  }
+  if (!isRecord(parsed)) return []
+  const keys: string[] = []
+  function take(value: unknown): void {
+    if (keys.length < maxImagesPerMessage && typeof value === 'string' && feishuImageKeyPattern.test(value)) keys.push(value)
+  }
+  if (messageType === 'image') {
+    take(parsed.image_key)
+    return keys
+  }
+  const body = Array.isArray(parsed.content)
+    ? parsed
+    : Object.values(parsed).find((value): value is Record<string, unknown> => isRecord(value) && Array.isArray(value.content))
+  if (!body || !Array.isArray(body.content)) return []
+  for (const paragraph of body.content) {
+    if (!Array.isArray(paragraph)) continue
+    for (const node of paragraph) {
+      if (isRecord(node) && node.tag === 'img') take(node.image_key)
+    }
+  }
+  return keys
+}
+
+/** 交给底座的取图句柄：哪条消息里的哪张图。取的时候两段都再核一遍。 */
+export function feishuImageRef(messageId: string, imageKey: string): string {
+  return `${messageId}/${imageKey}`
+}
+
+function parseFeishuImageRef(ref: string): { messageId: string; imageKey: string } | null {
+  const [messageId, imageKey, extra] = ref.split('/')
+  if (extra !== undefined || !messageId || !imageKey) return null
+  return feishuMessageIdPattern.test(messageId) && feishuImageKeyPattern.test(imageKey) ? { messageId, imageKey } : null
+}
+
+/** 飞书报错时回的是 JSON，取里面的 code；不是 JSON 返回 null。 */
+function feishuErrorCode(response: RemoteBytesResponse): number | null {
+  try {
+    const payload: unknown = JSON.parse(response.bytes.toString('utf8'))
+    return isRecord(payload) ? numberField(payload.code) : null
+  } catch {
+    return null
+  }
+}
+
+/** 把飞书消息的 content（JSON 字符串）读成纯文字；读不出来是 null（带图的另由 extractFeishuImageKeys 认）。 */
 export function extractFeishuText(messageType: unknown, content: unknown): string | null {
   if (typeof content !== 'string' || content.length > maxEventBytes) return null
   let parsed: unknown
@@ -280,6 +397,10 @@ export function parseFeishuEvent(payload: unknown, context: FeishuEventContext):
     const sentAt = parseMillis(message.create_time)
     const base = { peer, direct, replyContext: messageId, ...(sentAt ? { sentAt } : {}) }
     const text = extractFeishuText(message.message_type, message.content)
+    const images = extractFeishuImageKeys(message.message_type, message.content).map((key) => feishuImageRef(messageId, key))
+    if (images.length > 0) {
+      return { eventId, inbound: { ...base, kind: 'image', messageId, images, ...(text !== null ? { text } : {}) } }
+    }
     return {
       eventId,
       inbound: text === null ? { ...base, kind: 'unsupported', messageId } : { ...base, kind: 'text', messageId, text },
@@ -292,6 +413,13 @@ export function parseFeishuEvent(payload: unknown, context: FeishuEventContext):
     const actionContext = isRecord(event.context) ? event.context : {}
     const openId = stringField(operator.open_id)
     const chatId = stringField(actionContext.open_chat_id) ?? stringField(event.open_chat_id)
+    if ('stop' in value) {
+      // 进度卡上的「停止」（YF-15）：随机串认不出也交给底座，让它回一句是上一轮的卡片。
+      if (!openId) return { eventId, inbound: null }
+      const stopNonce = typeof value.stop === 'string' && approvalNoncePattern.test(value.stop) ? value.stop : null
+      const direct = Boolean(chatId) && context.p2pChats.get(openId) === chatId
+      return { eventId, inbound: { kind: 'stop', peer: { channel: 'feishu', userId: openId }, direct, nonce: stopNonce } }
+    }
     const approvalId = typeof value.approval === 'string' && /^\d{1,4}$/.test(value.approval) ? value.approval : null
     // 随机串认不出也照样交给底座，让它回一句卡片失效，而不是点了没反应。
     const nonce = typeof value.nonce === 'string' && approvalNoncePattern.test(value.nonce) ? value.nonce : null
@@ -310,8 +438,26 @@ export function parseFeishuEvent(payload: unknown, context: FeishuEventContext):
  * 审批卡片（消息卡片 1.0 写法）：正文是底座写好的纯文字，下面两颗按钮。按钮里带上这一条的随机串，
  * 旧卡片留在聊天记录里随时能点，底座靠它认出点的是不是当下这一条。
  */
-export function buildFeishuApprovalCard(message: RemoteOutboundApproval): Record<string, unknown> {
+const approvalOutcomeTemplates: Record<RemoteApprovalOutcome, string> = {
+  accepted: 'green',
+  declined: 'grey',
+  expired: 'grey',
+}
+
+/**
+ * 审批卡。处理过以后（YK-8，带 outcome）原地改成「已同意 / 已拒绝 / 没回，已自动拒绝」，按钮去掉、正文留着；
+ * 要能改就得一开始就是共享卡片（update_multi，飞书只许更新共享卡片，更新前后都得是 true）。
+ */
+export function buildFeishuApprovalCard(message: RemoteOutboundApproval, outcome?: RemoteApprovalOutcome): Record<string, unknown> {
   const { request } = message
+  const body = { tag: 'div', text: { tag: 'plain_text', content: message.text } }
+  if (outcome) {
+    return {
+      config: { wide_screen_mode: true, update_multi: true },
+      header: { template: approvalOutcomeTemplates[outcome], title: { tag: 'plain_text', content: approvalOutcomeTitle(outcome, request.approvalId) } },
+      elements: [body],
+    }
+  }
   const button = (text: string, type: 'primary' | 'danger', decision: 'accept' | 'decline') => ({
     tag: 'button',
     text: { tag: 'plain_text', content: text },
@@ -319,12 +465,45 @@ export function buildFeishuApprovalCard(message: RemoteOutboundApproval): Record
     value: { approval: request.approvalId, nonce: request.nonce, decision },
   })
   return {
-    config: { wide_screen_mode: true, update_multi: false },
+    config: { wide_screen_mode: true, update_multi: true },
     header: { template: 'orange', title: { tag: 'plain_text', content: `需要你同意（第 ${request.approvalId} 条）` } },
     elements: [
-      { tag: 'div', text: { tag: 'plain_text', content: message.text } },
+      body,
       { tag: 'action', actions: [button('同意', 'primary', 'accept'), button('拒绝', 'danger', 'decline')] },
     ],
+  }
+}
+
+const progressTemplates: Record<RemoteProgressCard['state'], string> = {
+  running: 'blue',
+  done: 'green',
+  stopped: 'grey',
+  failed: 'red',
+}
+
+/**
+ * 进度卡（YF-15，消息卡片 1.0 写法）：标题、计划里的每一步、「已经 N 分钟」和「停止」。之后每次原地更新
+ * 同一张，所以要 update_multi（飞书只许更新共享卡片，更新前后都得是 true）。做完以后只剩标题和步骤。
+ */
+export function buildFeishuProgressCard(card: RemoteProgressCard): Record<string, unknown> {
+  const elements: Array<Record<string, unknown>> = []
+  if (card.steps.length) {
+    const lines = card.steps.map((step) => `${progressStepMarks[step.status]} ${step.text}`)
+    elements.push({ tag: 'div', text: { tag: 'plain_text', content: lines.join('\n') } })
+  }
+  if (card.elapsed) elements.push({ tag: 'div', text: { tag: 'plain_text', content: card.elapsed } })
+  if (card.stopNonce) {
+    elements.push({
+      tag: 'action',
+      actions: [{ tag: 'button', text: { tag: 'plain_text', content: progressStopButton }, type: 'danger', value: { stop: card.stopNonce } }],
+    })
+  }
+  // 卡片不能一个元素都没有：没报计划又做完了的，只留一道分隔线。
+  if (!elements.length) elements.push({ tag: 'hr' })
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: progressTemplates[card.state], title: { tag: 'plain_text', content: progressCardTitles[card.state] } },
+    elements,
   }
 }
 
@@ -333,6 +512,27 @@ export function buildFeishuMessageBody(peer: RemotePeer, message: RemoteOutbound
     return { receive_id: peer.userId, msg_type: 'interactive', content: JSON.stringify(buildFeishuApprovalCard(message)) }
   }
   return { receive_id: peer.userId, msg_type: 'text', content: JSON.stringify({ text: message.text }) }
+}
+
+export type FeishuSendOutcome = 'sent' | 'token-invalid' | 'retry' | 'failed'
+
+/** 发消息接口回来以后怎么办：发出去了、换个令牌再发、等一会儿再发，还是直接报错。 */
+export function classifyFeishuSendResponse(status: number, code: number | null): FeishuSendOutcome {
+  if (code === 0) return 'sent'
+  if (code !== null && tokenInvalidCodes.has(code)) return 'token-invalid'
+  if (code !== null && sendRetryCodes.has(code)) return 'retry'
+  // 网关、负载均衡回的 5xx 和 429 多半不是 JSON，没有 code 也按一时的失败算。
+  if (status === 429 || status >= 500) return 'retry'
+  return 'failed'
+}
+
+/**
+ * 请求根本没拿到回应（断网、超时）时返回原因，可以带同一个 uuid 再发；别的失败返回 null。
+ * 地址不在允许范围、被重定向这类照旧直接报错，重发也是同样的结果。
+ */
+export function transientFeishuRequestFailure(error: unknown): 'network' | 'timeout' | null {
+  if (!(error instanceof RemoteHttpError)) return null
+  return error.reason === 'network' || error.reason === 'timeout' ? error.reason : null
 }
 
 interface FragmentEntry {
@@ -405,6 +605,8 @@ export interface FeishuSocket {
 export interface FeishuChannelOptions {
   createSocket?(url: string): FeishuSocket
   random?(): number
+  /** 发消息重发前的等待；测试里换成立即返回的。 */
+  sleep?(milliseconds: number): Promise<void>
 }
 
 const socketOpen = 1
@@ -413,6 +615,13 @@ const textEncoder = new TextEncoder()
 
 function defaultCreateSocket(url: string): FeishuSocket {
   return new WebSocket(url)
+}
+
+function defaultSleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    // 退出时不为了一次重发拖着进程；道别那句另有自己的时限。
+    setTimeout(resolve, milliseconds).unref?.()
+  })
 }
 
 function toBytes(data: unknown): Uint8Array | null {
@@ -456,7 +665,18 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     await this.stop()
     this.handlers = handlers
     this.running = true
-    this.credential = parseFeishuCredential(await this.deps.readCredential())
+    let stored: string | null
+    try {
+      stored = await this.deps.readCredential()
+    } catch {
+      // 不往外抛：抛出去底座会把读凭据的原话（系统钥匙串的英文报错这类）摆上卡片。这里只说「其余」那句。
+      if (!this.running) return
+      this.running = false
+      this.deps.log('warn', 'feishu.credential-read-failed')
+      this.setStatus({ state: 'error', message: feishuProblemMessages.other, problem: 'other' })
+      return
+    }
+    this.credential = parseFeishuCredential(stored)
     if (!this.running) return
     if (!this.credential) {
       this.running = false
@@ -489,15 +709,91 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
   }
 
   async send(peer: RemotePeer, message: RemoteOutbound): Promise<void> {
+    await this.post(buildFeishuMessageBody(peer, message))
+  }
+
+  /** 发进度卡（YF-15），交回它的 message_id，之后的 updateProgress 拿它原地更新。 */
+  async sendProgress(peer: RemotePeer, card: RemoteProgressCard): Promise<string> {
+    return await this.postCard(peer, buildFeishuProgressCard(card))
+  }
+
+  /**
+   * 原地更新进度卡（YF-15）。只换一次令牌，不等不重发：进度隔一会儿就会再更新，下一次带的总是最新的样子。
+   */
+  async updateProgress(handle: string, card: RemoteProgressCard): Promise<void> {
+    await this.patchCard(handle, buildFeishuProgressCard(card), 'feishu.progress-update-failed')
+  }
+
+  /** 发审批卡（YK-8），交回它的 message_id，处理过以后 updateApproval 拿它改样子。 */
+  async sendApproval(peer: RemotePeer, message: RemoteOutboundApproval): Promise<string> {
+    return await this.postCard(peer, buildFeishuApprovalCard(message))
+  }
+
+  /** 审批卡改成处理过的样子（YK-8）：标题换成结果，按钮去掉。改不成只是样子没变，手机上那句文字照样发。 */
+  async updateApproval(handle: string, message: RemoteOutboundApproval, outcome: RemoteApprovalOutcome): Promise<void> {
+    await this.patchCard(handle, buildFeishuApprovalCard(message, outcome), 'feishu.approval-update-failed')
+  }
+
+  /**
+   * 取消息里的一张图（YF-14，GET /open-apis/im/v1/messages/:message_id/resources/:file_key?type=image）。
+   * 只去 open.feishu.cn，读到 maxBytes 就停；令牌失效换一次，别的失败不重试，手机上说一声让他再发。
+   */
+  async fetchImage(ref: string, maxBytes: number): Promise<RemoteImageFetchResult> {
+    const parsed = parseFeishuImageRef(ref)
+    if (!parsed || !this.credential) return { ok: false, reason: 'failed' }
+    for (let attempt = 0; ; attempt += 1) {
+      let response: RemoteBytesResponse
+      try {
+        const token = await this.tenantToken()
+        response = await requestRemoteBytes({
+          fetch: this.deps.fetch,
+          url: `${feishuOpenOrigin}/open-apis/im/v1/messages/${parsed.messageId}/resources/${parsed.imageKey}?type=image`,
+          allowedOrigins,
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+          timeoutMs: imageRequestTimeoutMs,
+          maxResponseBytes: maxBytes,
+          label,
+        })
+      } catch (error) {
+        if (error instanceof RemoteHttpError && error.reason === 'oversize') return { ok: false, reason: 'too-large' }
+        this.deps.log('warn', 'feishu.image-fetch-failed', { reason: error instanceof RemoteHttpError ? error.reason : 'unknown' })
+        return { ok: false, reason: 'failed' }
+      }
+      this.noteServerTime(response.serverTime)
+      if (response.ok && response.contentType !== 'application/json') return { ok: true, bytes: response.bytes }
+      const code = feishuErrorCode(response)
+      if (code !== null && tokenInvalidCodes.has(code) && attempt === 0) {
+        this.token = null
+        continue
+      }
+      this.deps.log('warn', 'feishu.image-fetch-failed', { status: response.status, code })
+      if (code !== null && imagePermissionCodes.has(code)) return { ok: false, reason: 'permission' }
+      if (code === imageTooLargeCode) return { ok: false, reason: 'too-large' }
+      return { ok: false, reason: 'failed' }
+    }
+  }
+
+  private async postCard(peer: RemotePeer, card: Record<string, unknown>): Promise<string> {
+    const payload = await this.post({ receive_id: peer.userId, msg_type: 'interactive', content: JSON.stringify(card) })
+    const data = isRecord(payload.data) ? payload.data : {}
+    const messageId = stringField(data.message_id)
+    if (!messageId || !feishuMessageIdPattern.test(messageId)) throw new Error('飞书没有给出这张卡片的编号')
+    return messageId
+  }
+
+  /** 原地更新一张发过的卡片（PATCH /open-apis/im/v1/messages/:message_id）。 */
+  private async patchCard(handle: string, card: Record<string, unknown>, failureEvent: string): Promise<void> {
     if (!this.credential) throw new Error('飞书渠道没有在运行')
-    const body = buildFeishuMessageBody(peer, message)
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!feishuMessageIdPattern.test(handle)) throw new Error('飞书卡片编号不对')
+    const body = { content: JSON.stringify(card) }
+    for (let attempt = 0; ; attempt += 1) {
       const token = await this.tenantToken()
       const response = await requestRemoteJson({
         fetch: this.deps.fetch,
-        url: `${feishuOpenOrigin}/open-apis/im/v1/messages?receive_id_type=open_id`,
+        url: `${feishuOpenOrigin}/open-apis/im/v1/messages/${handle}`,
         allowedOrigins,
-        method: 'POST',
+        method: 'PATCH',
         headers: { Authorization: `Bearer ${token}` },
         body,
         timeoutMs: requestTimeoutMs,
@@ -507,9 +803,66 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
       this.noteServerTime(response.serverTime)
       const payload = isRecord(response.payload) ? response.payload : {}
       const code = numberField(payload.code)
-      if (code === 0) return
-      if (code !== null && tokenInvalidCodes.has(code) && attempt === 0) {
+      const outcome = classifyFeishuSendResponse(response.status, code)
+      if (outcome === 'sent') return
+      if (outcome === 'token-invalid' && attempt === 0) {
         this.token = null
+        continue
+      }
+      this.deps.log('warn', failureEvent, { status: response.status, code })
+      throw new Error(`飞书没有更新这张卡片（错误码 ${code ?? response.status}）`)
+    }
+  }
+
+  /** 发一条消息，交回飞书的应答（发进度卡要从里面取 message_id）。 */
+  private async post(message: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!this.credential) throw new Error('飞书渠道没有在运行')
+    // 一条消息不管重发几次都带同一个 uuid：第一次其实已经发到了、只是回应在路上断了时，飞书一小时内
+    // 只认一次，手机上不会出现两条一样的（尤其是审批卡，两张卡同一个编号会让人以为要点两次）。
+    const body = { ...message, uuid: randomUUID() }
+    let tokenRefreshed = false
+    let retries = 0
+    for (;;) {
+      let response: RemoteJsonResponse
+      try {
+        const token = await this.tenantToken()
+        response = await requestRemoteJson({
+          fetch: this.deps.fetch,
+          url: `${feishuOpenOrigin}/open-apis/im/v1/messages?receive_id_type=open_id`,
+          allowedOrigins,
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body,
+          timeoutMs: requestTimeoutMs,
+          maxResponseBytes,
+          label,
+        })
+      } catch (error) {
+        const reason = transientFeishuRequestFailure(error)
+        if (!reason) throw error
+        if (retries >= sendRetryDelaysMs.length) {
+          this.deps.log('warn', 'feishu.send-failed', { reason })
+          throw error
+        }
+        this.deps.log('warn', 'feishu.send-retry', { reason, retry: retries + 1 })
+        await this.sleep(sendRetryDelaysMs[retries])
+        retries += 1
+        continue
+      }
+      this.noteServerTime(response.serverTime)
+      const payload = isRecord(response.payload) ? response.payload : {}
+      const code = numberField(payload.code)
+      const outcome = classifyFeishuSendResponse(response.status, code)
+      if (outcome === 'sent') return payload
+      if (outcome === 'token-invalid' && !tokenRefreshed) {
+        tokenRefreshed = true
+        this.token = null
+        continue
+      }
+      if (outcome === 'retry' && retries < sendRetryDelaysMs.length) {
+        this.deps.log('warn', 'feishu.send-retry', { status: response.status, code, retry: retries + 1 })
+        await this.sleep(sendRetryDelaysMs[retries])
+        retries += 1
         continue
       }
       this.deps.log('warn', 'feishu.send-failed', { status: response.status, code })
@@ -517,12 +870,16 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     }
   }
 
+  private sleep(milliseconds: number): Promise<void> {
+    return (this.options.sleep ?? defaultSleep)(milliseconds)
+  }
+
   private noteServerTime(serverTime: number | undefined): void {
     if (serverTime !== undefined) this.clockAheadMs = this.deps.now() - serverTime
   }
 
   private setStatus(status: RemoteChannelStatus): void {
-    if (status.state === this.lastStatus.state && status.message === this.lastStatus.message) return
+    if (status.state === this.lastStatus.state && status.message === this.lastStatus.message && status.problem === this.lastStatus.problem) return
     this.lastStatus = status
     this.handlers?.onStatus(status)
   }
@@ -551,7 +908,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
 
   private failAuth(): void {
     this.deps.log('warn', 'feishu.auth-failed')
-    void this.stop().then(() => this.setStatus({ state: 'needs-login', message: needsLoginMessage }))
+    void this.stop().then(() => this.setStatus({ state: 'needs-login', message: needsLoginMessage, problem: 'credential' }))
   }
 
   private clearTimers(): void {
@@ -604,7 +961,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     if (result.kind === 'connection-limit') {
       this.deps.log('warn', 'feishu.connection-limit')
       await this.stop()
-      this.setStatus({ state: 'error', message: '这个飞书应用连着的地方太多了，请关掉别处用同一个应用的长连接再试。' })
+      this.setStatus({ state: 'error', message: feishuProblemMessages['connection-limit'], problem: 'connection-limit' })
       return
     }
     if (result.kind === 'retry') {

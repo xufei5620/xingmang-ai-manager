@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { awakeVideoPollSpan, createAiVideoService, delayVideoPoll, isAllowedVideoDownloadAddress } from './ai-video-service'
-import { aiVideoUnconfirmedSubmissionMessage } from './ai-video-submission'
+import { aiVideoDiskFullMessage, aiVideoUnconfirmedSubmissionMessage } from './ai-video-submission'
 import { networkFailureMessages } from './network-failure'
 import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, MAXIMUM_VIDEO_TASKS, type FinishedAiVideoAsset, type FinishedAiVideoTask, type StoredAiVideoTask } from './ai-video-task-store'
 
@@ -220,6 +220,25 @@ describe('createAiVideoService', () => {
     expect(assets.storeMp4).toHaveBeenCalledWith(7, expect.any(Buffer), { taskId: 'video_123', prompt: '海浪' })
     expect(stages).toEqual(['processing', 'downloading', 'saving'])
     expect(fetchImpl).toHaveBeenCalledTimes(3)
+  })
+
+  it('reports the request id of the submission, which is the request the relay charges for', async () => {
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_123', status: 'queued' }, 200, { 'x-oneapi-request-id': 'req-submit' })
+      if (url.endsWith('/content')) return mp4Response()
+      return jsonResponse({ id: 'video_123', status: 'completed', progress: 100 }, 200, { 'x-oneapi-request-id': 'req-poll' })
+    }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    const reports: unknown[] = []
+    await service.generate(41, {
+      requestId: 'billed-video', group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    }, {
+      onStage: () => undefined,
+      onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) },
+      onRelayAnswer: (id) => { reports.push(['answer', id]) },
+    })
+    expect(reports).toEqual([['dispatch', true], ['answer', 'req-submit']])
   })
 
   it('prefers the completed TOS URL and never sends the API key to it', async () => {
@@ -823,6 +842,48 @@ describe('createAiVideoService', () => {
     expect(assets.assertWritable).toHaveBeenCalledWith(7, '11111111-1111-4111-8111-111111111111')
     expect(fetchImpl).not.toHaveBeenCalled()
     expect(tasks.upsert).not.toHaveBeenCalled()
+  })
+
+  it('says a paid clip that a full disk could not hold is charged and comes back on the next launch (D38)', async () => {
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_full', status: 'queued' })
+      if (String(input).endsWith('/content')) return mp4Response()
+      return jsonResponse({ id: 'video_full', status: 'completed' })
+    }) as unknown as typeof fetch
+    const { service, tasks, assets } = setup(fetchImpl)
+    const diskFull = Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
+    assets.storeMp4.mockRejectedValueOnce(new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: diskFull }))
+
+    const error = await service.generate(41, {
+      requestId: 'video-disk-full', group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    }).then(() => null, (reason: unknown) => reason)
+
+    expect((error as Error).message).toBe(aiVideoDiskFullMessage)
+    expect((error as Error).message).toBe('视频已经生成、也已经扣费了，但电脑的磁盘满了存不进去。先别重新生成，清出一些空间后重开星芒，会自动取回。')
+    // The task stays on record, so the next launch fetches the clip again instead of anyone paying twice.
+    expect(tasks.finish).not.toHaveBeenCalled()
+    expect(tasks.remove).not.toHaveBeenCalled()
+    const [stored] = vi.mocked(tasks.upsert).mock.calls.map(([task]) => task)
+    expect(stored).toMatchObject({ taskId: 'video_full', requestId: 'video-disk-full' })
+
+    const relaunched = setup(fetchImpl, { pending: [stored] })
+    await expect(relaunched.service.resumeUser(7)).resolves.toEqual([expect.objectContaining({ taskId: 'video_full' })])
+    expect(vi.mocked(fetchImpl).mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+  })
+
+  it('keeps the store wording when a paid clip fails to save for a reason other than a full disk', async () => {
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_locked', status: 'queued' })
+      if (String(input).endsWith('/content')) return mp4Response()
+      return jsonResponse({ id: 'video_locked', status: 'completed' })
+    }) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const denied = Object.assign(new Error('EPERM: operation not permitted, open'), { code: 'EPERM' })
+    assets.storeMp4.mockRejectedValueOnce(new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: denied }))
+
+    await expect(service.generate(41, {
+      requestId: 'video-locked', group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).rejects.toThrow(/^作品没能存进保存位置，请稍后重试；一直不行请联系客服$/)
   })
 
   it('reserves recovery capacity before dispatching a paid video request', async () => {

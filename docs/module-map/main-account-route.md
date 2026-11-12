@@ -76,7 +76,7 @@
 ## 账号生命周期守卫
 - `account-startup-gate.ts` — 定启动画面最多等账号恢复多久：恢复结束和预算用完，哪个先到算哪个；确定断网就不等。预算先用完时记一笔，恢复结束后补发一次会话
 - `account-restore-retry.ts` — 开机恢复登录联不上时的重试节奏：30 秒、2 分钟，之后每 5 分钟一次，直到恢复成功、确认登录失效，或用户自己登录/退出
-- `account-work-gate.ts` — 切账号时记住所有正在跑的宿主操作（含它们最后的本地写入），`whenIdle` 等它们全部结束。操作结束时会话代数变了，就抛「账号上下文已变化」
+- `account-work-gate.ts` — 切账号时记住所有正在跑的宿主操作（含它们最后的本地写入），`whenIdle` 等它们全部结束。操作结束时会话代数变了，就抛「账号刚切换过」
 - `account-identity-tracker.ts` — 判断「换了一个人」：站点 + 用户 + 会话代数拼成身份串，只在它变了时返回 true。续期、充值后刷新余额都不算换人
 - `account-usage-tracker.ts` — AI 请求结束时通知界面刷新余额。只发 `realm:userId` 这个范围，不带凭据、提示词、模型或用量原文；旧账号的请求结束一律忽略
 
@@ -93,6 +93,7 @@
 - `sensitive-clipboard.ts` — 复制出去的密钥、找回密码后拿到的新密码，60 秒后从剪贴板清掉。只清自己放进去的那段，软件退出前（`prepareToQuit` 里的 `flush()`）立刻清：剪贴板读回比对是异步的，will-quit 里来不及。`ipc.ts` 在用
 
 ## 计费、充值、订阅、公告
+- `invoice-portal-window.ts` — 「我的订单」的「开发票」开的开票窗口，显示当前账号的开票中心（xingmang-console 的客户门户）。不挂 preload，导航只放行开票中心那一个 origin，登录按账号存持久分区、换人退出时清掉；下载只收那个页面自己的 `blob:` 发票文件（PDF、PNG、JPEG，8MB 内），认过类型再经保存框原子写
 - `payment-window.ts` — 充值和订阅付款用的独立窗口。后端给的付款表单、URL、二维码都先校验；页面导航只放行白名单 origin 和回调域 `api.solov.cc`（I12）；只有后端查到的订单状态才算付款成功。关了窗口还会在后台继续问 15 分钟
 - `payment-methods-off.ts` — 充值方式开关（`service-status.ts` 的 `paymentMethodsOff`）：从充值信息里去掉这台电脑该藏的付款方式，页面开着时才被藏掉的、点付款时拦下。只藏软件里的，站上不动
 - `payment-status-reader.ts` — 查订单状态前，先把订单绑到下单时的站点、用户和会话代数上；任何一样变了就报 STALE，不再问
@@ -104,6 +105,7 @@
 - `remote-features.ts` — 远程关功能（`service-status.ts` 的 `featuresOff`，商业级差距 G04）能关的名单和关掉后那几句话：视频剪辑、手机遥控、Mac 闲时装、托盘省内存、网络加速的新连接、Codex 桌面端中文补丁、每个工具的安装和打开。名单写死，状态文件只能挑几样关、打不开任何东西。它进渲染包，不许依赖 node 或 electron（I6）
 - `remote-feature-gate.ts` — 主进程这头的开关：跟着更新快照里的 `featuresOff` 走，点了才做的事用 `assertOn`（状态文件第一次没读完时最多等 2 秒）、同步的 IPC 处理器套 `runWhenOn`，后台的事用 `isOff`；`main.ts` 组装，接进安装、打开、视频、加速、手机遥控、闲时装、托盘省内存
 - `release-guard-store.ts` — 把最近一次读成功的撤回名单和放量比例记到本地 `release-guard.json`（#1055），开机先用它。不记最低版本。读回来的内容用状态文件同一个解析器重新校验
+- `service-switches-store.ts` — 把最近一次读成功的远程关功能、已知问题提示、充值方式开关记到本地 `service-switches.json`（D83，深查 RC-06），重开软件时状态文件还没读到、或者读不到，先用它；一样都没写的那次记成空的。记的是没筛过的原样，用的时候按这一版、这种安装包再筛。读回来的内容用状态文件同一个解析器重新校验
 
 ## 星芒 AI 技能与画图 MCP
 - `xingmang-ai-skill.ts` — 生图技能（文件夹和技能名都叫 `images`，0.2.20 及以前叫「星芒AI」），管这几件事：
@@ -120,7 +122,7 @@
 ## 官方账号（不是星芒账号）
 - `official-account-identity.ts` — 从 Codex `auth.json` 里的 JWT 解码出邮箱和套餐名，只用来显示，不验签（这不是认证决定）。令牌本身不出主进程（I3）
 - `official-account-usage.ts` — 用 Codex 本机的 ChatGPT 令牌去 chatgpt.com 查官方 5 小时限额和周限额还剩多少（8 秒超时、256KB 上限、不跟重定向，I10）。`system-service.ts` 在用
-- `official-credential-service.ts` — **官方账号与当前账号来回切的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `switchToOfficialAccount`、`setOfficialSourcePreference`、`restoreOfficialCredentials`、`adoptRestoredConfig`、`alignRestoredAccountSource`）：接中转时把 Claude Code 登录留下的官方 Console Key 挪到一边（它会顶掉当前账号的 Key），切回官方时放回，写配置失败就撤回这一步；恢复备份后按恢复出来的那份重新登记来源、对齐「选了官方账号」的记号；Codex 跟着账号开关星芒AI技能。都排在写配置那一条队里，保存配置也用这里的挪开、放回和撤回
+- `official-credential-service.ts` — **官方账号与当前账号来回切的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `switchToOfficialAccount`、`setOfficialSourcePreference`、`restoreOfficialCredentials`、`adoptRestoredConfig`、`alignRestoredAccountSource`）：接中转时把 Claude Code 登录留下的官方 Console Key 挪到一边（它会顶掉当前账号的 Key），切回官方时放回，写配置失败就撤回这一步；恢复备份后按恢复出来的那份重新登记来源、对齐「选了官方账号」的记号；Codex 跟着账号开关星芒AI技能；切回官方以后 Claude Code 还是「不逐条确认就执行」（老配置没有记号，D5 撤不掉）时问客户一次「要不要让官方 Claude Code 先问再执行？」（`claudeCommandConfirmationQuestionPending` 判要不要问，`answerClaudeCommandConfirmation` 接回答，配置那一半在 `config-files.ts` 的 `restoreClaudeOfficialCommandConfirmation`）。都排在写配置那一条队里，保存配置也用这里的挪开、放回和撤回
 
 ## 网络环境检查
 - `stale-proxy-environment.ts` — 找出并清掉「指向本机、代理软件却没开」的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`。这种残留设置下，本软件自己联网正常，从这里打开的工具和 npm 却全连不上。Windows 上读、清当前账号和整台电脑的设置，用固定路径的 PowerShell + `execFile` + `trustedCommandEnvironment`（I1 / I2 / I14）。Mac 上的同一套规则在 `macos-platform.ts`，改这里要一起改

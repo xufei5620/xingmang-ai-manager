@@ -22,6 +22,7 @@ import {
   type InstallCancellationHandle, type InstallCancellationOutcome,
 } from './install-cancellation'
 import { InstallationQueue } from './installation-queue'
+import { linuxLaunchRefusalNotice } from './linux-launch-guard'
 import { darwinDeepVerificationTimeoutMs, darwinDeveloperIdVerificationArgv, darwinGatekeeperAssessmentTimeoutMs } from './macos-code-signing'
 import { installMacosDesktopApp, macosDesktopAppInstallable } from './macos-desktop-app-installer'
 import {
@@ -32,6 +33,7 @@ import { resolveSystemWingetExecutable, type SystemWingetResolution } from './no
 import { sameLocalPathIdentity } from './path-identity'
 import { assertNoReparseComponents } from './safe-local-data'
 import { resolveWindowsExplorerExecutable } from './system-shell'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable, type WindowsCliExecutionMode } from './windows-elevation'
 import { pathWithinWindowsRoot, resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
@@ -384,8 +386,9 @@ export async function verifyExternalClientPath(candidate: string, kind: 'file' |
 //
 // `knownSignatures` lets a scan skip Get-AuthenticodeSignature for an executable
 // whose size, timestamps and registered version are unchanged since it was last
-// verified. The list is passed as base64 JSON so no path, subject or version text
-// ever becomes PowerShell source. A same-user attacker can forge those timestamps,
+// verified. The list is passed as base64 of ASCII-only JSON (see
+// encodeKnownExternalClientSignatures) so no path, subject or version text ever
+// becomes PowerShell source. A same-user attacker can forge those timestamps,
 // so install never passes this list: what it installs is verified anew.
 //
 // Launch passes only the entries that verified as Valid. This is a deliberate
@@ -400,6 +403,27 @@ export async function verifyExternalClientPath(candidate: string, kind: 'file' |
 // autoloading costs the whole System32 module scan (20 s and more on the CI
 // runner, see buildPowerShellModuleImportStatement) against a 15 s limit, so it
 // imports every module it calls before the first call.
+//
+// It also runs where an application-control policy holds every -Command string
+// to ConstrainedLanguage (see powershell-constrained-language.ts). There the
+// Stopwatch on the first line was refused, then the base64 decoding of the
+// remembered signatures, which under $ErrorActionPreference = 'Stop' ended the
+// script with exit code 1 and nothing on stdout: every client card on a
+// customer's home page read 「命令执行失败（退出码 1）」 (2026-11-10). So the
+// script sticks to what that mode allows: hashtables and arrays instead of
+// [pscustomobject] and generic lists, the wall clock instead of a Stopwatch for
+// the timings (they only go to the log; a clock set back reads as 0), string
+// operators for file names, and its own base64 decoding. The two checks that
+// need .NET keep their .NET call where it is allowed:
+// - The canonical path. Where System.IO.Path is refused, everything
+//   GetFullPath could rewrite is turned away instead: the other separator,
+//   doubled or trailing separators, . and .. segments, a segment ending in a
+//   dot or a space, a short (8.3) name, and anything as long as MAX_PATH.
+// - A key's values read one by one (Read-UninstallValues). Where the key's own
+//   GetValue is refused, each value the key holds is read with
+//   Get-ItemPropertyValue, which reads that value alone.
+// Nothing is checked less in either mode. The script travels on the command
+// line, which Windows caps at 32767 characters, so these notes stay out of it.
 export const windowsExternalClientInventoryModules = [
   'Microsoft.PowerShell.Utility',
   'Appx',
@@ -437,12 +461,29 @@ try {
   foreach ($package in @(Get-AppxPackage -Name Claude)) {
     if ($package.PackageFamilyName -ceq 'Claude_pzs8sxrjxfjjc') {
       $exe = Join-Path $package.InstallLocation 'app\Claude.exe'
-      $clients.Add([pscustomobject]@{ tool='claudeDesktop'; path=$exe; version=[string]$package.Version; running=($processes -contains $exe); family=[string]$package.PackageFamilyName; publisher=[string]$package.Publisher; installLocation=[string]$package.InstallLocation; applicationId='Claude_pzs8sxrjxfjjc!Claude' })
+      $clients += ,[ordered]@{ tool='claudeDesktop'; path=$exe; version=[string]$package.Version; running=($processes -contains $exe); family=[string]$package.PackageFamilyName; publisher=[string]$package.Publisher; installLocation=[string]$package.InstallLocation; applicationId='Claude_pzs8sxrjxfjjc!Claude' }
     }
   }
 } catch { $errors.claudeDesktop = '无法读取当前用户 Claude 桌面端的 AppX 注册信息'; $errorDetails.claudeDesktop = [string]$_.Exception.Message }
-$timings['appxMs'] = [int]$clock.ElapsedMilliseconds; $clock.Restart()
+$timings['appxMs'] = Get-ElapsedMs $clock; $clock = [datetime]::UtcNow
 `.trim()
+
+/**
+ * The remembered signatures as the inventory script reads them: base64 of JSON in
+ * which every character past ASCII is written as a `\uXXXX` escape. The script
+ * decodes it with string methods and bit operators alone, which
+ * ConstrainedLanguage allows ([Convert] and [System.Text.Encoding] are refused
+ * there), and since every byte is ASCII it needs no UTF-8 decoder;
+ * ConvertFrom-Json reads the escapes back. Base64 rather than hex keeps this
+ * part of the command line about as long as before: an all-ASCII list encodes
+ * to the same length, and each character past ASCII costs six bytes instead of
+ * UTF-8's two to four.
+ */
+export function encodeKnownExternalClientSignatures(knownSignatures: readonly KnownExternalClientSignature[]): string {
+  const json = JSON.stringify(knownSignatures.map(({ path: file, stamp, status, subject, version }) => ({ path: file, stamp, status, subject, version })))
+  const ascii = json.replace(/[^\x00-\x7f]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`)
+  return Buffer.from(ascii, 'latin1').toString('base64')
+}
 
 /**
  * `only` is the client about to be opened: the script then reads every uninstall
@@ -455,38 +496,53 @@ $timings['appxMs'] = [int]$clock.ElapsedMilliseconds; $clock.Restart()
  */
 export function windowsExternalClientInventoryScript(knownSignatures: readonly KnownExternalClientSignature[] = [], only?: ExternalToolId): string {
   if (only !== undefined && !isExternalToolId(only)) throw new Error('未知客户端')
-  const known = Buffer.from(JSON.stringify(knownSignatures.map(({ path: file, stamp, status, subject, version }) => ({ path: file, stamp, status, subject, version }))), 'utf8').toString('base64')
+  const known = encodeKnownExternalClientSignatures(knownSignatures)
   return String.raw`
-$clock = [System.Diagnostics.Stopwatch]::StartNew()
-$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$clock = [datetime]::UtcNow
+${powerShellUtf8OutputStatement}
 ${buildPowerShellModuleImportStatement(windowsExternalClientInventoryModulesFor(only))}
 $ErrorActionPreference = 'Stop'
+$fullLanguage = $ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage'
+function Get-ElapsedMs($since) {
+  $elapsed = [int]([datetime]::UtcNow - $since).TotalMilliseconds
+  if ($elapsed -lt 0) { 0 } else { $elapsed }
+}
 $knownSignatures = @{}
 # Windows PowerShell 5.1 emits a JSON array as one pipeline object; assigning it
 # first and then iterating enumerates the entries on every PowerShell version.
-$knownList = ConvertFrom-Json ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${known}')))
+$knownBase64 = '${known}'
+$knownBits = 0
+$knownBitCount = 0
+$knownList = ConvertFrom-Json (-join @(foreach ($knownCharacter in $knownBase64.ToCharArray()) {
+  $knownIndex = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.IndexOf($knownCharacter)
+  if ($knownIndex -lt 0) { continue }
+  $knownBits = (($knownBits -band 1023) -shl 6) -bor $knownIndex
+  $knownBitCount += 6
+  if ($knownBitCount -ge 8) { $knownBitCount -= 8; [string][char](($knownBits -shr $knownBitCount) -band 255) }
+}))
 foreach ($entry in $knownList) {
   if ($entry -and $entry.path) { $knownSignatures[[string]$entry.path] = $entry }
 }
 # The first ConvertFrom-Json loads its serializer on Windows PowerShell 5.1, so it
 # is counted with the imports rather than as reading the registry.
-$timings = [ordered]@{ importMs = [int]$clock.ElapsedMilliseconds }
-$clock.Restart()
-$clients = [System.Collections.Generic.List[object]]::new()
+$timings = [ordered]@{ importMs = Get-ElapsedMs $clock }
+$clock = [datetime]::UtcNow
+$clients = @()
 $errors = @{}
 # The screen gets only the Chinese sentence in $errors; what PowerShell said, most
 # often system English, goes back beside it for the runtime log alone.
 $errorDetails = @{}
-$registry = [System.Collections.Generic.List[object]]::new()
+$registry = @()
 function Test-LocalExecutablePath([string]$candidate) {
   # Registry entries are user writable. Reject remote paths, alternate streams
   # and reparse parents before reading metadata or a signature from them.
   if ($candidate -notmatch '^[A-Za-z]:\\' -or $candidate.Substring(2) -match '[:<>"|?*\x00-\x1f]') { return $false }
   try {
-    $full = [System.IO.Path]::GetFullPath($candidate)
-    if ($full -ine $candidate) { return $false }
-    $cursor = [System.IO.Path]::GetPathRoot($full)
-    foreach ($segment in $full.Substring($cursor.Length).Split('\')) {
+    if ($fullLanguage) {
+      if ([System.IO.Path]::GetFullPath($candidate) -ine $candidate) { return $false }
+    } elseif ($candidate.Length -ge 260 -or $candidate -match '/|\\\\|\\$|\\\.\.?(?:\\|$)|[. ](?:\\|$)|~\d') { return $false }
+    $cursor = $candidate.Substring(0, 3)
+    foreach ($segment in $candidate.Substring(3).Split('\')) {
       if (!$segment) { continue }
       $cursor = Join-Path $cursor $segment
       $item = Get-Item -LiteralPath $cursor -Force
@@ -497,7 +553,7 @@ function Test-LocalExecutablePath([string]$candidate) {
 }
 $roots = @('Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'Registry::HKEY_LOCAL_MACHINE\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')
 $registryIncomplete = $false
-$registryFailures = [System.Collections.Generic.List[object]]::new()
+$registryFailures = @()
 # Get-ItemProperty converts every value of a key, and a single malformed one fails
 # the whole key: some installers write an 8-byte REG_DWORD (NetBeans' NoModify, for
 # one), which the registry provider cannot cast, so that key throws on every scan.
@@ -506,35 +562,37 @@ $registryFailures = [System.Collections.Generic.List[object]]::new()
 function Read-UninstallValues($key) {
   $entry = [ordered]@{ PSChildName = [string]$key.PSChildName }
   foreach ($name in @('DisplayName', 'InstallLocation', 'DisplayIcon', 'DisplayVersion')) {
-    $value = $key.GetValue($name)
+    if ($fullLanguage) { $value = $key.GetValue($name) }
+    elseif (@($key.Property) -contains $name) { $value = Get-ItemPropertyValue -LiteralPath $key.PSPath -Name $name }
+    else { $value = $null }
     if ($null -ne $value -and $value -isnot [string]) { throw "$name is not text" }
     $entry[$name] = $value
   }
-  [pscustomobject]$entry
+  $entry
 }
 foreach ($root in $roots) {
   try {
     if (Test-Path -LiteralPath $root) {
       foreach ($key in Get-ChildItem -LiteralPath $root) {
-        try { $registry.Add((Get-ItemProperty -LiteralPath $key.PSPath)) }
+        try { $registry += ,(Get-ItemProperty -LiteralPath $key.PSPath) }
         catch {
           $failure = $_
-          try { $registry.Add((Read-UninstallValues $key)) }
+          try { $registry += ,(Read-UninstallValues $key) }
           catch {
             $registryIncomplete = $true
-            if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures.Add([pscustomobject]@{ entry=[string]$key.PSChildName; reason=[string]$failure.Exception.Message }) }
+            if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures += ,[ordered]@{ entry=[string]$key.PSChildName; reason=[string]$failure.Exception.Message } }
           }
         }
       }
     }
   } catch {
     $registryIncomplete = $true
-    if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures.Add([pscustomobject]@{ entry=$root; reason=[string]$_.Exception.Message }) }
+    if ($registryFailures.Count -lt ${maximumRegistryFailures}) { $registryFailures += ,[ordered]@{ entry=$root; reason=[string]$_.Exception.Message } }
   }
 }
-$timings['registryMs'] = [int]$clock.ElapsedMilliseconds; $clock.Restart()
+$timings['registryMs'] = Get-ElapsedMs $clock; $clock = [datetime]::UtcNow
 $processes = @(Get-Process -Name WorkBuddy,Claude,OpenCode -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Path } catch {} })
-$timings['processMs'] = [int]$clock.ElapsedMilliseconds; $clock.Restart()
+$timings['processMs'] = Get-ElapsedMs $clock; $clock = [datetime]::UtcNow
 $products = @(
   @{ tool='workbuddy'; code='BFD312E9-1019-4F57-9F44-F86246833B50'; name='^WorkBuddy(?:\s|$)'; exe='WorkBuddy.exe' },
   @{ tool='claudeDesktop'; code='AnthropicClaude'; name='^Claude$'; exe='Claude.exe' },
@@ -542,7 +600,7 @@ $products = @(
 )${only === undefined ? '' : `
 $products = @($products | Where-Object { $_.tool -ceq '${only}' })`}
 ${only === undefined || only === 'claudeDesktop' ? windowsClaudeAppxInventory : ''}
-$signatureClock = [System.Diagnostics.Stopwatch]::new()
+$signatureMs = 0
 $signaturesChecked = 0
 $signaturesReused = 0
 foreach ($product in $products) {
@@ -552,13 +610,13 @@ foreach ($product in $products) {
   foreach ($entry in $registry) {
     $keyName = ([string]$entry.PSChildName).Trim('{}')
     if ($keyName -ine $product.code -and [string]$entry.DisplayName -notmatch $product.name) { continue }
-    $paths = [System.Collections.Generic.List[string]]::new()
-    if ($entry.InstallLocation) { $paths.Add((Join-Path ([string]$entry.InstallLocation).Trim('"') $product.exe)) }
+    $paths = @()
+    if ($entry.InstallLocation) { $paths += (Join-Path ([string]$entry.InstallLocation).Trim('"') $product.exe) }
     $icon = [string]$entry.DisplayIcon
-    if ($icon -match '^"([^"\r\n]+\.exe)"(?:,[-\d]+)?$') { $paths.Add($Matches[1]) }
-    elseif ($icon -match '^([^"\r\n]+\.exe)(?:,[-\d]+)?$') { $paths.Add($Matches[1]) }
+    if ($icon -match '^"([^"\r\n]+\.exe)"(?:,[-\d]+)?$') { $paths += $Matches[1] }
+    elseif ($icon -match '^([^"\r\n]+\.exe)(?:,[-\d]+)?$') { $paths += $Matches[1] }
     foreach ($exe in @($paths | Select-Object -Unique)) {
-      if ([System.IO.Path]::GetFileName($exe) -ine $product.exe -or !(Test-LocalExecutablePath $exe)) { continue }
+      if (($exe -split '[\\/]')[-1] -ine $product.exe -or !(Test-LocalExecutablePath $exe)) { continue }
       try {
         $file = Get-Item -LiteralPath $exe -Force
         $stamp = '{0}:{1}:{2}' -f $file.Length, $file.LastWriteTimeUtc.Ticks, $file.CreationTimeUtc.Ticks
@@ -569,21 +627,21 @@ foreach ($product in $products) {
           $signaturesReused++
         } else {
           $signaturesChecked++
-          $signatureClock.Start()
-          try { $signature = Get-AuthenticodeSignature -LiteralPath $exe } finally { $signatureClock.Stop() }
+          $signatureStartedAt = [datetime]::UtcNow
+          try { $signature = Get-AuthenticodeSignature -LiteralPath $exe } finally { $signatureMs += Get-ElapsedMs $signatureStartedAt }
           $signatureStatus = [string]$signature.Status
           $signatureSubject = [string]$signature.SignerCertificate.Subject
         }
-        $clients.Add([pscustomobject]@{ tool=$product.tool; path=$exe; version=[string]$entry.DisplayVersion; running=($processes -contains $exe); signatureStatus=$signatureStatus; signatureSubject=$signatureSubject; signatureStamp=$stamp })
+        $clients += ,[ordered]@{ tool=$product.tool; path=$exe; version=[string]$entry.DisplayVersion; running=($processes -contains $exe); signatureStatus=$signatureStatus; signatureSubject=$signatureSubject; signatureStamp=$stamp }
       } catch { $errors[$product.tool] = '无法读取客户端数字签名'; $errorDetails[$product.tool] = [string]$_.Exception.Message }
     }
   }
 }
-$timings['clientsMs'] = [int]$clock.ElapsedMilliseconds
-$timings['signatureMs'] = [int]$signatureClock.ElapsedMilliseconds
+$timings['clientsMs'] = Get-ElapsedMs $clock
+$timings['signatureMs'] = $signatureMs
 $timings['signaturesChecked'] = $signaturesChecked
 $timings['signaturesReused'] = $signaturesReused
-@{ clients=@($clients.ToArray()); errors=$errors; errorDetails=$errorDetails; registryFailures=@($registryFailures.ToArray()); timings=$timings } | ConvertTo-Json -Depth 5 -Compress
+${buildPowerShellJsonOutputStatements('@{ clients=@($clients); errors=$errors; errorDetails=$errorDetails; registryFailures=@($registryFailures); timings=$timings } | ConvertTo-Json -Depth 5 -Compress').join('\n')}
 `.trim()
 }
 
@@ -643,7 +701,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     if (platform === 'win32') return architecture === 'x64' || (architecture === 'arm64' && tool !== 'workbuddy') ? null : '当前处理器架构没有可用的官方 Windows 安装包'
     // 有核对过的官方 Mac 包的才一键装；root 身份下装出来的应用归 root，客户自己更新不了。
     if (platform === 'darwin') return macosDesktopAppInstallable(tool, architecture) && !runningAsRoot() ? null : 'macOS 请先从客户端官网下载并将应用移入 Applications，然后重新检测'
-    return '工具箱当前不支持此系统的桌面客户端安装与启动，请使用客户端官网提供的平台安装方案'
+    return '星芒当前不支持此系统的桌面客户端安装与启动，请使用客户端官网提供的平台安装方案'
   }
   let lastWingetReason: string | null = null
   const resolveWinget = async (): Promise<SystemWingetResolution> => {
@@ -1160,7 +1218,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         // for an elevated spawn; Explorer delegates to the interactive shell.
         await launchProcess({ executable, argv: [client.applicationId ? `shell:AppsFolder\\${client.applicationId}` : client.path], cwd: machinePaths.systemRoot, env: environment(), windowsHide: true })
       } else if (platform === 'darwin') {
-        if (runningAsRoot()) throw new Error('请以普通用户身份重新打开工具箱后启动桌面客户端')
+        // platform/entry.ts 已经在最早的入口拦下 Mac 上的管理员身份（D18），这里只是兜底，说同一句话。
+        if (runningAsRoot()) throw new Error(linuxLaunchRefusalNotice('root').message)
         await execute({ executable: '/usr/bin/open', argv: ['-a', client.path] }, { env: environment(), trustedOnly: false, timeoutMs: 15_000, maxOutputBytes: maximumProbeBytes })
       } else throw new Error('当前系统不支持启动此桌面客户端')
       try { options.onLaunchTiming?.({ tool, queueWaitMs: startedAt - requestedAt, inventoryMs: inspectedAt - startedAt, launchMs: now() - inspectedAt, ...inspection.timings }) }

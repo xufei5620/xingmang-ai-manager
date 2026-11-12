@@ -16,6 +16,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { trustedCommandEnvironment } from './command-runner'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 const execFileAsync = promisify(execFile)
@@ -50,10 +51,16 @@ export const cliProcessProbeTimeoutMs = 8_000
  * The modules are imported by name first: under trustedCommandEnvironment()
  * an autoloaded Get-CimInstance costs the whole module scan, longer than the
  * 8 s this probe gets (see buildPowerShellModuleImportStatement).
+ *
+ * Each match is a hashtable: ConstrainedLanguage, where an application-control
+ * policy runs every -Command, refuses [pscustomobject], and under
+ * SilentlyContinue the refusal dropped every match, so the probe answered
+ * "nothing running" in front of an update. The StringComparison overloads are
+ * still allowed there (checked on the Windows runner under the lockdown).
  */
 export function buildWindowsCliProcessProbeScript(): string {
   return [
-    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    powerShellUtf8OutputStatement,
     buildPowerShellModuleImportStatement(windowsCliProcessProbeModules),
     '$ErrorActionPreference = "SilentlyContinue"',
     `$root = [string]$env:${cliProcessRootEnvironmentVariable}`,
@@ -68,10 +75,10 @@ export function buildWindowsCliProcessProbeScript(): string {
       if ($image -and $image.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { $matched = $true }
       if (-not $matched -and $commandLine -and $commandLine.IndexOf($root, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true }
       if ($matched) {
-        [pscustomobject]@{ ProcessId = $_.ProcessId; Name = [string]$_.Name; ExecutablePath = $image }
+        @{ ProcessId = $_.ProcessId; Name = [string]$_.Name; ExecutablePath = $image }
       }
     })`,
-    '$items | ConvertTo-Json -Compress',
+    ...buildPowerShellJsonOutputStatements('$items | ConvertTo-Json -Compress'),
   ].join('\n')
 }
 

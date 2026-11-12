@@ -32,7 +32,7 @@ export type IpcLogPolicy = 'normal' | 'quiet-success' | 'secret-input' | 'silent
  *
  * - none：跟账号无关；或者是登录、注册、退出、读登录态、切换已存账号这类本身就在管登录的通道，
  *   不进账号工作，要不要等开机恢复由处理函数自己定。
- * - scoped：在账号工作里跑，换账号要等它跑完才动手；跑完时账号已经换了，结果作废，报「账号上下文已变化，请重试」。
+ * - scoped：在账号工作里跑，换账号要等它跑完才动手；跑完时账号已经换了，结果作废，报「账号刚切换过，请再试一次」。
  * - scoped-may-end-session：同上，但这一下自己就可能结束或换掉登录（改密码、踢掉当前这台设备），
  *   跑完不核对账号换没换。
  * - scoped-queued：要在安装队列里排在别的安装后面（I11）。排着队那段不算账号工作，处理函数交给队列时
@@ -70,6 +70,9 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'config:switch-to-official-account': { log: 'normal', account: 'scoped' },
   'config:switch-account-source': { log: 'normal', account: 'scoped' },
   'config:repair-cli-hooks': { log: 'normal', account: 'scoped' },
+  'config:set-claude-write-boundary': { label: '只让 Claude Code 改项目文件夹里的文件', log: 'normal', account: 'scoped' },
+  'config:set-claude-commit-attribution': { label: 'Claude Code 提交代码时不署名', log: 'normal', account: 'scoped' },
+  'config:answer-claude-command-confirmation': { label: '官方 Claude Code 先问再执行', log: 'normal', account: 'scoped' },
   'tools:inspect-running': { label: '换账号后检查哪些工具还开着', log: 'normal', account: 'none' },
   'tools:check-models': { label: '打开工具前核对当前账号能用的模型', log: 'normal', account: 'scoped' },
   'tools:cli-model-hints': { label: '读取服务状态文件里的型号表', log: 'normal', account: 'none' },
@@ -144,6 +147,9 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'backups:inspect': { label: '配置备份详情读取', log: 'normal', account: 'none' },
   'backups:restore': { label: '配置备份恢复', log: 'normal', account: 'none' },
   'backups:delete': { label: '配置备份删除', log: 'normal', account: 'none' },
+  // 打开「备份迁移」那一组就问六次，每次成功都记一条只会刷屏；没算出来的那一行由 storage-usage-service.ts 自己记。
+  'storage:inspect': { label: '星芒占用的空间计算', log: 'quiet-success', account: 'none' },
+  'storage:clean': { label: '星芒占用的空间清理', log: 'normal', account: 'none' },
   // 结果里是登录二维码的图片，扫了它就能把别人的微信连到这台：成功不记（I13）。poll 每四十秒一次，
   // 记了也只会刷屏。失败照记，失败那一行不带入参。
   'codex-remote:weixin-login-start': { label: '手机遥控微信扫码', log: 'quiet-success', account: 'none' },
@@ -171,6 +177,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'extensions:mutate': { label: 'AI 工具扩展操作', log: 'normal', account: 'none' },
   'extensions:ensure-marketplace': { label: '官方插件市场添加', log: 'normal', account: 'none' },
   'extensions:check-mcp-health': { label: 'MCP 连接状态检测', log: 'normal', account: 'none' },
+  'extensions:copy-mcp': { label: '把外接工具也装到别的工具', log: 'normal', account: 'none' },
   // Frequent read-style checks stay quiet, while managed CLI configuration
   // handles secrets internally and account:reveal-key deliberately returns a
   // short-lived plaintext secret to the renderer. Logging any of those
@@ -180,6 +187,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // configure-managed-clis, reveal-key, list-key-models, configure-cli-with-key).
   'account:get-status': { label: '星芒账号服务状态读取', log: 'quiet-success', account: 'none' },
   'account:get-notice': { log: 'polling', account: 'scoped' },
+  // 打开公告时一张图一次，成功了只会刷屏；下不下来照记，排查破图要用。
+  'account:get-notice-image': { label: '公告图片下载', log: 'quiet-success', account: 'scoped' },
   'account:mark-notice-read': { log: 'normal', account: 'scoped' },
   'account:sync-local-notice-reads': { log: 'polling', account: 'scoped' },
   'acceleration:get-state': { log: 'normal', account: 'none' },
@@ -207,6 +216,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:quote-topup': { log: 'normal', account: 'scoped' },
   'account:create-topup-payment': { log: 'normal', account: 'scoped' },
   'account:close-payment-window': { log: 'normal', account: 'scoped' },
+  'account:open-invoice-portal': { log: 'normal', account: 'scoped' },
   'account:list-topup-orders': { log: 'normal', account: 'scoped' },
   'account:redeem-topup-code': { log: 'normal', account: 'scoped' },
   'account:transfer-affiliate-quota': { log: 'normal', account: 'scoped' },
@@ -243,6 +253,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // logs differently from its siblings.
   'account:list-keys': { label: '星芒账号 Key 列表读取', log: 'quiet-success', account: 'scoped' },
   'account:list-groups': { label: '星芒账号可用分组读取', log: 'quiet-success', account: 'scoped' },
+  'account:get-price-list': { label: '星芒账号价格表读取', log: 'quiet-success', account: 'scoped' },
   'account:revoke-key': { label: '星芒账号 Key 撤销', log: 'normal', account: 'scoped' },
   'account:copy-key': { label: '星芒账号 Key 复制', log: 'quiet-success', account: 'scoped' },
   // The input is the plaintext password the reset just produced.
@@ -261,6 +272,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:revoke-login-session': { log: 'normal', account: 'scoped-may-end-session' },
   'account:revoke-other-login-sessions': { log: 'normal', account: 'scoped' },
   'canvas:open': { label: '无限画布窗口打开', log: 'normal', account: 'scoped' },
+  'canvas:open-asset-library': { label: '无限画布素材库打开', log: 'normal', account: 'scoped' },
   // get-remembered-login's result and set-remembered-login's input both carry
   // a plaintext password (the 「记住密码」 credential) -- the same dedicated
   // reveal-channel pattern as config:reveal-api-key, and the same I3/I13
@@ -279,6 +291,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'chat:asset-menu': { log: 'quiet-success', account: 'scoped' },
   'chat:pick-images': { label: '聊天图片选择', log: 'quiet-success', account: 'scoped' },
   'chat:paste-image': { label: '聊天截图粘贴', log: 'quiet-success', account: 'scoped' },
+  'chat:pick-text-files': { label: '聊天选文字文件', log: 'quiet-success', account: 'scoped' },
   // 出视频要几分钟。换账号时 main.ts 先叫停视频服务再等账号工作结束，所以照样能放进账号工作里。
   'video-studio:plan': { label: '视频剪辑分镜', log: 'normal', account: 'scoped' },
   'video:generate': { label: 'AI 视频生成', log: 'normal', account: 'scoped' },
@@ -312,7 +325,14 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'extensions:choose-directory': { label: '外接工具选择文件夹', log: 'normal', account: 'none' },
   'codex-remote:get-state': { label: '手机遥控状态读取', log: 'quiet-success', account: 'none' },
   'codex-remote:set-channel-enabled': { label: '手机遥控开关', log: 'normal', account: 'none' },
+  'codex-remote:reconnect': { label: '手机遥控重新连接', log: 'normal', account: 'none' },
+  'codex-remote:set-auto-start': { label: '手机遥控打开星芒时自动打开', log: 'normal', account: 'none' },
+  'codex-remote:set-idle-close': { label: '手机遥控多久没消息自动关', log: 'normal', account: 'none' },
+  'codex-remote:stop-turn': { label: '在电脑上停下手机遥控这一轮', log: 'normal', account: 'none' },
+  'codex-remote:decline-approvals': { label: '在电脑上拒绝手机遥控等着同意的', log: 'normal', account: 'none' },
   'codex-remote:choose-workspace': { label: '手机遥控工作文件夹选择', log: 'normal', account: 'none' },
+  'codex-remote:use-workspace': { label: '手机遥控换用另一个工作文件夹', log: 'normal', account: 'none' },
+  'codex-remote:remove-workspace': { label: '手机遥控移除一个工作文件夹', log: 'normal', account: 'none' },
   // 返回值里带着配对码：只该出现在客户自己眼前的屏幕上，成功不进日志和反馈报告。
   'codex-remote:start-pairing': { label: '手机遥控开始配对', log: 'quiet-success', account: 'none' },
   'codex-remote:cancel-pairing': { label: '手机遥控取消配对', log: 'normal', account: 'none' },

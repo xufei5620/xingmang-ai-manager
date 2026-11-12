@@ -6,10 +6,14 @@ import { createWeixinLoginController, type WeixinLoginController } from '../../c
 import { parseWeixinLoginId, parseWeixinLoginPollInput } from '../parsers/codex-remote-weixin'
 import type { IpcHandlerContext } from './context'
 
-/** 扫码登录要用的那两样：跟渠道同一份的依赖，和带界面字样一起存凭据的入口。 */
+/**
+ * 扫码登录要用的那几样：跟渠道同一份的依赖，带界面字样一起存凭据的入口（过了手机上那串数字时顺带记下绑定的人），
+ * 和认出原来那份登录时的重连。
+ */
 export interface WeixinLoginHost {
   channelDependencies(channel: 'weixin'): RemoteChannelDependencies
-  saveChannelCredential(channel: 'weixin', value: string | null, accountLabel: string | null): Promise<unknown>
+  saveChannelCredential(channel: 'weixin', value: string | null, accountLabel: string | null, options?: { verifiedPeerUserId?: string }): Promise<unknown>
+  reconnectIfLoggedOut(channel: 'weixin'): Promise<void>
 }
 
 export function createWeixinLoginForHost(host: WeixinLoginHost): WeixinLoginController {
@@ -19,9 +23,10 @@ export function createWeixinLoginForHost(host: WeixinLoginHost): WeixinLoginCont
     botAgent: buildWeixinBotAgent(dependencies.appVersion),
     now: () => dependencies.now(),
     readCredential: () => dependencies.readCredential(),
-    saveCredential: async (value, accountLabel) => {
-      await host.saveChannelCredential('weixin', value, accountLabel)
+    saveCredential: async (value, accountLabel, verifiedOwner) => {
+      await host.saveChannelCredential('weixin', value, accountLabel, verifiedOwner ? { verifiedPeerUserId: verifiedOwner } : undefined)
     },
+    reconnectIfLoggedOut: () => host.reconnectIfLoggedOut('weixin'),
     // 二维码库只有扫码登录时才用到，到这一步才加载，不拖慢开机。
     renderQrCode: async (content) => (await import('qrcode')).default.toDataURL(content, { errorCorrectionLevel: 'M', margin: 2, width: 280 }),
     log: (level, event, detail) => dependencies.log(level, event, detail),

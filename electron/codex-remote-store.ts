@@ -8,7 +8,7 @@ import {
 import type { SafeStorageLike } from './account-session-store'
 import { inspectSafeStorageBackend, resolveCredentialPersistence } from './safe-storage-backend'
 import { isRecord } from './input-guards'
-import { isRemoteChannelId, type RemoteChannelId } from './codex-remote-channel'
+import { isRemoteChannelId, isRemoteIdleCloseHours, type RemoteChannelId, type RemoteIdleCloseHours } from './codex-remote-channel'
 
 // 手机遥控的两份本地数据：设置（开没开、绑定了谁、工作文件夹，不含密钥）和每个渠道的凭据
 // （飞书 App Secret、微信机器人令牌，safeStorage 加密）。凭据是本程序自己连平台用的登录凭据，
@@ -22,6 +22,8 @@ const credentialLabel = '手机遥控凭据'
 const maxDisplayNameLength = 64
 const maxUserIdLength = 256
 const maxAccountLabelLength = 128
+/** 电脑上最多加几个干活的文件夹（YF-19）：手机上回「文件夹 2」要好认，列出来一屏看得完。 */
+export const maxRemoteWorkspaces = 5
 
 /** 「退出登录」删不掉凭据文件时上屏那句（#1407 P3-6）。比如 Windows 上文件正被杀毒软件占着，重启后再删一般就行。 */
 export const credentialRemoveFailedMessage = '没能删掉保存的登录信息，请重启星芒后再点一次退出登录。'
@@ -34,7 +36,8 @@ export interface CodexRemoteBoundPeer {
 
 /**
  * 「开没开」不落盘：每次打开星芒遥控都从关着开始，要客户在电脑上点一次才连，
- * 免得开机自启的星芒在没人看着时就把这台电脑交给手机。
+ * 免得开机自启的星芒在没人看着时就把这台电脑交给手机。客户自己打开了「打开星芒时自动打开遥控」
+ * （设置里的 autoStart，默认关，YF-9）才替他连，连的也只是配对过人的渠道。
  */
 export interface CodexRemoteChannelSettings {
   /** 界面上认账号用的非机密字样（飞书 App ID、微信昵称）。 */
@@ -44,13 +47,30 @@ export interface CodexRemoteChannelSettings {
 
 export interface CodexRemoteSettings {
   version: 1
+  /** 正在用的那个文件夹。 */
   workspaceDirectory: string | null
+  /**
+   * 电脑上加过的全部文件夹（YF-19），按加的先后，含正在用的那个，最多 maxRemoteWorkspaces 个；手机上「文件夹 2」
+   * 认的就是这个次序。缺省 = 只有 workspaceDirectory 那一个（以前的版本只能选一个）。
+   */
+  workspaceDirectories?: string[]
   channels: Partial<Record<RemoteChannelId, CodexRemoteChannelSettings>>
   /**
    * 上一条审批用到的编号（0 = 还没有过）。重开星芒接着往下数：手机上还留着上次的「同意 1」，
    * 不能落到这次新的第 1 条头上。
    */
   lastApprovalNumber: number
+  /**
+   * 「打开星芒时自动打开遥控」（YF-9，yoyo 2026-11-11 亲手打字「遥控自动开，做」）。缺省 = 关：
+   * 只有客户在设置里自己打开了才存 true，读回来也只认 true。
+   */
+  autoStart?: boolean
+  /**
+   * 「多久没消息就自动关」（YF-10，yoyo 2026-11-11 亲手打字「不自动关」「默认不关」）。缺省 = 不自动关：
+   * 只有客户选了 4 小时或 12 小时才存，读回来也只认这两个数。以前的版本固定 4 小时，升上来也是不自动关
+   * （yoyo 同日亲手回「老客户也不关」，知道遥控开着电脑不自动睡）。
+   */
+  idleCloseHours?: RemoteIdleCloseHours
 }
 
 export function emptyCodexRemoteSettings(): CodexRemoteSettings {
@@ -79,10 +99,24 @@ export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
   if (!isRecord(value) || value.version !== 1) return settings
   const workspace = boundedString(value.workspaceDirectory, 4096)
   settings.workspaceDirectory = workspace && path.isAbsolute(workspace) ? workspace : null
+  if (Array.isArray(value.workspaceDirectories)) {
+    const list: string[] = []
+    for (const entry of value.workspaceDirectories) {
+      const directory = boundedString(entry, 4096)
+      if (directory && path.isAbsolute(directory) && !list.includes(directory) && list.length < maxRemoteWorkspaces) list.push(directory)
+    }
+    // 正在用的那个一定在单子上；单子满了也不挤掉它，挤掉最后加的那个。
+    if (settings.workspaceDirectory && !list.includes(settings.workspaceDirectory)) {
+      list.splice(maxRemoteWorkspaces - 1, list.length, settings.workspaceDirectory)
+    }
+    if (list.length > 1) settings.workspaceDirectories = list
+  }
   const lastApprovalNumber = value.lastApprovalNumber
   if (typeof lastApprovalNumber === 'number' && Number.isSafeInteger(lastApprovalNumber) && lastApprovalNumber > 0) {
     settings.lastApprovalNumber = lastApprovalNumber
   }
+  if (value.autoStart === true) settings.autoStart = true
+  if (isRemoteIdleCloseHours(value.idleCloseHours)) settings.idleCloseHours = value.idleCloseHours
   if (isRecord(value.channels)) {
     for (const [id, raw] of Object.entries(value.channels)) {
       if (!isRemoteChannelId(id) || !isRecord(raw)) continue
@@ -93,6 +127,12 @@ export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
     }
   }
   return settings
+}
+
+/** 电脑上加过的文件夹（YF-19），正在用的那个在里面；一个都没加过是空的。 */
+export function remoteWorkspaceList(settings: Pick<CodexRemoteSettings, 'workspaceDirectory' | 'workspaceDirectories'>): string[] {
+  if (settings.workspaceDirectories?.length) return [...settings.workspaceDirectories]
+  return settings.workspaceDirectory ? [settings.workspaceDirectory] : []
 }
 
 export class CodexRemoteStore {

@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { Home, bootstrapNoticeExpiresAt, cliHooksAutoRepairedText, homeMoneyNotice, homeWalletEmpty, hookRepairsToAnnounce, lowBalanceText, parseAnnouncedHookRepairs, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
+import { Home, bootstrapNoticeExpiresAt, cliHooksAutoRepairedText, homeMoneyNotice, homeToolRequest, homeWalletEmpty, hookRepairsToAnnounce, lowBalanceText, parseAnnouncedHookRepairs, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
 import { presentTools, type ToolboxSnapshot } from './model'
 import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
@@ -148,7 +148,7 @@ describe('renderer-v2 home tool line status', () => {
     const markup = render({}, undefined, { toolRouteStatus: { serverSwitching: true, outage: { id: 1, reason: 'reset', appReachable: true } } })
     expect(markup).toContain('data-testid="home-route-server-switching"')
     expect(markup).toContain('服务端正在切换线路，稍等几分钟')
-    expect(markup).toMatch(/data-testid="home-route-outage"[^>]*>.*星芒管理工具本身能连上。.*重新检测/)
+    expect(markup).toMatch(/data-testid="home-route-outage"[^>]*>.*星芒本身能连上。.*重新检测/)
   })
 
   it('says once that the Cloudflare line is in use after a hijack', () => {
@@ -580,7 +580,7 @@ describe('renderer-v2 home native install source', () => {
   it('keeps the passive hint for a Claude Code installed some other way', () => {
     const markup = render({}, { claude: { ...nativeClaude, installSource: 'path' }, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
     expect(markup).toContain('data-testid="tool-claude-external-managed"')
-    expect(markup).toContain('该版本不是通过本工具安装的，更新请用它原本的安装方式')
+    expect(markup).toContain('这一份不是星芒装的，要更新请用它原来的安装方式')
     expect(markup).not.toContain('data-testid="tool-claude-update"')
     expect(markup).not.toContain('可更新到')
   })
@@ -1644,7 +1644,8 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
 
 describe('renderer-v2 home balance for subscription customers', () => {
   const empty = { quota: 0, usedQuota: 0, quotaPerUnit: 500_000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, displayAmount: 0 }
-  const endsAt = new Date(2026, 9, 3, 12).toISOString()
+  // 不是今年的到期日会带上年份（D52）；这里只看措辞，用今年的日期。
+  const endsAt = new Date(new Date().getFullYear(), 9, 3, 12).toISOString()
   const subscription = { name: '月卡', remainingUsd: 8, endsAt, expiringSoon: false, lowRemaining: false, subscriptionOnly: false }
 
   it('keeps the low-balance warning for wallet-only customers', () => {
@@ -1839,7 +1840,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
   it('shows Node.js as optional and drops the Claude Code Git paragraph on a Windows desktop-only machine', () => {
     const markup = render({}, undefined, { snapshot: machine('windows') })
     const node = opening(markup, 'home-runtime-row-node', '</div>')
-    expect(node).toContain('可选 · 未装')
+    expect(node).toContain('可选 · 未安装')
     expect(node).not.toContain('is-warn')
     expect(markup).not.toContain('data-testid="home-runtime-git-hint"')
     expect(markup).not.toContain('Claude Code 的部分功能')
@@ -1916,7 +1917,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     it('stays off the banner while Node.js reads optional', () => {
       for (const platform of ['windows', 'macos'] as const) {
         const markup = render({}, undefined, { snapshot: machine(platform), bootstrap: bootstrap(), onBootstrapRetry: () => undefined })
-        expect(opening(markup, 'home-runtime-row-node', '</div>')).toContain('可选 · 未装')
+        expect(opening(markup, 'home-runtime-row-node', '</div>')).toContain('可选 · 未安装')
         expect(markup).not.toContain(drawing)
         expect(markup).not.toContain('账号 Key 已同步')
         expect(markup).not.toContain('>重新同步<')
@@ -1960,7 +1961,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     const managed = opening(quiet, 'home-runtime-node-managed', '</p>')
     expect(managed).toContain('is-quiet')
     expect(managed).toContain('这台 Mac 上还没有 Node.js')
-    expect(opening(quiet, 'home-runtime-row-node', '</div>')).toContain('可选 · 未装')
+    expect(opening(quiet, 'home-runtime-row-node', '</div>')).toContain('可选 · 未安装')
     expect(quiet).not.toContain('data-testid="home-runtime-git-hint"')
     expect(quiet).not.toContain('data-testid="home-runtime-node-elevation"')
 
@@ -1999,6 +2000,23 @@ describe('Home sections and balance labels', () => {
     expect(section(markup, 'home-your-tools')).toMatch(/已装 \d+ 个 · 1 个没检测出来/)
     expect(markup.slice(markup.indexOf('data-testid="home-tools"'))).toContain('data-testid="tool-row-grok"')
     expect(markup).not.toContain('data-testid="home-available"')
+  })
+
+  // D12：下面卡片红着「检测失败」，页头不能还说「都配好了」或「还没装工具」。
+  it('tells the header how many tools were not detected instead of saying everything is set up', () => {
+    const failed = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null, detectionFailed: true, detectionError: '命令入口无法安全执行' }
+    function withFailures(clis: Record<string, unknown>): string {
+      const base = snapshot(clis)
+      const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
+      return render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot })
+    }
+    expect(withFailures({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })).toContain('已安装的工具都配好了')
+    const one = withFailures({ claude: cliStatus, codex: cliStatus, grok: failed, gemini: cliStatus })
+    expect(one).toContain('有 1 个工具没检测出来，点卡片上的「重新检测」再试一次。')
+    expect(one).not.toContain('已安装的工具都配好了')
+    const all = withFailures({ claude: failed, codex: failed, grok: failed, gemini: failed })
+    expect(all).toContain('有 3 个工具没检测出来，点卡片上的「重新检测」再试一次。')
+    expect(all).not.toContain('还没装工具，从下面挑一个开始。')
   })
 
   it('says what the balance card is waiting for instead of claiming nothing was read', () => {
@@ -2155,6 +2173,15 @@ describe('renderer-v2 home v4 top cards', () => {
     const order = [...markup.matchAll(/data-testid="tool-row-([a-zA-Z]+)"/g)].map((match) => match[1])
     expect(order).toEqual(['claude', 'claudeDesktop', 'codex', 'codexDesktop', 'grok'])
     expect(markup).toContain('data-testid="home-tools-request"')
+  })
+
+  it('sends the last tool card to the addresses for other apps once there is a key page to send it to', () => {
+    expect(homeToolRequest(true, true)).toEqual({ page: 'account', section: 'other-apps', text: '看看怎么用在别的软件里' })
+    for (const [signedIn, supportsKeys] of [[true, false], [true, undefined], [false, true]] as const)
+      expect(homeToolRequest(signedIn, supportsKeys)).toEqual({ page: 'feedback', section: 'form', text: '告诉我们，我们来接入' })
+    const account = { userId: 7, username: 'fixture' } as unknown as HomeProps['account']
+    expect(render({}, undefined, { account, supportsKeys: true })).toMatch(/data-testid="home-tools-request"[^>]*>(?:<[^>]+>)*想用的工具不在这里？<\/b><span>看看怎么用在别的软件里<\/span>/)
+    expect(render({}, undefined, { account })).toContain('<span>告诉我们，我们来接入</span>')
   })
 
   it('says why the last install did not finish and offers to try again', () => {

@@ -9,6 +9,7 @@ import {
 } from './safe-local-data'
 import {
   canvasRunContractVersion,
+  canvasRunImageToolNodeLabels,
   canvasRunKernelOnlyNodeLabels,
   type CanvasRunAsset,
   type CanvasRunAssetLineage,
@@ -38,7 +39,8 @@ const PROJECT_ID_PATTERN = /^[a-f0-9-]{36}$/
 const CACHEABLE_NODE_KINDS = new Set<CanvasRunNodeKind>([
   'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'audio-input', 'image-generate', 'image-edit',
   'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note',
-  'drama-bible', 'drama-script', 'drama-parse', 'drama-character', 'drama-scene', 'drama-prop', 'drama-shot',
+  'drama-bible', 'drama-script', 'drama-parse', 'drama-character', 'drama-scene', 'drama-prop', 'drama-shot', 'text-generate',
+  ...Object.keys(canvasRunImageToolNodeLabels) as CanvasRunNodeKind[],
   ...Object.keys(canvasRunKernelOnlyNodeLabels) as CanvasRunNodeKind[],
 ])
 const CANVAS_RUN_NODE_STAGES = new Set([
@@ -120,6 +122,16 @@ function safeAsset(value: unknown): value is CanvasRunAsset {
   return true
 }
 
+// The page decodes what is listed here, so a damaged file must not name an
+// arbitrary asset or a second it never asked for.
+function safeFramePreparations(value: unknown): boolean {
+  return Array.isArray(value) && value.length <= 256 && value.every((entry) => isRecord(entry)
+    && safeIdentifier(entry.operationId) && safeIdentifier(entry.nodeId) && safeIdentifier(entry.attemptId)
+    && typeof entry.sourceAssetId === 'string' && ASSET_ID_PATTERN.test(entry.sourceAssetId)
+    && typeof entry.timestampSeconds === 'number' && Number.isFinite(entry.timestampSeconds)
+    && entry.timestampSeconds >= 0 && entry.timestampSeconds <= 86_400)
+}
+
 function safeRunRecord(value: unknown, userId: number): value is CanvasRunRecord {
   if (!isRecord(value) || value.version !== canvasRunContractVersion || value.userId !== userId) return false
   if (!safeIdentifier(value.runId) || !safeIdentifier(value.graphRevision)) return false
@@ -138,6 +150,7 @@ function safeRunRecord(value: unknown, userId: number): value is CanvasRunRecord
   if (value.events.some((event) => !isRecord(event)
     || (event.type === 'node-stage' && (!CANVAS_RUN_NODE_STAGES.has(event.stage as string)
       || !safeProgress(event, 'progress', 'progressMode', 'health'))))) return false
+  if (value.framePreparations !== undefined && !safeFramePreparations(value.framePreparations)) return false
   return value.status === 'running'
     || value.status === 'succeeded'
     || value.status === 'partial'
@@ -153,7 +166,19 @@ function safeCacheEntry(value: unknown): value is CanvasRunCacheEntry {
   if (!isIsoDate(value.createdAt) || !isIsoDate(value.lastUsedAt)) return false
   if (value.outputText !== undefined && (typeof value.outputText !== 'string' || value.outputText.length > 100_000)) return false
   if (value.candidate !== undefined && !safeCandidate(value.candidate)) return false
+  if (value.candidates !== undefined && !safeCachedCandidates(value.candidates, value.candidate)) return false
   return value.outputText !== undefined || value.candidate !== undefined
+}
+
+/** A grid split's slices (at most 4 x 4), led by the entry's own candidate. */
+function safeCachedCandidates(value: unknown, first: unknown): boolean {
+  return Array.isArray(value) && value.length >= 2 && value.length <= 16 && value.every(safeCandidate)
+    && isRecord(first) && value[0].candidateId === first.candidateId
+}
+
+/** Every candidate a cache entry hands out: all of them when it kept several. */
+function cachedCandidates(entry: CanvasRunCacheEntry): CanvasRunCandidate[] {
+  return entry.candidates ?? (entry.candidate ? [entry.candidate] : [])
 }
 
 function safeCandidate(value: unknown): value is CanvasRunCandidate {
@@ -162,6 +187,8 @@ function safeCandidate(value: unknown): value is CanvasRunCandidate {
     && safeIdentifier(value.attemptId)
     && isIsoDate(value.createdAt)
     && safeAsset(value.asset)
+    // A grid split makes at most 4 x 4 slices.
+    && (value.outputIndex === undefined || (Number.isSafeInteger(value.outputIndex) && (value.outputIndex as number) >= 0 && (value.outputIndex as number) < 16))
 }
 
 function safeManifestEntry(value: unknown): value is CanvasRunAssetManifestEntry {
@@ -327,6 +354,8 @@ export class CanvasRunStore {
       for (const run of state.runs) {
         if (run.status !== 'running') continue
         run.status = 'interrupted'
+        // Nothing waits on these frames any more; the page must not decode them.
+        delete run.framePreparations
         run.completedAt = recoveredAt.toISOString()
         run.durationMs = Math.max(0, recoveredAt.getTime() - Date.parse(run.startedAt))
         for (const node of run.nodes) {
@@ -392,6 +421,9 @@ export class CanvasRunStore {
       if (!safeRunRecord(run, userId)) throw new Error('画布运行记录格式错误')
       const state = await this.readState(userId)
       const copy = structuredClone(run)
+      // Recipes stay in memory (canvas-run-service.ts): they can be hundreds of KB each.
+      delete copy.imagePreparations
+      for (const event of copy.events) if (event.type === 'run-waiting') delete event.imagePreparations
       const existing = state.runs.findIndex((entry) => entry.runId === copy.runId)
       if (existing >= 0) state.runs.splice(existing, 1)
       state.runs.unshift(copy)
@@ -439,20 +471,23 @@ export class CanvasRunStore {
       const index = state.cache.findIndex((entry) => entry.fingerprint === fingerprint)
       if (index < 0) return null
       const cached = state.cache[index]
-      if (cached.candidate) {
+      // A grid split's slices come back together or not at all: a batch with
+      // a slice missing would hand the next node fewer pictures than it shows.
+      for (const candidate of cachedCandidates(cached)) {
         try {
-          const owned = await this.assets.readOwned(userId, cached.candidate.asset.assetId)
-          cached.candidate.asset = {
-            kind: cached.candidate.asset.kind,
+          const owned = await this.assets.readOwned(userId, candidate.asset.assetId)
+          candidate.asset = {
+            kind: candidate.asset.kind,
             ...structuredClone(owned.asset),
           }
         } catch {
           state.cache.splice(index, 1)
-          state.assets = state.assets.filter((entry) => entry.asset.assetId !== cached.candidate?.asset.assetId)
+          state.assets = state.assets.filter((entry) => entry.asset.assetId !== candidate.asset.assetId)
           await this.writeState(userId, state)
           return null
         }
       }
+      if (cached.candidate && cached.candidates) cached.candidate = cached.candidates[0]
       cached.lastUsedAt = this.now().toISOString()
       state.cache.splice(index, 1)
       state.cache.unshift(cached)
@@ -464,11 +499,11 @@ export class CanvasRunStore {
   async storeCache(userId: number, entry: CanvasRunCacheEntry): Promise<void> {
     return this.enqueue(userId, async () => {
       if (!safeCacheEntry(entry)) throw new Error('画布节点缓存格式错误')
-      if (entry.candidate) await this.assets.readOwned(userId, entry.candidate.asset.assetId)
+      for (const candidate of cachedCandidates(entry)) await this.assets.readOwned(userId, candidate.asset.assetId)
       const state = await this.readState(userId)
       state.cache = [structuredClone(entry), ...state.cache.filter((item) => item.fingerprint !== entry.fingerprint)]
         .slice(0, this.cacheRetention)
-      if (entry.candidate) this.recordAssetInState(state, entry.candidate.asset, entry.candidate.createdAt)
+      for (const candidate of cachedCandidates(entry)) this.recordAssetInState(state, candidate.asset, candidate.createdAt)
       await this.writeState(userId, state)
     })
   }
@@ -547,7 +582,7 @@ export class CanvasRunStore {
       }
       state.assets = verified.slice(0, this.assetRetention)
       if (missing.size > 0) {
-        state.cache = state.cache.filter((entry) => !entry.candidate || !missing.has(entry.candidate.asset.assetId))
+        state.cache = state.cache.filter((entry) => !cachedCandidates(entry).some((candidate) => missing.has(candidate.asset.assetId)))
       }
       await this.writeState(userId, state)
       return structuredClone(state.assets)

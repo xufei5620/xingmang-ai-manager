@@ -4,11 +4,12 @@ import type { AppxVolumeLink } from './appx-volume-link'
 import { CommandRunnerError, runCommand, type CommandErrorCode, type CommandSpec, type CommandErrorDetails } from './command-runner'
 import { DesktopBucketUnavailableError } from './desktop-package-bucket'
 import type { ExternalClientInstallProgress } from './external-client-contract'
-import { buildClaudeDesktopOtherVolumeMessage, buildExternalClientWingetInstall, createExternalClientRuntime, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, windowsExternalClientProcessScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
+import { buildClaudeDesktopOtherVolumeMessage, buildExternalClientWingetInstall, createExternalClientRuntime, encodeKnownExternalClientSignatures, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, windowsExternalClientProcessScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
 import type { ExternalToolId } from './external-tool-config'
 import { isInstallCancelledError } from './install-cancellation'
 import { InstallationQueue } from './installation-queue'
 import * as pathIdentity from './path-identity'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import * as safeLocalData from './safe-local-data'
 
 const machinePaths = {
@@ -33,6 +34,20 @@ function appx(extra: Record<string, unknown> = {}) {
     path: `${directory}\\app\\Claude.exe`, version: '2.110.1.0', running: true, family: 'Claude_pzs8sxrjxfjjc',
     publisher: subjects.claudeDesktop, installLocation: directory, applicationId: 'Claude_pzs8sxrjxfjjc!Claude', ...extra,
   })
+}
+// The loop the inventory script decodes $knownBase64 with, statement for statement.
+function decodeLikeTheInventoryScript(encoded: string): string {
+  let bits = 0
+  let bitCount = 0
+  let text = ''
+  for (const character of encoded) {
+    const index = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.indexOf(character)
+    if (index < 0) continue
+    bits = ((bits & 1023) << 6) | index
+    bitCount += 6
+    if (bitCount >= 8) { bitCount -= 8; text += String.fromCharCode((bits >> bitCount) & 255) }
+  }
+  return text
 }
 function commandResult(spec: CommandSpec, stdout = '') {
   return { executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null, stdout, stderr: '', outputBytes: stdout.length, durationMs: 1 }
@@ -140,9 +155,9 @@ describe('external desktop client lifecycle', () => {
     // value (e2e/windows-powershell-probes-smoke.mjs); here only what it reads.
     const script = windowsExternalClientInventoryScript()
     expect(script).toContain("foreach ($name in @('DisplayName', 'InstallLocation', 'DisplayIcon', 'DisplayVersion'))")
-    expect(script).toContain('try { $registry.Add((Read-UninstallValues $key)) }')
+    expect(script).toContain('try { $registry += ,(Read-UninstallValues $key) }')
     expect(script).toContain('$registryFailures.Count -lt 10')
-    expect(script).toContain('registryFailures=@($registryFailures.ToArray())')
+    expect(script).toContain('registryFailures=@($registryFailures)')
   })
 
   // 已知3：AppX 注册信息、数字签名读不出时，首页那一行只说前半句中文，PowerShell 的原话只进运行日志。
@@ -500,7 +515,7 @@ describe('external desktop client lifecycle', () => {
     const scripts = f.execute.mock.calls
       .filter(([spec]) => spec.executable === powershell)
       .map(([spec]) => Buffer.from(spec.argv.at(-1)!, 'base64').toString('utf16le'))
-    const known = (script: string) => JSON.parse(Buffer.from(/FromBase64String\('([A-Za-z0-9+/=]*)'\)/.exec(script)![1], 'base64').toString('utf8'))
+    const known = (script: string) => JSON.parse(Buffer.from(/\$knownBase64 = '([A-Za-z0-9+/=]*)'/.exec(script)![1], 'base64').toString('utf8'))
     const opencode = { path: candidate('opencode').path, stamp: '123:456:789', status: 'Valid', subject: subjects.opencode, version: '1.2.3' }
     const workbuddy = { path: candidate('workbuddy').path, stamp: '1:2:3', status: 'HashMismatch', subject: subjects.workbuddy, version: '1.2.3' }
     expect(known(scripts[0])).toEqual([])
@@ -516,7 +531,7 @@ describe('external desktop client lifecycle', () => {
     const f = fixture()
     const known = (index: number) => {
       const script = Buffer.from(f.execute.mock.calls.filter(([spec]) => spec.executable === powershell)[index][0].argv.at(-1)!, 'base64').toString('utf16le')
-      return JSON.parse(Buffer.from(/FromBase64String\('([A-Za-z0-9+/=]*)'\)/.exec(script)![1], 'base64').toString('utf8'))
+      return JSON.parse(Buffer.from(/\$knownBase64 = '([A-Za-z0-9+/=]*)'/.exec(script)![1], 'base64').toString('utf8'))
     }
     f.setInventory([candidate('opencode', { signatureStamp: '123:456:789', signatureStatus: 'HashMismatch' })])
     await f.runtime.scan()
@@ -534,7 +549,7 @@ describe('external desktop client lifecycle', () => {
     const f = fixture()
     const known = (index: number) => {
       const script = Buffer.from(f.execute.mock.calls.filter(([spec]) => spec.executable === powershell)[index][0].argv.at(-1)!, 'base64').toString('utf16le')
-      return JSON.parse(Buffer.from(/FromBase64String\('([A-Za-z0-9+/=]*)'\)/.exec(script)![1], 'base64').toString('utf8'))
+      return JSON.parse(Buffer.from(/\$knownBase64 = '([A-Za-z0-9+/=]*)'/.exec(script)![1], 'base64').toString('utf8'))
     }
     f.setInventory([candidate('opencode', { signatureStamp: '123:456:789' })])
     await f.runtime.scan()
@@ -551,9 +566,72 @@ describe('external desktop client lifecycle', () => {
     const script = windowsExternalClientInventoryScript([hostile])
     expect(script).not.toContain('Start-Process')
     expect(script).not.toContain('calc')
-    const encoded = /FromBase64String\('([A-Za-z0-9+/=]*)'\)/.exec(script)![1]
+    const encoded = /\$knownBase64 = '([A-Za-z0-9+/=]*)'/.exec(script)![1]
     expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual([hostile])
     expect(script).toContain('Get-AuthenticodeSignature -LiteralPath $exe')
+  })
+
+  // ConstrainedLanguage refuses [Convert] and [System.Text.Encoding], so the script
+  // decodes the list itself; the Windows packaging job runs that for real.
+  it('encodes remembered signatures as base64 of ASCII-only JSON that the script decodes without .NET', () => {
+    const entries = [
+      { path: 'C:\\Users\\张三\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', stamp: '1:2:3', status: 'Valid', subject: subjects.workbuddy, version: '1.0.0' },
+      { path: 'D:\\工具\\OpenCode\\OpenCode.exe', stamp: '4:5:6', status: 'Valid', subject: subjects.opencode, version: "2.0 'β' 😀" },
+    ]
+    const encoded = encodeKnownExternalClientSignatures(entries)
+    const text = Buffer.from(encoded, 'base64').toString('latin1')
+    expect(text).toMatch(/^[\x20-\x7e]+$/)
+    expect(JSON.parse(text)).toEqual(entries)
+    expect(decodeLikeTheInventoryScript(encoded)).toBe(text)
+    // Every padding length, and the empty list a scan without remembered signatures sends.
+    for (const sample of ['[]', '["a"]', '["ab"]', '["abc"]']) {
+      expect(decodeLikeTheInventoryScript(Buffer.from(sample, 'latin1').toString('base64'))).toBe(sample)
+    }
+    expect(encodeKnownExternalClientSignatures([])).toBe(Buffer.from('[]').toString('base64'))
+    const script = windowsExternalClientInventoryScript(entries)
+    expect(script).toContain(`$knownBase64 = '${encoded}'`)
+    expect(script).toContain("  $knownIndex = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.IndexOf($knownCharacter)\n  if ($knownIndex -lt 0) { continue }\n  $knownBits = (($knownBits -band 1023) -shl 6) -bor $knownIndex\n  $knownBitCount += 6\n  if ($knownBitCount -ge 8) { $knownBitCount -= 8; [string][char](($knownBits -shr $knownBitCount) -band 255) }")
+  })
+
+  // 2026-11-10 客户电脑：应用控制策略让 PowerShell 一律跑在受限语言模式，盘点脚本第一行的
+  // Stopwatch 就被拒，读记住的签名那句再被拒，整条退出码 1，三张客户端卡都是「命令执行失败（退出码 1）」。
+  it('builds the inventory from what ConstrainedLanguage allows, leaving .NET calls to FullLanguage branches', () => {
+    // The Windows packaging job runs it under ConstrainedLanguage for real (e2e/windows-powershell-probes-smoke.mjs).
+    for (const only of [undefined, 'workbuddy', 'claudeDesktop', 'opencode'] as const) {
+      const script = windowsExternalClientInventoryScript([{ path: candidate('opencode').path, stamp: '1:2:3', status: 'Valid', subject: subjects.opencode, version: '1.2.3' }], only)
+      const lines = script.split('\n')
+      expect(lines[0]).toBe('$clock = [datetime]::UtcNow')
+      expect(lines[1]).toBe(powerShellUtf8OutputStatement)
+      const body = lines.slice(2).join('\n')
+      expect(body).not.toMatch(/::new\(|New-Object|\[pscustomobject\]|System\.Collections|Stopwatch|\[Convert\]|System\.Text/)
+      // Type literals: core types, an enum value (reading one is allowed), and the one System.IO.Path call below.
+      expect([...new Set([...body.matchAll(/\[([A-Za-z][A-Za-z0-9.]*)\]/g)].map((match) => match[1]))].sort()).toEqual(['System.IO.FileAttributes', 'System.IO.Path', 'char', 'datetime', 'int', 'ordered', 'string'])
+      // Method calls: on strings and hashtables, which ConstrainedLanguage allows, plus the two .NET calls below.
+      expect([...new Set([...body.matchAll(/(?:\.|::)([A-Za-z]+)\(/g)].map((match) => match[1]))].sort()).toEqual(['ContainsKey', 'GetFullPath', 'GetValue', 'IndexOf', 'Split', 'Substring', 'ToCharArray', 'Trim'])
+      expect([...new Set([...body.matchAll(/\]::([A-Za-z]+)/g)].map((match) => match[1]))].sort()).toEqual(['GetFullPath', 'ReparsePoint', 'UtcNow'])
+      expect(body).toContain("    if ($fullLanguage) {\n      if ([System.IO.Path]::GetFullPath($candidate) -ine $candidate) { return $false }\n    } elseif (")
+      expect(body).toContain('    if ($fullLanguage) { $value = $key.GetValue($name) }\n    elseif (@($key.Property) -contains $name) { $value = Get-ItemPropertyValue -LiteralPath $key.PSPath -Name $name }')
+      expect(body).toContain("$fullLanguage = $ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage'")
+      expect(body.endsWith(buildPowerShellJsonOutputStatements('@{ clients=@($clients); errors=$errors; errorDetails=$errorDetails; registryFailures=@($registryFailures); timings=$timings } | ConvertTo-Json -Depth 5 -Compress').join('\n'))).toBe(true)
+    }
+  })
+
+  it('turns away in ConstrainedLanguage every path GetFullPath could rewrite', () => {
+    const script = windowsExternalClientInventoryScript()
+    const pattern = /\} elseif \(\$candidate\.Length -ge 260 -or \$candidate -match '([^']+)'\) \{ return \$false \}/.exec(script)![1]
+    // .NET and JavaScript read this pattern the same way: alternation, classes, an optional and a non-capturing group.
+    const rewritable = new RegExp(pattern)
+    for (const kept of [
+      'C:\\Users\\张三\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe',
+      'C:\\Program Files\\OpenCode\\OpenCode.exe',
+      'C:\\Users\\Tester\\.config\\a..b\\WorkBuddy.exe',
+    ]) expect(rewritable.test(kept), kept).toBe(false)
+    for (const refused of [
+      'C:\\Users\\.\\WorkBuddy.exe', 'C:\\Users\\..\\WorkBuddy.exe', 'C:\\Users\\Tester\\..',
+      'C:\\Users\\\\WorkBuddy.exe', 'C:\\Users/WorkBuddy.exe', 'C:\\Users\\',
+      'C:\\WorkBuddy.\\WorkBuddy.exe', 'C:\\WorkBuddy \\WorkBuddy.exe', 'C:\\Users\\WorkBuddy.exe.', 'C:\\Users\\WorkBuddy.exe ',
+      'C:\\PROGRA~1\\WorkBuddy\\WorkBuddy.exe', 'C:\\Users\\ADMINI~1\\WorkBuddy.exe',
+    ]) expect(rewritable.test(refused), refused).toBe(true)
   })
 
   it('reports probe failure separately from absence and refuses installation while status is uncertain', async () => {
@@ -1553,7 +1631,8 @@ describe('macOS external desktop lifecycle', () => {
   it('refuses root launch and reports invalid signatures as failed detection', async () => {
     const root = macFixture({ getuid: () => 0 })
     expect((await root.runtime.scan())[0].launchSupported).toBe(false)
-    await expect(root.runtime.launch('workbuddy')).rejects.toThrow('普通用户')
+    // Same words as the refusal at the entry point (D18); the old line still said 工具箱.
+    await expect(root.runtime.launch('workbuddy')).rejects.toThrow('星芒AI管理工具不能用管理员身份打开。用管理员身份打开，装好的工具和设置会归管理员所有，之后平时的账号反而用不了。请关掉这个提示，从应用菜单里直接打开。这次什么都没有改动。')
     const invalid = macFixture()
     invalid.execute.mockImplementation(async (spec) => {
       if (spec.executable === '/usr/bin/plutil') return commandResult(spec, '{"CFBundleIdentifier":"com.tencent.workbuddy.mac"}')

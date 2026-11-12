@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { windowsSystemExecutable } from './command-runner'
 import {
   buildCliTerminalAccessPlan,
   buildEnsureUserPathScript,
@@ -280,6 +281,9 @@ describe('ensureDirectoryOnWindowsUserPath', () => {
     const [script, env] = runPowerShell.mock.calls[0]
     expect(script).toBe(buildEnsureUserPathScript())
     expect(env.XINGMANG_ADD_PATH).toBe('C:\\ProgramData\\XingMangAI\\Cli\\npm')
+    // Only the ConstrainedLanguage branch runs them, and only by System32's absolute path (I14).
+    expect(env.XINGMANG_REG_EXE).toBe(windowsSystemExecutable('reg.exe'))
+    expect(env.XINGMANG_SETX_EXE).toBe(windowsSystemExecutable('setx.exe'))
   })
 
   it('rejects a directory that would split into several PATH entries', async () => {
@@ -353,6 +357,8 @@ describe('removeDirectoryFromWindowsUserPath', () => {
     const [script, env] = runPowerShell.mock.calls[0]
     expect(script).toBe(buildRemoveUserPathScript())
     expect(env.XINGMANG_REMOVE_PATH).toBe('C:\\Users\\Ann\\.grok\\bin')
+    expect(env.XINGMANG_REG_EXE).toBe(windowsSystemExecutable('reg.exe'))
+    expect(env.XINGMANG_SETX_EXE).toBe(windowsSystemExecutable('setx.exe'))
     // The uninstall may run under an elevated token.
     expect(env.NODE_OPTIONS).toBeUndefined()
   })

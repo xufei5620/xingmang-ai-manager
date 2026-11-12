@@ -18,7 +18,15 @@ export interface ApplicationTraySnapshot {
   keepAwakeLabel?: string | null
   /** 手机遥控有渠道开着（codex-remote-service.ts 的 hasEnabledChannel）。缺省 = 没开，菜单里就没有「关掉手机遥控」。 */
   remoteControlOn?: boolean
+  /**
+   * 手机遥控都关着，但文件夹选好了、有渠道凭据和配对过的人都在（codex-remote-service.ts 的 remoteChannelsReadyToEnable），
+   * 菜单里多一项「打开手机遥控」（YF-8）。缺省 = 没齐。
+   */
+  remoteControlReady?: boolean
 }
+
+/** 托盘里点「打开手机遥控」一个都没打开时那条系统通知的标题；正文是打不开的原因原句（YF-8）。 */
+export const trayRemoteControlOpenFailedTitle = '手机遥控没打开'
 
 export interface TrayKeepAwakeState {
   /** 终端里正在干活的工具名（Claude Code、Gemini CLI、Grok CLI）。 */
@@ -47,31 +55,35 @@ export function trayKeepAwakeLabel(state: TrayKeepAwakeState): string | null {
 /**
  * 托盘上那一项更新跟着「软件知不知道有新版本」走，而不是只认 `available`：自动下载
  * 开着时 `available` 只停留几秒就进了 `downloading`，常驻托盘的人几乎看不到它。
+ *
+ * `rollback`：这一版比本机旧，是发布者撤回本机这一版后建议退回的那一版（updater.ts 的
+ * rollback）。那一项不再说「新版本」，换成设置页「建议退回」的说法（D11）。缺省 = 平时的说法。
  */
 export type TrayUpdateEntry =
-  | { kind: 'available'; version: string | null; waitingForDisk: boolean }
-  | { kind: 'downloading'; version: string | null }
+  | { kind: 'available'; version: string | null; waitingForDisk: boolean; rollback?: true }
+  | { kind: 'downloading'; version: string | null; rollback?: true }
   /** systemInstaller：装这一步交给系统安装程序（Linux），软件只关掉、不会自己重开。 */
-  | { kind: 'downloaded'; version: string | null; systemInstaller?: true }
-  | { kind: 'failed'; version: string | null }
+  | { kind: 'downloaded'; version: string | null; systemInstaller?: true; rollback?: true }
+  | { kind: 'failed'; version: string | null; rollback?: true }
 
 export function resolveTrayUpdateEntry(
-  snapshot: Pick<UpdateSnapshot, 'phase' | 'availableVersion' | 'error' | 'failedStep' | 'diskShortfall' | 'installMethod'>,
+  snapshot: Pick<UpdateSnapshot, 'phase' | 'availableVersion' | 'error' | 'failedStep' | 'diskShortfall' | 'installMethod' | 'rollback'>,
 ): TrayUpdateEntry | null {
   const version = snapshot.availableVersion
+  const rollback: { rollback?: true } = snapshot.rollback === true ? { rollback: true } : {}
   switch (snapshot.phase) {
     case 'available':
-      return { kind: 'available', version, waitingForDisk: Boolean(snapshot.diskShortfall) }
+      return { kind: 'available', version, waitingForDisk: Boolean(snapshot.diskShortfall), ...rollback }
     case 'downloading':
-      return { kind: 'downloading', version }
+      return { kind: 'downloading', version, ...rollback }
     case 'downloaded':
       // 带错误的 downloaded 是安装器起过一次又失败了：updater 的安装闸已经关上，
       // 再点「重启安装」会什么都不发生，只能带他去更新页看原因。
-      if (snapshot.error) return { kind: 'failed', version }
-      return snapshot.installMethod === 'system-installer' ? { kind: 'downloaded', version, systemInstaller: true } : { kind: 'downloaded', version }
+      if (snapshot.error) return { kind: 'failed', version, ...rollback }
+      return snapshot.installMethod === 'system-installer' ? { kind: 'downloaded', version, systemInstaller: true, ...rollback } : { kind: 'downloaded', version, ...rollback }
     case 'error':
       // 只有下载失败时 availableVersion 才确定还是那个要装的版本；检查失败时它可能是上一轮留下的。
-      return snapshot.failedStep === 'download' && version ? { kind: 'failed', version } : null
+      return snapshot.failedStep === 'download' && version ? { kind: 'failed', version, ...rollback } : null
     default:
       return null
   }
@@ -87,29 +99,47 @@ function updateItem(
   if (!entry) return { label: '版本更新', click: openPage }
   const version = menuLabel(entry.version, '')
   const named = version ? `新版本 ${version} ` : '新版本'
+  // 退回旧版时说「建议退回的 X 版」（D11）；读不到版本号说不出「X 版」，照旧用平时那几句。
+  const rollback = entry.rollback && version ? version : null
   switch (entry.kind) {
     case 'available':
       return entry.waitingForDisk
-        ? { label: `版本更新：${named}等电脑腾出空间再下载`, click: openPage }
-        : { label: `版本更新：有${named}`.trimEnd(), click: openPage }
+        ? { label: rollback ? `版本更新：建议退回的 ${rollback} 版等电脑腾出空间再下载` : `版本更新：${named}等电脑腾出空间再下载`, click: openPage }
+        : { label: rollback ? `版本更新：建议退回 ${rollback} 版` : `版本更新：有${named}`.trimEnd(), click: openPage }
     case 'downloading':
-      return { label: `版本更新：正在下载${named}`.trimEnd(), click: openPage }
+      return { label: rollback ? `版本更新：正在下载建议退回的 ${rollback} 版` : `版本更新：正在下载${named}`.trimEnd(), click: openPage }
     case 'downloaded':
       // 和更新页「确认重启安装」走同一条 install()，不另开安装路径；没接安装动作时退回更新页。
       return install
-        ? { label: `${entry.systemInstaller ? '安装' : '重启并安装'}${named}`.trimEnd(), click: () => run(install) }
-        : { label: `版本更新：${named}已下载好`, click: openPage }
+        ? { label: rollback ? `${entry.systemInstaller ? '' : '重启并'}退回 ${rollback} 版` : `${entry.systemInstaller ? '安装' : '重启并安装'}${named}`.trimEnd(), click: () => run(install) }
+        : { label: rollback ? `版本更新：建议退回的 ${rollback} 版已下载好` : `版本更新：${named}已下载好`, click: openPage }
     case 'failed':
-      return { label: `版本更新：${named}没更新成功，点开看看`, click: openPage }
+      return { label: rollback ? `版本更新：退回 ${rollback} 版没成功，点开看看` : `版本更新：${named}没更新成功，点开看看`, click: openPage }
   }
 }
 
 export type TrayNavigationTarget = 'topup' | 'updates' | 'settings'
 type TrayAction = () => unknown | Promise<unknown>
 
+/**
+ * Windows 托盘图标（深查 TR-8、D94）。Windows 按「系统小图标」的边长向图标要一张图（125% 要
+ * 20px、150% 要 24px），只给 PNG 时拿 32px 那张去缩，发虚；给多尺寸 ICO 它就挑正好那张。
+ * 任务栏是深色时换浅色外圈那份，不然深蓝外圈融进任务栏，只剩一颗星。
+ */
+export interface WindowsTrayIcons {
+  /** 标准版（深蓝外圈）：浅色任务栏，以及读不到深浅时用。 */
+  standard: string
+  /** 浅色外圈版：任务栏是深色时用。 */
+  darkTaskbar: string
+  /** 任务栏现在是不是深色；null 是读不到，图标不换。要异步读，不挡主线程。 */
+  readDarkTaskbar(): Promise<boolean | null>
+}
+
 export interface ApplicationTrayOptions {
   iconPath: string
   icon2xPath?: string
+  /** 只在 Windows 上用；缺省或 ICO 读不出来时，Windows 也用上面那两张 PNG。 */
+  windowsIcons?: WindowsTrayIcons
   templateIconPath?: string
   templateIcon2xPath?: string
   platform?: NodeJS.Platform
@@ -124,6 +154,8 @@ export interface ApplicationTrayOptions {
   onInstallUpdate?: TrayAction
   /** 「关掉手机遥控」：开着的渠道全关，手机上收到的跟在设置里点关一样；缺省时那一项不出。 */
   onRemoteControlOff?: TrayAction
+  /** 「打开手机遥控」：把齐了的渠道都打开，跟在设置里点开过同样的检查；缺省时那一项不出。 */
+  onRemoteControlOn?: TrayAction
   /** 用户刚打开托盘菜单：用来现读一次会过期的状态，不是定时轮询。 */
   onMenuOpen?: TrayAction
   onQuit: TrayAction
@@ -135,6 +167,7 @@ export interface ApplicationTrayHandle {
   isDestroyed(): boolean
   setToolTip(label: string): void
   setContextMenu(menu: Menu): void
+  setImage(image: NativeImage): void
   /** Windows only in Electron; optional so test doubles can leave it out. */
   displayBalloon?(options: { title: string; content: string; iconType?: 'info'; noSound?: boolean; respectQuietTime?: boolean }): void
   on(event: 'click' | 'double-click' | 'right-click', listener: () => void): unknown
@@ -176,7 +209,7 @@ export function trayBalanceLabel(balance: number | null | undefined): string {
 /** 托盘那一行订阅；和首页用同一个「能不能用」的判断，没有能用的订阅时 null。 */
 export function traySubscriptionLabel(self: NewApiSubscriptionSelf | null, quotaPerUnit: number, now: number): string | null {
   const subscription = resolveUsableSubscription(self, { now, quotaPerUnit })
-  return subscription ? subscriptionSummaryText(subscription, trayBalanceLabel) : null
+  return subscription ? subscriptionSummaryText(subscription, trayBalanceLabel, new Date(now)) : null
 }
 
 function copySnapshot(snapshot: ApplicationTraySnapshot): ApplicationTraySnapshot {
@@ -211,7 +244,7 @@ function accelerationItems(
 
 export function buildApplicationTrayMenu(
   snapshot: ApplicationTraySnapshot,
-  actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit' | 'onAccelerationToggle' | 'onInstallUpdate' | 'onRemoteControlOff'>,
+  actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit' | 'onAccelerationToggle' | 'onInstallUpdate' | 'onRemoteControlOff' | 'onRemoteControlOn'>,
   run: (action: TrayAction) => void,
   appName = '星芒AI管理工具',
 ): MenuItemConstructorOptions[] {
@@ -220,10 +253,13 @@ export function buildApplicationTrayMenu(
   // 窗口缩到托盘后遥控照样开着（#1407 P2-1），人走开了也得能在托盘里一下关掉；放在那行灰字下面，
   // 状态和动作挨着。灰字同一时间只说一件，终端里的工具在干活时说的是那件，这一项不跟着它藏。
   const remoteOff = snapshot.remoteControlOn ? actions.onRemoteControlOff : undefined
+  // 反过来（YF-8）：都关着、齐了能直接开时，不用进设置翻到最底下。没配对过的、没选文件夹的还得去设置里弄，不出这一项。
+  const remoteOn = !snapshot.remoteControlOn && snapshot.remoteControlReady ? actions.onRemoteControlOn : undefined
   return [
     { label: `打开${appName}`, click: () => run(actions.onOpen) },
     ...(keepAwake ? [{ label: keepAwake, enabled: false }] : []),
     ...(remoteOff ? [{ label: '关掉手机遥控', click: () => run(remoteOff) }] : []),
+    ...(remoteOn ? [{ label: '打开手机遥控', click: () => run(remoteOn) }] : []),
     { type: 'separator' },
     { label: menuLabel(snapshot.accountLabel, '未登录'), enabled: false },
     { label: `余额：${trayBalanceLabel(snapshot.balanceUsd)}`, enabled: false },
@@ -257,6 +293,11 @@ export interface ApplicationTrayController {
    * 菜单栏图标一直看得见，用不着。弹没弹出来都不影响托盘本身，所以失败只返回 false。
    */
   showBalloon(title: string, content: string): boolean
+  /**
+   * 任务栏可能换了深浅（Windows）：读一次，变了就换图。同一时刻只读一份，读着的时候又叫的，
+   * 等这份读完再补读一次。不是 Windows、或没用上 ICO 时什么都不做。
+   */
+  refreshWindowsIcon(): void
   dispose(): void
 }
 
@@ -270,6 +311,11 @@ export function createApplicationTray(
   let disposed = false
   let available = false
   let snapshot: ApplicationTraySnapshot = { installedTools: [] }
+  const windowsIcons = platform === 'win32' ? options.windowsIcons : undefined
+  // 托盘现在挂着哪一份 ICO；null 是没用上 ICO（不是 Windows，或读不出来退回了 PNG），不跟着任务栏换。
+  let windowsIcon: 'standard' | 'darkTaskbar' | null = null
+  let windowsIconRead: Promise<void> | null = null
+  let windowsIconReadAgain = false
 
   const report = (error: unknown) => {
     try { options.onError(error) } catch { /* Tray callbacks cannot report through a rejected event handler. */ }
@@ -315,12 +361,51 @@ export function createApplicationTray(
       tray.setContextMenu(runtime.buildMenu(buildApplicationTrayMenu(snapshot, options, run, appName)))
     } catch (error) { unavailable(error) }
   }
-
-  try {
+  const showWindowsIcon = (variant: 'standard' | 'darkTaskbar') => {
+    if (!windowsIcons || windowsIcon === null || windowsIcon === variant || !checkAvailable() || !tray) return
+    const image = runtime.createImage(windowsIcons[variant], undefined, false)
+    // 换不了就留着现在这张，托盘照样能用。
+    if (image.isEmpty()) throw new Error('托盘图标无法读取')
+    tray.setImage(image)
+    windowsIcon = variant
+  }
+  const refreshWindowsIcon = () => {
+    if (disposed || !windowsIcons || windowsIcon === null) return
+    if (windowsIconRead) {
+      windowsIconReadAgain = true
+      return
+    }
+    windowsIconRead = (async () => {
+      try {
+        const dark = await windowsIcons.readDarkTaskbar()
+        if (dark !== null && !disposed) showWindowsIcon(dark ? 'darkTaskbar' : 'standard')
+      } catch (error) { report(error) } finally {
+        windowsIconRead = null
+        if (windowsIconReadAgain) {
+          windowsIconReadAgain = false
+          refreshWindowsIcon()
+        }
+      }
+    })()
+  }
+  const createIcon = (): NativeImage => {
+    if (windowsIcons) {
+      const image = runtime.createImage(windowsIcons.standard, undefined, false)
+      if (!image.isEmpty()) {
+        windowsIcon = 'standard'
+        return image
+      }
+      // 包里缺了 ICO 也别丢掉托盘：退回 PNG，只是不跟着任务栏换。
+      report(new Error('托盘多尺寸图标无法读取，改用 PNG'))
+    }
     const useTemplate = platform === 'darwin'
     const iconPath = useTemplate ? options.templateIconPath ?? options.iconPath : options.iconPath
     const icon2xPath = useTemplate ? options.templateIcon2xPath ?? options.icon2xPath : options.icon2xPath
-    const image = runtime.createImage(iconPath, icon2xPath, useTemplate)
+    return runtime.createImage(iconPath, icon2xPath, useTemplate)
+  }
+
+  try {
+    const image = createIcon()
     if (image.isEmpty()) throw new Error('托盘图标无法读取')
     tray = runtime.createTray(image)
     if (tray.isDestroyed()) throw new Error('系统未能创建托盘入口')
@@ -335,6 +420,8 @@ export function createApplicationTray(
     tray.on('click', () => { if (platform === 'darwin') menuOpened(); else run(options.onOpen) })
     tray.on('right-click', () => menuOpened())
     updateSnapshot()
+    // 先挂标准版让托盘马上出来，读到任务栏是深色再换；Windows 10 默认就是深色任务栏。
+    refreshWindowsIcon()
   } catch (error) { unavailable(error) }
 
   return {
@@ -351,6 +438,7 @@ export function createApplicationTray(
         return false
       }
     },
+    refreshWindowsIcon,
     dispose() {
       if (disposed) return
       disposed = true

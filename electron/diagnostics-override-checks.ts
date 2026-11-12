@@ -1,12 +1,12 @@
 // 一键检测里「电脑里另外设过的设置」那几项（#1070 第 9 步，从 diagnostics.ts 的 runDiagnostics 原样搬来）：环境变量和
-// Mac 终端设置文件里另外设的工具地址、密钥（会不会盖过当前账号、Windows 上能不能一键清掉，还有被忽略的 CODEX_HOME）、
+// 终端设置文件里另外设的工具地址、密钥（会不会盖过当前账号、Windows 上能不能一键清掉，还有被忽略的 CODEX_HOME）、
 // 项目文件夹里的设置、Codex 文件夹里的 .env、Claude Code 跑命令前问不问、个人文件夹里早先留下的项目说明和信任设置。
 // 「点这里就好」清环境变量用的名单 environmentOverrideNames 也在这里（diagnostic-fixes.ts 对照它）。
 //
 // 各类检查共用的那份在 diagnostics-context.ts；这里只 import diagnostics.ts 的类型，免得两个文件互相 require。
 import fs from 'node:fs'
 import path from 'node:path'
-import { readBoundedUtf8FileSync } from './bounded-file'
+import { readBoundedFile, readBoundedUtf8FileSync } from './bounded-file'
 import { activeProviderIds, cliCatalog, isRetiredProviderId, providerConfigDirectoryNames, type ProviderId } from './catalog'
 import type { IgnoredCodexHome, ProviderConfigRoots } from './codex-home'
 import { inspectHomeFolderTrust, providerAccountMode, type HomeFolderTrustProvider, type NativeConfigInspection } from './config-files'
@@ -16,8 +16,14 @@ import { pathForDisplay } from './diagnostics-redaction'
 import { isRecord } from './input-guards'
 import { hasUntouchedHomeProjectInstructions } from './project-instructions'
 import type { RelaySite } from './relay-sites'
+import { parsePowerShellProfileExports } from './powershell-profile-exports'
 import { readSafeUtf8File } from './safe-local-data'
-import { parseShellStartupExports, type ShellStartupDialect, type ShellStartupExport } from './shell-startup-exports'
+import {
+  parseFishUniversalExports,
+  parseShellStartupExports,
+  type ShellStartupDialect,
+  type ShellStartupExport,
+} from './shell-startup-exports'
 import type { ToolConfigOwnership } from './tool-config-ownership'
 import {
   claudePlatformSwitches,
@@ -58,7 +64,7 @@ interface EnvironmentOverrideMatch {
   overriding: boolean
   /** overriding 且这个变量会让 CLI 连不上当前账号（见 breaksAccount）。 */
   breaking: boolean
-  /** Mac 上从哪个终端设置文件读到的（`~/.zshrc` 这样，不带用户名）；缺省 = 星芒自己的进程环境里。 */
+  /** 从哪个终端设置文件读到的（`~/.zshrc` 这样，不带用户名）；缺省 = 星芒自己的进程环境里。 */
   shellFile?: string
 }
 
@@ -96,8 +102,9 @@ interface EnvironmentOverrideMatch {
  * Mac 上这些多半写在 ~/.zshrc 里，星芒从访达打开，自己的环境里看不到。从星芒打开工具时由启动脚本去掉
  * （provider-launch-service.ts 的 macosShellOverrideVariables，已知45）：breaksAccount 为 true 的都在那份名单里
  * （diagnostics.test.ts 钉着），其中 Claude 的那几个只在用星芒账号时去掉。Windows、Linux 上从星芒打开时
- * Claude 的这几个同样不带（launchExcludedEnvironmentVariables，#1081）。检查页在 Mac 上另去读那几个终端
- * 设置文件，只找 breaksAccount 的那几个（collectMacosShellOverrides）。
+ * Claude 的这几个同样不带（launchExcludedEnvironmentVariables，#1081）。检查页另去读客户自己开终端时会读的
+ * 那几个设置文件，只找 breaksAccount 的那几个（collectShellOverrides）：Mac 起，Windows 的 Git Bash、PowerShell
+ * 启动文件和 Linux 的 ~/.bashrc 这些也读（深查 Shell差异 SH-5）。
  * 改这里的取值时那边一起看。
  */
 const ENVIRONMENT_OVERRIDE_VARIABLES: readonly EnvironmentOverrideVariable[] = [
@@ -176,30 +183,74 @@ function collectEnvironmentOverrides(
   return matches
 }
 
+/** 终端设置文件的写法：zsh / bash 那种、fish 那种，fish 存 `set -Ux` 的 fish_variables，PowerShell 的启动文件。 */
+type ShellSettingsFormat = ShellStartupDialect | 'fish-universal' | 'powershell'
+
 interface ShellSettingsFile {
-  /** 相对用户主目录。 */
+  /** 相对用户主目录，用 / 分隔。 */
   path: string
-  dialect: ShellStartupDialect
+  format: ShellSettingsFormat
 }
 
 /**
  * Mac 上「终端」开新窗口时登录 shell 会读的启动文件（已知45）。照别家中转教程配的 Key 多半在 ~/.zshrc，
- * 它排第一；bash、fish 的也看，换过 shell 的电脑上旧文件里常留着。
+ * 它排第一；bash、fish 的也看，换过 shell 的电脑上旧文件里常留着。fish 的 conf.d 另外列目录读。
  */
 const macosShellSettingsFiles: readonly ShellSettingsFile[] = [
-  { path: '.zshrc', dialect: 'posix' },
-  { path: '.zprofile', dialect: 'posix' },
-  { path: '.zshenv', dialect: 'posix' },
-  { path: '.zlogin', dialect: 'posix' },
-  { path: '.bash_profile', dialect: 'posix' },
-  { path: '.bash_login', dialect: 'posix' },
-  { path: '.profile', dialect: 'posix' },
-  { path: '.bashrc', dialect: 'posix' },
-  { path: '.config/fish/config.fish', dialect: 'fish' },
+  { path: '.zshrc', format: 'posix' },
+  { path: '.zprofile', format: 'posix' },
+  { path: '.zshenv', format: 'posix' },
+  { path: '.zlogin', format: 'posix' },
+  { path: '.bash_profile', format: 'posix' },
+  { path: '.bash_login', format: 'posix' },
+  { path: '.profile', format: 'posix' },
+  { path: '.bashrc', format: 'posix' },
+  { path: '.config/fish/config.fish', format: 'fish' },
 ]
+
+/** Linux 的命令窗口开的是交互式 shell，读 ~/.bashrc，它排第一；登录 shell 和桌面会话读的 ~/.profile 紧跟着。 */
+const linuxShellSettingsFiles: readonly ShellSettingsFile[] = [
+  { path: '.bashrc', format: 'posix' },
+  { path: '.profile', format: 'posix' },
+  { path: '.bash_profile', format: 'posix' },
+  { path: '.bash_login', format: 'posix' },
+  { path: '.zshrc', format: 'posix' },
+  { path: '.zprofile', format: 'posix' },
+  { path: '.zshenv', format: 'posix' },
+  { path: '.zlogin', format: 'posix' },
+  { path: '.config/fish/config.fish', format: 'fish' },
+]
+
+/**
+ * Windows 上 Git Bash 读的那几个（它的家目录就是个人文件夹）。PowerShell 的启动文件在「文档」下，另算
+ * （windowsPowerShellProfiles）。
+ */
+const windowsShellSettingsFiles: readonly ShellSettingsFile[] = [
+  { path: '.bashrc', format: 'posix' },
+  { path: '.bash_profile', format: 'posix' },
+  { path: '.bash_login', format: 'posix' },
+  { path: '.profile', format: 'posix' },
+]
+
+/** PowerShell 7 在前（教程里多半让人装它），各自先「当前主机」那份、再「所有主机」那份，PowerShell 自己就是这样都读的。 */
+const windowsPowerShellProfiles = [
+  ['PowerShell', 'Microsoft.PowerShell_profile.ps1'],
+  ['PowerShell', 'profile.ps1'],
+  ['WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1'],
+  ['WindowsPowerShell', 'profile.ps1'],
+] as const
+
+const fishConfigFolder = '.config/fish'
+// conf.d 里一般只有几个插件放的文件；再多也只读这么多个，检查页不为它卡住。
+const maximumFishConfFiles = 32
 
 // 手写的启动文件不会有几百 KB（同 macos-shell-profile.ts）；再大就不是该去读的文件了。
 const maximumShellSettingsBytes = 512 * 1024
+
+interface ShellSettingsSource {
+  filePath: string
+  format: ShellSettingsFormat
+}
 
 interface ShellSettingsExports {
   /** `~/.zshrc` 这样写：进报告的只有它，不带用户名。 */
@@ -207,24 +258,115 @@ interface ShellSettingsExports {
   exports: ShellStartupExport[]
 }
 
-async function readMacosShellSettings(
+function fromHome(userHome: string, files: readonly ShellSettingsFile[]): ShellSettingsSource[] {
+  return files.map((file) => ({ filePath: path.join(userHome, ...file.path.split('/')), format: file.format }))
+}
+
+/**
+ * fish 的 conf.d 里每个 .fish 文件 fish 都会读（Mac、Linux 上星芒自己放的那份也在里面，只加 PATH，读了也找不到什么），
+ * 按名字排。只列名字：读的时候每个文件照样过 I8 那一道。
+ */
+async function fishConfSources(
   userHome: string,
+  displayRoots: ProviderConfigRoots,
+  skipped: (file: string, error: unknown) => void,
+): Promise<ShellSettingsSource[]> {
+  const directory = path.join(userHome, ...fishConfigFolder.split('/'), 'conf.d')
+  let names: string[]
+  try {
+    names = (await fs.promises.readdir(directory, { withFileTypes: true }))
+      .filter((entry) => !entry.isDirectory() && entry.name.endsWith('.fish'))
+      .map((entry) => entry.name)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') skipped(pathForDisplay(directory, displayRoots) ?? 'fish/conf.d', error)
+    return []
+  }
+  return names.sort().slice(0, maximumFishConfFiles).map((name) => ({ filePath: path.join(directory, name), format: 'fish' }))
+}
+
+/**
+ * 客户自己开终端时会读的那几个设置文件，按平台列（Mac 已知45；Windows、Linux 深查 Shell差异 SH-5；fish 的 conf.d
+ * 和 fish_variables SH-12）。Windows 的「文档」可能被 OneDrive 挪走，用宿主给的实际位置，没给才退回个人文件夹下的 Documents。
+ */
+async function shellSettingsSources(
+  platform: NodeJS.Platform,
+  userHome: string,
+  documentsDirectory: string | null | undefined,
+  displayRoots: ProviderConfigRoots,
+  skipped: (file: string, error: unknown) => void,
+): Promise<ShellSettingsSource[]> {
+  if (platform === 'win32') {
+    const documents = documentsDirectory && path.isAbsolute(documentsDirectory) ? documentsDirectory : path.join(userHome, 'Documents')
+    return [
+      ...fromHome(userHome, windowsShellSettingsFiles),
+      ...windowsPowerShellProfiles.map(([folder, name]): ShellSettingsSource => ({
+        filePath: path.join(documents, folder, name),
+        format: 'powershell',
+      })),
+    ]
+  }
+  return [
+    ...fromHome(userHome, platform === 'darwin' ? macosShellSettingsFiles : linuxShellSettingsFiles),
+    ...await fishConfSources(userHome, displayRoots, skipped),
+    { filePath: path.join(userHome, ...fishConfigFolder.split('/'), 'fish_variables'), format: 'fish-universal' },
+  ]
+}
+
+/**
+ * Windows PowerShell 5.1 的 `>`、Out-File 默认把文件存成带 BOM 的 UTF-16，记事本存的是 UTF-8（可能带 BOM）；
+ * 按 UTF-8 硬读，UTF-16 那种一个名字也认不出来。
+ */
+export function decodeShellSettingsBytes(bytes: Buffer): string {
+  if (bytes[0] === 0xFF && bytes[1] === 0xFE) return bytes.subarray(2).toString('utf16le')
+  if (bytes[0] === 0xFE && bytes[1] === 0xFF) {
+    const body = Buffer.from(bytes.subarray(2, 2 + ((bytes.length - 2) & ~1)))
+    return body.swap16().toString('utf16le')
+  }
+  if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) return bytes.subarray(3).toString('utf8')
+  return bytes.toString('utf8')
+}
+
+/** 没有这个文件返回 null；读不了（链接、多个硬链接、太大）照抛，由调用方记一笔跳过。 */
+async function readShellSettingsText(source: ShellSettingsSource): Promise<string | null> {
+  if (source.format !== 'powershell') {
+    return readSafeUtf8File(source.filePath, '终端设置文件', maximumShellSettingsBytes)
+  }
+  try {
+    return decodeShellSettingsBytes(await readBoundedFile(source.filePath, maximumShellSettingsBytes, '终端设置文件'))
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null
+    throw error
+  }
+}
+
+function parseShellSettings(text: string, format: ShellSettingsFormat, names: readonly string[], userHome: string): ShellStartupExport[] {
+  if (format === 'powershell') return parsePowerShellProfileExports(text, names, userHome)
+  if (format === 'fish-universal') return parseFishUniversalExports(text, names)
+  return parseShellStartupExports(text, format, names, userHome)
+}
+
+async function readShellSettings(
+  sources: readonly ShellSettingsSource[],
+  userHome: string,
+  displayRoots: ProviderConfigRoots,
   names: readonly string[],
   skipped: (file: string, error: unknown) => void,
 ): Promise<ShellSettingsExports[]> {
   const found: ShellSettingsExports[] = []
-  for (const settings of macosShellSettingsFiles) {
-    const file = `~/${settings.path}`
+  for (const source of sources) {
+    const file = pathForDisplay(source.filePath, displayRoots) ?? path.basename(source.filePath)
     let text: string | null
     try {
-      text = await readSafeUtf8File(path.join(userHome, ...settings.path.split('/')), '终端设置文件', maximumShellSettingsBytes)
+      text = await readShellSettingsText(source)
     } catch (error) {
       // dotfiles 仓库常把 ~/.zshrc 做成指向别处的链接。I8 只放行单链接普通文件，这一项只是提醒，不为它放宽。
       skipped(file, error)
       continue
     }
     if (text === null) continue
-    const exports = parseShellStartupExports(text, settings.dialect, names, userHome)
+    const exports = parseShellSettings(text, source.format, names, userHome)
     if (exports.length) found.push({ file, exports })
   }
   return found
@@ -249,13 +391,15 @@ function overridesFromShellSettings(
 }
 
 /**
- * Mac 上终端设置文件里导出的、会让工具绕开当前账号的那几个（已知45）。只看用星芒账号的工具：Claude Code
- * 用客户自己的账号时，那几行多半就是他自己的 Key，从星芒打开也照旧带上（system-service.ts 的
+ * 终端设置文件里导出的、会让工具绕开当前账号的那几个（Mac 已知45，Windows、Linux 深查 Shell差异 SH-5）。只看用星芒
+ * 账号的工具：Claude Code 用客户自己的账号时，那几行多半就是他自己的 Key，从星芒打开也照旧带上（system-service.ts 的
  * macosShellOverrideVariables）。
  * 同一个名字在几个文件里都有，就各报一条，客户照着逐个去删。
  */
-async function collectMacosShellOverrides(
+async function collectShellOverrides(
+  sources: readonly ShellSettingsSource[],
   userHome: string,
+  displayRoots: ProviderConfigRoots,
   relayProviders: ReadonlySet<ProviderId>,
   accountBaseUrls: ReadonlyArray<RelaySite['providerBaseUrls']>,
   skipped: (file: string, error: unknown) => void,
@@ -263,7 +407,7 @@ async function collectMacosShellOverrides(
   const variables = ENVIRONMENT_OVERRIDE_VARIABLES
     .filter((variable) => variable.breaksAccount && relayProviders.has(variable.provider))
   if (!variables.length) return []
-  const found = await readMacosShellSettings(userHome, variables.map((variable) => variable.name), skipped)
+  const found = await readShellSettings(sources, userHome, displayRoots, variables.map((variable) => variable.name), skipped)
   return variables.flatMap((variable) => found
     .filter((settings) => settings.exports.some((exported) => exported.name === variable.name
       && overridesFromShellSettings(variable, exported.value, accountBaseUrls, userHome)))
@@ -278,15 +422,17 @@ async function collectMacosShellOverrides(
 }
 
 /**
- * 星芒是从终端里打开的时候，进程环境里也带着终端设置文件里的那几个：同一个名字只留指明了文件的那几条。
- * 顺序照变量表排，同一个工具的挨在一起。
+ * Mac 上星芒是从终端里打开的时候，进程环境里也带着终端设置文件里的那几个：同一个名字只留指明了文件的那几条
+ * （replaceEnvironment）。Windows、Linux 上星芒自己的环境来自注册表、桌面会话，客户自己开的命令窗口同样拿到
+ * 它，两边都留着、各报各的。顺序照变量表排，同一个工具的挨在一起，同一个名字进程环境那条在前。
  */
 function withShellSettingsOverrides(
   environment: readonly EnvironmentOverrideMatch[],
   shell: readonly EnvironmentOverrideMatch[],
+  replaceEnvironment: boolean,
 ): EnvironmentOverrideMatch[] {
   const named = new Set(shell.map((match) => match.name))
-  const combined = [...environment.filter((match) => !named.has(match.name)), ...shell]
+  const combined = [...environment.filter((match) => !replaceEnvironment || !named.has(match.name)), ...shell]
   return ENVIRONMENT_OVERRIDE_VARIABLES.flatMap((variable) => combined.filter((match) => match.name === variable.name))
 }
 
@@ -319,9 +465,13 @@ export function clearableEnvironmentOverrides(
 /** 名单外的名字一律不碰；清除脚本那一侧再对照一遍。 */
 export const environmentOverrideNames: readonly string[] = ENVIRONMENT_OVERRIDE_VARIABLES.map((variable) => variable.name)
 
-/** Windows 上有能删的，就在结论里挂上「删掉这几项设置」（details.fix，详情抽屉不显示它）。 */
+/**
+ * Windows 上有能删的，就在结论里挂上「删掉这几项设置」（details.fix，详情抽屉不显示它）。只挂在「待处理」上：
+ * 那是进程环境里的变量判出来的，按钮删的正是它们；只在终端设置文件里找到的那几条是「需留意」，按钮删不到文件里，
+ * 挂上去点了也不会好（深查 Shell差异 SH-5）。
+ */
 function withEnvironmentOverrideFix(outcome: CheckOutcome, clearable: boolean): CheckOutcome {
-  if (!clearable || outcome.state === 'pass') return outcome
+  if (!clearable || outcome.state !== 'fail') return outcome
   return { ...outcome, details: { ...outcome.details, fix: 'clear-user-overrides' } }
 }
 
@@ -337,10 +487,11 @@ function toolsOf(matches: readonly EnvironmentOverrideMatch[]): string {
 }
 
 /**
- * droppedByLauncher：Mac 上从星芒打开时启动脚本会不会先去掉这一个，去掉的降成「需留意」。
- * Windows、Linux 不传，照旧报「待处理」：Claude 的那两个从星芒打开时同样不带了（#1081），但这里读的是
- * 星芒自己的进程环境，客户自己开命令窗口直接跑工具时拿到的也是这一份，照样绕开当前账号。Mac 降级时那句
- * 说的是「终端设置」，Windows、Linux 要降级得另写一句，#1081 定的是这次不加新字。
+ * droppedByLauncher：从星芒打开时这一个会不会带不到工具那里，带不到的降成「需留意」。Mac 上看启动脚本会不会先
+ * 去掉它。Windows、Linux 上只有终端设置文件里读到的才算：星芒开的窗口不读那些文件（Windows 带 -NoProfile 起
+ * PowerShell，Linux 的启动脚本由 /bin/sh 直接跑），客户自己开命令窗口才读到。进程环境里的照旧报「待处理」：
+ * Claude 的那两个从星芒打开时同样不带了（#1081），但客户自己开命令窗口直接跑工具时拿到的也是这一份，照样绕开
+ * 当前账号。Mac 降级时那句说的是「终端设置」，Windows、Linux 进程环境那种要降级得另写一句，#1081 定的是这次不加新字。
  */
 function environmentOverrideOutcome(
   matches: readonly EnvironmentOverrideMatch[],
@@ -573,17 +724,19 @@ export function buildOverrideChecks(context: DiagnosticsContext): CheckDefinitio
         const skipped = (file: string, error: unknown): void => {
           log?.('info', 'diagnostics.shell-settings.skipped', '终端设置文件没读', { file, raw: sanitize(errorChainText(error)) })
         }
-        const matches = platform === 'darwin'
-          ? withShellSettingsOverrides(
-            environment,
-            await collectMacosShellOverrides(userHome, relayProviders, accountBaseUrls, skipped),
-          )
-          : environment
+        const sources = await shellSettingsSources(platform, userHome, dependencies.documentsDirectory, displayRoots, skipped)
+        const matches = withShellSettingsOverrides(
+          environment,
+          await collectShellOverrides(sources, userHome, displayRoots, relayProviders, accountBaseUrls, skipped),
+          platform === 'darwin',
+        )
         return withIgnoredCodexHome(
           withEnvironmentOverrideFix(
             environmentOverrideOutcome(
               matches,
-              (match) => platform === 'darwin' && droppedByMacosLauncher(match.provider, relayProviders),
+              (match) => platform === 'darwin'
+                ? droppedByMacosLauncher(match.provider, relayProviders)
+                : match.shellFile !== undefined,
             ),
             platform === 'win32' && clearableEnvironmentOverrides(env, accountBaseUrls, userHome).length > 0,
           ),

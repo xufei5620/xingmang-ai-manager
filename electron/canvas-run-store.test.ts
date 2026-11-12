@@ -173,6 +173,51 @@ describe('CanvasRunStore', () => {
     expect(recovered[0].nodes[0].errorMessage).toContain('未自动重试')
   })
 
+  it('never writes the pictures a run waits on, nor their recipes in waiting events, to the run file', async () => {
+    const { root, store } = fixture()
+    const preparation = {
+      operationId: 'attempt-1', attemptId: 'attempt-1', runId: 'waiting', projectId: '11111111-1111-4111-8111-111111111111', nodeId: 'node',
+      sourceAssetIds: [], recipe: { kind: 'layer' as const, outputWidth: 8, outputHeight: 8, secretSauce: 'x'.repeat(1024) }, processorRevision: 'browser-image-v1',
+    }
+    const base = record('waiting', 'running')
+    const waitingEvent = { version: 1 as const, runId: 'waiting', graphRevision: base.graphRevision, sequence: 1, at: base.startedAt, type: 'run-waiting' as const, waitingForVideo: false as const, framePreparations: [], imagePreparations: [preparation] }
+    const waiting: CanvasRunRecord = { ...base, imagePreparations: [preparation], events: [waitingEvent] }
+    await store.saveRun(7, waiting)
+    expect(waiting.imagePreparations).toEqual([preparation])
+    const content = fs.readFileSync(path.join(root, 'user-7', 'canvas-runtime.json'), 'utf8')
+    expect(content).not.toContain('secretSauce')
+    expect(content).not.toContain('imagePreparations')
+    const [listed] = await store.listRuns(7)
+    expect(listed).not.toHaveProperty('imagePreparations')
+    expect(listed.events[0]).toMatchObject({ type: 'run-waiting', framePreparations: [] })
+    expect(listed.events[0]).not.toHaveProperty('imagePreparations')
+  })
+
+  it('forgets the frames an interrupted run waited on and reads back only well-formed ones', async () => {
+    const { root, store } = fixture()
+    const preparation = { operationId: 'attempt-1', nodeId: 'node', attemptId: 'attempt-1', sourceAssetId: 'V'.repeat(43), timestampSeconds: 2.5 }
+    const waiting = { ...record('waiting', 'running'), framePreparations: [preparation] }
+    await store.saveRun(7, waiting)
+    expect((await store.listRuns(7))[0].framePreparations).toEqual([preparation])
+    const recovered = await store.initializeUser(7)
+    expect(recovered[0].status).toBe('interrupted')
+    expect(recovered[0]).not.toHaveProperty('framePreparations')
+
+    const filePath = path.join(root, 'user-7', 'canvas-runtime.json')
+    const valid = fs.readFileSync(filePath, 'utf8')
+    for (const wrong of [
+      { ...preparation, sourceAssetId: '../../secret' },
+      { ...preparation, timestampSeconds: 86_401 },
+      { ...preparation, operationId: 'a\u0001b' },
+    ]) {
+      const state = JSON.parse(valid) as { runs: Array<Record<string, unknown>> }
+      state.runs[0].framePreparations = [wrong]
+      fs.writeFileSync(filePath, JSON.stringify(state), 'utf8')
+      expect(await store.listRuns(7), JSON.stringify(wrong)).toEqual([])
+      fs.writeFileSync(filePath, valid, 'utf8')
+    }
+  })
+
   it('backs up corrupt state and degrades to an empty history', async () => {
     const { root, store } = fixture()
     await store.saveRun(7, record('valid'))
@@ -251,6 +296,34 @@ describe('CanvasRunStore', () => {
     await expect(store.resolveCache(8, entry.fingerprint)).resolves.toBeNull()
     await expect(store.resolveCache(7, entry.fingerprint)).resolves.toMatchObject({ fingerprint: entry.fingerprint })
     owned.delete(storedAsset.assetId)
+    await expect(store.resolveCache(7, entry.fingerprint)).resolves.toBeNull()
+  })
+
+  // 宫格裁剪: a grid split's slices are cached together, and come back
+  // together or not at all, so the next node never gets part of a batch.
+  it('keeps every slice of a grid split in its cache entry and drops the entry once one slice is gone', async () => {
+    const { owned, store } = fixture()
+    const slices = [asset('a'), asset('b'), asset('c')]
+    for (const slice of slices) owned.set(slice.assetId, slice)
+    const candidates = slices.map((slice, outputIndex) => ({ outputIndex, candidateId: `slice-${outputIndex}`, attemptId: 'split', createdAt: '2026-08-13T00:00:00.000Z', asset: slice }))
+    const entry: CanvasRunCacheEntry = { ...cacheEntry('d', slices[0]), nodeKind: 'image-grid-split', candidate: candidates[0], candidates }
+    await store.storeCache(7, entry)
+    const resolved = await store.resolveCache(7, entry.fingerprint)
+    expect(resolved?.candidates?.map((candidate) => [candidate.outputIndex, candidate.asset.assetId])).toEqual(slices.map((slice, index) => [index, slice.assetId]))
+    expect(resolved?.candidate).toEqual(resolved?.candidates?.[0])
+
+    // The list must lead with the entry's own candidate and number slices within a 4 x 4 grid.
+    await expect(store.storeCache(7, { ...entry, candidates: [candidates[1], candidates[0]] })).rejects.toThrow('画布节点缓存格式错误')
+    await expect(store.storeCache(7, { ...entry, candidates: [candidates[0]] })).rejects.toThrow('画布节点缓存格式错误')
+    await expect(store.storeCache(7, { ...entry, candidates: [candidates[0], { ...candidates[1], outputIndex: 16 }] })).rejects.toThrow('画布节点缓存格式错误')
+
+    owned.delete(slices[2].assetId)
+    await expect(store.resolveCache(7, entry.fingerprint)).resolves.toBeNull()
+    owned.set(slices[2].assetId, slices[2])
+    await store.storeCache(7, entry)
+    owned.delete(slices[1].assetId)
+    await store.reconcileAssets(7)
+    owned.set(slices[1].assetId, slices[1])
     await expect(store.resolveCache(7, entry.fingerprint)).resolves.toBeNull()
   })
 
@@ -382,6 +455,37 @@ describe('CanvasRunStore', () => {
     const reloaded = await store.getRun(7, 'with-urls')
     expect(reloaded?.nodes[0].attempts.map((attempt) => attempt.outputText)).toEqual(texts)
     expect(reloaded?.nodes[0].errorMessage).toBe('生成失败：参考 https://example.com/ref.png')
+  })
+
+  it('keeps the relay request ids and the charge checked after the run', async () => {
+    const { store } = fixture()
+    const run = record('charged')
+    run.nodes = [{
+      nodeId: 'image-node',
+      kind: 'image',
+      state: 'succeeded',
+      attempts: [{
+        attemptId: 'attempt-1',
+        fingerprint: 'f'.repeat(64),
+        state: 'succeeded',
+        startedAt: run.startedAt,
+        completedAt: run.completedAt!,
+        durationMs: 1_000,
+        cached: false,
+        candidates: [],
+        relayBilling: { requestIds: ['2026111013000012345678abcdefgh'], unanswered: true },
+        charge: { state: 'unmatched', usd: 0.06 },
+      }],
+    }]
+    run.charge = { state: 'unmatched', usd: 0.06, unmatchedAttempts: 1, checkedAt: '2026-08-13T00:00:07.000Z' }
+
+    await store.saveRun(7, run)
+    const reloaded = await store.getRun(7, 'charged')
+    expect(reloaded?.nodes[0].attempts[0]).toMatchObject({
+      relayBilling: { requestIds: ['2026111013000012345678abcdefgh'], unanswered: true },
+      charge: { state: 'unmatched', usd: 0.06 },
+    })
+    expect(reloaded?.charge).toEqual(run.charge)
   })
 
   it('round-trips cached text containing URLs without treating it as corrupt', async () => {

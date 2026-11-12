@@ -34,7 +34,7 @@ const {
   parseCodexDesktopCombinedProbeJson,
   parseCodexDesktopSessionProcessIds,
 } = compiled('codex-desktop-service')
-const { parseWindowsProcessesJson } = compiled('codex-desktop')
+const { parseCodexDesktopPackageProbeJson, parseWindowsProcessesJson } = compiled('codex-desktop')
 const { windowsExternalClientInventoryScript } = compiled('external-client-runtime')
 const { encodeWindowsPowerShellCommand, resolveWindowsPowerShellExecutable } = compiled('windows-elevation')
 const { trustedCommandEnvironment, windowsSystemExecutable } = compiled('command-runner')
@@ -70,6 +70,15 @@ function runScript(script) {
 
 function runEncoded(script) {
   return runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(script)])
+}
+
+// Where an application-control policy is enforced, every -Command string runs
+// in ConstrainedLanguage. Switching the session there first stands in for it;
+// how close that comes is written beside the checks that use it.
+const constrainedWrapper = "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\nInvoke-Expression $env:XINGMANG_CONSTRAINED_SCRIPT"
+
+function runConstrained(script) {
+  return runPowerShell(['-Command', constrainedWrapper], { ...trustedCommandEnvironment(), XINGMANG_CONSTRAINED_SCRIPT: script })
 }
 
 const codexProcessMocks = String.raw`
@@ -144,6 +153,81 @@ const checks = [
     // Appx 段在任何账户下都必须给出结论：要么有包、要么确认没有、要么报错。
     const probe = parseCodexDesktopCombinedProbeJson(output)
     assert.ok(probe.packageProbe.value !== null || probe.packageProbe.confirmedAbsent === true || probe.packageProbe.error !== null)
+  }],
+  // Where an application-control policy is enforced, every -Command string
+  // runs in ConstrainedLanguage; a customer's Codex desktop card read 「检测失败」
+  // on every scan because the merged probe was refused as a whole (2026-11-10).
+  // Switching the session to ConstrainedLanguage first is at least as strict
+  // for these two scripts as the real lockdown: on this runner under
+  // __PSLockdownPolicy=4 both gave the same package conclusion, and the start
+  // menu segment, which the lockdown lets through, fails here instead. The
+  // failing Get-AppxPackage sends the Chinese message through the \uXXXX
+  // escaping, which has to come back ASCII-only and read as the same text; the
+  // stand-in for an installed Codex is built from Select-Object alone, which
+  // ConstrainedLanguage allows, so the version still reaches the parser.
+  ['Codex merged and package probes still answer in ConstrainedLanguage', async () => {
+    const failingAppx = "function Get-AppxPackage { throw 'The AppX Deployment Service is not running.' }\n"
+    const installedAppx = String.raw`function Get-AppxPackage { 'x' | Select-Object @{n='Name';e={'OpenAI.Codex'}}, @{n='Version';e={'26.1103.4239.0'}}, @{n='PackageFullName';e={'OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0'}}, @{n='PackageFamilyName';e={'OpenAI.Codex_2p2nqsd0c76g0'}}, @{n='InstallLocation';e={'C:\Program Files\WindowsApps\OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0'}} }
+`
+    for (const [label, script, combined, expect] of [
+      ['merged', buildCodexDesktopCombinedProbeScript(), true, 'conclusion'],
+      ['package', buildCodexDesktopPackageProbeScript(), false, 'conclusion'],
+      ['merged with a failing Appx query', failingAppx + buildCodexDesktopCombinedProbeScript(), true, 'error'],
+      ['merged with Codex installed', installedAppx + buildCodexDesktopCombinedProbeScript(), true, 'installed'],
+      ['package with Codex installed', installedAppx + buildCodexDesktopPackageProbeScript(), false, 'installed'],
+    ]) {
+      const output = await runConstrained(script)
+      assert.match(output.trim(), /^[\x00-\x7F]+$/, `${label}: ${output}`)
+      const probe = combined ? parseCodexDesktopCombinedProbeJson(output).packageProbe : parseCodexDesktopPackageProbeJson(output)
+      if (expect === 'error') {
+        assert.equal(probe.confirmedAbsent, false, label)
+        assert.match(String(probe.error), /^读不到这台电脑上 Codex 桌面端的安装信息/, label)
+      } else if (expect === 'installed') {
+        assert.equal(probe.value?.version, '26.1103.4239.0', `${label}: ${output}`)
+        assert.equal(probe.value?.packageFamilyName, 'OpenAI.Codex_2p2nqsd0c76g0', label)
+      } else {
+        assert.ok(probe.value !== null || probe.confirmedAbsent === true || probe.error !== null, `${label}: ${output}`)
+      }
+    }
+  }],
+  // The process segment names this user and session with two .NET calls that
+  // ConstrainedLanguage refuses, so it failed whole there and the home page
+  // could never say 「正在运行」 (2026-11-10). Now it asks WMI about its own
+  // PowerShell process instead. The stand-in window is node.exe copied under a
+  // WindowsApps-shaped folder as Codex.exe: the real query, WMI owner check
+  // included, has to find it from both language modes as the same entry, the
+  // parser has to keep it, and the close path's probe has to see it too.
+  ['Codex process probes find a running window in ConstrainedLanguage as in FullLanguage', async () => {
+    const standInRoot = path.join(scratch, 'running-codex')
+    const appDir = path.join(standInRoot, 'WindowsApps', 'OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0', 'app')
+    fs.mkdirSync(appDir, { recursive: true })
+    const exe = path.join(appDir, 'Codex.exe')
+    fs.copyFileSync(process.execPath, exe)
+    const standIn = spawn(exe, ['-e', 'setTimeout(() => {}, 300000)'], { stdio: 'ignore', windowsHide: true })
+    const gone = new Promise((resolve) => {
+      standIn.once('exit', resolve)
+      standIn.once('error', resolve)
+    })
+    try {
+      const script = buildCodexDesktopCombinedProbeScript()
+      const full = await runPowerShell(['-Command', script], trustedCommandEnvironment())
+      const constrained = await runConstrained(script)
+      assert.match(constrained.trim(), /^[\x00-\x7F]+$/, constrained)
+      const constrainedRecord = JSON.parse(constrained.trim())
+      assert.equal(constrainedRecord.processesError, null, constrained)
+      assert.deepEqual(constrainedRecord.processes, JSON.parse(full.trim()).processes, `${full}\n${constrained}`)
+      for (const output of [full, constrained]) {
+        const found = parseCodexDesktopCombinedProbeJson(output).processes
+        assert.deepEqual(found.map((entry) => [entry.processId, entry.packageFamilyName]), [[standIn.pid, 'OpenAI.Codex_2p2nqsd0c76g0']], output)
+      }
+      const closing = await runConstrained(buildCodexDesktopProcessProbeScript('all'))
+      assert.deepEqual(parseWindowsProcessesJson(closing).map((entry) => entry.processId), [standIn.pid], closing)
+    } finally {
+      standIn.kill()
+      await gone
+      // The image can stay locked for a moment after exit; the scratch cleanup at the end must not trip on it.
+      fs.rmSync(standInRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
   }],
   ['Codex close probe checks only roots during scans and each pid before closing', async () => {
     assert.deepEqual(await runMockedCodexProcessProbe('roots'), { calls: 1, processIds: [101] })
@@ -593,6 +677,73 @@ for (const [name, limit, run] of trustedProbes) {
   }])
 }
 
+const { buildUpdateSignatureScript } = compiled('update-signature')
+const { buildWindowsCliProcessProbeScript, parseWindowsCliProcessProbeOutput } = compiled('cli-process-probe')
+const { buildWindowsExecutableProductVersionScript } = compiled('system-scan-service')
+
+// Where an application-control policy is enforced, the update, install and
+// signature scripts were refused as a whole too (on this runner under
+// __PSLockdownPolicy=4, 2026-11-10): such a machine could not install any
+// update, Node.js, Python or a native CLI, and the running CLI probe answered
+// "nothing running". Each one runs here in a session switched to
+// ConstrainedLanguage, the same stand-in the Codex check above uses, which gave
+// the same answers as the real lockdown for all of them. They read a signed
+// copy of node.exe under a Chinese folder name, so the \uXXXX escaping is
+// exercised on a real path and has to come back as the same path.
+checks.push(['update, install and signature scripts still answer in ConstrainedLanguage', async () => {
+  const signedDir = path.join(scratch, '中文目录')
+  const signed = path.join(signedDir, 'node.exe')
+  fs.mkdirSync(signedDir, { recursive: true })
+  fs.copyFileSync(process.execPath, signed)
+  const modulesRoot = path.join(path.dirname(powershell), 'Modules')
+  async function answerConstrained(label, script, extra = {}) {
+    const output = (await runPowerShell(['-Command', constrainedWrapper], trustedEnv({ ...extra, XINGMANG_CONSTRAINED_SCRIPT: script }))).trim()
+    assert.match(output, /^[\x00-\x7F]*$/, `${label}: ${output}`)
+    return output
+  }
+  async function signatureFields(label, script, extra) {
+    const parsed = JSON.parse(await answerConstrained(label, script, extra))
+    assert.equal(parsed.status ?? parsed.Status, 'Valid', label)
+    return parsed
+  }
+
+  const update = await signatureFields('update installer', buildUpdateSignatureScript(), {
+    XINGMANG_UPDATE_SIGNATURE_TARGET: signed,
+    XINGMANG_UPDATE_SECURITY_MODULE: path.join(modulesRoot, 'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Security.psd1'),
+    XINGMANG_UPDATE_UTILITY_MODULE: path.join(modulesRoot, 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Utility.psd1'),
+  })
+  // parseSignatureResult compares this path with the installer it was asked about.
+  assert.equal(update.Path, signed)
+  assert.ok(update.Subject)
+  assert.ok((await signatureFields('native CLI', nativeCliSignatureScript, { XINGMANG_NATIVE_CLI: signed })).Subject)
+  await signatureFields('Node.js installer', nodeInstallerSignatureScript, { XINGMANG_NODE_MSI_PATH: signed })
+  await signatureFields('installed Node.js', installedNodeSignatureScript, { XINGMANG_NODE_EXE_PATH: signed })
+  await signatureFields('Python installer', pythonInstallerSignatureScript, { XINGMANG_PYTHON_FILE_PATH: signed })
+  const python = await signatureFields('installed Python', installedPythonInspectionScript, { XINGMANG_PYTHON_FILE_PATH: signed })
+  assert.equal(python.version, process.versions.node)
+  assert.equal(await answerConstrained('product version', buildWindowsExecutableProductVersionScript(), { XINGMANG_VERSION_TARGET: signed }), process.versions.node)
+
+  // Both registry keys answered as present, so both Chinese reasons go through the escaping.
+  const restart = JSON.parse(await answerConstrained('pending restart', `function Test-Path { param([string]$LiteralPath) return $true }\n${windowsRestartStatusScript}`))
+  assert.deepEqual(restart, { required: true, reasons: ['Windows 组件更新待重启', 'Windows Update 待重启'] })
+  const appInstaller = await answerConstrained('App Installer package', appInstallerQueryScript)
+  if (appInstaller) assert.ok(JSON.parse(appInstaller).packageFamilyName)
+
+  const sleeper = spawn(signed, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore', windowsHide: true })
+  try {
+    const matches = parseWindowsCliProcessProbeOutput(await answerConstrained('running CLI process', buildWindowsCliProcessProbeScript(), { XINGMANG_CLI_PROCESS_ROOT: signedDir }))
+    assert.ok(matches.some((match) => match.processId === sleeper.pid && match.executablePath === signed), JSON.stringify(matches))
+  } finally {
+    // The copy stays locked until it has exited, and the scratch folder is removed at the end.
+    if (sleeper.exitCode === null && sleeper.signalCode === null) {
+      await new Promise((resolve) => {
+        sleeper.once('exit', resolve)
+        sleeper.kill()
+      })
+    }
+  }
+}])
+
 // The managed-root hardening, run for real once, under ProgramData where the
 // real root lives. A fresh folder there inherits ProgramData's Users
 // create/write ACE, so this reproduces the standard-user write window; the unit
@@ -685,6 +836,220 @@ try { Get-ItemProperty -LiteralPath 'Registry::${key}' | Out-Null; 'read' } catc
     console.log(`info malformed uninstall key: Get-ItemProperty ${premise}; the inventory read it`)
   } finally {
     await runFile(reg, ['delete', key, '/f']).catch((error) => console.log(`::warning::could not delete the malformed uninstall key (left behind, unless the import never created it): ${error.message}`))
+  }
+}])
+
+const { buildEnsureUserPathScript, buildRemoveUserPathScript } = compiled('windows-cli-shell-access')
+const { buildClearUserProxyScript } = compiled('stale-proxy-environment')
+const { buildClearProviderOverridesScript } = compiled('diagnostic-fixes')
+
+// reg export writes UTF-16LE whatever the console code page is, so what comes
+// back is what is stored: the kind, and the text with %VAR% left as written.
+async function readUserEnvironment() {
+  const file = path.join(scratch, `user-environment-${Date.now()}.reg`)
+  await runFile(path.join(machinePaths.system32, 'reg.exe'), ['export', 'HKCU\\Environment', file, '/y'])
+  const text = fs.readFileSync(file).toString('utf16le').replace(/^\uFEFF/, '').replace(/\\\r?\n\s*/g, '')
+  fs.rmSync(file, { force: true })
+  const values = new Map()
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^"((?:[^"\\]|\\.)*)"=(.*)$/.exec(line)
+    if (!match) continue
+    const data = match[2]
+    let entry = { kind: 'other', value: data }
+    if (data.startsWith('"')) entry = { kind: 'REG_SZ', value: data.slice(1, -1).replace(/\\(.)/g, '$1') }
+    else if (data.startsWith('hex(2):')) {
+      const bytes = Buffer.from(data.slice('hex(2):'.length).split(',').filter(Boolean).map((byte) => parseInt(byte, 16)))
+      entry = { kind: 'REG_EXPAND_SZ', value: bytes.toString('utf16le').replace(/\0+$/, '') }
+    } else if (data.startsWith('dword:')) entry = { kind: 'REG_DWORD', value: String(parseInt(data.slice('dword:'.length), 16)) }
+    values.set(match[1].replace(/\\(.)/g, '$1').toLowerCase(), entry)
+  }
+  return values
+}
+
+async function setUserEnvironmentValue(name, kind, value) {
+  await runFile(path.join(machinePaths.system32, 'reg.exe'), ['add', 'HKCU\\Environment', '/v', name, '/t', kind, '/d', value, '/f'])
+}
+
+async function deleteUserEnvironmentValue(name) {
+  await runFile(path.join(machinePaths.system32, 'reg.exe'), ['delete', 'HKCU\\Environment', '/v', name, '/f']).catch(() => undefined)
+}
+
+// Adding a CLI's folder to the user PATH, taking it out again, reading and
+// clearing stale proxy variables, clearing provider overrides: each was refused
+// at its second line where an application-control policy is enforced (this
+// runner under __PSLockdownPolicy=4, 2026-11-10). Each step runs here once as
+// the app runs it and once in a session switched to ConstrainedLanguage, which
+// takes the scripts' other branch, against this runner's own HKCU\Environment,
+// and both must leave the same values behind: the user PATH keeps its
+// %USERPROFILE% entries as written, a Chinese folder name, and its kind. The
+// runner's own values are put back at the end.
+checks.push(['the user environment scripts leave the same registry values behind in ConstrainedLanguage as in FullLanguage', async () => {
+  const executables = {
+    XINGMANG_REG_EXE: windowsSystemExecutable('reg.exe'),
+    XINGMANG_SETX_EXE: windowsSystemExecutable('setx.exe'),
+    XINGMANG_SMOKE_HOST: '127.0.0.1',
+  }
+  const profile = process.env.USERPROFILE
+  // The long spelling: this runner's temp folder is the 8.3 one (RUNNER~1),
+  // which GetFullPath in Windows PowerShell expands and the ConstrainedLanguage
+  // statements leave as written (see windows-cli-shell-access.ts).
+  const target = path.join(fs.realpathSync.native(scratch), '中文目录', 'npm')
+  const stored = 'C:\\xingmang-smoke-keep;%USERPROFILE%\\xingmang-smoke-ref;C:\\中文工具\\bin;%XINGMANG_SMOKE_UNSET%\\x'
+  const watchedProxies = ['HTTP_PROXY', 'ALL_PROXY', 'HTTPS_PROXY', 'NO_PROXY']
+  const watchedOverrides = ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'CODEX_HOME']
+  fs.mkdirSync(target, { recursive: true })
+  // [label, setup, script, extra environment, watched values]
+  const steps = [
+    ['add the folder', () => setUserEnvironmentValue('Path', 'REG_EXPAND_SZ', stored), buildEnsureUserPathScript(), { XINGMANG_ADD_PATH: target }, ['Path']],
+    ['add it again', null, buildEnsureUserPathScript(), { XINGMANG_ADD_PATH: target }, ['Path']],
+    ['add it spelled another way', null, buildEnsureUserPathScript(), { XINGMANG_ADD_PATH: `${target.replaceAll('\\', '/')}/../npm/` }, ['Path']],
+    ['take it out', null, buildRemoveUserPathScript(), { XINGMANG_REMOVE_PATH: target }, ['Path']],
+    ['take it out again', null, buildRemoveUserPathScript(), { XINGMANG_REMOVE_PATH: target }, ['Path']],
+    ['find a %USERPROFILE% spelling', () => setUserEnvironmentValue('Path', 'REG_EXPAND_SZ', '%USERPROFILE%\\xingmang-smoke-npm'), buildEnsureUserPathScript(), { XINGMANG_ADD_PATH: `${profile}\\xingmang-smoke-npm` }, ['Path']],
+    ['take out a %USERPROFILE% spelling', () => setUserEnvironmentValue('Path', 'REG_EXPAND_SZ', 'C:\\xingmang-smoke-keep;%USERPROFILE%\\xingmang-smoke-npm'), buildRemoveUserPathScript(), { XINGMANG_REMOVE_PATH: `${profile}\\xingmang-smoke-npm` }, ['Path']],
+    ['add to a REG_SZ PATH', () => setUserEnvironmentValue('Path', 'REG_SZ', 'C:\\xingmang-smoke-keep;C:\\中文工具\\bin'), buildEnsureUserPathScript(), { XINGMANG_ADD_PATH: target }, ['Path']],
+    ['take out of a REG_SZ PATH', null, buildRemoveUserPathScript(), { XINGMANG_REMOVE_PATH: target }, ['Path']],
+    ['add without a user PATH', () => deleteUserEnvironmentValue('Path'), buildEnsureUserPathScript(), { XINGMANG_ADD_PATH: target }, ['Path']],
+    ['take out the only entry', null, buildRemoveUserPathScript(), { XINGMANG_REMOVE_PATH: target }, ['Path']],
+    ['read the proxy settings', async () => {
+      await setUserEnvironmentValue('HTTP_PROXY', 'REG_SZ', 'http://127.0.0.1:9/中文')
+      await setUserEnvironmentValue('ALL_PROXY', 'REG_EXPAND_SZ', 'socks5://%XINGMANG_SMOKE_HOST%:1080')
+      await setUserEnvironmentValue('HTTPS_PROXY', 'REG_DWORD', '1')
+      await setUserEnvironmentValue('NO_PROXY', 'REG_SZ', 'localhost')
+    }, buildReadProxyScopesScript(), {}, []],
+    ['clear the proxy settings', null, buildClearUserProxyScript(), { XINGMANG_CLEAR_PROXY: 'HTTP_PROXY;ALL_PROXY;NOT_A_PROXY;HTTPS_PROXY' }, watchedProxies],
+    ['clear the provider overrides', async () => {
+      await setUserEnvironmentValue('ANTHROPIC_BASE_URL', 'REG_SZ', 'http://127.0.0.1:9')
+      await setUserEnvironmentValue('OPENAI_BASE_URL', 'REG_EXPAND_SZ', 'http://%XINGMANG_SMOKE_HOST%:9')
+      await setUserEnvironmentValue('CODEX_HOME', 'REG_DWORD', '1')
+    }, buildClearProviderOverridesScript(), { XINGMANG_CLEAR_OVERRIDES: 'ANTHROPIC_BASE_URL;OPENAI_BASE_URL;CODEX_HOME;NOT_AN_OVERRIDE' }, watchedOverrides],
+  ]
+  const original = await readUserEnvironment()
+  const outcomes = { full: [], constrained: [] }
+  try {
+    for (const mode of ['full', 'constrained']) {
+      for (const [label, setup, script, extra, watched] of steps) {
+        if (setup) await setup()
+        const env = trustedEnv({ ...executables, ...extra })
+        const stdout = mode === 'full'
+          ? await runPowerShell(['-Command', script], env)
+          : await runPowerShell(['-Command', constrainedWrapper], { ...env, XINGMANG_CONSTRAINED_SCRIPT: script })
+        if (mode === 'constrained') assert.match(stdout, /^[\x00-\x7F]*$/, `${label}: ${stdout}`)
+        const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+        // The proxy reader answers in UTF-8 in FullLanguage and with \uXXXX escapes otherwise.
+        const answer = script === buildReadProxyScopesScript() ? JSON.parse(lines.at(-1)).user : lines
+        const values = await readUserEnvironment()
+        assert.equal(values.has('xingmang_environment_refresh') || values.has('xingmang_path_refresh'), false, `${mode} ${label} left its refresh value behind`)
+        outcomes[mode].push({ label, answer, state: Object.fromEntries(watched.map((name) => [name, values.get(name.toLowerCase()) ?? null])) })
+      }
+    }
+  } finally {
+    for (const name of [...watchedProxies, ...watchedOverrides]) {
+      const entry = original.get(name.toLowerCase())
+      if (entry) await setUserEnvironmentValue(name, entry.kind, entry.value)
+      else await deleteUserEnvironmentValue(name)
+    }
+    const originalPath = original.get('path')
+    if (originalPath) await setUserEnvironmentValue('Path', originalPath.kind, originalPath.value)
+    else await deleteUserEnvironmentValue('Path')
+  }
+  assert.deepEqual(outcomes.constrained, outcomes.full)
+  const byLabel = new Map(outcomes.full.map((outcome) => [outcome.label, outcome]))
+  assert.deepEqual(byLabel.get('add the folder'), { label: 'add the folder', answer: ['added'], state: { Path: { kind: 'REG_EXPAND_SZ', value: `${stored};${target}` } } })
+  assert.deepEqual(byLabel.get('add it again').answer, ['present'])
+  assert.deepEqual(byLabel.get('add it spelled another way').answer, ['present'])
+  assert.deepEqual(byLabel.get('take it out').state.Path, { kind: 'REG_EXPAND_SZ', value: stored })
+  assert.deepEqual(byLabel.get('take it out again').answer, ['absent'])
+  assert.deepEqual(byLabel.get('find a %USERPROFILE% spelling').answer, ['present'])
+  assert.deepEqual(byLabel.get('take out a %USERPROFILE% spelling').state.Path, { kind: 'REG_EXPAND_SZ', value: 'C:\\xingmang-smoke-keep' })
+  assert.deepEqual(byLabel.get('add to a REG_SZ PATH').state.Path, { kind: 'REG_SZ', value: `C:\\xingmang-smoke-keep;C:\\中文工具\\bin;${target}` })
+  assert.deepEqual(byLabel.get('add without a user PATH').state.Path, { kind: 'REG_EXPAND_SZ', value: target })
+  assert.deepEqual(byLabel.get('read the proxy settings').answer, { HTTP_PROXY: 'http://127.0.0.1:9/中文', ALL_PROXY: 'socks5://127.0.0.1:1080' })
+  assert.deepEqual(byLabel.get('clear the proxy settings'), {
+    label: 'clear the proxy settings',
+    answer: ['cleared:HTTP_PROXY;ALL_PROXY;HTTPS_PROXY'],
+    state: { HTTP_PROXY: null, ALL_PROXY: null, HTTPS_PROXY: null, NO_PROXY: { kind: 'REG_SZ', value: 'localhost' } },
+  })
+  assert.deepEqual(byLabel.get('clear the provider overrides'), {
+    label: 'clear the provider overrides',
+    answer: ['cleared:ANTHROPIC_BASE_URL;OPENAI_BASE_URL', 'machine:'],
+    state: { ANTHROPIC_BASE_URL: null, OPENAI_BASE_URL: null, CODEX_HOME: { kind: 'REG_DWORD', value: '1' } },
+  })
+}])
+
+// Where an application-control policy is enforced, every -Command string runs
+// in ConstrainedLanguage; on a customer's machine the inventory was refused as
+// a whole, so the Claude Desktop, OpenCode and WorkBuddy cards read
+// 「命令执行失败（退出码 1）」 on every scan (2026-11-10). Real stand-ins here:
+// a WorkBuddy uninstall key that also holds the malformed DWORD above, so its
+// values are read one by one (the part that differs in ConstrainedLanguage),
+// pointing into a folder with a Chinese name, and an OpenCode key found through
+// its DisplayIcon; both executables are copies of this Node.js. The session is
+// switched to ConstrainedLanguage before the script runs: on this runner under
+// the system lockdown debug policy (__PSLockdownPolicy=4) the same script found
+// the same two clients with the same results. It must answer in ASCII (the
+// output stays in the console code page there), find both at their real
+// paths, reuse a remembered signature whose subject is not ASCII, and still
+// turn away every path GetFullPath would rewrite.
+checks.push(['external client inventory answers in ConstrainedLanguage', async () => {
+  const root = path.join(fs.realpathSync.native(scratch), '星芒 盘点')
+  const workbuddy = path.join(root, 'WorkBuddy', 'WorkBuddy.exe')
+  const opencode = path.join(root, 'OpenCode', 'OpenCode.exe')
+  const uninstall = 'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
+  const keys = [`${uninstall}\\{BFD312E9-1019-4F57-9F44-F86246833B50}`, `${uninstall}\\{d074f30d-5f88-5885-b075-be1348cc7676}`]
+  const quoted = (value) => `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  for (const file of [workbuddy, opencode]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.copyFileSync(process.execPath, file)
+  }
+  const registryFile = path.join(scratch, 'constrained-inventory.reg')
+  const contents = ['Windows Registry Editor Version 5.00', '',
+    `[${keys[0]}]`, '"DisplayName"="WorkBuddy"', '"DisplayVersion"="9.9.9"', `"InstallLocation"=${quoted(path.dirname(workbuddy))}`, '"NoModify"=hex(4):01,00,00,00,00,00,00,00', '',
+    `[${keys[1]}]`, '"DisplayName"="OpenCode"', '"DisplayVersion"="1.2.3"', `"DisplayIcon"=${quoted(`"${opencode}",0`)}`, ''].join('\r\n')
+  fs.writeFileSync(registryFile, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(contents, 'utf16le')]))
+  const reg = path.join(machinePaths.system32, 'reg.exe')
+  const wrapper = "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\nInvoke-Expression $env:XINGMANG_CONSTRAINED_SCRIPT"
+  const runConstrained = (script, extra = {}) => runPowerShell(['-Command', wrapper], trustedEnv({ XINGMANG_CONSTRAINED_SCRIPT: script, ...extra }))
+  const inventory = async (script) => {
+    const output = (await runConstrained(script)).trim()
+    assert.match(output, /^[\x00-\x7F]+$/, output)
+    return JSON.parse(output)
+  }
+  const client = (data, tool) => data.clients.find((entry) => entry.tool === tool)
+  try {
+    // Inside the try: an import that fails halfway may still have created a key.
+    await runFile(reg, ['import', registryFile])
+    const scan = await inventory(windowsExternalClientInventoryScript())
+    assert.equal(client(scan, 'workbuddy')?.path, workbuddy, JSON.stringify(scan))
+    assert.equal(client(scan, 'workbuddy')?.version, '9.9.9')
+    assert.match(client(scan, 'workbuddy')?.signatureStamp ?? '', /^\d+:\d+:\d+$/)
+    assert.ok(client(scan, 'workbuddy')?.signatureStatus, JSON.stringify(scan))
+    assert.equal(client(scan, 'opencode')?.path, opencode, JSON.stringify(scan))
+    assert.equal(client(scan, 'opencode')?.version, '1.2.3')
+    assert.deepEqual(scan.registryFailures, [])
+    assert.equal(scan.timings.signaturesChecked, 2)
+    for (const [section, value] of Object.entries(scan.timings)) assert.ok(Number.isSafeInteger(value) && value >= 0, `${section}: ${JSON.stringify(scan.timings)}`)
+    const remembered = { path: workbuddy, stamp: client(scan, 'workbuddy').signatureStamp, status: 'Valid', subject: 'CN=星芒 Remembered', version: '9.9.9' }
+    const launch = await inventory(windowsExternalClientInventoryScript([remembered], 'workbuddy'))
+    assert.deepEqual(launch.clients.map((entry) => [entry.tool, entry.path, entry.signatureSubject]), [['workbuddy', workbuddy, 'CN=星芒 Remembered']])
+    assert.equal(launch.timings.signaturesReused, 1)
+    const directory = path.dirname(workbuddy)
+    const cases = [
+      [workbuddy, 'True'],
+      [workbuddy.toLowerCase(), 'True'],
+      [`${directory}\\.\\WorkBuddy.exe`, 'False'],
+      [`${directory}\\..\\WorkBuddy\\WorkBuddy.exe`, 'False'],
+      [`${directory}\\\\WorkBuddy.exe`, 'False'],
+      [`${directory}/WorkBuddy.exe`, 'False'],
+      [`${directory}.\\WorkBuddy.exe`, 'False'],
+      [`${directory} \\WorkBuddy.exe`, 'False'],
+    ]
+    const checked = await runConstrained(`${windowsExternalClientInventoryScript()}\n'CHECKED:' + (@(foreach ($pathCase in (ConvertFrom-Json $env:XINGMANG_PATH_CASES)) { [string](Test-LocalExecutablePath $pathCase) }) -join ',')`, { XINGMANG_PATH_CASES: JSON.stringify(cases.map(([candidate]) => candidate)) })
+    assert.equal(checked.split(/\r?\n/).find((line) => line.startsWith('CHECKED:')), `CHECKED:${cases.map(([, expected]) => expected).join(',')}`, checked)
+    console.log(`info external client inventory in ConstrainedLanguage: timings=${JSON.stringify(scan.timings)}`)
+  } finally {
+    for (const key of keys) await runFile(reg, ['delete', key, '/f']).catch((error) => console.log(`::warning::could not delete ${key} (left behind, unless the import never created it): ${error.message}`))
+    fs.rmSync(root, { recursive: true, force: true })
   }
 }])
 
@@ -1058,7 +1423,8 @@ const trustedProbeScripts = [
 
 async function reportTrustedProbesWithoutAutoloading() {
   for (const [name, script, extra] of trustedProbeScripts) {
-    const silenced = script.replace(/(Import-Module [^\n;]*)/, "$1; $PSModuleAutoLoadingPreference = 'None'")
+    // Every import: the proxy reader imports once in its ConstrainedLanguage branch and once after it.
+    const silenced = script.replace(/(Import-Module [^\n;]*)/g, "$1; $PSModuleAutoLoadingPreference = 'None'")
     const startedAt = Date.now()
     const { error, stderr } = await runPowerShellCollecting(silenced, trustedEnv(extra))
     const missing = [...new Set([...String(stderr).matchAll(/(?:The term '|无法将“)([A-Za-z]+-[A-Za-z]+)/g)].map((match) => match[1]))]

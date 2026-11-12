@@ -26,14 +26,20 @@ Codex 自带的 `image_gen.imagegen` 只对 ChatGPT 登录开放：`codex-rs/cor
 
 ## 用哪个模型
 
-只用 OpenAI 的 gpt-image 系列（2026-10 起去掉了即梦和 Gemini）。登录同步时（`syncXingmangAiSkill`）主进程拿技能的两把 Key 各查一次 `GET /v1/models`，合起来按 `XINGMANG_AI_IMAGE_MODEL_PREFERENCE` 挑：列表里有 `gpt-image-2.5-flare` 就用它，否则 `gpt-image-2`，写进 `config.json` 的 `model`。这两个都没有时，再按 `XINGMANG_AI_IMAGE_MODEL_FALLBACKS` 挑列表里有的（`gpt-image-2.5-sunburst`，再 `gpt-image-1`；`gpt-image-1.5` 站上没开放，不挑）。两把都没查到、或查到了但一个能挑的都没有，就不写，画图照旧用 `gpt-image-2`，日志记一句。`gpt-image-2.5-sunburst` 慢、偏精修，前两个在时不当默认，AI 可以自己点名。
+默认只用 OpenAI 的 gpt-image 系列。登录同步时（`syncXingmangAiSkill`）主进程拿技能的两把 Key 各查一次 `GET /v1/models`，合起来按 `XINGMANG_AI_IMAGE_MODEL_PREFERENCE`（`gpt-image-2.6-flare` → `gpt-image-2.5-flare` → `gpt-image-2`）再 `XINGMANG_AI_IMAGE_MODEL_FALLBACKS`（`gpt-image-2.6-sunburst` → `gpt-image-2.5-sunburst`）的顺序，把账号列表里有的排成一串：第一个写进 `config.json` 的 `model`，后面的写进 `fallbackModels`（可以是空数组）。两把都没查到、或查到了但一个都没有，就两样都不写，画图照旧用 `gpt-image-2`，日志记一句。sunburst 慢、偏精修，flare 和 `gpt-image-2` 在时不当默认。`gpt-image-1` 官方已经下了，`gpt-image-1.5` 站上调不通，都不挑，点名也在本地拒掉。AI 对话的图片默认（`chat/state.ts` 的 `DEFAULT_IMAGE_MODELS`）和图片分组次序（`ai-chat-protocol.ts` 的 `IMAGE_GROUP_MODEL_ORDER`）跟这串同一个顺序，测试钉住。
 
-画图工具把这个 `model` 当默认值（`tools/list` 的 schema 默认值跟着它走）。AI 没点名、或点的就是这个默认值时，中转明确回了错误（没渠道、没定价这类）会自动换 `gpt-image-2` 再试一次；连不上、超时不换。AI 点名要别的型号就只用那个。认型号三处用同一条规则（主进程 `OPENAI_IMAGE_MODEL_PATTERN`、`mcp-server.mjs`、技能脚本 `generate.mjs`，测试钉住一致）：只收 `gpt-image-*`，`config.json` 里写的、AI 点名的、`--model` 传的都一样；以前画图工具只认写死的 5 个，站上新出的型号会被悄悄换回 `gpt-image-2`（#1059）。工具 schema 的 `model` 不再列枚举，只给默认值和一句说明。
+画图工具把 `model` 当默认值（`tools/list` 的 schema 默认值跟着它走）。AI 没点名、或点的就是这个默认值时，中转明确回了错误（没渠道、没定价这类）会按 `fallbackModels` 依次换下一个再试，只换账号列表里有的；连不上、超时不换。老版本写的 `config.json` 没有 `fallbackModels`，照旧只换回 `gpt-image-2`。AI 点名要别的型号就只用那个。
+
+Nano Banana（`nano-banana-2` / `gemini-3.1-flash-image`、`nano-banana-pro`）和 Grok（`grok-imagine-image` 系列）只在点名时用，只用图片模型分组那把 Key（GPT 分组没有这些模型，没有那把 Key 就直接提示登录或开通，不发请求）。Nano Banana 走 Gemini 原生接口 `POST /v1beta/models/{model}:generateContent`（站上 Gemini 渠道走 Images API 会回 500「only imagen models are supported」），鉴权头用 `x-goog-api-key`（2026-11-11 实测它和 `Bearer` 站上都认），尺寸用 `imageConfig.imageSize`（1K/2K/4K）加 `aspectRatio`，图从 `candidates[].content.parts[].inlineData` 取，改图时参考图放进 `parts`。Grok 走 `/v1/images/generations`（改图 `/v1/images/edits`），要 `response_format: b64_json`；实测只出 1280x720，传 `aspect_ratio` 也不变，所以不传尺寸。两家回的都是 JPEG。
+
+认型号三处用同一套规则（主进程 `OPENAI_IMAGE_MODEL_PATTERN` / `GEMINI_IMAGE_MODEL_PATTERN` / `GROK_IMAGE_MODEL_PATTERN`、`mcp-server.mjs`、技能脚本 `generate.mjs`，测试钉住一致）；`config.json` 的默认模型只收 `gpt-image-*`。以前画图工具只认写死的 5 个，站上新出的型号会被悄悄换回 `gpt-image-2`（#1059）。工具 schema 的 `model` 不列枚举，只给默认值和一句说明；点名认不出的型号时，报错里列出能用的型号。
+
+尺寸两边一样：`size` 可以写宽x高，也可以写 1K/2K/4K 配 `aspect`（16:9、9:16、1:1、4:3、3:4、3:2、2:3）。gpt-image 系列换成比例不变、都是 16 倍数、总像素在 655,360 到 8,294,400 之间的宽高，长边 1024 / 2048 / 3840（2K 16:9 = 2048x1152，4K 16:9 = 3840x2160，4K 1:1 顶格是 2880x2880，1K 16:9 = 1280x720）。默认画质 `high`：站上各画质同价，2026-11-11 实测 `gpt-image-2.6-flare` 三档各 3 张，low 平均 25.9 秒、medium 27.5 秒、high 24.4 秒。
 
 ## 安全边界
 
 - Key 不写进任何工具的配置，只通过环境变量 `XINGMANG_IMAGE_CONFIG_PATH` 告诉脚本 `config.json` 在哪；脚本先用 Codex Key，401/403/429/503 时换生图分组 Key。上游报错里的 `sk-…`、`Bearer …` 打码。
-- 只连 `https://xm.solov.cc` / `https://api.solov.cc` 的 `/v1/images/generations` 与 `/v1/images/edits`，拒绝重定向，300 秒超时，响应 32MB 上限，模型只收 `gpt-image-*`。
+- 只连 `https://xm.solov.cc` / `https://api.solov.cc` / `https://xm-direct.solov.cc` 的 `/v1/images/generations`、`/v1/images/edits` 与 Nano Banana 的 `/v1beta/models/{model}:generateContent`，拒绝重定向，300 秒超时（管到读完响应体），响应 32MB 上限，模型只收上面三套规则认得出的。
 - 改图读取的原图：必须是绝对路径、单个普通文件（拒符号链接，lstat 与 fstat 同一文件）、不超过 20MB、按文件头判定为 PNG/JPEG/WebP，最多 4 张。被提示词注入要求「改一下 ~/.ssh/id_rsa」时，内容校验会拒绝上传。
 - 退出账号只清 Key，工具条目保留；调用时会提示重新登录，不会用旧凭据。
 

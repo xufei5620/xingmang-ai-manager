@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
+import { markBackgroundWork } from '../../background-work'
 import { createConversation, createWorkspace, type ChatWorkspace } from './state'
 import { createHistoryWriter, loadChatHistory, type LoadedChatHistory } from './storage'
-import { createChatTransfer } from './transfer'
+import { chatReplyingImportMessage, createChatTransfer } from './transfer'
 
 const scope = 'xm-account:7'
 function memoryStorage() {
@@ -68,5 +69,105 @@ describe('importing conversations while the chat page is around', () => {
     release()
     await importing
     expect(ids(await opened)).toEqual(new Set(['from-old-computer']))
+  })
+})
+
+// 0.2.24 深查聊天页 C2：一段对话的文件坏了，以前整份读不出来，「搬到新电脑」也一个都导不出去。
+describe('moving to a new computer with one broken conversation file', () => {
+  it('exports the conversations that still read and logs the broken one without showing its reason', async () => {
+    const files = memoryFiles()
+    const storage = memoryStorage()
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [conversation('fine'), conversation('broken')] })
+    const stored = await files.bridge.readAiChatHistory(scope)
+    stored.conversations = stored.conversations.map((file) => file.key === 'broken' ? { ...file, content: '{truncated' } : file)
+    files.bridge.readAiChatHistory.mockResolvedValueOnce(stored)
+    const reportRendererError = vi.fn(async () => undefined)
+    const transfer = createChatTransfer({ ...files.bridge, reportRendererError }, storage, scope, () => undefined)
+    const exported = (await transfer.exportChat()).conversations
+    expect(exported).toHaveLength(1)
+    expect(exported[0]).toMatchObject({ id: 'fine' })
+    expect(reportRendererError).toHaveBeenCalledWith({ message: expect.stringContaining('c-broken.json 读不出来'), context: 'chat-history', level: 'warn' })
+  })
+})
+
+// D41：聊天页藏在设置页后面照样收回复。以前「导入」一点就把聊天页卸下，正在回复、出图的那条被掐断，出图那条可能照样扣了费。
+describe('importing conversations while the chat is replying', () => {
+  const tokens: symbol[] = []
+  function busy(label: string, restartWork?: 'chat' | 'video-compose') {
+    const token = Symbol(label)
+    tokens.push(token)
+    markBackgroundWork(token, true, restartWork)
+    return token
+  }
+  afterEach(() => {
+    for (const token of tokens.splice(0)) markBackgroundWork(token, false)
+  })
+
+  it('refuses before anything moves, and leaves the chat page and the saved history alone', async () => {
+    const files = memoryFiles()
+    const unmountChat = vi.fn()
+    const transfer = createChatTransfer(files.bridge, memoryStorage(), scope, unmountChat)
+    const reply = busy('chat', 'chat')
+    expect(() => transfer.assertChatIdle()).toThrow(chatReplyingImportMessage)
+    await expect(transfer.importConversations([conversation('from-old-computer')])).rejects.toThrow(chatReplyingImportMessage)
+    expect(unmountChat).not.toHaveBeenCalled()
+    expect(files.bridge.readAiChatHistory).not.toHaveBeenCalled()
+    expect(files.bridge.writeAiChatHistory).not.toHaveBeenCalled()
+    markBackgroundWork(reply, false)
+    expect(() => transfer.assertChatIdle()).not.toThrow()
+    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, skipped: 0 })
+    expect(unmountChat).toHaveBeenCalledOnce()
+  })
+
+  it('is not held up by other work that the chat page does not do', async () => {
+    const files = memoryFiles()
+    const transfer = createChatTransfer(files.bridge, memoryStorage(), scope, () => undefined)
+    busy('tool-jobs')
+    busy('video-compose', 'video-compose')
+    expect(() => transfer.assertChatIdle()).not.toThrow()
+    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, skipped: 0 })
+  })
+
+  it('says it in the exact words the decision sheet gave', () => {
+    expect(chatReplyingImportMessage).toBe('聊天正在回复，等它说完再导入。')
+  })
+})
+
+// Fable 第二轮 Q7：「常用的话」跟聊天记录存在一起，搬到新电脑时一起带走。
+describe('moving saved phrases to a new computer', () => {
+  it('exports the saved phrases with the conversations', async () => {
+    const files = memoryFiles()
+    const storage = memoryStorage()
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [conversation('fine')], phrases: ['回答尽量简短', '翻译成英文'] })
+    const exported = await createChatTransfer(files.bridge, storage, scope, () => undefined).exportChat()
+    expect(exported.phrases).toEqual(['回答尽量简短', '翻译成英文'])
+    expect(exported.conversations).toHaveLength(1)
+  })
+
+  it('adds imported phrases after the ones already here, without duplicates, even when no conversation is new', async () => {
+    const files = memoryFiles()
+    const storage = memoryStorage()
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [conversation('here')], phrases: ['本机的一句', '两边都有'] })
+    const transfer = createChatTransfer(files.bridge, storage, scope, () => undefined)
+    expect(await transfer.importConversations([conversation('here')], ['两边都有', '旧电脑的一句'])).toEqual({ added: 0, skipped: 0 })
+    expect((await loadChatHistory(files.api, storage, scope)).state.phrases).toEqual(['本机的一句', '两边都有', '旧电脑的一句'])
+  })
+
+  it('writes nothing when the file brings no new conversation and no new phrase', async () => {
+    const files = memoryFiles()
+    const storage = memoryStorage()
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [conversation('here')], phrases: ['两边都有'] })
+    files.bridge.writeAiChatHistory.mockClear()
+    await createChatTransfer(files.bridge, storage, scope, () => undefined).importConversations([conversation('here')], ['两边都有'])
+    expect(files.bridge.writeAiChatHistory).not.toHaveBeenCalled()
+  })
+
+  it('stops adding imported phrases once this computer holds the most it can', async () => {
+    const files = memoryFiles()
+    const storage = memoryStorage()
+    const present = Array.from({ length: 29 }, (_, index) => `本机第 ${index} 句`)
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), phrases: present })
+    await createChatTransfer(files.bridge, storage, scope, () => undefined).importConversations([], ['旧电脑甲', '旧电脑乙'])
+    expect((await loadChatHistory(files.api, storage, scope)).state.phrases).toEqual([...present, '旧电脑甲'])
   })
 })

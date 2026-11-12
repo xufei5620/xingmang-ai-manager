@@ -50,6 +50,7 @@ import { ensureManagedNpmLayout } from './managed-cli'
 import { installLeftoverMinimumAgeMs, sweepInstallLeftovers, type InstallLeftoverLocation } from './install-leftovers'
 import { LinuxTerminalLaunchError, linuxTerminalFailureMessages } from './linux-terminal'
 import { WindowsCliLaunchError } from './windows-elevation'
+import { MacosTerminalNotStartedError } from './macos-platform'
 import type { installMacGitRuntime as installMacGitRuntimeType } from './macos-git-install'
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
@@ -373,6 +374,29 @@ afterEach(() => {
 })
 
 describe('createSystemService', () => {
+  // D45：首页和引导据此把第一句话换成让 AI 动手做点东西；放了别的东西进去就照旧。
+  it('tells the renderer when the remembered folder is the starter folder it made and nothing is in it yet', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-starter-summary-')))
+    temporaryDirectories.push(root)
+    const userHome = path.join(root, 'home')
+    const workspace = path.join(userHome, 'Documents', 'XingmangProjects', 'my-project')
+    fs.mkdirSync(workspace, { recursive: true })
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), '# 项目说明')
+    const store = new AppSettingsStore(path.join(root, 'settings.json'), root)
+    await store.write({ ...defaultAppSettings(root), workspace })
+    const inspect = vi.fn((provider: ProviderId) => ({
+      baseUrl: providerBaseUrls[provider], actualBaseUrl: providerBaseUrls[provider], exists: false, apiKey: '', hasApiKey: false,
+      matchesRelay: false, model: '', dataDirectory: path.join(userHome, provider), dataDirectoryExists: false, files: [], updatedAt: null,
+    }))
+    const service = createSystemService(store, { providerRoots: { userHome, codexHome: path.join(userHome, '.codex') }, inspectProviderConfig: inspect })
+
+    expect(service.getConfig(false)).toMatchObject({ rememberedWorkspace: workspace, rememberedWorkspaceFresh: true })
+    fs.writeFileSync(path.join(workspace, 'index.html'), '<!doctype html>')
+    const touched = service.getConfig(false)
+    expect(touched.rememberedWorkspace).toBe(workspace)
+    expect(touched.rememberedWorkspaceFresh).toBeUndefined()
+  })
+
   it('uses provider roots for config surfaces and codexEnv only for Codex CLI work', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-rooted-system-service-'))
     temporaryDirectories.push(root)
@@ -4776,6 +4800,43 @@ describe('npm install progress reporting', () => {
     expect(inspectWindowsProcessor).toHaveBeenCalledTimes(1)
   })
 
+  it.runIf(process.platform === 'win32')('tells the Node.js installer only when the app itself already runs elevated', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-elevated-node-runtime-'))
+    temporaryDirectories.push(directory)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => ({
+      installed: true,
+      action: 'installed',
+      method: 'msi',
+      source: 'official',
+      version: 'v24.19.0',
+      architecture: 'x64',
+      pathRefreshRequired: true,
+      systemRestartRequired: false,
+    }))
+    function serviceFor(windowsProcessElevated?: boolean) {
+      return createSystemService(
+        new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+        {
+          platform: 'win32',
+          windowsExecutionMode: 'same-user',
+          ...(windowsProcessElevated === undefined ? {} : { windowsProcessElevated }),
+          findExecutable: async () => null,
+          inspectWindowsRestartRequired: async () => ({ required: false, reasons: [] }),
+          inspectWindowsProcessor: async () => 'x64' as const,
+          installNodeRuntime,
+        },
+      )
+    }
+
+    await serviceFor(true).installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ processElevated: true }))
+    await serviceFor(false).installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenLastCalledWith(expect.not.objectContaining({ processElevated: true }))
+    await serviceFor().installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenLastCalledWith(expect.not.objectContaining({ processElevated: true }))
+  })
+
   it.runIf(process.platform === 'win32')('keeps an outdated Node.js on its own build when replacing it on an ARM laptop', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-arm-old-node-runtime-'))
     temporaryDirectories.push(directory)
@@ -5903,6 +5964,22 @@ describe('Darwin Codex Desktop integration', () => {
       isDestroyed: () => false,
       send: vi.fn(),
     })).rejects.toThrow('工作目录不存在，请重新选择')
+    expect(execute).not.toHaveBeenCalled()
+    expect(release).not.toHaveBeenCalled()
+  })
+
+  it('tells a Mac user to grant folder access when the stored workspace cannot be looked at (D29)', async () => {
+    const { service, workspace, execute, release } = await createDarwinService()
+    const statSync = fs.statSync
+    vi.spyOn(fs, 'statSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+      if (target === workspace) throw Object.assign(new Error(`EPERM: operation not permitted, stat '${workspace}'`), { code: 'EPERM' })
+      return statSync(target, options)
+    }) as typeof fs.statSync)
+
+    await expect(service.launchCodexDesktop('open', {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    })).rejects.toThrow('Mac 没允许星芒打开这个文件夹。打开「系统设置 › 隐私与安全性 › 文件和文件夹」，把「星芒AI管理工具」和「终端」两项都打开，再点一次「打开」。')
     expect(execute).not.toHaveBeenCalled()
     expect(release).not.toHaveBeenCalled()
   })
@@ -7179,7 +7256,7 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
 
     const calledOff = accountWork.queue()
     accountWork.abortQueued()
-    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号上下文已变化')
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号刚切换过')
     expect(fs.existsSync(path.join(userHome, '.claude.json'))).toBe(false)
 
     const work = accountWork.queue()
@@ -7271,9 +7348,11 @@ describe('opening a CLI on Linux', () => {
     launchLinuxTerminal: NonNullable<SystemServiceOptions['launchLinuxTerminal']>,
     runtimeLog?: SystemServiceOptions['runtimeLog'],
     account: Partial<NativeConfigInspection> = {},
+    extra: Partial<SystemServiceOptions> = {},
   ) {
     return createService({
       platform: 'linux',
+      ...extra,
       ...(runtimeLog ? { runtimeLog } : {}),
       providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
       inspectProviderConfig: vi.fn(() => ({
@@ -7328,6 +7407,69 @@ describe('opening a CLI on Linux', () => {
     expect(plan).toMatchObject({ executable: '/opt/xm/npm/bin/claude', workspace, title: 'Claude Code · 星芒AI' })
     expect(plan?.env).toMatchObject({ FORCE_COLOR: '3', NODE_USE_SYSTEM_CA: expect.any(String) })
     expect(log).toHaveBeenCalledWith('info', 'system', 'terminal.opened', expect.stringContaining('GNOME 终端'), expect.objectContaining({ terminal: 'gnome-terminal' }))
+  })
+
+  // D17：只读盘、没有改的权限的文件夹照样打开，结果里带上「写不进去」，首页说一句。
+  it.runIf(process.platform !== 'win32')('still opens a folder it cannot write to and reports that for the home page', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-readonly-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const log = vi.fn()
+    const probeWorkspaceWritable = vi.fn(async () => { throw Object.assign(new Error('EROFS: read-only file system'), { code: 'EROFS' }) })
+
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, { log }, {}, { probeWorkspaceWritable }).launchProvider('claude', workspace))
+      .resolves.toMatchObject({ workspaceReadOnly: true })
+
+    expect(probeWorkspaceWritable).toHaveBeenCalledWith(workspace)
+    expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith('warn', 'config', 'workspace.write-check', expect.any(String), expect.objectContaining({ provider: 'claude', result: 'read-only' }))
+    const entry = log.mock.calls.find((call) => call[2] === 'workspace.write-check')
+    expect(JSON.stringify(entry)).not.toContain(userHome)
+  })
+
+  it.runIf(process.platform !== 'win32')('treats a folder without write permission the same way', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-denied-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const probeWorkspaceWritable = vi.fn(async () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }) })
+
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, undefined, {}, { probeWorkspaceWritable }).launchProvider('claude', workspace))
+      .resolves.toMatchObject({ workspaceReadOnly: true })
+    expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
+  })
+
+  it.runIf(process.platform !== 'win32')('says nothing extra when the folder takes the probe or the probe fails for another reason', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-writable-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+
+    // 不注入：真在临时文件夹里试写一次，写完不留东西。
+    const opened = await linuxLaunchService(userHome, launchLinuxTerminal).launchProvider('claude', workspace)
+    expect(opened).not.toHaveProperty('workspaceReadOnly')
+    expect(fs.readdirSync(workspace).filter((name) => name.startsWith('.write-check-'))).toEqual([])
+
+    const full = vi.fn(async () => { throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }) })
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, undefined, {}, { probeWorkspaceWritable: full }).launchProvider('claude', workspace))
+      .resolves.not.toHaveProperty('workspaceReadOnly')
+  })
+
+  it.runIf(process.platform !== 'win32')('does not probe the home folder the user was already warned about', async () => {
+    const { userHome } = project('xingmang-linux-open-home-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const probeWorkspaceWritable = vi.fn(async () => undefined)
+
+    await linuxLaunchService(userHome, launchLinuxTerminal, undefined, {}, { probeWorkspaceWritable }).launchProvider('claude', userHome)
+    expect(probeWorkspaceWritable).not.toHaveBeenCalled()
+    expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
   })
 
   // 已知45 跟进、#1081：用星芒账号时，客户环境里的 Key、配置目录和选型号的变量不交给 Claude Code；交给已经
@@ -7463,13 +7605,19 @@ describe('opening a CLI on macOS', () => {
     expect(failure instanceof Error && failure.cause).toBe(refused)
   })
 
-  function macosLaunch(prefix: string, account: Partial<NativeConfigInspection> = {}) {
+  function macosLaunch(
+    prefix: string,
+    account: Partial<NativeConfigInspection> = {},
+    open: NonNullable<SystemServiceOptions['launchMacosTerminal']> = async () => undefined,
+    runtimeLog?: SystemServiceOptions['runtimeLog'],
+  ) {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
     temporaryDirectories.push(userHome)
     const workspace = path.join(userHome, 'project')
     fs.mkdirSync(workspace)
-    const launchMacosTerminal = vi.fn<NonNullable<SystemServiceOptions['launchMacosTerminal']>>(async () => undefined)
+    const launchMacosTerminal = vi.fn<NonNullable<SystemServiceOptions['launchMacosTerminal']>>(open)
     const service = createService({
+      ...(runtimeLog ? { runtimeLog } : {}),
       platform: 'darwin',
       providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
       inspectProviderConfig: vi.fn(() => ({
@@ -7520,6 +7668,24 @@ describe('opening a CLI on macOS', () => {
 
     expect(launchMacosTerminal).toHaveBeenCalledTimes(1)
     expect(launchMacosTerminal.mock.calls[0]?.[0]).not.toHaveProperty('clearedEnvironmentKeys')
+  })
+
+  // 深查 Shell差异 SH-3：「终端」开了窗口、启动脚本没跑，说那句 yoyo 定过的字，另记一条 terminal.failed。
+  it.runIf(process.platform !== 'win32')('says the Terminal window opened without the tool, and logs it', async () => {
+    const log = vi.fn()
+    const { launch } = macosLaunch('xingmang-macos-open-not-started-', {}, async () => {
+      throw new MacosTerminalNotStartedError(20_000)
+    }, { log })
+
+    const failure: unknown = await launch().catch((error: unknown) => error)
+    expect(failure instanceof Error && failure.message).toBe(
+      '未能打开 Claude Code：终端窗口打开了，但工具没有跟着起来。先看一眼终端窗口里是不是在问什么（比如要不要更新），'
+      + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「找客服」，把这句话发给客服。',
+    )
+    expect(failure instanceof Error && failure.cause).toBeInstanceOf(MacosTerminalNotStartedError)
+    const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
+    expect(entry?.slice(0, 4)).toEqual(['warn', 'system', 'terminal.failed', 'Claude Code 的终端窗口开了，工具没有跟着起来'])
+    expect(entry?.[4]).toEqual({ provider: 'claude', waitedMs: 20_000 })
   })
 })
 

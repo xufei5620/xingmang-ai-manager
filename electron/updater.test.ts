@@ -1235,6 +1235,54 @@ describe('service status from the update feed', () => {
     service.dispose()
   })
 
+  it('puts back the switches remembered from the last launch until the status file is read', () => {
+    // D83：读不到更新目录的电脑重开一次，关掉的功能不能又放出来，「先这样绕过去」那句也不能收起来。
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '0.2.24', isPackaged: true, platform: 'win32', arch: 'x64' })
+    const seen: unknown[] = []
+    service.subscribe((state) => seen.push([state.featuresOff, state.knownIssues]))
+    service.restoreServiceSwitches({
+      knownIssues: [
+        { page: 'chat', message: '聊天先换个型号用。' },
+        { page: 'home', message: '只给 0.2.23', versions: ['0.2.23'] },
+      ],
+      featuresOff: [
+        { feature: 'launch:codex' },
+        { feature: 'video-studio', platforms: ['windows'] },
+        { feature: 'codex-remote', platforms: ['mac'] },
+      ],
+    })
+    expect(service.getState().featuresOff).toEqual(['video-studio', 'launch:codex'])
+    expect(service.getState().knownIssues).toEqual([{ page: 'chat', message: '聊天先换个型号用。' }])
+    // 这次还是没读到：照记下的那份办。
+    service.setServiceStatus(null)
+    expect(service.getState().featuresOff).toEqual(['video-studio', 'launch:codex'])
+    // 读到了，以读到的为准；之后再交记下的那份也不理。
+    service.setServiceStatus({ maintenance: null, featuresOff: [{ feature: 'codex-remote' }] })
+    expect(service.getState().featuresOff).toEqual(['codex-remote'])
+    expect(service.getState().knownIssues).toEqual([])
+    service.restoreServiceSwitches({ featuresOff: [{ feature: 'launch:codex' }] })
+    expect(service.getState().featuresOff).toEqual(['codex-remote'])
+    expect(seen).toEqual([
+      [['video-studio', 'launch:codex'], [{ page: 'chat', message: '聊天先换个型号用。' }]],
+      [['codex-remote'], []],
+    ])
+    service.dispose()
+  })
+
+  it('leaves the snapshot untouched when nothing remembered applies to this version and package', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '0.2.24', isPackaged: true, platform: 'darwin', arch: 'arm64' })
+    const listener = vi.fn()
+    service.subscribe(listener)
+    service.restoreServiceSwitches({})
+    service.restoreServiceSwitches({ featuresOff: [{ feature: 'video-studio', versions: ['0.2.23'] }], knownIssues: [{ page: 'all', message: '只给 Windows', platforms: ['windows'] }] })
+    expect(listener).not.toHaveBeenCalled()
+    expect(service.getState()).not.toHaveProperty('featuresOff')
+    expect(service.getState()).not.toHaveProperty('knownIssues')
+    service.dispose()
+  })
+
   it('does not disturb an update failure the user is looking at', () => {
     const client = new FakeUpdater()
     const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
@@ -1366,6 +1414,193 @@ describe('update feed line', () => {
 
     await expect(service.check()).resolves.toMatchObject({ phase: 'not-available' })
     expect(fallBack).not.toHaveBeenCalled()
+    service.dispose()
+  })
+})
+
+// D84：「自动」线路时安装包在直连那份上没下成，宿主换回包里那份，这里在那份上重查一次再下一次。
+describe('update package on the default feed after the direct feed fails', () => {
+  // electron-updater 下载失败时先发 error 再让那次下载失败（AppUpdater.downloadUpdate 的 errorHandler）。
+  function failingDownload(client: FakeUpdater, error: Error) {
+    return async () => {
+      client.emit('error', error)
+      throw error
+    }
+  }
+
+  function finishedDownload(client: FakeUpdater, version = '1.1.0') {
+    return async () => {
+      client.emit('download-progress', { percent: 100, bytesPerSecond: 1, transferred: 10, total: 10, delta: 0 })
+      client.emit('update-downloaded', updateInfo(version))
+    }
+  }
+
+  function feedService(client: FakeUpdater, fallBackDownload: (error: unknown, stalled: boolean) => boolean, runtime: Partial<UpdaterRuntime> = {}) {
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedRoute: { prepare: () => undefined, fallBack: () => false, fallBackDownload },
+      ...runtime,
+    })
+    client.emit('update-available', updateInfo())
+    const phases: string[] = []
+    service.subscribe((state) => phases.push(state.phase))
+    return { service, phases }
+  }
+
+  it('checks again and downloads on the default feed when the host switches feeds', async () => {
+    const client = new FakeUpdater()
+    const failure = new Error('net::ERR_CONNECTION_RESET')
+    client.downloadUpdate.mockImplementationOnce(failingDownload(client, failure))
+    client.downloadUpdate.mockImplementationOnce(finishedDownload(client))
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('checking-for-update')
+      client.emit('update-available', updateInfo())
+    })
+    const fallBackDownload = vi.fn(() => true)
+    const { service, phases } = feedService(client, fallBackDownload)
+
+    await expect(service.download()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0', error: null })
+    expect(fallBackDownload).toHaveBeenCalledOnce()
+    expect(fallBackDownload).toHaveBeenCalledWith(failure, false)
+    expect(client.checkForUpdates).toHaveBeenCalledOnce()
+    expect(client.downloadUpdate).toHaveBeenCalledTimes(2)
+    // 重查的那一下不闪回「正在检查」「有新版本」：「必须更新」那道门和自动更新会当成还没开始下，再起一次下载。
+    expect(phases).not.toContain('checking')
+    expect(phases).not.toContain('available')
+    expect(phases.at(-1)).toBe('downloaded')
+    service.dispose()
+  })
+
+  it('reports the download failure as before when the host keeps the feed', async () => {
+    const client = new FakeUpdater()
+    const failure = new Error('net::ERR_CONNECTION_RESET')
+    client.downloadUpdate.mockImplementationOnce(failingDownload(client, failure))
+    const fallBackDownload = vi.fn(() => false)
+    const { service } = feedService(client, fallBackDownload)
+
+    const state = await service.download()
+    expect(state).toMatchObject({ phase: 'error', failedStep: 'download' })
+    expect(fallBackDownload).toHaveBeenCalledWith(failure, false)
+    expect(client.checkForUpdates).not.toHaveBeenCalled()
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('treats a throwing host as keeping the feed', async () => {
+    const client = new FakeUpdater()
+    client.downloadUpdate.mockImplementationOnce(failingDownload(client, new Error('net::ERR_CONNECTION_RESET')))
+    const { service } = feedService(client, () => { throw new Error('controller gone') })
+
+    await expect(service.download()).resolves.toMatchObject({ phase: 'error', failedStep: 'download' })
+    expect(client.checkForUpdates).not.toHaveBeenCalled()
+    service.dispose()
+  })
+
+  it('reports what the default feed ran into when the package fails there too, and asks only once', async () => {
+    const client = new FakeUpdater()
+    client.downloadUpdate.mockImplementationOnce(failingDownload(client, new Error('net::ERR_CONNECTION_RESET')))
+    client.downloadUpdate.mockImplementationOnce(failingDownload(client, new Error('net::ERR_NAME_NOT_RESOLVED')))
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('update-available', updateInfo())
+    })
+    const fallBackDownload = vi.fn(() => true)
+    const { service } = feedService(client, fallBackDownload)
+
+    const state = await service.download()
+    expect(state).toMatchObject({ phase: 'error', failedStep: 'download' })
+    expect(state.error?.message).toBe(updateNetworkFailureMessages.dns)
+    expect(fallBackDownload).toHaveBeenCalledOnce()
+    expect(client.downloadUpdate).toHaveBeenCalledTimes(2)
+    service.dispose()
+  })
+
+  it('reports a failed recheck on the default feed as the download failure', async () => {
+    const client = new FakeUpdater()
+    client.downloadUpdate.mockImplementationOnce(failingDownload(client, new Error('net::ERR_CONNECTION_RESET')))
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      const error = new Error('net::ERR_INTERNET_DISCONNECTED')
+      client.emit('error', error)
+      throw error
+    })
+    const { service } = feedService(client, () => true)
+
+    const state = await service.download()
+    expect(state).toMatchObject({ phase: 'error', failedStep: 'download' })
+    expect(state.error?.message).toBe(updateNetworkFailureMessages.offline)
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('stops at what the default feed says when it no longer offers a version', async () => {
+    const client = new FakeUpdater()
+    client.downloadUpdate.mockImplementationOnce(failingDownload(client, new Error('net::ERR_CONNECTION_RESET')))
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    const { service } = feedService(client, () => true)
+
+    await expect(service.download()).resolves.toMatchObject({ phase: 'not-available', availableVersion: null, error: null })
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('goes around a proxy already found down when it switches feeds', async () => {
+    const client = new FakeUpdater()
+    const order: string[] = []
+    client.downloadUpdate.mockImplementationOnce(async () => {
+      order.push('download')
+      throw proxyConnectionError()
+    })
+    client.downloadUpdate.mockImplementationOnce(async () => {
+      order.push('download')
+      throw new Error('net::ERR_CONNECTION_RESET')
+    })
+    client.downloadUpdate.mockImplementationOnce(async () => {
+      order.push('download')
+      await finishedDownload(client)()
+    })
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      order.push('check')
+      client.emit('update-available', updateInfo())
+    })
+    const fallBackDownload = vi.fn(() => true)
+    const { service } = feedService(client, fallBackDownload, {
+      retryWithoutProxy: async () => { order.push('direct') },
+      restoreProxy: async () => { order.push('restore') },
+    })
+
+    await expect(service.download()).resolves.toMatchObject({ phase: 'downloaded', error: null })
+    expect(order).toEqual(['download', 'direct', 'download', 'restore', 'direct', 'check', 'download', 'restore'])
+    expect(fallBackDownload).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('keeps a version found by a manual check offered on the recheck despite the staged rollout', async () => {
+    const client = new FakeUpdater()
+    client.isUserWithinRollout = vi.fn(async (info: { stagingPercentage?: number }) => (info.stagingPercentage ?? 100) >= 50)
+    const status: ServiceStatus = { maintenance: null, badVersions: [], rollout: { version: '1.1.0', percent: 20 } }
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      refreshServiceStatus: async () => status,
+      feedRoute: { prepare: () => undefined, fallBack: () => false, fallBackDownload: () => true },
+    })
+    const hook = client.isUserWithinRollout
+    const offered: boolean[] = []
+    client.checkForUpdates.mockImplementation(async () => {
+      const offer = await hook!(updateInfo('1.1.0'))
+      offered.push(offer)
+      client.emit(offer ? 'update-available' : 'update-not-available', offer ? updateInfo() : updateInfo('1.0.0'))
+    })
+    client.downloadUpdate.mockImplementationOnce(failingDownload(client, new Error('net::ERR_CONNECTION_RESET')))
+    client.downloadUpdate.mockImplementationOnce(finishedDownload(client))
+
+    await expect(service.check({ manual: true })).resolves.toMatchObject({ phase: 'available' })
+    await expect(service.download()).resolves.toMatchObject({ phase: 'downloaded', error: null })
+    // 分批放量没轮到的自动检查照旧不给这一版。
+    await service.check()
+    expect(offered).toEqual([true, true])
     service.dispose()
   })
 })
@@ -2494,15 +2729,15 @@ describe('plain-language install failures', () => {
 
   it('stops a version that failed to auto-install last time at the install step', () => {
     const client = new FakeUpdater()
-    const asked: string[] = []
+    const asked: [string, boolean][] = []
     const service = createUpdaterService(client, {
       currentVersion: '1.0.0',
       isPackaged: true,
       platform: 'win32',
-      previousAutoInstallFailure: (version) => { asked.push(version); return '新版本上次没装上' },
+      previousAutoInstallFailure: (version, rollback) => { asked.push([version, rollback]); return '新版本上次没装上' },
     })
     client.emit('update-downloaded', updateInfo())
-    expect(asked).toEqual(['1.1.0'])
+    expect(asked).toEqual([['1.1.0', false]])
     expect(service.getState()).toMatchObject({
       phase: 'downloaded',
       failedStep: 'install',
@@ -2511,6 +2746,22 @@ describe('plain-language install failures', () => {
     // 「重新安装」照样能用：点一下就清掉错误、拉起安装器。
     expect(service.install()).toEqual({ accepted: true })
     expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
+    service.dispose()
+  })
+
+  it('tells the previous-failure check when the version that failed is the older one the publisher rolled back to', () => {
+    // D11：退回旧版时那句要说「建议退回的 X 版上次没装上」，跟快照的 rollback 同一个算法。
+    const client = new FakeUpdater()
+    const asked: [string, boolean][] = []
+    const service = createUpdaterService(client, {
+      currentVersion: '1.2.0',
+      isPackaged: true,
+      platform: 'win32',
+      previousAutoInstallFailure: (version, rollback) => { asked.push([version, rollback]); return '建议退回的 1.1.0 版上次没装上' },
+    })
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    expect(asked).toEqual([['1.1.0', true]])
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', rollback: true, failedStep: 'install' })
     service.dispose()
   })
 
@@ -3105,6 +3356,103 @@ describe('stalled update downloads', () => {
       expect(stalls.map(({ retrying, fullPackage }) => ({ retrying, fullPackage }))).toEqual([
         { retrying: false, fullPackage: false },
       ])
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // D84：「自动」线路走直连那份更新地址时，换直连重下的那一次也停住了，换回包里那份重查一次、再下一次。
+  it('switches to the default feed once the retried download stops receiving data as well', async () => {
+    vi.useFakeTimers()
+    try {
+      const fallBackDownload = vi.fn((_error: unknown, _stalled: boolean) => true)
+      const { client, service, tokens, stalls, phases } = watchedService({
+        feedRoute: { prepare: () => undefined, fallBack: () => false, fallBackDownload },
+      })
+      let differentialDisabled: boolean | undefined
+      client.downloadUpdate.mockImplementationOnce((token) => stalledFullDownload(client, token))
+      client.downloadUpdate.mockImplementationOnce((token) => stalledFullDownload(client, token))
+      client.downloadUpdate.mockImplementationOnce(async () => {
+        differentialDisabled = client.disableDifferentialDownload
+        client.emit('download-progress', progress(100))
+        client.emit('update-downloaded', updateInfo())
+      })
+      client.checkForUpdates.mockImplementationOnce(async () => {
+        client.emit('checking-for-update')
+        client.emit('update-available', updateInfo())
+      })
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs)
+      expect(fallBackDownload).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(updateDownloadRetryStallMs + updateDownloadWatchMs)
+      await expect(downloading).resolves.toMatchObject({ phase: 'downloaded', error: null })
+      expect(fallBackDownload).toHaveBeenCalledOnce()
+      expect(fallBackDownload.mock.calls[0]?.[1]).toBe(true)
+      expect(tokens.map((token) => token.cancelled)).toEqual([true, true, false])
+      expect(client.checkForUpdates).toHaveBeenCalledOnce()
+      expect(differentialDisabled).toBe(true)
+      expect(client.disableDifferentialDownload).toBe(false)
+      expect(stalls.map(({ retrying, fullPackage, switchingFeed }) => ({ retrying, fullPackage, switchingFeed }))).toEqual([
+        { retrying: true, fullPackage: false, switchingFeed: undefined },
+        { retrying: true, fullPackage: true, switchingFeed: true },
+      ])
+      // 第一个是 watchedService 摆出来的「有新版本」；开始下以后不再闪回去。
+      const afterStart = phases.slice(phases.indexOf('downloading'))
+      expect(afterStart).not.toContain('available')
+      expect(afterStart).not.toContain('checking')
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports a stalled recheck on the default feed with the timeout wording', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service } = watchedService({
+        feedRoute: { prepare: () => undefined, fallBack: () => false, fallBackDownload: () => true },
+      })
+      client.downloadUpdate.mockImplementation((token) => stalledFullDownload(client, token))
+      // 换地址以后的那次重查一个字节也收不到，宿主也掐不到它：看门狗等过 updateDownloadCancelWaitMs 就不再等。
+      let abortCheck: (reason: unknown) => void = () => undefined
+      client.checkForUpdates.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+        abortCheck = reject
+      }))
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs)
+      await vi.advanceTimersByTimeAsync(updateDownloadRetryStallMs + updateDownloadWatchMs)
+      expect(client.checkForUpdates).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(updateCheckStallMs + updateDownloadWatchMs + updateDownloadCancelWaitMs)
+      await expect(downloading).resolves.toMatchObject({
+        phase: 'error',
+        failedStep: 'download',
+        error: { code: 'UPDATE_CHECK_STALLED', message: updateNetworkFailureMessages.timeout },
+      })
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(2)
+      abortCheck(new Error('late'))
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not switch feeds for a download electron-updater never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const fallBackDownload = vi.fn(() => true)
+      const { client, service } = watchedService({
+        feedRoute: { prepare: () => undefined, fallBack: () => false, fallBackDownload },
+      })
+      client.downloadUpdate.mockImplementationOnce(() => new Promise<void>(() => undefined))
+
+      const downloading = service.download()
+      await vi.advanceTimersByTimeAsync(updateDownloadStallMs + updateDownloadWatchMs + updateDownloadCancelWaitMs)
+      await expect(downloading).resolves.toMatchObject({ phase: 'error', error: { code: 'UPDATE_DOWNLOAD_STALLED' } })
+      expect(fallBackDownload).not.toHaveBeenCalled()
+      expect(client.checkForUpdates).not.toHaveBeenCalled()
       service.dispose()
     } finally {
       vi.useRealTimers()

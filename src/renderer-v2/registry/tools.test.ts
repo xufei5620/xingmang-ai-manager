@@ -74,6 +74,8 @@ describe('renderer-v2 tool registry', () => {
       const hint = firstRunHints[provider];
       expect(hint.command.trim()).not.toBe('');
       expect(hint.prompt.trim()).not.toBe('');
+      expect(hint.freshFolderPrompt.trim()).not.toBe('');
+      expect(hint.freshFolderPrompt).not.toBe(hint.prompt);
     }
     for (const tool of tools) {
       if (tool.kind !== 'cli' || !isActiveProviderId(tool.id)) continue;
@@ -87,6 +89,13 @@ describe('renderer-v2 tool registry', () => {
     for (const provider of activeProviderIds) {
       expect(firstRunHints[provider].command).toBe(cliCatalog[provider].command);
     }
+  });
+
+  // D45 的原字，一个字不改（汇总决定单，yoyo 11-11「决定单照推荐」）。
+  it('keeps the approved sentences for a folder the app has just made', () => {
+    expect(firstRunHints.claude.freshFolderPrompt).toBe('帮我在这个文件夹里做一个能在浏览器里打开的待办清单小网页，做好后告诉我怎么打开它。');
+    expect(firstRunHints.codex.freshFolderPrompt).toBe('在这个文件夹里写一个能在浏览器里打开的小计算器网页，写完用一句话告诉我怎么打开。');
+    expect(firstRunHints.grok.freshFolderPrompt).toBe('在这个文件夹里写一个能在浏览器里打开的番茄钟小网页，写完告诉我怎么打开。');
   });
 
   it('leaves the Codex desktop entry without a command, because it has no terminal', () => {

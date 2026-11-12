@@ -328,8 +328,8 @@ describe('v2 business boundaries', () => {
     expect(
       parseCommandArguments('["-y", "C:\\\\Program Files\\\\tool"]'),
     ).toEqual(['-y', 'C:\\Program Files\\tool'])
-    expect(() => parseCommandArguments('[true]')).toThrow('字符串数组')
-    expect(() => parseCommandArguments('"-y"')).toThrow('字符串数组')
+    expect(() => parseCommandArguments('[true]')).toThrow('附加参数照提供方说明原样粘贴')
+    expect(() => parseCommandArguments('"-y"')).toThrow('附加参数照提供方说明原样粘贴')
   })
   it('routes actionable diagnostic categories to their owning page', () => {
     expect(diagnosticTarget('PROVIDER_CODEX')).toBe('home')
@@ -360,6 +360,8 @@ describe('v2 business boundaries', () => {
       'CLASH_VERGE_TUN',
       'CODEX_DOTENV',
       'CLAUDE_BYPASS_PERMISSIONS',
+      // D35：Claude Code 自己设置里的代理是客户自己设的值，只提示、不给按钮。
+      'CLAUDE_SETTINGS_PROXY',
       // 能挪的那份说明在行里直接给「挪开这份说明」；信任只说一声，没有能处理它的页。
       'HOME_FOLDER_LEFTOVERS',
       'DISK_SPACE',
@@ -455,7 +457,7 @@ describe('v2 business boundaries', () => {
           "Error invoking remote method 'account:change-password': Error: This account has no password set.",
         ),
       ),
-    ).toBe('当前账号未设置密码，请先通过“找回密码”设置密码')
+    ).toBe('这个账号还没设过密码，先点「找回密码」设一个')
     expect(errorMessage(new Error('User has been banned'))).toBe(
       '该账号已被封禁，请联系客服',
     )

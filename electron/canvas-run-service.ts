@@ -1,5 +1,7 @@
 import { randomUUID as nodeRandomUUID } from 'node:crypto'
 import type {
+  CanvasImagePreparation,
+  CanvasRunChargeEvent,
   CanvasRunEvent,
   CanvasRunGraph,
   CanvasRunRecord,
@@ -15,10 +17,20 @@ import {
   type CanvasNodeExecutors,
 } from './canvas-run-engine'
 import type { CanvasRunStore } from './canvas-run-store'
+import type { CanvasRunPreparationBroker, CanvasRunPreparationCompletion } from './canvas-run-preparations'
+import type { CanvasRunChargeChecker } from './canvas-run-charges'
 
 export interface CanvasRunServiceOptions {
   store: Pick<CanvasRunStore, 'initializeUser' | 'listRuns' | 'getRun' | 'getAssetLineage' | 'listAssetIdsByLineage' | 'saveRun' | 'resolveCache' | 'storeCache' | 'resolveAssetOrigin' | 'reconcileAssets'>
   executors: CanvasNodeExecutors
+  /** The frames this service's frame-extract executor waits on; the page answers through completePreparation. */
+  preparations?: Pick<CanvasRunPreparationBroker, 'complete'>
+  /**
+   * Builds the checker of each finished run's 实扣 against the account's usage
+   * records, handed this service's own publisher; left out where the records
+   * cannot be matched.
+   */
+  charges?: (publish: (event: CanvasRunChargeEvent, userId: number, ownerId: number) => Promise<void>) => Pick<CanvasRunChargeChecker, 'schedule' | 'clear'>
   maxConcurrency?: number
   maxActiveRuns?: number
   maxRemoteGenerationsPerRun?: number
@@ -49,10 +61,16 @@ interface ActiveRun {
   exclusiveNodeIds: string[]
   controller: AbortController
   handle: CanvasRunHandle
+  /**
+   * The pictures this run waits on, from its latest waiting event (画布完善第
+   * 7 条第三步). The run file never holds them; listRuns and getRun add them
+   * back so a reloaded page can still answer.
+   */
+  imagePreparations?: CanvasImagePreparation[]
 }
 
 export interface CanvasRunPublication {
-  event: CanvasRunEvent
+  event: CanvasRunEvent | CanvasRunChargeEvent
   userId: number
   ownerId: number
 }
@@ -74,12 +92,13 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     return `${lockKey}\u0000${nodeId}`
   }
   const listeners = new Set<(publication: CanvasRunPublication) => void | Promise<void>>()
+  const charges = options.charges?.((event, userId, ownerId) => publish(event, userId, ownerId))
 
   function activeRunLockKey(input: Pick<StartCanvasRunInput, 'userId' | 'ownerId' | 'projectId'>): string {
     return JSON.stringify([input.userId, input.ownerId, input.projectId ?? null])
   }
 
-  async function publish(event: CanvasRunEvent, userId: number, ownerId: number): Promise<void> {
+  async function publish(event: CanvasRunEvent | CanvasRunChargeEvent, userId: number, ownerId: number): Promise<void> {
     for (const listener of listeners) {
       try {
         await listener({ event: structuredClone(event), userId, ownerId })
@@ -97,7 +116,8 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     if (unsupported) throw new Error(unsupported)
     const remoteGenerations = canvasRunRemoteGenerationUpperBound(input.graph, input.scope)
     if (remoteGenerations > maxRemoteGenerationsPerRun) {
-      throw new Error(`单次运行最多允许 ${maxRemoteGenerationsPerRun} 个远程生成节点，请拆分后重试`)
+      // Counted per paid request: a node set to four images is four.
+      throw new Error(`这次运行最多要生成 ${remoteGenerations} 次，一次运行最多 ${maxRemoteGenerationsPerRun} 次（一次出几张的按张数算），请分几次运行`)
     }
     const lockKey = activeRunLockKey(input)
     const exclusiveNodeIds = canvasRunExclusiveNodeIds(input.graph, input.scope)
@@ -109,7 +129,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     const runId = randomUUID()
     const controller = new AbortController()
     const handle = {} as CanvasRunHandle
-    const activeRun = { userId: input.userId, ownerId: input.ownerId, lockKey, exclusiveNodeIds, controller, handle }
+    const activeRun: ActiveRun = { userId: input.userId, ownerId: input.ownerId, lockKey, exclusiveNodeIds, controller, handle }
     active.set(runId, activeRun)
     for (const nodeId of exclusiveNodeIds) nodeLocks.set(nodeLockId(lockKey, nodeId), runId)
     let admissionSettled = false
@@ -142,7 +162,18 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
       },
       persistRecord: (record) => options.store.saveRun(input.userId, record),
       persistProgress: (record) => options.store.saveRun(input.userId, record, { deferWrite: true }),
-      onEvent: (event) => publish(event, input.userId, input.ownerId),
+      onEvent: (event) => {
+        if (event.type === 'run-waiting' && event.imagePreparations !== undefined) activeRun.imagePreparations = structuredClone(event.imagePreparations)
+        return publish(event, input.userId, input.ownerId)
+      },
+    }).then((record) => {
+      // The terminal record is on disk by now; its charges are checked a few seconds later.
+      try {
+        charges?.schedule(record, input.ownerId)
+      } catch {
+        // 实扣 is a display; failing to schedule it never fails the run.
+      }
+      return record
     }).finally(() => {
       if (active.get(runId)?.handle === handle) active.delete(runId)
       for (const nodeId of exclusiveNodeIds) {
@@ -203,6 +234,9 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
   }
 
   function shutdown(): number {
+    // Runs keep coming after this (main.ts calls it on every account change), so
+    // only the checks still waiting go; the checker itself stays.
+    charges?.clear()
     let count = 0
     for (const run of active.values()) {
       if (run.controller.signal.aborted) continue
@@ -217,22 +251,47 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     return () => listeners.delete(listener)
   }
 
+  // Only a run still going in this process, under the same account, waits on
+  // pictures; whatever a record read from the file says is dropped.
+  function withImagePreparations(run: CanvasRunRecord, userId: number): CanvasRunRecord {
+    const { imagePreparations: _stored, ...record } = run
+    const current = active.get(run.runId)
+    if (run.status !== 'running' || !current || current.userId !== userId || !current.imagePreparations?.length) return record
+    return { ...record, imagePreparations: structuredClone(current.imagePreparations) }
+  }
+
   return {
     initializeUser: (userId: number) => options.store.initializeUser(userId),
     listRuns: async (userId: number, projectId?: string) => {
       const runs = await options.store.listRuns(userId)
-      return projectId ? runs.filter((run) => run.projectId === projectId) : runs
+      return (projectId ? runs.filter((run) => run.projectId === projectId) : runs).map((run) => withImagePreparations(run, userId))
     },
-    getRun: (userId: number, runId: string) => options.store.getRun(userId, runId),
+    getRun: async (userId: number, runId: string) => {
+      const run = await options.store.getRun(userId, runId)
+      return run ? withImagePreparations(run, userId) : run
+    },
     getAssetLineage: (userId: number, assetIds: readonly string[]) => options.store.getAssetLineage(userId, assetIds),
     listAssetIdsByLineage: (userId: number, selector: { runId?: string; nodeId?: string }) => options.store.listAssetIdsByLineage(userId, selector),
     reconcileAssets: (userId: number) => options.store.reconcileAssets(userId),
     start,
+    /**
+     * A frame the page decoded for one of this window's running runs. The
+     * broker checks the operation itself; this only lets a window answer for
+     * a run it started, under the account that started it.
+     */
+    completePreparation: async (userId: number, ownerId: number, completion: CanvasRunPreparationCompletion) => {
+      const run = active.get(completion.runId)
+      if (!run || run.userId !== userId || run.ownerId !== ownerId || !options.preparations) {
+        throw new Error(completion.kind === 'image' ? '这次图片处理不在等待中，可能已经超时或运行已停止' : '这一帧不在等待中，可能已经超时或运行已停止')
+      }
+      await options.preparations.complete(userId, completion)
+    },
     cancel,
     cancelOwner,
     cancelUser,
     shutdown,
     whenIdle: async () => { await Promise.allSettled([...active.values()].map((run) => run.handle.promise)) },
+    hasActiveRuns: () => active.size > 0,
     subscribe,
     descendants: canvasRunDescendants,
   }

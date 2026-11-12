@@ -107,6 +107,7 @@ button:disabled {
 .canvas-project-actions { position: absolute; z-index: 2; top: 8px; right: 8px; display: flex; gap: var(--space-2); }
 .canvas-project-actions button { display: grid; width: 25px; height: 25px; place-items: center; padding: 0; color: var(--text-secondary); background: var(--surface-floating-strong); border: 1px solid var(--border-subtle); border-radius: var(--radius-chip); }
 .canvas-project-actions button:hover:not(:disabled) { color: var(--text-primary); background: var(--surface-hover); border-color: var(--border-strong); }
+.canvas-project-actions button.is-danger:hover:not(:disabled) { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 52%, var(--border-subtle)); }
 .canvas-project-actions button:disabled { cursor: default; opacity: 0.34; }
 .canvas-project-relink { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: var(--space-6) var(--space-8); padding: 0 var(--space-10) var(--space-10); }
 .canvas-project-relink button { min-height: 28px; padding: 0 var(--space-10); color: var(--text-primary); background: var(--surface-floating-strong); border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border-subtle)); border-radius: var(--radius-control); font-size: var(--text-xs); }
@@ -258,6 +259,22 @@ button:disabled {
   justify-content: center;
   gap: var(--space-6);
 }
+
+/* 余额条（第 2b 条）：哪个账号、打码的账号名、余额。窄了先收账号名，再收账号类型，余额一直在。 */
+.canvas-toolbar .canvas-account-balance {
+  display: inline-flex;
+  width: auto;
+  max-width: 300px;
+  align-items: center;
+  gap: var(--space-6);
+  padding: 0 var(--space-10);
+  white-space: nowrap;
+}
+.canvas-account-balance > span { min-width: 0; overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; }
+.canvas-account-balance-name { max-width: 120px; }
+.canvas-account-balance-name::before { content: '·'; margin-right: var(--space-6); }
+.canvas-account-balance > strong { color: var(--text-primary); font-weight: 650; font-variant-numeric: tabular-nums; }
+.canvas-account-balance.is-unread > strong { color: var(--text-muted); font-weight: 500; }
 
 .canvas-media-config-panel {
   position: absolute;
@@ -666,6 +683,7 @@ button:disabled {
 .canvas-inspector-runtime > div { display: flex; min-width: 0; justify-content: space-between; gap: var(--space-6); font-size: var(--text-xs); }
 .canvas-inspector-runtime dt { color: var(--text-muted); }
 .canvas-inspector-runtime dd { margin: 0; overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
+.canvas-inspector-runtime > div.is-wide { grid-column: 1 / -1; }
 .canvas-inspector-muted,
 .canvas-inspector-warning,
 .canvas-inspector-error { grid-column: 1 / -1; margin: 0; font-size: var(--text-xs); line-height: 1.45; }
@@ -983,6 +1001,8 @@ div.run-error-action { display: flex; flex-wrap: wrap; gap: var(--space-6); marg
 .run-summary { display: flex; align-items: center; justify-content: space-between; color: var(--text-muted); font-size: var(--text-xs); }
 .run-summary > div { display: grid; gap: var(--space-2); }
 .run-summary strong { color: var(--text-primary); font-size: var(--text-sm); }
+.run-summary > .run-summary-figures { justify-items: end; text-align: end; }
+.run-charge { color: var(--text-secondary); }
 .run-node-head,
 .run-meta,
 .run-history-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-8); }
@@ -991,7 +1011,7 @@ div.run-error-action { display: flex; flex-wrap: wrap; gap: var(--space-6); marg
 .run-meta,
 .run-history-row { color: var(--text-muted); font-size: var(--text-xs); }
 .run-node-record > p { margin: var(--space-6) 0 0; color: var(--danger); font-size: var(--text-xs); line-height: 1.4; }
-.run-meta { justify-content: flex-start; margin-top: var(--space-4); }
+.run-meta { flex-wrap: wrap; justify-content: flex-start; margin-top: var(--space-4); }
 .candidate-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-6); margin-top: var(--space-8); }
 .candidate-grid article { overflow: hidden; background: var(--surface-media); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
 /* One state now: this candidate is the node's product. */
@@ -2476,6 +2496,7 @@ div.run-error-action { display: flex; flex-wrap: wrap; gap: var(--space-6); marg
 
 @media (max-width: 1320px) {
   .canvas-history-command { display: none !important; }
+  .canvas-account-balance-name { display: none; }
   .canvas-config-command > span { display: none; }
   .canvas-toolbar .canvas-config-command { min-width: 30px; width: 30px; padding: 0; }
 }
@@ -2571,6 +2592,7 @@ div.run-error-action { display: flex; flex-wrap: wrap; gap: var(--space-6); marg
   .canvas-config-command > span { display: none; }
   .canvas-toolbar .canvas-config-command { min-width: 30px; width: 30px; padding: 0; }
   .canvas-run-split .canvas-run-main { min-width: 98px; }
+  .canvas-account-balance-site { display: none; }
   .canvas-statusbar { left: 58px; max-width: none; transform: none; }
   .canvas-statusbar span:nth-child(n+2) { display: none; }
   .canvas-inspector {

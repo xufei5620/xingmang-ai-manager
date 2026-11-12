@@ -8,9 +8,11 @@ import { scopedLocalAssetId } from './content-addressed-asset'
 import { inspectIsoBmffMediaMetadata } from './media-container-metadata'
 import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
 import { OwnedAssetLocator } from './ai-asset-locator'
+import { missingAiAssetMessages } from './ai-asset-missing'
+import type { ByteRange } from './byte-range'
 
 const FILE_LABEL = 'AI 视频资产'
-const MISSING_ASSET_MESSAGE = 'AI 视频资产不存在或无权访问'
+const MISSING_ASSET_MESSAGE = missingAiAssetMessages.video
 // 另存出去的是用户自己的文件，不是本程序的私有数据：权限位照原来 writeFile 在常见 umask
 // 下的结果给 0o644，不用原子写默认的 0o600。
 const SAVED_COPY_FILE_MODE = 0o644
@@ -32,6 +34,14 @@ export interface AiStoredVideoAsset {
 
 export interface AiVideoOwnedAssetRead {
   asset: AiStoredVideoAsset
+  bytes: Buffer
+}
+
+export interface AiVideoOwnedRangeRead {
+  asset: { mimeType: 'video/mp4' }
+  /** Size of the whole verified file. */
+  totalBytes: number
+  /** Only the bytes the caller selected; empty when it selected none. */
   bytes: Buffer
 }
 
@@ -92,7 +102,13 @@ export function inspectMp4VideoMetadata(bytes: Buffer): Pick<AiStoredVideoAsset,
   }
 }
 
-async function readBoundedVideo(requestedPath: string, maximumBytes: number): Promise<Buffer> {
+/**
+ * Opens an owned video and runs `read` on the handle only after the handle and
+ * the path are proven to be the same single-link regular file, inside the size
+ * bound; the read is rejected if the file changed while it ran. Whole-file and
+ * ranged reads share this, so a ranged read never skips a check.
+ */
+async function withVerifiedVideo<T>(requestedPath: string, maximumBytes: number, read: (handle: fs.promises.FileHandle, size: number) => Promise<T>): Promise<T> {
   // 「文档」被搬到别的盘时按实际位置核对，否则 realpath 与原路径永远对不上（relocated-folders.ts）。
   const filePath = resolveRelocatedPath(requestedPath)
   assertNoReparseComponents(filePath, FILE_LABEL)
@@ -108,15 +124,46 @@ async function readBoundedVideo(requestedPath: string, maximumBytes: number): Pr
       || current.dev !== before.dev || current.ino !== before.ino || !sameLocalPathIdentity(canonical, filePath)) {
       throw new Error('AI 视频资产文件在读取前发生变化')
     }
-    const bytes = await handle.readFile()
+    const result = await read(handle, Number(before.size))
     const after = await handle.stat({ bigint: true })
     if (after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       throw new Error('AI 视频资产文件在读取过程中发生变化')
     }
-    return bytes
+    return result
   } finally {
     await handle.close()
   }
+}
+
+async function readBoundedVideo(requestedPath: string, maximumBytes: number): Promise<Buffer> {
+  return withVerifiedVideo(requestedPath, maximumBytes, (handle) => handle.readFile())
+}
+
+/** Reads exactly `length` bytes at `position`; a short read means the file changed under us. */
+async function readExactly(handle: fs.promises.FileHandle, position: number, length: number): Promise<Buffer> {
+  const buffer = Buffer.alloc(length)
+  let filled = 0
+  while (filled < length) {
+    const { bytesRead } = await handle.read(buffer, filled, length - filled, position + filled)
+    if (bytesRead === 0) throw new Error('AI 视频资产文件在读取过程中发生变化')
+    filled += bytesRead
+  }
+  return buffer
+}
+
+/**
+ * The ranged counterpart of readBoundedVideo: the same checks, the same MP4
+ * signature check on the file's first bytes, then only the selected range.
+ */
+async function readBoundedVideoRange(requestedPath: string, maximumBytes: number, select: (totalBytes: number) => ByteRange | null): Promise<{ totalBytes: number, bytes: Buffer }> {
+  return withVerifiedVideo(requestedPath, maximumBytes, async (handle, totalBytes) => {
+    inspectMp4Video(await readExactly(handle, 0, Math.min(16, totalBytes)))
+    const range = select(totalBytes)
+    if (range && (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end) || range.start < 0 || range.end < range.start || range.end >= totalBytes)) {
+      throw new Error('AI 视频资产读取范围无效')
+    }
+    return { totalBytes, bytes: range ? await readExactly(handle, range.start, range.end - range.start + 1) : Buffer.alloc(0) }
+  })
 }
 
 export class AiVideoAssetStore {
@@ -204,7 +251,8 @@ export class AiVideoAssetStore {
         throw new Error('AI 视频内容摘要冲突')
       }
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('AI 视频资产标识冲突，请重试')
-      throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+      // 原因挂在 cause 上：出片那边要靠它认出是盘满了（D38），换一句「已经扣费、别重新生成」。
+      throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: error })
     }
     this.locator.remember(userId, assetId, filePath)
     return {
@@ -248,6 +296,23 @@ export class AiVideoAssetStore {
         ...inspectMp4VideoMetadata(bytes),
       },
       bytes,
+    }
+  }
+
+  /**
+   * Reads just the byte range `select` picks once the verified size is known,
+   * for the asset protocol: a player seeking through a long video would
+   * otherwise pull the whole file into memory on every seek. Ownership and
+   * file checks are the ones readOwned applies; no metadata is parsed.
+   */
+  async readOwnedRange(userId: number, assetId: string, select: (totalBytes: number) => ByteRange | null): Promise<AiVideoOwnedRangeRead> {
+    assertUserId(userId)
+    assertAssetId(assetId)
+    const filePath = await this.locateOwned(userId, assetId)
+    try {
+      return { asset: { mimeType: 'video/mp4' }, ...await readBoundedVideoRange(filePath, this.maximumVideoBytes, select) }
+    } catch (error) {
+      throw this.missingIfGone(assetId, error)
     }
   }
 

@@ -1,5 +1,16 @@
 // @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
 
+/**
+ * 聊天里附带的文字类文件（Fable 第二轮 Q2）：一条消息最多几个，所有文件合起来最多读多少字。
+ * 字数上限留出余量，文件加上客户自己打的字，整条消息不超过 AI_CHAT_LIMITS.messageLength。
+ */
+export const AI_CHAT_TEXT_FILE_LIMITS = {
+  filesPerMessage: 3,
+  charsPerMessage: 30_000,
+} as const
+// 选文件前聊天页先按同一笔账算过，满了就当场说这句、不开选择框；主进程收到的字数不对时也说这句。
+export const chatTextFileFullMessage = '这条消息的字已经满了，加不了文件。先删掉一些字或文件再加。'
+
 export const AI_CHAT_ENDPOINTS = {
   chatCompletions: '/v1/chat/completions',
   imageGenerations: '/v1/images/generations',
@@ -21,6 +32,15 @@ export const AI_CHAT_LIMITS = {
   // 控制在二十来 MB；更早消息里的图片超出部分改成一句说明，不再重复发送。
   imagesPerMessage: 4,
   imagesPerRequest: 8,
+} as const
+
+/**
+ * 聊天页「常用的话」（Fable 第二轮 Q7）：最多存几条、一条最长多少字。聊天页存的时候按它截，
+ * 「搬到新电脑」导出、导入时主进程按它挡住不成样的文件。
+ */
+export const AI_CHAT_PHRASE_LIMITS = {
+  count: 30,
+  length: 2_000,
 } as const
 
 export type AiChatGroup = {
@@ -544,16 +564,18 @@ export function isImageModel(model: string): boolean {
 // 这里只管对话和画布在图片分组里列哪些模型；画图技能挑哪个分组先走分组对照（managed-cli-groups.ts）。
 export const IMAGE_SKILL_GROUP_NAMES = ['图片模型', '生图分组'] as const
 const IMAGE_GROUP_NAMES = new Set<string>(IMAGE_SKILL_GROUP_NAMES)
-// gpt-image-2.5 两个型号 xm 站「GPT」「图片模型」两个分组都开了，按张计价。排序跟星芒AI生图（#999）的取舍：
-// flare 是默认、排第一，gpt-image-2 第二；sunburst 慢、偏精修，不当默认，排在它们后面。
+// gpt-image-2.5 / 2.6 的 flare、sunburst xm 站「GPT」「图片模型」两个分组都开了，按张计价。排序跟星芒AI生图
+// （xingmang-ai-skill.ts 的默认链，测试钉住）一样：2.6-flare、2.5-flare、gpt-image-2 在前；sunburst 慢、偏精修，
+// 不当默认，排在它们后面。gpt-image-1 官方已经下了，不再排进来（账号还列着的照旧接在后面）。
 // 这张表只管先后。以前只列表里有的，站上换代（gpt-image-3）后图片分组一个都不剩（#1059）；
 // 现在表外认得出的图片、视频型号接在后面，次序照账号列表，认不出的（聊天型号、藏起来的）照旧不列。
-const IMAGE_GROUP_MODEL_ORDER = [
+export const IMAGE_GROUP_MODEL_ORDER = [
+  'gpt-image-2.6-flare',
   'gpt-image-2.5-flare',
   'gpt-image-2',
+  'gpt-image-2.6-sunburst',
   'gpt-image-2.5-sunburst',
   'gemini-3.1-flash-image',
-  'gpt-image-1',
   'jimeng_high_aes_general_v21_L',
   'grok-imagine-image-2.0',
   'grok-imagine-image-quality',

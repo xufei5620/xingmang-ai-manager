@@ -597,6 +597,8 @@ export interface McpRuntimeNotice {
   body: string
   /** 只有真的缺 Python 才给按钮：装 Python 解决不了缺 uv。 */
   installPython: boolean
+  /** 缺 uv 时给「找客服」：星芒装不了它，客服教客户装（D20）。 */
+  support: boolean
 }
 
 /**
@@ -625,17 +627,14 @@ export function mcpRuntimeNotice(
       ? '可以先装好 Python 再回来添加。'
       : `可以在终端里执行 ${runtimeHomebrewCommand('python')} 装好 Python，再回来添加。`)
   }
-  // uv 不是本应用装得了的，所以缺它的时候只能把办法说清楚，不给按钮。
-  if (needs === 'uv') {
-    sentences.push(runtimes.python
-      ? 'uv 要自己装：在命令行里执行 pip install uv。'
-      : 'uv 也要自己装：Python 装好之后在命令行里执行 pip install uv。')
-  }
+  // uv 星芒装不了，客户多半也不会开命令行敲 pip，所以缺它的时候交给客服教（D20），配一颗「找客服」。
+  if (needs === 'uv') sentences.push('这个工具还要一个叫 uv 的小组件，点「找客服」，客服教你装。')
   sentences.push('仍然可以直接添加，但工具用到它的时候会连不上。')
   return {
     title: '这条连接还差一样东西',
     body: sentences.join(''),
     installPython: !runtimes.python && management === 'managed',
+    support: needs === 'uv',
   }
 }
 /**
@@ -655,7 +654,7 @@ export function parseCommandArguments(value: string): string[] {
     !Array.isArray(result) ||
     !result.every((item): item is string => typeof item === 'string')
   )
-    throw new Error('附加参数需填写为字符串数组，例如 ["-y", "工具包名称"]。')
+    throw new Error('附加参数照提供方说明原样粘贴，例如 ["-y", "工具包名称"]。')
   return result
 }
 export function parseEnvironmentVariables(
@@ -671,7 +670,7 @@ export function parseEnvironmentVariables(
         /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && typeof entry === 'string',
     )
   )
-    throw new Error('附加设置需填写为名称和值均有效的 JSON 对象。')
+    throw new Error('附加设置照提供方说明原样粘贴，例如 {"名称": "值"}。')
   return result as Record<string, string>
 }
 const headerFormatError = '请求头每行写一个，格式是「名称: 值」，比如 Authorization: Bearer 你的密钥。'
@@ -726,6 +725,30 @@ export async function mcpNameTakenIn(
       : mcpNamesInScope(read.value.items, scope)
     return names.includes(name)
   })
+}
+
+/**
+ * 外接工具页「也装到别的工具…」给不给（同类对比 备选 5）：只给 Claude Code、Codex「我的（全局）」那份里客户自己加的连接
+ * （能移除的那种）。项目里的连接常跟着仓库走，搬进别的工具的项目配置等于把密钥写进仓库文件；Grok 的连接列表
+ * 不带环境变量和请求头，主进程读不全；插件带的、系统自带的不在客户自己的配置里。
+ */
+export function mcpCopyOffered(provider: Provider, item: ExtensionItem): boolean {
+  return (provider === 'claude' || provider === 'codex')
+    && item.kind === 'mcp'
+    && item.installed
+    && item.scope === 'user'
+    && item.operations.uninstall
+}
+
+/** 「也装到别的工具」框里能勾的工具：不含来源那个；已经有同名连接的标「已添加」、不给勾。 */
+export function mcpCopyChoices(
+  provider: Provider,
+  usable: readonly string[] | undefined,
+  taken: readonly string[],
+  codexViaDesktop = false,
+): ExtensionToolChoice[] {
+  return extensionToolChoices(activeTools.map((tool) => tool.id), usable, taken, codexViaDesktop)
+    .filter((choice) => choice.id !== provider)
 }
 
 /**

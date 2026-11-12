@@ -1,3 +1,4 @@
+import { formatClockTime } from '../../calendar-time'
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
 
 export interface LocalAnnouncementEntry { id: string; title: string; text: string }
@@ -7,36 +8,44 @@ const maximumNodes = 20_000
 const maximumRememberedEntries = 200
 const entryIdPattern = /^newapi-[a-f0-9]{64}$/
 
-function malformed(): never { throw new Error('公告合集格式无法识别，请重新读取或到官网查看。') }
+/**
+ * 公告合集读不出来（格式不认识、太大、条目太多）。界面上照原句显示，不跟网络失败一起换成「暂时没读到」：
+ * 等一会儿再读多半还是这样，得给客户「重新读取」和官网两条路。
+ */
+export class AnnouncementCollectionError extends Error {
+  constructor() { super('公告没读出来，可以点「重新读取」，或到官网查看。') }
+}
+
+function unreadable(): never { throw new AnnouncementCollectionError() }
 
 /** Extract the published collection envelope, leaving each body for the existing sanitizer. */
 export async function parseNewApiAnnouncementCollection(text: string): Promise<LocalAnnouncementEntry[] | null> {
   if (!/\bdata-newapi-collection\s*=/i.test(text) || typeof DOMParser === 'undefined') return null
-  if (text.length > maximumContentLength) throw new Error('公告合集超出读取上限，请到官网查看。')
+  if (text.length > maximumContentLength) unreadable()
   const parsed = new DOMParser().parseFromString(text, 'text/html')
   const roots = Array.from(parsed.body.children)
   const root = roots[0]
   if (roots.length !== 1 || root?.getAttribute('data-newapi-collection') !== 'v1'
-    || Array.from(parsed.body.childNodes).some((node) => node.nodeType === 3 && node.textContent?.trim())) malformed()
+    || Array.from(parsed.body.childNodes).some((node) => node.nodeType === 3 && node.textContent?.trim())) unreadable()
   const walker = parsed.createTreeWalker(root, NodeFilter.SHOW_ALL)
   let count = 0
-  while (walker.nextNode()) if (++count > maximumNodes) throw new Error('公告合集内容过多，请到官网查看。')
+  while (walker.nextNode()) if (++count > maximumNodes) unreadable()
   const items = Array.from(root.children).filter((element) => element.matches('details.collection-entry'))
-  if (items.length > maximumEntries) throw new Error('公告合集条目过多，请到官网查看。')
+  if (items.length > maximumEntries) unreadable()
   // Never flatten an unrecognized collection back into a wall of mixed details.
-  if (!items.length || root.querySelectorAll('details.collection-entry').length !== items.length) malformed()
+  if (!items.length || root.querySelectorAll('details.collection-entry').length !== items.length) unreadable()
   const entries: LocalAnnouncementEntry[] = []
   const ids = new Set<string>()
   for (const item of items) {
     const summaries = Array.from(item.children).filter((element) => element.matches('summary.collection-summary'))
     const bodies = Array.from(item.children).filter((element) => element.matches('.collection-body'))
     const titles = summaries[0]?.querySelectorAll('.collection-entry-title')
-    if (summaries.length !== 1 || bodies.length !== 1 || titles?.length !== 1) malformed()
+    if (summaries.length !== 1 || bodies.length !== 1 || titles?.length !== 1) unreadable()
     const titleNode = titles[0].cloneNode(true) as Element
     titleNode.querySelectorAll('script, style, template').forEach((element) => element.remove())
     const title = (titleNode.textContent ?? '').replace(/\s+/g, ' ').trim()
     const body = bodies[0].innerHTML.trim()
-    if (!title || title.length > 512 || !body) malformed()
+    if (!title || title.length > 512 || !body) unreadable()
     // A collection wrapper/id changes when another notice is published. Hash
     // only this entry so old read states survive insertions and reordering.
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([title, body])))
@@ -202,19 +211,28 @@ export function timelineEntries(bulletins: TimelineSource[]): TimelineEntry[] {
 
 function pad(value: number): string { return String(value).padStart(2, '0') }
 
-/** `2026-09-09 20:00 · 3 天前`，按本机时区显示。 */
+/**
+ * 公告详情的发布时间，按本机时区、跟全软件一样写「9月9日 20:00 · 3 天前」。30 天以上只写日期
+ * 「2025年11月20日 18:00」，不再折算成「N 个月前」：原来按 30 天一个月算，360 来天会写出「12 个月前」（D60）。
+ */
 export function formatTimelineDate(publishedAt: string, now: number): string {
-  const date = new Date(publishedAt)
-  if (!Number.isFinite(date.getTime())) return ''
-  const absolute = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
-  const minutes = Math.floor((now - date.getTime()) / 60_000)
+  const at = Date.parse(publishedAt)
+  const absolute = formatClockTime(at, now)
+  if (absolute === null) return ''
+  const minutes = Math.floor((now - at) / 60_000)
+  if (minutes >= 30 * 24 * 60) return absolute
   const relative = minutes < 1 ? '刚刚'
     : minutes < 60 ? `${minutes} 分钟前`
       : minutes < 24 * 60 ? `${Math.floor(minutes / 60)} 小时前`
-        : minutes < 30 * 24 * 60 ? `${Math.floor(minutes / (24 * 60))} 天前`
-          : minutes < 365 * 24 * 60 ? `${Math.floor(minutes / (30 * 24 * 60))} 个月前`
-            : `${Math.floor(minutes / (365 * 24 * 60))} 年前`
+        : `${Math.floor(minutes / (24 * 60))} 天前`
   return `${absolute} · ${relative}`
+}
+
+/** 公告列表每条右边的短日期「09-09」，按本机时区；读不出日期返回空串。 */
+export function formatTimelineListDate(publishedAt: string): string {
+  const date = new Date(publishedAt)
+  if (!Number.isFinite(date.getTime())) return ''
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
 
 function normalizedTitle(title: string): string { return title.replace(/\s+/g, '') }

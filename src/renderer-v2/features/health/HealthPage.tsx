@@ -348,7 +348,7 @@ export function HealthPage({
   // 「正常」那一组默认收着：能点的几项（比如 Node.js 的「换成新版」）照旧一行一行摆出来，其余并成一块只写名字。
   // 从别处点名要看的那一项正好收在里面，就先摆出来再翻过去。
   const [showPassing, setShowPassing] = useState(false)
-  // 设置里「企业证书」「网络检查」点「去检查页」：检查结果出来以后翻到那一项、亮一下；
+  // 设置里「安全证书」「网络检查」点「去检查页」：检查结果出来以后翻到那一项、亮一下；
   // 开机提示「去看看」不知道是哪一项，翻到第一项问题。去过这一页再点名进来时正在重查，
   // 等新结果出来再翻，不在几个小时前那份上亮。
   useRowFocus('health', pageRef, Boolean(resource.data) && !resource.loading, (anchor) => {
@@ -796,7 +796,7 @@ export function HealthPage({
       loadingTitle="正在检查…"
       loadingDescription={null}
       emptyTitle="还没有做过完整检查"
-      emptyDescription="点右上角「重新检查」。"
+      emptyDescription="点右上角「开始检查」。"
       loading={resource.loading}
       error={resource.error}
       count={diagnostics.length}
@@ -806,6 +806,9 @@ export function HealthPage({
     </ListState>
   )
   const connectionsTested = connections !== null
+  // 页头那颗按钮跟着下面的空状态走（UI 字表 W33）：一项结果都还没有时下面写「还没有做过完整检查」，
+  // 这里就叫「开始检查」，不叫「重新」；查出结果以后才叫「重新检查」。重查时上一轮的结果还摆着，名字不跟着跳。
+  const checked = diagnostics.length > 0
   return (
     <section
       ref={pageRef}
@@ -831,7 +834,7 @@ export function HealthPage({
               loading={resource.loading}
               onClick={() => void resource.reload()}
             >
-              重新检查
+              {checked ? '重新检查' : '开始检查'}
             </Button>
           </>
         }
@@ -839,6 +842,7 @@ export function HealthPage({
       <ResultNotice
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
+        target={operation.failed === 'export' ? 'export' : undefined}
       />
       {diagnostics.length ? resultState(results) : <Card padding="none">{resultState(null)}</Card>}
       <section className="v2-health-group" aria-labelledby="health-connection-title">
@@ -848,7 +852,7 @@ export function HealthPage({
             <span className="v2-health-tile" aria-hidden="true"><Globe2 size={15} /></span>
             <div className="xm-row-main">
               <div className="xm-row-title">测试连接</div>
-              <div className="xm-row-desc">确认每个工具都能连上、账号有效；装好的外部客户端也一起测</div>
+              <div className="xm-row-desc">确认每个工具都能连上、账号有效；装好的桌面端也一起测</div>
               {connections && (
                 <div className="v2-health-lines">
                   {sortConnectionRows(connections).map((row) => (

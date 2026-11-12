@@ -109,7 +109,7 @@ export function describeRunningTools(report: RunningToolsReport, goal: RunningTo
   const sentences: string[] = []
   if (running.length) sentences.push(`${running.join('、')} 还开着，要关掉重开才会${outcome}。`)
   // Mac 上没有「帮我重开」，只点关窗口桌面端还在后台跑、读不到新设置，得说清怎么算关掉（第二十九批 A）。
-  if (report.codexDesktopRunning === true && !report.canRestartCodexDesktop) sentences.push('Codex 桌面端只关窗口不算，要在它的窗口里按 Command + Q 完全退出再打开。')
+  if (report.codexDesktopRunning === true && !report.canRestartCodexDesktop) sentences.push('Codex 桌面端只关窗口不算，要在它的窗口里按 ⌘Q 完全退出再打开。')
   if (unknown.length) sentences.push(`如果 ${unknown.join('、')} 还开着，${running.length ? '也' : ''}要关掉重开才会${outcome}。`)
   return sentences.join('')
 }
@@ -145,7 +145,7 @@ export interface ToolRouteRestartHint {
 }
 
 export const toolRouteRestartHintTitle = '刚才那条连接线路连不上，已经换到另一条。'
-export const codexPayloadRestartHintTitle = 'Codex 里这个对话超过了线路 1 的 100MB 上限，已为你切到线路 2，请重开 Codex 后继续。'
+export const codexPayloadRestartHintTitle = 'Codex 里这个对话超过了线路1 的 100MB 上限，已为你切到线路2，请重开 Codex 后继续。'
 
 /**
  * Codex 有个对话太大、发不出去，又没换成线路（codex-payload-limit.ts），要客户新开对话：locked = 设置里选了只用
@@ -166,7 +166,7 @@ export function describeToolRouteRestartHint(hint: ToolRouteRestartHint): string
   const sentences: string[] = []
   if (hint.codex?.cli) sentences.push('Codex 还开着：新建对话就走新线路，已经打开的对话要退出 Codex 再打开。')
   if (hint.codex?.desktop === 'win32') sentences.push('Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要完全退出再打开。')
-  if (hint.codex?.desktop === 'darwin') sentences.push('Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要按 Command + Q 完全退出再打开。')
+  if (hint.codex?.desktop === 'darwin') sentences.push('Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要按 ⌘Q 完全退出再打开。')
   if (hint.codex) sentences.push('如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。')
   if (hint.gemini === 'launched') sentences.push('从星芒打开的 Gemini 窗口要关掉再打开，才会走新线路。')
   if (hint.gemini === 'unknown') sentences.push('如果 Gemini 还开着，要关掉再打开才会走新线路。')

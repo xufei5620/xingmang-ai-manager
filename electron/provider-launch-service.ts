@@ -36,9 +36,10 @@ import {
   trustCodexWorkspace,
   trustManagedWorkspace,
 } from './config-files'
+import { inspectWorkspaceWritable, shouldNoteReadOnlyWorkspace } from './documents-fallback'
 import { errorCodeOf, toolLaunchFailureMessage } from './failure-wording'
 import { type LinuxTerminalAttempt, LinuxTerminalLaunchError } from './linux-terminal'
-import type { MacosTerminalLaunchPlan } from './macos-platform'
+import { type MacosTerminalLaunchPlan, MacosTerminalNotStartedError } from './macos-platform'
 import { ensureProjectInstructions, readProjectInstructionsTemplate } from './project-instructions'
 import { redactHomeDirectory } from './startup-log'
 import { withSystemCertificateTrust } from './system-certificate-trust'
@@ -60,6 +61,8 @@ import {
   inspectWorkspaceConfigOverrides,
   launchOverrideNotice,
 } from './workspace-config-overrides'
+import { assertWorkspaceDirectory } from './workspace-access'
+import { isUntouchedStarterWorkspace } from './starter-workspace'
 import { claudeProjectSettingsFiles, classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 
 /**
@@ -411,9 +414,7 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     if (!canLaunchManagedProvider(nativeConfig)) {
       throw new Error(managedProviderLaunchBlockedMessage(provider))
     }
-    if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
-      throw new Error('工作目录不存在，请重新选择')
-    }
+    assertWorkspaceDirectory(workspace, platform, '工作目录不存在，请重新选择')
     // 从星芒打开的窗口读的是现在的配置：之前标的「需重开生效」说的不是它了（C19 另按「开着」算 Gemini）。
     toolLaunchedAt.set(provider, Date.now())
     toolRouteRestartPending.delete(provider)
@@ -434,6 +435,8 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
         kind: workspaceSensitivity,
       })
     }
+    const workspaceReadOnly = shouldNoteReadOnlyWorkspace(workspaceSensitivity, platform)
+      && await workspaceRefusesWrites(provider, workspace)
     // 目录是用户刚在本软件的对话框里亲自选的，再让他去读一遍 CLI 自己的英文
     // 信任问答没有意义，所以打开之前先把这一项写进 CLI 的配置。写不进去
     // （文件损坏、只读、主目录被重定向）绝不能挡住打开：CLI 自己还会问一次。
@@ -506,7 +509,10 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
         })
       }
     }
-    const launchResult = inspectLaunchConfigOverrides(provider, workspace, nativeConfig)
+    const launchResult: CliLaunchResult = {
+      ...inspectLaunchConfigOverrides(provider, workspace, nativeConfig),
+      ...(workspaceReadOnly ? { workspaceReadOnly } : {}),
+    }
     const accountMode = providerAccountMode(nativeConfig)
     const excludedVariables = launchExcludedEnvironmentVariables(provider, accountMode)
     // Grok 按 PATH 挑跑钩子的 shell：补上注册表里新加的那几段，与 expectedGrokWindowsShell 推的是同一份 PATH。
@@ -594,8 +600,14 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
           macosShellOverrideVariables(provider, accountMode),
         ))
       } catch (error) {
-        // Windows、Linux 另记一条 terminal.failed；Mac 上 open 交回来的退出码和原话挂在 cause 上，
-        // 随这次失败一起进运行日志。
+        // open 交回来的退出码和原话挂在 cause 上，随这次失败一起进运行日志。窗口开了、工具没起来的，
+        // 同 Windows、Linux 另记一条 terminal.failed（SH-3）。
+        if (error instanceof MacosTerminalNotStartedError) {
+          runtimeLog?.log('warn', 'system', 'terminal.failed', `${definition.name} 的终端窗口开了，工具没有跟着起来`, {
+            provider,
+            waitedMs: error.waitedMs,
+          })
+        }
         throw new Error(toolLaunchFailureMessage(definition.name, error), { cause: error })
       }
       return launchResult
@@ -650,6 +662,20 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     }
   }
 
+  // 光盘、只读挂载的共享盘、没有改的权限的文件夹，工具照样起得来，AI 一改文件就是一串英文报错（D17）。
+  // 打开前试写一次，写不进不拦，打开后首页说一句。Windows 不走这里：同样这些文件夹在 cli:launch 那一步
+  // 已经试写过（ipc/handlers/launch.ts 的 launchIfWritable）。
+  async function workspaceRefusesWrites(provider: ProviderId, workspace: string): Promise<boolean> {
+    const startedAt = Date.now()
+    const writability = await inspectWorkspaceWritable(workspace, serviceOptions.probeWorkspaceWritable ? { probe: serviceOptions.probeWorkspaceWritable } : {})
+    const refused = writability === 'denied' || writability === 'read-only'
+    // 不记路径（I13）：客服要的是结果和耗时，跟 Windows 那一条同名。
+    runtimeLog?.log(refused ? 'warn' : 'info', 'config', 'workspace.write-check', refused
+      ? '选中的文件夹写不进去，照常打开，打开后在首页提醒'
+      : '打开前试写了选中的文件夹', { provider, result: writability, durationMs: Date.now() - startedAt })
+    return refused
+  }
+
   /**
    * 项目文件夹里（或公司统一下发）的设置会盖过当前账号时，打开照常，只带回一句
    * 提醒并记一条日志。只读，不动那些文件；查的过程出任何错都不能挡住打开。
@@ -702,9 +728,13 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     accountWork?: QueuedAccountWork,
   ): Promise<CliLaunchResult> {
     async function launch(): Promise<CliLaunchResult> {
+      const result = await launchProviderOperation(provider, workspace, mode, resumeSessionId)
+      const rememberedWorkspace = rememberedWorkspaceFor(store.read().workspace)
       return {
-        ...await launchProviderOperation(provider, workspace, mode, resumeSessionId),
-        rememberedWorkspace: rememberedWorkspaceFor(store.read().workspace),
+        ...result,
+        rememberedWorkspace,
+        // 记着的文件夹换了，首页「试试第一条命令」那句话跟着它挑，不等下一轮读配置（D45）。
+        ...(rememberedWorkspace && isUntouchedStarterWorkspace(rememberedWorkspace, platform) ? { rememberedWorkspaceFresh: true } : {}),
       }
     }
     return installationQueue.enqueue(

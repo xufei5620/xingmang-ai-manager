@@ -26,6 +26,8 @@ const valueImportable = [
   // 视频剪辑读回存着的工程时按片段编号重拼缩略图地址，缩略图一升版旧工程照样显示（#1406 P3-4）；文件本身什么都不 import。
   'electron/asset-thumbnail',
   'electron/ai-chat-protocol',
+  // 作品文件在外面被删了时三个作品库说的那几句，主进程抛、聊天和视频剪辑照它认出「文件没了」（D37）；文件本身什么都不 import。
+  'electron/ai-asset-missing',
   // 视频交出去却没拿到任务号时那句话，主进程报错、视频剪辑页照它认出「结果不明」共用一份（#1489 N2）；文件本身什么都不 import。
   'electron/ai-video-submission',
   'electron/catalog',
@@ -43,6 +45,8 @@ const valueImportable = [
   'electron/cli-model-defaults',
   // 工具配置文件是个链接时那句话的标志，主进程拼、错误框照它认出来配「配置文件是个链接」（#1100 第 2 条）。
   'electron/config-link-refusal',
+  // 写工具配置没权限时主进程查出来的两种情况（设置文件夹归管理员、文件被设成只读），主进程拼、错误框照它认出来配整句（D15）；文件本身什么都不 import。
+  'electron/config-write-blocker',
   // 更新因磁盘空间不够没下时那句话，系统通知与首页气泡、更新页共用一份（第二十二批 2）。
   'electron/disk-space-copy',
   // 装插件、加外接工具失败时命令行说的原因（缺 Git、连不上 GitHub、重名），主进程挑行、错误框配标题共用一份。

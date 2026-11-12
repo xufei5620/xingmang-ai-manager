@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { configWriteBlockerMessage } from '../../../../electron/config-write-blocker'
 import { toolCertificateMessages } from '../../../../electron/network-failure'
-import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideFailureExits, guideInstallFailure, guideInstallExits, guideStepFailure, guideSupportAction, type GuideToolState, type StartGuideProps } from './StartGuide'
+import { StartGuide, defaultGuideRoute, guideCanSkipConnect, isGuideToolRoute, resolveGuideReadiness, guideFailureExits, guideInstallFailure, guideInstallExits, guideStepFailure, guideSupportAction, type GuideToolState, type StartGuideProps } from './StartGuide'
 
 const resumeKey = 'fixture-scope'
 
@@ -33,16 +34,18 @@ function render(tools: GuideToolState[], overrides: Partial<StartGuideProps> = {
 describe('renderer-v2 start guide first run', () => {
   afterEach(() => { vi.unstubAllGlobals() })
 
-  it('hands over the first command and a prompt to paste on the last step', () => {
+  // D46（新手流程 N5）：「新开一个终端，敲这一条」新手看了会以为还要自己开终端，点「打开」星芒就替他敲了。
+  it('hands over only the prompt to paste on the last step, not the terminal command', () => {
     stubResumedGuide('claude', 'ready')
     const markup = render([guideTool()])
     expect(markup).toContain('data-guide-step="ready"')
     expect(markup).toContain('data-testid="guide-first-run"')
-    expect(markup).toContain('data-testid="guide-first-run-command"')
-    expect(markup).toContain('>claude<')
-    expect(markup).toContain('data-testid="guide-first-run-copy-command"')
     expect(markup).toContain('data-testid="guide-first-run-copy-prompt"')
-    expect(markup).toContain('复制命令')
+    expect(markup).toContain('Claude Code 起来之后，把下面这句话粘进去，看看它能做什么：')
+    expect(markup).not.toContain('data-testid="guide-first-run-command"')
+    expect(markup).not.toContain('data-testid="guide-first-run-copy-command"')
+    expect(markup).not.toContain('复制命令')
+    expect(markup).not.toContain('新开一个终端')
   })
 
   // 状态在最后一步变了（Key 没了、工具被卸了）时收尾文案会改口，那时给一条敲下去
@@ -61,13 +64,59 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).not.toContain('data-testid="guide-first-run"')
   })
 
-  // 新手没有「项目」这个概念，最后一步要告诉他打开时选什么，并给一颗不用选的按钮。
-  it('offers to create a project folder before opening a CLI', () => {
+  // D45（新手流程 N4）：新建的项目文件夹是空的，问「介绍一下这个项目」只会换来「这里什么都没有」。
+  it('asks the tool to build something when it is about to open a folder the app has just made', () => {
     stubResumedGuide('claude', 'ready')
-    const markup = render([guideTool()])
-    expect(markup).toContain('data-testid="guide-folder-hint"')
-    expect(markup).toContain('不知道选哪个')
-    expect(markup).toContain('data-testid="guide-open-tool-new-folder"')
+    const fresh = render([guideTool({ freshFolder: true })])
+    expect(fresh).toContain('帮我在这个文件夹里做一个能在浏览器里打开的待办清单小网页，做好后告诉我怎么打开它。')
+    expect(fresh).toContain('data-fresh-folder="true"')
+    expect(fresh).not.toContain('用中文介绍一下这个项目是做什么的')
+
+    const ownFolder = render([guideTool()])
+    expect(ownFolder).toContain('用中文介绍一下这个项目是做什么的，再指出最值得先读的三个文件。')
+    expect(ownFolder).not.toContain('data-fresh-folder')
+    expect(ownFolder).not.toContain('待办清单小网页')
+  })
+
+  it('gives Codex CLI and Grok CLI their own sentence for a fresh folder', () => {
+    stubResumedGuide('codex', 'ready')
+    expect(render([guideTool({ id: 'codex', freshFolder: true })])).toContain('在这个文件夹里写一个能在浏览器里打开的小计算器网页，写完用一句话告诉我怎么打开。')
+    stubResumedGuide('grok', 'ready')
+    expect(render([guideTool({ id: 'grok', freshFolder: true })])).toContain('在这个文件夹里写一个能在浏览器里打开的番茄钟小网页，写完告诉我怎么打开。')
+  })
+
+  // D46（新手流程 N2）：「打开」跟首页同一套，不再先问选哪个文件夹；想自己挑的点「选择其他文件夹…」。
+  it('drops the folder explanation and offers another folder only when opening does not ask', () => {
+    stubResumedGuide('claude', 'ready')
+    for (const opensIn of ['newFolder', 'lastFolder'] as const) {
+      const markup = render([guideTool({ opensIn })])
+      expect(markup).not.toContain('data-testid="guide-folder-hint"')
+      expect(markup).not.toContain('不知道选哪个')
+      expect(markup).not.toContain('data-testid="guide-open-tool-new-folder"')
+      expect(markup).toMatch(/class="[^"]*xm-btn-secondary[^"]*"[^>]*data-testid="guide-open-tool-choose-folder"[^>]*>.*选择其他文件夹…/)
+    }
+    // 记录还没读到：「打开」本来就弹选择窗口，旁边不再多一颗一样的。
+    expect(render([guideTool()])).not.toContain('data-testid="guide-open-tool-choose-folder"')
+  })
+
+  // D46（新手流程 N5）：「打开」「进入首页」放在底栏，跟「上一步」排在一起，内容再长也不用往下翻。
+  it('keeps open and home in the footer next to the back button on the last step', () => {
+    stubResumedGuide('claude', 'ready')
+    const markup = render([guideTool({ opensIn: 'newFolder' })])
+    const footer = markup.slice(markup.indexOf('<footer'))
+    const body = markup.slice(0, markup.indexOf('<footer'))
+    for (const id of ['guide-back', 'guide-home', 'guide-open-tool']) expect(footer).toContain(`data-testid="${id}"`)
+    expect(body).not.toContain('data-testid="guide-open-tool"')
+    expect(body).not.toContain('data-testid="guide-home"')
+    expect(footer.indexOf('data-testid="guide-back"')).toBeLessThan(footer.indexOf('data-testid="guide-home"'))
+    expect(footer.indexOf('data-testid="guide-home"')).toBeLessThan(footer.indexOf('data-testid="guide-open-tool"'))
+    expect(footer).toMatch(/class="[^"]*xm-btn-primary[^"]*"[^>]*data-testid="guide-open-tool"/)
+    stubResumedGuide('chat', 'ready')
+    expect(render([guideTool()]).split('<footer')[1]).toContain('data-testid="guide-chat"')
+    stubResumedGuide('claude', 'connect')
+    const connect = render([guideTool()]).split('<footer')[1]
+    expect(connect).not.toContain('data-testid="guide-open-tool"')
+    expect(connect).not.toContain('data-testid="guide-home"')
   })
 
   // 客服远程装好的客户走完引导也不知道要充值、去哪充（2026-09-29 yoyo 反馈）。
@@ -101,17 +150,30 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).toContain('当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。')
     expect(markup).not.toContain('已准备好。打开工具，即可开始第一次任务。')
     expect(markup.match(/data-testid="guide-recharge-button"/g)).toHaveLength(1)
-    // 紧跟在顶上那句后面，排在结果卡、第一句话、文件夹提示前面。
+    // 紧跟在顶上那句后面，排在结果卡、第一句话前面。
     expect(markup.indexOf('data-testid="guide-recharge-button"')).toBeLessThan(markup.indexOf('data-testid="guide-result"'))
-    expect(markup.indexOf('data-testid="guide-recharge-button"')).toBeLessThan(markup.indexOf('data-testid="guide-folder-hint"'))
+    expect(markup.indexOf('data-testid="guide-recharge-button"')).toBeLessThan(markup.indexOf('data-testid="guide-first-run"'))
     expect(markup).toMatch(/class="[^"]*xm-btn-primary[^"]*"[^>]*data-testid="guide-recharge-button"/)
     // 「打开」照样能点，只是不再抢主按钮。
     expect(markup).toMatch(/class="[^"]*xm-btn-secondary[^"]*"[^>]*data-testid="guide-open-tool"/)
     expect(markup).not.toMatch(/data-testid="guide-open-tool"[^>]*disabled/)
+    // D47：下面的结果卡跟着说先充值，不再两句叫人去打开。
+    expect(markup).toContain('设置已读到。')
+    expect(markup).toContain('>先充值<')
+    expect(markup).toContain('充值后回来点「打开」就能用。')
+    expect(markup).not.toContain('打开工具试一次')
     stubResumedGuide('chat', 'ready')
     const chat = render([guideTool()], { onFailureAction: () => undefined, walletEmpty: true })
     expect(chat).toContain('data-testid="guide-wallet-empty"')
     expect(chat).toMatch(/class="[^"]*xm-btn-secondary[^"]*"[^>]*data-testid="guide-chat"/)
+  })
+
+  // W9：自称一律「星芒」。
+  it('opens the chat route with 星芒 as the name of the app', () => {
+    stubResumedGuide('chat', 'ready')
+    const markup = render([guideTool()])
+    expect(markup).toContain('从一个问题开始，慢慢熟悉星芒。')
+    expect(markup).not.toContain('AI 工作台')
   })
 
   it('keeps the ready wording when the empty wallet is not what the tool spends', () => {
@@ -129,11 +191,11 @@ describe('renderer-v2 start guide first run', () => {
 
   it('does not offer a folder for the desktop app, the chat route or a tool that is not ready', () => {
     stubResumedGuide('codexDesktop', 'ready')
-    expect(render([guideTool({ id: 'codexDesktop' })])).not.toContain('data-testid="guide-folder-hint"')
+    expect(render([guideTool({ id: 'codexDesktop', opensIn: 'newFolder' })])).not.toContain('data-testid="guide-open-tool-choose-folder"')
     stubResumedGuide('chat', 'ready')
-    expect(render([guideTool()])).not.toContain('data-testid="guide-folder-hint"')
+    expect(render([guideTool({ opensIn: 'newFolder' })])).not.toContain('data-testid="guide-open-tool-choose-folder"')
     stubResumedGuide('claude', 'ready')
-    expect(render([guideTool({ configured: false, source: 'none' })])).not.toContain('data-testid="guide-folder-hint"')
+    expect(render([guideTool({ configured: false, source: 'none', opensIn: 'newFolder' })])).not.toContain('data-testid="guide-open-tool-choose-folder"')
   })
 
   it('leaves the earlier steps unchanged', () => {
@@ -311,6 +373,33 @@ describe('guide setup result card', () => {
     expect(markup).not.toContain('data-testid="guide-first-task-copy"')
   })
 
+  // D46（新手流程 N5）：一切正常时结果卡收成一行，有一行要人看一眼才整张摊开。
+  it('folds an all-clear result into one line and spreads it out when something needs a look', () => {
+    stubResumedGuide('claude', 'ready')
+    const clear = render([guideTool({ version: '2.1.319' })], { accountName: 'peaker' })
+    expect(clear).toContain('data-collapsed="true"')
+    expect(clear).toContain('已装好（版本 2.1.319）')
+    expect(clear).toContain('当前账号 peaker')
+    expect(clear).toContain('费用：花的是当前账号的余额。')
+    expect(clear).not.toContain('data-testid="guide-result-next"')
+    expect(clear).not.toContain('>安装情况<')
+    expect(clear).not.toContain('设置已读到，打开工具试一次。')
+    // 有新版：整张摊开，说清能以后再更新。
+    const update = render([guideTool({ version: '2.1.300', update: { version: '2.1.319', target: '2.1.319', newer: true, knownIssue: false, manualHint: null } })])
+    expect(update).not.toContain('data-collapsed')
+    expect(update).toContain('data-testid="guide-result-next"')
+    // 余额 $0：「先充值」那一行要看到。
+    const empty = render([guideTool()], { onFailureAction: () => undefined, walletEmpty: true })
+    expect(empty).not.toContain('data-collapsed')
+    expect(empty).toContain('>先充值<')
+    // 桌面端用密钥连的，那句「切到 Codex」不看就会报错。
+    stubResumedGuide('codexDesktop', 'ready')
+    expect(render([guideTool({ id: 'codexDesktop' })])).toContain('把模式切到「Codex」')
+    // 第 3 步那张不收。
+    stubResumedGuide('claude', 'connect')
+    expect(render([guideTool({ source: 'manual' })])).not.toContain('data-collapsed')
+  })
+
   it('takes back readiness when the installed status is no longer confirmed', () => {
     stubResumedGuide('codexDesktop', 'ready')
     const markup = render([guideTool({ id: 'codexDesktop', installed: false })])
@@ -418,6 +507,16 @@ describe('guide step failure wording', () => {
     expect(guideStepFailure(new Error('切换前的备份没有完成，已取消切换，配置没有改动：EACCES: permission denied'), '改用当前账号', true).reason).toBe('写不进配置文件')
     // 装东西的几步照旧是安装目录。
     expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备环境', true).reason).toBe('写不进安装目录')
+  })
+
+  it('tells a switch refused by a root-owned settings folder or a read-only file what it really is (D15)', () => {
+    // 主进程查出是哪一种时（config-files-context.ts 的 explainConfigWriteFailure）那半句，经 account-source-switch 包一层。
+    const adminOwned = guideStepFailure(new Error(`Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`), '改用当前账号', true)
+    expect(adminOwned.message).toBe('改用当前账号没有成功：写不进配置文件。这个工具的设置文件夹归电脑管理员所有，多半是以前用管理员身份运行过它，星芒改不了。点「复制给客服」，客服会教你一步改回来。')
+    expect(adminOwned.reason).toBe('写不进配置文件')
+    const readOnly = guideStepFailure(new Error(`Codex CLI 改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`), '改用当前账号', true)
+    expect(readOnly.message).toBe('改用当前账号没有成功：写不进配置文件。这个文件被设成了只读，星芒没动它。要让星芒写进去，先取消只读。')
+    expect(readOnly.reason).toBe('写不进配置文件')
   })
 
   it('puts the linked config file and what to do about it on the red line instead of the folded raw text', () => {
@@ -539,6 +638,26 @@ describe('guide choose step descriptions', () => {
   })
 })
 
+describe('guide routes that install nothing', () => {
+  it('treats chat and images-and-videos as ready once signed in, without any tool', () => {
+    expect(isGuideToolRoute('create')).toBe(false)
+    expect(isGuideToolRoute('chat')).toBe(false)
+    expect(isGuideToolRoute(null)).toBe(false)
+    expect(isGuideToolRoute('codexDesktop')).toBe(true)
+    expect(resolveGuideReadiness('create', undefined, false)).toEqual({ prepared: true, connected: false })
+    expect(resolveGuideReadiness('create', undefined, true)).toEqual({ prepared: true, connected: true })
+  })
+
+  it('lists images-and-videos last, after chat, unless the account cannot use the video page', () => {
+    // 不接上一条用例留下的进度：要看的是第一步。
+    const html = render([guideTool()], { resumeKey: undefined })
+    expect(html.indexOf('先在星芒里聊天')).toBeLessThan(html.indexOf('做图、做视频'))
+    expect(html).toContain('什么都不用装，用画布和视频剪辑')
+    expect(html).toContain('data-testid="guide-route-create"')
+    expect(render([guideTool()], { resumeKey: undefined, createAvailable: false })).not.toContain('guide-route-create')
+  })
+})
+
 describe('guide connect step skipping', () => {
   it('skips only when the account key is already written and the tool is ready', () => {
     expect(guideCanSkipConnect('claude', guideTool(), true)).toBe(true)
@@ -553,14 +672,18 @@ describe('guide connect step skipping', () => {
     expect(guideCanSkipConnect('claude', guideTool({ configured: false }), true)).toBe(false)
     expect(guideCanSkipConnect('claude', guideTool({ runtimeReady: false }), true)).toBe(false)
     expect(guideCanSkipConnect('chat', undefined, true)).toBe(false)
+    expect(guideCanSkipConnect('create', undefined, true)).toBe(false)
     expect(guideCanSkipConnect(null, guideTool(), true)).toBe(false)
   })
 
-  it('tells the user on the last step that the current account is already connected', () => {
+  // D46（新手流程 N5）：「想换密钥或模型，点这里」新手用不着，结果那一行已经写着用的是当前账号。
+  it('does not offer to change the key or model on the last step', () => {
     stubResumedGuide('claude', 'ready')
-    expect(render([guideTool()])).toContain('data-testid="guide-connected-note"')
-    stubResumedGuide('claude', 'ready')
-    expect(render([guideTool({ source: 'official' })])).not.toContain('data-testid="guide-connected-note"')
+    const markup = render([guideTool()])
+    expect(markup).not.toContain('data-testid="guide-connected-note"')
+    expect(markup).not.toContain('data-testid="guide-connected-config"')
+    expect(markup).not.toContain('想换密钥或模型')
+    expect(markup).toContain('data-testid="guide-result-connection"')
   })
 })
 
@@ -647,6 +770,20 @@ describe('guide connect step after the account key was not written', () => {
   function buttonClass(markup: string, testId: string): string {
     return new RegExp(`<button class="([^"]*)"[^>]*data-testid="${testId}"`).exec(markup)?.[1] ?? ''
   }
+
+  // W81 W82：「下一步」灰着时悬停说还差什么；那颗配置按钮叫「去连好」。
+  it('says what is missing on the grey next button and names the configure button plainly', () => {
+    stubResumedGuide('claude', 'connect')
+    const markup = render([guideTool({ configured: false, source: 'none' })])
+    expect(markup).toMatch(/<button title="先把上面那项连好"[^>]*data-testid="guide-next"[^>]*disabled/)
+    expect(markup).toMatch(/data-testid="guide-config"[^>]*>.*?<span>去连好<\/span>/)
+    expect(markup).not.toContain('去完成连接配置')
+    // 连好了就不灰，也不挂这句。
+    const connected = render([guideTool()])
+    expect(connected).not.toContain('先把上面那项连好')
+    // 正忙着的时候灰着是别的原因，不说这句。
+    expect(render([guideTool({ configured: false, source: 'none' })], { busy: true })).not.toContain('先把上面那项连好')
+  })
 
   it('says why with the home banner sentence and makes resync the main button', () => {
     stubResumedGuide('claude', 'connect')

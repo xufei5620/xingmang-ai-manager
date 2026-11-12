@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { sanitizeUpstreamDetail } from './command-runner'
-import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
-import { accountKeyNameMaxBytes, buildAccountKeyName, utf8Length } from './catalog'
+import { managedKeyQuotaExhaustedMessage, managedKeyStoppedMessage } from './account-key-quota'
+import { accountKeyNameMaxBytes, accountKeyNameTooLongMessage, buildAccountKeyName, utf8Length } from './catalog'
 import { resolveChineseServerMessage } from './new-api-messages'
-import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, type NetworkFailureReason } from './network-failure'
+import { classifyNetworkFailure, isProxyAuthFailure, isServiceUnavailableResponse, networkFailureMessages, proxyAuthRequiredMessage, proxyAuthRequiredStatus, type NetworkFailureReason } from './network-failure'
 import type { RelayBackendCapabilities, RelayBackendClient, RelayNotice, RelayNoticeBulletin, RelayNoticeBulletinType, RelayNoticeReadMode } from './relay-backend'
 import { relaySites } from './relay-sites'
 import { carryRequestDiagnostics, noteRequestDiagnostics, requestDiagnosticsOf, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
@@ -81,6 +81,12 @@ const taskSelfPath = '/api/task/self'
 const tokenCollectionPath = '/api/token/'
 const userGroupsPath = '/api/user/self/groups'
 const userModelsPath = '/api/user/models'
+const pricingPath = '/api/pricing'
+// The price list carries every model the account may use with its pricing
+// fields and descriptions; a few hundred models stay far below this.
+const maximumPricingResponseBytes = 4 * 1024 * 1024
+const maximumPricingModels = 2_000
+const maximumPricingGroups = 64
 const topupInfoPath = '/api/user/topup/info'
 const topupAmountPath = '/api/user/amount'
 const topupPaymentPath = '/api/user/pay'
@@ -569,6 +575,11 @@ export interface NewApiAccountUsageQuery {
    * records 为空、total 为 0，只有 stats 是真的。只有星芒账号认它。
    */
   statsOnly?: boolean
+  /**
+   * 只要明细那一页，不要合计：画布跑完按请求号对实扣（画布完善第 2b 条第 3 步）只看明细，
+   * 合计那一下白白把这段时间的日志再加一遍。返回的页里 stats 全是 0。只有星芒账号认它。
+   */
+  recordsOnly?: boolean
 }
 
 export interface NewApiAccountUsageStreamStatus {
@@ -955,6 +966,9 @@ export interface NewApiClientService extends RelayBackendClient {
   // the models one group enables, read with the login session rather than a
   // key. chat-credential-coordinator.ts lists the chat menu with it.
   listGroupModels(group: string): Promise<string[]>
+  // GET /api/pricing with the login session: per-model prices and this
+  // account's group ratios. canvas-price-snapshot.ts prices 「预计约 $x」 with it.
+  getModelPricing(): Promise<NewApiModelPricing>
   revealKey(id: number): Promise<string>
   // DELETE /api/token/:id. Destructive and immediate: any CLI config or
   // canvas session currently holding this key's plaintext stops working the
@@ -1099,11 +1113,12 @@ export class NewApiTwoFactorExpiredError extends Error {
 
 /**
  * 受限网络（校园网常见）下的失败不再统一冒一句「请求失败」：reason 是排查用的
- * 分类，message 已经是能直接上屏的中文，detail 只是给日志留一句现场。
+ * 分类，message 已经是能直接上屏的中文，detail 只是给日志留一句现场。summary 缺省
+ * 照 reason 那句；同一类里要换说法的（代理要账号密码）由调用方给。
  */
 export class NewApiNetworkError extends Error {
-  constructor(readonly reason: NetworkFailureReason, detail?: string) {
-    super(detail ? `${networkFailureMessages[reason]}（${detail}）` : networkFailureMessages[reason])
+  constructor(readonly reason: NetworkFailureReason, detail?: string, summary: string = networkFailureMessages[reason]) {
+    super(detail ? `${summary}（${detail}）` : summary)
     this.name = 'NewApiNetworkError'
   }
 }
@@ -1346,11 +1361,21 @@ async function performRequestOnce(
     }
     // 认不出来的失败按原样抛：上游自己写的中文错误比一句猜出来的「网络问题」有用。
     const reason = classifyNetworkFailure(error)
-    if (reason) throw carryRequestDiagnostics(error, new NewApiNetworkError(reason, `${label}请求失败`))
+    if (reason) throw carryRequestDiagnostics(error, new NewApiNetworkError(reason, `${label}请求失败`, proxyAuthSummary(reason, error, diagnostics)))
     throw error
   } finally {
     clearTimeout(timeout)
   }
+}
+
+/**
+ * 代理要账号密码时换的那句（D32）。走 https 时代理回的 407 先当回应交出来，读正文才报
+ * ERR_TUNNEL_CONNECTION_FAILED，错误本身跟「代理回绝了这个地址」分不开，所以也看这次回应的状态码。
+ * 归类不动，还是 proxy：改不改直连、重不重发照旧。
+ */
+function proxyAuthSummary(reason: NetworkFailureReason, error: unknown, diagnostics: RequestDiagnostics | null): string | undefined {
+  if (reason !== 'proxy') return undefined
+  return diagnostics?.status === proxyAuthRequiredStatus || isProxyAuthFailure(error) ? proxyAuthRequiredMessage : undefined
 }
 
 /**
@@ -2366,6 +2391,73 @@ export function parseGroupModels(payload: unknown): string[] {
   }))]
 }
 
+export interface NewApiModelPrice {
+  model: string
+  /** 1: one price per call (modelPrice, US dollars at group ratio 1); 0: priced by tokens. */
+  quotaType: number
+  modelPrice: number
+  /** Billed by an expression or a billing plugin, so modelPrice is not what a call costs. */
+  expressionPriced: boolean
+  /** Token-priced models: input price as a ratio (1 = US$2 per million tokens at group ratio 1). Left out when the entry had none. */
+  modelRatio?: number
+  /** Output tokens cost this many times the input price. */
+  completionRatio?: number
+  /** The groups that enable the model (`all` means every usable group), as the site lists them. */
+  groups?: string[]
+}
+
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+export interface NewApiModelPricing {
+  models: NewApiModelPrice[]
+  /** The ratio this account pays in each usable group, group-to-group ratios applied. */
+  groupRatios: Record<string, number>
+}
+
+// GET /api/pricing (controller/pricing.go GetPricing): `data` is []model.Pricing
+// filtered to the account's usable groups, and `group_ratio` sits next to it at
+// the top level with the account's group-to-group ratios already applied when
+// the request is authenticated. An entry this does not understand is skipped,
+// not fatal: the canvas then shows 价格未知 for that model.
+export function parseModelPricing(data: unknown, payload: unknown): NewApiModelPricing {
+  if (!Array.isArray(data)) throw new Error('价目响应格式异常')
+  const models: NewApiModelPrice[] = []
+  const seen = new Set<string>()
+  for (const entry of data.slice(0, maximumPricingModels)) {
+    if (!isRecord(entry) || typeof entry.model_name !== 'string') continue
+    const model = entry.model_name.trim()
+    if (!model || model.length > 200 || /[\x00-\x1F\x7F]/.test(model) || seen.has(model)) continue
+    if (typeof entry.quota_type !== 'number' || !Number.isFinite(entry.quota_type)) continue
+    if (typeof entry.model_price !== 'number' || !Number.isFinite(entry.model_price)) continue
+    seen.add(model)
+    const expressionPriced = (typeof entry.billing_expr === 'string' && entry.billing_expr.trim() !== '')
+      || (typeof entry.billing_mode === 'string' && entry.billing_mode.trim() !== '')
+      || (Array.isArray(entry.billing_plugin_variants) && entry.billing_plugin_variants.length > 0)
+    const modelRatio = nonNegativeNumber(entry.model_ratio)
+    const completionRatio = nonNegativeNumber(entry.completion_ratio)
+    const groups = Array.isArray(entry.enable_groups)
+      ? [...new Set(entry.enable_groups.slice(0, maximumPricingGroups).flatMap((group) => (
+        typeof group === 'string' && group.trim() && group.length <= 128 && !/[\x00-\x1F\x7F]/.test(group) ? [group.trim()] : []
+      )))]
+      : undefined
+    models.push({
+      model, quotaType: entry.quota_type, modelPrice: entry.model_price, expressionPriced,
+      ...(modelRatio === undefined ? {} : { modelRatio }),
+      ...(completionRatio === undefined ? {} : { completionRatio }),
+      ...(groups ? { groups } : {}),
+    })
+  }
+  const groupRatios: Record<string, number> = {}
+  const rawRatios = isRecord(payload) && isRecord(payload.group_ratio) ? payload.group_ratio : {}
+  for (const [group, ratio] of Object.entries(rawRatios).slice(0, maximumPricingModels)) {
+    if (!group.trim() || group.length > 128 || /[\x00-\x1F\x7F]/.test(group)) continue
+    if (typeof ratio === 'number' && Number.isFinite(ratio) && ratio >= 0) groupRatios[group] = ratio
+  }
+  return { models, groupRatios }
+}
+
 export function parseUsableGroups(payload: unknown): NewApiUsableGroup[] {
   if (!isRecord(payload)) throw new Error('可用分组响应格式异常')
   return Object.entries(payload).flatMap(([name, raw]) => {
@@ -2714,6 +2806,36 @@ export function hasExhaustedCappedCliKey(payload: unknown, names: readonly strin
   return false
 }
 
+// A key this app issued for a tool that the user disabled or let expire on
+// the web (0.2.24 深查 D3). Like a used-up cap it is a deliberate stop: a
+// fresh unlimited, never-expiring key under the same name would silently undo
+// it, and so would falling back to an older usable sibling, so provisioning
+// stops instead. newerThanId: a usable key newer than the stopped one (the
+// user re-enabled it, or one was issued in its place before this check
+// existed) is reused as before. A key deleted on the web is gone from the
+// listing, and one left behind by a group rename sits in the old group, so
+// both still get a fresh key (#1074). The server only flips an expired key to
+// status 3 once it next sees it in use (model/token.go ValidateUserToken), so
+// the expiry is read too, on the same boundary findNewestUsableCliKeyByGroup
+// skips it at. Records without a readable id are counted, as above.
+export function hasStoppedCliKey(
+  payload: unknown,
+  names: readonly string[],
+  group: string,
+  newerThanId = 0,
+  nowSeconds = Math.floor(Date.now() / 1_000),
+): boolean {
+  for (const entry of collectionEntries(payload)) {
+    if (!isRecord(entry) || !names.includes(asString(entry.name, '')) || asString(entry.group, '') !== group) continue
+    const id = entry.id
+    if (typeof id === 'number' && Number.isInteger(id) && id > 0 && id <= newerThanId) continue
+    const status = asFiniteNumber(entry.status, 0)
+    const expiredTime = asFiniteNumber(entry.expired_time, -1)
+    if (status === 2 || status === 3 || (status === 1 && expiredTime !== -1 && expiredTime <= nowSeconds)) return true
+  }
+  return false
+}
+
 export function parseCliKeySecret(payload: unknown): string | null {
   const data = isRecord(payload) ? payload : null
   const candidate = data && typeof data.key === 'string'
@@ -2805,6 +2927,7 @@ const newApiCapabilities: RelayBackendCapabilities = {
   supportsDashboard: true,
   supportsDashboardTrends: true,
   supportsTasks: true,
+  supportsPriceList: true,
   supportsProfileUpdate: true,
   supportsSessionManagement: true,
   supportsAutoKeyProvision: true,
@@ -3733,6 +3856,15 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       statParams.delete('request_id')
       statParams.delete('upstream_request_id')
       const statQuery = statParams.toString()
+      if (input.recordsOnly) {
+        const listRaw = await performRequest(
+          ctx,
+          listQuery ? `${logSelfPath}?${listQuery}` : logSelfPath,
+          { method: 'GET', headers: authHeaders(current) },
+          '用量明细查询',
+        )
+        return parseAccountUsagePage(unwrapEnvelope(listRaw, '用量明细查询', [current.accessToken]), { quota: 0, rpm: null, tpm: null })
+      }
       if (input.statsOnly) {
         const statRaw = await performRequest(
           ctx,
@@ -3856,6 +3988,19 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return parseGroupModels(unwrapEnvelope(raw, '分组模型查询', [current.accessToken]))
   })
 
+  // Signed in, so the answer carries this account's usable groups and its own
+  // group ratios rather than the anonymous defaults. Read-only and cached by
+  // the caller (canvas-price-snapshot.ts).
+  const getModelPricing = (): Promise<NewApiModelPricing> => withReadSession(async (current) => {
+    const raw = await performRequest(
+      ctx,
+      pricingPath,
+      { method: 'GET', headers: authHeaders(current), maxResponseBytes: maximumPricingResponseBytes },
+      '价目读取',
+    )
+    return parseModelPricing(unwrapEnvelope(raw, '价目读取', [current.accessToken]), raw.payload)
+  })
+
   const revealKey = (id: number): Promise<string> => withSession(async (current) => {
     if (!Number.isInteger(id) || id <= 0) throw new Error('密钥 ID 格式错误')
     const raw = await performRequest(
@@ -3895,7 +4040,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   function validateKeyEditorInput(input: NewApiAccountKeyCreateInput): { name: string; group: string } {
     const name = input.name.trim()
     if (!name) throw new Error('请输入密钥名称')
-    if (utf8Length(name) > accountKeyNameMaxBytes) throw new Error('密钥名称不能超过 50 个字符')
+    if (utf8Length(name) > accountKeyNameMaxBytes) throw new Error(accountKeyNameTooLongMessage)
     const group = input.group.trim()
     if (!group || group.length > 128) throw new Error('请选择有效分组')
     if (!input.unlimitedQuota && (!Number.isInteger(input.remainQuota) || input.remainQuota < 0)) {
@@ -4145,6 +4290,11 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
           && hasExhaustedCappedCliKey(records, names, group, existing?.name === requested ? existing.id : 0)) {
           throw new Error(managedKeyQuotaExhaustedMessage)
         }
+        // 网页上停用了、到期了的那把（D3）同样不拿新 Key 顶上。fresh 是撤销一把在用的 Key 以后照抄原限制换新，
+        // 那把是用户自己撤的；对话那把归 chat-credential-coordinator.ts 管。
+        if (!chat && !input.fresh && hasStoppedCliKey(records, names, group, existing?.id ?? 0)) {
+          throw new Error(managedKeyStoppedMessage)
+        }
         if (existing) {
           const known = knownCliKeyForRecord(records, existing, input.knownKeys)
           if (known) return { id: existing.id, name: existing.name, key: known }
@@ -4327,6 +4477,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     listKeys,
     listUsableGroups,
     listGroupModels,
+    getModelPricing,
     revealKey,
     revokeKey,
     createKey,

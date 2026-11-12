@@ -14,6 +14,7 @@ import { createServiceContext } from './system-service-context'
 const temporaryDirectories: string[] = []
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
 })
 
@@ -58,6 +59,19 @@ describe('provider launch service', () => {
     const { context, service, root, inspectCliTool } = createService()
 
     await expect(service.launchProvider('claude', path.join(root, 'missing'))).rejects.toThrow('工作目录不存在，请重新选择')
+    expect(context.toolLaunchedAt.has('claude')).toBe(false)
+    expect(inspectCliTool).not.toHaveBeenCalled()
+  })
+
+  it('tells a Mac user to grant folder access instead of calling an existing folder gone (D29)', async () => {
+    const { context, service, workspace, inspectCliTool } = createService({ platform: 'darwin' })
+    const statSync = fs.statSync
+    vi.spyOn(fs, 'statSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+      if (target === workspace) throw Object.assign(new Error(`EPERM: operation not permitted, stat '${workspace}'`), { code: 'EPERM' })
+      return statSync(target, options)
+    }) as typeof fs.statSync)
+
+    await expect(service.launchProvider('claude', workspace)).rejects.toThrow('Mac 没允许星芒打开这个文件夹。打开「系统设置 › 隐私与安全性 › 文件和文件夹」，把「星芒AI管理工具」和「终端」两项都打开，再点一次「打开」。')
     expect(context.toolLaunchedAt.has('claude')).toBe(false)
     expect(inspectCliTool).not.toHaveBeenCalled()
   })

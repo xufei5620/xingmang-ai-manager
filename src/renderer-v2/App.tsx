@@ -11,8 +11,9 @@ import { answerHistoryFlushRequests } from './features/chat/storage'
 import { OnlineStatusContext } from './features/shell/useOnlineStatus'
 import { buildEnvironmentStatus, environmentJobsFinished, markDiagnosticsStale, useDiagnosticsCounts } from './features/app/environment-status'
 import { createAppApi } from './features/app/api'
-import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState, type LoginTarget } from './features/auth'
+import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideFolderFields, guideOfficialLoginRequired, isGuideToolRoute, type AuthMode, type GuideLanding, type GuideRoute, type GuideToolState, type LoginTarget, useGuideLaunch } from './features/auth'
 import { AuthConnectionRoutes } from './features/app/AuthConnectionRoutes'
+import { CommandConfirmationDialog } from './features/tools/CommandConfirmationDialog'
 import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { OfficialQuotaDialog } from './features/tools/OfficialQuotaDialog'
@@ -39,6 +40,7 @@ import { BalanceTierProvider, Button, Confirm, Dialog, Notice, Switch, ToastProv
 import { bridge as getBridge } from './bridge'
 import { useLatestRequest } from './latest-request'
 import { SavedAccounts } from './SavedAccounts'
+import { logoutChatImageNote } from './chat-image-work'
 import { accountSwitchNeedsAttention } from './account-switch-sync'
 import { accountSources } from './features/auth/state'
 import { AnnouncementCenter } from './features/shell/Announcement'
@@ -52,6 +54,7 @@ import { FailureBoundary } from './features/app/FailureBoundary'
 import { PageLoading } from './features/app/PageLoading'
 import { OperationErrorDialog, type OperationFailure } from './features/app/OperationErrorDialog'
 import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
+import { UpdateInstallConfirm } from './features/settings/UpdateInstallDialog'
 import { canReplaceNode } from './features/tools/node-replace'
 import { StartupNotices } from './features/app/StartupNotices'
 import { updateFailureTone, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
@@ -193,6 +196,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 装完工具同步 Key 要对的是「现在」的账号，安装闭包里那份会话还停在点安装那一刻（#1097）。
   const latestScope = useRef(scope)
   latestScope.current = scope
+  // 引导里选「做图、做视频」时还没登录：先去登录。登好了引导会按新账号重开，所以记在这里，
+  // 登好了直接算走完、进视频剪辑页；登录框关掉没登就作罢。
+  const guideCreateAfterLogin = useRef(false)
   // 开机账号恢复超过了启动画面的等待上限：先进首页，按正在恢复的账号显示，
   // 恢复结束再补读一次配置（见 useAccountSessionSync）。
   const restoring = sessionRestoring(session)
@@ -225,7 +231,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const { accountBootstrap, accountBootstrapRef, runAccountBootstrap, rewriteAccountKeys, applySubscriptionToTools, followSessionChange, abandonAccountBootstrap, suppressRestore } = useAccountBootstrap({
     native, settings, toast, toolbox, session, scope, siteId, boot, auth, offline, noteStartupCheck, mounted, accountEpoch, setAuth, setWorkspaceEntered, restoredBoot,
   })
-  const { toolConfigConfirmed, keepCurrentToolConfig, switchToolAccount, repairToolHooks, repairBrokenToolConfig, confirmToolKeyWritten, finishConfigSave } = useToolAccountActions({
+  const { toolConfigConfirmed, keepCurrentToolConfig, switchToolAccount, repairToolHooks, repairBrokenToolConfig, confirmToolKeyWritten, finishConfigSave, commandConfirmation, answerCommandConfirmation } = useToolAccountActions({
     toolsApi, toolbox, toast, session, mounted, accountEpoch, configTool, setConfigTool, setAuth, setCcSwitchReminder, setSwitchRestartOffer,
   })
   // 官方账号与手填密钥重写不动（重写流程本身会跳过它们），所以按钮按当前配置的
@@ -276,6 +282,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     chineseSuspended: featuresOff.includes('codex-desktop-chinese') })
   const closeAccountDialogs = useCallback(() => { setConfigTool(null); setExternalClient(null) }, [])
   const leaveWorkspace = useCallback(() => { setGuide(false); setPage('home'); setWorkspaceEntered(false) }, [setPage])
+  const finishGuide = (id: GuideRoute, landing: GuideLanding) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }
+  // 等会话换成登好的那个账号再走完：登录回调里那一刻的 navigate 还当没登录，会再弹一次登录框。
+  useEffect(() => {
+    if (!guideCreateAfterLogin.current || !session.authenticated) return
+    guideCreateAfterLogin.current = false
+    finishGuide('create', 'video')
+  }, [session.authenticated, scope])
   const { accountReadError, setAccountReadError, reloadAccount, logoutVoluntarily } = useAccountSessionSync({
     native, app, toolsApi, toolbox, toast, balanceStore, session, setSession, scope, restoring, sessionEvents, accountEpoch, mounted,
     cancelPendingLaunchDialogs, followSessionChange, refreshRecent, noteStartupCheck, closeAccountDialogs, leaveWorkspace, setUnread, setPaymentReturn,
@@ -305,13 +318,15 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     confirmationLock.current = true; setConfirmBusy(true)
     void pending.work().then(() => setConfirmation(null)).catch((cause) => setOperationError({ ...operationFailureFrom(cause), retry: () => runConfirmed(pending), ...(pending.tool ? { tool: pending.tool } : {}) })).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
   }
-  const { inviteCode } = useDeepLinks({ native, mounted, boot, authenticated: session.authenticated, auth, configTool, confirmation, switcher, restartDialog, navigate, setAuth, setOperationError, setPaymentReturn })
+  const { inviteCode } = useDeepLinks({ native, mounted, boot, authenticated: session.authenticated, auth, configTool, confirmation, switcher, restartDialog, navigate, toast, setAuth, setOperationError, setPaymentReturn })
   useAppEntryPoints({ native, navigate, session, os, settings, snapshot: toolbox.snapshot, changeUiScale, requestLaunchInLastWorkspace, setAnnouncementOpen })
   // 界面挂好了的标记，e2e/macos-visual-qa.mjs 等到它才开始量。
   useEffect(() => {
     document.documentElement.dataset.rendererReady = 'true'
     return () => { delete document.documentElement.dataset.rendererReady }
   }, [])
+  // 引导最后一步那颗「打开」跟首页同一套（D46）：落在哪个文件夹按会话记录定，引导开着时读一份。
+  const guideLaunchTarget = useGuideLaunch(toolsApi, guide, recentRevision, toolbox.snapshot?.config.rememberedWorkspace)
   const guideTools: GuideToolState[] = toolbox.snapshot ? presentTools(toolbox.snapshot).map((tool) => ({
     id: tool.id, installed: tool.status.installed, configured: tool.configured, source: guideSource(tool.source),
     version: tool.currentVersion ?? undefined, model: tool.model, detectionError: Boolean(tool.error),
@@ -323,6 +338,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // Mac 上 Codex 桌面端的更新要先看开没开着、换完再帮它打开，引导里那颗「更新」走不了这一套：只在首页卡片上给。
     update: tool.id === 'codexDesktop' && toolbox.snapshot!.platform.isMac ? null : toolUpdateOffer(tool),
     installMode: tool.id === 'codexDesktop' ? platform?.codexDesktop.install : platform?.cliInstall[tool.id], workspace: toolbox.snapshot!.config.workspace,
+    // 「打开」落在哪、旁边给不给「选择其他文件夹…」，那句话（D45）也跟着它挑：跟首页这个工具的卡片同一套。
+    ...guideFolderFields(guideLaunchTarget(tool.provider), toolbox.snapshot!.config),
     // 没登录就没有「当前账号」可比：来源没确认的一律按「不是当前账号的 Key」走，
     // 引导只给「登录后改用我的账号」，不因 Key 恰好在我们站上就放行（方案盘查第 1 条）。
     keyState: tool.source === 'changed' ? 'changed' : session.authenticated ? foreignKeyKind(toolbox.snapshot!.config.providers[tool.provider], tool.source) ?? undefined : tool.source === 'unknown' ? 'otherSite' : undefined,
@@ -371,8 +388,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => {
     if (workspaceVisible && page === 'home' && tourReplayPending(scope)) setTourOpen(true)
   }, [workspaceVisible, page, scope])
-  const { showUpdate, dismissUpdate, updateRetrying, retryUpdate, autoUpdateToggle, autoUpdateOn, updateDiskText, offerInstall, offerDownload, openInstallConfirm, downloadUpdate, maintenance, launchInstall, maintenanceDismissed, dismissMaintenance } = useUpdateBubble({
-    native, update, setUpdate, settings, page, settingsGroup, perform, navigate,
+  const { showUpdate, dismissUpdate, updateRetrying, retryUpdate, autoUpdateToggle, autoUpdateOn, updateDiskText, offerInstall, offerDownload, openInstallConfirm, installConfirmOpen, closeInstallConfirm, downloadUpdate, maintenance, launchInstall, maintenanceDismissed, dismissMaintenance } = useUpdateBubble({
+    native, update, setUpdate, settings, page, settingsGroup, perform,
   })
   // 状态文件里的已知问题提示（service-status.ts 的 knownIssues）：跟维护提示挤同一个角落，按这一页挑一条。
   const knownIssue = useKnownIssue(update, { page, accountTab: page === 'account' ? shownAccountTab : undefined })
@@ -421,7 +438,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           updatableCount={toolUpdates.length}
           network={latestNetworkLocation(toolbox.snapshot?.system.network, networkLocation.snapshot.network)}
           networkRefreshing={networkLocation.snapshot.busy}
-          banner={<>{page !== 'home' && <RestartReminder restart={toolsApi.restartWindows} />}{session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement}
+          banner={<>{page !== 'home' && <RestartReminder restart={toolsApi.restartWindows} />}{session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} readImage={app.announcementImage} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement}
             promoVisible={page === 'home'} noticeSlot={page === 'home' ? homeNoticeSlot : null} noticeRoom={homeNoticeRoom} onTopUp={accountSupports(session, 'supportsBilling') ? (amount) => navigate('account', 'recharge', amount) : undefined}
             readTopupOffers={accountSupports(session, 'supportsBilling') ? () => native.getAccountTopupInfo() : undefined} />}</>}
           notification={update && showUpdate && <Notice tone={update.error ? updateFailureTone(update) : updateDiskText ? 'warn' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
@@ -460,11 +477,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), installUpdate: openInstallConfirm, openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
             startCheck,
             ...(toggleTheme ? { toggleTheme } : {}),
-            logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}`, label: '退出', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
+            logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}${logoutChatImageNote()}`, label: '退出登录', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
-            {renderedChatScope === scope && <div key={chatMount} className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
-            {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsUsageTrend={accountSupports(session, 'supportsDashboardTrends')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
+            {renderedChatScope === scope && <div key={chatMount} className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} onOpenAssets={() => void perform('打开素材库', app.openCanvasAssets)} /></Suspense></div>}
+            {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsUsageTrend={accountSupports(session, 'supportsDashboardTrends')} supportsBilling={accountSupports(session, 'supportsBilling')} supportsKeys={session.authenticated && visibleAccountTab('keys', session)} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={visibleExternalClients(os, toolbox.externalClients)} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               toolRouteStatus={session.authenticated && siteId === 'solov' ? settings?.relayToolRouteStatus : undefined}
               onScan={() => {
@@ -538,15 +555,22 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         return Boolean(outcome?.result?.configured.includes(provider))
       }} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
       walletEmpty={session.authenticated && homeWalletEmpty(balanceAmount, subscription, accountSupports(session, 'supportsBilling'))}
-      onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
-      onComplete={(id, landing) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
-    {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
+      onLaunch={async (id, chooseFolder) => {
+        if (!isGuideToolRoute(id)) return true
+        // 跟首页那颗「打开」同一套（D46）：没用过的替他新建项目文件夹，用过的在上次的文件夹里开（不在了提示一句再弹选择窗口）；
+        // 「选择其他文件夹…」弹选择窗口。Codex 桌面端自己管工作区。
+        const target = guideLaunchTarget(providerFor(id))
+        return chooseFolder || id === 'codexDesktop' ? launch(id, 'open', undefined, 'choose') : launch(id, 'open', target.workspace, target.startsFresh ? 'firstOpen' : 'choose')
+      }}
+      createAvailable={signedInSiteId(session) !== 'solov-api'} onCreateLogin={() => { guideCreateAfterLogin.current = true; setAuth('login') }}
+      onComplete={finishGuide} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
+    {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { guideCreateAfterLogin.current = false; setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
       onRelaunch={() => void perform('重开软件', async () => { await app.relaunch() })}
       connectionSettings={settings ? (onBusyChange) => <AuthConnectionRoutes api={app} settings={settings} onSettingsChanged={setSettings} onBusyChange={onBusyChange} /> : undefined}
       notice={maintenance ? <MaintenanceNotice maintenance={maintenance} testId="auth-maintenance-notice" /> : undefined} onAuthenticated={(result, options) => {
       const authenticatedScope = accountScope(result)
       suppressRestore(authenticatedScope)
-      setAuth(null); setAuthTarget(null); setSession({ ...result, authenticated: true }); setGuide(!readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
+      setAuth(null); setAuthTarget(null); setSession({ ...result, authenticated: true }); setGuide(!guideCreateAfterLogin.current && !readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
       void runAccountBootstrap(result.account.userId, 'login', true, undefined, accountSiteId(result))
       if (options?.notice) toast.show(options.notice, 'ok')
       if (options?.rememberError) toast.show(options.rememberError, 'warn')
@@ -625,7 +649,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button onClick={() => setStoreNewerVersion(null)}>先不用</Button>
       <Button variant="primary" testId="codex-desktop-store-newer-open" onClick={() => { setStoreNewerVersion(null); void perform('打开微软商店', openCodexDesktopStore) }}>去微软商店装</Button>
     </>}><p>国内下载线路还没跟上，这台电脑上的 Codex 桌面端这次没有变。微软商店里已经有 {storeNewerVersion}，想用最新版就去商店点「更新」或「获取」。</p></Dialog>}
-    {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} cleanUp={(tool) => toolsApi.cleanUninstallLeftovers(tool)} />}
+    {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} cleanUp={(tool) => toolsApi.cleanUninstallLeftovers(tool)} onHelp={() => setHelp(true)} />}
     {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<>
       <Button onClick={() => setAccountReadError(null)}>返回</Button>
       {accountReadErrorAction(accountReadError.message) === 'relogin'
@@ -636,15 +660,17 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       footer={<Button variant="primary" onClick={() => setCcSwitchReminder(false)}>知道了</Button>}>
       <p>这个工具以前用 CC Switch 配过。CC Switch 还开着的话，会把刚改好的设置又改回去。不再用它的话，请把它退出（包括托盘里的图标）。</p>
     </Dialog>}
+    {commandConfirmation && <CommandConfirmationDialog busy={commandConfirmation === 'answering'}
+      onAnswer={(choice) => void perform(choice === 'ask' ? '改回先问我' : '保持现在这样', () => answerCommandConfirmation(choice))} />}
     {switchRestartOffer && <Dialog open title="Codex 桌面端还开着" onClose={() => setSwitchRestartOffer(null)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
       <Button variant="ghost" onClick={() => setSwitchRestartOffer(null)}>先不用</Button>
       <Button variant="primary" testId="switch-restart-codex-desktop" onClick={() => void perform('重开 Codex 桌面端', async () => { await launch('codexDesktop', 'restart'); setSwitchRestartOffer(null) })}>帮我重开</Button>
     </>}><p>{switchRestartOffer === 'official' ? '它还在用刚才的账号，要重开才会换回官方账号。' : '它还在用刚才的账号，要重开才会用上当前账号。'}重开会打断它正在进行的回答。</p></Dialog>}
-    {restartDialog && <Dialog open title="Codex 已在运行" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
+    {restartDialog && <Dialog open title="Codex 桌面端还开着" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
       <Button variant="ghost" onClick={() => setRestartDialog(false)}>取消</Button>
-      <Button onClick={() => void perform('重启 Codex', async () => { await launch('codexDesktop', 'restart'); setRestartDialog(false) })}>重启 Codex</Button>
+      <Button onClick={() => void perform('重开 Codex', async () => { await launch('codexDesktop', 'restart'); setRestartDialog(false) })}>重开 Codex</Button>
       <Button variant="primary" onClick={() => void perform('打开 Codex', async () => { await launch('codexDesktop'); setRestartDialog(false) })}>打开窗口</Button>
-    </>}><p>可以直接打开现有窗口；需要重新加载配置时，选择重启 Codex。</p></Dialog>}
+    </>}><p>可以直接切到开着的窗口。刚改过配置的话，点「重开 Codex」才会用上。</p></Dialog>}
     {/* 显示中文要在本机开一个调试端口（早先审查标过的安全点），所以仍然问一次、不替用户默认开。
         两个按钮同等样式，键盘焦点落在「先不用」：随手一按回车不会开端口，想要中文的人点一下就行。
         Codex 的中文开关每次启动时才拿，只有星芒打开的那一下连了加速、开了通道，开机后直接点 Codex 自己的图标还是英文，
@@ -652,7 +678,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {chineseDialog && <Dialog open title="要让 Codex 的界面显示中文吗？" onClose={() => setChineseDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} initialFocus={chineseDecline} footer={<>
       <Button ref={chineseDecline} testId="codex-chinese-decline" onClick={() => void perform('打开 Codex', () => answerChineseRuntimePatch('disabled'))}>先不用</Button>
       <Button testId="codex-chinese-enable" onClick={() => void perform('启用中文界面', () => answerChineseRuntimePatch('enabled'))}>显示中文</Button>
-    </>}><p>选「显示中文」后，星芒每次打开 Codex 时会顺带开一个本机通道，用来把界面换成中文；关掉 Codex，通道也跟着关上。通道开着时，这台电脑上的其他程序和其他账户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。</p>
+    </>}><p>选「显示中文」后，星芒每次打开 Codex 时会顺带开一个本机通道，用来把界面换成中文；关掉 Codex，通道也跟着关上。通道开着时，这台电脑上的其他程序和其他用户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。</p>
       <p>不用也没关系，Codex 照样能用，只是界面是英文。只问这一次，以后想改，随时可以在 Codex 桌面端的配置里打开或关掉。</p></Dialog>}
     {/* 默认模型换不换由用户点，不替付费客户自动换（第十二批候选 5、第十五批 6）；关掉对话框 = 这次先不打开。 */}
     {modelSwap && <Dialog open title={modelSwapTitle(modelSwap.offer)} onClose={() => modelSwap.answer('cancel')} footer={<>
@@ -660,6 +686,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button variant="primary" testId="model-swap-confirm" onClick={() => modelSwap.answer('swap')}>{modelSwapConfirmLabel(modelSwap.offer)}</Button>
     </>}><p data-testid="model-swap-question">{modelSwapQuestion(modelSwap.offer)}</p></Dialog>}
     {runtimeRestart && <RuntimeRestartDialog onClose={() => setRuntimeRestart(false)} restart={toolsApi.restartWindows} />}
+    {/* 气泡、状态栏、侧栏的「重启并安装」在原地弹确认框，不先跳到版本更新页（11-10）。 */}
+    {installConfirmOpen && <UpdateInstallConfirm api={native} update={update} open onClose={closeInstallConfirm} />}
     {/* 点「取消」或关掉框都是不换：install 收到 false，什么都不动。 */}
     {managedSwitch && <Confirm {...managedSwitchConfirmation(managedSwitch.version)} testId="managed-switch-confirm" onOk={() => managedSwitch.answer(true)} onClose={() => managedSwitch.answer(false)} />}
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} cancelLabel={confirmation.cancelLabel} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => runConfirmed(confirmation)} />}

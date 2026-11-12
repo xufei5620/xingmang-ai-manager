@@ -12,6 +12,9 @@ import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './ch
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, isServiceUnavailableResponse, networkFailureMessages } from './network-failure'
 import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
+import { unsentRequestFailure } from './relay-line-fetch'
+import { reportRelayAnswer, reportRelayDispatch } from './relay-request-id'
+import type { AiRelayBillingObserver } from './ai-operation-progress'
 
 export const AI_CHAT_STREAM_LIMITS = {
   requestIdLength: 160,
@@ -122,6 +125,14 @@ export interface CompleteAiChatOnceInput {
   messages: readonly AiChatMessage[]
   parameters?: AiChatParameters
   signal?: AbortSignal
+  /** The canvas run's 实扣 bookkeeping (画布完善第 2b 条第 3 步). */
+  billing?: AiRelayBillingObserver
+  /**
+   * Resolves the image ids in `messages` to data URIs (画布完善第 6 条). Called
+   * only once the credential names the account, with that account's user id,
+   * and before anything is sent; a throw stops the request unpaid.
+   */
+  readImages?(userId: number, signal: AbortSignal): Promise<ReadonlyMap<string, string>>
 }
 
 export interface AiChatService {
@@ -1014,21 +1025,41 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('model-unavailable', SAFE_ERROR_MESSAGES['model-unavailable'])
       }
       if (controller.signal.aborted) throw controller.signal.reason
+      // Ids without a reader stay unresolved, and toChatCompletionsWireBody
+      // refuses them rather than send a literal asset id to the relay.
+      let images: ReadonlyMap<string, string> = new Map()
+      if (input.readImages) {
+        try {
+          images = await input.readImages(credential.userId, controller.signal)
+        } catch (error) {
+          if (controller.signal.aborted) throw controller.signal.reason
+          // The reader's own words say which picture and what to do about it.
+          throw new StreamFailure('image-unavailable', error instanceof Error && error.message ? error.message : SAFE_ERROR_MESSAGES['image-unavailable'])
+        }
+      }
+      if (controller.signal.aborted) throw controller.signal.reason
+      const wireBody = JSON.stringify(toChatCompletionsWireBody(body, images))
       armStageTimer('connection-timeout', limits.connectionTimeoutMs)
-      const response = await fetchImpl(endpoint, {
-        method: 'POST',
-        headers: {
-          Accept: 'text/event-stream',
-          Authorization: `Bearer ${credential.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        // Canvas text nodes never attach images; an id slipping through must
-        // fail here rather than reach the relay as a literal asset id.
-        body: JSON.stringify(toChatCompletionsWireBody(body, new Map())),
-        credentials: 'omit',
-        redirect: 'manual',
-        signal: controller.signal,
-      })
+      reportRelayDispatch(input.billing, true)
+      let response: Response
+      try {
+        response = await fetchImpl(endpoint, {
+          method: 'POST',
+          headers: {
+            Accept: 'text/event-stream',
+            Authorization: `Bearer ${credential.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: wireBody,
+          credentials: 'omit',
+          redirect: 'manual',
+          signal: controller.signal,
+        })
+      } catch (error) {
+        if (unsentRequestFailure(error)) reportRelayDispatch(input.billing, false)
+        throw error
+      }
+      reportRelayAnswer(input.billing, response.headers)
       armStageTimer('idle-timeout', limits.idleTimeoutMs)
       if (!responseOriginIsTrusted(response, baseUrl.origin) || REDIRECT_STATUSES.has(response.status)) {
         await response.body?.cancel().catch(() => undefined)

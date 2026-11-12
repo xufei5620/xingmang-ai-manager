@@ -27,8 +27,11 @@ import { createCanvasNodeExecutors } from '../canvas-node-executors'
 import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from '../canvas-project-asset-manager'
 import { CanvasProjectStore } from '../canvas-project-store'
 import { CanvasPromptPresetStore } from '../canvas-prompt-preset-store'
+import { createCanvasRunChargeChecker } from '../canvas-run-charges'
+import { CanvasRunPreparationBroker, createCanvasFrameExtraction, createCanvasImageToolProcessing } from '../canvas-run-preparations'
 import { createCanvasRunService } from '../canvas-run-service'
 import { CanvasRunStore } from '../canvas-run-store'
+import { readCanvasTextImages } from '../canvas-text-image-input'
 import { createChatCredentialCoordinator } from '../chat-credential-coordinator'
 import { ChatKeyStore } from '../chat-key-store'
 import { readClipboardPng, writeClipboardPng } from '../clipboard-image'
@@ -151,6 +154,8 @@ export interface RealmBusinessesOptions {
   runtimeLog: RuntimeLogStore
   sessionFetch: typeof fetch
   routedRelayFetch: typeof fetch
+  /** Quota per dollar from the balance main.ts already read; null when it has none yet. */
+  cachedQuotaPerUnit?: () => number | null
 }
 
 export function createRealmBusinesses(options: RealmBusinessesOptions) {
@@ -160,23 +165,32 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
   } = options
   // Each realm moves its own subtree once per launch; a second realm object for
   // the same subtree must not start a second walk over files already moving.
+  // Moves run one after another: the old folder next to the executable and the
+  // home-folder fallback can both hold the same account, and two walks into one
+  // account folder at once could both find it missing and race to create it.
   const aiOutputMigrations = new Set<string>()
-  function migrateAiOutputOnce(from: string, to: string, mergeMetadata: (userId: number, content: string) => Promise<void>): void {
+  let aiOutputMigrationQueue: Promise<void> = Promise.resolve()
+  function migrateAiOutputOnce(
+    from: string,
+    to: string,
+    mergeMetadata: (userId: number, content: string) => Promise<void>,
+    log: { event: string, failedEvent: string, message: string },
+  ): void {
     if (aiOutputMigrations.has(from)) return
     aiOutputMigrations.add(from)
-    void migrateLegacyAiOutput(from, to, { mergeMetadata }).then((result) => {
+    aiOutputMigrationQueue = aiOutputMigrationQueue.then(() => migrateLegacyAiOutput(from, to, { mergeMetadata })).then((result) => {
       if (!result.moved && !result.kept && !result.failed) return
       // Counts only: support needs to know whether anything stayed behind, not
       // where the user's files are (I13).
-      runtimeLog.log(result.failed ? 'warn' : 'info', 'ai-chat', 'asset.output.migrated', '老版本的 AI 作品已搬到新的保存位置', { ...result })
-    }).catch((error) => runtimeLog.exception('ai-chat', 'asset.output.migrate-failed', error))
+      runtimeLog.log(result.failed ? 'warn' : 'info', 'ai-chat', log.event, log.message, { ...result })
+    }).catch((error) => runtimeLog.exception('ai-chat', log.failedEvent, error))
   }
   function createBusiness(siteId: RealmAccountSiteId) {
     // AI 工作区的请求同样按默认线路的地址发，走哪条线路由 routedRelayFetch 换（「自动」会在运行中换线路）。
     const definition = requireSiteRuntimeDefinition(siteId)
     const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
     const accountService = createRealmServiceDispatch(() => {
-      if (accounts.getSiteId() !== siteId) throw new Error('账号上下文已变化，请重试')
+      if (accounts.getSiteId() !== siteId) throw new Error('账号刚切换过，请再试一次')
       return accounts.client
     })
     const onAiRequestStarted = createAccountUsageTracker({
@@ -302,7 +316,16 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     // 元数据合并交给正在用的这个 store，和搬家期间的收藏、新作品写入排同一个队。
     const legacyAiOutputRoot = resolveLegacyAiOutputRoot({ isPackaged: app.isPackaged, execPath: process.execPath })
     if (legacyAiOutputRoot) {
-      migrateAiOutputOnce(roots.assetOutputDirectory(legacyAiOutputRoot), aiOutputRoot, (userId, content) => assetMetadata.mergeLegacy(userId, content))
+      migrateAiOutputOnce(roots.assetOutputDirectory(legacyAiOutputRoot), aiOutputRoot, (userId, content) => assetMetadata.mergeLegacy(userId, content), {
+        event: 'asset.output.migrated', failedEvent: 'asset.output.migrate-failed', message: '老版本的 AI 作品已搬到新的保存位置',
+      })
+    }
+    // 「文档」又能写了：上次存到个人文件夹的作品挪回来，跟上面同一套搬法（同一块盘只改名、
+    // 不覆盖、不跟链接），作品库、聊天、画布按编号照样找得到（决定单 D107）。
+    if (aiOutputPlacement.worksToMoveBackFrom) {
+      migrateAiOutputOnce(aiOutputPlacement.worksToMoveBackFrom, aiOutputRoot, (userId, content) => assetMetadata.mergeLegacy(userId, content), {
+        event: 'asset.output.moved-back-to-documents', failedEvent: 'asset.output.move-back-failed', message: '「文档」又能写了，个人文件夹里的 AI 作品已挪回「文档」',
+      })
     }
     // Permanent deletion hands the file to the OS recycle bin rather than
     // unlinking it. The bytes are the user's artwork; the last recoverable copy
@@ -539,23 +562,84 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     const canvasPromptPresets = new CanvasPromptPresetStore({
       rootDirectory: path.join(roots.rootDirectory, 'canvas-content'),
     })
+    // 跑完写实扣只认星芒账号：它的用量记录按请求号记每一笔扣费（画布完善第 2b 条第 3 步）。
+    const canvasRunCharges = siteId === 'solov'
+      ? (publish: Parameters<typeof createCanvasRunChargeChecker>[0]['publish']) => createCanvasRunChargeChecker({
+        current: () => {
+          try {
+            if (accounts.getSiteId() !== siteId) return null
+            const revision = accountService.getSessionRevision!()
+            const state = accountService.getSessionState()
+            const userId = state.authenticated ? state.account?.userId : undefined
+            return typeof userId === 'number' ? { userId, key: `${revision}:${userId}` } : null
+          } catch {
+            return null
+          }
+        },
+        readUsage: async (query) => {
+          const page = await accountService.getUsage({ ...query, type: 2, recordsOnly: true })
+          return { records: page.records.map((record) => ({ requestId: record.requestId, quota: record.quota, type: record.type })), total: page.total }
+        },
+        readQuotaPerUnit: async () => options.cachedQuotaPerUnit?.() ?? (await accountService.getBalance()).quotaPerUnit,
+        getRun: (userId, runId) => canvasRunStore.getRun(userId, runId),
+        saveRun: (userId, record) => canvasRunStore.saveRun(userId, record),
+        publish,
+      })
+      : undefined
+    // 画布完善第 7 条第二步：抽帧节点等页面交回的那一帧。每个账号域一份，换域时跟着运行一起停。
+    const canvasRunPreparations = new CanvasRunPreparationBroker()
     const canvasRuns = createCanvasRunService({
       store: canvasRunStore,
+      ...(canvasRunCharges ? { charges: canvasRunCharges } : {}),
+      preparations: canvasRunPreparations,
       executors: createCanvasNodeExecutors({
         imageService: canvasImageService,
         videoService,
         assets: canvasProjectAssets,
-        completeText: {
-          completeOnce: (input) => chatService.completeOnce({
-            group: input.group,
-            model: input.model,
-            messages: [
-              { role: 'system', content: input.system },
-              { role: 'user', content: input.user },
-            ],
-            signal: input.signal,
+        frames: createCanvasFrameExtraction({
+          broker: canvasRunPreparations,
+          assets: canvasProjectAssets,
+          onSourceError: (error, assetId) => runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '视频帧已保存，但来源信息保存失败', {
+            assetId,
+            reason: error instanceof Error ? error.message : String(error),
           }),
+        }),
+        // 画布完善第 7 条第三步：图片工具等页面交回的图。运行图里的图片工具节点只在 imageTools 打开后才收（canvas-request-parser.ts）。
+        imageTools: createCanvasImageToolProcessing({
+          broker: canvasRunPreparations,
+          assets: canvasProjectAssets,
+          onSourceError: (error, assetId) => runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '图片处理结果已保存，但来源信息保存失败', {
+            assetId,
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        }),
+        completeText: {
+          completeOnce: (input) => {
+            const images = input.images
+            return chatService.completeOnce({
+              group: input.group,
+              model: input.model,
+              messages: [
+                ...(input.system ? [{ role: 'system' as const, content: input.system }] : []),
+                { role: 'user', content: input.user, ...(images ? { images: images.assetIds } : {}) },
+              ],
+              signal: input.signal,
+              ...(input.billing ? { billing: input.billing } : {}),
+              // 画布完善第 6 条：文字节点连的图从画布自己的项目素材库读，按凭据给出的那个账号读。
+              ...(images ? {
+                readImages: (userId: number, signal: AbortSignal) => readCanvasTextImages(
+                  (owner, assetId, projectId) => canvasProjectAssets.readImageOwned(owner, assetId, projectId),
+                  userId,
+                  images.assetIds,
+                  images.projectId,
+                  signal,
+                ),
+              } : {}),
+            })
+          },
         },
+        // 画布完善第 8 条第二步：室外两张图、故事板几张图在付费前读出来比内容，从画布自己的项目素材库读。
+        sceneSources: (userId, assetId, projectId) => canvasProjectAssets.readImageOwned(userId, assetId, projectId),
       }),
     })
     return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,

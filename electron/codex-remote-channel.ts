@@ -20,6 +20,24 @@ export function isRemoteChannelId(value: unknown): value is RemoteChannelId {
   return typeof value === 'string' && (remoteChannelIds as readonly string[]).includes(value)
 }
 
+/**
+ * 手机遥控卡飞书那块「打开飞书开放平台」交给浏览器的网址（YF-4）：开发者后台的应用列表，建机器人第 1 步就到这里。
+ * 主窗口外链白名单（main.ts，I12 全等匹配）收的就是这一条，两边用同一个常量。
+ */
+export const feishuDeveloperConsoleUrl = 'https://open.feishu.cn/app'
+
+/**
+ * 「多久没消息就自动关」能选的时长，单位小时（YF-10，yoyo 2026-11-11 亲手打字「不自动关」「默认不关」）。
+ * 不在这里面就是「不自动关」，也是缺省：设置里不存、快照里不带。
+ */
+export const remoteIdleCloseHours = [4, 12] as const
+
+export type RemoteIdleCloseHours = typeof remoteIdleCloseHours[number]
+
+export function isRemoteIdleCloseHours(value: unknown): value is RemoteIdleCloseHours {
+  return typeof value === 'number' && (remoteIdleCloseHours as readonly number[]).includes(value)
+}
+
 /** 平台给的发送人。userId 是平台里稳定的那个编号（飞书 open_id、微信 iLink 的用户编号）。 */
 export interface RemotePeer {
   channel: RemoteChannelId
@@ -66,13 +84,48 @@ export interface RemoteInboundApproval extends RemoteInboundBase {
   decision: RemoteApprovalDecision
 }
 
-/** 收到了渠道转不成文字的东西（图片、文件）。底座回一句「暂时只支持文字」，渠道不用自己回话。 */
+/**
+ * 进度卡上点了「停止」（YF-15，只有能原地更新卡片的渠道有）。nonce 是卡片上按钮原样带回来的
+ * RemoteProgressCard.stopNonce；认不出是 null，底座当上一轮留下的卡片。
+ */
+export interface RemoteInboundStop extends RemoteInboundBase {
+  kind: 'stop'
+  nonce: string | null
+}
+
+/**
+ * 带图片的消息（YF-14）。images 是渠道自己认得的取图句柄，底座不解读、不进日志，核过是绑定的那个人以后
+ * 才原样交还 fetchImage() 去取：陌生人发来的图连下载都不下载。text 是同一条消息里带的字（飞书富文本、
+ * 微信图文一起发），没有就不填。
+ */
+export interface RemoteInboundImage extends RemoteInboundBase {
+  kind: 'image'
+  messageId: string
+  images: string[]
+  text?: string
+}
+
+/** 收到了渠道转不成文字、也不是图片的东西（语音、文件）。底座回一句只支持文字和图片，渠道不用自己回话。 */
 export interface RemoteInboundUnsupported extends RemoteInboundBase {
   kind: 'unsupported'
   messageId: string
 }
 
-export type RemoteInbound = RemoteInboundText | RemoteInboundApproval | RemoteInboundUnsupported
+export type RemoteInbound = RemoteInboundText | RemoteInboundImage | RemoteInboundApproval | RemoteInboundStop | RemoteInboundUnsupported
+
+/** 一条消息里最多认这么多张图（YF-14），也是攒着等下一句话的图最多几张。 */
+export const remoteImagesPerPrompt = 5
+
+/** 一张图最多这么大（YF-14），按取回来、解开以后的字节算。 */
+export const remoteImageMaxBytes = 10 * 1024 * 1024
+
+/**
+ * 取图的结果（YF-14）。too-large：比 maxBytes 大；permission：平台说这个应用没开取图的权限（飞书）；
+ * failed：别的原因（网断了、平台报错、解不开）。字节是平台给的原样，是不是图片由底座认。
+ */
+export type RemoteImageFetchResult =
+  | { ok: true; bytes: Uint8Array }
+  | { ok: false; reason: 'too-large' | 'permission' | 'failed' }
 
 export type RemoteApprovalDecision = 'accept' | 'decline'
 
@@ -115,6 +168,28 @@ export interface RemoteOutboundApproval {
 
 export type RemoteOutbound = RemoteOutboundText | RemoteOutboundApproval
 
+/** 审批卡最后怎么样了（YK-8）：同意了、拒绝了（含「都拒绝」和发「停止」时一起拒掉的）、等到点没回自动拒绝的。 */
+export type RemoteApprovalOutcome = 'accepted' | 'declined' | 'expired'
+
+/** 进度卡上的一步（YF-15）：Codex 计划里的一条，字是 Codex 自己写的（已脱敏、已截短）。 */
+export interface RemoteProgressStep {
+  text: string
+  status: 'completed' | 'inProgress' | 'pending'
+}
+
+/**
+ * 底座发的进度（YF-15，yoyo 2026-11-11「进度改」），跟渠道无关。能原地更新卡片的渠道（飞书）画成一张卡，
+ * 之后每次都更新同一张；没有这个本事的渠道底座改发文字，不会调到 sendProgress。
+ */
+export interface RemoteProgressCard {
+  state: 'running' | 'done' | 'stopped' | 'failed'
+  steps: RemoteProgressStep[]
+  /** 「已经 N 分钟」那一行，只在 running 时有。 */
+  elapsed?: string
+  /** 「停止」按钮里带的随机串，只对这一轮有效，只在 running 时有。 */
+  stopNonce?: string
+}
+
 export type RemoteChannelState =
   | 'stopped'
   | 'connecting'
@@ -123,10 +198,17 @@ export type RemoteChannelState =
   | 'needs-login'
   | 'error'
 
+/**
+ * 渠道停在哪一类毛病上（0.2.24 D23），电脑卡片按它在那句话旁边配按钮：credential = 凭据不对，要重新填；
+ * connection-limit = 同一个应用在别处连着；other = 别的原因没连上。现在只有飞书填它，缺省 = 只摆那句话。
+ */
+export type RemoteChannelProblem = 'credential' | 'connection-limit' | 'other'
+
 export interface RemoteChannelStatus {
   state: RemoteChannelState
   /** 能上屏的中文原因，不带平台原文里的令牌和消息内容。 */
   message?: string
+  problem?: RemoteChannelProblem
 }
 
 export interface RemoteChannelCapabilities {
@@ -150,6 +232,24 @@ export interface RemoteChannelAdapter {
   stop(): Promise<void>
   /** 发一条消息给这个人；replyContext 是这个人最近一条入站消息带来的那个。失败就抛，底座记日志。 */
   send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string): Promise<void>
+  /**
+   * 能原地更新的进度卡（YF-15，飞书有，微信没有）：发出去返回之后更新要用的句柄（飞书的 message_id）。
+   * 两个都有才算有；失败就抛，底座记日志，下一次更新照样带着最新的样子。
+   */
+  sendProgress?(peer: RemotePeer, card: RemoteProgressCard): Promise<string>
+  updateProgress?(handle: string, card: RemoteProgressCard): Promise<void>
+  /**
+   * 能原地改样子的审批卡（YK-8，飞书有，微信没有）：sendApproval 代替 send 发卡，交回句柄；处理过以后
+   * updateApproval 把卡改成「已同意 / 已拒绝 / 没回，已自动拒绝」、去掉按钮。message.text 这时是不带
+   * 「回 同意 N」那句的正文。两个都有才算有；失败就抛，底座记日志，手机上那句文字照样发。
+   */
+  sendApproval?(peer: RemotePeer, message: RemoteOutboundApproval): Promise<string>
+  updateApproval?(handle: string, message: RemoteOutboundApproval, outcome: RemoteApprovalOutcome): Promise<void>
+  /**
+   * 取一张图（YF-14）：ref 是 RemoteInboundImage.images 里的一个。只许去平台自己那几个固定的 https 地址，
+   * 读到 maxBytes 就停；不抛，失败按原因交回。没有这个方法的渠道收到图片当 unsupported 报。
+   */
+  fetchImage?(ref: string, maxBytes: number): Promise<RemoteImageFetchResult>
 }
 
 export type RemoteChannelLogLevel = 'info' | 'warn' | 'error'
@@ -182,6 +282,13 @@ export interface CodexRemoteBoundPeerSnapshot {
 export interface CodexRemotePairingSnapshot {
   code: string
   expiresAt: number
+  /** 这个码发来过几次错的（D66 / YKS-21），只在电脑卡片上显示；没错过不填。 */
+  failures?: number
+  /**
+   * 码挂了 1 分钟还没收到过私聊（YF-2）：nothing = 这次打开以后平台一条消息都没送来（多半是平台后台没配好），
+   * group-only = 只收到过群里的。收到过私聊、还没满 1 分钟时不填。只在电脑卡片上说，手机那边照旧不回。
+   */
+  quiet?: 'nothing' | 'group-only'
 }
 
 export interface CodexRemoteChannelSnapshot {
@@ -192,9 +299,22 @@ export interface CodexRemoteChannelSnapshot {
   status: RemoteChannelStatus
   boundPeer: CodexRemoteBoundPeerSnapshot | null
   pairing: CodexRemotePairingSnapshot | null
+  /** 上一个配对码错满次数作废了，还没重新开始配对、也没取消（D66 / YKS-21）。没有时不填。 */
+  pairingLocked?: boolean
 }
 
 export type CodexRemoteTaskState = 'idle' | 'starting' | 'running' | 'waiting-approval'
+
+/**
+ * 手机上最近发来让 Codex 做的那一条（YF-13），电脑卡片上「最近一次」那行用。只给时间和结果，
+ * 手机上发来的原话不上电脑卡片。
+ */
+export interface CodexRemoteLastRequestSnapshot {
+  receivedAt: number
+  state: 'running' | 'done' | 'failed' | 'stopped'
+  /** 没做完时手机上收到的那句原因（大白话，已脱敏截短）；说不出原因时不填。 */
+  reason?: string
+}
 
 export interface CodexRemoteSnapshot {
   /**
@@ -206,9 +326,25 @@ export interface CodexRemoteSnapshot {
   unavailableReason?: string
   /** 凭据能不能存到下次打开（Linux 没有密钥环时只到这次关掉）。 */
   credentialPersistence: 'durable' | 'session-only' | 'unavailable'
-  /** 主目录已换成 ~ 的工作文件夹；没选是 null。 */
+  /** 主目录已换成 ~ 的工作文件夹（正在用的那个）；没选是 null。 */
   workspaceDirectory: string | null
+  /**
+   * 电脑上加过的全部文件夹（YF-19），主目录已换成 ~，按加的先后，含正在用的那个；手机上「文件夹 2」认的就是这个次序。
+   * 缺省 = 只有 workspaceDirectory 那一个。
+   */
+  workspaces?: string[]
   task: CodexRemoteTaskState
   pendingApprovals: number
+  /** 「打开星芒时自动打开遥控」开着（YF-9）；缺省 = 关。 */
+  autoStart?: boolean
+  /** 「多久没消息就自动关」选的小时数（YF-10）；缺省 = 不自动关。 */
+  idleCloseHours?: RemoteIdleCloseHours
+  /**
+   * 手机上最近一条因为电脑上的 Codex 起不来没做（YK-5），卡片上摆一条黄条。
+   * 下次 Codex 起来了、或者遥控全关了就不带；缺省 = 没有这回事。
+   */
+  codexStartFailed?: boolean
+  /** 手机上最近一条（YF-13）；这次打开遥控以后还没发来过、或者遥控全关了就不带。 */
+  lastRequest?: CodexRemoteLastRequestSnapshot
   channels: Record<RemoteChannelId, CodexRemoteChannelSnapshot>
 }

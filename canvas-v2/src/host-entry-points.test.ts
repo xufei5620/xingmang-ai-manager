@@ -10,17 +10,17 @@ const allMethods = {
   readRunHistory: method, renderImageAnnotation: method, readVideoForFramePreview: method,
   listProjectHistory: method, readProjectRevision: method, restoreProjectRevision: method, inspectProjectRestore: method,
   previewProjectExport: method, exportProjectPackage: method, cancelProjectExport: method,
-  createProjectInDefaultFolder: method, relinkProjectFolder: method,
+  createProjectInDefaultFolder: method, relinkProjectFolder: method, deleteProject: method, getAccountSummary: method, getPriceSnapshot: method,
 }
 
 describe('canvas host entry points', () => {
   it('offers none of them to a desktop without the methods or the switches', () => {
     // The 000f913 desktop bridge has none of these methods and declares nothing.
-    expect(Object.values(canvasHostEntryPoints({}, v2EquivalentCapabilities))).toEqual(Array(12).fill(false))
+    expect(Object.values(canvasHostEntryPoints({}, v2EquivalentCapabilities))).toEqual(Array(16).fill(false))
   })
 
   it('offers all of them to a host with every method and switch', () => {
-    expect(Object.values(canvasHostEntryPoints(allMethods, fullCanvasCapabilityProfile))).toEqual(Array(12).fill(true))
+    expect(Object.values(canvasHostEntryPoints(allMethods, fullCanvasCapabilityProfile))).toEqual(Array(16).fill(true))
   })
 
   it('turns off every entry that reads complete asset records when that method is missing', () => {
@@ -28,7 +28,7 @@ describe('canvas host entry points', () => {
     expect(canvasHostEntryPoints(rest, fullCanvasCapabilityProfile)).toEqual({
       batchAdd: false, batchDownload: true, assetOrigin: true, runResultCollection: false,
       imageAnnotation: false, videoFrames: false, menuPaste: true, pageDownload: true, projectHistory: true, projectPackageExport: true,
-      projectDefaultFolder: true, projectFolderRelink: true,
+      projectDefaultFolder: true, projectFolderRelink: true, projectDelete: true, accountSummary: true, quote: true, maskAssetSave: true,
     })
   })
 
@@ -37,6 +37,37 @@ describe('canvas host entry points', () => {
     expect(canvasHostEntryPoints(withoutDefault, fullCanvasCapabilityProfile)).toMatchObject({ projectDefaultFolder: false, projectFolderRelink: true })
     const { relinkProjectFolder: _relink, ...withoutRelink } = allMethods
     expect(canvasHostEntryPoints(withoutRelink, fullCanvasCapabilityProfile)).toMatchObject({ projectDefaultFolder: true, projectFolderRelink: false })
+  })
+
+  it('offers deleting an archived project only where the host can confirm and delete it', () => {
+    const { deleteProject: _delete, ...withoutDelete } = allMethods
+    expect(canvasHostEntryPoints(withoutDelete, fullCanvasCapabilityProfile)).toMatchObject({ projectDelete: false, projectFolderRelink: true })
+    expect(canvasHostEntryPoints(allMethods, fullCanvasCapabilityProfile).projectDelete).toBe(true)
+  })
+
+  it('shows the balance chip only where the host declared it and can answer the summary', () => {
+    const { getAccountSummary: _summary, ...withoutSummary } = allMethods
+    expect(canvasHostEntryPoints(withoutSummary, fullCanvasCapabilityProfile).accountSummary).toBe(false)
+    const undeclared = resolveCanvasCapabilities({ ...fullCanvasCapabilities, features: { ...fullCanvasCapabilities.features, accountSummary: false } })
+    expect(canvasHostEntryPoints(allMethods, undeclared).accountSummary).toBe(false)
+    expect(canvasHostEntryPoints(allMethods, v2EquivalentCapabilities).accountSummary).toBe(false)
+    expect(canvasHostEntryPoints(allMethods, fullCanvasCapabilityProfile).accountSummary).toBe(true)
+  })
+
+  it('quotes a run only where the host declared it and can answer the price list', () => {
+    const { getPriceSnapshot: _prices, ...withoutPrices } = allMethods
+    expect(canvasHostEntryPoints(withoutPrices, fullCanvasCapabilityProfile).quote).toBe(false)
+    const undeclared = resolveCanvasCapabilities({ ...fullCanvasCapabilities, features: { ...fullCanvasCapabilities.features, quote: false } })
+    expect(canvasHostEntryPoints(allMethods, undeclared).quote).toBe(false)
+    expect(canvasHostEntryPoints(allMethods, fullCanvasCapabilityProfile).quote).toBe(true)
+  })
+
+  it('offers saving a mask as an image only where the host takes page-built bytes', () => {
+    // The desktop can run a masked edit before it can take the PNG the editor builds.
+    const desktopLike = resolveCanvasCapabilities({ ...fullCanvasCapabilities, features: { ...fullCanvasCapabilities.features, imageEditMask: true, byteUpload: false } })
+    expect(canvasHostEntryPoints(allMethods, desktopLike).maskAssetSave).toBe(false)
+    expect(canvasHostEntryPoints(allMethods, v2EquivalentCapabilities).maskAssetSave).toBe(false)
+    expect(canvasHostEntryPoints({}, fullCanvasCapabilityProfile).maskAssetSave).toBe(true)
   })
 
   it('offers frame selection only where frame extraction can run', () => {

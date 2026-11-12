@@ -3,7 +3,9 @@ import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { directCallPositions, enclosingFunction, innerFunction, mainWiringFiles, moduleFunction, parseWiringFile, readMainWiringSource, startupCallback } from './bootstrap/main-source.test-support'
+import { feishuDeveloperConsoleUrl } from './codex-remote-channel'
 import { ipcEventChannels } from './ipc-contract'
+import { isAllowedExternalUrl } from './security'
 
 // main.ts boots the whole app on import, so these read its source instead.
 function mainSource() {
@@ -125,6 +127,18 @@ function quitCleanupSteps() {
   return steps
 }
 
+describe('main process config rewrite log', () => {
+  // D78：配置原来不是 UTF-8、写回后成了乱码，只记运行日志。要在运行日志建好后、头一次写配置之前接上，晚了就漏记。
+  it('hands not-UTF-8 config rewrites to the runtime log before any service can write a config', () => {
+    const { sourceText } = mainSource()
+    expect(sourceText.match(/attachNotUtf8ConfigRewriteLog\(/g)).toHaveLength(1)
+    const attached = sourceText.indexOf('attachNotUtf8ConfigRewriteLog(')
+    expect(attached).toBeGreaterThan(sourceText.indexOf('new RuntimeLogStore('))
+    expect(attached).toBeLessThan(sourceText.indexOf('createSystemService('))
+    expect(sourceText.slice(attached, attached + 200)).toContain("runtimeLog.log('warn', 'config', 'config.not-utf8-rewritten'")
+  })
+})
+
 describe('main process quit cleanup', () => {
   it('hangs the whole quit cleanup on a single will-quit listener', () => {
     const { sourceText } = mainSource()
@@ -234,7 +248,7 @@ describe('main process quit cleanup', () => {
         'business.chatVideoService.cancelAll()',
         'business.canvasRuns.shutdown()',
       ],
-      'asset-protocol-and-windows': ["protocol.unhandle('xingmang-asset')", 'paymentWindow.destroy()', 'canvasController.dispose()'],
+      'asset-protocol-and-windows': ["protocol.unhandle('xingmang-asset')", 'paymentWindow.destroy()', 'invoicePortalWindow.destroy()', 'canvasController.dispose()'],
       updater: ['updaterService.dispose()'],
       'display-watch': [
         'clearTimeout(displayChangeTimer)',
@@ -341,6 +355,26 @@ describe('main process quit cleanup', () => {
   })
 })
 
+describe('main process unexpected exit', () => {
+  it('only honours the simulated main process crash in development builds', () => {
+    // 模拟开关走的是真的未捕获异常那条路，打包版认了，真机演示就混进崩溃上报的统计（D101）。
+    const sourceText = readMainWiringSource()
+    expect(sourceText.match(/process\.env\.XINGMANG_SIMULATE_MAIN_CRASH/g)).toHaveLength(1)
+    const { source } = mainSource()
+    const initializers: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'simulateUnexpectedExit' && node.initializer) {
+        initializers.push(node.initializer.getText(source))
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(initializers).toEqual(["!app.isPackaged && process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1'"])
+    // 开发态设了开关照样重开，不打包也能演一遍「重开一次、第二次不再重开」。
+    expect(source.getText()).toContain('allowRelaunch: app.isPackaged || simulateUnexpectedExit,')
+  })
+})
+
 describe('main process application protocol', () => {
   it('attaches the security policy to every xingmang:// file, worker scripts included', () => {
     // 页面的 <meta> 到不了后台线程，只有协议回包里的头才管得到拼片线程（app-protocol.ts）。
@@ -349,6 +383,43 @@ describe('main process application protocol', () => {
     expect(body).toContain("registerFileProtocol('xingmang'")
     expect(body).toContain('callback({ path: target, headers: applicationSecurityResponseHeaders() })')
     expect(body).not.toMatch(/callback\(\{ path: target \}\)/)
+  })
+})
+
+describe('main process external links', () => {
+  function nonSiteAllowlistEntries(source: ts.SourceFile): string[] {
+    const entries: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'nonSiteExternalUrlAllowlist' && node.initializer) {
+        const list = ts.isAsExpression(node.initializer) ? node.initializer.expression : node.initializer
+        if (ts.isArrayLiteralExpression(list)) entries.push(...list.elements.map((element) => element.getText(source)))
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    return entries
+  }
+
+  it('lets both ways out of a failed Claude Desktop install through the external link allowlist', () => {
+    // 外链白名单是全等匹配（I12）：漏了这一条，错误框里的「下载离线安装包」点了只会报不允许打开（D64）。
+    const { source } = mainSource()
+    const entries = nonSiteAllowlistEntries(source)
+    expect(entries).toContain('claudeDesktopOfflinePackagesUrl')
+    // 「去 Claude 官网」打开的 claude.com/download 经它收进来。
+    expect(entries).toContain('...Object.values(externalClientOfficialDownloadUrls)')
+    expect(source.getText()).toContain("import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failure'")
+  })
+
+  // YF-4：yoyo 2026-11-11 亲手打字「飞书网址加」，白名单只多这一个网址；飞书别的页面、带参数的照样拦下。
+  it('lets only the exact Feishu developer console address through for the phone remote card', () => {
+    const { source } = mainSource()
+    expect(nonSiteAllowlistEntries(source)).toContain('feishuDeveloperConsoleUrl')
+    expect(feishuDeveloperConsoleUrl).toBe('https://open.feishu.cn/app')
+    const allowlist = [feishuDeveloperConsoleUrl]
+    expect(isAllowedExternalUrl('https://open.feishu.cn/app', allowlist)).toBe(true)
+    for (const other of ['https://open.feishu.cn/', 'https://open.feishu.cn/app/cli_a1b2c3', 'https://open.feishu.cn/app?lang=zh-CN', 'https://open.feishu.cn.evil.example/app', 'http://open.feishu.cn/app']) {
+      expect(isAllowedExternalUrl(other, allowlist)).toBe(false)
+    }
   })
 })
 
@@ -477,12 +548,13 @@ describe('main process startup order', () => {
 
   it('picks the update feed before it builds the updater, and reads service status once the updater exists', () => {
     // 包里那份还是直连那份更新目录开机就定（签名校验也在这时装上）；更新服务要等版本记录读好才建，
-    // 服务状态文件读到的结果要交给它，所以监视器建在它后面。
+    // 服务状态文件读到的结果要交给它，所以监视器建在它后面。记在本地的远程开关在第一次读之前就摆上（D83），
+    // 开机头几秒点的那一下也照它拦。
     const { source } = parseWiringFile(path.join(__dirname, 'bootstrap', 'updates.ts'))
     const feed = moduleFunction(source, 'createUpdateFeed')
     const orders: Array<[ts.FunctionDeclaration, string[]]> = [
       [feed, ['installStrictUpdateCodeSignatureVerifier', 'locateDirectUpdateFeed', 'useUpdateFeedLine']],
-      [innerFunction(feed, 'createUpdater'), ['createUpdateRequestGuard', 'createUpdaterService', 'createServiceStatusMonitor', 'serviceStatusMonitor?.start']],
+      [innerFunction(feed, 'createUpdater'), ['createUpdateRequestGuard', 'createUpdaterService', 'updaterService.restoreServiceSwitches', 'createServiceStatusMonitor', 'serviceStatusMonitor?.start']],
     ]
     for (const [owner, order] of orders) {
       const calls = directCallPositions(source, owner, order)

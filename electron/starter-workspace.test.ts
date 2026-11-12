@@ -5,6 +5,7 @@ import path from 'node:path'
 import {
   buildStarterWorkspaceName,
   createStarterWorkspace,
+  isUntouchedStarterWorkspace,
   resolveNewProjectParent,
   resolveStarterWorkspaceContainer,
   resolveStarterWorkspaceParent,
@@ -207,5 +208,115 @@ describe('createStarterWorkspace', () => {
     } finally {
       fs.chmodSync(documents, 0o755)
     }
+  })
+})
+
+// D45（新手流程 N4）：打开的是星芒刚建、还空着的项目文件夹时，界面把第一句话换成让 AI 动手做点东西。
+describe('isUntouchedStarterWorkspace', () => {
+  let home: string
+  let documents: string
+
+  beforeEach(() => {
+    home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-starter-untouched-')))
+    documents = path.join(home, 'Documents')
+    fs.mkdirSync(documents)
+  })
+
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  function created(): string {
+    return createStarterWorkspace(documents, { platform: process.platform, home })
+  }
+
+  it('treats a folder it has just created as untouched, with or without a trailing separator', () => {
+    const workspace = created()
+
+    expect(isUntouchedStarterWorkspace(workspace, process.platform)).toBe(true)
+    expect(isUntouchedStarterWorkspace(`${workspace}${path.sep}`, process.platform)).toBe(true)
+    const second = created()
+    expect(path.basename(second)).toBe('my-project-2')
+    expect(isUntouchedStarterWorkspace(second, process.platform)).toBe(true)
+  })
+
+  // 星芒自己放的说明文件、访达和资源管理器留下的、工具自己的点开头目录，都不是客户的东西。
+  it('ignores the generated instructions and what the system and the tools leave behind', () => {
+    const workspace = created()
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), '# 项目说明')
+    fs.writeFileSync(path.join(workspace, '.DS_Store'), '')
+    fs.writeFileSync(path.join(workspace, 'desktop.ini'), '')
+    fs.writeFileSync(path.join(workspace, 'Thumbs.db'), '')
+    fs.mkdirSync(path.join(workspace, '.claude'))
+    fs.mkdirSync(path.join(workspace, '.git'))
+
+    expect(isUntouchedStarterWorkspace(workspace, process.platform)).toBe(true)
+  })
+
+  it('stops calling it untouched once anything else is in it', () => {
+    const withPage = created()
+    fs.writeFileSync(path.join(withPage, 'index.html'), '<!doctype html>')
+    expect(isUntouchedStarterWorkspace(withPage, process.platform)).toBe(false)
+
+    const withFolder = created()
+    fs.mkdirSync(path.join(withFolder, 'src'))
+    expect(isUntouchedStarterWorkspace(withFolder, process.platform)).toBe(false)
+
+    const withClaudeInstructions = created()
+    fs.writeFileSync(path.join(withClaudeInstructions, 'CLAUDE.md'), '# mine')
+    expect(isUntouchedStarterWorkspace(withClaudeInstructions, process.platform)).toBe(false)
+  })
+
+  it('only recognizes the names the starter gives its folders', () => {
+    const container = path.join(documents, starterWorkspaceContainerName)
+    fs.mkdirSync(container)
+    const outside = path.join(documents, 'my-project')
+    const tooFar = path.join(container, 'my-project-100')
+    const other = path.join(container, 'notes')
+    for (const directory of [outside, tooFar, other]) fs.mkdirSync(directory)
+
+    expect(isUntouchedStarterWorkspace(outside, process.platform)).toBe(false)
+    expect(isUntouchedStarterWorkspace(tooFar, process.platform)).toBe(false)
+    expect(isUntouchedStarterWorkspace(other, process.platform)).toBe(false)
+    expect(isUntouchedStarterWorkspace(container, process.platform)).toBe(false)
+  })
+
+  it('says no when it cannot tell', () => {
+    const workspace = created()
+
+    expect(isUntouchedStarterWorkspace(path.join(documents, starterWorkspaceContainerName, 'my-project-3'), process.platform)).toBe(false)
+    expect(isUntouchedStarterWorkspace(path.join(starterWorkspaceContainerName, 'my-project'), process.platform)).toBe(false)
+    // 真空着的新项目里只有寥寥几样，翻了一大堆还没翻完就不算。
+    for (let index = 0; index < 20; index += 1) fs.writeFileSync(path.join(workspace, `.leftover-${index}`), '')
+    expect(isUntouchedStarterWorkspace(workspace, process.platform)).toBe(false)
+  })
+
+  it('says no for a file that only carries the name', () => {
+    const container = path.join(documents, starterWorkspaceContainerName)
+    fs.mkdirSync(container)
+    fs.writeFileSync(path.join(container, 'my-project'), '')
+
+    expect(isUntouchedStarterWorkspace(path.join(container, 'my-project'), process.platform)).toBe(false)
+  })
+
+  it.runIf(process.platform !== 'win32')('does not follow a link that carries the name', () => {
+    const container = path.join(documents, starterWorkspaceContainerName)
+    fs.mkdirSync(container)
+    const elsewhere = path.join(home, 'elsewhere')
+    fs.mkdirSync(elsewhere)
+    fs.symlinkSync(elsewhere, path.join(container, 'my-project'), 'dir')
+
+    expect(isUntouchedStarterWorkspace(path.join(container, 'my-project'), process.platform)).toBe(false)
+  })
+
+  // Windows 和 Mac 的文件名不分大小写，Linux 分。
+  it.runIf(process.platform !== 'win32')('matches names without case only where the file system does', () => {
+    const container = path.join(home, 'xingmangprojects')
+    const workspace = path.join(container, 'My-Project')
+    fs.mkdirSync(workspace, { recursive: true })
+    fs.writeFileSync(path.join(workspace, 'agents.md'), '')
+
+    expect(isUntouchedStarterWorkspace(workspace, 'darwin')).toBe(true)
+    expect(isUntouchedStarterWorkspace(workspace, 'linux')).toBe(false)
   })
 })

@@ -18,10 +18,12 @@ import { AI_VIDEO_TASK_VERSION, normalizeAiVideoTaskPrompt } from './ai-video-ta
 import type { AiVideoTaskStore, FinishedAiVideoAsset, StoredAiVideoTask } from './ai-video-task-store'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import type { AiOperationProgressObserver, AiOperationProgressUpdate } from './ai-operation-progress'
-import { aiVideoTaskRecordLostPrefix, aiVideoUnconfirmedSubmissionMessage } from './ai-video-submission'
+import { reportRelayAnswer, reportRelayDispatch } from './relay-request-id'
+import { aiVideoDiskFullMessage, aiVideoTaskRecordLostPrefix, aiVideoUnconfirmedSubmissionMessage } from './ai-video-submission'
 import { isServiceUnavailableResponse, networkFailureMessages } from './network-failure'
 import { classifyRelayQuotaFailure, relayQuotaFailureMessages } from './relay-quota-failure'
 import { unsentRequestFailure } from './relay-line-fetch'
+import { classifyStorageFailure } from './startup-failure'
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000
 const DEFAULT_MAXIMUM_POLL_INTERVAL_MS = 10_000
@@ -639,15 +641,23 @@ export function createAiVideoService(options: {
       }
     }
     await progress?.onStage('saving')
-    const asset = await options.assets.storeMp4(
-      task.userId,
-      bytes,
-      {
-        taskId: task.taskId,
-        ...(task.projectId ? { projectId: task.projectId } : {}),
-        ...(task.prompt ? { prompt: task.prompt } : {}),
-      },
-    )
+    let asset: AiStoredVideoAsset
+    try {
+      asset = await options.assets.storeMp4(
+        task.userId,
+        bytes,
+        {
+          taskId: task.taskId,
+          ...(task.projectId ? { projectId: task.projectId } : {}),
+          ...(task.prompt ? { prompt: task.prompt } : {}),
+        },
+      )
+    } catch (error) {
+      // 这一单已经付过钱了。盘满存不下时任务记录还留着（下面的 finish 没走到），下次启动 resumeUser 会再取一次，
+      // 所以要说清别重新生成：照「请稍后重试」再点一次，就是再扣一次钱（D38）。别的存不进去的原因照原话。
+      if (classifyStorageFailure(error) === 'disk-full') throw new Error(aiVideoDiskFullMessage, { cause: error })
+      throw error
+    }
     await options.tasks.finish(task, {
       assetId: asset.assetId,
       ...(asset.width ? { width: asset.width } : {}),
@@ -764,6 +774,7 @@ export function createAiVideoService(options: {
         throw operation.controller.signal.reason
       }
       operation.dispatched = true
+      reportRelayDispatch(progress, true)
       let submitted: { response: Response; payload?: Record<string, unknown> }
       try {
         const headers: Record<string, string> = {
@@ -793,12 +804,15 @@ export function createAiVideoService(options: {
         const unsent = unsentRequestFailure(error)
         if (unsent) {
           operation.dispatched = false
+          reportRelayDispatch(progress, false)
           await forgetSubmission()
           throw new Error(networkFailureMessages[unsent])
         }
         throw ambiguousVideoSubmission()
       }
       const { response } = submitted
+      // 提交这一下就是扣费那一下；画布跑完按这个号到用量记录里对实扣（画布完善第 2b 条第 3 步）。
+      reportRelayAnswer(progress, response.headers)
       const payload = submitted.payload
       if (!payload) {
         if (!response.ok && response.status < 500) {

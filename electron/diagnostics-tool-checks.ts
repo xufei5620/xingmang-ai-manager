@@ -109,6 +109,8 @@ function providerOutcome(provider: ProviderId, inspection: NativeConfigInspectio
   }
   inspection.files.forEach((file, index) => {
     details[`file${index + 1}`] = pathForDisplay(file.path, roots)
+    // D78：老记事本存的中文，下次写回会成「�」。只进导出的报告给客服看，检查页详情不认这个键、不上屏。
+    if (file.notUtf8) details[`file${index + 1}NotUtf8`] = true
   })
   if (inspection.matchesRelay && inspection.hasApiKey) {
     // 工具走的线路和星芒这会儿走的对不上（#941 第 2 节）：线路换了以后写失败的、客户自己改过配置所以没跟着
@@ -128,7 +130,7 @@ const cliCheckCodes: readonly string[] = activeProviderIds.map((provider) => `CL
 
 /**
  * 一个命令行工具都没装（只用 Codex 桌面端，它自带运行环境）时，Node.js、npm 没装只是
- * 「需留意」：首页运行环境卡这时也只写「可选 · 未装」、不挂橙点（第二十七批 B），检查页
+ * 「需留意」：首页运行环境卡这时也只写「可选 · 未安装」、不挂橙点（第二十七批 B），检查页
  * 却是两行红色「待处理」，状态栏和开机提示跟着数进去（已知7）。仍旧要提、不能不出：
  * Codex 桌面端的「星芒画图」要 Node.js。有一家装着、或者这次没查出来装没装的，照旧红。
  */

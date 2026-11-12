@@ -681,6 +681,33 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
   })
 
+  // D81: large text may be switched on once for a user whose Windows text
+  // size is raised. Any write that names largeText or uiScale -- switching it
+  // off, choosing 自动 again, restoring the default appearance -- records that
+  // a text size was chosen, so a later launch never switches it back on.
+  it('records a chosen text size on any write that names large text or zoom, and keeps it', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ uiSkin: 'mist' }))
+    await updateAppSettings(filePath, { version: 2, theme: 'light', reducedMotion: true })
+    expect(readAppSettings(filePath)).not.toHaveProperty('textSizeChosen')
+    await updateAppSettings(filePath, { version: 2, largeText: false })
+    expect(readAppSettings(filePath).textSizeChosen).toBe(true)
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    expect(readAppSettings(filePath).textSizeChosen).toBe(true)
+
+    for (const update of [{ version: 2, largeText: true }, { version: 2, uiScale: 'auto' }, { version: 2, uiScale: '110' }] as const) {
+      expect(mergeAppSettings(settings({ uiSkin: 'mist' }), update).textSizeChosen).toBe(true)
+    }
+  })
+
+  it('reads the chosen text size record only as an explicit true', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), textSizeChosen: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), textSizeChosen: true }), 'utf8')
+    expect(readAppSettings(filePath).textSizeChosen).toBe(true)
+  })
+
   it('rejects malformed persisted notification preferences without discarding other settings', () => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), desktopNotifications: 'enabled' }), 'utf8')
@@ -788,6 +815,18 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('crashReportingNoticeShown')
   })
 
+  it('keeps the asked-first question answered once recorded and ignores anything but true', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    expect(readAppSettings(filePath)).not.toHaveProperty('claudeCommandConfirmationAnswered')
+    await updateAppSettings(filePath, { version: 2, claudeCommandConfirmationAnswered: true })
+    expect(readAppSettings(filePath)).toMatchObject({ claudeCommandConfirmationAnswered: true })
+    await updateAppSettings(filePath, { version: 2, claudeCommandConfirmationAnswered: false })
+    expect(readAppSettings(filePath)).toMatchObject({ claudeCommandConfirmationAnswered: true })
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), claudeCommandConfirmationAnswered: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('claudeCommandConfirmationAnswered')
+  })
+
   it('keeps the usage stats notice marker once set', async () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings())
@@ -831,7 +870,8 @@ describe('UI and window preferences', () => {
     const reset = await updateAppSettings(filePath, {
       version: 2, uiSkin: 'auto', reducedMotion: false, uiScale: 'auto', closeBehavior: 'ask', windowState: null,
     })
-    expect(reset).toEqual(settings({ theme: 'light' }))
+    // Choosing 自动 again is still a chosen text size (D81); that record is not a preference to reset.
+    expect(reset).toEqual(settings({ theme: 'light', textSizeChosen: true }))
     expect(readAppSettings(filePath)).toEqual(reset)
   })
 
@@ -843,7 +883,7 @@ describe('UI and window preferences', () => {
       updateAppSettings(filePath, { version: 2, uiSkin: 'obsidian', reducedMotion: true }),
       updateAppSettings(filePath, { version: 2, uiScale: '90' }),
     ])
-    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'obsidian', reducedMotion: true, uiScale: '90', windowState }))
+    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'obsidian', reducedMotion: true, uiScale: '90', textSizeChosen: true, windowState }))
   })
 
   it('retains confirmed preferences and the valid backup if an appearance update cannot be replaced', async () => {

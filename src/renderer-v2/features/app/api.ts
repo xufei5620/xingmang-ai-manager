@@ -19,8 +19,12 @@ export function createAppApi(bridge: XingmangApi) {
     startupUpdate: () => bridge.runStartupUpdate(),
     relaunch: () => bridge.relaunchApp(),
     openCanvas: () => bridge.openCanvasWindow(),
+    // 画布首页的只读素材库（只列图片），主窗口「看全部作品」用。
+    openCanvasAssets: () => bridge.openCanvasAssetLibrary(),
     openExternal: (url: string) => bridge.openExternal(url),
     announcement: (mode?: RelayNoticeReadMode) => mode === undefined ? bridge.getAccountNotice() : bridge.getAccountNotice(mode),
+    // 公告里官网自己的图由主进程下好再交回（决定单 D89 a）。
+    announcementImage: (url: string) => bridge.getAccountNoticeImage(url),
     markAnnouncementRead: (id: string, entryId: string) => bridge.markAccountNoticeRead(id, entryId),
     syncLocalNoticeReads: (scope: string, ids: string[]) => bridge.syncLocalNoticeReads(scope, ids),
   }

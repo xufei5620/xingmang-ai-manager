@@ -50,7 +50,7 @@ export function RuntimeRestartDialog({ onClose, restart }: { onClose: () => void
   >
     <div ref={intro} tabIndex={-1}>
       <p>Windows 要重启一次才算把 Node.js 装完，重启之前装命令行工具可能会失败。</p>
-      <p>点「现在重启」后电脑大约 15 秒后重启，请先保存手上没保存的文件。不想现在重启就关掉这个框，之后自己重启一次也行。</p>
+      <p>点「现在重启」，电脑大约 15 秒后重启，请先保存手上没保存的文件。不想现在重启就关掉这个框，之后自己重启一次也行。</p>
     </div>
     {error && <p className="v2-business-notice is-error" role="alert" data-testid="runtime-restart-error">{error}</p>}
   </Dialog>

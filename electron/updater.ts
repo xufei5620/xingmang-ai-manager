@@ -3,7 +3,7 @@ import { isChineseSentence } from './chinese-sentence'
 import { classifyNetworkFailure, isProxyConnectionFailure, isServiceUnavailableResponse, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
 import type { RemoteFeatureId } from './remote-features'
-import { isOlderReleaseGuard, resolveFeaturesOffFor, resolveKnownIssuesFor, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type KnownIssue, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
+import { isOlderReleaseGuard, resolveFeaturesOffFor, resolveKnownIssuesFor, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type KnownIssue, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus, type ServiceSwitches } from './service-status'
 import type { UpdateSignatureVerdict } from './update-package-signature'
 import { compareVersionsBy, parseUpdateVersion } from './versions'
 
@@ -226,6 +226,8 @@ export interface UpdateDownloadStall {
   transferEnded: boolean
   transferred: number
   total: number
+  /** true＝接下来那一次是换回默认更新地址再下（D84，retrying 同时为 true）。缺省＝不换地址。*/
+  switchingFeed?: true
 }
 
 /**
@@ -291,6 +293,11 @@ export interface UpdaterService {
   install(): { accepted: true }
   /** 更新目录上的状态文件读到了新内容（null = 读不到，当没有）。 */
   setServiceStatus(status: ServiceStatus | null): void
+  /**
+   * 开机时状态文件还没读到：先摆上次读成功时记在本地的已知问题提示和关掉的功能（D83），按这一版、这种安装包筛。
+   * 这次打开以后已经读成功过就不动，以读到的为准。
+   */
+  restoreServiceSwitches(switches: ServiceSwitches): void
   /** 开机自动装前的预告摆出来（或收回，null）。 */
   setLaunchInstallNotice(notice: LaunchInstallNotice | null): void
   /** 主进程问出了这个 Windows 账号不在管理员组（见 UpdateSnapshot.installNeedsAdminPassword）。 */
@@ -309,6 +316,12 @@ export interface MacInstallHandoff {
 export interface UpdateFeedRouting {
   prepare(): void
   fallBack(error: unknown): boolean
+  /**
+   * 安装包没下成（自动重下的那一次也算在内）时问一声（D84）：宿主认得出是直连那份更新地址的事、已经换回
+   * 默认更新地址时返回 true，这里在那份上再查一次、再下一次。stalled＝看门狗停掉的那一次（下不动）。
+   * 不传＝下载不换地址（旧行为）。
+   */
+  fallBackDownload?(error: unknown, stalled: boolean): boolean
 }
 
 /** 排好的一次下载补试，见 UpdaterRuntime.downloadRetryScheduled。*/
@@ -424,9 +437,10 @@ export interface UpdaterRuntime {
    * 下载好（或命中本地缓存）一个版本时问一句：上次运行是不是已经自动装过它、却没装上
    * （见 auto-update-install.ts 的 resolvePreviousAutoInstallFailure）。返回给用户看的
    * 那句话时，这个版本停在「安装失败」，只留「重新安装」按钮，不再自动装；返回 null
-   * 照常。不传＝旧行为。
+   * 照常。不传＝旧行为。`rollback` 跟快照里的 `rollback` 同一个算法：这一版比本机旧，
+   * 那句话要说「建议退回的 X 版」（D11）。
    */
-  previousAutoInstallFailure?: (version: string) => string | null
+  previousAutoInstallFailure?: (version: string, rollback: boolean) => string | null
   /**
    * 下载前读更新包落地那块盘的剩余字节数。读不到返回 null，照常下载（宁可让一次下载
    * 自己失败，也不因一个查不到的数字把更新拦死）。不传＝旧行为，不做预检。
@@ -1119,6 +1133,8 @@ export function createUpdaterService(
   let releaseGuard: ReleaseGuard = runtime.releaseGuardAtLaunch ?? { badVersions: [], rollout: null }
   // 本地记着的那份；读到的跟它一样就不再写盘。没记下来时清掉，下次读成功再写。
   let rememberedReleaseGuard: string | null = JSON.stringify(releaseGuard)
+  // 这次打开以后状态文件读成功过没有：读成功过，开机时记下的已知问题提示和关掉的功能就不再拿来用（D83）。
+  let serviceStatusRead = false
   let manualCheck = false
   let lastProgressPercent = -1
   let progressSamples: DownloadProgressSample[] = []
@@ -1140,6 +1156,9 @@ export function createUpdaterService(
   let latestCheck = 0
   // 正在拿手里下好的那一版跟更新目录对一对（见 refreshDownloaded）。
   let refreshingDownloaded = false
+  // 安装包在直连那份上没下成、换回默认更新地址以后的那一次重查（见 downloadOnFallbackFeed）；version 是
+  // 在下的那一版。没在重查时为 null。
+  let feedRecheck: { version: string | null } | null = null
   // 后台下载没下成以后的补试（见 scheduleDownloadRetry）：version 是这一串补试在下的版本，attempts 是
   // 已经排过几次。换了版本从头数，下好了清掉。
   let downloadRetry: { version: string; attempts: number } | null = null
@@ -1199,7 +1218,8 @@ export function createUpdaterService(
       rollout: guard.rollout,
       // 被要求必须更新的电脑不受分批放量限制：放量挡住它，它就只能停在要淘汰的版本上。
       // 看的是本机低不低于最低版本，不是那道门亮没亮：Linux 的门要等有了提议才亮。
-      manual: manualCheck || Boolean(minimumRequired),
+      // 换地址重查的是已经在下的那一版：它当初是手动检查找到的也不能被放量收回去，下到一半变成「没有新版本」。
+      manual: manualCheck || Boolean(minimumRequired) || (feedRecheck !== null && feedRecheck.version === info.version),
     })
     if (!decision.offer) return false
     if (!defaultRolloutCheck) return true
@@ -1307,6 +1327,16 @@ export function createUpdaterService(
     })
   }
 
+  // 这一版、这种安装包该看到的已知问题和关掉的功能，跟快照里不一样的那几项。
+  const serviceSwitchesPatch = (switches: ServiceSwitches): Partial<UpdateSnapshot> => {
+    const patch: Partial<UpdateSnapshot> = {}
+    const knownIssues = resolveKnownIssuesFor(switches, runtime.currentVersion, releasePlatforms)
+    if (JSON.stringify(knownIssues) !== JSON.stringify(snapshot.knownIssues ?? [])) patch.knownIssues = knownIssues
+    const featuresOff = resolveFeaturesOffFor(switches, runtime.currentVersion, releasePlatforms)
+    if (JSON.stringify(featuresOff) !== JSON.stringify(snapshot.featuresOff ?? [])) patch.featuresOff = featuresOff
+    return patch
+  }
+
   const applyServiceStatus = (status: ServiceStatus | null) => {
     if (status) {
       adoptReleaseGuard({
@@ -1322,12 +1352,10 @@ export function createUpdaterService(
       patch.serviceMaintenance = maintenance
     }
     // 已知问题跟撤回名单一样只认读成功的那份：一次没读到就收起「先这样绕过去」那句，客户会当成已经修好了。
-    // 关掉的功能同理：一次没读到就放出来，坏掉的那条路又开了。
+    // 关掉的功能同理：一次没读到就放出来，坏掉的那条路又开了。重开软件时先用记在本地的那份（restoreServiceSwitches）。
     if (status) {
-      const knownIssues = resolveKnownIssuesFor(status, runtime.currentVersion, releasePlatforms)
-      if (JSON.stringify(knownIssues) !== JSON.stringify(snapshot.knownIssues ?? [])) patch.knownIssues = knownIssues
-      const featuresOff = resolveFeaturesOffFor(status, runtime.currentVersion, releasePlatforms)
-      if (JSON.stringify(featuresOff) !== JSON.stringify(snapshot.featuresOff ?? [])) patch.featuresOff = featuresOff
+      serviceStatusRead = true
+      Object.assign(patch, serviceSwitchesPatch(status))
     }
     const withdrawn = isWithdrawn(runtime.currentVersion)
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
@@ -1545,7 +1573,7 @@ export function createUpdaterService(
       return
     }
     let previousFailure: string | null = null
-    try { previousFailure = runtime.previousAutoInstallFailure?.(info.version) ?? null } catch { previousFailure = null }
+    try { previousFailure = runtime.previousAutoInstallFailure?.(info.version, isOlderVersion(info.version, runtime.currentVersion)) ?? null } catch { previousFailure = null }
     applyInfo('downloaded', info, previousFailure
       ? { error: { code: 'UPDATE_PREVIOUS_AUTO_INSTALL_FAILED', message: previousFailure }, failedStep: 'install' }
       : {})
@@ -1635,7 +1663,7 @@ export function createUpdaterService(
   const eventHandlers: Record<UpdateEventName, (...args: any[]) => void> = {
     // 拿手里那一版对比的那一趟，「正在检查」「没有新版本」都不进快照：手里那份照样摆着等装。
     'checking-for-update': () => {
-      if (probingDownloaded()) return
+      if (probingDownloaded() || feedRecheck) return
       emit({ phase: 'checking', progress: null, error: null })
     },
     'update-not-available': (info: UpdateInfo) => {
@@ -1667,7 +1695,9 @@ export function createUpdaterService(
       // updateInfoAndProvider 里），换个新对象它看不见，只能就地改。
       if (intelMac) Object.assign(info, buildIntelMacUpdateInfo(info))
       offeredPackageBytes = resolveUpdatePackageBytes(info)
-      applyInfo('available', info, { diskShortfall: null })
+      // 换地址重查时阶段留在「正在下载」，接着就下：闪回「有新版本」的那一下，「必须更新」那道门和
+      // 自动更新都会当成还没开始下，再起一次下载。
+      applyInfo(feedRecheck ? 'downloading' : 'available', info, { diskShortfall: null })
     },
     'update-downloaded': (event: DownloadedUpdateEvent) => {
       if (disposed) return
@@ -1982,7 +2012,7 @@ export function createUpdaterService(
     emit({ progress: { ...progress, averageBytesPerSecond, secondsRemaining } })
   }
 
-  const noteDownloadStall = (stall: UpdateDownloadStalled, retrying: boolean) => {
+  const noteDownloadStall = (stall: UpdateDownloadStalled, retrying: boolean, switchingFeed = false) => {
     try {
       runtime.downloadStalled?.({
         retrying,
@@ -1991,6 +2021,7 @@ export function createUpdaterService(
         transferEnded: stall.transferEnded,
         transferred: snapshot.progress?.transferred ?? 0,
         total: snapshot.progress?.total ?? 0,
+        ...(switchingFeed ? { switchingFeed: true as const } : {}),
       })
     } catch {
       // 记日志失败不影响接下来重下或报错。
@@ -2024,10 +2055,12 @@ export function createUpdaterService(
   }
 
   // 停住和连接超时对客户是一回事：那头没动静了。沿用更新那张表里「超时」那句，界面不多
-  // 一句新话；code 另记，日志里分得清是看门狗停的。
+  // 一句新话；code 另记，日志里分得清是看门狗停的。换地址以后那次重查挂住了也是这句（D84）。
   const downloadFailure = (error: unknown) => error instanceof UpdateDownloadStalled
     ? { code: 'UPDATE_DOWNLOAD_STALLED', message: updateNetworkFailureMessages.timeout }
-    : safeError(error, platform)
+    : error instanceof UpdateCheckAborted
+      ? { code: 'UPDATE_CHECK_STALLED', message: updateNetworkFailureMessages.timeout }
+      : safeError(error, platform)
 
   // 下载一次，期间盯着有没有新数据进来：electron-updater 的进度和宿主看到的字节
   // （downloadReceivedAt）都算。还在传时 stallMs、进度到过 100% 以后
@@ -2133,6 +2166,35 @@ export function createUpdaterService(
     }
   }
 
+  // 安装包这次没下成，问宿主要不要换回默认更新地址再下（D84）。electron-updater 那次一直没收尾的不问：
+  // 换了地址再下也只会接回同一次。
+  function feedFallBackForDownload(error: unknown): boolean {
+    if (disposed || (error instanceof UpdateDownloadStalled && error.unsettled)) return false
+    try {
+      return runtime.feedRoute?.fallBackDownload?.(error, error instanceof UpdateDownloadStalled) === true
+    } catch {
+      return false
+    }
+  }
+
+  // 宿主已经换回默认更新地址：在那份上重查一次再下（D84）。electron-updater 下载用的是检查时那份地址
+  // （AppUpdater 把它和清单一起记在 updateInfoAndProvider 里），光换地址不重查，再下还是去直连那份。
+  // 这是最后一次自动重下，和换直连那次一样按 updateDownloadRetryStallMs 多等一会儿才算停住。
+  // 返回 true＝下好了；false＝重查以后这一版不再可下（那份上没有新版本了），照重查的结果摆着。
+  async function downloadOnFallbackFeed(fullPackage: boolean): Promise<boolean> {
+    progressSamples = []
+    emit({ phase: 'downloading', error: null, progress: null })
+    feedRecheck = { version: snapshot.availableVersion }
+    try {
+      await checkWatched()
+    } finally {
+      feedRecheck = null
+    }
+    if (disposed || currentPhase() !== 'downloading') return false
+    await downloadWatched(fullPackage, updateDownloadRetryStallMs)
+    return true
+  }
+
   const download = async (options: UpdateDownloadOptions = {}): Promise<UpdateSnapshot> => {
     requireEnabled()
     if (snapshot.phase === 'downloading') return cloneSnapshot(snapshot)
@@ -2163,15 +2225,16 @@ export function createUpdaterService(
       noteDownloadMeasured(startedAt, receivedAtStart, false)
     } catch (error) {
       const stall = error instanceof UpdateDownloadStalled ? error : null
-      // 自动再下只有一次，再不行就照实报下载失败，重下的按钮界面上都有。停住的那次多半是
-      // 这条路不通了（代理软件不转发、换了网络旧连接没断干净），和代理连不上一样换直连，
-      // 而且重下整个安装包：只有一个请求，取消令牌就停得下来，不靠宿主掐请求。这一次按
-      // updateDownloadRetryStallMs 多等一会儿才算停住。
+      // 换直连再下只有一次（走直连那份更新地址的，下面还会换地址再下一次），再不行就照实报下载失败，
+      // 重下的按钮界面上都有。停住的那次多半是这条路不通了（代理软件不转发、换了网络旧连接没断干净），
+      // 和代理连不上一样换直连，而且重下整个安装包：只有一个请求，取消令牌就停得下来，不靠宿主掐请求。
+      // 这一次按 updateDownloadRetryStallMs 多等一会儿才算停住。
       // electron-updater 那次一直没收尾时不重下：再下只会接回同一次，白等一轮。
       const retry = stall
         ? !stall.unsettled
         : retryWithoutProxy !== undefined && isProxyConnectionFailure(error)
       if (stall) noteDownloadStall(stall, retry)
+      let failure: unknown = error
       if (retry) {
         try {
           await retryOffProxy(async () => {
@@ -2180,15 +2243,33 @@ export function createUpdaterService(
             await downloadWatched(stall !== null, updateDownloadRetryStallMs)
           })
           noteDownloadMeasured(startedAt, receivedAtStart, true)
+          return cloneSnapshot(snapshot)
         } catch (retryError) {
-          if (retryError instanceof UpdateDownloadStalled) noteDownloadStall(retryError, false)
-          emit({ phase: 'error', error: downloadFailure(retryError), failedStep: 'download', progress: null })
-          scheduleDownloadRetry(retryError, 'download')
+          failure = retryError
         }
-      } else {
-        emit({ phase: 'error', error: downloadFailure(error), failedStep: 'download', progress: null })
-        scheduleDownloadRetry(error, 'download')
       }
+      // 「自动」线路走的是直连那份更新地址、安装包在那里下不动（D84）：上面那次重下管的是代理那条路，这一次
+      // 换的是更新地址，宿主换回包里那份就在那里再查一次、再下一次。代理已经确定连不上的，这一次照样绕开它，
+      // 不然换了地址还是撞同一个代理。手动选了线路2、换了也白换的失败，宿主不换，照旧报下载失败。
+      const switchingFeed = feedFallBackForDownload(failure)
+      if (retry && failure instanceof UpdateDownloadStalled) noteDownloadStall(failure, switchingFeed, switchingFeed)
+      if (switchingFeed) {
+        const fullPackage = failure instanceof UpdateDownloadStalled
+        const proxyFailed = retry && !stall
+        let downloaded = false
+        const run = async () => { downloaded = await downloadOnFallbackFeed(fullPackage) }
+        try {
+          if (proxyFailed) await retryOffProxy(run)
+          else await run()
+          if (downloaded) noteDownloadMeasured(startedAt, receivedAtStart, true)
+          return cloneSnapshot(snapshot)
+        } catch (fallbackError) {
+          if (fallbackError instanceof UpdateDownloadStalled) noteDownloadStall(fallbackError, false)
+          failure = fallbackError
+        }
+      }
+      emit({ phase: 'error', error: downloadFailure(failure), failedStep: 'download', progress: null })
+      scheduleDownloadRetry(failure, 'download')
     }
     return cloneSnapshot(snapshot)
   }
@@ -2318,6 +2399,11 @@ export function createUpdaterService(
     setServiceStatus(status) {
       if (disposed) return
       applyServiceStatus(status)
+    },
+    restoreServiceSwitches(switches) {
+      if (disposed || serviceStatusRead) return
+      const patch = serviceSwitchesPatch(switches)
+      if (Object.keys(patch).length) emit(patch)
     },
     setLaunchInstallNotice(notice) {
       if (disposed) return

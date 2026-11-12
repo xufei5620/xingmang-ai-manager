@@ -7,7 +7,6 @@ export const canvasHostChannels = {
   saveFile: 'canvas-host:save-file',
   pickFile: 'canvas-host:pick-file',
   notify: 'canvas-host:notify',
-  openExternal: 'canvas-host:open-external',
   listGroups: 'canvas-host:list-groups',
   prepareGroup: 'canvas-host:prepare-group',
   generateImage: 'canvas-host:generate-image',
@@ -19,6 +18,7 @@ export const canvasHostChannels = {
   saveAsset: 'canvas-host:save-asset',
   showAssetMenu: 'canvas-host:asset-menu',
   listAssets: 'canvas-host:list-assets',
+  getAssetDetail: 'canvas-host:get-asset-detail',
   renameAsset: 'canvas-host:rename-asset',
   updateAssetMetadata: 'canvas-host:update-asset-metadata',
   markAssetUsed: 'canvas-host:mark-asset-used',
@@ -28,6 +28,8 @@ export const canvasHostChannels = {
   inspectAssetReferences: 'canvas-host:inspect-asset-references',
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
+  importAssetBytes: 'canvas-host:import-asset-bytes',
+  completeRunPreparation: 'canvas-host:complete-run-preparation',
   listPromptPresets: 'canvas-host:list-prompt-presets',
   createPromptPreset: 'canvas-host:create-prompt-preset',
   updatePromptPreset: 'canvas-host:update-prompt-preset',
@@ -48,10 +50,13 @@ export const canvasHostChannels = {
   createProjectInDefaultFolder: 'canvas-host:create-project-in-default-folder',
   relinkProjectFolder: 'canvas-host:relink-project-folder',
   deleteProject: 'canvas-host:delete-project',
+  getAccountSummary: 'canvas-host:get-account-summary',
+  getPriceSnapshot: 'canvas-host:get-price-snapshot',
   runEvent: 'canvas-host:run-event',
   accountChanged: 'canvas-host:account-changed',
   themeChanged: 'canvas-host:theme-changed',
   appearanceChanged: 'canvas-host:appearance-changed',
+  showAccountAssets: 'canvas-host:show-account-assets',
   closeRequested: 'canvas-host:close-requested',
   closeCancelled: 'canvas-host:close-cancelled',
   finishClose: 'canvas-host:finish-close',
@@ -119,25 +124,27 @@ export const desktopCanvasCapabilities: CanvasHostCapabilities = {
     'text', 'prompt', 'note', 'image', 'image-generate', 'image-edit', 'video', 'video-generate',
     'image-input', 'video-input', 'audio-input', 'router', 'gallery', 'output', 'group',
     'drama-bible', 'drama-script', 'drama-parse', 'drama-shot', 'drama-character', 'drama-scene', 'drama-prop',
+    'text-generate', 'frame-extract',
+    'image-crop', 'image-collage', 'image-grid-split', 'image-tile', 'image-layer', 'image-compare', 'image-panorama',
   ],
   features: {
-    quote: false,
-    accountSummary: false,
-    imageEditMask: false,
-    textGenerate: false,
+    quote: true,
+    accountSummary: true,
+    imageEditMask: true,
+    textGenerate: true,
     textWebSearch: false,
-    imageTools: false,
-    frameExtract: false,
-    scenarioTemplates: false,
+    imageTools: true,
+    frameExtract: true,
+    scenarioTemplates: true,
     routerStrategy: false,
     generateAudio: false,
-    referenceOrder: false,
+    referenceOrder: true,
     cloud: false,
     agentExecution: false,
-    byteUpload: false,
+    byteUpload: true,
     promptPresetGroups: false,
   },
-  imageCandidates: { maximum: 1 },
+  imageCandidates: { maximum: 4 },
   videoCandidates: { maximum: 1 },
   promptPresetNameMaxLength: maximumCanvasPromptPresetNameLength,
   imageResolutions: {
@@ -394,6 +401,36 @@ export interface CanvasProjectDeleteResult {
   projectId: string
   /** The project's own folder directly under the default projects folder went to the system trash; any other folder is left alone. */
   folderMovedToTrash: boolean
+}
+
+/**
+ * The balance chip's answer (画布完善第 2b 条). Four things and nothing else:
+ * which kind of account, its name half-hidden, the balance, when it was read.
+ * Never the email, the user id or any key (I15).
+ */
+export interface CanvasAccountSummary {
+  /** 星芒账号 or 历史账号. */
+  siteLabel: string
+  /** maskCanvasAccountLabel's output; null when the account has no name. */
+  accountLabel: string | null
+  /** US dollars, quota / quotaPerUnit as in the main window; null while not read. */
+  balanceUsd: number | null
+  /** 「订阅剩余 USD 12.30 · 10月3日到期」 when a subscription is usable, else null. */
+  subscriptionLabel: string | null
+  /** When the balance was read (ISO); null while not read. */
+  readAt: string | null
+}
+
+/**
+ * What the canvas run preflight prices 「预计约 $x」 with (画布完善第 2b 条第 2 步):
+ * per-call prices by model (US dollars at group ratio 1; approximate for video)
+ * and this account's ratio per group. Public price data and ratios only (I15).
+ */
+export interface CanvasPriceSnapshot {
+  models: Record<string, { usd: number; approximate?: boolean }>
+  groupRatios: Record<string, number>
+  /** When the price list was read (ISO). */
+  readAt: string
 }
 
 export interface CanvasStoredProjectSummary {

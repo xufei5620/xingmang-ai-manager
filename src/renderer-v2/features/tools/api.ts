@@ -3,6 +3,7 @@ import {
   type AccountSourceTarget,
   type AppConfigSummary,
   type ChooseWorkspaceOptions,
+  type ClaudeCommandConfirmationChoice,
   type CliModelHints,
   type CliUninstallOptions,
   type CodexDesktopLaunchMode,
@@ -263,6 +264,8 @@ export function createToolsApi(bridge: XingmangApi) {
       providers: [providerFor(tool)], preferredModels: model ? { [providerFor(tool)]: model } : {}, mode, intent: 'explicit',
     }),
     official: (tool: ToolId, mode: 'merge' | 'reset' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
+    // 切回官方后那一问「要不要让官方 Claude Code 先问再执行？」的回答；改不改、改之前备份都在主进程。
+    answerCommandConfirmation: (choice: ClaudeCommandConfirmationChoice) => bridge.answerClaudeCommandConfirmation(choice),
     // 首页的一键切换：备份、写入、自检、失败回滚都在主进程一次做完。
     switchSource: (tool: ToolId, target: AccountSourceTarget) => bridge.switchAccountSource(providerFor(tool), target),
     // 提醒设置指向旧位置时的「修好它」：备份、只改那几行、再查一遍都在主进程。

@@ -5,6 +5,7 @@ import { transpileModule, ModuleKind } from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
 import { accelerationEntryMode, accelerationWorkerArgument } from './acceleration-worker-entry'
 import { linuxLaunchRefusal, linuxLaunchRefusalNotice } from './linux-launch-guard'
+import { macosLaunchRefusal } from './macos-launch-guard'
 import { formatRelaunchedWithout, launchArgumentRelaunchEnvironmentKey, takeLaunchArgumentRelaunch } from './launch-argument-relaunch'
 import { loginLaunchArgument } from './login-launch'
 import { resolvePackagedLaunchArguments } from './security'
@@ -50,6 +51,7 @@ function runEntry(argv: string[], connected: boolean, platform = 'win32', identi
     require(name: string) {
       if (name === '../acceleration-worker-entry') return { accelerationEntryMode }
       if (name === '../linux-launch-guard') return { linuxLaunchRefusal, linuxLaunchRefusalNotice }
+      if (name === '../macos-launch-guard') return { macosLaunchRefusal }
       if (name === '../security') return { resolvePackagedLaunchArguments }
       if (name === '../launch-argument-relaunch') return { formatRelaunchedWithout, launchArgumentRelaunchEnvironmentKey, takeLaunchArgumentRelaunch }
       if (name === '../uninstall-cleanup-entry') return { uninstallCleanupEntryMode }
@@ -151,8 +153,29 @@ describe('packaged acceleration worker entry', () => {
   })
 
   it.each([
+    ['root', [], 0],
+    ['root, even with a helper switch', [accelerationWorkerArgument], 0],
+  ] as const)('refuses a macOS launch as %s, in the Linux wording, without loading anything else', async (_label, extraArgs, effectiveUid) => {
+    const result = runEntry(['app', ...extraArgs], true, 'darwin', { effectiveUid })
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(result.loaded).toEqual([])
+    expect(result.isolateAccelerationElectronProfile).not.toHaveBeenCalled()
+    expect(result.setActivationPolicy).not.toHaveBeenCalled()
+    expect(result.events).toContain('gpu:off')
+    expect(result.events).toContain('path:userData=/tmp/xingmang-refused-scratch')
+    expect(result.showErrorBox).toHaveBeenCalledExactlyOnceWith(
+      '请用平时登录电脑的账号打开',
+      '星芒AI管理工具不能用管理员身份打开。用管理员身份打开，装好的工具和设置会归管理员所有，之后平时的账号反而用不了。请关掉这个提示，从应用菜单里直接打开。这次什么都没有改动。',
+    )
+    expect(result.removed).toEqual(['/tmp/xingmang-refused-scratch'])
+    expect(result.appExit).toHaveBeenCalledExactlyOnceWith(1)
+    expect(result.events.at(-1)).toBe('app:exit:1')
+  })
+
+  it.each([
     ['win32', 0],
-    ['darwin', 0],
+    ['darwin', 501],
     ['linux', 1000],
   ] as const)('opens the desktop as before on %s with euid %s', (platform, effectiveUid) => {
     const result = runEntry(['app'], false, platform, { effectiveUid, env: { SUDO_UID: '1000' } })

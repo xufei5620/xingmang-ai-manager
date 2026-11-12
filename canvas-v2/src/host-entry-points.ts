@@ -29,11 +29,24 @@ export interface CanvasHostEntryPoints {
   projectDefaultFolder: boolean
   /** "Choose the folder again" on a project whose folder is missing. */
   projectFolderRelink: boolean
+  /** "Delete" on an archived project; the host confirms with the user itself. */
+  projectDelete: boolean
+  /** The balance chip in the toolbar: the host declared accountSummary and can answer getAccountSummary. */
+  accountSummary: boolean
+  /** 「预计约 $x」 in the run preflight: the host declared quote and can answer getPriceSnapshot. */
+  quote: boolean
+  /**
+   * "Save as an image" in the mask editor. It hands the PNG the page built to
+   * importAssetFile, which only a host that declared byteUpload accepts: the
+   * desktop imports files the user dropped from disk and refuses page-built
+   * bytes, and the editor would then report an upload it cannot confirm.
+   */
+  maskAssetSave: boolean
 }
 
 type EntryPointMethods = Pick<CanvasHostBridge, 'getAssetDetail' | 'downloadAssets' | 'readAssetOrigin' | 'listRunHistory' | 'readRunHistory' | 'renderImageAnnotation' | 'readVideoForFramePreview'
   | 'listProjectHistory' | 'readProjectRevision' | 'restoreProjectRevision' | 'inspectProjectRestore' | 'previewProjectExport' | 'exportProjectPackage' | 'cancelProjectExport'
-  | 'createProjectInDefaultFolder' | 'relinkProjectFolder'>
+  | 'createProjectInDefaultFolder' | 'relinkProjectFolder' | 'deleteProject' | 'getAccountSummary' | 'getPriceSnapshot'>
 
 export function canvasHostEntryPoints(bridge: Partial<EntryPointMethods>, profile: CanvasCapabilityProfile): CanvasHostEntryPoints {
   const assetDetail = typeof bridge.getAssetDetail === 'function'
@@ -51,6 +64,10 @@ export function canvasHostEntryPoints(bridge: Partial<EntryPointMethods>, profil
     projectPackageExport: typeof bridge.previewProjectExport === 'function' && typeof bridge.exportProjectPackage === 'function' && typeof bridge.cancelProjectExport === 'function',
     projectDefaultFolder: typeof bridge.createProjectInDefaultFolder === 'function',
     projectFolderRelink: typeof bridge.relinkProjectFolder === 'function',
+    projectDelete: typeof bridge.deleteProject === 'function',
+    accountSummary: profile.features.accountSummary && typeof bridge.getAccountSummary === 'function',
+    quote: profile.features.quote && typeof bridge.getPriceSnapshot === 'function',
+    maskAssetSave: profile.features.byteUpload,
   }
 }
 

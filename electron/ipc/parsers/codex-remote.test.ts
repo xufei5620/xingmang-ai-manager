@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled } from './codex-remote'
+import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled, parseRemoteIdleClose, parseRemoteWorkspaceChoice } from './codex-remote'
 
 describe('codex-remote parsers', () => {
   it('accepts only known channels and real booleans', () => {
@@ -8,6 +8,23 @@ describe('codex-remote parsers', () => {
     expect(() => parseRemoteChannel('../feishu')).toThrow()
     expect(parseRemoteEnabled(false)).toBe(false)
     expect(() => parseRemoteEnabled('true')).toThrow('遥控开关')
+  })
+
+  it('accepts only the offered idle-close hours or null for never', () => {
+    expect(parseRemoteIdleClose(4)).toBe(4)
+    expect(parseRemoteIdleClose(12)).toBe(12)
+    expect(parseRemoteIdleClose(null)).toBeNull()
+    for (const value of [0, 1, 24, '4', undefined, Number.NaN, 4.5]) {
+      expect(() => parseRemoteIdleClose(value)).toThrow('遥控自动关时长')
+    }
+  })
+
+  // YF-19：只是一串字，主进程再拿去跟电脑上加过的单子比，不当路径用。
+  it('takes a folder choice only as a short string', () => {
+    expect(parseRemoteWorkspaceChoice('~/projects/demo')).toBe('~/projects/demo')
+    for (const value of ['', 'a'.repeat(4097), 'x\0y', 42, null, undefined, ['~/a']]) {
+      expect(() => parseRemoteWorkspaceChoice(value)).toThrow('文件夹参数无效')
+    }
   })
 
   it('keeps only the two credential fields and caps their length', () => {

@@ -1,5 +1,5 @@
 // 装和更新命令行工具（Claude Code、Codex、Grok）的那一整段（#1070 第 2 步，从 system-service.ts 的 createSystemService
-// 原样搬来）：找 npm（Windows 上没有就先装 Node.js）、按网络挑源、下载卡住就换源、核对国内镜像下的包和 npm 官方源一致、
+// 原样搬来）：找 npm（Windows 上没有就先装 Node.js，Mac / Linux 上代装的旧了先换新）、按网络挑源、下载卡住就换源、核对国内镜像下的包和 npm 官方源一致、
 // 托管目录整体替换、Grok 的原生通道和 Mac / Linux 上的签名核对、装完 Claude Code 顺带装 Git、记更新历史，以及取消和清理
 // 下了一半的东西。
 //
@@ -49,6 +49,7 @@ import {
 } from './install-cancellation'
 import {
   buildInstallLeftoverLocations,
+  manualInstallLeftoverMinimumAgeMs,
   type InstallLeftoverLocation,
   type InstallLeftoverSweepResult,
 } from './install-leftovers'
@@ -896,6 +897,11 @@ export interface CliInstallServiceDependencies {
   ) => Promise<GitRuntimeInstallResult>
   /** 装完 Codex 时调：换上的新版读不进随包的型号名单，就把写进去的那份收回。 */
   takeBackUnreadableCodexModelCatalog: (trigger: 'cli-installed') => Promise<void>
+  /**
+   * 找 npm 之前调：Mac、Linux 上代装的 Node.js 比钉的版本旧就顺手换新（D86，runtime-install-service.ts）。
+   * 不往外抛，没换成照旧用原来那份；取消要看 signal。
+   */
+  refreshOutdatedManagedNodeRuntime: (signal?: AbortSignal) => Promise<void>
 }
 
 export function createCliInstallService(context: ServiceContext, dependencies: CliInstallServiceDependencies) {
@@ -915,6 +921,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
     invalidateCliUpdateCache,
     installGitRuntime,
     takeBackUnreadableCodexModelCatalog,
+    refreshOutdatedManagedNodeRuntime,
   } = dependencies
 
   function sendInstallProgress(
@@ -988,6 +995,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
       await installNodeRuntimeLts({
         networkRegion: await inspectNetworkRegion(),
         temporaryDirectoryMode: windowsExecutionMode,
+        ...(serviceOptions.windowsProcessElevated ? { processElevated: true } : {}),
         dependencies: { fetch: downloadFetch },
         onProgress: (progress) => {
           if (progress.message) sendInstallProgress(target, provider, 'output', progress.message)
@@ -1217,6 +1225,10 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
         }
       }
 
+      // 代装的那份 Node.js 旧了，先换成钉的那版再找 npm（D86），这次装工具就用上新的。Windows 上什么都不做。
+      // 换的时候没人在用：工具的安装、卸载、打开都排在同一个队列里，这会儿只有这一个任务在跑。
+      await refreshOutdatedManagedNodeRuntime(cancellation?.signal)
+      cancellation?.throwIfCancelled()
       // Mac 上客户自己那份 Node.js 太旧时用代下的那份装：npm 用它自带的，跑 npm 的环境也把它
       // 排最前，npm 和工具的安装脚本都靠 `#!/usr/bin/env node` 找 node（第三十四批 A）。
       const nodeDirectories = await preferredNodeDirectories()
@@ -1998,9 +2010,38 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
     })
   }
 
+  /**
+   * 「星芒占用的空间」里「装工具时下载的文件」那一行右边的数：和下面的手动清理同一套选法、同一个年龄，
+   * 写的就是点「清理」能腾出来的。只读，不排队：量的时候正在装也不碍事，最多少算正在下的那份。
+   */
+  function measureInstallLeftoversNow(): Promise<number> {
+    const measure = serviceOptions.measureInstallLeftovers
+    if (!measure) return Promise.resolve(0)
+    return measure(resolveInstallLeftoverLocations(), { minimumAgeMs: manualInstallLeftoverMinimumAgeMs(platform, windowsExecutionMode) })
+  }
+
+  /**
+   * 客户在那一行亲手点「清理」：和后台那次一样排进安装队列（I11），正在装的话等它装完再删；
+   * 不等 6 小时的规则见 manualInstallLeftoverMinimumAgeMs。键和后台那次分开：后台那次正排着时，
+   * 同一个键会直接拿到它的结果，那一次还是按 6 小时删的。
+   */
+  function cleanInstallLeftoversNow(): Promise<InstallLeftoverSweepResult> {
+    const sweep = serviceOptions.sweepInstallLeftovers
+    if (!sweep) return Promise.resolve({ removed: 0, freedBytes: 0, failed: 0 })
+    return installationQueue.enqueue('maintenance:install-leftovers-manual', async () => {
+      const result = await sweep(resolveInstallLeftoverLocations(), { minimumAgeMs: manualInstallLeftoverMinimumAgeMs(platform, windowsExecutionMode) })
+      runtimeLog?.log(result.failed ? 'warn' : 'info', 'install', 'install-leftovers.manual-cleaned', `手动清掉装工具时留下的下载 ${result.removed} 份，约 ${Math.round(result.freedBytes / 1024 / 1024)} MB`, {
+        removed: result.removed,
+        freedBytes: result.freedBytes,
+        failed: result.failed,
+      })
+      return result
+    })
+  }
+
   function cancelCliInstall(provider: ProviderId): InstallCancellationOutcome {
     return installCancellations.cancel(`cli:install:${provider}`)
   }
 
-  return { installCli, cancelCliInstall, cleanupInstallLeftovers }
+  return { installCli, cancelCliInstall, cleanupInstallLeftovers, measureInstallLeftoversNow, cleanInstallLeftoversNow }
 }

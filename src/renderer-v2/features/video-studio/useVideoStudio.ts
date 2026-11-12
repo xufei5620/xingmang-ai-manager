@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { aiVideoUnconfirmedSubmissionMessage, isAiVideoUnconfirmedSubmission } from '../../../../electron/ai-video-submission'
 import { AI_CHAT_LIMITS } from '../../../../electron/ai-chat-protocol'
+import { resolveMissingAiAssetMessage } from '../../../../electron/ai-asset-missing'
 import type { AiChatGroupSummary, AiVideoClip, XingmangApi } from '../../../../electron/ipc-contract'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
@@ -87,6 +88,12 @@ export function videoStudioErrorMessage(error: unknown, fallback = genericFailur
   const quota = matchRelayQuotaFailureMessage(message)
   if (quota) return relayQuotaFailureMessages[quota]
   return message && speaksChinese(message) ? redactSecretPatterns(message) : fallback
+}
+
+// 片段、配乐在作品库里没了：文件在外面被删掉时主进程说「已经不在电脑上了」（D37），
+// 编号不是这个账号的还是老说法「不存在或无权访问」，两种都算找不到。
+function isGoneFromLibrary(message: string): boolean {
+  return resolveMissingAiAssetMessage(message) !== null || /不存在|无权访问/.test(message)
 }
 
 function defaultStorage(): VideoStudioStorage | null {
@@ -495,7 +502,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
           bytes = await bridge.readAiVideoClip(shot.clip!.assetId)
         } catch (reason) {
           const message = userFacingErrorMessage(reason)
-          throw new Error(/不存在|无权访问/.test(message) ? `第 ${index + 1} 段片段在作品库里找不到了，重新生成这一段再拼` : videoStudioErrorMessage(reason, `第 ${index + 1} 段片段读不出来，请稍后再试`))
+          throw new Error(isGoneFromLibrary(message) ? `第 ${index + 1} 段片段在作品库里找不到了，重新生成这一段再拼` : videoStudioErrorMessage(reason, `第 ${index + 1} 段片段读不出来，请稍后再试`))
         }
         if (controller.signal.aborted || !alive()) return
         totalBytes = addVideoStudioClipBytes(totalBytes, bytes.byteLength)
@@ -515,7 +522,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
           bytes = await bridge.readVideoStudioMusic(sound.music.assetId)
         } catch (reason) {
           // 作品库里没了（客户删了那个文件）也是「这首歌用不了」；别的（没登录、排队满了）照主进程原话说。
-          throw new Error(/不存在|无权访问/.test(userFacingErrorMessage(reason)) ? videoStudioMusicUnreadableMessage : videoStudioErrorMessage(reason, videoStudioMusicUnreadableMessage))
+          throw new Error(isGoneFromLibrary(userFacingErrorMessage(reason)) ? videoStudioMusicUnreadableMessage : videoStudioErrorMessage(reason, videoStudioMusicUnreadableMessage))
         }
         if (controller.signal.aborted || !alive()) return
         const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
@@ -642,6 +649,9 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   const busy = Boolean(planning) || project.shots.some((shot) => isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot)) || composeState.phase !== 'idle'
   // 写分镜、出片、拼片都靠这一页接着往下走：做着的时候窗口缩到托盘也不关界面（electron/renderer-release.ts）。
   useBackgroundWork('video-studio', busy)
+  // 拼片也在这一页里跑，重启装更新会把它停下、重开以后要从头再拼：主进程要点名问一句（D10）。
+  // 出片交给服务端，重开以后接着取回来，不在这一样里。
+  useBackgroundWork('video-compose', composeState.phase !== 'idle', 'video-compose')
   return {
     site, project, groups, preparations, catalogLoading, catalogError, planning: Boolean(planning), composeState, error, notice, storageWarning, busy,
     catalogs: buildVideoStudioCatalogs(groups, preparations),

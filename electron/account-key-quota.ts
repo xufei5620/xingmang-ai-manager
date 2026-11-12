@@ -60,6 +60,20 @@ export function isKeyQuotaExhaustedMessage(message: string): boolean {
 export const managedKeyQuotaExhaustedMessage = '这个工具的额度用完了，软件不会自动放开。到「个人中心 › 密钥管理」的「每个工具的额度上限」里调高后再试。'
 
 /**
+ * 工具那把 Key 在网页上停用了或到期了（0.2.24 深查 D3）：跟上限用完一样是有人特意让它停，
+ * 签一把不限额、永不过期的新 Key 等于没停，所以也在这里止步。Key 被删掉、分组改名的照旧换新。
+ */
+export const managedKeyStoppedMessage = '这个工具的密钥已经停用或到期，软件不会自动换一把新的。到星芒网页的「令牌管理」里重新启用，或者在「个人中心 › 密钥管理」把它撤销后再试。'
+
+/**
+ * 同一件事的历史账号版（0.2.24 Fable 复查第 2 条，yoyo 11-11 回「历史账号也停」）。网页上的叫法照
+ * Wei-Shaw/sub2api 前端核过（锁定的 270eac6 和 11-11 的 main 一样）：侧栏「API 密钥」，每行
+ * 「启用」「编辑」，编辑框里叫「过期时间」。到期的光点「启用」没用：后端每次用的时候还按过期时间拦
+ * （APIKey.IsExpired），按时间到期的那把状态也还是「活跃」、那一行只有「禁用」，得在「编辑」里把时间往后改。
+ */
+export const sub2ApiManagedKeyStoppedMessage = '这个工具的密钥已经停用或到期，软件不会自动换一把新的。到历史账号官网的「API 密钥」里点「启用」（到期的要点「编辑」把过期时间往后改），或者在「个人中心 › 密钥管理」把它撤销后再试。'
+
+/**
  * AI 工作台聊天自己那把 Key 的上限用完了：同样停下，不去换一把不限额的。用的是
  * relay-quota-failure 里那句现成的话，聊天页认得它，会在旁边给「去调额度」。
  */

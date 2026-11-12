@@ -68,6 +68,7 @@ import { parseNodeImageEditMask, resolveImageMaskSource, type ImageMaskSource } 
 import { parseImageEditMask, imageEditMaskModelSupported, type ImageEditMask } from './image-tools/image-edit-mask'
 import { assertMaskAssetPng, assertMaskAssetSource, buildLinkedMaskAssetNode, buildMaskAssetNode, parseMaskAssetUpload, replaceMaskAssetNode, type ImageMaskAssetPng, type MaskAssetSaveMode } from './image-tools/mask-asset-export'
 import { parseImageCandidateCount } from './runtime/image-candidate-count'
+import { createHostRunPreparations, type HostRunPreparations } from './runtime/host-run-preparations'
 import { parseVideoCandidateCount, type VideoCandidateCount } from './runtime/video-candidate-count'
 import { imageTransformRecipeForNode, isImageTransformNodeKind } from './image-tools/recipe'
 import { parseImageCollageInputOrder } from './image-tools/collage-input-order'
@@ -77,6 +78,7 @@ import { buildLayerPsdGraph } from './image-tools/layer-psd-apply'
 import { assertLayerEditorScope, layerEditorScopeToken } from './image-tools/layer-editor-scope'
 import { collectGalleryCandidateAssetIds, currentNodeCandidates } from './runtime/current-batch-candidates'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { AccountBalanceChip } from './components/AccountBalanceChip'
 import { parsePromptReferences, type PromptReference } from './library/prompt-references'
 import { applyCanvasPromptDraft } from './editor/prompt-draft'
 import {
@@ -252,6 +254,7 @@ import { buildResourceTree, buildResourceExportWorkflow, resourceGroupSelectionI
 import { CanvasInspector, type CanvasInspectorNode, type CanvasInspectorTab } from './components/CanvasInspector'
 import { projectCanvasInspectorNodes } from './components/canvas-inspector-model'
 import { RunPreflight } from './components/RunPreflight'
+import { useCanvasRunQuote } from './components/run-quote'
 import { DramaParseConfirm } from './components/DramaParseConfirm'
 import type { DramaParseTables } from './library/drama-model'
 import type { DramaConfirmSelection } from './library/drama-layout'
@@ -273,6 +276,8 @@ import { RunInspector } from './components/RunInspector'
 import { RunResultCollectionDialog } from './components/RunResultCollectionDialog'
 import type { CanvasRunSummaryQuery } from './lib/run-summary-contract'
 import { ProjectCenter } from './components/ProjectCenter'
+import { AccountAssetLibrary } from './components/AccountAssetLibrary'
+import { accountAssetLibraryInProjectNotice, accountAssetLibraryRequested, withoutAccountAssetLibraryRoute } from './components/account-asset-library-model'
 import { createBlankProjectCreation, readSavedBlankProjectDraft, writeSavedBlankProjectDraft, type BlankProjectCreationState } from './lib/blank-project-creation-model'
 import { CanvasCloseDialog } from './components/CanvasCloseDialog'
 import { createCanvasCloseGuard, type CanvasCloseChoice, type CanvasClosePhase } from './persistence/canvas-close'
@@ -324,6 +329,7 @@ import {
   type CanvasRunPreflight,
 } from './runtime/run-preflight'
 import { canvasRunStatusLabel, mergeCanvasRunEvent } from './runtime/run-events'
+import { latestCanvasNodeCharges, mergeCanvasRunChargeEvent } from './runtime/run-charge'
 import { matchingCanvasRunNodeIds, matchingRunRecordNodes } from './runtime/run-input-matching'
 import { sameCanvasMediaAsset } from './library/media-result'
 import {
@@ -1047,6 +1053,8 @@ function CanvasWorkspace({
   const { CanvasAgentPanel, ProjectCollaborationPanel, CanvasWorkshopLibraryDialog, SaveCanvasWorkshopDialog, WorkshopAssetPickerDialog, WorkshopModelMappingDialog, WorkshopSetupPanel, WorkshopContentRecoveryNotice, WorkshopCreationRecoveryNotice, VideoTaskRecovery } = slots
   // 宿主少了的方法、没开的能力，对应的入口不给（#4，见 host-entry-points.ts）。
   const hostEntryPoints = canvasHostEntryPoints(hostBridge(), canvasCapabilities())
+  // 运行结束一次加一，余额条跟着重新问宿主（第 2b 条）。
+  const [accountSummarySignal, setAccountSummarySignal] = useState(0)
   const [projectAccessState, setProjectAccessState] = useState(() => window.xingmangCanvasHost?.getProjectAccess?.() ?? null)
   const [activeProject, setActiveProject] = useState<CanvasStoredProjectSummary | null>(null)
   const projectEpochRef = useRef(0)
@@ -1161,6 +1169,16 @@ function CanvasWorkspace({
   const [projectLoading, setProjectLoading] = useState(Boolean(window.xingmangCanvasHost))
   const [projectError, setProjectError] = useState<string | null>(null)
   const initialRouteConsumedRef = useRef(false)
+  // ?view=assets（桌面主窗口「看全部作品」）：项目中心直接打开只读的素材库。
+  const [accountAssetsOpen, setAccountAssetsOpen] = useState(false)
+  const listAccountAssets = useCallback((query: CanvasAssetQuery) => hostBridge().listAssets(query), [])
+  const saveAccountAsset = useCallback((assetId: string) => hostBridge().saveAsset(assetId), [])
+  const closeAccountAssets = useCallback(() => {
+    setAccountAssetsOpen(false)
+    const next = withoutAccountAssetLibraryRoute(window.location.href)
+    if (next) window.history.replaceState(window.history.state, '', next)
+  }, [])
+  useEffect(() => { if (activeProject) setAccountAssetsOpen(false) }, [activeProject])
   const templateProjectSubmissionRef = useRef(createTemplateProjectSubmission())
   const templateCreatedProjectRef = useRef<{ projectId: string; templateId: string } | null>(null)
   const [savedTemplateRecovery, setSavedTemplateRecovery] = useState<SavedTemplateProjectSubmission | null>(null)
@@ -1245,6 +1263,12 @@ function CanvasWorkspace({
   const [saveConflict, setSaveConflict] = useState<string | null>(null)
   const [draftActionBusy, setDraftActionBusy] = useState(false)
   const [banner, setBanner] = useState<string | null>(accountChangeNotice ?? null)
+  // 画布已经开着时，宿主再要看素材库（桌面主窗口「看全部作品」）不重新加载页面，改发这个通知。素材库只在
+  // 项目中心：打开着项目或正在打开时不弹，只提示先回项目中心，项目自己的素材在右侧「素材」页。
+  useEffect(() => window.xingmangCanvasHost?.onShowAccountAssets?.(() => {
+    if (!activeProjectIdRef.current && !projectTransitionRef.current) setAccountAssetsOpen(true)
+    else setBanner(accountAssetLibraryInProjectNotice)
+  }), [])
   useEffect(() => {
     if (banner !== '产物已保存') return
     const timer = window.setTimeout(() => setBanner((current) => current === banner ? null : current), 4000)
@@ -1404,6 +1428,8 @@ function CanvasWorkspace({
   const [inspectorTab, setInspectorTab] = useState<CanvasInspectorTab>('node')
   const [nodeInspectorOpen, setNodeInspectorOpen] = useState(false)
   const [runPreflight, setRunPreflight] = useState<CanvasRunPreflight | null>(null)
+  // 运行前检查里的「预计约 $x」（第 2b 条第 2 步），宿主没有价目时是 null。
+  const runQuote = useCanvasRunQuote(runPreflight, hostEntryPoints.quote)
   const [dramaParseConfirm, setDramaParseConfirm] = useState<{ nodeId: string; tables: DramaParseTables } | null>(null)
   const [pendingCanvasRun, setPendingCanvasRun] = useState<{ graph: CanvasRunGraph; scope: CanvasRunScope; outputPlacement?: { nodeId: string; editorScope: string }; agentExecution?: { origin: CanvasAgentExecutionOrigin; scopeKey: string; label: string } } | null>(null)
   const [agentExecutionRefreshKey, setAgentExecutionRefreshKey] = useState(0)
@@ -1573,6 +1599,16 @@ function CanvasWorkspace({
   const activeRunsRef = useRef(new Map<string, { graphRevision: string; projectId?: string; scope?: CanvasRunScope }>())
   const runWaitingBannerRef = useRef<{ runId: string; graphRevision: string; message: string } | null>(null)
   const runInputGraphsRef = useRef(new Map<string, CanvasRunGraph>())
+  // 宿主运行准备：桌面宿主请内核替它抽视频帧、处理图片工具的图（runtime/host-run-preparations.ts）；网页宿主自己做，这里是 null。
+  const runPreparationsRef = useRef<HostRunPreparations | null>(null)
+  useEffect(() => {
+    const preparations = createHostRunPreparations(window.xingmangCanvasHost)
+    runPreparationsRef.current = preparations
+    return () => {
+      preparations?.stopAll()
+      if (runPreparationsRef.current === preparations) runPreparationsRef.current = null
+    }
+  }, [])
 
   const rememberActiveRun = useCallback((entry: { runId: string; graphRevision: string; projectId?: string; scope?: CanvasRunScope; graph?: CanvasRunGraph }) => {
     activeRunsRef.current.set(entry.runId, { graphRevision: entry.graphRevision, projectId: entry.projectId, scope: entry.scope })
@@ -2076,6 +2112,7 @@ function CanvasWorkspace({
       pendingRunProjectionIdsRef.current.clear()
       runInputGraphsRef.current.clear()
       activeRunsRef.current.clear()
+      runPreparationsRef.current?.stopAll()
       runWaitingBannerRef.current = null
       setRunning(false)
       setRunRecoveryRevision((current) => current + 1)
@@ -2321,8 +2358,9 @@ function CanvasWorkspace({
     const interiorTask = interiorTaskFromRoute(route.get('interiorTask'))
     const exteriorTask = exteriorTaskFromRoute(route.get('exteriorTask'))
     const storyboardTask = storyboardTaskFromRoute(route.get('storyboardTask'))
+    const accountAssets = accountAssetLibraryRequested(window.location.search)
     const template = templateId ? builtinCanvasTemplates.find((entry) => entry.id === templateId) : null
-    if (!projectId && !template && !workshopId && !promptPresetId && !builtinPromptId && !commerceKind && !interiorTask && !exteriorTask && !storyboardTask && !route.get('templateOperation')) return
+    if (!projectId && !template && !workshopId && !promptPresetId && !builtinPromptId && !commerceKind && !interiorTask && !exteriorTask && !storyboardTask && !accountAssets && !route.get('templateOperation')) return
     function openExteriorRoute(task: ExteriorTask) {
       setExteriorSession({ scope: currentWorkshopSetupScope(), task, references: exteriorTaskRoles(task).map((role) => ({ role, binding: { kind: 'missing' } })), imageSource: exteriorTaskSourceSignature(groupsRef.current, mediaGroupsRef.current.image), textSource: exteriorTaskSourceSignature(groupsRef.current, mediaGroupsRef.current.text) })
     }
@@ -2375,6 +2413,7 @@ function CanvasWorkspace({
       if (interiorTask) { setInteriorSession({ scope: currentWorkshopSetupScope(), task: interiorTask, source: { binding: { kind: 'missing' } }, group: mediaGroupsRef.current.image, models: [...mediaModelsRef.current.image] }); return }
       if (exteriorTask) { openExteriorRoute(exteriorTask); return }
       if (storyboardTask) { openStoryboardRoute(storyboardTask); return }
+      if (accountAssets && !template) { setAccountAssetsOpen(true); return }
       if (!template) return
       setProjectError(null)
       setTemplateCatalog({ initialTemplateId: template.id })
@@ -2429,6 +2468,19 @@ function CanvasWorkspace({
     if (!relinked) return false
     if (projectPaginationEnabled) await refreshProjects()
     else setProjects((current) => current.map((project) => project.id === relinked.id ? relinked : project))
+    return true
+  }, [projectPaginationEnabled, refreshProjects])
+
+  // 跟重新选文件夹一样不设 projectLoading：宿主这时开着系统确认框，分页的列表加载时是空的。
+  // 删掉的若正是记着的当前项目也一并清掉；失败由卡片写在那张卡下面。
+  const deleteStoredProject = useCallback(async (projectId: string) => {
+    const bridge = hostBridge()
+    if (!bridge.deleteProject) return false
+    const deleted = await bridge.deleteProject(projectId)
+    if (!deleted) return false
+    setActiveProject((current) => current?.id === projectId ? null : current)
+    if (projectPaginationEnabled) await refreshProjects()
+    else setProjects((current) => current.filter((project) => project.id !== projectId))
     return true
   }, [projectPaginationEnabled, refreshProjects])
 
@@ -3404,6 +3456,8 @@ function CanvasWorkspace({
           recoveredRunning = true
         }
         if (record.status !== 'running' && activeRunsRef.current.has(record.runId)) forgetActiveRun(record.runId)
+        // A frame or picture asked for before this page knew the run (or before a reload) is read back here.
+        if (record.status === 'running' && record.projectId === projectId && (record.framePreparations?.length || record.imagePreparations?.length)) runPreparationsRef.current?.resume(record.runId, record.framePreparations ?? [], record.imagePreparations ?? [])
       }
       // A durable terminal snapshot can win the race against the event stream.
       // Once its active entry is removed, the later terminal event is ignored;
@@ -3561,6 +3615,11 @@ function CanvasWorkspace({
   }, [closeInspector, inspectorTab, openInspectorTab, runInspectorOpen])
 
   useEffect(() => hostBridge().onRunEvent((event) => {
+    if (event.type === 'run-charge') {
+      // 实扣在运行结束几秒后才到，那时这次运行早已不算进行中：只并进运行记录，不碰画布上的节点。
+      setRunRecords((current) => mergeCanvasRunChargeEvent(current, event))
+      return
+    }
     const active = activeRunsRef.current.get(event.runId)
     if (!active || event.graphRevision !== active.graphRevision || (active.projectId && active.projectId !== activeProjectIdRef.current)) return
     const submitted = runInputGraphsRef.current.get(event.runId)
@@ -3569,6 +3628,7 @@ function CanvasWorkspace({
     const matchingIds = submitted && !awaitingVideoCatalog ? matchingCanvasRunNodeIds(submitted, toCanvasRunGraph(graph.nodes, graph.edges, confirmedRunGroups(), nodeSourceCatalogRef.current)) : new Set<string>()
     setRunRecords((current) => mergeCanvasRunEvent(current, event))
     if (event.type === 'run-waiting') {
+      runPreparationsRef.current?.update(event.runId, event.framePreparations, event.imagePreparations ?? [])
       if (event.framePreparations.length || event.imagePreparations?.length || event.waitingForVideo) {
         const message = event.imagePreparations?.length ? '正在处理图像并保存素材，完成后会继续原工作流' : event.framePreparations.length ? '正在准备视频帧图片，完成后会继续原工作流' : '视频任务已提交，正在查询原任务进度'
         runWaitingBannerRef.current = { runId: event.runId, graphRevision: event.graphRevision, message }
@@ -3608,6 +3668,7 @@ function CanvasWorkspace({
     }
     if (event.type === 'run-terminal') {
       forgetActiveRun(event.runId)
+      runPreparationsRef.current?.finish(event.runId)
       const waitingNotice = runWaitingBannerRef.current
       const remaining = activeRunsRef.current.size
       const message = remaining > 0
@@ -3620,6 +3681,7 @@ function CanvasWorkspace({
       }
       void refreshAssets()
       void refreshRuns(event.runId)
+      setAccountSummarySignal((signal) => signal + 1)
     }
   }), [confirmedRunGroups, forgetActiveRun, patchNodeData, refreshAssets, refreshRuns, assetQuery])
 
@@ -7905,6 +7967,7 @@ function CanvasWorkspace({
       pendingRunProjectionIdsRef.current.clear()
       runInputGraphsRef.current.clear()
       activeRunsRef.current.clear()
+      runPreparationsRef.current?.stopAll()
       runWaitingBannerRef.current = null
       setRunning(false)
       projectEpochRef.current += 1
@@ -8594,6 +8657,7 @@ function CanvasWorkspace({
     () => projectCanvasInspectorNodes(nodes, edges),
     [edges, nodes],
   )
+  const inspectorNodeCharges = useMemo(() => latestCanvasNodeCharges(runRecords), [runRecords])
   const inspectorShown = !focusMode && !agentOpen && (
     (inspectorTab === 'node' && nodeInspectorOpen && selectedInspectorNodes.length > 0)
     || (inspectorTab === 'assets' && assetTrayOpen)
@@ -8799,6 +8863,12 @@ function CanvasWorkspace({
       if (!route.searchParams.has('templateOperation')) { route.searchParams.delete('storyboardTask'); window.history.replaceState(window.history.state, '', `${route.pathname}${route.search}${route.hash}`) }
     }}
   /> : null
+  const accountAssetLibraryDialog = accountAssetsOpen && !activeProject ? <AccountAssetLibrary
+    key={`${draftOwnerId ?? ''}:${creationOwnerId ?? ''}`}
+    onListAssets={listAccountAssets}
+    onSave={saveAccountAsset}
+    onClose={closeAccountAssets}
+  /> : null
   const templateRecoveryDialog = savedTemplateRecovery ? <TemplateProjectRecovery
     submission={savedTemplateRecovery}
     error={templateRecoveryError}
@@ -8810,7 +8880,7 @@ function CanvasWorkspace({
 
   if (window.xingmangCanvasHost && !activeProject) {
     return (
-      <>{closeDialog}{templateDialog}{commerceDialog}{interiorDialog}{exteriorDialog}{storyboardDialog}{workshopDialog}{templateRecoveryDialog}{projectImportRecoveryDialog}
+      <>{closeDialog}{templateDialog}{commerceDialog}{interiorDialog}{exteriorDialog}{storyboardDialog}{workshopDialog}{templateRecoveryDialog}{projectImportRecoveryDialog}{accountAssetLibraryDialog}
       {WorkshopCreationRecoveryNotice && <WorkshopCreationRecoveryNotice key={`creation:${layerEditorScope}`} scopeKey={layerEditorScope} active={() => agentMountedRef.current && draftActionsEnabledRef.current && currentWorkshopSetupScope() === layerEditorScope} onSaved={(item) => setBanner(item.deletedAt ? `已核对原保存：「${item.name}」目前在回收站，请到我的工坊恢复。` : `已核对原保存：「${item.name}」当前为 v${item.version}，不会另建一份。`)} />}
       <ProjectCenter
         projects={projects}
@@ -8826,6 +8896,7 @@ function CanvasWorkspace({
         defaultFolder={hostEntryPoints.projectDefaultFolder ? canvasDefaultProjectFolderLabel(navigator.userAgent) : undefined}
         onCreateElsewhere={hostEntryPoints.projectDefaultFolder ? (name) => createStoredProject(name, true) : undefined}
         onRelinkFolder={hostEntryPoints.projectFolderRelink ? relinkStoredProjectFolder : undefined}
+        onDeleteProject={hostEntryPoints.projectDelete ? deleteStoredProject : undefined}
         blankCreation={storageMode === 'cloud' ? blankCreation : undefined}
         blankCreationReady={blankCreationReady && draftActionsEnabled}
         blankDraftName={storageMode === 'cloud' ? blankProjectName : undefined}
@@ -8922,6 +8993,7 @@ function CanvasWorkspace({
             aria-pressed={focusMode}
             onClick={() => setFocusMode((current) => !current)}
           ><PanelRight size={15} /></button>
+          {hostEntryPoints.accountSummary && <AccountBalanceChip refreshSignal={accountSummarySignal} />}
           {projectCanRun && <MediaConfiguration
             open={mediaConfigOpen}
             groups={groups}
@@ -9378,6 +9450,7 @@ function CanvasWorkspace({
           canRun={projectCanRun}
           tab={inspectorTab}
           nodes={selectedInspectorNodes}
+          nodeCharges={inspectorNodeCharges}
           imageModels={imageModels}
           videoModels={videoModels}
           textModels={textModels}
@@ -9504,7 +9577,7 @@ function CanvasWorkspace({
         onClose={() => setTextSession(null)}
       />}
       {annotationSession && annotationSession.scope === layerEditorScope && draftActionsEnabled && <ImageAnnotationEditor key={`${annotationSession.scope}:${annotationSession.nodeId}:${annotationSession.asset.assetId}`} asset={annotationSession.asset} onSave={(recipe, mode, signal) => saveImageAnnotation(recipe, mode, signal)} onDownload={hostEntryPoints.pageDownload ? (recipe, signal) => saveImageAnnotation(recipe, 'download', signal) : undefined} onClose={() => { annotationSessionRef.current = null; setAnnotationSession(null) }} />}
-      {imageMaskSession && imageMaskSession.scope === layerEditorScope && draftActionsEnabled && <ImageMaskEditor key={`${imageMaskSession.scope}:${imageMaskSession.nodeId}:${imageMaskSession.source.asset.assetId}`} asset={imageMaskSession.source.asset} initial={imageMaskSession.initial} saveLabel={imageMaskSession.from === 'output' ? '创建 AI 局部修改节点' : '保存 AI 局部修改蒙版'} onApply={applyImageMask} onSaveAsset={saveImageMaskAsset} allowDownload={hostEntryPoints.pageDownload} allowLinkedAsset allowReplaceAsset={imageMaskSession.from === 'output'} onClose={() => { imageMaskSessionRef.current = null; setImageMaskSession(null) }} />}
+      {imageMaskSession && imageMaskSession.scope === layerEditorScope && draftActionsEnabled && <ImageMaskEditor key={`${imageMaskSession.scope}:${imageMaskSession.nodeId}:${imageMaskSession.source.asset.assetId}`} asset={imageMaskSession.source.asset} initial={imageMaskSession.initial} saveLabel={imageMaskSession.from === 'output' ? '创建 AI 局部修改节点' : '保存 AI 局部修改蒙版'} onApply={applyImageMask} onSaveAsset={hostEntryPoints.maskAssetSave ? saveImageMaskAsset : undefined} allowDownload={hostEntryPoints.pageDownload} allowLinkedAsset allowReplaceAsset={imageMaskSession.from === 'output'} onClose={() => { imageMaskSessionRef.current = null; setImageMaskSession(null) }} />}
       <MediaLightbox
         asset={previewAsset}
         onClose={() => setPreviewAsset(null)}
@@ -9533,6 +9606,7 @@ function CanvasWorkspace({
         <RunPreflight
           preflight={runPreflight}
           groups={groups}
+          quote={runQuote}
           agentRequestLabel={pendingCanvasRun?.agentExecution?.label}
           onCancel={() => { setRunPreflight(null); setPendingCanvasRun(null) }}
           onConfigure={() => {

@@ -1,13 +1,36 @@
 import { describe, expect, it } from 'vitest'
 import {
+  approvalOutcomeTitle,
   approvalTitle,
+  classifyRemoteTurnFailure,
+  formatApprovalBody,
   formatApprovalText,
+  formatFileChangeLine,
+  idleClosedMessage,
   normalizePairingAttempt,
   parseRemoteCommand,
+  progressCardTitles,
+  progressStepMarks,
+  progressStopButton,
+  progressTextMessage,
+  receivedMessage,
   redactRemoteText,
+  remoteMessages,
+  remoteOpenedMessage,
+  remoteRunningForText,
+  remoteTookText,
+  remoteTurnFailureMessages,
+  workspaceAlreadyInUseMessage,
+  workspaceListMessage,
+  workspaceMissingMessage,
+  workspaceSwitchedMessage,
+  workspaceUnusableMessage,
+  retryMessage,
   splitRemoteText,
+  staleMessageNotice,
   statusMessage,
   truncateRemoteText,
+  turnSummaryLine,
 } from './codex-remote-text'
 
 describe('codex-remote-text', () => {
@@ -16,6 +39,57 @@ describe('codex-remote-text', () => {
     expect(parseRemoteCommand(' /停止 ', false)).toEqual({ kind: 'stop' })
     expect(parseRemoteCommand('／状态', false)).toEqual({ kind: 'status' })
     expect(parseRemoteCommand('帮助', true)).toEqual({ kind: 'help' })
+    expect(parseRemoteCommand('关闭遥控', false)).toEqual({ kind: 'close' })
+    expect(parseRemoteCommand('/关闭遥控', true)).toEqual({ kind: 'close' })
+  })
+
+  // YF-17：「帮助」里列出手机上能关遥控；只有整条就是「关闭遥控」才算，句子里带着的照常交给 Codex。
+  it('lists closing the remote among the commands and does not read it out of a sentence', () => {
+    expect(remoteMessages.help.split('\n')[1]).toBe('能用的指令：新对话、停止、状态、文件夹、关闭遥控、重试、帮助。')
+    expect(remoteMessages.closedFromPhone).toBe('手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。')
+    expect(parseRemoteCommand('先别关闭遥控', false)).toEqual({ kind: 'prompt', text: '先别关闭遥控' })
+  })
+
+  // YF-19：手机上看、换电脑上加过的文件夹。只认整条就是「文件夹」或「文件夹 N」。
+  it('reads the folder commands only as whole messages', () => {
+    expect(parseRemoteCommand('文件夹', false)).toEqual({ kind: 'folders' })
+    expect(parseRemoteCommand('/文件夹', true)).toEqual({ kind: 'folders' })
+    expect(parseRemoteCommand('文件夹 2', false)).toEqual({ kind: 'use-folder', index: 2 })
+    expect(parseRemoteCommand('文件夹2', false)).toEqual({ kind: 'use-folder', index: 2 })
+    expect(parseRemoteCommand('文件夹 12', false)).toEqual({ kind: 'use-folder', index: 12 })
+    for (const body of ['文件夹 123', '看看文件夹', '文件夹 2 里有什么', '文件夹 -1']) {
+      expect(parseRemoteCommand(body, false)).toEqual({ kind: 'prompt', text: body })
+    }
+  })
+
+  it('lists the folders with the one in use marked, and says how to switch or where to add one', () => {
+    expect(workspaceListMessage(['~/projects/shop', '~/projects/blog'], '~/projects/shop'))
+      .toBe('1. ~/projects/shop（正在用）\n2. ~/projects/blog\n回「文件夹 2」切过去。')
+    expect(workspaceListMessage(['~/a', '~/b', '~/c'], '~/a')).toBe('1. ~/a（正在用）\n2. ~/b\n3. ~/c\n回「文件夹 2」切过去。')
+    expect(workspaceListMessage(['~/a', '~/b'], '~/b')).toBe('1. ~/a\n2. ~/b（正在用）\n回「文件夹 1」切过去。')
+    expect(workspaceListMessage(['~/projects/shop'], '~/projects/shop'))
+      .toBe('1. ~/projects/shop（正在用）\n要换别的，先在电脑上「干活的文件夹」那里添加。')
+    expect(workspaceSwitchedMessage('~/projects/blog')).toBe('已切到 ~/projects/blog，从新对话开始。')
+    expect(workspaceAlreadyInUseMessage('~/projects/shop')).toBe('现在用的就是 ~/projects/shop。')
+    expect(workspaceMissingMessage(6)).toBe('没有第 6 个文件夹。发「文件夹」看有哪些。')
+    expect(workspaceUnusableMessage('~/projects/blog')).toBe('~/projects/blog 现在打不开了，可能被移走或删掉了。先在电脑上看一下。')
+    expect(remoteMessages.workspaceBusy).toBe('Codex 还在处理上一条，等它做完再换文件夹。')
+  })
+
+  // YF-14：yoyo 2026-11-11「图片改」批的那几句，逐字。
+  it('says the approved image words, counting the pictures in the received line', () => {
+    expect(remoteMessages.unsupported).toBe('暂时只支持文字和图片。语音、文件发不过来，请打成字。')
+    expect(remoteMessages.imageReceived).toBe('收到图片。再发一句要 Codex 做什么，会跟图片一起交给它。')
+    expect(remoteMessages.imagesFull).toBe('一次最多带 5 张图片，这张没收。')
+    expect(remoteMessages.imageTooLarge).toBe('这张图片太大了，电脑没收。请发小一点的，或者截一部分。')
+    expect(remoteMessages.imagePermissionFeishu).toBe('这张图片电脑没取到。飞书后台要多开一个权限「获取单聊、群组消息」，再发布一个版本。')
+    expect(remoteMessages.imageFailed).toBe('这张图片电脑没取到，请再发一次。')
+    expect(receivedMessage(0)).toBe('收到，Codex 开始处理。')
+    expect(receivedMessage(2)).toBe('收到，带着 2 张图片，Codex 开始处理。')
+  })
+
+  it('tells the phone the remote was switched on, with the folder written like the status reply', () => {
+    expect(remoteOpenedMessage('~/projects/demo')).toBe('电脑上的手机遥控打开了，可以发消息了。工作文件夹：~/projects/demo')
   })
 
   it('treats a sentence that merely contains a command word as a prompt', () => {
@@ -105,8 +179,143 @@ describe('codex-remote-text', () => {
     expect(statusMessage({ workspace: '~/p', running: true, pendingApprovals: 2 })).toContain('等你同意 2 条')
   })
 
+  // YF-18：「状态」最多四行，字照「状态重试」那批一字不差；读不到的那一样整行不写。
+  it('adds how long it has run, the plan step, the balance and the idle close to the status reply', () => {
+    expect(statusMessage({
+      workspace: '~/projects/demo',
+      running: true,
+      pendingApprovals: 0,
+      runningForMs: 6 * 60_000 + 30_000,
+      step: '运行测试',
+      balanceUsd: 12.4,
+      idleCloseHours: 4,
+    })).toBe('工作文件夹：~/projects/demo\n现在：正在处理，已经 6 分钟，做到「运行测试」\n余额：$12.40\n再过 4 小时没新消息就自动关')
+    expect(statusMessage({ workspace: '~/p', running: true, pendingApprovals: 0, runningForMs: 20_000, step: null, balanceUsd: null, idleCloseHours: null }))
+      .toBe('工作文件夹：~/p\n现在：正在处理，已经不到 1 分钟')
+    expect(statusMessage({ workspace: '~/p', running: false, pendingApprovals: 0, balanceUsd: 1234.5, idleCloseHours: 12 }))
+      .toBe('工作文件夹：~/p\n现在：空闲\n余额：$1,234.50\n再过 12 小时没新消息就自动关')
+    expect(statusMessage({ workspace: '~/p', running: true, pendingApprovals: 2, runningForMs: 60_000, step: '运行测试' }))
+      .toBe('工作文件夹：~/p\n现在：等你同意 2 条')
+  })
+
+  it('writes the running time in minutes and hours', () => {
+    expect(remoteRunningForText(59_000)).toBe('已经不到 1 分钟')
+    expect(remoteRunningForText(6 * 60_000)).toBe('已经 6 分钟')
+    expect(remoteRunningForText(65 * 60_000)).toBe('已经 1 小时 5 分钟')
+    expect(remoteRunningForText(120 * 60_000)).toBe('已经 2 小时')
+  })
+
+  // YK-8：处理过的审批卡只留正文，标题换成结果。
+  it('titles an answered approval card by its outcome and drops the reply line from its body', () => {
+    expect(approvalOutcomeTitle('accepted', '3')).toBe('已同意（第 3 条）')
+    expect(approvalOutcomeTitle('declined', '3')).toBe('已拒绝（第 3 条）')
+    expect(approvalOutcomeTitle('expired', '3')).toBe('没回，已自动拒绝（第 3 条）')
+    const request = { approvalId: '3', nonce: 'nonce-of-three', kind: 'command' as const, summary: 'npm test', cwd: '~/p' }
+    expect(formatApprovalBody(request)).toBe(formatApprovalText(request).split('\n').slice(0, -1).join('\n'))
+    expect(formatApprovalBody(request)).not.toContain('回「同意')
+  })
+
+  // YF-15：yoyo 2026-11-11「进度改」批的字，逐字钉住。
+  it('says the approved progress words for the card and the five-minute text', () => {
+    expect(progressCardTitles).toEqual({ running: 'Codex 正在处理', done: '做完了', stopped: '已停止', failed: '没做完' })
+    expect(progressStepMarks).toEqual({ completed: '✓', inProgress: '▶', pending: '○' })
+    expect(progressStopButton).toBe('停止')
+    expect(remoteMessages.staleProgressCard).toBe('这张卡片是上一轮的，现在这一轮没有停。要停请发「停止」。')
+    expect(progressTextMessage(5 * 60_000, '运行测试')).toBe('还在做，已经 5 分钟。现在这一步：运行测试')
+    expect(progressTextMessage(10 * 60_000, null)).toBe('还在做，已经 10 分钟。')
+    expect(progressTextMessage(10 * 60_000, '  \n ')).toBe('还在做，已经 10 分钟。')
+    expect(progressTextMessage(5 * 60_000, '先把\n登录页的表单校验全部改成新的写法，再补上对应的测试用例和文档'))
+      .toBe('还在做，已经 5 分钟。现在这一步：先把 登录页的表单校验全部改成新的写法，再补上对应的测试用…')
+  })
+
+  it('squeezes a long or multi-line plan step onto the status line', () => {
+    const reply = statusMessage({ workspace: '~/p', running: true, pendingApprovals: 0, runningForMs: 0, step: '先把\n登录页的表单校验全部改成新的写法，再补上对应的测试用例和文档' })
+    expect(reply.split('\n')).toHaveLength(2)
+    expect(reply).toContain('做到「先把 登录页的表单校验全部改成新的写法，再补上对应的测试用…」')
+  })
+
+  // YF-16：做完以后接在回答后面的那一行。
+  it('sums up how long the turn took and which files it changed', () => {
+    expect(turnSummaryLine(200_000, ['a.ts', 'b.ts', 'c.css', 'd.md'])).toBe('用时 3 分 20 秒，改了 4 个文件：a.ts、b.ts、c.css，另外 1 个。')
+    expect(turnSummaryLine(45_000, ['a.ts', 'b.ts'])).toBe('用时 45 秒，改了 2 个文件：a.ts、b.ts。')
+    expect(turnSummaryLine(200_000, [])).toBe('用时 3 分 20 秒。')
+    expect(turnSummaryLine(65 * 60_000, ['a.ts', 'b.ts', 'c.css'])).toBe('用时 1 小时 5 分，改了 3 个文件：a.ts、b.ts、c.css。')
+  })
+
+  it('writes the time taken in seconds, minutes and hours', () => {
+    expect(remoteTookText(200)).toBe('1 秒')
+    expect(remoteTookText(45_000)).toBe('45 秒')
+    expect(remoteTookText(180_000)).toBe('3 分')
+    expect(remoteTookText(3_600_000)).toBe('1 小时')
+  })
+
+  // YF-22：「重试」是整条才算的指令，回复只带前 20 个字。
+  it('recognises the retry command and previews the first twenty characters', () => {
+    expect(parseRemoteCommand('重试', false)).toEqual({ kind: 'retry' })
+    expect(parseRemoteCommand('/重试', true)).toEqual({ kind: 'retry' })
+    expect(parseRemoteCommand('重试一下刚才那个命令', false)).toEqual({ kind: 'prompt', text: '重试一下刚才那个命令' })
+    expect(retryMessage('把登录页的表单校验全部改成新的写法，再补上测试')).toBe('再发一次上一条：「把登录页的表单校验全部改成新的写法，再补…」')
+    expect(retryMessage('修一下首页')).toBe('再发一次上一条：「修一下首页」')
+    expect(retryMessage('12345678901234567890')).toBe('再发一次上一条：「12345678901234567890」')
+    expect(remoteMessages.nothingToRetry).toBe('还没有可以重发的上一条。直接发要做的事就行。')
+  })
+
   it('truncates with an ellipsis', () => {
     expect(truncateRemoteText('abcdef', 4)).toBe('abc…')
     expect(truncateRemoteText('abc', 4)).toBe('abc')
+  })
+
+  // D66：手机上收到的这几句，字照 0.2.24 深查决定单一字不差。
+  it('says what the phone receives in so many words', () => {
+    expect(remoteMessages.codexStarting).toBe('电脑正在准备 Codex，稍等一下；想取消就发「停止」。')
+    expect(remoteMessages.threadReset).toBe('这是新对话，前面的记不得了。')
+    expect(remoteMessages.unbound).toBe('电脑上已经把你解绑了，之后发的消息不会再执行。')
+    expect(remoteMessages.idleClosingSoon).toBe('手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。')
+    // YF-10：自动关那句的时长跟着设置走。
+    expect(idleClosedMessage(4)).toBe('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。')
+    expect(idleClosedMessage(12)).toBe('12 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。')
+    expect(staleMessageNotice(25)).toBe('这条是 25 分钟前发的，那会儿电脑没连上，没有执行。还要做的话请再发一次。')
+    expect(remoteTurnFailureMessages).toEqual({
+      balance: '余额不够了，充值后再发一次。',
+      keyLimit: '这一轮没做完：这把密钥设置的额度上限用完了，到「个人中心 › 密钥管理」调高上限后再试',
+      login: '电脑上的登录失效了，请在电脑上的星芒里重新登录。',
+      context: '这段对话太长了，发「新对话」重新开始。',
+      connection: '电脑这会儿连不上星芒的线路，过一会儿再发。',
+    })
+  })
+
+  it('reads whose money or login ran out from what the relay said', () => {
+    const http = (status: number) => ({ httpConnectionFailed: { httpStatusCode: status } })
+    expect(classifyRemoteTurnFailure('unexpected status 403 Forbidden: {"error":{"code":"insufficient_user_quota"}}', http(403))).toBe('balance')
+    // Sub2API, and the status read from the message when codexErrorInfo has none.
+    expect(classifyRemoteTurnFailure('unexpected status 403 Forbidden: {"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}', null)).toBe('balance')
+    expect(classifyRemoteTurnFailure('unexpected status 403 Forbidden: {"error":{"message":"token quota is not enough","code":"pre_consume_token_quota_failed"}}', http(403))).toBe('keyLimit')
+    expect(classifyRemoteTurnFailure('unexpected status 401 Unauthorized: {"error":{"message":"无效的令牌"}}', http(401))).toBe('login')
+    expect(classifyRemoteTurnFailure('token refresh failed', 'unauthorized')).toBe('login')
+    // A 403 that says nothing about money is not the customer's to fix.
+    expect(classifyRemoteTurnFailure('unexpected status 403 Forbidden: Access blocked by Cloudflare', http(403))).toBeNull()
+  })
+
+  it('tells a conversation that grew too long and a line that cannot be reached', () => {
+    expect(classifyRemoteTurnFailure('Codex ran out of room in the model\'s context window.', 'contextWindowExceeded')).toBe('context')
+    expect(classifyRemoteTurnFailure('error sending request', { httpConnectionFailed: { httpStatusCode: null } })).toBe('connection')
+    expect(classifyRemoteTurnFailure('stream disconnected', { responseStreamDisconnected: { httpStatusCode: null } })).toBe('connection')
+    expect(classifyRemoteTurnFailure('exceeded retry limit, last status: 502', { responseTooManyFailedAttempts: { httpStatusCode: 502 } })).toBe('connection')
+    expect(classifyRemoteTurnFailure('We’re currently experiencing high demand', 'serverOverloaded')).toBe('connection')
+    // An answer that is not a gateway failure says nothing about the line.
+    expect(classifyRemoteTurnFailure('unexpected status 400 Bad Request: model not found', { httpConnectionFailed: { httpStatusCode: 400 } })).toBeNull()
+    expect(classifyRemoteTurnFailure('Quota exceeded. Check your plan and billing details.', 'usageLimitExceeded')).toBeNull()
+    expect(classifyRemoteTurnFailure('failed to read configuration layers', undefined)).toBeNull()
+    expect(classifyRemoteTurnFailure('something', { a: 1, b: 2 })).toBeNull()
+  })
+
+  it('puts what happens to a file in front of it and the line counts after it', () => {
+    expect(formatFileChangeLine({ kind: 'add', path: '~/p/a.ts', added: 12, removed: 0 })).toBe('新建 ~/p/a.ts +12 -0 行')
+    expect(formatFileChangeLine({ kind: 'delete', path: '~/p/a.ts', added: 0, removed: 3 })).toBe('删除 ~/p/a.ts +0 -3 行')
+    expect(formatFileChangeLine({ kind: 'update', path: '~/p/a.ts', added: 12, removed: 3 })).toBe('改 ~/p/a.ts +12 -3 行')
+    expect(formatFileChangeLine({ kind: 'update', path: '~/p/a.ts', movePath: '~/p/b.ts', added: 1, removed: 1 })).toBe('~/p/a.ts 挪到 ~/p/b.ts +1 -1 行')
+    // Without the change contents there is nothing to count; without a kind only the path is known.
+    expect(formatFileChangeLine({ kind: 'update', path: '~/p/a.ts' })).toBe('改 ~/p/a.ts')
+    expect(formatFileChangeLine({ kind: null, path: '~/p/a.ts' })).toBe('~/p/a.ts')
   })
 })

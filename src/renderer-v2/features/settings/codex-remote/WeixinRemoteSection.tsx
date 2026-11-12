@@ -24,7 +24,9 @@ export const weixinRemoteText = {
   codePlaceholder: '手机上的数字',
   confirmCode: '确认',
   wrongCode: '数字不对，请对照手机上的数字重新输入',
-  confirmed: '微信登录好了。下一步点「开始配对」，在微信的 ClawBot 对话里发配对码。',
+  confirmed: '微信登录好了。下一步打开下面的「打开遥控」，再点「开始配对」，在微信的 ClawBot 对话里发配对码。',
+  confirmedStillBound: '微信登录好了，绑定的人没变，不用重新配对。',
+  confirmedBound: '微信登录好了，已经绑定你这个微信。下一步打开下面的「打开遥控」。',
   cancel: '取消',
   retry: '重新扫码',
   close: '关闭',
@@ -45,7 +47,12 @@ export function weixinLoginFinished(phase: WeixinLoginPhase): boolean {
   return phase === 'confirmed' || phase === 'failed' || phase === 'cancelled'
 }
 
-export function weixinLoginHeadline(phase: WeixinLoginPhase): string | null {
+/**
+ * 登录好了以后那句按有没有绑着人分两种（0.2.24 D65）：「开始配对」要先打开遥控才点得动；扫的还是原来那个
+ * 机器人时主进程留着绑定的人（saveChannelCredential 的 sameAccount），这时按钮是「换人」，也不用再配对。
+ * 这次扫码微信要过手机上那串数字、输对了的（boundByScan，YF-5），主进程已经把扫码人记成绑定的人，说第三句。
+ */
+export function weixinLoginHeadline(phase: WeixinLoginPhase, hasBoundPeer: boolean, boundByScan = false): string | null {
   switch (phase) {
     case 'waiting-scan':
       return weixinRemoteText.scanHint
@@ -56,7 +63,8 @@ export function weixinLoginHeadline(phase: WeixinLoginPhase): string | null {
     case 'verify-code-wrong':
       return weixinRemoteText.wrongCode
     case 'confirmed':
-      return weixinRemoteText.confirmed
+      if (boundByScan) return weixinRemoteText.confirmedBound
+      return hasBoundPeer ? weixinRemoteText.confirmedStillBound : weixinRemoteText.confirmed
     case 'failed':
     case 'cancelled':
       return null
@@ -69,14 +77,16 @@ function wait(milliseconds: number): Promise<void> {
   })
 }
 
-export function WeixinLoginDialogBody({ view, code, onCodeChange, onSubmitCode, busy }: {
+export function WeixinLoginDialogBody({ view, hasBoundPeer, code, onCodeChange, onSubmitCode, busy }: {
   view: WeixinLoginSnapshot
+  /** 这个渠道现在绑着人：卡片收到的最新快照说了算，主进程存好登录信息时先推快照再回这次轮询。 */
+  hasBoundPeer: boolean
   code: string
   onCodeChange(value: string): void
   onSubmitCode(): void
   busy: boolean
 }) {
-  const headline = weixinLoginHeadline(view.phase)
+  const headline = weixinLoginHeadline(view.phase, hasBoundPeer, view.boundByScan === true)
   const askingForCode = view.phase === 'need-verify-code' || view.phase === 'verify-code-wrong'
   const showQr = view.qrImage && (view.phase === 'waiting-scan' || view.phase === 'scanned')
   function submit(event: FormEvent) {
@@ -189,7 +199,7 @@ export function WeixinRemoteSection({ snapshot, api, disabled, busy, run }: Remo
       testId="settings-remote-weixin-login-row"
     />
     <Dialog open={view !== null} title={weixinRemoteText.dialogTitle} onClose={close} footer={footer} testId="settings-remote-weixin-dialog">
-      {view ? <WeixinLoginDialogBody view={view} code={code} onCodeChange={setCode} onSubmitCode={submitCode} busy={false} /> : null}
+      {view ? <WeixinLoginDialogBody view={view} hasBoundPeer={snapshot.boundPeer !== null} code={code} onCodeChange={setCode} onSubmitCode={submitCode} busy={false} /> : null}
     </Dialog>
   </>
 }

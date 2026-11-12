@@ -15,9 +15,10 @@ import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMetho
 import type { ReleaseGuardStore } from '../release-guard-store'
 import type { RelayEndpointId } from '../relay-sites'
 import type { RuntimeLogStore } from '../runtime-log'
-import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus, resolveHiddenPaymentMethodsFor, resolveReleasePlatforms } from '../service-status'
+import { createServiceStatusMonitor, locateServiceStatusUrl, pickServiceSwitches, readServiceStatus, resolveHiddenPaymentMethodsFor, resolveReleasePlatforms } from '../service-status'
+import { createServiceSwitchesStore } from '../service-switches-store'
 import type { SystemService } from '../system-service'
-import { classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed, updateFeedLineFor } from '../update-feed-route'
+import { classifyDirectFeedDownloadFailure, classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed, updateFeedLineFor } from '../update-feed-route'
 import { verifyUpdatePackageDigest } from '../update-package-digest'
 import { shouldVerifyUpdateSignature, verifyUpdateEntrySignature } from '../update-package-signature'
 import { createUpdateRequestGuard } from '../update-request-guard'
@@ -146,13 +147,13 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
       unsignedAutoUpdate: true,
       readAutoUpdate: () => systemService.readStoredConfig().autoUpdate !== false,
       // 每次运行只认一次：用户点「重新安装」后又重新下载同一版时，不该再被判成上次失败。
-      previousAutoInstallFailure: (version) => {
+      previousAutoInstallFailure: (version, rollback) => {
         if (previousAutoInstallFailureReported) return null
         const failed = resolvePreviousAutoInstallFailure(version, app.getVersion(), pendingUpdateAtLaunch)
         if (!failed) return null
         previousAutoInstallFailureReported = true
         runtimeLog.log('warn', 'updater', 'install.auto.previous-failed', `上次自动安装 ${failed} 没有装上，这次不再自动装`)
-        return previousAutoInstallFailureMessage(process.platform)
+        return previousAutoInstallFailureMessage(process.platform, rollback ? failed : null)
       },
       verifyPackageDigest: verifyUpdatePackageDigest,
       // electron-updater 按 `uname -a`（带电脑名）判断 Apple 芯片，Intel Mac 会被挑上 arm64 包（#1155）。
@@ -188,13 +189,15 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
         runtimeLog.log('info', 'updater', 'download.requests.aborted', `掐断了 ${aborted} 个停住的更新请求`, { aborted, reason: reason.name })
       },
       downloadStalled: (stall) => {
-        runtimeLog.log('warn', 'updater', 'download.stalled', stall.retrying ? '更新下载停住了，换直连重下一次' : '更新下载停住了，报下载失败', {
+        const next = stall.switchingFeed ? '换线路1重下一次' : stall.retrying ? '换直连重下一次' : '报下载失败'
+        runtimeLog.log('warn', 'updater', 'download.stalled', `更新下载停住了，${next}`, {
           retrying: stall.retrying,
           transferred: stall.transferred,
           total: stall.total,
           unsettled: stall.unsettled,
           fullPackage: stall.fullPackage,
           transferEnded: stall.transferEnded,
+          ...(stall.switchingFeed ? { switchingFeed: true } : {}),
         })
       },
       // 每次下好记一条实际下了多少，跟整包比，看增量下载省了多少（在线热更新方案 B1）。
@@ -248,6 +251,17 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
               runtimeLog.log('info', 'updater', 'feed.fallback', '更新检查在线路2上没走通，改走线路1再查一次', { reason: failure.reason })
               return true
             },
+            // 安装包同理（D84）：「自动」时在直连那份上下不动、半路断了，换回包里那份再查一次、再下一次。手动选了
+            // 线路2 的不换，选它的人可能就是不想走线路1。只换这一次：下次检查照样按这会儿的线路选。
+            fallBackDownload: (error, stalled) => {
+              if (updateFeedLine !== 'direct' || !relayRouteController.route('solov').automatic) return false
+              const failure = classifyDirectFeedDownloadFailure(error, stalled)
+              if (!failure) return false
+              if (failure.lineFailure) relayRouteController.reportFailure('solov', 'direct', failure.reason)
+              useUpdateFeedLine('primary')
+              runtimeLog.log('info', 'updater', 'feed.download-fallback', '更新包在线路2上没下成，改走线路1再下一次', { reason: failure.reason })
+              return true
+            },
           }
         : undefined,
     })
@@ -261,6 +275,12 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
     // 型号表也记在本地（#1154 第 6 条）：开机那轮换下架型号时状态文件还没读成功，也按上次读成功的那份算。
     const cliModelHintsStore = createCliModelHintsStore({ filePath: path.join(managerDataDirectory, 'cli-model-hints.json') })
     const cliModelsAtLaunch = serviceStatusUrl ? cliModelHintsStore.read() : null
+    // 远程关功能、已知问题提示、充值方式开关同样记在本地（D83）：重开软件时状态文件还没读到、或者一直读不到，
+    // 关掉的功能不放出来，「先这样绕过去」那句照样摆着，藏掉的付款方式也不冒出来。读不到状态文件的包不用它：
+    // 那里永远不会读到新的来换掉它。
+    const serviceSwitchesStore = createServiceSwitchesStore({ filePath: path.join(managerDataDirectory, 'service-switches.json') })
+    const serviceSwitchesAtLaunch = serviceStatusUrl ? serviceSwitchesStore.read() : null
+    if (serviceSwitchesAtLaunch) updaterService.restoreServiceSwitches(serviceSwitchesAtLaunch)
     const serviceStatusMonitor = serviceStatusUrl
       ? createServiceStatusMonitor({
         // 状态文件和更新目录在一起：更新走直连那份时，状态文件也读直连上的那份。
@@ -281,10 +301,13 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
             ...(status?.accountGroups ? { accountGroups: status.accountGroups } : {}),
             ...(status?.cliModels ? { cliModels: status.cliModels } : {}),
           })
-          // 读成功的才记，没写型号表的那次记成没有；没读到（null）不动记下的那份。
+          // 读成功的才记，没写型号表的那次记成没有；没读到（null）不动记下的那份。三样开关同理，一样都没写就记成空的。
           if (status) {
             cliModelHintsStore.write(status.cliModels ?? null).catch((cause: unknown) => {
               runtimeLog.exception('updater', 'cli-models.save-failed', cause)
+            })
+            serviceSwitchesStore.write(pickServiceSwitches(status)).catch((cause: unknown) => {
+              runtimeLog.exception('updater', 'service-switches.save-failed', cause)
             })
           }
         },
@@ -292,7 +315,8 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
       : null
     serviceStatusMonitor?.start()
     // 充值方式开关跟分组对照一样搭启动那次读的便车，这次没读到就用上一次读成功的那份：一次定时读失败
-    // 不该把刚藏掉的那种付款方式又放出来。版本和平台按更新服务的同一套写法去对。
+    // 不该把刚藏掉的那种付款方式又放出来。这次打开以后一次也没读成功过，就用记在本地的那份（D83）。
+    // 版本和平台按更新服务的同一套写法去对。
     const releasePlatforms = resolveReleasePlatforms({
       platform: process.platform,
       arch: process.arch,
@@ -301,7 +325,7 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
     async function hiddenPaymentMethods(): Promise<string[]> {
       if (!serviceStatusMonitor) return []
       await serviceStatusMonitor.settled()
-      return resolveHiddenPaymentMethodsFor(serviceStatusMonitor.lastKnown(), app.getVersion(), releasePlatforms)
+      return resolveHiddenPaymentMethodsFor(serviceStatusMonitor.lastKnown() ?? serviceSwitchesAtLaunch, app.getVersion(), releasePlatforms)
     }
     // 在线换节点（acceleration-online-nodes.ts）：节点文件跟状态文件放在一起，读法也一样，只有能加速的平台读。
     // 一律读包里那份更新目录：直连那份只放行白名单里的文件。日志里只有发布时间和线路条数，不写节点内容（I13）。
@@ -338,6 +362,8 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
       updateFeedRoute: directUpdateFeed ? updateFeedLine : 'packaged',
       // 开机时有没有上次记下的撤回名单和分批放量：状态文件读不到时，客服靠这一项看出还拦着没有。
       storedReleaseGuard: releaseGuardAtLaunch !== null,
+      // 同上，远程关功能、已知问题提示、充值方式开关有没有上次记下的那份（D83）。
+      storedServiceSwitches: serviceSwitchesAtLaunch !== null,
     })
     if (unsignedChannel) {
       runtimeLog.log(

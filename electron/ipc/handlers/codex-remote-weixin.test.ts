@@ -20,6 +20,7 @@ describe('createWeixinLoginForHost', () => {
         appVersion: '0.0.0',
       }),
       saveChannelCredential: async () => undefined,
+      reconnectIfLoggedOut: async () => undefined,
     })
 
     const started = await login.start()

@@ -116,3 +116,21 @@ export function classifyDirectFeedFailure(error: unknown): { reason: string; lin
   const reason = relayLineFailureReason(error)
   return reason ? { reason: networkFailureCode(error) ?? reason, lineFailure: reportedRelayLineFailure(error) !== null } : null
 }
+
+// 下到一半连接断了：Chromium 报这两个码。network-failure.ts 的归类表还不认它们（深查 W-7，那边要连带
+// 登录、聊天一起改），这里只为下安装包认一下。
+const cutShortTransferCode = /\bERR_(?:CONTENT_LENGTH_MISMATCH|INCOMPLETE_CHUNKED_ENCODING)\b/
+
+/**
+ * 安装包在直连那份更新地址上没下成、换回包里那份再下一次有可能下成时，说清是哪一种（只记日志用，不带地址）；
+ * 换了也白换的（盘满了、文件被占着、下完核对不过）返回 null（D84）。stalled＝看门狗停掉的那一次。
+ * 连不上一类和网关出错跟检查同一套（classifyDirectFeedFailure）；下不动、下到一半断了不报给线路那边：
+ * 那条线路查账号、发聊天这些小请求可能照样好好的，下得慢不是直连坏了（#941 第 3 节）。
+ */
+export function classifyDirectFeedDownloadFailure(error: unknown, stalled: boolean): { reason: string; lineFailure: boolean } | null {
+  if (stalled) return { reason: 'stalled', lineFailure: false }
+  const failure = classifyDirectFeedFailure(error)
+  if (failure) return failure
+  const code = networkFailureCode(error)
+  return code && cutShortTransferCode.test(code) ? { reason: code, lineFailure: false } : null
+}

@@ -10,15 +10,44 @@ import { parseCanvasPromptPresetInput, parseCanvasStartRunInput, parseCanvasVide
 // that no longer exists.
 describe('desktop canvas capabilities', () => {
   it('lists exactly the node kinds that have a working executor', () => {
-    const executors = createCanvasNodeExecutors({ imageService: { generate: async () => [], cancel: () => ({ canceled: false, mayStillComplete: false }) } })
-    // frame-extract has an entry only to fail it with a reason.
-    const working = Object.keys(executors).filter((kind) => kind !== 'frame-extract').sort()
-    expect([...desktopCanvasCapabilities.executableNodeKinds].sort()).toEqual(working)
+    // bootstrap/ai-services.ts always hands the executors a frame extractor
+    // and the image-tool processing; without the first frame-extract has an
+    // entry only to fail it with a reason, without the second no image tool
+    // has an entry at all.
+    const frames = { assertDecodableVideo: async () => undefined, waitForFrame: async () => { throw new Error('unused') } }
+    const imageTools = { assertSources: async () => undefined, waitForImages: async () => { throw new Error('unused') } }
+    const executors = createCanvasNodeExecutors({ imageService: { generate: async () => [], cancel: () => ({ canceled: false, mayStillComplete: false }) }, frames, imageTools })
+    expect([...desktopCanvasCapabilities.executableNodeKinds].sort()).toEqual(Object.keys(executors).sort())
   })
 
-  it('switches off every feature the desktop does not have yet', () => {
-    expect(Object.values(desktopCanvasCapabilities.features).every((enabled) => enabled === false)).toBe(true)
-    expect(desktopCanvasCapabilities.imageCandidates.maximum).toBe(1)
+  it('switches on the balance chip, the run quote, masked edits, text nodes, page-drawn pictures, frame extraction, image tools, reference orders and scene tasks and off every feature the desktop does not have yet', () => {
+    // 画布完善第 2b 条: the chip reads canvas-host:get-account-summary, the quote
+    // canvas-host:get-price-snapshot. 第 5 条: an image-edit node's mask rides
+    // canvas-host:start-run and goes out as the edits request's mask PNG
+    // (canvas-image-mask.ts). 第 6 条: text-generate nodes run through the chat
+    // service (canvas-node-executors.ts). 第 7 条第一步: the mask editor's PNG
+    // goes back through canvas-host:import-asset-bytes (canvas-byte-upload.ts).
+    // 第 7 条第二步: the kernel decodes the frame a frame-extract node waits on
+    // and hands it back through canvas-host:complete-run-preparation
+    // (canvas-run-preparations.ts). 第 7 条第三步: the kernel makes the
+    // pictures a crop, collage, tile or layer node waits on and hands them back
+    // the same way. 第 8 条第一步: picture roles and video reference orders
+    // reorder what the node already receives (canvas-reference-order.ts). 第二
+    // 步: the four scene tasks write the prompt from fixed options in the main
+    // process (canvas-scene-tasks.ts). The rest stays off.
+    const { accountSummary, quote, imageEditMask, textGenerate, byteUpload, frameExtract, imageTools, referenceOrder, scenarioTemplates, ...rest } = desktopCanvasCapabilities.features
+    expect(accountSummary).toBe(true)
+    expect(quote).toBe(true)
+    expect(imageEditMask).toBe(true)
+    expect(textGenerate).toBe(true)
+    expect(byteUpload).toBe(true)
+    expect(frameExtract).toBe(true)
+    expect(imageTools).toBe(true)
+    expect(referenceOrder).toBe(true)
+    expect(scenarioTemplates).toBe(true)
+    expect(Object.values(rest).every((enabled) => enabled === false)).toBe(true)
+    // Image nodes send 2-4 independent one-image requests (canvas-run-engine.ts).
+    expect(desktopCanvasCapabilities.imageCandidates.maximum).toBe(4)
     expect(desktopCanvasCapabilities.videoCandidates.maximum).toBe(1)
   })
 

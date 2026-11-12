@@ -61,6 +61,9 @@ export function ImageMaskEditor({ asset, initial, saveLabel = '保存蒙版', on
   const busy = exporting !== null
   const validSaveMode = assetModeAllowed(assetSaveMode, allowLinkedAsset, allowReplaceAsset)
   const showSaveModes = !!onSaveAsset && (explicitMode || assetSaveMode !== 'new')
+  // Without a download or a host that takes the PNG there is no image to save,
+  // so the editor speaks only of the AI edit it hands back to the node.
+  const imageExport = allowDownload || !!onSaveAsset
   const shortEdge = Math.min(source?.width ?? mask.width, source?.height ?? mask.height)
   const pointsUsed = mask.strokes.reduce((sum, stroke) => sum + stroke.points.length, 0)
   const preview = useMemo(() => {
@@ -203,7 +206,7 @@ export function ImageMaskEditor({ asset, initial, saveLabel = '保存蒙版', on
       }
     }}>
       <header><div><small>图像编辑</small><h2>蒙版局部修改</h2></div><button type="button" aria-label="关闭蒙版编辑器" onClick={close}><X size={20} /></button></header>
-      <p className="image-mask-explanation">白色表示希望修改的区域，黑色表示保留。另存图片只保存黑白蒙版，不调用模型；AI 局部修改需之后单独确认运行，模型可能同时调整其他区域。</p>
+      <p className="image-mask-explanation">{imageExport ? '白色表示希望修改的区域，黑色表示保留。另存图片只保存黑白蒙版，不调用模型；AI 局部修改需之后单独确认运行，模型可能同时调整其他区域。' : '白色表示希望修改的区域，黑色表示保留。AI 局部修改需之后单独确认运行，模型可能同时调整其他区域。'}</p>
       <div className="image-mask-toolbar" role="toolbar" aria-label="蒙版工具">
         <button type="button" disabled={busy} aria-pressed={tool === 'brush'} onClick={() => chooseTool('brush')}><Brush size={16} />画笔</button>
         <button type="button" disabled={busy} aria-pressed={tool === 'erase'} onClick={() => chooseTool('erase')}><Eraser size={16} />橡皮</button>
@@ -241,7 +244,7 @@ export function ImageMaskEditor({ asset, initial, saveLabel = '保存蒙版', on
         {allowReplaceAsset && <option value="replace">保存至当前节点</option>}
       </select></label><p id={`${maskId}-save-note`} role={!validSaveMode ? 'status' : undefined}>{!validSaveMode ? '原保存方式已不可用，笔迹已保留；请重新选择保存方式。' : assetSaveMode === 'linked' ? '保存黑白蒙版并保留原图输入，创建关联图片节点；之后填写修改指令并明确运行，才会调用模型。' : assetSaveMode === 'replace' ? '将黑白蒙版扁平化保存至当前节点，替换当前候选；旧笔迹不会继续编辑，可在画布撤销。' : '只保存独立黑白蒙版素材与图片节点，可连接裁剪、拼图等零 AI 下游直接复用。'}</p></div>}
       {busy && <p className="image-mask-progress" role="status" aria-live="polite"><LoaderCircle size={15} aria-hidden="true" />{exporting === 'asset' ? '正在保存蒙版，关闭会停止等待；已上传素材仍可在素材库核对。' : '正在导出原尺寸黑白蒙版，关闭可取消。'}</p>}
-      <footer><div className="image-mask-footer-note"><span>{mask.strokes.length} / 128 笔 · {blackWhite ? '白色' : '红色'}区域待重绘</span><small>PNG 与原图同尺寸 · 不透明黑白图 · 保存图片不提交 AI 请求</small></div><div className="image-mask-footer-actions">{allowDownload && <button type="button" disabled={!matches || !editedPixels || busy || !!draft} onClick={() => void exportMask('download')}><Download size={15} />{exporting === 'download' ? '导出中…' : '下载黑白蒙版'}</button>}{onSaveAsset && <button type="button" className="is-primary" disabled={!matches || !editedPixels || busy || !!draft || !validSaveMode} onClick={() => void exportMask('asset')}><ImagePlus size={15} />{exporting === 'asset' ? assetSaveMode === 'replace' ? '正在保存…' : '正在另存…' : assetModeLabel(assetSaveMode)}</button>}<button type="button" onClick={close}>取消</button><button type="button" disabled={!matches || !editedPixels || !!draft || busy} onClick={applyMask}>{saveLabel}</button></div></footer>
+      <footer><div className="image-mask-footer-note"><span>{mask.strokes.length} / 128 笔 · {blackWhite ? '白色' : '红色'}区域待重绘</span>{imageExport && <small>PNG 与原图同尺寸 · 不透明黑白图 · 保存图片不提交 AI 请求</small>}</div><div className="image-mask-footer-actions">{allowDownload && <button type="button" disabled={!matches || !editedPixels || busy || !!draft} onClick={() => void exportMask('download')}><Download size={15} />{exporting === 'download' ? '导出中…' : '下载黑白蒙版'}</button>}{onSaveAsset && <button type="button" className="is-primary" disabled={!matches || !editedPixels || busy || !!draft || !validSaveMode} onClick={() => void exportMask('asset')}><ImagePlus size={15} />{exporting === 'asset' ? assetSaveMode === 'replace' ? '正在保存…' : '正在另存…' : assetModeLabel(assetSaveMode)}</button>}<button type="button" onClick={close}>取消</button><button type="button" disabled={!matches || !editedPixels || !!draft || busy} onClick={applyMask}>{saveLabel}</button></div></footer>
     </section>
   </div>, document.body)
 }

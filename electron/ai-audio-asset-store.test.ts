@@ -131,7 +131,7 @@ describe('AiAudioAssetStore', () => {
     const owned = await store.readOwned(36, asset.assetId)
     expect(owned.bytes).toEqual(before)
     expect(fs.readFileSync(sourcePath)).toEqual(before)
-    await expect(store.readOwned(37, asset.assetId)).rejects.toThrow('不存在或无权访问')
+    await expect(store.readOwned(37, asset.assetId)).rejects.toThrow('这段音频已经不在电脑上了')
     await expect(store.listOwned(36)).resolves.toEqual([expect.objectContaining({ assetId: asset.assetId, mediaType: 'audio' })])
   })
 
@@ -224,8 +224,8 @@ describe('AiAudioAssetStore lookup by identifier', () => {
     const lstatSync = vi.spyOn(fs, 'lstatSync')
     try {
       const store = new AiAudioAssetStore({ outputRoot })
-      await expect(store.readOwned(7, 'M'.repeat(43))).rejects.toThrow(/^AI 音频资产不存在或无权访问$/)
-      await expect(store.resolveOwnedFilePath(7, 'M'.repeat(43))).rejects.toThrow(/^AI 音频资产不存在或无权访问$/)
+      await expect(store.readOwned(7, 'M'.repeat(43))).rejects.toThrow(/^这段音频已经不在电脑上了，可能被移走或删掉了。$/)
+      await expect(store.resolveOwnedFilePath(7, 'M'.repeat(43))).rejects.toThrow(/^这段音频已经不在电脑上了，可能被移走或删掉了。$/)
       return lstatSync.mock.calls.length
     } finally {
       lstatSync.mockRestore()
@@ -243,8 +243,8 @@ describe('AiAudioAssetStore lookup by identifier', () => {
     await expect(store.readOwned(7, asset.assetId)).resolves.toMatchObject({ asset: { mimeType: 'audio/wav' } })
     fs.rmSync(await store.resolveOwnedFilePath(7, asset.assetId))
 
-    await expect(store.readOwned(7, asset.assetId)).rejects.toThrow(/^AI 音频资产不存在或无权访问$/)
-    await expect(store.resolveOwnedFilePath(7, asset.assetId)).rejects.toThrow(/^AI 音频资产不存在或无权访问$/)
+    await expect(store.readOwned(7, asset.assetId)).rejects.toThrow(/^这段音频已经不在电脑上了，可能被移走或删掉了。$/)
+    await expect(store.resolveOwnedFilePath(7, asset.assetId)).rejects.toThrow(/^这段音频已经不在电脑上了，可能被移走或删掉了。$/)
   })
 })
 

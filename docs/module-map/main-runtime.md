@@ -3,7 +3,7 @@
 > 总述、三套跨进程通道和其他分册见 [`../MODULE-MAP.md`](../MODULE-MAP.md)。每个模块一句话，**一律以代码为准**；加了新模块在这里补一行。
 
 ## 进程入口、生命周期与窗口
-- `main.ts` — **桌面主流程与装配中心，但不是进程入口**（入口是 `platform/entry.ts`，分流后经 `platform/desktop-entry.ts` 才 `require('../main')`，见总述）。管单实例锁、主窗口 `BrowserWindow` 安全策略（`sandbox:true` / `contextIsolation:true` / `nodeIntegration:false` / `webviewTag:false` / `navigateOnDragDrop:false`，打包版关 devTools）、注册 `xingmang://` / `xingmang-canvas://` / `xingmang-asset://` 三个特权协议、导航与外链白名单（I12；主窗口与画布各一张表，故意不合并）、显卡兼容模式要在 ready 之前定、装配全部服务并调 `registerIpcHandlers`。全仓最大的接线文件：新逻辑写成独立模块（多数做成「不含 Electron 依赖、由宿主注入」）再在这里接。启动回调正按子系统拆进 `bootstrap/`（#1070 第 5 步）：拆出去的启动步骤只在启动回调里直接调用、要收拾的东西交回 main.ts 登记退出清理，启动时各步的先后由 `main.test.ts` 按源码钉住；读 main.ts 源码核对接线的测试经 `bootstrap/main-source.test-support.ts` 连同 `bootstrap/` 一起读
+- `main.ts` — **桌面主流程与装配中心，但不是进程入口**（入口是 `platform/entry.ts`，分流后经 `platform/desktop-entry.ts` 才 `require('../main')`，见总述）。管单实例锁、主窗口 `BrowserWindow` 安全策略（`sandbox:true` / `contextIsolation:true` / `nodeIntegration:false` / `webviewTag:false` / `navigateOnDragDrop:false`，打包版关 devTools）、注册 `xingmang://` / `xingmang-canvas://` / `xingmang-asset://` 三个特权协议、导航与外链白名单（I12；主窗口与画布各一张表，故意不合并；主窗口那张里手机遥控只收飞书开发者后台 `feishuDeveloperConsoleUrl` 一条）、显卡兼容模式要在 ready 之前定、装配全部服务并调 `registerIpcHandlers`。全仓最大的接线文件：新逻辑写成独立模块（多数做成「不含 Electron 依赖、由宿主注入」）再在这里接。启动回调正按子系统拆进 `bootstrap/`（#1070 第 5 步）：拆出去的启动步骤只在启动回调里直接调用、要收拾的东西交回 main.ts 登记退出清理，启动时各步的先后由 `main.test.ts` 按源码钉住；读 main.ts 源码核对接线的测试经 `bootstrap/main-source.test-support.ts` 连同 `bootstrap/` 一起读
 - `main-service-options.ts` — 把同一份 `CodexHomeContext`（用户主目录、`CODEX_HOME`、Codex 环境变量）一次派生成 system / sessions / backups / 扩展 / 诊断各服务的根路径，保证各服务对「Codex 配置在哪」答案一致；只有 `main.ts` 用
 - `window-lifecycle.ts` — 点关闭时的决策：按「关闭行为」偏好缩到托盘 / 退出 / 询问（可「记住选择」），托盘不可用时不藏窗；退出前只问一句（有安装在跑就拦，或问要不要顺手装已下好的更新），选了装更新先置 quitting 再拉安装器，免得被自己再拦一遍
 - `bootstrap/lifecycle.ts` — 退出清理清单：`main.ts` 只挂一个 `will-quit`，各处用 `quitCleanup.add(名字, 步骤)` 按登记先后排进来，退出时挨个跑、整个退出只跑一次；某一步抛错只记日志（`app.quit-cleanup.failed`，带步骤名），后面的照跑。顺序由 `main.test.ts` 按源码钉住（加速服务在独立加速进程之前），新加一步登记在它该在的位置，别再另挂 `will-quit`
@@ -41,7 +41,7 @@
 - `diagnostics-redaction.ts` — 检查报告的脱敏和导出（#1070 第 9 步从 `diagnostics.ts` 搬出）：`createDiagnosticsExport` / `redactDiagnosticText` 导出前替换已知 Key 值、密钥样式、URL 与用户目录，导出时邮箱半遮（I13）；各类检查在报告里写路径、网址用的 `pathForDisplay` / `safeUrlForDisplay` 也在这里
 - `diagnostics-system-checks.ts` — 一键检测里「系统与权限」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出，`buildSystemChecks`）：星芒版本、操作系统（`operatingSystemSummary` 把内核号说成 Windows 11、macOS 15、Linux 发行版）、Windows ARM 电脑芯片、运行权限（是不是以管理员身份在跑、这个账号能不能提权，启动时那次探测没问出来时照实说）、打开工具用的命令窗口（Windows 的 PowerShell 只认固定解析器给的可信路径，I14；Linux 的终端程序）
 - `diagnostics-tool-checks.ts` — 一键检测里「运行环境与工具」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出，`buildToolChecks`）：Node.js、它自带的安装组件、Python、Git、各家命令行工具和 Codex 桌面端装没装、是哪一版（Codex 桌面端单独探时用的 PowerShell 脚本先按名字导入模块），各家工具连接设置是不是连到当前账号（导出的报告里另写工具配置走的是哪条线路、Codex 后台常驻开没开）；一个命令行工具都没装时 Node.js 那两项降成「需留意」（`reconcileNodeRuntimeWithClis`）
-- `diagnostics-network-checks.ts` — 一键检测里「网络与代理」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出）。`buildNetworkChecks`：星芒 AI 网络（向当前站点本来就回 JSON 的公开状态接口 `relayStatusProbeUrl` 发一次请求，认出断网、超时、门户拦截、服务端出错；「自动」先走的那条没查通就改查备用那条并报给线路那边；顺带拿 Date 头比一次系统时间）、安全证书（用跑工具的那个 Node.js 握手两次，见 `certificate-trust-probe.ts`）。`buildProxyChecks`：Clash Verge Rev 的全局接管模式（读配置限大小、YAML 限别名展开）、电脑里的代理设置（三个系统都看本机端口开没开，Windows 上另看能不能一键清掉，另问 Chromium 星芒自己走不走系统代理）。两段分开是因为它们在报告里不挨着
+- `diagnostics-network-checks.ts` — 一键检测里「网络与代理」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出）。`buildNetworkChecks`：星芒 AI 网络（向当前站点本来就回 JSON 的公开状态接口 `relayStatusProbeUrl` 发一次请求，认出断网、超时、门户拦截、服务端出错；「自动」先走的那条没查通就改查备用那条并报给线路那边；顺带拿 Date 头比一次系统时间）、安全证书（用跑工具的那个 Node.js 握手两次，见 `certificate-trust-probe.ts`）。`buildProxyChecks`：Clash Verge Rev 的全局接管模式（读配置限大小、YAML 限别名展开）、电脑里的代理设置（三个系统都看本机端口开没开，Windows 上另看能不能一键清掉，另问 Chromium 星芒自己走不走系统代理）、Claude Code 自己设置里的代理（D35：读 `~/.claude/settings.json` 的 env 段，照同一套规则试连，指向本机又没开的才出一行黄灯，不给按钮）。两段分开是因为它们在报告里不挨着
 - `relay-status-probe.ts` — 探线路通不通、检查页「星芒 AI 网络」那一项用的公开状态接口地址（`relayStatusProbeUrl`，按站点的账号后端选 `/api/status` 或 `/api/v1/settings/public`）和一个地址所在站点各条线路的探测地址（`relaySiteStatusProbeUrls`）。开机时线路探测和账号就要用，所以从 `diagnostics-network-checks.ts` 单拿出来、只靠站点表；检查页那一套（`diagnostics.ts` 起）开机不加载，由 `bootstrap/diagnostics.ts` 跑检查时再 `import()`
 - `diagnostics-storage-checks.ts` — 一键检测里「磁盘与文件夹」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出，`buildStorageChecks`）：磁盘空间（工具安装目录、软件数据目录所在的盘还剩多少，同一块盘只说一次）、「文档」文件夹能不能写（只在 Windows 上查，写不进时新项目和 AI 作品改放个人文件夹）、AI 作品保存位置、加速用的文件是否完好、文件夹位置（「C 盘搬家」留下的联接：普通权限运行时跟过去读写、只报一句搬到了哪块盘；管理员身份运行或搬到网络盘、共享位置的照 I8 不写，标红）
 - `diagnostics-override-checks.ts` — 一键检测里「电脑里另外设过的设置」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出，`buildOverrideChecks`）：环境变量里另外设的工具地址和密钥（哪些会盖过当前账号、哪些指的就是当前账号用 `environmentAccountBaseUrls` 判；Mac 上连终端设置文件一起看，Windows 上用户级的能一键清掉，名单 `environmentOverrideNames` / `clearableEnvironmentOverrides` 给 `diagnostic-fixes.ts` 对照；写错被忽略的 `CODEX_HOME` 单独说）、项目文件夹里的设置（`workspace-config-overrides.ts`）、Codex 文件夹里的 `.env`、Claude Code 跑命令前问不问、个人文件夹里早先留下的项目说明和信任设置
@@ -62,6 +62,7 @@
 - `path-identity.ts` — `sameLocalPathIdentity`：跨平台判断两个路径是不是同一个东西（Windows 逐级比 dev/ino/mode 且不分大小写，Mac 认 /var、/tmp、/etc 的 /private 别名）；可信路径、卸载、资产存储等二十多处用它而不是字符串比较
 - `windows-cli-shell-access.ts` — 让客户自己的终端能直接敲 `claude`：删掉 npm 生成的 `.ps1` 启动文件（Windows 默认执行策略会拦它，删了 PowerShell 就落到 `.cmd`，不用放宽执行策略），只认 cmd-shim 指向本包的那份；装完把 npm 目录加进用户 PATH、卸空后撤掉。提权令牌下只碰管理员所有的托管目录，用户可写目录一律不动（I8）；Mac/Linux 的对应动作由宿主注入
 - `windows-live-path.ts` — 读注册表里整台电脑 + 当前账号的 PATH（异步 reg.exe），拼出「现在新开终端会拿到的」PATH；只给推 Grok 跑钩子用哪个 shell、从星芒打开 Grok 时补新段用，不改 `process.env`，不进提权路径解析
+- `windows-taskbar-theme.ts` — 读当前账号的任务栏是不是深色（异步 reg.exe 读 `SystemUsesLightTheme`），给托盘换浅色外圈图标用（D94）；Electron 的 `shouldUseDarkColorsForSystemIntegratedUI` 开机时答的是应用模式、只换任务栏深浅时也不通知，所以自己读
 - `windows-processor.ts` — 认出 ARM 版 Windows：x64 星芒在 ARM 上被模拟时 `process.arch` 和本进程环境变量都报 x64，只有注册表里机器级的那份说真话；另读 PE 头判断某个 exe 是哪种架构，据此选 Node.js 安装包架构；诊断与 `system-service.ts` 用
 - `windows-store-availability.ts` — 问「这台电脑有没有微软商店」（LTSC、精简版、组策略关掉的都没有），只有确定没有时才跳过商店那条安装路；`codex-desktop-service.ts` 用。原名 `windows-store-app-launch.ts`，原先的「内置 Administrator / 关了 UAC 可能打不开」判断已于 2026-10-02 撤掉，文件头写了恢复它的前提
 
@@ -96,7 +97,7 @@
 - `network-location-cache.ts` — 合并并缓存「网络位置」（境内/境外，决定安装源顺序）的探测：显式刷新会让旧的在途结果作废重读；`system-service.ts` 用
 
 ## 托盘
-- `application-tray.ts` — 系统托盘与右键菜单：账号、余额与订阅剩余、已装工具一键打开、加速一行、更新一项、「暂不让电脑自动睡眠」提示（已知35）、手机遥控开着时的「关掉手机遥控」一项；打开菜单时现读一次会过期的状态，不定时轮询；Linux 上有没有托盘由 `linux-tray-host.ts` 先问
+- `application-tray.ts` — 系统托盘与右键菜单：账号、余额与订阅剩余、已装工具一键打开、加速一行、更新一项、「暂不让电脑自动睡眠」提示（已知35）、手机遥控开着时的「关掉手机遥控」一项、都关着但齐了时的「打开手机遥控」一项（打不开弹系统通知说原因）；打开菜单时现读一次会过期的状态，不定时轮询；Linux 上有没有托盘由 `linux-tray-host.ts` 先问；Windows 用多尺寸 ICO（`tray.ico` / `tray-dark.ico`，`scripts/generate-tray-icons.mjs` 生成），任务栏深色时换浅色外圈那份
 - `tray-acceleration.ts` — 托盘里加速那一行状态与连接/断开动作的纯逻辑：不新增第二条连接逻辑（走加速页同一条路、用落了盘的线路偏好）、不新增轮询（剩余时长只按读到的时刻往前推算来显示）、失败不弹窗只换一句短原因
 
 ## 更新与发布
@@ -114,7 +115,7 @@
 
 ## 设置与本地数据
 - `app-settings.ts` — 应用设置 `settings.json` 的类型、默认值、解析、合并与原子写入（读写走 safe-local-data，I8）：主题、缩放、关闭行为、下载源顺序、线路偏好、Codex 汉化等；新字段遵守「缺省 = 旧行为」，启动时只在格式真变了才重写；被 main、ipc、system-service、画布窗口等十来处引用
-- `data-transfer.ts` — 「搬到新电脑」导出/导入文件：当前账号的聊天对话 + 几项跟人走的设置，刻意不放 Key、密码、登录态、保存的账号、CLI 配置和本机路径；导入前给出逐项预览、版本更新的文件拒收
+- `data-transfer.ts` — 「搬到新电脑」导出/导入文件：当前账号的聊天对话、聊天页「常用的话」+ 几项跟人走的设置，刻意不放 Key、密码、登录态、保存的账号、CLI 配置和本机路径；导入前给出逐项预览、版本更新的文件拒收
 - `documents-fallback.ts` — 「文档」写不进去（受控文件夹访问、安全软件、Mac 上点了「不允许」，只认 EACCES/EPERM）时，新项目与 AI 作品改放到用户主目录；可写性靠真建一个随机名文件 `wx` 打开再删来判断，不跟预置的链接（I8）
 - `starter-workspace.ts` — 替新手建工作文件夹：Windows 建在「文档/XingmangProjects/my-project」，文档被云盘同步或在 Mac 上时退到主目录；名字刻意用英文无空格，避免下游 CLI/npm/MCP 在中文或带括号的路径下出问题
 - `disk-space.ts` / `disk-space-copy.ts` — 磁盘空间：前者 statfs 量剩余空间（目录不存在就往上退、同盘合并），定安装前门槛与检查页提醒线；后者是空间文案（无 Node 依赖，渲染层更新页与主进程系统通知读同一份说法）

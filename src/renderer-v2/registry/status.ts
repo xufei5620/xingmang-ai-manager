@@ -1,6 +1,6 @@
 export const statuses = {
   tool: { missing: ['未安装', 'neutral'], installing: ['安装中', 'accent'], configuring: ['正在配密钥', 'accent'], updating: ['更新中', 'accent'], ready: ['已配好', 'ok'], official: ['官方账号', 'ok'], unconfigured: ['待连接', 'warn'], notEnabled: ['账号未开通', 'neutral'], update: ['可更新', 'warn'], keyRevoked: ['密钥失效', 'bad'], zeroBalance: ['余额为零', 'bad'], unknownSource: ['别处的配置', 'neutral'], otherSiteKey: ['打不开', 'warn'], otherAccountKey: ['密钥待确认', 'warn'], configChanged: ['配置被改过', 'warn'], codexShadowed: ['连接设置要修', 'warn'], cliHooksStale: ['提醒设置要修', 'warn'], ccSwitch: ['被接管', 'warn'], detectionFailed: ['检测失败', 'bad'], configUnavailable: ['配置未读到', 'warn'], configBroken: ['配置坏了', 'bad'] },
-  environment: { ok: ['已找到', 'ok'], missing: ['未安装', 'warn'], optional: ['可选 · 未装', 'neutral'] },
+  environment: { ok: ['已找到', 'ok'], missing: ['未安装', 'warn'], optional: ['可选 · 未安装', 'neutral'] },
   key: { active: ['有效', 'ok'], disabled: ['已停用', 'neutral'], expired: ['已过期', 'warn'], exhausted: ['额度用完', 'warn'], revoked: ['已撤销', 'neutral'] },
   order: { pending: ['等待支付', 'warn'], paid: ['已到账', 'ok'], failed: ['支付失败', 'bad'], timeout: ['已超时', 'neutral'], unknown: ['待确认', 'neutral'] },
   task: { queued: ['排队中', 'neutral'], running: ['处理中', 'accent'], done: ['已完成', 'ok'], failed: ['失败', 'bad'] },

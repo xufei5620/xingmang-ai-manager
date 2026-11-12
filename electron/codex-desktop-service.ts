@@ -105,6 +105,7 @@ import type {
   UpdateState,
   VersionUpdateStatus,
 } from './system-service'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { powerShellLiteral, resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
@@ -124,6 +125,7 @@ import {
 import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
 import { codexDesktopChineseOffMessage } from './remote-features'
 import { inspectWindowsStoreAvailability } from './windows-store-availability'
+import { assertWorkspaceDirectory } from './workspace-access'
 
 const execFileAsync = promisify(execFile)
 
@@ -193,7 +195,7 @@ const maximumCodexDesktopAppManifestBytes = 512 * 1024
 const codexDesktopManifestRefreshParameter = 'xm_refresh'
 const codexDesktopInstallKey = 'desktop:codex:install'
 /** Mac 上工具箱以 root 身份运行时不装：装出来的应用归 root，客户自己的账号更新不了它。 */
-const codexDesktopMacRootMessage = '请用你平时登录 Mac 的账号重新打开工具箱，再安装 Codex 桌面端。'
+const codexDesktopMacRootMessage = '请用你平时登录 Mac 的账号重新打开星芒，再安装 Codex 桌面端。'
 /** Mac 上检测没做完，说不准装没装：点「打开」和点「安装」时都照这句说。 */
 const codexDesktopDetectionUnfinishedMessage = 'Codex 桌面端检测未完成，请重新检测后再试'
 // 下载可以随时丢掉，Add-AppxPackage 不行：它中途被杀会留下一个装了一半的包，
@@ -1570,7 +1572,7 @@ export function desktopMirrorUpdateAvailable(
   return comparison === null ? null : comparison < 0
 }
 
-const codexDesktopProbeScriptHeader = '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'
+const codexDesktopProbeScriptHeader = powerShellUtf8OutputStatement
 
 function codexDesktopStartAppsQuery(): string {
   return "@(Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' } | Select-Object Name, AppID)"
@@ -1633,9 +1635,28 @@ function codexDesktopProcessQuery(scope: CodexDesktopProcessScope, processIds?: 
           ($pidFamilies[[int]$_.Process.ParentProcessId] -ne $_.PackageFamilyName)
       })`
     : '$toCheck = $candidates'
+  // Where an application-control policy holds PowerShell to ConstrainedLanguage,
+  // the two .NET calls that name this user and session are refused, the whole
+  // segment fails, and the home page could never say 「正在运行」 there
+  // (2026-11-10 customer machine). WMI answers both questions about this very
+  // PowerShell process instead: GetOwnerSid is the same call every candidate's
+  // owner is read with below, so the comparison stays like for like. FullLanguage
+  // keeps the .NET lines untouched. Without a SID the segment fails rather than
+  // compare against nothing: unknown ownership must never become a taskkill
+  // target. The candidate and result objects are hashtables because
+  // ConstrainedLanguage refuses [pscustomobject]@{}; the result keeps its key
+  // order with [ordered], so ConvertTo-Json writes the same JSON as before.
   return String.raw`& {
-    $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {
+      $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+      $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    } else {
+      $selfProcess = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop
+      $selfOwner = Invoke-CimMethod -InputObject $selfProcess -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop
+      $currentSid = if ($null -ne $selfOwner -and $selfOwner.ReturnValue -eq 0) { [string]$selfOwner.Sid } else { $null }
+      $currentSessionId = $selfProcess.SessionId
+      if (-not $currentSid -or $null -eq $currentSessionId) { throw 'Codex desktop process probe: WMI did not name the owner and session of this PowerShell process' }
+    }
     $targetIds = ${targetIds}
     $candidates = @(Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId${nameFilter}" | ForEach-Object {
       $path = [string]$_.ExecutablePath
@@ -1650,7 +1671,7 @@ function codexDesktopProcessQuery(scope: CodexDesktopProcessScope, processIds?: 
       $package = [regex]::Match($path, '(?i)\\WindowsApps\\(?<name>OpenAI\.Codex(?:Beta)?)_\d+(?:\.\d+){3}_(?:x64|arm64|neutral)__(?<publisher>[A-Za-z0-9.]+)\\')
       if ($package.Success -and $null -ne $_.SessionId -and $_.SessionId -eq $currentSessionId -and ($null -eq $targetIds -or ($targetIds -contains [int]$_.ProcessId))) {
         $packageFamilyName = $package.Groups['name'].Value + '_' + $package.Groups['publisher'].Value
-        [pscustomobject]@{ Process = $_; Path = $path; PackageFamilyName = $packageFamilyName }
+        @{ Process = $_; Path = $path; PackageFamilyName = $packageFamilyName }
       }
     })
     ${ownerTargets}
@@ -1662,7 +1683,7 @@ function codexDesktopProcessQuery(scope: CodexDesktopProcessScope, processIds?: 
         try { $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop } catch {}
         # Unknown ownership must never become a taskkill target.
         if ($null -ne $owner -and $owner.ReturnValue -eq 0 -and $owner.Sid -eq $currentSid) {
-          [pscustomobject]@{ ProcessId = $process.ProcessId; ParentProcessId = $process.ParentProcessId; Name = $process.Name; ExecutablePath = $candidate.Path; OwnerSid = $owner.Sid; CurrentOwnerSid = $currentSid; SessionId = $process.SessionId; CurrentSessionId = $currentSessionId; PackageFamilyName = $candidate.PackageFamilyName }
+          [ordered]@{ ProcessId = $process.ProcessId; ParentProcessId = $process.ParentProcessId; Name = $process.Name; ExecutablePath = $candidate.Path; OwnerSid = $owner.Sid; CurrentOwnerSid = $currentSid; SessionId = $process.SessionId; CurrentSessionId = $currentSessionId; PackageFamilyName = $candidate.PackageFamilyName }
         }
       }
     })
@@ -1877,7 +1898,9 @@ function codexDesktopPackageProbeStatements(): string[] {
     'if ($null -ne $currentError) {',
     '  $errorMessage = \'读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。\'',
     '}',
-    '$packageProbe = [pscustomobject]@{ packages = $packages; source = $source; confirmedAbsent = $confirmedAbsent; error = $errorMessage }',
+    // A hashtable, not [pscustomobject]@{}: ConstrainedLanguage refuses that
+    // hashtable-to-object conversion, and ConvertTo-Json writes both the same.
+    '$packageProbe = @{ packages = $packages; source = $source; confirmedAbsent = $confirmedAbsent; error = $errorMessage }',
   ]
 }
 
@@ -1887,7 +1910,7 @@ export function buildCodexDesktopPackageProbeScript(): string {
     buildPowerShellModuleImportStatement(codexDesktopPackageProbeModules),
     '$ErrorActionPreference = "Stop"',
     ...codexDesktopPackageProbeStatements(),
-    '$packageProbe | ConvertTo-Json -Compress',
+    ...buildPowerShellJsonOutputStatements('$packageProbe | ConvertTo-Json -Compress'),
   ].join('; ')
 }
 
@@ -1934,7 +1957,9 @@ export function buildCodexDesktopCombinedProbeScript(): string {
     '$ErrorActionPreference = "Stop"',
     ...codexDesktopPackageProbeStatements(),
     '} catch { $packageError = $_.Exception.Message }',
-    '[pscustomobject]@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError } | ConvertTo-Json -Compress -Depth 6',
+    // 受限语言模式下 [pscustomobject]@{} 被拒，最后这句一失败整条就是退出码 1、结果全丢
+    // （2026-11-10 客户电脑），所以用普通哈希表，JSON 照样是同一个对象。
+    ...buildPowerShellJsonOutputStatements('@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError } | ConvertTo-Json -Compress -Depth 6'),
   ].join('\n')
 }
 
@@ -2677,7 +2702,7 @@ export function withCodexDesktopDarwinUpdate(status: DesktopAppStatus, latestVer
  * 看不懂；原话现在只进运行日志（system-service 接的 withCodexDesktopCdpFailureReport 和
  * withCodexDesktopLocaleFailureReport）。这条路只在 Windows 上走，首页「打开」在 Codex 开着时会问要不要重启。
  */
-export const codexDesktopChineseUnverifiedMessage = 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重启 Codex」试一次。'
+export const codexDesktopChineseUnverifiedMessage = 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。'
 
 export interface CodexDesktopServiceOptions {
   platform: NodeJS.Platform
@@ -2829,7 +2854,7 @@ function runWithoutDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
 /**
  * 打开 Codex 桌面端分两段（#1085）：start 做到发出启动请求为止，算账号工作；它交回来的那段只等本机的
  * Codex 进程起来、给它换中文，Windows 上最长一分多钟，换账号、退出不陪它等。start 跑的时候开始换账号，
- * 照旧报「账号上下文已变化，请重试」，但启动请求已经发出去了：先把窗口等完再报，安装队列不能趁 Codex
+ * 照旧报「账号刚切换过，请再试一次」，但启动请求已经发出去了：先把窗口等完再报，安装队列不能趁 Codex
  * 还在起来就放别的安装、卸载进来换同一个包（I11）。
  */
 export async function launchThenWaitOutsideAccountWork<T>(
@@ -3254,7 +3279,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       contentLength: downloaded.contentLength,
       onElevationRequired: () => sendCodexDesktopInstallProgress(target, {
         phase: 'installing', percent: null,
-        message: '此版本需管理员权限安装服务，请在 Windows 授权窗口中允许本次安装；取消将停止安装。',
+        message: '接下来 Windows 会弹出授权窗口，上面写的是「Windows PowerShell」，这是星芒在调用系统自带的安装工具，点「是」继续。',
       }),
     })
     const installedPackage = await verifyInstalledCodexDesktop(downloaded.version)
@@ -4118,11 +4143,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         throw new Error('未检测到 Codex 桌面端，请先安装 Codex App 后重新检测')
       }
       const workspace = store.read().workspace
-      try {
-        if (!fs.statSync(workspace).isDirectory()) throw new Error('not a directory')
-      } catch {
-        throw new Error('工作目录不存在，请重新选择')
-      }
+      assertWorkspaceDirectory(workspace, platform, '工作目录不存在，请重新选择')
       // 已经开着的 Codex 收不到启动参数（LaunchServices 只把链接交过去），那时只照旧连加速。
       const startupRoute = await prepareStartupBeforeLaunch(!desktopApp.running)
       const appArguments = startupRoute.kind === 'none' ? [] : [formatCodexStartupMacArgument(startupRoute.hostResolverRules)]

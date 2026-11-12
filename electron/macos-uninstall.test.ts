@@ -1,6 +1,9 @@
+import { execFile } from 'node:child_process'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AppUninstallRequest } from './ipc-contract'
 import {
@@ -14,6 +17,11 @@ import {
 const installedExecutable = '/Applications/星芒AI管理工具.app/Contents/MacOS/星芒AI管理工具'
 const installedAppPath = '/Applications/星芒AI管理工具.app/Contents/Resources/app.asar'
 const keepEverything: AppUninstallRequest = { clearLoginRecords: false, removeManagedTools: false }
+const execFileAsync = promisify(execFile)
+const requireFromTest = createRequire(__filename)
+const { createSettledPackage } = requireFromTest('../scripts/asar-fixture.test-support.cjs') as {
+  createSettledPackage(source: string, archive: string): Promise<string>
+}
 
 function fixture(overrides: Partial<MacUninstallDependencies> = {}) {
   const calls: string[] = []
@@ -215,5 +223,65 @@ describe('removeMacManagedTools', () => {
     fs.symlinkSync(outside, path.join(root, 'Cli', 'link'))
     expect(await removeMacManagedTools(root)).toBe(true)
     expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8')).toBe('keep')
+  })
+
+  /**
+   * Runs the real removeMacManagedTools inside the real Electron binary (as Node, so no display
+   * is needed): only there does the asar layer exist that takes app.asar for a folder and leaves
+   * Contents/Resources behind (remove-tree.ts). The sources are compiled as they are required,
+   * so what runs is this directory's module with its real imports, not a copy.
+   */
+  async function removeManagedToolsInElectron(base: string, root: string): Promise<{ electron: string | null, outcome: string }> {
+    const runner = path.join(base, 'runner.js')
+    fs.writeFileSync(runner, `
+const fs = require('node:fs')
+const ts = require(process.argv[2])
+require.extensions['.ts'] = function compileTypeScript(module, filename) {
+  const { outputText } = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+    fileName: filename,
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+  })
+  module._compile(outputText, filename)
+}
+const { removeMacManagedTools } = require(process.argv[3])
+removeMacManagedTools(process.argv[4]).then(
+  (removed) => removed ? 'removed' : 'left in place',
+  (error) => error.code ?? String(error),
+).then((outcome) => {
+  process.stdout.write(JSON.stringify({ electron: process.versions.electron ?? null, outcome }))
+})
+`)
+    const electronBinary = requireFromTest('electron') as string
+    const environment: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+    // The test runner's own loader flags mean nothing to Electron's Node.
+    delete environment.NODE_OPTIONS
+    const { stdout } = await execFileAsync(
+      electronBinary,
+      [runner, requireFromTest.resolve('typescript'), path.join(__dirname, 'macos-uninstall.ts'), root],
+      { env: environment, timeout: 20_000 },
+    )
+    return JSON.parse(stdout) as { electron: string | null, outcome: string }
+  }
+
+  it('removes a desktop app an interrupted install left unpacked, which the main process fs cannot delete', async () => {
+    const base = sandbox()
+    const root = path.join(base, 'XingMangAI')
+    fs.mkdirSync(path.join(root, 'Cli', 'npm', 'bin'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'Cli', 'npm', 'bin', 'claude'), '#!/bin/sh\n')
+    // What a shutdown in the middle of a desktop app install leaves behind until the next
+    // install (createStagingDirectory in macos-desktop-app-installer.ts): an unpacked
+    // Electron app whose Contents/Resources holds a real app.asar.
+    const resources = path.join(root, 'DesktopApps', 'staging-a1b2c3', 'extract', 'ChatGPT.app', 'Contents', 'Resources')
+    fs.mkdirSync(resources, { recursive: true })
+    const source = path.join(base, 'app-source')
+    fs.mkdirSync(source)
+    fs.writeFileSync(path.join(source, 'package.json'), '{"name":"fixture"}\n')
+    await createSettledPackage(source, path.join(resources, 'app.asar'))
+
+    const result = await removeManagedToolsInElectron(base, root)
+
+    expect(result.electron).toEqual(expect.any(String))
+    expect(result.outcome).toBe('removed')
+    expect(fs.existsSync(root)).toBe(false)
   })
 })

@@ -1,7 +1,6 @@
 import type { AccountBalance } from '../../../../electron/ipc-contract'
 import { formatAccountReadError } from './account-read-error'
-import type { NetworkFailureReason } from '../../../../electron/network-failure'
-import { localNetworkFailureReason } from '../shell/online-status'
+import { localNetworkFailureReason, type LocalNetworkFailure } from '../shell/online-status'
 
 export interface AccountBalanceSnapshot {
   scope: string | null
@@ -16,7 +15,7 @@ export interface AccountBalanceSnapshot {
    */
   networkFailures: number
   /** 最近那次本机网络失败是哪一种（代理、门户认证……）；计数归零时一起清掉。 */
-  networkFailureReason?: NetworkFailureReason
+  networkFailureReason?: LocalNetworkFailure
 }
 
 export type AccountBalanceRefreshReason = 'manual' | 'mutation' | 'foreground' | 'interval'

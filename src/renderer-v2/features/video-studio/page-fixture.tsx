@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { AiChatAsset, AiChatImageInput, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioPlan, VideoStudioPlanInput, XingmangApi } from '../../../../electron/ipc-contract'
+import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
 import { ToastProvider } from '../../ui'
 import { AccountBalanceContext } from '../app/balance-context'
 import { createAccountBalanceStore } from '../app/balance-store'
@@ -82,7 +83,7 @@ const bridge: VideoStudioBridge = {
   readAiVideoClip: async (assetId) => {
     record('read', assetId)
     const data = library.get(assetId)
-    if (!data) throw new Error(`Error invoking remote method 'video:read-clip': Error: 视频不存在或无权访问`)
+    if (!data) throw new Error(`Error invoking remote method 'video:read-clip': Error: ${missingAiAssetMessages.video}`)
     return new Uint8Array(data.slice(0))
   },
   storeVideoStudioExport: async (bytes) => {
@@ -122,7 +123,7 @@ const bridge: VideoStudioBridge = {
   readVideoStudioMusic: async (assetId) => {
     record('read-music', assetId)
     const data = library.get(assetId)
-    if (!data) throw new Error(`Error invoking remote method 'video-studio:read-music': Error: AI 音频资产不存在或无权访问`)
+    if (!data) throw new Error(`Error invoking remote method 'video-studio:read-music': Error: ${missingAiAssetMessages.audio}`)
     return new Uint8Array(data.slice(0))
   },
 }

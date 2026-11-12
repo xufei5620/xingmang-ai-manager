@@ -8,6 +8,7 @@ import {
   validatePaymentQrCode,
   validatePaymentUrl,
 } from '../../payment-window'
+import { invoicePortalOpenFailedMessage } from '../../invoice-portal-window'
 import { assertPaymentMethodShown, subscriptionPaymentType, withoutHiddenPaymentMethods } from '../../payment-methods-off'
 import { requiredString } from '../parsers/common'
 import {
@@ -51,7 +52,7 @@ export function registerAccountBillingHandlers(ctx: IpcHandlerContext): void {
       assertPaymentMethodShown(parsed.paymentMethod, hidden)
       return accountService.createTopupPayment(parsed)
     }).then(async (checkout) => {
-      if (accountService.getSessionRevision?.() !== revision) throw new Error('账号上下文已变化，请重试')
+      if (accountService.getSessionRevision?.() !== revision) throw new Error('账号刚切换过，请再试一次')
       // Validate the service result before handing it to the window and before
       // exposing the order number. This keeps the IPC result a strict,
       // renderer-safe DTO even if a backend adapter returns malformed data.
@@ -81,6 +82,14 @@ export function registerAccountBillingHandlers(ctx: IpcHandlerContext): void {
     // 和点支付窗口右上角的 × 一样：付过款的订单在后台接着确认到账。
     // destroy() 会把这份确认一起停掉，只留给换账号、退出这类场合。
     options.paymentWindow.close()
+  })
+  registerTrustedHandler('account:open-invoice-portal', async () => {
+    // 开哪个账号的开票中心只由主进程定：渲染层不给地址也不给账号，免得被引去别处或别人的登录记录。
+    const state = accountService.getSessionState()
+    const userId = state.authenticated ? state.account?.userId : undefined
+    if (!options.invoicePortalWindow || !userId) throw new Error(invoicePortalOpenFailedMessage)
+    const siteId = accountService.getActiveSiteId?.() ?? options.realmAccounts?.getSiteId() ?? 'solov'
+    await options.invoicePortalWindow.open({ siteId, userId })
   })
   registerTrustedHandler('account:list-topup-orders', (_event, input: unknown) => (
     accountService.listTopupOrders(parseAccountTopupOrdersQuery(input))

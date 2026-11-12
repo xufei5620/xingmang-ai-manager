@@ -62,11 +62,13 @@ export function accountSupports(session: Pick<AccountContext, 'siteId' | 'realmI
  * 原来要的能力判断；账号概览、账号安全哪种账号都有。
  */
 export function visibleAccountTab(value: string, session: Pick<AccountContext, 'siteId' | 'realmId' | 'capabilities'>): boolean {
-  if (value === 'keys') return accountSupports(session, 'supportsKeyManagement')
+  // 「用在别的软件里」在密钥管理最下面，跟密钥管理一起有无。
+  if (value === 'keys' || value === 'other-apps') return accountSupports(session, 'supportsKeyManagement')
   // 用量账单上面是用量看板，下面是调用明细：有一样就有这个页签。
   if (value === 'usage') return accountSupports(session, 'supportsUsage') || accountSupports(session, 'supportsDashboard')
   if (value === 'dashboard') return accountSupports(session, 'supportsDashboard')
   if (value === 'tasks') return accountSupports(session, 'supportsTasks')
+  if (value === 'prices') return accountSupports(session, 'supportsPriceList')
   if (['orders', 'invite', 'recharge'].includes(value)) return accountSupports(session, 'supportsBilling')
   if (value === 'devices') return accountSupports(session, 'supportsSessionManagement')
   return ['overview', 'security', 'switch-account', 'edit-profile', 'change-password', 'remember-password'].includes(value)

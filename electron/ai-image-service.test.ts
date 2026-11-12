@@ -10,6 +10,17 @@ function response(body: unknown, status = 200): Response {
   })
 }
 
+// Only the signature and IHDR, which is all inspectAiImage reads for a size.
+function pngHeader(width: number, height: number): Buffer {
+  const bytes = Buffer.alloc(33)
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes)
+  bytes.writeUInt32BE(13, 8)
+  bytes.write('IHDR', 12, 'ascii')
+  bytes.writeUInt32BE(width, 16)
+  bytes.writeUInt32BE(height, 20)
+  return bytes
+}
+
 function setup(
   fetchImpl: typeof fetch,
   queueOptions: { maxActive?: number; maxQueued?: number; timeoutMs?: number; backend?: 'new-api' | 'sub2api' } = {},
@@ -370,6 +381,46 @@ describe('AI image service', () => {
     expect(assets.readOwned).toHaveBeenNthCalledWith(2, 7, ids[1])
   })
 
+  it('sends a masked edit as one image plus a mask file once the source size matches', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const id = 'a'.repeat(43)
+    vi.mocked(assets.readOwned).mockResolvedValue({
+      asset: { assetId: id, localUrl: `xingmang-asset://image/${id}`, mimeType: 'image/png', fileName: 'source.png' },
+      bytes: pngHeader(64, 48),
+    })
+    const maskBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+    const png = vi.fn(async () => maskBytes)
+    await service.edit(4, {
+      requestId: 'mask-1', group: '生图分组', model: 'gpt-image-2', prompt: '换成红色',
+      sourceAssetIds: [id], expectedUserId: 7, mask: { width: 64, height: 48, png },
+    })
+    const form = vi.mocked(fetchImpl).mock.calls[0][1]?.body as FormData
+    expect(form.getAll('image')).toHaveLength(1)
+    const mask = form.get('mask') as File
+    expect(mask.name).toBe('mask.png')
+    expect(mask.type).toBe('image/png')
+    expect(new Uint8Array(await mask.arrayBuffer())).toEqual(maskBytes)
+    expect(png).toHaveBeenCalledOnce()
+  })
+
+  it('refuses a masked edit whose source is another size, or has more than one source, before dispatch', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const id = 'a'.repeat(43)
+    // The record says 64 x 48; the bytes going out are 65 x 48, and those are what the relay compares.
+    vi.mocked(assets.readOwned).mockResolvedValue({
+      asset: { assetId: id, localUrl: `xingmang-asset://image/${id}`, mimeType: 'image/png', fileName: 'source.png', width: 64, height: 48 },
+      bytes: pngHeader(65, 48),
+    })
+    const png = vi.fn(async () => new Uint8Array(8))
+    const input = { requestId: 'mask-2', group: '生图分组', model: 'gpt-image-2', prompt: '换成红色', expectedUserId: 7, mask: { width: 64, height: 48, png } }
+    await expect(service.edit(4, { ...input, sourceAssetIds: [id] })).rejects.toThrow('原图像素尺寸与蒙版不一致')
+    await expect(service.edit(4, { ...input, requestId: 'mask-3', sourceAssetIds: [id, 'b'.repeat(43)] })).rejects.toThrow('局部修改只能用一张原图')
+    expect(png).not.toHaveBeenCalled()
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
   it('rejects image edits across accounts and invalid asset lists before network dispatch', async () => {
     const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
     const { service, assets } = setup(fetchImpl)
@@ -693,6 +744,23 @@ describe('canvas image service after a stop', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
+  it('counts a paid picture still coming in after a stop as pending, so an update restart asks first (D10)', async () => {
+    const { fetchImpl, requests } = heldFetch()
+    const { service, onFinishedAfterStop } = canvasSetup(fetchImpl)
+    expect(service.hasPendingWork()).toBe(false)
+    const pending = service.generate(4, {
+      requestId: 'canvas-run:pending', group: '生图分组', model: 'gpt-image-2', prompt: '一只猫', expectedUserId: 7, projectId,
+    })
+    await vi.waitFor(() => expect(requests).toHaveLength(1))
+    expect(service.hasPendingWork()).toBe(true)
+    service.cancel(4, 'canvas-run:pending', 7)
+    await expect(pending).rejects.toThrow('已停止等待')
+    expect(service.hasPendingWork()).toBe(true)
+    requests[0].resolve(response({ data: [{ b64_json: 'aGVsbG8=' }] }))
+    await vi.waitFor(() => expect(onFinishedAfterStop).toHaveBeenCalled())
+    await vi.waitFor(() => expect(service.hasPendingWork()).toBe(false))
+  })
+
   it('still cancels requests that have not gone out, so nothing is paid for them', async () => {
     const { fetchImpl, requests } = heldFetch()
     const { service, credentials, assets, addTag } = canvasSetup(fetchImpl, { maxActive: 1, maxQueued: 1 })
@@ -825,5 +893,49 @@ describe('chat image service stop behaviour', () => {
     await service.whenIdle()
     expect(assets.storeBase64).not.toHaveBeenCalled()
     expect(assets.storeRemoteUrl).not.toHaveBeenCalled()
+  })
+})
+
+describe('AI image service relay billing', () => {
+  it('reports the request leaving and the request id the relay answered with', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: 'aGVsbG8=' }] }), {
+      headers: { 'content-type': 'application/json', 'x-oneapi-request-id': '20261110130000123456789abcdef' },
+    })) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    const reports: unknown[] = []
+    await service.generate(4, { requestId: 'billed', group: '生图分组', model: 'gpt-image-2', prompt: '一张图' }, {
+      onStage: () => undefined,
+      onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) },
+      onRelayAnswer: (id) => { reports.push(['answer', id]) },
+    })
+    expect(reports).toEqual([['dispatch', true], ['answer', '20261110130000123456789abcdef']])
+  })
+
+  it('takes back the dispatch of a request that never left, and reports a refused answer too', async () => {
+    const unsent = vi.fn(async () => { throw new Error('net::ERR_NAME_NOT_RESOLVED') }) as unknown as typeof fetch
+    const reports: unknown[] = []
+    const observer = {
+      onStage: () => undefined,
+      onRelayDispatch: (sent: boolean) => { reports.push(['dispatch', sent]) },
+      onRelayAnswer: (id: string | null) => { reports.push(['answer', id]) },
+    }
+    await expect(setup(unsent).service.generate(4, { requestId: 'unsent', group: '生图分组', model: 'gpt-image-2', prompt: '图' }, observer)).rejects.toThrow(networkFailureMessages.dns)
+    expect(reports).toEqual([['dispatch', true], ['dispatch', false]])
+    reports.length = 0
+    const refused = vi.fn(async () => new Response(JSON.stringify({ error: { message: '图片内容审核未通过' } }), {
+      status: 400, headers: { 'content-type': 'application/json', 'x-oneapi-request-id': 'req-refused' },
+    })) as unknown as typeof fetch
+    await expect(setup(refused).service.generate(4, { requestId: 'refused', group: '生图分组', model: 'gpt-image-2', prompt: '图' }, observer)).rejects.toThrow()
+    expect(reports).toEqual([['dispatch', true], ['answer', 'req-refused']])
+  })
+
+  it('never lets a broken billing observer break the request', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    await expect(service.generate(4, { requestId: 'broken', group: '生图分组', model: 'gpt-image-2', prompt: '图' }, {
+      onStage: () => undefined,
+      onRelayDispatch: () => { throw new Error('boom') },
+      onRelayAnswer: () => { throw new Error('boom') },
+    })).resolves.toHaveLength(1)
   })
 })

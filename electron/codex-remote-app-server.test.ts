@@ -95,6 +95,31 @@ describe('codex-remote-app-server', () => {
     expect(events.onNotification).toHaveBeenCalledWith('turn/completed', { threadId: 't' })
   })
 
+  // 管道按字节切块，一个汉字被切在两块中间时不能变成乱码（#1489 N8）。
+  it('keeps multi-byte characters intact when a chunk boundary splits them', async () => {
+    const fake = new FakeProcess()
+    const events = handlers()
+    await started(fake, events)
+    const bytes = Buffer.from(`${JSON.stringify({ method: 'item/completed', params: { text: '改好了登录页' } })}\n`, 'utf8')
+    const cut = bytes.indexOf(Buffer.from('登', 'utf8')) + 1
+    fake.stdout.emit('data', bytes.subarray(0, cut))
+    fake.stdout.emit('data', bytes.subarray(cut))
+    expect(events.onNotification).toHaveBeenCalledWith('item/completed', { text: '改好了登录页' })
+  })
+
+  it('keeps multi-byte characters intact in the stderr tail, including a final partial character', async () => {
+    const fake = new FakeProcess()
+    const events = handlers()
+    await started(fake, events)
+    const bytes = Buffer.from('找不到配置文件', 'utf8')
+    fake.stderr.emit('data', bytes.subarray(0, 4))
+    fake.stderr.emit('data', bytes.subarray(4, bytes.length - 1))
+    fake.emit('exit', 1, null)
+    const detail = vi.mocked(events.onExit).mock.calls[0][0]
+    // 只有真没写完的最后一个字冲成一个「�」，中间被切开的都拼回来了。
+    expect(detail.stderrTail).toBe('找不到配置文\uFFFD')
+  })
+
   it('kills the process when a line exceeds the cap', async () => {
     const fake = new FakeProcess()
     const client = new CodexAppServerClient({

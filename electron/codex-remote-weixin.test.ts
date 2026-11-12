@@ -19,6 +19,7 @@ function message(overrides: Partial<WeixinInboundMessage> = {}): WeixinInboundMe
     createdAt: 1761379200000,
     contextToken: 'ctx',
     text: '看下测试',
+    images: [],
     hasMedia: false,
     ...overrides,
   }
@@ -88,6 +89,13 @@ describe('toWeixinRemoteInbound', () => {
     expect(toWeixinRemoteInbound(message({ groupId: 'g1' }), owner)).toMatchObject({ direct: false })
   })
 
+  // YF-14：带图的交成 image，同一条里的字跟着；取图句柄底座不解读。
+  it('hands images over as handles with the words sent alongside', () => {
+    const inbound = toWeixinRemoteInbound(message({ text: '看这张', images: [{ encryptQueryParam: 'q1', aesKeyHex: null }] }), owner)
+    expect(inbound).toMatchObject({ kind: 'image', messageId: '1', text: '看这张', images: [expect.any(String)] })
+    expect(toWeixinRemoteInbound(message({ text: null, images: [{ encryptQueryParam: 'q1', aesKeyHex: null }] }), owner)).not.toHaveProperty('text')
+  })
+
   it('leaves owner filtering to pairing when the login gave no owner', () => {
     expect(toWeixinRemoteInbound(message({ fromUserId: 'someone@im.wechat' }), null)).toMatchObject({ kind: 'text' })
   })
@@ -103,6 +111,21 @@ describe('nextWeixinBackoffMs', () => {
 })
 
 describe('createWeixinRemoteChannel', () => {
+  // YF-14：取图句柄只认自己交出去的样子，取的时候只去腾讯图片服务器。
+  it('fetches an image by the handle it handed over and refuses handles it did not make', async () => {
+    const picture = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9])
+    const { dependencies, requests, logs } = harness(credentialText(), () => new Response(new Uint8Array(picture), { status: 200 }))
+    const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test' })
+    const inbound = toWeixinRemoteInbound(message({ text: null, images: [{ encryptQueryParam: 'q1', aesKeyHex: null }] }), owner)
+    const handle = inbound?.kind === 'image' ? inbound.images[0] : ''
+    await expect(channel.fetchImage?.(handle, 1024)).resolves.toEqual({ ok: true, bytes: picture })
+    expect(requests.map((request) => request.url)).toEqual(['https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=q1'])
+    await expect(channel.fetchImage?.('{"q":"q1","k":"short"}', 1024)).resolves.toEqual({ ok: false, reason: 'failed' })
+    await expect(channel.fetchImage?.('not json', 1024)).resolves.toEqual({ ok: false, reason: 'failed' })
+    expect(requests).toHaveLength(1)
+    expect(logs).toContain('weixin-image-fetch-failed')
+  })
+
   it('asks for a login when nothing has been scanned yet', async () => {
     const { dependencies, requests } = harness(null, () => jsonResponse({}))
     const statuses: RemoteChannelStatus[] = []

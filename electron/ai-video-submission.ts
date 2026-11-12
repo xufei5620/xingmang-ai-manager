@@ -17,3 +17,9 @@ export const aiVideoTaskRecordLostPrefix = '视频任务已创建但本地恢复
 export function isAiVideoUnconfirmedSubmission(message: string): boolean {
   return message === aiVideoUnconfirmedSubmissionMessage || message.startsWith(aiVideoTaskRecordLostPrefix)
 }
+
+/**
+ * 片段已经出了、钱已经扣了，下载下来却因为磁盘满了存不进去（D38，yoyo 2026-11-11 批）。以前说「请稍后重试」，
+ * 客户就再点一次生成、再扣一次钱。任务记录这时还在（ai-video-service.ts 存进去以后才删），下次启动会自动再取一次。
+ */
+export const aiVideoDiskFullMessage = '视频已经生成、也已经扣费了，但电脑的磁盘满了存不进去。先别重新生成，清出一些空间后重开星芒，会自动取回。'

@@ -466,10 +466,47 @@ describe('auto install wording', () => {
     }
   })
 
+  it('says the app is switching back, not installing a new version, when the publisher rolled back to an older one', () => {
+    // D11：撤回本机这一版、退回旧版时还说「新版」，客户以为写错了或者中了毒。
+    expect(buildAutoInstallNotice('0.2.23', 'quit', 'win32', false, true)).toEqual({
+      title: '正在换回星芒AI的 0.2.23 版',
+      body: '正在换回 0.2.23 版，装好会自动打开。Windows 弹出授权窗口时请点「是」。',
+    })
+    expect(buildAutoInstallNotice('0.2.23', 'launch', 'win32', true, true)).toEqual({
+      title: '星芒AI马上更新',
+      body: '上次下好的 0.2.23 版几秒后开始安装，软件会先关掉，装好自动打开。',
+    })
+    // 钥匙串那句、授权那句跟平时一样接在后面。
+    expect(buildAutoInstallNotice('0.2.23', 'quit', 'darwin', false, true).body)
+      .toBe('正在换回 0.2.23 版，装好会自动打开。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。')
+    for (const moment of ['quit', 'launch'] as const) {
+      for (const platform of ['win32', 'darwin', 'linux'] as const) {
+        const notice = buildAutoInstallNotice('0.2.23', moment, platform, false, true)
+        expect(`${notice.title}${notice.body}`).not.toContain('新版')
+      }
+      // 不是退回时照旧。
+      expect(buildAutoInstallNotice('0.2.12', moment, 'win32', false, false)).toEqual(buildAutoInstallNotice('0.2.12', moment, 'win32'))
+    }
+  })
+
   it('names the retry button and the likely cause after a failed auto install', () => {
     const message = previousAutoInstallFailureMessage('win32')
     expect(message).toContain('授权窗口')
     expect(message).toContain('「重新安装」')
+  })
+
+  it('names the suggested older version, not a new one, when the install that failed was a rollback', () => {
+    // D11：同一页上一句已经说「建议退回的 X 版」，这句不能再说「新版本」。
+    expect(previousAutoInstallFailureMessage('win32', '0.2.22'))
+      .toBe('建议退回的 0.2.22 版上次没装上：Windows 的授权窗口被关掉了，或者安装程序没起来。点「重新安装」再试一次，授权窗口弹出来时点「是」。')
+    for (const platform of ['darwin', 'linux'] as const) {
+      expect(previousAutoInstallFailureMessage(platform, '0.2.22')).toBe('建议退回的 0.2.22 版上次没装上，安装程序没起来。点「重新安装」再试一次。')
+    }
+    // 平时更新、读不到版本号时照旧。
+    expect(previousAutoInstallFailureMessage('win32'))
+      .toBe('新版本上次没装上：Windows 的授权窗口被关掉了，或者安装程序没起来。点「重新安装」再试一次，授权窗口弹出来时点「是」。')
+    expect(previousAutoInstallFailureMessage('darwin', null)).toBe('新版本上次没装上，安装程序没起来。点「重新安装」再试一次。')
+    expect(previousAutoInstallFailureMessage('linux', '')).toBe(previousAutoInstallFailureMessage('linux'))
   })
 
   it('uses no technical words', () => {
@@ -520,7 +557,7 @@ describe('system installer channel (Linux .deb)', () => {
     expect(linux.buttons).toEqual(['关掉并安装', '先退出，下次再装'])
     expect(quitInstallPrompt('0.2.12', undefined)).toEqual({
       message: '新版本 0.2.12 已经下载好，顺手装上吗？',
-      detail: '安装很快，装完会自动打开新版本。现在不装也行，更新会一直留着，下次退出时再问你。',
+      detail: '安装很快，装完会自动打开。现在不装也行，更新会一直留着，下次退出时再问你。',
       buttons: ['安装并退出', '先退出，下次再装'],
     })
     expect(quitInstallPrompt(null, 'system-installer').message).toBe('新版本已经下载好，现在装上吗？')
@@ -528,8 +565,29 @@ describe('system installer channel (Linux .deb)', () => {
 
   it('warns Mac users about the keychain prompt in the quit question, and nobody else', () => {
     expect(quitInstallPrompt('0.2.12', null, 'darwin').detail)
-      .toBe('安装很快，装完会自动打开新版本。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。现在不装也行，更新会一直留着，下次退出时再问你。')
+      .toBe('安装很快，装完会自动打开。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。现在不装也行，更新会一直留着，下次退出时再问你。')
     expect(quitInstallPrompt('0.2.12', null, 'win32')).toEqual(quitInstallPrompt('0.2.12', null))
     expect(quitInstallPrompt('0.2.12', 'system-installer', 'linux').detail).not.toContain('钥匙串')
+  })
+
+  it('asks about the suggested older version, in the settings page wording, when the install is a rollback', () => {
+    // D11：跟设置页「建议退回」一个说法，只换问的那句。
+    expect(quitInstallPrompt('0.2.23', null, 'win32', true)).toEqual({
+      ...quitInstallPrompt('0.2.23', null, 'win32'),
+      message: '建议退回的 0.2.23 版已经下好，顺手装上吗？',
+    })
+    expect(quitInstallPrompt('0.2.23', 'system-installer', 'linux', true)).toEqual({
+      ...quitInstallPrompt('0.2.23', 'system-installer', 'linux'),
+      message: '建议退回的 0.2.23 版已经下好，现在装上吗？',
+    })
+    // 说不出版本号时没法说「X 版」，照旧。
+    expect(quitInstallPrompt(null, null, 'win32', true)).toEqual(quitInstallPrompt(null, null, 'win32'))
+    expect(quitInstallPrompt(null, 'system-installer', 'linux', true)).toEqual(quitInstallPrompt(null, 'system-installer', 'linux'))
+    // 下面那行小字平时和退回同一句，都不说「新版本」。
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      for (const installMethod of [null, 'system-installer'] as const) {
+        expect(quitInstallPrompt('0.2.23', installMethod, platform, true).detail).not.toContain('新版')
+      }
+    }
   })
 })

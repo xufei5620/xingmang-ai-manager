@@ -51,12 +51,12 @@ describe('video studio compose client', () => {
     const unreadable = fakeWorker()
     const first = composeInVideoStudioWorker(request(), { createWorker: () => unreadable.port })
     unreadable.state.listener?.message({ kind: 'done', result: { ...result, data: null } })
-    await expect(first).rejects.toThrow('拼片线程回了看不懂的消息，请再试一次')
+    await expect(first).rejects.toThrow('拼的时候出了点问题，请再试一次')
 
     const dying = fakeWorker()
     const second = composeInVideoStudioWorker(request(), { createWorker: () => dying.port })
     dying.state.listener?.error()
-    await expect(second).rejects.toThrow('拼片线程意外停了，请再试一次')
+    await expect(second).rejects.toThrow('拼的时候出了点问题，请再试一次')
     expect(dying.state.terminated).toBe(1)
   })
 
@@ -82,7 +82,7 @@ describe('video studio compose client', () => {
 
   it('reports clip bytes that cannot be handed over', async () => {
     const { port, state } = fakeWorker({ failStart: true })
-    await expect(composeInVideoStudioWorker(request(), { createWorker: () => port })).rejects.toThrow('片段交不给拼片线程，请重新读一遍片段再试')
+    await expect(composeInVideoStudioWorker(request(), { createWorker: () => port })).rejects.toThrow('拼的时候出了点问题，请再试一次')
     expect(state.terminated).toBe(1)
   })
 })

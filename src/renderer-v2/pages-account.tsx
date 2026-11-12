@@ -69,6 +69,7 @@ import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import { AccountOverview, type AccountSummary } from './features/account/AccountOverview'
 import { AccountProfileDialog } from './features/account/AccountProfileDialog'
 import { AccountSecurity } from './features/account/AccountSecurity'
+import { OtherAppsCard } from './features/account/OtherApps'
 import {
   currentExpiryText,
   inviteRuleText,
@@ -299,6 +300,7 @@ export function AccountPage({
   onSubscriptionPurchased,
   onOpenHelp,
   onOpenHealth,
+  onRequestApp,
   onTabChange,
   onLogout,
   logoutNote,
@@ -339,6 +341,8 @@ export function AccountPage({
   onOpenHelp?: () => void
   /** 去「检查」页；缺省 = 订阅开通后工具没换过去时，不给「去检查页」。 */
   onOpenHealth?: () => void
+  /** 「用在别的软件里」最底下的「告诉我们」，去反馈表单；缺省 = 不出那一行。 */
+  onRequestApp?: () => void
   /** 现在摆出来的是哪个页签，顶栏的「个人中心 / 页签名」跟着它；缺省 = 不报。 */
   onTabChange?: (tab: AccountTab) => void
   /** 概览「退出登录」交给外壳退，外壳才不把自己退出说成「登录已结束」（#1098）；缺省 = 直接让主进程退出。 */
@@ -458,6 +462,7 @@ export function AccountPage({
   const [openTradeNo, setOpenTradeNo] = useState<string | null>(null)
   useRowFocus('account', pageRef, true, (anchor) => {
     if (anchor === 'tasks') setUsageView('tasks')
+    if (anchor === 'prices') setUsageView('prices')
     if (anchor !== accountProfileAnchor) return anchor
     setProfileOpen(true)
     return null
@@ -535,6 +540,7 @@ export function AccountPage({
             trends={accountSupports(session, 'supportsDashboardTrends')}
             calls={accountSupports(session, 'supportsUsage')}
             tasks={visibleAccountTab('tasks', session)}
+            prices={accountSupports(session, 'supportsPriceList')}
             view={usageView}
             onViewChange={setUsageView}
             refreshRequest={refresh}
@@ -553,6 +559,7 @@ export function AccountPage({
             onConfigureTool={onConfigureTool}
             onToolConfigSaved={onToolConfigSaved}
             toolConfigConfirmed={toolConfigConfirmed}
+            onRequestApp={onRequestApp}
             refreshRequest={refresh}
           />
         )
@@ -585,6 +592,7 @@ export function AccountPage({
                 refreshRequest={refresh}
                 openTradeNo={openTradeNo}
                 multiplierAccount={accountSiteId(session) === 'solov-api'}
+                invoicePortal={Boolean(site?.invoicePortalUrl)}
               />
             )}
           </>
@@ -766,6 +774,7 @@ function AccountKeys({
   onConfigureTool,
   onToolConfigSaved,
   toolConfigConfirmed,
+  onRequestApp,
   refreshRequest,
 }: {
   api: V2Bridge
@@ -779,6 +788,7 @@ function AccountKeys({
   onConfigureTool?: (provider: Provider) => void
   onToolConfigSaved?: () => void
   toolConfigConfirmed?: ToolConfigConfirmation | null
+  onRequestApp?: () => void
   refreshRequest?: number
 }) {
   const [page, setPage] = useState(1)
@@ -833,9 +843,9 @@ function AccountKeys({
   const [removing, setRemoving] = useState<AccountKey | null>(null)
   // 撤销了工具在用的 Key、自动换新却没成：记下是哪个工具，好给一颗「再换一次」。
   // skipped = 这个工具的配置不归自动流程管（手填、来源没确认等），再换一次也还是跳过，
-  // 要给的是「去设置」（#478）。
+  // 要给的是「去配置」（#478）。
   const [replaceFailed, setReplaceFailed] = useState<{ provider: Provider; skipped: boolean } | null>(null)
-  // 点「去设置」只是打开了设置窗口，用户可能取消，也可能保存失败，工具手里还是那把撤销掉的
+  // 点「去配置」只是打开了设置窗口，用户可能取消，也可能保存失败，工具手里还是那把撤销掉的
   // Key。所以警告要等那个工具的设置真的保存、并读回之后才收起（#546）。只认点开之后
   // 新来的信号，之前留下的那次不算。
   const confirmedSequence = useRef(toolConfigConfirmed?.sequence ?? 0)
@@ -935,9 +945,11 @@ function AccountKeys({
       setName(input.value)
       return
     }
+    // 当场把截过的名字写回框里再放光标：React 随后核对时框里已经是这个值，不会再写一遍把光标甩到最后。
+    // 以前等下一帧才挪，那一帧可能落在客户紧接着按 Home、→ 之后，把光标又拽回刚才那里。
+    input.value = limited.value
+    input.setSelectionRange(limited.caret, limited.caret)
     setName(limited.value)
-    // 输入框被改回截过的名字时光标会跳到最后，挪回刚才打字的地方。
-    window.requestAnimationFrame(() => input.setSelectionRange(limited.caret, limited.caret))
   }
   const selectedGroupAvailable = groups.some((entry) => entry.name === group)
   const groupDescription = groups.find((entry) => entry.name === group)?.description?.trim()
@@ -1099,7 +1111,7 @@ function AccountKeys({
         <Notice
           tone="warn"
           title={`${keyToolName(replaceFailed.provider)} 还在用刚撤销的密钥`}
-          body={`${keyToolName(replaceFailed.provider)} 的配置不是按当前账号自动写的，这次没有替你改，它现在会连不上。${onConfigureTool ? '点「去设置」改用当前账号就好。' : '到首页打开它的设置，改用当前账号就好。'}`}
+          body={`${keyToolName(replaceFailed.provider)} 的配置不是按当前账号自动写的，这次没有替你改，它现在会连不上。${onConfigureTool ? '点「去配置」改用当前账号就好。' :'到首页打开它的设置，改用当前账号就好。'}`}
           testId="account-key-replace-skipped"
           actions={onConfigureTool && (
             <Button
@@ -1108,7 +1120,7 @@ function AccountKeys({
               testId="account-key-replace-configure"
               onClick={() => onConfigureTool(replaceFailed.provider)}
             >
-              去设置
+              去配置
             </Button>
           )}
         />
@@ -1266,6 +1278,7 @@ function AccountKeys({
         failed={Boolean(resource.error)}
         onChange={setPage}
       />
+      <OtherAppsCard siteId={siteId} onRequestApp={onRequestApp} />
       <Dialog
         open={Boolean(editing)}
         title={created ? '新建密钥' : editingKey ? `编辑「${editingKey.name}」` : '新建密钥'}
@@ -1363,7 +1376,7 @@ function AccountKeys({
                 type="number"
                 min="0"
                 step="0.01"
-                hint="美元，用完后这把密钥会暂停，不影响账户余额"
+                hint="美元，用完后这把密钥会暂停，不影响账号余额"
                 value={quota}
                 onChange={(event) => setQuota(event.target.value)}
               />
@@ -1549,7 +1562,8 @@ function AccountInvite({
               }}
               testId="account-invite-transfer"
             >
-              {profile.affQuota > 0 ? '转入余额' : '已全部转入'}
+              {/* 没有可转的分两种：赚过、都转完了，和从来没赚过（后者写「已全部转入」像是转过了）。 */}
+              {profile.affQuota > 0 ? '转入余额' : profile.affHistoryQuota > 0 ? '已全部转入' : '还没有返利'}
             </Button>
           </div>
         </section>
@@ -1614,7 +1628,7 @@ function AccountInvite({
       >
         <p>转入后可以直接用来调用模型，不能再转回返利。</p>
         <Input
-          label="转入金额（USD）"
+          label="转入金额（美元）"
           type="number"
           min="0.01"
           step="0.01"

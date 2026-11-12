@@ -113,7 +113,7 @@ export function useStartupChecks({ native, app, boot, settings, setSettings, aut
   }, [boot, noteStartupCheck, authenticated, settings, restoredBoot])
   const chooseCrashReporting = useCallback((choice: 'keep' | 'off') => perform('保存错误报告设置', async () => {
     setSettings(await app.savePreferences({ version: 2, crashReportingNoticeShown: true, ...(choice === 'off' ? { crashReporting: false } : {}) }))
-    if (choice === 'off') toast.show('已关掉，出错时不再发送错误报告。想重新打开，到「设置」的「隐私数据」里。', 'ok')
+    if (choice === 'off') toast.show('已关闭，出错时不再发送错误报告。想重新打开，到「设置」的「隐私数据」里。', 'ok')
   }), [app, perform, setSettings, toast])
   // 匿名使用统计告知：一次打开只说一件这种事，错误报告那张这次出过就等下次打开，同样一次运行只出一回。
   // 开关在系统界面设置那边，要先读一下现在是不是开着：亲手关过的不用再说。

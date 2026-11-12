@@ -14,6 +14,8 @@ import {
   buildPaymentWindowTitle,
   createPaymentWindowController,
   detectPaymentWindowTerminalStatus,
+  formatPaymentQrAmount,
+  formatPaymentQrDeadline,
   isAllowedPaymentNavigationUrl,
   isPaymentWindowReady,
   paymentFollowUpDelayMs,
@@ -284,6 +286,66 @@ describe('payment terminal-state detection', () => {
   })
 })
 
+// D51：历史账号微信扫码那一页由星芒自己画，到期时间按本机时间写，币种不写代码。
+describe('drawn QR payment page wording', () => {
+  const now = new Date(2026, 10, 9, 14, 5).getTime()
+
+  it('writes the deadline in local time with the same day words as the rest of the app', () => {
+    expect(formatPaymentQrDeadline(new Date(2026, 10, 9, 14, 35).toISOString(), now)).toBe('今天 14:35')
+    // 秒数舍掉：14:35:59 到期也写 14:35，不把时间说晚。
+    expect(formatPaymentQrDeadline(new Date(2026, 10, 9, 14, 35, 59).toISOString(), now)).toBe('今天 14:35')
+    expect(formatPaymentQrDeadline(new Date(2026, 10, 9, 9, 3).toISOString(), now)).toBe('今天 09:03')
+  })
+
+  it('names the date when the deadline falls on another day instead of calling it today', () => {
+    const lateEvening = new Date(2026, 10, 9, 23, 50).getTime()
+    expect(formatPaymentQrDeadline(new Date(2026, 10, 10, 0, 20).toISOString(), lateEvening)).toBe('11月10日 00:20')
+    const newYearsEve = new Date(2026, 11, 31, 23, 50).getTime()
+    expect(formatPaymentQrDeadline(new Date(2027, 0, 1, 0, 20).toISOString(), newYearsEve)).toBe('2027年1月1日 00:20')
+  })
+
+  it('leaves the deadline out when the time cannot be read', () => {
+    expect(formatPaymentQrDeadline('not a time', now)).toBeNull()
+  })
+
+  it('writes yuan for CNY and keeps any other currency code as it is', () => {
+    expect(formatPaymentQrAmount(12, 'CNY')).toBe('12.00 元')
+    expect(formatPaymentQrAmount(10.2, 'USD')).toBe('10.20 USD')
+  })
+
+  it('draws the amount in yuan and the local deadline instead of the raw UTC timestamp', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+    const harness = createHarness()
+    const expiresAt = new Date(2026, 10, 9, 14, 35).toISOString()
+    await harness.controller.openQrCode({ ...qrPayment(), amount: 12, expiresAt })
+    const loaded = harness.window.loadURL.mock.calls[0]![0]
+    const html = decodeURIComponent(loaded.slice(loaded.indexOf(',') + 1))
+    expect(html).toContain('<p>金额：<strong>12.00 元</strong></p>')
+    expect(html).toContain('<p>订单号：sub2-qr-1</p>')
+    expect(html).toContain('<p>请在今天 14:35 前完成付款</p>')
+    expect(html).not.toContain('有效期至')
+    expect(html).not.toContain('CNY')
+    expect(html).not.toContain(expiresAt)
+    harness.controller.destroy()
+  })
+
+  it('draws no deadline line when the order carries no expiry', async () => {
+    const harness = createHarness()
+    await harness.controller.openQrCode(qrPayment())
+    const loaded = harness.window.loadURL.mock.calls[0]![0]
+    const html = decodeURIComponent(loaded.slice(loaded.indexOf(',') + 1))
+    expect(html).toContain('<p>金额：<strong>1.00 元</strong></p>')
+    expect(html).not.toContain('前完成付款')
+    harness.controller.destroy()
+  })
+
+  it('does not mistake a midnight deadline line for a finished countdown', () => {
+    const page = ['安全支付 - 星芒AI', '扫码支付', '金额：12.00 元', '订单号：sub2-qr-1', '请在今天 00:00 前完成付款'].join('\n')
+    expect(detectPaymentWindowTerminalStatus(page)).toBeNull()
+  })
+})
+
 describe('createPaymentWindowController', () => {
   it('opens a validated GET checkout URL without a POST body', async () => {
     const harness = createHarness()
@@ -372,14 +434,16 @@ describe('createPaymentWindowController', () => {
     expect(harness.window.setTitle.mock.calls.every(([title]) => title === '安全支付 - 星芒AI')).toBe(true)
   })
 
-  it('closes the window and reports the matching trade number when the provider page expires', async () => {
+  // 付款页上的字只说明这个窗口用不着了，不说明钱没扣：报「窗口已关闭」，不报「支付已超时」（那句说不会再扣钱）。
+  it('closes the window when the provider page expires, reporting it as closed rather than expired', async () => {
     const harness = createHarness(undefined, '支付剩余时间\n00:00\n支付超时后，请重新创建订单')
 
     await harness.controller.open(paymentForm())
     await vi.waitFor(() => expect(harness.onTerminalState).toHaveBeenCalledWith({
-      status: 'expired',
+      status: 'closed',
       tradeNo: 'XM-20260815-1',
-    }, inWindow))
+    }, { afterClose: false, autoClosed: 'page-expired' }))
+    expect(harness.onTerminalState).toHaveBeenCalledOnce()
     expect(harness.window.destroy).toHaveBeenCalledOnce()
     expect(harness.window.close).not.toHaveBeenCalled()
     expect(harness.window.destroy.mock.invocationCallOrder[0]).toBeLessThan(
@@ -650,13 +714,17 @@ describe('authenticated payment order monitoring', () => {
     harness.controller.destroy()
   })
 
-  it('expires a QR window at its server deadline even when page inspection never completes', async () => {
+  it('closes a QR window at its server deadline even when page inspection never completes, and keeps confirming', async () => {
     const harness = createHarness(undefined, '', { createOrderStatusReader: () => async () => 'pending' })
     harness.webContents.executeJavaScript.mockReturnValue(new Promise(() => undefined))
     await harness.controller.openQrCode({ ...qrPayment(), expiresAt: new Date(Date.now() + 5_000).toISOString() })
     await vi.advanceTimersByTimeAsync(5_000)
-    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'expired', tradeNo: 'sub2-qr-1' }, inWindow)
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith(
+      { status: 'closed', tradeNo: 'sub2-qr-1', confirming: true },
+      { afterClose: false, autoClosed: 'time-limit' },
+    )
     expect(harness.window.destroy).toHaveBeenCalledOnce()
+    harness.controller.destroy()
   })
 
   it('does not resurrect a QR window if destroyed while its image is being prepared', async () => {
@@ -920,6 +988,69 @@ describe('background order confirmation after the payment window closes', () => 
     expect(oldReader).toHaveBeenCalledOnce()
     expect(onTerminalState).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'success' }), expect.anything())
     controller.destroy()
+  })
+
+  // 客户第 9 分钟扫了码、第 10 分钟以后才在手机上付完：窗口到点关了，钱照样要到账。
+  it('keeps confirming for 15 minutes after the 10-minute limit closes the window, so a late payment still arrives', async () => {
+    const reader = vi.fn<() => Promise<NewApiTopupOrderStatus>>().mockResolvedValue('pending')
+    const harness = createHarness(undefined, '', { createOrderStatusReader: () => reader })
+    await harness.controller.openQrCode(qrPayment())
+    await vi.advanceTimersByTimeAsync(10 * 60_000 - 1_000)
+    expect(harness.window.destroy).not.toHaveBeenCalled()
+    expect(harness.onTerminalState).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(harness.window.destroy).toHaveBeenCalledOnce()
+    expect(harness.controller.isOpen()).toBe(false)
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith(
+      { status: 'closed', tradeNo: 'sub2-qr-1', confirming: true },
+      { afterClose: false, autoClosed: 'time-limit' },
+    )
+
+    const asked = reader.mock.calls.length
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(reader.mock.calls.length).toBeGreaterThan(asked)
+    expect(harness.onTerminalState).toHaveBeenCalledOnce()
+    reader.mockResolvedValue('success')
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(harness.onTerminalState).toHaveBeenLastCalledWith({ status: 'success', tradeNo: 'sub2-qr-1' }, afterClose)
+    expect(harness.onTerminalState).toHaveBeenCalledTimes(2)
+  })
+
+  // 付款页先显示「交易已关闭」、支付商的到账通知晚一步到，也是同一回事：只有账号后端能说这笔没付成。
+  it.each([
+    ['支付剩余时间 04:59\n交易已关闭', 'page-expired'],
+    ['支付剩余时间\n00:00\n支付超时后，请重新创建订单', 'page-expired'],
+    ['支付剩余时间 04:59\n支付失败', 'page-failed'],
+  ] as const)('keeps confirming the order after the provider page shows %j', async (snapshot, reason) => {
+    const reader = vi.fn<() => Promise<NewApiTopupOrderStatus>>().mockResolvedValue('pending')
+    const harness = createHarness(undefined, snapshot, { createOrderStatusReader: () => reader })
+    await harness.controller.open(paymentForm())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.window.destroy).toHaveBeenCalledOnce()
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith(
+      { status: 'closed', tradeNo: 'XM-20260815-1', confirming: true },
+      { afterClose: false, autoClosed: reason },
+    )
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(reader).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(paymentFollowUpMaxMs)
+    expect(harness.onTerminalState).toHaveBeenLastCalledWith({ status: 'unconfirmed', tradeNo: 'XM-20260815-1' }, afterClose)
+    expect(harness.onTerminalState).toHaveBeenCalledTimes(2)
+  })
+
+  it('still lets the account backend report expired after the window closed itself', async () => {
+    const harness = createHarness(undefined, '支付剩余时间 04:59\n交易已关闭', { createOrderStatusReader: () => async () => 'expired' })
+    await harness.controller.open(paymentForm())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith(
+      { status: 'closed', tradeNo: 'XM-20260815-1', confirming: true },
+      { afterClose: false, autoClosed: 'page-expired' },
+    )
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(harness.onTerminalState).toHaveBeenLastCalledWith({ status: 'expired', tradeNo: 'XM-20260815-1' }, afterClose)
+    expect(harness.onTerminalState).toHaveBeenCalledTimes(2)
   })
 
   // #1157 第 15 条：付款页的 beforeunload 能让 close() 不了了之，界面上却已经说关了。

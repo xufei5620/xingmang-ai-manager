@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FocusEvent, type ReactNode } from 'react'
 import { ArrowRight, CircleAlert, Copy, ExternalLink, Eye, EyeOff, Headset, Info, KeyRound, LogIn, Mail, RefreshCw, RotateCcw, UserPlus } from 'lucide-react'
 import type { AccountLoginResult, AccountStatus, LegalDocumentKind } from '../../../../electron/ipc-contract'
-import { Button, Dialog, Input, Segment } from '../../ui'
+import { Button, Confirm, Dialog, Input, Segment } from '../../ui'
 import { sessionOnlyLoginNotice } from '../app/remembered-login'
 import { currentWindowOs } from '../app/window-os'
 import { useLatestRequest } from '../../latest-request'
@@ -83,8 +83,10 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const [password, setPassword] = useState('')
   const [remember, setRemember] = useState(false)
   const [agreed, setAgreed] = useState(false)
-  const [registration, setRegistration] = useState<RegistrationDraft>({ email: '', username: '', password: '', confirm: '', code: '', invite: initialInviteCode, agreed: false })
+  const [registration, setRegistration] = useState<RegistrationDraft>({ email: '', username: '', password: '', code: '', invite: initialInviteCode, agreed: false })
   const [fieldErrors, setFieldErrors] = useState<RegistrationErrors>({})
+  // 别的都填对了、只差没勾协议时点「注册并登录」：弹框问一句，不再只报一句红字让人回去找那个小勾（D49）。
+  const [agreePrompt, setAgreePrompt] = useState(false)
   // 邮箱拼错的提示只在离开邮箱框或点按钮之后出，免得边打字边闪「你是不是想填」。
   const [emailChecked, setEmailChecked] = useState(false)
   // 看过提示仍坚持用的那个地址：提醒一次，第二次照原样发，不拦死。
@@ -376,14 +378,16 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     if (registerCooldown.seconds || !passesTypoCheck(email)) return
     void run('发送验证码', async (current) => { await api.sendVerification(email); if (current()) { registerCooldown.start(); setCodeSent(true); setMessage(`验证码已发到 ${email}。几分钟内没收到的话，看看垃圾邮件。`) } })
   }
-  const submitRegistration = () => {
+  // agreedNow：刚在弹框里点了「同意并注册」，勾选还没落进状态，这一次直接按勾上算。
+  const submitRegistration = (agreedNow = false) => {
     if (!status) { setError('注册还没准备好，请稍等，或点「重新读取」后再注册'); return }
     if (!status.registerEnabled || !status.passwordRegisterEnabled) { setError('目前暂未开放账号注册'); return }
-    if (status.turnstileCheckEnabled) { setError('服务端需要安全验证，请在浏览器完成注册'); return }
-    const draft = { ...registration, email: checkEmail() }
+    if (status.turnstileCheckEnabled) { setError('账号服务要先做一次安全验证，请在浏览器里完成注册'); return }
+    const draft = { ...registration, email: checkEmail(), agreed: registration.agreed || agreedNow }
     const errors = validateRegistration(draft, status.emailVerificationEnabled, codeSent)
     setFieldErrors(errors)
     if (Object.keys(errors).length || !passesTypoCheck(draft.email)) return
+    if (!draft.agreed) { setAgreePrompt(true); return }
     void run('创建账号', async (current) => {
       try { await api.register({ email: draft.email.trim(), username: draft.username.trim(), password: draft.password, verificationCode: draft.code.trim(), affCode: parseInviteCode(draft.invite) || undefined }) }
       catch (reason) {
@@ -398,14 +402,19 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       catch (reason) {
         if (current()) {
           setMode('login'); setIdentifier(draft.username.trim()); setPassword(''); setAgreed(draft.agreed); loginTouched.current = true
-          setRegistration((previous) => ({ ...previous, password: '', confirm: '', code: '' }))
+          setRegistration((previous) => ({ ...previous, password: '', code: '' }))
           setMessage('账号已创建，自动登录没有完成，请输入密码继续')
           showFailure(reason, '自动登录')
         }
         return
       }
-      if (current()) { setRegistration((previous) => ({ ...previous, password: '', confirm: '', code: '' })); onAuthenticated(result, { notice: '注册成功，已自动登录' }) }
+      if (current()) { setRegistration((previous) => ({ ...previous, password: '', code: '' })); onAuthenticated(result, { notice: '注册成功，已自动登录' }) }
     })
+  }
+  const agreeAndRegister = () => {
+    setAgreePrompt(false)
+    updateRegistration('agreed', true)
+    submitRegistration(true)
   }
   const sendReset = () => {
     if (!source.supportsPasswordReset) return
@@ -528,7 +537,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   ].filter(Boolean) : []
 
   if (legal) return <LegalDocument api={api} kind={legal} onClose={() => setLegal(null)} />
-  if (routesOpen && connectionSettings) return <Dialog key="connection-routes" open title="切换连接线路" subtitle="返回后可继续填写；新线路要重启星芒才生效。" width={640} onClose={() => setRoutesOpen(false)} busy={routesBusy} testId="auth-connection-routes" footer={<Button disabled={routesBusy} onClick={() => setRoutesOpen(false)} testId="auth-connection-back">返回继续填写</Button>}>
+  if (routesOpen && connectionSettings) return <Dialog key="connection-routes" open title="切换连接线路" subtitle="返回后可继续填写；新线路要重开星芒才生效。" width={640} onClose={() => setRoutesOpen(false)} busy={routesBusy} testId="auth-connection-routes" footer={<Button disabled={routesBusy} onClick={() => setRoutesOpen(false)} testId="auth-connection-back">返回继续填写</Button>}>
     {connectionSettings(setRoutesBusy)}
   </Dialog>
   function link(label: string, testId: string, onClick: () => void, disabled = busy) {
@@ -542,7 +551,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   // 底部那排：主按钮通栏，下面一行是「去注册 / 回去登录 / 历史账号 / 切换连接线路」这些去别处的链接。
   const primary = twoFactor ? <Button variant="primary" loading={busy} onClick={submitTwoFactor} testId="login-2fa-submit">{busy ? '正在登录…' : '登录'}</Button>
     : mode === 'login' ? <Button variant="primary" loading={busy} onClick={submitLogin} testId="login-submit">{busy ? '正在登录…' : '登录'}</Button>
-      : mode === 'register' ? <Button variant="primary" loading={busy} disabled={!status || !status.registerEnabled || !status.passwordRegisterEnabled} onClick={submitRegistration} testId="register-submit">{busy ? '正在注册…' : '注册并登录'}</Button>
+      : mode === 'register' ? <Button variant="primary" loading={busy} disabled={!status || !status.registerEnabled || !status.passwordRegisterEnabled} onClick={() => submitRegistration()} testId="register-submit">{busy ? '正在注册…' : '注册并登录'}</Button>
         : !source.supportsPasswordReset ? <Button variant="primary" icon={ExternalLink} loading={busy} onClick={openAccountWebsite} testId="forgot-open-website">前往历史账号官网</Button>
           : recoveryStep === 1 ? <Button variant="primary" loading={busy} disabled={Boolean(resetCooldown.seconds)} onClick={sendReset} testId="forgot-send">{resetCooldown.seconds ? `${resetCooldown.seconds} 秒后重发` : '发送重置邮件'}</Button>
             : recoveryStep === 2 ? <Button variant="primary" loading={busy} onClick={submitReset} testId="forgot-reset">下一步</Button>
@@ -568,7 +577,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   // 原来底部「取消」「返回」的 test id 挪到 × 上，跟着它的意思走。
   const closeTestId = twoFactor ? 'login-2fa-back' : mode === 'login' ? 'login-cancel' : mode === 'register' ? 'register-cancel' : undefined
   const title = twoFactor ? '两步验证' : mode === 'login' ? `登录${source.label}` : mode === 'register' ? '注册星芒账号' : `找回${source.label}密码`
-  return <Dialog open title={title} width={480} onClose={twoFactor ? leaveTwoFactorStep : close} closeTestId={closeTestId} busy={busy} dirty={dirty} testId={`${mode === 'recovery' ? 'forgot-password' : mode}-dialog`} footer={footer}>
+  return <><Dialog open title={title} width={480} onClose={twoFactor ? leaveTwoFactorStep : close} closeTestId={closeTestId} busy={busy} dirty={dirty} testId={`${mode === 'recovery' ? 'forgot-password' : mode}-dialog`} footer={footer}>
     <div className="auth-form" aria-busy={busy} data-busy={busy} onKeyDown={(event) => { if (event.key !== 'Enter' || event.nativeEvent.isComposing || event.target instanceof HTMLButtonElement || event.target instanceof HTMLTextAreaElement || busy) return; event.preventDefault(); if (twoFactor) submitTwoFactor(); else if (mode === 'login') submitLogin(); else if (mode === 'register') submitRegistration(); else if (recoveryStep === 1) sendReset(); else if (recoveryStep === 2) submitReset(); else if (!tempShown) submitNewPassword() }}>
       {notice}
       {mode !== 'register' && sourceVisible && !twoFactor && !(mode === 'recovery' && recoveryStep === 3) && <div className="auth-source"><span className="auth-source-label">账号来源</span><Segment label="账号来源" value={siteId} onChange={changeSource} testId="auth-source" options={Object.entries(accountSources).map(([value, entry]) => ({ value, label: entry.label, disabled: busy }))} /></div>}
@@ -589,14 +598,14 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
         {field('邮箱', 'register-email', registration.email, updateEmail, { type: 'email', autoComplete: 'email', placeholder: '常用邮箱（如 QQ 邮箱）', error: fieldErrors.email, onBlur: checkEmailOnLeave, addon: status?.emailVerificationEnabled ? <Button size="xs" onClick={sendVerification} disabled={busy || Boolean(registerCooldown.seconds)} testId="register-send-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重发` : '获取验证码'}</Button> : undefined })}
         {emailSuggestion && <p className="auth-typo" role="status" data-testid="register-email-suggestion">你是不是想填 <b>{emailSuggestion}</b>？{link('改成这个', 'register-email-fix', () => updateEmail(emailSuggestion, true))}{typoConfirmedEmail === normalizeEmail(registration.email) && ` 没填错的话，再点一次「${status?.emailVerificationEnabled ? '获取验证码' : '注册并登录'}」。`}</p>}
         <div className="auth-two-fields">{status?.emailVerificationEnabled && field('验证码', 'register-code', registration.code, (value) => updateRegistration('code', value), { autoComplete: 'one-time-code', placeholder: '邮件里的 6 位数字', mono: true, error: fieldErrors.code })}{field('用户名', 'register-user', registration.username, updateUsername, { autoComplete: 'username', placeholder: '最多 20 位', error: fieldErrors.username, maxLength: 20 })}</div>
-        <div className="auth-two-fields">{field('密码', 'register-password', registration.password, (value) => updateRegistration('password', value), { password: true, autoComplete: 'new-password', placeholder: '8 至 20 位', maxLength: 20, error: fieldErrors.password })}{field('确认密码', 'register-password-confirm', registration.confirm, (value) => updateRegistration('confirm', value), { password: true, autoComplete: 'new-password', placeholder: '再输一次', maxLength: 20, error: fieldErrors.confirm })}</div>
+        {field('密码', 'register-password', registration.password, (value) => updateRegistration('password', value), { password: true, autoComplete: 'new-password', placeholder: '8 至 20 位', maxLength: 20, error: fieldErrors.password })}
         {inviteOpen ? field('邀请码', 'register-invite', registration.invite, (value) => updateRegistration('invite', value), { placeholder: '邀请码或邀请链接', error: fieldErrors.invite, optional: true })
           : <div className="auth-more">{link('有邀请码？', 'register-invite-toggle', () => { setInviteOpen(true); setFocusTarget('register-invite') })}</div>}
-        {agreement(registration.agreed, (value) => updateRegistration('agreed', value))}{fieldErrors.agreed && <p role="alert" className="auth-field-error">{fieldErrors.agreed}</p>}
+        {agreement(registration.agreed, (value) => updateRegistration('agreed', value))}
         {/* 按钮灰着却不说为什么，客户只会一遍遍去点。 */}
         {!status && <p className="auth-hint" data-testid="register-submit-hint">{statusError ? '要先连上账号服务，「注册并登录」才能点。' : '准备好之后就能点「注册并登录」。'}</p>}
       </>}
-      {mode === 'recovery' && !source.supportsPasswordReset && <p className="auth-note" data-testid="forgot-official-help"><Info size={15} aria-hidden="true" /><span>历史账号暂不支持在客户端重置密码。请前往历史账号官网使用找回入口；官网没有找回入口的话，请联系官网客服恢复访问。</span></p>}
+      {mode === 'recovery' && !source.supportsPasswordReset && <p className="auth-note" data-testid="forgot-official-help"><Info size={15} aria-hidden="true" /><span>历史账号不能在星芒里重置密码。请前往历史账号官网使用找回入口；官网没有找回入口的话，请联系官网客服恢复访问。</span></p>}
       {recoveryResetStep && !twoFactor && <>
         <ol className="auth-stepper" aria-label="找回密码进度">{['获取邮件', '粘贴重置码', '设新密码'].map((text, index) => <li key={text} aria-current={recoveryStep === index + 1 ? 'step' : undefined} data-completed={index + 1 < recoveryStep}><i aria-hidden="true" /><span>{text}</span></li>)}</ol>
         {recoveryStep === 1 && <><p className="auth-lead">填写注册时用的邮箱，我们会发一封带重置码的邮件。</p>{field('注册邮箱', 'forgot-email', recoveryEmail, setRecoveryEmail, { type: 'email', autoComplete: 'email', placeholder: 'name@example.com' })}</>}
@@ -615,4 +624,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       {mode !== 'recovery' && status?.turnstileCheckEnabled && onHelp && !exitsVisible && <Button variant="ghost" onClick={onHelp} testId="auth-verification-help">打开帮助</Button>}
     </div>
   </Dialog>
+    {/* 跟注册框并排挂，不放进它里面：放进去的话按键会一路冒到注册框的回车、Tab 处理上。点两份协议看完回来，框还在。 */}
+    <Confirm open={agreePrompt} title={<>注册前请阅读并同意{link('《用户协议》', 'register-agree-terms', () => setLegal('user-agreement'))}和{link('《隐私政策》', 'register-agree-privacy', () => setLegal('privacy-policy'))}。</>} body={null} okLabel="同意并注册" cancelLabel="取消" onOk={agreeAndRegister} onClose={() => setAgreePrompt(false)} testId="register-agree-prompt" />
+  </>
 }

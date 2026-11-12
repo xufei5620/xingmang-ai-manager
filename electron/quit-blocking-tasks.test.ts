@@ -1,9 +1,23 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { providerIds } from './catalog'
 import { externalToolIds } from './external-client-contract'
 import { isKeepAwakeInstallKey } from './install-keep-awake'
 import { codexRemoteLaunchQueueKey } from './provider-launch-service'
-import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure } from './quit-blocking-tasks'
+import {
+  buildChatReplyQuitPrompt,
+  buildUnfinishedRestartWorkPrompt,
+  confirmQuitInterruptions,
+  confirmUpdateRestart,
+  isRollbackInstall,
+  resolveInstallableUpdateOnQuit,
+  resolveInterruptibleInstallTask,
+  waitForUpdateInstallFailure,
+  type ChatReplyQuitPrompt,
+  type InterruptibleInstallTask,
+  type QuitInterruptionConfirmation,
+  type UnfinishedRestartWorkPrompt,
+  type UpdateRestartConfirmation,
+} from './quit-blocking-tasks'
 import type { UpdateSnapshot } from './updater'
 
 function snapshot(activeKey: string | null, pendingKeys: string[] = []) {
@@ -108,9 +122,193 @@ function updateSnapshot(overrides: Partial<UpdateSnapshot> = {}): UpdateSnapshot
   }
 }
 
+describe('unfinished work before restarting to install an update', () => {
+  it('says nothing when none of the listed work is running', () => {
+    expect(buildUnfinishedRestartWorkPrompt([])).toBeNull()
+  })
+
+  it('uses the approved sentence word for word when all three are running', () => {
+    expect(buildUnfinishedRestartWorkPrompt(['canvas', 'chat', 'video-compose'])).toEqual({
+      kinds: ['chat', 'video-compose', 'canvas'],
+      message: '还有任务没做完',
+      detail: '对话还在回复或出图，视频剪辑还在拼接，或者画布还在生成。现在重启会把它们停下，出到一半的图可能已经扣费。',
+      buttons: ['等它做完', '仍然重启'],
+    })
+  })
+
+  it('lists only the work that is actually running', () => {
+    expect(buildUnfinishedRestartWorkPrompt(['chat'])?.detail).toBe('对话还在回复或出图。现在重启会把它们停下，出到一半的图可能已经扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['video-compose'])?.detail).toBe('视频剪辑还在拼接。现在重启会把它们停下，出到一半的图可能已经扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['canvas'])?.detail).toBe('画布还在生成。现在重启会把它们停下，出到一半的图可能已经扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['canvas', 'chat'])?.detail).toBe('对话还在回复或出图，或者画布还在生成。现在重启会把它们停下，出到一半的图可能已经扣费。')
+  })
+
+  it('names each kind once however often it is reported', () => {
+    expect(buildUnfinishedRestartWorkPrompt(['chat', 'chat'])?.kinds).toEqual(['chat'])
+  })
+})
+
+describe('confirming a restart to install an update', () => {
+  const task: InterruptibleInstallTask = { key: 'cli:install:claude', description: '正在安装 Claude Code', count: 1 }
+  const work = buildUnfinishedRestartWorkPrompt(['chat']) as UnfinishedRestartWorkPrompt
+
+  function steps(overrides: Partial<UpdateRestartConfirmation> = {}) {
+    return {
+      installTask: vi.fn(() => null),
+      confirmInstall: vi.fn(async () => true),
+      unfinishedWork: vi.fn(() => null),
+      confirmWork: vi.fn(async () => true),
+      log: vi.fn(),
+      ...overrides,
+    } satisfies UpdateRestartConfirmation
+  }
+
+  it('installs without asking when nothing would be interrupted', async () => {
+    const host = steps()
+    await expect(confirmUpdateRestart(host)).resolves.toBe(true)
+    expect(host.confirmInstall).not.toHaveBeenCalled()
+    expect(host.confirmWork).not.toHaveBeenCalled()
+    expect(host.log).not.toHaveBeenCalled()
+  })
+
+  it('asks about chat, video editing and canvas work even when no tool is installing', async () => {
+    const host = steps({ unfinishedWork: () => work })
+    await expect(confirmUpdateRestart(host)).resolves.toBe(true)
+    expect(host.confirmWork).toHaveBeenCalledWith(work)
+    expect(host.confirmInstall).not.toHaveBeenCalled()
+  })
+
+  it('keeps the downloaded update for later when the user waits for the work to finish', async () => {
+    const host = steps({ unfinishedWork: () => work, confirmWork: vi.fn(async () => false) })
+    await expect(confirmUpdateRestart(host)).resolves.toBe(false)
+    expect(host.log).toHaveBeenLastCalledWith('install.postponed', '还有任务没做完，这次不装新版本，新版本留着')
+  })
+
+  it('asks about the running install first and stops there when the user keeps installing', async () => {
+    const unfinishedWork = vi.fn(() => work)
+    const host = steps({ installTask: () => task, confirmInstall: vi.fn(async () => false), unfinishedWork })
+    await expect(confirmUpdateRestart(host)).resolves.toBe(false)
+    expect(host.confirmInstall).toHaveBeenCalledWith(task)
+    expect(unfinishedWork).not.toHaveBeenCalled()
+    expect(host.confirmWork).not.toHaveBeenCalled()
+  })
+
+  it('still asks about the other work after the user agreed to interrupt the install, since that box never mentioned it', async () => {
+    const host = steps({ installTask: () => task, unfinishedWork: () => work, confirmWork: vi.fn(async () => false) })
+    await expect(confirmUpdateRestart(host)).resolves.toBe(false)
+    expect(host.confirmInstall).toHaveBeenCalledOnce()
+    expect(host.confirmWork).toHaveBeenCalledOnce()
+  })
+
+  it('reads the running work only after the install question, which can take the user minutes to answer', async () => {
+    const order: string[] = []
+    const host = steps({
+      installTask: () => task,
+      confirmInstall: async () => { order.push('install-asked'); return true },
+      unfinishedWork: () => { order.push('work-read'); return null },
+    })
+    await expect(confirmUpdateRestart(host)).resolves.toBe(true)
+    expect(order).toEqual(['install-asked', 'work-read'])
+  })
+})
+
+describe('chat reply still streaming on quit', () => {
+  it('uses the approved sentence and buttons word for word', () => {
+    expect(buildChatReplyQuitPrompt(['chat'])).toEqual({
+      message: '正在回复，退出会停下这条回复。',
+      buttons: ['等它说完', '仍然退出'],
+    })
+  })
+
+  it('stays quiet when the chat is not replying, whatever else is running', () => {
+    expect(buildChatReplyQuitPrompt([])).toBeNull()
+    // 视频剪辑拼片、画布不在这一问里：画布有自己的关窗确认，拼片没批过退出时的字。
+    expect(buildChatReplyQuitPrompt(['video-compose', 'canvas'])).toBeNull()
+  })
+
+  it('asks once however the work is reported', () => {
+    expect(buildChatReplyQuitPrompt(['video-compose', 'chat', 'chat'])?.message).toBe('正在回复，退出会停下这条回复。')
+  })
+})
+
+describe('confirming a quit that would interrupt work', () => {
+  const task: InterruptibleInstallTask = { key: 'cli:install:claude', description: '正在安装 Claude Code', count: 1 }
+  const reply = buildChatReplyQuitPrompt(['chat']) as ChatReplyQuitPrompt
+
+  function steps(overrides: Partial<QuitInterruptionConfirmation> = {}) {
+    return {
+      installTask: vi.fn(() => null),
+      confirmInstall: vi.fn(async () => true),
+      chatReply: vi.fn(() => null),
+      confirmChatReply: vi.fn(async () => true),
+      log: vi.fn(),
+      ...overrides,
+    } satisfies QuitInterruptionConfirmation
+  }
+
+  it('asks nothing and leaves the update question to the caller when nothing would be interrupted', async () => {
+    const host = steps()
+    await expect(confirmQuitInterruptions(host)).resolves.toBe('none')
+    expect(host.confirmInstall).not.toHaveBeenCalled()
+    expect(host.confirmChatReply).not.toHaveBeenCalled()
+    expect(host.log).not.toHaveBeenCalled()
+  })
+
+  it('asks before stopping a chat reply and quits cleanly when the user still wants to', async () => {
+    const host = steps({ chatReply: () => reply })
+    await expect(confirmQuitInterruptions(host)).resolves.toBe('quit')
+    expect(host.confirmChatReply).toHaveBeenCalledWith(reply)
+    expect(host.log).toHaveBeenCalledWith('quit.chat-replying', '退出前确认：聊天还在回复')
+  })
+
+  it('cancels the quit when the user waits for the reply to finish', async () => {
+    const host = steps({ chatReply: () => reply, confirmChatReply: vi.fn(async () => false) })
+    await expect(confirmQuitInterruptions(host)).resolves.toBe('cancel')
+  })
+
+  it('keeps the install question as it was and stops there when the user keeps installing', async () => {
+    const chatReply = vi.fn(() => reply)
+    const host = steps({ installTask: () => task, confirmInstall: vi.fn(async () => false), chatReply })
+    await expect(confirmQuitInterruptions(host)).resolves.toBe('cancel')
+    expect(host.confirmInstall).toHaveBeenCalledWith(task)
+    expect(host.log).toHaveBeenCalledWith('quit.install-in-progress', '退出前确认：cli:install:claude')
+    expect(chatReply).not.toHaveBeenCalled()
+    expect(host.confirmChatReply).not.toHaveBeenCalled()
+  })
+
+  it('quits after the install question alone when no reply is streaming', async () => {
+    const host = steps({ installTask: () => task })
+    await expect(confirmQuitInterruptions(host)).resolves.toBe('quit')
+    expect(host.confirmChatReply).not.toHaveBeenCalled()
+  })
+
+  it('still asks about the reply after the user agreed to interrupt the install, since that box never mentioned it', async () => {
+    const host = steps({ installTask: () => task, chatReply: () => reply, confirmChatReply: vi.fn(async () => false) })
+    await expect(confirmQuitInterruptions(host)).resolves.toBe('cancel')
+    expect(host.confirmInstall).toHaveBeenCalledOnce()
+    expect(host.confirmChatReply).toHaveBeenCalledOnce()
+  })
+
+  it('checks for a streaming reply only after the install question, which can take the user minutes to answer', async () => {
+    const order: string[] = []
+    const host = steps({
+      installTask: () => task,
+      confirmInstall: async () => { order.push('install-asked'); return true },
+      chatReply: () => { order.push('reply-read'); return null },
+    })
+    await expect(confirmQuitInterruptions(host)).resolves.toBe('quit')
+    expect(order).toEqual(['install-asked', 'reply-read'])
+  })
+})
+
 describe('update ready to install on quit', () => {
   it('offers the verified package waiting on disk', () => {
-    expect(resolveInstallableUpdateOnQuit(updateSnapshot())).toEqual({ version: '0.2.9' })
+    expect(resolveInstallableUpdateOnQuit(updateSnapshot())).toEqual({ version: '0.2.9', rollback: false })
+  })
+
+  it('says when the package waiting on disk is an older version the publisher rolled back to', () => {
+    const rollback = updateSnapshot({ currentVersion: '0.2.24', availableVersion: '0.2.23', rollback: true })
+    expect(resolveInstallableUpdateOnQuit(rollback)).toEqual({ version: '0.2.23', rollback: true })
   })
 
   it('stays quiet until the download and its verification are finished', () => {
@@ -130,7 +328,23 @@ describe('update ready to install on quit', () => {
   })
 
   it('still offers the install when the snapshot carries no version to name', () => {
-    expect(resolveInstallableUpdateOnQuit(updateSnapshot({ availableVersion: null }))).toEqual({ version: null })
+    expect(resolveInstallableUpdateOnQuit(updateSnapshot({ availableVersion: null }))).toEqual({ version: null, rollback: false })
+  })
+})
+
+describe('rollback install wording', () => {
+  it('treats the install as a rollback only while that very version is still the one waiting on disk', () => {
+    const rollback = updateSnapshot({ currentVersion: '0.2.24', availableVersion: '0.2.23', rollback: true })
+    expect(isRollbackInstall(rollback, '0.2.23')).toBe(true)
+    // 等预告、等人停手的那几秒里换成了别的版本，或者下好的那份没了：按平时的说法。
+    expect(isRollbackInstall(rollback, '0.2.22')).toBe(false)
+    expect(isRollbackInstall({ ...rollback, phase: 'available' }, '0.2.23')).toBe(false)
+    expect(isRollbackInstall(null, '0.2.23')).toBe(false)
+  })
+
+  it('keeps the usual wording for an ordinary upgrade and for old snapshots without the flag', () => {
+    expect(isRollbackInstall(updateSnapshot({ rollback: false }), '0.2.9')).toBe(false)
+    expect(isRollbackInstall(updateSnapshot(), '0.2.9')).toBe(false)
   })
 })
 

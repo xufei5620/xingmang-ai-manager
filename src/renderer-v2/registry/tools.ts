@@ -1,7 +1,7 @@
 import { cliCatalog, providerConfigDirectoryNames, type ActiveProviderId } from '../../../electron/catalog';
 import type { ExternalToolId } from '../../../electron/ipc-contract';
 
-export type ToolFirstRun = { command: string; prompt: string };
+export type ToolFirstRun = { command: string; prompt: string; freshFolderPrompt: string };
 export type ToolDef = { id: ActiveProviderId | 'codexDesktop'; name: string; vendor: string; brandIcon: string; kind: 'cli' | 'desktop'; install: { type: 'npm'; pkg: string } | { type: 'installer'; win?: 'managed' | 'store'; mac?: 'managed' | 'external'; linux?: 'unavailable' }; requires: Array<'node' | 'python'>; configPath: Record<'win' | 'mac' | 'linux', string>; sources: Array<'account' | 'official' | 'manual'>; models?: string[] | { endpoint: string }; shortcutIndex: number; firstRun?: ToolFirstRun; hidden?: (os: 'win' | 'mac' | 'linux') => boolean };
 
 // npm 包名与配置目录名都从主进程的单一真相源派生,而不是在这里再抄一份:
@@ -45,10 +45,12 @@ export const officialAccountNotes: Record<ActiveProviderId, string | null> = {
 // 命令就是各 CLI 官方的裸命令,与主进程「打开」按钮真正启动的那条一致
 // (resolveCliCommand 的 argv 始终为空),用户自己开终端敲的和点按钮得到的是同一个东西。
 // Codex 桌面端是图形界面,没有要敲的命令,所以这张表只覆盖命令行工具。
+// freshFolderPrompt 是打开的正是星芒刚建、还空着的项目文件夹时换上的那句(D45,新手流程 N4):
+// 空文件夹里问「介绍一下这个项目」,AI 只能回「这里什么都没有」,换成让它动手做个小网页。
 export const firstRunHints: Record<ActiveProviderId, ToolFirstRun> = {
-  claude: { command: 'claude', prompt: '用中文介绍一下这个项目是做什么的，再指出最值得先读的三个文件。' },
-  codex: { command: 'codex', prompt: '用中文说明把这个项目跑起来需要哪些步骤，越具体越好。' },
-  grok: { command: 'grok', prompt: '用中文讲讲这个项目的主要功能，并给我一条改进建议。' },
+  claude: { command: 'claude', prompt: '用中文介绍一下这个项目是做什么的，再指出最值得先读的三个文件。', freshFolderPrompt: '帮我在这个文件夹里做一个能在浏览器里打开的待办清单小网页，做好后告诉我怎么打开它。' },
+  codex: { command: 'codex', prompt: '用中文说明把这个项目跑起来需要哪些步骤，越具体越好。', freshFolderPrompt: '在这个文件夹里写一个能在浏览器里打开的小计算器网页，写完用一句话告诉我怎么打开。' },
+  grok: { command: 'grok', prompt: '用中文讲讲这个项目的主要功能，并给我一条改进建议。', freshFolderPrompt: '在这个文件夹里写一个能在浏览器里打开的番茄钟小网页，写完告诉我怎么打开。' },
 };
 
 // 新手引导第一步默认选中、标「推荐」的那一个（第十一批候选 1，协调者拍板）。

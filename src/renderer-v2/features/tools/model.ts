@@ -171,7 +171,7 @@ export function updatesOutsideApp(
 /** 外部来源安装时那句被动提示；npm 装的或来源未知的返回 null。 */
 export function externalInstallHint(installSource: ToolStatus['installSource']): string | null {
   if (installSource === 'native') return '该版本由官方安装器管理，请用它自己的方式更新'
-  if (installSource === 'path') return '该版本不是通过本工具安装的，更新请用它原本的安装方式'
+  if (installSource === 'path') return '这一份不是星芒装的，要更新请用它原来的安装方式'
   return null
 }
 
@@ -589,8 +589,9 @@ export function spacedName(name: string): string {
   return /[一-鿿]$/.test(name) ? name : `${name} `
 }
 
+/** 凌晨 0～5 点说「晚上好」：那会儿还开着软件的多半还没睡，说「早上好」不对劲（D60）。 */
 export function greeting(hour: number): string {
-  return hour < 11 ? '早上好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好'
+  return hour < 5 ? '晚上好' : hour < 11 ? '早上好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好'
 }
 
 export function balanceTier(dollars: number): 'ok' | 'warn' | 'bad' {

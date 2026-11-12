@@ -68,6 +68,11 @@ export interface XingmangAiSkillConfig {
   group: string
   /** 画图默认用的 OpenAI 图片模型，登录同步时按当前账号两把 Key 实际能用的挑；缺省 = gpt-image-2。 */
   model?: string
+  /**
+   * 默认模型这次没画出来时依次换的，只列账号列表里有的（不含 model 本身），可以是空数组 = 不换。
+   * 缺省 = 老版本写的配置，脚本照旧退到 gpt-image-2。
+   */
+  fallbackModels?: string[]
   keyId?: number
   keyName?: string
   apiKey?: string
@@ -621,37 +626,45 @@ export function selectImageSkillGroup(groups: readonly { name: string }[]): stri
   return null
 }
 
-// 星芒AI 技能和画图工具只用 OpenAI 的图片模型。站上开了新的就用新的，没开就照旧 gpt-image-2；
-// 只按当前账号的 Key 实际查得到的模型挑，不猜。gpt-image-2.5-sunburst 慢、偏精修，不当默认，
-// 要用让 AI 自己点名。
+// 星芒AI 技能和画图工具默认只用 OpenAI 的图片模型。站上开了新的就用新的，没开就往下退；
+// 只按当前账号的 Key 实际查得到的模型挑，不猜。sunburst 慢、偏精修，不当首选，flare 和 gpt-image-2 都没有时才轮到。
+// 这个顺序跟 AI 对话（ai-chat-protocol.ts 的图片分组次序、chat/state.ts 的 DEFAULT_IMAGE_MODELS）一致，测试钉住。
+// gpt-image-1 官方已经下了，gpt-image-1.5 站上调不通，都不挑。
 export const XINGMANG_AI_DEFAULT_IMAGE_MODEL = 'gpt-image-2'
-export const XINGMANG_AI_IMAGE_MODEL_PREFERENCE = ['gpt-image-2.5-flare', XINGMANG_AI_DEFAULT_IMAGE_MODEL] as const
-// 两个首选账号里都没有时，以前照样写 gpt-image-2，一画就失败（#1059）。这时从下面两个里挑账号实有的，
-// 次序跟 AI 对话的图片分组一样；sunburst 这时才轮到。
-// gpt-image-1.5 站上没开放（ai-chat-protocol.ts 标了不可用），不挑。
-export const XINGMANG_AI_IMAGE_MODEL_FALLBACKS = ['gpt-image-2.5-sunburst', 'gpt-image-1'] as const
-// 画图脚本（mcp-server.mjs、generate.mjs）认型号用的是同一条，测试钉住三处一致。
+export const XINGMANG_AI_IMAGE_MODEL_PREFERENCE = ['gpt-image-2.6-flare', 'gpt-image-2.5-flare', XINGMANG_AI_DEFAULT_IMAGE_MODEL] as const
+export const XINGMANG_AI_IMAGE_MODEL_FALLBACKS = ['gpt-image-2.6-sunburst', 'gpt-image-2.5-sunburst'] as const
+// 画图脚本（mcp-server.mjs、generate.mjs）认型号用的是同一套，测试钉住三处一致。
+// OpenAI 这条也管 config.json 里的默认模型；Nano Banana 和 Grok 只在点名时用，不进默认。
 export const OPENAI_IMAGE_MODEL_PATTERN = /^gpt-image-[a-z0-9][a-z0-9._-]{0,63}$/i
+export const GEMINI_IMAGE_MODEL_PATTERN = /^(?:nano-banana(?:-[a-z0-9][a-z0-9._-]{0,63})?|gemini-[a-z0-9][a-z0-9._-]{0,63}-image(?:-[a-z0-9][a-z0-9._-]{0,63})?)$/i
+export const GROK_IMAGE_MODEL_PATTERN = /^grok-imagine-image(?:-[a-z0-9][a-z0-9._-]{0,63})?$/i
+/** config.json 里的 fallbackModels 最多认几个：现在的默认链一共 5 个，留点余量，手改得很长的截掉。 */
+const MAX_IMAGE_FALLBACK_MODELS = 8
 
-export function selectXingmangAiImageModel(models: readonly string[]): string | null {
+/** 账号列表里有的，按默认顺序排好；第一个是默认模型，后面是它失败时依次换的。 */
+export function selectXingmangAiImageModels(models: readonly string[]): string[] {
   const available = new Set(models.map((model) => model.trim()))
   return [...XINGMANG_AI_IMAGE_MODEL_PREFERENCE, ...XINGMANG_AI_IMAGE_MODEL_FALLBACKS]
-    .find((model) => available.has(model)) ?? null
+    .filter((model) => available.has(model))
+}
+
+export function selectXingmangAiImageModel(models: readonly string[]): string | null {
+  return selectXingmangAiImageModels(models)[0] ?? null
 }
 
 /**
  * 两把 Key 各查一次，合起来挑：画图脚本先用 Codex Key、被拒再换生图分组 Key，哪把能画都算。
- * 都没查到（断网、服务器忙），或查到了但一个能挑的都没有，返回 null：config.json 不写 model，
+ * 都没查到（断网、服务器忙），或查到了但一个能挑的都没有，返回空：config.json 不写 model，
  * 画图照旧用 gpt-image-2，日志记一句。
  */
-async function detectXingmangAiImageModel(
+async function detectXingmangAiImageModels(
   fetchAvailableModels: XingmangAiSkillSyncOptions['fetchAvailableModels'],
   apiKeys: readonly string[],
-): Promise<string | null> {
-  if (!fetchAvailableModels || apiKeys.length === 0) return null
+): Promise<string[]> {
+  if (!fetchAvailableModels || apiKeys.length === 0) return []
   const lists = await Promise.all(apiKeys.map((apiKey) => fetchModelsQuietly(fetchAvailableModels, apiKey)))
   const answered = lists.filter((models): models is string[] => models !== null)
-  return answered.length ? selectXingmangAiImageModel(answered.flat()) : null
+  return answered.length ? selectXingmangAiImageModels(answered.flat()) : []
 }
 
 async function fetchModelsQuietly(
@@ -671,6 +684,13 @@ function optionalImageModel(value: unknown): string | undefined {
   return OPENAI_IMAGE_MODEL_PATTERN.test(model) ? model : undefined
 }
 
+// 认不出的单个型号丢掉，整份配置照样读；不是数组就当没写（脚本照旧退到 gpt-image-2）。
+function optionalImageModelList(value: unknown, model: string | undefined): string[] | undefined {
+  if (!model || !Array.isArray(value)) return undefined
+  const models = value.map(optionalImageModel).filter((entry): entry is string => Boolean(entry) && entry !== model)
+  return [...new Set(models)].slice(0, MAX_IMAGE_FALLBACK_MODELS)
+}
+
 export function parseXingmangAiSkillConfig(raw: unknown): XingmangAiSkillConfig {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('星芒AI Skill 配置格式错误')
@@ -686,6 +706,7 @@ export function parseXingmangAiSkillConfig(raw: unknown): XingmangAiSkillConfig 
   }
   // 认不出的型号丢掉不报错：画图照旧用 gpt-image-2，一份手改过的配置不至于整个读不了。
   const model = optionalImageModel(record.model)
+  const fallbackModels = optionalImageModelList(record.fallbackModels, model)
   const apiKey = optionalSecretKey(record.apiKey, 'API Key')
   const keyId = optionalPositiveId(record.keyId)
   const keyName = optionalShortName(record.keyName)
@@ -700,6 +721,7 @@ export function parseXingmangAiSkillConfig(raw: unknown): XingmangAiSkillConfig 
     baseUrl,
     group,
     ...(model ? { model } : {}),
+    ...(fallbackModels ? { fallbackModels } : {}),
     ...(keyId ? { keyId } : {}),
     ...(keyName ? { keyName } : {}),
     ...(apiKey ? { apiKey } : {}),
@@ -1157,14 +1179,14 @@ export async function syncXingmangAiSkill(
   }
 
   const group = imageGroup || codexGroup
-  const model = await detectXingmangAiImageModel(
+  const [model, ...fallbackModels] = await detectXingmangAiImageModels(
     options.fetchAvailableModels,
     [codex?.key, image?.key].filter((key): key is string => Boolean(key)),
   )
   const config: XingmangAiSkillConfig = {
     baseUrl: options.baseUrl ?? XINGMANG_AI_DEFAULT_BASE_URL,
     group,
-    ...(model ? { model } : {}),
+    ...(model ? { model, fallbackModels } : {}),
     ...(image ? {
       keyId: image.id,
       keyName: image.name,

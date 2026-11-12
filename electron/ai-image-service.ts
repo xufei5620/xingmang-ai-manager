@@ -9,9 +9,11 @@ import {
   BoundedOperationQueue,
   type BoundedOperationHandle,
 } from './bounded-operation-queue'
+import { inspectAiImage } from './ai-asset-store'
 import { readBoundedResponseBytes } from './bounded-response'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiOperationProgressObserver, AiOperationProgressStage } from './ai-operation-progress'
+import { reportRelayAnswer, reportRelayDispatch } from './relay-request-id'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import { networkFailureMessages } from './network-failure'
 import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
@@ -62,9 +64,23 @@ export interface AiImageGenerationInput {
   projectId?: string
 }
 
+/**
+ * A masked edit (画布完善第 5 条). The relay's edits endpoint repaints the
+ * transparent part of `mask` and needs it at exactly the source image's pixel
+ * size, so the request takes one source and checks that size against the bytes
+ * it is about to send.
+ */
+export interface AiImageEditMask {
+  width: number
+  height: number
+  /** The PNG sent as `mask`; built only once the source has been checked. */
+  png(signal: AbortSignal): Promise<Uint8Array>
+}
+
 export interface AiImageEditInput extends AiImageGenerationInput {
   sourceAssetIds: string[]
   expectedUserId?: number
+  mask?: AiImageEditMask
 }
 
 export interface AiImageCancelResult {
@@ -314,7 +330,10 @@ export function createAiImageService(options: {
         if (signal.aborted) throw signal.reason
         let response: Response
         try {
-          response = await request(credential, signal, () => { operation.dispatched = true })
+          response = await request(credential, signal, () => {
+            operation.dispatched = true
+            reportRelayDispatch(progress, true)
+          })
         } catch (error) {
           if (!signal.aborted && operation.dispatched) {
             // 断网、解析不出地址、连不上、代理回绝：请求根本没出去，没扣钱，照网络原因说，客户放心再点一次。
@@ -322,12 +341,15 @@ export function createAiImageService(options: {
             const unsent = unsentRequestFailure(error)
             if (unsent) {
               operation.dispatched = false
+              reportRelayDispatch(progress, false)
               throw new Error(networkFailureMessages[unsent])
             }
             throw ambiguousImageSubmission()
           }
           throw error
         }
+        // 画布跑完按这个号到用量记录里对实扣（画布完善第 2b 条第 3 步）。
+        reportRelayAnswer(progress, response.headers)
         await reportStage('processing')
         await reportStage('downloading')
         let bytes: Buffer
@@ -469,6 +491,8 @@ export function createAiImageService(options: {
       throw new Error('当前模型不支持 Images API 图片编辑')
     }
     const sourceAssetIds = requiredSourceAssetIds(input.sourceAssetIds)
+    const mask = input.mask
+    if (mask && sourceAssetIds.length !== 1) throw new Error('局部修改只能用一张原图')
     return runImageOperation(senderId, input, async (credential, signal, markDispatched) => {
       const form = new FormData()
       let sourceBytes = 0
@@ -479,11 +503,24 @@ export function createAiImageService(options: {
         sourceBytes += source.bytes.byteLength
         if (sourceBytes > MAXIMUM_EDIT_SOURCE_BYTES) throw new Error('图片编辑参考图总大小超过 64 MB 安全上限')
         if (signal.aborted) throw signal.reason
+        if (mask) {
+          // The size of the bytes going out, not the one recorded when the
+          // asset was stored: the relay compares the mask with these.
+          const inspected = inspectAiImage(source.bytes)
+          if (inspected.width !== mask.width || inspected.height !== mask.height) {
+            throw new Error('原图像素尺寸与蒙版不一致，请重新核对蒙版后运行')
+          }
+        }
         form.append('image', new File(
           [Uint8Array.from(source.bytes)],
           source.asset.fileName,
           { type: source.asset.mimeType },
         ))
+      }
+      if (mask) {
+        const png = await mask.png(signal)
+        if (signal.aborted) throw signal.reason
+        form.append('mask', new File([Uint8Array.from(png)], 'mask.png', { type: 'image/png' }))
       }
       form.set('model', fields.model)
       form.set('prompt', fields.prompt)
@@ -600,6 +637,12 @@ export function createAiImageService(options: {
   return {
     generate, edit, cancel, cancelSender, cancelUser, cancelAll, shutdown,
     whenIdle: () => options.finishDispatchedAfterStop ? whenOwnedWorkIdle() : queue.whenIdle(),
+    // 还有图没收完，含停止以后接着收的那几张（它们不在 active、ownedWork 里，只在队列里跑）：
+    // 这时重启，已经扣了费的图就收不回来了（D10）。
+    hasPendingWork: () => {
+      const { active: running, queued } = queue.snapshot()
+      return running + queued > 0
+    },
   }
 }
 

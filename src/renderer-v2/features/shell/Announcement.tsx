@@ -10,7 +10,7 @@ import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../
 import { writeLocalPreference } from '../app/preferences'
 import { useOnlineStatus } from './useOnlineStatus'
 import type { RelayNotice, RelayNoticeReadMode } from '../../../../electron/relay-backend'
-import { formatTimelineDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
+import { AnnouncementCollectionError, formatTimelineDate, formatTimelineListDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
 import { activePromos, buildPromoTiers, formatPromoDeadline, formatPromoShortDeadline, localDayKey, nextPromoReminder, promoPreviewLines, promoShortName, readAcknowledgedPromos, readPromoBarHiddenDay, readRemindedPromos, readSnoozedPromos, rememberAcknowledgedPromo, rememberPromoBarHiddenDay, rememberRemindedPromo, rememberSnoozedPromo, stripSiteAddresses, visiblePromo, type PromoTier } from './promo-announcements'
 
 interface AnnouncementEntry { id: string; title: string; text: string; read: boolean; publishedAt?: string; timeline?: TimelineMeta }
@@ -32,6 +32,11 @@ interface Props {
   onOpen(): void
   onUnread(value: boolean): void
   openExternal(url: string): Promise<unknown>
+  /**
+   * 公告里官网自己的图由主进程下好、换成 data: 地址交回（决定单 D89 a）：页面的安全设置不放网上图片，
+   * 直接写 https 地址只会是破图标。缺省 = 这类图照旧显示「[图片：说明]」。
+   */
+  readImage?: ReadAnnouncementImage
   /** Official relay home used when the rich announcement exceeds the client cap. */
   noticeUrl?: string
   /** Asks the host for one system notification; the host owns the wording. */
@@ -56,6 +61,8 @@ interface Props {
 
 export interface TopupOffers { amountOptions: number[]; discounts: Record<string, number> }
 
+export type ReadAnnouncementImage = (url: string) => Promise<string>
+
 // 充值优惠设置很少改，活动期间最多十分钟重读一次，不跟着每分钟的余额刷新走。
 const topupOffersReuseMs = 10 * 60 * 1000
 
@@ -67,6 +74,8 @@ export const announcementPollIntervalMs = 10 * 60 * 1000
 interface AnnouncementError {
   message: string
   responseTooLarge: boolean
+  /** 公告合集读不出来：那句叫客户「重新读取」或到官网看，两个按钮都要摆出来。 */
+  collectionUnreadable?: boolean
 }
 
 const announcementBlockTags = new Set([
@@ -657,6 +666,7 @@ function renderAnnouncementNodes(
   openExternal: (url: string) => Promise<unknown>,
   onError: (cause: unknown) => void,
   imageOrigin: string | null,
+  readImage: ReadAnnouncementImage | undefined,
   keyPrefix = 'notice',
   depth = 0,
   budget: { count: number } = { count: 0 },
@@ -675,6 +685,7 @@ function renderAnnouncementNodes(
       openExternal,
       onError,
       imageOrigin,
+      readImage,
       key,
       depth + 1,
       budget,
@@ -701,9 +712,10 @@ function renderAnnouncementNodes(
     if (tag === 'img') {
       const alt = (element.getAttribute('alt') ?? '').trim().slice(0, 200)
       const src = safeAnnouncementImage(element.getAttribute('src'), imageOrigin)
+      const fallback = alt ? <span>[图片：{alt}]</span> : null
       return src
-        ? [<img key={key} src={src} alt={alt} loading="lazy" referrerPolicy="no-referrer" />]
-        : (alt ? [<span key={key}>[图片：{alt}]</span>] : [])
+        ? [<AnnouncementImage key={key} src={src} alt={alt} readImage={readImage} fallback={fallback} />]
+        : (fallback ? [<span key={key}>[图片：{alt}]</span>] : [])
     }
     if (announcementBlockTags.has(tag)) {
       const Block = announcementBlockElements[tag] ?? 'div'
@@ -714,6 +726,39 @@ function renderAnnouncementNodes(
     if (tag === 'code') return [<code key={key}>{children}</code>]
     return [<span key={key}>{children}</span>]
   })
+}
+
+interface AnnouncementImageResult { src: string; dataUrl: string | null }
+
+/**
+ * 公告里的一张图。data: 图直接显示；官网的 https 图交给主进程下好（readImage），拿回来的 data: 地址再过一遍
+ * safeAnnouncementImage 才显示。下的时候先空着，下不下来、没给 readImage 就显示 fallback（「[图片：说明]」），
+ * 页面自己从不去连网上的图。
+ */
+function AnnouncementImage({ src, alt, readImage, fallback }: {
+  src: string
+  alt: string
+  readImage: ReadAnnouncementImage | undefined
+  fallback: ReactNode
+}) {
+  const inline = src.startsWith('data:')
+  const [result, setResult] = useState<AnnouncementImageResult | null>(null)
+  useEffect(() => {
+    if (inline || !readImage) return undefined
+    let current = true
+    readImage(src).then((value) => {
+      if (!current) return
+      const safe = safeAnnouncementImage(value, null)
+      setResult({ src, dataUrl: safe?.startsWith('data:') ? safe : null })
+    }, () => {
+      if (current) setResult({ src, dataUrl: null })
+    })
+    return () => { current = false }
+  }, [inline, readImage, src])
+  if (inline) return <img src={src} alt={alt} loading="lazy" referrerPolicy="no-referrer" />
+  if (!readImage) return fallback
+  if (result?.src !== src) return null
+  return result.dataUrl ? <img src={result.dataUrl} alt={alt} loading="lazy" referrerPolicy="no-referrer" /> : fallback
 }
 
 function useAnnouncementDarkTheme(): boolean {
@@ -805,12 +850,15 @@ function NativeAnnouncementFrame({
 export function AnnouncementContent({
   text,
   noticeUrl,
+  readImage,
   openExternal,
   onError,
   onClose,
 }: {
   text: string
   noticeUrl?: string
+  /** 见 Props.readImage。 */
+  readImage?: ReadAnnouncementImage
   openExternal: (url: string) => Promise<unknown>
   onError: (cause: unknown) => void
   onClose?: () => void
@@ -828,6 +876,7 @@ export function AnnouncementContent({
           openExternal,
           onError,
           announcementOrigin(noticeUrl),
+          readImage,
         )}
       </div>
     )
@@ -840,9 +889,10 @@ export function AnnouncementContent({
         components={{
           img: ({ alt, src }) => {
             const safeSrc = safeAnnouncementImage(src ?? null, imageOrigin)
+            const fallback = <span>[图片：{alt ?? ''}]</span>
             return safeSrc
-              ? <img src={safeSrc} alt={alt ?? ''} loading="lazy" referrerPolicy="no-referrer" />
-              : <span>[图片：{alt ?? ''}]</span>
+              ? <AnnouncementImage src={safeSrc} alt={alt ?? ''} readImage={readImage} fallback={fallback} />
+              : fallback
           },
           a: ({ children, href }) => {
             const safeHref = safeAnnouncementHref(href ?? null)
@@ -887,10 +937,29 @@ export function formatAnnouncementError(cause: unknown): AnnouncementError {
   return responseTooLarge
     ? {
         responseTooLarge: true,
-        message: '公告包含过大的内嵌媒体，客户端已按安全上限拦截。可打开官网查看完整公告。',
+        message: '这条公告里的图片或视频太大，这里显示不了，可以到官网看完整公告。',
       }
     : { responseTooLarge: false, message: message || '公告读取失败' }
 }
+
+/**
+ * 读公告失败时上屏的那句。服务端原话、「HTTP 502」这类只进日志（主进程记 IPC 失败那一行带着原话），
+ * 客户看到的统一是「暂时没读到」；公告太大、合集读不出来这两种另有去官网的路，照各自那句。
+ */
+export function formatAnnouncementLoadError(cause: unknown): AnnouncementError {
+  const formatted = formatAnnouncementError(cause)
+  if (formatted.responseTooLarge) return formatted
+  if (cause instanceof AnnouncementCollectionError) return { ...formatted, collectionUnreadable: true }
+  return { responseTooLarge: false, message: '公告暂时没读到，过一会儿点铃铛再看。' }
+}
+
+/** 这句报错指客户去官网时，旁边就得有「打开官网查看完整公告」；只说「暂时没读到」的不给。 */
+export function announcementErrorOffersSite(error: AnnouncementError): boolean {
+  return error.responseTooLarge || error.collectionUnreadable === true
+}
+
+// 已读没记上时只说这一句，原因不上屏。
+const announcementReadFailedMessage = '没记上已读，下次打开可能还会提醒。'
 
 interface PromoCardProps {
   title: string
@@ -1019,7 +1088,7 @@ function AnnouncementPopover({ onClose, children }: { onClose(): void; children:
   return <div ref={ref} role="dialog" aria-label="公告" className="v2-announcement-popover" tabIndex={-1} data-testid="announcement-popover">{children}</div>
 }
 
-export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl, notify, promoVisible = false, onTopUp, readTopupOffers, noticeSlot, noticeRoom = 2 }: Props) {
+export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, readImage, noticeUrl, notify, promoVisible = false, onTopUp, readTopupOffers, noticeSlot, noticeRoom = 2 }: Props) {
   const [announcement, setAnnouncement] = useState<Announcement | null>(null)
   const [error, setError] = useState<AnnouncementError | null>(null)
   const [loading, setLoading] = useState(true)
@@ -1112,7 +1181,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     returnToRow.current = null
     setReadId(readLegacyAnnouncementId(scope))
     lastSilentLoad.current = Date.now()
-    void loadNotice(() => current).then((value) => { if (current) setAnnouncement(value) }).catch((cause) => { if (current) setError(formatAnnouncementError(cause)) }).finally(() => { if (current) setLoading(false) })
+    void loadNotice(() => current).then((value) => { if (current) setAnnouncement(value) }).catch((cause) => { if (current) setError(formatAnnouncementLoadError(cause)) }).finally(() => { if (current) setLoading(false) })
     return () => { current = false; revision.invalidate() }
   }, [scope, loadNotice, attempt])
   // 后台再读不打断用户：不清空、不转圈，读失败就保留眼前的内容，下一轮再试。
@@ -1277,8 +1346,8 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
       setAnnouncement((current) => current?.id === announcement.id ? {
         ...current, entries: current.entries?.map((item) => item.id === entry.id ? { ...item, read: true } : item),
       } : current)
-    } catch (cause) {
-      if (capturedRevision()) setReadErrors((current) => ({ ...current, [entry.id]: formatAnnouncementError(cause).message }))
+    } catch {
+      if (capturedRevision()) setReadErrors((current) => ({ ...current, [entry.id]: announcementReadFailedMessage }))
     } finally {
       pending.delete(entry.id)
       if (capturedRevision()) setMarkingIds((current) => current.filter((id) => id !== entry.id))
@@ -1364,18 +1433,16 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
       <Button size="xs" variant="ghost" icon={X} aria-label="关闭公告提示" title="关闭，有新公告时再提醒" onClick={acknowledge} testId="announcement-banner-close" />
     </div>,
   ].filter(Boolean).slice(0, noticeSlot === undefined ? undefined : Math.max(0, noticeRoom))
-  const stripArea = <>
-    {!offline && !shown && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
-    {strips}
-  </>
+  const stripArea = <>{strips}</>
   return <>
     {noticeSlot === undefined ? stripArea : noticeSlot ? createPortal(stripArea, noticeSlot) : null}
     {open && <AnnouncementPopover onClose={onClose}>
       <div className="v2-announcement-pop-head"><b>公告</b>{entries?.some((entry) => !entry.read) && <button type="button" className="v2-announcement-mark-all" onClick={() => void markAllRead()} data-testid="announcement-mark-all-read">全部已读</button>}</div>
-      {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{error.responseTooLarge && noticeUrl
-        ? <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>
-        : <Button size="sm" onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>}</div>}
-      {entries?.map((entry) => readErrors[entry.id] && <p key={entry.id} className="v2-announcement-error" role="alert">已读状态保存失败：{readErrors[entry.id]}</p>)}
+      {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p><div className="v2-announcement-error-actions">
+        {!(error.responseTooLarge && noticeUrl) && <Button size="sm" onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>}
+        {announcementErrorOffersSite(error) && noticeUrl && <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>}
+      </div></div>}
+      {entries?.map((entry) => readErrors[entry.id] && <p key={entry.id} className="v2-announcement-error" role="alert">{readErrors[entry.id]}</p>)}
       {loading ? <p role="status" className="v2-announcement-pop-note">正在读取公告</p> : entries?.length ? (
         <ul className="v2-announcement-list" data-testid="announcement-list" aria-label="公告列表">
           {entries.map((entry) => { const publishedAt = entryPublishedAt(entry); const preview = announcementTextPreview(entry.text); return <li key={entry.id}>
@@ -1383,7 +1450,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
               <span className="v2-announcement-row-head">
                 {entry.timeline && <TimelineTag type={entry.timeline.type} />}
                 <span className="v2-announcement-title">{entry.title}</span>
-                {publishedAt && <time className="v2-announcement-date" dateTime={publishedAt}>{formatTimelineDate(publishedAt, Date.now()).slice(5, 10)}</time>}
+                {publishedAt && <time className="v2-announcement-date" dateTime={publishedAt}>{formatTimelineListDate(publishedAt)}</time>}
                 <span className="v2-announcement-read-state xm-visually-hidden">{entry.read ? '已读' : '未读'}</span>
               </span>
               {/* 第一句只给眼睛看：读屏点进去就是全文，列表里每条只念标题、日期和已读未读。 */}
@@ -1396,7 +1463,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     {dialogOpen && <Dialog open title="公告" width={640} onClose={closeDialog} footer={selected
       ? <Button icon={ArrowLeft} onClick={backToList}>返回列表</Button>
       : <><Button onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>{announcement && !entries && <Button variant="primary" onClick={() => markLegacyRead(true)}>标为已读</Button>}</>}>
-      {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{error.responseTooLarge && noticeUrl && <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>}</div>}
+      {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{announcementErrorOffersSite(error) && noticeUrl && <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>}</div>}
       {blockedLink && <BlockedLinkHint notice={blockedLink} testId="announcement-blocked-link" />}
       {loading ? <p role="status">正在读取公告</p> : announcement ? entries ? selected ? (
         <article className="v2-announcement-entry" data-testid="announcement-detail" key={selected.id}>
@@ -1407,12 +1474,12 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
           </p>}
           {markingIds.includes(selected.id) && <p className="v2-announcement-read-status" role="status">正在保存已读状态…</p>}
           {readErrors[selected.id] && <div className="v2-announcement-error" role="alert">
-            <p>已读状态保存失败：{readErrors[selected.id]}</p>
+            <p>{readErrors[selected.id]}</p>
             <Button size="sm" onClick={() => void markEntryRead(selected)}>重试保存已读</Button>
           </div>}
-          <AnnouncementContent text={selected.timeline ? withMarkdownLineBreaks(selected.text) : selected.text} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={closeDialog} />
+          <AnnouncementContent text={selected.timeline ? withMarkdownLineBreaks(selected.text) : selected.text} noticeUrl={noticeUrl} readImage={readImage} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={closeDialog} />
           {selected.timeline?.extra && <div className="v2-announcement-extra" data-testid="announcement-detail-extra">
-            <AnnouncementContent text={withMarkdownLineBreaks(selected.timeline.extra)} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={closeDialog} />
+            <AnnouncementContent text={withMarkdownLineBreaks(selected.timeline.extra)} noticeUrl={noticeUrl} readImage={readImage} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={closeDialog} />
           </div>}
         </article>
       ) : (
@@ -1423,13 +1490,13 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
               onClick={() => openEntry(entry)} title={entry.title}>
               {entry.timeline && <TimelineTag type={entry.timeline.type} />}
               <span className="v2-announcement-title">{entry.title}</span>
-              {publishedAt && <time className="v2-announcement-date" dateTime={publishedAt}>{formatTimelineDate(publishedAt, Date.now()).slice(5, 10)}</time>}
+              {publishedAt && <time className="v2-announcement-date" dateTime={publishedAt}>{formatTimelineListDate(publishedAt)}</time>}
               <span className={`v2-announcement-read-state${entry.read ? '' : ' is-unread'}`}>{entry.read ? '已读' : '未读'}</span>
               <ChevronRight size={16} aria-hidden="true" />
             </button>
           </li> })}
         </ul>
-      ) : <AnnouncementContent text={announcement.text} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={closeDialog} /> : !error && <p>暂无公告</p>}
+      ) : <AnnouncementContent text={announcement.text} noticeUrl={noticeUrl} readImage={readImage} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={closeDialog} /> : !error && <p>暂无公告</p>}
     </Dialog>}
   </>
 }

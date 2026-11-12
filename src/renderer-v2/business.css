@@ -27,6 +27,11 @@
 .v2-operation-detail {
   color: var(--text-3);
 }
+/* 错误框底部一行只放得下四五颗按钮。Claude Desktop、Codex 桌面端装不上时连「返回」「复制给客服」
+   有六七颗，不折行就从左边挤出框外，客户看不见「返回」和排在前面的出口（D64 的「下载离线安装包」）。 */
+.xm-dialog[data-testid='operation-error'] > .xm-modal-content > footer {
+  flex-wrap: wrap;
+}
 .v2-business-loading {
   min-height: 200px;
   display: grid;
@@ -346,6 +351,11 @@
 .v2-backup-card-tools { padding: 12px 16px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .v2-backup-card-notices { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px 0; }
 .v2-backup-card-notices:empty { display: none; }
+/* 设置 › 备份迁移「星芒占用的空间」（D100）：最上面一行是合计，按钮灰着时旁边一句小字。 */
+.v2-storage-total { padding: 12px 16px; border-bottom: 1px solid var(--line); font-weight: 600; }
+.v2-storage-notice { padding: 12px 16px 0; }
+.v2-storage-notice:empty { display: none; }
+.v2-storage-note { font-size: var(--font-micro); color: var(--text-3); white-space: nowrap; }
 .v2-backup-preview-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0; color: var(--text); font-size: var(--font-small); }
 .v2-backup-preview-check { margin: 8px 0 12px; color: var(--ok-tx); font-size: var(--font-small); }
 .v2-backup-preview-check.is-bad { color: var(--bad-tx); }
@@ -358,14 +368,40 @@
 .v2-remote-channel-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 13px 16px 6px; }
 .v2-remote-channel-head h3 { margin: 0 4px 0 0; color: var(--text); font-size: var(--font-body); font-weight: 600; }
 .v2-remote-channel-actions { margin-left: auto; }
+/* 没登录的渠道收成一行（YF-7）：标题本身是展开 / 收起的按钮，收着时下边距跟上边一样。 */
+.v2-remote-channel-head.is-collapsed { padding-bottom: 13px; }
+.v2-remote-channel-toggle { display: inline-flex; align-items: center; gap: 4px; margin: 0 0 0 -4px; padding: 2px 4px; border: 0; border-radius: var(--radius-input); background: none; color: inherit; font: inherit; cursor: pointer; }
+.v2-remote-channel-toggle:hover { background: var(--panel-2); }
+.v2-remote-channel-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 「最近一次」下面那句等你同意（YF-13）。 */
+.v2-remote-waiting { color: var(--warn-tx); }
+.v2-remote-folders { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+.v2-remote-folder { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: var(--control-sm); }
+.v2-remote-folder > .xm-mono { min-width: 0; overflow-wrap: anywhere; }
+.v2-remote-folder-actions { display: inline-flex; gap: 4px; }
+.v2-remote-folders-note { color: var(--text-3); font-size: var(--font-small-compact); }
+/* 飞书「还差这几步」里扫码直接打开机器人对话（YF-3）。二维码保持白底：暗色主题下手机也要扫得出来。 */
+.v2-remote-bot-qr { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.v2-remote-bot-qr img, .v2-remote-bot-qr-pending { width: 96px; height: 96px; flex: none; border-radius: var(--radius-input); background: #fff; }
+.v2-remote-bot-qr p { margin: 0; color: var(--text-2); font-size: var(--font-small-compact); line-height: var(--line-body); }
 .v2-remote-status { margin: 6px 16px 0; color: var(--text-3); font-size: var(--font-small-compact); line-height: var(--line-body); }
+/* 那句话下面的「重新连接」「找客服」（D23）。 */
+.v2-remote-status-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 16px 0; }
 .v2-remote-form { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 13px; }
 .v2-remote-note { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: var(--line-body); }
 .v2-remote-guide > summary { cursor: pointer; color: var(--text-2); font-size: var(--font-small); font-weight: 600; }
 .v2-remote-guide ol { margin: 8px 0 0; padding-left: 20px; color: var(--text-2); font-size: var(--font-small-compact); line-height: 1.7; }
+.v2-remote-guide-row { padding: 0 16px 10px; }
+.v2-remote-guide-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.v2-remote-next { margin: 0 16px 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }
+.v2-remote-next-title { margin: 0; color: var(--text); font-size: var(--font-small); font-weight: 600; line-height: var(--line-body); }
+.v2-remote-next ol { margin: 6px 0 0; padding-left: 20px; color: var(--text-2); font-size: var(--font-small-compact); line-height: 1.7; }
+.v2-remote-next-note { margin: 6px 0 0; color: var(--text-3); font-size: var(--font-small-compact); line-height: var(--line-body); }
 .v2-remote-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .v2-remote-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .v2-remote-code { color: var(--text); font-size: var(--font-h1); font-weight: 600; letter-spacing: 0.18em; }
+/* 配对码发错过几次、错满作废（D66）：紧跟在配对那一行下面。 */
+.v2-remote-pairing-note { margin: -6px 16px 12px; color: var(--warn-tx); font-size: var(--font-small-compact); line-height: var(--line-body); }
 /* 微信那一块和扫码弹窗。二维码保持白底：暗色主题下手机也要扫得出来。 */
 .v2-remote-weixin-notice { padding: 6px 16px 0; }
 .v2-remote-weixin-login { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
@@ -384,6 +420,8 @@
 .v2-version-card-notes { display: flex; flex-direction: column; gap: 6px; }
 .v2-version-card-notes h3 { margin: 0; font-size: var(--font-body); font-weight: 600; }
 .v2-version-card-notes p { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.7; }
+/* 更新说明只占卡里一截，多了在这一截里自己滚：下面的「重启并安装」一直露着，不用滑到底去找（11-10）。 */
+.v2-version-card-notes-body { max-height: min(240px, 34vh); overflow-y: auto; overscroll-behavior: contain; }
 .v2-version-card-progress { display: flex; flex-direction: column; gap: 6px; }
 .v2-version-card-progress p { margin: 0; color: var(--text-2); font-size: var(--font-small); font-variant-numeric: tabular-nums; }
 .v2-version-card-line { display: flex; gap: 10px; margin: 0; color: var(--text-2); font-size: var(--font-small); }
@@ -993,6 +1031,11 @@ dl.v2-health-more dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap
 .v2-acct-key-line { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .v2-acct-key-line > code { min-width: 0; overflow: hidden; color: var(--text-3); text-overflow: ellipsis; white-space: nowrap; user-select: all; }
 .v2-acct-key-line > code.is-shown { color: var(--text); overflow-wrap: anywhere; white-space: normal; }
+/* 密钥管理最下面「用在别的软件里」（Q1）：地址要原样填进别的软件，整串露出来、点一下选中，窄了折行不省略。 */
+.v2-acct-other-apps-url { font-family: var(--mono); font-weight: 500; overflow-wrap: anywhere; user-select: all; }
+.v2-acct-other-apps .xm-row-desc { overflow: visible; white-space: normal; }
+.v2-acct-other-apps-note { margin: 14px 0 0; line-height: 1.6; }
+.v2-acct-other-apps-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 6px; color: var(--text-2); font-size: var(--font-small); }
 .v2-acct-key-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 3px; color: var(--text-3); font-size: 12px; }
 .v2-acct-field { display: grid; gap: 6px; }
 .v2-acct-field-label { color: var(--text); font-size: var(--font-small); font-weight: 500; }
@@ -1123,6 +1166,8 @@ dl.v2-health-more dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap
 .v2-usage-toolbar > h2 { margin: 0; color: var(--text); font-size: 14px; font-weight: 600; }
 .v2-usage-toolbar-gap { flex: 1; }
 .v2-usage-mono { font-family: var(--mono); font-size: 12.5px; }
+.v2-usage-price-caption { color: var(--text-3); font-size: var(--font-small); }
+.v2-usage-price-note { margin: 8px 2px 0; color: var(--text-3); font-size: var(--font-small); line-height: 1.7; }
 .v2-usage-nowrap { white-space: nowrap; }
 .v2-business-filters.is-folded { display: contents; }
 .v2-business-filters-panel { display: grid; flex-basis: 100%; gap: 12px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-card); corner-shape: squircle; background: var(--panel); }

@@ -16,7 +16,9 @@ import { resolveRelocatedPath } from './relocated-folders'
 import { scopedLocalAssetId } from './content-addressed-asset'
 import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
 import { OwnedAssetLocator } from './ai-asset-locator'
+import { missingAiAssetMessages } from './ai-asset-missing'
 import { readBoundedResponseBytes } from './bounded-response'
+import { describeInsufficientDiskSpace, paidGenerationMinimumFreeBytes, readDiskSpace, type DiskSpaceReading } from './disk-space'
 import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 
 const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
@@ -28,7 +30,7 @@ const MAXIMUM_REVISED_PROMPT_LENGTH = 40_000
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const DATE_DIRECTORY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const FILE_LABEL = 'AI 图片资产'
-const MISSING_ASSET_MESSAGE = 'AI 图片资产不存在或无权访问'
+const MISSING_ASSET_MESSAGE = missingAiAssetMessages.image
 // 另存出去的是用户自己的文件，不是本程序的私有数据：权限位照原来 writeFile 在常见 umask
 // 下的结果给 0o644，不用原子写默认的 0o600。
 const SAVED_COPY_FILE_MODE = 0o644
@@ -137,6 +139,8 @@ export interface AiAssetStoreOptions {
    * 文件夹，用户能做的事不一样，只有宿主知道这个 store 落在哪。
    */
   unwritableGuidance?: string
+  /** 量保存位置所在盘还剩多少；测试里换成假的。读不到返回 null，照常放行（同 disk-space.ts）。 */
+  readDiskSpace?: (target: string) => Promise<DiskSpaceReading | null>
 }
 
 interface OwnedAssetRecord {
@@ -551,6 +555,7 @@ export class AiAssetStore {
   private readonly maximumImageBytes: number
   private readonly downloadTimeoutMs: number
   private readonly unwritableGuidance: string
+  private readonly readDiskSpace: (target: string) => Promise<DiskSpaceReading | null>
   private readonly records = new Map<string, OwnedAssetRecord>()
   private readonly locator: OwnedAssetLocator
 
@@ -565,6 +570,7 @@ export class AiAssetStore {
     this.maximumImageBytes = options.maximumImageBytes ?? DEFAULT_MAXIMUM_IMAGE_BYTES
     this.downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS
     this.unwritableGuidance = options.unwritableGuidance ?? DEFAULT_UNWRITABLE_GUIDANCE
+    this.readDiskSpace = options.readDiskSpace ?? ((target) => readDiskSpace(target))
     this.locator = new OwnedAssetLocator({ outputRoot: this.outputRoot, extensions: ['png', 'jpg', 'webp'], label: FILE_LABEL })
     if (!Number.isInteger(this.maximumImageBytes) || this.maximumImageBytes < 1 || this.maximumImageBytes > DEFAULT_MAXIMUM_IMAGE_BYTES) {
       throw new Error('AI 图片大小上限配置无效')
@@ -593,12 +599,21 @@ export class AiAssetStore {
    * both; without a user id (startup, diagnostics) the output root is probed.
    * The error is phrased for the person who was about to pay: nothing has been
    * charged yet, and what to do next depends on where this store lives.
+   *
+   * With a user id this is the gate in front of a payment, so it also measures
+   * the free space first: a disk with a few megabytes left passes the probe and
+   * then cannot hold the paid result (D38). Measuring only reads, and an
+   * unreadable number lets the request through, as the install check does.
    */
   async assertWritable(userId?: number): Promise<void> {
     let directory = this.outputRoot
     if (userId !== undefined) {
       assertUserId(userId)
       directory = path.join(this.outputRoot, `user-${userId}`)
+      // 先量空间再试写：盘一点不剩时试写也会失败，那句说的是「写不进去、找客服」，不如直接说盘满了、清哪块盘。
+      // 字沿用装工具前查盘那句（「C 盘空间不足，只剩……，请先清理 C 盘再试」），不另起新字。
+      const shortfall = describeInsufficientDiskSpace(await this.readDiskSpace(directory), paidGenerationMinimumFreeBytes)
+      if (shortfall) throw new Error(shortfall)
     }
     try {
       ensureSafeDataDirectory(this.outputRoot, FILE_LABEL)

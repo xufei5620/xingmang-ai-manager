@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder'
 import { isRecord } from './input-guards'
 
 // 驱动本机 `codex app-server`（标准输入输出，一行一条 JSON-RPC，不带 "jsonrpc" 字段）。手机遥控只用
@@ -104,6 +105,10 @@ export class CodexAppServerClient {
   private readonly pending = new Map<string, PendingRequest>()
   private buffer = ''
   private stderrTail = ''
+  // 管道按字节切块，一个汉字的三个字节可能落在两块里；逐块 toString 会把它拆成两个「�」，
+  // 手机上的回答、审批卡里的中文路径就偶尔夹乱码（#1489 N8）。解码器把半个字留到下一块再拼。
+  private readonly stdoutDecoder = new StringDecoder('utf8')
+  private readonly stderrDecoder = new StringDecoder('utf8')
   private exited = false
   private stopping = false
   private exitWaiters: Array<() => void> = []
@@ -198,7 +203,7 @@ export class CodexAppServerClient {
 
   private onStdout(chunk: Buffer | string): void {
     const maxLineBytes = this.options.maxLineBytes ?? defaultMaxLineBytes
-    this.buffer += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+    this.buffer += typeof chunk === 'string' ? chunk : this.stdoutDecoder.write(chunk)
     let newline = this.buffer.indexOf('\n')
     while (newline >= 0) {
       const line = this.buffer.slice(0, newline).trim()
@@ -221,8 +226,11 @@ export class CodexAppServerClient {
   }
 
   private onStderr(chunk: Buffer | string): void {
-    const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
-    this.stderrTail = `${this.stderrTail}${text}`.slice(-stderrTailBytes)
+    this.appendStderr(typeof chunk === 'string' ? chunk : this.stderrDecoder.write(chunk))
+  }
+
+  private appendStderr(text: string): void {
+    if (text) this.stderrTail = `${this.stderrTail}${text}`.slice(-stderrTailBytes)
   }
 
   private onLine(line: string): void {
@@ -295,6 +303,9 @@ export class CodexAppServerClient {
   private onExit(code: number | null, signal: NodeJS.Signals | null): void {
     if (this.exited) return
     this.exited = true
+    // 退出前最后半个字也冲出来：stderr 尾巴要进日志给客服看。stdout 没有换行的半行本来就不算一条消息，丢掉。
+    this.appendStderr(this.stderrDecoder.end())
+    this.stdoutDecoder.end()
     this.rejectAll('Codex 已退出')
     this.child = null
     const waiters = this.exitWaiters

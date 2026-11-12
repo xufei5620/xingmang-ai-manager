@@ -51,9 +51,13 @@ const macPackagingFiles = new Set([
   'scripts/builder-fetch-compat.cjs',
   'e2e/macos-launch-smoke.mjs',
   'scripts/update-release-utils.cjs',
+  'scripts/release-copyright.cjs',
+  'scripts/extract-release-notes.cjs',
   'scripts/linux-artifact-names.cjs',
   'scripts/linux-payload-modes.cjs',
   'scripts/electron-fuse-hardening.cjs',
+  // 第三方许可清单：配置从这里取文件名和 Mac 补许可文件的钩子，出包校验也读它（D97）。
+  'scripts/third-party-notices.cjs',
   'scripts/prepare-acceleration-bundle.cjs',
   'scripts/stage-acceleration-bundle.cjs',
   'electron/acceleration-binary.ts',

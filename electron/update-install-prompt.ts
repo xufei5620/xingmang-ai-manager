@@ -33,7 +33,7 @@
  * 不含任何 Electron 依赖：框、窗口、空闲时长、装都由宿主接进来。
  */
 import { macKeychainUpdateHint } from './mac-keychain-update-copy'
-import { resolveInstallableUpdateOnQuit } from './quit-blocking-tasks'
+import { isRollbackInstall, resolveInstallableUpdateOnQuit } from './quit-blocking-tasks'
 import type { UpdateSnapshot } from './updater'
 
 /** 电脑这么久没人按键盘、动鼠标才跳框。 */
@@ -62,11 +62,14 @@ export interface InstallPromptCopyOptions {
   unattended: boolean
   /** 星芒这次本身就带着管理员权限在跑，不弹授权窗口（windows-elevation.ts 的 highIntegrity）。 */
   elevated?: boolean
+  /** 下好的这一版比本机旧，装上是退回（quit-blocking-tasks.ts 的 isRollbackInstall）。缺省 = 平时的说法。 */
+  rollback?: boolean
 }
 
 /**
  * 跳框里的字（yoyo 2026-10-25 回「更新改」的那一版，改字要先问他）。Mac 那句钥匙串提醒是
  * 10-28「钥匙串提示改」加的：从这里点「现在安装」，重开后第一眼看到的就是那个系统密码框。
+ * 退回旧版时那句换成「建议退回」，跟设置页的说法一致（D11，11-10 批）。
  */
 export function buildInstallPrompt(version: string, platform: NodeJS.Platform, options: InstallPromptCopyOptions): InstallPrompt {
   const consent = platform === 'win32' && !options.elevated ? 'Windows 弹出授权窗口时请点「是」。' : ''
@@ -78,7 +81,7 @@ export function buildInstallPrompt(version: string, platform: NodeJS.Platform, o
       : '退出星芒或下次打开时自动装上。'
   return {
     title: '星芒AI管理工具',
-    message: `新版 ${version} 已经下好，现在装上吗？`,
+    message: options.rollback ? `建议退回的 ${version} 版已经下好，现在装上吗？` : `新版 ${version} 已经下好，现在装上吗？`,
     detail: `装的时候星芒会先关掉，装好自动打开。${consent}${keychain}现在不装也行：${later}`,
     buttons: ['稍后再说', '现在安装'],
   }
@@ -395,6 +398,7 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
     const prompt = buildInstallPrompt(version, options.platform, {
       unattended: canInstallWhileIdle() && !idleInstallHeldByRemote(),
       elevated: read(options.elevated, false),
+      rollback: isRollbackInstall(read<UpdateSnapshot | null>(options.getState, null), version),
     })
     log('info', 'install.prompt.shown', `新版本 ${version} 下好了，跳框问要不要现在装`)
     void Promise.resolve()

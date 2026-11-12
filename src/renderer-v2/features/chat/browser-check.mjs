@@ -169,7 +169,8 @@ test('legacy read failures cannot establish an empty history via autosave or unm
   const raw = JSON.stringify({ version: 1, userId: '8', data: { messages: [{ id: 'old', role: 'user', content: 'belongs to someone else' }] } })
   const page = await open('strict=1', { [legacyChatKey]: raw })
   try {
-    await page.getByRole('alert').filter({ hasText: '原始记录已保留' }).waitFor()
+    // 原因只进日志，红条一律说同一句（W24）。
+    await page.getByRole('alert').filter({ hasText: '以前的聊天记录暂时读不出来，原文件没动。现在聊的内容不会保存，关掉软件就没了。' }).waitFor()
     await page.getByTestId('chat-composer-input').fill('not persisted')
     await page.waitForTimeout(400)
     assert.equal(await saved(page), null)
@@ -416,6 +417,32 @@ test('image controls use real model capabilities and asset actions use opaque id
     assert.equal((await calls(page, 'menu-asset'))[0].input, 'a'.repeat(43))
     assert.equal(await page.getByText('图片已保存', { exact: true }).count(), 0)
     await page.screenshot({ path: path.join(output, 'image-result-light.png') })
+  } finally { await page.close() }
+})
+
+// 图片文件在外面被删了（D37）：预览、复制、另存都照实说图不在电脑上了，不再叫客户重试——怎么重试都不会成。
+test('says the picture is gone from the computer, instead of asking to retry, when its file was removed outside the app', async () => {
+  const gone = '这张图已经不在电脑上了，可能被移走或删掉了。'
+  const page = await open('assetGone=1')
+  try {
+    await ready(page)
+    await allPrepared(page)
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    const request = await send(page, 'A test scene')
+    await page.evaluate((id) => window.chatHarness.completeImage(id), request.requestId)
+    const preview = page.locator('.chat-asset-preview img[data-failed="true"]')
+    await preview.waitFor()
+    assert.equal(await preview.getAttribute('alt'), gone)
+    const shown = page.locator('.chat-banner[data-tone="bad"] > span')
+    await page.getByTestId('chat-asset-copy').click()
+    await shown.waitFor()
+    assert.equal(await shown.innerText(), gone)
+    await page.getByRole('button', { name: '关闭提示' }).click()
+    await shown.waitFor({ state: 'detached' })
+    await page.getByTestId('chat-asset-save').click()
+    await shown.waitFor()
+    assert.equal(await shown.innerText(), gone)
+    assert.equal(await page.getByText(/可以重试|请稍后重试/).count(), 0)
   } finally { await page.close() }
 })
 
@@ -970,6 +997,129 @@ test('a model that reads images takes picked and pasted screenshots and sends th
   } finally { await page.close() }
 })
 
+test('text files picked in a text conversation go out with the message and stay on its card after a reload', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    await page.evaluate(() => window.chatHarness.queueTextFiles([{ name: '报错日志.txt', size: 12_288, text: 'Error: boom', truncated: false }, { name: 'big.log', size: 9_000_000, text: 'x'.repeat(12_000), truncated: true }]))
+    await page.getByTestId('chat-attach-file').click()
+    await page.getByTestId('chat-draft-files').waitFor()
+    assert.deepEqual((await calls(page, 'pick-text-files')).map((call) => call.input), [{ remainingFiles: 3, remainingChars: 30_000 }])
+    assert.deepEqual(await page.locator('[data-testid=chat-draft-files] .chat-file').evaluateAll((cards) => cards.map((card) => card.textContent)), ['报错日志.txt· 12 KB', 'big.log· 8.6 MB · 只读了前 12,000 字'])
+    await page.getByText('「big.log」太长，只读了前 12,000 个字。').waitFor()
+    // Removing the long one and picking again asks only for what is left.
+    await page.getByTestId('chat-draft-file-remove').nth(1).click()
+    await page.evaluate(() => window.chatHarness.queueTextFiles('Error: 这个文件读不出来，可能正被别的软件占着，关掉它再试。'))
+    await page.getByTestId('chat-attach-file').click()
+    await page.getByText('这个文件读不出来，可能正被别的软件占着，关掉它再试。').waitFor()
+    assert.deepEqual((await calls(page, 'pick-text-files')).at(-1).input, { remainingFiles: 2, remainingChars: 30_000 - 'Error: boom'.length })
+    assert.equal(await page.locator('[data-testid=chat-draft-files] .chat-file').count(), 1)
+
+    // A file alone is enough to send, and goes ahead of nothing.
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), false)
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'start'))
+    const request = (await calls(page, 'start')).at(-1).input
+    assert.deepEqual(request.messages.at(-1), { role: 'user', content: '<file name="报错日志.txt">\nError: boom\n</file>' })
+    assert.equal(await page.getByTestId('chat-draft-files').count(), 0)
+    await page.locator('[data-role="user"] [data-testid=chat-message-files] .chat-file').waitFor()
+    await emit(page, { type: 'complete', requestId: request.requestId })
+    await waitSaved(page, (workspace) => workspace.conversations[0]?.messages[0]?.files?.[0]?.name === '报错日志.txt')
+    await page.reload()
+    await page.locator('[data-role="user"] [data-testid=chat-message-files] .chat-file').waitFor()
+
+    // Generating an image takes no files: the button goes and a file left in the draft blocks sending.
+    await page.evaluate(() => window.chatHarness.queueTextFiles([{ name: 'a.txt', size: 3, text: 'abc', truncated: false }]))
+    await ready(page)
+    await page.getByTestId('chat-attach-file').click()
+    await page.getByTestId('chat-draft-files').waitFor()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.equal(await page.getByTestId('chat-attach-file').count(), 0)
+    await page.getByTestId('chat-files-image-mode').waitFor()
+    await page.getByTestId('chat-composer-input').fill('一只猫')
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
+  } finally { await page.close() }
+})
+
+test('a paste past 40000 characters keeps its tail, says how long it is under the composer counting picked files, and greys out sending until it is cut down', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    const input = page.getByTestId('chat-composer-input')
+    // A picked file counts toward the limit too, the same way the message is put together when it goes out.
+    const attached = { name: 'a.txt', size: 30_000, text: 'f'.repeat(30_000), truncated: false }
+    await page.evaluate((file) => window.chatHarness.queueTextFiles([file]), attached)
+    await page.getByTestId('chat-attach-file').click()
+    await page.getByTestId('chat-draft-files').waitFor()
+    const typed = 'y'.repeat(10_000)
+    await input.fill(typed)
+    const together = `<file name="a.txt">\n${attached.text}\n</file>\n\n${typed}`.length
+    assert.ok(together > 40000 && typed.length < 40000)
+    assert.equal(await page.getByTestId('chat-draft-too-long').textContent(), `最多 40000 字，现在 ${together} 字，删掉一些再发。`)
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
+    await page.getByTestId('chat-draft-file-remove').click()
+    assert.equal(await page.getByTestId('chat-draft-too-long').count(), 0)
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), false)
+    await input.fill('')
+    // An error log whose last line is the one that matters (D42): it used to be cut off silently.
+    const log = 'x'.repeat(44990) + '\n最后一行才是真正的报错'
+    await input.focus()
+    await page.keyboard.insertText(log)
+    assert.equal(await input.inputValue(), log, 'nothing is cut off the end')
+    const notice = page.getByTestId('chat-draft-too-long')
+    assert.equal(await notice.textContent(), `最多 40000 字，现在 ${log.length} 字，删掉一些再发。`)
+    assert.equal(await input.getAttribute('aria-describedby'), await notice.getAttribute('id'))
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
+    await input.press('Enter')
+    await page.getByTestId('chat-send').click({ force: true })
+    assert.equal((await calls(page, 'start')).length, 0, 'neither Enter nor the greyed button sends it')
+    assert.equal(await page.locator('.chat-banner').count(), 0, 'no red bar on top of the sentence under the composer')
+    await input.fill(log.slice(-40000))
+    assert.equal(await notice.count(), 0)
+    assert.equal(await input.getAttribute('aria-describedby'), null)
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'start'))
+    const sent = (await calls(page, 'start'))[0].input
+    assert.equal(sent.messages.at(-1).content, log.slice(-40000))
+    await emit(page, { type: 'content', requestId: sent.requestId, content: 'answer' })
+    await emit(page, { type: 'complete', requestId: sent.requestId })
+    // Editing a sent message and sending it again has the same limit, said the same way under its box.
+    await page.getByRole('button', { name: '编辑后重新发送', exact: true }).click()
+    const edit = page.getByTestId('chat-edit-input')
+    await edit.fill('')
+    await page.keyboard.insertText(log)
+    assert.equal(await edit.inputValue(), log)
+    assert.equal(await page.getByTestId('chat-edit-dialog').getByRole('alert').textContent(), `最多 40000 字，现在 ${log.length} 字，删掉一些再发。`)
+    assert.equal(await page.getByTestId('chat-edit-send').isDisabled(), true)
+    await edit.fill('shorter question')
+    assert.equal(await page.getByTestId('chat-edit-dialog').getByRole('alert').count(), 0)
+    assert.equal(await page.getByTestId('chat-edit-send').isDisabled(), false)
+  } finally { await page.close() }
+})
+
+// Excel and WPS copy cells as text plus a picture of the table. The composer
+// used to take every such paste as a screenshot and drop the text.
+test('pasting spreadsheet cells keeps the text instead of reading a screenshot', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    function pasteCells(element) {
+      const data = new DataTransfer()
+      data.setData('text/plain', '姓名\t金额\n张三\t12\n')
+      data.setData('text/html', '<table><tr><td>姓名</td><td>金额</td></tr></table>')
+      data.items.add(new File([new Uint8Array([1, 2, 3])], 'image.png', { type: 'image/png' }))
+      return element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+    }
+    // A synthetic paste never inserts text, so "not cancelled" is what shows the browser keeps its own paste.
+    assert.equal(await page.getByTestId('chat-composer-input').evaluate(pasteCells), true, 'a model that cannot read images still gets the text')
+    assert.equal(await page.getByText('当前模型看不了图片').count(), 0)
+    await pickModel(page, 'claude-test')
+    assert.equal(await page.getByTestId('chat-composer-input').evaluate(pasteCells), true, 'a model that reads images still gets the text, not a picture of it')
+    assert.equal((await calls(page, 'paste-image')).length, 0)
+    assert.equal(await page.locator('.chat-draft-image').count(), 0)
+  } finally { await page.close() }
+})
+
 // A long conversation used to re-parse every message's markdown on each key
 // typed into the composer. Counting renders instead of timing them keeps this
 // steady on a slow runner: React's development build stamps actualStartTime on
@@ -1013,11 +1163,13 @@ test('an empty chat says where conversations go, and its examples only fill the 
     const empty = page.getByTestId('chat-empty')
     await empty.getByRole('heading', { name: '有什么想问的？', exact: true }).waitFor()
     await empty.getByText('不开终端，直接和模型对话。额度与工具共用同一个账号。', { exact: true }).waitFor()
-    assert.deepEqual(await empty.getByRole('button').allTextContents(), ['用大白话解释什么是 API Key', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
-    await page.getByTestId('chat-example-2').click()
+    assert.deepEqual(await empty.getByRole('button').allTextContents(), ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
+    await page.getByTestId('chat-example-3').click()
     const input = page.getByTestId('chat-composer-input')
-    assert.equal(await input.inputValue(), '帮我写一个批量重命名文件的脚本')
+    // 半句话的示例填进去时不带省略号，光标在末尾，接着打就是客户自己的话。
+    assert.equal(await input.inputValue(), '帮我写一条朋友圈文案，卖的是')
     assert.equal(await input.evaluate((element) => element === document.activeElement), true)
+    await page.waitForFunction(() => { const element = document.querySelector('#chatIn'); return element instanceof HTMLTextAreaElement && element.selectionStart === element.value.length && element.selectionEnd === element.value.length })
     assert.equal((await calls(page, 'start')).length, 0, 'an example is never sent on its own')
     // 输入框里有字了就不再摆例句：再点一颗会把打的字换掉。
     assert.equal(await empty.getByRole('button').count(), 0)
@@ -1025,6 +1177,46 @@ test('an empty chat says where conversations go, and its examples only fill the 
     await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
     await empty.getByText('不开终端，直接和模型对话。额度与工具共用同一个账号。', { exact: true }).waitFor()
     assert.equal(await empty.getByRole('button').count(), 0, 'the examples are questions, not pictures')
+  } finally { await page.close() }
+})
+
+test('saved phrases fill the composer without sending, survive a reload and can be deleted', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    const input = page.getByTestId('chat-composer-input')
+    await input.fill('帮我看看这段话')
+    await page.getByTestId('chat-phrases-open').click()
+    const dialog = page.getByTestId('chat-phrases-dialog')
+    await dialog.getByTestId('chat-phrases-empty').waitFor()
+    assert.equal(await dialog.getByTestId('chat-phrases-empty').textContent(), '还没有存过常用的话。把经常要说的话存在这里，下次一点就填好。')
+    // 打开时把输入框里写好的字带进来，点「存下来」就存。
+    const phraseInput = dialog.getByTestId('chat-phrase-input')
+    assert.equal(await phraseInput.inputValue(), '帮我看看这段话')
+    await phraseInput.fill('回答尽量简短，用大白话')
+    await dialog.getByTestId('chat-phrase-save').click()
+    assert.equal(await phraseInput.inputValue(), '')
+    assert.equal(await dialog.getByTestId('chat-phrase-save').isDisabled(), true)
+    assert.deepEqual(await dialog.locator('.chat-phrase-text').allTextContents(), ['回答尽量简短，用大白话'])
+    await dialog.getByTestId('chat-phrase-use').click()
+    await dialog.waitFor({ state: 'detached' })
+    await page.waitForFunction(() => document.activeElement?.id === 'chatIn')
+    assert.equal(await input.inputValue(), '帮我看看这段话\n回答尽量简短，用大白话')
+    assert.equal(await input.evaluate((element) => element.selectionStart === element.value.length), true)
+    assert.equal((await calls(page, 'start')).length, 0, 'a saved phrase is never sent on its own')
+    await waitSaved(page, (workspace) => workspace.phrases?.[0] === '回答尽量简短，用大白话')
+
+    await page.reload()
+    await page.getByTestId('chat-composer-input').waitFor()
+    await ready(page)
+    await page.getByTestId('chat-phrases-open').click()
+    const reopened = page.getByTestId('chat-phrases-dialog')
+    assert.deepEqual(await reopened.locator('.chat-phrase-text').allTextContents(), ['回答尽量简短，用大白话'])
+    await reopened.getByTestId('chat-phrase-remove').click()
+    await reopened.getByTestId('chat-phrases-empty').waitFor()
+    await waitSaved(page, (workspace) => !workspace.phrases)
+    await reopened.getByTestId('chat-phrases-close').click()
+    await reopened.waitFor({ state: 'detached' })
   } finally { await page.close() }
 })
 
@@ -1063,6 +1255,47 @@ test('history that cannot be read is left alone, and reading it again brings it 
     await waitSaved(page, (workspace) => workspace.conversations.length === 2)
     const merged = await saved(page)
     assert.deepEqual(merged.conversations.map((conversation) => conversation.messages[0].content), ['said meanwhile', 'said before'])
+  } finally { await page.close() }
+})
+
+// 0.2.24 深查聊天页 C2：以前一段对话的文件坏了，整份记录读不出来，以后聊的也全都不存，「重新读取」永远读不出来。
+test('one broken conversation file is set aside on its own while the rest keep loading and saving', async () => {
+  const page = await open()
+  try {
+    for (const [index, prompt] of ['first topic', 'second topic', 'third topic'].entries()) {
+      if (index) await page.getByTestId('chat-conversation-new').click()
+      await ready(page)
+      await page.getByTestId('chat-composer-input').fill(prompt)
+      await page.getByTestId('chat-send').click()
+      await page.waitForFunction((count) => window.chatHarness.calls.filter((item) => item.method === 'start').length === count, index + 1)
+      const request = (await calls(page, 'start')).at(-1).input
+      await emit(page, { type: 'content', requestId: request.requestId, content: `answer to ${prompt}` })
+      await emit(page, { type: 'complete', requestId: request.requestId })
+    }
+    await waitSaved(page, (workspace) => workspace.conversations.length === 3 && workspace.conversations.every((conversation) => conversation.messages.length === 2))
+    const brokenKey = await page.evaluate(() => window.chatHarness.breakConversation(1, 'truncate'))
+
+    await page.reload()
+    await page.getByTestId('chat-composer-input').waitFor()
+    await page.getByRole('status').filter({ hasText: '有 1 段对话读不出来，已经单独留着，其余照常。' }).waitFor()
+    assert.equal(await page.getByRole('alert').count(), 0, 'the rest still saves, so there is no red bar')
+    assert.equal(await page.getByTestId('chat-history-reload').count(), 0)
+    assert.equal(await page.locator('.chat-conversation-select').count(), 2)
+    const logged = (await calls(page, 'log')).map((call) => call.input)
+    assert.ok(logged.some((entry) => entry.context === 'chat-history' && entry.level === 'warn' && entry.message.includes(`c-${brokenKey}.json 读不出来`)), JSON.stringify(logged))
+
+    // Saving goes on, and the broken file is moved aside exactly as it was instead of being deleted.
+    await page.getByTestId('chat-composer-input').fill('typed after the broken file')
+    await waitSaved(page, (workspace) => workspace.conversations.length === 2 && JSON.stringify(workspace).includes('typed after the broken file'))
+    const aside = await page.evaluate(() => window.chatHarness.asideFiles())
+    assert.deepEqual(aside.map((file) => file.key), [brokenKey])
+    assert.throws(() => JSON.parse(aside[0].content), 'the copy kept aside is the truncated file, untouched')
+
+    await page.reload()
+    await page.getByTestId('chat-composer-input').waitFor()
+    await page.locator('.chat-conversation-select').nth(1).waitFor()
+    assert.equal(await page.locator('.chat-conversation-select').count(), 2)
+    assert.equal(await page.getByText('读不出来', { exact: false }).count(), 0, 'once set aside it is not reported again')
   } finally { await page.close() }
 })
 
@@ -1141,7 +1374,7 @@ test('the conversation list groups by day, finds by title and clears everything 
     await page.getByTestId('chat-conversation-search').fill('')
     await page.getByRole('button', { name: '「今天聊的」更多操作', exact: true }).click()
     const menu = page.getByRole('menu', { name: '对话操作', exact: true })
-    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['导出这段对话', '删除这段对话…'])
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['改名', '置顶', '导出这段对话', '删除这段对话…'])
     await menu.getByRole('menuitem', { name: '导出这段对话', exact: true }).click()
     await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'export-text'))
     assert.equal((await calls(page, 'export-text'))[0].input.title, '今天聊的')
@@ -1168,6 +1401,82 @@ test('the conversation list groups by day, finds by title and clears everything 
   } finally { await page.close() }
 })
 
+// Fable 第二轮 Y2：聊多了找不到、重要的被挤下去，所以能改名、能置顶。改名不挪位置，置顶的排在最上面单独一段。
+test('a conversation can be renamed and pinned to the top, and both survive a reload', async () => {
+  const state = storedWorkspace()
+  const settings = state.conversations[0].settings
+  const noon = new Date(); noon.setHours(12, 0, 0, 0)
+  const message = (id) => [{ id: `${id}-q`, role: 'user', content: '问题', status: 'complete', createdAt: 1 }, { id: `${id}-a`, role: 'assistant', content: '回答', reasoning: '', status: 'complete', createdAt: 2 }]
+  const conversation = (id, title, updatedAt) => ({ id, title, createdAt: updatedAt, updatedAt, draft: '', settings, messages: message(id) })
+  state.conversations = [conversation('today', '今天聊的', Date.now()), conversation('older', '很久以前聊的', noon.getTime() - 10 * 86_400_000)]
+  state.activeId = 'today'
+  const page = await open('', { [storedChatKey]: JSON.stringify(state) })
+  try {
+    const list = page.getByRole('navigation', { name: '已保存的对话' })
+    await list.getByTestId('chat-conversation-older').waitFor()
+    const menu = page.getByRole('menu', { name: '对话操作', exact: true })
+    await page.getByRole('button', { name: '「很久以前聊的」更多操作', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '改名', exact: true }).click()
+    const dialog = page.getByTestId('chat-rename-dialog')
+    await dialog.getByRole('heading', { name: '给这段对话改个名', exact: true }).waitFor()
+    const input = page.getByTestId('chat-rename-input')
+    assert.equal(await input.inputValue(), '很久以前聊的')
+    assert.equal(await input.evaluate((element) => element === document.activeElement), true)
+    // 没改或者删空了，「保存」是灰的。
+    assert.equal(await page.getByTestId('chat-rename-save').isDisabled(), true)
+    await input.fill('   ')
+    assert.equal(await page.getByTestId('chat-rename-save').isDisabled(), true)
+    await input.fill('  年终总结  ')
+    await input.press('Enter')
+    await dialog.waitFor({ state: 'detached' })
+    await list.getByText('年终总结', { exact: true }).waitFor()
+    // 改名不挪位置：还在「更早」里。
+    assert.deepEqual(await list.locator('.chat-conversation-day').allTextContents(), ['今天', '更早'])
+    await page.getByRole('button', { name: '「年终总结」更多操作', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '置顶', exact: true }).click()
+    await page.waitForFunction(() => [...document.querySelectorAll('.chat-conversation-day')].map((item) => item.textContent).join() === '置顶,今天')
+    assert.deepEqual(await list.locator('.chat-conversation-select strong').allTextContents(), ['年终总结', '今天聊的'])
+    await waitSaved(page, (workspace) => workspace.conversations.some((item) => item.id === 'older' && item.pinned === true && item.renamed === true && item.title === '年终总结'))
+    await page.reload()
+    await list.getByTestId('chat-conversation-older').waitFor()
+    assert.deepEqual(await list.locator('.chat-conversation-day').allTextContents(), ['置顶', '今天'])
+    await page.getByRole('button', { name: '「年终总结」更多操作', exact: true }).click()
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['改名', '取消置顶', '导出这段对话', '删除这段对话…'])
+    await menu.getByRole('menuitem', { name: '取消置顶', exact: true }).click()
+    await page.waitForFunction(() => [...document.querySelectorAll('.chat-conversation-day')].map((item) => item.textContent).join() === '今天,更早')
+    // 取消也能退出改名框，不改名字。
+    await page.getByRole('button', { name: '「今天聊的」更多操作', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '改名', exact: true }).click()
+    await input.fill('不要了')
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    await list.getByText('今天聊的', { exact: true }).waitFor()
+    assert.equal(await page.locator('.chat-bar strong').textContent(), '今天聊的')
+  } finally { await page.close() }
+})
+
+test('a conversation that could not be saved says whether to pick another folder or free up the disk', async () => {
+  // D16：没权限、盘满了跟设置页导出同一套说法；认不出原因的照旧说可以重试。
+  const expected = {
+    denied: '这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。',
+    full: '这块盘满了，清出一些空间，或者换一块盘再导出。',
+    other: '这段对话没有导出成功，可以重试',
+  }
+  const state = storedWorkspace()
+  state.conversations[0].messages = [{ id: 'm1', role: 'user', content: '你好', status: 'complete', createdAt: 1 }, { id: 'm2', role: 'assistant', content: '你好呀', reasoning: '', status: 'complete', createdAt: 2 }]
+  for (const [failure, banner] of Object.entries(expected)) {
+    const page = await open(`exportFail=${failure}`, { [storedChatKey]: JSON.stringify(state) })
+    try {
+      await ready(page)
+      await page.getByTestId('chat-conversation-export').click()
+      await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'export-text'))
+      const shown = page.locator('.chat-banner[data-tone="bad"] > span')
+      await shown.waitFor()
+      assert.equal(await shown.innerText(), banner)
+    } finally { await page.close() }
+  }
+})
+
 test('a message typed while offline stays in the composer and goes out from the banner once the network is back', async () => {
   const page = await open()
   try {
@@ -1184,6 +1493,32 @@ test('a message typed while offline stays in the composer and goes out from the 
     assert.deepEqual((await calls(page, 'start'))[0].input.messages.at(-1), { role: 'user', content: 'sent after reconnecting' })
     assert.equal(await page.getByTestId('chat-send-retry').count(), 0)
   } finally { await page.close() }
+})
+
+test('a reply still coming in when the network drops says so under it and can be stopped (D43)', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'network drops midway')
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'half of the answer' })
+    await page.getByText('half of the answer', { exact: true }).waitFor()
+    const notice = page.locator('.chat-message[data-role=assistant] [data-testid=chat-message-offline]')
+    assert.equal(await notice.count(), 0)
+    await page.context().setOffline(true)
+    await notice.waitFor()
+    assert.equal(await notice.innerText(), '网络断了，这条回复可能接不上，可以先停止。')
+    // 3 分钟的时限照旧，界面不替它先停：字还留着、停止按钮还在，只是告诉人可以先停。
+    assert.equal(await page.getByTestId('chat-stop').count(), 1)
+    assert.equal((await calls(page, 'cancel')).length, 0)
+    await page.context().setOffline(false)
+    await notice.waitFor({ state: 'detached' })
+    await page.context().setOffline(true)
+    await notice.waitFor()
+    await page.getByTestId('chat-stop').click()
+    await page.getByText('已停止生成，保留已返回的内容', { exact: true }).waitFor()
+    assert.equal(await notice.count(), 0)
+    assert.equal(await page.getByText('half of the answer', { exact: true }).count(), 1)
+    assert.equal((await calls(page, 'cancel')).length, 1)
+  } finally { await page.context().setOffline(false); await page.close() }
 })
 
 test('the parameters dialog starts every slider at the model default, explains bad numbers and only changes the conversation on apply', async () => {
@@ -1203,7 +1538,7 @@ test('the parameters dialog starts every slider at the model default, explains b
     assert.equal(await dialog.locator('.xm-slider b').nth(1).textContent(), '0.95')
     await page.getByTestId('chat-parameter-maxTokens').fill('1.5')
     await page.getByTestId('chat-parameters-apply').click()
-    await dialog.getByText('最大输出 Token 要填整数，比如 4096', { exact: true }).waitFor()
+    await dialog.getByText('要填整数，比如 4096（不填就是不限）', { exact: true }).waitFor()
     await page.getByTestId('chat-parameters-reset').click()
     assert.deepEqual(await dialog.locator('.xm-slider b').allTextContents(), ['默认', '默认', '默认', '默认'])
     assert.equal(await page.getByTestId('chat-parameter-maxTokens').inputValue(), '')

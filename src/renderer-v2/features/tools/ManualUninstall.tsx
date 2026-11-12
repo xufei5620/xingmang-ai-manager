@@ -35,12 +35,17 @@ export function manualShellLabel(platform: PlatformCapabilities['platform'] | un
   return platform === 'macos' || platform === 'linux' ? '终端' : '普通 PowerShell'
 }
 
-export function ManualUninstallDialog({ state, platform, onClose, cleanUp }: {
+export function ManualUninstallDialog({ state, platform, onClose, cleanUp, onHelp }: {
   state: ManualUninstallState
   platform: PlatformCapabilities['platform'] | undefined
   onClose(): void
   /** 没传就只给命令，和以前一样。 */
   cleanUp?(tool: ActiveProviderId): Promise<CliLeftoverCleanupResult>
+  /**
+   * 「找客服」：没生成命令、或「帮我清理」没删干净时，框里叫人找客服，就得给个按钮（D21）。
+   * 帮助框是后开的模态框，叠在这个框上面，关掉还能回来看原因。没传就不给这颗按钮。
+   */
+  onHelp?(): void
 }) {
   const toast = useToast()
   const [copied, setCopied] = useState(false)
@@ -69,8 +74,11 @@ export function ManualUninstallDialog({ state, platform, onClose, cleanUp }: {
     void navigator.clipboard.writeText(state.manualCommand ?? '').then(() => setCopied(true)).catch(() => setCopied(false))
   }}>复制命令</Button>
   const copiedNote = copied && <span role="status">命令已复制</span>
+  const support = onHelp && (!state.manualCommand || problem)
+    ? <Button testId="manual-uninstall-support" onClick={onHelp} disabled={cleaning}>找客服</Button>
+    : null
   return <Dialog open title={tool ? `${state.name} 还有文件没删干净` : `${state.name} 需要手动清理`} width={640} onClose={onClose} busy={cleaning} testId="manual-uninstall"
-    footer={<Button onClick={onClose} disabled={cleaning}>知道了</Button>}>
+    footer={<>{support}<Button onClick={onClose} disabled={cleaning}>知道了</Button></>}>
     <p role="alert" data-testid="manual-uninstall-reason">{state.reason}</p>
     {state.manualCommand ? <>
       <p>{tool ? `点「帮我清理」，星芒再核对一遍就替你删掉；也可以复制下面的命令，在${shell}里自己执行。` : `在${shell}里执行下面这条命令即可完成清理。`}</p>
@@ -81,6 +89,6 @@ export function ManualUninstallDialog({ state, platform, onClose, cleanUp }: {
         {copiedNote}
       </div> : <>{copy}{copiedNote}</>}
       {problem && <div role="alert" className="v2-callout is-bad" data-testid="manual-uninstall-cleanup-problem"><span>{problem}</span></div>}
-    </> : <p>这次没有生成可复制的命令：本次检查本身没有通过，照着一条未经复核的命令删文件并不安全。请联系客服协助处理。</p>}
+    </> : <p>这次没能确认哪些文件能安全删掉，先别自己删，点「找客服」。</p>}
   </Dialog>
 }

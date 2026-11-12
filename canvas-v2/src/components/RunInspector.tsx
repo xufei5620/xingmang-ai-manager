@@ -12,6 +12,7 @@ import { canvasVideoTaskTargetForAttempt, type CanvasVideoTaskActions } from '..
 import type { CanvasKernelSlots } from '../slots'
 import { latestVideoBatchAttempts } from '../runtime/video-candidate-batch'
 import { latestPaidAttemptDurationMs } from '../runtime/run-projection'
+import { canvasRunChargeHint, canvasRunChargeText, canvasRunNodeCharge, canvasRunRecordCharge, type CanvasRunChargeTotal } from '../runtime/run-charge'
 import { assetBatchDragIds, assetBatchDragMime, assetBatchSelectionError, maximumAssetBatchCount, orderedAssetBatchIds } from './asset-batch-selection'
 import { assetSelectionForActivation, assetSelectionSelectAll, emptyAssetSelection } from './asset-selection'
 import { runCandidateBatchItems } from './run-candidate-selection'
@@ -50,6 +51,12 @@ interface RunInspectorProps {
   onResumeRun?(runId: string): Promise<boolean>
   onClose(): void
   embedded?: boolean
+}
+
+/** 宿主对出实扣以后，耗时下面多一行「实扣 $x」；没对（网页、历史账号、刚跑完几秒）照旧只有耗时。 */
+function RunSummaryFigures({ duration, charge }: { duration: string; charge: CanvasRunChargeTotal | null }) {
+  if (!charge) return <span>{duration}</span>
+  return <div className="run-summary-figures"><span>{duration}</span><span className="run-charge" title={canvasRunChargeHint(charge)}>{canvasRunChargeText(charge, { prefix: true })}</span></div>
 }
 
 const statusLabel: Record<string, string> = {
@@ -201,7 +208,7 @@ export function RunInspector(props: RunInspectorProps) {
         {selected && (
           <section className="run-summary">
             <div><strong>{statusLabel[selected.status] ?? selected.status}</strong><span>{runDateTime(selected.createdAt)}</span></div>
-            <span>{typeof selected.durationMs === 'number' ? `${(selected.durationMs / 1000).toFixed(1)} 秒` : selected.status === 'running' ? '正在执行' : '耗时未记录'}</span>
+            <RunSummaryFigures duration={typeof selected.durationMs === 'number' ? `${(selected.durationMs / 1000).toFixed(1)} 秒` : selected.status === 'running' ? '正在执行' : '耗时未记录'} charge={canvasRunRecordCharge(selected)} />
           </section>
         )}
         {selected && batchEnabled && <section className="asset-batch-toolbar run-candidate-batch" aria-label="历史素材批量复用">
@@ -249,6 +256,7 @@ export function RunInspector(props: RunInspectorProps) {
           const outputText = [...node.attempts].reverse().find((entry) => entry.outputText)?.outputText
           const candidates = node.attempts.flatMap((entry) => entry.candidates)
           const totalQuota = node.attempts.reduce((total, entry) => total + (entry.costQuota ?? 0), 0)
+          const charge = canvasRunNodeCharge(node)
           return (
             <section className="run-node-record" key={node.nodeId}>
               <div className="run-node-head">
@@ -257,14 +265,15 @@ export function RunInspector(props: RunInspectorProps) {
                   ? stageLabel[node.latestStage]
                   : statusLabel[node.state] ?? node.state}</span>
               </div>
-              {node.errorMessage && <><p role="alert">{node.errorMessage}</p><small className="run-error-action">{videoBatch ? `已保存视频保留。${selected.mayStillComplete ? '先核对原任务是否已完成或扣费。' : ''}重新生成会提交整组最多 ${videoBatch.count} 个独立付费视频任务；核对或保存原任务不会重新提交。` : batch ? `已有图片保留。${selected.mayStillComplete ? '先核对上游是否已完成或扣费。' : ''}再次生成会重新提交整组最多 ${batch.count} 次付费请求，不会只补缺失图片。` : selected.mayStillComplete ? '先核对上游是否已完成或扣费，再决定是否重新提交。' : '可先检查分组、模型和素材归属；重试仍会经过运行预检和付费确认。'}</small>{props.onRetryNode && selected.purpose !== 'agent-plan' && !selected.mayStillComplete && node.state === 'failed' && selected.status !== 'running' && <div className="run-error-action"><button type="button" onClick={() => props.onRetryNode?.(node.nodeId, 'to-node')}>{videoBatch ? `重新生成整组（${videoBatch.count} 个视频任务）` : batch ? `重新生成整组（${batch.count} 次）` : '重试到此节点'}</button>{!batch && !videoBatch && <button type="button" onClick={() => props.onRetryNode?.(node.nodeId, 'from-node')}>从此向后重试</button>}</div>}</>}
+              {node.errorMessage && <><p role="alert">{node.errorMessage}</p><small className="run-error-action">{videoBatch ? `已保存视频保留。${selected.mayStillComplete ? '先核对原任务是否已完成或扣费。' : ''}重新生成会提交整组最多 ${videoBatch.count} 个独立付费视频任务；核对或保存原任务不会重新提交。` : batch ? `出来的图都留着。${selected.mayStillComplete ? '有的请求发出去还没回结果，可能已经扣了费，先去用量里看一眼再决定。' : ''}重新生成会把这 ${batch.count} 张全部重出，每张再扣一次费，不会只补没出来的。` : selected.mayStillComplete ? '先核对上游是否已完成或扣费，再决定是否重新提交。' : '可先检查分组、模型和素材归属；重试仍会经过运行预检和付费确认。'}</small>{props.onRetryNode && selected.purpose !== 'agent-plan' && !selected.mayStillComplete && node.state === 'failed' && selected.status !== 'running' && <div className="run-error-action"><button type="button" onClick={() => props.onRetryNode?.(node.nodeId, 'to-node')}>{videoBatch ? `重新生成整组（${videoBatch.count} 个视频任务）` : batch ? `重新生成这 ${batch.count} 张` : '重试到此节点'}</button>{!batch && !videoBatch && <button type="button" onClick={() => props.onRetryNode?.(node.nodeId, 'from-node')}>从此向后重试</button>}</div>}</>}
               {attempt && (
                 <div className="run-meta">
                   <span>{node.attempts.length} 次尝试</span>
-                  {batch && <span>本组已完成 {node.attempts.filter((entry) => entry.imageBatch?.batchId === batch.batchId && ['succeeded', 'cached'].includes(entry.state)).length}/{batch.count} 次请求</span>}
+                  {batch && <span>这一组出了 {node.attempts.filter((entry) => entry.imageBatch?.batchId === batch.batchId && ['succeeded', 'cached'].includes(entry.state)).length}/{batch.count} 张</span>}
                   {videoBatch && <span>本组视频任务：已完成 {videoAttempts.filter((entry) => ['succeeded', 'cached'].includes(entry.state)).length}/{videoBatch.count} · 已提交 {videoAttempts.filter((entry) => Boolean(entry.videoTaskId)).length}</span>}
                   <span>{attempt.cached ? '缓存命中' : `${(durationMs / 1000).toFixed(1)} 秒`}</span>
                   {totalQuota > 0 && <span>{totalQuota} quota</span>}
+                  {charge && <span className="run-charge" title={canvasRunChargeHint(charge)}>{canvasRunChargeText(charge, { prefix: true })}</span>}
                 </div>
               )}
               {outputText && <div className="run-text-result"><label>本次文字结果<textarea readOnly value={outputText.slice(0, 32_000)} aria-label="运行记录文字结果" /></label><small>输入已变化时，结果仅在此保留，不自动替换当前画布。</small></div>}

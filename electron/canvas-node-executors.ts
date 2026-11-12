@@ -1,20 +1,51 @@
 import type { AiImageEditInput, AiImageGenerationInput, AiImageService } from './ai-image-service'
 import { resolveAiModelCapability, type MiniMaxVideoMode } from './ai-chat-protocol'
 import type { AiVideoGenerationInput, AiVideoService } from './ai-video-service'
+import { assertCanvasImageEditMaskInput, buildCanvasImageMaskPng } from './canvas-image-mask'
+import { assertCanvasTextImageInput } from './canvas-text-image-input'
+import type { CanvasFrameExtraction, CanvasImageToolProcessing } from './canvas-run-preparations'
+import {
+  canvasImageTransformKindForNode,
+  canvasImageTransformProcessorRevision,
+  maximumCanvasImageTransformInputs,
+  orderCanvasCollageSources,
+  parseCanvasImageTransformRecipe,
+  selectCanvasTileSource,
+} from './canvas-image-tools'
+import { canvasRunImageToolNodeLabels, type CanvasImagePreparation, type CanvasRunAsset, type CanvasRunGraphNode } from './canvas-run-contract'
+import { canvasImageReferenceRolePrompt } from './canvas-reference-order'
+import {
+  assertCanvasCommerceOutputSize,
+  assertCanvasCommerceTargetSizeSupported,
+  assertCanvasSceneSourceImages,
+  buildCanvasSceneImagePrompt,
+  canvasNodeHasSceneTask,
+  resolveCanvasCommerceTargetSize,
+} from './canvas-scene-tasks'
 import type {
+  CanvasNodeExecutionContext,
   CanvasNodeExecutionResult,
   CanvasNodeExecutors,
 } from './canvas-run-engine'
-import type { AiOperationProgressObserver } from './ai-operation-progress'
+import type { AiOperationProgressObserver, AiOperationProgressUpdate, AiRelayBillingObserver } from './ai-operation-progress'
 import { parseDramaTablesJson } from './drama-parse'
 import { dramaParseSystemPrompt } from './drama-parse-prompt'
 
 export interface CanvasTextCompletionInput {
   group: string
   model: string
-  system: string
+  /** Left out for a text-generate node: the user's own words are the whole request. */
+  system?: string
   user: string
+  /**
+   * Pictures the model reads with the user message (画布完善第 6 条): canvas
+   * asset ids, read from the account's own store only once the credential
+   * names that account.
+   */
+  images?: { assetIds: readonly string[]; projectId?: string }
   signal: AbortSignal
+  /** The attempt's 实扣 bookkeeping; hand it to the request. */
+  billing?: AiRelayBillingObserver
 }
 
 export interface CanvasTextCompletionService {
@@ -44,6 +75,30 @@ export interface CanvasVideoOperationService {
 
 function promptForNode(localPrompt: string, upstreamPrompt: string | undefined): string {
   return [upstreamPrompt, localPrompt].filter(Boolean).join('\n').trim()
+}
+
+/**
+ * The prompt as the web host sends it once the node names its pictures'
+ * roles (画布完善第 8 条): each picture's role first, then the prompt. The
+ * pictures already arrive in that order (canvas-run-engine.ts).
+ */
+function withReferenceRoles(node: CanvasRunGraphNode, prompt: string): string {
+  return node.data.imageReferenceOrder ? canvasImageReferenceRolePrompt(node.data.imageReferenceOrder, prompt) : prompt
+}
+
+/**
+ * A picture node's prompt: a scene task (第 8 条第二步) writes it around the
+ * user's words, which may then be empty; otherwise the user's words with any
+ * role lines ahead of them.
+ */
+function picturePrompt(node: CanvasRunGraphNode, typed: string, missing: string): string {
+  if (!typed && !canvasNodeHasSceneTask(node)) throw new Error(missing)
+  return buildCanvasSceneImagePrompt(node, typed, (prompt) => withReferenceRoles(node, prompt))
+}
+
+/** A scene task asks for one picture per request, as on the web host. */
+function assertOneScenePicture(node: CanvasRunGraphNode, assets: readonly unknown[]): void {
+  if (canvasNodeHasSceneTask(node) && assets.length !== 1) throw new Error('创作任务每次请求应返回唯一图片，实际返回数量不符；请核对原尝试，不会自动重发')
 }
 
 function videoDimensions(size: string | undefined): { width: number; height: number } {
@@ -105,12 +160,36 @@ function imageResult(
   }
 }
 
+/**
+ * What a paid request reports back to the run: its stages when the run shows
+ * them, and the relay's request id for the run's 实扣. Undefined when the run
+ * wants neither, so the request goes out exactly as it did before.
+ */
+function requestObserver(
+  reportStage: CanvasNodeExecutionContext['reportStage'],
+  billing: AiRelayBillingObserver | undefined,
+  withProgress = false,
+): AiOperationProgressObserver | undefined {
+  if (!reportStage && !billing) return undefined
+  return {
+    onStage: reportStage ?? (() => undefined),
+    ...(reportStage && withProgress ? { onProgress: (update: AiOperationProgressUpdate) => reportStage('processing', update) } : {}),
+    ...(billing ? {
+      onRelayDispatch: (sent: boolean) => billing.onRelayDispatch?.(sent),
+      onRelayAnswer: (relayRequestId: string | null) => billing.onRelayAnswer?.(relayRequestId),
+    } : {}),
+  }
+}
+
 // addEventListener('abort') never fires for a signal that is already
 // aborted, so a stop that lands before an executor starts would otherwise
 // slip through and submit a paid generation request.
 function throwIfCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw signal.reason ?? new Error('运行已取消')
 }
+
+/** What a canvas project can hold as a node's text result (canvas-project-package.ts). */
+export const maximumCanvasTextOutputLength = 32_000
 
 export function createCanvasNodeExecutors(options: {
   imageService: CanvasImageOperationService
@@ -120,11 +199,31 @@ export function createCanvasNodeExecutors(options: {
   imageGroup?: string
   videoGroup?: string
   textGroup?: string
+  /** Frame-extract nodes run only with it (画布完善第 7 条第二步); without it they stay refused. */
+  frames?: CanvasFrameExtraction
+  /** Image-tool nodes run only with it (第三步); without it they stay refused. */
+  imageTools?: CanvasImageToolProcessing
+  /**
+   * Reads a picture's bytes from the account's own canvas store, so the
+   * pictures of an exterior task over two pictures or of a storyboard can be
+   * told apart before the paid request (第 8 条第二步). Without it those
+   * nodes are refused.
+   */
+  sceneSources?: (userId: number, assetId: string, projectId?: string) => Promise<{ bytes: Buffer }>
 }): CanvasNodeExecutors {
+  // Called only when the node has checks: an await on every node would let a
+  // stop pressed right after the call miss the abort listener set up below.
+  async function checkSceneSources(context: CanvasNodeExecutionContext, assetIds: readonly string[]): Promise<void> {
+    const read = options.sceneSources
+    await assertCanvasSceneSourceImages(context.sceneSourceChecks ?? [], assetIds,
+      read ? async (assetId) => (await read(context.userId, assetId, context.projectId)).bytes : undefined, context.signal)
+  }
   const text: CanvasNodeExecutors['text'] = async ({ node }) => ({ outputText: node.data.prompt })
-  const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
-    const prompt = promptForNode(node.data.prompt, inputs.text)
-    if (!prompt) throw new Error('请输入图像提示词或连接上游文本节点')
+  const image: CanvasNodeExecutors['image'] = async (context) => {
+    const { ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing } = context
+    const typed = promptForNode(node.data.prompt, inputs.text)
+    const prompt = picturePrompt(node, typed, '请输入图像提示词或连接上游文本节点')
+    if (context.sceneSourceChecks?.length) await checkSceneSources(context, [])
     const group = node.data.group || options.imageGroup || '图片模型'
     const requestId = `canvas-run:${attemptId}`
     throwIfCancelled(signal)
@@ -147,18 +246,21 @@ export function createCanvasNodeExecutors(options: {
           ? { quality: node.data.quality }
           : {}),
       }
-      const assets = reportStage
-        ? await options.imageService.generate(ownerId, input, { onStage: reportStage })
+      const observer = requestObserver(reportStage, billing)
+      const assets = observer
+        ? await options.imageService.generate(ownerId, input, observer)
         : await options.imageService.generate(ownerId, input)
+      assertOneScenePicture(node, assets)
       return imageResult(assets, group, node.data.model)
     } finally {
       signal.removeEventListener('abort', onAbort)
     }
   }
-  const imageEdit: CanvasNodeExecutors['image-edit'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
+  const imageEdit: CanvasNodeExecutors['image-edit'] = async (context) => {
+    const { ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing } = context
     if (!options.imageService.edit) throw new Error('图片编辑能力尚未接入，当前不会提交付费请求')
-    const prompt = promptForNode(node.data.prompt, inputs.text)
-    if (!prompt) throw new Error('请输入图片编辑指令或连接上游文本节点')
+    const typed = promptForNode(node.data.prompt, inputs.text)
+    const prompt = picturePrompt(node, typed, '请输入图片编辑指令或连接上游文本节点')
     const capability = resolveAiModelCapability(node.data.model)
     if (capability.kind !== 'image' || !capability.supportsEdits) {
       throw new Error('当前模型不支持图片编辑，请换用支持编辑的图像模型')
@@ -169,6 +271,18 @@ export function createCanvasNodeExecutors(options: {
     )]
     if (sourceAssetIds.length === 0) throw new Error('请连接至少一张已保存到本地资产库的参考图片')
     if (sourceAssetIds.length > 4) throw new Error('图片编辑最多支持 4 张参考图片')
+    const mask = node.data.imageEditMask
+    // Checked again here, after the kernel's preflight, because the request
+    // goes out whatever the canvas checked: a mask drawn on another image, or
+    // on an image since swapped, fails before anything is paid.
+    if (mask) assertCanvasImageEditMaskInput(mask, node.data.model, inputs.images ?? (inputs.image ? [inputs.image] : []))
+    // Material B (第 8 条第二步): the source's own pixels times the upscale, the
+    // source being the first picture by role (canvas-run-engine.ts).
+    const commerceTask = node.data.commerceTask
+    const source = (inputs.images ?? (inputs.image ? [inputs.image] : []))[0]
+    const target = commerceTask ? resolveCanvasCommerceTargetSize(commerceTask, source) : undefined
+    if (target) assertCanvasCommerceTargetSizeSupported(node.data.model, target)
+    if (context.sceneSourceChecks?.length) await checkSceneSources(context, sourceAssetIds)
     const group = node.data.group || options.imageGroup || '图片模型'
     const requestId = `canvas-run:${attemptId}`
     throwIfCancelled(signal)
@@ -181,9 +295,10 @@ export function createCanvasNodeExecutors(options: {
         model: node.data.model,
         prompt,
         sourceAssetIds,
+        ...(mask ? { mask: { width: mask.width, height: mask.height, png: (maskSignal: AbortSignal) => buildCanvasImageMaskPng(mask, maskSignal) } } : {}),
         expectedUserId: userId,
         ...(projectId ? { projectId } : {}),
-        ...(node.data.size ? { size: node.data.size } : {}),
+        ...(target ? { size: target.size } : node.data.size ? { size: node.data.size } : {}),
         ...(node.data.imageResolution ? { imageResolution: node.data.imageResolution } : {}),
         ...(node.data.quality === 'low'
           || node.data.quality === 'medium'
@@ -192,9 +307,14 @@ export function createCanvasNodeExecutors(options: {
           ? { quality: node.data.quality }
           : {}),
       }
-      const assets = reportStage
-        ? await options.imageService.edit(ownerId, input, { onStage: reportStage })
+      const observer = requestObserver(reportStage, billing)
+      const assets = observer
+        ? await options.imageService.edit(ownerId, input, observer)
         : await options.imageService.edit(ownerId, input)
+      assertOneScenePicture(node, assets)
+      // Paid for and kept in the asset library either way; a picture of
+      // another size just is not a material-B result, so the node fails.
+      for (const asset of assets) assertCanvasCommerceOutputSize(commerceTask, source, asset)
       return imageResult(assets, group, node.data.model)
     } finally {
       signal.removeEventListener('abort', onAbort)
@@ -236,7 +356,7 @@ export function createCanvasNodeExecutors(options: {
     const owned = await options.assets.readOwned(userId, assetId, 'audio')
     return { assets: [{ kind: 'audio', ...owned.asset }] }
   }
-  const video: CanvasNodeExecutors['video'] = async ({ runId, graphRevision, ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
+  const video: CanvasNodeExecutors['video'] = async ({ runId, graphRevision, ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
     if (!options.videoService) throw new Error('视频生成能力尚未接入，当前不会提交付费请求')
     const prompt = promptForNode(node.data.prompt, inputs.text)
     if (!prompt) throw new Error('请输入视频提示词或连接上游文本节点')
@@ -280,11 +400,9 @@ export function createCanvasNodeExecutors(options: {
           ...(audioAssetIds.length > 0 ? { audioAssetIds } : {}),
         }),
       }
-      const asset = reportStage
-        ? await options.videoService.generate(ownerId, input, {
-          onStage: reportStage,
-          onProgress: (update) => reportStage('processing', update),
-        })
+      const observer = requestObserver(reportStage, billing, true)
+      const asset = observer
+        ? await options.videoService.generate(ownerId, input, observer)
         : await options.videoService.generate(ownerId, input)
       return {
         assets: [{
@@ -303,7 +421,87 @@ export function createCanvasNodeExecutors(options: {
   const unsupported: CanvasNodeExecutors['image-edit'] = async () => {
     throw new Error('该节点能力尚未接入，当前不会提交付费请求')
   }
-  const dramaParse: CanvasNodeExecutors['drama-parse'] = async ({ node, inputs, signal }) => {
+  // 画布完善第 7 条第二步：主进程不解视频，只核对视频是这个账号的、页面解得动，再请页面抽出那一帧交回来。
+  // 不发任何付费请求；等的这段时间节点显示「处理中」，画布顶上写「正在准备视频帧图片」。
+  const frameExtract: CanvasNodeExecutors['image-edit'] = async ({ runId, attemptId, userId, projectId, node, inputs, signal, reportFramePreparation }) => {
+    const frames = options.frames
+    if (!frames || !reportFramePreparation) throw new Error('「视频抽帧」节点桌面版暂不支持，本次没有提交任何付费请求')
+    const video = inputs.video
+    if (!video) throw new Error('请先给视频抽帧节点连接一段视频')
+    await frames.assertDecodableVideo(userId, video.assetId)
+    throwIfCancelled(signal)
+    // The web host names the operation after the attempt too; the kernel checks they match.
+    const preparation = {
+      operationId: attemptId,
+      nodeId: node.id,
+      attemptId,
+      sourceAssetId: video.assetId,
+      timestampSeconds: node.data.frameTimestampSeconds ?? 0,
+    }
+    const frame = frames.waitForFrame({ runId, userId, ...(projectId ? { projectId } : {}), preparation, signal })
+    void frame.catch(() => undefined)
+    try {
+      await reportFramePreparation(preparation, true)
+      return { assets: [await frame] }
+    } finally {
+      await reportFramePreparation(preparation, false)
+    }
+  }
+  // 画布完善第 7 条第三步：裁剪、拼图、宫格裁剪、平铺、图层合成。主进程不处理像素，只核对来源是这个账号、这个项目的
+  // 图片、张数和大小在网页版的上限内，再请页面按节点上的参数做好交回来。不发任何付费请求。
+  const imageTransform: CanvasNodeExecutors['image-crop'] = async ({ runId, attemptId, userId, projectId, node, inputs, signal, reportImagePreparation }) => {
+    const label = canvasRunImageToolNodeLabels[node.kind as keyof typeof canvasRunImageToolNodeLabels] ?? '图片处理'
+    const tools = options.imageTools
+    const kind = canvasImageTransformKindForNode(node.kind)
+    if (!tools || !reportImagePreparation || !kind) throw new Error(`「${label}」节点桌面版暂不支持，本次没有提交任何付费请求`)
+    if (!projectId) throw new Error('画布项目尚未选择，无法保存图片处理结果')
+    if (!node.data.imageTransform) throw new Error('请先设置图像工具参数')
+    // Parsed when the run started; read again here only for what the pictures are checked against.
+    const { expectation, layerGroups } = parseCanvasImageTransformRecipe(node.kind, node.data.imageTransform, { remaining: Number.MAX_SAFE_INTEGER })
+    const connected = inputs.imageSources ?? []
+    let sources = connected
+    if (kind === 'collage') sources = orderCanvasCollageSources(connected, node.data.imageCollageInputOrder)
+    if (kind === 'tile') {
+      const chosen = selectCanvasTileSource(connected, node.data.tileInput)
+      sources = chosen ? [chosen] : []
+    }
+    // The kernel checks the rest (collage capacity, layer references) before the run starts.
+    if (kind === 'crop' && sources.length !== 1) throw new Error('裁剪只能使用一个图片来源')
+    if (kind === 'grid-split' && sources.length !== 1) throw new Error('宫格裁剪只能使用一个图片来源')
+    if (kind === 'tile' && sources.length !== 1) throw new Error('平铺图片每次只能使用一张输入图片')
+    if (kind === 'collage' && sources.length < 1) throw new Error('请连接可读取的图片来源')
+    if (sources.length > maximumCanvasImageTransformInputs) throw new Error('图片处理最多用 20 张图片')
+    const sourceAssetIds = sources.map((source) => source.asset.assetId)
+    await tools.assertSources(userId, projectId, sourceAssetIds)
+    throwIfCancelled(signal)
+    // The web host names the operation after the attempt too; the kernel checks they match.
+    const preparation: CanvasImagePreparation = {
+      operationId: attemptId,
+      attemptId,
+      runId,
+      projectId,
+      nodeId: node.id,
+      sourceAssetIds,
+      recipe: structuredClone(node.data.imageTransform),
+      ...(layerGroups ? { layerGroupsVersion: 1 as const } : {}),
+      processorRevision: canvasImageTransformProcessorRevision,
+    }
+    const pictures = tools.waitForImages({ runId, userId, projectId, preparation, expectation, signal })
+    void pictures.catch(() => undefined)
+    try {
+      await reportImagePreparation(preparation, true)
+      return { assets: await pictures }
+    } finally {
+      await reportImagePreparation(preparation, false)
+    }
+  }
+  // 图片对比、全景预览不处理图片，跟网页版一样把连进来的图原样往下传。
+  const imagePassThrough: CanvasNodeExecutors['image-compare'] = async ({ inputs }) => {
+    const images: CanvasRunAsset[] = inputs.images ?? (inputs.image ? [inputs.image] : [])
+    if (images.length === 0) throw new Error('请连接可读取的图片来源')
+    return { assets: images.map((asset) => structuredClone(asset)) }
+  }
+  const dramaParse: CanvasNodeExecutors['drama-parse'] = async ({ node, inputs, signal, billing }) => {
     const script = [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n').trim()
     if (!script) throw new Error('请先连接或粘贴剧本文本')
     if (!options.completeText) throw new Error('剧本解析服务未就绪')
@@ -323,6 +521,7 @@ export function createCanvasNodeExecutors(options: {
           system: dramaParseSystemPrompt,
           user: script,
           signal,
+          ...(billing ? { billing } : {}),
         })
       } catch (error) {
         if (signal.aborted) throw error
@@ -344,6 +543,35 @@ export function createCanvasNodeExecutors(options: {
       throw failure(error)
     }
   }
+  // 画布完善第 6 条：文字生成节点。跟网页版服务端同一个做法（xingmang-canvas
+  // lib/canvas-runs.ts）：上游文字和节点自己的提示词按行拼起来，原样作为一条用户消息
+  // 发出，不加系统提示；连了图片就一起给模型看。结果超过 32000 字不收，跟画布能存的
+  // 文字结果一样长。
+  const textGenerate: CanvasNodeExecutors['text-generate'] = async (context) => {
+    const { projectId, node, inputs, signal, billing } = context
+    const typed = [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n')
+    if (!typed.trim()) throw new Error('请输入文字提示词或连接上游提示词节点')
+    const prompt = withReferenceRoles(node, typed)
+    if (!options.completeText) throw new Error('文字生成服务未就绪')
+    const group = node.data.group || options.textGroup || ''
+    if (!group) throw new Error('请先在「生成配置」中选择文字分组')
+    const model = node.data.model.trim()
+    if (!model) throw new Error('请选择文字模型')
+    const images = inputs.images ?? (inputs.image ? [inputs.image] : [])
+    assertCanvasTextImageInput(model, images.length)
+    // The text node that writes an exterior or storyboard prompt reads the same pictures.
+    if (context.sceneSourceChecks?.length) await checkSceneSources(context, images.map((asset) => asset.assetId))
+    const outputText = await options.completeText.completeOnce({
+      group,
+      model,
+      user: prompt,
+      ...(images.length ? { images: { assetIds: images.map((asset) => asset.assetId), ...(projectId ? { projectId } : {}) } } : {}),
+      signal,
+      ...(billing ? { billing } : {}),
+    })
+    if (outputText.length > maximumCanvasTextOutputLength) throw new Error('文字结果超过 32000 字上限，请调整生成长度后再运行')
+    return { outputText, group, model }
+  }
   const dramaText: CanvasNodeExecutors['drama-bible'] = async ({ node, inputs }) => ({
     outputText: [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n').trim(),
   })
@@ -360,10 +588,20 @@ export function createCanvasNodeExecutors(options: {
   return {
     text, prompt: text, image: imageOrEdit, 'image-generate': imageOrEdit,
     video, 'video-generate': video, 'image-edit': imageEdit,
-    'frame-extract': unsupported, 'video-input': videoInput,
+    'frame-extract': options.frames ? frameExtract : unsupported, 'video-input': videoInput,
     'image-input': imageInput, 'audio-input': audioInput, router: passThrough, gallery: passThrough, output: passThrough,
     group: passThrough, note: text,
     'drama-bible': dramaText, 'drama-script': dramaText, 'drama-parse': dramaParse, 'drama-shot': dramaText,
     'drama-character': dramaAsset, 'drama-scene': dramaAsset, 'drama-prop': dramaAsset,
+    'text-generate': textGenerate,
+    ...(options.imageTools ? {
+      'image-crop': imageTransform,
+      'image-collage': imageTransform,
+      'image-grid-split': imageTransform,
+      'image-tile': imageTransform,
+      'image-layer': imageTransform,
+      'image-compare': imagePassThrough,
+      'image-panorama': imagePassThrough,
+    } : {}),
   }
 }

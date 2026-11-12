@@ -121,7 +121,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       let config = await toolsApi.readConfig()
       if (!launchIsCurrent(epoch)) return null
       let tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
-      if (!tool) throw new Error('当前平台暂不支持打开这个工具')
+      if (!tool) throw new Error('这台电脑上打不开这个工具')
       if (tool.error) throw new Error(tool.error)
       if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
       // Shortcuts, tray actions and the records page share this entry, including
@@ -208,11 +208,16 @@ export function useToolLaunch(options: ToolLaunchOptions) {
   /**
    * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
    * 'open' | 'restart',各家 CLI 认 'new' | 'resumeLast'(#292),Codex 接着聊另带记录 id。
+   * remembered：在这个文件夹里开（引导最后一步，D46）；它已经不在了，跟首页一样提示一句再弹选择窗口（launchRemembered）。
    */
   async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, folder: LaunchFolder = 'choose', epoch = accountEpoch.capture()): Promise<boolean> {
     const outcome = { opened: false }
     try {
-      const started = await holdLaunch(id, async () => { outcome.opened = await openTool(id, mode, remembered, folder, epoch) })
+      const started = await holdLaunch(id, async () => {
+        outcome.opened = remembered && id !== 'codexDesktop'
+          ? await launchRemembered(id, remembered, mode === 'open' || mode === 'restart' ? 'new' : mode, epoch)
+          : await openTool(id, mode, undefined, folder, epoch)
+      })
       return launchIsCurrent(epoch) && started && outcome.opened
     } catch (cause) {
       if (!launchIsCurrent(epoch)) return false
@@ -244,8 +249,10 @@ export function useToolLaunch(options: ToolLaunchOptions) {
     // 刚选的文件夹主进程已经记下，随打开结果带回来；首页按钮马上写「打开 它」，其余工具也不再问。
     if (launchIsCurrent(epoch) && result && 'rememberedWorkspace' in result) {
       const rememberedWorkspace = result.rememberedWorkspace ?? undefined
-      toolbox.setSnapshot((current) => current && current.config.rememberedWorkspace !== rememberedWorkspace
-        ? { ...current, config: { ...current.config, rememberedWorkspace } }
+      // 那个文件夹还空不空跟着它一起换（D45）：刚替他建好的打开了，「试试第一条命令」那句话不跳回「介绍一下这个项目」。
+      const rememberedWorkspaceFresh = rememberedWorkspace !== undefined && result.rememberedWorkspaceFresh === true ? true : undefined
+      toolbox.setSnapshot((current) => current && (current.config.rememberedWorkspace !== rememberedWorkspace || current.config.rememberedWorkspaceFresh !== rememberedWorkspaceFresh)
+        ? { ...current, config: { ...current.config, rememberedWorkspace, rememberedWorkspaceFresh } }
         : current)
       // 开机检测还没跑完就打开的（首页摆的还是上次的结果）：那一轮落地时带的是打开前读的配置，
       // 会把刚记下的目录盖回去。重读一次配置，落地时就用这份新的（见 useToolbox 的 configRevision）。
@@ -317,7 +324,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
   }
   /**
    * 记住的目录随时可能被删掉或改名。那种情况下退回目录选择器，用户点一次
-   * 「打开」仍然能走到底，而不是只收到一条错误（N7）。只在 requestLaunch 挂着的那次任务里调。
+   * 「打开」仍然能走到底，而不是只收到一条错误（N7）。只在 requestLaunch、launch 挂着的那次任务里调。
    */
   async function launchRemembered(id: ToolId, remembered: string, mode: CliLaunchChoice = 'new', epoch = accountEpoch.capture()): Promise<boolean> {
     try { return await openTool(id, mode, remembered, 'choose', epoch) }

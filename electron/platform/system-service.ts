@@ -45,12 +45,31 @@ export interface PlatformSystemDependencies {
     eventKey: string,
     detail?: PlatformActivityDetail,
   ) => PlatformNotificationResult
+  /** 交给系统打开一个固定地址（shell.openExternal）；缺省时「打开系统通知设置」一律回 false。 */
+  openExternal?: (url: string) => Promise<void>
 }
 
 const startupTrayEnabledNote =
   '开机后在托盘里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点托盘图标。'
 const startupTrayDisabledNote =
   '打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'
+// Mac 上没有「托盘」这个说法，星芒的图标在屏幕顶部的菜单栏里（深查 TR-5、决定单 D30）。
+const startupMenuBarEnabledNote =
+  '开机后在菜单栏里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点屏幕顶部的星芒图标。'
+const startupMenuBarDisabledNote =
+  '打开后，开机时会在菜单栏里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'
+
+/**
+ * 设置页「发测试通知」那颗「打开系统通知设置」要打开的系统页（决定单 D68、深查 NT-6）。地址写死在
+ * 主进程，渲染层只说「要打开」（I12）。系统里把星芒的通知关了，Electron 多半不报错（Mac 上一般静默），
+ * 客户得自己去这一页看星芒有没有被关掉。Linux 各家桌面的设置程序不一样，没有统一能打开的那一页。
+ */
+export function notificationSettingsTarget(platform: string): string | null {
+  if (platform === 'win32') return 'ms-settings:notifications'
+  if (platform === 'darwin')
+    return 'x-apple.systempreferences:com.apple.Notifications-Settings.extension'
+  return null
+}
 
 const proxyScopeNote =
   '这里只查看应用窗口如何连接。账号、AI 请求和工具安装继续使用各自原有的连接方式；此处不会更改电脑或工具的网络设置。'
@@ -205,8 +224,8 @@ export class PlatformSystemService {
         : requested && !enabled
           ? '启动项已登记，但系统尚未允许自动运行。'
           : enabled
-            ? startupTrayEnabledNote
-            : startupTrayDisabledNote,
+            ? platform === 'darwin' ? startupMenuBarEnabledNote : startupTrayEnabledNote
+            : platform === 'darwin' ? startupMenuBarDisabledNote : startupTrayDisabledNote,
     }
   }
 
@@ -308,8 +327,12 @@ export class PlatformSystemService {
           ...(platform === 'win32' ? windowsLoginItem(executablePath) : {}),
         })
       const state = this.getState()
+      // Windows 上写开机项常被 360、火绒这类安全软件拦下，客户该去它弹的提示里放行，不是去翻系统设置
+      // （深查 AV-09 第 1 条、决定单 D26）。
       if (state.startup.requested !== enabled)
-        throw new Error('系统没有保存开机启动设置，请在系统设置中检查。')
+        throw new Error(platform === 'win32'
+          ? '系统没有保存开机启动设置。装了 360、火绒这类安全软件的话，在它弹出的提示里点「允许」，再打开一次这个开关。'
+          : '系统没有保存开机启动设置，请在系统设置中检查。')
       this.emit()
       return state
     })
@@ -354,6 +377,13 @@ export class PlatformSystemService {
   }
   testNotification() {
     return this.dependencies.notify?.('test', 'test') ?? 'unsupported'
+  }
+  async openNotificationSettings(): Promise<boolean> {
+    const target = notificationSettingsTarget(this.dependencies.platform)
+    const openExternal = this.dependencies.openExternal
+    if (!target || !openExternal) return false
+    await openExternal(target)
+    return true
   }
   notifyActivity(
     kind: PlatformActivityKind,

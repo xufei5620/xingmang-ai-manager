@@ -13,12 +13,19 @@ import {
   buildMacosTerminalScript,
   cleanupStaleTerminalDirectories,
   launchMacosTerminal,
+  MacosTerminalNotStartedError,
+  macosTerminalNotStartedMessage,
   quotePosixArgument,
 } from './macos-platform'
 import { parseLoopbackProxyTarget, staleProxyVariableNames } from './stale-proxy-environment'
 
 const execFileAsync = promisify(execFile)
 const temporaryDirectories: string[] = []
+
+/** What Terminal does once the login shell runs the launcher: its first line removes the file. */
+function terminalRuns(spec: CommandSpec): void {
+  fs.rmSync(spec.argv[2], { force: true })
+}
 const servers: net.Server[] = []
 
 // 真跑那几行 zsh 的用例：Mac 上总有 /bin/zsh；Linux 上装了 zsh 也跑（探测换成假的 nc，见下）。
@@ -319,7 +326,7 @@ describe('macOS terminal launcher', () => {
     }
   })
 
-  it('rejects invalid environment keys and NUL values', () => {
+  it('rejects invalid cleared keys and NUL values it would write', () => {
     const base = {
       executable: '/usr/bin/true',
       argv: [],
@@ -328,7 +335,8 @@ describe('macOS terminal launcher', () => {
     }
     expect(() => buildMacosTerminalScript({
       ...base,
-      env: { 'CODEX-HOME': '/tmp/codex' },
+      env: { HOME: '/tmp/home', PATH: '/usr/bin' },
+      clearedEnvironmentKeys: ['ANTHROPIC-API-KEY'],
     })).toThrow('environment key')
     expect(() => buildMacosTerminalScript({
       ...base,
@@ -338,6 +346,27 @@ describe('macOS terminal launcher', () => {
       ...base,
       env: { HOME: '/tmp/home' },
     })).toThrow('PATH')
+  })
+
+  // SH-11：从终端里起星芒时带进来的 bash 导出函数、别的软件 launchctl setenv 塞的怪名字不写进脚本，也不挡住打开。
+  it('ignores names it never writes, however they look', () => {
+    const script = buildMacosTerminalScript({
+      executable: '/usr/local/bin/claude',
+      argv: [],
+      workspace: '/workspace',
+      launcherPath: '/tmp/launcher',
+      env: {
+        HOME: '/Users/tester',
+        PATH: '/usr/bin',
+        'BASH_FUNC_module%%': '() {  eval "$(/usr/bin/modulecmd bash $*)"\n}',
+        'CODEX-HOME': '/tmp/codex',
+        UNLISTED_VALUE: 'with\0nul',
+      },
+    })
+    expect(script).not.toContain('BASH_FUNC')
+    expect(script).not.toContain('CODEX-HOME')
+    expect(script).not.toContain('UNLISTED_VALUE')
+    expect(script).toContain("export HOME='/Users/tester'")
   })
 
   it('rejects non-absolute paths in terminal scripts', () => {
@@ -392,6 +421,7 @@ describe('macOS terminal launcher', () => {
     temporaryDirectories.push(directory)
     const run = vi.fn(async (spec: CommandSpec) => {
       temporaryDirectories.push(path.dirname(spec.argv[2]))
+      terminalRuns(spec)
     })
 
     await launchMacosTerminal({
@@ -438,6 +468,7 @@ describe('macOS terminal launcher', () => {
     }, async (spec) => {
       temporaryDirectories.push(path.dirname(spec.argv[2]))
       launcherContent = fs.readFileSync(spec.argv[2], 'utf8')
+      terminalRuns(spec)
     }, () => undefined)
 
     expect(launcherContent).toContain(`export HOME='${directory}'`)
@@ -457,7 +488,7 @@ describe('macOS terminal launcher', () => {
     expect(launcherContent).not.toContain('XINGMANG_ENV_SENTINEL')
   })
 
-  it('schedules bounded cleanup when open succeeds without executing the launcher', async () => {
+  it('schedules bounded cleanup once the launcher has run', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-scheduled-cleanup-'))
     temporaryDirectories.push(directory)
     let launcherPath = ''
@@ -472,20 +503,68 @@ describe('macOS terminal launcher', () => {
     }, async (spec) => {
       launcherPath = spec.argv[2]
       temporaryDirectories.push(path.dirname(launcherPath))
+      // The launcher's first line removes the file; its rmdir may still fail, which the cleanup covers.
+      fs.unlinkSync(launcherPath)
     }, (task, delayMs) => {
       cleanup = task
       cleanupDelayMs = delayMs
     })
 
-    expect(fs.existsSync(launcherPath)).toBe(true)
     expect(cleanupDelayMs).toBeGreaterThan(0)
     expect(cleanupDelayMs).toBeLessThanOrEqual(5 * 60_000)
     expect(cleanup).toBeTypeOf('function')
 
     await cleanup!()
 
-    expect(fs.existsSync(launcherPath)).toBe(false)
     expect(fs.existsSync(path.dirname(launcherPath))).toBe(false)
+  })
+
+  // SH-3：open 成功只说明「终端」收下了文件，登录 shell 可能把跑脚本的那一行吞掉。
+  it('reports a Terminal that never ran the launcher and removes the launcher', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-not-started-'))
+    temporaryDirectories.push(directory)
+    let launcherPath = ''
+    const scheduled = vi.fn()
+
+    const failure = await launchMacosTerminal({
+      executable: '/usr/bin/true',
+      argv: [],
+      workspace: directory,
+      env: { HOME: directory, PATH: '/usr/bin' },
+    }, async (spec) => {
+      launcherPath = spec.argv[2]
+      temporaryDirectories.push(path.dirname(launcherPath))
+    }, scheduled, { waitMs: 50, pollIntervalMs: 5 }).catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(MacosTerminalNotStartedError)
+    expect((failure as MacosTerminalNotStartedError).waitedMs).toBe(50)
+    expect((failure as Error).message).toBe(macosTerminalNotStartedMessage)
+    // A window that turns up late finds nothing to run.
+    expect(fs.existsSync(launcherPath)).toBe(false)
+    expect(scheduled).not.toHaveBeenCalled()
+  })
+
+  it('says in plain Chinese what to do, ending with whom to ask', () => {
+    expect(macosTerminalNotStartedMessage).toBe('终端窗口打开了，但工具没有跟着起来。先看一眼终端窗口里是不是在问什么（比如要不要更新），'
+      + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「找客服」，把这句话发给客服。')
+  })
+
+  it('stops waiting as soon as the launcher has run', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-started-'))
+    temporaryDirectories.push(directory)
+    const started = Date.now()
+
+    await launchMacosTerminal({
+      executable: '/usr/bin/true',
+      argv: [],
+      workspace: directory,
+      env: { HOME: directory, PATH: '/usr/bin' },
+    }, async (spec) => {
+      temporaryDirectories.push(path.dirname(spec.argv[2]))
+      setTimeout(() => terminalRuns(spec), 30)
+    }, () => undefined, { waitMs: 10_000, pollIntervalMs: 5 })
+
+    expect(Date.now() - started).toBeLessThan(5_000)
   })
 
   // Runs on every platform on purpose. The property must not depend on whether the
@@ -505,11 +584,11 @@ describe('macOS terminal launcher', () => {
     }, async (spec) => {
       launcherPath = spec.argv[2]
       temporaryDirectories.push(path.dirname(launcherPath))
+      terminalRuns(spec)
     }, (task) => {
       cleanup = task
     })
 
-    fs.unlinkSync(launcherPath)
     fs.writeFileSync(launcherPath, 'replacement', { mode: 0o700 })
 
     await cleanup!()
@@ -521,32 +600,29 @@ describe('macOS terminal launcher', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-replaced-directory-'))
     temporaryDirectories.push(directory)
     let launcherPath = ''
-    let cleanup: (() => Promise<void>) | undefined
 
-    await launchMacosTerminal({
+    // The swap happens while the launch waits for a Terminal that never runs the
+    // launcher, so the removal that follows has to see through it.
+    await expect(launchMacosTerminal({
       executable: '/usr/bin/true',
       argv: [],
       workspace: directory,
       env: { HOME: directory, PATH: '/usr/bin' },
     }, async (spec) => {
       launcherPath = spec.argv[2]
+      const launcherDirectory = path.dirname(launcherPath)
+      const originalDirectory = `${launcherDirectory}-original`
       // Registered the moment the directory exists: anything after this point can
       // throw, and afterEach would otherwise never learn about the mkdtemp tree.
-      temporaryDirectories.push(path.dirname(launcherPath), `${path.dirname(launcherPath)}-original`)
-    }, (task) => {
-      cleanup = task
-    })
-
-    const launcherDirectory = path.dirname(launcherPath)
-    const originalDirectory = `${launcherDirectory}-original`
-    fs.renameSync(launcherDirectory, originalDirectory)
-    fs.mkdirSync(launcherDirectory, { mode: 0o700 })
-    fs.linkSync(path.join(originalDirectory, 'launch.zsh'), launcherPath)
-
-    await cleanup!()
+      temporaryDirectories.push(launcherDirectory, originalDirectory)
+      fs.renameSync(launcherDirectory, originalDirectory)
+      fs.mkdirSync(launcherDirectory, { mode: 0o700 })
+      fs.linkSync(path.join(originalDirectory, 'launch.zsh'), launcherPath)
+    }, () => undefined, { waitMs: 50, pollIntervalMs: 5 })).rejects.toBeInstanceOf(MacosTerminalNotStartedError)
 
     expect(fs.existsSync(launcherPath)).toBe(true)
   })
+
   it('collects launcher directories whose creating process is gone', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-terminal-base-'))
     temporaryDirectories.push(base)
@@ -915,6 +991,7 @@ describe('macOS terminal launcher with tool settings left by the login shell', (
     }, async (spec) => {
       temporaryDirectories.push(path.dirname(spec.argv[2]))
       launcherContent = fs.readFileSync(spec.argv[2], 'utf8')
+      terminalRuns(spec)
     }, () => undefined)
 
     expect(launcherContent.split('\n')).toContain('unset ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR')

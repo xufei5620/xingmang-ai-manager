@@ -136,6 +136,21 @@ export interface AppSettings {
    */
   alwaysInstallLatestCli?: boolean
   /**
+   * 设置里「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）。缺省 = 关，不改老客户的习惯。
+   * 只经 config:set-claude-write-boundary 改（它同时对齐 Claude Code 的配置），settings:save 不收这一项。
+   */
+  claudeWritesInsideProject?: boolean
+  /**
+   * 设置里「Claude Code 提交代码时不署名」（同类对比 备选 6）。缺省 = 关，Claude Code 照官方原样署名。
+   * 只经 config:set-claude-commit-attribution 改（它同时对齐 Claude Code 的配置），settings:save 不收这一项。
+   */
+  claudeHidesCommitAttribution?: boolean
+  /**
+   * 切回官方账号时问过客户「要不要让官方 Claude Code 先问再执行？」（Fable 复查第一轮 3）。只问一次，点哪个都算问过，
+   * 只落 true。只经 config:answer-claude-command-confirmation 记，settings:save 不收这一项。
+   */
+  claudeCommandConfirmationAnswered?: boolean
+  /**
    * 崩溃与未捕获异常自动上报。缺省 = 开启——和 alwaysInstallLatestCli 一样,
    * 这是有意的默认行为选择而不是「缺省 = 旧行为」的漏写:一个没人报的崩溃
    * 等于没修。只有显式关闭才落盘,所以文件里出现这个字段就代表用户亲手关过。
@@ -188,6 +203,13 @@ export interface AppSettings {
   largeText?: boolean
   /** Absent = automatic. A pinned percentage multiplies the automatic zoom. */
   uiScale?: Exclude<AppUiScale, 'auto'>
+  /**
+   * 字的大小已经有人定过：客户自己开关过「大字」、选过「界面缩放」（快捷键、「恢复默认外观」也算），
+   * 或者星芒照 Windows「文本大小」替他开过一次「大字」。只落 true，没有单独的写法：任何一次写入带了
+   * largeText 或 uiScale 就记上（mergeAppSettings）。老版本没有这个字段，读出来就是「还没定过」。
+   * 记上以后开机不再照系统字号自动开「大字」，客户关掉了不会再被打开（D81）。
+   */
+  textSizeChosen?: boolean
   /** Absent = ask. The host must keep a visible entry when no tray exists. */
   closeBehavior?: Exclude<AppCloseBehavior, 'ask'>
   /**
@@ -242,6 +264,10 @@ export interface AppSettingsUpdate {
   officialProviders?: ProviderId[]
   codexDesktopInstallDisabled?: boolean
   alwaysInstallLatestCli?: boolean
+  claudeWritesInsideProject?: boolean
+  claudeHidesCommitAttribution?: boolean
+  /** true is sticky and false is ignored, like trayHintShown. */
+  claudeCommandConfirmationAnswered?: boolean
   crashReporting?: boolean
   /** true is sticky and false is ignored, like trayHintShown. */
   crashReportingNoticeShown?: boolean
@@ -466,6 +492,9 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
     ...(optionalBoolean(value.alwaysInstallLatestCli, false) ? { alwaysInstallLatestCli: true as const } : {}),
+    ...(optionalBoolean(value.claudeWritesInsideProject, false) ? { claudeWritesInsideProject: true as const } : {}),
+    ...(optionalBoolean(value.claudeHidesCommitAttribution, false) ? { claudeHidesCommitAttribution: true as const } : {}),
+    ...(value.claudeCommandConfirmationAnswered === true ? { claudeCommandConfirmationAnswered: true as const } : {}),
     // Only the explicit opt-out survives a round trip; anything else (absent,
     // true, a hand-edited string) reads back as "reporting on".
     ...(value.crashReporting === false ? { crashReporting: false as const } : {}),
@@ -480,6 +509,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(value.hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
     ...(optionalBoolean(value.largeText, false) ? { largeText: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
+    ...(value.textSizeChosen === true ? { textSizeChosen: true as const } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(value.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(offeredModelUpgrades.length > 0 ? { offeredModelUpgrades } : {}),
@@ -640,6 +670,8 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const alwaysInstallLatestCli = update.alwaysInstallLatestCli === undefined
     ? base.alwaysInstallLatestCli
     : update.alwaysInstallLatestCli
+  const claudeWritesInsideProject = update.claudeWritesInsideProject ?? base.claudeWritesInsideProject
+  const claudeHidesCommitAttribution = update.claudeHidesCommitAttribution ?? base.claudeHidesCommitAttribution
   const crashReporting = update.crashReporting ?? base.crashReporting
   // Both sides are re-parsed, unlike the fields above which trust the base:
   // this one decides whether Codex starts with a local debugging port, so an
@@ -656,6 +688,8 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const hardwareAcceleration = update.hardwareAcceleration ?? base.hardwareAcceleration
   const largeText = update.largeText ?? base.largeText
   const uiScale = update.uiScale === 'auto' ? undefined : parseUiScale(update.uiScale) ?? base.uiScale
+  // 带了这两项就是有人定过字的大小，关掉、选回「自动」也算（D81）。
+  const textSizeChosen = base.textSizeChosen === true || update.largeText !== undefined || update.uiScale !== undefined
   const closeBehavior = update.closeBehavior === 'ask' ? undefined : parseCloseBehavior(update.closeBehavior) ?? base.closeBehavior
   const windowState = update.windowState === null ? undefined : parseWindowState(update.windowState) ?? base.windowState
   const offeredModelUpgrades = parseOfferedModelUpgrades([...(base.offeredModelUpgrades ?? []), ...(update.offeredModelUpgrades ?? [])])
@@ -674,6 +708,9 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
     ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
+    ...(claudeWritesInsideProject === true ? { claudeWritesInsideProject: true as const } : {}),
+    ...(claudeHidesCommitAttribution === true ? { claudeHidesCommitAttribution: true as const } : {}),
+    ...(update.claudeCommandConfirmationAnswered === true || base.claudeCommandConfirmationAnswered === true ? { claudeCommandConfirmationAnswered: true as const } : {}),
     ...(crashReporting === false ? { crashReporting: false as const } : {}),
     ...(update.crashReportingNoticeShown === true || base.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),
     ...(update.usageStatsNoticeShown === true || base.usageStatsNoticeShown === true ? { usageStatsNoticeShown: true as const } : {}),
@@ -686,6 +723,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
     ...(largeText ? { largeText: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
+    ...(textSizeChosen ? { textSizeChosen: true as const } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(update.trayHintShown === true || base.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(offeredModelUpgrades.length > 0 ? { offeredModelUpgrades } : {}),

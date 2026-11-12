@@ -35,7 +35,7 @@ describe('renderer-v2 login form remember-password', () => {
 describe('renderer-v2 account dialogs in the v4 layout', () => {
   it('lays out the login like v4: no subtitle, the close button carries cancel, forgot sits beside remember', () => {
     const markup = render(false, { connectionSettings: () => null })
-    expect(markup).toContain('<h2 id="_R_0_">登录星芒账号</h2>')
+    expect(markup).toMatch(/<h2 id="[^"]+">登录星芒账号<\/h2>/)
     expect(markup).not.toContain('xm-dialog-sub')
     expect(tagOf(markup, 'login-cancel')).toContain('data-modal-close="true"')
     expect(markup).toMatch(/class="auth-remember-row">.*data-testid="login-remember".*data-testid="login-forgot"[^>]*>找回密码</)
@@ -62,7 +62,12 @@ describe('renderer-v2 account dialogs in the v4 layout', () => {
     expect(markup).toMatch(/data-testid="register-submit"[^>]*>.*注册并登录</)
     expect(markup).toContain('准备好之后就能点「注册并登录」。')
     expect(markup).toContain('placeholder="最多 20 位"')
-    expect(markup).toContain('placeholder="再输一次"')
+    // One password box with its own show/hide eye; no second box to type it again (D49).
+    expect(markup).toContain('data-testid="register-password"')
+    expect(markup).not.toContain('register-password-confirm')
+    expect(markup).not.toContain('placeholder="再输一次"')
+    // The agreement prompt only appears once 注册并登录 is pressed without the box ticked.
+    expect(markup).not.toContain('register-agree-prompt')
     expect(markup).toMatch(/已经有账号？<button[^>]*data-testid="register-login"[^>]*>去登录</)
   })
 

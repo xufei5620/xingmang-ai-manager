@@ -63,15 +63,15 @@ const messages = {
   test: { title: '星芒测试通知', body: '这是一条测试通知，可在设置中关闭。' },
   install: {
     title: '工具已准备好',
-    body: '安装或更新已经完成，可以回到星芒工具箱查看。',
+    body: '安装或更新已经完成，可以回到星芒查看。',
   },
   balance: {
     title: '余额需要留意',
     body: '星芒余额不足 $5，可以在个人中心查看和充值。',
   },
   task: {
-    title: '异步任务已完成',
-    body: '任务结果已经更新，可以回到星芒工具箱查看。',
+    title: '生成任务已完成',
+    body: '任务结果已经更新，可以回到星芒查看。',
   },
   // 具体是哪几个工具、更到哪个版本，首页的工具卡片上已经各自写着；
   // 通知只负责把人叫回来，不重复那份清单，也不带版本号。
@@ -252,10 +252,11 @@ const hostMessages: Record<
     title: '星芒AI管理工具还在运行',
     body: '窗口缩到了右下角的托盘里，点星芒图标就能打开。看不到图标的话，点任务栏右边的小箭头 ^。',
   },
+  // 带刘海的 MacBook 上菜单栏图标一多，星芒的就被刘海挡住；程序坞那条路一直在（深查 TR-5、决定单 D30）。
   hiddenToMenuBar: {
     kind: null,
     title: '星芒AI管理工具还在运行',
-    body: '窗口已收起，点屏幕顶部菜单栏里的星芒图标就能打开。',
+    body: '窗口已收起，点屏幕顶部菜单栏里的星芒图标，或者程序坞里的星芒图标，就能打开。',
   },
   // Linux 各家桌面放托盘图标的地方不一样：Ubuntu 在屏幕右上角，KDE、deepin、UKUI 在
   // 任务栏右边，所以两处都说。没有托盘的桌面根本不会缩进去（linux-tray-host.ts）。
@@ -275,13 +276,13 @@ const hostMessages: Record<
   // 卡看不见，所以另发一条；归「终端里没回上」那个开关管。点开回到星芒，那张卡上写着怎么办。
   codexPayloadSwitched: {
     kind: 'cliTrouble',
-    title: 'Codex 的对话已换到线路 2',
-    body: '这个对话超过了线路 1 的 100MB 上限，已为你切到线路 2。完全退出 Codex 再打开，就能接着聊。',
+    title: 'Codex 的对话已换到线路2',
+    body: '这个对话超过了线路1 的 100MB 上限，已为你切到线路2。完全退出 Codex 再打开，就能接着聊。',
   },
   codexPayloadTooLarge: {
     kind: 'cliTrouble',
     title: 'Codex 里这个对话太大，发不出去了',
-    body: '这个对话已经超过 100MB，线路 1 发不出去。请新开一个对话继续，点这里看原因。',
+    body: '这个对话已经超过 100MB，线路1 发不出去。请新开一个对话继续，点这里看原因。',
   },
   codexPayloadLineTwoTooLarge: {
     kind: 'cliTrouble',
@@ -290,8 +291,8 @@ const hostMessages: Record<
   },
   codexPayloadNearing: {
     kind: 'cliTrouble',
-    title: 'Codex 里有个对话快到线路 1 的上限了',
-    body: '超过 100MB 后线路 1 就发不出去了，建议做完手上这件事就新开一个对话。',
+    title: 'Codex 里有个对话快到线路1 的上限了',
+    body: '超过 100MB 后线路1 就发不出去了，建议做完手上这件事就新开一个对话。',
   },
 }
 

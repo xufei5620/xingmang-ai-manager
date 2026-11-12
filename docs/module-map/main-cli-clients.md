@@ -14,7 +14,7 @@
 - `tool-installation.ts` — **认「这个工具装在哪、从哪装的、怎么起」的核心**：分清 npm 包与官方原生安装器（首页据此写「官方安装器」还是「其他来源」）、能不能卸、新开和续聊的启动参数；`resolveCliCommand` 在起进程前核原生可执行文件（Windows 走 `trusted-native-cli.ts` 的签名与暂存，Mac 走 codesign 加 `darwin-cli-staging.ts`）。npm 装、更新这一步本身在 `cli-install-service.ts`
 - `cli-install-service.ts` — **装和更新 CLI 的那一整段**（#1070 第 2 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `installCli` / `cancelCliInstall` / `cleanupInstallLeftovers`）：找 npm（Windows 上没有就先装 Node.js）、按网络挑源、解析和下载卡住就换源、国内镜像下的包要和 npm 官方源的 SHA-512 一致、托管 npm 目录整体替换（换不回去时报 `ManagedNpmRollbackError`）、Grok 的 Windows 原生通道和 Mac / Linux 的签名核对、装完 Claude Code 顺带装 Git、记更新历史，以及取消和清理下了一半的东西。Windows 提权安装、可信路径那几段只搬不改
 - `cli-uninstall-service.ts` — **卸载 CLI 的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `uninstallCli` / `cleanUninstallLeftovers`）：按安装来源定卸法（npm 包、官方安装器装的 Claude Code、Grok 原生程序，Mac 上先核 xAI 签名再删）、要用户自己跑的卸载命令开在不提权的窗口里、卸完核对命令真的没了、记下删不掉的文件供「帮我清理」用（路径只由这里给，不收界面传来的）
-- `runtime-install-service.ts` — **装运行环境的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `installNodeRuntime` / `installPythonRuntime` / `installGitRuntime` / `inspectWindowsProcessor` / `restartWindows`）：Node.js 认不得公司证书时换一份、Windows 上看处理器挑安装包（一次启动只问一次）、Mac 上弹苹果自己的 Git 安装窗口（一次只弹一个），装完补 Grok 钩子；有安装、卸载、打开在排队时不发重启。真正下载和核签名在 `node-runtime.ts`、`python-runtime.ts`、`git-runtime-install.ts` 和 Mac / Linux 各自那份；重启那段（`shutdown.exe` 走固定系统路径）只搬不改
+- `runtime-install-service.ts` — **装运行环境的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `installNodeRuntime` / `installPythonRuntime` / `installGitRuntime` / `inspectWindowsProcessor` / `restartWindows`）：Node.js 认不得公司证书时换一份、Windows 上看处理器挑安装包（一次启动只问一次）、Mac 上弹苹果自己的 Git 安装窗口（一次只弹一个），装完补 Grok 钩子；有安装、卸载、打开在排队时不发重启。Mac、Linux 上代装的 Node.js 比钉的版本旧、又正是星芒在用的那份时，`refreshOutdatedManagedNodeRuntime` 在装或更新工具的那个队列任务里静默换新（D86，门面交给 `cli-install-service.ts` 在找 npm 前调）。真正下载和核签名在 `node-runtime.ts`、`python-runtime.ts`、`git-runtime-install.ts` 和 Mac / Linux 各自那份；重启那段（`shutdown.exe` 走固定系统路径）只搬不改
 - `provider-launch-service.ts` — **从星芒打开工具的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `launchProvider`、`launchCodexDesktop` 和 Codex 桌面端中文界面、工作目录信任那几个）：打开前在保存配置那一队里补写目录信任和项目说明（敏感目录不写）、给 CLI 配环境（哪些变量这次不交给工具：`launchExcludedEnvironmentVariables`、Mac 的 `macosShellOverrideVariables`）、Windows 上核命令后开 PowerShell 窗口（管理员身份时终端环境以 `trustedCommandEnvironment` 为底，见 I2 的 `interactiveTerminalEnvironment`）、Mac 开「终端」、Linux 挨个试终端。Windows 提权那几段只搬不改
 - `installation-queue.ts` — **I11 的实现**：安装、卸载、启动这类会原子替换机器级目录的操作排成一队，同一个 key 复用同一个 Promise（双击天然幂等），还在排队的可以随信号直接出队。外部桌面客户端的「打开」是登记过的例外，见 `external-client-runtime.ts`
 - `install-cancellation.ts` — 安装的「取消」：每次安装一个可中止的信号，但原子替换那几段会「封住」，封着时拒绝取消并给出能上屏的中文原因，不默默吞掉；用户取消抛 `InstallCancelledError`，不进异常日志
@@ -62,6 +62,7 @@
 - `workspace-guard.ts` — 判「打开」选的目录是不是主目录、盘根、桌面、下载、文档、系统目录或四家存 Key 的目录：选中它们等于给整台电脑写信任名单和 AGENTS.md，系统目录与存 Key 目录每次都拦。只看路径形状、不读磁盘，判不准按普通目录放行
 - `workspace-config-overrides.ts` — 只看不改：找出项目文件夹里、公司下发的、会盖过当前账号地址或密钥的那几份配置（Claude 项目 env 与管理策略、Codex 强制登录方式、Gemini 换登录方式与文件夹信任），交给打开流程提醒、检查页列项；有界读、不跟链接（I8），结果只有路径和键名，值不出模块（I13）
 - `tool-path-probe.ts` — 「工具同路径」探测：照命令行工具自己（跑在 Node 里，不是 Chromium）连星芒的样子查一条线路通不通，逐地址握手再问 `/api/status`，只靠系统根证书才过的标成「安全软件接管」；总时限、正文上限、不跟重定向、只去本站线路的 origin（I10）。线路选择（`tool-route-*`）用它
+- `workspace-access.ts` — 点「打开」前查一次工作目录：不在或不是文件夹报调用方那句「工作目录不存在」，Mac 上被系统拒绝（EPERM / EACCES，「文件和文件夹」没给星芒授权）改报让客户把星芒和终端两项都打开的那句（D29）
 - `cli-exit-hint.ts` — 终端里 AI 工具退出后、进不去项目文件夹时打给用户看的那几行中文，Windows、macOS、Linux 共用一份
 - `terminal-launcher-files.ts` — 「打开」CLI 用的一次性启动脚本的文件部分，macOS（`macos-platform.ts`）与 Linux（`linux-terminal.ts`）共用：脚本里可能带 Key，只写进本进程 mkdtemp 的私有目录、原子写，用完按身份（连大小、链接数、时间戳一起）核对再删，绝不误删同一路径上别人放的东西
 
@@ -90,19 +91,20 @@
 
 ## 手机遥控 Codex（设置 › 工具管理；只认配对过的一个人的私聊，命令要在聊天里点同意）
 - `codex-remote-channel.ts` — 渠道（飞书、微信）和底座之间的接口：入站消息、出站文字与审批、渠道状态、`RemoteChannelDependencies`（主进程 fetch、凭据读写、日志、版本号），以及给界面的快照类型（带 `revision`，界面只收新的那份）。零依赖，在 `valueImportable` 名单上（I6），渲染层用它的 `remoteChannelIds`
-- `codex-remote-http.ts` — 渠道请求平台开放接口的唯一出口：只许 HTTPS 和渠道给的那几个主机、超时、响应体上限、不跟跳转（I10），报错不带令牌和消息正文
+- `codex-remote-http.ts` — 渠道请求平台开放接口的唯一出口：只许 HTTPS 和渠道给的那几个主机、超时、响应体上限、不跟跳转（I10），报错不带令牌和消息正文；取图用的 `requestRemoteBytes` 是同样四件、交回原样字节
+- `codex-remote-images.ts` — 手机上发来的图暂放 `<userData>/codex-remote/images`（YF-14）：只收开头字节认得的 PNG、JPEG、GIF、WebP，随机文件名、经 safe-local-data 原子写（I8），只删自己存的；关遥控、换人、退出时删，下次打开遥控先清
 - `codex-remote-text.ts` — 发到手机上的每一句话（帮助、配对成功、审批、断开）和脱敏：主目录换成 `~`、密钥和 Codex 自己的 Key 打码（I13）
 - `codex-remote-app-server.ts` — 驱动 `codex app-server` 的 JSON-RPC 客户端（stdio，一行一条）：握手、开对话、发一轮、中断，Codex 反过来问的审批交给底座；退出时 stderr 只留尾巴
 - `codex-remote-process.ts` — 起 `codex app-server`：可执行文件由 `resolveCodexCommand` 认过、argv 数组不经 shell（I1）；Windows 上停的时候用 System32 的 `taskkill /T` 连 Codex 跑起来的命令一起停（I14）
-- `codex-remote-store.ts` — 遥控的设置（干活的文件夹、每个渠道绑定的人、上一条审批的编号）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的
-- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝；编号重开星芒也接着数，卡片按钮另带只对这一条有效的随机串，旧卡片点了只回「已失效」）、发回的内容脱敏、闲置 4 小时断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限，也不带客户自己接的 MCP 服务、插件和 ChatGPT 应用（开对话前用 `config/read` 逐层查出名字逐个停用，电脑上照旧）。Windows 上在星芒里更新、卸载 Codex 之前（安装队列里，`system-service-context.ts` 的 `releaseRemoteCodex`）调它的 `releaseCodex`：遥控那份 Codex 闲着就停掉、等它真退出，正在干活就挡下来
+- `codex-remote-store.ts` — 遥控的设置（干活的文件夹：正在用的 `workspaceDirectory` 加电脑上加过的 `workspaceDirectories`，最多 5 个，YF-19；每个渠道绑定的人、上一条审批的编号）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的，只有客户自己打开了「打开星芒时自动打开遥控」（`autoStart`，默认关，YF-9）才由 `startOnLaunch` 替他连配对过人的渠道
+- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝；编号重开星芒也接着数，卡片按钮另带只对这一条有效的随机串，旧卡片点了只回「已失效」）、发回的内容脱敏、闲置到设置里选的时长（4 / 12 小时，缺省不自动关，YF-10）断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限，也不带客户自己接的 MCP 服务、插件和 ChatGPT 应用（开对话前用 `config/read` 逐层查出名字逐个停用，电脑上照旧）。Windows 上在星芒里更新、卸载 Codex 之前（安装队列里，`system-service-context.ts` 的 `releaseRemoteCodex`）调它的 `releaseCodex`：遥控那份 Codex 闲着就停掉、等它真退出，正在干活就挡下来。快照带手机最近一条的时间和结果（`lastRequest`，不带原话，YF-13）；电脑卡片上的「停下这一轮」「都拒绝」走 `stopTurnFromComputer` / `declineApprovalsFromComputer`，跟手机上发「停止」、点「拒绝」同一条路，手机上也收得到。长任务中途给进度（YF-15）：渠道有 `sendProgress` / `updateProgress` 的（飞书）发一张原地更新的进度卡，卡上「停止」只认这一轮的随机串；没有的（微信）每 5 分钟发一句，等同意时不发。手机上发来的图（YF-14）核过是绑定的人才去取，认过开头字节存进 `codex-remote-images.ts`，攒着跟下一句话一起作为 `localImage` 交给 Codex，最多 5 张、每张 10 MB
 - `codex-remote-keep-awake.ts` — 有渠道开着（在连、已连上、连不上正在重试）就挡住系统自动睡眠，全关了、要重新登录了、闲置断开了就放开（关屏、合盖照旧）；跟着底座推给界面的快照走，按 `revision` 只认新的那份。Codex 自己的防睡开关只管它跑一轮，两轮之间等手机那段靠这里
 - `codex-remote-channels.ts` — 按渠道建适配器（无 default 的 switch，加渠道漏了是编译错）
-- `codex-remote-feishu.ts` / `codex-remote-feishu-frame.ts` — 飞书渠道：长连接（开放平台的 WebSocket，帧格式照官方 SDK 逐字节对过）收私聊和卡片点击，开放接口发文字和带「同意 / 拒绝」按钮的卡片；App ID / App Secret 填错报「要重新登录」，不无限重试
-- `codex-remote-weixin.ts` / `codex-remote-weixin-api.ts` — 微信渠道（实验功能）：腾讯 iLink 长轮询收消息、发文字，写法照 `@tencent-weixin/openclaw-weixin` 2.4.10 核对；只认 https 的 `*.weixin.qq.com`（跳转主机和登录给的地址都过这道），64 位消息编号保精度解析，只交回扫码人的消息、也只往他那里发；登录过期（-14、401/403）报「要重新登录」不再重试
-- `codex-remote-weixin-login.ts` / `codex-remote-weixin-credential.ts` / `codex-remote-weixin-login-state.ts` — 微信扫码登录：二维码在主进程画成图（登录链接不出主进程），5 分钟一张、最多换 3 张、整体 8 分钟；手机上要输数字时停下来等；拿到的令牌直接进底座的加密凭据存储，不过 IPC。`-login-state.ts` 只有类型，界面 `import type` 它
+- `codex-remote-feishu.ts` / `codex-remote-feishu-frame.ts` — 飞书渠道：长连接（开放平台的 WebSocket，帧格式照官方 SDK 逐字节对过）收私聊和卡片点击，开放接口发文字、带「同意 / 拒绝」按钮的卡片和进度卡（`PATCH` 消息接口原地更新，YF-15；审批卡处理过以后也原地改成结果、去掉按钮，YK-8）；图片消息和富文本里的图交给底座一个取图句柄，`fetchImage` 从「获取消息中的资源文件」接口取（只去 `open.feishu.cn`，没开权限、太大、别的失败分开报，YF-14）；App ID / App Secret 填错报「要重新登录」，不无限重试
+- `codex-remote-weixin.ts` / `codex-remote-weixin-api.ts` — 微信渠道（实验功能）：腾讯 iLink 长轮询收消息、发文字，写法照 `@tencent-weixin/openclaw-weixin` 2.4.10 核对；只认 https 的 `*.weixin.qq.com`（跳转主机和登录给的地址都过这道），64 位消息编号保精度解析，只交回扫码人的消息、也只往他那里发；收到的图从腾讯图片服务器 `novac2c.cdn.weixin.qq.com` 取、AES-128-ECB 解开（只认这一个 origin，YF-14，yoyo 2026-11-11 亲手打字「微信图片网址加」）；登录过期（-14、401/403）报「要重新登录」不再重试
+- `codex-remote-weixin-login.ts` / `codex-remote-weixin-credential.ts` / `codex-remote-weixin-login-state.ts` — 微信扫码登录：二维码在主进程画成图（登录链接不出主进程），5 分钟一张、最多换 3 张、整体 8 分钟；手机上要输数字时停下来等；取二维码时请微信每次都要这串数字（`bot_spam_business_data` 的 verify_pin），这张二维码微信要过数字并且输对了、也说了是谁扫的，扫码人直接记成绑定的人、不用配对码（YF-5），没要过的照旧配对；拿到的令牌直接进底座的加密凭据存储，不过 IPC；服务端认出是本机原来那份令牌（「已经连着这台电脑了」）时不存，只让停在「需要重新登录」的渠道重连一次（YKS-6）。`-login-state.ts` 只有类型，界面 `import type` 它
 - `bootstrap/codex-remote.ts` — 主进程接线：存储放 `<userData>/codex-remote`、渠道走主进程会话 fetch、用客户装好的 Codex 命令行工具；Windows 上星芒以管理员身份或高完整性运行时不许开（手机上点一下就是管理员级操作）
-- 通道在 `ipc/handlers/codex-remote.ts` + `ipc/parsers/codex-remote.ts`（`codex-remote:*`，存飞书凭据那条记为密钥入参），状态变化经 `codex-remote:state-changed` 推给界面；微信扫码的三条（`codex-remote:weixin-login-start` / `-poll` / `-cancel`）在 `ipc/handlers/codex-remote-weixin.ts` + `ipc/parsers/codex-remote-weixin.ts`，成功不记日志
+- 通道在 `ipc/handlers/codex-remote.ts` + `ipc/parsers/codex-remote.ts`（`codex-remote:*`，存飞书凭据那条记为密钥入参；「用这个」「移除」文件夹的 `use-workspace` / `remove-workspace` 只收界面上显示的那串字，主进程只在加过的单子里找，YF-19），状态变化经 `codex-remote:state-changed` 推给界面；微信扫码的三条（`codex-remote:weixin-login-start` / `-poll` / `-cancel`）在 `ipc/handlers/codex-remote-weixin.ts` + `ipc/parsers/codex-remote-weixin.ts`，成功不记日志
 
 ## 外部桌面客户端：WorkBuddy / Claude Desktop / OpenCode
 - `external-client-runtime.ts` — **三家客户端的探测、安装与打开**：Windows 用一段 PowerShell 盘点并核签名，Claude Desktop 装法是存储桶 → winget → 官网 MSIX，OpenCode 走 winget，WorkBuddy 一律让客户去官网自己下；Mac 交给 `macos-desktop-app-installer.ts` 并核 Developer ID。「打开」不排安装队列，是 I11 的登记例外（只等同一家正在装的那一次）
@@ -154,6 +156,7 @@
 - `macos-shell-profile.ts` — 让客户自己开的终端也能直接敲 claude / codex / grok：往 `~/.zprofile`（或 bash 登录文件、fish 的 conf.d）末尾追加标记段，只追加不前置，客户自己装的照旧优先；客户删了那几行，开机不再补
 - `shell-startup-exports.ts` — 认 `~/.zshrc` 这类终端设置文件导出了哪些变量（zsh、bash、fish 的写法），只解析、不执行、不跟 `source`；检查页在 Mac 上用它找会让工具绕开当前账号的那几个（已知45）
 - `macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装桌面端（OpenCode、Claude Desktop，以及 Codex 桌面端的官方包 ChatGPT）：先从星芒存储桶（`desktop-package-bucket.ts`）下同一个官方包，没走通才问官方 feed（逐跳限定的重定向，feed 只能指向本模块自己会拼出的那个地址）；codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」（不是管理员就放 `~/Applications`）；失败的那几句话主进程与渲染层共用（I6）
+- `macos-launch-guard.ts` — 拒绝以 root 运行（D18；Mac 上本软件从不提权，没有「管理员模式」可退），字和 Linux 那句一样；零 import，`platform/entry.ts` 里跟 `linux-launch-guard.ts` 一起最先判。打开桌面客户端那处的 root 检查只剩兜底
 - `macos-install-location.ts` — 认出是不是直接从磁盘映像或系统的随机隔离副本（App Translocation）里运行：那样加速内核一推出就被杀，提示搬进「应用程序」；纯路径判断，不用挂盘就能单测
 - `macos-uninstall.ts` — 设置里「卸载星芒」的 Mac 版：先收回工具配置里指向 .app 的钩子与状态行，删开机项、托管工具和更新缓存，再把自己移进废纸篓并退出；安装队列有活时不卸（I11），Key 和工具设置照 Windows 的口径保留
 

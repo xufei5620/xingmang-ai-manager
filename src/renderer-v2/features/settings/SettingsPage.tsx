@@ -45,6 +45,7 @@ import {
 import { shortcutTools } from '../../registry/tools'
 import { AppUninstallRow } from '../app/AppUninstall'
 import { BackupCard } from './BackupCard'
+import { StorageCard } from './StorageCard'
 import { CodexRemoteCard } from './codex-remote/CodexRemoteCard'
 import { VersionCard } from './VersionCard'
 import { RelayRouteRestartNotice, RelayRouteRow } from '../app/RelayRouteSettings'
@@ -55,11 +56,11 @@ import { certificateDiagnosticCode } from '../app/certificate-trust'
 import { takeSettingsGroup } from '../app/settings-group-intent'
 import { useRowFocus } from '../app/row-focus'
 import { currentWindowOs, type WindowOs } from '../app/window-os'
-import { parseImportedConversations } from '../chat/storage'
+import { parseImportedConversations, readChatPhrases } from '../chat/storage'
 import type { Conversation } from '../chat/state'
 import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from '../app/data-transfer'
 import type { V2Bridge } from '../../types'
-import type { DataTransferImportPreview } from '../../../../electron/ipc-contract'
+import type { ClaudeToggleResult, DataTransferImportPreview } from '../../../../electron/ipc-contract'
 import type { PlatformSystemState } from '../../../../electron/platform/contract'
 import { platformApi } from '../../platform-api'
 import type { BusinessActions } from '../../business-actions'
@@ -84,16 +85,76 @@ export function shortcutRows(os: WindowOs): Array<{ keys: string; label: string 
   const mod = os === 'mac' ? '⌘' : 'Ctrl'
   return [
     { keys: `${mod} K`, label: '搜索或跳转' },
+    { keys: '/', label: '在有搜索框的页面里直接搜索' },
     { keys: `${mod} ,`, label: '打开设置' },
     { keys: launchShortcutMeta(os), label: '打开工具' },
     { keys: `${mod} + / ${mod} -`, label: '放大 / 缩小界面' },
     { keys: `${mod} 0`, label: '恢复自动缩放' },
+    // 全屏在主进程 electron/platform/renderer-v2.ts 里接：Mac 是 ⌃⌘F，别的是 F11。
+    { keys: os === 'mac' ? '⌃ ⌘ F' : 'F11', label: '全屏' },
     { keys: 'Esc', label: '关闭弹窗或菜单' },
   ]
 }
 
 /** 设置页顶上那句。找设置用左栏的「搜索设置」，这里不再教按 Ctrl K。 */
 export const settingsPageLead = '改动会立即保存。'
+
+type ClaudeToggleNotice = { text: string; tone: 'ok' | 'warn' }
+/** later：现在不是星芒在管 Claude Code 的配置（官方账号、没登录、自己填的密钥、还没配过），等下次星芒替它保存配置时一起写。 */
+const claudeToggleLaterNotice: ClaudeToggleNotice = { text: '开关记下了，下次星芒替 Claude Code 保存配置时一起写进去。', tone: 'ok' }
+
+/**
+ * 「点关闭按钮时」里藏起窗口那一项。Mac 上没有「托盘」这个说法，星芒的图标在屏幕顶部的菜单栏里
+ * （深查 TR-5、决定单 D30）；Windows、Linux 照旧。主进程关窗询问框那颗按钮是同一句（window-presentation.ts）。
+ */
+export function closeToTrayLabel(isMac: boolean): string {
+  return isMac ? '收到菜单栏' : '缩到托盘'
+}
+/** 「点关闭按钮时」下面那句说明（有地方放星芒图标时）。 */
+export function closeToTrayNote(isMac: boolean, accelerationAvailable: boolean): string {
+  if (isMac) return '收到菜单栏后，正在进行的安装会继续在后台运行'
+  return accelerationAvailable
+    ? '缩到托盘后，加速和正在进行的安装会继续在后台运行'
+    : '缩到托盘后，正在进行的安装会继续在后台运行'
+}
+/**
+ * 「开机自动启动」那句说明，系统状态读回来之前先摆的。读回来以后用主进程给的那句
+ * （electron/platform/system-service.ts），Mac 上同样说菜单栏。
+ */
+export function launchAtLoginFallbackNote(isMac: boolean): string {
+  return isMac
+    ? '开机后在菜单栏里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点屏幕顶部的星芒图标。'
+    : '开机后在托盘里待命，不弹窗口'
+}
+/**
+ * 「发测试通知」交给系统以后那句（决定单 D68、深查 NT-6）。系统里把星芒的通知关了，大多不会报错
+ * （Mac 上一般静默），所以不能再说「已发送」，叫客户没看到时去系统的通知设置里看。
+ */
+export const testNotificationHandedOffText = '已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。'
+/** 那句旁边的按钮，打开哪一页由主进程定（electron/platform/system-service.ts 的 notificationSettingsTarget）。 */
+export const openNotificationSettingsLabel = '打开系统通知设置'
+/** 系统没让打开时补的那句，说法同检查页「没能打开网络设置」（network-settings-fix.ts）。 */
+export const notificationSettingsUnavailableText = '没能打开系统通知设置，请在系统设置里找「通知」。'
+/** Windows、Mac 有能直接打开的系统通知设置页；Linux 各家桌面的设置程序不一样，不给按钮。 */
+export function canOpenNotificationSettings(platform: string): boolean {
+  return platform === 'windows' || platform === 'macos'
+}
+/**
+ * 「只让 Claude Code 改项目文件夹里的文件」拨完以后那句小提示（Fable 第二轮 Q6）。kept：Claude Code 自己的设置里
+ * 客户写过这一项（星芒没写过），星芒不替他改，开关照样记下。
+ */
+export function claudeWriteBoundaryNotice(result: ClaudeToggleResult): ClaudeToggleNotice {
+  if (result.applied === 'kept') return { text: '开关记下了。Claude Code 自己的设置里你写过这一项，星芒没有改它。', tone: 'warn' }
+  if (result.applied === 'later') return claudeToggleLaterNotice
+  return { text: result.enabled ? '已打开，新开的 Claude Code 会按这个来。' : '已关掉，新开的 Claude Code 不再拦。', tone: 'ok' }
+}
+
+/** 「Claude Code 提交代码时不署名」拨完以后那句小提示（同类对比 备选 6），说法同上。 */
+export function claudeCommitAttributionNotice(result: ClaudeToggleResult): ClaudeToggleNotice {
+  if (result.applied === 'kept') return { text: '开关记下了。Claude Code 自己的设置里你写过署名这一项，星芒没有改它。', tone: 'warn' }
+  if (result.applied === 'later') return claudeToggleLaterNotice
+  return { text: result.enabled ? '已打开，新开的 Claude Code 提交代码时不再署名。' : '已关掉，新开的 Claude Code 提交代码时照常署名。', tone: 'ok' }
+}
 
 /**
  * 设置页「版本更新」里的两个重来入口。两件事名字很像、做的事不一样：「新手引导」重走
@@ -155,6 +216,7 @@ export function SettingsPage({
   onSettingsGroupChange,
   onBackupRestored,
   installedProviders,
+  openHelp,
 }: { api: V2Bridge } & BusinessActions & Pick<Parameters<typeof BackupCard>[0], 'installedProviders'> & {
   /** 备份卡恢复成功后回调，用来让首页重读配置。 */
   onBackupRestored?: Parameters<typeof BackupCard>[0]['onRestored']
@@ -196,6 +258,8 @@ export function SettingsPage({
   }), [api, setResourceData])
   const operation = useOperation()
   const showToast = useToast().show
+  // 「星芒占用的空间」清掉旧备份就加一，「工具配置备份」那张卡跟着重读。
+  const [backupsRevision, setBackupsRevision] = useState(0)
   const systemApi = platformApi()
   const [systemState, setSystemState] = useState<PlatformSystemState | null>(
     null,
@@ -207,6 +271,8 @@ export function SettingsPage({
   const [isLinux, setIsLinux] = useState(false)
   // 网络加速 2026-10-30 下线：能力读回来之前按没有算，不先闪一下加速卡、「加速提醒」。
   const [accelerationAvailable, setAccelerationAvailable] = useState(false)
+  // 同上，读回来之前不给「打开系统通知设置」，免得 Linux 上先出一颗点了没用的按钮。
+  const [notificationSettingsOpenable, setNotificationSettingsOpenable] = useState(false)
   useEffect(() => {
     let current = true
     // 读不到平台就照旧显示工具的安装卸载，不出「卸载星芒」。
@@ -216,6 +282,7 @@ export function SettingsPage({
         setIsMac(capability.platform === 'macos')
         setIsLinux(capability.platform === 'linux')
         setAccelerationAvailable(capability.acceleration !== false)
+        setNotificationSettingsOpenable(canOpenNotificationSettings(capability.platform))
       })
       .catch(() => undefined)
     return () => { current = false }
@@ -258,6 +325,28 @@ export function SettingsPage({
   // 做成了的结果改成会自己消失的小提示，页面不再往下跳；没做成的照旧在页顶出红条。
   const toasted = (text: string) => () => {
     showToast(text, 'ok')
+    return null
+  }
+  // 测试通知那句旁边的按钮：真打开了才收起那句；没打开就留着，再补一句叫客户自己去找。
+  // 主进程是旧版、桥上还没有这个方法时同样落到那一句。
+  const openNotificationSettings = (dismiss: () => void) => {
+    if (!systemApi) return
+    void Promise.resolve()
+      .then(() => systemApi.openNotificationSettings())
+      .then((opened) => {
+        if (!opened) throw new Error('not-opened')
+        dismiss()
+      })
+      .catch(() => showToast(notificationSettingsUnavailableText, 'warn'))
+  }
+  const testNotificationHandedOff = () => {
+    showToast(
+      testNotificationHandedOffText,
+      'ok',
+      notificationSettingsOpenable
+        ? { label: openNotificationSettingsLabel, onSelect: openNotificationSettings }
+        : undefined,
+    )
     return null
   }
   // 「连接方式」点「查看」：查到的那一句用小提示说，不在这一行里多占一行字。
@@ -376,7 +465,7 @@ export function SettingsPage({
     overwrite: boolean,
   ) => {
     const { added, skipped } = chatTransfer
-      ? await chatTransfer.importConversations(conversations)
+      ? await chatTransfer.importConversations(conversations, readChatPhrases(preview.phrases))
       : { added: 0, skipped: 0 }
     const patch = overwrite
       ? settingsPatchFrom(preview.settings, preview.conflictingSettings)
@@ -404,6 +493,8 @@ export function SettingsPage({
     void operation.execute(
       'transfer-import',
       async () => {
+        // 聊天在回复或出图就先不动，连文件也不让选（D41）。
+        chatTransfer?.assertChatIdle()
         const preview = await api.importAppData()
         if (!preview) return null
         const conversations = parseImportedConversations(preview.conversations)
@@ -430,11 +521,11 @@ export function SettingsPage({
     void operation.execute(
       'transfer-export',
       async () =>
-        api.exportAppData({
-          conversations: chatTransfer
-            ? await chatTransfer.exportConversations()
-            : [],
-        }),
+        api.exportAppData(
+          chatTransfer
+            ? await chatTransfer.exportChat()
+            : { conversations: [] },
+        ),
       (result) =>
         result
           ? {
@@ -442,6 +533,29 @@ export function SettingsPage({
               revealPath: result.outputPath,
             }
           : null,
+    )
+  // 设置里两个 Claude Code 开关不走 saveSettings：主进程先对齐 Claude Code 的配置（先做一份备份）再记开关，
+  // 改配置失败就不记、页顶出红条；做成了按主进程实际做了什么弹一句。
+  const switchClaudeToggle = (
+    name: string,
+    field: 'claudeWritesInsideProject' | 'claudeHidesCommitAttribution',
+    call: () => Promise<ClaudeToggleResult>,
+    notice: (result: ClaudeToggleResult) => ClaudeToggleNotice,
+  ) =>
+    void operation.execute(
+      name,
+      async () => {
+        const result = await call()
+        resource.setData((previous) =>
+          previous ? { ...previous, settings: { ...previous.settings, [field]: result.enabled } } : previous,
+        )
+        return result
+      },
+      (result) => {
+        const shown = notice(result)
+        showToast(shown.text, shown.tone)
+        return null
+      },
     )
   const settings = resource.data?.settings
   // 行标题从注册表取（settingsItems），顶部搜索、页内搜索和这里说的是同一个名字。
@@ -463,10 +577,10 @@ export function SettingsPage({
     />
   )
   // 要先读一次系统状态的那几项：读的那一下照常画开关、灰着点不了，不写字；没读到写
-  // 「暂未读到」，页顶红条给「重新读取」；只有这台电脑真的没有这一项，才写「此版本暂不支持」。
+  // 「暂未读到」，页顶红条给「重新读取」；只有这台电脑真的没有这一项，才写「这台电脑上用不了」。
   const systemPending = (label: string) =>
     !systemApi ? (
-      <Pill tone="neutral">此版本暂不支持</Pill>
+      <Pill tone="neutral">这台电脑上用不了</Pill>
     ) : systemError ? (
       <Pill tone="neutral">暂未读到</Pill>
     ) : (
@@ -523,10 +637,13 @@ export function SettingsPage({
         navigate={navigate}
         onRestored={onBackupRestored}
         installedProviders={installedProviders}
+        reloadSignal={backupsRevision}
       />
     ),
+    // 星芒占用的空间（D100）：切到这一组时新挂上、算一次；清掉旧备份后叫上面那张备份卡重读。
+    storage: <StorageCard key="storage" api={api} active={active} onBackupsCleaned={() => setBackupsRevision((value) => value + 1)} />,
     // 手机遥控 Codex：不读设置，自己向主进程要状态。
-    'codex-remote': <CodexRemoteCard key="codex-remote" api={api} />,
+    'codex-remote': <CodexRemoteCard key="codex-remote" api={api} navigate={navigate} onOpenHelp={openHelp} isMac={isMac} />,
     // 原来的更新页。两个开关不在卡上再摆一份，就是下面那两行。
     version: (
       <VersionCard
@@ -651,13 +768,13 @@ export function SettingsPage({
               aria-label="用显卡加速显示"
               testId="settings-hardware-acceleration"
             />,
-            { badge: '重启后生效' },
+            { badge: '重开后生效' },
           )}
           {displayRelaunch && (
             <Notice
               tone="neutral"
               title="显示方式已改好"
-              body="重启软件后生效。"
+              body="重开星芒后生效。"
               testId="settings-display-relaunch"
               actions={
                 <>
@@ -700,7 +817,7 @@ export function SettingsPage({
       ),
       'launch-at-login': row(
         'launch-at-login',
-        systemState?.startup.note ?? '开机后在托盘里待命，不弹窗口',
+        systemState?.startup.note ?? launchAtLoginFallbackNote(isMac),
         systemApi && systemState?.startup.supported ? (
           <Switch
             aria-label="开机自动启动"
@@ -716,7 +833,7 @@ export function SettingsPage({
             }
           />
         ) : systemState ? (
-          <Pill tone="neutral">此版本暂不支持</Pill>
+          <Pill tone="neutral">这台电脑上用不了</Pill>
         ) : (
           systemPending('开机自动启动')
         ),
@@ -727,15 +844,13 @@ export function SettingsPage({
         // 没有游戏加速的电脑（Linux）不说加速。
         isLinux && resource.data && !resource.data.capabilities.tray
           ? '这台电脑的任务栏上没有放星芒图标的地方，点关闭会直接退出软件'
-          : accelerationAvailable
-            ? '缩到托盘后，加速和正在进行的安装会继续在后台运行'
-            : '缩到托盘后，正在进行的安装会继续在后台运行',
+          : closeToTrayNote(isMac, accelerationAvailable),
         <Segment
           options={[
             { value: 'ask', label: '每次询问' },
             {
               value: 'tray',
-              label: '缩到托盘',
+              label: closeToTrayLabel(isMac),
               disabled: !resource.data?.capabilities.tray,
             },
             { value: 'quit', label: '直接退出' },
@@ -764,7 +879,7 @@ export function SettingsPage({
       ),
       workspace: row(
         'workspace',
-        '工具会读写里面的文件，请选你信任的文件夹',
+        '打开工具时进入这个文件夹；工具会读写里面的文件，请选你信任的文件夹',
         <div className="v2-business-control">
           <span className="v2-business-path">{settings.workspace}</span>
           <Button
@@ -784,6 +899,32 @@ export function SettingsPage({
             更换
           </Button>
         </div>,
+      ),
+      'claude-write-boundary': row(
+        'claude-write-boundary',
+        '开着时，Claude Code 写文件、改文件只在你打开的那个文件夹里做，要改外面的会被拒绝。它在终端里跑的命令不受这个限制。',
+        <Switch
+          checked={settings.claudeWritesInsideProject === true}
+          aria-label="只让 Claude Code 改项目文件夹里的文件"
+          testId="settings-claude-write-boundary"
+          disabled={Boolean(operation.busy)}
+          onChange={(enabled) =>
+            switchClaudeToggle('claude-write-boundary', 'claudeWritesInsideProject', () => api.setClaudeWriteBoundary(enabled), claudeWriteBoundaryNotice)
+          }
+        />,
+      ),
+      'claude-commit-attribution': row(
+        'claude-commit-attribution',
+        '开着时，Claude Code 替你提交代码（git commit）和发 PR 时，不再在末尾加上 Claude 的署名。',
+        <Switch
+          checked={settings.claudeHidesCommitAttribution === true}
+          aria-label="Claude Code 提交代码时不署名"
+          testId="settings-claude-commit-attribution"
+          disabled={Boolean(operation.busy)}
+          onChange={(hidden) =>
+            switchClaudeToggle('claude-commit-attribution', 'claudeHidesCommitAttribution', () => api.setClaudeCommitAttribution(hidden), claudeCommitAttributionNotice)
+          }
+        />,
       ),
       'latest-cli': row(
         'latest-cli',
@@ -821,7 +962,7 @@ export function SettingsPage({
       ),
       'tool-route-restart-hints': row(
         'tool-route-restart-hints',
-        '连接线路因为连不上换了以后，开着的工具要重开才会走新线路。关掉以后只在首页标「需重开生效」。',
+        '连接线路因为连不上换了以后，开着的工具要重开才会走新线路。关掉以后不再弹提示，只在首页工具卡上标「需重开生效」。',
         <Switch
           checked={settings.toolRouteRestartHints !== false}
           aria-label="换线路后提醒我重开工具"
@@ -864,7 +1005,7 @@ export function SettingsPage({
             查看
           </Button>
         ) : (
-          <Pill tone="neutral">此版本暂不支持</Pill>
+          <Pill tone="neutral">这台电脑上用不了</Pill>
         ),
       ),
       'network-check': row(
@@ -917,7 +1058,7 @@ export function SettingsPage({
                   if (result === 'unsupported')
                     throw new Error('这台电脑当前无法显示系统通知。')
                 },
-                toasted('已发送一条测试通知'),
+                testNotificationHandedOff,
               )
             }
           >
@@ -1006,7 +1147,7 @@ export function SettingsPage({
         'crash-reporting',
         '出错时把错误信息、版本和系统信息发到海外的错误收集服务；不含账号、密钥、文件路径和对话内容',
         <Switch
-          aria-label="崩溃自动上报"
+          aria-label="自动发送错误报告"
           checked={settings.crashReporting !== false}
           onChange={(enabled) => void update({ crashReporting: enabled })}
         />,
@@ -1060,7 +1201,7 @@ export function SettingsPage({
             icon={FileText}
             onClick={() => navigate?.('feedback', 'log')}
           >
-            去反馈
+            查看运行日志
           </Button>
         </>,
       ),
@@ -1277,6 +1418,8 @@ export function SettingsPage({
         revealPath={operation.revealPath || undefined}
         onReveal={(path) => api.revealExportedFile(path)}
         retry={readFailed ? { label: '重新读取', onClick: reread } : undefined}
+        // 红条上是「导出聊天记录和设置」没存进去时，按换个位置再存说，不说安装目录（D16）。
+        target={!resource.error && !saveError && !systemError && operation.failed === 'transfer-export' ? 'export' : undefined}
       />
       <div className="v2-business-settings-grid">
         <div className="v2-settings-side">

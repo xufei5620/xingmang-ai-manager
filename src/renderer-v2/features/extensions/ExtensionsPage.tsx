@@ -3,10 +3,12 @@
 // 也靠它，见 pages-management.tsx 开头）。pages-management.tsx 照旧转出 ExtensionsPage。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  Copy,
   Download,
   FileText,
   FolderOpen,
   Globe,
+  Headset,
   MoreHorizontal,
   Package,
   Plug,
@@ -89,6 +91,8 @@ import {
   findNativeSkill,
   groupExtensionItems,
   mcpAuthorized,
+  mcpCopyChoices,
+  mcpCopyOffered,
   mcpHealthView,
   mcpNamesInScope,
   mcpNameTakenIn,
@@ -103,6 +107,7 @@ import {
   runExtensionAction,
   submitMcpInstall,
   unresolvedInstallPlaceholders,
+  type McpRuntimeNotice,
   type RowAction,
 } from './extensions-common'
 import { isProvider } from '../tools/provider-options'
@@ -330,6 +335,11 @@ export function ExtensionsPage({
   // 「自定义连接」给哪几个工具加；打开时只勾当前这个。
   const [formTools, setFormTools] = useState<Provider[]>([])
   const [deletion, setDeletion] = useState<ExtensionItem | null>(null)
+  // 「也装到别的工具…」（同类对比 备选 5）：哪一条、勾了哪几个工具、哪几个工具里已经有同名的（还没查回来是 null）。
+  const [copying, setCopying] = useState<{ item: ExtensionItem; tools: Provider[]; taken: Provider[] | null } | null>(null)
+  const copyCheck = useLatestRequest()
+  // 待确认移除的自己加的市场（名字）。地址、分支、子目录都是客户自己填的，手一滑删了没有撤销，所以先问一句（D67）。
+  const [marketRemoval, setMarketRemoval] = useState<string | null>(null)
   // 「添加插件」表单点了「添加」、等用户在确认框里点「信任并安装」（只有 Grok 有这一步）。
   const [trusting, setTrusting] = useState(false)
   const [selected, setSelected] = useState<ExtensionItem | null>(null)
@@ -383,13 +393,39 @@ export function ExtensionsPage({
       'python',
       async () => {
         await api.installPythonRuntime()
-        // 不叫的话回首页，「运行环境」里 Python 还写「可选 · 未装」、还给安装按钮。先叫、再读本页：
+        // 不叫的话回首页，「运行环境」里 Python 还写「可选 · 未安装」、还给安装按钮。先叫、再读本页：
         // 本页那次读接上 App 刚起的那一轮检测。
         onSystemChanged?.()
         await reloadList()
       },
       'Python 已经装好了，可以继续添加这条连接',
     )
+  // 缺 Python 能代装就给「自动安装 Python」；缺 uv 给「找客服」（D20），两样都缺时两颗都在。
+  function runtimeNoticeActions(notice: McpRuntimeNotice) {
+    const help = notice.support ? onOpenHelp : undefined
+    if (!notice.installPython && !help) return undefined
+    return (
+      <>
+        {notice.installPython && (
+          <Button
+            size="sm"
+            icon={Download}
+            loading={operation.busy === 'python'}
+            disabled={Boolean(operation.busy)}
+            onClick={installPython}
+            testId="mcp-install-python"
+          >
+            自动安装 Python
+          </Button>
+        )}
+        {help && (
+          <Button size="sm" icon={Headset} onClick={help} testId="mcp-runtime-support">
+            找客服
+          </Button>
+        )}
+      </>
+    )
+  }
   const job = toolJobs?.[provider]
   const installingTool = installJobRunning(job)
   const installMissingTool = () =>
@@ -560,6 +596,56 @@ export function ExtensionsPage({
   const oauthUnavailable = codexViaDesktop && formTargets.includes('codex')
   const formOffersProject = kind === 'mcp' ? !mcpGlobalOnly : extensionFormOffersProject(provider, kind)
   const shownScope = formOffersProject ? formScope : 'user'
+  // 「也装到别的工具…」：先问一遍别的工具里有没有同名的（有就标「已添加」不给勾），查回来以后把能装的都先勾上。
+  const openCopy = (item: ExtensionItem) => {
+    operation.clear()
+    const current = copyCheck.begin()
+    const others = mcpCopyChoices(provider, usable, [], codexViaDesktop)
+      .filter((choice) => choice.note === null)
+      .map((choice) => choice.id)
+    setCopying({ item, tools: [], taken: null })
+    void mcpNameTakenIn(api, others, item.id, 'user').then((taken) => {
+      if (!current()) return
+      setCopying((open) => (open && open.item === item ? { ...open, taken, tools: others.filter((tool) => !taken.includes(tool)) } : open))
+    })
+  }
+  const copyTargets = copying
+    ? mcpCopyChoices(provider, usable, copying.taken ?? [], codexViaDesktop)
+        .filter((choice) => choice.note === null && copying.tools.includes(choice.id))
+        .map((choice) => choice.id)
+    : []
+  // 连接里的密钥、环境变量、请求头由主进程自己读、自己交给目标工具，这里只给名字。一个工具没装上就停在那里：
+  // 已经装上的标成「已添加」，改好再点一次只补剩下的。
+  const submitCopy = () => {
+    const open = copying
+    if (!open) return
+    const targets = copyTargets
+    void operation.execute(
+      'copy',
+      async () => {
+        const name = open.item.id
+        if (!targets.length) throw new Error('先勾上要装的工具。')
+        const taken = await mcpNameTakenIn(api, targets, name, 'user')
+        if (taken.length) {
+          const names = extensionToolNames(taken, codexViaDesktop)
+          throw new Error(`${names} 里已经有叫「${name}」的连接了，为了不动原来那条，这次没有装。不勾 ${names} 再试。`)
+        }
+        const done: Provider[] = []
+        try {
+          for (const target of targets) {
+            await api.copyMcpToTool({ from: provider, to: target, name })
+            done.push(target)
+          }
+        } finally {
+          if (done.length && done.length < targets.length)
+            setCopying((current) => (current ? { ...current, taken: [...(current.taken ?? []), ...done] } : current))
+        }
+        setCopying(null)
+        return { name, tools: done }
+      },
+      (added) => `已添加「${added.name}」，给 ${extensionToolNames(added.tools, codexViaDesktop)} 使用，下次打开工具时生效`,
+    )
+  }
   const addMcp = async () => {
     const name = formName.trim()
     const problem = customMcpProblem({
@@ -939,6 +1025,15 @@ export function ExtensionsPage({
                       },
                     ]
                   : []),
+                ...(kind === 'mcp' && mcpCopyOffered(provider, item)
+                  ? [
+                      {
+                        label: '也装到别的工具…',
+                        icon: Copy,
+                        onSelect: () => openCopy(item),
+                      },
+                    ]
+                  : []),
                 ...(rowState.canUninstall
                   ? [
                       {
@@ -1305,14 +1400,11 @@ export function ExtensionsPage({
                           label: '移除市场',
                           icon: Trash2,
                           danger: true,
-                          onSelect: () =>
-                            void operation.execute(
-                              'market-delete',
-                              async () => {
-                                await api.removeMarketplace(market.name)
-                                await reloadList()
-                              },
-                            ),
+                          // 框里摆着 ResultNotice：先清掉别的操作留下的红条，别让它跟着进这个框。
+                          onSelect: () => {
+                            operation.clear()
+                            setMarketRemoval(market.name)
+                          },
                         },
                       ]}
                     />
@@ -1398,18 +1490,7 @@ export function ExtensionsPage({
             title={addFormRuntimeNotice.title}
             body={addFormRuntimeNotice.body}
             testId="mcp-runtime-notice"
-            actions={addFormRuntimeNotice.installPython ? (
-              <Button
-                size="sm"
-                icon={Download}
-                loading={operation.busy === 'python'}
-                disabled={Boolean(operation.busy)}
-                onClick={installPython}
-                testId="mcp-install-python"
-              >
-                自动安装 Python
-              </Button>
-            ) : undefined}
+            actions={runtimeNoticeActions(addFormRuntimeNotice)}
           />
         )}
         {kind === 'mcp' && form === 'add' && !curatedForm && (
@@ -1627,18 +1708,7 @@ export function ExtensionsPage({
             title={curatedRuntimeNotice.title}
             body={curatedRuntimeNotice.body}
             testId="curated-runtime-notice"
-            actions={curatedRuntimeNotice.installPython ? (
-              <Button
-                size="sm"
-                icon={Download}
-                loading={operation.busy === 'python'}
-                disabled={Boolean(operation.busy)}
-                onClick={installPython}
-                testId="mcp-install-python"
-              >
-                自动安装 Python
-              </Button>
-            ) : undefined}
+            actions={runtimeNoticeActions(curatedRuntimeNotice)}
           />
         )}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
@@ -1678,6 +1748,46 @@ export function ExtensionsPage({
           <dd>{source.trim()}</dd>
         </dl>
         <p>只装你认识、信得过的来源；拿不准就先别装。</p>
+        <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
+      </Dialog>
+      <Dialog
+        open={Boolean(copying)}
+        title={`把「${copying?.item.name ?? ''}」也装到别的工具`}
+        testId="mcp-copy"
+        busy={operation.busy === 'copy'}
+        onClose={() => setCopying(null)}
+        footer={
+          <>
+            <Button onClick={() => setCopying(null)}>取消</Button>
+            <Button
+              variant="primary"
+              icon={Copy}
+              loading={operation.busy === 'copy'}
+              disabled={copying?.taken === null || !copyTargets.length || (Boolean(operation.busy) && operation.busy !== 'copy')}
+              onClick={submitCopy}
+              testId="mcp-copy-confirm"
+            >
+              装上
+            </Button>
+          </>
+        }
+      >
+        {copying && (
+          <ExtensionToolPicker
+            choices={mcpCopyChoices(provider, usable, copying.taken ?? [], codexViaDesktop)}
+            selected={copying.tools}
+            disabled={copying.taken === null || Boolean(operation.busy)}
+            onToggle={(id) =>
+              setCopying((current) =>
+                current
+                  ? { ...current, tools: current.tools.includes(id) ? current.tools.filter((tool) => tool !== id) : [...current.tools, id] }
+                  : current,
+              )
+            }
+            testId="mcp-copy-tools"
+          />
+        )}
+        <p>连接里填过的密钥、环境变量和请求头会原样带过去，装在那些工具的「我的（全局）」里，下次打开工具时生效。</p>
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
       <Dialog
@@ -1726,7 +1836,9 @@ export function ExtensionsPage({
         <p>
           {kind === 'plugin'
             ? '插件里带的技能、命令和外接工具会一起移除。'
-            : '其他工具里的不受影响。以后可以在官方目录或精选里重新添加。'}
+            : kind === 'skill'
+              ? '其他工具里的不受影响。以后要用，再「从文件夹导入」一次。'
+              : '其他工具里的不受影响。精选里的以后可以在精选里再加，自己加的要重新填一遍。'}
         </p>
         {operation.busy && operation.busy !== 'delete' && (
           <p role="status" data-testid={`${page}-delete-busy`}>
@@ -1734,6 +1846,44 @@ export function ExtensionsPage({
               ? '上一个操作还没完成，完成后才能卸载。'
               : '上一个操作还没完成，完成后才能移除。'}
           </p>
+        )}
+        <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
+      </Dialog>
+      <Dialog
+        open={marketRemoval !== null}
+        title={`移除市场「${marketRemoval ?? ''}」？`}
+        onClose={() => setMarketRemoval(null)}
+        testId="plugins-market-delete-dialog"
+        footer={
+          <>
+            <Button onClick={() => setMarketRemoval(null)}>取消</Button>
+            {/* 跟上面删除确认框一个样子：只有移除自己在跑才转圈，别的操作没完时按钮灰着、正文下面说一句为什么。 */}
+            <Button
+              variant="danger"
+              icon={Trash2}
+              loading={operation.busy === 'market-delete'}
+              disabled={Boolean(operation.busy) && operation.busy !== 'market-delete'}
+              onClick={() => {
+                if (marketRemoval !== null)
+                  void operation.execute(
+                    'market-delete',
+                    async () => {
+                      await api.removeMarketplace(marketRemoval)
+                      setMarketRemoval(null)
+                      await reloadList()
+                    },
+                  )
+              }}
+              testId="plugins-market-delete-confirm"
+            >
+              移除
+            </Button>
+          </>
+        }
+      >
+        <p>移除后，这个市场就不在列表里了，要用时得重新添加。</p>
+        {operation.busy && operation.busy !== 'market-delete' && (
+          <p role="status" data-testid="plugins-market-delete-busy">上一个操作还没完成，完成后才能移除。</p>
         )}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>

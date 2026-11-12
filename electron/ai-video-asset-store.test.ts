@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiVideoAssetStore, inspectMp4Video, inspectMp4VideoMetadata } from './ai-video-asset-store'
 import { setRelocatedFolderPolicy } from './relocated-folders'
+import { classifyStorageFailure } from './startup-failure'
 
 const roots: string[] = []
 
@@ -77,13 +78,38 @@ describe('AiVideoAssetStore', () => {
       asset: expect.objectContaining({ mimeType: 'video/mp4', width: 1920, height: 1080, durationSeconds: 5.25 }),
       bytes: mp4(),
     })
-    await expect(store.readOwned(8, asset.assetId)).rejects.toThrow('不存在或无权访问')
+    await expect(store.readOwned(8, asset.assetId)).rejects.toThrow('这段视频已经不在电脑上了')
     await expect(store.listOwned(7)).resolves.toEqual([
       expect.objectContaining({
         assetId: asset.assetId, mediaType: 'video', mimeType: 'video/mp4',
         width: 1920, height: 1080, durationSeconds: 5.25,
       }),
     ])
+  })
+
+  it('reads only the asked-for range of an owned video, under the same checks as a whole read', async () => {
+    const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-range-'))
+    roots.push(outputRoot)
+    const store = new AiVideoAssetStore({ outputRoot, now: () => new Date('2026-08-14T12:00:00.000Z') })
+    const asset = await store.storeMp4(7, mp4(), { taskId: 'video_range' })
+    const whole = mp4()
+    const sizes: number[] = []
+    await expect(store.readOwnedRange(7, asset.assetId, (total) => { sizes.push(total); return { start: 4, end: 11 } })).resolves.toEqual({
+      asset: { mimeType: 'video/mp4' }, totalBytes: whole.length, bytes: whole.subarray(4, 12),
+    })
+    expect(sizes).toEqual([whole.length])
+    // Selecting nothing (HEAD, an unsatisfiable range) reads nothing past the signature.
+    await expect(store.readOwnedRange(7, asset.assetId, () => null)).resolves.toEqual({ asset: { mimeType: 'video/mp4' }, totalBytes: whole.length, bytes: Buffer.alloc(0) })
+    await expect(store.readOwnedRange(8, asset.assetId, () => null)).rejects.toThrow('这段视频已经不在电脑上了')
+    await expect(store.readOwnedRange(7, asset.assetId, (total) => ({ start: 0, end: total }))).rejects.toThrow('读取范围无效')
+
+    // A second hard link, or bytes that are not an MP4 any more, are refused exactly like a whole read.
+    const filePath = await store.resolveOwnedFilePath(7, asset.assetId)
+    fs.linkSync(filePath, `${filePath}.link`)
+    await expect(store.readOwnedRange(7, asset.assetId, () => null)).rejects.toThrow('无效或超过安全上限')
+    fs.rmSync(`${filePath}.link`)
+    fs.writeFileSync(filePath, Buffer.from('<html>not a video</html>'))
+    await expect(store.readOwnedRange(7, asset.assetId, () => ({ start: 0, end: 3 }))).rejects.toThrow('MP4')
   })
 
   it('stores a film composed on this computer like a generated clip, without a task id', async () => {
@@ -102,6 +128,23 @@ describe('AiVideoAssetStore', () => {
     await expect(store.storeComposed(0, mp4())).rejects.toThrow('AI 视频账号标识格式错误')
     const small = new AiVideoAssetStore({ outputRoot, maximumVideoBytes: 16 })
     await expect(small.storeComposed(7, mp4())).rejects.toThrow('视频超过 512 MB 安全上限')
+  })
+
+  it('keeps the full-disk reason on a failed save so a paid clip can say it is charged (D38)', async () => {
+    const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-full-'))
+    roots.push(outputRoot)
+    const store = new AiVideoAssetStore({ outputRoot, now: () => new Date('2026-08-14T12:00:00.000Z') })
+
+    failTemporaryFileWrites()
+    const error = await store.storeMp4(7, mp4(), { taskId: 'video_full' }).then(() => null, (reason: unknown) => reason)
+
+    expect((error as Error).message).toBe('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+    expect(classifyStorageFailure(error)).toBe('disk-full')
+    vi.restoreAllMocks()
+    // Nothing half-written is left in the dated folder, and the clip lists as not stored.
+    const accountRoot = path.join(outputRoot, 'user-7')
+    for (const day of fs.readdirSync(accountRoot)) expect(fs.readdirSync(path.join(accountRoot, day))).toEqual([])
+    await expect(store.listOwned(7)).resolves.toEqual([])
   })
 
   it('imports an MP4 file idempotently without changing the source', async () => {
@@ -209,8 +252,8 @@ describe('AiVideoAssetStore lookup by identifier', () => {
     const lstatSync = vi.spyOn(fs, 'lstatSync')
     try {
       const store = new AiVideoAssetStore({ outputRoot })
-      await expect(store.readOwned(7, 'M'.repeat(43))).rejects.toThrow(/^AI 视频资产不存在或无权访问$/)
-      await expect(store.resolveOwnedFilePath(7, 'M'.repeat(43))).rejects.toThrow(/^AI 视频资产不存在或无权访问$/)
+      await expect(store.readOwned(7, 'M'.repeat(43))).rejects.toThrow(/^这段视频已经不在电脑上了，可能被移走或删掉了。$/)
+      await expect(store.resolveOwnedFilePath(7, 'M'.repeat(43))).rejects.toThrow(/^这段视频已经不在电脑上了，可能被移走或删掉了。$/)
       return lstatSync.mock.calls.length
     } finally {
       lstatSync.mockRestore()
@@ -236,8 +279,8 @@ describe('AiVideoAssetStore lookup by identifier', () => {
     fs.rmSync(await store.resolveOwnedFilePath(7, gone.assetId))
 
     // Not a raw ENOENT carrying the file's path.
-    await expect(store.readOwned(7, gone.assetId)).rejects.toThrow(/^AI 视频资产不存在或无权访问$/)
-    await expect(store.resolveOwnedFilePath(7, gone.assetId)).rejects.toThrow(/^AI 视频资产不存在或无权访问$/)
+    await expect(store.readOwned(7, gone.assetId)).rejects.toThrow(/^这段视频已经不在电脑上了，可能被移走或删掉了。$/)
+    await expect(store.resolveOwnedFilePath(7, gone.assetId)).rejects.toThrow(/^这段视频已经不在电脑上了，可能被移走或删掉了。$/)
   })
 
   it.runIf(process.platform !== 'win32')('still runs the full file checks on a remembered location', async () => {
@@ -284,7 +327,7 @@ describe('AiVideoAssetStore on a relocated documents folder', () => {
     await expect(restarted.readOwned(7, asset.assetId)).resolves.toMatchObject({ bytes: mp4() })
     await expect(restarted.resolveOwnedFilePath(7, asset.assetId)).resolves.toContain(`xingmang-${asset.assetId}.mp4`)
     await restarted.removeOwned(7, asset.assetId)
-    await expect(restarted.readOwned(7, asset.assetId)).rejects.toThrow('不存在或无权访问')
+    await expect(restarted.readOwned(7, asset.assetId)).rejects.toThrow('这段视频已经不在电脑上了')
   })
 
   it('keeps refusing the relocated folder while no policy accepts it', async () => {

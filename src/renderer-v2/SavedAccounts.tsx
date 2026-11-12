@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Plus, Trash2, X } from 'lucide-react'
+import type { SavedAccount } from '../../electron/ipc-contract'
 import { Button, Dialog, Input, ListRow, Notice, Pill } from './ui'
 import {
   ListState,
@@ -27,6 +28,7 @@ import { accountSources, isEmail } from './features/auth/state'
 import type { LoginTarget } from './features/auth/api'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
 import { currentWindowOs, type WindowOs } from './features/app/window-os'
+import { chatImageSwitchWarning, chatImageWorkActive } from './chat-image-work'
 
 export function SavedAccounts({
   api,
@@ -76,12 +78,55 @@ export function SavedAccounts({
   // 切过去才发现登录已失效的那一个保存账号（全面检测 Q12）：当前账号没变，
   // 这一行给个「重新登录这个账号」，不然用户只看到一句失败、不知道下一步。
   const [expired, setExpired] = useState<string | null>(null)
+  // 对话页还在出图时点了「切换」、「添加另一个账号」或「重新登录这个账号」：先问一句，点「仍然切换」才接着做（D44）。
+  const [imageBusyNext, setImageBusyNext] = useState<ImageBusyNext | null>(null)
+  const waitForImage = useRef<HTMLButtonElement>(null)
   function isCurrent(account: { userId: number; origin: string }) {
     return Boolean(
       resource.data?.session.authenticated &&
       account.userId === resource.data.session.account?.userId &&
       sameAccountOrigin(account.origin, resource.data.origin),
     )
+  }
+  function switchTo(account: SavedAccount) {
+    void operation.execute(
+      account.id,
+      async () => {
+        setExpired(null)
+        const outcome = await switchAccountWithOptionalSync(
+          api,
+          account,
+          selected,
+          sync.data,
+          resource.data?.origin ?? '',
+        ).catch((error: unknown) => {
+          if (savedAccountExpired(error)) setExpired(account.id)
+          throw error
+        })
+        preserveAccountSwitchResult(outcome)
+        setResult(outcome)
+        setChoices({})
+        await resource.reload()
+        await sync.reload()
+        onAccountChanged?.(outcome)
+      },
+      '',
+    )
+  }
+  function proceed(next: ImageBusyNext) {
+    if ('account' in next) switchTo(next.account)
+    else onLogin?.(next.login)
+  }
+  // 换账号时主进程会停掉旧账号的出图，对话页那张停了就不收，服务端可能已经扣了钱（D44）。
+  // 去登录另一个账号也一样：登录框一提交主进程就先停掉出图（密码输错也停），登录框又挡住了
+  // 对话页、开着时出不了新图，所以在打开登录框之前问。
+  // 只在点下去这一刻看一次；问的时候图出完了也不自己关、不自己接着做，等用户选。
+  function unlessChatImageBusy(next: ImageBusyNext) {
+    if (chatImageWorkActive()) {
+      setImageBusyNext(next)
+      return
+    }
+    proceed(next)
   }
   const desktopClientsHint = accountSwitchDesktopClientsHint(currentWindowOs())
   const alone = variant === 'card' && Boolean(resource.data) && !resource.data?.accounts.some((account) => !isCurrent(account))
@@ -148,7 +193,7 @@ export function SavedAccounts({
         <div className="v2-business-card-inset v2-business-saved-alone" data-testid="saved-accounts-alone">
           <p><strong>还没有保存别的账号。</strong></p>
           <p>点下面的「添加另一个账号」，以后在这里一键切换。</p>
-          <Button icon={Plus} onClick={() => onLogin?.()} testId="account-add">
+          <Button icon={Plus} onClick={() => unlessChatImageBusy({ login: undefined })} testId="account-add">
             添加另一个账号
           </Button>
         </div>
@@ -179,31 +224,7 @@ export function SavedAccounts({
                         size="sm"
                         disabled={current || Boolean(operation.busy)}
                         loading={operation.busy === account.id}
-                        onClick={() =>
-                          void operation.execute(
-                            account.id,
-                            async () => {
-                              setExpired(null)
-                              const outcome = await switchAccountWithOptionalSync(
-                                api,
-                                account,
-                                selected,
-                                sync.data,
-                                resource.data?.origin ?? '',
-                              ).catch((error: unknown) => {
-                                if (savedAccountExpired(error)) setExpired(account.id)
-                                throw error
-                              })
-                              preserveAccountSwitchResult(outcome)
-                              setResult(outcome)
-                              setChoices({})
-                              await resource.reload()
-                              await sync.reload()
-                              onAccountChanged?.(outcome)
-                            },
-                            '',
-                          )
-                        }
+                        onClick={() => unlessChatImageBusy({ account })}
                       >
                         切换
                       </Button>
@@ -212,7 +233,7 @@ export function SavedAccounts({
                           size="sm"
                           variant="primary"
                           disabled={Boolean(operation.busy)}
-                          onClick={() => onLogin?.(savedAccountLoginTarget(account))}
+                          onClick={() => unlessChatImageBusy({ login: savedAccountLoginTarget(account) })}
                           testId={`saved-account-relogin-${account.id}`}
                         >
                           重新登录这个账号
@@ -265,7 +286,7 @@ export function SavedAccounts({
             ))}
           </details>
           <div className="v2-business-card-inset">
-            <Button icon={Plus} onClick={() => onLogin?.()} testId="account-add">
+            <Button icon={Plus} onClick={() => unlessChatImageBusy({ login: undefined })} testId="account-add">
               添加另一个账号
             </Button>
           </div>
@@ -303,6 +324,34 @@ export function SavedAccounts({
         <p>只移除本机保存的登录信息。已写入工具的密钥不会改变。</p>
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
+      {/* 单子（D44）只定了这一句和两个按钮，没有标题：标题行藏起来，这一句同时当框的名字。 */}
+      <Dialog
+        open={Boolean(imageBusyNext)}
+        headless
+        title={chatImageSwitchWarning}
+        onClose={() => setImageBusyNext(null)}
+        initialFocus={waitForImage}
+        testId="saved-account-switch-image-busy"
+        footer={
+          <>
+            <Button ref={waitForImage} onClick={() => setImageBusyNext(null)}>
+              等它出完
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                const next = imageBusyNext
+                setImageBusyNext(null)
+                if (next) proceed(next)
+              }}
+            >
+              仍然切换
+            </Button>
+          </>
+        }
+      >
+        <p>{chatImageSwitchWarning}</p>
+      </Dialog>
     </div>
   )
 }
@@ -317,6 +366,9 @@ export function accountSwitchDesktopClientsHint(os: WindowOs): string | null {
 }
 
 type SyncProvider = AccountSyncCandidate['provider']
+
+/** 问过「还在出图」以后、点「仍然切换」才接着做的那件事：切到这个保存的账号，或者打开登录框去登录另一个账号。 */
+type ImageBusyNext = { account: SavedAccount } | { login: LoginTarget | undefined }
 
 /**
  * 切换账号时哪些工具要一起换。没动过的按默认：原本就是账号密钥的勾上，自己填的、

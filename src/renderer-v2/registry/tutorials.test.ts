@@ -154,6 +154,43 @@ describe('tutorial wording that follows the current app', () => {
     for (const os of ['win', 'mac', 'linux'] as const) expect(tutorialTopicsFor(os).map((topic) => topic.id)).toContain('video');
   });
 
+  // Fable 第二轮 Q5：Claude Code 2.1.318 起不再自己往编辑器里装插件，客户得知道要自己装、装完不用登录。
+  it('tells editor users to install the extension themselves and to save the Claude Code config again if it still asks to sign in', () => {
+    const editor = tutorialTopics.find((topic) => topic.id === 'editor');
+    expect(editor?.category).toBe('tools');
+    expect(editor?.title).toBe('在 VS Code 或 Cursor 里用 Claude Code');
+    const text = JSON.stringify(editor);
+    expect(text).toContain('不会再自己往编辑器里装插件');
+    expect(text).toContain('认准发布者是 Anthropic');
+    // 第 4 步的按钮名照首页卡片「…」菜单和配置弹窗上的字写。
+    expect(step('editor', '回首页重新保存 Claude Code 配置').bullets).toContain('回星芒首页，在 Claude Code 卡片的「…」里点「配置…」，再点「保存配置」。');
+    for (const entry of editor?.steps ?? []) expect(entry.page, entry.action).toBe('home');
+  });
+
+  it('lands every phone remote step on the remote card in settings', () => {
+    const remote = tutorialTopics.find((topic) => topic.id === 'phone-remote');
+    expect(remote?.title).toBe('用手机遥控 Codex');
+    for (const entry of remote?.steps ?? []) {
+      expect(entry, entry.action).toMatchObject({ page: 'settings', section: 'codex-remote' });
+      expect(entry.where, entry.action).toContain(`工具管理 › ${settingsItemLabel('codex-remote')}`);
+    }
+    expect(JSON.stringify(remote)).toContain('长期用建议选飞书');
+  });
+
+  it('teaches the Claude Code rewind and warns that terminal commands cannot be undone', () => {
+    const undo = tutorialTopics.find((topic) => topic.id === 'undo');
+    expect(undo?.category).toBe('trouble');
+    const text = JSON.stringify(undo);
+    for (const words of ['连按两下 Esc', '/rewind', 'Restore code and conversation', '退不回来', '复制一份']) expect(text).toContain(words);
+  });
+
+  it('offers the editor, phone remote and undo chapters on every system', () => {
+    for (const os of ['win', 'mac', 'linux'] as const) {
+      const ids = tutorialTopicsFor(os).map((topic) => topic.id);
+      for (const id of ['editor', 'phone-remote', 'undo']) expect(ids, `${os} / ${id}`).toContain(id);
+    }
+  });
+
   it('keeps npm and the bare word CLI out of what customers read', () => {
     // keywords only feed the search box, so customers who type「npm」or「CLI」still land on the right chapter.
     const visible = JSON.stringify(tutorialTopics.map(({ keywords: _keywords, ...topic }) => topic));
@@ -171,7 +208,7 @@ describe('tutorial wording that follows the current app', () => {
     const entry = step('trouble', '回首页检查 Codex 打开结果').extra?.find((item) => item.title === '能打开，但还是英文？');
     expect(entry?.detail).toMatch(/^中文界面只在从星芒打开 Codex 时生效。/);
     expect(entry?.detail).toContain('（Mac 上叫 ChatGPT）');
-    expect(entry?.detail).toContain('的星芒图标 →「已安装的工具」→「Codex 桌面端」');
+    expect(entry?.detail).toContain('的星芒图标 ›「已安装的工具」›「Codex 桌面端」');
     expect(entry?.detail.indexOf('从星芒首页点「打开」')).toBeLessThan(entry?.detail.indexOf('「启用中文界面」') ?? -1);
   });
 
@@ -181,9 +218,16 @@ describe('tutorial wording that follows the current app', () => {
     expect(entry.detail).toContain('Work browser access requires an authenticated account');
     expect(entry.title).toContain('提交消息时出错');
     expect(entry.bullets?.[0]).toContain('切到「Codex」');
-    expect(entry.extra?.[0].detail).toContain('「…」→「配置…」里选「ChatGPT 账号」');
+    expect(entry.extra?.[0].detail).toContain('「…」›「配置…」里选「ChatGPT 账号」');
     expect(step('start', '回首页打开 Codex').bullets?.[0]).toContain('切到「Codex」');
     expect(step('launch', '返回首页打开桌面端').bullets?.[0]).toContain('切到「Codex」');
+  });
+
+  // WSL 里敲 claude、codex 读的是 WSL 自己家目录下的配置，星芒写的在 Windows 这一侧（D76）；Linux 版不提 Windows。
+  it('tells Windows users that the tools typed inside WSL need their own setup', () => {
+    const wsl = '星芒管的是 Windows 这一侧；要用 AI 工具请在 Windows 的终端里打开，WSL 里的需要单独配置。';
+    expect(step('messages', '查看余额与额度').bullets).toContain(wsl);
+    expect(JSON.stringify(tutorialTopicsFor('linux'))).not.toContain('WSL');
   });
 });
 
@@ -201,7 +245,7 @@ describe('linux tutorials', () => {
   it('switches accounts on Linux in the same four steps without the Claude Desktop lines or an empty bullet', () => {
     const switching = linux.find((topic) => topic.id === 'switch-account');
     const original = tutorialTopics.find((topic) => topic.id === 'switch-account');
-    expect(switching?.steps.map((entry) => entry.where)).toEqual(['工具箱首页 → 工具卡片左下角', '工具箱首页 → 卡片左下角的小标签，或右下角 … → 改用当前账号 / 切回官方账号', 'Claude Code / Codex 窗口', 'Claude Code / Codex 窗口']);
+    expect(switching?.steps.map((entry) => entry.where)).toEqual(['星芒首页 › 工具卡片左下角', '星芒首页 › 卡片左下角的小标签，或右下角 … › 改用当前账号 / 切回官方账号', 'Claude Code / Codex 窗口', 'Claude Code / Codex 窗口']);
     expect(switching?.steps.map((entry) => entry.bullets?.length)).toEqual(original?.steps.map((entry) => (entry.bullets?.length ?? 0) - (entry.bullets?.filter((bullet) => bullet.startsWith('Claude Desktop')).length ?? 0)));
     expect(switching?.steps[2].detail).toBe('已经打开的工具还记着旧账号，要关掉重开才会换过来。');
   });

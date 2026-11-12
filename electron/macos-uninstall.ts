@@ -4,6 +4,7 @@ import type { App } from 'electron'
 import type { AppUninstallLeftover, AppUninstallRequest, AppUninstallResult } from './ipc-contract'
 import { inspectMacosInstallLocation } from './macos-install-location'
 import { managedProductRoot } from './managed-cli-paths'
+import { removeTree } from './remove-tree'
 
 // Mac 上删软件就是把 .app 拖进废纸篓，没有卸载程序替我们收尾。四家工具配置里的钩子、
 // 状态行还指着 .app 里的脚本，文件没了以后每一轮都在终端里报红；Windows 由卸载程序
@@ -140,10 +141,11 @@ export function removeMacLoginItem(app: Pick<App, 'setLoginItemSettings' | 'getL
 }
 
 /**
- * 「连同星芒替你装的命令行工具一起删」：Mac 上星芒装的 CLI、Node 和 Grok 全在
+ * 「连同星芒替你装的命令行工具一起删」：Mac 上星芒装的 Claude Code、Codex CLI 和 Node 都在
  * ~/Library/Application Support/XingMangAI 下（managed-cli-paths.ts），客户自己装的不在这里，
- * 一个都不碰。根目录被换成链接时拒绝，不跟过去删（I8）；里面 npm 的 bin 链接由 rm
- * 按链接本身删掉，不跟随。
+ * 一个都不碰。Grok 不在这里：它装在 ~/.grok（macos-grok.ts），客户自己用官方脚本装的也在那儿、
+ * 分不出是谁装的，所以这一步不删它，界面那句提醒指客户去首页卡片上卸（AppUninstall.tsx）。
+ * 根目录被换成链接时拒绝，不跟过去删（I8）；里面 npm 的 bin 链接由 rm 按链接本身删掉，不跟随。
  */
 export async function removeMacManagedTools(
   root: string = managedProductRoot(process.env, 'darwin'),
@@ -160,7 +162,8 @@ export async function removeMacManagedTools(
     try { report?.('managed tools: root is not a plain directory; left in place') } catch { /* Reporting must not change the result. */ }
     return false
   }
-  await fs.promises.rm(root, { recursive: true, force: true })
+  // 装桌面端被打断时 DesktopApps/staging-* 里会留下解开的 .app，主进程的 fs 删不掉里面的 app.asar。
+  await removeTree(root)
   try {
     await fs.promises.lstat(root)
     return false

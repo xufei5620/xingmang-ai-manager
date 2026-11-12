@@ -20,19 +20,21 @@ import type { IpcHandlerContext } from './context'
 
 export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
   const { options, registerTrustedHandler, service, rememberExportedFile } = ctx
-  function desktopDirectory(): string {
+  // 默认存到「下载」，不存桌面（D16）：Windows「受控文件夹访问」默认保护桌面、不保护下载。
+  // 星芒没签名，开着它的电脑上多半不在放行名单里（推测），往桌面导出会被拦。
+  function downloadsDirectory(): string {
     try {
-      if (options.desktopDirectory) return options.desktopDirectory()
+      if (options.downloadsDirectory) return options.downloadsDirectory()
     } catch {
-      // app.getPath 拿不到桌面时退到主目录下的 Desktop，保存框里用户还能自己换。
+      // app.getPath 拿不到「下载」时退到主目录下的 Downloads，保存框里用户还能自己换。
     }
-    return path.join(os.homedir(), 'Desktop')
+    return path.join(os.homedir(), 'Downloads')
   }
   registerTrustedHandler('chat-history:export-text', async (_event, input: unknown) => {
     const { title, text } = parseChatConversationExport(input)
     const result = await dialog.showSaveDialog({
       title: '导出这段对话',
-      defaultPath: path.join(desktopDirectory(), conversationFileName(title)),
+      defaultPath: path.join(downloadsDirectory(), conversationFileName(title)),
       filters: [{ name: '文本文件', extensions: ['txt'] }],
     })
     if (result.canceled || !result.filePath) return null
@@ -48,7 +50,7 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
     const content = buildDataTransferFile(service.readStoredConfig(), exportInput, now)
     const result = await dialog.showSaveDialog({
       title: '导出聊天记录和设置',
-      defaultPath: path.join(desktopDirectory(), dataTransferFileName(now)),
+      defaultPath: path.join(downloadsDirectory(), dataTransferFileName(now)),
       filters: [{ name: '星芒聊天记录与设置', extensions: ['json'] }],
     })
     if (result.canceled || !result.filePath) return null
@@ -74,6 +76,6 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
       throw new Error(dataTransferInvalidMessage)
     }
     const parsed = parseDataTransferFile(raw)
-    return { conversations: parsed.conversations, ...planPortableSettingsImport(service.readStoredConfig(), parsed.settings) }
+    return { conversations: parsed.conversations, phrases: parsed.phrases, ...planPortableSettingsImport(service.readStoredConfig(), parsed.settings) }
   })
 }

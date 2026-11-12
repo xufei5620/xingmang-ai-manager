@@ -20,6 +20,8 @@ export const desktopInstallTutorialTopic = 'install'
 export const updatesTutorialTopic = 'safety'
 /** 同理：「进阶：安装与使用命令行工具」那一章；设置里「用哪个终端打开工具」跳到这里。 */
 export const cliTutorialTopic = 'cli'
+/** 同理：「用手机遥控 Codex」那一章；手机遥控卡飞书那块的「看教程」跳到这里（YF-4）。 */
+export const phoneRemoteTutorialTopic = 'phone-remote'
 // keywords 是顶部搜索用的常用说法：小白搜「余额」「Key」「开机」时也要能找到对应的分页，
 // 界面上不显示。次序就是个人中心顶上那排页签从左到右的次序。
 // v4 把原来的九个分页并成这六个：「我的订单」「异步任务」「登录设备」成了页签里的一节，
@@ -43,6 +45,10 @@ export const accountProfileAnchor = 'edit-profile'
 export const accountSwitchAnchor = 'switch-account'
 export const accountSwitchKeywords = ['换账号', '切账号', '换号'] as const
 /**
+ * 密钥管理最下面「用在别的软件里」那张卡（Q1）：首页工具区最后一格、顶部搜索「接口地址」落到这里。
+ */
+export const otherAppsAnchor = 'other-apps'
+/**
  * 页签里的几处落点。原来单独一个分页的（我的订单、异步任务、登录设备）和挪了地方的（修改密码从
  * 「我的账号」挪到账号安全），顶部搜索、教程、系统通知、付款回跳还按原来的名字跳过来，落到那个
  * 页签的那一节、亮一下。value 同时是页面上那一节的 data-anchor。
@@ -52,10 +58,12 @@ export const accountSections = [
   { value: accountSwitchAnchor, tab: 'overview', label: '切换账号', keywords: accountSwitchKeywords },
   { value: accountProfileAnchor, tab: 'overview', label: '编辑资料', keywords: ['改名', '改头像', '换头像', '显示名称'] },
   { value: 'orders', tab: 'recharge', label: '我的订单', keywords: ['订单', '到账', '没到账', '付款记录'], gated: true },
-  { value: 'tasks', tab: 'usage', label: '异步任务', keywords: ['任务', '生成进度'], gated: true },
+  { value: 'tasks', tab: 'usage', label: '生成任务', keywords: ['任务', '生成进度', '异步任务'], gated: true },
+  { value: 'prices', tab: 'usage', label: '价格表', keywords: ['价格', '单价', '模型价格', '多少钱', '哪个贵', '价目'], gated: true },
   { value: 'change-password', tab: 'security', label: '修改密码', keywords: ['改密码', '密码'] },
   { value: 'remember-password', tab: 'security', label: '记住密码', keywords: [] },
   { value: 'devices', tab: 'security', label: '登录设备', keywords: ['设备', '下线', '其他电脑', '登录记录'], gated: true },
+  { value: otherAppsAnchor, tab: 'keys', label: '用在别的软件里', keywords: ['接口地址', 'API 地址', 'API 域名', 'Base URL', 'baseURL', '别的软件', '其他软件', '第三方软件', 'Cherry Studio', 'Chatbox', '沉浸式翻译'], gated: true },
 ] as const satisfies ReadonlyArray<{ value: string; tab: AccountTabValue; label: string; keywords: readonly string[]; gated?: boolean }>
 export type AccountSectionValue = (typeof accountSections)[number]['value']
 /** 外面点名要去的地方：一个页签，或者页签里的一处落点。 */
@@ -467,7 +475,11 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'launch-at-login', group: 'startup', label: '开机自动启动', keywords: ['开机', '自启'] },
   { id: 'close-behavior', group: 'startup', label: '点关闭按钮时', keywords: ['托盘', '最小化', '关闭'] },
   { id: 'startup-diagnostics', group: 'startup', label: '启动时检查环境', keywords: [] },
-  { id: 'workspace', group: 'tools', label: '打开工具时进入的文件夹', keywords: ['工作文件夹', '项目文件夹', '默认文件夹'] },
+  { id: 'workspace', group: 'tools', label: '工作文件夹', keywords: ['工作文件夹', '项目文件夹', '默认文件夹'] },
+  // Claude Code 的写文件、改文件只在打开的那个文件夹里做（Fable 第二轮 Q6），默认关。
+  { id: 'claude-write-boundary', group: 'tools', label: '只让 Claude Code 改项目文件夹里的文件', keywords: ['文件夹外面', '乱改文件', '改错文件', '写文件', '权限'] },
+  // 提交代码、发 PR 时不带 Claude 的署名（同类对比 备选 6），默认关。
+  { id: 'claude-commit-attribution', group: 'tools', label: 'Claude Code 提交代码时不署名', keywords: ['署名', 'Co-Authored-By', 'commit', 'git', 'PR', '提交记录'] },
   { id: 'latest-cli', group: 'tools', label: '命令行工具总是装最新版', keywords: ['最新版', '推荐版本'] },
   { id: 'install-location', group: 'tools', label: '安装位置', keywords: ['装在哪'] },
   { id: 'terminal', group: 'tools', label: '终端', keywords: ['命令行'] },
@@ -479,7 +491,7 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'mirror', group: 'network', section: 'download', label: '下载来源', keywords: ['镜像', '下载慢', '国内', '官方源'] },
   { id: 'proxy', group: 'network', section: 'download', label: '连接方式', keywords: ['网络连接', '代理', 'VPN', '梯子'] },
   { id: 'network-check', group: 'network', section: 'download', label: '网络检查', keywords: [] },
-  { id: 'certificate', group: 'network', section: 'download', label: '企业证书', keywords: ['证书', '公司电脑'] },
+  { id: 'certificate', group: 'network', section: 'download', label: '安全证书', keywords: ['证书', '公司电脑'] },
   // 「发测试通知」并进了这一行，原来搜「测试通知」的说法跟过来。
   { id: 'desktop-notifications', group: 'notifications', label: '桌面通知', keywords: ['测试通知', '通知不弹', '收不到通知'] },
   ...notificationOptions.map((option): SettingsItem => ({
@@ -494,7 +506,10 @@ export const settingsItems: readonly SettingsItem[] = [
   // 没登录时只能导设置，那一行写「导出设置」（页面上换）；这里的标题给顶部搜索用。
   { id: 'transfer', group: 'backup', section: 'transfer', label: '导出设置和聊天记录', keywords: ['导出', '换电脑', '新电脑', '迁移', '聊天记录', '搬到新电脑'] },
   { id: 'transfer-import', group: 'backup', section: 'transfer', label: '从文件导入', keywords: ['导入', '换电脑', '新电脑', '迁移', '搬到新电脑'] },
-  { id: 'crash-reporting', group: 'privacy', label: '崩溃自动上报', keywords: [] },
+  // 星芒自己占了多少地方、能清哪些（决定单 D100，「空间页改」）。「C盘满了」是批过的「C 盘满了」不带空格的写法：
+  // 搜索按空格拆词，客户多半不打那个空格。
+  { id: 'storage', group: 'backup', label: '星芒占用的空间', keywords: ['空间', '磁盘', '清理', '占用', 'C 盘满了', 'C盘满了', '内存不够'], card: true },
+  { id: 'crash-reporting', group: 'privacy', label: '自动发送错误报告', keywords: [] },
   { id: 'usage-stats', group: 'privacy', label: '匿名使用统计', keywords: [] },
   { id: 'logs', group: 'privacy', label: '运行日志', keywords: ['日志', '报告'] },
   { id: 'legal', group: 'privacy', label: '用户协议与隐私政策', keywords: [] },

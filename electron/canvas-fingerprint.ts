@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { resolveAiModelCapability, type AiModelCapability } from './ai-chat-protocol'
+import { canvasImageTransformKindForNode, canvasImageTransformProcessorRevision } from './canvas-image-tools'
 import type {
   CanvasRunAsset,
   CanvasRunGraph,
@@ -16,6 +17,8 @@ interface CanvasFingerprintInput {
     fingerprint: string
     text?: string
     asset?: CanvasRunAsset
+    /** A batch connection (out:images): every picture it hands on, in order. */
+    assets?: CanvasRunAsset[]
   }>
 }
 
@@ -108,6 +111,32 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
       seconds: input.node.data.seconds,
       adoptedAssetId: adoptedAssetIdForFingerprint(input.node),
       ...generationParametersForFingerprint(input.node),
+      // Absent on every node that ran before masks, so their keys stay as
+      // they were; a masked edit never reuses a plain edit's image, or the
+      // other way round, and a new stroke is a new request.
+      imageEditMask: input.node.data.imageEditMask,
+      // Only frame-extract nodes carry it: another second is another frame.
+      frameTimestampSeconds: input.node.data.frameTimestampSeconds,
+      // Only image-tool nodes carry these (画布完善第 7 条第三步): another crop
+      // box, order or tile is another picture, and so is another processor.
+      imageTransform: input.node.data.imageTransform,
+      imageTransformProcessor: canvasImageTransformKindForNode(input.node.kind) ? canvasImageTransformProcessorRevision : undefined,
+      imageCollageInputOrder: input.node.data.imageCollageInputOrder,
+      tileInput: input.node.data.tileInput,
+      // imageOutputIndex stays out, as on the web host: picking another slice
+      // of the same grid is not another picture. What it picks reaches the
+      // downstream fingerprints through the asset handed on.
+      // Absent on every node that ran before 画布完善第 8 条, so their keys stay
+      // as they were. Other roles or another order send other pictures first
+      // (and a role line ahead of the prompt), so that is another request.
+      imageReferenceOrder: input.node.data.imageReferenceOrder,
+      videoReferenceOrder: input.node.data.videoReferenceOrder,
+      // Same for the four scene tasks: another option is another fixed
+      // sentence in the prompt, so another request.
+      commerceTask: input.node.data.commerceTask,
+      interiorTask: input.node.data.interiorTask,
+      exteriorTask: input.node.data.exteriorTask,
+      storyboardTask: input.node.data.storyboardTask,
     },
     upstream: input.upstream
       .map((entry) => ({
@@ -117,8 +146,23 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
         fingerprint: entry.fingerprint,
         text: entry.text,
         asset: stableAsset(entry.asset),
+        // Absent on every connection that ran before grid splits, so their keys stay as they were.
+        assets: entry.assets?.map(stableAsset),
       })),
   })
+}
+
+/**
+ * Cache key of one request in a multi-image node. Request 1 keeps the node's
+ * own fingerprint, so what a one-image run made is reused and every existing
+ * cache stays valid; requests 2-4 each get a key of their own, so a batch keeps
+ * all of its images. The attempts themselves still carry the node fingerprint:
+ * proving an adopted image (resolveAssetOrigin) compares against that.
+ */
+export function canvasImageCandidateCacheKey(fingerprint: string, index: number): string {
+  if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('画布节点指纹格式错误')
+  if (!Number.isSafeInteger(index) || index < 1 || index > 4) throw new Error('画布图片序号格式错误')
+  return index === 1 ? fingerprint : sha256({ version: 1, fingerprint, imageCandidate: index })
 }
 
 export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
@@ -142,6 +186,19 @@ export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
         videoResolution: node.data.videoResolution,
         videoAspectRatio: node.data.videoAspectRatio,
         promptOptimization: node.data.promptOptimization,
+        imageCandidateCount: node.data.imageCandidateCount,
+        imageEditMask: node.data.imageEditMask,
+        frameTimestampSeconds: node.data.frameTimestampSeconds,
+        imageTransform: node.data.imageTransform,
+        imageCollageInputOrder: node.data.imageCollageInputOrder,
+        tileInput: node.data.tileInput,
+        imageOutputIndex: node.data.imageOutputIndex,
+        imageReferenceOrder: node.data.imageReferenceOrder,
+        videoReferenceOrder: node.data.videoReferenceOrder,
+        commerceTask: node.data.commerceTask,
+        interiorTask: node.data.interiorTask,
+        exteriorTask: node.data.exteriorTask,
+        storyboardTask: node.data.storyboardTask,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
     edges: graph.edges
