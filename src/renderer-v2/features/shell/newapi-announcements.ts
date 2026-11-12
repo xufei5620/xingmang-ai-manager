@@ -18,6 +18,24 @@ export class AnnouncementCollectionError extends Error {
 
 function unreadable(): never { throw new AnnouncementCollectionError() }
 
+/**
+ * One entry in the shape the console publishes, or null when it is not. A
+ * collection-entry nested inside this one would end up shown inside its body,
+ * so that counts as not recognized too.
+ */
+function readCollectionEntry(item: Element): { title: string; body: string } | null {
+  const summaries = Array.from(item.children).filter((element) => element.matches('summary.collection-summary'))
+  const bodies = Array.from(item.children).filter((element) => element.matches('.collection-body'))
+  const titles = summaries[0]?.querySelectorAll('.collection-entry-title')
+  if (summaries.length !== 1 || bodies.length !== 1 || titles?.length !== 1 || item.querySelector('details.collection-entry')) return null
+  const titleNode = titles[0].cloneNode(true) as Element
+  titleNode.querySelectorAll('script, style, template').forEach((element) => element.remove())
+  const title = (titleNode.textContent ?? '').replace(/\s+/g, ' ').trim()
+  const body = bodies[0].innerHTML.trim()
+  if (!title || title.length > 512 || !body) return null
+  return { title, body }
+}
+
 /** Extract the published collection envelope, leaving each body for the existing sanitizer. */
 export async function parseNewApiAnnouncementCollection(text: string): Promise<LocalAnnouncementEntry[] | null> {
   if (!/\bdata-newapi-collection\s*=/i.test(text) || typeof DOMParser === 'undefined') return null
@@ -32,29 +50,38 @@ export async function parseNewApiAnnouncementCollection(text: string): Promise<L
   while (walker.nextNode()) if (++count > maximumNodes) unreadable()
   const items = Array.from(root.children).filter((element) => element.matches('details.collection-entry'))
   if (items.length > maximumEntries) unreadable()
-  // Never flatten an unrecognized collection back into a wall of mixed details.
-  if (!items.length || root.querySelectorAll('details.collection-entry').length !== items.length) unreadable()
   const entries: LocalAnnouncementEntry[] = []
   const ids = new Set<string>()
   for (const item of items) {
-    const summaries = Array.from(item.children).filter((element) => element.matches('summary.collection-summary'))
-    const bodies = Array.from(item.children).filter((element) => element.matches('.collection-body'))
-    const titles = summaries[0]?.querySelectorAll('.collection-entry-title')
-    if (summaries.length !== 1 || bodies.length !== 1 || titles?.length !== 1) unreadable()
-    const titleNode = titles[0].cloneNode(true) as Element
-    titleNode.querySelectorAll('script, style, template').forEach((element) => element.remove())
-    const title = (titleNode.textContent ?? '').replace(/\s+/g, ' ').trim()
-    const body = bodies[0].innerHTML.trim()
-    if (!title || title.length > 512 || !body) unreadable()
+    // 后台改公告时一条漏了标题、正文或多套了一层，只跳过这一条，其余照常显示（RC-03）：
+    // 原来一条坏就整份报错，所有客户同时看不到公告，充值活动也跟着没了。
+    const entry = readCollectionEntry(item)
+    if (!entry) continue
     // A collection wrapper/id changes when another notice is published. Hash
     // only this entry so old read states survive insertions and reordering.
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([title, body])))
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([entry.title, entry.body])))
     const id = `newapi-${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')}`
     if (ids.has(id)) continue
     ids.add(id)
-    entries.push({ id, title, text: body })
+    entries.push({ id, title: entry.title, text: entry.body })
   }
+  // Never flatten an unrecognized collection back into a wall of mixed details:
+  // with no entry left to show it is unreadable, not a legacy single notice.
+  if (!entries.length) unreadable()
   return entries
+}
+
+/**
+ * 跟「内容 → 公告」时间线一起下发的系统公告合集。合集整份认不出时只少了系统公告那一块，
+ * 回空列表，时间线和充值活动照常显示；没有时间线时照旧抛错，界面给「重新读取」和官网两条路。
+ */
+export async function parseAnnouncementCollectionBesideTimeline(text: string, hasTimeline: boolean): Promise<LocalAnnouncementEntry[] | null> {
+  try {
+    return await parseNewApiAnnouncementCollection(text)
+  } catch (cause) {
+    if (hasTimeline && cause instanceof AnnouncementCollectionError) return []
+    throw cause
+  }
 }
 
 function storageKey(scope: string): string { return `xingmang-v2-notice-entries:${scope}` }
