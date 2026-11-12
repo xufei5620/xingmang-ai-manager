@@ -256,6 +256,27 @@ describe('inspectMacosCodexApp', () => {
     expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(true)
   })
 
+  it.each<[string, () => Promise<string>]>([
+    ['osascript fails', async () => { throw commandRunnerError('EXIT_NON_ZERO', 'execution error: Not authorized to send Apple events') }],
+    ['osascript answers something unreadable', async () => 'missing value\n'],
+  ])('reports running as unknown, not closed, when %s (C-2)', async (_label, osascript) => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    createApp(app, 0o755, ['arm64', 'x86_64'])
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/plutil') return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.727.51351\n'
+      if (executable === '/usr/bin/osascript') return osascript()
+      throw new Error(`unexpected command: ${executable}`)
+    })
+
+    // Installed is still a definitive answer; only whether it is open is not.
+    await expect(inspectMacosCodexApp({ architecture: 'arm64', homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand }))
+      .resolves.toEqual({ app: { path: fs.realpathSync(app), version: '26.727.51351', running: null }, detectionFailed: false, detectionError: null })
+  })
+
   it('detects native Codex from an x64 toolbox under Rosetta without Codex config files', async () => {
     const root = temporaryDirectory()
     const systemApplicationsDirectory = path.join(root, 'Applications')

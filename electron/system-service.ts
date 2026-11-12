@@ -228,6 +228,12 @@ export interface DesktopAppStatus extends ToolStatus, Partial<VersionUpdateStatu
   mirrorUpdateAvailable: boolean | null
   mirrorError: string | null
   running: boolean
+  /**
+   * 装着，但这次没查出它开没开（现在只有 Mac 那支会填）。running 这时是 false，只为让
+   * 按布尔值读它的老地方照旧；要靠「没开」放行的（保存配置前看工具开没开）得把这一格当
+   * 「看不出来」。缺省 = 查成了，running 就是答案。
+   */
+  runningUnknown?: boolean
 }
 
 export interface LatestVersionProbe {

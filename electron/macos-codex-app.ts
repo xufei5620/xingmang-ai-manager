@@ -115,7 +115,11 @@ function verifyBundleSignature(canonical: string, fingerprint: string, command: 
 export interface MacosCodexAppInfo {
   path: string
   version: string | null
-  running: boolean
+  /**
+   * null = 这次没查出它开没开（osascript 报错、超时或回了看不懂的话）。不能折成 false：
+   * 保存配置那边拿「没开」当放行，Codex 开着时改它的配置，两边会互相覆盖。
+   */
+  running: boolean | null
 }
 
 /**
@@ -455,8 +459,9 @@ async function inspectCandidate(
 }
 
 /**
- * 与下面的 isCodexRunning 同一个问法，只是把「查不出来」单独交出来（null），不当成
- * 「没在跑」：拿它决定要不要断开加速的调用方，不能因为一次查询失败就把人断掉。
+ * Codex 桌面端开没开着：true / false / null（查不出来）。「查不出来」不当成「没在跑」：
+ * 拿它决定要不要断开加速的调用方不能因为一次查询失败就把人断掉，检测结果里的 running
+ * 也用它，保存配置那边才不会在 Codex 开着时去改它的配置。
  */
 export async function probeMacosCodexRunning(command: SystemCommandRunner = runSystemCommand): Promise<boolean | null> {
   try {
@@ -464,17 +469,6 @@ export async function probeMacosCodexRunning(command: SystemCommandRunner = runS
     return output === 'true' ? true : output === 'false' ? false : null
   } catch {
     return null
-  }
-}
-
-async function isCodexRunning(command: SystemCommandRunner): Promise<boolean> {
-  try {
-    return (await command('/usr/bin/osascript', [
-      '-e',
-      'application id "com.openai.codex" is running',
-    ])).trim() === 'true'
-  } catch {
-    return false
   }
 }
 
@@ -507,7 +501,7 @@ export async function inspectMacosCodexApp(
     const inspected = await inspectCandidate(candidate, inspectedPaths, command, supportsArchitecture)
     if (inspected.app) {
       return {
-        app: { ...inspected.app, running: await isCodexRunning(command) },
+        app: { ...inspected.app, running: await probeMacosCodexRunning(command) },
         detectionFailed: false,
         detectionError: null,
       }
@@ -531,7 +525,7 @@ export async function inspectMacosCodexApp(
     const inspected = await inspectCandidate(candidate, inspectedPaths, command, supportsArchitecture)
     if (inspected.app) {
       return {
-        app: { ...inspected.app, running: await isCodexRunning(command) },
+        app: { ...inspected.app, running: await probeMacosCodexRunning(command) },
         detectionFailed: false,
         detectionError: null,
       }
@@ -555,7 +549,7 @@ export async function inspectMacosCodexApp(
         const inspected = await inspectCandidate(candidate, inspectedPaths, command, supportsArchitecture, expectedName)
         if (inspected.app) {
           return {
-            app: { ...inspected.app, running: await isCodexRunning(command) },
+            app: { ...inspected.app, running: await probeMacosCodexRunning(command) },
             detectionFailed: false,
             detectionError: null,
           }

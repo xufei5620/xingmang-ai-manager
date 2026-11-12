@@ -1264,7 +1264,7 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
         if (platform !== 'win32' && platform !== 'darwin') return false
         const status = await inspectCodexDesktop()
         if (status.running) return true
-        return status.detectionFailed ? null : false
+        return status.detectionFailed || status.runningUnknown ? null : false
       },
       canRestartCodexDesktop: platform === 'win32',
     })
