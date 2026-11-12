@@ -484,6 +484,36 @@ test('the invoice button says the approved line when the invoice window does not
   }
 })
 
+test('order search drops surrounding spaces and asks the server once after typing stops', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    const orders = page.getByTestId('account-orders-section')
+    await orders.getByText('TEST-ORDER').waitFor()
+    const queries = async () => (await calls(page)).filter((call) => call.name === 'query-orders').map((call) => call.args)
+    const before = (await queries()).length
+    const search = orders.getByRole('searchbox', { name: '搜索订单号', exact: true })
+    // 中文输入法下按空格出的是全角空格：只有空白当没填，不拿去查（F4）。
+    await search.fill('　 ')
+    // 一个字一个字地敲：停手以后只按去掉首尾空白的词查一次，不是每个字查一次。
+    await search.pressSequentially('XM-42 ')
+    await page.waitForFunction(
+      () => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-orders' && call.args.keyword === 'XM-42'),
+    )
+    assert.deepEqual((await queries()).slice(before), [{ page: 1, pageSize: 20, keyword: 'XM-42' }])
+    assert.equal(await search.inputValue(), '　 XM-42 ')
+    // 清空马上回到全部订单。
+    await search.fill('')
+    await page.waitForFunction(
+      (count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'query-orders').length > count,
+      before + 1,
+    )
+    assert.deepEqual((await queries()).at(-1), { page: 1, pageSize: 20, keyword: '' })
+  } finally {
+    await page.close()
+  }
+})
+
 test('the account tabs move with the left and right arrow keys and open on Enter', async () => {
   const page = await fixture('page=account')
   try {
