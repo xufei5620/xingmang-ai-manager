@@ -275,7 +275,7 @@ describe('codex remote card', () => {
 
   // YF-10：「多久没消息就自动关」三选一，缺省「不自动关」并写明还有哪几种办法关；选了时长不写小字。
   it('offers four hours, twelve hours or never for the idle close, never by default with how else it closes', () => {
-    expect(codexRemoteIdleCloseText).toEqual({ title: '多久没消息就自动关', never: '不自动关', neverHint: '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。' })
+    expect(codexRemoteIdleCloseText).toEqual({ title: '多久没消息就自动关', never: '不自动关', neverHint: '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。', neverHintMac: '只有你在电脑上、菜单栏里关，或者手机上发「关闭遥控」才会关。' })
     const never = render(snapshot())
     const row = never.slice(never.indexOf('data-testid="settings-remote-idle-close"'))
     expect(never.indexOf('data-testid="settings-remote-idle-close"')).toBeGreaterThan(never.indexOf('data-testid="settings-remote-auto-start"'))
@@ -287,6 +287,19 @@ describe('codex remote card', () => {
     expect(twelve).not.toContain('只有你在电脑上、托盘里关')
     expect(twelve).toMatch(/aria-pressed="true"[^>]*>12 小时<\/button>/)
     expect(render(snapshot({ available: false, unavailableReason: '星芒正以管理员身份运行。' }))).toMatch(/<button[^>]*disabled=""[^>]*aria-pressed="true"[^>]*>不自动关<\/button>/)
+  })
+
+  // 「菜单栏改」：Mac 上两句说菜单栏，别的平台（缺省）照旧说托盘。
+  it('says the menu bar instead of the tray on a Mac', () => {
+    const state = snapshot({ workspaceDirectory: '/Users/yoyo/work' }, { hasCredential: true })
+    const mac = renderToStaticMarkup(<CodexRemotePanel snapshot={state} api={{} as V2Bridge} busy="" run={async () => true} error={null} isMac />)
+    expect(mac).toContain('窗口收到菜单栏也照样开着，退出星芒才断开')
+    expect(mac).toContain('只有你在电脑上、菜单栏里关，或者手机上发「关闭遥控」才会关。')
+    expect(mac).not.toContain('托盘')
+    const other = render(state)
+    expect(other).toContain('窗口缩到托盘也照样开着，退出星芒才断开')
+    expect(other).toContain('只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。')
+    expect(other).not.toContain('菜单栏')
   })
 
   it('warns when the credentials only last until the manager closes', () => {

@@ -147,3 +147,7 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 
 - **把显示出来的路径写死成斜杠**。手机遥控、诊断这类按本机分隔符显示路径（`remoteDisplayPath`、`redactHomeDirectory`），Windows 上是 `~\projects\demo`。期望值用 `path.join('~', 'projects', name)` 拼，别写 `'~/projects/demo'`。
 - **服务里写死了 `platform: 'darwin'`，又拿真文件夹去撞路径规矩**。`codex-remote-service.test.ts` 的 `setup()` 缺省按 darwin 起服务；Windows 上真文件夹是 `C:\…`，按 darwin 的规矩不算绝对路径，「主目录不能当干活的文件夹」这类拦截根本不触发，用例期望的报错就不来。要验拦截的那条传 `setup({ platform: process.platform })`，跟直接测 `validateRemoteWorkspace` 那条一样按本机规矩。
+
+## 刚过零点那几分钟才红的时间写法（2026-11-12，#1809）
+
+界面上「几点发来」这类时间，同一天只写 `14:05`，不是今天就带日期写成 `11 月 11 日 23:50`。用例里拿 `Date.now() - N 分钟` 造数据、再用 `/^\d\d:\d\d …/` 去对，在 runner 本地时间零点后的 N 分钟里就会红（`e2e/v2-business.test.mjs`「最近一次」那条 11-12 北京 08:00、UTC 零点红过）。要么断言里让日期那段可有可无（`(?:\d{1,2} 月 \d{1,2} 日 )?`），要么把造数据的时间钉在当天中午。复现：容器是 UTC，在 UTC 零点后几分钟内单跑那条就能看到。

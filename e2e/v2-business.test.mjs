@@ -3995,7 +3995,8 @@ test('the phone remote card shows the last phone request and can stop it, declin
     await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).click()
     const row = card.getByTestId('settings-remote-last-request')
     await row.getByText('最近一次', { exact: true }).waitFor()
-    assert.match(await row.getByTestId('settings-remote-last-request-text').innerText(), /^\d\d:\d\d 发来一条，正在处理，已经 3 分钟$/)
+    // 刚过零点那几分钟，几分钟前发来的算昨天，前面带上日期（「11 月 11 日 23:57」）。
+    assert.match(await row.getByTestId('settings-remote-last-request-text').innerText(), /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 发来一条，正在处理，已经 3 分钟$/)
     await row.getByText('等你同意 2 条，要在手机上回。', { exact: true }).waitFor()
     await row.getByRole('button', { name: '都拒绝', exact: true }).click()
     await row.getByTestId('settings-remote-last-request-waiting').waitFor({ state: 'detached' })
@@ -4004,7 +4005,7 @@ test('the phone remote card shows the last phone request and can stop it, declin
     await page.waitForFunction(() => /那一条停下了$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
     assert.equal(await row.getByRole('button', { name: '停下这一轮', exact: true }).count(), 0)
     await page.evaluate(() => window.remoteHarness.phoneRequest({ minutesAgo: 20, state: 'failed', reason: '余额不够了，充值后再发一次。' }))
-    await page.waitForFunction(() => /^\d\d:\d\d 那一条没做完：余额不够了，充值后再发一次。$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
+    await page.waitForFunction(() => /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 那一条没做完：余额不够了，充值后再发一次。$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
     await row.getByRole('button', { name: '在记录里看', exact: true }).click()
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'sessions')
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'remote-decline-approvals' || call.name === 'remote-stop-turn').map((call) => call.name), ['remote-decline-approvals', 'remote-stop-turn'])

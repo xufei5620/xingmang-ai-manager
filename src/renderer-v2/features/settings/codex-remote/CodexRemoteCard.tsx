@@ -79,6 +79,8 @@ export const codexRemoteIdleCloseText = {
   title: '多久没消息就自动关',
   never: '不自动关',
   neverHint: '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。',
+  // Mac 上没有托盘，星芒的图标在屏幕顶部的菜单栏里（#1745，yoyo 2026-11-11「菜单栏改」）。
+  neverHintMac: '只有你在电脑上、菜单栏里关，或者手机上发「关闭遥控」才会关。',
 } as const
 
 /**
@@ -117,12 +119,13 @@ export const codexRemoteConfirmText = {
   logout: { title: (channelTitle: string) => `退出${channelTitle}登录？`, ok: '退出登录' },
 } as const
 
-function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navigate, onOpenHelp }: {
+function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navigate, onOpenHelp, isMac }: {
   id: RemoteChannelId
   definition: RemoteChannelSectionDefinition
   snapshot: CodexRemoteSnapshot
   channel: CodexRemoteChannelSnapshot
   onOpenHelp?: () => void
+  isMac: boolean
 } & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run' | 'navigate'>) {
   // 没登录的渠道收成一行，点标题才摊开（YF-7）。登录、打开以后就不再收。
   const collapsible = remoteChannelCollapsed(snapshot, channel)
@@ -267,7 +270,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navig
         <Section snapshot={channel} api={api} disabled={disabled} busy={busy} run={run} navigate={navigate} />
         <SettingRow
           title="打开遥控"
-          description={remoteSwitchHint(snapshot, channel, definition.credentialHint)}
+          description={remoteSwitchHint(snapshot, channel, definition.credentialHint, isMac)}
           control={
             <Switch
               checked={channel.enabled}
@@ -355,7 +358,7 @@ function LastRequestRow({ snapshot, api, busy, run, navigate, now }: {
 /**
  * 卡片本身：拿到快照以后怎么摆。和取数分开，好用 renderToStaticMarkup 按各种快照直接测。
  */
-export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, onOpenHelp, lowBalance = null, now }: {
+export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, onOpenHelp, lowBalance = null, now, isMac = false }: {
   snapshot: CodexRemoteSnapshot
   /** 卡上那条红条；没有失败时是空的。 */
   error: ReactNode
@@ -366,6 +369,8 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
   lowBalance?: number | null
   /** 测试用的钟；缺省跟着真实时间走。 */
   now?: number
+  /** Mac 上说「菜单栏」不说「托盘」（「菜单栏改」）；缺省按 Windows、Linux。 */
+  isMac?: boolean
 } & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
   const persistenceNotice = snapshot.credentialPersistence === 'durable' ? null : codexRemotePersistenceNotices[snapshot.credentialPersistence]
   const anyEnabled = remoteAnyEnabled(snapshot)
@@ -411,6 +416,7 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
           run={run}
           navigate={navigate}
           onOpenHelp={onOpenHelp}
+          isMac={isMac}
         />
       ))}
       <SettingRow
@@ -429,7 +435,7 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
       />
       <SettingRow
         title={codexRemoteIdleCloseText.title}
-        description={snapshot.idleCloseHours ? null : codexRemoteIdleCloseText.neverHint}
+        description={snapshot.idleCloseHours ? null : isMac ? codexRemoteIdleCloseText.neverHintMac : codexRemoteIdleCloseText.neverHint}
         control={
           <Segment
             label={codexRemoteIdleCloseText.title}
@@ -501,7 +507,13 @@ function WorkspaceRow({ snapshot, api, busy, run }: { snapshot: CodexRemoteSnaps
  * 卡头、说明、干活的文件夹，再一个渠道一块（填凭据、打开遥控、配对）。
  * 操作的返回值和 state-changed 事件都是整份快照，按 revision 只收新的那份（newerRemoteSnapshot）。
  */
-export function CodexRemoteCard({ api, navigate, onOpenHelp }: { api: V2Bridge; navigate?: (page: V2Page, section?: string) => void; onOpenHelp?: () => void }) {
+export function CodexRemoteCard({ api, navigate, onOpenHelp, isMac = false }: {
+  api: V2Bridge
+  navigate?: (page: V2Page, section?: string) => void
+  onOpenHelp?: () => void
+  /** 设置页从主进程报的平台能力里取的（跟「点关闭按钮时」那一项同一份）。 */
+  isMac?: boolean
+}) {
   const lowBalance = useRemoteLowBalance()
   const load = useCallback(() => api.getCodexRemoteState(), [api])
   const resource = useResource(load)
@@ -539,6 +551,7 @@ export function CodexRemoteCard({ api, navigate, onOpenHelp }: { api: V2Bridge; 
       navigate={navigate}
       onOpenHelp={onOpenHelp}
       lowBalance={lowBalance}
+      isMac={isMac}
     />
   )
 }
