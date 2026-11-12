@@ -7,6 +7,7 @@ import {
   resolveFittedWindowBounds,
   resolveRecoveredWindowBounds,
   resolveWindowPlacement,
+  shouldDefaultToLargeText,
   shouldFollowSystemTextSize,
   type AppWindowState,
   type WindowDisplay,
@@ -348,6 +349,20 @@ describe('following the Windows text size (D81)', () => {
   it('never turns large text on again once a text size was chosen', () => {
     expect(shouldFollowSystemTextSize({ textSizeChosen: true }, 150)).toBe(false)
     expect(shouldFollowSystemTextSize({ textSizeChosen: true, largeText: false }, 225)).toBe(false)
+  })
+})
+
+// 「恢复默认」回到这台电脑装好时的样子（X-2）：调大了的装好时大字开着，没调大、读不到、还没读回来的关着。
+describe('the large text a fresh install gets', () => {
+  it('is on where the Windows text size was raised', () => {
+    expect(shouldDefaultToLargeText(150)).toBe(true)
+    expect(shouldDefaultToLargeText(105)).toBe(true)
+  })
+
+  it('is off where the text size is unchanged, unreadable or not read yet', () => {
+    expect(shouldDefaultToLargeText(100)).toBe(false)
+    expect(shouldDefaultToLargeText(null)).toBe(false)
+    expect(shouldDefaultToLargeText(undefined)).toBe(false)
   })
 })
 

@@ -1421,7 +1421,8 @@ const apiMethods = {
     if (fail === 'settings-read') throw new Error('设置文件暂时读不到')
     return settings
   },
-  getWindowCapabilities: async () => ({ tray: true, notifications: true }),
+  // largeTextByDefault：Windows 文本大小调大了的电脑，新装时「大字」开着（D81、X-2）。
+  getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('largeTextByDefault') ? { largeTextByDefault: true as const } : {}) }),
   saveSettings: async (patch: Parameters<V2Bridge['saveSettings']>[0]) => {
     record('settings', patch)
     if (fail === 'settings') throw new Error('设置写入失败')
