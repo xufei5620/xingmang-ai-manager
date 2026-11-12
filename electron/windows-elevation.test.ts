@@ -508,6 +508,33 @@ describe('Windows CLI launch', () => {
     expect(brokerScript).not.toMatch(/\bchcp\b/i)
   })
 
+  // D74：窗口只说终端能显示颜色；强制上色的两项会让 AI 跑的命令接管道也输出颜色控制码。
+  it('advertises colour support in the terminal without forcing colours into piped output', () => {
+    const plan = buildCliLaunchPlan({
+      executable: 'C:\\Program Files\\nodejs\\node.exe',
+      argv: ['C:\\ProgramData\\XingMangAI\\Cli\\node_modules\\tool\\cli.js'],
+      workspace: 'C:\\Work',
+      title: 'Claude Code',
+    }, testPowerShell)
+    const terminalScript = decodeTerminalScript(decodeWindowsPowerShellCommand(plan.argv.at(-1)!))
+    const launch = terminalScript.indexOf("& 'C:\\Program Files\\nodejs\\node.exe'")
+
+    for (const statement of [
+      "$env:TERM = 'xterm-256color'",
+      "$env:COLORTERM = 'truecolor'",
+      "$env:CLICOLOR = '1'",
+      'Remove-Item Env:FORCE_COLOR -ErrorAction SilentlyContinue',
+      'Remove-Item Env:CLICOLOR_FORCE -ErrorAction SilentlyContinue',
+      'Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue',
+    ]) {
+      const index = terminalScript.indexOf(statement)
+      expect(index).toBeGreaterThan(-1)
+      expect(index).toBeLessThan(launch)
+    }
+    expect(terminalScript).not.toMatch(/\$env:FORCE_COLOR\s*=/i)
+    expect(terminalScript).not.toMatch(/\$env:CLICOLOR_FORCE\s*=/i)
+  })
+
   it('escapes wildcard characters in the folder for -WorkingDirectory only', () => {
     const workspace = 'D:\\[2024]课程资料\\毕业设计[最终版]\\O\'Brien`s'
     const plan = buildCliLaunchPlan({

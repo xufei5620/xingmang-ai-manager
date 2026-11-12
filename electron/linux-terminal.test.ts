@@ -197,6 +197,7 @@ describe('Linux terminal launcher script', () => {
         https_proxy: 'http://proxy.example:8080',
         LANG: 'zh_CN.UTF-8',
         TERM: 'xterm-256color',
+        COLORTERM: 'truecolor',
         FORCE_COLOR: '3',
         API_TOKEN: 'must-not-reach-disk',
         DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
@@ -205,7 +206,9 @@ describe('Linux terminal launcher script', () => {
     expect(script).toContain("export GEMINI_API_KEY='sk-gemini'")
     expect(script).toContain("export https_proxy='http://proxy.example:8080'")
     expect(script).toContain("export LANG='zh_CN.UTF-8'")
-    expect(script).toContain("export FORCE_COLOR='3'")
+    expect(script).toContain("export COLORTERM='truecolor'")
+    // 强制上色的两项不写进去，命令窗口程序自己环境里的也去掉（D74）。
+    expect(script).not.toContain('export FORCE_COLOR=')
     expect(script).not.toContain('export TERM=')
     expect(script).not.toContain('must-not-reach-disk')
     expect(script).not.toContain('DBUS_SESSION_BUS_ADDRESS')
@@ -215,6 +218,18 @@ describe('Linux terminal launcher script', () => {
     ]))
     expect(unset?.split(' ')).not.toContain('GEMINI_API_KEY')
     expect(unset?.split(' ')).not.toContain('https_proxy')
+  })
+
+  // D74：交给已经开着的命令窗口程序时，它自己环境里强制上色的那两项也不带给工具。
+  it('clears the switches that force colours into piped output', () => {
+    const script = buildLinuxTerminalScript(scriptPlan({
+      env: { HOME: '/home/a', PATH: '/usr/bin', COLORTERM: 'truecolor', CLICOLOR: '1' },
+    }))
+    const unset = script.split('\n').find((line) => line.startsWith('unset '))
+
+    expect(unset?.split(' ').slice(1)).toEqual(expect.arrayContaining(['FORCE_COLOR', 'CLICOLOR_FORCE']))
+    expect(script).toContain("export COLORTERM='truecolor'")
+    expect(script).toContain("export CLICOLOR='1'")
   })
 
   it('also clears what the plan keeps from the tool, after the folder check and before its own values', () => {

@@ -5146,12 +5146,26 @@ describe('interactiveTerminalEnvironment', () => {
     expect(env).toMatchObject({
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
-      FORCE_COLOR: '3',
       CLICOLOR: '1',
-      CLICOLOR_FORCE: '1',
     })
     expect(env.NO_COLOR).toBeUndefined()
     expect(env.NODE_DISABLE_COLORS).toBeUndefined()
+    expect(env.FORCE_COLOR).toBeUndefined()
+  })
+
+  // D74：FORCE_COLOR、CLICOLOR_FORCE 让 AI 跑的命令接管道也输出颜色控制码，窗口里只说终端能显示颜色。
+  it('never forces colours onto output the CLI reads back through a pipe', () => {
+    const env = interactiveTerminalEnvironment({
+      PATH: 'C:\\Windows\\System32',
+      FORCE_COLOR: '3',
+      clicolor_force: '1',
+    })
+
+    // Windows 上名字不分大小写，小写的 clicolor_force 也是同一个变量。
+    const names = Object.keys(env).map((key) => key.toUpperCase())
+    expect(names).not.toContain('FORCE_COLOR')
+    expect(names).not.toContain('CLICOLOR_FORCE')
+    expect(env).toMatchObject({ TERM: 'xterm-256color', COLORTERM: 'truecolor', CLICOLOR: '1' })
   })
 
   it('keeps the unsanitized base for callers that stay at the current integrity level', () => {
@@ -5197,10 +5211,10 @@ describe('interactiveTerminalEnvironment', () => {
     expect(env).toMatchObject({
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
-      FORCE_COLOR: '3',
       CLICOLOR: '1',
-      CLICOLOR_FORCE: '1',
     })
+    expect(env.FORCE_COLOR).toBeUndefined()
+    expect(env.CLICOLOR_FORCE).toBeUndefined()
     expect(env.NO_COLOR).toBeUndefined()
   })
 })
@@ -7405,7 +7419,8 @@ describe('opening a CLI on Linux', () => {
     expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
     const plan = launchLinuxTerminal.mock.calls[0]?.[0]
     expect(plan).toMatchObject({ executable: '/opt/xm/npm/bin/claude', workspace, title: 'Claude Code · 星芒AI' })
-    expect(plan?.env).toMatchObject({ FORCE_COLOR: '3', NODE_USE_SYSTEM_CA: expect.any(String) })
+    expect(plan?.env).toMatchObject({ COLORTERM: 'truecolor', NODE_USE_SYSTEM_CA: expect.any(String) })
+    expect(plan?.env.FORCE_COLOR).toBeUndefined()
     expect(log).toHaveBeenCalledWith('info', 'system', 'terminal.opened', expect.stringContaining('GNOME 终端'), expect.objectContaining({ terminal: 'gnome-terminal' }))
   })
 

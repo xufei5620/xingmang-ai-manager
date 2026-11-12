@@ -480,9 +480,10 @@ describe('macOS terminal launcher', () => {
     expect(launcherContent).toContain("export LC_CTYPE='zh_CN.UTF-8'")
     expect(launcherContent).toContain("export TERM='xterm-256color'")
     expect(launcherContent).toContain("export COLORTERM='truecolor'")
-    expect(launcherContent).toContain("export FORCE_COLOR='3'")
     expect(launcherContent).toContain("export CLICOLOR='1'")
-    expect(launcherContent).toContain("export CLICOLOR_FORCE='1'")
+    // 强制上色的两项不写进去（D74）：AI 跑的命令接管道也会输出颜色控制码。
+    expect(launcherContent).not.toContain('FORCE_COLOR')
+    expect(launcherContent).not.toContain('CLICOLOR_FORCE')
     expect(launcherContent).not.toContain(secret)
     expect(launcherContent).not.toContain('API_TOKEN')
     expect(launcherContent).not.toContain('XINGMANG_ENV_SENTINEL')
