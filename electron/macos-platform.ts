@@ -162,7 +162,8 @@ export function darwinCommandPathCandidates(
     // 本软件代下的 Node.js 排在最后：客户自己装过（Homebrew、官网安装包、nvm）
     // 的那份先被找到，这一份只在他什么都没有时才顶上（第十六批 2）。他那份太旧时，
     // 本软件自己干活另把这一份经 additionalPaths 排到最前（第三十四批 A，
-    // macos-node-runtime.ts 的 resolveDarwinPreferredNodeDirectory），交给工具的终端仍是这个顺序。
+    // macos-node-runtime.ts 的 resolveDarwinPreferredNodeDirectory）。交给工具的终端不用这个顺序：
+    // 客户登录 shell 的 PATH 在前，这里的只补在后面（buildMacosAppendedPathLines，D73）。
     managedNodeRuntimeBinDirectory({ ...baseEnv, HOME: homeDirectory }, 'darwin'),
   ]
 }
@@ -241,6 +242,39 @@ export function buildMacosClosedProxyGuard(probeExecutable = '/usr/bin/nc'): str
   ]
 }
 
+/**
+ * 交给工具的 PATH 不再整份换成本软件那份（D73）。「终端」先起客户的登录 shell，读过 ~/.zprofile、
+ * ~/.zshrc 才跑启动脚本，这时的 PATH 里有他用 nvm、pyenv、conda、Homebrew 装的 node、python；
+ * 原样留在前面，本软件找程序用的目录（darwinCommandPathCandidates）只把还没有的补在后面，
+ * 客户什么都没装时照旧找得到 git、代下的 Node.js 这些。
+ *
+ * 工具本身是按核对过的绝对路径起的，不靠 PATH，照旧是本软件那份；#38 定的 /usr/bin 排最前只管
+ * 本软件自己找程序，不管这里。
+ *
+ * 比较按整段原文，不展开 ~、不去掉末尾的斜杠：写法差一点的算两段，多补的一段排在后面，不改变谁先被找到。
+ * 目录名写成单引号字面量，case 里的变量加了双引号，路径里的 `*`、`[` 只按字面比较。循环放在 zsh 的
+ * 匿名函数里，循环变量是 local，不会带给工具。
+ */
+export function buildMacosAppendedPathLines(appPath: string): string[] {
+  const entries = [...new Set(appPath.split(path.posix.delimiter).filter(Boolean))]
+  return [
+    ...(entries.length
+      ? [
+          '() {',
+          '  local entry',
+          `  for entry in ${entries.map(quotePosixArgument).join(' ')}; do`,
+          '    case ":${PATH-}:" in',
+          '      *":$entry:"*) ;;',
+          '      *) PATH="${PATH:+$PATH:}$entry" ;;',
+          '    esac',
+          '  done',
+          '}',
+        ]
+      : []),
+    'export PATH',
+  ]
+}
+
 /** Builds the short-lived zsh launcher that Terminal executes. */
 export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string {
   if (!isAbsolutePath(plan.executable)) throw new TypeError('executable must be an absolute path')
@@ -274,6 +308,8 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
       entry[1] !== undefined
       && persistedTerminalEnvironmentKeys.has(entry[0])
       && !shellMaintainedEnvironmentKeys.has(entry[0])
+      // PATH 不整份覆盖，接在客户登录 shell 那份后面补（buildMacosAppendedPathLines，D73）。
+      && entry[0] !== 'PATH'
     ))
     .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
     .map(([key, value]) => `export ${key}=${quotePosixArgument(value)}`)
@@ -298,6 +334,7 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
     // 星芒自己要给的值紧接着在下面写回去。
     ...(clearedEnvironmentKeys.length ? [`unset ${clearedEnvironmentKeys.join(' ')}`] : []),
     ...environmentExports,
+    ...buildMacosAppendedPathLines(plan.env.PATH ?? ''),
     // ~/.zshrc 里留着、却已经没开的本机代理，这一次不带给工具（第三十四批 B）。
     ...buildMacosClosedProxyGuard(),
     // 不再 exec：工具退出后还要留在这个脚本里补一句中文，告诉用户下一步。
