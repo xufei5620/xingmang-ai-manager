@@ -126,6 +126,29 @@ describe('spend spike watch', () => {
     await h.see(50, minute, 'solov:8')
     expect(h.readBaseline).not.toHaveBeenCalled()
   })
+  it('falls back to the record kept under the bare user number until the account has its own', async () => {
+    const notified = new Map<string, number>()
+    const notify = vi.fn()
+    const watch = createSpendSpikeWatch({
+      readBaseline: async () => ({ hourQuota: dollars(6), weekQuota: dollars(7) }),
+      notify,
+      readNotifiedAt: async (account) => notified.get(account) ?? null,
+      rememberNotifiedAt: (account, at) => { notified.set(account, at) },
+    })
+    const start = 1_000_000_000
+    // 升级前刚说过一次，那时只按用户编号记。
+    notified.set('7', start)
+    async function see(balance: number, at: number) {
+      await watch.observe({ scope: 'solov:7', account: 'solov:7', legacyAccount: '7', quota: dollars(balance), quotaPerUnit: unit, at })
+    }
+    await see(100, start + minute)
+    await see(90, start + 2 * minute)
+    expect(notify).not.toHaveBeenCalled()
+    await see(100, start + spendSpikeQuietPeriod)
+    await see(90, start + spendSpikeQuietPeriod + minute)
+    expect(notify).toHaveBeenCalledOnce()
+    expect(notified.get('solov:7')).toBe(start + spendSpikeQuietPeriod + minute)
+  })
   it('drops a result that arrives after the account changed', async () => {
     let release: (value: SpendBaseline) => void = () => undefined
     const h = watchFixture(() => new Promise<SpendBaseline>((resolve) => { release = resolve }))

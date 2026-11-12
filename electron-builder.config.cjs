@@ -205,6 +205,25 @@ const macPrivacyUsageDescriptions = {
   NSNetworkVolumesUsageDescription: '你放在共享盘上的项目，星芒要读得到才能帮你用 AI 工具打开。',
 }
 
+// Electron 自带的 Info.plist 写着麦克风、摄像头、录音、蓝牙五条英文用途说明（「This app needs
+// access to the microphone」这类），electron-builder 只往里合并不删，值写成 null 的键它才删
+// （26.15.3 的 macPackager.js applyCommonInfo）。星芒用不到的三条在这里删掉（SP-2）：
+// - 麦克风、摄像头、录音：主窗口和画布共用的会话把 media 一律拒（main.ts 的权限白名单），付款、
+//   开票窗口什么都拒，也没设 setDisplayMediaRequestHandler，网页碰不到这几样设备，Chromium
+//   就不会去问系统；主进程也没有 desktopCapturer、systemPreferences.askForMediaAccess。
+// - 删了以后谁碰这几样设备，macOS 不弹询问框，直接结束碰它的那个进程。所以以后要加语音输入、
+//   拍照这类功能，放开 main.ts 那张白名单的同一个改动里，必须把中文说明加回这里。星芒直接拉起
+//   的子进程（手机遥控的 codex app-server，以及它跑的命令和客户配的 MCP）也算在星芒头上；
+//   Codex 自己的命令在沙箱里碰不到这些设备，沙箱外的那部分以前是弹英文询问框，现在是被结束。
+// - 蓝牙两条留着：网页蓝牙（navigator.bluetooth.requestDevice）不过权限白名单，Electron 45
+//   的 MayUseBluetooth 恒为 true，Chromium 在发现没人接 select-bluetooth-device 之前已经建了
+//   CBCentralManager。删掉说明，任何窗口里的网页点一下就能让整个星芒被系统结束。
+const macUnusedElectronUsageDescriptions = {
+  NSMicrophoneUsageDescription: null,
+  NSCameraUsageDescription: null,
+  NSAudioCaptureUsageDescription: null,
+}
+
 module.exports = {
   appId: 'com.xingmang.ai.manager',
   productName,
@@ -383,7 +402,8 @@ module.exports = {
     fileAssociations: [{ ext: canvasProjectExtension, name: canvasProjectTypeName, role: 'Editor', rank: 'Owner' }],
     // macOS 第一次碰「文稿」「桌面」「下载」、U 盘、共享盘时弹的隐私询问框，标题是系统写的，
     // 下面那行说明取这几项；不写就只有「不允许」「好」两个按钮，客户不知道为什么要给（已知34）。
-    extendInfo: macPrivacyUsageDescriptions,
+    // 后面那三个 null 是删掉 Electron 自带的英文说明，理由见 macUnusedElectronUsageDescriptions。
+    extendInfo: { ...macPrivacyUsageDescriptions, ...macUnusedElectronUsageDescriptions },
     // 同上面的 electronLanguages，换成 .lproj 的写法：下划线，en-US 在盘上就叫 en。带
     // _FEMININE 这类后缀的是 Chromium 按语法性别分出来的目录，这三种语言的都只是 18 字节的
     // 空壳，原样留着，这三种语言的文件就跟改之前一模一样。

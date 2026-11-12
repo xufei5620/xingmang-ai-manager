@@ -5,6 +5,7 @@ const { spawnSync } = require('node:child_process')
 const test = require('node:test')
 const { NEW_UPDATE_URL } = require('./update-release-utils.cjs')
 const { BUILD_MODE_ENVIRONMENT_NAMES } = require('./run-macos-free-build.cjs')
+const { UNUSED_ELECTRON_USAGE_DESCRIPTION_KEYS } = require('./verify-macos-free-artifacts.cjs')
 
 const root = path.resolve(__dirname, '..')
 const configPath = path.join(root, 'electron-builder.config.cjs')
@@ -118,6 +119,14 @@ test('macOS targets produce per-architecture DMG and ZIP candidates', () => {
   assert.deepEqual(config.win.target, [{ target: 'nsis', arch: ['x64'] }])
 })
 
+const everyMacBuildMode = [
+  {},
+  { localBuildMode: true },
+  { releaseMode: true },
+  { unsignedRelease: true },
+  { freeReleaseMode: true, signingIdentity: 'XingMang Free Update Identity' },
+]
+
 test('every macOS build explains each privacy prompt in plain Chinese', () => {
   // 已知34：系统弹「想要访问“文稿”文件夹中的文件」时，标题下面那行说明取自这几项；
   // 免费自签、本机、发布哪种包都得带上。
@@ -128,13 +137,61 @@ test('every macOS build explains each privacy prompt in plain Chinese', () => {
     NSRemovableVolumesUsageDescription: '你放在 U 盘、移动硬盘上的项目，星芒要读得到才能帮你用 AI 工具打开。',
     NSNetworkVolumesUsageDescription: '你放在共享盘上的项目，星芒要读得到才能帮你用 AI 工具打开。',
   }
-  for (const mode of [
-    {},
-    { localBuildMode: true },
-    { releaseMode: true },
-    { unsignedRelease: true },
-    { freeReleaseMode: true, signingIdentity: 'XingMang Free Update Identity' },
-  ]) assert.deepEqual(loadConfig(mode).mac.extendInfo, expected)
+  for (const mode of everyMacBuildMode) {
+    const described = Object.entries(loadConfig(mode).mac.extendInfo).filter(([, value]) => value !== null)
+    assert.deepEqual(Object.fromEntries(described), expected)
+  }
+})
+
+test('every macOS build deletes the English microphone, camera and audio capture descriptions Electron ships (SP-2)', () => {
+  // electron-builder deletes a key whose extendInfo value is null; these three
+  // are the ones the packaged-bundle verifier then requires to be gone.
+  const expected = Object.fromEntries(UNUSED_ELECTRON_USAGE_DESCRIPTION_KEYS.map((key) => [key, null]))
+  for (const mode of everyMacBuildMode) {
+    const deleted = Object.entries(loadConfig(mode).mac.extendInfo).filter(([, value]) => value === null)
+    assert.deepEqual(Object.fromEntries(deleted), expected)
+  }
+})
+
+test('electron-builder turns the configured Info.plist into one without the unused English descriptions (SP-2)', () => {
+  // Runs the installed electron-builder's own Info.plist step over the usage
+  // descriptions Electron 45.1.0 ships (shell/browser/resources/mac/Info.plist),
+  // so the null-deletes-the-key behaviour this config relies on is exercised
+  // rather than read off its source. Bluetooth stays: see the config's comment.
+  const electronDefaults = {
+    NSMicrophoneUsageDescription: 'This app needs access to the microphone',
+    NSCameraUsageDescription: 'This app needs access to the camera',
+    NSAudioCaptureUsageDescription: 'This app needs access to audio capture',
+    NSBluetoothAlwaysUsageDescription: 'This app needs access to Bluetooth',
+    NSBluetoothPeripheralUsageDescription: 'This app needs access to Bluetooth',
+  }
+  const result = spawnSync(process.execPath, ['-e', `
+    // The package index first: requiring macPackager on its own trips a
+    // circular import inside app-builder-lib.
+    require('app-builder-lib')
+    const { MacPackager } = require('app-builder-lib/out/macPackager')
+    const config = require(${JSON.stringify(configPath)})
+    const plist = ${JSON.stringify(electronDefaults)}
+    const packager = {
+      appInfo: { productFilename: 'XingMang', productName: 'XingMang', version: '1.2.3', buildVersion: '1.2.3', copyright: '' },
+      platformSpecificBuildOptions: config.mac,
+      config,
+      getIconPath: async () => null,
+    }
+    MacPackager.prototype.applyCommonInfo.call(packager, plist, '/nonexistent/Contents')
+      .then(() => process.stdout.write(JSON.stringify(plist)))
+      .catch((error) => { process.stderr.write(String(error && error.stack)); process.exit(3) })
+  `], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...cleanBuildEnvironment(), XINGMANG_LOCAL_BUILD: '1', CSC_IDENTITY_AUTO_DISCOVERY: 'false' },
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const plist = JSON.parse(result.stdout)
+  for (const key of UNUSED_ELECTRON_USAGE_DESCRIPTION_KEYS) assert.equal(Object.hasOwn(plist, key), false, key)
+  assert.equal(plist.NSBluetoothAlwaysUsageDescription, electronDefaults.NSBluetoothAlwaysUsageDescription)
+  assert.equal(plist.NSBluetoothPeripheralUsageDescription, electronDefaults.NSBluetoothPeripheralUsageDescription)
+  assert.match(plist.NSDocumentsFolderUsageDescription, /星芒/)
 })
 
 test('macOS opens canvas project files in the app, named the way the import dialog names them', () => {
