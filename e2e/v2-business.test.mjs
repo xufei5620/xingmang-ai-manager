@@ -4122,6 +4122,23 @@ test('restoring the default appearance keeps large text on where a fresh install
   }
 })
 
+// X-8：系统界面设置读不出来（DM-3）时，缩放、大字、减少动画照样恢复，只跳过主题和高对比度。
+test('restoring the default appearance still resets scale, large text and motion when the system settings cannot be read', async () => {
+  const page = await fixture('page=settings&system=1&fail=platform-broken')
+  try {
+    await page.getByText('系统设置尚未准备好。', { exact: true }).waitFor()
+    await page.getByRole('switch', { name: '减少动画', exact: true }).click()
+    await page.getByTestId('settings-restore-appearance').click()
+    await waitForToast(page, '已恢复默认外观')
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.filter((call) => call.name === 'settings').at(-1).args, { version: 2, uiScale: 'auto', largeText: false, reducedMotion: false })
+    assert.equal(recorded.some((call) => call.name === 'platform-theme' || call.name === 'platform-contrast'), false)
+    assert.equal(await page.getByRole('switch', { name: '减少动画', exact: true }).getAttribute('aria-checked'), 'false')
+  } finally {
+    await page.close()
+  }
+})
+
 test('native preferences use the independent bridge while proxy remains a read-only query', async () => {
   const page = await fixture('page=settings&system=1')
   try {
