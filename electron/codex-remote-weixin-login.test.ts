@@ -66,6 +66,15 @@ describe('normalizeWeixinVerifyCode', () => {
     expect(normalizeWeixinVerifyCode('123456789')).toBeNull()
     expect(normalizeWeixinVerifyCode(1234)).toBeNull()
   })
+
+  it('turns full-width digits typed with a Chinese input method into ASCII digits', () => {
+    expect(normalizeWeixinVerifyCode('１２３４')).toBe('1234')
+    expect(normalizeWeixinVerifyCode('１2　３4')).toBe('1234')
+    expect(normalizeWeixinVerifyCode('１２３４５６７８９')).toBeNull()
+    expect(normalizeWeixinVerifyCode('１２ａ４')).toBeNull()
+    expect(normalizeWeixinVerifyCode('１２－３４')).toBeNull()
+    expect(normalizeWeixinVerifyCode('١٢٣٤')).toBeNull()
+  })
 })
 
 describe('createWeixinLoginController', () => {
@@ -130,6 +139,19 @@ describe('createWeixinLoginController', () => {
     await expect(login.poll(started.loginId, '1111')).resolves.toMatchObject({ phase: 'verify-code-wrong' })
     expect(requests[2]).toContain('verify_code=1111')
     await expect(login.poll(started.loginId, '2222')).resolves.toMatchObject({ phase: 'scanned' })
+  })
+
+  it('sends full-width digits from the phone prompt to WeChat as ASCII digits', async () => {
+    const { dependencies, requests } = harness([
+      qr('q1'),
+      jsonResponse({ status: 'need_verifycode' }),
+      jsonResponse({ status: 'scaned' }),
+    ])
+    const login = createWeixinLoginController(dependencies)
+    const started = await login.start()
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'need-verify-code' })
+    await expect(login.poll(started.loginId, '２２２２')).resolves.toMatchObject({ phase: 'scanned' })
+    expect(requests[2]).toContain('verify_code=2222')
   })
 
   it('asks for the phone number when WeChat confirms but still wants it, and only saves after the plain confirm', async () => {
