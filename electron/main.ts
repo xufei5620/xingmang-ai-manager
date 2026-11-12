@@ -250,17 +250,19 @@ const externalUrlAllowlist = [
   sub2ApiSupportServiceUrl,
 ] as const
 
-// The infinite-canvas build's own two runtime-visible external destinations
-// (docs button, About-modal "查看开源项目" GitHub credit -- see the task
-// report for how these were confirmed against the actual built bundle).
-// Kept separate from externalUrlAllowlist above: the canvas window's
-// setWindowOpenHandler/will-navigate checks only ever consult this list, so
-// the canvas page can never reach a main-app destination (or vice versa)
-// just because the two lists happened to be merged.
-const canvasExternalUrlAllowlist = [
-  'https://docs.canvas.best',
-  'https://github.com/basketikun/infinite-canvas',
-] as const
+// The canvas runs third-party front-end code (I15), so the pages it may hand
+// to the OS browser are only fixed destinations the synced kernel itself
+// links to. The xingmang-canvas kernel has none (links inside generated text
+// are content, not destinations to allow); the two infinite-canvas pages that
+// used to sit here went away with that kernel (#1393), and so did the
+// canvas-host:open-external channel that only they needed.
+// scripts/verify-canvas-external-links.test.cjs fails when an entry here is
+// not found in canvas-v2/src or canvas-v2/shared, so write plain string
+// literals. Kept separate from externalUrlAllowlist above: the canvas
+// window's setWindowOpenHandler/will-navigate checks only ever consult this
+// list, so the canvas page can never reach a main-app destination (or vice
+// versa) just because the two lists happened to be merged.
+const canvasExternalUrlAllowlist: readonly string[] = []
 
 const windowPreferenceAppliers = new WeakMap<WebContents, () => void>()
 const windowPreferenceFlushers = new WeakMap<WebContents, () => Promise<void>>()

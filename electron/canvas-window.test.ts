@@ -17,6 +17,7 @@ const electronMocks = vi.hoisted(() => ({
   showMessageBox: vi.fn<(...args: unknown[]) => Promise<{ response: number; checkboxChecked: boolean }>>(async () => ({ response: 1, checkboxChecked: false })),
   browserWindowFromWebContents: vi.fn(() => undefined),
   registerFileProtocol: vi.fn(),
+  shellOpenExternal: vi.fn(),
   notificationShow: vi.fn(),
   notificationSupported: vi.fn(() => true),
   browserWindowOptions: [] as unknown[],
@@ -107,7 +108,7 @@ vi.mock('electron', () => ({
     }
   },
   protocol: { registerFileProtocol: electronMocks.registerFileProtocol },
-  shell: { openExternal: vi.fn(), openPath: vi.fn() },
+  shell: { openExternal: electronMocks.shellOpenExternal, openPath: vi.fn() },
   webContents: { getAllWebContents: () => electronMocks.allWebContents ?? [electronMocks.latestWebContents] },
 }))
 
@@ -142,7 +143,6 @@ import {
   canvasHostImportProjectChannel,
   canvasHostListRunsChannel,
   canvasHostNotifyChannel,
-  canvasHostOpenExternalChannel,
   canvasHostOpenProjectChannel,
   canvasHostPickFileChannel,
   canvasHostPrepareGroupChannel,
@@ -177,7 +177,7 @@ import {
 } from './canvas-window'
 
 const trustedCanvasUrl = 'xingmang-canvas://app/index.html'
-const allowlist = ['https://docs.canvas.best', 'https://github.com/basketikun/infinite-canvas']
+const allowlist = ['https://docs.example.com', 'https://github.com/example/canvas-kernel']
 const temporaryDirectories: string[] = []
 const projectPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
 
@@ -306,6 +306,18 @@ function controllerOptions(
   }
 }
 
+// The popup and navigation hooks the canvas window installs on its latest
+// webContents: the only remaining paths from the canvas page to a browser.
+function popupAndNavigationHandlers() {
+  const webContents = electronMocks.latestWebContents!
+  const openHandler = (webContents.setWindowOpenHandler as ReturnType<typeof vi.fn>).mock.calls[0][0] as (
+    details: { url: string },
+  ) => { action: string }
+  const navigate = (webContents.on as ReturnType<typeof vi.fn>).mock.calls
+    .find(([event]) => event === 'will-navigate')![1] as (event: { preventDefault: () => void }, url: string) => void
+  return { openHandler, navigate }
+}
+
 beforeEach(() => {
   electronMocks.handlers.clear()
   electronMocks.onHandlers.clear()
@@ -318,6 +330,7 @@ beforeEach(() => {
   electronMocks.showMessageBox.mockClear()
   electronMocks.showMessageBox.mockResolvedValue({ response: 1, checkboxChecked: false })
   electronMocks.registerFileProtocol.mockClear()
+  electronMocks.shellOpenExternal.mockClear()
   electronMocks.notificationShow.mockClear()
   electronMocks.notificationSupported.mockReset()
   electronMocks.notificationSupported.mockReturnValue(true)
@@ -374,7 +387,6 @@ describe('createCanvasWindowController', () => {
       canvasHostListRunsChannel,
       canvasHostListGroupsChannel,
       canvasHostNotifyChannel,
-      canvasHostOpenExternalChannel,
       canvasHostOpenProjectChannel,
       canvasHostPickFileChannel,
       canvasHostPrepareGroupChannel,
@@ -574,27 +586,60 @@ describe('createCanvasWindowController', () => {
   it('rejects calls outside the current canvas main frame', async () => {
     const controller = createCanvasWindowController(controllerOptions())
     await controller.open()
-    const handler = electronMocks.handlers.get(canvasHostOpenExternalChannel)!
+    const handler = electronMocks.handlers.get(canvasHostListGroupsChannel)!
 
-    expect(() => handler(trustedEvent('https://attacker.example/'), 'https://docs.canvas.best')).toThrow(
+    expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow(
       '已拒绝来自非画布页面的操作请求',
     )
-    expect(() => handler(trustedEvent('xingmang://app/index.html'), 'https://docs.canvas.best')).toThrow(
+    expect(() => handler(trustedEvent('xingmang://app/index.html'))).toThrow(
       '已拒绝来自非画布页面的操作请求',
     )
-    expect(() => handler(foreignEvent(), 'https://docs.canvas.best')).toThrow(
+    expect(() => handler(foreignEvent())).toThrow(
       '已拒绝来自非画布页面的操作请求',
     )
   })
 
-  it('opens an allowlisted external URL via the injected shell launcher, never electron shell directly', async () => {
+  it('offers the canvas no host channel that opens a browser (I15: capabilities only shrink)', () => {
+    createCanvasWindowController(controllerOptions())
+    const preloadSource = fs.readFileSync(path.join(process.cwd(), 'electron', 'canvas-preload.ts'), 'utf8')
+
+    expect(Object.values(canvasHostChannels)).not.toContain('canvas-host:open-external')
+    expect(electronMocks.handlers.has('canvas-host:open-external')).toBe(false)
+    expect(preloadSource).not.toMatch(/openExternal/)
+  })
+
+  it('hands an allowlisted popup or navigation to the injected shell launcher, never electron shell directly', async () => {
     const externalShell = { openExternal: vi.fn(async () => undefined), openPath: vi.fn(async () => undefined) }
     const controller = createCanvasWindowController(controllerOptions({ externalShell }))
     await controller.open()
-    const handler = electronMocks.handlers.get(canvasHostOpenExternalChannel)!
+    const { openHandler, navigate } = popupAndNavigationHandlers()
+    const navigation = { preventDefault: vi.fn() }
 
-    await expect(handler(trustedEvent(), 'https://docs.canvas.best')).resolves.toBe(true)
-    expect(externalShell.openExternal).toHaveBeenCalledWith('https://docs.canvas.best')
+    expect(openHandler({ url: 'https://docs.example.com' })).toEqual({ action: 'deny' })
+    navigate(navigation, 'https://github.com/example/canvas-kernel')
+
+    expect(navigation.preventDefault).toHaveBeenCalledOnce()
+    expect(externalShell.openExternal.mock.calls).toEqual([
+      ['https://docs.example.com'],
+      ['https://github.com/example/canvas-kernel'],
+    ])
+    expect(electronMocks.shellOpenExternal).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
+  it('opens nothing from a popup or navigation while the canvas allowlist is empty, as main.ts passes it', async () => {
+    const externalShell = { openExternal: vi.fn(async () => undefined), openPath: vi.fn(async () => undefined) }
+    const controller = createCanvasWindowController(controllerOptions({ externalShell, externalUrlAllowlist: [] }))
+    await controller.open()
+    const { openHandler, navigate } = popupAndNavigationHandlers()
+    const navigation = { preventDefault: vi.fn() }
+
+    expect(openHandler({ url: 'https://xm.solov.cc/' })).toEqual({ action: 'deny' })
+    navigate(navigation, 'https://docs.canvas.best')
+
+    expect(navigation.preventDefault).toHaveBeenCalledOnce()
+    expect(externalShell.openExternal).not.toHaveBeenCalled()
+    controller.dispose()
   })
 
   it('logs a failed browser launch from a popup or navigation instead of leaving it unhandled', async () => {
@@ -603,15 +648,10 @@ describe('createCanvasWindowController', () => {
     const runtimeLog = { log: vi.fn(), exception: vi.fn() }
     const controller = createCanvasWindowController(controllerOptions({ externalShell, runtimeLog: runtimeLog as never }))
     await controller.open()
-    const webContents = electronMocks.latestWebContents!
-    const openHandler = (webContents.setWindowOpenHandler as ReturnType<typeof vi.fn>).mock.calls[0][0] as (
-      details: { url: string },
-    ) => { action: string }
-    const navigate = (webContents.on as ReturnType<typeof vi.fn>).mock.calls
-      .find(([event]) => event === 'will-navigate')![1] as (event: { preventDefault: () => void }, url: string) => void
+    const { openHandler, navigate } = popupAndNavigationHandlers()
 
-    expect(openHandler({ url: 'https://docs.canvas.best' })).toEqual({ action: 'deny' })
-    navigate({ preventDefault: vi.fn() }, 'https://docs.canvas.best')
+    expect(openHandler({ url: 'https://docs.example.com' })).toEqual({ action: 'deny' })
+    navigate({ preventDefault: vi.fn() }, 'https://docs.example.com')
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(externalShell.openExternal).toHaveBeenCalledTimes(2)
@@ -644,19 +684,24 @@ describe('createCanvasWindowController', () => {
     controller.dispose()
   })
 
-  it('rejects a URL that is not an exact allowlist match (I12) -- subdomain and path confusion both fail', async () => {
-    const controller = createCanvasWindowController(controllerOptions())
+  it('opens no popup or navigation that is not an exact allowlist match (I12) -- subdomain, path and scheme confusion all fail', async () => {
+    const externalShell = { openExternal: vi.fn(async () => undefined), openPath: vi.fn(async () => undefined) }
+    const controller = createCanvasWindowController(controllerOptions({ externalShell }))
     await controller.open()
-    const handler = electronMocks.handlers.get(canvasHostOpenExternalChannel)!
+    const { openHandler, navigate } = popupAndNavigationHandlers()
 
-    await expect(handler(trustedEvent(), 'https://docs.canvas.best.evil.example')).rejects.toThrow(
-      '不允许打开该链接',
-    )
-    await expect(handler(trustedEvent(), 'https://github.com/basketikun/infinite-canvas/extra-path')).rejects.toThrow(
-      '不允许打开该链接',
-    )
-    await expect(handler(trustedEvent(), 'http://docs.canvas.best')).rejects.toThrow('不允许打开该链接')
-    await expect(handler(trustedEvent(), 42)).rejects.toThrow('不允许打开该链接')
+    for (const url of [
+      'https://docs.example.com.evil.example',
+      'https://github.com/example/canvas-kernel/extra-path',
+      'http://docs.example.com',
+    ]) {
+      const navigation = { preventDefault: vi.fn() }
+      expect(openHandler({ url })).toEqual({ action: 'deny' })
+      navigate(navigation, url)
+      expect(navigation.preventDefault).toHaveBeenCalledOnce()
+    }
+    expect(externalShell.openExternal).not.toHaveBeenCalled()
+    controller.dispose()
   })
 
   it('validates notify input before ever constructing a Notification', async () => {
@@ -2315,7 +2360,7 @@ describe('createCanvasWindowController', () => {
 
     for (const channel of Object.values({
       canvasHostSaveFileChannel, canvasHostPickFileChannel, canvasHostNotifyChannel,
-      canvasHostOpenExternalChannel, canvasHostListGroupsChannel, canvasHostPrepareGroupChannel,
+      canvasHostListGroupsChannel, canvasHostPrepareGroupChannel,
       canvasHostGenerateImageChannel, canvasHostCancelRequestChannel, canvasHostCopyAssetChannel,
       canvasHostGenerateVideoChannel,
       canvasHostResumeVideoTaskChannel,
