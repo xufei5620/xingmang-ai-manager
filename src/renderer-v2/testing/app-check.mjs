@@ -2924,6 +2924,23 @@ test('an empty wallet turns the main button on the tool cards into 去充值 and
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   } finally { await page.close() }
 })
+// 深查 F1：钱包 $0、订阅还没读到（或读失败）时，不知道他是不是靠订阅在用，不能先叫他去充值。
+test('an empty wallet whose subscription could not be read is not called empty anywhere', async () => {
+  const page = await open('emptyWallet=1&subscriptionReadFail=1')
+  try {
+    await expect(page.getByTestId('home-balance')).toHaveText('$0.00')
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'getAccountSubscriptionSelf'))
+    const row = page.getByTestId('tool-row-claude')
+    await row.locator('.xm-tool-card-actions > .xm-btn').first().waitFor()
+    assert.equal(await page.getByTestId('home-low-balance').count(), 0)
+    assert.equal(await row.getByText('余额为零', { exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('tool-claude-recharge').count(), 0)
+    assert.equal(await page.getByTestId('home-hero-recharge').count(), 0)
+    assert.equal(await page.getByTestId('nav-recharge-low').count(), 0)
+    assert.equal(await page.getByTestId('home-balance-days').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
 // 第二十六批 D：系统给的英文原话（EPERM……）不再上屏，换成一句中文。
 test('an English probe failure reads as a plain Chinese sentence on the home row', async () => {
   const page = await open('detectionFailed=eperm')

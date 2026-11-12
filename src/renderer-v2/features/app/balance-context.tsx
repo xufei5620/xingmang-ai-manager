@@ -65,7 +65,18 @@ export function useUsableSubscription(api: XingmangApi, scope: string | null, ba
     readSelf: () => api.getAccountSubscriptionSelf(),
     async readPlanNames() { return new Map((await api.getAccountSubscriptionPlans()).map((plan) => [plan.id, plan.title])) },
   }), [api])
-  useEffect(() => () => cache.dispose(), [cache])
+  const lifetime = useMemo(() => ({ consumers: 0 }), [cache])
+  useEffect(() => {
+    lifetime.consumers++
+    return () => {
+      lifetime.consumers--
+      // Same as the balance store above: StrictMode runs this cleanup and
+      // reconnects the same cache at once. Disposing right here left it dead
+      // for good, so the subscription was never read in a development build,
+      // which now reads as "unknown" instead of "no subscription".
+      queueMicrotask(() => { if (!lifetime.consumers) cache.dispose() })
+    }
+  }, [cache, lifetime])
   const snapshot = useSyncExternalStore(cache.subscribe, cache.getSnapshot, cache.getSnapshot)
   useEffect(() => {
     if (!scope) { void cache.refreshIfStale(null); return }
