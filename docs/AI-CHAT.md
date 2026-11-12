@@ -2,7 +2,7 @@
 
 ## 功能入口
 
-主窗口工作台按“工具概览、AI聊天、会话管理、无限画布”排列。AI聊天复用当前已登录的星芒账号，renderer 只接收分组、模型、消息和本地图片资产标识，不接收 API Key 明文。
+主窗口侧栏第一组是「首页、聊天、记录、画布、视频剪辑」（`registry/shell.ts`，名字在 `registry/pages.ts`；画布在独立窗口打开）。AI聊天复用当前已登录的星芒账号，renderer 只接收分组、模型、消息和本地图片资产标识，不接收 API Key 明文。
 
 ## 分组与密钥
 
@@ -11,7 +11,7 @@
 - Key 由 Electron `safeStorage` 加密保存，并按账号隔离。
 - 同一账号、同一服务、同一分组的并发准备请求会合并，避免重复创建 Key。
 - 在账号中心撤销或编辑 Key 后，对应的 AI聊天缓存会同步失效；缓存 Key 收到明确的 `401` 或服务端明确说明 Key/令牌无效的鉴权失败时也会自动移除，并复用或创建新的可用 Key。普通网络错误、IP 白名单和账号/分组权限类 `403` 不会误删缓存或创建新 Key。
-- 生图分组按精选名单排先后（`ai-chat-protocol.ts` 的 `IMAGE_GROUP_MODEL_ORDER`，依次是 `gpt-image-2.5-flare`、`gpt-image-2`、`gpt-image-2.5-sunburst`，再是 Gemini、`gpt-image-1`、即梦、Grok 等），站上没开的不列；名单外按名字开头认得出的图片、视频型号（如以后的 `gpt-image-3`、`grok-imagine-video-2`）接在后面，次序照账号列表，聊天型号和藏起来的型号不列（#1059）。画图默认模型跟星芒AI生图一致：分组里有 `gpt-image-2.5-flare` 就选它，没有选 `gpt-image-2`；对话里记住的模型优先。
+- 生图分组按精选名单排先后（`ai-chat-protocol.ts` 的 `IMAGE_GROUP_MODEL_ORDER`，依次是 `gpt-image-2.6-flare`、`gpt-image-2.5-flare`、`gpt-image-2`、`gpt-image-2.6-sunburst`、`gpt-image-2.5-sunburst`，再是 Gemini、即梦、Grok、MiniMax 等；`gpt-image-1` 官方已下，不再排进精选，账号还列着的照旧接在后面），站上没开的不列；名单外按名字开头认得出的图片、视频型号（如以后的 `gpt-image-3`、`grok-imagine-video-2`）接在后面，次序照账号列表，聊天型号和藏起来的型号不列（#1059）。画图默认模型跟星芒AI生图一致（`chat/state.ts` 的 `DEFAULT_IMAGE_MODELS`，与 [生图技能](NATIVE-IMAGE-MCP.md)「用哪个模型」同一个顺序，测试钉住）：分组里有 `gpt-image-2.6-flare` 就选它，没有依次选 `gpt-image-2.5-flare`、`gpt-image-2`；对话里记住的模型优先。视频剪辑「画镜头图」的默认跟着聊天走（`video-studio/project.ts` 的 `settleVideoStudioModels`）；画布另有自己的默认，不在这里。
 
 ## 接口与取消
 

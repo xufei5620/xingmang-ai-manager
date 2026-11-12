@@ -11,13 +11,13 @@ npm install
 npm run dev
 ```
 
-`npm run dev` 和 `npm run compile` 默认使用 v2 界面；旧界面仅通过 `npm run dev:legacy` 或 `npm run compile:legacy` 显式选择。v2 首次绘制使用亮色，随后载入用户外观设置。开发版继承启动终端的权限；Windows 正式包按当前登录用户权限运行，不再在日常启动时弹出 UAC。
+`npm run dev` 和 `npm run compile` 默认使用 v2 界面；旧界面仅通过 `npm run dev:legacy` 或 `npm run compile:legacy` 显式选择。v2 第一帧按主进程拼进窗口地址的 `?theme=` 选深浅色（`features/app/initial-theme.ts`），设置读回来以后以设置为准。开发版继承启动终端的权限；Windows 正式包按当前登录用户权限运行，不再在日常启动时弹出 UAC。
 
-首页将 **WorkBuddy、Claude Desktop、OpenCode** 与现有工具一起放在“你的工具 / 还可以装”列表中。未安装时显示“安装”，已安装未配置时显示“配置”，配置完成后显示“打开”；工具行同步显示版本、运行状态和安装进度。Codex 行的右侧更多菜单提供“非 GPT 模型”入口。配置弹窗支持选择已有工具密钥、账号密钥或手动填写密钥，检测模型后保存。
+首页「工具」区按厂商把命令行工具、Codex 桌面端和 **WorkBuddy、Claude Desktop、OpenCode** 排在同一组卡片里（`features/tools/Home.tsx`）。主按钮跟着状态变：没装时是「安装」（Mac 上的 WorkBuddy 是「安装指南」，Windows 上一键装不了的是「去官网下载」），装了没连上是「确认连接」，连好了是「打开」；卡片同时显示版本、运行状态和安装进度。Codex 卡片「…」菜单里的「换用别家模型…」就是原来的非 GPT 模型入口。配置弹窗支持选择已有工具密钥、账号密钥或手动填写密钥，检测模型后保存。
 
 旧 CLI 配置缺少来源记录时，扫描会只读比对当前账号的本机加密密钥缓存；Key、工具和服务地址一致即可正确识别账号配置。账号匹配不会授予自动改写权限，手动配置继续保留。新增账号来源记录绑定站点和用户，切账号或退出后重新判定；本机缓存缺失、不可读或不匹配时仍显示“已有第三方配置”，不据此重写 Key。
 
-登录后，在顶部“搜索、打开、跳转”输入 `XM-NEBULA-10M-7Q9K`，按 Enter 或点击“领取 10 分钟加速时长”，可增加 600 秒加速时间。忽略英文大小写与首尾空白；每个账号在本机领取一次，按账号来源隔离，重启后保留。已有用量不清零，正在加速时会延长到期时间；这是本机加速权益，不同步到其他设备。
+网络加速 2026-10-30 已下线：三个平台的界面上都没有加速入口，客户开不了，原来在顶部搜索里输口令领加速时长的办法也跟着作废（`platform-capabilities.ts` 的 `acceleration` 都是 false）。安装包里还带着加速内核，只用来在开机时改回上次加速崩掉后留下的系统代理。详见 [网络加速](docs/GLOBAL-ACCELERATION.md)。
 
 Windows 主程序使用 `requestedExecutionLevel: asInvoker`。命令行工具（Claude Code、Codex CLI、Grok CLI；Gemini CLI 已于 2026-10-14 下线）的控制台和 Codex 桌面端都按当前桌面用户启动；普通模式下 npm CLI 安装到用户 npm 全局目录，Grok 安装到 `%USERPROFILE%\.grok\bin`。若用户手工选择“以管理员身份运行”，程序会自动收紧外部命令边界。NSIS 安装器、主程序更新或 Node.js 系统安装仍可在实际需要时由 Windows 单独请求授权。Codex Desktop MSIX 如因打包服务返回 `0x80073D28`，仅本次安装请求 UAC；取消即停止，日常启动不提权。
 
@@ -76,7 +76,7 @@ npm run release:build:unsigned
 
 本机入口使用 `electron-builder --publish never`，只在本机生成并校验候选产物，不会上传文件或修改线上 `latest.yml`。构建完成不等于获得发布授权；上传安装程序、上传 `.blockmap`、替换 `latest.yml` 或操作 Cloudflare R2，必须由产品所有者针对当前版本明确下达发布指令，不能从“打包”“继续”或一次历史授权中推断。
 
-按产品要求，无签名模式（`XINGMANG_UNSIGNED_RELEASE=1` 或 `npm run release:build:unsigned`）会保留自动更新，但不写入发布者签名校验；客户端改为在下载完成后按更新清单的 SHA-512 复核安装包。该模式只能在确认更新桶和网络链路可信时使用，普通 `npm run build` 仍保持本地构建隔离，不会自动更新。
+按产品要求，无签名模式（`XINGMANG_UNSIGNED_RELEASE=1` 或 `npm run release:build:unsigned`）保留自动更新。安装包没有 Windows 代码签名，所以不写 electron-updater 的发布者（Authenticode）校验；客户端下载完先按更新清单的 SHA-512 复核安装包，Windows 和 Linux 再核我们自己的更新包签名（Ed25519，签在清单里，见 [发布手册](docs/RELEASING.md) 第 5 节「更新包签名」），缺失或不一致一律拒装。普通 `npm run build` 仍保持本地构建隔离，不会自动更新。
 
 正式发布默认写入 `release-<package version>`。脚本会在执行任何发布步骤前确认目标目录不存在或为空；若目录含有旧产物会直接停止且不会删除文件，可通过 `XINGMANG_OUTPUT_DIR` 指向项目目录内另一个空目录。随后检查 HTTPS 更新目录没有被官网 SPA 接管，再执行类型检查、全部测试、编译、打包和本地产物校验；`latest.yml` 不合法、文件摘要不匹配或 `.blockmap` 缺失都会终止发布。签名模式额外要求关闭证书自动发现，并确认安装程序状态为 `Valid` 且发布者匹配 `XINGMANG_SIGNING_PUBLISHER`——无签名模式只跳过这一步比对，其余门禁照常执行。
 
@@ -90,9 +90,11 @@ npm run update:verify-feed -- --platform=windows
 
 构建时可通过 `XINGMANG_UPDATE_URL` 覆盖更新目录。生产地址必须是 HTTPS，且不得内嵌凭据、查询参数或片段。只有设置 `XINGMANG_UPDATE_DEV=1` 时，才允许 loopback HTTP 测试源。
 
-正式包默认在启动时执行一次更新预检（用户可在设置中关闭），不挡住主界面。签名包发现新版本会在后台下载，`electron-updater` 根据 `latest.yml` 的 SHA-512 和 blockmap 信息完成下载校验后停在「更新已下载」，**不会自己退出重装**，等用户点「重启安装」并确认（全面检测 Q42）；无签名包下载也要用户点。若检查超过 8 秒，原检查仍在后台继续，稍后发现更新时照样后台下载。
+客户端什么时候查、什么时候下、什么时候装，以 [发布手册](docs/RELEASING.md) 第 6 节「客户端更新行为」为准，这里只记最常被问到的几条：
 
-正式包运行期间每 3 小时执行一次版本检查。该定时任务只更新“有新版本”状态和入口，不自动开始下载；用户点击“下载更新”后，校验完成的安装包同样停在「更新已下载」等用户点「重启安装」。关闭“启动时检查主程序更新”只跳过启动预检，不关闭运行期间的 3 小时检查。
+- 打开后查一次（「设置 › 版本更新」的「启动时检查新版本」能关，关掉的只是这一次），运行期间每 3 小时再查一次，跟那个开关无关。
+- 「自动下载更新」开着（默认开）时，打开时查到的、定时查到的新版本都在后台下；关着时只提示，用户点「下载更新」才下。Windows 的无签名包 2026-09-25 起也跟这个开关走。
+- 下好以后从不当场装。「自动下载更新」开着时，Windows 和 Mac 下好会在屏幕中间跳框问「现在安装 / 稍后再说」（默认「稍后再说」，`update-install-prompt.ts`）；没装的在退出时或下次打开时自动装，装的时候不弹任何窗口的 Mac 在没人用电脑时也会自己装。开关关着时不跳框、打开时不装，退出时问一句。账号不是管理员的 Windows 电脑照样下，但从不自动装。任何时候都能手动点「重启并安装」（版本卡、右下角气泡、侧栏、托盘都有入口）。
 
 开发态可使用仓库内的 `dev-app-update.yml` 测试真实检查与下载链路。准备一个版本号高于当前应用的本地 `release` 目录后运行：
 
@@ -123,7 +125,7 @@ Codex CLI 与 Codex 桌面端共用 `%USERPROFILE%\.codex` 配置。已有配置
 
 | 入口 | 已实现 | 验证边界 |
 | --- | --- | --- |
-| Codex 非 GPT 模型 | 从所选 Key 检测模型，按名称筛选并显式选择，保存至 Codex CLI/桌面端共享配置 | 真实 CLI 0.153.4 向本地 Responses mock 发送非 GPT 模型 ID，流式、错误和应用层取消通过；工具回传成立但命令受本机策略阻断，生产上游未验收 |
+| Codex「换用别家模型…」（原非 GPT 模型入口） | 从所选 Key 检测模型，按名称筛选并显式选择，保存至 Codex CLI/桌面端共享配置 | 真实 CLI 0.153.4 向本地 Responses mock 发送非 GPT 模型 ID，流式、错误和应用层取消通过；工具回传成立但命令受本机策略阻断，生产上游未验收 |
 | WorkBuddy | 增量更新 `~/.workbuddy/models.json`，新建数组并兼容已有对象，保留已有模型与未知字段，事务备份和替换 | 已安装桌面版 5.5.6 源码确认配置契约；历史 lite-wb 本地 mock 结果不能作为桌面加载验收，修正后的桌面加载与生产推理仍需验证 |
 | Claude Desktop | 开启开发模式，保存并激活原生第三方推理 `configLibrary` 配置；备份已有文件，检测系统策略冲突；重启客户端生效 | 本机 Claude 2.2553.1.0 源码和官方文档核实保存契约；隔离文件、服务接线和界面测试通过，真实加载与生产推理尚未验证 |
 | OpenCode | 合并全局 JSON/JSONC 配置、选择 SDK、设置默认模型；保留注释、其他模型与配置备份 | 真实 CLI 1.18.31 在本地 mock 上通过两种协议的流式响应和工具回传；未验证星芒生产上游、桌面 UI 或其他版本 |
@@ -132,7 +134,7 @@ Codex CLI 与 Codex 桌面端共用 `%USERPROFILE%\.codex` 配置。已有配置
 
 此前 WorkBuddy 写入 `.codebuddy/models.json` 是桌面未加载配置的直接原因，原 `vendor: "OpenAI"` 和对象根格式本身并非无效。保存后重新进入 WorkBuddy 模型设置页确认，必要时自行重启客户端；工具不会自动结束会话。源码证据（WorkBuddy 5.5.6 桌面配置契约）同样只在当时的本机 `artifacts/` 里。
 
-Windows 上三个外部桌面客户端各走各的：WorkBuddy 由客户自己去腾讯官网下载（2026-10-13 起），装好回来重新检测；Claude Desktop 和 OpenCode 用系统 winget 的精确包 `Anthropic.Claude`、`SST.OpenCodeDesktop` 一键安装，Claude Desktop 没有受信任的 winget 时改从官网下离线 MSIX（`claude-desktop-msix-installer.ts`），OpenCode 没有 winget 时给官网下载链接；两者支持 x64 与 arm64。macOS 上 Claude Desktop 和 OpenCode 可一键安装（只装核对过 Team ID、签名与公证的官方包，`macos-desktop-app-installer.ts`），WorkBuddy 需先从官网下载并放入 Applications。安装源、签名和本机检测证据当时记在本机 `artifacts/`（没入库）；本轮未实际安装这三个客户端。
+Windows 上三个外部桌面客户端各走各的：WorkBuddy 由客户自己去腾讯官网下载（2026-10-13 起），装好回来重新检测；Claude Desktop 和 OpenCode 用系统 winget 的精确包 `Anthropic.Claude`、`SST.OpenCodeDesktop` 一键安装。Claude Desktop 先从星芒自己的存储桶下同一个官方离线安装包（MSIX），没装上再走 winget，winget 没有或没装上时改从官网下离线 MSIX（`claude-desktop-msix-installer.ts`、`external-client-runtime.ts`）；几路都没装上时错误框给「下载离线安装包」和「去 Claude 官网」两个出口（D64，`claude-desktop-install-failure.ts`）。OpenCode 没有 winget 时给官网下载链接；两者支持 x64 与 arm64。macOS 上 Claude Desktop 和 OpenCode 可一键安装（只装核对过 Team ID、签名与公证的官方包，`macos-desktop-app-installer.ts`），WorkBuddy 需先从官网下载并放入 Applications。安装源、签名和本机检测证据当时记在本机 `artifacts/`（没入库）；本轮未实际安装这三个客户端。
 
 使用步骤与配置细节见 [外部客户端配置](docs/EXTERNAL-CLIENT-CONFIG.md)和 [Codex 账号与模型配置](docs/CODEX-ACCOUNT-CONFIG.md)，实施记录见 [进度记录](docs/archive/IMPLEMENTATION-PROGRESS-2026-09-17.md)。
 
