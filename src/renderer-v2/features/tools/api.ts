@@ -260,10 +260,11 @@ export function createToolsApi(bridge: XingmangApi) {
     openSessionDirectory: (sessionId: string) => bridge.openProviderSessionDirectory(sessionId),
     saveManual: (input: Parameters<XingmangApi['saveConfig']>[0]) => bridge.saveConfig(input),
     saveAccountKey: (input: Parameters<XingmangApi['saveConfigWithAccountKey']>[0]) => bridge.saveConfigWithAccountKey(input),
-    configureManaged: (tool: ToolId, model?: string, mode: 'merge' | 'reset' = 'merge') => bridge.configureManagedCliKeys({
+    // repair = 首页「修好它」：读不了的那份重建，读得懂的那份只改账号几处（主进程 NativeConfigWriteMode）。
+    configureManaged: (tool: ToolId, model?: string, mode: 'merge' | 'reset' | 'repair' = 'merge') => bridge.configureManagedCliKeys({
       providers: [providerFor(tool)], preferredModels: model ? { [providerFor(tool)]: model } : {}, mode, intent: 'explicit',
     }),
-    official: (tool: ToolId, mode: 'merge' | 'reset' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
+    official: (tool: ToolId, mode: 'merge' | 'reset' | 'repair' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
     // 切回官方后那一问「要不要让官方 Claude Code 先问再执行？」的回答；改不改、改之前备份都在主进程。
     answerCommandConfirmation: (choice: ClaudeCommandConfirmationChoice) => bridge.answerClaudeCommandConfirmation(choice),
     // 首页的一键切换：备份、写入、自检、失败回滚都在主进程一次做完。

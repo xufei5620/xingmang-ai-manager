@@ -327,6 +327,8 @@ const chatHistoryFiles = new Map<string, AiChatHistorySnapshot>()
 const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource', 'saveSettings'])
 window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdAccountKeys() { heldAccountKeys = heldAccountKeys ?? [] }, releaseAccountKeys() { const held = heldAccountKeys ?? []; heldAccountKeys = null; for (const resolve of held) resolve() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, holdConfiguredModels(provider) { heldConfiguredModels.set(provider, heldConfiguredModels.get(provider) ?? []) }, releaseConfiguredModels(provider) { const held = heldConfiguredModels.get(provider) ?? []; heldConfiguredModels.delete(provider); for (const resolve of held) resolve() }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, signOutAccountPageSessionReads() { accountPageSessionSignedOut = true }, accountPageSessionSignedOutServed() { return accountPageSessionSignedOutServed }, dropSessionSilently() { session = { authenticated: false, account: null } }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, holdNextNodeInstall() { nextNodeInstallHeld = true }, releaseNodeInstall() { releaseNodeInstall() }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) }, setRelayRoute(line) { autoRelayLine = line; reportRoutedConfig() }, setToolsRunning(running) { fixtureToolsRunning = running }, holdNextImport() { nextImportHeld = true }, releaseImport() { releaseImport() }, holdNextChatHistoryRead() { nextChatHistoryReadHeld = true }, releaseChatHistoryRead() { releaseChatHistoryRead() }, chatHistory() { const index = [...chatHistoryFiles.values()][0]?.index ?? ''; return { ids: index ? (JSON.parse(index) as { conversations: Array<{ id: string }> }).conversations.map((entry) => entry.id) : [], index } }, releaseChatImage() { releaseChatImage() } }
 if (query.has('startupConfigFail')) window.v2Test.fail = 'getConfig'
+// subscriptionReadFail：订阅一直读不到（网络抖、服务端慢），不知道这个账号有没有订阅（F1）。
+if (query.has('subscriptionReadFail')) window.v2Test.fail = 'getAccountSubscriptionSelf'
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
 // ?elevated：星芒这次本身就带着管理员权限在跑（自带 Administrator 之类），装东西不弹授权窗口（已知19）。
@@ -810,12 +812,13 @@ const methods = {
     config.providers[input.provider] = { ...config.providers[input.provider], configurationOwnership: 'account', model: input.model, apiKeyPreview: input.keyId === 201 ? 'sk-se••••9012' : 'sk-ot••••1234' }
     return { backups: [], files: [] }
   },
-  switchToOfficialAccount: async (provider: ProviderId, mode?: 'merge' | 'reset') => {
+  switchToOfficialAccount: async (provider: ProviderId, mode?: 'merge' | 'reset' | 'repair') => {
     // 真实的 Codex 切回官方后 config.toml 不再指向中转，actualBaseUrl 为空。
+    const rebuilt = mode === 'reset' || mode === 'repair'
     config.providers[provider] = { ...config.providers[provider], hasApiKey: false,
       ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const, actualBaseUrl: '', matchesRelay: false } : {}),
-      ...(mode === 'reset' ? { configBroken: false, codexAuthBroken: false } : {}) }
-    return { backups: [], files: [], ...(mode === 'reset' ? {} : commandConfirmationQuestion(provider)) }
+      ...(rebuilt ? { configBroken: false, codexAuthBroken: false } : {}) }
+    return { backups: [], files: [], ...(rebuilt ? {} : commandConfirmationQuestion(provider)) }
   },
   answerClaudeCommandConfirmation: async (choice: 'ask' | 'keep') => {
     commandConfirmationAnswered = true
@@ -898,7 +901,7 @@ const methods = {
         continue
       }
       keyRewritten.add(provider)
-      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}), ...(input.mode === 'reset' ? { configBroken: false, codexAuthBroken: false } : {}) }
+      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}), ...(input.mode === 'reset' || input.mode === 'repair' ? { configBroken: false, codexAuthBroken: false } : {}) }
       if (query.has('autoFallback') && provider === 'codex') {
         config.providers[provider].model = 'gpt-5.6-sol'
         config.providers[provider].apiKeyPreview = 'sk-se••••9012'

@@ -262,6 +262,13 @@ export interface CodexWorkspacePermissionWriteResult extends NativeConfigSaveRes
 
 export type NativeConfigSaveMode = 'merge' | 'reset'
 
+/**
+ * 首页「配置文件坏了」的「修好它」和碰上坏文件的「改用当前账号」多一种：repair。工具读不了的那份照重置重建，
+ * 读得懂的那份照合并，只改账号、地址、型号那几处（0.2.24 深查 X-1）。只有 Codex 有两份文件（config.toml、
+ * auth.json），别的工具坏的就是唯一那份，跟重置一样。配置窗口的「保存」「重置为初始状态」不走这里。
+ */
+export type NativeConfigWriteMode = NativeConfigSaveMode | 'repair'
+
 export interface NativeConfigWriteHooks {
   beforeReplace?: (targetPath: string, index: number) => void
 }
@@ -1515,6 +1522,47 @@ function createCodexOfficialConfigPlans(
   if (storedChatgpt) plans.push({ path: paths.chatgpt, content: cleanContent })
   plans.push({ path: paths.active, content: officialContent(cleanContent) })
   return plans
+}
+
+/**
+ * 「修好它」时 Codex 的 config.toml 怎么写（X-1）。Codex 和星芒都读得懂（或者还没有这份文件）就照合并：客户自己
+ * 加的连接、信任过的文件夹、推理强度都留着。只坏了 auth.json 也整份重建 config.toml，客户的设置就全没了；从修之前
+ * 的备份里找回又会把坏的 auth.json 一起放回去。任何一边读不懂才整份重建，跟重置一样。
+ */
+function codexConfigRepairMode(roots: ProviderConfigRoots): NativeConfigSaveMode {
+  const configPath = codexConfigSnapshotPaths(roots).active
+  if (readFileBroken(configPath, isCodexConfigFileBroken)) return 'reset'
+  const text = readConfigText(configPath)
+  return text && parseTomlOrNull(text) === null ? 'reset' : 'merge'
+}
+
+/** 「修好它」按当前账号修、config.toml 又读得懂（codexConfigRepairMode）：config.toml 照合并，只有 auth.json 照重置重建。 */
+function createCodexRelayRepairPlans(
+  apiKey: string,
+  model: string,
+  roots: ProviderConfigRoots,
+  siteBaseUrls: Record<ProviderId, string>,
+  cliHook?: CliHookInvocation,
+  modelCatalog?: string | null,
+): FilePlan[] {
+  return [
+    ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge', cliHook, modelCatalog),
+    ...createCodexRelayAuthPlans(apiKey, roots, 'reset'),
+  ]
+}
+
+/**
+ * 「修好它」按官方账号修、config.toml 又读得懂：不再整份换成三行初始值。还接着当前账号的照「切回官方账号」只拿掉
+ * 当前账号那几处（不接着当前账号的，合并会拿存着的官方那份盖掉现在这份，所以一个字不动），auth.json 照重置重建。
+ */
+function createCodexOfficialRepairPlans(roots: ProviderConfigRoots, siteBaseUrls: Record<ProviderId, string>): FilePlan[] {
+  const configPath = codexConfigSnapshotPaths(roots).active
+  const currentText = requireConfigText(configPath, '现有 Codex config.toml')
+  const relay = currentText !== null && classifyCodexConfigProfile(parseTomlOrNull(currentText), siteBaseUrls.codex) === 'relay'
+  return [
+    ...(relay ? createCodexOfficialConfigPlans(roots, siteBaseUrls, 'merge') : []),
+    ...createCodexOfficialAuthPlans(roots, 'reset'),
+  ]
 }
 
 export function classifyCodexAuthProfile(value: unknown): 'apikey' | 'chatgpt' | 'mixed' | 'empty' {
@@ -2925,7 +2973,7 @@ export function saveProviderConfig(
   provider: ProviderId,
   apiKeyInput: string,
   modelInput: string,
-  mode: NativeConfigSaveMode,
+  mode: NativeConfigWriteMode,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   hooks: NativeConfigWriteHooks = {},
   // The relay base URL(s) written into the freshly-created/merged config.
@@ -2968,10 +3016,14 @@ export function saveProviderConfig(
 
   const statusLineCommand = claudeStatusLineCommand?.trim() || undefined
   if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
+  // 「修好它」只在 Codex 的 config.toml 读得懂、坏的只有 auth.json 时跟重置不一样（X-1）。
+  const codexAuthOnlyRepair = mode === 'repair' && provider === 'codex' && codexConfigRepairMode(roots) === 'merge'
   const plans = [
     ...(mode === 'merge'
       ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog, seeded)
-      : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog, seeded)),
+      : codexAuthOnlyRepair
+        ? createCodexRelayRepairPlans(apiKey, model, roots, siteBaseUrlsInput, cliHook, codexModelCatalog)
+        : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog, seeded)),
     ...globalResponseLanguagePlans(provider, roots, seeded),
   ]
 
@@ -4043,13 +4095,17 @@ export function switchProviderToOfficialAccount(
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   hooks: NativeConfigWriteHooks = {},
   siteBaseUrlsInput: Record<ProviderId, string> = providerBaseUrls,
-  saveMode: NativeConfigSaveMode = 'merge',
+  writeMode: NativeConfigWriteMode = 'merge',
 ): NativeConfigSaveResult {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
   const configuredPaths = providerConfigPaths(provider, roots)
   for (const filePath of configuredPaths) assertSafeConfigPath(filePath, providerRoot, 'file')
 
+  // 「修好它」照重置的口子过（它本来就是给坏文件用的），只在 Codex 的 config.toml 读得懂、坏的只有 auth.json 时
+  // 换一份计划（X-1）。
+  const saveMode: NativeConfigSaveMode = writeMode === 'merge' ? 'merge' : 'reset'
+  const codexAuthOnlyRepair = writeMode === 'repair' && provider === 'codex' && codexConfigRepairMode(roots) === 'merge'
   const inspection = inspectProviderConfig(provider, roots, siteBaseUrlsInput)
   // Codex 自己的 ChatGPT 登录会把 auth.json 换成令牌、Key 置空，却不动 config.toml；
   // 切账号站点也会让现有中转地址不同于当前站点。两种情况都必须按已知中转来源
@@ -4073,7 +4129,9 @@ export function switchProviderToOfficialAccount(
     throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')
   }
 
-  const plans = createOfficialAccountPlans(provider, roots, siteBaseUrlsInput, saveMode)
+  const plans = codexAuthOnlyRepair
+    ? createCodexOfficialRepairPlans(roots, siteBaseUrlsInput)
+    : createOfficialAccountPlans(provider, roots, siteBaseUrlsInput, saveMode)
   if (plans.length === 0) throw new Error('没有找到可切换的配置文件')
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')

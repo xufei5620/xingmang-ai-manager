@@ -1662,6 +1662,13 @@ describe('renderer-v2 home balance for subscription customers', () => {
     expect(lowBalanceText(3.456)).toBe('余额只剩 $3.46，充值后可继续使用。')
   })
 
+  it('does not tell a customer to top up while their subscription has not been read yet', () => {
+    const markup = render({}, undefined, { balance: empty, subscriptionUnknown: true })
+    expect(markup).not.toContain('home-low-balance')
+    expect(markup).not.toContain('当前账号余额是 $0')
+    expect(markup).not.toContain('tone-bad')
+  })
+
   it('drops the empty-wallet warning and shows the subscription while one is usable', () => {
     const markup = render({}, undefined, { balance: empty, subscription })
     expect(markup).not.toContain('home-low-balance')
@@ -1706,6 +1713,20 @@ describe('renderer-v2 home tool cards with an empty wallet', () => {
     expect(homeWalletEmpty(null, null, true)).toBe(false)
     expect(homeWalletEmpty(0, subscription, true)).toBe(false)
     expect(homeWalletEmpty(0, null, false)).toBe(false)
+    // 订阅还没读到（刚登录、读失败）：不知道有没有订阅，也不算（F1）。
+    expect(homeWalletEmpty(0, null, true, true)).toBe(false)
+    expect(homeWalletEmpty(0, null, true, false)).toBe(true)
+  })
+
+  it('leaves the cards alone while it is not yet known whether the wallet is backed by a subscription', () => {
+    const markup = render({}, undefined, { balance: empty, subscriptionUnknown: true })
+    for (const tool of ['claude', 'codex', 'grok']) {
+      const row = toolRow(markup, tool)
+      expect(row, tool).not.toContain('余额为零')
+      expect(row, tool).not.toContain(`data-testid="tool-${tool}-recharge"`)
+    }
+    expect(heroOf(markup)).not.toContain('余额为零')
+    expect(markup).not.toContain('home-low-balance')
   })
 
   it('turns every card on the current account into 余额为零 with 去充值 as its button', () => {
@@ -2095,6 +2116,21 @@ describe('renderer-v2 home v4 top cards', () => {
     expect(homeMoneyNotice(3, null, { usableUsd: 3, days: null, low: true })).toEqual({ text: lowBalanceText(3), renew: false })
     expect(homeMoneyNotice(0, null, null)).toEqual({ text: lowBalanceText(0), renew: false })
     expect(homeMoneyNotice(null, null, null)).toBeNull()
+  })
+
+  it('says nothing about money until it knows whether there is a subscription', () => {
+    expect(homeMoneyNotice(0, null, { usableUsd: null, days: null, low: false }, true)).toBeNull()
+    expect(homeMoneyNotice(3, null, { usableUsd: null, days: null, low: false }, true)).toBeNull()
+    // 读到了、确实没有订阅：$0 那句照旧。
+    expect(homeMoneyNotice(0, null, null, false)).toEqual({ text: lowBalanceText(0), renew: false })
+  })
+
+  it('draws no day count and no warning on the balance card while the subscription is unread', () => {
+    const markup = render({}, undefined, { account, accountScope: scope, balance: balance(0), api: api(14), subscriptionUnknown: true })
+    expect(markup).toContain('data-testid="home-balance">$0.00<')
+    expect(markup).not.toContain('data-testid="home-balance-days"')
+    expect(markup).not.toContain('data-testid="home-low-balance"')
+    expect(markup).not.toContain('余额已经用完')
   })
 
   it('counts the subscription in the money that is left, by how it is billed', () => {

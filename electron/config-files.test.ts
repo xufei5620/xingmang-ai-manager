@@ -548,6 +548,134 @@ describe('native CLI configuration files', () => {
     expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toMatchObject({ auth_mode: 'chatgpt', tokens: { access_token: 'saved' } })
   })
 
+  // 0.2.24 深查 X-1：只坏了 auth.json 时「修好它」以前整份重建 config.toml，客户自己加的连接、信任过的文件夹、
+  // 推理强度全没了；从修之前的备份找回又把坏的 auth.json 一起放回去。
+  describe('repair over an auth.json Codex cannot read (X-1)', () => {
+    const customized = [
+      'model_reasoning_effort = "high"',
+      '',
+      '[mcp_servers.my-docs]',
+      'command = "npx"',
+      'args = ["-y", "my-docs-mcp"]',
+      '',
+      '[projects."/home/me/work"]',
+      'trust_level = "trusted"',
+      '',
+    ].join('\n')
+    const brokenAuth = '{"OPENAI_API_KEY": "sk-old-re'
+
+    // The template already sets its own reasoning effort, so the customer's choice replaces it in place.
+    function customize(configPath: string) {
+      const config = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+      Object.assign(config, TOML.parse(customized))
+      fs.writeFileSync(configPath, TOML.stringify(config), 'utf8')
+    }
+
+    function expectCustomizationsKept(config: Record<string, unknown>) {
+      expect(config.model_reasoning_effort).toBe('high')
+      expect(config.mcp_servers).toEqual({ 'my-docs': { command: 'npx', args: ['-y', 'my-docs-mcp'] } })
+      expect(config.projects).toEqual({ '/home/me/work': { trust_level: 'trusted' } })
+    }
+
+    it('keeps the customer\'s own config.toml settings and rebuilds only auth.json for the current account', () => {
+      const roots = providerRoots(temporaryHome())
+      const [configPath] = providerConfigPaths('codex', roots)
+      const auth = codexAuthSnapshotPaths(roots)
+      saveProviderConfig('codex', 'sk-old', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+      customize(configPath)
+      fs.writeFileSync(auth.active, brokenAuth, 'utf8')
+      const inspected = inspectProviderConfig('codex', roots, providerBaseUrls)
+      expect(inspected).toMatchObject({ codexAuthBroken: true })
+      expect(inspected).not.toHaveProperty('configBroken')
+
+      const saved = saveProviderConfig('codex', 'sk-new', testModels.codex, 'repair', roots, {}, providerBaseUrls)
+
+      const config = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+      expectCustomizationsKept(config)
+      expect(config.model).toBe(testModels.codex)
+      expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-new' })
+      const after = inspectProviderConfig('codex', roots, providerBaseUrls)
+      expect(after).toMatchObject({ hasApiKey: true, matchesRelay: true })
+      expect(after).not.toHaveProperty('codexAuthBroken')
+      // Still backed up first, so the broken file can be looked at later.
+      const backup = saved.backups.find((entry) => entry.startsWith(`${auth.active}.bak.`))
+      expect(fs.readFileSync(String(backup), 'utf8')).toBe(brokenAuth)
+
+      // 配置里「重置为初始状态」照旧整份重建：那颗按钮说了「自己改过的设置也会重置」。
+      fs.writeFileSync(auth.active, brokenAuth, 'utf8')
+      saveProviderConfig('codex', 'sk-new', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+      const reset = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+      expect(reset).not.toHaveProperty('mcp_servers')
+      expect(reset).not.toHaveProperty('projects')
+    })
+
+    it('still rebuilds config.toml like a reset when Codex cannot read it either', () => {
+      const roots = providerRoots(temporaryHome())
+      const [configPath] = providerConfigPaths('codex', roots)
+      const auth = codexAuthSnapshotPaths(roots)
+      fs.mkdirSync(path.dirname(configPath), { recursive: true })
+      fs.writeFileSync(configPath, 'model = "a"\nmodel = "b"\n', 'utf8')
+      fs.writeFileSync(auth.active, brokenAuth, 'utf8')
+      expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ configBroken: true, codexAuthBroken: true })
+
+      saveProviderConfig('codex', 'sk-new', testModels.codex, 'repair', roots, {}, providerBaseUrls)
+      const repaired = fs.readFileSync(configPath, 'utf8')
+      fs.writeFileSync(configPath, 'model = "a"\nmodel = "b"\n', 'utf8')
+      fs.writeFileSync(auth.active, brokenAuth, 'utf8')
+      saveProviderConfig('codex', 'sk-new', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+      expect(repaired).toBe(fs.readFileSync(configPath, 'utf8'))
+      expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-new' })
+      expect(inspectProviderConfig('codex', roots, providerBaseUrls)).not.toHaveProperty('configBroken')
+    })
+
+    it('leaves an official config.toml exactly as the customer had it when repairing for the official account', () => {
+      const roots = providerRoots(temporaryHome())
+      const [configPath] = providerConfigPaths('codex', roots)
+      const auth = codexAuthSnapshotPaths(roots)
+      fs.mkdirSync(path.dirname(configPath), { recursive: true })
+      fs.writeFileSync(configPath, customized, 'utf8')
+      fs.writeFileSync(auth.active, brokenAuth, 'utf8')
+      // An older official copy must not come back over what the customer has now.
+      fs.writeFileSync(codexConfigSnapshotPaths(roots).chatgpt, 'approval_policy = "never"\n', 'utf8')
+      const savedLogin = { auth_mode: 'chatgpt', tokens: { id_token: 'a.b.c', access_token: 'saved' } }
+      fs.writeFileSync(auth.chatgpt, JSON.stringify(savedLogin), 'utf8')
+
+      const saved = switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'repair')
+
+      expect(fs.readFileSync(configPath, 'utf8')).toBe(customized)
+      expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toMatchObject(savedLogin)
+      expect(inspectProviderConfig('codex', roots, providerBaseUrls)).not.toHaveProperty('codexAuthBroken')
+      const backup = saved.backups.find((entry) => entry.startsWith(`${auth.active}.bak.`))
+      expect(fs.readFileSync(String(backup), 'utf8')).toBe(brokenAuth)
+
+      // Without a saved login the broken file goes, the way Codex itself says "not logged in".
+      fs.rmSync(auth.chatgpt)
+      fs.writeFileSync(auth.active, brokenAuth, 'utf8')
+      switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'repair')
+      expect(fs.existsSync(auth.active)).toBe(false)
+      expect(fs.readFileSync(configPath, 'utf8')).toBe(customized)
+    })
+
+    it('drops only the current account\'s settings from config.toml when repairing a relay setup for the official account', () => {
+      const roots = providerRoots(temporaryHome())
+      const [configPath] = providerConfigPaths('codex', roots)
+      const auth = codexAuthSnapshotPaths(roots)
+      saveProviderConfig('codex', 'sk-old', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+      customize(configPath)
+      fs.rmSync(codexConfigSnapshotPaths(roots).chatgpt, { force: true })
+      fs.writeFileSync(auth.active, brokenAuth, 'utf8')
+
+      switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'repair')
+
+      expectCustomizationsKept(TOML.parse(fs.readFileSync(configPath, 'utf8')))
+      const after = inspectProviderConfig('codex', roots, providerBaseUrls)
+      expect(after.actualBaseUrl).toBe('')
+      expect(after).not.toHaveProperty('codexAuthBroken')
+      expect(fs.existsSync(auth.active)).toBe(false)
+    })
+  })
+
   // Codex 0.159 reads an auth.json of `{}` as a ChatGPT login without tokens: every
   // request fails with "plan type is required for chatgpt authentication" and it
   // never asks for a login. Switching a relay that never had a ChatGPT login back

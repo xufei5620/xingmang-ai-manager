@@ -2924,6 +2924,23 @@ test('an empty wallet turns the main button on the tool cards into 去充值 and
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   } finally { await page.close() }
 })
+// 深查 F1：钱包 $0、订阅还没读到（或读失败）时，不知道他是不是靠订阅在用，不能先叫他去充值。
+test('an empty wallet whose subscription could not be read is not called empty anywhere', async () => {
+  const page = await open('emptyWallet=1&subscriptionReadFail=1')
+  try {
+    await expect(page.getByTestId('home-balance')).toHaveText('$0.00')
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'getAccountSubscriptionSelf'))
+    const row = page.getByTestId('tool-row-claude')
+    await row.locator('.xm-tool-card-actions > .xm-btn').first().waitFor()
+    assert.equal(await page.getByTestId('home-low-balance').count(), 0)
+    assert.equal(await row.getByText('余额为零', { exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('tool-claude-recharge').count(), 0)
+    assert.equal(await page.getByTestId('home-hero-recharge').count(), 0)
+    assert.equal(await page.getByTestId('nav-recharge-low').count(), 0)
+    assert.equal(await page.getByTestId('home-balance-days').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
 // 第二十六批 D：系统给的英文原话（EPERM……）不再上屏，换成一句中文。
 test('an English probe failure reads as a plain Chinese sentence on the home row', async () => {
   const page = await open('detectionFailed=eperm')
@@ -6308,8 +6325,8 @@ test('a key from another site is named for the account and switched from the row
   } finally { await page.close() }
 })
 
-// 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml。行上的「修好它」就是配置里的
-// 「重置为初始状态」，按现在用的账号重新生成，不换来源。
+// 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml。行上的「修好它」按现在用的账号把读不了的
+// 那份重新生成（repair，主进程里跟「重置为初始状态」一样整份重建），不换来源。
 test('a Codex config Codex cannot read is reset from either Codex row on the current account', async () => {
   const page = await open('codexBroken=1')
   try {
@@ -6323,8 +6340,8 @@ test('a Codex config Codex cannot read is reset from either Codex row on the cur
     await page.getByTestId('tool-codexDesktop-repair-config').click()
     await waitForToast(page, '已重置 Codex 桌面端的配置，原来的配置已备份')
     for (const tool of ['codex', 'codexDesktop']) await connectedBadge(page, tool).waitFor()
-    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
-    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset', intent: 'explicit' }])
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'repair').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'repair', intent: 'explicit' }])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
     await clean(page)
   } finally { await page.close() }
@@ -6339,8 +6356,8 @@ test('a ChatGPT login whose Codex config cannot be read is reset on the official
     await waitForToast(page, '已重置 Codex CLI 的配置，原来的配置已备份')
     await expect(page.getByTestId('tool-codex-source')).toHaveText('官方账号')
     const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'switchToOfficialAccount').map((entry) => entry.args))
-    assert.deepEqual(resets, [['codex', 'reset']])
-    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset')), false)
+    assert.deepEqual(resets, [['codex', 'repair']])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys')), false)
     await clean(page)
   } finally { await page.close() }
 })
@@ -6360,8 +6377,8 @@ test('a Claude Code settings file it cannot read is reset on the current account
     await page.getByTestId('tool-claude-repair-config').click()
     await waitForToast(page, '已重置 Claude Code 的配置，原来的配置已备份')
     await connectedBadge(page, 'claude').waitFor()
-    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
-    assert.deepEqual(resets, [{ providers: ['claude'], preferredModels: {}, mode: 'reset', intent: 'explicit' }])
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'repair').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['claude'], preferredModels: {}, mode: 'repair', intent: 'explicit' }])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
     await clean(page)
   } finally { await page.close() }
@@ -6458,7 +6475,9 @@ test('the which-account menus on the CLI and Claude Desktop cards keep every wor
   } finally { await page.close() }
 })
 
-test('a Codex login file Codex cannot read is reset from either Codex row', async () => {
+// 只坏了 auth.json 时「修好它」以前也整份重置，config.toml 里客户自己的设置跟着没了（X-1）。主进程按 repair
+// 只重建 auth.json，这里钉住界面交过去的是 repair、不是配置里「重置为初始状态」的 reset。
+test('a Codex login file Codex cannot read is repaired from either Codex row', async () => {
   const page = await open('codexAuthBroken=1')
   try {
     for (const tool of ['codex', 'codexDesktop']) {
@@ -6469,8 +6488,8 @@ test('a Codex login file Codex cannot read is reset from either Codex row', asyn
     await page.getByTestId('tool-codex-repair-config').click()
     await waitForToast(page, '已重置 Codex CLI 的配置，原来的配置已备份')
     for (const tool of ['codex', 'codexDesktop']) await connectedBadge(page, tool).waitFor()
-    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
-    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset', intent: 'explicit' }])
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'repair').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'repair', intent: 'explicit' }])
     await clean(page)
   } finally { await page.close() }
 })
