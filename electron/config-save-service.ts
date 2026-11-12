@@ -1413,7 +1413,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   }
 
   /**
-   * 开机那轮替 Claude Code、Grok 换掉已下架的默认型号（Codex 由上面的 syncPicker 连菜单一起管）。下架名单
+   * 开机那轮替 Claude Code、Grok 换掉已下架的默认型号（Codex 由上面的 syncPicker 连菜单一起管，Claude Code 的菜单在下面）。下架名单
    * 可以由服务状态文件加（cli-model-defaults.ts），站上下架一个型号不用等发版。只碰当前账号写的配置：
    * 配置里的型号不在名单上就什么都不做，不起进程看工具开没开；在名单上、工具开着或看不出开没开的这次不换，
    * 交回去记成还欠着，与补设置同一套规矩。真换由 toolModelChecker.replaceRetired 在后台做：先问一遍中转，
@@ -1464,23 +1464,21 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   }
 
   /**
-   * 开机那轮给老客户的 Claude Code 补上备用型号（fallbackModel，挑法见 cli-model-defaults.ts 的
-   * resolveClaudeFallbackModels）。要按当前账号能用的型号挑，补设置那一步（fillRelayTemplateDefaults）不问中转、
-   * 挑不了，所以走打开前那次核对同一条路（syncPicker），菜单要是也落后了一起刷新：从终端、VS Code 直接开
-   * Claude Code 的客户等不到打开前那一问。配置里已经有这一项就不问中转；型号已下架的留给上面换型号那条，
-   * 换完下次开机再补，免得两条路一起写。写之前看一眼 Claude Code 开没开，开着或看不出这次不写，也不记成欠着，
-   * 下次开机或从星芒打开时再补。先备份，失败只记日志。
+   * 开机那轮把 Claude Code 的 /model 菜单按当前账号能用的型号对一遍（tool-model-check.ts 的 syncPicker），同
+   * Codex 那条：菜单以前只在保存配置和从星芒点「打开」时刷新，从终端、VS Code 直接开 Claude Code 的客户，站上
+   * 新上的型号一直进不了菜单。只改菜单那几处（claude-model-picker.ts 的 claudeRelayModelPickerUpdates）：
+   * 菜单本身、没写过的「Default」、老配置没有的备用型号（fallbackModel，挑法见 cli-model-defaults.ts 的
+   * resolveClaudeFallbackModels）；客户选的型号、自己写的菜单和备用型号一个字不动，客户删掉的备用型号也不补。
+   * 菜单已经是新的就只问了一遍中转，不看工具开没开；型号已下架的留给上面换型号那条，换完下次开机再对，
+   * 免得两条路一起写。真要写之前看一眼 Claude Code 开没开，开着或看不出这次不写，也不记成欠着，下次开机或
+   * 从星芒打开时再刷。先备份，失败只记日志。
    */
-  async function syncClaudeFallbackModels(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<void> {
+  async function syncClaudeModelPicker(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<void> {
     if (!round.providers.includes('claude')) return
     const target = modelCheckTarget('claude', true)
     if (!target) return
-    if (!claudeFallbackModelMissing(providerRoots)) {
-      await rememberSeededToolDefaults(['claude:fallbackModel'])
-      return
-    }
-    // 出现过、现在没了：客户删的，或者恢复了一份更早的备份（0.2.22 第二轮回归第 2 条），不补。
-    if (seededFor('claude').claudeFallbackModel) return
+    // 记下这台电脑上出现过备用型号：以后不见了就是客户删的，刷菜单时不再补（seededFor 的 claudeFallbackModel）。
+    if (!claudeFallbackModelMissing(providerRoots)) await rememberSeededToolDefaults(['claude:fallbackModel'])
     const loadHints = serviceOptions.cliModelHints
     const hints = loadHints ? await unlessStopped(() => loadHints().catch(() => null), stopped) : null
     if (isRetiredCliModel('claude', target.model, hints)) return
@@ -1512,12 +1510,12 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     } catch (error) {
       void syncCodexModelCatalog(backup, round, stopped).catch(() => false)
       void replaceRetiredCliModels(backup, round, stopped).catch(() => [])
-      void syncClaudeFallbackModels(backup, round, stopped).catch(() => undefined)
+      void syncClaudeModelPicker(backup, round, stopped).catch(() => undefined)
       throw error
     }
     const catalogOwed = await syncCodexModelCatalog(backup, round, stopped).catch(() => false)
     const retiredOwed = await replaceRetiredCliModels(backup, round, stopped).catch((): ProviderId[] => [])
-    await syncClaudeFallbackModels(backup, round, stopped).catch(() => undefined)
+    await syncClaudeModelPicker(backup, round, stopped).catch(() => undefined)
     const skipped = [...new Set([...(result.pending ?? []), ...retiredOwed])]
     templateFillDebt = owner && (skipped.length || catalogOwed) ? { owner, providers: skipped, codexModelCatalog: catalogOwed } : null
     const pending = activeProviderIds.filter((provider) => skipped.includes(provider) || (provider === 'codex' && catalogOwed))

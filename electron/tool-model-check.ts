@@ -279,8 +279,8 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
   }
 
   /**
-   * 开机时只把菜单对一遍（system-service.ts）：客户升级后多半直接从开始菜单打开 Codex
-   * 桌面端，不经过打开前那次核对，新型号就一直进不了菜单。这里不劝换模型、也不占当天
+   * 开机时只把菜单对一遍（config-save-service.ts，Codex 和 Claude Code 各一次）：客户升级后多半直接从开始菜单
+   * 打开 Codex 桌面端、从终端或 VS Code 打开 Claude Code，不经过打开前那次核对，新型号就一直进不了菜单。这里不劝换模型、也不占当天
    * 那次核对，默认模型已经用不了的留给打开前那次去问；只有两站都下架了的直接换掉
    * （replaceRetiredModel）。beforeRefresh 在问完中转、真写之前跑，抛错就不写（system-service.ts 在这里先备份，
    * 再看一眼 Codex 开没开）。返回菜单是否真的刷新了。
@@ -312,7 +312,7 @@ export function createToolModelChecker(deps: ToolModelCheckDependencies) {
   }
 
   /**
-   * 开机那轮只换掉已下架的默认型号，不动菜单：给 Claude Code 和 Grok 用（Codex 走 syncPicker，菜单一起对）。
+   * 开机那轮只换掉已下架的默认型号，不动菜单：给 Claude Code 和 Grok 用（Codex 走 syncPicker，菜单一起对；Claude Code 的菜单另走 syncPicker）。
    * 配置里的型号不在下架名单上就什么都不做、也不问中转；在名单上、而当前账号确实不再列它才换，
    * 规矩同 replaceRetiredModel。beforeReplace 在问完中转、真写之前跑，抛错就不写（system-service.ts 在这里
    * 再看一眼工具开没开）。返回是否真换了。

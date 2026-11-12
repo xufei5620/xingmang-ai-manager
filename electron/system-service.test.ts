@@ -1283,7 +1283,7 @@ describe('createSystemService', () => {
     expect(backup).not.toHaveBeenCalled()
   })
 
-  it('does not look at running tools or ask the relay at startup when no configured model is retired', async () => {
+  it('does not look at running tools or swap the model at startup when no configured model is retired', async () => {
     const f = retiredClaudeFixture()
     f.hints.value = null
     await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-sonnet-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
@@ -1291,11 +1291,13 @@ describe('createSystemService', () => {
     const requests = f.fetchModels.mock.calls.length
 
     expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    // 只为对 /model 菜单问一遍中转；账号不列这个型号了，劝换留给打开前那一问，菜单也不刷。
+    await vi.waitFor(() => expect(f.fetchModels.mock.calls.length).toBe(requests + 1), backgroundStartupWait)
     await new Promise((resolve) => setTimeout(resolve, 20))
 
     expect(f.configuredModel()).toBe('claude-sonnet-5')
     expect(f.running).not.toHaveBeenCalled()
-    expect(f.fetchModels.mock.calls.length).toBe(requests)
+    expect(f.fetchModels.mock.calls.length).toBe(requests + 1)
   })
 
   it('leaves a retired Claude Code model alone at startup in a config the account did not write', async () => {
@@ -1345,7 +1347,7 @@ describe('createSystemService', () => {
     expect(f.service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
   })
 
-  it('does not write Claude Code fallback models at startup while it may be open, or ask the relay when settings already have them', async () => {
+  it('does not write Claude Code fallback models at startup while it may be open, or touch the ones settings already have', async () => {
     const f = retiredClaudeFixture()
     f.hints.value = null
     await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
@@ -1359,17 +1361,18 @@ describe('createSystemService', () => {
     expect(claudeFallbackModels(f.roots)).toBeUndefined()
     expect(backup).not.toHaveBeenCalled()
 
-    // 客户自己写了备用型号：开机不为它问中转，也不看工具开没开。
+    // 客户自己写了备用型号：开机只为对菜单问一遍中转，菜单没变就不看工具开没开，备用型号一个字不动。
     const [settingsPath] = providerConfigPaths('claude', f.roots)
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
     fs.writeFileSync(settingsPath, JSON.stringify({ ...settings, fallbackModel: ['claude-haiku-4-5'] }))
     f.running.mockClear()
     const requests = f.fetchModels.mock.calls.length
     expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+    await vi.waitFor(() => expect(f.fetchModels.mock.calls.length).toBe(requests + 1), backgroundStartupWait)
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(claudeFallbackModels(f.roots)).toEqual(['claude-haiku-4-5'])
     expect(f.running).not.toHaveBeenCalled()
-    expect(f.fetchModels.mock.calls.length).toBe(requests)
+    expect(backup).not.toHaveBeenCalled()
   })
 
   it('does not put back Claude Code fallback models the customer deleted, at startup or on the next save', async () => {
@@ -1383,10 +1386,11 @@ describe('createSystemService', () => {
     const backup = vi.fn()
 
     expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+    // 开机对菜单那一问照旧去，但删掉的备用型号不算菜单落后，不补、不写。
+    await vi.waitFor(() => expect(f.fetchModels.mock.calls.length).toBe(requests + 1), backgroundStartupWait)
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(claudeFallbackModels(f.roots)).toBeUndefined()
     expect(f.running).not.toHaveBeenCalled()
-    expect(f.fetchModels.mock.calls.length).toBe(requests)
     expect(backup).not.toHaveBeenCalled()
 
     await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
@@ -1409,6 +1413,87 @@ describe('createSystemService', () => {
     expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(claudeFallbackModels(f.roots)).toBeUndefined()
+    expect(f.running).not.toHaveBeenCalled()
+  })
+
+  function claudePickerModels(roots: { userHome: string; codexHome: string }): unknown {
+    const settings = JSON.parse(fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')) as { modelPicker?: { options: Array<{ model: string }> } }
+    return settings.modelPicker?.options.map((option) => option.model)
+  }
+
+  it('brings the Claude Code /model menu up to the account at startup, keeping the model the customer picked and backing up first', async () => {
+    const f = retiredClaudeFixture()
+    f.hints.value = null
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    expect(claudePickerModels(f.roots)).toEqual(['claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5'])
+    // 客户后来在 Claude Code 里换了型号；站上又上了一个新型号。
+    const [settingsPath] = providerConfigPaths('claude', f.roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown> & { env: Record<string, unknown> }
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ ...settings, model: 'claude-sonnet-5' }, null, 2)}\n`)
+    f.account.models.push('claude-sonnet-5-5')
+    const backups: Array<{ provider: ProviderId; picker: unknown }> = []
+
+    expect(await f.service.fillToolTemplateDefaults!((provider) => { backups.push({ provider, picker: claudePickerModels(f.roots) }) })).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(claudePickerModels(f.roots)).toEqual(['claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-sonnet-5-5']), backgroundStartupWait)
+    expect(backups).toEqual([{ provider: 'claude', picker: ['claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5'] }])
+    expect(f.running).toHaveBeenCalledWith(['claude'])
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown> & { env: Record<string, unknown> }
+    expect(after.model).toBe('claude-sonnet-5')
+    expect(after.env.ANTHROPIC_DEFAULT_MODEL).toBe(settings.env.ANTHROPIC_DEFAULT_MODEL)
+    expect(after.fallbackModel).toEqual(settings.fallbackModel)
+    expect(f.service.getConfig(false).providers.claude.configurationOwnership).toBe('account')
+  })
+
+  it('skips the Claude Code /model menu at startup while it may be open, without owing it', async () => {
+    const f = retiredClaudeFixture()
+    f.hints.value = null
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    f.account.models.push('claude-sonnet-5-5')
+    f.running.mockResolvedValue({ running: ['claude'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false })
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(f.running).toHaveBeenCalledWith(['claude']), backgroundStartupWait)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(claudePickerModels(f.roots)).toEqual(['claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5'])
+    expect(backup).not.toHaveBeenCalled()
+  })
+
+  it('leaves a Claude Code /model menu the customer wrote alone at startup', async () => {
+    const f = retiredClaudeFixture()
+    f.hints.value = null
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    const [settingsPath] = providerConfigPaths('claude', f.roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    const ownPicker = { replaceBuiltInOptions: true, options: [{ model: 'claude-opus-5-5', label: '主力', description: '我自己的' }] }
+    fs.writeFileSync(settingsPath, `${JSON.stringify({ ...settings, modelPicker: ownPicker }, null, 2)}\n`)
+    f.account.models.push('claude-sonnet-5-5')
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+
+    await vi.waitFor(() => expect(f.fetchModels).toHaveBeenCalled(), backgroundStartupWait)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect((JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>).modelPicker).toEqual(ownPicker)
+    expect(f.running).not.toHaveBeenCalled()
+    expect(backup).not.toHaveBeenCalled()
+  })
+
+  it('does not ask the relay for the Claude Code /model menu at startup in a config the account did not write', async () => {
+    const f = retiredClaudeFixture()
+    f.hints.value = null
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5-5', mode: 'merge' }, false)
+    f.account.models.push('claude-sonnet-5-5')
+    const before = claudePickerModels(f.roots)
+    const requests = f.fetchModels.mock.calls.length
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(claudePickerModels(f.roots)).toEqual(before)
+    expect(f.fetchModels.mock.calls.length).toBe(requests)
     expect(f.running).not.toHaveBeenCalled()
   })
 
