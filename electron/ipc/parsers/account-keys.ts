@@ -68,7 +68,8 @@ export function parseManagedCliConfigurationInput(value: unknown): AccountManage
     if (model === undefined) continue
     preferredModels[provider] = requiredString(model, 'CLI 首选模型', 512)
   }
-  if (value.mode !== undefined && value.mode !== 'merge' && value.mode !== 'reset') {
+  // repair 是首页「修好它」：工具读不了的那份重建，读得懂的那份只改账号几处（config-files.ts 的 NativeConfigWriteMode）。
+  if (value.mode !== undefined && value.mode !== 'merge' && value.mode !== 'reset' && value.mode !== 'repair') {
     throw new Error('未知的配置写入模式')
   }
   if (value.intent !== undefined && value.intent !== 'automatic' && value.intent !== 'explicit') throw new Error('CLI 配置意图无效')
