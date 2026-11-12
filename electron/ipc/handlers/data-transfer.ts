@@ -30,6 +30,14 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
     }
     return path.join(os.homedir(), 'Downloads')
   }
+  // 「匿名使用统计」在系统界面设置那份文件里（X-3）。没接上或读的时候出错都按读不出来算：导出不带、导入不碰。
+  function anonymousUsageHere(): boolean | null {
+    try {
+      return options.readAnonymousUsagePreference?.() ?? null
+    } catch {
+      return null
+    }
+  }
   registerTrustedHandler('chat-history:export-text', async (_event, input: unknown) => {
     const { title, text } = parseChatConversationExport(input)
     const result = await dialog.showSaveDialog({
@@ -42,12 +50,12 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
     rememberExportedFile(result.filePath)
     return { outputPath: result.filePath }
   })
-  // 「搬到新电脑」：设置由这里自己从 settings.json 挑，渲染层只交对话；文件里没有 Key、
+  // 「搬到新电脑」：设置由这里自己从 settings.json 和系统界面设置里挑，渲染层只交对话；文件里没有 Key、
   // 密码和登录状态（data-transfer.ts）。
   registerTrustedHandler('data-transfer:export', async (_event, input: unknown) => {
     const exportInput = parseDataTransferExportInput(input)
     const now = new Date()
-    const content = buildDataTransferFile(service.readStoredConfig(), exportInput, now)
+    const content = buildDataTransferFile(service.readStoredConfig(), exportInput, now, anonymousUsageHere())
     const result = await dialog.showSaveDialog({
       title: '导出聊天记录和设置',
       defaultPath: path.join(downloadsDirectory(), dataTransferFileName(now)),
@@ -58,8 +66,8 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
     rememberExportedFile(result.filePath)
     return { outputPath: result.filePath, conversations: exportInput.conversations.length }
   })
-  // 只读、只解析，什么都不写：对话交给渲染层逐条校验后合并，设置由渲染层走 settings:save，
-  // 改过的那几项先问用户。
+  // 只读、只解析，什么都不写：对话交给渲染层逐条校验后合并，设置由渲染层走 settings:save（匿名使用统计
+  // 走系统界面设置那条），改过的那几项先问用户。
   registerTrustedHandler('data-transfer:import', async () => {
     const result = await dialog.showOpenDialog({
       title: '选择导出的聊天记录和设置',
@@ -76,6 +84,10 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
       throw new Error(dataTransferInvalidMessage)
     }
     const parsed = parseDataTransferFile(raw)
-    return { conversations: parsed.conversations, phrases: parsed.phrases, ...planPortableSettingsImport(service.readStoredConfig(), parsed.settings) }
+    return {
+      conversations: parsed.conversations,
+      phrases: parsed.phrases,
+      ...planPortableSettingsImport(service.readStoredConfig(), parsed.settings, { here: anonymousUsageHere(), incoming: parsed.anonymousUsage }),
+    }
   })
 }

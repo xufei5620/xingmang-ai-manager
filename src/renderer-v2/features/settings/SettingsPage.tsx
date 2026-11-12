@@ -58,7 +58,7 @@ import { useRowFocus } from '../app/row-focus'
 import { currentWindowOs, type WindowOs } from '../app/window-os'
 import { parseImportedConversations, readChatPhrases } from '../chat/storage'
 import type { Conversation } from '../chat/state'
-import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from '../app/data-transfer'
+import { anonymousUsageFrom, dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from '../app/data-transfer'
 import type { V2Bridge } from '../../types'
 import type { ClaudeToggleResult, DataTransferImportPreview } from '../../../../electron/ipc-contract'
 import type { PlatformSystemState } from '../../../../electron/platform/contract'
@@ -470,19 +470,30 @@ export function SettingsPage({
     const patch = overwrite
       ? settingsPatchFrom(preview.settings, preview.conflictingSettings)
       : settingsPatchFrom(preview.settings)
-    if (patch && !(await update(patch, { quiet: true }))) {
-      throw new Error(
+    // 「匿名使用统计」不在 settings.json，走和那个开关同一条路写（X-3）；拿不到系统设置就不碰它。
+    const anonymousUsage = systemApi ? anonymousUsageFrom(preview, overwrite) : undefined
+    const settingsFailed = () =>
+      new Error(
         added
           ? `导入了 ${added} 个对话，设置没有保存成功，可以再点一次「导入」`
           : '设置没有保存成功，可以再点一次「导入」',
       )
+    if (patch && !(await update(patch, { quiet: true }))) throw settingsFailed()
+    if (systemApi && anonymousUsage !== undefined) {
+      try {
+        setSystemState(await systemApi.setPrivacyPreference('anonymousUsage', anonymousUsage))
+      } catch (error) {
+        // 和上面 update 一样：页顶红条说哪儿坏了，导入那句说设置没存上。
+        setSaveError(errorMessage(error))
+        throw settingsFailed()
+      }
     }
     return dataTransferImportMessage({
       fileConversations: conversations.length,
       added,
       skipped,
       signedIn: Boolean(chatTransfer),
-      settingsChanged: Boolean(patch),
+      settingsChanged: Boolean(patch) || anonymousUsage !== undefined,
     })
   }
   const importDone = (message: string | null) => {

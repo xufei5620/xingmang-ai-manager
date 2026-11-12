@@ -4367,6 +4367,43 @@ test('desktop notifications start on, the master switch gates test notifications
   }
 })
 
+// X-3：「搬到新电脑」以前带走「自动发送错误报告：关」，却不带「匿名使用统计：关」。新电脑没动过的直接关上；
+// 这台关过、文件里是开的先问，点「保留这台电脑的」照旧关着，只有点了「换成文件里的」才打开。
+test('importing a moved computer carries the usage-stats switch and asks before turning it back on', async () => {
+  const privacyCalls = async (page) => (await calls(page)).filter((call) => call.name === 'platform-privacy').map((call) => call.args)
+  let page = await fixture('page=settings&system=1&transfer=usage-off')
+  try {
+    await page.getByRole('tab', { name: '备份迁移', exact: true }).click()
+    await page.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '导入了你的设置。')
+    assert.deepEqual(await privacyCalls(page), [{ kind: 'anonymousUsage', enabled: false }])
+    assert.equal((await calls(page)).filter((call) => call.name === 'settings').length, 0)
+    await page.getByRole('tab', { name: '隐私数据', exact: true }).click()
+    assert.equal(await page.getByRole('switch', { name: '匿名使用统计偏好', exact: true }).getAttribute('aria-checked'), 'false')
+  } finally {
+    await page.close()
+  }
+  page = await fixture('page=settings&system=1&usageOff=1&transfer=usage-on')
+  try {
+    await page.getByRole('tab', { name: '备份迁移', exact: true }).click()
+    const ask = page.getByText('这台电脑上你已经改过这几项，和文件里的不一样：匿名使用统计。', { exact: true })
+    await page.getByTestId('settings-transfer-import').click()
+    await ask.waitFor()
+    await page.getByTestId('settings-transfer-keep').click()
+    await waitForToast(page, '文件里的设置和这台电脑上的一样，没有要改的。')
+    assert.deepEqual(await privacyCalls(page), [])
+    await page.getByTestId('settings-transfer-import').click()
+    await ask.waitFor()
+    await page.getByTestId('settings-transfer-overwrite').click()
+    await waitForToast(page, '导入了你的设置。')
+    assert.deepEqual(await privacyCalls(page), [{ kind: 'anonymousUsage', enabled: true }])
+    await page.getByRole('tab', { name: '隐私数据', exact: true }).click()
+    assert.equal(await page.getByRole('switch', { name: '匿名使用统计偏好', exact: true }).getAttribute('aria-checked'), 'true')
+  } finally {
+    await page.close()
+  }
+})
+
 test('a system notification settings page that will not open keeps the test notification line and says where to look', async () => {
   const page = await fixture('page=settings&system=1&fail=notification-settings')
   try {
