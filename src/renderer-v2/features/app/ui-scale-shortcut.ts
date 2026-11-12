@@ -1,9 +1,10 @@
-import type { AppSettingsV2Update } from '../../../../electron/ipc-contract'
+import type { AppSettingsV2Update, UiScaleShortcut } from '../../../../electron/ipc-contract'
 import type { WindowOs } from './window-os'
 
 type AppUiScale = NonNullable<AppSettingsV2Update['uiScale']>
 
-export type UiScaleShortcut = 'larger' | 'smaller' | 'reset'
+// Mac「显示」菜单经主进程送来的也是这三种，定义放在契约里，两边对得上。
+export type { UiScaleShortcut }
 
 export interface UiScaleStep {
   /** null = 已经到头，不用保存，只提示一句。 */

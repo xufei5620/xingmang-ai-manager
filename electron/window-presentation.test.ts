@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import type { BaseWindow, KeyboardEvent as MenuKeyboardEvent, MenuItem } from 'electron'
 import { describe, expect, it, vi } from 'vitest'
 import { readMainWiringSource } from './bootstrap/main-source.test-support'
 import { ipcEventChannels } from './ipc-contract'
@@ -113,7 +114,7 @@ describe('window chrome per renderer', () => {
 
 describe('macOS application menu', () => {
   it('contains standard App, Edit, View and Window role groups', () => {
-    const template = buildMacApplicationMenuTemplate('星芒AI管理工具', vi.fn())
+    const template = buildMacApplicationMenuTemplate('星芒AI管理工具', vi.fn(), vi.fn())
 
     expect(template.map((item) => item.label)).toEqual([
       '星芒AI管理工具',
@@ -133,14 +134,12 @@ describe('macOS application menu', () => {
     expect(roles[1]).toEqual(expect.arrayContaining([
       'undo', 'redo', 'cut', 'copy', 'paste', 'selectAll',
     ]))
-    expect(roles[2]).toEqual(expect.arrayContaining([
-      'resetZoom', 'zoomIn', 'zoomOut', 'togglefullscreen',
-    ]))
+    expect(roles[2]).toEqual(['togglefullscreen'])
     expect(roles[3]).toEqual(expect.arrayContaining(['minimize', 'zoom', 'front']))
   })
 
   it('gives every role item a Chinese label so no built-in English name shows', () => {
-    const template = buildMacApplicationMenuTemplate('星芒AI管理工具', vi.fn())
+    const template = buildMacApplicationMenuTemplate('星芒AI管理工具', vi.fn(), vi.fn())
     const roleItems = template.flatMap((item) => (
       Array.isArray(item.submenu) ? item.submenu.filter((child) => child.role) : []
     ))
@@ -158,9 +157,6 @@ describe('macOS application menu', () => {
       ['copy', '复制'],
       ['paste', '粘贴'],
       ['selectAll', '全选'],
-      ['resetZoom', '实际大小'],
-      ['zoomIn', '放大'],
-      ['zoomOut', '缩小'],
       ['togglefullscreen', '切换全屏'],
       ['minimize', '最小化'],
       ['zoom', '缩放'],
@@ -169,11 +165,36 @@ describe('macOS application menu', () => {
     for (const item of roleItems) expect(item.accelerator).toBeUndefined()
   })
 
+  // 深查 TR-3：resetZoom / zoomIn / zoomOut 改的是 Chromium 自带缩放，绕开「界面缩放」设置，
+  // 画布窗口里还会把整个界面缩放。三项改成自己接点击，把当时在前面的窗口一起交出去。
+  it('hands the View zoom commands and the focused window to the interface-scale handler instead of Chromium zoom', () => {
+    const onUiScale = vi.fn()
+    const view = buildMacApplicationMenuTemplate('星芒AI管理工具', vi.fn(), onUiScale)[2].submenu
+    const items = Array.isArray(view) ? view : []
+    expect(items.map((item) => item.label ?? item.type)).toEqual(['实际大小', '放大', '缩小', 'separator', '切换全屏'])
+    const zoom = items.slice(0, 3)
+    for (const item of zoom) expect(item.role).toBeUndefined()
+    expect(zoom.map((item) => item.accelerator)).toEqual(['CmdOrCtrl+0', 'CmdOrCtrl+Plus', 'CmdOrCtrl+-'])
+
+    const focused = { id: 7 } as unknown as BaseWindow
+    const menuItem = {} as unknown as MenuItem
+    const keyboard = {} as unknown as MenuKeyboardEvent
+    for (const item of zoom) item.click?.(menuItem, focused, keyboard)
+    zoom[1].click?.(menuItem, undefined, keyboard)
+    expect(onUiScale.mock.calls).toEqual([
+      ['reset', focused],
+      ['larger', focused],
+      ['smaller', focused],
+      ['larger', undefined],
+    ])
+  })
+
   it('routes the Settings command through the typed renderer navigation target', () => {
     const send = vi.fn()
     const template = buildMacApplicationMenuTemplate(
       '星芒AI管理工具',
       (target) => send(ipcEventChannels.onNavigate, target),
+      vi.fn(),
     )
     const appMenu = template[0].submenu
     const settings = Array.isArray(appMenu)
@@ -189,7 +210,7 @@ describe('macOS application menu', () => {
   // 决定单 D31：应用名菜单里加「检查更新…」，跳到设置里的版本更新；省略号用 Mac 惯用的「…」。
   it('offers Check for Updates right under About and opens the update card in settings', () => {
     const navigate = vi.fn()
-    const appMenu = buildMacApplicationMenuTemplate('星芒AI管理工具', navigate)[0].submenu
+    const appMenu = buildMacApplicationMenuTemplate('星芒AI管理工具', navigate, vi.fn())[0].submenu
     const items = Array.isArray(appMenu) ? appMenu : []
     expect(items.map((item) => item.label ?? item.type)).toEqual([
       '关于星芒AI管理工具', '检查更新…', 'separator', '设置…', 'separator', '服务', 'separator',

@@ -1,6 +1,6 @@
-import type { BrowserWindowConstructorOptions, MenuItemConstructorOptions } from 'electron'
+import type { BaseWindow, BrowserWindowConstructorOptions, MenuItemConstructorOptions } from 'electron'
 import { isChineseSentence } from './chinese-sentence'
-import type { RendererNavigationTarget } from './ipc-contract'
+import type { RendererNavigationTarget, UiScaleShortcut } from './ipc-contract'
 
 export interface WindowThemePalette {
   background: string
@@ -162,6 +162,7 @@ export function applyWindowTheme(
 export function buildMacApplicationMenuTemplate(
   appName: string,
   onNavigate: (target: RendererNavigationTarget) => void,
+  onUiScale: (shortcut: UiScaleShortcut, focusedWindow: BaseWindow | undefined) => void,
 ): MenuItemConstructorOptions[] {
   return [
     {
@@ -200,10 +201,14 @@ export function buildMacApplicationMenuTemplate(
     },
     {
       label: '显示',
+      // 不用 resetZoom / zoomIn / zoomOut 这三个 role（深查 TR-3）：它们改的是 Chromium 自带的缩放，
+      // 主窗口里不存、设置页不变、拖一下窗口又弹回去；画布窗口里会把工具栏、文字整个缩放。
+      // 改成自己接点击，在前面的是哪个窗口交给 main.ts 判断。快捷键照写原来那三个 role 的，
+      // 主窗口里按键先被界面接住（useAppEntryPoints），不会再走到这里多算一步。
       submenu: [
-        { role: 'resetZoom', label: '实际大小' },
-        { role: 'zoomIn', label: '放大' },
-        { role: 'zoomOut', label: '缩小' },
+        { label: '实际大小', accelerator: 'CmdOrCtrl+0', click: (_item, focusedWindow) => onUiScale('reset', focusedWindow) },
+        { label: '放大', accelerator: 'CmdOrCtrl+Plus', click: (_item, focusedWindow) => onUiScale('larger', focusedWindow) },
+        { label: '缩小', accelerator: 'CmdOrCtrl+-', click: (_item, focusedWindow) => onUiScale('smaller', focusedWindow) },
         { type: 'separator' },
         { role: 'togglefullscreen', label: '切换全屏' },
       ],
