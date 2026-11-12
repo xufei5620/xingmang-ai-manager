@@ -103,8 +103,8 @@ export class DesktopBucketUnavailableError extends Error {
 
 /**
  * 清单那一条超过 desktopBucketIndexMaximumAgeMs 没和官方核对过：桶里的包本身没毛病，只是可能落后官方。
- * 单独一类，好让 Windows 装 Codex 桌面端时先走商店和官网，那两路都没装上再回头用它（readDesktopBucketPackage
- * 的 allowStale）；别处照旧当作桶没走通。
+ * 单独一类，好让装 Codex 桌面端时先走后面那几路（Windows 是商店和官网，Mac 是官方），都没装上再回头用它
+ * （readDesktopBucketPackage 的 allowStale）；别处照旧当作桶没走通。
  */
 export class DesktopBucketIndexStaleError extends DesktopBucketUnavailableError {
   constructor(checkedAt: string | undefined) {
@@ -115,8 +115,9 @@ export class DesktopBucketIndexStaleError extends DesktopBucketUnavailableError 
 
 export interface ReadDesktopBucketPackageOptions {
   /**
-   * 清单过期了也照样交出这一条。缺省 = 过期就抛 DesktopBucketIndexStaleError，只有 Windows 装 Codex 桌面端在
-   * 商店、官网都没装上以后才会传 true：这时桶里那一版只要比本机新，就比第三方的国内镜像可靠。
+   * 清单过期了也照样交出这一条。缺省 = 过期就抛 DesktopBucketIndexStaleError，只有装 Codex 桌面端时后面那几路
+   * 都没装上才会传 true：Windows 是商店、官网之后（桶里那一版只要比本机新，就比第三方的国内镜像可靠），
+   * Mac 是官方之后（再往后没有别的路了）。
    */
   allowStale?: boolean
 }
