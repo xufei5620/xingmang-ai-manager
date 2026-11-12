@@ -945,6 +945,8 @@ if (!hasSingleInstanceLock) {
       Menu.setApplicationMenu(null)
     }
     // 白名单式收紧权限：仅放行剪贴板写入，否则复制配置等功能会静默失效
+    // 往这里加 media（麦克风、摄像头）之前，先把中文用途说明加回 electron-builder.config.cjs：
+    // Mac 包删掉了这几项说明（macUnusedElectronUsageDescriptions），没说明就碰设备，系统直接结束星芒。
     const allowedPermissions = new Set(['clipboard-sanitized-write'])
     session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
       callback(allowedPermissions.has(permission))
