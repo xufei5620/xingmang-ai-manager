@@ -2205,6 +2205,34 @@ test('a custom connection checks its name first and then goes to every tool pick
   }
 })
 
+// F6：「启动命令」里直接填整行命令，交给工具前拆成程序和参数，带引号的路径整段算程序；表单里他填的字不动。
+test('a whole command line in the launch box goes to the tool as the program and its arguments', async () => {
+  const page = await fixture('page=mcp&extensionOk')
+  try {
+    await page.getByTestId('mcp-add').first().click()
+    const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
+    const source = page.getByTestId('mcp-source')
+    await page.getByTestId('mcp-name').fill('amap')
+    await source.fill('npx -y @amap/amap-maps-mcp-server')
+    await dialog.getByTestId('mcp-form-submit').click()
+    await page.getByText('已添加「amap」，给 Claude Code 使用，下次打开工具时生效', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args.mcp), [
+      { type: 'stdio', command: 'npx', args: ['-y', '@amap/amap-maps-mcp-server'], env: {} },
+    ])
+
+    await page.getByTestId('mcp-add').first().click()
+    await page.getByTestId('mcp-name').fill('local-tool')
+    await source.fill('"C:\\Program Files\\My Tool\\tool.exe" --stdio')
+    await dialog.getByTestId('mcp-form-submit').click()
+    await page.getByText('已添加「local-tool」，给 Claude Code 使用，下次打开工具时生效', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args.mcp).slice(1), [
+      { type: 'stdio', command: 'C:\\Program Files\\My Tool\\tool.exe', args: ['--stdio'], env: {} },
+    ])
+  } finally {
+    await page.close()
+  }
+})
+
 // 同类对比第 1 条：提供方给的一整段配置直接粘贴，替他填好表单；带密钥的网络服务连请求头一起给到每个勾上的工具。
 test('a pasted provider config fills the custom connection and carries its headers to every tool', async () => {
   const page = await fixture('page=mcp&extensionOk')

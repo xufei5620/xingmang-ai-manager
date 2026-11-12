@@ -280,6 +280,31 @@ export function splitCommandLine(line: string): string[] | null {
   return tokens
 }
 
+// 写到这些后缀的一段是完整的程序文件（C:\nodejs\node.exe），文件夹不会这样起名。
+const programFilePattern = /\.(?:exe|cmd|bat)$/i
+
+/**
+ * 表单「启动命令」那格交出去的程序和参数。几家 CLI 起进程都不经过命令行解释器，整行 `npx -y 包名`、
+ * 带引号的 `"C:\Program Files\nodejs\node.exe" server.js` 原样当程序名交下去都找不到程序。
+ * 只拆两种，拆出来的参数排在「附加参数」前面：
+ * - 以引号开头的：引号里就是程序，只有一段带引号的路径也把引号去掉；
+ * - 第一段是 npx、uvx、node 这类：只写了名字，或者写到 .exe、.cmd 的完整路径。
+ * 别的照原样交：没加引号的 `C:\Program Files\nodejs\node.exe` 本来就是一个程序，`D:\node tools\x.exe`
+ * 的第一段也不能当成 node；引号没配对的同样照原样，跟以前一样。
+ */
+export function buildLaunchCommand(source: string, args: readonly string[]): { command: string; args: string[] } {
+  const command = source.trim()
+  const unchanged = { command, args: [...args] }
+  if (!/[\s"']/.test(command)) return unchanged
+  const tokens = splitCommandLine(command)
+  const program = tokens?.[0]
+  if (!tokens || !program) return unchanged
+  const quoted = /^["']/.test(command)
+  const runner = commandRunners.has(executableName(program)) && (!/[\\/]/.test(program) || programFilePattern.test(program))
+  if (!quoted && !runner) return unchanged
+  return { command: program, args: [...tokens.slice(1), ...args] }
+}
+
 const valueFlags = new Map<string, 'transport' | 'env' | 'header' | 'url' | 'bearer' | null>([
   ['-t', 'transport'], ['--transport', 'transport'],
   ['-e', 'env'], ['--env', 'env'],
