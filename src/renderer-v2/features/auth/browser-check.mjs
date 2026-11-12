@@ -239,6 +239,24 @@ test('recovery lets the user set their own password and signs in without ever sh
   } finally { await page.close() }
 })
 
+// F1：密码框以前带 maxLength 20，粘进来的长密码被悄悄截成前 20 位，账号按截短的设好，
+// 客户之后拿原密码就登不上。框里要留着整串，由长度规则当场拦下，一个请求都不发。
+const pastedLongPassword = 'pasted-from-a-password-manager'
+
+test('recovery keeps a pasted password longer than twenty characters whole and refuses it instead of cutting it short', async () => {
+  const page = await open('scenario=recovery')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill(pastedLongPassword)
+    await page.getByTestId('forgot-set-confirm').fill(pastedLongPassword)
+    assert.equal(await page.getByTestId('forgot-set-password').inputValue(), pastedLongPassword)
+    assert.equal(await page.getByTestId('forgot-set-confirm').inputValue(), pastedLongPassword)
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByText('新密码不能超过 20 位', { exact: true }).waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset'])
+  } finally { await page.close() }
+})
+
 test('recovery shows the temporary password when the change fails after signing in, and continuing still completes the login', async () => {
   const page = await open('scenario=recovery&changeFail=1')
   try {
@@ -1038,6 +1056,25 @@ test('a full-width at sign and full stop are corrected instead of rejected', asy
     await page.getByTestId('auth-message').filter({ hasText: '验证码已发到 123456@qq.com' }).waitFor()
     assert.equal(await page.getByTestId('register-email').inputValue(), '123456@qq.com')
     assert.equal(await page.getByText('请填写正确的邮箱', { exact: true }).count(), 0)
+  } finally { await page.close() }
+})
+
+test('registration keeps a pasted password longer than twenty characters whole and refuses it instead of cutting it short', async () => {
+  const page = await open('scenario=register')
+  try {
+    await page.getByTestId('register-email').fill('long@example.test')
+    await page.getByTestId('register-code').fill('123456')
+    await page.getByTestId('register-password').fill(pastedLongPassword)
+    assert.equal(await page.getByTestId('register-password').inputValue(), pastedLongPassword)
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('register-submit').click()
+    await page.getByText('密码不能超过 20 位', { exact: true }).waitFor()
+    assert.deepEqual((await calls(page)).filter((item) => item.method === 'register'), [])
+    // Exactly twenty is still the server's own limit, so it goes through as typed.
+    await page.getByTestId('register-password').fill('twenty-chars-exactly')
+    await page.getByTestId('register-submit').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.equal((await calls(page)).find((item) => item.method === 'register').input.password, 'twenty-chars-exactly')
   } finally { await page.close() }
 })
 
