@@ -124,7 +124,7 @@ const bridge: ChatBridge = {
   showAiChatAssetMenu: async (assetId) => { record('menu-asset', assetId) },
   pickAiChatImages: async (remaining) => { record('pick-images', remaining); return query.has('pickCancel') ? [] : [{ ...imageAsset, assetId: `p${String(calls.length).padStart(42, '0')}`, fileName: 'picked.png' }] },
   pickAiChatTextFiles: async (remainingFiles, remainingChars) => { record('pick-text-files', { remainingFiles, remainingChars }); const next = textFilePicks.shift(); if (next instanceof Error) throw next; return next ?? [] },
-  pasteAiChatImage: async () => { record('paste-image'); return query.has('emptyClipboard') ? null : { ...imageAsset, assetId: `v${String(calls.length).padStart(42, '0')}`, fileName: 'pasted.png' } },
+  pasteAiChatImage: async (remaining) => { record('paste-image', remaining); return query.has('emptyClipboard') ? [] : [{ ...imageAsset, assetId: `v${String(calls.length).padStart(42, '0')}`, fileName: 'pasted.png' }] },
   readAiChatHistory: async (scope) => { record('read-history', scope); if (heldHistoryReads) await heldHistoryReads; if (failHistoryReads) throw new Error('reparse point'); const { index, conversations } = await historyFiles(scope); return { index, conversations } },
   writeAiChatHistory: (input) => writeHistoryFiles(input),
   exportAiChatConversation: async (input) => { record('export-text', input); if (exportFailure) throw new Error(exportFailure); return query.has('exportCancel') ? null : { outputPath: `C:\\Users\\fixture\\Downloads\\${input.title}.txt` } },

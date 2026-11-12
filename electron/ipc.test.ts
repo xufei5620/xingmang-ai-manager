@@ -1046,6 +1046,29 @@ describe('registerIpcHandlers', () => {
     })
   })
 
+  it('pastes into a chat for the signed-in account with only a checked count from the page', async () => {
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.getSessionState).mockReturnValue({
+      authenticated: true,
+      account: { userId: 7 },
+    } as never)
+    const chatAttachments = {
+      pick: vi.fn(async () => []),
+      paste: vi.fn(async () => []),
+      readDataUri: vi.fn(async () => ''),
+    }
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { chatAttachments } as never)
+    const paste = electronMocks.handlers.get('chat:paste-image')!
+
+    for (const remaining of [undefined, '3', 1.5, Number.NaN, { count: 3 }]) {
+      expect(() => paste(trustedEvent(), remaining)).toThrow('聊天图片数量格式错误')
+    }
+    expect(chatAttachments.paste).not.toHaveBeenCalled()
+
+    await expect(paste(trustedEvent(), 3)).resolves.toEqual([])
+    expect(chatAttachments.paste).toHaveBeenCalledExactlyOnceWith(7, 3)
+  })
+
   it('binds chat requests and cancellation to the trusted sender without exposing credentials', async () => {
     const accountService = accountServiceStub()
     vi.mocked(accountService.getSessionState).mockReturnValue({

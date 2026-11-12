@@ -34,7 +34,7 @@ import { CanvasRunStore } from '../canvas-run-store'
 import { readCanvasTextImages } from '../canvas-text-image-input'
 import { createChatCredentialCoordinator } from '../chat-credential-coordinator'
 import { ChatKeyStore } from '../chat-key-store'
-import { readClipboardPng, writeClipboardPng } from '../clipboard-image'
+import { readClipboardFilePaths, readClipboardPng, writeClipboardPng } from '../clipboard-image'
 import { ipcEventChannels } from '../ipc-contract'
 import type { AccountGroupHints } from '../managed-cli-groups'
 import { ManagedCliKeyStore } from '../managed-cli-key-store'
@@ -436,6 +436,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         const image = nativeImage.createFromBuffer(png)
         return image.isEmpty() ? null : image.toPNG()
       },
+      readClipboardFiles: () => readClipboardFilePaths(clipboard, process.platform),
     })
     const assetProtocol = createAiAssetProtocolHandler({
       assets: canvasProjectAssets,

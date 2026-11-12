@@ -1,8 +1,8 @@
 import { AI_CHAT_LIMITS } from './ai-chat-protocol'
 import { inspectAiImage, type AiOwnedAssetRead, type AiStoredAsset } from './ai-asset-store'
 
-// 聊天里附带的图片只从两处来：系统的选文件框和剪贴板，都在主进程里拿，渲染层给不出
-// 任何路径或字节（I15 同一思路：渲染层只拿到存好之后的引用）。
+// 聊天里附带的图片只从两处来：系统的选文件框和剪贴板（截图，或在文件夹里复制的图片文件），
+// 都在主进程里拿，渲染层给不出任何路径或字节（I15 同一思路：渲染层只拿到存好之后的引用）。
 export const CHAT_ATTACHMENT_LIMITS = {
   // 原图读进内存前的上限。手机照片、4K 截图都在这之内。
   sourceBytes: 20 * 1024 * 1024,
@@ -37,11 +37,13 @@ export interface ChatAttachmentServiceOptions {
   pickFiles(): Promise<string[]>
   /** The clipboard's image as PNG bytes, or null when it holds no image. */
   readClipboardImage(): Promise<Buffer | null>
+  /** Absolute paths of files copied in a file manager, or an empty list; never throws. */
+  readClipboardFiles(): Promise<string[]>
 }
 
 export interface ChatAttachmentService {
   pick(userId: number, remaining: number): Promise<AiStoredAsset[]>
-  paste(userId: number): Promise<AiStoredAsset | null>
+  paste(userId: number, remaining: number): Promise<AiStoredAsset[]>
   readDataUri(userId: number, assetId: string): Promise<string>
 }
 
@@ -82,12 +84,13 @@ export function prepareChatImage(bytes: Buffer, codec: ChatImageCodec): Buffer {
 }
 
 export function createChatAttachmentService(options: ChatAttachmentServiceOptions): ChatAttachmentService {
-  async function pick(userId: number, remaining: number): Promise<AiStoredAsset[]> {
+  function assertRemaining(remaining: number): void {
     if (!Number.isSafeInteger(remaining) || remaining < 1 || remaining > AI_CHAT_LIMITS.imagesPerMessage) {
       throw new Error(`一条消息最多带 ${AI_CHAT_LIMITS.imagesPerMessage} 张图片`)
     }
-    const paths = await options.pickFiles()
-    if (!paths.length) return []
+  }
+
+  async function storeFiles(userId: number, remaining: number, paths: readonly string[]): Promise<AiStoredAsset[]> {
     if (paths.length > remaining) throw new Error(`这条消息还能加 ${remaining} 张图片，这次选了 ${paths.length} 张，请少选几张`)
     // Everything is read and checked before anything is stored, so one bad
     // file leaves no half-added batch behind.
@@ -106,10 +109,22 @@ export function createChatAttachmentService(options: ChatAttachmentServiceOption
     return assets
   }
 
-  async function paste(userId: number): Promise<AiStoredAsset | null> {
+  async function pick(userId: number, remaining: number): Promise<AiStoredAsset[]> {
+    assertRemaining(remaining)
+    const paths = await options.pickFiles()
+    if (!paths.length) return []
+    return storeFiles(userId, remaining, paths)
+  }
+
+  // 截图在前：剪贴板里位图和文件都有时照旧用位图，以前贴得进来的一张都不变。
+  // 没有位图才看是不是在文件夹里复制了图片文件，跟选文件框选来的走同一套检查（J4）。
+  async function paste(userId: number, remaining: number): Promise<AiStoredAsset[]> {
+    assertRemaining(remaining)
     const bytes = await options.readClipboardImage()
-    if (!bytes || bytes.length === 0) return null
-    return options.store.storeLocalBytes(userId, prepareChatImage(bytes, options.codec))
+    if (bytes && bytes.length > 0) return [await options.store.storeLocalBytes(userId, prepareChatImage(bytes, options.codec))]
+    const paths = await options.readClipboardFiles()
+    if (!paths.length) return []
+    return storeFiles(userId, remaining, paths)
   }
 
   async function readDataUri(userId: number, assetId: string): Promise<string> {

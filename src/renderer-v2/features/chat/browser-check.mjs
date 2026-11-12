@@ -973,7 +973,7 @@ test('a model that reads images takes picked and pasted screenshots and sends th
       element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
     })
     await page.waitForFunction(() => document.querySelectorAll('.chat-draft-image').length === 2)
-    assert.equal((await calls(page, 'paste-image')).length, 1)
+    assert.deepEqual((await calls(page, 'paste-image')).map((call) => call.input), [3], 'the main process learns how many more images fit')
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，带图片的提问会更贵一些。')
     assert.equal(await page.getByTestId('chat-send').isDisabled(), false, 'images alone are enough to send')
     await page.getByTestId('chat-send').click()

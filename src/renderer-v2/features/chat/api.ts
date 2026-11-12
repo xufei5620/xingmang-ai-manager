@@ -16,7 +16,7 @@ export function createChatApi(bridge: ChatBridge) {
     saveAsset: (assetId: string) => bridge.saveAiChatAsset(assetId),
     assetMenu: (assetId: string) => bridge.showAiChatAssetMenu(assetId),
     pickImages: (remaining: number) => bridge.pickAiChatImages(remaining),
-    pasteImage: () => bridge.pasteAiChatImage(),
+    pasteImages: (remaining: number) => bridge.pasteAiChatImage(remaining),
     pickTextFiles: (remainingFiles: number, remainingCharacters: number) => bridge.pickAiChatTextFiles(remainingFiles, remainingCharacters),
     readHistory: (scope: string) => bridge.readAiChatHistory(scope),
     writeHistory: (input: AiChatHistoryWrite) => bridge.writeAiChatHistory(input),

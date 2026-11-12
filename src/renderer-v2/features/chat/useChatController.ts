@@ -368,7 +368,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     }
   }
   const pickImages = () => attachImages((remaining) => api.pickImages(remaining))
-  const pasteImage = () => attachImages(async () => { const asset = await api.pasteImage(); return asset ? [asset] : [] })
+  const pasteImage = () => attachImages((remaining) => api.pasteImages(remaining))
   // 对话里生成的图拿来接着改：换到「生成图片」，这张图当参考图放进输入框。图已经在主进程存着，不用再读一遍。
   const reuseImage = (asset: AiChatAsset) => {
     if (activeConversation(stateRef.current).settings.mode !== 'image') selectMode('image')
