@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Xingmang image MCP server. The client (Codex, Claude Code, Gemini CLI, Grok)
+// Image MCP server for this skill. The client (Codex, Claude Code, Gemini CLI, Grok)
 // starts it outside its command sandbox, so everything that crosses that line is
 // narrowed here: the only network peer is the account's own image endpoint, the
 // only files read are the skill config and images the user asked to edit, and
@@ -26,7 +26,7 @@ const SUPPORTED_MODELS_HINT = [
   'OpenAI：gpt-image-2.6-flare、gpt-image-2.5-flare、gpt-image-2、gpt-image-2.6-sunburst、gpt-image-2.5-sunburst（gpt-image- 开头的新型号也行）',
   'Nano Banana：nano-banana-2（即 gemini-3.1-flash-image）、nano-banana-pro',
   'Grok：grok-imagine-image、grok-imagine-image-2.0、grok-imagine-image-quality',
-  '不填 model 就用星芒为当前账号挑好的那个。',
+  '不填 model 就用登录时按当前账号挑好的那个。',
 ].join('\n')
 const ASPECT_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3']
 const SIZE_TIERS = { '1K': 1024, '2K': 2048, '4K': 3840 }
@@ -90,7 +90,7 @@ function unsupportedModelMessage(model) {
 
 function configPath() {
   const value = process.env.XINGMANG_IMAGE_CONFIG_PATH?.trim()
-  if (!value) throw new ImageError('星芒画图工具还没有完成账号同步，请打开星芒AI管理工具重新登录')
+  if (!value) throw new ImageError('画图工具还没有完成账号同步，请打开管理工具重新登录当前账号')
   return value
 }
 
@@ -102,10 +102,10 @@ async function readConfig() {
     if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw new Error('unsafe config')
     parsed = JSON.parse(await readFile(configFile, 'utf8'))
   } catch {
-    throw new ImageError('星芒画图工具读不到账号配置，请打开星芒AI管理工具重新登录')
+    throw new ImageError('画图工具读不到账号配置，请打开管理工具重新登录当前账号')
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new ImageError('星芒画图工具的账号配置已损坏，请打开星芒AI管理工具重新登录')
+    throw new ImageError('画图工具的账号配置已损坏，请打开管理工具重新登录当前账号')
   }
   const baseUrl = typeof parsed.baseUrl === 'string' ? parsed.baseUrl.trim() : ''
   let origin
@@ -118,7 +118,7 @@ async function readConfig() {
       || url.username || url.password || url.search || url.hash) throw new Error('unsafe')
     origin = url.origin
   } catch {
-    throw new ImageError('星芒画图工具的服务地址无效，请打开星芒AI管理工具重新登录')
+    throw new ImageError('画图工具的服务地址无效，请打开管理工具重新登录当前账号')
   }
   // 与生图技能同一个顺序：先用 Codex Key，被拒再换生图分组 Key。
   const keys = []
@@ -126,7 +126,7 @@ async function readConfig() {
     const value = typeof parsed[field] === 'string' ? parsed[field].trim() : ''
     if (value.startsWith('sk-') && !keys.some((entry) => entry.value === value)) keys.push({ source, value })
   }
-  if (keys.length === 0) throw new ImageError('当前账号还没有可以画图的 Key，请打开星芒AI管理工具登录')
+  if (keys.length === 0) throw new ImageError('当前账号还没有可以画图的 Key，请打开管理工具登录')
   return { origin, keys, chain: defaultModelChain(parsed) }
 }
 
@@ -136,7 +136,7 @@ function configuredModel(value) {
 }
 
 /**
- * 星芒登录同步时按当前账号实际能用的 OpenAI 图片模型排好顺序：model 是第一个，fallbackModels 是后面的。
+ * 主程序登录同步时按当前账号实际能用的 OpenAI 图片模型排好顺序：model 是第一个，fallbackModels 是后面的。
  * 没点名时按这个顺序往下退，只退到账号列表里有的；老版本写的配置没有 fallbackModels，照旧退到 gpt-image-2。
  */
 function defaultModelChain(parsed) {
@@ -171,7 +171,7 @@ function schema(model) {
       model: {
         type: 'string',
         default: model,
-        description: '一般不填，用星芒为当前账号挑好的 OpenAI 模型。用户点名时可写 gpt-image- 开头的型号、nano-banana-2、nano-banana-pro、grok-imagine-image',
+        description: '一般不填，用登录时按当前账号挑好的 OpenAI 模型。用户点名时可写 gpt-image- 开头的型号、nano-banana-2、nano-banana-pro、grok-imagine-image',
       },
       size: { type: 'string', description: '1K、2K、4K，或 宽x高（如 1536x1024）；gpt-image-2 系列宽高要是 16 的倍数。4K 多收钱' },
       aspect: { type: 'string', enum: ASPECT_RATIOS, description: '画面比例，配 1K/2K/4K 用，默认 1:1' },
@@ -185,7 +185,7 @@ function schema(model) {
 function toolList(model) {
   return [{
     name: 'generate_image',
-    description: '用当前星芒账号画图或改图。用户要画一张图、生成图片，或者修改、编辑一张已有图片时调用；改图时把原图的完整路径放进 images。结果直接显示在对话里。不要自己写脚本或命令去调图片接口。',
+    description: '用当前账号画图或改图。用户要画一张图、生成图片，或者修改、编辑一张已有图片时调用；改图时把原图的完整路径放进 images。结果直接显示在对话里。不要自己写脚本或命令去调图片接口。',
     inputSchema: schema(model),
   }]
 }
@@ -202,7 +202,7 @@ function parseArguments(argumentsValue) {
   }
   const prompt = textValue(argumentsValue.prompt, '', 32_000)
   if (!prompt) throw new ImageError('图片描述不能为空')
-  // 没点名就留空，等读到配置再用星芒挑好的那个。
+  // 没点名就留空，等读到配置再用主程序挑好的那个。
   const model = argumentsValue.model === undefined ? undefined : textValue(argumentsValue.model, '', 80)
   if (model !== undefined && !modelFamily(model)) throw new ImageError(unsupportedModelMessage(model))
   const size = textValue(argumentsValue.size, '', 32)
@@ -454,7 +454,7 @@ async function requestImage(origin, apiKey, input, images) {
 async function generateImage(argumentsValue) {
   const input = parseArguments(argumentsValue)
   const config = await readConfig()
-  // AI 没点名、或点的就是星芒挑好的那个：按账号列表里有的顺序往下退（站上新开的这次没画出来：还没定价、渠道没好）。
+  // AI 没点名、或点的就是主程序挑好的那个：按账号列表里有的顺序往下退（站上新开的这次没画出来：还没定价、渠道没好）。
   // 点名要别的就只用它，失败原样交回去让 AI 自己换。
   const requested = input.model ?? config.chain[0]
   const family = modelFamily(requested)
@@ -464,7 +464,7 @@ async function generateImage(argumentsValue) {
   // Nano Banana 和 Grok 只在图片模型分组里有，Codex Key 一定被拒，不白试。
   const keys = family === 'openai' ? config.keys : config.keys.filter((entry) => entry.source === 'image')
   if (keys.length === 0) {
-    throw new ImageError(`${requested} 只能用图片模型分组画图，当前账号还没有这个分组的 Key。请打开星芒AI管理工具重新登录；账号还没开通图片模型分组的，先开通再登录`)
+    throw new ImageError(`${requested} 只能用图片模型分组画图，当前账号还没有这个分组的 Key。请打开管理工具重新登录；账号还没开通图片模型分组的，先开通再登录`)
   }
   const images = []
   for (const filePath of input.images) images.push(await readInputImage(filePath))

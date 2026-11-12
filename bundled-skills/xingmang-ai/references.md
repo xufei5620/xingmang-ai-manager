@@ -1,16 +1,16 @@
-# 星芒中转生图协议
+# 生图接口说明
 
-生产网关：`https://xm.solov.cc`（New API）。下面的数字是 2026-11-11 在站上实测的。
+接口地址用 `config.json` 里的 `baseUrl`（登录时按当前账号的线路写好）。下面的数字是 2026-11-11 实测的。
 
 ## 鉴权与分组
 
 - OpenAI、Grok：Header `Authorization: Bearer sk-...`
 - Nano Banana（Gemini 原生接口）：Header `x-goog-api-key: sk-...`（`Bearer` 站上也认）
-- 生产网关固定 `https://xm.solov.cc`，不要改成第三方生图站
+- 接口地址只用 `config.json` 的 `baseUrl`，不要改成第三方生图站
 - OpenAI 模型先用 `config.json` 的 Codex Key（`GPT`），401/403/429/503 再改用 `图片模型`（或旧名 `生图分组`）
 - Nano Banana 和 Grok 只在 `图片模型` 分组里有，只用那把 Key；账号没有就提醒用户登录或开通
 - 不要走 `/pg/chat/completions`
-- Key 只存在本技能 `config.json`，由星芒AI管理工具写入；不要读环境变量或 CLI 配置
+- Key 只存在本技能 `config.json`，登录时自动写入；不要读环境变量或 CLI 配置
 
 ## 模型和价格（每张）
 
@@ -24,7 +24,7 @@
 | `grok-imagine-image` | ¥0.2 | Images API |
 | `grok-imagine-image-2.0`、`grok-imagine-image-quality` | ¥0.5 | Images API |
 
-默认用 `config.json` 的 `model`（星芒按账号挑好的），失败按 `fallbackModels` 依次换；都没有就 `gpt-image-2`。`gpt-image-1` 官方已下线，`gpt-image-1.5` 站上调不通，都不要用。
+默认用 `config.json` 的 `model`（登录时按当前账号挑好的），失败按 `fallbackModels` 依次换；都没有就 `gpt-image-2`。`gpt-image-1` 官方已下线，`gpt-image-1.5` 站上调不通，都不要用。
 
 ## OpenAI 文生图 `POST /v1/images/generations`
 

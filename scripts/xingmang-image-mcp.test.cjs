@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict')
 const http = require('node:http')
-const { copyFile, mkdir, mkdtemp, realpath, writeFile, rm, symlink } = require('node:fs/promises')
+const { copyFile, mkdir, mkdtemp, readFile, realpath, writeFile, rm, symlink } = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
@@ -738,4 +738,25 @@ test('generate script size helpers keep exact ratios inside the gpt-image-2 pixe
   assert.equal(outputPathFor('/tmp/x', pngBytes), path.resolve('/tmp/x.png'))
   assert.deepEqual(defaultModelChain({ model: 'gpt-image-2.6-flare', fallbackModels: null }), ['gpt-image-2.6-flare', 'gpt-image-2'])
   assert.deepEqual(defaultModelChain({ model: '', fallbackModels: null }), ['gpt-image-2'])
+})
+
+test('bundled image skill names neither the brand nor a site address where the AI or the user reads it', async () => {
+  // 技能说明、工具说明和出错提示都会被 AI 读到、转述给客户，主语只用「当前账号」「管理工具」。
+  // 站点地址只许留在画图工具的地址白名单（安全检查）和命令行脚本的兜底地址里。
+  const skillRoot = path.resolve(__dirname, '..', 'bundled-skills', 'xingmang-ai')
+  const siteAddresses = /https:\/\/[a-z0-9.-]*solov\.cc/g
+  for (const file of ['SKILL.md', 'references.md']) {
+    const text = await readFile(path.join(skillRoot, file), 'utf8')
+    assert.doesNotMatch(text, /星芒/, file)
+    assert.doesNotMatch(text, /solov\.cc/, file)
+  }
+  const expectedAddresses = {
+    'generate.mjs': ['https://xm.solov.cc'],
+    'mcp-server.mjs': ['https://xm.solov.cc', 'https://api.solov.cc', 'https://xm-direct.solov.cc'],
+  }
+  for (const [file, addresses] of Object.entries(expectedAddresses)) {
+    const text = await readFile(path.join(skillRoot, 'scripts', file), 'utf8')
+    assert.doesNotMatch(text, /星芒/, file)
+    assert.deepEqual(text.match(siteAddresses), addresses, file)
+  }
 })
