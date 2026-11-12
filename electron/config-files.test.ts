@@ -4221,6 +4221,44 @@ describe('switching a provider back to the official subscription account', () =>
     expect(canLaunchManagedProvider(inspection)).toBe(true)
   })
 
+  // 0.2.24 深查「反复切换」N3：只删跟传进来的线路地址一模一样的那几处，停在这个站别的线路、旧别名上的
+  // 留着，切回官方以后 Grok 还走中转。这个站的每条线路和别名都要认，别的站和客户自己的地址不碰。
+  it('removes Grok relay entries on every line and retired alias of the account site', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const primary = relayProviderBaseUrls('solov', 'primary')
+    const direct = relayProviderBaseUrls('solov', 'direct')
+    const otherSite = relayProviderBaseUrls('solov-api', 'primary')
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', roots, {}, direct)
+    const [configPath] = providerConfigPaths('grok', roots)
+    const seeded = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    asRecord(seeded.endpoints)!.xai_api_base_url = `${primary.grok}/`
+    Object.assign(asRecord(seeded.model)!, {
+      alias: { model: 'grok-old', base_url: 'https://38.147.105.28:8443/v1', api_key: 'sk-alias' },
+      upper: { model: 'grok-upper', base_url: 'HTTPS://XM.SOLOV.CC/v1', api_key: 'sk-upper' },
+      history: { model: 'grok-history', base_url: otherSite.grok, api_key: 'sk-history' },
+      mine: { model: 'grok-4.6', base_url: 'https://my.example.com/v1', api_key: 'sk-mine' },
+    })
+    asRecord(seeded.models)!.allowed_models = ['grok', 'alias', 'mine']
+    fs.writeFileSync(configPath, TOML.stringify(seeded as Parameters<typeof TOML.stringify>[0]), 'utf8')
+
+    // The caller names the line it believes is in use; the other line and the alias must go as well.
+    switchProviderToOfficialAccount('grok', roots, {}, primary)
+
+    const settings = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(settings.model).toEqual({
+      history: { model: 'grok-history', base_url: otherSite.grok, api_key: 'sk-history' },
+      mine: { model: 'grok-4.6', base_url: 'https://my.example.com/v1', api_key: 'sk-mine' },
+    })
+    expect(settings.models).toEqual({ allowed_models: ['mine'] })
+    expect(settings.endpoints).toBeUndefined()
+    const written = fs.readFileSync(configPath, 'utf8')
+    for (const secret of ['sk-relay', 'sk-alias', 'sk-upper']) expect(written).not.toContain(secret)
+    for (const line of [primary, direct]) {
+      expect(providerAccountMode(inspectProviderConfig('grok', roots, line))).toBe('official')
+    }
+  })
+
   it('writes the relay model back after Grok was switched to its own login', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
