@@ -941,7 +941,7 @@ export interface XingmangInvokeContract {
   getCodexReadiness: IpcInvokeDefinition<'startup:codex-readiness', [], CodexReadinessStatus>
   getConfig: IpcInvokeDefinition<'config:get', [], AppConfigSummary>
   revealApiKey: IpcInvokeDefinition<'config:reveal-api-key', [provider: ProviderId], string>
-  saveConfig: IpcInvokeDefinition<'config:save', [payload: ConfigSavePayload], ConfigSaveResult>
+  saveConfig: IpcInvokeDefinition<'config:save', [payload: ConfigSavePayload & { mode: ConfigSaveMode }], ConfigSaveResult>
   /**
    * 在资源管理器 / 访达里打开这个工具自己的配置目录（Claude 是 ~/.claude，
    * Codex 以软件注入的 CODEX_HOME 为准）。只打开目录，不碰里面任何文件，

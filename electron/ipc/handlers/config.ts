@@ -100,11 +100,11 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
   })
   registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown, mode: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
-    if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
+    if (mode !== undefined && mode !== 'merge' && mode !== 'reset' && mode !== 'repair') throw new Error('未知的配置写入模式')
     return switchToOfficialAccountOnce(provider, mode)
   })
-  async function switchToOfficialAccountOnce(provider: ProviderId, mode: 'merge' | 'reset' | undefined) {
-    if (mode === 'reset') await backupBeforeReset(provider)
+  async function switchToOfficialAccountOnce(provider: ProviderId, mode: 'merge' | 'reset' | 'repair' | undefined) {
+    if (mode === 'reset' || mode === 'repair') await backupBeforeReset(provider)
     const result = await (mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode))
     return withCommandConfirmationQuestion(provider, result)
   }
@@ -198,10 +198,11 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
       },
       writeAccountConfig: async (id) => {
         // 工具自己读不了的配置，只更新要照着原文件改，只会报「写错了」；来源没确认时配置窗口里
-        // 又只有这一颗按钮，点不到「重置为初始状态」（第三十批跟进项）。这时改走重置：这次切换
-        // 开头已经在「备份」页留过一份，切不成照样从它恢复。
+        // 又只有这一颗按钮，点不到「重置为初始状态」（第三十批跟进项）。这时改走「修好它」那一种：读不了的
+        // 那份重建，Codex 只坏了 auth.json 时 config.toml 里客户自己的设置照留（X-1）。这次切换开头已经在
+        //「备份」页留过一份，切不成照样从它恢复。
         const current = service.getConfig(options.previewOnboarding).providers[id]
-        const mode = current?.configBroken === true || current?.codexAuthBroken === true ? 'reset' : 'merge'
+        const mode = current?.configBroken === true || current?.codexAuthBroken === true ? 'repair' : 'merge'
         // 客户原来选的型号带上，账号还列着就留着；以前这里什么都不带，切回过官方再切回来就回到默认（N5）。
         const model = accountSourcePreferredModel(current, () => service.relayModelBeforeOfficial?.(id))
         // 用户亲手点的切换：intent 'explicit' 才穿得过「来源未确认不自动改写」那道闸。
