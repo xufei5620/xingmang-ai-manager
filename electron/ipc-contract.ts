@@ -247,6 +247,9 @@ export interface WindowCapabilities {
   settingsSaveIssue?: SettingsSaveIssue
   // 显卡接连崩溃后，这次启动自动改用了兼容方式显示、用户还没选以后怎么办。缺省 = 没出事。
   displayCompat?: 'auto'
+  // Windows 文本大小调大了，这台电脑新装时「大字」是开着的（D81）；外观「恢复默认」据此把大字恢复成开（X-2）。
+  // 缺省 = 新装时关着（旧行为）。
+  largeTextByDefault?: true
   // 上次主进程意外退出（没接住的异常），这次打开要说一句。缺省 = 没出事。
   unexpectedExit?: UnexpectedExitNotice
   // 这次开机把 0.2.12 写坏的 Claude Desktop 型号清单改回了一个，界面说一句要重开它。缺省 = 没改。
