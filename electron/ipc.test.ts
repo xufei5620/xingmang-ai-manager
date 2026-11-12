@@ -4086,6 +4086,19 @@ describe('registerIpcHandlers', () => {
     expect(service.configureExternalTool).not.toHaveBeenCalled()
   })
 
+  it('writes a pasted external-client key without the spaces and zero-width characters it carried', async () => {
+    const service = serviceStub()
+    const safeResult = { tool: 'workbuddy' as const, model: 'fixture-model', path: 'fixture-config', files: ['fixture-config'], backups: [], outcome: 'configured' as const, message: 'saved', restartRequired: true, connectionVerified: false, connection: null }
+    vi.mocked(service.configureExternalTool).mockResolvedValue(safeResult)
+    register(service)
+    const handler = electronMocks.handlers.get('config:configure-external-tool')!
+    // J7：以前只去首尾空白，夹着的零宽空格、折行留下的空格原样写进客户端配置。
+    await expect(handler(trustedEvent(), 'workbuddy', { credential: { kind: 'manual', apiKey: '\u200Bsk-fixture 0123\u200D456789' }, model: 'fixture-model' })).resolves.toEqual(safeResult)
+    expect(service.configureExternalTool).toHaveBeenCalledWith('workbuddy', { apiKey: 'sk-fixture0123456789', model: 'fixture-model', protocol: undefined }, expect.any(Function), 'manual')
+    await expect(handler(trustedEvent(), 'workbuddy', { credential: { kind: 'manual', apiKey: '\u200B\u2060' }, model: 'fixture-model' })).rejects.toThrow('访问密钥格式无效')
+    expect(service.configureExternalTool).toHaveBeenCalledOnce()
+  })
+
   it('does not reuse an external-client key belonging to a different relay', async () => {
     const service = serviceStub()
     vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { hasApiKey: true, matchesRelay: false } } } as never)
@@ -5839,6 +5852,49 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         model: 'gpt-5.6-sol',
         mode: 'merge',
       }, false)
+    })
+
+    it('saves a pasted key without the spaces and zero-width characters it carried', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('config:save')!
+      const base = { provider: 'codex', model: 'gpt-5.6-sol', mode: 'merge' as const }
+
+      // J7：折成两行粘进来的空格、飞书复制带的零宽空格，以前原样存进工具，服务端回 401。
+      await handler(trustedEvent(), { ...base, apiKey: '\u200Bsk-test 0123\u200D456789\uFEFF ' })
+      expect(service.saveConfig).toHaveBeenLastCalledWith({ ...base, apiKey: 'sk-test0123456789' }, false)
+    })
+
+    it('keeps whitespace-only as the reuse sentinel but never turns invisible-only input into it', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('config:save')!
+      const base = { provider: 'codex', model: 'gpt-5.6-sol', mode: 'merge' as const }
+
+      await handler(trustedEvent(), { ...base, apiKey: ' \u3000 ' })
+      expect(service.saveConfig).toHaveBeenLastCalledWith({ ...base, apiKey: '' }, false)
+      expect(() => handler(trustedEvent(), { ...base, apiKey: '\u200B\u200D' })).toThrow('API Key 格式错误')
+      expect(service.saveConfig).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('models:list (a key the customer typed)', () => {
+    it('still rejects a pasted key with an embedded control character', async () => {
+      const { service } = register()
+      vi.mocked(service.fetchAvailableModels).mockRejectedValue(new Error('API Key 格式错误'))
+      const handler = electronMocks.handlers.get('models:list')!
+
+      // 去空白只去非控制字符；夹在中间的换行照旧整串交给 fetchAvailableModels 拒掉，不替它放宽。
+      await expect(handler(trustedEvent(), 'sk-test\n0123456789')).rejects.toThrow('API Key 格式错误')
+      expect(service.fetchAvailableModels).toHaveBeenCalledWith('sk-test\n0123456789')
+    })
+
+    it('lists models for a pasted key without the spaces and zero-width characters it carried', async () => {
+      const { service } = register()
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+      const handler = electronMocks.handlers.get('models:list')!
+
+      // J7：零宽空格进了请求头，Node 直接抛英文 ByteString 报错。
+      await expect(handler(trustedEvent(), ' sk-test 0123\u200B456789\u2060')).resolves.toEqual(['gpt-5.6-sol'])
+      expect(service.fetchAvailableModels).toHaveBeenCalledWith('sk-test0123456789')
     })
   })
 
