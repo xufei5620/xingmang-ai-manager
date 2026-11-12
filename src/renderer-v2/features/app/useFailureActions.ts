@@ -2,6 +2,7 @@ import { useCallback, type Dispatch, type SetStateAction } from 'react'
 import type { ProviderId } from '../../../../electron/ipc-contract'
 import { claudeDesktopDownloadPageUrl, claudeDesktopOfflinePackagesUrl } from '../../../../electron/claude-desktop-install-failure'
 import { codexDesktopStoreUrl } from '../../../../electron/codex-desktop-install-failure'
+import { isExternalUrlBlockedError } from '../../../../electron/external-url-blocked'
 import { operationLogSection, rewriteKeyAction, type OperationActionId } from '../../operation-error'
 import type { ToolInstallOutcome } from '../../pages-maintenance'
 import { macDesktopTutorialTopic } from '../../registry/business'
@@ -28,14 +29,28 @@ interface FailureActionsOptions {
   setHelp: Dispatch<SetStateAction<boolean>>
 }
 
+export const codexDesktopStoreUnavailableMessage = '没能打开微软商店，这台电脑可能没有它。回星芒再点一次安装，星芒会改用 OpenAI 官网的离线安装包或国内线路装；还不行就找客服。'
+
+/**
+ * 错误框里的「打开微软商店」。商店链接在主进程外链白名单里（全等匹配）。系统没接住时说清楚
+ * 自己去哪儿找，不留一颗按了没反应的按钮。打不开多半是这台电脑没有商店（第二十一批 2，
+ * LTSC、精简版），那就别再叫人去开始菜单里找它，回星芒重装会改走 OpenAI 官网的离线安装包或国内线路。
+ *
+ * 系统打不开时主进程是抛错，不是回 false：`external:open` 成功只回 true，Electron 的
+ * `shell.openExternal` 打不开就 reject（L6）。以前只看返回值，那句指路永远出不来，
+ * 客户只看到「打开微软商店没有完成」。被外链名单拦下另算：那是星芒自己的毛病（商店地址
+ * 本该在名单里），照原样报，不说成「这台电脑没有商店」。
+ */
+export async function openCodexDesktopStoreOrExplain(openExternal: (url: string) => Promise<boolean>): Promise<void> {
+  let opened = false
+  try { opened = await openExternal(codexDesktopStoreUrl) }
+  catch (cause) { if (isExternalUrlBlockedError(cause)) throw cause }
+  if (!opened) throw new Error(codexDesktopStoreUnavailableMessage)
+}
+
 /** 错误框和新手引导里那些「改用…」「去…」的出口按钮，各自通到哪（operation-error 的目录）。 */
 export function useFailureActions({ app, toolsApi, toast, perform, navigate, operationError, setOperationError, rewriteAccountKeys, install, snapshot, setConfirmation, setNodeReplace, setAuth, setHelp }: FailureActionsOptions) {
-  // 商店链接在主进程外链白名单里（全等匹配）。系统没接住时说清楚自己去哪儿找，
-  // 不留一颗按了没反应的按钮。打不开多半是这台电脑没有商店（第二十一批 2），
-  // 那就别再叫人去开始菜单里找它，回星芒重装会改走 OpenAI 官网的离线安装包或国内线路。
-  const openCodexDesktopStore = useCallback(async () => {
-    if (!await app.openExternal(codexDesktopStoreUrl)) throw new Error('没能打开微软商店，这台电脑可能没有它。回星芒再点一次安装，星芒会改用 OpenAI 官网的离线安装包或国内线路装；还不行就找客服。')
-  }, [app])
+  const openCodexDesktopStore = useCallback(() => openCodexDesktopStoreOrExplain(app.openExternal), [app])
   // 错误框里的「重置 Codex」：清掉的是 Codex 桌面端自己的登录和缓存，先问一句再动手；
   // 重置完接着把刚才没打开的那一次再跑一遍，客户不用再回首页点「打开」。
   const requestCodexDesktopReset = useCallback((retry?: () => void) => {
