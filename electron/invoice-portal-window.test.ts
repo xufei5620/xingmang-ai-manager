@@ -53,6 +53,7 @@ function createHarness(options: Partial<InvoicePortalWindowControllerOptions> & 
     setPermissionRequestHandler: vi.fn(),
     setPermissionCheckHandler: vi.fn(),
     setDevicePermissionHandler: vi.fn(),
+    setProxy: vi.fn(async (_config: { mode: string }) => undefined),
     on: vi.fn((name: string, handler: (...args: any[]) => void) => sessionEvents.set(name, handler)),
     clearStorageData: vi.fn(async () => undefined),
     clearCache: vi.fn(async () => undefined),
@@ -320,6 +321,88 @@ describe('createInvoicePortalWindowController', () => {
 
     expect(harness.window.destroy).toHaveBeenCalled()
     expect(harness.controller.isOpen()).toBe(false)
+  })
+
+  // 代理 PX-2（同付款窗口）：星芒替客户改了直连只改默认会话，开票窗口的分区要自己照着改，不然走回关掉的代理。
+  it('connects the portal session directly before loading when the app has bypassed a dead proxy', async () => {
+    const harness = createHarness({ proxyMode: () => 'direct' })
+    await harness.controller.open(xmAccount)
+
+    expect(harness.session.setProxy).toHaveBeenCalledExactlyOnceWith({ mode: 'direct' })
+    expect(harness.window.loadURL).toHaveBeenCalledOnce()
+    expect(harness.session.setProxy.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.window.loadURL.mock.invocationCallOrder[0]!,
+    )
+    // Only the connection mode changes; the window keeps denying everything else.
+    const permission = vi.fn()
+    harness.session.setPermissionRequestHandler.mock.calls[0]![0](null, 'media', permission)
+    expect(permission).toHaveBeenCalledWith(false)
+    const away = { preventDefault: vi.fn() }
+    harness.webContentsEvents.get('will-navigate')!(away, 'https://evil.example/')
+    expect(away.preventDefault).toHaveBeenCalledOnce()
+    const openHandler = harness.webContents.setWindowOpenHandler.mock.calls[0]![0]
+    expect(openHandler({ url: `${xmOrigin}/orders` })).toEqual({ action: 'deny' })
+  })
+
+  it('follows the system proxy by default and resets the persistent session for every new window', async () => {
+    const fallback = createHarness()
+    await fallback.controller.open(xmAccount)
+    expect(fallback.session.setProxy).toHaveBeenCalledExactlyOnceWith({ mode: 'system' })
+
+    // Both windows of one account share the persistent session, so the mode
+    // the first one set would stick unless every new window sets it again.
+    const first = createHarness()
+    const second = createHarness()
+    second.webContents.session = first.session
+    let mode: 'direct' | 'system' = 'direct'
+    const controller = createInvoicePortalWindowController({
+      temporaryDirectory: () => path.join(scratch, 'invoice-downloads'),
+      downloadsDirectory: () => path.join(scratch, 'Downloads'),
+      createWindow: vi.fn().mockReturnValueOnce(first.window).mockReturnValueOnce(second.window),
+      sessionFromPartition: vi.fn(() => first.session as never),
+      proxyMode: () => mode,
+    })
+    await controller.open(xmAccount)
+    // The customer closes the window; the proxy software comes back and the
+    // app returns to the system proxy before the next open.
+    first.window.destroy()
+    mode = 'system'
+    await controller.open(xmAccount)
+    expect(first.session.setProxy.mock.calls).toEqual([[{ mode: 'direct' }], [{ mode: 'system' }]])
+    expect(second.window.loadURL).toHaveBeenCalledOnce()
+    controller.destroy()
+  })
+
+  it('still opens the portal when the connection mode cannot be applied', async () => {
+    const harness = createHarness({ proxyMode: () => 'direct' })
+    harness.session.setProxy.mockRejectedValueOnce(new Error('setProxy failed'))
+
+    await harness.controller.open(xmAccount)
+
+    expect(harness.window.loadURL).toHaveBeenCalledOnce()
+    expect(harness.controller.isOpen()).toBe(true)
+  })
+
+  it('never loads a window that was closed while its connection mode was being applied', async () => {
+    for (const close of [
+      (controller: ReturnType<typeof createHarness>['controller']) => controller.setAccount({ siteId: 'solov-api', userId: 9 }),
+      (controller: ReturnType<typeof createHarness>['controller']) => controller.destroy(),
+    ]) {
+      let applied = () => {}
+      const harness = createHarness({ proxyMode: () => 'direct' })
+      harness.session.setProxy.mockReturnValueOnce(new Promise<undefined>((resolve) => { applied = () => resolve(undefined) }))
+      harness.controller.setAccount(xmAccount)
+      const opening = harness.controller.open(xmAccount)
+      const rejected = expect(opening).rejects.toThrow(invoicePortalOpenFailedMessage)
+      // Switching accounts, signing out or quitting closes the window before the page starts.
+      close(harness.controller)
+      applied()
+      await rejected
+
+      expect(harness.window.loadURL).not.toHaveBeenCalled()
+      expect(harness.window.destroy).toHaveBeenCalledOnce()
+      expect(harness.controller.isOpen()).toBe(false)
+    }
   })
 
   it('closes the window and clears the previous login when the account changes or signs out', async () => {
