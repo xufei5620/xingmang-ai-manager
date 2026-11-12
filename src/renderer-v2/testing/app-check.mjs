@@ -6016,6 +6016,36 @@ test('an unreadable announcement collection offers both a retry and the allowlis
   } finally { await page.close() }
 })
 
+// 合集坏一条只跳过那一条；整份认不出时「内容 → 公告」和充值活动照常显示（RC-03）。
+test('a broken collection entry is skipped and an unreadable collection keeps the timeline and the recharge card', async () => {
+  const page = await open('', true, () => { document.hasFocus = () => true })
+  const entry = (title, body) => `<details class="collection-entry"><summary class="collection-summary"><span class="collection-entry-title">${title}</span></summary><div class="collection-body">${body}</div></details>`
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.evaluate(() => {
+      window.__rechargeBulletin = { id: `newapi-${'e'.repeat(64)}`, type: 'ongoing', publishedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(), extra: '活动截止：2026-09-20 23:59', content: '**国庆礼遇 · 中秋同庆｜充值满赠**\n单笔充值最高送 100%' }
+      window.v2Test.setNotice({ id: 'collection-unreadable-with-timeline', text: '<div data-newapi-collection="v2"><p>格式不认识</p></div>', bulletins: [window.__rechargeBulletin] })
+    })
+    await page.clock.fastForward(60_000)
+    await page.getByTestId('announcement-promo-card').waitFor()
+    await page.getByTestId('announcement-open').click()
+    const popover = page.getByTestId('announcement-popover')
+    const list = popover.getByTestId('announcement-list')
+    await list.waitFor()
+    assert.deepEqual(await list.locator('.v2-announcement-title').allTextContents(), ['国庆礼遇 · 中秋同庆｜充值满赠'])
+    assert.equal(await popover.getByRole('alert').count(), 0)
+    await page.keyboard.press('Escape')
+    await popover.waitFor({ state: 'hidden' })
+    await page.evaluate((text) => window.v2Test.setNotice({ id: 'collection-one-broken', text, bulletins: [window.__rechargeBulletin] }),
+      `<div data-newapi-collection="v1">${entry('', '<p>漏了标题</p>')}${entry('还能读的那条', '<p>正文</p>')}${entry('漏了正文', '')}</div>`)
+    await page.getByTestId('announcement-open').click()
+    await list.waitFor()
+    assert.deepEqual(await list.locator('.v2-announcement-title').allTextContents(), ['国庆礼遇 · 中秋同庆｜充值满赠', '还能读的那条'])
+    assert.equal(await popover.getByRole('alert').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('Markdown announcements render headings, lists, emphasis and links', async () => {
   const page = await open('noticeMarkdown=1')
   try {

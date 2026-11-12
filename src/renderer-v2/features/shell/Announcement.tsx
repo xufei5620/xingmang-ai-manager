@@ -10,7 +10,7 @@ import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../
 import { writeLocalPreference } from '../app/preferences'
 import { useOnlineStatus } from './useOnlineStatus'
 import type { RelayNotice, RelayNoticeReadMode } from '../../../../electron/relay-backend'
-import { AnnouncementCollectionError, formatTimelineDate, formatTimelineListDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
+import { AnnouncementCollectionError, formatTimelineDate, formatTimelineListDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseAnnouncementCollectionBesideTimeline, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
 import { activePromos, buildPromoTiers, formatPromoDeadline, formatPromoShortDeadline, localDayKey, nextPromoReminder, promoPreviewLines, promoShortName, readAcknowledgedPromos, readPromoBarHiddenDay, readRemindedPromos, readSnoozedPromos, rememberAcknowledgedPromo, rememberPromoBarHiddenDay, rememberRemindedPromo, rememberSnoozedPromo, stripSiteAddresses, visiblePromo, type PromoTier } from './promo-announcements'
 
 interface AnnouncementEntry { id: string; title: string; text: string; read: boolean; publishedAt?: string; timeline?: TimelineMeta }
@@ -1154,7 +1154,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
   const loadNotice = useCallback(async (isCurrent: () => boolean, mode?: RelayNoticeReadMode): Promise<Announcement | null> => {
     const value = await read(mode)
     if (!isCurrent() || !value || value.entries) return value
-    const collection = await parseNewApiAnnouncementCollection(value.text)
+    const collection = await parseAnnouncementCollectionBesideTimeline(value.text, Boolean(value.bulletins?.length))
     if (!isCurrent()) return value
     const previouslyRead = readLegacyAnnouncementId(scope) === value.id
     if (value.bulletins?.length) return withTimeline(value, collection, previouslyRead, isCurrent)
