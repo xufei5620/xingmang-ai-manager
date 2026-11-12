@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildLaunchCommand,
   mcpHeaderLines,
   mcpNameFrom,
   mcpPasteChoiceLabel,
@@ -247,6 +248,48 @@ describe('splitCommandLine', () => {
     expect(splitCommandLine('node "C:\\My Tools\\a.js" \'x y\' "say \\"hi\\""')).toEqual(['node', 'C:\\My Tools\\a.js', 'x y', 'say "hi"'])
     expect(splitCommandLine('a "" b')).toEqual(['a', '', 'b'])
     expect(splitCommandLine('npx "oops')).toBeNull()
+  })
+})
+
+describe('buildLaunchCommand', () => {
+  it('splits a whole command line typed into the launch box into the program and its arguments', () => {
+    expect(buildLaunchCommand('  npx -y @amap/amap-maps-mcp-server  ', [])).toEqual({ command: 'npx', args: ['-y', '@amap/amap-maps-mcp-server'] })
+    expect(buildLaunchCommand('uvx mcp-server-fetch', [])).toEqual({ command: 'uvx', args: ['mcp-server-fetch'] })
+    // 中文输入法打出来的全角空格也算分隔。
+    expect(buildLaunchCommand('npx\u3000-y\u3000pkg', [])).toEqual({ command: 'npx', args: ['-y', 'pkg'] })
+    expect(buildLaunchCommand('node "C:\\My Tools\\server.js" --port 3', [])).toEqual({ command: 'node', args: ['C:\\My Tools\\server.js', '--port', '3'] })
+    expect(buildLaunchCommand('C:\\nodejs\\npx.cmd -y pkg', [])).toEqual({ command: 'C:\\nodejs\\npx.cmd', args: ['-y', 'pkg'] })
+  })
+
+  it('takes a quoted program as one piece and drops the quotes, even with nothing after it', () => {
+    expect(buildLaunchCommand('"C:\\Program Files\\nodejs\\node.exe" server.js', [])).toEqual({
+      command: 'C:\\Program Files\\nodejs\\node.exe', args: ['server.js'],
+    })
+    expect(buildLaunchCommand('"C:\\Program Files\\My Tool\\tool.exe" --stdio', [])).toEqual({
+      command: 'C:\\Program Files\\My Tool\\tool.exe', args: ['--stdio'],
+    })
+    expect(buildLaunchCommand("'/Users/me/My Tools/server'", [])).toEqual({ command: '/Users/me/My Tools/server', args: [] })
+  })
+
+  it('puts what it split off in front of the extra arguments already filled in', () => {
+    expect(buildLaunchCommand('npx -y', ['pkg', ''])).toEqual({ command: 'npx', args: ['-y', 'pkg', ''] })
+    expect(buildLaunchCommand('"C:\\Program Files\\nodejs\\node.exe"', ['server.js'])).toEqual({
+      command: 'C:\\Program Files\\nodejs\\node.exe', args: ['server.js'],
+    })
+  })
+
+  it('leaves a single program, an unquoted path with spaces and anything it cannot read exactly as before', () => {
+    expect(buildLaunchCommand(' npx ', ['-y', 'pkg'])).toEqual({ command: 'npx', args: ['-y', 'pkg'] })
+    expect(buildLaunchCommand('C:\\Program Files\\nodejs\\node.exe', ['server.js'])).toEqual({
+      command: 'C:\\Program Files\\nodejs\\node.exe', args: ['server.js'],
+    })
+    // 第一段长得像 node，但它只是一个带空格的文件夹的前半截。
+    expect(buildLaunchCommand('D:\\node tools\\server.exe', [])).toEqual({ command: 'D:\\node tools\\server.exe', args: [] })
+    expect(buildLaunchCommand('/Users/me/go projects/server --stdio', [])).toEqual({ command: '/Users/me/go projects/server --stdio', args: [] })
+    // 路径里的单引号（O'Brien）不当成引号拆。
+    expect(buildLaunchCommand("C:\\Users\\O'Brien\\tool.exe", [])).toEqual({ command: "C:\\Users\\O'Brien\\tool.exe", args: [] })
+    expect(buildLaunchCommand('npx -y "oops', [])).toEqual({ command: 'npx -y "oops', args: [] })
+    expect(buildLaunchCommand('my-server --stdio', [])).toEqual({ command: 'my-server --stdio', args: [] })
   })
 })
 
