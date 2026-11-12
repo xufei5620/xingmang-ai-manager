@@ -708,6 +708,119 @@ describe('external client system-service integration', () => {
     expect(targetFiles(f.directory)).toEqual([])
   })
 
+  // yoyo 2026-11-12「1 2 3 做」第 1 条：开机替客户把账号新上的型号补进 Claude Desktop 的菜单，只加不减，默认那个不动。
+  // 每次开机是一个新的服务（restart），型号清单不带上一次的缓存。
+  function claudeDesktopMenu(f: ReturnType<typeof fixture>, configPath: string): unknown {
+    return (JSON.parse(fs.readFileSync(configPath, 'utf8')) as { inferenceModels?: unknown }).inferenceModels
+  }
+  function messagesProbed(f: ReturnType<typeof fixture>): string[] {
+    return f.relayFetch.mock.calls.filter(([url]) => String(url).endsWith('/v1/messages'))
+      .map(([, init]) => (JSON.parse(String(init?.body)) as { model: string }).model)
+  }
+
+  it('adds the Claude models the account lists to the menu at startup, after the default and only the ones that answer', async () => {
+    const f = fixture()
+    messagesFetch(f, ['claude-opus-5-5', 'claude-fable-5', 'claude-haiku-4-5'])
+    const saved = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+    expect(claudeDesktopMenu(f, saved.path)).toEqual([selectedModel])
+
+    messagesFetch(f, ['claude-fable-5'])
+    f.relayFetch.mockClear()
+    await f.restart().topUpClaudeDesktopModels?.()
+    expect(claudeDesktopMenu(f, saved.path)).toEqual([{ name: selectedModel }, { name: 'claude-opus-5-5' }, { name: 'claude-haiku-4-5' }])
+    expect(messagesProbed(f).sort()).toEqual(['claude-fable-5', 'claude-haiku-4-5', 'claude-opus-5-5'])
+    for (const [url, init] of f.relayFetch.mock.calls.filter(([url]) => String(url).endsWith('/v1/messages'))) {
+      expect(url).toBe('https://xm.solov.cc/v1/messages')
+      expect(JSON.parse(String(init?.body))).toMatchObject({ max_tokens: 1, messages: [{ role: 'user', content: '.' }] })
+    }
+    expect(f.runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'external-client.claude-desktop.models.topped-up', expect.any(String), {
+      added: ['claude-opus-5-5', 'claude-haiku-4-5'], rejected: ['claude-fable-5'], overflow: [],
+    })
+    expect((await f.service.scanExternalClients()).find((status) => status.tool === 'claudeDesktop')).toMatchObject({
+      configured: true, configurationSource: 'xingmang', model: selectedModel,
+    })
+
+    // 下次开机账号上了 Opus 6：只试它和上次没通的那个，已经在菜单里、试过的都不再试。
+    f.relayFetch.mockImplementation(async (url, init) => {
+      if (!String(url).endsWith('/v1/messages')) {
+        return Response.json({ data: [{ id: 'claude-opus-6' }, { id: 'claude-opus-5-5' }, { id: selectedModel }, { id: 'claude-fable-5' }, { id: 'claude-haiku-4-5' }] })
+      }
+      const model = (JSON.parse(String(init?.body)) as { model: string }).model
+      return model === 'claude-fable-5'
+        ? Response.json({ error: { message: `当前分组 default 下对于模型 ${model} 无可用渠道` } }, { status: 503 })
+        : Response.json({ id: 'msg_fixture', type: 'message', role: 'assistant', model, content: [{ type: 'text', text: 'H' }], stop_reason: 'max_tokens' })
+    })
+    f.relayFetch.mockClear()
+    await f.restart().topUpClaudeDesktopModels?.()
+    expect(messagesProbed(f).sort()).toEqual(['claude-fable-5', 'claude-opus-6'])
+    expect(claudeDesktopMenu(f, saved.path)).toEqual([
+      { name: selectedModel }, { name: 'claude-opus-6' }, { name: 'claude-opus-5-5' }, { name: 'claude-haiku-4-5' },
+    ])
+    expect(JSON.stringify(f.runtimeLog.log.mock.calls)).not.toContain(selectedKey)
+    for (const file of targetFiles(f.managerDataDirectory)) expect(fs.readFileSync(file, 'utf8')).not.toContain(selectedKey)
+  })
+
+  it('leaves the menu alone and tries nothing while Claude Desktop is open', async () => {
+    const f = fixture()
+    messagesFetch(f, ['claude-opus-5-5', 'claude-fable-5', 'claude-haiku-4-5'])
+    const saved = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+    const before = fs.readFileSync(saved.path, 'utf8')
+    f.runtimeStatuses.find((status) => status.tool === 'claudeDesktop')!.running = true
+    messagesFetch(f, [])
+    f.relayFetch.mockClear()
+    await f.restart().topUpClaudeDesktopModels?.()
+    expect(f.relayFetch).not.toHaveBeenCalled()
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(before)
+    expect(f.runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'external-client.claude-desktop.models.top-up-skipped', expect.any(String), { reason: 'running' })
+  })
+
+  it('writes nothing when Claude Desktop is opened while the models are being tried, and tries again next start', async () => {
+    const f = fixture()
+    messagesFetch(f, ['claude-opus-5-5', 'claude-fable-5', 'claude-haiku-4-5'])
+    const saved = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+    const before = fs.readFileSync(saved.path, 'utf8')
+    const desktop = f.runtimeStatuses.find((status) => status.tool === 'claudeDesktop')!
+    messagesFetch(f, [], () => { desktop.running = true })
+    await f.restart().topUpClaudeDesktopModels?.()
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(before)
+    expect(f.runtimeLog.log).toHaveBeenCalledWith('warn', 'config', 'external-client.claude-desktop.models.top-up-failed', expect.any(String), {
+      reason: 'Claude Desktop 已经打开了，这次不补型号',
+    })
+
+    desktop.running = false
+    messagesFetch(f, [])
+    await f.restart().topUpClaudeDesktopModels?.()
+    expect(claudeDesktopMenu(f, saved.path)).toEqual([{ name: selectedModel }, { name: 'claude-opus-5-5' }, { name: 'claude-fable-5' }, { name: 'claude-haiku-4-5' }])
+  })
+
+  it('writes nothing when the account changes while the models are being tried', async () => {
+    const f = fixture()
+    messagesFetch(f, ['claude-opus-5-5', 'claude-fable-5', 'claude-haiku-4-5'])
+    const saved = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+    const before = fs.readFileSync(saved.path, 'utf8')
+    messagesFetch(f, [], () => f.setUser(18))
+    await f.restart().topUpClaudeDesktopModels?.()
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(before)
+    expect(f.runtimeLog.log).toHaveBeenCalledWith('warn', 'config', 'external-client.claude-desktop.models.top-up-failed', expect.any(String), {
+      reason: '账号已变化，这次不补型号',
+    })
+  })
+
+  it('does not touch a Claude Desktop profile that is not the current account, nor run without one', async () => {
+    const f = fixture()
+    messagesFetch(f, ['claude-opus-5-5', 'claude-fable-5', 'claude-haiku-4-5'])
+    const saved = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+    const before = fs.readFileSync(saved.path, 'utf8')
+    messagesFetch(f, [])
+    f.relayFetch.mockClear()
+    f.setUser(18)
+    await f.restart().topUpClaudeDesktopModels?.()
+    f.setUser(null)
+    await f.restart().topUpClaudeDesktopModels?.()
+    expect(f.relayFetch).not.toHaveBeenCalled()
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(before)
+  })
+
   for (const platform of ['win32', 'darwin', 'linux'] as const) {
     it.runIf(hostPlatform === platform)(`activates Claude in its native ${platform} local profile without an import step`, async () => {
       const f = fixture({ platform, nativeClaudePaths: true })

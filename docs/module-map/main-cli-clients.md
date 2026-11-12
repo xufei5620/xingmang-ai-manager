@@ -108,7 +108,7 @@
 
 ## 外部桌面客户端：WorkBuddy / Claude Desktop / OpenCode
 - `external-client-runtime.ts` — **三家客户端的探测、安装与打开**：Windows 用一段 PowerShell 盘点并核签名，Claude Desktop 装法是存储桶 → winget → 官网 MSIX，OpenCode 走 winget，WorkBuddy 一律让客户去官网自己下；Mac 交给 `macos-desktop-app-installer.ts` 并核 Developer ID。「打开」不排安装队列，是 I11 的登记例外（只等同一家正在装的那一次）
-- `external-client-route-service.ts` — **三家客户端在系统服务里的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `scanExternalClients`、`configureExternalTool`、`switchExternalClientSource` 这些）：盘点（合并、落盘先画首页）、安装、打开、测试连接，写配置前绕过缓存现查型号、核账号没换，Claude Desktop 切回官方账号或改用当前账号；换线路、换 Key 以后替当前账号写的那份跟着换，客户端开着就每 5 分钟看一眼进程、等它退出再换（星芒退出时撤掉这个定时）。写配置、切账号、跟线路改的是同一批文件，排同一个队（`queueExternalConfigWork`，原来手抄三份）
+- `external-client-route-service.ts` — **三家客户端在系统服务里的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `scanExternalClients`、`configureExternalTool`、`switchExternalClientSource` 这些）：盘点（合并、落盘先画首页）、安装、打开、测试连接，写配置前绕过缓存现查型号、核账号没换，Claude Desktop 切回官方账号或改用当前账号；换线路、换 Key 以后替当前账号写的那份跟着换，客户端开着就每 5 分钟看一眼进程、等它退出再换（星芒退出时撤掉这个定时）。写配置、切账号、跟线路改的是同一批文件，排同一个队（`queueExternalConfigWork`，原来手抄三份）；开机后台替 Claude Desktop 补账号新上的型号（`topUpClaudeDesktopModels`，查型号、试型号在队外，只有最后那一笔写排队）
 - `external-client-contract.ts` — 三家的共用类型、名字表、「去官网下载」网址（主进程外链白名单逐条全等收录，I12）和配置请求的入参校验（I5）；`ipc-contract.ts` 引它的类型
 - `external-tool-config.ts` — WorkBuddy 与 OpenCode 的配置文件：找位置、合并，经 `config-files.ts` 同一套两阶段提交写入（I9）；换线路时只改星芒写的那几处地址，客户刚改过就一个字不写。Claude Desktop 不在这里，见 `claude-desktop-config.ts`
 - `external-client-connection.ts` — 三家的连接自检：回读客户端自己的配置，用里面那把密钥问一次星芒（WorkBuddy、OpenCode 查模型清单不花额度，Claude Desktop 照它自己的样子发一个字）；客户端里真正发的对话本机测不到，结论照实说，不假绿
@@ -120,7 +120,8 @@
 - `claude-desktop-paths.ts` — 定 Claude Desktop 的配置目录：由当前装着的那一份（和它的 MSIX 虚拟化设置）决定，不看遗留目录；测试用的主目录绝不继承真实 AppData
 - `claude-desktop-manifest.ts` — 读微软商店版 Claude Desktop 的清单，判断它的配置目录有没有被 MSIX 虚拟化（决定实际写到哪）；PowerShell 脚本由纯函数生成，各平台都能按文本单测
 - `claude-desktop-policy.ts` — 写配置前确认 Claude Desktop 没被组织策略（注册表或托管文件）接管推理设置；PowerShell 只带出策略的名字和类型，值里可能有 Key，不出来（I3、I13）
-- `claude-desktop-models.ts` — 保存 Claude Desktop 配置时型号菜单里放哪几个：选中的排第一，其余 `claude-*` 按版本新到旧最多再试 7 个，照它的启动检查发一个字、通了才写；也照它的挑法算出启动检查用哪个型号，给连接自检多问一次。不含 Electron 依赖
+- `claude-desktop-models.ts` — 保存 Claude Desktop 配置时型号菜单里放哪几个：选中的排第一，其余 `claude-*` 按版本新到旧最多再试 7 个，照它的启动检查发一个字、通了才写；也照它的挑法算出启动检查用哪个型号，给连接自检多问一次；开机补型号挑哪几个去试（`claudeDesktopTopUpCandidates`）也在这里，试的那一步两边共用。不含 Electron 依赖
+- `claude-desktop-model-topup.ts` — 开机补型号：账号新上的 Claude 型号照保存时的挑法试通了才补进 Claude Desktop 的菜单，只加不减、默认不动、最多 12 个；记下这把 Key 上次列着的型号（Key 只存摘要），客户拿掉的不补回、没试通的下次再试。由 `external-client-route-service.ts` 的 `topUpClaudeDesktopModels` 在开机后台叫
 - `claude-desktop-model-repair.ts` — 开机一次性修复：0.2.12 往 Claude Desktop 配置里写了一串型号，导致发消息没回复；只认星芒自己那份、只认那个写法，改回单个型号，最多试三次，查完记一笔以后不再读
 - `claude-desktop-msix-installer.ts` — Windows 上 Claude Desktop 的离线 MSIX 一路（存储桶或 Claude 官网，官网只认 `claude.ai` 入口与 `downloads.claude.ai/releases/` 的逐跳重定向），PowerShell 只读核对包身份与 Anthropic 签名，再交给 `codex-desktop-appx.ts` 的共用安装（带服务的包走 UAC）
 - `claude-desktop-acceleration.ts` — 从星芒打开 Claude Desktop 前悄悄替用户连上加速，好让它从 `downloads.claude.ai` 下得到 Claude Code 程序和 Cowork 工作区（#1373）：约束同 `codex-desktop-acceleration.ts`，Claude 退出或连满一小时就断，和 Codex 桌面端共用同一次会话时先用完的那边交给另一边（`heldElsewhere`）。不含 Electron 依赖

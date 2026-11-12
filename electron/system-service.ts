@@ -607,6 +607,11 @@ export interface SystemService {
   launchExternalClient(tool: ExternalToolId): Promise<void>
   /** 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择，星芒那份配置留着。 */
   switchExternalClientSource(tool: ExternalToolId, target: 'account' | 'official', assertBeforeWrite?: () => void): Promise<ExternalClientSourceSwitchResult>
+  /**
+   * 开机后台替 Claude Desktop 把当前账号新上的 Claude 型号补进菜单：只补星芒替当前账号写的那一份，只加不减、
+   * 默认那个不动，它开着就这次不补。从不抛错。可选 = 旧实现不提供。
+   */
+  topUpClaudeDesktopModels?(): Promise<void>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
   /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
@@ -1115,6 +1120,7 @@ export function createSystemService(
     recheckPendingExternalRoutes,
     followManagedKeysNow,
     cancelPendingExternalRouteRecheck,
+    topUpClaudeDesktopModels,
   } = createExternalClientRouteService(context, {
     fetchAvailableModels,
   })
@@ -1434,6 +1440,7 @@ export function createSystemService(
     cancelExternalClientInstall,
     launchExternalClient,
     switchExternalClientSource,
+    topUpClaudeDesktopModels,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
     enqueueCodexRemoteLaunch: (launch) => installationQueue.enqueue(codexRemoteLaunchQueueKey, launch),

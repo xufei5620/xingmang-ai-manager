@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { readSafeUtf8FileSync } from './safe-local-data'
 import { commitClaudeDesktopFiles } from './claude-desktop-local-transaction'
-import { claudeDesktopStartupCheckModel } from './claude-desktop-models'
+import { claudeDesktopStartupCheckModel, claudeDesktopTopUpMaximumModels } from './claude-desktop-models'
 import type { ExternalClientConnectionStatus } from './external-client-contract'
 
 const label = 'Claude Desktop 第三方推理配置'
@@ -361,7 +361,23 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
   }
 
   /**
-   * followRoute、followKey 的那一笔写：正在用的是星芒那份、地址和 Key 还是 expected 时，只改 edits 给出的那几个
+   * 正在用的就是星芒标记的那一份（不是官方登录、没有 hybridPointer）、配置齐全时，交出它的编号、内容、网关地址和 Key；
+   * 不是回 null，读不出来往外抛。不查管理策略，要查的调用方自己先查。主进程内部专用，永不跨 IPC（I3）。
+   */
+  function readOwnedGateway(): { id: string; gateway: JsonObject; baseUrl: string; apiKey: string } | null {
+    const desktop = parseObject(read(configPath))
+    const metadata = parseMetadata(read(metadataPath))
+    const owner = parseOwner(read(markerPath), profileDirectory)
+    if (!owner || metadata.appliedId !== owner.id || metadata.hybridPointer
+      || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== claudeDesktopGatewayDeploymentMode)) return null
+    const gateway = parseObject(read(path.join(libraryDirectory, `${owner.id}.json`)))
+    const { inferenceGatewayBaseUrl: baseUrl, inferenceGatewayApiKey: apiKey } = gateway
+    if (!gatewayConfigurationReady(gateway) || typeof baseUrl !== 'string' || typeof apiKey !== 'string' || !apiKey.trim()) return null
+    return { id: owner.id, gateway, baseUrl, apiKey }
+  }
+
+  /**
+   * followRoute、followKey、addModels 的那一笔写：正在用的是星芒那份、地址和 Key 还是 expected 时，只改 edits 给出的那几个
    * 顶层字段，edits 拿的是核对完以后重读出来的那份。读、比、写都在 beforeCommit 之后同步做完。
    */
   function editOwnedGateway(
@@ -389,6 +405,8 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
         throw new Error(`${label}在${action}前已变化，未执行修改`)
       }
       const content = edits(gateway).reduce((text, [key, value]) => setTopLevelField(text, key, value), original)
+      // 一个字都不用改（开机补型号重读时发现要补的客户已经自己加上了）：不写，也不留备份。
+      if (content === original) return { path: gatewayPath, backups: [] }
       assertWithinSizeLimit(content)
       const saved = commitClaudeDesktopFiles([{ path: gatewayPath, content }], snapshots, assertContext)
       return { path: gatewayPath, backups: saved.backups }
@@ -458,18 +476,54 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
     inspectOwnedRoute: async (): Promise<{ baseUrl: string; apiKey: string; model: string | null } | null> => {
       try {
         await options.assertUnmanaged?.()
-        const desktop = parseObject(read(configPath))
-        const metadata = parseMetadata(read(metadataPath))
-        const owner = parseOwner(read(markerPath), profileDirectory)
-        if (!owner || metadata.appliedId !== owner.id || metadata.hybridPointer
-          || (desktop.deploymentMode !== undefined && desktop.deploymentMode !== claudeDesktopGatewayDeploymentMode)) return null
-        const gateway = parseObject(read(path.join(libraryDirectory, `${owner.id}.json`)))
-        const { inferenceGatewayBaseUrl: baseUrl, inferenceGatewayApiKey: apiKey } = gateway
-        if (!gatewayConfigurationReady(gateway) || typeof baseUrl !== 'string' || typeof apiKey !== 'string' || !apiKey.trim()) return null
-        return { baseUrl, apiKey, model: firstModel(gateway.inferenceModels) }
+        const owned = readOwnedGateway()
+        return owned ? { baseUrl: owned.baseUrl, apiKey: owned.apiKey, model: firstModel(owned.gateway.inferenceModels) } : null
       } catch {
         return null
       }
+    },
+    /**
+     * 开机补型号（claude-desktop-model-topup.ts）要读的：正在用的就是星芒那一份时，交出它的编号、网关地址、Key 和型号
+     * 菜单（没写清单、由 Claude Desktop 自己问网关要的，models 是空的）。legacy 是清单对得上 0.2.12 那串写法：留给开机
+     * 修复，不补。规矩同 inspectOwnedRoute，只是不查管理策略：Windows 上查一次要起 PowerShell，开机每次都为它多跑一个
+     * 进程不值得，真要写时 addModels 会查。主进程内部专用，永不跨 IPC（I3）。
+     */
+    inspectOwnedModelMenu: async (): Promise<{ id: string; baseUrl: string; apiKey: string; models: string[]; legacy: boolean } | null> => {
+      try {
+        const owned = readOwnedGateway()
+        if (!owned) return null
+        const list = owned.gateway.inferenceModels
+        return { id: owned.id, baseUrl: owned.baseUrl, apiKey: owned.apiKey, models: modelNames(list), legacy: legacyClaudeDesktopSelectedModel(list) !== null }
+      } catch {
+        return null
+      }
+    },
+    /**
+     * 开机补型号的那一笔写：models 里菜单还没有的放到默认那个（第一项）后面，原来的每一项照样留着、一个不删，到
+     * claudeDesktopTopUpMaximumModels 个为止。规矩同 followRoute：正在用的是星芒那一份、地址和 Key 还是 expected 才写，
+     * 写之前查管理策略、调 beforeCommit（调用方在那里最后看一眼 Claude Desktop 关着），之后到写完都是同步的。
+     * 写成好几个时，字符串写法的项换成 { name }（同名同义，对象里别的字段不动），和保存配置写多个时一样，开机修复
+     * 不会把它当成 0.2.12 那串收回成一个。清单不在（由 Claude Desktop 自己问网关要）、是 0.2.12 那串写法的不写。
+     * 交回真放进去的那几个；一个都没有时不动文件。
+     */
+    addModels: async (
+      expected: { baseUrl: string; apiKey: string },
+      models: readonly string[],
+      beforeCommit?: () => Promise<void>,
+    ): Promise<{ path: string; backups: string[]; added: string[] }> => {
+      let added: string[] = []
+      const saved = await editOwnedGateway(expected, (gateway) => {
+        added = []
+        const list = gateway.inferenceModels
+        if (!Array.isArray(list) || !list.length || legacyClaudeDesktopSelectedModel(list) !== null) return []
+        const present = modelNames(list)
+        const room = Math.max(0, claudeDesktopTopUpMaximumModels - list.length)
+        added = [...new Set(models.map((model) => field(model, '模型 ID', 512)))].filter((model) => !present.includes(model)).slice(0, room)
+        if (!added.length) return []
+        const named = (entry: unknown) => typeof entry === 'string' ? { name: entry } : entry
+        return [['inferenceModels', [named(list[0]), ...added.map((name) => ({ name })), ...list.slice(1).map(named)]]]
+      }, '补型号', beforeCommit)
+      return { ...saved, added }
     },
     /**
      * 换线路（第四十三批 A）：只把星芒那份的网关地址从 from 换成 to，文件里别的一个字不动（缩进、
