@@ -129,6 +129,7 @@ describe('file realm account vault', () => {
     await expect(f.vault.active()).rejects.toMatchObject({ code: 'STORAGE', stage: 'decrypt' })
     expect(await Promise.all([f.vault.recoverUnreadable(), f.vault.recoverUnreadable()])).toEqual([true, false])
     expect(f.onRecovered).toHaveBeenCalledTimes(1)
+    expect(f.onRecovered.mock.calls[0][1]).toBe('decrypt')
     const backup = path.join(f.directory, f.onRecovered.mock.calls[0][0])
     expect(fs.readFileSync(backup)).toEqual(original)
     expect(await f.vault.active()).toBeNull()
@@ -191,16 +192,68 @@ describe('file realm account vault', () => {
     expect(await f.vault.active()).toEqual(account())
   })
 
-  it('leaves unknown schemas and invalid envelopes intact for diagnosis', async () => {
+  // 退回旧版读到新版写的库：解得开、是 JSON，只是版本或字段认不出。清掉它，客户升回去以后账号也没了。
+  it('leaves a decryptable document with an unknown schema intact', async () => {
     const f = fixture()
-    for (const [content, stage] of [
-      ['broken-account-file', 'decode'],
-      [f.cipher.encryptString(JSON.stringify({ version: 3, accounts: [], activeId: null })).toString('base64'), 'validate'],
+    for (const document of [
+      { version: 3, accounts: [], activeId: null },
+      { version: 2, activeId: null, accounts: [{ version: 3, realmId: 'future-account' }] },
     ]) {
+      const content = f.cipher.encryptString(JSON.stringify(document)).toString('base64')
       fs.writeFileSync(f.file, content, 'utf8')
-      await expect(f.vault.recoverUnreadable()).rejects.toMatchObject({ stage })
+      await expect(f.vault.recoverUnreadable()).rejects.toMatchObject({ stage: 'validate' })
       expect(fs.readFileSync(f.file, 'utf8')).toBe(content)
       expect(fs.readdirSync(f.directory)).toEqual(['realm-accounts-v2.dat'])
+    }
+    expect(f.onRecovered).not.toHaveBeenCalled()
+  })
+
+  // DM-2：硬盘坏道、杀毒或同步盘截了文件、被别的程序改过，以前在 decode 这步就停，点多少次登录都进不去。
+  it('recovers a damaged account file on explicit recovery and keeps a copy of what was read', async () => {
+    type Fixture = ReturnType<typeof fixture>
+    const cases: Array<[string, (f: Fixture) => Buffer, 'decode' | 'parse']> = [
+      ['an empty file', () => Buffer.alloc(0), 'decode'],
+      ['a file cut off mid-way', (f) => Buffer.from(fs.readFileSync(f.file, 'utf8').slice(0, -3), 'utf8'), 'decode'],
+      ['text that is not ciphertext', () => Buffer.from('broken-account-file', 'utf8'), 'decode'],
+      ['a run of zeroed bytes', () => Buffer.alloc(64), 'decode'],
+      // 坏道读出来的乱码字节不成文字，备份里留的是读到的那份（乱码换成替换字符），这种文件本来也解不出来。
+      ['bytes that are not text at all', () => Buffer.from([0xff, 0xfe, 0x80, 0x41, 0xc3]), 'decode'],
+      ['ciphertext that decrypts to a cut-off document',
+        (f) => Buffer.from(f.cipher.encryptString('{"version":2,"activeId":null,"acc').toString('base64'), 'utf8'), 'parse'],
+      ['ciphertext that decrypts to a bare value', (f) => Buffer.from(f.cipher.encryptString('7').toString('base64'), 'utf8'), 'parse'],
+    ]
+    for (const [label, content, reason] of cases) {
+      const f = fixture()
+      await f.vault.activate(account())
+      const original = content(f)
+      fs.writeFileSync(f.file, original)
+      await expect(f.vault.active(), label).rejects.toMatchObject({ code: 'STORAGE', stage: reason })
+      expect(fs.readFileSync(f.file), label).toEqual(original)
+
+      await expect(f.vault.recoverUnreadable(), label).resolves.toBe(true)
+      expect(f.onRecovered, label).toHaveBeenCalledOnce()
+      expect(f.onRecovered.mock.calls[0][1], label).toBe(reason)
+      const backup = path.join(f.directory, f.onRecovered.mock.calls[0][0])
+      expect(fs.readFileSync(backup), label).toEqual(Buffer.from(original.toString('utf8'), 'utf8'))
+      expect(await f.vault.active(), label).toBeNull()
+      expect(await f.vault.hasMigratedLegacy(), label).toBe(true)
+      await f.vault.activate(account(true))
+      expect(await createFileRealmAccountVault(f.directory, f.cipher).active(), label).toEqual(account(true))
+    }
+  })
+
+  // 记事本这类编辑器打开再存，会在末尾补换行、在开头加 BOM。密文本身没坏，照常读出来，不用重置。
+  it('reads a vault an editor saved back with surrounding whitespace or a byte-order mark', async () => {
+    for (const wrap of [(text: string) => `${text}\r\n`, (text: string) => `\uFEFF${text}`, (text: string) => ` ${text}\n\n`]) {
+      const f = fixture()
+      await f.vault.activate(account())
+      const edited = wrap(fs.readFileSync(f.file, 'utf8'))
+      fs.writeFileSync(f.file, edited, 'utf8')
+      expect(await f.vault.active()).toEqual(account())
+      await expect(f.vault.recoverUnreadable()).resolves.toBe(false)
+      expect(fs.readFileSync(f.file, 'utf8')).toBe(edited)
+      expect(fs.readdirSync(f.directory)).toEqual(['realm-accounts-v2.dat'])
+      expect(f.onRecovered).not.toHaveBeenCalled()
     }
   })
 

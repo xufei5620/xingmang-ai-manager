@@ -1,5 +1,7 @@
+import type { RealmVaultRecoveryReason } from './realm-account-vault'
+
 /**
- * 本机登录记录解密不了时账号存储会被重建（realm-account-vault-file.ts 的
+ * 本机登录记录读不懂（解密不了，或文件本身坏了）时账号存储会被重建（realm-account-vault-file.ts 的
  * recoverAtomic）。用户在界面上看到的症状是「记住的账号没了」，而恢复本身只在
  * runtime.jsonl 里留一条 vault.recovered，客服之外没人看得到，用户只能自己猜。
  *
@@ -8,16 +10,18 @@
  * 任何账号内容（I3 / I13），界面只需要知道「发生过」。
  */
 export interface VaultRecoveryNotifierOptions {
-  /** 记进运行日志，带上备份文件名供客服排查。 */
-  log(backupFileName: string): void
+  /** 记进运行日志，带上备份文件名和读不懂的原因供客服排查。 */
+  log(backupFileName: string, reason: RealmVaultRecoveryReason): void
   /** 通知界面。恢复已经提交，通知失败不能反悔，所以日志先写。 */
   emit(): void
 }
 
-export function createVaultRecoveryNotifier(options: VaultRecoveryNotifierOptions): (backupFileName: string) => void {
+export function createVaultRecoveryNotifier(
+  options: VaultRecoveryNotifierOptions,
+): (backupFileName: string, reason: RealmVaultRecoveryReason) => void {
   let notified = false
-  return function onRecovered(backupFileName: string): void {
-    options.log(backupFileName)
+  return function onRecovered(backupFileName: string, reason: RealmVaultRecoveryReason): void {
+    options.log(backupFileName, reason)
     if (notified) return
     notified = true
     options.emit()

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { assertSafeDataFile, ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
-import { createRealmAccountVault, type RealmAccountVault } from './realm-account-vault'
+import { createRealmAccountVault, type RealmAccountVault, type RealmVaultRecoveryReason } from './realm-account-vault'
 import { RealmAccountError } from './realm-account'
 import { isSafeStorageUsable, type SafeStorageBackendLike } from './safe-storage-backend'
 
@@ -12,7 +12,7 @@ export interface RealmVaultCipher extends SafeStorageBackendLike {
 }
 
 export interface RealmVaultFileOptions {
-  onRecovered?(backupFileName: string): void
+  onRecovered?(backupFileName: string, reason: RealmVaultRecoveryReason): void
 }
 
 /**
@@ -39,7 +39,7 @@ export function createFileRealmAccountVault(
       ensureSafeDataDirectory(userDataDirectory, label)
       await writeAtomicSafeUtf8File(filePath, encrypted, label)
     },
-    recoverAtomic: async (expected, replacement) => {
+    recoverAtomic: async (expected, replacement, reason) => {
       ensureSafeDataDirectory(userDataDirectory, label)
       if (await read() !== expected) throw new Error('账号文件在恢复前发生变化')
       const backupFileName = `realm-accounts-v2.dat.unreadable-${Date.now()}-${randomUUID()}.bak`
@@ -60,7 +60,7 @@ export function createFileRealmAccountVault(
       // Catch a key change during the backup before replacing the old record.
       cipher.decryptString(Buffer.from(replacement, 'base64'))
       await writeAtomicSafeUtf8File(filePath, replacement, label)
-      try { options.onRecovered?.(backupFileName) } catch { /* logging cannot undo the commit */ }
+      try { options.onRecovered?.(backupFileName, reason) } catch { /* logging cannot undo the commit */ }
     },
   })
 }
