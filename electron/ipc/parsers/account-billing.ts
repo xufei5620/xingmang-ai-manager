@@ -47,8 +47,15 @@ export function parseAccountTopupOrdersQuery(value: unknown): NewApiTopupOrdersQ
   return {
     page: page as number | undefined,
     pageSize: pageSize as number | undefined,
-    keyword: optionalString(value.keyword, '订单搜索词', 128),
+    keyword: parseTopupOrdersKeyword(value.keyword),
   }
+}
+
+// 只有空白的搜索词当没填（F4）：输入法下按一下空格就是全角空格，以前在这里抛「订单搜索词格式错误」，
+// 订单列表变成读失败。只是先去空白再判断有没有填，长度照旧按原样算、不放宽。
+function parseTopupOrdersKeyword(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length <= 128 && !value.trim()) return undefined
+  return optionalString(value, '订单搜索词', 128)
 }
 
 export function parseAccountAffiliateTransferInput(value: unknown): NewApiAffiliateTransferInput {
