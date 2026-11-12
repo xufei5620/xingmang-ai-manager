@@ -1,6 +1,6 @@
 // @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
 
-import { resolveClaudeFallbackModels } from './cli-model-defaults'
+import { resolveClaudeFallbackModels, sortClaudeModelsNewestFirst } from './cli-model-defaults'
 
 // Claude Code 的 /model 菜单写死了官方阵容：Default（Opus 5 · 1M 上下文）、Opus、Fable、
 // Sonnet、Haiku……每一行还标着官方美元单价。接中转后这份菜单与当前账号实际能用的模型对不上：
@@ -56,6 +56,7 @@ export function claudeModelLabel(model: string): string {
 /**
  * 从当前 Key 的可用模型里挑出 Claude 系列生成菜单。一个 Claude 型号都没有（分组配错、
  * 或者模型接口没回东西）时返回 null：宁可留着官方菜单，也不能写一份空菜单。
+ * 型号多到放不下时先舍掉老的，当前选定的那个永远在内；放进去的照名字排。
  */
 export function buildClaudeRelayModelPicker(
   availableModels: readonly string[],
@@ -63,9 +64,9 @@ export function buildClaudeRelayModelPicker(
 ): ClaudeModelPickerSetting | null {
   const unique = [...new Set(availableModels.map((model) => model.trim()).filter(isClaudeModelId))]
   if (unique.length === 0) return null
-  const chosen = unique.includes(currentModel)
-    ? [currentModel, ...unique.filter((model) => model !== currentModel)]
-    : unique
+  // 模型接口按名字排，照这个次序截会先挤掉排在最后的 claude-sonnet-*，新上的 Sonnet 5、5.5 反倒进不了菜单。
+  const others = sortClaudeModelsNewestFirst(unique.filter((model) => model !== currentModel))
+  const chosen = unique.includes(currentModel) ? [currentModel, ...others] : others
   const options = chosen.slice(0, MAX_CLAUDE_PICKER_OPTIONS)
     .sort((left, right) => left.localeCompare(right))
     .map((model) => ({ model, label: claudeModelLabel(model), description: model }))
