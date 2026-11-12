@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Xingmang image generation helper. Never prints API keys.
+// Image generation helper for this skill. Never prints API keys.
 
 import { Buffer } from 'node:buffer'
 import { open, readFile, writeFile } from 'node:fs/promises'
@@ -24,7 +24,7 @@ const SUPPORTED_MODELS_HINT = [
   'OpenAI：gpt-image-2.6-flare、gpt-image-2.5-flare、gpt-image-2、gpt-image-2.6-sunburst、gpt-image-2.5-sunburst（gpt-image- 开头的新型号也行）',
   'Nano Banana：nano-banana-2（即 gemini-3.1-flash-image）、nano-banana-pro',
   'Grok：grok-imagine-image、grok-imagine-image-2.0、grok-imagine-image-quality',
-  '不传 --model 就用星芒为当前账号挑好的那个。',
+  '不传 --model 就用登录时按当前账号挑好的那个。',
 ].join('\n')
 
 const ASPECT_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3']
@@ -78,13 +78,13 @@ async function readSkillConfig(skillRoot) {
   try {
     raw = await readFile(filePath, 'utf8')
   } catch {
-    fail('还没有本机配置。请先打开星芒AI管理工具并登录，工具会自动检测「图片模型」分组并写入 config.json。')
+    fail('还没有本机配置。请先打开管理工具并登录当前账号，工具会自动检测「图片模型」分组并写入 config.json。')
   }
   let parsed
   try {
     parsed = JSON.parse(raw)
   } catch {
-    fail('config.json 损坏。请重新登录星芒AI管理工具，让它重写配置。')
+    fail('config.json 损坏。请在管理工具里重新登录当前账号，让它重写配置。')
   }
   if (!parsed || typeof parsed !== 'object') fail('config.json 格式错误')
   const baseUrl = typeof parsed.baseUrl === 'string' && parsed.baseUrl.trim()
@@ -96,9 +96,9 @@ async function readSkillConfig(skillRoot) {
   if (codexApiKey.startsWith('sk-')) keys.push({ source: 'codex', apiKey: codexApiKey })
   if (apiKey.startsWith('sk-') && apiKey !== codexApiKey) keys.push({ source: 'image', apiKey })
   if (keys.length === 0) {
-    fail('config.json 里还没有 API Key。请先登录星芒AI管理工具，工具会写入 Codex Key，并在可用时补上生图分组 Key。')
+    fail('config.json 里还没有 API Key。请先在管理工具里登录当前账号，工具会写入 Codex Key，并在可用时补上生图分组 Key。')
   }
-  // 星芒登录同步时按当前账号实际能用的 OpenAI 图片模型排好顺序：model 是第一个，fallbackModels 是后面的。
+  // 主程序登录同步时按当前账号实际能用的 OpenAI 图片模型排好顺序：model 是第一个，fallbackModels 是后面的。
   const model = configuredModel(parsed.model)
   const fallbackModels = Array.isArray(parsed.fallbackModels)
     ? parsed.fallbackModels.map(configuredModel).filter(Boolean)
@@ -118,7 +118,7 @@ function parseArgs(argv) {
   const options = {
     prompt: '',
     out: '',
-    // 没点名就留空，读到配置后用星芒挑好的那个。
+    // 没点名就留空，读到配置后用主程序挑好的那个。
     model: '',
     size: '',
     aspect: '',
@@ -173,7 +173,7 @@ function printUsage() {
     '用法：node generate.mjs --prompt "描述" --out ./out.png [选项]',
     '',
     '选项：',
-    '  --model       默认用星芒挑好的 OpenAI 图片模型；也可以点名 Nano Banana、Grok（只走图片模型分组）',
+    '  --model       默认用登录时按当前账号挑好的 OpenAI 图片模型；也可以点名 Nano Banana、Grok（只走图片模型分组）',
     '  --size        1K|2K|4K，或 宽x高（gpt-image-2 系列宽高须为 16 的倍数），默认 1K',
     '  --aspect      16:9|9:16|1:1|4:3|3:4|3:2|2:3，配 1K/2K/4K 用，默认 1:1',
     `  --quality     low|medium|high|auto，仅 gpt-image，默认 ${DEFAULT_QUALITY}`,
@@ -181,7 +181,7 @@ function printUsage() {
     '  --image       参考图路径，改图用；可以给多张（最多 4 张）',
     '  --edit        图生图，可省略：给了 --image 就是改图',
     '',
-    'Key 从本技能目录的 config.json 读取，由星芒AI管理工具登录后写入。',
+    'Key 从本技能目录的 config.json 读取，登录后自动写入。',
     '先用软件签发的 Codex Key，失败再改用生图分组 Key。',
     '不要把 Key 打进日志。',
     '',
@@ -515,7 +515,7 @@ async function main() {
   const config = await readSkillConfig(skillRootFromScript())
   const origin = assertHttpsOrigin(config.baseUrl)
 
-  // 没点名、或点的就是星芒挑好的那个：按账号列表里有的顺序往下退（站上新开的这次没画出来：还没定价、渠道没好）。
+  // 没点名、或点的就是主程序挑好的那个：按账号列表里有的顺序往下退（站上新开的这次没画出来：还没定价、渠道没好）。
   // 点名要别的就只用它。
   const requested = options.model || config.model || DEFAULT_MODEL
   const family = modelFamily(requested)
@@ -528,7 +528,7 @@ async function main() {
   // Nano Banana 和 Grok 只在图片模型分组里有，Codex Key 一定被拒，不白试。
   const keys = family === 'openai' ? config.keys : config.keys.filter((entry) => entry.source === 'image')
   if (keys.length === 0) {
-    fail(`${requested} 只能用图片模型分组的 Key 出图，当前账号还没有。请打开星芒AI管理工具重新登录；账号还没开通图片模型分组的，先开通再登录。`)
+    fail(`${requested} 只能用图片模型分组的 Key 出图，当前账号还没有。请打开管理工具重新登录；账号还没开通图片模型分组的，先开通再登录。`)
   }
   const images = []
   for (const filePath of options.images) images.push(await readInputImage(filePath))

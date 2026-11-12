@@ -378,7 +378,7 @@ describe('xingmang-ai-skill', () => {
       warnings: [],
     })
     expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: partial')
-    expect(await readFile(path.join(directory, 'references.md'), 'utf8')).toContain('星芒中转')
+    expect(await readFile(path.join(directory, 'references.md'), 'utf8')).toContain('生图接口说明')
   })
 
   it('prefers packaged extraResources and falls back to the app path', async () => {
@@ -728,7 +728,7 @@ describe('xingmang-ai-skill', () => {
     expect(await readFile(
       path.join(resolveXingmangAiSkillDirectories(userHome)[0], 'SKILL.md'),
       'utf8',
-    )).toContain('星芒AI')
+    )).toContain('name: images')
   })
 
   it('refreshes a previously cleared config on the next login sync', async () => {

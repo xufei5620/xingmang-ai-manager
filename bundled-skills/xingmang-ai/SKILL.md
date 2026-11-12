@@ -1,27 +1,27 @@
 ---
 name: images
 description: >-
-  用星芒中转（xm.solov.cc）按 URL + API Key 生成或编辑位图：照片、插画、海报、Logo、信息图、透明底切图。
+  用当前账号生成或编辑位图：照片、插画、海报、Logo、信息图、透明底切图。
   默认用 OpenAI 的 gpt-image 新款，用户点名时也能用 Nano Banana、Grok。
-  当用户说生图、画一张、生成图片、改图、星芒AI、星芒生图时使用。
+  当用户说生图、画一张、生成图片、改图时使用。
   脚本成功写出文件即结束，不要再用绘图库、Identify 或打开文件核对尺寸和内容。
   不要用它改仓库里已有的 SVG/矢量图标，或用 HTML/CSS/canvas 更合适的简单图形。
 ---
 
-# 星芒AI
+# 生图
 
-调用星芒中转出图。Key 由**星芒AI管理工具**在登录后自动写入本目录 `config.json`：优先用软件对应的 Codex Key（`GPT`），这次请求失败再自动改用 `图片模型`（别名 `生图分组`）。不要向用户要环境变量，也不要去翻 CLI 配置。你可以改这个技能的说明和脚本；工具只更新还是官方原样的文件，改过的不会覆盖。
+用当前账号出图。Key 在登录后自动写入本目录 `config.json`：优先用软件对应的 Codex Key（`GPT`），这次请求失败再自动改用 `图片模型`（别名 `生图分组`）。不要向用户要环境变量，也不要去翻 CLI 配置。你可以改这个技能的说明和脚本；工具只更新还是官方原样的文件，改过的不会覆盖。
 
-如果当前工具里有 `xingmang-image` 的 `generate_image`（星芒画图工具），画图和改图都优先用它：它不受命令沙箱拦截，图直接显示在对话里，参数和下面的脚本一样（`size`、`aspect`、`quality`、`background`、`images`、`model`）。只有没有这个工具、或者要把图存成指定文件时才跑下面的脚本。
+如果当前工具里有 `xingmang-image` 的 `generate_image`（画图工具），画图和改图都优先用它：它不受命令沙箱拦截，图直接显示在对话里，参数和下面的脚本一样（`size`、`aspect`、`quality`、`background`、`images`、`model`）。只有没有这个工具、或者要把图存成指定文件时才跑下面的脚本。
 
 **禁止**读取、粘贴或回显 `config.json`。脚本自己读配置，stdout 只打印输出图片路径。
 
-没有 `config.json` 或里面没有 Key：提醒用户打开星芒AI管理工具并登录。工具会写入 Codex Key，并在账号有图片模型分组时补上那把 Key。
+没有 `config.json` 或里面没有 Key：提醒用户打开管理工具并登录当前账号。工具会写入 Codex Key，并在账号有图片模型分组时补上那把 Key。
 
 ## 怎么出图
 
 ```bash
-node "<本技能目录>/scripts/generate.mjs" --prompt "一只橙色猫咪坐在窗台上，电影感光线" --out "./xingmang-cat.png"
+node "<本技能目录>/scripts/generate.mjs" --prompt "一只橙色猫咪坐在窗台上，电影感光线" --out "./cat.png"
 ```
 
 常用参数：
@@ -47,7 +47,7 @@ node "<本技能目录>/scripts/generate.mjs" --image "./ref.png" --image "./sty
 
 ## 模型怎么选
 
-一般不要传 `--model`：脚本和画图工具会用星芒按当前账号挑好的 OpenAI 图片模型（按 `gpt-image-2.6-flare` → `gpt-image-2.5-flare` → `gpt-image-2` 的顺序，账号有哪个用哪个）。这次没画出来会按账号里有的往下换，换了会在 stderr 说一句。
+一般不要传 `--model`：脚本和画图工具会用登录时按当前账号挑好的 OpenAI 图片模型（按 `gpt-image-2.6-flare` → `gpt-image-2.5-flare` → `gpt-image-2` 的顺序，账号有哪个用哪个）。这次没画出来会按账号里有的往下换，换了会在 stderr 说一句。
 
 用户点名时才用别的：
 
