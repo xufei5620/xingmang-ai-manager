@@ -84,7 +84,18 @@ describe('balance alerts', () => {
     await h.see(100)
     await h.see(90)
     expect(h.readBaseline).toHaveBeenCalledOnce()
-    expect(h.notify).toHaveBeenCalledWith('spend', `spend:7:${h.now()}`, { cents: 1000, multiple: null })
+    expect(h.notify).toHaveBeenCalledWith('spend', `spend:solov-7:${h.now()}`, { cents: 1000, multiple: null })
+  })
+
+  it('keeps the six hour spending quiet period apart for the same user number on the two sites', async () => {
+    const h = alertsFixture()
+    await h.see(100)
+    await h.see(90)
+    // 星芒账号和历史账号的用户编号碰巧一样：一边刚说过，不能把另一边也压下去。
+    await h.see(100, { scope: 'solov-api:7' })
+    await h.see(90, { scope: 'solov-api:7' })
+    expect(h.notify.mock.calls.filter(([kind]) => kind === 'spend').map(([, eventKey]) => eventKey))
+      .toEqual([`spend:solov-7:${h.now() - 2 * minute}`, `spend:solov-api-7:${h.now()}`])
   })
 
   it('never reads usage for an account that cannot', async () => {
@@ -287,6 +298,32 @@ describe('spend spike record store', () => {
     await createSpendSpikeRecordStore(directory, () => at).rememberNotifiedAt('7', at)
     const later = createSpendSpikeRecordStore(directory, () => at + spendSpikeQuietPeriod)
     expect(await later.readNotifiedAt('7')).toBeNull()
+  })
+
+  it('does not repeat a spending notice told under the bare user number before the upgrade', async () => {
+    const directory = tempDirectory()
+    const told = 1_000_000_000
+    // 旧版写下的样子：只有用户编号。
+    fs.writeFileSync(path.join(directory, 'spend-spike-notified.json'), `${JSON.stringify({ 7: told })}\n`)
+    let now = told + minute
+    const notify = vi.fn()
+    const alerts = createBalanceAlerts({
+      notify,
+      readBaseline: async () => ({ hourQuota: dollars(10), weekQuota: dollars(10) }),
+      ...createSpendSpikeRecordStore(directory, () => now),
+    })
+    async function see(balance: number) {
+      now += minute
+      await alerts.observe({ scope: 'solov:7', userId: 7, quota: dollars(balance), quotaPerUnit: unit, at: now, supportsUsage: true, subscribed: false })
+    }
+    await see(100)
+    await see(90)
+    expect(notify).not.toHaveBeenCalled()
+    now = told + spendSpikeQuietPeriod
+    await see(100)
+    await see(90)
+    expect(notify).toHaveBeenCalledOnce()
+    expect(JSON.parse(fs.readFileSync(path.join(directory, 'spend-spike-notified.json'), 'utf8'))).toEqual({ 'solov:7': now })
   })
 
   it('treats an unreadable record as no record', async () => {

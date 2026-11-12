@@ -93,8 +93,13 @@ export function pruneSpendSpikeRecord(record: unknown, at: number): Record<strin
 export interface SpendSpikeObservation {
   /** 余额 store 的 scope：换账号、换站点时样本全部作废。 */
   scope: string
-  /** 同一个账号 6 小时内最多提醒一次，按它记。 */
+  /** 同一个账号 6 小时内最多提醒一次，按它记。要带上站点：两个站的用户编号会撞上。 */
   account: string
+  /**
+   * 旧版只按用户编号记的那个键。这个账号自己还没有记录时退回看它：升级前刚提醒过的，不因为换了键
+   * 再说一遍；旧记录过了 6 小时自然清掉，之后只看新键。缺省 = 不看。
+   */
+  legacyAccount?: string
   quota: number
   quotaPerUnit: number
   at: number
@@ -117,11 +122,20 @@ export function createSpendSpikeWatch(options: {
   let checkedAt: number | null = null
   let checking = false
 
+  // 这个账号上次提醒的时间；自己还没有记录时看升级前按用户编号记的那条。
+  function lastNotifiedAt(observation: SpendSpikeObservation): number | null | Promise<number | null> {
+    const own = readNotifiedAt(observation.account)
+    const legacy = observation.legacyAccount
+    if (legacy === undefined) return own
+    return own instanceof Promise ? own.then((last) => last ?? readNotifiedAt(legacy)) : own ?? readNotifiedAt(legacy)
+  }
+
   // 记录读得出来就当场判断，不多等一拍：同步的记录（测试、已经读进内存的）照旧当场去核账。
-  function quiet(account: string, at: number): boolean | Promise<boolean> {
+  function quiet(observation: SpendSpikeObservation): boolean | Promise<boolean> {
+    const { at } = observation
     const judge = (last: number | null) => last !== null && at - last >= 0 && at - last < spendSpikeQuietPeriod
     let last: number | null | Promise<number | null>
-    try { last = readNotifiedAt(account) } catch { return false }
+    try { last = lastNotifiedAt(observation) } catch { return false }
     return last instanceof Promise ? last.then(judge, () => false) : judge(last)
   }
 
@@ -140,7 +154,7 @@ export function createSpendSpikeWatch(options: {
       checking = true
       const requestScope = scope
       try {
-        const silenced = quiet(observation.account, observation.at)
+        const silenced = quiet(observation)
         if (typeof silenced === 'boolean' ? silenced : await silenced) return
         const baseline = await options.readBaseline().catch(() => null)
         if (requestScope !== scope) return
