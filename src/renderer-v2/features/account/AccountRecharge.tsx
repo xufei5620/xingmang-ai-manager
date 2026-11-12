@@ -1062,7 +1062,20 @@ export function AccountOrders({
 }) {
   const operation = useOperation()
   const [page, setPage] = useState(1)
-  const [keyword, setKeyword] = useState(paymentReturn?.order ?? '')
+  // 框里的字和拿去查的词分开（F4）：去掉首尾空白再查，只打了空格（输入法下按空格是全角空格）
+  // 就当没填，不再把整张列表变成「没读出来」；停手 300 毫秒才查，手打一个二十多位的订单号
+  // 不再连着查二十多次。跟密钥页的搜索一个做法（#495）；清空马上查，付款回跳带来的订单号也马上查。
+  const [query, setQuery] = useState(paymentReturn?.order ?? '')
+  const [keyword, setKeyword] = useState((paymentReturn?.order ?? '').trim())
+  useEffect(() => {
+    const next = query.trim()
+    if (next === keyword) return
+    const timer = window.setTimeout(() => {
+      setKeyword(next)
+      setPage(1)
+    }, next ? 300 : 0)
+    return () => window.clearTimeout(timer)
+  }, [query, keyword])
   const load = useCallback(
     () => api.getAccountTopupOrders({ page, pageSize: 20, keyword }),
     [api, page, keyword],
@@ -1082,7 +1095,8 @@ export function AccountOrders({
   }, [openTradeNo])
   useEffect(() => {
     if (!paymentReturn) return
-    const order = paymentReturn.order ?? ''
+    const order = (paymentReturn.order ?? '').trim()
+    setQuery(order)
     if (page === 1 && keyword === order) void resource.reload()
     else {
       setKeyword(order)
@@ -1111,11 +1125,8 @@ export function AccountOrders({
           </Button>
         )}
         <SearchInput
-          value={keyword}
-          onChange={(value) => {
-            setKeyword(value)
-            setPage(1)
-          }}
+          value={query}
+          onChange={setQuery}
           placeholder="搜索订单号"
         />
       </div>

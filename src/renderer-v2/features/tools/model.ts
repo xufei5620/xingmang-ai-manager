@@ -607,7 +607,8 @@ export function subscriptionWarning(subscription: UsableSubscription, walletDoll
   if (!subscription.subscriptionOnly && (walletDollars === null || walletDollars >= 5)) return null
   const after = subscription.subscriptionOnly ? '工具就用不了了，续费后可继续使用' : '会从余额扣费'
   if (subscription.expiringSoon) return `订阅 ${subscriptionEndDate(subscription.endsAt)}到期，到期后${after}。`
-  if (subscription.lowRemaining && subscription.remainingUsd !== null) return `订阅只剩 ${dollars(subscription.remainingUsd)}，用完后${after}。`
+  // 会按期恢复的额度剩得少只是这一期快用完，到点自己回来，不是「快用完了要续费」（F2）。
+  if (subscription.lowRemaining && subscription.remainingUsd !== null && !subscription.resetsAt) return `订阅只剩 ${dollars(subscription.remainingUsd)}，用完后${after}。`
   return null
 }
 

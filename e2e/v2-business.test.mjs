@@ -484,6 +484,36 @@ test('the invoice button says the approved line when the invoice window does not
   }
 })
 
+test('order search drops surrounding spaces and asks the server once after typing stops', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    const orders = page.getByTestId('account-orders-section')
+    await orders.getByText('TEST-ORDER').waitFor()
+    const queries = async () => (await calls(page)).filter((call) => call.name === 'query-orders').map((call) => call.args)
+    const before = (await queries()).length
+    const search = orders.getByRole('searchbox', { name: '搜索订单号', exact: true })
+    // 中文输入法下按空格出的是全角空格：只有空白当没填，不拿去查（F4）。
+    await search.fill('　 ')
+    // 一个字一个字地敲：停手以后只按去掉首尾空白的词查一次，不是每个字查一次。
+    await search.pressSequentially('XM-42 ')
+    await page.waitForFunction(
+      () => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-orders' && call.args.keyword === 'XM-42'),
+    )
+    assert.deepEqual((await queries()).slice(before), [{ page: 1, pageSize: 20, keyword: 'XM-42' }])
+    assert.equal(await search.inputValue(), '　 XM-42 ')
+    // 清空马上回到全部订单。
+    await search.fill('')
+    await page.waitForFunction(
+      (count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'query-orders').length > count,
+      before + 1,
+    )
+    assert.deepEqual((await queries()).at(-1), { page: 1, pageSize: 20, keyword: '' })
+  } finally {
+    await page.close()
+  }
+})
+
 test('the account tabs move with the left and right arrow keys and open on Enter', async () => {
   const page = await fixture('page=account')
   try {
@@ -4115,6 +4145,23 @@ test('restoring the default appearance keeps large text on where a fresh install
     await page.getByTestId('settings-restore-appearance').click()
     await waitForToast(page, '已恢复默认外观')
     assert.deepEqual((await callsNamed(page, 'settings')).at(-1).args, { version: 2, uiScale: 'auto', largeText: true, reducedMotion: false })
+  } finally {
+    await page.close()
+  }
+})
+
+// X-8：系统界面设置读不出来（DM-3）时，缩放、大字、减少动画照样恢复，只跳过主题和高对比度。
+test('restoring the default appearance still resets scale, large text and motion when the system settings cannot be read', async () => {
+  const page = await fixture('page=settings&system=1&fail=platform-broken')
+  try {
+    await page.getByText('系统设置尚未准备好。', { exact: true }).waitFor()
+    await page.getByRole('switch', { name: '减少动画', exact: true }).click()
+    await page.getByTestId('settings-restore-appearance').click()
+    await waitForToast(page, '已恢复默认外观')
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.filter((call) => call.name === 'settings').at(-1).args, { version: 2, uiScale: 'auto', largeText: false, reducedMotion: false })
+    assert.equal(recorded.some((call) => call.name === 'platform-theme' || call.name === 'platform-contrast'), false)
+    assert.equal(await page.getByRole('switch', { name: '减少动画', exact: true }).getAttribute('aria-checked'), 'false')
   } finally {
     await page.close()
   }
