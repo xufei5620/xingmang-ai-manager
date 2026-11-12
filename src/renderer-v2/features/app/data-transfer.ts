@@ -1,4 +1,4 @@
-import type { AppSettingsV2Update, DataTransferExportResult } from '../../../../electron/ipc-contract'
+import type { AppSettingsV2Update, DataTransferExportResult, DataTransferImportPreview } from '../../../../electron/ipc-contract'
 import { MAX_CONVERSATIONS } from '../chat/storage'
 
 // 设置页「搬到新电脑」的说法。放在这里是为了能单测，页面只管调用。
@@ -17,6 +17,18 @@ export function settingsPatchFrom(...updates: AppSettingsV2Update[]): Omit<AppSe
   const patch: Omit<AppSettingsV2Update, 'version'> = {}
   for (const { version: _version, ...rest } of updates) Object.assign(patch, rest)
   return Object.keys(patch).length ? patch : null
+}
+
+/**
+ * 这次要写的「匿名使用统计」（X-3），没有要改的返回 undefined。overwrite = 询问框里点了「换成文件里的」；
+ * 点「保留这台电脑的」时这台关过的照旧关着。
+ */
+export function anonymousUsageFrom(
+  preview: Pick<DataTransferImportPreview, 'anonymousUsage' | 'conflictingAnonymousUsage'>,
+  overwrite: boolean,
+): boolean | undefined {
+  if (overwrite && preview.conflictingAnonymousUsage !== undefined) return preview.conflictingAnonymousUsage
+  return preview.anonymousUsage
 }
 
 export interface DataTransferImportOutcome {

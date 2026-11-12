@@ -119,6 +119,9 @@ export interface IpcRegistrationOptions {
   // 「搬到新电脑」和「导出这段对话」的保存框默认落在「下载」（D16）；main.ts 传 app.getPath('downloads')。
   // 省略 = 主目录下的 Downloads。
   downloadsDirectory?: () => string
+  // 「搬到新电脑」带上的「匿名使用统计」（X-3）：这台电脑上存着的样子，没碰过 = 开；系统界面设置读不出来
+  // 给 null。省略 = 导出不带、导入不碰这一项（测试与旧调用方）。
+  readAnonymousUsagePreference?: () => boolean | null
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore

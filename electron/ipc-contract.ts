@@ -753,6 +753,14 @@ export interface DataTransferImportPreview {
   conflictingSettings: AppSettingsUpdate
   /** conflictingSettings 对应的设置名，给询问框用。 */
   conflictLabels: string[]
+  /**
+   * 文件里的「匿名使用统计」（X-3），这台电脑上还是新装的「开」、可以直接换的。它不在 settings.json，
+   * 设置页走 setPrivacyPreference 写，不进 settings:save。旧文件没有这一项、和这台一样、这台的系统界面设置
+   * 读不出来时都不带。
+   */
+  anonymousUsage?: boolean
+  /** 同上，这台电脑上关过、文件里是开的：和 conflictingSettings 一起先问，设置名已经在 conflictLabels 里。 */
+  conflictingAnonymousUsage?: boolean
 }
 
 /**
