@@ -63,6 +63,13 @@ describe('account key quota conversion', () => {
     expect(() => parseManagedCliKeyLimitAmount('abc')).toThrow('大于 0')
   })
 
+  it('refuses a half-typed number that the field hands over as blank instead of lifting the limit', () => {
+    // 数字框里打成「-」「1e」时值是空的，只有 validity.badInput 说明框里其实有字（表单 F10-b）。
+    expect(() => parseManagedCliKeyLimitAmount('', true)).toThrow('请填写大于 0 的上限金额，留空表示不限额。')
+    expect(() => parseManagedCliKeyLimitAmount('  ', true)).toThrow('大于 0')
+    expect(parseManagedCliKeyLimitAmount('', false)).toBeNull()
+  })
+
   it('writes an expiry back as the server sentinel or whole seconds, and refuses an unreadable one', () => {
     expect(accountKeyExpiredTime(null)).toBe(-1)
     expect(accountKeyExpiredTime('')).toBe(-1)

@@ -943,6 +943,9 @@ const apiMethods = {
       keys: empty ? [] : managedKeys ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
     }
   },
+  updateAccountKey: async (input: Parameters<V2Bridge['updateAccountKey']>[0]) => {
+    record('updateAccountKey', input)
+  },
   revokeAccountKey: async (id: number) => {
     record('revokeAccountKey', id)
     if (query.has('revokeHold')) await new Promise<void>((resolve) => { releaseHeldRevoke = resolve })
