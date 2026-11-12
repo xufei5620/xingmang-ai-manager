@@ -49,6 +49,7 @@
 - `redaction-patterns.ts` — **全仓唯一的密钥样式表**（Bearer、sk-、AIza、xai-、GitHub/GitLab 令牌、URL userinfo、带凭据的命令行参数与查询参数），日志、诊断、崩溃、反馈的脱敏都用它；故意零 import（startup-log、crash-report 记录别的模块失败时也要能用），渲染层也值引用（I13、I6）
 - `request-diagnostics.ts` — 给一次账号请求的回应 / 错误挂上走的线路、HTTP 状态码、new-api 请求编号和 cf-ray，`ipc.ts` 记日志时取出来，给客服和服务端查单；挂在 WeakMap 上不改错误对象的样子，编号按白名单正则过滤（回应头外部可控），不带地址、令牌、Key（I13）
 - `diagnostic-fixes.ts` — 「检查」页「点这里就好」的三个修复：把 Codex 文件夹里的 `.env` 改名留在原处、把主目录里星芒生成且没动过的 AGENTS.md 挪开、用 PowerShell 清掉用户级的工具环境变量覆盖（名单来自 `diagnostics-override-checks.ts`，整台电脑那份只报不改）；改名前过 I8 检查
+- `feedback-message.ts` — 「复制给客服」那一段的格式和三种留言类型（J1）：主进程 `ipc/handlers/runtime-logs.ts` 拼好、现取报告、自己写剪贴板（页面写剪贴板要窗口在前台，客户等报告时切去微信就被拒）；留言框那一排选项也读这一份，渲染层值引用（I6），只 import 打码表
 - `feedback-environment.ts` — 反馈报告里「工具与配置」那段的纯函数：每个 CLI、外部客户端、运行时装没装、什么版本、怎么装的、配置是否指向当前账号、走哪条线路；只读已有快照、不触发扫描，不写 Key、地址和站点名（I13）
 - `feedback-self-check.ts` — 反馈报告里「最近一次自检」那段的纯函数：只读内存里上一次「检查」页结果和连接自检，不重跑、不发请求，刻意不带 endpoint / siteId（I13）；三个状态词与检查页一致
 - `broken-config-advice.ts` — 读不懂原配置、星芒没敢改时给客户的那句（哪里坏了、星芒没改、去配置窗口「高级」点「重置为初始状态」，会先备份）；`config-files.ts` 与 `codex-extensions.ts` 用

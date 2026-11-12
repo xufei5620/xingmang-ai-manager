@@ -812,12 +812,13 @@ const methods = {
     config.providers[input.provider] = { ...config.providers[input.provider], configurationOwnership: 'account', model: input.model, apiKeyPreview: input.keyId === 201 ? 'sk-se••••9012' : 'sk-ot••••1234' }
     return { backups: [], files: [] }
   },
-  switchToOfficialAccount: async (provider: ProviderId, mode?: 'merge' | 'reset') => {
+  switchToOfficialAccount: async (provider: ProviderId, mode?: 'merge' | 'reset' | 'repair') => {
     // 真实的 Codex 切回官方后 config.toml 不再指向中转，actualBaseUrl 为空。
+    const rebuilt = mode === 'reset' || mode === 'repair'
     config.providers[provider] = { ...config.providers[provider], hasApiKey: false,
       ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const, actualBaseUrl: '', matchesRelay: false } : {}),
-      ...(mode === 'reset' ? { configBroken: false, codexAuthBroken: false } : {}) }
-    return { backups: [], files: [], ...(mode === 'reset' ? {} : commandConfirmationQuestion(provider)) }
+      ...(rebuilt ? { configBroken: false, codexAuthBroken: false } : {}) }
+    return { backups: [], files: [], ...(rebuilt ? {} : commandConfirmationQuestion(provider)) }
   },
   answerClaudeCommandConfirmation: async (choice: 'ask' | 'keep') => {
     commandConfirmationAnswered = true
@@ -900,7 +901,7 @@ const methods = {
         continue
       }
       keyRewritten.add(provider)
-      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}), ...(input.mode === 'reset' ? { configBroken: false, codexAuthBroken: false } : {}) }
+      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}), ...(input.mode === 'reset' || input.mode === 'repair' ? { configBroken: false, codexAuthBroken: false } : {}) }
       if (query.has('autoFallback') && provider === 'codex') {
         config.providers[provider].model = 'gpt-5.6-sol'
         config.providers[provider].apiKeyPreview = 'sk-se••••9012'

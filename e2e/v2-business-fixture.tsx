@@ -11,7 +11,7 @@ import type {
   PlatformSystemState,
   XingmangPlatformApi,
 } from '../electron/platform/contract'
-import type { AccountPaymentWindowTerminalEvent, ProviderId } from '../electron/ipc-contract'
+import type { AccountPaymentWindowTerminalEvent, FeedbackMessageCopyRequest, ProviderId } from '../electron/ipc-contract'
 import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
 import { KeyRewriteSkippedError } from '../src/renderer-v2/features/tools/account-bootstrap'
@@ -1518,8 +1518,13 @@ const apiMethods = {
       selfChecked: !query.has('selfCheckMissing'),
     }
   },
-  copyFeedbackReport: async (id?: string) => {
-    record('copy-report', id)
+  copyFeedbackReport: async (target?: string | FeedbackMessageCopyRequest) => {
+    // 「复制给客服」交的是留言（J1）：拼好、现取报告、写剪贴板都在主进程，夹具只记下页面交过来的那几样。
+    if (typeof target === 'object') {
+      record('copy-feedback-message', target)
+      return fail === 'feedbackReport' && target.attachReport ? { entries: 0, reportMissing: true as const } : { entries: 1 }
+    }
+    record('copy-report', target)
     return { entries: 1 }
   },
   exportFeedbackReport: async (id?: string) => {

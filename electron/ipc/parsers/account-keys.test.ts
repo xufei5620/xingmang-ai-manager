@@ -95,6 +95,14 @@ describe('parseManagedCliConfigurationInput', () => {
       .toThrow('CLI 配置意图无效')
   })
 
+  // 首页「修好它」交 repair（0.2.24 深查 X-1）；别的照旧报错。
+  it('accepts the repair mode next to merge and reset', () => {
+    for (const mode of ['merge', 'reset', 'repair'] as const) {
+      expect(parseManagedCliConfigurationInput({ providers: ['codex'], mode })).toEqual({ providers: ['codex'], preferredModels: {}, mode })
+    }
+    expect(() => parseManagedCliConfigurationInput({ providers: ['codex'], mode: 'erase-all' })).toThrow('未知的配置写入模式')
+  })
+
   it('rejects duplicate targets and an explicit rewrite of several tools at once', () => {
     expect(() => parseManagedCliConfigurationInput({ providers: ['codex', 'codex'] })).toThrow('CLI 配置目标不能重复')
     expect(() => parseManagedCliConfigurationInput({ providers: ['codex', 'claude'], intent: 'explicit' }))

@@ -16,6 +16,7 @@ import {
   runCommand,
   runWithTrustedWindowsProcessEnvironment,
   sanitizeUpstreamDetail,
+  stopLiveCommandGroupsAtExit,
   trustedCommandEnvironment,
   windowsSystemExecutable,
 } from './command-runner'
@@ -1042,5 +1043,259 @@ describe('default command failure wording', () => {
     const messages = [...body.matchAll(/return `([^`]*)`/g)].map((match) => match[1])
     expect(messages).toHaveLength(7)
     for (const message of messages) expect(message).toMatch(/[一-龥]/)
+  })
+})
+
+/**
+ * True once pid no longer runs. A killed grandchild is reparented, and a
+ * zombie keeps answering signal 0 until something reaps it; a container's
+ * PID 1 may never do that, so Linux also reads the state out of /proc.
+ */
+function processGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH'
+  }
+  if (process.platform !== 'linux') return false
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z')
+  } catch {
+    return true
+  }
+}
+
+async function waitUntilGone(pid: number, withinMs: number): Promise<boolean> {
+  const deadline = Date.now() + withinMs
+  while (Date.now() < deadline) {
+    if (processGone(pid)) return true
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  return processGone(pid)
+}
+
+function forceKill(pid: number | null): void {
+  if (pid === null) return
+  try {
+    process.kill(pid, 'SIGKILL')
+  } catch {
+    // Already gone, which is what the test wanted.
+  }
+}
+
+/**
+ * A command that starts a long-lived grandchild and prints the grandchild's
+ * pid once it is running, the shape of `claude mcp list` starting an MCP
+ * server or a marketplace add starting git clone. The grandchild's own
+ * output goes to the command, never to the runner's pipes, so the runner can
+ * settle while it is still alive.
+ */
+function commandWithGrandchild(grandchildScript: string) {
+  return nodeCommand([
+    "const { spawn } = require('node:child_process')",
+    `const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildScript)}], { stdio: ['ignore', 'pipe', 'ignore'] })`,
+    "grandchild.stdout.once('data', () => process.stdout.write(String(grandchild.pid) + '\\n'))",
+    'setInterval(() => {}, 1_000)',
+  ].join(';'))
+}
+
+function grandchildPidFrom(onPid: (pid: number) => void) {
+  let seen = ''
+  return ({ stream, text }: { stream: 'stdout' | 'stderr', text: string }) => {
+    if (stream !== 'stdout') return
+    seen += text
+    const match = /^(\d+)\n/.exec(seen)
+    if (match) onPid(Number(match[1]))
+  }
+}
+
+describe('stopping a command on macOS and Linux (C-5)', () => {
+  it.runIf(process.platform !== 'win32')('takes down what the command started when it is cancelled', async () => {
+    const controller = new AbortController()
+    let grandchild: number | null = null
+    const execution = runCommand(commandWithGrandchild("process.stdout.write('ready'); setInterval(() => {}, 1_000)"), {
+      signal: controller.signal,
+      timeoutMs: 20_000,
+      killGraceMs: 200,
+      onOutput: grandchildPidFrom((pid) => {
+        grandchild ??= pid
+        controller.abort()
+      }),
+    })
+
+    try {
+      await expect(execution).rejects.toMatchObject({ code: 'ABORTED' })
+      expect(grandchild).not.toBeNull()
+      expect(await waitUntilGone(grandchild ?? 0, 3_000)).toBe(true)
+    } finally {
+      forceKill(grandchild)
+    }
+  }, 15_000)
+
+  it.runIf(process.platform !== 'win32')('still kills a grandchild that ignores SIGTERM after the command itself has settled', async () => {
+    // The command exits on SIGTERM and its pipes close at once, so it settles
+    // well before the grace period ends; the SIGKILL for the group must not
+    // be cancelled along with the command's own timers.
+    const controller = new AbortController()
+    let grandchild: number | null = null
+    const execution = runCommand(commandWithGrandchild([
+      "process.on('SIGTERM', () => {})",
+      "process.stdout.write('ready')",
+      'setInterval(() => {}, 1_000)',
+    ].join(';')), {
+      signal: controller.signal,
+      timeoutMs: 20_000,
+      killGraceMs: 200,
+      onOutput: grandchildPidFrom((pid) => {
+        grandchild ??= pid
+        controller.abort()
+      }),
+    })
+
+    try {
+      await expect(execution).rejects.toMatchObject({ code: 'ABORTED' })
+      expect(grandchild).not.toBeNull()
+      expect(await waitUntilGone(grandchild ?? 0, 3_000)).toBe(true)
+    } finally {
+      forceKill(grandchild)
+    }
+  }, 15_000)
+
+  it.runIf(process.platform !== 'win32')('takes down a running command and what it started when the app exits', async () => {
+    let grandchild: number | null = null
+    let reportPid: (pid: number) => void = () => {}
+    const started = new Promise<number>((resolve) => {
+      reportPid = resolve
+    })
+    const execution = runCommand(commandWithGrandchild("process.stdout.write('ready'); setInterval(() => {}, 1_000)"), {
+      timeoutMs: 20_000,
+      onOutput: grandchildPidFrom((pid) => reportPid(pid)),
+    })
+
+    try {
+      grandchild = await started
+      stopLiveCommandGroupsAtExit()
+      await expect(execution).rejects.toMatchObject({ code: 'EXIT_NON_ZERO', signal: 'SIGTERM' })
+      expect(await waitUntilGone(grandchild, 3_000)).toBe(true)
+    } finally {
+      forceKill(grandchild)
+    }
+  }, 15_000)
+
+  it.each(['linux', 'darwin'] as const)('signals the whole process group on %s, then SIGKILLs it after the grace period', async (platform) => {
+    const primary = createFakeChild(4242)
+    const spawnOptions: Array<Record<string, unknown>> = []
+    const groupSignals: Array<[number, NodeJS.Signals]> = []
+    const spawnProcess = ((_file: string, _args: string[], options: Record<string, unknown>) => {
+      spawnOptions.push(options)
+      return primary
+    }) as unknown as typeof import('node:child_process').spawn
+    let groupKilled: () => void = () => {}
+    const sigkill = new Promise<void>((resolve) => {
+      groupKilled = resolve
+    })
+
+    const execution = runCommand(nodeCommand('setInterval(() => {}, 1_000)'), {
+      timeoutMs: 10,
+      killGraceMs: 20,
+    }, {
+      platform,
+      spawnProcess,
+      signalProcessGroup: (pid, signal) => {
+        groupSignals.push([pid, signal])
+        if (signal === 'SIGTERM') {
+          queueMicrotask(() => {
+            primary.emit('exit', null, 'SIGTERM')
+            primary.emit('close', null, 'SIGTERM')
+          })
+        } else {
+          groupKilled()
+        }
+      },
+    })
+
+    await expect(execution).rejects.toMatchObject({ code: 'TIMED_OUT' })
+    await sigkill
+    expect(spawnOptions[0]).toMatchObject({ detached: true, shell: false })
+    expect(groupSignals).toEqual([[4242, 'SIGTERM'], [4242, 'SIGKILL']])
+    expect(primary.killSignals).toEqual([])
+  })
+
+  it('falls back to the direct child when the process group cannot be signalled', async () => {
+    const primary = createFakeChild(4343)
+    const spawnProcess = (() => primary) as unknown as typeof import('node:child_process').spawn
+
+    const execution = runCommand(nodeCommand('setInterval(() => {}, 1_000)'), {
+      timeoutMs: 10,
+      killGraceMs: 0,
+    }, {
+      platform: 'linux',
+      spawnProcess,
+      signalProcessGroup: () => {
+        throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+      },
+    })
+
+    await expect(execution).rejects.toMatchObject({ code: 'TIMED_OUT' })
+    expect(primary.killSignals).toEqual(['SIGTERM'])
+  })
+
+  it('never turns a substituted child into a real group signal', async () => {
+    // A fake child's pid may belong to a real process group on the test
+    // machine; without an explicit group seam the old direct kill is kept.
+    const primary = createFakeChild(4444)
+    const spawnOptions: Array<Record<string, unknown>> = []
+    const spawnProcess = ((_file: string, _args: string[], options: Record<string, unknown>) => {
+      spawnOptions.push(options)
+      return primary
+    }) as unknown as typeof import('node:child_process').spawn
+
+    const execution = runCommand(nodeCommand('setInterval(() => {}, 1_000)'), {
+      timeoutMs: 10,
+      killGraceMs: 0,
+    }, {
+      platform: 'linux',
+      spawnProcess,
+    })
+
+    await expect(execution).rejects.toMatchObject({ code: 'TIMED_OUT' })
+    expect(spawnOptions[0]).not.toHaveProperty('detached')
+    expect(primary.killSignals).toEqual(['SIGTERM'])
+  })
+
+  it('leaves Windows on taskkill without a separate process group', async () => {
+    const primary = createFakeChild(4545)
+    const killer = createFakeChild(4646)
+    const spawned: Array<{ file: string, options: Record<string, unknown> }> = []
+    const groupSignals: NodeJS.Signals[] = []
+    const spawnProcess = ((file: string, _args: string[], options: Record<string, unknown>) => {
+      spawned.push({ file, options })
+      if (spawned.length === 1) return primary
+      queueMicrotask(() => {
+        killer.emit('exit', 0, null)
+        primary.emit('exit', 1, null)
+        primary.emit('close', 1, null)
+      })
+      return killer
+    }) as unknown as typeof import('node:child_process').spawn
+
+    const execution = runCommand(nodeCommand('setInterval(() => {}, 1_000)'), {
+      timeoutMs: 10,
+      killGraceMs: 20,
+    }, {
+      platform: 'win32',
+      spawnProcess,
+      resolveWindowsSystemExecutable: () => 'D:\\Windows\\System32\\taskkill.exe',
+      signalProcessGroup: (_pid, signal) => {
+        groupSignals.push(signal)
+      },
+    })
+
+    await expect(execution).rejects.toMatchObject({ code: 'TIMED_OUT' })
+    expect(spawned[0].options).not.toHaveProperty('detached')
+    expect(spawned[1].file).toBe('D:\\Windows\\System32\\taskkill.exe')
+    expect(groupSignals).toEqual([])
+    expect(primary.killSignals).toEqual([])
   })
 })

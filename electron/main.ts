@@ -14,6 +14,7 @@ import {
   session,
   shell,
   webContents,
+  type BaseWindow,
   type WebContents,
 } from 'electron'
 import { AnnouncementReadStore } from './announcement-read-store'
@@ -162,7 +163,7 @@ import { createCliHookEventMonitor } from './cli-hook-events'
 import { createCliKeepAwake } from './cli-keep-awake'
 import { createInstallKeepAwake } from './install-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
-import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type IpcEventPayload, type RendererNavigationTarget, type SettingsSaveIssue, type UnexpectedExitNotice, type XingmangEventContract } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type IpcEventPayload, type RendererNavigationTarget, type SettingsSaveIssue, type UiScaleShortcut, type UnexpectedExitNotice, type XingmangEventContract } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -917,6 +918,7 @@ if (!hasSingleInstanceLock) {
     let linuxSystemLabel: string | null = null
     // Mac 菜单要在建主窗口之前设上，「设置…」（⌘,）点下去时才去找主窗口；主窗口建好之前点了不做事。
     let navigateFromAppMenu: ((target: RendererNavigationTarget) => void) | null = null
+    let uiScaleFromAppMenu: ((shortcut: UiScaleShortcut, focusedWindow: BaseWindow | undefined) => void) | null = null
     if (process.platform === 'win32') {
       app.setAppUserModelId(windowsAppUserModelId)
       Menu.setApplicationMenu(null)
@@ -931,7 +933,11 @@ if (!hasSingleInstanceLock) {
     } else if (process.platform === 'darwin') {
       // BrowserWindow.icon does not control the Dock, especially under electron . in development.
       app.dock?.setIcon(path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'))
-      const template = buildMacApplicationMenuTemplate('星芒AI管理工具', (target) => navigateFromAppMenu?.(target))
+      const template = buildMacApplicationMenuTemplate(
+        '星芒AI管理工具',
+        (target) => navigateFromAppMenu?.(target),
+        (shortcut, focusedWindow) => uiScaleFromAppMenu?.(shortcut, focusedWindow),
+      )
       Menu.setApplicationMenu(Menu.buildFromTemplate(template))
     } else {
       // Linux 窗口和 Windows 一样自己画标题栏；Electron 默认那套英文 File / Edit / View
@@ -2860,6 +2866,10 @@ if (!hasSingleInstanceLock) {
     // 以前发给在前面的那个窗口：画布、付款窗口在前时发进了它们，没人接；主窗口缩在托盘里时发到了却不出来（#1210）。
     // 跟托盘跳页一样，先把主窗口叫出来，再只发给它。
     navigateFromAppMenu = (target) => { showMainWindow(); deliverToMainWindow('onNavigate', target) }
+    // 「显示」菜单的实际大小、放大、缩小（深查 TR-3）：主窗口在前时交给界面，跟按键盘一样改「界面缩放」设置；
+    // 画布、付款、开票这些窗口在前时不做事，跟 Windows 上没有这个菜单时一样，画布不会整个跟着变大变小。
+    // 不叫出主窗口、界面没开着也不存着补发：缩放只对眼前这一下有意义。
+    uiScaleFromAppMenu = (shortcut, focusedWindow) => { if (focusedWindow === mainWindow) sendToMainWindow('onUiScaleShortcut', shortcut) }
     // 退出、重启安装更新都会把正在装的工具打断，两处问同一句（已知31）。true = 点了「仍然退出」。
     const confirmInterruptingInstall = async (task: InterruptibleInstallTask): Promise<boolean> => {
       // 托盘「退出」「重启并安装」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。

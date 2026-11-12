@@ -5074,6 +5074,37 @@ test('large text switch enlarges the small print and Ctrl plus / minus / 0 step 
   } finally { await page.close() }
 })
 
+// 深查 TR-3：Mac「显示」菜单的实际大小、放大、缩小原来用的是 Chromium 自带缩放，不存、设置页不变。
+// 现在主窗口在前时主进程发 onUiScaleShortcut，界面跟 ⌘ 加减 0 走同一条路。
+test('the macOS View menu zoom commands step the saved interface scale the same way the shortcuts do', async () => {
+  const page = await open('os=mac')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    await page.getByTestId('nav-settings').click()
+    const settings = page.getByTestId('page-settings')
+    await settings.waitFor()
+    await settings.getByRole('button', { name: '自动', exact: true, pressed: true }).waitFor()
+    function saves() { return page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0])) }
+
+    await page.evaluate(() => window.v2Test.emit('onUiScaleShortcut', 'larger'))
+    await waitForToast(page, '界面缩放 110%，按 ⌘ 0 恢复自动')
+    await expect.poll(async () => (await saves()).at(-1)).toEqual({ version: 2, uiScale: '110' })
+    await settings.getByRole('button', { name: '110%', pressed: true }).waitFor()
+    await page.evaluate(() => window.v2Test.emit('onUiScaleShortcut', 'larger'))
+    await waitForToast(page, '已经是最大的 110%')
+    await page.evaluate(() => window.v2Test.emit('onUiScaleShortcut', 'smaller'))
+    await waitForToast(page, '界面缩放 100%，按 ⌘ 0 恢复自动')
+    await expect.poll(async () => (await saves()).at(-1)).toEqual({ version: 2, uiScale: '100' })
+    await settings.getByRole('button', { name: '100%', pressed: true }).waitFor()
+    await page.evaluate(() => window.v2Test.emit('onUiScaleShortcut', 'reset'))
+    await waitForToast(page, '界面缩放已恢复自动')
+    await expect.poll(async () => (await saves()).at(-1)).toEqual({ version: 2, uiScale: 'auto' })
+    await settings.getByRole('button', { name: '自动', exact: true, pressed: true }).waitFor()
+    assert.equal((await saves()).filter((entry) => 'uiScale' in entry).length, 3)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 更新装完重新打开时，软件原来一句话都没有。现在角落里一张轻量卡片说一声已经在新版上、
 // 列前几项改动，只有一颗「知道了」；完整清单在「设置 › 版本更新」的版本卡上。普通启动什么都不说。
 test('the first launch after an update says which version it is on and lists the bundled changes', async () => {
@@ -6294,8 +6325,8 @@ test('a key from another site is named for the account and switched from the row
   } finally { await page.close() }
 })
 
-// 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml。行上的「修好它」就是配置里的
-// 「重置为初始状态」，按现在用的账号重新生成，不换来源。
+// 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml。行上的「修好它」按现在用的账号把读不了的
+// 那份重新生成（repair，主进程里跟「重置为初始状态」一样整份重建），不换来源。
 test('a Codex config Codex cannot read is reset from either Codex row on the current account', async () => {
   const page = await open('codexBroken=1')
   try {
@@ -6309,8 +6340,8 @@ test('a Codex config Codex cannot read is reset from either Codex row on the cur
     await page.getByTestId('tool-codexDesktop-repair-config').click()
     await waitForToast(page, '已重置 Codex 桌面端的配置，原来的配置已备份')
     for (const tool of ['codex', 'codexDesktop']) await connectedBadge(page, tool).waitFor()
-    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
-    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset', intent: 'explicit' }])
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'repair').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'repair', intent: 'explicit' }])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
     await clean(page)
   } finally { await page.close() }
@@ -6325,8 +6356,8 @@ test('a ChatGPT login whose Codex config cannot be read is reset on the official
     await waitForToast(page, '已重置 Codex CLI 的配置，原来的配置已备份')
     await expect(page.getByTestId('tool-codex-source')).toHaveText('官方账号')
     const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'switchToOfficialAccount').map((entry) => entry.args))
-    assert.deepEqual(resets, [['codex', 'reset']])
-    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset')), false)
+    assert.deepEqual(resets, [['codex', 'repair']])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys')), false)
     await clean(page)
   } finally { await page.close() }
 })
@@ -6346,8 +6377,8 @@ test('a Claude Code settings file it cannot read is reset on the current account
     await page.getByTestId('tool-claude-repair-config').click()
     await waitForToast(page, '已重置 Claude Code 的配置，原来的配置已备份')
     await connectedBadge(page, 'claude').waitFor()
-    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
-    assert.deepEqual(resets, [{ providers: ['claude'], preferredModels: {}, mode: 'reset', intent: 'explicit' }])
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'repair').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['claude'], preferredModels: {}, mode: 'repair', intent: 'explicit' }])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
     await clean(page)
   } finally { await page.close() }
@@ -6444,7 +6475,9 @@ test('the which-account menus on the CLI and Claude Desktop cards keep every wor
   } finally { await page.close() }
 })
 
-test('a Codex login file Codex cannot read is reset from either Codex row', async () => {
+// 只坏了 auth.json 时「修好它」以前也整份重置，config.toml 里客户自己的设置跟着没了（X-1）。主进程按 repair
+// 只重建 auth.json，这里钉住界面交过去的是 repair、不是配置里「重置为初始状态」的 reset。
+test('a Codex login file Codex cannot read is repaired from either Codex row', async () => {
   const page = await open('codexAuthBroken=1')
   try {
     for (const tool of ['codex', 'codexDesktop']) {
@@ -6455,8 +6488,8 @@ test('a Codex login file Codex cannot read is reset from either Codex row', asyn
     await page.getByTestId('tool-codex-repair-config').click()
     await waitForToast(page, '已重置 Codex CLI 的配置，原来的配置已备份')
     for (const tool of ['codex', 'codexDesktop']) await connectedBadge(page, tool).waitFor()
-    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
-    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset', intent: 'explicit' }])
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'repair').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'repair', intent: 'explicit' }])
     await clean(page)
   } finally { await page.close() }
 })
