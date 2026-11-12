@@ -53,6 +53,11 @@ export function useAccountBalanceStore(api: XingmangApi, scope: string | null) {
  */
 export function useUsableSubscription(api: XingmangApi, scope: string | null, balance: AccountBalanceSnapshot): {
   subscription: UsableSubscription | null
+  /**
+   * 这个账号的订阅还没读到（刚登录、刚换账号，或者读失败了）：subscription 的 null 不代表「没有订阅」。
+   * 钱包 $0、靠订阅用的客户这时不能被说成「余额是 $0，去充值」（F1）。账号不支持订阅、没登录时为 false。
+   */
+  subscriptionUnknown: boolean
   /** 付款到账、兑换成订阅之后调：首页那行订阅马上跟着变，不等几分钟。 */
   refresh: () => Promise<void>
 } {
@@ -67,9 +72,11 @@ export function useUsableSubscription(api: XingmangApi, scope: string | null, ba
     if (balance.updatedAt !== null) void cache.refreshIfStale(scope)
   }, [cache, scope, balance.updatedAt])
   const refresh = useCallback(() => cache.refreshNow(scope), [cache, scope])
-  if (!scope || snapshot.scope !== scope) return { subscription: null, refresh }
+  if (!scope) return { subscription: null, subscriptionUnknown: false, refresh }
+  if (snapshot.scope !== scope || snapshot.readAt === null) return { subscription: null, subscriptionUnknown: true, refresh }
   return {
     subscription: resolveUsableSubscription(snapshot.self, { now: Date.now(), quotaPerUnit: balance.balance?.quotaPerUnit ?? 0, planNames: snapshot.planNames }),
+    subscriptionUnknown: false,
     refresh,
   }
 }
