@@ -12,6 +12,7 @@ import {
   sensitiveWorkspaceAsksAtLaunch,
   sensitiveWorkspaceLabel,
   sensitiveWorkspacePolicy,
+  shouldRememberWorkspace,
   type SensitiveWorkspaceKind,
 } from '../../workspace-guard'
 import {
@@ -172,8 +173,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
   }
   // 「每次都提醒」的目录不记住：不写进配置，下次还得重新选或在打开时再确认。
   async function rememberWorkspace(workspace: string): Promise<void> {
-    const sensitivity = classifyLocalWorkspace(workspace)
-    if (sensitivity && sensitiveWorkspacePolicy(sensitivity) === 'every-time') return
+    if (!shouldRememberWorkspace(workspace, { platform: process.platform, home: os.homedir() })) return
     await service.updateStoredConfig({ version: 2, workspace })
     options.extensionService.setRepositoryContext(workspace)
     options.providerExtensionService.setRepositoryRoot(workspace)
@@ -246,7 +246,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('cli:launch', (event, provider: unknown, workspace: unknown, mode: unknown, recordId: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     const stored = service.readStoredConfig()
-    const target = parseWorkspace(workspace, stored.workspace)
+    const target = parseWorkspace(workspace, stored.workspace, process.platform)
     const launchMode = parseCliLaunchMode(mode)
     const resumeRecordId = parseCodexResumeRecordId(provider, launchMode, recordId)
     // 在问「这个文件夹不建议打开」之前拦：关着的工具不该先弹一个文件夹的问题。

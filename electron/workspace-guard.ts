@@ -108,6 +108,16 @@ export function sensitiveWorkspaceAsksAtLaunch(kind: SensitiveWorkspaceKind, res
 }
 
 /**
+ * 选过的目录要不要记下来（下次首页「打开」、不带目录打开时用的就是它）。「每次都提醒」的两类不记：
+ * 记下了，就会被当成默认目录不声不响地拿去用。选择器（workspace:choose）和设置页存目录（settings:save）
+ * 都只认这一条，免得一边不记、另一边照存。
+ */
+export function shouldRememberWorkspace(workspace: string, context: WorkspaceGuardContext): boolean {
+  const kind = classifyWorkspace(workspace, context)
+  return kind === null || sensitiveWorkspacePolicy(kind) !== 'every-time'
+}
+
+/**
  * 选中的目录是不是「一份配置管全电脑」的那几类。返回 null 表示普通目录，
  * 按原有行为处理。
  */

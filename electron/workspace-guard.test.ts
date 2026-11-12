@@ -7,6 +7,7 @@ import {
   sensitiveWorkspaceAsksAtLaunch,
   sensitiveWorkspaceLabel,
   sensitiveWorkspacePolicy,
+  shouldRememberWorkspace,
   type SensitiveWorkspaceKind,
   type WorkspaceGuardContext,
 } from './workspace-guard'
@@ -230,6 +231,25 @@ describe('sensitiveWorkspaceAsksAtLaunch', () => {
 
   it('only asks before resuming in the folders it warns about every time', () => {
     expect(allKinds.filter((kind) => sensitiveWorkspaceAsksAtLaunch(kind, true))).toEqual(['system', 'provider-config'])
+  })
+})
+
+// 选择器（workspace:choose）和设置页存目录（settings:save）共用这一条。
+describe('shouldRememberWorkspace', () => {
+  it('remembers ordinary folders and the ones that only ask once', () => {
+    for (const workspace of ['D:\\code\\shop', 'C:\\Users\\peaker', 'C:\\Users\\peaker\\Desktop', 'C:\\']) {
+      expect(shouldRememberWorkspace(workspace, windowsContext)).toBe(true)
+    }
+    expect(shouldRememberWorkspace('/Users/alex/Documents', macContext)).toBe(true)
+  })
+
+  it('never remembers a system folder or one where the AI tools keep their keys', () => {
+    for (const workspace of ['C:\\Windows', 'C:\\Program Files', 'C:\\Users\\peaker\\.claude', 'C:\\Users\\peaker\\.codex']) {
+      expect(shouldRememberWorkspace(workspace, windowsContext)).toBe(false)
+    }
+    for (const workspace of ['/System', '/Users/alex/.claude', '/Users/alex/.grok']) {
+      expect(shouldRememberWorkspace(workspace, macContext)).toBe(false)
+    }
   })
 })
 

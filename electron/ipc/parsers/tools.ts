@@ -7,6 +7,7 @@ import type { ChooseWorkspaceOptions } from '../../ipc-contract'
 import type { CliLaunchMode, CliUninstallOptions, CodexDesktopLaunchMode, ConfigSavePayload } from '../../system-service'
 import { isCodexSessionUuid } from '../../tool-installation'
 import { isExactCliVersion } from '../../versions'
+import { requiredWorkspacePath } from './common'
 
 export function parseCliUninstallOptions(value: unknown): CliUninstallOptions {
   if (value === undefined) return {}
@@ -56,11 +57,12 @@ export function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOpti
   }
 }
 
-export function parseWorkspace(workspace: unknown, fallback: string): string {
-  if (typeof workspace === 'string' && workspace.length > 32_767) {
-    throw new Error('工作目录格式错误')
-  }
-  return typeof workspace === 'string' && workspace.trim() ? workspace.trim() : fallback
+// 没带目录（或只带了空白）时用记住的那个，它也得是完整路径：设置文件被改坏、或者以前经 settings:save
+// 存进去一个相对路径，同样会让「这个文件夹不建议打开」那一问认不出来。带了但不是字符串的直接报错，
+// 不悄悄换成记住的目录——那只会是界面出了 bug 或被人动过。
+export function parseWorkspace(workspace: unknown, fallback: string, platform: NodeJS.Platform): string {
+  if (workspace !== undefined && typeof workspace !== 'string') throw new Error('工作目录格式错误')
+  return requiredWorkspacePath(workspace?.trim() ? workspace : fallback, platform)
 }
 
 export function parseDesktopLaunchMode(mode: unknown): CodexDesktopLaunchMode {
