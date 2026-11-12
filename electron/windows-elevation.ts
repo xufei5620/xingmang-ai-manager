@@ -656,11 +656,13 @@ export function buildCliLaunchPlan(
     // （CI 上 20 多秒），工具迟迟不出来。先按名字导入。
     buildPowerShellModuleImportStatement(cliTerminalScriptModules),
     `$Host.UI.RawUI.WindowTitle = ${powerShellLiteral(title)}`,
+    // 只说终端能显示颜色，不逼着上色（D74）：FORCE_COLOR、CLICOLOR_FORCE 会让 AI 跑的命令接管道
+    // 也输出颜色控制码，同 interactiveTerminalEnvironment，这个窗口里一并去掉。
     `$env:TERM = 'xterm-256color'`,
     `$env:COLORTERM = 'truecolor'`,
-    `$env:FORCE_COLOR = '3'`,
     `$env:CLICOLOR = '1'`,
-    `$env:CLICOLOR_FORCE = '1'`,
+    'Remove-Item Env:FORCE_COLOR -ErrorAction SilentlyContinue',
+    'Remove-Item Env:CLICOLOR_FORCE -ErrorAction SilentlyContinue',
     'Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue',
     'Remove-Item Env:NODE_DISABLE_COLORS -ErrorAction SilentlyContinue',
     `Set-Location -LiteralPath ${powerShellLiteral(workspace)}`,

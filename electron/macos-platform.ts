@@ -98,11 +98,11 @@ const persistedTerminalEnvironmentKeys = new Set([
   'LC_TIME',
   'TERM',
   'COLORTERM',
-  'FORCE_COLOR',
+  // FORCE_COLOR、CLICOLOR_FORCE 不往窗口里写（D74）：它们让 AI 跑的命令接管道也输出颜色控制码。
+  // 客户自己在 ~/.zshrc 里设的，登录 shell 读过以后照旧在，不去动。
   'NO_COLOR',
   'NODE_DISABLE_COLORS',
   'CLICOLOR',
-  'CLICOLOR_FORCE',
 ])
 // export、unset 后面的名字不带引号写进启动脚本，所以只收普通的变量名。
 const environmentKeyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/

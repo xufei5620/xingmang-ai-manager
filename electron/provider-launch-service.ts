@@ -71,7 +71,7 @@ import { claudeProjectSettingsFiles, classifyWorkspace, sensitiveWorkspaceLabel 
  * be applied unconditionally: callers that stay at the current integrity level
  * would lose every user-writable PATH entry for no security gain. Sanitizing
  * after the color layer is not an option either, because the sanitizer strips
- * TERM/COLORTERM/FORCE_COLOR and would leave the terminal monochrome.
+ * TERM/COLORTERM and would leave the terminal monochrome.
  */
 export function interactiveTerminalEnvironment(
   baseEnv: NodeJS.ProcessEnv = process.env,
@@ -90,11 +90,13 @@ export function interactiveTerminalEnvironment(
   for (const key of Object.keys(env)) {
     if (colorKeys.has(key.toLowerCase())) delete env[key]
   }
+  // 只说「这个终端能显示颜色」，不逼着上色（D74，深查 Shell差异 SH-8）：FORCE_COLOR、CLICOLOR_FORCE
+  // 的意思是「输出接到管道里也照样上色」，设给整个窗口，AI 让子进程跑的每条命令读回去的输出里都夹着
+  // 颜色控制码。工具自己的界面接的是真终端，按下面这几项就会上色。继承来的那两项上面已经删掉：
+  // FORCE_COLOR=0 会把窗口变成黑白，别的值又会逼着上色，两样都不要。
   env.TERM = 'xterm-256color'
   env.COLORTERM = 'truecolor'
-  env.FORCE_COLOR = '3'
   env.CLICOLOR = '1'
-  env.CLICOLOR_FORCE = '1'
   return env
 }
 

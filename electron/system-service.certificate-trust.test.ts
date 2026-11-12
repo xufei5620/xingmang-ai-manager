@@ -176,6 +176,6 @@ describe('opening a CLI as the current user', () => {
   it('lets the terminal trust the operating system certificate store and keeps the colours', () => {
     const env = interactiveTerminalEnvironment({ PATH: '/usr/bin', HOME: '/home/tester' }, sameUserTerminalEnvironment)
     expect(env.NODE_USE_SYSTEM_CA).toBe('1')
-    expect(env.FORCE_COLOR).toBe('3')
+    expect(env.COLORTERM).toBe('truecolor')
   })
 })

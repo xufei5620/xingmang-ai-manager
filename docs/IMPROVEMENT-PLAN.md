@@ -219,7 +219,7 @@ env: interactiveTerminalEnvironment(
 
 > **需拍板的功能影响**：`trustedCommandEnvironment` 会把 PATH 里所有用户可写目录过滤掉。所以**以管理员身份运行时**，终端里用户装在个人目录的工具（如便携版 git）会不在 PATH 上。系统目录、Program Files、本软件托管的 npm 目录仍在，CLI 本身按绝对路径启动，主要功能不受影响。这是安全与便利的取舍，且只影响"以管理员身份运行"这一非默认场景。
 
-> **明确不要做**：不要把 `interactiveTerminalEnvironment` 整个换成 `trustedCommandEnvironment` —— 那会连 `TERM`/`FORCE_COLOR` 一起剥掉，终端变无色。必须在净化基底之上保留颜色层。
+> **明确不要做**：不要把 `interactiveTerminalEnvironment` 整个换成 `trustedCommandEnvironment` —— 那会连 `TERM`/`COLORTERM` 一起剥掉，终端变无色。必须在净化基底之上保留颜色层。
 
 same-user 模式无需处理（未跨越完整性边界）。
 
