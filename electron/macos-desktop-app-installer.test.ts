@@ -23,6 +23,7 @@ import {
   isMacosDesktopUpdateFailure,
   macosDesktopAppManagementBlockedMessage,
   macosDesktopDiskFullMessage,
+  macosDesktopDownloadFailedMessage,
   macosDesktopInstallErrorName,
   macosDesktopNameTakenMessage,
   macosDesktopNotOfficialMessage,
@@ -1100,6 +1101,9 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
 const bucketBytes = Buffer.alloc(10 * 1024 * 1024, 9)
 const bucketDigest = sha256Hex(bucketBytes)
 const bucketCodexVersion = '26.1003.2'
+// Two days since the sync last matched the Codex entry against OpenAI: past the 24 hours the client allows.
+const staleCheckedAt = new Date(Date.now() - 48 * 60 * 60_000).toISOString()
+const staleFallback = `codex-macos-arm64：存储桶清单超过 24 小时没和官方核对过（上次是 ${staleCheckedAt}），桶里的可能不是最新版`
 const bucketClaudeVersion = '2.31226.1'
 
 function bucketCodexKey(architecture: string): string {
@@ -1107,7 +1111,7 @@ function bucketCodexKey(architecture: string): string {
 }
 const bucketClaudeKey = `xingmang/offline/claude/macos-pkg-universal/sha256-${bucketDigest}/Claude-universal.pkg`
 
-function bucketCodexIndex(architecture: string): string {
+function bucketCodexIndex(architecture: string, checkedAt = new Date().toISOString()): string {
   const key = bucketCodexKey(architecture)
   return JSON.stringify({
     schemaVersion: 1,
@@ -1120,7 +1124,7 @@ function bucketCodexIndex(architecture: string): string {
           contentType: 'application/zip', verification: 'official-https-sha256', cosEtag: '"etag"',
         },
         // The sync refreshes it every 6 hours (#1061 item 7).
-        checkedAt: new Date().toISOString(),
+        checkedAt,
       },
     },
   })
@@ -1141,12 +1145,24 @@ function bucketClaudeIndex(): string {
 
 interface BucketOptions {
   indexStatus?: number
+  /** When the sync last matched the Codex entry against OpenAI; just now by default. */
+  checkedAt?: string
+  /** Every vendor request fails the way it does when OpenAI cannot be reached from China. */
+  vendorOffline?: boolean
   packageBody?: Buffer
   onPackageRequest?: () => void
   /** Bundles the expanded PKG holds, relative to its root; one Claude.app by default. */
   pkgBundles?: string[]
   /** What pkgutil --check-signature prints; Anthropic's notarized installer by default. */
   pkgSignature?: string
+}
+
+/** The Codex desktop app already in Applications, as an update finds it. */
+function installedChatgpt(applications: string): string {
+  const bundle = path.posix.join(applications, 'ChatGPT.app')
+  fs.mkdirSync(path.join(bundle, 'Contents', 'MacOS'), { recursive: true })
+  fs.writeFileSync(path.join(bundle, 'Contents', 'MacOS', 'ChatGPT'), 'old binary')
+  return bundle
 }
 
 function installerSignature(signer = 'Developer ID Installer: Anthropic PBC (Q6L2SF6YDW)', status = 'signed by a developer certificate issued by Apple for distribution'): string {
@@ -1180,11 +1196,15 @@ function bucketSetup(
   const vendorFetch = f.options.fetch
   const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
-    if (!url.startsWith(desktopPackageBucketOrigin)) return vendorFetch(input, init)
+    if (!url.startsWith(desktopPackageBucketOrigin)) {
+      if (!bucketOptions.vendorOffline) return vendorFetch(input, init)
+      f.requested.push(url)
+      throw new TypeError('fetch failed')
+    }
     f.requested.push(url)
     expect(init).toMatchObject({ redirect: 'manual', credentials: 'omit' })
     if (url === desktopBucketIndexUrl('codex-macos-arm64') || url === desktopBucketIndexUrl('claude-macos-universal')) {
-      const body = url.includes('/chatgpt/') ? bucketCodexIndex(f.options.architecture) : bucketClaudeIndex()
+      const body = url.includes('/chatgpt/') ? bucketCodexIndex(f.options.architecture, bucketOptions.checkedAt) : bucketClaudeIndex()
       return new Response(body, { status: bucketOptions.indexStatus ?? 200, headers: { 'content-type': 'application/json' } })
     }
     bucketOptions.onPackageRequest?.()
@@ -1352,6 +1372,90 @@ describe('macOS installer from the Xingmang bucket', () => {
     expect((await failure(installMacosDesktopApp(f.options))).message).toBe(macosDesktopDiskFullMessage('Codex 桌面端'))
     expect(f.routed).toEqual([])
     expect(f.fallbacks).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('asks the vendor first when the Codex bucket index is stale, and installs the vendor package', async () => {
+    const f = bucketSetup('codexDesktop', { checkedAt: staleCheckedAt })
+    await expect(installMacosDesktopApp(f.options)).resolves.toMatchObject({ version: chatgptVersion })
+    expect(f.requested).toEqual([desktopBucketIndexUrl('codex-macos-arm64'), `${chatgptRoot}appcast.xml`, chatgptPackageUrl('arm64')])
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.fallbacks).toEqual([staleFallback])
+  })
+
+  it.skipIf(process.platform === 'win32')('comes back to a stale bucket, outside the download route, when the vendor cannot be reached', async () => {
+    const f = bucketSetup('codexDesktop', { checkedAt: staleCheckedAt, vendorOffline: true })
+    await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: bucketCodexVersion, path: path.posix.join(f.applications, 'ChatGPT.app') })
+    expect(f.requested).toEqual([
+      desktopBucketIndexUrl('codex-macos-arm64'),
+      `${chatgptRoot}appcast.xml`,
+      desktopBucketIndexUrl('codex-macos-arm64'),
+      `${desktopPackageBucketOrigin}/${bucketCodexKey('arm64')}`,
+    ])
+    // Only the vendor attempt ran inside the route.
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.fallbacks).toEqual([staleFallback])
+    // The same checks as a fresh bucket package, and the customer sees the same words as on the vendor route.
+    expect(signingRequirement(f.plans)).toContain('certificate leaf[subject.OU] = "2DC432GLL2"')
+    expect(f.plans.some((plan) => plan.executable === '/usr/sbin/spctl')).toBe(true)
+    expect(f.progress).toContain(`正在下载 Codex 桌面端 ${bucketCodexVersion}`)
+    expect(f.progress.some((message) => /存储桶|过期|24/.test(message))).toBe(false)
+    expect(stagingLeftovers(f.home)).toEqual([])
+    // Nothing comes after it, so a slow download goes on rather than giving up.
+    const handed = vi.mocked(downloadDesktopBucketPackage).mock.calls.at(-1)?.[2]
+    f.requested.length = 0
+    await expect(handed?.probeAlternative?.(new AbortController().signal)).resolves.toBeNull()
+    expect(f.requested).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('reports the vendor failure without a second bucket round when the bucket failed for another reason', async () => {
+    const f = bucketSetup('codexDesktop', { indexStatus: 404, vendorOffline: true })
+    expect((await failure(installMacosDesktopApp(f.options))).message).toBe(macosDesktopDownloadFailedMessage('Codex 桌面端'))
+    expect(f.requested).toEqual([desktopBucketIndexUrl('codex-macos-arm64'), `${chatgptRoot}appcast.xml`])
+    expect(f.fallbacks).toEqual(['codex-macos-arm64：存储桶清单返回 HTTP 404'])
+  })
+
+  it.skipIf(process.platform === 'win32')('still reports the vendor failure when the stale bucket package does not check out either', async () => {
+    const f = bucketSetup('codexDesktop', { checkedAt: staleCheckedAt, vendorOffline: true, packageBody: Buffer.alloc(bucketBytes.byteLength, 1) })
+    expect((await failure(installMacosDesktopApp(f.options))).message).toBe(macosDesktopDownloadFailedMessage('Codex 桌面端'))
+    expect(f.fallbacks).toEqual([staleFallback, 'codex-macos-arm64：存储桶的安装包 SHA-256 和清单不一致'])
+    expect(fs.readdirSync(f.applications)).toEqual([])
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('does not come back to a stale bucket after a cancel during the vendor download', async () => {
+    const controller = new AbortController()
+    const f = bucketSetup('codexDesktop', { checkedAt: staleCheckedAt }, { signal: controller.signal })
+    const fetch = f.options.fetch
+    f.options.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input) === chatgptPackageUrl('arm64')) controller.abort()
+      return fetch(input, init)
+    }) as typeof globalThis.fetch
+    const error = await installMacosDesktopApp(f.options).then(() => null, (reason: unknown) => reason)
+    expect(error).not.toBeInstanceOf(MacosDesktopInstallError)
+    expect((error as Error).name).toBe('AbortError')
+    expect(f.requested).toEqual([desktopBucketIndexUrl('codex-macos-arm64'), `${chatgptRoot}appcast.xml`, chatgptPackageUrl('arm64')])
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('updates from a stale bucket when the vendor cannot be reached and its version is newer', async () => {
+    const f = bucketSetup('codexDesktop', { checkedAt: staleCheckedAt, vendorOffline: true })
+    const installedPath = installedChatgpt(f.applications)
+    f.options.replace = { installedPath, installedVersion: chatgptVersion, beforeReplace: async () => undefined }
+    await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: bucketCodexVersion, path: installedPath })
+    expect(fs.readFileSync(path.join(installedPath, 'Contents', 'MacOS', 'ChatGPT'), 'utf8')).toBe('binary')
+    expect(fs.readdirSync(f.applications)).toEqual(['ChatGPT.app'])
+  })
+
+  it.skipIf(process.platform === 'win32')('leaves the installed copy alone, without downloading, when the stale bucket is not newer', async () => {
+    const f = bucketSetup('codexDesktop', { checkedAt: staleCheckedAt, vendorOffline: true })
+    const installedPath = installedChatgpt(f.applications)
+    const beforeReplace = vi.fn(async () => undefined)
+    f.options.replace = { installedPath, installedVersion: bucketCodexVersion, beforeReplace }
+    expect((await failure(installMacosDesktopApp(f.options))).message).toBe(macosDesktopUpdateFailedMessage)
+    expect(f.requested).not.toContain(`${desktopPackageBucketOrigin}/${bucketCodexKey('arm64')}`)
+    expect(f.fallbacks).toEqual([staleFallback, `codex-macos-arm64：清单过期，桶里的 ${bucketCodexVersion} 不比装着的 ${bucketCodexVersion} 新，不用它`])
+    expect(beforeReplace).not.toHaveBeenCalled()
+    expect(fs.readFileSync(path.join(installedPath, 'Contents', 'MacOS', 'ChatGPT'), 'utf8')).toBe('old binary')
   })
 
 })

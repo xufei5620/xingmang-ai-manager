@@ -5,6 +5,7 @@ import { readBoundedResponseText } from './bounded-response'
 import { CommandRunnerError, type CommandResult } from './command-runner'
 import {
   describeDesktopBucketFallback,
+  DesktopBucketIndexStaleError,
   DesktopBucketUnavailableError,
   downloadDesktopBucketPackage,
   measureDesktopDownloadSpeed,
@@ -988,6 +989,10 @@ export async function measureMacosDesktopVendorSpeed(
  * bundle id、最低系统、Team ID 签名和 Gatekeeper。读不到清单、没下成、对不上、核不过都删掉、
  * 返回 null，照旧问官方，原因只进日志；客户点的取消原样抛出；盘写满了也照直抛：换一路重下一遍
  * 也一样写不进去。
+ *
+ * 只因 Codex 清单过期（DesktopBucketIndexStaleError）没用上时返回 'stale'：包本身没毛病，只是可能落后
+ * 官方。官方那一路也没走通时带 allowStale 回头再走一次（同 #1571 在 Windows 上的做法）。那一次排在官方
+ * 后面，再往后没有别的路了：更新时桶里那版不比装着的新就不下，下得慢也不换路。
  */
 async function unpackFromBucket(
   source: MacosDesktopAppSource,
@@ -997,14 +1002,20 @@ async function unpackFromBucket(
   options: InstallMacosDesktopAppOptions,
   readSystemVersion: () => Promise<string>,
   report: (phase: MacosDesktopAppInstallProgress['phase'], message: string, percent?: number | null) => void,
-): Promise<{ version: string, bundle: string } | null> {
+  allowStale: boolean,
+): Promise<{ version: string, bundle: string } | 'stale' | null> {
   const bucket = options.bucket
   const id = macosDesktopBucketPackageId(options.tool, architecture)
   if (!bucket || !id) return null
   const bundleName = `${source.applicationName}.app`
   const workDirectory = path.posix.join(staging, 'bucket')
   try {
-    const release = await readDesktopBucketPackage(id, options.fetch, options.signal)
+    const release = await readDesktopBucketPackage(id, options.fetch, options.signal, { allowStale })
+    // 下了也换不上：装着的那份已经不比它旧。
+    if (allowStale && options.replace && compareMacosDesktopVersions(release.version, options.replace.installedVersion) !== 1) {
+      bucket.onFallback?.(describeDesktopBucketFallback(id, `清单过期，桶里的 ${release.version} 不比装着的 ${options.replace.installedVersion} 新，不用它`))
+      return null
+    }
     await fs.promises.mkdir(workDirectory, { mode: 0o700 })
     const format = release.contentType === 'application/zip' ? 'zip' : release.contentType === 'application/gzip' ? 'tar.gz' : 'pkg'
     const archive = path.posix.join(workDirectory, `package.${format}`)
@@ -1020,8 +1031,11 @@ async function unpackFromBucket(
         resuming ? `网络断了一下，正在接着下载 ${source.name} ${release.version}` : downloading,
         Math.min(99, percent),
       ),
-      // 桶太慢时先比一比官方那一路，确实更快才换（#1061 第 6 条）。
-      probeAlternative: (probeSignal) => measureMacosDesktopVendorSpeed(options.tool, context, options.fetch, probeSignal),
+      probeAlternative: allowStale
+        // 官方那一路刚没走通，没有别的路可换：测不出来就当它不比桶快，桶再慢也接着下，断得接不上才停。
+        ? async () => null
+        // 桶太慢时先比一比官方那一路，确实更快才换（#1061 第 6 条）。
+        : (probeSignal) => measureMacosDesktopVendorSpeed(options.tool, context, options.fetch, probeSignal),
     })
     report('checking', '正在检查下载下来的安装包是不是完整的官方版')
     options.signal?.throwIfAborted()
@@ -1041,7 +1055,7 @@ async function unpackFromBucket(
     if (isDiskFull(cause)) throw cause
     await removeTree(workDirectory).catch(() => undefined)
     bucket.onFallback?.(describeDesktopBucketFallback(id, error instanceof MacosDesktopInstallError ? error.detail : error))
-    return null
+    return !allowStale && error instanceof DesktopBucketIndexStaleError ? 'stale' : null
   }
 }
 
@@ -1167,8 +1181,22 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
     stage = 'download'
     const stagingDirectory = staging
     // 先从星芒自己的存储桶下；没走通再问官方，只有问官方那一路接加速线路。
-    const unpacked = await unpackFromBucket(source, architecture, context, stagingDirectory, options, readSystemVersion, report)
-      ?? await (options.withVendorDownloadRoute ?? runDirectly)(() => downloadFromVendor(stagingDirectory, context))
+    const fromBucket = await unpackFromBucket(source, architecture, context, stagingDirectory, options, readSystemVersion, report, false)
+    let unpacked: { version: string, bundle: string }
+    if (fromBucket !== null && fromBucket !== 'stale') {
+      unpacked = fromBucket
+    } else {
+      try {
+        unpacked = await (options.withVendorDownloadRoute ?? runDirectly)(() => downloadFromVendor(stagingDirectory, context))
+      } catch (error) {
+        // 桶只是清单过期才没用上的：官方那一路也没走通（国内多半连不上），回头用桶里那一版，不进下载线路。
+        // 它也没装成就照旧报官方那一路的错。客户点的取消、盘写满了不回头：换一路也一样。
+        if (fromBucket !== 'stale' || options.signal?.aborted || isDiskFull(error)) throw error
+        const fromStaleBucket = await unpackFromBucket(source, architecture, context, stagingDirectory, options, readSystemVersion, report, true)
+        if (fromStaleBucket === null || fromStaleBucket === 'stale') throw error
+        unpacked = fromStaleBucket
+      }
+    }
 
     options.signal?.throwIfAborted()
     stage = 'place'
