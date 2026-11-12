@@ -791,6 +791,14 @@ describe('renderer subscription warning', () => {
   it('warns regardless of the wallet when only the subscription is spent', () => {
     expect(subscriptionWarning({ ...base, expiringSoon: true, subscriptionOnly: true }, 100)).toBe('订阅 10月3日到期，到期后工具就用不了了，续费后可继续使用。')
   })
+
+  it('does not call a quota that comes back on its own nearly used up, only one about to end (F2)', () => {
+    const resets = { ...base, lowRemaining: true, resetsAt: new Date(Date.now() + 3_600_000).toISOString() }
+    expect(subscriptionWarning(resets, 1)).toBeNull()
+    expect(subscriptionWarning({ ...resets, subscriptionOnly: true }, 100)).toBeNull()
+    expect(subscriptionWarning({ ...resets, expiringSoon: true }, 1)).toBe('订阅 10月3日到期，到期后会从余额扣费。')
+    expect(subscriptionWarning({ ...resets, resetsAt: null }, 1)).toBe('订阅只剩 $3.00，用完后会从余额扣费。')
+  })
 })
 
 describe('renderer official account subtitle', () => {

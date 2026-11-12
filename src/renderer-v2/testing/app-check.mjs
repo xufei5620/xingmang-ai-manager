@@ -520,7 +520,8 @@ test('a background recheck that fails after opening a desktop client keeps the l
     await opener.click()
     await row.getByText(/运行中/).waitFor()
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > count, before)
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     assert.equal(await unread.count(), 0)
     assert.equal(await row.getByTestId('tool-workbuddy-source').count(), 1)
     await expect(opener).toBeEnabled()
@@ -1567,7 +1568,8 @@ test('the account page follows the shell login when its own session read says si
     await page.evaluate(() => window.v2Test.signOutAccountPageSessionReads())
     await page.getByTestId('sidebar-account-open').click()
     await page.waitForFunction(() => window.v2Test.accountPageSessionSignedOutServed() > 0)
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     await expect(page.getByTestId('account-tabs')).toBeVisible()
     assert.equal(await page.getByTestId('page-account').getByText('登录后查看个人中心', { exact: true }).count(), 0)
     assert.equal(await page.getByTestId('welcome-page').count(), 0)
@@ -2294,6 +2296,58 @@ test('home shows the last usage right away instead of asking the account backend
     await expect(usageLine).toContainText('约还能用')
     assert.equal(await page.evaluate(() => window.__usageBlank), false)
     assert.equal(await usageReads(), 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// F3：一直停在首页时，「近 7 天花费」和靠它算的「约还能用 N 天」以前一直是进首页那一刻的数，点余额旁边的刷新也只刷余额。
+// 现在点刷新马上跟着重读；余额每读到一次也再要一次，一分钟的缓存照旧挡着。重读时手上的数不先清空，卡片不闪。时钟停着。
+test('the balance card re-reads usage and the last 7 days along with the balance while home stays open', async () => {
+  const page = await open('allInstalled=1', true)
+  const usageReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountUsage').length)
+  const days = page.getByTestId('home-balance-days')
+  const weekTotal = page.locator('[data-testid="home-week-spend"] .v2-home-week-head > b')
+  try {
+    await expect(days).toHaveText('按最近用量约还能用 43 天')
+    const before = await weekTotal.innerText()
+    assert.equal(await usageReads(), 2)
+    await page.evaluate(() => {
+      window.__usageBlank = false
+      new MutationObserver(() => {
+        const text = document.querySelector('[data-testid="home-balance-days"]')?.textContent ?? ''
+        if (text.includes('正在读取用量') || !document.querySelector('[data-testid="home-week-spend"]')) window.__usageBlank = true
+      }).observe(document.body, { childList: true, subtree: true, characterData: true })
+    })
+
+    // 一个下午花掉 $70：点余额旁边的刷新，用量、近 7 天跟着余额一起重读，不认一分钟的缓存。
+    await page.evaluate(() => window.v2Test.addSpend(35_000_000))
+    await page.getByTestId('home-balance-refresh').click()
+    await expect(days).toHaveText('按最近用量约还能用 1 天')
+    await expect(weekTotal).not.toHaveText(before)
+    assert.equal(await usageReads(), 4)
+    // 刷新带回来的那次余额不再多问：一分钟内的用量直接用。
+    await expect(page.getByTestId('home-balance-refresh')).toBeEnabled()
+    assert.equal(await usageReads(), 4)
+
+    // 不点刷新：过了一分钟，窗口回到前面读了一次余额，用量和柱子也跟着换。
+    const afterClick = await weekTotal.innerText()
+    await page.evaluate(() => window.v2Test.addSpend(35_000_000))
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await expect(days).toHaveText('按最近用量不到 1 天就会用完')
+    await expect(weekTotal).not.toHaveText(afterClick)
+    assert.equal(await usageReads(), 6)
+
+    // 点了刷新、用量这回没读到：卡片上已经有的数照旧留着，不换成「用量暂未读到」。
+    await page.evaluate(() => { window.v2Test.fail = 'getAccountUsage' })
+    await page.getByTestId('home-balance-refresh').click()
+    await expect.poll(usageReads).toBeGreaterThan(6)
+    await expect(page.getByTestId('home-balance-refresh')).toBeEnabled()
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
+    await expect(days).toHaveText('按最近用量不到 1 天就会用完')
+    assert.equal(await page.evaluate(() => window.__usageBlank), false)
+    await page.evaluate(() => { window.v2Test.fail = '' })
     await clean(page)
   } finally { await page.close() }
 })
@@ -6913,7 +6967,8 @@ test('Sub2API pending read updates stay attached to their own announcement after
     await detail.getByRole('heading', { name: '套餐更新', exact: true }).waitFor()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead' && call.args[1] === '8'))
     await page.evaluate(() => window.v2Test.releaseNoticeMark('12'))
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     assert.equal(await detail.getByRole('heading', { name: '套餐更新', exact: true }).isVisible(), true)
     assert.equal(await button.locator('.v2-unread').count(), 0)
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
@@ -7108,7 +7163,8 @@ test('an obsolete balance rejection stays silent before the session-change event
     await page.getByTestId('tool-row-codex').waitFor()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'getAccountBalance'))
     await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': Error: 账号刚切换过，请再试一次"))
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: false, account: null, siteId: 'solov-api', realmId: 'api-account' }))
     await page.getByTestId('welcome-login').waitFor()
@@ -7130,7 +7186,8 @@ test('late balance results and failures cannot escape an expired or switched acc
       else await page.locator('.v2-sidebar').getByText('$24.80', { exact: true }).waitFor()
       await page.evaluate((result) => window.v2Test.releaseBalance(result === 'reject'
         ? "Error invoking remote method 'account:get-balance': RealmAccountError: 账号服务暂时无法连接" : undefined), result)
-      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
       assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
       if (action === 'expire') assert.equal(await page.getByTestId('welcome-login').isVisible(), true)
       else assert.equal(await page.locator('.v2-sidebar').getByText('$24.80', { exact: true }).isVisible(), true)
@@ -7492,7 +7549,8 @@ test('logging out yourself does not warn that the login ended from either entry 
       // 两个入口的确认框按钮都写「退出登录」，不写「退出」，免得当成退出星芒（W83）。
       await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
       await page.getByTestId('welcome-login').waitFor()
-      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
       assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'logoutAccount').length), 1)
       await assertNoToast(page, '当前登录已结束，请重新登录。')
       await clean(page)
@@ -7804,7 +7862,8 @@ for (const { name, query, tool } of [
   const page = await open(query)
   try {
     await openGuestToolConfiguration(page, tool, true)
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'listConfiguredModels')), false)
     await clean(page)
   } finally { await page.close() }
@@ -7890,7 +7949,8 @@ test('selected account key shows its group and survives delayed metadata', async
     assert.match(await page.getByTestId('tool-key-select-option-202').innerText(), /^custom-key\s+sk-ot••••1234，Custom group分组$/)
     await page.keyboard.press('Escape')
     await page.evaluate(() => window.v2Test.releaseKeyMetadata('codex'))
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     assert.equal(await select.getAttribute('data-value'), '202')
     await page.getByTestId('tool-detect-models').click()
     await page.getByLabel('默认模型').selectOption('fixture-other')
@@ -10185,7 +10245,8 @@ test('asking for the sidebar in a narrow window floats it over the page until yo
       document.addEventListener('keydown', window.__claimEscape, true)
     })
     await page.keyboard.press('Escape')
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     assert.equal(await shell.getAttribute('class'), 'v2-shell sidebar-floating')
     await page.evaluate(() => document.removeEventListener('keydown', window.__claimEscape, true))
     await page.keyboard.press('Escape')

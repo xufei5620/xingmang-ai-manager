@@ -7,6 +7,7 @@ import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { configurationFailureMessages, type AccountBootstrapResult } from './account-bootstrap'
+import { buildBalanceRunway } from '../app/balance-runway'
 
 const cliStatus: Record<string, unknown> = {
   installed: true, version: '1.2.3', path: 'C:\\fixture\\bin', installDirectory: 'C:\\fixture',
@@ -2138,6 +2139,20 @@ describe('renderer-v2 home v4 top cards', () => {
     expect(homeMoneyNotice(1, subscription, { usableUsd: 3, days: 1, low: true })?.text).toBe('余额加订阅额度只剩 $3.00，按最近用量约还能用 1 天。用完后工具会暂停')
     const only = { ...subscription, subscriptionOnly: true }
     expect(homeMoneyNotice(1, only, { usableUsd: 2, days: 0, low: true })).toEqual({ text: '月卡只剩 $2.00，按最近用量不到 1 天就会用完。用完后工具会暂停', renew: true })
+  })
+
+  it('does not nag every afternoon about a subscription quota that comes back tomorrow (F2)', () => {
+    const daily = { name: '日卡', remainingUsd: 2, endsAt: '2026-11-03T00:00:00Z', expiringSoon: false, lowRemaining: true, subscriptionOnly: false, resetsAt: '2026-10-21T16:00:00Z' }
+    for (const subscription of [daily, { ...daily, subscriptionOnly: true }]) {
+      const markup = render({}, undefined, { account, accountScope: scope, balance: balance(0), api: api(56), subscription })
+      expect(markup).not.toContain('data-testid="home-low-balance"')
+      expect(markup).not.toContain('data-testid="home-subscription-warning"')
+      expect(markup).not.toContain('data-testid="home-balance-days"')
+      expect(markup).not.toContain('class="is-warn" data-testid="home-balance"')
+      expect(markup).toContain('data-testid="home-subscription"')
+    }
+    // 快到期的照旧提醒。
+    expect(homeMoneyNotice(1, { ...daily, expiringSoon: true }, buildBalanceRunway({ walletUsd: 1, subscription: { ...daily, expiringSoon: true }, weekUsageUsd: 56 }))?.renew).toBe(true)
   })
 
   it('shows the balance, how many days it lasts and one bar per day of the last week', () => {
