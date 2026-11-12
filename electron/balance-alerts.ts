@@ -17,7 +17,10 @@ import { usageDateRange } from './usage-date-range'
 export const lowBalanceDollars = 5
 
 export interface BalanceAlertObservation {
-  /** 哪个站点的哪个账号：换了就从头记，上一个账号的余额不拿来比。 */
+  /**
+   * 哪个站点的哪个账号：换了就从头记，上一个账号的余额不拿来比。也是落盘记录（余额用完、花费突增
+   * 6 小时安静期）的键，只能由站点和用户编号拼成，软件重开后还得是同一个。
+   */
   scope: string
   userId: number
   quota: number
@@ -124,7 +127,10 @@ export function createBalanceAlerts(options: BalanceAlertsOptions): BalanceAlert
       if (!observation.supportsUsage) return
       await spend.observe({
         scope: observation.scope,
-        account: String(observation.userId),
+        // 6 小时安静期按站点加账号记：星芒账号和历史账号的用户编号会撞上，只记编号的话一边说过、
+        // 另一边 6 小时里也不说了。升级前只按编号记的那条还在安静期里时照旧算数。
+        account: observation.scope,
+        legacyAccount: String(observation.userId),
         quota: observation.quota,
         quotaPerUnit: observation.quotaPerUnit,
         at: observation.at,
