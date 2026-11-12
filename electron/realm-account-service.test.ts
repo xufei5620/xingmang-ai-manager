@@ -42,7 +42,7 @@ function vaultFixture() {
     },
   }
   return { vault: createRealmAccountVault(storage), content: () => content, backup: () => backup,
-    corrupt: () => { content = Buffer.from('test-unreadable-ciphertext').toString('base64') },
+    corrupt: (value = Buffer.from('test-unreadable-ciphertext').toString('base64')) => { content = value },
     fail: (value: boolean) => { fail = value }, available: (value: boolean) => { available = value } }
 }
 const capabilities: RelayBackendCapabilities = {
@@ -810,6 +810,37 @@ describe('explicit login vault recovery', () => {
     expect(legacy.list).not.toHaveBeenCalled()
     expect(legacy.readActive).not.toHaveBeenCalled()
     expect(f.service.client.getSessionState().authenticated).toBe(true)
+  })
+  // DM-2：文件本身坏了（空的、截断、被别的程序改过），以前点登录也只报存储不可用，客户自己永远进不去。
+  for (const [label, damaged] of [
+    ['an empty file', ''],
+    ['a cut-off file', Buffer.from(JSON.stringify({ version: 2, activeId: null, accounts: [] })).toString('base64').slice(0, -3)],
+    ['text that is not ciphertext', 'not-base64!'],
+    ['a document cut off after decryption', Buffer.from('{"version":2,"activeId":null,"acc').toString('base64')],
+  ] as const) {
+    it(`keeps ${label} on startup and recovers it on explicit login`, async () => {
+      const f = fixture()
+      f.corrupt(damaged)
+      await expect(f.service.restoreActive()).rejects.toMatchObject({ code: 'STORAGE' })
+      await expect(f.service.listSavedAccounts()).rejects.toMatchObject({ code: 'STORAGE' })
+      expect(f.content()).toBe(damaged)
+      expect(f.backup()).toBeNull()
+
+      await expect(f.service.login(login)).resolves.toMatchObject({ siteId: 'solov' })
+      expect(f.backup()).toBe(damaged)
+      expect((await f.vault.active())?.userId).toBe('7')
+      expect(await f.vault.hasMigratedLegacy()).toBe(true)
+    })
+  }
+  // 解得开、是 JSON，只是认不出：多半是退回旧版读到了新版写的库，点登录也不清它。
+  it('does not reset a document from a newer version on explicit login', async () => {
+    const f = fixture()
+    const newer = Buffer.from(JSON.stringify({ version: 3, activeId: null, accounts: [] })).toString('base64')
+    f.corrupt(newer)
+    await expect(f.service.login(login)).rejects.toMatchObject({ code: 'STORAGE' })
+    expect(f.content()).toBe(newer)
+    expect(f.backup()).toBeNull()
+    expect(f.service.client.getSessionState().authenticated).toBe(false)
   })
   it('rechecks the persisted migration marker after recovery and never imports old sessions again', async () => {
     const origin = 'https://xm.solov.cc'
