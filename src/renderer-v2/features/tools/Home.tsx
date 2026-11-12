@@ -71,6 +71,8 @@ export interface HomeProps {
   balance: AccountBalance | null
   /** 当前账号能用的订阅；缺省 / null = 没有，一切按钱包说（旧行为）。 */
   subscription?: UsableSubscription | null
+  /** 订阅还没读到（刚登录、读失败）：不知道有没有，钱的提醒和「余额为零」都先不说（F1）。缺省 = 读到了。 */
+  subscriptionUnknown?: boolean
   jobs: Record<string, ToolJob>
   externalClients: ExternalClientStatus[]
   externalLoading: boolean
@@ -319,9 +321,10 @@ function runwayDaysText(days: number): string {
 /**
  * 余额卡和首页提示条里的钱的那一句（v4 方案问 6）：按最近用量不够 7 天才提醒，订阅剩下的额度按
  * 扣费顺序算进去；算不出用量时退回旧规矩（钱包不到 $5、订阅快用完 / 快到期）。不用提醒时 null。
+ * 订阅还没读到时也是 null：钱包 $0、靠订阅用的客户不能被叫去充值（F1）。
  */
-export function homeMoneyNotice(dollars: number | null, subscription: UsableSubscription | null, runway: BalanceRunway | null): { text: string; renew: boolean } | null {
-  if (dollars === null) return null
+export function homeMoneyNotice(dollars: number | null, subscription: UsableSubscription | null, runway: BalanceRunway | null, subscriptionUnknown = false): { text: string; renew: boolean } | null {
+  if (dollars === null || !subscription && subscriptionUnknown) return null
   const days = runway?.days ?? null
   if (!subscription) {
     if (dollars <= 0) return { text: lowBalanceText(dollars), renew: false }
@@ -355,10 +358,10 @@ export function homeToolRequest(signedIn: boolean, supportsKeys: boolean | undef
 
 /**
  * 钱包是 $0、也没有能用的订阅：跟上面那条 $0 提示同一个判断。订阅客户的钱包常是 0、扣的却是订阅；
- * 余额还没读到、账号不能在这里充值时都不算。
+ * 余额还没读到、订阅还没读到（不知道有没有，F1）、账号不能在这里充值时都不算。
  */
-export function homeWalletEmpty(dollars: number | null, subscription: UsableSubscription | null, supportsBilling: boolean): boolean {
-  return supportsBilling && !subscription && dollars !== null && dollars <= 0
+export function homeWalletEmpty(dollars: number | null, subscription: UsableSubscription | null, supportsBilling: boolean, subscriptionUnknown = false): boolean {
+  return supportsBilling && !subscription && !subscriptionUnknown && dollars !== null && dollars <= 0
 }
 
 function cachedUsage(api: ToolsApi, scope: string | undefined): BalanceUsage | null {
@@ -572,11 +575,12 @@ export function Home(props: HomeProps) {
   const firstScan = loading && !snapshot
   const dollars = balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null
   const subscription = props.subscription ?? null
+  const subscriptionUnknown = props.subscriptionUnknown === true
   const usageDollars = (quota: number) => balance && balance.quotaPerUnit > 0 ? quota / balance.quotaPerUnit : null
   const weekUsd = usage ? usageDollars(usage.weekQuota) : null
-  const runway = account ? buildBalanceRunway({ walletUsd: dollars, subscription, weekUsageUsd: weekUsd }) : null
-  const moneyNotice = props.supportsBilling !== false ? homeMoneyNotice(dollars, subscription, runway) : null
-  const walletEmpty = homeWalletEmpty(dollars, subscription, props.supportsBilling !== false)
+  const runway = account ? buildBalanceRunway({ walletUsd: dollars, subscription, subscriptionUnknown, weekUsageUsd: weekUsd }) : null
+  const moneyNotice = props.supportsBilling !== false ? homeMoneyNotice(dollars, subscription, runway, subscriptionUnknown) : null
+  const walletEmpty = homeWalletEmpty(dollars, subscription, props.supportsBilling !== false, subscriptionUnknown)
   const toolRequest = homeToolRequest(Boolean(account), props.supportsKeys)
   const bootstrapResult = props.bootstrap?.result
   const bootstrapFailed = bootstrapResult?.failed ?? []

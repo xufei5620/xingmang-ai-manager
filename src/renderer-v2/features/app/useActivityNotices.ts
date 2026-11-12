@@ -42,22 +42,24 @@ interface BalanceWatchOptions {
   scope: string
   balanceState: AccountBalanceSnapshot
   subscription: UsableSubscription | null
+  /** 订阅还没读到（useUsableSubscription）：还能用几天、「余额低」「余额为零」都先不算。缺省 = 读到了。 */
+  subscriptionUnknown?: boolean
 }
 
 /**
  * 余额折成美元，算出还能用几天。余额跌破 5 美元、一小时里花得远超平时那两条系统通知挪到了
  * 主进程（electron/balance-alerts.ts）：窗口缩到托盘久了界面会被关掉，那时也得照样提醒。
  */
-export function useBalanceWatch({ toolsApi, session, scope, balanceState, subscription }: BalanceWatchOptions) {
+export function useBalanceWatch({ toolsApi, session, scope, balanceState, subscription, subscriptionUnknown = false }: BalanceWatchOptions) {
   const balance = balanceState.balance
   const balanceAmount = balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null
   const supportsUsage = session.authenticated && accountSupports(session, 'supportsUsage')
   const runwayUsage = useRunwayUsage(toolsApi, supportsUsage ? scope : null, balanceState.updatedAt ?? undefined)
   const runway = session.authenticated && balance ? buildBalanceRunway({
-    walletUsd: balanceAmount, subscription,
+    walletUsd: balanceAmount, subscription, subscriptionUnknown,
     weekUsageUsd: runwayUsage && balance.quotaPerUnit > 0 ? runwayUsage.weekQuota / balance.quotaPerUnit : null,
   }) : null
   // 账号概览和首页说同一套数：还能用几天、能扣的订阅、近 7 天花费（历史账号只有这个合计）。
-  const accountSummary = { runway, subscription, weekUsageUsd: runwayUsage && balance && balance.quotaPerUnit > 0 ? runwayUsage.weekQuota / balance.quotaPerUnit : null }
+  const accountSummary = { runway, subscription, subscriptionUnknown, weekUsageUsd: runwayUsage && balance && balance.quotaPerUnit > 0 ? runwayUsage.weekQuota / balance.quotaPerUnit : null }
   return { balanceAmount, runway, accountSummary }
 }

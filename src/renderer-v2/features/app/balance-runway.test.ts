@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { UsableSubscription } from '../../../../electron/subscription-summary'
-import { balanceRunwayMeter, balanceRunwayText, buildBalanceRunway } from './balance-runway'
+import { balanceRunwayMeter, balanceRunwayText, balanceTier, buildBalanceRunway } from './balance-runway'
 
 function plan(overrides: Partial<UsableSubscription> = {}): UsableSubscription {
   return { name: '月卡', remainingUsd: 20, endsAt: '2026-11-01T00:00:00Z', expiringSoon: false, lowRemaining: false, subscriptionOnly: false, ...overrides }
@@ -34,6 +34,17 @@ describe('balance runway', () => {
     expect(buildBalanceRunway({ walletUsd: 0, subscription: plan({ remainingUsd: null }), weekUsageUsd: 7 })).toEqual({ usableUsd: null, days: null, low: false })
   })
 
+  it('neither counts days nor calls the wallet low or empty while the subscription is unread', () => {
+    const unread = buildBalanceRunway({ walletUsd: 0, subscription: null, subscriptionUnknown: true, weekUsageUsd: 7 })
+    expect(unread).toEqual({ usableUsd: null, days: null, low: false })
+    expect(balanceRunwayText(unread)).toBeNull()
+    expect(buildBalanceRunway({ walletUsd: 3, subscription: null, subscriptionUnknown: true, weekUsageUsd: null })).toEqual({ usableUsd: null, days: null, low: false })
+    // 读到了、确实没有订阅：照旧算「用完了」。
+    expect(buildBalanceRunway({ walletUsd: 0, subscription: null, subscriptionUnknown: false, weekUsageUsd: 7 })).toEqual({ usableUsd: 0, days: 0, low: true, empty: true })
+    // 一份读到的订阅不受影响。
+    expect(buildBalanceRunway({ walletUsd: 0, subscription: plan({ remainingUsd: 20 }), subscriptionUnknown: true, weekUsageUsd: 7 })?.days).toBe(20)
+  })
+
   it('says nothing until the balance has been read', () => {
     expect(buildBalanceRunway({ walletUsd: null, subscription: plan(), weekUsageUsd: 7 })).toBeNull()
     expect(balanceRunwayText(null)).toBeNull()
@@ -60,5 +71,28 @@ describe('balance runway', () => {
     expect(balanceRunwayMeter(15)).toBe(50)
     expect(balanceRunwayMeter(0)).toBe(6)
     expect(balanceRunwayMeter(400)).toBe(100)
+  })
+})
+
+describe('balance tier', () => {
+  it('colours the wallet by how much is left when there is no subscription', () => {
+    expect(balanceTier(0, null)).toBe('zero')
+    expect(balanceTier(-0.03, null)).toBe('zero')
+    expect(balanceTier(4.99, null)).toBe('bad')
+    expect(balanceTier(19.99, null)).toBe('warn')
+    expect(balanceTier(20, null)).toBe('ok')
+    expect(balanceTier(null, null)).toBe('neutral')
+  })
+
+  it('counts a usable subscription as enough', () => {
+    expect(balanceTier(0, plan())).toBe('ok')
+    expect(balanceTier(null, plan())).toBe('ok')
+  })
+
+  it('stays neutral instead of red while the subscription is unread', () => {
+    expect(balanceTier(0, null, true)).toBe('neutral')
+    expect(balanceTier(3, null, true)).toBe('neutral')
+    expect(balanceTier(10, null, true)).toBe('neutral')
+    expect(balanceTier(20, null, true)).toBe('ok')
   })
 })
