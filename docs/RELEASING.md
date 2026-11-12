@@ -188,7 +188,7 @@ npm view electron time --json --registry=https://registry.npmjs.org/ | Select-St
 - 更新清单必须由对应版本的静态 R2 目录提供：`0.1.2` 及更早版本检查 `https://updates.shenfengwl.fun/xingmang-manager/latest.yml`，`0.1.3+` 检查 `https://updatesnew.shenfengwl.fun/xingmang-manager/latest.yml`。两者返回 `text/html`/官网 SPA 都属于发布阻断故障。
 - Windows 主程序必须以 `asInvoker` 运行，不能在日常启动或打开 AI 工具时主动请求管理员权限。普通模式下 npm CLI 与 Grok 使用当前用户目录；NSIS 安装、主程序更新或 Node.js 系统安装只在实际执行该操作时交给 Windows 请求所需授权。打包门禁会拒绝重新引入 `RunAs` 的 CLI 启动链。
 - 普通 `npm run build` 仍生成仅供本机调试的未签名安装包。按产品要求，明确设置 `XINGMANG_UNSIGNED_RELEASE=1` 或运行 `npm run release:build:unsigned` 时，未签名包会保留更新能力但不写入发布者签名校验；该模式不得与 `XINGMANG_RELEASE=1` 或 macOS 正式发布模式同时启用。
-- 无签名包在 `package.json` 里带上 `xingmangUnsignedRelease: true`。2026-09-25 起这条通道也跟着「自动更新」开关走（`electron/main.ts` 的 `unsignedAutoUpdate: true`，yoyo 同意）：开着时查到新版本就在后台下，关着时只提示、用户点了才下；下好以后都不当场装，什么时候装见第 6 节。每次下完都按更新清单的 SHA-512 重新校验安装包，Windows 和 Linux 再核发布者签名（第 5 节「更新包签名」），校验值缺失或不一致一律拒绝安装。发布无签名包时必须确认 `latest.yml` 为每个安装包写出了 `sha512`，否则客户端会拒绝该次更新。
+- 无签名包在 `package.json` 里带上 `xingmangUnsignedRelease: true`。2026-09-25 起这条通道也跟着「自动更新」开关走（`electron/bootstrap/updates.ts` 的 `unsignedAutoUpdate: true`，yoyo 同意）：开着时查到新版本就在后台下，关着时只提示、用户点了才下；下好以后都不当场装，什么时候装见第 6 节。每次下完都按更新清单的 SHA-512 重新校验安装包，Windows 和 Linux 再核发布者签名（第 5 节「更新包签名」），校验值缺失或不一致一律拒绝安装。发布无签名包时必须确认 `latest.yml` 为每个安装包写出了 `sha512`，否则客户端会拒绝该次更新。
 - 记下本次出包的 commit（`git rev-parse HEAD`）。发布完成后要用它打 `v<版本号>` 的附注 tag，见第 5 节。
 - 每一版都分批放量：触发 publish-release 时「上传以后先推给多少」保持默认的 20，工作流自己在换更新清单之前写好，不用再先跑 service-status（2026-10-28 起，商业级差距报告 G02）。第二天中午 rollout-health 给出「放开还是停住」的建议，放开再跑一次 service-status 填 `none`。步骤见第 5 节「分批放量」。快修通道（第 5 节「热修版本」）另有规矩：客户正卡着的选 100 全量推送＋强制更新。这一版要配合服务端做旧版本不认的改动（删分组、改名这类）时，先后顺序另有规矩，见第 5 节「服务端要做旧版本不认的改动时」。
 
@@ -509,7 +509,7 @@ Windows 首先按当前用户调用 `Add-AppxPackage`。只有错误详情明确
 
 ## 6. 客户端更新行为
 
-只有用发布模式（`XINGMANG_UNSIGNED_RELEASE=1`、`XINGMANG_MAC_FREE_RELEASE=1`）打的包开着更新，`package-for-testing` 出的测试包也开着；普通 `npm run build` 和 `XINGMANG_LOCAL_BUILD=1` 打的包关着（`xingmangLocalBuild`）。下面说的是开着时的行为，细节以 `electron/updater.ts`、`electron/auto-update-install.ts`、`electron/main.ts` 为准。
+只有用发布模式（`XINGMANG_UNSIGNED_RELEASE=1`、`XINGMANG_MAC_FREE_RELEASE=1`）打的包开着更新，`package-for-testing` 出的测试包也开着；普通 `npm run build` 和 `XINGMANG_LOCAL_BUILD=1` 打的包关着（`xingmangLocalBuild`）。下面说的是开着时的行为，细节以 `electron/updater.ts`、`electron/auto-update-install.ts`、`electron/update-install-prompt.ts`、`electron/bootstrap/updates.ts`、`electron/main.ts` 为准。「自动更新」开关在「设置 › 版本更新」里叫「自动下载更新」，右下角更新气泡上的那个叫「自动更新」，是同一个设置。
 
 **什么时候查**
 
@@ -527,7 +527,9 @@ Windows 首先按当前用户调用 `Add-AppxPackage`。只有错误详情明确
 
 **安装**：下好以后软件自己从不当场装（以前「下载校验完约 300ms 自动安装重启」那条已经没有了，见全面检测 Q42），装的时机只有下面几种。
 
-- 用户在更新页点「重启安装」再点「确认重启安装」，或者从托盘菜单装，「自动更新」开没开都行。
+- 用户点「重启并安装」（「设置 › 版本更新」的版本卡、右下角气泡、状态栏版本号、侧栏「重启并安装新版」都弹同一个「重启并安装更新？」确认框，再点框里的「重启并安装」），或者从托盘菜单装，「自动更新」开没开都行。Linux 上这颗按钮叫「安装新版本」。
+- 「自动更新」开着：下好后在屏幕中间跳框问「新版 x.y.z 已经下好，现在装上吗？」（「稍后再说 / 现在安装」，回车、空格、Esc 都落在「稍后再说」上），等电脑 3 秒没人按键盘、动鼠标再弹，每个版本每次运行最多问一次；打开时装已经接手的那一版不问。付款窗口开着、对话正在出字、视频在出或在拼片时先不问，30 秒看一次。账号不是管理员的 Windows、关了「自动更新」的、Linux（交给系统安装器装）都不问（`update-install-prompt.ts`，#1380）。
+- Mac 闲时装：装的时候不弹任何窗口的 Mac（`canInstallUnattended`：程序和它所在的文件夹当前用户都能写）上，电脑 10 分钟没人碰或锁了屏、星芒窗口都缩着、没在装工具、命令行工具没在干活、手机遥控没开、视频没在出，就自己装；问过的版本还要等点「稍后再说」之后 10 分钟。每个版本只自动试一次，没装上退回退出时装；装之前先现读一次服务状态文件，下载之后才被撤回的不装。Windows 每次装都要有人点授权窗口，不做闲时装。
 - 「自动更新」开着：用户退出时直接装（同一个版本只自动试一次）。上次运行就下好的版本，下次打开时（开始查更新后 2 分钟内认出来）先预告 5 秒再装。开机自启、窗口一直没打开过时，Mac 上程序所在位置当前用户能写、又没连着加速，就在后台悄悄装；Windows 等用户第一次打开窗口，再预告再装；其余留到退出。
 - 「自动更新」关着：打开时不装，退出时问「顺手装上吗？」（安装并退出 / 先退出，下次再装）。
 - 系统关机、重启、注销时不装也不问，下次打开照常自动装。自动装过一次没装上（授权窗口点了「否」、安装程序没起来），下次打开说「新版本上次没装上」，之后只给「重新安装」，不再自动装，退出时也不再问。

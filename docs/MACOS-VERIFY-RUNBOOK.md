@@ -141,6 +141,8 @@ npm run update:verify-feed -- --platform=macos
 
 ## 3. 加速线路：默认不带，要带得显式开
 
+> **网络加速 2026-10-30 已下线**：`platform-capabilities.ts` 的 `acceleration` 三个平台都是 false，带不带线路的包界面上都没有加速入口，开不了（见 `docs/GLOBAL-ACCELERATION.md` 开头）。包里的内核还留着，只用来在开机时改回上次加速崩掉后留下的系统代理，所以下面出带线路包的办法和文件检查照旧有效，只是不再有「在应用里连一次」这一步。
+
 `npm run dist:mac:free` 默认出的包**不含**加速线路，包里不会有 `resources/acceleration`，这是正常的，不要当缺陷报上来。
 
 要出带线路的包，先按 `RELEASING.md` 第 2 节分别准备 arm64 与 x64 两个资源目录（都放在项目目录之外），再多传两个参数：
@@ -156,13 +158,13 @@ CSC_NAME='<身份名>' XINGMANG_MAC_SIGNING_SHA256='<64 位 SHA-256 指纹>' \
 
 开了开关之后，构建会分两次跑 electron-builder（先 arm64 后 x64，各自只看到自己架构的资源），再把两次的产物合并进同一个 `release-free-<版本号>` 目录。**验收点不变**：最后仍然是那 8 个文件，多一个少一个都会被产物校验拒掉；中途的 `arch-arm64` / `arch-x64` 两个子目录会在合并后自动删掉，如果构建结束后它们还在，说明合并没跑完，把日志发我。
 
-带线路的包额外要看三条（不带线路时跳过）：
+带线路的包额外要看下面几条（不带线路时跳过）：
 
 1. 解包 DMG 后，`星芒AI管理工具.app/Contents/Resources/acceleration/` 里应有 `mihomo`、`profile.yaml`、`manifest.json`、`LICENSE-mihomo.txt`、`THIRD-PARTY-NOTICES.txt` 五个文件，不多不少。
 2. `manifest.json` 里的 `arch` 要和这个包的架构一致（arm64 包里写 `arm64`，x64 包里写 `x64`）。两个包拿错资源正是分架构构建最容易出的错。
-3. 在应用里打开加速，确认线路列表能出来、能连上；停止后再启动一次。
+3. ~~在应用里打开加速，确认线路列表能出来、能连上~~：加速 2026-10-30 已下线，界面上没有入口，这一步跳过，只看前两条文件在不在、架构对不对。界面上找不到加速不是包坏了。
 
-CI 也跑这条路径（2026-09-19 节点入仓以后，`--ci-temporary-signing` 不再与这两个参数互斥）：`package-for-testing` 出的 Mac 测试包和 `quality` 的 `macos-release-rehearsal` 排练（每次合进 `main` 都跑，PR 上只在动了打包相关文件时跑）都带线路。它们用 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；想在真机上先验上面三条，下载 `package-for-testing` 的包就行，不必为此在发布 Mac 上另出一份。正式发给客户的包仍按本手册用发布身份出。
+CI 也跑这条路径（2026-09-19 节点入仓以后，`--ci-temporary-signing` 不再与这两个参数互斥）：`package-for-testing` 出的 Mac 测试包和 `quality` 的 `macos-release-rehearsal` 排练（每次合进 `main` 都跑，PR 上只在动了打包相关文件时跑）都带线路。它们用 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；想在真机上先验上面两条，下载 `package-for-testing` 的包就行，不必为此在发布 Mac 上另出一份。正式发给客户的包仍按本手册用发布身份出。
 
 ---
 
