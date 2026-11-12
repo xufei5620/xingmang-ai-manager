@@ -3,9 +3,16 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
-import { createProviderLaunchService, workspaceCarriesClaudeProjectSettings } from './provider-launch-service'
+import { trustedCommandEnvironment } from './command-runner'
+import {
+  createProviderLaunchService,
+  interactiveTerminalEnvironment,
+  withPythonUtf8Output,
+  workspaceCarriesClaudeProjectSettings,
+} from './provider-launch-service'
 import type { DesktopAppStatus, SystemServiceOptions, ToolStatus } from './system-service'
 import { createServiceContext } from './system-service-context'
+import type { WindowsMachinePaths } from './windows-machine-paths'
 
 // #1070 第 3 步把打开工具那一段搬成了 createProviderLaunchService。真正开终端的各条路仍由 system-service 的测试经
 // createSystemService 覆盖；这里钉住搬家新接上的那几处：打开前记下「从星芒打开过」、清掉「需重开生效」（这两份
@@ -150,5 +157,72 @@ describe('telling whether a folder carries Claude Code project settings', () => 
     })
     await expect(workspaceCarriesClaudeProjectSettings('/work/repo', lstat)).resolves.toBe(true)
     expect(seen).toEqual(['.claude/settings.json', '.claude/settings.local.json'])
+  })
+})
+
+// D77：中文 Windows 上 Python 接管道输出按 GBK 编码，打印 ✅ 就报错。客户没设过时才补 UTF-8，只管输入输出。
+describe('making Python print UTF-8 in a tool window opened on Windows', () => {
+  it('asks for UTF-8 standard streams when the customer has set neither variable', () => {
+    const env = withPythonUtf8Output({ PATH: 'C:\\Windows\\System32' })
+
+    expect(env.PYTHONIOENCODING).toBe('utf-8')
+    // PYTHONUTF8=1 也会改 open() 读文件的默认编码，读 GBK 文件的老脚本会出错，所以不设它。
+    expect(Object.keys(env).map((key) => key.toUpperCase())).not.toContain('PYTHONUTF8')
+    expect(env.PATH).toBe('C:\\Windows\\System32')
+  })
+
+  it('leaves whatever the customer chose alone, whichever variable and letter case it is', () => {
+    for (const chosen of [
+      { PYTHONIOENCODING: 'gbk' },
+      { PythonIOEncoding: 'utf-8:replace' },
+      { PYTHONUTF8: '1' },
+      // 设成 0 也是客户自己的选择：明说了不要 UTF-8 模式，这里不再从另一头补。
+      { pythonutf8: '0' },
+    ]) {
+      const env = withPythonUtf8Output({ PATH: 'C:\\Windows\\System32', ...chosen })
+
+      expect(env).toEqual({ PATH: 'C:\\Windows\\System32', ...chosen })
+    }
+  })
+
+  it('treats an empty value as unset, as Python does, and hands over a single spelling', () => {
+    const env = withPythonUtf8Output({ pythonioencoding: '', PYTHONUTF8: '' })
+
+    expect(env).toEqual({ PYTHONIOENCODING: 'utf-8' })
+  })
+
+  it('does not change the environment it was given', () => {
+    const base = { PATH: 'C:\\Windows\\System32' }
+
+    withPythonUtf8Output(base)
+
+    expect(base).toEqual({ PATH: 'C:\\Windows\\System32' })
+  })
+
+  // T4：管理员身份打开时基底是 trustedCommandEnvironment。这一层只加一个写死的值，被基底去掉的
+  // Python 注入变量不会回来，基底补的那两项保护照旧在。
+  it('only adds a fixed value on top of the elevated base and brings back nothing it removed', () => {
+    const machinePaths: WindowsMachinePaths = {
+      systemRoot: 'D:\\Windows',
+      system32: 'D:\\Windows\\System32',
+      programFiles: 'D:\\Program Files',
+      programFilesX86: 'D:\\Program Files (x86)',
+      programData: 'D:\\ProgramData',
+    }
+    const inherited = {
+      PATH: ['C:\\Users\\tester\\AppData\\Roaming\\npm', 'D:\\Windows\\System32'].join(';'),
+      PYTHONPATH: 'C:\\Users\\tester\\payload',
+      PYTHONSTARTUP: 'C:\\Users\\tester\\startup.py',
+      PYTHONHOME: 'C:\\Users\\tester\\python',
+    }
+    const elevated = interactiveTerminalEnvironment(inherited, (env) => trustedCommandEnvironment(env, machinePaths))
+
+    const env = withPythonUtf8Output(elevated)
+
+    expect(env).toEqual({ ...elevated, PYTHONIOENCODING: 'utf-8' })
+    expect(env.PYTHONPATH).toBeUndefined()
+    expect(env.PYTHONSTARTUP).toBeUndefined()
+    expect(env.PYTHONHOME).toBeUndefined()
+    expect(env).toMatchObject({ PYTHONNOUSERSITE: '1', PYTHONSAFEPATH: '1' })
   })
 })
