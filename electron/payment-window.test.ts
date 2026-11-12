@@ -28,6 +28,7 @@ import {
   validatePaymentUrl,
   waitForPaymentPage,
   type PaymentWindowControllerOptions,
+  type PaymentWindowProxyMode,
 } from './payment-window'
 
 function paymentForm(overrides: Partial<NewApiPaymentForm> = {}): NewApiPaymentForm {
@@ -49,7 +50,7 @@ function paymentForm(overrides: Partial<NewApiPaymentForm> = {}): NewApiPaymentF
 const alipayAppLaunchUrl = 'alipays://platformapi/startapp?saId=10000007&clientVersion=3.7.0.0718&qrcode=https%3A%2F%2Fqr.alipay.com%2Ffake'
 const weixinAppLaunchUrl = 'weixin://wxpay/bizpayurl?pr=fake'
 
-function createHarness(loadError?: Error, terminalSnapshot = '', options: Pick<PaymentWindowControllerOptions, 'createOrderStatusReader' | 'iconPath'> = {}) {
+function createHarness(loadError?: Error, terminalSnapshot = '', options: Pick<PaymentWindowControllerOptions, 'createOrderStatusReader' | 'iconPath' | 'proxyMode'> = {}) {
   const windowEvents = new Map<string, (...args: any[]) => void>()
   const webContentsEvents = new Map<string, (...args: any[]) => void>()
   const sessionEvents = new Map<string, (...args: any[]) => void>()
@@ -59,6 +60,7 @@ function createHarness(loadError?: Error, terminalSnapshot = '', options: Pick<P
     setPermissionRequestHandler: vi.fn(),
     setPermissionCheckHandler: vi.fn(),
     setDevicePermissionHandler: vi.fn(),
+    setProxy: vi.fn(async (_config: { mode: string }) => undefined),
     on: vi.fn((name: string, handler: (...args: any[]) => void) => sessionEvents.set(name, handler)),
   }
   const webContents = {
@@ -496,6 +498,87 @@ describe('createPaymentWindowController', () => {
     expect(harness.onBlockedNavigation).toHaveBeenCalledWith('https://attacker.example/')
   })
 
+  // 代理 PX-2：星芒替客户改了直连只改默认会话，付款窗口的新分区要自己照着改，不然走回关掉的代理。
+  it('connects the payment session directly before loading when the app has bypassed a dead proxy', async () => {
+    const harness = createHarness(undefined, '', { proxyMode: () => 'direct' })
+    await harness.controller.open(paymentForm())
+
+    expect(harness.session.setProxy).toHaveBeenCalledExactlyOnceWith({ mode: 'direct' })
+    expect(harness.window.loadURL).toHaveBeenCalledOnce()
+    expect(harness.session.setProxy.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.window.loadURL.mock.invocationCallOrder[0]!,
+    )
+    // Only the connection mode changes; the window keeps denying everything else.
+    const callback = vi.fn()
+    harness.session.setPermissionRequestHandler.mock.calls[0]?.[0]({}, 'notifications', callback)
+    expect(callback).toHaveBeenCalledWith(false)
+    const blockedEvent = { preventDefault: vi.fn() }
+    harness.webContentsEvents.get('will-navigate')!(blockedEvent, 'https://attacker.example/')
+    expect(blockedEvent.preventDefault).toHaveBeenCalledOnce()
+  })
+
+  it('follows the system proxy by default and re-reads the connection mode for every payment window', async () => {
+    const fallback = createHarness()
+    await fallback.controller.openUrl('https://checkout.example.com/session')
+    expect(fallback.session.setProxy).toHaveBeenCalledExactlyOnceWith({ mode: 'system' })
+
+    const first = createHarness()
+    const second = createHarness()
+    let mode: PaymentWindowProxyMode = 'direct'
+    const controller = createPaymentWindowController({
+      createWindow: vi.fn().mockReturnValueOnce(first.window).mockReturnValueOnce(second.window),
+      proxyMode: () => mode,
+    })
+    await controller.openUrl('https://pay.example.com/first')
+    // The proxy software came back and the app returned to the system proxy.
+    mode = 'system'
+    await controller.openUrl('https://pay.example.com/second')
+    expect(first.session.setProxy).toHaveBeenCalledExactlyOnceWith({ mode: 'direct' })
+    expect(second.session.setProxy).toHaveBeenCalledExactlyOnceWith({ mode: 'system' })
+    controller.destroy()
+  })
+
+  it('still opens the payment page when the connection mode cannot be applied', async () => {
+    const harness = createHarness(undefined, '', { proxyMode: () => 'direct' })
+    harness.session.setProxy.mockRejectedValueOnce(new Error('setProxy failed'))
+
+    await harness.controller.open(paymentForm())
+
+    expect(harness.window.loadURL).toHaveBeenCalledOnce()
+    expect(harness.controller.isOpen()).toBe(true)
+  })
+
+  it('never loads a window that was replaced or destroyed while its connection mode was being applied', async () => {
+    const pendingProxy = deferred<undefined>()
+    const first = createHarness()
+    const second = createHarness()
+    first.session.setProxy.mockReturnValueOnce(pendingProxy.promise)
+    const controller = createPaymentWindowController({
+      createWindow: vi.fn().mockReturnValueOnce(first.window).mockReturnValueOnce(second.window),
+      proxyMode: () => 'direct',
+    })
+    const firstOpening = controller.openUrl('https://pay.example.com/old', undefined, 'old')
+    await controller.openUrl('https://pay.example.com/new', undefined, 'new')
+    pendingProxy.resolve(undefined)
+    await expect(firstOpening).resolves.toBeUndefined()
+
+    expect(first.window.loadURL).not.toHaveBeenCalled()
+    expect(first.window.destroy).toHaveBeenCalledOnce()
+    expect(second.window.loadURL).toHaveBeenCalledOnce()
+    expect(controller.isOpen()).toBe(true)
+
+    const destroyedProxy = deferred<undefined>()
+    const third = createHarness(undefined, '', { proxyMode: () => 'direct' })
+    third.session.setProxy.mockReturnValueOnce(destroyedProxy.promise)
+    const opening = third.controller.open(paymentForm())
+    // Switching accounts or quitting destroys the window before the page starts.
+    third.controller.destroy()
+    destroyedProxy.resolve(undefined)
+    await expect(opening).resolves.toBeUndefined()
+    expect(third.window.loadURL).not.toHaveBeenCalled()
+    expect(third.controller.isOpen()).toBe(false)
+  })
+
   it('blocks cross-origin navigation and redirects while allowing both exact origins', async () => {
     const harness = createHarness()
     await harness.controller.open(paymentForm())
@@ -751,6 +834,8 @@ describe('authenticated payment order monitoring', () => {
     })
     const firstOpening = controller.openUrl('https://pay.example.com/old', undefined, 'old')
     const rejected = expect(firstOpening).rejects.toThrow('支付页面打开失败')
+    // The old page must already be loading (past the proxy setup) for its load to fail late.
+    await vi.waitFor(() => expect(first.window.loadURL).toHaveBeenCalledOnce())
     await controller.openUrl('https://pay.example.com/new', undefined, 'new')
     oldLoad.reject(new Error('old page load failed'))
     await rejected

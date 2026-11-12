@@ -21,6 +21,7 @@ import {
   type CliProcessProbe,
 } from './cli-process-probe'
 import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
+import { inspectRunningTools, type RunningToolsReport } from './running-tools'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
@@ -63,7 +64,7 @@ describe('cli process probe', () => {
     expect(script).toContain('[System.StringComparison]::OrdinalIgnoreCase')
     // The one -match left is the fixed ASCII check on the JSON this script
     // prints, never on the path.
-    const escapeStatement = buildPowerShellJsonOutputStatements('$items | ConvertTo-Json -Compress')[1]
+    const escapeStatement = buildPowerShellJsonOutputStatements('$result | ConvertTo-Json -Compress -Depth 3')[1]
     expect(script).toContain(escapeStatement)
     expect(script.replace(escapeStatement, '')).not.toMatch(/-match|-like/)
     // The command line must stay inside PowerShell: other processes' arguments
@@ -72,18 +73,93 @@ describe('cli process probe', () => {
     expect(script).toContain('ConvertTo-Json -Compress')
   })
 
-  it('reads the probe output back, and refuses rows without a usable pid', () => {
-    expect(parseWindowsCliProcessProbeOutput('')).toEqual([])
-    expect(parseWindowsCliProcessProbeOutput('not json')).toEqual([])
-    expect(parseWindowsCliProcessProbeOutput('[]')).toEqual([])
-    expect(parseWindowsCliProcessProbeOutput(JSON.stringify([
-      { ProcessId: 4321, Name: 'claude.exe', ExecutablePath: 'C:\\p\\claude.exe' },
+  it('counts a listing as checked only when the script says it went through', () => {
+    expect(parseWindowsCliProcessProbeOutput('{"ok":true,"items":[]}')).toEqual({ status: 'checked', processes: [] })
+    expect(parseWindowsCliProcessProbeOutput(JSON.stringify({
+      ok: true,
+      items: [{ ProcessId: 4321, Name: 'claude.exe', ExecutablePath: 'C:\\p\\claude.exe' }],
+    }))).toEqual({
+      status: 'checked',
+      processes: [{ processId: 4321, name: 'claude.exe', executablePath: 'C:\\p\\claude.exe' }],
+    })
+    // Windows PowerShell may lead with a byte order mark, and a row may lack the optional fields.
+    expect(parseWindowsCliProcessProbeOutput('\uFEFF{"items":[{"ProcessId":7,"Name":null}],"ok":true}'))
+      .toEqual({ status: 'checked', processes: [{ processId: 7, name: '', executablePath: '' }] })
+  })
+
+  it('answers "cannot tell" for every output that is not a finished listing', () => {
+    // Each of these used to come back as "checked, nothing running", which is what lets the
+    // startup pass rewrite a CLI's config while it is open (C-1).
+    for (const output of [
+      '',
+      '   \r\n',
+      'not json',
+      // What the script printed before it said whether the listing ran.
+      '[]',
+      JSON.stringify([{ ProcessId: 4321, Name: 'claude.exe', ExecutablePath: 'C:\\p\\claude.exe' }]),
+      'null',
+      '{}',
+      '{"ok":"true","items":[]}',
+      '{"ok":true}',
+      '{"ok":true,"items":{"ProcessId":7}}',
+    ]) {
+      const probe = parseWindowsCliProcessProbeOutput(output)
+      expect(probe.status, output).toBe('unavailable')
+      expect(probe.processes, output).toEqual([])
+      expect(probe.detail, output).toBeTruthy()
+    }
+  })
+
+  it('passes on why the listing failed, bounded for the log', () => {
+    expect(parseWindowsCliProcessProbeOutput('{"ok":false,"error":"Invalid class \\"Win32_Process\\""}'))
+      .toEqual({ status: 'unavailable', processes: [], detail: '进程检测失败：Invalid class "Win32_Process"' })
+    expect(parseWindowsCliProcessProbeOutput('{"ok":false}'))
+      .toEqual({ status: 'unavailable', processes: [], detail: '进程检测失败' })
+    const long = parseWindowsCliProcessProbeOutput(JSON.stringify({ ok: false, error: 'x'.repeat(1000) }))
+    expect(long.detail?.length).toBe(200)
+  })
+
+  it('refuses the whole answer when a matched row cannot be read, rather than dropping that row', () => {
+    // The script prints a row only for a process it matched; skipping one it cannot read would
+    // turn a running CLI back into a stopped one.
+    for (const row of [
       { ProcessId: 0, Name: 'claude.exe', ExecutablePath: 'C:\\p\\claude.exe' },
       { ProcessId: '4322', Name: 'claude.exe', ExecutablePath: 'C:\\p\\claude.exe' },
-    ]))).toEqual([{ processId: 4321, name: 'claude.exe', executablePath: 'C:\\p\\claude.exe' }])
-    // PowerShell unwraps a one-element array into a bare object.
-    expect(parseWindowsCliProcessProbeOutput('\uFEFF{"ProcessId":7,"Name":"node.exe","ExecutablePath":""}'))
-      .toEqual([{ processId: 7, name: 'node.exe', executablePath: '' }])
+      { ProcessId: 12.5, Name: 'claude.exe' },
+      { Name: 'claude.exe' },
+      null,
+      'claude.exe',
+    ]) {
+      const probe = parseWindowsCliProcessProbeOutput(JSON.stringify({
+        ok: true,
+        items: [{ ProcessId: 4321, Name: 'claude.exe', ExecutablePath: 'C:\\p\\claude.exe' }, row],
+      }))
+      expect(probe, JSON.stringify(row)).toMatchObject({ status: 'unavailable', processes: [] })
+    }
+  })
+
+  it('leaves the tool as "cannot tell" for the caller when the listing failed', async () => {
+    // running-tools.ts is where the startup pass and the account switch read the probe: a
+    // listing that failed has to land there as unknown, never as stopped.
+    const outputs = ['', '{"ok":false,"error":"RPC server is unavailable"}', '{"ok":true,"items":[]}']
+    const reports: RunningToolsReport[] = []
+    for (const output of outputs) {
+      reports.push(await inspectRunningTools(['claude'], {
+        probeRoots: async () => ['C:\\prefix\\node_modules\\@anthropic-ai\\claude-code'],
+        probe: (root) => probeRunningCliProcesses(root, {
+          platform: 'win32',
+          resolvePowerShell: () => 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+          runProbe: async () => output,
+        }),
+        codexDesktopRunning: async () => false,
+        canRestartCodexDesktop: true,
+      }))
+    }
+    expect(reports.map((report) => ({ running: report.running, unknown: report.unknown }))).toEqual([
+      { running: [], unknown: ['claude'] },
+      { running: [], unknown: ['claude'] },
+      { running: [], unknown: [] },
+    ])
   })
 
   it('only claims the processes that point inside this one package directory', () => {
@@ -306,7 +382,7 @@ describe('cli process probe', () => {
         resolvePowerShell: () => 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
         runProbe: async (executable, argv, options) => {
           calls.push({ executable, argv, options })
-          return JSON.stringify([{ ProcessId: 4321, Name: 'node.exe', ExecutablePath: 'C:\\Program Files\\nodejs\\node.exe' }])
+          return JSON.stringify({ ok: true, items: [{ ProcessId: 4321, Name: 'node.exe', ExecutablePath: 'C:\\Program Files\\nodejs\\node.exe' }] })
         },
       })
     } finally {
@@ -335,15 +411,14 @@ describe('cli process probe', () => {
     expect(scan.unterminated).toBe(false)
     expect(unbalancedBracket(scan.code)).toBeNull()
     // No path is ever spliced into the text: the only literals are the module names, the
-    // empty-result JSON and the fixed lines that keep it working in ConstrainedLanguage.
+    // error preference and the fixed lines that keep it working in ConstrainedLanguage.
     expect(scan.literals).toEqual([
       ...scanPowerShell(powerShellUtf8OutputStatement).literals,
       ...windowsCliProcessProbeModules,
-      '[]',
-      ...scanPowerShell(buildPowerShellJsonOutputStatements('$items').join('\n')).literals,
+      'Stop',
+      ...scanPowerShell(buildPowerShellJsonOutputStatements('$result').join('\n')).literals,
     ])
     expect(scan.code).toContain(`$root = [string]$env:${cliProcessRootEnvironmentVariable}`)
-    expect(scan.code).toContain("if (-not $root) { ''; exit 0 }")
     // A native CLI is its own image; a node-hosted one carries its entry script on the command
     // line. Both are ordinal, case-insensitive comparisons against that one directory.
     expect(scan.code).toContain('$image = [string]$_.ExecutablePath')
@@ -357,10 +432,37 @@ describe('cli process probe', () => {
     expect(scan.code).not.toMatch(/\[pscustomobject\]/i)
   })
 
+  it('reports a listing that failed or was refused instead of printing an empty one', () => {
+    const { code } = scanPowerShell(buildWindowsCliProcessProbeScript())
+    // Get-CimInstance only writes an error when WMI is stopped or denied; under the old
+    // SilentlyContinue that came back as an empty list with exit code 0 (C-1). Stop turns it,
+    // and any line the language mode refuses while matching, into the catch below. The one
+    // SilentlyContinue left is the module import, which falls back to autoloading on purpose.
+    expect(code).not.toContain('$ErrorActionPreference = "SilentlyContinue"')
+    expect(code.match(/SilentlyContinue/g)).toHaveLength(1)
+    expect(code).toContain("Import-Module -Name '', '' -ErrorAction SilentlyContinue")
+    const order = [
+      "$ErrorActionPreference = ''",
+      '$result = @{ ok = $false }',
+      'if ($root) {',
+      'try {',
+      '$items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {',
+      '$result = @{ ok = $true; items = $items }',
+      '} catch {',
+      '$result = @{ ok = $false; error = [string]$_ }',
+      '$xingmangJson = $result | ConvertTo-Json -Compress -Depth 3',
+    ].map((line) => code.indexOf(line))
+    expect(order.every((position) => position >= 0), JSON.stringify(order)).toBe(true)
+    expect([...order].sort((left, right) => left - right)).toEqual(order)
+    // Nothing leaves the script early with a bare list any more: the one answer is printed last.
+    expect(code).not.toMatch(/\bexit\b/)
+    expect(code.trimEnd().endsWith('$xingmangJson')).toBe(true)
+  })
+
   it.runIf(process.platform === 'win32')('asks the system PowerShell resolver when nothing is injected', async () => {
     const executables: string[] = []
     await probeRunningCliProcesses(path.join(os.tmpdir(), 'xingmang-probe'), {
-      runProbe: async (executable) => { executables.push(executable); return '[]' },
+      runProbe: async (executable) => { executables.push(executable); return '{"ok":true,"items":[]}' },
     })
     expect(executables).toEqual([resolveWindowsPowerShellExecutable()])
   })
