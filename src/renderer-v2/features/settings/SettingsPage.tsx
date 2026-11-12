@@ -603,15 +603,14 @@ export function SettingsPage({
   // 恢复默认外观：主题回到跟随系统、关掉高对比度，缩放、大字、减少动画回到装好时的样子。
   // 大字也按这台电脑装好时的样子：Windows 文本大小调大了的，装好时 D81 替他开着，恢复后也开着（X-2）。
   // 显卡加速不算外观，改了要重开软件，这里不动它。
+  // 缩放、大字、减少动画存在设置文件里，先存，不等系统界面设置：那份读不出来（深查 DM-3，文件坏了）时
+  // 原来第一步就报「系统设置尚未准备好。」，后面三样一样都没恢复（X-8）。系统界面设置没读到时只跳过
+  // 主题和高对比度两项，和这一页那两行一样：没读到就点不了。
   const restoreAppearance = () =>
     void operation.execute(
       'restore-appearance',
       async () => {
-        if (systemApi) {
-          setSystemState(await systemApi.setThemePreference('system'))
-          setSystemState(await systemApi.setHighContrast(false))
-        }
-        return update(
+        const saved = await update(
           {
             uiScale: 'auto',
             largeText: resource.data?.capabilities.largeTextByDefault === true,
@@ -620,6 +619,11 @@ export function SettingsPage({
           },
           { quiet: true },
         )
+        if (systemApi && systemState) {
+          setSystemState(await systemApi.setThemePreference('system'))
+          setSystemState(await systemApi.setHighContrast(false))
+        }
+        return saved
       },
       (saved) => (saved ? '已恢复默认外观' : null),
     )

@@ -1623,13 +1623,18 @@ if (query.has('system')) {
     for (const listener of listeners) listener(systemState)
     return systemState
   }
+  // fail=platform-broken：系统界面设置文件坏了（深查 DM-3），主进程没建起系统设置服务，读和写一律
+  // 报「系统设置尚未准备好。」（electron/platform/install-system-api.ts），点「重新读取」也不会好。
+  const platformBroken = fail === 'platform-broken'
   const guard = () => {
+    if (platformBroken) throw new Error('系统设置尚未准备好。')
     if (fail === 'platform') throw new Error('平台设置写入失败')
   }
   // fail=platform-read：第一次读系统状态失败，点「重新读取」再读就好了。
   let platformReadFailures = fail === 'platform-read' ? 1 : 0
   const platform: XingmangPlatformApi = {
     getState: async () => {
+      if (platformBroken) throw new Error('系统设置尚未准备好。')
       if (platformReadFailures > 0) {
         platformReadFailures -= 1
         throw new Error('系统状态暂时读不到')
