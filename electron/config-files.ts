@@ -697,16 +697,23 @@ function addManagedGrokModel(parsed: Record<string, unknown>): void {
 // 官方登录的令牌去请求中转，等于把用户的 Grok 登录交给了第三方。出图工具走的
 // endpoints.xai_api_base_url 同理。只动指向当前账号服务的那几项，用户自己加的别的
 // 模型和设置原样留下。
+//
+// 「当前账号服务」认的是这个站的每条线路和退役别名，不只传进来的这一个地址（0.2.24 深查「反复切换」N3）：
+// 对话表、出图地址、多出来的表可能分别停在不同线路或旧别名上（客户或别的软件改过、换线时某一处没跟上），
+// 只删跟传进来地址一模一样的，别的线路上那几处原样留着，切回官方以后 Grok 照样去请求中转、扣当前账号的钱，
+// 出图工具还会带着官方登录的令牌过去。别的站的地址不在这里认（relayProviderBaseUrlMatches 不跨站）。
 function removeGrokRelayConfig(parsed: Record<string, unknown>, relayBaseUrl: string): void {
   const relay = normalizeUrl(relayBaseUrl)
+  function pointsAtRelay(value: unknown): boolean {
+    return typeof value === 'string' && (normalizeUrl(value) === relay || relayProviderBaseUrlMatches('grok', value, relayBaseUrl))
+  }
   const removed = new Set<string>()
   const modelTables = parsed.model
   if (modelTables && typeof modelTables === 'object' && !Array.isArray(modelTables)) {
     const tables = modelTables as Record<string, unknown>
     for (const [name, table] of Object.entries(tables)) {
       if (!table || typeof table !== 'object' || Array.isArray(table)) continue
-      const baseUrl = (table as Record<string, unknown>).base_url
-      if (typeof baseUrl === 'string' && normalizeUrl(baseUrl) === relay) {
+      if (pointsAtRelay((table as Record<string, unknown>).base_url)) {
         delete tables[name]
         removed.add(name)
       }
@@ -731,7 +738,7 @@ function removeGrokRelayConfig(parsed: Record<string, unknown>, relayBaseUrl: st
   const endpoints = parsed.endpoints
   if (endpoints && typeof endpoints === 'object' && !Array.isArray(endpoints)) {
     const record = endpoints as Record<string, unknown>
-    if (typeof record.xai_api_base_url === 'string' && normalizeUrl(record.xai_api_base_url) === relay) delete record.xai_api_base_url
+    if (pointsAtRelay(record.xai_api_base_url)) delete record.xai_api_base_url
     if (Object.keys(record).length === 0) delete parsed.endpoints
   }
 }

@@ -6,7 +6,7 @@ import { AppSettingsStore } from './app-settings'
 import { providerBaseUrls } from './catalog'
 import { saveProviderConfig } from './config-files'
 import { createOfficialCredentialService, relayModelBeforeOfficialSwitch } from './official-credential-service'
-import { relaySiteEndpointChoices, relaySites } from './relay-sites'
+import { createRelayEndpointRoutingSnapshot, relayProviderBaseUrls, relaySiteEndpointChoices, relaySites } from './relay-sites'
 import type { SystemServiceOptions } from './system-service'
 import { createServiceContext } from './system-service-context'
 
@@ -116,6 +116,24 @@ describe('official credential service', () => {
 
     expect(store.read().officialProviders).toContain('grok')
     expect(logged).toContain('official-switch.relay-model-unsaved')
+  })
+
+  // 0.2.24 深查「反复切换」N3：对话表和出图地址停在不同线路上，切回官方要两处都拿掉，记成官方时 Grok 真的不走中转了。
+  it('leaves no line of the account site in the Grok config when it switches back to the official account', async () => {
+    const { store, roots, userHome, service } = createService({ relayEndpointRouting: createRelayEndpointRoutingSnapshot({ solov: 'primary' }) })
+    const primary = relayProviderBaseUrls('solov', 'primary')
+    const direct = relayProviderBaseUrls('solov', 'direct')
+    saveProviderConfig('grok', 'sk-relay', 'grok-code-fast', 'merge', roots, {}, direct)
+    const configPath = path.join(userHome, '.grok', 'config.toml')
+    fs.writeFileSync(configPath, fs.readFileSync(configPath, 'utf8').replace(`xai_api_base_url = "${direct.grok}"`, `xai_api_base_url = "${primary.grok}"`))
+    expect(fs.readFileSync(configPath, 'utf8')).toContain(`xai_api_base_url = "${primary.grok}"`)
+
+    await service.switchToOfficialAccount('grok')
+
+    const written = fs.readFileSync(configPath, 'utf8')
+    for (const origin of relaySiteEndpointChoices('solov').map((line) => line.origin)) expect(written).not.toContain(origin)
+    expect(written).not.toContain('sk-relay')
+    expect(store.read().officialProviders).toContain('grok')
   })
 
   it('takes the model only from a config on the account site, on any of its lines', () => {
