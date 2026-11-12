@@ -143,7 +143,7 @@ import {
 } from './macos-install-location'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createManualRedirectFetch } from './manual-redirect-fetch'
-import { createPaymentWindowController, resolvePaymentAppLaunchScheme } from './payment-window'
+import { createPaymentWindowController, resolvePaymentAppLaunchScheme, type PaymentWindowProxyMode } from './payment-window'
 import { createInvoicePortalWindowController, type InvoicePortalIdentity } from './invoice-portal-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
@@ -2206,6 +2206,11 @@ if (!hasSingleInstanceLock) {
     // constructed. Seed its ownership record so the first real account
     // transition is delivered to an already-open canvas window exactly once.
     canvasController.setAccountUser(accountService.getSessionState().account?.userId ?? null)
+    // 付款窗口、开票窗口打开前都按它设一次连法。星芒整个改了直连（系统代理指着关掉的代理软件），这两个页面也直连；
+    // 只是连星芒站点那一路直连时，付款商、开票中心的页面照旧经代理走，代理软件还开着、只是不转发星芒。
+    function externalPageProxyMode(): PaymentWindowProxyMode {
+      return proxyBypass.active() ? 'direct' : 'system'
+    }
     const paymentWindow = createPaymentWindowController({
       iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
       createOrderStatusReader: (tradeNo) => createPaymentOrderStatusReader({
@@ -2213,9 +2218,7 @@ if (!hasSingleInstanceLock) {
         getSiteId: accounts.getSiteId,
         assertReady: accounts.assertReady,
       }, tradeNo),
-      // 星芒整个改了直连（系统代理指着关掉的代理软件），付款页也直连；只是连星芒站点那一路直连时，
-      // 付款商的页面照旧经代理走，代理软件还开着、只是不转发星芒。
-      proxyMode: () => proxyBypass.active() ? 'direct' : 'system',
+      proxyMode: externalPageProxyMode,
       onBlockedNavigation: (targetUrl) => {
         // 收银台想拉起支付宝、微信 App：正常行为，扫码付款不受影响。只记协议名，后面那串带着付款码。
         const scheme = resolvePaymentAppLaunchScheme(targetUrl)
@@ -2269,6 +2272,7 @@ if (!hasSingleInstanceLock) {
       iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
       temporaryDirectory: () => path.join(managerDataDirectory, 'invoice-downloads'),
       downloadsDirectory: () => app.getPath('downloads'),
+      proxyMode: externalPageProxyMode,
       onBlockedNavigation: (targetUrl) => {
         let origin = 'invalid-url'
         try {

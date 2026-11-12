@@ -16,7 +16,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { readBoundedFile } from './bounded-file'
 import { networkFailureCode } from './network-failure'
-import { waitForPaymentPage } from './payment-window'
+import { applyPageProxyMode, waitForPaymentPage, type PaymentWindowProxyMode } from './payment-window'
 import { resolveRelaySite } from './relay-sites'
 import { ensureSafeDataDirectory, removeSafeDataFile, writeAtomicSafeBinaryFile } from './safe-local-data'
 
@@ -135,6 +135,11 @@ export interface InvoicePortalWindowControllerOptions {
   onBlockedNavigation?: (url: string) => void
   /** 只记原因的错误码和类别，不记地址和文件名。 */
   onEvent?: (event: InvoicePortalWindowEvent) => void
+  /**
+   * 星芒这会儿怎么连网，每开一次开票窗口问一次，同付款窗口的 proxyMode：'direct' 是系统代理指着一个已经
+   * 关掉的代理软件、星芒已经整个改了直连。缺省 'system'。
+   */
+  proxyMode?: () => PaymentWindowProxyMode
 }
 
 export type InvoicePortalWindowEvent =
@@ -334,6 +339,14 @@ export function createInvoicePortalWindowController(options: InvoicePortalWindow
     window.webContents.on('will-navigate', guardNavigation)
     window.webContents.on('will-redirect', guardNavigation)
 
+    // 开票窗口的分区不跟着星芒的改直连走，不照着设就又去连那个已经关掉的代理软件，开票中心打不开（同付款窗口，
+    // 代理 PX-2）。分区是持久的，上一次设的连法也留着，所以每开一次都按这会儿的重设。只换连法，别的一样不动。
+    await applyPageProxyMode(window.webContents.session, options.proxyMode?.() ?? 'system')
+    // 设连法这一下里换了账号、退出了：这个窗口已经作废，不再加载。
+    if (window.isDestroyed() || current?.window !== window) {
+      destroyWindow(window)
+      throw new Error(invoicePortalOpenFailedMessage)
+    }
     try {
       await waitForPaymentPage(window.loadURL(target.url), committed)
     } catch (error) {
