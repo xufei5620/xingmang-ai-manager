@@ -97,7 +97,6 @@ import {
 export const canvasHostSaveFileChannel = canvasHostChannels.saveFile
 export const canvasHostPickFileChannel = canvasHostChannels.pickFile
 export const canvasHostNotifyChannel = canvasHostChannels.notify
-export const canvasHostOpenExternalChannel = canvasHostChannels.openExternal
 export const canvasHostListGroupsChannel = canvasHostChannels.listGroups
 export const canvasHostPrepareGroupChannel = canvasHostChannels.prepareGroup
 export const canvasHostGenerateImageChannel = canvasHostChannels.generateImage
@@ -209,6 +208,7 @@ export interface CanvasWindowControllerOptions {
   accountWork?: import('./account-work-gate').AccountWorkGate
   /** Absolute path to the packaged infinite-canvas dist/ directory. */
   canvasDistRoot: string
+  /** Exact-match (I12) external destinations for popups and navigations; never the main window's list. */
   externalUrlAllowlist: readonly string[]
   systemService: SystemService
   // Typed as the backend-agnostic RelayBackendClient (relay-backend.ts), not
@@ -697,14 +697,6 @@ export function createCanvasWindowController(
     if (!title || now - lastCanvasNotificationAt < canvasNotificationIntervalMs) return false
     lastCanvasNotificationAt = now
     new Notification({ title, body }).show()
-    return true
-  })
-
-  registerCanvasHandler(canvasHostOpenExternalChannel, async (_event, urlInput) => {
-    if (typeof urlInput !== 'string' || !isAllowedExternalUrl(urlInput, options.externalUrlAllowlist)) {
-      throw new Error('不允许打开该链接')
-    }
-    await externalShell.openExternal(urlInput)
     return true
   })
 
@@ -1719,12 +1711,12 @@ export function createCanvasWindowController(
       if (canvasCrashRecovery === crashRecovery) canvasCrashRecovery = null
       if (canvasWindow === window) canvasWindow = null
     })
-    // Deny every popup by default; the only ones ever legitimate are the
-    // handful of known external links infinite-canvas itself opens via
-    // window.open(url, "_blank") (docs button, About-modal GitHub credit).
-    // Those still never get a real popup window -- shell.openExternal hands
-    // them to the OS browser instead, and the popup request itself is
-    // always denied.
+    // Every popup request is denied. A link the canvas opens with
+    // window.open or target="_blank" reaches the OS browser only when it is
+    // an exact match on the canvas's own allowlist (main.ts), and that list is
+    // empty: the synced kernel links to no fixed external page, and
+    // scripts/verify-canvas-external-links.test.cjs fails if an entry is added
+    // that the kernel source does not contain.
     window.webContents.setWindowOpenHandler(({ url }) => {
       if (isAllowedExternalUrl(url, options.externalUrlAllowlist)) {
         openExternalInBackground(url)
