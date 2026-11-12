@@ -3,7 +3,7 @@ import { platformApi } from '../../platform-api'
 import { chatTextFileFullMessage } from '../../../../electron/ai-chat-protocol'
 import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase, pastedNothingMessage } from './state'
 import { autosaveDelay, ChatStorageError, conversationLimitMessage, createHistoryWriter, MAX_CONVERSATIONS, registerHistoryFlusher, unreadableConversationsNotice, type LoadedChatHistory } from './storage'
 import { useLatestRequest } from '../../latest-request'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
@@ -347,8 +347,9 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     }
   }
   // 选图框和剪贴板都在主进程里读、在那里压缩和保存，回来的只是图片引用。结果放回
-  // 发起时的那个对话，中途切走了也不会贴错地方。
-  const attachImages = async (work: (remaining: number) => Promise<AiChatAsset[]>) => {
+  // 发起时的那个对话，中途切走了也不会贴错地方。选图框取消了回空的不用说什么；贴了却什么都没拿到，
+  // 由调用方给一句 emptyMessage。
+  const attachImages = async (work: (remaining: number) => Promise<AiChatAsset[]>, emptyMessage = '') => {
     const current = activeConversation(stateRef.current)
     const owner = epoch.capture()
     const remaining = chatLimits.imagesPerMessage - (current.draftImages?.length ?? 0)
@@ -357,7 +358,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     attachingRef.current = true; setAttaching(true)
     try {
       const assets = await work(remaining)
-      if (!alive.current || !owner() || !assets.length) return
+      if (!alive.current || !owner()) return
+      if (!assets.length) { if (emptyMessage) setError(emptyMessage); return }
       commit((workspace) => changeConversation(workspace, current.id, (item) => addDraftImages(item, assets)))
       setError('')
     } catch (reason) {
@@ -368,7 +370,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     }
   }
   const pickImages = () => attachImages((remaining) => api.pickImages(remaining))
-  const pasteImage = () => attachImages((remaining) => api.pasteImages(remaining))
+  const pasteImage = () => attachImages((remaining) => api.pasteImages(remaining), pastedNothingMessage)
   // 对话里生成的图拿来接着改：换到「生成图片」，这张图当参考图放进输入框。图已经在主进程存着，不用再读一遍。
   const reuseImage = (asset: AiChatAsset) => {
     if (activeConversation(stateRef.current).settings.mode !== 'image') selectMode('image')

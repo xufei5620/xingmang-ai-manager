@@ -491,6 +491,10 @@ export function chatAssetSaveErrorMessage(error: unknown): string {
  * 英文原话（图片存不进去时系统给的 EPERM 这类）换成兜底句。以前从第一个汉字截起，
  * Windows 用户名是中文时会从用户名那里截，带出半截路径；是不是中文按 speaksChinese 判（第三十批 A）。
  */
+// Ctrl+V 时页面看见了图片，主进程却一张都没拿到（这台电脑上复制的文件读不出位置、截图是空的）：
+// 别一声不吭，叫客户换选图那条路（J4）。
+export const pastedNothingMessage = '图片没贴上，点输入框右下角那颗带加号的图片按钮，选它就行'
+
 export function attachmentErrorMessage(error: unknown): string {
   const message = userFacingErrorMessage(error)
   if (/请先登录/.test(message)) return '请先登录，再加图片'
