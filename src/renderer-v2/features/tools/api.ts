@@ -301,7 +301,7 @@ export function createToolsApi(bridge: XingmangApi) {
       const owned = usageCache.peek()
       return owned && owned.scope === scope ? owned.usage : null
     },
-    /** 让用量缓存立刻作废：换账号时调。近 7 天的小柱子跟着一起作废。 */
+    /** 让用量缓存立刻作废：换账号、首页点余额刷新时调。近 7 天的小柱子跟着一起作废（过完的那几天另记着，不会重查）。 */
     invalidateBalanceUsage: () => { usageCache.invalidate(); weekSpend.invalidate() },
     /** 首页余额卡「近 7 天花费」每天一根柱子（只给能按时段查看板的账号用）。 */
     weekSpend: (scope?: string) => weekSpend.read(scope),

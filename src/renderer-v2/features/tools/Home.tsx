@@ -471,6 +471,8 @@ export function Home(props: HomeProps) {
   const [usageError, setUsageError] = useState('')
   const trendWanted = props.supportsUsageTrend === true && props.supportsUsage !== false
   const [week, setWeek] = useState<WeekSpend | null>(() => cachedWeekSpend(props.api, props.accountScope, trendWanted))
+  // 点了余额旁边的刷新：用量和近 7 天跟着重读一次（F3）。
+  const [usageRefresh, setUsageRefresh] = useState(0)
   const [officialOpen, setOfficialOpen] = useState(false)
   const [official, setOfficial] = useState<OfficialChatGptAccount | null>(null)
   const [uninstallGuide, setUninstallGuide] = useState<UninstallGuide | null>(null)
@@ -478,23 +480,39 @@ export function Home(props: HomeProps) {
   const [noticeSlot, setNoticeSlot] = useState<HTMLDivElement | null>(null)
   const active = useRef(true)
   useEffect(() => { active.current = true; return () => { active.current = false } }, [])
+  // 用量和近 7 天跟着余额走（F3）：一直停在首页时余额每分钟在变，这两样以前只在进首页、换账号时读，
+  // 「近 7 天花费」和靠它算的「约还能用 N 天」一下午不动。余额每读到一次（updatedAt 变了）就再要一次，
+  // 一分钟的缓存照旧挡着，不会每回都去问后台；点刷新时先作废缓存，见 refreshBalanceCard。
+  const balanceUpdatedAt = balanceState.updatedAt
   useEffect(() => {
     let current = true
     // 先摆上一次查到的（一分钟内就是它本身，不会再发请求），查回来再换；刷新失败时
-    // 手上已经有数就留着它，没有才说读不到。
+    // 手上已经有数就留着它，没有才说读不到。缓存刚作废（点了刷新）、手上已经有数时不先清空，
+    // 免得卡片一闪一跳；换账号整页重挂（外层 key={scope}），留着的不会是上一个账号的。
     const cached = cachedUsage(props.api, props.accountScope)
-    setUsage(cached); setUsageError('')
-    if (account && props.supportsUsage !== false) void props.api.balanceUsage(props.accountScope).then((value) => { if (current) setUsage(value) }).catch(() => { if (current && !cached) setUsageError('用量暂未读到') })
+    const wanted = Boolean(account) && props.supportsUsage !== false
+    if (cached || !wanted) { setUsage(cached); setUsageError('') }
+    // 「手上的数」= 这一刻卡片上摆着的：点刷新作废了缓存、重读又失败时，照旧留着它，不换成「暂未读到」。
+    const kept = cached ?? usage
+    if (wanted) void props.api.balanceUsage(props.accountScope).then((value) => { if (current) { setUsage(value); setUsageError('') } }).catch(() => { if (current && !kept) setUsageError('用量暂未读到') })
     return () => { current = false }
-  }, [account?.userId, props.accountScope, props.api, props.supportsUsage])
+  }, [account?.userId, props.accountScope, props.api, props.supportsUsage, balanceUpdatedAt, usageRefresh])
   useEffect(() => {
     let current = true
-    // 七根柱子读不到就不画，合计照旧按上面那份用量写，不另报错。
+    // 七根柱子读不到就不画，合计照旧按上面那份用量写，不另报错。不先清空同上。
     const cached = cachedWeekSpend(props.api, props.accountScope, trendWanted)
-    setWeek(cached)
-    if (account && trendWanted) void props.api.weekSpend(props.accountScope).then((value) => { if (current) setWeek(value) }).catch(() => undefined)
+    const wanted = Boolean(account) && trendWanted
+    if (cached || !wanted) setWeek(cached)
+    if (wanted) void props.api.weekSpend(props.accountScope).then((value) => { if (current) setWeek(value) }).catch(() => undefined)
     return () => { current = false }
-  }, [account?.userId, props.accountScope, props.api, trendWanted])
+  }, [account?.userId, props.accountScope, props.api, trendWanted, balanceUpdatedAt, usageRefresh])
+  /** 余额旁边的刷新：点了是要看现在的数，用量和近 7 天不认一分钟的缓存，跟余额一起重读（F3）。 */
+  function refreshBalanceCard() {
+    if (!balanceStore) return
+    props.api.invalidateBalanceUsage()
+    setUsageRefresh((value) => value + 1)
+    void balanceStore.refresh('manual')
+  }
   // 公告、活动放进首页提示区：把位置交给外层；离开首页时收回。
   const { onNoticeSlot, onNoticeRoom } = props
   useEffect(() => {
@@ -1266,7 +1284,7 @@ export function Home(props: HomeProps) {
         <div className="v2-home-balance-top">
           <strong className={lowMoney ? 'is-warn' : undefined} data-testid="home-balance">{dollars === null ? '—' : money(dollars)}</strong>
           {balanceLabel && <small data-testid="home-balance-label">{balanceLabel}</small>}
-          {balanceStore && account && <Button variant="ghost" size="xs" icon={RefreshCw} loading={balanceState.loading} aria-label="刷新账号余额" title={balanceHint} onClick={() => void balanceStore.refresh('manual')} testId="home-balance-refresh" />}
+          {balanceStore && account && <Button variant="ghost" size="xs" icon={RefreshCw} loading={balanceState.loading} aria-label="刷新账号余额" title={balanceHint} onClick={refreshBalanceCard} testId="home-balance-refresh" />}
           {props.supportsBilling !== false && <Button variant="secondary" size="sm" onClick={() => props.onNavigate('account', 'recharge')} testId="home-recharge">充值</Button>}
         </div>
         {balanceState.error && <p className="v2-balance-error" role="status" title={balanceState.error}>更新失败，{balance ? '显示上次余额' : '请重试'}</p>}

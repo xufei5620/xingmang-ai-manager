@@ -34,6 +34,19 @@ describe('balance runway', () => {
     expect(buildBalanceRunway({ walletUsd: 0, subscription: plan({ remainingUsd: null }), weekUsageUsd: 7 })).toEqual({ usableUsd: null, days: null, low: false })
   })
 
+  it('does not divide a quota that comes back every day, week or month by the daily spend (F2)', () => {
+    // 每天 $10、每天用 $8：下午剩 $2 时按一次性额度算是「不到 1 天」，其实明天 0 点又回来。
+    const daily = plan({ remainingUsd: 2, lowRemaining: true, resetsAt: '2026-10-21T16:00:00Z' })
+    expect(buildBalanceRunway({ walletUsd: 0, subscription: daily, weekUsageUsd: 56 })).toEqual({ usableUsd: null, days: null, low: false })
+    expect(buildBalanceRunway({ walletUsd: 0, subscription: { ...daily, subscriptionOnly: true }, weekUsageUsd: 56 })).toEqual({ usableUsd: null, days: null, low: false })
+    // 订阅先扣、钱包兜底：日均里多少是订阅包掉的分不出来，钱包单算一样不说低。
+    expect(buildBalanceRunway({ walletUsd: 1, subscription: daily, weekUsageUsd: 56 })).toEqual({ usableUsd: null, days: null, low: false })
+    expect(balanceRunwayText(buildBalanceRunway({ walletUsd: 0, subscription: daily, weekUsageUsd: 56 }))).toBeNull()
+    // 这一期赶不到到期前再恢复（resetsAt 为 null）的，剩下的就是最后这些：照旧按一次性算。
+    expect(buildBalanceRunway({ walletUsd: 0, subscription: plan({ remainingUsd: 2, resetsAt: null }), weekUsageUsd: 56 })).toEqual({ usableUsd: 2, days: 0, low: true })
+    expect(buildBalanceRunway({ walletUsd: 0, subscription: plan({ remainingUsd: 2 }), weekUsageUsd: 56 })).toEqual({ usableUsd: 2, days: 0, low: true })
+  })
+
   it('neither counts days nor calls the wallet low or empty while the subscription is unread', () => {
     const unread = buildBalanceRunway({ walletUsd: 0, subscription: null, subscriptionUnknown: true, weekUsageUsd: 7 })
     expect(unread).toEqual({ usableUsd: null, days: null, low: false })
