@@ -34,7 +34,7 @@ import { createChatHistoryFlush } from './chat-history-flush'
 import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
-import { calculateUiZoom, resolveWindowPlacement, shouldFollowSystemTextSize } from './window-preferences'
+import { calculateUiZoom, resolveWindowPlacement, shouldDefaultToLargeText, shouldFollowSystemTextSize } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { createSensitiveClipboard } from './sensitive-clipboard'
 import { fitOversizedWindow, recoverOffscreenWindow } from './window-recovery'
@@ -2609,6 +2609,7 @@ if (!hasSingleInstanceLock) {
         lowEndDevice,
         ...(settingsSaveIssue ? { settingsSaveIssue } : {}),
         ...(displayCompatPending ? { displayCompat: 'auto' as const } : {}),
+        ...(shouldDefaultToLargeText(systemTextScale) ? { largeTextByDefault: true as const } : {}),
         ...(unexpectedExit ? { unexpectedExit } : {}),
         ...(claudeDesktopRepaired ? { claudeDesktopRepaired: true as const } : {}),
         ...(linuxSystemLabel ? { systemLabel: linuxSystemLabel } : {}),
