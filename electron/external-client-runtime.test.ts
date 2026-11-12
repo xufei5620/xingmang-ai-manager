@@ -730,7 +730,7 @@ describe('external desktop client lifecycle', () => {
     const statuses = await f.runtime.scan()
     expect(statuses[2].installHint).toBe(externalClientWingetUnavailableHint)
     expect(statuses[2].installHint).not.toMatch(/winget|ENOENT|App Installer/i)
-    expect(statuses.map((entry) => entry.officialDownloadUrl)).toEqual(['https://www.workbuddy.ai/', null, 'https://opencode.ai/download'])
+    expect(statuses.map((entry) => entry.officialDownloadUrl)).toEqual(['https://www.workbuddy.ai/', null, 'https://opencode.ai/desktop'])
     clock += 10 * 60_000
     await f.runtime.scan({ force: true })
     expect(onWingetUnavailable.mock.calls).toEqual([[reason]])

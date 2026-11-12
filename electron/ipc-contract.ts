@@ -578,6 +578,9 @@ export type AccountChangePasswordResult = NewApiChangePasswordResult
 // home / chat / tasks / announcement / usage / health 只由系统通知的点击发出（platform/notifications.ts）。
 export type RendererNavigationTarget = 'settings' | 'updates' | 'topup' | 'acceleration' | 'home' | 'chat' | 'tasks' | 'announcement' | 'usage' | 'health'
 
+/** 「界面缩放」往哪边走一步：放大、缩小、恢复自动。键盘（⌘/Ctrl 加减 0）和 Mac「显示」菜单共用。 */
+export type UiScaleShortcut = 'larger' | 'smaller' | 'reset'
+
 export interface AccountManagedCliConfigurationInput {
   providers: ProviderId[]
   preferredModels: Partial<Record<ProviderId, string>>
@@ -1587,6 +1590,11 @@ export interface XingmangEventContract {
   onNavigate: IpcEventDefinition<'navigation:open-page', RendererNavigationTarget>
   onExternalDeepLink: IpcEventDefinition<'navigation:deep-link-pending', undefined>
   onLaunchTool: IpcEventDefinition<'window:launch-tool', ProviderId | 'codexDesktop'>
+  /**
+   * Mac「显示」菜单里点了实际大小、放大、缩小，当时在前面的是主窗口（深查 TR-3）。界面照键盘那条路
+   * 改「界面缩放」设置：会存、设置页跟着变，不再用 Chromium 自带的缩放。
+   */
+  onUiScaleShortcut: IpcEventDefinition<'window:ui-scale-shortcut', UiScaleShortcut>
   onNodeRuntimeInstallProgress: IpcEventDefinition<
     'runtime:node-install-progress',
     NodeRuntimeInstallProgress
@@ -1896,6 +1904,7 @@ export const ipcEventChannels = {
   onNavigate: 'navigation:open-page',
   onExternalDeepLink: 'navigation:deep-link-pending',
   onLaunchTool: 'window:launch-tool',
+  onUiScaleShortcut: 'window:ui-scale-shortcut',
   onNodeRuntimeInstallProgress: 'runtime:node-install-progress',
   onPythonRuntimeInstallProgress: 'runtime:python-install-progress',
   onGitRuntimeInstallProgress: 'runtime:git-install-progress',

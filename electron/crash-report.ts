@@ -201,6 +201,21 @@ export function crashReportDist(platform: string, arch: string): string {
   return `${platform}-${arch}`
 }
 
+export type CrashReportEnvironmentName = 'production' | 'testing' | 'development'
+
+/**
+ * Sentry's issue views and alerts are meant to be read for `production`. A
+ * test package (package-for-testing.yml, `xingmangTestingBuild` in its
+ * packaged package.json) carries the version about to ship and runs on test
+ * machines before that version is out. It still reports, so a crash there is
+ * seen, but under `testing`, so it does not count as the new release's first
+ * errors before any customer has it (R4).
+ */
+export function crashReportEnvironmentName(input: { packaged: boolean; testingBuild: boolean }): CrashReportEnvironmentName {
+  if (!input.packaged) return 'development'
+  return input.testingBuild ? 'testing' : 'production'
+}
+
 // Everything the app ships sits under app.asar (or app.asar.unpacked), and the
 // main window loads its renderer from xingmang://app/, which serves the
 // archive's dist/ directory (security.ts resolvePackagedApplicationFile).
@@ -339,19 +354,27 @@ export const crashReportingDisableEnvironmentKey = 'XINGMANG_DISABLE_CRASH_REPOR
 /**
  * Set to '1' to send one synthetic event at startup. The only way to confirm
  * end to end that a *packaged* build reaches the dashboard without waiting for
- * a real crash; it obeys the preference and the packaged check like any other
- * report.
+ * a real crash; it obeys the preference and the build checks of
+ * shouldReportCrashes like any other report.
  */
 export const crashReportSelfTestEnvironmentKey = 'XINGMANG_CRASH_REPORT_TEST'
 
 export function shouldReportCrashes(input: {
   packaged: boolean
+  /** package.json 的 xingmangLocalBuild：本机和 test-build.yml 出的快包。 */
+  localBuild: boolean
   crashReporting?: boolean
   env?: NodeJS.ProcessEnv
 }): boolean {
   // Development builds crash constantly and on purpose; their stacks would
   // bury the releases that matter.
   if (!input.packaged) return false
+  // A local build carries the version already on main -- the release that is
+  // out -- around newer code, so its stacks would land under that release and
+  // be matched against the wrong source maps. Packaged apps launched by GitHub
+  // Actions smoke jobs (CI=true) are not customers either. Same rule as the
+  // daily usage ping, shouldSendUsageStats in usage-stats.ts (R4).
+  if (input.localBuild || input.env?.CI === 'true') return false
   if (input.env?.[crashReportingDisableEnvironmentKey] === '1') return false
   // Absent = 开启。Only an explicit false is an opt-out (see app-settings.ts).
   return input.crashReporting !== false

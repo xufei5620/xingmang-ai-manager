@@ -108,6 +108,10 @@ describe('external client snapshot cache', () => {
       const row: Record<string, unknown> = { ...rows[1], [field]: value }
       expect(parseExternalClientSnapshotCache(document([rows[0], row, rows[2]])), `${field}=${String(value)}`).toBeNull()
     }
+    // 上一版落盘的 OpenCode 总览页已不在外链白名单里（L4）：不拿来画首页，等这次真的检测结果。
+    const opencodeRow = { ...rows[2], installSupported: false, officialDownloadUrl: externalClientOfficialDownloadUrls.opencode }
+    expect(parseExternalClientSnapshotCache(document([rows[0], rows[1], opencodeRow]))).not.toBeNull()
+    expect(parseExternalClientSnapshotCache(document([rows[0], rows[1], { ...opencodeRow, officialDownloadUrl: 'https://opencode.ai/download' }]))).toBeNull()
     // A foreign download page from this process is simply not written down.
     const saved = serializeExternalClientSnapshotCache([{ ...rows[0], officialDownloadUrl: 'https://evil.example/download' }, rows[1], rows[2]], new Date())
     expect(saved).not.toContain('evil.example')

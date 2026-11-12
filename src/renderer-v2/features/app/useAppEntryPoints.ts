@@ -18,7 +18,7 @@ interface AppEntryPointsOptions {
   setAnnouncementOpen: Dispatch<SetStateAction<boolean>>
 }
 
-/** 不经过界面按钮进来的那几条路：系统通知、托盘「已安装的工具」、快捷键。 */
+/** 不经过界面按钮进来的那几条路：系统通知、托盘「已安装的工具」、Mac 菜单、快捷键。 */
 export function useAppEntryPoints({ native, navigate, session, os, settings, snapshot, changeUiScale, requestLaunchInLastWorkspace, setAnnouncementOpen }: AppEntryPointsOptions) {
   useEffect(() => native.onNavigate((target) => {
     // 系统通知点进来：余额去「充值订阅」，异步任务去「用量账单」里那一节，花费突然变多去「用量账单」，公告直接打开公告。
@@ -30,6 +30,8 @@ export function useAppEntryPoints({ native, navigate, session, os, settings, sna
   }), [native, navigate, session, setAnnouncementOpen])
   // 托盘点的那一下和快捷键都按当时的检测结果和登录态打开，所以这两样一变就重新挂一次。
   useEffect(() => native.onLaunchTool((id) => { if (isToolId(id)) void requestLaunchInLastWorkspace(id) }), [native, snapshot, session.authenticated])
+  // Mac「显示」菜单点的实际大小、放大、缩小（主窗口在前时主进程才发）跟快捷键走同一条路，会存、设置页跟着变（TR-3）。
+  useEffect(() => native.onUiScaleShortcut((shortcut) => { if (settings) changeUiScale(shortcut) }), [native, settings, changeUiScale])
   useEffect(() => {
     function onShortcut(event: KeyboardEvent) {
       // 放大缩小对整个窗口都有效，弹窗开着也照样能调；Mac 上这里拦下后菜单里的「放大」就不会再动一遍。

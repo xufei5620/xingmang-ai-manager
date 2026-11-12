@@ -11,6 +11,7 @@ import type { NewApiPaymentForm, NewApiTopupOrderStatus } from './new-api-client
 import { RealmAccountError } from './realm-account'
 import {
   PaymentCheckoutRejected,
+  applyPageProxyMode,
   buildPaymentWindowTitle,
   createPaymentWindowController,
   detectPaymentWindowTerminalStatus,
@@ -536,6 +537,17 @@ describe('createPaymentWindowController', () => {
     expect(first.session.setProxy).toHaveBeenCalledExactlyOnceWith({ mode: 'direct' })
     expect(second.session.setProxy).toHaveBeenCalledExactlyOnceWith({ mode: 'system' })
     controller.destroy()
+  })
+
+  it('applies a page connection mode without ever failing the open', async () => {
+    const target = { setProxy: vi.fn(async (_config: Electron.ProxyConfig) => undefined) }
+    await applyPageProxyMode(target, 'direct')
+    expect(target.setProxy).toHaveBeenCalledExactlyOnceWith({ mode: 'direct' })
+
+    target.setProxy.mockRejectedValueOnce(new Error('setProxy failed'))
+    await expect(applyPageProxyMode(target, 'system')).resolves.toBeUndefined()
+    target.setProxy.mockImplementationOnce(() => { throw new Error('session gone') })
+    await expect(applyPageProxyMode(target, 'system')).resolves.toBeUndefined()
   })
 
   it('still opens the payment page when the connection mode cannot be applied', async () => {

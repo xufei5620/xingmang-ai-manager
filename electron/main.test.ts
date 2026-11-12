@@ -79,6 +79,30 @@ describe('main process window events', () => {
     // 界面缩在托盘里被关掉时，跳页先存着，重新加载好了再发（renderer-release.ts）。
     expect(assignments[0].value).toBe("(target) => { showMainWindow(); deliverToMainWindow('onNavigate', target) }")
   })
+
+  it('passes the macOS View zoom commands to the main window interface only while it is the focused window', () => {
+    // 深查 TR-3：画布窗口在前时 ⌘- / ⌘= 不再把整个画布界面缩放；付款、开票窗口同样不管，跟 Windows 上一样。
+    const { source } = mainSource()
+    const callback = startupCallback(source)
+    const menuHandlers: string[] = []
+    const assignments: Array<{ value: string, owner: ts.Node | undefined }> = []
+    function visit(node: ts.Node): void {
+      if (ts.isCallExpression(node) && node.expression.getText(source) === 'buildMacApplicationMenuTemplate') {
+        menuHandlers.push(node.arguments[2]?.getText(source) ?? '')
+      }
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && node.left.getText(source) === 'uiScaleFromAppMenu') {
+        assignments.push({ value: node.right.getText(source), owner: enclosingFunction(node) })
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(menuHandlers).toEqual(['(shortcut, focusedWindow) => uiScaleFromAppMenu?.(shortcut, focusedWindow)'])
+    expect(assignments).toHaveLength(1)
+    expect(assignments[0].owner).toBe(callback)
+    // 不叫出主窗口，也不经 deliverToMainWindow 存着补发：界面没开着时这一下就算了。
+    expect(assignments[0].value).toBe("(shortcut, focusedWindow) => { if (focusedWindow === mainWindow) sendToMainWindow('onUiScaleShortcut', shortcut) }")
+  })
 })
 
 // What a step runs, one entry per statement, whitespace and a trailing `;`

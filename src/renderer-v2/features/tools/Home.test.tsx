@@ -1608,7 +1608,7 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
     } as unknown as ToolboxSnapshot
     const opencode = {
       ...macClient, tool: 'opencode', installHint: '这台电脑缺少系统自带的应用安装组件，不能一键安装；点「去官网下载」装好后回来重新检测',
-      officialDownloadUrl: 'https://opencode.ai/download',
+      officialDownloadUrl: 'https://opencode.ai/desktop',
     } as typeof macClient
     const withDownload = render({}, undefined, { snapshot: windows, externalClients: [opencode], onOpenExternalDownload: () => undefined })
     expect(rowButton(withDownload, 'opencode')).toContain('去官网下载')
