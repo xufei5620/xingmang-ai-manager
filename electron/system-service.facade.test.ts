@@ -82,7 +82,7 @@ function rendererTarget() {
   return { isDestroyed: () => false, send: vi.fn() }
 }
 
-function macCodexApp(appPath: string, running = true) {
+function macCodexApp(appPath: string, running: boolean | null = true) {
   return vi.fn(async (): Promise<MacosCodexAppInspection> => ({
     app: { path: appPath, version: '26.1007.0', running },
     detectionFailed: false,
@@ -284,6 +284,34 @@ describe('inspectRunningTools', () => {
     })
     expect(resolveCliInstallation).toHaveBeenCalledWith('claude', expect.objectContaining({ platform: 'darwin' }))
     expect(resolveCliInstallation).toHaveBeenCalledWith('codex', expect.objectContaining({ platform: 'darwin' }))
+  })
+  it('treats a Mac Codex desktop app whose running state could not be read as unknown, not closed (C-2)', async () => {
+    const root = temporaryRoot()
+    const { service } = createFixture({
+      platform: 'darwin',
+      resolveCliInstallation: async () => null,
+      macosCodexAppDetector: macCodexApp(path.join(root, 'Codex.app'), null),
+    }, root)
+
+    // null 是「看不出来」：保存配置那边见到它就不去改 Codex 的配置（config-save-service 的 codexDesktopRunning !== false）。
+    await expect(provided(service.inspectRunningTools, 'inspectRunningTools')(['codex'])).resolves.toMatchObject({
+      running: [],
+      unknown: [],
+      codexDesktopRunning: null,
+    })
+  })
+
+  it('still reports a Mac Codex desktop app confirmed closed as not running', async () => {
+    const root = temporaryRoot()
+    const { service } = createFixture({
+      platform: 'darwin',
+      resolveCliInstallation: async () => null,
+      macosCodexAppDetector: macCodexApp(path.join(root, 'Codex.app'), false),
+    }, root)
+
+    await expect(provided(service.inspectRunningTools, 'inspectRunningTools')(['codex'])).resolves.toMatchObject({
+      codexDesktopRunning: false,
+    })
   })
 })
 

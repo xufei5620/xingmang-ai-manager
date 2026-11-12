@@ -1966,6 +1966,26 @@ describe('buildCodexDesktopDarwinStatus', () => {
     expect(result.detectionError).toBe('stale probe')
   })
 
+  it('keeps running false for old readers but marks an unanswered running probe as unknown', () => {
+    // C-2 (Mac): the running probe failed for an installed app. `running` stays a
+    // boolean for the home page and diagnostics, while runningUnknown lets the
+    // pre-save check treat it as "cannot tell" instead of a confirmed "not open".
+    const unknown = buildCodexDesktopDarwinStatus({
+      status: 'fulfilled',
+      value: { ...installedApp, app: { path: '/Applications/Codex.app', version: '26.727.51351', running: null } },
+    })
+    expect(unknown).toMatchObject({ installed: true, running: false, runningUnknown: true, detectionFailed: false })
+
+    const closed = buildCodexDesktopDarwinStatus({
+      status: 'fulfilled',
+      value: { ...installedApp, app: { path: '/Applications/Codex.app', version: '26.727.51351', running: false } },
+    })
+    expect(closed.running).toBe(false)
+    expect(closed).not.toHaveProperty('runningUnknown')
+    expect(buildCodexDesktopDarwinStatus({ status: 'fulfilled', value: installedApp })).not.toHaveProperty('runningUnknown')
+    expect(buildCodexDesktopDarwinStatus({ status: 'fulfilled', value: confirmedAbsent })).not.toHaveProperty('runningUnknown')
+  })
+
   it('degrades a rejected detector promise to detectionFailed instead of a confirmed absence', () => {
     // The detector is caller-injectable (CodexDesktopServiceOptions.detectMacosCodexApp);
     // a substitute that throws outright — as system-service.test.ts's darwin
