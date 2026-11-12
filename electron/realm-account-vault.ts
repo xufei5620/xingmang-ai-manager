@@ -20,11 +20,23 @@ export interface RealmVaultStorage {
   /** Must atomically replace the file or reject with the original file intact. */
   writeAtomic(ciphertext: string): Promise<void>
   /** Preserve the exact failed ciphertext before replacing it; reject if it changed. */
-  recoverAtomic?(expectedCiphertext: string, replacementCiphertext: string): Promise<void>
+  recoverAtomic?(expectedCiphertext: string, replacementCiphertext: string, reason: RealmVaultRecoveryReason): Promise<void>
 }
 
-export type RealmVaultFailureStage = 'availability' | 'read' | 'decode' | 'decrypt' | 'validate'
+export type RealmVaultFailureStage = 'availability' | 'read' | 'decode' | 'decrypt' | 'parse' | 'validate'
   | 'encrypt' | 'verify' | 'write' | 'recover'
+
+/**
+ * 点登录时可以留一份备份、换成空库的几种「读不懂」（DM-2）：decode 是文件本身坏了（空的、截断、
+ * 被别的程序改过、坏道读出乱码），decrypt 是钥匙丢了或密文被改，parse 是解得开、却连一份 JSON
+ * 文档都不是。validate 不在里面：解得开、是 JSON、只是版本或字段认不出，多半是退回旧版读到了
+ * 新版写的库，清掉它客户升回去以后账号也没了。读不到文件（权限、链接、大小）同样不算。
+ */
+export type RealmVaultRecoveryReason = Extract<RealmVaultFailureStage, 'decode' | 'decrypt' | 'parse'>
+
+function isRealmVaultRecoveryReason(stage: RealmVaultFailureStage): stage is RealmVaultRecoveryReason {
+  return stage === 'decode' || stage === 'decrypt' || stage === 'parse'
+}
 
 // The OS key store itself refused, as opposed to the file being unreadable. On
 // macOS this is a denied or dismissed keychain prompt: Chromium keeps the key
@@ -145,18 +157,26 @@ export function createRealmAccountVault(storage: RealmVaultStorage): RealmAccoun
     try { return await storage.read() } catch { throw new RealmVaultStorageError('read') }
   }
 
-  function decode(ciphertext: string): VaultDocument {
-    if (!ciphertext || Buffer.byteLength(ciphertext) > maxFileBytes
+  function decode(content: string): VaultDocument {
+    // 记事本这类编辑器打开再存，会在末尾补换行、在开头加 BOM（trim 连 U+FEFF 一起去掉）；
+    // 密文本身没坏，去掉它们照常读（DM-2）。
+    const ciphertext = content.trim()
+    if (!ciphertext || Buffer.byteLength(content) > maxFileBytes
       || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(ciphertext)) {
       throw new RealmVaultStorageError('decode')
     }
     let plaintext: string
     try { plaintext = storage.decryptString(Buffer.from(ciphertext, 'base64')) }
     catch { throw new RealmVaultStorageError('decrypt') }
+    if (Buffer.byteLength(plaintext) > maxPlaintextBytes) throw new RealmVaultStorageError('validate')
+    // A future build must keep writing a JSON object here (or move to a new
+    // file name): this build reads anything else as damage and replaces it on
+    // an explicit signed-out login, which would lose the newer accounts.
+    let data: unknown
+    try { data = JSON.parse(plaintext) } catch { throw new RealmVaultStorageError('parse') }
+    if (!isRealmRecord(data)) throw new RealmVaultStorageError('parse')
     try {
-      if (Buffer.byteLength(plaintext) > maxPlaintextBytes) throw new Error()
-      const data: unknown = JSON.parse(plaintext)
-      if (!isRealmRecord(data) || data.version !== 2 || !Array.isArray(data.accounts) || data.accounts.length > maxAccounts) throw new Error()
+      if (data.version !== 2 || !Array.isArray(data.accounts) || data.accounts.length > maxAccounts) throw new Error()
       const accounts = data.accounts.map(parseRealmSavedAccount)
       const ids = new Set(accounts.map(realmOwnerKey))
       if (ids.size !== accounts.length || (data.activeId !== null && (typeof data.activeId !== 'string' || !ids.has(data.activeId)))) throw new Error()
@@ -198,15 +218,20 @@ export function createRealmAccountVault(storage: RealmVaultStorage): RealmAccoun
     }
   }
 
+  /** Returns why the bytes are unreadable, or rethrows anything that must be preserved. */
+  function unreadableReason(error: unknown): RealmVaultRecoveryReason {
+    if (error instanceof RealmVaultStorageError && isRealmVaultRecoveryReason(error.stage)) return error.stage
+    throw error
+  }
+
   function recoverUnreadable(): Promise<boolean> {
     return enqueue(async () => {
       const ciphertext = await readCiphertext()
       if (ciphertext === null) return false
-      try { decode(ciphertext); return false } catch (error) {
-        // Incompatible schemas, unsafe paths and I/O failures are not evidence
-        // of a lost encryption key. Preserve those records without recovery.
-        if (!(error instanceof RealmVaultStorageError) || error.stage !== 'decrypt') throw error
-      }
+      let reason: RealmVaultRecoveryReason
+      // Unknown schemas, unsafe paths and I/O failures rethrow here and are
+      // preserved without recovery (see RealmVaultRecoveryReason).
+      try { decode(ciphertext); return false } catch (error) { reason = unreadableReason(error) }
       if (!storage.recoverAtomic) throw new RealmVaultStorageError('recover')
       assertEncryption()
       try {
@@ -215,12 +240,10 @@ export function createRealmAccountVault(storage: RealmVaultStorage): RealmAccoun
       } catch { throw new RealmVaultStorageError('verify') }
       // A temporarily unavailable key may have recovered during the probe.
       assertEncryption()
-      try { decode(ciphertext); return false } catch (error) {
-        if (!(error instanceof RealmVaultStorageError) || error.stage !== 'decrypt') throw error
-      }
+      try { decode(ciphertext); return false } catch (error) { reason = unreadableReason(error) }
       // The durable marker prevents resurrecting legacy sessions after reset.
       const replacement = encode({ version: 2, activeId: null, accounts: [], legacyMigrated: true })
-      try { await storage.recoverAtomic(ciphertext, replacement) }
+      try { await storage.recoverAtomic(ciphertext, replacement, reason) }
       catch { throw new RealmVaultStorageError('recover') }
       return true
     })
