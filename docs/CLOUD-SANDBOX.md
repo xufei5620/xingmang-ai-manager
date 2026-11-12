@@ -110,6 +110,8 @@ node node_modules/electron/install.js
 
 另外，容器的环境变量里有一批 `ANTHROPIC_*`、`CLAUDE_*`（11-11 验）。在子进程里真跑某个 CLI 时用 `env -i` 起，否则这些变量会把它的请求带到真服务上。
 
+容器没设 `LANG`。起 Electron 时带上 `LANG=C.UTF-8`，否则碰到中文文件名会整个崩掉，只打一行 `Trace/breakpoint trap`，看着像产品的毛病。11-12 验：同一个剪贴板探针粘贴复制的 `截图.png`，不带 `LANG` 每次都崩，带上就正常；英文文件名两种都正常。
+
 ## 8. 仓库里的规则，云端线程读到哪些
 
 - 根目录 `CLAUDE.md`（导入 `AGENTS.md`）每个线程开工就读。
