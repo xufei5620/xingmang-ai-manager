@@ -133,12 +133,23 @@ export function parseDataTransferExportInput(value: unknown): DataTransferExport
   return { conversations: parseConversations(value.conversations, '导出的聊天对话格式无效'), phrases: parsePhrases(value.phrases, '导出的常用的话格式无效') }
 }
 
-export function buildDataTransferFile(settings: AppSettings, input: DataTransferExportInput, exportedAt: Date): string {
+// 「隐私数据」里的「匿名使用统计」不在 settings.json，存在系统界面设置那份文件里（privacy.anonymousUsage，
+// 没碰过 = 开），所以不进 PortableSettings 那一套：导出时由主进程另外读出来放进文件的 settings 里，导入时
+// 不走 settings:save，由设置页走和那个开关同一条路（setPrivacyPreference）写（X-3）。规矩和上面几项一样：
+// 这台还是新装的「开」就照文件换，关过了才问，所以导入只会直接把它关掉，要打开一定先问过客户。
+const anonymousUsageLabel = '匿名使用统计'
+const anonymousUsageUntouched = true
+
+/**
+ * anonymousUsage 是导出那台电脑上「匿名使用统计」存着的样子（没碰过 = 开）；系统界面设置读不出来时给 null，
+ * 文件里就不写这一项：不知道客户选的是什么，不替客户定，新电脑那边照旧不动。
+ */
+export function buildDataTransferFile(settings: AppSettings, input: DataTransferExportInput, exportedAt: Date, anonymousUsage?: boolean | null): string {
   const content = JSON.stringify({
     format: DATA_TRANSFER_FORMAT,
     version: DATA_TRANSFER_VERSION,
     exportedAt: exportedAt.toISOString(),
-    settings: buildPortableSettings(settings),
+    settings: { ...buildPortableSettings(settings), ...(typeof anonymousUsage === 'boolean' ? { anonymousUsage } : {}) },
     conversations: input.conversations,
     ...(input.phrases?.length ? { phrases: input.phrases } : {}),
   })
@@ -150,7 +161,13 @@ export function buildDataTransferFile(settings: AppSettings, input: DataTransfer
 // (I5): every setting is checked against its allowed values, and anything off
 // rejects the whole file rather than importing the part that looked fine.
 // Unknown keys are ignored so a newer same-version file still imports.
-export function parseDataTransferFile(raw: string): { settings: Partial<PortableSettings>; conversations: Record<string, unknown>[]; phrases: string[] } {
+export function parseDataTransferFile(raw: string): {
+  settings: Partial<PortableSettings>
+  /** 旧版本导出的文件没有这一项。 */
+  anonymousUsage?: boolean
+  conversations: Record<string, unknown>[]
+  phrases: string[]
+} {
   let parsed: unknown
   try { parsed = JSON.parse(raw) } catch { throw new Error(dataTransferInvalidMessage) }
   if (!isRecord(parsed) || parsed.format !== DATA_TRANSFER_FORMAT || typeof parsed.version !== 'number' || !Number.isInteger(parsed.version) || parsed.version < 1) {
@@ -165,18 +182,32 @@ export function parseDataTransferFile(raw: string): { settings: Partial<Portable
     if (!(allowed[key] as readonly unknown[]).includes(value)) throw new Error(dataTransferInvalidMessage)
     Object.assign(settings, { [key]: value })
   }
-  return { settings, conversations: parseConversations(parsed.conversations, dataTransferInvalidMessage), phrases: parsePhrases(parsed.phrases, dataTransferInvalidMessage) }
+  const anonymousUsage = parsed.settings.anonymousUsage
+  if (anonymousUsage !== undefined && typeof anonymousUsage !== 'boolean') throw new Error(dataTransferInvalidMessage)
+  return {
+    settings,
+    ...(anonymousUsage === undefined ? {} : { anonymousUsage }),
+    conversations: parseConversations(parsed.conversations, dataTransferInvalidMessage),
+    phrases: parsePhrases(parsed.phrases, dataTransferInvalidMessage),
+  }
 }
 
 /**
  * Splits the imported settings into what can be applied as is (this computer
  * still has the fresh-install value) and what would overwrite a choice the user
  * already made here, which the renderer asks about first.
+ *
+ * anonymousUsage carries the usage-stats switch, which lives outside
+ * settings.json: `here` is what this computer has stored (null when that file
+ * cannot be read, in which case the file's value is left alone). Because the
+ * fresh-install value is on, an import can only switch it off silently;
+ * switching it back on always goes through the question.
  */
 export function planPortableSettingsImport(
   current: AppSettings,
   incoming: Partial<PortableSettings>,
-): Pick<DataTransferImportPreview, 'settings' | 'conflictingSettings' | 'conflictLabels'> {
+  anonymousUsage?: { here: boolean | null; incoming?: boolean },
+): Pick<DataTransferImportPreview, 'settings' | 'conflictingSettings' | 'conflictLabels' | 'anonymousUsage' | 'conflictingAnonymousUsage'> {
   const here = buildPortableSettings(current)
   const settings: AppSettingsUpdate = { version: 2 }
   const conflictingSettings: AppSettingsUpdate = { version: 2 }
@@ -192,7 +223,13 @@ export function planPortableSettingsImport(
       conflictLabels.push(label)
     }
   }
-  return { settings, conflictingSettings, conflictLabels }
+  const usage = anonymousUsage?.incoming
+  const usageHere = anonymousUsage?.here
+  if (usage === undefined || usageHere === null || usageHere === undefined || usage === usageHere) {
+    return { settings, conflictingSettings, conflictLabels }
+  }
+  if (usageHere === anonymousUsageUntouched) return { settings, conflictingSettings, conflictLabels, anonymousUsage: usage }
+  return { settings, conflictingSettings, conflictLabels: [...conflictLabels, anonymousUsageLabel], conflictingAnonymousUsage: usage }
 }
 
 export function dataTransferFileName(now: Date): string {

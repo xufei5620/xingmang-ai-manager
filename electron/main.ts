@@ -2553,6 +2553,14 @@ if (!hasSingleInstanceLock) {
       documentsDirectory: () => app.getPath('documents'),
       aiOutputDirectory: () => currentBusiness().aiOutputPlacement.root,
       downloadsDirectory: () => app.getPath('downloads'),
+      // 设置页那个开关同一份文件、同一种读法（没碰过 = 开）；读不出来交 null，「搬到新电脑」就不带也不碰它（X-3）。
+      readAnonymousUsagePreference: () => {
+        try {
+          return new PlatformSettingsStore(platformPreferencesPath).read().privacy?.anonymousUsage !== false
+        } catch {
+          return null
+        }
+      },
       accountService,
       paymentWindow,
       invoicePortalWindow,

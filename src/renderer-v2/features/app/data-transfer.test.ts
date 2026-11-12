@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from './data-transfer'
+import { anonymousUsageFrom, dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from './data-transfer'
 
 describe('data transfer wording', () => {
   it('names the saved file and what is in it', () => {
@@ -29,5 +29,14 @@ describe('data transfer wording', () => {
   it('merges settings updates and drops the version marker', () => {
     expect(settingsPatchFrom({ version: 2 })).toBeNull()
     expect(settingsPatchFrom({ version: 2, theme: 'dark' }, { version: 2, closeBehavior: 'tray' })).toEqual({ theme: 'dark', closeBehavior: 'tray' })
+  })
+
+  it('switches usage stats back on only when the user chose the file in the question', () => {
+    // X-3：这台关过的「匿名使用统计」，点「保留这台电脑的」照旧关着。
+    expect(anonymousUsageFrom({ conflictingAnonymousUsage: true }, false)).toBeUndefined()
+    expect(anonymousUsageFrom({ conflictingAnonymousUsage: true }, true)).toBe(true)
+    expect(anonymousUsageFrom({ anonymousUsage: false }, false)).toBe(false)
+    expect(anonymousUsageFrom({ anonymousUsage: false }, true)).toBe(false)
+    expect(anonymousUsageFrom({}, true)).toBeUndefined()
   })
 })

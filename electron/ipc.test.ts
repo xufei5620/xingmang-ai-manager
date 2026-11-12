@@ -1703,6 +1703,54 @@ describe('registerIpcHandlers', () => {
     } finally { fs.rmSync(directory, { recursive: true, force: true }) }
   })
 
+  it('carries the usage-stats switch across computers without ever turning it on unasked', async () => {
+    // X-3：「匿名使用统计」在系统界面设置那份文件里，以前「搬到新电脑」不带它。
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
+    try {
+      let here: boolean | null = false
+      let readFails = false
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, {
+        downloadsDirectory: () => directory,
+        readAnonymousUsagePreference: () => {
+          if (readFails) throw new Error('系统界面设置无法读取，原文件已保留。')
+          return here
+        },
+      })
+      const exportData = electronMocks.handlers.get('data-transfer:export')!
+      const importData = electronMocks.handlers.get('data-transfer:import')!
+      const exported = path.join(directory, 'off.json')
+      electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: exported })
+      await exportData(trustedEvent(), { conversations: [] })
+      expect(JSON.parse(fs.readFileSync(exported, 'utf8')).settings.anonymousUsage).toBe(false)
+
+      // 新电脑还是新装的「开」：直接关，不问。
+      here = true
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [exported] })
+      await expect(importData(trustedEvent())).resolves.toMatchObject({ anonymousUsage: false, conflictLabels: [] })
+
+      // 这台关过、文件里是开：只进询问框。
+      const turnedOn = path.join(directory, 'on.json')
+      fs.writeFileSync(turnedOn, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: { anonymousUsage: true }, conversations: [] }))
+      here = false
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [turnedOn] })
+      const asked = await importData(trustedEvent())
+      expect(asked).toMatchObject({ conflictingAnonymousUsage: true, conflictLabels: ['匿名使用统计'] })
+      expect(asked).not.toHaveProperty('anonymousUsage')
+
+      // 这台读不出来：导出不写这一项，导入不碰它。
+      readFails = true
+      const unreadable = path.join(directory, 'unreadable.json')
+      electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: unreadable })
+      await exportData(trustedEvent(), { conversations: [] })
+      expect(JSON.parse(fs.readFileSync(unreadable, 'utf8')).settings).not.toHaveProperty('anonymousUsage')
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [exported] })
+      const untouched = await importData(trustedEvent())
+      expect(untouched).not.toHaveProperty('anonymousUsage')
+      expect(untouched).not.toHaveProperty('conflictingAnonymousUsage')
+      dispose()
+    } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  })
+
   it('saves one conversation as text where the user picks', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
     try {
