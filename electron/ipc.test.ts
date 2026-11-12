@@ -71,9 +71,15 @@ import { parseRunningToolsProviders } from './ipc/parsers/tools'
 import { videoStudioMusicName } from './ipc/handlers/ai-video'
 import { createRemoteFeatureGate } from './remote-feature-gate'
 
+// cli:launch、settings:save 只收这台电脑认得的完整路径。用例沿用 Windows 的写法；在 Windows 上原样不动，照样按
+// Windows 的规矩验，在别的平台上换成 / 开头的同一个路径，不然那里会被当成相对路径拒掉。
+function nativeFolder(windowsPath: string): string {
+  return process.platform === 'win32' ? windowsPath : windowsPath.replace(/^[A-Za-z]:/, '').replace(/\\/g, '/')
+}
+
 const stubStoredConfig: AppSettings = {
   version: 2,
-  workspace: 'C:\\workspace',
+  workspace: nativeFolder('C:\\workspace'),
   theme: 'dark',
   checkUpdatesOnStartup: true,
   runDiagnosticsOnStartup: false,
@@ -2429,10 +2435,10 @@ describe('registerIpcHandlers', () => {
         workspaceWriteCheck: { platform: 'win32', probe },
       })
 
-      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo')
-      expect(probe).toHaveBeenCalledWith('C:\\projects\\demo')
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'))
+      expect(probe).toHaveBeenCalledWith(nativeFolder('C:\\projects\\demo'))
       expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\projects\\demo', 'new')
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', nativeFolder('C:\\projects\\demo'), 'new')
       expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.write-check', expect.any(String), expect.objectContaining({
         result: 'writable',
         durationMs: expect.any(Number),
@@ -2446,9 +2452,9 @@ describe('registerIpcHandlers', () => {
         workspaceWriteCheck: { platform: 'darwin', probe },
       })
 
-      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', '/Users/alex/demo')
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', nativeFolder('C:\\Users\\alex\\demo'))
       expect(probe).not.toHaveBeenCalled()
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', '/Users/alex/demo', 'new')
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', nativeFolder('C:\\Users\\alex\\demo'), 'new')
     })
 
     // D17：光盘、写保护的 U 盘不是受控文件夹访问，那一问的原因对不上；不拦，打开后首页说一句。
@@ -2459,10 +2465,10 @@ describe('registerIpcHandlers', () => {
       })
       vi.mocked(service.launchProvider).mockResolvedValueOnce({ configOverrideNotice: '这个项目文件夹里有自己的设置。' })
 
-      await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'E:\\disc\\demo'))
+      await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', nativeFolder('E:\\disc\\demo')))
         .resolves.toEqual({ configOverrideNotice: '这个项目文件夹里有自己的设置。', workspaceReadOnly: true })
       expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'E:\\disc\\demo', 'new')
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', nativeFolder('E:\\disc\\demo'), 'new')
       expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'config', 'workspace.write-check', expect.any(String), expect.objectContaining({
         result: 'read-only',
       }))
@@ -2475,9 +2481,9 @@ describe('registerIpcHandlers', () => {
         workspaceWriteCheck: { platform: 'win32', probe },
       })
 
-      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo')
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'))
       expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\projects\\demo', 'new')
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', nativeFolder('C:\\projects\\demo'), 'new')
     })
 
     it('opens anyway when the user says so', async () => {
@@ -2486,14 +2492,14 @@ describe('registerIpcHandlers', () => {
         workspaceWriteCheck: { platform: 'win32', probe: denied },
       })
 
-      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', 'C:\\projects\\demo')
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'))
       expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
         title: '这个文件夹不让写入',
         buttons: ['换到能写的位置', '照常打开', '先不打开'],
         defaultId: 0,
         cancelId: 2,
       }))
-      expect(service.launchProvider).toHaveBeenCalledWith('codex', 'C:\\projects\\demo', 'new')
+      expect(service.launchProvider).toHaveBeenCalledWith('codex', nativeFolder('C:\\projects\\demo'), 'new')
       expect(service.updateStoredConfig).not.toHaveBeenCalled()
     })
 
@@ -2508,7 +2514,7 @@ describe('registerIpcHandlers', () => {
         })
         const expected = path.join(documents, 'XingmangProjects', 'my-project')
 
-        await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo')
+        await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'))
         expect(service.launchProvider).toHaveBeenCalledTimes(1)
         expect(service.launchProvider).toHaveBeenCalledWith('claude', expected, 'new')
         expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: expected })
@@ -2524,7 +2530,7 @@ describe('registerIpcHandlers', () => {
         workspaceWriteCheck: { platform: 'win32', probe: denied },
       })
 
-      await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo'))
+      await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo')))
         .resolves.toEqual({ declined: true })
       expect(service.launchProvider).not.toHaveBeenCalled()
       expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'workspace.write-check.declined', expect.any(String), { provider: 'claude' })
@@ -2536,13 +2542,13 @@ describe('registerIpcHandlers', () => {
         workspaceWriteCheck: { platform: 'win32', probe: denied },
       })
 
-      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'C:\\projects\\demo', 'resumeLast')
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'), 'resumeLast')
       expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
         buttons: ['先不打开', '照常打开'],
         defaultId: 1,
         cancelId: 0,
       }))
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\projects\\demo', 'resumeLast')
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', nativeFolder('C:\\projects\\demo'), 'resumeLast')
     })
   })
 
@@ -4726,7 +4732,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('settings:save')!
       const patch = { version: 2, uiSkin: 'mist', reducedMotion: true, largeText: true, uiScale: '90', closeBehavior: 'tray' }
       await expect(handler(trustedEvent(), patch)).resolves.toMatchObject({
-        workspace: 'C:\\workspace', uiSkin: 'mist', reducedMotion: true, largeText: true, uiScale: '90', closeBehavior: 'tray',
+        workspace: nativeFolder('C:\\workspace'), uiSkin: 'mist', reducedMotion: true, largeText: true, uiScale: '90', closeBehavior: 'tray',
       })
       expect(service.updateStoredConfig).toHaveBeenCalledWith(patch)
     })
@@ -4789,19 +4795,53 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         version: 2,
-        workspace: '  D:\\workspace  ',
+        workspace: `  ${nativeFolder('D:\\workspace')}  `,
         theme: 'light',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
       })).resolves.toEqual({
         version: 2,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'light',
         uiSkin: 'mist',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
       })
-      expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ workspace: 'D:\\workspace' }))
+      expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ workspace: nativeFolder('D:\\workspace') }))
+    })
+
+    // 存下一个相对路径，下次不带目录打开时就拿它去用了，「这个文件夹不建议打开」那一问认不出来。
+    it('rejects a workspace that is not a full path before persisting anything', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      for (const workspace of ['.', 'projects', '~/projects']) {
+        await expect(handler(trustedEvent(), { version: 2, workspace, theme: 'light' })).rejects.toThrow('工作目录格式错误')
+      }
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
+    // 设置页「更换」选到存密钥的文件夹、点了「仍然打开」：选择器那边不记，这里也不能照存。
+    it('keeps the stored folder instead of remembering one that asks every time, like the picker does', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      for (const folder of ['.claude', '.codex']) {
+        await expect(handler(trustedEvent(), { version: 2, workspace: path.join(os.homedir(), folder), theme: 'light' }))
+          .resolves.toMatchObject({ workspace: stubStoredConfig.workspace, theme: 'light' })
+      }
+      expect(service.updateStoredConfig).toHaveBeenCalledTimes(2)
+      expect(service.updateStoredConfig).toHaveBeenNthCalledWith(1, { version: 2, theme: 'light' })
+      expect(service.updateStoredConfig).toHaveBeenNthCalledWith(2, { version: 2, theme: 'light' })
+    })
+
+    it('still remembers a folder that only asks once, like the picker does', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+      const desktop = path.join(os.homedir(), 'Desktop')
+
+      await expect(handler(trustedEvent(), { version: 2, workspace: desktop })).resolves.toMatchObject({ workspace: desktop })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: desktop })
     })
 
     it('accepts a narrow single-field update and merges it over the stored record (①栏11)', async () => {
@@ -4816,7 +4856,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         sidebarMoreExpanded: true,
       })).resolves.toEqual({
         version: 2,
-        workspace: 'C:\\workspace',
+        workspace: nativeFolder('C:\\workspace'),
         theme: 'dark',
         uiSkin: 'mist',
         checkUpdatesOnStartup: true,
@@ -4864,7 +4904,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         version: 2,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'light',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
@@ -4884,7 +4924,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         version: 2,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'light',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
@@ -4899,7 +4939,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       const saved = await handler(trustedEvent(), {
         version: 2,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'light',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
@@ -4923,7 +4963,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         version: 2,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'light',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
@@ -4933,7 +4973,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         version: 2,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'light',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
@@ -4957,7 +4997,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         version: 1,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'light',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
@@ -4970,7 +5010,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         version: 2,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'blue',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
@@ -4980,7 +5020,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     it('rejects non-boolean checkUpdatesOnStartup/runDiagnosticsOnStartup flags', async () => {
       register()
       const handler = electronMocks.handlers.get('settings:save')!
-      const base = { version: 2, workspace: 'D:\\workspace', theme: 'dark' as const }
+      const base = { version: 2, workspace: nativeFolder('D:\\workspace'), theme: 'dark' as const }
 
       await expect(handler(trustedEvent(), {
         ...base, checkUpdatesOnStartup: 'yes', runDiagnosticsOnStartup: false,
@@ -5006,7 +5046,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         version: 2,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'dark',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
@@ -5020,7 +5060,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         version: 2,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'dark',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
@@ -5033,7 +5073,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         version: 2,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'dark',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
@@ -5047,7 +5087,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         version: 2,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'dark',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
@@ -5061,7 +5101,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         version: 2,
-        workspace: 'D:\\workspace',
+        workspace: nativeFolder('D:\\workspace'),
         theme: 'dark',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
@@ -5654,8 +5694,8 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('cli:launch')!
 
-      expect(() => handler(trustedEvent(), 'claude', '  D:\\projects\\demo  ')).not.toThrow()
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'D:\\projects\\demo', 'new')
+      expect(() => handler(trustedEvent(), 'claude', `  ${nativeFolder('D:\\projects\\demo')}  `)).not.toThrow()
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', nativeFolder('D:\\projects\\demo'), 'new')
     })
 
     it('falls back to the stored workspace when omitted', () => {
@@ -5663,7 +5703,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('cli:launch')!
 
       expect(() => handler(trustedEvent(), 'claude', undefined)).not.toThrow()
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\workspace', 'new')
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', nativeFolder('C:\\workspace'), 'new')
     })
 
     it('falls back to the stored workspace for a blank or whitespace-only value', () => {
@@ -5671,15 +5711,41 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('cli:launch')!
 
       expect(() => handler(trustedEvent(), 'claude', '   ')).not.toThrow()
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\workspace', 'new')
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', nativeFolder('C:\\workspace'), 'new')
     })
 
-    it('falls back to the stored workspace for a non-string value instead of throwing', () => {
+    // 带了却不是字符串，只会是界面出了 bug 或被人动过：报错，不悄悄换成记住的目录。
+    it('rejects a non-string value instead of quietly using the stored workspace', () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('cli:launch')!
 
-      expect(() => handler(trustedEvent(), 'claude', 12345)).not.toThrow()
-      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\workspace', 'new')
+      for (const bad of [12345, null, ['C:\\workspace'], { path: 'C:\\workspace' }]) {
+        expect(() => handler(trustedEvent(), 'claude', bad)).toThrow('工作目录格式错误')
+      }
+      expect(service.launchProvider).not.toHaveBeenCalled()
+    })
+
+    // 相对路径按主进程自己的当前目录算，「这个文件夹不建议打开」那一问认不出它在哪儿，就不问了。
+    it('rejects a relative folder or one with a NUL byte before anything asks or launches', () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      for (const bad of ['.', '..', 'foo', `${nativeFolder('C:\\projects')}\0demo`]) {
+        expect(() => handler(trustedEvent(), 'claude', bad)).toThrow('工作目录格式错误')
+      }
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+      expect(service.launchProvider).not.toHaveBeenCalled()
+    })
+
+    it('rejects a stored workspace that is not a full path when no folder is sent', () => {
+      const service = serviceStub()
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, workspace: '.' })
+      register(service)
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      expect(() => handler(trustedEvent(), 'claude', undefined)).toThrow('工作目录格式错误')
+      expect(() => handler(trustedEvent(), 'claude', '   ')).toThrow('工作目录格式错误')
+      expect(service.launchProvider).not.toHaveBeenCalled()
     })
 
     it('rejects a workspace string exceeding the maximum length', () => {
@@ -5695,8 +5761,8 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('cli:launch')!
 
-      expect(() => handler(trustedEvent(), 'codex', 'C:\\projects\\demo', 'resumeLast')).not.toThrow()
-      expect(service.launchProvider).toHaveBeenCalledWith('codex', 'C:\\projects\\demo', 'resumeLast')
+      expect(() => handler(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast')).not.toThrow()
+      expect(service.launchProvider).toHaveBeenCalledWith('codex', nativeFolder('C:\\projects\\demo'), 'resumeLast')
     })
 
     // 渲染层永远不许自己拼续接参数:任何不在这两个值里的输入都必须当场拒绝,
@@ -5705,9 +5771,9 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register()
       const handler = electronMocks.handlers.get('cli:launch')!
 
-      expect(() => handler(trustedEvent(), 'claude', 'C:\\workspace', '--dangerously-skip-permissions'))
+      expect(() => handler(trustedEvent(), 'claude', nativeFolder('C:\\workspace'), '--dangerously-skip-permissions'))
         .toThrow('CLI 启动方式错误')
-      expect(() => handler(trustedEvent(), 'claude', 'C:\\workspace', ['--continue']))
+      expect(() => handler(trustedEvent(), 'claude', nativeFolder('C:\\workspace'), ['--continue']))
         .toThrow('CLI 启动方式错误')
     })
   })
@@ -5716,34 +5782,34 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   describe('Codex resume by record id (cli:launch fourth argument)', () => {
     it('resumes by the bare id once the record is found in the same folder', async () => {
       const { service, providerSessionsService } = register()
-      providerSessionsService.resolveWorkspace.mockResolvedValueOnce('C:\\projects\\demo')
+      providerSessionsService.resolveWorkspace.mockResolvedValueOnce(nativeFolder('C:\\projects\\demo'))
 
-      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', 'C:\\projects\\demo', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
 
       expect(providerSessionsService.resolveWorkspace).toHaveBeenCalledWith('codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
-      expect(service.launchProvider).toHaveBeenCalledWith('codex', 'C:\\projects\\demo', 'resumeLast', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      expect(service.launchProvider).toHaveBeenCalledWith('codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
     })
 
     it('falls back to the latest one in the folder when the record is gone or elsewhere', async () => {
       const { service, providerSessionsService } = register()
       const handler = electronMocks.handlers.get('cli:launch')!
       providerSessionsService.resolveWorkspace.mockRejectedValueOnce(new Error('未找到这条记录'))
-      await handler(trustedEvent(), 'codex', 'C:\\projects\\demo', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
-      expect(service.launchProvider).toHaveBeenLastCalledWith('codex', 'C:\\projects\\demo', 'resumeLast')
+      await handler(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      expect(service.launchProvider).toHaveBeenLastCalledWith('codex', nativeFolder('C:\\projects\\demo'), 'resumeLast')
 
-      providerSessionsService.resolveWorkspace.mockResolvedValueOnce('C:\\projects\\other')
-      await handler(trustedEvent(), 'codex', 'C:\\projects\\demo', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
-      expect(service.launchProvider).toHaveBeenLastCalledWith('codex', 'C:\\projects\\demo', 'resumeLast')
+      providerSessionsService.resolveWorkspace.mockResolvedValueOnce(nativeFolder('C:\\projects\\other'))
+      await handler(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      expect(service.launchProvider).toHaveBeenLastCalledWith('codex', nativeFolder('C:\\projects\\demo'), 'resumeLast')
     })
 
     it('rejects a record id for another tool, a new conversation or a malformed id', () => {
       const { service, providerSessionsService } = register()
       const handler = electronMocks.handlers.get('cli:launch')!
 
-      expect(() => handler(trustedEvent(), 'claude', 'C:\\w', 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')).toThrow('CLI 启动方式错误')
-      expect(() => handler(trustedEvent(), 'codex', 'C:\\w', 'new', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')).toThrow('CLI 启动方式错误')
+      expect(() => handler(trustedEvent(), 'claude', nativeFolder('C:\\w'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')).toThrow('CLI 启动方式错误')
+      expect(() => handler(trustedEvent(), 'codex', nativeFolder('C:\\w'), 'new', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')).toThrow('CLI 启动方式错误')
       for (const bad of ['0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', 'codex:--last', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b --yolo', 'claude:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', ['codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b']]) {
-        expect(() => handler(trustedEvent(), 'codex', 'C:\\w', 'resumeLast', bad)).toThrow('会话 ID 格式错误')
+        expect(() => handler(trustedEvent(), 'codex', nativeFolder('C:\\w'), 'resumeLast', bad)).toThrow('会话 ID 格式错误')
       }
       expect(providerSessionsService.resolveWorkspace).not.toHaveBeenCalled()
       expect(service.launchProvider).not.toHaveBeenCalled()

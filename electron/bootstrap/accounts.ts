@@ -60,8 +60,9 @@ export function createAccountStorage(options: AccountStorageOptions) {
     // 重建之后用户看到的是「记住的账号没了」，只记日志等于让他自己猜，所以同时
     // 给界面发一条（一次启动只发一条，备份文件名不跟着走）。
     onRecovered: createVaultRecoveryNotifier({
-      log: (backupFileName) => runtimeLog.log('warn', 'account', 'vault.recovered',
-        '本地登录记录无法解密，已保留原密文备份并重建账号存储', { reason: 'decrypt', backupFileName }),
+      log: (backupFileName, reason) => runtimeLog.log('warn', 'account', 'vault.recovered',
+        reason === 'decrypt' ? '本地登录记录无法解密，已保留原密文备份并重建账号存储'
+          : '本地登录记录文件已损坏，已保留原文件备份并重建账号存储', { reason, backupFileName }),
       emit: () => {
         const managedMainWindow = mainWindow()
         if (!managedMainWindow || managedMainWindow.isDestroyed()) return

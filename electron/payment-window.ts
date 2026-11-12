@@ -85,7 +85,14 @@ export interface PaymentWindowControllerOptions {
   onBlockedNavigation?: (url: string) => void
   onTerminalState?: (event: PaymentWindowTerminalEvent, context: PaymentWindowTerminalContext) => void
   createOrderStatusReader?: (tradeNo: string) => PaymentOrderStatusReader | undefined
+  /**
+   * 星芒这会儿怎么连网，每开一次付款页问一次：'direct' 是系统代理指着一个已经关掉的代理软件、星芒已经
+   * 整个改了直连（proxy-bypass.ts 的 active()）。缺省 'system'。
+   */
+  proxyMode?: () => PaymentWindowProxyMode
 }
+
+export type PaymentWindowProxyMode = 'direct' | 'system'
 
 export interface PaymentWindowController {
   open(form: NewApiPaymentForm, parent?: BrowserWindow): Promise<void>
@@ -587,6 +594,13 @@ export function createPaymentWindowController(
     window.webContents.on('will-redirect', guardNavigation)
 
     try {
+      // 付款窗口每次一个新分区，分区的代理各管各的：星芒替客户改直连只改了默认会话，新分区照旧跟系统代理，
+      // 又走回那个已经关掉的代理软件，下单成功、付款页打不开（代理 PX-2）。所以打开前照星芒这会儿的连法设一次。
+      // 只换连法，导航白名单、权限、下载照旧全拦。设不上也照旧打开（就是以前的样子）：真是代理的事，
+      // 下面加载失败时日志里的错误码自己会说。
+      await window.webContents.session.setProxy({ mode: options.proxyMode?.() ?? 'system' }).catch(() => undefined)
+      // 设连法这一下里客户又点了一次付款、或者换了账号：这个窗口已经作废，交给新的那次。
+      if (!isCurrent()) return
       await waitForPaymentPage(window.loadURL(targetUrl, loadOptions), committed)
       if (!isCurrent()) return
       showFallbackTimer = setTimeout(reveal, paymentWindowShowFallbackMs)

@@ -4,21 +4,22 @@ import { isProviderId } from '../../catalog'
 import { isRecord } from '../../input-guards'
 import { relayRoutePreferenceAllowed, relaySites } from '../../relay-sites'
 import { parseWindowState } from '../../window-preferences'
-import { optionalBoolean, requiredString } from './common'
+import { optionalBoolean, requiredWorkspacePath } from './common'
 
 // settings:save carries a field-wise update since ①栏11: absent field = keep
 // the persisted value (the merge itself runs inside app-settings.ts's
 // serialized write queue). A field that IS present is validated exactly as
 // strictly as the old whole-record parser -- partial semantics loosen which
 // fields must appear, never what a present field may contain (I5).
-export function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
+export function parseSettingsUpdate(value: unknown, platform: NodeJS.Platform = process.platform): AppSettingsUpdate {
   if (!isRecord(value) || value.version !== 2) throw new Error('设置格式错误')
   if (value.theme !== undefined && value.theme !== 'light' && value.theme !== 'dark') {
     throw new Error('主题格式错误')
   }
+  // 跟 cli:launch 收的目录同一道检查：存下一个相对路径，下次不带目录打开时就拿它去用了。
   const workspace = value.workspace === undefined
     ? undefined
-    : requiredString(value.workspace, '工作目录', 32_767)
+    : requiredWorkspacePath(value.workspace, platform)
   const checkUpdatesOnStartup = optionalBoolean(value.checkUpdatesOnStartup, '设置')
   const runDiagnosticsOnStartup = optionalBoolean(value.runDiagnosticsOnStartup, '设置')
   const sidebarMoreExpanded = optionalBoolean(value.sidebarMoreExpanded, '侧边栏展开状态')

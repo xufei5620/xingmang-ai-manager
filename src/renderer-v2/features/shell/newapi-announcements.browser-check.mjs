@@ -43,7 +43,7 @@ async function expectReadableError(source) {
     try { await window.parseNewApiNoticeFixture(text); return null }
     catch (error) { return error instanceof Error ? error.message : String(error) }
   }, source)
-  assert.equal(typeof result, 'string', 'Invalid collections must fail rather than silently hide entries')
+  assert.equal(typeof result, 'string', 'A collection with nothing readable must fail rather than show an empty list')
   assert.match(result, /公告/, 'The parser must return a user-readable announcement error')
 }
 
@@ -106,7 +106,7 @@ test('plain Markdown and standalone notices keep the legacy path without a colle
   ]) assert.equal(await parse(source), null)
 })
 
-test('NewAPI malformed collections fail visibly instead of dropping or merging announcements', async () => {
+test('NewAPI collections with no readable entry fail visibly instead of merging into one notice', async () => {
   const sources = [
     collection([entry('未知版本')]).replace('data-newapi-collection="v1"', 'data-newapi-collection="v2"'),
     collection([]),
@@ -116,6 +116,43 @@ test('NewAPI malformed collections fail visibly instead of dropping or merging a
     collection([entry('空正文', '')]),
   ]
   for (const source of sources) await expectReadableError(source)
+})
+
+// 后台改公告时一条格式不对只跳过那一条（RC-03）：原来整份报错，所有客户同时看不到公告。
+test('NewAPI collections skip an entry they cannot read and keep the others', async () => {
+  const broken = [
+    '<details class="collection-entry"><div class="collection-body">缺少标题</div></details>',
+    '<details class="collection-entry"><summary class="collection-summary"><span class="collection-entry-title">缺少正文</span></summary></details>',
+    entry('   '),
+    entry('空正文', ''),
+    entry('x'.repeat(513)),
+    entry('两个标题').replace('</summary>', '<span class="collection-entry-title">第二个标题</span></summary>'),
+    entry('套着另一条', nativeBody('套着另一条', entry('被套住的公告'))),
+    `<div class="collection-wrapper">${entry('多套了一层')}</div>`,
+  ]
+  const parsed = await parse(collection([broken[0], entry('第一条好的'), ...broken.slice(1), entry('第二条好的')]))
+  assert.deepEqual(parsed.map(({ title }) => title), ['第一条好的', '第二条好的'])
+  // Skipping a broken neighbour must not change the IDs read states are stored under.
+  const intact = await parse(collection([entry('第一条好的'), entry('第二条好的')]))
+  assert.deepEqual(parsed.map(({ id }) => id), intact.map(({ id }) => id))
+})
+
+test('an unreadable collection next to the timeline drops only the system notices', async () => {
+  const unreadable = collection([entry('未知版本')]).replace('data-newapi-collection="v1"', 'data-newapi-collection="v2"')
+  const readable = collection([entry('系统公告')])
+  const outcomes = await page.evaluate(async (cases) => {
+    const { parseAnnouncementCollectionBesideTimeline } = await import('/src/renderer-v2/features/shell/newapi-announcements.ts')
+    const results = []
+    for (const [text, hasTimeline] of cases) {
+      try { results.push(await parseAnnouncementCollectionBesideTimeline(text, hasTimeline)) }
+      catch (error) { results.push({ error: error instanceof Error ? error.message : String(error) }) }
+    }
+    return results
+  }, [[unreadable, true], [unreadable, false], [readable, true], ['', true]])
+  assert.deepEqual(outcomes[0], [])
+  assert.match(outcomes[1].error, /公告/)
+  assert.deepEqual(outcomes[2].map(({ title }) => title), ['系统公告'])
+  assert.equal(outcomes[3], null)
 })
 
 test('NewAPI collections reject oversized content, too many entries, and excessive DOM nodes', async () => {

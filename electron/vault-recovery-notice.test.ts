@@ -16,22 +16,30 @@ describe('vault recovery notice', () => {
 
   it('tells the interface once when the account store is rebuilt', () => {
     const f = notifier()
-    f.onRecovered('realm-accounts-v2.dat.unreadable-1.bak')
-    expect(f.log).toHaveBeenCalledWith('realm-accounts-v2.dat.unreadable-1.bak')
+    f.onRecovered('realm-accounts-v2.dat.unreadable-1.bak', 'decrypt')
+    expect(f.log).toHaveBeenCalledWith('realm-accounts-v2.dat.unreadable-1.bak', 'decrypt')
     expect(f.emit).toHaveBeenCalledTimes(1)
+  })
+
+  // 文件本身坏了跟钥匙丢了，客服排查的方向不一样，日志里要分得出来（DM-2）。
+  it('passes why the store was unreadable on to the log', () => {
+    const f = notifier()
+    f.onRecovered('first.bak', 'decode')
+    f.onRecovered('second.bak', 'parse')
+    expect(f.log.mock.calls).toEqual([['first.bak', 'decode'], ['second.bak', 'parse']])
   })
 
   it('keeps the event free of the backup file name and of any account content', () => {
     const f = notifier()
-    f.onRecovered('realm-accounts-v2.dat.unreadable-1.bak')
+    f.onRecovered('realm-accounts-v2.dat.unreadable-1.bak', 'decode')
     expect(f.emit).toHaveBeenCalledWith()
   })
 
   it('still logs a second rebuild but does not raise the notice again', () => {
     const f = notifier()
-    f.onRecovered('first.bak')
-    f.onRecovered('second.bak')
-    expect(f.log.mock.calls).toEqual([['first.bak'], ['second.bak']])
+    f.onRecovered('first.bak', 'decrypt')
+    f.onRecovered('second.bak', 'decrypt')
+    expect(f.log.mock.calls).toEqual([['first.bak', 'decrypt'], ['second.bak', 'decrypt']])
     expect(f.emit).toHaveBeenCalledTimes(1)
   })
 
@@ -41,7 +49,7 @@ describe('vault recovery notice', () => {
       log: () => { order.push('log') },
       emit: () => { order.push('emit'); throw new Error('window is gone') },
     })
-    expect(() => onRecovered('backup.bak')).toThrow('window is gone')
+    expect(() => onRecovered('backup.bak', 'decrypt')).toThrow('window is gone')
     expect(order).toEqual(['log', 'emit'])
   })
 })

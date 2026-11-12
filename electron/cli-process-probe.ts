@@ -57,56 +57,93 @@ export const cliProcessProbeTimeoutMs = 8_000
  * SilentlyContinue the refusal dropped every match, so the probe answered
  * "nothing running" in front of an update. The StringComparison overloads are
  * still allowed there (checked on the Windows runner under the lockdown).
+ *
+ * The answer says whether the listing ran at all, because "nothing running" is
+ * what lets the startup pass rewrite a CLI's config behind its back (C-1).
+ * Get-CimInstance only writes an error when WMI is stopped, broken or denied,
+ * so under the old SilentlyContinue a failed listing came back as an empty
+ * list with exit code 0, indistinguishable from a machine where none of this
+ * CLI's processes run. Under Stop that error, and any line the language mode
+ * refuses while matching, lands in the catch instead, and only a listing that
+ * went through to the end reports `ok = $true`.
  */
 export function buildWindowsCliProcessProbeScript(): string {
   return [
     powerShellUtf8OutputStatement,
     buildPowerShellModuleImportStatement(windowsCliProcessProbeModules),
-    '$ErrorActionPreference = "SilentlyContinue"',
+    "$ErrorActionPreference = 'Stop'",
     `$root = [string]$env:${cliProcessRootEnvironmentVariable}`,
-    "if (-not $root) { '[]'; exit 0 }",
-    String.raw`$items = @(Get-CimInstance Win32_Process | ForEach-Object {
-      $image = [string]$_.ExecutablePath
-      $commandLine = [string]$_.CommandLine
-      # A node-hosted CLI runs as node.exe with the entry script on its command
-      # line, while a native one runs as its own binary. Accept either, but only
-      # when the managed package directory itself is what shows up.
-      $matched = $false
-      if ($image -and $image.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { $matched = $true }
-      if (-not $matched -and $commandLine -and $commandLine.IndexOf($root, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true }
-      if ($matched) {
-        @{ ProcessId = $_.ProcessId; Name = [string]$_.Name; ExecutablePath = $image }
+    '$result = @{ ok = $false }',
+    String.raw`if ($root) {
+      try {
+        $items = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
+          $image = [string]$_.ExecutablePath
+          $commandLine = [string]$_.CommandLine
+          # A node-hosted CLI runs as node.exe with the entry script on its command
+          # line, while a native one runs as its own binary. Accept either, but only
+          # when the managed package directory itself is what shows up.
+          $matched = $false
+          if ($image -and $image.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { $matched = $true }
+          if (-not $matched -and $commandLine -and $commandLine.IndexOf($root, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true }
+          if ($matched) {
+            @{ ProcessId = $_.ProcessId; Name = [string]$_.Name; ExecutablePath = $image }
+          }
+        })
+        $result = @{ ok = $true; items = $items }
+      } catch {
+        $result = @{ ok = $false; error = [string]$_ }
       }
-    })`,
-    ...buildPowerShellJsonOutputStatements('$items | ConvertTo-Json -Compress'),
+    }`,
+    ...buildPowerShellJsonOutputStatements('$result | ConvertTo-Json -Compress -Depth 3'),
   ].join('\n')
 }
 
-export function parseWindowsCliProcessProbeOutput(output: string): CliProcessMatch[] {
+/**
+ * Only `ok: true` with a list of readable rows counts as having looked. Empty
+ * output, output that is not this script's JSON, a reported failure and a row
+ * without a usable pid all come back `unavailable`: each means the probe
+ * cannot say whether the CLI runs, and every caller treats that as "it might",
+ * never as "it does not". The script prints a row only for a process it
+ * matched, so dropping an unreadable one would turn a running CLI into a
+ * stopped one again.
+ */
+export function parseWindowsCliProcessProbeOutput(output: string): CliProcessProbe {
   const trimmed = output.trim().replace(/^﻿/, '')
-  if (!trimmed) return []
+  if (!trimmed) return unavailableProbe('进程检测没有输出')
   let parsed: unknown
   try {
     parsed = JSON.parse(trimmed)
   } catch {
-    return []
+    return unavailableProbe('进程检测的输出读不懂')
   }
-  const values = Array.isArray(parsed) ? parsed : [parsed]
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return unavailableProbe('进程检测的输出读不懂')
+  const answer = parsed as Record<string, unknown>
+  if (answer.ok !== true) {
+    const reason = typeof answer.error === 'string' ? answer.error.trim() : ''
+    return unavailableProbe(reason ? `进程检测失败：${reason}` : '进程检测失败')
+  }
+  if (!Array.isArray(answer.items)) return unavailableProbe('进程检测的输出读不懂')
   const matches: CliProcessMatch[] = []
-  for (const value of values) {
-    if (!value || typeof value !== 'object') continue
+  for (const value of answer.items) {
+    if (!value || typeof value !== 'object') return unavailableProbe('进程检测的输出读不懂')
     const record = value as Record<string, unknown>
     const processId = record.ProcessId
     const name = record.Name
     const executablePath = record.ExecutablePath
-    if (typeof processId !== 'number' || !Number.isInteger(processId) || processId <= 0) continue
+    if (typeof processId !== 'number' || !Number.isInteger(processId) || processId <= 0) {
+      return unavailableProbe('进程检测的输出读不懂')
+    }
     matches.push({
       processId,
       name: typeof name === 'string' ? name : '',
       executablePath: typeof executablePath === 'string' ? executablePath : '',
     })
   }
-  return matches
+  return { status: 'checked', processes: matches }
+}
+
+function unavailableProbe(detail: string): CliProcessProbe {
+  return { status: 'unavailable', processes: [], detail: detail.slice(0, 200) }
 }
 
 /**
@@ -230,7 +267,7 @@ export async function probeRunningCliProcesses(
           maxOutputBytes: 1024 * 1024,
         },
       )
-      return { status: 'checked', processes: parseWindowsCliProcessProbeOutput(stdout) }
+      return parseWindowsCliProcessProbeOutput(stdout)
     }
     const { executable, argv } = buildDarwinCliProcessProbeArgv()
     const stdout = await runProbe(executable, argv, {
@@ -241,7 +278,7 @@ export async function probeRunningCliProcesses(
     return { status: 'checked', processes: parseDarwinCliProcessProbeOutput(stdout, root) }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    return { status: 'unavailable', processes: [], detail: detail.slice(0, 200) }
+    return unavailableProbe(detail)
   }
 }
 
