@@ -2213,6 +2213,9 @@ if (!hasSingleInstanceLock) {
         getSiteId: accounts.getSiteId,
         assertReady: accounts.assertReady,
       }, tradeNo),
+      // 星芒整个改了直连（系统代理指着关掉的代理软件），付款页也直连；只是连星芒站点那一路直连时，
+      // 付款商的页面照旧经代理走，代理软件还开着、只是不转发星芒。
+      proxyMode: () => proxyBypass.active() ? 'direct' : 'system',
       onBlockedNavigation: (targetUrl) => {
         // 收银台想拉起支付宝、微信 App：正常行为，扫码付款不受影响。只记协议名，后面那串带着付款码。
         const scheme = resolvePaymentAppLaunchScheme(targetUrl)
