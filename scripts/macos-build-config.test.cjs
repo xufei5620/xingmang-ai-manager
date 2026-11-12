@@ -40,6 +40,7 @@ function loadConfig({
   keychainPath,
   updateDev = false,
   unsignedRelease = false,
+  testingBuild = false,
   updateUrl,
 } = {}) {
   const result = spawnSync(process.execPath, ['-e', `
@@ -68,6 +69,7 @@ function loadConfig({
       XINGMANG_MAC_SIGNING_SHA1: signingSha1 || '',
       XINGMANG_UPDATE_DEV: updateDev ? '1' : '0',
       XINGMANG_UNSIGNED_RELEASE: unsignedRelease ? '1' : '0',
+      XINGMANG_TESTING_BUILD: testingBuild ? '1' : '0',
       XINGMANG_UPDATE_URL: updateUrl || '',
     },
   })
@@ -278,6 +280,63 @@ test('CI free signing bypasses trusted-identity discovery only through the pinne
   assert.equal(config.mac.timestamp, 'none')
   assert.equal(config.forceCodeSigning, true)
   assert.equal(config.extraMetadata.xingmangLocalBuild, false)
+})
+
+test('only test packages tell the main process to file crash reports as testing (R4)', () => {
+  const ephemeral = {
+    freeReleaseMode: true,
+    signingIdentity: 'XingMang CI Free Update Identity',
+    ephemeralSigning: true,
+    signingSha1: 'CD'.repeat(20),
+    keychainPath: '/private/tmp/xingmang-ci-signing.keychain-db',
+  }
+  // package-for-testing 的两份：Windows 走正式那条 release:build:unsigned 再加标记；
+  // macOS 是一次性身份签的，不用标记也认得出。
+  assert.equal(loadConfig({ unsignedRelease: true, testingBuild: true }).extraMetadata.xingmangTestingBuild, true)
+  assert.equal(loadConfig(ephemeral).extraMetadata.xingmangTestingBuild, true)
+  assert.equal(loadConfig({ ...ephemeral, testingBuild: true }).extraMetadata.xingmangTestingBuild, true)
+
+  // 正式发布的包一律不是测试包。
+  assert.equal(loadConfig({ unsignedRelease: true }).extraMetadata.xingmangTestingBuild, false)
+  assert.equal(loadConfig({ releaseMode: true }).extraMetadata.xingmangTestingBuild, false)
+  assert.equal(
+    loadConfig({ freeReleaseMode: true, signingIdentity: 'XingMang Free Update Identity' }).extraMetadata.xingmangTestingBuild,
+    false,
+  )
+  // 本机快包根本不报崩溃，标记对它没有意义，写成 false 才是实话。
+  assert.equal(loadConfig().extraMetadata.xingmangTestingBuild, false)
+  assert.equal(loadConfig({ localBuildMode: true, testingBuild: true }).extraMetadata.xingmangTestingBuild, false)
+})
+
+test('the testing marker fails closed on anything but exact 0 or 1, and never rides a real Mac release', () => {
+  const build = (overrides) => spawnSync(process.execPath, ['-e', `require(${JSON.stringify(configPath)})`], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...cleanBuildEnvironment(),
+      XINGMANG_RELEASE: '0',
+      XINGMANG_MAC_FREE_RELEASE: '0',
+      XINGMANG_LOCAL_BUILD: '0',
+      XINGMANG_UNSIGNED_RELEASE: '1',
+      ...overrides,
+    },
+  })
+
+  assert.equal(build({ XINGMANG_TESTING_BUILD: '1' }).status, 0)
+  for (const marker of ['true', '01', ' 1']) {
+    const result = build({ XINGMANG_TESTING_BUILD: marker })
+    assert.notEqual(result.status, 0, `marker ${JSON.stringify(marker)} must fail closed`)
+    assert.match(result.stderr, /XINGMANG_TESTING_BUILD/)
+  }
+  // 正式的 Mac 包被标成测试包，客户的崩溃报告就全落进 testing。
+  const realMacRelease = build({
+    XINGMANG_UNSIGNED_RELEASE: '0',
+    XINGMANG_MAC_FREE_RELEASE: '1',
+    CSC_NAME: 'XingMang Free Update Identity',
+    XINGMANG_TESTING_BUILD: '1',
+  })
+  assert.notEqual(realMacRelease.status, 0)
+  assert.match(realMacRelease.stderr, /XINGMANG_TESTING_BUILD/)
 })
 
 test('ephemeral signing rejects missing pins and every non-CI build mode', () => {

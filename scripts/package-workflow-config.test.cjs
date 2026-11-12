@@ -111,6 +111,14 @@ test('the Windows package goes through the same release gate as a real release',
   assert.equal(String(buildSteps[0].run).trim(), 'npm run release:build:unsigned')
 })
 
+test('the Windows test package files its crash reports as testing, not as the release (R4)', () => {
+  // 它和正式发布走的是同一条 release:build:unsigned，版本号也是要发的那一版；不带这个
+  // 标记，发版前测试机上的报错就先记进这一版的正式名下。macOS 那份靠一次性身份签名
+  // 认出是测试包（electron-builder.config.cjs 的 testingBuildMode），不需要它。
+  const buildStep = windowsJob.steps.find((step) => /release:build/.test(String(step.run || '')))
+  assert.equal(buildStep.env.XINGMANG_TESTING_BUILD, '1')
+})
+
 test('the macOS artifact says in its own name that it cannot be shipped', () => {
   // 下载列表里只看得到名字，而 macOS 包的签名身份是一次性的：发出去既不能自动
   // 更新也无法追溯。Windows 包无签名是产品决定，名字里不必自曝。

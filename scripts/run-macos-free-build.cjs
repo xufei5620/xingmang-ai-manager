@@ -46,6 +46,9 @@ const BUILD_MODE_ENVIRONMENT_NAMES = new Set([
   'XINGMANG_ALLOW_UNSIGNED_RELEASE',
   // Linux 打包标记会把 productName 换成英文名；残留到 macOS 构建里，beforePack 会拒绝。
   'XINGMANG_LINUX_PACKAGE',
+  // macOS 测试包只认一次性身份签名（electron-builder.config.cjs 的 testingBuildMode）；
+  // 继承进来的这个标记会把正式发布的 Mac 包标成测试包，客户的崩溃报告就看不见了。
+  'XINGMANG_TESTING_BUILD',
 ])
 
 function normalizeFingerprint(value, byteLength = 32) {

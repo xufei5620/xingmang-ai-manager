@@ -4,6 +4,7 @@ import {
   buildCrashReportEvent,
   crashReportDist,
   crashReportDsn,
+  crashReportEnvironmentName,
   crashReportRelease,
   crashReportSignature,
   parseCrashReportDsn,
@@ -13,6 +14,7 @@ import {
   shouldReportCrashes,
   type CrashReportEnvironment,
 } from './crash-report'
+import { shouldSendUsageStats } from './usage-stats'
 
 const runtime: CrashReportEnvironment = {
   release: 'xingmang-ai-manager@9.9.9',
@@ -258,16 +260,55 @@ describe('crashReportSignature', () => {
 
 describe('shouldReportCrashes', () => {
   it('stays silent in development builds', () => {
-    expect(shouldReportCrashes({ packaged: false, env: {} })).toBe(false)
+    expect(shouldReportCrashes({ packaged: false, localBuild: false, env: {} })).toBe(false)
   })
 
   it('reports by default once packaged', () => {
-    expect(shouldReportCrashes({ packaged: true, env: {} })).toBe(true)
-    expect(shouldReportCrashes({ packaged: true, crashReporting: true, env: {} })).toBe(true)
+    expect(shouldReportCrashes({ packaged: true, localBuild: false, env: {} })).toBe(true)
+    expect(shouldReportCrashes({ packaged: true, localBuild: false, crashReporting: true, env: {} })).toBe(true)
   })
 
   it('honours an explicit opt-out and the environment kill switch', () => {
-    expect(shouldReportCrashes({ packaged: true, crashReporting: false, env: {} })).toBe(false)
-    expect(shouldReportCrashes({ packaged: true, env: { XINGMANG_DISABLE_CRASH_REPORTING: '1' } })).toBe(false)
+    expect(shouldReportCrashes({ packaged: true, localBuild: false, crashReporting: false, env: {} })).toBe(false)
+    expect(shouldReportCrashes({ packaged: true, localBuild: false, env: { XINGMANG_DISABLE_CRASH_REPORTING: '1' } })).toBe(false)
+  })
+
+  it('stays silent in local builds even with the preference on (R4)', () => {
+    // A local build carries the version already released around newer code.
+    expect(shouldReportCrashes({ packaged: true, localBuild: true, crashReporting: true, env: {} })).toBe(false)
+    expect(shouldReportCrashes({ packaged: true, localBuild: true, env: {} })).toBe(false)
+  })
+
+  it('stays silent in packaged apps launched by CI (R4)', () => {
+    expect(shouldReportCrashes({ packaged: true, localBuild: false, crashReporting: true, env: { CI: 'true' } })).toBe(false)
+    // Only GitHub Actions' exact value counts, same as the usage ping.
+    expect(shouldReportCrashes({ packaged: true, localBuild: false, env: { CI: 'false' } })).toBe(true)
+    expect(shouldReportCrashes({ packaged: true, localBuild: false, env: { CI: '' } })).toBe(true)
+  })
+
+  it('follows the same build rules as the daily usage ping', () => {
+    for (const packaged of [true, false]) {
+      for (const localBuild of [true, false]) {
+        for (const env of [{}, { CI: 'true' }]) {
+          expect(shouldReportCrashes({ packaged, localBuild, env }))
+            .toBe(shouldSendUsageStats({ packaged, localBuild, env, preference: undefined }))
+        }
+      }
+    }
+  })
+})
+
+describe('crashReportEnvironmentName', () => {
+  it('files a release build under production', () => {
+    expect(crashReportEnvironmentName({ packaged: true, testingBuild: false })).toBe('production')
+  })
+
+  it('files a test package under testing so it stays out of the release (R4)', () => {
+    expect(crashReportEnvironmentName({ packaged: true, testingBuild: true })).toBe('testing')
+  })
+
+  it('calls anything unpackaged development', () => {
+    expect(crashReportEnvironmentName({ packaged: false, testingBuild: false })).toBe('development')
+    expect(crashReportEnvironmentName({ packaged: false, testingBuild: true })).toBe('development')
   })
 })
