@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { FeedbackPage, HealthPage, OnboardingGuideRow, OnboardingTourRow, SettingsPage, TutorialPage, buildFeedbackMessage, connectionRowStatus, feedbackCopyNotice, feedbackErrorCount, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, launchShortcutMeta, shortcutRows, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics } from './pages-maintenance'
+import { FeedbackPage, HealthPage, OnboardingGuideRow, OnboardingTourRow, SettingsPage, TutorialPage, connectionRowStatus, feedbackCopyNotice, feedbackErrorCount, feedbackExportNotice, installGuideTopic, installJobRunning, installResultMessage, launchShortcutMeta, shortcutRows, settingsPageLead, sortConnectionRows, sortDiagnosticsBySeverity, tutorialTopics } from './pages-maintenance'
 import type { V2Bridge } from './types'
 import { VersionCard } from './features/settings/VersionCard'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from './registry/business'
@@ -171,40 +171,6 @@ describe('feedback and support page', () => {
     // 留言那一块还挂着（写到一半的字不丢），只是藏起来。
     expect(markup).toContain('id="feedback-panel-form" role="tabpanel" aria-label="留言反馈" hidden=""')
     expect(markup).toContain('id="feedback-panel-log" role="tabpanel" aria-label="运行日志" data-testid')
-  })
-})
-
-describe('buildFeedbackMessage', () => {
-  it('puts the type, what the customer wrote and who they are in one block, then the report', () => {
-    expect(buildFeedbackMessage({
-      type: '遇到问题',
-      description: '  点「打开」后终端闪一下就关了 \n',
-      contact: ' wx-yoyo ',
-      identity: '账号 yoyo（ID 7） · 星芒AI管理工具 0.2.19 · Windows',
-      lastFailure: '最近一次出错：14:37 打开 Codex：没有写入权限',
-      report: '[report]',
-    })).toBe([
-      '留言反馈 · 遇到问题',
-      '点「打开」后终端闪一下就关了',
-      '联系方式：wx-yoyo',
-      '账号 yoyo（ID 7） · 星芒AI管理工具 0.2.19 · Windows',
-      '最近一次出错：14:37 打开 Codex：没有写入权限',
-      '',
-      '[report]',
-    ].join('\n'))
-  })
-
-  it('leaves out an empty contact and the report when it is not attached', () => {
-    expect(buildFeedbackMessage({ type: '功能建议', description: '想要深色图标', contact: '  ' })).toBe('留言反馈 · 功能建议\n想要深色图标')
-  })
-
-  it('says at the end that the report could not be made, so support does not take it for an unticked box', () => {
-    expect(buildFeedbackMessage({ type: '遇到问题', description: '打不开', contact: '', reportMissing: true })).toBe('留言反馈 · 遇到问题\n打不开\n反馈报告：这次没生成出来')
-  })
-
-  it('masks a key the customer pasted into the description', () => {
-    const text = buildFeedbackMessage({ type: '其他', description: '我的 key 是 sk-abcdefghijklmnopqrstuvwxyz0123456789', contact: '' })
-    expect(text).not.toContain('sk-abcdefghijklmnopqrstuvwxyz0123456789')
   })
 })
 
@@ -621,7 +587,6 @@ describe('pages-maintenance as a re-export of the split pages', () => {
     expect(HealthPage).toBe(healthPage.HealthPage)
     expect(sortDiagnosticsBySeverity).toBe(healthPage.sortDiagnosticsBySeverity)
     expect(FeedbackPage).toBe(feedbackPage.FeedbackPage)
-    expect(buildFeedbackMessage).toBe(feedbackPage.buildFeedbackMessage)
     expect(SettingsPage).toBe(settingsPage.SettingsPage)
     expect(shortcutRows).toBe(settingsPage.shortcutRows)
     expect(installResultMessage).toBe(installResult.installResultMessage)

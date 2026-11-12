@@ -38,7 +38,7 @@ import {
   useResource,
 } from '../../business-common'
 import { feedbackTabs, type FeedbackTabValue } from '../../registry/business'
-import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
+import { feedbackMessageTypes, isFeedbackMessageType, type FeedbackMessageType } from '../../../../electron/feedback-message'
 import { SupportIdentity } from '../app/SupportIdentity'
 import {
   anyRuntimeLogValue,
@@ -93,38 +93,6 @@ export function feedbackExportNotice(
   }
 }
 
-/** 留言的类型，复制给客服时写在第一行。 */
-const feedbackTypes = [
-  { value: 'bug', label: '遇到问题' },
-  { value: 'idea', label: '功能建议' },
-  { value: 'other', label: '其他' },
-]
-
-/**
- * 「复制给客服」复制出去的那一段（v4 第 10 批按问 5：不往服务器提交，客户自己发给客服）：类型、客户写的、
- * 联系方式、身份行、最近一次出错；勾了「附带反馈报告」再接上整份反馈报告（主进程已经脱敏）。
- * 客户自己写的那几行再过一遍打码表（I13）：描述里偶尔会贴上 sk-… 或 Bearer …。
- */
-export function buildFeedbackMessage(input: {
-  type: string
-  description: string
-  contact: string
-  identity?: string
-  lastFailure?: string
-  report?: string
-  /** 勾了「附带反馈报告」但这次没生成出来：末尾说一句，客服不会当成客户忘了勾。缺省 = 不说。 */
-  reportMissing?: boolean
-}): string {
-  const lines = [`留言反馈 · ${input.type}`, input.description.trim()]
-  const contact = input.contact.trim()
-  if (contact) lines.push(`联系方式：${contact}`)
-  if (input.identity) lines.push(input.identity)
-  if (input.lastFailure) lines.push(input.lastFailure)
-  if (input.reportMissing) lines.push('反馈报告：这次没生成出来')
-  const head = redactSecretPatterns(lines.join('\n'))
-  return input.report ? `${head}\n\n${input.report}` : head
-}
-
 /** 运行日志页签上那个红色角标：这次打开软件以后记下的错误条数（以前打开时留下的旧错误不算）。 */
 export function feedbackErrorCount(snapshot: Pick<RuntimeLogSnapshot, 'entries' | 'currentProcessId' | 'startedAt'> | null | undefined): number {
   if (!snapshot) return 0
@@ -155,7 +123,7 @@ export function FeedbackPage({
   const [openId, setOpenId] = useState<string | null>(null)
   // 刚点过「清除」：列表空着时说「日志已清空」，不说「还没有运行日志」。下一次读到日志就不再算。
   const [cleared, setCleared] = useState(false)
-  const [type, setType] = useState(feedbackTypes[0].value)
+  const [type, setType] = useState<FeedbackMessageType>('bug')
   const [description, setDescription] = useState('')
   const [descriptionError, setDescriptionError] = useState('')
   const [contact, setContact] = useState('')
@@ -212,7 +180,6 @@ export function FeedbackPage({
       async () => setReport(await api.getFeedbackReport()),
       '',
     )
-  const typeLabel = feedbackTypes.find((entry) => entry.value === type)?.label ?? feedbackTypes[0].label
   const copyToSupport = () => {
     if (!description.trim()) {
       setDescriptionError('请先描述一下发生了什么')
@@ -220,29 +187,19 @@ export function FeedbackPage({
       return
     }
     void operation.execute('send', async () => {
-      // 每次复制都现取一份报告：几分钟前预览的那份里没有刚才那次出错。报告生成不出来时
-      // 照样把客户写的复制出去、打开客服窗口，不能让一份报告把整条留言卡住（#1104 第 1 条）。
-      let attached: string | undefined
-      let reportMissing = false
-      if (attachReport) {
-        try {
-          attached = (await api.getFeedbackReport()).text
-        } catch {
-          reportMissing = true
-        }
-      }
-      await navigator.clipboard.writeText(buildFeedbackMessage({
-        type: typeLabel,
+      // 拼留言、现取报告、写剪贴板都交给主进程（J1）：页面写剪贴板要窗口在前台，慢的电脑等报告要好几秒，
+      // 客户这时切去微信，复制就被拒了。报告生成不出来时主进程照样把客户写的复制出去，这边照样打开客服窗口（#1104 第 1 条）。
+      const { reportMissing } = await api.copyFeedbackReport({
+        type,
         description,
         contact,
-        identity: support?.identity,
-        lastFailure: support?.lastFailure,
-        report: attached,
-        reportMissing,
-      }))
+        ...(support ? { identity: support.identity } : {}),
+        ...(support?.lastFailure ? { lastFailure: support.lastFailure } : {}),
+        attachReport,
+      })
       support?.open()
       if (reportMissing) toast.show('反馈报告没生成出来，只复制了你写的内容，发给客服就行', 'warn')
-      return reportMissing
+      return reportMissing === true
     }, (reportMissing) => reportMissing ? '' : '已复制，发给客服就行')
   }
   const tries = [
@@ -261,7 +218,7 @@ export function FeedbackPage({
       >
         <div className="v2-fb-field">
           <span id="feedback-type-label">类型</span>
-          <Segment options={feedbackTypes} value={type} onChange={setType} label="类型" testId="feedback-type" />
+          <Segment options={[...feedbackMessageTypes]} value={type} onChange={(value) => { if (isFeedbackMessageType(value)) setType(value) }} label="类型" testId="feedback-type" />
         </div>
         <Textarea
           label="描述一下发生了什么"

@@ -1046,6 +1046,98 @@ describe('registerIpcHandlers', () => {
     })
   })
 
+  // J1：「复制给客服」以前是页面等完报告再自己写剪贴板，客户等的那几秒切去微信，窗口没了焦点就写不进去。
+  // 现在页面只交留言，主进程拼好、现取报告、自己写剪贴板；格式是定死的，页面给不了别的内容。
+  describe('feedback message copy', () => {
+    const message = {
+      type: 'idea',
+      description: '  点「打开」后终端闪一下就关了 ',
+      contact: ' wx-test ',
+      identity: '账号 test-user · 星芒AI管理工具 0.2.24 · Windows',
+      lastFailure: '最近一次出错：14:37 打开 Codex：网络超时',
+      attachReport: true,
+    }
+
+    it('builds the message in the main process and copies it with a freshly captured report', async () => {
+      const { runtimeLog } = register()
+      runtimeLog.captureFeedbackReport.mockResolvedValueOnce({ text: 'fresh report\n', entries: 3 })
+      const owner = trustedEvent()
+      await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, message)).resolves.toEqual({ entries: 3 })
+      expect(electronMocks.writeText).toHaveBeenCalledExactlyOnceWith([
+        '留言反馈 · 功能建议',
+        '点「打开」后终端闪一下就关了',
+        '联系方式：wx-test',
+        '账号 test-user · 星芒AI管理工具 0.2.24 · Windows',
+        '最近一次出错：14:37 打开 Codex：网络超时',
+        '',
+        'fresh report\n',
+      ].join('\n'))
+      expect(runtimeLog.captureFeedbackReport).toHaveBeenCalledOnce()
+    })
+
+    it('copies only what the customer wrote when the report is not attached', async () => {
+      const { runtimeLog } = register()
+      await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent(), {
+        type: 'bug', description: '想要深色图标', contact: '  ', attachReport: false,
+      })).resolves.toEqual({ entries: 0 })
+      expect(electronMocks.writeText).toHaveBeenCalledExactlyOnceWith('留言反馈 · 遇到问题\n想要深色图标')
+      expect(runtimeLog.captureFeedbackReport).not.toHaveBeenCalled()
+      expect(runtimeLog.feedbackReport).not.toHaveBeenCalled()
+    })
+
+    it('still copies what the customer wrote and logs why when the report cannot be made', async () => {
+      const { runtimeLog } = register()
+      runtimeLog.captureFeedbackReport.mockRejectedValueOnce(new Error('日志读取失败'))
+      await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent(), message)).resolves.toEqual({ entries: 0, reportMissing: true })
+      const copied = electronMocks.writeText.mock.calls.at(-1)?.[0]
+      expect(copied).toMatch(/^留言反馈 · 功能建议\n点「打开」后终端闪一下就关了\n/)
+      expect(copied).toMatch(/\n反馈报告：这次没生成出来$/)
+      expect(runtimeLog.log).toHaveBeenCalledWith('error', 'ipc', 'runtime-logs:preview-feedback', 'runtime-logs:preview-feedback失败：日志读取失败', expect.anything())
+    })
+
+    it('masks a key pasted into the description before it reaches the clipboard', async () => {
+      register()
+      await electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent(), {
+        type: 'other', description: '我的 key 是 sk-abcdefghijklmnopqrstuvwxyz0123456789', attachReport: false,
+      })
+      expect(electronMocks.writeText.mock.calls.at(-1)?.[0]).not.toContain('sk-abcdefghijklmnopqrstuvwxyz0123456789')
+    })
+
+    it('refuses anything but the fixed message shape without touching the clipboard or the logs', async () => {
+      const { runtimeLog } = register()
+      const copy = electronMocks.handlers.get('runtime-logs:copy-feedback')!
+      const refused: unknown[] = [
+        // A free-form first line: the type must be one of the three values, never a label.
+        { ...message, type: '遇到问题' },
+        { ...message, type: 'constructor' },
+        // Extra fields could smuggle another format onto the clipboard.
+        { ...message, text: 'anything at all' },
+        { ...message, report: 'forged report' },
+        { type: 'bug', description: '打不开' },
+        { ...message, attachReport: 'yes' },
+        { ...message, description: '   ' },
+        { ...message, description: undefined },
+        { ...message, description: 'x'.repeat(200_001) },
+        { ...message, description: 'a\0b' },
+        { ...message, contact: 7 },
+        { ...message, identity: 'x'.repeat(4_097) },
+        { ...message, lastFailure: ['line'] },
+      ]
+      for (const request of refused) {
+        await expect(copy(trustedEvent(), request)).rejects.toThrow('反馈留言格式错误')
+      }
+      expect(electronMocks.writeText).not.toHaveBeenCalled()
+      expect(runtimeLog.captureFeedbackReport).not.toHaveBeenCalled()
+      expect(runtimeLog.feedbackReport).not.toHaveBeenCalled()
+    })
+
+    it('keeps refusing a message from a page that is not the app', () => {
+      register()
+      expect(() => electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent('https://attacker.example/'), message)).toThrow('非应用页面')
+      expect(electronMocks.writeText).not.toHaveBeenCalled()
+    })
+  })
+
   it('binds chat requests and cancellation to the trusted sender without exposing credentials', async () => {
     const accountService = accountServiceStub()
     vi.mocked(accountService.getSessionState).mockReturnValue({

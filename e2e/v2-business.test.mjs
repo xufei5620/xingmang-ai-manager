@@ -2641,22 +2641,25 @@ test('feedback opens on the message form and copies what the customer wrote toge
     await page.getByTestId('feedback-contact').fill('wx-test')
     await page.getByTestId('feedback-send').click()
     await waitForToast(page, '已复制，发给客服就行')
-    const copied = (await calls(page)).filter((call) => call.name === 'copy-clipboard').map((call) => call.args)
-    assert.deepEqual(copied, [[
-      '留言反馈 · 功能建议',
-      '点「打开」后终端闪一下就关了',
-      '联系方式：wx-test',
-      '星芒 0.1.31 · Windows · 已登录 test-user',
-      '最近一次失败：安装 Codex CLI · 网络超时',
-    ].join('\n') + '\n\n固定的脱敏报告内容'])
+    // J1：留言交给主进程拼好、现取报告、写剪贴板；页面自己不写剪贴板，客户等报告时切去微信也复制得上。
+    const sent = (await calls(page)).filter((call) => call.name === 'copy-feedback-message').map((call) => call.args)
+    assert.deepEqual(sent, [{
+      type: 'idea',
+      description: '点「打开」后终端闪一下就关了',
+      contact: 'wx-test',
+      identity: '星芒 0.1.31 · Windows · 已登录 test-user',
+      lastFailure: '最近一次失败：安装 Codex CLI · 网络超时',
+      attachReport: true,
+    }])
+    assert.equal((await calls(page)).some((call) => call.name === 'copy-clipboard'), false, 'the page leaves the clipboard to the main process')
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page opens after copying')
-    // 关掉「附带反馈报告」只复制客户写的那几行。
+    // 关掉「附带反馈报告」：主进程只复制客户写的那几行。
     await page.getByTestId('feedback-attach').getByRole('switch').click()
     await page.getByTestId('feedback-send').click()
-    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-clipboard').length === 2)
-    const last = (await calls(page)).filter((call) => call.name === 'copy-clipboard').at(-1).args
-    assert.equal(last.includes('固定的脱敏报告内容'), false)
-    assert.match(last, /^留言反馈 · 功能建议\n/)
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-feedback-message').length === 2)
+    const last = (await calls(page)).filter((call) => call.name === 'copy-feedback-message').at(-1).args
+    assert.equal(last.attachReport, false)
+    assert.equal(last.type, 'idea')
   } finally {
     await page.close()
   }
@@ -2669,10 +2672,12 @@ test('feedback still copies what the customer wrote when the diagnostic report c
     await page.getByTestId('feedback-description').fill('点「打开」后终端闪一下就关了')
     await page.getByTestId('feedback-send').click()
     await waitForToast(page, '反馈报告没生成出来，只复制了你写的内容，发给客服就行')
-    const copied = (await calls(page)).filter((call) => call.name === 'copy-clipboard').map((call) => call.args)
-    assert.equal(copied.length, 1)
-    assert.match(copied[0], /^留言反馈 · 遇到问题\n点「打开」后终端闪一下就关了\n/)
-    assert.match(copied[0], /\n反馈报告：这次没生成出来$/)
+    const sent = (await calls(page)).filter((call) => call.name === 'copy-feedback-message').map((call) => call.args)
+    assert.equal(sent.length, 1)
+    assert.equal(sent[0].type, 'bug')
+    assert.equal(sent[0].description, '点「打开」后终端闪一下就关了')
+    assert.equal(sent[0].attachReport, true)
+    assert.equal((await calls(page)).some((call) => call.name === 'copy-clipboard'), false)
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page still opens')
   } finally {
     await page.close()
