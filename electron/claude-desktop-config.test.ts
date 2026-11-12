@@ -926,6 +926,140 @@ describe('Claude Desktop key follow (#1113)', () => {
   })
 })
 
+// yoyo 2026-11-12「1 2 3 做」第 1 条：开机替客户把账号新上的型号补进菜单，只加不减，默认那个不动。
+describe('Claude Desktop model menu top-up', () => {
+  const baseUrl = 'https://xm.solov.cc'
+  const expected = { baseUrl, apiKey: input.apiKey }
+
+  it('hands the toolbox profile id, key and menu over without checking the management policy', async () => {
+    const assertUnmanaged = vi.fn(async () => undefined)
+    const f = fixture({ assertUnmanaged })
+    const saved = await f.service.saveGateway({ ...input, models: ['claude-opus-5', 'claude-sonnet-5'] })
+    assertUnmanaged.mockClear()
+    const id = path.basename(saved.path, '.json')
+    expect(await f.service.inspectOwnedModelMenu()).toEqual({
+      id, baseUrl, apiKey: input.apiKey, models: ['claude-opus-5', 'claude-sonnet-5'], legacy: false,
+    })
+    expect(assertUnmanaged).not.toHaveBeenCalled()
+  })
+
+  it('reports an empty menu when Claude Desktop discovers the models itself, and flags the 0.2.12 list', async () => {
+    const f = fixture()
+    await f.service.saveGateway({ ...input, models: undefined })
+    expect(await f.service.inspectOwnedModelMenu()).toMatchObject({ models: [], legacy: false })
+    await saveLegacyList(f, ['claude-opus-5', 'claude-haiku-5', 'claude-sonnet-5'])
+    expect(await f.service.inspectOwnedModelMenu()).toMatchObject({ models: ['claude-opus-5', 'claude-haiku-5', 'claude-sonnet-5'], legacy: true })
+  })
+
+  it('does not hand over a copy the customer applied, the official login or a profile it did not save', async () => {
+    const f = fixture()
+    expect(await f.service.inspectOwnedModelMenu()).toBeNull()
+    const saved = await f.service.saveGateway(input)
+    write(f.configPath, { ...read(f.configPath), deploymentMode: '1p' })
+    expect(await f.service.inspectOwnedModelMenu()).toBeNull()
+    write(f.configPath, { ...read(f.configPath), deploymentMode: '3p' })
+    const copyPath = path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`)
+    write(copyPath, read(saved.path))
+    const metadata = read(f.metadataPath) as { entries: unknown[] }
+    write(f.metadataPath, { ...metadata, appliedId: otherId, entries: [...metadata.entries, { id: otherId, name: '星芒 AI 副本' }] })
+    expect(await f.service.inspectOwnedModelMenu()).toBeNull()
+  })
+
+  it('puts the new models right after the default and keeps every entry and field the customer had', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    write(saved.path, { ...read(saved.path), inferenceModels: ['claude-opus-5', { name: 'claude-sonnet-5', displayName: 'Sonnet' }], custom: { preserved: true } })
+    const original = read(saved.path)
+    const before = fs.readFileSync(saved.path, 'utf8')
+    const others = snapshot([f.metadataPath, f.configPath, markerPath(f)])
+
+    const result = await f.service.addModels({ baseUrl: `${baseUrl}/`, apiKey: input.apiKey }, ['claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-5'])
+    expect(result.added).toEqual(['claude-opus-5-5', 'claude-haiku-5'])
+    expect(read(saved.path)).toEqual({ ...original, inferenceModels: [
+      { name: 'claude-opus-5' }, { name: 'claude-opus-5-5' }, { name: 'claude-haiku-5' }, { name: 'claude-sonnet-5', displayName: 'Sonnet' },
+    ] })
+    expect(result.backups).toHaveLength(1)
+    expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(before)
+    expectSnapshot(others)
+    expect(JSON.stringify(result)).not.toContain(input.apiKey)
+    // 默认还是原来那个；开机修复不会把它当成 0.2.12 那串。
+    expect(await f.service.inspectOwnedRoute()).toEqual({ baseUrl, apiKey: input.apiKey, model: 'claude-opus-5' })
+    expect(legacyClaudeDesktopSelectedModel((read(saved.path) as { inferenceModels: unknown }).inferenceModels)).toBeNull()
+    expect(await f.service.repairLegacyModelList([baseUrl])).toEqual({ status: 'unrecognized', reason: 'model-list' })
+  })
+
+  it('turns a single-model menu into name objects like a save of several models writes', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    expect((read(saved.path) as { inferenceModels: unknown }).inferenceModels).toEqual(['claude-opus-5'])
+    const result = await f.service.addModels(expected, ['claude-sonnet-5'])
+    expect(result.added).toEqual(['claude-sonnet-5'])
+    expect((read(saved.path) as { inferenceModels: unknown }).inferenceModels).toEqual([{ name: 'claude-opus-5' }, { name: 'claude-sonnet-5' }])
+  })
+
+  it('leaves the file alone when every model is already in the menu', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway({ ...input, models: ['claude-opus-5', 'claude-sonnet-5'] })
+    const previous = snapshot([saved.path])
+    commit.mockClear()
+    const result = await f.service.addModels(expected, ['claude-sonnet-5', 'claude-opus-5'])
+    expect(result).toEqual({ path: saved.path, backups: [], added: [] })
+    expect(commit).not.toHaveBeenCalled()
+    expectSnapshot(previous)
+  })
+
+  it('stops adding once the menu holds twelve models', async () => {
+    const f = fixture()
+    const existing = Array.from({ length: 10 }, (_value, index) => `claude-sonnet-4-${index}`)
+    const saved = await f.service.saveGateway({ ...input, models: existing })
+    const result = await f.service.addModels(expected, ['claude-opus-5-5', 'claude-opus-5', 'claude-haiku-5'])
+    expect(result.added).toEqual(['claude-opus-5-5', 'claude-opus-5'])
+    expect((read(saved.path) as { inferenceModels: unknown[] }).inferenceModels).toHaveLength(12)
+    const full = snapshot([saved.path])
+    expect((await f.service.addModels(expected, ['claude-haiku-5'])).added).toEqual([])
+    expectSnapshot(full)
+  })
+
+  it('checks the policy, then lets the caller look at the client a last time, and writes nothing when that look says no', async () => {
+    const order: string[] = []
+    const assertUnmanaged = vi.fn(async () => { order.push('policy') })
+    const f = fixture({ assertUnmanaged })
+    const saved = await f.service.saveGateway(input)
+    order.length = 0
+    const previous = snapshot([saved.path])
+    await expect(f.service.addModels(expected, ['claude-sonnet-5'], async () => {
+      order.push('recheck')
+      throw new Error('Claude Desktop 已经打开了，这次不补型号')
+    })).rejects.toThrow('已经打开了')
+    expect(order).toEqual(['policy', 'recheck'])
+    expectSnapshot(previous)
+  })
+
+  it.each([
+    ['points elsewhere', { inferenceGatewayBaseUrl: 'https://gateway.example' }],
+    ['uses another key', { inferenceGatewayApiKey: 'sk-hand-edited' }],
+  ])('writes nothing when the toolbox profile now %s', async (_case, edit) => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    write(saved.path, { ...read(saved.path), ...edit })
+    const previous = snapshot([saved.path, f.metadataPath, f.configPath, markerPath(f)])
+    await expect(f.service.addModels(expected, ['claude-sonnet-5'])).rejects.toThrow('在补型号前已变化')
+    expectSnapshot(previous)
+  })
+
+  it('leaves a profile without a model list and the 0.2.12 list to Claude Desktop and the startup repair', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway({ ...input, models: undefined })
+    const discovered = snapshot([saved.path])
+    expect((await f.service.addModels(expected, ['claude-sonnet-5'])).added).toEqual([])
+    expectSnapshot(discovered)
+    await saveLegacyList(f, ['claude-opus-5', 'claude-haiku-5'])
+    const legacy = snapshot([saved.path])
+    expect((await f.service.addModels(expected, ['claude-sonnet-5'])).added).toEqual([])
+    expectSnapshot(legacy)
+  })
+})
+
 describe('Claude Desktop official login switch', () => {
   const belongs = (key: string) => key === input.apiKey
 

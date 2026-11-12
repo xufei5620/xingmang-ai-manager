@@ -103,6 +103,7 @@ import { createCanvasWindowController } from './canvas-window'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
 import { runClaudeDesktopModelRepair } from './claude-desktop-model-repair'
+import { claudeDesktopModelTopUpStartupDelayMs } from './claude-desktop-model-topup'
 import { findExecutable, isTrustedHighIntegrityExecutable, trustedCommandEnvironment } from './command-runner'
 import { CodexExtensionService, isCodexCliInstalled } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
@@ -2346,6 +2347,12 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => systemService.reclaimRetiredToolIntegrations?.()).catch(() => undefined)
     // 卸了星芒再装回来：卸载时收回的做完提醒、防睡和状态栏，按卸载时留下的记录补回。没登录的也补。
     void startupQuiet.whenOver().then(() => systemService.restoreCliHooksRemovedByUninstall?.()).catch(() => undefined)
+    // Claude Desktop 的型号菜单只在客户保存配置那一刻写，账号新上的型号它看不到：开机替他补进去，只加不减、默认的不动，
+    // 它开着就这次不补（external-client-route-service.ts 的 topUpClaudeDesktopModels）。要按当前账号查型号，等登录恢复完；
+    // 再等开机那一阵检测跑完。要联网一个个试，放后台，不等它。
+    void startupQuiet.whenOver().then(() => accountSessionReady).then(() => new Promise<void>((resolve) => {
+      setTimeout(resolve, claudeDesktopModelTopUpStartupDelayMs).unref()
+    })).then(() => systemService.topUpClaudeDesktopModels?.()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { claudeDesktopModelCandidates, claudeDesktopStartupCheckModel, resolveClaudeDesktopModels } from './claude-desktop-models'
+import {
+  claudeDesktopModelCandidates, claudeDesktopStartupCheckModel, claudeDesktopTopUpCandidates, probeClaudeDesktopModels, resolveClaudeDesktopModels,
+} from './claude-desktop-models'
 
 describe('claudeDesktopModelCandidates', () => {
   it('offers the other Claude models newest first and leaves out the picked one, other vendors and unsafe names', () => {
@@ -83,5 +85,44 @@ describe('resolveClaudeDesktopModels', () => {
     })
     expect(peak).toBe(3)
     expect(selection.models).toHaveLength(8)
+  })
+})
+
+describe('probeClaudeDesktopModels', () => {
+  it('splits the models into the ones that answer and the rest, keeping their order', async () => {
+    const result = await probeClaudeDesktopModels(['claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-5'], async (model) => {
+      if (model === 'claude-haiku-5') throw new Error('timeout')
+      return model === 'claude-opus-5-5'
+    })
+    expect(result).toEqual({ passed: ['claude-opus-5-5'], rejected: ['claude-sonnet-5', 'claude-haiku-5'] })
+  })
+})
+
+describe('claudeDesktopTopUpCandidates', () => {
+  const offered = ['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5', 'gpt-6-astra']
+
+  it('without a record offers what a save today would try, minus what the menu already has', () => {
+    expect(claudeDesktopTopUpCandidates(['claude-opus-5'], offered, null)).toEqual(['claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-5'])
+    expect(claudeDesktopTopUpCandidates(['claude-opus-5', 'claude-sonnet-5'], offered, null)).toEqual(['claude-opus-5-5', 'claude-haiku-5'])
+  })
+
+  it('with a record offers only the models the key did not list last time', () => {
+    expect(claudeDesktopTopUpCandidates(['claude-opus-5'], offered, ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5'])).toEqual(['claude-opus-5-5'])
+    expect(claudeDesktopTopUpCandidates(['claude-opus-5'], offered, ['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5'])).toEqual([])
+  })
+
+  it('never offers the default again and leaves models outside the newest picks alone', () => {
+    const many = ['claude-opus-5-5', ...Array.from({ length: 9 }, (_value, index) => `claude-sonnet-4-${index}`)]
+    const candidates = claudeDesktopTopUpCandidates(['claude-opus-5-5'], many, null)
+    expect(candidates).toHaveLength(7)
+    expect(candidates).not.toContain('claude-opus-5-5')
+    expect(candidates).not.toContain('claude-sonnet-4-0')
+  })
+
+  it('tries nothing for a menu left to Claude Desktop or a menu that is already full', () => {
+    expect(claudeDesktopTopUpCandidates([], offered, null)).toEqual([])
+    const full = Array.from({ length: 12 }, (_value, index) => `claude-sonnet-4-${index}`)
+    expect(claudeDesktopTopUpCandidates(full, offered, null)).toEqual([])
+    expect(claudeDesktopTopUpCandidates(full.slice(0, 11), offered, null)).toEqual(['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5'])
   })
 })

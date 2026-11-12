@@ -12,6 +12,7 @@ import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manife
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { resolveClaudeDesktopModels } from './claude-desktop-models'
+import { runClaudeDesktopModelTopUp } from './claude-desktop-model-topup'
 import { buildGatewayMessagesProbe, runConnectionProbe } from './connection-check'
 import { type ExternalClientCheckResult, runExternalClientCheck } from './external-client-connection'
 import {
@@ -171,6 +172,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   // 这次运行里替哪个账号的哪个客户端换过线路，记着原来的地址和那把 Key（只在主进程内存里）：
   // 换完又回到原来那份（推测是客户端退出时把旧配置写了回去），要能在日志里说出来。
   const externalRoutesFollowed = new Map<string, { from: RelayEndpointId; baseUrl: string; apiKey: string }>()
+  const managerDataDirectory = serviceOptions.managerDataDirectory ?? path.join(providerRoots.userHome, '.xingmang-ai-manager')
   async function claudeDesktopConfig(status: ExternalClientRuntimeStatus, assertBeforeWrite?: () => void) {
     if (status.detectionError) throw new Error('Claude Desktop 安装位置无法确认，请重新检测')
     const env = serviceOptions.claudeDesktopEnv ?? (providerRoots.userHome === os.homedir() ? process.env : {})
@@ -180,7 +182,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     assertBeforeWrite?.()
     const roots = resolveClaudeDesktopPaths({ platform, userHome: providerRoots.userHome, env, installationPath, storeVirtualization })
     return createClaudeDesktopConfigService({
-      dataDirectory: serviceOptions.managerDataDirectory ?? path.join(providerRoots.userHome, '.xingmang-ai-manager'),
+      dataDirectory: managerDataDirectory,
       ...roots,
       assertBeforeWrite,
       assertUnmanaged: serviceOptions.assertClaudeDesktopUnmanaged ?? (() => assertClaudeDesktopUnmanaged({ platform, userHome: providerRoots.userHome })),
@@ -418,6 +420,75 @@ export function createExternalClientRouteService(context: ServiceContext, depend
         connectionVerified: connection?.ok === true, connection }
     }
     return queueExternalConfigWork(work)
+  }
+  // 开机补型号正在跑的那一次：main.ts 开机只叫一次，这里再挡一下同时叫两次。
+  let toppingUpClaudeDesktopModels: Promise<void> | null = null
+  /**
+   * 开机替 Claude Desktop 把当前账号新上的 Claude 型号补进菜单（claude-desktop-model-topup.ts，yoyo 2026-11-12「1 2 3 做」
+   * 第 1 条）。只补星芒替当前账号写的、正在用的、地址在当前线路上的那一份，菜单里原来的一个不删、默认那个不动；
+   * Claude Desktop 开着（或者看不出开没开）这次就不补，也不回头等它退出，下次开机再看。查型号、逐个试都在队外做，
+   * 只有最后那一笔写排进写配置的队，写之前再盘点一次它关着。从不抛错，出了岔子只记运行日志，界面上什么都不说。
+   */
+  function topUpClaudeDesktopModels(): Promise<void> {
+    toppingUpClaudeDesktopModels ??= topUpClaudeDesktopModelsOnce().finally(() => { toppingUpClaudeDesktopModels = null })
+    return toppingUpClaudeDesktopModels
+  }
+  async function topUpClaudeDesktopModelsOnce(): Promise<void> {
+    const tool = 'claudeDesktop'
+    const name = externalClientNames[tool]
+    const { activeSite, owner, baseUrl, belongsToCurrentAccount } = externalClientContext(tool)
+    if (owner === null) return
+    const assertContext = () => {
+      if (activeRelaySite().id !== activeSite.id || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) {
+        throw new Error('账号已变化，这次不补型号')
+      }
+    }
+    try {
+      const status = (await externalClientRuntime.scan()).find((entry) => entry.tool === tool)
+      if (!status?.installed || status.detectionError) return
+      if (status.running) {
+        runtimeLog?.log('info', 'config', 'external-client.claude-desktop.models.top-up-skipped', `${name} 开着，这次不补型号`, { reason: 'running' })
+        return
+      }
+      const menu = await (await claudeDesktopConfig(status)).inspectOwnedModelMenu()
+      // 不是星芒替当前账号写的、不在当前线路上（换线路那边会先换过去）、没写清单（Claude Desktop 自己问网关要）、
+      // 还是 0.2.12 那串写法（留给开机修复）的，都不补。
+      if (!menu || !sameRouteUrl(menu.baseUrl, baseUrl) || !belongsToCurrentAccount(menu.apiKey) || !menu.models.length || menu.legacy) return
+      const offered = await fetchAvailableModels(menu.apiKey, { site: activeSite })
+      assertContext()
+      const report = await runClaudeDesktopModelTopUp({
+        dataDirectory: managerDataDirectory,
+        menu,
+        offered,
+        // 和保存配置时一样，照 Claude Desktop 的开机检查发一个字。
+        probe: async (model) => (await runConnectionProbe(
+          buildGatewayMessagesProbe(name, baseUrl, model, menu.apiKey),
+          { fetch: serviceOptions.relayFetch, timeoutMs: claudeDesktopModelProbeTimeoutMs },
+        )).ok,
+        add: (models) => queueExternalConfigWork(async () => {
+          assertContext()
+          // 动文件之前再盘点一次开没开（同换线路）：客户可能是在试型号那几秒里打开的。
+          const recheck = async () => {
+            const latest = (await externalClientRuntime.scan({ fresh: true })).find((entry) => entry.tool === tool)
+            if (latest?.running) throw new Error(`${name} 已经打开了，这次不补型号`)
+            if (!latest?.installed || latest.detectionError) throw new Error(`${name} 这次没认出来开没开，这次不补型号`)
+            assertContext()
+          }
+          const saved = await (await claudeDesktopConfig(status, assertContext)).addModels({ baseUrl: menu.baseUrl, apiKey: menu.apiKey }, models, recheck)
+          return saved.added
+        }),
+      })
+      if (report.added.length || report.rejected.length || report.overflow.length) {
+        runtimeLog?.log('info', 'config', 'external-client.claude-desktop.models.topped-up', report.added.length
+          ? `已把当前账号新上的型号补进 ${name} 的型号菜单` : `${name} 的型号菜单这次没有补进新型号`, {
+          added: report.added, rejected: report.rejected, overflow: report.overflow,
+        })
+      }
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'external-client.claude-desktop.models.top-up-failed', `${name} 的型号菜单这次没补成，下次开机再看`, {
+        reason: credentialFailureReason(error),
+      })
+    }
   }
   /**
    * 首页 Claude Desktop 卡上「切回官方账号 / 改用当前账号」。和保存配置排同一个队：两件事改的是同一个
@@ -979,5 +1050,6 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     recheckPendingExternalRoutes,
     followManagedKeysNow,
     cancelPendingExternalRouteRecheck,
+    topUpClaudeDesktopModels,
   }
 }

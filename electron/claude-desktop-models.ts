@@ -12,6 +12,9 @@ import { isCliModelName, sortClaudeModelsNewestFirst } from './cli-model-default
 
 // 菜单里最多放几个，连同选中的那个。保存时每个都要试一次，放多了保存要多等。
 const maximumModels = 8
+// 开机补型号（claude-desktop-model-topup.ts）只加不减，账号每上一个新型号菜单就长一格。长到这么多就不再补，
+// 免得菜单越攒越长；客户在星芒里重新保存一次，菜单回到最新的 maximumModels 个。
+export const claudeDesktopTopUpMaximumModels = 12
 // 同时试几个：一次只试一个，8 个要等好几秒；全部一起发又像一阵突发请求。
 const probeConcurrency = 3
 // 和 3.6556.2 安装包里判微调型号的写法一样，那种型号开机检查排在后面。
@@ -57,7 +60,18 @@ export async function resolveClaudeDesktopModels(
   models: readonly string[],
   probe: (model: string) => Promise<boolean>,
 ): Promise<ClaudeDesktopModelSelection> {
-  const candidates = claudeDesktopModelCandidates(models, selected)
+  const tried = await probeClaudeDesktopModels(claudeDesktopModelCandidates(models, selected), probe)
+  return { models: [selected, ...tried.passed], rejected: tried.rejected }
+}
+
+/**
+ * 把 candidates 逐个交给 probe 发一个字（最多同时 probeConcurrency 个），按原来的先后分成通了的和没通的；probe 抛错
+ * 算没通。保存配置和开机补型号共用这一份，两边试的规矩一样。
+ */
+export async function probeClaudeDesktopModels(
+  candidates: readonly string[],
+  probe: (model: string) => Promise<boolean>,
+): Promise<{ passed: string[]; rejected: string[] }> {
   const passed = await mapWithConcurrency(candidates, probeConcurrency, async (model) => {
     try {
       return await probe(model)
@@ -66,7 +80,24 @@ export async function resolveClaudeDesktopModels(
     }
   })
   return {
-    models: [selected, ...candidates.filter((_model, index) => passed[index])],
+    passed: candidates.filter((_model, index) => passed[index]),
     rejected: candidates.filter((_model, index) => !passed[index]),
   }
+}
+
+/**
+ * 开机补型号拿哪几个去试：menu 是菜单里现在的型号（第一项是默认），按今天保存会挑的那几个算
+ * （claudeDesktopModelCandidates），去掉菜单里已经有的，再去掉 known 里的。known 是上一次补的时候这把密钥列着的型号
+ * （那次试过没通的不算，下次还试）：它们不是新上的，不在菜单里是客户自己拿掉的、菜单满了，或者本来就排不进最新那几个，
+ * 不再补。没有记录时为 null，这次照保存的挑法补一遍。菜单没有型号（由 Claude Desktop 自己问网关要）或者已经满了，
+ * 一个都不试。
+ */
+export function claudeDesktopTopUpCandidates(
+  menu: readonly string[],
+  offered: readonly string[],
+  known: readonly string[] | null,
+): string[] {
+  const [selected] = menu
+  if (selected === undefined || menu.length >= claudeDesktopTopUpMaximumModels) return []
+  return claudeDesktopModelCandidates(offered, selected).filter((model) => !menu.includes(model) && !known?.includes(model))
 }
