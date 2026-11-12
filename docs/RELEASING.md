@@ -624,6 +624,12 @@ npm run update:verify-feed -- http://127.0.0.1:8123/ --allow-local --platform=wi
 `electron/*.ts`、`src/renderer-v2/*.tsx` 的行号（商业级差距报告 G06）。更早的版本没有对照表，
 只能拿压缩后的行列号对着同版本的 `dist-electron` 人工找。
 
+### 哪些包会报、记在哪
+
+- 正式发布的包：environment 是 `production`。看这一版的报错、设报警，都按 `production` 筛。
+- `package-for-testing` 出的测试包：照样报，但记在 `testing` 下。它的版本号就是要发的那一版，不分开的话，发版前测试机上的报错会先算成这一版的报错（R4）。打包时写进 `package.json` 的 `xingmangTestingBuild`：Windows 那份由工作流设 `XINGMANG_TESTING_BUILD=1`（和正式发布走同一条 `release:build:unsigned`，只差这一个标记），macOS 那份是一次性身份签的，自动算测试包（`electron-builder.config.cjs` 的 `testingBuildMode`）。`publish-release.yml` 里不许出现这个标记（`scripts/publish-workflow-config.test.cjs` 钉住）。
+- 不报：开发版；本机和 `test-build.yml` 出的快包（`xingmangLocalBuild`），它们的版本号是已经发出去的那一版、代码却更新，堆栈对不上那一版的对照表；GitHub Actions 里起的打包版（`CI=true`）。和每天打卡同一条规矩（`crash-report.ts` 的 `shouldReportCrashes`、`usage-stats.ts` 的 `shouldSendUsageStats`）。设置里关掉的、用 `XINGMANG_DISABLE_CRASH_REPORTING=1` 启动的也不报。
+
 ### 怎么对上
 
 Sentry 只在三样都对上时用对照表，客户端和上传两边按同一套名字（`scripts/sentry-sourcemaps.test.cjs` 钉住）：

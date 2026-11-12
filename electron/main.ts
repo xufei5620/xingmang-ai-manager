@@ -74,7 +74,7 @@ import { inspectDeviceHardware, isLowEndDevice } from './device-profile'
 import { buildUnexpectedExitRelaunchArgs, describeUnexpectedExitError, recordUnexpectedExit, takeUnexpectedExitNotice, unexpectedExitRecordPath } from './unexpected-exit'
 import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneStaleDisplayCrashRecord, recordDisplayCrash, type DisplayLaunch } from './display-compat'
 import { ConfigBackupStore } from './backups'
-import { crashReportDist, crashReportDsn, crashReportRelease, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
+import { crashReportDist, crashReportDsn, crashReportEnvironmentName, crashReportRelease, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
 import { classifyNetworkFailure } from './network-failure'
 import { PlatformSettingsStore } from './platform/settings-store'
@@ -217,6 +217,7 @@ guardProcessOutputStreams()
 const applicationPackage = require('../package.json') as {
   xingmangAccelerationBundle?: unknown
   xingmangLocalBuild?: unknown
+  xingmangTestingBuild?: unknown
   xingmangUnsignedRelease?: unknown
 }
 
@@ -737,6 +738,7 @@ function appValue<T>(read: () => T, fallback: T): T {
 function crashReportingEnabled(): boolean {
   return shouldReportCrashes({
     packaged: appValue(() => app.isPackaged, false),
+    localBuild: applicationPackage.xingmangLocalBuild === true,
     // Re-read per report so switching the preference off stops the very next
     // send, with no refresh plumbing between the settings handler and here.
     // The fallback is the opt-out, not the default: if the preference cannot
@@ -762,7 +764,10 @@ const crashReporter = createCrashReporter({
   runtime: {
     release: crashReportRelease(appValue(() => app.getVersion(), '0.0.0')),
     dist: crashReportDist(process.platform, process.arch),
-    environment: appValue(() => app.isPackaged, false) ? 'production' : 'development',
+    environment: crashReportEnvironmentName({
+      packaged: appValue(() => app.isPackaged, false),
+      testingBuild: applicationPackage.xingmangTestingBuild === true,
+    }),
     homeDirectory: os.homedir(),
     appVersion: appValue(() => app.getVersion(), '0.0.0'),
     electronVersion: process.versions.electron ?? 'unknown',

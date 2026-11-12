@@ -101,6 +101,25 @@ if (ephemeralMacSigningMode) {
     throw new Error('CI ephemeral macOS signing requires CSC_FOR_PULL_REQUEST=true')
   }
 }
+// 测试包（package-for-testing.yml 出给测试机装的那几份）照样开着更新、照样报崩溃，只是
+// 主进程看见 xingmangTestingBuild 就把报错记在 Sentry 的 testing 环境下，免得发版前
+// 测试机上的报错先算进这一版的正式名下（R4）。macOS 那份一定是 runner 现场生成的一次性
+// 身份签的，本来就不能发给客户（publish-release.yml 开头），一次性签名本身就说明它是
+// 测试包；Windows 那份和正式发布走同一条 release:build:unsigned，只能由工作流用
+// XINGMANG_TESTING_BUILD=1 明说。本机快包根本不报崩溃，这个标记对它没有意义。
+const testingBuildMarker = process.env.XINGMANG_TESTING_BUILD
+if (testingBuildMarker !== undefined
+  && testingBuildMarker !== ''
+  && testingBuildMarker !== '0'
+  && testingBuildMarker !== '1') {
+  throw new Error('XINGMANG_TESTING_BUILD 只接受精确的 0 或 1')
+}
+if (testingBuildMarker === '1' && freeMacReleaseMode && !ephemeralMacSigningMode) {
+  // 正式的 Mac 包被标成测试包，客户的报错就全落进 testing，按 production 看的人一条也看不到。
+  throw new Error('XINGMANG_TESTING_BUILD=1 不能用于 macOS 免费发布通道：macOS 测试包只由一次性身份签名出')
+}
+const testingBuildMode = updateEnabledMode && (ephemeralMacSigningMode || testingBuildMarker === '1')
+
 // XINGMANG_RELEASE=1 is the Windows Authenticode channel: the only release
 // workflow runs on windows-latest, and run-release-build.cjs verifies
 // win-unpacked artifacts. macOS distribution goes through the free self-signed
@@ -227,6 +246,9 @@ module.exports = {
     // Unsigned test releases intentionally keep the updater enabled, while
     // ordinary local builds remain isolated from every production feed.
     xingmangLocalBuild: !updateEnabledMode,
+    // Files crash reports under Sentry's `testing` environment instead of
+    // `production` (crash-report.ts crashReportEnvironmentName, R4).
+    xingmangTestingBuild: testingBuildMode,
     // The main process reads this to know that electron-updater will skip its
     // installer signature check (no publisherName below), and switches the
     // updater to user-confirmed download/install plus its own SHA-512 check.
