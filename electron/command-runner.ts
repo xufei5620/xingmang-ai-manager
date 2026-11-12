@@ -125,6 +125,13 @@ export interface CommandRunnerDependencies {
   platform?: NodeJS.Platform
   spawnProcess?: typeof spawn
   resolveWindowsSystemExecutable?: (fileName: string) => string
+  /**
+   * How stop() signals the command's process group on macOS and Linux;
+   * production calls process.kill(-pid). A substituted spawnProcess gets the
+   * old direct-child kill unless it also passes this, so a fake child's pid
+   * is never turned into a real group signal.
+   */
+  signalProcessGroup?: (pid: number, signal: NodeJS.Signals) => void
 }
 
 export class CommandRunnerError extends Error {
@@ -1169,6 +1176,49 @@ async function resolveTrustedLinuxSpec(
   return { spec: { ...spec, executable, argv }, argv0: located ?? executable }
 }
 
+// Process groups of macOS / Linux commands that have not settled yet. Each
+// command leads its own group there (see runCommand), which also moves it out
+// of the app's group: whatever reaches the app's group on quit no longer
+// reaches the command, so the exit hook below signals these instead.
+const liveCommandGroups = new Set<number>()
+let commandGroupExitHookRegistered = false
+
+function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
+  process.kill(-pid, signal)
+}
+
+/**
+ * 1 and below would make -pid mean "every process this user may signal" (-1)
+ * or the caller's own group (0), never a group this module created.
+ */
+function usableProcessGroupId(pid: number | undefined): pid is number {
+  return typeof pid === 'number' && Number.isInteger(pid) && pid > 1
+}
+
+/**
+ * Runs from process.once('exit'): SIGTERM to every command group still running,
+ * so quitting mid-install or mid-probe does not leave npm, git or an MCP server
+ * running with nobody waiting for it. No SIGKILL follows: the process is
+ * already exiting and cannot wait out a grace period.
+ */
+export function stopLiveCommandGroupsAtExit(): void {
+  for (const pid of liveCommandGroups) {
+    try {
+      signalProcessGroup(pid, 'SIGTERM')
+    } catch {
+      // The group already ended; exit cleanup is best effort.
+    }
+  }
+  liveCommandGroups.clear()
+}
+
+function trackLiveCommandGroup(pid: number): void {
+  liveCommandGroups.add(pid)
+  if (commandGroupExitHookRegistered) return
+  commandGroupExitHookRegistered = true
+  process.once('exit', stopLiveCommandGroupsAtExit)
+}
+
 function positiveInteger(value: number, name: string, allowZero = false): number {
   if (!Number.isInteger(value) || value < (allowZero ? 0 : 1)) {
     throw new TypeError(`${name} must be ${allowZero ? 'a non-negative' : 'a positive'} integer`)
@@ -1287,6 +1337,16 @@ export async function runCommand(
   const startedAt = Date.now()
   const processPlatform = dependencies.platform ?? process.platform
   const spawnProcess = dependencies.spawnProcess ?? spawn
+  // On macOS and Linux, child.kill() reaches only the direct child: an MCP
+  // server that `claude mcp list` started, or the git clone behind a plugin
+  // marketplace add, was reparented and kept running after a timeout or
+  // cancel (C-5). detached makes the child lead a new session and process
+  // group, so stop() can signal everything it started at once. It has no
+  // controlling terminal either way: stdin is ignored and the packaged app has
+  // none to hand down. Windows keeps its taskkill /T path below.
+  const groupSignal = dependencies.signalProcessGroup
+    ?? (dependencies.spawnProcess ? undefined : signalProcessGroup)
+  const ownProcessGroup = processPlatform !== 'win32' && groupSignal !== undefined
 
   return await new Promise<CommandResult>((resolve, reject) => {
     let child: ReturnType<typeof spawn>
@@ -1297,12 +1357,16 @@ export async function runCommand(
         shell: false,
         windowsHide: options.windowsHide ?? true,
         stdio: ['ignore', 'pipe', 'pipe'],
+        ...(ownProcessGroup ? { detached: true } : {}),
         ...(launchName ? { argv0: launchName } : {}),
       })
     } catch {
       reject(immediateError('SPAWN_FAILED', spec, options))
       return
     }
+    const groupId = ownProcessGroup && usableProcessGroupId(child.pid) ? child.pid : null
+    const trackedGroup = groupId !== null && groupSignal === signalProcessGroup
+    if (trackedGroup) trackLiveCommandGroup(groupId)
 
     const stdoutChunks: Buffer[] = []
     const stderrChunks: Buffer[] = []
@@ -1332,6 +1396,7 @@ export async function runCommand(
       awakeTimeout?.stop()
       if (hardKill) clearTimeout(hardKill)
       if (exitSettleTimer) clearTimeout(exitSettleTimer)
+      if (trackedGroup) liveCommandGroups.delete(groupId)
       stdoutDecoder.end()
       stderrDecoder.end()
       options.signal?.removeEventListener('abort', abort)
@@ -1357,10 +1422,38 @@ export async function runCommand(
       })
     }
 
+    // false when the group is already gone (ESRCH) or none of it may be
+    // signalled (EPERM); the caller then falls back to the direct child.
+    const signalGroup = (signal: NodeJS.Signals): boolean => {
+      if (groupId === null || !groupSignal) return false
+      try {
+        groupSignal(groupId, signal)
+        return true
+      } catch {
+        return false
+      }
+    }
+
     const stop = (code: CommandErrorCode) => {
       if (forcedCode || settled) return
       forcedCode = code
       const fallbackKill = () => child.kill(options.killSignal ?? 'SIGTERM')
+      if (groupId !== null) {
+        if (!signalGroup(options.killSignal ?? 'SIGTERM')) fallbackKill()
+        if (killGraceMs > 0) {
+          // Deliberately outside cleanup(): the direct child exiting and the
+          // pipes closing settle this command, but say nothing about a
+          // grandchild that ignored SIGTERM. The group id cannot be handed to
+          // a new process while any member is alive, and reusing it once the
+          // group is empty would take the whole pid space wrapping within
+          // this grace period.
+          const groupKill = setTimeout(() => {
+            if (!signalGroup('SIGKILL') && !settled) child.kill('SIGKILL')
+          }, killGraceMs)
+          groupKill.unref()
+        }
+        return
+      }
       if (processPlatform === 'win32' && child.pid) {
         // child.kill() only reaches the direct child on Windows; a grandchild
         // holding the inherited stdio pipe handles would keep 'close' from
