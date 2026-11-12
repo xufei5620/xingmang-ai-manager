@@ -15,7 +15,6 @@ export {
 } from './features/health/HealthPage'
 export {
   FeedbackPage,
-  buildFeedbackMessage,
   feedbackCopyNotice,
   feedbackErrorCount,
   feedbackExportNotice,

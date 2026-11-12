@@ -1,8 +1,9 @@
-// 窗口、诊断、更新、检测、Node.js 安装和渲染层报错这几条通道的入参。
+// 窗口、诊断、更新、检测、Node.js 安装、渲染层报错和「复制给客服」这几条通道的入参。
 import type { DiagnosticsRunOptions } from '../../diagnostics'
 import type { ExternalClientScanOptions } from '../../external-client-contract'
+import { isFeedbackMessageType } from '../../feedback-message'
 import { isRecord } from '../../input-guards'
-import type { AppUninstallRequest, NodeRuntimeInstallRequest, RendererActivity, RendererLogLevel, RendererRestartWork, UpdateInstallOptions } from '../../ipc-contract'
+import type { AppUninstallRequest, FeedbackMessageCopyRequest, NodeRuntimeInstallRequest, RendererActivity, RendererLogLevel, RendererRestartWork, UpdateInstallOptions } from '../../ipc-contract'
 import type { SystemScanOptions } from '../../system-service'
 import type { UpdateDownloadOptions } from '../../updater'
 import { optionalBoolean, optionalString, requiredString } from './common'
@@ -88,5 +89,37 @@ export function parseRendererError(value: unknown): { message: string; stack?: s
     stack: optionalString(value.stack, '错误堆栈', 16_384),
     context: optionalString(value.context, '错误上下文', 256),
     level: parseRendererLogLevel(value.level),
+  }
+}
+
+const feedbackMessageFields = new Set(['type', 'description', 'contact', 'identity', 'lastFailure', 'attachReport'])
+
+// 客户写的、身份行、最近一次出错都是原话，可长可短：上限放得宽，正常留言碰不到；
+// 不是字符串、超长、带 NUL 一律不认（I5）。去掉首尾空白后是空的当没给。
+function feedbackMessageText(value: unknown, maximum: number): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value.length > maximum || value.includes('\0')) throw new Error('反馈留言格式错误')
+  return value.trim() || undefined
+}
+
+/**
+ * 「复制给客服」（J1）。只认契约里那六个字段，多一个也不认：这条通道只拼这一种留言，
+ * 页面不能借它往剪贴板写别的格式。描述是空的不认，页面在点按钮时已经拦下了。
+ */
+export function parseFeedbackMessageCopyRequest(value: unknown): FeedbackMessageCopyRequest {
+  if (!isRecord(value) || Object.keys(value).some((key) => !feedbackMessageFields.has(key))
+    || !isFeedbackMessageType(value.type) || typeof value.attachReport !== 'boolean') throw new Error('反馈留言格式错误')
+  const description = feedbackMessageText(value.description, 200_000)
+  if (!description) throw new Error('反馈留言格式错误')
+  const contact = feedbackMessageText(value.contact, 4_096)
+  const identity = feedbackMessageText(value.identity, 4_096)
+  const lastFailure = feedbackMessageText(value.lastFailure, 65_536)
+  return {
+    type: value.type,
+    description,
+    ...(contact ? { contact } : {}),
+    ...(identity ? { identity } : {}),
+    ...(lastFailure ? { lastFailure } : {}),
+    attachReport: value.attachReport,
   }
 }
