@@ -47,7 +47,7 @@ import {
   switchProviderToOfficialAccount,
   type CodexWorkspacePermissionStatus,
   type CodexWorkspacePermissionWriteResult,
-  type NativeConfigSaveMode,
+  type NativeConfigWriteMode,
   type NativeConfigSummary,
   type RetiredGeminiIntegrations,
 } from './config-files'
@@ -371,7 +371,8 @@ export interface ConfigSavePayload {
   provider: ProviderId
   apiKey: string
   model: string
-  mode: NativeConfigSaveMode
+  // repair 只有「修好它」「改用当前账号」那两条路用（NativeConfigWriteMode）；配置窗口的 config:save 只收合并和重置。
+  mode: NativeConfigWriteMode
 }
 
 /** 换线路定点改写是哪一下起的（只进日志）。 */

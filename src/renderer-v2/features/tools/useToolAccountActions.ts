@@ -99,8 +99,9 @@ export function useToolAccountActions({ toolsApi, toolbox, toast, session, mount
   }, [toast, toolbox.refreshConfig, toolbox.run, toolsApi])
   /**
    * 首页「配置文件坏了」的「修好它」：工具自己都读不了它的配置（Codex 的 config.toml、auth.json，
-   * Claude Code 的 settings.json）。做的就是配置里「高级」的「重置为初始状态」：主进程
-   * 先备份、再按现在用的账号整份重新生成。看得出原来用官方登录的照旧用官方账号，其余按当前账号
+   * Claude Code 的 settings.json）。主进程先备份，再按现在用的账号把读不了的那份重新生成，跟配置里「高级」的
+   * 「重置为初始状态」一样；只有 Codex 只坏了 auth.json 时不一样：config.toml 只改账号几处，客户自己加的连接、
+   * 信任过的文件夹照留（repair，X-1）。看得出原来用官方登录的照旧用官方账号，其余按当前账号
    * （brokenConfigRepairTarget）；没登录就先去登录。
    */
   const repairBrokenToolConfig = useCallback(async (tool: ToolId): Promise<boolean> => {
@@ -116,15 +117,15 @@ export function useToolAccountActions({ toolsApi, toolbox, toast, session, mount
     // 按工具家族登记：两行 Codex 共用一份配置，一行在修时另一行也是「修复中」，不会两次重置叠着跑。
     await toolbox.run(`repair-config:${provider}`, brokenConfigDetails[broken], async () => {
       try {
-        if (target === 'official') await toolsApi.official(tool, 'reset')
+        if (target === 'official') await toolsApi.official(tool, 'repair')
         else {
           // 还读得出模型的照旧用它，同配置里的重置；读不出就用账号的默认模型。
-          const result = await toolsApi.configureManaged(tool, config.model.trim() || undefined, 'reset')
+          const result = await toolsApi.configureManaged(tool, config.model.trim() || undefined, 'repair')
           if (result.failed.length) throw new Error(result.failed.map((item) => item.message).join('；'))
           if (!result.configured.includes(provider)) throw new Error('工具没有返回配置写入结果，请重新检测后再试。')
         }
         written = true
-        // 与配置对话框重置时一样：整份重新生成了，「自己填写密钥」的本机标记跟着清掉。
+        // 与配置对话框重置时一样：密钥换成了这次选的账号那边的，「自己填写密钥」的本机标记跟着清掉。
         const markerWarning = config.baseUrl ? applyManualSourceMarker(getSourceMarkerStorage(), config.baseUrl, provider, false) : ''
         toast.show(`已重置 ${spacedName(jobToolName(tool) ?? tool)}的配置，原来的配置已备份`, 'ok')
         if (markerWarning) toast.show(markerWarning, 'warn')
