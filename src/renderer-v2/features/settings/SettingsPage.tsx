@@ -612,6 +612,7 @@ export function SettingsPage({
       },
     )
   // 恢复默认外观：主题回到跟随系统、关掉高对比度，缩放、大字、减少动画回到装好时的样子。
+  // 大字也按这台电脑装好时的样子：Windows 文本大小调大了的，装好时 D81 替他开着，恢复后也开着（X-2）。
   // 显卡加速不算外观，改了要重开软件，这里不动它。
   const restoreAppearance = () =>
     void operation.execute(
@@ -624,7 +625,7 @@ export function SettingsPage({
         return update(
           {
             uiScale: 'auto',
-            largeText: false,
+            largeText: resource.data?.capabilities.largeTextByDefault === true,
             reducedMotion: false,
             ...(systemApi ? {} : { theme: 'light' as const }),
           },

@@ -297,6 +297,15 @@ export function shouldFollowSystemTextSize(preferences: TextSizePreferences, sys
   return preferences.uiScale === undefined || preferences.uiScale === 'auto'
 }
 
+/**
+ * 这台电脑新装时「大字」是不是开着：就是没定过字号的人在这台电脑上开机会不会被 D81 打开。
+ * 外观「恢复默认」说的是「回到装好时的样子」，按这一项给大字，不然 Windows 文本大小调大的电脑
+ * 一恢复反倒把 D81 开的大字关掉（X-2）。开机时还没读回来（`undefined`）或读不到（`null`）都当没调大。
+ */
+export function shouldDefaultToLargeText(systemTextScale: number | null | undefined): boolean {
+  return systemTextScale !== undefined && shouldFollowSystemTextSize({}, systemTextScale)
+}
+
 export function resolveCloseAction(
   preference: AppCloseBehavior = 'ask',
   trayAvailable: boolean,

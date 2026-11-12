@@ -1421,7 +1421,8 @@ const apiMethods = {
     if (fail === 'settings-read') throw new Error('设置文件暂时读不到')
     return settings
   },
-  getWindowCapabilities: async () => ({ tray: true, notifications: true }),
+  // largeTextByDefault：Windows 文本大小调大了的电脑，新装时「大字」开着（D81、X-2）。
+  getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('largeTextByDefault') ? { largeTextByDefault: true as const } : {}) }),
   // transfer=usage-off：「搬到新电脑」的文件里「匿名使用统计」是关，这台还是新装的开，主进程交来「直接关」；
   // transfer=usage-on：文件里是开，这台关过（配 usageOff），只进询问框（X-3）。没有对话，不用登录。
   importAppData: async () => {
