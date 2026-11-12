@@ -731,8 +731,9 @@ checks.push(['update, install and signature scripts still answer in ConstrainedL
 
   const sleeper = spawn(signed, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore', windowsHide: true })
   try {
-    const matches = parseWindowsCliProcessProbeOutput(await answerConstrained('running CLI process', buildWindowsCliProcessProbeScript(), { XINGMANG_CLI_PROCESS_ROOT: signedDir }))
-    assert.ok(matches.some((match) => match.processId === sleeper.pid && match.executablePath === signed), JSON.stringify(matches))
+    const probe = parseWindowsCliProcessProbeOutput(await answerConstrained('running CLI process', buildWindowsCliProcessProbeScript(), { XINGMANG_CLI_PROCESS_ROOT: signedDir }))
+    assert.equal(probe.status, 'checked', probe.detail)
+    assert.ok(probe.processes.some((match) => match.processId === sleeper.pid && match.executablePath === signed), JSON.stringify(probe))
   } finally {
     // The copy stays locked until it has exited, and the scratch folder is removed at the end.
     if (sleeper.exitCode === null && sleeper.signalCode === null) {
@@ -741,6 +742,40 @@ checks.push(['update, install and signature scripts still answer in ConstrainedL
         sleeper.kill()
       })
     }
+  }
+}])
+
+// "Nothing running" is what lets the startup pass rewrite a CLI's config, so the
+// running CLI probe has to tell an empty listing from one that never ran (C-1).
+// Get-CimInstance only writes an error when WMI is stopped, broken or denied;
+// the stand-in below does the same, and it has to come back as a failure in
+// both language modes, while a listing that finds nothing still reads as
+// checked. A function shadows the cmdlet even after the script imports
+// CimCmdlets, because functions come before cmdlets in command lookup.
+checks.push(['running CLI process probe tells a listing that failed from an empty one, in both language modes', async () => {
+  const failingListing = String.raw`
+function Get-CimInstance {
+  [CmdletBinding()]
+  param([string]$ClassName)
+  Write-Error 'WMI is unavailable (smoke stand-in)'
+}
+`
+  const emptyRoot = path.join(scratch, 'no-such-cli', 'node_modules', '@anthropic-ai', 'claude-code')
+  for (const constrained of [false, true]) {
+    const mode = constrained ? 'ConstrainedLanguage' : 'FullLanguage'
+    async function probeWith(script) {
+      const env = trustedEnv({ XINGMANG_CLI_PROCESS_ROOT: emptyRoot })
+      const output = constrained
+        ? await runPowerShell(['-Command', constrainedWrapper], { ...env, XINGMANG_CONSTRAINED_SCRIPT: script })
+        : await runPowerShell(['-Command', script], env)
+      return parseWindowsCliProcessProbeOutput(output)
+    }
+    const empty = await probeWith(buildWindowsCliProcessProbeScript())
+    assert.deepEqual(empty, { status: 'checked', processes: [] }, `${mode}: ${JSON.stringify(empty)}`)
+    const failed = await probeWith(`${failingListing}\n${buildWindowsCliProcessProbeScript()}`)
+    assert.equal(failed.status, 'unavailable', `${mode}: ${JSON.stringify(failed)}`)
+    assert.match(String(failed.detail), /WMI is unavailable \(smoke stand-in\)/, mode)
+    console.log(`info running CLI process probe in ${mode}: empty listing checked, failed listing ${JSON.stringify(failed.detail)}`)
   }
 }])
 
