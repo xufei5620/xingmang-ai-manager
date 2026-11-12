@@ -45,6 +45,68 @@ describe('claude model picker', () => {
     expect(picker?.options.map((option) => option.model)).toContain('claude-zz-9')
   })
 
+  // 模型接口按名字排：claude-3-* 在最前，claude-sonnet-* 在最后。
+  const crowdedClaudeModels = [
+    'claude-3-5-haiku-20241022',
+    'claude-3-5-sonnet-20241022',
+    'claude-3-7-sonnet-20250219',
+    'claude-3-7-sonnet-20250219-thinking',
+    'claude-fable-5',
+    'claude-fable-5-1',
+    'claude-haiku-4-5-20251001',
+    'claude-opus-4-1-20250805',
+    'claude-opus-4-20250514',
+    'claude-opus-4-5-20251101',
+    'claude-opus-4-6',
+    'claude-opus-4-7',
+    'claude-opus-4-8',
+    'claude-opus-5',
+    'claude-opus-5-5',
+    'claude-sonnet-4-20250514',
+    'claude-sonnet-4-5-20250929',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-7',
+    'claude-sonnet-4-8',
+    'claude-sonnet-5',
+    'claude-sonnet-5-5',
+  ]
+
+  it('drops the oldest models, not the last ones by name, when the list is capped', () => {
+    const models = buildClaudeRelayModelPicker(['gpt-6-astra', ...crowdedClaudeModels], 'claude-opus-5-5')?.options.map((option) => option.model)
+    expect(models).toHaveLength(20)
+    expect(models).toContain('claude-sonnet-5')
+    expect(models).toContain('claude-sonnet-5-5')
+    expect(models).not.toContain('claude-3-5-haiku-20241022')
+    expect(models).not.toContain('claude-3-5-sonnet-20241022')
+    expect(models).toEqual([...(models ?? [])].sort((left, right) => left.localeCompare(right)))
+  })
+
+  it('keeps an old current model in a capped list and drops the next oldest instead', () => {
+    const models = buildClaudeRelayModelPicker(crowdedClaudeModels, 'claude-3-5-haiku-20241022')?.options.map((option) => option.model)
+    expect(models).toHaveLength(20)
+    expect(models).toContain('claude-3-5-haiku-20241022')
+    expect(models).toContain('claude-sonnet-5-5')
+    expect(models).not.toContain('claude-3-5-sonnet-20241022')
+    expect(models).not.toContain('claude-3-7-sonnet-20250219-thinking')
+  })
+
+  it('counts a menu written from the old name-ordered cut as outdated so it gets the newest models', () => {
+    const nameOrderedCut = crowdedClaudeModels.filter((model) => model !== 'claude-sonnet-5' && model !== 'claude-sonnet-5-5')
+    const parsed: Record<string, unknown> = {
+      model: 'claude-opus-5-5',
+      env: { ANTHROPIC_DEFAULT_MODEL: 'claude-opus-5-5' },
+      fallbackModel: ['claude-opus-5', 'claude-sonnet-5-5'],
+      modelPicker: {
+        replaceBuiltInOptions: true,
+        options: nameOrderedCut.map((model) => ({ model, label: claudeModelLabel(model), description: model })),
+      },
+    }
+    const updates = claudeRelayModelPickerUpdates(parsed, crowdedClaudeModels, 'claude-opus-5-5')
+    expect(updates.defaultModel).toBeUndefined()
+    expect(updates.fallbackModel).toBeUndefined()
+    expect(updates.modelPicker?.options.map((option) => option.model)).toContain('claude-sonnet-5-5')
+  })
+
   it('points Default at the current model and writes the menu over an unset or managed one', () => {
     const parsed: Record<string, unknown> = {}
     const env: Record<string, unknown> = {}
