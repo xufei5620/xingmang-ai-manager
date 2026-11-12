@@ -98,7 +98,7 @@ XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm run test:v2
 
 **I2. 跨提权边界的执行必须用 `trustedCommandEnvironment()` + `trustedOnly:true`。**
 `NODE_OPTIONS`、`PSModulePath`、`DOTNET_STARTUP_HOOKS`、`BROWSER`、`GIT_ASKPASS`、`LD_PRELOAD` 等 60+ 变量能让子进程在启动瞬间加载攻击者代码（清单见 `command-runner.ts` 的 `unsafeKeys` / `unsafePrefixes` 两张表）。
-*注*：交互式终端启动走 `interactiveTerminalEnvironment`，它的净化基底**由调用方传入**——`trusted-only` 传 `trustedCommandEnvironment`，same-user 传 `commandEnvironment`（缺省值，未跨越完整性边界，无需收窄 PATH）。颜色层叠在基底之上，**不要把整个函数换成 `trustedCommandEnvironment`**，那会连 `TERM`/`COLORTERM` 一起剥掉，终端变无色。
+*注*：交互式终端启动走 `interactiveTerminalEnvironment`，它的净化基底**由调用方传入**——`trusted-only` 传 `trustedCommandEnvironment`，same-user 传 `commandEnvironment`（缺省值，未跨越完整性边界，无需收窄 PATH）。颜色层叠在基底之上，**不要把整个函数换成 `trustedCommandEnvironment`**，那会连 `TERM`/`COLORTERM` 一起剥掉，终端变无色。Windows 上再叠一层 `withPythonUtf8Output`（D77，客户没设过时补 `PYTHONIOENCODING=utf-8`），同样只加写死的值；别把它挪进 `trustedCommandEnvironment`，那会改到所有提权命令。
 
 **I3. API Key 明文永不随普通查询跨 IPC。**
 `toNativeConfigSummary` 解构剥离 `apiKey`；明文仅走 `config:reveal-api-key`。**账号凭据同理**：`accessToken` / refresh cookie 在 IPC 契约里 0 处返回给渲染层（渲染层只拿登录态快照），加密落盘走 `account-session-store.ts`。

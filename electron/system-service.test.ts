@@ -7902,6 +7902,24 @@ describe('opening a CLI on Windows', () => {
     expect(process.env.ANTHROPIC_API_KEY).toBe('sk-other-relay')
   })
 
+  // D77：从星芒打开的窗口里，AI 跑的 Python 脚本接管道输出也按 UTF-8，客户自己设过的照旧。
+  it('makes Python in the tool window print UTF-8 unless the customer chose otherwise', async () => {
+    vi.stubEnv('PYTHONIOENCODING', undefined)
+    vi.stubEnv('PYTHONUTF8', undefined)
+    const { userHome, workspace } = project('xingmang-windows-open-python-')
+    const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => undefined)
+
+    await windowsLaunchService(userHome, launchCliPowerShell).launchProvider('claude', workspace)
+    vi.stubEnv('PYTHONUTF8', '0')
+    await windowsLaunchService(userHome, launchCliPowerShell).launchProvider('claude', workspace)
+
+    expect(launchCliPowerShell).toHaveBeenCalledTimes(2)
+    expect(launchCliPowerShell.mock.calls[0]?.[0].env?.PYTHONIOENCODING).toBe('utf-8')
+    const chosen = launchCliPowerShell.mock.calls[1]?.[0].env ?? {}
+    expect(chosen.PYTHONUTF8).toBe('0')
+    expect(chosen.PYTHONIOENCODING).toBeUndefined()
+  })
+
   it('hands the key, config folder and model choices over as before while Claude Code is on the customer’s own account', async () => {
     vi.stubEnv('ANTHROPIC_MODEL', 'claude-opus-4-6')
     vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-own')

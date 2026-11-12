@@ -101,6 +101,25 @@ export function interactiveTerminalEnvironment(
 }
 
 /**
+ * 中文 Windows 上，Python 3.14 及以前把输出接到管道时按系统代码页（GBK）编码。Claude Code、Codex 跑命令都是
+ * 接管道读输出，AI 写的脚本一打印 ✅ 就报 `'gbk' codec can't encode`，不报错的中文也成了乱码（D77，深查
+ * 中文路径编码 ZW-2；终端那句 UTF-8 输出头只管控制台，管不到管道）。客户自己没设过 PYTHONIOENCODING、
+ * PYTHONUTF8 时补一个 PYTHONIOENCODING=utf-8：它只管标准输入输出，不像 PYTHONUTF8=1 那样连 open() 读文件的
+ * 默认编码一起改，读 GBK 文件的老脚本照旧。Python 3.15 起默认就是 UTF-8（PEP 686），到时这一项只是重复。
+ *
+ * 设过的不论设成什么都照旧；空值 Python 自己当没设，这里也一样。Windows 上变量名不分大小写。
+ * 管理员身份那条路的基底是 trustedCommandEnvironment，这里同颜色层一样叠在它上面：只加一个写死的值，
+ * 不放行任何被基底去掉的变量（T4）。
+ */
+export function withPythonUtf8Output(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const names = ['PYTHONIOENCODING', 'PYTHONUTF8']
+  const chosen = Object.entries(env).some(([key, value]) => names.includes(key.toUpperCase()) && Boolean(value))
+  if (chosen) return env
+  // 先去掉大小写不同的空值，免得同一个变量交下去两份。
+  return { ...withoutEnvironmentVariables(env, names), PYTHONIOENCODING: 'utf-8' }
+}
+
+/**
  * 普通权限打开工具时的基底：在 commandEnvironment 之上让 Claude Code、Gemini CLI
  * 也信任这台电脑装的证书（公司上网审计、安全软件的网页扫描）。管理员身份那条路
  * 用 trustedCommandEnvironment，不经过这里。
@@ -562,10 +581,11 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
           // other injection variables would cross the integrity boundary and
           // run attacker code as administrator. assertTrustedElevatedCliCommand
           // only vets the executable path and cannot see the environment.
-          env: await withoutDeadLoopbackProxies(interactiveTerminalEnvironment(
+          // Python 输出按 UTF-8 只在 Windows 上补（D77）：Mac、Linux 上它跟着系统语言走，那边一般本来就是 UTF-8。
+          env: await withoutDeadLoopbackProxies(withPythonUtf8Output(interactiveTerminalEnvironment(
             providerEnv,
             windowsExecutionMode === 'trusted-only' ? trustedCommandEnvironment : sameUserTerminalEnvironment,
-          ), provider),
+          )), provider),
         })
       } catch (error) {
         if (error instanceof WindowsCliLaunchError) {
