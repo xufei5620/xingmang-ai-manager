@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { Gauge } from 'lucide-react'
 import {
   buildManagedCliKeyLimitUpdate,
@@ -66,9 +66,13 @@ export function ToolKeyLimitRow({
   busy: boolean
   disabled: boolean
   onChange(value: string): void
-  onSave(): void
+  /** badInput:点保存那一刻,框里是不是打了浏览器读不成数的半截数。 */
+  onSave(badInput: boolean): void
 }) {
   const name = toolKeyLimitName(limit.provider)
+  // 打成「-」「1e」时数字框交出来的值是空的，跟留空分不开，只有框自己的 validity 知道；
+  // 而且从空打成「-」值没变，onChange 都不来，所以在点保存那一刻现读（表单 F10-b）。
+  const field = useRef<HTMLInputElement>(null)
   return (
     <ListRow
       icon={Gauge}
@@ -80,6 +84,7 @@ export function ToolKeyLimitRow({
       actions={
         <>
           <Input
+            ref={field}
             type="number"
             min="0"
             step="0.01"
@@ -95,7 +100,7 @@ export function ToolKeyLimitRow({
             loading={busy}
             disabled={disabled || !limit.key}
             testId={`tool-key-limit-save-${limit.provider}`}
-            onClick={onSave}
+            onClick={() => onSave(field.current?.validity.badInput ?? false)}
           >
             保存
           </Button>
@@ -136,11 +141,11 @@ export function ToolKeyLimits({
   // 只记用户改过的那几格。没改过的格子跟着刷新后的真实剩余额度走,
   // 免得保存完还停在旧数字上。
   const [drafts, setDrafts] = useState<Record<string, string>>({})
-  const save = (limit: ManagedCliKeyLimit, value: string) =>
+  const save = (limit: ManagedCliKeyLimit, value: string, badInput: boolean) =>
     void operation.execute(
       `limit-${limit.provider}`,
       async () => {
-        const amount = parseManagedCliKeyLimitAmount(value)
+        const amount = parseManagedCliKeyLimitAmount(value, badInput)
         await api.updateAccountKey(buildManagedCliKeyLimitUpdate(limit, amount, balance.quotaPerUnit, siteId))
         setDrafts((current) => {
           const next = { ...current }
@@ -187,7 +192,7 @@ export function ToolKeyLimits({
               busy={operation.busy === `limit-${limit.provider}`}
               disabled={Boolean(operation.busy)}
               onChange={(next) => setDrafts((current) => ({ ...current, [limit.provider]: next }))}
-              onSave={() => save(limit, value)}
+              onSave={(badInput) => save(limit, value, badInput)}
             />
           )
         })

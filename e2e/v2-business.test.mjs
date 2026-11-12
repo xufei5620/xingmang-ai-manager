@@ -4,7 +4,7 @@ import path from 'node:path'
 import { before, after, test } from 'node:test'
 import { openFixturePage } from './fixture-readiness.mjs'
 import { actionTimeoutMs, createBrowserFixture, navigationTimeoutMs } from './harness.mjs'
-import { recordToasts, waitForToast } from './toast-recording.mjs'
+import { assertNoToast, recordToasts, waitForToast } from './toast-recording.mjs'
 
 const business = createBrowserFixture({
   cacheDir: 'node_modules/.vite-v2-business-tests',
@@ -988,6 +988,39 @@ test('tool key limits that could not be read can be read again without leaving t
     assert.equal(await card.getByRole('alert').count(), 0)
   } finally {
     await none.close()
+  }
+})
+
+test('a half-typed tool key limit is refused instead of being saved as no limit', async () => {
+  const page = await fixture('page=account&managedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const card = page.getByTestId('tool-key-limits')
+    const field = card.getByTestId('tool-key-limit-input-claude')
+    const save = card.getByTestId('tool-key-limit-save-claude')
+    const refused = card.getByRole('alert').getByText('请填写大于 0 的上限金额，留空表示不限额。', { exact: true })
+    await field.waitFor()
+    // 「1e」「-」这种半截数，数字框交出来的值是空的，跟留空一样；不能当成不限额存下去（表单 F10-b）。
+    // 「-」是先清空再打的：从空到「-」值没变，框的 onChange 根本不来。
+    for (const typed of ['1e', '-']) {
+      await field.fill('')
+      await field.pressSequentially(typed)
+      assert.equal(await field.inputValue(), '')
+      await save.click()
+      await refused.waitFor()
+      await assertNoToast(page, '额度上限已保存')
+      // 两轮红条是同一句，第二轮光看红条分不出来，所以每轮都核对保存一次也没发出去。
+      assert.equal((await calls(page)).filter((call) => call.name === 'updateAccountKey').length, 0)
+    }
+    // 真留空照旧是不限额：保存发出去，而且前面两次一次都没发。
+    await field.fill('')
+    await save.click()
+    await waitForToast(page, '额度上限已保存')
+    const updates = (await calls(page)).filter((call) => call.name === 'updateAccountKey')
+    assert.equal(updates.length, 1)
+    assert.equal(updates[0].args.unlimitedQuota, true)
+  } finally {
+    await page.close()
   }
 })
 
