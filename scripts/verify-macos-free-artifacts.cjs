@@ -47,6 +47,17 @@ const BASE_ENTITLEMENT_KEYS = ['com.apple.security.cs.allow-jit']
 // expected set is derived from the signature's own TeamIdentifier, and both
 // directions are failures.
 const LIBRARY_VALIDATION_EXCEPTION_KEY = 'com.apple.security.cs.disable-library-validation'
+// Electron's own Info.plist declares these with English text, and
+// electron-builder keeps them unless the config deletes them by value null
+// (electron-builder.config.cjs, macUnusedElectronUsageDescriptions, which has
+// the reasons). Checked on the packaged bundle because the only other evidence
+// is a reading of electron-builder's merge code: an upgrade that stopped
+// honouring null would otherwise ship the English prompts again unnoticed.
+const UNUSED_ELECTRON_USAGE_DESCRIPTION_KEYS = [
+  'NSMicrophoneUsageDescription',
+  'NSCameraUsageDescription',
+  'NSAudioCaptureUsageDescription',
+]
 
 function expectedEntitlementKeys(teamIdentifier) {
   return teamIdentifier === null
@@ -746,6 +757,11 @@ function assertExactPackagedInfoPlist(infoPlist, expectedVersion) {
   if (infoPlist.CFBundleVersion !== expectedVersion) {
     throw new Error(`Info.plist CFBundleVersion 必须精确为预期版本 ${expectedVersion}`)
   }
+  for (const key of UNUSED_ELECTRON_USAGE_DESCRIPTION_KEYS) {
+    if (Object.hasOwn(infoPlist, key)) {
+      throw new Error(`Info.plist 不能带 ${key}：星芒用不到这项设备，Electron 自带的英文说明应在打包配置里删掉`)
+    }
+  }
 }
 
 async function verifyPackagedInfoPlist(appPath, expectedVersion, commandRunner) {
@@ -1191,6 +1207,7 @@ if (require.main === module) {
 module.exports = {
   BASE_ENTITLEMENT_KEYS,
   LIBRARY_VALIDATION_EXCEPTION_KEY,
+  UNUSED_ELECTRON_USAGE_DESCRIPTION_KEYS,
   assertAllowedEntitlements,
   expectedEntitlementKeys,
   parseCodesignTeamIdentifier,
