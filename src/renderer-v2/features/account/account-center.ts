@@ -154,6 +154,18 @@ export function inviteRuleText(rate: number | null | undefined): string {
 }
 
 /**
+ * 「转入余额」这次发给后台的额度；金额不对时给 null，不发。
+ * 历史账号的后台只收和可转返利一分不差的全额，返利按美元记、常带小数（余额 F4）：
+ * 金额框固定为全额，发出去的就是可转返利原值，不取整——取整以后不是多了就是少了，永远转不进去。
+ * 星芒账号照旧按填的美元数换成整数额度，可以只转一部分。
+ */
+export function affiliateTransferQuota(input: { wholeOnly: boolean; amount: string; available: number; quotaPerUnit: number }): number | null {
+  if (input.wholeOnly) return Number.isFinite(input.available) && input.available > 0 ? input.available : null
+  const quota = Math.round(Number(input.amount) * input.quotaPerUnit)
+  return Number.isFinite(quota) && quota > 0 && quota <= input.available ? quota : null
+}
+
+/**
  * 登录设备那一行的小字：这台是「正在使用」；别的写多久以前活动过、从哪个地址。后台没给地址
  * 或时间的那一半就不写。只有不到 5 分钟才算「刚刚」：客户靠这一行判断是不是别人在用他的号，
  * 「刚刚」和 50 分钟前差得不小（D60）。

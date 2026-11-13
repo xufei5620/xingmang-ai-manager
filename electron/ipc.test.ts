@@ -8285,6 +8285,24 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(paymentWindow.openUrl).not.toHaveBeenCalled()
     })
 
+    it('passes a historical account rebate with cents unrounded but keeps Xingmang on whole units', async () => {
+      // 余额 F4：历史账号的返利按美元记、常带小数，后台只收全额；星芒账号照旧只收整数额度。
+      const historical = Object.assign(accountServiceStub(), { getActiveSiteId: vi.fn<() => 'solov' | 'solov-api'>(() => 'solov-api') })
+      vi.mocked(historical.transferAffiliateQuota).mockResolvedValue(undefined)
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, historical)
+      const transfer = electronMocks.handlers.get('account:transfer-affiliate-quota')!
+      await expect(transfer(trustedEvent(), { quota: 3.456 })).resolves.toBeUndefined()
+      expect(historical.transferAffiliateQuota).toHaveBeenCalledWith({ quota: 3.456 })
+      for (const quota of [0, -0.5, Number.NaN, Number.POSITIVE_INFINITY, '3.456']) {
+        expect(() => transfer(trustedEvent(), { quota })).toThrow('邀请额度格式错误')
+      }
+      expect(historical.transferAffiliateQuota).toHaveBeenCalledOnce()
+
+      historical.getActiveSiteId.mockReturnValue('solov')
+      expect(() => transfer(trustedEvent(), { quota: 3.456 })).toThrow('邀请额度格式错误')
+      expect(historical.transferAffiliateQuota).toHaveBeenCalledOnce()
+    })
+
     it('rejects hostile billing and profile inputs before they reach the service', () => {
       const { accountService } = register()
       const quote = electronMocks.handlers.get('account:quote-topup')!

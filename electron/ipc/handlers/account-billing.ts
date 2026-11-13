@@ -98,7 +98,7 @@ export function registerAccountBillingHandlers(ctx: IpcHandlerContext): void {
     accountService.redeemTopupCode(requiredString(code, '兑换码', 256))
   ))
   registerTrustedHandler('account:transfer-affiliate-quota', (_event, input: unknown) => (
-    accountService.transferAffiliateQuota(parseAccountAffiliateTransferInput(input))
+    accountService.transferAffiliateQuota(parseAccountAffiliateTransferInput(input, accountService.getActiveSiteId?.() === 'solov-api'))
   ))
   registerTrustedHandler('account:list-subscription-plans', () => accountService.listSubscriptionPlans())
   registerTrustedHandler('account:get-subscription-self', async () => {

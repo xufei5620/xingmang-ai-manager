@@ -883,6 +883,29 @@ test('the transfer dialog starts from what is transferable now, also after part 
   }
 })
 
+test('a historical account moves a rebate with cents in one go, at the exact amount', async () => {
+  // 余额 F4：以前 $3.456 被四舍五入成 3 发出去，后台要全额，怎么点都报错。
+  const page = await fixture('page=account&sub2apiReliability=1&fractionalRebate=1')
+  try {
+    await page.getByRole('tab', { name: '邀请返利', exact: true }).click()
+    const panel = page.getByRole('tabpanel').filter({ visible: true })
+    const transfer = panel.getByTestId('account-invite-transfer')
+    await transfer.click()
+    const dialog = page.getByRole('dialog', { name: '把 $3.46 返利转入余额？', exact: true })
+    await dialog.waitFor()
+    const amount = dialog.getByLabel('转入金额（美元）', { exact: true })
+    assert.equal(await amount.inputValue(), '3.456')
+    assert.equal(await amount.isEditable(), false)
+    await dialog.getByRole('button', { name: '转入余额', exact: true }).click()
+    await waitForToast(page, '$3.46 已转入余额')
+    await dialog.waitFor({ state: 'hidden' })
+    await transfer.getByText('已全部转入', { exact: true }).waitFor()
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'transfer-affiliate-quota').map((call) => call.args), [{ quota: 3.456 }])
+  } finally {
+    await page.close()
+  }
+})
+
 test('the empty transfer button tells a drained rebate from one never earned', async () => {
   const page = await fixture('page=account')
   try {
