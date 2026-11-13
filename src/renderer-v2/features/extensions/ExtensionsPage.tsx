@@ -113,6 +113,7 @@ import {
 import { isProvider } from '../tools/provider-options'
 import {
   buildLaunchCommand,
+  launchCommandSplitsArguments,
   mcpHeaderLines,
   mcpPasteChoiceLabel,
   mcpPasteNotice,
@@ -1571,6 +1572,11 @@ export function ExtensionsPage({
               ? transport === 'http'
                 ? 'https://example.com/mcp'
                 : '比如：从提供方说明里复制的启动命令'
+              : undefined
+          }
+          hint={
+            kind === 'mcp' && form === 'add' && transport === 'stdio' && launchCommandSplitsArguments(source)
+              ? '已经帮你把后面的参数分出去了'
               : undefined
           }
           mono
