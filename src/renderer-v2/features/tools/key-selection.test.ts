@@ -48,6 +48,15 @@ describe('configuration key selection', () => {
     // 历史账号的密钥前缀没核实，只拦空的。
     expect(manualKeyIssue('abc', false)).toBeNull()
   })
+  it('checks the key without the spaces and zero-width characters a paste can carry', () => {
+    // 飞书、网页复制来的开头带零宽空格，以前报「应以 sk- 开头」（J7）。
+    expect(manualKeyIssue('\u200Bsk-12345678901234567', true)).toBeNull()
+    expect(manualKeyIssue('\uFEFFsk-12345678901234567\u200B', true)).toBeNull()
+    // 折成两行的密钥粘进来中间多一个空格，去掉后照样要 20 位以上。
+    expect(manualKeyIssue('sk-12345 67890', true)).toContain('20 位以上')
+    expect(manualKeyIssue('\u200B\u3000\u200D', true)).toBe('请粘贴你在星芒创建的密钥')
+    expect(manualKeyIssue('\u200B', false)).toBe('请粘贴你在星芒创建的密钥')
+  })
   it('defaults to an automatic key when the local key belongs to another site', () => {
     // 「保持当前」对别的站的 Key 存不进去（主进程报「属于其他账号」），不能默认选它。
     expect(initialKeyChoice({ hasApiKey: true, matchesRelay: false } as AppConfigSummary['providers']['codex'])).toBe('automatic')

@@ -14,6 +14,7 @@
 - `security.ts` — URL 策略的单一来源：`isTrustedIpcSenderUrl`（IPC 发送方校验，主窗口、画布、platform 三套 handler 都用它，I4）、`isAllowedAppNavigationUrl`（窗口内导航）、`isAllowedExternalUrl`（外链白名单，只认 https 和 `ms-windows-store:`，要求 `href` **全等**，防 `xm.solov.cc.evil.com` 这类前缀绕过，I12）、`resolvePackagedApplicationFile`（`xingmang://` 与 `xingmang-canvas://` 共用的防穿越解析，I15）；另有 `hasDisallowedPackagedDebugSwitch`，打包版由 `platform/entry.ts` 在分出任何一支之前调用，拒绝 `--inspect` / `--remote-debugging-*` 和能让 Chromium 拉起命令的 `--gpu-launcher`、`--*-cmd-prefix`、`--browser-subprocess-path`；照 Chromium 的读法，单短横线和 Windows 上的斜杠写法同样拦。Windows 打包版另有白名单 `resolvePackagedLaunchArguments`：只认开机自启、更新后重开、卸载清理、加速辅助、通知唤起、深链和 `--user-data-dir` 这几样，别的开关去掉后重新打开一次（不是打不开），黑名单上的照旧直接退出；Mac 不提权、Linux 不许 root，只用黑名单。残余风险写在源码注释里（#1065）
 - `app-protocol.ts` — 主窗口 `xingmang://` 回包的安全策略响应头：和 `index.html` 的 `<meta>` 一字不差（测试钉住），页面本身规矩不变；视频剪辑拼片的后台线程只认自己脚本的响应头、不继承 `<meta>`，靠它才连不了外站（#1406 P3-2）。只能在协议回包里带，`webRequest.onHeadersReceived` 注入的头到不了后台线程（Electron 43 实测）
 - `input-guards.ts` — 最基础的输入检查（`isRecord`、`isStringArray`、`filterStrings`、`isPromiseLike`），零依赖、渲染层也能值导入（I6）；只判断不出报错文案。主进程和 renderer-v2 各文件自己那份 `isRecord` 已全部换成这一份（#1071 第 3 条、#1070），只有要和画布逐字一样的 `drama-parse.ts` 还留着；`codex-config-toml.ts` 的 `isTomlTable` 在它上面再排除 Date
+- `pasted-api-key.ts` — 客户自己粘贴的密钥先去掉夹着的空格、零宽字符（`normalizePastedApiKey`，深查 J7）：页面 `manualKeyIssue` 查格式，主进程 `models:list`、`config:save`、`config:configure-external-tool` 检测和保存前都过这一遍；Tab、换行这类控制字符不去，照旧整串拒掉（`fetchAvailableModels`、`parseExternalClientConfigRequest`）。零依赖、渲染层也能值导入（I6）
 
 ## 命令执行与安全边界（本项目真正的复杂度在这里）
 

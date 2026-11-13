@@ -13,6 +13,7 @@ import { assertOpenableConfigDirectory } from '../../config-directory'
 import { defaultProviderConfigRoots, providerConfigRoot } from '../../codex-home'
 import type { CliModelHints } from '../../cli-model-defaults'
 import type { ToolModelCheck, ToolTemplateFillResult } from '../../ipc-contract'
+import { normalizePastedApiKey } from '../../pasted-api-key'
 import { parseConfigSavePayload, parseRunningToolsProviders } from '../parsers/tools'
 import type { IpcHandlerContext } from './context'
 
@@ -60,7 +61,12 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
     const check = () => {
       if (revision !== undefined && accountService.getSessionRevision?.() !== revision) throw new Error('账号已变化，请重新配置')
     }
-    const parsed = parseConfigSavePayload(payload)
+    const input = parseConfigSavePayload(payload)
+    // 客户粘贴的密钥夹着空格、零宽字符时先去掉再检测、保存（J7）。只有空白的照旧是「沿用已保存的那把」，
+    // 只有零宽字符的不能因此悄悄变成沿用。
+    const apiKey = normalizePastedApiKey(input.apiKey)
+    if (!apiKey && input.apiKey.trim()) throw new Error('API Key 格式错误')
+    const parsed = { ...input, apiKey }
     const save = () => options.realmAccounts ? service.saveConfig(parsed, options.previewOnboarding, check)
       : service.saveConfig(parsed, options.previewOnboarding)
     if (parsed.mode !== 'reset') return save()
@@ -93,7 +99,11 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
       const config = service.getConfig(options.previewOnboarding).providers[provider]
       if (!config.hasApiKey || !config.matchesRelay) throw new Error('该工具没有当前账号的可用密钥，请重新选择密钥来源')
       apiKey = service.revealApiKey(provider, options.previewOnboarding)
-    } else apiKey = parsed.credential.apiKey
+    } else {
+      // 同 config:save：客户粘贴的密钥夹着的空格、零宽字符先去掉（J7）。
+      apiKey = normalizePastedApiKey(parsed.credential.apiKey)
+      if (!apiKey) throw new Error('访问密钥格式无效')
+    }
     assertCurrent()
     // 记下这把是从哪来的：Claude Code 换 Key 时，客户自己填的那把不跟着换（#1113）。
     return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent, parsed.credential.kind)
@@ -284,7 +294,8 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
     if (typeof apiKey !== 'string' || apiKey.length > 4_096) {
       throw new Error('API Key 格式错误')
     }
-    return service.fetchAvailableModels(apiKey)
+    // 只有自己填的密钥走这条：夹着的空格、零宽字符先去掉再问（J7）。
+    return service.fetchAvailableModels(normalizePastedApiKey(apiKey))
   })
   registerTrustedHandler('models:list-configured', (_event, provider: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
