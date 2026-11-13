@@ -1738,7 +1738,7 @@ describe('registerIpcHandlers', () => {
       fs.writeFileSync(file, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: {}, conversations: [] }))
       electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
       open.mockRejectedValueOnce(busy)
-      const failure = await importData(trustedEvent()).then(() => null, (error: unknown) => error)
+      const failure = await Promise.resolve(importData(trustedEvent())).then(() => null, (error: unknown) => error)
       expect(failure).toBeInstanceOf(Error)
       expect((failure as Error).message).toBe('这个文件现在读不了，可能正被别的程序占着。关掉它，再点一次「导入」。')
       expect((failure as Error).cause).toBe(busy)
