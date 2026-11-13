@@ -11,6 +11,9 @@ param([Parameter(Mandatory = $true)][string]$Installer)
 #      association and the template writes the unquoted one back, so the
 #      rewrite has to happen again;
 #   3. uninstalls: the ProgID is gone.
+# After the install and the upgrade it also checks the file type's own icon
+# (IC-10): DefaultIcon points at the document icon the installer copied into
+# resources, not at the program icon electron-builder falls back to.
 #
 # Only names in ASCII are compared, so the runner's display language does not
 # matter. CI only; the finally block removes everything it made.
@@ -77,6 +80,10 @@ function Assert-Association([string]$stage, [string]$dir) {
   Check ($command -eq $expected) "after $stage, the open command quotes the program path (expected $expected, got $command)"
   $verbText = Read-Value "Software\Classes\$progId\shell\open" ''
   Check ($null -eq $verbText) "after $stage, the open verb shows Windows' own word, not the template's English (got $verbText)"
+  $icon = Read-Value "Software\Classes\$progId\DefaultIcon" ''
+  $expectedIcon = Join-Path $dir 'resources\canvas-project.ico'
+  Check ($icon -eq $expectedIcon) "after $stage, the file type uses its own document icon (expected $expectedIcon, got $icon)"
+  Check (Test-Path -LiteralPath $expectedIcon -PathType Leaf) "after $stage, the document icon file is in place"
 }
 
 $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
