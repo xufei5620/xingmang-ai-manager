@@ -89,6 +89,30 @@ describe('home balance usage cache', () => {
     expect(api.peekBalanceUsage('xm-account:7')).toBeNull()
   })
 
+  it('does not hand a caller the usage of another account when the re-read still lands on it', async () => {
+    vi.useFakeTimers()
+    try {
+      const session = { authenticated: true, siteId: 'solov', account: { userId: 7 } }
+      // 每个账号的用量不一样，好看出拿到的是谁的。
+      const getAccountUsage = vi.fn(async () => ({ stats: { quota: session.account.userId } }))
+      const bridge = { getAccountSession: async () => session, getAccountUsage } as unknown as XingmangApi
+      const api = createToolsApi(bridge)
+      expect(await api.balanceUsage('xm-account:7')).toEqual({ monthQuota: 7, weekQuota: 7 })
+      vi.advanceTimersByTime(balanceUsageTtlMs)
+      // 主进程这边已经换成 8 号，还停在 7 号的那张卡片恰好这时来要用量：
+      // 第一次读到 8 号的、对不上，作废重查，重查回来还是 8 号的。
+      session.account.userId = 8
+      await expect(api.balanceUsage('xm-account:7')).rejects.toThrow()
+      expect(getAccountUsage).toHaveBeenCalledTimes(6)
+      // 缓存里那份照实记在 8 号名下，8 号来要时直接用，不用再查。
+      expect(api.peekBalanceUsage('xm-account:7')).toBeNull()
+      expect(await api.balanceUsage('xm-account:8')).toEqual({ monthQuota: 8, weekQuota: 8 })
+      expect(getAccountUsage).toHaveBeenCalledTimes(6)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('asks again right after the cache is invalidated', async () => {
     const { bridge, getAccountUsage } = usageBridge()
     const api = createToolsApi(bridge)
