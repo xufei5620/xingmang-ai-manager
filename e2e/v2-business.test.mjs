@@ -278,6 +278,20 @@ test('sub-cent calls, bars and the daily average show the fraction of a cent the
   } finally { await page.close() }
 })
 
+test('refund rows in the call list leave the cost cell as a dash', async () => {
+  // 余额审查 F5：退款记录里记着退回的额度，「花费」一格以前写成「$0.50」，看着像又扣了一笔；不是消费的行跟没扣费的失败行一样写「—」。
+  const page = await fixture('page=account&accountTab=usage&usageDetail=refund')
+  try {
+    await page.getByRole('tab', { name: '用量账单', exact: true, selected: true }).waitFor()
+    const section = page.getByTestId('account-usage-section')
+    const costColumn = await section.locator('thead th').allInnerTexts().then((labels) => labels.map((label) => label.trim()).indexOf('花费'))
+    assert.ok(costColumn >= 0)
+    const row = usageRow(page)
+    await row.getByText('退款', { exact: true }).waitFor()
+    assert.equal((await row.locator('td').nth(costColumn).innerText()).trim(), '—')
+  } finally { await page.close() }
+})
+
 test('changing the usage range sends the call list back to its first page', async () => {
   const page = await fixture('page=account&accountTab=usage&usagePages=1')
   try {

@@ -13,6 +13,7 @@ import {
   usageCalendarNote,
   usageChartScale,
   usageCost,
+  usageCostShown,
   usageDailyAverageText,
   usageEmptyText,
   usageFailedFree,
@@ -174,6 +175,18 @@ describe('usage', () => {
     expect(usageStatus({ type: 6, quota: 0 })).toEqual({ label: '退款', tone: 'neutral' })
     expect(usageFailedFree({ type: 5, quota: 0 })).toBe(true)
     expect(usageFailedFree({ type: 2, quota: 0 })).toBe(false)
+  })
+
+  it('shows a cost only for calls that spent money', () => {
+    // 余额审查 F5：充值、管理、系统、退款、登录这些不是花出去的钱，「花费」一栏跟没扣费的错误记录一样写「—」。
+    expect(usageCostShown({ type: 2, quota: 10 })).toBe(true)
+    expect(usageCostShown({ type: 2, quota: 0 })).toBe(true)
+    expect(usageCostShown({ type: 5, quota: 3 })).toBe(true)
+    expect(usageCostShown({ type: 5, quota: 0 })).toBe(false)
+    for (const type of [1, 3, 4, 6, 7, 0, 99]) {
+      expect(usageCostShown({ type, quota: 0 })).toBe(false)
+      expect(usageCostShown({ type, quota: 500 })).toBe(false)
+    }
   })
 
   it('words an empty list by what was filtered', () => {

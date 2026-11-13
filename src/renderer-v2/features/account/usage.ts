@@ -199,6 +199,15 @@ export function usageStatus(record: Pick<AccountUsageRecord, 'type' | 'quota'>):
   return { label: usageTypeLabel(record.type), tone: 'neutral' }
 }
 
+/**
+ * 明细表「花费」那一栏写不写金额：只有消费记录和扣了钱的错误记录写。充值、退款、管理、系统这些不是花出去的钱，
+ * 写成「$0.00」或把退回的额度写成一笔金额，看着像又扣了一次（余额审查 F5），跟没扣费的错误记录一样写「—」。
+ */
+export function usageCostShown(record: Pick<AccountUsageRecord, 'type' | 'quota'>): boolean {
+  if (record.type === 2) return true
+  return record.type === 5 && record.quota > 0
+}
+
 /** 这次调用没成也没扣钱：详情弹窗里那条说明只在这种时候出。 */
 export function usageFailedFree(record: Pick<AccountUsageRecord, 'type' | 'quota'>): boolean {
   return record.type === 5 && record.quota <= 0
