@@ -80,6 +80,8 @@ const macPackagingPatterns = [
   // Every macOS build, signing, keychain and artifact script.
   /^scripts\/[^/]*macos[^/]*$/,
   /^build\/entitlements\.mac/,
+  // The DMG window background (and its outlined hint text) the dmg target packs.
+  /^build\/dmg-background/,
   // The system proxy helper, compiled once per architecture.
   /^native\//,
   /^bundled-acceleration\//,

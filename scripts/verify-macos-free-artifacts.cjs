@@ -16,6 +16,7 @@ const {
   parseLatestMetadata,
 } = require('./update-release-utils.cjs')
 const { ARCHITECTURES, releaseArtifactNames } = require('./macos-artifact-names.cjs')
+const { applicationsLinkName, applicationsLinkTarget } = require('./macos-dmg-layout.cjs')
 const {
   CHROMIUM_LICENSE_FILE_NAME,
   ELECTRON_LICENSE_FILE_NAME,
@@ -978,6 +979,22 @@ async function detachMountPoints(mountPoints, commandRunner) {
   return failures
 }
 
+// 安装窗口背景上那行字叫客户拖到右边的「应用程序」（IC-9）。替身要是没叫这个名字
+// （electron-builder 或它带的 dmgbuild 不再认 dmg.contents 的 name），客户看到的字和图标就
+// 对不上，所以宁可出包失败也不发出去。
+function assertDmgApplicationsLink(mountPoint) {
+  const linkPath = path.join(mountPoint, applicationsLinkName)
+  let stat
+  try {
+    stat = fs.lstatSync(linkPath)
+  } catch {
+    throw new Error(`DMG 里缺少拖进去用的「${applicationsLinkName}」替身`)
+  }
+  if (!stat.isSymbolicLink() || fs.readlinkSync(linkPath) !== applicationsLinkTarget) {
+    throw new Error(`DMG 里的「${applicationsLinkName}」必须是指向 ${applicationsLinkTarget} 的替身`)
+  }
+}
+
 async function verifyDmgApplication(dmgPath, architecture, options) {
   const mountRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-dmg-'))
   const env = options.env || process.env
@@ -994,6 +1011,7 @@ async function verifyDmgApplication(dmgPath, architecture, options) {
     ]))
     const mountPoint = resolveSingleMountPoint(mountRoot, parseHdiutilMountPoints(attached, mountRoot))
     const appPath = findExtractedApplication(mountPoint, 'DMG')
+    assertDmgApplicationsLink(mountPoint)
     // The mount root itself cannot be the containment boundary: electron-builder
     // puts a /Applications symlink next to the .app by design. Inside the bundle
     // every link must still stay within it.

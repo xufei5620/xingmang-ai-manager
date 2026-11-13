@@ -9,6 +9,7 @@ const YAML = require('yaml')
 const { createSettledPackage } = require('./asar-fixture.test-support.cjs')
 const { publishedSigningCertificateSha256 } = require('./macos-published-signing-identity.cjs')
 const { NOTICES_HEADING } = require('./third-party-notices.cjs')
+const { applicationsLinkName } = require('./macos-dmg-layout.cjs')
 
 // 夹具直接用仓库登记的那张已发布证书，好让跨版本连续性核对在每条用例里都真的跑
 // 一遍；换证书的拒绝路径由下面那条专门的用例覆盖。
@@ -1030,8 +1031,12 @@ function inspectableDmgCommandRunner(sourceApp, certificate, infoPlist, options 
         const mountPoint = path.join(mountRoot, volume)
         fs.mkdirSync(mountPoint)
         copyTreePreservingLinks(sourceApp, path.join(mountPoint, 'Fixture.app'))
-        // electron-builder ships this drag-install target next to the .app.
-        fs.symlinkSync('/Applications', path.join(mountPoint, 'Applications'))
+        // electron-builder ships this drag-install target next to the .app,
+        // named the way the DMG background tells the customer to find it.
+        if (options.applicationsLink !== null) {
+          const link = options.applicationsLink || { name: applicationsLinkName, target: '/Applications' }
+          fs.symlinkSync(link.target, path.join(mountPoint, link.name))
+        }
         lines.push(`/dev/disk9s1\tApple_HFS\t${mountPoint}`)
       }
       return { stdout: `${lines.join('\n')}\n` }
@@ -1392,6 +1397,26 @@ test('rejects a DMG that mounts more than one volume and detaches all of them', 
     commandRunner,
   }), /恰好挂载出一个/)
   assert.equal(commandRunner.detached().length, 2)
+})
+
+test('rejects a DMG whose drag-install link does not match the background hint', async (t) => {
+  const fixture = await createInspectableZipFixture(t)
+  const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+  const cases = [
+    // electron-builder's own default name: the background says 「应用程序」.
+    [{ name: 'Applications', target: '/Applications' }, /缺少拖进去用的「应用程序」替身/],
+    [{ name: applicationsLinkName, target: '/tmp' }, /必须是指向 \/Applications 的替身/],
+    [null, /缺少拖进去用的「应用程序」替身/],
+  ]
+  for (const [applicationsLink, expected] of cases) {
+    const commandRunner = inspectableDmgCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist, { applicationsLink })
+    await assert.rejects(() => verifyDmgApplication(dmgPathFor(fixture), 'arm64', {
+      expectedCertificateSha256: certificateSha256,
+      expectedVersion: '1.2.3',
+      commandRunner,
+    }), expected)
+    assert.equal(commandRunner.detached().length, 1, 'a rejected DMG is still detached')
+  }
 })
 
 test('reports a DMG that stays mounted after a successful inspection', async (t) => {
