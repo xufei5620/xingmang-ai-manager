@@ -3,6 +3,7 @@ import { activeProviderIds, isActiveProviderId, type ProviderId } from '../../ca
 import type { CodexDesktopLocale } from '../../codex-desktop-locale'
 import type { NativeConfigSaveMode } from '../../config-files'
 import { isRecord } from '../../input-guards'
+import { pastedApiKeyFormatMessage } from '../../pasted-api-key'
 import type { ChooseWorkspaceOptions } from '../../ipc-contract'
 import type { CliLaunchMode, CliUninstallOptions, CodexDesktopLaunchMode, ConfigSavePayload } from '../../system-service'
 import { isCodexSessionUuid } from '../../tool-installation'
@@ -28,7 +29,7 @@ export function parseConfigSavePayload(payload: unknown): ConfigSavePayload {
   }
   if (!isActiveProviderId(input.provider)) throw new Error('未知的 CLI 类型')
   if (typeof input.apiKey !== 'string' || input.apiKey.length > 4_096) {
-    throw new Error('API Key 格式错误')
+    throw new Error(pastedApiKeyFormatMessage)
   }
   if (typeof input.model !== 'string' || input.model.length > 256) {
     throw new Error('模型格式错误')

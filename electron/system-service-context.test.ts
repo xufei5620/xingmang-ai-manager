@@ -213,7 +213,7 @@ describe('system service context', () => {
 
     await context.fetchAvailableModels('sk-fixture', { bypassCache: true })
     expect(relayFetch).toHaveBeenCalledTimes(2)
-    await expect(context.fetchAvailableModels('sk-bad\u0000')).rejects.toThrow('API Key 格式错误')
+    await expect(context.fetchAvailableModels('sk-bad\u0000')).rejects.toThrow('密钥格式不对，请重新复制完整的密钥')
     expect(relayFetch).toHaveBeenCalledTimes(2)
   })
 })

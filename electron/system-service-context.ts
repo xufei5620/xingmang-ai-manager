@@ -54,6 +54,7 @@ import {
   installNodeRuntime as installNodeRuntimeLts,
 } from './node-runtime'
 import { fetchOfficialChatGptUsage } from './official-account-usage'
+import { pastedApiKeyFormatMessage } from './pasted-api-key'
 import { sameLocalPathIdentity } from './path-identity'
 import { describeProbeFailure } from './probe-failure'
 import { ProjectInstructionsStateStore } from './project-instructions'
@@ -583,7 +584,7 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     // NUL in the clear in both the runtime log and the renderer-facing failure
     // reason. This one chokepoint covers both models:list and config:save (the
     // latter funnels through fetchAvailableModels before writing).
-    if (/[\x00-\x1F\x7F]/.test(apiKey)) throw new Error('API Key 格式错误')
+    if (/[\x00-\x1F\x7F]/.test(apiKey)) throw new Error(pastedApiKeyFormatMessage)
 
     const now = Date.now()
     for (const [key, entry] of modelAccessCache) {

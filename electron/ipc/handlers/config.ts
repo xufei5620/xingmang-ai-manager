@@ -13,7 +13,7 @@ import { assertOpenableConfigDirectory } from '../../config-directory'
 import { defaultProviderConfigRoots, providerConfigRoot } from '../../codex-home'
 import type { CliModelHints } from '../../cli-model-defaults'
 import type { ToolModelCheck, ToolTemplateFillResult } from '../../ipc-contract'
-import { normalizePastedApiKey } from '../../pasted-api-key'
+import { isMaskedApiKey, maskedApiKeyMessage, normalizePastedApiKey, pastedApiKeyFormatMessage } from '../../pasted-api-key'
 import { parseConfigSavePayload, parseRunningToolsProviders } from '../parsers/tools'
 import type { IpcHandlerContext } from './context'
 
@@ -63,9 +63,10 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
     }
     const input = parseConfigSavePayload(payload)
     // 客户粘贴的密钥夹着空格、零宽字符时先去掉再检测、保存（J7）。只有空白的照旧是「沿用已保存的那把」，
-    // 只有零宽字符的不能因此悄悄变成沿用。
+    // 只有零宽字符的不能因此悄悄变成沿用。打码的那串同页面一样直说，页面查过了这里再挡一道（旧界面也走这条）。
     const apiKey = normalizePastedApiKey(input.apiKey)
-    if (!apiKey && input.apiKey.trim()) throw new Error('API Key 格式错误')
+    if (!apiKey && input.apiKey.trim()) throw new Error(pastedApiKeyFormatMessage)
+    if (isMaskedApiKey(apiKey)) throw new Error(maskedApiKeyMessage)
     const parsed = { ...input, apiKey }
     const save = () => options.realmAccounts ? service.saveConfig(parsed, options.previewOnboarding, check)
       : service.saveConfig(parsed, options.previewOnboarding)
@@ -103,6 +104,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
       // 同 config:save：客户粘贴的密钥夹着的空格、零宽字符先去掉（J7）。
       apiKey = normalizePastedApiKey(parsed.credential.apiKey)
       if (!apiKey) throw new Error('访问密钥格式无效')
+      if (isMaskedApiKey(apiKey)) throw new Error(maskedApiKeyMessage)
     }
     assertCurrent()
     // 记下这把是从哪来的：Claude Code 换 Key 时，客户自己填的那把不跟着换（#1113）。
@@ -292,10 +294,12 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
   })
   registerTrustedHandler('models:list', (_event, apiKey: unknown) => {
     if (typeof apiKey !== 'string' || apiKey.length > 4_096) {
-      throw new Error('API Key 格式错误')
+      throw new Error(pastedApiKeyFormatMessage)
     }
-    // 只有自己填的密钥走这条：夹着的空格、零宽字符先去掉再问（J7）。
-    return service.fetchAvailableModels(normalizePastedApiKey(apiKey))
+    // 只有自己填的密钥走这条：夹着的空格、零宽字符先去掉再问（J7）；打码的那串不拿去问，问了也只回 401。
+    const pasted = normalizePastedApiKey(apiKey)
+    if (isMaskedApiKey(pasted)) throw new Error(maskedApiKeyMessage)
+    return service.fetchAvailableModels(pasted)
   })
   registerTrustedHandler('models:list-configured', (_event, provider: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
