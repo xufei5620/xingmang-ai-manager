@@ -520,7 +520,8 @@ test('a background recheck that fails after opening a desktop client keeps the l
     await opener.click()
     await row.getByText(/运行中/).waitFor()
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > count, before)
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     assert.equal(await unread.count(), 0)
     assert.equal(await row.getByTestId('tool-workbuddy-source').count(), 1)
     await expect(opener).toBeEnabled()
@@ -1567,7 +1568,8 @@ test('the account page follows the shell login when its own session read says si
     await page.evaluate(() => window.v2Test.signOutAccountPageSessionReads())
     await page.getByTestId('sidebar-account-open').click()
     await page.waitForFunction(() => window.v2Test.accountPageSessionSignedOutServed() > 0)
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     await expect(page.getByTestId('account-tabs')).toBeVisible()
     assert.equal(await page.getByTestId('page-account').getByText('登录后查看个人中心', { exact: true }).count(), 0)
     assert.equal(await page.getByTestId('welcome-page').count(), 0)
@@ -2298,6 +2300,58 @@ test('home shows the last usage right away instead of asking the account backend
   } finally { await page.close() }
 })
 
+// F3：一直停在首页时，「近 7 天花费」和靠它算的「约还能用 N 天」以前一直是进首页那一刻的数，点余额旁边的刷新也只刷余额。
+// 现在点刷新马上跟着重读；余额每读到一次也再要一次，一分钟的缓存照旧挡着。重读时手上的数不先清空，卡片不闪。时钟停着。
+test('the balance card re-reads usage and the last 7 days along with the balance while home stays open', async () => {
+  const page = await open('allInstalled=1', true)
+  const usageReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountUsage').length)
+  const days = page.getByTestId('home-balance-days')
+  const weekTotal = page.locator('[data-testid="home-week-spend"] .v2-home-week-head > b')
+  try {
+    await expect(days).toHaveText('按最近用量约还能用 43 天')
+    const before = await weekTotal.innerText()
+    assert.equal(await usageReads(), 2)
+    await page.evaluate(() => {
+      window.__usageBlank = false
+      new MutationObserver(() => {
+        const text = document.querySelector('[data-testid="home-balance-days"]')?.textContent ?? ''
+        if (text.includes('正在读取用量') || !document.querySelector('[data-testid="home-week-spend"]')) window.__usageBlank = true
+      }).observe(document.body, { childList: true, subtree: true, characterData: true })
+    })
+
+    // 一个下午花掉 $70：点余额旁边的刷新，用量、近 7 天跟着余额一起重读，不认一分钟的缓存。
+    await page.evaluate(() => window.v2Test.addSpend(35_000_000))
+    await page.getByTestId('home-balance-refresh').click()
+    await expect(days).toHaveText('按最近用量约还能用 1 天')
+    await expect(weekTotal).not.toHaveText(before)
+    assert.equal(await usageReads(), 4)
+    // 刷新带回来的那次余额不再多问：一分钟内的用量直接用。
+    await expect(page.getByTestId('home-balance-refresh')).toBeEnabled()
+    assert.equal(await usageReads(), 4)
+
+    // 不点刷新：过了一分钟，窗口回到前面读了一次余额，用量和柱子也跟着换。
+    const afterClick = await weekTotal.innerText()
+    await page.evaluate(() => window.v2Test.addSpend(35_000_000))
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await expect(days).toHaveText('按最近用量不到 1 天就会用完')
+    await expect(weekTotal).not.toHaveText(afterClick)
+    assert.equal(await usageReads(), 6)
+
+    // 点了刷新、用量这回没读到：卡片上已经有的数照旧留着，不换成「用量暂未读到」。
+    await page.evaluate(() => { window.v2Test.fail = 'getAccountUsage' })
+    await page.getByTestId('home-balance-refresh').click()
+    await expect.poll(usageReads).toBeGreaterThan(6)
+    await expect(page.getByTestId('home-balance-refresh')).toBeEnabled()
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
+    await expect(days).toHaveText('按最近用量不到 1 天就会用完')
+    assert.equal(await page.evaluate(() => window.__usageBlank), false)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // #1362 第 1 条：今天花得最多时，今天那根柱子最高，柱顶上的金额以前顶到「近 7 天花费」那一行，跟七天合计叠在一起。
 // 测试数据每天花多少按星期几给，星期五最多，所以把时钟定在一个星期五：UTC 中午，哪个时区的跑机看都还是星期五
 // （以前跟着真实日期走，只有星期五跑才绿）。
@@ -2922,6 +2976,23 @@ test('an empty wallet turns the main button on the tool cards into 去充值 and
     await page.waitForFunction(() => document.querySelector('[data-testid="account-tabs"] [aria-selected="true"]')?.textContent === '充值订阅')
     // 默认夹具没接充值、订单那几个读取（会记进 unexpected），这里只看有没有报错。
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
+  } finally { await page.close() }
+})
+// 深查 F1：钱包 $0、订阅还没读到（或读失败）时，不知道他是不是靠订阅在用，不能先叫他去充值。
+test('an empty wallet whose subscription could not be read is not called empty anywhere', async () => {
+  const page = await open('emptyWallet=1&subscriptionReadFail=1')
+  try {
+    await expect(page.getByTestId('home-balance')).toHaveText('$0.00')
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'getAccountSubscriptionSelf'))
+    const row = page.getByTestId('tool-row-claude')
+    await row.locator('.xm-tool-card-actions > .xm-btn').first().waitFor()
+    assert.equal(await page.getByTestId('home-low-balance').count(), 0)
+    assert.equal(await row.getByText('余额为零', { exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('tool-claude-recharge').count(), 0)
+    assert.equal(await page.getByTestId('home-hero-recharge').count(), 0)
+    assert.equal(await page.getByTestId('nav-recharge-low').count(), 0)
+    assert.equal(await page.getByTestId('home-balance-days').count(), 0)
+    await clean(page)
   } finally { await page.close() }
 })
 // 第二十六批 D：系统给的英文原话（EPERM……）不再上屏，换成一句中文。
@@ -5057,6 +5128,37 @@ test('large text switch enlarges the small print and Ctrl plus / minus / 0 step 
   } finally { await page.close() }
 })
 
+// 深查 TR-3：Mac「显示」菜单的实际大小、放大、缩小原来用的是 Chromium 自带缩放，不存、设置页不变。
+// 现在主窗口在前时主进程发 onUiScaleShortcut，界面跟 ⌘ 加减 0 走同一条路。
+test('the macOS View menu zoom commands step the saved interface scale the same way the shortcuts do', async () => {
+  const page = await open('os=mac')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    await page.getByTestId('nav-settings').click()
+    const settings = page.getByTestId('page-settings')
+    await settings.waitFor()
+    await settings.getByRole('button', { name: '自动', exact: true, pressed: true }).waitFor()
+    function saves() { return page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0])) }
+
+    await page.evaluate(() => window.v2Test.emit('onUiScaleShortcut', 'larger'))
+    await waitForToast(page, '界面缩放 110%，按 ⌘ 0 恢复自动')
+    await expect.poll(async () => (await saves()).at(-1)).toEqual({ version: 2, uiScale: '110' })
+    await settings.getByRole('button', { name: '110%', pressed: true }).waitFor()
+    await page.evaluate(() => window.v2Test.emit('onUiScaleShortcut', 'larger'))
+    await waitForToast(page, '已经是最大的 110%')
+    await page.evaluate(() => window.v2Test.emit('onUiScaleShortcut', 'smaller'))
+    await waitForToast(page, '界面缩放 100%，按 ⌘ 0 恢复自动')
+    await expect.poll(async () => (await saves()).at(-1)).toEqual({ version: 2, uiScale: '100' })
+    await settings.getByRole('button', { name: '100%', pressed: true }).waitFor()
+    await page.evaluate(() => window.v2Test.emit('onUiScaleShortcut', 'reset'))
+    await waitForToast(page, '界面缩放已恢复自动')
+    await expect.poll(async () => (await saves()).at(-1)).toEqual({ version: 2, uiScale: 'auto' })
+    await settings.getByRole('button', { name: '自动', exact: true, pressed: true }).waitFor()
+    assert.equal((await saves()).filter((entry) => 'uiScale' in entry).length, 3)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 更新装完重新打开时，软件原来一句话都没有。现在角落里一张轻量卡片说一声已经在新版上、
 // 列前几项改动，只有一颗「知道了」；完整清单在「设置 › 版本更新」的版本卡上。普通启动什么都不说。
 test('the first launch after an update says which version it is on and lists the bundled changes', async () => {
@@ -6277,8 +6379,8 @@ test('a key from another site is named for the account and switched from the row
   } finally { await page.close() }
 })
 
-// 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml。行上的「修好它」就是配置里的
-// 「重置为初始状态」，按现在用的账号重新生成，不换来源。
+// 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml。行上的「修好它」按现在用的账号把读不了的
+// 那份重新生成（repair，主进程里跟「重置为初始状态」一样整份重建），不换来源。
 test('a Codex config Codex cannot read is reset from either Codex row on the current account', async () => {
   const page = await open('codexBroken=1')
   try {
@@ -6292,8 +6394,8 @@ test('a Codex config Codex cannot read is reset from either Codex row on the cur
     await page.getByTestId('tool-codexDesktop-repair-config').click()
     await waitForToast(page, '已重置 Codex 桌面端的配置，原来的配置已备份')
     for (const tool of ['codex', 'codexDesktop']) await connectedBadge(page, tool).waitFor()
-    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
-    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset', intent: 'explicit' }])
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'repair').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'repair', intent: 'explicit' }])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
     await clean(page)
   } finally { await page.close() }
@@ -6308,8 +6410,8 @@ test('a ChatGPT login whose Codex config cannot be read is reset on the official
     await waitForToast(page, '已重置 Codex CLI 的配置，原来的配置已备份')
     await expect(page.getByTestId('tool-codex-source')).toHaveText('官方账号')
     const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'switchToOfficialAccount').map((entry) => entry.args))
-    assert.deepEqual(resets, [['codex', 'reset']])
-    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset')), false)
+    assert.deepEqual(resets, [['codex', 'repair']])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys')), false)
     await clean(page)
   } finally { await page.close() }
 })
@@ -6329,8 +6431,8 @@ test('a Claude Code settings file it cannot read is reset on the current account
     await page.getByTestId('tool-claude-repair-config').click()
     await waitForToast(page, '已重置 Claude Code 的配置，原来的配置已备份')
     await connectedBadge(page, 'claude').waitFor()
-    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
-    assert.deepEqual(resets, [{ providers: ['claude'], preferredModels: {}, mode: 'reset', intent: 'explicit' }])
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'repair').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['claude'], preferredModels: {}, mode: 'repair', intent: 'explicit' }])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
     await clean(page)
   } finally { await page.close() }
@@ -6427,7 +6529,9 @@ test('the which-account menus on the CLI and Claude Desktop cards keep every wor
   } finally { await page.close() }
 })
 
-test('a Codex login file Codex cannot read is reset from either Codex row', async () => {
+// 只坏了 auth.json 时「修好它」以前也整份重置，config.toml 里客户自己的设置跟着没了（X-1）。主进程按 repair
+// 只重建 auth.json，这里钉住界面交过去的是 repair、不是配置里「重置为初始状态」的 reset。
+test('a Codex login file Codex cannot read is repaired from either Codex row', async () => {
   const page = await open('codexAuthBroken=1')
   try {
     for (const tool of ['codex', 'codexDesktop']) {
@@ -6438,8 +6542,8 @@ test('a Codex login file Codex cannot read is reset from either Codex row', asyn
     await page.getByTestId('tool-codex-repair-config').click()
     await waitForToast(page, '已重置 Codex CLI 的配置，原来的配置已备份')
     for (const tool of ['codex', 'codexDesktop']) await connectedBadge(page, tool).waitFor()
-    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'reset').map((entry) => entry.args[0]))
-    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset', intent: 'explicit' }])
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'repair').map((entry) => entry.args[0]))
+    assert.deepEqual(resets, [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'repair', intent: 'explicit' }])
     await clean(page)
   } finally { await page.close() }
 })
@@ -6863,7 +6967,8 @@ test('Sub2API pending read updates stay attached to their own announcement after
     await detail.getByRole('heading', { name: '套餐更新', exact: true }).waitFor()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead' && call.args[1] === '8'))
     await page.evaluate(() => window.v2Test.releaseNoticeMark('12'))
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     assert.equal(await detail.getByRole('heading', { name: '套餐更新', exact: true }).isVisible(), true)
     assert.equal(await button.locator('.v2-unread').count(), 0)
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
@@ -7058,7 +7163,8 @@ test('an obsolete balance rejection stays silent before the session-change event
     await page.getByTestId('tool-row-codex').waitFor()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'getAccountBalance'))
     await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': Error: 账号刚切换过，请再试一次"))
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: false, account: null, siteId: 'solov-api', realmId: 'api-account' }))
     await page.getByTestId('welcome-login').waitFor()
@@ -7080,7 +7186,8 @@ test('late balance results and failures cannot escape an expired or switched acc
       else await page.locator('.v2-sidebar').getByText('$24.80', { exact: true }).waitFor()
       await page.evaluate((result) => window.v2Test.releaseBalance(result === 'reject'
         ? "Error invoking remote method 'account:get-balance': RealmAccountError: 账号服务暂时无法连接" : undefined), result)
-      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
       assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
       if (action === 'expire') assert.equal(await page.getByTestId('welcome-login').isVisible(), true)
       else assert.equal(await page.locator('.v2-sidebar').getByText('$24.80', { exact: true }).isVisible(), true)
@@ -7442,7 +7549,8 @@ test('logging out yourself does not warn that the login ended from either entry 
       // 两个入口的确认框按钮都写「退出登录」，不写「退出」，免得当成退出星芒（W83）。
       await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
       await page.getByTestId('welcome-login').waitFor()
-      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
       assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'logoutAccount').length), 1)
       await assertNoToast(page, '当前登录已结束，请重新登录。')
       await clean(page)
@@ -7754,7 +7862,8 @@ for (const { name, query, tool } of [
   const page = await open(query)
   try {
     await openGuestToolConfiguration(page, tool, true)
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'listConfiguredModels')), false)
     await clean(page)
   } finally { await page.close() }
@@ -7840,7 +7949,8 @@ test('selected account key shows its group and survives delayed metadata', async
     assert.match(await page.getByTestId('tool-key-select-option-202').innerText(), /^custom-key\s+sk-ot••••1234，Custom group分组$/)
     await page.keyboard.press('Escape')
     await page.evaluate(() => window.v2Test.releaseKeyMetadata('codex'))
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     assert.equal(await select.getAttribute('data-value'), '202')
     await page.getByTestId('tool-detect-models').click()
     await page.getByLabel('默认模型').selectOption('fixture-other')
@@ -10135,7 +10245,8 @@ test('asking for the sidebar in a narrow window floats it over the page until yo
       document.addEventListener('keydown', window.__claimEscape, true)
     })
     await page.keyboard.press('Escape')
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
+    await page.waitForTimeout(100)
     assert.equal(await shell.getAttribute('class'), 'v2-shell sidebar-floating')
     await page.evaluate(() => document.removeEventListener('keydown', window.__claimEscape, true))
     await page.keyboard.press('Escape')

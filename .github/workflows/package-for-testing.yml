@@ -108,8 +108,11 @@ jobs:
         # 「release-notes.md 第一行与 package.json 不一致」失败 —— 那不是本工作流
         # 的故障，而是发版流程的前置条件：先 npm run changelog:collect 汇总变更
         # 分片、再把版本号改成要发的那一版。见 docs/CI-TEST-PACKAGES.md。
+        # XINGMANG_TESTING_BUILD 让这份包的崩溃报告记在 Sentry 的 testing 环境下，
+        # 不算进这一版正式的报错（R4）；它和正式发布走同一条路，只差这一个标记。
         env:
           XINGMANG_ACCELERATION_BUNDLE_DIR: ${{ runner.temp }}\acceleration-win32-x64
+          XINGMANG_TESTING_BUILD: '1'
         run: npm run release:build:unsigned
 
       - name: Print artifact checksums

@@ -938,6 +938,28 @@ describe('moving history to another computer', () => {
     expect(exported).toContain('[图片没有一起搬过来]')
   })
 
+  it('leaves unsent draft images behind but keeps the typed draft and attached text files', () => {
+    const state = workspace(scope, 1)
+    const file = { name: 'notes.txt', size: 5, text: 'hello', truncated: false }
+    state.conversations[0] = { ...state.conversations[0], draft: 'half typed', draftImages: [asset], draftFiles: [file] }
+    const exported = JSON.parse(JSON.stringify(exportableConversations(state)))
+    expect(exported[0]).not.toHaveProperty('draftImages')
+    expect(JSON.stringify(exported)).not.toContain('assetId')
+    const [imported] = parseImportedConversations(exported)
+    expect(imported.draftImages).toBeUndefined()
+    expect(imported.draft).toBe('half typed')
+    expect(imported.draftFiles).toEqual([file])
+  })
+
+  it('drops draft images that files exported by older versions still carry', () => {
+    const exported = JSON.parse(JSON.stringify(exportableConversations(workspace(scope, 1))))
+    exported[0].draft = 'half typed'
+    exported[0].draftImages = [{ assetId: asset.assetId, mimeType: asset.mimeType, fileName: asset.fileName }]
+    const [imported] = parseImportedConversations(exported)
+    expect(imported.draftImages).toBeUndefined()
+    expect(imported.draft).toBe('half typed')
+  })
+
   it('round-trips exported conversations through the strict import parser', () => {
     const state = workspace(scope, 3)
     const parsed = parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(state))))

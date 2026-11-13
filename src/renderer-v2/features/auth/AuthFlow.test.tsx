@@ -71,6 +71,13 @@ describe('renderer-v2 account dialogs in the v4 layout', () => {
     expect(markup).toMatch(/已经有账号？<button[^>]*data-testid="register-login"[^>]*>去登录</)
   })
 
+  it('leaves the sign-up password box without a length cap so a long paste is refused rather than silently cut (F1)', () => {
+    const markup = render(false, { initialMode: 'register' })
+    expect(tagOf(markup, 'register-password')).not.toMatch(/maxlength/i)
+    // The username box may still stop at 20: a cut there stays visible on screen.
+    expect(tagOf(markup, 'register-user')).toMatch(/maxlength="20"/i)
+  })
+
   it('starts password recovery with a bar stepper and a way back to login', () => {
     const markup = render(false, { initialMode: 'recovery' })
     expect(markup).toContain('找回星芒账号密码')

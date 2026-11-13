@@ -1,6 +1,7 @@
 import {
   BrowserWindow,
   type BrowserWindowConstructorOptions,
+  type Session,
 } from 'electron'
 import { randomUUID } from 'node:crypto'
 import type { NewApiPaymentForm, NewApiPaymentFormField } from './new-api-client'
@@ -93,6 +94,20 @@ export interface PaymentWindowControllerOptions {
 }
 
 export type PaymentWindowProxyMode = 'direct' | 'system'
+
+/**
+ * 打开一个外部网页窗口（付款窗口、开票窗口）之前，照星芒这会儿的连法给它的会话设一次代理。这两个窗口都用
+ * 自己的分区，分区的代理各管各的：星芒替客户改直连（proxy-bypass.ts）只改了默认会话，别的分区照旧跟系统代理，
+ * 又走回那个已经关掉的代理软件（代理 PX-2）。只换连法，别的一样不动。设不上也照旧打开（就是以前的样子）：
+ * 真是代理的事，加载失败时日志里的错误码自己会说。
+ */
+export async function applyPageProxyMode(target: Pick<Session, 'setProxy'>, mode: PaymentWindowProxyMode): Promise<void> {
+  try {
+    await target.setProxy({ mode })
+  } catch {
+    // Opening the page the old way is the fallback; a real proxy failure surfaces as the load error.
+  }
+}
 
 export interface PaymentWindowController {
   open(form: NewApiPaymentForm, parent?: BrowserWindow): Promise<void>
@@ -594,11 +609,9 @@ export function createPaymentWindowController(
     window.webContents.on('will-redirect', guardNavigation)
 
     try {
-      // 付款窗口每次一个新分区，分区的代理各管各的：星芒替客户改直连只改了默认会话，新分区照旧跟系统代理，
-      // 又走回那个已经关掉的代理软件，下单成功、付款页打不开（代理 PX-2）。所以打开前照星芒这会儿的连法设一次。
-      // 只换连法，导航白名单、权限、下载照旧全拦。设不上也照旧打开（就是以前的样子）：真是代理的事，
-      // 下面加载失败时日志里的错误码自己会说。
-      await window.webContents.session.setProxy({ mode: options.proxyMode?.() ?? 'system' }).catch(() => undefined)
+      // 付款窗口每次一个新分区，不照着设就跟系统代理走：下单成功、付款页打不开（代理 PX-2）。
+      // 只换连法，导航白名单、权限、下载照旧全拦。
+      await applyPageProxyMode(window.webContents.session, options.proxyMode?.() ?? 'system')
       // 设连法这一下里客户又点了一次付款、或者换了账号：这个窗口已经作废，交给新的那次。
       if (!isCurrent()) return
       await waitForPaymentPage(window.loadURL(targetUrl, loadOptions), committed)

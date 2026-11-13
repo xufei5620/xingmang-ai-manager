@@ -52,6 +52,8 @@ const valueImportable = [
   // 装插件、加外接工具失败时命令行说的原因（缺 Git、连不上 GitHub、重名），主进程挑行、错误框配标题共用一份。
   'electron/extension-command-failure',
   'electron/external-url-blocked',
+  // 「复制给客服」那一段的格式和留言类型：主进程拼好写剪贴板，留言框那一排选项用同一份说法（J1）；只 import 打码表。
+  'electron/feedback-message',
   'electron/git-runtime',
   // isRecord 这类最基础的输入检查，主进程和渲染层共用一份（#1071 第 3 条）；文件本身什么都不 import。
   'electron/input-guards',
@@ -65,6 +67,8 @@ const valueImportable = [
   'electron/network-failure',
   // npm 没装成那句里「整句自己说清了下一步」的几类错误码，主进程拼、错误框照它认（#1100 第 1 条）。
   'electron/npm-failure-reasons',
+  // 粘贴的密钥去掉夹着的空格和零宽字符，页面查格式与主进程检测、保存共用一份（J7）；文件本身什么都不 import。
+  'electron/pasted-api-key',
   // 错误框「给客服看的原话」和「复制给客服」要和日志、反馈报告用同一张 Key 打码表（第二十批 2、3）。
   'electron/redaction-patterns',
   'electron/relay-quota-failure',

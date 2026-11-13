@@ -1,5 +1,6 @@
 import type { AccountKey, AccountKeyOptions, AccountKeysPage, AppConfigSummary, ProviderId, XingmangApi } from '../../../../electron/ipc-contract'
 import { managedCliKeyProfiles, retiredAccountGroups, retiredProviderIds } from '../../../../electron/catalog'
+import { normalizePastedApiKey } from '../../../../electron/pasted-api-key'
 
 export const CURRENT_KEY = 'current'
 export const AUTOMATIC_KEY = 'automatic'
@@ -59,10 +60,11 @@ export function listedAccountKeys(keys: readonly AccountKey[], selectedKeyId: st
 
 /**
  * 自己填写的密钥在检测前先过一遍格式。只有星芒的密钥确定是 sk- 开头（strict）；历史账号那边的
- * 前缀没核实过，只拦空的，别把能用的密钥挡在外面。
+ * 前缀没核实过，只拦空的，别把能用的密钥挡在外面。夹着的空格、零宽字符先去掉再看，
+ * 和主进程检测、保存时去掉的是同一批（J7）。
  */
 export function manualKeyIssue(secret: string, strict: boolean): string | null {
-  const value = secret.trim()
+  const value = normalizePastedApiKey(secret)
   if (!value) return '请粘贴你在星芒创建的密钥'
   if (strict && (!value.startsWith('sk-') || value.length < 20)) return '这不像星芒的密钥：应以 sk- 开头，20 位以上'
   return null

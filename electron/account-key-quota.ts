@@ -232,12 +232,15 @@ export function resolveManagedCliKeyLimits(
   })
 }
 
-/** 解析用户填的上限:留空 = 不限额。 */
-export function parseManagedCliKeyLimitAmount(value: string): number | null {
+/**
+ * 解析用户填的上限:留空 = 不限额。badInput 是数字框自己报的「打了半截数」(「-」「1e」):
+ * 这时浏览器交出来的值同样是空的,不能当成留空,否则一点保存上限就被拿掉了(表单 F10-b)。
+ */
+export function parseManagedCliKeyLimitAmount(value: string, badInput = false): number | null {
   const text = value.trim()
-  if (!text) return null
+  if (!text && !badInput) return null
   const amount = Number(text)
-  if (!Number.isFinite(amount) || amount <= 0) throw new Error('请填写大于 0 的上限金额，留空表示不限额。')
+  if (badInput || !Number.isFinite(amount) || amount <= 0) throw new Error('请填写大于 0 的上限金额，留空表示不限额。')
   return amount
 }
 

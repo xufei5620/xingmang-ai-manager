@@ -13,6 +13,7 @@ import { assertOpenableConfigDirectory } from '../../config-directory'
 import { defaultProviderConfigRoots, providerConfigRoot } from '../../codex-home'
 import type { CliModelHints } from '../../cli-model-defaults'
 import type { ToolModelCheck, ToolTemplateFillResult } from '../../ipc-contract'
+import { normalizePastedApiKey } from '../../pasted-api-key'
 import { parseConfigSavePayload, parseRunningToolsProviders } from '../parsers/tools'
 import type { IpcHandlerContext } from './context'
 
@@ -60,7 +61,12 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
     const check = () => {
       if (revision !== undefined && accountService.getSessionRevision?.() !== revision) throw new Error('账号已变化，请重新配置')
     }
-    const parsed = parseConfigSavePayload(payload)
+    const input = parseConfigSavePayload(payload)
+    // 客户粘贴的密钥夹着空格、零宽字符时先去掉再检测、保存（J7）。只有空白的照旧是「沿用已保存的那把」，
+    // 只有零宽字符的不能因此悄悄变成沿用。
+    const apiKey = normalizePastedApiKey(input.apiKey)
+    if (!apiKey && input.apiKey.trim()) throw new Error('API Key 格式错误')
+    const parsed = { ...input, apiKey }
     const save = () => options.realmAccounts ? service.saveConfig(parsed, options.previewOnboarding, check)
       : service.saveConfig(parsed, options.previewOnboarding)
     if (parsed.mode !== 'reset') return save()
@@ -93,18 +99,22 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
       const config = service.getConfig(options.previewOnboarding).providers[provider]
       if (!config.hasApiKey || !config.matchesRelay) throw new Error('该工具没有当前账号的可用密钥，请重新选择密钥来源')
       apiKey = service.revealApiKey(provider, options.previewOnboarding)
-    } else apiKey = parsed.credential.apiKey
+    } else {
+      // 同 config:save：客户粘贴的密钥夹着的空格、零宽字符先去掉（J7）。
+      apiKey = normalizePastedApiKey(parsed.credential.apiKey)
+      if (!apiKey) throw new Error('访问密钥格式无效')
+    }
     assertCurrent()
     // 记下这把是从哪来的：Claude Code 换 Key 时，客户自己填的那把不跟着换（#1113）。
     return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent, parsed.credential.kind)
   })
   registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown, mode: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
-    if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
+    if (mode !== undefined && mode !== 'merge' && mode !== 'reset' && mode !== 'repair') throw new Error('未知的配置写入模式')
     return switchToOfficialAccountOnce(provider, mode)
   })
-  async function switchToOfficialAccountOnce(provider: ProviderId, mode: 'merge' | 'reset' | undefined) {
-    if (mode === 'reset') await backupBeforeReset(provider)
+  async function switchToOfficialAccountOnce(provider: ProviderId, mode: 'merge' | 'reset' | 'repair' | undefined) {
+    if (mode === 'reset' || mode === 'repair') await backupBeforeReset(provider)
     const result = await (mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode))
     return withCommandConfirmationQuestion(provider, result)
   }
@@ -198,10 +208,11 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
       },
       writeAccountConfig: async (id) => {
         // 工具自己读不了的配置，只更新要照着原文件改，只会报「写错了」；来源没确认时配置窗口里
-        // 又只有这一颗按钮，点不到「重置为初始状态」（第三十批跟进项）。这时改走重置：这次切换
-        // 开头已经在「备份」页留过一份，切不成照样从它恢复。
+        // 又只有这一颗按钮，点不到「重置为初始状态」（第三十批跟进项）。这时改走「修好它」那一种：读不了的
+        // 那份重建，Codex 只坏了 auth.json 时 config.toml 里客户自己的设置照留（X-1）。这次切换开头已经在
+        //「备份」页留过一份，切不成照样从它恢复。
         const current = service.getConfig(options.previewOnboarding).providers[id]
-        const mode = current?.configBroken === true || current?.codexAuthBroken === true ? 'reset' : 'merge'
+        const mode = current?.configBroken === true || current?.codexAuthBroken === true ? 'repair' : 'merge'
         // 客户原来选的型号带上，账号还列着就留着；以前这里什么都不带，切回过官方再切回来就回到默认（N5）。
         const model = accountSourcePreferredModel(current, () => service.relayModelBeforeOfficial?.(id))
         // 用户亲手点的切换：intent 'explicit' 才穿得过「来源未确认不自动改写」那道闸。
@@ -283,7 +294,8 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
     if (typeof apiKey !== 'string' || apiKey.length > 4_096) {
       throw new Error('API Key 格式错误')
     }
-    return service.fetchAvailableModels(apiKey)
+    // 只有自己填的密钥走这条：夹着的空格、零宽字符先去掉再问（J7）。
+    return service.fetchAvailableModels(normalizePastedApiKey(apiKey))
   })
   registerTrustedHandler('models:list-configured', (_event, provider: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')

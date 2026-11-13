@@ -32,7 +32,7 @@
 - `startup-log.ts` — **最后一道日志**：正常日志栈起来之前的失败同步写进 `logs/startup-failure.log`（与运行日志同目录，免得被轮转冲掉）；只依赖 Node 内置模块和无依赖的 `redaction-patterns.ts`，因为它记录的失败可能正是 command-runner、safe-local-data 或 Electron 本身加载失败。`redactHomeDirectory`（含 Linux 的 /home、/media、/run/user 打码）定义在这里，`runtime-log.ts` 转导出（I13）
 - `startup-failure.ts` — 启动出错时给小白看的弹框：按 errno 链分成磁盘满 / 被杀毒软件占着 / 安装不完整 / 其他，原文只在点「复制错误信息」时出去且先抹用户目录与密钥（I13）
 - `unexpected-exit.ts` — 主进程未捕获异常时不弹 Electron 的英文框：记一笔、自动重开一次，下次打开用中文说明并给「复制给客服」；10 分钟内已重开过就不再重开，避免窗口一闪一闪
-- `crash-report.ts` / `crash-reporter.ts` — 崩溃自动上报 Sentry。前者全是纯函数（DSN 校验只认 `*.ingest.sentry.io`、脱敏、事件与 envelope 构造、开关判定），后者负责发送（按会话去重限量、超时、拒绝重定向、读回包限量，I10）。没用 `@sentry/electron`；开关是 `AppSettings.crashReporting`，缺省开，环境变量可关。报错带 release 和 dist（平台-芯片），帧地址改写成 `app:///dist-electron/…`、`app:///dist/…`，和发版后传给 Sentry 的对照表对上（`docs/RELEASING.md` §9）
+- `crash-report.ts` / `crash-reporter.ts` — 崩溃自动上报 Sentry。前者全是纯函数（DSN 校验只认 `*.ingest.sentry.io`、脱敏、事件与 envelope 构造、开关判定），后者负责发送（按会话去重限量、超时、拒绝重定向、读回包限量，I10）。没用 `@sentry/electron`；开关是 `AppSettings.crashReporting`，缺省开，环境变量可关；本机快包和 CI 里起的打包版不报（同每天打卡），测试包记在 `testing` 环境（`xingmangTestingBuild`）。报错带 release 和 dist（平台-芯片），帧地址改写成 `app:///dist-electron/…`、`app:///dist/…`，和发版后传给 Sentry 的对照表对上（`docs/RELEASING.md` §9）
 - `usage-stats.ts` / `usage-stats-reporter.ts` — 匿名使用统计（每天打卡，2026-10-26 yoyo 选的推荐档）。前者是纯函数：一天那条地址的每一段都从固定缩写表或版本号样式来，报错原文只在内存里归成五类之一，开关判定、计数文件的解析；后者负责本机计数文件（`safe-local-data` 原子写）和发送（两个固定地址、一天最多成功一次最多试三次、不带 cookie、拒绝重定向、超时、读回包限量，I10），另有主进程卡顿计时。开关是系统界面设置里的 `privacy.anonymousUsage`，没碰过 = 开；工作流解码在 `scripts/update-feed-stats.cjs`
 
 ## 诊断、日志与反馈
@@ -49,6 +49,7 @@
 - `redaction-patterns.ts` — **全仓唯一的密钥样式表**（Bearer、sk-、AIza、xai-、GitHub/GitLab 令牌、URL userinfo、带凭据的命令行参数与查询参数），日志、诊断、崩溃、反馈的脱敏都用它；故意零 import（startup-log、crash-report 记录别的模块失败时也要能用），渲染层也值引用（I13、I6）
 - `request-diagnostics.ts` — 给一次账号请求的回应 / 错误挂上走的线路、HTTP 状态码、new-api 请求编号和 cf-ray，`ipc.ts` 记日志时取出来，给客服和服务端查单；挂在 WeakMap 上不改错误对象的样子，编号按白名单正则过滤（回应头外部可控），不带地址、令牌、Key（I13）
 - `diagnostic-fixes.ts` — 「检查」页「点这里就好」的三个修复：把 Codex 文件夹里的 `.env` 改名留在原处、把主目录里星芒生成且没动过的 AGENTS.md 挪开、用 PowerShell 清掉用户级的工具环境变量覆盖（名单来自 `diagnostics-override-checks.ts`，整台电脑那份只报不改）；改名前过 I8 检查
+- `feedback-message.ts` — 「复制给客服」那一段的格式和三种留言类型（J1）：主进程 `ipc/handlers/runtime-logs.ts` 拼好、现取报告、自己写剪贴板（页面写剪贴板要窗口在前台，客户等报告时切去微信就被拒）；留言框那一排选项也读这一份，渲染层值引用（I6），只 import 打码表
 - `feedback-environment.ts` — 反馈报告里「工具与配置」那段的纯函数：每个 CLI、外部客户端、运行时装没装、什么版本、怎么装的、配置是否指向当前账号、走哪条线路；只读已有快照、不触发扫描，不写 Key、地址和站点名（I13）
 - `feedback-self-check.ts` — 反馈报告里「最近一次自检」那段的纯函数：只读内存里上一次「检查」页结果和连接自检，不重跑、不发请求，刻意不带 endpoint / siteId（I13）；三个状态词与检查页一致
 - `broken-config-advice.ts` — 读不懂原配置、星芒没敢改时给客户的那句（哪里坏了、星芒没改、去配置窗口「高级」点「重置为初始状态」，会先备份）；`config-files.ts` 与 `codex-extensions.ts` 用

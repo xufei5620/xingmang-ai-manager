@@ -112,6 +112,8 @@ import type { CliModelHints } from './cli-model-defaults'
 export type { CliModelHints } from './cli-model-defaults'
 import type { ToolTemplateFillResult } from './tool-config-ownership'
 export type { ToolTemplateFillResult } from './tool-config-ownership'
+import type { FeedbackMessageType } from './feedback-message'
+export type { FeedbackMessageType } from './feedback-message'
 import type {
   ConnectionCheckLayer as MainConnectionCheckLayer,
   ConnectionCheckResult as MainConnectionCheckResult,
@@ -245,6 +247,9 @@ export interface WindowCapabilities {
   settingsSaveIssue?: SettingsSaveIssue
   // 显卡接连崩溃后，这次启动自动改用了兼容方式显示、用户还没选以后怎么办。缺省 = 没出事。
   displayCompat?: 'auto'
+  // Windows 文本大小调大了，这台电脑新装时「大字」是开着的（D81）；外观「恢复默认」据此把大字恢复成开（X-2）。
+  // 缺省 = 新装时关着（旧行为）。
+  largeTextByDefault?: true
   // 上次主进程意外退出（没接住的异常），这次打开要说一句。缺省 = 没出事。
   unexpectedExit?: UnexpectedExitNotice
   // 这次开机把 0.2.12 写坏的 Claude Desktop 型号清单改回了一个，界面说一句要重开它。缺省 = 没改。
@@ -306,7 +311,22 @@ export interface FeedbackReportPreview {
 }
 // Present only when the previewed report had expired or been superseded and
 // the main process captured a fresh one; the renderer swaps its dialog text.
-export interface FeedbackReportCopyResult { entries: number; regenerated?: FeedbackReportPreview }
+// reportMissing: the 「复制给客服」 copy asked for the report but it could not be
+// made, so only what the customer wrote went onto the clipboard.
+export interface FeedbackReportCopyResult { entries: number; regenerated?: FeedbackReportPreview; reportMissing?: true }
+/**
+ * 「复制给客服」交给主进程的那几样（J1）：客户在留言框里选的、写的，加上「找客服」卡上那行身份和最近一次出错。
+ * 主进程按 feedback-message.ts 的固定格式拼好，勾了 attachReport 再现生成一份反馈报告接在后面，然后自己写剪贴板：
+ * 页面写剪贴板要窗口在前台，客户点完等报告那几秒切去微信就写不进去。页面给不了报告的内容，也给不了这个格式以外的东西。
+ */
+export interface FeedbackMessageCopyRequest {
+  type: FeedbackMessageType
+  description: string
+  contact?: string
+  identity?: string
+  lastFailure?: string
+  attachReport: boolean
+}
 export interface FeedbackReportExportResult { outputPath: string; regenerated?: FeedbackReportPreview }
 export type UpdatePhase = MainUpdatePhase
 export type UpdateFailedStep = MainUpdateFailedStep
@@ -561,6 +581,9 @@ export type AccountChangePasswordResult = NewApiChangePasswordResult
 // home / chat / tasks / announcement / usage / health 只由系统通知的点击发出（platform/notifications.ts）。
 export type RendererNavigationTarget = 'settings' | 'updates' | 'topup' | 'acceleration' | 'home' | 'chat' | 'tasks' | 'announcement' | 'usage' | 'health'
 
+/** 「界面缩放」往哪边走一步：放大、缩小、恢复自动。键盘（⌘/Ctrl 加减 0）和 Mac「显示」菜单共用。 */
+export type UiScaleShortcut = 'larger' | 'smaller' | 'reset'
+
 export interface AccountManagedCliConfigurationInput {
   providers: ProviderId[]
   preferredModels: Partial<Record<ProviderId, string>>
@@ -733,6 +756,14 @@ export interface DataTransferImportPreview {
   conflictingSettings: AppSettingsUpdate
   /** conflictingSettings 对应的设置名，给询问框用。 */
   conflictLabels: string[]
+  /**
+   * 文件里的「匿名使用统计」（X-3），这台电脑上还是新装的「开」、可以直接换的。它不在 settings.json，
+   * 设置页走 setPrivacyPreference 写，不进 settings:save。旧文件没有这一项、和这台一样、这台的系统界面设置
+   * 读不出来时都不带。
+   */
+  anonymousUsage?: boolean
+  /** 同上，这台电脑上关过、文件里是开的：和 conflictingSettings 一起先问，设置名已经在 conflictLabels 里。 */
+  conflictingAnonymousUsage?: boolean
 }
 
 /**
@@ -938,7 +969,7 @@ export interface XingmangInvokeContract {
   getCodexReadiness: IpcInvokeDefinition<'startup:codex-readiness', [], CodexReadinessStatus>
   getConfig: IpcInvokeDefinition<'config:get', [], AppConfigSummary>
   revealApiKey: IpcInvokeDefinition<'config:reveal-api-key', [provider: ProviderId], string>
-  saveConfig: IpcInvokeDefinition<'config:save', [payload: ConfigSavePayload], ConfigSaveResult>
+  saveConfig: IpcInvokeDefinition<'config:save', [payload: ConfigSavePayload & { mode: ConfigSaveMode }], ConfigSaveResult>
   /**
    * 在资源管理器 / 访达里打开这个工具自己的配置目录（Claude 是 ~/.claude，
    * Codex 以软件注入的 CODEX_HOME 为准）。只打开目录，不碰里面任何文件，
@@ -1185,7 +1216,11 @@ export interface XingmangInvokeContract {
   exportDiagnostics: IpcInvokeDefinition<'diagnostics:export', [], { outputPath: string } | null>
   getRuntimeLogs: IpcInvokeDefinition<'runtime-logs:list', [limit?: number], RuntimeLogSnapshot>
   getFeedbackReport: IpcInvokeDefinition<'runtime-logs:preview-feedback', [], FeedbackReportPreview>
-  copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [reportId?: string], FeedbackReportCopyResult>
+  /**
+   * 给预览里那份报告的标识 = 复制那份（过期了就地重生成）；不给 = 复制一份最新的；给留言 = 「复制给客服」，
+   * 留言加现生成的报告由主进程拼好再复制（J1）。三种都只往剪贴板写反馈内容，不读剪贴板。
+   */
+  copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [target?: string | FeedbackMessageCopyRequest], FeedbackReportCopyResult>
   exportFeedbackReport: IpcInvokeDefinition<'runtime-logs:export-feedback', [reportId?: string], FeedbackReportExportResult | null>
   /** 只认本次运行里导出过的文件路径（主进程记着），渲染层给别的路径会被拒。 */
   revealExportedFile: IpcInvokeDefinition<'exports:reveal-file', [filePath: string], boolean>
@@ -1567,6 +1602,11 @@ export interface XingmangEventContract {
   onNavigate: IpcEventDefinition<'navigation:open-page', RendererNavigationTarget>
   onExternalDeepLink: IpcEventDefinition<'navigation:deep-link-pending', undefined>
   onLaunchTool: IpcEventDefinition<'window:launch-tool', ProviderId | 'codexDesktop'>
+  /**
+   * Mac「显示」菜单里点了实际大小、放大、缩小，当时在前面的是主窗口（深查 TR-3）。界面照键盘那条路
+   * 改「界面缩放」设置：会存、设置页跟着变，不再用 Chromium 自带的缩放。
+   */
+  onUiScaleShortcut: IpcEventDefinition<'window:ui-scale-shortcut', UiScaleShortcut>
   onNodeRuntimeInstallProgress: IpcEventDefinition<
     'runtime:node-install-progress',
     NodeRuntimeInstallProgress
@@ -1876,6 +1916,7 @@ export const ipcEventChannels = {
   onNavigate: 'navigation:open-page',
   onExternalDeepLink: 'navigation:deep-link-pending',
   onLaunchTool: 'window:launch-tool',
+  onUiScaleShortcut: 'window:ui-scale-shortcut',
   onNodeRuntimeInstallProgress: 'runtime:node-install-progress',
   onPythonRuntimeInstallProgress: 'runtime:python-install-progress',
   onGitRuntimeInstallProgress: 'runtime:git-install-progress',

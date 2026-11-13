@@ -36,7 +36,7 @@
 - 这份包**不能**从正式发布版自动更新过去，正式发布版也**不能**更新到这份包；
 - 它**绝对不能**发给客户，artifact 的名字里就写着 `DO-NOT-PUBLISH`。
 
-Windows 那一份与正式发布的产物走的是同一条门禁（`release:build:unsigned`），资源也一样，跟发布版只差一个发布动作。验安装、启动、登录、装 CLI、加速、界面都算数。
+Windows 那一份与正式发布的产物走的是同一条门禁（`release:build:unsigned`），资源也一样，跟发布版只差一个发布动作和一个测试包标记（`XINGMANG_TESTING_BUILD=1`：崩溃报告记在 Sentry 的 `testing` 下，不算进这一版正式的报错，见 `docs/RELEASING.md` 第 9 节）。验安装、启动、登录、装 CLI、加速、界面都算数。
 
 ---
 

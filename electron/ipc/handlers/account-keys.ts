@@ -106,7 +106,8 @@ export function registerAccountKeyHandlers(ctx: IpcHandlerContext): void {
       logManagedCliFailures(outcome)
       return outcome
     })
-    if (parsed.mode !== 'reset') return configure()
+    // 「修好它」（repair）也是先备份再动手，跟重置一样。
+    if (parsed.mode !== 'reset' && parsed.mode !== 'repair') return configure()
     return (async () => {
       for (const provider of parsed.providers) await backupBeforeReset(provider)
       return configure()

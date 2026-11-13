@@ -4,7 +4,7 @@ import path from 'node:path'
 import { before, after, test } from 'node:test'
 import { openFixturePage } from './fixture-readiness.mjs'
 import { actionTimeoutMs, createBrowserFixture, navigationTimeoutMs } from './harness.mjs'
-import { recordToasts, waitForToast } from './toast-recording.mjs'
+import { assertNoToast, recordToasts, waitForToast } from './toast-recording.mjs'
 
 const business = createBrowserFixture({
   cacheDir: 'node_modules/.vite-v2-business-tests',
@@ -484,6 +484,36 @@ test('the invoice button says the approved line when the invoice window does not
   }
 })
 
+test('order search drops surrounding spaces and asks the server once after typing stops', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    const orders = page.getByTestId('account-orders-section')
+    await orders.getByText('TEST-ORDER').waitFor()
+    const queries = async () => (await calls(page)).filter((call) => call.name === 'query-orders').map((call) => call.args)
+    const before = (await queries()).length
+    const search = orders.getByRole('searchbox', { name: '搜索订单号', exact: true })
+    // 中文输入法下按空格出的是全角空格：只有空白当没填，不拿去查（F4）。
+    await search.fill('　 ')
+    // 一个字一个字地敲：停手以后只按去掉首尾空白的词查一次，不是每个字查一次。
+    await search.pressSequentially('XM-42 ')
+    await page.waitForFunction(
+      () => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-orders' && call.args.keyword === 'XM-42'),
+    )
+    assert.deepEqual((await queries()).slice(before), [{ page: 1, pageSize: 20, keyword: 'XM-42' }])
+    assert.equal(await search.inputValue(), '　 XM-42 ')
+    // 清空马上回到全部订单。
+    await search.fill('')
+    await page.waitForFunction(
+      (count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'query-orders').length > count,
+      before + 1,
+    )
+    assert.deepEqual((await queries()).at(-1), { page: 1, pageSize: 20, keyword: '' })
+  } finally {
+    await page.close()
+  }
+})
+
 test('the account tabs move with the left and right arrow keys and open on Enter', async () => {
   const page = await fixture('page=account')
   try {
@@ -958,6 +988,39 @@ test('tool key limits that could not be read can be read again without leaving t
     assert.equal(await card.getByRole('alert').count(), 0)
   } finally {
     await none.close()
+  }
+})
+
+test('a half-typed tool key limit is refused instead of being saved as no limit', async () => {
+  const page = await fixture('page=account&managedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const card = page.getByTestId('tool-key-limits')
+    const field = card.getByTestId('tool-key-limit-input-claude')
+    const save = card.getByTestId('tool-key-limit-save-claude')
+    const refused = card.getByRole('alert').getByText('请填写大于 0 的上限金额，留空表示不限额。', { exact: true })
+    await field.waitFor()
+    // 「1e」「-」这种半截数，数字框交出来的值是空的，跟留空一样；不能当成不限额存下去（表单 F10-b）。
+    // 「-」是先清空再打的：从空到「-」值没变，框的 onChange 根本不来。
+    for (const typed of ['1e', '-']) {
+      await field.fill('')
+      await field.pressSequentially(typed)
+      assert.equal(await field.inputValue(), '')
+      await save.click()
+      await refused.waitFor()
+      await assertNoToast(page, '额度上限已保存')
+      // 两轮红条是同一句，第二轮光看红条分不出来，所以每轮都核对保存一次也没发出去。
+      assert.equal((await calls(page)).filter((call) => call.name === 'updateAccountKey').length, 0)
+    }
+    // 真留空照旧是不限额：保存发出去，而且前面两次一次都没发。
+    await field.fill('')
+    await save.click()
+    await waitForToast(page, '额度上限已保存')
+    const updates = (await calls(page)).filter((call) => call.name === 'updateAccountKey')
+    assert.equal(updates.length, 1)
+    assert.equal(updates[0].args.unlimitedQuota, true)
+  } finally {
+    await page.close()
   }
 })
 
@@ -2205,6 +2268,34 @@ test('a custom connection checks its name first and then goes to every tool pick
   }
 })
 
+// F6：「启动命令」里直接填整行命令，交给工具前拆成程序和参数，带引号的路径整段算程序；表单里他填的字不动。
+test('a whole command line in the launch box goes to the tool as the program and its arguments', async () => {
+  const page = await fixture('page=mcp&extensionOk')
+  try {
+    await page.getByTestId('mcp-add').first().click()
+    const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
+    const source = page.getByTestId('mcp-source')
+    await page.getByTestId('mcp-name').fill('amap')
+    await source.fill('npx -y @amap/amap-maps-mcp-server')
+    await dialog.getByTestId('mcp-form-submit').click()
+    await page.getByText('已添加「amap」，给 Claude Code 使用，下次打开工具时生效', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args.mcp), [
+      { type: 'stdio', command: 'npx', args: ['-y', '@amap/amap-maps-mcp-server'], env: {} },
+    ])
+
+    await page.getByTestId('mcp-add').first().click()
+    await page.getByTestId('mcp-name').fill('local-tool')
+    await source.fill('"C:\\Program Files\\My Tool\\tool.exe" --stdio')
+    await dialog.getByTestId('mcp-form-submit').click()
+    await page.getByText('已添加「local-tool」，给 Claude Code 使用，下次打开工具时生效', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args.mcp).slice(1), [
+      { type: 'stdio', command: 'C:\\Program Files\\My Tool\\tool.exe', args: ['--stdio'], env: {} },
+    ])
+  } finally {
+    await page.close()
+  }
+})
+
 // 同类对比第 1 条：提供方给的一整段配置直接粘贴，替他填好表单；带密钥的网络服务连请求头一起给到每个勾上的工具。
 test('a pasted provider config fills the custom connection and carries its headers to every tool', async () => {
   const page = await fixture('page=mcp&extensionOk')
@@ -2641,22 +2732,25 @@ test('feedback opens on the message form and copies what the customer wrote toge
     await page.getByTestId('feedback-contact').fill('wx-test')
     await page.getByTestId('feedback-send').click()
     await waitForToast(page, '已复制，发给客服就行')
-    const copied = (await calls(page)).filter((call) => call.name === 'copy-clipboard').map((call) => call.args)
-    assert.deepEqual(copied, [[
-      '留言反馈 · 功能建议',
-      '点「打开」后终端闪一下就关了',
-      '联系方式：wx-test',
-      '星芒 0.1.31 · Windows · 已登录 test-user',
-      '最近一次失败：安装 Codex CLI · 网络超时',
-    ].join('\n') + '\n\n固定的脱敏报告内容'])
+    // J1：留言交给主进程拼好、现取报告、写剪贴板；页面自己不写剪贴板，客户等报告时切去微信也复制得上。
+    const sent = (await calls(page)).filter((call) => call.name === 'copy-feedback-message').map((call) => call.args)
+    assert.deepEqual(sent, [{
+      type: 'idea',
+      description: '点「打开」后终端闪一下就关了',
+      contact: 'wx-test',
+      identity: '星芒 0.1.31 · Windows · 已登录 test-user',
+      lastFailure: '最近一次失败：安装 Codex CLI · 网络超时',
+      attachReport: true,
+    }])
+    assert.equal((await calls(page)).some((call) => call.name === 'copy-clipboard'), false, 'the page leaves the clipboard to the main process')
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page opens after copying')
-    // 关掉「附带反馈报告」只复制客户写的那几行。
+    // 关掉「附带反馈报告」：主进程只复制客户写的那几行。
     await page.getByTestId('feedback-attach').getByRole('switch').click()
     await page.getByTestId('feedback-send').click()
-    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-clipboard').length === 2)
-    const last = (await calls(page)).filter((call) => call.name === 'copy-clipboard').at(-1).args
-    assert.equal(last.includes('固定的脱敏报告内容'), false)
-    assert.match(last, /^留言反馈 · 功能建议\n/)
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-feedback-message').length === 2)
+    const last = (await calls(page)).filter((call) => call.name === 'copy-feedback-message').at(-1).args
+    assert.equal(last.attachReport, false)
+    assert.equal(last.type, 'idea')
   } finally {
     await page.close()
   }
@@ -2669,10 +2763,12 @@ test('feedback still copies what the customer wrote when the diagnostic report c
     await page.getByTestId('feedback-description').fill('点「打开」后终端闪一下就关了')
     await page.getByTestId('feedback-send').click()
     await waitForToast(page, '反馈报告没生成出来，只复制了你写的内容，发给客服就行')
-    const copied = (await calls(page)).filter((call) => call.name === 'copy-clipboard').map((call) => call.args)
-    assert.equal(copied.length, 1)
-    assert.match(copied[0], /^留言反馈 · 遇到问题\n点「打开」后终端闪一下就关了\n/)
-    assert.match(copied[0], /\n反馈报告：这次没生成出来$/)
+    const sent = (await calls(page)).filter((call) => call.name === 'copy-feedback-message').map((call) => call.args)
+    assert.equal(sent.length, 1)
+    assert.equal(sent[0].type, 'bug')
+    assert.equal(sent[0].description, '点「打开」后终端闪一下就关了')
+    assert.equal(sent[0].attachReport, true)
+    assert.equal((await calls(page)).some((call) => call.name === 'copy-clipboard'), false)
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page still opens')
   } finally {
     await page.close()
@@ -4075,6 +4171,35 @@ test('restoring the default appearance resets the theme, contrast, scale, large 
   }
 })
 
+// X-2：Windows 文本大小调大了的电脑，装好时 D81 替客户开着大字；「恢复默认」要回到那个样子，不能反倒关掉。
+test('restoring the default appearance keeps large text on where a fresh install would turn it on', async () => {
+  const page = await fixture('page=settings&system=1&largeTextByDefault=1')
+  try {
+    await page.getByTestId('settings-restore-appearance').click()
+    await waitForToast(page, '已恢复默认外观')
+    assert.deepEqual((await callsNamed(page, 'settings')).at(-1).args, { version: 2, uiScale: 'auto', largeText: true, reducedMotion: false })
+  } finally {
+    await page.close()
+  }
+})
+
+// X-8：系统界面设置读不出来（DM-3）时，缩放、大字、减少动画照样恢复，只跳过主题和高对比度。
+test('restoring the default appearance still resets scale, large text and motion when the system settings cannot be read', async () => {
+  const page = await fixture('page=settings&system=1&fail=platform-broken')
+  try {
+    await page.getByText('系统设置尚未准备好。', { exact: true }).waitFor()
+    await page.getByRole('switch', { name: '减少动画', exact: true }).click()
+    await page.getByTestId('settings-restore-appearance').click()
+    await waitForToast(page, '已恢复默认外观')
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.filter((call) => call.name === 'settings').at(-1).args, { version: 2, uiScale: 'auto', largeText: false, reducedMotion: false })
+    assert.equal(recorded.some((call) => call.name === 'platform-theme' || call.name === 'platform-contrast'), false)
+    assert.equal(await page.getByRole('switch', { name: '减少动画', exact: true }).getAttribute('aria-checked'), 'false')
+  } finally {
+    await page.close()
+  }
+})
+
 test('native preferences use the independent bridge while proxy remains a read-only query', async () => {
   const page = await fixture('page=settings&system=1')
   try {
@@ -4345,6 +4470,43 @@ test('desktop notifications start on, the master switch gates test notifications
         .length,
       1,
     )
+  } finally {
+    await page.close()
+  }
+})
+
+// X-3：「搬到新电脑」以前带走「自动发送错误报告：关」，却不带「匿名使用统计：关」。新电脑没动过的直接关上；
+// 这台关过、文件里是开的先问，点「保留这台电脑的」照旧关着，只有点了「换成文件里的」才打开。
+test('importing a moved computer carries the usage-stats switch and asks before turning it back on', async () => {
+  const privacyCalls = async (page) => (await calls(page)).filter((call) => call.name === 'platform-privacy').map((call) => call.args)
+  let page = await fixture('page=settings&system=1&transfer=usage-off')
+  try {
+    await page.getByRole('tab', { name: '备份迁移', exact: true }).click()
+    await page.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '导入了你的设置。')
+    assert.deepEqual(await privacyCalls(page), [{ kind: 'anonymousUsage', enabled: false }])
+    assert.equal((await calls(page)).filter((call) => call.name === 'settings').length, 0)
+    await page.getByRole('tab', { name: '隐私数据', exact: true }).click()
+    assert.equal(await page.getByRole('switch', { name: '匿名使用统计偏好', exact: true }).getAttribute('aria-checked'), 'false')
+  } finally {
+    await page.close()
+  }
+  page = await fixture('page=settings&system=1&usageOff=1&transfer=usage-on')
+  try {
+    await page.getByRole('tab', { name: '备份迁移', exact: true }).click()
+    const ask = page.getByText('这台电脑上你已经改过这几项，和文件里的不一样：匿名使用统计。', { exact: true })
+    await page.getByTestId('settings-transfer-import').click()
+    await ask.waitFor()
+    await page.getByTestId('settings-transfer-keep').click()
+    await waitForToast(page, '文件里的设置和这台电脑上的一样，没有要改的。')
+    assert.deepEqual(await privacyCalls(page), [])
+    await page.getByTestId('settings-transfer-import').click()
+    await ask.waitFor()
+    await page.getByTestId('settings-transfer-overwrite').click()
+    await waitForToast(page, '导入了你的设置。')
+    assert.deepEqual(await privacyCalls(page), [{ kind: 'anonymousUsage', enabled: true }])
+    await page.getByRole('tab', { name: '隐私数据', exact: true }).click()
+    assert.equal(await page.getByRole('switch', { name: '匿名使用统计偏好', exact: true }).getAttribute('aria-checked'), 'true')
   } finally {
     await page.close()
   }

@@ -405,6 +405,12 @@ test('the macOS packages are signed with the published identity, never an epheme
   assert.doesNotMatch(JSON.stringify(workflow), /--rehearsal-identity/)
 })
 
+test('the real release never marks its packages as test packages (R4)', () => {
+  // 正式包被标成测试包，客户的崩溃报告就全记在 Sentry 的 testing 环境下，按 production
+  // 看的人一条也看不到。这个标记只属于 package-for-testing。
+  assert.doesNotMatch(source, /XINGMANG_TESTING_BUILD/)
+})
+
 test('no dispatch input, secret or step output is substituted into a shell script', () => {
   // P-26：run 块里的 ${{ ... }} 是在 shell 解析之前做的文本替换。取值里的一个单引号
   // 就能闭合字符串并执行后面的内容 —— 在这条工作流里，那是持有发布凭据的那台机器。

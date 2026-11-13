@@ -54,7 +54,8 @@ export function parseDesktopAppUpdateRequest(value: unknown): DesktopAppUpdateRe
 export const externalClientOfficialDownloadUrls = {
   workbuddy: 'https://www.workbuddy.ai/',
   claudeDesktop: claudeDesktopDownloadPageUrl,
-  opencode: 'https://opencode.ai/download',
+  // /download 是 OpenCode 全部产品（命令行、手机、SDK）的总览页，Windows 客户容易下错；/desktop 只有桌面端安装包（L4）。
+  opencode: 'https://opencode.ai/desktop',
 } as const satisfies Partial<Record<ExternalToolId, string>>
 
 export interface ExternalClientConnectionStatus {

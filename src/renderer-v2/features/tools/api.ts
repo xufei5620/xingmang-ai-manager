@@ -260,10 +260,11 @@ export function createToolsApi(bridge: XingmangApi) {
     openSessionDirectory: (sessionId: string) => bridge.openProviderSessionDirectory(sessionId),
     saveManual: (input: Parameters<XingmangApi['saveConfig']>[0]) => bridge.saveConfig(input),
     saveAccountKey: (input: Parameters<XingmangApi['saveConfigWithAccountKey']>[0]) => bridge.saveConfigWithAccountKey(input),
-    configureManaged: (tool: ToolId, model?: string, mode: 'merge' | 'reset' = 'merge') => bridge.configureManagedCliKeys({
+    // repair = 首页「修好它」：读不了的那份重建，读得懂的那份只改账号几处（主进程 NativeConfigWriteMode）。
+    configureManaged: (tool: ToolId, model?: string, mode: 'merge' | 'reset' | 'repair' = 'merge') => bridge.configureManagedCliKeys({
       providers: [providerFor(tool)], preferredModels: model ? { [providerFor(tool)]: model } : {}, mode, intent: 'explicit',
     }),
-    official: (tool: ToolId, mode: 'merge' | 'reset' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
+    official: (tool: ToolId, mode: 'merge' | 'reset' | 'repair' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
     // 切回官方后那一问「要不要让官方 Claude Code 先问再执行？」的回答；改不改、改之前备份都在主进程。
     answerCommandConfirmation: (choice: ClaudeCommandConfirmationChoice) => bridge.answerClaudeCommandConfirmation(choice),
     // 首页的一键切换：备份、写入、自检、失败回滚都在主进程一次做完。
@@ -287,20 +288,23 @@ export function createToolsApi(bridge: XingmangApi) {
     officialUsage: () => bridge.refreshOfficialChatGptUsage(),
     /**
      * 当前账号本月与最近 7 天的用量。一分钟内复用上一次的结果；scope 传了而缓存
-     * 不是这个账号查的（换账号那一瞬间），作废后重查。
+     * 不是这个账号查的（换账号那一瞬间），作废后重查。重查回来还不是这个账号的就报错，
+     * 不把别的账号的用量交给它：侧栏账号卡会把拿到的数记在 scope 名下（F8-6）。
      */
     async balanceUsage(scope?: string): Promise<BalanceUsage> {
       const owned = await usageCache.read()
       if (scope === undefined || owned.scope === scope) return owned.usage
       usageCache.invalidate()
-      return (await usageCache.read()).usage
+      const reread = await usageCache.read()
+      if (reread.scope !== scope) throw new Error('账号刚切换过，请再试一次')
+      return reread.usage
     },
     /** 上一次查到的用量，过期了也给；不是 scope 这个账号的就当没有。 */
     peekBalanceUsage(scope: string): BalanceUsage | null {
       const owned = usageCache.peek()
       return owned && owned.scope === scope ? owned.usage : null
     },
-    /** 让用量缓存立刻作废：换账号时调。近 7 天的小柱子跟着一起作废。 */
+    /** 让用量缓存立刻作废：换账号、首页点余额刷新时调。近 7 天的小柱子跟着一起作废（过完的那几天另记着，不会重查）。 */
     invalidateBalanceUsage: () => { usageCache.invalidate(); weekSpend.invalidate() },
     /** 首页余额卡「近 7 天花费」每天一根柱子（只给能按时段查看板的账号用）。 */
     weekSpend: (scope?: string) => weekSpend.read(scope),

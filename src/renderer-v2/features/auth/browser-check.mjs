@@ -239,6 +239,24 @@ test('recovery lets the user set their own password and signs in without ever sh
   } finally { await page.close() }
 })
 
+// F1：密码框以前带 maxLength 20，粘进来的长密码被悄悄截成前 20 位，账号按截短的设好，
+// 客户之后拿原密码就登不上。框里要留着整串，由长度规则当场拦下，一个请求都不发。
+const pastedLongPassword = 'pasted-from-a-password-manager'
+
+test('recovery keeps a pasted password longer than twenty characters whole and refuses it instead of cutting it short', async () => {
+  const page = await open('scenario=recovery')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill(pastedLongPassword)
+    await page.getByTestId('forgot-set-confirm').fill(pastedLongPassword)
+    assert.equal(await page.getByTestId('forgot-set-password').inputValue(), pastedLongPassword)
+    assert.equal(await page.getByTestId('forgot-set-confirm').inputValue(), pastedLongPassword)
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByText('新密码不能超过 20 位', { exact: true }).waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset'])
+  } finally { await page.close() }
+})
+
 test('recovery shows the temporary password when the change fails after signing in, and continuing still completes the login', async () => {
   const page = await open('scenario=recovery&changeFail=1')
   try {
@@ -1041,6 +1059,25 @@ test('a full-width at sign and full stop are corrected instead of rejected', asy
   } finally { await page.close() }
 })
 
+test('registration keeps a pasted password longer than twenty characters whole and refuses it instead of cutting it short', async () => {
+  const page = await open('scenario=register')
+  try {
+    await page.getByTestId('register-email').fill('long@example.test')
+    await page.getByTestId('register-code').fill('123456')
+    await page.getByTestId('register-password').fill(pastedLongPassword)
+    assert.equal(await page.getByTestId('register-password').inputValue(), pastedLongPassword)
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('register-submit').click()
+    await page.getByText('密码不能超过 20 位', { exact: true }).waitFor()
+    assert.deepEqual((await calls(page)).filter((item) => item.method === 'register'), [])
+    // Exactly twenty is still the server's own limit, so it goes through as typed.
+    await page.getByTestId('register-password').fill('twenty-chars-exactly')
+    await page.getByTestId('register-submit').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.equal((await calls(page)).find((item) => item.method === 'register').input.password, 'twenty-chars-exactly')
+  } finally { await page.close() }
+})
+
 test('a taken username points at the username field instead of a generic failure', async () => {
   const page = await open('scenario=register&usernameTaken=1')
   try {
@@ -1147,6 +1184,55 @@ test('a wrong password offers password recovery and registration under the red t
     assert.equal(await page.getByTestId('forgot-email').inputValue(), 'person@example.test')
     assert.equal(await page.getByTestId('auth-exits').count(), 0)
   } finally { await page.close() }
+})
+
+// F2：中文输入法下打出来的全角＠、全角句号，注册那边会替客户改掉，登录和找回以前不改：
+// 历史账号报「请使用注册邮箱登录」，星芒账号报账号或密码不对，点去找回又报「请填写注册时用的邮箱」。
+test('a full-width at sign and full stop in a login email are corrected for both account sources (F2)', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('login-account').fill(' 123456＠qq。com ')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.deepEqual((await calls(page)).find((item) => item.method === 'login').input, { username: '123456@qq.com', password: 'fixture-password', siteId: 'solov' })
+    assert.equal(await page.getByTestId('login-account').inputValue(), '123456@qq.com')
+  } finally { await page.close() }
+  const history = await open()
+  try {
+    await chooseAccountSource(history, '历史账号')
+    await history.getByTestId('login-account').fill('abc﹫163．com')
+    await history.getByTestId('login-password').fill('fixture-password')
+    await history.getByTestId('auth-agree').check()
+    await history.getByTestId('login-submit').click()
+    await history.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.equal(await history.getByText('历史账号请使用注册邮箱登录').count(), 0)
+    assert.deepEqual((await calls(history)).find((item) => item.method === 'login').input, { username: 'abc@163.com', password: 'fixture-password', siteId: 'solov-api' })
+    assert.equal(await history.getByTestId('login-account').inputValue(), 'abc@163.com')
+  } finally { await history.close() }
+})
+
+test('recovery corrects a full-width email, including one carried over from the login form (F2)', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('login-account').fill('person＠example。test')
+    await page.getByTestId('login-forgot').click()
+    await page.getByTestId('forgot-password-dialog').waitFor()
+    assert.equal(await page.getByTestId('forgot-email').inputValue(), 'person@example.test')
+  } finally { await page.close() }
+  const recovery = await open('scenario=recovery')
+  try {
+    await recovery.getByTestId('forgot-email').fill(' person＠example。test ')
+    await recovery.getByTestId('forgot-send').click()
+    await recovery.getByTestId('forgot-token').waitFor()
+    assert.equal(await recovery.getByText('请填写注册时用的邮箱', { exact: true }).count(), 0)
+    assert.deepEqual((await calls(recovery)).at(-1), { method: 'send-reset', input: { email: 'person@example.test', siteId: 'solov' } })
+    await recovery.getByTestId('forgot-token').fill('a-valid-reset-token')
+    await recovery.getByTestId('forgot-reset').click()
+    await recovery.waitForFunction(() => document.documentElement.dataset.calls?.includes('"reset"'))
+    assert.deepEqual((await calls(recovery)).find((item) => item.method === 'reset').input, { email: 'person@example.test', token: 'a-valid-reset-token', siteId: 'solov' })
+  } finally { await recovery.close() }
 })
 
 test('an email that is already registered offers to log in with it', async () => {

@@ -66,10 +66,13 @@ interface ActiveLogin {
   poll: AbortController | null
 }
 
-/** 手机上显示的那串数字；只收数字，免得拼进查询串的东西不是数字。 */
+/**
+ * 手机上显示的那串数字；只收数字，免得拼进查询串的东西不是数字。中文输入法全角状态下打出来的是全角数字，
+ * 跟两步验证码一样先换成半角再认（表单 F10-c），别的字照旧不收。
+ */
 export function normalizeWeixinVerifyCode(value: unknown): string | null {
   if (typeof value !== 'string') return null
-  const trimmed = value.replace(/\s+/g, '')
+  const trimmed = value.replace(/[０-９]/g, (digit) => String.fromCharCode(digit.charCodeAt(0) - 0xfee0)).replace(/\s+/g, '')
   return /^\d{1,8}$/.test(trimmed) ? trimmed : null
 }
 

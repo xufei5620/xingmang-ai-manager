@@ -112,6 +112,7 @@ import {
 } from './extensions-common'
 import { isProvider } from '../tools/provider-options'
 import {
+  buildLaunchCommand,
   mcpHeaderLines,
   mcpPasteChoiceLabel,
   mcpPasteNotice,
@@ -667,8 +668,8 @@ export function ExtensionsPage({
           }
         : {
             type: 'stdio' as const,
-            command: source.trim(),
-            args: parseCommandArguments(args),
+            // 「启动命令」里填了整行（npx -y 包名）的，交出去前拆成程序和参数；表单里他填的字不动。
+            ...buildLaunchCommand(source, parseCommandArguments(args)),
             env: parseEnvironmentVariables(environment),
           }
     if (mcp.type === 'stdio') {

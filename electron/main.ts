@@ -14,6 +14,7 @@ import {
   session,
   shell,
   webContents,
+  type BaseWindow,
   type WebContents,
 } from 'electron'
 import { AnnouncementReadStore } from './announcement-read-store'
@@ -33,7 +34,7 @@ import { createChatHistoryFlush } from './chat-history-flush'
 import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
-import { calculateUiZoom, resolveWindowPlacement, shouldFollowSystemTextSize } from './window-preferences'
+import { calculateUiZoom, resolveWindowPlacement, shouldDefaultToLargeText, shouldFollowSystemTextSize } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { createSensitiveClipboard } from './sensitive-clipboard'
 import { fitOversizedWindow, recoverOffscreenWindow } from './window-recovery'
@@ -74,7 +75,7 @@ import { inspectDeviceHardware, isLowEndDevice } from './device-profile'
 import { buildUnexpectedExitRelaunchArgs, describeUnexpectedExitError, recordUnexpectedExit, takeUnexpectedExitNotice, unexpectedExitRecordPath } from './unexpected-exit'
 import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneStaleDisplayCrashRecord, recordDisplayCrash, type DisplayLaunch } from './display-compat'
 import { ConfigBackupStore } from './backups'
-import { crashReportDist, crashReportDsn, crashReportRelease, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
+import { crashReportDist, crashReportDsn, crashReportEnvironmentName, crashReportRelease, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
 import { classifyNetworkFailure } from './network-failure'
 import { PlatformSettingsStore } from './platform/settings-store'
@@ -143,7 +144,7 @@ import {
 } from './macos-install-location'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createManualRedirectFetch } from './manual-redirect-fetch'
-import { createPaymentWindowController, resolvePaymentAppLaunchScheme } from './payment-window'
+import { createPaymentWindowController, resolvePaymentAppLaunchScheme, type PaymentWindowProxyMode } from './payment-window'
 import { createInvoicePortalWindowController, type InvoicePortalIdentity } from './invoice-portal-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
@@ -162,7 +163,7 @@ import { createCliHookEventMonitor } from './cli-hook-events'
 import { createCliKeepAwake } from './cli-keep-awake'
 import { createInstallKeepAwake } from './install-keep-awake'
 import { resolveProjectInstructionsTemplatePath } from './project-instructions'
-import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type IpcEventPayload, type RendererNavigationTarget, type SettingsSaveIssue, type UnexpectedExitNotice, type XingmangEventContract } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance, type AccountSubscriptionSelf, type AppUninstallRequest, type IpcEventPayload, type RendererNavigationTarget, type SettingsSaveIssue, type UiScaleShortcut, type UnexpectedExitNotice, type XingmangEventContract } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -217,6 +218,7 @@ guardProcessOutputStreams()
 const applicationPackage = require('../package.json') as {
   xingmangAccelerationBundle?: unknown
   xingmangLocalBuild?: unknown
+  xingmangTestingBuild?: unknown
   xingmangUnsignedRelease?: unknown
 }
 
@@ -737,6 +739,7 @@ function appValue<T>(read: () => T, fallback: T): T {
 function crashReportingEnabled(): boolean {
   return shouldReportCrashes({
     packaged: appValue(() => app.isPackaged, false),
+    localBuild: applicationPackage.xingmangLocalBuild === true,
     // Re-read per report so switching the preference off stops the very next
     // send, with no refresh plumbing between the settings handler and here.
     // The fallback is the opt-out, not the default: if the preference cannot
@@ -762,7 +765,10 @@ const crashReporter = createCrashReporter({
   runtime: {
     release: crashReportRelease(appValue(() => app.getVersion(), '0.0.0')),
     dist: crashReportDist(process.platform, process.arch),
-    environment: appValue(() => app.isPackaged, false) ? 'production' : 'development',
+    environment: crashReportEnvironmentName({
+      packaged: appValue(() => app.isPackaged, false),
+      testingBuild: applicationPackage.xingmangTestingBuild === true,
+    }),
     homeDirectory: os.homedir(),
     appVersion: appValue(() => app.getVersion(), '0.0.0'),
     electronVersion: process.versions.electron ?? 'unknown',
@@ -912,6 +918,7 @@ if (!hasSingleInstanceLock) {
     let linuxSystemLabel: string | null = null
     // Mac 菜单要在建主窗口之前设上，「设置…」（⌘,）点下去时才去找主窗口；主窗口建好之前点了不做事。
     let navigateFromAppMenu: ((target: RendererNavigationTarget) => void) | null = null
+    let uiScaleFromAppMenu: ((shortcut: UiScaleShortcut, focusedWindow: BaseWindow | undefined) => void) | null = null
     if (process.platform === 'win32') {
       app.setAppUserModelId(windowsAppUserModelId)
       Menu.setApplicationMenu(null)
@@ -926,7 +933,11 @@ if (!hasSingleInstanceLock) {
     } else if (process.platform === 'darwin') {
       // BrowserWindow.icon does not control the Dock, especially under electron . in development.
       app.dock?.setIcon(path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'))
-      const template = buildMacApplicationMenuTemplate('星芒AI管理工具', (target) => navigateFromAppMenu?.(target))
+      const template = buildMacApplicationMenuTemplate(
+        '星芒AI管理工具',
+        (target) => navigateFromAppMenu?.(target),
+        (shortcut, focusedWindow) => uiScaleFromAppMenu?.(shortcut, focusedWindow),
+      )
       Menu.setApplicationMenu(Menu.buildFromTemplate(template))
     } else {
       // Linux 窗口和 Windows 一样自己画标题栏；Electron 默认那套英文 File / Edit / View
@@ -934,6 +945,8 @@ if (!hasSingleInstanceLock) {
       Menu.setApplicationMenu(null)
     }
     // 白名单式收紧权限：仅放行剪贴板写入，否则复制配置等功能会静默失效
+    // 往这里加 media（麦克风、摄像头）之前，先把中文用途说明加回 electron-builder.config.cjs：
+    // Mac 包删掉了这几项说明（macUnusedElectronUsageDescriptions），没说明就碰设备，系统直接结束星芒。
     const allowedPermissions = new Set(['clipboard-sanitized-write'])
     session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
       callback(allowedPermissions.has(permission))
@@ -2201,6 +2214,11 @@ if (!hasSingleInstanceLock) {
     // constructed. Seed its ownership record so the first real account
     // transition is delivered to an already-open canvas window exactly once.
     canvasController.setAccountUser(accountService.getSessionState().account?.userId ?? null)
+    // 付款窗口、开票窗口打开前都按它设一次连法。星芒整个改了直连（系统代理指着关掉的代理软件），这两个页面也直连；
+    // 只是连星芒站点那一路直连时，付款商、开票中心的页面照旧经代理走，代理软件还开着、只是不转发星芒。
+    function externalPageProxyMode(): PaymentWindowProxyMode {
+      return proxyBypass.active() ? 'direct' : 'system'
+    }
     const paymentWindow = createPaymentWindowController({
       iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
       createOrderStatusReader: (tradeNo) => createPaymentOrderStatusReader({
@@ -2208,9 +2226,7 @@ if (!hasSingleInstanceLock) {
         getSiteId: accounts.getSiteId,
         assertReady: accounts.assertReady,
       }, tradeNo),
-      // 星芒整个改了直连（系统代理指着关掉的代理软件），付款页也直连；只是连星芒站点那一路直连时，
-      // 付款商的页面照旧经代理走，代理软件还开着、只是不转发星芒。
-      proxyMode: () => proxyBypass.active() ? 'direct' : 'system',
+      proxyMode: externalPageProxyMode,
       onBlockedNavigation: (targetUrl) => {
         // 收银台想拉起支付宝、微信 App：正常行为，扫码付款不受影响。只记协议名，后面那串带着付款码。
         const scheme = resolvePaymentAppLaunchScheme(targetUrl)
@@ -2264,6 +2280,7 @@ if (!hasSingleInstanceLock) {
       iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
       temporaryDirectory: () => path.join(managerDataDirectory, 'invoice-downloads'),
       downloadsDirectory: () => app.getPath('downloads'),
+      proxyMode: externalPageProxyMode,
       onBlockedNavigation: (targetUrl) => {
         let origin = 'invalid-url'
         try {
@@ -2538,6 +2555,14 @@ if (!hasSingleInstanceLock) {
       documentsDirectory: () => app.getPath('documents'),
       aiOutputDirectory: () => currentBusiness().aiOutputPlacement.root,
       downloadsDirectory: () => app.getPath('downloads'),
+      // 设置页那个开关同一份文件、同一种读法（没碰过 = 开）；读不出来交 null，「搬到新电脑」就不带也不碰它（X-3）。
+      readAnonymousUsagePreference: () => {
+        try {
+          return new PlatformSettingsStore(platformPreferencesPath).read().privacy?.anonymousUsage !== false
+        } catch {
+          return null
+        }
+      },
       accountService,
       paymentWindow,
       invoicePortalWindow,
@@ -2594,6 +2619,7 @@ if (!hasSingleInstanceLock) {
         lowEndDevice,
         ...(settingsSaveIssue ? { settingsSaveIssue } : {}),
         ...(displayCompatPending ? { displayCompat: 'auto' as const } : {}),
+        ...(shouldDefaultToLargeText(systemTextScale) ? { largeTextByDefault: true as const } : {}),
         ...(unexpectedExit ? { unexpectedExit } : {}),
         ...(claudeDesktopRepaired ? { claudeDesktopRepaired: true as const } : {}),
         ...(linuxSystemLabel ? { systemLabel: linuxSystemLabel } : {}),
@@ -2851,6 +2877,10 @@ if (!hasSingleInstanceLock) {
     // 以前发给在前面的那个窗口：画布、付款窗口在前时发进了它们，没人接；主窗口缩在托盘里时发到了却不出来（#1210）。
     // 跟托盘跳页一样，先把主窗口叫出来，再只发给它。
     navigateFromAppMenu = (target) => { showMainWindow(); deliverToMainWindow('onNavigate', target) }
+    // 「显示」菜单的实际大小、放大、缩小（深查 TR-3）：主窗口在前时交给界面，跟按键盘一样改「界面缩放」设置；
+    // 画布、付款、开票这些窗口在前时不做事，跟 Windows 上没有这个菜单时一样，画布不会整个跟着变大变小。
+    // 不叫出主窗口、界面没开着也不存着补发：缩放只对眼前这一下有意义。
+    uiScaleFromAppMenu = (shortcut, focusedWindow) => { if (focusedWindow === mainWindow) sendToMainWindow('onUiScaleShortcut', shortcut) }
     // 退出、重启安装更新都会把正在装的工具打断，两处问同一句（已知31）。true = 点了「仍然退出」。
     const confirmInterruptingInstall = async (task: InterruptibleInstallTask): Promise<boolean> => {
       // 托盘「退出」「重启并安装」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。

@@ -1046,6 +1046,98 @@ describe('registerIpcHandlers', () => {
     })
   })
 
+  // J1：「复制给客服」以前是页面等完报告再自己写剪贴板，客户等的那几秒切去微信，窗口没了焦点就写不进去。
+  // 现在页面只交留言，主进程拼好、现取报告、自己写剪贴板；格式是定死的，页面给不了别的内容。
+  describe('feedback message copy', () => {
+    const message = {
+      type: 'idea',
+      description: '  点「打开」后终端闪一下就关了 ',
+      contact: ' wx-test ',
+      identity: '账号 test-user · 星芒AI管理工具 0.2.24 · Windows',
+      lastFailure: '最近一次出错：14:37 打开 Codex：网络超时',
+      attachReport: true,
+    }
+
+    it('builds the message in the main process and copies it with a freshly captured report', async () => {
+      const { runtimeLog } = register()
+      runtimeLog.captureFeedbackReport.mockResolvedValueOnce({ text: 'fresh report\n', entries: 3 })
+      const owner = trustedEvent()
+      await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, message)).resolves.toEqual({ entries: 3 })
+      expect(electronMocks.writeText).toHaveBeenCalledExactlyOnceWith([
+        '留言反馈 · 功能建议',
+        '点「打开」后终端闪一下就关了',
+        '联系方式：wx-test',
+        '账号 test-user · 星芒AI管理工具 0.2.24 · Windows',
+        '最近一次出错：14:37 打开 Codex：网络超时',
+        '',
+        'fresh report\n',
+      ].join('\n'))
+      expect(runtimeLog.captureFeedbackReport).toHaveBeenCalledOnce()
+    })
+
+    it('copies only what the customer wrote when the report is not attached', async () => {
+      const { runtimeLog } = register()
+      await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent(), {
+        type: 'bug', description: '想要深色图标', contact: '  ', attachReport: false,
+      })).resolves.toEqual({ entries: 0 })
+      expect(electronMocks.writeText).toHaveBeenCalledExactlyOnceWith('留言反馈 · 遇到问题\n想要深色图标')
+      expect(runtimeLog.captureFeedbackReport).not.toHaveBeenCalled()
+      expect(runtimeLog.feedbackReport).not.toHaveBeenCalled()
+    })
+
+    it('still copies what the customer wrote and logs why when the report cannot be made', async () => {
+      const { runtimeLog } = register()
+      runtimeLog.captureFeedbackReport.mockRejectedValueOnce(new Error('日志读取失败'))
+      await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent(), message)).resolves.toEqual({ entries: 0, reportMissing: true })
+      const copied = electronMocks.writeText.mock.calls.at(-1)?.[0]
+      expect(copied).toMatch(/^留言反馈 · 功能建议\n点「打开」后终端闪一下就关了\n/)
+      expect(copied).toMatch(/\n反馈报告：这次没生成出来$/)
+      expect(runtimeLog.log).toHaveBeenCalledWith('error', 'ipc', 'runtime-logs:preview-feedback', 'runtime-logs:preview-feedback失败：日志读取失败', expect.anything())
+    })
+
+    it('masks a key pasted into the description before it reaches the clipboard', async () => {
+      register()
+      await electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent(), {
+        type: 'other', description: '我的 key 是 sk-abcdefghijklmnopqrstuvwxyz0123456789', attachReport: false,
+      })
+      expect(electronMocks.writeText.mock.calls.at(-1)?.[0]).not.toContain('sk-abcdefghijklmnopqrstuvwxyz0123456789')
+    })
+
+    it('refuses anything but the fixed message shape without touching the clipboard or the logs', async () => {
+      const { runtimeLog } = register()
+      const copy = electronMocks.handlers.get('runtime-logs:copy-feedback')!
+      const refused: unknown[] = [
+        // A free-form first line: the type must be one of the three values, never a label.
+        { ...message, type: '遇到问题' },
+        { ...message, type: 'constructor' },
+        // Extra fields could smuggle another format onto the clipboard.
+        { ...message, text: 'anything at all' },
+        { ...message, report: 'forged report' },
+        { type: 'bug', description: '打不开' },
+        { ...message, attachReport: 'yes' },
+        { ...message, description: '   ' },
+        { ...message, description: undefined },
+        { ...message, description: 'x'.repeat(200_001) },
+        { ...message, description: 'a\0b' },
+        { ...message, contact: 7 },
+        { ...message, identity: 'x'.repeat(4_097) },
+        { ...message, lastFailure: ['line'] },
+      ]
+      for (const request of refused) {
+        await expect(copy(trustedEvent(), request)).rejects.toThrow('反馈留言格式错误')
+      }
+      expect(electronMocks.writeText).not.toHaveBeenCalled()
+      expect(runtimeLog.captureFeedbackReport).not.toHaveBeenCalled()
+      expect(runtimeLog.feedbackReport).not.toHaveBeenCalled()
+    })
+
+    it('keeps refusing a message from a page that is not the app', () => {
+      register()
+      expect(() => electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent('https://attacker.example/'), message)).toThrow('非应用页面')
+      expect(electronMocks.writeText).not.toHaveBeenCalled()
+    })
+  })
+
   it('pastes into a chat for the signed-in account with only a checked count from the page', async () => {
     const accountService = accountServiceStub()
     vi.mocked(accountService.getSessionState).mockReturnValue({
@@ -1630,6 +1722,54 @@ describe('registerIpcHandlers', () => {
         conflictLabels: ['主题'],
       })
       expect(service.updateStoredConfig).not.toHaveBeenCalled()
+      dispose()
+    } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  })
+
+  it('carries the usage-stats switch across computers without ever turning it on unasked', async () => {
+    // X-3：「匿名使用统计」在系统界面设置那份文件里，以前「搬到新电脑」不带它。
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
+    try {
+      let here: boolean | null = false
+      let readFails = false
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, {
+        downloadsDirectory: () => directory,
+        readAnonymousUsagePreference: () => {
+          if (readFails) throw new Error('系统界面设置无法读取，原文件已保留。')
+          return here
+        },
+      })
+      const exportData = electronMocks.handlers.get('data-transfer:export')!
+      const importData = electronMocks.handlers.get('data-transfer:import')!
+      const exported = path.join(directory, 'off.json')
+      electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: exported })
+      await exportData(trustedEvent(), { conversations: [] })
+      expect(JSON.parse(fs.readFileSync(exported, 'utf8')).settings.anonymousUsage).toBe(false)
+
+      // 新电脑还是新装的「开」：直接关，不问。
+      here = true
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [exported] })
+      await expect(importData(trustedEvent())).resolves.toMatchObject({ anonymousUsage: false, conflictLabels: [] })
+
+      // 这台关过、文件里是开：只进询问框。
+      const turnedOn = path.join(directory, 'on.json')
+      fs.writeFileSync(turnedOn, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: { anonymousUsage: true }, conversations: [] }))
+      here = false
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [turnedOn] })
+      const asked = await importData(trustedEvent())
+      expect(asked).toMatchObject({ conflictingAnonymousUsage: true, conflictLabels: ['匿名使用统计'] })
+      expect(asked).not.toHaveProperty('anonymousUsage')
+
+      // 这台读不出来：导出不写这一项，导入不碰它。
+      readFails = true
+      const unreadable = path.join(directory, 'unreadable.json')
+      electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: unreadable })
+      await exportData(trustedEvent(), { conversations: [] })
+      expect(JSON.parse(fs.readFileSync(unreadable, 'utf8')).settings).not.toHaveProperty('anonymousUsage')
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [exported] })
+      const untouched = await importData(trustedEvent())
+      expect(untouched).not.toHaveProperty('anonymousUsage')
+      expect(untouched).not.toHaveProperty('conflictingAnonymousUsage')
       dispose()
     } finally { fs.rmSync(directory, { recursive: true, force: true }) }
   })
@@ -3204,6 +3344,17 @@ describe('registerIpcHandlers', () => {
     create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
     await expect(handler(trustedEvent(), 'codex', 'reset')).rejects.toThrow('没能先备份当前配置，这次没有重置')
     expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
+
+    // 「修好它」（repair）同样先备份，备份不成就不动手。
+    create.mockClear()
+    await handler(trustedEvent(), 'codex', 'repair')
+    expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+    expect(service.switchToOfficialAccount).toHaveBeenLastCalledWith('codex', 'repair')
+    expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.switchToOfficialAccount).mock.invocationCallOrder[0])
+    vi.mocked(service.switchToOfficialAccount).mockClear()
+    create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+    await expect(handler(trustedEvent(), 'codex', 'repair')).rejects.toThrow('没能先备份当前配置，这次没有重置')
+    expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
   })
 
   it('validates and forwards the official save mode while accepting legacy calls', async () => {
@@ -3216,11 +3367,13 @@ describe('registerIpcHandlers', () => {
     expect(service.switchToOfficialAccount).toHaveBeenLastCalledWith('codex', 'merge')
     await handler(trustedEvent(), 'codex', 'reset')
     expect(service.switchToOfficialAccount).toHaveBeenLastCalledWith('codex', 'reset')
+    await handler(trustedEvent(), 'codex', 'repair')
+    expect(service.switchToOfficialAccount).toHaveBeenLastCalledWith('codex', 'repair')
     expect(() => handler(trustedEvent(), 'unknown', 'reset')).toThrow('未知的 CLI 类型')
     for (const mode of ['erase-all', null, 1, {}]) {
       expect(() => handler(trustedEvent(), 'codex', mode)).toThrow('未知的配置写入模式')
     }
-    expect(service.switchToOfficialAccount).toHaveBeenCalledTimes(3)
+    expect(service.switchToOfficialAccount).toHaveBeenCalledTimes(4)
   })
 
   // Fable 复查第一轮 3：切回官方以后 Claude Code 还是「不逐条确认就执行」、又没问过，结果里带上，界面问一次。
@@ -3956,6 +4109,19 @@ describe('registerIpcHandlers', () => {
     expect(service.configureExternalTool).not.toHaveBeenCalled()
   })
 
+  it('writes a pasted external-client key without the spaces and zero-width characters it carried', async () => {
+    const service = serviceStub()
+    const safeResult = { tool: 'workbuddy' as const, model: 'fixture-model', path: 'fixture-config', files: ['fixture-config'], backups: [], outcome: 'configured' as const, message: 'saved', restartRequired: true, connectionVerified: false, connection: null }
+    vi.mocked(service.configureExternalTool).mockResolvedValue(safeResult)
+    register(service)
+    const handler = electronMocks.handlers.get('config:configure-external-tool')!
+    // J7：以前只去首尾空白，夹着的零宽空格、折行留下的空格原样写进客户端配置。
+    await expect(handler(trustedEvent(), 'workbuddy', { credential: { kind: 'manual', apiKey: '\u200Bsk-fixture 0123\u200D456789' }, model: 'fixture-model' })).resolves.toEqual(safeResult)
+    expect(service.configureExternalTool).toHaveBeenCalledWith('workbuddy', { apiKey: 'sk-fixture0123456789', model: 'fixture-model', protocol: undefined }, expect.any(Function), 'manual')
+    await expect(handler(trustedEvent(), 'workbuddy', { credential: { kind: 'manual', apiKey: '\u200B\u2060' }, model: 'fixture-model' })).rejects.toThrow('访问密钥格式无效')
+    expect(service.configureExternalTool).toHaveBeenCalledOnce()
+  })
+
   it('does not reuse an external-client key belonging to a different relay', async () => {
     const service = serviceStub()
     vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { hasApiKey: true, matchesRelay: false } } } as never)
@@ -4575,7 +4741,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
-  describe('stringArray (mcp:add args, marketplaces:add sparse)', () => {
+  describe('array arguments (mcp:add args, marketplaces:add sparse)', () => {
     it('defaults to an empty array when the field is omitted', () => {
       const { extensionService } = register()
       const handler = electronMocks.handlers.get('mcp:add')!
@@ -5709,6 +5875,49 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         model: 'gpt-5.6-sol',
         mode: 'merge',
       }, false)
+    })
+
+    it('saves a pasted key without the spaces and zero-width characters it carried', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('config:save')!
+      const base = { provider: 'codex', model: 'gpt-5.6-sol', mode: 'merge' as const }
+
+      // J7：折成两行粘进来的空格、飞书复制带的零宽空格，以前原样存进工具，服务端回 401。
+      await handler(trustedEvent(), { ...base, apiKey: '\u200Bsk-test 0123\u200D456789\uFEFF ' })
+      expect(service.saveConfig).toHaveBeenLastCalledWith({ ...base, apiKey: 'sk-test0123456789' }, false)
+    })
+
+    it('keeps whitespace-only as the reuse sentinel but never turns invisible-only input into it', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('config:save')!
+      const base = { provider: 'codex', model: 'gpt-5.6-sol', mode: 'merge' as const }
+
+      await handler(trustedEvent(), { ...base, apiKey: ' \u3000 ' })
+      expect(service.saveConfig).toHaveBeenLastCalledWith({ ...base, apiKey: '' }, false)
+      expect(() => handler(trustedEvent(), { ...base, apiKey: '\u200B\u200D' })).toThrow('API Key 格式错误')
+      expect(service.saveConfig).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('models:list (a key the customer typed)', () => {
+    it('still rejects a pasted key with an embedded control character', async () => {
+      const { service } = register()
+      vi.mocked(service.fetchAvailableModels).mockRejectedValue(new Error('API Key 格式错误'))
+      const handler = electronMocks.handlers.get('models:list')!
+
+      // 去空白只去非控制字符；夹在中间的换行照旧整串交给 fetchAvailableModels 拒掉，不替它放宽。
+      await expect(handler(trustedEvent(), 'sk-test\n0123456789')).rejects.toThrow('API Key 格式错误')
+      expect(service.fetchAvailableModels).toHaveBeenCalledWith('sk-test\n0123456789')
+    })
+
+    it('lists models for a pasted key without the spaces and zero-width characters it carried', async () => {
+      const { service } = register()
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+      const handler = electronMocks.handlers.get('models:list')!
+
+      // J7：零宽空格进了请求头，Node 直接抛英文 ByteString 报错。
+      await expect(handler(trustedEvent(), ' sk-test 0123\u200B456789\u2060')).resolves.toEqual(['gpt-5.6-sol'])
+      expect(service.fetchAvailableModels).toHaveBeenCalledWith('sk-test0123456789')
     })
   })
 
@@ -7340,11 +7549,12 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         )
       })
 
-      // 来源没确认时配置窗口里只有「改用当前账号」：工具读不了的配置照原文件改只会报错，改走重置。
-      it('resets a config the tool cannot read when switching it to the current account', async () => {
+      // 来源没确认时配置窗口里只有「改用当前账号」：工具读不了的配置照原文件改只会报错，改走「修好它」那一种：
+      // 读不了的那份重建，Codex 只坏了 auth.json 时 config.toml 里客户自己的设置照留（X-1）。
+      it('repairs a config the tool cannot read when switching it to the current account', async () => {
         for (const [current, mode] of [
-          [{ configBroken: true }, 'reset'],
-          [{ codexAuthBroken: true }, 'reset'],
+          [{ configBroken: true }, 'repair'],
+          [{ codexAuthBroken: true }, 'repair'],
           [{ configBroken: false, codexAuthBroken: false }, 'merge'],
         ] as const) {
           electronMocks.handlers.clear()
@@ -8915,6 +9125,17 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
       await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
       expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+      expect(service.saveConfig).not.toHaveBeenCalled()
+
+      // 首页「修好它」（repair）也是先备份再写，模式原样交给保存。
+      create.mockClear()
+      await expect(handler(trustedEvent(), { ...input, mode: 'repair' })).resolves.toEqual({ configured: ['codex'], failed: [] })
+      expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
+      expect(service.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ provider: 'codex', mode: 'repair' }), false, expect.any(Function), { source: 'account', automatic: false })
+      expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.saveConfig).mock.invocationCallOrder[0])
+      vi.mocked(service.saveConfig).mockClear()
+      create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+      await expect(handler(trustedEvent(), { ...input, mode: 'repair' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
       expect(service.saveConfig).not.toHaveBeenCalled()
     })
 

@@ -102,6 +102,27 @@ describe('data transfer file', () => {
     expect(parseDataTransferFile(JSON.stringify({ ...valid, phrases: Array.from({ length: 30 }, () => 'x'.repeat(2_000)) })).phrases).toHaveLength(30)
   })
 
+  it('carries the usage-stats switch only when this computer could read it', () => {
+    // X-3：「匿名使用统计」在系统界面设置那份文件里，以前不跟着走。
+    for (const anonymousUsage of [true, false]) {
+      const raw = buildDataTransferFile(settings(), { conversations: [] }, new Date(), anonymousUsage)
+      expect(JSON.parse(raw).settings.anonymousUsage).toBe(anonymousUsage)
+      expect(parseDataTransferFile(raw).anonymousUsage).toBe(anonymousUsage)
+    }
+    for (const unreadable of [null, undefined]) {
+      const raw = buildDataTransferFile(settings(), { conversations: [] }, new Date(), unreadable)
+      expect(JSON.parse(raw).settings).not.toHaveProperty('anonymousUsage')
+      expect(parseDataTransferFile(raw)).not.toHaveProperty('anonymousUsage')
+    }
+  })
+
+  it('rejects the whole file when the usage-stats switch is not a plain on or off', () => {
+    const valid = JSON.parse(buildDataTransferFile(settings(), { conversations: [] }, new Date(), false))
+    for (const anonymousUsage of ['false', 0, 1, null, {}, []]) {
+      expect(() => parseDataTransferFile(JSON.stringify({ ...valid, settings: { ...valid.settings, anonymousUsage } }))).toThrow(dataTransferInvalidMessage)
+    }
+  })
+
   it('validates the phrases in the export request from the renderer', () => {
     expect(parseDataTransferExportInput({ conversations: [], phrases: ['回答尽量简短'] }).phrases).toEqual(['回答尽量简短'])
     expect(() => parseDataTransferExportInput({ conversations: [], phrases: 'x' })).toThrow('导出的常用的话格式无效')
@@ -136,6 +157,41 @@ describe('planPortableSettingsImport', () => {
     const plan = planPortableSettingsImport(settings({ uiSkin: undefined }), { uiSkin: 'obsidian' })
     expect(plan.settings).toEqual({ version: 2, uiSkin: 'obsidian' })
     expect(plan.conflictLabels).toEqual([])
+  })
+
+  it('switches usage stats off silently only while this computer still has the fresh-install on', () => {
+    const plan = planPortableSettingsImport(settings(), { crashReporting: false }, { here: true, incoming: false })
+    expect(plan).toEqual({
+      settings: { version: 2, crashReporting: false },
+      conflictingSettings: { version: 2 },
+      conflictLabels: [],
+      anonymousUsage: false,
+    })
+  })
+
+  it('asks before an import switches usage stats back on here', () => {
+    const plan = planPortableSettingsImport(settings({ theme: 'dark' }), { theme: 'light' }, { here: false, incoming: true })
+    expect(plan).toEqual({
+      settings: { version: 2 },
+      conflictingSettings: { version: 2, theme: 'light' },
+      conflictLabels: ['主题', '匿名使用统计'],
+      conflictingAnonymousUsage: true,
+    })
+  })
+
+  it('leaves usage stats alone for old files, matching values and an unreadable switch here', () => {
+    const cases: Array<{ here: boolean | null; incoming?: boolean }> = [
+      { here: false },
+      { here: true },
+      { here: false, incoming: false },
+      { here: true, incoming: true },
+      { here: null, incoming: false },
+      { here: null, incoming: true },
+    ]
+    for (const anonymousUsage of cases) {
+      expect(planPortableSettingsImport(settings(), {}, anonymousUsage)).toEqual({ settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] })
+    }
+    expect(planPortableSettingsImport(settings(), {})).toEqual({ settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] })
   })
 
   it('has nothing to do when the file matches this computer', () => {

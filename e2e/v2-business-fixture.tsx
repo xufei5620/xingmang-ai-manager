@@ -11,7 +11,7 @@ import type {
   PlatformSystemState,
   XingmangPlatformApi,
 } from '../electron/platform/contract'
-import type { AccountPaymentWindowTerminalEvent, ProviderId } from '../electron/ipc-contract'
+import type { AccountPaymentWindowTerminalEvent, FeedbackMessageCopyRequest, ProviderId } from '../electron/ipc-contract'
 import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
 import { KeyRewriteSkippedError } from '../src/renderer-v2/features/tools/account-bootstrap'
@@ -943,6 +943,9 @@ const apiMethods = {
       keys: empty ? [] : managedKeys ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
     }
   },
+  updateAccountKey: async (input: Parameters<V2Bridge['updateAccountKey']>[0]) => {
+    record('updateAccountKey', input)
+  },
   revokeAccountKey: async (id: number) => {
     record('revokeAccountKey', id)
     if (query.has('revokeHold')) await new Promise<void>((resolve) => { releaseHeldRevoke = resolve })
@@ -1421,7 +1424,23 @@ const apiMethods = {
     if (fail === 'settings-read') throw new Error('设置文件暂时读不到')
     return settings
   },
-  getWindowCapabilities: async () => ({ tray: true, notifications: true }),
+  // largeTextByDefault：Windows 文本大小调大了的电脑，新装时「大字」开着（D81、X-2）。
+  getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('largeTextByDefault') ? { largeTextByDefault: true as const } : {}) }),
+  // transfer=usage-off：「搬到新电脑」的文件里「匿名使用统计」是关，这台还是新装的开，主进程交来「直接关」；
+  // transfer=usage-on：文件里是开，这台关过（配 usageOff），只进询问框（X-3）。没有对话，不用登录。
+  importAppData: async () => {
+    record('import-app-data')
+    const transfer = query.get('transfer')
+    if (transfer !== 'usage-off' && transfer !== 'usage-on') throw new Error('未提供测试方法 importAppData')
+    return {
+      conversations: [],
+      settings: { version: 2 },
+      conflictingSettings: { version: 2 },
+      ...(transfer === 'usage-off'
+        ? { conflictLabels: [], anonymousUsage: false }
+        : { conflictLabels: ['匿名使用统计'], conflictingAnonymousUsage: true }),
+    }
+  },
   saveSettings: async (patch: Parameters<V2Bridge['saveSettings']>[0]) => {
     record('settings', patch)
     if (fail === 'settings') throw new Error('设置写入失败')
@@ -1518,8 +1537,13 @@ const apiMethods = {
       selfChecked: !query.has('selfCheckMissing'),
     }
   },
-  copyFeedbackReport: async (id?: string) => {
-    record('copy-report', id)
+  copyFeedbackReport: async (target?: string | FeedbackMessageCopyRequest) => {
+    // 「复制给客服」交的是留言（J1）：拼好、现取报告、写剪贴板都在主进程，夹具只记下页面交过来的那几样。
+    if (typeof target === 'object') {
+      record('copy-feedback-message', target)
+      return fail === 'feedbackReport' && target.attachReport ? { entries: 0, reportMissing: true as const } : { entries: 1 }
+    }
+    record('copy-report', target)
     return { entries: 1 }
   },
   exportFeedbackReport: async (id?: string) => {
@@ -1598,7 +1622,13 @@ const api = new Proxy(apiMethods, {
 }) as unknown as V2Bridge
 if (query.has('system')) {
   let systemState: PlatformSystemState = {
-    preferences: { version: 1, themePreference: settings.theme, highContrast: false },
+    preferences: {
+      version: 1,
+      themePreference: settings.theme,
+      highContrast: false,
+      // usageOff：这台电脑上亲手关过「匿名使用统计」。
+      ...(query.has('usageOff') ? { privacy: { anonymousUsage: false } } : {}),
+    },
     appearance: {
       theme: settings.theme,
       highContrast: false,
@@ -1617,13 +1647,18 @@ if (query.has('system')) {
     for (const listener of listeners) listener(systemState)
     return systemState
   }
+  // fail=platform-broken：系统界面设置文件坏了（深查 DM-3），主进程没建起系统设置服务，读和写一律
+  // 报「系统设置尚未准备好。」（electron/platform/install-system-api.ts），点「重新读取」也不会好。
+  const platformBroken = fail === 'platform-broken'
   const guard = () => {
+    if (platformBroken) throw new Error('系统设置尚未准备好。')
     if (fail === 'platform') throw new Error('平台设置写入失败')
   }
   // fail=platform-read：第一次读系统状态失败，点「重新读取」再读就好了。
   let platformReadFailures = fail === 'platform-read' ? 1 : 0
   const platform: XingmangPlatformApi = {
     getState: async () => {
+      if (platformBroken) throw new Error('系统设置尚未准备好。')
       if (platformReadFailures > 0) {
         platformReadFailures -= 1
         throw new Error('系统状态暂时读不到')

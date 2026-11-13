@@ -58,7 +58,7 @@ import { useRowFocus } from '../app/row-focus'
 import { currentWindowOs, type WindowOs } from '../app/window-os'
 import { parseImportedConversations, readChatPhrases } from '../chat/storage'
 import type { Conversation } from '../chat/state'
-import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from '../app/data-transfer'
+import { anonymousUsageFrom, dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from '../app/data-transfer'
 import type { V2Bridge } from '../../types'
 import type { ClaudeToggleResult, DataTransferImportPreview } from '../../../../electron/ipc-contract'
 import type { PlatformSystemState } from '../../../../electron/platform/contract'
@@ -470,19 +470,30 @@ export function SettingsPage({
     const patch = overwrite
       ? settingsPatchFrom(preview.settings, preview.conflictingSettings)
       : settingsPatchFrom(preview.settings)
-    if (patch && !(await update(patch, { quiet: true }))) {
-      throw new Error(
+    // 「匿名使用统计」不在 settings.json，走和那个开关同一条路写（X-3）；拿不到系统设置就不碰它。
+    const anonymousUsage = systemApi ? anonymousUsageFrom(preview, overwrite) : undefined
+    const settingsFailed = () =>
+      new Error(
         added
           ? `导入了 ${added} 个对话，设置没有保存成功，可以再点一次「导入」`
           : '设置没有保存成功，可以再点一次「导入」',
       )
+    if (patch && !(await update(patch, { quiet: true }))) throw settingsFailed()
+    if (systemApi && anonymousUsage !== undefined) {
+      try {
+        setSystemState(await systemApi.setPrivacyPreference('anonymousUsage', anonymousUsage))
+      } catch (error) {
+        // 和上面 update 一样：页顶红条说哪儿坏了，导入那句说设置没存上。
+        setSaveError(errorMessage(error))
+        throw settingsFailed()
+      }
     }
     return dataTransferImportMessage({
       fileConversations: conversations.length,
       added,
       skipped,
       signedIn: Boolean(chatTransfer),
-      settingsChanged: Boolean(patch),
+      settingsChanged: Boolean(patch) || anonymousUsage !== undefined,
     })
   }
   const importDone = (message: string | null) => {
@@ -601,24 +612,29 @@ export function SettingsPage({
       },
     )
   // 恢复默认外观：主题回到跟随系统、关掉高对比度，缩放、大字、减少动画回到装好时的样子。
+  // 大字也按这台电脑装好时的样子：Windows 文本大小调大了的，装好时 D81 替他开着，恢复后也开着（X-2）。
   // 显卡加速不算外观，改了要重开软件，这里不动它。
+  // 缩放、大字、减少动画存在设置文件里，先存，不等系统界面设置：那份读不出来（深查 DM-3，文件坏了）时
+  // 原来第一步就报「系统设置尚未准备好。」，后面三样一样都没恢复（X-8）。系统界面设置没读到时只跳过
+  // 主题和高对比度两项，同这一页的高对比度开关和主题「跟随系统」：没读到就点不了。
   const restoreAppearance = () =>
     void operation.execute(
       'restore-appearance',
       async () => {
-        if (systemApi) {
-          setSystemState(await systemApi.setThemePreference('system'))
-          setSystemState(await systemApi.setHighContrast(false))
-        }
-        return update(
+        const saved = await update(
           {
             uiScale: 'auto',
-            largeText: false,
+            largeText: resource.data?.capabilities.largeTextByDefault === true,
             reducedMotion: false,
             ...(systemApi ? {} : { theme: 'light' as const }),
           },
           { quiet: true },
         )
+        if (systemApi && systemState) {
+          setSystemState(await systemApi.setThemePreference('system'))
+          setSystemState(await systemApi.setHighContrast(false))
+        }
+        return saved
       },
       (saved) => (saved ? '已恢复默认外观' : null),
     )

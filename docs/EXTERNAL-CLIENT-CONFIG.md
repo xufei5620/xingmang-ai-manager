@@ -1,12 +1,12 @@
 # 外部客户端安装、配置与打开
 
-实现与验证日期：2026-09-17；WorkBuddy 安装恢复和桌面配置契约更新于 2026-09-18，Claude Desktop 本地第三方配置更新于 2026-09-19。默认开发和生产构建均使用 v2 界面。
+实现与验证日期：2026-09-17；WorkBuddy 安装恢复和桌面配置契约更新于 2026-09-18，Claude Desktop 本地第三方配置更新于 2026-09-19；「入口与操作」和「安装与启动」的安装表 2026-11-12 照代码重核。默认开发和生产构建均使用 v2 界面。
 
 ## 入口与操作
 
-首页将 **WorkBuddy、Claude Desktop、OpenCode** 作为工具行，与已有 CLI 和 Codex 桌面端一起分入“你的工具 / 还可以装”。工具行主按钮按实际状态显示“安装 → 配置 → 打开”，安装期间显示进度，检测失败显示“重新检测”。已安装的行保留配置入口和打开菜单。Codex 的“非 GPT 模型”入口位于工具行右侧更多菜单中。
+首页「工具」区按厂商把 **WorkBuddy、Claude Desktop、OpenCode** 和命令行工具、Codex 桌面端排在同一组卡片里（`src/renderer-v2/features/tools/Home.tsx`）。卡片主按钮按实际状态显示「安装 → 确认连接 → 打开」（Mac 上的 WorkBuddy 没装时是「安装指南」，Windows 上一键装不了的是「去官网下载」），安装期间显示进度，检测失败显示「重新检测」。已安装的卡片在「…」菜单里留着「配置…」（主按钮已是「确认连接」时换成「打开」）。Codex 卡片「…」菜单里的「换用别家模型…」是原来的非 GPT 模型入口。
 
-首次使用未安装的客户端时，先点击“安装”；安装完成并重新检测后，再从同一行点击“配置”。保存配置会刷新工具状态；完成后返回工具行点击“打开”。已有其他来源配置的客户端保留可打开状态，连接星芒使用该行“配置”按钮。
+首次使用未安装的客户端时，先点击「安装」；安装完成并重新检测后，再从同一张卡片点击「确认连接」打开配置弹窗。保存配置会刷新工具状态；完成后回到卡片点击「打开」。已有其他来源配置的客户端保留可打开状态，要连接星芒就用「…」菜单里的「配置…」。
 
 外部客户端配置步骤：
 
@@ -47,9 +47,9 @@ Claude Desktop 为什么不查清单：它每次启动、每次点「Check again
 
 | 平台 | 一键安装 | 检测与打开 |
 | --- | --- | --- |
-| Windows x64 | 系统 winget 精确安装 `Anthropic.Claude`、`SST.OpenCodeDesktop`，用户级、静默执行；WorkBuddy 不一键安装，按钮「去官网下载」打开 `https://www.workbuddy.ai/` | 读取安装记录和版本，验证可信文件与官方签名；Claude 商店版识别 AppX 身份，通过已注册 AUMID 打开 |
+| Windows x64 | 系统 winget 精确安装 `Anthropic.Claude`、`SST.OpenCodeDesktop`，用户级、静默执行。Claude Desktop 先从星芒存储桶下同一个官方离线安装包（MSIX），没装上再走 winget，winget 没有或没装上时从 Claude 官网下离线 MSIX（`claude-desktop-msix-installer.ts`）；几路都没装上时错误框给「下载离线安装包」和「去 Claude 官网」（D64，`claude-desktop-install-failure.ts`）。OpenCode 没有 winget 时按钮是「去官网下载」。WorkBuddy 不一键安装，按钮「去官网下载」打开 `https://www.workbuddy.ai/` | 读取安装记录和版本，验证可信文件与官方签名；Claude 商店版识别 AppX 身份，通过已注册 AUMID 打开 |
 | Windows arm64 | Claude Desktop 与 OpenCode；WorkBuddy 当前 manifest 没有 arm64 安装项 | 与 Windows x64 相同，按实际安装状态显示能力 |
-| macOS | 当前未实现，需从官网下载并将应用移入 Applications | 检测 `/Applications` 与用户 Applications 内的官方应用、bundle ID 和系统签名评估，通过 LaunchServices 打开 |
+| macOS | Claude Desktop、OpenCode 一键安装：先从星芒存储桶、再从官方发布地址下官方包，只装核过 Team ID、Developer ID 签名与公证（Gatekeeper）的原版，放进 `/Applications`（不是管理员时放 `~/Applications`），见 `macos-desktop-app-installer.ts`。WorkBuddy 没有能核对的 Mac 下载地址，按钮是「安装指南」，要客户自己从官网下载并移入 Applications | 检测 `/Applications` 与用户 Applications 内的官方应用、bundle ID 和系统签名评估，通过 LaunchServices 打开 |
 
 安装通过现有队列执行，重复点击不会启动多个安装任务。过程显示“排队 / 检测 / 下载 / 安装 / 验证”状态；只有安装后重新检测到客户端才显示完成。检测 OpenCode Desktop 不会把已安装的 OpenCode CLI 误当桌面版。
 

@@ -18,6 +18,7 @@ const { EXPECTED_FUSES, describeFuseMismatches, readFuseWires } = require('./ele
 const {
   BASE_ENTITLEMENT_KEYS,
   LIBRARY_VALIDATION_EXCEPTION_KEY,
+  UNUSED_ELECTRON_USAGE_DESCRIPTION_KEYS,
   expectedEntitlementKeys,
   expectedFreeArtifactNames,
   assertAllowedEntitlements,
@@ -960,6 +961,38 @@ for (const [field, value] of [
     }), new RegExp(field))
   })
 }
+
+// SP-2: Electron's own Info.plist carries these in English; the packaging config
+// deletes them, and the bundle is where that is proven rather than assumed.
+for (const key of UNUSED_ELECTRON_USAGE_DESCRIPTION_KEYS) {
+  test(`rejects a signed free ZIP whose Info.plist still carries Electron's ${key}`, async (t) => {
+    const fixture = await createInspectableZipFixture(t, {
+      infoPlist: {
+        CFBundleIdentifier: 'com.xingmang.ai.manager',
+        CFBundleShortVersionString: '1.2.3',
+        CFBundleVersion: '1.2.3',
+        [key]: 'This app needs access to the device',
+      },
+    })
+    const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+    await assert.rejects(() => verifyZipApplication(fixture.zipPath, 'arm64', {
+      expectedCertificateSha256: certificateSha256,
+      expectedVersion: '1.2.3',
+      commandRunner: inspectableZipCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist),
+    }), new RegExp(key))
+  })
+}
+
+test('the packaged Info.plist check names exactly the microphone, camera and audio capture descriptions', () => {
+  // Bluetooth stays on purpose: Web Bluetooth reaches CoreBluetooth without
+  // passing the session permission handler, and with no description macOS
+  // would end the whole app instead of asking (electron-builder.config.cjs).
+  assert.deepEqual(UNUSED_ELECTRON_USAGE_DESCRIPTION_KEYS, [
+    'NSMicrophoneUsageDescription',
+    'NSCameraUsageDescription',
+    'NSAudioCaptureUsageDescription',
+  ])
+})
 
 test('rejects a signed free ZIP whose packaged metadata marks it as a local build', async (t) => {
   const fixture = await createInspectableZipFixture(t, { xingmangLocalBuild: true })

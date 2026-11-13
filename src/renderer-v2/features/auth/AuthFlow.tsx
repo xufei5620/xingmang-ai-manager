@@ -8,7 +8,7 @@ import { useLatestRequest } from '../../latest-request'
 import { getAuthApi, type AccountSiteId, type AuthApi } from './api'
 import { LegalDocument } from './LegalDocument'
 import { isUsernameTakenError } from './account-errors'
-import { accountSources, authFailure, authOfflineMessage, isEmail, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, passwordChangeOutcomeUnknown, registrationStatusFailure, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type AuthFailureKind, type RegistrationDraft, type RegistrationErrors } from './state'
+import { accountSources, authFailure, authOfflineMessage, isEmail, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, normalizeLoginAccount, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, passwordChangeOutcomeUnknown, registrationStatusFailure, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type AuthFailureKind, type RegistrationDraft, type RegistrationErrors } from './state'
 import { useCooldown } from './useCooldown'
 import './auth.css'
 
@@ -219,7 +219,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     setMode(next); setError(''); setMessage(''); setFailure(null); setBrowserAuthentication(false); setFieldErrors({}); leaveTwoFactor(); clearRecoveredPassword()
     if (next === 'register') { setSiteId('solov'); setPassword(''); setRemember(false) }
     if (nextIdentifier !== undefined) { setIdentifier(nextIdentifier); setPassword(''); loginTouched.current = true }
-    if (next === 'recovery') { setRecoveryStep(1); if (isEmail(identifier)) setRecoveryEmail(identifier) }
+    if (next === 'recovery') { setRecoveryStep(1); const email = normalizeLoginAccount(identifier); if (isEmail(email)) setRecoveryEmail(email) }
   }
   const close = () => {
     if (locked.current) { setMessage('正在处理，请稍候'); return }
@@ -238,10 +238,13 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     finally { if (current()) { locked.current = false; setBusy(false) } }
   }
   const submitLogin = () => {
-    if (!identifier.trim() || !password) { setError('请输入账号和密码'); return }
+    // 像注册那样，把邮箱里中文输入法打出来的全角＠、句号当场改在框里（F2）；用户名只去首尾空格，框里不动。
+    const account = normalizeLoginAccount(identifier)
+    if (account !== identifier.trim()) setIdentifier(account)
+    if (!account || !password) { setError('请输入账号和密码'); return }
     if (!agreed) { setError('请先同意用户协议和隐私政策'); return }
-    if (siteId === 'solov-api' && !isEmail(identifier)) { setError('历史账号请使用注册邮箱登录'); return }
-    const login = { username: identifier.trim(), password, siteId }
+    if (siteId === 'solov-api' && !isEmail(account)) { setError('历史账号请使用注册邮箱登录'); return }
+    const login = { username: account, password, siteId }
     void run('登录', async (current) => {
       let result: AccountLoginResult
       try { result = await api.login(login) }
@@ -416,22 +419,30 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     updateRegistration('agreed', true)
     submitRegistration(true)
   }
+  // 找回用的邮箱也和注册一样，全角＠、句号当场改在框里（F2）。后面几步都读改好的这一份。
+  const checkRecoveryEmail = () => {
+    const email = normalizeEmail(recoveryEmail)
+    if (email !== recoveryEmail) setRecoveryEmail(email)
+    return email
+  }
   const sendReset = () => {
     if (!source.supportsPasswordReset) return
-    if (!isEmail(recoveryEmail)) { setError('请填写注册时用的邮箱'); return }
+    const email = checkRecoveryEmail()
+    if (!isEmail(email)) { setError('请填写注册时用的邮箱'); return }
     if (resetCooldown.seconds) return
     void run('发送重置邮件', async (current) => {
-      await api.sendReset(recoveryEmail.trim(), siteId)
+      await api.sendReset(email, siteId)
       if (current()) { resetCooldown.start(); setRecoveryStep(2); setMessage('如果这个邮箱注册过，几分钟内会收到重置邮件。没收到的话，看看垃圾邮件。') }
     })
   }
   const submitReset = () => {
     if (!source.supportsPasswordReset) return
-    if (!isEmail(recoveryEmail)) { setError('请先填写有效的注册邮箱'); return }
+    const email = checkRecoveryEmail()
+    if (!isEmail(email)) { setError('请先填写有效的注册邮箱'); return }
     const parsed = parseRecoveryCode(recoveryText, source.website)
     if (!parsed.ok) { setError(parsed.error); return }
     void run('重置密码', async (current) => {
-      const result = await api.reset({ email: recoveryEmail.trim(), token: parsed.token }, siteId)
+      const result = await api.reset({ email, token: parsed.token }, siteId)
       if (current()) { clearRecoveredPassword(); setNewPassword(result.newPassword); setRecoveryStep(3); setRecoveryText('') }
     })
   }
@@ -598,7 +609,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
         {field('邮箱', 'register-email', registration.email, updateEmail, { type: 'email', autoComplete: 'email', placeholder: '常用邮箱（如 QQ 邮箱）', error: fieldErrors.email, onBlur: checkEmailOnLeave, addon: status?.emailVerificationEnabled ? <Button size="xs" onClick={sendVerification} disabled={busy || Boolean(registerCooldown.seconds)} testId="register-send-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重发` : '获取验证码'}</Button> : undefined })}
         {emailSuggestion && <p className="auth-typo" role="status" data-testid="register-email-suggestion">你是不是想填 <b>{emailSuggestion}</b>？{link('改成这个', 'register-email-fix', () => updateEmail(emailSuggestion, true))}{typoConfirmedEmail === normalizeEmail(registration.email) && ` 没填错的话，再点一次「${status?.emailVerificationEnabled ? '获取验证码' : '注册并登录'}」。`}</p>}
         <div className="auth-two-fields">{status?.emailVerificationEnabled && field('验证码', 'register-code', registration.code, (value) => updateRegistration('code', value), { autoComplete: 'one-time-code', placeholder: '邮件里的 6 位数字', mono: true, error: fieldErrors.code })}{field('用户名', 'register-user', registration.username, updateUsername, { autoComplete: 'username', placeholder: '最多 20 位', error: fieldErrors.username, maxLength: 20 })}</div>
-        {field('密码', 'register-password', registration.password, (value) => updateRegistration('password', value), { password: true, autoComplete: 'new-password', placeholder: '8 至 20 位', maxLength: 20, error: fieldErrors.password })}
+        {/* 设新密码的框不加 maxLength：粘进来的长密码会被悄悄截短，账号按截短的设好，客户拿原密码就登不上。超长的整串留在框里，交给长度规则当场说。 */}
+        {field('密码', 'register-password', registration.password, (value) => updateRegistration('password', value), { password: true, autoComplete: 'new-password', placeholder: '8 至 20 位', error: fieldErrors.password })}
         {inviteOpen ? field('邀请码', 'register-invite', registration.invite, (value) => updateRegistration('invite', value), { placeholder: '邀请码或邀请链接', error: fieldErrors.invite, optional: true })
           : <div className="auth-more">{link('有邀请码？', 'register-invite-toggle', () => { setInviteOpen(true); setFocusTarget('register-invite') })}</div>}
         {agreement(registration.agreed, (value) => updateRegistration('agreed', value))}
@@ -611,8 +623,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
         {recoveryStep === 1 && <><p className="auth-lead">填写注册时用的邮箱，我们会发一封带重置码的邮件。</p>{field('注册邮箱', 'forgot-email', recoveryEmail, setRecoveryEmail, { type: 'email', autoComplete: 'email', placeholder: 'name@example.com' })}</>}
         {recoveryStep === 2 && <>{field('重置码或邮件链接', 'forgot-token', recoveryText, setRecoveryText, { placeholder: '把邮件里的重置码或整条链接粘贴过来', autoComplete: 'off', mono: true })}<div className="auth-link-row">{link('修改邮箱', 'forgot-change-email', () => { setRecoveryStep(1); setError('') })}{link(resetCooldown.seconds ? `${resetCooldown.seconds} 秒后重发` : '重新发送', 'forgot-resend', sendReset, busy || Boolean(resetCooldown.seconds))}</div></>}
         {recoveryStep === 3 && !tempShown && <>
-          {field('新密码', 'forgot-set-password', chosen.password, (value) => updateChosen('password', value), { password: true, autoComplete: 'new-password', placeholder: '8 至 20 位', maxLength: 20, error: chosenErrors.password })}
-          {field('再输一次', 'forgot-set-confirm', chosen.confirm, (value) => updateChosen('confirm', value), { password: true, autoComplete: 'new-password', placeholder: '和上面一样', maxLength: 20, error: chosenErrors.confirm })}
+          {field('新密码', 'forgot-set-password', chosen.password, (value) => updateChosen('password', value), { password: true, autoComplete: 'new-password', placeholder: '8 至 20 位', error: chosenErrors.password })}
+          {field('再输一次', 'forgot-set-confirm', chosen.confirm, (value) => updateChosen('confirm', value), { password: true, autoComplete: 'new-password', placeholder: '和上面一样', error: chosenErrors.confirm })}
           {sessionOnly ? <p className="auth-hint" data-testid="forgot-session-only">{sessionOnlyLoginNotice}</p> : rememberBox('forgot-remember')}
         </>}
         {recoveryStep === 3 && tempShown && <><div className="auth-temp-password"><label htmlFor="forgot-new-password">临时密码</label><Input id="forgot-new-password" testId="forgot-new-password" readOnly type={reveal ? 'text' : 'password'} value={newPassword} aria-label="临时密码" mono /><Button variant="ghost" size="xs" icon={reveal ? EyeOff : Eye} onClick={() => setReveal(!reveal)} testId="forgot-show-password">{reveal ? '隐藏' : '显示'}</Button><Button variant="ghost" size="xs" icon={Copy} onClick={copyPassword} disabled={busy} testId="forgot-copy-password">复制</Button></div>{copyFallback && <p className="auth-hint">选中临时密码后使用系统复制操作，再返回登录。</p>}</>}
