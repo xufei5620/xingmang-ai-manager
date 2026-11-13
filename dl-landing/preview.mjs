@@ -14,6 +14,7 @@ const mimeTypes = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.ico': 'image/x-icon',
   '.md': 'text/markdown; charset=utf-8',
   '.exe': 'application/octet-stream',
   '.dmg': 'application/octet-stream'

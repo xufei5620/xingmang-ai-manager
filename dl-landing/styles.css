@@ -65,8 +65,7 @@ input {
   width: 44px;
   height: 44px;
   object-fit: cover;
-  border-radius: 12px;
-  background: #000;
+  border-radius: 20%;
   box-shadow: 0 0 24px rgba(126, 182, 255, 0.22);
 }
 

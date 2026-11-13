@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
 import { parse as parseYaml } from 'yaml'
@@ -49,6 +49,11 @@ const NAME_PATTERN = /^[A-Za-z0-9_-]+$/
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 const SELECTOR_PART_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const SKILL_DIRECTORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+// Claude Code caps a skill name at 64 characters, and a renamed folder stands
+// in for the name when SKILL.md declares none.
+const MAX_RENAMED_SKILL_DIRECTORY_LENGTH = 64
+// A device name is not a folder on Windows: mkdir would land on the device.
+const WINDOWS_DEVICE_NAME_PATTERN = /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/
 const MAX_SKILL_FILES = 2_000
 const MAX_SKILL_BYTES = 50 * 1024 * 1024
 const MAX_SKILL_DISCOVERY_ENTRIES = 10_000
@@ -1023,16 +1028,66 @@ export function resolveSkillImportSource(sourcePath: string): string {
   return sourceDirectory
 }
 
-/** 技能要落到的文件夹：技能目录下跟来源同名的一层，已经有了就不导。 */
+function renamedSkillDirectorySlug(value: string): string {
+  const slug = value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+/, '')
+    .slice(0, MAX_RENAMED_SKILL_DIRECTORY_LENGTH)
+    .replace(/-+$/, '')
+  return WINDOWS_DEVICE_NAME_PATTERN.test(slug) ? '' : slug
+}
+
+/**
+ * 技能文件夹名带中文、空格、括号（「写作助手」「my-skill (1)」）时落地换的名字（表单审查 F7）：
+ * 先按 SKILL.md 里写的 name，没写或转出来是空的就按文件夹名，都只留英文字母、数字和 -；
+ * 全是中文的文件夹名转不出字，用它算一个固定的短码，同一个文件夹再导一次落在同一处，
+ * 照旧报「已存在」，不同的中文文件夹也不会撞到一起。本来就合规的文件夹名原样用，不走这里。
+ */
+export function buildRenamedSkillDirectoryName(folderName: string, declaredName: unknown): string {
+  const fromDeclared = typeof declaredName === 'string' ? renamedSkillDirectorySlug(declaredName) : ''
+  if (fromDeclared) return fromDeclared
+  const fromFolder = renamedSkillDirectorySlug(folderName)
+  if (fromFolder) return fromFolder
+  return `skill-${createHash('sha256').update(folderName.normalize('NFC')).digest('hex').slice(0, 8)}`
+}
+
+function declaredSkillName(sourceDirectory: string): unknown {
+  try {
+    return frontmatter(readBoundedUtf8FileSync(
+      path.join(sourceDirectory, 'SKILL.md'),
+      MAX_SKILL_DEFINITION_BYTES,
+      'Skill SKILL.md',
+    )).name
+  } catch {
+    // 读不出 name 只是少一个起名的依据，退回按文件夹名起；复制时每个文件还会再查一遍。
+    return undefined
+  }
+}
+
+/**
+ * 技能要落到的文件夹：技能目录下跟来源同名的一层，名字不合规就换一个（见
+ * buildRenamedSkillDirectoryName），已经有了就不导。
+ */
 export function skillImportTarget(sourceDirectory: string, root: string): string {
   assertNoSymlinkComponents(root, 'Skill 受管目录')
-  const directoryName = path.basename(sourceDirectory)
+  const folderName = path.basename(sourceDirectory)
+  let directoryName = folderName
+  let label = folderName
+  if (!SKILL_DIRECTORY_PATTERN.test(folderName)) {
+    const declaredName = declaredSkillName(sourceDirectory)
+    directoryName = buildRenamedSkillDirectoryName(folderName, declaredName)
+    // 列表里技能显示的是 SKILL.md 的 name，没写才显示文件夹名；「已存在」说的跟列表上的对得上。
+    label = typeof declaredName === 'string' && declaredName.trim() ? declaredName.trim() : directoryName
+  }
   if (!SKILL_DIRECTORY_PATTERN.test(directoryName)) throw new Error('Skill 目录名包含不支持的字符')
   const target = path.resolve(root, directoryName)
   if (!isWithin(root, target) || normalizedPathKey(root) === normalizedPathKey(target)) {
     throw new Error('Skill 目标路径越界')
   }
-  if (fs.existsSync(target)) throw new Error(`Skill 已存在：${directoryName}`)
+  if (fs.existsSync(target)) throw new Error(`Skill 已存在：${label}`)
   return target
 }
 

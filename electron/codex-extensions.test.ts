@@ -5,6 +5,7 @@ import * as TOML from '@iarna/toml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError } from './command-runner'
 import {
+  buildRenamedSkillDirectoryName,
   CodexExtensionService,
   resolveCodexCommand,
   type CodexInvocationOptions,
@@ -1157,6 +1158,70 @@ describe('Skill discovery and managed mutations', () => {
     const target = path.join(home, '.agents', 'skills', 'nested-skill')
     expect(fs.readFileSync(path.join(target, 'scripts', 'deep', 'run.txt'), 'utf8')).toBe('resource-content')
     expect(fs.statSync(path.join(target, 'empty')).isDirectory()).toBe(true)
+  })
+
+  it('renames a folder name the skills folder cannot hold to letters, digits and hyphens', () => {
+    expect(buildRenamedSkillDirectoryName('写作助手', 'writing-helper')).toBe('writing-helper')
+    expect(buildRenamedSkillDirectoryName('my-skill (1)', undefined)).toBe('my-skill-1')
+    expect(buildRenamedSkillDirectoryName('My Skill (1)', 'Alpha Skill')).toBe('alpha-skill')
+    // A Chinese name in SKILL.md yields nothing, so the folder name is used instead.
+    expect(buildRenamedSkillDirectoryName('Report 报告 (2)', '报告助手')).toBe('report-2')
+    expect(buildRenamedSkillDirectoryName('ｍｙ　ｓｋｉｌｌ', undefined)).toBe('my-skill')
+    expect(buildRenamedSkillDirectoryName('café notes', 42)).toBe('cafe-notes')
+    expect(buildRenamedSkillDirectoryName('x'.repeat(80) + ' y', undefined)).toBe('x'.repeat(64))
+    expect(buildRenamedSkillDirectoryName('a'.repeat(63) + ' b', undefined)).toBe('a'.repeat(63))
+    // A device name is no folder on Windows, so it falls through to the next source.
+    expect(buildRenamedSkillDirectoryName('con (copy)', 'CON')).toBe('con-copy')
+    expect(buildRenamedSkillDirectoryName('写作助手', undefined)).toMatch(/^skill-[0-9a-f]{8}$/)
+    expect(buildRenamedSkillDirectoryName('写作助手', undefined)).toBe(buildRenamedSkillDirectoryName('写作助手', ''))
+    expect(buildRenamedSkillDirectoryName('写作助手', undefined)).not.toBe(buildRenamedSkillDirectoryName('翻译助手', undefined))
+    // The same Chinese folder name as macOS may spell it (decomposed) lands in the same place.
+    expect(buildRenamedSkillDirectoryName('ポーズ', undefined)).toBe(buildRenamedSkillDirectoryName('ポーズ'.normalize('NFD'), undefined))
+  })
+
+  it('imports a skill folder named in Chinese, with spaces or brackets, under a renamed folder', async () => {
+    const home = temporaryDirectory()
+    const sourceRoot = temporaryDirectory()
+    const named = path.join(sourceRoot, '写作助手')
+    const copied = path.join(sourceRoot, 'my-skill (1)')
+    const unnamed = path.join(sourceRoot, '翻译助手')
+    write(path.join(named, 'SKILL.md'), '---\nname: writing-helper\ndescription: 写作\n---\n')
+    write(path.join(named, 'references', '范文.md'), '范文内容')
+    write(path.join(copied, 'SKILL.md'), '---\ndescription: copy\n---\n')
+    write(path.join(unnamed, 'SKILL.md'), '没有 frontmatter 的技能\n')
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+    const skillsRoot = path.join(home, '.agents', 'skills')
+
+    await service.importSkill({ sourcePath: named })
+    await service.importSkill({ sourcePath: path.join(copied, 'SKILL.md') })
+    const skills = await service.importSkill({ sourcePath: unnamed })
+
+    expect(fs.readFileSync(path.join(skillsRoot, 'writing-helper', 'references', '范文.md'), 'utf8')).toBe('范文内容')
+    expect(fs.existsSync(path.join(skillsRoot, 'my-skill-1', 'SKILL.md'))).toBe(true)
+    const fallback = buildRenamedSkillDirectoryName('翻译助手', undefined)
+    expect(fs.readFileSync(path.join(skillsRoot, fallback, 'SKILL.md'), 'utf8')).toBe('没有 frontmatter 的技能\n')
+    expect(fs.readdirSync(skillsRoot).sort()).toEqual([fallback, 'my-skill-1', 'writing-helper'].sort())
+    expect(skills.map((skill) => skill.name).sort()).toEqual([fallback, 'my-skill-1', 'writing-helper'].sort())
+    // 源文件夹原样留着，没被改名。
+    expect(fs.existsSync(path.join(named, 'SKILL.md'))).toBe(true)
+
+    // 再导一次同一个文件夹照旧说已经有了，说的是列表上看得到的名字。
+    await expect(service.importSkill({ sourcePath: named })).rejects.toThrow('Skill 已存在：writing-helper')
+    await expect(service.importSkill({ sourcePath: unnamed })).rejects.toThrow(`Skill 已存在：${fallback}`)
+  })
+
+  it('still refuses a renamed skill that is already in the skills folder, keeping the one there', async () => {
+    const home = temporaryDirectory()
+    const sourceRoot = temporaryDirectory()
+    const source = path.join(sourceRoot, 'my-skill (1)')
+    const existing = path.join(home, '.agents', 'skills', 'my-skill', 'SKILL.md')
+    write(path.join(source, 'SKILL.md'), '---\nname: my-skill\ndescription: downloaded again\n---\n')
+    write(existing, '---\nname: my-skill\ndescription: mine\n---\n')
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+
+    await expect(service.importSkill({ sourcePath: source })).rejects.toThrow('Skill 已存在：my-skill')
+    expect(fs.readFileSync(existing, 'utf8')).toContain('mine')
+    expect(fs.readdirSync(path.join(home, '.agents', 'skills'))).toEqual(['my-skill'])
   })
 
   it('imports user skills and moves uninstall targets into application trash', async () => {

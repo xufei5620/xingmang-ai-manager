@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildLaunchCommand,
+  launchCommandSplitsArguments,
   mcpHeaderLines,
   mcpNameFrom,
   mcpPasteChoiceLabel,
@@ -261,6 +262,12 @@ describe('buildLaunchCommand', () => {
     expect(buildLaunchCommand('C:\\nodejs\\npx.cmd -y pkg', [])).toEqual({ command: 'C:\\nodejs\\npx.cmd', args: ['-y', 'pkg'] })
   })
 
+  it('splits any bare program name or program file path, not only the well-known runners', () => {
+    expect(buildLaunchCommand('my-server --stdio', [])).toEqual({ command: 'my-server', args: ['--stdio'] })
+    expect(buildLaunchCommand('C:\\tools\\server.exe --stdio', [])).toEqual({ command: 'C:\\tools\\server.exe', args: ['--stdio'] })
+    expect(buildLaunchCommand('D:\\bin\\start.BAT --port 3', [])).toEqual({ command: 'D:\\bin\\start.BAT', args: ['--port', '3'] })
+  })
+
   it('takes a quoted program as one piece and drops the quotes, even with nothing after it', () => {
     expect(buildLaunchCommand('"C:\\Program Files\\nodejs\\node.exe" server.js', [])).toEqual({
       command: 'C:\\Program Files\\nodejs\\node.exe', args: ['server.js'],
@@ -289,7 +296,25 @@ describe('buildLaunchCommand', () => {
     // 路径里的单引号（O'Brien）不当成引号拆。
     expect(buildLaunchCommand("C:\\Users\\O'Brien\\tool.exe", [])).toEqual({ command: "C:\\Users\\O'Brien\\tool.exe", args: [] })
     expect(buildLaunchCommand('npx -y "oops', [])).toEqual({ command: 'npx -y "oops', args: [] })
-    expect(buildLaunchCommand('my-server --stdio', [])).toEqual({ command: 'my-server --stdio', args: [] })
+    // 没加引号、第一段又不是程序文件的路径：拆不准，照原样交。
+    expect(buildLaunchCommand('/usr/local/bin/my-server --stdio', [])).toEqual({ command: '/usr/local/bin/my-server --stdio', args: [] })
+  })
+})
+
+describe('launchCommandSplitsArguments', () => {
+  it('is true only when the launch box will hand some arguments over separately', () => {
+    expect(launchCommandSplitsArguments('npx -y @amap/amap-maps-mcp-server')).toBe(true)
+    expect(launchCommandSplitsArguments('"C:\\Program Files\\My Tool\\tool.exe" --stdio')).toBe(true)
+    expect(launchCommandSplitsArguments('my-server --stdio')).toBe(true)
+  })
+
+  it('stays false for a single program, a quoted path alone, an unquoted path with spaces and unreadable text', () => {
+    expect(launchCommandSplitsArguments('')).toBe(false)
+    expect(launchCommandSplitsArguments('  npx  ')).toBe(false)
+    expect(launchCommandSplitsArguments('"C:\\Program Files\\nodejs\\node.exe"')).toBe(false)
+    expect(launchCommandSplitsArguments('C:\\Program Files\\nodejs\\node.exe')).toBe(false)
+    expect(launchCommandSplitsArguments('D:\\node tools\\server.exe')).toBe(false)
+    expect(launchCommandSplitsArguments('npx -y "oops')).toBe(false)
   })
 })
 

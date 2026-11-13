@@ -2652,6 +2652,25 @@ describe('Claude Code and Grok CLI skills managed in the app', () => {
     expect(vi.mocked(invoke).mock.calls.some(([, argv]) => argv.includes('skills'))).toBe(false)
   })
 
+  it('imports a skill folder named in Chinese into Claude Code and Grok under a renamed folder', async () => {
+    const home = temporaryDirectory()
+    const { service } = managedService(home)
+    const source = path.join(temporaryDirectory(), '写作助手 (1)')
+    write(path.join(source, 'SKILL.md'), '---\nname: writing-helper\ndescription: 写作\n---\n')
+
+    for (const provider of ['claude', 'grok'] as const) {
+      const snapshot = await service.mutate({ provider, kind: 'skill', action: 'install', source, scope: 'user' })
+      const definition = path.resolve(home, `.${provider}`, 'skills', 'writing-helper', 'SKILL.md')
+      expect(fs.readFileSync(definition, 'utf8')).toContain('name: writing-helper')
+      expect(snapshot.items.find((item) => item.kind === 'skill' && item.id === definition)).toMatchObject({
+        name: 'writing-helper',
+        operations: { uninstall: true },
+      })
+      await expect(service.mutate({ provider, kind: 'skill', action: 'install', source, scope: 'user' }))
+        .rejects.toThrow('Skill 已存在：writing-helper')
+    }
+  })
+
   it('accepts the SKILL.md file itself as the import source', async () => {
     const home = temporaryDirectory()
     const { service } = managedService(home)
