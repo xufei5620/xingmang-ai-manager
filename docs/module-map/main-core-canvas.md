@@ -15,6 +15,7 @@
 - `app-protocol.ts` — 主窗口 `xingmang://` 回包的安全策略响应头：和 `index.html` 的 `<meta>` 一字不差（测试钉住），页面本身规矩不变；视频剪辑拼片的后台线程只认自己脚本的响应头、不继承 `<meta>`，靠它才连不了外站（#1406 P3-2）。只能在协议回包里带，`webRequest.onHeadersReceived` 注入的头到不了后台线程（Electron 43 实测）
 - `input-guards.ts` — 最基础的输入检查（`isRecord`、`isStringArray`、`filterStrings`、`isPromiseLike`），零依赖、渲染层也能值导入（I6）；只判断不出报错文案。主进程和 renderer-v2 各文件自己那份 `isRecord` 已全部换成这一份（#1071 第 3 条、#1070），只有要和画布逐字一样的 `drama-parse.ts` 还留着；`codex-config-toml.ts` 的 `isTomlTable` 在它上面再排除 Date
 - `pasted-api-key.ts` — 客户自己粘贴的密钥先去掉夹着的空格、零宽字符（`normalizePastedApiKey`，深查 J7）：页面 `manualKeyIssue` 查格式，主进程 `models:list`、`config:save`、`config:configure-external-tool` 检测和保存前都过这一遍；Tab、换行这类控制字符不去，照旧整串拒掉（`fetchAvailableModels`、`parseExternalClientConfigRequest`）。零依赖、渲染层也能值导入（I6）
+- `email-verification-code.ts` — 注册邮件里的验证码先去掉空白和零宽字符、全角字母数字换半角，整串是 6 位十六进制时转小写（`normalizeEmailVerificationCode`，表单 F8）：new-api 的验证码是小写十六进制、一字不差地比。renderer-v2 注册框提交前、主进程 `parseAccountRegisterInput` 收下时都过这一遍。零依赖、渲染层也能值导入（I6）
 
 ## 命令执行与安全边界（本项目真正的复杂度在这里）
 
