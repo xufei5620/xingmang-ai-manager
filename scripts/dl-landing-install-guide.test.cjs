@@ -70,3 +70,35 @@ test('the download buttons open the same tutorial download page as the app', () 
   assert.doesNotMatch(app, /feishu|larksuite/i)
   assert.doesNotMatch(html, /feishu|larksuite/i)
 })
+
+function readIcoEntry(ico, size) {
+  // ICONDIR (6 bytes) then one 16-byte ICONDIRENTRY per image; a width byte of 0 means 256.
+  const count = ico.readUInt16LE(4)
+  for (let index = 0; index < count; index += 1) {
+    const entry = 6 + index * 16
+    if ((ico[entry] || 256) !== size) continue
+    const length = ico.readUInt32LE(entry + 8)
+    const offset = ico.readUInt32LE(entry + 12)
+    return ico.subarray(offset, offset + length)
+  }
+  return null
+}
+
+test('the download page shows the same mark customers see once the app is installed', () => {
+  // IC-11：下载页原来是老版发紫光的四角星，装好打开却是 v3 深蓝金色星芒，第一次来的客户会怀疑是不是同一家。
+  // 页面上的标和标签页图标都从 Windows 安装包用的那份 favicon.ico 原样取，品牌素材换了这里会红。
+  const appIcon = fs.readFileSync(path.join(root, 'assets', 'brand', 'v3', 'favicon.ico'))
+  const tile = readIcoEntry(appIcon, 256)
+  assert.ok(tile, 'assets/brand/v3/favicon.ico no longer carries a 256px image')
+  assert.ok(fs.readFileSync(path.join(root, 'dl-landing', 'favicon.ico')).equals(appIcon), 'dl-landing/favicon.ico drifted from the app icon')
+  assert.ok(fs.readFileSync(path.join(root, 'dl-landing', 'logo.png')).equals(tile), 'dl-landing/logo.png drifted from the app icon')
+})
+
+test('the download page asks for the new mark rather than a cached old one', () => {
+  // 新标沿用了 /logo.png 这个文件名，不带版本参数的话，CDN 和浏览器会接着给老客户看缓存里的紫光标。
+  const logos = [...html.matchAll(/<img class="[^"]*\b(?:brand|card)-logo\b[^"]*" src="([^"]+)"/g)].map((match) => match[1])
+  assert.equal(logos.length, 4)
+  for (const source of logos) assert.match(source, /^\/logo\.png\?v=[\w.-]+$/)
+  assert.match(html, /<link rel="icon" href="\/favicon\.ico\?v=[\w.-]+"/)
+  assert.doesNotMatch(html, /src="\/logo\.png"|href="\/logo\.png"/)
+})
