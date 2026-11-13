@@ -4,7 +4,7 @@ import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
 import { IMAGE_GROUP_MODEL_ORDER } from '../../../../electron/ai-chat-protocol'
-import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatAssetSaveErrorMessage, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH } from './state'
+import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatAssetSaveErrorMessage, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH, customImageSizeRule, imageSizeFits } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -392,6 +392,30 @@ describe('v2 chat request transitions', () => {
     expect(inspectModel('gpt-image-1.5')).toMatchObject({ available: false, hidden: true })
     expect(inspectModel('gpt-image-2')).toMatchObject({ kind: 'image', resolutions: ['1K', '2K', '4K'] })
     expect(() => validateImageRequest({ model: 'gpt-image-2', prompt: 'a scene', size: '1011x1000' })).toThrow()
+  })
+  // 表单 F5：数字框的 min/max/step 只管上下箭头，手打的 1000、删空的宽度都能交出去，发之前按型号说清规矩。
+  it('names the size rule of the model when a custom size breaks it, in the same words as the canvas', () => {
+    const image = (model: string, size: string): Pick<ChatSettings, 'mode' | 'model' | 'size'> => ({ mode: 'image', model, size })
+    const gptRule = '这个型号的宽和高都要是 16 的倍数，并在 256 到 4096 之间'
+    for (const size of ['1000x1000', 'x1024', '1024x', '240x1024', '4112x1024', '1e3x1024', '1024.5x1024', 'auto']) expect(customImageSizeRule(image('gpt-image-2', size))).toBe(gptRule)
+    for (const size of ['1024x1024', '1008x1024', '256x4096']) expect(customImageSizeRule(image('gpt-image-2', size))).toBe('')
+    // 即梦上限是 1024，句子一样、数字跟着型号表走。
+    expect(customImageSizeRule(image('jimeng_high_aes_general_v21_L', '2048x1024'))).toBe('这个型号的宽和高都要是 16 的倍数，并在 256 到 1024 之间')
+    // 只能从菜单里挑尺寸的型号、文字对话、还没选模型的，都不说。
+    expect(customImageSizeRule(image('gemini-3.1-flash-image', '1000x1000'))).toBe('')
+    expect(customImageSizeRule({ mode: 'text', model: 'gpt-image-2', size: '1000x1000' })).toBe('')
+    expect(customImageSizeRule(image('', '1000x1000'))).toBe('')
+    // 说合规的尺寸，主进程那套也收；说不合规的，主进程也拒。
+    for (const size of ['1000x1000', 'x1024', '1008x1024', '256x4096', '4112x1024']) {
+      const accepted = (() => { try { validateImageRequest({ model: 'gpt-image-2', prompt: 'a scene', size }); return true } catch { return false } })()
+      expect(accepted).toBe(customImageSizeRule(image('gpt-image-2', size)) === '')
+    }
+  })
+  it('checks a size against the allow-list or divisible rule of the model', () => {
+    expect(imageSizeFits('1024x1024', { kind: 'allow-list', values: ['1024x1024'], default: '1024x1024' })).toBe(true)
+    expect(imageSizeFits('1008x1024', { kind: 'allow-list', values: ['1024x1024'], default: '1024x1024' })).toBe(false)
+    expect(imageSizeFits('1008x1024', { kind: 'divisible', divisor: 16, min: 256, max: 4096, default: '1024x1024' })).toBe(true)
+    expect(imageSizeFits('1000x1024', { kind: 'divisible', divisor: 16, min: 256, max: 4096, default: '1024x1024' })).toBe(false)
   })
 })
 

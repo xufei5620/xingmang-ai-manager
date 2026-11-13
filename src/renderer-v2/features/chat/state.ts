@@ -1,4 +1,4 @@
-import { AI_CHAT_PHRASE_LIMITS, AI_CHAT_TEXT_FILE_LIMITS, IMAGE_SKILL_GROUP_NAMES } from '../../../../electron/ai-chat-protocol'
+import { AI_CHAT_PHRASE_LIMITS, AI_CHAT_TEXT_FILE_LIMITS, IMAGE_SKILL_GROUP_NAMES, describeImageSizePolicy, type ImageSizePolicy } from '../../../../electron/ai-chat-protocol'
 import { resolveMissingAiAssetMessage } from '../../../../electron/ai-asset-missing'
 import { resolveNewestModelOfFamily } from '../../../../electron/cli-model-defaults'
 import { matchNetworkFailureMessage, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
@@ -299,6 +299,22 @@ export function removeDraftFile(conversation: Conversation, index: number): Conv
 }
 
 export const imageModeFilesMessage = '生成图片时带不了文件，请先把文件去掉，或者换回「文本对话」'
+/** 这个尺寸合不合型号的规矩，跟主进程 validateImageSize 同一套：按倍数算的型号，宽和高都要是整数倍、在上下限之间。 */
+export function imageSizeFits(size: string, policy: ImageSizePolicy): boolean {
+  if (policy.kind === 'allow-list') return policy.values.includes(size)
+  return /^\d+x\d+$/.test(size) && size.split('x').every((part) => { const value = Number(part); return value >= policy.min && value <= policy.max && value % policy.divisor === 0 })
+}
+/**
+ * 自定义尺寸填得不合规矩时，尺寸框下面说的那句（跟画布同一句），合规就是空串（表单 F5）。
+ * 数字框的 min、max、step 只管上下箭头，手打的 1000、删空的宽度照样能交出去，所以发送前要按型号再看一遍。
+ * 只能从菜单里挑尺寸的型号挑不出不合规的，不管。
+ */
+export function customImageSizeRule(settings: Pick<ChatSettings, 'mode' | 'model' | 'size'>): string {
+  if (settings.mode !== 'image' || !settings.model) return ''
+  const capability = inspectModel(settings.model)
+  if (capability.kind !== 'image' || capability.sizePolicy.kind !== 'divisible') return ''
+  return imageSizeFits(settings.size, capability.sizePolicy) ? '' : describeImageSizePolicy(capability.sizePolicy)
+}
 /** 只读了开头的文件，加上以后在横幅上说一声，免得客户以为 AI 看了全文。 */
 export function fileTruncationNotice(files: readonly AiChatTextFile[]): string {
   return files.filter((file) => file.truncated).map((file) => `「${file.name}」太长，只读了前 ${file.text.length.toLocaleString('zh-CN')} 个字。`).join('')

@@ -88,6 +88,27 @@ describe('AI image service', () => {
     expect(JSON.stringify(result)).not.toContain('sk-secret')
   })
 
+  // 聊天页自定义尺寸填错了（表单 F5）：界面拦在前面，主进程按型号表再核一次，不解析密钥、不发请求，免得被中转取整后照样扣钱。
+  it('rejects a size the model cannot draw before resolving a key or sending anything', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, credentials, assets } = setup(fetchImpl)
+    for (const size of ['1000x1000', 'x1024', '4112x1024']) {
+      await expect(service.generate(4, {
+        requestId: `bad-${size}`, group: '生图分组', model: 'gpt-image-2', prompt: '一张图', size,
+      })).rejects.toMatchObject({ code: 'invalid-image-size' })
+      await expect(service.edit(4, {
+        requestId: `bad-edit-${size}`, group: '生图分组', model: 'gpt-image-2', prompt: '改成夜景',
+        sourceAssetIds: ['a'.repeat(43)], expectedUserId: 7, size,
+      })).rejects.toMatchObject({ code: 'invalid-image-size' })
+    }
+    await expect(service.generate(4, {
+      requestId: 'bad-jimeng', group: '生图分组', model: 'jimeng_high_aes_general_v21_L', prompt: '一张图', size: '2048x1024',
+    })).rejects.toMatchObject({ code: 'invalid-image-size' })
+    expect(credentials.resolveCredential).not.toHaveBeenCalled()
+    expect(assets.readOwned).not.toHaveBeenCalled()
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
   it('uses the same upstream-compatible request shape for GPT Image 1', async () => {
     const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
     const { service } = setup(fetchImpl)

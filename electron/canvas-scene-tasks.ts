@@ -18,7 +18,7 @@ import type {
   CanvasRunGraphNode,
   CanvasStoryboardTask,
 } from './canvas-run-contract'
-import { buildImageGenerationRequest, resolveAiModelCapability } from './ai-chat-protocol'
+import { buildImageGenerationRequest, describeImageSizePolicy, resolveAiModelCapability } from './ai-chat-protocol'
 import { assertCanvasTextImageInput } from './canvas-text-image-input'
 import { isRecord } from './input-guards'
 
@@ -572,9 +572,7 @@ export async function assertCanvasSceneSourceImages(
 function sizeRule(model: string): string {
   const capability = resolveAiModelCapability(model)
   if (capability.kind !== 'image') return '这个型号不能出图'
-  const policy = capability.sizePolicy
-  if (policy.kind === 'divisible') return `这个型号的宽和高都要是 ${policy.divisor} 的倍数，并在 ${policy.min} 到 ${policy.max} 之间`
-  return policy.values.length === 1 && policy.values[0] === 'auto' ? '这个型号由服务决定尺寸，不能指定' : `这个型号只支持这几种尺寸：${policy.values.join('、')}`
+  return describeImageSizePolicy(capability.sizePolicy)
 }
 
 /**

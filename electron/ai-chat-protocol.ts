@@ -785,6 +785,12 @@ function parseImageDimensions(size: string): { width: number; height: number } |
   return { width: Number(match[1]), height: Number(match[2]) }
 }
 
+// 尺寸不合规时说给客户听的规矩：画布派生尺寸出不来时接在原因后面，聊天页自定义尺寸框下面也是这一句（表单 F5）。
+export function describeImageSizePolicy(policy: ImageSizePolicy): string {
+  if (policy.kind === 'divisible') return `这个型号的宽和高都要是 ${policy.divisor} 的倍数，并在 ${policy.min} 到 ${policy.max} 之间`
+  return policy.values.length === 1 && policy.values[0] === 'auto' ? '这个型号由服务决定尺寸，不能指定' : `这个型号只支持这几种尺寸：${policy.values.join('、')}`
+}
+
 export function validateImageSize(size: string, capability: ImageModelCapability): string {
   if (typeof size !== 'string') {
     throw new AiChatProtocolError('invalid-image-size', 'image size must be a string')
