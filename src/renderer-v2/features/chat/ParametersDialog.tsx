@@ -20,7 +20,8 @@ export function ParametersDialog({ settings, onApply, onClose }: { settings: Cha
     setErrors(result.errors)
     if (!Object.keys(result.errors).length) onApply({ parameters: result.parameters, systemPrompt })
   }
-  const reset = () => { setDraft(createParameterDraft({})); setSystemPrompt(''); setErrors({}) }
+  // 「恢复默认」只管滑块和两个数字框；系统提示词是客户自己写的字，要清自己删（设置 X-5）。
+  const reset = () => { setDraft(createParameterDraft({})); setErrors({}) }
   return <Dialog open title="参数设置" width={480} dirty={dirty} onClose={onClose} testId="chat-parameters" footer={<><Button variant="ghost" icon={RotateCcw} onClick={reset} testId="chat-parameters-reset">恢复默认</Button><span className="chat-parameter-gap" /><Button onClick={onClose} testId="chat-parameters-cancel">取消</Button><Button variant="primary" icon={Check} onClick={apply} testId="chat-parameters-apply">应用</Button></>}>
     <div className="chat-parameters">
       <Textarea label="系统提示词" value={systemPrompt} maxLength={40000} rows={3} placeholder="比如：你是一位耐心的编程老师，回答尽量简短" onChange={(event) => setSystemPrompt(event.target.value)} testId="chat-system-prompt" />
