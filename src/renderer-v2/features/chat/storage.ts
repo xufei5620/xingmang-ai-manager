@@ -625,7 +625,9 @@ export function mergeImportedPhrases(present: readonly string[] | undefined, imp
 
 export function exportableConversations(state: ChatWorkspace): unknown[] {
   return state.conversations.map((conversation) => {
-    const persisted = persistedConversation(conversation)
+    // 输入框里加了还没发的图片也只在这台电脑上：带过去是一个空白方块，点发送还会说图片找不到了（设置 X-6）。
+    // 打了的字和加的文字文件照带。
+    const { draftImages: _localOnly, ...persisted } = persistedConversation(conversation)
     return { ...persisted, messages: persisted.messages.map(portableMessage) }
   })
 }
@@ -635,7 +637,8 @@ export function exportableConversations(state: ChatWorkspace): unknown[] {
 export function parseImportedConversations(values: unknown[]): Conversation[] {
   if (values.length > MAX_CONVERSATIONS) throw new ChatStorageError(transferInvalidMessage)
   try {
-    const conversations = values.map(readConversation).map((conversation) => ({
+    // 0.2.24 以前导出的文件里还带着输入框里没发的图片，到这台电脑上打不开，导入时也去掉（设置 X-6）。
+    const conversations = values.map(readConversation).map(({ draftImages: _localOnly, ...conversation }) => ({
       ...conversation,
       messages: conversation.messages.map(({ mayStillComplete: _pending, ...message }) => message),
     }))
