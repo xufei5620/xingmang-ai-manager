@@ -10735,6 +10735,23 @@ test('the chat page on screen when an import lands reads it again instead of sav
   } finally { await page.close() }
 })
 
+// 设置 X-4：先导一次、旧电脑接着聊几天再导一次，以前后来聊的一条都过不来，还说「都有了」。
+test('a second import brings over what the old computer said after the first one', async () => {
+  const page = await open('chatImport&chatImportContinued')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '导入了 1 个对话。')
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '有 1 个对话更新成了文件里的内容。')
+    await page.getByTestId('nav-chat').click()
+    await expect(page.getByTestId('chat-conversation-from-old-computer')).toContainText('2 条消息')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.chatHistory().ids), ['from-old-computer'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // D41：聊天页藏在设置页后面照样收回复。以前「导入」一点就把聊天页卸下，正在回复的那条被掐断，页面上什么也不说。
 test('importing while the chat is still replying waits for the reply instead of cutting it off', async () => {
   const page = await open('chatImport')

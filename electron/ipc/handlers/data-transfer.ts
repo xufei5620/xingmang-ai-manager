@@ -9,7 +9,7 @@ import {
   buildDataTransferFile,
   conversationFileName,
   dataTransferFileName,
-  dataTransferInvalidMessage,
+  dataTransferReadFailureMessage,
   MAX_DATA_TRANSFER_BYTES,
   parseChatConversationExport,
   parseDataTransferExportInput,
@@ -79,9 +79,9 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
     let raw: string
     try {
       raw = await readBoundedUtf8File(filePath, MAX_DATA_TRANSFER_BYTES, '聊天记录与设置文件')
-    } catch {
-      // 太大、是链接、读不了：对用户都是「这不是一份能导入的文件」。
-      throw new Error(dataTransferInvalidMessage)
+    } catch (error) {
+      // 被占着、没权限单独说一句；太大、是链接照旧是「这不是一份能导入的文件」。原话挂在 cause 上进运行日志。
+      throw new Error(dataTransferReadFailureMessage(error), { cause: error })
     }
     const parsed = parseDataTransferFile(raw)
     return {

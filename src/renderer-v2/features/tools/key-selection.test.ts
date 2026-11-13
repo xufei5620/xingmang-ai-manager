@@ -57,6 +57,17 @@ describe('configuration key selection', () => {
     expect(manualKeyIssue('\u200B\u3000\u200D', true)).toBe('请粘贴你在星芒创建的密钥')
     expect(manualKeyIssue('\u200B', false)).toBe('请粘贴你在星芒创建的密钥')
   })
+  it('says a masked key is the masked one before any other format check', () => {
+    const hint = '这是打码后的密钥，请到「密钥」页点复制按钮，复制完整的那串'
+    // 星芒「密钥」页上选中复制的那串正好 sk- 开头、21 位，以前格式检查放行，服务端才回 401「无效的令牌」（J7）。
+    expect(manualKeyIssue('sk-AbCd**********WxYz', true)).toBe(hint)
+    // 历史账号的列表画的是圆点，不过 sk- 那道检查，也直说。
+    expect(manualKeyIssue('••••••••', false)).toBe(hint)
+    expect(manualKeyIssue('••••••••', true)).toBe(hint)
+    // 粘贴带的零宽字符先去掉，再认打码。
+    expect(manualKeyIssue('\u200Bsk-AbCd**********WxYz ', true)).toBe(hint)
+    expect(manualKeyIssue('sk-AbCd0123456789WxYz', true)).toBeNull()
+  })
   it('defaults to an automatic key when the local key belongs to another site', () => {
     // 「保持当前」对别的站的 Key 存不进去（主进程报「属于其他账号」），不能默认选它。
     expect(initialKeyChoice({ hasApiKey: true, matchesRelay: false } as AppConfigSummary['providers']['codex'])).toBe('automatic')

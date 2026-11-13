@@ -4,8 +4,10 @@ import {
   buildDataTransferFile,
   buildPortableSettings,
   conversationFileName,
+  dataTransferBusyMessage,
   dataTransferFileName,
   dataTransferInvalidMessage,
+  dataTransferReadFailureMessage,
   MAX_DATA_TRANSFER_BYTES,
   parseChatConversationExport,
   parseDataTransferExportInput,
@@ -66,6 +68,34 @@ describe('data transfer file', () => {
   it('asks for an update when the file comes from a newer format', () => {
     const valid = JSON.parse(buildDataTransferFile(settings(), { conversations: [] }, new Date()))
     expect(() => parseDataTransferFile(JSON.stringify({ ...valid, version: 2 }))).toThrow('更新到最新版')
+  })
+
+  it('reads a file that Notepad saved with a byte order mark', () => {
+    // X-7：老记事本「另存为 UTF-8」会在开头加 BOM，以前整份被当成坏文件。
+    const raw = buildDataTransferFile(settings({ theme: 'dark' }), { conversations: [{ id: 'c1' }] }, new Date())
+    const parsed = parseDataTransferFile(`\uFEFF${raw}`)
+    expect(parsed.settings.theme).toBe('dark')
+    expect(parsed.conversations).toEqual([{ id: 'c1' }])
+    // 只去开头那一个：中间冒出来的照旧是坏文件。
+    expect(() => parseDataTransferFile(`\uFEFF\uFEFF${raw}`)).toThrow(dataTransferInvalidMessage)
+  })
+
+  it('tells a file another program holds apart from one that cannot be imported', () => {
+    // X-7：被杀毒软件扫着、没权限读，以前也说「不是星芒导出的，或者已经损坏」。
+    for (const code of ['EBUSY', 'EPERM', 'EACCES']) {
+      expect(dataTransferReadFailureMessage(Object.assign(new Error(`${code}: open`), { code }))).toBe(dataTransferBusyMessage)
+    }
+    for (const error of [
+      new Error('聊天记录与设置文件超过 65536 KB 安全上限'),
+      new Error('聊天记录与设置文件必须是单链接普通文件'),
+      new Error('聊天记录与设置文件不能经过符号链接或目录联接'),
+      Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' }),
+      Object.assign(new Error('ELOOP: too many symbolic links'), { code: 'ELOOP' }),
+      'EBUSY',
+      null,
+    ]) {
+      expect(dataTransferReadFailureMessage(error)).toBe(dataTransferInvalidMessage)
+    }
   })
 
   it('ignores unknown settings and accepts missing ones', () => {

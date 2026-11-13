@@ -16,3 +16,5 @@
 Windows 安装、卸载向导左图：`build/installerSidebar.bmp`（164×314、24 位 BMP）把 `symbol-dark.svg` 和 `wordmark-dark.svg` 原样画在应用图标同一块深蓝（#0B1F3B）上，比例照闪屏。重新生成：`node scripts/generate-installer-sidebar.mjs`，同样需要 Playwright Chromium。
 
 Windows 画布项目文件（`.xingcanvas`）的图标：`build/canvas-project.ico`，白纸折角、右下角放 standard 母版的星芒（128px 以上 `symbol-standard.svg`，以下 `micro32-standard.svg`），不加字，16–256px 十档各画一张。只给安装程序用（`win.fileAssociations` 的 `icon`，装到安装目录的 `resources` 下），所以不放这个目录。重新生成：`node scripts/generate-canvas-project-icon.mjs`，同样需要 Playwright Chromium。
+
+下载落地页（`dl-landing/`）：`favicon.ico` 是本目录 `favicon.ico` 的原样副本，`logo.png` 是其中 256px 那张；换了本目录的 `favicon.ico` 要一起重取，`scripts/dl-landing-install-guide.test.cjs` 会核对。

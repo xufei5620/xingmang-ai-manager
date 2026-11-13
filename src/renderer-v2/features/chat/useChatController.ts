@@ -3,7 +3,7 @@ import { platformApi } from '../../platform-api'
 import { chatTextFileFullMessage } from '../../../../electron/ai-chat-protocol'
 import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase, pastedNothingMessage } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase, pastedNothingMessage, customImageSizeRule, imageSizeFits } from './state'
 import { autosaveDelay, ChatStorageError, conversationLimitMessage, createHistoryWriter, MAX_CONVERSATIONS, registerHistoryFlusher, unreadableConversationsNotice, type LoadedChatHistory } from './storage'
 import { useLatestRequest } from '../../latest-request'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
@@ -30,6 +30,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const [notice, setNotice] = useState(initial.unreadable ? unreadableConversationsNotice(initial.unreadable) : '')
   const [storageError, setStorageError] = useState(initial.warning ? `${initial.warning}。现在聊的内容不会保存，关掉软件就没了。` : '')
   const [attaching, setAttaching] = useState(false)
+  // 尺寸框下那句规矩等客户离开尺寸框、或者点了发送才露出来，免得一边打字它一边跳；填对了就收起（表单 F5）。
+  const [sizeRuleRevealed, setSizeRuleRevealed] = useState(false)
   const attachingRef = useRef(false)
   const stateRef = useRef(state)
   const offlineRef = useRef(false)
@@ -221,6 +223,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   // 页面上那条红条照旧由下一次自动保存来报。
   useEffect(() => registerHistoryFlusher(() => persist.current ? writer.save(stateRef.current) : Promise.resolve()), [writer])
   const conversation = activeConversation(state)
+  const sizeRule = customImageSizeRule(conversation.settings)
+  useEffect(() => { if (!sizeRule) setSizeRuleRevealed(false) }, [sizeRule])
   const updateActive = (change: (conversation: Conversation) => Conversation) => { const id = activeConversation(stateRef.current).id; commit((current) => changeConversation(current, id, change)) }
   const changeSettings = (patch: Partial<ChatSettings>) => updateActive((item) => ({ ...item, settings: { ...item.settings, ...patch } }))
   // 选了哪个模型，就用有它的那个分组计费（同一个模型几个分组都有时按 pickChatGroup 的次序挑）。
@@ -258,6 +262,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     const current = activeConversation(stateRef.current)
     const owner = epoch.capture()
     if (!alive.current || isGenerating(current)) return
+    // 自定义尺寸不合这个型号的规矩：不发，在尺寸框下面说清规矩。重新生成用的是那条回复当时的设置，不看这里。
+    if (!options.retryId && customImageSizeRule(current.settings)) { setSizeRuleRevealed(true); return }
     // 断网时当场说，草稿原样留在输入框里，不先挂一条等超时的消息。
     if (offlineRef.current) { offlineRetry.current = { conversationId: current.id, options }; setError(offlineSendMessage); return }
     if (!stateRef.current.conversations.some((item) => item.id === current.id) && stateRef.current.conversations.length >= MAX_CONVERSATIONS) { setError(conversationLimitMessage); return }
@@ -425,13 +431,12 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const deleteFrom = (id: string) => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => { const index = item.messages.findIndex((message) => message.id === id); return index < 0 ? item : { ...item, messages: item.messages.slice(0, index) } }) }
   // 以前的记录没读出来：这一回不往本机写，免得空记录盖掉原文件；页面上给「重新读取」。
   const historyUnreadable = Boolean(initial.warning)
-  return { site, attaching, pickImages, pasteImage, reuseImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectModel, selectMode, refreshGroups, refreshModels, refreshOnInteraction, newConversation, continueInNew, retryOfflineSend, clearAllConversations, dismissLengthNotice, openConversation, removeConversation, renameConversation: renameSavedConversation, pinConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive, pickFiles, removeFile, savePhrase, removePhrase }
+  return { site, attaching, sizeRule, sizeRuleRevealed, revealSizeRule: () => setSizeRuleRevealed(true), pickImages, pasteImage, reuseImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectModel, selectMode, refreshGroups, refreshModels, refreshOnInteraction, newConversation, continueInNew, retryOfflineSend, clearAllConversations, dismissLengthNotice, openConversation, removeConversation, renameConversation: renameSavedConversation, pinConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive, pickFiles, removeFile, savePhrase, removePhrase }
 }
 
 function normalizeModel(settings: ChatSettings): ChatSettings {
   if (!settings.model) return settings
   const capability = inspectModel(settings.model)
   if (capability.kind !== 'image') return settings
-  const validSize = capability.sizePolicy.kind === 'allow-list' ? capability.sizePolicy.values.includes(settings.size) : /^\d+x\d+$/.test(settings.size) && settings.size.split('x').every((part) => { const size = Number(part); const policy = capability.sizePolicy; return policy.kind === 'divisible' && size >= policy.min && size <= policy.max && size % policy.divisor === 0 })
-  return { ...settings, size: validSize ? settings.size : capability.sizePolicy.default, quality: capability.qualities.includes(settings.quality) ? settings.quality : capability.defaultQuality ?? 'auto', imageResolution: capability.resolutions.includes(settings.imageResolution) ? settings.imageResolution : capability.defaultResolution }
+  return { ...settings, size: imageSizeFits(settings.size, capability.sizePolicy) ? settings.size : capability.sizePolicy.default, quality: capability.qualities.includes(settings.quality) ? settings.quality : capability.defaultQuality ?? 'auto', imageResolution: capability.resolutions.includes(settings.imageResolution) ? settings.imageResolution : capability.defaultResolution }
 }

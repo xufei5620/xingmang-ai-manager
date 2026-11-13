@@ -3,6 +3,7 @@ import type { AppSettings, AppSettingsUpdate } from './app-settings'
 import type { ChatConversationExportInput, DataTransferExportInput, DataTransferImportPreview } from './ipc-contract'
 import { MAX_CHAT_HISTORY_CONVERSATIONS } from './ai-chat-history-store'
 import { AI_CHAT_PHRASE_LIMITS } from './ai-chat-protocol'
+import { withoutByteOrderMark } from './config-files-context'
 import { isRecord } from './input-guards'
 
 // 「搬到新电脑」的文件：当前账号的聊天对话 + 几项跟着人走的软件设置。刻意不放任何
@@ -17,6 +18,8 @@ export const MAX_CONVERSATION_TEXT_BYTES = 16 * 1024 * 1024
 const MAX_TITLE_LENGTH = 200
 
 export const dataTransferInvalidMessage = '这个文件不是星芒导出的，或者已经损坏，没有导入任何内容。'
+// yoyo 2026-11-13 批的字（设置 X-7）。
+export const dataTransferBusyMessage = '这个文件现在读不了，可能正被别的程序占着。关掉它，再点一次「导入」。'
 const dataTransferNewerMessage = '这个文件是更新版本的星芒导出的，请先把软件更新到最新版再导入。'
 const dataTransferTooLargeMessage = '聊天记录太多，超过 64 MB，没法存成一个文件。'
 
@@ -157,6 +160,16 @@ export function buildDataTransferFile(settings: AppSettings, input: DataTransfer
   return content
 }
 
+// 这几种是「这会儿打不开」，文件本身没问题（X-7）：Windows 上被别的程序独占着（杀毒软件正扫着、别的软件
+// 开着它）报 EBUSY，没权限读报 EPERM / EACCES。太大、是链接这些是文件本身不能导，照旧说不是星芒导出的。
+const dataTransferBusyCodes = new Set(['EBUSY', 'EPERM', 'EACCES'])
+
+/** 选好的文件读不出来时上屏那句。 */
+export function dataTransferReadFailureMessage(error: unknown): string {
+  const code = isRecord(error) ? error.code : undefined
+  return typeof code === 'string' && dataTransferBusyCodes.has(code) ? dataTransferBusyMessage : dataTransferInvalidMessage
+}
+
 // The file comes from wherever the user picked it, so it is hostile input
 // (I5): every setting is checked against its allowed values, and anything off
 // rejects the whole file rather than importing the part that looked fine.
@@ -169,7 +182,9 @@ export function parseDataTransferFile(raw: string): {
   phrases: string[]
 } {
   let parsed: unknown
-  try { parsed = JSON.parse(raw) } catch { throw new Error(dataTransferInvalidMessage) }
+  // 老记事本「另存为 UTF-8」会在开头加一个看不见的字节顺序标记，客户打开看过又点了保存，整份就
+  // 被当成坏文件（X-7）。
+  try { parsed = JSON.parse(withoutByteOrderMark(raw)) } catch { throw new Error(dataTransferInvalidMessage) }
   if (!isRecord(parsed) || parsed.format !== DATA_TRANSFER_FORMAT || typeof parsed.version !== 'number' || !Number.isInteger(parsed.version) || parsed.version < 1) {
     throw new Error(dataTransferInvalidMessage)
   }

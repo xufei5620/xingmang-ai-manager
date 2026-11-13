@@ -55,8 +55,9 @@ function text(value: unknown): string {
   if (typeof value !== 'string') throw new ChatStorageError('聊天记录包含无法完整读取的文本，原始记录已保留')
   return value
 }
+const ID_LENGTH_LIMIT = 160
 function id(value: unknown): string {
-  if (typeof value !== 'string' || !value || value.length > 160) throw new ChatStorageError('聊天记录标识无效，原始记录已保留')
+  if (typeof value !== 'string' || !value || value.length > ID_LENGTH_LIMIT) throw new ChatStorageError('聊天记录标识无效，原始记录已保留')
   return value
 }
 function timestamp(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0 }
@@ -647,23 +648,90 @@ export function parseImportedConversations(values: unknown[]): Conversation[] {
   } catch { throw new ChatStorageError(transferInvalidMessage) }
 }
 
-/** 导入对话的结果：added 是导进来的新对话，skipped 是这台电脑存满 MAX_CONVERSATIONS 个、这次放不下的新对话。 */
-export interface ChatImportResult { added: number; skipped: number }
+/**
+ * 导入对话的结果：added 是导进来的新对话（含两边各聊过、另存的那一份），updated 是这台电脑上已有、
+ * 换成了文件里更新那份的对话，skipped 是这台电脑存满 MAX_CONVERSATIONS 个、这次放不下的新对话。
+ */
+export interface ChatImportResult { added: number; updated: number; skipped: number }
+
+// 两边比的是说了什么：图片、请求编号这些只在本机，导出时已经去掉或换成一句说明，两边按同一套规则存过。
+function messageFingerprint(message: ChatMessage): string {
+  return JSON.stringify([message.id, message.role, message.status, message.content, message.reasoning, message.error ?? '', (message.files ?? []).map((file) => [file.name, file.text])])
+}
+
+type ImportedRelation = 'same' | 'local-newer' | 'file-newer' | 'diverged'
+
+/** 这台电脑上的消息和文件里的消息谁接着谁：一边正好是另一边的开头才算接着聊，中间有一条对不上就是两边各聊各的。 */
+function relationOf(local: readonly ChatMessage[], file: readonly ChatMessage[]): ImportedRelation {
+  const shared = Math.min(local.length, file.length)
+  for (let index = 0; index < shared; index += 1) {
+    if (messageFingerprint(local[index]) !== messageFingerprint(file[index])) return 'diverged'
+  }
+  if (local.length === file.length) return 'same'
+  return local.length > file.length ? 'local-newer' : 'file-newer'
+}
+
+const importedCopySuffix = '（导入）'
+
+// 另存的那一份用从原编号推出来的固定编号：同一个文件再导一次，落到的还是这一份，不会每导一次多一份；
+// 旧电脑又接着聊了，这一份照样能更新。编号太长（正常是 36 位）存不下时才随机起一个。
+function importedCopyId(original: string, attempt: number): string {
+  const candidate = attempt === 1 ? `${original}-imported` : `${original}-imported-${attempt}`
+  return candidate.length <= ID_LENGTH_LIMIT ? candidate : createId()
+}
+
+function importedCopy(conversation: Conversation, id: string): Conversation {
+  const title = conversation.title.endsWith(importedCopySuffix) ? conversation.title : `${conversation.title}${importedCopySuffix}`
+  return { ...conversation, id, title }
+}
+
+// 换成文件里接着聊过的那份时，这台电脑上做过、文件里没有的不丢：输入框里打了没发的、自己起的名字、置顶。
+function updatedFromFile(local: Conversation, incoming: Conversation): Conversation {
+  const { draft, draftImages, draftFiles, pinned: _filePinned, ...rest } = incoming
+  const typed = Boolean(local.draft.trim() || local.draftImages?.length || local.draftFiles?.length)
+  const kept = typed ? local : { draft, draftImages, draftFiles }
+  return {
+    ...rest,
+    draft: kept.draft,
+    ...(kept.draftImages?.length ? { draftImages: kept.draftImages } : {}),
+    ...(kept.draftFiles?.length ? { draftFiles: kept.draftFiles } : {}),
+    ...(local.renamed ? { title: local.title, renamed: true } : {}),
+    ...(local.pinned ? { pinned: true } : {}),
+  }
+}
 
 /**
- * 已有的对话不覆盖（同一个对话导两次不会多出一份）。这台电脑上的对话一个不删
- * （D02：以前合起来超过 50 个时按修改时间截断，会悄悄删掉本机最老的几个）：
- * 还有几个空位就导几个，先导最近改过的，放不下的数进 skipped，删掉一些后再导一次就能补上。
+ * 这台电脑上的对话一个不删（D02：以前合起来超过上限时按修改时间截断，会悄悄删掉本机最老的几个）。
+ * 同一个对话（编号相同）：两边一样、或者这台电脑上的更新，不动；文件里那份是接着这台电脑上的往下聊的，
+ * 换成文件里的；两边各自又聊过，文件里那份另存一份、标题加「（导入）」，两边的都留着（设置 X-4：
+ * 以前同号的一律跳过，先导一次、旧电脑接着聊几天再导，后来聊的一条都过不来）。同一个文件导两次不会多出一份。
+ * 新对话还有几个空位就导几个，先导最近改过的，放不下的数进 skipped，删掉一些后再导一次就能补上。
  */
 export function mergeImportedConversations(state: ChatWorkspace, imported: Conversation[]): { state: ChatWorkspace } & ChatImportResult {
-  const present = new Set(state.conversations.map((conversation) => conversation.id))
-  const fresh = imported
-    .filter((conversation) => !present.has(conversation.id))
-    .map((conversation) => conversation.id === state.draftConversation.id ? { ...conversation, id: createId() } : conversation)
+  const present = new Map(state.conversations.map((conversation) => [conversation.id, conversation]))
+  // 另存的那份不占文件里别的对话的编号，那些由它们自己那一条处理。
+  const fileIds = new Set(imported.map((conversation) => conversation.id))
+  const claimed = new Set<string>()
+  const replaced = new Map<string, Conversation>()
+  const fresh: Conversation[] = []
+  for (const conversation of imported) {
+    if (conversation.id === state.draftConversation.id) { fresh.push({ ...conversation, id: createId() }); continue }
+    let incoming = conversation
+    for (let attempt = 1; ; attempt += 1) {
+      const local = present.get(incoming.id)
+      if (!local) { fresh.push(incoming); claimed.add(incoming.id); break }
+      const relation = relationOf(local.messages, incoming.messages)
+      if (relation === 'same' || relation === 'local-newer') break
+      if (relation === 'file-newer') { replaced.set(local.id, updatedFromFile(local, incoming)); claimed.add(local.id); break }
+      let copyId = importedCopyId(conversation.id, attempt)
+      while (fileIds.has(copyId) || claimed.has(copyId) || copyId === state.draftConversation.id) copyId = importedCopyId(conversation.id, ++attempt)
+      incoming = importedCopy(conversation, copyId)
+    }
+  }
   const room = Math.max(0, MAX_CONVERSATIONS - state.conversations.length)
   const accepted = [...fresh].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, room)
-  const conversations = [...state.conversations, ...accepted].sort((left, right) => right.updatedAt - left.updatedAt)
-  return { state: { ...state, conversations }, added: accepted.length, skipped: fresh.length - accepted.length }
+  const conversations = [...state.conversations.map((conversation) => replaced.get(conversation.id) ?? conversation), ...accepted].sort((left, right) => right.updatedAt - left.updatedAt)
+  return { state: { ...state, conversations }, added: accepted.length, updated: replaced.size, skipped: fresh.length - accepted.length }
 }
 
 /**
@@ -711,14 +779,14 @@ export async function importConversationsIntoHistory(
   // Not loadChatHistory: inside runHistoryImport that would wait on itself.
   const loaded = await readChatHistory(api, storage, scope)
   if (loaded.warning) throw new ChatStorageError('这台电脑上的聊天记录现在读不出来，为了不弄丢它，这次没有导入对话')
-  const { state: merged, added, skipped } = mergeImportedConversations(loaded.state, imported)
+  const { state: merged, added, updated, skipped } = mergeImportedConversations(loaded.state, imported)
   const phrases = mergeImportedPhrases(merged.phrases, importedPhrases)
-  if (!added && !phrases) return { added, skipped }
+  if (!added && !updated && !phrases) return { added, updated, skipped }
   const state = phrases ? { ...merged, phrases } : merged
   const plan = planHistoryWrite(state, loaded.saved)
   if (plan) await api.writeHistory(plan.write)
   loaded.afterFirstSave?.()
-  return { added, skipped }
+  return { added, updated, skipped }
 }
 
 function timeText(value: number): string {

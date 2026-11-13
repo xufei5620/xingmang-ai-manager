@@ -2311,15 +2311,22 @@ test('a custom connection checks its name first and then goes to every tool pick
   }
 })
 
-// F6：「启动命令」里直接填整行命令，交给工具前拆成程序和参数，带引号的路径整段算程序；表单里他填的字不动。
+// F6：「启动命令」里直接填整行命令，交给工具前拆成程序和参数，带引号的路径整段算程序；表单里他填的字不动，
+// 框下面说一声参数已经分出去了。
 test('a whole command line in the launch box goes to the tool as the program and its arguments', async () => {
   const page = await fixture('page=mcp&extensionOk')
   try {
     await page.getByTestId('mcp-add').first().click()
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     const source = page.getByTestId('mcp-source')
+    const splitHint = dialog.getByText('已经帮你把后面的参数分出去了', { exact: true })
     await page.getByTestId('mcp-name').fill('amap')
+    await source.fill('npx')
+    assert.equal(await splitHint.count(), 0)
     await source.fill('npx -y @amap/amap-maps-mcp-server')
+    await splitHint.waitFor()
+    assert.equal(await source.getAttribute('aria-describedby'), await splitHint.getAttribute('id'))
+    assert.equal(await source.inputValue(), 'npx -y @amap/amap-maps-mcp-server')
     await dialog.getByTestId('mcp-form-submit').click()
     await page.getByText('已添加「amap」，给 Claude Code 使用，下次打开工具时生效', { exact: true }).waitFor()
     assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args.mcp), [
@@ -2328,7 +2335,10 @@ test('a whole command line in the launch box goes to the tool as the program and
 
     await page.getByTestId('mcp-add').first().click()
     await page.getByTestId('mcp-name').fill('local-tool')
+    await source.fill('"C:\\Program Files\\My Tool\\tool.exe"')
+    assert.equal(await splitHint.count(), 0)
     await source.fill('"C:\\Program Files\\My Tool\\tool.exe" --stdio')
+    await splitHint.waitFor()
     await dialog.getByTestId('mcp-form-submit').click()
     await page.getByText('已添加「local-tool」，给 Claude Code 使用，下次打开工具时生效', { exact: true }).waitFor()
     assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args.mcp).slice(1), [

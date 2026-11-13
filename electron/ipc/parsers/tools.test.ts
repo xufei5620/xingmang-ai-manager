@@ -23,7 +23,7 @@ describe('parseConfigSavePayload', () => {
 
   it('rejects a key that is not a string or is oversized', () => {
     for (const apiKey of [undefined, 42, { value: 'sk' }, 'k'.repeat(4_097)]) {
-      expect(() => parseConfigSavePayload({ provider: 'claude', apiKey, model: 'm', mode: 'merge' })).toThrow('API Key 格式错误')
+      expect(() => parseConfigSavePayload({ provider: 'claude', apiKey, model: 'm', mode: 'merge' })).toThrow('密钥格式不对，请重新复制完整的密钥')
     }
   })
 

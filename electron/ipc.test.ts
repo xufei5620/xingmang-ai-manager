@@ -1726,6 +1726,34 @@ describe('registerIpcHandlers', () => {
     } finally { fs.rmSync(directory, { recursive: true, force: true }) }
   })
 
+  it('says the import file is busy rather than broken when it cannot be read right now', async () => {
+    // X-7：文件正被别的程序占着、没权限读，以前也说「不是星芒导出的，或者已经损坏」。
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
+    const busy = Object.assign(new Error('EBUSY: resource busy or locked, open'), { code: 'EBUSY' })
+    const open = vi.spyOn(fs.promises, 'open')
+    try {
+      const { dispose } = register(serviceStub())
+      const importData = electronMocks.handlers.get('data-transfer:import')!
+      const file = path.join(directory, 'moving.json')
+      fs.writeFileSync(file, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: {}, conversations: [] }))
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+      open.mockRejectedValueOnce(busy)
+      const failure = await Promise.resolve(importData(trustedEvent())).then(() => null, (error: unknown) => error)
+      expect(failure).toBeInstanceOf(Error)
+      expect((failure as Error).message).toBe('这个文件现在读不了，可能正被别的程序占着。关掉它，再点一次「导入」。')
+      expect((failure as Error).cause).toBe(busy)
+
+      // 记事本存过的（开头带 BOM）照常导进来。
+      fs.writeFileSync(file, `\uFEFF${JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: {}, conversations: [{ id: 'c1' }] })}`)
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+      await expect(importData(trustedEvent())).resolves.toMatchObject({ conversations: [{ id: 'c1' }] })
+      dispose()
+    } finally {
+      open.mockRestore()
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('carries the usage-stats switch across computers without ever turning it on unasked', async () => {
     // X-3：「匿名使用统计」在系统界面设置那份文件里，以前「搬到新电脑」不带它。
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
@@ -4122,6 +4150,18 @@ describe('registerIpcHandlers', () => {
     expect(service.configureExternalTool).toHaveBeenCalledOnce()
   })
 
+  it('turns away a masked external-client key with a hint instead of writing it', async () => {
+    const service = serviceStub()
+    register(service)
+    const handler = electronMocks.handlers.get('config:configure-external-tool')!
+    // J7：从「密钥」页选中复制的是打码的那串，以前原样写进客户端，用的时候服务端回 401「无效的令牌」。
+    for (const apiKey of ['sk-AbCd**********WxYz', '\u200Bsk-AbCd••••••••WxYz']) {
+      await expect(handler(trustedEvent(), 'workbuddy', { credential: { kind: 'manual', apiKey }, model: 'fixture-model' }))
+        .rejects.toThrow('这是打码后的密钥，请到「密钥」页点复制按钮，复制完整的那串')
+    }
+    expect(service.configureExternalTool).not.toHaveBeenCalled()
+  })
+
   it('does not reuse an external-client key belonging to a different relay', async () => {
     const service = serviceStub()
     vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { hasApiKey: true, matchesRelay: false } } } as never)
@@ -5837,7 +5877,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const base = { provider: 'codex', model: 'gpt-5.6-sol', mode: 'merge' as const }
 
       await expect(handler(trustedEvent(), { ...base, apiKey: 'k'.repeat(4_096) })).resolves.toBeDefined()
-      expect(() => handler(trustedEvent(), { ...base, apiKey: 'k'.repeat(4_097) })).toThrow('API Key 格式错误')
+      expect(() => handler(trustedEvent(), { ...base, apiKey: 'k'.repeat(4_097) })).toThrow('密钥格式不对，请重新复制完整的密钥')
     })
 
     it('rejects an oversized model', () => {
@@ -5894,19 +5934,32 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await handler(trustedEvent(), { ...base, apiKey: ' \u3000 ' })
       expect(service.saveConfig).toHaveBeenLastCalledWith({ ...base, apiKey: '' }, false)
-      expect(() => handler(trustedEvent(), { ...base, apiKey: '\u200B\u200D' })).toThrow('API Key 格式错误')
+      expect(() => handler(trustedEvent(), { ...base, apiKey: '\u200B\u200D' })).toThrow('密钥格式不对，请重新复制完整的密钥')
       expect(service.saveConfig).toHaveBeenCalledOnce()
+    })
+
+    it('turns away a masked key with a hint instead of saving it', () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('config:save')!
+      const base = { provider: 'codex', model: 'gpt-5.6-sol', mode: 'merge' as const }
+
+      // J7：打码的那串正好 sk- 开头、21 位，以前一路放行到服务端才回 401。旧界面不查格式，也靠这里挡。
+      expect(() => handler(trustedEvent(), { ...base, apiKey: 'sk-AbCd**********WxYz' }))
+        .toThrow('这是打码后的密钥，请到「密钥」页点复制按钮，复制完整的那串')
+      expect(() => handler(trustedEvent(), { ...base, apiKey: ' sk-AbCd••••••••WxYz\u200B' }))
+        .toThrow('这是打码后的密钥，请到「密钥」页点复制按钮，复制完整的那串')
+      expect(service.saveConfig).not.toHaveBeenCalled()
     })
   })
 
   describe('models:list (a key the customer typed)', () => {
     it('still rejects a pasted key with an embedded control character', async () => {
       const { service } = register()
-      vi.mocked(service.fetchAvailableModels).mockRejectedValue(new Error('API Key 格式错误'))
+      vi.mocked(service.fetchAvailableModels).mockRejectedValue(new Error('密钥格式不对，请重新复制完整的密钥'))
       const handler = electronMocks.handlers.get('models:list')!
 
       // 去空白只去非控制字符；夹在中间的换行照旧整串交给 fetchAvailableModels 拒掉，不替它放宽。
-      await expect(handler(trustedEvent(), 'sk-test\n0123456789')).rejects.toThrow('API Key 格式错误')
+      await expect(handler(trustedEvent(), 'sk-test\n0123456789')).rejects.toThrow('密钥格式不对，请重新复制完整的密钥')
       expect(service.fetchAvailableModels).toHaveBeenCalledWith('sk-test\n0123456789')
     })
 
@@ -5918,6 +5971,17 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       // J7：零宽空格进了请求头，Node 直接抛英文 ByteString 报错。
       await expect(handler(trustedEvent(), ' sk-test 0123\u200B456789\u2060')).resolves.toEqual(['gpt-5.6-sol'])
       expect(service.fetchAvailableModels).toHaveBeenCalledWith('sk-test0123456789')
+    })
+
+    it('does not ask the relay about a masked key and says what was copied instead', () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('models:list')!
+
+      // J7：以前拿打码的那串去问，客户看到「服务返回 401：无效的令牌」，以为密钥坏了。
+      for (const masked of ['sk-AbCd**********WxYz', '••••••••', 'sk-AbCd●●●●WxYz', 'sk-AbCd＊＊＊＊WxYz']) {
+        expect(() => handler(trustedEvent(), masked)).toThrow('这是打码后的密钥，请到「密钥」页点复制按钮，复制完整的那串')
+      }
+      expect(service.fetchAvailableModels).not.toHaveBeenCalled()
     })
   })
 
