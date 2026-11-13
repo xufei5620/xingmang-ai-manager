@@ -223,9 +223,13 @@ export function remoteRunningForText(ms: number): string {
   return rest ? `已经 ${Math.floor(minutes / 60)} 小时 ${rest} 分钟` : `已经 ${Math.floor(minutes / 60)} 小时`
 }
 
-/** 美元金额跟电脑上同一种写法：带千分位、两位小数（renderer-v2 的 dollars()）。 */
+/**
+ * 美元金额跟电脑上同一种写法：带千分位、两位小数，欠费的负号写在 $ 前面（renderer-v2 的
+ * dollars()，余额审查 F7）。
+ */
 export function remoteDollars(amount: number): string {
-  return `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const text = Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return amount < 0 && text !== '0.00' ? `-$${text}` : `$${text}`
 }
 
 const maxStatusStepLength = 30

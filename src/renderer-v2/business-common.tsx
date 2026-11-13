@@ -198,11 +198,13 @@ export function ClockTime({ value, now }: { value: string | number | null | unde
 /**
  * 美元金额只有这一种写法：带千分位、两位小数（$23,456.78，#1133 第 5 条）。首页、侧栏、
  * 状态栏、个人中心都走它，读不到时一律写「—」，原因由旁边的小字或鼠标提示说（#1073 第 8 条）。
+ * 欠费的负数把负号写在 $ 前面（-$0.03，余额审查 F7），以前是「$-0.03」，负号夹在中间；
+ * 四舍五入后是 0 的负数照 $0.00 写，不出「-$0.00」。
  */
 export function dollars(amount: number | null | undefined) {
-  return typeof amount === 'number' && Number.isFinite(amount)
-    ? `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-    : '—'
+  if (typeof amount !== 'number' || !Number.isFinite(amount)) return '—'
+  const text = Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return amount < 0 && text !== '0.00' ? `-$${text}` : `$${text}`
 }
 /** 后台记的额度（quota）换成美元；换算比例没读到时同样写「—」。 */
 export function quotaMoney(quota: number | null | undefined, balance: { quotaPerUnit: number } | null) {

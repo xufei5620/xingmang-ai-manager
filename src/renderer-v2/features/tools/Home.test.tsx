@@ -1659,8 +1659,24 @@ describe('renderer-v2 home balance for subscription customers', () => {
 
   it('tells a brand-new account to top up first instead of saying the balance ran low', () => {
     expect(lowBalanceText(0)).toBe('当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。')
-    expect(lowBalanceText(-0.2)).toMatch(/^当前账号余额是 \$0/)
     expect(lowBalanceText(3.456)).toBe('余额只剩 $3.46，充值后可继续使用。')
+  })
+
+  it('says how much the account owes once the last call took the balance below zero', () => {
+    expect(lowBalanceText(-0.03)).toBe('当前账号已欠费 $0.03，充值后才能继续用')
+    expect(lowBalanceText(-0.2)).toBe('当前账号已欠费 $0.20，充值后才能继续用')
+    expect(lowBalanceText(-1234.5)).toBe('当前账号已欠费 $1,234.50，充值后才能继续用')
+    // 不到半分钱的欠费，余额那格写 $0.00，这句也照 $0 说，不出「欠费 $0.00」。
+    expect(lowBalanceText(-0.004)).toBe(lowBalanceText(0))
+    expect(homeMoneyNotice(-0.03, null, null)).toEqual({ text: '当前账号已欠费 $0.03，充值后才能继续用', renew: false })
+  })
+
+  it('writes the minus sign in front of the dollar sign on the balance card and keeps the notice in step', () => {
+    const markup = render({}, undefined, { balance: { ...empty, quota: -15_000, displayAmount: -0.03 } })
+    expect(markup).toMatch(/data-testid="home-balance"[^>]*>-\$0\.03</)
+    expect(markup).toContain('当前账号已欠费 $0.03，充值后才能继续用')
+    expect(markup).not.toContain('$-0.03')
+    expect(markup).not.toContain('当前账号余额是 $0')
   })
 
   it('does not tell a customer to top up while their subscription has not been read yet', () => {
