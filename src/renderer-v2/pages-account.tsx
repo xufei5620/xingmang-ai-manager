@@ -72,6 +72,7 @@ import { AccountSecurity } from './features/account/AccountSecurity'
 import { OtherAppsCard } from './features/account/OtherApps'
 import {
   affiliateTransferQuota,
+  affiliateTransferTitleQuota,
   currentExpiryText,
   inviteRuleText,
   keyExpiredTime,
@@ -1595,7 +1596,13 @@ function AccountInvite({
       )}
       <Dialog
         open={transfer}
-        title={`把 ${transferable} 返利转入余额？`}
+        // 标题写这次要转的数：星芒账号可以只转一部分，以前填了 $3 这里还写全部可转的数（余额 F8-1）。
+        title={`把 ${quotaMoney(affiliateTransferTitleQuota({
+          wholeOnly,
+          amount,
+          available: profile.affQuota,
+          quotaPerUnit: balance.quotaPerUnit,
+        }), balance)} 返利转入余额？`}
         onClose={() => setTransfer(false)}
         footer={
           <>

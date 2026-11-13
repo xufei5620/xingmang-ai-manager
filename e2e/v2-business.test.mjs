@@ -884,6 +884,12 @@ test('the transfer dialog starts from what is transferable now, also after part 
     await dialog.waitFor()
     assert.equal(await amount.inputValue(), '1')
     await amount.fill('0.4')
+    // 余额 F8-1：只转一部分时标题写这次要转的数，不再写全部可转的 $1.00。
+    await page.getByRole('dialog', { name: '把 $0.40 返利转入余额？', exact: true }).waitFor()
+    await amount.fill('')
+    await page.getByRole('dialog', { name: '把 $1.00 返利转入余额？', exact: true }).waitFor()
+    await amount.fill('0.4')
+    await page.getByRole('dialog', { name: '把 $0.40 返利转入余额？', exact: true }).waitFor()
     await dialog.getByRole('button', { name: '转入余额', exact: true }).click()
     await waitForToast(page, '$0.40 已转入余额')
     await dialog.waitFor({ state: 'hidden' })
