@@ -34,8 +34,10 @@ export function anonymousUsageFrom(
 export interface DataTransferImportOutcome {
   /** 文件里有几个对话。 */
   fileConversations: number
-  /** 导进来的新对话（这台电脑上已有的不算）。 */
+  /** 导进来的新对话（这台电脑上已有的不算；两边各聊过、另存的那一份算）。 */
   added: number
+  /** 这台电脑上已有、旧电脑上又接着聊过，换成了文件里那份的对话（设置 X-4）。 */
+  updated: number
   /** 这台电脑存满 MAX_CONVERSATIONS 个对话、这次放不下的新对话。本机的对话不会为了它们被删掉。 */
   skipped: number
   signedIn: boolean
@@ -45,15 +47,20 @@ export interface DataTransferImportOutcome {
 const deleteThenRetry = '在「聊天」里删掉一些不要的，再点一次「导入」就能补上。'
 
 export function dataTransferImportMessage(outcome: DataTransferImportOutcome): string {
-  const { fileConversations, added, skipped, signedIn, settingsChanged } = outcome
+  const { fileConversations, added, updated, skipped, signedIn, settingsChanged } = outcome
   if (fileConversations && !signedIn) {
     return `${settingsChanged ? '设置已导入。' : ''}文件里的 ${fileConversations} 个对话要先登录，再点一次「导入」。`
   }
   if (!fileConversations) return settingsChanged ? '导入了你的设置。' : '文件里的设置和这台电脑上的一样，没有要改的。'
+  const alsoUpdated = updated ? `，另有 ${updated} 个对话更新成了文件里的内容` : ''
   if (skipped && added) {
-    return `导入了 ${added} 个对话${settingsChanged ? '和你的设置' : ''}。还有 ${skipped} 个没导进来：这台电脑最多存 ${MAX_CONVERSATIONS} 个对话，${deleteThenRetry}`
+    return `导入了 ${added} 个对话${settingsChanged ? '和你的设置' : ''}${alsoUpdated}。还有 ${skipped} 个没导进来：这台电脑最多存 ${MAX_CONVERSATIONS} 个对话，${deleteThenRetry}`
   }
-  if (skipped) return `${settingsChanged ? '设置已导入。' : ''}这台电脑已经存满 ${MAX_CONVERSATIONS} 个对话，文件里的 ${skipped} 个对话没导进来。${deleteThenRetry}`
+  if (skipped) {
+    return `${settingsChanged ? '设置已导入。' : ''}${updated ? `有 ${updated} 个对话更新成了文件里的内容。` : ''}这台电脑已经存满 ${MAX_CONVERSATIONS} 个对话，文件里的 ${skipped} 个对话没导进来。${deleteThenRetry}`
+  }
+  // 文件里的对话全都更新了，就没有「其余」可说。
+  if (!added && updated) return `有 ${updated} 个对话更新成了文件里的内容${updated < fileConversations ? '，其余这台电脑上都有了' : ''}${settingsChanged ? '，设置已导入' : ''}。`
   if (!added) return `文件里的对话这台电脑上都有了${settingsChanged ? '，设置已导入' : ''}。`
-  return `导入了 ${added} 个对话${settingsChanged ? '和你的设置' : ''}。`
+  return `导入了 ${added} 个对话${settingsChanged ? '和你的设置' : ''}${alsoUpdated}。`
 }
