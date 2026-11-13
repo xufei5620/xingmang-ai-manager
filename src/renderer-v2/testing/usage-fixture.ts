@@ -42,6 +42,11 @@ export function usageDetailFixture(kind: string): AccountUsageRecord {
     delete record.details.unitPrices; delete record.details.pricingTiers
     record.quota = 0.32; record.details.matchedTier = ''
   }
+  // 余额审查 F5：退款记录里记着退回的额度，明细表「花费」那一格不该写成一笔金额。
+  if (kind === 'refund') {
+    delete record.details.unitPrices; delete record.details.pricingTiers
+    record.type = 6; record.quota = 50; record.details.matchedTier = ''; record.details.billingMode = 'refund'
+  }
   if (kind === 'stream-error') {
     record.type = 5; record.content = 'fixture <script>window.usageXss=true</script>'
     record.details.streamStatus = { status: 'error', endReason: 'upstream_error', errorCount: 1, endError: '连接中断', errors: ['请稍后重试'] }

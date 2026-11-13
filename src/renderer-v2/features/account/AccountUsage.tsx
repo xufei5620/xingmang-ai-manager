@@ -36,6 +36,7 @@ import {
   usageCalendarNote,
   usageChartScale,
   usageCost,
+  usageCostShown,
   usageDailyAverageText,
   usageEmptyText,
   usageHourBlocks,
@@ -458,7 +459,7 @@ function AccountCalls({
                 model: <span className="v2-usage-mono">{row.modelName}</span>,
                 key: row.tokenName || '—',
                 tokens: <span className="v2-usage-nowrap">{`${row.promptTokens.toLocaleString('en-US')} / ${row.completionTokens.toLocaleString('en-US')}`}</span>,
-                amount: <span className="v2-usage-nowrap">{row.type === 5 && row.quota <= 0 ? '—' : usageQuotaCost(row.quota, balance)}</span>,
+                amount: <span className="v2-usage-nowrap">{usageCostShown(row) ? usageQuotaCost(row.quota, balance) : '—'}</span>,
                 status: <Pill tone={status.tone}>{status.label}</Pill>,
               }
             })}
