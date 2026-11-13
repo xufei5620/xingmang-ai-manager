@@ -24,7 +24,7 @@ export function parseMcpInput(value: unknown): AddMcpInput {
       type: 'stdio',
       name,
       command: requiredString(value.command, 'MCP 命令'),
-      args: stringArray(value.args, 'MCP 参数'),
+      args: mcpArguments(value.args),
       env,
     }
   }
@@ -39,6 +39,18 @@ export function parseMcpInput(value: unknown): AddMcpInput {
     oauthResource: optionalString(value.oauthResource, 'OAuth Resource'),
     ...(headers ? { headers } : {}),
   }
+}
+
+// 附加参数照提供方说明原样交给工具：有的说明里就带 "" 占位，首尾空格也是参数的一部分，所以不去空格、不拒空串
+// （表单 F10-a，附加设置的值本来也是原样收的）。查的跟下游 provider-extensions.ts 拼命令时一样：类型、条数、
+// 长度、NUL。参数不经 shell（I1），且排在命令行的 `--` 后面，空串和空格当不成开关。
+function mcpArguments(value: unknown): string[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 128) throw new Error('MCP 参数格式错误')
+  return value.map((entry) => {
+    if (typeof entry !== 'string' || entry.length > 4_096 || entry.includes('\0')) throw new Error('MCP 参数格式错误')
+    return entry
+  })
 }
 
 // 缺省或一条都没有时不带这个字段，下游照旧（不带请求头）。
@@ -117,7 +129,7 @@ export function parseProviderExtensionMutation(value: unknown): ProviderExtensio
       mcp = {
         type: 'stdio',
         command: requiredString(value.mcp.command, 'MCP 命令'),
-        args: stringArray(value.mcp.args, 'MCP 参数'),
+        args: mcpArguments(value.mcp.args),
         env,
       }
     } else {
