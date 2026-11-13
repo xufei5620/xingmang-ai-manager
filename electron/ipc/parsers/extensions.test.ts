@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseMcpInput, parseProviderExtensionMutation, parseSkillInput } from './extensions'
+import { parseMarketplaceInput, parseMcpInput, parseProviderExtensionMutation, parseSkillInput } from './extensions'
 
 describe('parseSkillInput', () => {
   it('trims the folder and keeps the scope', () => {
@@ -34,6 +34,43 @@ describe('parseMcpInput', () => {
     expect(() => parseMcpInput({ type: 'stdio', name: 'demo', command: 'npx', env: { TOKEN: 1 } })).toThrow('MCP 环境变量格式错误')
     const env = Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`K${index}`, 'v']))
     expect(() => parseMcpInput({ type: 'stdio', name: 'demo', command: 'npx', env })).toThrow('MCP 环境变量数量过多')
+  })
+})
+
+// 表单 F10-a：附加参数照提供方说明原样交给工具，"" 占位和首尾空格都是参数的一部分。
+describe('MCP arguments', () => {
+  function addArgs(args: unknown): unknown {
+    const parsed = parseMcpInput({ type: 'stdio', name: 'demo', command: 'npx', args })
+    return parsed.type === 'stdio' ? parsed.args : undefined
+  }
+  function installArgs(args: unknown): unknown {
+    const parsed = parseProviderExtensionMutation({
+      provider: 'claude', kind: 'mcp', action: 'install', id: 'demo', mcp: { type: 'stdio', command: 'npx', args },
+    })
+    return parsed.mcp?.type === 'stdio' ? parsed.mcp.args : undefined
+  }
+
+  it('keeps empty and space-padded arguments exactly as given', () => {
+    for (const parse of [addArgs, installArgs]) {
+      expect(parse(['-y', 'pkg', ''])).toEqual(['-y', 'pkg', ''])
+      expect(parse([' x ', '  ', '\tvalue\n'])).toEqual([' x ', '  ', '\tvalue\n'])
+      expect(parse(undefined)).toEqual([])
+    }
+  })
+
+  it('still rejects non-strings, NUL bytes, overlong arguments and too many arguments', () => {
+    for (const parse of [addArgs, installArgs]) {
+      expect(parse(['a'.repeat(4_096)])).toEqual(['a'.repeat(4_096)])
+      expect(parse(Array.from({ length: 128 }, () => ''))).toHaveLength(128)
+      for (const bad of [['ok', 42], ['ok', null], ['bad\0'], ['a'.repeat(4_097)], Array.from({ length: 129 }, () => 'x'), 'x', null, {}]) {
+        expect(() => parse(bad)).toThrow('MCP 参数格式错误')
+      }
+    }
+  })
+
+  it('leaves marketplace sparse paths trimmed and non-empty', () => {
+    expect(parseMarketplaceInput({ source: 'owner/repo', sparse: [' plugins/a '] }).sparse).toEqual(['plugins/a'])
+    expect(() => parseMarketplaceInput({ source: 'owner/repo', sparse: [''] })).toThrow('Sparse 路径格式错误')
   })
 })
 

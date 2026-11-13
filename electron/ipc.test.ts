@@ -4718,7 +4718,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
-  describe('stringArray (mcp:add args, marketplaces:add sparse)', () => {
+  describe('array arguments (mcp:add args, marketplaces:add sparse)', () => {
     it('defaults to an empty array when the field is omitted', () => {
       const { extensionService } = register()
       const handler = electronMocks.handlers.get('mcp:add')!
