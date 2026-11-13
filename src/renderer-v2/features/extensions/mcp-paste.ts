@@ -286,11 +286,12 @@ const programFilePattern = /\.(?:exe|cmd|bat)$/i
 /**
  * 表单「启动命令」那格交出去的程序和参数。几家 CLI 起进程都不经过命令行解释器，整行 `npx -y 包名`、
  * 带引号的 `"C:\Program Files\nodejs\node.exe" server.js` 原样当程序名交下去都找不到程序。
- * 只拆两种，拆出来的参数排在「附加参数」前面：
+ * 拆这三种，拆出来的参数排在「附加参数」前面：
  * - 以引号开头的：引号里就是程序，只有一段带引号的路径也把引号去掉；
- * - 第一段是 npx、uvx、node 这类：只写了名字，或者写到 .exe、.cmd、.bat 的完整路径。
- * 别的照原样交：没加引号的 `C:\Program Files\nodejs\node.exe` 本来就是一个程序，`D:\node tools\x.exe`
- * 的第一段也不能当成 node；引号没配对的同样照原样，跟以前一样。
+ * - 第一段只是一个名字（npx、uvx、my-server），不带 \ 或 /：找程序时名字里不会带空格，后面的只能是参数；
+ * - 第一段是写到 .exe、.cmd、.bat 的完整路径。
+ * 别的照原样交：没加引号的 `C:\Program Files\nodejs\node.exe` 本来就是一个程序，第一段 `C:\Program`
+ * 只是文件夹的前半截；`D:\node tools\x.exe`、`/Users/me/go projects/server` 同理。引号没配对的也照原样，跟以前一样。
  */
 export function buildLaunchCommand(source: string, args: readonly string[]): { command: string; args: string[] } {
   const command = source.trim()
@@ -300,9 +301,14 @@ export function buildLaunchCommand(source: string, args: readonly string[]): { c
   const program = tokens?.[0]
   if (!tokens || !program) return unchanged
   const quoted = /^["']/.test(command)
-  const runner = commandRunners.has(executableName(program)) && (!/[\\/]/.test(program) || programFilePattern.test(program))
-  if (!quoted && !runner) return unchanged
+  const standalone = !/[\\/]/.test(program) || programFilePattern.test(program)
+  if (!quoted && !standalone) return unchanged
   return { command: program, args: [...tokens.slice(1), ...args] }
+}
+
+/** 「启动命令」那格交出去时会不会拆出参数：会的话框下面说一声，他就不用再去「附加参数」里填一遍。 */
+export function launchCommandSplitsArguments(source: string): boolean {
+  return buildLaunchCommand(source, []).args.length > 0
 }
 
 const valueFlags = new Map<string, 'transport' | 'env' | 'header' | 'url' | 'bearer' | null>([
