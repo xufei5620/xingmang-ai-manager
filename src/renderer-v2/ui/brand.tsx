@@ -17,7 +17,9 @@ import { useUiText, type BaseProps } from './shared';
 export type ToolId = string;
 const brandComponents = { Claude: ClaudeIcon, OpenAI: OpenAIIcon, Gemini: GeminiIcon, Grok: GrokIcon, DeepSeek: DeepSeekIcon, Qwen: QwenIcon, ChatGLM: ChatGLMIcon, Moonshot: MoonshotIcon, MiniMax: MiniMaxIcon, Zhipu: ZhipuIcon } as const;
 const environmentBrands = { node: siNodedotjs, npm: siNpm, python: siPython, git: siGit, stripe: siStripe, alipay: siAlipay, wechat: siWechat } as const;
-function modelBrand(model: string) { return /^claude/i.test(model) ? 'Claude' : /^(gpt|o[134]|chatgpt|codex)/i.test(model) ? 'OpenAI' : /^gemini/i.test(model) ? 'Gemini' : /^grok/i.test(model) ? 'Grok' : /^deepseek/i.test(model) ? 'DeepSeek' : /^qwen/i.test(model) ? 'Qwen' : /^(chatglm|glm)/i.test(model) ? 'ChatGLM' : /^(kimi|moonshot)/i.test(model) ? 'Moonshot' : /^minimax/i.test(model) ? 'MiniMax' : /^(zhipu|智谱)/i.test(model) ? 'Zhipu' : ''; }
+// 跟聊天模型菜单的分节（features/chat/state.ts 的 vendorPatterns）认同一批前缀：菜单把 sora、veo、qwq 这些归到哪家，
+// 按钮和回复头像就画哪家的标。即梦在 vendor-icons 里没有现成的标，仍落到问号。
+function modelBrand(model: string) { return /^claude/i.test(model) ? 'Claude' : /^(gpt|o\d|chatgpt|codex|dall-e|sora)/i.test(model) ? 'OpenAI' : /^(gemini|imagen|veo)/i.test(model) ? 'Gemini' : /^grok/i.test(model) ? 'Grok' : /^deepseek/i.test(model) ? 'DeepSeek' : /^(qwen|qwq|qvq)/i.test(model) ? 'Qwen' : /^(chatglm|glm)/i.test(model) ? 'ChatGLM' : /^(kimi|moonshot)/i.test(model) ? 'Moonshot' : /^(minimax|abab|hailuo)/i.test(model) ? 'MiniMax' : /^(zhipu|智谱|cogview)/i.test(model) ? 'Zhipu' : ''; }
 export function BrandIcon({ tool, model, size = 24, variant = 'inline', testId }: BaseProps & { tool?: ToolId; model?: string; size?: number; variant?: 'tile' | 'inline' | 'xs' }) {
   const t = useUiText();
   const definition = tools.find(item => item.id === tool || item.name === tool) ?? clientConnections.find(item => item.id === tool || item.name === tool);
