@@ -420,6 +420,44 @@ test('image controls use real model capabilities and asset actions use opaque id
   } finally { await page.close() }
 })
 
+// 表单 F5：自定义尺寸手打成不合规的，不发；离开尺寸框或点发送时，尺寸框下面说清规矩，改对了就收起来。
+test('a custom image size the model cannot draw is held back with its rule under the size box', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    await allPrepared(page)
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.equal((await picked(page)).model, 'gpt-image-2')
+    await pickChoice(page, 'chat-image-size', '尺寸', '自定义尺寸')
+    const rule = page.getByTestId('chat-image-size-rule')
+    const width = page.getByTestId('chat-image-width')
+    // 打字的时候不说，免得一边打一边跳。
+    await width.fill('1000')
+    assert.equal(await rule.count(), 0)
+    await page.getByTestId('chat-composer-input').fill('A test scene')
+    assert.equal(await rule.textContent(), '这个型号的宽和高都要是 16 的倍数，并在 256 到 4096 之间')
+    assert.equal(await width.getAttribute('aria-describedby'), 'chatImageSizeRule')
+    // Enter 和发送按钮都不发。
+    await page.getByTestId('chat-composer-input').press('Enter')
+    await page.getByTestId('chat-send').click()
+    assert.equal((await calls(page, 'image')).length, 0)
+    assert.equal(await page.locator('.chat-banner').count(), 0, 'the rule sits under the size box, not in a banner')
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'A test scene', 'the description stays in the box')
+    // 宽度删空（发出去会是 x1024）也一样拦。
+    await width.fill('')
+    await page.getByTestId('chat-send').click()
+    assert.equal((await calls(page, 'image')).length, 0)
+    assert.equal(await rule.count(), 1)
+    await page.screenshot({ path: path.join(output, 'image-size-rule-light.png') })
+    // 改对了就收起，照常发出去。
+    await width.fill('1008')
+    await rule.waitFor({ state: 'detached' })
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'image'))
+    assert.equal((await calls(page, 'image'))[0].input.size, '1008x1024')
+  } finally { await page.close() }
+})
+
 // 图片文件在外面被删了（D37）：预览、复制、另存都照实说图不在电脑上了，不再叫客户重试——怎么重试都不会成。
 test('says the picture is gone from the computer, instead of asking to retry, when its file was removed outside the app', async () => {
   const gone = '这张图已经不在电脑上了，可能被移走或删掉了。'
