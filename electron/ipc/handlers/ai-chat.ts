@@ -105,9 +105,10 @@ export function registerAiChatHandlers(ctx: IpcHandlerContext): void {
     currentChatUserId()
     return options.chatTextFiles.pick(remainingFiles, remainingChars)
   })
-  registerTrustedHandler('chat:paste-image', () => {
+  registerTrustedHandler('chat:paste-image', (_event, remaining: unknown) => {
     if (!options.chatAttachments) throw new Error('聊天图片服务未就绪')
-    return options.chatAttachments.paste(currentChatUserId())
+    if (typeof remaining !== 'number' || !Number.isSafeInteger(remaining)) throw new Error('聊天图片数量格式错误')
+    return options.chatAttachments.paste(currentChatUserId(), remaining)
   })
   // Deliberately outside the chat: account gate. The window saves the old
   // account's last edits while an account switch is in progress, and history

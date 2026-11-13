@@ -5,6 +5,8 @@
  * 格式，别的软件照样粘得进去；截图工具、浏览器放进来的位图读出来也是 image/png。
  */
 
+import { fileURLToPath } from 'node:url'
+
 export const CLIPBOARD_IMAGE_TYPE = 'image/png'
 
 export interface ClipboardImageEntry {
@@ -40,4 +42,81 @@ export async function writeClipboardPng<Item>(
   // pool, and the Blob must carry only this image's bytes.
   const blob = new Blob([new Uint8Array(png)], { type: CLIPBOARD_IMAGE_TYPE })
   await clipboard.write([createItem({ [CLIPBOARD_IMAGE_TYPE]: blob })])
+}
+
+// 在资源管理器、访达、文件管理器里「复制」的文件不是位图，剪贴板里只有文件的位置（J4）。Electron
+// 把它们统一列成 text/uri-list（每行一个 file:// 地址；Linux 实测）。Windows、Mac 再各认一种系统
+// 自带的格式兜底：资源管理器的 FileNameW（第一个文件的路径，UTF-16）、访达的 public.file-url。
+export const CLIPBOARD_FILE_LIST_TYPE = 'text/uri-list'
+const WINDOWS_FILE_NAME_TYPE = 'electron application/osclipboard;format="FileNameW"'
+const MAC_FILE_URL_TYPE = 'electron application/osclipboard;format="public.file-url"'
+// 一份文件清单写到这么长，复制的文件早就远超一条消息能带的张数了。
+const MAX_FILE_LIST_BYTES = 1024 * 1024
+
+function filePathFromUrl(value: string, platform: NodeJS.Platform): string | null {
+  if (!/^file:/i.test(value)) return null
+  try {
+    return fileURLToPath(value, { windows: platform === 'win32' })
+  } catch {
+    return null
+  }
+}
+
+/** text/uri-list 的写法：一行一个地址，# 开头的是注释；不是本机文件的地址不要。 */
+export function parseClipboardFileList(text: string, platform: NodeJS.Platform): string[] {
+  const paths: string[] = []
+  for (const line of text.split(/\r?\n/)) {
+    const value = line.trim()
+    if (!value || value.startsWith('#')) continue
+    const filePath = filePathFromUrl(value, platform)
+    if (filePath && !paths.includes(filePath)) paths.push(filePath)
+  }
+  return paths
+}
+
+async function readPayload(item: ClipboardImageEntry, type: string): Promise<Buffer | null> {
+  if (!item.types.includes(type)) return null
+  const payload = await item.getType(type)
+  if (!(payload instanceof Blob) || payload.size === 0 || payload.size > MAX_FILE_LIST_BYTES) return null
+  return Buffer.from(await payload.arrayBuffer())
+}
+
+function untilNul(text: string): string {
+  const end = text.indexOf('\0')
+  return end < 0 ? text : text.slice(0, end)
+}
+
+async function readEntryFilePaths(item: ClipboardImageEntry, platform: NodeJS.Platform): Promise<string[]> {
+  const list = await readPayload(item, CLIPBOARD_FILE_LIST_TYPE)
+  if (list) {
+    const paths = parseClipboardFileList(list.toString('utf8'), platform)
+    if (paths.length) return paths
+  }
+  if (platform === 'win32') {
+    const name = await readPayload(item, WINDOWS_FILE_NAME_TYPE)
+    const filePath = name ? untilNul(name.toString('utf16le')) : ''
+    if (filePath) return [filePath]
+  }
+  if (platform === 'darwin') {
+    const url = await readPayload(item, MAC_FILE_URL_TYPE)
+    const filePath = url ? filePathFromUrl(untilNul(url.toString('utf8')).trim(), platform) : null
+    if (filePath) return [filePath]
+  }
+  return []
+}
+
+/**
+ * 剪贴板里「复制的文件」的路径，按复制时的先后；没有、读不出来都回空数组，从不抛错。
+ * 路径只在主进程里从系统剪贴板读，调用方照选文件框选来的路径一样逐个检查后才读。
+ */
+export async function readClipboardFilePaths(clipboard: ClipboardImageSource, platform: NodeJS.Platform): Promise<string[]> {
+  try {
+    for (const item of await clipboard.read()) {
+      const paths = await readEntryFilePaths(item, platform)
+      if (paths.length) return paths
+    }
+  } catch {
+    // A busy or unreadable clipboard simply holds no files for us.
+  }
+  return []
 }

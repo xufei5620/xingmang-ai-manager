@@ -1473,7 +1473,8 @@ export interface XingmangInvokeContract {
   saveAiChatAsset: IpcInvokeDefinition<'chat:save-asset', [assetId: string], { saved: boolean }>
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
   pickAiChatImages: IpcInvokeDefinition<'chat:pick-images', [remaining: number], AiChatAsset[]>
-  pasteAiChatImage: IpcInvokeDefinition<'chat:paste-image', [], AiChatAsset | null>
+  /** Ctrl+V 贴图：剪贴板里的截图，没有截图时是在文件夹里复制的图片文件；remaining 是这条消息还能加几张。 */
+  pasteAiChatImage: IpcInvokeDefinition<'chat:paste-image', [remaining: number], AiChatAsset[]>
   /** 系统选文件框选文字类文件，读出来的字交回去；remainingChars 是这条消息还能放多少字。 */
   pickAiChatTextFiles: IpcInvokeDefinition<'chat:pick-text-files', [remainingFiles: number, remainingChars: number], AiChatTextFile[]>
   /** 视频剪辑「一句话出片」：文字型号把想法拆成几个镜头。停下用 video:cancel，同一个请求标识。 */

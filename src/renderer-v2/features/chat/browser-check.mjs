@@ -973,7 +973,7 @@ test('a model that reads images takes picked and pasted screenshots and sends th
       element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
     })
     await page.waitForFunction(() => document.querySelectorAll('.chat-draft-image').length === 2)
-    assert.equal((await calls(page, 'paste-image')).length, 1)
+    assert.deepEqual((await calls(page, 'paste-image')).map((call) => call.input), [3], 'the main process learns how many more images fit')
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，带图片的提问会更贵一些。')
     assert.equal(await page.getByTestId('chat-send').isDisabled(), false, 'images alone are enough to send')
     await page.getByTestId('chat-send').click()
@@ -994,6 +994,27 @@ test('a model that reads images takes picked and pasted screenshots and sends th
     })
     await page.getByText('当前模型看不了图片').first().waitFor()
     assert.equal((await calls(page, 'paste-image')).length, 1, 'a model that cannot read images never reads the clipboard')
+  } finally { await page.close() }
+})
+
+test('a paste the main process finds no picture in points at the image button instead of doing nothing', async () => {
+  const page = await open('emptyClipboard=1')
+  try {
+    await ready(page)
+    await pickModel(page, 'claude-test')
+    await page.getByTestId('chat-composer-input').evaluate((element) => {
+      const data = new DataTransfer()
+      data.items.add(new File([new Uint8Array([1, 2, 3])], '截图.png', { type: 'image/png' }))
+      element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+    })
+    await page.getByRole('alert').filter({ hasText: '图片没贴上，点输入框右下角那颗带加号的图片按钮，选它就行' }).waitFor()
+    assert.deepEqual((await calls(page, 'paste-image')).map((call) => call.input), [4])
+    assert.equal(await page.locator('.chat-draft-image').count(), 0)
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), '', 'the file is not pasted as text either')
+
+    await page.getByTestId('chat-attach-image').click()
+    await page.locator('.chat-draft-image').first().waitFor()
+    assert.equal(await page.getByRole('alert').filter({ hasText: '图片没贴上' }).count(), 0, 'adding the image with the button clears the hint')
   } finally { await page.close() }
 })
 
