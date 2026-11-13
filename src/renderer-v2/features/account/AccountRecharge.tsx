@@ -104,7 +104,14 @@ function paymentBrand(method: Pick<PaymentMethod, 'provider' | 'type'>) {
       ? 'alipay'
       : /wechat|wxpay/i.test(method.type)
         ? 'wechat'
-        : method.provider
+        : null
+}
+
+/** 付款方式前面的渠道小标。没有现成标志的渠道（QQ 钱包、Creem、Waffo 这类）画中性的银行卡，跟「余额支付」那颗钱包一样大：
+ * 问号在这套界面里是「帮助」，摆在付钱的地方像出了错，客户会犹豫这个渠道靠不靠谱。 */
+export function PaymentMethodIcon({ method }: { method: Pick<PaymentMethod, 'provider' | 'type'> }) {
+  const brand = paymentBrand(method)
+  return brand ? <BrandIcon tool={brand} size={22} /> : <CreditCard size={16} />
 }
 
 interface PayChoice {
@@ -148,7 +155,7 @@ function channelChoice(method: PaymentMethod): PayChoice {
     value: method.type,
     label: paymentMethodLabel(method),
     description: '支付金额以渠道页面为准',
-    leading: <BrandIcon tool={paymentBrand(method)} size={22} />,
+    leading: <PaymentMethodIcon method={method} />,
   }
 }
 
