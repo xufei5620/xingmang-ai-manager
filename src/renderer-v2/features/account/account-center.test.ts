@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   affiliateTransferQuota,
+  affiliateTransferTitleQuota,
   countAccountKeys,
   currentExpiryText,
   deviceActivityText,
@@ -255,6 +256,37 @@ describe('affiliateTransferQuota', () => {
     expect(affiliateTransferQuota({ wholeOnly: false, amount: '3.5', available: 2_000_000, quotaPerUnit: 500_000 })).toBe(1_750_000)
     for (const amount of ['', '0', '-1', 'abc', '1.01']) {
       expect(affiliateTransferQuota({ wholeOnly: false, amount, available: 100, quotaPerUnit: 100 })).toBeNull()
+    }
+  })
+})
+
+describe('affiliateTransferTitleQuota', () => {
+  it('names the part being moved instead of the whole rebate on a Xingmang account', () => {
+    // 余额 F8-1：可转 $10、填了 $3，标题以前还写「把 $10.00 返利转入余额？」。
+    expect(affiliateTransferTitleQuota({ wholeOnly: false, amount: '3', available: 5_000_000, quotaPerUnit: 500_000 })).toBe(1_500_000)
+    expect(affiliateTransferTitleQuota({ wholeOnly: false, amount: '10', available: 5_000_000, quotaPerUnit: 500_000 })).toBe(5_000_000)
+  })
+
+  it('rounds the same way as the quota that is sent', () => {
+    for (const amount of ['3.456', '0.4', '1.234567', '2']) {
+      const input = { wholeOnly: false, amount, available: 5_000_000, quotaPerUnit: 500_000 }
+      expect(affiliateTransferTitleQuota(input)).toBe(affiliateTransferQuota(input))
+    }
+  })
+
+  it('names what was typed even when it is more than the rebate, so the title matches the field', () => {
+    expect(affiliateTransferTitleQuota({ wholeOnly: false, amount: '20', available: 5_000_000, quotaPerUnit: 500_000 })).toBe(10_000_000)
+  })
+
+  it('falls back to the whole rebate while the field holds no positive amount', () => {
+    for (const amount of ['', ' ', '0', '-1', 'abc', '0.0000001']) {
+      expect(affiliateTransferTitleQuota({ wholeOnly: false, amount, available: 5_000_000, quotaPerUnit: 500_000 })).toBe(5_000_000)
+    }
+  })
+
+  it('always names the whole rebate on a historical account, whatever the field holds', () => {
+    for (const amount of ['', '1', '3.456']) {
+      expect(affiliateTransferTitleQuota({ wholeOnly: true, amount, available: 3.456, quotaPerUnit: 1 })).toBe(3.456)
     }
   })
 })

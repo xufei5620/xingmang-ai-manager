@@ -166,6 +166,18 @@ export function affiliateTransferQuota(input: { wholeOnly: boolean; amount: stri
 }
 
 /**
+ * 「转入余额」确认框标题里写的数（余额 F8-1）：这次要转多少就写多少。星芒账号可以只转一部分
+ * （后台按发去的整数额度原样从返利扣、加进余额），以前填了 $3 标题还写全部可转的数。框里还不是
+ * 一个正数时（清空了、填了 0）照旧写全部可转的数；历史账号的后台每次全转，一直是全额。
+ * 换算跟 affiliateTransferQuota 同一种取整，标题、发出去的、转完的提示三处是同一个数。
+ */
+export function affiliateTransferTitleQuota(input: { wholeOnly: boolean; amount: string; available: number; quotaPerUnit: number }): number {
+  if (input.wholeOnly) return input.available
+  const quota = Math.round(Number(input.amount) * input.quotaPerUnit)
+  return Number.isFinite(quota) && quota > 0 ? quota : input.available
+}
+
+/**
  * 登录设备那一行的小字：这台是「正在使用」；别的写多久以前活动过、从哪个地址。后台没给地址
  * 或时间的那一半就不写。只有不到 5 分钟才算「刚刚」：客户靠这一行判断是不是别人在用他的号，
  * 「刚刚」和 50 分钟前差得不小（D60）。
