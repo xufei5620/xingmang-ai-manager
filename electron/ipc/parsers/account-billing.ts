@@ -58,9 +58,15 @@ function parseTopupOrdersKeyword(value: unknown): string | undefined {
   return optionalString(value, '订单搜索词', 128)
 }
 
-export function parseAccountAffiliateTransferInput(value: unknown): NewApiAffiliateTransferInput {
+// 历史账号的返利是按美元记的（1 个单位 = 1 美元），按比例算出来常带小数，后台又只收和可转返利
+// 一分不差的全额，所以这一种放开到「有限正数」，原值照转（余额 F4，yoyo 2026-11-13 亲手同意放宽）。
+// 星芒账号的额度是整数单位，照旧只收正整数。
+export function parseAccountAffiliateTransferInput(value: unknown, sub2Api = false): NewApiAffiliateTransferInput {
   if (!isRecord(value)) throw new Error('邀请额度转余额信息格式错误')
-  return { quota: parsePositiveSafeInteger(value.quota, '邀请额度') }
+  if (!sub2Api) return { quota: parsePositiveSafeInteger(value.quota, '邀请额度') }
+  const quota = value.quota
+  if (typeof quota !== 'number' || !Number.isFinite(quota) || quota <= 0) throw new Error('邀请额度格式错误')
+  return { quota }
 }
 
 const accountBillingPreferences = new Set<NewApiBillingPreference>([

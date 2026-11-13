@@ -71,6 +71,7 @@ import { AccountProfileDialog } from './features/account/AccountProfileDialog'
 import { AccountSecurity } from './features/account/AccountSecurity'
 import { OtherAppsCard } from './features/account/OtherApps'
 import {
+  affiliateTransferQuota,
   currentExpiryText,
   inviteRuleText,
   keyExpiredTime,
@@ -619,6 +620,7 @@ export function AccountPage({
             balance={balance}
             changed={changed}
             inviteBaseUrl={site.websiteUrl}
+            wholeOnly={accountSiteId(session) === 'solov-api'}
           />
         )
     }
@@ -1504,12 +1506,15 @@ function AccountInvite({
   balance,
   changed,
   inviteBaseUrl,
+  wholeOnly,
 }: {
   api: V2Bridge
   profile: Profile
   balance: Balance
   changed: () => void
   inviteBaseUrl: string
+  /** 历史账号：后台只收一次全转，金额框固定为全额、不让改（余额 F4）。 */
+  wholeOnly: boolean
 }) {
   const operation = useOperation()
   const [transfer, setTransfer] = useState(false)
@@ -1603,15 +1608,13 @@ function AccountInvite({
                 void operation.execute(
                   'transfer',
                   async () => {
-                    const quota = Math.round(
-                      Number(amount) * balance.quotaPerUnit,
-                    )
-                    if (
-                      !Number.isFinite(quota) ||
-                      quota <= 0 ||
-                      quota > profile.affQuota
-                    )
-                      throw new Error('转入金额不能超过可用返利。')
+                    const quota = affiliateTransferQuota({
+                      wholeOnly,
+                      amount,
+                      available: profile.affQuota,
+                      quotaPerUnit: balance.quotaPerUnit,
+                    })
+                    if (quota === null) throw new Error('转入金额不能超过可用返利。')
                     await api.transferAccountAffiliateQuota({ quota })
                     setTransfer(false)
                     changed()
@@ -1632,7 +1635,9 @@ function AccountInvite({
           type="number"
           min="0.01"
           step="0.01"
-          value={amount}
+          readOnly={wholeOnly}
+          // 历史账号显示的就是这次要转的全额，跟着资料重读走，免得框里的数和发出去的对不上。
+          value={wholeOnly ? String(profile.affQuota / balance.quotaPerUnit) : amount}
           onChange={(event) => setAmount(event.target.value)}
         />
         <ResultNotice error={operation.error} detail={operation.detail} />

@@ -532,7 +532,8 @@ const profile = {
   affCode: 'TEST',
   affCount: 2,
   // noRebate 演从来没赚过返利的账号：可转和累计都是 0。
-  affQuota: query.has('noRebate') ? 0 : 100,
+  // fractionalRebate 配 sub2apiReliability 演历史账号带小数的返利（1 个单位 = 1 美元，余额 F4）。
+  affQuota: query.has('noRebate') ? 0 : query.has('fractionalRebate') ? 3.456 : 100,
   affHistoryQuota: query.has('noRebate') ? 0 : 150,
 }
 const balance = {
@@ -855,6 +856,10 @@ const apiMethods = {
   },
   transferAccountAffiliateQuota: async (input: { quota: number }) => {
     record('transfer-affiliate-quota', input)
+    // 历史账号的后台只收和可转返利一分不差的全额，差一点就拒（同 sub2api-relay-backend.ts）。
+    if (query.has('sub2apiReliability') && Math.abs(input.quota - profile.affQuota) > 1e-9) {
+      throw new Error('返利只能一次性全部转入，请使用当前可转余额')
+    }
     profile.affQuota -= input.quota
   },
   getAccountBalance: async () => { record('get-balance'); return { ...balance, ...(query.has('sub2apiReliability') ? { quotaPerUnit: 1 } : {}) } },

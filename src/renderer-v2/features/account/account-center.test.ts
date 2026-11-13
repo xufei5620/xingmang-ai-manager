@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  affiliateTransferQuota,
   countAccountKeys,
   currentExpiryText,
   deviceActivityText,
@@ -230,5 +231,30 @@ describe('account center keys', () => {
     let calls = 0
     expect(await countAccountKeys(async () => { calls++; return { total: 1_000_000, keys: [{}] } }, () => false)).toEqual({ total: 1_000_000, inUse: 0 })
     expect(calls).toBe(100)
+  })
+})
+
+describe('affiliateTransferQuota', () => {
+  it('sends a historical account rebate whole and unrounded, whatever the field holds', () => {
+    // 余额 F4：以前 $3.50 被四舍五入成 4（超过可转），$3.456 成 3（后台要全额），都转不进去。
+    for (const available of [3.5, 3.456, 0.01, 100]) {
+      expect(affiliateTransferQuota({ wholeOnly: true, amount: String(available), available, quotaPerUnit: 1 })).toBe(available)
+      expect(affiliateTransferQuota({ wholeOnly: true, amount: '1', available, quotaPerUnit: 1 })).toBe(available)
+    }
+  })
+
+  it('sends nothing for a historical account with no rebate left', () => {
+    for (const available of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(affiliateTransferQuota({ wholeOnly: true, amount: '1', available, quotaPerUnit: 1 })).toBeNull()
+    }
+  })
+
+  it('keeps the Xingmang account on whole units and lets it move part of the rebate', () => {
+    expect(affiliateTransferQuota({ wholeOnly: false, amount: '0.4', available: 100, quotaPerUnit: 100 })).toBe(40)
+    expect(affiliateTransferQuota({ wholeOnly: false, amount: '1', available: 100, quotaPerUnit: 100 })).toBe(100)
+    expect(affiliateTransferQuota({ wholeOnly: false, amount: '3.5', available: 2_000_000, quotaPerUnit: 500_000 })).toBe(1_750_000)
+    for (const amount of ['', '0', '-1', 'abc', '1.01']) {
+      expect(affiliateTransferQuota({ wholeOnly: false, amount, available: 100, quotaPerUnit: 100 })).toBeNull()
+    }
   })
 })
