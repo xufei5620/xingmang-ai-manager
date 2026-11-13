@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FocusEvent, type ReactNode } from 'react'
 import { ArrowRight, CircleAlert, Copy, ExternalLink, Eye, EyeOff, Headset, Info, KeyRound, LogIn, Mail, RefreshCw, RotateCcw, UserPlus } from 'lucide-react'
 import type { AccountLoginResult, AccountStatus, LegalDocumentKind } from '../../../../electron/ipc-contract'
+import { normalizeEmailVerificationCode } from '../../../../electron/email-verification-code'
 import { Button, Confirm, Dialog, Input, Segment } from '../../ui'
 import { sessionOnlyLoginNotice } from '../app/remembered-login'
 import { currentWindowOs } from '../app/window-os'
@@ -386,13 +387,13 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     if (!status) { setError('注册还没准备好，请稍等，或点「重新读取」后再注册'); return }
     if (!status.registerEnabled || !status.passwordRegisterEnabled) { setError('目前暂未开放账号注册'); return }
     if (status.turnstileCheckEnabled) { setError('账号服务要先做一次安全验证，请在浏览器里完成注册'); return }
-    const draft = { ...registration, email: checkEmail(), agreed: registration.agreed || agreedNow }
+    const draft = { ...registration, email: checkEmail(), code: normalizeEmailVerificationCode(registration.code), agreed: registration.agreed || agreedNow }
     const errors = validateRegistration(draft, status.emailVerificationEnabled, codeSent)
     setFieldErrors(errors)
     if (Object.keys(errors).length || !passesTypoCheck(draft.email)) return
     if (!draft.agreed) { setAgreePrompt(true); return }
     void run('创建账号', async (current) => {
-      try { await api.register({ email: draft.email.trim(), username: draft.username.trim(), password: draft.password, verificationCode: draft.code.trim(), affCode: parseInviteCode(draft.invite) || undefined }) }
+      try { await api.register({ email: draft.email.trim(), username: draft.username.trim(), password: draft.password, verificationCode: draft.code, affCode: parseInviteCode(draft.invite) || undefined }) }
       catch (reason) {
         // 用户名是替他从邮箱取的，撞名是这条路上最可能遇到的失败：直接指到那一格。
         if (!isUsernameTakenError(reason)) throw reason
@@ -608,7 +609,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
         {status && (!status.registerEnabled || !status.passwordRegisterEnabled) && <p className="auth-error" role="alert"><CircleAlert size={15} aria-hidden="true" /><span>目前暂未开放账号注册</span></p>}
         {field('邮箱', 'register-email', registration.email, updateEmail, { type: 'email', autoComplete: 'email', placeholder: '常用邮箱（如 QQ 邮箱）', error: fieldErrors.email, onBlur: checkEmailOnLeave, addon: status?.emailVerificationEnabled ? <Button size="xs" onClick={sendVerification} disabled={busy || Boolean(registerCooldown.seconds)} testId="register-send-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重发` : '获取验证码'}</Button> : undefined })}
         {emailSuggestion && <p className="auth-typo" role="status" data-testid="register-email-suggestion">你是不是想填 <b>{emailSuggestion}</b>？{link('改成这个', 'register-email-fix', () => updateEmail(emailSuggestion, true))}{typoConfirmedEmail === normalizeEmail(registration.email) && ` 没填错的话，再点一次「${status?.emailVerificationEnabled ? '获取验证码' : '注册并登录'}」。`}</p>}
-        <div className="auth-two-fields">{status?.emailVerificationEnabled && field('验证码', 'register-code', registration.code, (value) => updateRegistration('code', value), { autoComplete: 'one-time-code', placeholder: '邮件里的 6 位数字', mono: true, error: fieldErrors.code })}{field('用户名', 'register-user', registration.username, updateUsername, { autoComplete: 'username', placeholder: '最多 20 位', error: fieldErrors.username, maxLength: 20 })}</div>
+        <div className="auth-two-fields">{status?.emailVerificationEnabled && field('验证码', 'register-code', registration.code, (value) => updateRegistration('code', value), { autoComplete: 'one-time-code', placeholder: '邮件里的 6 位验证码', mono: true, error: fieldErrors.code })}{field('用户名', 'register-user', registration.username, updateUsername, { autoComplete: 'username', placeholder: '最多 20 位', error: fieldErrors.username, maxLength: 20 })}</div>
         {/* 设新密码的框不加 maxLength：粘进来的长密码会被悄悄截短，账号按截短的设好，客户拿原密码就登不上。超长的整串留在框里，交给长度规则当场说。 */}
         {field('密码', 'register-password', registration.password, (value) => updateRegistration('password', value), { password: true, autoComplete: 'new-password', placeholder: '8 至 20 位', error: fieldErrors.password })}
         {inviteOpen ? field('邀请码', 'register-invite', registration.invite, (value) => updateRegistration('invite', value), { placeholder: '邀请码或邀请链接', error: fieldErrors.invite, optional: true })

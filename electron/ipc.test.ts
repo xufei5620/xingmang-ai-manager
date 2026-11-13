@@ -6532,6 +6532,20 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       })
     })
 
+    it('normalizes the emailed verification code the way the register form does (表单 F8)', async () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:register')!
+
+      await handler(trustedEvent(), {
+        username: 'new-user',
+        email: 'new-user@example.com',
+        password: 'correct horse battery staple',
+        verificationCode: ' ３ＦＡ​9C1　',
+      })
+
+      expect(accountService.register).toHaveBeenCalledWith(expect.objectContaining({ verificationCode: '3fa9c1' }))
+    })
+
     it('forwards an explicit affiliate code instead of defaulting it', async () => {
       const { accountService } = register()
       const handler = electronMocks.handlers.get('account:register')!
