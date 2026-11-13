@@ -13,6 +13,7 @@ const { resolveLockedElectronZipChecksums } = require('./scripts/electron-zip-ch
 const { buildReleaseCopyright } = require('./scripts/release-copyright.cjs')
 const { feedReleaseNotes } = require('./scripts/extract-release-notes.cjs')
 const { NOTICES_FILE_NAME, OUTPUT_DIRECTORY_NAME: THIRD_PARTY_DIRECTORY, copyMacElectronLicenses } = require('./scripts/third-party-notices.cjs')
+const macDmgLayout = require('./scripts/macos-dmg-layout.cjs')
 const accelerationBundle = resolveAccelerationBundleResources(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR)
 
 function resolveUpdateUrl() {
@@ -421,13 +422,18 @@ module.exports = {
     notarize: false,
     ...(freeMacReleaseMode ? { timestamp: 'none' } : {}),
   },
-  ...(freeMacReleaseMode ? {
-    dmg: {
-      // The free update channel is ZIP-only. DMGs remain manual installers and
-      // must not create blockmaps or enter latest-mac.yml.
-      writeUpdateInfo: false,
-    },
-  } : {}),
+  dmg: {
+    // 打开安装包看到的窗口（IC-9，2026-11-13 yoyo 回「改」）：品牌深蓝背景上一行中文告诉客户
+    // 拖到右边的「应用程序」，替身也叫这个名字。背景、图标位置、替身名字都在
+    // scripts/macos-dmg-layout.cjs，背景由 scripts/generate-dmg-background.mjs 按同一份画出来。
+    // 写明背景名：文件不在时 electron-builder 当场报错，不会悄悄退回自带的灰底虚线箭头。
+    background: macDmgLayout.backgroundName,
+    iconSize: macDmgLayout.iconSize,
+    contents: macDmgLayout.buildDmgContents(),
+    // The free update channel is ZIP-only. DMGs remain manual installers and
+    // must not create blockmaps or enter latest-mac.yml.
+    ...(freeMacReleaseMode ? { writeUpdateInfo: false } : {}),
+  },
   win: {
     requestedExecutionLevel: 'asInvoker',
     // Stated explicitly because the strict verifier in update-signature.ts is
