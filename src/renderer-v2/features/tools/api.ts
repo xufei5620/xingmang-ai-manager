@@ -288,13 +288,16 @@ export function createToolsApi(bridge: XingmangApi) {
     officialUsage: () => bridge.refreshOfficialChatGptUsage(),
     /**
      * 当前账号本月与最近 7 天的用量。一分钟内复用上一次的结果；scope 传了而缓存
-     * 不是这个账号查的（换账号那一瞬间），作废后重查。
+     * 不是这个账号查的（换账号那一瞬间），作废后重查。重查回来还不是这个账号的就报错，
+     * 不把别的账号的用量交给它：侧栏账号卡会把拿到的数记在 scope 名下（F8-6）。
      */
     async balanceUsage(scope?: string): Promise<BalanceUsage> {
       const owned = await usageCache.read()
       if (scope === undefined || owned.scope === scope) return owned.usage
       usageCache.invalidate()
-      return (await usageCache.read()).usage
+      const reread = await usageCache.read()
+      if (reread.scope !== scope) throw new Error('账号刚切换过，请再试一次')
+      return reread.usage
     },
     /** 上一次查到的用量，过期了也给；不是 scope 这个账号的就当没有。 */
     peekBalanceUsage(scope: string): BalanceUsage | null {
