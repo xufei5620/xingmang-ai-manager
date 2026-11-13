@@ -2412,7 +2412,7 @@ describe('createSystemService', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(service.fetchAvailableModels('bad\nkey')).rejects.toThrow('API Key 格式错误')
+    await expect(service.fetchAvailableModels('bad\nkey')).rejects.toThrow('密钥格式不对，请重新复制完整的密钥')
     expect(fetchMock).not.toHaveBeenCalled()
   })
 

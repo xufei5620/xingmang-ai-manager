@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizePastedApiKey } from './pasted-api-key'
+import { isMaskedApiKey, maskedApiKeyMessage, normalizePastedApiKey, pastedApiKeyFormatMessage } from './pasted-api-key'
 
 const key = 'sk-AbCdEf0123456789xyzW'
 
@@ -41,5 +41,30 @@ describe('normalizePastedApiKey', () => {
   it('returns an empty string when nothing but invisible characters was pasted', () => {
     expect(normalizePastedApiKey('\u200B \u3000\uFEFF')).toBe('')
     expect(normalizePastedApiKey('')).toBe('')
+  })
+})
+
+describe('isMaskedApiKey', () => {
+  it('recognizes the masks the key list and the local previews draw', () => {
+    // new-api 列表：sk-前4位**********后4位（new-api-client.ts parseMaskedTokenKey）。
+    expect(isMaskedApiKey('sk-AbCd**********WxYz')).toBe(true)
+    // 历史账号的列表、本机配置预览（sub2api-relay-backend.ts、key-secret-summary.ts、config-files.ts）。
+    expect(isMaskedApiKey('••••••••')).toBe(true)
+    expect(isMaskedApiKey('sk-Ab••••••••WxYz')).toBe(true)
+    // 别处常见的画法：全角星号、实心圆点。
+    expect(isMaskedApiKey('sk-AbCd＊＊＊＊WxYz')).toBe(true)
+    expect(isMaskedApiKey('sk-AbCd●●●●WxYz')).toBe(true)
+  })
+
+  it('leaves real keys alone', () => {
+    expect(isMaskedApiKey(key)).toBe(false)
+    expect(isMaskedApiKey('sk-AbCd-0000_WxYz.9')).toBe(false)
+    expect(isMaskedApiKey('')).toBe(false)
+  })
+
+  it('says in plain words what to do, without technical terms', () => {
+    expect(maskedApiKeyMessage).toBe('这是打码后的密钥，请到「密钥」页点复制按钮，复制完整的那串')
+    expect(pastedApiKeyFormatMessage).toBe('密钥格式不对，请重新复制完整的密钥')
+    expect(`${maskedApiKeyMessage}${pastedApiKeyFormatMessage}`).not.toMatch(/API|Key|[A-Za-z]/)
   })
 })

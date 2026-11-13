@@ -20,3 +20,16 @@ const pastedInvisibleCharacters = /[ \u00A0\u1680\u2000-\u200D\u2028\u2029\u202F
 export function normalizePastedApiKey(value: string): string {
   return value.replace(pastedInvisibleCharacters, '').trim()
 }
+
+// 掩码只会用这几个字符画（new-api 列表是 sk-前4位**********后4位，历史账号和本机预览是 •），
+// 真密钥里一个都不会有，见到就是客户从「密钥」页把打码的那串选中复制了。以前它正好过得了星芒密钥的
+// 格式检查（sk- 开头、20 位以上），送到服务端才回 401「无效的令牌」，客户以为密钥坏了。
+const maskCharacters = /[*\uFF0A\u2022\u25CF]/
+
+export const maskedApiKeyMessage = '这是打码后的密钥，请到「密钥」页点复制按钮，复制完整的那串'
+export const pastedApiKeyFormatMessage = '密钥格式不对，请重新复制完整的密钥'
+
+/** 粘贴的是不是打码后的那串（带 *、＊、•、● 之一）。 */
+export function isMaskedApiKey(value: string): boolean {
+  return maskCharacters.test(value)
+}
