@@ -1,4 +1,5 @@
 // 账号登录、注册、找回和修改密码、记住密码、显示名称、协议文档的入参。
+import { normalizeEmailVerificationCode } from '../../email-verification-code'
 import { isRecord } from '../../input-guards'
 import type { LegalDocumentKind, RememberedAccountLogin } from '../../ipc-contract'
 import type {
@@ -91,7 +92,9 @@ export function parseAccountRegisterInput(value: unknown): NewApiRegisterInput {
   // The account status endpoint can disable email verification. In that mode
   // the renderer intentionally hides the field and sends an empty value; do
   // not reject an otherwise valid registration before the service sees it.
-  const verificationCode = optionalString(value.verificationCode, '邮箱验证码', 32) ?? ''
+  // Normalized after the bounds check, the same way the v2 register form does
+  // it before sending (表单 F8): the service compares the code byte for byte.
+  const verificationCode = normalizeEmailVerificationCode(optionalString(value.verificationCode, '邮箱验证码', 32) ?? '')
   return {
     email,
     password: value.password,

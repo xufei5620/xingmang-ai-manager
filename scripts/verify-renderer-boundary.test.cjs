@@ -49,6 +49,8 @@ const valueImportable = [
   'electron/config-write-blocker',
   // 更新因磁盘空间不够没下时那句话，系统通知与首页气泡、更新页共用一份（第二十二批 2）。
   'electron/disk-space-copy',
+  // 注册验证码去空白、换半角、6 位十六进制转小写，注册框提交前与主进程收注册请求共用一份（表单 F8）；文件本身什么都不 import。
+  'electron/email-verification-code',
   // 装插件、加外接工具失败时命令行说的原因（缺 Git、连不上 GitHub、重名），主进程挑行、错误框配标题共用一份。
   'electron/extension-command-failure',
   'electron/external-url-blocked',

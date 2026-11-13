@@ -159,12 +159,15 @@ test('registration preserves its completed result when the following real login 
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('register-submit').click()
     await page.getByText('请填写邮件中的验证码', { exact: true }).waitFor()
-    await page.getByTestId('register-code').fill('123456')
+    // 表单 F8：邮件里的验证码是字母数字混着的，格子不再说「6 位数字」；大写、全角、夹着的空格提交前替他理顺。
+    assert.equal(await page.getByTestId('register-code').getAttribute('placeholder'), '邮件里的 6 位验证码')
+    await page.getByTestId('register-code').fill(' ３ＦＡ 9C1 ')
     await page.getByTestId('register-submit').click()
     await page.getByTestId('login-dialog').waitFor()
     assert.equal(await page.getByTestId('login-account').inputValue(), 'fixture-member')
     assert.equal(await page.getByTestId('login-password').inputValue(), '')
     assert.deepEqual((await calls(page)).map((item) => item.method), ['verification', 'register', 'login'])
+    assert.equal((await calls(page)).find((item) => item.method === 'register').input.verificationCode, '3fa9c1')
   } finally { await page.close() }
 })
 
