@@ -49,7 +49,7 @@ export function createChatTransfer(bridge: ChatTransferBridge, storage: ChatStor
     },
     assertChatIdle,
     async importConversations(conversations, phrases = []) {
-      if (!conversations.length && !phrases.length) return { added: 0, skipped: 0 }
+      if (!conversations.length && !phrases.length) return { added: 0, updated: 0, skipped: 0 }
       // 卸下聊天页前再看一次：设置页先问的那次跟这里隔着选文件、问要不要换掉设置，都要等人。
       assertChatIdle()
       return runHistoryImport(scope, async () => {

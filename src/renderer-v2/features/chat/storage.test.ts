@@ -347,7 +347,7 @@ describe('lossless chat history files', () => {
     const stored = files.stores.get(scope)!
     stored.conversations[0].content = '{truncated'
     const other = { ...createConversation(undefined, 'from-old-computer'), updatedAt: 3000, messages: [message()] }
-    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toEqual({ added: 1, skipped: 0 })
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toEqual({ added: 1, updated: 0, skipped: 0 })
     expect(files.api.writeHistory.mock.calls.at(-1)![0].setAside).toEqual(['conversation-0'])
     expect(files.aside.get(scope)).toEqual([{ key: 'conversation-0', content: '{truncated' }])
   })
@@ -1010,6 +1010,99 @@ describe('moving history to another computer', () => {
     expect(merged.state.conversations[0].id).not.toBe(state.draftConversation.id)
   })
 
+  it('takes the file copy of a conversation the old computer kept chatting in', () => {
+    const state = workspace(scope, 2)
+    state.conversations.forEach((conversation, index) => { conversation.updatedAt = 2000 - index * 1000 })
+    const continued = { ...state.conversations[1], title: '旧电脑上的名字', updatedAt: 3000, messages: [message(0), message(1), message(2)] }
+    const merged = mergeImportedConversations(state, [continued])
+    expect(merged).toMatchObject({ added: 0, updated: 1, skipped: 0 })
+    expect(merged.state.conversations.map((conversation) => conversation.id)).toEqual(['conversation-1', 'conversation-0'])
+    expect(merged.state.conversations[0]).toMatchObject({ title: '旧电脑上的名字', updatedAt: 3000 })
+    expect(merged.state.conversations[0].messages.map((item) => item.id)).toEqual(['message-0', 'message-1', 'message-2'])
+    expect(merged.state.conversations[1]).toBe(state.conversations[0])
+  })
+
+  it('leaves a conversation alone when the file copy is the same or behind this computer', () => {
+    const state = workspace(scope, 2)
+    state.conversations[0].messages = [message(0), message(1)]
+    const behind = { ...state.conversations[0], messages: [message(0)], updatedAt: state.conversations[0].updatedAt + 5000 }
+    const same = { ...state.conversations[1], title: '改过名字', updatedAt: state.conversations[1].updatedAt + 5000 }
+    const merged = mergeImportedConversations(state, [behind, same])
+    expect(merged).toMatchObject({ added: 0, updated: 0, skipped: 0 })
+    expect(merged.state.conversations).toEqual(expect.arrayContaining(state.conversations))
+    expect(merged.state.conversations).toHaveLength(2)
+  })
+
+  it('saves a diverged file copy beside this computer copy, once, and keeps updating that copy', () => {
+    const state = workspace(scope, 1)
+    state.conversations[0] = { ...state.conversations[0], title: '写周报', messages: [message(0), message(1, { content: '新电脑上聊的' })] }
+    const fromOld = { ...state.conversations[0], updatedAt: state.conversations[0].updatedAt + 1000, messages: [message(0), message(1, { content: '旧电脑上聊的' })] }
+    const first = mergeImportedConversations(state, [fromOld])
+    expect(first).toMatchObject({ added: 1, updated: 0, skipped: 0 })
+    expect(first.state.conversations.find((conversation) => conversation.id === 'conversation-0')).toBe(state.conversations[0])
+    const copy = first.state.conversations.find((conversation) => conversation.id !== 'conversation-0')
+    expect(copy).toMatchObject({ id: 'conversation-0-imported', title: '写周报（导入）' })
+    expect(copy?.messages[1].content).toBe('旧电脑上聊的')
+    // 同一个文件再导一次不会多出一份。
+    expect(mergeImportedConversations(first.state, [fromOld])).toMatchObject({ added: 0, updated: 0, skipped: 0 })
+    // 旧电脑接着聊，另存的那一份跟着更新，名字照旧带「（导入）」。
+    const later = { ...fromOld, updatedAt: fromOld.updatedAt + 1000, messages: [...fromOld.messages, message(2)] }
+    const second = mergeImportedConversations(first.state, [later])
+    expect(second).toMatchObject({ added: 0, updated: 1, skipped: 0 })
+    expect(second.state.conversations).toHaveLength(2)
+    expect(second.state.conversations.find((conversation) => conversation.id === 'conversation-0-imported')).toMatchObject({ title: '写周报（导入）', updatedAt: later.updatedAt })
+    expect(second.state.conversations.find((conversation) => conversation.id === 'conversation-0-imported')?.messages).toHaveLength(3)
+    // 另存的那份在这台电脑上也接着聊过，再分叉就再另存一份，谁的都不丢。
+    const copyChatted = second.state.conversations.map((conversation) => conversation.id === 'conversation-0-imported' ? { ...conversation, messages: [...conversation.messages, message(3, { content: '新电脑上又聊的' })] } : conversation)
+    const forked = { ...later, messages: [...later.messages, message(3, { content: '旧电脑上又聊的' })] }
+    const third = mergeImportedConversations({ ...second.state, conversations: copyChatted }, [forked])
+    expect(third).toMatchObject({ added: 1, updated: 0, skipped: 0 })
+    expect(third.state.conversations.map((conversation) => conversation.id).sort()).toEqual(['conversation-0', 'conversation-0-imported', 'conversation-0-imported-2'])
+  })
+
+  it('does not put a diverged copy on an id the file itself carries or on the draft', () => {
+    const state = workspace(scope, 1)
+    state.draftConversation = createConversation(undefined, 'conversation-0-imported-2')
+    const fromOld = { ...state.conversations[0], messages: [message(0, { content: '旧电脑上的' })] }
+    const alsoInFile = { ...createConversation(undefined, 'conversation-0-imported'), messages: [message(5)] }
+    const merged = mergeImportedConversations(state, [fromOld, alsoInFile])
+    expect(merged).toMatchObject({ added: 2, updated: 0, skipped: 0 })
+    expect(merged.state.conversations.map((conversation) => conversation.id).sort()).toEqual(['conversation-0', 'conversation-0-imported', 'conversation-0-imported-3'])
+    expect(merged.state.conversations.find((conversation) => conversation.id === 'conversation-0-imported')?.messages[0].id).toBe('message-5')
+  })
+
+  it('keeps what was done on this computer when taking the file copy', () => {
+    const state = workspace(scope, 1)
+    state.conversations[0] = { ...state.conversations[0], title: '我起的名字', renamed: true, pinned: true, draft: '打了一半', draftFiles: [{ name: 'a.txt', size: 1, text: 'a', truncated: false }] }
+    const continued = { ...state.conversations[0], title: '旧电脑上的名字', renamed: false, pinned: false, draft: '旧电脑上打的', draftFiles: undefined, messages: [message(0), message(1)] }
+    const updated = mergeImportedConversations(state, [continued]).state.conversations[0]
+    expect(updated).toMatchObject({ title: '我起的名字', renamed: true, pinned: true, draft: '打了一半', draftFiles: [{ name: 'a.txt' }] })
+    expect(updated.messages).toHaveLength(2)
+    const untouched = { ...state.conversations[0], title: '新对话', renamed: undefined, pinned: undefined, draft: '', draftFiles: undefined }
+    const fromFile = mergeImportedConversations({ ...state, conversations: [untouched] }, [continued]).state.conversations[0]
+    expect(fromFile).toMatchObject({ title: '旧电脑上的名字', draft: '旧电脑上打的' })
+    expect(fromFile.pinned).toBeUndefined()
+  })
+
+  it('brings over what the old computer said after the first import, through real export files', async () => {
+    const asset = { assetId: 'b'.repeat(43), mimeType: 'image/png' as const, localUrl: 'xingmang-asset://image/x', fileName: '图.png' }
+    const oldComputer = workspace('xm-account:9', 1)
+    oldComputer.conversations[0] = { ...oldComputer.conversations[0], title: '搬家', updatedAt: 1000, messages: [
+      message(0, { content: '我的密钥 sk-live-0123456789abcdef 用不了', files: [{ name: 'log.txt', size: 3, text: 'Bearer abcdef0123456789', truncated: false }] }),
+      message(1, { assets: [asset] }),
+    ] }
+    function exported(state: typeof oldComputer) { return parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(state)))) }
+    const files = memoryFiles()
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, exported(oldComputer))).toEqual({ added: 1, updated: 0, skipped: 0 })
+    // 旧电脑又用了几天，再导一次。
+    oldComputer.conversations[0] = { ...oldComputer.conversations[0], updatedAt: 2000, messages: [...oldComputer.conversations[0].messages, message(2, { content: '后来聊的' }), message(3)] }
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, exported(oldComputer))).toEqual({ added: 0, updated: 1, skipped: 0 })
+    const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
+    expect(reopened.state.conversations).toHaveLength(1)
+    expect(reopened.state.conversations[0].messages.map((item) => item.content)).toEqual(['我的密钥 [密钥未保存] 用不了', 'content-1\n\n[图片没有一起搬过来]', '后来聊的', 'content-3'])
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, exported(oldComputer))).toEqual({ added: 0, updated: 0, skipped: 0 })
+  })
+
   it('merges into the saved files and survives a reopen', async () => {
     const files = memoryFiles()
     // 导入按 updatedAt 倒序排；夹具连着建的两个对话偶尔跨过一毫秒，后建的就排到前面，所以时间写死。
@@ -1017,10 +1110,10 @@ describe('moving history to another computer', () => {
     saved.conversations.forEach((conversation, index) => { conversation.updatedAt = 2000 - index * 1000 })
     await createHistoryWriter(files.api, null).save(saved)
     const imported = parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(workspace('xm-account:9', 0)))))
-    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toEqual({ added: 0, skipped: 0 })
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toEqual({ added: 0, updated: 0, skipped: 0 })
     const other = { ...createConversation(undefined, 'from-old-computer'), updatedAt: 3000, messages: [message()] }
-    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toEqual({ added: 1, skipped: 0 })
-    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toEqual({ added: 0, skipped: 0 })
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toEqual({ added: 1, updated: 0, skipped: 0 })
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toEqual({ added: 0, updated: 0, skipped: 0 })
     const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
     expect(reopened.state.conversations.map((conversation) => conversation.id)).toEqual(['from-old-computer', 'conversation-0', 'conversation-1'])
   })
@@ -1031,13 +1124,13 @@ describe('moving history to another computer', () => {
     saved.conversations.forEach((conversation, index) => { conversation.updatedAt = 1000 + index })
     await createHistoryWriter(files.api, null).save(saved)
     const imported = [3, 2, 1].map((index) => ({ ...createConversation(undefined, `from-old-computer-${index}`), updatedAt: 5000 + index, messages: [message()] }))
-    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toEqual({ added: 1, skipped: 2 })
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toEqual({ added: 1, updated: 0, skipped: 2 })
     const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
     expect(reopened.state.conversations).toHaveLength(200)
     expect(reopened.state.conversations[0].id).toBe('from-old-computer-3')
     expect(new Set(reopened.state.conversations.slice(1).map((conversation) => conversation.id))).toEqual(new Set(saved.conversations.map((conversation) => conversation.id)))
     files.api.writeHistory.mockClear()
-    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toEqual({ added: 0, skipped: 2 })
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toEqual({ added: 0, updated: 0, skipped: 2 })
     expect(files.api.writeHistory).not.toHaveBeenCalled()
   })
 
@@ -1075,7 +1168,7 @@ describe('moving history to another computer', () => {
     await vi.waitFor(() => expect(files.api.writeHistory).toHaveBeenCalledTimes(2))
     expect(files.api.readHistory).toHaveBeenCalledOnce()
     release()
-    expect(await importing).toEqual({ added: 1, skipped: 0 })
+    expect(await importing).toEqual({ added: 1, updated: 0, skipped: 0 })
     expect(new Set((await page).state.conversations.map((conversation) => conversation.id))).toEqual(new Set(['from-old-computer', 'conversation-0']))
   })
 

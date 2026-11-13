@@ -323,6 +323,8 @@ let nextImportHeld = false
 let releaseImport: () => void = () => undefined
 let nextChatHistoryReadHeld = false
 let releaseChatHistoryRead: () => void = () => undefined
+// ?chatImportContinued：第二次起导入的文件里，那个对话在旧电脑上又接着聊了一句（设置 X-4）。
+let importAppDataCount = 0
 // ?chatImage：对话页能选出图的模型，出的图压着不回，releaseChatImage 才交出来（D44 换账号先问一句）。
 let releaseChatImage: () => void = () => undefined
 const chatHistoryFiles = new Map<string, AiChatHistorySnapshot>()
@@ -959,7 +961,10 @@ const methods = {
       nextImportHeld = false
       await new Promise<void>((resolve) => { releaseImport = resolve })
     }
-    const conversation = { ...createConversation(undefined, 'from-old-computer'), title: '旧电脑上的对话', messages: [{ id: 'old-message', role: 'user' as const, content: '旧电脑上问过的话', reasoning: '', status: 'complete' as const, createdAt: 1 }] }
+    importAppDataCount += 1
+    const messages = [{ id: 'old-message', role: 'user' as const, content: '旧电脑上问过的话', reasoning: '', status: 'complete' as const, createdAt: 1 }]
+    if (query.has('chatImportContinued') && importAppDataCount > 1) messages.push({ id: 'old-message-later', role: 'user' as const, content: '旧电脑上后来又问的', reasoning: '', status: 'complete' as const, createdAt: 2 })
+    const conversation = { ...createConversation(undefined, 'from-old-computer'), title: '旧电脑上的对话', messages }
     return { conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }), phrases: ['旧电脑上存的一句'], settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] }
   },
   getLegalDocument: async (kind) => ({ kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }),

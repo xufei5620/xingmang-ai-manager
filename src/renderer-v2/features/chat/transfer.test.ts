@@ -46,7 +46,7 @@ describe('importing conversations while the chat page is around', () => {
       void writer.save({ ...shown, draftConversation: { ...shown.draftConversation, draft: '还没发出去的话' } })
       remounted = loadChatHistory(files.api, storage, scope)
     })
-    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, skipped: 0 })
+    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, updated: 0, skipped: 0 })
     const reloaded = await remounted!
     expect(ids(reloaded)).toEqual(new Set(['on-this-computer', 'from-old-computer']))
     expect(reloaded.state.draftConversation.draft).toBe('还没发出去的话')
@@ -115,7 +115,7 @@ describe('importing conversations while the chat is replying', () => {
     expect(files.bridge.writeAiChatHistory).not.toHaveBeenCalled()
     markBackgroundWork(reply, false)
     expect(() => transfer.assertChatIdle()).not.toThrow()
-    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, skipped: 0 })
+    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, updated: 0, skipped: 0 })
     expect(unmountChat).toHaveBeenCalledOnce()
   })
 
@@ -125,7 +125,7 @@ describe('importing conversations while the chat is replying', () => {
     busy('tool-jobs')
     busy('video-compose', 'video-compose')
     expect(() => transfer.assertChatIdle()).not.toThrow()
-    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, skipped: 0 })
+    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, updated: 0, skipped: 0 })
   })
 
   it('says it in the exact words the decision sheet gave', () => {
@@ -149,7 +149,7 @@ describe('moving saved phrases to a new computer', () => {
     const storage = memoryStorage()
     await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [conversation('here')], phrases: ['本机的一句', '两边都有'] })
     const transfer = createChatTransfer(files.bridge, storage, scope, () => undefined)
-    expect(await transfer.importConversations([conversation('here')], ['两边都有', '旧电脑的一句'])).toEqual({ added: 0, skipped: 0 })
+    expect(await transfer.importConversations([conversation('here')], ['两边都有', '旧电脑的一句'])).toEqual({ added: 0, updated: 0, skipped: 0 })
     expect((await loadChatHistory(files.api, storage, scope)).state.phrases).toEqual(['本机的一句', '两边都有', '旧电脑的一句'])
   })
 
