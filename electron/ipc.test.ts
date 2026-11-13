@@ -1726,6 +1726,34 @@ describe('registerIpcHandlers', () => {
     } finally { fs.rmSync(directory, { recursive: true, force: true }) }
   })
 
+  it('says the import file is busy rather than broken when it cannot be read right now', async () => {
+    // X-7：文件正被别的程序占着、没权限读，以前也说「不是星芒导出的，或者已经损坏」。
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
+    const busy = Object.assign(new Error('EBUSY: resource busy or locked, open'), { code: 'EBUSY' })
+    const open = vi.spyOn(fs.promises, 'open')
+    try {
+      const { dispose } = register(serviceStub())
+      const importData = electronMocks.handlers.get('data-transfer:import')!
+      const file = path.join(directory, 'moving.json')
+      fs.writeFileSync(file, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: {}, conversations: [] }))
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+      open.mockRejectedValueOnce(busy)
+      const failure = await importData(trustedEvent()).then(() => null, (error: unknown) => error)
+      expect(failure).toBeInstanceOf(Error)
+      expect((failure as Error).message).toBe('这个文件现在读不了，可能正被别的程序占着。关掉它，再点一次「导入」。')
+      expect((failure as Error).cause).toBe(busy)
+
+      // 记事本存过的（开头带 BOM）照常导进来。
+      fs.writeFileSync(file, `\uFEFF${JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: {}, conversations: [{ id: 'c1' }] })}`)
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+      await expect(importData(trustedEvent())).resolves.toMatchObject({ conversations: [{ id: 'c1' }] })
+      dispose()
+    } finally {
+      open.mockRestore()
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('carries the usage-stats switch across computers without ever turning it on unasked', async () => {
     // X-3：「匿名使用统计」在系统界面设置那份文件里，以前「搬到新电脑」不带它。
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))

@@ -190,6 +190,12 @@ describe('renderer-v2 operation error classification', () => {
     expect(presentOperationError('   ')).toBeNull()
   })
 
+  it('leaves the import file sentences alone instead of sending the user to close a tool', () => {
+    // X-7：导入文件被占着时主进程那句已经说清下一步；配上「工具正在运行」的标题会叫人去关命令行工具。
+    expect(presentOperationError('这个文件现在读不了，可能正被别的程序占着。关掉它，再点一次「导入」。')).toBeNull()
+    expect(presentOperationError('这个文件不是星芒导出的，或者已经损坏，没有导入任何内容。')).toBeNull()
+  })
+
   it('does not repeat wording the message already carries', () => {
     expect(presentOperationError('登录已过期，工具里已写入的 Key 还能用。')).toBeNull()
   })
