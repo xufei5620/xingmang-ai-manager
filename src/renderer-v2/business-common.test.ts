@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectionFailureMessage, errorMessage, failureWithDetail, operationFailureFrom, overflowedPage, rawErrorMessage, snapshotErrorMessage, speaksChinese, userFacingErrorMessage } from './business-common'
+import { detectionFailureMessage, dollars, errorMessage, failureWithDetail, operationFailureFrom, overflowedPage, rawErrorMessage, snapshotErrorMessage, speaksChinese, userFacingErrorMessage } from './business-common'
 
 describe('rawErrorMessage', () => {
   it('strips the Electron IPC prefix that would otherwise expose channel names', () => {
@@ -323,6 +323,24 @@ describe('detectionFailureMessage', () => {
     expect(detectionFailureMessage(null)).toBeNull()
     expect(detectionFailureMessage(undefined)).toBeNull()
     expect(detectionFailureMessage('  ')).toBeNull()
+  })
+})
+
+describe('dollars', () => {
+  it('keeps thousands separators and two decimals and falls back to a dash', () => {
+    expect(dollars(23456.784)).toBe('$23,456.78')
+    expect(dollars(0)).toBe('$0.00')
+    expect(dollars(null)).toBe('—')
+    expect(dollars(undefined)).toBe('—')
+    expect(dollars(Number.NaN)).toBe('—')
+  })
+
+  it('puts the minus sign in front of the dollar sign for an account in debt', () => {
+    expect(dollars(-0.03)).toBe('-$0.03')
+    expect(dollars(-1234.5)).toBe('-$1,234.50')
+    // 四舍五入后是 0 的负数不写成「-$0.00」。
+    expect(dollars(-0.004)).toBe('$0.00')
+    expect(dollars(-0)).toBe('$0.00')
   })
 })
 

@@ -17,6 +17,7 @@ import {
   redactRemoteText,
   remoteMessages,
   remoteOpenedMessage,
+  remoteDollars,
   remoteRunningForText,
   remoteTookText,
   remoteTurnFailureMessages,
@@ -196,6 +197,16 @@ describe('codex-remote-text', () => {
       .toBe('工作文件夹：~/p\n现在：空闲\n余额：$1,234.50\n再过 12 小时没新消息就自动关')
     expect(statusMessage({ workspace: '~/p', running: true, pendingApprovals: 2, runningForMs: 60_000, step: '运行测试' }))
       .toBe('工作文件夹：~/p\n现在：等你同意 2 条')
+  })
+
+  // 余额审查 F7：跟电脑上的 dollars() 同一种写法，欠费的负号写在 $ 前面。
+  it('writes a negative balance with the minus sign in front of the dollar sign', () => {
+    expect(remoteDollars(-0.03)).toBe('-$0.03')
+    expect(remoteDollars(-1234.5)).toBe('-$1,234.50')
+    expect(remoteDollars(-0.004)).toBe('$0.00')
+    expect(remoteDollars(12.4)).toBe('$12.40')
+    expect(statusMessage({ workspace: '~/p', running: false, pendingApprovals: 0, balanceUsd: -0.03, idleCloseHours: null }))
+      .toBe('工作文件夹：~/p\n现在：空闲\n余额：-$0.03')
   })
 
   it('writes the running time in minutes and hours', () => {

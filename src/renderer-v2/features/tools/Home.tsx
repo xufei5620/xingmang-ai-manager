@@ -306,8 +306,12 @@ export function nodeInstallerPartMissing(runtime: ToolboxSnapshot['system']['run
  * 新账号的余额本来就是 0，「余额只剩 $0.00」读起来像是用光了，客户不知道要先充值才能用；
  * 客服远程装好以后，这一行往往是客户看到的第一句跟钱有关的话。
  * 算不出最近用量（新账号、看不了用量）时退回这一句，按 $5 报（v4 方案问 6）。
+ * 最后一次调用把余额扣成负数时，余额那格写「-$0.03」，这句跟着说欠了多少（余额审查 F7）；
+ * 以前照样说「余额是 $0」，跟那格的数对不上。欠的不到半分钱时那格是 $0.00，这句也照 $0 说。
  */
 export function lowBalanceText(dollars: number) {
+  const owed = money(-dollars)
+  if (dollars < 0 && owed !== money(0)) return `当前账号已欠费 ${owed}，充值后才能继续用`
   return dollars <= 0 ? '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。' : `余额只剩 ${money(dollars)}，充值后可继续使用。`
 }
 
