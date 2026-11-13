@@ -443,7 +443,10 @@ module.exports = {
     icon: 'assets/brand/v3/favicon.ico',
     legalTrademarks: '星芒AI',
     artifactName: 'XingMang-AI-Manager-${version}-Setup.${ext}',
-    fileAssociations: [{ ext: canvasProjectExtension, name: windowsCanvasProjectProgId, description: canvasProjectTypeName }],
+    // 作品文件自己的图标（白纸折角＋星芒，深查 IC-10）。不写 icon 时 electron-builder 让它借用程序图标
+    // （"$appExe,0"），桌面上作品跟星芒的快捷方式一模一样。按名字在 build/ 里找，找不到打包直接报错；
+    // 安装时拷到安装目录的 resources 下，DefaultIcon 指过去。重新生成见 scripts/generate-canvas-project-icon.mjs。
+    fileAssociations: [{ ext: canvasProjectExtension, name: windowsCanvasProjectProgId, description: canvasProjectTypeName, icon: 'canvas-project.ico' }],
   },
   nsis: {
     oneClick: false,
