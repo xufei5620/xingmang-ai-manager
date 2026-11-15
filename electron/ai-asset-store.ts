@@ -854,8 +854,8 @@ export class AiAssetStore {
     if (!path.isAbsolute(target) || target.includes('\0')) throw new Error('图片另存地址无效')
     try {
       await writeAtomicSafeBinaryFile(target, owned.bytes, '图片另存文件', { mode: SAVED_COPY_FILE_MODE })
-    } catch {
-      throw new Error('图片另存失败，请检查目标目录写入权限')
+    } catch (error) {
+      throw new Error('图片另存失败，请检查目标目录写入权限', { cause: error })
     }
     return true
   }
@@ -943,7 +943,8 @@ export class AiAssetStore {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST' && fs.existsSync(filePath)) {
         throw new Error('AI 图片资产标识冲突，请重试')
       }
-      throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+      // 原因挂在 cause 上，日志里才看得到 ENOSPC、EPERM 这些（深查 S-1）；界面照旧只说这一句。
+      throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: error })
     }
     this.cacheRecord(assetId, { userId, filePath, asset })
     return { ...asset }

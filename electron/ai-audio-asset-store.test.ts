@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiAudioAssetStore, inspectAudio, inspectAudioMetadata } from './ai-audio-asset-store'
 import { setRelocatedFolderPolicy } from './relocated-folders'
+import { classifyStorageFailure } from './startup-failure'
 
 const roots: string[] = []
 
@@ -186,13 +187,30 @@ describe('AiAudioAssetStore', () => {
     const asset = await store.storeLocalFile(36, path.join(fixtureRoot, '8月14日.wav'))
 
     failTemporaryFileWrites()
-    await expect(store.saveAs(36, asset.assetId)).rejects.toThrow('音频另存失败，请检查目标目录写入权限')
+    const error = await store.saveAs(36, asset.assetId).then(() => null, (reason: unknown) => reason)
+    expect((error as Error).message).toBe('音频另存失败，请检查目标目录写入权限')
+    expect(classifyStorageFailure(error)).toBe('disk-full')
     expect(fs.readFileSync(target, 'utf8')).toBe('previous recording')
     expect(fs.readdirSync(saveRoot)).toEqual(['saved.wav'])
 
     vi.restoreAllMocks()
     await expect(store.saveAs(36, asset.assetId)).resolves.toBe(true)
     expect(fs.readFileSync(target)).toEqual(pcmWav())
+  })
+
+  it('keeps the operating-system reason under a failed import so the run log shows it (S-1)', async () => {
+    const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-audio-full-'))
+    const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-audio-full-source-'))
+    roots.push(outputRoot, sourceRoot)
+    const sourcePath = path.join(sourceRoot, 'one-second.wav')
+    fs.writeFileSync(sourcePath, pcmWav())
+    const store = new AiAudioAssetStore({ outputRoot })
+
+    failTemporaryFileWrites()
+    const error = await store.storeLocalFile(36, sourcePath).then(() => null, (reason: unknown) => reason)
+
+    expect((error as Error).message).toBe('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+    expect(classifyStorageFailure(error)).toBe('disk-full')
   })
 })
 
