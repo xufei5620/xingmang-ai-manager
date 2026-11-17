@@ -772,7 +772,7 @@ interface ChannelRuntime {
   lastPromptImages: string[]
   /**
    * 只发了图、还没说要做什么时攒着的图（YF-14），下一句话交给 Codex 时一起带上，最多 remoteImagesPerPrompt 张。
-   * 发「新对话」、关遥控、换人时删掉。
+   * 发「新对话」、关遥控、换人时删掉。跟一句没收下的话一起发来的图不留在这里（M05，见 runPrompt）。
    */
   pendingImages: string[]
 }
@@ -1451,6 +1451,14 @@ export class CodexRemoteService {
     })
   }
 
+  /** 跟一句没收下的话一起发来的图不再攒着、删掉（M05，见 runPrompt）；早先单独发来的照旧留着。 */
+  private returnIncomingImages(runtime: ChannelRuntime, incoming: readonly string[]): void {
+    const returned = runtime.pendingImages.filter((image) => incoming.includes(image))
+    if (returned.length === 0) return
+    runtime.pendingImages = runtime.pendingImages.filter((image) => !incoming.includes(image))
+    this.releaseImages(returned)
+  }
+
   /** 攒着的和上一句带过的图都不要了（关遥控、换人、重新打开）。 */
   private dropImages(runtime: ChannelRuntime): void {
     this.releaseImages([...runtime.pendingImages, ...runtime.lastPromptImages])
@@ -1900,10 +1908,14 @@ export class CodexRemoteService {
       return
     }
     let text: string
+    // 跟这句话一起发来、刚攒上的图（M05）：这句话没被收下时连它们一起退回。
+    let incoming: readonly string[] = []
     if (message.kind === 'image') {
-      if (!(await this.receiveImages(runtime, message))) return
+      const received = await this.receiveImages(runtime, message)
+      if (!received) return
       // 图和字一起发来的（飞书富文本、微信图文）：图已经攒上，字照常当一句话处理，是要做的事就带着图交出去。
       if (!message.text?.trim()) return
+      incoming = received
       text = message.text
     } else {
       text = message.text
@@ -1927,7 +1939,7 @@ export class CodexRemoteService {
           await this.sendText(runtime, remoteMessages.nothingToRetry)
           return
         }
-        await this.runPrompt(runtime, runtime.lastPrompt, true)
+        await this.runPrompt(runtime, runtime.lastPrompt, true, incoming)
         return
       case 'stop':
         if (!runtime.turn) {
@@ -1956,33 +1968,34 @@ export class CodexRemoteService {
         await this.answerApproval(runtime, command.decision, command.approvalId)
         return
       case 'prompt':
-        await this.runPrompt(runtime, command.text)
+        await this.runPrompt(runtime, command.text, false, incoming)
     }
   }
 
   /**
    * 手机上发来的图（YF-14）：走到这里已经核过是绑定的那个人，这才去平台取。认过开头字节是图片的存下来攒着，
    * 等下一句话一起交给 Codex；取不到、太大、攒满了，每种原因回一句。只有图、没带字、之前没攒着图时回一句
-   * 「收到图片」，免得连发几张收到一串一样的话。返回 false = 取图的这一会儿渠道关了或者换了人，别再往下做。
+   * 「收到图片」，免得连发几张收到一串一样的话。返回这条消息里攒上的图；null = 取图的这一会儿渠道关了或者
+   * 换了人，别再往下做。
    */
-  private async receiveImages(runtime: ChannelRuntime, message: RemoteInboundImage): Promise<boolean> {
+  private async receiveImages(runtime: ChannelRuntime, message: RemoteInboundImage): Promise<string[] | null> {
     const adapter = runtime.adapter
     const store = this.options.imageStore
     if (!adapter?.fetchImage || !store) {
       await this.sendText(runtime, remoteMessages.unsupported)
-      return true
+      return []
     }
     const stillHere = () => runtime.enabled && runtime.adapter === adapter && runtime.peer?.userId === message.peer.userId
     const hadPending = runtime.pendingImages.length > 0
     const problems = new Set<string>()
-    let added = 0
+    const added: string[] = []
     for (const ref of message.images) {
       if (runtime.pendingImages.length >= remoteImagesPerPrompt) {
         problems.add(remoteMessages.imagesFull)
         break
       }
       const result = await adapter.fetchImage(ref, remoteImageMaxBytes)
-      if (!stillHere()) return false
+      if (!stillHere()) return null
       if (!result.ok) {
         problems.add(imageProblemMessage(runtime.id, result.reason))
         continue
@@ -2007,15 +2020,15 @@ export class CodexRemoteService {
       }
       if (!stillHere()) {
         this.releaseImages([saved])
-        return false
+        return null
       }
       runtime.pendingImages.push(saved)
-      added += 1
+      added.push(saved)
     }
-    this.options.log('info', 'remote.images-received', { channel: runtime.id, added, offered: message.images.length })
+    this.options.log('info', 'remote.images-received', { channel: runtime.id, added: added.length, offered: message.images.length })
     for (const problem of problems) await this.sendText(runtime, problem)
-    if (added > 0 && !hadPending && !message.text?.trim()) await this.sendText(runtime, remoteMessages.imageReceived)
-    return stillHere()
+    if (added.length > 0 && !hadPending && !message.text?.trim()) await this.sendText(runtime, remoteMessages.imageReceived)
+    return stillHere() ? added : null
   }
 
   /**
@@ -2364,15 +2377,21 @@ export class CodexRemoteService {
 
   /**
    * retry：手机上发的是「重试」（YF-22），「收到」前面先说重发的是哪一句，带的是上一句的图。不是重试时
-   * 带上攒着的图（YF-14）。还在做上一条、没选文件夹时图照旧攒着，下一句再带。
+   * 带上攒着的图（YF-14）。
+   *
+   * incoming 是跟这句话同一条消息发来的图。还在做上一条、没选文件夹，这句话没收下时，这几张跟着一起退回（M05）：
+   * 手机上回的那句是让人做完再发，重发时会连图一起发；留着的话，下一句不相干的话会带上这几张交给 Codex。之前单独
+   * 发来、等着下一句的图照旧攒着，先发图、下一句再说要做什么的用法不变。
    */
-  private async runPrompt(runtime: ChannelRuntime, text: string, retry = false): Promise<void> {
+  private async runPrompt(runtime: ChannelRuntime, text: string, retry = false, incoming: readonly string[] = []): Promise<void> {
     if (runtime.turn) {
+      this.returnIncomingImages(runtime, incoming)
       await this.sendText(runtime, remoteMessages.busy)
       return
     }
     const workspace = (await this.options.store.readSettings()).workspaceDirectory
     if (!workspace) {
+      this.returnIncomingImages(runtime, incoming)
       await this.sendText(runtime, remoteMessages.codexUnavailable)
       return
     }
