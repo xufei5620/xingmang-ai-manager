@@ -54,6 +54,12 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 - **别用 `pkill -f <脚本名>` 收拾卡住的命令。** 命令行里带这串字的 shell 自己也会被杀掉。用进程号杀。（沿用 10-03）
 - **`npm test` 和 `npm run test:v2` 可以在同一个目录里同时后台跑**，没冒过假红。（沿用 11-09）
 - **容器里没有 zsh**（11-11 验），`electron/macos-platform.test.ts` 里真跑 zsh 的那批用例会自动跳过，不算失败。想让它们在容器里真跑，`apt-get install -y zsh`。（沿用 11-10）
+- **容器自带的 Claude Code 会让 `npm test` 红 4 个文件。** 容器的 `/opt/node22/bin` 里除了 `node`、`npm`，还有一个 `claude`（指向 `/opt/claude-code/bin/claude`），装 CLI 那几组用例照首页的判定认成「不是通过本工具安装的」，报「这台电脑上的 Claude Code 不是通过本工具安装的…」。红的是 `electron/system-service.certificate-trust`、`disk-space`、`download-stall`、`install-cancel` 四个 `.test.ts`，干净的 main 上一样红，不是你的改动弄的。去掉它再跑就绿：建一个只放 `node`、`npm`、`npx` 三个软链的目录，用它替掉 PATH 里的 `/opt/node22/bin`。（11-17 验：`npm run selfcheck` 里这四个文件 29 条红；单跑这四个文件，带它红、去掉它 57 条全绿）
+
+  ```bash
+  mkdir -p /tmp/nodebin && for t in node npm npx; do ln -sf /opt/node22/bin/$t /tmp/nodebin/$t; done
+  PATH=$(echo "$PATH" | sed 's#/opt/node22/bin#/tmp/nodebin#') npm test
+  ```
 - **容器里你是 root**（11-11 验）。Linux 版客户端拒绝以 root 启动，真开客户端要先处理这个（见第 7 节）。
 
 ## 4. Electron 二进制装不上时
