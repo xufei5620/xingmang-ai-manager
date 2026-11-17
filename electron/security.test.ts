@@ -7,6 +7,7 @@ import {
   isAllowedExternalUrl,
   hasDisallowedPackagedDebugSwitch,
   isTrustedIpcSenderUrl,
+  resolveAllowedExternalUrl,
   resolvePackagedApplicationFile,
   resolvePackagedLaunchArguments,
   type ApplicationUrlPolicy,
@@ -227,6 +228,23 @@ describe('external URL allowlist', () => {
     expect(isAllowedExternalUrl('javascript:alert(1)', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('not a URL', allowlist)).toBe(false)
   })
+
+  it('resolves an allowed link to the allowlist entry itself, never to the caller text', () => {
+    // The check compares parsed hrefs, so spellings that parse to an allowed
+    // page pass it. What reaches the OS browser must be the entry that was
+    // matched, not the raw string the check never looked at as text.
+    for (const spelling of [
+      ' https://xm.solov.cc/keys',
+      'https://xm.solov.cc/ke\tys',
+      'https:\\\\XM.solov.%63c\\x\\..\\keys',
+      'https://xm.solov.cc/keys',
+    ]) {
+      expect(resolveAllowedExternalUrl(spelling, allowlist)).toBe('https://xm.solov.cc/keys')
+    }
+    expect(resolveAllowedExternalUrl('https://xm.solov.cc/', allowlist)).toBe('https://xm.solov.cc')
+    expect(resolveAllowedExternalUrl('https://xm.solov.cc/keys?redirect=1', allowlist)).toBeNull()
+    expect(resolveAllowedExternalUrl('not a URL', allowlist)).toBeNull()
+  })
 })
 
 // Random inputs (fast-check): text glued around an allowlisted link, lookalike
@@ -263,6 +281,23 @@ describe('external URL allowlist with random inputs', () => {
       const candidate = `${before}${entry}${after}`
       if (isAllowedExternalUrl(candidate, allowlist)) expect(landsOnAllowedPage(candidate)).toBe(true)
     }), { numRuns: 500 })
+  })
+
+  // URL parsing drops leading and trailing spaces and control characters and
+  // every tab or line break, so these spellings pass the check while differing
+  // from the entry as text. The browser must still be handed the entry.
+  it('resolves a link spelled differently from an allowlist entry to that entry itself', () => {
+    const blank = fc.string({ unit: fc.constantFrom(' ', '\t', '\n', '\r', '\u0000', '\u001f'), maxLength: 4 })
+    fc.assert(fc.property(blank, fc.constantFrom(...allowlist), fc.array(fc.nat(), { maxLength: 4 }), blank, (before, entry, cuts, after) => {
+      let spelled = entry
+      for (const cut of cuts) {
+        const at = cut % (spelled.length + 1)
+        spelled = `${spelled.slice(0, at)}${cut % 2 === 0 ? '\t' : '\n'}${spelled.slice(at)}`
+      }
+      const resolved = resolveAllowedExternalUrl(`${before}${spelled}${after}`, allowlist)
+      expect(resolved !== null && allowlist.includes(resolved)).toBe(true)
+      expect(new URL(String(resolved)).href).toBe(new URL(entry).href)
+    }), { numRuns: 300 })
   })
 
   // A bare `:` is left out of the joints: `:443` is the default port and lands
