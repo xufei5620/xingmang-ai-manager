@@ -311,6 +311,8 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 
 **提交**：分支命名与 PR 规范见 `docs/COLLABORATION.md`。要借 GitHub Actions 临时跑一次探测（容器里做不到的核对），边界见同一份文档 §3 的「一次性探测工作流」：只读、不挂 environment、不读 secret、用完删分支。
 
+**合并前**：看一眼 PR 上 `removed-guards` 检查有没有标警告。它只提醒不拦，报的是删掉或改掉的门禁行、变少的测试；是放宽安全校验或少测东西的，要 yoyo 亲手打字同意，其余在 PR 正文里说一句为什么（见 `docs/COLLABORATION.md` §5）。
+
 **收尾**：这次踩到、下一个人也会踩的坑（环境怎么配、哪条用例会假红、哪个命令别这么用），随这个 PR 写回仓库文档：云端容器的进 `docs/CLOUD-SANDBOX.md`，测试基线的进 `docs/TEST-BASELINE.md`，改代码的陷阱进第 5 节或 `.claude/rules/` 里对应的那份。只记在云端项目的记忆里不算数：别的线程开工读不到，Claude·win 和本地会话更读不到（见 `docs/COLLABORATION.md` §7.4）。
 
 ---

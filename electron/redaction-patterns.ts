@@ -106,7 +106,7 @@ export function redactSecretShapes(value: string, replacement = REDACTED): strin
     .replace(JSON_WEB_TOKEN, text)
     .replace(CLOUD_ACCESS_KEY_ID, text)
     .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, `$1${text}`)
-    .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/gi, text)
+    .replace(new RegExp(`\\bsk-[A-Za-z0-9_-]{6,}${KEY_TAIL}`, 'gi'), text)
     .replace(new RegExp(`\\bAIza[A-Za-z0-9_-]{35,}${KEY_TAIL}`, 'g'), text)
     .replace(new RegExp(`\\bxai-[A-Za-z0-9_-]{20,}${KEY_TAIL}`, 'gi'), text)
 }
