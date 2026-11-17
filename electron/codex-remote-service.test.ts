@@ -2595,11 +2595,50 @@ describe('codex-remote-service lifecycle', () => {
     expect(channel.stopped).toBe(1)
     expect(weixin.stopped).toBe(1)
     expect(codex.kills).toContain('SIGTERM')
-    expect(s.logs).toContain('remote.closed-from-phone')
+    expect(s.logDetails.find((entry) => entry.event === 'remote.closed-from-phone')?.detail).toEqual({ channel: 'feishu', autoStartCleared: false })
     // 关了以后再发什么都没人理，得回电脑上打开。
     channel.handlers?.onInbound(text(alice, '跑一下测试'))
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(channel.texts()).toHaveLength(1)
+  })
+
+  // YR-1：开了「打开星芒时自动打开遥控」（YF-9）的，手机上急停要管到下一次打开星芒，不然一重开就自己连回去。
+  it('also turns off switching on at launch, so reopening Xingmang does not connect again', async () => {
+    const root = tempRoot()
+    const first = await setup({ root })
+    const channel = await enabledAndPaired(first)
+    await first.service.setAutoStart(true)
+    first.snapshots.length = 0
+
+    channel.handlers?.onInbound(text(alice, '关闭遥控'))
+    await vi.waitFor(() => expect(first.snapshots.at(-1)).toMatchObject({ channels: { feishu: { enabled: false } } }))
+    expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
+    // 卡片上的开关跟着显示关着，客户回到电脑前一看就明白。
+    expect(first.snapshots.at(-1)).not.toHaveProperty('autoStart')
+    expect((await first.store.readSettings()).autoStart).toBeUndefined()
+    expect(first.logDetails.find((entry) => entry.event === 'remote.closed-from-phone')?.detail).toEqual({ channel: 'feishu', autoStartCleared: true })
+    first.service.dispose()
+
+    const reopened = await setup({ root })
+    await reopened.service.startOnLaunch()
+    expect(reopened.service.hasEnabledChannel()).toBe(false)
+    expect(reopened.channels).toHaveLength(0)
+    expect(reopened.logs).not.toContain('remote.auto-started')
+    expect((await reopened.service.snapshot()).autoStart).toBeUndefined()
+  })
+
+  it('still switches every channel off when turning off switching on at launch cannot be saved', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.service.setAutoStart(true)
+    vi.spyOn(s.store, 'updateSettings').mockRejectedValueOnce(new Error('disk full'))
+
+    channel.handlers?.onInbound(text(alice, '关闭遥控'))
+    await vi.waitFor(() => expect(s.service.hasEnabledChannel()).toBe(false))
+    expect(channel.stopped).toBe(1)
+    expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
+    expect(s.logs).toContain('remote.auto-start-unsaved')
+    expect(s.logDetails.find((entry) => entry.event === 'remote.closed-from-phone')?.detail).toEqual({ channel: 'feishu', autoStartCleared: false })
   })
 
   it('ignores the close command from anyone but the paired person, and from a group', async () => {

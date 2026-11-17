@@ -2022,14 +2022,33 @@ export class CodexRemoteService {
    * 手机上发「关闭遥控」（YF-17）：手机丢了、发现不对劲，换台设备登录同一个账号就能当场关。跟托盘「关掉手机遥控」一样
    * 开着的渠道全关（同一个人两个渠道都开着时，只关一个等于没关），只是每个配对过的人收到的是「已关闭」那句。
    * 只认配对过的人（走到这里之前已经核过），要再开只能回电脑上。
+   * 「打开星芒时自动打开遥控」（YF-9）也一起关掉（YR-1）：不然星芒一重开（夜里装系统更新重启、闲时装完新版、崩溃再开）
+   * 遥控就自己连回去，急停只管到下一次重开，手机上那句「要再用，请在电脑上重新打开」也成了错话。
+   * 先关开关再断渠道：两步之间星芒要是退出了，渠道本来也跟着断了，反过来就会留下一个下次自己连上的开关。
+   * 开关没记下来（写设置失败）也照样断渠道，当场停住比什么都要紧。
    */
   private async closeFromPhone(from: ChannelRuntime): Promise<void> {
-    this.options.log('info', 'remote.closed-from-phone', { channel: from.id })
+    const autoStartCleared = await this.clearAutoStartFromPhone()
+    this.options.log('info', 'remote.closed-from-phone', { channel: from.id, autoStartCleared })
     for (const id of remoteChannelIds) {
       const runtime = this.runtimes[id]
       if (runtime.enabled) await this.disableChannel(runtime, remoteMessages.closedFromPhone)
     }
     await this.emit()
+  }
+
+  /** 关掉了返回 true；本来就没开、或者没记下来返回 false（没记下来另记一条日志）。 */
+  private async clearAutoStartFromPhone(): Promise<boolean> {
+    try {
+      if (!(await this.options.store.readSettings()).autoStart) return false
+      await this.options.store.updateSettings((settings) => {
+        delete settings.autoStart
+      })
+      return true
+    } catch {
+      this.options.log('warn', 'remote.auto-start-unsaved')
+      return false
+    }
   }
 
   private staleNoticedRecently(runtime: ChannelRuntime): boolean {
