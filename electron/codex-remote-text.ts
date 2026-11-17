@@ -13,6 +13,9 @@ export const remoteMessages = {
   busy: 'Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。',
   emptyAnswer: '这一轮做完了，Codex 没有留下文字回复。',
   interrupted: '已停止。',
+  // 请 Codex 停、它没答应（回了错、10 秒没回）时（M01）：这一轮照旧算在做，后来停下了再说「已停止。」。
+  stopPending: '还没停下来，Codex 还在处理上一条。停下以后会告诉你，也可以过一会儿再发一次「停止」。',
+  newThreadStopPending: '上一条还没停下来，新对话没开。Codex 停下以后会告诉你，到时再发「新对话」。',
   nothingToStop: '现在没有在处理的任务。',
   newThread: '已开始新对话。',
   // 语音、文件这些（YF-14，yoyo 2026-11-11「图片改」）：图片能发了，这句跟着改。
