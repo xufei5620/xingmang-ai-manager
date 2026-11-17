@@ -262,6 +262,8 @@ interface Setup {
    * 取过了文件还在写，目录里是一个 .tmp 临时文件；要看目录得等存图本身（Windows CI 上撞过，2026-11-12）。
    */
   imagesSaved(count: number): Promise<void>
+  /** 删图删够 count 张时 resolve（M05）：删图在后台做，要看目录得等删图本身。 */
+  imagesRemoved(count: number): Promise<void>
 }
 
 async function setup(options: {
@@ -316,6 +318,12 @@ async function setup(options: {
     if (savedImageCount >= count) return Promise.resolve()
     return new Promise((resolve) => { imageSaveWaiters.push({ count, resolve }) })
   }
+  let removedImageCount = 0
+  const imageRemoveWaiters: Array<{ count: number; resolve: () => void }> = []
+  function imagesRemoved(count: number): Promise<void> {
+    if (removedImageCount >= count) return Promise.resolve()
+    return new Promise((resolve) => { imageRemoveWaiters.push({ count, resolve }) })
+  }
   function observedImageStore(): RemoteImageStore {
     const real = createRemoteImageStore(imageDirectory)
     return {
@@ -329,6 +337,15 @@ async function setup(options: {
           waiter.resolve()
         }
         return saved
+      },
+      async remove(paths) {
+        await real.remove(paths)
+        removedImageCount += paths.length
+        for (const waiter of [...imageRemoveWaiters]) {
+          if (removedImageCount < waiter.count) continue
+          imageRemoveWaiters.splice(imageRemoveWaiters.indexOf(waiter), 1)
+          waiter.resolve()
+        }
       },
     }
   }
@@ -373,7 +390,7 @@ async function setup(options: {
     ...(options.readBalanceUsd ? { readBalanceUsd: options.readBalanceUsd } : {}),
     ...(options.images && options.imageStore !== false ? { imageStore: observedImageStore() } : {}),
   })
-  return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, logDetails, unavailable, imageDirectory, imagesSaved }
+  return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, logDetails, unavailable, imageDirectory, imagesSaved, imagesRemoved }
 }
 
 async function enabledAndPaired(s: Setup): Promise<FakeChannel> {
@@ -1878,7 +1895,8 @@ describe('codex-remote-service images', () => {
     channel.handlers?.onInbound(imageMessage(alice, ['img-a'], '照这张图改按钮颜色'))
     await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
     expect(channel.fetched).toEqual(['img-a'])
-    await vi.waitFor(() => expect(storedImages(s.imageDirectory)).toEqual([]))
+    await s.imagesRemoved(1)
+    expect(storedImages(s.imageDirectory)).toEqual([])
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
 
@@ -1901,7 +1919,8 @@ describe('codex-remote-service images', () => {
     expect(kept).toHaveLength(1)
     channel.handlers?.onInbound(imageMessage(alice, ['img-b'], '照这张图改'))
     await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
-    await vi.waitFor(() => expect(storedImages(s.imageDirectory)).toEqual(kept))
+    await s.imagesRemoved(1)
+    expect(storedImages(s.imageDirectory)).toEqual(kept)
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
 
@@ -1922,7 +1941,8 @@ describe('codex-remote-service images', () => {
     channel.handlers?.onInbound(imageMessage(alice, ['img-a'], '照这张图改按钮颜色'))
     await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。'))
     expect(channel.fetched).toEqual(['img-a'])
-    await vi.waitFor(() => expect(storedImages(s.imageDirectory)).toEqual([]))
+    await s.imagesRemoved(1)
+    expect(storedImages(s.imageDirectory)).toEqual([])
 
     await s.store.updateSettings((settings) => { settings.workspaceDirectory = s.workspace })
     const codex = await prompted(s, channel, '把标题改大一点')
