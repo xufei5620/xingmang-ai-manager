@@ -825,6 +825,10 @@ jobs:
       # Without --report this writes no files, which is what lets it sit in
       # front of the dirty-tree guard below.
       - run: npm run check:v2
+      # 客户看得到的字里有没有技术词、站点名、「Key」（对照官方「验证」文章的建议第 8 条）。
+      # 先只报不拦：它总是以 0 退出，命中的地方写进这个作业的摘要；误报调干净了，
+      # 再另写一道 verify-*.test.cjs 进 npm test。它不往仓库里写文件，所以放在下面那道检查前面也行。
+      - run: npm run check:wording
       # R-G12: `legacy` is the rollback renderer, and until this step nothing
       # in CI ever built it — its React 18 alias table in vite.config.ts only
       # resolves when XINGMANG_RENDERER=legacy, so a dropped pinned dependency
