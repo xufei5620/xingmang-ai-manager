@@ -339,6 +339,24 @@ describe('downloadWeixinImage', () => {
     await expect(downloadWeixinImage(redirected.fetch, { encryptQueryParam: 'q', aesKeyHex: null }, 1024)).resolves.toMatchObject({ ok: false, reason: 'failed', failure: 'redirected' })
   })
 
+  // YR-5：图下到一半断了网，不说「太大了」，按没取到算，原因记 network。
+  it('reports a download that breaks off midway as not received, not as too large', async () => {
+    let sent = false
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent) {
+          controller.error(new Error('net::ERR_CONNECTION_RESET'))
+          return
+        }
+        sent = true
+        controller.enqueue(new Uint8Array(encrypted(picture).subarray(0, 16)))
+      },
+    })
+    const broken = mockFetch([new Response(body, { status: 200, headers: { 'Content-Type': 'image/jpeg' } })])
+    await expect(downloadWeixinImage(broken.fetch, { encryptQueryParam: 'q', aesKeyHex: key.toString('hex') }, 1024))
+      .resolves.toEqual({ ok: false, reason: 'failed', failure: 'network' })
+  })
+
   it('does not ask anyone when it does not know where the image is', async () => {
     const { fetch, requests } = mockFetch([])
     await expect(downloadWeixinImage(fetch, { encryptQueryParam: '', aesKeyHex: null }, 1024)).resolves.toMatchObject({ ok: false, reason: 'failed' })
