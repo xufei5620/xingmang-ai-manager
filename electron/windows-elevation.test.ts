@@ -1,5 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
+import fc from 'fast-check'
 import { describe, expect, it, vi } from 'vitest'
 import { buildClaudeRetainedVersionFilesCommand } from './claude-native-uninstall'
 import { cliExitHintLines } from './cli-exit-hint'
@@ -1187,6 +1188,34 @@ describe('PowerShell wildcard escaping', () => {
     expect(containsPowerShellWildcard('D:\\作业[1]')).toBe(true)
     // Escaping only the brackets is not enough once a backtick comes before one.
     expect(containsPowerShellWildcard('C:\\a`[1]'.replace(/[[\]]/g, '`$&'))).toBe(true)
+  })
+})
+
+// Random inputs (fast-check): folder names heavy on every quote PowerShell
+// knows, backticks and wildcard characters, read back with the same scanners
+// the examples above use. A failing run prints its seed and the smallest name
+// that escaped its literal or turned back into a pattern.
+describe('PowerShell quoting with random inputs', () => {
+  const awkward = fc.constantFrom(...powerShellSingleQuotes, ...powerShellDoubleQuotes, '`', '$', '[', ']', '*', '?', '(', ')', ';', '&', '|', '#', '@', '{', '}', '\\', ' ', 'a', '作')
+  const folderName = fc.oneof(
+    fc.string({ unit: awkward, maxLength: 24 }),
+    fc.string({ unit: 'binary', maxLength: 24 }),
+  )
+
+  it('keeps any text one verbatim literal, with the code after it untouched', () => {
+    fc.assert(fc.property(folderName, (value) => {
+      expect(scanPowerShellQuotes(`$path = ${powerShellLiteral(value)}; Remove-Item -LiteralPath $path`))
+        .toEqual({ code: "$path = ''; Remove-Item -LiteralPath $path", literals: [value], unterminated: false })
+    }), { numRuns: 500 })
+  })
+
+  it('escapes any folder name so it holds no live wildcard and reads back as itself', () => {
+    fc.assert(fc.property(folderName, (value) => {
+      const escaped = escapePowerShellWildcard(value)
+      expect(containsPowerShellWildcard(escaped)).toBe(false)
+      expect(unescapePowerShellWildcard(escaped)).toBe(value)
+      expect(scanPowerShellQuotes(powerShellLiteral(escaped)).literals).toEqual([escaped])
+    }), { numRuns: 500 })
   })
 })
 
