@@ -879,7 +879,8 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
   }
 
   private setStatus(status: RemoteChannelStatus): void {
-    if (status.state === this.lastStatus.state && status.message === this.lastStatus.message && status.problem === this.lastStatus.problem) return
+    if (status.state === this.lastStatus.state && status.message === this.lastStatus.message && status.problem === this.lastStatus.problem
+      && status.halted === this.lastStatus.halted) return
     this.lastStatus = status
     this.handlers?.onStatus(status)
   }
