@@ -2611,8 +2611,10 @@ describe('codex-remote-service lifecycle', () => {
     first.snapshots.length = 0
 
     channel.handlers?.onInbound(text(alice, '关闭遥控'))
-    await vi.waitFor(() => expect(first.snapshots.at(-1)).toMatchObject({ channels: { feishu: { enabled: false } } }))
+    // 先把关掉的开关原子写进盘才断渠道、发「已关闭」：直接等发送本身，不靠 vi.waitFor 的 1 秒（R16）。
+    await channel.sentUntil(() => channel.texts().length > 0)
     expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
+    await vi.waitFor(() => expect(first.snapshots.at(-1)).toMatchObject({ channels: { feishu: { enabled: false } } }))
     // 卡片上的开关跟着显示关着，客户回到电脑前一看就明白。
     expect(first.snapshots.at(-1)).not.toHaveProperty('autoStart')
     expect((await first.store.readSettings()).autoStart).toBeUndefined()
@@ -2634,8 +2636,9 @@ describe('codex-remote-service lifecycle', () => {
     vi.spyOn(s.store, 'updateSettings').mockRejectedValueOnce(new Error('disk full'))
 
     channel.handlers?.onInbound(text(alice, '关闭遥控'))
-    await vi.waitFor(() => expect(s.service.hasEnabledChannel()).toBe(false))
-    expect(channel.stopped).toBe(1)
+    await channel.sentUntil(() => channel.texts().length > 0)
+    expect(s.service.hasEnabledChannel()).toBe(false)
+    await vi.waitFor(() => expect(channel.stopped).toBe(1))
     expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
     expect(s.logs).toContain('remote.auto-start-unsaved')
     expect(s.logDetails.find((entry) => entry.event === 'remote.closed-from-phone')?.detail).toEqual({ channel: 'feishu', autoStartCleared: false })
