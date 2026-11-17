@@ -1266,9 +1266,10 @@ test('main paces its matrix with one wait, and pull requests never wait', () => 
   }
   // The wait is spent inside the job's own bound; the rest took seconds.
   assert.ok(job['timeout-minutes'] >= 13, 'the job bound must leave room after the ten-minute wait')
-  // It is for merges to main, not a way to pace anything else.
+  // It is for merges to main, not a way to pace anything else. A job that
+  // calls another workflow has no steps of its own here.
   const sleepers = Object.entries(workflow.jobs)
-    .filter(([, entry]) => entry.steps.some((step) => /\bsleep\b/i.test(String(step.run || ''))))
+    .filter(([, entry]) => (entry.steps || []).some((step) => /\bsleep\b/i.test(String(step.run || ''))))
     .map(([name]) => name)
   assert.deepEqual(sleepers, ['changes'])
 
@@ -1337,7 +1338,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   const vm = require('node:vm')
   const gate = workflow.jobs['quality-gate']
   assert.equal(gate.if, 'always()')
-  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-relay-probe', 'secret-scan'])
+  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-relay-probe', 'upgrade-smoke', 'uninstall-smoke', 'secret-scan'])
   const source = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
   const run = (source, jobs) => {
     assert.doesNotThrow(() => JSON.stringify(jobs))
@@ -1345,8 +1346,10 @@ test('the required aggregate fails for incomplete checks and accepts documentati
     try { vm.runInNewContext(source, { process: { env: { JOB_RESULTS: JSON.stringify(jobs) }, exit: () => { throw new Error('failed') } } }) } catch { failed = true }
     return !failed
   }
-  const verify = (code, changeResult, results, macPackaging = code === 'true' ? 'true' : 'false') => {
-    const jobs = { changes: { outputs: { code, macPackaging }, result: changeResult } }
+  const verify = (code, changeResult, results, macPackaging = code === 'true' ? 'true' : 'false', smokes = {}) => {
+    const upgradeSmoke = 'upgradeSmoke' in smokes ? smokes.upgradeSmoke : 'false'
+    const uninstallSmoke = 'uninstallSmoke' in smokes ? smokes.uninstallSmoke : 'false'
+    const jobs = { changes: { outputs: { code, macPackaging, upgradeSmoke, uninstallSmoke }, result: changeResult } }
     for (const name of ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
       jobs[name] = { result: results[name] || 'success' }
     }
@@ -1354,6 +1357,9 @@ test('the required aggregate fails for incomplete checks and accepts documentati
     // The probe has its own trigger, so "skipped" is its normal state on a
     // pull request that leaves the verified-version list alone.
     jobs['cli-relay-probe'] = { result: results['cli-relay-probe'] || 'skipped' }
+    // The installer smokes run where they are due and skip everywhere else.
+    jobs['upgrade-smoke'] = { result: results['upgrade-smoke'] || (upgradeSmoke === 'true' ? 'success' : 'skipped') }
+    jobs['uninstall-smoke'] = { result: results['uninstall-smoke'] || (uninstallSmoke === 'true' ? 'success' : 'skipped') }
     jobs['secret-scan'] = { result: results['secret-scan'] || 'success' }
     return run(source, jobs)
   }
@@ -1414,6 +1420,27 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   assert.equal(verify('true', 'success', { 'secret-scan': 'cancelled' }), false)
   assert.equal(verify('false', 'success', { ...documentationOnly, 'secret-scan': 'failure' }), false)
   assert.equal(verify('false', 'success', { ...documentationOnly, 'secret-scan': 'skipped' }), false)
+  // CI-6: the installer smokes used to be workflows the gate could not see,
+  // and #1524 merged with the upgrade smoke red. Due, they block like any
+  // other job; not due, they report skipped and that passes.
+  for (const [output, name] of [['upgradeSmoke', 'upgrade-smoke'], ['uninstallSmoke', 'uninstall-smoke']]) {
+    const due = { [output]: 'true' }
+    assert.equal(verify('true', 'success', {}, 'true', due), true, name)
+    assert.equal(verify('true', 'success', { [name]: 'failure' }, 'true', due), false, name)
+    assert.equal(verify('true', 'success', { [name]: 'cancelled' }, 'true', due), false, name)
+    // Due and skipped is how a broken call or a cancelled matrix would look.
+    assert.equal(verify('true', 'success', { [name]: 'skipped' }, 'true', due), false, name)
+    // Not due means it cannot have run.
+    assert.equal(verify('true', 'success', { [name]: 'success' }, 'true'), false, name)
+    assert.equal(verify('true', 'success', { [name]: 'failure' }, 'true'), false, name)
+    // Only a change that runs the code checks can make them due, and a missing
+    // output reaches the gate as '', which is as unusable as a wrong one.
+    assert.equal(verify('false', 'success', documentationOnly, 'false', due), false, name)
+    assert.equal(verify('true', 'success', {}, 'true', { [output]: '' }), false, name)
+    assert.equal(verify('true', 'success', {}, 'true', { [output]: null }), false, name)
+  }
+  assert.equal(verify('true', 'success', {}, 'true', { upgradeSmoke: 'true', uninstallSmoke: 'true' }), true)
+  assert.equal(verify('true', 'success', { 'uninstall-smoke': 'failure' }, 'true', { upgradeSmoke: 'true', uninstallSmoke: 'true' }), false)
 
   // The fold-in job itself: it is what keeps a single `test` check meaning
   // "Windows is green" after the matrix replaced the job that used to be it.
@@ -1546,6 +1573,92 @@ test('the relay probe runs exactly when the verified-version list moves', () => 
   assert.equal(probeStep.env.XINGMANG_CLI_PATROL_KEY_CLAUDE, '${{ secrets.XINGMANG_CLI_PATROL_KEY_CLAUDE }}')
   assert.equal(probeStep.run.includes('secrets.'), false, 'the key must never be interpolated into a command line')
   assert.equal(runSteps('cli-relay-probe').some((command) => command.startsWith('npm ci')), true)
+})
+
+test('the installer smokes run inside quality on the pull requests that touch their paths, never on their own', () => {
+  const { touchesUpgradeSmoke, touchesUninstallSmoke, requiresInstallerSmokeForEvent } = require('./ci-change-scope.cjs')
+  for (const file of [
+    'electron/updater.ts',
+    'electron/auto-update-install.ts',
+    'electron/installed-release.ts',
+    'electron/update-signature.ts',
+    'electron/update-install-prompt.ts',
+    'electron/bootstrap/updates.ts',
+    'electron/app-settings.ts',
+    'electron-builder.config.cjs',
+    'build/installer.nsh',
+    'package.json',
+    'package-lock.json',
+    'scripts/upgrade-smoke.cjs',
+    'scripts/upgrade-smoke-support.cjs',
+    '.github/workflows/upgrade-smoke.yml',
+  ]) {
+    assert.equal(touchesUpgradeSmoke(['README.md', file]), true, file)
+  }
+  for (const file of ['electron/ipc.ts', 'electron/bootstrap/update.ts', 'electron/sub/update-x.ts', 'scripts/upgrade-smoke.test.cjs']) {
+    assert.equal(touchesUpgradeSmoke(['README.md', file]), false, file)
+  }
+  for (const file of [
+    'build/installer.nsh',
+    'electron-builder.config.cjs',
+    'electron/platform/entry.ts',
+    'electron/uninstall-cleanup-entry.ts',
+    'electron/platform/windows-system-proxy.ts',
+    'electron/platform/system-service.ts',
+    'electron/login-launch.ts',
+    'scripts/windows-acceleration-recovery.ps1',
+    'scripts/windows-uninstall-cleanup-smoke.ps1',
+    'scripts/windows-uninstall-shortcuts-smoke.ps1',
+    'scripts/windows-install-directory-acl-smoke.ps1',
+    'scripts/windows-file-association-smoke.ps1',
+    'scripts/windows-upgrade-blocked-smoke.ps1',
+    '.github/workflows/windows-uninstall-smoke.yml',
+  ]) {
+    assert.equal(touchesUninstallSmoke(['README.md', file]), true, file)
+  }
+  for (const file of ['electron/ipc.ts', 'electron/platform/entry.test.ts', 'scripts/windows-acceleration-recovery.test.cjs']) {
+    assert.equal(touchesUninstallSmoke(['README.md', file]), false, file)
+  }
+
+  // Pull requests only, as the paths filters were; an unknown range runs them,
+  // and a change that skips the code checks cannot.
+  assert.equal(requiresInstallerSmokeForEvent('pull_request', ['electron/updater.ts'], touchesUpgradeSmoke), true)
+  assert.equal(requiresInstallerSmokeForEvent('pull_request', ['electron/ipc.ts'], touchesUpgradeSmoke), false)
+  assert.equal(requiresInstallerSmokeForEvent('pull_request', null, touchesUpgradeSmoke), true)
+  assert.equal(requiresInstallerSmokeForEvent('pull_request', ['docs/guide.md'], touchesUpgradeSmoke), false)
+  assert.equal(requiresInstallerSmokeForEvent('push', ['electron/updater.ts'], touchesUpgradeSmoke), false)
+  assert.equal(requiresInstallerSmokeForEvent('push', null, touchesUninstallSmoke), false)
+
+  const scopeSource = fs.readFileSync(path.join(root, 'scripts', 'ci-change-scope.cjs'), 'utf8')
+  assert.match(scopeSource, /upgradeSmoke=\$\{upgradeSmoke\}/)
+  assert.match(scopeSource, /uninstallSmoke=\$\{uninstallSmoke\}/)
+  assert.equal(workflow.jobs.changes.outputs.upgradeSmoke, '${{ steps.scope.outputs.upgradeSmoke }}')
+  assert.equal(workflow.jobs.changes.outputs.uninstallSmoke, '${{ steps.scope.outputs.uninstallSmoke }}')
+
+  const calls = { 'upgrade-smoke': ['upgradeSmoke', 'upgrade-smoke.yml'], 'uninstall-smoke': ['uninstallSmoke', 'windows-uninstall-smoke.yml'] }
+  for (const [name, [output, file]] of Object.entries(calls)) {
+    const job = workflow.jobs[name]
+    assert.equal(job.uses, `./.github/workflows/${file}`, name)
+    assert.equal(job.needs, 'changes', name)
+    assert.equal(job.if, `needs.changes.outputs.${output} == 'true'`, name)
+    // No secrets: neither smoke reads one, and a call must not hand them over.
+    assert.equal(job.secrets, undefined, name)
+
+    const called = YAML.parse(fs.readFileSync(path.join(root, '.github', 'workflows', file), 'utf8'))
+    // A pull_request trigger of its own would run it a second time, outside
+    // the gate, which is exactly how a red one used to slip through.
+    assert.ok(Object.hasOwn(called.on, 'workflow_call'), `${file} must be callable`)
+    assert.equal(Object.hasOwn(called.on, 'pull_request'), false, `${file} must not trigger itself on pull requests`)
+    assert.equal(Object.hasOwn(called.on, 'push'), false, `${file} must not trigger itself on push`)
+    assert.deepEqual(called.permissions, { contents: 'read' }, file)
+    // github.workflow is the caller's name inside a called workflow. A group of
+    // workflow + ref alone would equal quality's own and cancel the very run
+    // that called it.
+    const group = String(called.concurrency.group)
+    assert.notEqual(group, workflow.concurrency.group, file)
+    assert.match(group, /smoke/, file)
+    for (const calledJob of Object.values(called.jobs)) assert.equal(calledJob.environment, undefined, file)
+  }
 })
 
 test('the packaging-only macOS jobs run when a pull request moves a packaging input, and on every push to main', () => {
@@ -1695,6 +1808,8 @@ test('packaged Markdown and validation data always require code checks', () => {
   for (const file of [
     'docs/canvas-third-party.json',
     'docs/CANVAS-THIRD-PARTY.md',
+    'docs/RELIABILITY-CHECKLIST.md',
+    'docs/CI-RERUN-LEDGER.md',
     'bundled-skills/xingmang-ai/SKILL.md',
     'bundled-skills/xingmang-ai/references.md',
     'assets/brand/v3/README.md',
