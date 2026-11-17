@@ -148,6 +148,16 @@ describe('redactSecretShapes', () => {
     expect(redactSecretShapes(text)).toBe(expected.replaceAll('<$1 $& $$>', '[REDACTED]'))
   })
 
+  // The `sk-` rule ended on `\b`, which stops short of a key ending in `-`:
+  // the dash stayed readable after the replacement, and a body of fewer than
+  // six letters and digits padded out with dashes was not hidden at all.
+  it('redacts an sk- key through its trailing dashes', () => {
+    expect(redactSecretShapes(`rejected ${fakeRelayKey}- here`)).toBe('rejected [REDACTED] here')
+    expect(redactSecretShapes(`"${fakeRelayKey}--"`)).toBe('"[REDACTED]"')
+    expect(redactSecretShapes('sk-fake---.')).toBe('[REDACTED].')
+    expect(redactSecretPatterns(`relay key ${fakeRelayKey}-`)).toBe('relay key [REDACTED]')
+  })
+
   it('does not treat short look-alikes as keys', () => {
     expect(redactSecretShapes('AIzaShort and xai-short and desk-toolbar')).toBe('AIzaShort and xai-short and desk-toolbar')
   })
