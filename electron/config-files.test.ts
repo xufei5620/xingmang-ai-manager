@@ -1084,6 +1084,7 @@ describe('native CLI configuration files', () => {
           allowed_models: ['grok'],
         })
         expect(settings.endpoints).toEqual({ xai_api_base_url: 'https://xm.solov.cc/v1' })
+        expect(settings.features).toEqual({ video_gen: false })
         expect(asRecord(settings.model)?.grok).toMatchObject({
           model,
           base_url: 'https://xm.solov.cc/v1',
@@ -1854,6 +1855,30 @@ describe('native CLI configuration files', () => {
       xai_api_base_url: 'https://xm.solov.cc/v1',
       feedback_base_url: 'https://example.invalid',
     })
+  })
+
+  it('turns the Grok video tools off when merging, unless the user set them', () => {
+    // The relay hands back xAI's own video address, which Grok downloads straight
+    // from the customer's machine; x.ai is blocked in mainland China, so every
+    // video was charged and never arrived (2026-11-17, yoyo「关视频」).
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('grok', 'old-key', testModels.grok, 'reset', roots, {}, providerBaseUrls)
+    const [configPath] = providerConfigPaths('grok', roots)
+    const seeded = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    seeded.features = { lsp_tools: true }
+    fs.writeFileSync(configPath, TOML.stringify(seeded as Parameters<typeof TOML.stringify>[0]), 'utf8')
+
+    saveProviderConfig('grok', 'new-key', testModels.grok, 'merge', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).features).toEqual({ lsp_tools: true, video_gen: false })
+
+    // A customer who turned video back on keeps it on across later saves.
+    const chosen = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    chosen.features = { video_gen: true }
+    fs.writeFileSync(configPath, TOML.stringify(chosen as Parameters<typeof TOML.stringify>[0]), 'utf8')
+
+    saveProviderConfig('grok', 'newer-key', testModels.grok, 'merge', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).features).toEqual({ video_gen: true })
   })
 
   it('limits the Grok model picker to the relay entry and routes titles through it when merging', () => {
@@ -4340,6 +4365,8 @@ describe('switching a provider back to the official subscription account', () =>
 
     const settings = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     expect(settings.cli).toEqual({ auto_update: false })
+    // Nothing tells our video_gen = false apart from one the customer wrote, so it stays.
+    expect(settings.features).toEqual({ video_gen: false })
     expect(settings.models).toBeUndefined()
     expect(settings.model).toEqual({ mine: { model: 'grok-4.6', base_url: 'https://my.example.com/v1', api_key: 'sk-mine' } })
     expect(settings.endpoints).toEqual({ feedback_base_url: 'https://example.invalid' })
@@ -5473,6 +5500,41 @@ describe('bringing an older account config up to the current template', () => {
     expect(asRecord(parsed.models)?.session_summary).toBe('grok-4.6')
     expect(asRecord(parsed.models)?.image_description).toBe('grok')
     expect(asRecord(parsed.models)?.allowed_models).toEqual(['grok'])
+    expect(asRecord(parsed.features)?.video_gen).toBe(false)
+  })
+
+  it('turns the Grok video tools off for existing customers only where they never set them', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = providerConfigPaths('grok', roots)[0]
+    const relayConfig = [
+      '[cli]',
+      'auto_update = false',
+      '',
+      '[models]',
+      'default = "grok"',
+      'session_summary = "grok"',
+      'image_description = "grok"',
+      'allowed_models = ["grok"]',
+      '',
+      '[model.grok]',
+      'model = "grok-4.5"',
+      `base_url = "${providerBaseUrls.grok}"`,
+      'api_key = "sk-fixture"',
+      '',
+      '[endpoints]',
+      `xai_api_base_url = "${providerBaseUrls.grok}"`,
+      '',
+    ].join('\n')
+    writeFile(configPath, relayConfig)
+    expect(relayTemplateDefaultsPending('grok', roots, providerBaseUrls)).toBe(true)
+
+    fillRelayTemplateDefaults('grok', roots, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).features).toEqual({ video_gen: false })
+
+    writeFile(configPath, `${relayConfig}\n[features]\nvideo_gen = true\n`)
+    fillRelayTemplateDefaults('grok', roots, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).features).toEqual({ video_gen: true })
   })
 })
 
