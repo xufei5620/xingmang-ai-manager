@@ -6,7 +6,9 @@
 # 三种跑法：
 #   - package-for-testing.yml 出完发版前那两份包以后调用这里（workflow_call），测的就是要交出去
 #     装的那两份包本身。每发一版都会先出这两份包，所以每一版都会测到。
-#   - 动到更新链路的 PR 自动跑（pull_request），这时现出一份包来测。
+#   - 动到更新链路的 PR 由 quality.yml 调用（workflow_call），这时现出一份包来测。名单在
+#     scripts/ci-change-scope.cjs 的 upgradeSmokeFiles；该跑的时候 quality-gate 要它绿才放行。
+#     以前这里自己按 paths 触发，quality-gate 看不见，红着也能合（CI-6）。
 #   - 手动点（workflow_dispatch），同样现出一份包。
 #
 # 现出的包只用来测，名字里写明了，留三天就删；Windows 那份走无签名发布模式（客户拿到的就是这种），
@@ -18,21 +20,6 @@
 name: upgrade-smoke
 
 on:
-  pull_request:
-    paths:
-      - electron/updater.ts
-      - electron/auto-update-install.ts
-      - electron/installed-release.ts
-      - electron/update-*.ts
-      - electron/bootstrap/updates.ts
-      - electron/app-settings.ts
-      - electron-builder.config.cjs
-      - build/installer.nsh
-      - package.json
-      - package-lock.json
-      - scripts/upgrade-smoke.cjs
-      - scripts/upgrade-smoke-support.cjs
-      - .github/workflows/upgrade-smoke.yml
   workflow_dispatch:
     inputs:
       platforms:
@@ -66,7 +53,8 @@ permissions:
   contents: read
 
 concurrency:
-  # 被 package-for-testing 调用时 github.workflow 是调用方的名字，两个平台各调一次，靠 platforms 分开。
+  # 被调用时 github.workflow 是调用方的名字（package-for-testing 或 quality），所以不会和调用方自己的
+  # 并发组撞上；package-for-testing 两个平台各调一次，靠 platforms 分开。
   group: ${{ github.workflow }}-upgrade-smoke-${{ github.ref }}-${{ inputs.platforms || 'both' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 

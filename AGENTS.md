@@ -304,9 +304,11 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 
 **改动前**：读第 4、5 节（不变量与陷阱）；从最新 `main` 拉分支。多人并行时在对应 Issue 上留言认领。
 
-**改动中**：一个 PR 只做一件事；涉及安全边界的改动，先在测试里写出"为什么安全"。修缺陷先写一条在旧代码上会红的用例，再改到它变绿；确实写不出用例的（只在真机上才现形的那类），在 PR 里写明为什么。
+**改动中**：一个 PR 只做一件事；涉及安全边界的改动，先在测试里写出"为什么安全"。修缺陷先写一条在旧代码上会红的用例，再改到它变绿；确实写不出用例的（只在真机上才现形的那类），在 PR 里写明为什么。**同一个检查（一条用例、一道门禁、CI 上的一个作业）连修三轮还红，就停手**：不再改第四轮，写清卡在哪、试过什么、为什么没好，交回协调者（或叫你干活的人）。三轮修不好的，多半是理解错了，再修下去容易变成改断言迁就代码。
 
-**提交前**：`npm run typecheck` + `npm test` 两条都要过（见第 3 节）。提 PR 前四道自查用 `npm run selfcheck` 一条跑完。
+**提交前**：`npm run typecheck` + `npm test` 两条都要过（见第 3 节）。提 PR 前四道自查用 `npm run selfcheck` 一条跑完。再跑 `npm run checklist`：按这次改动从 `origin/main` 上的 `docs/RELIABILITY-CHECKLIST.md` 挑出要查的几条，照着查，命中了哪几条、怎么查的写进 PR 正文。
+
+**CI 红了**：不是这次改动弄的，先查账（`npm run ci:rerun-ledger -- <用例名>`）。两周内记过同一条就不许再重跑，开线程查根因；没记过才重跑一次，而且要先在 `docs/CI-RERUN-LEDGER.md` 末尾记一行、作为提交推上去，这次推送就是那一次重跑。不删测试、不跳过、不调大超时（细则在那份文件开头）。
 
 **写变更日志**：在 `changes/unreleased/` 下放一个分片文件（`## 用户` 进 `release-notes.md`，`## 开发` 进 `CHANGELOG.md`，写法见该目录 README），发版时 `npm run changelog:collect` 汇总。**不要直接改两份文件的「未发布」段**——并行 PR 都往那一段加行必冲突，而带冲突的 PR GitHub 不触发 CI，CI 会拒绝这种改动。
 
@@ -334,6 +336,8 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 | 发版 | `docs/RELEASING.md` |
 | 在云端容器里干活 | `docs/CLOUD-SANDBOX.md` |
 | 排查测试基线 | `docs/TEST-BASELINE.md` |
+| 开 PR 前挑要查的、合并前复核 | `docs/RELIABILITY-CHECKLIST.md`（`npm run checklist`） |
+| CI 红了想重跑 | `docs/CI-RERUN-LEDGER.md`（`npm run ci:rerun-ledger`） |
 | 了解产品背景与优先级 | `docs/ROADMAP.md`、`README.md` |
 | 已确认问题与修复计划 | `docs/IMPROVEMENT-PLAN.md` |
 

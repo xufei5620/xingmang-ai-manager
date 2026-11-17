@@ -32,6 +32,10 @@ Fixes #
 - [ ] `npm run test:v2`
 - [ ] 带了 `changes/unreleased/` 分片（纯 CI、脚本、文档改动可以不带）
 
+## 可靠性清单
+
+<!-- `npm run checklist -- --markdown` 打出来的那段贴在这里，每条后面写怎么查的；查不了的（要真机）写「没演过」。一条都没命中就写「没命中」。清单在 docs/RELIABILITY-CHECKLIST.md，脚本读 origin/main 上那份 -->
+
 ## 检查项
 
 - [ ] 已阅读 `AGENTS.md` 的关键不变量与改动陷阱
