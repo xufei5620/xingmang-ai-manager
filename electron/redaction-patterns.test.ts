@@ -468,13 +468,10 @@ describe('redaction with random inputs', () => {
   }
 
   // Each entry is [what is written, the part that must not survive]. Bodies are
-  // drawn from the vendor's own alphabet at the lengths its rule accepts. The
-  // `sk-` rule still ends on `\b`, so a body that ends in `-` keeps those dashes
-  // outside the match; dashes carry nothing secret, so bodies end on a letter or
-  // digit here and the assertion stays "the whole key is gone".
+  // drawn from the vendor's own alphabet at the lengths its rule accepts,
+  // including bodies that end in `-`.
   const shapedSecret = fc.oneof(
-    fc.tuple(textOf(alphanumeric, 1, 1), textOf(`${alphanumeric}_-`, 4, 46), textOf(alphanumeric, 1, 1))
-      .map((parts) => `sk-${parts.join('')}`),
+    textOf(`${alphanumeric}_-`, 6, 48).map((body) => `sk-${body}`),
     textOf(`${alphanumeric}_-`, 20, 48).map((body) => `xai-${body}`),
     fc.tuple(fc.constantFrom('p', 'o', 'u', 's', 'r'), textOf(alphanumeric, 20, 40)).map(([kind, body]) => `gh${kind}_${body}`),
     textOf(`${alphanumeric}_`, 20, 60).map((body) => `github_pat_${body}`),
