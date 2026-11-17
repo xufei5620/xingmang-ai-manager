@@ -149,6 +149,16 @@ describe('redactSecretShapes', () => {
     expect(redactSecretShapes(text)).toBe(expected.replaceAll('<$1 $& $$>', '[REDACTED]'))
   })
 
+  // The `sk-` rule ended on `\b`, which stops short of a key ending in `-`:
+  // the dash stayed readable after the replacement, and a body of fewer than
+  // six letters and digits padded out with dashes was not hidden at all.
+  it('redacts an sk- key through its trailing dashes', () => {
+    expect(redactSecretShapes(`rejected ${fakeRelayKey}- here`)).toBe('rejected [REDACTED] here')
+    expect(redactSecretShapes(`"${fakeRelayKey}--"`)).toBe('"[REDACTED]"')
+    expect(redactSecretShapes('sk-fake---.')).toBe('[REDACTED].')
+    expect(redactSecretPatterns(`relay key ${fakeRelayKey}-`)).toBe('relay key [REDACTED]')
+  })
+
   it('does not treat short look-alikes as keys', () => {
     expect(redactSecretShapes('AIzaShort and xai-short and desk-toolbar')).toBe('AIzaShort and xai-short and desk-toolbar')
   })
@@ -458,13 +468,10 @@ describe('redaction with random inputs', () => {
   }
 
   // Each entry is [what is written, the part that must not survive]. Bodies are
-  // drawn from the vendor's own alphabet at the lengths its rule accepts. The
-  // `sk-` rule still ends on `\b`, so a body that ends in `-` keeps those dashes
-  // outside the match; dashes carry nothing secret, so bodies end on a letter or
-  // digit here and the assertion stays "the whole key is gone".
+  // drawn from the vendor's own alphabet at the lengths its rule accepts,
+  // including bodies that end in `-`.
   const shapedSecret = fc.oneof(
-    fc.tuple(textOf(alphanumeric, 1, 1), textOf(`${alphanumeric}_-`, 4, 46), textOf(alphanumeric, 1, 1))
-      .map((parts) => `sk-${parts.join('')}`),
+    textOf(`${alphanumeric}_-`, 6, 48).map((body) => `sk-${body}`),
     textOf(`${alphanumeric}_-`, 20, 48).map((body) => `xai-${body}`),
     fc.tuple(fc.constantFrom('p', 'o', 'u', 's', 'r'), textOf(alphanumeric, 20, 40)).map(([kind, body]) => `gh${kind}_${body}`),
     textOf(`${alphanumeric}_`, 20, 60).map((body) => `github_pat_${body}`),
