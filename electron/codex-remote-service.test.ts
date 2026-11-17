@@ -1017,6 +1017,20 @@ describe('codex-remote-service pairing', () => {
     expect(s.codex).toHaveLength(0)
   })
 
+  // YR-10：输入法切在全角时发来的配对码照样能配上。
+  it('binds whoever sends the code in full-width digits', async () => {
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    const channel = s.channels[0]
+    await s.service.startPairing('feishu')
+    channel.handlers?.onInbound(text(alice, '０００ ０４２'))
+    await channel.sentUntil(() => channel.sent.length > 0)
+    expect(channel.sent[0].peer).toEqual(alice)
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu.boundPeer).toMatchObject({ userIdTail: '1234' })
+    expect(snapshot.channels.feishu.pairing).toBeNull()
+  })
+
   it('locks pairing after too many wrong codes', async () => {
     const s = await setup()
     await s.service.setChannelEnabled('feishu', true)
