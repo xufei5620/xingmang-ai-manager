@@ -1,0 +1,56 @@
+# 门禁删行提醒（2026-11-17，对照 Claude Code 团队讲「验证」的那篇文章，建议第 5 条）：PR 删掉或改掉
+# 门禁里的行、少了测试用例或断言时，在这次运行的摘要页列出来，并在 PR 的 Files changed 里原处标一条
+# 警告。看什么、为什么看这些，写在 scripts/report-removed-guards.cjs 开头。
+#
+# ## 只提醒，不挡合并
+#
+# 它不在 quality-gate 里，也不是 main 的必过检查，平常永远是绿的；只有它自己没跑成才红，那说明提醒
+# 失灵了。先跑两周（到 2026-12-01）看误报多不多，再定要不要改成拦，改成拦要 yoyo 点头。
+#
+# ## 为什么用 pull_request_target
+#
+# 改动不能改自己的裁判。用 pull_request 触发的话，工作流文件和检出的脚本都是 PR 分支里那一份，PR
+# 自己就能把这道检查删掉或改瞎。用 pull_request_target 触发，GitHub 取的是 PR 目标分支（main）上的
+# 工作流文件，actions/checkout 不写 ref 检出的也是 main，所以名单和脚本都从 main 读。代价是新加或
+# 改这道检查的 PR 自己看不到它跑，合进 main 以后的下一个 PR 才用上。
+#
+# pull_request_target 的作业拿得到仓库的 secret，令牌也可能带写权限，出名的坑是「检出 PR 的代码再
+# 执行它」。这里守着三条（scripts/report-removed-guards.test.cjs 钉住）：
+#   1. 不检出 PR 的代码。PR 的提交由脚本 git fetch 进来，只用 git diff / git show 当文字读；不装
+#      依赖、不跑 npm，PR 里的任何一行都不执行。
+#   2. 令牌只有读权限，作业不读任何 secret。
+#   3. run 里不写表达式，PR 带来的值（编号、提交号）都由脚本从事件文件读，校验过格式再用。
+name: removed-guards
+
+on:
+  pull_request_target:
+    branches: [main]
+
+# 同一个 PR 推了新提交，旧的那次就不用查完了。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    # Two fetches and a handful of git reads; a minute at most.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The diff is measured from where the pull request left main, so the
+          # checkout needs main's history down to that commit.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          # Nothing is installed here, and a pull_request_target job must not
+          # restore a cache a pull request run could have written.
+          package-manager-cache: false
+      - name: List the guard lines and tests this pull request removes
+        run: node scripts/report-removed-guards.cjs
