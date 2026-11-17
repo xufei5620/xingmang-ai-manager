@@ -2004,7 +2004,8 @@ describe('codex-remote-service images', () => {
     // The image is still taken once it arrives, and waits for the next prompt as usual.
     release()
     await s.imagesSaved(1)
-    await vi.waitFor(() => expect(channel.texts()).toEqual(['收到，Codex 开始处理。', '已停止。', receivedImage]))
+    await channel.sentUntil(() => channel.texts().includes(receivedImage))
+    expect(channel.texts()).toEqual(['收到，Codex 开始处理。', '已停止。', receivedImage])
   })
 
   it('answers approvals at once, typed or tapped, while an image sent before them is still being fetched', async () => {
@@ -2030,7 +2031,7 @@ describe('codex-remote-service images', () => {
     expect(storedImages(s.imageDirectory)).toEqual([])
     release()
     await s.imagesSaved(1)
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(receivedImage))
+    await channel.sentUntil(() => channel.texts().at(-1) === receivedImage)
   })
 
   it('keeps a prompt behind the images sent before it, and 「停止」 behind that prompt', async () => {
@@ -2047,7 +2048,8 @@ describe('codex-remote-service images', () => {
     // 「停止」 is meant for 「看看这张」: answering it now would say there is nothing to stop.
     expect(channel.texts()).toEqual([])
     release()
-    await vi.waitFor(() => expect(channel.texts()).toContain('已停止。'))
+    await s.imagesSaved(1)
+    await channel.sentUntil(() => channel.texts().includes('已停止。'))
     expect(channel.texts()).toEqual([receivedImage, '收到，带着 1 张图片，Codex 开始处理。', '已停止。'])
   })
 
@@ -2069,13 +2071,15 @@ describe('codex-remote-service images', () => {
     channel.handlers?.onInbound(text(alice, '同意 1'))
     await s.service.stopTurnFromComputer()
     releaseFirst()
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toContain('现在：空闲'))
+    await s.imagesSaved(1)
+    await channel.sentUntil(() => channel.texts().at(-1)?.includes('现在：空闲') === true)
     // The approval is gone, so 「同意 1」 is now words for Codex: they go out only with the second image too.
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(codex.requests('turn/start')).toHaveLength(1)
     releaseSecond()
+    await s.imagesSaved(2)
+    await channel.sentUntil(() => channel.texts().at(-1) === '收到，带着 2 张图片，Codex 开始处理。')
     await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
-    expect(channel.texts().at(-1)).toBe('收到，带着 2 张图片，Codex 开始处理。')
     const input = (codex.requests('turn/start')[1].params as { input: Array<Record<string, unknown>> }).input
     expect(input.map((entry) => entry.type)).toEqual(['text', 'localImage', 'localImage'])
   })
