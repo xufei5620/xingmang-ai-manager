@@ -985,6 +985,18 @@ npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指�
 
 跑通之后，把跑通的站点 id 写进对应那条 `recommended` 的 `verifiedSites`。
 
+## 谁来兜平时：CI 里的主链路冒烟（不要密钥）
+
+中转实测只回答「线上中转认不认这个版本」，而且要真密钥、只在改名单时跑。平时更常见的坏法是另一种：改了写配置的代码、默认型号或站点地址，或者新版 CLI 不再认星芒写的某个键，客户新装以后第一句话就报错，四道自查和单测全绿（0.2.24 深查·测试和CI CV-1）。所以 quality 工作流里另有一个 `cli-config-smoke` 作业（`scripts/cli-config-smoke.cjs`，2026-11-17 加），本地是 `npm run smoke:cli-config`：
+
+- **什么时候跑**：每个改了代码的 PR（文档单改不跑），在 quality-gate 里是必过项。写配置的代码牵着五十多个模块，按文件挑触发条件一定会漏，而这一项不要密钥、不碰线上，跑一次十几秒到一两分钟。
+- **跑什么**：名单里钉住的 Claude Code、Codex、Grok 各装一份（npm 官方源，装进 `node_modules/.cache/xingmang-cli-config-smoke/`，不装全局）；对 `relay-sites.ts` 的每个站点，用主进程真正写配置的 `saveProviderConfig` 把配置写进临时主目录，参数照 `config-save-service.ts` 登录后自动写的那一笔（`merge`、账号能用的型号、Claude 的状态行、三家的提醒钩子、Codex 的型号名单）。写完只把文件里这个站的正式地址换成本机假中转（`scripts/cli-config-smoke-relay.cjs`）的地址，别的一个字不动；换不到算失败，换完还留着任何一条线上地址（两个站全部线路和别名）就不跑，保证不对线上发请求。
+- **怎么判**：CLI 的环境里只有 `PATH`、`HOME`、`LANG`，不带 runner 上的 `ANTHROPIC_*`、`OPENAI_*` 和代理变量，能用的只有星芒写的那份配置。跑一句话（Claude Code、Grok 用 `-p`，Codex 用 `exec`），要求正常退出、打出假中转的回答、对话请求送到了假中转、带的是写进去的那把假密钥、型号是配置里那个。
+- **Codex 走 WebSocket**：星芒给 Codex 写的是 `supports_websockets = true`，假中转也接 WebSocket，并且照 new-api 只认 `response.create`、`response.cancel`，别的消息类型回 400 并让这一项变红（#1572 的 `response.interrupt` 就是这一类；一句话的 `exec` 不会发它，这里兜的是以后哪一版在一句话里就发）。
+- **抬版本对照**：PR 上另外拿 base 上钉的版本跑一遍，推荐版本变了的工具，把新旧两版发出去的请求（路径、请求头名、`anthropic-beta`、`OpenAI-Beta`、`anthropic-version` 和 `x-codex-beta-features` 的值、请求体字段、WebSocket 消息类型）列成差异表写进 job summary。**只报不拦**：新多出来的东西，就是要在真中转上重点看的。2026-11-17 对 #1880 试过：Claude Code 2.1.319 → 2.1.326、Codex 0.167.0 → 0.169.0，一句话的请求长得一样。
+- **每周巡检怎么用**：抬版本以前在沙箱跑 `npm run smoke:cli-config -- --compare-with origin/main`（分支上已经改了名单），把「抬版本对照」那一节贴进 PR 正文，代替以前手工起假接口对比 `-p hi` 的那一步。交互模式的第一屏（auto mode 弹窗那一类）这里测不到，照旧另开真终端看。
+- **测不到的**：Windows 和 macOS（作业只在 Linux 上跑；配置写法三个平台基本一样，钩子在 Windows 上的写法不同）；真中转认不认（那是上一节中转实测的事）；交互模式和多轮对话；Claude Code 在 root 下要声明沙箱（`IS_SANDBOX=1`，云端容器里脚本自己加，CI 的 runner 不是 root）。
+
 ## 不要做的事
 
 - 不要把 `recommended` 写成 `latest`、`^2.1.0` 这类范围或 dist-tag。IPC 侧只接受精确 semver（`ipc.ts` 的 `parseCliInstallVersion`），范围表达式会让 npm 自己去决定装什么，等于绕过名单。
