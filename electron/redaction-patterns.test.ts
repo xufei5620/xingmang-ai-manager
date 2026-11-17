@@ -562,18 +562,33 @@ describe('redaction with random inputs', () => {
     fc.boolean(),
   ).map(([name, upper]) => (upper ? name.toUpperCase() : name))
   const space = fc.constantFrom('', ' ', '  ', '\t')
-  // A value with an escaped quote (`\"`) is cut short at that quote today and
-  // what follows it stays readable; that is a separate fix, so these values
-  // leave quotes and backslashes out until it lands.
-  const fieldValue = fc.string({ unit: 'grapheme', minLength: 4, maxLength: 40 })
-    .filter((value) => !/["'\\\u0000-\u001f\u007f]/.test(value))
+  // Values are printed the way JSON and Python print them, with the backslash
+  // and the quote escaped, and quotes and backslashes are drawn often so most
+  // values carry an escape. Everything after the first escape is what a rule
+  // that stopped at an escaped quote left readable.
+  const fieldValue = fc.string({
+    unit: fc.oneof(
+      { weight: 1, arbitrary: fc.constantFrom('"', "'", '\\') },
+      { weight: 4, arbitrary: fc.string({ unit: 'grapheme', minLength: 1, maxLength: 1 }) },
+    ),
+    minLength: 4,
+    maxLength: 40,
+  }).filter((value) => !/[\u0000-\u001f\u007f]/.test(value))
 
   it.each(redactors)('%s hides a quoted secret field in JSON and in single-quoted output', (_name, redact) => {
     fc.assert(fc.property(secretFieldName, space, space, fieldValue, fc.boolean(), (name, beforeColon, afterColon, value, single) => {
       const quote = single ? "'" : '"'
-      const field = (inner: string) => `{${quote}${name}${quote}${beforeColon}:${afterColon}${quote}${inner}${quote}}`
-      fc.pre(!field('[REDACTED]').includes(value))
-      expect(redact(field(value))).not.toContain(value)
+      const printed = value.replaceAll('\\', '\\\\').replaceAll(quote, `\\${quote}`)
+      const key = `{${quote}${name}${quote}${beforeColon}:${afterColon}`
+      const field = (inner: string) => `${key}${quote}${inner}${quote}}`
+      // The crash reporter's rule leaves the quotes out of what it writes back.
+      const hidden = [field('[REDACTED]'), `${key}[REDACTED]}`]
+      const escape = printed.indexOf('\\')
+      const tail = escape === -1 ? '' : printed.slice(escape + 2)
+      fc.pre(!hidden.some((text) => text.includes(printed)))
+      const redacted = redact(field(printed))
+      expect(redacted).not.toContain(printed)
+      if (tail.length >= 4 && !hidden.some((text) => text.includes(tail))) expect(redacted).not.toContain(tail)
     }), { numRuns: 300 })
   })
 
