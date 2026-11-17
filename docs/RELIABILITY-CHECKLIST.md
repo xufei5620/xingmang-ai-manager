@@ -98,7 +98,7 @@
 ### R12 客户看得见的字
 
 - 触发：文件 `src/renderer-v2/**/*.tsx` `src/renderer-v2/**/*.ts` `!src/renderer-v2/**/*.test.*` `!src/renderer-v2/**/*fixture*` `!src/renderer-v2/testing/**` `!src/renderer-v2/features/video-studio/**`，改动行含 `['"\x60>][^'"\x60<>]*[一-鿿]`
-- 查什么：改完的字逐字贴给 yoyo，等他回「改」再合（画布、视频剪辑除外），等字的 PR 先不开自动合并；动了版面的配一张截图（`scripts/audit/v2-page-screenshot.mjs`，写明是 Chromium 里截的）；不出现站点名、Sub2API、PATH、npm、TOML、环境变量这类词，「Key」叫「密钥」，主语用「当前账号」。
+- 查什么：改完的字逐字贴给 yoyo，等他回「改」再合（画布、视频剪辑除外），等字的 PR 先不开自动合并；动了版面的配一张截图（`scripts/audit/v2-page-screenshot.mjs`，写明是 Chromium 里截的）；不出现站点名、Sub2API、PATH、npm、TOML、环境变量这类词，「Key」叫「密钥」，主语用「当前账号」，跑一遍 `npm run check:wording` 看新字有没有命中。
 - 出自：项目规矩，`docs/COLLABORATION.md` §7.5。
 
 ### R13 账号后端对接
