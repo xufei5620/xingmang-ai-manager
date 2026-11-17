@@ -65,6 +65,16 @@ const endpointCodes = {
 // 开放平台接口里 tenant_access_token 失效的几种 code，碰到就换一个再发一次。
 const tokenInvalidCodes = new Set([99991661, 99991663, 99991668])
 
+// 换访问凭证（tenant_access_token/internal）时，只有这几个 code 明说是 App ID、App Secret 或应用本身不对，
+// 碰到才停下遥控、让客户回电脑上重新填（YR-4）。原来是「不是 0 就算填错」，飞书一时限流、内部出错也会把
+// 遥控整个停掉。照飞书「通用错误码」：10003 参数不对（这个接口只收 App ID 和 App Secret，填错了回的就是它）、
+// 10005 应用 ID 无权、10014 应用不可用（多半停用了）、10015 App Secret 不对、20002 App ID 和 App Secret
+// 对不上、50003 App ID 无效。别的 code 不说明凭据错，这一次没换到，遥控照旧开着，下一次用到时再换。
+const tokenCredentialCodes = new Set([10003, 10005, 10014, 10015, 20002, 50003])
+// 换访问凭证碰到这几个 code 是飞书那边一时忙不过来，发消息时按 sendRetryDelaysMs 等一会儿再换：
+// 99991400 限流（文档说降低频率后重试）、1500 和 10500 内部错误（稍后重试）。没有 code 的 429、5xx 也一样。
+const tokenRetryCodes = new Set([99991400, 1500, 10500])
+
 // 发消息碰到这几个 code 是飞书那边一时忙不过来，等一会儿带同一个 uuid 再发（YKS-4）。照飞书文档：
 // 99991400 通用限流、230020 发消息限流（都说降低频率后重试）、1500 内部错误（稍后重试）、
 // 230049 消息正在发送中（上一次带同一个 uuid 的还没发完）。别的 code 是参数、权限、对方不收这类，重发也没用。
@@ -99,9 +109,12 @@ export class FeishuAuthError extends Error {
   }
 }
 
-/** 换访问凭证时飞书回的应答里没有 code（多半是代理或网关的页面），带着 HTTP 状态好进日志。 */
+/**
+ * 换访问凭证没换到，但又不是凭据不对：应答里没有 code（多半是代理或网关的页面），或者 code 不在
+ * tokenCredentialCodes 里（限流、飞书内部出错这类）。带着 HTTP 状态和 code 好进日志。
+ */
 export class FeishuTokenResponseError extends Error {
-  constructor(readonly status: number) {
+  constructor(readonly status: number, readonly code: number | null = null) {
     super(`飞书没有给出访问凭证（HTTP ${status}）`)
     this.name = 'FeishuTokenResponseError'
   }
@@ -165,7 +178,10 @@ export interface FeishuTenantToken {
   expiresAt: number
 }
 
-/** 拿 tenant_access_token；App ID / App Secret 不对时抛 FeishuAuthError，保存凭据前也用它验一遍。 */
+/**
+ * 拿 tenant_access_token，保存凭据前也用它验一遍。飞书明说凭据不对（tokenCredentialCodes）时抛 FeishuAuthError，
+ * 别的没换到抛 FeishuTokenResponseError。
+ */
 export async function requestFeishuTenantToken(
   fetchImpl: typeof fetch,
   credential: FeishuCredential,
@@ -191,13 +207,14 @@ export async function requestFeishuTenantToken(
     // 提前 5 分钟换，免得发到一半过期。
     return { token, expiresAt: now + Math.max(60, expire - 300) * 1000 }
   }
-  if (code !== null && code !== 0) throw new FeishuAuthError()
-  throw new FeishuTokenResponseError(response.status)
+  if (code !== null && tokenCredentialCodes.has(code)) throw new FeishuAuthError()
+  throw new FeishuTokenResponseError(response.status, code)
 }
 
 /**
- * 保存凭据前拿去飞书换一次访问凭证：填错了当场说，不等打开遥控才发现连不上。飞书回的不是正常应答时，
- * HTTP 状态只进日志，红条上只说 feishuSaveFailedMessage；凭据不对、连不上照旧是各自那句。
+ * 保存凭据前拿去飞书换一次访问凭证：填错了当场说，不等打开遥控才发现连不上。飞书回的不是正常应答、
+ * 或者回的 code 不说明凭据错（限流、内部出错）时，HTTP 状态和 code 只进日志，红条上只说
+ * feishuSaveFailedMessage；凭据不对、连不上照旧是各自那句。
  */
 export async function verifyFeishuCredential(
   deps: Pick<RemoteChannelDependencies, 'fetch' | 'now' | 'log'>,
@@ -207,7 +224,7 @@ export async function verifyFeishuCredential(
     await requestFeishuTenantToken(deps.fetch, credential, deps.now())
   } catch (error) {
     if (!(error instanceof FeishuTokenResponseError)) throw error
-    deps.log('warn', 'feishu.save-token-unexpected', { status: error.status })
+    deps.log('warn', 'feishu.save-token-unexpected', { status: error.status, code: error.code })
     throw new Error(feishuSaveFailedMessage)
   }
 }
@@ -527,10 +544,15 @@ export function classifyFeishuSendResponse(status: number, code: number | null):
 }
 
 /**
- * 请求根本没拿到回应（断网、超时）时返回原因，可以带同一个 uuid 再发；别的失败返回 null。
- * 地址不在允许范围、被重定向这类照旧直接报错，重发也是同样的结果。
+ * 请求根本没拿到回应（断网、超时），或者换访问凭证时飞书一时忙不过来（429、5xx、tokenRetryCodes，YR-4）时
+ * 返回原因，可以带同一个 uuid 再发；别的失败返回 null。地址不在允许范围、被重定向、凭据不对这类照旧直接报错，
+ * 重发也是同样的结果。
  */
-export function transientFeishuRequestFailure(error: unknown): 'network' | 'timeout' | null {
+export function transientFeishuRequestFailure(error: unknown): 'network' | 'timeout' | 'token-unavailable' | null {
+  if (error instanceof FeishuTokenResponseError) {
+    const momentary = error.status === 429 || error.status >= 500 || (error.code !== null && tokenRetryCodes.has(error.code))
+    return momentary ? 'token-unavailable' : null
+  }
   if (!(error instanceof RemoteHttpError)) return null
   return error.reason === 'network' || error.reason === 'timeout' ? error.reason : null
 }
@@ -895,7 +917,10 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
         (token) => {
           if (this.tokenRequest === request) this.token = token
         },
-        () => undefined,
+        (error: unknown) => {
+          // 不停遥控的那些也记下状态和 code，好对上飞书实际回了什么（YR-4）；应答原文不记。
+          if (error instanceof FeishuTokenResponseError) this.deps.log('warn', 'feishu.token-failed', { status: error.status, code: error.code })
+        },
       ).finally(() => {
         if (this.tokenRequest === request) this.tokenRequest = null
       })
