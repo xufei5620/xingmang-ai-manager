@@ -382,7 +382,7 @@ Key 走的型号菜单）不用抬。
 | Grok CLI | `1.0.77`（2026-11-09） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52、1.0.62、1.0.70、1.0.77 各一遍，见下文；1.0.62 核过、没合） |
 
 仓库 secret `XINGMANG_CLI_PATROL_KEY` 2026-11-09 配上了。那天真跑的结果：Codex 0.167.0、Claude Code 2.1.319 都在 `solov` 上通过，当时这两条的 `verifiedSites` 是 `['solov']`；Grok、Gemini 两条还是空数组。
-- 2026-11-17 抬到 Claude Code 2.1.326、Codex 0.169.0，两条的 `verifiedSites` 先清空，等这次 PR 上 `cli-relay-probe` 的结果再填。
+- 2026-11-17 抬到 Claude Code 2.1.326、Codex 0.169.0：`cli-relay-probe` 在 `solov` 上两家都通过（Claude 用 `XINGMANG_CLI_PATROL_KEY_CLAUDE`），`verifiedSites` 照旧是 `['solov']`；`solov-api` 照旧不测。
 - Claude Code 第一次用共用那把 Key（GPT 分组），中转答「分组 GPT 下模型 claude-opus-5-5 无可用渠道」；换成 Claude 分组的 `XINGMANG_CLI_PATROL_KEY_CLAUDE` 后通过。
 - `solov-api` 上两家都是 401（Codex 看到的是 `INVALID_API_KEY`）。那是历史账号站 `api.solov.cc`，星芒账号签的 Key 在那边本来就认不了。yoyo 同日定「历史站不测」：探测跳过它（`scripts/probe-cli-relay.cjs` 的 `UNPROBED_SITES`），summary 里写明「未在中转实测」。
 - Grok 不在探测范围里。
@@ -666,7 +666,7 @@ npm `latest` 是 2.1.326；2.1.320 没发到 npm，2.1.324 发了但变更记录
 沙箱（做法同上，2.1.319 一起重跑当对照，逐项相同）：`claude -p "hi"` 拿到回复、只带 `Authorization`，请求体字段与 beta 头一样；
 假接口对工具搜索一律回 400 时被拒三次、第四次不带它拿到回复，退出码 0；`--model haiku` 仍发 `claude-haiku-5-5`；
 `claude-fable-5-1` 原样发出（设不设 `ANTHROPIC_DEFAULT_MODEL` 都一样）；`/context` 是 `28.7k / 1m`；主型号回 503 时换到备用的 Sonnet 5.5。
-中转实测见「名单今天覆盖到哪」下面那段。
+中转实测：2026-11-17 `cli-relay-probe` 在 `solov` 上真跑通过，`solov-api` 照 11-09 的决定不测。
 
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
@@ -885,6 +885,8 @@ release note），另把 `rust-v0.167.0..rust-v0.169.0` 的提交标题按 provi
 `codex --no-daemon exec` 用 `gpt-6.1-sol` 都拿到回复，假接口只收到一次 `POST /v1/responses`（带 `Authorization`，请求字段两版一样）；
 出网代理记下的 `github.com`、`api.github.com`、`chatgpt.com` 都被拒，0.169.0 少连一次 `chatgpt.com`；手机遥控那一路（`app-server`）的
 `initialize` → `config/read` → `thread/start` → `turn/start` 两版都走到 `turn/completed`，通知序列一样。
+
+中转实测：2026-11-17 `cli-relay-probe` 在 `solov` 上用默认型号真跑通过，`solov-api` 照 11-09 的决定不测。没做的：GPT-6.1 Terra 没在中转上单独跑。
 
 **Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
 上游只有 8 个提交，和中转有关的是两条：
