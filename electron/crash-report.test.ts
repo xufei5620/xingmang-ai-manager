@@ -53,6 +53,7 @@ describe('redactCrashText', () => {
     expect(redactCrashText('sent Bearer abcdef123456 upstream', '')).toBe('sent Bearer [REDACTED] upstream')
     expect(redactCrashText('Authorization: Bearer abcdef123456', '')).not.toContain('abcdef123456')
     expect(redactCrashText('{"api_key":"abcdef123456"}', '')).toBe('{"api_key":[REDACTED]}')
+    expect(redactCrashText('{"api_key":"abc\\"def123456"}', '')).toBe('{"api_key":[REDACTED]}')
     // Over-redaction on purpose: the value rule swallows the rest of the query
     // rather than guess where a secret ends.
     expect(redactCrashText('https://example.com/x?token=abcdef&page=2', ''))

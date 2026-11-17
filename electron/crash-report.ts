@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { SECRET_FIELD_NAME, redactSecretShapes } from './redaction-patterns'
+import { QUOTED_SECRET_VALUE, SECRET_FIELD_NAME, redactSecretShapes } from './redaction-patterns'
 import { redactHomeDirectory } from './startup-log'
 
 /**
@@ -75,9 +75,10 @@ const MAX_MESSAGE_LENGTH = 2_048
 const MAX_CONTEXT_LENGTH = 1_024
 const MAX_FRAMES = 60
 
-// The same names the shared table recognises; the value here also stops at a
-// closing bracket, since a stack trace wraps payloads in `(…)` and `{…}`.
-const CRASH_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}["']?\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^\\s,;)\\]}]+)`, 'gi')
+// The same names and quoted values the shared table recognises; an unquoted
+// value here also stops at a closing bracket, since a stack trace wraps
+// payloads in `(…)` and `{…}`.
+const CRASH_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}["']?\\s*[:=]\\s*)(?:${QUOTED_SECRET_VALUE}|[^\\s,;)\\]}]+)`, 'gi')
 
 // The address shape the crash reporter hides whole. A match that starts inside
 // a run of local-part characters also matches from the character before it,

@@ -137,9 +137,35 @@ const CREDENTIAL_FLAG_IN_TEXT = new RegExp(
 // filler value in a log detail) is rescanned from every position in it, which
 // is quadratic and timed out the runtime log's oversized-detail test.
 export const SECRET_FIELD_NAME = '(?:api[_-]?key|(?<![a-z0-9_-])(?:[a-z0-9]+[_-])+key|authorization|token|secret|password|passwd|cookies?|credentials?)'
-const DOUBLE_QUOTED_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}"\\s*[:=]\\s*)"[^"]*"`, 'gi')
-const SINGLE_QUOTED_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}'\\s*[:=]\\s*)'[^']*'`, 'gi')
-const SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^\\s,;]+)`, 'gi')
+
+// A quoted value read the way JSON, JavaScript, Python and the shells print
+// one: a backslash takes the next character with it, so `\"` does not close
+// the value. Reading only to the first quote stopped at an escaped one and
+// left the rest of the value in the log: `{"password":"abc\"defghij"}` kept
+// `defghij"`.
+//
+// A backslash that is not an escape (a Windows path printed as is,
+// `password="C:\x\" token="…"`) would carry that reading on to a later quote,
+// and the value of the field that quote belongs to would stay readable where
+// the old rule hid it. So the reading only counts when its closing quote looks
+// like one: followed by what ends a value (whitespace, `,`, `;`, a closing
+// bracket, the end of the text; a key's closing quote is followed by `:`), and
+// not right after a secret field's name and `:` or `=` (that quote opens the
+// field's value). Otherwise the value runs to its first quote, as it always
+// did. Text with no backslash in it therefore comes out exactly as before.
+//
+// Each alternative either starts with a backslash or excludes it, so a value
+// is read once, and the scan stops at the first quote it does not take as
+// escaped; a later field's opening quote follows `:`, `=` or a space, never a
+// backslash, so the scans of two values never overlap.
+const NOT_A_FIELD_OPENING = `(?<!${SECRET_FIELD_NAME}["']?\\s*[:=]\\s*["']?)`
+const QUOTED_VALUE_END = String.raw`(?=[\s,;)\]}]|$)`
+const DOUBLE_QUOTED_VALUE = String.raw`(?:"(?:[^"\\]|\\[\s\S])*${NOT_A_FIELD_OPENING}"${QUOTED_VALUE_END}|"[^"]*")`
+const SINGLE_QUOTED_VALUE = String.raw`(?:'(?:[^'\\]|\\[\s\S])*${NOT_A_FIELD_OPENING}'${QUOTED_VALUE_END}|'[^']*')`
+export const QUOTED_SECRET_VALUE = `${DOUBLE_QUOTED_VALUE}|${SINGLE_QUOTED_VALUE}`
+const DOUBLE_QUOTED_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}"\\s*[:=]\\s*)${DOUBLE_QUOTED_VALUE}`, 'gi')
+const SINGLE_QUOTED_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}'\\s*[:=]\\s*)${SINGLE_QUOTED_VALUE}`, 'gi')
+const SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}\\s*[:=]\\s*)(?:${QUOTED_SECRET_VALUE}|[^\\s,;]+)`, 'gi')
 
 // `Cookie: a=b; c=d`. The first value runs to the end of its run of value
 // characters (anything but whitespace, `,`, `;` and quotes), and `cookie=` is
