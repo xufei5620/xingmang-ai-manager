@@ -265,6 +265,8 @@ describe('redactSecretFields', () => {
     expect(redactSecretFields("token='\\' ".repeat(20_000))).toBe('token=[REDACTED] '.repeat(20_000))
     expect(redactSecretFields('{"token":"\\"'.repeat(20_000))).toBe('{"token":"[REDACTED]"'.repeat(20_000))
     expect(redactSecretFields(`password="${'\\" '.repeat(40_000)}`)).toMatch(/^password=\[REDACTED\] /)
+    expect(redactSecretFields(`password="${'\\'.repeat(80_000)}x"`)).toBe('password=[REDACTED]')
+    expect(redactSecretFields(`password="${'\\'.repeat(80_001)}" tail" end`)).toBe('password=[REDACTED] end')
     expect(performance.now() - started).toBeLessThan(2_000)
   })
 

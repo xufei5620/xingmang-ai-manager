@@ -180,8 +180,11 @@ const REST_OF_SINGLE_QUOTED_VALUE = /\uFDD1(?:[^'\\\uFDD0\uFDD1]|\\[^\uFDD0\uFDD
 export function escapedQuoteMark(hiddenValue: string): string {
   const quote = hiddenValue[0]
   if (hiddenValue.length < 2 || (quote !== '"' && quote !== "'") || !hiddenValue.endsWith(quote)) return ''
-  const backslashes = /\\*$/.exec(hiddenValue.slice(1, -1))?.[0].length ?? 0
-  if (backslashes % 2 === 0) return ''
+  // Counted back from the closing quote: a regex for the trailing run starts
+  // at every backslash of a long run and reads the rest of it each time.
+  let runStart = hiddenValue.length - 1
+  while (runStart > 1 && hiddenValue[runStart - 1] === '\\') runStart--
+  if ((hiddenValue.length - 1 - runStart) % 2 === 0) return ''
   return quote === '"' ? ESCAPED_DOUBLE_QUOTE_MARK : ESCAPED_SINGLE_QUOTE_MARK
 }
 
