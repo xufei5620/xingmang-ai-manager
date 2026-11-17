@@ -1337,7 +1337,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   const vm = require('node:vm')
   const gate = workflow.jobs['quality-gate']
   assert.equal(gate.if, 'always()')
-  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-relay-probe', 'secret-scan'])
+  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-config-smoke', 'cli-relay-probe', 'secret-scan'])
   const source = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
   const run = (source, jobs) => {
     assert.doesNotThrow(() => JSON.stringify(jobs))
@@ -1347,7 +1347,7 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   }
   const verify = (code, changeResult, results, macPackaging = code === 'true' ? 'true' : 'false') => {
     const jobs = { changes: { outputs: { code, macPackaging }, result: changeResult } }
-    for (const name of ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
+    for (const name of ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-config-smoke']) {
       jobs[name] = { result: results[name] || 'success' }
     }
     jobs.test = { result: results.test || 'success' }
@@ -1378,8 +1378,14 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   // they still block exactly as they did when linux-test ran them.
   assert.equal(verify('true', 'success', { 'linux-renderer-v2-browser': 'failure' }), false)
   assert.equal(verify('true', 'success', { 'linux-renderer-v2-browser': 'skipped' }), false)
+  // The main-chain smoke runs on every code change: a red one means a pinned CLI
+  // no longer reads the config the app writes, and a skip where it was due is
+  // the "nobody ran it" shape this job exists to end.
+  assert.equal(verify('true', 'success', { 'cli-config-smoke': 'failure' }), false)
+  assert.equal(verify('true', 'success', { 'cli-config-smoke': 'skipped' }), false)
+  assert.equal(verify('true', 'success', { 'cli-config-smoke': 'cancelled' }), false)
   const documentationOnly = Object.fromEntries(
-    ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].map(name => [name, 'skipped']),
+    ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-config-smoke'].map(name => [name, 'skipped']),
   )
   assert.equal(verify('false', 'success', documentationOnly), true)
   // G1: a pull request that leaves the packaging inputs alone skips the two
@@ -1546,6 +1552,24 @@ test('the relay probe runs exactly when the verified-version list moves', () => 
   assert.equal(probeStep.env.XINGMANG_CLI_PATROL_KEY_CLAUDE, '${{ secrets.XINGMANG_CLI_PATROL_KEY_CLAUDE }}')
   assert.equal(probeStep.run.includes('secrets.'), false, 'the key must never be interpolated into a command line')
   assert.equal(runSteps('cli-relay-probe').some((command) => command.startsWith('npm ci')), true)
+})
+
+test('the main-chain smoke runs the pinned CLIs on every code change, without secrets', () => {
+  const smoke = workflow.jobs['cli-config-smoke']
+  assert.equal(smoke.if, "needs.changes.outputs.code == 'true'")
+  assert.deepEqual(smoke.needs, 'changes')
+  assert.equal(smoke['runs-on'], 'ubuntu-latest')
+  assert.ok(smoke['timeout-minutes'] > 0, 'a job that installs from npm needs a bound')
+  const step = smoke.steps.find((candidate) => String(candidate.run || '').includes('scripts/cli-config-smoke.cjs'))
+  assert.ok(step, 'the job must run the smoke script')
+  // The whole point is that it needs no key: a secret here would make it skip
+  // on forks and tempt someone into pointing it at production.
+  assert.equal(JSON.stringify(smoke).includes('secrets.'), false)
+  assert.deepEqual(Object.keys(step.env), ['COMPARE_WITH'])
+  assert.match(step.run, /--compare-with "\$COMPARE_WITH"/)
+  // The comparison reads the base commit's pinned versions with git show.
+  assert.equal(smoke.steps[0].with['fetch-depth'], 0)
+  assert.equal(runSteps('cli-config-smoke').some((command) => command.startsWith('npm ci')), true)
 })
 
 test('the packaging-only macOS jobs run when a pull request moves a packaging input, and on every push to main', () => {

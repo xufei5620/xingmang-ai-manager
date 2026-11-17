@@ -56,6 +56,7 @@ npm run test:scripts    # 单跑 scripts/*.test.cjs（构建、CI、发布脚本
 npm run test:browser    # 单跑 e2e 里随 npm test 走的那几个浏览器套件（串行起 Chromium）
 npm run test:v2     # renderer-v2 / platform 单测和浏览器业务回归；Windows required CI 拆开跑：单测那半已含在 test:vitest 里，浏览器那半分片跑
 npm run selfcheck   # 提 PR 前的四道自查一条跑完：typecheck、test、check:v2、test:v2 依次跑，结尾打印贴进 PR 的汇总
+npm run smoke:cli-config  # 主链路冒烟：钉住的三家 CLI 读星芒写的那份配置，打本机假中转（要连 npm 官方源，不在四道里；CI 每个改代码的 PR 都跑，见 docs/CLI-VERIFIED-VERSIONS.md）
 npm run check:wording  # 只报不拦：界面和主进程会给客户看的字里有没有技术词、站点名、「Key」，CI 里写进 linux-test 的作业摘要；改了字顺手看一眼
 npm run compile     # 默认构建 renderer-v2 与对应 canvas token，再清理 + vite build + tsc + 压缩
 npm run compile:legacy  # 显式构建 React 18 旧回滚界面（已冻结，只为回滚保留）
@@ -272,6 +273,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 - 平台相关测试用 `it.runIf(process.platform === 'win32')` 门控（参考 `command-runner.test.ts` / `node-runtime.test.ts`）
 - 新逻辑优先写成纯函数再测，不要为了测试去 mock 整个闭包
 - **涉及 new-api 的测试一律注入 mock fetch，绝不对生产 `xm.solov.cc` 发真实请求**（铁律，见 T12）
+- 安全规矩和「只改该改的、客户的值不动」这类不变量，手写例子之外再加随机输入测试（`fast-check`，只在开发依赖里）：写出「不管输入是什么都必须成立」的那句话，让库去造输入。现有的在 `redaction-patterns.test.ts`、`security.test.ts`、`tool-route-rewrite.test.ts` 等文件末尾的 `… with random inputs` 一节；红了是真问题，怎么复现见 `docs/TEST-BASELINE.md`
 
 ---
 
