@@ -2981,8 +2981,9 @@ describe('codex-remote-service lifecycle', () => {
     const snapshot = await s.service.snapshot()
     expect(snapshot.channels.feishu).toMatchObject({ enabled: true, status: { state: 'error', halted: true } })
     expect(s.logs).toContain('remote.channel-start-failed')
+    // Only what the service pushed to the listener: main.ts feeds the blocker from onStateChanged alone.
     for (const each of s.snapshots) keepAwake.observe(each)
-    keepAwake.observe(snapshot)
+    expect(s.snapshots.at(-1)?.channels.feishu.status.halted).toBe(true)
     expect(keepAwake.holding()).toBe(false)
   })
 
