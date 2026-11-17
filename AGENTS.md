@@ -56,6 +56,7 @@ npm run test:scripts    # 单跑 scripts/*.test.cjs（构建、CI、发布脚本
 npm run test:browser    # 单跑 e2e 里随 npm test 走的那几个浏览器套件（串行起 Chromium）
 npm run test:v2     # renderer-v2 / platform 单测和浏览器业务回归；Windows required CI 拆开跑：单测那半已含在 test:vitest 里，浏览器那半分片跑
 npm run selfcheck   # 提 PR 前的四道自查一条跑完：typecheck、test、check:v2、test:v2 依次跑，结尾打印贴进 PR 的汇总
+npm run smoke:cli-config  # 主链路冒烟：钉住的三家 CLI 读星芒写的那份配置，打本机假中转（要连 npm 官方源，不在四道里；CI 每个改代码的 PR 都跑，见 docs/CLI-VERIFIED-VERSIONS.md）
 npm run compile     # 默认构建 renderer-v2 与对应 canvas token，再清理 + vite build + tsc + 压缩
 npm run compile:legacy  # 显式构建 React 18 旧回滚界面（已冻结，只为回滚保留）
 npm run dev         # 默认启动 renderer-v2；内部先构建 canvas-v2 + 全量编译一次主进程（消 electron 抢跑竞态）
