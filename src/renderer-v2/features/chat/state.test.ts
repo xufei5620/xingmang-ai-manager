@@ -275,6 +275,12 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage(video)).toBe(video)
     expect(chatErrorMessage('生图请求超时')).toBe('请求未完成，请检查网络后重试')
   })
+  it('keeps the do-not-regenerate sentence when a paid image was set aside instead of saved', () => {
+    const kept = '图片已经生成、也已经扣费了，但没能存进作品库，已经先替你收着。先别重新生成，清出一些空间后会自动存进作品库。'
+    expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:generate-image': Error: ${kept}`))).toBe(kept)
+    // Shown text goes through here again when the reply is marked failed.
+    expect(chatErrorMessage(kept)).toBe(kept)
+  })
   it('shows the network reason the main process gave when an image request never left', () => {
     for (const reason of ['offline', 'dns', 'proxy', 'refused', 'intercepted'] as const) {
       const message = networkFailureMessages[reason]

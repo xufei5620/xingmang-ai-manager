@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AiAssetStore, type AiStoredAsset } from './ai-asset-store'
+import { AI_IMAGE_KEPT_UNSAVED_ERROR_CODE, AiAssetStore, type AiStoredAsset } from './ai-asset-store'
 import {
   AiUnsavedImageStash,
   stashedImageFileName,
@@ -293,7 +293,7 @@ describe('AiUnsavedImageStash', () => {
 describe('AiAssetStore with an unsaved-image stash', () => {
   function storeWithStash() {
     const outputRoot = path.join(temporaryDirectory(), 'output')
-    const keepUnsaved = vi.fn(async () => 'disk')
+    const keepUnsaved = vi.fn(async () => true)
     const store = new AiAssetStore({ outputRoot, keepUnsaved, now: () => new Date(2026, 10, 15, 12, 0, 0) })
     return { store, keepUnsaved }
   }
@@ -302,10 +302,22 @@ describe('AiAssetStore with an unsaved-image stash', () => {
     const { store, keepUnsaved } = storeWithStash()
 
     failTemporaryFileWrites()
-    await expect(store.storeBase64(42, png(640, 480).toString('base64')))
-      .rejects.toThrow('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+    const error = await store.storeBase64(42, png(640, 480).toString('base64')).then(() => null, (reason: unknown) => reason)
 
     expect(keepUnsaved).toHaveBeenCalledWith(42, png(640, 480))
+    // Marked as set aside, so the image service can say so instead of "try again".
+    expect(error).toMatchObject({ message: '作品没能存进保存位置，请稍后重试；一直不行请联系客服', code: AI_IMAGE_KEPT_UNSAVED_ERROR_CODE })
+    expect((error as Error).cause).toMatchObject({ code: 'ENOSPC' })
+  })
+
+  it('does not claim the image was set aside when the stash could not take it', async () => {
+    const outputRoot = path.join(temporaryDirectory(), 'output')
+    const store = new AiAssetStore({ outputRoot, keepUnsaved: async () => false })
+
+    failTemporaryFileWrites()
+    const error = await store.storeBase64(42, png().toString('base64')).then(() => null, (reason: unknown) => reason)
+
+    expect((error as { code?: unknown }).code).not.toBe(AI_IMAGE_KEPT_UNSAVED_ERROR_CODE)
   })
 
   it('keeps the same error when the stash itself fails', async () => {
@@ -313,8 +325,9 @@ describe('AiAssetStore with an unsaved-image stash', () => {
     const store = new AiAssetStore({ outputRoot, keepUnsaved: async () => { throw new Error('stash broke') } })
 
     failTemporaryFileWrites()
-    await expect(store.storeBase64(42, png().toString('base64')))
-      .rejects.toThrow('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+    const error = await store.storeBase64(42, png().toString('base64')).then(() => null, (reason: unknown) => reason)
+    expect((error as Error).message).toBe('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+    expect((error as { code?: unknown }).code).not.toBe(AI_IMAGE_KEPT_UNSAVED_ERROR_CODE)
   })
 
   it('does not stash bytes that failed validation or that the person imported', async () => {

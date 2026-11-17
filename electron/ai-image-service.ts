@@ -9,7 +9,7 @@ import {
   BoundedOperationQueue,
   type BoundedOperationHandle,
 } from './bounded-operation-queue'
-import { inspectAiImage } from './ai-asset-store'
+import { AI_IMAGE_KEPT_UNSAVED_ERROR_CODE, inspectAiImage } from './ai-asset-store'
 import { readBoundedResponseBytes } from './bounded-response'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiOperationProgressObserver, AiOperationProgressStage } from './ai-operation-progress'
@@ -188,6 +188,13 @@ function imageRequestFailure(status: number, detail: string, evidence = detail):
   if (status >= 500) return new Error('生图服务暂时不可用，请稍后重试')
   return new Error(detail || `生图失败，服务返回 ${status}`)
 }
+
+/**
+ * 图已经生成、扣过费，写不进作品库，但已经先暂存好了（深查 S-1，yoyo 2026-11-17 回「暂存改」）。之后登录时、
+ * 软件开着时隔一阵会自动补存进作品库（ai-unsaved-image-stash.ts），所以要说清别重新生成：再点一次就是再扣一次钱。
+ * 对话页认「先别重新生成」原样上屏（renderer-v2 的 chatErrorMessage）。
+ */
+export const aiImageKeptUnsavedMessage = '图片已经生成、也已经扣费了，但没能存进作品库，已经先替你收着。先别重新生成，清出一些空间后会自动存进作品库。'
 
 function ambiguousImageSubmission(): Error {
   return new Error('生图提交结果不明确，服务端可能仍在生成图片，请勿立即重复提交')
@@ -409,6 +416,9 @@ export function createAiImageService(options: {
             if (signal.aborted) throw signal.reason
             if (!entry.b64Json && isAssetDownloadError(error)) {
               throw new Error('图片已生成但下载失败，这次可能已经扣费，请勿立即重复提交；先检查网络，稍后再重新生成', { cause: error })
+            }
+            if ((error as { code?: unknown } | null)?.code === AI_IMAGE_KEPT_UNSAVED_ERROR_CODE) {
+              throw new Error(aiImageKeptUnsavedMessage, { cause: error })
             }
             // 原因挂在 cause 上：界面只说这一句，运行日志（ipc.ts 记失败时连 cause 一起写）里要看得到是盘满、没权限还是被占用（深查 S-1）。
             throw new Error('图片已生成但本地保存失败，这次可能已经扣费，请勿立即重复提交；先看看保存位置所在的磁盘空间够不够', { cause: error })

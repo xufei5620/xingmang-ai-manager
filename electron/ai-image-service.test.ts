@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { chargedAfterStopAssetTag, createAiImageService, type AiImageAssetWriter } from './ai-image-service'
+import { aiImageKeptUnsavedMessage, chargedAfterStopAssetTag, createAiImageService, type AiImageAssetWriter } from './ai-image-service'
 import { networkFailureMessages } from './network-failure'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
 
@@ -209,6 +209,21 @@ describe('AI image service', () => {
     expect((error as Error).message).toMatch(/本地保存失败.*请勿立即重复提交.*磁盘空间/)
     // The run log records the store's own reason under the sentence the person reads (S-1).
     expect((error as Error).cause).toBe(writeFailure)
+  })
+
+  it('tells the person not to regenerate when the paid image was set aside (S-1)', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ url: 'https://imgen.x.ai/result.jpg' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const setAside = Object.assign(new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服'), { code: 'AI_IMAGE_KEPT_UNSAVED' })
+    vi.mocked(assets.storeRemoteUrl).mockRejectedValue(setAside)
+
+    const error = await service.generate(4, {
+      requestId: 'remote-set-aside', group: '生图分组', model: 'grok-imagine-image-2.0', prompt: '图',
+    }).then(() => null, (reason: unknown) => reason)
+
+    expect((error as Error).message).toBe(aiImageKeptUnsavedMessage)
+    expect(aiImageKeptUnsavedMessage).toBe('图片已经生成、也已经扣费了，但没能存进作品库，已经先替你收着。先别重新生成，清出一些空间后会自动存进作品库。')
+    expect((error as Error).cause).toBe(setAside)
   })
 
   it('treats a successful response without images as ambiguous and never retries it', async () => {
