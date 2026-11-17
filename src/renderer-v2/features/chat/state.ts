@@ -470,6 +470,9 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   // 超时、已生成没下载下来还是没存下来。必须排在下面「超时 / 网络」那条前面，否则会被改成
   // 「请检查网络后重试」，照做就再扣一次钱。
   if (/重复提交/.test(message)) return message
+  // 付过钱的图存不进作品库、已经先暂存着（深查 S-1）：主进程那句说清了别重新生成、腾出空间后会自动存进去。
+  // 落到最后那句「请稍后重试」，客户照做就再扣一次钱。
+  if (/先别重新生成/.test(message)) return message
   // 出图请求根本没发出去（断网、解析不出地址、代理连不上）时，主进程按 network-failure.ts 说清了原因和下一步，
   // 原样上屏；落到下面按字面猜的几条，「先上网认证」「换个网络」这些出路就丢了（深查 W-1）。
   const network = matchNetworkFailureMessage(message)

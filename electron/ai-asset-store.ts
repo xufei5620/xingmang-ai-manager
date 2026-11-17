@@ -40,6 +40,8 @@ const AI_ASSET_DOWNLOAD_ERROR_CODE = 'AI_IMAGE_DOWNLOAD_FAILED'
 const AI_ASSET_WRITE_FAILED_ERROR_CODE = 'AI_IMAGE_WRITE_FAILED'
 /** 生成前试写失败时挂在错误上的 code，与「已生成但保存失败」那类扣过费的错误区分开。 */
 export const AI_OUTPUT_UNWRITABLE_ERROR_CODE = 'AI_OUTPUT_UNWRITABLE'
+/** 付过钱的图写不进去、但已经交给 keepUnsaved 暂存好了：生图那边据此换一句「先替你收着」（深查 S-1）。 */
+export const AI_IMAGE_KEPT_UNSAVED_ERROR_CODE = 'AI_IMAGE_KEPT_UNSAVED'
 const DEFAULT_UNWRITABLE_GUIDANCE = '请联系客服帮你处理。'
 
 const blockedIpv4Addresses = new BlockList()
@@ -146,9 +148,10 @@ export interface AiAssetStoreOptions {
   /**
    * 付过钱的图（生图回来的 base64 和下载下来的图）存不进保存位置时，把字节交给它先暂存，
    * 腾出空间后再补存（深查 S-1，ai-unsaved-image-stash.ts）。只管扣过费的那两条路：本机导入的
-   * 原文件还在客户手里，不用替它留一份。它出错不改变这次抛出去的那句。
+   * 原文件还在客户手里，不用替它留一份。回 true 表示收下了，抛出去的错误换成
+   * AI_IMAGE_KEPT_UNSAVED_ERROR_CODE；回 false 或它自己出错，照旧是写不进去那个错误。
    */
-  keepUnsaved?: (userId: number, bytes: Buffer) => Promise<unknown>
+  keepUnsaved?: (userId: number, bytes: Buffer) => Promise<boolean>
 }
 
 interface OwnedAssetRecord {
@@ -564,7 +567,7 @@ export class AiAssetStore {
   private readonly downloadTimeoutMs: number
   private readonly unwritableGuidance: string
   private readonly readDiskSpace: (target: string) => Promise<DiskSpaceReading | null>
-  private readonly keepUnsaved: ((userId: number, bytes: Buffer) => Promise<unknown>) | undefined
+  private readonly keepUnsaved: ((userId: number, bytes: Buffer) => Promise<boolean>) | undefined
   private readonly records = new Map<string, OwnedAssetRecord>()
   private readonly locator: OwnedAssetLocator
 
@@ -917,7 +920,8 @@ export class AiAssetStore {
       return await this.persist(userId, bytes, declaredMime, meta)
     } catch (error) {
       if (this.keepUnsaved && (error as { code?: unknown }).code === AI_ASSET_WRITE_FAILED_ERROR_CODE) {
-        await this.keepUnsaved(userId, bytes).catch(() => undefined)
+        const kept = await this.keepUnsaved(userId, bytes).catch(() => false)
+        if (kept) Object.assign(error as Error, { code: AI_IMAGE_KEPT_UNSAVED_ERROR_CODE })
       }
       throw error
     }
