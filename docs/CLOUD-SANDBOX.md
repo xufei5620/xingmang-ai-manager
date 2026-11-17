@@ -53,6 +53,7 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
   2. `tooling/legacy-renderer/node_modules` 也要链（它是 npm workspace，装着 React 18 的类型）。漏了 `npm run typecheck` 会在 legacy 的 `src/components/ui/*` 报一串类型错，不是代码问题。
 - **别用 `pkill -f <脚本名>` 收拾卡住的命令。** 命令行里带这串字的 shell 自己也会被杀掉。用进程号杀。（沿用 10-03）
 - **`npm test` 和 `npm run test:v2` 可以在同一个目录里同时后台跑**，没冒过假红。（沿用 11-09）
+- **`npm test` 在容器里会红 29 条装命令行工具的用例**（11-17 验），全在 `electron/system-service.certificate-trust` / `disk-space` / `download-stall` / `install-cancel` 四个测试文件里，报「这台电脑上的 Claude Code 不是通过本工具安装的」或等满 30 秒。是容器的 PATH 里自带一份 Claude Code（见第 7 节第 4 条），这几条用例看得见它。CI 上没有这份，照常是绿的。核对时只重跑这四个文件、去掉那份：`PATH=/usr/bin:/bin /opt/node22/bin/node node_modules/vitest/vitest.mjs run <这四个文件>`，要 0 失败；PR 的「自查」一节照贴汇总，再写一句重跑的结果。
 - **容器里没有 zsh**（11-11 验），`electron/macos-platform.test.ts` 里真跑 zsh 的那批用例会自动跳过，不算失败。想让它们在容器里真跑，`apt-get install -y zsh`。（沿用 11-10）
 - **容器里你是 root**（11-11 验）。Linux 版客户端拒绝以 root 启动，真开客户端要先处理这个（见第 7 节）。
 
