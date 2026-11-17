@@ -25,6 +25,12 @@ const maxAccountLabelLength = 128
 /** 电脑上最多加几个干活的文件夹（YF-19）：手机上回「文件夹 2」要好认，列出来一屏看得完。 */
 export const maxRemoteWorkspaces = 5
 
+/**
+ * 设置文件在、这会儿却读不出来（比如 Windows 上杀毒软件正占着它）时，改设置那一下上屏这句，文件不动（M09）。
+ * 以前读不出来就当没设过，下一次改开关拿空设置整份写回，加过的文件夹、绑定的人、自动关的时长全没了。
+ */
+export const settingsUnreadableMessage = '这次没改成：电脑上保存的手机遥控设置这会儿读不出来，为了不弄丢原来的设置，先没动。请过一会儿再试一次。'
+
 /** 「退出登录」删不掉凭据文件时上屏那句（#1407 P3-6）。比如 Windows 上文件正被杀毒软件占着，重启后再删一般就行。 */
 export const credentialRemoveFailedMessage = '没能删掉保存的登录信息，请重启星芒后再点一次退出登录。'
 
@@ -147,9 +153,45 @@ export class CodexRemoteStore {
     private readonly platform: NodeJS.Platform = process.platform,
   ) {}
 
+  /**
+   * 给界面和收消息用：读不出来时先当没设过，但不记下来，下次再读（M09）。要改设置走 updateSettings，
+   * 它读不出来就不改。
+   */
   async readSettings(): Promise<CodexRemoteSettings> {
+    try {
+      return await this.loadSettings()
+    } catch {
+      return emptyCodexRemoteSettings()
+    }
+  }
+
+  updateSettings(mutate: (settings: CodexRemoteSettings) => void): Promise<CodexRemoteSettings> {
+    return this.enqueue(async () => {
+      const current = structuredClone(await this.loadSettings())
+      mutate(current)
+      const next = parseCodexRemoteSettings(current)
+      ensureSafeDataDirectory(this.directory, settingsLabel)
+      await writeAtomicSafeUtf8File(this.settingsPath(), `${JSON.stringify(next, null, 2)}\n`, settingsLabel)
+      this.settings = next
+      return next
+    })
+  }
+
+  /**
+   * 「还没有这个文件」（第一次用）和「文件在、这会儿读不出来」是两回事（M09）：前者就是没设过，记下来；
+   * 后者抛 settingsUnreadableMessage、什么都不记，免得把读失败当成空设置存着，下一次改开关整份写回去。
+   * 文件读出来了但内容坏了，照旧当没设过（parseCodexRemoteSettings 的口径），不然这份设置永远改不了。
+   */
+  private async loadSettings(): Promise<CodexRemoteSettings> {
     if (this.settings) return this.settings
-    const content = await readSafeUtf8File(this.settingsPath(), settingsLabel, maxSettingsBytes).catch(() => null)
+    let content: string | null
+    try {
+      content = await readSafeUtf8File(this.settingsPath(), settingsLabel, maxSettingsBytes)
+    } catch (error) {
+      // 查的时候还在、打开时已经没了，跟没有一样。
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(settingsUnreadableMessage, { cause: error })
+      content = null
+    }
     let parsed: unknown = null
     if (content) {
       try {
@@ -160,18 +202,6 @@ export class CodexRemoteStore {
     }
     this.settings = parseCodexRemoteSettings(parsed)
     return this.settings
-  }
-
-  updateSettings(mutate: (settings: CodexRemoteSettings) => void): Promise<CodexRemoteSettings> {
-    return this.enqueue(async () => {
-      const current = structuredClone(await this.readSettings())
-      mutate(current)
-      const next = parseCodexRemoteSettings(current)
-      ensureSafeDataDirectory(this.directory, settingsLabel)
-      await writeAtomicSafeUtf8File(this.settingsPath(), `${JSON.stringify(next, null, 2)}\n`, settingsLabel)
-      this.settings = next
-      return next
-    })
   }
 
   /** 这台电脑能不能把凭据存到下次打开：durable 能，session-only 只到这次关掉，unavailable 存不了。 */

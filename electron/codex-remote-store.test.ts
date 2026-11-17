@@ -1,9 +1,32 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { CodexRemoteStore, credentialRemoveFailedMessage, parseCodexRemoteSettings, remoteWorkspaceList } from './codex-remote-store'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  CodexRemoteStore,
+  credentialRemoveFailedMessage,
+  emptyCodexRemoteSettings,
+  parseCodexRemoteSettings,
+  remoteWorkspaceList,
+  settingsUnreadableMessage,
+} from './codex-remote-store'
 import type { SafeStorageLike } from './account-session-store'
+
+// The next `remaining` reads fail with `code`, like a settings file that antivirus holds for a moment.
+const readFailures = vi.hoisted(() => ({ remaining: 0, code: 'EBUSY' }))
+vi.mock('./safe-local-data', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./safe-local-data')>()
+  return {
+    ...original,
+    async readSafeUtf8File(...args: Parameters<typeof original.readSafeUtf8File>) {
+      if (readFailures.remaining > 0) {
+        readFailures.remaining -= 1
+        throw Object.assign(new Error(`${readFailures.code}: simulated read failure`), { code: readFailures.code })
+      }
+      return original.readSafeUtf8File(...args)
+    },
+  }
+})
 
 const roots: string[] = []
 
@@ -27,6 +50,8 @@ function fakeStorage(backend = 'gnome_libsecret', available = true): SafeStorage
 }
 
 afterEach(() => {
+  readFailures.remaining = 0
+  readFailures.code = 'EBUSY'
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -99,6 +124,68 @@ describe('codex-remote-store', () => {
     expect(reread.workspaceDirectory).toBe(workspace)
     expect(reread.channels.feishu?.accountLabel).toBe('cli_x')
     expect(reread.lastApprovalNumber).toBe(12)
+  })
+
+  it('keeps the saved settings when the file cannot be read for a moment instead of writing over them (M09)', async () => {
+    const directory = tempDirectory()
+    const workspace = path.join(os.tmpdir(), 'project')
+    await new CodexRemoteStore(directory, fakeStorage(), 'darwin').updateSettings((settings) => {
+      settings.workspaceDirectory = workspace
+      settings.idleCloseHours = 12
+      settings.channels.feishu = { accountLabel: 'cli_x', boundPeer: { userId: 'ou_1', boundAt: 5 } }
+    })
+    const settingsPath = path.join(directory, 'settings.json')
+    const saved = fs.readFileSync(settingsPath, 'utf8')
+    const store = new CodexRemoteStore(directory, fakeStorage(), 'darwin')
+    // Busy on the first read: the card shows nothing set for now rather than failing outright...
+    readFailures.remaining = 1
+    expect(await store.readSettings()).toEqual(emptyCodexRemoteSettings())
+    // ...but a change made while the file is still busy is refused and the file stays exactly as it was.
+    readFailures.remaining = 1
+    const change = store.updateSettings((settings) => {
+      settings.autoStart = true
+    })
+    await expect(change).rejects.toThrow(new Error(settingsUnreadableMessage))
+    // The original failure rides along as the cause so the runtime log keeps it.
+    await expect(change).rejects.toHaveProperty('cause', expect.objectContaining({ code: 'EBUSY' }))
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(saved)
+    // Once the file reads again the same store picks it up, and the change keeps everything else.
+    expect((await store.readSettings()).workspaceDirectory).toBe(workspace)
+    await store.updateSettings((settings) => {
+      settings.autoStart = true
+    })
+    const reread = await new CodexRemoteStore(directory, fakeStorage(), 'darwin').readSettings()
+    expect(reread).toMatchObject({ workspaceDirectory: workspace, idleCloseHours: 12, autoStart: true })
+    expect(reread.channels.feishu).toEqual({ accountLabel: 'cli_x', boundPeer: { userId: 'ou_1', boundAt: 5 } })
+  })
+
+  it('treats a settings file that vanished between the check and the read as never saved', async () => {
+    const directory = tempDirectory()
+    const store = new CodexRemoteStore(directory, fakeStorage(), 'darwin')
+    readFailures.code = 'ENOENT'
+    readFailures.remaining = 1
+    expect(await store.readSettings()).toEqual(emptyCodexRemoteSettings())
+    await store.updateSettings((settings) => {
+      settings.autoStart = true
+    })
+    expect((await new CodexRemoteStore(directory, fakeStorage(), 'darwin').readSettings()).autoStart).toBe(true)
+  })
+
+  it('treats a settings file that does not parse as nothing set and lets the next change replace it', async () => {
+    const directory = tempDirectory()
+    fs.mkdirSync(directory, { recursive: true })
+    const settingsPath = path.join(directory, 'settings.json')
+    fs.writeFileSync(settingsPath, '{not json')
+    const store = new CodexRemoteStore(directory, fakeStorage(), 'darwin')
+    expect(await store.readSettings()).toEqual(emptyCodexRemoteSettings())
+    await store.updateSettings((settings) => {
+      settings.autoStart = true
+    })
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8'))).toMatchObject({ version: 1, autoStart: true })
+  })
+
+  it('words the refused change for the customer', () => {
+    expect(settingsUnreadableMessage).toBe('这次没改成：电脑上保存的手机遥控设置这会儿读不出来，为了不弄丢原来的设置，先没动。请过一会儿再试一次。')
   })
 
   it('encrypts credentials at rest and clears them', async () => {
