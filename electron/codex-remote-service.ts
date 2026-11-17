@@ -145,6 +145,11 @@ const shutdownSendTimeoutMs = 1500
 const farewellTimeoutMs = shutdownSendTimeoutMs
 /** 一轮多久没任何动静就当它卡死（打磨 C2，yoyo 10-27「停改」）：Codex 不出声这一轮永远不结束，手机上发什么都是「上一件还没做完」。 */
 const turnStallMs = 60 * 60_000
+/**
+ * 开了「打开星芒时自动打开遥控」时，手机上这么久没来消息、手上又没活，Mac 才能闲时装更新、重开
+ * （YR-3，yoyo 2026-11-17「改」）：刚发完一句的人多半还会接着发，半小时没动静才算放下了。
+ */
+export const remoteIdleInstallQuietMs = 30 * 60_000
 /** 审批编号最多 4 位：手机上回「同意 12」要好打，飞书按钮和文字指令也只认 4 位以内。 */
 const maxApprovalNumber = 9999
 /**
@@ -846,6 +851,30 @@ export function lastRequestSnapshot(entry: { receivedAt: number; state: CodexRem
  * 托盘「打开手机遥控」能直接打开的渠道（YF-8）：选好了文件夹，渠道有凭据、配对过人，还没开着。
  * 没配对过的不算：打开以后还得回电脑上点「开始配对」，从托盘开它没用。
  */
+/**
+ * Mac 闲时装更新（#1380）为手机遥控等不等、怎么等（YK-2、YR-3）：
+ * - 'drops'：开着的渠道重开星芒后连不回去（没开「打开星芒时自动打开遥控」），这次运行就不闲时装。
+ * - 'busy'：重开会自己连回去，可手上有活、有等你同意的，或者 remoteIdleInstallQuietMs 内手机上来过消息：先等等。
+ * - null：没开着，或者重开就连回去、手上也没事，可以装。
+ *
+ * 开了自动打开也只替配对过人的渠道连（enableReadyChannels），开着还没配对的渠道重开后是关的；这里不另算它：
+ * 没配对就没人能从手机上用它，配对码要在电脑上点出来，重开丢掉的只是一个还没人能用的开关。
+ * 电脑上的钟往回调过时按绝对值算，跟 staleNoticedRecently 一样，免得一调就挡上几个小时。
+ */
+export function resolveRemoteIdleInstallHold(input: {
+  enabled: boolean
+  autoStart: boolean
+  working: boolean
+  lastPhoneMessageAt: number | null
+  now: number
+}): 'drops' | 'busy' | null {
+  if (!input.enabled) return null
+  if (!input.autoStart) return 'drops'
+  if (input.working) return 'busy'
+  if (input.lastPhoneMessageAt !== null && Math.abs(input.now - input.lastPhoneMessageAt) < remoteIdleInstallQuietMs) return 'busy'
+  return null
+}
+
 export function remoteChannelsReadyToEnable(snapshot: Pick<CodexRemoteSnapshot, 'workspaceDirectory' | 'channels'>): RemoteChannelId[] {
   if (!snapshot.workspaceDirectory) return []
   return remoteChannelIds.filter((id) => {
@@ -883,6 +912,14 @@ export class CodexRemoteService {
    */
   private idleCloseHours: RemoteIdleCloseHours | null = null
   private idleCloseLoaded = false
+  /**
+   * 「打开星芒时自动打开遥控」（YF-9）开没开，留一份给同步的 idleInstallHold 用（YR-3）。跟 idleCloseHours 一样：
+   * 头一回连渠道前从盘上读，之后只有 setAutoStart 改它（盘上那份也只有它写）。没读过时当没开：宁可这次不闲时装。
+   */
+  private autoStart = false
+  private autoStartLoaded = false
+  /** 绑定的那个人最近一次从手机上发来消息（含点卡片按钮）的时间；null = 这次打开星芒还没来过（YR-3）。 */
+  private lastPhoneMessageAt: number | null = null
   /** 已经叫停、还没真退出的几份 Codex（retireClient）：装、卸 Codex 前也要等它们放开文件。 */
   private readonly retiringClients = new Set<CodexAppServerClient>()
   private secrets: readonly string[] = []
@@ -919,9 +956,23 @@ export class CodexRemoteService {
     }
   }
 
-  /** 有渠道开着。闲时自动装更新要看：一重启遥控就停了，开着它的人又多半不在电脑前。 */
+  /** 有渠道开着。托盘那一项「关掉手机遥控」跟着它；闲时装更新看的是 idleInstallHold。 */
   hasEnabledChannel(): boolean {
     return remoteChannelIds.some((id) => this.runtimes[id].enabled)
+  }
+
+  /**
+   * Mac 闲时装更新这一刻为手机遥控等不等（resolveRemoteIdleInstallHold）。同步给跳框器每 30 秒问一次，
+   * 不读盘：自动打开开没开用 setAutoStart、连渠道前留下的那份。
+   */
+  idleInstallHold(): 'drops' | 'busy' | null {
+    return resolveRemoteIdleInstallHold({
+      enabled: this.hasEnabledChannel(),
+      autoStart: this.autoStart,
+      working: remoteChannelIds.some((id) => this.runtimes[id].turn !== null) || this.pending.size > 0,
+      lastPhoneMessageAt: this.lastPhoneMessageAt,
+      now: this.now(),
+    })
   }
 
   /**
@@ -1188,6 +1239,8 @@ export class CodexRemoteService {
       if (enabled) settings.autoStart = true
       else delete settings.autoStart
     })
+    this.autoStart = enabled
+    this.autoStartLoaded = true
     this.options.log('info', 'remote.auto-start-set', { enabled })
     return this.emit()
   }
@@ -1506,6 +1559,7 @@ export class CodexRemoteService {
     const adapter = this.options.createChannel(runtime.id, this.channelDependencies(runtime.id))
     runtime.adapter = adapter
     await this.loadIdleClose()
+    await this.loadAutoStart()
     await this.refreshSecrets(true)
     // 读设置、读密钥这一下里渠道被关掉了（或者又开了一次、换上了新的一份）：这一份还没连，就别连了，连上就没人停它。
     if (runtime.adapter !== adapter) return null
@@ -1711,6 +1765,14 @@ export class CodexRemoteService {
     this.idleCloseLoaded = true
   }
 
+  private async loadAutoStart(): Promise<void> {
+    if (this.autoStartLoaded) return
+    const autoStart = (await this.options.store.readSettings()).autoStart === true
+    if (this.autoStartLoaded) return
+    this.autoStart = autoStart
+    this.autoStartLoaded = true
+  }
+
   /**
    * 从现在起再闲 delayMs（缺省是设置里选的时长）就自动关；关之前 10 分钟先提醒手机一次（D66 / YKS-19），
    * 手机上回什么都会走到这里重新起算。选了「不自动关」（YF-10）就只撤掉手上的计时。
@@ -1886,6 +1948,7 @@ export class CodexRemoteService {
     runtime.peer = message.peer
     if (message.replyContext) runtime.replyContext = message.replyContext
     runtime.staleNoticeAt = 0
+    this.lastPhoneMessageAt = this.now()
     this.touch(runtime)
     if (message.kind === 'unsupported') {
       await this.sendText(runtime, remoteMessages.unsupported)

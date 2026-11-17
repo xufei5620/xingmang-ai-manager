@@ -44,6 +44,7 @@ import {
   readFileChange,
   readRequestedPermissions,
   remoteChannelsReadyToEnable,
+  remoteIdleInstallQuietMs,
   sentWhileOpen,
   validateRemoteWorkspace,
 } from './codex-remote-service'
@@ -990,6 +991,76 @@ describe('codex-remote-service switching on when Xingmang opens', () => {
     expect(s.service.hasEnabledChannel()).toBe(false)
     expect(s.logDetails.find((entry) => entry.event === 'remote.auto-started')?.detail).toEqual({ opened: 0, failed: true })
     expect((await s.service.snapshot()).autoStart).toBe(true)
+  })
+})
+
+describe('codex-remote-service holding off the Mac idle install (YK-2, YR-3)', () => {
+  it('holds it off for the whole run while an open channel would not come back after a restart', async () => {
+    const s = await setup()
+    expect(s.service.idleInstallHold()).toBeNull()
+    await enabledAndPaired(s)
+    expect(s.service.idleInstallHold()).toBe('drops')
+    await s.service.setAutoStart(true)
+    expect(s.service.idleInstallHold()).toBeNull()
+    await s.service.setAutoStart(false)
+    expect(s.service.idleInstallHold()).toBe('drops')
+    await s.service.setChannelEnabled('feishu', false)
+    expect(s.service.idleInstallHold()).toBeNull()
+  })
+
+  it('with switch-on-launch on, waits until the phone has been quiet for half an hour', async () => {
+    let clock = 1_000_000
+    const s = await setup({ now: () => clock })
+    const channel = await enabledAndPaired(s)
+    await s.service.setAutoStart(true)
+    // The pairing message came from someone not bound yet, so it does not count.
+    expect(s.service.idleInstallHold()).toBeNull()
+    channel.handlers?.onInbound(text(alice, '帮助'))
+    await channel.sentUntil(() => channel.texts().length > 0)
+    expect(s.service.idleInstallHold()).toBe('busy')
+    clock += remoteIdleInstallQuietMs - 1
+    expect(s.service.idleInstallHold()).toBe('busy')
+    clock += 1
+    expect(s.service.idleInstallHold()).toBeNull()
+    // A clock turned back by hours must not hold it off for hours.
+    clock -= 3 * 60 * 60_000
+    expect(s.service.idleInstallHold()).toBeNull()
+  })
+
+  it('with switch-on-launch on, waits while a turn runs no matter how long ago the last message came', async () => {
+    let clock = 1_000_000
+    const s = await setup({ now: () => clock })
+    const channel = await enabledAndPaired(s)
+    await s.service.setAutoStart(true)
+    await prompted(s, channel)
+    clock += remoteIdleInstallQuietMs * 4
+    expect(s.service.idleInstallHold()).toBe('busy')
+  })
+
+  it('knows the switch is on after a launch that switched the channels on by itself', async () => {
+    const root = tempRoot()
+    const first = await setup({ root })
+    await enabledAndPaired(first)
+    await first.service.setAutoStart(true)
+    first.service.dispose()
+
+    const s = await setup({ root })
+    await s.service.startOnLaunch()
+    expect(s.service.hasEnabledChannel()).toBe(true)
+    expect(s.service.idleInstallHold()).toBeNull()
+  })
+
+  it('treats a channel switched on by hand after a launch as coming back when the switch was already on', async () => {
+    const root = tempRoot()
+    const first = await setup({ root })
+    await enabledAndPaired(first)
+    await first.service.setAutoStart(true)
+    await first.service.setChannelEnabled('feishu', false)
+    first.service.dispose()
+
+    const s = await setup({ root })
+    await s.service.setChannelEnabled('feishu', true)
+    expect(s.service.idleInstallHold()).toBeNull()
   })
 })
 
