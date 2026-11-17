@@ -911,9 +911,13 @@ npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指�
 所以 quality 工作流里有一个 `cli-relay-probe` 作业（`scripts/probe-cli-relay.cjs`）：
 
 - **什么时候跑**：PR 改到 `electron/cli-verified-versions.ts` 或本文档时。别的 PR 改不动这个答案，不值得对生产中转发真实请求。
-- **跑什么**：名单里**每一个**填了 `recommended`、且脚本里有探测办法的工具各装一次那个版本，再对 `relay-sites.ts` 里的**每个**中转站点各跑一次最小请求，结论写进 job summary。今天是 Claude Code、Codex 两个工具 × `solov` 一个站点 = 两次真实请求（Grok 还没有探测办法；Gemini CLI 2026-10-14 下线后不再探测；历史账号站 `solov-api` 2026-11-09 定不测，见上文，summary 里照样列出并写明没测）。
+- **跑什么**：名单里**每一个**填了 `recommended`、且脚本里有探测办法的工具各装一次那个版本，再对 `relay-sites.ts` 里的**每个**中转站点各跑一次最小请求，结论写进 job summary。今天是 Claude Code、Codex 两个工具 × `solov` 一个站点 = 两次真实请求，外加下面 Claude Code 那一次结构化输出检查（Grok 还没有探测办法；Gemini CLI 2026-10-14 下线后不再探测；历史账号站 `solov-api` 2026-11-09 定不测，见上文，summary 里照样列出并写明没测）。
   - Claude Code：`claude -p --output-format stream-json --verbose`，凭据走 `ANTHROPIC_AUTH_TOKEN`。输出格式只改本地打印、不改请求体；用它是因为纯 `-p` 在重试期间什么都不打，被超时杀掉时只剩退出码 143，stream-json 会把每次重试的 HTTP 状态打出来，脚本据此归类。
   - Codex：`codex exec`，配置是一份与 `config-files.ts` 的 `buildCodexRelayConfigTemplate` 同形的 `config.toml`（`wire_api = "responses"`、`model_reasoning_effort = "xhigh"`）。
+  - Claude Code 另跑一次「中转收不收结构化输出」（2026-11-17 加）：Claude Code 起对话标题、找记忆、跑提示钩子时发的是带 `structured-outputs-2025-12-15` beta 和 `output_config.format` 的请求，中转不收时这几样**静默失败**，客户只看到首页「最近对话」没有标题、显示第一句话（本地假接口上对 2.1.319 实测过，`CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS` 能让标题回来）。
+    - 起标题只在交互模式里发，`-p --json-schema` 走的是一个工具，都测不到；能让 `-p` 发出同一种请求的是提示钩子（`type: "prompt"`，同一个型号、同一个 beta）。所以这一次在临时 HOME 的 `~/.claude/settings.json` 里放一个放行的 `UserPromptSubmit` 提示钩子，加 `--debug-file`，看 CLI 自己的调试日志：有「Hooks: Model response:」算收，「prompt-hook evaluator API error」带 400 算不收，别的算没测出。这一次多花两次很小的请求（钩子一次、提示本身一次）。
+    - **它不让作业变红**：收不收是中转的能力，不是推荐版本的回归，不该挡住抬版本。结论单独写在 summary 的「中转收不收结构化输出」一节；看到「不收」，就在 `config-files.ts` 写 Claude Code 配置的地方加上 `CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS`。
+    - 调试日志的写法是 CLI 自己的，哪天改了这一节会变成「没测出」，那时照新写法改 `classifyStructuredOutputProbe`。
 - **为什么连接自检不能代替它**：自检只读模型清单，而 CLI 真正打的端点各不相同（Claude 的 `/v1/messages`、Codex 的 `/responses`），请求体更是天差地别。0.155.0 那类回归改的正是请求体。
 - **密钥**：仓库 secret `XINGMANG_CLI_PATROL_KEY`，一把额度很小的测试 Key，在 GPT 分组。new-api 一把令牌只属于一个分组，所以 Claude 另用 `XINGMANG_CLI_PATROL_KEY_CLAUDE`（Claude 分组，2026-11-09 加）；没配这把时 Claude 退回共用的那把。
   - 每把 Key 要落在它那个工具的分组里（`catalog.ts` 的 `managedCliKeyProfiles`：`Claude-MAX订阅` / `GPT-中转/订阅`）。分组不对时，中转会答「分组 GPT 下模型 claude-opus-5-5 无可用渠道」这样的话（11-09 第一次真跑，Claude 用 GPT 分组那把就是这样）。

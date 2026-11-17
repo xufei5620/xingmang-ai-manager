@@ -156,6 +156,90 @@ function displayOutput(output) {
   return String(output).split('\n').filter((line) => !/^\{"type":"system","subtype":"init"/.test(line.trim())).join('\n')
 }
 
+/**
+ * Claude Code 起对话标题、找记忆、跑提示钩子时发的是「结构化输出」请求(带
+ * `structured-outputs-2025-12-15` beta 和 `output_config.format`)。中转不收时这几样
+ * 静默失败:CLI 被 400 拒掉后不报错,标题就不写了,星芒首页「最近对话」只能显示
+ * 第一句话(2026-11-15 在本地假接口上对 2.1.319 实测;那次也实测了
+ * CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS 能让标题回来)。
+ *
+ * 起标题只在交互模式里发,`-p` 不发;`-p --json-schema` 走的是一个工具,也不发这种
+ * 请求。能让 `-p` 发出同一种请求的是提示钩子(type: "prompt"):同一个型号、同一个
+ * beta、同一种 output_config.format。所以这一项在临时 HOME 里放一个
+ * UserPromptSubmit 提示钩子,看 CLI 自己的调试日志:钩子拿到回答会记一行
+ * 「Hooks: Model response:」,请求失败会记「Hooks: prompt-hook evaluator API error: …」。
+ *
+ * 它不让作业变红:收不收是中转的能力,不是这个版本的回归,不该挡住抬版本。
+ */
+const STRUCTURED_OUTPUT_DEBUG_FILE = 'claude-debug.log'
+
+/** 临时 HOME 里 ~/.claude/settings.json 的全部内容:只有一个放行的提示钩子。 */
+function structuredOutputProbeSettings() {
+  return {
+    hooks: {
+      UserPromptSubmit: [{ hooks: [{ type: 'prompt', prompt: 'Allow this prompt. $ARGUMENTS' }] }],
+    },
+  }
+}
+
+/** 和主探测同一个提示、同一个型号;`--debug-file` 只多写一份本地日志,不改请求。 */
+function structuredOutputProbeArgv(model, debugFile) {
+  return ['-p', PROBE_PROMPT, '--model', model, '--debug-file', debugFile]
+}
+
+/** 读调试日志下结论。分组、凭据、5xx 这类失败说明不了收不收,一律算没测出。 */
+function classifyStructuredOutputProbe(debugLog) {
+  const text = String(debugLog)
+  if (/Hooks: Model response:/.test(text)) return { verdict: 'accepted', detail: '结构化输出请求正常返回' }
+  const failure = /prompt-hook evaluator API error:\s*(.*)/.exec(text)
+  if (failure) {
+    const message = failure[1].trim().slice(0, 300)
+    if (!/无可用渠道|无可用的渠道|当前分组|no available channel/i.test(message) && /\b400\b|invalid_request_error/i.test(message)) {
+      return { verdict: 'rejected', detail: `中转拒绝了结构化输出请求:${message}` }
+    }
+    return { verdict: 'unknown', detail: `钩子的请求没成功,但不是被拒(${message}),这次判定不了` }
+  }
+  return { verdict: 'unknown', detail: '调试日志里没有钩子请求的结果,可能是 CLI 改了日志写法,这次判定不了' }
+}
+
+async function probeStructuredOutputs(executable, site, key, model) {
+  const { secret } = key
+  const runner = probeRunners.claude
+  const baseUrl = runner.baseUrlFor(site)
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-cli-home-'))
+  try {
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), `${JSON.stringify(structuredOutputProbeSettings())}\n`, 'utf8')
+    const debugFile = path.join(home, STRUCTURED_OUTPUT_DEBUG_FILE)
+    await runCommand(executable, structuredOutputProbeArgv(model, debugFile), {
+      cwd: home,
+      env: runner.environment(baseUrl, secret, home),
+      timeoutMs: PROBE_TIMEOUT_MS,
+    })
+    const debugLog = fs.existsSync(debugFile) ? fs.readFileSync(debugFile, 'utf8') : ''
+    const { verdict, detail } = classifyStructuredOutputProbe(debugLog)
+    return { siteId: site.id, verdict, detail: redact(detail, secret) }
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+}
+
+/** summary 里「收不收结构化输出」那一节。没探测 Claude 时没有这一节。 */
+function structuredOutputSummaryLines(results) {
+  if (results.length === 0) return []
+  const labels = { accepted: '收', rejected: '**不收**', unknown: '没测出' }
+  return [
+    '',
+    '### Claude Code：中转收不收结构化输出',
+    '',
+    '不影响上面的结论，也不让作业变红。不收时客户的对话标题、记忆查找、提示钩子会静默失败，修法是在星芒写的 Claude Code 配置里加 `CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS`（见 `docs/CLI-VERIFIED-VERSIONS.md`）。',
+    '',
+    '| 站点 | 结论 | 说明 |',
+    '| --- | --- | --- |',
+    ...results.map((result) => `| \`${result.siteId}\` | ${labels[result.verdict] || '没测出'} | ${result.detail} |`),
+  ]
+}
+
 /** 只有 rejected 才让作业变红 —— 那是名单要挡的那一类。其余是探测自身的问题,也要红,但文案不同。 */
 function summarize(results) {
   if (results.some((result) => result.verdict === 'rejected')) return { ok: false, headline: '推荐版本在中转上被拒绝,不要合入' }
@@ -347,6 +431,7 @@ async function main() {
   }
 
   const results = []
+  const structuredOutputResults = []
   for (const provider of providers) {
     const recommended = cliVerifiedVersions[provider].recommended
     const install = await runCommand('npm', [
@@ -361,6 +446,11 @@ async function main() {
     const executable = await resolveGlobalCli(cliCatalog[provider].command)
     for (const site of sites) {
       results.push(await probeSite(provider, executable, site, recommended.version, resolveProbeKey(provider, process.env), defaultCliModels[provider]))
+    }
+    if (provider === 'claude') {
+      for (const site of sites) {
+        structuredOutputResults.push(await probeStructuredOutputs(executable, site, resolveProbeKey(provider, process.env), defaultCliModels[provider]))
+      }
     }
   }
 
@@ -380,6 +470,7 @@ async function main() {
     '',
     '跑通的站点 id 请写进名单里对应那条 `recommended` 的 `verifiedSites`，当前分别是：',
     ...providers.map((provider) => `- ${cliCatalog[provider].name}：\`[${cliVerifiedVersions[provider].recommended.verifiedSites.join(', ')}]\``),
+    ...structuredOutputSummaryLines(structuredOutputResults),
   ]
   for (const result of results.filter((entry) => entry.verdict !== 'ok')) {
     lines.push('', `<details><summary><code>${result.provider}</code> @ <code>${result.siteId}</code> 的输出</summary>`, '', '```', result.output || '(没有输出)', '```', '', '</details>')
@@ -395,4 +486,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { probedSites, UNPROBED_SITES, resolveProbeKey, PROVIDER_KEY_VARIABLES, classifyProbe, claudeStreamEvidence, displayOutput, probeSite, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders, PROBED_PROVIDERS, KEY_VARIABLE }
+module.exports = { structuredOutputProbeSettings, structuredOutputProbeArgv, classifyStructuredOutputProbe, structuredOutputSummaryLines, probedSites, UNPROBED_SITES, resolveProbeKey, PROVIDER_KEY_VARIABLES, classifyProbe, claudeStreamEvidence, displayOutput, probeSite, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders, PROBED_PROVIDERS, KEY_VARIABLE }
