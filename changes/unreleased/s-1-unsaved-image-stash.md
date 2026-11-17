@@ -11,5 +11,5 @@
 - 只接扣过费的两条路（`storeBase64`、`storeRemoteUrl`），而且只在校验已经过了、写盘那一步失败时（新的内部 code
   `AI_IMAGE_WRITE_FAILED`）；本机导入、主进程自己做的图不暂存。对话和画布项目两边的 `AiAssetStore` 都经新选项
   `keepUnsaved` 交给同一份，统一补存进账号作品库（画布项目文件夹写不进多半是文件夹本身出了状况）。
-- 运行日志新增 `ai-chat/asset.unsaved.kept|dropped|restored|restore-failed`。界面字没改：对话、画布那句
-  「图片已生成但本地保存失败……」照旧。
+- 运行日志新增 `ai-chat/asset.unsaved.kept|dropped|restored|restore-failed`。暂存好了时上屏那句见
+  `s-1-kept-image-wording.md`；没暂存上的照旧是「图片已生成但本地保存失败……」。
