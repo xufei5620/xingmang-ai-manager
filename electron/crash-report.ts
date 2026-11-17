@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { QUOTED_SECRET_VALUE, SECRET_FIELD_NAME, redactSecretShapes } from './redaction-patterns'
+import {
+  SECRET_FIELD_NAME,
+  escapedQuoteMark,
+  hideRestOfEscapedQuotedValues,
+  redactSecretShapes,
+} from './redaction-patterns'
 import { redactHomeDirectory } from './startup-log'
 
 /**
@@ -75,10 +80,9 @@ const MAX_MESSAGE_LENGTH = 2_048
 const MAX_CONTEXT_LENGTH = 1_024
 const MAX_FRAMES = 60
 
-// The same names and quoted values the shared table recognises; an unquoted
-// value here also stops at a closing bracket, since a stack trace wraps
-// payloads in `(…)` and `{…}`.
-const CRASH_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}["']?\\s*[:=]\\s*)(?:${QUOTED_SECRET_VALUE}|[^\\s,;)\\]}]+)`, 'gi')
+// The same names the shared table recognises; the value here also stops at a
+// closing bracket, since a stack trace wraps payloads in `(…)` and `{…}`.
+const CRASH_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}["']?\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^\\s,;)\\]}]+)`, 'gi')
 
 // The address shape the crash reporter hides whole. A match that starts inside
 // a run of local-part characters also matches from the character before it,
@@ -125,7 +129,7 @@ export function redactCrashText(value: string, homeDirectory: string): string {
   const redacted = redactSecretShapes(redactHomeDirectory(value, homeDirectory))
     // The optional quote after the key name is what `redactCommandText` lacks:
     // a stack trace carrying a serialized payload spells it `"api_key":"..."`.
-    .replace(CRASH_SECRET_FIELD, '$1[REDACTED]')
+    .replace(CRASH_SECRET_FIELD, (field, name: string) => `${name}[REDACTED]${escapedQuoteMark(field.slice(name.length))}`)
     .replace(/([?&](?:api[_-]?key|token|key)=)[^&\s]+/gi, '$1[REDACTED]')
     // Other users' profiles, and this user's own when the home directory is
     // spelled differently than os.homedir() reports it (a junction, a mapped
@@ -133,7 +137,9 @@ export function redactCrashText(value: string, homeDirectory: string): string {
     .replace(/([A-Za-z]:[\\/]+Users[\\/]+)[^\\/:*?"<>|\r\n]+/gi, '$1%USER%')
     .replace(/(\/Users\/)[^/\s:"'\\]+/g, '$1%USER%')
     .replace(/(\/home\/)[^/\s:"'\\]+/g, '$1%USER%')
-  return redactCrashEmailAddresses(redacted)
+  // Last, as in the shared table: what the rules above hid of a value whose
+  // closing quote was escaped, and only that, is extended to its real end.
+  return hideRestOfEscapedQuotedValues(redactCrashEmailAddresses(redacted))
 }
 
 /**

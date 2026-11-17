@@ -222,17 +222,20 @@ describe('redactSecretFields', () => {
       .toBe('{"password":"[REDACTED]","user":"alice"}')
   })
 
+  it('hides the whole value when it holds both kinds of quote', () => {
+    expect(redactSecretFields('{"password":"it\'s \\"defghij\\"","user":"alice"}')).toBe('{"password":"[REDACTED]","user":"alice"}')
+    expect(redactSecretFields("{'password': 'it\\'s \"defghij\"', 'user': 'alice'}")).toBe("{'password': '[REDACTED]', 'user': 'alice'}")
+  })
+
   it('ends a quoted value at an escaped backslash before its closing quote', () => {
     expect(redactSecretFields('{"password":"abc\\\\","user":"alice"}')).toBe('{"password":"[REDACTED]","user":"alice"}')
     expect(redactSecretFields("{'token': 'abc\\\\', 'user': 'alice'}")).toBe("{'token': '[REDACTED]', 'user': 'alice'}")
   })
 
-  // Why reading escapes hides nothing the old rule hid: a backslash that is
-  // not an escape would carry that reading on to the next field's opening
-  // quote and leave that field's value readable. The reading only counts when
-  // its closing quote is followed by the end of a value and is not right
-  // after a secret name and `=`; otherwise the value runs to its first quote,
-  // which is all the old rule ever took.
+  // Why this hides nothing the old rule hid: every rule still runs as it did,
+  // and the rest of an escaped value is hidden only after all of them, up to a
+  // quote that ends a value. A backslash that is not an escape finds no such
+  // quote before the next field, so nothing more is hidden.
   it('still hides the next field when a backslash before a quote is not an escape', () => {
     expect(redactSecretFields('password="C:\\fake\\" token="plain-fake-next"')).toBe('password=[REDACTED] token=[REDACTED]')
     expect(redactSecretFields("password='C:\\fake\\' token='plain-fake-next'")).toBe('password=[REDACTED] token=[REDACTED]')
@@ -241,8 +244,21 @@ describe('redactSecretFields', () => {
     expect(redactSecretFields('password="C:\\fake\\" token=" plain-fake-next"')).toBe('password=[REDACTED] token=[REDACTED]')
   })
 
-  // A later field's opening quote always stops the scan of the value in front
-  // of it, so a run of fields whose values hold escaped quotes is read once.
+  // In each of these a later rule starts inside the rest of the escaped value
+  // and runs past its closing quote. A field rule that read on past the
+  // escaped quote itself swallowed that start and showed the tail; hiding
+  // the rest last leaves those rules their whole match.
+  it('leaves a later rule its whole match when it starts inside the rest of an escaped value', () => {
+    expect(redactSecretPatterns('password="a\\" token=\'plain fake" tail\'')).toBe('password=[REDACTED] token=[REDACTED]')
+    expect(redactSecretPatterns('password="a\\" token=plain-fake")tail')).toBe('password=[REDACTED] token=[REDACTED]')
+    expect(redactSecretPatterns('password="a\\" ?key=plain-fake",tail')).toBe('password=[REDACTED] ?key=[REDACTED]')
+    expect(redactSecretPatterns("{'token': 'x \"password\":\"\\\"plain-fake' tail\"}")).toBe("{'token': '[REDACTED]' tail\"}")
+    expect(redactSecretPatterns('secret="x \'token\': \'\\\'plain-fake" tail\'')).toBe("secret=[REDACTED] tail'")
+    expect(redactCrashText("{'password': 'a\\'C:\\Users\\plain-fake' tail}", '')).toBe("{'password': [REDACTED]C:\\Users\\%USER%")
+  })
+
+  // The rest of a value is read up to the next quote or the next mark, so a
+  // run of fields whose values hold escaped quotes is read once.
   it('scans many fields with escaped quotes in linear time', () => {
     const started = performance.now()
     expect(redactSecretFields('"password":"\\" '.repeat(20_000))).toBe('"password":"[REDACTED]" '.repeat(20_000))
