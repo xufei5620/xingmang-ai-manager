@@ -2,6 +2,7 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 
 const {
+  structuredOutputProbeSettings, structuredOutputProbeArgv, classifyStructuredOutputProbe, structuredOutputSummaryLines,
   probedSites, UNPROBED_SITES, resolveProbeKey, PROVIDER_KEY_VARIABLES, classifyProbe, claudeStreamEvidence, displayOutput, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders,
   PROBED_PROVIDERS, KEY_VARIABLE,
 } = require('./probe-cli-relay.cjs')
@@ -205,4 +206,68 @@ test('the history-account site is listed as untested instead of being probed wit
   assert.match(UNPROBED_SITES['solov-api'], /不测/)
   // Only that one site is exempt; a new relay site is probed by default.
   assert.deepEqual(probedSites([{ id: 'solov' }, { id: 'new-site' }]).map((site) => site.id), ['solov', 'new-site'])
+})
+
+// Lines copied from Claude Code 2.1.319's --debug-file against a local fake
+// gateway (2026-11-17), one that answered and one that refused output_format.
+const ANSWERED_HOOK_LOG = [
+  '2026-11-17T01:22:47.294Z [DEBUG] Hooks: Querying model with 1 messages',
+  '2026-11-17T01:22:47.308Z [DEBUG] [API REQUEST] /v1/messages source=hook_prompt',
+  '2026-11-17T01:22:47.316Z [DEBUG] Hooks: Model response: {"ok":true}',
+].join('\n')
+const REFUSED_HOOK_LOG = [
+  '2026-11-17T01:22:39.638Z [DEBUG] [API REQUEST] /v1/messages source=hook_prompt',
+  '2026-11-17T01:22:39.642Z [ERROR] API error (attempt 1/3): 400 400 {"type":"error","error":{"type":"invalid_request_error","message":"output_format: Extra inputs are not permitted"}}',
+  '2026-11-17T01:22:39.651Z [ERROR] Hooks: prompt-hook evaluator API error: API Error: 400 output_format: Extra inputs are not permitted',
+].join('\n')
+
+test('the structured-output check runs a prompt hook, the one -p request that uses structured outputs', () => {
+  // Session titles are only requested interactively, and --json-schema goes
+  // through a tool, so a prompt hook is what makes -p send output_config.format.
+  const hooks = structuredOutputProbeSettings().hooks
+  assert.deepEqual(Object.keys(hooks), ['UserPromptSubmit'])
+  assert.equal(hooks.UserPromptSubmit[0].hooks[0].type, 'prompt')
+  // Same prompt and model as the version probe; the debug file only adds a
+  // local log, and the key is never an argument.
+  const argv = structuredOutputProbeArgv('claude-opus-5', '/tmp/home/claude-debug.log')
+  assert.deepEqual(argv.slice(0, 2), probeRunners.claude.argv('claude-opus-5').slice(0, 2))
+  assert.deepEqual(argv.slice(-4), ['--model', 'claude-opus-5', '--debug-file', '/tmp/home/claude-debug.log'])
+  // The check must see the request a customer's Claude Code sends, so the
+  // runner environment may not switch structured outputs off.
+  assert.equal(probeRunners.claude.environment('https://relay.invalid', 'sk-probe', '/tmp/home').CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS, undefined)
+})
+
+test('an answered hook means the relay takes structured outputs, and a 400 means it refuses them', () => {
+  assert.equal(classifyStructuredOutputProbe(ANSWERED_HOOK_LOG).verdict, 'accepted')
+  const refused = classifyStructuredOutputProbe(REFUSED_HOOK_LOG)
+  assert.equal(refused.verdict, 'rejected')
+  // The relay's own words go into the summary, so a person can tell a refusal
+  // of output_format from some other 400.
+  assert.match(refused.detail, /output_format: Extra inputs are not permitted/)
+})
+
+test('a hook request that failed for any other reason says nothing about structured outputs', () => {
+  // A key outside the Claude group is often refused with a 4xx; it must not
+  // read as a relay that drops structured outputs.
+  const group = '[ERROR] Hooks: prompt-hook evaluator API error: API Error: 400 当前分组下对于模型 claude-opus-5-5 无可用渠道'
+  assert.equal(classifyStructuredOutputProbe(group).verdict, 'unknown')
+  assert.equal(classifyStructuredOutputProbe('[ERROR] Hooks: prompt-hook evaluator API error: API Error: 503 upstream').verdict, 'unknown')
+  assert.equal(classifyStructuredOutputProbe('[ERROR] Hooks: prompt-hook evaluator API error: API Error: 401 Invalid API key').verdict, 'unknown')
+  // A later CLI that words its debug log differently leaves the check
+  // undecided instead of guessing.
+  assert.equal(classifyStructuredOutputProbe('').verdict, 'unknown')
+})
+
+test('the structured-output section names the fix and is left out when Claude was not probed', () => {
+  assert.deepEqual(structuredOutputSummaryLines([]), [])
+  const lines = structuredOutputSummaryLines([
+    { siteId: 'solov', verdict: 'rejected', detail: '中转拒绝了结构化输出请求:API Error: 400' },
+    { siteId: 'other', verdict: 'accepted', detail: '结构化输出请求正常返回' },
+  ])
+  assert.ok(lines.some((line) => line.includes('`solov`') && line.includes('**不收**')))
+  assert.ok(lines.some((line) => line.includes('`other`') && line.includes('| 收 |')))
+  // The section tells the reader the fix and that the job verdict ignores it:
+  // whether the relay takes structured outputs is a property of the relay,
+  // not a regression of the pinned version.
+  assert.ok(lines.some((line) => line.includes('CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS') && line.includes('不让作业变红')))
 })
