@@ -188,6 +188,16 @@ npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不�
 
 PR 模板「自查」一节要的是四道（再加 `npm run check:v2`、`npm run test:v2`）。`npm run selfcheck` 一条命令把四道按顺序跑完，哪道红了也接着跑后面的，结尾打印一段汇总，原样贴进 PR。
 
+### 门禁删行提醒（只提醒，不挡合并）
+
+每个 PR 上会多一个 `removed-guards / report` 检查（2026-11-17 加，`.github/workflows/removed-guards.yml`，对照 Claude Code 团队讲「验证」的文章：改动不能改自己的裁判）。PR 删掉或改掉门禁里的行（quality 工作流、`scripts/verify-*.test.cjs`、提权子进程的禁用变量表、通道日志策略、密钥扫描、CODEOWNERS 等，名单在 `scripts/report-removed-guards.cjs` 开头），测试少了用例或断言、多了 `.skip` / `.only` / `.todo`，或者 `npm test`、`typecheck` 这几条命令少跑了东西，它就在运行摘要页列出来，并在 Files changed 里原处标一条警告。
+
+- 它平常永远是绿的，不在 `quality-gate` 里，自动合并不等它。**合并前看一眼它有没有标警告**：是放宽安全校验、少跑检查、少测东西的，要 yoyo 亲手打字同意，PR 正文写上他同意的那句话；只是挪位置、换写法、跟着删掉的功能一起删的，PR 正文里说一句为什么。
+- 名单和脚本从 main 读（`pull_request_target` 触发），PR 里改它们只影响以后的 PR，新加或改这道检查的 PR 自己看不到它跑。PR 的提交只当文字读，不执行，作业不读 secret（工作流开头写了为什么安全，测试钉住）。
+- 它自己红了说明提醒失灵（拿不到 PR 的提交之类），去看日志，不要当成「PR 有问题」。
+- 本机先看自己的分支会被报什么：`node scripts/report-removed-guards.cjs origin/main HEAD`。
+- 加它时拿 main 上最近 400 个合并试过：报了 12 个（3%），都是真删了门禁行或测试（退掉旧冒烟、修偶发红时删断言这一类）。2026-12-01 前后复盘这两周的误报，再定要不要改成拦，改成拦要 yoyo 点头。
+
 ### 平台差异（重要）
 
 | | Windows | macOS | Linux |

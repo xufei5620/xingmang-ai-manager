@@ -23,7 +23,7 @@ import {
   resolveCanvasProtocolFile,
   type ApplicationUrlPolicy,
 } from './canvas-protocol'
-import { isAllowedExternalUrl } from './security'
+import { resolveAllowedExternalUrl } from './security'
 import { readBoundedUtf8File } from './bounded-file'
 import { assertNoReparseComponents, writeAtomicSafeUtf8File } from './safe-local-data'
 import type { RelayBackendClient } from './relay-backend'
@@ -1718,17 +1718,15 @@ export function createCanvasWindowController(
     // scripts/verify-canvas-external-links.test.cjs fails if an entry is added
     // that the kernel source does not contain.
     window.webContents.setWindowOpenHandler(({ url }) => {
-      if (isAllowedExternalUrl(url, options.externalUrlAllowlist)) {
-        openExternalInBackground(url)
-      }
+      const allowedUrl = resolveAllowedExternalUrl(url, options.externalUrlAllowlist)
+      if (allowedUrl !== null) openExternalInBackground(allowedUrl)
       return { action: 'deny' }
     })
     window.webContents.on('will-navigate', (event, targetUrl) => {
       if (isAllowedAppNavigationUrl(targetUrl, policy)) return
       event.preventDefault()
-      if (isAllowedExternalUrl(targetUrl, options.externalUrlAllowlist)) {
-        openExternalInBackground(targetUrl)
-      }
+      const allowedUrl = resolveAllowedExternalUrl(targetUrl, options.externalUrlAllowlist)
+      if (allowedUrl !== null) openExternalInBackground(allowedUrl)
     })
     // Electron emits this when the sandboxed preload cannot be read or
     // executes before exposing the host bridge. Without an explicit record the

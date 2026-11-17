@@ -3166,6 +3166,20 @@ describe('registerIpcHandlers', () => {
     expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
   })
 
+  it('hands the browser the allowlist entry it matched, not the renderer text', async () => {
+    register()
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.openExternal)!
+
+    for (const spelling of [' https://xm.solov.cc/', 'https://xm.\tsolov.cc', 'https:\\\\XM.solov.%63c\\x\\..\\']) {
+      await expect(handler(trustedEvent(), spelling)).resolves.toBe(true)
+    }
+    expect(electronMocks.openExternal.mock.calls).toEqual([
+      ['https://xm.solov.cc'],
+      ['https://xm.solov.cc'],
+      ['https://xm.solov.cc'],
+    ])
+  })
+
   it.each([supportServiceUrl, sub2ApiSupportServiceUrl])('opens only the exact enterprise WeChat support URL %s', async (supportUrl) => {
     register()
     const handler = electronMocks.handlers.get(ipcInvokeChannels.openExternal)!
