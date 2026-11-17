@@ -270,6 +270,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 - 平台相关测试用 `it.runIf(process.platform === 'win32')` 门控（参考 `command-runner.test.ts` / `node-runtime.test.ts`）
 - 新逻辑优先写成纯函数再测，不要为了测试去 mock 整个闭包
 - **涉及 new-api 的测试一律注入 mock fetch，绝不对生产 `xm.solov.cc` 发真实请求**（铁律，见 T12）
+- 安全规矩和「只改该改的、客户的值不动」这类不变量，手写例子之外再加随机输入测试（`fast-check`，只在开发依赖里）：写出「不管输入是什么都必须成立」的那句话，让库去造输入。现有的在 `redaction-patterns.test.ts`、`security.test.ts`、`tool-route-rewrite.test.ts` 等文件末尾的 `… with random inputs` 一节；红了是真问题，怎么复现见 `docs/TEST-BASELINE.md`
 
 ---
 
