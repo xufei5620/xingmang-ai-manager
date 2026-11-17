@@ -1330,9 +1330,12 @@ export class CodexRemoteService {
     const sameAccount = value !== null && accountLabel !== null && before?.accountLabel === accountLabel
     const verifiedPeer = value !== null ? options.verifiedPeerUserId ?? null : null
     const keepsPeer = sameAccount && (verifiedPeer === null || !before?.boundPeer || before.boundPeer.userId === verifiedPeer)
+    // 换了机器人重新扫码、过了数字的还是原来绑着的那个人（YR-9）：账号字样变了，这次连接里的对话照旧清掉，
+    // 但人没换，绑定留着，也不跟他说「已经把你解绑了」，不然他以为要重新配对。
+    const rebindsSamePeer = verifiedPeer !== null && before?.boundPeer?.userId === verifiedPeer
     if (!keepsPeer) {
       // 换凭据以前说：凭据一换（退出登录是清掉），就发不出去了。
-      await this.tellUnbound(runtime)
+      if (!rebindsSamePeer) await this.tellUnbound(runtime)
       await this.forgetPeer(runtime)
     }
     // 退出登录时凭据删不掉（#1407 P3-6）：解绑、停渠道照做，客户点退出就是不想再让手机指挥这台电脑；
@@ -1348,7 +1351,7 @@ export class CodexRemoteService {
     await this.options.store.updateSettings((settings) => {
       const stored = settings.channels[channel] ?? emptyChannelSettings()
       if (!removeFailure) stored.accountLabel = value === null ? null : accountLabel
-      if (!keepsPeer) stored.boundPeer = null
+      if (!keepsPeer && !rebindsSamePeer) stored.boundPeer = null
       if (verifiedPeer && stored.boundPeer?.userId !== verifiedPeer) stored.boundPeer = { userId: verifiedPeer, boundAt: this.now() }
       settings.channels[channel] = stored
     })

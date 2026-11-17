@@ -2999,6 +2999,33 @@ describe('codex-remote-service lifecycle', () => {
     expect((await s.store.readSettings()).channels.weixin?.boundPeer).toBeNull()
   })
 
+  // YR-9：换了机器人重新扫码、过了数字的还是原来绑着的那个人：绑定照旧，手机上不先收一句「已经把你解绑了」。
+  // 换成别人扫，原来那个人照旧先收到那句。
+  it('keeps the binding quietly when the person bound before passes the number on a new bot', async () => {
+    const unboundText = '电脑上已经把你解绑了，之后发的消息不会再执行。'
+    const s = await setup()
+    function weixinCredential(botId: string): string {
+      return encodeWeixinCredential({ version: 1, token: `tok-${botId}`, botId, origin: 'https://ilinkai.weixin.qq.com', ownerUserId: 'owner@im.wechat' })
+    }
+    function unboundTexts(): string[] {
+      return s.channels.flatMap((channel) => channel.texts()).filter((line) => line === unboundText)
+    }
+    await s.service.saveChannelCredential('weixin', weixinCredential('b1@im.bot'), 'ClawBot 1bot', { verifiedPeerUserId: 'owner@im.wechat' })
+    await s.service.setChannelEnabled('weixin', true)
+    const boundAt = (await s.store.readSettings()).channels.weixin?.boundPeer?.boundAt
+
+    await s.service.saveChannelCredential('weixin', weixinCredential('b2@im.bot'), 'ClawBot 2bot', { verifiedPeerUserId: 'owner@im.wechat' })
+    expect(unboundTexts()).toEqual([])
+    expect((await s.store.readSettings()).channels.weixin?.boundPeer).toMatchObject({ userId: 'owner@im.wechat', boundAt })
+    expect((await s.service.snapshot()).channels.weixin.enabled).toBe(true)
+
+    await s.service.saveChannelCredential('weixin', weixinCredential('b3@im.bot'), 'ClawBot 3bot', { verifiedPeerUserId: 'other@im.wechat' })
+    expect(unboundTexts()).toEqual([unboundText])
+    expect(s.channels.flatMap((channel) => channel.sent).find((entry) => entry.message.kind === 'text' && entry.message.text === unboundText)?.peer.userId)
+      .toBe('owner@im.wechat')
+    expect((await s.store.readSettings()).channels.weixin?.boundPeer?.userId).toBe('other@im.wechat')
+  })
+
   it('voids a pairing code that was waiting when the scan binds someone', async () => {
     const s = await setup()
     await s.store.writeCredential('weixin', 'weixin-credential-value')
