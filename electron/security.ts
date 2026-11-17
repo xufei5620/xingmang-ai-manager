@@ -144,8 +144,14 @@ export function isAllowedAppNavigationUrl(targetUrl: string, policy: Application
   return isAllowedApplicationUrl(targetUrl, policy)
 }
 
-export function isAllowedExternalUrl(targetUrl: string, allowlist: readonly string[]): boolean {
-  if (typeof targetUrl !== 'string' || targetUrl.length === 0) return false
+// The comparison is on parsed hrefs, so a leading space, a tab inside the host
+// or backslashes in place of slashes still match an allowed page. Callers open
+// the entry this returns, never the text they were handed: what reaches the
+// OS browser is then exactly what the allowlist names, and a difference
+// between our URL parser and the browser's cannot turn a passed check into a
+// different destination.
+export function resolveAllowedExternalUrl(targetUrl: string, allowlist: readonly string[]): string | null {
+  if (typeof targetUrl !== 'string' || targetUrl.length === 0) return null
   const target = parseUrl(targetUrl)
   if (
     !target
@@ -153,10 +159,10 @@ export function isAllowedExternalUrl(targetUrl: string, allowlist: readonly stri
     || target.username !== ''
     || target.password !== ''
   ) {
-    return false
+    return null
   }
 
-  return allowlist.some((allowedUrl) => {
+  const match = allowlist.find((allowedUrl) => {
     const allowed = parseUrl(allowedUrl)
     return allowed !== null
       && allowed.protocol === target.protocol
@@ -164,6 +170,11 @@ export function isAllowedExternalUrl(targetUrl: string, allowlist: readonly stri
       && allowed.password === ''
       && target.href === allowed.href
   })
+  return match ?? null
+}
+
+export function isAllowedExternalUrl(targetUrl: string, allowlist: readonly string[]): boolean {
+  return resolveAllowedExternalUrl(targetUrl, allowlist) !== null
 }
 
 // Packaged builds refuse to start with a switch that opens a debugger or makes

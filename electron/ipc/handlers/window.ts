@@ -2,7 +2,7 @@
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
 import { ExternalUrlBlockedError } from '../../external-url-blocked'
 import { providerIds } from '../../catalog'
-import { isAllowedExternalUrl } from '../../security'
+import { resolveAllowedExternalUrl } from '../../security'
 import { isNetworkSettingsKind } from '../../proxy-bypass'
 import { parseAppUninstallRequest, parseRendererActivity } from '../parsers/system'
 import type { IpcHandlerContext } from './context'
@@ -43,13 +43,9 @@ export function registerWindowHandlers(ctx: IpcHandlerContext): void {
   })
   registerTrustedHandler('navigation:take-deep-link', (event) => options.takeExternalDeepLink?.(event.sender) ?? null)
   registerTrustedHandler('external:open', async (_event, url: unknown) => {
-    if (
-      typeof url !== 'string'
-      || !isAllowedExternalUrl(url, options.externalUrlAllowlist)
-    ) {
-      throw new ExternalUrlBlockedError()
-    }
-    await externalShell.openExternal(url)
+    const allowedUrl = typeof url === 'string' ? resolveAllowedExternalUrl(url, options.externalUrlAllowlist) : null
+    if (allowedUrl === null) throw new ExternalUrlBlockedError()
+    await externalShell.openExternal(allowedUrl)
     return true
   })
   registerTrustedHandler('network:bypass-broken-proxy', () => options.bypassBrokenProxy?.() ?? 'unavailable')
