@@ -55,7 +55,6 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 - **`npm test` 和 `npm run test:v2` 可以在同一个目录里同时后台跑**，没冒过假红。（沿用 11-09）
 - **容器里没有 zsh**（11-11 验），`electron/macos-platform.test.ts` 里真跑 zsh 的那批用例会自动跳过，不算失败。想让它们在容器里真跑，`apt-get install -y zsh`。（沿用 11-10）
 - **容器里你是 root**（11-11 验）。Linux 版客户端拒绝以 root 启动，真开客户端要先处理这个（见第 7 节）。
-- **容器 PATH 里自带的那份 Claude Code（`/opt/node22/bin/claude`）会让 `npm test` 假红 29 条**（11-18 验）：`system-service.certificate-trust` / `disk-space` / `download-stall` / `install-cancel` 四个文件的安装用例都报「这台电脑上的 Claude Code 不是通过本工具安装的」或等满 30 秒超时，main 上一样红。node 也在 `/opt/node22/bin`，不能整个去掉：把 `node`、`npm`、`npx` 软链进一个临时目录，PATH 换成「临时目录 + 原 PATH 去掉 `/opt/node22/bin`」再跑（`npm run selfcheck` 同理），这四个文件 57 条全绿。
 
 ## 4. Electron 二进制装不上时
 
