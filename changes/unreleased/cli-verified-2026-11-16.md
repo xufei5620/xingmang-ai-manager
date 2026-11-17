@@ -1,0 +1,3 @@
+## 开发
+
+- `electron/cli-verified-versions.ts` 每周巡检（11-16）：Claude Code 2.1.319 → 2.1.326（2.1.321～2.1.326 没有网关回归，2.1.323 让不走流式的请求也能从被拒的 beta 头里恢复，2.1.325 修了很多第三方网关上每轮都报上下文过长；沙箱假接口上问答、工具搜索被拒后的回退、`haiku` 别名、写全名的型号、`/context` 1M、备用型号与 2.1.319 逐项相同，`install.cjs` 不变）。Codex 0.167.0 → 0.169.0（0.167.1、0.167.2、0.168.0、0.169.0 没有改自定义 provider 读法的条目；`daemon_auto_start` 先删后恢复，写 `false` 照旧认；0.169.0 的 `codex exec` 在没信任的目录不读项目配置，本软件不跑 `exec`；随包型号名单换成 `rust-v0.169.0`，`models.json` 逐字相同，`openai_models.rs` 只加可选字段；沙箱 `debug models`、`exec`、`--no-daemon exec` 与手机遥控用的 `app-server` 一轮对话都与 0.167.0 一样）。用户那一条并进 `cli-verified-2026-11-09.md`（更新页 60 条已满）。依据写进 `docs/CLI-VERIFIED-VERSIONS.md`。
