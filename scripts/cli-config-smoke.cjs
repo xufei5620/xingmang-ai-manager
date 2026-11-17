@@ -345,6 +345,7 @@ async function main() {
   const relay = await startFakeRelay({ key: FAKE_KEY, replyText: REPLY_TEXT })
   const runs = []
   const comparisons = []
+  let comparisonError = null
   try {
     for (const provider of providers) {
       const definition = app.cliCatalog[provider]
@@ -358,23 +359,33 @@ async function main() {
       }
     }
     if (options.compareWith) {
-      const baseVersions = loadVersionsAt(options.compareWith)
-      for (const provider of providers) {
+      // 对照只报不拦：读不到 base 的名单、装不上旧版本，都只写进 summary，不让作业变红。
+      let baseVersions = null
+      try {
+        baseVersions = loadVersionsAt(options.compareWith)
+      } catch (error) {
+        comparisonError = `读不到 \`${options.compareWith}\` 上的推荐版本名单，这次没有对照（${String(error && error.message || error).split('\n')[0]}）`
+      }
+      for (const provider of baseVersions ? providers : []) {
         const current = app.cliVerifiedVersions[provider].recommended.version
         const base = baseVersions[provider] && baseVersions[provider].recommended && baseVersions[provider].recommended.version
         if (!base || base === current) continue
         const definition = app.cliCatalog[provider]
-        const executable = await installCli(definition, base, installRoot)
         const site = app.relaySites[0]
-        const before = await smokeOnce({ app, relay, provider, site, executable, workRoot })
         const after = runs.find((run) => run.provider === provider && run.siteId === site.id)
-        comparisons.push({
-          provider,
-          base,
-          current,
-          baseProblems: before.problems,
-          changes: diffShapes(requestShape(before.requests), requestShape(after.requests)),
-        })
+        try {
+          const executable = await installCli(definition, base, installRoot)
+          const before = await smokeOnce({ app, relay, provider, site, executable, workRoot })
+          comparisons.push({
+            provider,
+            base,
+            current,
+            baseProblems: before.problems,
+            changes: diffShapes(requestShape(before.requests), requestShape(after.requests)),
+          })
+        } catch (error) {
+          comparisons.push({ provider, base, current, baseProblems: [`旧版本没装上：${String(error && error.message || error).split('\n')[0]}`], changes: null })
+        }
       }
     }
   } finally {
@@ -405,12 +416,13 @@ async function main() {
   }
   if (options.compareWith) {
     lines.push('', `### 抬版本：和 \`${options.compareWith}\` 上钉的版本对照`, '')
-    if (comparisons.length === 0) lines.push('推荐版本没变，不用对照。')
+    if (comparisonError) lines.push(comparisonError)
+    else if (comparisons.length === 0) lines.push('推荐版本没变，不用对照。')
     for (const comparison of comparisons) {
       const name = app.cliCatalog[comparison.provider].name
       lines.push(`**${name} \`${comparison.base}\` → \`${comparison.current}\`**${comparison.baseProblems.length ? `（旧版本这次也没跑通：${comparison.baseProblems.join('；')}）` : ''}`, '')
-      if (comparison.changes.length === 0) lines.push('- 发出去的请求长得一样。')
-      for (const change of comparison.changes) {
+      if (comparison.changes && comparison.changes.length === 0) lines.push('- 发出去的请求长得一样。')
+      for (const change of comparison.changes || []) {
         if (change.added.length) lines.push(`- ${change.label} 新多了：${codeList(change.added)}`)
         if (change.removed.length) lines.push(`- ${change.label} 不再有：${codeList(change.removed)}`)
       }
