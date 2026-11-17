@@ -825,6 +825,10 @@ jobs:
       # Without --report this writes no files, which is what lets it sit in
       # front of the dirty-tree guard below.
       - run: npm run check:v2
+      # 客户看得到的字里有没有技术词、站点名、「Key」（对照官方「验证」文章的建议第 8 条）。
+      # 先只报不拦：它总是以 0 退出，命中的地方写进这个作业的摘要；误报调干净了，
+      # 再另写一道 verify-*.test.cjs 进 npm test。它不往仓库里写文件，所以放在下面那道检查前面也行。
+      - run: npm run check:wording
       # R-G12: `legacy` is the rollback renderer, and until this step nothing
       # in CI ever built it — its React 18 alias table in vite.config.ts only
       # resolves when XINGMANG_RENDERER=legacy, so a dropped pinned dependency
@@ -1010,6 +1014,41 @@ jobs:
             fi
           done
 
+  # 主链路冒烟（scripts/cli-config-smoke.cjs，0.2.24 深查·测试和CI CV-1）：用主进程真正写配置的
+  # saveProviderConfig 把客户那份配置写进临时主目录，只把站点地址换成本机假中转，然后用名单里钉住
+  # 的 Claude Code、Codex、Grok 各真跑一句。断言请求带着写进去的密钥和型号送到了假中转、回答打了
+  # 出来、WebSocket 没发 new-api 不认的消息。不要密钥、不碰线上，所以每个改了代码的 PR 都跑：
+  # 写配置的代码牵着五十多个模块，按文件挑触发条件一定会漏。
+  #
+  # PR 上另外拿 base 上钉的版本跑一遍，哪个工具的推荐版本变了，就把两版发出去的请求列成差异表
+  # 写进 job summary（只报不拦，抬版本时要到真中转上重点看新多出来的东西）。
+  cli-config-smoke:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    # 装三个 CLI 加六次一句话的对话，本机实测十几秒；上限留给 npm 慢的时候（每个包最多试三次）。
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # 对照要读 base 上那份 cli-verified-versions.ts。
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      - name: Run each pinned CLI against the config the app writes, through a local fake relay
+        env:
+          COMPARE_WITH: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+        run: |
+          if [ -n "$COMPARE_WITH" ]; then
+            node scripts/cli-config-smoke.cjs --compare-with "$COMPARE_WITH"
+          else
+            node scripts/cli-config-smoke.cjs
+          fi
+
   # N1 的已验证版本名单说「这个版本在我们的中转上能用」，而在这个作业存在之前
   # 那句话只有上游 changelog 作背书 —— 名单挡住的两次回归都是 CLI 发出的请求被
   # 第三方端点拒掉，只有真的跑一次 `claude -p` 才答得了。所以改名单的 PR 要自己
@@ -1092,7 +1131,7 @@ jobs:
 
   quality-gate:
     if: always()
-    needs: [changes, test, macos-test, macos-release-rehearsal, macos-intel, linux-test, linux-renderer-v2-browser, linux-package, audit, cli-relay-probe, secret-scan]
+    needs: [changes, test, macos-test, macos-release-rehearsal, macos-intel, linux-test, linux-renderer-v2-browser, linux-package, audit, cli-config-smoke, cli-relay-probe, secret-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -1105,7 +1144,7 @@ jobs:
           const code = jobs.changes.outputs.code
           if (jobs.changes.result !== 'success' || !['true', 'false'].includes(code)) process.exit(1)
           const expected = code === 'true' ? 'success' : 'skipped'
-          if (['macos-test', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
+          if (['macos-test', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit', 'cli-config-smoke'].some(name => jobs[name].result !== expected)) process.exit(1)
           // The two packaging-only macOS jobs follow their own output, which
           // can only be true where code is. Whichever it says, they must have
           // done exactly that: a skip where they were due is a failure.

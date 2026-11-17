@@ -184,6 +184,7 @@ Claude Code 的 `fallbackModel`（settings.json，型号数组，最多认三个
 | Claude 的状态行 | `statusLine` | 未设（终端里没有状态行） | 指向随包脚本的一条命令 | 用户按 token 付费，却看不到在用哪个模型、上下文吃到几成 |
 | Gemini 后台功能用的型号 | `modelConfigs.customOverrides` | 联网搜索、读网页、压缩、子代理、会话摘要、Auto 各自写死 Google 官方型号名 | 这批官方型号名统一改写成当前配的中转型号（只在星芒来源下写，切回官方删掉） | 中转没有这些型号时，这些功能默默重试几分钟后失败 |
 | Grok 画图与视频工具的地址 | `~/.grok/config.toml` 的 `[endpoints] xai_api_base_url` | `https://api.x.ai/v1` | 与对话同一个中转地址 | 这几个工具带的是同一把 `api_key`，不改就把中转 Key 发给 xAI 官方，国内还要卡 120 秒 |
+| Grok 的做视频工具（K5） | `~/.grok/config.toml` 的 `[features] video_gen` | 开（`image_to_video`、`reference_to_video`） | `false`（用户写过就不动；切回官方不收回，认不出是不是我们写的；2026-11-17 起） | 中转做好以后回的是 xAI 自己的视频地址（`vidgen.x.ai`），Grok 在客户电脑上直连它下载；`x.ai` 在国内连不上，默认一条视频扣约 3.84 美元却拿不到片，中转算成功、不退钱。yoyo 定「关视频」，等服务端能把结果地址换成 xm 的再打开 |
 | Codex 的使用统计 | `~/.codex/config.toml` 的 `[analytics] enabled` | 开（发往 `ab.chatgpt.com`） | `false`（用户写过就不动；切回 ChatGPT 且没有官方快照时收回） | 国内连不上，`codex exec` 每次退出前要等约 10 秒 |
 | Codex 干活时不让电脑睡 | `~/.codex/config.toml` 的 `[features] prevent_idle_sleep` | 关（0.156.1 实验功能） | `true`（用户写过就不动；切回 ChatGPT 不收回） | 只在一轮进行中生效；笔记本跑长任务睡着，连接断了这一轮就白扣 |
 | Codex 的后台服务 | `~/.codex/config.toml` 的 `[features] daemon_auto_start`；从本软件打开时另带 `--no-daemon`（已装 ≥ 0.156.0） | 0.157.0 起开：交互会话自动拉起多窗口共享用的后台服务，退出 Codex 后仍常驻 | `false`（用户写过就不动；切回 ChatGPT 不收回） | 低配电脑上是没人要的常驻开销；Windows 上外层 Job Object 不许脱离时直接报错退出。`codex agents` 自己会按需拉起服务，不受影响；0.155.x 只在日志记一行未知键 |
@@ -352,6 +353,7 @@ Claude Code 的 `fallbackModel`（settings.json，型号数组，最多认三个
   补设置那一轮在 Claude Code 那份到期时顺带补（`editor-claude-login-prompt.ts`），跟着版本号只做一次。
 - 第 6 版的 Codex、Grok 全局说明（配置目录里没有任何一份时放的那份「用中文回复」`AGENTS.md`）不是配置里的键，
   但在工具配置目录里，所以进 `fillRelayTemplateDefaults` 的同一次两阶段提交（`globalResponseLanguagePlans`），保存配置时也一起写。
+- 第 8 版（2026-11-17）补的是 Grok 的 `[features] video_gen = false`（K5），只在没写过这一项时补。
 
 **规矩：往 `fillCodex/Claude/Gemini/GrokRelayTemplateDefaults` 里加了新的一项，就把
 `relayTemplateRevision` 加一**，否则老客户拿不到。只在保存路径里加、不进补缺清单的项（比如跟着
@@ -426,6 +428,12 @@ base URL 指本地假接口，型号名故意起成内置目录里没有的 `rel
   记下 `CONNECT api.x.ai:443`——Key 外流那条路仍然只靠这个键堵着。
 - **钩子 —— 跑起来看到了**。`[compat.claude] hooks = false` 加六类 `[[hooks.*]]` 时，一轮 `-p` 触发了
   `UserPromptSubmit`、`Stop`、`SessionEnd`，配置无解析错误。
+- **做视频工具（K5，2026-11-17 在 1.0.77 上加）—— 跑起来看到了**。假接口让模型调一次 `image_to_video`（`--always-approve`）：
+  没写 `[features] video_gen` 时请求打到本地 `POST /v1/videos/generations`（型号 `grok-imagine-video-1.5`、480p、6 秒），
+  每 5 秒 `GET /v1/videos/<request_id>` 查一次，`done` 以后直接去取返回里的 `video.url`，不带 `Authorization`，存进
+  `~/.grok/sessions/…/videos/1.mp4`；那个地址连不上时，模型看到 `Tool image_to_video failed: Failed to download video: …`。
+  写了 `video_gen = false`（星芒模板原样）时，发给模型的工具清单里没有 `image_to_video`、`reference_to_video`，
+  `image_gen`、`image_edit` 还在，也没有任何视频请求。**抬 Grok 版本时要重核这一项**：键名变了，视频工具就又开了。
 - **Windows 上挑哪个 shell —— 只读了程序里的字符串**。1.0.44 Windows 版里 `GROK_SHELL` 覆盖、`pwsh`、
   三处 Git Bash、`System32\WindowsPowerShell\v1.0\powershell.exe` 兜底的字样与顺序和上面记的一致。
 - 没做的：中转上的真实请求（`scripts/probe-cli-relay.cjs` 还没有 Grok 的探测，名单里的 Grok 条目会被它跳过）；
@@ -976,6 +984,18 @@ npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指�
 - **结论怎么读**：只有「端点拒绝了 CLI 发出的请求（400 类）」才说明这个版本不能推给客户。分组不对、401/403、额度不足、5xx 是**探测本身坏了**，作业同样变红，但那是去换密钥或等中转恢复，不是去改名单。
 
 跑通之后，把跑通的站点 id 写进对应那条 `recommended` 的 `verifiedSites`。
+
+## 谁来兜平时：CI 里的主链路冒烟（不要密钥）
+
+中转实测只回答「线上中转认不认这个版本」，而且要真密钥、只在改名单时跑。平时更常见的坏法是另一种：改了写配置的代码、默认型号或站点地址，或者新版 CLI 不再认星芒写的某个键，客户新装以后第一句话就报错，四道自查和单测全绿（0.2.24 深查·测试和CI CV-1）。所以 quality 工作流里另有一个 `cli-config-smoke` 作业（`scripts/cli-config-smoke.cjs`，2026-11-17 加），本地是 `npm run smoke:cli-config`：
+
+- **什么时候跑**：每个改了代码的 PR（文档单改不跑），在 quality-gate 里是必过项。写配置的代码牵着五十多个模块，按文件挑触发条件一定会漏，而这一项不要密钥、不碰线上，跑一次十几秒到一两分钟。
+- **跑什么**：名单里钉住的 Claude Code、Codex、Grok 各装一份（npm 官方源，装进 `node_modules/.cache/xingmang-cli-config-smoke/`，不装全局）；对 `relay-sites.ts` 的每个站点，用主进程真正写配置的 `saveProviderConfig` 把配置写进临时主目录，参数照 `config-save-service.ts` 登录后自动写的那一笔（`merge`、账号能用的型号、Claude 的状态行、三家的提醒钩子、Codex 的型号名单）。写完只把文件里这个站的正式地址换成本机假中转（`scripts/cli-config-smoke-relay.cjs`）的地址，别的一个字不动；换不到算失败，换完还留着任何一条线上地址（两个站全部线路和别名）就不跑，保证不对线上发请求。
+- **怎么判**：CLI 的环境里只有 `PATH`、`HOME`、`LANG`，不带 runner 上的 `ANTHROPIC_*`、`OPENAI_*` 和代理变量，能用的只有星芒写的那份配置。跑一句话（Claude Code、Grok 用 `-p`，Codex 用 `exec`），要求正常退出、打出假中转的回答、对话请求送到了假中转、带的是写进去的那把假密钥、型号是配置里那个。
+- **Codex 走 WebSocket**：星芒给 Codex 写的是 `supports_websockets = true`，假中转也接 WebSocket，并且照 new-api 只认 `response.create`、`response.cancel`，别的消息类型回 400 并让这一项变红（#1572 的 `response.interrupt` 就是这一类；一句话的 `exec` 不会发它，这里兜的是以后哪一版在一句话里就发）。
+- **抬版本对照**：PR 上另外拿 base 上钉的版本跑一遍，推荐版本变了的工具，把新旧两版发出去的请求（路径、请求头名、`anthropic-beta`、`OpenAI-Beta`、`anthropic-version` 和 `x-codex-beta-features` 的值、请求体字段、WebSocket 消息类型）列成差异表写进 job summary。**只报不拦**：新多出来的东西，就是要在真中转上重点看的。2026-11-17 对 #1880 试过：Claude Code 2.1.319 → 2.1.326、Codex 0.167.0 → 0.169.0，一句话的请求长得一样。
+- **每周巡检怎么用**：抬版本以前在沙箱跑 `npm run smoke:cli-config -- --compare-with origin/main`（分支上已经改了名单），把「抬版本对照」那一节贴进 PR 正文，代替以前手工起假接口对比 `-p hi` 的那一步。交互模式的第一屏（auto mode 弹窗那一类）这里测不到，照旧另开真终端看。
+- **测不到的**：Windows 和 macOS（作业只在 Linux 上跑；配置写法三个平台基本一样，钩子在 Windows 上的写法不同）；真中转认不认（那是上一节中转实测的事）；交互模式和多轮对话；Claude Code 在 root 下要声明沙箱（`IS_SANDBOX=1`，云端容器里脚本自己加，CI 的 runner 不是 root）。
 
 ## 不要做的事
 

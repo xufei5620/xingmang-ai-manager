@@ -689,6 +689,20 @@ function pointGrokXaiApiAtRelay(parsed: Record<string, unknown>, relayBaseUrl: s
   ensureRecord(parsed, 'endpoints').xai_api_base_url = relayBaseUrl
 }
 
+// Grok 的两个做视频工具（image_to_video、reference_to_video）1.0.77 起默认开着，也走上面那个
+// 地址。中转做好以后回的是 xAI 自己的视频地址（vidgen.x.ai），Grok 在客户电脑上直接连它下载，
+// 不经过中转（沙箱实测 1.0.77：done 之后就去取 video.url，不带 Key）。x.ai 在国内连不上
+// （GFWList、v2fly 的名单都收了整个 x.ai，GreatFire 记作封锁），于是默认一条视频扣约 3.84 美元，
+// 片子却下不来；中转那边 xAI 说做好了就算成功，钱不退，模型还可能自己再调一次。
+// 2026-11-17 yoyo「关视频」：先关掉，等服务端能把结果地址换成 xm 自己的再打开。
+// 沙箱实测 1.0.77：写了 video_gen = false，两个视频工具都不在发给模型的工具清单里，也不发
+// 视频请求，画图、改图照旧。用户自己写过这一项（true 或 false）就不动；切回官方也不收回，
+// 认不出是不是我们写的。
+function turnOffGrokVideoTools(parsed: Record<string, unknown>): void {
+  const features = fillableRecord(parsed, 'features')
+  if (features && features.video_gen === undefined) features.video_gen = false
+}
+
 function addManagedGrokModel(parsed: Record<string, unknown>): void {
   const models = ensureRecord(parsed, 'models')
   models.default = 'grok'
@@ -2841,6 +2855,9 @@ function createPlans(
           '[endpoints]',
           `xai_api_base_url = ${tomlString(siteBaseUrls.grok)}`,
           '',
+          '[features]',
+          'video_gen = false',
+          '',
         ].join('\n') + grokCliHookTemplate(cliHook),
       }]
   }
@@ -2962,6 +2979,7 @@ function createMergePlans(
       targetModel.base_url = siteBaseUrls.grok
       disableGrokSelfUpdate(parsed)
       pointGrokXaiApiAtRelay(parsed, siteBaseUrls.grok)
+      turnOffGrokVideoTools(parsed)
       pinGrokModelsToRelay(parsed, defaultModel)
       if (cliHook) applyGrokCliHooks(parsed, cliHook)
       return [{ path: paths[0], content: tomlContent(parsed) }]
@@ -3434,7 +3452,8 @@ function withManagedCodexModelCatalogLine(text: string): string | null {
 // 6：Codex、Grok 配置目录里一份全局说明都没有的，放一份「用中文回复」（2026-10-26）。这一项不是
 //    配置里的键，是另放一个文件（globalResponseLanguagePlans），同一次两阶段提交里写。
 // 7：Codex 没写的补上回复途中不发「打断」那几项（keepCodexRelayResponsesUninterrupted，2026-11-06）。
-export const relayTemplateRevision = 7
+// 8：Grok 没写的补 [features] video_gen = false，关掉国内下不了片的做视频工具（turnOffGrokVideoTools，2026-11-17）。
+export const relayTemplateRevision = 8
 
 function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, siteBaseUrl: string, platform: NodeJS.Platform): void {
   if (parsed.check_for_update_on_startup === undefined) parsed.check_for_update_on_startup = false
@@ -3470,6 +3489,7 @@ function fillGrokRelayTemplateDefaults(parsed: Record<string, unknown>, relayBas
   if (cli && cli.auto_update === undefined) disableGrokSelfUpdate(parsed)
   const endpoints = fillableRecord(parsed, 'endpoints')
   if (endpoints && endpoints.xai_api_base_url === undefined) pointGrokXaiApiAtRelay(parsed, relayBaseUrl)
+  turnOffGrokVideoTools(parsed)
   if (isJsonRecord(parsed.models)) pinGrokModelsToRelay(parsed, relayModelName)
 }
 
