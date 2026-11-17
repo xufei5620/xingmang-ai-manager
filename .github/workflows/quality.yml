@@ -410,6 +410,17 @@ jobs:
         # fifteen seconds.
         timeout-minutes: 5
         run: node e2e/renderer-v2-native-close-race.mjs
+      # npm run verify:app with no steps: the compiled client signed in against
+      # the local account-site fixture, every sidebar page opened and kept as a
+      # screenshot plus its text. It is the same walk a thread runs in its Linux
+      # container, so a real-device note can point at this commit's Windows
+      # screens instead of asking someone to click (docs/COLLABORATION.md §7.6).
+      # A page that throws or no longer opens fails it.
+      - name: Walk every page of the real client and keep the screenshots
+        # The script budgets itself to about 7 minutes for this walk; a healthy
+        # one is well under a minute. This is the backstop.
+        timeout-minutes: 9
+        run: node e2e/verify-app.mjs --out output/verify-app
       # The one place the main process's PowerShell probes run for real. They
       # used to run inside the vitest shards, where a cold PowerShell start on a
       # busy runner could use up the whole budget, return nothing and fail an
@@ -441,6 +452,7 @@ jobs:
             artifacts/**/*.json
             output/realm-account-review/*
             output/canvas-kernel-review/*
+            output/verify-app/*
           if-no-files-found: ignore
           retention-days: 7
 
@@ -548,6 +560,14 @@ jobs:
         # window.xingmangPlatform answers; until now only Windows ran this.
         timeout-minutes: 6
         run: node e2e/renderer-v2-native.mjs
+      # Same walk as windows-package: every sidebar page of the compiled client
+      # (test:mac:dev-origin above compiled it) has to open on macOS without a
+      # page error. This job uploads nothing (ci-workflow-config pins that), so
+      # the screenshots stay on the runner; the step list lands in the log.
+      # output/ is ignored by git, so the dirty tree guard below does not see it.
+      - name: Walk every page of the real client
+        timeout-minutes: 9
+        run: node e2e/verify-app.mjs --out output/verify-app
       - name: Fail if the test run left files in the working tree
         # Windows path math evaluated on a POSIX host yields a backslash
         # relative name, which lands as a stray directory in the repository

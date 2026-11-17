@@ -63,6 +63,7 @@ npm run compile:legacy  # 显式构建 React 18 旧回滚界面（已冻结，�
 npm run dev         # 默认启动 renderer-v2；内部先构建 canvas-v2 + 全量编译一次主进程（消 electron 抢跑竞态）
 npm run dev:legacy  # 显式启动 React 18 旧回滚界面（已冻结，只为回滚保留）
 npm start           # 直接跑已编译产物（需先 compile），免 dev server
+npm run verify:app  # 真开编译好的客户端（假账号站、不连外网），按页面或步骤截图并存每屏的字；用法 -- --help，真机要点怎么分两段见 docs/COLLABORATION.md §7.6
 npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 npm run build:linux     # Linux 本地测试 deb（x64 + arm64，更新器关着；只能在 Linux 上跑）
 ```
