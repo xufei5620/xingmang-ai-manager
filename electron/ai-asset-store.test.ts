@@ -13,6 +13,7 @@ import {
   type AiAssetNativeOperations,
 } from './ai-asset-store'
 import { setRelocatedFolderPolicy } from './relocated-folders'
+import { classifyStorageFailure } from './startup-failure'
 
 const temporaryDirectories: string[] = []
 
@@ -352,6 +353,18 @@ describe('AiAssetStore base64 and ownership', () => {
 
     await expect(store.storeBase64(42, png().toString('base64')))
       .rejects.toThrow('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+  })
+
+  it('keeps the operating-system reason under a failed store so the run log shows it (S-1)', async () => {
+    const store = new AiAssetStore(storeOptions())
+
+    failTemporaryFileWrites()
+    const error = await store.storeBase64(42, png().toString('base64')).then(() => null, (reason: unknown) => reason)
+
+    // The person still reads the one sentence; the errno travels below it for the log.
+    expect((error as Error).message).toBe('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+    expect((error as Error).cause).toMatchObject({ code: 'ENOSPC' })
+    expect(classifyStorageFailure(error)).toBe('disk-full')
   })
 })
 
@@ -726,7 +739,10 @@ describe('AiAssetStore native operations', () => {
     const asset = await store.storeBase64(42, png().toString('base64'))
 
     failTemporaryFileWrites()
-    await expect(store.saveAs(42, asset.assetId)).rejects.toThrow('图片另存失败，请检查目标目录写入权限')
+    const error = await store.saveAs(42, asset.assetId).then(() => null, (reason: unknown) => reason)
+    expect((error as Error).message).toBe('图片另存失败，请检查目标目录写入权限')
+    // A full target disk is not a permission problem: the log has to be able to tell (S-1).
+    expect(classifyStorageFailure(error)).toBe('disk-full')
     expect(fs.readFileSync(savedPath, 'utf8')).toBe('previous picture')
     expect(fs.readdirSync(directory)).toEqual(['saved.png'])
 

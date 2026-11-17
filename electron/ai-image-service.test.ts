@@ -201,10 +201,14 @@ describe('AI image service', () => {
       requestId: 'remote-download-failed', group: '生图分组', model: 'grok-imagine-image-2.0', prompt: '图',
     })).rejects.toThrow(/已生成但下载失败.*请勿立即重复提交.*检查网络/)
 
-    vi.mocked(assets.storeRemoteUrl).mockRejectedValue(new Error('无法写入 output 目录'))
-    await expect(service.generate(4, {
+    const writeFailure = new Error('无法写入 output 目录')
+    vi.mocked(assets.storeRemoteUrl).mockRejectedValue(writeFailure)
+    const error = await service.generate(4, {
       requestId: 'remote-write-failed', group: '生图分组', model: 'grok-imagine-image-2.0', prompt: '图',
-    })).rejects.toThrow(/本地保存失败.*请勿立即重复提交.*磁盘空间/)
+    }).then(() => null, (reason: unknown) => reason)
+    expect((error as Error).message).toMatch(/本地保存失败.*请勿立即重复提交.*磁盘空间/)
+    // The run log records the store's own reason under the sentence the person reads (S-1).
+    expect((error as Error).cause).toBe(writeFailure)
   })
 
   it('treats a successful response without images as ambiguous and never retries it', async () => {

@@ -437,7 +437,7 @@ export class AiVideoAssetStore {
     await authorize?.()
     if (!path.isAbsolute(target) || target.includes('\0')) throw new Error('视频另存地址无效')
     await writeAtomicSafeBinaryFile(target, owned.bytes, '视频另存文件', { mode: SAVED_COPY_FILE_MODE })
-      .catch(() => { throw new Error('视频另存失败，请检查目标目录写入权限') })
+      .catch((error: unknown) => { throw new Error('视频另存失败，请检查目标目录写入权限', { cause: error }) })
     return true
   }
 
