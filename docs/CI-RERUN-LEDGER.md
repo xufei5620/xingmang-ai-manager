@@ -1,0 +1,36 @@
+# CI 重跑记账
+
+> yoyo 2026-11-17 定「记账」：重跑才过的都记一笔；同一条两周内第二次出现必须查根因，不许再重跑放过；不删测试。
+> 查清根因的写法和已经修掉的偶发红在 `docs/TEST-BASELINE.md`，这里只记账。
+
+## 规矩
+
+1. CI 红了，先看是不是这次改动弄的：失败的用例在不在改动碰到的代码上、分支是不是落后 main（落后先合进最新 main）。是这次改动弄的就修。
+2. 不是的，先查账：`npm run ci:rerun-ledger -- <用例名里的几个字>`，它把账里对得上的都列出来，并说两周内有没有记过。
+   - **两周内记过同一条**：不许再重跑。开线程查根因（云端线程请协调者开），在账末尾加一行，「处理」写 `查根因：` 加线程、issue 或 PR。修好合进 main 以后，本 PR 合进最新 main 再跑。
+   - **两周内没记过**：在账末尾加一行，作为一个提交推到这个 PR 上。这次推送就是那唯一一次重跑，不再另点 Re-run。重跑还红就是真失败，回到第 1 步。
+3. 不删测试、不跳过、不调大超时、不加等待把它盖过去。查不出根因也不删，写清楚排除了什么，记进 `docs/TEST-BASELINE.md`。
+4. 同一个检查连修三轮还红，停手，写清卡在哪、试过什么，交回协调者（`AGENTS.md` 第 8 节）。
+5. main 上的运行重跑才过的也记，由处理 main 报警的那个线程记在它自己的 PR 里。
+6. 网络偶发（GitHub 下载 504、装系统包超时这类）照样记：同一个步骤两周内第二次，就该给它加缓存或重试，跟用例一样查。
+
+## 怎么写一行
+
+- **日期**：北京时间 `YYYY-MM-DD`，按先后往下加，只加在末尾。
+- **用例或步骤**：用例照失败输出原样抄「文件 › 分组 › 用例名」；不是用例的写「工作流或作业 › 步骤名或报错」。查账按这一列整句比（不分大小写、空白和反引号），所以别改写、别缩写。
+- **作业**：失败的那个作业，比如 `windows-test (vitest-2)`。
+- **指纹**：报错里最能认出它的那一句。
+- **运行**：运行号，Actions 地址里 `runs/` 后面那串数字。
+- **PR**：`#1234`；main 上的写 `main`。
+- **处理**：第一次一般写「重跑一次过」，没单独重跑、下一次推送过了的写「下一次推送过」。**两周内第二次必须以「查根因：」开头**，后面跟线程、issue 或 PR。`npm test` 里的 `scripts/ci-rerun-ledger.test.cjs` 逐行核对这几条。
+
+## 账
+
+| 日期 | 用例或步骤 | 作业 | 指纹 | 运行 | PR | 处理 |
+|---|---|---|---|---|---|---|
+| 2026-10-31 | upgrade-smoke › 新版本没有记下「本次启动是更新后的第一次」 | upgrade-smoke / windows-upgrade (0.2.19) | 新版本没有记下「本次启动是更新后的第一次」 | 41193398956 | #1565 | 重跑一次过 |
+| 2026-11-11 | upgrade-smoke › 新版本没有记下「本次启动是更新后的第一次」 | upgrade-smoke / windows-upgrade (0.2.19) | 同上 | 42948887888 | #1748 | 查根因：#1771（冒烟查得太早，改成最多等 30 秒） |
+| 2026-11-11 | electron/diagnostics.test.ts › diagnostics › PROVIDER_ENVIRONMENT_OVERRIDE › passes %s because the written configuration still wins | macos-test | `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`OPENAI_BASE_URL` 三条都是 `summary: 检查超时` | 42988685884 | #1756 | 下一次推送过（根因没查） |
+| 2026-11-11 | e2e/v2-business.test.mjs › adding a uvx connection without Python says so first and still lets it through | windows-test (renderer-v2-e2e) | `locator.click: Timeout 5000ms exceeded`，等 `mcp-add`，停在 `performing click action` | 42992280184 | #1756 | 重跑一次过（根因没坐实，见 TEST-BASELINE） |
+| 2026-11-11 | e2e/v2-business.test.mjs › a uvx connection missing uv points to customer support with a button instead of a pip command | windows-test (renderer-v2-e2e) | 同上一行 | 42992280184 | #1756 | 重跑一次过（同上一行） |
+| 2026-11-11 | electron/git-runtime-install.test.ts › Git download deadline › still gives up on each source at the ceiling, in the words customers already see | windows-test (vitest-2) | `expected 3800000 to be less than 3640000` | 43011123157 | #1794 | 重跑一次过（#1798 查清并修了） |

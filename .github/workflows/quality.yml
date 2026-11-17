@@ -44,6 +44,8 @@ jobs:
       code: ${{ steps.scope.outputs.code }}
       cliVersions: ${{ steps.scope.outputs.cliVersions }}
       macPackaging: ${{ steps.scope.outputs.macPackaging }}
+      upgradeSmoke: ${{ steps.scope.outputs.upgradeSmoke }}
+      uninstallSmoke: ${{ steps.scope.outputs.uninstallSmoke }}
     steps:
       # A merge to main used to start the whole matrix at once, and the next
       # merge a few minutes later cancelled it part way: 65 of the 104 main
@@ -1084,6 +1086,22 @@ jobs:
           XINGMANG_CLI_PATROL_KEY_CLAUDE: ${{ secrets.XINGMANG_CLI_PATROL_KEY_CLAUDE }}
         run: node scripts/probe-cli-relay.cjs
 
+  # 旧版升新版、开着加速卸载这两道冒烟（G13、windows-uninstall-smoke）以前是两个单独的工作流，
+  # 按路径自己触发，quality-gate 看不见它们：10-28 #1524 合并时 macos-upgrade 红着（运行
+  # 40730079976），没有任何东西拦（11-09 测试和 CI 深查 CI-6）。现在由这里调用，跑不跑看
+  # `changes` 的两个开关（名单在 scripts/ci-change-scope.cjs，就是原来两个工作流的 paths），
+  # 该跑就必须绿；没碰到那些文件的 PR 报「跳过」，不占打包机器。package-for-testing 发版前
+  # 调用升级冒烟的那条路照旧。两份工作流都不读 secret、不挂 environment、只读权限。
+  upgrade-smoke:
+    needs: changes
+    if: needs.changes.outputs.upgradeSmoke == 'true'
+    uses: ./.github/workflows/upgrade-smoke.yml
+
+  uninstall-smoke:
+    needs: changes
+    if: needs.changes.outputs.uninstallSmoke == 'true'
+    uses: ./.github/workflows/windows-uninstall-smoke.yml
+
   audit:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -1131,7 +1149,7 @@ jobs:
 
   quality-gate:
     if: always()
-    needs: [changes, test, macos-test, macos-release-rehearsal, macos-intel, linux-test, linux-renderer-v2-browser, linux-package, audit, cli-config-smoke, cli-relay-probe, secret-scan]
+    needs: [changes, test, macos-test, macos-release-rehearsal, macos-intel, linux-test, linux-renderer-v2-browser, linux-package, audit, cli-config-smoke, cli-relay-probe, upgrade-smoke, uninstall-smoke, secret-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -1161,6 +1179,15 @@ jobs:
           // block: catching a bad pin before it reaches a customer is the only
           // reason the job exists.
           if (!['success', 'skipped'].includes(jobs['cli-relay-probe'].result)) process.exit(1)
+          // The two installer smokes follow their own outputs, which only a
+          // pull request that touches code can set. Due means they must have
+          // passed; a skip where they were due is a failure, and so is a run
+          // where they were not.
+          for (const [output, name] of [['upgradeSmoke', 'upgrade-smoke'], ['uninstallSmoke', 'uninstall-smoke']]) {
+            const due = jobs.changes.outputs[output]
+            if (!['true', 'false'].includes(due) || (due === 'true' && code !== 'true')) process.exit(1)
+            if (jobs[name].result !== (due === 'true' ? 'success' : 'skipped')) process.exit(1)
+          }
           // A key pasted into Markdown leaks as surely as one in code, so the
           // secret scan runs on documentation-only changes too and has to pass
           // on every change.
