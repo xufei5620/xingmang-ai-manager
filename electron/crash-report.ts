@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { SECRET_FIELD_NAME, redactSecretShapes } from './redaction-patterns'
+import {
+  SECRET_FIELD_NAME,
+  escapedQuoteMark,
+  hideRestOfEscapedQuotedValues,
+  redactSecretShapes,
+} from './redaction-patterns'
 import { redactHomeDirectory } from './startup-log'
 
 /**
@@ -124,7 +129,7 @@ export function redactCrashText(value: string, homeDirectory: string): string {
   const redacted = redactSecretShapes(redactHomeDirectory(value, homeDirectory))
     // The optional quote after the key name is what `redactCommandText` lacks:
     // a stack trace carrying a serialized payload spells it `"api_key":"..."`.
-    .replace(CRASH_SECRET_FIELD, '$1[REDACTED]')
+    .replace(CRASH_SECRET_FIELD, (field, name: string) => `${name}[REDACTED]${escapedQuoteMark(field.slice(name.length))}`)
     .replace(/([?&](?:api[_-]?key|token|key)=)[^&\s]+/gi, '$1[REDACTED]')
     // Other users' profiles, and this user's own when the home directory is
     // spelled differently than os.homedir() reports it (a junction, a mapped
@@ -132,7 +137,9 @@ export function redactCrashText(value: string, homeDirectory: string): string {
     .replace(/([A-Za-z]:[\\/]+Users[\\/]+)[^\\/:*?"<>|\r\n]+/gi, '$1%USER%')
     .replace(/(\/Users\/)[^/\s:"'\\]+/g, '$1%USER%')
     .replace(/(\/home\/)[^/\s:"'\\]+/g, '$1%USER%')
-  return redactCrashEmailAddresses(redacted)
+  // Last, as in the shared table: what the rules above hid of a value whose
+  // closing quote was escaped, and only that, is extended to its real end.
+  return hideRestOfEscapedQuotedValues(redactCrashEmailAddresses(redacted))
 }
 
 /**

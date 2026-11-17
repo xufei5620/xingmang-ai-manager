@@ -141,6 +141,64 @@ const DOUBLE_QUOTED_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}"\\s*[:=]\\s
 const SINGLE_QUOTED_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}'\\s*[:=]\\s*)'[^']*'`, 'gi')
 const SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^\\s,;]+)`, 'gi')
 
+// A quoted value printed the way JSON, JavaScript, Python and the shells
+// print one carries a quote of its own as `\"`. The field rules read a value
+// only to its first quote, so they stopped at that one, and the rest of the
+// value stayed in the log: `{"password":"abc\"defghij"}` kept `defghij"`.
+//
+// The rules are not changed to read past it. A backslash is not always an
+// escape (a Windows path printed as is, `password="C:\x\" token="…"`), and a
+// reading that runs on past a value's real end swallows the start of
+// whatever rule would have matched in there, which can reach past the quote
+// that reading stops at; every way of telling the two apart from inside one
+// rule left some such text readable that the old rule hid. Instead each rule
+// runs exactly as before, and a value it hid whose closing quote was escaped
+// leaves a mark after it. Once every rule has run, the text from a mark up to
+// the quote that closes the value is hidden too. That only ever hides more,
+// and text with no backslash in it comes out exactly as before.
+//
+// The marks are Unicode noncharacters, which no printed text carries (one
+// that does just loses it, and the text after it may be hidden). Rules that
+// run after a mark see it where they saw nothing before, right after
+// `[REDACTED]` or the quote closing it; none of them starts on it, and the
+// ones whose match can run over it take it in rather than stop there.
+const ESCAPED_DOUBLE_QUOTE_MARK = '\uFDD0'
+const ESCAPED_SINGLE_QUOTE_MARK = '\uFDD1'
+// The rest of the value runs to a quote that ends it: one followed by what
+// ends a value (whitespace, `,`, `;`, a closing bracket, the end of the text).
+// When there is none, the backslash was not an escape and nothing more is
+// hidden. A scan stops at the next mark as well, so a text full of marks and
+// no quotes is read once, not once per mark.
+const REST_OF_DOUBLE_QUOTED_VALUE = /\uFDD0(?:[^"\\\uFDD0\uFDD1]|\\[^\uFDD0\uFDD1])*"(?=[\s,;)\]}]|$)/g
+const REST_OF_SINGLE_QUOTED_VALUE = /\uFDD1(?:[^'\\\uFDD0\uFDD1]|\\[^\uFDD0\uFDD1])*'(?=[\s,;)\]}]|$)/g
+
+/**
+ * The mark to leave after a value a field rule hid: none unless the value is
+ * quoted and its closing quote is escaped, that is, an odd run of backslashes
+ * stands in front of it.
+ */
+export function escapedQuoteMark(hiddenValue: string): string {
+  const quote = hiddenValue[0]
+  if (hiddenValue.length < 2 || (quote !== '"' && quote !== "'") || !hiddenValue.endsWith(quote)) return ''
+  // Counted back from the closing quote: a regex for the trailing run starts
+  // at every backslash of a long run and reads the rest of it each time.
+  let runStart = hiddenValue.length - 1
+  while (runStart > 1 && hiddenValue[runStart - 1] === '\\') runStart--
+  if ((hiddenValue.length - 1 - runStart) % 2 === 0) return ''
+  return quote === '"' ? ESCAPED_DOUBLE_QUOTE_MARK : ESCAPED_SINGLE_QUOTE_MARK
+}
+
+/**
+ * Hides the rest of every value marked by `escapedQuoteMark`, then drops the
+ * marks. Runs after every other rule of a redactor.
+ */
+export function hideRestOfEscapedQuotedValues(value: string): string {
+  return value
+    .replace(REST_OF_DOUBLE_QUOTED_VALUE, '')
+    .replace(REST_OF_SINGLE_QUOTED_VALUE, '')
+    .replace(/[\uFDD0\uFDD1]/g, '')
+}
+
 // `Cookie: a=b; c=d`. The first value runs to the end of its run of value
 // characters (anything but whitespace, `,`, `;` and quotes), and `cookie=` is
 // made of value characters itself, so in `cookie=cookie=cookie=…` every name
@@ -162,6 +220,11 @@ const COOKIE_HEADER = /(?:(?=cookies?[:=][^\s,;"'])(?<!cookies?[:=][^\s,;"']*?)|
  * printed in.
  */
 export function redactSecretFields(value: string): string {
+  return hideRestOfEscapedQuotedValues(markSecretFields(value))
+}
+
+/** `redactSecretFields` with the marks of `escapedQuoteMark` still in it. */
+function markSecretFields(value: string): string {
   return value
     // MCP servers are commonly launched as `npx some-server --token <value>`.
     // The `name=value` rules below never see the space-separated spelling, and
@@ -183,9 +246,9 @@ export function redactSecretFields(value: string): string {
     // that closes the key name, so any CLI writing JSON to stderr leaked its
     // secrets verbatim into the runtime log and the feedback export. Redacting
     // between the existing quotes also keeps a JSON body parseable.
-    .replace(DOUBLE_QUOTED_SECRET_FIELD, `$1"${REDACTED}"`)
-    .replace(SINGLE_QUOTED_SECRET_FIELD, `$1'${REDACTED}'`)
-    .replace(SECRET_FIELD, `$1${REDACTED}`)
+    .replace(DOUBLE_QUOTED_SECRET_FIELD, (field, name: string) => `${name}"${REDACTED}"${escapedQuoteMark(field.slice(name.length))}`)
+    .replace(SINGLE_QUOTED_SECRET_FIELD, (field, name: string) => `${name}'${REDACTED}'${escapedQuoteMark(field.slice(name.length))}`)
+    .replace(SECRET_FIELD, (field, name: string) => `${name}${REDACTED}${escapedQuoteMark(field.slice(name.length))}`)
 }
 
 /**
@@ -216,7 +279,9 @@ export function credentialArgumentValues(argv: readonly string[]): string[] {
 }
 
 export function redactSecretPatterns(value: string): string {
-  return redactSecretQueryParameters(redactSecretFields(redactSecretShapes(value)))
+  // The query rule runs before the rest of an escaped value is hidden: a
+  // parameter that starts in there can run past the value's closing quote.
+  return hideRestOfEscapedQuotedValues(redactSecretQueryParameters(markSecretFields(redactSecretShapes(value))))
 }
 
 // The address shape the crash reporter hides. The lookbehind lets a match start

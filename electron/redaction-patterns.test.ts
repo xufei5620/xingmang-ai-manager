@@ -220,6 +220,66 @@ describe('redactSecretShapes', () => {
 })
 
 describe('redactSecretFields', () => {
+  // A quoted value ends at the quote that closes it, not at the first quote
+  // in it: an escaped quote used to stop every field rule, and the rest of a
+  // password that held a `"` stayed in the log and the feedback export.
+  it('hides the whole quoted value when it carries an escaped quote', () => {
+    expect(redactSecretFields('{"password":"abc\\"defghij"}')).toBe('{"password":"[REDACTED]"}')
+    expect(redactSecretFields("{'password': 'abc\\'defghij'}")).toBe("{'password': '[REDACTED]'}")
+    expect(redactSecretFields('password="abc\\"defghij" user=alice')).toBe('password=[REDACTED] user=alice')
+    expect(redactSecretFields("token='abc\\'defghij' user=alice")).toBe('token=[REDACTED] user=alice')
+    expect(redactSecretFields('{"password":"{\\"a\\":\\"defghij\\"}","user":"alice"}'))
+      .toBe('{"password":"[REDACTED]","user":"alice"}')
+  })
+
+  it('hides the whole value when it holds both kinds of quote', () => {
+    expect(redactSecretFields('{"password":"it\'s \\"defghij\\"","user":"alice"}')).toBe('{"password":"[REDACTED]","user":"alice"}')
+    expect(redactSecretFields("{'password': 'it\\'s \"defghij\"', 'user': 'alice'}")).toBe("{'password': '[REDACTED]', 'user': 'alice'}")
+  })
+
+  it('ends a quoted value at an escaped backslash before its closing quote', () => {
+    expect(redactSecretFields('{"password":"abc\\\\","user":"alice"}')).toBe('{"password":"[REDACTED]","user":"alice"}')
+    expect(redactSecretFields("{'token': 'abc\\\\', 'user': 'alice'}")).toBe("{'token': '[REDACTED]', 'user': 'alice'}")
+  })
+
+  // Why this hides nothing the old rule hid: every rule still runs as it did,
+  // and the rest of an escaped value is hidden only after all of them, up to a
+  // quote that ends a value. A backslash that is not an escape finds no such
+  // quote before the next field, so nothing more is hidden.
+  it('still hides the next field when a backslash before a quote is not an escape', () => {
+    expect(redactSecretFields('password="C:\\fake\\" token="plain-fake-next"')).toBe('password=[REDACTED] token=[REDACTED]')
+    expect(redactSecretFields("password='C:\\fake\\' token='plain-fake-next'")).toBe('password=[REDACTED] token=[REDACTED]')
+    expect(redactSecretFields('{"password":"a\\"token":"plain-fake-next"}')).toBe('{"password":"[REDACTED]"token":"[REDACTED]"}')
+    expect(redactSecretFields('{"password": "C:\\fake\\"}')).toBe('{"password": "[REDACTED]"}')
+    expect(redactSecretFields('password="C:\\fake\\" token=" plain-fake-next"')).toBe('password=[REDACTED] token=[REDACTED]')
+  })
+
+  // In each of these a later rule starts inside the rest of the escaped value
+  // and runs past its closing quote. A field rule that read on past the
+  // escaped quote itself swallowed that start and showed the tail; hiding
+  // the rest last leaves those rules their whole match.
+  it('leaves a later rule its whole match when it starts inside the rest of an escaped value', () => {
+    expect(redactSecretPatterns('password="a\\" token=\'plain fake" tail\'')).toBe('password=[REDACTED] token=[REDACTED]')
+    expect(redactSecretPatterns('password="a\\" token=plain-fake")tail')).toBe('password=[REDACTED] token=[REDACTED]')
+    expect(redactSecretPatterns('password="a\\" ?key=plain-fake",tail')).toBe('password=[REDACTED] ?key=[REDACTED]')
+    expect(redactSecretPatterns("{'token': 'x \"password\":\"\\\"plain-fake' tail\"}")).toBe("{'token': '[REDACTED]' tail\"}")
+    expect(redactSecretPatterns('secret="x \'token\': \'\\\'plain-fake" tail\'')).toBe("secret=[REDACTED] tail'")
+    expect(redactCrashText("{'password': 'a\\'C:\\Users\\plain-fake' tail}", '')).toBe("{'password': [REDACTED]C:\\Users\\%USER%")
+  })
+
+  // The rest of a value is read up to the next quote or the next mark, so a
+  // run of fields whose values hold escaped quotes is read once.
+  it('scans many fields with escaped quotes in linear time', () => {
+    const started = performance.now()
+    expect(redactSecretFields('"password":"\\" '.repeat(20_000))).toBe('"password":"[REDACTED]" '.repeat(20_000))
+    expect(redactSecretFields("token='\\' ".repeat(20_000))).toBe('token=[REDACTED] '.repeat(20_000))
+    expect(redactSecretFields('{"token":"\\"'.repeat(20_000))).toBe('{"token":"[REDACTED]"'.repeat(20_000))
+    expect(redactSecretFields(`password="${'\\" '.repeat(40_000)}`)).toMatch(/^password=\[REDACTED\] /)
+    expect(redactSecretFields(`password="${'\\'.repeat(80_000)}x"`)).toBe('password=[REDACTED]')
+    expect(redactSecretFields(`password="${'\\'.repeat(80_001)}" tail" end`)).toBe('password=[REDACTED] end')
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
   it('redacts a two-step login flow token in JSON and key=value form', () => {
     const text = redactSecretFields('{"flow_token":"test-flow-abc"} flow_token=test-flow-abc flowToken: test-flow-abc')
     expect(text).not.toContain('test-flow-abc')
@@ -453,6 +513,20 @@ describe('shared redaction table', () => {
     const result = redact('cookie=plain-fake-cookie {"credential":"plain-fake-credential"}')
     for (const secret of ['plain-fake-cookie', 'plain-fake-credential']) expect(result).not.toContain(secret)
   })
+
+  // A password that holds a quote is printed with it escaped, by JSON and by
+  // Python alike; the crash reporter keeps its own field rule and reads the
+  // value the same way.
+  it.each([
+    ['redactSecretPatterns', (value: string) => redactSecretPatterns(value)],
+    ['redactCommandText', (value: string) => redactCommandText(value)],
+    ['redactStartupSecrets', (value: string) => redactStartupSecrets(value)],
+    ['redactDiagnosticText', (value: string) => redactDiagnosticText(value)],
+    ['redactCrashText', (value: string) => redactCrashText(value, '/home/fake-user')],
+  ])('%s hides the rest of a field value after an escaped quote', (_name, redact) => {
+    const result = redact('{"password":"plain\\"fake-json-tail"} {\'token\': \'plain\\\'fake-repr-tail\'} secret="plain\\"fake-env-tail"')
+    for (const secret of ['fake-json-tail', 'fake-repr-tail', 'fake-env-tail']) expect(result).not.toContain(secret)
+  })
 })
 
 // Random inputs (fast-check). The examples above are the shapes someone thought
@@ -513,18 +587,33 @@ describe('redaction with random inputs', () => {
     fc.boolean(),
   ).map(([name, upper]) => (upper ? name.toUpperCase() : name))
   const space = fc.constantFrom('', ' ', '  ', '\t')
-  // A value with an escaped quote (`\"`) is cut short at that quote today and
-  // what follows it stays readable; that is a separate fix, so these values
-  // leave quotes and backslashes out until it lands.
-  const fieldValue = fc.string({ unit: 'grapheme', minLength: 4, maxLength: 40 })
-    .filter((value) => !/["'\\\u0000-\u001f\u007f]/.test(value))
+  // Values are printed the way JSON and Python print them, with the backslash
+  // and the quote escaped, and quotes and backslashes are drawn often so most
+  // values carry an escape. Everything after the first escape is what a rule
+  // that stopped at an escaped quote left readable.
+  const fieldValue = fc.string({
+    unit: fc.oneof(
+      { weight: 1, arbitrary: fc.constantFrom('"', "'", '\\') },
+      { weight: 4, arbitrary: fc.string({ unit: 'grapheme', minLength: 1, maxLength: 1 }) },
+    ),
+    minLength: 4,
+    maxLength: 40,
+  }).filter((value) => !/[\u0000-\u001f\u007f]/.test(value))
 
   it.each(redactors)('%s hides a quoted secret field in JSON and in single-quoted output', (_name, redact) => {
     fc.assert(fc.property(secretFieldName, space, space, fieldValue, fc.boolean(), (name, beforeColon, afterColon, value, single) => {
       const quote = single ? "'" : '"'
-      const field = (inner: string) => `{${quote}${name}${quote}${beforeColon}:${afterColon}${quote}${inner}${quote}}`
-      fc.pre(!field('[REDACTED]').includes(value))
-      expect(redact(field(value))).not.toContain(value)
+      const printed = value.replaceAll('\\', '\\\\').replaceAll(quote, `\\${quote}`)
+      const key = `{${quote}${name}${quote}${beforeColon}:${afterColon}`
+      const field = (inner: string) => `${key}${quote}${inner}${quote}}`
+      // The crash reporter's rule leaves the quotes out of what it writes back.
+      const hidden = [field('[REDACTED]'), `${key}[REDACTED]}`]
+      const escape = printed.indexOf('\\')
+      const tail = escape === -1 ? '' : printed.slice(escape + 2)
+      fc.pre(!hidden.some((text) => text.includes(printed)))
+      const redacted = redact(field(printed))
+      expect(redacted).not.toContain(printed)
+      if (tail.length >= 4 && !hidden.some((text) => text.includes(tail))) expect(redacted).not.toContain(tail)
     }), { numRuns: 300 })
   })
 
