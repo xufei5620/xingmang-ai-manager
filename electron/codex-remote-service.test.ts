@@ -154,6 +154,11 @@ class FakeChannel implements RemoteChannelAdapter {
   handlers: RemoteChannelHandlers | null = null
   readonly sent: Array<{ peer: RemotePeer; message: RemoteOutbound; replyContext?: string }> = []
   stopped = 0
+  /** 设了就每一条都发不出去：模拟网断了，平台那边重发几次也没成（M03）。发不出去的记进 failed，不进 sent。 */
+  offline = false
+  readonly failed: RemoteOutbound[] = []
+  /** 设了就每一条都等它好了才发：模拟发到一半的那一会儿。 */
+  gate: Promise<void> | null = null
   private readonly waiters: Array<{ done: () => boolean; resolve: () => void }> = []
 
   async start(handlers: RemoteChannelHandlers): Promise<void> {
@@ -166,7 +171,17 @@ class FakeChannel implements RemoteChannelAdapter {
   }
 
   async send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string): Promise<void> {
+    if (this.gate) await this.gate
+    if (this.offline) {
+      this.failed.push(message)
+      this.wakeWaiters()
+      throw new Error('连不上飞书，请检查网络')
+    }
     this.sent.push({ peer, message, replyContext })
+    this.wakeWaiters()
+  }
+
+  private wakeWaiters(): void {
     for (const waiter of [...this.waiters]) {
       if (!waiter.done()) continue
       this.waiters.splice(this.waiters.indexOf(waiter), 1)
@@ -175,7 +190,7 @@ class FakeChannel implements RemoteChannelAdapter {
   }
 
   /**
-   * 发到手机的那一下让 done 成立时 resolve（已经成立就立刻 resolve）。直接等发送本身，不用 vi.waitFor 的
+   * 发到手机（或者 offline 时没发出去）的那一下让 done 成立时 resolve（已经成立就立刻 resolve）。直接等发送本身，不用 vi.waitFor 的
    * 1 秒轮询：「配对成功」和每张审批卡片都要先把设置原子写进盘才发，Windows CI 上撞过 1 秒（#1542）。
    */
   sentUntil(done: () => boolean): Promise<void> {
@@ -1559,6 +1574,164 @@ describe('codex-remote-service turns', () => {
     const reopened = s.channels.at(-1) as FakeChannel
     reopened.handlers?.onInbound(text(alice, '重试'))
     await vi.waitFor(() => expect(reopened.texts()).toContain('还没有可以重发的上一条。直接发要做的事就行。'))
+  })
+
+  // M03：做完了，回答刚好没送到手机。手机那头通了补发，「重试」不让 Codex 再做一遍。
+  describe('answers that never reached the phone', () => {
+    const resentPrefix = '之前有一条回答没发到你手机上，这里补发：'
+    const idleStatus = `工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：空闲`
+    const retryNote = '上一条已经做完了，回答就是上面那条，所以这次没有重做。确实要重做，请再发一次「重试」。'
+
+    /** 交一句、Codex 做完，回答发的那一下网断了；返回时手机那头已经又通了。 */
+    async function finishedWhileOffline(s: Setup, channel: FakeChannel, codex: FakeCodex, answer: string): Promise<void> {
+      codex.notify('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'a1', text: answer, phase: 'final_answer' } })
+      channel.offline = true
+      codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+      // 没送到的那一份是在发送失败以后才留下的：等到它留下了再放开网络。
+      await vi.waitFor(() => expect(s.logs).toContain('remote.answer-undelivered'))
+      channel.offline = false
+    }
+
+    it('sends the missed answer before the status reply, only once', async () => {
+      let now = Date.UTC(2026, 10, 18, 6, 0, 0)
+      const s = await setup({ now: () => now })
+      const channel = await enabledAndPaired(s)
+      const codex = await prompted(s, channel, '把首页的标题改大一点')
+      now += 45_000
+      await finishedWhileOffline(s, channel, codex, '改好了。')
+      expect(channel.texts().some((entry) => entry.includes('改好了。'))).toBe(false)
+      expect((await s.service.snapshot()).lastRequest).toMatchObject({ state: 'done' })
+
+      channel.handlers?.onInbound(text(alice, '状态'))
+      await channel.sentUntil(() => channel.texts().at(-1) === idleStatus)
+      expect(channel.texts().slice(-2)).toEqual([`${resentPrefix}\n\n改好了。\n\n用时 45 秒。`, idleStatus])
+      expect(s.logs).toContain('remote.answer-resent')
+
+      channel.handlers?.onInbound(text(alice, '状态'))
+      await channel.sentUntil(() => channel.texts().filter((entry) => entry === idleStatus).length === 2)
+      expect(channel.texts().filter((entry) => entry.startsWith(resentPrefix))).toHaveLength(1)
+      expect(codex.requests('turn/start')).toHaveLength(1)
+    })
+
+    it('answers retry with the missed answer instead of running the task again, and runs it on the next retry', async () => {
+      const s = await setup()
+      const channel = await enabledAndPaired(s)
+      const codex = await prompted(s, channel, '跑一下测试')
+      await finishedWhileOffline(s, channel, codex, '测试都过了。')
+
+      channel.handlers?.onInbound(text(alice, '重试'))
+      await channel.sentUntil(() => channel.texts().at(-1) === retryNote)
+      expect(channel.texts().at(-2)).toMatch(new RegExp(`^${resentPrefix}\\n\\n测试都过了。\\n\\n用时 `))
+      expect(codex.requests('turn/start')).toHaveLength(1)
+
+      channel.handlers?.onInbound(text(alice, '重试'))
+      await channel.sentUntil(() => channel.texts().includes('再发一次上一条：「跑一下测试」\n收到，Codex 开始处理。'))
+      await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    })
+
+    it('sends the missed answer by itself once the channel is connected again', async () => {
+      const s = await setup()
+      const channel = await enabledAndPaired(s)
+      const codex = await prompted(s, channel)
+      await finishedWhileOffline(s, channel, codex, '做完了。')
+      channel.handlers?.onStatus({ state: 'connecting', message: '连不上飞书，正在重试。' })
+      channel.handlers?.onStatus({ state: 'connected' })
+      await channel.sentUntil(() => channel.texts().some((entry) => entry.startsWith(`${resentPrefix}\n\n做完了。`)))
+      // 已经连着时再报一次「连上了」不算又连上，送到了的也不会再发。
+      channel.handlers?.onStatus({ state: 'connected' })
+      channel.handlers?.onInbound(text(alice, '状态'))
+      await channel.sentUntil(() => channel.texts().at(-1) === idleStatus)
+      expect(channel.texts().filter((entry) => entry.startsWith(resentPrefix))).toHaveLength(1)
+    })
+
+    it('does not run the task again when retry arrives while the missed answer is still being sent', async () => {
+      const s = await setup()
+      const channel = await enabledAndPaired(s)
+      const codex = await prompted(s, channel)
+      await finishedWhileOffline(s, channel, codex, '做完了。')
+      let release!: () => void
+      channel.gate = new Promise((resolve) => { release = resolve })
+      channel.handlers?.onStatus({ state: 'connecting' })
+      channel.handlers?.onStatus({ state: 'connected' })
+      // 连上了那次补发卡在发的半路。之后头一个读设置的是手机来的「重试」：它读完一路走到补发那里停下等，
+      // 这时才放行，补发确实是在它等着的时候才发完。
+      const readSettings = s.store.readSettings.bind(s.store)
+      vi.spyOn(s.store, 'readSettings').mockImplementationOnce(async () => {
+        const settings = await readSettings()
+        setTimeout(() => {
+          channel.gate = null
+          release()
+        }, 0)
+        return settings
+      })
+      channel.handlers?.onInbound(text(alice, '重试'))
+      await channel.sentUntil(() => channel.texts().at(-1) === retryNote)
+      expect(channel.texts().filter((entry) => entry.startsWith(`${resentPrefix}\n\n做完了。`))).toHaveLength(1)
+      expect(codex.requests('turn/start')).toHaveLength(1)
+    })
+
+    it('keeps the answer when sending it again fails too, and tries once more on the next message', async () => {
+      const s = await setup()
+      const channel = await enabledAndPaired(s)
+      const codex = await prompted(s, channel)
+      await finishedWhileOffline(s, channel, codex, '做完了。')
+      channel.offline = true
+      // 先补发、再回「状态」，两条都没发出去（加上原来那条回答一共 3 条）。
+      channel.handlers?.onInbound(text(alice, '状态'))
+      await channel.sentUntil(() => channel.failed.length === 3)
+      channel.offline = false
+      channel.handlers?.onInbound(text(alice, '状态'))
+      await channel.sentUntil(() => channel.texts().at(-1) === idleStatus)
+      expect(channel.texts().filter((entry) => entry.startsWith(`${resentPrefix}\n\n做完了。`))).toHaveLength(1)
+    })
+
+    it('runs the newer prompt on retry when the missed answer belongs to an older one', async () => {
+      const s = await setup()
+      const channel = await enabledAndPaired(s)
+      const codex = await prompted(s, channel, '第一件事')
+      await finishedWhileOffline(s, channel, codex, '第一件做完了。')
+      // 第二句到的时候手机那头又断了：补发没成，第二句照常交给 Codex。
+      channel.offline = true
+      channel.handlers?.onInbound(text(alice, '第二件事'))
+      // 原来那条回答、补发、「收到」三条都没发出去。
+      await channel.sentUntil(() => channel.failed.length === 3)
+      await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+      channel.offline = false
+      codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-2', status: 'failed', error: { message: 'boom' } } })
+      await channel.sentUntil(() => channel.texts().at(-1) === '这一轮没做完：boom')
+
+      channel.handlers?.onInbound(text(alice, '重试'))
+      await channel.sentUntil(() => channel.texts().includes('再发一次上一条：「第二件事」\n收到，Codex 开始处理。'))
+      await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(3))
+      expect(channel.texts().filter((entry) => entry.startsWith(`${resentPrefix}\n\n第一件做完了。`))).toHaveLength(1)
+      expect(channel.texts()).not.toContain(retryNote)
+    })
+
+    it('drops the missed answer after a day', async () => {
+      let now = Date.UTC(2026, 10, 18, 6, 0, 0)
+      const s = await setup({ now: () => now })
+      const channel = await enabledAndPaired(s)
+      const codex = await prompted(s, channel)
+      await finishedWhileOffline(s, channel, codex, '做完了。')
+      now += 24 * 60 * 60_000 + 1
+      channel.handlers?.onInbound(text(alice, '重试'))
+      await channel.sentUntil(() => channel.texts().some((entry) => entry.startsWith('再发一次上一条：')))
+      await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+      expect(channel.texts().some((entry) => entry.startsWith(resentPrefix))).toBe(false)
+    })
+
+    it('drops the missed answer once the remote is switched off on the computer', async () => {
+      const s = await setup()
+      const channel = await enabledAndPaired(s)
+      const codex = await prompted(s, channel)
+      await finishedWhileOffline(s, channel, codex, '做完了。')
+      await s.service.setChannelEnabled('feishu', false)
+      await s.service.setChannelEnabled('feishu', true)
+      const reopened = s.channels.at(-1) as FakeChannel
+      reopened.handlers?.onInbound(text(alice, '状态'))
+      await reopened.sentUntil(() => reopened.texts().at(-1) === idleStatus)
+      expect([...channel.texts(), ...reopened.texts()].some((entry) => entry.startsWith(resentPrefix))).toBe(false)
+    })
   })
 
   it('tells the phone when Codex dies mid-turn', async () => {
