@@ -1,3 +1,4 @@
+import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import { redactCommandText } from './command-runner'
 import { redactCrashText } from './crash-report'
@@ -451,5 +452,125 @@ describe('shared redaction table', () => {
   ])('%s hides cookie and credential values', (_name, redact) => {
     const result = redact('cookie=plain-fake-cookie {"credential":"plain-fake-credential"}')
     for (const secret of ['plain-fake-cookie', 'plain-fake-credential']) expect(result).not.toContain(secret)
+  })
+})
+
+// Random inputs (fast-check). The examples above are the shapes someone thought
+// of; these let the library build the text around a secret, the secret itself
+// and where it sits, then shrink any failure to the smallest text that still
+// leaks. A failing run prints its seed and that text: it is a real gap in a
+// redactor, not a flaky test, and `{ seed, path }` from the report replays it.
+describe('redaction with random inputs', () => {
+  const alphanumeric = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+
+  function textOf(characters: string, minLength: number, maxLength: number) {
+    return fc.string({ unit: fc.constantFrom(...characters), minLength, maxLength })
+  }
+
+  // Each entry is [what is written, the part that must not survive]. Bodies are
+  // drawn from the vendor's own alphabet at the lengths its rule accepts. The
+  // `sk-` rule still ends on `\b`, so a body that ends in `-` keeps those dashes
+  // outside the match; dashes carry nothing secret, so bodies end on a letter or
+  // digit here and the assertion stays "the whole key is gone".
+  const shapedSecret = fc.oneof(
+    fc.tuple(textOf(alphanumeric, 1, 1), textOf(`${alphanumeric}_-`, 4, 46), textOf(alphanumeric, 1, 1))
+      .map((parts) => `sk-${parts.join('')}`),
+    textOf(`${alphanumeric}_-`, 20, 48).map((body) => `xai-${body}`),
+    fc.tuple(fc.constantFrom('p', 'o', 'u', 's', 'r'), textOf(alphanumeric, 20, 40)).map(([kind, body]) => `gh${kind}_${body}`),
+    textOf(`${alphanumeric}_`, 20, 60).map((body) => `github_pat_${body}`),
+    textOf(`${alphanumeric}_-`, 20, 40).map((body) => `glpat-${body}`),
+    textOf(`${alphanumeric}_-`, 35, 45).map((body) => `AIza${body}`),
+    fc.tuple(fc.constantFrom('AKIA', 'ASIA'), textOf('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', 16, 16)).map((parts) => parts.join('')),
+    textOf(alphanumeric, 12, 20).map((body) => `LTAI${body}`),
+    textOf(alphanumeric, 32, 32).map((body) => `AKID${body}`),
+    fc.tuple(textOf(`${alphanumeric}_-`, 10, 30), textOf(`${alphanumeric}_-`, 1, 40), textOf(`${alphanumeric}_-`, 1, 40))
+      .map(([header, payload, signature]) => `eyJ${header}.${payload}.${signature}`),
+  ).map((secret): [string, string] => [secret, secret])
+  const bearerSecret = fc.tuple(fc.constantFrom('Bearer ', 'bearer  ', 'BEARER\t'), textOf(`${alphanumeric}._~+/=-`, 6, 60))
+    .map(([scheme, token]): [string, string] => [`${scheme}${token}`, token])
+
+  // Anything that cannot continue a key: letters, digits, `_` and `-` would
+  // make the key longer rather than end it.
+  const separator = fc.constantFrom(...' \n\t"\',;()<>|[]{}=:@/.!?#&*~+%'.split(''))
+  const filler = fc.string({ unit: 'binary', maxLength: 40 })
+
+  const redactors: [string, (value: string) => string][] = [
+    ['redactSecretPatterns', (value) => redactSecretPatterns(value)],
+    ['redactCommandText', (value) => redactCommandText(value)],
+    ['redactStartupSecrets', (value) => redactStartupSecrets(value)],
+    ['redactDiagnosticText', (value) => redactDiagnosticText(value)],
+    ['redactCrashText', (value) => redactCrashText(value, '/home/fake-user')],
+  ]
+
+  it.each(redactors)('%s hides a vendor-shaped key whatever text surrounds it', (_name, redact) => {
+    fc.assert(fc.property(filler, separator, fc.oneof(shapedSecret, bearerSecret), separator, filler, (before, open, [written, secret], close, after) => {
+      fc.pre(!`${before}${open}`.includes(secret) && !`${close}${after}`.includes(secret))
+      expect(redact(`${before}${open}${written}${close}${after}`)).not.toContain(secret)
+    }), { numRuns: 300 })
+  })
+
+  // Secret field names as CLIs and .env files spell them, in any letter case.
+  const secretFieldName = fc.tuple(
+    fc.constantFrom('api_key', 'apikey', 'x-api-key', 'access_token', 'refresh_token', 'token', 'client_secret', 'password',
+      'passwd', 'authorization', 'cookie', 'credentials', 'AWS_SECRET_ACCESS_KEY', 'private_key', 'ssh-key'),
+    fc.boolean(),
+  ).map(([name, upper]) => (upper ? name.toUpperCase() : name))
+  const space = fc.constantFrom('', ' ', '  ', '\t')
+  // A value with an escaped quote (`\"`) is cut short at that quote today and
+  // what follows it stays readable; that is a separate fix, so these values
+  // leave quotes and backslashes out until it lands.
+  const fieldValue = fc.string({ unit: 'grapheme', minLength: 4, maxLength: 40 })
+    .filter((value) => !/["'\\\u0000-\u001f\u007f]/.test(value))
+
+  it.each(redactors)('%s hides a quoted secret field in JSON and in single-quoted output', (_name, redact) => {
+    fc.assert(fc.property(secretFieldName, space, space, fieldValue, fc.boolean(), (name, beforeColon, afterColon, value, single) => {
+      const quote = single ? "'" : '"'
+      const field = (inner: string) => `{${quote}${name}${quote}${beforeColon}:${afterColon}${quote}${inner}${quote}}`
+      fc.pre(!field('[REDACTED]').includes(value))
+      expect(redact(field(value))).not.toContain(value)
+    }), { numRuns: 300 })
+  })
+
+  // `[REDACTED]` itself can contain a short "secret" (`RED`, `ACT`), and a
+  // bracket lets the replacement and its neighbour form one; real values have
+  // neither problem, so those are left out rather than asserted around.
+  const explicitSecret = fc.string({ unit: fc.constantFrom(...`${alphanumeric} _-.~+/=:@!$%&*?#,;'"\\()<>{}|^\``.split(''), '密', '钥', '\u00e9'), minLength: 3, maxLength: 40 })
+    .filter((secret) => !'[REDACTED]'.includes(secret))
+
+  it('redactCommandText never leaves a value the caller marked sensitive', () => {
+    fc.assert(fc.property(
+      fc.uniqueArray(explicitSecret, { minLength: 1, maxLength: 3 }),
+      fc.array(fc.tuple(fc.string({ unit: 'binary', maxLength: 30 }), fc.nat()), { minLength: 1, maxLength: 6 }),
+      (secrets, pieces) => {
+        const text = pieces.map(([text, pick]) => `${text}${secrets[pick % secrets.length]}`).join('')
+        const redacted = redactCommandText(text, secrets)
+        for (const secret of secrets) expect(redacted).not.toContain(secret)
+      },
+    ), { numRuns: 300 })
+  })
+
+  // A flag with a segment `sk` (`--sk-api-key`) holds `sk-` plus six characters,
+  // so the key rule hides the flag's name before the flag rule can pair it with
+  // its value; no CLI we launch spells a flag that way.
+  const credentialFlag = fc.tuple(
+    fc.constantFrom('-', '--'),
+    fc.array(textOf('abcdefghijklmnopqrstuvwxyz0123456789', 1, 6).filter((segment) => segment !== 'sk').map((segment) => `${segment}-`), { maxLength: 2 }),
+    fc.constantFrom('api-key', 'api_key', 'apikey', 'key', 'token', 'secret', 'password', 'passwd', 'auth'),
+    fc.boolean(),
+  ).map(([dashes, segments, word, upper]) => {
+    const flag = `${dashes}${segments.join('')}${word}`
+    return upper ? flag.toUpperCase() : flag
+  })
+  const flagValue = explicitSecret.filter((value) => !/^-|[\s"']/.test(value))
+
+  it('hides the value of every credential flag in a logged command line, in both spellings', () => {
+    fc.assert(fc.property(credentialFlag, flagValue, fc.boolean(), fc.array(textOf(`${alphanumeric}-./`, 1, 12), { maxLength: 3 }), (flag, value, assigned, rest) => {
+      const argv = ['npx', 'some-mcp-server', ...(assigned ? [`${flag}=${value}`] : [flag, value]), ...rest]
+      fc.pre(!argv.join(' ').replace(value, '[REDACTED]').includes(value))
+      // The runner's own path: the argv values are named up front.
+      expect(redactCommandText(argv.join(' '), credentialArgumentValues(argv))).not.toContain(value)
+      // A child that echoes its command line back is caught by the text rule.
+      expect(redactSecretPatterns(argv.join(' '))).not.toContain(value)
+    }), { numRuns: 300 })
   })
 })

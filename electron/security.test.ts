@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import {
   isAllowedAppNavigationUrl,
@@ -10,7 +11,7 @@ import {
   resolvePackagedLaunchArguments,
   type ApplicationUrlPolicy,
 } from './security'
-import { supportServiceUrl } from './relay-sites'
+import { relaySiteExternalUrls, relaySites, supportServiceUrl } from './relay-sites'
 import { accelerationWorkerArgument } from './acceleration-worker-entry'
 import { loginLaunchArgument } from './login-launch'
 import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
@@ -225,6 +226,71 @@ describe('external URL allowlist', () => {
     expect(isAllowedExternalUrl('ms-windows-store://search/?query=Codex', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('javascript:alert(1)', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('not a URL', allowlist)).toBe(false)
+  })
+})
+
+// Random inputs (fast-check): text glued around an allowlisted link, lookalike
+// hosts and userinfo. A failing run prints its seed and the smallest link that
+// got through; that is a hole in the allowlist check, not a flaky test.
+describe('external URL allowlist with random inputs', () => {
+  const allowlist = [
+    ...relaySiteExternalUrls(relaySites),
+    'https://nodejs.org/',
+    supportServiceUrl,
+    'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
+  ]
+  const allowedHrefs = allowlist.map((entry) => new URL(entry).href)
+  const httpsEntries = allowlist.filter((entry) => entry.startsWith('https://'))
+  // The characters URL parsing turns on, percent escapes, and two characters
+  // IDNA folds into a dot.
+  const urlNoise = fc.string({
+    unit: fc.constantFrom(...'abcxyz019-_.~/\\?#@:%&=+;,!$\'()*[] \t\n'.split(''), '\u3002', '\uff0e', '\u00e9', '%2e', '%40', '%2f'),
+    maxLength: 12,
+  })
+
+  function landsOnAllowedPage(candidate: string): boolean {
+    let target: URL
+    try {
+      target = new URL(candidate)
+    } catch {
+      return false
+    }
+    return target.username === '' && target.password === '' && allowedHrefs.includes(target.href)
+  }
+
+  it('lets text around an allowlisted link through only when it still lands on that exact page', () => {
+    fc.assert(fc.property(urlNoise, fc.constantFrom(...allowlist), urlNoise, (before, entry, after) => {
+      const candidate = `${before}${entry}${after}`
+      if (isAllowedExternalUrl(candidate, allowlist)) expect(landsOnAllowedPage(candidate)).toBe(true)
+    }), { numRuns: 500 })
+  })
+
+  // A bare `:` is left out of the joints: `:443` is the default port and lands
+  // on the same page, which the first property already covers.
+  it('refuses a host with anything added before or after it', () => {
+    const label = fc.string({ unit: fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789'.split('')), minLength: 1, maxLength: 8 })
+    fc.assert(fc.property(fc.constantFrom(...httpsEntries), label, fc.constantFrom('', '.', '-', '@', ':443@', '%2e', '\u3002'), fc.boolean(), (entry, extra, joint, prepend) => {
+      const url = new URL(entry)
+      const host = prepend ? `${extra}${joint}${url.host}` : `${url.host}${joint}${extra}`
+      expect(isAllowedExternalUrl(`https://${host}${url.pathname}${url.search}`, allowlist)).toBe(false)
+    }), { numRuns: 300 })
+  })
+
+  it('refuses an allowlisted page that carries a user name or password', () => {
+    const part = fc.string({ unit: fc.constantFrom(...'abcxyz019-_.~%'.split('')), maxLength: 8 })
+    fc.assert(fc.property(fc.constantFrom(...httpsEntries), part, part, (entry, user, password) => {
+      fc.pre(user !== '' || password !== '')
+      const url = new URL(entry)
+      expect(isAllowedExternalUrl(`https://${user}${password ? `:${password}` : ''}@${url.host}${url.pathname}${url.search}`, allowlist)).toBe(false)
+    }), { numRuns: 300 })
+  })
+
+  it('accepts an allowlisted page whatever letter case its scheme and host are written in', () => {
+    fc.assert(fc.property(fc.constantFrom(...httpsEntries), fc.array(fc.boolean(), { minLength: 64, maxLength: 64 }), (entry, flips) => {
+      const url = new URL(entry)
+      const origin = `https://${url.host}`.split('').map((character, index) => (flips[index % flips.length] ? character.toUpperCase() : character)).join('')
+      expect(isAllowedExternalUrl(`${origin}${url.pathname}${url.search}`, allowlist)).toBe(true)
+    }), { numRuns: 200 })
   })
 })
 
