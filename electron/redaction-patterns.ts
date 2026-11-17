@@ -171,6 +171,17 @@ const ESCAPED_SINGLE_QUOTE_MARK = '\uFDD1'
 // no quotes is read once, not once per mark.
 const REST_OF_DOUBLE_QUOTED_VALUE = /\uFDD0(?:[^"\\\uFDD0\uFDD1]|\\[^\uFDD0\uFDD1])*"(?=[\s,;)\]}]|$)/g
 const REST_OF_SINGLE_QUOTED_VALUE = /\uFDD1(?:[^'\\\uFDD0\uFDD1]|\\[^\uFDD0\uFDD1])*'(?=[\s,;)\]}]|$)/g
+// A credential flag's value gets marks of its own. The flag rule runs before
+// every field rule, so its marks land inside the rest of a field value that
+// is hidden later; with the same marks, that field's scan stopped at one and
+// left its own rest readable. A field's scan reads over a flag's mark like
+// any other character (it sits after `[REDACTED]`, never after a backslash),
+// so it ends exactly where it did before the flag rule left marks. A flag's
+// scan runs after the fields' ones and stops at any mark.
+const ESCAPED_FLAG_DOUBLE_QUOTE_MARK = '\uFDD2'
+const ESCAPED_FLAG_SINGLE_QUOTE_MARK = '\uFDD3'
+const REST_OF_DOUBLE_QUOTED_FLAG_VALUE = /\uFDD2(?:[^"\\\uFDD0-\uFDD3]|\\[^\uFDD0-\uFDD3])*"(?=[\s,;)\]}]|$)/g
+const REST_OF_SINGLE_QUOTED_FLAG_VALUE = /\uFDD3(?:[^'\\\uFDD0-\uFDD3]|\\[^\uFDD0-\uFDD3])*'(?=[\s,;)\]}]|$)/g
 
 /**
  * The mark to leave after a value a field rule hid: none unless the value is
@@ -188,15 +199,38 @@ export function escapedQuoteMark(hiddenValue: string): string {
   return quote === '"' ? ESCAPED_DOUBLE_QUOTE_MARK : ESCAPED_SINGLE_QUOTE_MARK
 }
 
+/** `escapedQuoteMark` for a value the credential flag rule hid. */
+function escapedFlagQuoteMark(hiddenValue: string): string {
+  const mark = escapedQuoteMark(hiddenValue)
+  if (mark === ESCAPED_DOUBLE_QUOTE_MARK) return ESCAPED_FLAG_DOUBLE_QUOTE_MARK
+  if (mark === ESCAPED_SINGLE_QUOTE_MARK) return ESCAPED_FLAG_SINGLE_QUOTE_MARK
+  return ''
+}
+
 /**
- * Hides the rest of every value marked by `escapedQuoteMark`, then drops the
- * marks. Runs after every other rule of a redactor.
+ * The flag's mark a field rule keeps when it hides a flag's value over again.
+ * `--token="abc\"d ef"` is a `token=` field too, and that field's unquoted
+ * value starts with the flag's `[REDACTED]` and mark but stops at the space,
+ * short of the quote that closes the flag's value.
+ */
+function flagMarkHiddenAgain(hiddenValue: string): string {
+  const mark = hiddenValue.charAt(REDACTED.length)
+  if (!hiddenValue.startsWith(REDACTED)) return ''
+  return mark === ESCAPED_FLAG_DOUBLE_QUOTE_MARK || mark === ESCAPED_FLAG_SINGLE_QUOTE_MARK ? mark : ''
+}
+
+/**
+ * Hides the rest of every value marked by `escapedQuoteMark` or
+ * `escapedFlagQuoteMark`, then drops the marks. Runs after every other rule of
+ * a redactor.
  */
 export function hideRestOfEscapedQuotedValues(value: string): string {
   return value
     .replace(REST_OF_DOUBLE_QUOTED_VALUE, '')
     .replace(REST_OF_SINGLE_QUOTED_VALUE, '')
-    .replace(/[\uFDD0\uFDD1]/g, '')
+    .replace(REST_OF_DOUBLE_QUOTED_FLAG_VALUE, '')
+    .replace(REST_OF_SINGLE_QUOTED_FLAG_VALUE, '')
+    .replace(/[\uFDD0-\uFDD3]/g, '')
 }
 
 // `Cookie: a=b; c=d`. The first value runs to the end of its run of value
@@ -223,14 +257,17 @@ export function redactSecretFields(value: string): string {
   return hideRestOfEscapedQuotedValues(markSecretFields(value))
 }
 
-/** `redactSecretFields` with the marks of `escapedQuoteMark` still in it. */
+/** `redactSecretFields` with the marks of `escapedQuoteMark` and `escapedFlagQuoteMark` still in it. */
 function markSecretFields(value: string): string {
   return value
     // MCP servers are commonly launched as `npx some-server --token <value>`.
     // The `name=value` rules below never see the space-separated spelling, and
     // a bare `--key=` is not one of their names, so a failed `mcp add` printed
     // the user's token straight into the runtime log and the feedback export.
-    .replace(CREDENTIAL_FLAG_IN_TEXT, `$1${REDACTED}`)
+    // A child that echoes its command line back escapes a quote inside a
+    // quoted value (`--token "abc\"def"`), and the value read to its first
+    // quote is marked like the field values below.
+    .replace(CREDENTIAL_FLAG_IN_TEXT, (argument, flag: string) => `${flag}${REDACTED}${escapedFlagQuoteMark(argument.slice(flag.length))}`)
     // An Authorization value is `<scheme> <credentials>`. The unquoted rule
     // below stops at the space and would hide only the scheme word, leaving a
     // `Basic` credential (base64 of user:password) readable. A `Bearer` value
@@ -248,7 +285,10 @@ function markSecretFields(value: string): string {
     // between the existing quotes also keeps a JSON body parseable.
     .replace(DOUBLE_QUOTED_SECRET_FIELD, (field, name: string) => `${name}"${REDACTED}"${escapedQuoteMark(field.slice(name.length))}`)
     .replace(SINGLE_QUOTED_SECRET_FIELD, (field, name: string) => `${name}'${REDACTED}'${escapedQuoteMark(field.slice(name.length))}`)
-    .replace(SECRET_FIELD, (field, name: string) => `${name}${REDACTED}${escapedQuoteMark(field.slice(name.length))}`)
+    .replace(SECRET_FIELD, (field, name: string) => {
+      const hiddenValue = field.slice(name.length)
+      return `${name}${REDACTED}${escapedQuoteMark(hiddenValue)}${flagMarkHiddenAgain(hiddenValue)}`
+    })
 }
 
 /**
