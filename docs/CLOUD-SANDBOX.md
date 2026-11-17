@@ -99,16 +99,38 @@ node node_modules/electron/install.js
 
 ## 7. 在容器里真开客户端走一遍
 
-能做到：`npm run compile` 之后用 Playwright 起 Electron，外面套 `xvfb-run -a`（`xvfb-run` 容器里有，11-11 验）。账号站点一律用假接口，写法照 `e2e/realm-account-smoke.mjs`。
+**直接用 `npm run verify:app`**（11-17 验：编译完一条命令，登录加走完侧栏 13 页 16 秒）。它起的是 `npm run compile` 编出来的真客户端，不是浏览器夹具：
 
-四个不处理就走不通的地方（沿用 10-26，11-11 没重演）：
+```bash
+npm run compile                                   # 改了代码就要重编，它不替你编
+npm run verify:app                                # 侧栏每一页截一张（画布除外）
+npm run verify:app -- settings tap:网络连接 shot:网络连接 "expect:重开星芒后生效，不会切换账号。"
+npm run verify:app -- --account api --theme dark account:keys
+npm run verify:app -- --help                      # 全部选项和步骤写法
+```
+
+- 没有图形界面时它自己套 `xvfb-run -a` 再跑一遍，不用手写。
+- 账号站（星芒账号、历史账号，两条线路都在）是 `e2e/verify-app-fixture.cjs` 里的假接口，余额用 `--balance` 调；别的网站一律不连，CLI 的更新检测会报「连不上」，这是故意的。假接口没答的请求列在报告里，那一屏显示「读不到」是夹具缺路由，不是产品的毛病。
+- 每到一页（或 `shot:`、`look:`）存一张 `NN-名字.png` 和同名 `.txt`。`.txt` 是整页的字，滚出屏幕的部分也在，核字用它比看图准。结尾写 `report.md`（贴进真机要点的「机器能核」那段，见 `docs/COLLABORATION.md` §7.6）、`steps.json` 和这次的运行日志。默认放 `output/verify-app/<时间>`，`--out` 改位置。
+- 步骤没过、页面报错（`pageerror`）都算没过，命令退出码是 1；截图照样留着，最后一张是没过那一刻。
+- 下面四个坑它都处理了。自己另写脚本时照它的写法，或者直接在它上面加步骤。
+
+它做不到的：原生对话框（选文件、保存）、系统通知和托盘菜单的样子、`title` 悬停提示的样子（`hover:` 只把提示的字记下来）、真网络、真装 CLI、真付款。这些留在真机要点的「必须真机」那段。另外工具检测照容器自己的 PATH 来：容器自带一份 Claude Code，首页会显示它装着（版本旧）。
+
+CI 的 Windows（`windows-package`）和 Mac（`macos-test`）作业每个 PR 都跑一次不带步骤的 `verify:app`，哪一页打不开或报错，作业就红。Windows 那次的截图和每页的字在运行产物 `electron-smoke-artifacts` 的 `output/verify-app/` 里，想看 Windows 上某一页长什么样先去那里找；Mac 作业按规矩不传任何产物（`scripts/ci-workflow-config.test.cjs` 钉着），只在日志里留每一步过没过。Windows 运行机的桌面可能比要的窗口小，报告第二行写实际截到的大小。
+
+四个不处理就走不通的地方（沿用 10-26，11-17 在 `verify:app` 里重演过）：
 
 1. 容器是 root，`linux-launch-guard` 拒绝启动。夹具里先 `process.geteuid = () => 1000` 再加载入口。只许在夹具里这么做。
 2. 出网代理会换证书。要在夹具里对 `defaultSession` 和 `app.on('session-created')` 新建的会话都设 `setCertificateVerifyProc`，只放行代理那一个签发者；装工具用的是 `fromPartition` 出来的会话，只改默认会话不够。
 3. 写密钥那一步走 `Session.prototype.fetch`，不经过换掉的 `net.request`，要把它也对账号站转给假接口。
 4. 容器的 PATH 里自带一份 Claude Code（`/opt/node22/bin/claude`，11-11 验），客户端会当成「已装好但版本旧」。要走干净机器的路，给 `PATH=/usr/bin:/bin`。
 
-另外，容器的环境变量里有一批 `ANTHROPIC_*`、`CLAUDE_*`（11-11 验）。在子进程里真跑某个 CLI 时用 `env -i` 起，否则这些变量会把它的请求带到真服务上。
+另外，容器的环境变量里有一批 `ANTHROPIC_*`、`CLAUDE_*`（11-11 验）。在子进程里真跑某个 CLI 时用 `env -i` 起，否则这些变量会把它的请求带到真服务上。还有一个不带下划线的 `CLAUDECODE`：客户端探测 Claude Code 的插件列表时，它会让 Claude Code 报「cannot be launched inside another Claude Code session」退出（11-17 验）。
+
+用 Playwright 起 Electron 时，Electron 的入口脚本里 `require.main === module` 不成立（Playwright 先加载自己的东西），按它判断「是不是被 Electron 当入口」的夹具一句都不会执行，窗口永远等不到（11-17 踩过）。改看 `process.type === 'browser'`。
+
+只写一个 `settings.json` 种子时要带 `workspace`（非空字符串）和 `uiSkin`：缺 `workspace` 整份会被换成默认值，你种的「提示已看过」一起丢；缺 `uiSkin` 会被当成老文件、主题强制改成浅色。有了 `settings.json` 客户端就当这台机器跑过，没有 `last-run-version.json` 又会弹「已更新到…」（11-17 验）。
 
 容器没设 `LANG`。起 Electron 时带上 `LANG=C.UTF-8`，否则碰到中文文件名会整个崩掉，只打一行 `Trace/breakpoint trap`，看着像产品的毛病。11-12 验：同一个剪贴板探针粘贴复制的 `截图.png`，不带 `LANG` 每次都崩，带上就正常；英文文件名两种都正常。
 
