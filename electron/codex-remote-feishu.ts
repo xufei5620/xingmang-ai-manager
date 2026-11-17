@@ -673,7 +673,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
       if (!this.running) return
       this.running = false
       this.deps.log('warn', 'feishu.credential-read-failed')
-      this.setStatus({ state: 'error', message: feishuProblemMessages.other, problem: 'other' })
+      this.setStatus({ state: 'error', message: feishuProblemMessages.other, problem: 'other', halted: true })
       return
     }
     this.credential = parseFeishuCredential(stored)
@@ -961,7 +961,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     if (result.kind === 'connection-limit') {
       this.deps.log('warn', 'feishu.connection-limit')
       await this.stop()
-      this.setStatus({ state: 'error', message: feishuProblemMessages['connection-limit'], problem: 'connection-limit' })
+      this.setStatus({ state: 'error', message: feishuProblemMessages['connection-limit'], problem: 'connection-limit', halted: true })
       return
     }
     if (result.kind === 'retry') {

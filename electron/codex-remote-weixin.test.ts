@@ -262,6 +262,8 @@ describe('createWeixinRemoteChannel', () => {
     expect(sleeps).toEqual([2_000])
     expect(statuses.map((status) => status.state)).toEqual(['connecting', 'error', 'connected'])
     expect(statuses[1].message).toBe('连不上微信，正在重试')
+    // 还在自己重试，不算停下（YKS-12）：防睡照样挡着，网络回来了才连得回去。
+    expect(statuses[1].halted).toBeUndefined()
     await channel.stop()
   })
 

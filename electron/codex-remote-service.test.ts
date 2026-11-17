@@ -223,6 +223,14 @@ class FakeApprovalCardChannel extends FakeChannel {
   }
 }
 
+/** 一连就抛的渠道：模拟读凭据出错这类，连都没连起来、也不会自己再试。 */
+class FakeFailingChannel extends FakeChannel {
+  async start(handlers: RemoteChannelHandlers): Promise<void> {
+    this.handlers = handlers
+    throw new Error('keychain locked')
+  }
+}
+
 /** 能取图的渠道（YF-14）：images 里放好每个句柄取回来什么，取过哪些记在 fetched。 */
 class FakeImageChannel extends FakeChannel {
   readonly images = new Map<string, RemoteImageFetchResult>()
@@ -294,6 +302,8 @@ async function setup(options: {
   /** 渠道能取图（YF-14）；imageStore 缺省跟着它，设成 false 就是有渠道能取、底座没处存。 */
   images?: boolean
   imageStore?: boolean
+  /** 渠道一连就抛（FakeFailingChannel）。 */
+  startFails?: boolean
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -335,7 +345,9 @@ async function setup(options: {
   const service = new CodexRemoteService({
     store,
     createChannel: () => {
-      const channel = options.images
+      const channel = options.startFails
+        ? new FakeFailingChannel()
+        : options.images
         ? new FakeImageChannel()
         : options.approvalCards ? new FakeApprovalCardChannel() : options.progressCards ? new FakeCardChannel() : new FakeChannel()
       channels.push(channel)
@@ -2958,6 +2970,20 @@ describe('codex-remote-service lifecycle', () => {
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
     await vi.waitFor(() => expect(follow()).toBe(false))
     expect(held).toBe(0)
+  })
+
+  // YKS-12：渠道没连起来就停下了、不会自己再试，开关还开着（卡片上留着那句话和「重新连接」），可已经收不到手机上的消息，
+  // 不能再挡着电脑睡眠；YF-10 默认不自动关，原来这一挡就是几天。
+  it('marks a channel that failed to start as halted so the sleep blocker lets go', async () => {
+    const s = await setup({ startFails: true })
+    const keepAwake = createCodexRemoteKeepAwake({ blocker: { start: () => 1, stop: () => undefined } })
+    await s.service.setChannelEnabled('feishu', true)
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu).toMatchObject({ enabled: true, status: { state: 'error', halted: true } })
+    expect(s.logs).toContain('remote.channel-start-failed')
+    for (const each of s.snapshots) keepAwake.observe(each)
+    keepAwake.observe(snapshot)
+    expect(keepAwake.holding()).toBe(false)
   })
 
   // YF-5：微信扫码过了手机上那串数字，扫码的人直接绑上，不用配对码；原来绑着别人时先跟他说一声。

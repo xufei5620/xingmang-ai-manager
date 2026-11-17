@@ -506,7 +506,8 @@ describe('codex-remote-feishu channel', () => {
     const channel = createFeishuRemoteChannel(h.deps, { createSocket: (url) => new FakeSocket(url) })
     await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
     await vi.waitFor(() => expect(h.statuses.at(-1)?.state).toBe('error'))
-    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' })
+    // YKS-12：长连接已经停了、不会自己再连，标出来，防睡那边才不把它当还在听。
+    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit', halted: true })
     expect(h.logs).toContain('feishu.connection-limit')
   })
 
@@ -518,7 +519,7 @@ describe('codex-remote-feishu channel', () => {
     }
     const channel = createFeishuRemoteChannel(deps)
     await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
-    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other' })
+    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other', halted: true })
     expect(h.logs).toContain('feishu.credential-read-failed')
     expect(h.fetch).not.toHaveBeenCalled()
   })
