@@ -6,6 +6,7 @@ import {
   isAllowedExternalUrl,
   hasDisallowedPackagedDebugSwitch,
   isTrustedIpcSenderUrl,
+  resolveAllowedExternalUrl,
   resolvePackagedApplicationFile,
   resolvePackagedLaunchArguments,
   type ApplicationUrlPolicy,
@@ -225,6 +226,23 @@ describe('external URL allowlist', () => {
     expect(isAllowedExternalUrl('ms-windows-store://search/?query=Codex', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('javascript:alert(1)', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('not a URL', allowlist)).toBe(false)
+  })
+
+  it('resolves an allowed link to the allowlist entry itself, never to the caller text', () => {
+    // The check compares parsed hrefs, so spellings that parse to an allowed
+    // page pass it. What reaches the OS browser must be the entry that was
+    // matched, not the raw string the check never looked at as text.
+    for (const spelling of [
+      ' https://xm.solov.cc/keys',
+      'https://xm.solov.cc/ke\tys',
+      'https:\\\\XM.solov.%63c\\x\\..\\keys',
+      'https://xm.solov.cc/keys',
+    ]) {
+      expect(resolveAllowedExternalUrl(spelling, allowlist)).toBe('https://xm.solov.cc/keys')
+    }
+    expect(resolveAllowedExternalUrl('https://xm.solov.cc/', allowlist)).toBe('https://xm.solov.cc')
+    expect(resolveAllowedExternalUrl('https://xm.solov.cc/keys?redirect=1', allowlist)).toBeNull()
+    expect(resolveAllowedExternalUrl('not a URL', allowlist)).toBeNull()
   })
 })
 

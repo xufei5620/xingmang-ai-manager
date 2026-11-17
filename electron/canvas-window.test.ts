@@ -627,6 +627,22 @@ describe('createCanvasWindowController', () => {
     controller.dispose()
   })
 
+  it('hands the shell the allowlist entry it matched, not the text the canvas page supplied', async () => {
+    const externalShell = { openExternal: vi.fn(async () => undefined), openPath: vi.fn(async () => undefined) }
+    const controller = createCanvasWindowController(controllerOptions({ externalShell }))
+    await controller.open()
+    const { openHandler, navigate } = popupAndNavigationHandlers()
+
+    expect(openHandler({ url: ' https://DOCS.example.com/' })).toEqual({ action: 'deny' })
+    navigate({ preventDefault: vi.fn() }, 'https:\\\\github.com\\example\\x\\..\\canvas-kernel')
+
+    expect(externalShell.openExternal.mock.calls).toEqual([
+      ['https://docs.example.com'],
+      ['https://github.com/example/canvas-kernel'],
+    ])
+    controller.dispose()
+  })
+
   it('opens nothing from a popup or navigation while the canvas allowlist is empty, as main.ts passes it', async () => {
     const externalShell = { openExternal: vi.fn(async () => undefined), openPath: vi.fn(async () => undefined) }
     const controller = createCanvasWindowController(controllerOptions({ externalShell, externalUrlAllowlist: [] }))
