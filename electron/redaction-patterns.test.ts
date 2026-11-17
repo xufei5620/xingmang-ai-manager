@@ -312,6 +312,53 @@ describe('redactSecretFields', () => {
     }
   })
 
+  // A child that echoes its command line back quotes an argument the way a
+  // shell or JSON does, with a quote inside it escaped. The flag rule read the
+  // value to that quote and left the rest of the token in the log.
+  it('hides the whole quoted value of a credential flag when it carries an escaped quote', () => {
+    expect(redactSecretFields('npx srv --token "abc\\"defghij"')).toBe('npx srv --token [REDACTED]')
+    expect(redactSecretFields('npx srv --token "abc\\"defghij" --verbose')).toBe('npx srv --token [REDACTED] --verbose')
+    expect(redactSecretFields('npx srv --auth="a\\\\\\"bc\\"defghij"\nnext')).toBe('npx srv --auth=[REDACTED]\nnext')
+    expect(redactSecretFields("npx srv --client_secret 'abc\\'defghij' --verbose")).toBe("npx srv --client_secret [REDACTED] --verbose")
+    expect(redactSecretFields('npx srv -key "a\\"b\'c\\"defghij" --verbose')).toBe('npx srv -key [REDACTED] --verbose')
+  })
+
+  // `--token=` is a `token=` field as well, whose unquoted value stops at the
+  // first space in the rest of the flag's value.
+  it('hides the whole escaped value of a flag whose name is also a field name', () => {
+    expect(redactSecretFields('npx srv --token="abc\\"def ghij" --verbose')).toBe('npx srv --token=[REDACTED] --verbose')
+    expect(redactSecretFields("npx srv --password='abc\\'def ghij'")).toBe('npx srv --password=[REDACTED]')
+    expect(redactSecretFields('npx srv --api-key="abc\\"def,ghij" --verbose')).toBe('npx srv --api-key=[REDACTED] --verbose')
+  })
+
+  // A backslash that is not an escape (a Windows path printed as is) leaves
+  // the flag's mark with no quote closing the value: everything after it was
+  // already read by the rules that followed, as before.
+  it('still hides the next flag or field when a backslash before a flag value\'s quote is not an escape', () => {
+    expect(redactSecretFields('--token "C:\\fake\\" --key "plain-fake-next"')).toBe('--token [REDACTED] --key [REDACTED]')
+    expect(redactSecretFields('--token "C:\\fake\\" password="plain-fake-next"')).toBe('--token [REDACTED] password=[REDACTED]')
+    expect(redactSecretFields("--token 'C:\\fake\\' --key 'plain-fake-next'")).toBe('--token [REDACTED] --key [REDACTED]')
+    expect(redactSecretFields('--token "C:\\fake\\"x plain-fake-arg')).toBe('--token [REDACTED]x plain-fake-arg')
+  })
+
+  // The flag rule runs before the field rules, so a flag inside the rest of a
+  // field's value leaves its mark in there. The field's mark still reads to
+  // the field's own closing quote.
+  it('hides the rest of a field value that holds a flag with an escaped quote', () => {
+    expect(redactSecretFields('password="a\\" plain-fake-rest --token "b\\" c" tail')).toBe('password=[REDACTED] tail')
+    expect(redactSecretFields("token='a\\' plain-fake-rest --key 'b\\' c' tail")).toBe('token=[REDACTED] tail')
+  })
+
+  it('scans many credential flag values with escaped quotes in linear time', () => {
+    const started = performance.now()
+    expect(redactSecretFields('--token "\\" '.repeat(20_000))).toBe('--token [REDACTED] '.repeat(20_000))
+    expect(redactSecretFields("--key '\\' ".repeat(20_000))).toBe('--key [REDACTED] '.repeat(20_000))
+    expect(redactSecretFields(`password="\\" ${'--token "\\" '.repeat(20_000)}`)).toBe(`password=[REDACTED] ${'--token [REDACTED] '.repeat(20_000)}`)
+    expect(redactSecretFields('password="\\" --token "\\" '.repeat(20_000))).toBe('password=[REDACTED] --token [REDACTED] '.repeat(20_000))
+    expect(redactSecretFields(`--token "${'\\'.repeat(80_000)}x"`)).toBe('--token [REDACTED]')
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
   it('redacts the credential of a non-Bearer Authorization header, not just its scheme', () => {
     expect(redactSecretFields('--header Authorization: Basic cGxhaW4tZmFrZTp2YWx1ZQ==')).toBe('--header Authorization: [REDACTED]')
     expect(redactSecretFields('authorization=Token plain-fake-value')).toBe('authorization=[REDACTED]')
@@ -475,6 +522,16 @@ describe('shared redaction table', () => {
   ])('%s hides credentials named only by their command-line flag', (_name, redact) => {
     const result = redact('npx some-server --token plain-fake-flag --key=plain-fake-assigned\nAuthorization: Basic plain-fake-basic')
     for (const secret of ['plain-fake-flag', 'plain-fake-assigned', 'plain-fake-basic']) expect(result).not.toContain(secret)
+  })
+
+  it.each([
+    ['redactSecretPatterns', (value: string) => redactSecretPatterns(value)],
+    ['redactCommandText', (value: string) => redactCommandText(value)],
+    ['redactStartupSecrets', (value: string) => redactStartupSecrets(value)],
+    ['redactDiagnosticText', (value: string) => redactDiagnosticText(value)],
+  ])('%s hides the rest of a flag value after an escaped quote', (_name, redact) => {
+    const result = redact('npx some-server --token "plain\\"fake-double-tail" --key=\'plain\\\'fake-single-tail\'\nnext')
+    for (const secret of ['fake-double-tail', 'fake-single-tail']) expect(result).not.toContain(secret)
   })
 
   // A `.env` or `~/.ssh` file Codex reads reaches the phone through
@@ -657,6 +714,23 @@ describe('redaction with random inputs', () => {
       expect(redactCommandText(argv.join(' '), credentialArgumentValues(argv))).not.toContain(value)
       // A child that echoes its command line back is caught by the text rule.
       expect(redactSecretPatterns(argv.join(' '))).not.toContain(value)
+    }), { numRuns: 300 })
+  })
+
+  // An echoed command line quotes the value and escapes the backslash and the
+  // quote inside it, as the field values above are printed.
+  it('hides an escaped quoted value of every credential flag in an echoed command line', () => {
+    fc.assert(fc.property(credentialFlag, fieldValue, fc.boolean(), fc.boolean(), fc.array(textOf(`${alphanumeric}-./`, 1, 12), { maxLength: 3 }), (flag, value, single, assigned, rest) => {
+      const quote = single ? "'" : '"'
+      const printed = value.replaceAll('\\', '\\\\').replaceAll(quote, `\\${quote}`)
+      const line = (inner: string) => ['npx', 'some-mcp-server', ...(assigned ? [`${flag}=${inner}`] : [flag, inner]), ...rest].join(' ')
+      const hidden = line('[REDACTED]')
+      const escape = printed.indexOf('\\')
+      const tail = escape === -1 ? '' : printed.slice(escape + 2)
+      fc.pre(!hidden.includes(printed))
+      const redacted = redactSecretPatterns(line(`${quote}${printed}${quote}`))
+      expect(redacted).not.toContain(printed)
+      if (tail.length >= 4 && !hidden.includes(tail)) expect(redacted).not.toContain(tail)
     }), { numRuns: 300 })
   })
 })
