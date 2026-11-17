@@ -36,6 +36,8 @@ const MISSING_ASSET_MESSAGE = missingAiAssetMessages.image
 const SAVED_COPY_FILE_MODE = 0o644
 const PROXY_AWARE_IMAGE_HOSTS = new Set(['imgen.x.ai'])
 const AI_ASSET_DOWNLOAD_ERROR_CODE = 'AI_IMAGE_DOWNLOAD_FAILED'
+// 图片已经校验过、往保存位置写的那一步没成：只有这一种值得把字节暂存下来（见 keepUnsaved）。
+const AI_ASSET_WRITE_FAILED_ERROR_CODE = 'AI_IMAGE_WRITE_FAILED'
 /** 生成前试写失败时挂在错误上的 code，与「已生成但保存失败」那类扣过费的错误区分开。 */
 export const AI_OUTPUT_UNWRITABLE_ERROR_CODE = 'AI_OUTPUT_UNWRITABLE'
 const DEFAULT_UNWRITABLE_GUIDANCE = '请联系客服帮你处理。'
@@ -141,6 +143,12 @@ export interface AiAssetStoreOptions {
   unwritableGuidance?: string
   /** 量保存位置所在盘还剩多少；测试里换成假的。读不到返回 null，照常放行（同 disk-space.ts）。 */
   readDiskSpace?: (target: string) => Promise<DiskSpaceReading | null>
+  /**
+   * 付过钱的图（生图回来的 base64 和下载下来的图）存不进保存位置时，把字节交给它先暂存，
+   * 腾出空间后再补存（深查 S-1，ai-unsaved-image-stash.ts）。只管扣过费的那两条路：本机导入的
+   * 原文件还在客户手里，不用替它留一份。它出错不改变这次抛出去的那句。
+   */
+  keepUnsaved?: (userId: number, bytes: Buffer) => Promise<unknown>
 }
 
 interface OwnedAssetRecord {
@@ -556,6 +564,7 @@ export class AiAssetStore {
   private readonly downloadTimeoutMs: number
   private readonly unwritableGuidance: string
   private readonly readDiskSpace: (target: string) => Promise<DiskSpaceReading | null>
+  private readonly keepUnsaved: ((userId: number, bytes: Buffer) => Promise<unknown>) | undefined
   private readonly records = new Map<string, OwnedAssetRecord>()
   private readonly locator: OwnedAssetLocator
 
@@ -571,6 +580,7 @@ export class AiAssetStore {
     this.downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS
     this.unwritableGuidance = options.unwritableGuidance ?? DEFAULT_UNWRITABLE_GUIDANCE
     this.readDiskSpace = options.readDiskSpace ?? ((target) => readDiskSpace(target))
+    this.keepUnsaved = options.keepUnsaved
     this.locator = new OwnedAssetLocator({ outputRoot: this.outputRoot, extensions: ['png', 'jpg', 'webp'], label: FILE_LABEL })
     if (!Number.isInteger(this.maximumImageBytes) || this.maximumImageBytes < 1 || this.maximumImageBytes > DEFAULT_MAXIMUM_IMAGE_BYTES) {
       throw new Error('AI 图片大小上限配置无效')
@@ -629,7 +639,7 @@ export class AiAssetStore {
     assertUserId(userId)
     if (typeof value !== 'string') throw new Error('图片 base64 数据格式错误')
     const source = parseBase64Image(value, this.maximumImageBytes)
-    return this.persist(userId, source.bytes, source.declaredMime, meta)
+    return this.persistPaid(userId, source.bytes, source.declaredMime, meta)
   }
 
   async storeRemoteUrl(userId: number, url: string, meta?: AiAssetMetadata): Promise<AiStoredAsset> {
@@ -649,7 +659,7 @@ export class AiAssetStore {
       Object.assign(downloadError, { code: AI_ASSET_DOWNLOAD_ERROR_CODE })
       throw downloadError
     }
-    return this.persist(userId, source.bytes, source.declaredMime, meta)
+    return this.persistPaid(userId, source.bytes, source.declaredMime, meta)
   }
 
   async storeLocalFile(userId: number, filePath: string): Promise<AiStoredAsset> {
@@ -890,6 +900,29 @@ export class AiAssetStore {
     ])
   }
 
+  /**
+   * The two paths whose bytes were paid for. When writing them out fails, the
+   * bytes go to keepUnsaved before the same error is rethrown: this is the
+   * last moment anything holds them, and the person has already been charged.
+   * Bytes that failed validation are not kept, since storing them later would
+   * fail the same way.
+   */
+  private async persistPaid(
+    userId: number,
+    bytes: Buffer,
+    declaredMime: string | null,
+    meta?: AiAssetMetadata,
+  ): Promise<AiStoredAsset> {
+    try {
+      return await this.persist(userId, bytes, declaredMime, meta)
+    } catch (error) {
+      if (this.keepUnsaved && (error as { code?: unknown }).code === AI_ASSET_WRITE_FAILED_ERROR_CODE) {
+        await this.keepUnsaved(userId, bytes).catch(() => undefined)
+      }
+      throw error
+    }
+  }
+
   private async persist(
     userId: number,
     bytes: Buffer,
@@ -944,7 +977,8 @@ export class AiAssetStore {
         throw new Error('AI 图片资产标识冲突，请重试')
       }
       // 原因挂在 cause 上，日志里才看得到 ENOSPC、EPERM 这些（深查 S-1）；界面照旧只说这一句。
-      throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: error })
+      const failure = new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: error })
+      throw Object.assign(failure, { code: AI_ASSET_WRITE_FAILED_ERROR_CODE })
     }
     this.cacheRecord(assetId, { userId, filePath, asset })
     return { ...asset }

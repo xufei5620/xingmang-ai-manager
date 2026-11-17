@@ -17,6 +17,7 @@ import { AI_CHAT_STREAM_LIMITS, createAiChatService } from '../ai-chat-service'
 import { createAiImageService } from '../ai-image-service'
 import { createAiMediaAssetService, type AiMediaAssetService } from '../ai-media-asset-service'
 import { chooseAiOutputRoot, migrateLegacyAiOutput, resolveLegacyAiOutputRoot } from '../ai-output-location'
+import { AiUnsavedImageStash, unsavedImageLogEntry } from '../ai-unsaved-image-stash'
 import { AiVideoAssetStore } from '../ai-video-asset-store'
 import { createAiVideoService, type AiVideoAssetWriter } from '../ai-video-service'
 import { AiVideoTaskStore } from '../ai-video-task-store'
@@ -238,8 +239,12 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
       const content = assetMenuFailureDialog(mediaType, error)
       dialog.showErrorBox(content.title, content.message)
     }
+    // 付过钱的图存不进去时先暂存、腾出空间后补存进作品库（深查 S-1）。对话、画布项目两边的图都补存进
+    // 这个账号的作品库：画布项目文件夹写不进多半是文件夹本身出了状况（被移走、U 盘拔了），补回原处还是失败。
+    const keepUnsavedImage = (userId: number, bytes: Buffer): Promise<unknown> => unsavedImages.keep(userId, bytes)
     const assetStore = new AiAssetStore({
       outputRoot: aiOutputRoot,
+      keepUnsaved: keepUnsavedImage,
       // 全局保存位置在「文档」里，写不进多半是整个文档出了状况，用户自己能绕开的是
       // 画布项目：新项目的作品存在用户自己选的文件夹里。
       unwritableGuidance: '可以先在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来；也可以联系客服。',
@@ -265,6 +270,15 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
           })))
           menu.popup()
         },
+      },
+    })
+    const unsavedImages: AiUnsavedImageStash = new AiUnsavedImageStash({
+      // 软件自己的数据文件夹（不在「文档」里）：「文档」被拦、画布项目文件夹出状况时这里多半还写得进。
+      root: path.join(roots.rootDirectory, 'ai-unsaved-images'),
+      target: assetStore,
+      log: (event) => {
+        const entry = unsavedImageLogEntry(event)
+        runtimeLog.log(entry.level, 'ai-chat', entry.event, entry.message, entry.detail)
       },
     })
     // Create the output location at startup and prove it accepts a file, so a
@@ -336,6 +350,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     const createProjectAssetContext = (outputRoot: string) => {
       const images = new AiAssetStore({
         outputRoot,
+        keepUnsaved: keepUnsavedImage,
         unwritableGuidance: '这个项目的文件夹可能被移走了，或者放不进新文件。请新建一个项目、换个文件夹再试。',
         trustedProxyFetchImpl: sessionFetch,
         nativeOperations: {
@@ -645,7 +660,8 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     })
     return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
       audioAssets, mediaAssets, canvasPromptPresets, canvasProjects, canvasProjectAssets,
-      chatService, imageService, canvasImageService, videoService, chatVideoService, canvasRuns, assetProtocol, chatAttachments, aiOutputPlacement }
+      chatService, imageService, canvasImageService, videoService, chatVideoService, canvasRuns, assetProtocol, chatAttachments, aiOutputPlacement,
+      unsavedImages }
   }
   const businesses = new Map<RealmAccountSiteId, ReturnType<typeof createBusiness>>()
   type CanvasRunListener = Parameters<ReturnType<typeof createCanvasRunService>['subscribe']>[0]
