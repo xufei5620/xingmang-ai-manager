@@ -187,7 +187,7 @@ export class AiAudioAssetStore {
         throw new Error('AI 音频内容摘要冲突')
       }
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('AI 音频资产标识冲突，请重试')
-      throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+      throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: error })
     }
     this.locator.remember(userId, assetId, filePath)
     return {
@@ -350,7 +350,7 @@ export class AiAudioAssetStore {
     await authorize?.()
     if (!path.isAbsolute(target) || target.includes('\0')) throw new Error('音频另存地址无效')
     await writeAtomicSafeBinaryFile(target, owned.bytes, '音频另存文件', { mode: SAVED_COPY_FILE_MODE })
-      .catch(() => { throw new Error('音频另存失败，请检查目标目录写入权限') })
+      .catch((error: unknown) => { throw new Error('音频另存失败，请检查目标目录写入权限', { cause: error }) })
     return true
   }
 

@@ -408,9 +408,10 @@ export function createAiImageService(options: {
           } catch (error) {
             if (signal.aborted) throw signal.reason
             if (!entry.b64Json && isAssetDownloadError(error)) {
-              throw new Error('图片已生成但下载失败，这次可能已经扣费，请勿立即重复提交；先检查网络，稍后再重新生成')
+              throw new Error('图片已生成但下载失败，这次可能已经扣费，请勿立即重复提交；先检查网络，稍后再重新生成', { cause: error })
             }
-            throw new Error('图片已生成但本地保存失败，这次可能已经扣费，请勿立即重复提交；先看看保存位置所在的磁盘空间够不够')
+            // 原因挂在 cause 上：界面只说这一句，运行日志（ipc.ts 记失败时连 cause 一起写）里要看得到是盘满、没权限还是被占用（深查 S-1）。
+            throw new Error('图片已生成但本地保存失败，这次可能已经扣费，请勿立即重复提交；先看看保存位置所在的磁盘空间够不够', { cause: error })
           }
         }
         return results

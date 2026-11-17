@@ -205,7 +205,9 @@ describe('AiVideoAssetStore', () => {
     const authorize = () => { if (currentUserId !== 7) throw new Error('账号已切换，请重新另存') }
 
     failTemporaryFileWrites()
-    await expect(store.saveAs(7, asset.assetId, authorize)).rejects.toThrow('视频另存失败，请检查目标目录写入权限')
+    const error = await store.saveAs(7, asset.assetId, authorize).then(() => null, (reason: unknown) => reason)
+    expect((error as Error).message).toBe('视频另存失败，请检查目标目录写入权限')
+    expect(classifyStorageFailure(error)).toBe('disk-full')
     expect(fs.readdirSync(saveRoot)).toEqual([])
 
     vi.restoreAllMocks()

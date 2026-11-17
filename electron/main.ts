@@ -1956,6 +1956,8 @@ if (!hasSingleInstanceLock) {
             await current.canvasRuns.initializeUser(userId)
             await current.canvasRuns.reconcileAssets(userId)
           }).catch((error) => runtimeLog.exception('canvas', 'runtime.initialize.failed', error))
+          // 上次付了钱却没存进作品库、先暂存着的图，登录好了先补存一次（深查 S-1）；补存不了的它自己记日志、过一阵再试。
+          void current.unsavedImages.flush(userId)
           if (siteId === 'solov') {
             void current.videoService.resumeUser(userId).catch((error) => runtimeLog.exception('canvas', 'video.resume.failed', error))
             // 视频剪辑页上次关掉时还在出的视频：取回来放进作品库。
