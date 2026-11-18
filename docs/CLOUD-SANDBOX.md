@@ -55,7 +55,7 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 - **`npm test` 和 `npm run test:v2` 可以在同一个目录里同时后台跑**，没冒过假红。（沿用 11-09）
 - **容器里没有 zsh**（11-11 验），`electron/macos-platform.test.ts` 里真跑 zsh 的那批用例会自动跳过，不算失败。想让它们在容器里真跑，`apt-get install -y zsh`。（沿用 11-10）
 - **容器里你是 root**（11-11 验）。Linux 版客户端拒绝以 root 启动，真开客户端要先处理这个（见第 7 节）。
-- **`npm test` 的 vitest 段在 `electron/system-service.{certificate-trust,disk-space,download-stall,install-cancel}.test.ts` 这 4 个文件红 29 条**（11-18 验）：报「这台电脑上的 Claude Code 不是通过本工具安装的」，或者等到 30 秒超时。原因是容器自带的 Claude Code 换了装法：`/opt/node22/bin/claude` 现在链到 `/opt/claude-code/bin/claude`（11-18 这个容器里链接的时间是 11-17，以前在 npm 全局目录里），不在 npm 全局目录里，装 CLI 前的检测照真机 PATH 认出它、当成别处装的拒绝再装。这几个用例没把 PATH 隔开，算测试自己的漏洞，不算环境问题放过。核对办法：把容器那份挪出 PATH 单跑这 4 个文件，要 0 失败：`PATH=/usr/bin:/bin /opt/node22/bin/node node_modules/vitest/vitest.mjs run <这 4 个文件>`（11-18 验：57 条全过）。vitest 段一红，`npm test` 后面的 `test:scripts`、`test:browser` 不会跑，要再各自单跑一次。
+- **容器自带的 Claude Code（`/opt/node22/bin/claude`）以前让 `npm test` 红 29 条装工具的用例，已修**（11-18 验）：`electron/system-service.{certificate-trust,disk-space,download-stall,install-cancel}.test.ts` 的夹具现在把 PATH 换成夹具自己的目录，不再读容器的 PATH。直接跑 `npm test` / `npm run selfcheck` 就是 0 失败，不用再把那份挪出 PATH。自己写装 CLI 的用例时照同样写，见 `docs/TEST-BASELINE.md`「装命令行工具的用例：夹具要连 PATH 一起换掉」。
 
 ## 4. Electron 二进制装不上时
 
