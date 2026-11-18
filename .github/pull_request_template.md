@@ -30,7 +30,7 @@ Fixes #
 - [ ] `npm test`
 - [ ] `npm run check:v2`
 - [ ] `npm run test:v2`
-- [ ] 带了 `changes/unreleased/` 分片（纯 CI、脚本、文档改动可以不带）
+- [ ] 带了 `changes/unreleased/` 分片（纯 CI、脚本、文档改动可以不带；目录里有 `final-user-notes.md` 时只写「## 开发」）
 
 ## 可靠性清单
 
