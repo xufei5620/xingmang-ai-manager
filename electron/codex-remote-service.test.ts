@@ -309,6 +309,8 @@ interface Setup {
    * 取过了文件还在写，目录里是一个 .tmp 临时文件；要看目录得等存图本身（Windows CI 上撞过，2026-11-12）。
    */
   imagesSaved(count: number): Promise<void>
+  /** 删图删够 count 张时 resolve（M05）：删图在后台做，要看目录得等删图本身。 */
+  imagesRemoved(count: number): Promise<void>
 }
 
 async function setup(options: {
@@ -365,6 +367,12 @@ async function setup(options: {
     if (savedImageCount >= count) return Promise.resolve()
     return new Promise((resolve) => { imageSaveWaiters.push({ count, resolve }) })
   }
+  let removedImageCount = 0
+  const imageRemoveWaiters: Array<{ count: number; resolve: () => void }> = []
+  function imagesRemoved(count: number): Promise<void> {
+    if (removedImageCount >= count) return Promise.resolve()
+    return new Promise((resolve) => { imageRemoveWaiters.push({ count, resolve }) })
+  }
   function observedImageStore(): RemoteImageStore {
     const real = createRemoteImageStore(imageDirectory)
     return {
@@ -378,6 +386,15 @@ async function setup(options: {
           waiter.resolve()
         }
         return saved
+      },
+      async remove(paths) {
+        await real.remove(paths)
+        removedImageCount += paths.length
+        for (const waiter of [...imageRemoveWaiters]) {
+          if (removedImageCount < waiter.count) continue
+          imageRemoveWaiters.splice(imageRemoveWaiters.indexOf(waiter), 1)
+          waiter.resolve()
+        }
       },
     }
   }
@@ -424,7 +441,7 @@ async function setup(options: {
     ...(options.readBalanceUsd ? { readBalanceUsd: options.readBalanceUsd } : {}),
     ...(options.images && options.imageStore !== false ? { imageStore: observedImageStore() } : {}),
   })
-  return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, logDetails, unavailable, imageDirectory, imagesSaved }
+  return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, logDetails, unavailable, imageDirectory, imagesSaved, imagesRemoved }
 }
 
 async function enabledAndPaired(s: Setup): Promise<FakeChannel> {
@@ -2286,6 +2303,71 @@ describe('codex-remote-service images', () => {
     expect(channel.texts()).toEqual(['收到，带着 1 张图片，Codex 开始处理。'])
     const input = (s.codex[0].requests('turn/start')[0].params as { input: Array<Record<string, unknown>> }).input
     expect(input.map((entry) => entry.type)).toEqual(['text', 'localImage'])
+  })
+
+  // M05（Codex 复核 11-18）：图和字一起发、赶上还在做上一条，回「还在处理上一条」时图也一起退回，
+  // 不留给下一句不相干的话。
+  it('turns away the images sent with a prompt while the last one is still running', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.images.set('img-a', { ok: true, bytes: pngBytes })
+    const codex = await prompted(s, channel, '先跑一下测试')
+    channel.handlers?.onInbound(imageMessage(alice, ['img-a'], '照这张图改按钮颜色'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
+    expect(channel.fetched).toEqual(['img-a'])
+    await s.imagesRemoved(1)
+    expect(storedImages(s.imageDirectory)).toEqual([])
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+
+    channel.handlers?.onInbound(text(alice, '把标题改大一点'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    expect(channel.texts().at(-1)).toBe('收到，Codex 开始处理。')
+    expect((codex.requests('turn/start')[1].params as { input: unknown[] }).input).toEqual([{ type: 'text', text: '把标题改大一点', text_elements: [] }])
+  })
+
+  // M05：退回的只是跟那句话一起发来的；早先单独发来、等着下一句的图照旧留着，先发图、再说要做什么的用法不变。
+  it('keeps images sent on their own when a prompt with more images is turned away', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.images.set('img-a', { ok: true, bytes: pngBytes })
+    channel.images.set('img-b', { ok: true, bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]) })
+    const codex = await prompted(s, channel, '先跑一下测试')
+    channel.handlers?.onInbound(imageMessage(alice, ['img-a']))
+    await s.imagesSaved(1)
+    const kept = storedImages(s.imageDirectory)
+    expect(kept).toHaveLength(1)
+    channel.handlers?.onInbound(imageMessage(alice, ['img-b'], '照这张图改'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
+    await s.imagesRemoved(1)
+    expect(storedImages(s.imageDirectory)).toEqual(kept)
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+
+    channel.handlers?.onInbound(text(alice, '看看这张图'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    expect(channel.texts().at(-1)).toBe('收到，带着 1 张图片，Codex 开始处理。')
+    const input = (codex.requests('turn/start')[1].params as { input: Array<Record<string, unknown>> }).input
+    expect(input.map((entry) => entry.type)).toEqual(['text', 'localImage'])
+    expect(path.basename(String(input[1].path))).toBe(kept[0])
+  })
+
+  // M05：设置一时读不到文件夹、回「Codex 没能启动」时同样没收下这句，图一起退回。
+  it('turns away the images sent with a prompt when there is no folder to work in', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.images.set('img-a', { ok: true, bytes: pngBytes })
+    await s.store.updateSettings((settings) => { settings.workspaceDirectory = null })
+    channel.handlers?.onInbound(imageMessage(alice, ['img-a'], '照这张图改按钮颜色'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。'))
+    expect(channel.fetched).toEqual(['img-a'])
+    await s.imagesRemoved(1)
+    expect(storedImages(s.imageDirectory)).toEqual([])
+
+    await s.store.updateSettings((settings) => { settings.workspaceDirectory = s.workspace })
+    const codex = await prompted(s, channel, '把标题改大一点')
+    expect(channel.texts().at(-1)).toBe('收到，Codex 开始处理。')
+    expect((codex.requests('turn/start')[0].params as { input: unknown[] }).input).toHaveLength(1)
   })
 
   it('says why an image was not taken, once per reason', async () => {
