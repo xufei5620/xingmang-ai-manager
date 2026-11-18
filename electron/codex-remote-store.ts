@@ -22,6 +22,12 @@ const credentialLabel = '手机遥控凭据'
 const maxDisplayNameLength = 64
 const maxUserIdLength = 256
 const maxAccountLabelLength = 128
+const maxMessageIdLength = 128
+/**
+ * 每个渠道记下最近处理过的几条消息编号（YR-2）。重开星芒以后只有开启前 1 分钟以内发的还会放行，
+ * 要盖住的只是重开前那一两分钟里处理过的，100 条足够。
+ */
+export const maxRecentMessageIds = 100
 /** 电脑上最多加几个干活的文件夹（YF-19）：手机上回「文件夹 2」要好认，列出来一屏看得完。 */
 export const maxRemoteWorkspaces = 5
 
@@ -49,6 +55,12 @@ export interface CodexRemoteChannelSettings {
   /** 界面上认账号用的非机密字样（飞书 App ID、微信昵称）。 */
   accountLabel: string | null
   boundPeer: CodexRemoteBoundPeer | null
+  /**
+   * 绑定的人最近发来、已经处理过的消息编号（YR-2），按先后，最多 maxRecentMessageIds 条。重开星芒以后平台
+   * 可能把上次处理过的再送一遍（微信每次打开都从头拉），开启前 1 分钟以内发的还会放行，靠它认出来不再做一遍。
+   * 缺省 = 没记过。
+   */
+  recentMessageIds?: string[]
 }
 
 export interface CodexRemoteSettings {
@@ -99,6 +111,23 @@ function parseBoundPeer(value: unknown): CodexRemoteBoundPeer | null {
   return { userId, boundAt: value.boundAt, ...(displayName ? { displayName } : {}) }
 }
 
+/** 把这条消息编号记到最后（记过的挪到最后），只留最近 maxRecentMessageIds 条；编号太长的不记。 */
+export function appendRecentMessageId(list: readonly string[] | undefined, messageId: string): string[] {
+  const next = (list ?? []).filter((entry) => entry !== messageId)
+  if (boundedString(messageId, maxMessageIdLength)) next.push(messageId)
+  return next.slice(-maxRecentMessageIds)
+}
+
+function parseRecentMessageIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  let list: string[] = []
+  for (const entry of value) {
+    const messageId = boundedString(entry, maxMessageIdLength)
+    if (messageId) list = appendRecentMessageId(list, messageId)
+  }
+  return list
+}
+
 /** 读回来的设置当外来输入：认不出的字段丢掉，坏了就当没设过（同 I5 的口径）。 */
 export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
   const settings = emptyCodexRemoteSettings()
@@ -126,9 +155,11 @@ export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
   if (isRecord(value.channels)) {
     for (const [id, raw] of Object.entries(value.channels)) {
       if (!isRemoteChannelId(id) || !isRecord(raw)) continue
+      const recentMessageIds = parseRecentMessageIds(raw.recentMessageIds)
       settings.channels[id] = {
         accountLabel: boundedString(raw.accountLabel, maxAccountLabelLength),
         boundPeer: parseBoundPeer(raw.boundPeer),
+        ...(recentMessageIds.length > 0 ? { recentMessageIds } : {}),
       }
     }
   }

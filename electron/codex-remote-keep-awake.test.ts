@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { SleepBlocker } from './cli-keep-awake'
-import type { CodexRemoteSnapshot, RemoteChannelId, RemoteChannelState } from './codex-remote-channel'
+import type { CodexRemoteSnapshot, RemoteChannelId, RemoteChannelState, RemoteChannelStatus } from './codex-remote-channel'
 import { createCodexRemoteKeepAwake, resolveCodexRemoteKeepAwakeChannels } from './codex-remote-keep-awake'
 
-type ChannelState = [enabled: boolean, state: RemoteChannelState]
+type ChannelState = [enabled: boolean, state: RemoteChannelState, extra?: Omit<RemoteChannelStatus, 'state'>]
 
 function snapshot(revision: number, states: Partial<Record<RemoteChannelId, ChannelState>> = {}): CodexRemoteSnapshot {
   function channel(id: RemoteChannelId) {
-    const [enabled, state] = states[id] ?? [false, 'stopped']
-    return { channel: id, hasCredential: true, accountLabel: null, enabled, status: { state }, boundPeer: null, pairing: null }
+    const [enabled, state, extra] = states[id] ?? [false, 'stopped']
+    return { channel: id, hasCredential: true, accountLabel: null, enabled, status: { state, ...extra }, boundPeer: null, pairing: null }
   }
   return {
     revision,
@@ -51,6 +51,14 @@ describe('resolveCodexRemoteKeepAwakeChannels', () => {
     expect(resolveCodexRemoteKeepAwakeChannels(snapshot(1, { weixin: [false, 'error'] }))).toEqual([])
     expect(resolveCodexRemoteKeepAwakeChannels(snapshot(1, { feishu: [true, 'stopped'] }))).toEqual([])
   })
+
+  // YKS-12：飞书在别处连着（连接数超限）时长连接已经停了、不会自己再连，渠道却还开着；
+  // YF-10 默认不自动关以后，原来算它在听就让电脑几天都不睡。
+  it('leaves out channels that stopped on an error and will not retry by themselves', () => {
+    const limit = { message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit', halted: true } as const
+    expect(resolveCodexRemoteKeepAwakeChannels(snapshot(1, { feishu: [true, 'error', limit] }))).toEqual([])
+    expect(resolveCodexRemoteKeepAwakeChannels(snapshot(1, { feishu: [true, 'error', limit], weixin: [true, 'error', { message: '连不上微信，正在重试' }] }))).toEqual(['weixin'])
+  })
 })
 
 describe('createCodexRemoteKeepAwake', () => {
@@ -88,6 +96,20 @@ describe('createCodexRemoteKeepAwake', () => {
     keepAwake.observe(snapshot(3, { weixin: [true, 'connecting'] }))
     expect(keepAwake.holding()).toBe(true)
     expect(calls).toEqual(['start:prevent-app-suspension'])
+    keepAwake.dispose()
+  })
+
+  it('lets the computer sleep once the only channel stops for good on an error, and holds again when it reconnects', () => {
+    const { blocker, calls } = fakeBlocker()
+    let changes = 0
+    const keepAwake = createCodexRemoteKeepAwake({ blocker, onChange: () => { changes += 1 } })
+    keepAwake.observe(snapshot(1, { feishu: [true, 'connected'] }))
+    keepAwake.observe(snapshot(2, { feishu: [true, 'error', { problem: 'connection-limit', halted: true }] }))
+    expect(keepAwake.holding()).toBe(false)
+    keepAwake.observe(snapshot(3, { feishu: [true, 'connecting'] }))
+    expect(keepAwake.holding()).toBe(true)
+    expect(calls).toEqual(['start:prevent-app-suspension', 'stop:1', 'start:prevent-app-suspension'])
+    expect(changes).toBe(3)
     keepAwake.dispose()
   })
 

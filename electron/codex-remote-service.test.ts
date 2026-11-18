@@ -39,6 +39,7 @@ import {
   inspectCommandDisplay,
   isStaleInbound,
   isStaleOnlyByClock,
+  jumpsImageFetch,
   nextApprovalNumber,
   permissionsShowInFull,
   readFileChange,
@@ -223,14 +224,27 @@ class FakeApprovalCardChannel extends FakeChannel {
   }
 }
 
-/** 能取图的渠道（YF-14）：images 里放好每个句柄取回来什么，取过哪些记在 fetched。 */
+/** 一连就抛的渠道：模拟读凭据出错这类，连都没连起来、也不会自己再试。 */
+class FakeFailingChannel extends FakeChannel {
+  async start(handlers: RemoteChannelHandlers): Promise<void> {
+    this.handlers = handlers
+    throw new Error('keychain locked')
+  }
+}
+
+/**
+ * 能取图的渠道（YF-14）：images 里放好每个句柄取回来什么，取过哪些记在 fetched。gates 里设了的句柄等它好了
+ * 才取回来：模拟网不好时取图慢（YR-6）。
+ */
 class FakeImageChannel extends FakeChannel {
   readonly images = new Map<string, RemoteImageFetchResult>()
+  readonly gates = new Map<string, Promise<unknown>>()
   readonly fetched: string[] = []
 
   async fetchImage(ref: string, maxBytes: number): Promise<RemoteImageFetchResult> {
     this.fetched.push(ref)
     expect(maxBytes).toBe(10 * 1024 * 1024)
+    await this.gates.get(ref)
     return this.images.get(ref) ?? { ok: false, reason: 'failed' }
   }
 }
@@ -294,6 +308,8 @@ async function setup(options: {
   /** 渠道能取图（YF-14）；imageStore 缺省跟着它，设成 false 就是有渠道能取、底座没处存。 */
   images?: boolean
   imageStore?: boolean
+  /** 渠道一连就抛（FakeFailingChannel）。 */
+  startFails?: boolean
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -335,7 +351,9 @@ async function setup(options: {
   const service = new CodexRemoteService({
     store,
     createChannel: () => {
-      const channel = options.images
+      const channel = options.startFails
+        ? new FakeFailingChannel()
+        : options.images
         ? new FakeImageChannel()
         : options.approvalCards ? new FakeApprovalCardChannel() : options.progressCards ? new FakeCardChannel() : new FakeChannel()
       channels.push(channel)
@@ -390,6 +408,16 @@ async function prompted(s: Setup, channel: FakeChannel, body = '跑一下测试'
   channel.handlers?.onInbound(text(alice, body))
   await vi.waitFor(() => expect(s.codex[0]?.requests('turn/start').length ?? 0).toBeGreaterThan(0))
   return s.codex[0]
+}
+
+/** 手机上收到过几次「帮助」那段话。 */
+function helpReplies(channel: FakeChannel): number {
+  return channel.texts().filter((line) => line.startsWith('直接发消息就能让 Codex 干活。')).length
+}
+
+/** 等「状态」的回复发出去：同一个渠道的消息一条条处理，它前面那几条这时都处理完了。 */
+function statusReplied(channel: FakeChannel): Promise<void> {
+  return channel.sentUntil(() => channel.texts().some((line) => line.startsWith('工作文件夹：')))
 }
 
 function approvalsSent(channel: FakeChannel): RemoteApprovalRequest[] {
@@ -518,6 +546,25 @@ describe('codex-remote-service helpers', () => {
     expect(isStaleOnlyByClock(sentAt, startedAt, now, Number.NaN)).toBe(false)
     // A message that was never dropped needs no warning either.
     expect(isStaleOnlyByClock(now, startedAt, now, fiveMinutes)).toBe(false)
+  })
+
+  // YR-6：取图慢的时候，只有「停止」「同意 / 拒绝」（打字的、卡片按钮）不等图。
+  it('lets only stop and approval answers skip images still being fetched', () => {
+    expect(jumpsImageFetch(text(alice, '停止'), false)).toBe(true)
+    expect(jumpsImageFetch(text(alice, ' ／停止 '), false)).toBe(true)
+    expect(jumpsImageFetch(text(alice, '同意 2'), true)).toBe(true)
+    expect(jumpsImageFetch(text(alice, '拒绝'), true)).toBe(true)
+    expect(jumpsImageFetch(cardClick(alice, { approvalId: '1', nonce: generateApprovalNonce() }, 'accept'), false)).toBe(true)
+    expect(jumpsImageFetch({ kind: 'stop', peer: alice, direct: true, nonce: null }, false)).toBe(true)
+    // Nothing waiting for an answer: 「同意」 is words for Codex and has to take the images sent before it.
+    expect(jumpsImageFetch(text(alice, '同意 2'), false)).toBe(false)
+    for (const body of ['看看这张图', '状态', '帮助', '新对话', '重试', '文件夹', '文件夹 2', '关闭遥控', '000042']) {
+      expect(jumpsImageFetch(text(alice, body), true)).toBe(false)
+    }
+    // Words sent together with an image wait for that image, whatever they say.
+    expect(jumpsImageFetch(imageMessage(alice, ['img-a'], '停止'), true)).toBe(false)
+    expect(jumpsImageFetch(imageMessage(alice, ['img-a']), true)).toBe(false)
+    expect(jumpsImageFetch({ kind: 'unsupported', peer: alice, direct: true, messageId: 'voice-1' }, true)).toBe(false)
   })
 
   it('starts threads that ask the user before anything outside the safe list runs', () => {
@@ -831,6 +878,58 @@ describe('codex-remote-service enabling', () => {
     expect((await s.service.snapshot()).channels.feishu.status).toEqual({ state: 'connected' })
   })
 
+  // YR-2：卡片上点「重新连接」、关掉再开，平台把刚处理过的那条再送一遍（微信每次连上都从头拉），不再做一遍。
+  it('does not act on a message again when the platform sends it once more after reconnecting or switching off and on', async () => {
+    const s = await setup()
+    const first = await enabledAndPaired(s)
+    const help = text(alice, '帮助', { sentAt: Date.now() })
+    first.handlers?.onInbound(help)
+    await first.sentUntil(() => helpReplies(first) === 1)
+
+    await s.service.reconnectChannel('feishu')
+    const second = s.channels[1]
+    second.handlers?.onInbound(help)
+    second.handlers?.onInbound(text(alice, '状态', { sentAt: Date.now() }))
+    await statusReplied(second)
+    expect(helpReplies(second)).toBe(0)
+
+    await s.service.setChannelEnabled('feishu', false)
+    await s.service.setChannelEnabled('feishu', true)
+    const third = s.channels[2]
+    third.handlers?.onInbound(help)
+    third.handlers?.onInbound(text(alice, '状态', { sentAt: Date.now() }))
+    await statusReplied(third)
+    expect(helpReplies(third)).toBe(0)
+  })
+
+  it('does not act on a message again when the platform sends it once more after Xingmang restarts', async () => {
+    const root = tempRoot()
+    const before = await setup({ root })
+    const beforeChannel = await enabledAndPaired(before)
+    const help = text(alice, '帮助', { sentAt: Date.now(), messageId: 'wx-before-restart' })
+    beforeChannel.handlers?.onInbound(help)
+    await beforeChannel.sentUntil(() => helpReplies(beforeChannel) === 1)
+    expect((await before.store.readSettings()).channels.feishu?.recentMessageIds).toEqual(['wx-before-restart'])
+    before.service.dispose()
+
+    const after = await setup({ root })
+    await after.service.setChannelEnabled('feishu', true)
+    const channel = after.channels[0]
+    channel.handlers?.onInbound(help)
+    channel.handlers?.onInbound(text(alice, '状态', { sentAt: Date.now() }))
+    await statusReplied(channel)
+    expect(helpReplies(channel)).toBe(0)
+  })
+
+  it('still acts on a message when its id cannot be written down', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    vi.spyOn(s.store, 'updateSettings').mockRejectedValue(new Error('disk full'))
+    channel.handlers?.onInbound(text(alice, '帮助', { sentAt: Date.now() }))
+    await channel.sentUntil(() => helpReplies(channel) === 1)
+    expect(s.logs).toContain('remote.message-id-unsaved')
+  })
+
   it('does not open a channel that is switched off when asked to reconnect it', async () => {
     const s = await setup()
     const snapshot = await s.service.reconnectChannel('feishu')
@@ -1015,6 +1114,20 @@ describe('codex-remote-service pairing', () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(channel.sent).toHaveLength(1)
     expect(s.codex).toHaveLength(0)
+  })
+
+  // YR-10：输入法切在全角时发来的配对码照样能配上。
+  it('binds whoever sends the code in full-width digits', async () => {
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    const channel = s.channels[0]
+    await s.service.startPairing('feishu')
+    channel.handlers?.onInbound(text(alice, '０００ ０４２'))
+    await channel.sentUntil(() => channel.sent.length > 0)
+    expect(channel.sent[0].peer).toEqual(alice)
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu.boundPeer).toMatchObject({ userIdTail: '1234' })
+    expect(snapshot.channels.feishu.pairing).toBeNull()
   })
 
   it('locks pairing after too many wrong codes', async () => {
@@ -1962,6 +2075,102 @@ describe('codex-remote-service images', () => {
     ]))
     expect(channel.fetched).toEqual([])
   })
+
+  // YR-6：网不好时取一张图最长要等 30 秒，「停止」不该排在后面等。
+  it('stops the running turn at once while an image sent before 「停止」 is still being fetched', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    let release!: () => void
+    channel.images.set('slow', { ok: true, bytes: pngBytes })
+    channel.gates.set('slow', new Promise<void>((resolve) => { release = resolve }))
+    const codex = await prompted(s, channel)
+    channel.handlers?.onInbound(imageMessage(alice, ['slow']))
+    await vi.waitFor(() => expect(channel.fetched).toEqual(['slow']))
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('已停止。'))
+    expect(codex.requests('turn/interrupt')).toHaveLength(1)
+    // The image is still taken once it arrives, and waits for the next prompt as usual.
+    release()
+    await s.imagesSaved(1)
+    await channel.sentUntil(() => channel.texts().includes(receivedImage))
+    expect(channel.texts()).toEqual(['收到，Codex 开始处理。', '已停止。', receivedImage])
+  })
+
+  it('answers approvals at once, typed or tapped, while an image sent before them is still being fetched', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    let release!: () => void
+    channel.images.set('slow', { ok: true, bytes: pngBytes })
+    channel.gates.set('slow', new Promise<void>((resolve) => { release = resolve }))
+    const codex = await prompted(s, channel)
+    const first = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await approvalCardsSent(channel, 1)
+    channel.handlers?.onInbound(imageMessage(alice, ['slow']))
+    await vi.waitFor(() => expect(channel.fetched).toEqual(['slow']))
+    channel.handlers?.onInbound(text(alice, '同意 1'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('已同意第 1 条。'))
+    expect((await first).result).toEqual({ decision: 'accept' })
+
+    const second = codex.ask('item/fileChange/requestApproval', { threadId: 'th-1', turnId: 'tu-1', itemId: 'i2', startedAtMs: 0 })
+    await approvalCardsSent(channel, 2)
+    channel.handlers?.onInbound(cardClick(alice, approvalsSent(channel)[1], 'decline'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('已拒绝第 2 条。'))
+    expect((await second).result).toEqual({ decision: 'decline' })
+    expect(storedImages(s.imageDirectory)).toEqual([])
+    release()
+    await s.imagesSaved(1)
+    await channel.sentUntil(() => channel.texts().at(-1) === receivedImage)
+  })
+
+  it('keeps a prompt behind the images sent before it, and 「停止」 behind that prompt', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    let release!: () => void
+    channel.images.set('slow', { ok: true, bytes: pngBytes })
+    channel.gates.set('slow', new Promise<void>((resolve) => { release = resolve }))
+    channel.handlers?.onInbound(imageMessage(alice, ['slow']))
+    await vi.waitFor(() => expect(channel.fetched).toEqual(['slow']))
+    channel.handlers?.onInbound(text(alice, '看看这张'))
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // 「停止」 is meant for 「看看这张」: answering it now would say there is nothing to stop.
+    expect(channel.texts()).toEqual([])
+    release()
+    await s.imagesSaved(1)
+    await channel.sentUntil(() => channel.texts().includes('已停止。'))
+    expect(channel.texts()).toEqual([receivedImage, '收到，带着 1 张图片，Codex 开始处理。', '已停止。'])
+  })
+
+  it('puts an approval answer back in line when nothing is waiting for it by the time its turn comes', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    let releaseFirst!: () => void
+    let releaseSecond!: () => void
+    channel.images.set('first', { ok: true, bytes: pngBytes })
+    channel.images.set('second', { ok: true, bytes: pngBytes })
+    channel.gates.set('first', new Promise<void>((resolve) => { releaseFirst = resolve }))
+    channel.gates.set('second', new Promise<void>((resolve) => { releaseSecond = resolve }))
+    const codex = await prompted(s, channel)
+    void codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await approvalCardsSent(channel, 1)
+    // Words sent with an image are not skipped: 「同意 1」 waits for this one, but not for the bare image after it.
+    channel.handlers?.onInbound(imageMessage(alice, ['first'], '状态'))
+    channel.handlers?.onInbound(imageMessage(alice, ['second']))
+    channel.handlers?.onInbound(text(alice, '同意 1'))
+    await s.service.stopTurnFromComputer()
+    releaseFirst()
+    await s.imagesSaved(1)
+    await channel.sentUntil(() => channel.texts().at(-1)?.includes('现在：空闲') === true)
+    // The approval is gone, so 「同意 1」 is now words for Codex: they go out only with the second image too.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(codex.requests('turn/start')).toHaveLength(1)
+    releaseSecond()
+    await s.imagesSaved(2)
+    await channel.sentUntil(() => channel.texts().at(-1) === '收到，带着 2 张图片，Codex 开始处理。')
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    const input = (codex.requests('turn/start')[1].params as { input: Array<Record<string, unknown>> }).input
+    expect(input.map((entry) => entry.type)).toEqual(['text', 'localImage', 'localImage'])
+  })
 })
 
 // YF-19（yoyo 2026-11-11「文件夹改」）：电脑上加几个干活的文件夹，手机上发「文件夹」看、发「文件夹 2」换。
@@ -2595,11 +2804,63 @@ describe('codex-remote-service lifecycle', () => {
     expect(channel.stopped).toBe(1)
     expect(weixin.stopped).toBe(1)
     expect(codex.kills).toContain('SIGTERM')
-    expect(s.logs).toContain('remote.closed-from-phone')
+    expect(s.logDetails.find((entry) => entry.event === 'remote.closed-from-phone')?.detail).toEqual({ channel: 'feishu', autoStartCleared: false })
     // 关了以后再发什么都没人理，得回电脑上打开。
     channel.handlers?.onInbound(text(alice, '跑一下测试'))
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(channel.texts()).toHaveLength(1)
+  })
+
+  // YR-1：开了「打开星芒时自动打开遥控」（YF-9）的，手机上急停要管到下一次打开星芒，不然一重开就自己连回去。
+  it('also turns off switching on at launch, so reopening Xingmang does not connect again', async () => {
+    const root = tempRoot()
+    const first = await setup({ root })
+    const channel = await enabledAndPaired(first)
+    await first.service.setAutoStart(true)
+    first.snapshots.length = 0
+
+    channel.handlers?.onInbound(text(alice, '关闭遥控'))
+    // 先把关掉的开关原子写进盘才断渠道、发「已关闭」：直接等发送本身，不靠 vi.waitFor 的 1 秒（R16）。
+    await channel.sentUntil(() => channel.texts().length > 0)
+    expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
+    await vi.waitFor(() => expect(first.snapshots.at(-1)).toMatchObject({ channels: { feishu: { enabled: false } } }))
+    // 卡片上的开关跟着显示关着，客户回到电脑前一看就明白。
+    expect(first.snapshots.at(-1)).not.toHaveProperty('autoStart')
+    expect((await first.store.readSettings()).autoStart).toBeUndefined()
+    expect(first.logDetails.find((entry) => entry.event === 'remote.closed-from-phone')?.detail).toEqual({ channel: 'feishu', autoStartCleared: true })
+    first.service.dispose()
+
+    const reopened = await setup({ root })
+    await reopened.service.startOnLaunch()
+    expect(reopened.service.hasEnabledChannel()).toBe(false)
+    expect(reopened.channels).toHaveLength(0)
+    expect(reopened.logs).not.toContain('remote.auto-started')
+    expect((await reopened.service.snapshot()).autoStart).toBeUndefined()
+  })
+
+  it('still switches every channel off when turning off switching on at launch cannot be saved', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.service.setAutoStart(true)
+    // 只让清掉自动打开的那一次写失败，按写进去的内容认，不按第几次：处理这句之前还要先记下消息编号（YR-2），
+    // 那一次写照常成功。按次数数（mockRejectedValueOnce）会被那一次吃掉，测的就不是这件事了。
+    const realUpdateSettings = s.store.updateSettings.bind(s.store)
+    vi.spyOn(s.store, 'updateSettings').mockImplementation(async (mutate) => {
+      const probe = structuredClone(await s.store.readSettings())
+      mutate(probe)
+      if (!probe.autoStart) throw new Error('disk full')
+      return realUpdateSettings(mutate)
+    })
+
+    channel.handlers?.onInbound(text(alice, '关闭遥控'))
+    await channel.sentUntil(() => channel.texts().length > 0)
+    expect(s.service.hasEnabledChannel()).toBe(false)
+    await vi.waitFor(() => expect(channel.stopped).toBe(1))
+    expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
+    expect(s.logs).not.toContain('remote.message-id-unsaved')
+    expect((await s.store.readSettings()).autoStart).toBe(true)
+    expect(s.logs).toContain('remote.auto-start-unsaved')
+    expect(s.logDetails.find((entry) => entry.event === 'remote.closed-from-phone')?.detail).toEqual({ channel: 'feishu', autoStartCleared: false })
   })
 
   it('ignores the close command from anyone but the paired person, and from a group', async () => {
@@ -2960,6 +3221,21 @@ describe('codex-remote-service lifecycle', () => {
     expect(held).toBe(0)
   })
 
+  // YKS-12：渠道没连起来就停下了、不会自己再试，开关还开着（卡片上留着那句话和「重新连接」），可已经收不到手机上的消息，
+  // 不能再挡着电脑睡眠；YF-10 默认不自动关，原来这一挡就是几天。
+  it('marks a channel that failed to start as halted so the sleep blocker lets go', async () => {
+    const s = await setup({ startFails: true })
+    const keepAwake = createCodexRemoteKeepAwake({ blocker: { start: () => 1, stop: () => undefined } })
+    await s.service.setChannelEnabled('feishu', true)
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu).toMatchObject({ enabled: true, status: { state: 'error', halted: true } })
+    expect(s.logs).toContain('remote.channel-start-failed')
+    // Only what the service pushed to the listener: main.ts feeds the blocker from onStateChanged alone.
+    for (const each of s.snapshots) keepAwake.observe(each)
+    expect(s.snapshots.at(-1)?.channels.feishu.status.halted).toBe(true)
+    expect(keepAwake.holding()).toBe(false)
+  })
+
   // YF-5：微信扫码过了手机上那串数字，扫码的人直接绑上，不用配对码；原来绑着别人时先跟他说一声。
   it('binds the person who passed the number on the phone while scanning, telling whoever was bound before', async () => {
     const s = await setup()
@@ -2983,6 +3259,33 @@ describe('codex-remote-service lifecycle', () => {
     expect((await s.store.readSettings()).channels.weixin?.boundPeer?.userId).toBe('other@im.wechat')
     await s.service.saveChannelCredential('weixin', weixinCredential, 'ClawBot 2bot')
     expect((await s.store.readSettings()).channels.weixin?.boundPeer).toBeNull()
+  })
+
+  // YR-9：换了机器人重新扫码、过了数字的还是原来绑着的那个人：绑定照旧，手机上不先收一句「已经把你解绑了」。
+  // 换成别人扫，原来那个人照旧先收到那句。
+  it('keeps the binding quietly when the person bound before passes the number on a new bot', async () => {
+    const unboundText = '电脑上已经把你解绑了，之后发的消息不会再执行。'
+    const s = await setup()
+    function weixinCredential(botId: string): string {
+      return encodeWeixinCredential({ version: 1, token: `tok-${botId}`, botId, origin: 'https://ilinkai.weixin.qq.com', ownerUserId: 'owner@im.wechat' })
+    }
+    function unboundTexts(): string[] {
+      return s.channels.flatMap((channel) => channel.texts()).filter((line) => line === unboundText)
+    }
+    await s.service.saveChannelCredential('weixin', weixinCredential('b1@im.bot'), 'ClawBot 1bot', { verifiedPeerUserId: 'owner@im.wechat' })
+    await s.service.setChannelEnabled('weixin', true)
+    const boundAt = (await s.store.readSettings()).channels.weixin?.boundPeer?.boundAt
+
+    await s.service.saveChannelCredential('weixin', weixinCredential('b2@im.bot'), 'ClawBot 2bot', { verifiedPeerUserId: 'owner@im.wechat' })
+    expect(unboundTexts()).toEqual([])
+    expect((await s.store.readSettings()).channels.weixin?.boundPeer).toMatchObject({ userId: 'owner@im.wechat', boundAt })
+    expect((await s.service.snapshot()).channels.weixin.enabled).toBe(true)
+
+    await s.service.saveChannelCredential('weixin', weixinCredential('b3@im.bot'), 'ClawBot 3bot', { verifiedPeerUserId: 'other@im.wechat' })
+    expect(unboundTexts()).toEqual([unboundText])
+    expect(s.channels.flatMap((channel) => channel.sent).find((entry) => entry.message.kind === 'text' && entry.message.text === unboundText)?.peer.userId)
+      .toBe('owner@im.wechat')
+    expect((await s.store.readSettings()).channels.weixin?.boundPeer?.userId).toBe('other@im.wechat')
   })
 
   it('voids a pairing code that was waiting when the scan binds someone', async () => {
