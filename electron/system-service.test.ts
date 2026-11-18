@@ -2335,6 +2335,26 @@ describe('createSystemService', () => {
     expect(relayFetch).not.toHaveBeenCalled()
   })
 
+  it('resets an unreadable Codex config with the key the current account issued for it', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-broken-config-'))
+    temporaryDirectories.push(root)
+    const providerRoots = { userHome: root, codexHome: path.join(root, '.codex') }
+    saveProviderConfig('codex', 'sk-cached-fixture', 'fixture-model', 'reset', providerRoots, {}, providerBaseUrls)
+    const configPath = providerConfigPaths('codex', providerRoots)[0]
+    // 客户那份：路径里一个反斜杠被吃掉，"\." 是 TOML 不认的转义。
+    fs.writeFileSync(configPath, 'notify_dir = "C:\\\\Users\\\\fixture\\.codex"\n' + fs.readFileSync(configPath, 'utf8'))
+    const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
+    const service = createService({ providerRoots, getExternalClientAccountId: () => 'solov:7', relayFetch })
+    // ipc/handlers/config.ts 挂上的那一件：认的是当前账号签给这个工具、本机缓存着的那把。
+    const accountKeyMatches = vi.fn(async (provider: ProviderId, apiKey: string) => provider === 'codex' && apiKey === 'sk-cached-fixture')
+    service.bindToolRouteAccount?.({ backup: async () => undefined, ownedKeyIds: async () => new Set(), accountKeyMatches })
+
+    await service.saveConfig({ provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'reset' }, false)
+
+    expect(accountKeyMatches).toHaveBeenCalledWith('codex', 'sk-cached-fixture')
+    expect(inspectProviderConfig('codex', providerRoots, providerBaseUrls)).toMatchObject({ matchesRelay: true, apiKey: 'sk-cached-fixture' })
+  })
+
   // D-02: 从 relay-sites.ts 的站点表到 CLI 配置文件之间那一段此前无人验证。
   // saveProviderConfig 的 siteBaseUrlsInput 刻意不给默认值(config-files.ts
   // 的长注释),这四条就是那个设计约束的回归网:换账号站点后写进四个 CLI 的
