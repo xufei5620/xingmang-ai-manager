@@ -25,6 +25,9 @@ export const remoteMessages = {
   // 手机上发「关闭遥控」（Fable 手机遥控 YF-17，yoyo 2026-11-11「第三批改」）：开着的渠道都收到这一句。
   closedFromPhone: '手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。',
   quitting: '电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。',
+  // 开了「打开星芒时自动打开遥控」（YF-9）时退出说的这句（手机遥控深查 YR-8，yoyo 2026-11-18「这些都按照你的推荐」）：
+  // 再打开星芒就会自己连上，不用再去设置里开。
+  quittingAutoStart: '电脑上的星芒关了，遥控已停。星芒再打开时会自动连上。',
   quitAborted: '电脑上的星芒没关成，遥控还开着，可以接着用。',
   stalled: '这件事 1 小时没有任何进展，已经停下。可以重新说一遍要做什么。',
   codexUnavailable: '电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。',
@@ -88,9 +91,14 @@ export function retryMessage(text: string): string {
   return `再发一次上一条：「${characters.length > retryPreviewLength ? `${head}…` : head}」`
 }
 
-/** 闲着自动关时手机上收到的那句（YF-10）：时长跟着设置里选的走；选了「不自动关」时根本不会关，也就不发。 */
-export function idleClosedMessage(hours: number): string {
-  return `${hours} 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。`
+/**
+ * 闲着自动关时手机上收到的那句（YF-10）：时长跟着设置里选的走；选了「不自动关」时根本不会关，也就不发。
+ * 开了「打开星芒时自动打开遥控」（YF-9）的，星芒下次打开会自己连上，换一句说（YR-8，yoyo 2026-11-18「这些都按照你的推荐」）。
+ */
+export function idleClosedMessage(hours: number, autoStart = false): string {
+  return autoStart
+    ? `${hours} 小时没有新消息，手机遥控已自动关闭。星芒下次打开时会自动连上，现在要用请在电脑上重新打开。`
+    : `${hours} 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。`
 }
 
 /** 遥控开着时发的、到电脑时已超过 10 分钟的消息照旧不执行，只给绑定的人回这一句（D66 / YKS-9）。 */

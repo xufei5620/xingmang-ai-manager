@@ -5,7 +5,8 @@ import { newerRemoteSnapshot, remoteAnyEnabled } from './remote-view'
 
 /**
  * 外壳状态栏的「手机遥控中」：有渠道开着就亮，点了去设置里那张卡关掉。手机上能让这台电脑跑命令，
- * 开着时坐在电脑前的人要一眼看得到。读不到当没开：开关不落盘，开着的一定是这次在设置卡上打开的，卡上看得到。
+ * 开着时坐在电脑前的人要一眼看得到。读不到当没开：开着的要么是这次在设置卡或托盘上打开的，要么是开了
+ * 「打开星芒时自动打开遥控」、星芒一打开就替他连上的（YF-9），设置卡上都看得到。
  */
 export function useCodexRemoteActive(api: V2Bridge): boolean {
   const [snapshot, setSnapshot] = useState<CodexRemoteSnapshot | null>(null)
