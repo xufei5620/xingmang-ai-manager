@@ -113,12 +113,25 @@ function readAndValidatePackageLock() {
 // 时走到，树里没有调用方传它，3.x / 5.x 根本没有这段代码；规则全来自自家打包配置，
 // 客户装的那部分依赖（audit:production）不含 minimatch。到期后照常变红，那时回头
 // 看上游有没有换到 11。
+// GHSA-fc5q-39xc-vjpf：2026-11-18 北京时间 13:49，yoyo 回「同意 picomatch 例外到 12-15」。
+// 公告范围是 <=4.0.7，也就是 picomatch 发过的每一版，npm 上最新的就是 4.0.7；上游
+// 修复 micromatch/picomatch#194 还没合。vite 8.3.8、vitest 5.1.0、tinyglobby 0.2.17
+// 这些最新版仍要 ^4，没有能换掉它的版本。出事要「+(*)」这类单分支重复的 extglob
+// 规则，规则全来自自家 vite / vitest 配置，里面没有 extglob；vite 开发服务器只在
+// 开发机本地跑。客户装的那部分依赖（audit:production）不含 picomatch。到期后照常
+// 变红，那时回头看上游有没有发修好的版本。
 const temporaryAdvisoryExceptions = [{
   url: 'https://github.com/advisories/GHSA-g3hv-75wg-m249',
   packageName: 'minimatch',
   maxSeverity: 'moderate',
   // 北京时间 2026-11-30 当天结束。
   expiresAt: '2026-11-30T16:00:00.000Z',
+}, {
+  url: 'https://github.com/advisories/GHSA-fc5q-39xc-vjpf',
+  packageName: 'picomatch',
+  maxSeverity: 'high',
+  // 北京时间 2026-12-15 当天结束。
+  expiresAt: '2026-12-15T16:00:00.000Z',
 }]
 
 const severityRank = { info: 0, low: 1, moderate: 2, high: 3, critical: 4 }
@@ -144,22 +157,42 @@ function matchingException(source, exceptions) {
   ))
 }
 
+// Walks "depends on a vulnerable package" edges breadth-first, so dependency
+// cycles (app-builder-lib <-> dmg-builder) are fine. Callers have already
+// checked every string edge names a node in the report. Returns -1 when no
+// advisory object is reachable.
+function worstReachableAdvisorySeverity(vulnerabilities, start) {
+  let worst = -1
+  const seen = new Set([start])
+  const queue = [start]
+  while (queue.length) {
+    const name = queue.shift()
+    for (const source of vulnerabilities[name].via) {
+      if (typeof source !== 'string') {
+        worst = Math.max(worst, severityRank[source.severity])
+      } else if (!seen.has(source)) {
+        seen.add(source)
+        queue.push(source)
+      }
+    }
+  }
+  return worst
+}
+
 // Every affected package must trace back, through npm's "depends on a
 // vulnerable package" edges, to nothing but excepted advisories. Anything else
 // (a second advisory, a dangling edge, a node with no advisory under it, a
-// severity above the excepted ceiling, or counts that disagree with the nodes)
-// fails exactly as an unexcepted report would.
+// node more severe than the excepted advisories it reaches, or counts that
+// disagree with the nodes) fails exactly as an unexcepted report would.
 function exceptedAdvisoryCoverage(report, exceptions) {
   const vulnerabilities = report.vulnerabilities ?? {}
   const counts = report.metadata.vulnerabilities
   const usedExceptions = new Set()
-  const ceiling = Math.max(-1, ...exceptions.map((exception) => severityRank[exception.maxSeverity]))
   const expectedCounts = { info: 0, low: 0, moderate: 0, high: 0, critical: 0 }
 
   for (const [name, node] of Object.entries(vulnerabilities)) {
     if (!node || typeof node !== 'object' || !Array.isArray(node.via) || node.via.length === 0) return null
     if (!Object.prototype.hasOwnProperty.call(severityRank, node.severity)) return null
-    if (severityRank[node.severity] > ceiling) return null
     expectedCounts[node.severity] += 1
     for (const source of node.via) {
       if (typeof source === 'string') {
@@ -173,20 +206,13 @@ function exceptedAdvisoryCoverage(report, exceptions) {
     }
   }
 
-  const reachesAdvisory = new Map()
-  function reaches(name, visiting) {
-    if (reachesAdvisory.has(name)) return reachesAdvisory.get(name)
-    if (visiting.has(name)) return false
-    visiting.add(name)
-    const result = vulnerabilities[name].via.some((source) => (
-      typeof source === 'string' ? reaches(source, visiting) : true
-    ))
-    visiting.delete(name)
-    reachesAdvisory.set(name, result)
-    return result
-  }
-  for (const name of Object.keys(vulnerabilities)) {
-    if (!reaches(name, new Set())) return null
+  // Each node is capped by the worst excepted advisory it actually reaches, not
+  // by the highest ceiling on the list: otherwise a chain that only reaches the
+  // moderate minimatch advisory could report "high" because the picomatch
+  // exception allows high.
+  for (const [name, node] of Object.entries(vulnerabilities)) {
+    const worst = worstReachableAdvisorySeverity(vulnerabilities, name)
+    if (worst < 0 || severityRank[node.severity] > worst) return null
   }
 
   const total = Object.keys(vulnerabilities).length
