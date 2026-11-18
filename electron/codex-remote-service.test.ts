@@ -23,6 +23,7 @@ import { encodeWeixinCredential } from './codex-remote-weixin-credential'
 import { CodexRemoteStore, credentialRemoveFailedMessage } from './codex-remote-store'
 import type { SafeStorageLike } from './account-session-store'
 import {
+  autoStartRetryMs,
   belongsToOtherTurn,
   buildApprovalRequest,
   buildFileChangeSummary,
@@ -1127,18 +1128,114 @@ describe('codex-remote-service switching on when Xingmang opens', () => {
     expect(s.channels[0].sent[0].peer).toMatchObject({ userId: alice.userId })
   })
 
-  it('only logs when it cannot open, leaving the switch on for next time', async () => {
+  /** 上一次打开星芒时配对好、打开了自动打开，再「重开星芒」：返回新的这一份，还没调 startOnLaunch。 */
+  async function relaunchedWithAutoStart(options: Parameters<typeof setup>[0] = {}): Promise<Setup> {
     const root = tempRoot()
     const first = await setup({ root })
     await enabledAndPaired(first)
     await first.service.setAutoStart(true)
     first.service.dispose()
+    return setup({ ...options, root })
+  }
 
-    const s = await setup({ root, codexProblem: '这台电脑还没装 Codex 命令行工具，先在首页把它装好。' })
+  function autoStartLogs(s: Setup, event: string) {
+    return s.logDetails.filter((entry) => entry.event === event).map((entry) => entry.detail)
+  }
+
+  // YR-7：打不开时卡片上说原因（原句就是在设置里点开时那句），开关照旧开着等下次。
+  it('tells the card why it could not open, leaving the switch on for next time', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await relaunchedWithAutoStart({ codexProblem: '这台电脑还没装 Codex 命令行工具，先在首页把它装好。' })
     await s.service.startOnLaunch()
     expect(s.service.hasEnabledChannel()).toBe(false)
-    expect(s.logDetails.find((entry) => entry.event === 'remote.auto-started')?.detail).toEqual({ opened: 0, failed: true })
-    expect((await s.service.snapshot()).autoStart).toBe(true)
+    expect(autoStartLogs(s, 'remote.auto-started')).toEqual([{ opened: 0, failed: true }])
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.autoStart).toBe(true)
+    expect(snapshot.autoStartFailure).toBe('这台电脑还没装 Codex 命令行工具，先在首页把它装好。')
+    expect(s.snapshots.at(-1)?.autoStartFailure).toBe('这台电脑还没装 Codex 命令行工具，先在首页把它装好。')
+    s.service.dispose()
+  })
+
+  // YR-7：开机时移动硬盘上的文件夹还没挂上，过几分钟挂上了，自己再试一次就连上，那句原因收起。
+  it('tries once more a few minutes later and clears the reason when that works', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await relaunchedWithAutoStart()
+    fs.rmSync(s.workspace, { recursive: true, force: true })
+    await s.service.startOnLaunch()
+    expect((await s.service.snapshot()).autoStartFailure).toBe('这个文件夹不存在了，请重新选。')
+    expect(s.channels).toHaveLength(0)
+
+    fs.mkdirSync(s.workspace, { recursive: true })
+    await vi.advanceTimersByTimeAsync(autoStartRetryMs - 1_000)
+    expect(autoStartLogs(s, 'remote.auto-start-retried')).toEqual([])
+    await vi.advanceTimersByTimeAsync(1_000)
+    // 连上以后记日志是这次重试的最后一步。
+    await vi.waitFor(() => expect(autoStartLogs(s, 'remote.auto-start-retried')).toEqual([{ opened: 1, failed: false }]))
+    expect(s.service.hasEnabledChannel()).toBe(true)
+    expect(s.snapshots.at(-1)?.autoStartFailure).toBeUndefined()
+    expect((await s.service.snapshot()).autoStartFailure).toBeUndefined()
+    s.service.dispose()
+  })
+
+  it('tries only once more, keeping the newest reason when that fails too', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await relaunchedWithAutoStart()
+    fs.rmSync(s.workspace, { recursive: true, force: true })
+    await s.service.startOnLaunch()
+    // 文件夹挂上了，换成别的原因：卡片上说的是这次重试的原因。
+    fs.mkdirSync(s.workspace, { recursive: true })
+    s.unavailable.reason = '星芒正以管理员身份运行，手机遥控不能打开。'
+    await vi.advanceTimersByTimeAsync(autoStartRetryMs)
+    // 记下新原因、推给界面是这次重试的最后一步，等它而不是等日志（日志在它前面）。
+    await vi.waitFor(() => expect(s.snapshots.at(-1)?.autoStartFailure).toBe('星芒正以管理员身份运行，手机遥控不能打开。'))
+    expect(autoStartLogs(s, 'remote.auto-start-retried')).toEqual([{ opened: 0, failed: true }])
+    expect((await s.service.snapshot()).autoStartFailure).toBe('星芒正以管理员身份运行，手机遥控不能打开。')
+    s.unavailable.reason = null
+    await vi.advanceTimersByTimeAsync(10 * autoStartRetryMs)
+    expect(autoStartLogs(s, 'remote.auto-start-retried')).toHaveLength(1)
+    expect(s.service.hasEnabledChannel()).toBe(false)
+    s.service.dispose()
+  })
+
+  it('drops the reason and the retry once the remote is opened by hand', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await relaunchedWithAutoStart()
+    fs.rmSync(s.workspace, { recursive: true, force: true })
+    await s.service.startOnLaunch()
+    fs.mkdirSync(s.workspace, { recursive: true })
+    const opened = await s.service.setChannelEnabled('feishu', true)
+    expect(opened.autoStartFailure).toBeUndefined()
+    await s.service.setChannelEnabled('feishu', false)
+    await vi.advanceTimersByTimeAsync(autoStartRetryMs)
+    // 客户在电脑前自己开过又关了：不再替他连回去。
+    expect(autoStartLogs(s, 'remote.auto-start-retried')).toEqual([])
+    expect(s.channels).toHaveLength(1)
+    expect(s.service.hasEnabledChannel()).toBe(false)
+    s.service.dispose()
+  })
+
+  it('drops the reason and the retry when the launch switch is turned off or Xingmang quits', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const off = await relaunchedWithAutoStart()
+    fs.rmSync(off.workspace, { recursive: true, force: true })
+    await off.service.startOnLaunch()
+    fs.mkdirSync(off.workspace, { recursive: true })
+    expect((await off.service.setAutoStart(false)).autoStartFailure).toBeUndefined()
+    // 又打开也不翻出旧原因、不当场试：等下次打开星芒。
+    expect((await off.service.setAutoStart(true)).autoStartFailure).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(autoStartRetryMs)
+    expect(autoStartLogs(off, 'remote.auto-start-retried')).toEqual([])
+    expect(off.channels).toHaveLength(0)
+    off.service.dispose()
+
+    const quit = await relaunchedWithAutoStart()
+    fs.rmSync(quit.workspace, { recursive: true, force: true })
+    await quit.service.startOnLaunch()
+    fs.mkdirSync(quit.workspace, { recursive: true })
+    quit.service.dispose()
+    await vi.advanceTimersByTimeAsync(autoStartRetryMs)
+    expect(autoStartLogs(quit, 'remote.auto-start-retried')).toEqual([])
+    expect(quit.channels).toHaveLength(0)
   })
 })
 

@@ -259,7 +259,7 @@ describe('codex remote card', () => {
 
   // YF-9：「打开星芒时自动打开遥控」在卡片最后一行，默认关，说明把没人在电脑前也会连上说在前头。
   it('ends the card with the launch switch, off unless turned on, warning that it connects with nobody around', () => {
-    expect(codexRemoteAutoStartText).toEqual({
+    expect(codexRemoteAutoStartText).toMatchObject({
       title: '打开星芒时自动打开遥控',
       description: '开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。',
     })
@@ -271,6 +271,20 @@ describe('codex remote card', () => {
     expect(row).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*aria-checked="false"[^>]*aria-label="打开星芒时自动打开遥控"/)
     expect(render(snapshot({ autoStart: true }))).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*aria-checked="true"/)
     expect(render(snapshot({ available: false, unavailableReason: '星芒正以管理员身份运行。' }))).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*disabled=""/)
+    expect(off).not.toContain('settings-remote-auto-start-failed')
+  })
+
+  // YR-7：这次打开星芒没能自动打开时，自动打开那行说明下面一句黄字说原因，原因照抄在这里点开打不开时那句。
+  it('says under the launch switch why it could not open by itself this time', () => {
+    const reason = '这个文件夹不存在了，请重新选。'
+    expect(codexRemoteAutoStartText.failed(reason)).toBe('上次打开星芒时没能自动打开：这个文件夹不存在了，请重新选。')
+    const failed = render(snapshot({ autoStart: true, autoStartFailure: reason }))
+    const row = failed.slice(failed.indexOf('data-testid="settings-remote-auto-start"'), failed.indexOf('data-testid="settings-remote-idle-close"'))
+    expect(row).toContain(codexRemoteAutoStartText.description)
+    expect(row).toMatch(/<span class="v2-remote-auto-start-failed" data-testid="settings-remote-auto-start-failed">上次打开星芒时没能自动打开：这个文件夹不存在了，请重新选。<\/span>/)
+    expect(row.indexOf(codexRemoteAutoStartText.description)).toBeLessThan(row.indexOf('settings-remote-auto-start-failed'))
+    // 开关关着就不说：主进程关掉开关时也会清掉，这里再守一道。
+    expect(render(snapshot({ autoStartFailure: reason }))).not.toContain('settings-remote-auto-start-failed')
   })
 
   // YF-10：「多久没消息就自动关」三选一，缺省「不自动关」并写明还有哪几种办法关；选了时长不写小字。
