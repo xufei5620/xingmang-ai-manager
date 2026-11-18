@@ -67,7 +67,7 @@ xvfb-run -a node e2e/linux-deb-smoke.mjs /usr/bin/xingmang-ai-manager
 ## 3. CI
 
 - `quality.yml` 的 `linux-package`（进 quality-gate）：x64 在 `ubuntu-24.04`、arm64 在 `ubuntu-24.04-arm`，各自打包 → 两道产物校验 → apt 真装 → 打开 Ubuntu 24.04 的用户命名空间限制 → 普通用户真开一次（上面的冒烟）→ 再跑一遍 `packaged-hardening-smoke.mjs`（迁移只做一次、拒绝远程调试参数）→ 卸载并确认 `/opt`、`/usr/bin`、菜单文件、AppArmor 配置一样不留。typecheck 与 npm test 由 `linux-test` 跑，这里不重复。
-- `package-for-testing.yml` 选 `linux`：先在 x64 上跑一遍 typecheck 和 npm test，再两个架构各自出包、校验、真装真开，过了才上传。artifact 名字带 `NO-AUTO-UPDATE`，装上以后只能手动换新版。选 `both` 仍只出 Windows 和 macOS。
+- `package-for-testing.yml` 选 `linux`：先在 x64 上跑一遍 typecheck 和 npm test，再两个架构各自走和发版同一条 `release:package:linux` 出包、校验、真装真开，过了才上传。与 Windows 测试包一样只多一个 `XINGMANG_TESTING_BUILD=1`：自动更新开着、照样报崩溃，记在 Sentry 的 `testing` 下（2026-11-18 起；之前是本地构建模式，不报错也不更新）。artifact 名字带 `TESTING`，只有 deb、不带更新清单。Linux 还没对外发时更新源上没有 Linux 清单，装上以后开机那次检查更新查不到，首页不弹，更新页说「更新文件还没放好」。Linux 发过以后，没改版本号的分支会被发布前置检查拦下（和 Windows 那份一样，见 `docs/CI-PACKAGING.md` 第 3 节）。选 `both` 仍只出 Windows 和 macOS。
 - `publish-release.yml` 的 Linux 那半见第 4 节。
 
 ## 4. 发版

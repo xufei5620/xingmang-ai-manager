@@ -119,6 +119,23 @@ test('the Windows test package files its crash reports as testing, not as the re
   assert.equal(buildStep.env.XINGMANG_TESTING_BUILD, '1')
 })
 
+test('the Linux test package goes through the release gate and files its crash reports as testing (R4)', () => {
+  // 本地构建模式（build:linux:ci）的包既不报崩溃也不收更新，交给别人试的时候出了错
+  // 什么都回不来（2026-11-18 yoyo「要报错」）。改走 publish-release 的 linux-build
+  // 同一条 release:package:linux，与 Windows 那份一样只多 XINGMANG_TESTING_BUILD=1。
+  const buildSteps = linuxJob.steps.filter((step) => /release:package:linux|build:linux/.test(String(step.run || '')))
+  assert.equal(buildSteps.length, 1)
+  assert.equal(String(buildSteps[0].run).trim(), 'npm run release:package:linux -- --arch "$PACKAGE_ARCH"')
+  assert.equal(buildSteps[0].env.XINGMANG_TESTING_BUILD, '1')
+  // 那条门禁会丢掉一串继承来的变量（scripts/run-linux-release-package.cjs），但不丢
+  // 这个标记；工作流这一层也不能再塞进让它变成别的包的变量。
+  assert.equal(linuxJob.env.XINGMANG_LOCAL_BUILD, undefined)
+  assert.equal(buildSteps[0].env.XINGMANG_LOCAL_BUILD, undefined)
+  // 只交 deb：更新清单是更新源上的东西，测试包这里没有发布动作。
+  const upload = linuxJob.steps.find((step) => String(step.uses || '').startsWith('actions/upload-artifact@'))
+  assert.equal(upload.with.path, 'release-${{ steps.metadata.outputs.version }}/*.deb')
+})
+
 test('the macOS artifact says in its own name that it cannot be shipped', () => {
   // 下载列表里只看得到名字，而 macOS 包的签名身份是一次性的：发出去既不能自动
   // 更新也无法追溯。Windows 包无签名是产品决定，名字里不必自曝。
@@ -126,9 +143,9 @@ test('the macOS artifact says in its own name that it cannot be shipped', () => 
   assert.equal(uploads.length, 3)
   const names = uploads.map((step) => step.with.name)
   assert.ok(names.some((name) => name.includes('DO-NOT-PUBLISH')), names.join('、'))
-  // Linux 包是本地构建模式，自动更新关着；装上去的人得从名字上就知道这一点。
+  // Linux 包的报错记在 testing 下，不是发给客户的那份；下载列表里只看得到名字。
   assert.equal(names.filter((name) => name.startsWith('linux-')).length, 1)
-  assert.ok(names.some((name) => name.startsWith('linux-') && name.includes('NO-AUTO-UPDATE')), names.join('、'))
+  assert.ok(names.some((name) => name.startsWith('linux-') && name.includes('TESTING')), names.join('、'))
   for (const step of uploads) {
     assert.equal(step.with['if-no-files-found'], 'error', '出包作业不能以「没有产物」的形式悄悄成功')
   }
@@ -161,16 +178,16 @@ test('the Linux packages are checked once, then built, installed and launched on
   const commands = linuxJob.steps.map((step) => String(step.run || '').trim())
   const index = (pattern) => commands.findIndex((command) => pattern.test(command))
   const order = [
-    index(/^npm run build:linux:ci$/),
-    index(/^node scripts\/verify-packaged-hardening\.cjs "\$UNPACKED_DIRECTORY"$/),
-    index(/^node scripts\/verify-linux-deb\.cjs release --arch "\$PACKAGE_ARCH"$/),
+    // 加固校验和 deb、更新清单校验都在 release:package:linux 里，和 publish-release 的
+    // linux-build 是同一条门禁。
+    index(/^npm run release:package:linux -- --arch "\$PACKAGE_ARCH"$/),
     index(/apt-get install -y --no-install-recommends xvfb "\$deb"/),
     index(/^xvfb-run -a node e2e\/linux-deb-smoke\.mjs \/usr\/bin\/xingmang-ai-manager$/),
     linuxJob.steps.findIndex((step) => String(step.uses || '').includes('upload-artifact')),
   ]
   assert.ok(order.every((entry) => entry !== -1), JSON.stringify(order))
   assert.deepEqual([...order].sort((a, b) => a - b), order, '上传之前必须先校验、真装、真开')
-  for (const step of linuxJob.steps.filter((entry) => /apt-get|xvfb-run|build:linux/.test(String(entry.run || '')))) {
+  for (const step of linuxJob.steps.filter((entry) => /apt-get|xvfb-run|release:package:linux/.test(String(entry.run || '')))) {
     assert.ok(step['timeout-minutes'] > 0, `${step.name || step.run} 需要自己的步骤上限`)
   }
   assert.doesNotMatch(JSON.stringify(linuxJob), /no-sandbox|disable-setuid-sandbox|ELECTRON_DISABLE_SANDBOX/)
