@@ -117,7 +117,18 @@ export function localPathPresentSync(targetPath: string): boolean {
     fs.lstatSync(targetPath)
     return true
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== 'ENOENT'
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return true
+  }
+  // Windows answers ENOENT, not ENOTDIR, for a path under a file. Only call the path absent
+  // when the nearest ancestor that exists is a directory; links are followed here so a home
+  // folder moved off C: by a junction still counts as a directory.
+  for (let current = path.dirname(targetPath); ; current = path.dirname(current)) {
+    try {
+      return !fs.statSync(current).isDirectory()
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return true
+    }
+    if (path.dirname(current) === current) return false
   }
 }
 

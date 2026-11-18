@@ -453,8 +453,9 @@ describe('WorkBuddy domestic and overseas editions (2026-11-18)', () => {
   }
 
   it('keeps writing only the domestic folder when no edition is named, as before', () => {
-    expect(externalToolConfigPath('workbuddy', platform, { userHome: '/home/test' })).toBe(path.join('/home/test', '.workbuddy', 'models.json'))
-    expect(externalToolConfigPath('workbuddy', platform, { userHome: '/home/test', workBuddyEditions: ['overseas'] })).toBe(path.join('/home/test', '.workbuddy-ai', 'models.json'))
+    expect(externalToolConfigPath('workbuddy', 'linux', { userHome: '/home/test' })).toBe('/home/test/.workbuddy/models.json')
+    expect(externalToolConfigPath('workbuddy', 'linux', { userHome: '/home/test', workBuddyEditions: ['overseas'] })).toBe('/home/test/.workbuddy-ai/models.json')
+    expect(externalToolConfigPath('workbuddy', 'win32', { userHome: 'C:\\Users\\test', workBuddyEditions: ['overseas'] })).toBe('C:\\Users\\test\\.workbuddy-ai\\models.json')
   })
 
   it('writes each installed edition its own models.json, domestic first, each with its own backup', async () => {
