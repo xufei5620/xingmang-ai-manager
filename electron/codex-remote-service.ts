@@ -1557,16 +1557,19 @@ export class CodexRemoteService {
    * 星芒要退出了（主窗口的 prepareToQuit，排在 dispose 前面）：开着遥控、绑着人的渠道各发一句「星芒关了」，
    * 最多等 1.5 秒（打磨 B8）。dispose 在 will-quit 里同步调、来不及等网络，所以道别只能放在这一步；发不出去就算了，
    * 退出不等它。Windows 关机那条路不经过这里，关机不为一条消息推迟。
+   * 开了「打开星芒时自动打开遥控」的换一句「星芒再打开时会自动连上」（YR-8）；读盘也算在这 1.5 秒里。
    */
   async farewell(): Promise<void> {
     if (this.disposed) return
-    const sends = remoteChannelIds.map((id) => this.runtimes[id]).filter((runtime) => runtime.enabled && runtime.adapter).map(async (runtime) => {
+    const runtimes = remoteChannelIds.map((id) => this.runtimes[id]).filter((runtime) => runtime.enabled && runtime.adapter)
+    if (!runtimes.length) return
+    const goodbye = this.autoStartOnDisk().then((autoStart) => autoStart ? remoteMessages.quittingAutoStart : remoteMessages.quitting)
+    const sends = runtimes.map(async (runtime) => {
       const peer = runtime.peer ?? (await this.boundPeer(runtime.id))
       if (!peer) return
-      await this.sendText(runtime, remoteMessages.quitting, peer)
+      await this.sendText(runtime, await goodbye, peer)
       this.farewellSaid.add(runtime.id)
     })
-    if (!sends.length) return
     await Promise.race([Promise.all(sends), new Promise((resolve) => setTimeout(resolve, farewellTimeoutMs).unref?.())])
   }
 
@@ -1739,7 +1742,11 @@ export class CodexRemoteService {
     }
   }
 
-  private async disableChannel(runtime: ChannelRuntime, farewell: string | null): Promise<void> {
+  /**
+   * farewell 可以是还在读的一句（闲着自动关那句要看盘上开没开自动打开，YR-8）：渠道照样当场关、不等它，
+   * 读出来再发，也算在发送那 1.5 秒里。传进来的不许是会失败的 Promise。
+   */
+  private async disableChannel(runtime: ChannelRuntime, farewell: string | Promise<string> | null): Promise<void> {
     const wasEnabled = runtime.enabled
     runtime.enabled = false
     this.clearPairing(runtime)
@@ -1750,7 +1757,7 @@ export class CodexRemoteService {
     if (wasEnabled && farewell && runtime.adapter) {
       const peer = runtime.peer ?? (await this.boundPeer(runtime.id))
       if (peer) {
-        const sent = this.sendText(runtime, farewell, peer)
+        const sent = Promise.resolve(farewell).then((text) => this.sendText(runtime, text, peer))
         await Promise.race([sent, new Promise((resolve) => setTimeout(resolve, shutdownSendTimeoutMs).unref?.())])
       }
     }
@@ -2011,7 +2018,20 @@ export class CodexRemoteService {
     const hours = this.idleCloseHours
     if (hours === null) return
     this.options.log('info', 'remote.idle-closed', { channel: runtime.id, hours })
-    void this.disableChannel(runtime, idleClosedMessage(hours)).then(() => this.emit()).catch(() => undefined)
+    const farewell = this.autoStartOnDisk().then((autoStart) => idleClosedMessage(hours, autoStart))
+    void this.disableChannel(runtime, farewell).then(() => this.emit()).catch(() => undefined)
+  }
+
+  /**
+   * 盘上「打开星芒时自动打开遥控」开没开（YF-9），只用来挑手机上那句话（YR-8）。读的是盘不是内存：手机上「关闭遥控」
+   * 会直接改盘（YR-1），下次打开连不连看的也是盘。读不出来当没开，退回「要在电脑上打开」那句，不许诺会自己连上。
+   */
+  private async autoStartOnDisk(): Promise<boolean> {
+    try {
+      return (await this.options.store.readSettings()).autoStart === true
+    } catch {
+      return false
+    }
   }
 
   private async refreshSecrets(force = false): Promise<void> {
