@@ -21,10 +21,6 @@ jobs:
             url: https://download.codebuddy.ai/workbuddy/saas/win32-x64-user/WorkBuddy-win32-x64-user-5.9.4.42593613-fa0a0901.exe
             sha256: 6ff4be433d664ad14c88210b5b82ebb3674d7047aab8ae52459006c587be2ee0
             file: setup.exe
-          - edition: mac-global
-            url: https://codebuddy-1328495429.cos.accelerate.myqcloud.com/workbuddy/saas/darwin-arm64/WorkBuddy-darwin-arm64-5.11.4.44121853-0026dff0.dmg
-            sha256: 804a6e445ee8f957d0ff675bee1923c54de18ea4f121fb3eef2cb41fe0ece2df
-            file: setup.dmg
     steps:
       - name: Tools
         run: |
@@ -82,14 +78,12 @@ jobs:
             asar=$(find "$app" -name app.asar | head -1)
             [ -n "$asar" ] && echo "ASAR=$asar" >> "$GITHUB_ENV"
           fi
-      - name: App source strings
+      - name: Data folder name
         if: env.ASAR != ''
         timeout-minutes: 5
         run: |
-          echo "== $ASAR"; ls -l "$ASAR"
-          echo '== around .workbuddy-ai'
-          LC_ALL=C grep -a -o -E '.{0,160}\.workbuddy-ai.{0,160}' "$ASAR" | cut -c1-330 | head -n 12 || true
-          echo '== around com.tencent.workbuddy.mac'
-          LC_ALL=C grep -a -o -E '.{0,160}com\.tencent\.workbuddy\.mac.{0,160}' "$ASAR" | cut -c1-330 | head -n 6 || true
-          echo '== around models.json'
-          LC_ALL=C grep -a -o -E '.{0,120}[^a-zA-Z]models\.json.{0,80}' "$ASAR" | cut -c1-210 | head -n 25 || true
+          echo '== dataFolderName anywhere under the app'
+          LC_ALL=C grep -r -a -o -E 'dataFolderName.{0,60}' app | cut -c1-200 | sort | uniq -c | sort -nr | head -n 20 || true
+          echo '== product json files'
+          find app/resources -maxdepth 2 -name '*.json' -size -200k -printf '%s %p\n' | head -n 20
+          for f in $(find app/resources -maxdepth 2 -name 'product*.json' -size -200k | head -3); do echo "== $f"; LC_ALL=C grep -o -E '"(dataFolderName|nameShort|nameLong|applicationName|win32AppUserModelId|darwinBundleIdentifier|urlProtocol)"\s*:\s*"[^"]{0,60}"' "$f" | head -n 12; done
