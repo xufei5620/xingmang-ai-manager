@@ -1766,11 +1766,12 @@ describe('codex-remote-service turns', () => {
       channel.gate = new Promise((resolve) => { release = resolve })
       channel.handlers?.onStatus({ state: 'connecting' })
       channel.handlers?.onStatus({ state: 'connected' })
-      // 连上了那次补发卡在发的半路。之后头一个读设置的是手机来的「重试」：它读完一路走到补发那里停下等，
-      // 这时才放行，补发确实是在它等着的时候才发完。
-      const readSettings = s.store.readSettings.bind(s.store)
-      vi.spyOn(s.store, 'readSettings').mockImplementationOnce(async () => {
-        const settings = await readSettings()
+      // 连上了那次补发卡在发的半路。之后头一个写设置的是手机来的「重试」记下消息编号（YR-2），那是它补发以前最后
+      // 一次等：写完它一路走到补发那里停下等，这时才放行，补发确实是在它等着的时候才发完。放早了它会看不到在补发，
+      // 这条用例只会红、不会假绿。
+      const updateSettings = s.store.updateSettings.bind(s.store)
+      vi.spyOn(s.store, 'updateSettings').mockImplementationOnce(async (mutate) => {
+        const settings = await updateSettings(mutate)
         setTimeout(() => {
           channel.gate = null
           release()
