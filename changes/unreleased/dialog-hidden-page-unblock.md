@@ -1,3 +1,0 @@
-## 开发
-
-- 0.2.24 深查 NT-0：去过的页面藏在 `hidden`（业务页还有 `inert`）外层下面不卸载，页面里开着的 `<dialog>` 跟着看不见，却还是模态框，整个文档点不动，只能按 Esc 或重开。`ui/modal.tsx` 的 Dialog 开着时用 MutationObserver 看祖先的 `hidden` / `inert`：被藏住就原生 `close()` 让出顶层（React 的 open 和框里的内容不动），露出来再 `showModal()`，焦点回到藏之前框里那个元素；页面在后台打开的框等页面露出来再开。只重开它自己让出去的框，浏览器自己关掉的不碰；藏着时被关掉的框不再把焦点拽回原按钮。补了组件级（`ui/browser-check.mjs`）和整页（`testing/app-check.mjs`，托盘/通知换页）两条浏览器回归。

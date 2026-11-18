@@ -1,7 +1,0 @@
-## 开发
-
-- `shell.css` 给整张账号卡（`.v2-account-entry`）加 `-webkit-app-region: no-drag`。#1508 把 Electron 43 升到 45 后，
-  Chromium 152 起 `app-region` 会传给子元素：卡右下角铺满整张卡的 `.v2-account-mark` 和余额失败那一行排在按钮后面，
-  跟着侧栏变成拖动区、盖回按钮上，鼠标点下去全成了拖窗口（Electron 45.1.0 真鼠标复现，43.8.3 不出现）。
-  Playwright 的点击走 CDP、不经过系统的拖动区判断，所以原有用例照样能点进去；`app-check.mjs` 新加一条按拖动区叠加顺序
-  核对「侧栏和顶栏里没有排在后面的拖动区盖住按钮」，CI 上的 Chromium 151 不传，也照 152 的规矩自己往上找。
