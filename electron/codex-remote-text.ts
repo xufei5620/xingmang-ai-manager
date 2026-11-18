@@ -425,9 +425,14 @@ export function parseRemoteCommand(text: string, hasPendingApprovals: boolean): 
   return { kind: 'prompt', text: trimmed }
 }
 
-/** 配对码只认整条消息就是这 6 位数字（中间、两边的空格不算）。 */
+/**
+ * 配对码只认整条消息就是这 6 位数字（中间、两边的空格不算）。手机输入法切在全角时发来的是「１２３４５６」，
+ * JS 的 \d 只认半角，不先换过来就什么反应都没有，客户会以为坏了（YR-10）。只换全角数字，别的写法照旧不认。
+ */
 export function normalizePairingAttempt(text: string): string | null {
-  const compact = text.replace(/\s+/g, '')
+  const compact = text
+    .replace(/\s+/g, '')
+    .replace(/[０-９]/g, (digit) => String.fromCharCode(digit.charCodeAt(0) - 0xfee0))
   return /^\d{6}$/.test(compact) ? compact : null
 }
 
