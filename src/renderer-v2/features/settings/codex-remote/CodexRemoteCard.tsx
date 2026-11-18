@@ -65,10 +65,12 @@ export const codexRemoteWorkspaceText = {
 /**
  * 「打开星芒时自动打开遥控」那一行（YF-9，yoyo 2026-11-11 亲手打字「遥控自动开，做」）。默认关；说明把风险说在前头：
  * 开机自启的星芒没人在电脑前也会连上。
+ * 这次打开星芒没能自动打开时，说明下面多一句黄字说原因（YR-7，yoyo 2026-11-18 批），原因是在这里点开打不开时那句原话。
  */
 export const codexRemoteAutoStartText = {
   title: '打开星芒时自动打开遥控',
   description: '开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。',
+  failed: (reason: string) => `上次打开星芒时没能自动打开：${reason}`,
 } as const
 
 /**
@@ -421,7 +423,17 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
       ))}
       <SettingRow
         title={codexRemoteAutoStartText.title}
-        description={codexRemoteAutoStartText.description}
+        description={
+          snapshot.autoStart && snapshot.autoStartFailure
+            ? (
+                <>
+                  {codexRemoteAutoStartText.description}
+                  <br />
+                  <span className="v2-remote-auto-start-failed" data-testid="settings-remote-auto-start-failed">{codexRemoteAutoStartText.failed(snapshot.autoStartFailure)}</span>
+                </>
+              )
+            : codexRemoteAutoStartText.description
+        }
         control={
           <Switch
             checked={snapshot.autoStart === true}
