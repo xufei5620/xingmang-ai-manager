@@ -257,18 +257,18 @@ function clampInterval(seconds: number | null, fallbackMs: number, minimumMs: nu
   return Math.max(minimumMs, Math.min(seconds * 1000, 10 * 60_000))
 }
 
-export function parseFeishuEndpointResponse(status: number, payload: unknown): FeishuEndpointResult {
-  if (!isRecord(payload)) return status === 401 || status === 403 ? { kind: 'auth-failed' } : { kind: 'retry' }
+/**
+ * 长连接接口的应答分三种去向。只有飞书明说应用被拒（auth_failed、forbidden）才停下遥控、让客户回电脑上重新填；
+ * 原来别的不认识的 code、不是 JSON 的 401 / 403（公司网关的拦截页）也算填错，遥控整个停掉，卡片叫客户去改
+ * 飞书应用（W-6，跟换访问凭证那边的 YR-4 同一类）。现在这些都按连不上处理，按退避等一会儿再连，飞书恢复了
+ * 遥控自己接上；退避有上限，不会把飞书打满。
+ */
+export function parseFeishuEndpointResponse(payload: unknown): FeishuEndpointResult {
+  if (!isRecord(payload)) return { kind: 'retry' }
   const code = numberField(payload.code)
   if (code === endpointCodes.authFailed || code === endpointCodes.forbidden) return { kind: 'auth-failed' }
   if (code === endpointCodes.connectionLimit) return { kind: 'connection-limit' }
-  if (code !== endpointCodes.ok) {
-    // system_busy、internal_error 以外的 code 多半也是应用配置问题，但不确定时按能重试处理，
-    // 重试有退避上限，不会把飞书打满。
-    return code === endpointCodes.systemBusy || code === endpointCodes.internalError || code === null
-      ? { kind: 'retry' }
-      : { kind: 'auth-failed' }
-  }
+  if (code !== endpointCodes.ok) return { kind: 'retry' }
   const data = isRecord(payload.data) ? payload.data : {}
   const socket = resolveFeishuSocketUrl(data.URL)
   if (!socket) return { kind: 'retry' }
@@ -971,7 +971,13 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
         signal: controller.signal,
       })
       this.noteServerTime(response.serverTime)
-      result = parseFeishuEndpointResponse(response.status, response.payload)
+      result = parseFeishuEndpointResponse(response.payload)
+      if (result.kind === 'retry') {
+        // 飞书回了话却没给连接地址（忙、内部出错、不认识的 code、网关拦截页）：记下状态和 code，好对上飞书实际回了什么
+        // （W-6）；应答原文不记。
+        const code = isRecord(response.payload) ? numberField(response.payload.code) : null
+        this.deps.log('warn', 'feishu.endpoint-retry', { status: response.status, code })
+      }
     } catch (error) {
       if (generation !== this.generation) return
       this.deps.log('warn', 'feishu.endpoint-failed', {

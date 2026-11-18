@@ -276,14 +276,24 @@ describe('codex-remote-feishu endpoint', () => {
   })
 
   it('classifies endpoint answers', () => {
-    expect(parseFeishuEndpointResponse(200, { code: 514 })).toEqual({ kind: 'auth-failed' })
-    expect(parseFeishuEndpointResponse(200, { code: 403 })).toEqual({ kind: 'auth-failed' })
-    expect(parseFeishuEndpointResponse(200, { code: 1000040350 })).toEqual({ kind: 'connection-limit' })
-    expect(parseFeishuEndpointResponse(200, { code: 1 })).toEqual({ kind: 'retry' })
-    expect(parseFeishuEndpointResponse(502, null)).toEqual({ kind: 'retry' })
-    expect(parseFeishuEndpointResponse(200, { code: 0, data: { URL: 'wss://elsewhere.example/ws?service_id=1' } })).toEqual({ kind: 'retry' })
-    expect(parseFeishuEndpointResponse(200, { code: 0, data: { URL: socketUrl, ClientConfig: { PingInterval: 1 } } }))
+    expect(parseFeishuEndpointResponse({ code: 514 })).toEqual({ kind: 'auth-failed' })
+    expect(parseFeishuEndpointResponse({ code: 403 })).toEqual({ kind: 'auth-failed' })
+    expect(parseFeishuEndpointResponse({ code: 1000040350 })).toEqual({ kind: 'connection-limit' })
+    expect(parseFeishuEndpointResponse({ code: 1 })).toEqual({ kind: 'retry' })
+    expect(parseFeishuEndpointResponse({ code: 1000040343 })).toEqual({ kind: 'retry' })
+    expect(parseFeishuEndpointResponse(null)).toEqual({ kind: 'retry' })
+    expect(parseFeishuEndpointResponse({ code: 0, data: { URL: 'wss://elsewhere.example/ws?service_id=1' } })).toEqual({ kind: 'retry' })
+    expect(parseFeishuEndpointResponse({ code: 0, data: { URL: socketUrl, ClientConfig: { PingInterval: 1 } } }))
       .toMatchObject({ kind: 'ok', serviceId: 321, pingIntervalMs: 10_000 })
+  })
+
+  // W-6：只有飞书明说应用被拒（514、403）才停遥控；不认识的 code、网关回的不是 JSON 的页面都等一会儿再连。
+  it('retries instead of blaming the credential for codes it does not know', () => {
+    for (const code of [99991400, 1500, 10500, 10015, 2, 404, -1]) {
+      expect(parseFeishuEndpointResponse({ code, msg: 'whatever' })).toEqual({ kind: 'retry' })
+    }
+    expect(parseFeishuEndpointResponse({ msg: 'no code at all' })).toEqual({ kind: 'retry' })
+    expect(parseFeishuEndpointResponse('<html>403 Forbidden</html>')).toEqual({ kind: 'retry' })
   })
 })
 
@@ -550,6 +560,43 @@ describe('codex-remote-feishu channel', () => {
     await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
     await vi.waitFor(() => expect(h.statuses.at(-1)?.state).toBe('needs-login'))
     expect(h.statuses.at(-1)).toEqual({ state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' })
+  })
+
+  // W-6：原来不认识的 code 和公司网关的 401 / 403 拦截页都当成 App ID 或 Secret 不对，遥控停掉、叫客户去改飞书应用。
+  it('keeps reconnecting when the endpoint answers an unknown code or a gateway page', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const answers = [
+      () => json({ code: 99991400, msg: 'request trigger frequency limit' }),
+      () => new Response('<html>403 Forbidden</html>', { status: 403, headers: { 'Content-Type': 'text/html' } }),
+      () => new Response('<html>401 Unauthorized</html>', { status: 401, headers: { 'Content-Type': 'text/html' } }),
+    ]
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      const next = url.endsWith('/callback/ws/endpoint') ? answers.shift() : undefined
+      return next ? next() : defaultRespond(url)
+    })
+    const channel = createFeishuRemoteChannel(h.deps, {
+      createSocket: (url) => {
+        const socket = new FakeSocket(url)
+        h.sockets.push(socket)
+        return socket
+      },
+      random: () => 0,
+    })
+    await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
+    // 每次飞书回完话、退避的那个等待排上了，才把时钟拨过这一段（2、4、8 秒）。
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await vi.waitFor(() => expect(h.logs.filter((event) => event === 'feishu.endpoint-retry')).toHaveLength(attempt + 1))
+      expect(h.sockets).toHaveLength(0)
+      expect(h.statuses.at(-1)).toEqual({ state: 'connecting', message: '连不上飞书，正在重试。' })
+      await vi.advanceTimersByTimeAsync(2_000 * 2 ** attempt)
+    }
+    await vi.waitFor(() => expect(h.sockets).toHaveLength(1))
+    h.sockets[0].emit('open')
+    expect(h.statuses.at(-1)).toEqual({ state: 'connected' })
+    expect(h.statuses.map((status) => status.state)).not.toContain('needs-login')
+    expect(h.logs).not.toContain('feishu.auth-failed')
+    expect(h.logs.filter((event) => event === 'feishu.endpoint-retry')).toHaveLength(3)
+    await channel.stop()
   })
 
   // D23：原来这句带着「长连接」，现在只说关掉别处再试，卡片配「重新连接」。
