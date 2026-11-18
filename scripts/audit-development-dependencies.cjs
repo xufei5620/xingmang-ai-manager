@@ -113,7 +113,7 @@ function readAndValidatePackageLock() {
 // 时走到，树里没有调用方传它，3.x / 5.x 根本没有这段代码；规则全来自自家打包配置，
 // 客户装的那部分依赖（audit:production）不含 minimatch。到期后照常变红，那时回头
 // 看上游有没有换到 11。
-// GHSA-fc5q-39xc-vjpf：要 yoyo 亲手打字回「同意 picomatch 例外到 12-15」才能合进 main。
+// GHSA-fc5q-39xc-vjpf：2026-11-18 北京时间 13:49，yoyo 回「同意 picomatch 例外到 12-15」。
 // 公告范围是 <=4.0.7，也就是 picomatch 发过的每一版，npm 上最新的就是 4.0.7；上游
 // 修复 micromatch/picomatch#194 还没合。vite 8.3.8、vitest 5.1.0、tinyglobby 0.2.17
 // 这些最新版仍要 ^4，没有能换掉它的版本。出事要「+(*)」这类单分支重复的 extglob
