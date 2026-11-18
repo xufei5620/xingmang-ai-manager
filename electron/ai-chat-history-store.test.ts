@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { AiChatHistoryWrite } from './ipc-contract'
+import type { AiChatHistoryFile, AiChatHistoryWrite } from './ipc-contract'
 import { chatHistoryDirectoryName, createAiChatHistoryStore, MAX_CHAT_HISTORY_CONVERSATIONS, MAX_CHAT_HISTORY_SCOPES, MAX_UNREADABLE_CHAT_FILES, parseAiChatHistoryScope, parseAiChatHistoryWrite, UNREADABLE_CHAT_DIRECTORY } from './ai-chat-history-store'
 
 const scope = 'xm-account:7'
@@ -16,6 +16,18 @@ function temporaryRoot(): string {
 
 function write(patch: Partial<AiChatHistoryWrite> = {}): AiChatHistoryWrite {
   return { scope, index: '{"version":3}', keys: ['a'], put: [{ key: 'a', content: '{"conversation":"a"}' }], ...patch }
+}
+
+// 测 200 个对话上限的用例把这 200 个对话直接写进文件，只让要测的那几次保存经过 store。
+// 一次经 store 存满 200 个就是 200 次带路径检查和刷盘的原子写，Windows CI 上平时八九秒，
+// runner 慢的时候一次一百多到三百多毫秒，整条撞过 30 秒（#1897、#1921 的 vitest-4）。
+function seedConversations(root: string, index: string, files: readonly AiChatHistoryFile[]): string {
+  const directory = path.join(root, chatHistoryDirectoryName(scope))
+  fs.mkdirSync(directory, { recursive: true })
+  // Conversations first, index last, byte for byte what the store writes.
+  for (const file of files) fs.writeFileSync(path.join(directory, `c-${file.key}.json`), file.content, 'utf8')
+  fs.writeFileSync(path.join(directory, 'index.json'), index, 'utf8')
+  return directory
 }
 
 afterEach(() => {
@@ -74,7 +86,10 @@ describe('ai chat history store', () => {
     const root = temporaryRoot()
     const store = createAiChatHistoryStore({ root })
     const keys = Array.from({ length: 200 }, (_, index) => `k${index}`)
-    await store.write(write({ keys, put: keys.map((key) => ({ key, content: `content of ${key}` })) }))
+    const files = keys.map((key) => ({ key, content: `content of ${key}` }))
+    // A save that rewrites all 200 is accepted as one; what it leaves on disk is seeded directly.
+    expect(parseAiChatHistoryWrite(write({ keys, put: files })).put).toHaveLength(200)
+    const directory = seedConversations(root, '{"version":3}', files)
     await store.write(write({ index: 'one reply later', keys, put: [{ key: 'k0', content: 'updated' }] }))
     const snapshot = await store.read(scope)
     expect(snapshot.index).toBe('one reply later')
@@ -83,7 +98,6 @@ describe('ai chat history store', () => {
     // The directory is walked once per save now, not once per file, but each
     // untouched file still gets its own check: one turned into a hard link to
     // a file elsewhere refuses the save instead of being counted and kept.
-    const directory = path.join(root, chatHistoryDirectoryName(scope))
     const victim = path.join(path.dirname(root), 'victim.txt')
     fs.writeFileSync(victim, 'keep')
     fs.rmSync(path.join(directory, 'c-k150.json'))
