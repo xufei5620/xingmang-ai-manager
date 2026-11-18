@@ -96,6 +96,7 @@ node node_modules/electron/install.js
 - **PR 有合并冲突时，CI 根本不会触发**，也不留任何记录，看起来像 GitHub 排队慢。推完两三分钟还没看到 `quality` 运行，先看 PR 是不是有冲突，有就合 main 解掉再推。不要推空提交去催。（沿用 09-19）
 - **`quality` 运行偶尔停在 queued、一个作业都没派出来，等多久都不会动。** 跟没冲突、没被取消是两回事：运行在列表里、`jobs` 是空的，后来推的别的 PR 都照常跑。这时取消回 409「has not been queued yet」，重跑回 403「already running」，两条路都走不通。办法只有往分支上推一个真改动（合进 main 的新提交，或者把这次踩到的坑补进文档），新的那次照常派作业；不要推空提交，也不要关了 PR 再开。#1806 碰到过，推完 1 小时还是这样，靠补这一条重新推起来的。（11-12）
 - **作业日志用 GitHub 工具的 `get_job_logs` 加 `return_content: true` 看。** 它给的下载链接在容器里被代理拦。最多只回最后 5000 行，`macos-test` 这种更长的日志前半段取不到。（沿用 10-05、10-06）
+- **Actions 运行产物（artifact）容器里下不了。** `download_workflow_run_artifact` 给的链接在 `productionresultssa*.blob.core.windows.net`，代理拒连（403 connect_rejected）。要把产物交给人，就给运行页上那个 artifact 的链接（`https://github.com/<仓库>/actions/runs/<运行号>/artifacts/<产物号>`），对方登录 GitHub 才能下；哈希从作业日志里取。（11-18）
 - **只在 Windows 上跑的用例（`it.runIf(process.platform === 'win32')`）容器里跑不到。** 想确认它在 CI 上真跑了，看 Windows 作业日志里那个测试文件的那一行，形如 `✓ legacy electron/xxx.test.ts (9 tests | 2 skipped)`，拿跳过数对一下。（沿用 10-06）
 
 ## 7. 在容器里真开客户端走一遍
