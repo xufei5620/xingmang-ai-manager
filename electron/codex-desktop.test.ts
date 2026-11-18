@@ -23,7 +23,7 @@ import {
   stableInstallFamilyName,
   stopCodexDesktopProcesses,
 } from './codex-desktop'
-import { codexDesktopPackageProbeName, isCodexDesktopProbeFailure } from './codex-desktop-probe-failure'
+import { codexDesktopPackageProbeName, isCodexDesktopProbeFailure, isCodexDesktopUnrecognizedProbeResult } from './codex-desktop-probe-failure'
 
 const validPackageMetadata = {
   name: 'OpenAI.Codex',
@@ -330,6 +330,8 @@ describe('Codex desktop app discovery', () => {
         }
         expect(isCodexDesktopProbeFailure(result.error)).toBe(true)
         expect(isChineseSentence(result.error)).toBe(false)
+        // 解析这一层说不出别的：只会是「没认出」那一种，界面据此说可能正在更新。
+        expect(isCodexDesktopUnrecognizedProbeResult(result.error)).toBe(true)
         // 没认出来的结果从不当成「确定没装」，也不给出一个包。脚本里没有的那句报错只换掉说法，结果的其余部分照旧。
         if (result.error.endsWith('(unknown error text)')) return
         expect(result.confirmedAbsent).toBe(false)

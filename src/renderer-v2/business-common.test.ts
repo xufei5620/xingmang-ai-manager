@@ -307,9 +307,13 @@ describe('detectionFailureMessage', () => {
 
   it('never puts the words behind a Codex desktop probe summary on screen, even in Chinese', () => {
     // 11-18 客户截图：查包那段的中文说法原样上了屏。现在主进程交英文摘要＋原话，界面认开头。
+    const maybeUpdating = '暂时没认出 Codex 桌面端，可能正在更新。等一两分钟点「重新检测」。'
+    expect(detectionFailureMessage('Codex desktop package probe: unrecognized result (no package entry has a usable name, version and install folder): {"packages":{"InstallLocation":"C:\\Users\\张三\\x"}}')).toBe(maybeUpdating)
+    expect(detectionFailureMessage('Codex desktop package probe: unrecognized result (empty output)')).toBe(maybeUpdating)
+    expect(detectionFailureMessage('Codex desktop package probe: unrecognized result (unknown error text): 当前用户未检测到 Codex Desktop')).toBe(maybeUpdating)
+    // PowerShell 自己报错、超时的不是「没认出」，照旧说检测出了错。
     expect(detectionFailureMessage('Codex desktop status probe: package step failed: 拒绝访问。')).toBe(other)
-    expect(detectionFailureMessage('Codex desktop package probe: unrecognized result (no package entry has a usable name, version and install folder): {"packages":{"InstallLocation":"C:\\Users\\张三\\x"}}')).toBe(other)
-    expect(detectionFailureMessage('Codex desktop package probe: unrecognized result (unknown error text): 当前用户未检测到 Codex Desktop')).toBe(other)
+    expect(detectionFailureMessage('Codex desktop status probe: PowerShell gave no answer within 24 s and was stopped')).toBe(other)
     // 写给客户、带着下一步的那句照旧原样显示。
     expect(detectionFailureMessage('读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。'))
       .toBe('读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。')

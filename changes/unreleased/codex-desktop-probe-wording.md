@@ -7,4 +7,6 @@
   别的说法也改成摘要。合并脚本里查包那段的 PowerShell 报错（`packageError`，中文系统上是中文）同样只进 `detail`。
   检测失败那行把 `detail` 接在摘要后面，`scan.completed`、`desktop.detection-failed` 两行日志照旧看得到原话；
   装、卸载抛的错把它挂成 `cause`。界面按新的零依赖模块 `codex-desktop-probe-failure.ts` 认摘要开头，
-  认出来就换成「检测这个工具时出了错，原因已经记进日志……」那句，不再看后面是不是中文。
+  不再看后面是不是中文：查包那段答了看不懂的结果（`unrecognized result`）时说「暂时没认出 Codex 桌面端，
+  可能正在更新。等一两分钟点「重新检测」。」（yoyo 11-18 批），PowerShell 报错、超时照旧是「检测这个工具时出了错……」。
+  给客户看的那一行并进了 `codex-desktop-constrained-language.md`（用户行已满 60）。

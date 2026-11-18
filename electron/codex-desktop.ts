@@ -1,4 +1,4 @@
-import { codexDesktopPackageProbeName } from './codex-desktop-probe-failure'
+import { codexDesktopPackageProbeName, codexDesktopUnrecognizedProbeResult } from './codex-desktop-probe-failure'
 
 export interface StartAppEntry {
   name: string
@@ -206,7 +206,7 @@ function unrecognizedCodexDesktopPackageProbe(reason: string, output: string): {
   const detail = packageProbeDetail(output)
   return {
     value: null,
-    error: `${codexDesktopPackageProbeName}: unrecognized result (${reason})`,
+    error: `${codexDesktopPackageProbeName}: ${codexDesktopUnrecognizedProbeResult} (${reason})`,
     source: null,
     confirmedAbsent: false,
     ...(detail ? { detail } : {}),
@@ -273,7 +273,7 @@ export function parseCodexDesktopPackageProbeJson(output: string): {
   }
   return {
     value: selectCodexDesktopPackage(packages),
-    error: !rawError ? null : knownError ? rawError : `${codexDesktopPackageProbeName}: unrecognized result (unknown error text)`,
+    error: !rawError ? null : knownError ? rawError : `${codexDesktopPackageProbeName}: ${codexDesktopUnrecognizedProbeResult} (unknown error text)`,
     source,
     confirmedAbsent,
     ...(rawError && !knownError ? { detail: packageProbeDetail(rawError) } : {}),
