@@ -122,8 +122,8 @@ describe('cliVerifiedVersions coverage', () => {
     // customer who pressed "更新" in that window installed exactly 0.155.0.
     // 0.156.1 is the first release whose bundled catalog knows gpt-6-sol and
     // gpt-6-luna; on 0.155.1 they run on fallback metadata. The bundled model
-    // catalog is copied from rust-v0.169.0, the recommended release's own tag
-    // (codex-model-catalog.ts).
+    // catalog is copied from rust-v0.169.1, the recommended release's patch that
+    // only adds GPT-6.2 Sol and Astra (codex-model-catalog.ts).
     expect(cliVerifiedVersions.codex.recommended?.version).toBe('0.169.0')
     expect(findBlockedCliVersion('codex', '0.155.0')?.fixed).toBe('0.155.1')
     expect(findBlockedCliVersion('codex', '0.155.1')).toBeNull()

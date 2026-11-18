@@ -148,6 +148,18 @@ export function resolveNewestModelOfFamily(models: readonly string[], model: str
   return newestOfFamily(models, model) ?? null
 }
 
+/**
+ * 列表里跟 model 同系列、版本最新的那个，前提是 model 比它们都新；同系列一个都没有、或者 model 不比它们新是 null。
+ * 中转上了 Codex 型号资料里还没有的新 GPT 型号时，借谁的资料用它挑（codex-model-catalog.ts）：gpt-6.3-sol 借
+ * gpt-6.2-sol 的；gpt-4.1、带日期的 gpt-6.2-sol-2026-11-17 这类不比资料里的新，不借。
+ */
+export function resolveOlderSiblingModel(models: readonly string[], model: string): string | null {
+  // OpenAI 的快照写成 -2024-08-06 这样，按 - 切开会被 modelLineage 当成版本号，比正式名还「新」。
+  if (/-\d{4}-\d{2}-\d{2}$/.test(model)) return null
+  const newest = newestOfFamily(models, model)
+  return newest !== undefined && compareNewerFirst(model, newest) < 0 ? newest : null
+}
+
 // 模型列表按字母排，claude-haiku 排在 opus、sonnet 前面，兜底只拿第一个就挑到最弱的（#1154）。
 const claudeTiers = ['haiku', 'sonnet', 'opus']
 

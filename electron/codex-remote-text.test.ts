@@ -89,6 +89,12 @@ describe('codex-remote-text', () => {
     expect(receivedMessage(2)).toBe('收到，带着 2 张图片，Codex 开始处理。')
   })
 
+  // M03：yoyo 2026-11-18「这些都按照你的推荐」批的那两句（回答没送到手机、补发时说的），逐字。
+  it('says the words for an answer sent again after it missed the phone', () => {
+    expect(remoteMessages.answerResent).toBe('之前有一条回答没发到你手机上，这里补发：')
+    expect(remoteMessages.retryAfterAnswerResent).toBe('上一条已经做完了，回答就是上面那条，所以这次没有重做。确实要重做，请再发一次「重试」。')
+  })
+
   it('tells the phone the remote was switched on, with the folder written like the status reply', () => {
     expect(remoteOpenedMessage('~/projects/demo')).toBe('电脑上的手机遥控打开了，可以发消息了。工作文件夹：~/projects/demo')
   })
