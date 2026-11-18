@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isCliModelName, isNonInteractiveCliModel, isRetiredCliModel, resolveClaudeFallbackModels, resolveCliModelDefault, resolveCliModelUpgrade, resolveDefaultCliModel, resolveNewestModelOfFamily, resolveRetiredCliModelReplacement, sortClaudeModelsNewestFirst } from './cli-model-defaults'
+import { isCliModelName, isNonInteractiveCliModel, isRetiredCliModel, resolveClaudeFallbackModels, resolveCliModelDefault, resolveCliModelUpgrade, resolveDefaultCliModel, resolveNewestModelOfFamily, resolveOlderSiblingModel, resolveRetiredCliModelReplacement, sortClaudeModelsNewestFirst } from './cli-model-defaults'
 
 describe('resolveDefaultCliModel', () => {
   it('selects the Codex product default regardless of model endpoint ordering', () => {
@@ -230,6 +230,27 @@ describe('resolveCliModelDefault', () => {
 
   it('ignores a published default that the same table retires', () => {
     expect(resolveCliModelDefault('claude', { claude: { default: 'claude-opus-6', retired: ['claude-opus-6'] } })).toBe('claude-opus-5-5')
+  })
+})
+
+describe('resolveOlderSiblingModel', () => {
+  const listed = ['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-luna', 'gpt-5.5']
+
+  it('picks the newest model of the same family when the new model is newer than all of them', () => {
+    expect(resolveOlderSiblingModel(listed, 'gpt-6.3-sol')).toBe('gpt-6.2-sol')
+    expect(resolveOlderSiblingModel(listed, 'gpt-7-astra')).toBe('gpt-6.2-astra')
+    expect(resolveOlderSiblingModel(listed, 'gpt-6.2-terra')).toBe('gpt-6.1-terra')
+    expect(resolveOlderSiblingModel(listed, 'gpt-6.1-luna')).toBe('gpt-6-luna')
+  })
+
+  it('borrows nothing for models that are not newer, are dated snapshots, or have no sibling', () => {
+    expect(resolveOlderSiblingModel(listed, 'gpt-6.2-sol')).toBeNull()
+    expect(resolveOlderSiblingModel(listed, 'gpt-6.1-astra')).toBeNull()
+    expect(resolveOlderSiblingModel(listed, 'gpt-6.2-sol-2026-11-17')).toBeNull()
+    expect(resolveOlderSiblingModel(listed, 'gpt-4.1')).toBeNull()
+    expect(resolveOlderSiblingModel(listed, 'gpt-6.3-sol-fast')).toBeNull()
+    expect(resolveOlderSiblingModel(listed, 'gpt-7-nova')).toBeNull()
+    expect(resolveOlderSiblingModel([], 'gpt-6.3-sol')).toBeNull()
   })
 })
 
