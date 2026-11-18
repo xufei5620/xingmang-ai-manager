@@ -40,6 +40,8 @@ const valueImportable = [
   // Codex 桌面端装不上那句话的开头和微软商店链接，主进程与错误框共用一份（第十九批 5）。
   'electron/codex-desktop-install-failure',
   'electron/codex-desktop-known-issues',
+  // Codex 桌面端检测没查成时主进程那句英文摘要的开头，主进程拼、首页「检测失败」那行照它认出来换成中文、原话不上屏；文件本身什么都不 import。
+  'electron/codex-desktop-probe-failure',
   // 手机遥控的渠道表和状态快照类型，设置页那张卡按渠道摆；文件本身什么都不 import。
   'electron/codex-remote-channel',
   'electron/cli-model-defaults',
