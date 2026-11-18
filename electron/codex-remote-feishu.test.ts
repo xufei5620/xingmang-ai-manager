@@ -1,3 +1,4 @@
+import fc from 'fast-check'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildFeishuApprovalCard,
@@ -10,6 +11,7 @@ import {
   FeishuAuthError,
   FeishuFragmentCache,
   feishuProblemMessages,
+  FeishuTokenResponseError,
   parseFeishuCredential,
   parseFeishuEndpointResponse,
   parseFeishuEvent,
@@ -208,7 +210,7 @@ describe('codex-remote-feishu credentials', () => {
     expect(failure).toBeInstanceOf(Error)
     expect((failure as Error).message).toBe('飞书凭据没保存上。请核对 App ID 和 App Secret 有没有填错，再点一次「保存」；还不行请找客服。')
     expect((failure as Error).message).not.toMatch(/HTTP|401/)
-    expect(logged).toEqual([{ event: 'feishu.save-token-unexpected', detail: { status: 401 } }])
+    expect(logged).toEqual([{ event: 'feishu.save-token-unexpected', detail: { status: 401, code: null } }])
 
     // A wrong secret and a good one keep their own outcome.
     await expect(verifyFeishuCredential(deps(() => json({ code: 10014, msg: 'app secret invalid' })), { appId, appSecret }))
@@ -221,6 +223,45 @@ describe('codex-remote-feishu credentials', () => {
   it('refuses to follow a redirect with the secret', async () => {
     const redirect = vi.fn(async () => new Response(null, { status: 302, headers: { Location: 'https://evil.example/' } }))
     await expect(requestFeishuTenantToken(redirect, { appId, appSecret }, 0)).rejects.toThrow('重定向')
+  })
+
+  // YR-4: only the codes Feishu documents as a wrong App ID / App Secret / unusable app count as bad credentials.
+  it('treats only the documented credential codes as bad credentials', async () => {
+    for (const code of [10003, 10005, 10014, 10015, 20002, 50003]) {
+      const answer = vi.fn(async () => json({ code, msg: 'credential' }, 400))
+      await expect(requestFeishuTenantToken(answer, { appId, appSecret }, 0)).rejects.toBeInstanceOf(FeishuAuthError)
+    }
+    for (const [status, code] of [[400, 99991400], [500, 1500], [500, 10500], [200, 21001], [200, 10013]]) {
+      const answer = vi.fn(async () => json({ code, msg: 'not about the credential' }, status))
+      const failure = await requestFeishuTenantToken(answer, { appId, appSecret }, 0).then(() => null, (error: unknown) => error)
+      expect(failure).toBeInstanceOf(FeishuTokenResponseError)
+      expect(failure).toMatchObject({ status, code })
+    }
+  })
+
+  it('never calls a code outside the credential list a bad credential, with random inputs', async () => {
+    const credentialCodes = new Set([0, 10003, 10005, 10014, 10015, 20002, 50003])
+    const otherCode = fc.integer({ min: -2_147_483_648, max: 2_147_483_647 }).filter((code) => !credentialCodes.has(code))
+    // Statuses that carry a body and are not redirects (those never reach the code check).
+    const bodyStatus = fc.oneof(fc.constant(200), fc.integer({ min: 400, max: 599 }))
+    await fc.assert(fc.asyncProperty(otherCode, bodyStatus, async (code, status) => {
+      const answer = vi.fn(async () => json({ code, msg: 'x' }, status))
+      const failure = await requestFeishuTenantToken(answer, { appId, appSecret }, 0).then(() => null, (error: unknown) => error)
+      expect(failure).toBeInstanceOf(FeishuTokenResponseError)
+      expect(failure).not.toBeInstanceOf(FeishuAuthError)
+    }), { numRuns: 200 })
+  })
+
+  it('does not tell someone saving the credential that it is wrong when Feishu is only busy', async () => {
+    const logged: Array<{ event: string; detail?: Record<string, unknown> }> = []
+    const deps = {
+      fetch: vi.fn(async () => json({ code: 99991400, msg: 'request trigger frequency limit' }, 400)),
+      now: () => 0,
+      log: (_level: string, event: string, detail?: Record<string, string | number | boolean | null>) => { logged.push({ event, detail }) },
+    }
+    await expect(verifyFeishuCredential(deps, { appId, appSecret }))
+      .rejects.toThrow('飞书凭据没保存上。请核对 App ID 和 App Secret 有没有填错，再点一次「保存」；还不行请找客服。')
+    expect(logged).toEqual([{ event: 'feishu.save-token-unexpected', detail: { status: 400, code: 99991400 } }])
   })
 })
 
@@ -389,6 +430,18 @@ describe('codex-remote-feishu outbound', () => {
     expect(transientFeishuRequestFailure(new RemoteHttpError('飞书请求地址不在允许范围内，已拒绝', 'blocked-url'))).toBeNull()
     expect(transientFeishuRequestFailure(new FeishuAuthError())).toBeNull()
     expect(transientFeishuRequestFailure(new Error('boom'))).toBeNull()
+  })
+
+  // YR-4: a token request Feishu could not serve right now is worth another try; anything else is not.
+  it('treats a busy or failing token service as worth sending again', () => {
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(503))).toBe('token-unavailable')
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(502, null))).toBe('token-unavailable')
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(429))).toBe('token-unavailable')
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(400, 99991400))).toBe('token-unavailable')
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(200, 1500))).toBe('token-unavailable')
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(200, 10500))).toBe('token-unavailable')
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(200, 21001))).toBeNull()
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(401, null))).toBeNull()
   })
 })
 
@@ -656,6 +709,68 @@ describe('codex-remote-feishu send retries', () => {
     expect(tokenCalls).toBe(2)
     expect(sendBodies(h)).toHaveLength(1)
     expect(waits).toEqual([1000])
+    await channel.stop()
+  })
+
+  // YR-4: Feishu being busy or failing inside used to stop the whole remote as if the secret were wrong.
+  it('keeps the remote running and sends again when the token service is momentarily busy or failing', async () => {
+    const answers = [
+      json({ code: 99991400, msg: 'request trigger frequency limit' }, 400),
+      new Response('<html>502 Bad Gateway</html>', { status: 502, headers: { 'Content-Type': 'text/html' } }),
+    ]
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.endsWith('/tenant_access_token/internal')) return answers.shift() ?? defaultRespond(url)
+      return defaultRespond(url)
+    })
+    const logged: unknown[] = []
+    h.deps.log = (_level, event, fields) => { logged.push({ event, fields }) }
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    h.sockets[0].emit('open')
+    await vi.waitFor(() => expect(h.statuses.at(-1)?.state).toBe('connected'))
+    await channel.send(peer, { kind: 'text', text: '做完了' })
+    expect(sendBodies(h)).toHaveLength(1)
+    expect(waits).toEqual([1000, 4000])
+    expect(h.statuses.map((status) => status.state)).not.toContain('needs-login')
+    expect(h.statuses.at(-1)?.state).toBe('connected')
+    expect(logged).toContainEqual({ event: 'feishu.token-failed', fields: { status: 400, code: 99991400 } })
+    expect(logged).toContainEqual({ event: 'feishu.token-failed', fields: { status: 502, code: null } })
+    await channel.stop()
+  })
+
+  it('drops only this message when the token answer is unknown, and tries again for the next one', async () => {
+    let tokenCalls = 0
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.endsWith('/tenant_access_token/internal')) {
+        tokenCalls += 1
+        if (tokenCalls === 1) return json({ code: 21001, msg: 'Access denied by access control policy.' })
+      }
+      return defaultRespond(url)
+    })
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    h.sockets[0].emit('open')
+    await vi.waitFor(() => expect(h.statuses.at(-1)?.state).toBe('connected'))
+    await expect(channel.send(peer, { kind: 'text', text: '一' })).rejects.toBeInstanceOf(FeishuTokenResponseError)
+    expect(waits).toEqual([])
+    expect(h.statuses.at(-1)?.state).toBe('connected')
+    await channel.send(peer, { kind: 'text', text: '二' })
+    expect(tokenCalls).toBe(2)
+    expect(sendBodies(h)).toHaveLength(1)
+    await channel.stop()
+  })
+
+  it('still stops and asks for the credential again when Feishu says the secret is wrong', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.endsWith('/tenant_access_token/internal')) return json({ code: 10003, msg: 'invalid param' }, 400)
+      return defaultRespond(url)
+    })
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    await expect(channel.send(peer, { kind: 'text', text: '做完了' })).rejects.toBeInstanceOf(FeishuAuthError)
+    expect(waits).toEqual([])
+    await vi.waitFor(() => expect(h.statuses.at(-1)).toEqual({ state: 'needs-login', message: feishuProblemMessages.credential, problem: 'credential' }))
+    expect(sendBodies(h)).toHaveLength(0)
     await channel.stop()
   })
 
