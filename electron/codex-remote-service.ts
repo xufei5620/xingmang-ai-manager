@@ -38,7 +38,7 @@ import {
   type RemoteProgressStep,
 } from './codex-remote-channel'
 import { sniffRemoteImageType, type RemoteImageStore } from './codex-remote-images'
-import { emptyChannelSettings, maxRemoteWorkspaces, remoteWorkspaceList, type CodexRemoteStore } from './codex-remote-store'
+import { appendRecentMessageId, emptyChannelSettings, maxRemoteWorkspaces, remoteWorkspaceList, type CodexRemoteStore } from './codex-remote-store'
 import {
   approvalAcceptedMessage,
   approvalDeclinedMessage,
@@ -275,6 +275,23 @@ export function sentWhileOpen(sentAt: number, channelStartedAt: number): boolean
 export function isStaleOnlyByClock(sentAt: number, channelStartedAt: number, now: number, clockAheadMs: number | undefined): boolean {
   if (clockAheadMs === undefined || !Number.isFinite(clockAheadMs) || clockAheadMs < clockAheadToleranceMs) return false
   return isStaleInbound(sentAt, channelStartedAt, now) && !isStaleInbound(sentAt, channelStartedAt - clockAheadMs, now - clockAheadMs)
+}
+
+/**
+ * 「停止」「同意 / 拒绝」（打字的、卡片按钮）不用等前面光发图的那几条取完（YR-6）：取图要等平台，网不好时一张
+ * 最长 30 秒、一次最多 5 张，审批可能就等过期了。先停、先答再收图，最后的样子跟按顺序来一样。别的话照旧排在图
+ * 后面，交给 Codex 的那句才带得上前面的图。「同意」只在有等你同意的时候才算，不然它是一句要交给 Codex 的话。
+ */
+export function jumpsImageFetch(message: RemoteInbound, hasPendingApprovals: boolean): boolean {
+  if (message.kind === 'approval' || message.kind === 'stop') return true
+  if (message.kind !== 'text') return false
+  const command = parseRemoteCommand(message.text, hasPendingApprovals).kind
+  return command === 'stop' || command === 'approval'
+}
+
+/** 光发图、没带字（YR-6）：后面的「停止」「同意 / 拒绝」可以不等它取完。带字的那句可能就是要做的事，照旧得等。 */
+function imageOnly(message: RemoteInbound): boolean {
+  return message.kind === 'image' && !message.text?.trim()
 }
 
 /**
@@ -751,9 +768,15 @@ interface ChannelRuntime {
   inboundSeen: RemoteInboundSeen
   peer: RemotePeer | null
   replyContext?: string
+  /**
+   * 处理过的消息编号，最多 seenMessageLimit 条。关掉再开、重新连接都不清（YR-2）：微信每次连上都从头拉，
+   * 刚做过的话会再送一遍，清了就会再做一遍。平台的消息编号不会重复，换了人也不用清。
+   */
   seen: Set<string>
   idleTimer: NodeJS.Timeout | null
   inbox: Promise<void>
+  /** 收件队列里除了光发图的那几条（imageOnly），到这一刻收到的都处理完了；「停止」「同意 / 拒绝」只等它（YR-6）。 */
+  inboxExceptImages: Promise<void>
   /**
    * 把话交给 Codex 的那几步（startTurn），一个渠道一次一份。不在收件队列里排（D66 / YKS-3），但前一轮刚被「停止」、
    * 回执还在路上时，后一轮要等它补完那次打断再交，同一个对话里不会两轮叠在一起。
@@ -839,6 +862,7 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     seen: new Set(),
     idleTimer: null,
     inbox: Promise.resolve(),
+    inboxExceptImages: Promise.resolve(),
     handoff: Promise.resolve(),
     outbox: Promise.resolve(),
     threadId: null,
@@ -1363,9 +1387,12 @@ export class CodexRemoteService {
     const sameAccount = value !== null && accountLabel !== null && before?.accountLabel === accountLabel
     const verifiedPeer = value !== null ? options.verifiedPeerUserId ?? null : null
     const keepsPeer = sameAccount && (verifiedPeer === null || !before?.boundPeer || before.boundPeer.userId === verifiedPeer)
+    // 换了机器人重新扫码、过了数字的还是原来绑着的那个人（YR-9）：账号字样变了，这次连接里的对话照旧清掉，
+    // 但人没换，绑定留着，也不跟他说「已经把你解绑了」，不然他以为要重新配对。
+    const rebindsSamePeer = verifiedPeer !== null && before?.boundPeer?.userId === verifiedPeer
     if (!keepsPeer) {
       // 换凭据以前说：凭据一换（退出登录是清掉），就发不出去了。
-      await this.tellUnbound(runtime)
+      if (!rebindsSamePeer) await this.tellUnbound(runtime)
       await this.forgetPeer(runtime)
     }
     // 退出登录时凭据删不掉（#1407 P3-6）：解绑、停渠道照做，客户点退出就是不想再让手机指挥这台电脑；
@@ -1381,7 +1408,7 @@ export class CodexRemoteService {
     await this.options.store.updateSettings((settings) => {
       const stored = settings.channels[channel] ?? emptyChannelSettings()
       if (!removeFailure) stored.accountLabel = value === null ? null : accountLabel
-      if (!keepsPeer) stored.boundPeer = null
+      if (!keepsPeer && !rebindsSamePeer) stored.boundPeer = null
       if (verifiedPeer && stored.boundPeer?.userId !== verifiedPeer) stored.boundPeer = { userId: verifiedPeer, boundAt: this.now() }
       settings.channels[channel] = stored
     })
@@ -1529,7 +1556,6 @@ export class CodexRemoteService {
     }
     runtime.enabled = true
     runtime.startedAt = this.now()
-    runtime.seen.clear()
     runtime.staleNoticeAt = 0
     runtime.lastPrompt = null
     this.dropImages(runtime)
@@ -1539,6 +1565,7 @@ export class CodexRemoteService {
     const adapter = this.options.createChannel(runtime.id, this.channelDependencies(runtime.id))
     runtime.adapter = adapter
     await this.loadIdleClose()
+    await this.loadRecentMessageIds(runtime)
     await this.refreshSecrets(true)
     // 读设置、读密钥这一下里渠道被关掉了（或者又开了一次、换上了新的一份）：这一份还没连，就别连了，连上就没人停它。
     if (runtime.adapter !== adapter) return null
@@ -1564,7 +1591,7 @@ export class CodexRemoteService {
       })
     } catch (error) {
       if (runtime.adapter === adapter) {
-        runtime.status = { state: 'error', message: errorMessage(error, '渠道没能连上。') }
+        runtime.status = { state: 'error', message: errorMessage(error, '渠道没能连上。'), halted: true }
       }
       this.options.log('warn', 'remote.channel-start-failed', { channel: runtime.id })
     }
@@ -1924,12 +1951,22 @@ export class CodexRemoteService {
   }
 
   private onInbound(runtime: ChannelRuntime, adapter: RemoteChannelAdapter, message: RemoteInbound): void {
-    // 一个渠道的消息按到达顺序一条条处理，配对、指令、审批不会互相插队。
-    runtime.inbox = runtime.inbox
-      .then(() => (runtime.adapter === adapter ? this.handleInbound(runtime, message) : undefined))
+    // 一个渠道的消息按到达顺序一条条处理，配对、指令、审批不会互相插队。只有一种例外（YR-6）：「停止」「同意 / 拒绝」
+    // 不等前面光发图的那几条取完，别的照旧要等；前面有一句还排在图后面的话，就连它一起等，「停止」停得到它。
+    const ahead = runtime.inbox
+    const hasPending = () => this.pendingFor(runtime.id).length > 0
+    const urgent = jumpsImageFetch(message, hasPending())
+    const handled = (urgent ? runtime.inboxExceptImages : ahead)
+      .then(async () => {
+        // 排队时还算「同意」，轮到时那条已经没了（比如到点自动拒绝了）：这句要交给 Codex，回到原来的位置等前面的图。
+        if (urgent && !jumpsImageFetch(message, hasPending())) await ahead
+        if (runtime.adapter === adapter) await this.handleInbound(runtime, message)
+      })
       .catch(() => {
         this.options.log('error', 'remote.inbound-failed', { channel: runtime.id })
       })
+    runtime.inbox = urgent ? Promise.all([ahead, handled]).then(() => undefined) : handled
+    if (!imageOnly(message)) runtime.inboxExceptImages = handled
   }
 
   private async handleInbound(runtime: ChannelRuntime, message: RemoteInbound): Promise<void> {
@@ -1958,6 +1995,8 @@ export class CodexRemoteService {
       await this.tryPair(runtime, message)
       return
     }
+    // 先记下再处理：处理到一半星芒退出了，重开以后平台再送一遍也不再做。
+    if (message.kind !== 'approval' && message.kind !== 'stop') await this.saveRecentMessageId(runtime, message.messageId)
     runtime.peer = message.peer
     if (message.replyContext) runtime.replyContext = message.replyContext
     runtime.staleNoticeAt = 0
@@ -2107,9 +2146,14 @@ export class CodexRemoteService {
    * 手机上发「关闭遥控」（YF-17）：手机丢了、发现不对劲，换台设备登录同一个账号就能当场关。跟托盘「关掉手机遥控」一样
    * 开着的渠道全关（同一个人两个渠道都开着时，只关一个等于没关），只是每个配对过的人收到的是「已关闭」那句。
    * 只认配对过的人（走到这里之前已经核过），要再开只能回电脑上。
+   * 「打开星芒时自动打开遥控」（YF-9）也一起关掉（YR-1）：不然星芒一重开（夜里装系统更新重启、闲时装完新版、崩溃再开）
+   * 遥控就自己连回去，急停只管到下一次重开，手机上那句「要再用，请在电脑上重新打开」也成了错话。
+   * 先关开关再断渠道：两步之间星芒要是退出了，渠道本来也跟着断了，反过来就会留下一个下次自己连上的开关。
+   * 开关没记下来（写设置失败）也照样断渠道，当场停住比什么都要紧。
    */
   private async closeFromPhone(from: ChannelRuntime): Promise<void> {
-    this.options.log('info', 'remote.closed-from-phone', { channel: from.id })
+    const autoStartCleared = await this.clearAutoStartFromPhone()
+    this.options.log('info', 'remote.closed-from-phone', { channel: from.id, autoStartCleared })
     for (const id of remoteChannelIds) {
       const runtime = this.runtimes[id]
       if (runtime.enabled) await this.disableChannel(runtime, remoteMessages.closedFromPhone)
@@ -2117,11 +2161,47 @@ export class CodexRemoteService {
     await this.emit()
   }
 
+  /** 关掉了返回 true；本来就没开、或者没记下来返回 false（没记下来另记一条日志）。 */
+  private async clearAutoStartFromPhone(): Promise<boolean> {
+    try {
+      if (!(await this.options.store.readSettings()).autoStart) return false
+      await this.options.store.updateSettings((settings) => {
+        delete settings.autoStart
+      })
+      return true
+    } catch {
+      this.options.log('warn', 'remote.auto-start-unsaved')
+      return false
+    }
+  }
+
   private staleNoticedRecently(runtime: ChannelRuntime): boolean {
     return runtime.staleNoticeAt > 0 && Math.abs(this.now() - runtime.staleNoticeAt) < staleNoticeQuietMs
   }
 
-  /** 第一次见到这条消息返回 true；见过的（长轮询重连、飞书重投会送重）返回 false。 */
+  /**
+   * 上次运行里绑定的人发来、处理过的消息编号（YR-2）。重开星芒、开了自动打开时，平台可能把重开前刚做过的话再送一遍，
+   * 发送时间还在开启前 1 分钟以内，光看时间挡不住。
+   */
+  private async loadRecentMessageIds(runtime: ChannelRuntime): Promise<void> {
+    const stored = (await this.options.store.readSettings()).channels[runtime.id]?.recentMessageIds ?? []
+    for (const messageId of stored) this.markSeen(runtime, messageId)
+  }
+
+  /** 把绑定的人这条消息的编号记进设置（YR-2）。记不下来照样处理：这次运行里内存那份照样挡得住重送。 */
+  private async saveRecentMessageId(runtime: ChannelRuntime, messageId: string): Promise<void> {
+    try {
+      await this.options.store.updateSettings((settings) => {
+        const stored = settings.channels[runtime.id] ?? emptyChannelSettings()
+        stored.recentMessageIds = appendRecentMessageId(stored.recentMessageIds, messageId)
+        settings.channels[runtime.id] = stored
+      })
+    } catch {
+      this.options.log('warn', 'remote.message-id-unsaved', { channel: runtime.id })
+    }
+  }
+
+  /** 第一次见到这条消息返回 true；见过的（长轮询重连、飞书重投、微信重连从头拉会送重）返回 false。 */
   private markSeen(runtime: ChannelRuntime, messageId: string): boolean {
     if (runtime.seen.has(messageId)) return false
     runtime.seen.add(messageId)
