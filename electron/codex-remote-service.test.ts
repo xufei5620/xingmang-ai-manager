@@ -39,6 +39,7 @@ import {
   inspectCommandDisplay,
   isStaleInbound,
   isStaleOnlyByClock,
+  jumpsImageFetch,
   nextApprovalNumber,
   permissionsShowInFull,
   readFileChange,
@@ -231,14 +232,19 @@ class FakeFailingChannel extends FakeChannel {
   }
 }
 
-/** 能取图的渠道（YF-14）：images 里放好每个句柄取回来什么，取过哪些记在 fetched。 */
+/**
+ * 能取图的渠道（YF-14）：images 里放好每个句柄取回来什么，取过哪些记在 fetched。gates 里设了的句柄等它好了
+ * 才取回来：模拟网不好时取图慢（YR-6）。
+ */
 class FakeImageChannel extends FakeChannel {
   readonly images = new Map<string, RemoteImageFetchResult>()
+  readonly gates = new Map<string, Promise<unknown>>()
   readonly fetched: string[] = []
 
   async fetchImage(ref: string, maxBytes: number): Promise<RemoteImageFetchResult> {
     this.fetched.push(ref)
     expect(maxBytes).toBe(10 * 1024 * 1024)
+    await this.gates.get(ref)
     return this.images.get(ref) ?? { ok: false, reason: 'failed' }
   }
 }
@@ -540,6 +546,25 @@ describe('codex-remote-service helpers', () => {
     expect(isStaleOnlyByClock(sentAt, startedAt, now, Number.NaN)).toBe(false)
     // A message that was never dropped needs no warning either.
     expect(isStaleOnlyByClock(now, startedAt, now, fiveMinutes)).toBe(false)
+  })
+
+  // YR-6：取图慢的时候，只有「停止」「同意 / 拒绝」（打字的、卡片按钮）不等图。
+  it('lets only stop and approval answers skip images still being fetched', () => {
+    expect(jumpsImageFetch(text(alice, '停止'), false)).toBe(true)
+    expect(jumpsImageFetch(text(alice, ' ／停止 '), false)).toBe(true)
+    expect(jumpsImageFetch(text(alice, '同意 2'), true)).toBe(true)
+    expect(jumpsImageFetch(text(alice, '拒绝'), true)).toBe(true)
+    expect(jumpsImageFetch(cardClick(alice, { approvalId: '1', nonce: generateApprovalNonce() }, 'accept'), false)).toBe(true)
+    expect(jumpsImageFetch({ kind: 'stop', peer: alice, direct: true, nonce: null }, false)).toBe(true)
+    // Nothing waiting for an answer: 「同意」 is words for Codex and has to take the images sent before it.
+    expect(jumpsImageFetch(text(alice, '同意 2'), false)).toBe(false)
+    for (const body of ['看看这张图', '状态', '帮助', '新对话', '重试', '文件夹', '文件夹 2', '关闭遥控', '000042']) {
+      expect(jumpsImageFetch(text(alice, body), true)).toBe(false)
+    }
+    // Words sent together with an image wait for that image, whatever they say.
+    expect(jumpsImageFetch(imageMessage(alice, ['img-a'], '停止'), true)).toBe(false)
+    expect(jumpsImageFetch(imageMessage(alice, ['img-a']), true)).toBe(false)
+    expect(jumpsImageFetch({ kind: 'unsupported', peer: alice, direct: true, messageId: 'voice-1' }, true)).toBe(false)
   })
 
   it('starts threads that ask the user before anything outside the safe list runs', () => {
@@ -2049,6 +2074,102 @@ describe('codex-remote-service images', () => {
       '暂时只支持文字和图片。语音、文件发不过来，请打成字。',
     ]))
     expect(channel.fetched).toEqual([])
+  })
+
+  // YR-6：网不好时取一张图最长要等 30 秒，「停止」不该排在后面等。
+  it('stops the running turn at once while an image sent before 「停止」 is still being fetched', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    let release!: () => void
+    channel.images.set('slow', { ok: true, bytes: pngBytes })
+    channel.gates.set('slow', new Promise<void>((resolve) => { release = resolve }))
+    const codex = await prompted(s, channel)
+    channel.handlers?.onInbound(imageMessage(alice, ['slow']))
+    await vi.waitFor(() => expect(channel.fetched).toEqual(['slow']))
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('已停止。'))
+    expect(codex.requests('turn/interrupt')).toHaveLength(1)
+    // The image is still taken once it arrives, and waits for the next prompt as usual.
+    release()
+    await s.imagesSaved(1)
+    await channel.sentUntil(() => channel.texts().includes(receivedImage))
+    expect(channel.texts()).toEqual(['收到，Codex 开始处理。', '已停止。', receivedImage])
+  })
+
+  it('answers approvals at once, typed or tapped, while an image sent before them is still being fetched', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    let release!: () => void
+    channel.images.set('slow', { ok: true, bytes: pngBytes })
+    channel.gates.set('slow', new Promise<void>((resolve) => { release = resolve }))
+    const codex = await prompted(s, channel)
+    const first = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await approvalCardsSent(channel, 1)
+    channel.handlers?.onInbound(imageMessage(alice, ['slow']))
+    await vi.waitFor(() => expect(channel.fetched).toEqual(['slow']))
+    channel.handlers?.onInbound(text(alice, '同意 1'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('已同意第 1 条。'))
+    expect((await first).result).toEqual({ decision: 'accept' })
+
+    const second = codex.ask('item/fileChange/requestApproval', { threadId: 'th-1', turnId: 'tu-1', itemId: 'i2', startedAtMs: 0 })
+    await approvalCardsSent(channel, 2)
+    channel.handlers?.onInbound(cardClick(alice, approvalsSent(channel)[1], 'decline'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('已拒绝第 2 条。'))
+    expect((await second).result).toEqual({ decision: 'decline' })
+    expect(storedImages(s.imageDirectory)).toEqual([])
+    release()
+    await s.imagesSaved(1)
+    await channel.sentUntil(() => channel.texts().at(-1) === receivedImage)
+  })
+
+  it('keeps a prompt behind the images sent before it, and 「停止」 behind that prompt', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    let release!: () => void
+    channel.images.set('slow', { ok: true, bytes: pngBytes })
+    channel.gates.set('slow', new Promise<void>((resolve) => { release = resolve }))
+    channel.handlers?.onInbound(imageMessage(alice, ['slow']))
+    await vi.waitFor(() => expect(channel.fetched).toEqual(['slow']))
+    channel.handlers?.onInbound(text(alice, '看看这张'))
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // 「停止」 is meant for 「看看这张」: answering it now would say there is nothing to stop.
+    expect(channel.texts()).toEqual([])
+    release()
+    await s.imagesSaved(1)
+    await channel.sentUntil(() => channel.texts().includes('已停止。'))
+    expect(channel.texts()).toEqual([receivedImage, '收到，带着 1 张图片，Codex 开始处理。', '已停止。'])
+  })
+
+  it('puts an approval answer back in line when nothing is waiting for it by the time its turn comes', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    let releaseFirst!: () => void
+    let releaseSecond!: () => void
+    channel.images.set('first', { ok: true, bytes: pngBytes })
+    channel.images.set('second', { ok: true, bytes: pngBytes })
+    channel.gates.set('first', new Promise<void>((resolve) => { releaseFirst = resolve }))
+    channel.gates.set('second', new Promise<void>((resolve) => { releaseSecond = resolve }))
+    const codex = await prompted(s, channel)
+    void codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await approvalCardsSent(channel, 1)
+    // Words sent with an image are not skipped: 「同意 1」 waits for this one, but not for the bare image after it.
+    channel.handlers?.onInbound(imageMessage(alice, ['first'], '状态'))
+    channel.handlers?.onInbound(imageMessage(alice, ['second']))
+    channel.handlers?.onInbound(text(alice, '同意 1'))
+    await s.service.stopTurnFromComputer()
+    releaseFirst()
+    await s.imagesSaved(1)
+    await channel.sentUntil(() => channel.texts().at(-1)?.includes('现在：空闲') === true)
+    // The approval is gone, so 「同意 1」 is now words for Codex: they go out only with the second image too.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(codex.requests('turn/start')).toHaveLength(1)
+    releaseSecond()
+    await s.imagesSaved(2)
+    await channel.sentUntil(() => channel.texts().at(-1) === '收到，带着 2 张图片，Codex 开始处理。')
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    const input = (codex.requests('turn/start')[1].params as { input: Array<Record<string, unknown>> }).input
+    expect(input.map((entry) => entry.type)).toEqual(['text', 'localImage', 'localImage'])
   })
 })
 
