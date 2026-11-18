@@ -94,13 +94,14 @@ const status = { installed: true, version: '1.2.3', path: 'C:\\Fixture\\bin', in
   uninstall: { available: true, reason: null, manualCommand: null, delegated: false } }
 const externalStatuses: ExternalClientStatus[] = (['workbuddy', 'claudeDesktop', 'opencode'] as ExternalToolId[]).map((tool) => ({
   tool, installed: query.has('clientModels') || query.has('externalInstalled'), version: '1.2.3', path: `C:\\Fixture\\${tool}.exe`, installDirectory: 'C:\\Fixture', running: false,
-  installSupported: query.get('externalUnsupported') !== tool, launchSupported: true, detectionError: query.get('externalDetectionError') === tool ? '客户端路径读取失败' : null,
+  // 同主进程：WorkBuddy 星芒不装、不给下载（yoyo 2026-11-18「下线」），没装时首页是「重新检测」。
+  installSupported: tool !== 'workbuddy' && query.get('externalUnsupported') !== tool, launchSupported: true, detectionError: query.get('externalDetectionError') === tool ? '客户端路径读取失败' : null,
   installHint: query.get('externalUnsupported') === tool ? '当前平台请从官方页面手动安装' : null,
   configured: query.get('externalReady') === tool, model: query.get('externalReady') === tool ? 'fixture-model' : null,
   configurationSource: query.get('externalOther') === tool ? 'other' : query.get('externalReady') === tool ? 'xingmang' : 'missing',
   ...(tool === 'claudeDesktop' ? { configurationReady: query.get('externalReady') === tool || query.get('externalLocalReady') === tool } : {}),
   configurationError: query.get('externalConfigError') === tool ? '当前配置读取失败，可在客户端中检查' : null,
-  // ?externalPristine=workbuddy：主进程现看这一家从没配置过（决定单 D7 的自动连只认它）。
+  // ?externalPristine=opencode：主进程现看这一家从没配置过（决定单 D7 的自动连只认它）。
   ...(query.get('externalPristine') === tool ? { pristine: true } : {}),
 }))
 const externalOwnerSite = session.siteId ?? 'solov'
@@ -587,6 +588,8 @@ const methods = {
         ...(entry.tool === 'workbuddy' ? { installed: true, version: '0.9.0', configured: true, configurationSource: 'xingmang' as const, model: 'cached-model' } : {}),
         cachedAt: '2026-10-05T10:00:00.000Z' }))
     }
+    // 回到星芒窗口时只看 WorkBuddy 一家（yoyo 2026-11-18「改」）：同主进程，回的列表里只有它那一条。
+    if (options?.only === 'workbuddy') return structuredClone(externalStatuses.filter((entry) => entry.tool === 'workbuddy'))
     const result = structuredClone(externalStatuses)
     if (query.has('externalAccountOwned') && (!session.authenticated || session.account?.userId !== account.userId || (session.siteId ?? 'solov') !== externalOwnerSite)) {
       const owned = result.find((entry) => entry.tool === query.get('externalAccountOwned'))
@@ -608,7 +611,7 @@ const methods = {
   },
   // 同主进程：下载那一段点了就停，安装那一步拒绝并给原因（externalCancelRefused）。
   cancelExternalClientInstall: async (tool) => {
-    if (query.has('externalCancelRefused')) return { cancelled: false, reason: '正在安装 WorkBuddy，这一步中断会留下装了一半的程序，请等它结束。' }
+    if (query.has('externalCancelRefused')) return { cancelled: false, reason: '正在安装 OpenCode，这一步中断会留下装了一半的程序，请等它结束。' }
     cancelExternalInstall?.(new Error(`${tool} 安装已取消`))
     return { cancelled: true, reason: null }
   },

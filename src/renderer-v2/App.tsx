@@ -300,6 +300,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     requestUninstall, requestRevert, installFromHome, cancelHomeInstall, connectExternalAfterLogin,
   } = useToolInstall({
     app, toolsApi, toolbox, toast, perform, platform, session, scope, latestScope, offline, offlineNow, mounted, accountEpoch,
+    accountKeysReady: accountBootstrap?.scope === scope && accountBootstrap.result !== undefined,
     runAccountBootstrap, refreshRecent, navigate, setAuth, setConfirmation, setOperationError, setExternalClient,
   })
   // Mac 上桌面端的「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）：星芒关掉的那一份更新完走首页同一个「打开」。

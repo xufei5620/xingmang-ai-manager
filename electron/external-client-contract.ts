@@ -1,7 +1,7 @@
 import type { ProviderId } from './catalog'
 import { claudeDesktopDownloadPageUrl } from './claude-desktop-install-failure'
 import type { ExternalClientCheckResult } from './external-client-connection'
-import type { ExternalToolId } from './external-tool-config'
+import type { ExternalToolId, WorkBuddyEdition } from './external-tool-config'
 
 export interface ExternalClientRuntimeStatus {
   tool: ExternalToolId
@@ -26,6 +26,11 @@ export interface ExternalClientRuntimeStatus {
   latestVersion?: string | null
   /** 装着的比 latestVersion 旧、而且在「应用程序」里，星芒换得了它：首页出「可更新到 v…」。缺省 = 不提醒（旧行为）。 */
   updateAvailable?: boolean
+  /**
+   * 只有 WorkBuddy 有：认出来的是国内版、海外版（WorkBuddy AI）还是两版都有，国内版在前。path、version 是排第一的那一版的；
+   * 写配置每一版各写各的 models.json。缺省 = 没装，或者是不分版本的旧结果（当国内版）。
+   */
+  workBuddyEditions?: WorkBuddyEdition[]
 }
 
 /**
@@ -47,12 +52,11 @@ export function parseDesktopAppUpdateRequest(value: unknown): DesktopAppUpdateRe
 }
 
 /**
- * 首页「去官网下载」打开的页面：WorkBuddy 在 Windows 上一律由客户自己去腾讯官网下载
- * （yoyo 2026-10-13），另两家是缺少系统 winget 时。主进程外链白名单逐条收录这几条
- * （I12 全等匹配），所以这里只放完整网址，不拼接。
+ * 首页「去官网下载」打开的页面：Claude Desktop、OpenCode 缺少系统 winget 时给。主进程外链白名单逐条收录
+ * 这几条（I12 全等匹配），所以这里只放完整网址，不拼接。WorkBuddy 不再给下载（yoyo 2026-11-18「下线」）：
+ * 原来那条 workbuddy.ai 是海外版的官网，客户照着装的海外版星芒又认不出来。
  */
 export const externalClientOfficialDownloadUrls = {
-  workbuddy: 'https://www.workbuddy.ai/',
   claudeDesktop: claudeDesktopDownloadPageUrl,
   // /download 是 OpenCode 全部产品（命令行、手机、SDK）的总览页，Windows 客户容易下错；/desktop 只有桌面端安装包（L4）。
   opencode: 'https://opencode.ai/desktop',
@@ -88,9 +92,10 @@ export interface ExternalClientConnectionStatus {
   officialAccount?: boolean
   /**
    * 这个客户端从没配置过：星芒和客户都没给它写过配置，也没登过别家（决定单 D7）。装好或登录以后只有这样的
-   * 才替客户自动连一次。WorkBuddy 是没有 models.json；OpenCode 是全局配置文件一个都没有、也没在它里面登过
-   * 别家（auth.json）；Claude Desktop 是官方和第三方两个数据目录都还不在（一次都没打开过，自己的 Claude 账号
-   * 也就没登过）。缺省 = 不是，或者说不准（旧行为：不自动连）。
+   * 才替客户自动连一次。WorkBuddy 是每一版的 models.json 里都没有指向星芒的模型、星芒也没替当前账号配过它
+   * （2026-11-18 起：客户自己加的别家模型不算配置过，自动连只加一条、不碰他的）；OpenCode 是全局配置文件一个都
+   * 没有、也没在它里面登过别家（auth.json）；Claude Desktop 是官方和第三方两个数据目录都还不在（一次都没打开过，
+   * 自己的 Claude 账号也就没登过）。缺省 = 不是，或者说不准（旧行为：不自动连）。
    */
   pristine?: boolean
 }
@@ -106,6 +111,11 @@ export interface ExternalClientStatus extends ExternalClientRuntimeStatus, Exter
 /** 首页开机那一次可以只要上次落盘的结果（见 SystemService.cachedExternalClients）；其余调用方不传。 */
 export interface ExternalClientScanOptions {
   cachedOnly?: boolean
+  /**
+   * 只看 WorkBuddy 这一家（见 SystemService.scanExternalClient）：客户自己装好以后回到星芒窗口，首页那一行还写着
+   * 「未安装」时悄悄看一眼（yoyo 2026-11-18「改」）。回的列表里只有这一条，不起整轮盘点。
+   */
+  only?: 'workbuddy'
 }
 
 /**

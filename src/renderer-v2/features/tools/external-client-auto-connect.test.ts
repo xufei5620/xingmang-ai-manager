@@ -3,8 +3,10 @@ import type { AccountKey, AppConfigSummary, ExternalClientCheckResult, ExternalC
 import {
   autoConnectExternalClient,
   describeExternalAutoConnect,
+  externalAutoConnectAttemptKey,
   externalAutoConnectEligible,
   externalAutoConnectSource,
+  externalDetectedAutoConnectTarget,
   type ExternalAutoConnectBridge,
 } from './external-client-auto-connect'
 
@@ -56,15 +58,41 @@ const bridge = (options: { config?: AppConfigSummary['providers']; keys?: Accoun
 }
 
 describe('external client automatic connection', () => {
-  it('only connects a client the main process just found installed, never configured and closed', () => {
+  it.each(['claudeDesktop', 'opencode'] as const)('only connects %s while the main process just found it installed, never configured and closed', (tool) => {
+    expect(externalAutoConnectEligible(fresh(tool))).toBe(true)
+    expect(externalAutoConnectEligible(fresh(tool, { pristine: undefined }))).toBe(false)
+    expect(externalAutoConnectEligible(fresh(tool, { installed: false }))).toBe(false)
+    expect(externalAutoConnectEligible(fresh(tool, { running: true }))).toBe(false)
+    expect(externalAutoConnectEligible(fresh(tool, { cachedAt: '2026-11-10T00:00:00.000Z' }))).toBe(false)
+    expect(externalAutoConnectEligible(fresh(tool, { detectionError: '客户端路径读取失败' }))).toBe(false)
+    expect(externalAutoConnectEligible(fresh(tool, { configurationError: '当前配置读取失败' }))).toBe(false)
+    expect(externalAutoConnectEligible(fresh(tool, { configurationSource: 'other' }))).toBe(false)
+  })
+
+  // yoyo 2026-11-18「改」：WorkBuddy 盯着 models.json，开着也写；里面只有客户自己的模型也写（只加一条）。
+  it('connects WorkBuddy while it is open or holds only the customer\'s own models, and nothing else changes', () => {
     expect(externalAutoConnectEligible(fresh('workbuddy'))).toBe(true)
+    expect(externalAutoConnectEligible(fresh('workbuddy', { running: true }))).toBe(true)
+    expect(externalAutoConnectEligible(fresh('workbuddy', { configurationSource: 'other' }))).toBe(true)
     expect(externalAutoConnectEligible(fresh('workbuddy', { pristine: undefined }))).toBe(false)
     expect(externalAutoConnectEligible(fresh('workbuddy', { installed: false }))).toBe(false)
-    expect(externalAutoConnectEligible(fresh('workbuddy', { running: true }))).toBe(false)
     expect(externalAutoConnectEligible(fresh('workbuddy', { cachedAt: '2026-11-10T00:00:00.000Z' }))).toBe(false)
     expect(externalAutoConnectEligible(fresh('workbuddy', { detectionError: '客户端路径读取失败' }))).toBe(false)
     expect(externalAutoConnectEligible(fresh('workbuddy', { configurationError: '当前配置读取失败' }))).toBe(false)
-    expect(externalAutoConnectEligible(fresh('workbuddy', { configurationSource: 'other' }))).toBe(false)
+    expect(externalAutoConnectEligible(fresh('workbuddy', { configurationSource: 'unknown' }))).toBe(false)
+  })
+
+  it('connects only WorkBuddy once detection finds it, and tries each install once per account', () => {
+    const statuses = [fresh('workbuddy'), fresh('claudeDesktop'), fresh('opencode')]
+    expect(externalDetectedAutoConnectTarget(statuses)?.tool).toBe('workbuddy')
+    expect(externalDetectedAutoConnectTarget(statuses.slice(1))).toBeNull()
+    expect(externalDetectedAutoConnectTarget([fresh('workbuddy', { pristine: undefined }), fresh('opencode')])).toBeNull()
+    const installed = fresh('workbuddy', { path: 'C:\\WorkBuddy\\WorkBuddy.exe', workBuddyEditions: ['domestic', 'overseas'] })
+    const key = externalAutoConnectAttemptKey('solov:7', installed)
+    expect(externalAutoConnectAttemptKey('solov:7', { ...installed, workBuddyEditions: ['overseas', 'domestic'] })).toBe(key)
+    expect(externalAutoConnectAttemptKey('solov:8', installed)).not.toBe(key)
+    expect(externalAutoConnectAttemptKey('solov:7', { ...installed, workBuddyEditions: ['domestic'] })).not.toBe(key)
+    expect(externalAutoConnectAttemptKey('solov:7', { ...installed, path: 'D:\\WorkBuddy\\WorkBuddy.exe' })).not.toBe(key)
   })
 
   it('picks the same key and model the connect dialog would open with', () => {

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import fc from 'fast-check'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parse } from 'jsonc-parser'
 import {
+  combineWorkBuddyInspections,
   createExternalToolConfig,
   externalToolConfigPath,
   followExternalToolKey,
@@ -117,16 +119,24 @@ describe('external tool configuration', () => {
     expect(fs.readdirSync(path.dirname(file))).toEqual([path.basename(file)])
   })
 
-  it('treats WorkBuddy as never configured only while it has no models.json at all', async () => {
+  it('treats WorkBuddy as never configured while its models.json points nowhere at either site', async () => {
     const home = temporaryHome()
     const inspect = () => inspectExternalToolConnection('workbuddy', platform, { userHome: home }, 'https://xm.solov.cc/v1')
     expect(inspect()).toMatchObject({ configurationSource: 'missing', pristine: true })
-    // 文件在、一条都没有：多半是客户删过星芒那条，不再算从没配置过（D7 只自动连一次）。
+    // 文件在、只有客户自己的模型也算：自动连只加一条，不碰他的（yoyo 2026-11-18「改」）。删过星芒那条的由
+    // 主进程按「这个账号替它写过」另外拦（external-client-route-service.ts）。
     const file = externalToolConfigPath('workbuddy', platform, { userHome: home })
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, '[]', 'utf8')
-    expect(inspect()).toMatchObject({ configurationSource: 'missing' })
-    expect(inspect()).not.toHaveProperty('pristine')
+    expect(inspect()).toMatchObject({ configurationSource: 'missing', pristine: true })
+    fs.writeFileSync(file, JSON.stringify({ models: [{ id: 'own-model', url: 'https://api.example.com/v1/chat/completions', apiKey: 'sk-own' }] }), 'utf8')
+    expect(inspect()).toMatchObject({ configurationSource: 'other', pristine: true })
+    // 指着星芒任何一个站点（含历史账号站、直连线路）的都不算：那是星芒写过的。
+    for (const url of ['https://api.solov.cc/v1/chat/completions', 'https://xm.solov.cc/v1/chat/completions']) {
+      fs.writeFileSync(file, JSON.stringify({ models: [{ id: 'old', url, apiKey: 'sk-old' }] }), 'utf8')
+      expect(inspect(), url).not.toHaveProperty('pristine')
+    }
+    fs.writeFileSync(file, '[]', 'utf8')
     await saveExternalToolConfig('workbuddy', platform, { userHome: home }, { model: 'claude-test', apiKey: 'sk-private-test' })
     expect(inspect()).not.toHaveProperty('pristine')
   })
@@ -428,6 +438,139 @@ describe('external tool configuration', () => {
     expect(held).toBe(true)
     expect(fs.readFileSync(target, 'utf8')).toBe('{"concurrent":true}')
     expect(fs.readdirSync(path.dirname(target)).some((name) => name.endsWith('.tmp'))).toBe(false)
+  })
+})
+
+describe('WorkBuddy domestic and overseas editions (2026-11-18)', () => {
+  const xm = 'https://xm.solov.cc/v1'
+  const both = (home: string) => ({ userHome: home, workBuddyEditions: ['overseas', 'domestic'] as const })
+
+  function folder(home: string, name: '.workbuddy' | '.workbuddy-ai', content: string): string {
+    const target = path.join(home, name, 'models.json')
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, content, 'utf8')
+    return target
+  }
+
+  it('keeps writing only the domestic folder when no edition is named, as before', () => {
+    expect(externalToolConfigPath('workbuddy', platform, { userHome: '/home/test' })).toBe(path.join('/home/test', '.workbuddy', 'models.json'))
+    expect(externalToolConfigPath('workbuddy', platform, { userHome: '/home/test', workBuddyEditions: ['overseas'] })).toBe(path.join('/home/test', '.workbuddy-ai', 'models.json'))
+  })
+
+  it('writes each installed edition its own models.json, domestic first, each with its own backup', async () => {
+    const home = temporaryHome()
+    const overseas = folder(home, '.workbuddy-ai', '[{"id":"mine","url":"https://own.example/v1/chat/completions","apiKey":"sk-own"}]\n')
+    const result = await saveExternalToolConfig('workbuddy', platform, both(home), { model: 'gpt-5.4', apiKey: 'sk-private-test' })
+    const domestic = path.join(home, '.workbuddy', 'models.json')
+    expect(result.path).toBe(domestic)
+    expect(result.files).toEqual([domestic, overseas])
+    expect(result.backups).toHaveLength(1)
+    expect(JSON.parse(fs.readFileSync(domestic, 'utf8')).map((entry: { id: string }) => entry.id)).toEqual(['gpt-5.4'])
+    expect(JSON.parse(fs.readFileSync(overseas, 'utf8')).map((entry: { id: string }) => entry.id)).toEqual(['mine', 'gpt-5.4'])
+    expect(inspectExternalToolConnection('workbuddy', platform, both(home), xm)).toMatchObject({ configured: true, configurationSource: 'xingmang', model: 'gpt-5.4' })
+  })
+
+  it('says connected only when every installed edition is, and never configured only when none points at the toolbox', async () => {
+    const home = temporaryHome()
+    await saveExternalToolConfig('workbuddy', platform, { userHome: home }, { model: 'gpt-5.4', apiKey: 'sk-private-test' })
+    expect(inspectExternalToolConnection('workbuddy', platform, both(home), xm)).toMatchObject({ configured: false, configurationSource: 'missing' })
+    expect(inspectExternalToolConnection('workbuddy', platform, both(home), xm)).not.toHaveProperty('pristine')
+    folder(home, '.workbuddy-ai', 'not json')
+    expect(inspectExternalToolConnection('workbuddy', platform, both(home), xm)).toMatchObject({ configurationSource: 'unknown' })
+    const fresh = temporaryHome()
+    folder(fresh, '.workbuddy-ai', '[{"id":"mine","url":"https://own.example/v1/chat/completions","apiKey":"sk-own"}]')
+    expect(inspectExternalToolConnection('workbuddy', platform, both(fresh), xm)).toMatchObject({ configured: false, configurationSource: 'other', pristine: true })
+  })
+
+  it('combines inspections the same way whatever the order', () => {
+    const configured = { configured: true, model: 'a', configurationSource: 'xingmang' as const, configurationError: null }
+    const missing = { configured: false, model: null, configurationSource: 'missing' as const, configurationError: null, pristine: true }
+    const other = { configured: false, model: null, configurationSource: 'other' as const, configurationError: null, pristine: true }
+    expect(combineWorkBuddyInspections([configured])).toBe(configured)
+    expect(combineWorkBuddyInspections([configured, configured])).toBe(configured)
+    expect(combineWorkBuddyInspections([missing, other])).toMatchObject({ configured: false, configurationSource: 'other', pristine: true })
+    expect(combineWorkBuddyInspections([configured, missing])).toMatchObject({ configured: false, model: 'a' })
+    expect(combineWorkBuddyInspections([configured, missing])).not.toHaveProperty('pristine')
+  })
+
+  it('moves the route in the edition that has the toolbox entry and skips the one that does not', async () => {
+    const home = temporaryHome()
+    const to = 'https://xm-direct.solov.cc/v1'
+    const domestic = folder(home, '.workbuddy', `[{"id":"gpt-5.4","url":"${xm}/chat/completions","apiKey":"sk-owned"}]`)
+    const untouched = '[{"id":"mine","url":"https://own.example/v1/chat/completions","apiKey":"sk-own"}]'
+    const overseas = folder(home, '.workbuddy-ai', untouched)
+    await followExternalToolRoute('workbuddy', platform, both(home), { from: xm, to, apiKey: 'sk-owned' })
+    expect(fs.readFileSync(domestic, 'utf8')).toContain(`${to}/chat/completions`)
+    expect(fs.readFileSync(overseas, 'utf8')).toBe(untouched)
+    await followExternalToolKey('workbuddy', platform, both(home), { baseUrl: to, from: 'sk-owned', to: 'sk-next', offered: ['gpt-5.4'] })
+    expect(fs.readFileSync(domestic, 'utf8')).toContain('sk-next')
+    expect(fs.readFileSync(overseas, 'utf8')).toBe(untouched)
+  })
+
+  it.each([
+    ['a model of the same name', '[{"id":"gpt-5.4","url":"https://own.example/v1/chat/completions","apiKey":"sk-own"}]'],
+    ['an entry on the historical site', '[{"id":"old","url":"https://api.solov.cc/v1/chat/completions","apiKey":"sk-old"}]'],
+    ['an entry on the direct line', '{"models":[{"id":"old","url":"https://xm-direct.solov.cc/v1/chat/completions","apiKey":"sk-old"}]}'],
+  ])('refuses the automatic write next to %s and leaves the file alone', async (_case, content) => {
+    const home = temporaryHome()
+    const target = folder(home, '.workbuddy', content)
+    expect(() => mergeExternalToolConfig('workbuddy', content, { model: 'gpt-5.4', apiKey: 'sk-new', automatic: true })).toThrow('这次没有自动连接')
+    await expect(saveExternalToolConfig('workbuddy', platform, { userHome: home }, { model: 'gpt-5.4', apiKey: 'sk-new', automatic: true })).rejects.toThrow('这次没有自动连接')
+    expect(fs.readFileSync(target, 'utf8')).toBe(content)
+    // 客户自己在配置窗口里点保存照旧按型号名覆盖（旧行为）。
+    expect(() => mergeExternalToolConfig('workbuddy', content, { model: 'gpt-5.4', apiKey: 'sk-new' })).not.toThrow()
+  })
+
+  it('writes a whole new list when the automatic write finds no file or no model list yet', () => {
+    expect(JSON.parse(mergeExternalToolConfig('workbuddy', null, { model: 'gpt-5.4', apiKey: 'sk-new', automatic: true }))).toEqual([expect.objectContaining({ id: 'gpt-5.4', apiKey: 'sk-new' })])
+    expect(JSON.parse(mergeExternalToolConfig('workbuddy', '{"theme":"dark"}', { model: 'gpt-5.4', apiKey: 'sk-new', automatic: true }))).toEqual({ theme: 'dark', models: [expect.objectContaining({ id: 'gpt-5.4' })] })
+  })
+
+  it('appends the automatic model after the customer\'s own entries and adds it to their visible list', () => {
+    const content = '{\n\t"availableModels": ["mine"],\n\t"models": [ {"id":"mine",  "url":"https://own.example/v1/chat/completions","apiKey":"sk-own"} ]\n}\n'
+    const merged = mergeExternalToolConfig('workbuddy', content, { model: 'gpt-5.4', apiKey: 'sk-new', automatic: true })
+    expect(merged).toContain('{"id":"mine",  "url":"https://own.example/v1/chat/completions","apiKey":"sk-own"}')
+    const parsed = JSON.parse(merged)
+    expect(parsed.models.map((entry: { id: string }) => entry.id)).toEqual(['mine', 'gpt-5.4'])
+    expect(parsed.models[1]).toMatchObject({ url: `${xm}/chat/completions`, apiKey: 'sk-new' })
+    expect(parsed.availableModels).toEqual(['mine', 'gpt-5.4'])
+  })
+})
+
+describe('automatic WorkBuddy connection with random inputs', () => {
+  const relay = /^https?:\/\/(?:xm|api|xm-direct|api-direct)\.solov\.cc(?:[:/]|$)/i
+  const entry = fc.record({
+    id: fc.string({ minLength: 1, maxLength: 12 }).filter((id) => id.trim().length > 0 && id !== 'gpt-5.4'),
+    url: fc.webUrl().filter((url) => !relay.test(url)),
+    apiKey: fc.string({ maxLength: 20 }),
+    extra: fc.option(fc.dictionary(fc.string({ minLength: 1, maxLength: 6 }).filter((key) => !['id', 'url', 'apiKey'].includes(key)), fc.oneof(fc.string(), fc.integer(), fc.boolean()), { maxKeys: 3 }), { nil: undefined }),
+  })
+  const customerFile = fc.record({
+    entries: fc.uniqueArray(entry, { selector: (item) => item.id, maxLength: 6 }),
+    objectForm: fc.boolean(),
+    indent: fc.constantFrom(0, 2, 4, '\t'),
+  })
+
+  it('keeps every customer entry byte for byte and in order, adding one model at the end', () => {
+    fc.assert(fc.property(customerFile, ({ entries, objectForm, indent }) => {
+      const texts = entries.map(({ id, url, apiKey, extra }) => JSON.stringify({ ...extra, id, url, apiKey }))
+      const separator = indent === 0 ? ',' : `,\n${typeof indent === 'number' ? ' '.repeat(indent) : indent}`
+      const list = `[${texts.join(separator)}]`
+      const content = objectForm ? `{"models": ${list}, "keep": true}\n` : `${list}\n`
+      const merged = mergeExternalToolConfig('workbuddy', content, { model: 'gpt-5.4', apiKey: 'sk-new', automatic: true })
+      let cursor = 0
+      for (const text of texts) {
+        const at = merged.indexOf(text, cursor)
+        expect(at, text).toBeGreaterThanOrEqual(cursor)
+        cursor = at + text.length
+      }
+      const parsed = JSON.parse(merged)
+      const models = objectForm ? parsed.models : parsed
+      expect(models.slice(0, entries.length)).toEqual(texts.map((text) => JSON.parse(text)))
+      expect(models).toHaveLength(entries.length + 1)
+      expect(models[entries.length]).toMatchObject({ id: 'gpt-5.4', apiKey: 'sk-new' })
+      if (objectForm) expect(parsed.keep).toBe(true)
+    }), { numRuns: 200 })
   })
 })
 

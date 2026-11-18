@@ -43,6 +43,7 @@ function fixture(options: { site?: 'solov' | 'solov-api'; platform?: NodeJS.Plat
   }))
   const runtime: NonNullable<SystemServiceOptions['externalClientRuntime']> = {
     scan: vi.fn(async () => structuredClone(runtimeStatuses)),
+    scanOne: vi.fn(async (tool: ExternalToolId) => structuredClone(runtimeStatuses.find((status) => status.tool === tool)!)),
     install: vi.fn(async (tool, onProgress) => {
       onProgress?.({ tool, phase: 'installing', message: '正在安装', percent: null })
       return { ...runtimeStatuses.find((status) => status.tool === tool)!, installed: true, launchSupported: true, version: '1.2.3' }
@@ -293,18 +294,23 @@ describe('external client system-service integration', () => {
     expect(JSON.stringify(f.service.getLastExternalClients())).not.toContain(selectedKey)
   })
 
-  it.each(externalToolIds)('writes the automatic %s connection only while it is still never configured and closed', async (tool) => {
+  it.each(externalToolIds)('writes the automatic %s connection only while it is still never configured, and closed unless it is WorkBuddy', async (tool) => {
     const f = fixture()
     for (const status of f.runtimeStatuses) status.installed = true
     const runtimeStatus = f.runtimeStatuses.find((status) => status.tool === tool)!
     const automatic = () => f.service.configureExternalTool(tool, { apiKey: selectedKey, model: selectedModel }, undefined, 'configured', { automatic: true })
     expect((await f.service.scanExternalClients()).find((status) => status.tool === tool)).toMatchObject({ configurationSource: 'missing', pristine: true })
-    // 开着：等它退出再说，这次一个字不写（D7）。
     runtimeStatus.running = true
-    await expect(automatic()).rejects.toThrow('这次没有自动连接')
-    expect(targetFiles(f.userHome)).toEqual([])
-    runtimeStatus.running = false
-    await expect(automatic()).resolves.toMatchObject({ tool, model: selectedModel, outcome: 'configured' })
+    if (tool === 'workbuddy') {
+      // WorkBuddy 盯着 models.json，开着也写（2026-11-18 拆安装包核实）。
+      await expect(automatic()).resolves.toMatchObject({ tool, model: selectedModel, outcome: 'configured' })
+    } else {
+      // 开着：等它退出再说，这次一个字不写（D7）。
+      await expect(automatic()).rejects.toThrow('这次没有自动连接')
+      expect(targetFiles(f.userHome)).toEqual([])
+      runtimeStatus.running = false
+      await expect(automatic()).resolves.toMatchObject({ tool, model: selectedModel, outcome: 'configured' })
+    }
     const written = targetFiles(f.userHome)
     expect(written.length).toBeGreaterThan(0)
     const before = new Map(written.map((file) => [file, fs.readFileSync(file, 'utf8')]))
@@ -313,6 +319,37 @@ describe('external client system-service integration', () => {
     for (const [file, content] of before) expect(fs.readFileSync(file, 'utf8'), file).toBe(content)
     // 客户自己在配置窗口里点的保存照旧能写。
     await expect(f.service.configureExternalTool(tool, { apiKey: selectedKey, model: selectedModel })).resolves.toMatchObject({ tool, outcome: 'configured' })
+  })
+
+  // yoyo 2026-11-18「改」：WorkBuddy 认出来就自动连，但每个账号只替它写一次；客户删了星芒那条，不再给他加回去。
+  it('keeps WorkBuddy out of automatic connection once this account has written it, even after the customer removes the entry', async () => {
+    const f = fixture()
+    f.runtimeStatuses[0].installed = true
+    const automatic = () => f.service.configureExternalTool('workbuddy', { apiKey: selectedKey, model: selectedModel }, undefined, 'configured', { automatic: true })
+    const read = async () => (await f.service.scanExternalClients()).find((status) => status.tool === 'workbuddy')
+    await expect(automatic()).resolves.toMatchObject({ outcome: 'configured' })
+    const [file] = targetFiles(f.userHome).filter((entry) => entry.endsWith('models.json'))
+    fs.writeFileSync(file, '[]\n', 'utf8')
+    expect(await read()).toMatchObject({ configured: false, configurationSource: 'missing' })
+    expect(await read()).not.toHaveProperty('pristine')
+    await expect(automatic()).rejects.toThrow('这次没有自动连接')
+    expect(fs.readFileSync(file, 'utf8')).toBe('[]\n')
+    // 换一个账号登录：这个账号还没替它写过。
+    f.setUser(18)
+    expect(await read()).toMatchObject({ pristine: true })
+    // 没登录时不算从没配置过：自动连要的是当前账号。
+    f.setUser(null)
+    expect(await read()).not.toHaveProperty('pristine')
+  })
+
+  it('looks at WorkBuddy alone when asked, without a full inventory or touching the saved snapshot', async () => {
+    const f = fixture()
+    f.runtimeStatuses[0].installed = true
+    const status = await f.service.scanExternalClient('workbuddy')
+    expect(status).toMatchObject({ tool: 'workbuddy', installed: true, configurationSource: 'missing', pristine: true })
+    expect(f.runtime.scanOne).toHaveBeenCalledExactlyOnceWith('workbuddy')
+    expect(f.runtime.scan).not.toHaveBeenCalled()
+    expect(f.service.getLastExternalClients()).toBeNull()
   })
 
   it('shows the next start the last whole detection until that start has scanned, never as running and without the key', async () => {

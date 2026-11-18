@@ -16,7 +16,7 @@ import {
   externalClientOfficialDownloadUrls, isExternalToolId,
   type DesktopAppUpdateRequest, type ExternalClientInstallProgress, type ExternalClientRuntimeStatus,
 } from './external-client-contract'
-import type { ExternalToolId } from './external-tool-config'
+import type { ExternalToolId, WorkBuddyEdition } from './external-tool-config'
 import {
   InstallCancellationRegistry, InstallCancelledError, isInstallCancelledError,
   type InstallCancellationHandle, type InstallCancellationOutcome,
@@ -44,14 +44,21 @@ const definitions = {
   claudeDesktop: { name: 'Claude Desktop', winget: 'Anthropic.Claude', executable: 'Claude.exe', bundle: 'Claude.app', bundleId: 'com.anthropic.claudefordesktop' },
   opencode: { name: 'OpenCode', winget: 'SST.OpenCodeDesktop', executable: 'OpenCode.exe', bundle: 'OpenCode.app', bundleId: 'ai.opencode.desktop' },
 } as const
+/**
+ * WorkBuddy 两个版的程序（2026-11-18 拆官方安装包核实）：国内版 WorkBuddy.exe / WorkBuddy.app，海外版（WorkBuddy AI，
+ * 官网 workbuddy.ai）WorkBuddyAI.exe / WorkBuddy AI.app。两版 Windows 上都是腾讯科技（深圳）签名，Mac 上都是
+ * FN2V63AD2J 这个团队，认人的规矩不变，只是多认一种程序名。国内版在前：两版都装着时首页「打开」开的是它。
+ */
+const workBuddyPrograms: readonly { edition: WorkBuddyEdition; executable: string; bundle: string; bundleId: string }[] = [
+  { edition: 'domestic', executable: definitions.workbuddy.executable, bundle: definitions.workbuddy.bundle, bundleId: definitions.workbuddy.bundleId },
+  { edition: 'overseas', executable: 'WorkBuddyAI.exe', bundle: 'WorkBuddy AI.app', bundleId: 'com.workbuddy.workbuddy-ai' },
+]
 const claudeFamily = 'Claude_pzs8sxrjxfjjc'
 const claudeApplicationId = `${claudeFamily}!Claude`
 const maximumProbeBytes = 256 * 1024
 // 找不到可信的系统 winget 时，原因是 ENOENT、包身份校验失败之类的内部细节，客户看不懂
 // 也做不了什么；首页行里只说装不了、怎么办，原因写进运行日志给客服查。
 export const externalClientWingetUnavailableHint = '这台电脑缺少系统自带的应用安装组件，不能一键安装；点「去官网下载」装好后回来重新检测'
-// Windows 上 WorkBuddy 由客户自己去腾讯官网下载（yoyo 2026-10-13），首页那一行的说明。
-const workBuddySelfDownloadHint = '到腾讯官网下载安装，装好后回来重新检测'
 // Windows 上签名不对、Mac 上苹果的签名核对没过，首页那一行说的都是这一句。
 const signatureMismatchMessage = '客户端数字签名无效或签名发布者与官方发布者不一致'
 const appxPathIdentityMessage = '客户端 AppX 路径身份无法验证'
@@ -59,6 +66,8 @@ const appxPathIdentityMessage = '客户端 AppX 路径身份无法验证'
 const claudeDesktopOtherVolumePattern = /^Claude Desktop 装在了 [A-Z] 盘，/
 // 检测脚本最多交回几条读不出来的安装记录（只进运行日志）。
 const maximumRegistryFailures = 10
+// 安装记录对上了、程序却没认的（路径里有联接、程序不在了），检测脚本最多交回几条（只进运行日志）。
+const maximumRejectedClients = 10
 // 老电脑上这一轮 PowerShell 盘点（注册表、进程、AppX、签名）要好几秒，而装没装
 // 客户端这件事几分钟内几乎不会变；装、卸、打开之后会主动作废。
 const defaultScanCacheTtlMs = 5 * 60_000
@@ -80,6 +89,8 @@ interface LocatedClient {
   version: string | null
   running: boolean
   applicationId?: string
+  /** 只有 WorkBuddy 有：认出来的是哪一版。 */
+  edition?: WorkBuddyEdition
 }
 interface Inspection { clients: LocatedClient[]; errors: Partial<Record<ExternalToolId, string>>; timings?: ExternalClientInventoryTimings }
 interface InspectionScope {
@@ -138,6 +149,8 @@ export interface ExternalClientRuntimeOptions {
   onWingetUnavailable?: (reason: string) => void
   /** Windows 上哪几条安装记录读不出来、为什么，只进运行日志；内容和上一次一样就不再调。 */
   onRegistryIncomplete?: (failures: ExternalClientRegistryFailure[]) => void
+  /** Windows 上安装记录对上了、程序却没认的那几条（见 ExternalClientRejection），只进运行日志；内容和上一次一样就不再调。 */
+  onClientsRejected?: (rejections: ExternalClientRejection[]) => void
   /** Mac 上苹果的签名核对没过时它自己说的原因，只进运行日志；同一个应用包原因没变就不再调。 */
   onMacVerificationFailed?: (failure: ExternalClientMacVerificationFailure) => void
   /**
@@ -174,6 +187,17 @@ export interface ExternalClientRegistryFailure {
 }
 
 /** 检测失败时首页那句中文（reason），和 PowerShell 给的原话（message）。 */
+/**
+ * 安装记录对上了、程序却没认的那一条（只进运行日志）：invalid = 路径不像本机路径或是个文件夹，missing = 程序不在了
+ * （卸了但记录还在、搬走了），reparse = 路径里有符号链接或目录联接（C 盘搬家、软件搬家），unreadable = 读不了。
+ * 认不认照旧（I8），这里只是让客服看得出「装了怎么显示没装」。
+ */
+export interface ExternalClientRejection {
+  tool: ExternalToolId
+  path: string
+  reason: 'invalid' | 'missing' | 'reparse' | 'unreadable'
+}
+
 export interface ExternalClientDetectionErrorDetail {
   tool: ExternalToolId
   reason: string
@@ -263,13 +287,12 @@ function officialDownloadUrl(tool: ExternalToolId): string | null {
 }
 
 /**
- * Windows 上各家怎么装。WorkBuddy 一律让客户去腾讯官网自己下载、装好回来重新检测，星芒只管
- * 认出来和写配置（yoyo 2026-10-13）：认它看的是卸载记录和腾讯签名，跟谁装的无关。Claude Desktop
- * 没有可信的系统 winget 时换 Claude 官网的离线安装包，和有 winget 时一样只给「安装」；OpenCode
- * 没有 winget 就只能去官网自己下载。
+ * Windows 上各家怎么装。WorkBuddy 星芒不装也不给下载（yoyo 2026-11-18「下线」）：客户自己装好，星芒认出来
+ * （卸载记录和腾讯签名，跟谁装的、装哪一版无关）就替当前账号连上。Claude Desktop 没有可信的系统 winget 时换
+ * Claude 官网的离线安装包，和有 winget 时一样只给「安装」；OpenCode 没有 winget 就只能去官网自己下载。
  */
 function windowsInstallRoute(tool: ExternalToolId, wingetAvailable: boolean): { hint: string | null; oneClick: boolean } {
-  if (tool === 'workbuddy') return { hint: workBuddySelfDownloadHint, oneClick: false }
+  if (tool === 'workbuddy') return { hint: null, oneClick: false }
   if (wingetAvailable || tool === 'claudeDesktop') return { hint: null, oneClick: true }
   return { hint: externalClientWingetUnavailableHint, oneClick: false }
 }
@@ -332,6 +355,17 @@ function registryFailures(value: unknown): ExternalClientRegistryFailure[] {
   } catch { return [] }
 }
 /** 检测脚本交回的 PowerShell 原话，按客户端。格式不对同样当没有。 */
+const rejectionReasons: readonly ExternalClientRejection['reason'][] = ['invalid', 'missing', 'reparse', 'unreadable']
+
+function rejectedClients(value: unknown): ExternalClientRejection[] {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, maximumRejectedClients).flatMap((raw) => {
+    const item = record(raw)
+    const reason = rejectionReasons.find((entry) => entry === item.reason)
+    return isExternalToolId(item.tool) && reason ? [{ tool: item.tool, path: scriptLogText(item.path, 512), reason }] : []
+  })
+}
+
 function scriptErrorDetails(value: unknown): Partial<Record<ExternalToolId, string>> {
   const details: Partial<Record<ExternalToolId, string>> = {}
   if (!value || typeof value !== 'object' || Array.isArray(value)) return details
@@ -439,7 +473,8 @@ export const externalClientSystemCommandTimeoutMs = 15_000
  * 比路径在 JS 里做，没有任何外来文字进 PowerShell 源码。
  */
 export function windowsExternalClientProcessScript(tool: ExternalToolId): string {
-  const name = definitions[tool].executable.replace(/\.exe$/i, '')
+  const name = (tool === 'workbuddy' ? workBuddyPrograms.map((program) => program.executable) : [definitions[tool].executable])
+    .map((executable) => executable.replace(/\.exe$/i, '')).join(',')
   return String.raw`
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ${buildPowerShellModuleImportStatement(['Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management'])}
@@ -533,23 +568,30 @@ $errors = @{}
 # often system English, goes back beside it for the runtime log alone.
 $errorDetails = @{}
 $registry = @()
-function Test-LocalExecutablePath([string]$candidate) {
+$rejected = @()
+function Get-LocalExecutableRejection([string]$candidate) {
   # Registry entries are user writable. Reject remote paths, alternate streams
-  # and reparse parents before reading metadata or a signature from them.
-  if ($candidate -notmatch '^[A-Za-z]:\\' -or $candidate.Substring(2) -match '[:<>"|?*\x00-\x1f]') { return $false }
+  # and reparse parents before reading metadata or a signature from them. An
+  # empty answer accepts the path; the reason for a refusal is only reported to
+  # the runtime log (a junction from moving folders off C: was silent before).
+  if ($candidate -notmatch '^[A-Za-z]:\\' -or $candidate.Substring(2) -match '[:<>"|?*\x00-\x1f]') { return 'invalid' }
   try {
     if ($fullLanguage) {
-      if ([System.IO.Path]::GetFullPath($candidate) -ine $candidate) { return $false }
-    } elseif ($candidate.Length -ge 260 -or $candidate -match '/|\\\\|\\$|\\\.\.?(?:\\|$)|[. ](?:\\|$)|~\d') { return $false }
+      if ([System.IO.Path]::GetFullPath($candidate) -ine $candidate) { return 'invalid' }
+    } elseif ($candidate.Length -ge 260 -or $candidate -match '/|\\\\|\\$|\\\.\.?(?:\\|$)|[. ](?:\\|$)|~\d') { return 'invalid' }
     $cursor = $candidate.Substring(0, 3)
     foreach ($segment in $candidate.Substring(3).Split('\')) {
       if (!$segment) { continue }
       $cursor = Join-Path $cursor $segment
       $item = Get-Item -LiteralPath $cursor -Force
-      if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $false }
+      if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return 'reparse' }
     }
-    return !$item.PSIsContainer
-  } catch { return $false }
+    if ($item.PSIsContainer) { return 'invalid' }
+    return ''
+  } catch {
+    if ([string]$_.FullyQualifiedErrorId -like 'PathNotFound*') { return 'missing' }
+    return 'unreadable'
+  }
 }
 $roots = @('Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'Registry::HKEY_LOCAL_MACHINE\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')
 $registryIncomplete = $false
@@ -591,10 +633,11 @@ foreach ($root in $roots) {
   }
 }
 $timings['registryMs'] = Get-ElapsedMs $clock; $clock = [datetime]::UtcNow
-$processes = @(Get-Process -Name WorkBuddy,Claude,OpenCode -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Path } catch {} })
+$processes = @(Get-Process -Name WorkBuddy,WorkBuddyAI,Claude,OpenCode -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Path } catch {} })
 $timings['processMs'] = Get-ElapsedMs $clock; $clock = [datetime]::UtcNow
 $products = @(
-  @{ tool='workbuddy'; code='BFD312E9-1019-4F57-9F44-F86246833B50'; name='^WorkBuddy(?:\s|$)'; exe='WorkBuddy.exe' },
+  @{ tool='workbuddy'; edition='domestic'; code='BFD312E9-1019-4F57-9F44-F86246833B50'; name='^WorkBuddy(?!\s?AI(?:\s|$))(?:\s|$)'; exe='WorkBuddy.exe' },
+  @{ tool='workbuddy'; edition='overseas'; code='C02C88CB-5DAE-4330-AEC1-572CFD048A59'; name='^WorkBuddy\s?AI(?:\s|$)'; exe='WorkBuddyAI.exe' },
   @{ tool='claudeDesktop'; code='AnthropicClaude'; name='^Claude$'; exe='Claude.exe' },
   @{ tool='opencode'; code='d074f30d-5f88-5885-b075-be1348cc7676'; name='^OpenCode$'; exe='OpenCode.exe' }
 )${only === undefined ? '' : `
@@ -616,7 +659,12 @@ foreach ($product in $products) {
     if ($icon -match '^"([^"\r\n]+\.exe)"(?:,[-\d]+)?$') { $paths += $Matches[1] }
     elseif ($icon -match '^([^"\r\n]+\.exe)(?:,[-\d]+)?$') { $paths += $Matches[1] }
     foreach ($exe in @($paths | Select-Object -Unique)) {
-      if (($exe -split '[\\/]')[-1] -ine $product.exe -or !(Test-LocalExecutablePath $exe)) { continue }
+      if (($exe -split '[\\/]')[-1] -ine $product.exe) { continue }
+      $rejection = Get-LocalExecutableRejection $exe
+      if ($rejection) {
+        if ($rejected.Count -lt ${maximumRejectedClients}) { $rejected += ,[ordered]@{ tool=$product.tool; path=$exe; reason=$rejection } }
+        continue
+      }
       try {
         $file = Get-Item -LiteralPath $exe -Force
         $stamp = '{0}:{1}:{2}' -f $file.Length, $file.LastWriteTimeUtc.Ticks, $file.CreationTimeUtc.Ticks
@@ -632,7 +680,7 @@ foreach ($product in $products) {
           $signatureStatus = [string]$signature.Status
           $signatureSubject = [string]$signature.SignerCertificate.Subject
         }
-        $clients += ,[ordered]@{ tool=$product.tool; path=$exe; version=[string]$entry.DisplayVersion; running=($processes -contains $exe); signatureStatus=$signatureStatus; signatureSubject=$signatureSubject; signatureStamp=$stamp }
+        $clients += ,[ordered]@{ tool=$product.tool; edition=[string]$product.edition; path=$exe; version=[string]$entry.DisplayVersion; running=($processes -contains $exe); signatureStatus=$signatureStatus; signatureSubject=$signatureSubject; signatureStamp=$stamp }
       } catch { $errors[$product.tool] = '无法读取客户端数字签名'; $errorDetails[$product.tool] = [string]$_.Exception.Message }
     }
   }
@@ -641,7 +689,7 @@ $timings['clientsMs'] = Get-ElapsedMs $clock
 $timings['signatureMs'] = $signatureMs
 $timings['signaturesChecked'] = $signaturesChecked
 $timings['signaturesReused'] = $signaturesReused
-${buildPowerShellJsonOutputStatements('@{ clients=@($clients); errors=$errors; errorDetails=$errorDetails; registryFailures=@($registryFailures); timings=$timings } | ConvertTo-Json -Depth 5 -Compress').join('\n')}
+${buildPowerShellJsonOutputStatements('@{ clients=@($clients); errors=$errors; errorDetails=$errorDetails; registryFailures=@($registryFailures); rejected=@($rejected); timings=$timings } | ConvertTo-Json -Depth 5 -Compress').join('\n')}
 `.trim()
 }
 
@@ -698,7 +746,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   const runningAsRoot = () => (options.getuid?.() ?? process.getuid?.() ?? 1) === 0
   const systemOptions = (): RunCommandOptions => ({ env: environment(), trustedOnly: true, timeoutMs: externalClientSystemCommandTimeoutMs, maxOutputBytes: maximumProbeBytes, windowsHide: true })
   const noInstallHint = (tool: ExternalToolId): string | null => {
-    if (platform === 'win32') return architecture === 'x64' || (architecture === 'arm64' && tool !== 'workbuddy') ? null : '当前处理器架构没有可用的官方 Windows 安装包'
+    // WorkBuddy 不走这里（星芒不装、不给下载），剩下两家 x64、arm64 都有官方包。
+    if (platform === 'win32') return architecture === 'x64' || architecture === 'arm64' ? null : '当前处理器架构没有可用的官方 Windows 安装包'
     // 有核对过的官方 Mac 包的才一键装；root 身份下装出来的应用归 root，客户自己更新不了。
     if (platform === 'darwin') return macosDesktopAppInstallable(tool, architecture) && !runningAsRoot() ? null : 'macOS 请先从客户端官网下载并将应用移入 Applications，然后重新检测'
     return '星芒当前不支持此系统的桌面客户端安装与启动，请使用客户端官网提供的平台安装方案'
@@ -723,6 +772,13 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     const signature = failures.length ? JSON.stringify(failures) : null
     if (signature && signature !== lastRegistryFailures) options.onRegistryIncomplete?.(failures)
     lastRegistryFailures = signature
+  }
+  // 只记整轮检测的：打开前只看一家的那次交回来的只有那一家，跟整轮的一比就「变了」，同一条会被记好几遍。
+  let lastRejectedClients: string | null = null
+  function noteRejectedClients(rejections: ExternalClientRejection[]) {
+    const signature = rejections.length ? JSON.stringify(rejections) : null
+    if (signature && signature !== lastRejectedClients) options.onClientsRejected?.(rejections)
+    lastRejectedClients = signature
   }
   function noteMacVerificationFailure(tool: ExternalToolId, bundle: string, error: unknown) {
     const failure = describeMacVerificationFailure(tool, bundle, error)
@@ -784,6 +840,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     const data = record(JSON.parse(cleanCommandOutput(result.stdout).trim()) as unknown)
     if (!Array.isArray(data.clients)) throw new Error('客户端安装检测未返回有效列表')
     noteRegistryFailures(registryFailures(data.registryFailures))
+    if (scope.only === undefined) noteRejectedClients(rejectedClients(data.rejected))
     const errors: Inspection['errors'] = {}
     if (data.errors !== undefined) {
       const rawErrors = record(data.errors)
@@ -799,7 +856,12 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       if (item.family === undefined) rememberSignature(item)
       try {
         const candidate = textValue(item.path)
-        if (!candidate || !localWindowsPath(candidate) || path.win32.basename(candidate).toLowerCase() !== definitions[tool].executable.toLowerCase()) throw new Error('客户端可执行文件路径无效')
+        // WorkBuddy 的程序名按脚本说的那一版对（国内版 WorkBuddy.exe、海外版 WorkBuddyAI.exe）。没说是哪一版的
+        // 按国内版对，同以前只认国内版时一样；说了一个不认识的版不认。
+        const edition = item.edition === undefined ? 'domestic' : item.edition
+        const program = tool === 'workbuddy' ? workBuddyPrograms.find((entry) => entry.edition === edition) : undefined
+        const executable = tool === 'workbuddy' ? program?.executable : definitions[tool].executable
+        if (!candidate || !executable || !localWindowsPath(candidate) || path.win32.basename(candidate).toLowerCase() !== executable.toLowerCase()) throw new Error('客户端可执行文件路径无效')
         const canonical = await verifyPath(candidate, item.family !== undefined ? 'appx-file' : 'file')
         if (path.win32.normalize(canonical).toLowerCase() !== path.win32.normalize(candidate).toLowerCase()) throw new Error('客户端路径经过符号链接或目录联接')
         let applicationId: string | undefined
@@ -817,7 +879,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         } else if (item.signatureStatus !== 'Valid' || !publisherPatterns[tool].test(textValue(item.signatureSubject) ?? '')) {
           throw new Error(signatureMismatchMessage)
         }
-        clients.push({ tool, path: canonical, version: versionValue(item.version), running: item.running === true, ...(applicationId ? { applicationId } : {}) })
+        clients.push({ tool, path: canonical, version: versionValue(item.version), running: item.running === true, ...(applicationId ? { applicationId } : {}), ...(program ? { edition: program.edition } : {}) })
       } catch (error) {
         errors[tool] = errorText(error)
         if (item.family !== undefined && errors[tool] === appxPathIdentityMessage) errors[tool] = otherVolumeMessage(item) ?? errors[tool]
@@ -851,8 +913,9 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     const clients: LocatedClient[] = []
     const errors: Inspection['errors'] = {}
     for (const tool of scope.only ? [scope.only] : tools) {
-      const definition = definitions[tool]
-      for (const directory of ['/Applications', path.posix.join(userHome, 'Applications')]) {
+      // WorkBuddy 两版各找一遍（国内版在前），两版都装着就都认；别的客户端只有一种应用名。
+      const programs = tool === 'workbuddy' ? workBuddyPrograms : [{ edition: undefined, bundle: definitions[tool].bundle, bundleId: definitions[tool].bundleId }]
+      for (const definition of programs) for (const directory of ['/Applications', path.posix.join(userHome, 'Applications')]) {
         const candidate = path.posix.join(directory, definition.bundle)
         try {
           const canonical = await verifyPath(candidate, 'directory')
@@ -890,7 +953,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
           }
           const processes = await execute({ executable: '/bin/ps', argv: ['-axo', 'comm='] }, { ...systemOptions(), trustedOnly: false })
           const running = processes.stdout.split(/\r?\n/).some((line) => line.trim().startsWith(`${canonical}/Contents/MacOS/`))
-          clients.push({ tool, path: canonical, version: versionValue(data.CFBundleShortVersionString), running })
+          clients.push({ tool, path: canonical, version: versionValue(data.CFBundleShortVersionString), running, ...(definition.edition ? { edition: definition.edition } : {}) })
           delete errors[tool]
           break
         } catch (error) {
@@ -898,6 +961,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         }
       }
     }
+    // 另一版没过核对（原话已经进了运行日志）不该把认出来的这一版也报成检测失败：那一版星芒不认、不写，照旧用这一版。
+    for (const client of clients) delete errors[client.tool]
     return { clients, errors }
   }
 
@@ -906,17 +971,22 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     catch (error) { return { clients: [], errors: Object.fromEntries(tools.map((tool) => [tool, errorText(error)])) } }
   }
   function status(tool: ExternalToolId, inspection: Inspection, winget: SystemWingetResolution): ExternalClientRuntimeStatus {
-    const client = inspection.clients.find((item) => item.tool === tool)
-    const platformHint = noInstallHint(tool)
+    const located = inspection.clients.filter((item) => item.tool === tool)
+    const client = located[0]
+    // WorkBuddy 星芒不装、不给下载（yoyo 2026-11-18「下线」）：没装时首页只说装好后会自动连上，不给安装、下载那一句。
+    const platformHint = tool === 'workbuddy' ? null : noInstallHint(tool)
     const route = platform === 'win32' && platformHint === null ? windowsInstallRoute(tool, Boolean(winget.executable)) : null
+    const editions = located.flatMap((item) => item.edition ? [item.edition] : [])
     return {
       tool, installed: Boolean(client), version: client?.version ?? null, path: client?.path ?? null,
       installDirectory: client ? (platform === 'win32' ? path.win32.dirname(client.path) : client.path) : null,
-      running: client?.running ?? false,
-      installSupported: platformHint === null && (platform === 'darwin' || Boolean(route?.oneClick)),
+      // 两版 WorkBuddy 有一版开着就算开着：换线路、换 Key 照旧等它退出。
+      running: located.some((item) => item.running),
+      installSupported: tool !== 'workbuddy' && platformHint === null && (platform === 'darwin' || Boolean(route?.oneClick)),
       launchSupported: Boolean(client) && (platform === 'win32' || (platform === 'darwin' && !runningAsRoot())),
       detectionError: inspection.errors[tool] ?? null, installHint: platformHint ?? route?.hint ?? null,
       officialDownloadUrl: route && !route.oneClick ? officialDownloadUrl(tool) : null,
+      ...(editions.length ? { workBuddyEditions: [...new Set(editions)] } : {}),
     }
   }
   function invalidateScan() {
@@ -967,6 +1037,22 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     inFlightScan = started
     void promise.then(() => { if (inFlightScan === started) inFlightScan = null }, () => { if (inFlightScan === started) inFlightScan = null })
     return promise
+  }
+  /**
+   * 只现看一家（回到星芒窗口时看 WorkBuddy 装好没有）：不用缓存，也不起整轮盘点。结果并进几分钟内复用的那份
+   * 整轮结果：接着自动连时主进程读的是那一份，不并进去就还当它没装。这次起跑以后作废过的（刚装、刚卸、刚打开）
+   * 不并，免得拿旧的盖了新的。展示用的检测，签名照整轮那样可以认之前验过、文件没变的。
+   */
+  async function scanOne(tool: ExternalToolId): Promise<ExternalClientRuntimeStatus> {
+    if (!isExternalToolId(tool)) throw new Error('未知客户端')
+    const generation = scanGeneration
+    const [inspection, winget] = await Promise.all([inspect({ only: tool, reuseSignatures: true }), resolveWinget()])
+    const [entry] = await withUpdateOffers([status(tool, inspection, winget)])
+    const cached = cachedScan
+    if (generation === scanGeneration && cached && !entry.detectionError) {
+      cachedScan = { ...cached, statuses: cached.statuses.map((item) => item.tool === tool ? entry : item) }
+    }
+    return entry
   }
   /**
    * Mac 上没有 winget 一类的系统安装器：下载官方包、核对签名、放进「应用程序」都在这一步。
@@ -1259,5 +1345,5 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     }
   }
 
-  return { scan, install, cancelInstall, launch, stillRunning }
+  return { scan, scanOne, install, cancelInstall, launch, stillRunning }
 }

@@ -2,7 +2,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { isExternalToolId } from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
-import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
+import { ensureSafeDataDirectory, localPathPresentSync, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 
 /**
  * 客户端里这把 Key 是从哪来的（#1113）：configured = 用某个工具当前那把，account = 从账号里挑的，
@@ -61,6 +61,16 @@ export class ExternalClientOwnershipStore {
     } catch { return null }
   }
 
+  /**
+   * 星芒替这个账号给这个客户端写过配置没有（不管现在还在不在、是哪把 Key、哪条线路）：自动连只连从没写过的（D7），
+   * 客户把星芒那条删了，不会再给他加回去。读不了（坏了、被换成了链接）也当写过，宁可不自动连。
+   */
+  recorded(tool: ExternalToolId, owner: string): boolean {
+    try {
+      if (!isExternalToolId(tool) || !owner.trim() || owner !== owner.trim() || owner.length > 1024 || /[\u0000-\u001f\u007f]/.test(owner)) return true
+      return localPathPresentSync(path.join(this.directory, `${digest([tool, owner])}.json`))
+    } catch { return true }
+  }
   async write(tool: ExternalToolId, owner: string, baseUrl: string, apiKey: string, source?: ExternalClientKeySource): Promise<void> {
     const { filename, identity } = ownershipIdentity(tool, owner, baseUrl, apiKey)
     await this.save(filename, { version: 1, tool, identity, ...(source ? { source } : {}) })

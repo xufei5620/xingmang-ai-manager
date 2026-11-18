@@ -20,7 +20,8 @@ import { readAllAccountKeys } from './key-selection'
 
 export type ExternalAutoConnectBridge = Pick<XingmangApi, 'getConfig' | 'getAccountKeys' | 'listConfiguredModels' | 'listAccountKeyModels' | 'configureExternalTool'>
 
-export type ExternalAutoConnectTrigger = 'install' | 'login'
+// detect：客户自己装好的 WorkBuddy 被检测认出来以后（开机、点「重新检测」、回到星芒窗口时，yoyo 2026-11-18「改」）。
+export type ExternalAutoConnectTrigger = 'install' | 'login' | 'detect'
 
 export type ExternalAutoConnectOutcome =
   | { kind: 'skipped'; reason: 'no-key' | 'no-model' | 'account-changed' }
@@ -35,11 +36,30 @@ export interface ExternalAutoConnectChoice {
 
 /**
  * 这一家值不值得自动连：只认主进程这一刻现看的「从没配置过」（pristine，开机先摆出来的上次结果不算）。
- * 开着的不碰，同换线路、换 Key 一样等它退出；检测出错、配置读不了的也不碰。
+ * 开着的不碰，同换线路、换 Key 一样等它退出；只有 WorkBuddy 开着也连（它盯着 models.json，改了自己就同步）。
+ * 检测出错、配置读不了的也不碰。WorkBuddy 里只有客户自己的模型（other）也算：自动连只加一条，不碰他的。
  */
 export function externalAutoConnectEligible(status: ExternalClientStatus): boolean {
-  return status.installed && status.pristine === true && !status.running && !status.cachedAt
-    && !status.detectionError && !status.configurationError && status.configurationSource === 'missing'
+  const workBuddy = status.tool === 'workbuddy'
+  return status.installed && status.pristine === true && (!status.running || workBuddy) && !status.cachedAt
+    && !status.detectionError && !status.configurationError
+    && (status.configurationSource === 'missing' || (workBuddy && status.configurationSource === 'other'))
+}
+
+/**
+ * 检测认出来以后（开机、点「重新检测」、回到星芒窗口）替他连的那一家：只有 WorkBuddy（yoyo 2026-11-18「改」）。
+ * Claude Desktop、OpenCode 照决定单 D7 只在装好、登录以后连。
+ */
+export function externalDetectedAutoConnectTarget(statuses: readonly ExternalClientStatus[]): ExternalClientStatus | null {
+  return statuses.find((status) => status.tool === 'workbuddy' && externalAutoConnectEligible(status)) ?? null
+}
+
+/**
+ * 同一个账号、同一份安装只替他试一次：没连成的照旧等他点「确认连接」，不在每次检测、每次切回窗口时再试。
+ * 换了装法（另装了一版、挪了位置）算另一份。
+ */
+export function externalAutoConnectAttemptKey(scope: string, status: Pick<ExternalClientStatus, 'tool' | 'path' | 'workBuddyEditions'>): string {
+  return JSON.stringify([scope, status.tool, status.path ?? '', [...(status.workBuddyEditions ?? [])].sort()])
 }
 
 /**
@@ -97,7 +117,7 @@ export async function autoConnectExternalClient(
   }
 }
 
-const triggerLabels: Record<ExternalAutoConnectTrigger, string> = { install: '装好后', login: '登录后' }
+const triggerLabels: Record<ExternalAutoConnectTrigger, string> = { install: '装好后', login: '登录后', detect: '认出来后' }
 
 const skipReasonLabels: Record<Extract<ExternalAutoConnectOutcome, { kind: 'skipped' }>['reason'], string> = {
   'no-key': '挑不出能自动用的密钥',

@@ -30,11 +30,13 @@ import {
   type ExternalClientDetectionErrorDetail,
   type ExternalClientMacVerificationFailure,
   type ExternalClientRegistryFailure,
+  type ExternalClientRejection,
 } from './external-client-runtime'
 import { createExternalClientSnapshotCache } from './external-client-snapshot-cache'
 import {
   type ExternalToolConfigOptions,
   type ExternalToolId,
+  type ExternalToolPathRoots,
   type ExternalToolProbeCredential,
   followExternalToolKey,
   followExternalToolRoute,
@@ -62,6 +64,19 @@ export function buildExternalClientRegistryLogDetail(failures: ExternalClientReg
 /** 苹果没放行时进运行日志的那几项：应用包可能在主目录下的「应用程序」里，原话里也会带着这个路径。 */
 export function buildExternalClientMacVerificationLogDetail(failure: ExternalClientMacVerificationFailure, userHome: string) {
   return { ...failure, path: redactHomeDirectory(failure.path, userHome), output: redactHomeDirectory(failure.output, userHome) }
+}
+
+/** 安装记录对上了、程序却没认的那几条进运行日志时：路径多在主目录下（按用户装的程序都在 AppData 里），按主目录脱敏。 */
+export function buildExternalClientRejectionLogDetail(rejections: ExternalClientRejection[], userHome: string) {
+  return { rejected: rejections.map((rejection) => ({ ...rejection, path: redactHomeDirectory(rejection.path, userHome) })) }
+}
+
+/**
+ * WorkBuddy 的配置位置被客户用环境变量另指过（它先看 WORKBUDDY_CONFIG_DIR，再看 WORKBUDDY_DATA_FOLDER_NAME，
+ * 2026-11-18 拆安装包核实）：星芒写的那份它可能不读，不替他自动连（D7）。客户自己点「确认连接」照旧写主目录下那份。
+ */
+export function workBuddyConfiguredByEnvironment(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.WORKBUDDY_CONFIG_DIR?.trim() || env.WORKBUDDY_DATA_FOLDER_NAME?.trim())
 }
 
 /** 检测失败时 PowerShell 的原话进运行日志的那几项：读签名报的错里常带着客户端的完整路径。 */
@@ -147,6 +162,9 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     // 首页只说「部分软件安装记录无法读取」；是哪几条、为什么，客服在反馈报告里看这一行。
     onRegistryIncomplete: (failures) => runtimeLog?.log('warn', 'system', 'external-client.registry-incomplete', '部分软件安装记录无法读取，桌面客户端检测不完整',
       buildExternalClientRegistryLogDetail(failures, providerRoots.userHome)),
+    // 客户说「装了怎么显示没装」：安装记录在、程序没认的是哪几条、为什么（联接、程序不在了），客服在反馈报告里看这一行。
+    onClientsRejected: (rejections) => runtimeLog?.log('warn', 'system', 'external-client.candidate-rejected', '找到了桌面客户端的安装记录，但程序没有认',
+      buildExternalClientRejectionLogDetail(rejections, providerRoots.userHome)),
     onMacVerificationFailed: (failure) => runtimeLog?.log('warn', 'system', 'external-client.mac-verification-failed', '桌面客户端没通过苹果的签名核对',
       buildExternalClientMacVerificationLogDetail(failure, providerRoots.userHome)),
     // 首页只说「无法读取客户端数字签名」这类前半句中文（已知3），系统给的原话客服在反馈报告里看这一行。
@@ -183,6 +201,19 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   // 换完又回到原来那份（推测是客户端退出时把旧配置写了回去），要能在日志里说出来。
   const externalRoutesFollowed = new Map<string, { from: RelayEndpointId; baseUrl: string; apiKey: string }>()
   const managerDataDirectory = serviceOptions.managerDataDirectory ?? path.join(providerRoots.userHome, '.xingmang-ai-manager')
+  /**
+   * 读写 WorkBuddy、OpenCode 配置用的目录。WorkBuddy 按这次认出来的是哪几版，每版各一份 models.json（国内版、海外版
+   * 文件夹不同）；没认出来时照旧只有国内版那份。OpenCode 跟着 XDG_CONFIG_HOME，不是完整路径的由调用方先拦下。
+   */
+  function externalToolRoots(status: Pick<ExternalClientRuntimeStatus, 'workBuddyEditions'> | null | undefined, extra: Partial<ExternalToolPathRoots> = {}): ExternalToolPathRoots {
+    const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
+    return {
+      userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'), ...extra,
+      ...(status?.workBuddyEditions?.length ? { workBuddyEditions: status.workBuddyEditions } : {}),
+    }
+  }
+  // WorkBuddy 的配置位置被环境变量另指过时只记一次：每次检测都会碰到。
+  let workBuddyEnvironmentNoted = false
   async function claudeDesktopConfig(status: ExternalClientRuntimeStatus, assertBeforeWrite?: () => void) {
     if (status.detectionError) throw new Error('Claude Desktop 安装位置无法确认，请重新检测')
     const env = serviceOptions.claudeDesktopEnv ?? (providerRoots.userHome === os.homedir() ? process.env : {})
@@ -215,6 +246,22 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     const belongsToCurrentAccount = (apiKey: string) => ownedOnRoute(apiKey, baseUrl)
     return { activeSite, owner, baseUrl, belongsToCurrentAccount, ownedOnRoute }
   }
+  /**
+   * WorkBuddy 的 models.json 里没有星芒的模型之外，还要星芒从没替当前账号配过它（客户删了星芒那条就不再加回去），
+   * 配置位置也没被环境变量另指过，才算能自动连（D7）。别的客户端不看这两条。
+   */
+  function workBuddyUntouched(status: ExternalClientRuntimeStatus, env: NodeJS.ProcessEnv): boolean {
+    if (status.tool !== 'workbuddy') return true
+    if (workBuddyConfiguredByEnvironment(env)) {
+      if (status.installed && !workBuddyEnvironmentNoted) {
+        workBuddyEnvironmentNoted = true
+        runtimeLog?.log('info', 'config', 'external-client.workbuddy.config-dir-env', 'WorkBuddy 的配置位置被环境变量另指过，不替它自动连接', {})
+      }
+      return false
+    }
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    return owner !== null && !externalOwnership.recorded(status.tool, owner)
+  }
   async function describeExternalClient(status: ExternalClientRuntimeStatus): Promise<ExternalClientStatus> {
     const { baseUrl, belongsToCurrentAccount } = externalClientContext(status.tool)
     if (status.tool === 'claudeDesktop') {
@@ -231,10 +278,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       configurationSource: 'unknown', configurationError: relativeXdgConfigHomeMessage }
     const externalPlatform = platform === 'win32' || platform === 'darwin' ? platform : 'linux'
     const dataHome = env.XDG_DATA_HOME && path.isAbsolute(env.XDG_DATA_HOME) ? { dataHome: env.XDG_DATA_HOME } : {}
-    const { pristine, ...connection } = inspectExternalToolConnection(status.tool, externalPlatform, {
-      userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'), ...dataHome,
-    }, baseUrl, belongsToCurrentAccount)
-    const fresh = pristine && !(status.tool === 'opencode' && openCodeConfiguredByEnvironment(env)) ? { pristine: true } : {}
+    const { pristine, ...connection } = inspectExternalToolConnection(status.tool, externalPlatform, externalToolRoots(status, dataHome), baseUrl, belongsToCurrentAccount)
+    const fresh = pristine && !(status.tool === 'opencode' && openCodeConfiguredByEnvironment(env)) && workBuddyUntouched(status, env) ? { pristine: true } : {}
     return { ...status, ...connection, ...fresh }
   }
   /**
@@ -254,9 +299,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
       if (xdgConfig && !path.isAbsolute(xdgConfig)) return null
       const externalPlatform = platform === 'win32' || platform === 'darwin' ? platform : 'linux'
-      return resolveExternalToolProbeCredential(status.tool, externalPlatform, {
-        userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
-      }, baseUrl, belongsToCurrentAccount)
+      return resolveExternalToolProbeCredential(status.tool, externalPlatform, externalToolRoots(status), baseUrl, belongsToCurrentAccount)
     } catch {
       // 读不出来不是自检失败，是「本地配置」层的结论，由 describeExternalClient
       // 那一份已经算出来的 configurationSource 去说。
@@ -307,6 +350,13 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       void externalClientCache?.save(clients)
     }
     return clients
+  }
+  /**
+   * 回到星芒窗口时只现看 WorkBuddy 这一家（yoyo 2026-11-18「改」）。只认得出新装的就够了：刚装好的没有星芒那条，
+   * 用不着跟线路、换 Key，整轮检测时再跟。不落盘、不改反馈报告那份快照，那两份都要三家整份。
+   */
+  async function scanExternalClient(tool: ExternalToolId): Promise<ExternalClientStatus> {
+    return describeExternalClient(await externalClientRuntime.scanOne(tool))
   }
   async function cachedExternalClients(): Promise<ExternalClientStatus[]> {
     if (latestExternalClients || !externalClientCache) return []
@@ -373,7 +423,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
    * 挑型号那几秒里客户可能自己在配置窗口保存过，或者把客户端打开了；这时一个字不写，原因只进运行日志。
    */
   async function assertAutomaticTarget(tool: ExternalToolId, status: ExternalClientRuntimeStatus | undefined): Promise<void> {
-    const described = status?.installed && !status.running && !status.detectionError ? await describeExternalClient(status) : null
+    // WorkBuddy 开着也写：它盯着 models.json，改了自己就同步（2026-11-18 拆安装包核实）。另两家开着时不碰。
+    const described = status?.installed && (!status.running || tool === 'workbuddy') && !status.detectionError ? await describeExternalClient(status) : null
     if (!described?.pristine) throw new Error(`${externalClientNames[tool]} 已经有配置了或者正开着，这次没有自动连接`)
   }
   function configureExternalTool(
@@ -432,14 +483,17 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       const externalPlatform = platform === 'win32' || platform === 'darwin' || platform === 'linux' ? platform : 'linux'
       const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
       if (tool === 'opencode' && xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error(relativeXdgConfigHomeMessage)
+      // WorkBuddy 要知道装的是哪几版（每版一份 models.json）：盘点几分钟内复用，这里一般不用再跑一轮。
+      const status = tool === 'workbuddy' || options.automatic ? (await externalClientRuntime.scan()).find((entry) => entry.tool === tool) : undefined
+      assertContext()
       if (options.automatic) {
-        await assertAutomaticTarget(tool, (await externalClientRuntime.scan()).find((entry) => entry.tool === tool))
+        await assertAutomaticTarget(tool, status)
         assertContext()
       }
-      const result = await saveExternalToolConfig(tool, externalPlatform, {
-        userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
-      }, { apiKey, model, baseUrl: activeSite.providerBaseUrls.codex,
+      const result = await saveExternalToolConfig(tool, externalPlatform, externalToolRoots(status), { apiKey, model, baseUrl: activeSite.providerBaseUrls.codex,
         protocol: tool === 'workbuddy' ? 'chat-completions' : requested.protocol ?? 'responses',
+        // 自动连的那一次：WorkBuddy 里已经有星芒的或者同名的模型就整笔不写（主进程在这次读出来的内容上再核一遍）。
+        ...(options.automatic ? { automatic: true } : {}),
       }, { beforeReplace: assertContext })
       assertContext()
       if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.codex, apiKey, keySource)
@@ -930,9 +984,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
     if (status.tool === 'opencode' && xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error(relativeXdgConfigHomeMessage)
     await recheck()
-    return (await followExternalToolKey(status.tool, platform === 'win32' || platform === 'darwin' ? platform : 'linux', {
-      userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
-    }, change, { beforeReplace: assertContext })).unsupportedModels
+    return (await followExternalToolKey(status.tool, platform === 'win32' || platform === 'darwin' ? platform : 'linux', externalToolRoots(status), change, { beforeReplace: assertContext })).unsupportedModels
   }
   /** followExternalClientRoutes 里的一个客户端：那一行要换成什么就回什么，不用动时回 null。 */
   async function followExternalClientRoute(
@@ -1063,13 +1115,12 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
     if (status.tool === 'opencode' && xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error(relativeXdgConfigHomeMessage)
     await recheck()
-    await followExternalToolRoute(status.tool, platform === 'win32' || platform === 'darwin' ? platform : 'linux', {
-      userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
-    }, route, { beforeReplace: assertContext })
+    await followExternalToolRoute(status.tool, platform === 'win32' || platform === 'darwin' ? platform : 'linux', externalToolRoots(status), route, { beforeReplace: assertContext })
   }
 
   return {
     scanExternalClients,
+    scanExternalClient,
     cachedExternalClients,
     getLastExternalClients,
     installExternalClient,

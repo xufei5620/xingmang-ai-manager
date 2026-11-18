@@ -1,14 +1,16 @@
 # 外部客户端安装、配置与打开
 
-实现与验证日期：2026-09-17；WorkBuddy 安装恢复和桌面配置契约更新于 2026-09-18，Claude Desktop 本地第三方配置更新于 2026-09-19；「入口与操作」和「安装与启动」的安装表 2026-11-12 照代码重核。默认开发和生产构建均使用 v2 界面。
+实现与验证日期：2026-09-17；WorkBuddy 安装恢复和桌面配置契约更新于 2026-09-18（2026-11-18 起不再给下载、两个版本都认、认出后自动连），Claude Desktop 本地第三方配置更新于 2026-09-19；「入口与操作」和「安装与启动」的安装表 2026-11-12 照代码重核。默认开发和生产构建均使用 v2 界面。
 
 ## 入口与操作
 
-首页「工具」区按厂商把 **WorkBuddy、Claude Desktop、OpenCode** 和命令行工具、Codex 桌面端排在同一组卡片里（`src/renderer-v2/features/tools/Home.tsx`）。卡片主按钮按实际状态显示「安装 → 确认连接 → 打开」（Mac 上的 WorkBuddy 没装时是「安装指南」，Windows 上一键装不了的是「去官网下载」），安装期间显示进度，检测失败显示「重新检测」。已安装的卡片在「…」菜单里留着「配置…」（主按钮已是「确认连接」时换成「打开」）。Codex 卡片「…」菜单里的「换用别家模型…」是原来的非 GPT 模型入口。
+首页「工具」区按厂商把 **WorkBuddy、Claude Desktop、OpenCode** 和命令行工具、Codex 桌面端排在同一组卡片里（`src/renderer-v2/features/tools/Home.tsx`）。卡片主按钮按实际状态显示「安装 → 确认连接 → 打开」（WorkBuddy 没装时说明写「装好 WorkBuddy 后，星芒会自动连上当前账号」、按钮是「重新检测」，星芒不给下载也不给安装指南；Windows 上 OpenCode 一键装不了的是「去官网下载」），安装期间显示进度，检测失败显示「重新检测」。已安装的卡片在「…」菜单里留着「配置…」（主按钮已是「确认连接」时换成「打开」）。Codex 卡片「…」菜单里的「换用别家模型…」是原来的非 GPT 模型入口。
 
 首次使用未安装的客户端时，先点击「安装」；安装完成并重新检测后，再从同一张卡片点击「确认连接」打开配置弹窗。保存配置会刷新工具状态；完成后回到卡片点击「打开」。已有其他来源配置的客户端保留可打开状态，要连接星芒就用「…」菜单里的「配置…」。
 
-自动连一次（决定单 D7，0.2.24 起）：登录着账号装好这三家之一，或者登录（含注册后登录）以后，客户端要是从没配置过、没开着，默认密钥和型号也定得下来，就照配置窗口打开时默认的那套（`external-client-defaults.ts`）替客户保存一次，省掉「确认连接」→「保存并检测」。挑不准的不连：只剩要客户自己填的密钥、这把密钥里挑不出拿得准的型号（Claude Desktop 只认 Claude 型号），OpenCode 只在借 Codex 那把时连（「模型类型」只有那时拿得准）。「从没配置过」由主进程每次检测现看（`ExternalClientConnectionStatus.pristine`，不进开机快照）：WorkBuddy 没有 `models.json`；OpenCode 全局配置一个都没有、没有它自己的 `auth.json`、也没用 `OPENCODE_CONFIG*` 另指配置；Claude Desktop 官方和第三方两个数据目录都不在（打开过的一律不碰，看不出客户是不是用自己的 Claude 账号登着）。写配置请求带 `automatic: true`，主进程排在写配置的队里、真要写之前再核一遍，不是从没配置过或者开着就整笔拒掉，不会盖掉客户这几秒里自己保存的那份。装好那次结果写在角落的提示里（只用配置窗口原有的那句），登录那次不提示、只进运行日志（`external-client-auto-connect`）；开机、切换账号都不做。
+自动连一次（决定单 D7，0.2.24 起）：登录着账号装好这三家之一，或者登录（含注册后登录）以后，客户端要是从没配置过、没开着，默认密钥和型号也定得下来，就照配置窗口打开时默认的那套（`external-client-defaults.ts`）替客户保存一次，省掉「确认连接」→「保存并检测」。挑不准的不连：只剩要客户自己填的密钥、这把密钥里挑不出拿得准的型号（Claude Desktop 只认 Claude 型号），OpenCode 只在借 Codex 那把时连（「模型类型」只有那时拿得准）。「从没配置过」由主进程每次检测现看（`ExternalClientConnectionStatus.pristine`，不进开机快照）：WorkBuddy 的 `models.json` 里没有指向星芒任何一个站点的模型（没有这份文件也算），星芒也没替当前账号配过它（客户删了星芒那条就不再加回去，按账号记在 `external-client-ownership/`，`recorded`），配置位置也没被 `WORKBUDDY_CONFIG_DIR` / `WORKBUDDY_DATA_FOLDER_NAME` 另指过；OpenCode 全局配置一个都没有、没有它自己的 `auth.json`、也没用 `OPENCODE_CONFIG*` 另指配置；Claude Desktop 官方和第三方两个数据目录都不在（打开过的一律不碰，看不出客户是不是用自己的 Claude 账号登着）。写配置请求带 `automatic: true`，主进程排在写配置的队里、真要写之前再核一遍，不是从没配置过或者开着就整笔拒掉，不会盖掉客户这几秒里自己保存的那份。装好那次结果写在角落的提示里（只用配置窗口原有的那句），登录那次不提示、只进运行日志（`external-client-auto-connect`）；开机、切换账号都不做。
+
+WorkBuddy 另有三处不同（2026-11-18，产品负责人回「改」）：一是星芒不装它，所以「装好那次」换成「认出来那次」——开机、点「重新检测」、回到星芒窗口时检测到它装着、符合上面的条件，就替他连一次（`external-client-auto-connect.ts` 的 `externalDetectedAutoConnectTarget`），要等这个账号的密钥那一轮写完（`accountKeysReady`），借的才是当前账号那把；同一份安装在同一个账号下只试一次（`externalAutoConnectAttemptKey`），跟登录那一轮共用一个「正在连」的标记，不同时写。二是开着也写：它监听 `models.json`、约 1 秒同步，不用关掉；`assertAutomaticTarget` 只对它放开「开着就拒」。三是自动那次只往文件里**追加**一条紧凑的星芒模型（jsonc `modify` 的数组插入，不带格式化选项），客户原来的每一条一个字节都不动；文件里已有同 `id` 或指向星芒站点的条目就整笔不写。连好了、读回来核过的，认出来那次和登录那次都在角落说「已连好 WorkBuddy，在它的模型列表里选「〈型号〉」」（配置窗口原有的那句）；Claude Desktop、OpenCode 照旧登录那次不说。
 
 外部客户端配置步骤：
 
@@ -49,19 +51,19 @@ Claude Desktop 为什么不查清单：它每次启动、每次点「Check again
 
 | 平台 | 一键安装 | 检测与打开 |
 | --- | --- | --- |
-| Windows x64 | 系统 winget 精确安装 `Anthropic.Claude`、`SST.OpenCodeDesktop`，用户级、静默执行。Claude Desktop 先从星芒存储桶下同一个官方离线安装包（MSIX），没装上再走 winget，winget 没有或没装上时从 Claude 官网下离线 MSIX（`claude-desktop-msix-installer.ts`）；几路都没装上时错误框给「下载离线安装包」和「去 Claude 官网」（D64，`claude-desktop-install-failure.ts`）。OpenCode 没有 winget 时按钮是「去官网下载」。WorkBuddy 不一键安装，按钮「去官网下载」打开 `https://www.workbuddy.ai/` | 读取安装记录和版本，验证可信文件与官方签名；Claude 商店版识别 AppX 身份，通过已注册 AUMID 打开 |
-| Windows arm64 | Claude Desktop 与 OpenCode；WorkBuddy 当前 manifest 没有 arm64 安装项 | 与 Windows x64 相同，按实际安装状态显示能力 |
-| macOS | Claude Desktop、OpenCode 一键安装：先从星芒存储桶、再从官方发布地址下官方包，只装核过 Team ID、Developer ID 签名与公证（Gatekeeper）的原版，放进 `/Applications`（不是管理员时放 `~/Applications`），见 `macos-desktop-app-installer.ts`。WorkBuddy 没有能核对的 Mac 下载地址，按钮是「安装指南」，要客户自己从官网下载并移入 Applications | 检测 `/Applications` 与用户 Applications 内的官方应用、bundle ID 和系统签名评估，通过 LaunchServices 打开 |
+| Windows x64 | 系统 winget 精确安装 `Anthropic.Claude`、`SST.OpenCodeDesktop`，用户级、静默执行。Claude Desktop 先从星芒存储桶下同一个官方离线安装包（MSIX），没装上再走 winget，winget 没有或没装上时从 Claude 官网下离线 MSIX（`claude-desktop-msix-installer.ts`）；几路都没装上时错误框给「下载离线安装包」和「去 Claude 官网」（D64，`claude-desktop-install-failure.ts`）。OpenCode 没有 winget 时按钮是「去官网下载」。WorkBuddy 不一键安装也不给下载（2026-11-18 起），没装时按钮是「重新检测」 | 读取安装记录和版本，验证可信文件与官方签名；Claude 商店版识别 AppX 身份，通过已注册 AUMID 打开 |
+| Windows arm64 | Claude Desktop 与 OpenCode；WorkBuddy 同 x64，客户自己装好后照样识别 | 与 Windows x64 相同，按实际安装状态显示能力 |
+| macOS | Claude Desktop、OpenCode 一键安装：先从星芒存储桶、再从官方发布地址下官方包，只装核过 Team ID、Developer ID 签名与公证（Gatekeeper）的原版，放进 `/Applications`（不是管理员时放 `~/Applications`），见 `macos-desktop-app-installer.ts`。WorkBuddy 不一键安装，客户自己装好后点「重新检测」或回到星芒窗口时识别（2026-11-18 起没有「安装指南」） | 检测 `/Applications` 与用户 Applications 内的官方应用、bundle ID 和系统签名评估，通过 LaunchServices 打开 |
 
 安装通过现有队列执行，重复点击不会启动多个安装任务。过程显示“排队 / 检测 / 下载 / 安装 / 验证”状态；只有安装后重新检测到客户端才显示完成。检测 OpenCode Desktop 不会把已安装的 OpenCode CLI 误当桌面版。
 
-2026-10-13 起，Windows 上 WorkBuddy 改成客户自己到腾讯官网下载安装，星芒只管识别和写配置。首页那一行说明「到腾讯官网下载安装，装好后回来重新检测」，按钮「去官网下载」；装好后点「重新检测」，识别仍按卸载记录登记的位置、`WorkBuddy.exe` 与腾讯 Authenticode 签名判断，跟谁装的、装在哪个盘无关。原来的 winget 安装与固定 5.5.6 腾讯安装包兜底（`workbuddy-installer.ts`，两枚 SHA-256）一并删除；那段历史见 `docs/archive/IMPLEMENTATION-PROGRESS-2026-09-17.md`。其他客户端的 winget 网络失败仍显示中文原因和错误码。
+2026-10-13 起，Windows 上 WorkBuddy 改成客户自己到腾讯官网下载安装，星芒只管识别和写配置。2026-11-18 起两个平台都不再给下载：官网那颗按钮下到的多是海外版「WorkBuddy AI」，星芒原来不认，客户装好了首页还说没装。现在两个版本都认：国内版是卸载记录 `BFD312E9…`、`WorkBuddy.exe`，Mac 上 `WorkBuddy.app`（`com.tencent.workbuddy.mac`）；海外版是卸载记录 `C02C88CB-5DAE-4330-AEC1-572CFD048A59`、`WorkBuddyAI.exe`，Mac 上 `WorkBuddy AI.app`（`com.workbuddy.workbuddy-ai`）。两个版本签名主体相同（Windows 腾讯 Authenticode，Mac 团队 `FN2V63AD2J`），签名核对一处没放宽；识别跟谁装的、装在哪个盘无关。首页那一行说明「装好 WorkBuddy 后，星芒会自动连上当前账号」，按钮「重新检测」；没装时回到星芒窗口也会单独看一眼 WorkBuddy（`external-clients:scan` 带 `{ only: 'workbuddy' }`，没加通道；两次之间至少隔 2 分钟，只查这一家、复用已核过的签名，检测失败的那次不改首页）。安装记录在、程序没认的（指向联接、程序不在了），原因进运行日志 `external-client.candidate-rejected`，按主目录脱敏。旧版本留下的开机快照里那条 `https://www.workbuddy.ai/` 照常读、读出来丢掉，升级后第一次打开不会空着。原来的 winget 安装与固定 5.5.6 腾讯安装包兜底（`workbuddy-installer.ts`，两枚 SHA-256）一并删除；那段历史见 `docs/archive/IMPLEMENTATION-PROGRESS-2026-09-17.md`。其他客户端的 winget 网络失败仍显示中文原因和错误码。
 
 2026-09-19 本机只读识别的 Claude 商店版为 2.2553.1.0（9 月 17 日为 2.110.1.0），AUMID 为 `Claude_pzs8sxrjxfjjc!Claude`；本工具此次没有安装或更新 Claude。OpenCode 桌面端仍未安装，也没有在 macOS 上执行安装或启动验收。一键安装路径和启动动作由主进程处理，渲染层不传入任意命令或可执行路径。实际安装包来源、hash、签名证据及读取限制见 [官方安装来源记录](../artifacts/external-client-install-sources.md)。
 
 ## 腾讯 WorkBuddy
 
-目标产品是腾讯 WorkBuddy AI 桌面客户端。已安装的 5.5.6 源码确认默认用户级配置为 `~/.workbuddy/models.json`，Windows 对应 `%USERPROFILE%\.workbuddy\models.json`。此前写入用户目录 `.codebuddy/models.json` 是桌面模型列表未加载的直接原因；桌面默认不会回退读取这个全局路径。项目级 `<workspace>/.codebuddy/models.json` 属于另一层配置，不能代替全局文件。不使用同名现场服务管理产品的 npm 模板，也不创建 `~/.config/workbuddy/config.json`。
+目标产品是腾讯 WorkBuddy AI 桌面客户端。已安装的 5.5.6 源码确认默认用户级配置为 `~/.workbuddy/models.json`，Windows 对应 `%USERPROFILE%\.workbuddy\models.json`；海外版「WorkBuddy AI」用 `~/.workbuddy-ai/models.json`。两个版本都装着时各写各的那份，每份是一笔单独的事务（`ExternalToolPathRoots.workBuddyEditions`）。此前写入用户目录 `.codebuddy/models.json` 是桌面模型列表未加载的直接原因；桌面默认不会回退读取这个全局路径。项目级 `<workspace>/.codebuddy/models.json` 属于另一层配置，不能代替全局文件。不使用同名现场服务管理产品的 npm 模板，也不创建 `~/.config/workbuddy/config.json`。
 
 新模型的核心结构如下，地址由当前账号站点决定：
 

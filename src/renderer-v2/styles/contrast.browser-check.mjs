@@ -93,7 +93,7 @@ for (const theme of ['light', 'dark']) {
 
 test('Windows high contrast (forced colors) redraws selection, switches, progress and dialog edges with system colors', async () => {
   // The v4 home has no standing progress bar (the month-used bar is gone), so a
-  // held WorkBuddy install puts one on its card.
+  // held OpenCode install puts one on its card.
   const page = await open({ theme: 'dark', forced: true, query: 'externalInstallPending=1' })
   try {
     // The OS setting also turns the in-app switch on; forced colors must still win.
@@ -112,9 +112,9 @@ test('Windows high contrast (forced colors) redraws selection, switches, progres
     const label = await style(activeNav.locator('span').first(), ['color'])
     assert.equal(label.color, highlightText)
 
-    const workbuddy = page.getByTestId('tool-row-workbuddy')
-    await workbuddy.getByRole('button', { name: '安装', exact: true }).click()
-    await workbuddy.getByRole('progressbar').waitFor()
+    const opencode = page.getByTestId('tool-row-opencode')
+    await opencode.getByRole('button', { name: '安装', exact: true }).click()
+    await opencode.getByRole('progressbar').waitFor()
     const progress = await style(page.locator('.xm-progress-track').first(), ['outline-style'])
     assert.equal(progress['outline-style'], 'solid')
     const bar = await style(page.locator('.xm-progress-bar').first(), ['background-color'])
