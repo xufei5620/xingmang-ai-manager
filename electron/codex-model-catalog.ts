@@ -24,9 +24,10 @@ import { isNewerVersion } from './versions'
 // - 它整份替换内置名单，不合并：没写进来的型号菜单里就没有。所以只写当前账号有、官方
 //   资料也有的型号，账号能用的型号变了要跟着重写（tool-model-check.ts）。
 // - 0.146.x 及更早要求每个型号都带 base_instructions，官方从 0.147.0 起的名单不再带它；
-//   每个型号另有官方标的最低客户端版本（OpenAI 在服务端按它筛，客户端自己不看）。读这份
-//   名单的不只命令行，还有桌面端自带的那一份：命令行低于这些版本里最高的那个、桌面端早于
-//   已知读得懂的那一批，就不写，已经写了的收回；看不出版本时原样不动。
+//   每个型号另有官方标的最低客户端版本（OpenAI 在服务端按它一个一个筛，客户端自己不看）。
+//   我们照样一个一个筛：这台电脑上的命令行够不上哪个型号，就只少写那一个，不连累别的
+//   （fitCodexModelCatalogToCli）。读这份名单的不只命令行，还有桌面端自带的那一份：命令行
+//   低于 0.147.0、桌面端早于已知读得懂的那一批，就不写，已经写了的收回；看不出版本时原样不动。
 // - 默认型号要在名单里：不在的话它丢了官方资料、菜单里也没有它，宁可不写。
 // - 只在启动时读名单：桌面端开着时写进去，要关掉重开才看得到。
 
@@ -36,9 +37,9 @@ export const codexModelCatalogFileName = 'xingmang-models.json'
 /** 随包那份官方名单从哪来。换版本时整份照拷、三项一起改，测试按 sha256 钉住。 */
 export const bundledCodexModelCatalogSource = Object.freeze({
   repository: 'openai/codex',
-  tag: 'rust-v0.169.0',
+  tag: 'rust-v0.169.1',
   path: 'codex-rs/models-manager/models.json',
-  sha256: '1384625c0b6b3e67d3c60da29becea2b017f2c283fc1e2d05b8edafb4698eb10',
+  sha256: 'd50b6749506d97e5f334dbabcb666eb1689f423cf3e88cfabdcf3c536b873068',
 })
 
 export const BUNDLED_CODEX_MODEL_CATALOG_RELATIVE_PATH = ['bundled-catalog', 'codex-models', 'models.json'] as const
@@ -106,7 +107,7 @@ function hasInstructions(entry: Record<string, unknown>): boolean {
 
 /**
  * 这一项能不能被 Codex 读进去；能返回 null，不能返回原因。规则来自 openai_models.rs 的
- * 必填字段与固定取值（rust-v0.147.0～rust-v0.169.0 一致）。
+ * 必填字段与固定取值（rust-v0.147.0～rust-v0.169.1 一致）。
  */
 export function codexModelCatalogEntryProblem(entry: unknown): string | null {
   if (!isRecord(entry)) return '不是对象'
@@ -209,6 +210,29 @@ export function buildCodexRelayModelCatalog(
   return models.some((entry) => entry.visibility === 'list') ? { models } : null
 }
 
+function codexCliVersionOf(cli: { installed: boolean; version: string | null }): string | null {
+  return CLI_VERSION_IN_TEXT.exec(cli.version ?? '')?.[1] ?? null
+}
+
+/**
+ * 按这台电脑上的命令行版本筛一遍：官方标的最低客户端版本比它新的型号不写，跟 OpenAI 给 ChatGPT
+ * 登录的客户下发名单时一样一个一个筛。以前是整份不写，名单里多出一个新型号（GPT-6.2 要 0.166.0），
+ * 没升级命令行的客户就连已经在用的那几个也一起丢了菜单。没装命令行、读不出版本时原样返回，交给
+ * codexCliAcceptsModelCatalog 去判断；筛完菜单里一个能显示的都不剩返回 null，跟账号一个都对不上同样处理。
+ */
+export function fitCodexModelCatalogToCli(
+  catalog: CodexModelCatalog,
+  cli: { installed: boolean; version: string | null } | null,
+): CodexModelCatalog | null {
+  const version = cli?.installed ? codexCliVersionOf(cli) : null
+  if (!version) return catalog
+  const models = catalog.models.filter((entry) => {
+    const required = entry.minimal_client_version
+    return typeof required !== 'string' || !VERSION_PATTERN.test(required) || !isNewerVersion(version, required)
+  })
+  return models.some((entry) => entry.visibility === 'list') ? { models } : null
+}
+
 /** 写这份名单所需的最低 Codex 版本：读得懂它的底线，与每个型号官方标的最低客户端版本，取最高。 */
 export function codexModelCatalogRequiredCliVersion(catalog: CodexModelCatalog): string {
   let required = codexModelCatalogMinimumCliVersion
@@ -228,7 +252,7 @@ export function codexCliAcceptsModelCatalog(
   catalog: CodexModelCatalog,
 ): CodexModelCatalogVerdict {
   if (!cli.installed) return 'accepted'
-  const version = CLI_VERSION_IN_TEXT.exec(cli.version ?? '')?.[1]
+  const version = codexCliVersionOf(cli)
   if (!version) return 'unknown'
   return isNewerVersion(version, codexModelCatalogRequiredCliVersion(catalog)) ? 'too-old' : 'accepted'
 }

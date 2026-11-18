@@ -896,6 +896,20 @@ release note），另把 `rust-v0.167.0..rust-v0.169.0` 的提交标题按 provi
 
 中转实测：2026-11-17 `cli-relay-probe` 在 `solov` 上用默认型号真跑通过，`solov-api` 照 11-09 的决定不测。没做的：GPT-6.1 Terra 没在中转上单独跑。
 
+**随包型号名单单独换到 `rust-v0.169.1`（2026-11-18，推荐版本仍是 0.169.0）。** xm 站分组上了 `gpt-6.2-sol`、`gpt-6.2-astra`，
+Codex 自己是 0.169.1 才把这两个放进名单（#62106），随包名单停在 `rust-v0.169.0` 时菜单里选不到，在星芒配置窗口硬选上，星芒按
+「默认型号不在名单里」收回整份名单，Codex 弹 `Model metadata for gpt-6.2-sol not found` 走通用资料；勾了「总是装最新版」的客户装的
+0.170.0 自带这两个，反被星芒的旧名单盖掉。0.169.1 的 `models.json` 与 `rust-v0.170.0` 逐字相同（sha256 `d50b6749…3068`，提交
+`c376cf7396eff83ce4c6ac61b9553df142e7a0be`），`LICENSE`、`NOTICE` 不变；`openai_models.rs` 两个 tag 之间没改，二进制其余改动只在
+Bedrock / Vertex。这次只换名单、不抬推荐版本：两个新型号官方标的最低客户端版本是 0.166.0，不高过推荐的 0.169.0。
+
+沙箱（本机假接口，`supports_websockets = false`）：0.159.0-alpha.12.1（26.930 那批桌面端带的）、0.169.0、0.170.0 读新名单的子集都不报错，
+`app-server` 的 `model/list` 都列出两个 6.2；0.169.0 用 `gpt-6.2-sol` 发的请求字段跟用随包旧名单跑 `gpt-6.1-sol` 一样（`reasoning.context`、
+`text.verbosity`，不带 `tools`），旧名单下硬跑 `gpt-6.2-sol` 才带 `reasoning.summary = auto` 和 9 个通用工具。
+
+同时改了一处写法：以前写进名单的型号里有一个官方最低版本高过本机命令行，整份不写；现在只少写那一个
+（`fitCodexModelCatalogToCli`），命令行低于 0.166.0 的客户菜单照旧，只是没有 6.2，跟 OpenAI 给 ChatGPT 登录的客户下发名单时一样一个一个筛。
+
 **Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
 上游只有 8 个提交，和中转有关的是两条：
 

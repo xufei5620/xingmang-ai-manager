@@ -16,6 +16,7 @@ import {
   codexModelCatalogRequiredCliVersion,
   codexRelayModelCatalogOutdated,
   combineCodexModelCatalogVerdicts,
+  fitCodexModelCatalogToCli,
   isManagedCodexModelCatalogSetting,
   parseCodexModelCatalog,
   readBundledCodexModelCatalog,
@@ -67,7 +68,21 @@ describe('bundled Codex model catalog', () => {
     expect(catalog.rejected).toEqual([])
     const sol = catalog.models.find((model) => model.slug === 'gpt-6.1-sol')
     expect(sol).toMatchObject({ visibility: 'list', supported_in_api: true })
-    expect(codexModelCatalogRequiredCliVersion(catalog)).toBe('0.155.0')
+    expect(codexModelCatalogRequiredCliVersion(catalog)).toBe('0.166.0')
+  })
+
+  it('lists GPT-6.2 Sol and GPT-6.2 Astra, which the relay offers and Codex 0.169.0 does not ship', () => {
+    // xm 站 11-18 上了这两个型号，Codex 自己是 rust-v0.169.1 才把它们放进名单；随包名单停在
+    // rust-v0.169.0 时菜单里选不到，硬选上走通用资料。官方标的最低客户端版本是 0.166.0，
+    // 不高过推荐的 0.169.0。
+    const catalog = readBundledCodexModelCatalog(bundledPath)
+    for (const slug of ['gpt-6.2-sol', 'gpt-6.2-astra']) {
+      expect(catalog.models.find((model) => model.slug === slug)).toMatchObject({
+        visibility: 'list',
+        supported_in_api: true,
+        minimal_client_version: '0.166.0',
+      })
+    }
   })
 
   it('ships the upstream license and notice next to the catalog', () => {
@@ -151,6 +166,39 @@ describe('Codex relay model catalog', () => {
     expect(codexModelCatalogRequiredCliVersion({
       models: [entry('a', { minimal_client_version: '0.153.0' }), entry('b', { minimal_client_version: '0.155.0' }), entry('c')],
     })).toBe('0.155.0')
+  })
+
+  it('leaves out only the models the installed Codex CLI is too old for', () => {
+    const catalog = {
+      models: [
+        entry('gpt-6.2-sol', { minimal_client_version: '0.166.0' }),
+        entry('gpt-6.1-sol', { minimal_client_version: '0.153.0' }),
+        entry('codex-auto-review', { visibility: 'hide', minimal_client_version: '0.98.0' }),
+        entry('gpt-no-version'),
+      ],
+    }
+    const slugs = (cli: { installed: boolean; version: string | null } | null) => fitCodexModelCatalogToCli(catalog, cli)?.models.map((model) => model.slug)
+    expect(slugs({ installed: true, version: 'codex-cli 0.160.0' })).toEqual(['gpt-6.1-sol', 'codex-auto-review', 'gpt-no-version'])
+    expect(slugs({ installed: true, version: '0.166.0-alpha.3' })).toEqual(['gpt-6.1-sol', 'codex-auto-review', 'gpt-no-version'])
+    expect(slugs({ installed: true, version: '0.166.0' })).toEqual(['gpt-6.2-sol', 'gpt-6.1-sol', 'codex-auto-review', 'gpt-no-version'])
+    expect(slugs({ installed: true, version: '0.169.0' })).toEqual(['gpt-6.2-sol', 'gpt-6.1-sol', 'codex-auto-review', 'gpt-no-version'])
+    // 筛完的名单整份够得上，后面那道版本关照常放行。
+    expect(codexCliAcceptsModelCatalog({ installed: true, version: '0.160.0' }, fitCodexModelCatalogToCli(catalog, { installed: true, version: '0.160.0' })!)).toBe('accepted')
+  })
+
+  it('keeps the catalog as it is when there is no Codex CLI or its version cannot be read', () => {
+    const catalog = { models: [entry('gpt-6.2-sol', { minimal_client_version: '0.166.0' })] }
+    expect(fitCodexModelCatalogToCli(catalog, { installed: false, version: null })).toBe(catalog)
+    expect(fitCodexModelCatalogToCli(catalog, { installed: true, version: null })).toBe(catalog)
+    expect(fitCodexModelCatalogToCli(catalog, { installed: true, version: 'codex-cli' })).toBe(catalog)
+    expect(fitCodexModelCatalogToCli(catalog, null)).toBe(catalog)
+  })
+
+  it('writes no catalog when the installed Codex CLI is too old for every model the menu would show', () => {
+    const catalog = {
+      models: [entry('gpt-6.2-sol', { minimal_client_version: '0.166.0' }), entry('codex-auto-review', { visibility: 'hide', minimal_client_version: '0.98.0' })],
+    }
+    expect(fitCodexModelCatalogToCli(catalog, { installed: true, version: '0.165.2' })).toBeNull()
   })
 
   it.each([

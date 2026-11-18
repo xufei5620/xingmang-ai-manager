@@ -1,0 +1,4 @@
+## 开发
+
+- 随包 Codex 型号名单 `bundled-catalog/codex-models/models.json` 从 `rust-v0.169.0` 换到 `rust-v0.169.1`（与 `rust-v0.170.0` 逐字相同，只多 `gpt-6.2-sol`、`gpt-6.2-astra`，并更新已有型号的说明和提示词），推荐版本仍是 0.169.0。xm 站分组 11-18 上了这两个型号，旧名单下 Codex 命令行 `/model` 和桌面端菜单都选不到；在星芒配置窗口硬选上会因「默认型号不在名单里」收回整份名单，Codex 弹 `Model metadata for gpt-6.2-sol not found` 走通用资料；装了 0.170.0 的客户自带这两个，反被星芒的旧名单盖掉。两个新型号官方最低客户端版本 0.166.0，`openai_models.rs` 两个 tag 之间没改；沙箱里 0.159.0-alpha.12.1、0.169.0、0.170.0 都读得进新名单、`model/list` 列出两个 6.2，0.169.0 用 6.2 发的请求跟旧名单下的 6.1-sol 一样。
+- `electron/codex-model-catalog.ts` 新增 `fitCodexModelCatalogToCli`：写名单前按本机命令行版本一个一个筛，官方最低版本高过命令行的型号只少写那一个，不再整份不写（`config-save-service.ts` 的 `resolveCodexModelCatalog`，少写时记 `codex-model-catalog.cli-too-old-for-models`）。否则换名单后，分组里有 6.2、命令行还在 0.166 以下的客户会连已经在用的型号一起丢了菜单。命令行低于 0.147.0、桌面端早于 26.917 照旧整份不写。

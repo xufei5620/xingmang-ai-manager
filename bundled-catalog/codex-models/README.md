@@ -5,9 +5,9 @@
 | 项 | 值 |
 | --- | --- |
 | 仓库 | <https://github.com/openai/codex> |
-| tag | `rust-v0.169.0`（提交 `d32063f96c2dff1dc96af839b3952abb6acfeda4`） |
+| tag | `rust-v0.169.1`（提交 `c376cf7396eff83ce4c6ac61b9553df142e7a0be`） |
 | 路径 | `codex-rs/models-manager/models.json` |
-| sha256 | `1384625c0b6b3e67d3c60da29becea2b017f2c283fc1e2d05b8edafb4698eb10` |
+| sha256 | `d50b6749506d97e5f334dbabcb666eb1689f423cf3e88cfabdcf3c536b873068` |
 | 许可 | Apache-2.0，`LICENSE` 与 `NOTICE` 原样拷自同一 tag 的仓库根目录 |
 
 ## 为什么不能改
@@ -16,7 +16,7 @@
 
 ## 怎么换新
 
-抬 Codex 推荐版本（`electron/cli-verified-versions.ts`）时一起换，选同一个 tag：
+抬 Codex 推荐版本（`electron/cli-verified-versions.ts`）时一起换，选同一个 tag。中转上了新 GPT 型号、上游只出了加型号的补丁版时（比如 2026-11-18 的 `rust-v0.169.1` 加 GPT-6.2，推荐版本仍是 0.169.0），可以只换名单不抬版本，前提是新型号官方标的最低客户端版本不高过推荐版本、`openai_models.rs` 两个 tag 之间没改，第 4 步照做：
 
 1. 从那个 tag 原样下载 `codex-rs/models-manager/models.json`、根目录的 `LICENSE` 与 `NOTICE`，覆盖这里的三个文件。不要经过会改换行或缩进的编辑器。
 2. 改 `electron/codex-model-catalog.ts` 的 `bundledCodexModelCatalogSource`：`tag` 与 `sha256`（`sha256sum models.json`）。改这份 README 的表格。

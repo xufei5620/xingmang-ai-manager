@@ -913,6 +913,28 @@ describe('createSystemService', () => {
     expect(written.models.map((model) => model.slug)).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
   })
 
+  it('puts GPT-6.2 Sol and Astra in the Codex menu when the account offers them and the CLI is recent enough', async () => {
+    const f = codexCatalogFixture()
+    f.account.models = ['gpt-5.5', 'gpt-6.1-sol', 'gpt-6.2-astra', 'gpt-6.2-sol']
+    f.installCodexCli('0.169.0')
+
+    await f.save('gpt-6.2-sol')
+
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+    expect(f.catalogSlugs()).toEqual(['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-sol', 'gpt-5.5'])
+  })
+
+  it('keeps the rest of the Codex menu for a CLI too old for GPT-6.2, instead of dropping the whole catalog', async () => {
+    const f = codexCatalogFixture()
+    f.account.models = ['gpt-5.5', 'gpt-6.1-sol', 'gpt-6.2-astra', 'gpt-6.2-sol']
+    f.installCodexCli('0.160.0')
+
+    await f.save()
+
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+  })
+
   it('writes the catalog when only a Codex desktop app from a release that reads it is on this computer', async () => {
     const f = codexCatalogFixture()
     f.desktop.probe = { installed: true, version: '26.930.2377.0' }
