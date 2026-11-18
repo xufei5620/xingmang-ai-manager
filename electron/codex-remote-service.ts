@@ -150,6 +150,11 @@ const turnStallMs = 60 * 60_000
  * （YR-3，yoyo 2026-11-17「改」）：刚发完一句的人多半还会接着发，半小时没动静才算放下了。
  */
 export const remoteIdleInstallQuietMs = 30 * 60_000
+/**
+ * 做完了、没送到手机的回答最多留这么久等补发（M03）：晚上交代的事第二天早上手机通了还能收到；再久就不翻出来了，
+ * 免得几天前的回答突然冒出来。
+ */
+const undeliveredAnswerTtlMs = 24 * hourMs
 /** 审批编号最多 4 位：手机上回「同意 12」要好打，飞书按钮和文字指令也只认 4 位以内。 */
 const maxApprovalNumber = 9999
 /**
@@ -708,13 +713,25 @@ interface TurnState {
   finalAnswer: string | null
   lastMessage: string | null
   error: TurnFailure | null
+  /** 请 Codex 停过这一轮（「停止」、关遥控这些）：再来要同意的一律拒绝，它以「停了」收场时不重复说「已停止。」。没停成时改回 false（M01）。 */
   stoppedByUser: boolean
+  /** 正在等 Codex 答应停下的那一次（M01）：电脑上、手机上同时点「停止」时共用这一次，不重复打断、不重复说「已停止。」。 */
+  stopping: Promise<StopTurnOutcome> | null
+  /** 这一轮最先记下的结果（settleTurn）；还没结果是 null。等停下的回执时用它看这一轮是怎么收场的（M01）。 */
+  settledAs: Exclude<CodexRemoteLastRequestSnapshot['state'], 'running'> | null
   /** 上一次有动静起算的「卡死」计时；每条通知、每次问审批都重新起算（noteTurnProgress）。 */
   stallTimer: NodeJS.Timeout | null
   /** Codex 最近一次报的整张计划（YF-15）；没报过是空的。 */
   plan: RemoteProgressStep[]
   progress: TurnProgress
 }
+
+/**
+ * 请 Codex 停下这一轮以后怎么样了（M01）。stopped：停了，该跟手机说「已停止。」；settled：等回执的这一会儿它自己
+ * 有了别的结果（做完、没做完、Codex 没了），或者别处正在停、会由那边说，这边不用再说什么；running：Codex 没答应
+ * （回了错、10 秒没回），这一轮照旧在做。
+ */
+type StopTurnOutcome = 'stopped' | 'settled' | 'running'
 
 /** 这一轮发到手机上的进度（YF-15）。 */
 interface TurnProgress {
@@ -800,9 +817,35 @@ interface ChannelRuntime {
   lastPromptImages: string[]
   /**
    * 只发了图、还没说要做什么时攒着的图（YF-14），下一句话交给 Codex 时一起带上，最多 remoteImagesPerPrompt 张。
-   * 发「新对话」、关遥控、换人时删掉。
+   * 发「新对话」、关遥控、换人时删掉。跟一句没收下的话一起发来的图不留在这里（M05，见 runPrompt）。
    */
   pendingImages: string[]
+  /**
+   * 做完了、却没送到手机的那条回答（M03），等手机那头通了补发。只在内存里，最多留 undeliveredAnswerTtlMs；
+   * 关遥控、换人、解绑时扔掉，送到了也扔掉。
+   */
+  undeliveredAnswer: UndeliveredAnswer | null
+  /** 正在补发的那一次（M03）：连上了和手机来消息碰在一起时，后到的等这一次的结果，不再发一遍。 */
+  answerResend: Promise<AnswerResendResult | null> | null
+}
+
+/** 补发了一次（M03）：送没送到，补发的是不是最后一句的回答（UndeliveredAnswer.latest）。 */
+interface AnswerResendResult {
+  sent: boolean
+  latest: boolean
+}
+
+interface UndeliveredAnswer {
+  /** 原样的回答（含「用时……」那行），补发时跟别的消息一样再脱敏一次。 */
+  text: string
+  /** 回答是给谁的：只补发给这个人。 */
+  peerUserId: string
+  at: number
+  /**
+   * 是不是最后一句交给 Codex 的话的回答：是的话手机上发「重试」只补发、不让 Codex 再做一遍。之后又交给 Codex
+   * 一句新的（这时补发没成）就不是了，「重试」照常重做那句新的。
+   */
+  latest: boolean
 }
 
 export type RemoteInboundSeen = 'none' | 'group' | 'direct'
@@ -847,6 +890,8 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     lastPrompt: null,
     lastPromptImages: [],
     pendingImages: [],
+    undeliveredAnswer: null,
+    answerResend: null,
   }
 }
 
@@ -1343,13 +1388,21 @@ export class CodexRemoteService {
    * 手机上也收到那句「已停止。」，免得手机那头以为还在做。之后手机上再发消息照常开新的一轮。
    */
   async stopTurnFromComputer(): Promise<CodexRemoteSnapshot> {
+    let stillRunning = false
     for (const runtime of Object.values(this.runtimes)) {
       if (!runtime.turn) continue
-      await this.abandonTurn(runtime)
+      const outcome = await this.stopTurn(runtime)
+      // Codex 没答应停（M01）：卡片照旧是「正在处理」，手机上什么都没变，不说什么；电脑上报一句，好再点一次。
+      if (outcome === 'running') {
+        stillRunning = true
+        continue
+      }
       this.options.log('info', 'remote.turn-stopped-on-computer', { channel: runtime.id })
-      await this.sendText(runtime, remoteMessages.interrupted)
+      if (outcome === 'stopped') await this.sendText(runtime, remoteMessages.interrupted)
     }
-    return this.emit()
+    const snapshot = await this.emit()
+    if (stillRunning) throw new Error('还没停下来，Codex 还在处理。可以过一会儿再点一次「停下这一轮」。')
+    return snapshot
   }
 
   /**
@@ -1532,6 +1585,14 @@ export class CodexRemoteService {
     })
   }
 
+  /** 跟一句没收下的话一起发来的图不再攒着、删掉（M05，见 runPrompt）；早先单独发来的照旧留着。 */
+  private returnIncomingImages(runtime: ChannelRuntime, incoming: readonly string[]): void {
+    const returned = runtime.pendingImages.filter((image) => incoming.includes(image))
+    if (returned.length === 0) return
+    runtime.pendingImages = runtime.pendingImages.filter((image) => !incoming.includes(image))
+    this.releaseImages(returned)
+  }
+
   /** 攒着的和上一句带过的图都不要了（关遥控、换人、重新打开）。 */
   private dropImages(runtime: ChannelRuntime): void {
     this.releaseImages([...runtime.pendingImages, ...runtime.lastPromptImages])
@@ -1600,11 +1661,14 @@ export class CodexRemoteService {
         onInbound: (message) => this.onInbound(runtime, adapter, message),
         onStatus: (status) => {
           if (runtime.adapter !== adapter) return
+          const wasConnected = runtime.status.state === 'connected'
           runtime.status = status
           if (status.state === 'connected' && !announced) {
             announced = true
             void this.announceOpened(runtime, adapter)
           }
+          // 断了又连上（含卡片上点「重新连接」）：做完了没送到的回答这时补发（M03）。
+          if (status.state === 'connected' && !wasConnected) void this.resendUndeliveredAnswer(runtime)
           this.emitSoon()
         },
       })
@@ -1647,6 +1711,8 @@ export class CodexRemoteService {
     await this.stopAdapter(runtime)
     runtime.peer = null
     runtime.replyContext = undefined
+    runtime.undeliveredAnswer = null
+    runtime.answerResend = null
     this.dropThread(runtime)
     this.dropImages(runtime)
     if (wasEnabled) this.options.log('info', 'remote.channel-stopped', { channel: runtime.id })
@@ -1685,6 +1751,8 @@ export class CodexRemoteService {
     runtime.replyContext = undefined
     runtime.threadId = null
     runtime.lastPrompt = null
+    runtime.undeliveredAnswer = null
+    runtime.answerResend = null
     this.dropImages(runtime)
     // 换了人就是新的人，没有「前面的」可言。
     runtime.threadLost = false
@@ -1712,7 +1780,59 @@ export class CodexRemoteService {
     await Promise.race([sent, new Promise((resolve) => setTimeout(resolve, shutdownSendTimeoutMs).unref?.())])
   }
 
-  /** 正在跑的这一轮：等你同意的一律拒绝，再请 Codex 停下。 */
+  /**
+   * 手机上发「停止」「新对话」、点进度卡「停止」、电脑卡片上点「停下这一轮」（M01）：Codex 答应停了才算停了。
+   * 以前先把这一轮记成停了、收掉，再请 Codex 停；Codex 回了错或 10 秒没回（正在跑的命令一时停不下来）时，电脑卡片
+   * 已经空闲、手机收到「已停止。」、下一句照常开新的一轮，旧的那一轮在 Codex 里可能还在跑，它后面的通知又因为
+   * 编号作废了没人认。现在等回执这一会儿和没停成以后，这一轮都还挂着：手机再发的话回「还在处理上一条」，它后面的
+   * 通知、审批、结束照常认，后来停下了手机收到「已停止。」，做完了收到回答。等你同意的照样先一律拒绝。
+   * 关遥控、解绑、卡死不走这里（abandonTurn）：渠道或人都没了，挂着也没人接；卡死本来就是 Codex 不理人了。
+   */
+  private stopTurn(runtime: ChannelRuntime): Promise<StopTurnOutcome> {
+    const turn = runtime.turn
+    if (!turn) return Promise.resolve('settled')
+    // 电脑上、手机上差不多同时点了「停止」：等同一次，「已停止。」由先点的那边说。
+    if (turn.stopping) return turn.stopping.then((outcome) => (outcome === 'stopped' ? 'settled' : outcome))
+    turn.stopping = this.interruptTurn(runtime, turn).finally(() => {
+      turn.stopping = null
+    })
+    return turn.stopping
+  }
+
+  private async interruptTurn(runtime: ChannelRuntime, turn: TurnState): Promise<StopTurnOutcome> {
+    const turnId = turn.id
+    const threadId = runtime.threadId
+    const client = this.codex
+    // 还没交给 Codex（没有编号，交到一半的由 turnStillWanted 拦住、补打断）、Codex 已经不在了：没有可等的，当场收掉。
+    if (!turnId || !threadId || !client?.running) {
+      await this.abandonTurn(runtime)
+      return 'stopped'
+    }
+    for (const entry of this.pendingFor(runtime.id)) entry.settle('decline')
+    turn.stoppedByUser = true
+    const accepted = await client.request('turn/interrupt', { threadId, turnId }, 10_000).then(() => true, () => false)
+    // 等回执的这一会儿这一轮已经收场了：以「停了」收场的（Codex 先发了结束通知、或者关了遥控）手机上还没人说「已停止。」，
+    // 做完、没做完、Codex 没了的，那句已经发过了。
+    if (runtime.turn !== turn) return turn.settledAs === 'stopped' ? 'stopped' : 'settled'
+    if (!accepted) {
+      turn.stoppedByUser = false
+      this.options.log('warn', 'remote.interrupt-failed', { channel: runtime.id })
+      return 'running'
+    }
+    this.settleTurn(runtime, turn, 'stopped')
+    this.clearTurn(runtime)
+    this.retireTurn(runtime, turnId)
+    return 'stopped'
+  }
+
+  /** 手机上「停止」、进度卡「停止」以后回一句（M01）：停了说「已停止。」，没停成说还在做，别处已经说过的不再说。 */
+  private async replyToStop(runtime: ChannelRuntime, outcome: StopTurnOutcome): Promise<void> {
+    if (outcome === 'stopped') await this.sendText(runtime, remoteMessages.interrupted)
+    else if (outcome === 'running') await this.sendText(runtime, remoteMessages.stopPending)
+    this.emitSoon()
+  }
+
+  /** 关遥控、解绑、卡死时正在跑的这一轮：等你同意的一律拒绝、当场收掉，再请 Codex 停下（成不成都不等它，见 stopTurn）。 */
   private async abandonTurn(runtime: ChannelRuntime): Promise<void> {
     for (const entry of this.pendingFor(runtime.id)) entry.settle('decline')
     const turn = runtime.turn
@@ -1742,6 +1862,7 @@ export class CodexRemoteService {
 
   /** 这一轮有了结果：记到电脑卡片「最近一次」上，手机上的进度卡也跟着变成做完了、停了或没做完（YF-15）。 */
   private settleTurn(runtime: ChannelRuntime, turn: TurnState, state: Exclude<CodexRemoteLastRequestSnapshot['state'], 'running'>, reason: string | null = null): void {
+    turn.settledAs ??= state
     this.settleLastRequest(turn, state, reason)
     this.endProgress(runtime, turn, state)
   }
@@ -1919,23 +2040,58 @@ export class CodexRemoteService {
     })
   }
 
+  /** 整段都发出去了返回 true；没人可发、渠道没连着、哪一段没发出去都是 false（M03 靠它知道回答送没送到）。 */
   private async sendText(
     runtime: ChannelRuntime,
     text: string,
     peer = runtime.peer,
     replyContext: string | null | undefined = runtime.replyContext,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const adapter = runtime.adapter
-    if (!peer || !adapter) return
+    if (!peer || !adapter) return false
     await this.refreshSecrets()
     const chunks = splitRemoteText(redactRemoteText(text, this.redaction()), adapter.capabilities.maxTextLength, maxReplyChunks)
     for (const chunk of chunks) {
       try {
         await this.deliver(runtime, peer, { kind: 'text', text: chunk }, replyContext)
       } catch {
-        return
+        return false
       }
     }
+    return true
+  }
+
+  /**
+   * 这一轮做完了的回答（M03）：没送到手机就留一份，等手机那头通了补发。不留的话电脑上记着做完了，手机上什么都
+   * 没收到，发「状态」取不回，发「重试」又让 Codex 从头做一遍、再扣一次钱。
+   */
+  private async sendAnswer(runtime: ChannelRuntime, text: string): Promise<void> {
+    const peer = runtime.peer
+    if (await this.sendText(runtime, text)) return
+    // 发的这一会儿关了遥控、换了人：不用留了，disableChannel、forgetPeer 已经扔过一次。
+    if (!peer || !runtime.enabled || runtime.peer?.userId !== peer.userId) return
+    runtime.undeliveredAnswer = { text, peerUserId: peer.userId, at: this.now(), latest: true }
+    this.options.log('warn', 'remote.answer-undelivered', { channel: runtime.id })
+  }
+
+  /**
+   * 补发做完了没送到的那条回答（M03）。先从 runtime 上摘下来再发；正在补发时再叫一次，等的是同一次，不会发两遍。
+   * 还是没送到就放回去等下一次（这期间又留了更新的一份就留新的）。没有要补发的、过了时限的返回 null。
+   */
+  private resendUndeliveredAnswer(runtime: ChannelRuntime): Promise<AnswerResendResult | null> {
+    if (runtime.answerResend) return runtime.answerResend
+    const pending = runtime.undeliveredAnswer
+    if (!pending) return Promise.resolve(null)
+    runtime.undeliveredAnswer = null
+    if (this.now() - pending.at > undeliveredAnswerTtlMs || runtime.peer?.userId !== pending.peerUserId) return Promise.resolve(null)
+    const resend: Promise<AnswerResendResult | null> = this.sendText(runtime, `${remoteMessages.answerResent}\n\n${pending.text}`).then((sent) => {
+      if (runtime.answerResend === resend) runtime.answerResend = null
+      if (sent) this.options.log('info', 'remote.answer-resent', { channel: runtime.id })
+      else if (runtime.enabled && runtime.peer?.userId === pending.peerUserId) runtime.undeliveredAnswer ??= pending
+      return { sent, latest: pending.latest }
+    })
+    runtime.answerResend = resend
+    return resend
   }
 
   private onInbound(runtime: ChannelRuntime, adapter: RemoteChannelAdapter, message: RemoteInbound): void {
@@ -1990,6 +2146,10 @@ export class CodexRemoteService {
     runtime.staleNoticeAt = 0
     this.lastPhoneMessageAt = this.now()
     this.touch(runtime)
+    // 他发来了消息，手机那头是通的：做完了没送到的回答先补上，再处理这一条（M03）。这时还有一轮在做的话，要补的是
+    // 更早那轮的，「重试」用不上它；不等它发完，「停止」「同意」不往后排。
+    const resending = this.resendUndeliveredAnswer(runtime)
+    const resent = runtime.turn ? null : await resending
     if (message.kind === 'unsupported') {
       await this.sendText(runtime, remoteMessages.unsupported)
       return
@@ -2003,10 +2163,14 @@ export class CodexRemoteService {
       return
     }
     let text: string
+    // 跟这句话一起发来、刚攒上的图（M05）：这句话没被收下时连它们一起退回。
+    let incoming: readonly string[] = []
     if (message.kind === 'image') {
-      if (!(await this.receiveImages(runtime, message))) return
+      const received = await this.receiveImages(runtime, message)
+      if (!received) return
       // 图和字一起发来的（飞书富文本、微信图文）：图已经攒上，字照常当一句话处理，是要做的事就带着图交出去。
       if (!message.text?.trim()) return
+      incoming = received
       text = message.text
     } else {
       text = message.text
@@ -2026,22 +2190,32 @@ export class CodexRemoteService {
         await this.useWorkspaceFromPhone(runtime, command.index)
         return
       case 'retry':
+        // 上一句其实做完了，只是回答刚才没送到、这会儿才补发（M03）：不让 Codex 再做一遍，真要重做就再发一次「重试」。
+        // 补发也没成的同样不重做，做完的回答发不到手机，重做一遍也一样发不到。
+        if (resent?.latest) {
+          if (resent.sent) await this.sendText(runtime, remoteMessages.retryAfterAnswerResent)
+          return
+        }
         if (!runtime.lastPrompt) {
           await this.sendText(runtime, remoteMessages.nothingToRetry)
           return
         }
-        await this.runPrompt(runtime, runtime.lastPrompt, true)
+        await this.runPrompt(runtime, runtime.lastPrompt, true, incoming)
         return
       case 'stop':
         if (!runtime.turn) {
           await this.sendText(runtime, remoteMessages.nothingToStop)
           return
         }
-        await this.abandonTurn(runtime)
-        await this.sendText(runtime, remoteMessages.interrupted)
-        this.emitSoon()
+        await this.replyToStop(runtime, await this.stopTurn(runtime))
         return
       case 'new-thread':
+        // 上一条没停成就不开新对话（M01）：不然旧的那一轮还在跑，新对话里又开一轮。
+        if (runtime.turn && (await this.stopTurn(runtime)) === 'running') {
+          await this.sendText(runtime, remoteMessages.newThreadStopPending)
+          this.emitSoon()
+          return
+        }
         await this.abandonTurn(runtime)
         runtime.threadId = null
         // 是他自己要的新对话，下次不用再提醒「前面的记不得了」。
@@ -2059,33 +2233,34 @@ export class CodexRemoteService {
         await this.answerApproval(runtime, command.decision, command.approvalId)
         return
       case 'prompt':
-        await this.runPrompt(runtime, command.text)
+        await this.runPrompt(runtime, command.text, false, incoming)
     }
   }
 
   /**
    * 手机上发来的图（YF-14）：走到这里已经核过是绑定的那个人，这才去平台取。认过开头字节是图片的存下来攒着，
    * 等下一句话一起交给 Codex；取不到、太大、攒满了，每种原因回一句。只有图、没带字、之前没攒着图时回一句
-   * 「收到图片」，免得连发几张收到一串一样的话。返回 false = 取图的这一会儿渠道关了或者换了人，别再往下做。
+   * 「收到图片」，免得连发几张收到一串一样的话。返回这条消息里攒上的图；null = 取图的这一会儿渠道关了或者
+   * 换了人，别再往下做。
    */
-  private async receiveImages(runtime: ChannelRuntime, message: RemoteInboundImage): Promise<boolean> {
+  private async receiveImages(runtime: ChannelRuntime, message: RemoteInboundImage): Promise<string[] | null> {
     const adapter = runtime.adapter
     const store = this.options.imageStore
     if (!adapter?.fetchImage || !store) {
       await this.sendText(runtime, remoteMessages.unsupported)
-      return true
+      return []
     }
     const stillHere = () => runtime.enabled && runtime.adapter === adapter && runtime.peer?.userId === message.peer.userId
     const hadPending = runtime.pendingImages.length > 0
     const problems = new Set<string>()
-    let added = 0
+    const added: string[] = []
     for (const ref of message.images) {
       if (runtime.pendingImages.length >= remoteImagesPerPrompt) {
         problems.add(remoteMessages.imagesFull)
         break
       }
       const result = await adapter.fetchImage(ref, remoteImageMaxBytes)
-      if (!stillHere()) return false
+      if (!stillHere()) return null
       if (!result.ok) {
         problems.add(imageProblemMessage(runtime.id, result.reason))
         continue
@@ -2110,15 +2285,15 @@ export class CodexRemoteService {
       }
       if (!stillHere()) {
         this.releaseImages([saved])
-        return false
+        return null
       }
       runtime.pendingImages.push(saved)
-      added += 1
+      added.push(saved)
     }
-    this.options.log('info', 'remote.images-received', { channel: runtime.id, added, offered: message.images.length })
+    this.options.log('info', 'remote.images-received', { channel: runtime.id, added: added.length, offered: message.images.length })
     for (const problem of problems) await this.sendText(runtime, problem)
-    if (added > 0 && !hadPending && !message.text?.trim()) await this.sendText(runtime, remoteMessages.imageReceived)
-    return stillHere()
+    if (added.length > 0 && !hadPending && !message.text?.trim()) await this.sendText(runtime, remoteMessages.imageReceived)
+    return stillHere() ? added : null
   }
 
   /**
@@ -2415,9 +2590,7 @@ export class CodexRemoteService {
       return
     }
     this.options.log('info', 'remote.turn-stopped-from-card', { channel: runtime.id })
-    await this.abandonTurn(runtime)
-    await this.sendText(runtime, remoteMessages.interrupted)
-    this.emitSoon()
+    await this.replyToStop(runtime, await this.stopTurn(runtime))
   }
 
   /** 过 delayMs 发一次进度；已经排着更早的那次就不动（YF-15）。 */
@@ -2518,15 +2691,21 @@ export class CodexRemoteService {
 
   /**
    * retry：手机上发的是「重试」（YF-22），「收到」前面先说重发的是哪一句，带的是上一句的图。不是重试时
-   * 带上攒着的图（YF-14）。还在做上一条、没选文件夹时图照旧攒着，下一句再带。
+   * 带上攒着的图（YF-14）。
+   *
+   * incoming 是跟这句话同一条消息发来的图。还在做上一条、没选文件夹，这句话没收下时，这几张跟着一起退回（M05）：
+   * 手机上回的那句是让人做完再发，重发时会连图一起发；留着的话，下一句不相干的话会带上这几张交给 Codex。之前单独
+   * 发来、等着下一句的图照旧攒着，先发图、下一句再说要做什么的用法不变。
    */
-  private async runPrompt(runtime: ChannelRuntime, text: string, retry = false): Promise<void> {
+  private async runPrompt(runtime: ChannelRuntime, text: string, retry = false, incoming: readonly string[] = []): Promise<void> {
     if (runtime.turn) {
+      this.returnIncomingImages(runtime, incoming)
       await this.sendText(runtime, remoteMessages.busy)
       return
     }
     const workspace = (await this.options.store.readSettings()).workspaceDirectory
     if (!workspace) {
+      this.returnIncomingImages(runtime, incoming)
       await this.sendText(runtime, remoteMessages.codexUnavailable)
       return
     }
@@ -2539,12 +2718,16 @@ export class CodexRemoteService {
       lastMessage: null,
       error: null,
       stoppedByUser: false,
+      stopping: null,
+      settledAs: null,
       stallTimer: null,
       plan: [],
       progress: newTurnProgress(),
     }
     runtime.turn = turn
     runtime.lastPrompt = text
+    // 又交给 Codex 一句了（M03）：还没补发成的那条回答不再是「上一条」的，「重试」照常重做这一句。
+    if (runtime.undeliveredAnswer) runtime.undeliveredAnswer.latest = false
     const images = retry ? [...runtime.lastPromptImages] : [...runtime.pendingImages]
     if (!retry) {
       this.releaseImages(runtime.lastPromptImages.filter((image) => !images.includes(image)))
@@ -2799,7 +2982,8 @@ export class CodexRemoteService {
     if (turn.id) this.retireTurn(runtime, turn.id)
     for (const entry of this.pendingFor(runtime.id)) entry.settle('decline')
     let reply: string | null
-    if (turnPayload.status === 'completed') {
+    const completed = turnPayload.status === 'completed'
+    if (completed) {
       const answer = turn.finalAnswer ?? turn.lastMessage ?? remoteMessages.emptyAnswer
       reply = `${answer}\n\n${turnSummaryLine(this.now() - turn.startedAt, turn.changedFiles.map(remoteFileName))}`
       this.settleTurn(runtime, turn, 'done')
@@ -2814,7 +2998,8 @@ export class CodexRemoteService {
       this.settleTurn(runtime, turn, 'failed', failed.reason)
     }
     this.options.log('info', 'remote.turn-finished', { channel: runtime.id, status: stringField(turnPayload.status) })
-    if (reply) void this.sendText(runtime, reply)
+    if (reply && completed) void this.sendAnswer(runtime, reply)
+    else if (reply) void this.sendText(runtime, reply)
     this.touch(runtime)
     this.emitSoon()
   }

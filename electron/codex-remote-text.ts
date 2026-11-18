@@ -13,6 +13,9 @@ export const remoteMessages = {
   busy: 'Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。',
   emptyAnswer: '这一轮做完了，Codex 没有留下文字回复。',
   interrupted: '已停止。',
+  // 请 Codex 停、它没答应（回了错、10 秒没回）时（M01）：这一轮照旧算在做，后来停下了再说「已停止。」。
+  stopPending: '还没停下来，Codex 还在处理上一条。停下以后会告诉你，也可以过一会儿再发一次「停止」。',
+  newThreadStopPending: '上一条还没停下来，新对话没开。Codex 停下以后会告诉你，到时再发「新对话」。',
   nothingToStop: '现在没有在处理的任务。',
   newThread: '已开始新对话。',
   // 语音、文件这些（YF-14，yoyo 2026-11-11「图片改」）：图片能发了，这句跟着改。
@@ -46,6 +49,11 @@ export const remoteMessages = {
   imageTooLarge: '这张图片太大了，电脑没收。请发小一点的，或者截一部分。',
   imagePermissionFeishu: '这张图片电脑没取到。飞书后台要多开一个权限「获取单聊、群组消息」，再发布一个版本。',
   imageFailed: '这张图片电脑没取到，请再发一次。',
+  // 以下两句是 Codex 复核 M03，yoyo 2026-11-18「这些都按照你的推荐」。
+  // 做完了、回答当时没送到手机，手机那头通了补发：放在原回答前面。
+  answerResent: '之前有一条回答没发到你手机上，这里补发：',
+  // 发「重试」时碰上补发：上一条其实做完了，这次不让 Codex 再做一遍。
+  retryAfterAnswerResent: '上一条已经做完了，回答就是上面那条，所以这次没有重做。确实要重做，请再发一次「重试」。',
 } as const
 
 /** 「收到」那句（YF-14）：带着图的说几张，没带图的照旧。 */
