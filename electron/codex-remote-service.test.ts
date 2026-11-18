@@ -1119,6 +1119,7 @@ describe('codex-remote-service switching on when Xingmang opens', () => {
     await vi.advanceTimersByTimeAsync(autoStartRetryMs - 1_000)
     expect(autoStartLogs(s, 'remote.auto-start-retried')).toEqual([])
     await vi.advanceTimersByTimeAsync(1_000)
+    // 连上以后记日志是这次重试的最后一步。
     await vi.waitFor(() => expect(autoStartLogs(s, 'remote.auto-start-retried')).toEqual([{ opened: 1, failed: false }]))
     expect(s.service.hasEnabledChannel()).toBe(true)
     expect(s.snapshots.at(-1)?.autoStartFailure).toBeUndefined()
@@ -1135,7 +1136,9 @@ describe('codex-remote-service switching on when Xingmang opens', () => {
     fs.mkdirSync(s.workspace, { recursive: true })
     s.unavailable.reason = '星芒正以管理员身份运行，手机遥控不能打开。'
     await vi.advanceTimersByTimeAsync(autoStartRetryMs)
-    await vi.waitFor(() => expect(autoStartLogs(s, 'remote.auto-start-retried')).toEqual([{ opened: 0, failed: true }]))
+    // 记下新原因、推给界面是这次重试的最后一步，等它而不是等日志（日志在它前面）。
+    await vi.waitFor(() => expect(s.snapshots.at(-1)?.autoStartFailure).toBe('星芒正以管理员身份运行，手机遥控不能打开。'))
+    expect(autoStartLogs(s, 'remote.auto-start-retried')).toEqual([{ opened: 0, failed: true }])
     expect((await s.service.snapshot()).autoStartFailure).toBe('星芒正以管理员身份运行，手机遥控不能打开。')
     s.unavailable.reason = null
     await vi.advanceTimersByTimeAsync(10 * autoStartRetryMs)
