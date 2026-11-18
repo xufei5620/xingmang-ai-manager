@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import type { AppSettingsStore } from './app-settings'
 import type { ProviderId } from './catalog'
 import {
+  codexDesktopPackageProbeAccountMessage,
   codexDesktopPackageValidationError,
   compareWindowsPackageVersions,
   parseCodexDesktopAppManifest,
@@ -28,6 +29,7 @@ import {
   type StartAppEntry,
   type WindowsProcessEntry,
 } from './codex-desktop'
+import { codexDesktopPackageProbeName, codexDesktopStatusProbeName } from './codex-desktop-probe-failure'
 import {
   CommandRunnerError,
   trustedCommandEnvironment,
@@ -398,6 +400,12 @@ export interface CodexDesktopPackageProbe {
   confirmedAbsent?: boolean
   /** powershell.exe 自己的失败（超时、退出码、stderr）。只当 Error 的 cause 往下传，进日志、不上屏。 */
   cause?: unknown
+  /**
+   * 探测的原话：PowerShell 在查包那段的报错、看不懂的输出。只跟着英文摘要（开头是
+   * codexDesktopStatusProbeName / codexDesktopPackageProbeName）出现：检测失败那行接在摘要后面进日志，
+   * 界面认的是开头、不上屏；装、卸载时抛的错把它挂成 cause。
+   */
+  detail?: string
 }
 
 /** Launches the AppsFolder URI through the canonical SystemRoot Explorer. */
@@ -1896,7 +1904,7 @@ function codexDesktopPackageProbeStatements(): string[] {
     '$confirmedAbsent = $currentProbeSucceeded -and $currentPackages.Count -eq 0',
     '$errorMessage = $null',
     'if ($null -ne $currentError) {',
-    '  $errorMessage = \'读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。\'',
+    `  $errorMessage = ${powerShellLiteral(codexDesktopPackageProbeAccountMessage)}`,
     '}',
     // A hashtable, not [pscustomobject]@{}: ConstrainedLanguage refuses that
     // hashtable-to-object conversion, and ConvertTo-Json writes both the same.
@@ -1984,12 +1992,13 @@ function codexDesktopProbeSegmentJson(value: unknown): string {
   }
 }
 
-function failedCodexDesktopPackageProbe(error: string | null): CodexDesktopPackageProbe {
+function failedCodexDesktopPackageProbe(error: string | null, detail?: string): CodexDesktopPackageProbe {
   return {
     value: null,
-    error: error || '无法读取 Windows Appx 包信息',
+    error: error || `${codexDesktopStatusProbeName}: failed without a reason`,
     source: null,
     confirmedAbsent: false,
+    ...(detail ? { detail } : {}),
   }
 }
 
@@ -2030,8 +2039,10 @@ export function parseCodexDesktopCombinedProbeJson(output: string): CodexDesktop
     processes: processesError
       ? []
       : parseWindowsProcessesJson(codexDesktopProbeSegmentJson(record.processes)),
+    // 查包那段的报错是 PowerShell 的原话，跟着系统语言，中文系统上就是中文：以前原样当检测失败的原因，
+    // 渲染层见是中文就整句上屏。现在摘要说是哪一段，原话放进 detail，只进日志。
     packageProbe: packageError
-      ? failedCodexDesktopPackageProbe(packageError)
+      ? failedCodexDesktopPackageProbe(`${codexDesktopStatusProbeName}: package step failed`, packageError)
       : parseCodexDesktopPackageProbeJson(codexDesktopProbeSegmentJson(record.package)),
   }
 }
@@ -2073,7 +2084,7 @@ export function buildCodexDesktopCombinedProbeFailure(
   timeoutMs: number = codexDesktopCombinedProbeTimeoutMs,
 ): CodexDesktopCombinedProbe {
   const packageProbe = failedCodexDesktopPackageProbe(
-    describeCodexDesktopProbeProcessFailure('Codex desktop status probe', reason, timeoutMs),
+    describeCodexDesktopProbeProcessFailure(codexDesktopStatusProbeName, reason, timeoutMs),
   )
   return {
     match: null,
@@ -2153,8 +2164,8 @@ export async function inspectCodexDesktopPackage(): Promise<CodexDesktopPackageP
   } catch (error) {
     return {
       value: null,
-      error: describeCodexDesktopProbeProcessFailure('Codex desktop package probe', error, codexDesktopSingleProbeTimeoutMs)
-        ?? '无法读取 Windows Appx 包信息',
+      error: describeCodexDesktopProbeProcessFailure(codexDesktopPackageProbeName, error, codexDesktopSingleProbeTimeoutMs)
+        ?? `${codexDesktopPackageProbeName}: failed without a reason`,
       source: null,
       confirmedAbsent: false,
       cause: error,
@@ -2166,8 +2177,9 @@ export async function inspectCodexDesktopPackage(): Promise<CodexDesktopPackageP
  * 查包没有结果时调用方抛的错。message 用探测自己那句（能让客户照着做的那句，或上面的英文
  * 摘要），powershell.exe 的原始错误挂成 cause，日志里照样看得到退出码和 stderr。
  */
-export function codexDesktopPackageProbeError(error: string, probe: Pick<CodexDesktopPackageProbe, 'cause'>): Error {
-  return probe.cause === undefined ? new Error(error) : new Error(error, { cause: probe.cause })
+export function codexDesktopPackageProbeError(error: string, probe: Pick<CodexDesktopPackageProbe, 'cause' | 'detail'>): Error {
+  const cause = probe.cause ?? (probe.detail ? new Error(probe.detail) : undefined)
+  return cause === undefined ? new Error(error) : new Error(error, { cause })
 }
 
 export async function inspectCodexDesktopAppVersion(
@@ -2540,7 +2552,12 @@ export function buildCodexDesktopWindowsProbes(
   mirrorResult: PromiseSettledResult<DesktopMirrorVersionProbe>,
   checkedAt: string = new Date().toISOString(),
 ): CodexDesktopWindowsProbes {
-  const packageProbeError = packageResult.status === 'fulfilled' ? packageResult.value.error : null
+  const fulfilledPackageProbe = packageResult.status === 'fulfilled' ? packageResult.value : null
+  // 原话接在摘要后面，跟检测失败那行一起进日志（scan.completed、desktop.detection-failed）；
+  // 界面只认摘要的开头（isCodexDesktopProbeFailure），后面的不上屏。
+  const packageProbeError = fulfilledPackageProbe?.error
+    ? (fulfilledPackageProbe.detail ? `${fulfilledPackageProbe.error}: ${fulfilledPackageProbe.detail}` : fulfilledPackageProbe.error)
+    : null
   const installDetectionFailures = [matchResult, processesResult, packageResult]
     .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
     .map((result) => describeProbeFailure(result.reason))

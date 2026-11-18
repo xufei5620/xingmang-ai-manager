@@ -116,7 +116,7 @@ describe('renderer-v2 component contract', () => {
     // 即梦 has no mark in vendor-icons yet, and 其他 is by definition unknown.
     const marks: Record<string, string[]> = { OpenAI: ['OpenAI'], Claude: ['Claude'], Gemini: ['Gemini'], Grok: ['Grok'], DeepSeek: ['DeepSeek'], 通义千问: ['Qwen'], '智谱 GLM': ['ChatGLM', 'Zhipu'], Kimi: ['MoonshotAI'], MiniMax: ['Minimax'] };
     expect(Object.keys(marks).sort()).toEqual(chatModelVendors.filter(vendor => vendor !== '即梦' && vendor !== '其他').sort());
-    const models = ['gpt-5.6-sol', 'chatgpt-4o-latest', 'codex-mini', 'o3-mini', 'o5-mini', 'dall-e-3', 'sora-2', 'claude-sonnet-4-5', 'gemini-3-pro', 'imagen-4.0', 'veo-3', 'grok-4', 'deepseek-v4-flash',
+    const models = ['gpt-5.6-sol', 'chatgpt-4o-latest', 'codex-mini', 'o3-mini', 'o5-mini', 'dall-e-3', 'sora-2', 'claude-sonnet-4-5', 'gemini-3-pro', 'imagen-4.0', 'nano-banana-pro', 'veo-3', 'grok-4', 'deepseek-v4-flash',
       'qwen3-max', 'qwq-32b', 'qvq-max', 'chatglm-6b', 'glm-5', 'zhipu-x', 'cogview-4', 'kimi-k2', 'moonshot-v1-8k', 'minimax-m2', 'abab6.5s', 'hailuo-02'];
     for (const model of models) {
       const html = renderToStaticMarkup(<BrandIcon model={model} />);

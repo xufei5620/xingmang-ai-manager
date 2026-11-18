@@ -1,5 +1,7 @@
+import * as TOML from '@iarna/toml'
+import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import { isCodexConfigBroken } from './codex-config-syntax'
+import { isCodexConfigBroken, salvageCodexConfigText } from './codex-config-syntax'
 
 const relayConfig = [
   'model_provider = "XingmangAI"',
@@ -83,5 +85,115 @@ describe('isCodexConfigBroken', () => {
     expect(broken('model ＝ "gpt-6-sol"\n')).toBe(true)
     expect(broken('<<<<<<< HEAD\nmodel = "a"\n=======\nmodel = "b"\n>>>>>>> other\n')).toBe(true)
     expect(broken('{"model": "gpt-6-sol"}\n')).toBe(true)
+  })
+})
+
+// 2026-11-18 客户：PowerShell 5.1 按 GBK 读、UTF-8 写回，中文用户名成了乱码，紧跟着的那个反斜杠被乱码的最后
+// 一个字吃掉，只剩一个，「\A」「\.」就成了认不出的转义。这里用虚构的「张小明」：它成了「寮犲皬鏄嶾」，
+// 反斜杠被「嶾」吃掉（GBK 8E 5C）。
+const mangledName = '\u5BEE\u72B2\u76AC\u93C4\u5DBE'
+
+describe('salvageCodexConfigText', () => {
+  function salvage(text: string) {
+    const result = salvageCodexConfigText(text)
+    return result === null ? null : { text: result, parsed: TOML.parse(result) }
+  }
+
+  it('drops only the lines a GBK round trip broke and keeps every other setting where it was', () => {
+    const text = [
+      'model_provider = "XingmangAI"',
+      'model = "gpt-6.2-astra"',
+      'model_reasoning_effort = "high"',
+      `notify = ["C:\\\\Users\\\\${mangledName}\\AppData\\\\Roaming\\\\hook\\\\node.exe", "codex"]`,
+      '',
+      '[model_providers.XingmangAI]',
+      'name = "XingmangAI"',
+      'base_url = "https://xm.solov.cc/v1"',
+      '',
+      '[plugins."browser@openai-bundled"]',
+      `source = "\\\\\\\\?\\\\C:\\\\Users\\\\${mangledName}\\.cache\\\\plugins\\\\browser"`,
+      'enabled = true',
+      '',
+      '[mcp_servers.node_repl]',
+      'command = "node"',
+      '',
+      '[mcp_servers.node_repl.env]',
+      `CODEX_HOME = "C:\\\\Users\\\\${mangledName}\\.codex"`,
+      'NODE_REPL_MAX_OUTPUT = "4000"',
+      '',
+      `[projects."C:\\\\Users\\\\${mangledName}\\Documents"]`,
+      'trust_level = "trusted"',
+      '',
+      '[projects."D:\\\\work"]',
+      'trust_level = "trusted"',
+      '',
+    ].join('\r\n')
+    expect(isCodexConfigBroken(Buffer.from(text, 'utf8'))).toBe(true)
+
+    const result = salvage(text)
+    expect(result?.parsed).toEqual({
+      model_provider: 'XingmangAI',
+      model: 'gpt-6.2-astra',
+      model_reasoning_effort: 'high',
+      model_providers: { XingmangAI: { name: 'XingmangAI', base_url: 'https://xm.solov.cc/v1' } },
+      plugins: { 'browser@openai-bundled': { enabled: true } },
+      mcp_servers: { node_repl: { command: 'node', env: { NODE_REPL_MAX_OUTPUT: '4000' } } },
+      // The broken header goes with its own keys: trust_level must not land in the table above it.
+      projects: { 'D:\\work': { trust_level: 'trusted' } },
+    })
+    expect(isCodexConfigBroken(Buffer.from(result!.text, 'utf8'))).toBe(false)
+  })
+
+  it('also drops lines with characters TOML forbids, including stray comments', () => {
+    expect(salvage('# a\u0001b\nmodel = "a"\n')?.parsed).toEqual({ model: 'a' })
+    expect(salvage('model = "a\u0007"\napproval_policy = "never"\n')?.parsed).toEqual({ approval_policy: 'never' })
+  })
+
+  it('gives up whenever removing a line could change what the rest means', () => {
+    // A broken element of an array that spans lines: dropping it alone would leave half an array.
+    expect(salvage('model = "a"\nnotify = [\n  "C:\\Users\\x",\n  "codex",\n]\n')).toBeNull()
+    // Duplicates: which one the customer meant is a guess.
+    expect(salvage('model = "a"\nmodel = "b"\n')).toBeNull()
+    expect(salvage('[a]\nx = 1\n[a]\ny = 2\n')).toBeNull()
+    // Multi-line strings can hide anything that looks like a line of its own.
+    expect(salvage('developer_instructions = """\nx = "\\A"\n"""\nmodel = "C:\\A"\n')).toBeNull()
+    // A line that is not a key, a table, a comment or blank.
+    expect(salvage('model = "a"\n<<<<<<< HEAD\napproval_policy = "never"\n')).toBeNull()
+    expect(salvage('model ＝ "a"\napproval_policy = "never"\n')).toBeNull()
+    // Not UTF-8 is not this function's business, and a file Codex reads needs no salvage.
+    expect(salvage('model = "a"\n')).toBeNull()
+    expect(salvage('')).toBeNull()
+  })
+
+  it('gives up when nothing readable would be left or too much is broken', () => {
+    expect(salvage('model = "C:\\Users\\a"\n')).toBeNull()
+    expect(salvage('\u0000'.repeat(300))).toBeNull()
+    const manyBroken = Array.from({ length: 21 }, (_, index) => `k${index} = "C:\\A"`).join('\n')
+    expect(salvage(`model = "a"\n${manyBroken}\n`)).toBeNull()
+    expect(salvage(`model = "a"\n${manyBroken.split('\n').slice(1).join('\n')}\n`)?.parsed).toEqual({ model: 'a' })
+  })
+
+  // Random inputs (fast-check). The promise: whatever lines are broken, salvage only ever removes the broken
+  // key lines, never moves or changes a key that was readable.
+  it('removes exactly the broken keys and keeps the rest in their tables, with random inputs', () => {
+    const bareKey = fc.stringMatching(/^[a-z][a-z0-9_]{0,6}$/)
+    const plainValue = fc.stringMatching(/^[A-Za-z0-9 ._:/-]{0,12}$/)
+    const table = fc.uniqueArray(fc.record({ key: bareKey, value: plainValue, broken: fc.boolean() }), { selector: (entry) => entry.key, minLength: 1, maxLength: 4 })
+    const config = fc.record({
+      top: table,
+      tables: fc.uniqueArray(fc.record({ name: bareKey, entries: table }), { selector: (entry) => entry.name, maxLength: 3 }),
+    })
+    fc.assert(fc.property(config, ({ top, tables }) => {
+      const names = new Set(top.map((entry) => entry.key))
+      const usable = tables.filter((entry) => !names.has(entry.name))
+      const line = (entry: { key: string; value: string; broken: boolean }) => `${entry.key} = "${entry.broken ? `C:\\Users\\${mangledName}\\A` : ''}${entry.value}"`
+      const text = [...top.map(line), ...usable.flatMap((entry) => ['', `[${entry.name}]`, ...entry.entries.map(line)])].join('\n')
+      const kept = (entries: Array<{ key: string; value: string; broken: boolean }>) => Object.fromEntries(entries.filter((entry) => !entry.broken).map((entry) => [entry.key, entry.value]))
+      const expected: Record<string, unknown> = { ...kept(top), ...Object.fromEntries(usable.map((entry) => [entry.name, kept(entry.entries)])) }
+      const anyBroken = [...top, ...usable.flatMap((entry) => entry.entries)].some((entry) => entry.broken)
+      const result = salvage(text)
+      if (!anyBroken || Object.keys(expected).length === 0) expect(result).toBeNull()
+      else expect(result?.parsed).toEqual(expected)
+    }), { numRuns: 300 })
   })
 })

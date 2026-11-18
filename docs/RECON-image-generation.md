@@ -74,6 +74,13 @@ UI 对所有模型显示三个档位；不支持的 2K/4K 保持可见但禁用�
 
 ---
 
+### 3.4 名字规则认出来的型号（2026-11-18，#1920，对 new-api rc.44 源码核过，线上没实测）
+
+预设表外的出图型号，桌面端按名字认（`ai-chat-protocol.ts` 的 `resolveFamilyImageDefinition`）：
+
+- Gemini 系（`nano-banana*`、`gemini-*-image*`）照 `gemini-3.1-flash-image` 走 `/v1/chat/completions`。New API 只在**上游型号名**（渠道映射以后的名字）精确出现在「支持出图的 Gemini 模型」表（`setting/model_setting/gemini.go` 的 `SupportedImagineModels`，后台可改）里时才给 Gemini 设 `TEXT + IMAGE` 输出；默认表有 `gemini-2.0-flash-exp(-image-generation)`、`gemini-2.5-flash-image`、`gemini-3-pro-image(-preview)`、`gemini-3.1-flash-image(-preview)`。不在表里的新型号走对话接口只会回文字，要站上把它加进表。Gemini 2.x 不带 `image_size`。
+- 别家（`dall-e-*`、`imagen-*`、`qwen-image*`、`z-image*`、万相 `*-t2i`、Flux、seedream）走 `/v1/images/generations`，只发 `model`、`prompt`、`n`，尺寸画质交给上游默认值：通义 qwen-image 只认五种固定尺寸，seedream 4.5 最小 2K，传通用尺寸会被拒。名字照 New API 自己的 `common/model.go` `ImageGenerationModels` 再加 seedream；改图专用的（`qwen-image-edit*`、`wan2.6-image`）不认。
+
 ## 4. 响应格式差异（两个必须处理的坑）
 
 ### 4.1 gpt-image 系返回 `b64_json`

@@ -22,13 +22,15 @@
  *   有人点授权窗口的「是」，没人在电脑前就卡在那儿，不做。要等电脑 10 分钟没人碰或者锁了屏，
  *   星芒的窗口都缩着，没在装工具，Claude Code 这些工具没在干活，网络加速没开，手机遥控没开着，
  *   视频没在出，界面手上没事（拼片、对话在出字这些）；问过的版本还要等「稍后再说」之后 10 分钟。
+ *   手机遥控开着、客户又打开了「打开星芒时自动打开遥控」的，重开会自己连回去，不算遥控开着，
+ *   只要等它手上没活、没有等你同意的、30 分钟没收到手机消息（YR-3，yoyo 2026-11-17「改」）。
  *   每个版本只自动试一次，记在打开时装的同一条记录里（attempted），没装上就退回到退出时装。
  *   客户不在电脑前时下好的不问，直接等着闲时装；框弹出来以后人一直没回、电脑 10 分钟没人碰的，
- *   把框收掉，再按闲时装的规矩办。星芒窗口开着（含最小化）或者手机遥控开着时这两条不做：闲时装
- *   要窗口都缩着、遥控关着，遥控可能一开一整天，记成问过了或者把框收掉，这一版这次运行就再也没人
- *   管了；人不在时先不问，等人回来、几秒没动再跳框，框弹出来以后也不收。遥控开着时框里那句换成
+ *   把框收掉，再按闲时装的规矩办。星芒窗口开着（含最小化）或者手机遥控开着、重开连不回去时这两条
+ *   不做：闲时装要窗口都缩着、遥控关着，遥控可能一开一整天，记成问过了或者把框收掉，这一版这次运行
+ *   就再也没人管了；人不在时先不问，等人回来、几秒没动再跳框，框弹出来以后也不收。这时框里那句换成
  *   退出或下次打开时装（YK-2）。装之前跟退出时装一样，先现读一次服务状态文件（最多等几秒）：
- *   下载之后才被撤回的版本在这里收回，不装。
+ *   下载之后才被撤回的版本在这里收回，不装；读的这几秒里手机上来了消息的，也先不装。
  *
  * 不含任何 Electron 依赖：框、窗口、空闲时长、装都由宿主接进来。
  */
@@ -124,8 +126,16 @@ export interface IdleInstallInput {
   /** Claude Code 这些工具正在干活（cli-keep-awake）。 */
   toolsWorking: boolean
   accelerationActive: boolean
-  /** 手机遥控开着（任一渠道）。重开星芒后遥控不会自己连回去，开着它的人又多半不在电脑前。 */
+  /**
+   * 手机遥控开着（任一渠道），重开星芒后又不会自己连回去（没开「打开星芒时自动打开遥控」，YK-2）。
+   * 开着它的人多半不在电脑前，这次运行就不闲时装。
+   */
   remoteControlActive: boolean
+  /**
+   * 手机遥控开着、重开会自己连回去，可手上有活、有等你同意的，或者 30 分钟内手机上来过消息（YR-3）：
+   * 先等等，重启会把这一轮打断。缺省 = 没有。
+   */
+  remoteControlBusy?: boolean
   /** 视频在出或在取回（主进程里的请求）：重启会把它打断，已经交给服务端的片段照样扣钱。 */
   videoWorking: boolean
   /** 主窗口界面手上有事：视频剪辑在拼片、对话在出字、开着对话框（renderer-release.ts 的 rendererBusy）。 */
@@ -148,7 +158,7 @@ export function decideIdleInstall(input: IdleInstallInput): string | null {
   if (input.notBefore !== null && input.now < input.notBefore) return null
   if (!input.locked && !(input.idleMs >= IDLE_INSTALL_IDLE_MS)) return null
   if (input.windowVisible || input.busy || input.toolsWorking || input.accelerationActive) return null
-  if (input.remoteControlActive || input.videoWorking || input.rendererBusy) return null
+  if (input.remoteControlActive || input.remoteControlBusy || input.videoWorking || input.rendererBusy) return null
   return version
 }
 
@@ -176,6 +186,8 @@ export interface UpdateInstallPrompterOptions {
   accelerationActive(): boolean
   /** 见 IdleInstallInput.remoteControlActive。 */
   remoteControlActive(): boolean
+  /** 见 IdleInstallInput.remoteControlBusy；不给 = 没有。 */
+  remoteControlBusy?(): boolean
   /** 见 IdleInstallInput.videoWorking。 */
   videoWorking(): boolean
   /** 见 IdleInstallInput.rendererBusy。 */
@@ -277,6 +289,7 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
       toolsWorking: read(options.toolsWorking, true),
       accelerationActive: read(options.accelerationActive, true),
       remoteControlActive: read(options.remoteControlActive, true),
+      remoteControlBusy: remoteBusy(),
       videoWorking: read(options.videoWorking, true),
       rendererBusy: read(options.rendererBusy, true),
       attempted: !version || version === idleTried || read(() => options.attempted(version), true),
@@ -291,10 +304,17 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
     return options.platform === 'darwin' && read(options.unattended, false)
   }
 
-  // 手机遥控可能一开就是一整天，这期间闲时装等不来：跟窗口开着一样，人不在就等人回来再跳框、
-  // 框也不收；框里说退出或下次打开时装。视频、界面上的活一会儿就做完，不用这样。
+  // 手机遥控可能一开就是一整天，重开又连不回去时这期间闲时装等不来：跟窗口开着一样，人不在就等人
+  // 回来再跳框、框也不收；框里说退出或下次打开时装。视频、界面上的活一会儿就做完，不用这样；重开会
+  // 自己连回去的遥控（remoteBusy）也一样，等手机那边安静下来就能装。
   function idleInstallHeldByRemote(): boolean {
     return read(options.remoteControlActive, true)
+  }
+
+  // 读不出来当作在忙：宁可晚装一会儿，也不能把手机上正在做的这一轮打断。
+  function remoteBusy(): boolean {
+    const probe = options.remoteControlBusy
+    return probe ? read(probe, true) : false
   }
 
   // 读不出加速开没开时当作开着：宁可这次不问，也不能把正在打的游戏切出去。
@@ -463,6 +483,13 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
         if (installableVersion(read<UpdateSnapshot | null>(options.getState, null)) !== version) {
           idleTried = null
           log('info', 'install.idle.withdrawn', `${version} 刚被撤回或换了一版，这次不闲时装`)
+          schedule()
+          return
+        }
+        // 读状态文件的这几秒里手机上来了消息、开始了一轮（YR-3）：重启会把它打断，等它安静下来再装。
+        if (idleInstallHeldByRemote() || remoteBusy()) {
+          idleTried = null
+          log('info', 'install.idle.remote-busy', `手机遥控刚来了消息，${version} 等它安静下来再闲时装`)
           schedule()
           return
         }

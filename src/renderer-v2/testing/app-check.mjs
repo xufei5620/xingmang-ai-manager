@@ -6416,6 +6416,55 @@ test('a ChatGPT login whose Codex config cannot be read is reset on the official
   } finally { await page.close() }
 })
 
+// 2026-11-18 客户：中文用户名被读成乱码、吃掉了反斜杠，Codex 读不了 config.toml，星芒也读不出中转地址。
+// 从托盘打开以前只说「请先确认账号连接」还把配置窗口弹出来，在里面怎么点都修不好；现在错误框直接给「修好它」，
+// 修完替客户接着打开。
+test('opening a tool whose config cannot be read offers 修好它 and opens it once repaired', async () => {
+  const page = await open('codexUnreadable=1')
+  const launches = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args[0]))
+  try {
+    await page.getByTestId('tool-row-codex').getByText('配置坏了', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'codex'))
+    const dialog = page.getByTestId('operation-error')
+    await dialog.waitFor()
+    await expect(dialog.getByRole('heading', { name: '配置文件坏了' })).toBeVisible()
+    await expect(page.getByTestId('operation-error-body')).toHaveText('点「修好它」，会先备份原来的文件，修好后接着打开。')
+    await expect(page.getByTestId('operation-error-detail')).toHaveText('Codex 读不了这份配置，打开会报错。')
+    assert.equal(await dialog.getByText('请先确认账号连接', { exact: false }).count(), 0)
+    assert.equal(await page.getByTestId('config-dialog').count(), 0)
+    assert.deepEqual(await launches(), [])
+
+    await page.getByTestId('operation-error-repairConfig').click()
+    await waitForToast(page, '已重置 Codex CLI 的配置，原来的配置已备份')
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    assert.deepEqual(await launches(), ['codex'])
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'repair').map((entry) => entry.args[0].providers))
+    assert.deepEqual(resets, [['codex']])
+    await connectedBadge(page, 'codex').waitFor()
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the config dialog of a tool whose config cannot be read says so and repairs it from the top', async () => {
+  const page = await open('codexUnreadable=1')
+  try {
+    await openToolConfiguration(page, 'codexDesktop')
+    await expect(page.getByTestId('tool-broken-config-note')).toHaveText('Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留')
+    await page.getByTestId('tool-repair-config').click()
+    await page.getByTestId('config-dialog').waitFor({ state: 'hidden' })
+    await waitForToast(page, '已重置 Codex 桌面端的配置，原来的配置已备份')
+    for (const tool of ['codex', 'codexDesktop']) await connectedBadge(page, tool).waitFor()
+    const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'repair').map((entry) => entry.args[0].providers))
+    assert.deepEqual(resets, [['codex']])
+    // 修好了再开配置窗口，那一行红字和「修好它」都不在了。
+    await openToolConfiguration(page, 'codex')
+    assert.equal(await page.getByTestId('tool-broken-config-note').count(), 0)
+    assert.equal(await page.getByTestId('tool-repair-config').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 已知44：Claude Code 读不了 settings.json、星芒也读不出 Key 时，原来首页写成「官方账号」，配置窗口也默认选官方账号。
 test('a Claude Code settings file it cannot read is reset on the current account instead of passing for the official account', async () => {
   const page = await open('claudeBroken=1')

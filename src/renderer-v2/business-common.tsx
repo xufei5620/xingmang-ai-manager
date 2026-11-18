@@ -16,6 +16,7 @@ import { formatCalendarTime, formatClockTime } from './calendar-time'
 import { matchAccountErrorMessage } from './features/auth/account-errors'
 import { redactSecretPatterns } from '../../electron/redaction-patterns'
 import { isChineseSentence } from '../../electron/chinese-sentence'
+import { isCodexDesktopProbeFailure, isCodexDesktopUnrecognizedProbeResult } from '../../electron/codex-desktop-probe-failure'
 import { stripIpcErrorPrefix } from './ipc-error-prefix'
 import { useLatestRequest } from './latest-request'
 
@@ -99,6 +100,8 @@ const detectionFailureCopy = {
   busy: '这个工具的文件正被别的程序占着。关掉正在用它的窗口，再点「重新检测」。',
   missing: '检测时有个文件找不到了，可能被安全软件拦了或被删掉了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。',
   other: '检测这个工具时出了错，原因已经记进日志。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。',
+  // yoyo 11-18 批的字：Codex 桌面端查包那段答了看不懂的结果（推测是微软商店正在更新它）。
+  codexDesktopUnrecognized: '暂时没认出 Codex 桌面端，可能正在更新。等一两分钟点「重新检测」。',
 }
 
 /**
@@ -122,9 +125,15 @@ export function speaksChinese(safe: string) {
  * warn 进运行日志（ipc/handlers/detection-failures.ts 的 *.detection-failed），客服在反馈报告里看得到；这里只按错误码
  * 分四类说人话。原话本来是中文的照旧显示（只脱敏）。原话为空时返回 null，调用点用 `??`
  * 留自己的兜底句，同 `snapshotErrorMessage`。
+ *
+ * Codex 桌面端的探测摘要例外：后面接着 PowerShell 的原话（中文系统上是中文），按是不是中文判会被
+ * 整句端上屏（11-18「Windows Appx 探测返回数据格式无效」），所以先认开头，认出来就不看后面。
+ * 查包那段答了看不懂的结果时说可能正在更新，别的照旧是 other。
  */
 export function detectionFailureMessage(value: string | null | undefined) {
   const safe = snapshotErrorMessage(value)
+  if (safe && isCodexDesktopUnrecognizedProbeResult(safe)) return detectionFailureCopy.codexDesktopUnrecognized
+  if (safe && isCodexDesktopProbeFailure(safe)) return detectionFailureCopy.other
   if (!safe || speaksChinese(safe)) return safe
   if (/\b(?:EPERM|EACCES)\b|not permitted|permission denied|access\b.*\bis denied|unauthorized ?access/i.test(safe)) return detectionFailureCopy.permission
   if (/\bEBUSY\b|resource busy|used by another process/i.test(safe)) return detectionFailureCopy.busy

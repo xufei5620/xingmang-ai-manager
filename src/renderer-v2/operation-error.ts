@@ -10,10 +10,11 @@ import { npmFailureExplainsItself } from '../../electron/npm-failure-reasons'
 import { relayQuotaFailureInMessage } from '../../electron/relay-quota-failure'
 import { isRemoteFeatureOffMessage } from '../../electron/remote-features'
 import { errors } from './registry/errors'
+import { isBrokenConfigLaunchMessage } from './features/tools/broken-config-launch'
 import { feedbackInstallLogSection } from './registry/business'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopOfflinePackages' | 'claudeDesktopDownload'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopOfflinePackages' | 'claudeDesktopDownload' | 'repairConfig'
 export interface OperationAction { id: OperationActionId; label: string }
 /**
  * 这次失败要写的是什么；缺省 = 只按原话认（旧行为）。
@@ -49,6 +50,9 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // 所以排在最前，出口直接是「去备份迁移」。只认「自动恢复也没有完成」这半句，不认
   // 后面叫人去哪儿：新版说「设置 › 备份迁移」，旧版和旧日志里还是「备份」，两种都要接住。
   { key: 'switchUndoFailed', match: (message) => /自动恢复也没有完成/.test(message) },
+  // 打开工具时发现工具自己都读不了它的配置文件（broken-config-launch.ts 那几句，整句全等）。出口是首页那颗
+  // 「修好它」，修完接着打开；别的规则认不出这几句，放前面只是省得以后有人加了更泛的规则把它抢走。
+  { key: 'configBroken', match: (message) => isBrokenConfigLaunchMessage(message) },
   // Codex 桌面端叫了、等了将近一分钟也没起来（主进程 codex-desktop-service.ts 的
   // codexDesktopNotStartedPrefix，两边字面量要一致）。那句话后半截已经写好下一步，
   // 这里只给按钮；排在前面，是为了主进程写好的这整句不被下面更泛的规则（比如
@@ -272,6 +276,9 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   // 与「检查网络」落到同一页（App 里 network → health），只是这里说的不是网络。
   打开检查页: 'network',
   一键修复: 'repair',
+  // 跟首页「配置文件坏了」那颗「修好它」是同一件事（先备份、再按现在用的账号修），只有 configBroken 那一类会出。
+  // 要知道是哪个工具，错误框里没记着工具时这颗按钮不出（operationErrorActions）。
+  修好它: 'repairConfig',
   复制路径: 'copyPath',
   去备份迁移: 'backups',
   // 公司电脑的证书要新版 Node.js 才认（system-certificate-trust.ts）。以前这里只有「重试」，
