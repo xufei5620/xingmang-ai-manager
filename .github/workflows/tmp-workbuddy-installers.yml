@@ -87,8 +87,9 @@ jobs:
         timeout-minutes: 5
         run: |
           echo "== $ASAR"; ls -l "$ASAR"
-          LC_ALL=C grep -a -o -E '[A-Za-z0-9_.~/\\-]{0,30}\.workbuddy(-ai)?[A-Za-z0-9_./\\-]{0,30}' "$ASAR" | sort | uniq -c | sort -nr | head -n 40 || true
-          echo '== models.json mentions'
-          LC_ALL=C grep -a -o -E '[A-Za-z0-9_.~/\\-]{0,40}models\.json' "$ASAR" | sort | uniq -c | sort -nr | head -n 20 || true
-          echo '== package fields'
-          LC_ALL=C grep -a -o -E '"(productName|appId|executableName)": ?"[^"]{1,60}"' "$ASAR" | sort | uniq -c | sort -nr | head -n 20 || true
+          echo '== around .workbuddy-ai'
+          LC_ALL=C grep -a -o -E '.{0,160}\.workbuddy-ai.{0,160}' "$ASAR" | cut -c1-330 | head -n 12 || true
+          echo '== around com.tencent.workbuddy.mac'
+          LC_ALL=C grep -a -o -E '.{0,160}com\.tencent\.workbuddy\.mac.{0,160}' "$ASAR" | cut -c1-330 | head -n 6 || true
+          echo '== around models.json'
+          LC_ALL=C grep -a -o -E '.{0,120}[^a-zA-Z]models\.json.{0,80}' "$ASAR" | cut -c1-210 | head -n 25 || true
