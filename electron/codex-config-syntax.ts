@@ -57,3 +57,117 @@ function codexAlsoRejects(error: unknown): boolean {
   if (escape) return !escapesOnlyCodexKnows.has(Number(escape[1]))
   return codexFatalTomlErrors.some((prefix) => message.startsWith(prefix))
 }
+
+// 救回来时最多去掉几处。再多就不像是写坏了几行，是整份都坏了，照旧整份重建。
+const salvageDropLimit = 20
+
+// 只去掉一行就能收拾干净的那几类：写到一半的值、认不出的转义或字符。键或表重复不在里面：两份里留哪一份
+// 说不准，删错了反倒丢掉客户后写的那份。
+const lineLocalTomlErrors = [
+  'Unknown escape character',
+  'Invalid character in unicode sequence',
+  'Unterminated string',
+  'Unknown character',
+  'Invalid character, expected "="',
+  'Unexpected character, expecting string, number, datetime, boolean, inline array or inline table',
+]
+
+// 一行就是一条完整的「键 = 值」。键可以是裸键、带引号的键，或者用点连起来的几段。
+const keyValueStart = /^\s*(?:[A-Za-z0-9_-]+|"(?:[^"\\\n]|\\.)*"|'[^'\n]*')(?:\s*\.\s*(?:[A-Za-z0-9_-]+|"(?:[^"\\\n]|\\.)*"|'[^'\n]*'))*\s*=/
+const tableHeader = /^\s*\[/
+
+/**
+ * 「修好它」碰上 Codex 读不了的 config.toml 时，先试着只去掉读不了的那几行，客户自己的设置（信任过的文件夹、
+ * 加的连接、推理强度）照留；以前一律整份换成星芒的模板，这些全没了。原文件照旧先备份。
+ *
+ * 2026-11-18 那位客户就是这样：PowerShell 5.1 按 GBK 读、UTF-8 写回，中文用户名后面的反斜杠被吃掉，
+ * 「\A」「\.」成了认不出的转义，整份读不了；坏的只是带用户名路径的那几行。
+ *
+ * 只在去掉的东西不会让别的键挪了地方时才动手，有一点拿不准就返回 null，由调用方照旧整份重建：
+ * - 坏的是一条「键 = 值」，而且一整条都在这一行里（括号配得上），只去掉这一行；
+ * - 坏的是表头，连表头带它下面的键一起去掉，不让那些键落进上一张表；
+ * - 有跨行字符串（三个引号）、错误不是上面那几类、去掉的超过 salvageDropLimit 处，都不救；
+ * - 救完必须星芒读得懂、Codex 也认（isCodexConfigBroken），而且不是空的（空的跟整份重建没区别，模板还更全）。
+ *
+ * 去掉的那几行不另存：修之前的备份里都有。
+ */
+export function salvageCodexConfigText(text: string, parse: (text: string) => unknown = TOML.parse): string | null {
+  if (/"""|'''/.test(text)) return null
+  const lines = text.replace(/^﻿/, '').split('\n')
+  let dropped = 0
+  // TOML 1.0/1.1 都不许的控制字符：那一行本身一定是坏的，先去掉（断电写坏的整份 0 字节，去完是空的，下面照旧不救）。
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!forbiddenCharacters.test(lines[index].replace(/\r$/, ''))) continue
+    if (!removeStatement(lines, index)) return null
+    dropped += 1
+  }
+  while (dropped <= salvageDropLimit) {
+    const candidate = lines.join('\n')
+    let failure: unknown = null
+    let parsed: unknown = null
+    try {
+      parsed = parse(candidate)
+    } catch (error) {
+      failure = error
+    }
+    if (failure === null) {
+      if (dropped === 0 || !isNonEmptyRecord(parsed)) return null
+      return isCodexConfigBroken(Buffer.from(candidate, 'utf8'), parse) ? null : candidate
+    }
+    const line = tomlErrorLine(failure)
+    const message = failure instanceof Error ? failure.message : ''
+    if (line === null || line >= lines.length || !lineLocalTomlErrors.some((prefix) => message.startsWith(prefix))) return null
+    if (!removeStatement(lines, line)) return null
+    dropped += 1
+  }
+  return null
+}
+
+// 去掉 index 这一行（表头连同它下面那张表）；去不得就返回 false，什么都不改。
+function removeStatement(lines: string[], index: number): boolean {
+  const line = lines[index]
+  if (/^\s*(?:#|$)/.test(line)) {
+    lines.splice(index, 1)
+    return true
+  }
+  if (tableHeader.test(line)) {
+    let end = index + 1
+    while (end < lines.length && !tableHeader.test(lines[end])) end += 1
+    lines.splice(index, end - index)
+    return true
+  }
+  if (!keyValueStart.test(line) || !closesOnSameLine(line)) return false
+  lines.splice(index, 1)
+  return true
+}
+
+// 括号在这一行里配平了（引号里、注释里的不算）：这条值没有接到下一行去。字符串没收尾也算在这一行里：
+// 单行字符串本来就不许跨行。
+function closesOnSameLine(line: string): boolean {
+  let depth = 0
+  let quote: '"' | "'" | null = null
+  for (let index = line.indexOf('=') + 1; index < line.length; index += 1) {
+    const char = line[index]
+    if (quote === '"') {
+      if (char === '\\') index += 1
+      else if (char === '"') quote = null
+    } else if (quote === "'") {
+      if (char === "'") quote = null
+    } else if (char === '"' || char === "'") quote = char
+    else if (char === '#') break
+    else if (char === '[' || char === '{') depth += 1
+    else if (char === ']' || char === '}') depth -= 1
+  }
+  return depth === 0
+}
+
+// @iarna/toml 的错误带着从 0 数起的行号。
+function tomlErrorLine(error: unknown): number | null {
+  if (!error || typeof error !== 'object' || !('line' in error)) return null
+  const line = error.line
+  return typeof line === 'number' && Number.isInteger(line) && line >= 0 ? line : null
+}
+
+function isNonEmptyRecord(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).length > 0
+}
