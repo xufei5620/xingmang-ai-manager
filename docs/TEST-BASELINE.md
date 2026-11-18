@@ -175,6 +175,14 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 - 写法：用 `mockImplementation` 先把 `mutate` 套在一份 `structuredClone` 出来的设置上看它改了什么，是要测的那次才抛错，其余照常调原来的 `updateSettings`。再补一句断言钉住场景（比如 `remote.message-id-unsaved` 没出现、盘上的值还是旧的），以后路径上再多一次写，用例也不会悄悄换成测别的。
 - 真的要模拟「盘满了、所有写都失败」用 `mockRejectedValue`（不带 Once），那是另一种场景，别混着用。
 
+## 测「最多 N 条」的用例：别经 store 存满（2026-11-18）
+
+`safe-local-data` 的原子写每次都要逐级查路径、写临时文件、刷盘再换名。Windows runner 上平时几十毫秒一次，runner 慢的时候一次一百多到三百多毫秒（11-18 那次 `vitest-4` 的日志里，同一文件里只存几个对话的小用例折算下来每次 120~340 毫秒）。测上限的用例要是经 store 把 N 条存满，N 到一两百就会偶发撞 30 秒：`ai-video-task-store.test.ts`（#1516）、`ai-chat-history-store.test.ts`「keeps 200 conversations and still checks every one it did not rewrite」（11-18 在 #1897、#1921 上各红一次，平时八九秒）都是这样红的。
+
+- 写法：上限前那些条按 store 写的格式和顺序直接写进文件，只让要测的那几次保存经过 store；store 对每个没重写的文件做的检查（多一个硬链接、文件没了）照样走得到。「一次存满 N 条能不能收下」用解析函数单独断言，不用真写 N 次。
+- 复现：在 `writeAtomicSafeFile` 的 `handle.writeFile` 后面临时加 `await new Promise((resolve) => setTimeout(resolve, 150))`，旧写法当场撞 30 秒。11-18 验：聊天记录那条旧写法 30091ms 超时，改完 399ms。别提交这句。
+- 不是产品慢：客户用的时候一次保存只重写改过的那一两个对话加索引，一次写上百个只在「搬到新电脑」导入、头一回从旧的存法搬过来时各有一回。
+
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 
 `fast-check` 写的随机输入测试（各测试文件末尾 `… with random inputs` 那几节：打码、外链白名单、会话编号、换线路改配置、粘贴密钥整理、PowerShell 单引号和通配符转义）每次跑用不同的随机种子，同一条这次绿、下次红是可能的。红的那次是库碰巧造出了一个打破规矩的输入，**代码真有这个缺口**：不按「重跑就过」放过，也不许把生成器改窄躲过去。
