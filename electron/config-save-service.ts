@@ -26,14 +26,16 @@ import { type CodexDesktopPackageProbe, inspectCodexDesktopPackage } from './cod
 import { trustedCommandEnvironment } from './command-runner'
 import {
   buildCodexRelayModelCatalog,
-  codexCliAcceptsModelCatalog,
-  codexDesktopAcceptsModelCatalog,
+  codexCliModelCatalogReader,
+  codexDesktopModelCatalogReader,
   type CodexDesktopCatalogProbe,
-  type CodexModelCatalog,
   codexModelCatalogContent,
+  codexModelCatalogForClients,
   codexModelCatalogListsModel,
+  type CodexModelCatalogReader,
   codexModelCatalogRequiredCliVersion,
   type CodexModelCatalogVerdict,
+  codexModelsUnsupportedByClients,
   combineCodexModelCatalogVerdicts,
   parseCodexModelCatalog,
   type ParsedCodexModelCatalog,
@@ -535,45 +537,54 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     codexDesktopForModelCatalog.forget()
   }
 
-  /** 读这份名单的几份 Codex 合起来能不能用它（codex-model-catalog.ts），顺带各自的版本留给日志。 */
-  async function codexModelCatalogReadersVerdict(catalog: CodexModelCatalog, readers: CodexModelCatalogReaders): Promise<{
+  /**
+   * 读这份名单的几份 Codex 合起来读不读得进它、各自按哪一版挑型号（codex-model-catalog.ts），
+   * 顺带各自的版本留给日志。
+   */
+  async function codexModelCatalogReadersVerdict(readers: CodexModelCatalogReaders): Promise<{
     verdict: CodexModelCatalogVerdict
+    clientVersions: Array<string | null>
     detail: Record<string, unknown>
   }> {
-    const verdicts: CodexModelCatalogVerdict[] = []
-    const detail: Record<string, unknown> = { required: codexModelCatalogRequiredCliVersion(catalog) }
+    const found: CodexModelCatalogReader[] = []
+    const detail: Record<string, unknown> = {}
     if (readers !== 'desktop') {
       const cli = await codexCliForModelCatalog.read()
-      const verdict = cli ? codexCliAcceptsModelCatalog(cli, catalog) : 'unknown'
-      verdicts.push(verdict)
-      Object.assign(detail, { cli: verdict, cliVersion: cli?.version ?? null })
+      const reader: CodexModelCatalogReader = cli ? codexCliModelCatalogReader(cli) : { verdict: 'unknown', clientVersion: null }
+      found.push(reader)
+      Object.assign(detail, { cli: reader.verdict, cliVersion: cli?.version ?? null })
     }
     if (readers !== 'cli') {
       const desktop = await codexDesktopForModelCatalog.read()
-      const verdict = codexDesktopAcceptsModelCatalog(desktop)
-      verdicts.push(verdict)
-      Object.assign(detail, { desktop: verdict, desktopVersion: desktop.version })
+      const reader = codexDesktopModelCatalogReader(desktop)
+      found.push(reader)
+      Object.assign(detail, { desktop: reader.verdict, desktopVersion: desktop.version, desktopCodexVersion: reader.clientVersion })
     }
-    return { verdict: combineCodexModelCatalogVerdicts(verdicts), detail }
+    return {
+      verdict: combineCodexModelCatalogVerdicts(found.map((reader) => reader.verdict)),
+      clientVersions: found.map((reader) => reader.clientVersion),
+      detail,
+    }
   }
 
   /**
    * 这次要给 Codex 写的型号名单（codex-model-catalog.ts）：全文 = 照写；null = 收回本软件
    * 写的那一行（账号的型号随包名单里一个都没有、默认型号不在名单里、名单文件的位置被换成了
-   * 链接、这台电脑上的命令行或桌面端太旧）；undefined = 原样不动（没有随包名单、看不出
-   * 命令行或桌面端是哪一版），免得一次没读到就把菜单来回改。
+   * 链接、这台电脑上的命令行或桌面端太旧读不进，或者用不了默认型号）；undefined = 原样不动
+   * （没有随包名单、看不出命令行或桌面端是哪一版），免得一次没读到就把菜单来回改。命令行或
+   * 桌面端只是用不了其中几个新型号时，只拿掉那几个，其余照写。
    */
   async function resolveCodexModelCatalog(availableModels: readonly string[], model: string): Promise<string | null | undefined> {
     const official = loadBundledCodexModelCatalog()
     if (!official) return undefined
-    const catalog = buildCodexRelayModelCatalog(official, availableModels)
-    if (!catalog) {
+    const offered = buildCodexRelayModelCatalog(official, availableModels)
+    if (!offered) {
       runtimeLog?.log('info', 'config', 'codex-model-catalog.no-match', '当前账号能用的型号随包名单里都没有，Codex 用它自带的菜单', {
         models: availableModels.length,
       })
       return null
     }
-    if (!codexModelCatalogListsModel(catalog, model)) {
+    if (!codexModelCatalogListsModel(offered, model)) {
       runtimeLog?.log('info', 'config', 'codex-model-catalog.model-not-listed', 'Codex 的默认型号不在随包名单里，这次不写型号名单', { model })
       return null
     }
@@ -581,14 +592,28 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       runtimeLog?.log('warn', 'config', 'codex-model-catalog.target-unsafe', 'Codex 型号名单的位置被换成了链接，这次不写型号名单')
       return null
     }
-    const { verdict, detail } = await codexModelCatalogReadersVerdict(catalog, 'all')
-    if (verdict === 'unknown') {
+    const readers = await codexModelCatalogReadersVerdict('all')
+    const detail = { required: codexModelCatalogRequiredCliVersion(offered), ...readers.detail }
+    if (readers.verdict === 'unknown') {
       runtimeLog?.log('info', 'config', 'codex-model-catalog.reader-unknown', '看不出 Codex 命令行或桌面端是哪一版，型号名单这次不动', detail)
       return undefined
     }
-    if (verdict === 'too-old') {
+    if (readers.verdict === 'too-old') {
       runtimeLog?.log('info', 'config', 'codex-model-catalog.reader-too-old', '这台电脑上的 Codex 命令行或桌面端太旧，读不进型号名单，这次不写', detail)
       return null
+    }
+    const catalog = codexModelCatalogForClients(offered, readers.clientVersions)
+    const heldBack = codexModelsUnsupportedByClients(offered, readers.clientVersions)
+    if (!catalog || !codexModelCatalogListsModel(catalog, model)) {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.model-too-new', '这台电脑上的 Codex 命令行或桌面端太旧，用不了默认型号，这次不写型号名单', {
+        model, heldBack, ...detail,
+      })
+      return null
+    }
+    if (heldBack.length) {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.models-held-back', '这台电脑上的 Codex 命令行或桌面端用不了其中几个新型号，名单里先不列', {
+        heldBack, ...detail,
+      })
     }
     return codexModelCatalogContent(catalog)
   }
@@ -600,8 +625,9 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   }
 
   /**
-   * 本软件写的名单该不该收回：名单文件丢了、读不进，或读它的命令行 / 桌面端太旧（只看这次
-   * 可能变了的那一边）。不该收回是 null，该收回给出原因留给日志；看不出版本的算不该。
+   * 本软件写的名单该不该收回：名单文件丢了、读不进，读它的命令行 / 桌面端太旧，或名单里有它
+   * 用不了的型号（只看这次可能变了的那一边）。不该收回是 null，该收回给出原因留给日志；看不出
+   * 版本的算不该。
    */
   async function codexModelCatalogTakeBackReason(trigger: CodexModelCatalogGuardTrigger): Promise<Record<string, unknown> | null> {
     const onDisk = inspectCodexModelCatalogOnDisk(providerRoots)
@@ -613,8 +639,14 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       catalog = null
     }
     if (!catalog || catalog.rejected.length) return { reason: onDisk.content === null ? 'missing' : 'unreadable' }
-    const readers = await codexModelCatalogReadersVerdict(catalog, codexModelCatalogGuardReaders[trigger])
-    return readers.verdict === 'too-old' ? { reason: 'too-old', ...readers.detail } : null
+    const readers = await codexModelCatalogReadersVerdict(codexModelCatalogGuardReaders[trigger])
+    if (readers.verdict === 'too-old') return { reason: 'too-old', ...readers.detail }
+    if (readers.verdict !== 'accepted') return null
+    // 按账号写的名单只会有读它的 Codex 都用得了的型号；这里还有用不了的，多半是刚换成了旧版。
+    // 官方标的最低版本背后可能就是旧版不认的取值，读不进时 Codex 整个起不来，所以宁可先整行
+    // 收回；这一步只改 config.toml 那一行，按新版本重挑型号留给下一次按账号核对。
+    const tooNew = codexModelsUnsupportedByClients(catalog, readers.clientVersions)
+    return tooNew.length ? { reason: 'model-too-new', models: tooNew, ...readers.detail } : null
   }
 
   /**
@@ -637,7 +669,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
         // 进锁以后按同一套条件再判一次：排队期间配置可能刚被重写过。
         const detail = await codexModelCatalogTakeBackReason(trigger)
         if (detail && takeBackCodexModelCatalog(providerRoots)) {
-          runtimeLog?.log('info', 'config', 'codex-model-catalog.taken-back', 'Codex 读不进本软件写的型号名单，已经收回 config.toml 里那一行', { trigger, ...detail })
+          runtimeLog?.log('info', 'config', 'codex-model-catalog.taken-back', 'Codex 读不进或用不了本软件写的型号名单，已经收回 config.toml 里那一行', { trigger, ...detail })
         }
       })
     } catch (error) {

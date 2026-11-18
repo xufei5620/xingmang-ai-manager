@@ -51,7 +51,7 @@ const APP_MODULE_ENTRY = [
   "export { activeProviderIds, cliCatalog } from './electron/catalog'",
   "export { resolveClaudeStatusLineScriptPath, buildClaudeStatusLineCommand } from './electron/claude-status-line'",
   "export { resolveCliHookScriptPath, buildCliHookInvocation, cliHookEventsDirectory } from './electron/cli-hooks'",
-  "export { resolveBundledCodexModelCatalogPath, readBundledCodexModelCatalog, buildCodexRelayModelCatalog, codexModelCatalogListsModel, codexModelCatalogContent, codexCliAcceptsModelCatalog } from './electron/codex-model-catalog'",
+  "export { resolveBundledCodexModelCatalogPath, readBundledCodexModelCatalog, buildCodexRelayModelCatalog, codexModelCatalogListsModel, codexModelCatalogContent } from './electron/codex-model-catalog'",
 ].join('\n')
 
 /** 每个工具怎么跑一句话。都是一次性的无界面模式，答完就退。 */

@@ -91,11 +91,11 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   codex: {
     recommended: {
-      version: '0.169.0',
-      verifiedAt: '2026-11-17',
-      verifiedSites: ['solov'],
-      note: '当前 npm latest,随包型号名单的 tag 换成 rust-v0.169.0(models.json 与 rust-v0.167.0、rust-v0.168.0 逐字相同,sha256 不变;openai_models.rs 只加了可选字段 web_search_provider 与 plugins);0.167.1、0.167.2 只改 Bedrock / Vertex 的增量工具声明,与我们无关;0.168.0、0.169.0 的 release note 与区间内提交没有一条改自定义 model_providers 的 base_url / wire_api / requires_openai_auth / auth.json 的读法:换过默认 provider 后打开或续上的对话仍用它自己存的 provider(#59503)、认证收成运行时一套(#59572 等)、终端里可以新建自定义 provider;daemon_auto_start 在 0.168.0 先被删(#58940)又恢复(#59447),写 false 照旧认;0.169.0 起 codex exec 在没信任的目录里不读项目配置和 MCP(#60041),本软件不跑 codex exec,探测脚本带 --skip-git-repo-check,沙箱里两版行为一样;沙箱(0.167.0 一起重跑当对照):debug models 列出全部 12 个型号,exec 与 --no-daemon exec 只发一次 POST /v1/responses、带 Authorization、请求字段一样,手机遥控用的 app-server 一轮对话走到 turn/completed;2026-11-17 cli-relay-probe 在 solov(xm.solov.cc)上用默认型号真跑通过,solov-api 按 11-09 的决定不测',
-      userNote: '修好了换过账号后再打开旧对话会用错账号的问题,其余是官方的小修小补',
+      version: '0.170.0',
+      verifiedAt: '2026-11-18',
+      verifiedSites: [],
+      note: '当前 npm latest,随包型号名单的 tag 换成 rust-v0.170.0(models.json 比 rust-v0.169.0 多 gpt-6.2-sol、gpt-6.2-astra 两个型号,官方标的最低客户端版本 0.166.0,与 rust-v0.169.1 逐字相同;别的型号只改了提示词、说明、排序,gpt-6.1-sol 的 context_window 272000 → 500000;openai_models.rs 与 0.169.0 逐字相同,LICENSE、NOTICE 不变);0.169.1 只加 GPT-6.2 与两处 Bedrock 改动;0.170.0 的 release note 没有一条碰自定义 model_providers 的 base_url / wire_api / requires_openai_auth / auth.json:WebSocket 请求过大时直接退回 HTTP、按服务端声明的消息上限发(#60840、#60841),Windows 原子写入与沙箱权限修复(#60872、#60943、#60944);Windows 本机沙箱(假中转,0.169.0 一起重跑当对照):两版 debug models 都列出新名单的全部 11 个菜单型号,exec 用 gpt-6.2-sol、gpt-6.2-astra、gpt-6.1-sol 都只发一次 WebSocket response.create,请求头、请求体字段两版一样,--no-daemon exec 与手机遥控用的 app-server 一轮对话都走到底;中转实测等这个 PR 的 cli-relay-probe',
+      userNote: '能选上新出的 GPT-6.2,其余是官方的小修小补',
     },
     blocked: [
       {

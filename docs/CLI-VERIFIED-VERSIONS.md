@@ -188,7 +188,7 @@ Claude Code 的 `fallbackModel`（settings.json，型号数组，最多认三个
 | Codex 的使用统计 | `~/.codex/config.toml` 的 `[analytics] enabled` | 开（发往 `ab.chatgpt.com`） | `false`（用户写过就不动；切回 ChatGPT 且没有官方快照时收回） | 国内连不上，`codex exec` 每次退出前要等约 10 秒 |
 | Codex 干活时不让电脑睡 | `~/.codex/config.toml` 的 `[features] prevent_idle_sleep` | 关（0.156.1 实验功能） | `true`（用户写过就不动；切回 ChatGPT 不收回） | 只在一轮进行中生效；笔记本跑长任务睡着，连接断了这一轮就白扣 |
 | Codex 的后台服务 | `~/.codex/config.toml` 的 `[features] daemon_auto_start`；从本软件打开时另带 `--no-daemon`（已装 ≥ 0.156.0） | 0.157.0 起开：交互会话自动拉起多窗口共享用的后台服务，退出 Codex 后仍常驻 | `false`（用户写过就不动；切回 ChatGPT 不收回） | 低配电脑上是没人要的常驻开销；Windows 上外层 Job Object 不许脱离时直接报错退出。`codex agents` 自己会按需拉起服务，不受影响；0.155.x 只在日志记一行未知键 |
-| Codex 的型号名单 | `~/.codex/config.toml` 顶层的 `model_catalog_json`，指向同目录的 `xingmang-models.json` | 只用二进制自带的名单（桌面端自带的 Codex 常比命令行旧，26.930 那批没有 GPT-6.1 Sol） | 随包官方名单里当前 Key 能用的那几项，原样照抄（用户自己设过就不动；命令行低于名单要求的版本、桌面端早于 26.917 那批不写；切回 ChatGPT 收回） | 不写的话中转开了新型号，桌面端菜单里也选不到；见 `docs/CODEX-ACCOUNT-CONFIG.md`「型号名单」 |
+| Codex 的型号名单 | `~/.codex/config.toml` 顶层的 `model_catalog_json`，指向同目录的 `xingmang-models.json` | 只用二进制自带的名单（桌面端自带的 Codex 常比命令行旧，26.930 那批没有 GPT-6.1 Sol） | 随包官方名单里当前 Key 能用的那几项，原样照抄（用户自己设过就不动；命令行早于 0.147.0、桌面端早于 26.917 那批不写，本机命令行或桌面端用不了的新型号先不列；切回 ChatGPT 收回） | 不写的话中转开了新型号，桌面端菜单里也选不到；见 `docs/CODEX-ACCOUNT-CONFIG.md`「型号名单」 |
 | Codex 在 Windows 上的沙箱档位 | `~/.codex/config.toml` 的 `[windows] sandbox`（只在 Windows 上写） | 未设：第一次跑命令弹英文沙箱设置，推荐档还要一次管理员确认 | `"unelevated"`（用户写过就不动；切回 ChatGPT 不收回） | `sandbox_mode` 仍是 `workspace-write`，只是换成不需要提权的实现；按 0.156.1 源码（`tui/src/app/platform_actions.rs`）配了档位就不再弹引导，**Windows 真机没验证** |
 | Claude 里别家中转留下的设置 | `~/.claude/settings.json` 的 `env.ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` / `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` 与顶层 `apiKeyHelper` | 用户自己写的，原样生效 | 接当前账号时挪进 `~/.claude/xingmang-claude-foreign-settings.json`，切回官方原样放回（当时已有同名项就不覆盖） | 它们会顶掉当前账号的 Key 或型号，界面却显示正常（全面检测 Q7） |
 | Grok 的型号名单与附带型号 | `~/.grok/config.toml` 的 `[models] allowed_models` / `session_summary` / `image_description` | 名单不限（内置 grok-4.6、grok-4.5 也在）；标题钉在字面量 `grok-4.6` | 只留中转那一项，标题与看图都用它（用户写过就不动） | 内置型号走 xAI 自己的服务，国内连不上、也不走当前账号；中转型号不叫 grok-4.6 时标题会悄悄失败 |
@@ -379,7 +379,7 @@ Key 走的型号菜单）不用抬。
 | 工具 | `recommended` | `blocked` | 依据 |
 |---|---|---|---|
 | Claude Code | `2.1.326`（2026-11-17） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)`、`[2.1.304, 2.1.305)` | 上游 changelog 三条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296、2.1.302、2.1.310、2.1.319、2.1.326 的依据见下文（2.1.303、2.1.316 那两次核过、没合，分别并进 2.1.310、2.1.319） |
-| Codex CLI | `0.169.0`（2026-11-17） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1、0.164.0、0.167.0、0.169.0 的依据见下文（0.163.0、0.166.0 核过、没合） |
+| Codex CLI | `0.170.0`（2026-11-18） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1、0.164.0、0.167.0、0.169.0、0.170.0 的依据见下文（0.163.0、0.166.0 核过、没合） |
 | Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文。**2026-10-14 下线**：星芒不再装、不再显示它，这一条留着只因为名单要覆盖全部 `ProviderId`（`catalog.ts` 的退役名单），不再抬 |
 | Grok CLI | `1.0.77`（2026-11-09） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52、1.0.62、1.0.70、1.0.77 各一遍，见下文；1.0.62 核过、没合） |
 
@@ -895,6 +895,41 @@ release note），另把 `rust-v0.167.0..rust-v0.169.0` 的提交标题按 provi
 `initialize` → `config/read` → `thread/start` → `turn/start` 两版都走到 `turn/completed`，通知序列一样。
 
 中转实测：2026-11-17 `cli-relay-probe` 在 `solov` 上用默认型号真跑通过，`solov-api` 照 11-09 的决定不测。没做的：GPT-6.1 Terra 没在中转上单独跑。
+
+**Codex 0.169.0 → 0.170.0（2026-11-18，GPT-6.2 上线，不等周一巡检）。** 两个站当天 03:37（北京时间）开了 `gpt-6.2-sol`、
+`gpt-6.2-astra`，可随包名单停在 `rust-v0.169.0`，从星芒打开的 Codex 菜单里没有它们（名单整份顶掉 Codex 自带的那份）。
+
+上游 `rust-v0.169.1`（11-17）与 `rust-v0.170.0`（11-18，npm `latest`）都加了这两个型号，`models.json` 两版逐字相同。release note：
+
+- 0.169.1：只有「Add GPT-6.2 Sol and Astra to model catalogs」（#62106）和两处 Bedrock 改动（#61426、#62095）。
+- 0.170.0：WebSocket 请求过大时直接退回 HTTP、按服务端声明的消息上限发（#60840、#60841）；Windows 原子写入、沙箱权限、运行时注册的修复
+  （#60872、#60943、#60944）；MCP OAuth、Cloud 对话重连等。没有一条碰自定义 `model_providers` 的 `base_url` / `wire_api` /
+  `requires_openai_auth` / `auth.json`。
+
+随包型号名单：换成 `rust-v0.170.0`（tag 对象 `72f97c30…`，指向提交 `29eb79e9866b3262a777fdf8195c1b9e63684c91`），sha256
+`d50b6749…3068`。比 `rust-v0.169.0` 多 `gpt-6.2-sol`（上下文 500000）、`gpt-6.2-astra`（272000），官方标的最低客户端版本都是
+0.166.0，字段取值和已有的 GPT-6 系列一样（`code_mode_only`、`v2`、推理档位到 `ultra`），多两个 `allow_only_*` 字段（0.170.0 的
+`openai_models.rs` 里也没有，各版都忽略）；
+已有型号改了提示词、说明与排序，`gpt-6.1-sol` 的 `context_window` 272000 → 500000。`openai_models.rs`、`LICENSE`、`NOTICE` 不变。
+
+这次顺带改了名单的写法：以前写进去的型号里有一个要的版本高过本机命令行，整份名单就收回，账号一开 GPT-6.2，0.166 以下的命令行
+连 GPT-6.1 Sol 都跟着从菜单里消失，桌面端也一起丢。上游 models-manager 里 Codex 自己根本不读 `minimal_client_version`，是给官方
+账号下发名单时把客户端版本按整版（`client_version_to_whole`）报上去、由服务端筛。现在主进程照同一个办法逐个型号筛，见
+`docs/CODEX-ACCOUNT-CONFIG.md`「型号名单」。桌面端自带哪一版按批次查新表 `codexDesktopBundledCliVersions`，这次补核了两批：
+Windows 26.1111.9265.0 包里 `codex.exe --version` 是 0.169.0-alpha.11.1；Mac 包从 OpenAI 的 appcast 按 HTTP 分段只读出包里的
+`codex` 搜版本串，26.1103.41825 是 0.167.0-alpha.3.2、26.1106.51428 是 0.167.0-alpha.4.1、26.1111.71025 是 0.169.0-alpha.11.1
+（和 Windows 同批一致）。所以 26.1103 起的桌面端都列得出 GPT-6.2，更早的批次先不列。
+
+沙箱（Windows 本机，`CODEX_HOME` 指临时目录，配置由 `saveProviderConfig` 写、地址换成本机假中转，0.169.0 一起重跑当对照）：
+
+- 读名单：命令行 0.170.0、0.169.0、0.164.0、0.159.0-alpha.12.1、0.147.0 和桌面端 26.1111 自带的 0.169.0-alpha.11.1，拿整份新名单
+  跑 `codex debug models` 都列出全部 11 个菜单型号——旧版也读得进新型号，筛掉只是照官方的兼容说明，不是怕起不来。
+- `codex exec` 用 `gpt-6.2-sol`、`gpt-6.2-astra`、`gpt-6.1-sol`：0.170.0、0.169.0、桌面端那份都只发一次 WebSocket `response.create`，
+  型号对；0.170.0 与 0.169.0 的请求头、请求体字段、`x-codex-beta-features` 完全一样。
+- 0.170.0、0.169.0 的 `--no-daemon exec` 和手机遥控那一路（`app-server`：`initialize` → `config/read` → `thread/start` → `turn/start`）
+  用 `gpt-6.2-sol` 都走到底。
+
+没做的：中转实测等这个 PR 的 `cli-relay-probe`（跑通前 `verifiedSites` 留空）；HTTP 那一路（非 GPT 型号）没单独跑；Mac 上没真开桌面端。
 
 **Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
 上游只有 8 个提交，和中转有关的是两条：

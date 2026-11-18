@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { isRecord } from './input-guards'
-import { isNewerVersion } from './versions'
+import { compareVersionNumbers, isNewerVersion } from './versions'
 
 // 用星芒密钥连中转时，Codex（命令行和桌面端自带的那一份）只认二进制里随版本打包的模型
 // 名单：菜单只列它，提示词、工具、推理档位也只从它取，从不问中转有哪些型号
@@ -23,10 +23,13 @@ import { isNewerVersion } from './versions'
 //   软件写的那一行。
 // - 它整份替换内置名单，不合并：没写进来的型号菜单里就没有。所以只写当前账号有、官方
 //   资料也有的型号，账号能用的型号变了要跟着重写（tool-model-check.ts）。
-// - 0.146.x 及更早要求每个型号都带 base_instructions，官方从 0.147.0 起的名单不再带它；
-//   每个型号另有官方标的最低客户端版本（OpenAI 在服务端按它筛，客户端自己不看）。读这份
-//   名单的不只命令行，还有桌面端自带的那一份：命令行低于这些版本里最高的那个、桌面端早于
-//   已知读得懂的那一批，就不写，已经写了的收回；看不出版本时原样不动。
+// - 0.146.x 及更早要求每个型号都带 base_instructions，官方从 0.147.0 起的名单不再带它。
+//   读这份名单的不只命令行，还有桌面端自带的那一份：命令行早于 0.147.0、桌面端早于已知读得
+//   懂的那一批，就不写，已经写了的收回；看不出版本时原样不动。
+// - 每个型号另有官方标的最低客户端版本（minimal_client_version）。Codex 自己不看它，是
+//   OpenAI 给官方账号下发名单时按客户端报上去的整版号（0.159.0-alpha.12.1 报 0.159.0）筛掉
+//   用不了的型号。这里照同一个办法逐个型号筛：读名单的命令行或桌面端哪一份太旧，只拿掉它用
+//   不了的那几个（2026-11-18 GPT-6.2 要 0.166.0），其余照写，不因为一个新型号整份收回。
 // - 默认型号要在名单里：不在的话它丢了官方资料、菜单里也没有它，宁可不写。
 // - 只在启动时读名单：桌面端开着时写进去，要关掉重开才看得到。
 
@@ -36,9 +39,9 @@ export const codexModelCatalogFileName = 'xingmang-models.json'
 /** 随包那份官方名单从哪来。换版本时整份照拷、三项一起改，测试按 sha256 钉住。 */
 export const bundledCodexModelCatalogSource = Object.freeze({
   repository: 'openai/codex',
-  tag: 'rust-v0.169.0',
+  tag: 'rust-v0.170.0',
   path: 'codex-rs/models-manager/models.json',
-  sha256: '1384625c0b6b3e67d3c60da29becea2b017f2c283fc1e2d05b8edafb4698eb10',
+  sha256: 'd50b6749506d97e5f334dbabcb666eb1689f423cf3e88cfabdcf3c536b873068',
 })
 
 export const BUNDLED_CODEX_MODEL_CATALOG_RELATIVE_PATH = ['bundled-catalog', 'codex-models', 'models.json'] as const
@@ -48,12 +51,24 @@ export const codexModelCatalogMinimumCliVersion = '0.147.0'
 
 /**
  * 桌面端自带的 Codex 跟着 OpenAI 自己的发布批次走，版本号前两段就是批次（26.930 =
- * 2026-09-30 那一批；Windows 包是 26.930.2377.0，Mac 是 26.930.11008 这样）。已知自带版本
- * 的最早一批是 26.917（0.155.0-alpha.16.3，2026-09-23 真机日志），26.930 带的是
- * 0.159.0-alpha.12.1（openai/codex #50061），都读得懂。批次越新带的越新；更早的批次带的
- * 多半早于 0.147.0，读不进名单时桌面端开不了新对话，一律当太旧。
+ * 2026-09-30 那一批；Windows 包是 26.930.2377.0，Mac 是 26.930.11008 这样）。批次越新带的
+ * 越新。这里只记核过的批次，桌面端按「不早于哪一行，就当它带的是那一行的版本」往下取：
+ * - 26.917：0.155.0-alpha.16.3（2026-09-23 真机日志）
+ * - 26.930：0.159.0-alpha.12.1（openai/codex #50061）
+ * - 26.1103：0.167.0-alpha.3.2（2026-11-18 读 Mac 26.1103.41825 包里的 codex；26.1106.51428 带 0.167.0-alpha.4.1）
+ * - 26.1111：0.169.0-alpha.11.1（2026-11-18 Windows 26.1111.9265.0 包里 resources\codex.exe --version，Mac 26.1111.71025 相同）
+ * 第一行之前的批次带的多半早于 0.147.0，读不进名单时桌面端开不了新对话，一律当太旧。没记的
+ * 新批次按上一行算，只会少列几个新型号，不会多列；每周巡检看到新批次就照样核一次、加一行。
  */
-export const codexDesktopModelCatalogMinimumBuild = '26.917'
+export const codexDesktopBundledCliVersions: ReadonlyArray<Readonly<{ build: string; cli: string }>> = Object.freeze([
+  { build: '26.917', cli: '0.155.0-alpha.16.3' },
+  { build: '26.930', cli: '0.159.0-alpha.12.1' },
+  { build: '26.1103', cli: '0.167.0-alpha.3.2' },
+  { build: '26.1111', cli: '0.169.0-alpha.11.1' },
+])
+
+/** 读得懂名单的最早一批桌面端（上表第一行）。 */
+export const codexDesktopModelCatalogMinimumBuild = codexDesktopBundledCliVersions[0].build
 
 const MAX_BUNDLED_CATALOG_BYTES = 2 * 1024 * 1024
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
@@ -88,6 +103,12 @@ export interface ParsedCodexModelCatalog extends CodexModelCatalog {
 
 export type CodexModelCatalogVerdict = 'accepted' | 'too-old' | 'unknown'
 
+/** 一份读名单的 Codex：读不读得进这份文件，读得进的话按哪一版挑型号（null = 不限，比如没装）。 */
+export interface CodexModelCatalogReader {
+  verdict: CodexModelCatalogVerdict
+  clientVersion: string | null
+}
+
 export interface CodexDesktopCatalogProbe {
   /** null = 看不出装没装（探测本身失败）。 */
   installed: boolean | null
@@ -106,7 +127,7 @@ function hasInstructions(entry: Record<string, unknown>): boolean {
 
 /**
  * 这一项能不能被 Codex 读进去；能返回 null，不能返回原因。规则来自 openai_models.rs 的
- * 必填字段与固定取值（rust-v0.147.0～rust-v0.169.0 一致）。
+ * 必填字段与固定取值（rust-v0.147.0～rust-v0.170.0 一致）。
  */
 export function codexModelCatalogEntryProblem(entry: unknown): string | null {
   if (!isRecord(entry)) return '不是对象'
@@ -209,7 +230,10 @@ export function buildCodexRelayModelCatalog(
   return models.some((entry) => entry.visibility === 'list') ? { models } : null
 }
 
-/** 写这份名单所需的最低 Codex 版本：读得懂它的底线，与每个型号官方标的最低客户端版本，取最高。 */
+/**
+ * 名单里每个型号都列得出来所需的最低 Codex 版本：读得懂它的底线，与每个型号官方标的最低
+ * 客户端版本，取最高。低于它的 Codex 照样读得进，只是有几个型号要拿掉（codexModelCatalogForClients）。
+ */
 export function codexModelCatalogRequiredCliVersion(catalog: CodexModelCatalog): string {
   let required = codexModelCatalogMinimumCliVersion
   for (const entry of catalog.models) {
@@ -220,32 +244,66 @@ export function codexModelCatalogRequiredCliVersion(catalog: CodexModelCatalog):
 }
 
 /**
- * 这台电脑上的 Codex 命令行能不能用这份名单。没装命令行就不拦（桌面端另看）；装了但读不出
- * 版本号就算不知道，交给调用方保持原样，免得一次没读到就把菜单来回改。
+ * 这台电脑上的 Codex 命令行读不读得进本软件写的名单，按哪一版挑型号。没装命令行就不拦（桌面端
+ * 另看）；装了但读不出版本号就算不知道，交给调用方保持原样，免得一次没读到就把菜单来回改；
+ * 早于 codexModelCatalogMinimumCliVersion 的读不进，算太旧。
  */
-export function codexCliAcceptsModelCatalog(
-  cli: { installed: boolean; version: string | null },
-  catalog: CodexModelCatalog,
-): CodexModelCatalogVerdict {
-  if (!cli.installed) return 'accepted'
+export function codexCliModelCatalogReader(cli: { installed: boolean; version: string | null }): CodexModelCatalogReader {
+  if (!cli.installed) return { verdict: 'accepted', clientVersion: null }
   const version = CLI_VERSION_IN_TEXT.exec(cli.version ?? '')?.[1]
-  if (!version) return 'unknown'
-  return isNewerVersion(version, codexModelCatalogRequiredCliVersion(catalog)) ? 'too-old' : 'accepted'
+  if (!version) return { verdict: 'unknown', clientVersion: null }
+  return { verdict: isNewerVersion(version, codexModelCatalogMinimumCliVersion) ? 'too-old' : 'accepted', clientVersion: version }
 }
 
 /**
- * 桌面端自带的那份 Codex 能不能用这份名单，按批次判断（见 codexDesktopModelCatalogMinimumBuild）。
- * 没装不拦；看不出装没装、版本号认不出批次，都算不知道。
+ * 桌面端自带的那份 Codex 读不读得进名单、按哪一版挑型号，按批次查 codexDesktopBundledCliVersions。
+ * 没装不拦；看不出装没装、版本号认不出批次，都算不知道；早于表里第一批的算太旧。
  */
-export function codexDesktopAcceptsModelCatalog(desktop: CodexDesktopCatalogProbe): CodexModelCatalogVerdict {
-  if (desktop.installed === false) return 'accepted'
-  if (desktop.installed === null) return 'unknown'
+export function codexDesktopModelCatalogReader(desktop: CodexDesktopCatalogProbe): CodexModelCatalogReader {
+  if (desktop.installed === false) return { verdict: 'accepted', clientVersion: null }
+  if (desktop.installed === null) return { verdict: 'unknown', clientVersion: null }
   const build = /^(\d+)\.(\d+)(?:\.|$)/.exec(desktop.version?.trim() ?? '')
-  if (!build) return 'unknown'
-  const [minimumMajor, minimumMinor] = codexDesktopModelCatalogMinimumBuild.split('.').map(Number)
-  const major = Number(build[1])
-  const minor = Number(build[2])
-  return major > minimumMajor || (major === minimumMajor && minor >= minimumMinor) ? 'accepted' : 'too-old'
+  if (!build) return { verdict: 'unknown', clientVersion: null }
+  const batch = [Number(build[1]), Number(build[2])]
+  let bundled: string | null = null
+  for (const row of codexDesktopBundledCliVersions) {
+    if (compareVersionNumbers(batch, row.build.split('.').map(Number)) >= 0) bundled = row.cli
+  }
+  return bundled ? { verdict: 'accepted', clientVersion: bundled } : { verdict: 'too-old', clientVersion: null }
+}
+
+/**
+ * 这一版 Codex（null = 不限）用不用得了这个型号：官方标的最低客户端版本不比它新，没标的都能用。
+ * 版本号照 OpenAI 的算法只比整版：models-manager 的 client_version_to_whole 把
+ * 0.167.0-alpha.3.2 报成 0.167.0，服务端再拿它跟 minimal_client_version 比。
+ */
+export function codexClientSupportsModel(entry: Record<string, unknown>, clientVersion: string | null): boolean {
+  const minimum = entry.minimal_client_version
+  if (clientVersion === null || typeof minimum !== 'string' || !VERSION_PATTERN.test(minimum)) return true
+  const whole = /^\d+\.\d+\.\d+/.exec(clientVersion)?.[0]
+  return whole !== undefined && !isNewerVersion(whole, minimum)
+}
+
+/** 读名单的那几份 Codex 是不是都用得了这个型号。 */
+export function codexClientsSupportModel(entry: Record<string, unknown>, clientVersions: readonly (string | null)[]): boolean {
+  return clientVersions.every((version) => codexClientSupportsModel(entry, version))
+}
+
+/** 名单里读它的那几份 Codex 有一份用不了的型号，照名单顺序。 */
+export function codexModelsUnsupportedByClients(catalog: CodexModelCatalog, clientVersions: readonly (string | null)[]): string[] {
+  return catalog.models.filter((entry) => !codexClientsSupportModel(entry, clientVersions)).map((entry) => String(entry.slug))
+}
+
+/**
+ * 只留读名单的那几份 Codex 都用得了的型号，其余原样照旧。剩下的全是菜单里不显示的就返回 null，
+ * 规矩同 buildCodexRelayModelCatalog。
+ */
+export function codexModelCatalogForClients(
+  catalog: CodexModelCatalog,
+  clientVersions: readonly (string | null)[],
+): CodexModelCatalog | null {
+  const models = catalog.models.filter((entry) => codexClientsSupportModel(entry, clientVersions))
+  return models.some((entry) => entry.visibility === 'list') ? { models } : null
 }
 
 /** 读这份名单的几份 Codex 合起来看：有一份太旧就不能写，有一份看不出就原样不动。 */

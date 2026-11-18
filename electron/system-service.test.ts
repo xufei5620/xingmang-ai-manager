@@ -993,6 +993,71 @@ describe('createSystemService', () => {
     expect(fs.existsSync(f.catalogPath)).toBe(true)
   })
 
+  it('lists GPT-6.2 once the account offers it and the Codex CLI and desktop app on this computer can use it', async () => {
+    const f = codexCatalogFixture()
+    f.account.models.push('gpt-6.2-sol', 'gpt-6.2-astra')
+    f.installCodexCli('0.170.0')
+    f.desktop.probe = { installed: true, version: '26.1111.9265.0' }
+
+    await f.save()
+
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+    expect(f.catalogSlugs()).toEqual(['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-sol', 'gpt-5.5'])
+  })
+
+  // 以前一个型号要的版本高过命令行，整份名单就收回，桌面端连 GPT-6.1 Sol 都丢了。
+  it('holds only GPT-6.2 back, keeping the rest of the catalog, for a Codex CLI older than 0.166.0', async () => {
+    const f = codexCatalogFixture()
+    f.account.models.push('gpt-6.2-sol', 'gpt-6.2-astra')
+    f.installCodexCli('0.164.0')
+
+    await f.save()
+
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+  })
+
+  it('holds GPT-6.2 back for a Codex desktop app from a release that bundles an older Codex', async () => {
+    const f = codexCatalogFixture()
+    f.account.models.push('gpt-6.2-sol', 'gpt-6.2-astra')
+    f.desktop.probe = { installed: true, version: '26.1013.4894.0' }
+
+    await f.save()
+
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+  })
+
+  it('does not write the catalog when the configured default model is too new for the Codex CLI', async () => {
+    const f = codexCatalogFixture()
+    f.account.models.push('gpt-6.2-sol')
+    f.installCodexCli('0.164.0')
+
+    await f.save('gpt-6.2-sol')
+
+    expect(f.catalogSetting()).toBeUndefined()
+    expect(fs.existsSync(f.catalogPath)).toBe(false)
+  })
+
+  it('takes a catalog listing GPT-6.2 back before a launch once the Codex CLI was swapped for an older one, and the next save lists the rest', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const f = codexCatalogFixture()
+    f.account.models.push('gpt-6.2-sol')
+    f.installCodexCli('0.170.0')
+    await f.save()
+    expect(f.catalogSlugs()).toEqual(['gpt-6.2-sol', 'gpt-6.1-sol', 'gpt-5.5'])
+    f.installCodexCli('0.164.0')
+    letCatalogReaderProbesExpire()
+
+    await f.service.checkToolModels!('codex')
+
+    expect(f.catalogSetting()).toBeUndefined()
+
+    await f.save()
+
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+    expect(f.catalogSlugs()).toEqual(['gpt-6.1-sol', 'gpt-5.5'])
+  })
+
   it('takes the catalog back before a launch when its file went missing', async () => {
     const f = codexCatalogFixture()
     await f.save()

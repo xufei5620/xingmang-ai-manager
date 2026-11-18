@@ -7,13 +7,17 @@ import {
   applyCodexRelayModelCatalog,
   buildCodexRelayModelCatalog,
   bundledCodexModelCatalogSource,
-  codexCliAcceptsModelCatalog,
-  codexDesktopAcceptsModelCatalog,
+  codexCliModelCatalogReader,
+  codexClientSupportsModel,
+  codexDesktopBundledCliVersions,
+  codexDesktopModelCatalogReader,
   codexModelCatalogContent,
   codexModelCatalogEntryProblem,
   codexModelCatalogFileName,
+  codexModelCatalogForClients,
   codexModelCatalogListsModel,
   codexModelCatalogRequiredCliVersion,
+  codexModelsUnsupportedByClients,
   codexRelayModelCatalogOutdated,
   combineCodexModelCatalogVerdicts,
   isManagedCodexModelCatalogSetting,
@@ -22,6 +26,8 @@ import {
   removeCodexRelayModelCatalog,
   resolveBundledCodexModelCatalogPath,
 } from './codex-model-catalog'
+import { cliVerifiedVersions } from './cli-verified-versions'
+import { isNewerVersion } from './versions'
 
 const repositoryRoot = path.resolve(__dirname, '..')
 const bundledPath = resolveBundledCodexModelCatalogPath(repositoryRoot)
@@ -62,12 +68,27 @@ describe('bundled Codex model catalog', () => {
     expect(bundledCodexModelCatalogSource).toMatchObject({ repository: 'openai/codex', path: 'codex-rs/models-manager/models.json' })
   })
 
-  it('loads every model without dropping any, including GPT-6.1 Sol in the menu', () => {
+  it('loads every model without dropping any, including GPT-6.2 Sol and Astra in the menu', () => {
     const catalog = readBundledCodexModelCatalog(bundledPath)
     expect(catalog.rejected).toEqual([])
-    const sol = catalog.models.find((model) => model.slug === 'gpt-6.1-sol')
-    expect(sol).toMatchObject({ visibility: 'list', supported_in_api: true })
-    expect(codexModelCatalogRequiredCliVersion(catalog)).toBe('0.155.0')
+    for (const slug of ['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-sol']) {
+      expect(catalog.models.find((model) => model.slug === slug)).toMatchObject({ visibility: 'list', supported_in_api: true })
+    }
+    expect(codexModelCatalogRequiredCliVersion(catalog)).toBe('0.166.0')
+  })
+
+  it('never needs a newer Codex CLI than the recommended one to list every model', () => {
+    const catalog = readBundledCodexModelCatalog(bundledPath)
+    const recommended = cliVerifiedVersions.codex.recommended?.version ?? null
+    expect(recommended).not.toBeNull()
+    expect(isNewerVersion(recommended, codexModelCatalogRequiredCliVersion(catalog))).toBe(false)
+    expect(codexModelsUnsupportedByClients(catalog, [recommended])).toEqual([])
+  })
+
+  it('keeps GPT-6.1 Sol but holds GPT-6.2 back for a Codex CLI older than 0.166.0', () => {
+    const catalog = readBundledCodexModelCatalog(bundledPath)
+    expect(codexModelsUnsupportedByClients(catalog, ['0.164.0'])).toEqual(['gpt-6.2-sol', 'gpt-6.2-astra'])
+    expect(codexModelsUnsupportedByClients(catalog, ['0.166.0'])).toEqual([])
   })
 
   it('ships the upstream license and notice next to the catalog', () => {
@@ -154,32 +175,80 @@ describe('Codex relay model catalog', () => {
   })
 
   it.each([
-    [{ installed: false, version: null }, 'accepted'],
-    [{ installed: true, version: '0.156.1' }, 'accepted'],
-    [{ installed: true, version: 'codex-cli 0.160.0' }, 'accepted'],
-    [{ installed: true, version: 'codex-cli 0.154.2' }, 'too-old'],
-    [{ installed: true, version: '0.146.1' }, 'too-old'],
-    [{ installed: true, version: null }, 'unknown'],
-    [{ installed: true, version: 'codex-cli' }, 'unknown'],
-  ] as const)('judges Codex CLI %j as %s for a catalog that needs 0.155.0', (cli, verdict) => {
-    const catalog = { models: [entry('gpt-6-sol', { minimal_client_version: '0.155.0' })] }
-    expect(codexCliAcceptsModelCatalog(cli, catalog)).toBe(verdict)
+    [{ installed: false, version: null }, { verdict: 'accepted', clientVersion: null }],
+    [{ installed: true, version: '0.156.1' }, { verdict: 'accepted', clientVersion: '0.156.1' }],
+    [{ installed: true, version: 'codex-cli 0.160.0' }, { verdict: 'accepted', clientVersion: '0.160.0' }],
+    [{ installed: true, version: 'codex-cli 0.154.2' }, { verdict: 'accepted', clientVersion: '0.154.2' }],
+    [{ installed: true, version: '0.147.0' }, { verdict: 'accepted', clientVersion: '0.147.0' }],
+    [{ installed: true, version: '0.146.1' }, { verdict: 'too-old', clientVersion: '0.146.1' }],
+    [{ installed: true, version: null }, { verdict: 'unknown', clientVersion: null }],
+    [{ installed: true, version: 'codex-cli' }, { verdict: 'unknown', clientVersion: null }],
+  ] as const)('reads Codex CLI %j as %j', (cli, reader) => {
+    expect(codexCliModelCatalogReader(cli)).toEqual(reader)
   })
 
   it.each([
-    [{ installed: false, version: null }, 'accepted'],
-    [{ installed: true, version: '26.930.2377.0' }, 'accepted'],
-    [{ installed: true, version: '26.930.11008' }, 'accepted'],
-    [{ installed: true, version: '26.917.8451.0' }, 'accepted'],
-    [{ installed: true, version: '27.105.100.0' }, 'accepted'],
-    [{ installed: true, version: '26.909.1234.0' }, 'too-old'],
-    [{ installed: true, version: '26.727.51351' }, 'too-old'],
-    [{ installed: true, version: '25.1201.3.0' }, 'too-old'],
-    [{ installed: true, version: null }, 'unknown'],
-    [{ installed: true, version: 'beta' }, 'unknown'],
-    [{ installed: null, version: null }, 'unknown'],
-  ] as const)('judges Codex desktop app %j as %s by its release', (desktop, verdict) => {
-    expect(codexDesktopAcceptsModelCatalog(desktop)).toBe(verdict)
+    [{ installed: false, version: null }, { verdict: 'accepted', clientVersion: null }],
+    [{ installed: true, version: '26.917.8451.0' }, { verdict: 'accepted', clientVersion: '0.155.0-alpha.16.3' }],
+    [{ installed: true, version: '26.930.2377.0' }, { verdict: 'accepted', clientVersion: '0.159.0-alpha.12.1' }],
+    [{ installed: true, version: '26.930.11008' }, { verdict: 'accepted', clientVersion: '0.159.0-alpha.12.1' }],
+    [{ installed: true, version: '26.1013.4894.0' }, { verdict: 'accepted', clientVersion: '0.159.0-alpha.12.1' }],
+    [{ installed: true, version: '26.1103.3517.0' }, { verdict: 'accepted', clientVersion: '0.167.0-alpha.3.2' }],
+    [{ installed: true, version: '26.1106.51428' }, { verdict: 'accepted', clientVersion: '0.167.0-alpha.3.2' }],
+    [{ installed: true, version: '26.1111.9265.0' }, { verdict: 'accepted', clientVersion: '0.169.0-alpha.11.1' }],
+    [{ installed: true, version: '27.105.100.0' }, { verdict: 'accepted', clientVersion: '0.169.0-alpha.11.1' }],
+    [{ installed: true, version: '26.909.1234.0' }, { verdict: 'too-old', clientVersion: null }],
+    [{ installed: true, version: '26.727.51351' }, { verdict: 'too-old', clientVersion: null }],
+    [{ installed: true, version: '25.1201.3.0' }, { verdict: 'too-old', clientVersion: null }],
+    [{ installed: true, version: null }, { verdict: 'unknown', clientVersion: null }],
+    [{ installed: true, version: 'beta' }, { verdict: 'unknown', clientVersion: null }],
+    [{ installed: null, version: null }, { verdict: 'unknown', clientVersion: null }],
+  ] as const)('reads Codex desktop app %j as %j by its release', (desktop, reader) => {
+    expect(codexDesktopModelCatalogReader(desktop)).toEqual(reader)
+  })
+
+  it('lists desktop releases oldest first, each bundling a newer Codex than the one before', () => {
+    const batches = codexDesktopBundledCliVersions.map((row) => row.build.split('.').map(Number))
+    for (let index = 1; index < batches.length; index += 1) {
+      const [previous, current] = [batches[index - 1], batches[index]]
+      expect(current[0] > previous[0] || (current[0] === previous[0] && current[1] > previous[1])).toBe(true)
+      expect(isNewerVersion(codexDesktopBundledCliVersions[index - 1].cli, codexDesktopBundledCliVersions[index].cli)).toBe(true)
+    }
+  })
+
+  it.each([
+    ['no minimal version', {}, '0.98.0', true],
+    ['a minimal version the client meets', { minimal_client_version: '0.166.0' }, '0.170.0', true],
+    ['exactly the minimal version', { minimal_client_version: '0.166.0' }, '0.166.0', true],
+    ['a minimal version newer than the client', { minimal_client_version: '0.166.0' }, '0.164.0', false],
+    // OpenAI compares the whole version: an alpha of 0.155.0 counts as 0.155.0.
+    ['an alpha of the minimal version', { minimal_client_version: '0.155.0' }, '0.155.0-alpha.16.3', true],
+    ['an alpha of an older release', { minimal_client_version: '0.166.0' }, '0.165.0-alpha.1.2', false],
+    ['no client to satisfy', { minimal_client_version: '9.0.0' }, null, true],
+  ] as const)('decides whether a client can use a model with %s', (_label, overrides, clientVersion, supported) => {
+    expect(codexClientSupportsModel(entry('gpt-x', overrides), clientVersion)).toBe(supported)
+  })
+
+  it('holds back only the models some reader is too old for, and keeps the rest unchanged', () => {
+    const catalog = { models: [
+      entry('gpt-6.2-sol', { minimal_client_version: '0.166.0' }),
+      entry('gpt-6.1-sol', { minimal_client_version: '0.153.0' }),
+      entry('codex-auto-review', { visibility: 'hide', minimal_client_version: '0.98.0' }),
+    ] }
+    expect(codexModelCatalogForClients(catalog, ['0.170.0', '0.169.0-alpha.11.1'])?.models).toEqual(catalog.models)
+    const older = codexModelCatalogForClients(catalog, ['0.170.0', '0.159.0-alpha.12.1'])
+    expect(older?.models.map((model) => model.slug)).toEqual(['gpt-6.1-sol', 'codex-auto-review'])
+    expect(older?.models[0]).toBe(catalog.models[1])
+    expect(codexModelsUnsupportedByClients(catalog, [null, '0.164.0'])).toEqual(['gpt-6.2-sol'])
+    expect(codexModelCatalogForClients(catalog, [])?.models).toEqual(catalog.models)
+  })
+
+  it('writes no catalog when every model the menu would show is too new for some reader', () => {
+    const catalog = { models: [
+      entry('gpt-6.2-sol', { minimal_client_version: '0.166.0' }),
+      entry('codex-auto-review', { visibility: 'hide', minimal_client_version: '0.98.0' }),
+    ] }
+    expect(codexModelCatalogForClients(catalog, ['0.164.0'])).toBeNull()
   })
 
   it('refuses the catalog when any reader is too old, and holds still when any reader is unknown', () => {
