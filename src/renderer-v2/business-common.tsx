@@ -16,6 +16,7 @@ import { formatCalendarTime, formatClockTime } from './calendar-time'
 import { matchAccountErrorMessage } from './features/auth/account-errors'
 import { redactSecretPatterns } from '../../electron/redaction-patterns'
 import { isChineseSentence } from '../../electron/chinese-sentence'
+import { isCodexDesktopProbeFailure } from '../../electron/codex-desktop-probe-failure'
 import { stripIpcErrorPrefix } from './ipc-error-prefix'
 import { useLatestRequest } from './latest-request'
 
@@ -122,9 +123,13 @@ export function speaksChinese(safe: string) {
  * warn 进运行日志（ipc/handlers/detection-failures.ts 的 *.detection-failed），客服在反馈报告里看得到；这里只按错误码
  * 分四类说人话。原话本来是中文的照旧显示（只脱敏）。原话为空时返回 null，调用点用 `??`
  * 留自己的兜底句，同 `snapshotErrorMessage`。
+ *
+ * Codex 桌面端的探测摘要例外：后面接着 PowerShell 的原话（中文系统上是中文），按是不是中文判会被
+ * 整句端上屏（11-18「Windows Appx 探测返回数据格式无效」），所以先认开头，认出来就不看后面。
  */
 export function detectionFailureMessage(value: string | null | undefined) {
   const safe = snapshotErrorMessage(value)
+  if (safe && isCodexDesktopProbeFailure(safe)) return detectionFailureCopy.other
   if (!safe || speaksChinese(safe)) return safe
   if (/\b(?:EPERM|EACCES)\b|not permitted|permission denied|access\b.*\bis denied|unauthorized ?access/i.test(safe)) return detectionFailureCopy.permission
   if (/\bEBUSY\b|resource busy|used by another process/i.test(safe)) return detectionFailureCopy.busy

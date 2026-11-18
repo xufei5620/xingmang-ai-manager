@@ -305,6 +305,16 @@ describe('detectionFailureMessage', () => {
     expect(detectionFailureMessage('UNKNOWN: unknown error, lstat')).toBe(other)
   })
 
+  it('never puts the words behind a Codex desktop probe summary on screen, even in Chinese', () => {
+    // 11-18 客户截图：查包那段的中文说法原样上了屏。现在主进程交英文摘要＋原话，界面认开头。
+    expect(detectionFailureMessage('Codex desktop status probe: package step failed: 拒绝访问。')).toBe(other)
+    expect(detectionFailureMessage('Codex desktop package probe: unrecognized result (no package entry has a usable name, version and install folder): {"packages":{"InstallLocation":"C:\\Users\\张三\\x"}}')).toBe(other)
+    expect(detectionFailureMessage('Codex desktop package probe: unrecognized result (unknown error text): 当前用户未检测到 Codex Desktop')).toBe(other)
+    // 写给客户、带着下一步的那句照旧原样显示。
+    expect(detectionFailureMessage('读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。'))
+      .toBe('读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。')
+  })
+
   it('keeps a reason that was written in Chinese, with its path redacted', () => {
     expect(detectionFailureMessage('读取 Node.js 安装位置时被拒绝')).toBe('读取 Node.js 安装位置时被拒绝')
     expect(detectionFailureMessage('读取 /Users/yoyo/.codex/config.toml 失败')).toBe('读取 本机路径 失败')

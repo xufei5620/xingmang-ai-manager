@@ -13,7 +13,9 @@ import { InstallationQueue } from './installation-queue'
 import { createAccountWorkGate } from './account-work-gate'
 import { CommandRunnerError } from './command-runner'
 import { InstallCancelledError, isInstallCancelledError } from './install-cancellation'
-import { parseWindowsProcessesJson } from './codex-desktop'
+import { codexDesktopPackageProbeAccountMessage, parseWindowsProcessesJson } from './codex-desktop'
+import { isCodexDesktopProbeFailure } from './codex-desktop-probe-failure'
+import { powerShellLiteral } from './windows-elevation'
 import type { NativeConfigInspection } from './config-files'
 import {
   assertCodexDesktopUninstalled,
@@ -1391,6 +1393,12 @@ describe('Codex Desktop Appx probe script', () => {
     expect(script).toContain('$confirmedAbsent = $currentProbeSucceeded -and $currentPackages.Count -eq 0')
   })
 
+  it('writes the one customer sentence the parser lets through', () => {
+    // 解析时只认这一句原样上屏（codex-desktop.ts），脚本得照同一份拼。
+    expect(buildCodexDesktopPackageProbeScript()).toContain(`$errorMessage = ${powerShellLiteral(codexDesktopPackageProbeAccountMessage)}`)
+    expect(buildCodexDesktopCombinedProbeScript()).toContain(`$errorMessage = ${powerShellLiteral(codexDesktopPackageProbeAccountMessage)}`)
+  })
+
   it('recovers a packaged process path from its command line when WMI omits ExecutablePath', () => {
     const script = buildCodexDesktopProcessProbeScript()
     expect(script).toContain('$_.CommandLine')
@@ -1716,7 +1724,7 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
     expect(probe.packageProbe.value?.version).toBe('26.721.4979.0')
   })
 
-  it('isolates a failed Appx segment and keeps its message on the package probe', () => {
+  it('isolates a failed Appx segment and keeps its PowerShell message for the log only', () => {
     const probe = parseCodexDesktopCombinedProbeJson(combinedOutput({
       package: null,
       packageError: 'Get-AppxPackage 被拒绝',
@@ -1724,9 +1732,10 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
 
     expect(probe.packageProbe).toEqual({
       value: null,
-      error: 'Get-AppxPackage 被拒绝',
+      error: 'Codex desktop status probe: package step failed',
       source: null,
       confirmedAbsent: false,
+      detail: 'Get-AppxPackage 被拒绝',
     })
     expect(probe.match).toEqual({ name: 'ChatGPT', appId: 'OpenAI.Codex_stable!App' })
     expect(probe.processes).toHaveLength(1)
@@ -1750,16 +1759,17 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
       processes: [],
       packageProbe: {
         value: null,
-        error: 'Windows Appx 探测返回数据格式无效',
+        error: 'Codex desktop package probe: unrecognized result (not JSON)',
         source: null,
         confirmedAbsent: false,
+        detail: 'not-json',
       },
     })
 
     const empty = parseCodexDesktopCombinedProbeJson('   ')
     expect(empty.packageProbe).toEqual({
       value: null,
-      error: 'Windows Appx 探测没有返回结果',
+      error: 'Codex desktop package probe: unrecognized result (empty output)',
       source: null,
       confirmedAbsent: false,
     })
@@ -1782,7 +1792,7 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
       },
     })
     expect(buildCodexDesktopCombinedProbeFailure(null).packageProbe.error)
-      .toBe('无法读取 Windows Appx 包信息')
+      .toBe('Codex desktop status probe: failed without a reason')
     // detectionFailed 必须亮起来，界面才不会把「没看成」显示成「没装」
     const probes = buildCodexDesktopWindowsProbes(
       { status: 'fulfilled', value: timedOut.match },
@@ -1837,6 +1847,48 @@ describe('inspectCodexDesktopBeforeInstall', () => {
 
     expect(thrown.message).toBe('Codex desktop status probe: PowerShell gave no answer within 24 s and was stopped')
     expect(thrown.cause).toBe(processError)
+  })
+
+  it('throws the summary and keeps the PowerShell words as the cause when only a detail is known', () => {
+    const failed = parseCodexDesktopCombinedProbeJson(JSON.stringify({ package: null, packageError: '无法加载模块“Appx”。' }))
+    const thrown = codexDesktopPackageProbeError(failed.packageProbe.error ?? '', failed.packageProbe)
+
+    expect(thrown.message).toBe('Codex desktop status probe: package step failed')
+    expect(thrown.cause).toEqual(new Error('无法加载模块“Appx”。'))
+  })
+})
+
+describe('Codex desktop detection failure line', () => {
+  function probesFor(packageProbe: Parameters<typeof buildCodexDesktopWindowsProbes>[2]) {
+    return buildCodexDesktopWindowsProbes(
+      { status: 'fulfilled', value: null },
+      { status: 'fulfilled', value: [] },
+      packageProbe,
+      { status: 'fulfilled', value: { version: null, checkedAt: '2026-11-18T00:00:00.000Z', error: null } },
+    )
+  }
+
+  it('logs the PowerShell words behind a summary the screen recognises', () => {
+    const output = '{"packages":{"Name":"OpenAI.Codex","Version":"26.1105.1234.0","InstallLocation":null},"source":"current-user"}'
+    const probes = probesFor({ status: 'fulfilled', value: parseCodexDesktopCombinedProbeJson(JSON.stringify({ package: JSON.parse(output) })).packageProbe })
+
+    expect(probes.detectionFailed).toBe(true)
+    // 原话还在，scan.completed / desktop.detection-failed 两行日志都记的是它。
+    expect(probes.detectionError).toContain('"Version":"26.1105.1234.0"')
+    expect(probes.detectionError).toContain('"InstallLocation":null')
+    expect(isCodexDesktopProbeFailure(probes.detectionError ?? '')).toBe(true)
+
+    const denied = probesFor({ status: 'fulfilled', value: parseCodexDesktopCombinedProbeJson(JSON.stringify({ package: null, packageError: '拒绝访问。' })).packageProbe })
+    expect(denied.detectionError).toBe('Codex desktop status probe: package step failed: 拒绝访问。')
+    expect(isCodexDesktopProbeFailure(denied.detectionError ?? '')).toBe(true)
+  })
+
+  it('keeps the customer sentence as the whole line', () => {
+    const probes = probesFor({ status: 'fulfilled', value: parseCodexDesktopCombinedProbeJson(JSON.stringify({
+      package: { packages: [], source: null, confirmedAbsent: false, error: codexDesktopPackageProbeAccountMessage },
+    })).packageProbe })
+
+    expect(probes.detectionError).toBe(codexDesktopPackageProbeAccountMessage)
   })
 })
 
