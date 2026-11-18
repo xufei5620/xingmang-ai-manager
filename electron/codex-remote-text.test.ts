@@ -111,6 +111,15 @@ describe('codex-remote-text', () => {
     expect(normalizePairingAttempt('1234567')).toBeNull()
   })
 
+  // YR-10：手机输入法切在全角时发的是「１２３４５６」，照样认成配对码。
+  it('reads a pairing code typed in full-width digits', () => {
+    expect(normalizePairingAttempt('１２３４５６')).toBe('123456')
+    expect(normalizePairingAttempt('１２３　４５６')).toBe('123456')
+    expect(normalizePairingAttempt('12３4５6')).toBe('123456')
+    expect(normalizePairingAttempt('１２３４５６７')).toBeNull()
+    expect(normalizePairingAttempt('配对 １２３４５６')).toBeNull()
+  })
+
   it('redacts named secrets, key shapes and the home directory', () => {
     const text = 'key=abcdef123456 token sk-live0123456789 at /Users/alice/project and Bearer zzzzzzzzzz'
     const redacted = redactRemoteText(text, { secrets: ['abcdef123456'], homeDirectory: '/Users/alice', platform: 'darwin' })
