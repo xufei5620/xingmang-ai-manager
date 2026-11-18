@@ -1,8 +1,3 @@
-## 用户
-
-- Mac 上星芒装、更新的 OpenCode 重新跟上 OpenCode 的新版：OpenCode 10 月 28 日发的 1.19.5 换了放版本信息的方式，
-  星芒一直停在 1.19.4；星芒自己的下载点一时不通、改去 OpenCode 官方下载时，还会报「没下载下来」或「没更新成」。
-
 ## 开发
 
 - OpenCode 1.19.5（2026-10-28）起不再往 GitHub Release 放 Tauri 的 `latest.json`（它们 `script/publish.ts` 写明那份

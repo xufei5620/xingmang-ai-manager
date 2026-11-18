@@ -1,7 +1,3 @@
-## 用户
-
-- 画布能用「文字生成」节点了：写一句话让模型帮你写或扩写提示词，连上图片还能看图写描述（要选能看图的型号，选得不对节点上会提示）。生成的文字能接给下游节点，也能另存成文本节点或存进提示词库。
-
 ## 开发
 
 - 画布完善第 6 条：主进程能跑文字生成节点（`text-generate`），打开 `desktopCanvasCapabilities.features.textGenerate`，`executableNodeKinds` 加上它（`canvas-contract.ts` 和 `canvas-preload.ts` 两份一起改）。内核不用改，桌面原来只是把这类节点标成「桌面版暂不支持」。

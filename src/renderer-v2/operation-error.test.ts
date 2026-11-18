@@ -4,6 +4,7 @@ import { networkFailureMessages, officialRegistryUnreachableMarker, toolCertific
 import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalMessage } from '../../electron/config-link-refusal'
+import { brokenConfigLaunchMessages } from './features/tools/broken-config-launch'
 import { configWriteBlockerMessage } from '../../electron/config-write-blocker'
 import { buildClaudeDesktopInstallFailureMessage, claudeDesktopInstallFailureReasons, type ClaudeDesktopInstallFailureReason } from '../../electron/claude-desktop-install-failure'
 import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
@@ -25,6 +26,7 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   toolNotEnabled: { sample: 'Codex CLI 改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
   switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。' },
   pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
+  configBroken: { sample: brokenConfigLaunchMessages.codexConfig },
   // 主进程 extension-command-output.ts 的 withCommandOutput：原话后面接上命令自己说的那一行（Claude Code 2.1 的原话）。
   gitMissing: { sample: '命令执行失败（退出码 1）：claude（命令输出：Executable not found in $PATH: "git"）', target: 'config' },
   githubUnreachable: { sample: "命令执行失败（退出码 1）：claude（命令输出：fatal: unable to access 'https://github.com/anthropics/claude-code.git/': Failed to connect to github.com port 443 after 21045 ms: Couldn't connect to server）", target: 'config' },

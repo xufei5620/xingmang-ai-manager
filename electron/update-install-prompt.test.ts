@@ -64,7 +64,7 @@ interface Harness {
   options: UpdateInstallPrompterOptions
   state: {
     snapshot: UpdateSnapshot; idleMs: number; locked: boolean; now: number; windowVisible: boolean; standardAccount: boolean | null; attempted: string | null
-    remote: boolean; video: boolean; renderer: boolean; payment: boolean
+    remote: boolean; remoteBusy: boolean; video: boolean; renderer: boolean; payment: boolean
   }
   timers: Array<{ callback: () => void; ms: number; cancelled: boolean }>
   asks: Array<{ prompt: InstallPrompt; signal: AbortSignal; answer(value: InstallPromptAnswer): void }>
@@ -77,7 +77,7 @@ interface Harness {
 function harness(platform: NodeJS.Platform = 'darwin', patch: Partial<UpdateInstallPrompterOptions> = {}): Harness {
   const state: Harness['state'] = {
     snapshot: snapshot(), idleMs: 0, locked: false, now: 1_000, windowVisible: false, standardAccount: false, attempted: null,
-    remote: false, video: false, renderer: false, payment: false,
+    remote: false, remoteBusy: false, video: false, renderer: false, payment: false,
   }
   const timers: Harness['timers'] = []
   const asks: Harness['asks'] = []
@@ -98,6 +98,7 @@ function harness(platform: NodeJS.Platform = 'darwin', patch: Partial<UpdateInst
     toolsWorking: () => false,
     accelerationActive: () => false,
     remoteControlActive: () => state.remote,
+    remoteControlBusy: () => state.remoteBusy,
     videoWorking: () => state.video,
     rendererBusy: () => state.renderer,
     paymentWindowOpen: () => state.payment,
@@ -233,6 +234,12 @@ describe('decideIdleInstall', () => {
     expect(decideIdleInstall(idleInput({ videoWorking: true }))).toBeNull()
     expect(decideIdleInstall(idleInput({ rendererBusy: true }))).toBeNull()
     expect(decideIdleInstall(idleInput({ locked: true, remoteControlActive: true }))).toBeNull()
+  })
+
+  it('waits while a remote that comes back after a restart still has work or recent messages (YR-3)', () => {
+    expect(decideIdleInstall(idleInput({ remoteControlBusy: true }))).toBeNull()
+    expect(decideIdleInstall(idleInput({ locked: true, remoteControlBusy: true }))).toBeNull()
+    expect(decideIdleInstall(idleInput({ remoteControlBusy: false }))).toBe('0.2.22')
   })
 
   it('tries each version once', () => {
@@ -618,6 +625,73 @@ describe('createUpdateInstallPrompter', () => {
     test.state.remote = false
     await test.runTimers()
     expect(test.installedIdle).toEqual(['0.2.22'])
+    prompter.dispose()
+  })
+
+  it('does not wait for the customer when the remote comes back after a restart, and installs once the phone has gone quiet (YR-3)', async () => {
+    const test = harness()
+    test.state.remoteBusy = true
+    test.state.locked = true
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    // Switch-on-launch reconnects the remote after the restart, so the away rule skips the question as usual.
+    expect(test.asks).toHaveLength(0)
+    expect(test.events).toContain('install.prompt.away')
+    expect(test.events).not.toContain('install.prompt.away-remote-on')
+    await test.runTimers()
+    await test.runTimers()
+    expect(test.installedIdle).toEqual([])
+    expect(test.timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms)).toEqual([IDLE_POLL_MS])
+
+    test.state.remoteBusy = false
+    await test.runTimers()
+    expect(test.installedIdle).toEqual(['0.2.22'])
+    prompter.dispose()
+  })
+
+  it('promises the idle install in the question when the remote comes back after a restart (YR-3)', async () => {
+    const test = harness()
+    test.state.remoteBusy = true
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    expect(test.asks[0].prompt.detail).toBe(buildInstallPrompt('0.2.22', 'darwin', { unattended: true }).detail)
+    prompter.dispose()
+  })
+
+  it('looks at the remote again after reading the service status and leaves the install for later when a phone message just came in (YR-3)', async () => {
+    const test = harness()
+    test.options.refreshServiceStatus = async () => {
+      test.state.remoteBusy = true
+      return null
+    }
+    test.state.locked = true
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    await test.runTimers()
+    expect(test.installedIdle).toEqual([])
+    expect(test.events).toContain('install.idle.remote-busy')
+
+    test.options.refreshServiceStatus = async () => null
+    test.state.remoteBusy = false
+    await test.runTimers()
+    expect(test.installedIdle).toEqual(['0.2.22'])
+    prompter.dispose()
+  })
+
+  it('treats a remote work state that cannot be read as busy (YR-3)', async () => {
+    const test = harness('darwin', { remoteControlBusy: () => { throw new Error('gone') } })
+    test.state.locked = true
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    await test.runTimers()
+    await test.runTimers()
+    expect(test.installedIdle).toEqual([])
     prompter.dispose()
   })
 

@@ -45,6 +45,8 @@ export function operationErrorActions(failure: OperationFailure, installDirector
   const actions = (hint?.actions ?? operationFallbackActions())
     .filter((action) => action.id !== 'retry' || Boolean(failure.retry))
     .filter((action) => action.id !== 'copyPath' || Boolean(installDirectory))
+    // 「修好它」要知道修哪个工具；不知道就只剩「找客服」，不留一颗按了没反应的按钮。
+    .filter((action) => action.id !== 'repairConfig' || Boolean(failure.tool))
   if (canReplaceNode || !actions.some((action) => action.id === 'replaceNode')) return actions
   const rest = actions.filter((action) => action.id !== 'replaceNode')
   return rest.some((action) => action.id === 'support') ? rest : [...rest, { id: 'support', label: '找客服' }]
@@ -66,8 +68,8 @@ export function OperationErrorDialog({ failure, installDirectory, canReplaceNode
   const [supportCopy, setSupportCopy] = useState<{ state: 'ok' | 'failed'; text: string } | null>(null)
   const hint = presentOperationFailure(failure)
   const actions = operationErrorActions(failure, installDirectory, canReplaceNode)
-  // 有「换成新版 Node.js」时它才是出路，重试只会撞同一个错，所以它当主按钮。
-  const primary = actions.some((action) => action.id === 'replaceNode') ? 'replaceNode' : 'retry'
+  // 有「换成新版 Node.js」「修好它」时它才是出路，重试只会撞同一个错，所以它当主按钮。
+  const primary = actions.find((action) => action.id === 'replaceNode' || action.id === 'repairConfig')?.id ?? 'retry'
   const showPath = actions.some((action) => action.id === 'copyPath')
   const copySupport = support && <Button key="copySupport" icon={Copy} testId="operation-error-copySupport" onClick={() => {
     const text = buildSupportBundle(support, supportFailureOf(failure, new Date()))
