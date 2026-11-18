@@ -82,8 +82,11 @@ jobs:
         if: env.ASAR != ''
         timeout-minutes: 5
         run: |
-          echo '== dataFolderName anywhere under the app'
-          LC_ALL=C grep -r -a -o -E 'dataFolderName.{0,60}' app | cut -c1-200 | sort | uniq -c | sort -nr | head -n 20 || true
-          echo '== product json files'
-          find app/resources -maxdepth 2 -name '*.json' -size -200k -printf '%s %p\n' | head -n 20
-          for f in $(find app/resources -maxdepth 2 -name 'product*.json' -size -200k | head -3); do echo "== $f"; LC_ALL=C grep -o -E '"(dataFolderName|nameShort|nameLong|applicationName|win32AppUserModelId|darwinBundleIdentifier|urlProtocol)"\s*:\s*"[^"]{0,60}"' "$f" | head -n 12; done
+          echo '== resolveDataFolderName / isOversea context'
+          LC_ALL=C grep -a -o -E '.{0,160}resolveDataFolderName\(.{0,200}' "$ASAR" | cut -c1-400 | head -n 6 || true
+          LC_ALL=C grep -a -o -E '.{0,120}WORKBUDDY_DATA_FOLDER_NAME.{0,160}' "$ASAR" | cut -c1-320 | head -n 4 || true
+          echo '== folder-name candidates'
+          LC_ALL=C grep -a -o -E '[`"'"'"']\.workbuddy[-_A-Za-z0-9]{0,16}[`"'"'"']' "$ASAR" | sort | uniq -c | sort -nr | head -n 12 || true
+          LC_ALL=C grep -a -o -E '.{0,80}isOversea.{0,80}' "$ASAR" | cut -c1-200 | sort -u | head -n 10 || true
+          echo '== install-manifest.json'
+          head -c 1500 app/resources/install-manifest.json; echo
