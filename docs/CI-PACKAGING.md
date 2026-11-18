@@ -42,7 +42,7 @@ Windows 那一份与正式发布的产物走的是同一条门禁（`release:bui
 
 ## 3. 跑之前会撞上的一件事：版本号
 
-`package-for-testing` 的 Windows 作业第一步就是发布前置检查，它会拒绝三种情况：
+`package-for-testing` 的 Windows 作业第一步就是发布前置检查（Linux 的出包作业也是，只比它自己那个架构的清单），它会拒绝三种情况：
 
 - `release-notes.md` 的第一行和 `package.json` 的版本对不上；
 - 这一版的更新说明超过 60 条（装完后的更新页只放这么多，超了就合并几条，见 `docs/RELEASING.md` 第 3 节，#1334）；

@@ -13,9 +13,13 @@
 # Mac 钥匙串里那张证书。安装和使用没有区别（两者都未经公证，都得右键打开），但
 # electron-updater 认签名身份，所以这份包与正式发布版之间**不能互相自动更新**。
 #
-# **Linux 那一份只在选 linux 时出**：本地构建模式的 deb，x64 和 arm64 各一个，自动
-# 更新是关着的，因为 Linux 还没有发布通道（docs/LINUX.md）。上传之前每个架构都在
-# 原生机器上用 apt 真装一次、以普通用户真开一次。
+# **Linux 那一份只在选 linux 时出**：x64 和 arm64 各一个 deb，走的是 publish-release
+# 的 linux-build 同一条 release:package:linux，与 Windows 那份一样只多一个
+# XINGMANG_TESTING_BUILD=1：自动更新开着、照样报崩溃，只是记在 Sentry 的 testing 环境下
+# （R4）。这样交给别人试的 Linux 包出了错也能报回来（2026-11-18 应 yoyo「要报错」改，
+# 之前是本地构建模式，不报错也不更新）。Linux 还没对外发布时更新源上没有 Linux 清单，
+# 装上以后开机那次检查更新查不到，首页不弹，只在更新页说「更新文件还没放好」。上传之前
+# 每个架构都在原生机器上用 apt 真装一次、以普通用户真开一次。
 #
 # 与既有三个工作流的分工：
 #   - quality.yml 的 macos-test 跑的是同一条 macOS 打包链路，但它是演练，产物
@@ -305,15 +309,12 @@ jobs:
         include:
           - arch: x64
             runner: ubuntu-24.04
-            unpacked: linux-unpacked
           - arch: arm64
             runner: ubuntu-24.04-arm
-            unpacked: linux-arm64-unpacked
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    timeout-minutes: 45
     env:
       PACKAGE_ARCH: ${{ matrix.arch }}
-      UNPACKED_DIRECTORY: release/${{ matrix.unpacked }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -330,23 +331,28 @@ jobs:
 
       - run: npm ci --registry=https://registry.npmjs.org/
 
-      - name: Build the deb for this runner's architecture
-        timeout-minutes: 15
-        run: npm run build:linux:ci
-
-      - run: node scripts/verify-packaged-hardening.cjs "$UNPACKED_DIRECTORY"
-
-      - run: node scripts/verify-linux-deb.cjs release --arch "$PACKAGE_ARCH"
+      - name: Build the deb through the Linux release gate
+        # 与 publish-release 的 linux-build 同一条：线上这个架构的清单比本次旧（还没发过
+        # Linux 时允许没有）→ 编译 → 出 deb → 加固校验 → deb 与更新清单校验。Linux 对外
+        # 发过以后，它和 Windows 那份一样，会在第一分钟拦下没改版本号的分支（远端版本
+        # 必须低于本地），见 docs/CI-PACKAGING.md。
+        timeout-minutes: 20
+        env:
+          XINGMANG_TESTING_BUILD: '1'
+        run: npm run release:package:linux -- --arch "$PACKAGE_ARCH"
 
       # 与 quality.yml 的 linux-package 一样：像客户那样用 apt 装上，再以普通用户
       # 真开一次、确认渲染进程在沙箱里，过了才上传。只看产物的检查看不见「装上去
       # 打不开」，2026-09-19 的 macOS 包就是这么漏过去的。
       - name: Install the deb the way a customer would
         timeout-minutes: 10
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
         run: |
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
-          deb="$(node -p "require('node:path').resolve(require('./scripts/verify-linux-deb.cjs').resolveDebPath('release', require('./package.json').version, process.env.PACKAGE_ARCH))")"
+          # 绝对路径：apt 会把相对的「目录/文件名」当成包名。
+          deb="$(node -p "require('node:path').resolve('release-' + process.env.PACKAGE_VERSION, require('./scripts/linux-artifact-names.cjs').debFileName(process.env.PACKAGE_VERSION, process.env.PACKAGE_ARCH))")"
           sudo timeout --kill-after=20s 240 apt-get update
           sudo timeout --kill-after=20s 300 apt-get install -y --no-install-recommends xvfb "$deb"
 
@@ -361,14 +367,16 @@ jobs:
         run: xvfb-run -a node e2e/linux-deb-smoke.mjs /usr/bin/xingmang-ai-manager
 
       - name: Print artifact checksums
-        run: sha256sum release/*.deb
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: sha256sum "release-$PACKAGE_VERSION"/*.deb
 
       - name: Upload the Linux test package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          # Linux 还没有发布通道，这份包的自动更新是关着的（本地构建模式）；装上
-          # 以后只能手动换新版本。名字照实写，免得被当成能发给客户的那一份。
-          name: linux-${{ matrix.arch }}-NO-AUTO-UPDATE-${{ steps.metadata.outputs.version }}
-          path: release/*.deb
+          # 这份包的报错记在 Sentry 的 testing 下，发给客户的那份由 publish-release 出；
+          # 名字照实写。只传 deb 不传更新清单：清单是更新源上的东西，这里没有发布动作。
+          name: linux-${{ matrix.arch }}-TESTING-${{ steps.metadata.outputs.version }}
+          path: release-${{ steps.metadata.outputs.version }}/*.deb
           retention-days: 14
           if-no-files-found: error
