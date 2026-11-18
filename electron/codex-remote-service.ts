@@ -38,7 +38,7 @@ import {
   type RemoteProgressStep,
 } from './codex-remote-channel'
 import { sniffRemoteImageType, type RemoteImageStore } from './codex-remote-images'
-import { emptyChannelSettings, maxRemoteWorkspaces, remoteWorkspaceList, type CodexRemoteStore } from './codex-remote-store'
+import { appendRecentMessageId, emptyChannelSettings, maxRemoteWorkspaces, remoteWorkspaceList, type CodexRemoteStore } from './codex-remote-store'
 import {
   approvalAcceptedMessage,
   approvalDeclinedMessage,
@@ -746,6 +746,10 @@ interface ChannelRuntime {
   inboundSeen: RemoteInboundSeen
   peer: RemotePeer | null
   replyContext?: string
+  /**
+   * 处理过的消息编号，最多 seenMessageLimit 条。关掉再开、重新连接都不清（YR-2）：微信每次连上都从头拉，
+   * 刚做过的话会再送一遍，清了就会再做一遍。平台的消息编号不会重复，换了人也不用清。
+   */
   seen: Set<string>
   idleTimer: NodeJS.Timeout | null
   inbox: Promise<void>
@@ -1496,7 +1500,6 @@ export class CodexRemoteService {
     }
     runtime.enabled = true
     runtime.startedAt = this.now()
-    runtime.seen.clear()
     runtime.staleNoticeAt = 0
     runtime.lastPrompt = null
     this.dropImages(runtime)
@@ -1506,6 +1509,7 @@ export class CodexRemoteService {
     const adapter = this.options.createChannel(runtime.id, this.channelDependencies(runtime.id))
     runtime.adapter = adapter
     await this.loadIdleClose()
+    await this.loadRecentMessageIds(runtime)
     await this.refreshSecrets(true)
     // 读设置、读密钥这一下里渠道被关掉了（或者又开了一次、换上了新的一份）：这一份还没连，就别连了，连上就没人停它。
     if (runtime.adapter !== adapter) return null
@@ -1883,6 +1887,8 @@ export class CodexRemoteService {
       await this.tryPair(runtime, message)
       return
     }
+    // 先记下再处理：处理到一半星芒退出了，重开以后平台再送一遍也不再做。
+    if (message.kind !== 'approval' && message.kind !== 'stop') await this.saveRecentMessageId(runtime, message.messageId)
     runtime.peer = message.peer
     if (message.replyContext) runtime.replyContext = message.replyContext
     runtime.staleNoticeAt = 0
@@ -2055,7 +2061,29 @@ export class CodexRemoteService {
     return runtime.staleNoticeAt > 0 && Math.abs(this.now() - runtime.staleNoticeAt) < staleNoticeQuietMs
   }
 
-  /** 第一次见到这条消息返回 true；见过的（长轮询重连、飞书重投会送重）返回 false。 */
+  /**
+   * 上次运行里绑定的人发来、处理过的消息编号（YR-2）。重开星芒、开了自动打开时，平台可能把重开前刚做过的话再送一遍，
+   * 发送时间还在开启前 1 分钟以内，光看时间挡不住。
+   */
+  private async loadRecentMessageIds(runtime: ChannelRuntime): Promise<void> {
+    const stored = (await this.options.store.readSettings()).channels[runtime.id]?.recentMessageIds ?? []
+    for (const messageId of stored) this.markSeen(runtime, messageId)
+  }
+
+  /** 把绑定的人这条消息的编号记进设置（YR-2）。记不下来照样处理：这次运行里内存那份照样挡得住重送。 */
+  private async saveRecentMessageId(runtime: ChannelRuntime, messageId: string): Promise<void> {
+    try {
+      await this.options.store.updateSettings((settings) => {
+        const stored = settings.channels[runtime.id] ?? emptyChannelSettings()
+        stored.recentMessageIds = appendRecentMessageId(stored.recentMessageIds, messageId)
+        settings.channels[runtime.id] = stored
+      })
+    } catch {
+      this.options.log('warn', 'remote.message-id-unsaved', { channel: runtime.id })
+    }
+  }
+
+  /** 第一次见到这条消息返回 true；见过的（长轮询重连、飞书重投、微信重连从头拉会送重）返回 false。 */
   private markSeen(runtime: ChannelRuntime, messageId: string): boolean {
     if (runtime.seen.has(messageId)) return false
     runtime.seen.add(messageId)

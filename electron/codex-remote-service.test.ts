@@ -404,6 +404,16 @@ async function prompted(s: Setup, channel: FakeChannel, body = '跑一下测试'
   return s.codex[0]
 }
 
+/** 手机上收到过几次「帮助」那段话。 */
+function helpReplies(channel: FakeChannel): number {
+  return channel.texts().filter((line) => line.startsWith('直接发消息就能让 Codex 干活。')).length
+}
+
+/** 等「状态」的回复发出去：同一个渠道的消息一条条处理，它前面那几条这时都处理完了。 */
+function statusReplied(channel: FakeChannel): Promise<void> {
+  return channel.sentUntil(() => channel.texts().some((line) => line.startsWith('工作文件夹：')))
+}
+
 function approvalsSent(channel: FakeChannel): RemoteApprovalRequest[] {
   return channel.sent.flatMap((entry) => (entry.message.kind === 'approval' ? [entry.message.request] : []))
 }
@@ -841,6 +851,58 @@ describe('codex-remote-service enabling', () => {
     // The replaced adapter can no longer move the card.
     first.handlers?.onStatus({ state: 'error', message: '旧的', problem: 'other' })
     expect((await s.service.snapshot()).channels.feishu.status).toEqual({ state: 'connected' })
+  })
+
+  // YR-2：卡片上点「重新连接」、关掉再开，平台把刚处理过的那条再送一遍（微信每次连上都从头拉），不再做一遍。
+  it('does not act on a message again when the platform sends it once more after reconnecting or switching off and on', async () => {
+    const s = await setup()
+    const first = await enabledAndPaired(s)
+    const help = text(alice, '帮助', { sentAt: Date.now() })
+    first.handlers?.onInbound(help)
+    await first.sentUntil(() => helpReplies(first) === 1)
+
+    await s.service.reconnectChannel('feishu')
+    const second = s.channels[1]
+    second.handlers?.onInbound(help)
+    second.handlers?.onInbound(text(alice, '状态', { sentAt: Date.now() }))
+    await statusReplied(second)
+    expect(helpReplies(second)).toBe(0)
+
+    await s.service.setChannelEnabled('feishu', false)
+    await s.service.setChannelEnabled('feishu', true)
+    const third = s.channels[2]
+    third.handlers?.onInbound(help)
+    third.handlers?.onInbound(text(alice, '状态', { sentAt: Date.now() }))
+    await statusReplied(third)
+    expect(helpReplies(third)).toBe(0)
+  })
+
+  it('does not act on a message again when the platform sends it once more after Xingmang restarts', async () => {
+    const root = tempRoot()
+    const before = await setup({ root })
+    const beforeChannel = await enabledAndPaired(before)
+    const help = text(alice, '帮助', { sentAt: Date.now(), messageId: 'wx-before-restart' })
+    beforeChannel.handlers?.onInbound(help)
+    await beforeChannel.sentUntil(() => helpReplies(beforeChannel) === 1)
+    expect((await before.store.readSettings()).channels.feishu?.recentMessageIds).toEqual(['wx-before-restart'])
+    before.service.dispose()
+
+    const after = await setup({ root })
+    await after.service.setChannelEnabled('feishu', true)
+    const channel = after.channels[0]
+    channel.handlers?.onInbound(help)
+    channel.handlers?.onInbound(text(alice, '状态', { sentAt: Date.now() }))
+    await statusReplied(channel)
+    expect(helpReplies(channel)).toBe(0)
+  })
+
+  it('still acts on a message when its id cannot be written down', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    vi.spyOn(s.store, 'updateSettings').mockRejectedValue(new Error('disk full'))
+    channel.handlers?.onInbound(text(alice, '帮助', { sentAt: Date.now() }))
+    await channel.sentUntil(() => helpReplies(channel) === 1)
+    expect(s.logs).toContain('remote.message-id-unsaved')
   })
 
   it('does not open a channel that is switched off when asked to reconnect it', async () => {
