@@ -9,4 +9,4 @@
   装、卸载抛的错把它挂成 `cause`。界面按新的零依赖模块 `codex-desktop-probe-failure.ts` 认摘要开头，
   不再看后面是不是中文：查包那段答了看不懂的结果（`unrecognized result`）时说「暂时没认出 Codex 桌面端，
   可能正在更新。等一两分钟点「重新检测」。」（yoyo 11-18 批），PowerShell 报错、超时照旧是「检测这个工具时出了错……」。
-  给客户看的那一行并进了 `codex-desktop-constrained-language.md`（用户行已满 60）。
+  改字类，只写「## 开发」（用户行已满 60，且 11-18 起要压短）。
