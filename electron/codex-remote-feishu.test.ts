@@ -1,3 +1,4 @@
+import fc from 'fast-check'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildFeishuApprovalCard,
@@ -10,6 +11,7 @@ import {
   FeishuAuthError,
   FeishuFragmentCache,
   feishuProblemMessages,
+  FeishuTokenResponseError,
   parseFeishuCredential,
   parseFeishuEndpointResponse,
   parseFeishuEvent,
@@ -29,6 +31,21 @@ import type { RemoteChannelDependencies, RemoteChannelStatus, RemoteInbound } fr
 const appId = 'cli_a1b2c3d4e5f6a7b8'
 const appSecret = 'S3cretS3cretS3cretS3cretS3cret00'
 const socketUrl = 'wss://msg-frontier.feishu.cn/ws/v2?device_id=d1&service_id=321&ticket=t'
+
+/** 先给出一段，再报一个读取错误：回应或图片下到一半断了网。 */
+function brokenBody(head: string, failure: string): ReadableStream<Uint8Array> {
+  let sent = false
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (!sent) {
+        sent = true
+        controller.enqueue(new TextEncoder().encode(head))
+        return
+      }
+      controller.error(new Error(failure))
+    },
+  })
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -208,7 +225,7 @@ describe('codex-remote-feishu credentials', () => {
     expect(failure).toBeInstanceOf(Error)
     expect((failure as Error).message).toBe('飞书凭据没保存上。请核对 App ID 和 App Secret 有没有填错，再点一次「保存」；还不行请找客服。')
     expect((failure as Error).message).not.toMatch(/HTTP|401/)
-    expect(logged).toEqual([{ event: 'feishu.save-token-unexpected', detail: { status: 401 } }])
+    expect(logged).toEqual([{ event: 'feishu.save-token-unexpected', detail: { status: 401, code: null } }])
 
     // A wrong secret and a good one keep their own outcome.
     await expect(verifyFeishuCredential(deps(() => json({ code: 10014, msg: 'app secret invalid' })), { appId, appSecret }))
@@ -221,6 +238,45 @@ describe('codex-remote-feishu credentials', () => {
   it('refuses to follow a redirect with the secret', async () => {
     const redirect = vi.fn(async () => new Response(null, { status: 302, headers: { Location: 'https://evil.example/' } }))
     await expect(requestFeishuTenantToken(redirect, { appId, appSecret }, 0)).rejects.toThrow('重定向')
+  })
+
+  // YR-4: only the codes Feishu documents as a wrong App ID / App Secret / unusable app count as bad credentials.
+  it('treats only the documented credential codes as bad credentials', async () => {
+    for (const code of [10003, 10005, 10014, 10015, 20002, 50003]) {
+      const answer = vi.fn(async () => json({ code, msg: 'credential' }, 400))
+      await expect(requestFeishuTenantToken(answer, { appId, appSecret }, 0)).rejects.toBeInstanceOf(FeishuAuthError)
+    }
+    for (const [status, code] of [[400, 99991400], [500, 1500], [500, 10500], [200, 21001], [200, 10013]]) {
+      const answer = vi.fn(async () => json({ code, msg: 'not about the credential' }, status))
+      const failure = await requestFeishuTenantToken(answer, { appId, appSecret }, 0).then(() => null, (error: unknown) => error)
+      expect(failure).toBeInstanceOf(FeishuTokenResponseError)
+      expect(failure).toMatchObject({ status, code })
+    }
+  })
+
+  it('never calls a code outside the credential list a bad credential, with random inputs', async () => {
+    const credentialCodes = new Set([0, 10003, 10005, 10014, 10015, 20002, 50003])
+    const otherCode = fc.integer({ min: -2_147_483_648, max: 2_147_483_647 }).filter((code) => !credentialCodes.has(code))
+    // Statuses that carry a body and are not redirects (those never reach the code check).
+    const bodyStatus = fc.oneof(fc.constant(200), fc.integer({ min: 400, max: 599 }))
+    await fc.assert(fc.asyncProperty(otherCode, bodyStatus, async (code, status) => {
+      const answer = vi.fn(async () => json({ code, msg: 'x' }, status))
+      const failure = await requestFeishuTenantToken(answer, { appId, appSecret }, 0).then(() => null, (error: unknown) => error)
+      expect(failure).toBeInstanceOf(FeishuTokenResponseError)
+      expect(failure).not.toBeInstanceOf(FeishuAuthError)
+    }), { numRuns: 200 })
+  })
+
+  it('does not tell someone saving the credential that it is wrong when Feishu is only busy', async () => {
+    const logged: Array<{ event: string; detail?: Record<string, unknown> }> = []
+    const deps = {
+      fetch: vi.fn(async () => json({ code: 99991400, msg: 'request trigger frequency limit' }, 400)),
+      now: () => 0,
+      log: (_level: string, event: string, detail?: Record<string, string | number | boolean | null>) => { logged.push({ event, detail }) },
+    }
+    await expect(verifyFeishuCredential(deps, { appId, appSecret }))
+      .rejects.toThrow('飞书凭据没保存上。请核对 App ID 和 App Secret 有没有填错，再点一次「保存」；还不行请找客服。')
+    expect(logged).toEqual([{ event: 'feishu.save-token-unexpected', detail: { status: 400, code: 99991400 } }])
   })
 })
 
@@ -235,14 +291,24 @@ describe('codex-remote-feishu endpoint', () => {
   })
 
   it('classifies endpoint answers', () => {
-    expect(parseFeishuEndpointResponse(200, { code: 514 })).toEqual({ kind: 'auth-failed' })
-    expect(parseFeishuEndpointResponse(200, { code: 403 })).toEqual({ kind: 'auth-failed' })
-    expect(parseFeishuEndpointResponse(200, { code: 1000040350 })).toEqual({ kind: 'connection-limit' })
-    expect(parseFeishuEndpointResponse(200, { code: 1 })).toEqual({ kind: 'retry' })
-    expect(parseFeishuEndpointResponse(502, null)).toEqual({ kind: 'retry' })
-    expect(parseFeishuEndpointResponse(200, { code: 0, data: { URL: 'wss://elsewhere.example/ws?service_id=1' } })).toEqual({ kind: 'retry' })
-    expect(parseFeishuEndpointResponse(200, { code: 0, data: { URL: socketUrl, ClientConfig: { PingInterval: 1 } } }))
+    expect(parseFeishuEndpointResponse({ code: 514 })).toEqual({ kind: 'auth-failed' })
+    expect(parseFeishuEndpointResponse({ code: 403 })).toEqual({ kind: 'auth-failed' })
+    expect(parseFeishuEndpointResponse({ code: 1000040350 })).toEqual({ kind: 'connection-limit' })
+    expect(parseFeishuEndpointResponse({ code: 1 })).toEqual({ kind: 'retry' })
+    expect(parseFeishuEndpointResponse({ code: 1000040343 })).toEqual({ kind: 'retry' })
+    expect(parseFeishuEndpointResponse(null)).toEqual({ kind: 'retry' })
+    expect(parseFeishuEndpointResponse({ code: 0, data: { URL: 'wss://elsewhere.example/ws?service_id=1' } })).toEqual({ kind: 'retry' })
+    expect(parseFeishuEndpointResponse({ code: 0, data: { URL: socketUrl, ClientConfig: { PingInterval: 1 } } }))
       .toMatchObject({ kind: 'ok', serviceId: 321, pingIntervalMs: 10_000 })
+  })
+
+  // W-6：只有飞书明说应用被拒（514、403）才停遥控；不认识的 code、网关回的不是 JSON 的页面都等一会儿再连。
+  it('retries instead of blaming the credential for codes it does not know', () => {
+    for (const code of [99991400, 1500, 10500, 10015, 2, 404, -1]) {
+      expect(parseFeishuEndpointResponse({ code, msg: 'whatever' })).toEqual({ kind: 'retry' })
+    }
+    expect(parseFeishuEndpointResponse({ msg: 'no code at all' })).toEqual({ kind: 'retry' })
+    expect(parseFeishuEndpointResponse('<html>403 Forbidden</html>')).toEqual({ kind: 'retry' })
   })
 })
 
@@ -390,6 +456,18 @@ describe('codex-remote-feishu outbound', () => {
     expect(transientFeishuRequestFailure(new FeishuAuthError())).toBeNull()
     expect(transientFeishuRequestFailure(new Error('boom'))).toBeNull()
   })
+
+  // YR-4: a token request Feishu could not serve right now is worth another try; anything else is not.
+  it('treats a busy or failing token service as worth sending again', () => {
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(503))).toBe('token-unavailable')
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(502, null))).toBe('token-unavailable')
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(429))).toBe('token-unavailable')
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(400, 99991400))).toBe('token-unavailable')
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(200, 1500))).toBe('token-unavailable')
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(200, 10500))).toBe('token-unavailable')
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(200, 21001))).toBeNull()
+    expect(transientFeishuRequestFailure(new FeishuTokenResponseError(401, null))).toBeNull()
+  })
 })
 
 describe('codex-remote-feishu channel', () => {
@@ -499,6 +577,43 @@ describe('codex-remote-feishu channel', () => {
     expect(h.statuses.at(-1)).toEqual({ state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' })
   })
 
+  // W-6：原来不认识的 code 和公司网关的 401 / 403 拦截页都当成 App ID 或 Secret 不对，遥控停掉、叫客户去改飞书应用。
+  it('keeps reconnecting when the endpoint answers an unknown code or a gateway page', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const answers = [
+      () => json({ code: 99991400, msg: 'request trigger frequency limit' }),
+      () => new Response('<html>403 Forbidden</html>', { status: 403, headers: { 'Content-Type': 'text/html' } }),
+      () => new Response('<html>401 Unauthorized</html>', { status: 401, headers: { 'Content-Type': 'text/html' } }),
+    ]
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      const next = url.endsWith('/callback/ws/endpoint') ? answers.shift() : undefined
+      return next ? next() : defaultRespond(url)
+    })
+    const channel = createFeishuRemoteChannel(h.deps, {
+      createSocket: (url) => {
+        const socket = new FakeSocket(url)
+        h.sockets.push(socket)
+        return socket
+      },
+      random: () => 0,
+    })
+    await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
+    // 每次飞书回完话、退避的那个等待排上了，才把时钟拨过这一段（2、4、8 秒）。
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await vi.waitFor(() => expect(h.logs.filter((event) => event === 'feishu.endpoint-retry')).toHaveLength(attempt + 1))
+      expect(h.sockets).toHaveLength(0)
+      expect(h.statuses.at(-1)).toEqual({ state: 'connecting', message: '连不上飞书，正在重试。' })
+      await vi.advanceTimersByTimeAsync(2_000 * 2 ** attempt)
+    }
+    await vi.waitFor(() => expect(h.sockets).toHaveLength(1))
+    h.sockets[0].emit('open')
+    expect(h.statuses.at(-1)).toEqual({ state: 'connected' })
+    expect(h.statuses.map((status) => status.state)).not.toContain('needs-login')
+    expect(h.logs).not.toContain('feishu.auth-failed')
+    expect(h.logs.filter((event) => event === 'feishu.endpoint-retry')).toHaveLength(3)
+    await channel.stop()
+  })
+
   // D23：原来这句带着「长连接」，现在只说关掉别处再试，卡片配「重新连接」。
   it('stops with a plain connection-limit sentence when the app is connected elsewhere', async () => {
     const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) =>
@@ -506,7 +621,8 @@ describe('codex-remote-feishu channel', () => {
     const channel = createFeishuRemoteChannel(h.deps, { createSocket: (url) => new FakeSocket(url) })
     await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
     await vi.waitFor(() => expect(h.statuses.at(-1)?.state).toBe('error'))
-    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' })
+    // YKS-12：长连接已经停了、不会自己再连，标出来，防睡那边才不把它当还在听。
+    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit', halted: true })
     expect(h.logs).toContain('feishu.connection-limit')
   })
 
@@ -518,7 +634,7 @@ describe('codex-remote-feishu channel', () => {
     }
     const channel = createFeishuRemoteChannel(deps)
     await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
-    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other' })
+    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other', halted: true })
     expect(h.logs).toContain('feishu.credential-read-failed')
     expect(h.fetch).not.toHaveBeenCalled()
   })
@@ -592,6 +708,26 @@ describe('codex-remote-feishu send retries', () => {
     await channel.stop()
   })
 
+  // YR-5：飞书收到了、回应读到一半断了，也按断网算，带同一个 uuid 再发，不当成「回应太大」直接丢掉。
+  it('sends again when the answer breaks off midway, with the same uuid', async () => {
+    let sends = 0
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/im/v1/messages')) {
+        sends += 1
+        if (sends === 1) return new Response(brokenBody('{"code":', 'net::ERR_CONNECTION_RESET'), { status: 200 })
+      }
+      return defaultRespond(url)
+    })
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    await channel.send(peer, { kind: 'text', text: '做完了' })
+    const bodies = sendBodies(h)
+    expect(bodies).toHaveLength(2)
+    expect(bodies[1].uuid).toBe(bodies[0].uuid)
+    expect(waits).toEqual([1000])
+    await channel.stop()
+  })
+
   it('waits longer each time Feishu is busy or rate limits, then delivers', async () => {
     const answers = [json({}, 502), json({ code: 99991400, msg: 'request trigger frequency limit' }, 400), json({ code: 0 })]
     const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
@@ -655,6 +791,68 @@ describe('codex-remote-feishu send retries', () => {
     expect(tokenCalls).toBe(2)
     expect(sendBodies(h)).toHaveLength(1)
     expect(waits).toEqual([1000])
+    await channel.stop()
+  })
+
+  // YR-4: Feishu being busy or failing inside used to stop the whole remote as if the secret were wrong.
+  it('keeps the remote running and sends again when the token service is momentarily busy or failing', async () => {
+    const answers = [
+      json({ code: 99991400, msg: 'request trigger frequency limit' }, 400),
+      new Response('<html>502 Bad Gateway</html>', { status: 502, headers: { 'Content-Type': 'text/html' } }),
+    ]
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.endsWith('/tenant_access_token/internal')) return answers.shift() ?? defaultRespond(url)
+      return defaultRespond(url)
+    })
+    const logged: unknown[] = []
+    h.deps.log = (_level, event, fields) => { logged.push({ event, fields }) }
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    h.sockets[0].emit('open')
+    await vi.waitFor(() => expect(h.statuses.at(-1)?.state).toBe('connected'))
+    await channel.send(peer, { kind: 'text', text: '做完了' })
+    expect(sendBodies(h)).toHaveLength(1)
+    expect(waits).toEqual([1000, 4000])
+    expect(h.statuses.map((status) => status.state)).not.toContain('needs-login')
+    expect(h.statuses.at(-1)?.state).toBe('connected')
+    expect(logged).toContainEqual({ event: 'feishu.token-failed', fields: { status: 400, code: 99991400 } })
+    expect(logged).toContainEqual({ event: 'feishu.token-failed', fields: { status: 502, code: null } })
+    await channel.stop()
+  })
+
+  it('drops only this message when the token answer is unknown, and tries again for the next one', async () => {
+    let tokenCalls = 0
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.endsWith('/tenant_access_token/internal')) {
+        tokenCalls += 1
+        if (tokenCalls === 1) return json({ code: 21001, msg: 'Access denied by access control policy.' })
+      }
+      return defaultRespond(url)
+    })
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    h.sockets[0].emit('open')
+    await vi.waitFor(() => expect(h.statuses.at(-1)?.state).toBe('connected'))
+    await expect(channel.send(peer, { kind: 'text', text: '一' })).rejects.toBeInstanceOf(FeishuTokenResponseError)
+    expect(waits).toEqual([])
+    expect(h.statuses.at(-1)?.state).toBe('connected')
+    await channel.send(peer, { kind: 'text', text: '二' })
+    expect(tokenCalls).toBe(2)
+    expect(sendBodies(h)).toHaveLength(1)
+    await channel.stop()
+  })
+
+  it('still stops and asks for the credential again when Feishu says the secret is wrong', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.endsWith('/tenant_access_token/internal')) return json({ code: 10003, msg: 'invalid param' }, 400)
+      return defaultRespond(url)
+    })
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    await expect(channel.send(peer, { kind: 'text', text: '做完了' })).rejects.toBeInstanceOf(FeishuAuthError)
+    expect(waits).toEqual([])
+    await vi.waitFor(() => expect(h.statuses.at(-1)).toEqual({ state: 'needs-login', message: feishuProblemMessages.credential, problem: 'credential' }))
+    expect(sendBodies(h)).toHaveLength(0)
     await channel.stop()
   })
 
@@ -925,6 +1123,20 @@ describe('codex-remote-feishu images', () => {
     await expect(channel.fetchImage?.('om_1/img_v3_gone', 1024)).resolves.toEqual({ ok: false, reason: 'failed' })
     await expect(channel.fetchImage?.('om_1/img_v3_retry', 1024)).resolves.toMatchObject({ ok: true })
     expect(attempts).toBe(2)
+    expect(h.logs).toContain('feishu.image-fetch-failed')
+    await channel.stop()
+  })
+
+  // YR-5：图下到一半断了网，说「没取到，请再发一次」，不说「太大了」。
+  it('says an image that broke off midway was not received, not that it was too large', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/resources/')) {
+        return new Response(brokenBody('\x89PNG', 'net::ERR_CONNECTION_RESET'), { status: 200, headers: { 'Content-Type': 'image/png' } })
+      }
+      return defaultRespond(url)
+    })
+    const channel = await startChannel(h)
+    await expect(channel.fetchImage?.(`om_1/${imageKey}`, 1024)).resolves.toEqual({ ok: false, reason: 'failed' })
     expect(h.logs).toContain('feishu.image-fetch-failed')
     await channel.stop()
   })

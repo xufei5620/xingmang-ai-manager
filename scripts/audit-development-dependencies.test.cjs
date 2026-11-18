@@ -115,8 +115,16 @@ function validateWithTestException(report, now = beforeExpiry) {
   return validateDevelopmentAuditReport(report, { exceptions: [testException], now })
 }
 
-test('pins the temporary exception list to the single advisory yoyo approved', () => {
-  assert.deepEqual(temporaryAdvisoryExceptions, [testException])
+const picomatchAdvisory = 'https://github.com/advisories/GHSA-fc5q-39xc-vjpf'
+const picomatchException = {
+  url: picomatchAdvisory,
+  packageName: 'picomatch',
+  maxSeverity: 'high',
+  expiresAt: '2026-12-15T16:00:00.000Z',
+}
+
+test('pins the temporary exception list to the advisories yoyo approved', () => {
+  assert.deepEqual(temporaryAdvisoryExceptions, [testException, picomatchException])
 })
 
 test('accepts the excepted minimatch chain before it expires', () => {
@@ -191,6 +199,92 @@ test('rejects severity-count drift alongside the excepted chain', () => {
 
 test('reports an exception as unused once the audit comes back clean', () => {
   assert.deepEqual(validateWithTestException(cleanReport()).unusedExceptions, [minimatchAdvisory])
+})
+
+// Same shape as the 2026-11-17 report on main ca72c20: the high picomatch
+// advisory reaches through vite / vitest / tinyglobby and, via node-gyp, into
+// app-builder-lib, which also sits on the moderate minimatch chain.
+function combinedChainReport() {
+  const nodes = {
+    minimatch: ['moderate', [{ name: 'minimatch', url: minimatchAdvisory, severity: 'moderate' }]],
+    '@electron/universal': ['moderate', ['minimatch']],
+    picomatch: ['high', [{ name: 'picomatch', url: picomatchAdvisory, severity: 'high' }]],
+    fdir: ['high', ['picomatch']],
+    tinyglobby: ['high', ['fdir', 'picomatch']],
+    vite: ['high', ['picomatch', 'tinyglobby']],
+    vitest: ['high', ['picomatch', 'tinyglobby']],
+    '@vitejs/plugin-react': ['high', ['vite']],
+    'node-gyp': ['high', ['tinyglobby']],
+    '@electron/rebuild': ['high', ['node-gyp']],
+    'app-builder-lib': ['high', ['@electron/rebuild', '@electron/universal', 'dmg-builder', 'minimatch']],
+    'dmg-builder': ['moderate', ['app-builder-lib']],
+    'electron-builder': ['moderate', ['app-builder-lib', 'dmg-builder']],
+  }
+  const vulnerabilities = Object.fromEntries(Object.entries(nodes).map(([name, [severity, via]]) => [
+    name,
+    { name, severity, via },
+  ]))
+  const moderate = Object.values(vulnerabilities).filter((node) => node.severity === 'moderate').length
+  const high = Object.values(vulnerabilities).filter((node) => node.severity === 'high').length
+  return {
+    auditReportVersion: 2,
+    vulnerabilities,
+    metadata: {
+      vulnerabilities: { info: 0, low: 0, moderate, high, critical: 0, total: moderate + high },
+    },
+  }
+}
+
+function validateWithBothExceptions(report, now = beforeExpiry) {
+  return validateDevelopmentAuditReport(report, { exceptions: [testException, picomatchException], now })
+}
+
+test('accepts the combined minimatch and picomatch chains before either exception expires', () => {
+  const result = validateWithBothExceptions(combinedChainReport())
+  assert.deepEqual(result.exceptedAdvisories, [picomatchAdvisory, minimatchAdvisory])
+  assert.deepEqual(result.unusedExceptions, [])
+})
+
+test('rejects the picomatch chain without its own exception', () => {
+  assert.throws(() => validateWithTestException(combinedChainReport()), /构建依赖存在漏洞/)
+})
+
+test('rejects the combined chains once either exception expires', () => {
+  assert.throws(
+    () => validateWithBothExceptions(combinedChainReport(), new Date(testException.expiresAt)),
+    /临时例外已到期：https:\/\/github\.com\/advisories\/GHSA-g3hv-75wg-m249/,
+  )
+  const picomatchOnly = combinedChainReport()
+  delete picomatchOnly.vulnerabilities.minimatch
+  delete picomatchOnly.vulnerabilities['@electron/universal']
+  picomatchOnly.vulnerabilities['app-builder-lib'].via = ['@electron/rebuild', 'dmg-builder']
+  picomatchOnly.metadata.vulnerabilities.moderate -= 2
+  picomatchOnly.metadata.vulnerabilities.total -= 2
+  assert.deepEqual(
+    validateWithBothExceptions(picomatchOnly, new Date(testException.expiresAt)).unusedExceptions,
+    [minimatchAdvisory],
+  )
+  assert.throws(
+    () => validateWithBothExceptions(picomatchOnly, new Date(picomatchException.expiresAt)),
+    /临时例外已到期：https:\/\/github\.com\/advisories\/GHSA-fc5q-39xc-vjpf/,
+  )
+})
+
+test('keeps a minimatch-only node capped at moderate while the picomatch exception allows high', () => {
+  const report = combinedChainReport()
+  report.vulnerabilities['@electron/universal'].severity = 'high'
+  report.metadata.vulnerabilities.moderate -= 1
+  report.metadata.vulnerabilities.high += 1
+  assert.throws(() => validateWithBothExceptions(report), /构建依赖存在漏洞/)
+})
+
+test('rejects the picomatch advisory once its severity rises to critical', () => {
+  const report = combinedChainReport()
+  report.vulnerabilities.picomatch.via[0].severity = 'critical'
+  report.vulnerabilities.picomatch.severity = 'critical'
+  report.metadata.vulnerabilities.high -= 1
+  report.metadata.vulnerabilities.critical += 1
+  assert.throws(() => validateWithBothExceptions(report), /构建依赖存在漏洞/)
 })
 
 test('extracts unique advisory URLs from npm audit report nodes', () => {

@@ -2,7 +2,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { CodexRemoteStore, credentialRemoveFailedMessage, parseCodexRemoteSettings, remoteWorkspaceList } from './codex-remote-store'
+import {
+  appendRecentMessageId,
+  CodexRemoteStore,
+  credentialRemoveFailedMessage,
+  maxRecentMessageIds,
+  parseCodexRemoteSettings,
+  remoteWorkspaceList,
+} from './codex-remote-store'
 import type { SafeStorageLike } from './account-session-store'
 
 const roots: string[] = []
@@ -84,6 +91,31 @@ describe('codex-remote-store', () => {
     for (const value of [false, 'true', 1, null, undefined]) {
       expect(parseCodexRemoteSettings({ version: 1, autoStart: value })).not.toHaveProperty('autoStart')
     }
+  })
+
+  // YR-2：每个渠道记下最近处理过的消息编号，重开以后平台再送一遍也认得出来。
+  it('keeps the latest handled message ids per channel, without repeats, and only sane ones', () => {
+    const many = Array.from({ length: maxRecentMessageIds + 5 }, (_, index) => `m-${index}`)
+    const parsed = parseCodexRemoteSettings({ version: 1, channels: { weixin: { recentMessageIds: [...many, 'm-3', '', 7, 'x'.repeat(129)] } } })
+    const kept = parsed.channels.weixin?.recentMessageIds ?? []
+    expect(kept).toHaveLength(maxRecentMessageIds)
+    expect(kept.at(-1)).toBe('m-3')
+    expect(kept[0]).toBe('m-6')
+    expect(new Set(kept).size).toBe(kept.length)
+    // Nothing usable reads back as never recorded.
+    expect(parseCodexRemoteSettings({ version: 1, channels: { feishu: { recentMessageIds: 'm-1' } } }).channels.feishu).not.toHaveProperty('recentMessageIds')
+    expect(parseCodexRemoteSettings({ version: 1, channels: { feishu: { recentMessageIds: [] } } }).channels.feishu).not.toHaveProperty('recentMessageIds')
+  })
+
+  it('appends a handled message id at the end, moves a repeat there and drops the oldest past the limit', () => {
+    expect(appendRecentMessageId(undefined, 'a')).toEqual(['a'])
+    expect(appendRecentMessageId(['a', 'b', 'c'], 'a')).toEqual(['b', 'c', 'a'])
+    const full = Array.from({ length: maxRecentMessageIds }, (_, index) => `m-${index}`)
+    const next = appendRecentMessageId(full, 'new')
+    expect(next).toHaveLength(maxRecentMessageIds)
+    expect(next[0]).toBe('m-1')
+    expect(next.at(-1)).toBe('new')
+    expect(appendRecentMessageId(['a'], 'x'.repeat(129))).toEqual(['a'])
   })
 
   it('persists settings and reads them back in a new store', async () => {
