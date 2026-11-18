@@ -50,6 +50,10 @@ function createCancellableInstallFixture() {
   vi.stubEnv('HOME', homeDirectory)
   // Linux 上托管目录跟着 XDG_DATA_HOME 走，不清掉会写进开发机真实的数据目录。
   vi.stubEnv('XDG_DATA_HOME', undefined)
+  // 装之前会按首页那套判定看这台电脑上是不是已经有别处装的 Claude Code，那一步照 PATH 找。
+  // 不换掉就读到跑测试那台机器的 PATH：开发机或云端容器自带一份（/opt/node22/bin/claude）时，
+  // 安装当场被拒成「不是通过本工具安装的」，后面要测的那段根本走不到。
+  vi.stubEnv('PATH', runtimeBin)
   const npmExecutable = path.join(runtimeBin, 'npm')
   fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
   fs.chmodSync(npmExecutable, 0o700)
