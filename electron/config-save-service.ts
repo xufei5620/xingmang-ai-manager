@@ -1105,8 +1105,8 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       }
       // An empty key is an explicit renderer sentinel: reuse the main-process key.
       const configured = payload.apiKey.trim() ? null : before
-      // 自动写入到不了这里：读不了的配置来源对不上（changed / unknown），上面那道闸已经拦下。
-      const recovered = configured?.hasApiKey && !configured.matchesRelay
+      // 只放客户亲手点的重置。自动写入平时到不了这里（读不了的配置来源对不上，上面那道闸先拦下），这里再写明一遍。
+      const recovered = configured?.hasApiKey && !configured.matchesRelay && ownership?.automatic !== true
         ? await brokenConfigKeyOwnership(payload.provider, payload.mode, configured, owner)
         : null
       if (configured?.hasApiKey && !configured.matchesRelay && !recovered) throw new Error('已保存的密钥属于其他账号，请使用当前账号重新配置')
