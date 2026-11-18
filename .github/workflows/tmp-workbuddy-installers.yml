@@ -84,10 +84,11 @@ jobs:
           fi
       - name: App source strings
         if: env.ASAR != ''
+        timeout-minutes: 5
         run: |
-          echo "== $ASAR"
-          strings -n 6 "$ASAR" | grep -o -E '.{0,50}\.workbuddy(-ai)?[^a-zA-Z].{0,50}' | sort | uniq -c | sort -nr | head -n 40
+          echo "== $ASAR"; ls -l "$ASAR"
+          LC_ALL=C grep -a -o -E '[A-Za-z0-9_.~/\\-]{0,30}\.workbuddy(-ai)?[A-Za-z0-9_./\\-]{0,30}' "$ASAR" | sort | uniq -c | sort -nr | head -n 40 || true
           echo '== models.json mentions'
-          strings -n 6 "$ASAR" | grep -o -E '.{0,80}models\.json.{0,60}' | sort | uniq -c | sort -nr | head -n 20
+          LC_ALL=C grep -a -o -E '[A-Za-z0-9_.~/\\-]{0,40}models\.json' "$ASAR" | sort | uniq -c | sort -nr | head -n 20 || true
           echo '== package fields'
-          strings -n 6 "$ASAR" | grep -o -E '"(productName|appId|executableName)"\s*:\s*"[^"]{1,60}"' | sort | uniq -c | sort -nr | head -n 20
+          LC_ALL=C grep -a -o -E '"(productName|appId|executableName)": ?"[^"]{1,60}"' "$ASAR" | sort | uniq -c | sort -nr | head -n 20 || true
