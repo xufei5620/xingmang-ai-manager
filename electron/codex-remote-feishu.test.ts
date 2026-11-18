@@ -32,6 +32,21 @@ const appId = 'cli_a1b2c3d4e5f6a7b8'
 const appSecret = 'S3cretS3cretS3cretS3cretS3cret00'
 const socketUrl = 'wss://msg-frontier.feishu.cn/ws/v2?device_id=d1&service_id=321&ticket=t'
 
+/** 先给出一段，再报一个读取错误：回应或图片下到一半断了网。 */
+function brokenBody(head: string, failure: string): ReadableStream<Uint8Array> {
+  let sent = false
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (!sent) {
+        sent = true
+        controller.enqueue(new TextEncoder().encode(head))
+        return
+      }
+      controller.error(new Error(failure))
+    },
+  })
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
@@ -646,6 +661,26 @@ describe('codex-remote-feishu send retries', () => {
     await channel.stop()
   })
 
+  // YR-5：飞书收到了、回应读到一半断了，也按断网算，带同一个 uuid 再发，不当成「回应太大」直接丢掉。
+  it('sends again when the answer breaks off midway, with the same uuid', async () => {
+    let sends = 0
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/im/v1/messages')) {
+        sends += 1
+        if (sends === 1) return new Response(brokenBody('{"code":', 'net::ERR_CONNECTION_RESET'), { status: 200 })
+      }
+      return defaultRespond(url)
+    })
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    await channel.send(peer, { kind: 'text', text: '做完了' })
+    const bodies = sendBodies(h)
+    expect(bodies).toHaveLength(2)
+    expect(bodies[1].uuid).toBe(bodies[0].uuid)
+    expect(waits).toEqual([1000])
+    await channel.stop()
+  })
+
   it('waits longer each time Feishu is busy or rate limits, then delivers', async () => {
     const answers = [json({}, 502), json({ code: 99991400, msg: 'request trigger frequency limit' }, 400), json({ code: 0 })]
     const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
@@ -1041,6 +1076,20 @@ describe('codex-remote-feishu images', () => {
     await expect(channel.fetchImage?.('om_1/img_v3_gone', 1024)).resolves.toEqual({ ok: false, reason: 'failed' })
     await expect(channel.fetchImage?.('om_1/img_v3_retry', 1024)).resolves.toMatchObject({ ok: true })
     expect(attempts).toBe(2)
+    expect(h.logs).toContain('feishu.image-fetch-failed')
+    await channel.stop()
+  })
+
+  // YR-5：图下到一半断了网，说「没取到，请再发一次」，不说「太大了」。
+  it('says an image that broke off midway was not received, not that it was too large', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/resources/')) {
+        return new Response(brokenBody('\x89PNG', 'net::ERR_CONNECTION_RESET'), { status: 200, headers: { 'Content-Type': 'image/png' } })
+      }
+      return defaultRespond(url)
+    })
+    const channel = await startChannel(h)
+    await expect(channel.fetchImage?.(`om_1/${imageKey}`, 1024)).resolves.toEqual({ ok: false, reason: 'failed' })
     expect(h.logs).toContain('feishu.image-fetch-failed')
     await channel.stop()
   })
