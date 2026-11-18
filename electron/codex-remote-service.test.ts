@@ -79,8 +79,11 @@ class FakeCodex extends EventEmitter {
   readonly replyGates = new Map<string, Promise<unknown>>()
   /** config/read 回什么（result 或 error）：缺省是什么外部工具都没配。 */
   configRead: Record<string, unknown> = { result: { config: {}, origins: {}, layers: [] } }
+  /** 设了就拿它当 turn/interrupt 的报错回去：模拟 Codex 不答应停（M01）。 */
+  interruptError: Record<string, unknown> | null = null
   private turns = 0
   private readonly replies = new Map<string, (message: Record<string, unknown>) => void>()
+  private readonly requestWaiters: Array<{ done: () => boolean; resolve: () => void }> = []
   readonly stdin = {
     write: (chunk: string) => {
       for (const line of chunk.split('\n').filter(Boolean)) this.receive(JSON.parse(line) as Record<string, unknown>)
@@ -123,8 +126,23 @@ class FakeCodex extends EventEmitter {
     return this.written.filter((message) => message.method === method)
   }
 
+  /**
+   * 写给 Codex 的 method 请求到了 count 条时 resolve。手机发来的话要先把消息编号原子写进盘才处理（YR-2），
+   * 直接等请求本身，不靠 vi.waitFor 的 1 秒（R16）。
+   */
+  requestedUntil(method: string, count = 1): Promise<void> {
+    const done = () => this.requests(method).length >= count
+    if (done()) return Promise.resolve()
+    return new Promise((resolve) => { this.requestWaiters.push({ done, resolve }) })
+  }
+
   private receive(message: Record<string, unknown>): void {
     this.written.push(message)
+    for (const waiter of [...this.requestWaiters]) {
+      if (!waiter.done()) continue
+      this.requestWaiters.splice(this.requestWaiters.indexOf(waiter), 1)
+      waiter.resolve()
+    }
     const id = message.id
     if (typeof id === 'string' && !message.method) {
       this.replies.get(id)?.(message)
@@ -140,7 +158,7 @@ class FakeCodex extends EventEmitter {
       this.turns += 1
       reply = { id, result: { turn: { id: `tu-${this.turns}`, status: 'inProgress' } } }
     }
-    if (message.method === 'turn/interrupt') reply = { id, result: {} }
+    if (message.method === 'turn/interrupt') reply = this.interruptError ? { id, error: this.interruptError } : { id, result: {} }
     if (!reply) return
     const gate = typeof message.method === 'string' ? this.replyGates.get(message.method) : undefined
     const answer = reply
@@ -1422,6 +1440,121 @@ describe('codex-remote-service turns', () => {
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'interrupted' } })
     channel.handlers?.onInbound(text(alice, '停止'))
     await vi.waitFor(() => expect(channel.texts()).toContain('现在没有在处理的任务。'))
+  })
+
+  // M01：Codex 不答应停（回了错、10 秒没回）时不说「已停止。」，这一轮照旧算在做，不让下一句叠一轮上去。
+  it('keeps the turn running and says so when Codex refuses to stop it, then reports the stop once Codex ends it', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    codex.interruptError = { code: -32600, message: 'thread runtime is no longer accepting interrupts' }
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await channel.sentUntil(() => channel.texts().includes('还没停下来，Codex 还在处理上一条。停下以后会告诉你，也可以过一会儿再发一次「停止」。'))
+    expect(channel.texts()).not.toContain('已停止。')
+    expect(s.logs).toContain('remote.interrupt-failed')
+    expect(await s.service.snapshot()).toMatchObject({ task: 'running', lastRequest: { state: 'running' } })
+    channel.handlers?.onInbound(text(alice, '换个做法'))
+    await channel.sentUntil(() => channel.texts().includes('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
+    expect(codex.requests('turn/start')).toHaveLength(1)
+    // 没停成的这一轮照旧能问审批，手机上照常收到卡片。
+    const asked = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await approvalCardsSent(channel, 1)
+    channel.handlers?.onInbound(text(alice, '拒绝'))
+    await expect(asked).resolves.toMatchObject({ result: { decision: 'decline' } })
+    // Codex 后来自己停下了：这时才说「已停止。」，下一句开新的一轮。
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'interrupted' } })
+    await channel.sentUntil(() => channel.texts().includes('已停止。'))
+    await vi.waitFor(async () => expect((await s.service.snapshot()).lastRequest?.state).toBe('stopped'))
+    channel.handlers?.onInbound(text(alice, '再来一次'))
+    await codex.requestedUntil('turn/start', 2)
+  })
+
+  it('keeps the turn when Codex does not answer the stop within ten seconds, and still delivers its answer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    codex.replyGates.set('turn/interrupt', new Promise(() => undefined))
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await codex.requestedUntil('turn/interrupt')
+    // 等回执这一会儿 Codex 再要同意的一律拒绝，不发卡片。
+    await expect(codex.ask('item/commandExecution/requestApproval', commandRequest)).resolves.toMatchObject({ result: { decision: 'decline' } })
+    expect(approvalsSent(channel)).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(10_000)
+    await channel.sentUntil(() => channel.texts().includes('还没停下来，Codex 还在处理上一条。停下以后会告诉你，也可以过一会儿再发一次「停止」。'))
+    expect((await s.service.snapshot()).task).toBe('running')
+    codex.notify('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'a1', text: '测试都过了。', phase: 'final_answer' } })
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await channel.sentUntil(() => channel.texts().some((entry) => entry.startsWith('测试都过了。')))
+    expect(channel.texts()).not.toContain('已停止。')
+    expect((await s.service.snapshot()).lastRequest?.state).toBe('done')
+  })
+
+  it('says it stopped exactly once when Codex ends the turn before answering the stop request', async () => {
+    let release!: () => void
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    codex.replyGates.set('turn/interrupt', new Promise<void>((resolve) => { release = resolve }))
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await codex.requestedUntil('turn/interrupt')
+    // 电脑上也点了「停下这一轮」：等同一次打断，不再请 Codex 停第二次。
+    const fromComputer = s.service.stopTurnFromComputer()
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'interrupted' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    release()
+    await expect(fromComputer).resolves.toMatchObject({ task: 'idle', lastRequest: { state: 'stopped' } })
+    await channel.sentUntil(() => channel.texts().includes('已停止。'))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(channel.texts().filter((entry) => entry === '已停止。')).toHaveLength(1)
+    expect(codex.requests('turn/interrupt')).toHaveLength(1)
+  })
+
+  it('does not start a new conversation while the turn it could not stop is still running', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    codex.interruptError = { code: -32603, message: 'failed to interrupt turn' }
+    channel.handlers?.onInbound(text(alice, '新对话'))
+    await channel.sentUntil(() => channel.texts().includes('上一条还没停下来，新对话没开。Codex 停下以后会告诉你，到时再发「新对话」。'))
+    expect(channel.texts()).not.toContain('已开始新对话。')
+    channel.handlers?.onInbound(text(alice, '换个做法'))
+    await channel.sentUntil(() => channel.texts().includes('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
+    codex.interruptError = null
+    channel.handlers?.onInbound(text(alice, '新对话'))
+    await channel.sentUntil(() => channel.texts().includes('已开始新对话。'))
+    channel.handlers?.onInbound(text(alice, '换个做法'))
+    await codex.requestedUntil('turn/start', 2)
+    expect(codex.requests('thread/start')).toHaveLength(2)
+  })
+
+  it('tells the computer the turn has not stopped yet when Codex refuses, and says nothing to the phone', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    await channel.sentUntil(() => channel.texts().includes('收到，Codex 开始处理。'))
+    const sentBefore = channel.sent.length
+    codex.interruptError = { code: -32600, message: 'no active turn to interrupt' }
+    await expect(s.service.stopTurnFromComputer()).rejects.toThrow('还没停下来，Codex 还在处理。可以过一会儿再点一次「停下这一轮」。')
+    expect(channel.sent.length).toBe(sentBefore)
+    expect(s.logs).not.toContain('remote.turn-stopped-on-computer')
+    expect((await s.service.snapshot())).toMatchObject({ task: 'running', lastRequest: { state: 'running' } })
+    codex.interruptError = null
+    await expect(s.service.stopTurnFromComputer()).resolves.toMatchObject({ task: 'idle', lastRequest: { state: 'stopped' } })
+    expect(channel.texts().at(-1)).toBe('已停止。')
+  })
+
+  it('says the turn is still running when a stop pressed on its progress card is refused', async () => {
+    const s = await setup({ progressCards: true })
+    const channel = await enabledAndPaired(s) as FakeCardChannel
+    const codex = await prompted(s, channel)
+    codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-1', plan: [{ step: '跑测试', status: 'inProgress' }] })
+    await vi.waitFor(() => expect(channel.progress).toHaveLength(1))
+    codex.interruptError = { code: -32600, message: 'thread runtime is no longer accepting interrupts' }
+    channel.handlers?.onInbound({ kind: 'stop', peer: alice, direct: true, nonce: channel.progress[0].card.stopNonce ?? '' })
+    await channel.sentUntil(() => channel.texts().includes('还没停下来，Codex 还在处理上一条。停下以后会告诉你，也可以过一会儿再发一次「停止」。'))
+    expect(channel.progress.at(-1)?.card.state).toBe('running')
+    expect((await s.service.snapshot()).task).toBe('running')
   })
 
   // 一轮一小时没任何动静就当 Codex 卡死（0.2.22 打磨 C2，yoyo 10-27「停改」）：请它停下、告诉手机，之后能开新的一轮。

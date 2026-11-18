@@ -703,13 +703,25 @@ interface TurnState {
   finalAnswer: string | null
   lastMessage: string | null
   error: TurnFailure | null
+  /** 请 Codex 停过这一轮（「停止」、关遥控这些）：再来要同意的一律拒绝，它以「停了」收场时不重复说「已停止。」。没停成时改回 false（M01）。 */
   stoppedByUser: boolean
+  /** 正在等 Codex 答应停下的那一次（M01）：电脑上、手机上同时点「停止」时共用这一次，不重复打断、不重复说「已停止。」。 */
+  stopping: Promise<StopTurnOutcome> | null
+  /** 这一轮最先记下的结果（settleTurn）；还没结果是 null。等停下的回执时用它看这一轮是怎么收场的（M01）。 */
+  settledAs: Exclude<CodexRemoteLastRequestSnapshot['state'], 'running'> | null
   /** 上一次有动静起算的「卡死」计时；每条通知、每次问审批都重新起算（noteTurnProgress）。 */
   stallTimer: NodeJS.Timeout | null
   /** Codex 最近一次报的整张计划（YF-15）；没报过是空的。 */
   plan: RemoteProgressStep[]
   progress: TurnProgress
 }
+
+/**
+ * 请 Codex 停下这一轮以后怎么样了（M01）。stopped：停了，该跟手机说「已停止。」；settled：等回执的这一会儿它自己
+ * 有了别的结果（做完、没做完、Codex 没了），或者别处正在停、会由那边说，这边不用再说什么；running：Codex 没答应
+ * （回了错、10 秒没回），这一轮照旧在做。
+ */
+type StopTurnOutcome = 'stopped' | 'settled' | 'running'
 
 /** 这一轮发到手机上的进度（YF-15）。 */
 interface TurnProgress {
@@ -1289,13 +1301,21 @@ export class CodexRemoteService {
    * 手机上也收到那句「已停止。」，免得手机那头以为还在做。之后手机上再发消息照常开新的一轮。
    */
   async stopTurnFromComputer(): Promise<CodexRemoteSnapshot> {
+    let stillRunning = false
     for (const runtime of Object.values(this.runtimes)) {
       if (!runtime.turn) continue
-      await this.abandonTurn(runtime)
+      const outcome = await this.stopTurn(runtime)
+      // Codex 没答应停（M01）：卡片照旧是「正在处理」，手机上什么都没变，不说什么；电脑上报一句，好再点一次。
+      if (outcome === 'running') {
+        stillRunning = true
+        continue
+      }
       this.options.log('info', 'remote.turn-stopped-on-computer', { channel: runtime.id })
-      await this.sendText(runtime, remoteMessages.interrupted)
+      if (outcome === 'stopped') await this.sendText(runtime, remoteMessages.interrupted)
     }
-    return this.emit()
+    const snapshot = await this.emit()
+    if (stillRunning) throw new Error('还没停下来，Codex 还在处理。可以过一会儿再点一次「停下这一轮」。')
+    return snapshot
   }
 
   /**
@@ -1657,7 +1677,59 @@ export class CodexRemoteService {
     await Promise.race([sent, new Promise((resolve) => setTimeout(resolve, shutdownSendTimeoutMs).unref?.())])
   }
 
-  /** 正在跑的这一轮：等你同意的一律拒绝，再请 Codex 停下。 */
+  /**
+   * 手机上发「停止」「新对话」、点进度卡「停止」、电脑卡片上点「停下这一轮」（M01）：Codex 答应停了才算停了。
+   * 以前先把这一轮记成停了、收掉，再请 Codex 停；Codex 回了错或 10 秒没回（正在跑的命令一时停不下来）时，电脑卡片
+   * 已经空闲、手机收到「已停止。」、下一句照常开新的一轮，旧的那一轮在 Codex 里可能还在跑，它后面的通知又因为
+   * 编号作废了没人认。现在等回执这一会儿和没停成以后，这一轮都还挂着：手机再发的话回「还在处理上一条」，它后面的
+   * 通知、审批、结束照常认，后来停下了手机收到「已停止。」，做完了收到回答。等你同意的照样先一律拒绝。
+   * 关遥控、解绑、卡死不走这里（abandonTurn）：渠道或人都没了，挂着也没人接；卡死本来就是 Codex 不理人了。
+   */
+  private stopTurn(runtime: ChannelRuntime): Promise<StopTurnOutcome> {
+    const turn = runtime.turn
+    if (!turn) return Promise.resolve('settled')
+    // 电脑上、手机上差不多同时点了「停止」：等同一次，「已停止。」由先点的那边说。
+    if (turn.stopping) return turn.stopping.then((outcome) => (outcome === 'stopped' ? 'settled' : outcome))
+    turn.stopping = this.interruptTurn(runtime, turn).finally(() => {
+      turn.stopping = null
+    })
+    return turn.stopping
+  }
+
+  private async interruptTurn(runtime: ChannelRuntime, turn: TurnState): Promise<StopTurnOutcome> {
+    const turnId = turn.id
+    const threadId = runtime.threadId
+    const client = this.codex
+    // 还没交给 Codex（没有编号，交到一半的由 turnStillWanted 拦住、补打断）、Codex 已经不在了：没有可等的，当场收掉。
+    if (!turnId || !threadId || !client?.running) {
+      await this.abandonTurn(runtime)
+      return 'stopped'
+    }
+    for (const entry of this.pendingFor(runtime.id)) entry.settle('decline')
+    turn.stoppedByUser = true
+    const accepted = await client.request('turn/interrupt', { threadId, turnId }, 10_000).then(() => true, () => false)
+    // 等回执的这一会儿这一轮已经收场了：以「停了」收场的（Codex 先发了结束通知、或者关了遥控）手机上还没人说「已停止。」，
+    // 做完、没做完、Codex 没了的，那句已经发过了。
+    if (runtime.turn !== turn) return turn.settledAs === 'stopped' ? 'stopped' : 'settled'
+    if (!accepted) {
+      turn.stoppedByUser = false
+      this.options.log('warn', 'remote.interrupt-failed', { channel: runtime.id })
+      return 'running'
+    }
+    this.settleTurn(runtime, turn, 'stopped')
+    this.clearTurn(runtime)
+    this.retireTurn(runtime, turnId)
+    return 'stopped'
+  }
+
+  /** 手机上「停止」、进度卡「停止」以后回一句（M01）：停了说「已停止。」，没停成说还在做，别处已经说过的不再说。 */
+  private async replyToStop(runtime: ChannelRuntime, outcome: StopTurnOutcome): Promise<void> {
+    if (outcome === 'stopped') await this.sendText(runtime, remoteMessages.interrupted)
+    else if (outcome === 'running') await this.sendText(runtime, remoteMessages.stopPending)
+    this.emitSoon()
+  }
+
+  /** 关遥控、解绑、卡死时正在跑的这一轮：等你同意的一律拒绝、当场收掉，再请 Codex 停下（成不成都不等它，见 stopTurn）。 */
   private async abandonTurn(runtime: ChannelRuntime): Promise<void> {
     for (const entry of this.pendingFor(runtime.id)) entry.settle('decline')
     const turn = runtime.turn
@@ -1687,6 +1759,7 @@ export class CodexRemoteService {
 
   /** 这一轮有了结果：记到电脑卡片「最近一次」上，手机上的进度卡也跟着变成做完了、停了或没做完（YF-15）。 */
   private settleTurn(runtime: ChannelRuntime, turn: TurnState, state: Exclude<CodexRemoteLastRequestSnapshot['state'], 'running'>, reason: string | null = null): void {
+    turn.settledAs ??= state
     this.settleLastRequest(turn, state, reason)
     this.endProgress(runtime, turn, state)
   }
@@ -1973,11 +2046,15 @@ export class CodexRemoteService {
           await this.sendText(runtime, remoteMessages.nothingToStop)
           return
         }
-        await this.abandonTurn(runtime)
-        await this.sendText(runtime, remoteMessages.interrupted)
-        this.emitSoon()
+        await this.replyToStop(runtime, await this.stopTurn(runtime))
         return
       case 'new-thread':
+        // 上一条没停成就不开新对话（M01）：不然旧的那一轮还在跑，新对话里又开一轮。
+        if (runtime.turn && (await this.stopTurn(runtime)) === 'running') {
+          await this.sendText(runtime, remoteMessages.newThreadStopPending)
+          this.emitSoon()
+          return
+        }
         await this.abandonTurn(runtime)
         runtime.threadId = null
         // 是他自己要的新对话，下次不用再提醒「前面的记不得了」。
@@ -2341,9 +2418,7 @@ export class CodexRemoteService {
       return
     }
     this.options.log('info', 'remote.turn-stopped-from-card', { channel: runtime.id })
-    await this.abandonTurn(runtime)
-    await this.sendText(runtime, remoteMessages.interrupted)
-    this.emitSoon()
+    await this.replyToStop(runtime, await this.stopTurn(runtime))
   }
 
   /** 过 delayMs 发一次进度；已经排着更早的那次就不动（YF-15）。 */
@@ -2465,6 +2540,8 @@ export class CodexRemoteService {
       lastMessage: null,
       error: null,
       stoppedByUser: false,
+      stopping: null,
+      settledAs: null,
       stallTimer: null,
       plan: [],
       progress: newTurnProgress(),
