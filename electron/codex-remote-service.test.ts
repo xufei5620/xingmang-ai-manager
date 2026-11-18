@@ -224,6 +224,14 @@ class FakeApprovalCardChannel extends FakeChannel {
   }
 }
 
+/** 一连就抛的渠道：模拟读凭据出错这类，连都没连起来、也不会自己再试。 */
+class FakeFailingChannel extends FakeChannel {
+  async start(handlers: RemoteChannelHandlers): Promise<void> {
+    this.handlers = handlers
+    throw new Error('keychain locked')
+  }
+}
+
 /**
  * 能取图的渠道（YF-14）：images 里放好每个句柄取回来什么，取过哪些记在 fetched。gates 里设了的句柄等它好了
  * 才取回来：模拟网不好时取图慢（YR-6）。
@@ -300,6 +308,8 @@ async function setup(options: {
   /** 渠道能取图（YF-14）；imageStore 缺省跟着它，设成 false 就是有渠道能取、底座没处存。 */
   images?: boolean
   imageStore?: boolean
+  /** 渠道一连就抛（FakeFailingChannel）。 */
+  startFails?: boolean
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -341,7 +351,9 @@ async function setup(options: {
   const service = new CodexRemoteService({
     store,
     createChannel: () => {
-      const channel = options.images
+      const channel = options.startFails
+        ? new FakeFailingChannel()
+        : options.images
         ? new FakeImageChannel()
         : options.approvalCards ? new FakeApprovalCardChannel() : options.progressCards ? new FakeCardChannel() : new FakeChannel()
       channels.push(channel)
@@ -1040,6 +1052,20 @@ describe('codex-remote-service pairing', () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(channel.sent).toHaveLength(1)
     expect(s.codex).toHaveLength(0)
+  })
+
+  // YR-10：输入法切在全角时发来的配对码照样能配上。
+  it('binds whoever sends the code in full-width digits', async () => {
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    const channel = s.channels[0]
+    await s.service.startPairing('feishu')
+    channel.handlers?.onInbound(text(alice, '０００ ０４２'))
+    await channel.sentUntil(() => channel.sent.length > 0)
+    expect(channel.sent[0].peer).toEqual(alice)
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu.boundPeer).toMatchObject({ userIdTail: '1234' })
+    expect(snapshot.channels.feishu.pairing).toBeNull()
   })
 
   it('locks pairing after too many wrong codes', async () => {
@@ -2716,11 +2742,53 @@ describe('codex-remote-service lifecycle', () => {
     expect(channel.stopped).toBe(1)
     expect(weixin.stopped).toBe(1)
     expect(codex.kills).toContain('SIGTERM')
-    expect(s.logs).toContain('remote.closed-from-phone')
+    expect(s.logDetails.find((entry) => entry.event === 'remote.closed-from-phone')?.detail).toEqual({ channel: 'feishu', autoStartCleared: false })
     // 关了以后再发什么都没人理，得回电脑上打开。
     channel.handlers?.onInbound(text(alice, '跑一下测试'))
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(channel.texts()).toHaveLength(1)
+  })
+
+  // YR-1：开了「打开星芒时自动打开遥控」（YF-9）的，手机上急停要管到下一次打开星芒，不然一重开就自己连回去。
+  it('also turns off switching on at launch, so reopening Xingmang does not connect again', async () => {
+    const root = tempRoot()
+    const first = await setup({ root })
+    const channel = await enabledAndPaired(first)
+    await first.service.setAutoStart(true)
+    first.snapshots.length = 0
+
+    channel.handlers?.onInbound(text(alice, '关闭遥控'))
+    // 先把关掉的开关原子写进盘才断渠道、发「已关闭」：直接等发送本身，不靠 vi.waitFor 的 1 秒（R16）。
+    await channel.sentUntil(() => channel.texts().length > 0)
+    expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
+    await vi.waitFor(() => expect(first.snapshots.at(-1)).toMatchObject({ channels: { feishu: { enabled: false } } }))
+    // 卡片上的开关跟着显示关着，客户回到电脑前一看就明白。
+    expect(first.snapshots.at(-1)).not.toHaveProperty('autoStart')
+    expect((await first.store.readSettings()).autoStart).toBeUndefined()
+    expect(first.logDetails.find((entry) => entry.event === 'remote.closed-from-phone')?.detail).toEqual({ channel: 'feishu', autoStartCleared: true })
+    first.service.dispose()
+
+    const reopened = await setup({ root })
+    await reopened.service.startOnLaunch()
+    expect(reopened.service.hasEnabledChannel()).toBe(false)
+    expect(reopened.channels).toHaveLength(0)
+    expect(reopened.logs).not.toContain('remote.auto-started')
+    expect((await reopened.service.snapshot()).autoStart).toBeUndefined()
+  })
+
+  it('still switches every channel off when turning off switching on at launch cannot be saved', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.service.setAutoStart(true)
+    vi.spyOn(s.store, 'updateSettings').mockRejectedValueOnce(new Error('disk full'))
+
+    channel.handlers?.onInbound(text(alice, '关闭遥控'))
+    await channel.sentUntil(() => channel.texts().length > 0)
+    expect(s.service.hasEnabledChannel()).toBe(false)
+    await vi.waitFor(() => expect(channel.stopped).toBe(1))
+    expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
+    expect(s.logs).toContain('remote.auto-start-unsaved')
+    expect(s.logDetails.find((entry) => entry.event === 'remote.closed-from-phone')?.detail).toEqual({ channel: 'feishu', autoStartCleared: false })
   })
 
   it('ignores the close command from anyone but the paired person, and from a group', async () => {
@@ -3079,6 +3147,21 @@ describe('codex-remote-service lifecycle', () => {
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
     await vi.waitFor(() => expect(follow()).toBe(false))
     expect(held).toBe(0)
+  })
+
+  // YKS-12：渠道没连起来就停下了、不会自己再试，开关还开着（卡片上留着那句话和「重新连接」），可已经收不到手机上的消息，
+  // 不能再挡着电脑睡眠；YF-10 默认不自动关，原来这一挡就是几天。
+  it('marks a channel that failed to start as halted so the sleep blocker lets go', async () => {
+    const s = await setup({ startFails: true })
+    const keepAwake = createCodexRemoteKeepAwake({ blocker: { start: () => 1, stop: () => undefined } })
+    await s.service.setChannelEnabled('feishu', true)
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu).toMatchObject({ enabled: true, status: { state: 'error', halted: true } })
+    expect(s.logs).toContain('remote.channel-start-failed')
+    // Only what the service pushed to the listener: main.ts feeds the blocker from onStateChanged alone.
+    for (const each of s.snapshots) keepAwake.observe(each)
+    expect(s.snapshots.at(-1)?.channels.feishu.status.halted).toBe(true)
+    expect(keepAwake.holding()).toBe(false)
   })
 
   // YF-5：微信扫码过了手机上那串数字，扫码的人直接绑上，不用配对码；原来绑着别人时先跟他说一声。

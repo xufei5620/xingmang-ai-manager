@@ -9,17 +9,19 @@ import { remoteChannelIds, type CodexRemoteSnapshot, type RemoteChannelId } from
 // 跟 cli-keep-awake.ts 是同一种挡法：只挡「自动睡眠」，屏幕照样按用户的设置关，合盖照样睡；
 // 不改任何系统电源设置，星芒退出时系统自己就放开了。不另设时长上限：遥控闲够设置里「多久没消息
 // 就自动关」选的时长会自己断开，断开就放；选了「不自动关」（YF-10 的缺省，yoyo 2026-11-11 定的）
-// 就一直挡到客户在电脑上、托盘里关，或者手机上发「关闭遥控」。
+// 就一直挡到客户在电脑上、托盘里关，或者手机上发「关闭遥控」。所以渠道自己停下、不会再连的那几种（要重新登录、
+// 飞书在别处连着这类 halted 的 error）一出现就放开，不然开关还开着、遥控早就收不到消息了，电脑却几天都不睡（YKS-12）。
 
 /**
  * 哪些渠道开着、还收得到手机上的消息：正在连、已连上、连不上正在重试（微信长轮询出错时报
  * error 再退避重试）。重试那一阵也得挡着，不然电脑早就闲够了时间，一放开马上就睡下去，
- * 网络恢复了也连不回来。要回电脑上重新登录的（needs-login）收不到消息，不挡。
+ * 网络恢复了也连不回来。要回电脑上重新登录的（needs-login）和自己停下不再连的（halted）
+ * 收不到消息，不挡；客户点「重新连接」以后又是 connecting，再挡上。
  */
 export function resolveCodexRemoteKeepAwakeChannels(snapshot: Pick<CodexRemoteSnapshot, 'channels'>): RemoteChannelId[] {
   return remoteChannelIds.filter((id) => {
     const channel = snapshot.channels[id]
-    return channel.enabled && channel.status.state !== 'needs-login' && channel.status.state !== 'stopped'
+    return channel.enabled && channel.status.state !== 'needs-login' && channel.status.state !== 'stopped' && channel.status.halted !== true
   })
 }
 
