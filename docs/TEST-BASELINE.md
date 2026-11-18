@@ -161,6 +161,13 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 
 界面上「几点发来」这类时间，同一天只写 `14:05`，不是今天就带日期写成 `11 月 11 日 23:50`。用例里拿 `Date.now() - N 分钟` 造数据、再用 `/^\d\d:\d\d …/` 去对，在 runner 本地时间零点后的 N 分钟里就会红（`e2e/v2-business.test.mjs`「最近一次」那条 11-12 北京 08:00、UTC 零点红过）。要么断言里让日期那段可有可无（`(?:\d{1,2} 月 \d{1,2} 日 )?`），要么把造数据的时间钉在当天中午。复现：容器是 UTC，在 UTC 零点后几分钟内单跑那条就能看到。
 
+## 装命令行工具的用例：夹具要连 PATH 一起换掉（2026-11-18）
+
+装 CLI 之前，`cli-install-service.ts` 的 `assertNpmChannelOwnsCli` 按首页那套判定（`resolveCliInstallation`）看这台电脑上是不是已经有别处装的同一个工具，它照 `process.env.PATH` 找。夹具只换了 `HOME`、没换 `PATH` 时，跑测试那台机器上装着 Claude Code（云端容器自带 `/opt/node22/bin/claude`，开发机自己装过的也算），安装当场被拒成「这台电脑上的 Claude Code 不是通过本工具安装的…」，后面要测的那段走不到，等下载的用例拖满超时。`system-service.certificate-trust` / `disk-space` / `download-stall` / `install-cancel` 四个文件就这样在容器里红过 29 条；CI 的机器上没装这几个工具，一直是绿的，所以 CI 替你发现不了。
+
+- 写法：起服务前 `vi.stubEnv('PATH', <夹具自己的 bin 目录>)`；夹具一个程序都不给的，建一个空目录指过去。上面四个文件和 `system-service.cli-revert.test.ts` 都是这样写的。
+- 复现：本机没装 Claude Code 的，往 PATH 最前面加一个目录，里面放一个能执行的 `claude`（内容 `#!/bin/sh` 加 `echo 1.0.0` 就够），没换 PATH 的夹具当场红。11-18 验：旧写法的 `install-cancel` 13 条红 8 条，换了 PATH 的四个文件 57 条全过。
+
 ## 只让某一次写失败：按写的内容认，不按第几次（2026-11-18）
 
 `codex-remote-service.test.ts`「still switches every channel off when turning off switching on at launch cannot be saved」在 main 上三平台必红过：#1898 用 `mockRejectedValueOnce` 让 `store.updateSettings` 失败一次，本意是让「清掉自动打开」那次写失败；#1902（YR-2）在处理绑定的人发来的话之前先写一次消息编号，那一次失败被它吃掉，轮到清自动打开时写成功了。两个 PR 各自绿，合在一起红。
