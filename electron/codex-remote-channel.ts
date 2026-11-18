@@ -209,6 +209,11 @@ export interface RemoteChannelStatus {
   /** 能上屏的中文原因，不带平台原文里的令牌和消息内容。 */
   message?: string
   problem?: RemoteChannelProblem
+  /**
+   * error 时渠道已经自己停下、不会再自己连（飞书在别处连着、读不到凭据、一连就抛）：开关还开着，卡片照样摆那句话和
+   * 「重新连接」，可手机上的消息已经收不到了，防睡不再为它挡着（YKS-12）。缺省 = 还在连或还在自己重试（微信长轮询出错退避）。
+   */
+  halted?: boolean
 }
 
 export interface RemoteChannelCapabilities {

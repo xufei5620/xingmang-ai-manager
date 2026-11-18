@@ -1528,7 +1528,7 @@ export class CodexRemoteService {
       })
     } catch (error) {
       if (runtime.adapter === adapter) {
-        runtime.status = { state: 'error', message: errorMessage(error, '渠道没能连上。') }
+        runtime.status = { state: 'error', message: errorMessage(error, '渠道没能连上。'), halted: true }
       }
       this.options.log('warn', 'remote.channel-start-failed', { channel: runtime.id })
     }
