@@ -145,6 +145,11 @@ const shutdownSendTimeoutMs = 1500
 const farewellTimeoutMs = shutdownSendTimeoutMs
 /** 一轮多久没任何动静就当它卡死（打磨 C2，yoyo 10-27「停改」）：Codex 不出声这一轮永远不结束，手机上发什么都是「上一件还没做完」。 */
 const turnStallMs = 60 * 60_000
+/**
+ * 做完了、没送到手机的回答最多留这么久等补发（M03）：晚上交代的事第二天早上手机通了还能收到；再久就不翻出来了，
+ * 免得几天前的回答突然冒出来。
+ */
+const undeliveredAnswerTtlMs = 24 * hourMs
 /** 审批编号最多 4 位：手机上回「同意 12」要好打，飞书按钮和文字指令也只认 4 位以内。 */
 const maxApprovalNumber = 9999
 /**
@@ -810,6 +815,32 @@ interface ChannelRuntime {
    * 发「新对话」、关遥控、换人时删掉。
    */
   pendingImages: string[]
+  /**
+   * 做完了、却没送到手机的那条回答（M03），等手机那头通了补发。只在内存里，最多留 undeliveredAnswerTtlMs；
+   * 关遥控、换人、解绑时扔掉，送到了也扔掉。
+   */
+  undeliveredAnswer: UndeliveredAnswer | null
+  /** 正在补发的那一次（M03）：连上了和手机来消息碰在一起时，后到的等这一次的结果，不再发一遍。 */
+  answerResend: Promise<AnswerResendResult | null> | null
+}
+
+/** 补发了一次（M03）：送没送到，补发的是不是最后一句的回答（UndeliveredAnswer.latest）。 */
+interface AnswerResendResult {
+  sent: boolean
+  latest: boolean
+}
+
+interface UndeliveredAnswer {
+  /** 原样的回答（含「用时……」那行），补发时跟别的消息一样再脱敏一次。 */
+  text: string
+  /** 回答是给谁的：只补发给这个人。 */
+  peerUserId: string
+  at: number
+  /**
+   * 是不是最后一句交给 Codex 的话的回答：是的话手机上发「重试」只补发、不让 Codex 再做一遍。之后又交给 Codex
+   * 一句新的（这时补发没成）就不是了，「重试」照常重做那句新的。
+   */
+  latest: boolean
 }
 
 export type RemoteInboundSeen = 'none' | 'group' | 'direct'
@@ -854,6 +885,8 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     lastPrompt: null,
     lastPromptImages: [],
     pendingImages: [],
+    undeliveredAnswer: null,
+    answerResend: null,
   }
 }
 
@@ -1565,11 +1598,14 @@ export class CodexRemoteService {
         onInbound: (message) => this.onInbound(runtime, adapter, message),
         onStatus: (status) => {
           if (runtime.adapter !== adapter) return
+          const wasConnected = runtime.status.state === 'connected'
           runtime.status = status
           if (status.state === 'connected' && !announced) {
             announced = true
             void this.announceOpened(runtime, adapter)
           }
+          // 断了又连上（含卡片上点「重新连接」）：做完了没送到的回答这时补发（M03）。
+          if (status.state === 'connected' && !wasConnected) void this.resendUndeliveredAnswer(runtime)
           this.emitSoon()
         },
       })
@@ -1612,6 +1648,8 @@ export class CodexRemoteService {
     await this.stopAdapter(runtime)
     runtime.peer = null
     runtime.replyContext = undefined
+    runtime.undeliveredAnswer = null
+    runtime.answerResend = null
     this.dropThread(runtime)
     this.dropImages(runtime)
     if (wasEnabled) this.options.log('info', 'remote.channel-stopped', { channel: runtime.id })
@@ -1650,6 +1688,8 @@ export class CodexRemoteService {
     runtime.replyContext = undefined
     runtime.threadId = null
     runtime.lastPrompt = null
+    runtime.undeliveredAnswer = null
+    runtime.answerResend = null
     this.dropImages(runtime)
     // 换了人就是新的人，没有「前面的」可言。
     runtime.threadLost = false
@@ -1929,23 +1969,58 @@ export class CodexRemoteService {
     })
   }
 
+  /** 整段都发出去了返回 true；没人可发、渠道没连着、哪一段没发出去都是 false（M03 靠它知道回答送没送到）。 */
   private async sendText(
     runtime: ChannelRuntime,
     text: string,
     peer = runtime.peer,
     replyContext: string | null | undefined = runtime.replyContext,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const adapter = runtime.adapter
-    if (!peer || !adapter) return
+    if (!peer || !adapter) return false
     await this.refreshSecrets()
     const chunks = splitRemoteText(redactRemoteText(text, this.redaction()), adapter.capabilities.maxTextLength, maxReplyChunks)
     for (const chunk of chunks) {
       try {
         await this.deliver(runtime, peer, { kind: 'text', text: chunk }, replyContext)
       } catch {
-        return
+        return false
       }
     }
+    return true
+  }
+
+  /**
+   * 这一轮做完了的回答（M03）：没送到手机就留一份，等手机那头通了补发。不留的话电脑上记着做完了，手机上什么都
+   * 没收到，发「状态」取不回，发「重试」又让 Codex 从头做一遍、再扣一次钱。
+   */
+  private async sendAnswer(runtime: ChannelRuntime, text: string): Promise<void> {
+    const peer = runtime.peer
+    if (await this.sendText(runtime, text)) return
+    // 发的这一会儿关了遥控、换了人：不用留了，disableChannel、forgetPeer 已经扔过一次。
+    if (!peer || !runtime.enabled || runtime.peer?.userId !== peer.userId) return
+    runtime.undeliveredAnswer = { text, peerUserId: peer.userId, at: this.now(), latest: true }
+    this.options.log('warn', 'remote.answer-undelivered', { channel: runtime.id })
+  }
+
+  /**
+   * 补发做完了没送到的那条回答（M03）。先从 runtime 上摘下来再发；正在补发时再叫一次，等的是同一次，不会发两遍。
+   * 还是没送到就放回去等下一次（这期间又留了更新的一份就留新的）。没有要补发的、过了时限的返回 null。
+   */
+  private resendUndeliveredAnswer(runtime: ChannelRuntime): Promise<AnswerResendResult | null> {
+    if (runtime.answerResend) return runtime.answerResend
+    const pending = runtime.undeliveredAnswer
+    if (!pending) return Promise.resolve(null)
+    runtime.undeliveredAnswer = null
+    if (this.now() - pending.at > undeliveredAnswerTtlMs || runtime.peer?.userId !== pending.peerUserId) return Promise.resolve(null)
+    const resend: Promise<AnswerResendResult | null> = this.sendText(runtime, `${remoteMessages.answerResent}\n\n${pending.text}`).then((sent) => {
+      if (runtime.answerResend === resend) runtime.answerResend = null
+      if (sent) this.options.log('info', 'remote.answer-resent', { channel: runtime.id })
+      else if (runtime.enabled && runtime.peer?.userId === pending.peerUserId) runtime.undeliveredAnswer ??= pending
+      return { sent, latest: pending.latest }
+    })
+    runtime.answerResend = resend
+    return resend
   }
 
   private onInbound(runtime: ChannelRuntime, adapter: RemoteChannelAdapter, message: RemoteInbound): void {
@@ -1999,6 +2074,10 @@ export class CodexRemoteService {
     if (message.replyContext) runtime.replyContext = message.replyContext
     runtime.staleNoticeAt = 0
     this.touch(runtime)
+    // 他发来了消息，手机那头是通的：做完了没送到的回答先补上，再处理这一条（M03）。这时还有一轮在做的话，要补的是
+    // 更早那轮的，「重试」用不上它；不等它发完，「停止」「同意」不往后排。
+    const resending = this.resendUndeliveredAnswer(runtime)
+    const resent = runtime.turn ? null : await resending
     if (message.kind === 'unsupported') {
       await this.sendText(runtime, remoteMessages.unsupported)
       return
@@ -2035,6 +2114,12 @@ export class CodexRemoteService {
         await this.useWorkspaceFromPhone(runtime, command.index)
         return
       case 'retry':
+        // 上一句其实做完了，只是回答刚才没送到、这会儿才补发（M03）：不让 Codex 再做一遍，真要重做就再发一次「重试」。
+        // 补发也没成的同样不重做，做完的回答发不到手机，重做一遍也一样发不到。
+        if (resent?.latest) {
+          if (resent.sent) await this.sendText(runtime, remoteMessages.retryAfterAnswerResent)
+          return
+        }
         if (!runtime.lastPrompt) {
           await this.sendText(runtime, remoteMessages.nothingToRetry)
           return
@@ -2548,6 +2633,8 @@ export class CodexRemoteService {
     }
     runtime.turn = turn
     runtime.lastPrompt = text
+    // 又交给 Codex 一句了（M03）：还没补发成的那条回答不再是「上一条」的，「重试」照常重做这一句。
+    if (runtime.undeliveredAnswer) runtime.undeliveredAnswer.latest = false
     const images = retry ? [...runtime.lastPromptImages] : [...runtime.pendingImages]
     if (!retry) {
       this.releaseImages(runtime.lastPromptImages.filter((image) => !images.includes(image)))
@@ -2802,7 +2889,8 @@ export class CodexRemoteService {
     if (turn.id) this.retireTurn(runtime, turn.id)
     for (const entry of this.pendingFor(runtime.id)) entry.settle('decline')
     let reply: string | null
-    if (turnPayload.status === 'completed') {
+    const completed = turnPayload.status === 'completed'
+    if (completed) {
       const answer = turn.finalAnswer ?? turn.lastMessage ?? remoteMessages.emptyAnswer
       reply = `${answer}\n\n${turnSummaryLine(this.now() - turn.startedAt, turn.changedFiles.map(remoteFileName))}`
       this.settleTurn(runtime, turn, 'done')
@@ -2817,7 +2905,8 @@ export class CodexRemoteService {
       this.settleTurn(runtime, turn, 'failed', failed.reason)
     }
     this.options.log('info', 'remote.turn-finished', { channel: runtime.id, status: stringField(turnPayload.status) })
-    if (reply) void this.sendText(runtime, reply)
+    if (reply && completed) void this.sendAnswer(runtime, reply)
+    else if (reply) void this.sendText(runtime, reply)
     this.touch(runtime)
     this.emitSoon()
   }
