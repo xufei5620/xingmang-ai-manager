@@ -1,5 +1,8 @@
+import fc from 'fast-check'
 import { describe, expect, it, vi } from 'vitest'
+import { isChineseSentence } from './chinese-sentence'
 import {
+  codexDesktopPackageProbeAccountMessage,
   codexDesktopPackageValidationError,
   compareWindowsPackageVersions,
   isCodexDesktopCliInstallation,
@@ -20,6 +23,7 @@ import {
   stableInstallFamilyName,
   stopCodexDesktopProcesses,
 } from './codex-desktop'
+import { codexDesktopPackageProbeName, isCodexDesktopProbeFailure, isCodexDesktopUnrecognizedProbeResult } from './codex-desktop-probe-failure'
 
 const validPackageMetadata = {
   name: 'OpenAI.Codex',
@@ -206,17 +210,133 @@ describe('Codex desktop app discovery', () => {
     })
   })
 
-  it('keeps a denied all-users probe inconclusive instead of confirming absence', () => {
+  it('keeps a failed current-user probe inconclusive and passes its customer sentence through', () => {
     expect(parseCodexDesktopPackageProbeJson(JSON.stringify({
       packages: [],
       source: null,
       confirmedAbsent: false,
-      error: '当前用户未检测到 Codex Desktop，系统拒绝读取其他用户的安装信息。',
+      error: codexDesktopPackageProbeAccountMessage,
     }))).toEqual({
       value: null,
-      error: '当前用户未检测到 Codex Desktop，系统拒绝读取其他用户的安装信息。',
+      error: codexDesktopPackageProbeAccountMessage,
       source: null,
       confirmedAbsent: false,
+    })
+  })
+
+  it('keeps any other probe message off the screen: an English summary for the log, the words in detail', () => {
+    // 旧版脚本的说法、编码坏掉的乱码，都不是写给客户的那一句。
+    for (const message of ['当前用户未检测到 Codex Desktop，系统拒绝读取其他用户的安装信息。', '璇讳笉鍒拌繖鍙扮數鑴戜笂 Codex']) {
+      const result = parseCodexDesktopPackageProbeJson(JSON.stringify({ packages: [], source: null, confirmedAbsent: false, error: message }))
+      expect(result).toEqual({
+        value: null,
+        error: `${codexDesktopPackageProbeName}: unrecognized result (unknown error text)`,
+        source: null,
+        confirmedAbsent: false,
+        detail: message,
+      })
+    }
+  })
+
+  it('reports output it cannot read as an English summary and keeps the raw output for the log', () => {
+    expect(parseCodexDesktopPackageProbeJson('  ')).toEqual({
+      value: null,
+      error: `${codexDesktopPackageProbeName}: unrecognized result (empty output)`,
+      source: null,
+      confirmedAbsent: false,
+    })
+    expect(parseCodexDesktopPackageProbeJson('Get-AppxPackage : 拒绝访问。')).toEqual({
+      value: null,
+      error: `${codexDesktopPackageProbeName}: unrecognized result (not JSON)`,
+      source: null,
+      confirmedAbsent: false,
+      detail: 'Get-AppxPackage : 拒绝访问。',
+    })
+    expect(parseCodexDesktopPackageProbeJson('[]').error).toBe(`${codexDesktopPackageProbeName}: unrecognized result (not a JSON object)`)
+    expect(parseCodexDesktopPackageProbeJson('{"source":"current-user"}').error).toBe(`${codexDesktopPackageProbeName}: unrecognized result (no packages field)`)
+    expect(parseCodexDesktopPackageProbeJson('{"packages":null}').error).toBe(`${codexDesktopPackageProbeName}: unrecognized result (invalid packages field)`)
+    expect(parseCodexDesktopPackageProbeJson('{"packages":[],"confirmedAbsent":false,"error":null}').error)
+      .toBe(`${codexDesktopPackageProbeName}: unrecognized result (neither a package nor a confirmed absence)`)
+  })
+
+  it('says which check a package entry failed and keeps the entry for the log', () => {
+    // 11-18 客户截图「Windows Appx 探测返回数据格式无效」的一种可能：商店正在更新，安装位置一时是空的。
+    const output = JSON.stringify({
+      packages: {
+        Name: 'OpenAI.Codex',
+        Version: '26.1105.1234.0',
+        PackageFullName: 'OpenAI.Codex_26.1105.1234.0_x64__publisher',
+        PackageFamilyName: 'OpenAI.Codex_publisher',
+        InstallLocation: null,
+      },
+      source: 'current-user',
+      confirmedAbsent: false,
+      error: null,
+    })
+    const result = parseCodexDesktopPackageProbeJson(output)
+    expect(result).toEqual({
+      value: null,
+      error: `${codexDesktopPackageProbeName}: unrecognized result (no package entry has a usable name, version and install folder)`,
+      source: null,
+      confirmedAbsent: false,
+      detail: output,
+    })
+
+    const withoutSource = parseCodexDesktopPackageProbeJson(JSON.stringify({
+      packages: [{
+        Name: 'OpenAI.Codex',
+        Version: '26.825.6671.0',
+        PackageFullName: 'OpenAI.Codex_26.825.6671.0_x64__publisher',
+        PackageFamilyName: 'OpenAI.Codex_publisher',
+        InstallLocation: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.825.6671.0_x64__publisher',
+      }],
+      source: null,
+      confirmedAbsent: false,
+      error: null,
+    }))
+    expect(withoutSource.error).toBe(`${codexDesktopPackageProbeName}: unrecognized result (packages without a source)`)
+    expect(withoutSource.value).toBeNull()
+  })
+
+  it('caps the raw output kept for the log and folds control characters', () => {
+    const result = parseCodexDesktopPackageProbeJson(`第一行\r\n${'x'.repeat(2_000)}`)
+    expect(result.detail?.startsWith('第一行 x')).toBe(true)
+    expect(result.detail).toHaveLength(600)
+  })
+
+  describe('with random inputs', () => {
+    const errorText = fc.oneof(fc.string({ maxLength: 60 }), fc.constant(codexDesktopPackageProbeAccountMessage), fc.constant('Windows Appx 探测返回数据格式无效'))
+    const entry = fc.record({
+      Name: fc.oneof(fc.constantFrom('OpenAI.Codex', 'OpenAI.CodexBeta', 'OpenAI.Other'), fc.string({ maxLength: 12 }), fc.constant(null)),
+      Version: fc.oneof(fc.constantFrom('26.825.6671.0', '26.1105.1234.0', 'latest', ''), fc.constant(null)),
+      PackageFullName: fc.oneof(fc.string({ maxLength: 20 }), fc.constant(null)),
+      PackageFamilyName: fc.oneof(fc.string({ maxLength: 20 }), fc.constant(null)),
+      InstallLocation: fc.oneof(fc.constantFrom('C:\\Program Files\\WindowsApps\\OpenAI.Codex_x', ''), fc.constant(null)),
+    }, { requiredKeys: [] })
+    const probe = fc.record({
+      packages: fc.oneof(fc.array(entry, { maxLength: 3 }), entry, fc.constant(null)),
+      source: fc.constantFrom('current-user', 'all-users', null, 'other'),
+      confirmedAbsent: fc.oneof(fc.boolean(), fc.constant(null)),
+      error: fc.oneof(errorText, fc.constant(null)),
+    }, { requiredKeys: [] })
+    const output = fc.oneof(probe.map((value) => JSON.stringify(value)), fc.string({ maxLength: 80 }), fc.json())
+
+    it('only ever puts the customer sentence or a summary the screen recognises into error', () => {
+      fc.assert(fc.property(output, (text) => {
+        const result = parseCodexDesktopPackageProbeJson(text)
+        if (result.error === null || result.error === codexDesktopPackageProbeAccountMessage) {
+          expect(result.detail).toBeUndefined()
+          return
+        }
+        expect(isCodexDesktopProbeFailure(result.error)).toBe(true)
+        expect(isChineseSentence(result.error)).toBe(false)
+        // 解析这一层说不出别的：只会是「没认出」那一种，界面据此说可能正在更新。
+        expect(isCodexDesktopUnrecognizedProbeResult(result.error)).toBe(true)
+        // 没认出来的结果从不当成「确定没装」，也不给出一个包。脚本里没有的那句报错只换掉说法，结果的其余部分照旧。
+        if (result.error.endsWith('(unknown error text)')) return
+        expect(result.confirmedAbsent).toBe(false)
+        expect(result.value).toBeNull()
+      }), { numRuns: 500 })
     })
   })
 

@@ -8,7 +8,7 @@ import { providerBaseUrls, type ProviderId } from './catalog'
 import { relayProviderBaseUrlEquals, relayProviderBaseUrlMatches, relaySiteEndpointIdForBaseUrl, relaySites } from './relay-sites'
 import { readEnvLineValue, readJsonString, readTomlBoolean, readTomlString, rewriteEnvValue, rewriteJsonStrings, rewriteTomlStrings, rewriteTomlValues, type StringValueEdit, type ValueEdit } from './tool-route-rewrite'
 import { readBoundedFileSync } from './bounded-file'
-import { isCodexConfigBroken } from './codex-config-syntax'
+import { isCodexConfigBroken, salvageCodexConfigText } from './codex-config-syntax'
 import { isClaudeSettingsBroken, isCodexAuthBroken, isGeminiSettingsBroken } from './cli-config-health'
 import { tomlErrorLocation } from './toml-error-location'
 import { describeBrokenConfig, describeConfigReset } from './broken-config-advice'
@@ -1424,15 +1424,18 @@ function createCodexRelayConfigPlans(
   // 本软件管的型号名单（codex-model-catalog.ts）：字符串 = 写这份文件并指向它；null = 收回
   // 本软件写的那一行；缺省 = 那一行和文件都原样不动，与从前一致。
   modelCatalog?: string | null,
+  // 「修好它」从读不了的 config.toml 里救回来的那份（salvagedCodexConfigForRepair），当作现在的配置来合并；
+  // 缺省 = 读文件本身。
+  salvaged?: string,
 ): FilePlan[] {
   const paths = codexConfigSnapshotPaths(roots)
   const plans: FilePlan[] = []
   // 名单文件被换成了链接：这次只收回那一行，Key 和其余配置照常保存，不让一个写不了的
   // 附属文件把整次保存连累失败。
   const catalog = typeof modelCatalog === 'string' && !codexModelCatalogTargetUsable(roots) ? null : modelCatalog
-  const currentText = fs.existsSync(paths.active)
+  const currentText = salvaged ?? (fs.existsSync(paths.active)
     ? requireConfigText(paths.active, '现有 Codex config.toml')
-    : null
+    : null)
   let currentParsed: Record<string, unknown> | null = null
   if (currentText) {
     try {
@@ -1493,12 +1496,14 @@ function createCodexOfficialConfigPlans(
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
   mode: NativeConfigSaveMode,
+  // 同 createCodexRelayConfigPlans 的 salvaged。
+  salvaged?: string,
 ): FilePlan[] {
   const paths = codexConfigSnapshotPaths(roots)
   const plans: FilePlan[] = []
-  const currentText = fs.existsSync(paths.active)
+  const currentText = salvaged ?? (fs.existsSync(paths.active)
     ? requireConfigText(paths.active, '现有 Codex config.toml')
-    : null
+    : null)
   // 重置是读不懂的配置唯一的出路（首页「配置文件坏了」的「修好它」也走这里），登录 ChatGPT 的
   // 客户也一样：坏文件照旧先备份再整份换掉。只更新（merge）仍然拒绝，不悄悄重置客户的设置。
   const currentParsed = !currentText ? null
@@ -1550,7 +1555,23 @@ function codexConfigRepairMode(roots: ProviderConfigRoots): NativeConfigSaveMode
   return text && parseTomlOrNull(text) === null ? 'reset' : 'merge'
 }
 
-/** 「修好它」按当前账号修、config.toml 又读得懂（codexConfigRepairMode）：config.toml 照合并，只有 auth.json 照重置重建。 */
+/**
+ * 「修好它」碰上读不了的 config.toml（codexConfigRepairMode 说要整份重建）时，先看能不能只去掉坏的那几行
+ * （salvageCodexConfigText）：能就返回救回来的那份，照合并修，客户自己的设置照留；救不了返回 null，照旧整份重建。
+ * 不是合法 UTF-8 的不救：解码会把中文换成「�」，救回来的路径也是坏的。原文件照旧由 executeFilePlans 先备份。
+ * 只用在「修好它」上，配置窗口里的「重置为初始状态」照旧整份重建。
+ */
+function salvagedCodexConfigForRepair(roots: ProviderConfigRoots): string | null {
+  if (codexConfigRepairMode(roots) !== 'reset') return null
+  const content = readConfigBytes(codexConfigSnapshotPaths(roots).active)
+  if (!content || !isUtf8(content)) return null
+  return salvageCodexConfigText(content.toString('utf8'), parseToml)
+}
+
+/**
+ * 「修好它」按当前账号修、config.toml 又读得懂（codexConfigRepairMode），或者读不了但救得回来（salvaged）：
+ * config.toml 照合并，只有 auth.json 照重置重建。
+ */
 function createCodexRelayRepairPlans(
   apiKey: string,
   model: string,
@@ -1558,10 +1579,25 @@ function createCodexRelayRepairPlans(
   siteBaseUrls: Record<ProviderId, string>,
   cliHook?: CliHookInvocation,
   modelCatalog?: string | null,
+  salvaged?: string,
 ): FilePlan[] {
   return [
-    ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge', cliHook, modelCatalog),
+    ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge', cliHook, modelCatalog, salvaged),
     ...createCodexRelayAuthPlans(apiKey, roots, 'reset'),
+  ]
+}
+
+/**
+ * 「修好它」按官方账号修、config.toml 读不了但救得回来：同 createCodexOfficialRepairPlans，只是救回来的那份一定要写回去
+ * （原文件 Codex 读不了）。还接着当前账号的照「切回官方账号」拿掉当前账号那几处，不接着的原样写回。
+ */
+function createCodexOfficialSalvagePlans(roots: ProviderConfigRoots, siteBaseUrls: Record<ProviderId, string>, salvaged: string): FilePlan[] {
+  const relay = classifyCodexConfigProfile(parseTomlOrNull(salvaged), siteBaseUrls.codex) === 'relay'
+  return [
+    ...(relay
+      ? createCodexOfficialConfigPlans(roots, siteBaseUrls, 'merge', salvaged)
+      : [{ path: codexConfigSnapshotPaths(roots).active, content: withTrailingNewline(salvaged) }]),
+    ...createCodexOfficialAuthPlans(roots, 'reset'),
   ]
 }
 
@@ -3034,13 +3070,15 @@ export function saveProviderConfig(
 
   const statusLineCommand = claudeStatusLineCommand?.trim() || undefined
   if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
-  // 「修好它」只在 Codex 的 config.toml 读得懂、坏的只有 auth.json 时跟重置不一样（X-1）。
+  // 「修好它」只在 Codex 的 config.toml 读得懂、坏的只有 auth.json 时跟重置不一样（X-1）；config.toml 读不了但
+  // 只坏了几行的，去掉那几行照合并修（salvagedCodexConfigForRepair）。
   const codexAuthOnlyRepair = mode === 'repair' && provider === 'codex' && codexConfigRepairMode(roots) === 'merge'
+  const codexSalvaged = mode === 'repair' && provider === 'codex' && !codexAuthOnlyRepair ? salvagedCodexConfigForRepair(roots) : null
   const plans = [
     ...(mode === 'merge'
       ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog, seeded)
-      : codexAuthOnlyRepair
-        ? createCodexRelayRepairPlans(apiKey, model, roots, siteBaseUrlsInput, cliHook, codexModelCatalog)
+      : codexAuthOnlyRepair || codexSalvaged !== null
+        ? createCodexRelayRepairPlans(apiKey, model, roots, siteBaseUrlsInput, cliHook, codexModelCatalog, codexSalvaged ?? undefined)
         : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog, seeded)),
     ...globalResponseLanguagePlans(provider, roots, seeded),
   ]
@@ -4126,6 +4164,7 @@ export function switchProviderToOfficialAccount(
   // 换一份计划（X-1）。
   const saveMode: NativeConfigSaveMode = writeMode === 'merge' ? 'merge' : 'reset'
   const codexAuthOnlyRepair = writeMode === 'repair' && provider === 'codex' && codexConfigRepairMode(roots) === 'merge'
+  const codexSalvaged = writeMode === 'repair' && provider === 'codex' && !codexAuthOnlyRepair ? salvagedCodexConfigForRepair(roots) : null
   const inspection = inspectProviderConfig(provider, roots, siteBaseUrlsInput)
   // Codex 自己的 ChatGPT 登录会把 auth.json 换成令牌、Key 置空，却不动 config.toml；
   // 切账号站点也会让现有中转地址不同于当前站点。两种情况都必须按已知中转来源
@@ -4151,7 +4190,9 @@ export function switchProviderToOfficialAccount(
 
   const plans = codexAuthOnlyRepair
     ? createCodexOfficialRepairPlans(roots, siteBaseUrlsInput)
-    : createOfficialAccountPlans(provider, roots, siteBaseUrlsInput, saveMode)
+    : codexSalvaged !== null
+      ? createCodexOfficialSalvagePlans(roots, siteBaseUrlsInput, codexSalvaged)
+      : createOfficialAccountPlans(provider, roots, siteBaseUrlsInput, saveMode)
   if (plans.length === 0) throw new Error('没有找到可切换的配置文件')
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
