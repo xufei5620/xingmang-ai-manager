@@ -1,8 +1,3 @@
-## 用户
-
-- 修好 Mac 上 Codex 桌面端和 Claude Desktop 更新一次没成以后，再点更新每次都只说「没更新成，旧版还在」：
-  上次留在「应用程序」里的半截副本现在能清掉，更新照常进行；更新成功后挪开的旧版也能真正删掉，不再悄悄占着空间。
-
 ## 开发
 
 - `macos-desktop-app-installer.ts` 的八处递归删除改走新的 `electron/remove-tree.ts`（Electron 里用 `original-fs`）。

@@ -1,8 +1,3 @@
-## 用户
-
-- 卸载星芒后再装回来，Claude Code、Codex、Grok 的做完提醒、干活时不让电脑睡着和 Claude Code 底下那行状态栏，
-  打开星芒时自己补回来，不用再重新保存一次配置。你自己删掉的提醒、自己设的状态栏不会被改。
-
 ## 开发
 
 - 深查「安装卸载」第 1 条：Windows 卸载清理（`uninstall-cleanup.ts`）和 Mac「卸载星芒」（`macos-uninstall.ts`）

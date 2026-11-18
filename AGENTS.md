@@ -310,7 +310,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 
 **CI 红了**：不是这次改动弄的，先查账（`npm run ci:rerun-ledger -- <用例名>`）。两周内记过同一条就不许再重跑，开线程查根因；没记过才重跑一次，而且要先在 `docs/CI-RERUN-LEDGER.md` 末尾记一行、作为提交推上去，这次推送就是那一次重跑。不删测试、不跳过、不调大超时（细则在那份文件开头）。
 
-**写变更日志**：在 `changes/unreleased/` 下放一个分片文件（`## 用户` 进 `release-notes.md`，`## 开发` 进 `CHANGELOG.md`，写法见该目录 README），发版时 `npm run changelog:collect` 汇总。**不要直接改两份文件的「未发布」段**——并行 PR 都往那一段加行必冲突，而带冲突的 PR GitHub 不触发 CI，CI 会拒绝这种改动。
+**写变更日志**：在 `changes/unreleased/` 下放一个分片文件（`## 用户` 进 `release-notes.md`，`## 开发` 进 `CHANGELOG.md`，写法见该目录 README），发版时 `npm run changelog:collect` 汇总。**不要直接改两份文件的「未发布」段**——并行 PR 都往那一段加行必冲突，而带冲突的 PR GitHub 不触发 CI，CI 会拒绝这种改动。目录里有 `final-user-notes.md` 时，这一版给客户看的那份已经定稿，新分片只写 `## 开发`（`changelog:check` 会拦）。
 
 **提交**：分支命名与 PR 规范见 `docs/COLLABORATION.md`。要借 GitHub Actions 临时跑一次探测（容器里做不到的核对），边界见同一份文档 §3 的「一次性探测工作流」：只读、不挂 environment、不读 secret、用完删分支。
 

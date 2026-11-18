@@ -86,6 +86,25 @@ function parseFragment(name, source) {
   return entries
 }
 
+// When the product owner signs off a version's customer notes as a whole
+// (0.2.24: six lines, word for word, 2026-11-18), the notes live in this one
+// fragment and every other fragment may carry only a developer half. Without
+// this gate the next PR that follows the usual recipe quietly adds a line to
+// notes that were approved as they stand. Collect removes this fragment along
+// with the rest, so the freeze ends with the release that ships it.
+const finalUserNotesFragment = 'final-user-notes.md'
+
+function assertUserNotesNotFinalized(fragments) {
+  if (!fragments.some((fragment) => fragment.name === finalUserNotesFragment)) return
+  const extra = fragments.filter((fragment) => fragment.name !== finalUserNotesFragment && fragment.entries.user.length > 0)
+  if (extra.length === 0) return
+  throw new Error(
+    `这一版给客户看的更新说明已经定稿，整份写在 ${fragmentDirectory}/${finalUserNotesFragment}，别的分片只能写「## 开发」。`
+    + `请删掉这几个分片里的「## 用户」：${extra.map((fragment) => fragment.name).join('、')}。`
+    + `客户那份真要加一句，先把逐字的新句子给产品所有者看，同意了再改 ${finalUserNotesFragment} 那一个文件。`,
+  )
+}
+
 function pendingFragmentNames(root) {
   const directory = path.join(root, fragmentDirectory)
   if (!fs.existsSync(directory)) return []
@@ -157,6 +176,7 @@ function appendToUnreleasedSection(source, section, entries) {
 
 function collectChanges(root) {
   const fragments = readFragments(root)
+  assertUserNotesNotFinalized(fragments)
   const written = []
   for (const section of sections) {
     const entries = fragments.flatMap((fragment) => fragment.entries[section.key])
@@ -257,6 +277,7 @@ function checkChanges(root) {
   if (eventPath && fs.existsSync(eventPath)) {
     assertNoDirectUnreleasedEdit(root, JSON.parse(fs.readFileSync(eventPath, 'utf8')), process.env.GITHUB_EVENT_NAME)
   }
+  assertUserNotesNotFinalized(fragments)
   return { fragments, userItems: assertUserItemsFit(root, fragments) }
 }
 
@@ -295,10 +316,12 @@ module.exports = {
   assertAllCollected,
   assertNoDirectUnreleasedEdit,
   assertUserItemsFit,
+  assertUserNotesNotFinalized,
   changedFileStatuses,
   checkChanges,
   collectChanges,
   countUserItems,
+  finalUserNotesFragment,
   parseFragment,
   readFragments,
   readUnreleasedSection,
