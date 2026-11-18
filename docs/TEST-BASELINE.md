@@ -161,6 +161,13 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 
 界面上「几点发来」这类时间，同一天只写 `14:05`，不是今天就带日期写成 `11 月 11 日 23:50`。用例里拿 `Date.now() - N 分钟` 造数据、再用 `/^\d\d:\d\d …/` 去对，在 runner 本地时间零点后的 N 分钟里就会红（`e2e/v2-business.test.mjs`「最近一次」那条 11-12 北京 08:00、UTC 零点红过）。要么断言里让日期那段可有可无（`(?:\d{1,2} 月 \d{1,2} 日 )?`），要么把造数据的时间钉在当天中午。复现：容器是 UTC，在 UTC 零点后几分钟内单跑那条就能看到。
 
+## 只让某一次写失败：按写的内容认，不按第几次（2026-11-18）
+
+`codex-remote-service.test.ts`「still switches every channel off when turning off switching on at launch cannot be saved」在 main 上三平台必红过：#1898 用 `mockRejectedValueOnce` 让 `store.updateSettings` 失败一次，本意是让「清掉自动打开」那次写失败；#1902（YR-2）在处理绑定的人发来的话之前先写一次消息编号，那一次失败被它吃掉，轮到清自动打开时写成功了。两个 PR 各自绿，合在一起红。
+
+- 写法：用 `mockImplementation` 先把 `mutate` 套在一份 `structuredClone` 出来的设置上看它改了什么，是要测的那次才抛错，其余照常调原来的 `updateSettings`。再补一句断言钉住场景（比如 `remote.message-id-unsaved` 没出现、盘上的值还是旧的），以后路径上再多一次写，用例也不会悄悄换成测别的。
+- 真的要模拟「盘满了、所有写都失败」用 `mockRejectedValue`（不带 Once），那是另一种场景，别混着用。
+
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 
 `fast-check` 写的随机输入测试（各测试文件末尾 `… with random inputs` 那几节：打码、外链白名单、会话编号、换线路改配置、粘贴密钥整理、PowerShell 单引号和通配符转义）每次跑用不同的随机种子，同一条这次绿、下次红是可能的。红的那次是库碰巧造出了一个打破规矩的输入，**代码真有这个缺口**：不按「重跑就过」放过，也不许把生成器改窄躲过去。

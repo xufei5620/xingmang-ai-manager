@@ -55,6 +55,7 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 - **`npm test` 和 `npm run test:v2` 可以在同一个目录里同时后台跑**，没冒过假红。（沿用 11-09）
 - **容器里没有 zsh**（11-11 验），`electron/macos-platform.test.ts` 里真跑 zsh 的那批用例会自动跳过，不算失败。想让它们在容器里真跑，`apt-get install -y zsh`。（沿用 11-10）
 - **容器里你是 root**（11-11 验）。Linux 版客户端拒绝以 root 启动，真开客户端要先处理这个（见第 7 节）。
+- **`npm test` 的 vitest 段在 `electron/system-service.{certificate-trust,disk-space,download-stall,install-cancel}.test.ts` 这 4 个文件红 29 条**（11-18 验）：报「这台电脑上的 Claude Code 不是通过本工具安装的」，或者等到 30 秒超时。原因是容器自带的 Claude Code 换了装法：`/opt/node22/bin/claude` 现在链到 `/opt/claude-code/bin/claude`（11-18 这个容器里链接的时间是 11-17，以前在 npm 全局目录里），不在 npm 全局目录里，装 CLI 前的检测照真机 PATH 认出它、当成别处装的拒绝再装。这几个用例没把 PATH 隔开，算测试自己的漏洞，不算环境问题放过。核对办法：把容器那份挪出 PATH 单跑这 4 个文件，要 0 失败：`PATH=/usr/bin:/bin /opt/node22/bin/node node_modules/vitest/vitest.mjs run <这 4 个文件>`（11-18 验：57 条全过）。vitest 段一红，`npm test` 后面的 `test:scripts`、`test:browser` 不会跑，要再各自单跑一次。
 
 ## 4. Electron 二进制装不上时
 
@@ -124,7 +125,7 @@ CI 的 Windows（`windows-package`）和 Mac（`macos-test`）作业每个 PR �
 1. 容器是 root，`linux-launch-guard` 拒绝启动。夹具里先 `process.geteuid = () => 1000` 再加载入口。只许在夹具里这么做。
 2. 出网代理会换证书。要在夹具里对 `defaultSession` 和 `app.on('session-created')` 新建的会话都设 `setCertificateVerifyProc`，只放行代理那一个签发者；装工具用的是 `fromPartition` 出来的会话，只改默认会话不够。
 3. 写密钥那一步走 `Session.prototype.fetch`，不经过换掉的 `net.request`，要把它也对账号站转给假接口。
-4. 容器的 PATH 里自带一份 Claude Code（`/opt/node22/bin/claude`，11-11 验），客户端会当成「已装好但版本旧」。要走干净机器的路，给 `PATH=/usr/bin:/bin`。
+4. 容器的 PATH 里自带一份 Claude Code（`/opt/node22/bin/claude`，11-11 验；11-18 验时它链到 `/opt/claude-code/bin/claude`，不在 npm 全局目录里，客户端会当成别处装的），客户端会当成「已装好」。要走干净机器的路，给 `PATH=/usr/bin:/bin`。
 
 另外，容器的环境变量里有一批 `ANTHROPIC_*`、`CLAUDE_*`（11-11 验）。在子进程里真跑某个 CLI 时用 `env -i` 起，否则这些变量会把它的请求带到真服务上。还有一个不带下划线的 `CLAUDECODE`：客户端探测 Claude Code 的插件列表时，它会让 Claude Code 报「cannot be launched inside another Claude Code session」退出（11-17 验）。
 
