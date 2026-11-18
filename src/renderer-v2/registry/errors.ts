@@ -25,6 +25,8 @@ export const errors = {
   tlsIntercepted: { title: '连接被网络拦截', body: '连接的路上有设备把证书换成了别的（运营商、公司或学校的网络常见）。稍等一两分钟再试；还不行就换个网络（比如手机热点），公司或学校的网络请找网络管理员。', actions: ['重试', '查看日志'] },
   toolCertOutdatedNode: { title: 'Node.js 太旧，认不了这台电脑的证书', body: toolCertificateMessages.outdatedNode, actions: ['换成新版 Node.js', '重试', '查看日志'] },
   toolCertElevated: { title: '管理员身份下工具不认这台电脑的证书', body: toolCertificateMessages.elevated, actions: ['重试', '查看日志'] },
+  // 打开工具时工具自己都读不了它的配置文件（features/tools/broken-config-launch.ts）。下面那句原话说是哪个工具、打开会怎样。
+  configBroken: { title: '配置文件坏了', body: '点「修好它」，会先备份原来的文件，修好后接着打开。', actions: ['修好它', '找客服'] },
   configLink: { title: '配置文件是个链接', body: '为了安全，星芒不往链接里写，原来的设置没有动。照下面这句话把它换成普通文件，再点「重试」；不会弄就点「找客服」。', actions: ['重试', '找客服'] },
   folderRelocated: { title: '文件夹被搬到了别的位置', body: '为了安全，软件不往被搬过的文件夹里写东西。打开「检查」页能看到是哪个文件夹；把它搬回原来的位置就能恢复。', actions: ['打开检查页', '找客服'] },
   elevationDeclined: { title: '没拿到管理员授权', body: '这次没装，电脑上什么都没改。先照下面这句话做，再点「重试」；还不行点「找客服」。', actions: ['重试', '找客服'] },

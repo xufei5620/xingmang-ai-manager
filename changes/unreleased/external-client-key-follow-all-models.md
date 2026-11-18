@@ -1,7 +1,3 @@
-## 用户
-
-- 换了分组或账号、星芒自动把 Claude Desktop 和 WorkBuddy 换成新密钥时，会把它们用到的每个型号都对一遍，新密钥用不了的型号不再跟着换过去：Claude Desktop 打开时不会再因为菜单里留着新密钥没有的型号而提示型号被拒。
-
 ## 开发
 
 - 深查·桌面端接入第 1 条：自动换密钥（#1113）原来只拿新 Key 的型号清单核默认那一个。Claude Desktop 开机检查挑的是菜单里的 Haiku（`claudeDesktopStartupCheckModel`），新 Key 没有 Haiku 时一打开就「型号被拒」；WorkBuddy 每条都换了 Key，不看各条的型号。

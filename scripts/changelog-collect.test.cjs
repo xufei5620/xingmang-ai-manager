@@ -10,9 +10,11 @@ const {
   assertAllCollected,
   assertNoDirectUnreleasedEdit,
   assertUserItemsFit,
+  assertUserNotesNotFinalized,
   changedFileStatuses,
   collectChanges,
   countUserItems,
+  finalUserNotesFragment,
   parseFragment,
   readFragments,
   readUnreleasedSection,
@@ -316,6 +318,66 @@ test('the check reports the user entry count even without fragments', () => {
 
     assert.equal(result.status, 0, result.stderr)
     assert.match(result.stdout, /本次没有分片，「## 用户」合计 1 条/)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+const finalNotes = '## 用户\n\n- 定稿的第一句。\n- 定稿的第二句。\n\n## 开发\n\n- 为什么定稿。\n'
+
+test('once the customer notes are finalized, other fragments may carry only a developer half', () => {
+  const directory = fixture({ [finalUserNotesFragment]: finalNotes, 'later.md': '## 开发\n\n- 定稿之后合进来的改动。\n' })
+  try {
+    assert.doesNotThrow(() => assertUserNotesNotFinalized(readFragments(directory)))
+    const result = run(directory, ['--check'])
+    assert.equal(result.status, 0, result.stderr)
+    // 未发布段里原有 1 条，加上定稿那 2 句。
+    assert.match(result.stdout, /「## 用户」合计 3 条/)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('a fragment that adds a customer line to finalized notes is refused by the check and by collect', () => {
+  const fragments = { [finalUserNotesFragment]: finalNotes, 'late.md': userFragment(1, '定稿后又加的'), 'quiet.md': '## 开发\n\n- 只有开发。\n' }
+  const directory = fixture(fragments)
+  try {
+    assert.throws(() => assertUserNotesNotFinalized(readFragments(directory)), /已经定稿[\s\S]*late\.md/)
+
+    const checked = run(directory, ['--check'])
+    assert.notEqual(checked.status, 0)
+    assert.match(checked.stderr, /变更分片处理失败/)
+    assert.match(checked.stderr, new RegExp(`整份写在 changes/unreleased/${finalUserNotesFragment.replace('.', '\\.')}`))
+    assert.match(checked.stderr, /删掉这几个分片里的「## 用户」：late\.md。/)
+
+    // 发版时汇总也拦下，一个文件都不动，免得多出来的那句跟着定稿的几句进了更新页。
+    const collected = run(directory)
+    assert.notEqual(collected.status, 0)
+    assert.deepEqual(fs.readdirSync(path.join(directory, 'changes', 'unreleased')).sort(), ['README.md', 'TEMPLATE.md.example', finalUserNotesFragment, 'late.md', 'quiet.md'].sort())
+    assert.equal(fs.readFileSync(path.join(directory, 'release-notes.md'), 'utf8'), releaseNotes)
+    assert.equal(fs.readFileSync(path.join(directory, 'CHANGELOG.md'), 'utf8'), changelog)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('customer lines in several fragments are fine while no version has finalized its notes', () => {
+  const directory = fixture({ 'a.md': userFragment(1), 'b.md': userFragment(1, '另一条') })
+  try {
+    assert.doesNotThrow(() => assertUserNotesNotFinalized(readFragments(directory)))
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('collecting finalized notes ships them in order and removes the fragment, so the next version starts open', () => {
+  const directory = fixture({ [finalUserNotesFragment]: finalNotes, 'later.md': '## 开发\n\n- 定稿之后合进来的改动。\n' })
+  try {
+    const result = run(directory)
+    assert.equal(result.status, 0, result.stderr)
+    const notes = readUnreleasedSection(fs.readFileSync(path.join(directory, 'release-notes.md'), 'utf8'), userSection)
+    assert.deepEqual(notes, ['- 已经在 main 上的用户条目。', '- 定稿的第一句。', '- 定稿的第二句。'])
+    assert.deepEqual(fs.readdirSync(path.join(directory, 'changes', 'unreleased')).sort(), ['README.md', 'TEMPLATE.md.example'])
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
   }

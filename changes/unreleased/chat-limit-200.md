@@ -1,8 +1,3 @@
-## 用户
-
-- 聊天能存的对话从 50 个提到 200 个，天天用聊天也不用隔一两个月就停下来删对话。存满 200 个以后还是原来那句提示，删掉一些不要的就能接着聊。
-  一条消息贴得太长（超过 40000 字）时也不再悄悄把结尾截掉（报错日志最要紧的往往就是最后几行），输入框下面会写明现在多少字，删到 40000 字以内就能发。
-
 ## 开发
 
 - 深查 D6（聊天页 C9，选「放宽」）：渲染层 `chat/storage.ts` 的 `MAX_CONVERSATIONS` 和主进程 `ai-chat-history-store.ts` 的 `MAX_CHAT_HISTORY_CONVERSATIONS` 从 50 提到 200（两边有意重复，各自的测试钉着 200 可存、201 拒绝）。`useChatController.ts` 三处写死的 50 和那句「最多保存 N 个对话，请先删除不再需要的对话」改用 storage 导出的 `MAX_CONVERSATIONS` / `conversationLimitMessage`；设置页「导入」的两句（`features/app/data-transfer.ts`）和读存超上限时那句「聊天记录超过 N 个，这台电脑存不下，原来的记录没动」（W24）里的数字也跟着它走。字一个没加，只是数字变了。

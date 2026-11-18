@@ -2474,13 +2474,14 @@ if (!hasSingleInstanceLock) {
       log: (level, event, message, detail) => runtimeLog.log(level, 'codex-remote', event, message, detail),
       onChange: () => applicationTray?.updateSnapshot(),
     })
-    // 手机遥控 Codex：每次打开星芒都从关着开始，客户在设置里点了才连飞书、微信。
+    // 手机遥控 Codex：客户在设置里点了才连飞书、微信；打开了「打开星芒时自动打开遥控」（YF-9）的，打开星芒时替他连。
     // 「下好了」的系统通知和首页气泡在能闲时装的 Mac 上多说一句「你不用电脑时星芒也会自己装好」：看的是程序包能不能
-    // 免密码换（一次运行里不变）和遥控开没开——遥控开着闲时不装（YK-2，update-install-prompt 的 idleInstallHeldByRemote），
-    // 这句就不能说；遥控开关每变一次重算。遥控开着时不去探程序包，省得每条遥控消息都跟着试一次能不能写。
+    // 免密码换（一次运行里不变）和遥控重开以后连不连得回去——开着又连不回去时闲时不装（YK-2，idleInstallHold 的
+    // 'drops'），这句就不能说；连得回去的只是等手机那边安静下来（YR-3），照样会装。遥控开关、自动打开开关每变一次重算。
+    // 遥控连不回去时不去探程序包，省得每条遥控消息都跟着试一次能不能写。
     // 状态文件关掉了闲时装（remote-features.ts）也不说，跳框器那边同一条（unattended）。
     const refreshIdleInstall = () => {
-      updaterService.setIdleInstall(!codexRemote.hasEnabledChannel() && !remoteFeatures.isOff('mac-idle-install')
+      updaterService.setIdleInstall(codexRemote.idleInstallHold() !== 'drops' && !remoteFeatures.isOff('mac-idle-install')
         && installUnattended(updaterService.getState().installMethod))
     }
     // 托盘那一项「关掉手机遥控」跟着有没有渠道开着走，「打开手机遥控」跟着都关着时齐没齐走（YF-8）。
@@ -2956,8 +2957,10 @@ if (!hasSingleInstanceLock) {
       busy: () => resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
       toolsWorking: () => cliKeepAwake.tools().length > 0,
       accelerationActive: () => acceleration?.hasPossibleSession() === true,
-      // 遥控开着就不在闲时重启：重开以后不会自己连回去，人在外面也开不了（YK-2）。
-      remoteControlActive: () => codexRemote.hasEnabledChannel(),
+      // 遥控开着、重开以后又不会自己连回去，就不在闲时重启：人在外面开不了（YK-2）。
+      remoteControlActive: () => codexRemote.idleInstallHold() === 'drops',
+      // 开了「打开星芒时自动打开遥控」的重开会自己连回去，只等手上没活、半小时没收到手机消息（YR-3）。
+      remoteControlBusy: () => codexRemote.idleInstallHold() === 'busy',
       // 视频剪辑页、画布出的视频，连同登录时接着取回来的：重启会打断，交给服务端的照样扣钱。
       videoWorking: () => [...businesses.values()].some((business) => (
         business.videoService.hasActiveRequests() || business.chatVideoService.hasActiveRequests()

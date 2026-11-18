@@ -11,4 +11,4 @@
   `detect`），开着也写；「从没配置过」对 WorkBuddy 改成 `models.json` 里没有星芒站点的模型、星芒没替当前账号写过
   （`ExternalClientOwnershipStore.recorded`，客户删了星芒那条不再加回去）、没用 `WORKBUDDY_CONFIG_DIR` / `WORKBUDDY_DATA_FOLDER_NAME`
   另指配置。自动那次只往文件里追加一条，客户原有的每一条一个字节不动。连好了在角落说配置窗口原有那句，登录那次也说（另两家照旧不说）。
-  更新页「## 用户」已满 60 条，这条没占。
+  0.2.24 给客户看的更新说明已定稿（`final-user-notes.md`），这条只写开发记录。

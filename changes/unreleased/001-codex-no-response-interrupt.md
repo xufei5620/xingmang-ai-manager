@@ -1,8 +1,3 @@
-## 用户
-
-- 修好 Codex 用着用着突然停下、报一行「response.interrupt」英文错误的问题（多半出在它派出去的帮手做完活的时候）。
-  现在在 Codex 回复途中发的新消息，会等它说完手上这一步再处理。
-
 ## 开发
 
 - Codex 用当前账号时 `[features]` 补 `instant_interrupt = false`、`defer_mailbox_preemption = true`，

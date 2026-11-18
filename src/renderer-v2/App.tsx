@@ -308,9 +308,18 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     toolsApi, toolbox, toast, offline, mounted, accountEpoch, setConfirmation, setOperationError,
     reopen: (tool) => { if (tool === 'codexDesktop') requestLaunch('codexDesktop'); else void perform('打开客户端', () => launchExternal(tool)) },
   })
+  // 「配置文件坏了」的「修好它」：首页卡片、配置窗口和打开工具时的错误框都走这里。retry 是错误框里那次
+  // 没打开的打开，修好了替客户再开一次，不用回首页再点。
+  function repairBrokenConfig(id: ToolId, retry?: () => void) {
+    void perform('重置为初始状态', async () => {
+      if (!await repairBrokenToolConfig(id)) return
+      confirmToolKeyWritten(id)
+      retry?.()
+    }, id)
+  }
   const { openCodexDesktopStore, runOperationAction, runGuideFailureAction } = useFailureActions({
     app, toolsApi, toast, perform, navigate, operationError, setOperationError, rewriteAccountKeys, install, snapshot: toolbox.snapshot,
-    setConfirmation, setNodeReplace, setAuth, setHelp,
+    setConfirmation, setNodeReplace, setAuth, setHelp, repairBrokenConfig,
   })
   // 确认过的事没做成时，错误框里的「重试」直接再做一遍，不再问一次。卸载时工具还开着，
   // 错误框说「先关掉……再重试」，以前框里却没有「重试」可点。确认框一直开在错误框后面，
@@ -503,7 +512,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               }, id)} onKeepConfig={(id) => void perform('保留当前配置', () => keepCurrentToolConfig(id))}
               onSwitchAccount={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', async () => { if (await switchToolAccount(id, target)) confirmToolKeyWritten(id) }, id)}
               onRepairHooks={(id) => void perform('修提醒设置', () => repairToolHooks(id), id)}
-              onRepairConfig={(id) => void perform('重置为初始状态', async () => { if (await repairBrokenToolConfig(id)) confirmToolKeyWritten(id) }, id)}
+              onRepairConfig={(id) => repairBrokenConfig(id)}
               onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onCancelInstallExternal={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
               onSwitchExternalSource={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', () => switchExternalSource(id, target))} onOpenExternalDownload={(url) => void perform('打开下载页', () => app.openExternal(url))}
@@ -585,7 +594,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       ready={externalClientReady(toolbox.externalClients, externalClient)} version={toolbox.externalClients.find((client) => client.tool === externalClient)?.version ?? null} onClose={() => setExternalClient(null)} onSaved={finishExternalConfigSave} />}
     {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}:${codexModelFilter}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated} initialModelFilter={codexModelFilter}
       strictKeyFormat={siteId === 'solov'} onOfficialQuota={() => setOfficialQuotaOpen(true)} onBackups={() => navigate('backups')}
-      onClose={() => setConfigTool(null)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onKeyWritten={confirmToolKeyWritten} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)}
+      onClose={() => setConfigTool(null)} onRepair={(id) => repairBrokenConfig(id)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onKeyWritten={confirmToolKeyWritten} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)}
       accountName={session.account?.username ?? null}
       onSwitchAccount={async (id) => {
         const switched: { result: AccountSourceSwitchResult | null } = { result: null }

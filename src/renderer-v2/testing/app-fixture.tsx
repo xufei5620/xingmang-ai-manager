@@ -158,6 +158,9 @@ if (query.has('officialEmail')) { config.providers.codex.officialAccountEmail = 
 if (query.has('unknown')) { config.providers.codex.matchesRelay = false; config.providers.codex.actualBaseUrl = 'https://other.example.test/v1' }
 // ?codexBroken：Codex 自己读不了 config.toml（主进程 configBroken），重置之后才好。
 if (query.has('codexBroken')) config.providers.codex.configBroken = true
+// ?codexUnreadable：同上，再照真机那样星芒也读不出中转地址和型号（2026-11-18 客户：中文用户名吃掉了反斜杠），
+// 工具就成了「没连上」，打开时走到「配置文件坏了」那一句。
+if (query.has('codexUnreadable')) config.providers.codex = { ...config.providers.codex, configBroken: true, matchesRelay: false, actualBaseUrl: '', model: '' }
 // ?hooksAutoRepaired=codex：打开软件时主进程替客户把指向旧位置的提醒设置改好了（cliHooksAutoRepaired）。
 for (const provider of Object.keys(config.providers) as ProviderId[]) if (query.get('hooksAutoRepaired') === provider) config.providers[provider].cliHooksAutoRepaired = true
 // ?codexAuthBroken：Codex 读不了 auth.json（主进程 codexAuthBroken），星芒也读不出 Key。
@@ -912,6 +915,11 @@ const methods = {
       }
       if (query.get('notEnabled') === provider) {
         failed.push({ provider, message: '分组不存在、不可用或名称重复，请确认账号可用分组' })
+        continue
+      }
+      // 真机上只更新要照着原文件改，读不了的 config.toml 会被拒（config-files.ts 的 describeBrokenConfig）。
+      if (query.has('codexUnreadable') && provider === 'codex' && config.providers.codex.configBroken && input.mode !== 'reset' && input.mode !== 'repair') {
+        failed.push({ provider, message: 'Codex 的配置文件里有写错的地方（第 2 行附近），星芒没有改动它。' })
         continue
       }
       keyRewritten.add(provider)

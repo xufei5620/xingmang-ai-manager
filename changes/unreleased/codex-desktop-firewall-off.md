@@ -1,8 +1,3 @@
-## 用户
-
-- Windows 上装或更新 Codex 桌面端时，如果是因为这台电脑的 Windows 防火墙服务被停掉才装不上，现在会直接说清楚，不再叫你反复重试或去微软商店装，也不会先换一路把几百兆的安装包再下一遍才告诉你；微软商店只是还没有新版时，也不再说成「商店没装上」。
-  Claude Desktop 一键安装没装上时，错误框里多了「下载离线安装包」，国内也下得动。
-
 ## 开发
 
 - `codex-desktop-install-failure.ts` 新增 `firewallOff`：Add-AppxPackage 的 0x80073CF6 里带 0x800706D9（注册 `windows.firewallRules` 扩展时防火墙服务 MpsSvc 没在跑）单独归一类，排在 `blocked` 前面；只认错误码，因为 PowerShell 按控制台宽度把扩展名折成两半（2026-11-06 客户日志是「windows.firewallRu\r\nles」）。这一类的失败句不带商店、官网两路的经过，也不说「原来那一版照常能用」。渲染层新卡 `codexDesktopFirewallOff`，只给「查看日志」「找客服」。
