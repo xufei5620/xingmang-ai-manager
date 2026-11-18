@@ -35,6 +35,7 @@ import {
   codexModelCatalogRequiredCliVersion,
   type CodexModelCatalogVerdict,
   combineCodexModelCatalogVerdicts,
+  fitCodexModelCatalogToCli,
   parseCodexModelCatalog,
   type ParsedCodexModelCatalog,
   readBundledCodexModelCatalog,
@@ -585,21 +586,36 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   }
 
   /**
-   * 这次要给 Codex 写的型号名单（codex-model-catalog.ts）：全文 = 照写；null = 收回本软件
-   * 写的那一行（账号的型号随包名单里一个都没有、默认型号不在名单里、名单文件的位置被换成了
-   * 链接、这台电脑上的命令行或桌面端太旧）；undefined = 原样不动（没有随包名单、看不出
+   * 这次要给 Codex 写的型号名单（codex-model-catalog.ts）：全文 = 照写，命令行够不上的新型号
+   * 不写；null = 收回本软件写的那一行（账号的型号随包名单里一个都没有、默认型号不在名单里、
+   * 名单文件的位置被换成了链接、这台电脑上的命令行或桌面端太旧）；undefined = 原样不动（没有随包名单、看不出
    * 命令行或桌面端是哪一版），免得一次没读到就把菜单来回改。
    */
   async function resolveCodexModelCatalog(availableModels: readonly string[], model: string): Promise<string | null | undefined> {
     const official = loadBundledCodexModelCatalog()
     if (!official) return undefined
-    const catalog = buildCodexRelayModelCatalog(official, availableModels)
-    if (!catalog) {
+    const offered = buildCodexRelayModelCatalog(official, availableModels)
+    if (!offered) {
       runtimeLog?.log('info', 'config', 'codex-model-catalog.no-match', '当前账号能用的型号随包名单里都没有，Codex 用它自带的菜单', {
         models: availableModels.length,
       })
       return null
     }
+    if (offered.borrowed.length) {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.borrowed', '随包名单里还没有的新型号，借了同系列最新那一项的资料', {
+        borrowed: offered.borrowed,
+      })
+    }
+    const cli = await codexCliForModelCatalog.read()
+    const catalog = fitCodexModelCatalogToCli(offered, cli)
+    if (catalog?.models.length !== offered.models.length) {
+      const kept = new Set(catalog?.models.map((entry) => entry.slug) ?? [])
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.cli-too-old-for-models', '这台电脑上的 Codex 命令行够不上几个新型号，这几个先不进菜单', {
+        cliVersion: cli?.version ?? null,
+        skipped: offered.models.map((entry) => entry.slug).filter((slug) => !kept.has(slug)),
+      })
+    }
+    if (!catalog) return null
     if (!codexModelCatalogListsModel(catalog, model)) {
       runtimeLog?.log('info', 'config', 'codex-model-catalog.model-not-listed', 'Codex 的默认型号不在随包名单里，这次不写型号名单', { model })
       return null
