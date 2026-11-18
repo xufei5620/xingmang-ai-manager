@@ -1022,8 +1022,7 @@ export function Home(props: HomeProps) {
     // macOS 上没有核对得了的官方 Mac 包的（主进程 macos-desktop-app-installer.ts 那张表之外，
     // installSupported 为假）要客户自己下载。原来按钮写「暂不支持」且点不动，客户看到的是
     // 死路一条；现在带他去教程里那一章（第七批 3）。表里有的照常「安装」。
-    // Windows arm64 上 WorkBuddy 同样装不了，但那是没有对应架构的包，教程救不了，
-    // 仍旧保持「暂不支持」。
+    // WorkBuddy 不走这里：星芒不装、不给下载，没装时按钮是「重新检测」（external-model.ts，yoyo 2026-11-18「下线」）。
     const manualInstall = tool.action === 'install' && tool.disabled && snapshot?.platform.isMac === true
     // Windows 上缺系统安装组件时一键安装不了，与其留一颗点不动的「暂不支持」，
     // 不如直接把人送到官网下载页（网址由主进程给，白名单逐条收录）。

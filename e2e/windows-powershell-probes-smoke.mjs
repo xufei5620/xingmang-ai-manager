@@ -1069,17 +1069,21 @@ checks.push(['external client inventory answers in ConstrainedLanguage', async (
     assert.deepEqual(launch.clients.map((entry) => [entry.tool, entry.path, entry.signatureSubject]), [['workbuddy', workbuddy, 'CN=星芒 Remembered']])
     assert.equal(launch.timings.signaturesReused, 1)
     const directory = path.dirname(workbuddy)
+    // Get-LocalExecutableRejection answers '' for a path it accepts and names the
+    // refusal otherwise; the refusal only reaches the runtime log, but a missing
+    // program must read as missing, not as a path it could not read.
     const cases = [
-      [workbuddy, 'True'],
-      [workbuddy.toLowerCase(), 'True'],
-      [`${directory}\\.\\WorkBuddy.exe`, 'False'],
-      [`${directory}\\..\\WorkBuddy\\WorkBuddy.exe`, 'False'],
-      [`${directory}\\\\WorkBuddy.exe`, 'False'],
-      [`${directory}/WorkBuddy.exe`, 'False'],
-      [`${directory}.\\WorkBuddy.exe`, 'False'],
-      [`${directory} \\WorkBuddy.exe`, 'False'],
+      [workbuddy, 'accepted'],
+      [workbuddy.toLowerCase(), 'accepted'],
+      [`${directory}\\.\\WorkBuddy.exe`, 'invalid'],
+      [`${directory}\\..\\WorkBuddy\\WorkBuddy.exe`, 'invalid'],
+      [`${directory}\\\\WorkBuddy.exe`, 'invalid'],
+      [`${directory}/WorkBuddy.exe`, 'invalid'],
+      [`${directory}.\\WorkBuddy.exe`, 'invalid'],
+      [`${directory} \\WorkBuddy.exe`, 'invalid'],
+      [`${directory}\\WorkBuddyAI.exe`, 'missing'],
     ]
-    const checked = await runConstrained(`${windowsExternalClientInventoryScript()}\n'CHECKED:' + (@(foreach ($pathCase in (ConvertFrom-Json $env:XINGMANG_PATH_CASES)) { [string](Test-LocalExecutablePath $pathCase) }) -join ',')`, { XINGMANG_PATH_CASES: JSON.stringify(cases.map(([candidate]) => candidate)) })
+    const checked = await runConstrained(`${windowsExternalClientInventoryScript()}\n'CHECKED:' + (@(foreach ($pathCase in (ConvertFrom-Json $env:XINGMANG_PATH_CASES)) { $rejection = Get-LocalExecutableRejection $pathCase; if ($rejection) { [string]$rejection } else { 'accepted' } }) -join ',')`, { XINGMANG_PATH_CASES: JSON.stringify(cases.map(([candidate]) => candidate)) })
     assert.equal(checked.split(/\r?\n/).find((line) => line.startsWith('CHECKED:')), `CHECKED:${cases.map(([, expected]) => expected).join(',')}`, checked)
     console.log(`info external client inventory in ConstrainedLanguage: timings=${JSON.stringify(scan.timings)}`)
   } finally {

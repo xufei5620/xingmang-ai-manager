@@ -12,8 +12,10 @@ export function registerExternalClientHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('external-clients:scan', async (_event, force: unknown, input: unknown) => {
     if (force !== undefined && typeof force !== 'boolean') throw new Error('客户端检测参数格式错误')
     // 上次的结果只用来先把首页那几行画出来：不起盘点、不记检测失败，真的结果回来再说。
-    if (parseExternalClientScanOptions(input).cachedOnly) return service.cachedExternalClients()
-    const statuses = await service.scanExternalClients(force === true)
+    const scanOptions = parseExternalClientScanOptions(input)
+    if (scanOptions.cachedOnly) return service.cachedExternalClients()
+    // 回到窗口时悄悄看一眼 WorkBuddy：一向是现看，不分 force；检测失败照常记。
+    const statuses = scanOptions.only ? [await service.scanExternalClient(scanOptions.only)] : await service.scanExternalClients(force === true)
     logDetectionFailures(externalClientDetectionFailures(statuses))
     return statuses
   })

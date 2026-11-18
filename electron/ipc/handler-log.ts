@@ -67,6 +67,11 @@ export function ipcSuccessMessage(channel: IpcInvokeChannel, args: unknown[], re
   if (readsCachedExternalClientsOnly(channel, args)) {
     return count ? `已先显示上次的客户端检测结果，共 ${count} 项` : '没有可先显示的上次客户端检测结果'
   }
+  // 回到窗口时只看了 WorkBuddy 一家（yoyo 2026-11-18「改」）：写「外部客户端检测完成，共 1 项」会让客服以为整轮检测过了。
+  if (channel === 'external-clients:scan' && isRecord(args[1]) && args[1].only === 'workbuddy' && Array.isArray(result)) {
+    const [status] = result
+    return isRecord(status) && status.installed === true ? '回到窗口时单独看了一眼 WorkBuddy：已装好' : '回到窗口时单独看了一眼 WorkBuddy：还没装'
+  }
   if ((channel === 'models:list' || channel === 'models:list-configured') && count !== null) {
     return `可用模型读取完成，共 ${count} 个`
   }

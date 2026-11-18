@@ -94,12 +94,15 @@ const status = { installed: true, version: '1.2.3', path: 'C:\\Fixture\\bin', in
   uninstall: { available: true, reason: null, manualCommand: null, delegated: false } }
 const externalStatuses: ExternalClientStatus[] = (['workbuddy', 'claudeDesktop', 'opencode'] as ExternalToolId[]).map((tool) => ({
   tool, installed: query.has('clientModels') || query.has('externalInstalled'), version: '1.2.3', path: `C:\\Fixture\\${tool}.exe`, installDirectory: 'C:\\Fixture', running: false,
-  installSupported: query.get('externalUnsupported') !== tool, launchSupported: true, detectionError: query.get('externalDetectionError') === tool ? '客户端路径读取失败' : null,
+  // 同主进程：WorkBuddy 星芒不装、不给下载（yoyo 2026-11-18「下线」），没装时首页是「重新检测」。
+  installSupported: tool !== 'workbuddy' && query.get('externalUnsupported') !== tool, launchSupported: true, detectionError: query.get('externalDetectionError') === tool ? '客户端路径读取失败' : null,
   installHint: query.get('externalUnsupported') === tool ? '当前平台请从官方页面手动安装' : null,
   configured: query.get('externalReady') === tool, model: query.get('externalReady') === tool ? 'fixture-model' : null,
   configurationSource: query.get('externalOther') === tool ? 'other' : query.get('externalReady') === tool ? 'xingmang' : 'missing',
   ...(tool === 'claudeDesktop' ? { configurationReady: query.get('externalReady') === tool || query.get('externalLocalReady') === tool } : {}),
   configurationError: query.get('externalConfigError') === tool ? '当前配置读取失败，可在客户端中检查' : null,
+  // ?externalPristine=opencode：主进程现看这一家从没配置过（决定单 D7 的自动连只认它）。
+  ...(query.get('externalPristine') === tool ? { pristine: true } : {}),
 }))
 const externalOwnerSite = session.siteId ?? 'solov'
 const configValue = { exists: true, hasApiKey: true, matchesRelay: true, configurationOwnership: 'account' as const, baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1', model: 'fixture-model', apiKeyPreview: 'sk-***', dataDirectory: 'C:\\Fixture', dataDirectoryExists: true, files: [], updatedAt: null }
@@ -588,6 +591,8 @@ const methods = {
         ...(entry.tool === 'workbuddy' ? { installed: true, version: '0.9.0', configured: true, configurationSource: 'xingmang' as const, model: 'cached-model' } : {}),
         cachedAt: '2026-10-05T10:00:00.000Z' }))
     }
+    // 回到星芒窗口时只看 WorkBuddy 一家（yoyo 2026-11-18「改」）：同主进程，回的列表里只有它那一条。
+    if (options?.only === 'workbuddy') return structuredClone(externalStatuses.filter((entry) => entry.tool === 'workbuddy'))
     const result = structuredClone(externalStatuses)
     if (query.has('externalAccountOwned') && (!session.authenticated || session.account?.userId !== account.userId || (session.siteId ?? 'solov') !== externalOwnerSite)) {
       const owned = result.find((entry) => entry.tool === query.get('externalAccountOwned'))
@@ -609,7 +614,7 @@ const methods = {
   },
   // 同主进程：下载那一段点了就停，安装那一步拒绝并给原因（externalCancelRefused）。
   cancelExternalClientInstall: async (tool) => {
-    if (query.has('externalCancelRefused')) return { cancelled: false, reason: '正在安装 WorkBuddy，这一步中断会留下装了一半的程序，请等它结束。' }
+    if (query.has('externalCancelRefused')) return { cancelled: false, reason: '正在安装 OpenCode，这一步中断会留下装了一半的程序，请等它结束。' }
     cancelExternalInstall?.(new Error(`${tool} 安装已取消`))
     return { cancelled: true, reason: null }
   },
@@ -875,7 +880,11 @@ const methods = {
   },
   configureExternalTool: async (tool, input) => {
     if (query.has('clientSaveFailure')) throw new Error('配置保存失败，原配置已保留')
-    Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, { configured: true, ...(tool === 'claudeDesktop' ? { configurationReady: true } : {}), model: input.model, configurationSource: 'xingmang', configurationError: null })
+    const saving = externalStatuses.find((entry) => entry.tool === tool)!
+    // 同主进程：自动连的那一次只写从没配置过的。
+    if (input.automatic && !saving.pristine) throw new Error(`${tool} 已经有配置了或者正开着，这次没有自动连接`)
+    delete saving.pristine
+    Object.assign(saving, { configured: true, ...(tool === 'claudeDesktop' ? { configurationReady: true } : {}), model: input.model, configurationSource: 'xingmang', configurationError: null })
     return { tool, model: input.model, path: tool === 'claudeDesktop' ? 'C:\\Fixture\\Claude-3p\\configLibrary\\fixture.json' : `C:\\Fixture\\${tool}\\config.json`,
       files: [], backups: ['C:\\Fixture\\config.bak'], outcome: 'configured' as const,
       message: '配置已保存，请重新打开客户端。', restartRequired: true,

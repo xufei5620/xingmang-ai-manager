@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import type { ClaudeDesktopLaunchContext } from './claude-desktop-acceleration'
-import { createExternalClientRouteService } from './external-client-route-service'
+import { buildExternalClientRejectionLogDetail, createExternalClientRouteService, openCodeConfiguredByEnvironment, workBuddyConfiguredByEnvironment } from './external-client-route-service'
 import type { SystemServiceOptions } from './system-service'
 import { createServiceContext } from './system-service-context'
 
@@ -24,6 +24,7 @@ function createService(fetchAvailableModels: (apiKey: string) => Promise<string[
   const store = new AppSettingsStore(path.join(root, 'settings.json'), root)
   const runtime: NonNullable<SystemServiceOptions['externalClientRuntime']> = {
     scan: vi.fn(async () => []),
+    scanOne: vi.fn(),
     install: vi.fn(),
     cancelInstall: vi.fn(() => ({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })),
     launch: vi.fn(async () => undefined),
@@ -98,5 +99,31 @@ describe('external client route service', () => {
     await expect(service.launchExternalClient('claudeDesktop')).rejects.toThrow('尚未检测到客户端')
     await expect(prepareClaudeDesktopLaunch.mock.calls[1][0].isDesktopRunning()).resolves.toBe(false)
     expect(runtime.stillRunning).not.toHaveBeenCalled()
+  })
+
+  it('counts OpenCode as configured by the customer when environment variables point its config elsewhere', () => {
+    expect(openCodeConfiguredByEnvironment({})).toBe(false)
+    expect(openCodeConfiguredByEnvironment({ XDG_DATA_HOME: path.join(os.tmpdir(), 'xdg-data') })).toBe(false)
+    for (const env of [{ OPENCODE_CONFIG: '/custom/opencode.json' }, { OPENCODE_CONFIG_DIR: '/custom' }, { OPENCODE_CONFIG_CONTENT: '{}' }]) {
+      expect(openCodeConfiguredByEnvironment(env), JSON.stringify(env)).toBe(true)
+    }
+    // XDG_DATA_HOME 不是完整路径：看不准它把登录凭据放在哪，当客户自己配过（D7）。
+    expect(openCodeConfiguredByEnvironment({ XDG_DATA_HOME: 'relative/data' })).toBe(true)
+  })
+})
+
+describe('WorkBuddy found but not taken (2026-11-18)', () => {
+  it('leaves WorkBuddy alone when the customer moved its configuration with an environment variable', () => {
+    expect(workBuddyConfiguredByEnvironment({})).toBe(false)
+    expect(workBuddyConfiguredByEnvironment({ WORKBUDDY_CONFIG_DIR: '  ' })).toBe(false)
+    expect(workBuddyConfiguredByEnvironment({ WORKBUDDY_CONFIG_DIR: 'D:\\WorkBuddyData' })).toBe(true)
+    expect(workBuddyConfiguredByEnvironment({ WORKBUDDY_DATA_FOLDER_NAME: '.workbuddy-test' })).toBe(true)
+  })
+
+  it('logs install records it did not take with the home folder masked', () => {
+    const home = 'C:\\Users\\张三'
+    expect(buildExternalClientRejectionLogDetail([{ tool: 'workbuddy', path: `${home}\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe`, reason: 'reparse' }], home)).toEqual({
+      rejected: [{ tool: 'workbuddy', path: '%USERPROFILE%\\AppData\\Local\\WorkBuddy\\WorkBuddy.exe', reason: 'reparse' }],
+    })
   })
 })

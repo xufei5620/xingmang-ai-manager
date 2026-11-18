@@ -1014,19 +1014,19 @@ export const tutorialTopics: readonly TutorialTopic[] = [
   {
     id: macDesktopTutorialTopic,
     title: 'Mac 上装桌面端',
-    lead: 'Codex 桌面端、Claude Desktop 和 OpenCode 在首页点「安装」就能装好；WorkBuddy 还要你从官网下载。装好后回星芒检测、配置。不用把四个都装一遍。',
+    lead: 'Codex 桌面端、Claude Desktop 和 OpenCode 在首页点「安装」就能装好，装好后回星芒检测、配置。不用把三个都装一遍。',
     category: 'tools',
     minutes: 4,
-    keywords: ['Mac', 'macOS', '苹果', 'Codex', 'ChatGPT', 'WorkBuddy', 'Claude Desktop', 'OpenCode', '桌面端', '安装指南', '一键安装', 'dmg', 'pkg', '应用程序', 'arm64', '检测不到'],
+    keywords: ['Mac', 'macOS', '苹果', 'Codex', 'ChatGPT', 'Claude Desktop', 'OpenCode', '桌面端', '安装指南', '一键安装', 'dmg', 'pkg', '应用程序', 'arm64', '检测不到'],
     steps: [
       {
         title: '先选你要用的桌面端',
         where: '星芒首页 › 对应桌面端 › 安装 / 安装指南',
-        detail: 'Codex 桌面端、Claude Desktop 和 OpenCode 点「安装」，星芒会下载官方安装包、放进「应用程序」，装好直接看第 4 步。WorkBuddy 的「安装指南」会打开本教程，下载安装要你自己完成。',
-        bullets: ['选择 Codex 桌面端、WorkBuddy、Claude Desktop 或 OpenCode。', '已显示版本号的不用重装，直接看第 4 步。'],
+        detail: 'Codex 桌面端、Claude Desktop 和 OpenCode 点「安装」，星芒会下载官方安装包、放进「应用程序」，装好直接看第 4 步。',
+        bullets: ['选择 Codex 桌面端、Claude Desktop 或 OpenCode。', '已显示版本号的不用重装，直接看第 4 步。'],
         expected: '知道这次要安装哪个应用。',
         extra: [
-          { title: '为什么 WorkBuddy 不能一键安装？', detail: '星芒要能确认下载到的是官方原版才会代你安装，Mac 上目前能确认的是 Codex 桌面端、Claude Desktop 和 OpenCode。WorkBuddy 请从官网下载、自己安装，它在 Mac 上一样能用。一键安装没成功时，也可以照第 2、3 步自己装。安装桌面端不会改动已经装好的命令行工具。' },
+          { title: '一键安装没成功怎么办？', detail: '照第 2、3 步自己装。安装桌面端不会改动已经装好的命令行工具。' },
           { title: 'Codex 桌面端装好后为什么叫 ChatGPT？', detail: 'OpenAI 的 Mac 版 Codex 桌面端在「应用程序」里就叫 ChatGPT。「应用程序」里已经有一个旧版 ChatGPT（以前的聊天程序）时，先把它移到废纸篓，再点「安装」。' },
           { title: '装到哪里去了？', detail: '管理员账号装进「应用程序」；不是管理员的账号装进自己个人文件夹里的「应用程序」，星芒一样认得出来。' },
         ],
@@ -1041,7 +1041,6 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         expected: '得到所选应用的 Mac 安装包。',
         extra: [
           { title: 'Codex 桌面端', detail: '在 OpenAI 的 ChatGPT 下载页查找 Mac 安装包；安装后可能叫 Codex，也可能叫 ChatGPT，星芒会识别对应的官方应用。' },
-          { title: 'WorkBuddy', detail: '到腾讯 WorkBuddy 官网下载 macOS 版。' },
           { title: 'Claude Desktop', detail: '到 Claude 官网的下载页选择 macOS 版桌面应用。' },
           { title: 'OpenCode', detail: '到 OpenCode 官网下载 macOS 桌面端，注意与同名命令行版本区分。' },
         ],
