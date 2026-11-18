@@ -2842,13 +2842,23 @@ describe('codex-remote-service lifecycle', () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
     await s.service.setAutoStart(true)
-    vi.spyOn(s.store, 'updateSettings').mockRejectedValueOnce(new Error('disk full'))
+    // 只让清掉自动打开的那一次写失败，按写进去的内容认，不按第几次：处理这句之前还要先记下消息编号（YR-2），
+    // 那一次写照常成功。按次数数（mockRejectedValueOnce）会被那一次吃掉，测的就不是这件事了。
+    const realUpdateSettings = s.store.updateSettings.bind(s.store)
+    vi.spyOn(s.store, 'updateSettings').mockImplementation(async (mutate) => {
+      const probe = structuredClone(await s.store.readSettings())
+      mutate(probe)
+      if (!probe.autoStart) throw new Error('disk full')
+      return realUpdateSettings(mutate)
+    })
 
     channel.handlers?.onInbound(text(alice, '关闭遥控'))
     await channel.sentUntil(() => channel.texts().length > 0)
     expect(s.service.hasEnabledChannel()).toBe(false)
     await vi.waitFor(() => expect(channel.stopped).toBe(1))
     expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
+    expect(s.logs).not.toContain('remote.message-id-unsaved')
+    expect((await s.store.readSettings()).autoStart).toBe(true)
     expect(s.logs).toContain('remote.auto-start-unsaved')
     expect(s.logDetails.find((entry) => entry.event === 'remote.closed-from-phone')?.detail).toEqual({ channel: 'feishu', autoStartCleared: false })
   })
