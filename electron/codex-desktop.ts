@@ -1,3 +1,5 @@
+import { codexDesktopPackageProbeName, codexDesktopUnrecognizedProbeResult } from './codex-desktop-probe-failure'
+
 export interface StartAppEntry {
   name: string
   appId: string
@@ -175,60 +177,106 @@ export function parseCodexDesktopPackagesJson(output: string): CodexDesktopPacka
 }
 
 /**
+ * 查包脚本自己会写进 error 的唯一一句：当前账户的 Get-AppxPackage 报错时。它本来就是写给客户看的、
+ * 带着下一步，所以是查包结果里唯一能原样上屏的话。脚本照这一份拼（buildCodexDesktopPackageProbeScript），
+ * 解析时也只认这一份。
+ */
+export const codexDesktopPackageProbeAccountMessage = '读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。'
+
+// 原话进日志时最多留多长：够看出是哪个字段不对、是不是更新到一半，又不把整段输出塞进一行日志。
+const maximumPackageProbeDetailLength = 600
+
+function packageProbeDetail(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, maximumPackageProbeDetailLength)
+}
+
+/**
+ * 查包那段答了话、答的却不是认得的结果。摘要是英文、开头是 codexDesktopPackageProbeName，
+ * 界面认出开头就换成自己的话（isCodexDesktopProbeFailure）；原话放在 detail 里，只进日志。
+ * 以前这里直接写中文「Windows Appx 探测返回数据格式无效」，渲染层见是中文就原样上屏，而且
+ * 原话被丢了，日志里看不出到底缺了什么（11-18 客户）。
+ */
+function unrecognizedCodexDesktopPackageProbe(reason: string, output: string): {
+  value: null
+  error: string
+  source: null
+  confirmedAbsent: false
+  detail?: string
+} {
+  const detail = packageProbeDetail(output)
+  return {
+    value: null,
+    error: `${codexDesktopPackageProbeName}: ${codexDesktopUnrecognizedProbeResult} (${reason})`,
+    source: null,
+    confirmedAbsent: false,
+    ...(detail ? { detail } : {}),
+  }
+}
+
+/**
  * Parses the structured result emitted by the Windows Appx probe. The probe
  * deliberately reports whether an empty result is authoritative: a regular
  * user may enumerate its own packages but is not allowed to use
  * `Get-AppxPackage -AllUsers` to inspect another account.
+ *
+ * Only `codexDesktopPackageProbeAccountMessage` may come back as `error`
+ * verbatim. Anything else the probe says, and any output that does not parse,
+ * becomes an English summary for the log with the raw text in `detail`, never
+ * a sentence the renderer would put on screen as-is.
  */
 export function parseCodexDesktopPackageProbeJson(output: string): {
   value: CodexDesktopPackageEntry | null
   error: string | null
   source: CodexDesktopPackageProbeSource
   confirmedAbsent: boolean
+  /** 探测的原话（看不懂的输出、脚本里没有的那种报错），只进日志、不上屏。只跟着英文摘要出现。 */
+  detail?: string
 } {
   const trimmed = output.trim().replace(/^\uFEFF/, '')
-  if (!trimmed) {
-    return {
-      value: null,
-      error: 'Windows Appx 探测没有返回结果',
-      source: null,
-      confirmedAbsent: false,
-    }
+  if (!trimmed) return unrecognizedCodexDesktopPackageProbe('empty output', '')
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed) as unknown
+  } catch {
+    return unrecognizedCodexDesktopPackageProbe('not JSON', trimmed)
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return unrecognizedCodexDesktopPackageProbe('not a JSON object', trimmed)
+  }
+  const record = parsed as Record<string, unknown>
+  if (!Object.prototype.hasOwnProperty.call(record, 'packages')) {
+    return unrecognizedCodexDesktopPackageProbe('no packages field', trimmed)
+  }
+  if (!record.packages || typeof record.packages !== 'object') {
+    return unrecognizedCodexDesktopPackageProbe('invalid packages field', trimmed)
   }
 
-  try {
-    const parsed = JSON.parse(trimmed) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
-    const record = parsed as Record<string, unknown>
-    if (!Object.prototype.hasOwnProperty.call(record, 'packages')) throw new Error('missing packages')
-    if (!record.packages || typeof record.packages !== 'object') throw new Error('invalid packages')
-
-    const source = record.source === 'current-user' || record.source === 'all-users'
-      ? record.source
-      : null
-    const confirmedAbsent = record.confirmedAbsent === true
-    const error = typeof record.error === 'string' && record.error.trim()
-      ? record.error.trim().slice(0, 2_000)
-      : null
-    const packageJson = JSON.stringify(record.packages)
-    const packages = packageJson ? parseCodexDesktopPackagesJson(packageJson) : []
-    const rawPackages = Array.isArray(record.packages) ? record.packages : [record.packages]
-    if (rawPackages.length > 0 && packages.length === 0) throw new Error('invalid package entries')
-    if (packages.length > 0 && source === null) throw new Error('missing package source')
-    if (packages.length === 0 && !confirmedAbsent && !error) throw new Error('inconclusive probe')
-    return {
-      value: selectCodexDesktopPackage(packages),
-      error,
-      source,
-      confirmedAbsent,
-    }
-  } catch {
-    return {
-      value: null,
-      error: 'Windows Appx 探测返回数据格式无效',
-      source: null,
-      confirmedAbsent: false,
-    }
+  const source = record.source === 'current-user' || record.source === 'all-users'
+    ? record.source
+    : null
+  const confirmedAbsent = record.confirmedAbsent === true
+  const rawError = typeof record.error === 'string' ? record.error.trim() : ''
+  // 脚本只会写给客户的那一句；别的（旧版脚本的说法、编码坏掉的乱码）都不上屏，原话进日志。
+  const knownError = rawError === codexDesktopPackageProbeAccountMessage
+  const packageJson = JSON.stringify(record.packages)
+  const packages = packageJson ? parseCodexDesktopPackagesJson(packageJson) : []
+  const rawPackages = Array.isArray(record.packages) ? record.packages : [record.packages]
+  if (rawPackages.length > 0 && packages.length === 0) {
+    return unrecognizedCodexDesktopPackageProbe('no package entry has a usable name, version and install folder', trimmed)
+  }
+  if (packages.length > 0 && source === null) {
+    return unrecognizedCodexDesktopPackageProbe('packages without a source', trimmed)
+  }
+  if (packages.length === 0 && !confirmedAbsent && !rawError) {
+    return unrecognizedCodexDesktopPackageProbe('neither a package nor a confirmed absence', trimmed)
+  }
+  return {
+    value: selectCodexDesktopPackage(packages),
+    error: !rawError ? null : knownError ? rawError : `${codexDesktopPackageProbeName}: ${codexDesktopUnrecognizedProbeResult} (unknown error text)`,
+    source,
+    confirmedAbsent,
+    ...(rawError && !knownError ? { detail: packageProbeDetail(rawError) } : {}),
   }
 }
 

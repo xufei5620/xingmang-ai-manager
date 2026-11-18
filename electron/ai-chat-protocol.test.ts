@@ -15,6 +15,7 @@ import {
   toChatCompletionsWireBody,
   validateAiChatGroup,
 } from './ai-chat-protocol'
+import { GEMINI_IMAGE_MODEL_PATTERN as IMAGE_SKILL_GEMINI_PATTERN } from './xingmang-ai-skill'
 
 describe('AI model capabilities', () => {
   it('uses explicit presets for verified image models', () => {
@@ -256,6 +257,69 @@ describe('AI model capabilities', () => {
     expect(resolveAiModelCapability('jimeng/bad')).toMatchObject({ kind: 'chat' })
     expect(isImageModel('gpt-4o')).toBe(false)
   })
+
+  // 站上加的新 Gemini 出图型号以前被当成文字模型：图片分组里不列，硬拿来出图报「当前模型不支持图片生成」。
+  it('recognizes newer Gemini image models by the image skill rule and routes them like Gemini 3.1 Flash Image', () => {
+    for (const model of ['nano-banana-2', 'nano-banana-pro', 'gemini-3-pro-image-preview', 'gemini-3.2-flash-image', 'Gemini-3.1-Flash-Image-Preview']) {
+      expect(resolveAiModelCapability(model), model).toMatchObject({
+        kind: 'image', model, provider: 'gemini-image', available: true, hidden: false, source: 'fallback',
+        resolutions: ['1K', '2K', '4K'], defaultResolution: '1K', supportsEdits: false, qualities: [],
+      })
+    }
+    for (const model of ['nano-banana', 'gemini-2.5-flash-image', 'gemini-2.0-flash-exp-image-generation']) {
+      expect(resolveAiModelCapability(model), model).toMatchObject({
+        kind: 'image', provider: 'gemini-image', source: 'fallback', resolutions: ['1K'], supportsEdits: false,
+      })
+    }
+    for (const model of ['gemini-3-pro', 'gemini-2.0-flash-exp', 'gemini-embedding-001', 'proxy-nano-banana-2', 'gemini-image']) {
+      expect(resolveAiModelCapability(model), model).toMatchObject({ kind: 'chat', available: true, hidden: false })
+    }
+  })
+
+  it('agrees with the image skill on which names are Gemini image models', () => {
+    const names = [
+      'nano-banana', 'nano-banana-2', 'nano-banana-pro', 'nano-banana-', 'nano-bananas',
+      'gemini-3-pro-image-preview', 'gemini-2.5-flash-image', 'gemini-3.2-flash-image', 'gemini-image', 'gemini-3-pro',
+      'gemini-2.0-flash-exp', 'proxy-nano-banana-2', 'gemini--image',
+    ]
+    for (const model of names) {
+      expect(resolveAiModelCapability(model).kind === 'image', model).toBe(IMAGE_SKILL_GEMINI_PATTERN.test(model))
+    }
+  })
+
+  it('recognizes other vendors\' image models that the relay serves through the Images API', () => {
+    for (const model of [
+      'dall-e-3', 'imagen-4.0-generate-001', 'qwen-image', 'qwen-image-plus', 'qwen-image-2.0-pro', 'z-image-turbo',
+      'wan2.6-t2i', 'wanx2.1-t2i-turbo', 'flux-2-pro', 'flux.1-schnell', 'black-forest-labs/FLUX.1-schnell',
+      'black-forest-labs/flux-1.1-pro', 'doubao-seedream-4-0-250828', 'doubao-seedream-3-0-t2i-250415', 'seedream-4.5',
+    ]) {
+      expect(resolveAiModelCapability(model), model).toEqual({
+        kind: 'image', model, provider: 'images-api', available: true, hidden: false, source: 'fallback',
+        sizePolicy: { kind: 'allow-list', values: ['auto'], default: 'auto' },
+        qualities: [], resolutions: ['1K'], defaultResolution: '1K', supportsEdits: false,
+      })
+    }
+  })
+
+  it('leaves edit-only, chat and video models out of the name rules', () => {
+    // Edit-only models need a source picture this path never sends.
+    for (const model of ['qwen-image-edit', 'qwen-image-edit-plus', 'wan2.6-image', 'wanx2.1-imageedit', 'doubao-seededit-3-0-i2i', 'flux-1-edit']) {
+      expect(resolveAiModelCapability(model), model).toMatchObject({ kind: 'chat' })
+    }
+    for (const model of ['qwen3-max', 'qwen-vl-max', 'doubao-seed-1.6', 'influx-7b', 'midjourney-v7', 'proxy-dall-e-3']) {
+      expect(resolveAiModelCapability(model), model).toEqual({ kind: 'chat', model, available: true, hidden: false, source: 'fallback' })
+    }
+    // A name that also reads as video stays hidden, as before (#1059).
+    for (const model of ['wan2.2-t2v-plus', 'doubao-seedance-1-0-pro', 'flux-video-1', 'nano-banana-video']) {
+      expect(resolveAiModelCapability(model), model).toMatchObject({ kind: 'chat', available: false, hidden: true })
+    }
+  })
+
+  it('lists newly recognized image models in the image group after the curated ones', () => {
+    expect(selectAiChatModelsForGroup('图片模型', [
+      'nano-banana-pro', 'gpt-image-2', 'doubao-seedream-4-0-250828', 'qwen-image-edit', 'gpt-5.6-sol', 'flux-2-pro', 'nano-banana-2',
+    ])).toEqual(['gpt-image-2', 'nano-banana-pro', 'doubao-seedream-4-0-250828', 'flux-2-pro', 'nano-banana-2'])
+  })
 })
 
 describe('chat completion protocol', () => {
@@ -460,6 +524,41 @@ describe('image generation protocol', () => {
     expect(() => buildImageGenerationRequest({
       model: 'gemini-3.1-flash-image', prompt: '图', size: '1111x777',
     })).toThrowError(expect.objectContaining({ code: 'invalid-image-size' }))
+  })
+
+  it('builds the same Gemini request for newer Gemini image models and leaves image_size out for Gemini 2', () => {
+    expect(buildImageGenerationRequest({
+      model: 'nano-banana-pro', prompt: '电影感海岸', size: '1280x720', quality: 'high', imageResolution: '4K',
+    })).toEqual({
+      model: 'nano-banana-pro',
+      messages: [{ role: 'user', content: '电影感海岸' }],
+      stream: false,
+      extra_body: { google: { image_config: { aspect_ratio: '16:9', image_size: '4K' } } },
+    })
+    expect(buildImageGenerationRequest({ model: 'gemini-2.5-flash-image', prompt: '图', size: '720x1280' })).toEqual({
+      model: 'gemini-2.5-flash-image',
+      messages: [{ role: 'user', content: '图' }],
+      stream: false,
+      extra_body: { google: { image_config: { aspect_ratio: '9:16' } } },
+    })
+    expect(() => buildImageGenerationRequest({ model: 'nano-banana', prompt: '图', imageResolution: '2K' }))
+      .toThrowError(expect.objectContaining({ code: 'invalid-image-resolution' }))
+    expect(() => buildImageGenerationRequest({ model: 'nano-banana-2', prompt: '图', size: '1111x777' }))
+      .toThrowError(expect.objectContaining({ code: 'invalid-image-size' }))
+  })
+
+  it('sends only model, prompt and n for image models the service sizes itself', () => {
+    for (const input of [
+      { model: 'doubao-seedream-4-0-250828', prompt: '海边', size: '1024x1024', quality: 'high' as const, imageResolution: '1K' as const },
+      { model: 'qwen-image', prompt: '海边' },
+      { model: 'flux-2-pro', prompt: '海边', size: 'auto' },
+    ]) {
+      expect(buildImageGenerationRequest(input), input.model).toEqual({ model: input.model, prompt: '海边', n: 1 })
+    }
+    expect(() => buildImageGenerationRequest({ model: 'imagen-4.0-generate-001', prompt: '海边', imageResolution: '2K' }))
+      .toThrowError(expect.objectContaining({ code: 'invalid-image-resolution' }))
+    expect(() => buildImageGenerationRequest({ model: 'qwen-image', prompt: ' ' }))
+      .toThrowError(expect.objectContaining({ code: 'invalid-message' }))
   })
 })
 
