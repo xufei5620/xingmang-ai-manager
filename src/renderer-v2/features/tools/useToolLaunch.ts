@@ -6,12 +6,13 @@ import type { AccountBootstrapView } from '../app/useAccountBootstrap'
 import type { AppApi, AppToast, Perform, Toolbox, ToolsApi } from '../app/runtime-context'
 import type { WindowOs } from '../app/window-os'
 import { accountKeyChangeInProgress } from './account-bootstrap'
+import { brokenConfigLaunchMessages } from './broken-config-launch'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './chinese-runtime-choice'
 import { offersCodexDesktopRestartOnOpen } from './codex-desktop-open'
 import { resolveToolKeySyncFailure } from './key-sync-failure'
 import { launchWaitLabel, launchWarning } from './launch-notice'
 import { waitWhileAccountConnectionPending } from './launch-wait'
-import { codexNeedsRepair, presentTools, providerFor, readyOnceRepaired, type ToolId, type ToolSource } from './model'
+import { brokenConfigOf, codexNeedsRepair, presentTools, providerFor, readyOnceRepaired, type ToolId, type ToolSource } from './model'
 import { modelSwapOffer, type ModelSwapChoice, type ModelSwapOffer } from './model-check'
 import { isMissingWorkspace, launchWorkspaces, type CliLaunchChoice } from './recent-workspaces'
 import { jobToolName } from './tool-jobs'
@@ -144,6 +145,10 @@ export function useToolLaunch(options: ToolLaunchOptions) {
         tool = presentTools({ ...current, config: fresh }).find((entry) => entry.id === id) ?? tool
         if (codexNeedsRepair(fresh.providers[tool.provider], tool.provider)) throw new Error('Codex 的连接设置没修好，已保持原样。请在首页点「修好它」再试一次。')
       }
+      // 工具自己都读不了的配置文件，在配置窗口里怎么选都修不好（只更新会被拒、密钥也读不准），不再弹它、
+      // 也不说「确认账号连接」：错误框直接给「修好它」，修完接着打开（broken-config-launch.ts）。
+      const broken = tool.configured ? null : brokenConfigOf(config.providers[tool.provider], tool.provider)
+      if (broken) throw new Error(brokenConfigLaunchMessages[broken])
       if (!tool.configured) { openToolConfig(id); throw new Error('请先确认账号连接，再打开工具。') }
       // Every awaited step belongs to the account that requested this launch. A
       // later session event must not resume the old request against a new owner.
@@ -301,6 +306,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
     const inFlight = launchRequest.current
     if (inFlight?.epoch() && (inFlight.id === id || !launchParkedOnAccount(inFlight.id))) return
     launchRequest.current = request
+    // 记着是哪个工具：错误框里的「修好它」「复制路径」都要靠它找到修哪个、哪个目录。
     void perform('打开工具', async () => {
       try {
         // Codex 桌面端先查在不在运行、问不问中文，也算在「正在打开工具」里；要弹框问的，
@@ -320,7 +326,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       } catch (cause) {
         if (launchIsCurrent(request.epoch)) throw cause
       }
-    }).finally(() => { if (launchRequest.current === request) launchRequest.current = null })
+    }, id).finally(() => { if (launchRequest.current === request) launchRequest.current = null })
   }
   /**
    * 记住的目录随时可能被删掉或改名。那种情况下退回目录选择器，用户点一次

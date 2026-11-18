@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { configWriteBlockerMessage } from '../../../../electron/config-write-blocker'
 import { toolCertificateMessages } from '../../../../electron/network-failure'
 import { OperationErrorDialog, operationErrorActions, supportFailureOf } from './OperationErrorDialog'
+import { brokenConfigLaunchMessages } from '../tools/broken-config-launch'
 
 describe('renderer-v2 operation error dialog', () => {
   it('leads with the catalog heading and keeps the backend sentence underneath', () => {
@@ -106,6 +107,19 @@ describe('renderer-v2 operation error dialog', () => {
       .toEqual(['copyPath', 'support'])
     expect(operationErrorActions({ message: permission, retry: () => undefined }, '/tmp/npm/@anthropic-ai/claude-code').map((action) => action.id))
       .toEqual(['retry', 'copyPath', 'support'])
+  })
+
+  it('offers 修好它 as the way out of a broken config only when it knows which tool to repair', () => {
+    const message = brokenConfigLaunchMessages.codexConfig
+    expect(operationErrorActions({ message, retry: () => undefined }).map((action) => action.id)).toEqual(['support'])
+    expect(operationErrorActions({ message, retry: () => undefined, tool: 'codexDesktop' }).map((action) => action.id)).toEqual(['repairConfig', 'support'])
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message, tool: 'codexDesktop', retry: () => undefined }} onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('配置文件坏了')
+    expect(markup).toContain('点「修好它」，会先备份原来的文件，修好后接着打开。')
+    expect(markup).toContain(message)
+    expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="operation-error-repairConfig"/)
   })
 
   it('offers to replace an outdated Node.js as the way out, and 找客服 where it cannot', () => {

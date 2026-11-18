@@ -5,6 +5,7 @@ import { codexDesktopKnownIssueNotice, resolveCodexDesktopKnownIssue } from '../
 import { relayProviderBaseUrlMatches } from '../../../../electron/relay-sites'
 import type { ActiveProviderId } from '../../../../electron/catalog'
 import { tools } from '../../registry/tools'
+import type { BrokenConfig } from './broken-config-launch'
 import {
   getSourceMarkerStorage,
   readManualSourceMarker,
@@ -288,9 +289,9 @@ export function codexNeedsRepair(config: Pick<ProviderConfigSummary, 'codexProvi
  * - codexAuth：Codex 的 auth.json。Codex 不报错，当成没登录，打开就要重新登录。
  * - claudeSettings：settings.json。Claude Code 弹英文的「Settings Error」、整份不用。
  *   星芒自己读不出 Key 时会把它认成官方账号，其实不是。
- * Grok CLI 的配置主进程不判。
+ * Grok CLI 的配置主进程不判。类型本身定在 broken-config-launch.ts（见那边的说明）。
  */
-export type BrokenConfig = 'codexConfig' | 'codexAuth' | 'claudeSettings'
+export type { BrokenConfig }
 
 export function brokenConfigOf(config: Pick<ProviderConfigSummary, 'configBroken' | 'codexAuthBroken'>, provider: ProviderId): BrokenConfig | null {
   if (provider === 'codex') return config.configBroken === true ? 'codexConfig' : config.codexAuthBroken === true ? 'codexAuth' : null
