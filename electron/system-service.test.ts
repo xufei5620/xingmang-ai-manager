@@ -924,6 +924,20 @@ describe('createSystemService', () => {
     expect(f.catalogSlugs()).toEqual(['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.1-sol', 'gpt-5.5'])
   })
 
+  it('puts a GPT model the bundled catalog does not know yet in the Codex menu, on its newest sibling\'s entry', async () => {
+    const f = codexCatalogFixture()
+    f.account.models = ['gpt-6.1-sol', 'gpt-6.2-sol', 'gpt-6.3-sol']
+    f.installCodexCli('0.169.0')
+
+    await f.save('gpt-6.3-sol')
+
+    expect(f.catalogSetting()).toBe('xingmang-models.json')
+    expect(f.catalogSlugs()).toEqual(['gpt-6.3-sol', 'gpt-6.2-sol', 'gpt-6.1-sol'])
+    const written = JSON.parse(fs.readFileSync(f.catalogPath, 'utf8')) as { models: Array<Record<string, unknown>> }
+    const [borrowed, sibling] = written.models
+    expect(borrowed).toEqual({ ...sibling, slug: 'gpt-6.3-sol', display_name: 'GPT-6.3-Sol', availability_nux: null, upgrade: null })
+  })
+
   it('keeps the rest of the Codex menu for a CLI too old for GPT-6.2, instead of dropping the whole catalog', async () => {
     const f = codexCatalogFixture()
     f.account.models = ['gpt-5.5', 'gpt-6.1-sol', 'gpt-6.2-astra', 'gpt-6.2-sol']

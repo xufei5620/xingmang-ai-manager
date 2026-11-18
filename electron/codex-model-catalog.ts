@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import { isCliModelName, isNonInteractiveCliModel, resolveOlderSiblingModel } from './cli-model-defaults'
 import { isRecord } from './input-guards'
 import { isNewerVersion } from './versions'
 
@@ -14,7 +15,13 @@ import { isNewerVersion } from './versions'
 // config.toml 顶层的 model_catalog_json 能整份换掉内置名单（0.105 起就有）。这里拿随包
 // 那份官方名单（bundled-catalog/codex-models，原样拷自 openai/codex 的发布 tag，一个字
 // 不改），只挑当前账号 /v1/models 里真有的型号，写成 CODEX_HOME 下的 xingmang-models.json。
-// 不编造型号，也不拿旧型号的资料冒充新型号。
+// 不编造账号没有的型号。
+//
+// 中转上了随包名单里还没有的新 GPT 型号（2026-11-18 的 GPT-6.2：xm 站当天上架，Codex 前一天才
+// 放进名单），以前要等下一版换名单：菜单里选不到，硬选上 Codex 退回通用提示词和老工具。现在
+// 借随包名单里同系列最新那一项的资料（只换 slug 和显示名，见 borrowCodexModelEntry），比通用
+// 资料近得多，不用发版。只借比同系列都新的型号，老型号、带日期的快照不借；下一版带上官方资料，
+// 官方那项自然顶替借来的。
 //
 // 这个文件坏了后果很重，几处取舍都围着它（2026-10-02 用 0.147.0～0.160.0 七个版本实测）：
 // - Codex 启动时读它，桌面端每开一个新对话还要再读一遍。找不到、不是合法 JSON、一个型号
@@ -73,8 +80,13 @@ const verbosities: ReadonlySet<string> = new Set(['low', 'medium', 'high'])
 const inputModalities: ReadonlySet<string> = new Set(['text', 'image', 'audio'])
 
 export interface CodexModelCatalog {
-  /** 每一项都是官方资料原样，只按 slug 挑，不改字段。 */
+  /** 每一项都是官方资料原样，只按 slug 挑，不改字段；借来的那几项只换了 slug 和显示名（borrowCodexModelEntry）。 */
   models: Array<Record<string, unknown>>
+}
+
+export interface CodexRelayModelCatalog extends CodexModelCatalog {
+  /** 借了同系列资料的新型号，留给日志。 */
+  borrowed: Array<{ slug: string; from: string }>
 }
 
 export interface CodexModelCatalogRejection {
@@ -195,19 +207,65 @@ export function readBundledCodexModelCatalog(filePath: string): ParsedCodexModel
   return parseCodexModelCatalog(bytes.toString('utf8'))
 }
 
+// 一次最多借这么多个。每一项带着整段提示词（几十 KB），中转回的型号列表是外部输入，
+// 列一长串假的新型号不能把名单文件撑大；正常时候一次上新也就一两个。
+const MAX_BORROWED_CODEX_MODELS = 6
+
+/** gpt-6.3-sol → GPT-6.3-Sol，跟官方名单的写法一样。 */
+export function codexModelDisplayName(slug: string): string {
+  return slug.split('-').map((part) => part.toLowerCase() === 'gpt' ? 'GPT' : part.charAt(0).toUpperCase() + part.slice(1)).join('-')
+}
+
 /**
- * 按当前账号能用的型号挑出要写的那几项，顺序照官方名单。账号的型号一个都对不上（分组
- * 配错、接口没回东西、全是非 OpenAI 型号）时返回 null：Codex 不认空名单，宁可不写。
- * 挑出来的全是菜单里不显示的（自动审查这类）也返回 null：写进去菜单就空了，还不如
- * Codex 自带的那份。
+ * 照着同系列那一项给新型号做一份资料：只换 slug 和显示名，提示词、工具、推理档位、上下文、最低
+ * 客户端版本都照抄。那一项的上新提示（availability_nux）和「换用新型号」（upgrade）写的是它自己，
+ * 留着 Codex 会拿别的型号名弹提示，清掉。
+ */
+export function borrowCodexModelEntry(base: Record<string, unknown>, slug: string): Record<string, unknown> {
+  return { ...base, slug, display_name: codexModelDisplayName(slug), availability_nux: null, upgrade: null }
+}
+
+/** 这个型号要不要借资料：像 GPT 对话型号的名字、随包名单里没有，借谁的由 resolveOlderSiblingModel 定。 */
+function borrowableCodexModel(model: string, officialSlugs: ReadonlySet<string>): boolean {
+  return /^gpt-/i.test(model) && isCliModelName(model) && !isNonInteractiveCliModel(model) && !officialSlugs.has(model)
+}
+
+/**
+ * 按当前账号能用的型号挑出要写的那几项，顺序照官方名单；随包名单里没有、又比同系列都新的
+ * GPT 型号借同系列最新那一项的资料，排在那一项前面。账号的型号一个都对不上（分组配错、
+ * 接口没回东西、全是非 OpenAI 型号）时返回 null：Codex 不认空名单，宁可不写。挑出来的全是
+ * 菜单里不显示的（自动审查这类）也返回 null：写进去菜单就空了，还不如 Codex 自带的那份。
  */
 export function buildCodexRelayModelCatalog(
   official: CodexModelCatalog,
   availableModels: readonly string[],
-): CodexModelCatalog | null {
-  const offered = new Set(availableModels.map((model) => model.trim()).filter(Boolean))
-  const models = official.models.filter((entry) => typeof entry.slug === 'string' && offered.has(entry.slug))
-  return models.some((entry) => entry.visibility === 'list') ? { models } : null
+): CodexRelayModelCatalog | null {
+  const offered = [...new Set(availableModels.map((model) => model.trim()).filter(Boolean))]
+  const offeredSet = new Set(offered)
+  const officialSlugs = new Set(official.models.flatMap((entry) => typeof entry.slug === 'string' ? [entry.slug] : []))
+  // 只从菜单里显示、能走 API 的官方型号里借，自动审查、内部代号不当底子。
+  const bases = official.models.filter((entry) => typeof entry.slug === 'string' && entry.visibility === 'list' && entry.supported_in_api === true)
+  const baseSlugs = bases.map((entry) => entry.slug as string)
+  const borrowedBefore = new Map<string, Array<Record<string, unknown>>>()
+  const borrowed: Array<{ slug: string; from: string }> = []
+  for (const model of offered) {
+    if (borrowed.length >= MAX_BORROWED_CODEX_MODELS) break
+    if (!borrowableCodexModel(model, officialSlugs)) continue
+    const from = resolveOlderSiblingModel(baseSlugs, model)
+    const base = from === null ? undefined : bases.find((entry) => entry.slug === from)
+    if (!from || !base) continue
+    const entry = borrowCodexModelEntry(base, model)
+    if (codexModelCatalogEntryProblem(entry) !== null) continue
+    borrowedBefore.set(from, [...(borrowedBefore.get(from) ?? []), entry])
+    borrowed.push({ slug: model, from })
+  }
+  const models: Array<Record<string, unknown>> = []
+  for (const entry of official.models) {
+    if (typeof entry.slug !== 'string') continue
+    models.push(...(borrowedBefore.get(entry.slug) ?? []))
+    if (offeredSet.has(entry.slug)) models.push(entry)
+  }
+  return models.some((entry) => entry.visibility === 'list') ? { models, borrowed } : null
 }
 
 function codexCliVersionOf(cli: { installed: boolean; version: string | null }): string | null {

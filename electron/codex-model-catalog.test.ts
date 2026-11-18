@@ -5,12 +5,14 @@ import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   applyCodexRelayModelCatalog,
+  borrowCodexModelEntry,
   buildCodexRelayModelCatalog,
   bundledCodexModelCatalogSource,
   codexCliAcceptsModelCatalog,
   codexDesktopAcceptsModelCatalog,
   codexModelCatalogContent,
   codexModelCatalogEntryProblem,
+  codexModelDisplayName,
   codexModelCatalogFileName,
   codexModelCatalogListsModel,
   codexModelCatalogRequiredCliVersion,
@@ -153,6 +155,70 @@ describe('Codex relay model catalog', () => {
     const catalog = buildCodexRelayModelCatalog(official, ['gpt-5.5', ' gpt-6.1-sol ', 'claude-opus-5', 'codex-auto-review'])
     expect(catalog?.models.map((model) => model.slug)).toEqual(['gpt-6.1-sol', 'codex-auto-review', 'gpt-5.5'])
     expect(catalog?.models[0]).toBe(official.models[1])
+  })
+
+  describe('models the bundled catalog does not know yet', () => {
+    const catalog = {
+      models: [
+        entry('gpt-6.2-sol', { priority: 1, minimal_client_version: '0.166.0', availability_nux: { message: 'Try GPT-6.2 Sol' }, upgrade: { model: 'gpt-6.2-sol' } }),
+        entry('gpt-6.1-terra', { priority: 3 }),
+        entry('gpt-daybreak-blue-latest', { visibility: 'hide' }),
+        entry('codex-auto-review', { visibility: 'hide' }),
+      ],
+    }
+
+    it('borrows the newest sibling entry, renamed, and lists it right before that sibling', () => {
+      const built = buildCodexRelayModelCatalog(catalog, ['gpt-6.2-sol', 'gpt-6.3-sol', 'gpt-6.2-terra'])
+      expect(built?.models.map((model) => model.slug)).toEqual(['gpt-6.3-sol', 'gpt-6.2-sol', 'gpt-6.2-terra'])
+      expect(built?.borrowed).toEqual([{ slug: 'gpt-6.3-sol', from: 'gpt-6.2-sol' }, { slug: 'gpt-6.2-terra', from: 'gpt-6.1-terra' }])
+      const borrowed = built!.models[0]
+      expect(borrowed).toEqual({
+        ...catalog.models[0],
+        slug: 'gpt-6.3-sol',
+        display_name: 'GPT-6.3-Sol',
+        availability_nux: null,
+        upgrade: null,
+      })
+      expect(codexModelCatalogEntryProblem(borrowed)).toBeNull()
+      // 官方那一项原样不动。
+      expect(built!.models[1]).toBe(catalog.models[0])
+    })
+
+    it('writes a catalog even when the account only offers the new model, not the sibling it borrows from', () => {
+      const built = buildCodexRelayModelCatalog(catalog, ['gpt-6.3-sol', 'claude-opus-5'])
+      expect(built?.models.map((model) => model.slug)).toEqual(['gpt-6.3-sol'])
+      expect(codexModelCatalogListsModel(built!, 'gpt-6.3-sol')).toBe(true)
+      // 借来的那项照抄最低客户端版本，命令行够不上时照样只少写它。
+      expect(fitCodexModelCatalogToCli(built!, { installed: true, version: '0.160.0' })).toBeNull()
+    })
+
+    it('borrows nothing for older models, dated snapshots, media models, unknown families or odd names', () => {
+      for (const model of ['gpt-4.1', 'gpt-6.2-sol-2026-11-17', 'gpt-image-3', 'gpt-6.3-sol-fast', 'gpt-7-nova', 'gpt-6.3 sol', 'gpt-daybreak-blue-v2', 'claude-opus-6']) {
+        expect(buildCodexRelayModelCatalog(catalog, ['gpt-6.2-sol', model])?.borrowed).toEqual([])
+      }
+      expect(buildCodexRelayModelCatalog(catalog, ['codex-auto-review', 'codex-auto-review-2'])).toBeNull()
+    })
+
+    it('borrows at most six at a time, so a long list of made-up names cannot swell the file', () => {
+      const flood = Array.from({ length: 20 }, (_, index) => `gpt-${7 + index}-sol`)
+      const built = buildCodexRelayModelCatalog(catalog, flood)
+      expect(built?.borrowed).toHaveLength(6)
+      expect(built?.models).toHaveLength(6)
+    })
+
+    it('spells display names the way the official catalog does', () => {
+      expect(codexModelDisplayName('gpt-6.3-sol')).toBe('GPT-6.3-Sol')
+      expect(codexModelDisplayName('gpt-7-astra')).toBe('GPT-7-Astra')
+      expect(borrowCodexModelEntry(entry('gpt-6.2-sol'), 'gpt-6.3-sol')).toMatchObject({ slug: 'gpt-6.3-sol', display_name: 'GPT-6.3-Sol' })
+    })
+
+    it('borrows from the real bundled catalog: GPT-6.2 Sol for a GPT-6.3 Sol, GPT-6.1 Terra for a GPT-6.2 Terra', () => {
+      const bundled = readBundledCodexModelCatalog(bundledPath)
+      const built = buildCodexRelayModelCatalog(bundled, ['gpt-6.3-sol', 'gpt-6.2-terra', 'gpt-6.2-sol'])
+      expect(built?.borrowed).toEqual([{ slug: 'gpt-6.3-sol', from: 'gpt-6.2-sol' }, { slug: 'gpt-6.2-terra', from: 'gpt-6.1-terra' }])
+      expect(built?.models.map((model) => model.slug)).toEqual(['gpt-6.3-sol', 'gpt-6.2-sol', 'gpt-6.2-terra'])
+      expect(parseCodexModelCatalog(codexModelCatalogContent(built!)).rejected).toEqual([])
+    })
   })
 
   it('writes no catalog when nothing the account offers would show in the menu', () => {

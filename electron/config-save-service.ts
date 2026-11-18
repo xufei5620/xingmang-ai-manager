@@ -574,6 +574,11 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       })
       return null
     }
+    if (offered.borrowed.length) {
+      runtimeLog?.log('info', 'config', 'codex-model-catalog.borrowed', '随包名单里还没有的新型号，借了同系列最新那一项的资料', {
+        borrowed: offered.borrowed,
+      })
+    }
     const cli = await codexCliForModelCatalog.read()
     const catalog = fitCodexModelCatalogToCli(offered, cli)
     if (catalog?.models.length !== offered.models.length) {

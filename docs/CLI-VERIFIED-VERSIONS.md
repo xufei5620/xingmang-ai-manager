@@ -910,6 +910,11 @@ Bedrock / Vertex。这次只换名单、不抬推荐版本：两个新型号官�
 同时改了一处写法：以前写进名单的型号里有一个官方最低版本高过本机命令行，整份不写；现在只少写那一个
 （`fitCodexModelCatalogToCli`），命令行低于 0.166.0 的客户菜单照旧，只是没有 6.2，跟 OpenAI 给 ChatGPT 登录的客户下发名单时一样一个一个筛。
 
+以后不等换名单：随包名单里还没有、又比同系列都新的 GPT 型号，借同系列最新那一项的资料进菜单（`borrowCodexModelEntry`，
+见 `docs/CODEX-ACCOUNT-CONFIG.md`「型号名单」）。沙箱里拿 `gpt-6.3-sol`（借 `gpt-6.2-sol`）、`gpt-6.2-terra`（借 `gpt-6.1-terra`）
+写的名单：0.159.0-alpha.12.1、0.169.0、0.170.0 的 `model/list` 都列出 `GPT-6.3-Sol`，`codex exec` 不报 `Model metadata ... not found`，
+请求字段跟官方那项一样。
+
 **Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
 上游只有 8 个提交，和中转有关的是两条：
 
