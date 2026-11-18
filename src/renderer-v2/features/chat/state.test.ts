@@ -94,6 +94,8 @@ describe('v2 chat request transitions', () => {
     expect(['claude-sonnet-4-5', 'gemini-3.1-flash-image', 'grok-imagine-image', 'deepseek-v3', 'qwen3-max', 'glm-4.6', 'kimi-k2', 'MiniMax-M2', 'jimeng-4.0']
       .map(chatModelVendor)).toEqual(['Claude', 'Gemini', 'Grok', 'DeepSeek', '通义千问', '智谱 GLM', 'Kimi', 'MiniMax', '即梦'])
     expect(chatModelVendor('other-model')).toBe('其他')
+    // Nano Banana is Google's name for Gemini image models.
+    expect(['nano-banana-pro', 'nano-banana-2'].map(chatModelVendor)).toEqual(['Gemini', 'Gemini'])
   })
 
   it('merges the models of every group into one list per mode, once each, in the backend order', () => {

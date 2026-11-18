@@ -35,6 +35,8 @@ function setup(
         'gpt-image-2',
         'jimeng_high_aes_general_v21_L',
         'grok-imagine-image-2.0',
+        'nano-banana-pro',
+        'doubao-seedream-4-0-250828',
       ],
       keyCreated: false,
       apiKey: 'sk-secret-never-return',
@@ -147,6 +149,44 @@ describe('AI image service', () => {
     })
     expect(assets.storeBase64).toHaveBeenCalledWith(7, 'data:image/jpeg;base64,aGVsbG8=', { prompt: '生成极简图标' })
     expect(assets.storeRemoteUrl).not.toHaveBeenCalled()
+  })
+
+  it('sends newer Gemini image models through Chat Completions like Gemini 3.1 Flash Image', async () => {
+    const fetchImpl = vi.fn(async () => response({
+      choices: [{ message: { content: '![image](data:image/jpeg;base64,aGVsbG8=)' } }],
+    })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+
+    await service.generate(4, {
+      requestId: 'nano-banana-pro', group: '图片模型', model: 'nano-banana-pro', prompt: '海边', size: '1024x1024', imageResolution: '2K',
+    })
+
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0]
+    expect(String(url)).toBe('https://xm.solov.cc/v1/chat/completions')
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      model: 'nano-banana-pro', extra_body: { google: { image_config: { aspect_ratio: '1:1', image_size: '2K' } } },
+    })
+    expect(assets.storeBase64).toHaveBeenCalledWith(7, 'data:image/jpeg;base64,aGVsbG8=', { prompt: '海边' })
+  })
+
+  it('sends other vendors\' image models to the images endpoint without size or quality and keeps a returned URL', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ url: 'https://images.example/seedream.jpeg' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+
+    await service.generate(4, {
+      requestId: 'seedream', group: '图片模型', model: 'doubao-seedream-4-0-250828', prompt: '海边', size: '1024x1024', quality: 'high',
+    })
+
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0]
+    expect(String(url)).toBe('https://xm.solov.cc/v1/images/generations')
+    expect(JSON.parse(String(init?.body))).toEqual({ model: 'doubao-seedream-4-0-250828', prompt: '海边', n: 1 })
+    expect(assets.storeRemoteUrl).toHaveBeenCalledWith(7, 'https://images.example/seedream.jpeg', { prompt: '海边' })
+    // These go out as plain generations only: an edit is refused before anything is sent.
+    await expect(service.edit(4, {
+      requestId: 'seedream-edit', group: '图片模型', model: 'doubao-seedream-4-0-250828', prompt: '改成夜景',
+      sourceAssetIds: ['a'.repeat(43)], expectedUserId: 7,
+    })).rejects.toThrow('当前模型不支持图片编辑')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
   it('rejects unsupported Gemini inline media without exposing it as an image asset', async () => {

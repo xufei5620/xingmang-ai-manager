@@ -78,7 +78,8 @@ export type AiChatParameters = {
 
 export type ImageQuality = 'low' | 'medium' | 'high' | 'auto'
 export type ImageResolution = '1K' | '2K' | '4K'
-export type ImageModelProvider = 'gpt-image' | 'gemini-image' | 'jimeng' | 'grok-image'
+// images-api：名字规则认出来的别家出图型号（seedream、Flux、通义等），走 Images API、尺寸交给服务定。
+export type ImageModelProvider = 'gpt-image' | 'gemini-image' | 'jimeng' | 'grok-image' | 'images-api'
 export type VideoModelProvider = 'grok-video' | 'minimax-h3'
 export type MiniMaxVideoMode = 't2va' | 'i2va' | 'fl2va' | 'l2va' | 'ref2va'
 export type MiniMaxVideoResolution = '480p' | '720p'
@@ -177,7 +178,7 @@ export type GeminiImageGenerationRequestBody = {
     google: {
       image_config: {
         aspect_ratio: string
-        image_size: ImageResolution
+        image_size?: ImageResolution
       }
     }
   }
@@ -431,6 +432,25 @@ export const KNOWN_IMAGE_MODEL_IDS = Object.freeze(
   Object.keys(IMAGE_PRESET_DEFINITIONS) as Array<keyof typeof IMAGE_PRESET_DEFINITIONS>,
 )
 
+// 下面两份只给名字规则认出来的型号用（不是哪个具体型号的预设，不进 KNOWN_IMAGE_MODEL_IDS，画布那张清晰度表也不列）。
+// Gemini 2.x 出图（nano-banana 原版就是 gemini-2.5-flash-image）只出 1K，请求里也不带 image_size：
+// 1K/2K/4K 档位是 Gemini 3 出图才有的，不带就是 1K；给 2.x 带上没好处，还可能被拒。
+const LEGACY_GEMINI_IMAGE_DEFINITION: ImagePresetDefinition = {
+  ...IMAGE_PRESET_DEFINITIONS['gemini-3.1-flash-image'],
+  resolutions: ONE_K_IMAGE_RESOLUTION,
+}
+const IMAGES_API_IMAGE_DEFINITION: ImagePresetDefinition = {
+  kind: 'image',
+  provider: 'images-api',
+  available: true,
+  hidden: false,
+  sizePolicy: GROK_IMAGE_POLICY,
+  qualities: [],
+  resolutions: ONE_K_IMAGE_RESOLUTION,
+  defaultResolution: '1K',
+  supportsEdits: false,
+}
+
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/
 const GPT_IMAGE_MODEL_PATTERN = /^gpt-image-[a-z0-9][a-z0-9._-]*$/i
 const UNAVAILABLE_GPT_IMAGE_15_PATTERN = /^gpt-image-1\.5(?:-|$)/i
@@ -439,6 +459,24 @@ const GROK_IMAGE_MODEL_PATTERN = /^grok-imagine-image(?:-[a-z0-9][a-z0-9._-]*)?$
 // grok-imagine-video-2 这类同名新版本按 Grok 视频认（#1059）：走的还是同一个接口、同样 1–15 秒；
 // 型号都来自账号自己的列表，账号列不出的照样用不了。
 const GROK_VIDEO_MODEL_PATTERN = /^grok-imagine-video(?:-[a-z0-9][a-z0-9._-]*)?$/i
+// 站上新上的 Gemini 出图型号（nano-banana-2、nano-banana-pro、gemini-3-pro-image-preview 这类）照 gemini-3.1-flash-image
+// 的接法走对话接口。规则跟画图技能认 Nano Banana 的同一条（xingmang-ai-skill.ts 的 GEMINI_IMAGE_MODEL_PATTERN，测试钉住）。
+// 对话接口要出图，站上 new-api 的「支持出图的 Gemini 模型」表里得有它映射到的上游型号：默认就有 gemini-2.5-flash-image、
+// gemini-3-pro-image(-preview)、gemini-3.1-flash-image(-preview)（rc.44 的 setting/model_setting/gemini.go 核过）。
+const GEMINI_IMAGE_MODEL_PATTERN = /^(?:nano-banana(?:-[a-z0-9][a-z0-9._-]{0,63})?|gemini-[a-z0-9][a-z0-9._-]{0,63}-image(?:-[a-z0-9][a-z0-9._-]{0,63})?)$/i
+const LEGACY_GEMINI_IMAGE_MODEL_PATTERN = /^(?:gemini-[12][.-]|nano-banana$)/i
+// 走 Images API、尺寸交给服务定的别家出图型号。名字照 new-api 自己认出图型号的那张表（rc.44 的 common/model.go
+// ImageGenerationModels：dall-e、imagen-、qwen-image、z-image、万相 t2i、flux）再加豆包 seedream（new-api 测渠道时
+// 也按 seedream 走生图接口）。万相 wan2.6-image 必须带参考图，不收；改图型号（qwen-image-edit 这类）同样不收。
+const IMAGES_API_MODEL_PATTERNS = [
+  /^dall-e(?:-|$)/i,
+  /^imagen-/i,
+  /(?:^|\/)(?:qwen-image|z-image)(?:$|[-_.])/i,
+  /^wanx?\d+(?:\.\d+)?-t2i(?:$|[-_.])/i,
+  /(?:^|[/_-])flux(?:[-.]|$)/i,
+  /(?:^|[/_-])seedream(?:$|[-_.\d])/i,
+]
+const IMAGE_EDIT_ONLY_MODEL_PATTERN = /(?:^|[-_.])edit(?:$|[-_.\d])/i
 const IMAGE_SIZE_PATTERN = /^(\d{3,4})x(\d{3,4})$/
 const MINIMAX_VIDEO_MODEL_PATTERN = /^minimax-h3-(?:mini|fast|base)$/
 // 站上新出的视频型号（minimax-h3-pro、sora-2 之类）上面认不出，不能拿去生成视频；
@@ -499,6 +537,17 @@ function createImageCapability(
   }
 }
 
+/** 名字规则认得出的出图型号用哪份能力；认不出返回 null。 */
+function resolveFamilyImageDefinition(model: string): ImagePresetDefinition | null {
+  if (GEMINI_IMAGE_MODEL_PATTERN.test(model)) {
+    return LEGACY_GEMINI_IMAGE_MODEL_PATTERN.test(model)
+      ? LEGACY_GEMINI_IMAGE_DEFINITION
+      : IMAGE_PRESET_DEFINITIONS['gemini-3.1-flash-image']
+  }
+  if (IMAGE_EDIT_ONLY_MODEL_PATTERN.test(model)) return null
+  return IMAGES_API_MODEL_PATTERNS.some((pattern) => pattern.test(model)) ? IMAGES_API_IMAGE_DEFINITION : null
+}
+
 export function resolveAiModelCapability(model: string): AiModelCapability {
   const normalized = requireBoundedIdentifier(model, 'model', AI_CHAT_LIMITS.modelLength)
   const preset = IMAGE_PRESET_DEFINITIONS[normalized as keyof typeof IMAGE_PRESET_DEFINITIONS]
@@ -541,6 +590,9 @@ export function resolveAiModelCapability(model: string): AiModelCapability {
     return createImageCapability(normalized, IMAGE_PRESET_DEFINITIONS['grok-imagine-image'], 'fallback')
   }
   const looksLikeVideo = UNRECOGNIZED_VIDEO_MODEL_PATTERN.test(normalized)
+  // 名字像视频的照旧藏起来（#1059），不拿去出图。
+  const family = looksLikeVideo ? null : resolveFamilyImageDefinition(normalized)
+  if (family) return createImageCapability(normalized, family, 'fallback')
   return {
     kind: 'chat',
     model: normalized,
@@ -881,6 +933,11 @@ export function buildImageGenerationRequest(input: {
     // recoverable when the user's DNS proxy exposes CDN hosts as Fake-IP.
     return { model: capability.model, prompt: input.prompt, n: 1, response_format: 'b64_json' }
   }
+  if (capability.provider === 'images-api') {
+    // 各家尺寸写法不一样：通义只认几种固定尺寸，seedream 4.5 最小就是 2K，传错了直接被拒。这里不传尺寸和画质，
+    // 照服务给这个型号的默认值出图（new-api 自己测渠道也只多传一个 1024x1024）；画布传来的尺寸、画质同样不发。
+    return { model: capability.model, prompt: input.prompt, n: 1 }
+  }
 
   const size = validateImageSize(input.size ?? capability.sizePolicy.default, capability)
   if (capability.provider === 'gemini-image') {
@@ -894,7 +951,10 @@ export function buildImageGenerationRequest(input: {
       stream: false,
       extra_body: {
         google: {
-          image_config: { aspect_ratio: aspectRatio, image_size: imageResolution },
+          // 只出 1K 的（Gemini 2.x）不带 image_size，见 LEGACY_GEMINI_IMAGE_DEFINITION。
+          image_config: capability.resolutions.length > 1
+            ? { aspect_ratio: aspectRatio, image_size: imageResolution }
+            : { aspect_ratio: aspectRatio },
         },
       },
     }

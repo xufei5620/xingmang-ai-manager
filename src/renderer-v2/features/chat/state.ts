@@ -92,7 +92,7 @@ export type ChatModelVendor = typeof chatModelVendors[number]
 const vendorPatterns: ReadonlyArray<readonly [ChatModelVendor, RegExp]> = [
   ['OpenAI', /^(?:gpt|chatgpt|codex|dall-e|sora)|^o\d/i],
   ['Claude', /^claude/i],
-  ['Gemini', /^(?:gemini|imagen|veo)/i],
+  ['Gemini', /^(?:gemini|imagen|veo|nano-banana)/i],
   ['Grok', /^grok/i],
   ['DeepSeek', /^deepseek/i],
   ['通义千问', /^(?:qwen|qwq|qvq)/i],
