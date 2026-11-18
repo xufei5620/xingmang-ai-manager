@@ -72,7 +72,7 @@ function untilAborted(signal: AbortSignal | undefined): Promise<never> {
   })
 }
 function fixture(overrides: ExternalClientRuntimeOptions = {}) {
-  let inventory: { clients: Record<string, unknown>[]; errors: Record<string, string> } = { clients: [], errors: {} }
+  let inventory: { clients: Record<string, unknown>[]; errors: Record<string, string>; rejected?: Record<string, unknown>[] } = { clients: [], errors: {} }
   const execute = vi.fn<typeof runCommand>(async (spec) => commandResult(spec, spec.executable === powershell ? JSON.stringify(inventory) : ''))
   const launchProcess = vi.fn(async () => undefined)
   const resolveWinget = vi.fn(async () => ({ executable: winget, reason: null }))
@@ -83,7 +83,7 @@ function fixture(overrides: ExternalClientRuntimeOptions = {}) {
     resolveWingetExecutable: resolveWinget, verifyPath: async (value) => value,
     launchProcess, ...overrides,
   })
-  return { runtime, execute, launchProcess, resolveWinget, setInventory(clients: Record<string, unknown>[], errors: Record<string, string> = {}) { inventory = { clients, errors } } }
+  return { runtime, execute, launchProcess, resolveWinget, setInventory(clients: Record<string, unknown>[], errors: Record<string, string> = {}, rejected?: Record<string, unknown>[]) { inventory = { clients, errors, ...(rejected ? { rejected } : {}) } } }
 }
 
 describe('external desktop client lifecycle', () => {
@@ -609,16 +609,16 @@ describe('external desktop client lifecycle', () => {
       // Method calls: on strings and hashtables, which ConstrainedLanguage allows, plus the two .NET calls below.
       expect([...new Set([...body.matchAll(/(?:\.|::)([A-Za-z]+)\(/g)].map((match) => match[1]))].sort()).toEqual(['ContainsKey', 'GetFullPath', 'GetValue', 'IndexOf', 'Split', 'Substring', 'ToCharArray', 'Trim'])
       expect([...new Set([...body.matchAll(/\]::([A-Za-z]+)/g)].map((match) => match[1]))].sort()).toEqual(['GetFullPath', 'ReparsePoint', 'UtcNow'])
-      expect(body).toContain("    if ($fullLanguage) {\n      if ([System.IO.Path]::GetFullPath($candidate) -ine $candidate) { return $false }\n    } elseif (")
+      expect(body).toContain("    if ($fullLanguage) {\n      if ([System.IO.Path]::GetFullPath($candidate) -ine $candidate) { return 'invalid' }\n    } elseif (")
       expect(body).toContain('    if ($fullLanguage) { $value = $key.GetValue($name) }\n    elseif (@($key.Property) -contains $name) { $value = Get-ItemPropertyValue -LiteralPath $key.PSPath -Name $name }')
       expect(body).toContain("$fullLanguage = $ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage'")
-      expect(body.endsWith(buildPowerShellJsonOutputStatements('@{ clients=@($clients); errors=$errors; errorDetails=$errorDetails; registryFailures=@($registryFailures); timings=$timings } | ConvertTo-Json -Depth 5 -Compress').join('\n'))).toBe(true)
+      expect(body.endsWith(buildPowerShellJsonOutputStatements('@{ clients=@($clients); errors=$errors; errorDetails=$errorDetails; registryFailures=@($registryFailures); rejected=@($rejected); timings=$timings } | ConvertTo-Json -Depth 5 -Compress').join('\n'))).toBe(true)
     }
   })
 
   it('turns away in ConstrainedLanguage every path GetFullPath could rewrite', () => {
     const script = windowsExternalClientInventoryScript()
-    const pattern = /\} elseif \(\$candidate\.Length -ge 260 -or \$candidate -match '([^']+)'\) \{ return \$false \}/.exec(script)![1]
+    const pattern = /\} elseif \(\$candidate\.Length -ge 260 -or \$candidate -match '([^']+)'\) \{ return 'invalid' \}/.exec(script)![1]
     // .NET and JavaScript read this pattern the same way: alternation, classes, an optional and a non-capturing group.
     const rewritable = new RegExp(pattern)
     for (const kept of [
@@ -730,7 +730,7 @@ describe('external desktop client lifecycle', () => {
     const statuses = await f.runtime.scan()
     expect(statuses[2].installHint).toBe(externalClientWingetUnavailableHint)
     expect(statuses[2].installHint).not.toMatch(/winget|ENOENT|App Installer/i)
-    expect(statuses.map((entry) => entry.officialDownloadUrl)).toEqual(['https://www.workbuddy.ai/', null, 'https://opencode.ai/desktop'])
+    expect(statuses.map((entry) => entry.officialDownloadUrl)).toEqual([null, null, 'https://opencode.ai/desktop'])
     clock += 10 * 60_000
     await f.runtime.scan({ force: true })
     expect(onWingetUnavailable.mock.calls).toEqual([[reason]])
@@ -786,18 +786,17 @@ describe('external desktop client lifecycle', () => {
     await expect(f.runtime.install('opencode')).rejects.toThrow('连不上微软的软件下载源（错误码 0x80072efd）')
   })
 
-  // yoyo 2026-10-13：WorkBuddy 改成客户自己去腾讯官网下载，星芒只管认出来和写配置。
+  // yoyo 2026-11-18「下线」：星芒不装 WorkBuddy、也不给下载，客户自己装好以后认出来、自动连上。
   it.each([
     ['with', { executable: winget, reason: null }],
     ['without', { executable: null, reason: 'Microsoft App Installer missing' }],
-  ] as const)('sends WorkBuddy customers to the Tencent website %s winget and never runs an installer for it', async (_label, resolution) => {
+  ] as const)('offers neither a download page nor an installer for WorkBuddy %s winget', async (_label, resolution) => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => { throw new Error('Unexpected download') })
     const f = fixture({ resolveWingetExecutable: async () => resolution, fetch })
     expect((await f.runtime.scan())[0]).toMatchObject({
-      tool: 'workbuddy', installed: false, installSupported: false,
-      installHint: '到腾讯官网下载安装，装好后回来重新检测', officialDownloadUrl: 'https://www.workbuddy.ai/',
+      tool: 'workbuddy', installed: false, installSupported: false, installHint: null, officialDownloadUrl: null,
     })
-    await expect(f.runtime.install('workbuddy')).rejects.toThrow('到腾讯官网下载安装，装好后回来重新检测')
+    await expect(f.runtime.install('workbuddy')).rejects.toThrow('当前系统不支持一键安装')
     expect(f.execute.mock.calls.every(([spec]) => spec.executable === powershell)).toBe(true)
     expect(fetch).not.toHaveBeenCalled()
   })
@@ -812,6 +811,98 @@ describe('external desktop client lifecycle', () => {
     await expect(f.runtime.install('workbuddy')).resolves.toMatchObject({ installed: true })
     await f.runtime.launch('workbuddy')
     expect(f.launchProcess).toHaveBeenCalledWith(expect.objectContaining({ executable: explorer, argv: [elsewhere] }))
+  })
+
+  // 2026-11-18 拆官方安装包核实：海外版 WorkBuddy AI 是另一个程序名、另一条卸载登记，星芒以前认不出。
+  describe('WorkBuddy editions on Windows', () => {
+    const overseasPath = 'C:\\Users\\Tester\\AppData\\Local\\Programs\\WorkBuddyAI\\WorkBuddyAI.exe'
+
+    it('recognises the overseas edition by its own program name and says which editions are installed', async () => {
+      const f = fixture()
+      f.setInventory([candidate('workbuddy', { edition: 'overseas', path: overseasPath })])
+      expect((await f.runtime.scan())[0]).toMatchObject({ installed: true, path: overseasPath, detectionError: null, workBuddyEditions: ['overseas'] })
+      f.setInventory([candidate('workbuddy', { edition: 'domestic' }), candidate('workbuddy', { edition: 'overseas', path: overseasPath, running: true })])
+      expect((await f.runtime.scan({ force: true }))[0]).toMatchObject({
+        installed: true, path: candidate('workbuddy').path, running: true, workBuddyEditions: ['domestic', 'overseas'],
+      })
+    })
+
+    it.each([
+      ['an overseas record pointing at the domestic program', { edition: 'overseas' }],
+      ['a domestic record pointing at the overseas program', { edition: 'domestic', path: overseasPath }],
+      ['an edition it does not know', { edition: 'beta' }],
+    ])('refuses %s', async (_case, extra) => {
+      const f = fixture()
+      f.setInventory([candidate('workbuddy', extra)])
+      expect((await f.runtime.scan())[0]).toMatchObject({ installed: false, detectionError: '客户端可执行文件路径无效' })
+    })
+
+    it('keeps the signature check for both editions', async () => {
+      const f = fixture()
+      f.setInventory([candidate('workbuddy', { edition: 'overseas', path: overseasPath, signatureSubject: 'CN=Someone Else' })])
+      expect((await f.runtime.scan())[0]).toMatchObject({ installed: false, detectionError: expect.stringContaining('签名') })
+    })
+
+    it('reads both uninstall records and tells the two names apart', () => {
+      const script = windowsExternalClientInventoryScript()
+      expect(script).toContain("@{ tool='workbuddy'; edition='domestic'; code='BFD312E9-1019-4F57-9F44-F86246833B50';")
+      expect(script).toContain("@{ tool='workbuddy'; edition='overseas'; code='C02C88CB-5DAE-4330-AEC1-572CFD048A59';")
+      expect(script).toContain("exe='WorkBuddyAI.exe'")
+      expect(script).toContain('Get-Process -Name WorkBuddy,WorkBuddyAI,Claude,OpenCode')
+      const names = [...script.matchAll(/@\{ tool='workbuddy'; edition='(\w+)'; code='[^']+'; name='([^']+)'/g)].map((match) => [match[1], new RegExp(match[2], 'i')] as const)
+      expect(names.map(([edition]) => edition)).toEqual(['domestic', 'overseas'])
+      const [[, domestic], [, overseas]] = names
+      for (const name of ['WorkBuddy', 'WorkBuddy 5.6.0', 'workbuddy']) expect([domestic.test(name), overseas.test(name)], name).toEqual([true, false])
+      for (const name of ['WorkBuddy AI', 'WorkBuddyAI', 'WorkBuddy AI 1.0.2']) expect([domestic.test(name), overseas.test(name)], name).toEqual([false, true])
+      for (const name of ['WorkBuddyX', 'CodeBuddy']) expect([domestic.test(name), overseas.test(name)], name).toEqual([false, false])
+      expect(windowsExternalClientProcessScript('workbuddy')).toContain('Get-Process -Name WorkBuddy,WorkBuddyAI ')
+    })
+
+    it('hands install records it found but did not accept to the log once, and only from a full scan', async () => {
+      const onClientsRejected = vi.fn()
+      const f = fixture({ onClientsRejected })
+      const rejected = [{ tool: 'workbuddy', path: 'D:\\Moved\\WorkBuddy\\WorkBuddy.exe', reason: 'reparse' }]
+      f.setInventory([], {}, [...rejected, { tool: 'notepad', path: 'C:\\x.exe', reason: 'reparse' }, { tool: 'opencode', path: 'C:\\y.exe', reason: 'made-up' }])
+      await f.runtime.scan()
+      await f.runtime.scan({ force: true })
+      await f.runtime.scanOne('workbuddy')
+      expect(onClientsRejected.mock.calls).toEqual([[rejected]])
+    })
+
+    it('looks at WorkBuddy alone on request and lets the next few minutes of scans see what it found', async () => {
+      const f = fixture()
+      expect((await f.runtime.scan())[0]).toMatchObject({ installed: false })
+      f.setInventory([candidate('workbuddy', { edition: 'overseas', path: overseasPath })])
+      f.execute.mockClear()
+      expect(await f.runtime.scanOne('workbuddy')).toMatchObject({ installed: true, workBuddyEditions: ['overseas'] })
+      const scripts = f.execute.mock.calls.map(([spec]) => Buffer.from(spec.argv[spec.argv.length - 1], 'base64').toString('utf16le'))
+      expect(scripts).toHaveLength(1)
+      expect(scripts[0]).toContain("$products = @($products | Where-Object { $_.tool -ceq 'workbuddy' })")
+      // The cached full scan now says WorkBuddy is installed, without another inventory.
+      f.execute.mockClear()
+      expect((await f.runtime.scan())[0]).toMatchObject({ installed: true, workBuddyEditions: ['overseas'] })
+      expect(f.execute).not.toHaveBeenCalled()
+    })
+
+    it('does not fold a look at WorkBuddy into a scan that was thrown away meanwhile', async () => {
+      const f = fixture()
+      await f.runtime.scan()
+      f.setInventory([candidate('workbuddy')])
+      const gate = deferred()
+      const allowed = f.execute.getMockImplementation()!
+      // The look reads the machine with WorkBuddy on it and answers only after a launch has thrown the cache away.
+      f.execute.mockImplementationOnce(async (spec, options) => { const result = await allowed(spec, options); await gate.promise; return result })
+      const looking = f.runtime.scanOne('workbuddy')
+      f.setInventory([])
+      await f.runtime.launch('opencode').catch(() => undefined)
+      // A full scan after the launch fills the cache with the machine as it is now.
+      expect((await f.runtime.scan())[0]).toMatchObject({ installed: false })
+      gate.resolve()
+      expect(await looking).toMatchObject({ installed: true })
+      f.execute.mockClear()
+      expect((await f.runtime.scan())[0]).toMatchObject({ installed: false })
+      expect(f.execute).not.toHaveBeenCalled()
+    })
   })
 
   it('uses the trusted Explorer broker for user applications even in trusted-only mode', async () => {
@@ -900,7 +991,7 @@ describe('external desktop client lifecycle', () => {
     // Every check on the client being opened stays.
     for (const script of [workbuddy, claude]) {
       expect(script).toContain('Get-AuthenticodeSignature -LiteralPath $exe')
-      expect(script).toContain('Test-LocalExecutablePath $exe')
+      expect(script).toContain('Get-LocalExecutableRejection $exe')
       expect(script).toContain('foreach ($root in $roots)')
     }
     expect(scan).not.toContain('Where-Object { $_.tool')
@@ -988,9 +1079,12 @@ describe('external desktop client lifecycle', () => {
     const f = fixture({ architecture: 'arm64' })
     const statuses = await f.runtime.scan()
     expect(statuses.map((status) => status.installSupported)).toEqual([false, true, true])
-    expect(statuses[0].installHint).toContain('处理器架构')
-    // 没有对应架构的包，送去官网也装不上：仍旧「暂不支持」，不给下载页。
+    // WorkBuddy 在哪种电脑上都一样：不装、不给下载，没装时首页只说装好后会自动连上（yoyo 2026-11-18「改」）。
+    expect(statuses[0].installHint).toBeNull()
     expect(statuses[0].officialDownloadUrl).toBeNull()
+    const ia32 = await fixture({ architecture: 'ia32' }).runtime.scan()
+    expect(ia32.map((status) => status.installSupported)).toEqual([false, false, false])
+    expect(ia32[2].installHint).toContain('处理器架构')
   })
 
   it('does not claim official Linux WorkBuddy or Claude Desktop installation support', async () => {
@@ -1454,7 +1548,7 @@ describe('macOS external desktop lifecycle', () => {
     expect(statuses.map((status) => [status.tool, status.installSupported])).toEqual([['workbuddy', false], ['claudeDesktop', true], ['opencode', true]])
     expect(statuses[1].installHint).toBeNull()
     expect(statuses[2].installHint).toBeNull()
-    expect(statuses[0].installHint).toContain('官网下载')
+    expect(statuses[0].installHint).toBeNull()
     // A bundle installed as root would belong to root, and the customer could never update it.
     const root = macInstallFixture({ getuid: () => 0 })
     expect((await root.runtime.scan()).map((status) => status.installSupported)).toEqual([false, false, false])
@@ -1621,12 +1715,39 @@ describe('macOS external desktop lifecycle', () => {
     expect(f.execute.mock.calls.length).toBeGreaterThan(0)
     for (const [, options] of f.execute.mock.calls) expect(options?.trustedOnly).toBe(false)
   })
+  it('recognises the overseas WorkBuddy AI.app by its own bundle identifier, and both editions together', async () => {
+    const identities: Record<string, string> = { '/Applications/WorkBuddy.app': 'com.tencent.workbuddy.mac', '/Applications/WorkBuddy AI.app': 'com.workbuddy.workbuddy-ai' }
+    function machine(installed: string[], identity: (bundle: string) => string = (bundle) => identities[bundle]) {
+      const execute = vi.fn<typeof runCommand>(async (spec) => {
+        const bundle = installed.find((entry) => spec.argv.some((arg) => arg.startsWith(`${entry}/`) || arg === entry))
+        if (spec.executable === '/usr/bin/plutil') return commandResult(spec, JSON.stringify({ CFBundleIdentifier: bundle ? identity(bundle) : '', CFBundleShortVersionString: '5.6.0' }))
+        return commandResult(spec)
+      })
+      const verifyPath = vi.fn(async (candidate: string) => {
+        if (installed.some((bundle) => candidate === bundle || candidate.startsWith(`${bundle}/`))) return candidate
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+      })
+      return createExternalClientRuntime({ platform: 'darwin', architecture: 'arm64', userHome: '/Users/tester', runCommand: execute, verifyPath, getuid: () => 501 })
+    }
+    expect((await machine(['/Applications/WorkBuddy AI.app']).scan())[0]).toMatchObject({
+      installed: true, path: '/Applications/WorkBuddy AI.app', detectionError: null, workBuddyEditions: ['overseas'],
+    })
+    expect((await machine(['/Applications/WorkBuddy.app', '/Applications/WorkBuddy AI.app']).scan())[0]).toMatchObject({
+      installed: true, path: '/Applications/WorkBuddy.app', workBuddyEditions: ['domestic', 'overseas'],
+    })
+    // 换了包标识的不认，跟国内版一样；另一版好好的照样认，不因此整行报检测失败。
+    const swapped = (bundle: string) => bundle.endsWith('WorkBuddy AI.app') ? 'com.tencent.workbuddy.mac' : identities[bundle]
+    expect((await machine(['/Applications/WorkBuddy AI.app'], swapped).scan())[0]).toMatchObject({ installed: false, detectionError: expect.any(String) })
+    expect((await machine(['/Applications/WorkBuddy.app', '/Applications/WorkBuddy AI.app'], swapped).scan())[0]).toMatchObject({
+      installed: true, detectionError: null, workBuddyEditions: ['domestic'],
+    })
+  })
   it('reports missing apps without inventing an automatic macOS installer', async () => {
     // WorkBuddy is the one client without a Mac package the toolbox could verify.
     const f = macFixture({ verifyPath: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }) } })
     const status = (await f.runtime.scan())[0]
-    expect(status).toMatchObject({ tool: 'workbuddy', installed: false, detectionError: null, installSupported: false })
-    await expect(f.runtime.install('workbuddy')).rejects.toThrow('官网下载')
+    expect(status).toMatchObject({ tool: 'workbuddy', installed: false, detectionError: null, installSupported: false, installHint: null })
+    await expect(f.runtime.install('workbuddy')).rejects.toThrow('当前系统不支持一键安装')
   })
   it('refuses root launch and reports invalid signatures as failed detection', async () => {
     const root = macFixture({ getuid: () => 0 })
@@ -1665,8 +1786,9 @@ describe('macOS external client signature checks', () => {
       dev: 1, ino: candidate.length, mtimeMs: mtimes.get(candidate) ?? 100, size: 10, isFile: () => candidate.includes('/Contents/'),
     }))
     // 三家都装在 /Applications，~/Applications 下没有：某家在 /Applications 验不过时，不会再从那边读出另一种错。
+    // WorkBuddy 只装了国内版，海外版那个包不在。
     const verifyPath = async (candidate: string) => {
-      if (candidate.startsWith('/Applications/')) return candidate
+      if (Object.values(bundles).some((bundle) => candidate === bundle || candidate.startsWith(`${bundle}/`))) return candidate
       throw Object.assign(new Error('missing'), { code: 'ENOENT' })
     }
     const runtime = createExternalClientRuntime({
@@ -1879,7 +2001,7 @@ describe('external client still running check', () => {
   it('names the process with a fixed client name, never the user supplied path', () => {
     for (const tool of ['claudeDesktop', 'workbuddy', 'opencode'] as const) {
       const script = windowsExternalClientProcessScript(tool)
-      expect(script).toMatch(/Get-Process -Name [A-Za-z]+ /)
+      expect(script).toMatch(/Get-Process -Name [A-Za-z]+(?:,[A-Za-z]+)* /)
       expect(script).not.toContain('Users')
     }
   })

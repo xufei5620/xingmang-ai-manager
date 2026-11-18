@@ -591,8 +591,14 @@ export interface SystemService {
   disposeToolRoutes?(): void
   /** routed：星芒自己用的（AI 工作区），「自动」时直连没走通当场改走默认线路；缺省查的是工具会用的那条线路。 */
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean; routed?: boolean }): Promise<string[]>
-  configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void, keySource?: ExternalClientKeySource): Promise<ExternalClientConfigResult>
+  /** writeOptions.automatic：装好或登录以后自动连的那一次（D7），客户端不再是从没配置过、或开着时一个字不写。 */
+  configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void, keySource?: ExternalClientKeySource, writeOptions?: { automatic?: boolean }): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
+  /**
+   * 只现看这一家（回到星芒窗口时看 WorkBuddy 装好没有）：不起整轮盘点、不跟线路，结果并进几分钟内复用的那份
+   * 整轮结果，接着自动连时读到的就是它。不落盘、不进反馈报告那份快照（那两份要的是三家整份）。
+   */
+  scanExternalClient(tool: ExternalToolId): Promise<ExternalClientStatus>
   /**
    * 本次启动还没真检测过客户端时，给出上次落盘的结果（每条带 `cachedAt`）；检测过了、或没有可用的
    * 旧结果时是空列表。只读文件、不起盘点，只给首页「先画个样子」用（已知13）。
@@ -1116,6 +1122,7 @@ export function createSystemService(
   // 三个外部桌面客户端那一段在 external-client-route-service.ts（#1070 第 3 步）。
   const {
     scanExternalClients,
+    scanExternalClient,
     cachedExternalClients,
     getLastExternalClients,
     installExternalClient,
@@ -1440,6 +1447,7 @@ export function createSystemService(
     fetchAvailableModels,
     configureExternalTool,
     scanExternalClients,
+    scanExternalClient,
     cachedExternalClients,
     getLastExternalClients,
     checkExternalClientConnection,

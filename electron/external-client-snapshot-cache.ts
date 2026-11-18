@@ -37,6 +37,9 @@ const maximumBytes = 512 * 1024
 const maximumStringLength = 4096
 // 赋给更宽的类型再按客户端查，不用断言：没有下载页的那家查出来是 undefined。
 const officialDownloadUrls: Partial<Record<ExternalToolId, string>> = externalClientOfficialDownloadUrls
+// 以前给过、现在下线了的下载页（WorkBuddy 那条，yoyo 2026-11-18「下线」）：更新前落盘的那份带着它，读的时候认、
+// 交给界面前扔掉（cachedStatus），免得更新完第一次开机因为这一条整份作废、三行空着等真的检测。
+const retiredDownloadUrls: Partial<Record<ExternalToolId, string>> = { workbuddy: 'https://www.workbuddy.ai/' }
 
 function nullableString(value: unknown): boolean {
   return value === null || typeof value === 'string'
@@ -64,7 +67,7 @@ export function isCachedExternalClientStatus(value: unknown): value is ExternalC
     && typeof value.launchSupported === 'boolean'
     && nullableString(value.detectionError)
     && nullableString(value.installHint)
-    && (downloadUrl === undefined || downloadUrl === null || downloadUrl === officialDownloadUrls[value.tool])
+    && (downloadUrl === undefined || downloadUrl === null || downloadUrl === officialDownloadUrls[value.tool] || downloadUrl === retiredDownloadUrls[value.tool])
     && typeof value.configured === 'boolean'
     && (value.configurationReady === undefined || typeof value.configurationReady === 'boolean')
     && (value.officialAccount === undefined || typeof value.officialAccount === 'boolean')
@@ -102,7 +105,7 @@ interface PinnedExternalClientStatus {
   configurationError: string | null
 }
 
-type ExternalClientOptionalFields = 'officialDownloadUrl' | 'latestVersion' | 'updateAvailable' | 'configurationReady' | 'routePending' | 'routeRecheck' | 'keyPending' | 'officialAccount' | 'cachedAt'
+type ExternalClientOptionalFields = 'officialDownloadUrl' | 'latestVersion' | 'updateAvailable' | 'workBuddyEditions' | 'configurationReady' | 'routePending' | 'routeRecheck' | 'keyPending' | 'officialAccount' | 'pristine' | 'cachedAt'
 
 function scrub(value: string | null): string | null {
   return value === null ? null : redactCommandText(value).slice(0, maximumStringLength)
@@ -112,7 +115,9 @@ function scrub(value: string | null): string | null {
  * 落盘和读回来都只过这一道，只留上面清单里的字段：读回来时文件里多出来的东西不往界面送。
  * 「运行中」不留：上次开着不代表这次还开着，真的结果回来再说。routePending（开着所以线路没换）、
  * keyPending（开着所以 Key 没换）同理不留，界面也只在开着时才说它们。
- * 「可更新到 v…」（latestVersion、updateAvailable）也不留：上次以后客户可能自己升级过，点了才发现不用更新。报错里可能夹着命令输出，统一过一遍脱敏（这几行本来就
+ * 「可更新到 v…」（latestVersion、updateAvailable）也不留：上次以后客户可能自己升级过，点了才发现不用更新。
+ * 「从没配置过」（pristine）也不留：自动连（决定单 D7）只认这一刻现看的，上次没配置不代表现在还没有。
+ * WorkBuddy 装的是哪几版（workBuddyEditions）也不留：只有写配置要用，写配置从不拿上次的结果。报错里可能夹着命令输出，统一过一遍脱敏（这几行本来就
  * 不含 Key，Key 只在主进程现读）。
  */
 function cachedStatus(status: ExternalClientStatus): ExternalClientStatus {

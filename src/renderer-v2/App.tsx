@@ -297,9 +297,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const {
     installIntents, installFailures, storeNewerVersion, setStoreNewerVersion, manualUninstall, setManualUninstall, runtimeRestart, setRuntimeRestart, managedSwitch,
     install, cancelInstall, installRuntime, replaceNode, installExternal, launchExternal, switchExternalSource, finishExternalConfigSave,
-    requestUninstall, requestRevert, installFromHome, cancelHomeInstall,
+    requestUninstall, requestRevert, installFromHome, cancelHomeInstall, connectExternalAfterLogin,
   } = useToolInstall({
     app, toolsApi, toolbox, toast, perform, platform, session, scope, latestScope, offline, offlineNow, mounted, accountEpoch,
+    accountKeysReady: accountBootstrap?.scope === scope && accountBootstrap.result !== undefined,
     runAccountBootstrap, refreshRecent, navigate, setAuth, setConfirmation, setOperationError, setExternalClient,
   })
   // Mac 上桌面端的「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）：星芒关掉的那一份更新完走首页同一个「打开」。
@@ -581,7 +582,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       const authenticatedScope = accountScope(result)
       suppressRestore(authenticatedScope)
       setAuth(null); setAuthTarget(null); setSession({ ...result, authenticated: true }); setGuide(!guideCreateAfterLogin.current && !readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
-      void runAccountBootstrap(result.account.userId, 'login', true, undefined, accountSiteId(result))
+      // 账号密钥写完，再把装着、从没配置过的桌面客户端替他连一次（决定单 D7）。
+      void runAccountBootstrap(result.account.userId, 'login', true, undefined, accountSiteId(result)).then((outcome) => { if (outcome?.result) void connectExternalAfterLogin() })
       if (options?.notice) toast.show(options.notice, 'ok')
       if (options?.rememberError) toast.show(options.rememberError, 'warn')
     }} />}

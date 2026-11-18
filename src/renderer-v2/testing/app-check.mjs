@@ -319,7 +319,7 @@ test('v2 home places clients in installed ToolRows and saves and opens through t
 test('external client install shows progress and finishes at configuration without writing a key', async () => {
   const page = await open('externalInstallPending=1')
   try {
-    const row = page.getByTestId('tool-row-workbuddy')
+    const row = page.getByTestId('tool-row-opencode')
     await row.waitFor()
     assert.equal(await row.getAttribute('data-installed'), 'false')
     await row.getByRole('button', { name: '安装', exact: true }).click()
@@ -327,7 +327,7 @@ test('external client install shows progress and finishes at configuration witho
     assert.equal(await row.getByRole('progressbar').getAttribute('aria-valuenow'), '36')
     // 装着的时候卡片上只有「取消」，没有能再点一次的「安装」。
     assert.equal(await row.getByRole('button', { name: '安装', exact: true }).count(), 0)
-    await row.getByTestId('tool-workbuddy-cancel').waitFor()
+    await row.getByTestId('tool-opencode-cancel').waitFor()
     await page.evaluate(() => window.v2Test.releaseLaunch())
     await row.getByRole('button', { name: '确认连接', exact: true }).waitFor()
     assert.equal(await row.getAttribute('data-installed'), 'true')
@@ -336,17 +336,99 @@ test('external client install shows progress and finishes at configuration witho
   } finally { await page.close() }
 })
 
+// 决定单 D7：装好的这一家从没配置过、默认密钥和型号也定得下来，就在同一个任务里替他连一次，角落说配置窗口保存成功时那句。
+test('a never-configured client installed while signed in connects itself once with the dialog defaults', async () => {
+  const page = await open('externalInstallPending=1&externalPristine=opencode')
+  try {
+    const row = page.getByTestId('tool-row-opencode')
+    await row.getByRole('button', { name: '安装', exact: true }).click()
+    await row.getByText('正在下载安装包', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await waitForToast(page, '已连好 OpenCode，命令行版和桌面版都能用')
+    await row.getByRole('button', { name: '打开', exact: true }).waitFor()
+    assert.equal(await page.getByTestId('tool-opencode-source').innerText(), '当前账号')
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureExternalTool').map((entry) => entry.args))
+    assert.deepEqual(saves, [['opencode', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture-model', automatic: true, protocol: 'responses' }]])
+    assert.equal(await page.getByTestId('external-client-dialog').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// yoyo 2026-11-18「改」「下线」「留着」：WorkBuddy 星芒不装也不给下载，没装时卡片说装好后会自动连上、按钮是「重新检测」；
+// 客户自己装好以后点一下（或开机检测）认出来，就替他连一次，角落说去它那里选哪个型号。每个账号每份安装只试一次。
+test('a WorkBuddy the customer installed themselves connects itself once it is detected', async () => {
+  const page = await open('')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByText('装好 WorkBuddy 后，星芒会自动连上当前账号', { exact: true }).waitFor()
+    const button = page.getByTestId('tool-workbuddy-primary')
+    await expect(button).toHaveText('重新检测')
+    for (const gone of ['去官网下载', '安装指南', '暂不支持']) assert.equal(await row.getByRole('button', { name: gone, exact: true }).count(), 0, gone)
+    await page.evaluate(() => window.v2Test.setExternalStatus('workbuddy', { installed: true, pristine: true }))
+    await button.click()
+    await waitForToast(page, '已连好 WorkBuddy，在它的模型列表里选「fixture-model」')
+    await expect(page.getByTestId('tool-workbuddy-source')).toHaveText('当前账号')
+    const saves = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureExternalTool').map((entry) => entry.args))
+    assert.deepEqual(await saves(), [['workbuddy', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture-model', automatic: true }]])
+    // 客户把星芒那条删了：主进程不再说它从没配置过，星芒也不再替他加回去。
+    await page.evaluate(() => window.v2Test.setExternalStatus('workbuddy', { configured: false, model: null, configurationSource: 'missing' }))
+    await page.getByTestId('home-rescan').click()
+    await page.getByTestId('home-client-workbuddy').waitFor()
+    assert.equal((await saves()).length, 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('coming back to the window looks at a missing WorkBuddy alone, at most every two minutes', async () => {
+  const start = new Date('2026-11-18T04:00:00Z')
+  const page = await open('', start)
+  try {
+    await page.getByTestId('tool-workbuddy-primary').waitFor()
+    await page.waitForFunction(() => !document.querySelector('[data-testid="home-rescan"]')?.hasAttribute('aria-busy'))
+    const looks = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients' && entry.args[1]?.only === 'workbuddy').length)
+    await page.evaluate(() => window.v2Test.setExternalStatus('workbuddy', { installed: true, pristine: true }))
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await page.waitForTimeout(100)
+    assert.equal(await looks(), 0)
+    await page.clock.setFixedTime(new Date(start.getTime() + 2 * 60_000 + 1_000))
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await waitForToast(page, '已连好 WorkBuddy，在它的模型列表里选「fixture-model」')
+    assert.equal(await looks(), 1)
+    await page.clock.setFixedTime(new Date(start.getTime() + 10 * 60_000))
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await page.waitForTimeout(100)
+    // 已经装好、连好了：回来也不再看。
+    assert.equal(await looks(), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 定不下型号（Claude Desktop 借的那把没有 Claude 型号）就不替他连，照旧停在「确认连接」。
+test('a never-configured client without a confident model still stops at 确认连接 after install', async () => {
+  const page = await open('externalInstallPending=1&externalPristine=claudeDesktop')
+  try {
+    const row = page.getByTestId('tool-row-claudeDesktop')
+    await row.getByRole('button', { name: '安装', exact: true }).click()
+    await row.getByText('正在下载安装包', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await row.getByRole('button', { name: '确认连接', exact: true }).waitFor()
+    await waitForToast(page, 'Claude Desktop 已装好，点「确认连接」用上当前账号')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureExternalTool')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('external client install can be cancelled while downloading and returns to 安装 without an error', async () => {
   const page = await open('externalInstallPending=1')
   try {
-    const row = page.getByTestId('tool-row-workbuddy')
+    const row = page.getByTestId('tool-row-opencode')
     await row.getByRole('button', { name: '安装', exact: true }).click()
     await row.getByText('正在下载安装包', { exact: true }).waitFor()
-    await row.getByTestId('tool-workbuddy-cancel').click()
+    await row.getByTestId('tool-opencode-cancel').click()
     await row.getByRole('button', { name: '安装', exact: true }).waitFor()
-    assert.equal(await row.getByTestId('tool-workbuddy-cancel').count(), 0)
+    assert.equal(await row.getByTestId('tool-opencode-cancel').count(), 0)
     assert.equal(await page.getByRole('alert').count(), 0)
-    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'cancelExternalClientInstall').map((entry) => entry.args)), [['workbuddy']])
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'cancelExternalClientInstall').map((entry) => entry.args)), [['opencode']])
     await clean(page)
   } finally { await page.close() }
 })
@@ -354,12 +436,12 @@ test('external client install can be cancelled while downloading and returns to 
 test('a refused external client cancel says why and lets the install finish', async () => {
   const page = await open('externalInstallPending=1&externalCancelRefused=1')
   try {
-    const row = page.getByTestId('tool-row-workbuddy')
+    const row = page.getByTestId('tool-row-opencode')
     await row.getByRole('button', { name: '安装', exact: true }).click()
     await row.getByText('正在下载安装包', { exact: true }).waitFor()
-    await row.getByTestId('tool-workbuddy-cancel').click()
-    await page.getByText('正在安装 WorkBuddy，这一步中断会留下装了一半的程序，请等它结束。', { exact: true }).waitFor()
-    assert.equal(await row.getByTestId('tool-workbuddy-cancel').textContent(), '取消')
+    await row.getByTestId('tool-opencode-cancel').click()
+    await page.getByText('正在安装 OpenCode，这一步中断会留下装了一半的程序，请等它结束。', { exact: true }).waitFor()
+    assert.equal(await row.getByTestId('tool-opencode-cancel').textContent(), '取消')
     await page.evaluate(() => window.v2Test.releaseLaunch())
     await row.getByRole('button', { name: '确认连接', exact: true }).waitFor()
     await clean(page)
@@ -697,11 +779,11 @@ test('desktop client rows show the last saved result at startup and wait for the
     await page.keyboard.press('Escape')
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients' && !entry.args[1]?.cachedOnly).length), 0, '首屏扫描没回来之前不盘点外部客户端')
     await page.evaluate(() => window.v2Test.releaseScan())
-    // 真的结果回来整份替换：这次 WorkBuddy 没装。
-    await row.getByRole('button', { name: '安装', exact: true }).waitFor()
+    // 真的结果回来整份替换：这次 WorkBuddy 没装（星芒不装它，没装时是「重新检测」，yoyo 2026-11-18「下线」）。
+    await row.getByRole('button', { name: '重新检测', exact: true }).waitFor()
     assert.equal(await row.getByText('v0.9.0 · cached-model', { exact: true }).count(), 0)
     await page.getByTestId('home-external-detecting').waitFor({ state: 'detached' })
-    assert.equal(await row.getByRole('button', { name: '安装', exact: true }).isEnabled(), true)
+    assert.equal(await row.getByRole('button', { name: '重新检测', exact: true }).isEnabled(), true)
     await clean(page)
   } finally { await page.close() }
 })
@@ -831,7 +913,7 @@ test('logout retains WorkBuddy local configuration without retaining the signed-
 test('external client installation completion does not refresh or notify the next account', async () => {
   const page = await open('externalInstallPending=1')
   try {
-    const row = page.getByTestId('tool-row-workbuddy')
+    const row = page.getByTestId('tool-row-opencode')
     await row.getByRole('button', { name: '安装', exact: true }).click()
     await row.getByText('正在下载安装包', { exact: true }).waitFor()
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 } }))
@@ -841,7 +923,7 @@ test('external client installation completion does not refresh or notify the nex
     await page.evaluate(() => window.v2Test.releaseLaunch())
     await row.getByRole('button', { name: '安装', exact: true }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length), count)
-    assert.equal(await page.getByText('WorkBuddy 已装好，点「确认连接」用上当前账号', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('OpenCode 已装好，点「确认连接」用上当前账号', { exact: true }).count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -4005,6 +4087,28 @@ test('partial Key configuration keeps successful tools and retries recoverably',
     await page.getByRole('button', { name: '重新同步' }).click()
     await connectedBadge(page, 'claude').waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length), 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 决定单 D7：登录那一轮账号密钥写完，再把装着、从没配置过的客户端替他连一次；界面上不另说。
+test('logging in connects an installed never-configured client once after the account keys are written', async () => {
+  const page = await open('guest=1&externalInstalled=1&externalPristine=opencode')
+  try {
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('guide-pause').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureExternalTool'))
+    const calls = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.ok(calls.lastIndexOf('configureManagedCliKeys') < calls.indexOf('configureExternalTool'), calls.join(','))
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureExternalTool').map((entry) => entry.args))
+    assert.deepEqual(saves, [['opencode', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture-model', automatic: true, protocol: 'responses' }]])
+    await expect(page.getByTestId('tool-opencode-source')).toHaveText('当前账号')
+    // 别的两家不是从没配置过：不碰。
+    assert.equal(saves.some(([tool]) => tool !== 'opencode'), false)
     await clean(page)
   } finally { await page.close() }
 })

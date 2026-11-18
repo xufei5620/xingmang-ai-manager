@@ -24,7 +24,8 @@ export function presentExternalClients(statuses: ExternalClientStatus[]) {
     const ready = official || (!status.configurationError && (status.configurationReady ?? (status.configured || status.configurationSource === 'other')))
     const configurationStatus: 'ready' | 'official' | 'unknownSource' | 'unconfigured' = !ready ? 'unconfigured' : official ? 'official'
       : status.configurationReady === true || status.configured ? 'ready' : 'unknownSource'
-    const action = status.detectionError ? 'scan' : !status.installed ? 'install' : ready ? 'launch' : 'configure'
+    // WorkBuddy 星芒不装、不给下载（yoyo 2026-11-18「下线」）：没装时按钮是「重新检测」，客户自己装好后点一下就认得出。
+    const action = status.detectionError || (!status.installed && status.tool === 'workbuddy') ? 'scan' : !status.installed ? 'install' : ready ? 'launch' : 'configure'
     const version = status.version ? `v${status.version.replace(/^v/, '')}` : '版本暂未识别'
     return [{ ...definition, status, ready, configurationStatus, action,
       disabled: action === 'install' ? !status.installSupported : action === 'launch' ? !status.launchSupported : false,

@@ -24,6 +24,28 @@ afterEach(() => {
 })
 
 describe('external client configuration ownership', () => {
+  // 自动连 WorkBuddy 只给从没写过的（yoyo 2026-11-18）：写过一次，不管现在那条还在不在、是哪把密钥，都算写过。
+  it('remembers that this account was ever written for a client, whatever key or address, and per account', async () => {
+    const f = fixture()
+    expect(f.store.recorded('workbuddy', owner)).toBe(false)
+    await f.store.write('workbuddy', owner, endpoint, apiKey, 'configured')
+    expect(f.store.recorded('workbuddy', owner)).toBe(true)
+    await f.store.rewrite('workbuddy', owner, 'https://xm-direct.solov.cc/v1', 'sk-other-key')
+    expect(new ExternalClientOwnershipStore(f.directory).recorded('workbuddy', owner)).toBe(true)
+    expect(f.store.recorded('opencode', owner)).toBe(false)
+    expect(f.store.recorded('workbuddy', 'solov:100000008')).toBe(false)
+  })
+
+  it('counts an owner it cannot check, or a record it cannot read, as already written', async () => {
+    const f = fixture()
+    for (const bad of ['', ' padded ', 'line\nbreak', 'x'.repeat(1025)]) expect(f.store.recorded('workbuddy', bad), JSON.stringify(bad)).toBe(true)
+    // @ts-expect-error only the three clients compile; anything else is refused at run time as well
+    expect(f.store.recorded('notepad', owner)).toBe(true)
+    await f.store.write('workbuddy', owner, endpoint, apiKey)
+    fs.writeFileSync(f.recordPath(), 'not json', 'utf8')
+    expect(f.store.recorded('workbuddy', owner)).toBe(true)
+  })
+
   it.each(['workbuddy', 'opencode', 'claudeDesktop'] as const)('persists %s ownership across store reconstruction without plaintext credentials or owner', async (tool) => {
     const f = fixture()
     expect(f.store.matches(tool, owner, endpoint, apiKey)).toBe(false)

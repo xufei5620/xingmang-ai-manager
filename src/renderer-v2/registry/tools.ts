@@ -93,7 +93,8 @@ export const homeToolBlurbs: Record<HomeToolId, string> = {
   codexDesktop: '和 Codex CLI 共用配置',
   grok: '在终端里读项目、改代码',
   opencode: '开源，命令行版和桌面版共用配置',
-  workbuddy: '办公助手，可以接当前账号的模型',
+  // WorkBuddy 星芒不装、不给下载，客户自己装好以后自动连上（yoyo 2026-11-18「改」）：没装时只说这一句。
+  workbuddy: '装好 WorkBuddy 后，星芒会自动连上当前账号',
 };
 
 // 欢迎页星轨上的几颗，按这个次序每隔 90° 一个（yoyo 2026-10-16：照 0.2.18 摆四颗）。

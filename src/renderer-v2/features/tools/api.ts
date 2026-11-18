@@ -8,6 +8,7 @@ import {
   type CliUninstallOptions,
   type CodexDesktopLaunchMode,
   type DesktopAppUpdateRequest,
+  type ExternalClientStatus,
   type ExternalToolId,
   type InstallCancelResult,
   type ProviderConfigSummary,
@@ -17,6 +18,7 @@ import {
 } from '../../../../electron/ipc-contract'
 import { providerFor, type ToolboxSnapshot, type ToolId } from './model'
 import { readAllAccountKeys } from './key-selection'
+import { autoConnectExternalClient, describeExternalAutoConnect, type ExternalAutoConnectTrigger } from './external-client-auto-connect'
 import { errorMessage } from '../../business-common'
 import { createTtlCache } from './ttl-cache'
 import { createWeekSpendLoader } from './week-spend'
@@ -180,6 +182,8 @@ export function createToolsApi(bridge: XingmangApi) {
     readExternal: (force = false) => bridge.scanExternalClients(force),
     // 只要上次落盘的那份，主进程不起盘点；本次启动已经真检测过、或没有旧结果时是空列表（已知13）。
     readCachedExternal: () => bridge.scanExternalClients(false, { cachedOnly: true }),
+    // 回到星芒窗口时只现看 WorkBuddy 这一家（yoyo 2026-11-18「改」）：主进程回的列表里只有它那一条。
+    readWorkBuddy: async (): Promise<ExternalClientStatus | null> => (await bridge.scanExternalClients(true, { only: 'workbuddy' })).find((status) => status.tool === 'workbuddy') ?? null,
     installExternal: (id: ExternalToolId) => bridge.installExternalClient(id),
     // Mac 上首页「可更新到 v…」那一下：换掉装着的那一份（closeRunning = 客户点过「关掉并更新」）。
     updateMacDesktopApp: async (id: 'codexDesktop' | ExternalToolId, request: DesktopAppUpdateRequest) => {
@@ -197,6 +201,13 @@ export function createToolsApi(bridge: XingmangApi) {
     cancelExternalInstall: (id: ExternalToolId): Promise<InstallCancelResult> => bridge.cancelExternalClientInstall(id),
     launchExternal: (id: ExternalToolId) => bridge.launchExternalClient(id),
     switchExternalSource: (id: ExternalToolId, target: AccountSourceTarget) => bridge.switchExternalClientSource(id, target),
+    /** 装好或登录以后替从没配置过的客户端自动连一次（决定单 D7）。连没连都只记进运行日志，界面上说不说由调用方定。 */
+    autoConnectExternal: async (status: ExternalClientStatus, trigger: ExternalAutoConnectTrigger, stillCurrent: () => boolean) => {
+      const outcome = await autoConnectExternalClient(bridge, status, stillCurrent)
+      const line = describeExternalAutoConnect(status.tool, trigger, outcome)
+      void bridge.reportRendererError({ message: line.message, context: 'external-client-auto-connect', level: line.level }).catch(() => undefined)
+      return outcome
+    },
     // version 省略时由主进程按已验证版本名单与设置决定装哪个版本(N1);
     // 只有「回到推荐版本」会点名版本。
     install: async (id: ToolId, version?: string) => {

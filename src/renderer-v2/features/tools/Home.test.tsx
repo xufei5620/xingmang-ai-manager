@@ -1532,11 +1532,12 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
     expect(index, `没有渲染出 ${tool} 那一行的主按钮`).toBeGreaterThan(-1)
     return markup.slice(markup.lastIndexOf('<button', index), markup.indexOf('</button>', index))
   }
+  // WorkBuddy 星芒不装、不给下载（yoyo 2026-11-18「下线」），「安装指南」「暂不支持」这几颗按钮拿 OpenCode 验。
   function clientButton(markup: string): string {
-    return rowButton(markup, 'workbuddy')
+    return rowButton(markup, 'opencode')
   }
   const macClient = {
-    tool: 'workbuddy', installed: false, version: null, path: null, installDirectory: null, running: false,
+    tool: 'opencode', installed: false, version: null, path: null, installDirectory: null, running: false,
     installSupported: false, launchSupported: false, detectionError: null,
     installHint: 'macOS 请先从客户端官网下载并将应用移入 Applications，然后重新检测',
   } as unknown as HomeProps['externalClients'][number]
@@ -1556,7 +1557,7 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
       expect(button, tool).not.toContain('安装指南')
       expect(button, tool).not.toContain('disabled')
     }
-    // WorkBuddy 还没有可核对的 Mac 官方包，照旧带去教程。
+    // 这台 Mac 上没有可核对的官方包的（比如以管理员身份运行时），照旧带去教程。
     expect(clientButton(markup)).toContain('安装指南')
   })
 
@@ -1569,14 +1570,15 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
   })
 
   it('offers a real install on a Mac for a client whose official Mac package the main process can fetch', () => {
-    const opencode = { ...macClient, tool: 'opencode', installSupported: true, installHint: null } as typeof macClient
-    const markup = render({}, undefined, { snapshot: macSnapshot(), externalClients: [macClient, opencode] })
+    const opencode = { ...macClient, installSupported: true, installHint: null } as typeof macClient
+    const claudeDesktop = { ...macClient, tool: 'claudeDesktop' } as typeof macClient
+    const markup = render({}, undefined, { snapshot: macSnapshot(), externalClients: [claudeDesktop, opencode] })
     const button = rowButton(markup, 'opencode')
     expect(button).toContain('安装')
     expect(button).not.toContain('安装指南')
     expect(button).not.toContain('disabled')
     // 其余没有可核对官方包的，照旧带去教程。
-    expect(clientButton(markup)).toContain('安装指南')
+    expect(rowButton(markup, 'claudeDesktop')).toContain('安装指南')
   })
 
   it('keeps 「暂不支持」 where no guide can help, such as Windows arm64', () => {
@@ -1620,9 +1622,15 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
     expect(rowButton(render({}, undefined, { snapshot: windows, externalClients: [opencode] }), 'opencode')).toContain('暂不支持')
   })
 
-  it('sends WorkBuddy customers on Windows to the Tencent website instead of offering an install', () => {
+  // yoyo 2026-11-18「改」「下线」「留着」：WorkBuddy 没装时卡片留着，只说装好后会自动连上，按钮是「重新检测」；
+  // Windows、Mac、Windows ARM 上都一样，不再有「去官网下载」「安装指南」「暂不支持」。
+  it.each([
+    ['Windows', 'windows'],
+    ['a Mac', 'macos'],
+    ['Windows on ARM', 'windows-arm'],
+  ] as const)('tells %s customers WorkBuddy connects itself once installed and offers a rescan, not a download', (_label, machine) => {
     const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
-    const windows = {
+    const host = machine === 'macos' ? macSnapshot('managed') : {
       ...base,
       platform: {
         platform: 'windows', isMac: false, nodeRuntimeInstall: 'managed', pythonRuntimeInstall: 'managed',
@@ -1630,16 +1638,15 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
         codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true },
       },
     } as unknown as ToolboxSnapshot
-    // 主进程给的就是这样一行（external-client-runtime.ts 的 windowsInstallRoute）。
-    const workbuddy = {
-      ...macClient, installHint: '到腾讯官网下载安装，装好后回来重新检测', officialDownloadUrl: 'https://www.workbuddy.ai/',
-    } as typeof macClient
-    const markup = render({}, undefined, { snapshot: windows, externalClients: [workbuddy], onOpenExternalDownload: () => undefined })
-    expect(rowButton(markup, 'workbuddy')).toContain('去官网下载')
-    expect(rowButton(markup, 'workbuddy')).not.toContain('disabled')
-    expect(markup).toContain('到腾讯官网下载安装，装好后回来重新检测')
-    expect(markup).not.toContain('将使用腾讯官方安装包')
-    expect(markup).not.toContain('安装指南')
+    // 主进程现在给 WorkBuddy 的就是这样一行：不装、不给安装提示、不给下载页（external-client-runtime.ts 的 status）。
+    const workbuddy = { ...macClient, tool: 'workbuddy', installHint: null, officialDownloadUrl: null } as typeof macClient
+    const markup = render({}, undefined, { snapshot: host, externalClients: [workbuddy], onOpenExternalDownload: () => undefined })
+    const button = rowButton(markup, 'workbuddy')
+    expect(button).toContain('重新检测')
+    expect(button).not.toContain('disabled')
+    expect(markup).toContain('装好 WorkBuddy 后，星芒会自动连上当前账号')
+    expect(markup).toContain('未安装')
+    for (const gone of ['去官网下载', '安装指南', '暂不支持', '办公助手，可以接当前账号的模型']) expect(markup, gone).not.toContain(gone)
   })
 })
 

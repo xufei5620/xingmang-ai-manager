@@ -12,9 +12,14 @@ describe('external client lifecycle presentation', () => {
     expect(isToolId('codexDesktop')).toBe(true)
   })
   it('moves from install to configure to launch using detected state', () => {
-    expect(present({}).action).toBe('install')
+    expect(present({ tool: 'opencode' }).action).toBe('install')
     expect(present({ installed: true }).action).toBe('configure')
     expect(present({ installed: true, configured: true, configurationSource: 'xingmang' }).action).toBe('launch')
+  })
+  // yoyo 2026-11-18「下线」：星芒不装 WorkBuddy、不给下载，没装时那颗按钮是「重新检测」，点得动。
+  it('offers WorkBuddy a rescan instead of an install while it is missing', () => {
+    expect(present({ installSupported: false })).toMatchObject({ action: 'scan', disabled: false })
+    expect(present({ installed: true }).action).toBe('configure')
   })
   it('opens an existing third-party configuration without assuming account ownership', () => {
     const value = present({ installed: true, configurationSource: 'other' })
@@ -72,7 +77,7 @@ describe('external client lifecycle presentation', () => {
   })
 
   it('respects platform support and keeps version/model/running details visible', () => {
-    expect(present({ installSupported: false, installHint: 'manual only' })).toMatchObject({ disabled: true, detail: 'manual only' })
+    expect(present({ tool: 'opencode', installSupported: false, installHint: 'manual only' })).toMatchObject({ disabled: true, detail: 'manual only' })
     expect(present({ installed: true, configured: true, launchSupported: false }).disabled).toBe(true)
     expect(present({ installed: true, running: true, version: 'v2.0', model: 'deepseek-test' }).detail).toBe('v2.0 · 运行中 · deepseek-test')
   })

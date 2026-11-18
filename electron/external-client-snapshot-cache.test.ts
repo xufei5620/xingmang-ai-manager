@@ -34,8 +34,7 @@ function client(tool: ExternalClientStatus['tool'], overrides: Partial<ExternalC
 
 function clients(): ExternalClientStatus[] {
   return [
-    // Windows 上 WorkBuddy 这一行总带着腾讯官网（客户自己下载），落盘再读回来也得认。
-    client('workbuddy', { running: true, installSupported: false, officialDownloadUrl: externalClientOfficialDownloadUrls.workbuddy }),
+    client('workbuddy', { running: true, installSupported: false, officialDownloadUrl: null }),
     client('claudeDesktop', { configurationReady: true, officialDownloadUrl: externalClientOfficialDownloadUrls.claudeDesktop }),
     client('opencode', { installed: false, version: null, path: null, installDirectory: null, configured: false, model: null, configurationSource: 'missing', officialDownloadUrl: null }),
   ]
@@ -112,6 +111,11 @@ describe('external client snapshot cache', () => {
     const opencodeRow = { ...rows[2], installSupported: false, officialDownloadUrl: externalClientOfficialDownloadUrls.opencode }
     expect(parseExternalClientSnapshotCache(document([rows[0], rows[1], opencodeRow]))).not.toBeNull()
     expect(parseExternalClientSnapshotCache(document([rows[0], rows[1], { ...opencodeRow, officialDownloadUrl: 'https://opencode.ai/download' }]))).toBeNull()
+    // 更新前落盘的 WorkBuddy 那一行带着下线了的下载页：整份照认，那一条交给首页前扔掉；别家拿它冒充不认。
+    const retired = parseExternalClientSnapshotCache(document([{ ...rows[0], officialDownloadUrl: 'https://www.workbuddy.ai/' }, rows[1], rows[2]]))
+    expect(retired).not.toBeNull()
+    expect(retired?.[0]).not.toHaveProperty('officialDownloadUrl')
+    expect(parseExternalClientSnapshotCache(document([rows[0], { ...rows[1], officialDownloadUrl: 'https://www.workbuddy.ai/' }, rows[2]]))).toBeNull()
     // A foreign download page from this process is simply not written down.
     const saved = serializeExternalClientSnapshotCache([{ ...rows[0], officialDownloadUrl: 'https://evil.example/download' }, rows[1], rows[2]], new Date())
     expect(saved).not.toContain('evil.example')

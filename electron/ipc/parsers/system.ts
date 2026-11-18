@@ -62,9 +62,13 @@ export function parseSystemScanOptions(value: unknown): SystemScanOptions {
 
 export function parseExternalClientScanOptions(value: unknown): ExternalClientScanOptions {
   if (value === undefined) return {}
-  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'cachedOnly')
-    || (value.cachedOnly !== undefined && typeof value.cachedOnly !== 'boolean')) throw new Error('客户端检测参数格式错误')
-  return value.cachedOnly === true ? { cachedOnly: true } : {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'cachedOnly' && key !== 'only')
+    || (value.cachedOnly !== undefined && typeof value.cachedOnly !== 'boolean')
+    || (value.only !== undefined && value.only !== 'workbuddy')
+    // 上次的结果是整份三家的，只看一家是现看：两样一起要说不通。
+    || (value.cachedOnly === true && value.only !== undefined)) throw new Error('客户端检测参数格式错误')
+  if (value.cachedOnly === true) return { cachedOnly: true }
+  return value.only === 'workbuddy' ? { only: 'workbuddy' } : {}
 }
 
 export function parseNodeRuntimeInstallRequest(value: unknown): NodeRuntimeInstallRequest {

@@ -53,6 +53,26 @@ export function withExternalRunning(statuses: ExternalClientStatus[], tool: Exte
   return statuses.map((entry) => entry.tool === tool ? { ...entry, running: true } : entry)
 }
 
+/** 回到星芒窗口时再看一眼 WorkBuddy 的最短间隔：同线路跟随那套，免得来回切窗口反复起检测。 */
+export const workBuddyFocusRecheckMs = 2 * 60_000
+
+/**
+ * 回到星芒窗口时要不要悄悄只看一眼 WorkBuddy（yoyo 2026-11-18「改」）：首页那一行是这次真检测出来的
+ * 「未安装」（不是开机先摆的上次结果、也没检测出错），离上次检测过了 2 分钟，手上也没在检测。
+ * 客户照着「装好后回来」做了却没点「重新检测」的，回来就能认出来。
+ */
+export function shouldRecheckWorkBuddy(statuses: readonly ExternalClientStatus[], lastScanAt: number | null, now: number, busy: boolean): boolean {
+  const row = statuses.find((entry) => entry.tool === 'workbuddy')
+  return !busy && lastScanAt !== null && now - lastScanAt >= workBuddyFocusRecheckMs
+    && row !== undefined && !row.installed && !row.detectionError && !row.cachedAt
+}
+
+/** 只看了一家回来：换掉那一行，别的行原样不动；手上是开机先摆的上次结果时不并（真的那轮会整份换掉）。 */
+export function withExternalStatus(statuses: ExternalClientStatus[], next: ExternalClientStatus): ExternalClientStatus[] {
+  if (statuses.some((entry) => entry.cachedAt) || !statuses.some((entry) => entry.tool === next.tool)) return statuses
+  return statuses.map((entry) => entry.tool === next.tool ? next : entry)
+}
+
 /**
  * 引导页只有一条进度条。「安装」把运行环境和工具串成一次任务后，第几步由工具
  * 那个任务的那句话说（先开的任务排在前面），下载进度只有运行环境那个任务报得出，
@@ -77,6 +97,9 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   const externalRequest = useLatestRequest()
   // 真的检测回来过一次以后，换账号重跑开机那段时不再要上次落盘的那份：主进程那时也只会回空列表。
   const externalScanned = useRef(false)
+  // 上次真检测回来的时刻，回到窗口时据此决定要不要再看一眼 WorkBuddy；换账号重来。
+  const externalScannedAt = useRef<number | null>(null)
+  const workBuddyRecheck = useRef(false)
   const [jobs, setJobs] = useState<Record<string, ToolJob>>({})
   const request = useLatestRequest()
   const active = useRef(true)
@@ -101,6 +124,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     snapshotRef.current = null
     setSnapshot(null); setError(''); setFailures([]); setLoading(false)
     externalRequest.invalidate()
+    externalScannedAt.current = null
     setExternalClients([]); setExternalError(''); setExternalLoading(false)
   }, [scope])
   // quiet 只给打开客户端之后那一次：重扫换来的只是那一行的「运行中」，不该让三行按钮一起变灰、
@@ -113,6 +137,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       const statuses = await createToolsApi(bridge).readExternal(force)
       externalScanned.current = true
       if (active.current && currentScope.current === scope && id()) {
+        externalScannedAt.current = Date.now()
         setExternalClients(statuses)
         if (options.quiet) setExternalError('')
       }
@@ -134,6 +159,36 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     if (!statuses.length || !active.current || currentScope.current !== scope || !id()) return
     setExternalClients((current) => current.length ? current : statuses)
   }, [bridge, scope])
+  // 回到星芒窗口（获得焦点、从后台切回来）：首页 WorkBuddy 那一行还是「未安装」时悄悄只看它这一家，
+  // 不转圈、不出红条；认出来了换掉那一行，自动连由 useToolInstall 看着这一行接着做。这期间开始了整轮
+  // 检测（capture 过期）就不拿它盖整轮的结果。
+  const externalClientsRef = useRef(externalClients)
+  externalClientsRef.current = externalClients
+  const externalLoadingRef = useRef(externalLoading)
+  externalLoadingRef.current = externalLoading
+  useEffect(() => {
+    if (!bridge || !enabled) return
+    function recheck() {
+      if (document.visibilityState === 'hidden' || !bridge) return
+      if (!shouldRecheckWorkBuddy(externalClientsRef.current, externalScannedAt.current, Date.now(), externalLoadingRef.current || workBuddyRecheck.current)) return
+      const id = externalRequest.capture()
+      const checkedScope = scope
+      // 没看成也算看过一次：老电脑上 PowerShell 一直超时的，不该每次切回来都再起一个。
+      externalScannedAt.current = Date.now()
+      workBuddyRecheck.current = true
+      void createToolsApi(bridge).readWorkBuddy().then((next) => {
+        // 悄悄看的这一下出了错不往首页摆「检测失败」：那一行照旧，点「重新检测」才算数。
+        if (!next || next.detectionError || !active.current || currentScope.current !== checkedScope || !id()) return
+        setExternalClients((current) => withExternalStatus(current, next))
+      }, () => undefined).finally(() => { workBuddyRecheck.current = false })
+    }
+    window.addEventListener('focus', recheck)
+    document.addEventListener('visibilitychange', recheck)
+    return () => {
+      window.removeEventListener('focus', recheck)
+      document.removeEventListener('visibilitychange', recheck)
+    }
+  }, [bridge, enabled, scope])
   // 打开客户端以后：先把那一行写成「运行中」，再在后台悄悄核一次（主进程打开后已作废缓存）。
   const noteExternalLaunched = useCallback((tool: ExternalToolId) => {
     if (currentScope.current !== scope) return

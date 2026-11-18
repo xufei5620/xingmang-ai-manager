@@ -108,6 +108,30 @@ export function assertSafeDataFile(requestedPath: string, label: string): boolea
   return safeDataFileStats(filePath, label) !== null
 }
 
+/**
+ * 只问这个位置上有没有东西：不跟随最后一级的链接、不读内容。看不准的（没权限、上级是个文件）一律当有。
+ * 给「从没配置过」这类判断用（决定单 D7）：说不准时宁可当有，什么都不替客户写。
+ */
+export function localPathPresentSync(targetPath: string): boolean {
+  try {
+    fs.lstatSync(targetPath)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return true
+  }
+  // Windows answers ENOENT, not ENOTDIR, for a path under a file. Only call the path absent
+  // when the nearest ancestor that exists is a directory; links are followed here so a home
+  // folder moved off C: by a junction still counts as a directory.
+  for (let current = path.dirname(targetPath); ; current = path.dirname(current)) {
+    try {
+      return !fs.statSync(current).isDirectory()
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return true
+    }
+    if (path.dirname(current) === current) return false
+  }
+}
+
 // assertSafeDataFile for many files of one directory, for a caller that checks
 // them all on every save (chat history: up to 200 conversation files, every
 // couple of seconds while a reply streams). The directory's ancestors are walked

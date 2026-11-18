@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ExternalClientStatus } from '../../../../electron/ipc-contract'
-import { guideJobProgress, planConfigRefresh, withExternalRunning } from './useToolbox'
+import { guideJobProgress, planConfigRefresh, shouldRecheckWorkBuddy, withExternalRunning, withExternalStatus, workBuddyFocusRecheckMs } from './useToolbox'
 
 describe('post key-sync refresh plan', () => {
   it('only re-reads the config once a snapshot is on screen', () => {
@@ -52,5 +52,38 @@ describe('desktop client marked running after it was opened', () => {
     const statuses = [client('workbuddy', true), client('opencode')]
     expect(withExternalRunning(statuses, 'workbuddy')).toBe(statuses)
     expect(withExternalRunning(statuses, 'claudeDesktop')).toBe(statuses)
+  })
+})
+
+// yoyo 2026-11-18「改」：客户照着「装好后回来」做了却没点「重新检测」，回到星芒窗口就悄悄只看一眼 WorkBuddy。
+describe('WorkBuddy looked at again when the window comes back', () => {
+  const row = (tool: ExternalClientStatus['tool'], patch: Partial<ExternalClientStatus> = {}): ExternalClientStatus => ({
+    tool, installed: false, version: null, path: null, installDirectory: null, running: false,
+    installSupported: false, launchSupported: false, detectionError: null, installHint: null,
+    configured: false, model: null, configurationSource: 'missing', configurationError: null, ...patch,
+  })
+  const now = 10_000_000
+
+  it('looks again only for a real missing row, two minutes after the last scan and when nothing else is scanning', () => {
+    const missing = [row('workbuddy'), row('opencode', { installed: true })]
+    expect(shouldRecheckWorkBuddy(missing, now - workBuddyFocusRecheckMs, now, false)).toBe(true)
+    expect(shouldRecheckWorkBuddy(missing, now - workBuddyFocusRecheckMs + 1, now, false)).toBe(false)
+    expect(shouldRecheckWorkBuddy(missing, now - workBuddyFocusRecheckMs, now, true)).toBe(false)
+    expect(shouldRecheckWorkBuddy(missing, null, now, false)).toBe(false)
+    for (const patch of [{ installed: true }, { detectionError: '客户端检测超时' }, { cachedAt: '2026-11-18T00:00:00.000Z' }]) {
+      expect(shouldRecheckWorkBuddy([row('workbuddy', patch)], 0, now, false), JSON.stringify(patch)).toBe(false)
+    }
+    expect(shouldRecheckWorkBuddy([row('opencode')], 0, now, false)).toBe(false)
+  })
+
+  it('swaps in the row it looked at and leaves the others and a startup snapshot alone', () => {
+    const statuses = [row('workbuddy'), row('claudeDesktop', { installed: true })]
+    const found = row('workbuddy', { installed: true, path: 'C:\\WorkBuddy\\WorkBuddy.exe', pristine: true })
+    const next = withExternalStatus(statuses, found)
+    expect(next).toEqual([found, statuses[1]])
+    expect(next[1]).toBe(statuses[1])
+    const cached = statuses.map((entry) => ({ ...entry, cachedAt: '2026-11-18T00:00:00.000Z' }))
+    expect(withExternalStatus(cached, found)).toBe(cached)
+    expect(withExternalStatus([row('opencode')], found)).toEqual([row('opencode')])
   })
 })

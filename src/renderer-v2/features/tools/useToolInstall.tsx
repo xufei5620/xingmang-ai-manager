@@ -1,5 +1,5 @@
-import { useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
-import type { AccountSessionState, AccountSourceTarget, ExternalToolId, PlatformCapabilities } from '../../../../electron/ipc-contract'
+import { useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
+import type { AccountSessionState, AccountSourceTarget, ExternalClientStatus, ExternalToolId, PlatformCapabilities } from '../../../../electron/ipc-contract'
 import { isRemoteFeatureOffMessage } from '../../../../electron/remote-features'
 import type { LatestRequest } from '../../latest-request'
 import { operationFailureFrom } from '../../business-common'
@@ -24,6 +24,8 @@ import { jobToolName, withoutTool } from './tool-jobs'
 import { rememberRevertedToolUpdate } from './update-notice'
 import { uninstallHandOffNotice } from './uninstall-handoff'
 import { clientLaunchWaitLabel } from './launch-notice'
+import { externalAutoConnectAttemptKey, externalAutoConnectEligible, externalDetectedAutoConnectTarget, type ExternalAutoConnectOutcome } from './external-client-auto-connect'
+import { externalClientConnectedText } from './external-client-notice'
 import { installedToolSyncLabel } from './useToolbox'
 
 interface ToolInstallOptions {
@@ -40,6 +42,8 @@ interface ToolInstallOptions {
   offlineNow: RefObject<boolean>
   mounted: RefObject<boolean>
   accountEpoch: LatestRequest
+  /** 这个账号的密钥那一轮（登录、开机恢复）已经写完：认出 WorkBuddy 后自动连借的是那几家里当前账号的密钥。 */
+  accountKeysReady: boolean
   runAccountBootstrap: AccountBootstrap['runAccountBootstrap']
   refreshRecent(): void
   navigate(page: PageId, section?: string): void
@@ -54,7 +58,7 @@ interface ToolInstallOptions {
  * 工具卡上（toolbox.run）；装完把账号密钥写进去再重新检测，这一段也算在同一个任务里。
  */
 export function useToolInstall(options: ToolInstallOptions) {
-  const { app, toolsApi, toolbox, toast, perform, platform, session, scope, latestScope, offline, offlineNow, mounted, accountEpoch, runAccountBootstrap, refreshRecent, navigate, setAuth, setConfirmation, setOperationError, setExternalClient } = options
+  const { app, toolsApi, toolbox, toast, perform, platform, session, scope, latestScope, offline, offlineNow, mounted, accountEpoch, accountKeysReady, runAccountBootstrap, refreshRecent, navigate, setAuth, setConfirmation, setOperationError, setExternalClient } = options
   // 首页卡片上正在装的是更新、回到推荐版本还是退回（v4 批 04）：进度那一行开头说清楚。
   const [installIntents, setInstallIntents] = useState<Partial<Record<ToolId, ToolInstallIntent>>>({})
   // 首页卡片上第一次装没装上的原因：卡片写「没装上：…，已撤回」，「看原因」再弹一次同一个错误框。
@@ -271,13 +275,90 @@ export function useToolInstall(options: ToolInstallOptions) {
   }
   async function installExternal(id: ExternalToolId) {
     const epoch = accountEpoch.capture()
+    const connect: { outcome?: ExternalAutoConnectOutcome } = {}
+    let connecting = false
     try {
-      const completed = await toolbox.run(id, '正在安装', () => toolsApi.installExternal(id), { cancel: () => toolsApi.cancelExternalInstall(id), notice: {} })
+      // 装好以后从没配置过的，在同一个任务里替他连一次（决定单 D7），进度那一行用命令行工具装完时那句。
+      // 没登录、换了账号、配过别家或开着的，照旧停在「确认连接」。
+      const completed = await toolbox.run(id, '正在安装', async (report) => {
+        const status = await toolsApi.installExternal(id)
+        if (!session.authenticated || !session.account || scope !== latestScope.current || !epoch() || !externalAutoConnectEligible(status)) return
+        connecting = true
+        report(installedToolSyncLabel)
+        connect.outcome = await toolsApi.autoConnectExternal(status, 'install', epoch)
+      }, { cancel: async () => connecting ? { cancelled: false, reason: '这一步已经不能取消了。' } : toolsApi.cancelExternalInstall(id), notice: {} })
       if (!completed || !mounted.current || !epoch()) return
       await toolbox.refreshExternal()
-      if (mounted.current && epoch()) toast.show(`${spacedName(jobToolName(id) ?? id)}已装好，点「确认连接」用上当前账号`, 'ok')
+      if (!mounted.current || !epoch()) return
+      const outcome = connect.outcome
+      const name = spacedName(jobToolName(id) ?? id)
+      // 连好了用配置窗口保存成功时那句；写进去了但自检没过，同命令行工具装完没配好时只说装好了；没连就照旧。
+      if (outcome?.kind === 'connected') toast.show(outcome.verified ? externalClientConnectedText(id, outcome.model) : `${name}已装好`, 'ok')
+      else toast.show(`${name}已装好，点「确认连接」用上当前账号`, 'ok')
     } catch (cause) { if (mounted.current && epoch()) throw cause }
   }
+  // 自动连同一份安装只试一次（externalAutoConnectAttemptKey）；登录后那一轮和认出 WorkBuddy 后那一次不同时跑，
+  // 免得两边都去写、后到的那次被主进程拦下来白记一行「没连成」。
+  const autoConnectAttempts = useRef(new Set<string>())
+  const autoConnecting = useRef(false)
+  /**
+   * 登录以后（不含开机恢复、切换账号）把已经装着、从没配置过的客户端替他连一次（决定单 D7）。登录那一轮账号密钥
+   * 写完才叫，这样借得到 Claude Code、Codex 刚写好的那把。原因只记运行日志；首页卡片重新检测后自己会变。
+   * WorkBuddy 连好了在角落说一句去它那里选哪个型号（yoyo 2026-11-18「改」），另两家照 D7 不说。
+   */
+  async function connectExternalAfterLogin() {
+    if (!session.authenticated || !session.account || scope !== latestScope.current || offlineNow.current) return
+    const epoch = accountEpoch.capture()
+    const loginScope = scope
+    autoConnecting.current = true
+    try {
+      const statuses = await toolsApi.readExternal().catch((): ExternalClientStatus[] => [])
+      let connected = false
+      let workBuddyModel: string | null = null
+      // 一家一家来：主进程写配置本来就排一个队，同时发只是一起等。
+      for (const status of statuses.filter(externalAutoConnectEligible)) {
+        if (!mounted.current || !epoch()) return
+        autoConnectAttempts.current.add(externalAutoConnectAttemptKey(loginScope, status))
+        const outcome = await toolsApi.autoConnectExternal(status, 'login', epoch)
+        if (outcome.kind !== 'connected') continue
+        connected = true
+        if (status.tool === 'workbuddy' && outcome.verified) workBuddyModel = outcome.model
+      }
+      if (!connected || !mounted.current || !epoch()) return
+      await toolbox.refreshExternal().catch(() => undefined)
+      if (workBuddyModel !== null && mounted.current && epoch()) toast.show(externalClientConnectedText('workbuddy', workBuddyModel), 'ok')
+    } finally { autoConnecting.current = false }
+  }
+  /**
+   * 客户自己装好的 WorkBuddy 被认出来以后（开机、点「重新检测」、回到星芒窗口），替他连一次（yoyo 2026-11-18「改」）。
+   * 等这个账号的密钥那一轮写完才连：借的是 Claude Code、Codex 里当前账号的那把，不能拿上一个账号留下的。
+   * 没连成的照旧停在「确认连接」，原因进运行日志（不出新字）。
+   */
+  async function connectDetectedClient(status: ExternalClientStatus) {
+    const epoch = accountEpoch.capture()
+    autoConnecting.current = true
+    try {
+      const outcome = await toolsApi.autoConnectExternal(status, 'detect', epoch)
+      if (outcome.kind !== 'connected' || !mounted.current || !epoch()) return
+      await toolbox.refreshExternal(false, { quiet: true }).catch(() => undefined)
+      if (outcome.verified && mounted.current && epoch()) toast.show(externalClientConnectedText(status.tool, outcome.model), 'ok')
+    } finally { autoConnecting.current = false }
+  }
+  const detected = session.authenticated && session.account && accountKeysReady && !offline && !toolbox.jobs.workbuddy
+    ? externalDetectedAutoConnectTarget(toolbox.externalClients)
+    : null
+  const detectedKey = detected ? externalAutoConnectAttemptKey(scope, detected) : null
+  const latestDetected = useRef(detected)
+  latestDetected.current = detected
+  useEffect(() => {
+    const status = latestDetected.current
+    if (!status || !detectedKey || autoConnecting.current || offlineNow.current || autoConnectAttempts.current.has(detectedKey)) return
+    autoConnectAttempts.current.add(detectedKey)
+    void connectDetectedClient(status)
+  }, [detectedKey])
+  // 登录那一轮跑完时手上的是登录前那次渲染的闭包（还没登录、旧的检测作用域），只认最新这一份。
+  const latestConnectAfterLogin = useRef(connectExternalAfterLogin)
+  latestConnectAfterLogin.current = connectExternalAfterLogin
   async function launchExternal(id: ExternalToolId) {
     const epoch = accountEpoch.capture()
     try {
@@ -425,5 +506,6 @@ export function useToolInstall(options: ToolInstallOptions) {
     installIntents, installFailures, storeNewerVersion, setStoreNewerVersion, manualUninstall, setManualUninstall, runtimeRestart, setRuntimeRestart, managedSwitch,
     install, cancelInstall, installRuntime, replaceNode, installExternal, launchExternal, switchExternalSource, finishExternalConfigSave,
     requestUninstall, requestRevert, installFromHome, cancelHomeInstall,
+    connectExternalAfterLogin: () => latestConnectAfterLogin.current(),
   }
 }

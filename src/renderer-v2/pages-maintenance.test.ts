@@ -332,14 +332,18 @@ describe('tutorial topics', () => {
     expect(text).toContain('重新检测')
   })
 
-  it('tells a Mac customer how to install the four desktop clients by hand', () => {
-    // 第七批 3：macOS 上这四个桌面端点「安装」只能被带到教程，可教程里一度没有这一章。
+  it('tells a Mac customer how to install the desktop clients by hand', () => {
+    // 第七批 3：macOS 上这几个桌面端点「安装」只能被带到教程，可教程里一度没有这一章。
     const topic = tutorialTopics.find((entry) => entry.id === macDesktopTutorialTopic)
     expect(topic, '缺少 macOS 桌面端教程章节').toBeDefined()
     const text = tutorialText(macDesktopTutorialTopic)
-    // 四个客户端的名字都要出现，名字从注册表取，改了名字这里会红。
+    // 星芒装得了的客户端名字都要出现，名字从注册表取，改了名字这里会红。WorkBuddy 星芒不装、不给下载
+    // （yoyo 2026-11-18「下线」），首页不再带人来这一章，这一章也不再提它。
     expect(text).toContain('Codex 桌面端')
-    for (const client of clientConnections) expect(text, `教程里没写 ${client.name}`).toContain(client.name)
+    for (const client of clientConnections) {
+      if (client.id === 'workbuddy') expect(text).not.toContain(client.name)
+      else expect(text, `教程里没写 ${client.name}`).toContain(client.name)
+    }
     // 检测只认「应用程序」文件夹里的官方应用名，这两条不写清楚客户就卡在「装了但检测不到」。
     expect(text).toContain('应用程序')
     expect(text).toContain('重新检测')

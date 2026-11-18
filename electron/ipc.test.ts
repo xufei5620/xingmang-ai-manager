@@ -130,6 +130,7 @@ function serviceStub(): SystemService {
     fetchAvailableModels: vi.fn() as never,
     configureExternalTool: vi.fn() as never,
     scanExternalClients: vi.fn(async () => []),
+    scanExternalClient: vi.fn(),
     cachedExternalClients: vi.fn(async () => []),
     getLastExternalClients: vi.fn(() => null),
     checkExternalClientConnection: vi.fn() as never,
@@ -4109,14 +4110,34 @@ describe('registerIpcHandlers', () => {
     const service = serviceStub()
     register(service)
     const handler = electronMocks.handlers.get('external-clients:scan')!
-    for (const input of ['cachedOnly', { cachedOnly: 'yes' }, { cachedOnly: true, path: '/etc' }, [true]]) {
+    for (const input of ['cachedOnly', { cachedOnly: 'yes' }, { cachedOnly: true, path: '/etc' }, [true], { only: 'claudeDesktop' }, { only: 'WorkBuddy' }, { only: 1 }, { only: 'workbuddy', cachedOnly: true }]) {
       await expect(Promise.resolve().then(() => handler(trustedEvent(), false, input)), JSON.stringify(input)).rejects.toThrow('客户端检测参数格式错误')
     }
     expect(service.scanExternalClients).not.toHaveBeenCalled()
+    expect(service.scanExternalClient).not.toHaveBeenCalled()
     expect(service.cachedExternalClients).not.toHaveBeenCalled()
     expect(parseExternalClientScanOptions(undefined)).toEqual({})
     expect(parseExternalClientScanOptions({ cachedOnly: false })).toEqual({})
     expect(parseExternalClientScanOptions({ cachedOnly: true })).toEqual({ cachedOnly: true })
+    expect(parseExternalClientScanOptions({ only: 'workbuddy' })).toEqual({ only: 'workbuddy' })
+    expect(parseExternalClientScanOptions({ cachedOnly: false, only: 'workbuddy' })).toEqual({ only: 'workbuddy' })
+  })
+
+  // 回到星芒窗口时只看 WorkBuddy 一家（yoyo 2026-11-18「改」）：不起整轮检测，检测失败照常记，日志不说成整轮检测完了。
+  it('looks at WorkBuddy alone on request and logs it as that', async () => {
+    const service = serviceStub()
+    const status = { tool: 'workbuddy', installed: true, detectionError: null }
+    vi.mocked(service.scanExternalClient).mockResolvedValueOnce(status as never)
+    const { runtimeLog } = register(service)
+    const handler = electronMocks.handlers.get('external-clients:scan')!
+    await expect(handler(trustedEvent(), true, { only: 'workbuddy' })).resolves.toEqual([status])
+    expect(service.scanExternalClient).toHaveBeenCalledExactlyOnceWith('workbuddy')
+    expect(service.scanExternalClients).not.toHaveBeenCalled()
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-clients:scan').map((call) => call[3])).toEqual(['回到窗口时单独看了一眼 WorkBuddy：已装好'])
+    vi.mocked(service.scanExternalClient).mockResolvedValueOnce({ tool: 'workbuddy', installed: false, detectionError: 'Code signature check failed' } as never)
+    await handler(trustedEvent(), false, { only: 'workbuddy' })
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-client.detection-failed')).toHaveLength(1)
+    expect(vi.mocked(runtimeLog.log).mock.calls.filter((call) => call[2] === 'external-clients:scan').at(-1)?.[3]).toBe('回到窗口时单独看了一眼 WorkBuddy：还没装')
   })
 
   it('resolves external-client keys in the main process and never accepts a renderer URL', async () => {
@@ -4133,6 +4154,22 @@ describe('registerIpcHandlers', () => {
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('sk-known-secret-value')
     expect(JSON.stringify(result)).not.toContain('sk-known-secret-value')
     expect(() => handler(trustedEvent('https://untrusted.example/'), 'opencode', {})).toThrow('已拒绝')
+    expect(service.configureExternalTool).toHaveBeenCalledOnce()
+  })
+
+  it('passes the automatic connection after install or login down so the main process can recheck it before writing', async () => {
+    const service = serviceStub()
+    const safeResult = { tool: 'workbuddy' as const, model: 'fixture-model', path: 'fixture-config', files: ['fixture-config'], backups: [], outcome: 'configured' as const, message: 'saved', restartRequired: false, connectionVerified: true, connection: null }
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { hasApiKey: true, matchesRelay: true } } } as never)
+    vi.mocked(service.configureExternalTool).mockResolvedValue(safeResult)
+    register(service)
+    const handler = electronMocks.handlers.get('config:configure-external-tool')!
+    await handler(trustedEvent(), 'workbuddy', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture-model', automatic: true })
+    expect(service.configureExternalTool).toHaveBeenCalledWith('workbuddy', { apiKey: 'sk-known-secret-value', model: 'fixture-model', protocol: undefined }, expect.any(Function), 'configured', { automatic: true })
+    // 只认 true：别的值一律当参数不对，什么都不写。
+    for (const automatic of [false, 'yes', 1]) {
+      await expect(handler(trustedEvent(), 'workbuddy', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture-model', automatic })).rejects.toThrow('客户端配置参数无效')
+    }
     expect(service.configureExternalTool).toHaveBeenCalledOnce()
   })
 

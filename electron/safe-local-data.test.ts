@@ -9,6 +9,7 @@ import {
   assertSafeDataFile,
   assertSafeDataFiles,
   findReparseComponent,
+  localPathPresentSync,
   readSafeUtf8File,
   readSafeUtf8FileSync,
   renameWithTransientRetry,
@@ -308,6 +309,32 @@ describe('safe local data files', () => {
 
     expect(() => appendSafeUtf8FileSync(filePath, 'new\n', '操作日志')).toThrow('单链接普通文件')
     expect(fs.readFileSync(victim, 'utf8')).toBe('victim\n')
+  })
+})
+
+describe('local path presence', () => {
+  it('only answers absent for a path that truly does not exist', () => {
+    const directory = temporaryDirectory()
+    expect(localPathPresentSync(path.join(directory, 'missing'))).toBe(false)
+    expect(localPathPresentSync(path.join(directory, 'missing', 'child'))).toBe(false)
+    fs.writeFileSync(path.join(directory, 'file'), 'x')
+    expect(localPathPresentSync(path.join(directory, 'file'))).toBe(true)
+    expect(localPathPresentSync(directory)).toBe(true)
+    // 上级是个文件：看不准，当有。
+    expect(localPathPresentSync(path.join(directory, 'file', 'child'))).toBe(true)
+  })
+
+  it('still answers present under a file when the system says the path is simply missing', () => {
+    // Windows reports ENOENT rather than ENOTDIR for a path under a file.
+    const directory = temporaryDirectory()
+    fs.writeFileSync(path.join(directory, 'file'), 'x')
+    const lstat = fs.lstatSync
+    vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+      if (String(target).startsWith(path.join(directory, 'file') + path.sep)) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+      return lstat(target, options)
+    }) as typeof fs.lstatSync)
+    expect(localPathPresentSync(path.join(directory, 'file', 'child', 'grandchild'))).toBe(true)
+    expect(localPathPresentSync(path.join(directory, 'missing', 'child'))).toBe(false)
   })
 })
 

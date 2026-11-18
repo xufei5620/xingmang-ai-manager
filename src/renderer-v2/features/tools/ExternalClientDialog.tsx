@@ -4,7 +4,7 @@ import type { AccountKey, AppConfigSummary, ExternalClientConfigResult, External
 import { BrandIcon, Button, Dialog, Input, Notice, Select, useToast } from '../../ui'
 import { clientConnections, clientKeySources } from '../../registry/clients'
 import { connectionCheckView } from './connection-check'
-import { accountKeyListFailureText, externalClientSavedTone } from './external-client-notice'
+import { accountKeyListFailureText, externalClientConnectedText, externalClientSavedTone } from './external-client-notice'
 import { accountKeyDescription, manualKeyIssue, readAllAccountKeys } from './key-selection'
 import { configuredKeySources, configuredSourceModel, detectedClientModel, initialClientSource } from './external-client-defaults'
 import { DialogExitButton } from './dialog-parts'
@@ -18,14 +18,6 @@ const clientHints: Record<ExternalToolId, string> = {
   claudeDesktop: '保存后要完全退出再重新打开 Claude Desktop。它第一次用和每次自己升级以后，都要从 Claude 官网下载组件（最多 1.6GB），这台电脑要能连上 Claude 官网才下得动。',
   workbuddy: '请选择能调用工具的模型；保存后在 WorkBuddy 的模型列表里选它。',
   opencode: '命令行版和桌面版共用这份配置。',
-}
-
-// 连好以后页顶说一句下一步。WorkBuddy 列表里显示的就是型号本身（主进程写进 models.json 的
-// name 缺省是型号 ID），所以直接点名让他选哪一个。
-function connectedText(tool: ExternalToolId, model: string): string {
-  if (tool === 'claudeDesktop') return '已连好 Claude Desktop，完全退出后从这里点「打开」；第一次发消息要等它下完组件'
-  if (tool === 'workbuddy') return `已连好 WorkBuddy，在它的模型列表里选「${model}」`
-  return '已连好 OpenCode，命令行版和桌面版都能用'
 }
 
 export function ExternalClientDialog({ api, tool, signedIn, ready = false, version = null, strictKeyFormat = false, liveConfig = null, onClose, onSaved }: {
@@ -144,7 +136,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
       const saved = await api.configureExternalTool(tool, { credential: credential(), model: chosen, ...(tool === 'opencode' ? { protocol } : {}) })
       if (!alive.current) return
       setResult(saved); setDirty(false); onSaved()
-      if (saved.connection && connectionCheckView(saved.connection).tone === 'ok') toast.show(connectedText(tool, chosen), 'ok')
+      if (saved.connection && connectionCheckView(saved.connection).tone === 'ok') toast.show(externalClientConnectedText(tool, chosen), 'ok')
     } catch (cause) { if (alive.current) setError(errorMessage(cause)) }
     finally { finish(); lock.current = false; if (alive.current) setBusy('') }
   }
