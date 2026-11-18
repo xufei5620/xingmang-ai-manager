@@ -3579,6 +3579,41 @@ describe('codex-remote-service lifecycle', () => {
     await vi.waitFor(() => expect(channel.stopped).toBe(1))
   })
 
+  // YR-8：开了「打开星芒时自动打开遥控」，再打开星芒就会自己连上，道别那句跟着换；没开的照旧（上一条）。
+  it('tells the phone the remote comes back on its own at the next launch when switching on at launch is on', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.service.setAutoStart(true)
+    await s.service.farewell()
+    // 换了道别那句，退出没退成时照旧补「没关成」。
+    await s.service.quitAborted()
+    expect(channel.texts()).toEqual(['电脑上的星芒关了，遥控已停。星芒再打开时会自动连上。', '电脑上的星芒没关成，遥控还开着，可以接着用。'])
+  })
+
+  it('falls back to the plain goodbye when the switch cannot be read, rather than promising a reconnect', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.service.setAutoStart(true)
+    vi.spyOn(s.store, 'readSettings').mockRejectedValueOnce(new Error('disk'))
+    await s.service.farewell()
+    expect(channel.texts()).toEqual(['电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。'])
+  })
+
+  it('keeps the goodbye inside one and a half seconds when reading the switch hangs', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    vi.spyOn(s.store, 'readSettings').mockImplementationOnce(() => new Promise(() => undefined))
+    let done = false
+    const farewell = s.service.farewell().then(() => { done = true })
+    await vi.advanceTimersByTimeAsync(1_499)
+    expect(done).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await farewell
+    expect(done).toBe(true)
+    expect(channel.texts()).toEqual([])
+  })
+
   // 主窗口 prepareToQuit 的清理预算是 2 秒（window-lifecycle），道别要在它之前放手。
   it('does not let a stuck channel hold the quit for more than one and a half seconds', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
@@ -3640,6 +3675,34 @@ describe('codex-remote-service lifecycle', () => {
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
     await vi.waitFor(() => expect(channel.texts()).toContain('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。'))
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
+  })
+
+  // YR-8：开了自动打开的，星芒下次打开会自己连上，自动关那句跟着换。
+  it('says the remote comes back at the next launch when it closes itself with switching on at launch on', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup({ idleCloseHours: 4 })
+    const channel = await enabledAndPaired(s)
+    await s.service.setAutoStart(true)
+    await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
+    await channel.sentUntil(() => channel.texts().includes('4 小时没有新消息，手机遥控已自动关闭。星芒下次打开时会自动连上，现在要用请在电脑上重新打开。'))
+    expect(channel.texts()).not.toContain('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。')
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
+  })
+
+  // 挑那句话要读盘，渠道不等它：到点当场关，读不出来也照样在 1.5 秒后收掉连接，只是那句不发了。
+  it('switches off on the idle close at once even while reading the switch hangs', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup({ idleCloseHours: 4 })
+    const channel = await enabledAndPaired(s)
+    const warning = '手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。'
+    await vi.advanceTimersByTimeAsync(4 * 60 * 60_000 - 1)
+    await channel.sentUntil(() => channel.texts().includes(warning))
+    vi.spyOn(s.store, 'readSettings').mockImplementationOnce(() => new Promise(() => undefined))
+    await vi.advanceTimersByTimeAsync(1)
+    expect(s.service.hasEnabledChannel()).toBe(false)
+    await vi.advanceTimersByTimeAsync(1_500)
+    await vi.waitFor(() => expect(channel.stopped).toBe(1))
+    expect(channel.texts()).toEqual([warning])
   })
 
   // D66 / YKS-19：自动关之前 10 分钟提醒一次，回什么都续上。

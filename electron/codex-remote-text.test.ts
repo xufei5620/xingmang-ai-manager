@@ -300,6 +300,11 @@ describe('codex-remote-text', () => {
     // YF-10：自动关那句的时长跟着设置走。
     expect(idleClosedMessage(4)).toBe('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。')
     expect(idleClosedMessage(12)).toBe('12 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。')
+    // YR-8：开了「打开星芒时自动打开遥控」时换的两句，字照 yoyo 2026-11-18 批的一字不差。
+    expect(idleClosedMessage(4, true)).toBe('4 小时没有新消息，手机遥控已自动关闭。星芒下次打开时会自动连上，现在要用请在电脑上重新打开。')
+    expect(idleClosedMessage(12, false)).toBe('12 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。')
+    expect(remoteMessages.quitting).toBe('电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。')
+    expect(remoteMessages.quittingAutoStart).toBe('电脑上的星芒关了，遥控已停。星芒再打开时会自动连上。')
     expect(staleMessageNotice(25)).toBe('这条是 25 分钟前发的，那会儿电脑没连上，没有执行。还要做的话请再发一次。')
     expect(remoteTurnFailureMessages).toEqual({
       balance: '余额不够了，充值后再发一次。',
