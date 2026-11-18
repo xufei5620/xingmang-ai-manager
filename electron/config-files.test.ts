@@ -629,6 +629,85 @@ describe('native CLI configuration files', () => {
       expect(inspectProviderConfig('codex', roots, providerBaseUrls)).not.toHaveProperty('configBroken')
     })
 
+    // 2026-11-18 客户：中文用户名被 PowerShell 5.1 按 GBK 转了一圈，后面的反斜杠被吃掉，整份 Codex 读不了。
+    // 只坏了带用户名的那几行，「修好它」去掉它们照合并修，客户自己的设置照留；「重置为初始状态」照旧整份重建。
+    const mangledLines = [
+      'notify = ["C:\\\\Users\\\\\u5BEE\u72B2\u76AC\u93C4\u5DBE\\AppData\\\\hook.cjs", "codex"]',
+      '',
+      '[projects."C:\\\\Users\\\\\u5BEE\u72B2\u76AC\u93C4\u5DBE\\Documents"]',
+      'trust_level = "trusted"',
+      '',
+    ].join('\n')
+
+    it('keeps the readable settings when only a few lines of config.toml are unreadable, repairing for the current account', () => {
+      const roots = providerRoots(temporaryHome())
+      const [configPath] = providerConfigPaths('codex', roots)
+      const auth = codexAuthSnapshotPaths(roots)
+      saveProviderConfig('codex', 'sk-old', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+      customize(configPath)
+      const broken = `${fs.readFileSync(configPath, 'utf8')}\n${mangledLines}`
+      fs.writeFileSync(configPath, broken, 'utf8')
+      expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ configBroken: true, matchesRelay: false })
+
+      const saved = saveProviderConfig('codex', 'sk-new', testModels.codex, 'repair', roots, {}, providerBaseUrls)
+
+      const config = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+      expectCustomizationsKept(config)
+      expect(config.model).toBe(testModels.codex)
+      expect(config).not.toHaveProperty('notify')
+      expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-new' })
+      const after = inspectProviderConfig('codex', roots, providerBaseUrls)
+      expect(after).toMatchObject({ hasApiKey: true, matchesRelay: true })
+      expect(after).not.toHaveProperty('configBroken')
+      const backup = saved.backups.find((entry) => entry.startsWith(`${configPath}.bak.`))
+      expect(fs.readFileSync(String(backup), 'utf8')).toBe(broken)
+
+      // 配置里「重置为初始状态」照旧整份重建。
+      fs.writeFileSync(configPath, broken, 'utf8')
+      saveProviderConfig('codex', 'sk-new', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+      const reset = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+      expect(reset).not.toHaveProperty('mcp_servers')
+      expect(reset).not.toHaveProperty('projects')
+    })
+
+    it('rebuilds a config.toml that is not UTF-8 instead of salvaging garbled text', () => {
+      const roots = providerRoots(temporaryHome())
+      const [configPath] = providerConfigPaths('codex', roots)
+      saveProviderConfig('codex', 'sk-old', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+      customize(configPath)
+      // 「张三」 saved as GBK, plus one line Codex cannot parse either way.
+      const gbk = Buffer.concat([fs.readFileSync(configPath), Buffer.from('\n[projects."C:\\\\Users\\\\'), Buffer.from([0xd5, 0xc5, 0xc8, 0xfd]), Buffer.from('\\A"]\ntrust_level = "trusted"\n')])
+      fs.writeFileSync(configPath, gbk)
+      expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ configBroken: true })
+
+      saveProviderConfig('codex', 'sk-new', testModels.codex, 'repair', roots, {}, providerBaseUrls)
+
+      const config = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+      expect(config).not.toHaveProperty('mcp_servers')
+      expect(config.model).toBe(testModels.codex)
+    })
+
+    it('keeps the readable settings of a ChatGPT login whose config.toml has a few unreadable lines', () => {
+      const roots = providerRoots(temporaryHome())
+      const [configPath] = providerConfigPaths('codex', roots)
+      const auth = codexAuthSnapshotPaths(roots)
+      fs.mkdirSync(path.dirname(configPath), { recursive: true })
+      const broken = `${customized}\n${mangledLines}`
+      fs.writeFileSync(configPath, broken, 'utf8')
+      const login = { auth_mode: 'chatgpt', tokens: { id_token: 'a.b.c', access_token: 'live' } }
+      fs.writeFileSync(auth.active, JSON.stringify(login), 'utf8')
+      expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ configBroken: true, codexAuthMode: 'chatgpt' })
+
+      const saved = switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'repair')
+
+      const config = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+      expectCustomizationsKept(config)
+      expect(config).not.toHaveProperty('notify')
+      expect(inspectProviderConfig('codex', roots, providerBaseUrls)).not.toHaveProperty('configBroken')
+      const backup = saved.backups.find((entry) => entry.startsWith(`${configPath}.bak.`))
+      expect(fs.readFileSync(String(backup), 'utf8')).toBe(broken)
+    })
+
     it('leaves an official config.toml exactly as the customer had it when repairing for the official account', () => {
       const roots = providerRoots(temporaryHome())
       const [configPath] = providerConfigPaths('codex', roots)
