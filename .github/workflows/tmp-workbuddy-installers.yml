@@ -82,11 +82,8 @@ jobs:
         if: env.ASAR != ''
         timeout-minutes: 5
         run: |
-          echo '== resolveDataFolderName / isOversea context'
-          LC_ALL=C grep -a -o -E '.{0,160}resolveDataFolderName\(.{0,200}' "$ASAR" | cut -c1-400 | head -n 6 || true
-          LC_ALL=C grep -a -o -E '.{0,120}WORKBUDDY_DATA_FOLDER_NAME.{0,160}' "$ASAR" | cut -c1-320 | head -n 4 || true
-          echo '== folder-name candidates'
-          LC_ALL=C grep -a -o -E '[`"'"'"']\.workbuddy[-_A-Za-z0-9]{0,16}[`"'"'"']' "$ASAR" | sort | uniq -c | sort -nr | head -n 12 || true
-          LC_ALL=C grep -a -o -E '.{0,80}isOversea.{0,80}' "$ASAR" | cut -c1-200 | sort -u | head -n 10 || true
-          echo '== install-manifest.json'
-          head -c 1500 app/resources/install-manifest.json; echo
+          f=app/resources/app.asar.unpacked/cli/product.json
+          echo "== $f"; ls -l "$f" || true
+          LC_ALL=C grep -o -E '"(dataFolderName|productName|applicationName|isOversea|nameShort|nameLong|win32AppUserModelId|darwinBundleIdentifier|urlProtocol)"\s*:\s*("[^"]{0,60}"|true|false)' "$f" | head -n 20 || true
+          echo '== .workbuddy-ai context'
+          LC_ALL=C grep -a -o -E '[^`]{0,120}`\.workbuddy-ai`[^;]{0,120}' "$ASAR" | cut -c1-260 | head -n 6 || true
