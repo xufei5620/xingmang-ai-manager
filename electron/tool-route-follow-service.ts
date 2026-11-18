@@ -451,5 +451,6 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
     toolRouteSnapshotFields,
     disposeToolRoutes,
     bindToolRouteAccount,
+    holdsAccountKey,
   }
 }

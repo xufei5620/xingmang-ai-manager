@@ -83,6 +83,7 @@ import {
   relayProviderBaseUrlEquals,
   relaySiteEndpointIdForBaseUrl,
   relaySiteForProviderBaseUrl,
+  relaySiteProviderBaseUrlVariants,
 } from './relay-sites'
 import {
   planRemovedCliHooksRestore,
@@ -120,6 +121,26 @@ export function permitsShadowedCodexRepair(
   const key = apiKey.trim()
   return provider === 'codex' && previousOwnership === 'unknown' && before.codexProviderShadowed === true
     && before.hasApiKey && before.matchesRelay && key.length > 0 && before.apiKey === key
+}
+
+/**
+ * 工具自己读不了的主配置（configBroken）读不出地址，matchesRelay 只能是 false，可这不说明 Key 是别家的
+ * （11-18 客户：Codex 的 config.toml 被 PowerShell 5.1 按 GBK 改坏，Key 在 auth.json 里好好的）。来源记录的
+ * 指纹里有地址，把地址换成当前站各条线路的地址逐个对一遍：对得上的就是星芒上回替这个账号（account）或客户
+ * 自己（manual）写下的那一份，Key 一个字没变，原本就是发给当前站的。地址读得出来的照旧按读到的算，不在此列；
+ * 只认这两种记录，没有记录、记录是「看不出来」的一律不认。
+ */
+export function recoverBrokenConfigOwnership(
+  before: NativeConfigInspection,
+  siteBaseUrls: readonly string[],
+  read: (config: NativeConfigInspection) => ToolConfigOwnership,
+): 'account' | 'manual' | null {
+  if (before.configBroken !== true || !before.hasApiKey || before.actualBaseUrl) return null
+  for (const baseUrl of siteBaseUrls) {
+    const ownership = read({ ...before, actualBaseUrl: baseUrl })
+    if (ownership === 'account' || ownership === 'manual') return ownership
+  }
+  return null
 }
 
 /**
@@ -289,6 +310,11 @@ export interface ConfigSaveServiceDependencies {
   moveOfficialCredentialsAside: () => boolean
   withCredentialUndo: (error: unknown, undo: () => unknown, leftover: string) => unknown
   applyXingmangAiSkillForCodexAccount: (official: boolean) => Promise<void>
+  /**
+   * 线路跟随那边：配置里那把是不是当前账号签给这个工具、本机缓存着的那把（读不到缓存、没接上账号 = 不是）。
+   * 「保持当前」重置读不了的配置时，来源记录对不上就靠它认人。缺省 = 不认（旧行为）。
+   */
+  holdsAccountKey?: (provider: ProviderId, current: NativeConfigInspection) => Promise<boolean>
 }
 
 export function createConfigSaveService(context: ServiceContext, dependencies: ConfigSaveServiceDependencies) {
@@ -310,6 +336,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     moveOfficialCredentialsAside,
     withCredentialUndo,
     applyXingmangAiSkillForCodexAccount,
+    holdsAccountKey,
   } = dependencies
 
   // 这次启动替用户改过的钩子（第十八批 1b）：试过的不再试，改好的让首页说一句。只在内存里，重开软件从头算。
@@ -1029,6 +1056,26 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     await rememberSeededToolDefaults(present)
   }
 
+  /**
+   * 「保持当前」的重置碰上工具自己读不了的主配置：本机认得出这把 Key 是当前站这边的（来源记录对得上，见
+   * recoverBrokenConfigOwnership），或者它正是当前账号签给这个工具、本机缓存着的那把，就照旧沿用。重置是坏文件
+   * 唯一的出路（首页「修好它」也走它），以前在这里一律报「属于其他账号」，一个字没写。认不出来的照旧拦，Key 不
+   * 发出去。只更新（merge）要照着原文件改，读不了照旧走不通，不在此列。返回 cached = 只靠缓存认出来的，来源照旧
+   * 按记录算（同读得懂的配置沿用这把时）。
+   */
+  async function brokenConfigKeyOwnership(
+    provider: ProviderId,
+    mode: ConfigSavePayload['mode'],
+    before: NativeConfigInspection,
+    owner: string | null,
+  ): Promise<'account' | 'manual' | 'cached' | null> {
+    if (mode === 'merge' || before.configBroken !== true || before.actualBaseUrl) return null
+    const siteBaseUrls = relaySiteProviderBaseUrlVariants(activeRelaySite().id, provider).map((variant) => variant.baseUrl)
+    const recovered = recoverBrokenConfigOwnership(before, siteBaseUrls, (config) => configOwnership.read(provider, config, owner))
+    if (recovered) return recovered
+    return owner && holdsAccountKey && await holdsAccountKey(provider, before) ? 'cached' : null
+  }
+
   async function saveConfig(
     payload: ConfigSavePayload,
     previewOnboarding: boolean,
@@ -1074,7 +1121,17 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       }
       // An empty key is an explicit renderer sentinel: reuse the main-process key.
       const configured = payload.apiKey.trim() ? null : before
-      if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的密钥属于其他账号，请使用当前账号重新配置')
+      // 只放客户亲手点的重置。自动写入平时到不了这里（读不了的配置来源对不上，上面那道闸先拦下），这里再写明一遍。
+      const recovered = configured?.hasApiKey && !configured.matchesRelay && ownership?.automatic !== true
+        ? await brokenConfigKeyOwnership(payload.provider, payload.mode, configured, owner)
+        : null
+      if (configured?.hasApiKey && !configured.matchesRelay && !recovered) throw new Error('已保存的密钥属于其他账号，请使用当前账号重新配置')
+      if (recovered) {
+        runtimeLog?.log('info', 'config', 'broken-config.key-kept', '工具读不了的配置：认出原来那把密钥是当前账号这边的，重置时照旧沿用', {
+          provider: payload.provider,
+          by: recovered === 'cached' ? 'cache' : 'record',
+        })
+      }
       const apiKey = payload.apiKey.trim() || configured?.apiKey || ''
       if (!apiKey) throw new Error('请先填写密钥')
       const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
@@ -1088,8 +1145,10 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       assertUnchanged()
       // Invalidate previous consent before a write, including same-key manual
       // saves. A crash or persistence failure then leaves a protected source.
+      // 读不了的配置按记录认出来的，来源照记录放回：不然重置完首页又说「来源未确认」。
+      const keptOwnership = recovered === 'account' || recovered === 'manual' ? recovered : previousOwnership
       const source = ownership?.source ?? (payload.apiKey.trim() ? 'manual'
-        : previousOwnership === 'account' || previousOwnership === 'manual' ? previousOwnership : 'unknown')
+        : keptOwnership === 'account' || keptOwnership === 'manual' ? keptOwnership : 'unknown')
       const restoreOwnership = configOwnership.remember(payload.provider, before)
       await configOwnership.write(payload.provider, before, 'manual', owner)
       let result: ReturnType<typeof saveProviderConfig>
