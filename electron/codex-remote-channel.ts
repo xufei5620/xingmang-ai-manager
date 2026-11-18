@@ -342,6 +342,11 @@ export interface CodexRemoteSnapshot {
   pendingApprovals: number
   /** 「打开星芒时自动打开遥控」开着（YF-9）；缺省 = 关。 */
   autoStart?: boolean
+  /**
+   * 这次打开星芒时自动打开遥控没成功的原因（YR-7），跟在设置里点开打不开时那句一样；卡片上自动打开那一行下面说。
+   * 连上了、关掉了自动打开就不带；缺省 = 没有这回事。
+   */
+  autoStartFailure?: string
   /** 「多久没消息就自动关」选的小时数（YF-10）；缺省 = 不自动关。 */
   idleCloseHours?: RemoteIdleCloseHours
   /**
