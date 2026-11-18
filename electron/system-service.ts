@@ -1216,6 +1216,7 @@ export function createSystemService(
     toolRouteSnapshotFields,
     disposeToolRoutes,
     bindToolRouteAccount,
+    holdsAccountKey,
   } = createToolRouteFollowService(context, {
     inspectRunningTools,
     cancelPendingExternalRouteRecheck,
@@ -1269,6 +1270,7 @@ export function createSystemService(
     moveOfficialCredentialsAside,
     withCredentialUndo,
     applyXingmangAiSkillForCodexAccount,
+    holdsAccountKey,
   })
   // 装运行环境和重启 Windows 那一段在 runtime-install-service.ts（#1070 第 3 步）。
   const {

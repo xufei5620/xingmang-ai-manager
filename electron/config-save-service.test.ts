@@ -1,12 +1,13 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import fc from 'fast-check'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
-import { providerBaseUrls } from './catalog'
+import { providerBaseUrls, type ProviderId } from './catalog'
 import { resolveGrokWindowsShell } from './cli-hooks'
-import { providerConfigPaths, saveProviderConfig } from './config-files'
-import { createConfigSaveService, grokShellEnvironment } from './config-save-service'
+import { inspectProviderConfig, providerConfigPaths, saveProviderConfig, type NativeConfigInspection } from './config-files'
+import { createConfigSaveService, grokShellEnvironment, recoverBrokenConfigOwnership } from './config-save-service'
 import { resolveEditorSettingsLocations } from './editor-claude-login-prompt'
 import type { SystemServiceOptions, ToolStatus } from './system-service'
 import { createServiceContext } from './system-service-context'
@@ -50,6 +51,7 @@ function createService(options: SystemServiceOptions = {}) {
     moveOfficialCredentialsAside: vi.fn(() => false),
     withCredentialUndo: vi.fn((error: unknown) => error),
     applyXingmangAiSkillForCodexAccount: vi.fn(async () => undefined),
+    holdsAccountKey: vi.fn(async (_provider: ProviderId, _current: NativeConfigInspection) => false),
   }
   return { root, store, userHome, relayFetch, dependencies, service: createConfigSaveService(context, dependencies) }
 }
@@ -348,5 +350,134 @@ describe('the Claude Code write boundary toggle', () => {
 
     await expect(service.setClaudeWriteBoundary(true)).resolves.toEqual({ enabled: true, applied: 'later' })
     expect(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')).toBe(before)
+  })
+})
+
+// 11-18 客户：Codex 的 config.toml 被 PowerShell 5.1 按 GBK 读、按 UTF-8 写回，路径里吃掉一个反斜杠，Codex 和星芒
+// 都读不了；Key 在 auth.json 里好好的。配置窗口里「保持当前」再点重置，以前读不出地址就报「属于其他账号」，一个字没写。
+describe('resetting a config the tool cannot read while keeping the current key', () => {
+  function codexService() {
+    let owner: string | null = 'solov:7'
+    const fixture = createService({ getExternalClientAccountId: () => owner })
+    fixture.relayFetch.mockImplementation(async () => Response.json({ data: [{ id: 'gpt-fixture' }] }))
+    const roots = { userHome: fixture.userHome, codexHome: path.join(fixture.root, 'codex') }
+    return { ...fixture, roots, switchOwner: (next: string | null) => { owner = next } }
+  }
+
+  function breakCodexConfig(roots: { userHome: string; codexHome: string }): string {
+    const configPath = providerConfigPaths('codex', roots)[0]
+    // 跟客户那份一样：一个反斜杠被吃掉，"\." 是 TOML 不认的转义。
+    const broken = 'notify_dir = "C:\\\\Users\\\\fixture\\.codex"\n' + fs.readFileSync(configPath, 'utf8')
+    fs.writeFileSync(configPath, broken)
+    expect(inspectProviderConfig('codex', roots)).toMatchObject({ configBroken: true, matchesRelay: false, hasApiKey: true, actualBaseUrl: '' })
+    return broken
+  }
+
+  const keepCurrent = { provider: 'codex' as const, apiKey: '', model: 'gpt-fixture', mode: 'reset' as const }
+
+  it('rebuilds the file with the key Xingmang last wrote for this account', async () => {
+    const { roots, service } = codexService()
+    await service.saveConfig({ provider: 'codex', apiKey: 'sk-current-fixture', model: 'gpt-fixture', mode: 'merge' }, false, undefined, {
+      source: 'account', automatic: false,
+    })
+    breakCodexConfig(roots)
+
+    await service.saveConfig(keepCurrent, false)
+
+    const after = inspectProviderConfig('codex', roots)
+    expect(after).toMatchObject({ matchesRelay: true, apiKey: 'sk-current-fixture', model: 'gpt-fixture' })
+    expect(after.configBroken).toBeUndefined()
+    // 来源照记录放回：重置完首页不会又说「来源未确认」。
+    expect(service.buildConfigSummary(false).providers.codex.configurationOwnership).toBe('account')
+  })
+
+  it('still refuses, before any request, a key nothing on this computer ties to the current account', async () => {
+    const { roots, relayFetch, dependencies, service } = codexService()
+    saveProviderConfig('codex', 'sk-unrecorded-fixture', 'gpt-fixture', 'reset', roots, {}, providerBaseUrls)
+    const broken = breakCodexConfig(roots)
+
+    await expect(service.saveConfig(keepCurrent, false)).rejects.toThrow('已保存的密钥属于其他账号')
+
+    expect(dependencies.holdsAccountKey).toHaveBeenCalledWith('codex', expect.objectContaining({ apiKey: 'sk-unrecorded-fixture' }))
+    expect(relayFetch).not.toHaveBeenCalled()
+    expect(fs.readFileSync(providerConfigPaths('codex', roots)[0], 'utf8')).toBe(broken)
+  })
+
+  it('does not take a record Xingmang wrote for another account as proof', async () => {
+    const { roots, relayFetch, switchOwner, service } = codexService()
+    await service.saveConfig({ provider: 'codex', apiKey: 'sk-first-account', model: 'gpt-fixture', mode: 'merge' }, false, undefined, {
+      source: 'account', automatic: false,
+    })
+    breakCodexConfig(roots)
+    relayFetch.mockClear()
+    switchOwner('solov:8')
+
+    await expect(service.saveConfig(keepCurrent, false)).rejects.toThrow('已保存的密钥属于其他账号')
+    expect(relayFetch).not.toHaveBeenCalled()
+  })
+
+  it('keeps refusing a plain save, which has to edit the unreadable file in place', async () => {
+    const { roots, relayFetch, service } = codexService()
+    await service.saveConfig({ provider: 'codex', apiKey: 'sk-current-fixture', model: 'gpt-fixture', mode: 'merge' }, false, undefined, {
+      source: 'account', automatic: false,
+    })
+    breakCodexConfig(roots)
+    relayFetch.mockClear()
+
+    await expect(service.saveConfig({ ...keepCurrent, mode: 'merge' }, false)).rejects.toThrow('已保存的密钥属于其他账号')
+    expect(relayFetch).not.toHaveBeenCalled()
+  })
+
+  it('accepts the key the current account issued for this tool and leaves its source unconfirmed', async () => {
+    const { roots, dependencies, service } = codexService()
+    saveProviderConfig('codex', 'sk-cached-fixture', 'gpt-fixture', 'reset', roots, {}, providerBaseUrls)
+    breakCodexConfig(roots)
+    dependencies.holdsAccountKey.mockImplementation(async (_provider, current) => current.apiKey === 'sk-cached-fixture')
+
+    await service.saveConfig(keepCurrent, false)
+
+    expect(inspectProviderConfig('codex', roots)).toMatchObject({ matchesRelay: true, apiKey: 'sk-cached-fixture' })
+    // 同读得懂的配置沿用这把时一样：没有记录就不替客户认来源，首页按缓存认出是当前账号。
+    expect(service.buildConfigSummary(false).providers.codex.configurationOwnership).toBe('unknown')
+  })
+
+  it('does not ask the key cache while logged out', async () => {
+    const { roots, relayFetch, dependencies, switchOwner, service } = codexService()
+    saveProviderConfig('codex', 'sk-cached-fixture', 'gpt-fixture', 'reset', roots, {}, providerBaseUrls)
+    breakCodexConfig(roots)
+    switchOwner(null)
+    dependencies.holdsAccountKey.mockResolvedValue(true)
+
+    await expect(service.saveConfig(keepCurrent, false)).rejects.toThrow('已保存的密钥属于其他账号')
+    expect(dependencies.holdsAccountKey).not.toHaveBeenCalled()
+    expect(relayFetch).not.toHaveBeenCalled()
+  })
+})
+
+describe('recovering who a broken config belonged to', () => {
+  const broken = { configBroken: true, hasApiKey: true, actualBaseUrl: '', apiKey: 'sk-fixture' } as NativeConfigInspection
+  const urls = ['https://primary.example/v1', 'https://direct.example/v1']
+
+  it('tries every address of the site and takes only account or manual records', () => {
+    const tried: string[] = []
+    expect(recoverBrokenConfigOwnership(broken, urls, (config) => {
+      tried.push(config.actualBaseUrl)
+      return config.actualBaseUrl === urls[1] ? 'manual' : 'unknown'
+    })).toBe('manual')
+    expect(tried).toEqual(urls)
+    expect(recoverBrokenConfigOwnership(broken, urls, () => 'changed')).toBeNull()
+    expect(recoverBrokenConfigOwnership(broken, urls, () => 'unknown')).toBeNull()
+    expect(recoverBrokenConfigOwnership(broken, [], () => 'account')).toBeNull()
+  })
+
+  it('never vouches for a config whose address is readable, that is not broken, or that has no key, with random inputs', () => {
+    fc.assert(fc.property(
+      fc.record({ configBroken: fc.option(fc.boolean(), { nil: undefined }), hasApiKey: fc.boolean(), actualBaseUrl: fc.string() }),
+      fc.array(fc.string(), { maxLength: 4 }),
+      (fields, siteUrls) => {
+        fc.pre(fields.configBroken !== true || !fields.hasApiKey || fields.actualBaseUrl !== '')
+        return recoverBrokenConfigOwnership({ ...broken, ...fields }, siteUrls, () => 'account') === null
+      },
+    ))
   })
 })
