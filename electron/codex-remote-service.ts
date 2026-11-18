@@ -176,6 +176,11 @@ const quittingMessage = '星芒正在退出。'
  * taskkill /T /F 一起收掉，平常一两秒；client.stop() 5 秒后还会再补一刀，这里比那个多留一点。
  */
 const codexReleaseTimeoutMs = 10_000
+/**
+ * 打开星芒时自动打开遥控没成功，过这么久自己再试一次（YR-7）：开机那一会儿移动硬盘、网盘上的文件夹可能还没挂上，
+ * Codex 可能还在装或者还在更新。只再试这一次，还不行就留着卡片上那句原因，等客户回电脑前看。
+ */
+export const autoStartRetryMs = 3 * 60_000
 
 /** 电脑上要更新还是卸载 Codex：遥控里的 Codex 正在干活时，挡下来的那句按这个说。 */
 export type CodexRemoteReleaseAction = 'update' | 'uninstall'
@@ -942,6 +947,13 @@ export class CodexRemoteService {
    */
   private codexStartFailed = false
   /**
+   * 这次打开星芒时自动打开遥控没成功的原因（YR-7），卡片上自动打开那一行下面说。原句就是在设置里点开时那几句，
+   * 托盘「打开手机遥控」打不开时系统通知里也是它。连上了、客户关掉了自动打开就清掉。
+   */
+  private autoStartFailure: string | null = null
+  /** 自动打开没成功以后那一次重试（autoStartRetryMs）；连上了、关掉了自动打开、星芒退出时撤掉。 */
+  private autoStartRetryTimer: NodeJS.Timeout | null = null
+  /**
    * 手机上最近发来让 Codex 做的那一条（YF-13），电脑卡片上「最近一次」那行：几点发来的、做到哪儿了。
    * 只记在内存里，遥控全关了就清掉。turn 用来认是不是同一轮：这一轮收尾时，它要还是最近那一条才改结果。
    */
@@ -1085,6 +1097,7 @@ export class CodexRemoteService {
       task,
       pendingApprovals,
       ...(settings.autoStart ? { autoStart: true } : {}),
+      ...(settings.autoStart && this.autoStartFailure ? { autoStartFailure: this.autoStartFailure } : {}),
       ...(settings.idleCloseHours ? { idleCloseHours: settings.idleCloseHours } : {}),
       ...(this.codexStartFailed ? { codexStartFailed: true } : {}),
       ...(this.lastRequest ? { lastRequest: lastRequestSnapshot(this.lastRequest) } : {}),
@@ -1177,6 +1190,8 @@ export class CodexRemoteService {
     if (codexProblem) throw new Error(codexProblem)
     const blocked = await this.startChannel(runtime)
     if (blocked) throw new Error(blocked)
+    // 开上了一个（客户自己点的，或者是自动打开那次重试）：「上次没能自动打开」那句就过时了，也不用再替他试。
+    this.clearAutoStartFailure()
     return this.emit()
   }
 
@@ -1257,6 +1272,8 @@ export class CodexRemoteService {
       if (enabled) settings.autoStart = true
       else delete settings.autoStart
     })
+    // 关掉了就不替他再试，那句原因也跟着收起；又打开时不当场试，跟「只记下来」一样等下次打开星芒。
+    if (!enabled) this.clearAutoStartFailure()
     this.options.log('info', 'remote.auto-start-set', { enabled })
     return this.emit()
   }
@@ -1282,12 +1299,40 @@ export class CodexRemoteService {
   /**
    * 打开星芒时（YF-9）：客户自己打开了「打开星芒时自动打开遥控」才替他连，连的跟托盘「打开手机遥控」一样只是
    * 配对过人的渠道（enableReadyChannels），检查也跟设置里那个开关一样；只认配对的那一个人、改东西要手机上同意都不变。
-   * 打不开（比如还没装 Codex）只记日志：这时没人在看，卡片上开关照旧是关的。
+   *
+   * 打不开（文件夹在还没挂上的移动硬盘上、还没装 Codex……）时这会儿多半没人在看（YR-7）：原因记下来，卡片上自动打开
+   * 那一行下面说；过 autoStartRetryMs 再试一次，开机那一会儿没准备好的，这时多半好了。
    */
   async startOnLaunch(): Promise<void> {
+    await this.autoStart('remote.auto-started')
+  }
+
+  private async autoStart(event: 'remote.auto-started' | 'remote.auto-start-retried'): Promise<void> {
     if (this.disposed || !(await this.options.store.readSettings()).autoStart) return
     const { opened, failure } = await this.enableReadyChannels()
-    this.options.log(failure ? 'warn' : 'info', 'remote.auto-started', { opened: opened.length, failed: failure !== null })
+    this.options.log(failure ? 'warn' : 'info', event, { opened: opened.length, failed: failure !== null })
+    // 这一会儿客户自己关掉了自动打开（setAutoStart），或者星芒开始退出：不记原因，也不再试。
+    if (!failure || this.disposed || !(await this.options.store.readSettings()).autoStart) return
+    this.autoStartFailure = failure
+    if (event === 'remote.auto-started') this.scheduleAutoStartRetry()
+    await this.emit()
+  }
+
+  private scheduleAutoStartRetry(): void {
+    if (this.autoStartRetryTimer) clearTimeout(this.autoStartRetryTimer)
+    this.autoStartRetryTimer = setTimeout(() => {
+      this.autoStartRetryTimer = null
+      void this.autoStart('remote.auto-start-retried').catch(() => {
+        this.options.log('warn', 'remote.auto-start-retry-failed')
+      })
+    }, autoStartRetryMs)
+    this.autoStartRetryTimer.unref?.()
+  }
+
+  private clearAutoStartFailure(): void {
+    this.autoStartFailure = null
+    if (this.autoStartRetryTimer) clearTimeout(this.autoStartRetryTimer)
+    this.autoStartRetryTimer = null
   }
 
   /** 托盘里点「关掉手机遥控」：开着的渠道全关，手机上收到的跟在设置里点关一样。 */
@@ -1495,6 +1540,7 @@ export class CodexRemoteService {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.clearAutoStartFailure()
     for (const entry of this.pending.values()) entry.settle('decline')
     for (const id of remoteChannelIds) {
       const runtime = this.runtimes[id]
