@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import { isCliModelName, isNonInteractiveCliModel, resolveOlderSiblingModel } from './cli-model-defaults'
 import { isRecord } from './input-guards'
 import { isNewerVersion } from './versions'
 
@@ -14,7 +15,13 @@ import { isNewerVersion } from './versions'
 // config.toml 顶层的 model_catalog_json 能整份换掉内置名单（0.105 起就有）。这里拿随包
 // 那份官方名单（bundled-catalog/codex-models，原样拷自 openai/codex 的发布 tag，一个字
 // 不改），只挑当前账号 /v1/models 里真有的型号，写成 CODEX_HOME 下的 xingmang-models.json。
-// 不编造型号，也不拿旧型号的资料冒充新型号。
+// 不编造账号没有的型号。
+//
+// 中转上了随包名单里还没有的新 GPT 型号（2026-11-18 的 GPT-6.2：xm 站当天上架，Codex 前一天才
+// 放进名单），以前要等下一版换名单：菜单里选不到，硬选上 Codex 退回通用提示词和老工具。现在
+// 借随包名单里同系列最新那一项的资料（只换 slug 和显示名，见 borrowCodexModelEntry），比通用
+// 资料近得多，不用发版。只借比同系列都新的型号，老型号、带日期的快照不借；下一版带上官方资料，
+// 官方那项自然顶替借来的。
 //
 // 这个文件坏了后果很重，几处取舍都围着它（2026-10-02 用 0.147.0～0.160.0 七个版本实测）：
 // - Codex 启动时读它，桌面端每开一个新对话还要再读一遍。找不到、不是合法 JSON、一个型号
@@ -24,9 +31,10 @@ import { isNewerVersion } from './versions'
 // - 它整份替换内置名单，不合并：没写进来的型号菜单里就没有。所以只写当前账号有、官方
 //   资料也有的型号，账号能用的型号变了要跟着重写（tool-model-check.ts）。
 // - 0.146.x 及更早要求每个型号都带 base_instructions，官方从 0.147.0 起的名单不再带它；
-//   每个型号另有官方标的最低客户端版本（OpenAI 在服务端按它筛，客户端自己不看）。读这份
-//   名单的不只命令行，还有桌面端自带的那一份：命令行低于这些版本里最高的那个、桌面端早于
-//   已知读得懂的那一批，就不写，已经写了的收回；看不出版本时原样不动。
+//   每个型号另有官方标的最低客户端版本（OpenAI 在服务端按它一个一个筛，客户端自己不看）。
+//   我们照样一个一个筛：这台电脑上的命令行够不上哪个型号，就只少写那一个，不连累别的
+//   （fitCodexModelCatalogToCli）。读这份名单的不只命令行，还有桌面端自带的那一份：命令行
+//   低于 0.147.0、桌面端早于已知读得懂的那一批，就不写，已经写了的收回；看不出版本时原样不动。
 // - 默认型号要在名单里：不在的话它丢了官方资料、菜单里也没有它，宁可不写。
 // - 只在启动时读名单：桌面端开着时写进去，要关掉重开才看得到。
 
@@ -36,9 +44,9 @@ export const codexModelCatalogFileName = 'xingmang-models.json'
 /** 随包那份官方名单从哪来。换版本时整份照拷、三项一起改，测试按 sha256 钉住。 */
 export const bundledCodexModelCatalogSource = Object.freeze({
   repository: 'openai/codex',
-  tag: 'rust-v0.169.0',
+  tag: 'rust-v0.169.1',
   path: 'codex-rs/models-manager/models.json',
-  sha256: '1384625c0b6b3e67d3c60da29becea2b017f2c283fc1e2d05b8edafb4698eb10',
+  sha256: 'd50b6749506d97e5f334dbabcb666eb1689f423cf3e88cfabdcf3c536b873068',
 })
 
 export const BUNDLED_CODEX_MODEL_CATALOG_RELATIVE_PATH = ['bundled-catalog', 'codex-models', 'models.json'] as const
@@ -72,8 +80,13 @@ const verbosities: ReadonlySet<string> = new Set(['low', 'medium', 'high'])
 const inputModalities: ReadonlySet<string> = new Set(['text', 'image', 'audio'])
 
 export interface CodexModelCatalog {
-  /** 每一项都是官方资料原样，只按 slug 挑，不改字段。 */
+  /** 每一项都是官方资料原样，只按 slug 挑，不改字段；借来的那几项只换了 slug 和显示名（borrowCodexModelEntry）。 */
   models: Array<Record<string, unknown>>
+}
+
+export interface CodexRelayModelCatalog extends CodexModelCatalog {
+  /** 借了同系列资料的新型号，留给日志。 */
+  borrowed: Array<{ slug: string; from: string }>
 }
 
 export interface CodexModelCatalogRejection {
@@ -106,7 +119,7 @@ function hasInstructions(entry: Record<string, unknown>): boolean {
 
 /**
  * 这一项能不能被 Codex 读进去；能返回 null，不能返回原因。规则来自 openai_models.rs 的
- * 必填字段与固定取值（rust-v0.147.0～rust-v0.169.0 一致）。
+ * 必填字段与固定取值（rust-v0.147.0～rust-v0.169.1 一致）。
  */
 export function codexModelCatalogEntryProblem(entry: unknown): string | null {
   if (!isRecord(entry)) return '不是对象'
@@ -194,18 +207,87 @@ export function readBundledCodexModelCatalog(filePath: string): ParsedCodexModel
   return parseCodexModelCatalog(bytes.toString('utf8'))
 }
 
+// 一次最多借这么多个。每一项带着整段提示词（几十 KB），中转回的型号列表是外部输入，
+// 列一长串假的新型号不能把名单文件撑大；正常时候一次上新也就一两个。
+const MAX_BORROWED_CODEX_MODELS = 6
+
+/** gpt-6.3-sol → GPT-6.3-Sol，跟官方名单的写法一样。 */
+export function codexModelDisplayName(slug: string): string {
+  return slug.split('-').map((part) => part.toLowerCase() === 'gpt' ? 'GPT' : part.charAt(0).toUpperCase() + part.slice(1)).join('-')
+}
+
 /**
- * 按当前账号能用的型号挑出要写的那几项，顺序照官方名单。账号的型号一个都对不上（分组
- * 配错、接口没回东西、全是非 OpenAI 型号）时返回 null：Codex 不认空名单，宁可不写。
- * 挑出来的全是菜单里不显示的（自动审查这类）也返回 null：写进去菜单就空了，还不如
- * Codex 自带的那份。
+ * 照着同系列那一项给新型号做一份资料：只换 slug 和显示名，提示词、工具、推理档位、上下文、最低
+ * 客户端版本都照抄。那一项的上新提示（availability_nux）和「换用新型号」（upgrade）写的是它自己，
+ * 留着 Codex 会拿别的型号名弹提示，清掉。
+ */
+export function borrowCodexModelEntry(base: Record<string, unknown>, slug: string): Record<string, unknown> {
+  return { ...base, slug, display_name: codexModelDisplayName(slug), availability_nux: null, upgrade: null }
+}
+
+/** 这个型号要不要借资料：像 GPT 对话型号的名字、随包名单里没有，借谁的由 resolveOlderSiblingModel 定。 */
+function borrowableCodexModel(model: string, officialSlugs: ReadonlySet<string>): boolean {
+  return /^gpt-/i.test(model) && isCliModelName(model) && !isNonInteractiveCliModel(model) && !officialSlugs.has(model)
+}
+
+/**
+ * 按当前账号能用的型号挑出要写的那几项，顺序照官方名单；随包名单里没有、又比同系列都新的
+ * GPT 型号借同系列最新那一项的资料，排在那一项前面。账号的型号一个都对不上（分组配错、
+ * 接口没回东西、全是非 OpenAI 型号）时返回 null：Codex 不认空名单，宁可不写。挑出来的全是
+ * 菜单里不显示的（自动审查这类）也返回 null：写进去菜单就空了，还不如 Codex 自带的那份。
  */
 export function buildCodexRelayModelCatalog(
   official: CodexModelCatalog,
   availableModels: readonly string[],
+): CodexRelayModelCatalog | null {
+  const offered = [...new Set(availableModels.map((model) => model.trim()).filter(Boolean))]
+  const offeredSet = new Set(offered)
+  const officialSlugs = new Set(official.models.flatMap((entry) => typeof entry.slug === 'string' ? [entry.slug] : []))
+  // 只从菜单里显示、能走 API 的官方型号里借，自动审查、内部代号不当底子。
+  const bases = official.models.filter((entry) => typeof entry.slug === 'string' && entry.visibility === 'list' && entry.supported_in_api === true)
+  const baseSlugs = bases.map((entry) => entry.slug as string)
+  const borrowedBefore = new Map<string, Array<Record<string, unknown>>>()
+  const borrowed: Array<{ slug: string; from: string }> = []
+  for (const model of offered) {
+    if (borrowed.length >= MAX_BORROWED_CODEX_MODELS) break
+    if (!borrowableCodexModel(model, officialSlugs)) continue
+    const from = resolveOlderSiblingModel(baseSlugs, model)
+    const base = from === null ? undefined : bases.find((entry) => entry.slug === from)
+    if (!from || !base) continue
+    const entry = borrowCodexModelEntry(base, model)
+    if (codexModelCatalogEntryProblem(entry) !== null) continue
+    borrowedBefore.set(from, [...(borrowedBefore.get(from) ?? []), entry])
+    borrowed.push({ slug: model, from })
+  }
+  const models: Array<Record<string, unknown>> = []
+  for (const entry of official.models) {
+    if (typeof entry.slug !== 'string') continue
+    models.push(...(borrowedBefore.get(entry.slug) ?? []))
+    if (offeredSet.has(entry.slug)) models.push(entry)
+  }
+  return models.some((entry) => entry.visibility === 'list') ? { models, borrowed } : null
+}
+
+function codexCliVersionOf(cli: { installed: boolean; version: string | null }): string | null {
+  return CLI_VERSION_IN_TEXT.exec(cli.version ?? '')?.[1] ?? null
+}
+
+/**
+ * 按这台电脑上的命令行版本筛一遍：官方标的最低客户端版本比它新的型号不写，跟 OpenAI 给 ChatGPT
+ * 登录的客户下发名单时一样一个一个筛。以前是整份不写，名单里多出一个新型号（GPT-6.2 要 0.166.0），
+ * 没升级命令行的客户就连已经在用的那几个也一起丢了菜单。没装命令行、读不出版本时原样返回，交给
+ * codexCliAcceptsModelCatalog 去判断；筛完菜单里一个能显示的都不剩返回 null，跟账号一个都对不上同样处理。
+ */
+export function fitCodexModelCatalogToCli(
+  catalog: CodexModelCatalog,
+  cli: { installed: boolean; version: string | null } | null,
 ): CodexModelCatalog | null {
-  const offered = new Set(availableModels.map((model) => model.trim()).filter(Boolean))
-  const models = official.models.filter((entry) => typeof entry.slug === 'string' && offered.has(entry.slug))
+  const version = cli?.installed ? codexCliVersionOf(cli) : null
+  if (!version) return catalog
+  const models = catalog.models.filter((entry) => {
+    const required = entry.minimal_client_version
+    return typeof required !== 'string' || !VERSION_PATTERN.test(required) || !isNewerVersion(version, required)
+  })
   return models.some((entry) => entry.visibility === 'list') ? { models } : null
 }
 
@@ -228,7 +310,7 @@ export function codexCliAcceptsModelCatalog(
   catalog: CodexModelCatalog,
 ): CodexModelCatalogVerdict {
   if (!cli.installed) return 'accepted'
-  const version = CLI_VERSION_IN_TEXT.exec(cli.version ?? '')?.[1]
+  const version = codexCliVersionOf(cli)
   if (!version) return 'unknown'
   return isNewerVersion(version, codexModelCatalogRequiredCliVersion(catalog)) ? 'too-old' : 'accepted'
 }

@@ -5,17 +5,20 @@ import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   applyCodexRelayModelCatalog,
+  borrowCodexModelEntry,
   buildCodexRelayModelCatalog,
   bundledCodexModelCatalogSource,
   codexCliAcceptsModelCatalog,
   codexDesktopAcceptsModelCatalog,
   codexModelCatalogContent,
   codexModelCatalogEntryProblem,
+  codexModelDisplayName,
   codexModelCatalogFileName,
   codexModelCatalogListsModel,
   codexModelCatalogRequiredCliVersion,
   codexRelayModelCatalogOutdated,
   combineCodexModelCatalogVerdicts,
+  fitCodexModelCatalogToCli,
   isManagedCodexModelCatalogSetting,
   parseCodexModelCatalog,
   readBundledCodexModelCatalog,
@@ -67,7 +70,21 @@ describe('bundled Codex model catalog', () => {
     expect(catalog.rejected).toEqual([])
     const sol = catalog.models.find((model) => model.slug === 'gpt-6.1-sol')
     expect(sol).toMatchObject({ visibility: 'list', supported_in_api: true })
-    expect(codexModelCatalogRequiredCliVersion(catalog)).toBe('0.155.0')
+    expect(codexModelCatalogRequiredCliVersion(catalog)).toBe('0.166.0')
+  })
+
+  it('lists GPT-6.2 Sol and GPT-6.2 Astra, which the relay offers and Codex 0.169.0 does not ship', () => {
+    // xm 站 11-18 上了这两个型号，Codex 自己是 rust-v0.169.1 才把它们放进名单；随包名单停在
+    // rust-v0.169.0 时菜单里选不到，硬选上走通用资料。官方标的最低客户端版本是 0.166.0，
+    // 不高过推荐的 0.169.0。
+    const catalog = readBundledCodexModelCatalog(bundledPath)
+    for (const slug of ['gpt-6.2-sol', 'gpt-6.2-astra']) {
+      expect(catalog.models.find((model) => model.slug === slug)).toMatchObject({
+        visibility: 'list',
+        supported_in_api: true,
+        minimal_client_version: '0.166.0',
+      })
+    }
   })
 
   it('ships the upstream license and notice next to the catalog', () => {
@@ -140,6 +157,70 @@ describe('Codex relay model catalog', () => {
     expect(catalog?.models[0]).toBe(official.models[1])
   })
 
+  describe('models the bundled catalog does not know yet', () => {
+    const catalog = {
+      models: [
+        entry('gpt-6.2-sol', { priority: 1, minimal_client_version: '0.166.0', availability_nux: { message: 'Try GPT-6.2 Sol' }, upgrade: { model: 'gpt-6.2-sol' } }),
+        entry('gpt-6.1-terra', { priority: 3 }),
+        entry('gpt-daybreak-blue-latest', { visibility: 'hide' }),
+        entry('codex-auto-review', { visibility: 'hide' }),
+      ],
+    }
+
+    it('borrows the newest sibling entry, renamed, and lists it right before that sibling', () => {
+      const built = buildCodexRelayModelCatalog(catalog, ['gpt-6.2-sol', 'gpt-6.3-sol', 'gpt-6.2-terra'])
+      expect(built?.models.map((model) => model.slug)).toEqual(['gpt-6.3-sol', 'gpt-6.2-sol', 'gpt-6.2-terra'])
+      expect(built?.borrowed).toEqual([{ slug: 'gpt-6.3-sol', from: 'gpt-6.2-sol' }, { slug: 'gpt-6.2-terra', from: 'gpt-6.1-terra' }])
+      const borrowed = built!.models[0]
+      expect(borrowed).toEqual({
+        ...catalog.models[0],
+        slug: 'gpt-6.3-sol',
+        display_name: 'GPT-6.3-Sol',
+        availability_nux: null,
+        upgrade: null,
+      })
+      expect(codexModelCatalogEntryProblem(borrowed)).toBeNull()
+      // 官方那一项原样不动。
+      expect(built!.models[1]).toBe(catalog.models[0])
+    })
+
+    it('writes a catalog even when the account only offers the new model, not the sibling it borrows from', () => {
+      const built = buildCodexRelayModelCatalog(catalog, ['gpt-6.3-sol', 'claude-opus-5'])
+      expect(built?.models.map((model) => model.slug)).toEqual(['gpt-6.3-sol'])
+      expect(codexModelCatalogListsModel(built!, 'gpt-6.3-sol')).toBe(true)
+      // 借来的那项照抄最低客户端版本，命令行够不上时照样只少写它。
+      expect(fitCodexModelCatalogToCli(built!, { installed: true, version: '0.160.0' })).toBeNull()
+    })
+
+    it('borrows nothing for older models, dated snapshots, media models, unknown families or odd names', () => {
+      for (const model of ['gpt-4.1', 'gpt-6.2-sol-2026-11-17', 'gpt-image-3', 'gpt-6.3-sol-fast', 'gpt-7-nova', 'gpt-6.3 sol', 'gpt-daybreak-blue-v2', 'claude-opus-6']) {
+        expect(buildCodexRelayModelCatalog(catalog, ['gpt-6.2-sol', model])?.borrowed).toEqual([])
+      }
+      expect(buildCodexRelayModelCatalog(catalog, ['codex-auto-review', 'codex-auto-review-2'])).toBeNull()
+    })
+
+    it('borrows at most six at a time, so a long list of made-up names cannot swell the file', () => {
+      const flood = Array.from({ length: 20 }, (_, index) => `gpt-${7 + index}-sol`)
+      const built = buildCodexRelayModelCatalog(catalog, flood)
+      expect(built?.borrowed).toHaveLength(6)
+      expect(built?.models).toHaveLength(6)
+    })
+
+    it('spells display names the way the official catalog does', () => {
+      expect(codexModelDisplayName('gpt-6.3-sol')).toBe('GPT-6.3-Sol')
+      expect(codexModelDisplayName('gpt-7-astra')).toBe('GPT-7-Astra')
+      expect(borrowCodexModelEntry(entry('gpt-6.2-sol'), 'gpt-6.3-sol')).toMatchObject({ slug: 'gpt-6.3-sol', display_name: 'GPT-6.3-Sol' })
+    })
+
+    it('borrows from the real bundled catalog: GPT-6.2 Sol for a GPT-6.3 Sol, GPT-6.1 Terra for a GPT-6.2 Terra', () => {
+      const bundled = readBundledCodexModelCatalog(bundledPath)
+      const built = buildCodexRelayModelCatalog(bundled, ['gpt-6.3-sol', 'gpt-6.2-terra', 'gpt-6.2-sol'])
+      expect(built?.borrowed).toEqual([{ slug: 'gpt-6.3-sol', from: 'gpt-6.2-sol' }, { slug: 'gpt-6.2-terra', from: 'gpt-6.1-terra' }])
+      expect(built?.models.map((model) => model.slug)).toEqual(['gpt-6.3-sol', 'gpt-6.2-sol', 'gpt-6.2-terra'])
+      expect(parseCodexModelCatalog(codexModelCatalogContent(built!)).rejected).toEqual([])
+    })
+  })
+
   it('writes no catalog when nothing the account offers would show in the menu', () => {
     expect(buildCodexRelayModelCatalog(official, ['claude-opus-5'])).toBeNull()
     expect(buildCodexRelayModelCatalog(official, [])).toBeNull()
@@ -151,6 +232,39 @@ describe('Codex relay model catalog', () => {
     expect(codexModelCatalogRequiredCliVersion({
       models: [entry('a', { minimal_client_version: '0.153.0' }), entry('b', { minimal_client_version: '0.155.0' }), entry('c')],
     })).toBe('0.155.0')
+  })
+
+  it('leaves out only the models the installed Codex CLI is too old for', () => {
+    const catalog = {
+      models: [
+        entry('gpt-6.2-sol', { minimal_client_version: '0.166.0' }),
+        entry('gpt-6.1-sol', { minimal_client_version: '0.153.0' }),
+        entry('codex-auto-review', { visibility: 'hide', minimal_client_version: '0.98.0' }),
+        entry('gpt-no-version'),
+      ],
+    }
+    const slugs = (cli: { installed: boolean; version: string | null } | null) => fitCodexModelCatalogToCli(catalog, cli)?.models.map((model) => model.slug)
+    expect(slugs({ installed: true, version: 'codex-cli 0.160.0' })).toEqual(['gpt-6.1-sol', 'codex-auto-review', 'gpt-no-version'])
+    expect(slugs({ installed: true, version: '0.166.0-alpha.3' })).toEqual(['gpt-6.1-sol', 'codex-auto-review', 'gpt-no-version'])
+    expect(slugs({ installed: true, version: '0.166.0' })).toEqual(['gpt-6.2-sol', 'gpt-6.1-sol', 'codex-auto-review', 'gpt-no-version'])
+    expect(slugs({ installed: true, version: '0.169.0' })).toEqual(['gpt-6.2-sol', 'gpt-6.1-sol', 'codex-auto-review', 'gpt-no-version'])
+    // 筛完的名单整份够得上，后面那道版本关照常放行。
+    expect(codexCliAcceptsModelCatalog({ installed: true, version: '0.160.0' }, fitCodexModelCatalogToCli(catalog, { installed: true, version: '0.160.0' })!)).toBe('accepted')
+  })
+
+  it('keeps the catalog as it is when there is no Codex CLI or its version cannot be read', () => {
+    const catalog = { models: [entry('gpt-6.2-sol', { minimal_client_version: '0.166.0' })] }
+    expect(fitCodexModelCatalogToCli(catalog, { installed: false, version: null })).toBe(catalog)
+    expect(fitCodexModelCatalogToCli(catalog, { installed: true, version: null })).toBe(catalog)
+    expect(fitCodexModelCatalogToCli(catalog, { installed: true, version: 'codex-cli' })).toBe(catalog)
+    expect(fitCodexModelCatalogToCli(catalog, null)).toBe(catalog)
+  })
+
+  it('writes no catalog when the installed Codex CLI is too old for every model the menu would show', () => {
+    const catalog = {
+      models: [entry('gpt-6.2-sol', { minimal_client_version: '0.166.0' }), entry('codex-auto-review', { visibility: 'hide', minimal_client_version: '0.98.0' })],
+    }
+    expect(fitCodexModelCatalogToCli(catalog, { installed: true, version: '0.165.2' })).toBeNull()
   })
 
   it.each([
