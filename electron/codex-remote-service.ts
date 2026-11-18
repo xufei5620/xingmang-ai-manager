@@ -273,6 +273,23 @@ export function isStaleOnlyByClock(sentAt: number, channelStartedAt: number, now
 }
 
 /**
+ * 「停止」「同意 / 拒绝」（打字的、卡片按钮）不用等前面光发图的那几条取完（YR-6）：取图要等平台，网不好时一张
+ * 最长 30 秒、一次最多 5 张，审批可能就等过期了。先停、先答再收图，最后的样子跟按顺序来一样。别的话照旧排在图
+ * 后面，交给 Codex 的那句才带得上前面的图。「同意」只在有等你同意的时候才算，不然它是一句要交给 Codex 的话。
+ */
+export function jumpsImageFetch(message: RemoteInbound, hasPendingApprovals: boolean): boolean {
+  if (message.kind === 'approval' || message.kind === 'stop') return true
+  if (message.kind !== 'text') return false
+  const command = parseRemoteCommand(message.text, hasPendingApprovals).kind
+  return command === 'stop' || command === 'approval'
+}
+
+/** 光发图、没带字（YR-6）：后面的「停止」「同意 / 拒绝」可以不等它取完。带字的那句可能就是要做的事，照旧得等。 */
+function imageOnly(message: RemoteInbound): boolean {
+  return message.kind === 'image' && !message.text?.trim()
+}
+
+/**
  * 遥控开的对话不给客户自己接的外部工具（#1407 P2-4，yoyo 10-29「按推荐」）：MCP 服务、插件、ChatGPT 应用的工具
  * 调用不一定先问人，手机上看不到也拦不住。只关这一份对话，电脑上直接用 Codex 照旧，联网搜索也不动。
  * mcpServers 是 buildRemoteMcpServerOverrides 算出来的那份。
@@ -753,6 +770,8 @@ interface ChannelRuntime {
   seen: Set<string>
   idleTimer: NodeJS.Timeout | null
   inbox: Promise<void>
+  /** 收件队列里除了光发图的那几条（imageOnly），到这一刻收到的都处理完了；「停止」「同意 / 拒绝」只等它（YR-6）。 */
+  inboxExceptImages: Promise<void>
   /**
    * 把话交给 Codex 的那几步（startTurn），一个渠道一次一份。不在收件队列里排（D66 / YKS-3），但前一轮刚被「停止」、
    * 回执还在路上时，后一轮要等它补完那次打断再交，同一个对话里不会两轮叠在一起。
@@ -812,6 +831,7 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     seen: new Set(),
     idleTimer: null,
     inbox: Promise.resolve(),
+    inboxExceptImages: Promise.resolve(),
     handoff: Promise.resolve(),
     outbox: Promise.resolve(),
     threadId: null,
@@ -1334,9 +1354,12 @@ export class CodexRemoteService {
     const sameAccount = value !== null && accountLabel !== null && before?.accountLabel === accountLabel
     const verifiedPeer = value !== null ? options.verifiedPeerUserId ?? null : null
     const keepsPeer = sameAccount && (verifiedPeer === null || !before?.boundPeer || before.boundPeer.userId === verifiedPeer)
+    // 换了机器人重新扫码、过了数字的还是原来绑着的那个人（YR-9）：账号字样变了，这次连接里的对话照旧清掉，
+    // 但人没换，绑定留着，也不跟他说「已经把你解绑了」，不然他以为要重新配对。
+    const rebindsSamePeer = verifiedPeer !== null && before?.boundPeer?.userId === verifiedPeer
     if (!keepsPeer) {
       // 换凭据以前说：凭据一换（退出登录是清掉），就发不出去了。
-      await this.tellUnbound(runtime)
+      if (!rebindsSamePeer) await this.tellUnbound(runtime)
       await this.forgetPeer(runtime)
     }
     // 退出登录时凭据删不掉（#1407 P3-6）：解绑、停渠道照做，客户点退出就是不想再让手机指挥这台电脑；
@@ -1352,7 +1375,7 @@ export class CodexRemoteService {
     await this.options.store.updateSettings((settings) => {
       const stored = settings.channels[channel] ?? emptyChannelSettings()
       if (!removeFailure) stored.accountLabel = value === null ? null : accountLabel
-      if (!keepsPeer) stored.boundPeer = null
+      if (!keepsPeer && !rebindsSamePeer) stored.boundPeer = null
       if (verifiedPeer && stored.boundPeer?.userId !== verifiedPeer) stored.boundPeer = { userId: verifiedPeer, boundAt: this.now() }
       settings.channels[channel] = stored
     })
@@ -1853,12 +1876,22 @@ export class CodexRemoteService {
   }
 
   private onInbound(runtime: ChannelRuntime, adapter: RemoteChannelAdapter, message: RemoteInbound): void {
-    // 一个渠道的消息按到达顺序一条条处理，配对、指令、审批不会互相插队。
-    runtime.inbox = runtime.inbox
-      .then(() => (runtime.adapter === adapter ? this.handleInbound(runtime, message) : undefined))
+    // 一个渠道的消息按到达顺序一条条处理，配对、指令、审批不会互相插队。只有一种例外（YR-6）：「停止」「同意 / 拒绝」
+    // 不等前面光发图的那几条取完，别的照旧要等；前面有一句还排在图后面的话，就连它一起等，「停止」停得到它。
+    const ahead = runtime.inbox
+    const hasPending = () => this.pendingFor(runtime.id).length > 0
+    const urgent = jumpsImageFetch(message, hasPending())
+    const handled = (urgent ? runtime.inboxExceptImages : ahead)
+      .then(async () => {
+        // 排队时还算「同意」，轮到时那条已经没了（比如到点自动拒绝了）：这句要交给 Codex，回到原来的位置等前面的图。
+        if (urgent && !jumpsImageFetch(message, hasPending())) await ahead
+        if (runtime.adapter === adapter) await this.handleInbound(runtime, message)
+      })
       .catch(() => {
         this.options.log('error', 'remote.inbound-failed', { channel: runtime.id })
       })
+    runtime.inbox = urgent ? Promise.all([ahead, handled]).then(() => undefined) : handled
+    if (!imageOnly(message)) runtime.inboxExceptImages = handled
   }
 
   private async handleInbound(runtime: ChannelRuntime, message: RemoteInbound): Promise<void> {

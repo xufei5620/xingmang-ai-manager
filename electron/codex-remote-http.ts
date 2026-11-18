@@ -150,15 +150,13 @@ async function performRemoteRequest<T>(
       await response.body?.cancel().catch(() => undefined)
       throw new RemoteHttpError(`${request.label}请求被重定向，已拒绝`, 'redirected')
     }
-    let bytes: Buffer
-    try {
-      bytes = await readBoundedResponseBytes(response, request.maxResponseBytes, request.label, {
-        guard: { signal: controller.signal },
-      })
-    } catch (error) {
-      if (controller.signal.aborted) throw error
-      throw new RemoteHttpError(error instanceof Error ? error.message : `${request.label}响应读取失败`, 'oversize')
-    }
+    const bytes = await readBoundedResponseBytes(response, request.maxResponseBytes, request.label, {
+      guard: { signal: controller.signal },
+      // 只有真超过上限才算「太大」。读到一半断网、连接被重置也是读正文时出的错，以前一律记成 oversize，
+      // 手机上就叫客户去缩图，其实再发一次就行；飞书发消息也因此不重发（YR-5）。给超限一个认得出的错误，
+      // 别的读取失败落到下面的 catch，跟请求没发出去一样按 network 算。
+      oversizeError: () => new RemoteHttpError(`${request.label}响应超过 ${Math.floor(request.maxResponseBytes / 1024)} KB 安全上限`, 'oversize'),
+    })
     return finish(response, bytes)
   } catch (error) {
     if (error instanceof RemoteHttpError) throw error
