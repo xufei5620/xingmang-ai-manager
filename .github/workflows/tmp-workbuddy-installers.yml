@@ -1,0 +1,70 @@
+# 临时：核 WorkBuddy 国内版、海外版 Windows 安装包里的程序名、卸载登记和配置目录，核完就删
+name: tmp-workbuddy-installers
+on:
+  push:
+    branches: [claude/project-thread-7931oj]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - edition: domestic
+            url: https://download.codebuddy.cn/workbuddy/saas/win32-x64-user/WorkBuddy-win32-x64-user-5.8.3.41334564-db0e9b51.exe
+            sha256: 824de10f3196c501004f540eb84ee881292fef2f5df9fb3fc48af9ea5366c03c
+          - edition: global
+            url: https://download.codebuddy.ai/workbuddy/saas/win32-x64-user/WorkBuddy-win32-x64-user-5.9.4.42593613-fa0a0901.exe
+            sha256: 6ff4be433d664ad14c88210b5b82ebb3674d7047aab8ae52459006c587be2ee0
+    steps:
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq 7zip osslsigncode >/dev/null
+          7zz | head -2
+      - name: Download
+        run: |
+          curl -fsSL --retry 3 -o setup.exe "${{ matrix.url }}"
+          echo "${{ matrix.sha256 }}  setup.exe" | sha256sum -c -
+          ls -l setup.exe
+      - name: Installer signature
+        run: osslsigncode verify -in setup.exe 2>&1 | grep -E 'Subject:|Issuer:|Signature verification|Number of signers' | head -10 || true
+      - name: Installer layout
+        run: |
+          7zz l setup.exe | tail -n 40
+      - name: NSIS script (registry, install dir, exe)
+        run: |
+          mkdir -p nsis && cd nsis
+          7zz x -y ../setup.exe '[NSIS].nsi' >/dev/null || true
+          ls -la
+          if [ -f '[NSIS].nsi' ]; then
+            grep -n -i -E 'Uninstall|DisplayName|DisplayIcon|InstallLocation|DisplayVersion|Publisher|UninstallString|\.exe|Programs|INSTDIR|SetShellVarContext|RegView|workbuddy' '[NSIS].nsi' | head -n 200
+          fi
+      - name: App payload
+        run: |
+          mkdir -p payload && cd payload
+          7zz x -y ../setup.exe >/dev/null || true
+          find . -maxdepth 3 -type f -printf '%s %p\n' | sort -k2 | head -n 60
+          for archive in $(find . -name 'app-*.7z' -o -name '*.nsis.7z' | head -3); do
+            echo "== $archive"
+            mkdir -p app && 7zz x -y "$archive" -oapp >/dev/null
+          done
+          if [ -d app ]; then
+            echo '== exe files'; find app -maxdepth 2 -iname '*.exe' -printf '%p\n'
+            echo '== top level'; ls app | head -n 50
+            for exe in $(find app -maxdepth 1 -iname '*.exe' | head -3); do
+              echo "== signature $exe"; osslsigncode verify -in "$exe" 2>&1 | grep -E 'Subject:|Signature verification' | head -4 || true
+            done
+            asar=$(find app -name app.asar | head -1)
+            if [ -n "$asar" ]; then
+              echo "== asar $asar"
+              strings -n 6 "$asar" | grep -o -E '[^"'"'"' ]{0,40}\.workbuddy[^"'"'"' ]{0,40}' | sort | uniq -c | sort -nr | head -n 40
+              echo '== models.json mentions'
+              strings -n 6 "$asar" | grep -o -E '.{0,60}models\.json.{0,60}' | sort | uniq -c | sort -nr | head -n 20
+              echo '== productName / appId'
+              strings -n 6 "$asar" | grep -o -E '"(productName|name|appId|executableName)"\s*:\s*"[^"]{1,60}"' | sort | uniq -c | sort -nr | head -n 20
+            fi
+          fi
