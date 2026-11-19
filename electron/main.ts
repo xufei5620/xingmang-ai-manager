@@ -55,7 +55,7 @@ import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
-import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
+import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoLaunchInstallAttempt, undoQuitInstallAttempt, type LaunchInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
 import { createRendererRelease, type RendererRelease, type RendererReleaseLogEvent } from './renderer-release'
@@ -1736,6 +1736,14 @@ if (!hasSingleInstanceLock) {
     }))
     // 自动更新：上一次运行已经下好的版本，这次一打开就装上（见 auto-update-install.ts）。
     let launchInstallTried = false
+    // 打开时装也会把软件关掉重开（O07）：重启装更新前要问一句的那几样（D10，runningRestartWork）在做，
+    // 或者付款窗口开着，客户就已经在用了，这时不装。服务端在出的视频不算，同 D10：重开以后会接着取回来。
+    // 用到的几样都在后面才建好；打开时装要等退出交接接上（updateQuitHandoff）才开始，那时都在了。
+    const launchInstallWork = (): Array<UnfinishedRestartWork | 'payment'> => {
+      const work: Array<UnfinishedRestartWork | 'payment'> = [...runningRestartWork()]
+      if (paymentWindow.isOpen()) work.push('payment')
+      return work
+    }
     // Windows 上开机自启、窗口没打开过、开机时没装的那一版（'window'）：等第一次打开窗口再装。
     // 电脑闲下来时跳框先问了的，就撤下（withdrawLaunchInstall）。
     let launchInstallAwaitingWindow: string | null = null
@@ -1746,6 +1754,7 @@ if (!hasSingleInstanceLock) {
         autoUpdate: updaterService.autoUpdateEnabled(),
         snapshot: updaterService.getState(),
         busy: resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
+        working: launchInstallWork().length > 0,
         mode,
         windowShown: mainWindowShown,
         accelerationActive: acceleration?.hasPossibleSession() === true,
@@ -1755,6 +1764,7 @@ if (!hasSingleInstanceLock) {
         runtimeLog.log('info', 'updater', 'install.on-launch.skipped', `第一次打开窗口时先不装 ${version}，留到退出时再装`, {
           autoUpdate: updaterService.autoUpdateEnabled(),
           accelerationActive: acceleration?.hasPossibleSession() === true,
+          work: launchInstallWork(),
         })
         return
       }
@@ -1766,6 +1776,7 @@ if (!hasSingleInstanceLock) {
         runtimeLog.log('info', 'updater', 'install.on-launch', `上次已下载好 ${version}，启动时自动安装`)
       }
       // 后台装的另记一笔：安装器装好重新拉起新版本时，照它认出那一次，照旧待在后台。
+      const attempt: LaunchInstallAttempt = { version, previous: pendingUpdateRecord.attemptedVersion }
       pendingUpdateRecord = {
         ...pendingUpdateRecord,
         attemptedVersion: version,
@@ -1783,9 +1794,21 @@ if (!hasSingleInstanceLock) {
           await new Promise((resolve) => { setTimeout(resolve, LAUNCH_INSTALL_NOTICE_MS).unref() })
         }
         if (!stillInstallable()) {
+          // 没装就不算试过：先撤「试过了」再收预告卡，跳框看到卡收了时这一版已经不算打开时装接手的，
+          // 等聊天、画布这些做完会接着问。
+          const undone = undoLaunchInstallAttempt(pendingUpdateRecord, attempt)
+          if (undone) {
+            pendingUpdateRecord = undone
+            void pendingUpdateStore.write(pendingUpdateRecord).catch((cause: unknown) => {
+              runtimeLog.exception('updater', 'pending.record-failed', cause)
+            })
+          } else {
+            dropBackgroundInstall()
+          }
           updaterService.setLaunchInstallNotice(null)
-          dropBackgroundInstall()
-          runtimeLog.log('info', 'updater', 'install.on-launch.skipped', `启动时自动安装 ${version} 前情况变了，留到退出时再装`)
+          runtimeLog.log('info', 'updater', 'install.on-launch.skipped', `启动时自动安装 ${version} 前情况变了，这次不装，交给跳框或退出时再装`, {
+            work: launchInstallWork(),
+          })
           return
         }
         updaterService.install()
@@ -1806,6 +1829,7 @@ if (!hasSingleInstanceLock) {
         recordAtLaunch: pendingUpdateAtLaunch,
         elapsedSinceLaunchMs: Date.now() - launchInstallClockFrom,
         busy: resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
+        working: launchInstallWork().length > 0,
         standardAccount: updateAccount === 'standard',
       })
       if (!version) return
@@ -2900,11 +2924,13 @@ if (!hasSingleInstanceLock) {
     }
     // 重启装更新会把聊天的回复和出图、视频剪辑的拼片、画布出的图停下，重开以后也不会接着做（D10）。
     // 界面开着的对话框不算：从更新页点「重启并安装」时那个确认框自己就开着，所以不看 rendererBusy。
-    const unfinishedRestartWork = (): UnfinishedRestartWorkPrompt | null => {
+    // 打开时自动装也看这一份（launchInstallWork，O07）。
+    const runningRestartWork = (): UnfinishedRestartWork[] => {
       const running: UnfinishedRestartWork[] = [...(mainRendererRelease?.rendererWork ?? [])]
       if ([...businesses.values()].some((business) => business.canvasImageService.hasPendingWork() || business.canvasRuns.hasActiveRuns())) running.push('canvas')
-      return buildUnfinishedRestartWorkPrompt(running)
+      return running
     }
+    const unfinishedRestartWork = (): UnfinishedRestartWorkPrompt | null => buildUnfinishedRestartWorkPrompt(runningRestartWork())
     const confirmUnfinishedRestartWork = async (prompt: UnfinishedRestartWorkPrompt): Promise<boolean> => {
       // 托盘「重启并安装」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
       if (!mainWindow.isVisible()) showMainWindow()
