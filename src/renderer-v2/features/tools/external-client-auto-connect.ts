@@ -12,13 +12,13 @@ import { clientConnections, clientKeySources } from '../../registry/clients'
 import { errorMessage } from '../../business-common'
 import { connectionCheckView } from './connection-check'
 import { configuredSourceModel, detectedClientModel, initialClientSource } from './external-client-defaults'
-import { readAllAccountKeys } from './key-selection'
+import { keysInUsableGroups, readAllAccountKeys } from './key-selection'
 
 // 决定单 D7（yoyo 2026-11-11「决定单照推荐」）：Claude Desktop、WorkBuddy、OpenCode 装好或登录以后，从没配置过、
 // 默认密钥和型号也定得下来的，替客户自动连一次，省掉「确认连接」→「保存并检测」那两下。挑密钥、挑型号跟
 // 配置窗口打开时替他挑的是同一套（external-client-defaults.ts），挑不准就不连，照旧等他自己点。
 
-export type ExternalAutoConnectBridge = Pick<XingmangApi, 'getConfig' | 'getAccountKeys' | 'listConfiguredModels' | 'listAccountKeyModels' | 'configureExternalTool'>
+export type ExternalAutoConnectBridge = Pick<XingmangApi, 'getConfig' | 'getAccountKeys' | 'getAccountUsableGroups' | 'getAccountKeyOptions' | 'listConfiguredModels' | 'listAccountKeyModels' | 'configureExternalTool'>
 
 // detect：客户自己装好的 WorkBuddy 被检测认出来以后（开机、点「重新检测」、回到星芒窗口时，yoyo 2026-11-18「改」）。
 export type ExternalAutoConnectTrigger = 'install' | 'login' | 'detect'
@@ -70,11 +70,12 @@ export function externalAutoConnectAttemptKey(scope: string, status: Pick<Extern
 export function externalAutoConnectSource(
   tool: ExternalToolId,
   providers: AppConfigSummary['providers'] | null,
-  keys: readonly Pick<AccountKey, 'id' | 'group'>[],
+  keys: readonly (Pick<AccountKey, 'id' | 'group'> & { name?: string })[],
+  claudeCode: { name: string; group: string } | null = null,
 ): ExternalAutoConnectChoice | null {
   const preferred = clientConnections.find((entry) => entry.id === tool)?.preferredProvider
   if (!preferred) return null
-  const source = initialClientSource(tool, preferred, clientKeySources, providers, keys)
+  const source = initialClientSource(tool, preferred, clientKeySources, providers, keys, claudeCode)
   if (tool === 'opencode' && source !== 'configured:codex') return null
   const configured = clientKeySources.find((entry) => source === `configured:${entry.id}`)
   if (configured) return { credential: { kind: 'configured', provider: configured.id }, model: configuredSourceModel(tool, source, providers) }
@@ -95,13 +96,16 @@ export async function autoConnectExternalClient(
 ): Promise<ExternalAutoConnectOutcome> {
   const tool = status.tool
   try {
-    // 密钥列表没读到时照配置窗口那样只看工具里配着的那几把，不因此整次不连。
-    const [config, keys] = await Promise.all([
+    // 密钥列表没读到时照配置窗口那样只看工具里配着的那几把，不因此整次不连。能用的分组、Claude Code 那把的
+    // 分组没读到，也跟配置窗口一样退回旧挑法（照旧全列、只按分组名挑）。
+    const [config, keys, usableGroups, claudeCode] = await Promise.all([
       bridge.getConfig(),
       readAllAccountKeys((query) => bridge.getAccountKeys(query)).then((page) => page.keys.filter((key) => key.status === 1), (): AccountKey[] => []),
+      bridge.getAccountUsableGroups().then((groups) => groups.map((group) => group.name), () => null),
+      tool === 'claudeDesktop' ? bridge.getAccountKeyOptions('claude').then((options) => options.automatic, () => null) : Promise.resolve(null),
     ])
     if (!stillCurrent()) return { kind: 'skipped', reason: 'account-changed' }
-    const choice = externalAutoConnectSource(tool, config.providers, keys)
+    const choice = externalAutoConnectSource(tool, config.providers, keysInUsableGroups(keys, usableGroups), claudeCode)
     if (!choice) return { kind: 'skipped', reason: 'no-key' }
     const listed = choice.credential.kind === 'configured'
       ? await bridge.listConfiguredModels(choice.credential.provider)

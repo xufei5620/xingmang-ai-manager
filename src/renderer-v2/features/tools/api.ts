@@ -259,6 +259,7 @@ export function createToolsApi(bridge: XingmangApi) {
     toolSessions: (provider: ProviderId) => bridge.listProviderSessions({ provider, page: 1, pageSize: 100 }).then(withoutRetiredSessions),
     readConfig: () => bridge.getConfig(),
     readKeys: () => readAllAccountKeys((query) => bridge.getAccountKeys(query)),
+    readUsableGroups: () => bridge.getAccountUsableGroups(),
     readKeyOptions: (tool: ToolId) => bridge.getAccountKeyOptions(providerFor(tool)),
     keyModels: (id: number) => bridge.listAccountKeyModels(id),
     configuredModels: (tool: ToolId) => bridge.listConfiguredModels(providerFor(tool)),

@@ -8107,6 +8107,19 @@ for (const tool of matchedToolIds) test(`read-only account matches retain accoun
   } finally { await page.close() }
 })
 
+test('the tool key list leaves out keys in groups the account lost', async () => {
+  const page = await open('clientKeyGroups=1')
+  try {
+    await openToolConfiguration(page)
+    await page.getByTestId('tool-key-select').click()
+    await page.getByTestId('tool-key-select-option-402').waitFor()
+    await page.getByTestId('tool-key-select-option-401').waitFor()
+    assert.equal(await page.getByTestId('tool-key-select-option-403').count(), 0)
+    await page.keyboard.press('Escape')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('selected account key shows its group and survives delayed metadata', async () => {
   const page = await open('keyOptions=1&keyMetadataPending=codex')
   try {

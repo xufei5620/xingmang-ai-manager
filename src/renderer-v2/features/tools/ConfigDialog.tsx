@@ -80,6 +80,8 @@ export function ConfigDialog(props: ConfigDialogProps) {
 function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyFormat = false, onOfficialQuota, onClose, onRepair, onRefresh, onSaved, onKeyWritten, onLogin, onKeys, onBackups, accountName = null, onSwitchAccount }: ConfigDialogProps) {
   const [edited, setEdited] = useState<ConfigDraft | null>(null)
   const [keys, setKeys] = useState<AccountKey[]>([])
+  // 账号现在能用的分组：分组用不了的密钥不列。null = 没读到，照旧全列。
+  const [usableGroups, setUsableGroups] = useState<string[] | null>(null)
   const [models, setModels] = useState<string[]>([])
   const [modelsDetected, setModelsDetected] = useState(false)
   // 服务状态文件里的型号表：没设型号的工具预选哪个、检测完替他挑哪个，跟登录自动配置一个口径（#1154 附录）。
@@ -158,6 +160,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     let current = true
     lastKeyRefresh.current = Date.now()
     setKeysLoading(true); setKeyError('')
+    void api.readUsableGroups().then((groups) => { if (current) setUsableGroups(groups.map((group) => group.name)) }, () => { if (current) setUsableGroups(null) })
     void api.readKeys().then((page) => { if (current) setKeys(page.keys) }).catch((cause) => {
       if (current) setKeyError(errorMessage(cause, '密钥列表暂时没有读到'))
     }).finally(() => { if (current) setKeysLoading(false) })
@@ -452,7 +455,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     // 别的站的 Key 不给「保持当前」：选了也存不进去（主进程报「属于其他账号」）。
     ...((native.hasApiKey && native.matchesRelay) || usingCurrentKey ? [{ value: CURRENT_KEY, label: currentKeyLabel(metadata, native.apiKeyPreview), disabled: !native.hasApiKey || !native.matchesRelay }] : []),
     { value: AUTOMATIC_KEY, label: automaticLabel, description: '保存时自动准备好密钥，不用自己创建', disabled: !metadata || metadataLoading || Boolean(metadataError) },
-    ...listedAccountKeys(keys, draft.keyId).map((key) => ({ value: String(key.id), label: key.name || key.maskedKey || '密钥预览未提供', description: accountKeyDescription(key) })),
+    ...listedAccountKeys(keys, draft.keyId, usableGroups).map((key) => ({ value: String(key.id), label: key.name || key.maskedKey || '密钥预览未提供', description: accountKeyDescription(key) })),
     ...(!usingCurrentKey && !usingAutomaticKey && !selectedKey ? [{ value: draft.keyId, label: '所选密钥已不可用，请重新选择', disabled: true }] : []),
   ]
   const detectedForDraft = modelsDetected && (draft.source !== 'manual' || draft.validatedSecret === draft.secret)

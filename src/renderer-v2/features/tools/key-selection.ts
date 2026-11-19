@@ -35,14 +35,26 @@ function preferredTwin(kept: AccountKey, other: AccountKey, selectedKeyId: strin
 }
 
 /**
+ * 这把密钥的分组账号现在还能不能用（2026-11-19 yoyo 回「改」）。服务端删掉的分组，密钥还留在账号里、还是启用的
+ * （8 月 AI 对话签的那批），一检测就是 403「无权访问 … 分组」：new-api 拿密钥调用时核的正是 `/api/user/self/groups`
+ * 列的那份（rc.51 middleware/auth.go TokenAuth 与 controller/group.go GetUserGroups 同一个条件，`auto` 也只有列出来才算）。
+ * usable 是 null（没读到）时只认 xm 站删掉的老名字，其余照旧当能用，不因此把下拉清空。分组空着的（new-api 走账号自己的
+ * 等级分组）不算用不了。历史账号的密钥分组本来就是从它自己的可用分组里认的，认不出的是空的，所以那边等于不筛。
+ */
+function unusableKeyGroup(group: string, usable: ReadonlySet<string> | null): boolean {
+  return Boolean(group) && (retiredAccountGroups.has(group) || (usable !== null && !usable.has(group)))
+}
+
+/**
  * 工具配置框的密钥下拉列哪几把（个人中心「密钥」页照旧全列）：
  * - 星芒签的密钥在同一个分组里同名的只列一把，挑最近用过的那把。xm 站改分组本名那几天，老版本星芒在老名字下
  *   又签了一把同名的，服务端删老名字时把它挂回了新名字下，就成了同一分组里两把一样名字的。用户自己建的同名密钥不合并。
  * - 下线工具（Gemini CLI）星芒签的那把不列：星芒不再替它配，选给别的工具也用不了。
- * - 分组还写着 xm 站删掉的老名字的不列：服务端删之前已把这些都挂到新名字下，再有就是坏的，一调用就 403「无权访问 … 分组」。
+ * - 分组账号现在用不了的不列（usableGroups 是 `/api/user/self/groups` 列的那份，见 unusableKeyGroup）。
  * 正选着的那把照旧列着，免得下拉里找不到它。
  */
-export function listedAccountKeys(keys: readonly AccountKey[], selectedKeyId: string): AccountKey[] {
+export function listedAccountKeys(keys: readonly AccountKey[], selectedKeyId: string, usableGroups: readonly string[] | null = null): AccountKey[] {
+  const usable = usableGroups ? new Set(usableGroups) : null
   const enabled = keys.filter((key) => key.status === 1)
   const shown = new Map<string, AccountKey>()
   for (const key of enabled) {
@@ -53,21 +65,18 @@ export function listedAccountKeys(keys: readonly AccountKey[], selectedKeyId: st
   }
   return enabled.filter((key) => {
     if (String(key.id) === selectedKeyId) return true
-    if (retiredManagedKeyNames.has(key.name) || retiredAccountGroups.has(key.group)) return false
+    if (retiredManagedKeyNames.has(key.name) || unusableKeyGroup(key.group, usable)) return false
     return !key.name.startsWith('xingmang-') || shown.get(JSON.stringify([key.name, key.group])) === key
   })
 }
 
 /**
- * Claude Desktop、WorkBuddy、OpenCode 弹窗的密钥下拉只列账号现在还能用的分组里的（2026-11-19 yoyo 回「改」）。
- * 服务端关掉的分组，密钥还留在账号里（8 月 AI 对话签的那批），一检测就是 403「无权访问 … 分组」：new-api 拿密钥
- * 调用时核的正是 `/api/user/self/groups` 列的那份（rc.51 middleware/auth.go TokenAuth）。
- * usableGroups 是 null（没读到）时只去掉 xm 站删掉的老名字，其余照旧全列；分组空着的（new-api 走账号自己的等级分组、
- * 历史账号认不出分组）不算用不了，照列。
+ * Claude Desktop、WorkBuddy、OpenCode 的密钥下拉和登录后替它们自动连时，只在账号现在还能用的分组里挑
+ * （见 unusableKeyGroup）。这里打开时就定下默认，没有「正选着的」要留。
  */
 export function keysInUsableGroups<T extends Pick<AccountKey, 'group'>>(keys: readonly T[], usableGroups: readonly string[] | null): T[] {
   const usable = usableGroups ? new Set(usableGroups) : null
-  return keys.filter((key) => !key.group || (!retiredAccountGroups.has(key.group) && (!usable || usable.has(key.group))))
+  return keys.filter((key) => !unusableKeyGroup(key.group, usable))
 }
 
 /**

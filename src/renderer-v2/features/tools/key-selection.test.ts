@@ -47,6 +47,17 @@ describe('configuration key selection', () => {
     // 能用的分组没读到：只去掉删掉的老名字，其余照旧。
     expect(keysInUsableGroups(keys, null).map((entry) => entry.id)).toEqual([1, 2, 3, 5, 6])
     expect(keysInUsableGroups(keys, []).map((entry) => entry.id)).toEqual([3])
+    // auto 只有接口列出来才算能用。
+    expect(keysInUsableGroups(keys, ['Claude-MAX', 'GPT']).map((entry) => entry.id)).toEqual([2, 3, 6])
+  })
+  it('leaves keys in groups the account lost out of the tool dialog list, except the one selected', () => {
+    const grouped = (id: number, group: string) => ({ ...key(id), group }) as AccountKey
+    const keys = [grouped(1, 'Claude-ANTI'), grouped(2, 'Claude-MAX'), grouped(3, ''), grouped(4, 'auto')]
+    expect(listedAccountKeys(keys, 'automatic', ['Claude-MAX']).map((entry) => entry.id)).toEqual([2, 3])
+    expect(listedAccountKeys(keys, '1', ['Claude-MAX']).map((entry) => entry.id)).toEqual([1, 2, 3])
+    // 分组没读到：照旧全列。
+    expect(listedAccountKeys(keys, 'automatic', null).map((entry) => entry.id)).toEqual([1, 2, 3, 4])
+    expect(listedAccountKeys(keys, 'automatic').map((entry) => entry.id)).toEqual([1, 2, 3, 4])
   })
   it('checks the sk- prefix only where the key format is known', () => {
     expect(manualKeyIssue('  ', true)).toBe('请粘贴你在星芒创建的密钥')
