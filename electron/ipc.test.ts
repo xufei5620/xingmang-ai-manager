@@ -7249,6 +7249,60 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(() => handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2, userId: 9 })).toThrow('未知字段')
       expect(accountService.getDashboard).not.toHaveBeenCalled()
     })
+
+    // 11-18 D11: the home week-spend loader reads the session, then queries the
+    // dashboard in separate calls. A switch in between used to return the new
+    // account's spend, which the renderer then filed under the old account.
+    it('refuses a query made for an account that is no longer the current one', () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 8 } as never })
+      register(undefined, undefined, undefined, accountService)
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      const range = { startTimestamp: 1_700_000_000, endTimestamp: 1_700_086_400 }
+      expect(() => handler(trustedEvent(), range, 'xm-account:7')).toThrow('账号刚切换过，请再试一次')
+      // Same user id on the other site is a different account.
+      expect(() => handler(trustedEvent(), range, 'api-account:8')).toThrow('账号刚切换过，请再试一次')
+      expect(() => handler(trustedEvent(), range, 'xm-account:guest')).toThrow('账号刚切换过，请再试一次')
+      expect(accountService.getDashboard).not.toHaveBeenCalled()
+    })
+
+    it('checks the expected account in the same tick that starts the request', async () => {
+      const accountService = accountServiceStub()
+      let userId = 7
+      vi.mocked(accountService.getSessionState).mockImplementation(() => ({ authenticated: true, account: { userId } as never }))
+      vi.mocked(accountService.getDashboard).mockImplementation(async () => {
+        // The request is already bound to account 7 by the time anything else runs.
+        userId = 8
+        return { startTimestamp: 1, endTimestamp: 2, buckets: [], models: [], quota: 100, count: 1, tokens: 1, discardedCount: 0 }
+      })
+      register(undefined, undefined, undefined, accountService)
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      const pending = handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2 }, 'xm-account:7')
+      expect(accountService.getDashboard).toHaveBeenCalledTimes(1)
+      await expect(pending).resolves.toMatchObject({ quota: 100 })
+      expect(() => handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2 }, 'xm-account:7')).toThrow('账号刚切换过')
+      expect(accountService.getDashboard).toHaveBeenCalledTimes(1)
+    })
+
+    it('tells the two account sites apart by the active site', async () => {
+      const accountService = { ...accountServiceStub(), getActiveSiteId: vi.fn(() => 'solov-api' as const) }
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } as never })
+      vi.mocked(accountService.getDashboard).mockResolvedValue({ startTimestamp: 1, endTimestamp: 2, buckets: [], models: [], quota: 0, count: 0, tokens: 0, discardedCount: 0 })
+      register(undefined, undefined, undefined, accountService)
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      expect(() => handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2 }, 'xm-account:7')).toThrow('账号刚切换过')
+      await expect(handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2 }, 'api-account:7')).resolves.toMatchObject({ quota: 0 })
+    })
+
+    it('rejects a malformed expected account before calling the service', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      const range = { startTimestamp: 1, endTimestamp: 2 }
+      for (const scope of [7, '', 'xm-account:', 'xm-account:0', 'other:7', 'xm-account:7 ', 'xm-account:../7', null]) {
+        expect(() => handler(trustedEvent(), range, scope)).toThrow('数据看板查询的账号格式错误')
+      }
+      expect(accountService.getDashboard).not.toHaveBeenCalled()
+    })
   })
 
   describe('parseAccountTaskQuery (account:get-tasks)', () => {
