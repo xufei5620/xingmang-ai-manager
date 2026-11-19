@@ -191,9 +191,11 @@ async function renderSegmentFrames(
     context.fillRect(0, 0, plan.width, plan.height)
     if (current) context.drawImage(current.canvas, 0, 0, plan.width, plan.height)
     if (caption) paintVideoStudioCaption(context, caption)
-    // 淡入淡出：字幕画好以后整张盖一层黑，字幕和画面一起淡。
+    // 淡入淡出：字幕画好以后整张盖一层黑，字幕和画面一起淡。画字幕时填充色换成了白色，
+    // 盖之前要换回黑色，不然开着字幕的成片切镜和片尾会淡成白的。
     const level = videoStudioFadeLevel(segment, index + 0.5)
     if (level < 1) {
+      context.fillStyle = '#000000'
       context.globalAlpha = 1 - level
       context.fillRect(0, 0, plan.width, plan.height)
       context.globalAlpha = 1
