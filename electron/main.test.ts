@@ -395,6 +395,59 @@ describe('main process quit cleanup', () => {
   })
 })
 
+describe('main process launch install', () => {
+  function variableInitializer(name: string): string {
+    const { source } = mainSource()
+    const found: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === name && node.initializer) found.push(node.initializer.getText(source))
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(found).toHaveLength(1)
+    return found[0]
+  }
+
+  it('looks at the same work before deciding and again right before installing', () => {
+    // 打开时装会把软件关掉重开（O07）：决定装之前、预告完真去装之前，都要看重启装更新前要问的那几样（D10）和付款窗口。
+    const { source } = mainSource()
+    const working: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && ['decideLaunchInstall', 'shouldStillInstallAtLaunch'].includes(node.expression.text)) {
+        const [argument] = node.arguments
+        if (argument && ts.isObjectLiteralExpression(argument)) {
+          for (const property of argument.properties) {
+            if (ts.isPropertyAssignment(property) && property.name.getText(source) === 'working') {
+              working.push(`${node.expression.text}: ${property.initializer.getText(source)}`)
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(working.sort()).toEqual([
+      'decideLaunchInstall: launchInstallWork().length > 0',
+      'shouldStillInstallAtLaunch: launchInstallWork().length > 0',
+    ])
+    const launchWork = variableInitializer('launchInstallWork')
+    expect(launchWork).toContain('runningRestartWork()')
+    expect(launchWork).toContain('paymentWindow.isOpen()')
+    // 重启装更新前那一问读的也是这一份，两边说的「在忙」不会走样。
+    expect(variableInitializer('unfinishedRestartWork')).toContain('buildUnfinishedRestartWorkPrompt(runningRestartWork())')
+  })
+
+  it('takes back the attempt before clearing the notice when it backs off after the notice', () => {
+    // 跳框看到预告卡收了就会再看这一版算不算打开时装接手的：要先撤「试过了」，它才会等聊天、画布做完接着问。
+    const start = variableInitializer('startLaunchInstall')
+    const backOff = start.slice(start.indexOf('if (!stillInstallable()) {\n'))
+    const undo = backOff.indexOf('undoLaunchInstallAttempt(pendingUpdateRecord, attempt)')
+    expect(undo).toBeGreaterThan(0)
+    expect(undo).toBeLessThan(backOff.indexOf('updaterService.setLaunchInstallNotice(null)'))
+    expect(backOff.indexOf('updaterService.setLaunchInstallNotice(null)')).toBeLessThan(backOff.indexOf('updaterService.install()'))
+  })
+})
+
 describe('main process update install handoff', () => {
   // The object main.ts hands the updater as its quit handoff, keyed by property name.
   function updateQuitHandoff(): Record<string, string> {

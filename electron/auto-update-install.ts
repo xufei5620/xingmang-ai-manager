@@ -5,6 +5,8 @@
  * - **用户自己退出时**：直接装，不再弹「顺手装上吗」那一问（main.ts 的 confirmQuit）。
  *   系统关机、重启、注销不算：安装器会被一起结束，留给下次打开。
  * - **下次打开软件时**：上一次运行就已经下好了，这次启动刚打开、用户还没开始用，装上。
+ *   已经开始用了的不装：聊天在回复或出图、视频剪辑在拼接、画布在生成、付款窗口开着（O07），
+ *   预告之前和预告那几秒以后各看一次；没装的交给跳框等这些做完再问，或者退出时装。
  *   常驻托盘、从不真正退出的人只能靠这一条拿到新版本。开机自启的要等开机安静期过了才查
  *   更新（login-launch.ts），「刚打开」从那时算；窗口一直没打开过时没人在看，就不预告、
  *   在后台装，装好照旧待在后台，装的时候要弹窗等人点的开机时不装。Windows 上那就等用户
@@ -145,13 +147,18 @@ export interface LaunchInstallInput {
   elapsedSinceLaunchMs: number
   /** 有安装任务在跑（装 CLI、装 Node 之类）时不打断。 */
   busy: boolean
+  /**
+   * 客户已经在用了：聊天在回复或出图、视频剪辑在拼接、画布在生成（重启装更新前要问的那几样，D10），
+   * 或者付款窗口开着。装的时候软件会关掉，这些停了重开也不会接着做，付款页没了客户还可能再付一次（O07）。
+   */
+  working: boolean
   /** Windows 上这个账号不在管理员组（windows-elevation.ts 问出来的 'standard'）。缺省＝不是，或者没问出来。 */
   standardAccount?: boolean
 }
 
 /** 返回要在启动时装上的版本；不该装时返回 null。 */
 export function decideLaunchInstall(input: LaunchInstallInput): string | null {
-  if (!input.autoUpdate || input.busy || input.standardAccount) return null
+  if (!input.autoUpdate || input.busy || input.working || input.standardAccount) return null
   // 交给系统安装器的版本（Linux）从不自己装：一打开（常常是开机自启）就弹一个要开机密码
   // 的窗口，客户只会当成来路不明的东西点掉。
   if (input.snapshot.installMethod === 'system-installer') return null
@@ -197,6 +204,8 @@ export interface LaunchInstallRecheckInput {
   autoUpdate: boolean
   snapshot: UpdateSnapshot
   busy: boolean
+  /** 见 LaunchInstallInput.working。 */
+  working: boolean
   mode: Exclude<LaunchInstallMode, 'skip'>
   windowShown: boolean
   accelerationActive: boolean
@@ -204,12 +213,13 @@ export interface LaunchInstallRecheckInput {
 
 /**
  * 预告等完、或者后台装写完记录，真去装之前再看一眼：这几秒里用户可能关了自动更新、开始
- * 装工具，或者这个版本被撤回了；后台装的，用户可能刚点开窗口、从托盘开了加速。等到第一次
- * 打开窗口才装的，离开机可能已经过了几个小时，预告之前也先看这一眼：开着加速时不装，用户
- * 这时多半正靠它连着别的工具，装的时候加速会断，装好也不会自己连回去，留到退出时再装。
+ * 装工具、开始聊天或者在画布上出图，或者这个版本被撤回了；后台装的，用户可能刚点开窗口、
+ * 从托盘开了加速。等到第一次打开窗口才装的，离开机可能已经过了几个小时，预告之前也先看
+ * 这一眼：开着加速时不装，用户这时多半正靠它连着别的工具，装的时候加速会断，装好也不会
+ * 自己连回去，留到退出时再装。
  */
 export function shouldStillInstallAtLaunch(input: LaunchInstallRecheckInput): boolean {
-  if (!input.autoUpdate || input.busy) return false
+  if (!input.autoUpdate || input.busy || input.working) return false
   if (resolveInstallableUpdateOnQuit(input.snapshot)?.version !== input.version) return false
   if (input.mode === 'notice') return true
   if (input.accelerationActive) return false
@@ -347,6 +357,23 @@ export interface QuitInstallAttempt {
 export function undoQuitInstallAttempt(record: PendingUpdateRecord, attempt: QuitInstallAttempt | null): PendingUpdateRecord | null {
   if (!attempt || record.quitAttemptedVersion !== attempt.version) return null
   return { ...record, quitAttemptedVersion: attempt.previous }
+}
+
+/** 这次打开时装写下的「试过了」，连同写之前记录里的值，撤回时要用。 */
+export interface LaunchInstallAttempt {
+  version: string
+  previous: string | null
+}
+
+/**
+ * 打开时装已经记下「试过了」，预告那几秒里情况变了（客户开始聊天、装工具，关了自动更新……），
+ * 这次没去装：撤回那条记录，后台装那条也一起撤。没装就不算试过：不撤的话，跳框把这一版当成打开时装
+ * 已经接手，这次运行里不再问；客户之后只关机不退出，下次打开还会把它说成「上次没装上」、不再自动装。
+ * 记录已经不是这次写的样子时不动，返回 null。
+ */
+export function undoLaunchInstallAttempt(record: PendingUpdateRecord, attempt: LaunchInstallAttempt | null): PendingUpdateRecord | null {
+  if (!attempt || record.attemptedVersion !== attempt.version) return null
+  return { ...record, attemptedVersion: attempt.previous, backgroundInstall: null }
 }
 
 /**
