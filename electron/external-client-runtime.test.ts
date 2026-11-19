@@ -4,7 +4,7 @@ import type { AppxVolumeLink } from './appx-volume-link'
 import { CommandRunnerError, runCommand, type CommandErrorCode, type CommandSpec, type CommandErrorDetails } from './command-runner'
 import { DesktopBucketUnavailableError } from './desktop-package-bucket'
 import type { ExternalClientInstallProgress } from './external-client-contract'
-import { buildClaudeDesktopOtherVolumeMessage, buildExternalClientWingetInstall, createExternalClientRuntime, encodeKnownExternalClientSignatures, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, windowsExternalClientProcessScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
+import { buildClaudeDesktopOtherVolumeMessage, buildExternalClientLaunchResult, buildExternalClientWingetInstall, createExternalClientRuntime, encodeKnownExternalClientSignatures, externalClientWingetUnavailableHint, verifyExternalClientPath, windowsExternalClientInventoryScript, windowsExternalClientProcessScript, type ExternalClientRuntimeOptions } from './external-client-runtime'
 import type { ExternalToolId } from './external-tool-config'
 import { isInstallCancelledError } from './install-cancellation'
 import { InstallationQueue } from './installation-queue'
@@ -946,6 +946,29 @@ describe('external desktop client lifecycle', () => {
     await expect(prepareClaudeDesktopLaunch.mock.calls[0][0].isRunning?.()).resolves.toBe(true)
   })
 
+  it('brings back only the skip the customer can fix: 星芒 running elevated', async () => {
+    const outcomes = [
+      { status: 'skipped', reason: 'not-same-user' },
+      { status: 'skipped', reason: 'running' },
+      { status: 'placed', version: '2.1.325' },
+    ] as const
+    const prepareClaudeDesktopLaunch = vi.fn(async () => outcomes[prepareClaudeDesktopLaunch.mock.calls.length - 1])
+    const f = fixture({ prepareClaudeDesktopLaunch })
+    f.setInventory([appx({ running: false })])
+    await expect(f.runtime.launch('claudeDesktop')).resolves.toEqual({ preparationSkipped: 'elevated' })
+    await expect(f.runtime.launch('claudeDesktop')).resolves.toEqual({})
+    await expect(f.runtime.launch('claudeDesktop')).resolves.toEqual({})
+    expect(f.launchProcess).toHaveBeenCalledTimes(3)
+  })
+
+  it('maps seed outcomes to what the home page has to say', () => {
+    expect(buildExternalClientLaunchResult({ status: 'skipped', reason: 'not-same-user' })).toEqual({ preparationSkipped: 'elevated' })
+    for (const reason of ['remote-off', 'running', 'download-failed', 'disk-space', 'timeout'] as const)
+      expect(buildExternalClientLaunchResult({ status: 'skipped', reason })).toEqual({})
+    expect(buildExternalClientLaunchResult({ status: 'present', version: '2.1.325' })).toEqual({})
+    expect(buildExternalClientLaunchResult(undefined)).toEqual({})
+  })
+
   it('never prepares anything for the other desktop clients', async () => {
     const prepareClaudeDesktopLaunch = vi.fn(async () => undefined)
     const f = fixture({ prepareClaudeDesktopLaunch })
@@ -1093,14 +1116,14 @@ describe('external desktop client lifecycle', () => {
 
     const throwing = fixture({ onLaunched: () => { throw new Error('host gone') } })
     throwing.setInventory([candidate('opencode')])
-    await expect(throwing.runtime.launch('opencode')).resolves.toBeUndefined()
+    await expect(throwing.runtime.launch('opencode')).resolves.toEqual({})
   })
 
   it('still reports a launch as done when its timings cannot be logged', async () => {
     // The client is already with Explorer: a failure here must not send the customer to click again.
     const f = fixture({ onLaunchTiming: () => { throw new Error('log unavailable') } })
     f.setInventory([candidate('opencode')])
-    await expect(f.runtime.launch('opencode')).resolves.toBeUndefined()
+    await expect(f.runtime.launch('opencode')).resolves.toEqual({})
     expect(f.launchProcess).toHaveBeenCalledOnce()
   })
 
