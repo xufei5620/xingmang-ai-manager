@@ -223,6 +223,62 @@ describe('updater service', () => {
     expect(service.getState().phase).toBe('downloaded')
   })
 
+  // D23：超时那一刻自动更新还开着，查完前客户把它关了，迟到的结果不能再替客户下。
+  it('does not download a late-discovered release after the user turned auto-update off', async () => {
+    const client = new FakeUpdater()
+    const check: { resolve: (() => void) | null } = { resolve: null }
+    client.checkForUpdates.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      check.resolve = resolve
+    }))
+    let autoUpdate = true
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      startupCheckTimeoutMs: 10,
+      readAutoUpdate: () => autoUpdate,
+    })
+
+    await expect(service.startup()).resolves.toMatchObject({ error: { code: 'STARTUP_UPDATE_TIMEOUT' } })
+    autoUpdate = false
+    await service.autoUpdateChanged()
+    client.emit('update-available', updateInfo('1.2.0'))
+    check.resolve?.()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(client.downloadUpdate).not.toHaveBeenCalled()
+    expect(service.getState()).toMatchObject({ phase: 'available', availableVersion: '1.2.0' })
+    service.dispose()
+  })
+
+  // 反过来：超时那一刻关着、查完前刚打开。打开那一下还没有可下的版本，迟到的结果按打开后的设置接着下。
+  it('downloads a late-discovered release when auto-update was turned on before the check finished', async () => {
+    const client = new FakeUpdater()
+    const check: { resolve: (() => void) | null } = { resolve: null }
+    client.checkForUpdates.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      check.resolve = resolve
+    }))
+    client.downloadUpdate.mockImplementationOnce(async () => {
+      client.emit('update-downloaded', updateInfo('1.2.0'))
+    })
+    let autoUpdate = false
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      startupCheckTimeoutMs: 10,
+      readAutoUpdate: () => autoUpdate,
+    })
+
+    await expect(service.startup()).resolves.toMatchObject({ error: { code: 'STARTUP_UPDATE_TIMEOUT' } })
+    autoUpdate = true
+    await service.autoUpdateChanged()
+    expect(client.downloadUpdate).not.toHaveBeenCalled()
+    client.emit('update-available', updateInfo('1.2.0'))
+    check.resolve?.()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(client.downloadUpdate).toHaveBeenCalledTimes(1)
+    expect(service.getState().phase).toBe('downloaded')
+    service.dispose()
+  })
+
   it('hands a late background download failure to the host instead of leaving it unhandled', async () => {
     const client = new FakeUpdater()
     const check: { resolve: (() => void) | null } = { resolve: null }

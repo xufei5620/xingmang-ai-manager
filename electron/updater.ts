@@ -2353,11 +2353,11 @@ export function createUpdaterService(
           }
           // The timeout only releases the startup UI. Keep the updater request
           // alive so a slow network can still download the discovered release.
-          if (autoDownload()) {
-            void checkPromise.then((lateSnapshot) => {
-              if (lateSnapshot.phase === 'available') downloadInBackground()
-            }, (error: unknown) => runtime.reportBackgroundError?.(error))
-          }
+          // 下不下按查完那一刻的设置定（D23）：超时到查完之间客户关掉了自动更新，这次就不下，停在「有新版本」
+          // 等客户自己点；反过来这段时间里刚打开的，autoUpdateChanged 那时还没有可下的版本，这里接着下。
+          void checkPromise.then((lateSnapshot) => {
+            if (lateSnapshot.phase === 'available' && autoDownload()) downloadInBackground()
+          }, (error: unknown) => runtime.reportBackgroundError?.(error))
           emit({
             phase: 'error',
             checkedAt: now().toISOString(),
