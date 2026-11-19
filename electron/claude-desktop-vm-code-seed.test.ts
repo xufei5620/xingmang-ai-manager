@@ -133,10 +133,10 @@ describe('claude desktop vm code seed: what Cowork wants', () => {
 
   it('uses the folder Claude keeps the VM copy in', () => {
     expect(claudeCodeVmSeedPaths('/p/Claude-3p', { version: '2.1.309', checksum: x64Checksum }, path.posix)).toEqual({
-      installDirectory: '/p/Claude-3p/claude-code-vm/2.1.309/e52289b95def',
-      binaryPath: '/p/Claude-3p/claude-code-vm/2.1.309/e52289b95def/claude',
-      payloadPath: '/p/Claude-3p/claude-code-vm/2.1.309/e52289b95def/.payload',
-      verifiedPath: '/p/Claude-3p/claude-code-vm/2.1.309/e52289b95def/.verified',
+      installDirectory: '/p/Claude-3p/claude-code-vm/2.1.309',
+      binaryPath: '/p/Claude-3p/claude-code-vm/2.1.309/claude',
+      payloadPath: '/p/Claude-3p/claude-code-vm/2.1.309/.payload',
+      verifiedPath: '/p/Claude-3p/claude-code-vm/2.1.309/.verified',
     })
     expect(() => claudeCodeVmSeedPaths('/p', { version: '../../x', checksum: x64Checksum })).toThrow()
   })

@@ -1,11 +1,12 @@
 /**
  * Cowork 的虚拟机里也要一份 Claude Code（Linux 版），Claude Desktop 照样从 downloads.claude.ai 下，国内下不动，
- * 工作区放好了也会卡在这一步。拆 4.4212.0 看到（claude-desktop-component-manifest.ts 读清单）：
+ * 工作区放好了也会卡在这一步。拆 Windows 5.11492.5 和 Mac 6.6395.1 看到（claude-desktop-component-manifest.ts 读清单）：
  * - 要哪一版、官网压缩包 `claude.zst` 的 sha256 跟 Windows、Mac 那份写在同一段清单里（`linux-x64` / `linux-arm64`），
  *   架构跟着这台电脑走（x64 电脑用 linux-x64，Apple 芯片的 Mac 用 linux-arm64）。
- * - 放在 `<userData>/claude-code-vm/<版本>/<checksum 前 12 位>/claude`，格式跟 Windows 那份一样：程序、`.payload`
- *   （解开后的 sha256 和大小）、`.verified`（最后写）。启动时只看程序在、`.verified` 对得上，不重算整个文件
- *   （只有 Mac 本机那份多核 Mach-O 头）。
+ * - 放在 `<userData>/claude-code-vm/<版本>/claude`：虚拟机这份不像本机那份多一层 checksum 前 12 位的目录
+ *   （`installDirFor` 里 `kind === "vm"` 直接 `join(storageDir, version)`，也不做旧位置搬家）。同目录里还有
+ *   `.payload`（解开后的 sha256 和大小）、`.verified`（最后写，内容是清单里的 checksum）。启动时只看程序在且可执行、
+ *   `.verified` 对得上，不重算整个文件（文件头只查 Mac 本机那份）。
  * - npm 上 `@anthropic-ai/claude-code-linux-x64` 那一版的 `package/claude` 跟官网压缩包解开的逐字节相同（2.1.309
  *   比过，探测 41624912418）；linux-arm64 没比过，按同一个发布流程推测相同。
  *
@@ -118,7 +119,8 @@ export function claudeCodeVmNpmPackageName(platform: ClaudeCodeLinuxPlatform): s
 
 export function claudeCodeVmSeedPaths(profileDirectory: string, pin: Pick<ClaudeCodeVmPin, 'version' | 'checksum'>, paths: path.PlatformPath = path): ClaudeCodeVmSeedPaths {
   if (!versionPattern.test(pin.version) || !checksumPattern.test(pin.checksum)) throw new Error('Claude Code 版本号或校验值格式无效')
-  const installDirectory = paths.join(profileDirectory, 'claude-code-vm', pin.version, pin.checksum.slice(0, buildIdLength))
+  // 版本目录本身就是安装目录。同一版换了 build（checksum 变了）时 `.verified` 对不上，照样当没放好、重放。
+  const installDirectory = paths.join(profileDirectory, 'claude-code-vm', pin.version)
   return {
     installDirectory,
     binaryPath: paths.join(installDirectory, 'claude'),
