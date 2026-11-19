@@ -7,6 +7,7 @@ import {
   relayAnswerMayRedirect,
   relayLineFailureAnswer,
   relayLineAnswerWaitMs,
+  relayLineBlockedMemoryMs,
   relayLineFailureReason,
   reportedRelayLineFailure,
   unsentRequestFailure,
@@ -844,6 +845,139 @@ describe('createRelayLineFetch', () => {
     await expect(createRelayLineFetch(pinnedPrimary.router, primaryBase)('https://xm-direct.solov.cc/api/status')).rejects.toThrow('fetch failed')
     expect(sentUrls(primaryBase)).toEqual(['https://xm.solov.cc/api/status'])
     expect(pinnedPrimary.reports).toEqual([])
+  })
+})
+
+// 线路2的白名单不放行的接口：价目事先就知道（#1394），别的被挡过一次就记半小时，走着线路2时直接走线路1
+// （0.2.24 Mac 验收 R17：一次打开画布 3～6 个请求先碰线路2的 404 再退回来）。
+describe('createRelayLineFetch and endpoints line 2 does not serve', () => {
+  function blockedLogs(log: ReturnType<typeof vi.fn>): unknown[][] {
+    return log.mock.calls.filter((call) => call[1] === 'relay.line.blocked')
+  }
+
+  it('reads the price list on line 1 while on line 2, automatic or chosen, without touching line 2 first', async () => {
+    for (const automatic of [true, false]) {
+      const { router, reports } = fakeRouter('direct', automatic)
+      const log = vi.fn()
+      const base = vi.fn<typeof fetch>(async () => json(200, { success: true, data: [] }))
+      const response = await createRelayLineFetch(router, base, { log })('https://xm.solov.cc/api/pricing')
+      expect(response.status).toBe(200)
+      expect(sentUrls(base)).toEqual(['https://xm.solov.cc/api/pricing'])
+      expect(requestDiagnosticsOf(response)).toEqual({ line: 'primary' })
+      expect(reports).toEqual([])
+      expect(log).not.toHaveBeenCalled()
+    }
+
+    // 线路1没走通：不退回线路2（那边只会回 404），也不报给线路那边。
+    const { router, reports } = fakeRouter('direct')
+    const base = vi.fn<typeof fetch>().mockRejectedValueOnce(networkError('ERR_CONNECTION_REFUSED'))
+    const failure = await createRelayLineFetch(router, base)('https://xm.solov.cc/api/pricing').catch((error: unknown) => error)
+    expect(causeOf(failure)).toContain('ERR_CONNECTION_REFUSED')
+    expect(sentUrls(base)).toEqual(['https://xm.solov.cc/api/pricing'])
+    expect(requestDiagnosticsOf(failure)).toEqual({ line: 'primary' })
+    expect(reports).toEqual([])
+
+    // 走着线路1时照旧，历史账号的站也不受影响。
+    const onPrimary = fakeRouter('primary', false)
+    const primaryBase = vi.fn<typeof fetch>(async () => json(200))
+    await createRelayLineFetch(onPrimary.router, primaryBase)('https://xm.solov.cc/api/pricing')
+    expect(sentUrls(primaryBase)).toEqual(['https://xm.solov.cc/api/pricing'])
+    const historical = fakeRouter('direct', false)
+    const historicalBase = vi.fn<typeof fetch>(async () => json(200))
+    await createRelayLineFetch(historical.router, historicalBase)('https://api.solov.cc/api/pricing')
+    expect(sentUrls(historicalBase)).toEqual(['https://api-direct.solov.cc/api/pricing'])
+  })
+
+  it('sends an endpoint line 2 just blocked straight to line 1 for half an hour, then tries line 2 again', async () => {
+    let clock = 1_000_000
+    const { router, reports } = fakeRouter('direct')
+    const log = vi.fn()
+    const base = vi.fn<typeof fetch>(async (input) => new URL(String(input)).host === 'xm-direct.solov.cc' && new URL(String(input)).pathname === '/api/user/models'
+      ? page(404)
+      : json(200, { success: true, data: [] }))
+    const routed = createRelayLineFetch(router, base, { log, now: () => clock })
+
+    expect((await routed('https://xm.solov.cc/api/user/models?group=image')).status).toBe(200)
+    expect(sentUrls(base)).toEqual(['https://xm-direct.solov.cc/api/user/models?group=image', 'https://xm.solov.cc/api/user/models?group=image'])
+    expect(blockedLogs(log)).toHaveLength(1)
+
+    // 同一个接口换了查询串照样直接走线路1，别的接口照旧先走线路2。
+    base.mockClear()
+    const [video, text] = await Promise.all([
+      routed('https://xm.solov.cc/api/user/models?group=video'),
+      routed('https://xm.solov.cc/api/user/models?group=text'),
+    ])
+    expect([video.status, text.status]).toEqual([200, 200])
+    expect(requestDiagnosticsOf(video)).toEqual({ line: 'primary' })
+    await routed('https://xm.solov.cc/api/user/self')
+    expect(sentUrls(base)).toEqual([
+      'https://xm.solov.cc/api/user/models?group=video',
+      'https://xm.solov.cc/api/user/models?group=text',
+      'https://xm-direct.solov.cc/api/user/self',
+    ])
+    expect(blockedLogs(log)).toHaveLength(1)
+    expect(reports).toEqual([])
+
+    // 半小时到了：再先走线路2试一次，还被挡就再记半小时。
+    clock += relayLineBlockedMemoryMs - 1
+    base.mockClear()
+    await routed('https://xm.solov.cc/api/user/models?group=image')
+    expect(sentUrls(base)).toEqual(['https://xm.solov.cc/api/user/models?group=image'])
+    clock += 1
+    base.mockClear()
+    await routed('https://xm.solov.cc/api/user/models?group=image')
+    expect(sentUrls(base)).toEqual(['https://xm-direct.solov.cc/api/user/models?group=image', 'https://xm.solov.cc/api/user/models?group=image'])
+    expect(blockedLogs(log)).toHaveLength(2)
+
+    // 时钟往回拨了也当过期，不会一直不回线路2。
+    clock -= 60_000
+    base.mockClear()
+    await routed('https://xm.solov.cc/api/user/models?group=image')
+    expect(sentUrls(base)).toEqual(['https://xm-direct.solov.cc/api/user/models?group=image', 'https://xm.solov.cc/api/user/models?group=image'])
+  })
+
+  it('remembers line 2 blocking a write, and a block met while falling back from line 1', async () => {
+    const write = fakeRouter('direct')
+    const writeBase = vi.fn<typeof fetch>().mockResolvedValueOnce(page(404)).mockResolvedValue(json(200))
+    const writeRouted = createRelayLineFetch(write.router, writeBase)
+    await writeRouted('https://xm.solov.cc/api/user/pay', { method: 'POST', body: '{}' })
+    await writeRouted('https://xm.solov.cc/api/user/pay', { method: 'POST', body: '{}' })
+    expect(sentUrls(writeBase)).toEqual(['https://xm-direct.solov.cc/api/user/pay', 'https://xm.solov.cc/api/user/pay', 'https://xm.solov.cc/api/user/pay'])
+
+    // 走着线路1没走通、退回线路2又被白名单挡下：线路那边改回线路2以后，这个接口也直接走线路1。
+    const { router, moveTo } = fakeRouter('primary')
+    const base = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(networkError('ERR_CONNECTION_REFUSED'))
+      .mockResolvedValueOnce(page(404))
+      .mockResolvedValue(json(200))
+    const routed = createRelayLineFetch(router, base)
+    await expect(routed('https://xm.solov.cc/api/user/self/groups')).rejects.toThrow('fetch failed')
+    moveTo('direct')
+    base.mockClear()
+    await routed('https://xm.solov.cc/api/user/self/groups')
+    expect(sentUrls(base)).toEqual(['https://xm.solov.cc/api/user/self/groups'])
+  })
+
+  it('keeps one remembered endpoint per site and path, forgetting the oldest beyond the cap', async () => {
+    const { router } = fakeRouter('direct')
+    const base = vi.fn<typeof fetch>(async (input) => new URL(String(input)).host === 'xm-direct.solov.cc' ? page(404) : json(200))
+    const routed = createRelayLineFetch(router, base)
+    for (let index = 0; index <= 64; index += 1) await routed(`https://xm.solov.cc/api/blocked/${index}`)
+    base.mockClear()
+    await routed('https://xm.solov.cc/api/blocked/64')
+    await routed('https://xm.solov.cc/api/blocked/1')
+    await routed('https://xm.solov.cc/api/blocked/0')
+    expect(sentUrls(base)).toEqual([
+      'https://xm.solov.cc/api/blocked/64',
+      'https://xm.solov.cc/api/blocked/1',
+      'https://xm-direct.solov.cc/api/blocked/0',
+      'https://xm.solov.cc/api/blocked/0',
+    ])
+
+    // 各个 fetch 各记各的：账号那一路记下的不影响 AI 工作区那一路。
+    const other = vi.fn<typeof fetch>(async () => json(200))
+    await createRelayLineFetch(router, other)('https://xm.solov.cc/api/blocked/64')
+    expect(sentUrls(other)).toEqual(['https://xm-direct.solov.cc/api/blocked/64'])
   })
 })
 
