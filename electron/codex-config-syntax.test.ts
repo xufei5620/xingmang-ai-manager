@@ -23,6 +23,11 @@ function broken(text: string): boolean {
   return isCodexConfigBroken(Buffer.from(text, 'utf8'))
 }
 
+// What the bundled parser says when a bracket is missing.
+const unclosedHeader = 'Unexpected character, expected whitespace, . or ]'
+const missingCommaOrBracket = 'Invalid character, expected whitespace, comma (,) or close bracket (])'
+const unterminatedInline = 'Unterminated inline array'
+
 describe('isCodexConfigBroken', () => {
   it('accepts the config the app writes, with or without a byte order mark', () => {
     expect(broken(relayConfig)).toBe(false)
@@ -45,6 +50,21 @@ describe('isCodexConfigBroken', () => {
       'xm = """a"""""',
       "xm = '''a'''''",
     ]) {
+      expect(broken(`${line}\n${relayConfig}`), line).toBe(false)
+    }
+  })
+
+  // Codex 0.169.0 reads each of these too. The bundled parser rejects them with the
+  // same two messages it gives for a missing ] or }, so those messages alone prove nothing.
+  it('does not report TOML 1.1 syntax that trips the missing-bracket messages', () => {
+    for (const [line, message] of [
+      ['xm = ["""a"""""]', missingCommaOrBracket],
+      ["xm = { s = '''a''''' }", missingCommaOrBracket],
+      ['xm = { a = 1\n}', unterminatedInline],
+      ['xm = [{\n  a = 1\n}]', unterminatedInline],
+      ['xm = {\n  a = "}", # } ]\n  b = \'{[\',\n  c = """\n}""",\n  d = [\'\'\'x]\'\'\', "\\"]"],\n}', unterminatedInline],
+    ]) {
+      expect(() => TOML.parse(`${line}\n${relayConfig}`), line).toThrow(message)
       expect(broken(`${line}\n${relayConfig}`), line).toBe(false)
     }
   })
@@ -76,6 +96,47 @@ describe('isCodexConfigBroken', () => {
     expect(broken('model = "gpt-6-sol"\nmodel_reasoning_effort =')).toBe(true)
     expect(broken('model = "gpt-6-sol"\n[model_providers.Xingm')).toBe(true)
     expect(broken('developer_instructions = """abc\n')).toBe(true)
+  })
+
+  // Codex 0.169.0 refuses every file below. Each case names the bundled parser's message it
+  // stands for, so a parser upgrade that rewords one fails here instead of silently missing it.
+  it('reports a table header, array or inline table that never closes', () => {
+    for (const [text, message, codexSays] of [
+      [`[model_providers.Other\nname = "a"\n${relayConfig}`, unclosedHeader, 'unclosed table, expected `]`'],
+      [`${relayConfig}[[hooks]\nx = 1\n`, unclosedHeader, 'unclosed array table, expected `]`'],
+      [`notify = ["codex", "hook"\n${relayConfig}`, missingCommaOrBracket, 'missing comma between array elements'],
+      [`xm = { a = 1 ]\n${relayConfig}`, missingCommaOrBracket, 'invalid inline table element'],
+      [`xm = { a = 1\n${relayConfig}`, unterminatedInline, 'missing comma between key-value pairs'],
+      [`${relayConfig}notify = ["codex",\n`, unterminatedInline, 'unclosed array, expected `]`'],
+      [`${relayConfig}xm = { a = 1`, unterminatedInline, 'unclosed inline table, expected `}`'],
+    ]) {
+      expect(() => TOML.parse(text), codexSays).toThrow(message)
+      expect(broken(text), codexSays).toBe(true)
+    }
+  })
+
+  it('reports an unclosed bracket even when a closer hides in a later string or comment', () => {
+    expect(broken(`xm = { a = 1\ny = "}"\n${relayConfig}`)).toBe(true)
+    expect(broken(`xm = { a = 1\n# }\n${relayConfig}`)).toBe(true)
+    expect(broken(`xm = { a = 1\ny = '''\n}\n'''\n${relayConfig}`)).toBe(true)
+    expect(broken(`notify = ["codex"\n[t]\nk = 1\n`)).toBe(true)
+  })
+
+  // Random inputs (fast-check). The promise: a TOML 1.1 inline table spread over lines is never
+  // reported broken, whatever brackets, quotes or # its strings and comments hold; drop its } and it is.
+  it('tells a multi-line inline table from an unclosed one, with random inputs', () => {
+    const tricky = fc.string({ unit: fc.constantFrom('[', ']', '{', '}', '"', "'", '#', '\\', ',', '=', ' ', 'a', '中'), maxLength: 12 })
+    const value = fc.oneof(
+      tricky.map((text) => JSON.stringify(text)),
+      tricky.filter((text) => !text.includes("'")).map((text) => `'${text}'`),
+      tricky.filter((text) => !text.includes("'''") && !text.endsWith("'")).map((text) => `'''${text}'''`),
+    )
+    const entries = fc.array(fc.record({ value, comment: fc.option(tricky.map((text) => `# ${text}`), { nil: undefined }) }), { minLength: 1, maxLength: 4 })
+    fc.assert(fc.property(entries, (list) => {
+      const body = list.map((entry, index) => `  k${index} = ${entry.value},${entry.comment ? ` ${entry.comment}` : ''}`).join('\n')
+      expect(broken(`xm = {\n${body}\n}\n${relayConfig}`)).toBe(false)
+      expect(broken(`xm = {\n${body}\n${relayConfig}`)).toBe(true)
+    }), { numRuns: 300 })
   })
 
   it('reports hand edits Codex refuses', () => {
@@ -144,6 +205,12 @@ describe('salvageCodexConfigText', () => {
     expect(isCodexConfigBroken(Buffer.from(result!.text, 'utf8'))).toBe(false)
   })
 
+  it('drops a table header that lost its ] together with the keys under it', () => {
+    const text = ['model = "a"', '', '[mcp_servers.docs', 'command = "npx"', '', '[projects."D:\\\\work"]', 'trust_level = "trusted"', ''].join('\n')
+    expect(isCodexConfigBroken(Buffer.from(text, 'utf8'))).toBe(true)
+    expect(salvage(text)?.parsed).toEqual({ model: 'a', projects: { 'D:\\work': { trust_level: 'trusted' } } })
+  })
+
   it('also drops lines with characters TOML forbids, including stray comments', () => {
     expect(salvage('# a\u0001b\nmodel = "a"\n')?.parsed).toEqual({ model: 'a' })
     expect(salvage('model = "a\u0007"\napproval_policy = "never"\n')?.parsed).toEqual({ approval_policy: 'never' })
@@ -152,6 +219,9 @@ describe('salvageCodexConfigText', () => {
   it('gives up whenever removing a line could change what the rest means', () => {
     // A broken element of an array that spans lines: dropping it alone would leave half an array.
     expect(salvage('model = "a"\nnotify = [\n  "C:\\Users\\x",\n  "codex",\n]\n')).toBeNull()
+    // An array or inline table that never closes: the parser points at the next line, not the broken one.
+    expect(salvage('notify = ["codex"\nmodel = "a"\n')).toBeNull()
+    expect(salvage('xm = { a = 1\nmodel = "a"\n')).toBeNull()
     // Duplicates: which one the customer meant is a guess.
     expect(salvage('model = "a"\nmodel = "b"\n')).toBeNull()
     expect(salvage('[a]\nx = 1\n[a]\ny = 2\n')).toBeNull()

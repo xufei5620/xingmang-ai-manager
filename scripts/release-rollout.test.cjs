@@ -1,11 +1,19 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
-const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const { spawnSync } = require('node:child_process')
 const YAML = require('yaml')
-const { RolloutInputError, describeRolloutChoice, parseRolloutChoice, planReleaseRollout } = require('./release-rollout.cjs')
+const { RolloutInputError, describeResign, describeRolloutChoice, parseRolloutChoice, planReleaseRollout } = require('./release-rollout.cjs')
+const { signStatus } = require('./service-status-signature.cjs')
+const { PRESERVE_SYMLINKS, createPinnedWorkspace, createTestSigner } = require('./service-status-signature.test-support.cjs')
+
+// 状态文件签名用测试那把钥匙：命令行在只钉它的临时目录里跑（service-status-signature.test-support.cjs）。
+const signer = createTestSigner()
+
+function signedStatus(status) {
+  return JSON.stringify(signStatus(status, signer.privateKey, [signer.publicKey]))
+}
 
 const root = path.resolve(__dirname, '..')
 const workflow = YAML.parse(fs.readFileSync(path.join(root, '.github', 'workflows', 'publish-release.yml'), 'utf8'))
@@ -142,7 +150,7 @@ test('the plan refuses what it cannot reason about', () => {
 
 // 发布作业里那样跑一遍命令行：产物目录、线上清单目录、线上状态文件，写出新的状态文件。
 function runPlan({ rollout = '20: 先推给两成电脑（平时都选这个）', artifacts = ['latest.yml'], liveManifests = {}, current = null }) {
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-release-rollout-'))
+  const workspace = createPinnedWorkspace('xingmang-release-rollout-', [signer.publicKey])
   const artifactsDirectory = path.join(workspace, 'release-artifacts')
   const liveDirectory = path.join(workspace, 'live')
   fs.mkdirSync(artifactsDirectory)
@@ -154,7 +162,8 @@ function runPlan({ rollout = '20: 先推给两成电脑（平时都选这个）'
   const outputPath = path.join(workspace, 'next.json')
   const summaryPath = path.join(workspace, 'summary.md')
   const result = spawnSync(process.execPath, [
-    path.join(__dirname, 'release-rollout.cjs'), 'plan',
+    ...PRESERVE_SYMLINKS,
+    path.join(workspace, 'scripts', 'release-rollout.cjs'), 'plan',
     '--version', '0.2.23', '--rollout', rollout,
     '--artifacts', artifactsDirectory, '--live', liveDirectory,
     '--current', currentPath, '--output', outputPath, '--summary', summaryPath,
@@ -191,8 +200,29 @@ test('the command line adds the platform published later to a rollout scoped to 
   assert.match(run.summary, /写成「0\.2\.23 20@windows\|mac」/)
 })
 
+test('a live status file whose guard is not signed is rewritten as it is, to be signed before it goes up (D85)', () => {
+  assert.equal(describeResign(JSON.parse(signedStatus({ badVersions: ['0.2.10'] })), [signer.publicKey]), null)
+  assert.match(describeResign({ badVersions: ['0.2.10'] }, [signer.publicKey]), /还没有发布者签名/)
+  assert.match(describeResign({ ...JSON.parse(signedStatus({ badVersions: ['0.2.10'] })), badVersions: [] }, [signer.publicKey]), /跟发布者签名对不上/)
+
+  // 重跑、放量不改：内容照旧，只换 updatedAt、拿掉对不上的旧签名，交给下一步签。
+  const current = { rollout: { version: '0.2.23', percent: 0 }, badVersions: ['0.2.10'], maintenance: { active: true }, releaseGuardSignature: 'stale' }
+  const rerun = runPlan({ current: JSON.stringify(current), liveManifests: { 'latest.yml': '0.2.23' } })
+  assert.equal(rerun.status, 0, rerun.output)
+  assert.deepEqual(rerun.next.rollout, { version: '0.2.23', percent: 0 })
+  assert.deepEqual(rerun.next.badVersions, ['0.2.10'])
+  assert.deepEqual(rerun.next.maintenance, { active: true })
+  assert.equal(rerun.next.releaseGuardSignature, undefined)
+  assert.match(rerun.summary, /跟发布者签名对不上（有人没走工作流改过），0\.2\.25 起的客户端不认它们/)
+
+  // 线上没有这份文件：没什么要签的，照旧不写。
+  const blank = runPlan({ rollout: '100' })
+  assert.equal(blank.status, 0, blank.output)
+  assert.equal(blank.next, null)
+})
+
 test('the command line writes nothing on a rerun, and stops on a status file it cannot read', () => {
-  const rerun = runPlan({ current: JSON.stringify({ rollout: { version: '0.2.23', percent: 0 } }), liveManifests: { 'latest.yml': '0.2.23' } })
+  const rerun = runPlan({ current: signedStatus({ rollout: { version: '0.2.23', percent: 0 } }), liveManifests: { 'latest.yml': '0.2.23' } })
   assert.equal(rerun.status, 0, rerun.output)
   assert.equal(rerun.next, null)
 

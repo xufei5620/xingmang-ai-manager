@@ -26,6 +26,8 @@ const {
   parseCurrentStatus,
   parsePublishedDates,
 } = require('./service-status.cjs')
+const { signStatus } = require('./service-status-signature.cjs')
+const { PRESERVE_SYMLINKS, createPinnedWorkspace, createTestSigner } = require('./service-status-signature.test-support.cjs')
 
 const now = new Date('2026-09-23T08:00:00.000Z')
 
@@ -42,6 +44,15 @@ test('turning maintenance off removes the block but keeps every other field', ()
   assert.equal(next.maintenance, undefined)
   assert.deepEqual(next.badVersions, ['0.2.10'])
   assert.equal(next.custom, 1)
+})
+
+test('every change drops the live signature, which cannot match the new updatedAt, for the workflow to sign again (D85)', () => {
+  const current = { badVersions: ['0.2.10'], updatedAt: '2026-09-22T08:00:00.000Z', releaseGuardSignature: 'old' }
+  for (const changes of [{}, { maintenance: 'off' }, { 'bad-versions': '0.2.11' }]) {
+    const next = applyStatusChanges(current, changes, now)
+    assert.equal(Object.hasOwn(next, 'releaseGuardSignature'), false)
+    assert.equal(next.updatedAt, now.toISOString())
+  }
 })
 
 test('keep leaves maintenance alone and refuses a message that would go nowhere', () => {
@@ -497,18 +508,22 @@ test('the 0.2.19 run raises both warnings', () => {
 
 test('the script prints the warnings as workflow annotations and writes the approval summary', () => {
   assert.equal(escapeWorkflowCommand('先给 20% 的电脑\r\n下一行'), '先给 20%25 的电脑%0D%0A下一行')
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-status-'))
+  // 线上那份签没签名也会进提示（D85）：脚本在只钉测试钥匙的临时目录里跑。
+  const signer = createTestSigner()
+  const directory = createPinnedWorkspace('xingmang-status-', [signer.publicKey])
   try {
     const current = path.join(directory, 'current.json')
     const output = path.join(directory, 'service-status.json')
     const summary = path.join(directory, 'summary.md')
-    const script = path.join(__dirname, 'service-status.cjs')
-    fs.writeFileSync(current, JSON.stringify({ rollout: { version: '0.2.19', percent: 20 } }))
+    const script = path.join(directory, 'scripts', 'service-status.cjs')
+    const run = (...args) => spawnSync(process.execPath, [...PRESERVE_SYMLINKS, script, '--current', current, '--output', output, ...args, '--summary', summary], { encoding: 'utf8' })
+    const live = { rollout: { version: '0.2.19', percent: 20 } }
+    fs.writeFileSync(current, JSON.stringify(signStatus(live, signer.privateKey, [signer.publicKey])))
     const released = new Date(Date.now() - 2 * 60 * 60 * 1000 - 60 * 1000).toISOString()
-    const run = spawnSync(process.execPath, [script, '--current', current, '--output', output, '--rollout', 'none', '--minimum-version', '0.2.19', '--published-versions', ' 0.2.19', '--published-dates', ` 0.2.19=${released}`, '--summary', summary], { encoding: 'utf8' })
-    assert.equal(run.status, 0, run.stderr)
+    const warned = run('--rollout', 'none', '--minimum-version', '0.2.19', '--published-versions', ' 0.2.19', '--published-dates', ` 0.2.19=${released}`)
+    assert.equal(warned.status, 0, warned.stderr)
     assert.equal(JSON.parse(fs.readFileSync(output, 'utf8')).minimumVersion, '0.2.19')
-    const annotations = run.stdout.split('\n').filter((line) => line.startsWith('::warning::'))
+    const annotations = warned.stdout.split('\n').filter((line) => line.startsWith('::warning::'))
     assert.equal(annotations.length, 2)
     assert.match(annotations[0], /^::warning::最低版本 0\.2\.19 的包出来才 2 小时/)
     assert.match(annotations[1], /「0\.2\.19 先给 20%25 的电脑」/)
@@ -520,10 +535,30 @@ test('the script prints the warnings as workflow annotations and writes the appr
 
     // 没什么要提醒的：只有摘要，没有警告。
     fs.rmSync(summary)
-    const quiet = spawnSync(process.execPath, [script, '--current', current, '--output', output, '--maintenance', 'off', '--summary', summary], { encoding: 'utf8' })
+    const quiet = run('--maintenance', 'off')
     assert.equal(quiet.status, 0, quiet.stderr)
     assert.doesNotMatch(quiet.stdout, /::warning::/)
     assert.doesNotMatch(fs.readFileSync(summary, 'utf8'), /批之前看一眼/)
+
+    // 线上那份还没签过名、或者被人改过撤回名单那几项：批之前提醒，这次签上就等于替它们背书。
+    for (const [text, reason] of [
+      [JSON.stringify(live), /还没有发布者签名/],
+      [JSON.stringify({ ...signStatus(live, signer.privateKey, [signer.publicKey]), badVersions: ['0.2.19'] }), /跟发布者签名对不上/],
+    ]) {
+      fs.writeFileSync(current, text)
+      fs.rmSync(summary, { force: true })
+      const flagged = run('--maintenance', 'off')
+      assert.equal(flagged.status, 0, flagged.stderr)
+      assert.match(flagged.stdout, new RegExp(`::warning::线上这份状态文件的撤回名单、分批放量、最低版本.*${reason.source}`))
+      assert.match(fs.readFileSync(summary, 'utf8'), new RegExp(`#### ⚠️ 批之前看一眼\\n\\n- 线上这份状态文件.*${reason.source}`))
+    }
+
+    // 线上没有这份文件（404）：从空白开始，没什么要背书的。
+    fs.rmSync(current)
+    fs.rmSync(summary, { force: true })
+    const blank = run('--maintenance', 'off')
+    assert.equal(blank.status, 0, blank.stderr)
+    assert.doesNotMatch(blank.stdout, /::warning::/)
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
   }
