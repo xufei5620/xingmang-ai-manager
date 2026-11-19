@@ -54,6 +54,8 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 - **别用 `pkill -f <脚本名>` 收拾卡住的命令。** 命令行里带这串字的 shell 自己也会被杀掉。用进程号杀。（沿用 10-03）
 - **`npm test` 和 `npm run test:v2` 可以在同一个目录里同时后台跑**，没冒过假红。（沿用 11-09）
 - **容器里没有 zsh**（11-11 验），`electron/macos-platform.test.ts` 里真跑 zsh 的那批用例会自动跳过，不算失败。想让它们在容器里真跑，`apt-get install -y zsh`。（沿用 11-10）
+- **只在 Mac 上跑的用例（`it.runIf(process.platform === 'darwin')`）可以先在容器里粗跑一遍**（11-19 验）。写一个 setup 文件，里面只有 `Object.defineProperty(process, 'platform', { value: 'darwin' })`；再写一个 vitest 配置，`root` 指向仓库、`include` 列要跑的测试文件、`setupFiles` 指向它。两个文件都放仓库外面（草稿目录），配置里别 `import 'vitest/config'`（仓库外解析不到），直接 `export default ({ root, test: { … } })`，再 `npx vitest run --config <那个配置>`。`electron/macos-grok.test.ts`、`tool-installation.test.ts`、`macos-codex.test.ts` 这样跑 134 条全过。它只对注入了假 `codesign` 的用例有意义，真去调 `/usr/bin/codesign`、`open` 的过不了也不该当真；结论以 PR 上 Mac 作业为准，PR 里写明是这样跑的。
+- **首页卡片要配图时，现成的夹具截不到**（11-19 验）。`scripts/audit/v2-page-screenshot.mjs` 只收 `e2e/` 下的 `*-fixture.html`，而 `e2e/v2-business-fixture` 只渲染业务页，不渲染首页。临时在 `e2e/` 下放一对 `*-fixture.html` / `.tsx`：照 `src/renderer-v2/main.tsx` 引那几份样式（再加 `business.css`），用 `Shell` 包 `Home`，假数据照 `Home.test.tsx` 的 `render()` 写，`api` 用一个所有方法都回 `null` 的 `Proxy`。截完把这对文件删掉，别提交。
 - **容器里你是 root**（11-11 验）。Linux 版客户端拒绝以 root 启动，真开客户端要先处理这个（见第 7 节）。
 - **容器自带的 Claude Code（`/opt/node22/bin/claude`）以前让 `npm test` 红 29 条装工具的用例，已修**（11-18 验）：`electron/system-service.{certificate-trust,disk-space,download-stall,install-cancel}.test.ts` 的夹具现在把 PATH 换成夹具自己的目录，不再读容器的 PATH。直接跑 `npm test` / `npm run selfcheck` 就是 0 失败，不用再把那份挪出 PATH。自己写装 CLI 的用例时照同样写，见 `docs/TEST-BASELINE.md`「装命令行工具的用例：夹具要连 PATH 一起换掉」。
 
