@@ -80,6 +80,9 @@ test('rejects vulnerability entries and severity-count drift', () => {
   assert.throws(() => validateDevelopmentAuditReport(critical), /构建依赖存在漏洞/)
 })
 
+// The minimatch exception is no longer on the real list (package.json now
+// overrides the two affected copies); these tests keep it only as a fixture for
+// the exception mechanism the remaining entries still rely on.
 const minimatchAdvisory = 'https://github.com/advisories/GHSA-g3hv-75wg-m249'
 const testException = {
   url: minimatchAdvisory,
@@ -124,7 +127,7 @@ const picomatchException = {
 }
 
 test('pins the temporary exception list to the advisories yoyo approved', () => {
-  assert.deepEqual(temporaryAdvisoryExceptions, [testException, picomatchException])
+  assert.deepEqual(temporaryAdvisoryExceptions, [picomatchException])
 })
 
 test('accepts the excepted minimatch chain before it expires', () => {

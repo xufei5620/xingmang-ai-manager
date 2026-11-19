@@ -594,6 +594,7 @@ const rendererReleaseLogMessages: Record<RendererReleaseLogEvent, string> = {
   'release.deferred': '窗口缩在托盘里，还有事没做完，先不关界面',
   'release.skipped': '界面进程和别的页面共用，这次不关',
   'restore.started': '重新加载关掉的界面',
+  'restore.failed': '关掉的界面没能重新加载，下次叫出窗口时再试',
   'restore.ready': '关掉的界面重新加载好了',
 }
 
@@ -3256,14 +3257,11 @@ if (!hasSingleInstanceLock) {
         return null
       },
       release: () => releaseRendererProcess(mainWindow.webContents),
-      reload: () => {
-        void mainWindow.loadURL(resolveMainWindowUrl(systemService.readStoredConfig().theme)).catch((error) => {
-          runtimeLog.exception('renderer', 'page.load.failed', error)
-        })
-      },
+      // 加载结果交回去：没成的话控制器记一笔（renderer.restore.failed），下次叫出窗口再加载一次（U05）。
+      reload: () => mainWindow.loadURL(resolveMainWindowUrl(systemService.readStoredConfig().theme)),
       onReleased: () => { releasedWatch.start() },
       onRestoring: () => { releasedWatch.stop() },
-      log: (event, detail) => { runtimeLog.log('info', 'window', `renderer.${event}`, rendererReleaseLogMessages[event], detail) },
+      log: (event, detail) => { runtimeLog.log(event === 'restore.failed' ? 'warn' : 'info', 'window', `renderer.${event}`, rendererReleaseLogMessages[event], detail) },
       onError: (cause) => runtimeLog.exception('window', 'renderer.release.failed', cause),
     })
     mainRendererRelease = rendererRelease

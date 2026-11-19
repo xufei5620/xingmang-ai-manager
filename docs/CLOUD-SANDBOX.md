@@ -72,6 +72,12 @@ node node_modules/electron/install.js
 
 缓存子目录名是「下载目录网址」的 sha256。安装脚本照常按包里的校验和核对后才解压，这条退路没有绕过校验。
 
+**在容器里打 Windows 目录包**（比对打包前后的文件清单时用，11-20 验）：`npm run compile` 之后，
+`XINGMANG_LOCAL_BUILD=1 CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --config electron-builder.config.cjs --win --x64 --dir --publish never`
+能出 `release/win-unpacked`，不用装 wine。打包器自己下 win32 压缩包时经代理断在一成多（同一个 `assert(!this.paused)`），
+照上面的办法把 `electron-v$V-win32-x64.zip` 用 curl 下进同一个缓存目录再打，打包器照样按 `checksums.json` 核对。
+Linux 目录包把 `--win` 换成 `--linux dir`、加 `XINGMANG_LINUX_PACKAGE=1`。Mac 包不在容器里打（项目规矩）。
+
 ## 5. 容器能连哪些网站
 
 出网都经过一个代理，只放行一部分主机。（下表 11-11 用 `curl -I` 各试过一次）
