@@ -143,7 +143,7 @@ test('every alerted product names its own impact because the client downloads ea
   const alerted = fs.readdirSync(workflowDirectory).filter((name) => name.endsWith('.yml'))
     .map((name) => /SYNC_WORKFLOW_FILE: (\S+)/.exec(fs.readFileSync(path.join(workflowDirectory, name), 'utf8'))?.[1])
     .filter(Boolean)
-  assert.deepEqual([...alerted].sort(), ['sync-chatgpt-official-cos.yml', 'sync-claude-official-cos.yml', 'sync-codex-plugins-cos.yml', 'sync-grok-cos.yml', 'sync-opencode-cos.yml'])
+  assert.deepEqual([...alerted].sort(), ['sync-chatgpt-official-cos.yml', 'sync-claude-components-cos.yml', 'sync-claude-official-cos.yml', 'sync-codex-plugins-cos.yml', 'sync-grok-cos.yml', 'sync-opencode-cos.yml'])
   for (const file of alerted) {
     const { impact } = readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: file }))
     assert.equal(typeof impact, 'string')
