@@ -159,6 +159,27 @@ test('dips to black between shots and fades out at the end, picture and sound to
   await page.close()
 })
 
+test('still dips to black, not white, when the shots carry captions', async () => {
+  const { page, errors } = await open()
+  const colors = await page.evaluate(async () => {
+    const harness = window.videoStudioHarness
+    const clip = (color) => harness.makeClip({ width: 320, height: 240, frameRate: 30, seconds: 2, color })
+    const clips = [{ data: await clip('#ff0000'), caption: '第一句' }, { data: await clip('#0000ff'), caption: '第二句' }]
+    const options = { aspect: '16:9', resolution: 480, fit: 'cover', frameRate: 30, transition: 'fade', fadeOut: true }
+    const film = await harness.compose({ clips, options })
+    // 字幕在下面，量上面没字幕的地方：第一段中间、换段前最后一帧、换段后第一帧、片尾最后一帧。
+    const probe = { colors: [{ time: 1, x: 427, y: 60 }, { time: 1.98, x: 427, y: 60 }, { time: 2.02, x: 427, y: 60 }, { time: 3.98, x: 427, y: 60 }] }
+    return (await harness.inspect(film.data, probe)).colors
+  })
+  assert.deepEqual(errors, [])
+  const [middle, beforeCut, afterCut, end] = colors
+  closeColor(middle, [255, 0, 0], 'first shot in full')
+  closeColor(beforeCut, [0, 0, 0], 'the captioned shot dips to black')
+  closeColor(afterCut, [0, 0, 0], 'the next captioned shot comes up from black')
+  closeColor(end, [0, 0, 0], 'the captioned film fades out to black')
+  await page.close()
+})
+
 test('prints the caption at the size and place asked for', async () => {
   const { page, errors } = await open()
   const summary = await page.evaluate(async () => {
