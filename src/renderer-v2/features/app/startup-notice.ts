@@ -140,26 +140,24 @@ export function releaseNoteHeadline(note: string): string {
 
 /**
  * 更新装完后的第一次启动：软件消失又出现，界面和之前一模一样，不说一句用户就只能
- * 再去点一次「检查更新」确认自己在不在新版上。挂在角落、不挡操作，只有一颗「知道了」，
- * 不让用户做任何选择；列最前面几项改动的开头那句，完整清单在「设置 › 版本更新」（随包带的，断网
- * 也在）。不是更新后第一次启动时返回 null。
+ * 再去点一次「检查更新」确认自己在不在新版上。挂在角落、不挡操作，不让用户做任何选择；
+ * 只列最前面几项改动的开头那句，不再加一句引导语（字越少卡片越矮，越不挡首页）。没列全时
+ * 旁边多一颗「看全部改动」去「设置 › 版本更新」（随包带的，断网也在）。不是更新后第一次启动时返回 null。
  */
 export function updatedNotice(currentVersion: string, release: InstalledRelease | null | undefined): StartupNotice | null {
   if (!release?.justUpdated || !currentVersion) return null
   const notes = release.notes ?? []
   const items = notes.slice(0, UPDATED_NOTICE_ITEMS).map(releaseNoteHeadline).filter(Boolean)
   const rest = notes.length - items.length
-  const body = items.length === 0
-    ? '已经在用新版本了，可以照常使用。'
-    : rest > 0 ? `这一版的主要改动如下，另外 ${rest} 项在「设置 › 版本更新」里可以看到。` : '这一版的改动：'
   return {
     id: 'updated',
     failure: false,
     tone: 'ok',
     title: `已更新到 ${currentVersion}`,
-    body,
+    body: items.length === 0 ? '已经在用新版本了，可以照常使用。' : '',
     ...(items.length > 0 ? { items } : {}),
     action: { label: '知道了', dismiss: true },
+    ...(items.length > 0 && rest > 0 ? { secondaryAction: { label: '看全部改动', page: 'settings', section: 'version' } } : {}),
   }
 }
 
@@ -253,7 +251,7 @@ export function usageStatsNotice(
     failure: false,
     tone: 'neutral',
     title: '软件会发送匿名使用情况',
-    body: '为了知道新版本有没有顺利装上、哪里容易出错，星芒每天最多发一次匿名使用情况：版本、电脑系统、装了哪些工具、安装和更新是否成功。不含你的账号、密钥、文件路径和聊天内容，也没有能认出这台电脑的编号。以后想改，可以在「设置」的「隐私数据」里关掉。',
+    body: '每天最多一次，用来发现哪里容易出错。只发版本、电脑系统、装了哪些工具、安装更新是否成功，不发账号、密钥、文件和聊天，也认不出是哪台电脑。在「设置 › 隐私数据」里能关。',
     action: { label: '知道了', usageStats: 'keep' },
     secondaryAction: { label: '不想发送', usageStats: 'off' },
     waitsForOnboarding: true,
