@@ -1,0 +1,99 @@
+# 临时：拿当前的 Claude Desktop 安装包（5.x）在 Windows 上把「替它放 Claude Code 程序」整条再跑一遍、跟官网逐字节比，顺带看它「Feature enablement」那一步调的是什么，核完就删（不进 PR 的最终 diff）。
+name: tmp-claude-code-seed
+
+on:
+  push:
+    branches: [claude/project-thread-aabxwd]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Compile the main process
+        shell: bash
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx tsc -p tsconfig.electron.json
+
+      - name: Download and unpack the current Windows x64 MSIX
+        shell: bash
+        run: |
+          set -euo pipefail
+          loc=$(curl -sS -o /dev/null -w '%{redirect_url}' https://claude.ai/api/desktop/win32/x64/msix/latest/redirect)
+          echo "redirect: $loc"
+          case "$loc" in https://downloads.claude.ai/releases/win32/x64/*.msix) ;; *) echo "unexpected redirect"; exit 1 ;; esac
+          curl -fsSL --max-time 600 -o "$RUNNER_TEMP/claude.msix" "$loc"
+          # MSIX 就是 zip；runner 上自带 7-Zip。
+          7z x -y -o"$RUNNER_TEMP/msix" "$RUNNER_TEMP/claude.msix" > /dev/null
+          ls -l "$RUNNER_TEMP/msix/app" "$RUNNER_TEMP/msix/app/resources"
+
+      - name: Where npmmirror sends the tarball
+        shell: bash
+        run: |
+          set -uo pipefail
+          node -e "
+            const seed = require('./dist-electron/claude-desktop-code-seed.js')
+            seed.readClaudeCodeBuildPin(process.argv[1], 'win32-x64').then((pin) => {
+              console.log('pin', JSON.stringify(pin))
+              require('node:fs').writeFileSync(process.env.RUNNER_TEMP + '/pin.json', JSON.stringify(pin))
+            })
+          " "$RUNNER_TEMP/msix/app/resources/app.asar"
+          ver=$(node -p "require(process.env.RUNNER_TEMP + '/pin.json').version")
+          for url in \
+            "https://registry.npmmirror.com/@anthropic-ai/claude-code-win32-x64/-/claude-code-win32-x64-$ver.tgz" \
+            "https://registry.npmmirror.com/@anthropic-ai%2fclaude-code-win32-x64/-/claude-code-win32-x64-$ver.tgz"; do
+            echo "== $url"
+            curl -sS -o /dev/null -D - --max-time 60 "$url" | grep -iE '^(HTTP|location|content-length)'
+          done
+
+      - name: Place it the way the client does
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/profile/Claude-3p"
+          node tmp-probe/seed.cjs "$RUNNER_TEMP/msix/app/Claude.exe" "$RUNNER_TEMP/profile/Claude-3p"
+          echo "== second open (should be present, no download)"
+          node tmp-probe/seed.cjs "$RUNNER_TEMP/msix/app/Claude.exe" "$RUNNER_TEMP/profile/Claude-3p"
+
+      - name: Compare with the official download
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tmp-probe/compare.cjs "$RUNNER_TEMP/profile/Claude-3p"
+
+      - name: What Cowork setup runs for feature enablement
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          asar="$RUNNER_TEMP/msix/app/resources/app.asar"
+          for token in 'Feature enablement' 'VirtualMachinePlatform' 'HypervisorPlatform' 'Enable-WindowsOptionalFeature' 'enable-feature' 'Hyper-V Administrators' 'CoworkVMService'; do
+            echo "== $token: $(grep -a -c -F "$token" "$asar") lines"
+            grep -a -o -E ".{0,160}${token}.{0,160}" "$asar" | head -4 | cut -c1-330
+          done
+          echo "== layout markers"
+          for token in '.verified' '.payload' 'claude-code-releases'; do
+            echo "-- $token: $(grep -a -o -F "$token" "$asar" | wc -l)"
+          done
+          echo "== files mentioning feature enablement"
+          grep -a -r -l -i -E 'feature enablement|VirtualMachinePlatform' "$RUNNER_TEMP/msix" | sed "s#$RUNNER_TEMP/msix/##" | head -20
+          for f in $(grep -a -r -l -i 'feature enablement' "$RUNNER_TEMP/msix" | grep -v 'app.asar$' | head -3); do
+            echo "-- $f"
+            grep -a -o -i -E ".{0,160}feature enablement.{0,160}" "$f" | head -3 | cut -c1-330
+            strings -n 8 "$f" 2>/dev/null | grep -i -E 'VirtualMachinePlatform|HypervisorPlatform|dism|Enable-WindowsOptionalFeature|runas' | head -10
+          done
