@@ -7,7 +7,7 @@ import { isUtf8 } from 'node:buffer'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { ProviderId } from './catalog'
 import { readBoundedFileSync, readBoundedUtf8FileSync } from './bounded-file'
 import {
@@ -271,7 +271,30 @@ type PreparedFilePlan = FilePlan & {
   temporaryPath: string
   /** 写回前那份原文不是合法 UTF-8（见 NotUtf8ConfigRewrite）。 */
   notUtf8: boolean
+  /** 动手前它的样子，不在是 null。每次换上去（拿掉的是挪走）之前都再比一遍，不一样就是别的程序刚存过（O11）。 */
+  before: ConfigFileState | null
+  /** 换上去以后它该是的样子：写的是这次的内容，拿掉的是不在（null）。回滚只动还是这样的文件。 */
+  committedState: ConfigFileState | null
 }
+
+/**
+ * 一份配置某一刻的样子（O11）。比的是整份字节：别的程序原样重存一遍不算改过，同一个时钟刻里改了、
+ * 大小也没变的照样认得出。identity 只在它被别的程序独占着、读不了的时候拿来比。
+ */
+interface ConfigFileState {
+  digest: string
+  identity: ConfigFileIdentity
+}
+
+interface ConfigFileIdentity {
+  dev: bigint
+  ino: bigint
+  size: bigint
+  mtimeNs: bigint
+}
+
+// 换上去之前、回滚之前发现别的程序刚存过同一份配置时上屏的那句（O11）。
+const configChangedMessage = '配置文件刚被别的程序改过，为了不盖掉它的改动，这次没有保存，再试一次就好'
 
 /**
  * 一份原来不是合法 UTF-8 的配置刚被星芒写回了一次（D78）。多半是客户用老记事本手改过：中文 Windows 上它
@@ -345,6 +368,72 @@ function writeDurableUtf8(filePath: string, content: string, providerRoot: strin
   } finally {
     fs.closeSync(descriptor)
   }
+}
+
+function configFileIdentity(info: fs.BigIntStats): ConfigFileIdentity {
+  return { dev: info.dev, ino: info.ino, size: info.size, mtimeNs: info.mtimeNs }
+}
+
+function sameConfigFileIdentity(left: ConfigFileIdentity, right: ConfigFileIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeNs === right.mtimeNs
+}
+
+/**
+ * 整份读一遍算摘要，一次读 64 KB：~/.claude.json 会长到十几 MB，不用整份放进内存。打开的不是刚才看到的
+ * 那个文件（中间被换掉了）返回 null。
+ */
+function configFileDigest(filePath: string, seen: fs.BigIntStats): string | null {
+  const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true })
+    if (!opened.isFile() || opened.dev !== seen.dev || opened.ino !== seen.ino) return null
+    const hash = createHash('sha256')
+    const chunk = Buffer.allocUnsafe(64 * 1024)
+    for (let bytesRead = fs.readSync(descriptor, chunk); bytesRead > 0; bytesRead = fs.readSync(descriptor, chunk)) {
+      hash.update(chunk.subarray(0, bytesRead))
+    }
+    return hash.digest('hex')
+  } finally {
+    fs.closeSync(descriptor)
+  }
+}
+
+// 别的程序独占着文件时（Windows 上正在存它的那个程序、同步盘）读也被拒，码同 renameWithTransientRetrySync
+// 等一下再试的那几个。
+function isHeldFileError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null | undefined)?.code
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY' || code === 'EAGAIN'
+}
+
+/** 这份配置还是不是 expected 那样（不在也是一种样子）。 */
+function configFileUnchanged(filePath: string, expected: ConfigFileState | null): boolean {
+  let info: fs.BigIntStats
+  try {
+    info = fs.lstatSync(filePath, { bigint: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return expected === null
+    throw error
+  }
+  if (!expected || !info.isFile() || info.nlink !== 1n || info.size !== expected.identity.size) return false
+  try {
+    return configFileDigest(filePath, info) === expected.digest
+  } catch (error) {
+    if (!isHeldFileError(error)) throw error
+    // 读不了内容，就看是不是同一个文件、大小和修改时间都没变。这时换上去多半也撞上同一把锁，等一下再试时重比。
+    return sameConfigFileIdentity(configFileIdentity(info), expected.identity)
+  }
+}
+
+function assertConfigUnchanged(plan: PreparedFilePlan): void {
+  if (!configFileUnchanged(plan.path, plan.before)) throw new Error(configChangedMessage)
+}
+
+/** 动手前那份的样子。路径前面已经查过是单链接普通文件；读不了照旧报错，跟接下来留 .bak 时一样。 */
+function existingConfigFileState(filePath: string): ConfigFileState {
+  const info = fs.lstatSync(filePath, { bigint: true })
+  const digest = info.isFile() ? configFileDigest(filePath, info) : null
+  if (digest === null) throw new Error(configChangedMessage)
+  return { digest, identity: configFileIdentity(info) }
 }
 
 function removeIfPresent(filePath: string): void {
@@ -482,6 +571,8 @@ function prepareFilePlans(plans: FilePlan[], providerRoot: string): PreparedFile
       temporaryPath: `${plan.path}.xingmang-${randomUUID()}.tmp`,
       // 拿掉的那份整个挪走、不经解码，不用看。
       notUtf8: existed && !isRemovePlan(plan) && existingConfigNotUtf8(plan.path),
+      before: existed ? existingConfigFileState(plan.path) : null,
+      committedState: null,
     }
   }).filter((plan) => plan.existed || !isRemovePlan(plan))
 }
@@ -492,18 +583,24 @@ function rollbackCommittedPlans(
 ): Error[] {
   const rollbackErrors: Error[] = []
   for (const plan of [...committed].reverse()) {
+    // 换上去以后别的程序又存过：留着它的，不拿备份盖掉、也不删，算这一份没能回滚（O11）。
+    const assertStillCommitted = () => {
+      if (!configFileUnchanged(plan.path, plan.committedState)) {
+        throw new Error(`配置文件换上去以后又被别的程序改过，保留了它的改动，没有回滚：${plan.path}`)
+      }
+    }
     if (plan.existed && plan.backupPath) {
       const rollbackPath = `${plan.path}.xingmang-rollback-${randomUUID()}.tmp`
       let rollbackCopyCreated = false
       try {
         assertSafeSourceAndTarget(plan.backupPath, rollbackPath, providerRoot)
+        assertStillCommitted()
         fs.copyFileSync(plan.backupPath, rollbackPath, fs.constants.COPYFILE_EXCL)
         rollbackCopyCreated = true
-        renameWithTransientRetrySync(
-          rollbackPath,
-          plan.path,
-          () => assertSafeSourceAndTarget(rollbackPath, plan.path, providerRoot),
-        )
+        renameWithTransientRetrySync(rollbackPath, plan.path, () => {
+          assertSafeSourceAndTarget(rollbackPath, plan.path, providerRoot)
+          assertStillCommitted()
+        })
         rollbackCopyCreated = false
       } catch (error) {
         rollbackErrors.push(error instanceof Error ? error : new Error(String(error)))
@@ -519,6 +616,7 @@ function rollbackCommittedPlans(
     } else {
       try {
         assertSafeConfigPath(plan.path, providerRoot, 'file')
+        assertStillCommitted()
         removeIfPresent(plan.path)
       } catch (error) {
         rollbackErrors.push(error instanceof Error ? error : new Error(String(error)))
@@ -571,6 +669,11 @@ export function executeFilePlans(
       assertSafeConfigPath(plan.path, providerRoot, 'parent')
       fs.mkdirSync(path.dirname(plan.path), { recursive: true })
       writeDurableUtf8(plan.temporaryPath, plan.content, providerRoot)
+      // 改名不换文件、不动修改时间，换上去以后还是这个身份。
+      plan.committedState = {
+        digest: createHash('sha256').update(plan.content, 'utf8').digest('hex'),
+        identity: configFileIdentity(fs.lstatSync(plan.temporaryPath, { bigint: true })),
+      }
     }
     for (const plan of prepared) {
       if (plan.backupPath) {
@@ -586,10 +689,12 @@ export function executeFilePlans(
       assertSafeSourceAndTarget(source, target, providerRoot)
       // A hook may re-read what this save was computed from (external-tool-config
       // does), so it runs again before every retry: whoever held the file may
-      // have just saved its own change.
+      // have just saved its own change. The same goes for the target itself,
+      // which is compared against what it held before this save began (O11).
       renameWithTransientRetrySync(source, target, () => {
         hooks.beforeReplace?.(plan.path, index)
         assertSafeSourceAndTarget(source, target, providerRoot)
+        assertConfigUnchanged(plan)
       })
       committed.push(plan)
     }

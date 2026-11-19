@@ -307,6 +307,252 @@ describe('config-files-context', () => {
     expect(fs.readFileSync(settings, 'utf8')).toBe('{}\n')
   })
 
+  // O11：保存进行到一半，别的程序（Codex、Claude Code 自己，客户开着的编辑器）也存了同一份配置。
+  const configChanged = '配置文件刚被别的程序改过，为了不盖掉它的改动，这次没有保存，再试一次就好'
+  const rollbackIncomplete = '配置写入失败，且部分文件无法自动回滚；请从 .bak 备份恢复'
+
+  function thrownBy(run: () => unknown): Error {
+    try {
+      run()
+    } catch (error) {
+      return error as Error
+    }
+    throw new Error('expected the save to fail')
+  }
+
+  it('does not overwrite a config another program saved while this save was under way (O11)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const config = path.join(root, 'config.toml')
+    fs.writeFileSync(config, 'model = "old"\n')
+
+    expect(() => executeFilePlans([{ path: config, content: 'model = "manager"\n' }], {
+      beforeReplace: () => fs.writeFileSync(config, 'model = "external"\n'),
+    }, root)).toThrow(configChanged)
+
+    expect(fs.readFileSync(config, 'utf8')).toBe('model = "external"\n')
+    expect(fs.readdirSync(root).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('notices a same-size rewrite that the file times alone could miss (O11)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const config = path.join(root, 'config.toml')
+    fs.writeFileSync(config, 'model = "aaa"\n')
+    const before = fs.statSync(config)
+
+    expect(() => executeFilePlans([{ path: config, content: 'model = "new"\n' }], {
+      beforeReplace: () => {
+        fs.writeFileSync(config, 'model = "bbb"\n')
+        // 同一个时钟刻里改的：大小、修改时间都跟动手前一样，只有内容不同。
+        fs.utimesSync(config, before.atime, before.mtime)
+      },
+    }, root)).toThrow(configChanged)
+
+    expect(fs.readFileSync(config, 'utf8')).toBe('model = "bbb"\n')
+  })
+
+  it('still saves when another program only rewrote the very same bytes (O11)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const config = path.join(root, 'config.toml')
+    fs.writeFileSync(config, 'model = "old"\n')
+
+    executeFilePlans([{ path: config, content: 'model = "new"\n' }], {
+      // 别的程序原样重存了一遍（换了个文件、改了修改时间），没有要留的改动。
+      beforeReplace: () => {
+        const elsewhere = path.join(root, 'rewritten.tmp')
+        fs.writeFileSync(elsewhere, 'model = "old"\n')
+        fs.renameSync(elsewhere, config)
+      },
+    }, root)
+
+    expect(fs.readFileSync(config, 'utf8')).toBe('model = "new"\n')
+  })
+
+  it('does not replace a file another program created where this save was adding one (O11)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const auth = path.join(root, 'auth.json')
+
+    expect(() => executeFilePlans([{ path: auth, content: '{"manager":true}\n' }], {
+      beforeReplace: () => fs.writeFileSync(auth, '{"external":true}\n'),
+    }, root)).toThrow(configChanged)
+
+    expect(fs.readFileSync(auth, 'utf8')).toBe('{"external":true}\n')
+  })
+
+  it('does not take away a file another program saved just before it was to be removed (O11)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const auth = path.join(root, 'auth.json')
+    fs.writeFileSync(auth, '{}\n')
+
+    expect(() => executeFilePlans([{ path: auth, remove: true }], {
+      beforeReplace: () => fs.writeFileSync(auth, '{"tokens":{"id_token":"signed-in"}}\n'),
+    }, root)).toThrow(configChanged)
+
+    expect(fs.readFileSync(auth, 'utf8')).toBe('{"tokens":{"id_token":"signed-in"}}\n')
+  })
+
+  it('checks again after waiting out a held file, since the holder may just have saved (O11)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const config = path.join(root, 'config.toml')
+    fs.writeFileSync(config, 'model = "old"\n')
+    const renameSync = fs.renameSync.bind(fs)
+    let held = true
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (held && path.resolve(String(to)) === path.resolve(config)) {
+        held = false
+        // 拿着文件的那个程序存完才放手。
+        fs.writeFileSync(config, 'model = "external"\n')
+        throw errnoError('EBUSY', 'EBUSY: resource busy or locked, rename')
+      }
+      renameSync(from, to)
+    })
+
+    expect(() => executeFilePlans([{ path: config, content: 'model = "manager"\n' }], {}, root)).toThrow(configChanged)
+
+    expect(held).toBe(false)
+    expect(fs.readFileSync(config, 'utf8')).toBe('model = "external"\n')
+  })
+
+  it('still waits out a file another program holds so tightly it cannot even be read (O11)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const config = path.join(root, 'config.toml')
+    fs.writeFileSync(config, 'model = "old"\n')
+    const openSync = fs.openSync
+    const renameSync = fs.renameSync.bind(fs)
+    let held = 0
+    vi.spyOn(fs, 'openSync').mockImplementation(((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode | null) => {
+      if (held > 0 && path.resolve(String(target)) === path.resolve(config)) throw errnoError('EBUSY', 'EBUSY: resource busy or locked, open')
+      return openSync(target, flags, mode)
+    }) as typeof fs.openSync)
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (held > 0 && path.resolve(String(to)) === path.resolve(config)) {
+        held -= 1
+        throw errnoError('EBUSY', 'EBUSY: resource busy or locked, rename')
+      }
+      renameSync(from, to)
+    })
+
+    let renameAttempts = 0
+    executeFilePlans([{ path: config, content: 'model = "new"\n' }], {
+      // 动手前那一遍读得到；换上去的时候它被占着，头两次换都没成。
+      beforeReplace: () => {
+        renameAttempts += 1
+        if (renameAttempts === 1) held = 2
+      },
+    }, root)
+
+    expect(renameAttempts).toBe(3)
+    expect(held).toBe(0)
+    expect(fs.readFileSync(config, 'utf8')).toBe('model = "new"\n')
+  })
+
+  it('keeps what another program saved over an already replaced file instead of rolling it back (O11)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const config = path.join(root, 'config.toml')
+    const auth = path.join(root, 'auth.json')
+    fs.writeFileSync(config, 'model = "old"\n')
+    fs.writeFileSync(auth, '{"key":"old"}\n')
+
+    const error = thrownBy(() => executeFilePlans([
+      { path: config, content: 'model = "manager"\n' },
+      { path: auth, content: '{"key":"manager"}\n' },
+    ], {
+      beforeReplace: (_targetPath, index) => {
+        if (index !== 1) return
+        fs.writeFileSync(config, 'model = "external"\n')
+        throw new Error('injected second-file failure')
+      },
+    }, root))
+
+    expect(error).toBeInstanceOf(AggregateError)
+    expect(error.message).toBe(rollbackIncomplete)
+    expect((error as AggregateError).errors.map((inner: Error) => inner.message)).toEqual([
+      'injected second-file failure',
+      `配置文件换上去以后又被别的程序改过，保留了它的改动，没有回滚：${config}`,
+    ])
+    expect(fs.readFileSync(config, 'utf8')).toBe('model = "external"\n')
+    expect(fs.readFileSync(auth, 'utf8')).toBe('{"key":"old"}\n')
+    // 原来那份照旧在 .bak 里，客户要退回去还找得到。
+    const backups = fs.readdirSync(root).filter((name) => name.startsWith('config.toml.bak.'))
+    expect(backups.map((name) => fs.readFileSync(path.join(root, name), 'utf8'))).toEqual(['model = "old"\n'])
+    expect(fs.readdirSync(root).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('does not delete a file another program saved over one this save had just added (O11)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const added = path.join(root, 'added.json')
+    const auth = path.join(root, 'auth.json')
+    fs.writeFileSync(auth, '{"key":"old"}\n')
+
+    const error = thrownBy(() => executeFilePlans([
+      { path: added, content: '{"manager":true}\n' },
+      { path: auth, content: '{"key":"manager"}\n' },
+    ], {
+      beforeReplace: (_targetPath, index) => {
+        if (index !== 1) return
+        fs.writeFileSync(added, '{"external":true}\n')
+        throw new Error('injected second-file failure')
+      },
+    }, root))
+
+    expect(error.message).toBe(rollbackIncomplete)
+    expect(fs.readFileSync(added, 'utf8')).toBe('{"external":true}\n')
+    expect(fs.readFileSync(auth, 'utf8')).toBe('{"key":"old"}\n')
+  })
+
+  it('does not put back a removed file over one another program created in its place (O11)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const auth = path.join(root, 'auth.json')
+    const config = path.join(root, 'config.toml')
+    fs.writeFileSync(auth, '{}\n')
+    fs.writeFileSync(config, 'model = "old"\n')
+
+    const error = thrownBy(() => executeFilePlans([
+      { path: auth, remove: true },
+      { path: config, content: 'model = "manager"\n' },
+    ], {
+      beforeReplace: (_targetPath, index) => {
+        if (index !== 1) return
+        fs.writeFileSync(auth, '{"tokens":{"id_token":"signed-in"}}\n')
+        throw new Error('injected second-file failure')
+      },
+    }, root))
+
+    expect(error.message).toBe(rollbackIncomplete)
+    expect(fs.readFileSync(auth, 'utf8')).toBe('{"tokens":{"id_token":"signed-in"}}\n')
+    expect(fs.readFileSync(config, 'utf8')).toBe('model = "old"\n')
+  })
+
+  it('stops waiting to roll back once another program saves over the replaced file (O11)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const config = path.join(root, 'config.toml')
+    const auth = path.join(root, 'auth.json')
+    fs.writeFileSync(config, 'model = "old"\n')
+    fs.writeFileSync(auth, '{"key":"old"}\n')
+    const renameSync = fs.renameSync.bind(fs)
+    let held = true
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (held && path.basename(String(from)).includes('.xingmang-rollback-')) {
+        held = false
+        fs.writeFileSync(config, 'model = "external"\n')
+        throw errnoError('EBUSY', 'EBUSY: resource busy or locked, rename')
+      }
+      renameSync(from, to)
+    })
+
+    expect(() => executeFilePlans([
+      { path: config, content: 'model = "manager"\n' },
+      { path: auth, content: '{"key":"manager"}\n' },
+    ], {
+      beforeReplace: (_targetPath, index) => {
+        if (index === 1) throw new Error('injected second-file failure')
+      },
+    }, root)).toThrow(rollbackIncomplete)
+
+    expect(held).toBe(false)
+    expect(fs.readFileSync(config, 'utf8')).toBe('model = "external"\n')
+    expect(fs.readdirSync(root).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
   it('compares a verbatim Windows path the same as the plain one', () => {
     expect(trustedFolderKey('\\\\?\\C:\\Users\\Me')).toBe(trustedFolderKey('C:\\Users\\Me'))
     expect(trustedFolderKey('\\\\?\\UNC\\server\\share')).toBe(trustedFolderKey('\\\\server\\share'))
