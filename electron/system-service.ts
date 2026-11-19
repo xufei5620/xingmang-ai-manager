@@ -189,6 +189,12 @@ export interface ToolStatus {
    */
   installSource?: CliInstallDisplaySource
   /**
+   * 只在 Mac 上的 Codex / Grok 出现：找到的那份不是 npm 装的，又核不出是官方安装器那一份，星芒不替它跑
+   * （tool-installation.ts 的 UnrecognizedDarwinCliError，Mac 验收 R1）。首页这时不给「打开」，给
+   * 「用星芒装一份」；主进程也不再拿「不会另装一份」拦这次安装。缺省 = 认得出或不适用。
+   */
+  unrecognizedInstall?: boolean
+  /**
    * 这个工具装上去会落在哪个目录。未装时 installDirectory 为 null，而用户要
    * 查写入权限或加杀毒白名单需要的正是这个路径；已装时两者指同一处。算不出
    * 落点（非 CLI 工具、探测不到 npm 全局根）时缺省，界面据此不出「复制路径」。

@@ -613,6 +613,61 @@ describe('renderer-v2 home native install source', () => {
   })
 })
 
+// Mac 验收 R1：Mac 上找到的 Codex / Grok 星芒认不出来路，也不替它跑。卡上以前照样一颗「打开」，
+// 点了只说没打开成；现在写明为什么，主按钮换成「用星芒装一份」，点了走安装。
+describe('renderer-v2 home unrecognised Mac install', () => {
+  const unrecognizedCodex = { ...cliStatus, version: null, installSource: 'path', unrecognizedInstall: true,
+    uninstall: { available: false, reason: '请用它原来的方式卸载', manualCommand: null } }
+  const unrecognizedGrok = { ...cliStatus, version: null, unrecognizedInstall: true }
+
+  it('offers the app install instead of opening an unrecognised Codex and says why', () => {
+    const markup = render({}, { claude: cliStatus, codex: unrecognizedCodex, grok: cliStatus, gemini: cliStatus })
+    expect(markup).toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*用星芒装一份</)
+    expect(markup).toContain('不是星芒装的，星芒没法替你打开')
+    // 「要更新请用它原来的安装方式」那句在这里不对：客户该做的是点旁边那颗按钮。
+    expect(markup).not.toContain('data-testid="tool-codex-external-managed"')
+    // 跑不起来的那份不给切账号的来源牌，地方让给那颗按钮（卡上放不下两样）。
+    expect(markup).not.toContain('data-testid="tool-codex-source"')
+    expect(markup).toContain('data-testid="tool-claude-source"')
+    expect(markup).not.toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*打开</)
+    // 别的工具照旧。
+    expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开</)
+    // 页头也不能还说「都配好了」。
+    expect(markup).toContain('Codex CLI 不是星芒装的，星芒打不开，点卡片上的「用星芒装一份」。')
+    expect(markup).not.toContain('已安装的工具都配好了')
+  })
+
+  it('offers the app install on the top card when the unrecognised Codex is the first installed tool', () => {
+    const missing = { ...cliStatus, installed: false, version: null }
+    const base = snapshot({ claude: missing, codex: unrecognizedCodex, grok: missing, gemini: missing })
+    const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
+    const markup = render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot })
+    expect(markup).toMatch(/data-testid="home-hero-open"[^>]*>(?:<[^>]+>)*用星芒装一份</)
+    expect(markup).not.toContain('data-testid="home-hero-pick-folder"')
+  })
+
+  it('names every unrecognised tool in the page head', () => {
+    const markup = render({}, { claude: cliStatus, codex: unrecognizedCodex, grok: unrecognizedGrok, gemini: cliStatus })
+    expect(markup).toContain('Codex CLI、Grok CLI 不是星芒装的，星芒打不开，点卡片上的「用星芒装一份」。')
+  })
+
+  it('does the same for an unrecognised Grok', () => {
+    const markup = render({}, { claude: cliStatus, codex: cliStatus, grok: unrecognizedGrok, gemini: cliStatus })
+    expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*用星芒装一份</)
+    expect(markup).toContain('不是星芒装的，星芒没法替你打开')
+    expect(markup).toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*打开</)
+  })
+
+  it('keeps the install progress on the card while the app copy is being installed', () => {
+    const markup = render({ codex: { label: '正在安装', percent: 40, log: [] } },
+      { claude: cliStatus, codex: unrecognizedCodex, grok: cliStatus, gemini: cliStatus })
+    // 装的那一会儿卡上是进度条和「正在安装」，不再说打不开。
+    expect(markup).toContain('aria-valuenow="40"')
+    expect(markup).toContain('title="正在安装"')
+    expect(markup).not.toContain('不是星芒装的，星芒没法替你打开')
+  })
+})
+
 describe('renderer-v2 home pinned update direction', () => {
   const advice = { recommendedVersion: '0.156.1', blockedReason: null, onRecommended: false, pinned: true, rollbackAvailable: true }
 
