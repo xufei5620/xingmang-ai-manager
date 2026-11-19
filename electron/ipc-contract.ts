@@ -39,10 +39,10 @@ import type {
   ExternalToolId,
 } from './external-tool-config'
 export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
-import type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress } from './external-client-contract'
+import type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress, ExternalClientLaunchResult } from './external-client-contract'
 import type { ExternalClientCheckResult } from './external-client-connection'
 export type { ExternalClientCheckResult } from './external-client-connection'
-export type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress } from './external-client-contract'
+export type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress, ExternalClientLaunchResult } from './external-client-contract'
 import type {
   ManagedCliConfigurationOutcome,
   ManagedCliKeySyncSummary,
@@ -986,7 +986,8 @@ export interface XingmangInvokeContract {
   installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId, request?: DesktopAppUpdateRequest], ExternalClientStatus>
   /** 中止正在进行的客户端安装;Windows 上已经交给系统去装的那一步会被拒绝并给出原因。 */
   cancelExternalClientInstall: IpcInvokeDefinition<'external-clients:cancel-install', [tool: ExternalToolId], InstallCancelResult>
-  launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], void>
+  /** 回打开以后还要客户知道的事（ExternalClientLaunchResult），没有就是空对象。 */
+  launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], ExternalClientLaunchResult>
   /**
    * 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择（官方登录 / 第三方），星芒那份配置留着。
    * 只有 Claude Desktop 支持；切回当前账号时那份用不上了回 reconnect，界面接着打开配置窗口。
