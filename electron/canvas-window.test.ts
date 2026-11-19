@@ -2848,6 +2848,68 @@ describe('canvas close confirmation', () => {
     expect(electronMocks.latestBrowserWindow!.destroy).not.toHaveBeenCalled()
   })
 
+  it('opens the canvas again after an update installer it stood aside for never started', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const firstWindow = electronMocks.latestBrowserWindow!
+
+    controller.suspendForQuit()
+    expect(firstWindow.destroy).toHaveBeenCalledOnce()
+    // The host stays registered: the installer may still fail to start and leave the app running.
+    expect(electronMocks.removeHandler).not.toHaveBeenCalled()
+    await expect(controller.open()).rejects.toThrow('画布宿主已关闭')
+    await expect(controller.openAssetLibrary()).rejects.toThrow('画布宿主已关闭')
+    expect(electronMocks.browserWindowOptions).toHaveLength(1)
+
+    controller.resumeAfterAbortedQuit()
+    await controller.open()
+    expect(electronMocks.browserWindowOptions).toHaveLength(2)
+    expect(electronMocks.latestBrowserWindow).not.toBe(firstWindow)
+    expect(electronMocks.handlers.has(canvasHostChannels.finishClose)).toBe(true)
+    controller.dispose()
+  })
+
+  it('does not bring back a canvas whose close was pending when it stands aside for an update installer', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    const closing = controller.requestClose()
+    const shown = (window.show as ReturnType<typeof vi.fn>).mock.calls.length
+
+    controller.suspendForQuit()
+
+    expect(await closing).toBe(false)
+    expect(window.show).toHaveBeenCalledTimes(shown)
+    expect(electronMocks.latestWebContents!.send).not.toHaveBeenCalledWith(canvasHostChannels.closeCancelled, expect.anything())
+    expect(window.destroy).toHaveBeenCalledOnce()
+  })
+
+  it('lets a canvas window that finished opening after it stood aside close with the installer quit', async () => {
+    let answerSandbox!: () => void
+    const controller = createCanvasWindowController(controllerOptions({
+      inspectRendererSandbox: () => new Promise((resolve) => { answerSandbox = () => resolve({ kind: 'sandboxed' }) }),
+    }))
+    const opening = controller.open()
+    controller.suspendForQuit()
+    answerSandbox()
+    await opening
+    const window = electronMocks.latestBrowserWindow!
+
+    ;(window.close as () => void)()
+
+    expect(window.isDestroyed()).toBe(true)
+    expect(electronMocks.latestWebContents!.send).not.toHaveBeenCalledWith(canvasHostChannels.closeRequested, expect.anything())
+  })
+
+  it('stays disposed when an aborted update quit follows the final shutdown', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    controller.dispose()
+    controller.suspendForQuit()
+    controller.resumeAfterAbortedQuit()
+    await expect(controller.open()).rejects.toThrow('画布宿主已关闭')
+    expect(electronMocks.browserWindowOptions).toEqual([])
+  })
+
   it('does not run the quit check when no canvas is open or its renderer is already gone', async () => {
     const controller = createCanvasWindowController(controllerOptions())
     expect(await controller.requestCloseForQuit()).toBe(true)
