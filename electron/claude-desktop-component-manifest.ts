@@ -8,12 +8,13 @@
  *   x64:[…]},win32:{arm64:[…],x64:[…]}}},…]`，新的在前（那段注释说旧版留着是为了生成差量）。每个文件
  *   `{name, checksum, size, rawChecksum, rawSize, …}`，checksum 是官网那份 `.zst` 的 sha256。
  *
- * 读法只读、限大小（claude-desktop-asar.ts）：先读文件表，再按大小从大到小读 `.vite/build/` 下的脚本，两样都找到
- * 就停。Claude 换了写法就读不出来（null）。存储桶同步作业靠它知道该搬哪几个官网文件，读不出来就停下报警。
+ * 读 asar 的几个工具跟 claude-desktop-code-seed.ts 共用，只读、限大小：先读文件表，再按大小从大到小读
+ * `.vite/build/` 下的脚本，两样都找到就停。Claude 换了写法就读不出来（null）。存储桶同步作业靠它知道该搬哪几个
+ * 官网文件，读不出来就停下报警。
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { decodeSingleQuotedLiteral, listAsarBuildScripts, parseAsarHeaderJson, parseAsarSizePrefix } from './claude-desktop-asar'
+import { decodeSingleQuotedLiteral, listAsarBuildScripts, parseAsarHeaderJson, parseAsarSizePrefix } from './claude-desktop-code-seed'
 
 export type ClaudeDesktopVmPlatformKey = 'win32' | 'unix'
 export type ClaudeDesktopVmArchitecture = 'x64' | 'arm64'
