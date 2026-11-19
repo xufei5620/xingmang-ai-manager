@@ -165,12 +165,13 @@ export function guideOfficialLoginRequired(provider: ProviderId, source: GuideTo
 const installFailureKeys = new Set<string>(['toolRunning', 'installBlocked', 'downloadTimeout', 'downloadUnreachable', 'downloadSourceError', 'officialRegistryUnreachable', 'diskFull', 'certDate', 'tlsIntercepted', 'toolCertOutdatedNode', 'toolCertElevated', 'elevationDeclined', 'permission'])
 
 /**
- * 授权窗口那句（windows-elevation.ts）后半截按账号类型写好了下一步：普通账号要输管理员账号的密码、公司电脑找 IT。
+ * 授权窗口那句（windows-elevation.ts）后半截按账号类型写好了下一步：普通账号换个管理员账号去装、公司电脑找管理电脑的人。
  * 认出原因以后原话折在「给客服看的原话」里，客户不会点开，所以把这半截接在红字里（#1096）。
+ * 主进程那句说的是错误框的「重试」，引导里这颗按钮叫「再试一次」，跟网络那几类一样换掉。
  */
 function elevationNextStep(key: string, message: string): string {
   if (key !== 'elevationDeclined') return ''
-  const next = /(?:已取消管理员授权|未获得管理员权限)，[^。]*。(.+)$/.exec(message)?.[1].trim() ?? ''
+  const next = (/(?:已取消管理员授权|未获得管理员权限)，[^。]*。(.+)$/.exec(message)?.[1].trim() ?? '').replace(/「重试」/g, '「再试一次」')
   return !next || /[。！？]$/.test(next) ? next : `${next}。`
 }
 
