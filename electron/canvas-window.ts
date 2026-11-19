@@ -428,6 +428,8 @@ export function createCanvasWindowController(
   } | null = null
   const pendingProjects = new Map<number, PendingCanvasProjectImport>()
   const activeProjects = new Map<number, { userId: number; projectId: string }>()
+  // 画布窗口每换上一张新页面（崩溃或卡死后的重新加载等）就加一，见 createWindow 里的 did-navigate。
+  let canvasPageLoads = 0
   const generationAdmission = new CanvasGenerationAdmission()
   const byteUploadAdmission = new CanvasByteUploadAdmission()
   let lastCanvasNotificationAt = Number.NEGATIVE_INFINITY
@@ -552,6 +554,12 @@ export function createCanvasWindowController(
     const active = activeProjects.get(ownerId)
     if (!active || active.userId !== userId) throw new Error('请先选择或新建一个画布项目')
     return active.projectId
+  }
+
+  // 打开、新建项目要等读盘或选文件夹，这中间画布崩了、换上了新页面的话，新页面停在项目中心，
+  // 不能把旧页面开的项目记到它头上：只在发起时那张页面还在时才记。
+  function rememberOpenProject(ownerId: number, pageLoad: number, userId: number, projectId: string): void {
+    if (pageLoad === canvasPageLoads) activeProjects.set(ownerId, { userId, projectId })
   }
 
   async function activeAssetContext(ownerId: number, userId: number) {
@@ -719,6 +727,7 @@ export function createCanvasWindowController(
   registerCanvasHandler(canvasHostCreateProjectChannel, async (event, nameInput, contentInput, optionsInput) => {
     if (!options.projects) throw new Error('项目自动保存能力不可用')
     const userId = authenticatedCanvasUserId()
+    const pageLoad = canvasPageLoads
     // Checked before the folder dialog, so a malformed copy request does not
     // make the user pick a folder first and then fail.
     const initial = parseCanvasCreateProjectContent(contentInput, optionsInput)
@@ -738,16 +747,17 @@ export function createCanvasWindowController(
       ? await options.projects.createWithContent(userId, name, result.filePaths[0], initial.workflowContent, initial.sourceProjectId)
       : await options.projects.create(userId, name, result.filePaths[0])
     assertCanvasUserUnchanged(userId)
-    activeProjects.set(event.sender.id, { userId, projectId: created.project.id })
+    rememberOpenProject(event.sender.id, pageLoad, userId, created.project.id)
     return created
   })
 
   registerCanvasHandler(canvasHostOpenProjectChannel, async (event, projectIdInput) => {
     if (!options.projects) throw new Error('项目自动保存能力不可用')
     const userId = authenticatedCanvasUserId()
+    const pageLoad = canvasPageLoads
     const opened = await options.projects.open(userId, requiredCanvasString(projectIdInput, '画布项目标识', 64))
     assertCanvasUserUnchanged(userId)
-    activeProjects.set(event.sender.id, { userId, projectId: opened.project.id })
+    rememberOpenProject(event.sender.id, pageLoad, userId, opened.project.id)
     return opened
   })
 
@@ -801,6 +811,7 @@ export function createCanvasWindowController(
     if (!options.projects) throw new Error('项目自动保存能力不可用')
     if (!options.defaultProjectsDirectory) throw new Error('默认项目文件夹不可用，请点「换个位置创建…」自己选文件夹')
     const userId = authenticatedCanvasUserId()
+    const pageLoad = canvasPageLoads
     const name = requiredCanvasString(nameInput, '画布项目名称', 128)
     let directory: string
     try {
@@ -816,7 +827,7 @@ export function createCanvasWindowController(
       throw error
     }
     assertCanvasUserUnchanged(userId)
-    activeProjects.set(event.sender.id, { userId, projectId: created.project.id })
+    rememberOpenProject(event.sender.id, pageLoad, userId, created.project.id)
     return created
   })
 
@@ -1825,6 +1836,19 @@ export function createCanvasWindowController(
       rendererReady = false
       rendererUnavailable = false
       if (pendingClose?.window === window) finishPendingClose(false, '画布页面已重新加载，请重新确认关闭')
+    })
+    // 画布崩溃或卡死后重新加载出来的是一张新页面，停在项目中心，还没开任何项目。不清这个窗口记着的项目的话，
+    // projectCenterAssetLibrary 还当旧页面那个项目开着，主窗口「看做过的图」叫出来的素材库列的是旧项目的素材。
+    // did-navigate fires only once a new document has committed in the main
+    // frame; same-document route changes (the kernel's history router) do not
+    // emit it, and a custom-scheme page never comes back from the back/forward
+    // cache. did-start-loading would be wrong here: it fires as a navigation
+    // begins (and for subframe loads), while the page that opened the project
+    // may still be the one that stays, and forgetting its project would make
+    // every autosave after that refused.
+    window.webContents.on('did-navigate', () => {
+      canvasPageLoads += 1
+      activeProjects.delete(senderId)
     })
 
     try {

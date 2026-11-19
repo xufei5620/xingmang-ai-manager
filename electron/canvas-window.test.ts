@@ -542,6 +542,87 @@ describe('createCanvasWindowController', () => {
     expect(mediaAssets.listOwnedPage).toHaveBeenCalledTimes(1)
   })
 
+  // 画布崩溃或卡死后重新加载：新页面停在项目中心，「看做过的图」要读共享库，不能还当旧页面那个项目开着。
+  it('serves the home page library again once a reloaded page replaces the one that had a project open', async () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const project = { id: projectId, name: '项目', createdAt: '2026-11-10T00:00:00.000Z', updatedAt: '2026-11-10T00:00:00.000Z' }
+    const page = { items: [], offset: 0, limit: 24, total: 0, hasMore: false, facets: { tags: [] } }
+    const mediaAssets = { listOwnedPage: vi.fn(async () => page) }
+    const folderMedia = { listOwnedPage: vi.fn(async () => page) }
+    const save = vi.fn(async () => ({ project, workspaceStatus: 'ready' }))
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 7 } })), provisionCliKey: vi.fn() } as unknown as NewApiClientService,
+      projects: { list: vi.fn(async () => [project]), create: vi.fn(), open: vi.fn(async () => ({ project, content: '{}' })), save } as never,
+      projectAssets: { forProject: vi.fn(async () => ({ media: folderMedia })), forNewWorkspace: vi.fn(), forgetProject: vi.fn() } as never,
+      mediaAssets: mediaAssets as never,
+    }))
+    await controller.open()
+    const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+    const pageEvent = (name: string) => on.mock.calls.find(([event]) => event === name)![1]
+    const list = electronMocks.handlers.get(canvasHostListAssetsChannel)!
+    const query = { mediaType: 'image', view: 'all', source: 'all', sort: 'created-desc', offset: 0, limit: 24 }
+
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    await list(trustedEvent(), query)
+    expect(folderMedia.listOwnedPage).toHaveBeenCalledTimes(1)
+
+    // A navigation that has only begun may still be refused, leaving the page that opened the project in place.
+    pageEvent('did-start-loading')()
+    await list(trustedEvent(), query)
+    expect(folderMedia.listOwnedPage).toHaveBeenCalledTimes(2)
+    expect(mediaAssets.listOwnedPage).not.toHaveBeenCalled()
+
+    canvasRendererGone({ reason: 'crashed', exitCode: 1 })
+    expect(electronMocks.latestBrowserWindow!.loadURL).toHaveBeenCalledTimes(2)
+    pageEvent('did-navigate')({}, trustedCanvasUrl, 200, 'OK')
+    await list(trustedEvent(), query)
+    expect(mediaAssets.listOwnedPage).toHaveBeenCalledTimes(1)
+    expect(folderMedia.listOwnedPage).toHaveBeenCalledTimes(2)
+    await expect(electronMocks.handlers.get(canvasHostSaveProjectChannel)!(trustedEvent(), projectId, '{}')).rejects.toThrow('请先选择或新建一个画布项目')
+    expect(save).not.toHaveBeenCalled()
+    expect(await electronMocks.handlers.get(canvasHostCloseProjectChannel)!(trustedEvent(), projectId)).toBe(false)
+
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    await list(trustedEvent(), query)
+    expect(folderMedia.listOwnedPage).toHaveBeenCalledTimes(3)
+    expect(mediaAssets.listOwnedPage).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not hand a project the replaced page was still opening to the page that replaced it', async () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const project = { id: projectId, name: '项目', createdAt: '2026-11-10T00:00:00.000Z', updatedAt: '2026-11-10T00:00:00.000Z' }
+    const page = { items: [], offset: 0, limit: 24, total: 0, hasMore: false, facets: { tags: [] } }
+    const mediaAssets = { listOwnedPage: vi.fn(async () => page) }
+    const folderMedia = { listOwnedPage: vi.fn(async () => page) }
+    let finishOpen!: () => void
+    const open = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishOpen = () => resolve({ project, content: '{}' }) }))
+      .mockImplementation(async () => ({ project, content: '{}' }))
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 7 } })), provisionCliKey: vi.fn() } as unknown as NewApiClientService,
+      projects: { list: vi.fn(async () => [project]), create: vi.fn(), open, save: vi.fn() } as never,
+      projectAssets: { forProject: vi.fn(async () => ({ media: folderMedia })), forNewWorkspace: vi.fn(), forgetProject: vi.fn() } as never,
+      mediaAssets: mediaAssets as never,
+    }))
+    await controller.open()
+    const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+    const list = electronMocks.handlers.get(canvasHostListAssetsChannel)!
+    const query = { mediaType: 'image', view: 'all', source: 'all', sort: 'created-desc', offset: 0, limit: 24 }
+
+    const opening = electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    on.mock.calls.find(([event]) => event === 'did-navigate')![1]({}, trustedCanvasUrl, 200, 'OK')
+    finishOpen()
+    await opening
+    await list(trustedEvent(), query)
+    expect(mediaAssets.listOwnedPage).toHaveBeenCalledTimes(1)
+    expect(folderMedia.listOwnedPage).not.toHaveBeenCalled()
+
+    // The new page opening the project itself is remembered as usual.
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    await list(trustedEvent(), query)
+    expect(folderMedia.listOwnedPage).toHaveBeenCalledTimes(1)
+  })
+
   it('opens the canvas on the home page library, or asks an open canvas to show it', async () => {
     const controller = createCanvasWindowController(controllerOptions())
 
