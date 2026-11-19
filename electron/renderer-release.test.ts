@@ -198,6 +198,135 @@ describe('renderer release', () => {
     expect(h.reload).toHaveBeenCalledOnce()
   })
 
+  it('loads again on the next show after a restore load fails, and delivers what waited exactly once', async () => {
+    // 11-18 复核 U05：重新加载那一下失败了，状态一直停在「正在重新加载」，再怎么叫出窗口都不再加载。
+    const h = fixture()
+    h.controller.noteShown()
+    h.controller.reportActivity(false)
+    h.controller.noteHidden()
+    h.fire()
+    const failure = new Error('ERR_FILE_NOT_FOUND')
+    h.reload.mockReturnValueOnce(Promise.reject(failure))
+    h.controller.noteShown()
+    const navigate = vi.fn()
+    h.controller.deliver('onNavigate', navigate)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(h.controller.state).toBe('restoring')
+    expect(h.onError).toHaveBeenCalledWith(failure)
+    h.advance(500)
+    h.controller.noteShown()
+    expect(h.reload).toHaveBeenCalledTimes(2)
+    // Another focus while the retry is loading does not start a third load.
+    h.controller.noteShown()
+    expect(h.reload).toHaveBeenCalledTimes(2)
+    h.advance(200)
+    h.controller.reportActivity(false)
+    expect(h.controller.state).toBe('live')
+    expect(navigate).toHaveBeenCalledOnce()
+    // The prompts shown before the release stay shown; the retry is the same restore.
+    expect(h.controller.restoredBoot).toBe(true)
+    expect(h.logged).toEqual([
+      { event: 'release.done' },
+      { event: 'restore.started', detail: { reason: 'show' } },
+      { event: 'restore.failed', detail: { cause: 'load' } },
+      { event: 'restore.started', detail: { reason: 'show', retry: true } },
+      { event: 'restore.ready', detail: { ms: 200 } },
+    ])
+  })
+
+  it('loads again after a reload that throws before it starts', () => {
+    const h = fixture()
+    h.controller.reportActivity(false)
+    h.controller.noteHidden()
+    h.fire()
+    const failure = new Error('window is gone')
+    h.reload.mockImplementationOnce(() => { throw failure })
+    expect(h.controller.restore('show')).toBe(true)
+    expect(h.onError).toHaveBeenCalledWith(failure)
+    expect(h.controller.restore('show')).toBe(true)
+    expect(h.reload).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores a late failure from a load that a newer restore already replaced', async () => {
+    const h = fixture()
+    h.controller.reportActivity(false)
+    h.controller.noteHidden()
+    h.fire()
+    expect(h.controller.consumeExpectedExit()).toBe(true)
+    let rejectFirst: (error: unknown) => void = () => undefined
+    h.reload.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectFirst = reject }))
+    h.reload.mockReturnValueOnce(new Promise(() => undefined))
+    h.controller.restore('show')
+    // The first load's renderer dies; the next show starts a second load.
+    h.controller.consumeExpectedExit()
+    h.controller.restore('show')
+    expect(h.reload).toHaveBeenCalledTimes(2)
+    // Electron settles the first load only now. It must not undo the second one.
+    rejectFirst(new Error('ERR_FAILED'))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(h.controller.restore('show')).toBe(true)
+    expect(h.reload).toHaveBeenCalledTimes(2)
+    expect(h.onError).not.toHaveBeenCalled()
+    expect(h.logged.filter((entry) => entry.event === 'restore.failed')).toEqual([
+      { event: 'restore.failed', detail: { cause: 'renderer-gone' } },
+    ])
+  })
+
+  it('ignores a failure that arrives after the restored renderer already reported', async () => {
+    const h = fixture()
+    h.controller.reportActivity(false)
+    h.controller.noteHidden()
+    h.fire()
+    let rejectLoad: (error: unknown) => void = () => undefined
+    h.reload.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectLoad = reject }))
+    h.controller.restore('show')
+    h.controller.reportActivity(false)
+    rejectLoad(new Error('ERR_ABORTED'))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(h.controller.state).toBe('live')
+    expect(h.controller.restore('show')).toBe(false)
+    expect(h.reload).toHaveBeenCalledOnce()
+  })
+
+  it('loads again on the next show when the renderer dies while it is being restored', () => {
+    // 重新加载到一半界面进程没了，崩溃恢复问过一次、用户选了「先不管」：下次叫出窗口还得能载回来。
+    const h = fixture()
+    h.controller.reportActivity(false)
+    h.controller.noteHidden()
+    h.fire()
+    expect(h.controller.consumeExpectedExit()).toBe(true)
+    h.controller.restore('show')
+    expect(h.controller.consumeExpectedExit()).toBe(false)
+    expect(h.controller.state).toBe('restoring')
+    expect(h.controller.restore('show')).toBe(true)
+    expect(h.reload).toHaveBeenCalledTimes(2)
+    expect(h.logged).toContainEqual({ event: 'restore.failed', detail: { cause: 'renderer-gone' } })
+  })
+
+  it('neither retries nor delivers after a failed restore once disposed', async () => {
+    const h = fixture()
+    h.controller.reportActivity(false)
+    h.controller.noteHidden()
+    h.fire()
+    let rejectLoad: (error: unknown) => void = () => undefined
+    h.reload.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectLoad = reject }))
+    h.controller.restore('show')
+    const send = vi.fn()
+    h.controller.deliver('onNavigate', send)
+    h.controller.dispose()
+    rejectLoad(new Error('late'))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(h.controller.restore('show')).toBe(false)
+    h.controller.reportActivity(false)
+    expect(h.reload).toHaveBeenCalledOnce()
+    expect(send).not.toHaveBeenCalled()
+    expect(h.onError).not.toHaveBeenCalled()
+  })
+
   it('leaves a live renderer to the crash recovery', () => {
     const h = fixture()
     expect(h.controller.restore('show')).toBe(false)
