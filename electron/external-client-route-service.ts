@@ -20,6 +20,7 @@ import {
   type DesktopAppUpdateRequest,
   type ExternalClientConfigResult,
   type ExternalClientInstallProgress,
+  type ExternalClientLaunchResult,
   externalClientNames,
   type ExternalClientRuntimeStatus,
   type ExternalClientSourceSwitchResult,
@@ -413,7 +414,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     if (clientPath === null) return false
     return await externalClientRuntime.stillRunning?.(tool, clientPath) ?? null
   }
-  async function launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<void> {
+  async function launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<ExternalClientLaunchResult> {
     // Claude Desktop 第一次用、每次自己升级以后都要从官网下 1GB 多的组件，国内直连下不动：先在后台替他连上
     // 加速（#1373）。连不上照常打开（它永不抛错，这里再兜一层）。
     if (tool === 'claudeDesktop' && serviceOptions.prepareClaudeDesktopLaunch) {
@@ -421,7 +422,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     }
     const unwatch = tool === 'claudeDesktop' && target ? claudeDesktopSeedProgress.watch(target) : null
     try {
-      await externalClientRuntime.launch(tool)
+      return await externalClientRuntime.launch(tool)
     } catch (error) {
       if (tool === 'claudeDesktop') launchedClientPaths.set(tool, null)
       throw error

@@ -142,7 +142,7 @@ function serviceStub(): SystemService {
     cleanInstallLeftoversNow: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
     cancelExternalClientInstall: vi.fn(() => ({ cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' })),
-    launchExternalClient: vi.fn(async () => undefined),
+    launchExternalClient: vi.fn(async () => ({})),
     switchExternalClientSource: vi.fn(async (tool, target) => ({ tool, target, outcome: 'switched' as const, backups: [], message: '已切回官方账号' })),
   }
 }
