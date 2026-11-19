@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AccountKey, AppConfigSummary, AccountKeysPage } from '../../../../electron/ipc-contract'
-import { accountKeyDescription, currentKeyLabel, initialKeyChoice, listedAccountKeys, manualKeyIssue, manualKeyPreview, readAllAccountKeys } from './key-selection'
+import { accountKeyDescription, currentKeyLabel, initialKeyChoice, keysInUsableGroups, listedAccountKeys, manualKeyIssue, manualKeyPreview, readAllAccountKeys } from './key-selection'
 
 const key = (id: number) => ({ id, name: `key-${id}`, group: 'Group A', maskedKey: 'sk-••••1234', status: 1 }) as AccountKey
 
@@ -38,6 +38,26 @@ describe('configuration key selection', () => {
     expect(listedAccountKeys(keys, '2').map((entry) => entry.id)).toEqual([1, 2, 6, 7, 9, 10, 11])
     expect(listedAccountKeys(keys, '3').map((entry) => entry.id)).toEqual([1, 3, 5, 6, 7, 9, 10, 11])
     expect(listedAccountKeys(keys, '12').map((entry) => entry.id)).toEqual([1, 5, 6, 7, 9, 10, 11, 12])
+  })
+  it('lists only keys whose group the account can still use', () => {
+    const grouped = (id: number, group: string) => ({ ...key(id), group }) as AccountKey
+    const keys = [grouped(1, 'Claude-ANTI'), grouped(2, 'Claude-MAX'), grouped(3, ''), grouped(4, 'Claude-MAX订阅'), grouped(5, 'auto'), grouped(6, 'GPT')]
+    // 服务端关掉的分组、删掉的老名字不列；分组空着的认不出，照列。
+    expect(keysInUsableGroups(keys, ['Claude-MAX', 'GPT', 'auto']).map((entry) => entry.id)).toEqual([2, 3, 5, 6])
+    // 能用的分组没读到：只去掉删掉的老名字，其余照旧。
+    expect(keysInUsableGroups(keys, null).map((entry) => entry.id)).toEqual([1, 2, 3, 5, 6])
+    expect(keysInUsableGroups(keys, []).map((entry) => entry.id)).toEqual([3])
+    // auto 只有接口列出来才算能用。
+    expect(keysInUsableGroups(keys, ['Claude-MAX', 'GPT']).map((entry) => entry.id)).toEqual([2, 3, 6])
+  })
+  it('leaves keys in groups the account lost out of the tool dialog list, except the one selected', () => {
+    const grouped = (id: number, group: string) => ({ ...key(id), group }) as AccountKey
+    const keys = [grouped(1, 'Claude-ANTI'), grouped(2, 'Claude-MAX'), grouped(3, ''), grouped(4, 'auto')]
+    expect(listedAccountKeys(keys, 'automatic', ['Claude-MAX']).map((entry) => entry.id)).toEqual([2, 3])
+    expect(listedAccountKeys(keys, '1', ['Claude-MAX']).map((entry) => entry.id)).toEqual([1, 2, 3])
+    // 分组没读到：照旧全列。
+    expect(listedAccountKeys(keys, 'automatic', null).map((entry) => entry.id)).toEqual([1, 2, 3, 4])
+    expect(listedAccountKeys(keys, 'automatic').map((entry) => entry.id)).toEqual([1, 2, 3, 4])
   })
   it('checks the sk- prefix only where the key format is known', () => {
     expect(manualKeyIssue('  ', true)).toBe('请粘贴你在星芒创建的密钥')
