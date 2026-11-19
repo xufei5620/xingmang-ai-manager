@@ -96,6 +96,8 @@
   "overrides": {
     "@electron/get": "5.0.0",
     "katex": "$katex",
+    "minimatch@^9.0.3": "11.0.5",
+    "minimatch@^10.2.5": "11.0.5",
     "shell-quote": "1.12.0"
   },
   "devDependencies": {
