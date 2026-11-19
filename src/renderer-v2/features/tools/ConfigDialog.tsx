@@ -11,6 +11,7 @@ import { accountKeyDescription, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, ini
 import { describeChineseLocale, describeChineseLocaleResult, describeWorkspaceTrustResult, macLocaleNote } from './locale-status'
 import { codexModelChoices, isHiddenCodexModel, type CodexModelFilter } from './model-filter'
 import { DialogExitButton, DialogExitLink, RadioCards, type RadioCardOption } from './dialog-parts'
+import { isKeyGroupRejection, KeyGroupRejectedNotice, modelCheckFailure, type KeyGroupRejection } from './key-group-rejection'
 import { OptionPicker, type PickerOption } from './OptionPicker'
 import { OtherModelsDialog } from './OtherModelsDialog'
 import { errorMessage, FailureReason, failureWithDetail } from '../../business-common'
@@ -20,7 +21,7 @@ import { currentWindowOs } from '../app/window-os'
 type SourceChoice = 'account' | 'official' | 'manual' | 'unknown'
 // 保存这类操作失败时连原话一起留着，红字和页顶红条一个认法（FailureReason）：认得出是「工具正在
 // 运行」这类原因就先说原因，原来那句跟在后面。没过前置检查的提示还是一句话。
-type DialogError = string | ReturnType<typeof failureWithDetail>
+type DialogError = string | ReturnType<typeof failureWithDetail> | KeyGroupRejection
 interface ConfigDraft { source: SourceChoice; keyId: string; secret: string; model: string; validatedSecret: string; dirty: boolean }
 /** 保存成功后页顶那句按哪种说：重置、换成官方账号，还是一般的保存。 */
 export type ConfigSaveOutcome = 'saved' | 'reset' | 'official'
@@ -250,7 +251,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       if (next !== target) change(next)
       if (!result.length) setError('这把密钥没有可用模型，请换一把密钥后重新检测。')
     } catch (cause) {
-      if (active.current && id()) { setError(errorMessage(cause, '模型检测未完成')); setDetectTried(true) }
+      if (active.current && id()) { setError(modelCheckFailure(cause, '模型检测未完成')); setDetectTried(true) }
     }
     finally { locked.current = false; if (active.current) setBusy('') }
   }
@@ -265,7 +266,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     setBusy('保存并检测'); setError(''); setWarning(''); setNotice('')
     let result: string[] | null = null
     try { result = await listModels(target) }
-    catch (cause) { if (active.current && id()) { setError(errorMessage(cause, '模型检测未完成')); setDetectTried(true) } }
+    catch (cause) { if (active.current && id()) { setError(modelCheckFailure(cause, '模型检测未完成')); setDetectTried(true) } }
     finally { locked.current = false; if (active.current) setBusy('') }
     if (!result || !active.current || !id()) return
     setModels(result)
@@ -478,7 +479,9 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     else if (readyToSave(draft, models)) commit('merge', draft)
   }
   // 这个窗口里的动作改的都是工具的配置文件：没权限时说「写不进配置文件」，不说安装目录（已知29）。
-  const errorText = typeof error === 'string' ? error : <FailureReason error={error.message} detail={error.detail} target="config" />
+  const errorText = typeof error === 'string' ? error : isKeyGroupRejection(error) ? null : <FailureReason error={error.message} detail={error.detail} target="config" />
+  // 分组被拒时「换一把能用的」= 换成「自动准备」：保存时替他在能用的分组里准备好。账号信息还没读到、读不到就不给按钮。
+  const automaticReady = signedIn && Boolean(metadata) && !metadataLoading && !metadataError && !(draft.source === 'account' && usingAutomaticKey)
   const saveSummary = <div data-testid="tool-save-summary">{draft.source === 'official' ? <p>来源：{officialName}</p> : <><p>密钥：{keyDescription.name}</p><p>分组：{keyDescription.group}</p><p>预览：{keyDescription.preview}</p><p>模型：{draft.model || '使用该分组默认模型'}</p></>}</div>
   const permissionText = !permission ? '' : permission.error ? permission.error
     : permission.trustLevel === 'trusted' ? 'Codex 已信任这个文件夹，可以直接改里面的文件'
@@ -543,6 +546,9 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
             : <Button size="sm" variant="ghost" testId="tool-save-reset" onClick={requestReset}>重置</Button>}</div>}
       </div></details>
     </fieldset>
-    {error && <p className="v2-callout is-bad" role="alert">{errorText}</p>}{warning && <p className="v2-callout is-warn" role="status">{warning}</p>}
+    {isKeyGroupRejection(error)
+      ? <KeyGroupRejectedNotice failure={error} onSwitch={automaticReady ? () => change({ source: 'account', keyId: AUTOMATIC_KEY }) : undefined}
+        testId="tool-key-group-rejected" switchTestId="tool-key-group-switch" />
+      : error && <p className="v2-callout is-bad" role="alert">{errorText}</p>}{warning && <p className="v2-callout is-warn" role="status">{warning}</p>}
   </Dialog>
 }
