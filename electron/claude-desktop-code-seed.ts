@@ -950,9 +950,11 @@ export function createClaudeDesktopCodeSeeder(options: ClaudeDesktopCodeSeederOp
 
   async function prepareNow(client: ClaudeDesktopSeedClient): Promise<ClaudeDesktopCodeSeedOutcome> {
     if (options.platform !== 'win32') throw new SeedSkip('unsupported-platform', '只在 Windows 上替 Claude Desktop 放程序')
-    if (options.executionMode !== 'same-user') throw new SeedSkip('not-same-user', '星芒正以管理员身份运行，不往 Claude Desktop 的文件夹里写东西')
     if (options.isOff?.() === true) throw new SeedSkip('remote-off', '替 Claude Desktop 放程序已被远程关掉')
     if (client.running) throw new SeedSkip('running', 'Claude Desktop 开着，这次不动它的文件夹')
+    // 排在「远程关了」「开着」之后：这一条会随打开结果让界面提醒客户正常打开星芒再点一次，本来就不该放的
+    // 那两种不能也这么说。前两条都不碰文件，挪到前面不改管理员身份下碰不碰 Claude 文件夹。
+    if (options.executionMode !== 'same-user') throw new SeedSkip('not-same-user', '星芒正以管理员身份运行，不往 Claude Desktop 的文件夹里写东西')
     const platform = claudeCodeSeedPlatform(client.path, options.architecture)
     if (!platform) throw new SeedSkip('unsupported-platform', '认不出 Claude Desktop 的处理器架构')
     const asarPath = (options.resolveAsarPath ?? claudeDesktopAsarPath)(client.path)
