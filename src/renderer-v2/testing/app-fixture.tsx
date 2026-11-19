@@ -801,6 +801,12 @@ const methods = {
   getAccountKeys: async () => {
     const held = heldAccountKeys
     if (held) await new Promise<void>((resolve) => held.push(resolve))
+    // clientKeyGroups：编号倒序，最新那把是 8 月 AI 对话在 Claude-ANTI 里签的，那个分组账号现在用不了（见 getAccountUsableGroups）。
+    if (query.has('clientKeyGroups')) return { keys: [
+      { id: 403, name: 'xingmang-chat-msu81uct-5e3c562e6de0', group: 'Claude-ANTI', maskedKey: 'sk-u7••••dtsW', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
+      { id: 402, name: 'my-claude', group: 'Claude AWS-B', maskedKey: 'sk-66••••gPdO', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
+      { id: 401, name: 'xingmang-desktop-claude', group: 'Claude-MAX', maskedKey: 'sk-cl••••5678', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
+    ], total: 3, page: 1, pageSize: 100 }
     return { keys: query.has('keyOptions') ? [
     { id: 201, name: 'coding-key', group: 'Codex_pro', maskedKey: 'sk-se••••9012', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
     { id: 202, name: 'custom-key', group: 'Custom group', maskedKey: 'sk-ot••••1234', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
@@ -864,7 +870,13 @@ const methods = {
   fillToolTemplateDefaults: async (retry?: boolean) => query.has('templateDeferred')
     ? retry ? { filled: ['codex'] as ProviderId[] } : { filled: [] as ProviderId[], pending: ['codex'] as ProviderId[] }
     : { filled: query.has('templateFilled') ? ['codex', 'claude'] as ProviderId[] : [] },
-  getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT', description: 'Codex', ratio: 1 }],
+  // keyOptions、clientKeyGroups 列出的密钥所在的分组账号都还能用，只有 Claude-ANTI 那把不行。
+  getAccountUsableGroups: async () => [
+    { name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT', description: 'Codex', ratio: 1 },
+    ...(query.has('keyOptions') && session.siteId !== 'solov-api' ? [{ name: 'Codex_pro', description: 'Codex', ratio: 1 }] : []),
+    ...(query.has('keyOptions') ? [{ name: 'Custom group', description: 'Custom', ratio: 1 }] : []),
+    ...(query.has('clientKeyGroups') ? [{ name: 'Claude-MAX', description: 'Claude', ratio: 1 }, { name: 'Claude AWS-B', description: 'Claude', ratio: 1 }] : []),
+  ],
   createAccountKey: async () => undefined,
   changeAccountPassword: async () => {
     session = { ...session, authenticated: false, account: null }

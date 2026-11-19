@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, RefreshCw, Save } from 'lucide-react'
-import type { AccountKey, AppConfigSummary, ExternalClientConfigResult, ExternalClientCredential, ExternalToolId, ProviderId, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AccountKey, AccountKeyOptions, AppConfigSummary, ExternalClientConfigResult, ExternalClientCredential, ExternalToolId, ProviderId, XingmangApi } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Dialog, Input, Notice, Select, useToast } from '../../ui'
 import { clientConnections, clientKeySources } from '../../registry/clients'
 import { connectionCheckView } from './connection-check'
 import { accountKeyListFailureText, externalClientConnectedText, externalClientSavedTone } from './external-client-notice'
-import { accountKeyDescription, manualKeyIssue, readAllAccountKeys } from './key-selection'
+import { accountKeyDescription, keysInUsableGroups, manualKeyIssue, readAllAccountKeys } from './key-selection'
 import { configuredKeySources, configuredSourceModel, detectedClientModel, initialClientSource } from './external-client-defaults'
 import { DialogExitButton } from './dialog-parts'
 import { OptionPicker, type PickerOption } from './OptionPicker'
@@ -41,6 +41,8 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   const definition = clientConnections.find((entry) => entry.id === tool)!
   const [config, setConfig] = useState<AppConfigSummary | null>(null)
   const [keys, setKeys] = useState<AccountKey[]>([])
+  // 星芒替 Claude Code 签密钥用的名字和分组：Claude Desktop 默认先挑这个分组里的那把。只有 Claude Desktop 读。
+  const [claudeCodeKey, setClaudeCodeKey] = useState<AccountKeyOptions['automatic'] | null>(null)
   const [source, setSource] = useState('manual')
   const [secret, setSecret] = useState('')
   const [secretError, setSecretError] = useState('')
@@ -62,16 +64,24 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   useEffect(() => {
     let current = true
     alive.current = true
+    // 能用的分组、Claude Code 那把的分组没读到，都退回旧挑法：照旧全列、只按分组名挑，不因此拦着不让连。
     void Promise.allSettled([
       api.getConfig(),
       signedIn ? readAllAccountKeys((query) => api.getAccountKeys(query)) : Promise.resolve({ keys: [] as AccountKey[] }),
-    ]).then(([configResult, keyResult]) => {
+      signedIn ? api.getAccountUsableGroups() : Promise.resolve(null),
+      signedIn && tool === 'claudeDesktop' ? api.getAccountKeyOptions('claude') : Promise.resolve(null),
+    ]).then(([configResult, keyResult, groupResult, claudeCodeResult]) => {
       if (!current || !alive.current) return
-      const availableKeys = keyResult.status === 'fulfilled' ? keyResult.value.keys.filter((key) => key.status === 1) : []
+      const usableGroups = groupResult.status === 'fulfilled' && groupResult.value ? groupResult.value.map((group) => group.name) : null
+      const availableKeys = keyResult.status === 'fulfilled'
+        ? keysInUsableGroups(keyResult.value.keys.filter((key) => key.status === 1), usableGroups)
+        : []
+      const claudeCode = claudeCodeResult.status === 'fulfilled' ? claudeCodeResult.value?.automatic ?? null : null
       setKeys(availableKeys)
+      setClaudeCodeKey(claudeCode)
       if (keyResult.status === 'rejected') setKeyError(errorMessage(keyResult.reason))
       const providers = configResult.status === 'fulfilled' ? configResult.value.providers : null
-      const initial = initialClientSource(tool, definition.preferredProvider, clientKeySources, providers, availableKeys)
+      const initial = initialClientSource(tool, definition.preferredProvider, clientKeySources, providers, availableKeys, claudeCode)
       setSource(initial)
       setModel(configuredSourceModel(tool, initial, providers))
       if (configResult.status === 'fulfilled') setConfig(configResult.value)
@@ -87,7 +97,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
     if (!liveConfig || liveConfig === openedWith.current || busy) return
     openedWith.current = liveConfig
     if (dirty || models.length || result || error) return
-    const next = initialClientSource(tool, definition.preferredProvider, clientKeySources, liveConfig.providers, keys)
+    const next = initialClientSource(tool, definition.preferredProvider, clientKeySources, liveConfig.providers, keys, claudeCodeKey)
     // 来源没变也重填型号：那个工具的配置可能刚换了型号（比如开机那一轮把下架的换掉）。
     setConfig(liveConfig); setSource(next); setModel(configuredSourceModel(tool, next, liveConfig.providers))
   }, [liveConfig, busy])

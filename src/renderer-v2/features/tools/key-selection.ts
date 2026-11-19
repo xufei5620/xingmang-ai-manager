@@ -59,6 +59,18 @@ export function listedAccountKeys(keys: readonly AccountKey[], selectedKeyId: st
 }
 
 /**
+ * Claude Desktop、WorkBuddy、OpenCode 弹窗的密钥下拉只列账号现在还能用的分组里的（2026-11-19 yoyo 回「改」）。
+ * 服务端关掉的分组，密钥还留在账号里（8 月 AI 对话签的那批），一检测就是 403「无权访问 … 分组」：new-api 拿密钥
+ * 调用时核的正是 `/api/user/self/groups` 列的那份（rc.51 middleware/auth.go TokenAuth）。
+ * usableGroups 是 null（没读到）时只去掉 xm 站删掉的老名字，其余照旧全列；分组空着的（new-api 走账号自己的等级分组、
+ * 历史账号认不出分组）不算用不了，照列。
+ */
+export function keysInUsableGroups<T extends Pick<AccountKey, 'group'>>(keys: readonly T[], usableGroups: readonly string[] | null): T[] {
+  const usable = usableGroups ? new Set(usableGroups) : null
+  return keys.filter((key) => !key.group || (!retiredAccountGroups.has(key.group) && (!usable || usable.has(key.group))))
+}
+
+/**
  * 自己填写的密钥在检测前先过一遍格式。只有星芒的密钥确定是 sk- 开头（strict）；历史账号那边的
  * 前缀没核实过，只拦空的，别把能用的密钥挡在外面。夹着的空格、零宽字符先去掉再看，
  * 和主进程检测、保存时去掉的是同一批（J7）。打码的那串两个站都先认出来直说：星芒的正好过得了
