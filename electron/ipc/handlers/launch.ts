@@ -250,7 +250,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
   // 点下去那一刻就记下是哪个账号（N5）。以前要等续聊查询、打开前试写、问完文件夹都做完，真要排进安装队列
   // 时才记，这中间换了账号，上一个账号点的「打开」就按新账号的配置打开。记下的这份不算账号工作，换账号不用
   // 等它（#1085），只会让它作废；没打开、先不打开、点两下时第二下跟着第一下那份排队，请求一结束都交还。
-  function launchForClickedAccount<T>(launch: (accountWork: LaunchAccountWork | undefined) => T | Promise<T>): T | Promise<T> {
+  function launchForClickedAccount<T>(launch: (accountWork: LaunchAccountWork | undefined) => T): T | Promise<Awaited<T>> {
     const accountWork = options.accountWork?.queue()
     if (!accountWork) return launch(undefined)
     try {
