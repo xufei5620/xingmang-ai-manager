@@ -81,6 +81,10 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
   let toolRouteRestartHintAt = 0
   // 暂时性失败已经连着失败了几次；换线或重启从头算。
   const toolRouteFailures = new Map<ProviderId, number>()
+  // 因为连不上换的线路、那一轮没改成要重试的几家，记着是哪个账号的（D21）：重试时（或之后哪一轮）改成了照样提示重开，
+  // 不然配置已经换了、开着的 Codex / Grok 还走旧线路，客户却以为全好了。只认同一个账号；换线、重启从头算；改成了、
+  // 不用改了就忘掉。别的工具那一轮成没成不碰这几家的记号。
+  const toolRouteFaultPending = new Map<ProviderId, string>()
   let cancelToolRouteRetry: (() => void) | null = null
   let cancelToolRouteVerify: (() => void) | null = null
   // 提示只在出来以后半小时内给界面：窗口晚开、重载时还能看到，过了就是旧事。
@@ -349,37 +353,56 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
     }
   }
 
+  /** 这一家上回因为连不上换线、没改成，记号是同一个账号留下的；别的账号留下的顺手扔掉。 */
+  function inheritsToolRouteFault(provider: ProviderId, owner: string): boolean {
+    const pending = toolRouteFaultPending.get(provider)
+    if (pending === undefined) return false
+    if (pending === owner) return true
+    toolRouteFaultPending.delete(provider)
+    return false
+  }
+
   async function followToolRoutes(request: ToolRouteFollowRequest): Promise<ToolRouteFollowReport> {
     if (activeRelaySite().id !== 'solov' || toolRouteRewriteMode() === 'merge') return { rewritten: [] }
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     if (!owner) return { rewritten: [] }
     if (request.reason === 'route-changed' || request.reason === 'startup') {
       toolRouteFailures.clear()
+      toolRouteFaultPending.clear()
       cancelToolRouteRetry?.()
       cancelToolRouteRetry = null
     }
     const rewritten: ProviderId[] = []
+    const faultRewritten: ProviderId[] = []
     const failed: ProviderId[] = []
     for (const provider of request.providers ?? activeProviderIds) {
       const attempt = request.reason === 'retry' ? toolRouteFailures.get(provider) ?? 0 : 0
+      const fault = request.fault === true || inheritsToolRouteFault(provider, owner)
+      const providerRequest = fault ? { ...request, fault: true } : request
       let outcome: ToolRouteOutcome
       try {
-        outcome = await serializeConfigWrite(() => followProviderToolRoute(provider, owner, request, attempt))
+        outcome = await serializeConfigWrite(() => followProviderToolRoute(provider, owner, providerRequest, attempt))
       } catch (error) {
         runtimeLog?.log('warn', 'config', 'route.follow-failed', '工具配置这次没换成线路，稍后再试', { provider, kind: 'tool', reason: credentialFailureReason(error), attempt })
         outcome = 'retry'
       }
-      if (outcome === 'retry') failed.push(provider)
-      else toolRouteFailures.delete(provider)
+      if (outcome === 'retry') {
+        failed.push(provider)
+        if (fault) toolRouteFaultPending.set(provider, owner)
+      } else {
+        toolRouteFailures.delete(provider)
+        toolRouteFaultPending.delete(provider)
+      }
       if (outcome === 'rewritten') {
         rewritten.push(provider)
+        if (fault) faultRewritten.push(provider)
         // 这回又改了一次，之前那句「需重开生效」说的是上一条线路：因故障换的下面再按这次的标。
         toolRouteRestartPending.delete(provider)
       }
     }
     await followSkillToolRoute()
     if (failed.length) scheduleToolRouteRetry(failed)
-    const hinted = request.fault === true && rewritten.length > 0 && await noteToolRouteRestart(rewritten)
+    const hinted = faultRewritten.length > 0 && await noteToolRouteRestart(faultRewritten)
     if (rewritten.length) {
       cancelToolRouteVerify?.()
       const verify = [...rewritten]
@@ -422,6 +445,7 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
   function disposeToolRoutes(): void {
     cancelToolRouteRetry?.()
     cancelToolRouteRetry = null
+    toolRouteFaultPending.clear()
     cancelToolRouteVerify?.()
     cancelToolRouteVerify = null
     cancelPendingExternalRouteRecheck()
