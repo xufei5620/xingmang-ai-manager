@@ -293,6 +293,16 @@ export interface CanvasWindowController {
   requestCloseForQuit(): Promise<boolean>
   /** Closes the canvas window if one is open; a no-op otherwise. */
   closeIfOpen(): void
+  /**
+   * Destroys the canvas window for an update installer that is about to end
+   * the process, but keeps the host: the installer may still fail to start
+   * (UAC declined, the package gone, the macOS handoff failing) and leave the
+   * app running. Until resumeAfterAbortedQuit() the canvas cannot be opened
+   * and a window opened in flight does not hold the installer's quit.
+   */
+  suspendForQuit(): void
+  /** The quit suspendForQuit() stood aside for did not happen: the canvas opens again. */
+  resumeAfterAbortedQuit(): void
   /** Removes every IPC handler this controller registered. */
   dispose(): void
 }
@@ -415,6 +425,9 @@ export function createCanvasWindowController(
   }
   let currentAccountUserId: number | null | undefined
   let disposed = false
+  // 更新安装前关掉画布用的（suspendForQuit）。不能像 dispose 那样拆掉宿主：安装程序没起来时星芒照常开着，
+  // 拆掉了画布就再也打不开，只能重启星芒（11-18 复核 U02）。
+  let suspendedForQuit = false
   // A renderer without its host preload, a failed main-frame load, or a gone
   // renderer process cannot answer the close handshake. Keep this separate
   // from `disposed`: disposal is an intentional app shutdown, while this flag
@@ -433,6 +446,10 @@ export function createCanvasWindowController(
   const generationAdmission = new CanvasGenerationAdmission()
   const byteUploadAdmission = new CanvasByteUploadAdmission()
   let lastCanvasNotificationAt = Number.NEGATIVE_INFINITY
+
+  function hostClosed(): boolean {
+    return disposed || suspendedForQuit
+  }
 
   function assertCanvasAccountId(userId: number | null): number | null {
     if (userId !== null && (!Number.isSafeInteger(userId) || userId <= 0)) {
@@ -485,7 +502,7 @@ export function createCanvasWindowController(
     if (!pending) return
     pendingClose = null
     clearTimeout(pending.timer)
-    if (!result && !disposed && !pending.window.isDestroyed()) {
+    if (!result && !hostClosed() && !pending.window.isDestroyed()) {
       try {
         pending.window.webContents.send(canvasHostChannels.closeCancelled, { requestId: pending.requestId })
         pending.window.show()
@@ -1527,7 +1544,7 @@ export function createCanvasWindowController(
   // 文件先读、先查，坏文件不会让开着的画布关掉。画布开着就先走它自己的关闭确认：有任务在跑会问，
   // 没有就存好直接关，换项目不丢正在画的东西；用户在那里点了取消，就留在原来的项目上，这个文件不导入。
   async function openLaunchedProjectFile(filePath: string): Promise<boolean> {
-    if (disposed) throw new Error('画布宿主已关闭')
+    if (hostClosed()) throw new Error('画布宿主已关闭')
     const userId = authenticatedCanvasUserId()
     if (!options.projects || !options.projectAssets || !options.defaultProjectsDirectory) throw new Error('导入成新项目暂时不可用，请重新选择文件')
     const parsed = await readLaunchedCanvasProjectFile(filePath)
@@ -1537,13 +1554,13 @@ export function createCanvasWindowController(
       if (canvasWindow && !canvasWindow.isDestroyed()) await open()
       return false
     }
-    if (disposed) return false
+    if (hostClosed()) return false
     assertCanvasUserUnchanged(userId)
     const pending = { parsed, projectName: importedCanvasProjectName(parsed.workflow.name, filePath) }
     const imported = options.accountWork
       ? await options.accountWork.run(() => importAsNewProject(userId, pending))
       : await importAsNewProject(userId, pending)
-    if (disposed) return false
+    if (hostClosed()) return false
     if (pendingOpen) await pendingOpen.catch(() => undefined)
     if (canvasWindow && !canvasWindow.isDestroyed()) {
       // 导入这一会儿里又从主窗口打开了画布：不再关它，新项目就在项目中心里。
@@ -1718,7 +1735,7 @@ export function createCanvasWindowController(
       // There is no bridge available to verify/save state after a preload
       // failure. Let Electron close the isolated window instead of trapping
       // the user behind a timeout and an unusable browser-demo surface.
-      if (disposed || rendererUnavailable || !rendererReady || (pendingClose?.window === window && pendingClose.authorized)) return
+      if (hostClosed() || rendererUnavailable || !rendererReady || (pendingClose?.window === window && pendingClose.authorized)) return
       event.preventDefault()
       void requestClose()
     })
@@ -1863,7 +1880,7 @@ export function createCanvasWindowController(
   }
 
   async function open(): Promise<void> {
-    if (disposed) throw new Error('画布宿主已关闭')
+    if (hostClosed()) throw new Error('画布宿主已关闭')
     if (canvasWindow && !canvasWindow.isDestroyed()) {
       if (canvasWindow.isMinimized()) canvasWindow.restore()
       canvasWindow.show()
@@ -1880,7 +1897,7 @@ export function createCanvasWindowController(
   }
 
   async function openAssetLibrary(): Promise<void> {
-    if (disposed) throw new Error('画布宿主已关闭')
+    if (hostClosed()) throw new Error('画布宿主已关闭')
     if (pendingOpen) await pendingOpen.catch(() => undefined)
     if (canvasWindow && !canvasWindow.isDestroyed()) {
       await open()
@@ -1916,6 +1933,16 @@ export function createCanvasWindowController(
     requestCloseForQuit,
     closeIfOpen() {
       void requestClose()
+    },
+    suspendForQuit() {
+      if (disposed) return
+      suspendedForQuit = true
+      finishPendingClose(false)
+      if (canvasWindow && !canvasWindow.isDestroyed()) canvasWindow.destroy()
+      canvasWindow = null
+    },
+    resumeAfterAbortedQuit() {
+      suspendedForQuit = false
     },
     dispose() {
       disposed = true

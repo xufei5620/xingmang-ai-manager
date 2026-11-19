@@ -448,6 +448,36 @@ describe('main process launch install', () => {
   })
 })
 
+describe('main process update install handoff', () => {
+  // The object main.ts hands the updater as its quit handoff, keyed by property name.
+  function updateQuitHandoff(): Record<string, string> {
+    const { source } = mainSource()
+    const handoffs: Array<Record<string, string>> = []
+    function visit(node: ts.Node): void {
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && node.left.getText(source) === 'updateQuitHandoff' && ts.isObjectLiteralExpression(node.right)) {
+        const properties: Record<string, string> = {}
+        for (const property of node.right.properties) {
+          if (ts.isPropertyAssignment(property)) properties[property.name.getText(source)] = property.initializer.getText(source)
+        }
+        handoffs.push(properties)
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(handoffs).toHaveLength(1)
+    return handoffs[0]
+  }
+
+  it('closes the canvas for the installer without tearing it down, and lets it open again when the installer never starts', () => {
+    // 更新安装前把画布拆掉（dispose），安装程序没起来时星芒还开着，画布却再也打不开，只能重启星芒（11-18 复核 U02）。
+    const handoff = updateQuitHandoff()
+    expect(handoff.prepare).toContain('canvasController.suspendForQuit()')
+    expect(handoff.prepare).not.toContain('canvasController.dispose()')
+    expect(handoff.abort).toContain('canvasController.resumeAfterAbortedQuit()')
+  })
+})
+
 describe('main process unexpected exit', () => {
   it('only honours the simulated main process crash in development builds', () => {
     // 模拟开关走的是真的未捕获异常那条路，打包版认了，真机演示就混进崩溃上报的统计（D101）。

@@ -3450,8 +3450,9 @@ if (!hasSingleInstanceLock) {
         runtimeLog.log('info', 'updater', 'install.quit-prepare', '安装更新前先完成退出清理')
         return preparation.then(() => {
           // 与 quit() 一样：画布窗口会拦自己的关闭，不先放掉它，安装器发起的
-          // 退出（Mac 上是先关所有窗口）会被它挡住。
-          try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
+          // 退出（Mac 上是先关所有窗口）会被它挡住。只关窗口、不拆画布：安装器
+          // 没起来时星芒照常开着，画布还要能再打开（下面 abort 里放回来）。
+          try { canvasController.suspendForQuit() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
           try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
           try { invoicePortalWindow.destroy() } catch (cause) { runtimeLog.exception('invoice', 'shutdown.failed', cause) }
           for (const window of BrowserWindow.getAllWindows()) {
@@ -3461,6 +3462,7 @@ if (!hasSingleInstanceLock) {
       },
       abort: () => {
         lifecycle.abortUpdateQuit()
+        canvasController.resumeAfterAbortedQuit()
         // 安装器没启动起来（Windows 提权框点了「否」、包不在了）：星芒还开着，退出前跟手机说的「星芒关了」要补一句（打磨 B8）。
         void codexRemote.quitAborted().catch(() => undefined)
       },
