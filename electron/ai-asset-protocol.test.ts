@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { describe, it } from 'vitest'
 import { createActiveIdentityReader } from './active-identity'
-import { createAiAssetProtocolHandler, maximumVideoRangeBytes, type AiAssetProtocolOptions } from './ai-asset-protocol'
+import { createAiAssetProtocolHandler, type AiAssetProtocolOptions } from './ai-asset-protocol'
 import { assetThumbnailUrl, assetThumbnailVersion } from './asset-thumbnail'
 
 const assetId = 'a'.repeat(43)
@@ -149,20 +149,25 @@ describe('account-owned asset protocol', () => {
     })
   }
 
-  it('answers a seek through a long video with one bounded chunk, not the rest of the file', async () => {
-    const example = fixture()
-    const total = maximumVideoRangeBytes + 1_000_000
-    example.media.bytes = Buffer.alloc(total, 7)
-    const response = await example.handler(new Request(videoUrl, { headers: { Range: 'bytes=100-' } }))
-    assert.equal(response.status, 206)
-    assert.equal(response.headers.get('content-range'), `bytes 100-${100 + maximumVideoRangeBytes - 1}/${total}`)
-    assert.equal(response.headers.get('content-length'), String(maximumVideoRangeBytes))
-    assert.equal((await response.arrayBuffer()).byteLength, maximumVideoRangeBytes)
-    assert.deepEqual(example.videoReads, [maximumVideoRangeBytes])
-    // A range that already fits is served as asked.
-    const tail = await example.handler(new Request(videoUrl, { headers: { Range: `bytes=${total - 5}-` } }))
-    assert.equal(tail.headers.get('content-range'), `bytes ${total - 5}-${total - 1}/${total}`)
-  })
+  // Electron's player does not ask for the next piece after a short 206, so a
+  // capped open-ended range stopped playback partway (Mac acceptance B1).
+  for (const start of [0, 100, 9 * 1024 * 1024]) {
+    it(`serves an open-ended range of a large video through the end of the file: bytes=${start}-`, async () => {
+      const example = fixture()
+      const total = 21 * 1024 * 1024
+      example.media.bytes = Buffer.alloc(total, 7)
+      example.media.bytes[total - 1] = 9
+      const response = await example.handler(new Request(videoUrl, { headers: { Range: `bytes=${start}-` } }))
+      assert.equal(response.status, 206)
+      assert.equal(response.headers.get('content-range'), `bytes ${start}-${total - 1}/${total}`)
+      assert.equal(response.headers.get('content-length'), String(total - start))
+      const body = Buffer.from(await response.arrayBuffer())
+      assert.equal(body.byteLength, total - start)
+      assert.equal(body[body.byteLength - 1], 9)
+      // Still only the requested part comes off disk, never the bytes before it.
+      assert.deepEqual(example.videoReads, [total - start])
+    })
+  }
 
   it('serves a whole video without a Range header and reads nothing for HEAD', async () => {
     const example = fixture()
