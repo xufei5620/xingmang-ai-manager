@@ -130,7 +130,7 @@ import {
   type ExternalToolConfigOptions,
   type ExternalToolId,
 } from './external-tool-config'
-import { type DesktopAppUpdateRequest, type ExternalClientConfigResult, type ExternalClientSourceSwitchResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
+import { type DesktopAppUpdateRequest, type ExternalClientConfigResult, type ExternalClientLaunchResult, type ExternalClientSourceSwitchResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
 import { createExternalClientRuntime } from './external-client-runtime'
 import type { MacosDesktopLatestVersionLookup } from './macos-desktop-app-update'
 import { type ExternalClientCheckResult } from './external-client-connection'
@@ -618,7 +618,7 @@ export interface SystemService {
   installExternalClient(tool: ExternalToolId, target: RendererMessageTarget, request?: DesktopAppUpdateRequest): Promise<ExternalClientStatus>
   cancelExternalClientInstall(tool: ExternalToolId): InstallCancellationOutcome
   /** target：点「打开」的那个窗口，Claude Desktop 打开前替它放程序的进度发给它；缺省 = 不发。 */
-  launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<void>
+  launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<ExternalClientLaunchResult>
   /** 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择，星芒那份配置留着。 */
   switchExternalClientSource(tool: ExternalToolId, target: 'account' | 'official', assertBeforeWrite?: () => void): Promise<ExternalClientSourceSwitchResult>
   /**

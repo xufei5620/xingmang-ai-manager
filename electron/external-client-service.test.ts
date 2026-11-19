@@ -49,7 +49,7 @@ function fixture(options: { site?: 'solov' | 'solov-api'; platform?: NodeJS.Plat
       return { ...runtimeStatuses.find((status) => status.tool === tool)!, installed: true, launchSupported: true, version: '1.2.3' }
     }),
     cancelInstall: vi.fn(() => ({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })),
-    launch: vi.fn(async () => undefined),
+    launch: vi.fn(async () => ({})),
     stillRunning: vi.fn(async (tool: ExternalToolId) => runtimeStatuses.find((status) => status.tool === tool)?.running ?? null),
   }
   // 外部客户端换线路的定时复查（C11）只记下来，由用例自己拨。
