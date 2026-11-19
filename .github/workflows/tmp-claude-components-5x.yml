@@ -1,4 +1,4 @@
-# 临时：拿官网当前 Claude Desktop 5.x 重核工作区清单格式、放法和五部分官网文件（只下载核对，不往桶里传），核完就删。
+# 临时：拿官网当前 Claude Desktop（Windows 5.x、Mac 6.x）重核工作区清单格式和放法（只下载核对，不往桶里传），核完就删。
 name: tmp-claude-components-5x
 
 on:
@@ -9,7 +9,11 @@ permissions:
   contents: read
 
 jobs:
-  manifest:
+  read:
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [windows-msix, mac-zip, windows-nupkg]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -25,75 +29,53 @@ jobs:
 
       - run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
 
-      - name: Download the current Windows x64 MSIX and the Mac zip of the same release
+      - name: Download the installer and take out app.asar
+        env:
+          SOURCE: ${{ matrix.source }}
         run: |
           set -euo pipefail
-          loc=$(curl -sS -o /dev/null -w '%{redirect_url}' https://claude.ai/api/desktop/win32/x64/msix/latest/redirect)
-          echo "windows redirect: $loc"
-          case "$loc" in https://downloads.claude.ai/releases/win32/x64/*/Claude-*.msix) ;; *) echo "unexpected redirect"; exit 1 ;; esac
-          curl -fsSL --max-time 600 -o claude.msix "$loc"
-          ls -l claude.msix
-          mkdir -p win && unzip -qq -n claude.msix 'app/resources/app.asar' -d win
-          ls -l win/app/resources/app.asar
-          mac=$(curl -sS -o /dev/null -w '%{redirect_url}' https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect || true)
-          echo "mac dmg redirect: $mac"
-          case "$mac" in
-            https://downloads.claude.ai/releases/darwin/universal/*/Claude-*.dmg)
-              zip="${mac%.dmg}.zip"
-              echo "mac zip: $zip"
-              if curl -fsSL --max-time 600 -o claude-mac.zip "$zip"; then
-                mkdir -p mac && unzip -qq -n claude-mac.zip 'Claude.app/Contents/Resources/app.asar' -d mac && ls -l mac/Claude.app/Contents/Resources/app.asar || echo "mac zip has no app.asar at the expected place"
-              else
-                echo "mac zip download failed"
-              fi
-              ;;
-            *) echo "mac redirect not as expected; skipping the Mac comparison" ;;
+          case "$SOURCE" in
+            windows-msix)
+              loc=$(curl -sS -o /dev/null -w '%{redirect_url}' https://claude.ai/api/desktop/win32/x64/msix/latest/redirect)
+              case "$loc" in https://downloads.claude.ai/releases/win32/x64/*/Claude-*.msix) ;; *) echo "unexpected redirect $loc"; exit 1 ;; esac
+              entry='app/resources/app.asar' ;;
+            mac-zip)
+              loc=$(curl -sS -o /dev/null -w '%{redirect_url}' https://api.anthropic.com/api/desktop/darwin/universal/zip/latest/redirect)
+              case "$loc" in https://downloads.claude.ai/releases/darwin/universal/*/Claude-*.zip) ;; *) echo "unexpected redirect $loc"; exit 1 ;; esac
+              entry='Claude.app/Contents/Resources/app.asar' ;;
+            windows-nupkg)
+              loc=https://downloads.claude.ai/releases/win32/x64/AnthropicClaude-6.6395.0-full.nupkg
+              entry='lib/net45/resources/app.asar' ;;
           esac
+          echo "source: $loc"
+          curl -fsSL --max-time 900 -o package.zip "$loc"
+          ls -l package.zip
+          unzip -l package.zip | grep -E 'app\.asar$' || true
+          mkdir -p pkg && unzip -qq -n package.zip "$entry" -d pkg
+          cp "pkg/$entry" app.asar
+          ls -l app.asar
 
-      - name: Read both manifests with the client code
+      - name: Read the manifest with the client code
         run: |
           node <<'NODE'
-          const fs = require('node:fs')
           const { readClaudeDesktopComponentManifest } = require('./dist-electron/claude-desktop-component-manifest.js')
-          const { resolveClaudeCodeMacPin, claudeCodeMacObjectKey } = require('./dist-electron/claude-desktop-mac-code-seed.js')
-          const { claudeDesktopWorkspaceObjectKey } = require('./dist-electron/claude-desktop-workspace-seed.js')
-          function summary(manifest) {
-            const out = { code: null, vm: null }
-            if (manifest.code) out.code = manifest.code
-            if (manifest.vm) {
-              out.vm = { sha: manifest.vm.sha, files: {} }
-              for (const platformKey of ['win32', 'unix']) {
-                for (const architecture of ['x64', 'arm64']) {
-                  const files = manifest.vm.files[platformKey][architecture]
-                  if (!files) continue
-                  out.vm.files[`${platformKey}-${architecture}`] = files.map((file) => ({ ...file, key: claudeDesktopWorkspaceObjectKey(manifest.vm.sha, platformKey, architecture, file) }))
-                }
-              }
-            }
-            return out
-          }
           ;(async () => {
-            const win = await readClaudeDesktopComponentManifest('win/app/resources/app.asar')
-            console.log('######## windows manifest\n' + JSON.stringify(summary(win), null, 2))
-            for (const architecture of ['arm64', 'x64']) {
-              const pin = resolveClaudeCodeMacPin(win, architecture)
-              console.log(`mac pin ${architecture}: ${JSON.stringify(pin)} key ${pin ? claudeCodeMacObjectKey(pin) : '-'}`)
-            }
-            const macAsar = 'mac/Claude.app/Contents/Resources/app.asar'
-            if (fs.existsSync(macAsar)) {
-              const mac = await readClaudeDesktopComponentManifest(macAsar)
-              console.log('######## mac manifest identical to windows: ' + (JSON.stringify(summary(mac)) === JSON.stringify(summary(win))))
-              if (JSON.stringify(summary(mac)) !== JSON.stringify(summary(win))) console.log(JSON.stringify(summary(mac), null, 2))
+            const manifest = await readClaudeDesktopComponentManifest('app.asar')
+            console.log('######## code ' + JSON.stringify(manifest.code))
+            if (!manifest.vm) { console.log('######## vm null'); return }
+            console.log('######## vm sha ' + manifest.vm.sha)
+            for (const platformKey of ['win32', 'unix']) for (const architecture of ['x64', 'arm64']) {
+              const files = manifest.vm.files[platformKey][architecture] || []
+              console.log(`${platformKey}-${architecture}: ` + files.map((file) => `${file.name} ${file.size} ${file.checksum}`).join(' | '))
             }
           })().catch((error) => { console.error(error); process.exitCode = 1 })
           NODE
 
-      - name: How 5.x places and verifies the workspace and the Claude Code bundles
+      - name: How this version places and verifies the workspace and the Claude Code bundles
         run: |
           set -uo pipefail
-          npx --yes @electron/asar@3.4.1 extract win/app/resources/app.asar app || echo "some files could not be extracted"
-          find app -maxdepth 3 -type f -name '*.js' -printf '%s %p\n' | sort -n | tail -12
-          head -c 400 app/package.json; echo
+          npx --yes @electron/asar@3.4.1 extract app.asar app >/dev/null 2>&1 || echo "some files could not be extracted"
+          head -c 300 app/package.json; echo
           cat > "$RUNNER_TEMP/read.mjs" <<'EOF'
           import fs from 'node:fs'
           import path from 'node:path'
@@ -108,98 +90,82 @@ jobs:
           }
           walk(root)
           const texts = files.map((f) => [path.relative(root, f), fs.readFileSync(f, 'utf8')])
-          const patterns = [
-            ['workspace manifest start', /versions:\[\{sha:"/g, 2, 300, 1600],
-            ['claudevm.bundle', /claudevm\.bundle/g, 6, 700, 900],
-            ['cowork-adopted', /cowork-adopted/g, 6, 900, 900],
-            ['.origin', /\.origin[`"']/g, 8, 900, 700],
-            ['vms/linux', /vms\/linux/g, 4, 700, 700],
-            ['rawChecksum use', /\.rawChecksum/g, 6, 700, 700],
-            ['.zst cache', /\.zst[`"']/g, 10, 600, 600],
-            ['claude-code-releases', /claude-code-releases/g, 4, 500, 700],
-            ['claude.app.tar.zst', /claude\.app\.tar\.zst/g, 4, 600, 700],
-            ['.verified', /\.verified/g, 6, 600, 900],
-            ['claude-code-vm', /claude-code-vm/g, 4, 500, 900],
-            ['vm_bundles', /vm_bundles/g, 6, 500, 700],
-          ]
-          for (const [label, re, max, before, after] of patterns) {
-            console.log('\n######## ' + label)
-            let shown = 0
-            let count = 0
-            for (const [name, t] of texts) {
-              for (const m of t.matchAll(re)) {
-                count++
-                if (shown >= max) continue
-                shown++
-                console.log('--- ' + name + ' @' + m.index + '\n' + t.slice(Math.max(0, m.index - before), m.index + after))
-              }
-            }
-            console.log('(matches: ' + count + ')')
+          function show(label, name, text, index, before, after) {
+            console.log(`--- ${label} ${name} @${index}\n` + text.slice(Math.max(0, index - before), index + after).replace(/\n/g, ' '))
           }
+          function escape(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
+          function enclosingName(text, index) {
+            const window = text.slice(Math.max(0, index - 30000), index)
+            let name = null
+            for (const m of window.matchAll(/(?:function\s+([\w$]+)|(?:async\s+)?([\w$]+))\(([\w$,=.\s{}]*)\)\{/g)) name = m[1] || m[2]
+            return name
+          }
+          function callers(label, name, maximum, before, after) {
+            if (!name) { console.log(`(no name for ${label})`); return }
+            const re = new RegExp(`(?<![\\w$.])${escape(name)}\\(`, 'g')
+            let shown = 0
+            for (const [file, text] of texts) for (const m of text.matchAll(re)) {
+              if (/function\s+$/.test(text.slice(Math.max(0, m.index - 10), m.index))) continue
+              if (shown++ < maximum) show(`${label} caller of ${name}`, file, text, m.index, before, after)
+            }
+            console.log(`(${label}: ${shown} call sites of ${name})`)
+          }
+          function anchor(label, literal, maximum, before, after) {
+            console.log('\n######## ' + label)
+            const found = []
+            for (const [file, text] of texts) {
+              let at = text.indexOf(literal)
+              while (at >= 0) { found.push([file, text, at]); at = text.indexOf(literal, at + literal.length) }
+            }
+            for (const [file, text, at] of found.slice(0, maximum)) show(label, file, text, at, before, after)
+            console.log(`(${label}: ${found.length} matches)`)
+            return found
+          }
+          function regex(label, re, maximum, before, after) {
+            console.log('\n######## ' + label)
+            const found = []
+            for (const [file, text] of texts) for (const m of text.matchAll(re)) found.push([file, text, m])
+            for (const [file, text, m] of found.slice(0, maximum)) show(label, file, text, m.index, before, after)
+            console.log(`(${label}: ${found.length} matches)`)
+            return found
+          }
+          function variable(label, re, maximum, before, after) {
+            console.log('\n######## ' + label)
+            for (const [file, text] of texts) for (const m of text.matchAll(re)) {
+              const name = m[1]
+              console.log(`(${label}: ${file} defines ${name})`)
+              const use = new RegExp(`(?<![\\w$.])${escape(name)}(?![\\w$])`, 'g')
+              let shown = 0
+              for (const u of text.matchAll(use)) {
+                if (u.index === m.index) continue
+                if (shown++ < maximum) show(`${label} use of ${name}`, file, text, u.index, before, after)
+              }
+              console.log(`(${label}: ${shown} uses of ${name} in ${file})`)
+            }
+          }
+
+          // Cowork workspace: status check, cache decompress, warm promote, download, adopted marker.
+          for (const [label, literal] of [['bundle status', '[Bundle:status] ${t} missing'], ['cache decompress', '[cache] No cached compressed file'],
+            ['warm promote', '[warm] Promoting warm file'], ['warm start', '[warm] Starting warm download']]) {
+            const found = anchor(label, literal, 1, 2500, 600)
+            for (const [, text, at] of found.slice(0, 1)) callers(label, enclosingName(text, at), 4, 2500, 1500)
+          }
+          variable('adopted marker', /([\w$]+)="\.cowork-adopted"/g, 8, 1500, 1200)
+          variable('download failed text', /([\w$]+)="Claude's workspace download failed: "/g, 3, 2500, 800)
+          for (const [, text, m] of regex('vm base url', /function ([\w$]+)\(\)\{return`https:\/\/downloads\.claude\.ai\/vms\/linux\//g, 2, 200, 400)) callers('vm base url', m[1], 4, 2500, 1500)
+
+          // Claude Code (Mac bundle, Windows exe, Linux in the VM): where it goes and how a placed one is recognised.
+          regex('installDirFor', /installDirFor\(e,t,r\)\{/g, 2, 100, 700)
+          regex('getBinaryPathForTarget', /getBinaryPathForTarget\(e,t,r=this/g, 1, 100, 4000)
+          for (const [file, text, m] of regex('bundle extract and marker', /await ([\w$]+)\(u,o,s\),a\.step="marker",await ([\w$]+)\(o,s,r\.checksum\)/g, 1, 300, 300)) {
+            for (const name of [m[1], m[2]]) {
+              const def = text.indexOf(`function ${name}(`)
+              if (def >= 0) show(`definition of ${name}`, file, text, def, 50, 2500)
+            }
+            const dir = /\.installDirFor\(e,t,r\.checksum\),s=[\w$.]+\(o,([\w$]+)\)/.exec(text)
+            if (dir) { const def = text.indexOf(`${dir[1]}=`); if (def >= 0) show(`definition of ${dir[1]}`, file, text, def, 50, 200) }
+          }
+          anchor('targetVersion', 'targetVersion', 6, 400, 600)
+          anchor('claude-code-vm', 'claude-code-vm', 6, 800, 2500)
           EOF
           node "$RUNNER_TEMP/read.mjs" "$PWD/app"
-
-  dry-run:
-    strategy:
-      fail-fast: false
-      matrix:
-        part: [vm-win32-x64, vm-win32-arm64, vm-unix-x64, vm-unix-arm64, code-mac]
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-
-      - run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
-
-      # 同一份同步脚本，只把存储桶换成只记账的假桶：inspect 一律说「桶里没有」，publishFile 只在本机算一遍大小和 SHA-256。
-      # 所以每个文件都会真从 downloads.claude.ai 下（不跟跳转），按 app.asar 清单核大小和校验值。
-      - name: Dry-run the sync without the bucket
-        env:
-          CLAUDE_COMPONENTS_PART: ${{ matrix.part }}
-        run: |
-          node <<'NODE'
-          const crypto = require('node:crypto')
-          const fs = require('node:fs')
-          const common = require('./scripts/cos-sync-utils.cjs')
-          const sync = require('./scripts/sync-claude-components-cos.cjs')
-          const part = sync.parsePart(process.env.CLAUDE_COMPONENTS_PART)
-          const objects = new Map()
-          function hashFile(file) {
-            return new Promise((resolve, reject) => {
-              const hash = crypto.createHash('sha256')
-              let bytes = 0
-              fs.createReadStream(file).on('data', (chunk) => { bytes += chunk.length; hash.update(chunk) }).on('error', reject).on('end', () => resolve({ bytes, sha256: hash.digest('hex') }))
-            })
-          }
-          const store = {
-            async inspect(key) { return objects.get(key) || null },
-            async publishFile(key, file, input) {
-              const { bytes, sha256 } = await hashFile(file)
-              if (bytes !== input.expectedBytes || sha256 !== input.expectedSha256) throw new Error('dry-run: local file differs from the manifest')
-              console.log(`[dry-run] would publish ${key} (${bytes} bytes, ${input.contentType})`)
-              const object = { bytes, sha256, etag: `"${sha256.slice(0, 16)}"` }
-              objects.set(key, object)
-              return { key, ...object }
-            },
-          }
-          const dependencies = sync.createRuntimeDependencies(common)
-          const resolve = dependencies.resolveOfficialPackage
-          dependencies.resolveOfficialPackage = async (url) => {
-            const resource = await resolve(url)
-            console.log(`[dry-run] installer ${resource.url} (${resource.bytes} bytes)`)
-            return resource
-          }
-          const started = Date.now()
-          sync.synchronizeClaudeComponents({ part, store, dependencies, components: sync.loadComponents(),
-            progress: (event) => { if (event.event !== 'transfer') console.log(`[claude-components-sync] ${JSON.stringify(event)}`) } })
-            .then((result) => console.log(`[dry-run] done in ${Math.round((Date.now() - started) / 1000)}s ${JSON.stringify(result)}`))
-            .catch((error) => { console.error(`[dry-run] failed ${JSON.stringify(sync.safeComponentsSyncFailure(error))}`); process.exitCode = 1 })
-          NODE
