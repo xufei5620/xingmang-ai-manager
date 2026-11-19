@@ -58,7 +58,7 @@ import type { V2Bridge } from './types'
 import { accountOrigin, accountSiteId, accountSupports, visibleAccountTab, accountKeyQuota, type AccountSiteId } from './account-context'
 import type { AccountSessionState } from '../../electron/ipc-contract'
 import { isActiveProviderId, type ActiveProviderId } from '../../electron/catalog'
-import { accountKeyExpiredTime } from '../../electron/account-key-quota'
+import { findAccountKeyById } from '../../electron/account-key-quota'
 import { useLatestRequest } from './latest-request'
 import { resolveRelaySite } from '../../electron/ipc-contract'
 import { LocalAvatar } from './LocalAvatar'
@@ -75,6 +75,8 @@ import {
   affiliateTransferTitleQuota,
   currentExpiryText,
   inviteRuleText,
+  keyEditChanges,
+  keyEditUpdate,
   keyExpiredTime,
   keyMetaParts,
   keyToolChoice,
@@ -817,6 +819,15 @@ function AccountKeys({
   )
   const resource = useResource(load)
   useRefreshRequest(refreshRequest, () => void resource.reload())
+  // 列表和上面「每个工具的额度上限」读的是同一批密钥，各读各的：一边写过，另一边跟着重读，
+  // 免得一处显示刚设的上限、另一处还是旧的（F01）。
+  const [keysWritten, setKeysWritten] = useState(0)
+  const reloadAfterWrite = () => {
+    setKeysWritten((count) => count + 1)
+    return resource.reload()
+  }
+  // 保存前要先读一次这把密钥现在的样子；读的这会儿换了账号（这一页会整个换掉），旧的编辑不再发出去。
+  const keyEdit = useLatestRequest()
   const operation = useOperation()
   // 「配置到工具」写的是工具的配置文件，没权限时说「写不进配置文件」（已知29）。
   const configureFailureTarget = operation.failed === 'configure' ? 'config' : undefined
@@ -841,6 +852,8 @@ function AccountKeys({
   const groupsRequestedAt = useRef(0)
   const [quota, setQuota] = useState('10')
   const [unlimited, setUnlimited] = useState(false)
+  // 编辑已有密钥时，「额度」那两格动过没有：没动就照这把密钥保存那一刻的额度写回去（F01）。
+  const [quotaEdited, setQuotaEdited] = useState(false)
   const [expiry, setExpiry] = useState<KeyExpiryChoice>('never')
   const [customExpiry, setCustomExpiry] = useState('')
   const [removing, setRemoving] = useState<AccountKey | null>(null)
@@ -935,6 +948,7 @@ function AccountKeys({
     setQuota(
       key === 'new' ? '10' : String(key.remainQuota / balance.quotaPerUnit),
     )
+    setQuotaEdited(false)
     setExpiry(key === 'new' ? 'never' : 'keep')
     setCustomExpiry(key === 'new' ? '' : toDateTimeLocalValue(key.expiredAt))
     operation.clear()
@@ -960,36 +974,44 @@ function AccountKeys({
     void operation.execute(
       'save-key',
       async () => {
-        const amount = Number(quota)
         if (groupsLoading || groupsError || groupsPending.current?.request()) throw new Error('请先获取最新的可用分组。')
         if (!name.trim()) throw new Error('请给密钥起个名字')
         if (!group.trim() || !selectedGroupAvailable)
           throw new Error('当前没有可用分组，暂时无法保存密钥。')
+        if (editing && editing !== 'new') {
+          const changes = keyEditChanges(
+            { name: name.trim(), group, quotaEdited, unlimited, quota, expiry, customExpiry },
+            editing,
+            { quotaPerUnit: balance.quotaPerUnit, siteId, now: Date.now() },
+          )
+          // 列表是打开这页时读的，上面「每个工具的额度上限」、别的设备都可能刚改过这把。没改的几项照它
+          // 现在的样子写回去，不拿编辑框打开那一刻的旧数整条盖上去（F01）。整张列表翻完都没有这把，
+          // 就照框里的发，后台自己会说找不到。
+          const live = keyEdit.capture()
+          const latest = await findAccountKeyById((query) => api.getAccountKeys(query), editing.id)
+          if (!live()) return null
+          const input = keyEditUpdate(editing.id, changes, latest ?? editing)
+          await api.updateAccountKey(input)
+          closeEditor()
+          await reloadAfterWrite()
+          return input.name
+        }
+        const amount = Number(quota)
         if (!unlimited && !(amount > 0)) throw new Error('请填写大于 0 的可用额度')
-        const expiredTime = keyExpiredTime(expiry, {
-          custom: customExpiry,
-          current: editing && editing !== 'new' && expiry === 'keep' ? accountKeyExpiredTime(editing.expiredAt) : -1,
-          now: Date.now(),
-        })
         const input = {
           name: name.trim(),
           group,
           remainQuota: accountKeyQuota(amount, balance.quotaPerUnit, siteId, unlimited),
           unlimitedQuota: unlimited,
-          expiredTime,
+          expiredTime: keyExpiredTime(expiry, { custom: customExpiry, current: -1, now: Date.now() }),
         }
-        if (editing && editing !== 'new') {
-          await api.updateAccountKey({ ...input, id: editing.id })
-          closeEditor()
-        } else {
-          await api.createAccountKey(input)
-          groupsRequest.invalidate()
-          setCreated(input.name)
-        }
-        await resource.reload()
+        await api.createAccountKey(input)
+        groupsRequest.invalidate()
+        setCreated(input.name)
+        await reloadAfterWrite()
         return input.name
       },
-      (saved) => editing && editing !== 'new' ? `已保存「${saved}」` : '',
+      (saved) => saved && editing && editing !== 'new' ? `已保存「${saved}」` : '',
     )
   // 失败只记下工具，不把主进程的原话摆出来：这里要告诉用户的只有「点哪里」。
   const replaceKey = async (provider: Provider): Promise<boolean> => {
@@ -1006,7 +1028,7 @@ function AccountKeys({
       'replace',
       async () => {
         if (!(await replaceKey(provider))) throw new Error(`${keyToolName(provider)} 还是没换上新密钥，请检查网络后再点一次。`)
-        await resource.reload()
+        await reloadAfterWrite()
       },
       `${keyToolName(provider)} 已换上新密钥`,
     )
@@ -1108,7 +1130,15 @@ function AccountKeys({
           新建密钥
         </Button>
       </div>
-      <ToolKeyLimits api={api} balance={balance} siteId={siteId} username={username} refreshRequest={refreshRequest} />
+      <ToolKeyLimits
+        api={api}
+        balance={balance}
+        siteId={siteId}
+        username={username}
+        refreshRequest={refreshRequest}
+        keysWritten={keysWritten}
+        onSaved={() => void resource.reload()}
+      />
       <ResultNotice {...operation} target={configureFailureTarget} />
       {replaceFailed && onRewriteKey && (replaceFailed.skipped ? (
         <Notice
@@ -1369,7 +1399,10 @@ function AccountKeys({
                 label="额度"
                 options={keyQuotaChoices}
                 value={unlimited ? 'unlimited' : 'limited'}
-                onChange={(value) => setUnlimited(value === 'unlimited')}
+                onChange={(value) => {
+                  setUnlimited(value === 'unlimited')
+                  setQuotaEdited(true)
+                }}
                 testId="account-key-quota-mode"
               />
             </div>
@@ -1381,7 +1414,10 @@ function AccountKeys({
                 step="0.01"
                 hint="美元，用完后这把密钥会暂停，不影响账号余额"
                 value={quota}
-                onChange={(event) => setQuota(event.target.value)}
+                onChange={(event) => {
+                  setQuota(event.target.value)
+                  setQuotaEdited(true)
+                }}
               />
             )}
           </>
@@ -1411,7 +1447,7 @@ function AccountKeys({
                       const provider = onRewriteKey && isProvider(removing.managedProvider) ? removing.managedProvider : undefined
                       const replaced = provider ? await replaceKey(provider) : false
                       setRemoving(null)
-                      await resource.reload()
+                      await reloadAfterWrite()
                       return { name: removing.name, provider: provider && replaced ? provider : null }
                     },
                     (result) => result.provider
