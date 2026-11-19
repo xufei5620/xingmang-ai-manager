@@ -26,33 +26,48 @@ import { createHash } from 'node:crypto'
 // fails scripts/ci-workflow-config.test.cjs rather than quietly weighing
 // nothing.
 //
-// The five canvas-v2/ entries came in with the xingmang-canvas kernel (#1393)
-// and were timed serially in the Linux cloud container, not on windows-latest:
-// they render the whole canvas app, which costs CPU rather than file I/O, so
-// the two platforms should be close. Take their Windows numbers from a shard
-// log the next time the table is re-measured.
+// Re-measured on 2026-11-19, each entry the median of three main runs
+// (44568715302, 44572005275 and 44588543395). Since the 10-19 table
+// config-files had grown from 169 seconds to 278, and codex-remote-service,
+// never listed, took 60 to 108 on its own; weighing a nominal second, it kept
+// landing on the shard that already held config-files. On main f6e671b that
+// shard ran 12.9 minutes against 7.7 to 8.9 for the others, and 13.5 on
+// #1946. Dealt from the table below, the same runs' times come to about 9.5
+// minutes a shard: the whole vitest suite is now some 38 runner-minutes,
+// where the 10-19 cut planned four quarters near 6.
+//
+// The canvas-v2/ entries are windows-latest numbers now too. They came in with
+// the xingmang-canvas kernel (#1393) timed in the Linux cloud container, which
+// had them at roughly two thirds of what the Windows runners take.
 export const measuredSeconds = {
-  'electron/external-client-service.test.ts': 170,
-  'electron/config-files.test.ts': 169,
-  'electron/system-service.test.ts': 128,
-  'electron/claude-desktop-config.test.ts': 106,
-  'electron/tool-config-ownership.test.ts': 105,
-  'electron/system-service-tool-route.test.ts': 59,
-  'electron/xingmang-ai-skill.test.ts': 38,
-  'electron/backups.test.ts': 30,
-  'electron/codex-provider-isolation.test.ts': 19,
-  'electron/system-service.config-write-queue.test.ts': 14,
+  'electron/config-files.test.ts': 278,
+  'electron/external-client-service.test.ts': 189,
+  'electron/system-service.test.ts': 170,
+  'electron/claude-desktop-config.test.ts': 100,
+  'electron/tool-config-ownership.test.ts': 80,
+  'electron/system-service-tool-route.test.ts': 76,
+  'electron/codex-remote-service.test.ts': 76,
+  'electron/xingmang-ai-skill.test.ts': 55,
+  'electron/codex-provider-isolation.test.ts': 24,
+  'electron/backups.test.ts': 24,
+  'electron/config-save-service.test.ts': 18,
+  'electron/canvas-project-store.test.ts': 15,
+  'electron/diagnostics.test.ts': 13,
   'electron/codex-plugin-catalog.test.ts': 13,
-  'electron/acceleration-development-backend.test.ts': 13,
-  'canvas-v2/src/image-tools/annotation-app.test.ts': 29,
-  'canvas-v2/src/video-tools/video-app-workflow.test.ts': 27,
-  'canvas-v2/src/editor/asset-placement-app.test.ts': 17,
-  'canvas-v2/src/editor/frame-selection-app.test.ts': 16,
-  'canvas-v2/src/editor/output-image-app.test.ts': 13,
+  'electron/system-service.config-write-queue.test.ts': 12,
+  'electron/acceleration-development-backend.test.ts': 10,
+  'canvas-v2/src/image-tools/annotation-app.test.ts': 50,
+  'canvas-v2/src/video-tools/video-app-workflow.test.ts': 39,
+  'canvas-v2/src/editor/frame-selection-app.test.ts': 26,
+  'canvas-v2/src/editor/asset-placement-app.test.ts': 26,
+  'canvas-v2/src/editor/output-image-app.test.ts': 20,
+  'canvas-v2/src/editor/group-selection-app.test.ts': 13,
+  'canvas-v2/src/image-tools/mask-asset-app.test.ts': 11,
+  'canvas-v2/src/editor/run-result-collection-app.test.ts': 10,
 }
 
 // Per-file setup (transform and import) plus a typical file's tests came to
-// 0.78s on the same run.
+// 0.78s on f4b0d2a, and to 0.70 to 0.83 on the three runs above.
 export const unmeasuredSeconds = 1
 
 function compareText(left, right) {
