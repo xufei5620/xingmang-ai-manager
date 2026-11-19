@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clientLaunchProgressLabel, clientLaunchWaitLabel, launchDeclined, launchWaitLabel, launchWarning, logoutJobsNote, resumeSessionNotice } from './launch-notice'
+import { clientLaunchProgressLabel, clientLaunchWaitLabel, externalLaunchWarning, launchDeclined, launchWaitLabel, launchWarning, logoutJobsNote, resumeSessionNotice } from './launch-notice'
 import type { DesktopAppStatus } from '../../../../electron/ipc-contract'
 
 const status = { installed: true } as DesktopAppStatus
@@ -148,5 +148,14 @@ describe('clientLaunchProgressLabel', () => {
       .toBe('正在替 Claude Desktop 准备聊天要用的程序，好了马上打开')
     expect(clientLaunchProgressLabel({ tool: 'claudeDesktop', phase: 'placing', percent: null }))
       .toBe('正在替 Claude Desktop 准备聊天要用的程序，好了马上打开')
+  })
+})
+
+describe('externalLaunchWarning', () => {
+  it('tells an elevated 星芒 how to let Claude Desktop get its program, and says nothing otherwise', () => {
+    expect(externalLaunchWarning({ preparationSkipped: 'elevated' }))
+      .toBe('星芒现在是以管理员身份打开的，没法替 Claude Desktop 准备程序。关掉星芒、直接双击打开，再点「打开」。')
+    expect(externalLaunchWarning({})).toBeNull()
+    expect(externalLaunchWarning(undefined)).toBeNull()
   })
 })

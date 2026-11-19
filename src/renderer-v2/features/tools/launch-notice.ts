@@ -1,4 +1,4 @@
-import type { CliLaunchResult, CodexDesktopLaunchResult, ExternalClientLaunchProgress } from '../../../../electron/ipc-contract'
+import type { CliLaunchResult, CodexDesktopLaunchResult, ExternalClientLaunchProgress, ExternalClientLaunchResult } from '../../../../electron/ipc-contract'
 import { spacedName } from './model'
 
 const unverifiedChineseLocale = 'Codex 已打开，中文界面尚未确认生效，请在配置中再次启用。'
@@ -85,6 +85,17 @@ export function clientLaunchWaitLabel(
 export function clientLaunchProgressLabel(event: ExternalClientLaunchProgress): string {
   const percent = event.percent === null ? '' : `（${event.percent}%）`
   return `正在替 Claude Desktop 准备聊天要用的程序${percent}，好了马上打开`
+}
+
+/**
+ * 桌面客户端打开以后还要提醒的那一句。现在只有 Windows 上星芒是右键「以管理员身份运行」时打开 Claude Desktop：
+ * 星芒有意不往它的文件夹里放程序（electron/claude-desktop-code-seed.ts 的 not-same-user），客户不知道就只看到
+ * Claude 一直转圈。字是 yoyo 2026-11-19 回「提示改」批的。测试夹具和旧版主进程什么都不回时按「没有」处理。
+ */
+export function externalLaunchWarning(result: ExternalClientLaunchResult | void | undefined): string | null {
+  if (result?.preparationSkipped === 'elevated')
+    return '星芒现在是以管理员身份打开的，没法替 Claude Desktop 准备程序。关掉星芒、直接双击打开，再点「打开」。'
+  return null
 }
 
 // Git 不在工具表里，和 Node.js、Python 一样挂在首页「运行环境」那张卡上，名字只能在这里给。
