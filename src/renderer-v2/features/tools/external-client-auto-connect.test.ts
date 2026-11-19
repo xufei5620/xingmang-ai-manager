@@ -37,7 +37,7 @@ const fresh = (tool: ExternalToolId, patch: Partial<ExternalClientStatus> = {}):
 const okConnection = (tool: ExternalToolId, model: string): ExternalClientCheckResult => ({ tool, siteId: 'solov', installed: true, ok: true, layer: 'network',
   summary: `当前账号的密钥和模型 ${model} 都可用`, nextStep: '无需处理', evidence: '已核对', endpoint: 'https://fixture.invalid/v1/models', model, detail: null, status: 200, durationMs: 9,
   checkedAt: '2026-11-11T00:00:00.000Z' })
-const bridge = (options: { config?: AppConfigSummary['providers']; keys?: AccountKey[] | Error; configured?: string[]; accountModels?: string[]; save?: Error; verified?: boolean } = {}) => {
+const bridge = (options: { config?: AppConfigSummary['providers']; keys?: AccountKey[] | Error; groups?: string[] | Error; claudeCode?: { name: string; group: string } | Error; configured?: string[]; accountModels?: string[]; save?: Error; verified?: boolean } = {}) => {
   const configureExternalTool = vi.fn(async (tool: ExternalToolId, request: ExternalClientConfigRequest): Promise<ExternalClientConfigResult> => {
     if (options.save) throw options.save
     const connection: ExternalClientCheckResult = options.verified === false ? { ...okConnection(tool, request.model), ok: false, layer: 'model' } : okConnection(tool, request.model)
@@ -49,6 +49,16 @@ const bridge = (options: { config?: AppConfigSummary['providers']; keys?: Accoun
       if (options.keys instanceof Error) throw options.keys
       const keys = options.keys ?? []
       return { keys, total: keys.length, page: 1, pageSize: 100 }
+    }),
+    // 缺省：账号能用的分组就是密钥挂着的那几个，Claude Code 那把签在 Claude-MAX。
+    getAccountUsableGroups: vi.fn(async () => {
+      if (options.groups instanceof Error) throw options.groups
+      const names = options.groups ?? [...new Set((options.keys instanceof Error ? [] : options.keys ?? []).map((key) => key.group))]
+      return names.map((name) => ({ name, description: name, ratio: 1 }))
+    }),
+    getAccountKeyOptions: vi.fn(async () => {
+      if (options.claudeCode instanceof Error) throw options.claudeCode
+      return { current: { preview: null, keyId: null, name: null, group: null }, automatic: options.claudeCode ?? { name: 'xingmang-desktop-claude', group: 'Claude-MAX' } }
     }),
     listConfiguredModels: vi.fn(async () => options.configured ?? ['gpt-6.1-sol', 'claude-opus-5-5', 'claude-haiku-5-5']),
     listAccountKeyModels: vi.fn(async () => options.accountModels ?? ['claude-haiku-5-5', 'claude-opus-5-5']),
@@ -119,6 +129,22 @@ describe('external client automatic connection', () => {
     // Claude Desktop 不按字母序拿 Haiku，照 Claude Code 那套挑 Opus。
     await expect(autoConnectExternalClient(desktop.api, fresh('claudeDesktop'), () => true)).resolves.toMatchObject({ kind: 'connected', model: 'claude-opus-5-5' })
     expect(desktop.configureExternalTool).toHaveBeenCalledWith('claudeDesktop', { credential: { kind: 'account', keyId: 22 }, model: 'claude-opus-5-5', automatic: true })
+  })
+
+  it('skips keys in groups the account lost and prefers the Claude Code group, like the connect dialog', async () => {
+    const codexOnly = providers({ codex: relay('gpt-6.1-sol') })
+    const keys = [accountKey(40, 'Claude-ANTI'), accountKey(31, 'Claude AWS-B'), accountKey(30, 'Claude-MAX')]
+    const desktop = bridge({ config: codexOnly, keys, groups: ['GPT', 'Claude-MAX', 'Claude AWS-B'] })
+    await expect(autoConnectExternalClient(desktop.api, fresh('claudeDesktop'), () => true)).resolves.toMatchObject({ kind: 'connected' })
+    expect(desktop.configureExternalTool).toHaveBeenCalledWith('claudeDesktop', expect.objectContaining({ credential: { kind: 'account', keyId: 30 } }))
+    // 那个分组里一把都没有：挑别的能用的 Claude 分组，删掉的那个不碰。
+    const other = bridge({ config: codexOnly, keys: keys.slice(0, 2), groups: ['GPT', 'Claude-MAX', 'Claude AWS-B'] })
+    await autoConnectExternalClient(other.api, fresh('claudeDesktop'), () => true)
+    expect(other.configureExternalTool).toHaveBeenCalledWith('claudeDesktop', expect.objectContaining({ credential: { kind: 'account', keyId: 31 } }))
+    // 分组和 Claude Code 那把都没读到：退回旧挑法，不因此不连。
+    const unknown = bridge({ config: codexOnly, keys, groups: new Error('网络不通'), claudeCode: new Error('网络不通') })
+    await autoConnectExternalClient(unknown.api, fresh('claudeDesktop'), () => true)
+    expect(unknown.configureExternalTool).toHaveBeenCalledWith('claudeDesktop', expect.objectContaining({ credential: { kind: 'account', keyId: 40 } }))
   })
 
   it('does not save when the key has no model it can pick with confidence', async () => {

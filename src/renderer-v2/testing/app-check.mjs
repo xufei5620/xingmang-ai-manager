@@ -993,6 +993,22 @@ test('the Claude Desktop dialog moves to the Claude Code key once it lands, but 
   } finally { await racing.close() }
 })
 
+test('the Claude Desktop dialog leaves out keys in groups the account lost and defaults to the Claude Code group', async () => {
+  // bootstrapPending：开机那一轮还没替 Claude Code 写上当前账号的密钥，弹窗只能在账号里挑。
+  const page = await open('clientModels=1&claudeUnconfigured=1&bootstrapPending=1&clientKeyGroups=1')
+  try {
+    await page.getByTestId('home-client-claudeDesktop').click()
+    await page.getByTestId('external-client-dialog').waitFor()
+    // 以前默认落到最新那把分组名带 Claude 的（8 月 AI 对话在 Claude-ANTI 里签的），一检测就 403。
+    await expect(page.getByTestId('external-client-source')).toHaveAttribute('data-value', 'account:401')
+    await page.getByTestId('external-client-source').click()
+    await page.getByTestId('external-client-source-option-account:402').waitFor()
+    assert.equal(await page.getByTestId('external-client-source-option-account:403').count(), 0)
+    await page.keyboard.press('Escape')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('client save errors retain the selected model and never show a success notice', async () => {
   const page = await open('clientModels=1&clientSaveFailure=1&keyOptions=1')
   try {
@@ -8105,6 +8121,19 @@ for (const tool of matchedToolIds) test(`read-only account matches retain accoun
     assert.equal(await page.getByTestId('tool-key-select').getAttribute('data-value'), 'current')
     assert.equal(await page.getByLabel('默认模型').inputValue(), selectedModel)
     assert.equal(await page.getByLabel('星芒密钥', { exact: true }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the tool key list leaves out keys in groups the account lost', async () => {
+  const page = await open('clientKeyGroups=1')
+  try {
+    await openToolConfiguration(page)
+    await page.getByTestId('tool-key-select').click()
+    await page.getByTestId('tool-key-select-option-402').waitFor()
+    await page.getByTestId('tool-key-select-option-401').waitFor()
+    assert.equal(await page.getByTestId('tool-key-select-option-403').count(), 0)
+    await page.keyboard.press('Escape')
     await clean(page)
   } finally { await page.close() }
 })

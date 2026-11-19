@@ -17,21 +17,37 @@ export function configuredKeySources<T extends { id: ProviderId }>(sources: read
   return [...usable.filter((item) => item.id === preferred), ...usable.filter((item) => item.id !== preferred)]
 }
 
+type ClientKey = Pick<AccountKey, 'id' | 'group'> & { name?: string }
+
+/**
+ * Claude Desktop 在账号里挑哪把：先挑星芒替 Claude Code 签的那个分组里的（同名的那把最先），没有再挑别的
+ * 分组名带 Claude 的。只看分组名会挑到账号里最新的那把，可能是 8 月 AI 对话在别的 Claude 分组里签的，
+ * 那个分组后来关了，一检测就 403（2026-11-19 yoyo 看到默认成了 Claude-ANTI 那把）。
+ */
+function claudeDesktopAccountKey(keys: readonly ClientKey[], claudeCode: { name: string; group: string } | null): ClientKey | undefined {
+  const own = claudeCode
+    ? keys.find((key) => key.name === claudeCode.name && key.group === claudeCode.group) ?? keys.find((key) => key.group === claudeCode.group)
+    : undefined
+  return own ?? keys.find((key) => /claude/i.test(key.group))
+}
+
 /**
  * 打开弹窗时默认选哪把密钥：先用客户端自己那一家工具的；它没配当前账号时，Claude Desktop 先找账号里
- * 挂在 Claude 分组的那把，再轮到别的工具。Codex 的密钥只能用 GPT 型号，排在前面就会让 Claude Desktop
- * 默认配上 GPT 型号（yoyo 10-16 在 0.2.19 测试包里看到默认成了 gpt-6.1-sol）。
+ * 挂在 Claude 分组的那把（claudeCode 是星芒替 Claude Code 签密钥用的名字和分组，先挑它），再轮到别的工具。
+ * Codex 的密钥只能用 GPT 型号，排在前面就会让 Claude Desktop 默认配上 GPT 型号（yoyo 10-16 在 0.2.19
+ * 测试包里看到默认成了 gpt-6.1-sol）。claudeCode 缺省 = 只按分组名挑（旧行为）。
  */
 export function initialClientSource(
   tool: ExternalToolId,
   preferred: ProviderId,
   sources: readonly { id: ProviderId }[],
   providers: Providers | null,
-  keys: readonly Pick<AccountKey, 'id' | 'group'>[],
+  keys: readonly ClientKey[],
+  claudeCode: { name: string; group: string } | null = null,
 ): string {
   const configured = configuredKeySources(sources, preferred, providers)
   if (configured[0]?.id === preferred) return `configured:${preferred}`
-  const claudeKey = tool === 'claudeDesktop' ? keys.find((key) => /claude/i.test(key.group)) : undefined
+  const claudeKey = tool === 'claudeDesktop' ? claudeDesktopAccountKey(keys, claudeCode) : undefined
   if (claudeKey) return `account:${claudeKey.id}`
   if (configured[0]) return `configured:${configured[0].id}`
   return keys.length ? `account:${keys[0].id}` : 'manual'
