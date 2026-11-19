@@ -1,4 +1,4 @@
-# 临时：拿官网当前 Claude Desktop（Windows 5.x、Mac 6.x）重核工作区清单格式和放法（只下载核对，不往桶里传），核完就删。
+# 临时：拿官网当前 Claude Desktop（Windows 5.x、Mac 6.x）重核工作区清单格式和放法、Claude Code 怎么认（只下载核对，不往桶里传），核完就删。
 name: tmp-claude-components-5x
 
 on:
@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        source: [windows-msix, mac-zip, windows-nupkg]
+        source: [windows-msix, mac-zip]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -144,28 +144,12 @@ jobs:
             }
           }
 
-          // Cowork workspace: status check, cache decompress, warm promote, download, adopted marker.
-          for (const [label, literal] of [['bundle status', '[Bundle:status] ${t} missing'], ['cache decompress', '[cache] No cached compressed file'],
-            ['warm promote', '[warm] Promoting warm file'], ['warm start', '[warm] Starting warm download']]) {
-            const found = anchor(label, literal, 1, 2500, 600)
-            for (const [, text, at] of found.slice(0, 1)) callers(label, enclosingName(text, at), 4, 2500, 1500)
-          }
-          variable('adopted marker', /([\w$]+)="\.cowork-adopted"/g, 8, 1500, 1200)
-          variable('download failed text', /([\w$]+)="Claude's workspace download failed: "/g, 3, 2500, 800)
-          for (const [, text, m] of regex('vm base url', /function ([\w$]+)\(\)\{return`https:\/\/downloads\.claude\.ai\/vms\/linux\//g, 2, 200, 400)) callers('vm base url', m[1], 4, 2500, 1500)
-
-          // Claude Code (Mac bundle, Windows exe, Linux in the VM): where it goes and how a placed one is recognised.
-          regex('installDirFor', /installDirFor\(e,t,r\)\{/g, 2, 100, 700)
-          regex('getBinaryPathForTarget', /getBinaryPathForTarget\(e,t,r=this/g, 1, 100, 4000)
-          for (const [file, text, m] of regex('bundle extract and marker', /await ([\w$]+)\(u,o,s\),a\.step="marker",await ([\w$]+)\(o,s,r\.checksum\)/g, 1, 300, 300)) {
-            for (const name of [m[1], m[2]]) {
-              const def = text.indexOf(`function ${name}(`)
-              if (def >= 0) show(`definition of ${name}`, file, text, def, 50, 2500)
-            }
-            const dir = /\.installDirFor\(e,t,r\.checksum\),s=[\w$.]+\(o,([\w$]+)\)/.exec(text)
-            if (dir) { const def = text.indexOf(`${dir[1]}=`); if (def >= 0) show(`definition of ${dir[1]}`, file, text, def, 50, 200) }
-          }
-          anchor('targetVersion', 'targetVersion', 6, 400, 600)
-          anchor('claude-code-vm', 'claude-code-vm', 6, 800, 2500)
+          // How a placed Claude Code (host and VM) is recognised, and when Claude wants a version other than its build pin.
+          regex('checkCachedBinaryHeader', /async checkCachedBinaryHeader\(e,t,r\)\{/g, 1, 100, 3000)
+          anchor('effectiveTarget', 'effectiveTarget', 10, 300, 900)
+          anchor('autoUpdateCandidates', 'autoUpdateCandidates', 6, 300, 900)
+          anchor('vm kind', 'kind==="vm"', 12, 700, 900)
+          anchor('.payload', '.payload', 10, 900, 900)
+          anchor('hostDownloadFailed', 'hostDownloadFailed', 6, 300, 900)
           EOF
           node "$RUNNER_TEMP/read.mjs" "$PWD/app"
