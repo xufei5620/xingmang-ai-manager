@@ -618,9 +618,11 @@ const methods = {
     cancelExternalInstall?.(new Error(`${tool} 安装已取消`))
     return { cancelled: true, reason: null }
   },
+  // ?externalLaunchElevated：同主进程在「星芒是右键以管理员身份运行的」时打开 Claude Desktop 的回法。
   launchExternalClient: async (tool) => {
     if (query.has('externalLaunchPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
     externalStatuses.find((entry) => entry.tool === tool)!.running = true
+    return tool === 'claudeDesktop' && query.has('externalLaunchElevated') ? { preparationSkipped: 'elevated' } : {}
   },
   // 同主进程：只改 Claude Desktop 登录页那个选择，星芒那份留着；?externalReconnect 时那份已经用不上。
   switchExternalClientSource: async (tool, target) => {

@@ -485,6 +485,22 @@ describe('claude desktop code seed: putting it in place', () => {
     for (const fixture of [off, elevated, mac]) expect(fixture.fetchMock).not.toHaveBeenCalled()
   })
 
+  // The not-same-user skip is the one the home page turns into "reopen 星芒 normally", so it
+  // must not shadow the skips that would have happened anyway, and an elevated run still must
+  // not read anything out of Claude's folders.
+  it('reports an elevated run only when it would otherwise have placed the program, without reading Claude\'s files', async () => {
+    const resolveAsarPath = vi.fn(() => path.join(os.tmpdir(), 'no-such-dir', 'app.asar'))
+    const resolveProfileDirectory = vi.fn(async () => os.tmpdir())
+    const elevated = seedFixture({ overrides: { executionMode: 'trusted-only', resolveAsarPath, resolveProfileDirectory } })
+    expect(await elevated.seeder.prepare(client())).toEqual({ status: 'skipped', reason: 'not-same-user' })
+    expect(await elevated.seeder.prepare(client({ running: true }))).toEqual({ status: 'skipped', reason: 'running' })
+    const elevatedOff = seedFixture({ overrides: { executionMode: 'trusted-only', isOff: () => true, resolveAsarPath, resolveProfileDirectory } })
+    expect(await elevatedOff.seeder.prepare(client())).toEqual({ status: 'skipped', reason: 'remote-off' })
+    expect(resolveAsarPath).not.toHaveBeenCalled()
+    expect(resolveProfileDirectory).not.toHaveBeenCalled()
+    for (const fixture of [elevated, elevatedOff]) expect(fixture.fetchMock).not.toHaveBeenCalled()
+  })
+
   it('skips when the pin cannot be read, the profile cannot be found, or the disk is nearly full', async () => {
     const missing = seedFixture({ overrides: { resolveAsarPath: () => path.join(os.tmpdir(), 'no-such-dir', 'app.asar') } })
     expect(await missing.seeder.prepare(client())).toEqual({ status: 'skipped', reason: 'asar-missing' })
