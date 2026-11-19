@@ -41,15 +41,16 @@ jobs:
 
       - run: npm ci --registry=https://registry.npmjs.org/
 
-      - name: Fail early when the R2 credentials are not configured
+      - name: Fail early when the R2 credentials or the signing key are not configured
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          XINGMANG_UPDATE_SIGNING_KEY: ${{ secrets.XINGMANG_UPDATE_SIGNING_KEY }}
         run: |
           missing=""
-          for name in R2_ACCOUNT_ID R2_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+          for name in R2_ACCOUNT_ID R2_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY XINGMANG_UPDATE_SIGNING_KEY; do
             [ -n "${!name}" ] || missing="$missing $name"
           done
           if [ -n "$missing" ]; then
@@ -135,6 +136,8 @@ jobs:
 
       # 先撤回，再换清单：撤回一落地，还没升上去的人就不会再装坏版本；换清单之前
       # 客户端看到的「最新版」仍是坏版本本身，已经在上面的人不会有任何变化。
+      # 撤回名单要签上发布者签名再传（D85）：0.2.25 起的客户端不认没签名的撤回名单，
+      # 不签的话它们不会退回去。
       - name: Withdraw the live version in the status file
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -144,6 +147,7 @@ jobs:
           AWS_DEFAULT_REGION: auto
           PUBLIC_BASE: ${{ steps.feed.outputs.base }}
           WITHDRAWN: ${{ steps.plan.outputs.withdrawn }}
+          XINGMANG_UPDATE_SIGNING_KEY: ${{ secrets.XINGMANG_UPDATE_SIGNING_KEY }}
         run: |
           set -euo pipefail
           code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/current.json" --write-out '%{http_code}' "$PUBLIC_BASE/service-status.json")
@@ -156,6 +160,7 @@ jobs:
             --current "$RUNNER_TEMP/current.json" \
             --output "$RUNNER_TEMP/service-status.json" \
             --bad-versions "$WITHDRAWN"
+          node scripts/service-status-signature.cjs sign --file "$RUNNER_TEMP/service-status.json"
           aws s3 cp "$RUNNER_TEMP/service-status.json" \
             "s3://$R2_BUCKET/$OBJECT_PREFIX/service-status.json" \
             --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" \

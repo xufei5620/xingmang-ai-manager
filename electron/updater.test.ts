@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import type { UpdateInfo } from 'builder-util-runtime'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
-import type { ServiceStatus } from './service-status'
+import { parseServiceStatus, type ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
 import { buildIntelMacUpdateInfo, createSharedDirectRetry, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
@@ -2077,6 +2077,39 @@ describe('withdrawn versions and staged rollout', () => {
     service.setServiceStatus({ maintenance: null, badVersions: [], rollout: null })
     await flush()
     expect(rememberReleaseGuard).toHaveBeenLastCalledWith({ badVersions: [], rollout: null })
+    service.dispose()
+  })
+
+  it('keeps the remembered withdrawals and the minimum when the status file guard is unsigned or tampered (D85)', async () => {
+    const client = new FakeUpdater()
+    const rememberReleaseGuard = vi.fn(async () => undefined)
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      releaseGuardAtLaunch: { badVersions: ['1.1.0'], rollout: null },
+      rememberReleaseGuard,
+    })
+    const flush = () => new Promise((resolve) => { setTimeout(resolve, 0) })
+    // 这次运行读成功（签名验过）过一份，里面有最低版本。
+    service.setServiceStatus({ maintenance: null, badVersions: ['1.1.0'], rollout: null, minimumVersion: '1.1.0' })
+    expect(service.getState().requiredVersion).toBe('1.1.0')
+
+    // 深查 Z-4：没有私钥的人把正在跑的版本写进撤回名单、撤掉最低版本。不管这一份里写着什么，这几项照「没读到」办；
+    // 维护提示照常跟着它走。
+    for (const releaseGuardRejected of ['unsigned', 'signature'] as const) {
+      service.setServiceStatus({ maintenance: { message: '升级中' }, badVersions: ['1.0.0'], rollout: { version: '1.2.0', percent: 0 }, minimumVersion: null, releaseGuardRejected })
+      await flush()
+      expect(rememberReleaseGuard).not.toHaveBeenCalled()
+      expect(service.getState()).toMatchObject({ requiredVersion: '1.1.0', currentVersionWithdrawn: false, serviceMaintenance: { message: '升级中' } })
+    }
+    // 真的解析一份没签名的文件也是这样（内置的是发版那把公钥，这份谁也没签）。
+    service.setServiceStatus(parseServiceStatus(JSON.stringify({ badVersions: ['1.0.0'], minimumVersion: null }), new Date()))
+    await flush()
+    expect(rememberReleaseGuard).not.toHaveBeenCalled()
+    expect(service.getState()).toMatchObject({ requiredVersion: '1.1.0', currentVersionWithdrawn: false })
+    // 记着的撤回名单照旧挡着 1.1.0。
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    expect(service.getState()).toMatchObject({ phase: 'idle', availableVersion: null })
     service.dispose()
   })
 
