@@ -155,7 +155,7 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 `safe-local-data` 的原子写先写 `.<文件名>.<uuid>.tmp`，写完、刷盘再换名。用例要是等的是写盘之前的某一步（比如手机遥控的假渠道「取过图」`FakeImageChannel.fetched`），接着就去数目录，Windows 上写得慢时会数到临时文件：`codex-remote-service.test.ts`「holds images until the next prompt…」就这样红过（长度 2 对得上，「有 .jpg」那句 `expected false to be true`）。按长度等（`toHaveLength(1)`）也会被临时文件凑上。
 
 - 写法：等存好本身。手机遥控的图用 `setup()` 返回的 `imagesSaved(count)`（第 count 张存好时 resolve），别的存放处照这个办法包一层 `save`。
-- 等的东西前面排着几次原子写的，也别用 `vi.waitFor`：它默认只等 1 秒，每次写一两百毫秒，凑上五六次就过了。手机遥控每处理一句话都先把消息编号记进设置、每张图都存一次，「keeps at most five images waiting for the next prompt」等第二句回话前要写 7 次，11-18 #1929、11-20 #1940 在 Windows `vitest-2` 上各红一次（指纹：只等到「收到图片……」，「一次最多带 5 张图片，这张没收。」没到）。手机上收到的话用假渠道的 `sentUntil(done)` 等发送本身，再照常断言全部内容。
+- 等的东西前面排着几次原子写的，也别用 `vi.waitFor`：它默认只等 1 秒，每次写一两百毫秒，凑上五六次就过了。手机遥控每处理一句话都先把消息编号记进设置、每张图都存一次，「keeps at most five images waiting for the next prompt」等第二句回话前要写 7 次，11-18 #1929、11-20 main 和 #1940 在 Windows `vitest-2` 上各红一次（指纹：只等到「收到图片……」，「一次最多带 5 张图片，这张没收。」没到；慢的时候一句都没等到，`expected [] to deeply equal`）。手机上收到的话用假渠道的 `sentUntil(done)` 等发送本身，再照常断言全部内容。
 - 本地复现：在 `writeAtomicSafeFile` 的 `handle.writeFile` 后面临时加一句 `await new Promise((resolve) => setTimeout(resolve, 150))`，旧写法当场红。别提交这句。
 
 ## 刚过零点那几分钟才红的时间写法（2026-11-12，#1809）
