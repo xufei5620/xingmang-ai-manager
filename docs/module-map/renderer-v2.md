@@ -233,12 +233,12 @@
 ## features/settings/ 与 features/tutorial/
 - `features/settings/VersionCard.tsx` — 设置 › 版本更新最上面的版本卡：当前版本、更新内容、下载进度与主按钮，撤回、要管理员密码、磁盘不够、失败几种提示；Windows 授权窗、Mac 钥匙串、Linux 系统安装窗口各有提前说明。
 - `features/settings/BackupCard.tsx` — 设置 › 备份迁移的备份列表、预览与恢复，恢复后提醒回首页看或重开工具；下线的 Gemini 不列。
-- `features/settings/codex-remote/CodexRemoteCard.tsx` — 设置 › 工具管理的「手机遥控 Codex」整卡：干活的文件夹（YF-19 起能加几个，`WorkspaceRow` 一个一行、正在用的标出来、别的能「用这个」「移除」）、每个渠道一块（凭据、打开遥控、配对码与绑定的人）；`CodexRemotePanel` 只管按快照摆，取数和操作在外层。「干活的文件夹」上面的「最近一次」（YF-13，停下这一轮 / 都拒绝）、余额不到 $1 的黄条（YF-12，余额在外层 `useRemoteLowBalance` 读）、另一个渠道登录过时没登录的那块收成一行（YF-7，`remoteChannelCollapsed`）；飞书还差几步那块的打开机器人对话二维码在 `FeishuRemoteSection.tsx`（YF-3），「怎么建飞书机器人」六步下面的「打开飞书开放平台」「看教程」也在那里（YF-4）。
+- `features/settings/codex-remote/CodexRemotePage.tsx` — 侧栏「手机遥控」一页（0.2.25 起；以前是设置 › 工具管理的整卡，目录名没改）：页头写 Codex 在干什么；「连接方式」两张可选的小卡（页签，`MethodPicker`，先选哪种按 `initialRemoteMethod`），下面只摆选中那一种的那一块（凭据、打开遥控、配对码与绑定的人）；「两种方式共用的设置」卡里是干活的文件夹（YF-19 起能加几个，`WorkspaceRow`）、手机上用的模型（`ModelRow`，列表跟首页 Codex「默认模型」同一份 `codexModelChoices`，第一项跟电脑上一样）、自动打开、自动关。`CodexRemotePageView` 只管按快照摆，取数和操作在外层 `CodexRemotePage`。连接方式上面的「最近一次」（YF-13，停下这一轮 / 都拒绝）、余额不到 $1 的黄条（YF-12，余额在外层 `useRemoteLowBalance` 读）；飞书还差几步那块的打开机器人对话二维码在 `FeishuRemoteSection.tsx`（YF-3），「怎么建飞书机器人」六步下面的「打开飞书开放平台」「看教程」也在那里（YF-4）。
 - `features/settings/codex-remote/channel-sections.tsx` — 各渠道那一块的登记表（`Record<RemoteChannelId, …>`，主进程加渠道这里漏了是编译错）：标题、提示句和填凭据的组件。
 - `features/settings/codex-remote/FeishuRemoteSection.tsx` — 飞书那一块：填 App ID / App Secret（附怎么建机器人的六步，只写字不放链接），填过了只显示 App ID。
 - `features/settings/codex-remote/WeixinRemoteSection.tsx` — 微信那一块（实验功能）：黄色提醒、扫码登录 / 重新扫码，扫码弹窗（二维码图由主进程给、手机上要输数字时换成输入框）；拿二维码走卡片的 `run`，弹窗里的轮询自己管（`useLatestRequest`），登录好了靠主进程推的快照变成「已登录」。
-- `features/settings/codex-remote/remote-view.ts` — 卡上几处说法的纯函数（状态小标签、绑定的人、开关说明）和按 `revision` 取新快照。
-- `features/settings/codex-remote/useCodexRemoteActive.ts` — 外壳状态栏「手机遥控中」用的：有渠道开着就亮，点了到设置里那张卡。
+- `features/settings/codex-remote/remote-view.ts` — 页上几处说法的纯函数（状态小标签、绑定的人、开关说明）和按 `revision` 取新快照。
+- `features/settings/codex-remote/useCodexRemoteActive.ts` — 外壳状态栏「手机遥控中」用的：有渠道开着就亮，点了到「手机遥控」那一页。
 - `features/tutorial/TutorialPage.tsx` — 教程页：分类按钮与搜索、两列卡片、文章与吸顶条、「读到第几步」；顶部搜索没结果时带字进来接着搜。
 - `features/tutorial/TutorialIllustration.tsx` — 教程每一步的示意插图（用界面同款图标拼出来，不是截图），每种插图配标题与说明。
 - `features/tutorial/tutorial-progress.ts` / `features/tutorial/tutorial-search.ts` — 教程卡上的「已完成 k / n 步」（只存本机 localStorage、只进不退，不为它开主进程通道）和教程页与顶部搜索共用的分词匹配、高亮。

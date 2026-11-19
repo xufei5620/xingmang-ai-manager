@@ -309,9 +309,11 @@ function imageOnly(message: RemoteInbound): boolean {
  * 调用不一定先问人，手机上看不到也拦不住。只关这一份对话，电脑上直接用 Codex 照旧，联网搜索也不动。
  * mcpServers 是 buildRemoteMcpServerOverrides 算出来的那份。
  */
-export function buildThreadStartParams(workspace: string, mcpServers: Record<string, Record<string, unknown>> = {}): Record<string, unknown> {
+export function buildThreadStartParams(workspace: string, mcpServers: Record<string, Record<string, unknown>> = {}, model: string | null = null): Record<string, unknown> {
   return {
     cwd: workspace,
+    // 「手机上用的模型」单独选了才带；不带 = Codex 照 config.toml，跟电脑上一样。
+    ...(model ? { model } : {}),
     approvalPolicy: 'untrusted',
     // auto_review / guardian 会让另一个模型替人点同意；遥控只许人自己点。
     approvalsReviewer: 'user',
@@ -323,6 +325,12 @@ export function buildThreadStartParams(workspace: string, mcpServers: Record<str
       ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServers } : {}),
     },
   }
+}
+
+/** Codex `config/read` 答回来的生效配置里的 model（就是电脑上 Codex 现在用的那个）；没配、读不出是 null。 */
+export function configuredCodexModel(configRead: unknown): string | null {
+  const config = isRecord(configRead) && isRecord(configRead.config) ? configRead.config : null
+  return config && typeof config.model === 'string' && config.model ? config.model : null
 }
 
 function mcpServerTable(config: unknown): Record<string, unknown> | null {
@@ -806,6 +814,11 @@ interface ChannelRuntime {
   handoff: Promise<void>
   outbox: Promise<void>
   threadId: string | null
+  /**
+   * 这份对话现在用的是「手机上用的模型」单独选的哪个；null = 跟电脑上的 Codex 一样。只在 threadId 有值时算数：
+   * 开对话时记下，手机上下一句交给 Codex 前跟设置比一比，不一样才在 turn/start 里改（handTurnToCodex）。
+   */
+  threadModel: string | null
   /** 原来的对话不是手机上发「新对话」丢的（dropThread）：下次开新对话时先说一声（D66 / YKS-16）。 */
   threadLost: boolean
   /** 上一次回「这条是 N 分钟前发的」的时间（noticeStale），0 = 还没回过；收到一条照常处理的消息就清零。 */
@@ -888,6 +901,7 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     handoff: Promise.resolve(),
     outbox: Promise.resolve(),
     threadId: null,
+    threadModel: null,
     threadLost: false,
     staleNoticeAt: 0,
     turn: null,
@@ -1151,6 +1165,7 @@ export class CodexRemoteService {
       ...(settings.autoStart ? { autoStart: true } : {}),
       ...(settings.autoStart && this.autoStartFailure ? { autoStartFailure: this.autoStartFailure } : {}),
       ...(settings.idleCloseHours ? { idleCloseHours: settings.idleCloseHours } : {}),
+      ...(settings.model ? { model: settings.model } : {}),
       ...(this.codexStartFailed ? { codexStartFailed: true } : {}),
       ...(this.lastRequest ? { lastRequest: lastRequestSnapshot(this.lastRequest) } : {}),
       channels: channels as Record<RemoteChannelId, CodexRemoteChannelSnapshot>,
@@ -1347,6 +1362,19 @@ export class CodexRemoteService {
       if (runtime.enabled) this.touch(runtime)
     }
     this.options.log('info', 'remote.idle-close-set', { hours: hours ?? 0 })
+    return this.emit()
+  }
+
+  /**
+   * 「手机上用的模型」（yoyo 2026-11-19「改」）：null = 跟电脑上的 Codex 一样。只记下来，手机上下一句交给 Codex 时
+   * 才用上（handTurnToCodex），正在做的那一轮不打断，开着的对话也接着用，不丢前面说过的。
+   */
+  async setModel(model: string | null): Promise<CodexRemoteSnapshot> {
+    await this.options.store.updateSettings((settings) => {
+      if (model === null) delete settings.model
+      else settings.model = model
+    })
+    this.options.log('info', 'remote.model-set', { follow: model === null })
     return this.emit()
   }
 
@@ -2853,23 +2881,29 @@ export class CodexRemoteService {
     // 只读命令也会先跑，事后再补一次打断已经晚了。
     if (!this.turnStillWanted(runtime, turn)) return
     try {
+      const wantedModel = (await this.options.store.readSettings()).model ?? null
       if (!runtime.threadId) {
         // 读不出配了哪些外部工具就不开对话：宁可这一条做不了，也不让手机用上没关掉的工具。
         const configRead = await client.request('config/read', { cwd: workspace, includeLayers: true })
         if (!this.turnStillWanted(runtime, turn)) return
-        const started = await client.request('thread/start', buildThreadStartParams(workspace, buildRemoteMcpServerOverrides(configRead)))
+        const started = await client.request('thread/start', buildThreadStartParams(workspace, buildRemoteMcpServerOverrides(configRead), wantedModel))
         const thread = isRecord(started) && isRecord(started.thread) ? stringField(started.thread.id) : null
         if (!thread) throw new Error('Codex 没有开出新对话')
         if (!this.turnStillWanted(runtime, turn)) return
         runtime.threadId = thread
+        runtime.threadModel = wantedModel
         runtime.threadLost = false
       }
       const threadId = runtime.threadId
+      const model = await this.turnModel(client, runtime, workspace, wantedModel)
+      if (!this.turnStillWanted(runtime, turn)) return
       const result = await client.request('turn/start', {
         threadId,
         // 图只给这里存的路径（YF-14），Codex 的 localImage 自己读文件。
         input: [{ type: 'text', text, text_elements: [] }, ...images.map((image) => ({ type: 'localImage', path: image }))],
+        ...(model ? { model } : {}),
       })
+      if (runtime.threadId === threadId) runtime.threadModel = wantedModel
       const turnId = isRecord(result) && isRecord(result.turn) ? stringField(result.turn.id) : null
       if (turnId && this.turnStillWanted(runtime, turn)) turn.id = turnId
       else if (turnId) {
@@ -2887,6 +2921,19 @@ export class CodexRemoteService {
       await this.sendText(runtime, reply)
       this.emitSoon()
     }
+  }
+
+  /**
+   * 开着的对话中途改了「手机上用的模型」：这一句的 turn/start 要带的 model；不用改是 null。
+   * Codex 把 turn/start 里的 model 一直用到这份对话结束，所以改回「跟电脑上一样」时也得明着带上电脑上那个
+   * （config/read 读生效配置），不然还用着之前单独选的。读不出来就先接着用，记一笔，下次开新对话时自然回到电脑上的。
+   */
+  private async turnModel(client: CodexAppServerClient, runtime: ChannelRuntime, workspace: string, wanted: string | null): Promise<string | null> {
+    if (wanted === runtime.threadModel) return null
+    if (wanted) return wanted
+    const computer = configuredCodexModel(await client.request('config/read', { cwd: workspace }).catch(() => null))
+    if (!computer) this.options.log('warn', 'remote.model-follow-unread', { channel: runtime.id })
+    return computer
   }
 
   /**

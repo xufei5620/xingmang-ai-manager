@@ -15,7 +15,7 @@ export type TutorialIllustrationId = 'desktop-home' | 'desktop-install' | 'deskt
  * 这里只收教程真用到的几个，写错照样编译不过；tutorials.test.ts 核对它们都登记过。
  * 网络加速那一章 2026-10-30 随加速下线去掉了。
  */
-type TutorialSettingsRow = 'backups' | 'version' | 'codex-remote';
+type TutorialSettingsRow = 'backups' | 'version';
 
 /**
  * 按钮落到哪一页、哪个分页。个人中心和设置里分页很多，只跳页会停在默认的
@@ -852,8 +852,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
     ],
   },
-  // 卡片上的按钮名、步骤以手机遥控卡为准（features/settings/codex-remote），这里只说走哪几步，不抄卡片上的字，
-  // 卡片改字不用跟着改这一章。
+  // 页面上的按钮名、步骤以左侧栏「手机遥控」那一页为准（features/settings/codex-remote），这里只说走哪几步，
+  // 不抄页面上的字，页面改字不用跟着改这一章。
   {
     id: phoneRemoteTutorialTopic,
     title: '用手机遥控 Codex',
@@ -863,42 +863,38 @@ export const tutorialTopics: readonly TutorialTopic[] = [
     keywords: ['手机', '遥控', '远程', '飞书', '微信', 'ClawBot', '机器人', '配对', '配对码', '不在电脑前'],
     steps: [
       {
-        title: '找到「手机遥控 Codex」，选一个干活的文件夹',
-        where: '设置 › 工具管理 › 手机遥控 Codex',
+        title: '找到「手机遥控」，选一个干活的文件夹',
+        where: '左侧栏 › 手机遥控',
         detail: 'Codex 只在这个文件夹里干活。选一个具体的项目文件夹，别选整个桌面或整个盘。',
-        expected: '卡片上写着选好的文件夹。',
+        expected: '页面上写着选好的文件夹。',
         action: '打开手机遥控',
-        page: 'settings',
-        section: 'codex-remote',
+        page: 'remote',
       },
       {
         title: '选飞书或微信，登录机器人',
-        where: '设置 › 工具管理 › 手机遥控 Codex › 飞书 / 微信',
-        detail: '飞书：照卡片上的步骤建一个你自己的机器人，把它的凭据填进来。微信：用手机微信扫码登录。',
+        where: '左侧栏 › 手机遥控 › 连接方式 › 飞书 / 微信',
+        detail: '飞书：照页面上的步骤建一个你自己的机器人，把它的凭据填进来。微信：用手机微信扫码登录。',
         bullets: ['微信这条是实验功能，随时可能断，长期用建议选飞书。'],
-        expected: '卡片上显示已经登录。',
+        expected: '页面上显示已经登录。',
         action: '打开手机遥控登录机器人',
-        page: 'settings',
-        section: 'codex-remote',
+        page: 'remote',
       },
       {
         title: '打开遥控，在手机上配对',
-        where: '设置 › 工具管理 › 手机遥控 Codex',
-        detail: '打开遥控后开始配对，把卡片上的配对码私聊发给机器人。只认配对过的那一个人。',
-        expected: '卡片上写着谁在什么时候配对的。',
+        where: '左侧栏 › 手机遥控',
+        detail: '打开遥控后开始配对，把页面上的配对码私聊发给机器人。只认配对过的那一个人。',
+        expected: '页面上写着谁在什么时候配对的。',
         action: '打开手机遥控去配对',
-        page: 'settings',
-        section: 'codex-remote',
+        page: 'remote',
       },
       {
         title: '在手机上派活、点同意',
-        where: '飞书或微信里和机器人的私聊；设置 › 工具管理 › 手机遥控 Codex',
+        where: '飞书或微信里和机器人的私聊；左侧栏 › 手机遥控',
         detail: '直接发要做的事。Codex 要改文件、跑会改东西的命令，都先在聊天里问你，你回「同意」它才动手。',
         bullets: ['谁能用你绑定的飞书或微信发消息，谁就能指挥这台电脑，账号别借给别人。'],
         expected: '手机上收到 Codex 的进度和结果。',
         action: '打开手机遥控看状态',
-        page: 'settings',
-        section: 'codex-remote',
+        page: 'remote',
       },
     ],
   },

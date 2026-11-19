@@ -9747,8 +9747,8 @@ test('every settings row the search can name is on the settings page, in the reg
   } finally { await page.close() }
 })
 
-// 手机遥控开着时坐在电脑前的人要看得到：状态栏亮「手机遥控中」，点了落到设置里那张卡。
-test('the status bar says the phone remote is on and leads to its settings card', async () => {
+// 手机遥控开着时坐在电脑前的人要看得到：状态栏亮「手机遥控中」，点了落到左侧栏那一页（0.2.25）。
+test('the status bar says the phone remote is on and leads to its page', async () => {
   const page = await open()
   try {
     await expect(page.getByTestId('statusbar-remote')).toHaveCount(0)
@@ -9756,7 +9756,8 @@ test('the status bar says the phone remote is on and leads to its settings card'
     const weixin = { channel: 'weixin', hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' }, boundPeer: null, pairing: null }
     await page.evaluate(([channel, idle]) => window.v2Test.emit('onCodexRemoteStateChanged', { revision: 50, available: true, credentialPersistence: 'durable', workspaceDirectory: '~/projects/demo', task: 'idle', pendingApprovals: 0, channels: { feishu: channel, weixin: idle } }), [feishu, weixin])
     await page.getByTestId('statusbar-remote').click()
-    await expect(page.getByTestId('page-settings').getByTestId('settings-remote-card')).toBeVisible()
+    await expect(page.getByTestId('page-remote').getByTestId('settings-remote-card')).toBeVisible()
+    await expect(page.getByTestId('nav-remote')).toHaveAttribute('aria-current', 'page')
     // 推来的旧快照（revision 小）不把它关掉。
     await page.evaluate(([channel, idle]) => window.v2Test.emit('onCodexRemoteStateChanged', { revision: 2, available: true, credentialPersistence: 'durable', workspaceDirectory: null, task: 'idle', pendingApprovals: 0, channels: { feishu: { ...channel, enabled: false }, weixin: idle } }), [feishu, weixin])
     await expect(page.getByTestId('statusbar-remote')).toBeVisible()

@@ -1,6 +1,7 @@
 import { AccountPage } from './pages-account'
 import { accountSiteId, sessionScope } from './account-context'
 import { VideoStudioPage } from './features/video-studio'
+import { CodexRemotePage } from './features/settings/codex-remote/CodexRemotePage'
 import { ExtensionsPage, SessionsPage } from './pages-management'
 import { FeaturedPage } from './pages-featured'
 import {
@@ -131,6 +132,7 @@ export function BusinessPage({
     return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'health') return <HealthPage api={api} accountSession={accountSession} {...actions} />
   if (page === 'feedback') return <FeedbackPage api={api} {...actions} />
+  if (page === 'remote') return <CodexRemotePage api={api} navigate={actions.navigate} onOpenHelp={actions.openHelp} />
   if (page === 'settings') return <SettingsPage api={api} {...actions} onBackupRestored={onBackupRestored} installedProviders={installedProviders} />
   if (page === 'tutorial') return <TutorialPage {...actions} topic={tutorialTopic} />
   if (page === 'video') {
