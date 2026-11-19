@@ -1,4 +1,4 @@
 ## 开发
 
 - 画布宿主新开通道 `canvas-host:close-project`（`canvas-contract.ts`、`canvas-preload.ts`、`canvas-window.ts` 三处一起加）：内核回到项目中心、存完最后一次时调一次，只带项目标识；主进程只清这个窗口记着的、正是当前账号这个项目的那条「开着的项目」，别的回 `false`。之前回到项目中心不清这条，主窗口「看做过的图」叫出来的项目中心素材库照旧按刚离开的项目列素材（Mac 验收 R3，0.2.25 总单第 8 项）。投毒审计：画布拿它只能让主进程忘掉自己开着的项目，之后项目里的素材、运行、保存都要重新打开项目；没开项目时那份只读图片本来就能看，没有多给能力。
-- 内核这一半在 xingmang-canvas（宿主桥可选方法 `closeProject`），要等 xingmang-canvas 打出下一个内核 tag、同步进 `canvas-v2/` 以后客户才看得到变化；老内核不调这个通道，行为跟原来一样。
+- 内核这一半是 xingmang-canvas #48（宿主桥可选方法 `closeProject`，已合 741e28a），要等 xingmang-canvas 打出下一个内核 tag、同步进 `canvas-v2/` 以后客户才看得到变化；老内核不调这个通道，行为跟原来一样。
