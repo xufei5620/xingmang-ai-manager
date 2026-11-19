@@ -74,8 +74,6 @@ const FEATURE_LABELS = {
   'tray-release': '缩到托盘久了关界面省内存',
   acceleration: '网络加速（新连接）',
   'codex-desktop-chinese': 'Codex 桌面端中文补丁',
-  'claude-desktop-code-seed': '替 Claude Desktop 放程序',
-  'claude-desktop-workspace-seed': '替 Claude Desktop 放 Cowork 工作区',
 }
 const FEATURE_TOOL_LABELS = {
   claude: 'Claude Code', codex: 'Codex CLI', grok: 'Grok CLI', codexDesktop: 'Codex 桌面端',

@@ -1,5 +1,6 @@
 # Claude Desktop 的 Cowork 工作区（四个平台）和 Mac 的 Claude Code 程序包：从 Claude 官网原样搬进腾讯云存储桶。
-# 客户端（claude-desktop-workspace-seed.ts、claude-desktop-mac-code-seed.ts）按自己装的那份 Claude 里写的校验值去桶里取。
+# Windows 工作区读 Windows 商店版安装包里的清单，Mac 工作区和 Mac 程序读 Mac 通用版 zip 里的清单（两边版本不同步）。
+# 客户端（0.2.25 起）按自己装的那份 Claude 里写的校验值去桶里取，位置由 electron/claude-desktop-component-keys.ts 算。
 name: sync-claude-components-cos
 
 on:

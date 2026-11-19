@@ -1,15 +1,15 @@
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { describe, expect, it } from 'vitest'
+import * as keysModule from './claude-desktop-component-keys'
 import * as manifestModule from './claude-desktop-component-manifest'
 import type { ClaudeDesktopComponentManifest, ClaudeDesktopVmArchitecture } from './claude-desktop-component-manifest'
-import * as macCodeModule from './claude-desktop-mac-code-seed'
-import * as workspaceModule from './claude-desktop-workspace-seed'
-import { desktopPackageBucketOrigin, validateDesktopBucketUrl } from './desktop-package-bucket'
+import { desktopPackageBucketOrigin } from './desktop-package-bucket'
 
 // scripts/sync-claude-components-cos.cjs copies these files into the bucket using the compiled
-// copies of these very modules. This runs its plan against the TypeScript sources, so a renamed
-// export or a moved key shows up here instead of as a red scheduled sync or an empty bucket.
+// copies of these very modules, and the client computes where to fetch them with the same key
+// module. This runs the sync plan against the TypeScript sources, so a renamed export or a moved
+// key shows up here instead of as a red scheduled sync or an empty bucket.
 interface PlanItem {
   label: string
   key: string
@@ -20,13 +20,14 @@ interface PlanItem {
 
 interface ComponentsSyncScript {
   PART_IDS: readonly string[]
-  componentsFromModules: (manifest: unknown, workspace: unknown, macCode: unknown) => unknown
+  componentsFromModules: (manifest: unknown, keys: unknown) => unknown
   buildPlan: (part: string, manifest: ClaudeDesktopComponentManifest, components: unknown) => { items: PlanItem[] }
 }
 
 const sync = createRequire(__filename)(path.join(__dirname, '..', 'scripts', 'sync-claude-components-cos.cjs')) as ComponentsSyncScript
 
 // Real values from Claude Desktop 4.4212.0 (probe run 41623510171, 2026-11-03), trimmed to one or two files a platform.
+// Windows 5.11492.5 (probe run 44558371619, 2026-11-19) still names this workspace and these two rootfs files.
 const sha = '072b6cbfe74f428a98bd86035f83b322b369d1f1'
 const manifest: ClaudeDesktopComponentManifest = {
   code: {
@@ -62,21 +63,21 @@ const manifest: ClaudeDesktopComponentManifest = {
 function clientKeys(): string[] {
   const keys: string[] = []
   for (const platform of ['win32', 'darwin'] as const) {
-    const platformKey = workspaceModule.claudeDesktopVmPlatformKey(platform)
+    const platformKey = keysModule.claudeDesktopVmPlatformKey(platform)
     if (!platformKey || !manifest.vm) throw new Error('fixture')
     for (const architecture of ['x64', 'arm64'] as ClaudeDesktopVmArchitecture[]) {
-      for (const file of manifest.vm.files[platformKey][architecture] ?? []) keys.push(workspaceModule.claudeDesktopWorkspaceObjectKey(sha, platformKey, architecture, file))
+      for (const file of manifest.vm.files[platformKey][architecture] ?? []) keys.push(keysModule.claudeDesktopWorkspaceObjectKey(sha, platformKey, architecture, file))
     }
   }
   for (const architecture of ['arm64', 'x64'] as ClaudeDesktopVmArchitecture[]) {
-    const pin = macCodeModule.resolveClaudeCodeMacPin(manifest, architecture)
-    if (pin) keys.push(macCodeModule.claudeCodeMacObjectKey(pin))
+    const pin = keysModule.resolveClaudeCodeMacPin(manifest, architecture)
+    if (pin) keys.push(keysModule.claudeCodeMacObjectKey(pin))
   }
   return keys
 }
 
 describe('sync-claude-components-cos against the client modules', () => {
-  const components = sync.componentsFromModules(manifestModule, workspaceModule, macCodeModule)
+  const components = sync.componentsFromModules(manifestModule, keysModule)
 
   it('uploads exactly the files the Windows and Mac clients will ask the bucket for', () => {
     const planned = sync.PART_IDS.flatMap((part) => sync.buildPlan(part, manifest, components).items.map((item) => item.key))
@@ -84,10 +85,11 @@ describe('sync-claude-components-cos against the client modules', () => {
     expect(new Set(planned).size).toBe(planned.length)
   })
 
-  it('puts every file where the client is allowed to download from', () => {
+  it('keeps every file inside the one bucket folder the sync is allowed to write', () => {
     for (const part of sync.PART_IDS) {
       for (const item of sync.buildPlan(part, manifest, components).items) {
-        expect(validateDesktopBucketUrl(`${desktopPackageBucketOrigin}/${item.key}`).pathname).toBe(`/${item.key}`)
+        expect(item.key.startsWith(`${keysModule.claudeDesktopComponentsBucketPrefix}/`)).toBe(true)
+        expect(new URL(`${desktopPackageBucketOrigin}/${item.key}`).pathname).toBe(`/${item.key}`)
       }
     }
   })

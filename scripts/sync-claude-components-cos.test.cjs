@@ -63,8 +63,6 @@ function fakeModules(manifest, macManifest = manifest) {
     {
       claudeDesktopComponentsBucketPrefix: PREFIX,
       claudeDesktopWorkspaceObjectKey: (sha, platformKey, architecture, file) => `${PREFIX}/vm/${sha}/${platformKey}-${architecture}/${file.checksum}/${file.name}.zst`,
-    },
-    {
       resolveClaudeCodeMacPin: (value, architecture) => {
         const platform = architecture === 'arm64' ? 'darwin-arm64' : 'darwin-x64'
         const bundle = value.code?.macBundles[platform]
@@ -202,9 +200,9 @@ test('keys must stay inside the Claude components prefix', () => {
 test('the compiled client modules must still export the parser, the key builders and the same prefix', () => {
   const modules = fakeModules(manifestFixture())
   assert.equal(typeof componentsFromModules(...modules).readManifest, 'function')
-  assert.throws(() => componentsFromModules({}, modules[1], modules[2]), /找不到 Claude 组件清单的读法/)
-  assert.throws(() => componentsFromModules(modules[0], { ...modules[1], claudeDesktopComponentsBucketPrefix: 'xingmang/offline/elsewhere' }, modules[2]), /桶内目录变了/)
-  assert.throws(() => componentsFromModules(modules[0], modules[1], { resolveClaudeCodeMacPin: modules[2].resolveClaudeCodeMacPin }), /找不到/)
+  assert.throws(() => componentsFromModules({}, modules[1]), /找不到 Claude 组件清单的读法/)
+  assert.throws(() => componentsFromModules(modules[0], { ...modules[1], claudeDesktopComponentsBucketPrefix: 'xingmang/offline/elsewhere' }), /桶内目录变了/)
+  assert.throws(() => componentsFromModules(modules[0], { ...modules[1], claudeCodeMacObjectKey: undefined }), /找不到/)
   assert.throws(() => loadComponents(path.join(os.tmpdir(), 'xingmang-no-such-checkout')), /先跑 tsc/)
 })
 

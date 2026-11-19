@@ -1,19 +1,19 @@
 /**
- * 从 Claude Desktop 自己的 app.asar 里读出它要的两样组件的清单（2026-11-03 拆 4.4212.0 读到的写法）：
+ * 从 Claude Desktop 自己的 app.asar 里读出它要的两样组件的清单（2026-11-03 拆 4.4212.0 读到的写法，11-19 拿
+ * Windows 5.11492.5、Mac 6.6395.1 重核过，没变）：
  *
- * - Claude Code 那份：`JSON.parse('{"version":"2.1.309","manifest":{…"platforms":{…}}…}')`。Windows 那一项
- *   claude-desktop-code-seed.ts 已经在读；这里取 Mac 的程序包（`darwin-*` 的 `bundle`）和 Cowork 虚拟机里那份
- *   Linux 版（`linux-*`）。
+ * - Claude Code 那份：`JSON.parse('{"version":"2.1.309","manifest":{…"platforms":{…}}…}')`。这里取 Mac 的程序包
+ *   （`darwin-*` 的 `bundle`）和 Cowork 虚拟机里那份 Linux 版（`linux-*`）。
  * - Cowork 工作区那份：一段对象字面量 `versions:[{sha:"072b…",publishedAt:"2026-10-22",files:{unix:{arm64:[…],
  *   x64:[…]},win32:{arm64:[…],x64:[…]}}},…]`，新的在前（那段注释说旧版留着是为了生成差量）。每个文件
  *   `{name, checksum, size, rawChecksum, rawSize, …}`，checksum 是官网那份 `.zst` 的 sha256。
  *
- * 读法跟 claude-desktop-code-seed.ts 一样只读、限大小：先读文件表，再按大小从大到小读 `.vite/build/` 下的脚本，
- * 两样都找到就停。Claude 换了写法就读不出来（null），调用方什么都不放，交还 Claude 自己去下。
+ * 读法只读、限大小（claude-desktop-asar.ts）：先读文件表，再按大小从大到小读 `.vite/build/` 下的脚本，两样都找到
+ * 就停。Claude 换了写法就读不出来（null）。存储桶同步作业靠它知道该搬哪几个官网文件，读不出来就停下报警。
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { decodeSingleQuotedLiteral, listAsarBuildScripts, parseAsarHeaderJson, parseAsarSizePrefix } from './claude-desktop-code-seed'
+import { decodeSingleQuotedLiteral, listAsarBuildScripts, parseAsarHeaderJson, parseAsarSizePrefix } from './claude-desktop-asar'
 
 export type ClaudeDesktopVmPlatformKey = 'win32' | 'unix'
 export type ClaudeDesktopVmArchitecture = 'x64' | 'arm64'
@@ -397,7 +397,7 @@ export async function readClaudeDesktopComponentManifest(asarPath: string): Prom
   }
 }
 
-/** Mac 上 Claude.app 里的 app.asar；Windows 上用 claude-desktop-code-seed.ts 的 claudeDesktopAsarPath。 */
+/** Mac 上 Claude.app 里的 app.asar。 */
 export function claudeDesktopMacAsarPath(applicationPath: string): string {
   return path.posix.join(applicationPath, 'Contents', 'Resources', 'app.asar')
 }

@@ -255,7 +255,6 @@ const ipcInvokeChannels = {
 
 const ipcEventChannels = {
   onExternalClientInstallProgress: 'external-clients:install-progress',
-  onExternalClientLaunchProgress: 'external-clients:launch-progress',
   onAccountSessionChanged: 'account:session-changed',
   onAccountUsageChanged: 'account:usage-changed',
   onAccountVaultRecovered: 'account:vault-recovered',
@@ -552,7 +551,6 @@ const xingmangApi: XingmangApi = {
   saveCodexRemoteFeishuCredentials: (request) => invoke('saveCodexRemoteFeishuCredentials', request),
   onAccountSessionChanged: (listener) => subscribe('onAccountSessionChanged', listener),
   onExternalClientInstallProgress: (listener) => subscribe('onExternalClientInstallProgress', listener),
-  onExternalClientLaunchProgress: (listener) => subscribe('onExternalClientLaunchProgress', listener),
   onAccountUsageChanged: (listener) => subscribe('onAccountUsageChanged', listener),
   onAccountVaultRecovered: (listener) => subscribe('onAccountVaultRecovered', listener),
   onNavigate: (listener) => subscribe('onNavigate', listener),

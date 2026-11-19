@@ -8,16 +8,16 @@ const { performance } = require('node:perf_hooks')
 const { checkFailure, observedProcessFailure, safeSyncFailure } = require('./cos-sync-utils.cjs')
 
 // Claude Desktop 自己要从官网下两样东西，国内下不动（加速 10-30 已下线）：Cowork 工作区（每个平台约 1.3 GB）
-// 和 Mac 上的 Claude Code 程序包（约 95 MB）。yoyo 11-03「如果能用这个方式就不要加速了」：这里把它们原样搬进
-// 星芒的腾讯云存储桶，客户端（electron/claude-desktop-workspace-seed.ts、claude-desktop-mac-code-seed.ts）
-// 从桶里下好放进 Claude 自己的文件夹。
+// 和 Mac 上的 Claude Code 程序包（2.1.326 约 120 MB）。yoyo 11-03「如果能用这个方式就不要加速了」：这里把它们原样搬进
+// 星芒的腾讯云存储桶，客户端（0.2.25 起）从桶里下好放进 Claude 自己的文件夹。11-19 他要先把桶搬起来，所以同步
+// 先单独合进来，客户端那部分随 0.2.25 跟上。
 //
-// 搬什么：每次下两份最新的 Claude 安装包（Windows 商店版 x64、Mac 的 zip），从各自的 app.asar 里读出那一版要的
-// 工作区（四个平台）和 Claude Code 版本、Mac 程序包的校验值。两份都读，是因为 Windows 和 Mac 不同步换版：11-19
-// Windows 商店版还是 5.11492.5（工作区 072b…、Claude Code 2.1.325），Mac 已经是 6.6395.1（工作区 3781…、
-// Claude Code 2.1.326），Windows 上自己升级的也会到 6.x。每一部分搬两份清单里这个平台要的文件的并集（按桶里的
-// 位置去重，两版一样时只搬一次）。清单解析和桶里的位置都用客户端同一套编译好的代码（dist-electron/），所以作业
-// 先编译主进程，客户端算出来的位置和这里传的永远是同一个。
+// 搬什么：每一部分下一份最新的 Claude 安装包，从它的 app.asar 里读出那一版要的工作区和 Claude Code 版本、Mac 程序包
+// 的校验值。Windows 和 Mac 不同步换版（11-19 Windows 商店版是 5.11492.5、工作区 072b…，Mac 是 6.6395.1、工作区
+// 3781…），所以 Windows 工作区那两部分读 Windows 商店版 x64（星芒在 Windows 上装的就是它），Mac 工作区和 Mac 程序
+// 那三部分读 Mac 的通用版 zip，各搬自己那边真在用的那一版。清单解析和桶里的位置都用客户端同一套编译好的代码
+// （dist-electron/ 里的 claude-desktop-component-manifest.js、claude-desktop-component-keys.js），所以作业先编译
+// 主进程，客户端算出来的位置和这里传的永远是同一个。
 //
 // Trust: the expected size and SHA-256 of every file come from Claude's own app.asar, and the
 // bytes come only from downloads.claude.ai's two component paths, with redirects refused. A
@@ -33,8 +33,8 @@ const { checkFailure, observedProcessFailure, safeSyncFailure } = require('./cos
 const official = require('./sync-claude-official-cos.cjs')
 
 const SOURCE_HOST = 'downloads.claude.ai'
-// Inside the manager prefix docs/cos-sync-policy.json already authorizes, and the one the
-// client's validateDesktopBucketUrl accepts.
+// Inside the manager prefix docs/cos-sync-policy.json already authorizes. The client part adds
+// this folder to validateDesktopBucketUrl when it lands.
 const PREFIX = 'xingmang/offline/claude-components'
 const CONTENT_TYPE = 'application/zstd'
 const CACHE_CONTROL = 'public, max-age=31536000, immutable'
@@ -52,7 +52,7 @@ const INSTALLERS = Object.freeze({
 })
 const INSTALLER_IDS = Object.freeze(Object.keys(INSTALLERS))
 const MAX_ASAR_BYTES = 1024 * 1024 * 1024
-// cos-sync-utils 单个文件的上限；4.4212.0 最大的 rootfs 压缩后约 1.36 GB。
+// cos-sync-utils 单个文件的上限；4.4212.0 到 6.6395.1 最大的 rootfs 压缩后都在 1.36 GB 上下。
 const MAX_COMPONENT_BYTES = 2 * 1024 * 1024 * 1024
 // GitHub 的机器往上海的桶分块传约 190~300 KB/s（#1082 和 11-01 Codex 桌面端那次），1.36 GB 要一个半小时上下，
 // 网断一阵还要等着重试；单个文件给四个小时，作业 330 分钟兜底。
@@ -120,13 +120,13 @@ function assertObjectKey(key) {
 }
 
 /** 编译好的客户端模块里取这几样；名字改了或目录换了就停，免得同步按另一套位置传。 */
-function componentsFromModules(manifest, workspace, macCode) {
+function componentsFromModules(manifest, keys) {
   const components = {
     readManifest: manifest?.readClaudeDesktopComponentManifest,
-    workspaceObjectKey: workspace?.claudeDesktopWorkspaceObjectKey,
-    resolveMacPin: macCode?.resolveClaudeCodeMacPin,
-    macObjectKey: macCode?.claudeCodeMacObjectKey,
-    prefix: workspace?.claudeDesktopComponentsBucketPrefix,
+    workspaceObjectKey: keys?.claudeDesktopWorkspaceObjectKey,
+    resolveMacPin: keys?.resolveClaudeCodeMacPin,
+    macObjectKey: keys?.claudeCodeMacObjectKey,
+    prefix: keys?.claudeDesktopComponentsBucketPrefix,
   }
   if (['readManifest', 'workspaceObjectKey', 'resolveMacPin', 'macObjectKey'].some(function (name) { return typeof components[name] !== 'function' }) || components.prefix !== PREFIX) {
     throw checkFailure('inspector-unavailable', '编译好的主进程里找不到 Claude 组件清单的读法，或桶内目录变了')
@@ -137,7 +137,7 @@ function componentsFromModules(manifest, workspace, macCode) {
 function loadComponents(root = path.join(__dirname, '..')) {
   let modules
   try {
-    modules = ['claude-desktop-component-manifest.js', 'claude-desktop-workspace-seed.js', 'claude-desktop-mac-code-seed.js']
+    modules = ['claude-desktop-component-manifest.js', 'claude-desktop-component-keys.js']
       .map(function (name) { return require(path.join(root, 'dist-electron', name)) })
   } catch {
     throw checkFailure('inspector-unavailable', '没有编译好的主进程代码，先跑 tsc -p tsconfig.electron.json')

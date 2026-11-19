@@ -617,8 +617,7 @@ export interface SystemService {
   /** request 只有 Mac 上首页「可更新到 v…」那一下才传（见 DesktopAppUpdateRequest）。 */
   installExternalClient(tool: ExternalToolId, target: RendererMessageTarget, request?: DesktopAppUpdateRequest): Promise<ExternalClientStatus>
   cancelExternalClientInstall(tool: ExternalToolId): InstallCancellationOutcome
-  /** target：点「打开」的那个窗口，Claude Desktop 打开前替它放程序的进度发给它；缺省 = 不发。 */
-  launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<void>
+  launchExternalClient(tool: ExternalToolId): Promise<void>
   /** 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择，星芒那份配置留着。 */
   switchExternalClientSource(tool: ExternalToolId, target: 'account' | 'official', assertBeforeWrite?: () => void): Promise<ExternalClientSourceSwitchResult>
   /**
