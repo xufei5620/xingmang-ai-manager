@@ -386,7 +386,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       }
       try {
         const scoped = policy.account !== 'none' && !readsCachedExternalClientsOnly(channel, args)
-        // scoped-queued 的处理函数交给安装队列时自己拿 accountWork.queue()（#1085），这里不再包一层。
+        // scoped-queued 的处理函数一进来就自己拿 accountWork.queue()（#1085、N5），这里不再包一层。
         const invoke = () => scoped && options.accountWork && policy.account !== 'scoped-queued'
           ? options.accountWork.run(() => handler(event, ...args), { checkRevision: policy.account !== 'scoped-may-end-session' }) : handler(event, ...args)
         // Bootstrap requests config and session concurrently. The first

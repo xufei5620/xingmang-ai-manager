@@ -80,6 +80,22 @@ describe('main process window events', () => {
     expect(assignments[0].value).toBe("(target) => { showMainWindow(); deliverToMainWindow('onNavigate', target) }")
   })
 
+  it('hands the tray restore load result back to the release controller, so a failed load is retried on the next show', () => {
+    // 11-18 复核 U05：缩到托盘关掉的界面重新加载失败时，这里原先只记一行日志、不交回去，
+    // 控制器一直停在「正在重新加载」，再怎么叫出窗口都不再加载。
+    const { source } = mainSource()
+    const reloads: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isPropertyAssignment(node) && node.name.getText(source) === 'reload'
+        && ts.isCallExpression(node.parent.parent) && node.parent.parent.expression.getText(source) === 'createRendererRelease') {
+        reloads.push(node.initializer.getText(source))
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(reloads).toEqual(['() => mainWindow.loadURL(resolveMainWindowUrl(systemService.readStoredConfig().theme))'])
+  })
+
   it('passes the macOS View zoom commands to the main window interface only while it is the focused window', () => {
     // 深查 TR-3：画布窗口在前时 ⌘- / ⌘= 不再把整个画布界面缩放；付款、开票窗口同样不管，跟 Windows 上一样。
     const { source } = mainSource()
@@ -376,6 +392,59 @@ describe('main process quit cleanup', () => {
     expect(all.match(/(?<![\w.])acceleration\?\.dispose\(\)/g)).toHaveLength(1)
     expect(all.match(/accelerationHosts\.dispose\(\)/g)).toHaveLength(1)
     expect(all).not.toMatch(/developmentAcceleration\?\.dispose\(\)/)
+  })
+})
+
+describe('main process launch install', () => {
+  function variableInitializer(name: string): string {
+    const { source } = mainSource()
+    const found: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === name && node.initializer) found.push(node.initializer.getText(source))
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(found).toHaveLength(1)
+    return found[0]
+  }
+
+  it('looks at the same work before deciding and again right before installing', () => {
+    // 打开时装会把软件关掉重开（O07）：决定装之前、预告完真去装之前，都要看重启装更新前要问的那几样（D10）和付款窗口。
+    const { source } = mainSource()
+    const working: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && ['decideLaunchInstall', 'shouldStillInstallAtLaunch'].includes(node.expression.text)) {
+        const [argument] = node.arguments
+        if (argument && ts.isObjectLiteralExpression(argument)) {
+          for (const property of argument.properties) {
+            if (ts.isPropertyAssignment(property) && property.name.getText(source) === 'working') {
+              working.push(`${node.expression.text}: ${property.initializer.getText(source)}`)
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(working.sort()).toEqual([
+      'decideLaunchInstall: launchInstallWork().length > 0',
+      'shouldStillInstallAtLaunch: launchInstallWork().length > 0',
+    ])
+    const launchWork = variableInitializer('launchInstallWork')
+    expect(launchWork).toContain('runningRestartWork()')
+    expect(launchWork).toContain('paymentWindow.isOpen()')
+    // 重启装更新前那一问读的也是这一份，两边说的「在忙」不会走样。
+    expect(variableInitializer('unfinishedRestartWork')).toContain('buildUnfinishedRestartWorkPrompt(runningRestartWork())')
+  })
+
+  it('takes back the attempt before clearing the notice when it backs off after the notice', () => {
+    // 跳框看到预告卡收了就会再看这一版算不算打开时装接手的：要先撤「试过了」，它才会等聊天、画布做完接着问。
+    const start = variableInitializer('startLaunchInstall')
+    const backOff = start.slice(start.indexOf('if (!stillInstallable()) {\n'))
+    const undo = backOff.indexOf('undoLaunchInstallAttempt(pendingUpdateRecord, attempt)')
+    expect(undo).toBeGreaterThan(0)
+    expect(undo).toBeLessThan(backOff.indexOf('updaterService.setLaunchInstallNotice(null)'))
+    expect(backOff.indexOf('updaterService.setLaunchInstallNotice(null)')).toBeLessThan(backOff.indexOf('updaterService.install()'))
   })
 })
 
