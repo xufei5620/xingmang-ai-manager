@@ -209,15 +209,16 @@ jobs:
 
       - run: npm ci --registry=https://registry.npmjs.org/
 
-      - name: Fail early when the R2 credentials are not configured
+      - name: Fail early when the R2 credentials or the signing key are not configured
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          XINGMANG_UPDATE_SIGNING_KEY: ${{ secrets.XINGMANG_UPDATE_SIGNING_KEY }}
         run: |
           missing=""
-          for name in R2_ACCOUNT_ID R2_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+          for name in R2_ACCOUNT_ID R2_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY XINGMANG_UPDATE_SIGNING_KEY; do
             [ -n "${!name}" ] || missing="$missing $name"
           done
           if [ -n "$missing" ]; then
@@ -318,6 +319,13 @@ jobs:
             --features-off "$FEATURES_OFF"
           echo "将要发布："
           cat "$RUNNER_TEMP/service-status.json"
+
+      # 撤回名单、分批放量、最低版本签上发布者签名（D85，scripts/service-status-signature.cjs 开头）：
+      # 0.2.25 起的客户端只认签过名的这几项，没签的当没读到。私钥只给这一步，上传那步拿不到它。
+      - name: Sign the release guard in the new status file
+        env:
+          XINGMANG_UPDATE_SIGNING_KEY: ${{ secrets.XINGMANG_UPDATE_SIGNING_KEY }}
+        run: node scripts/service-status-signature.cjs sign --file "$RUNNER_TEMP/service-status.json"
 
       - name: Upload the status file
         env:

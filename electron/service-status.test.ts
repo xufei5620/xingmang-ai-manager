@@ -1,16 +1,21 @@
 import fs from 'node:fs'
+import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
+import fc from 'fast-check'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  buildReleaseGuardPayload,
   createServiceStatusMonitor,
+  inspectReleaseGuardSignature,
   isOlderReleaseGuard,
   locateServiceStatusUrl,
   parseReleaseGuard,
   parseServiceStatus,
   parseServiceStatusDocument,
   readServiceStatus,
+  releaseGuardSignatureField,
   resolveFeaturesOffFor,
   resolveHiddenPaymentMethodsFor,
   resolveKnownIssuesFor,
@@ -22,6 +27,20 @@ import {
 } from './service-status'
 
 const now = new Date('2026-09-23T08:00:00.000Z')
+
+// 撤回名单、放量、最低版本要发布者签名才认（D85）。测试用自己生成的一把，经 publicKeys 交给客户端。
+const testKey = generateKeyPairSync('ed25519')
+const testPublicKeys = [testKey.publicKey.export({ format: 'der', type: 'spki' }).toString('base64')]
+const signedKeys = { publicKeys: testPublicKeys }
+
+function signGuard(document: Record<string, unknown>): Record<string, unknown> {
+  const payload = buildReleaseGuardPayload(document)
+  return { ...document, [releaseGuardSignatureField]: sign(null, Buffer.from(payload, 'utf8'), testKey.privateKey).toString('base64') }
+}
+
+function signedText(document: Record<string, unknown>): string {
+  return JSON.stringify(signGuard(document))
+}
 
 function jsonResponse(body: string, init: ResponseInit = {}): Response {
   return new Response(body, { status: 200, headers: { 'content-type': 'application/json' }, ...init })
@@ -106,31 +125,36 @@ describe('parseServiceStatus', () => {
   })
 
   it('never throws on malformed content', () => {
-    for (const text of ['', 'not json', '[]', 'null', '"x"', '{"maintenance": []}', '\uFEFF{}']) {
+    for (const text of ['', 'not json', '[]', 'null', '"x"']) {
       expect(parseServiceStatus(text, now)).toEqual({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
     }
+    // 是个对象、只是没签名：撤回名单那几项照样当没读到，并说明为什么（D85）。
+    for (const text of ['{"maintenance": []}', '\uFEFF{}']) {
+      expect(parseServiceStatus(text, now)).toEqual({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null, releaseGuardRejected: 'unsigned' })
+    }
+    expect(parseServiceStatus(signedText({}), now, signedKeys)).toEqual({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
     expect(parseServiceStatus('\uFEFF{"maintenance":{"active":true}}', now).maintenance).toEqual({ message: null })
   })
 
   it('reads withdrawn versions and a staged rollout, dropping entries it cannot read', () => {
-    const text = JSON.stringify({
+    const text = signedText({
       badVersions: ['0.2.10', 'v0.2.11', '0.2.10', 'latest', 12, '1.0'],
       rollout: { version: '0.2.12', percent: 150 },
     })
-    expect(parseServiceStatus(text, now)).toEqual({
+    expect(parseServiceStatus(text, now, signedKeys)).toEqual({
       maintenance: null,
       badVersions: ['0.2.10', '0.2.11'],
       rollout: { version: '0.2.12', percent: 100 },
       minimumVersion: null,
     })
-    expect(parseServiceStatus(JSON.stringify({ badVersions: '0.2.10', rollout: { version: '0.2.12', percent: '20' } }), now))
+    expect(parseServiceStatus(signedText({ badVersions: '0.2.10', rollout: { version: '0.2.12', percent: '20' } }), now, signedKeys))
       .toEqual({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
   })
 
   it('reads a minimum version and treats anything it cannot read as no minimum', () => {
-    expect(parseServiceStatus(JSON.stringify({ minimumVersion: 'v0.2.12' }), now).minimumVersion).toBe('0.2.12')
+    expect(parseServiceStatus(signedText({ minimumVersion: 'v0.2.12' }), now, signedKeys).minimumVersion).toBe('0.2.12')
     for (const minimumVersion of ['0.2', '0.2.12-beta', 'latest', 12, null, true, ['0.2.12'], '']) {
-      expect(parseServiceStatus(JSON.stringify({ minimumVersion }), now).minimumVersion).toBeNull()
+      expect(parseServiceStatus(signedText({ minimumVersion }), now, signedKeys).minimumVersion).toBeNull()
     }
   })
 
@@ -213,12 +237,12 @@ describe('parseServiceStatus', () => {
   })
 
   it('reads when the publisher last changed the file, ignoring a time it cannot use (#1157 item 10)', () => {
-    expect(parseServiceStatus(JSON.stringify({ updatedAt: '2026-09-23T07:59:00.000Z' }), now).updatedAt).toBe('2026-09-23T07:59:00.000Z')
-    expect(parseServiceStatus(JSON.stringify({ updatedAt: '2026-09-23T16:00:00+08:00' }), now).updatedAt).toBe('2026-09-23T08:00:00.000Z')
+    expect(parseServiceStatus(signedText({ updatedAt: '2026-09-23T07:59:00.000Z' }), now, signedKeys).updatedAt).toBe('2026-09-23T07:59:00.000Z')
+    expect(parseServiceStatus(signedText({ updatedAt: '2026-09-23T16:00:00+08:00' }), now, signedKeys).updatedAt).toBe('2026-09-23T08:00:00.000Z')
     // 留一天给时钟偏差；再往后就是写错了，当没写，免得它压住之后每一份。
-    expect(parseServiceStatus(JSON.stringify({ updatedAt: '2026-09-24T07:59:00.000Z' }), now).updatedAt).toBe('2026-09-24T07:59:00.000Z')
+    expect(parseServiceStatus(signedText({ updatedAt: '2026-09-24T07:59:00.000Z' }), now, signedKeys).updatedAt).toBe('2026-09-24T07:59:00.000Z')
     for (const updatedAt of ['2026-09-24T08:01:00.000Z', 'yesterday', 1_758_614_400_000, null]) {
-      expect(parseServiceStatus(JSON.stringify({ updatedAt }), now)).not.toHaveProperty('updatedAt')
+      expect(parseServiceStatus(signedText({ updatedAt }), now, signedKeys)).not.toHaveProperty('updatedAt')
     }
     expect(parseReleaseGuard({ badVersions: ['0.2.10'], rollout: null, updatedAt: '2026-09-23T07:00:00.000Z' }, now))
       .toEqual({ badVersions: ['0.2.10'], rollout: null, updatedAt: '2026-09-23T07:00:00.000Z' })
@@ -261,13 +285,13 @@ describe('release platforms (#1155 item 5)', () => {
   })
 
   it('reads which packages a withdrawal, a rollout or a minimum covers', () => {
-    const status = parseServiceStatus(JSON.stringify({
+    const status = parseServiceStatus(signedText({
       badVersions: ['0.2.19', '0.2.20', 'v0.2.21'],
       badVersionPlatforms: { '0.2.20': ['mac-x64', 'MAC-X64 ', 'linux'], 'v0.2.21': ['windows'], '0.2.18': ['mac'] },
       rollout: { version: '0.2.22', percent: 0, platforms: ['mac-x64'] },
       minimumVersion: '0.2.21',
       minimumVersionPlatforms: ['mac-arm64'],
-    }), now)
+    }), now, signedKeys)
     expect(status).toEqual({
       maintenance: null,
       badVersions: ['0.2.19', '0.2.20', '0.2.21'],
@@ -283,26 +307,26 @@ describe('release platforms (#1155 item 5)', () => {
 
   it('falls back to every package on a platform list it cannot fully read', () => {
     for (const platforms of [['mac-intel'], ['mac-x64', 'macos'], [], 'mac-x64', [3], null, Array(10).fill('mac')]) {
-      const status = parseServiceStatus(JSON.stringify({
+      const status = parseServiceStatus(signedText({
         badVersions: ['0.2.20'],
         badVersionPlatforms: { '0.2.20': platforms },
         rollout: { version: '0.2.21', percent: 20, platforms },
         minimumVersion: '0.2.21',
         minimumVersionPlatforms: platforms,
-      }), now)
+      }), now, signedKeys)
       expect(status).toEqual({ maintenance: null, badVersions: ['0.2.20'], rollout: { version: '0.2.21', percent: 20 }, minimumVersion: '0.2.21' })
     }
     // 同一个版本写了两次，有一份读不懂就整版撤回。
-    expect(parseServiceStatus(JSON.stringify({
+    expect(parseServiceStatus(signedText({
       badVersions: ['0.2.20'],
       badVersionPlatforms: { '0.2.20': ['mac-x64'], 'v0.2.20': ['mac-intel'] },
-    }), now)).not.toHaveProperty('badVersionPlatforms')
-    expect(parseServiceStatus(JSON.stringify({
+    }), now, signedKeys)).not.toHaveProperty('badVersionPlatforms')
+    expect(parseServiceStatus(signedText({
       badVersions: ['0.2.20'],
       badVersionPlatforms: { '0.2.20': ['mac-x64'], 'v0.2.20': ['linux'] },
-    }), now).badVersionPlatforms).toEqual({ '0.2.20': ['mac-x64', 'linux'] })
+    }), now, signedKeys).badVersionPlatforms).toEqual({ '0.2.20': ['mac-x64', 'linux'] })
     // 没有最低版本时不收它的平台表。
-    expect(parseServiceStatus(JSON.stringify({ minimumVersionPlatforms: ['mac'] }), now)).not.toHaveProperty('minimumVersionPlatforms')
+    expect(parseServiceStatus(signedText({ minimumVersionPlatforms: ['mac'] }), now, signedKeys)).not.toHaveProperty('minimumVersionPlatforms')
   })
 
   it('keeps only what applies to this machine', () => {
@@ -340,13 +364,14 @@ describe('release platforms (#1155 item 5)', () => {
     let written: Record<string, unknown> = {}
     for (const change of changes) {
       written = applyStatusChanges(written, change, now)
-      const scoped = parseServiceStatusDocument(JSON.stringify(written), now)
+      const scoped = parseServiceStatusDocument(signedText(written), now, signedKeys)
       const { badVersionPlatforms: _versions, minimumVersionPlatforms: _minimum, ...visible } = written
       const rollout = visible.rollout as Record<string, unknown> | undefined
-      const legacy = parseServiceStatusDocument(JSON.stringify({
+      // 0.2.19 及以前的客户端不验签名，这里替它把看得见的那几项重新签上，只比读法。
+      const legacy = parseServiceStatusDocument(signedText({
         ...visible,
         ...(rollout ? { rollout: { version: rollout.version, percent: rollout.percent } } : {}),
-      }), now)
+      }), now, signedKeys)
       expect(scoped).not.toBeNull()
       expect(legacy).not.toBeNull()
       for (const here of Object.values(machines)) {
@@ -501,6 +526,171 @@ describe('known issues and payment method switches', () => {
   })
 })
 
+interface StatusSignatureScript {
+  canonicalJson: (value: unknown) => string
+  buildGuardPayload: (status: Record<string, unknown>) => string
+  signStatus: (status: Record<string, unknown>, privateKey: KeyObject, pinnedKeys: readonly string[]) => Record<string, unknown>
+  inspectStatusSignature: (status: Record<string, unknown>, pinnedKeys: readonly string[]) => string
+}
+
+function loadStatusSignatureScript(): StatusSignatureScript {
+  return createRequire(__filename)('../scripts/service-status-signature.cjs') as StatusSignatureScript
+}
+
+describe('release guard signature (D85)', () => {
+  const guard = {
+    badVersions: ['0.2.21'],
+    rollout: { version: '0.2.25', percent: 20 },
+    minimumVersion: '0.2.22',
+    updatedAt: '2026-09-23T07:00:00.000Z',
+  }
+  const extras = {
+    maintenance: { active: true, message: '升级中' },
+    featuresOff: [{ feature: 'video-studio' }],
+    accountGroups: { codex: ['GPT'] },
+  }
+
+  it('builds exactly the text scripts/service-status-signature.cjs signs', () => {
+    // 与 scripts/service-status-signature.test.cjs 的同名断言逐字一致；改一边必须改另一边。
+    const document = { ...extras, updatedAt: '2026-11-20T00:00:00.000Z', rollout: { version: '0.2.25', percent: 20 }, badVersions: ['0.2.21'] }
+    const expected = 'xingmang-service-status-guard/v1\n{"badVersions":["0.2.21"],"rollout":{"percent":20,"version":"0.2.25"},"updatedAt":"2026-11-20T00:00:00.000Z"}\n'
+    expect(buildReleaseGuardPayload(document)).toBe(expected)
+    expect(loadStatusSignatureScript().buildGuardPayload(document)).toBe(expected)
+    expect(buildReleaseGuardPayload({})).toBe('xingmang-service-status-guard/v1\n{}\n')
+    // 写了 null 跟没写是两回事：拿掉一项也算改过。
+    expect(buildReleaseGuardPayload({ rollout: null })).toBe('xingmang-service-status-guard/v1\n{"rollout":null}\n')
+  })
+
+  it('reads the guard of a signed file and every other field either way', () => {
+    const signed = parseServiceStatus(signedText({ ...guard, ...extras }), now, signedKeys)
+    expect(signed).toMatchObject({ badVersions: ['0.2.21'], rollout: { version: '0.2.25', percent: 20 }, minimumVersion: '0.2.22', updatedAt: guard.updatedAt })
+    expect(signed).not.toHaveProperty('releaseGuardRejected')
+    const unsigned = parseServiceStatus(JSON.stringify({ ...guard, ...extras }), now, signedKeys)
+    expect(unsigned).toEqual({
+      maintenance: { message: '升级中' },
+      badVersions: [],
+      rollout: null,
+      minimumVersion: null,
+      accountGroups: { codex: ['GPT'] },
+      featuresOff: [{ feature: 'video-studio' }],
+      releaseGuardRejected: 'unsigned',
+    })
+  })
+
+  it('refuses the guard when any signed field was changed, added or taken away after signing', () => {
+    const signed = signGuard({ ...guard, ...extras })
+    const tampered: Array<Record<string, unknown>> = [
+      // Z-4：把正在跑的版本写进撤回名单，好让客户端「退回」旧版。
+      { ...signed, badVersions: ['0.2.21', '0.2.25'] },
+      { ...signed, badVersionPlatforms: { '0.2.21': ['mac'] } },
+      { ...signed, rollout: { version: '0.2.25', percent: 0 } },
+      { ...signed, minimumVersion: '9.9.9' },
+      { ...signed, minimumVersionPlatforms: ['windows'] },
+      // 换个时间就能让一份旧的盖掉新的，或者让新的永远盖不掉它。
+      { ...signed, updatedAt: '2026-09-23T07:30:00.000Z' },
+    ]
+    const { badVersions: _removed, ...withoutWithdrawals } = signed
+    tampered.push(withoutWithdrawals)
+    for (const document of tampered) {
+      const status = parseServiceStatus(JSON.stringify(document), now, signedKeys)
+      expect(status.releaseGuardRejected).toBe('signature')
+      expect(status).toMatchObject({ badVersions: [], rollout: null, minimumVersion: null })
+      expect(status).not.toHaveProperty('updatedAt')
+      // 别的项照常读。
+      expect(status.maintenance).toEqual({ message: '升级中' })
+    }
+  })
+
+  it('keeps the signature valid across a hand edit of the unsigned fields, key order and whitespace', () => {
+    const signed = signGuard({ ...guard, ...extras })
+    const edited = { ...signed, maintenance: { active: false }, knownIssues: [{ page: 'home', message: '今晚慢一点。' }] }
+    const reordered = Object.fromEntries(Object.entries(edited).reverse())
+    for (const text of [JSON.stringify(edited), JSON.stringify(reordered, null, 4)]) {
+      const status = parseServiceStatus(text, now, signedKeys)
+      expect(status).not.toHaveProperty('releaseGuardRejected')
+      expect(status.badVersions).toEqual(['0.2.21'])
+    }
+  })
+
+  it('accepts no key but the pinned ones and no malformed signature', () => {
+    const signed = signGuard(guard)
+    // 内置的是发版那把，测试那把它不认。
+    expect(inspectReleaseGuardSignature(signed)).toBe('signature')
+    expect(inspectReleaseGuardSignature(signed, [])).toBe('signature')
+    expect(inspectReleaseGuardSignature(signed, testPublicKeys)).toBeNull()
+    for (const value of [42, 'not-base64', `${'A'.repeat(86)}==`, ['x'], { signature: 'x' }]) {
+      expect(inspectReleaseGuardSignature({ ...signed, [releaseGuardSignatureField]: value }, testPublicKeys)).toBe('signature')
+    }
+    for (const value of [undefined, null, '']) {
+      expect(inspectReleaseGuardSignature({ ...guard, [releaseGuardSignatureField]: value }, testPublicKeys)).toBe('unsigned')
+    }
+  })
+
+  it('reads what the publishing scripts write and sign', () => {
+    const load = createRequire(__filename)
+    const { applyStatusChanges } = load('../scripts/service-status.cjs') as {
+      applyStatusChanges: (current: Record<string, unknown>, changes: Record<string, string>, now: Date) => Record<string, unknown>
+    }
+    const { signStatus } = loadStatusSignatureScript()
+    let written = applyStatusChanges({}, { 'bad-versions': '0.2.20 0.2.21@mac-x64', rollout: '0.2.25 20@windows' }, now)
+    written = signStatus(written, testKey.privateKey, testPublicKeys)
+    // 再改一次：脚本拿掉旧签名、改完重签，线上那个旧签名不会留下来冒充。
+    written = applyStatusChanges(written, { 'minimum-version': '0.2.22', 'published-versions': '0.2.25 0.2.25' }, now)
+    expect(written).not.toHaveProperty(releaseGuardSignatureField)
+    expect(parseServiceStatus(JSON.stringify(written), now, signedKeys).releaseGuardRejected).toBe('unsigned')
+    written = signStatus(written, testKey.privateKey, testPublicKeys)
+    const status = parseServiceStatus(`${JSON.stringify(written, null, 2)}\n`, now, signedKeys)
+    expect(status).toMatchObject({
+      badVersions: ['0.2.20', '0.2.21'],
+      badVersionPlatforms: { '0.2.21': ['mac-x64'] },
+      rollout: { version: '0.2.25', percent: 20, platforms: ['windows'] },
+      minimumVersion: '0.2.22',
+      updatedAt: now.toISOString(),
+    })
+    expect(status).not.toHaveProperty('releaseGuardRejected')
+  })
+})
+
+// Random inputs (fast-check). The promise is "the client and the publishing
+// script sign the same text for any value the file can hold, the signature
+// follows the values and not the bytes, and no change to a signed field gets
+// through". A failing run prints its seed and the smallest document that breaks
+// it; that is a file the workflow would sign and the client would then refuse,
+// or a tampered file the client would trust.
+describe('release guard signature with random inputs', () => {
+  const script = loadStatusSignatureScript()
+  const fieldNames = ['badVersions', 'badVersionPlatforms', 'rollout', 'minimumVersion', 'minimumVersionPlatforms', 'updatedAt'] as const
+  const guardDocument = fc.record(
+    Object.fromEntries(fieldNames.map((name) => [name, fc.jsonValue({ maxDepth: 3 })])) as Record<(typeof fieldNames)[number], fc.Arbitrary<unknown>>,
+    { requiredKeys: [] },
+  )
+  const otherFields = fc.dictionary(
+    fc.string({ maxLength: 12 }).filter((key) => !(fieldNames as readonly string[]).includes(key) && key !== releaseGuardSignatureField),
+    fc.jsonValue({ maxDepth: 2 }),
+    { maxKeys: 4 },
+  )
+
+  it('builds the same text as the script for anything JSON can hold, keys in any order', () => {
+    fc.assert(fc.property(fc.jsonValue({ maxDepth: 4 }), (value) => {
+      expect(script.canonicalJson(value)).toBe(script.canonicalJson(JSON.parse(JSON.stringify(value))))
+      const document = { rollout: value }
+      expect(buildReleaseGuardPayload(document)).toBe(script.buildGuardPayload(document))
+    }))
+  })
+
+  it('verifies a signed file after any edit of the unsigned fields and refuses any edit of a signed one', () => {
+    fc.assert(fc.property(guardDocument, otherFields, otherFields, fc.constantFrom(...fieldNames), fc.jsonValue({ maxDepth: 2 }), (fields, before, after, target, replacement) => {
+      const signed = script.signStatus({ ...before, ...fields }, testKey.privateKey, testPublicKeys)
+      const reread = JSON.parse(JSON.stringify({ ...after, ...signed })) as Record<string, unknown>
+      expect(inspectReleaseGuardSignature(reread, testPublicKeys)).toBeNull()
+      const original = Object.hasOwn(signed, target) ? JSON.stringify(signed[target]) : undefined
+      fc.pre(original !== JSON.stringify(replacement))
+      const tampered = JSON.parse(JSON.stringify({ ...signed, [target]: replacement })) as Record<string, unknown>
+      expect(inspectReleaseGuardSignature(tampered, testPublicKeys)).toBe('signature')
+    }), { numRuns: 100 })
+  })
+})
+
 describe('readServiceStatus', () => {
   const url = 'https://example.test/xingmang-manager/service-status.json'
 
@@ -523,7 +713,7 @@ describe('readServiceStatus', () => {
     for (const body of ['<html>请先登录</html>', '{"accountGroups": {"codex": ["GPT', '[]', 'null']) {
       await expect(readServiceStatus({ url, fetch: async () => jsonResponse(body) })).resolves.toBeNull()
     }
-    await expect(readServiceStatus({ url, fetch: async () => jsonResponse('{}') })).resolves.toEqual({
+    await expect(readServiceStatus({ url, fetch: async () => jsonResponse(signedText({})), ...signedKeys })).resolves.toEqual({
       maintenance: null,
       badVersions: [],
       rollout: null,
@@ -541,7 +731,7 @@ describe('readServiceStatus', () => {
 
 describe('readServiceStatus when the system proxy points at a proxy that is not running (PX-1)', () => {
   const url = 'https://example.test/xingmang-manager/service-status.json'
-  const gate = '{"minimumVersion":"0.2.22","badVersions":["0.2.21"]}'
+  const gate = signedText({ minimumVersion: '0.2.22', badVersions: ['0.2.21'] })
   // What session.fetch rejects with when the proxy is not listening, captured from Electron 45.1.0: a plain
   // Error whose only own keys are `stack` and `message`, no `code`, no `cause`.
   const proxyConnectionError = () => new Error('net::ERR_PROXY_CONNECTION_FAILED')
@@ -570,7 +760,7 @@ describe('readServiceStatus when the system proxy points at a proxy that is not 
     const session = proxiedSession()
     expect(Object.getOwnPropertyNames(proxyConnectionError()).sort()).toEqual(['message', 'stack'])
 
-    await expect(readServiceStatus({ url, ...session, now: () => now })).resolves.toMatchObject({
+    await expect(readServiceStatus({ url, ...session, now: () => now, ...signedKeys })).resolves.toMatchObject({
       minimumVersion: '0.2.22',
       badVersions: ['0.2.21'],
     })
@@ -589,7 +779,7 @@ describe('readServiceStatus when the system proxy points at a proxy that is not 
         .mockResolvedValueOnce(jsonResponse(gate))
       const retryWithoutProxy = vi.fn(async () => {})
       const restoreProxy = vi.fn(async () => {})
-      await expect(readServiceStatus({ url, fetch, retryWithoutProxy, restoreProxy })).resolves.toMatchObject({ minimumVersion: '0.2.22' })
+      await expect(readServiceStatus({ url, fetch, retryWithoutProxy, restoreProxy, ...signedKeys })).resolves.toMatchObject({ minimumVersion: '0.2.22' })
       expect(retryWithoutProxy).toHaveBeenCalledOnce()
       expect(restoreProxy).toHaveBeenCalledOnce()
     }
@@ -634,7 +824,7 @@ describe('readServiceStatus when the system proxy points at a proxy that is not 
   it('keeps what the direct read got when putting the session back fails', async () => {
     const session = proxiedSession()
     session.restoreProxy.mockRejectedValueOnce(new Error('setProxy failed'))
-    await expect(readServiceStatus({ url, ...session })).resolves.toMatchObject({ minimumVersion: '0.2.22' })
+    await expect(readServiceStatus({ url, ...session, ...signedKeys })).resolves.toMatchObject({ minimumVersion: '0.2.22' })
   })
 
   it('reads only once when no direct retry was handed in', async () => {
