@@ -1,7 +1,9 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
+import fc from 'fast-check'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError } from './command-runner'
 import {
@@ -289,6 +291,83 @@ describe('Codex MCP contract and secret boundary', () => {
     await expect(service.addMcpServer({
       type: 'stdio', name: 'demo', command: 'node', args: ['server.mjs'],
     })).resolves.toHaveLength(1)
+  })
+
+  it('keeps the add error when only the key value changed and the old value is still saved', async () => {
+    const home = temporaryDirectory()
+    const invoke: CodexInvoker = async (argv) => {
+      if (argv[0] === 'plugin') return pluginCatalog()
+      if (argv[1] === 'add') throw new Error('config write failed')
+      return mcpList([stdioMcp('demo', { API_TOKEN: 'sk-old-value' })])
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, invoke })
+
+    await expect(service.addMcpServer({
+      type: 'stdio', name: 'demo', command: 'node', args: ['server.mjs'], env: { API_TOKEN: 'sk-new-value' },
+    })).rejects.toThrow('config write failed')
+    // 清空密钥也算换了值：原来那条还带着旧值，就不能说保存好了。
+    await expect(service.addMcpServer({
+      type: 'stdio', name: 'demo', command: 'node', args: ['server.mjs'], env: { API_TOKEN: '' },
+    })).rejects.toThrow('config write failed')
+  })
+
+  it('accepts a key change that was saved before the add command failed, without returning the key', async () => {
+    const home = temporaryDirectory()
+    const secret = 'sk-new-value'
+    const invoke: CodexInvoker = async (argv) => {
+      if (argv[0] === 'plugin') return pluginCatalog()
+      if (argv[1] === 'add') throw new Error('command timed out after writing')
+      return mcpList([stdioMcp('demo', { API_TOKEN: secret })])
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, invoke })
+
+    const servers = await service.addMcpServer({
+      type: 'stdio', name: 'demo', command: 'node', args: ['server.mjs'], env: { API_TOKEN: secret },
+    })
+
+    expect(servers.map((server) => [server.name, server.envNames])).toEqual([['demo', ['API_TOKEN']]])
+    expect(JSON.stringify(servers)).not.toContain(secret)
+  })
+
+  it('accepts a failed add only when the saved key values are exactly the requested ones, with random inputs', async () => {
+    const home = temporaryDirectory()
+    const envName = fc.constantFrom('API_TOKEN', 'OTHER_KEY', 'X')
+    const envValue = fc.string({ maxLength: 8 }).filter((value) => !value.includes('\0'))
+    const envMap = fc.dictionary(envName, envValue, { maxKeys: 3 })
+    await fc.assert(fc.asyncProperty(envMap, envMap, fc.boolean(), async (requested, other, sameAsRequested) => {
+      const saved = sameAsRequested ? { ...requested } : other
+      const invoke: CodexInvoker = async (argv) => {
+        if (argv[0] === 'plugin') return pluginCatalog()
+        if (argv[1] === 'add') throw new Error('config write failed')
+        return mcpList([stdioMcp('demo', saved)])
+      }
+      const service = new CodexExtensionService({ homeDirectory: home, invoke })
+      const result = service.addMcpServer({
+        type: 'stdio', name: 'demo', command: 'node', args: ['server.mjs'], env: requested,
+      })
+      // fast-check 有时给的是没有原型的对象，摊平成普通对象再比，只比名字和值。
+      if (isDeepStrictEqual({ ...saved }, { ...requested })) await expect(result).resolves.toHaveLength(1)
+      else await expect(result).rejects.toThrow('config write failed')
+    }), { numRuns: 300 })
+  })
+
+  it('keeps the add error when the listed server does not report its key values', async () => {
+    const home = temporaryDirectory()
+    const listed = stdioMcp('demo')
+    const transport = asRecord(listed.transport)
+    if (!transport) throw new Error('fixture transport missing')
+    // 名字对得上、值读不出来（不是字符串），就当没读回来，照原样报错。
+    transport.env = { API_TOKEN: null }
+    const invoke: CodexInvoker = async (argv) => {
+      if (argv[0] === 'plugin') return pluginCatalog()
+      if (argv[1] === 'add') throw new Error('config write failed')
+      return mcpList([listed])
+    }
+    const service = new CodexExtensionService({ homeDirectory: home, invoke })
+
+    await expect(service.addMcpServer({
+      type: 'stdio', name: 'demo', command: 'node', args: ['server.mjs'], env: { API_TOKEN: 'sk-new-value' },
+    })).rejects.toThrow('config write failed')
   })
 
   it('blocks deleting non-user MCP servers and rejects invalid HTTP/env input', async () => {
