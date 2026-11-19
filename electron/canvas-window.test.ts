@@ -2897,7 +2897,7 @@ describe('canvas close confirmation', () => {
 
     ;(window.close as () => void)()
 
-    expect(window.isDestroyed()).toBe(true)
+    expect((window.isDestroyed as () => boolean)()).toBe(true)
     expect(electronMocks.latestWebContents!.send).not.toHaveBeenCalledWith(canvasHostChannels.closeRequested, expect.anything())
   })
 
