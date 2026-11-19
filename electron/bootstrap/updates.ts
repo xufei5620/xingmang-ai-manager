@@ -300,6 +300,8 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
             toolRouteRewrite: toolRouteRewriteMode,
             ...(status?.accountGroups ? { accountGroups: status.accountGroups } : {}),
             ...(status?.cliModels ? { cliModels: status.cliModels } : {}),
+            // 撤回名单、放量、最低版本没签名或签名不对，这几项没采用（D85）：排查「撤回了怎么没生效」先看这一项。
+            ...(status?.releaseGuardRejected ? { releaseGuardRejected: status.releaseGuardRejected } : {}),
           })
           // 读成功的才记，没写型号表的那次记成没有；没读到（null）不动记下的那份。三样开关同理，一样都没写就记成空的。
           if (status) {
