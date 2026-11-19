@@ -118,6 +118,9 @@ function validateWithTestException(report, now = beforeExpiry) {
   return validateDevelopmentAuditReport(report, { exceptions: [testException], now })
 }
 
+// GitHub withdrew the picomatch advisory on 2026-11-18, so its exception is off
+// the real list too; like the minimatch one above, it stays here only as a
+// fixture for a high-severity exception sitting beside a moderate one.
 const picomatchAdvisory = 'https://github.com/advisories/GHSA-fc5q-39xc-vjpf'
 const picomatchException = {
   url: picomatchAdvisory,
@@ -127,7 +130,7 @@ const picomatchException = {
 }
 
 test('pins the temporary exception list to the advisories yoyo approved', () => {
-  assert.deepEqual(temporaryAdvisoryExceptions, [picomatchException])
+  assert.deepEqual(temporaryAdvisoryExceptions, [])
 })
 
 test('accepts the excepted minimatch chain before it expires', () => {
@@ -288,6 +291,19 @@ test('rejects the picomatch advisory once its severity rises to critical', () =>
   report.metadata.vulnerabilities.high -= 1
   report.metadata.vulnerabilities.critical += 1
   assert.throws(() => validateWithBothExceptions(report), /构建依赖存在漏洞/)
+})
+
+test('rejects the picomatch chain with the real exception list', () => {
+  const report = combinedChainReport()
+  delete report.vulnerabilities.minimatch
+  delete report.vulnerabilities['@electron/universal']
+  report.vulnerabilities['app-builder-lib'].via = ['@electron/rebuild', 'dmg-builder']
+  report.metadata.vulnerabilities.moderate -= 2
+  report.metadata.vulnerabilities.total -= 2
+  assert.throws(
+    () => validateDevelopmentAuditReport(report, { now: beforeExpiry }),
+    /构建依赖存在漏洞；新增公告：https:\/\/github\.com\/advisories\/GHSA-fc5q-39xc-vjpf/,
+  )
 })
 
 test('extracts unique advisory URLs from npm audit report nodes', () => {
