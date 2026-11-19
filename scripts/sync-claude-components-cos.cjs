@@ -1,4 +1,5 @@
 const fs = require('node:fs/promises')
+const https = require('node:https')
 const path = require('node:path')
 const os = require('node:os')
 const { execFile } = require('node:child_process')
@@ -11,19 +12,23 @@ const { checkFailure, observedProcessFailure, safeSyncFailure } = require('./cos
 // 星芒的腾讯云存储桶，客户端（electron/claude-desktop-workspace-seed.ts、claude-desktop-mac-code-seed.ts）
 // 从桶里下好放进 Claude 自己的文件夹。
 //
-// 搬什么：每次下一份最新的 Windows x64 版 Claude 安装包，从它的 app.asar 里读出这一版要的工作区（四个平台）和
-// Claude Code 版本、Mac 程序包的校验值（11-03 拆 4.4212.0 核过，Windows 包里四个平台的都在）。清单解析和桶里
-// 的位置都用客户端同一套编译好的代码（dist-electron/），所以作业先编译主进程，客户端算出来的位置和这里传的
-// 永远是同一个。
+// 搬什么：每次下两份最新的 Claude 安装包（Windows 商店版 x64、Mac 的 zip），从各自的 app.asar 里读出那一版要的
+// 工作区（四个平台）和 Claude Code 版本、Mac 程序包的校验值。两份都读，是因为 Windows 和 Mac 不同步换版：11-19
+// Windows 商店版还是 5.11492.5（工作区 072b…、Claude Code 2.1.325），Mac 已经是 6.6395.1（工作区 3781…、
+// Claude Code 2.1.326），Windows 上自己升级的也会到 6.x。每一部分搬两份清单里这个平台要的文件的并集（按桶里的
+// 位置去重，两版一样时只搬一次）。清单解析和桶里的位置都用客户端同一套编译好的代码（dist-electron/），所以作业
+// 先编译主进程，客户端算出来的位置和这里传的永远是同一个。
 //
 // Trust: the expected size and SHA-256 of every file come from Claude's own app.asar, and the
 // bytes come only from downloads.claude.ai's two component paths, with redirects refused. A
 // file is uploaded only when it matches the manifest exactly, under a key that names its
-// checksum, and nothing is ever overwritten. The installer itself is not signature-checked
-// here: it only says which official files to copy, and every customer machine checks each
+// checksum, and nothing is ever overwritten. The installers themselves are not signature-checked
+// here: they only say which official files to copy, and every customer machine checks each
 // file against the app.asar of the Claude it actually has installed before placing it, so a
 // wrong object in the bucket is a wasted download, never a placed file. Nothing downloaded
-// is executed.
+// is executed. The one redirect followed outside cos-sync-utils is the fixed Mac "latest zip"
+// entry on api.anthropic.com: only its headers are read, and its Location must name a
+// universal zip under downloads.claude.ai/releases/ exactly.
 
 const official = require('./sync-claude-official-cos.cjs')
 
@@ -36,6 +41,16 @@ const CACHE_CONTROL = 'public, max-age=31536000, immutable'
 const USER_AGENT = 'xingmang-claude-components-cos-sync/1'
 const MSIX_REQUEST_URL = official.SOURCES['windows-x64'].requestUrl
 const MSIX_ASAR_ENTRY = 'app/resources/app.asar'
+// claude.ai 那个 Mac 入口在 GitHub 的机器上被人机验证挡着（11-19 探测 44558371619 拿到空跳转），api.anthropic.com
+// 上同一个入口直接 307 到 downloads.claude.ai 的通用版 zip（约 400 MB），zip 里就有 app.asar。
+const MAC_ZIP_REQUEST_URL = 'https://api.anthropic.com/api/desktop/darwin/universal/zip/latest/redirect'
+const MAC_ZIP_LOCATION = /^https:\/\/downloads\.claude\.ai\/releases\/darwin\/universal\/\d{1,4}\.\d{1,6}\.\d{1,6}\/Claude-[0-9a-f]{40}\.zip$/
+const MAC_ASAR_ENTRY = 'Claude.app/Contents/Resources/app.asar'
+const INSTALLERS = Object.freeze({
+  windows: Object.freeze({ fileName: 'Claude-x64.msix', asarEntry: MSIX_ASAR_ENTRY }),
+  macos: Object.freeze({ fileName: 'Claude-universal.zip', asarEntry: MAC_ASAR_ENTRY }),
+})
+const INSTALLER_IDS = Object.freeze(Object.keys(INSTALLERS))
 const MAX_ASAR_BYTES = 1024 * 1024 * 1024
 // cos-sync-utils 单个文件的上限；4.4212.0 最大的 rootfs 压缩后约 1.36 GB。
 const MAX_COMPONENT_BYTES = 2 * 1024 * 1024 * 1024
@@ -43,12 +58,14 @@ const MAX_COMPONENT_BYTES = 2 * 1024 * 1024 * 1024
 // 网断一阵还要等着重试；单个文件给四个小时，作业 330 分钟兜底。
 const MULTIPART_DEADLINE_MS = 240 * 60 * 1000
 const WORK_PREFIX = 'xingmang-claude-components-cos-'
+// 每部分读哪个安装包：Windows 和 Mac 的 Claude 不同步出版（11-19 Windows MSIX 是 5.11492.5、Mac 是 6.6395.1，
+// 两边清单里的工作区版本也不一样），客户 Windows 上装的是 MSIX、Mac 上装的是通用版 zip，各部分只搬自己那边真在用的那一版。
 const PARTS = Object.freeze({
-  'vm-win32-x64': Object.freeze({ kind: 'vm', platformKey: 'win32', architecture: 'x64' }),
-  'vm-win32-arm64': Object.freeze({ kind: 'vm', platformKey: 'win32', architecture: 'arm64' }),
-  'vm-unix-x64': Object.freeze({ kind: 'vm', platformKey: 'unix', architecture: 'x64' }),
-  'vm-unix-arm64': Object.freeze({ kind: 'vm', platformKey: 'unix', architecture: 'arm64' }),
-  'code-mac': Object.freeze({ kind: 'code', architectures: Object.freeze(['arm64', 'x64']) }),
+  'vm-win32-x64': Object.freeze({ kind: 'vm', platformKey: 'win32', architecture: 'x64', installers: Object.freeze(['windows']) }),
+  'vm-win32-arm64': Object.freeze({ kind: 'vm', platformKey: 'win32', architecture: 'arm64', installers: Object.freeze(['windows']) }),
+  'vm-unix-x64': Object.freeze({ kind: 'vm', platformKey: 'unix', architecture: 'x64', installers: Object.freeze(['macos']) }),
+  'vm-unix-arm64': Object.freeze({ kind: 'vm', platformKey: 'unix', architecture: 'arm64', installers: Object.freeze(['macos']) }),
+  'code-mac': Object.freeze({ kind: 'code', architectures: Object.freeze(['arm64', 'x64']), installers: Object.freeze(['macos']) }),
 })
 const PART_IDS = Object.freeze(Object.keys(PARTS))
 const SHA_PATTERN = /^[0-9a-f]{40}$/
@@ -169,13 +186,30 @@ function codeItems(spec, manifest, components) {
   return items
 }
 
-/** 这一部分要搬哪些文件：桶里的位置、官网的地址、大小和校验值，全部来自清单。 */
-function buildPlan(part, manifest, components) {
+/**
+ * 这一部分要搬哪些文件：桶里的位置、官网的地址、大小和校验值，全部来自清单。传几份清单（Windows、Mac 两个安装包）
+ * 就搬几份要的并集，按桶里的位置去重：同一个位置名字里带着校验值，内容必然相同。
+ */
+function buildPlan(part, manifests, components) {
   const spec = PARTS[parsePart(part)]
-  const items = spec.kind === 'vm' ? vmItems(spec, manifest, components) : codeItems(spec, manifest, components)
-  for (const item of items) if (!LABEL_PATTERN.test(item.label)) throw checkFailure('metadata-invalid', '组件文件名无效')
+  const list = Array.isArray(manifests) ? manifests : [manifests]
+  if (list.length === 0) throw checkFailure('metadata-invalid', '没有读到任何一份 Claude 清单')
+  const items = []
+  const keys = new Set()
+  const versions = []
+  for (const manifest of list) {
+    const own = spec.kind === 'vm' ? vmItems(spec, manifest, components) : codeItems(spec, manifest, components)
+    const version = spec.kind === 'vm' ? manifest.vm.sha : manifest.code.version
+    if (!versions.includes(version)) versions.push(version)
+    for (const item of own) {
+      if (!LABEL_PATTERN.test(item.label)) throw checkFailure('metadata-invalid', '组件文件名无效')
+      if (keys.has(item.key)) continue
+      keys.add(item.key)
+      items.push(item)
+    }
+  }
   return {
-    reference: spec.kind === 'vm' ? { vmSha: manifest.vm.sha } : { codeVersion: manifest.code.version },
+    reference: spec.kind === 'vm' ? { vmShas: versions } : { codeVersions: versions },
     items,
   }
 }
@@ -222,25 +256,41 @@ function createStageRunner(progress, part) {
   }
 }
 
-async function synchronizeClaudeComponents({ part, store, dependencies, components, progress }) {
-  parsePart(part)
+/** 下一个安装包、只解出 app.asar、读清单；安装包读完就删。 */
+async function readInstallerManifest(id, { stage, dependencies, components, workDirectory }) {
+  const installer = INSTALLERS[id]
+  const context = { installer: id }
+  const resource = await stage('source-resolve', context, function () { return dependencies.resolveInstaller(id) })
+  const packagePath = path.join(workDirectory, installer.fileName)
+  await stage('source-download-app', { ...context, expectedBytes: resource.bytes }, async function (onProgress) {
+    const result = await dependencies.downloadResource({ url: resource.url, filePath: packagePath, allowedHosts: official.OFFICIAL_HOSTS, maxBytes: official.MAX_PACKAGE_BYTES,
+      expectedBytes: resource.bytes, expectedEtag: resource.etag, headers: { accept: 'application/octet-stream', 'user-agent': USER_AGENT }, onProgress })
+    if (!result || result.bytes !== resource.bytes) throw checkFailure('download-mismatch', 'Claude 安装包大小和官网说的不一致')
+  })
+  let asarPath
+  try { asarPath = await stage('extract-asar', context, function () { return dependencies.extractAsar(packagePath, workDirectory, id) }) }
+  finally { await dependencies.removeFile(packagePath) }
+  return stage('read-manifest', context, async function () {
+    try { return await components.readManifest(asarPath) } catch { throw checkFailure('package-format-invalid', 'Claude 安装包里的 app.asar 读不出来') }
+  })
+}
+
+async function synchronizeClaudeComponents({ part, store, dependencies, components, progress, installers }) {
+  installers ??= PARTS[parsePart(part)].installers
+  if (!Array.isArray(installers) || installers.length === 0 || installers.some(function (id) { return !Object.hasOwn(INSTALLERS, id) })) throw checkFailure('platform-invalid', 'Claude 安装包来源无效')
   const stage = createStageRunner(progress, part)
   const workDirectory = await stage('prepare-temp', {}, function () { return dependencies.createWorkDirectory() })
   let primaryError
   try {
-    const resource = await stage('source-resolve', {}, function () { return dependencies.resolveOfficialPackage(MSIX_REQUEST_URL) })
-    const msixPath = path.join(workDirectory, 'Claude-x64.msix')
-    await stage('source-download-app', { expectedBytes: resource.bytes }, async function (onProgress) {
-      const result = await dependencies.downloadResource({ url: resource.url, filePath: msixPath, allowedHosts: official.OFFICIAL_HOSTS, maxBytes: official.MAX_PACKAGE_BYTES,
-        expectedBytes: resource.bytes, expectedEtag: resource.etag, headers: { accept: 'application/octet-stream', 'user-agent': USER_AGENT }, onProgress })
-      if (!result || result.bytes !== resource.bytes) throw checkFailure('download-mismatch', 'Claude 安装包大小和官网说的不一致')
-    })
-    const asarPath = await stage('extract-asar', {}, function () { return dependencies.extractAsar(msixPath, workDirectory) })
-    await dependencies.removeFile(msixPath)
-    const manifest = await stage('read-manifest', {}, async function () {
-      try { return await components.readManifest(asarPath) } catch { throw checkFailure('package-format-invalid', 'Claude 安装包里的 app.asar 读不出来') }
-    })
-    const plan = await stage('plan', {}, async function () { return buildPlan(part, manifest, components) })
+    // 一个安装包读不到（入口换了、官网一时不通）不挡另一个：读到的那份照样搬，搬完再报这次失败，让报警作业看得见。
+    const manifests = []
+    let installerError = null
+    for (const id of installers) {
+      try { manifests.push(await readInstallerManifest(id, { stage, dependencies, components, workDirectory })) }
+      catch (error) { installerError ??= error }
+    }
+    if (manifests.length === 0) throw installerError
+    const plan = await stage('plan', {}, async function () { return buildPlan(part, manifests, components) })
     if (typeof progress === 'function') {
       try { progress({ event: 'plan', part, ...plan.reference, files: plan.items.map(function (item) { return { file: item.label, bytes: item.bytes } }) }) } catch {}
     }
@@ -276,6 +326,7 @@ async function synchronizeClaudeComponents({ part, store, dependencies, componen
       await dependencies.removeFile(filePath)
       files.push({ file: item.label, bytes: item.bytes, state: 'uploaded' })
     }
+    if (installerError) throw installerError
     return { part, ...plan.reference, files }
   } catch (error) {
     primaryError = error
@@ -291,28 +342,77 @@ function safeChildEnvironment(directory) {
   return { PATH: '/usr/bin:/bin', HOME: directory, TMPDIR: directory, LANG: 'C', LC_ALL: 'C' }
 }
 
-/** MSIX 就是 zip：只解 app.asar 这一项到新建的空目录，解出来必须是普通文件。 */
-async function extractAsar(msixPath, workDirectory, run = promisify(execFile), platform = process.platform) {
+/** MSIX 和 Mac 的 zip 都是 zip：只解 app.asar 这一项到新建的空目录，解出来必须是普通文件。 */
+async function extractAsar(packagePath, workDirectory, installer = 'windows', run = promisify(execFile), platform = process.platform) {
   if (platform === 'win32') throw checkFailure('inspector-unavailable', '解 Claude 安装包要在 Linux 或 macOS 上跑')
-  const directory = path.join(workDirectory, 'msix')
+  if (!Object.hasOwn(INSTALLERS, installer)) throw checkFailure('platform-invalid', 'Claude 安装包来源无效')
+  const entry = INSTALLERS[installer].asarEntry
+  const directory = path.join(workDirectory, installer)
   await fs.mkdir(directory, { mode: 0o700 })
   try {
-    await run('/usr/bin/unzip', ['-qq', '-n', msixPath, MSIX_ASAR_ENTRY, '-d', directory], { env: safeChildEnvironment(workDirectory), timeout: 10 * 60 * 1000, maxBuffer: 1024 * 1024 })
+    await run('/usr/bin/unzip', ['-qq', '-n', packagePath, entry, '-d', directory], { env: safeChildEnvironment(workDirectory), timeout: 10 * 60 * 1000, maxBuffer: 1024 * 1024 })
   } catch (error) {
     throw checkFailure('inspector-failed', 'Claude 安装包里解不出 app.asar', observedProcessFailure(error))
   }
-  const asarPath = path.join(directory, ...MSIX_ASAR_ENTRY.split('/'))
+  const asarPath = path.join(directory, ...entry.split('/'))
   let stats
   try { stats = await fs.lstat(asarPath) } catch { throw checkFailure('package-format-invalid', 'Claude 安装包里没有 app.asar') }
   if (!stats.isFile() || stats.nlink !== 1 || stats.size < 1024 || stats.size > MAX_ASAR_BYTES) throw checkFailure('package-format-invalid', 'Claude 安装包里的 app.asar 不是普通文件或大小不对')
   return asarPath
 }
 
+/**
+ * 只读 Mac 那个固定入口的响应头（它不认 HEAD，所以用 GET，拿到头就断开、不收正文），把 Location 交回来。
+ * 只认一跳 30x 到 downloads.claude.ai 的通用版 zip，别的一律停。
+ */
+function requestMacZipLocation(options = {}) {
+  const timeoutMs = options.headerTimeoutMs ?? 30000
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) return Promise.reject(new Error('Claude Mac 入口响应头超时配置无效'))
+  return new Promise(function (resolve, reject) {
+    let request
+    let settled = false
+    const timer = setTimeout(function () { fail(checkFailure('source-url-rejected', 'Claude Mac 安装包入口响应头超时')) }, timeoutMs)
+    function fail(error) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(error)
+      if (request) request.destroy()
+    }
+    try {
+      request = (options.requestImpl || https.request)(new URL(MAC_ZIP_REQUEST_URL), { method: 'GET', headers: { 'accept-encoding': 'identity', 'user-agent': USER_AGENT }, agent: false, maxHeaderSize: 16 * 1024 }, function (response) {
+        if (settled) { response.destroy(); return }
+        settled = true
+        clearTimeout(timer)
+        const status = response.statusCode
+        const location = response.headers?.location
+        response.destroy()
+        if (request) request.destroy()
+        if (![301, 302, 303, 307, 308].includes(status) || typeof location !== 'string' || !MAC_ZIP_LOCATION.test(location)) {
+          reject(checkFailure('source-url-rejected', 'Claude Mac 安装包入口没有跳到 downloads.claude.ai 的通用版 zip'))
+          return
+        }
+        resolve(location)
+      })
+      request.on('error', function () { fail(checkFailure('source-url-rejected', 'Claude Mac 安装包入口连不上')) })
+      request.end()
+    } catch { fail(checkFailure('source-url-rejected', 'Claude Mac 安装包入口连不上')) }
+  })
+}
+
+/** 两个安装包各自的最新一版：地址、大小、ETag（下载时对 ETag，防止中途换了包）。 */
+async function resolveInstaller(id, options = {}) {
+  const resolveOfficial = options.resolveOfficialPackage || official.resolveOfficialPackage
+  if (id === 'windows') return resolveOfficial(MSIX_REQUEST_URL)
+  if (id === 'macos') return resolveOfficial(await (options.requestMacZipLocation || requestMacZipLocation)())
+  throw checkFailure('platform-invalid', 'Claude 安装包来源无效')
+}
+
 function createRuntimeDependencies(common) {
   return {
     downloadResource: common.downloadResource,
-    resolveOfficialPackage: function (url) { return official.resolveOfficialPackage(url) },
-    extractAsar: function (msixPath, workDirectory) { return extractAsar(msixPath, workDirectory) },
+    resolveInstaller: function (id) { return resolveInstaller(id) },
+    extractAsar: function (packagePath, workDirectory, installer) { return extractAsar(packagePath, workDirectory, installer) },
     removeFile: function (filePath) { return fs.rm(filePath, { force: true }) },
     createWorkDirectory: async function () { return fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), WORK_PREFIX)) },
     removeWorkDirectory: async function (directory) {
@@ -340,6 +440,7 @@ if (require.main === module) {
   })
 }
 
-module.exports = { SOURCE_HOST, PREFIX, CONTENT_TYPE, CACHE_CONTROL, MSIX_REQUEST_URL, MSIX_ASAR_ENTRY, MULTIPART_DEADLINE_MS, PARTS, PART_IDS,
-  parsePart, parsePartArgument, componentSourceUrl, validateComponentSourceUrl, assertObjectKey, componentsFromModules, loadComponents, buildPlan,
-  synchronizeClaudeComponents, safeComponentsSyncFailure, safeChildEnvironment, extractAsar, createRuntimeDependencies, main }
+module.exports = { SOURCE_HOST, PREFIX, CONTENT_TYPE, CACHE_CONTROL, MSIX_REQUEST_URL, MSIX_ASAR_ENTRY, MAC_ZIP_REQUEST_URL, MAC_ASAR_ENTRY, INSTALLERS, INSTALLER_IDS,
+  MULTIPART_DEADLINE_MS, PARTS, PART_IDS, parsePart, parsePartArgument, componentSourceUrl, validateComponentSourceUrl, assertObjectKey, componentsFromModules,
+  loadComponents, buildPlan, synchronizeClaudeComponents, safeComponentsSyncFailure, safeChildEnvironment, extractAsar, requestMacZipLocation, resolveInstaller,
+  createRuntimeDependencies, main }
