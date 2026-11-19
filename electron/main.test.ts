@@ -80,6 +80,22 @@ describe('main process window events', () => {
     expect(assignments[0].value).toBe("(target) => { showMainWindow(); deliverToMainWindow('onNavigate', target) }")
   })
 
+  it('hands the tray restore load result back to the release controller, so a failed load is retried on the next show', () => {
+    // 11-18 复核 U05：缩到托盘关掉的界面重新加载失败时，这里原先只记一行日志、不交回去，
+    // 控制器一直停在「正在重新加载」，再怎么叫出窗口都不再加载。
+    const { source } = mainSource()
+    const reloads: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isPropertyAssignment(node) && node.name.getText(source) === 'reload'
+        && ts.isCallExpression(node.parent.parent) && node.parent.parent.expression.getText(source) === 'createRendererRelease') {
+        reloads.push(node.initializer.getText(source))
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(reloads).toEqual(['() => mainWindow.loadURL(resolveMainWindowUrl(systemService.readStoredConfig().theme))'])
+  })
+
   it('passes the macOS View zoom commands to the main window interface only while it is the focused window', () => {
     // 深查 TR-3：画布窗口在前时 ⌘- / ⌘= 不再把整个画布界面缩放；付款、开票窗口同样不管，跟 Windows 上一样。
     const { source } = mainSource()
