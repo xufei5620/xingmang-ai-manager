@@ -137,6 +137,7 @@ export const canvasHostSaveProjectChannel = canvasHostChannels.saveProject
 export const canvasHostRenameProjectChannel = canvasHostChannels.renameProject
 export const canvasHostDuplicateProjectChannel = canvasHostChannels.duplicateProject
 export const canvasHostSetProjectArchivedChannel = canvasHostChannels.setProjectArchived
+export const canvasHostCloseProjectChannel = canvasHostChannels.closeProject
 export const canvasHostCreateProjectInDefaultFolderChannel = canvasHostChannels.createProjectInDefaultFolder
 export const canvasHostRelinkProjectFolderChannel = canvasHostChannels.relinkProjectFolder
 export const canvasHostDeleteProjectChannel = canvasHostChannels.deleteProject
@@ -919,6 +920,20 @@ export function createCanvasWindowController(
     const active = activeProjects.get(event.sender.id)
     if (archivedInput && active?.userId === userId && active.projectId === projectId) activeProjects.delete(event.sender.id)
     return updated
+  })
+
+  // 画布回到项目中心（Mac 验收 R3）：内核存完最后一次、项目中心出来之前说一声，这里就不再记着这个窗口开着那个项目。
+  // 不清的话 projectCenterAssetLibrary 还当项目开着，主窗口「看做过的图」叫出来的素材库列的是刚离开那个项目的素材。
+  // 只收项目标识，只清这个窗口自己记着的、正是当前账号这个项目的那一条，别的一律不动、回 false；清之前不 await，
+  // 紧跟着发来的打开项目一定排在它后面。被投毒的画布拿它只能让主进程忘掉自己开着的项目：之后项目里的素材、运行、
+  // 保存都要先重新打开项目；没开项目时那份只读图片，刚打开画布时本来就能看（「素材库放开」），没多给任何东西。
+  registerCanvasHandler(canvasHostCloseProjectChannel, (event, projectIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
+    const active = activeProjects.get(event.sender.id)
+    if (!active || active.userId !== userId || active.projectId !== projectId) return false
+    activeProjects.delete(event.sender.id)
+    return true
   })
 
   registerCanvasHandler(canvasHostPrepareGroupChannel, async (_event, groupInput) => {

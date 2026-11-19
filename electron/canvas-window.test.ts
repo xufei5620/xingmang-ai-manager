@@ -163,6 +163,7 @@ import {
   canvasHostSaveAssetChannel,
   canvasHostSaveProjectChannel,
   canvasHostSetProjectArchivedChannel,
+  canvasHostCloseProjectChannel,
   canvasHostShowAssetMenuChannel,
   canvasHostThemeChangedChannel,
   canvasHostUpdatePromptPresetChannel,
@@ -404,6 +405,7 @@ describe('createCanvasWindowController', () => {
       canvasHostSaveAssetChannel,
       canvasHostSaveProjectChannel,
       canvasHostSetProjectArchivedChannel,
+      canvasHostCloseProjectChannel,
       canvasHostSaveFileChannel,
       canvasHostShowAssetMenuChannel,
       canvasHostUpdatePromptPresetChannel,
@@ -487,6 +489,56 @@ describe('createCanvasWindowController', () => {
     await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
     await list(trustedEvent(), { ...query, mediaType: 'video' })
     expect(folderMedia.listOwnedPage).toHaveBeenCalledTimes(1)
+    expect(mediaAssets.listOwnedPage).toHaveBeenCalledTimes(1)
+  })
+
+  // Mac 验收 R3：画布回到项目中心以后，主窗口「看做过的图」叫出来的素材库要读共享库，不再列刚离开那个项目的素材。
+  it('serves the home page library again once the canvas says it left the open project', async () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const project = { id: projectId, name: '项目', createdAt: '2026-11-10T00:00:00.000Z', updatedAt: '2026-11-10T00:00:00.000Z' }
+    const page = { items: [], offset: 0, limit: 24, total: 0, hasMore: false, facets: { tags: [] } }
+    const mediaAssets = { listOwnedPage: vi.fn(async () => page) }
+    const folderMedia = { listOwnedPage: vi.fn(async () => page) }
+    const save = vi.fn(async () => ({ project, workspaceStatus: 'ready' }))
+    const session = { authenticated: true, account: { userId: 7 } }
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState: vi.fn(() => session), provisionCliKey: vi.fn() } as unknown as NewApiClientService,
+      projects: { list: vi.fn(async () => [project]), create: vi.fn(), open: vi.fn(async () => ({ project, content: '{}' })), save } as never,
+      projectAssets: { forProject: vi.fn(async () => ({ media: folderMedia })), forNewWorkspace: vi.fn(), forgetProject: vi.fn() } as never,
+      mediaAssets: mediaAssets as never,
+    }))
+    await controller.open()
+    const list = electronMocks.handlers.get(canvasHostListAssetsChannel)!
+    const close = electronMocks.handlers.get(canvasHostCloseProjectChannel)!
+    const query = { mediaType: 'image', view: 'all', source: 'all', sort: 'created-desc', offset: 0, limit: 24 }
+
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    await list(trustedEvent(), query)
+    expect(folderMedia.listOwnedPage).toHaveBeenCalledTimes(1)
+
+    // Another project, another account, or a malformed id leaves the open project alone.
+    expect(await close(trustedEvent(), '22222222-2222-4222-8222-222222222222')).toBe(false)
+    session.account = { userId: 8 }
+    expect(await close(trustedEvent(), projectId)).toBe(false)
+    session.account = { userId: 7 }
+    await expect(Promise.resolve().then(() => close(trustedEvent(), 42))).rejects.toThrow('画布项目标识格式错误')
+    await expect(Promise.resolve().then(() => close(foreignEvent(), projectId))).rejects.toThrow('已拒绝来自非画布页面的操作请求')
+    await list(trustedEvent(), query)
+    expect(folderMedia.listOwnedPage).toHaveBeenCalledTimes(2)
+    expect(mediaAssets.listOwnedPage).not.toHaveBeenCalled()
+
+    expect(await close(trustedEvent(), projectId)).toBe(true)
+    await list(trustedEvent(), query)
+    expect(mediaAssets.listOwnedPage).toHaveBeenCalledTimes(1)
+    expect(folderMedia.listOwnedPage).toHaveBeenCalledTimes(2)
+    // The project's own operations need it opened again; nothing is left to forget.
+    await expect(electronMocks.handlers.get(canvasHostSaveProjectChannel)!(trustedEvent(), projectId, '{}')).rejects.toThrow('请先选择或新建一个画布项目')
+    expect(save).not.toHaveBeenCalled()
+    expect(await close(trustedEvent(), projectId)).toBe(false)
+
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    await list(trustedEvent(), query)
+    expect(folderMedia.listOwnedPage).toHaveBeenCalledTimes(3)
     expect(mediaAssets.listOwnedPage).toHaveBeenCalledTimes(1)
   })
 

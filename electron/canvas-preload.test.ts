@@ -104,6 +104,13 @@ describe('canvas sandbox preload', () => {
     expect(invoke).not.toHaveBeenCalled()
   })
 
+  it('tells the main process which project the canvas left and nothing else', async () => {
+    const invoke = vi.fn(async () => true)
+    const bridge = loadCanvasBridge(invoke)
+    await expect(bridge.closeProject('p1')).resolves.toBe(true)
+    expect(invoke.mock.calls).toEqual([['canvas-host:close-project', 'p1']])
+  })
+
   it('forwards the content and source of a saved copy only when the kernel passes them', async () => {
     const invoke = vi.fn(async () => null)
     const bridge = loadCanvasBridge(invoke)
