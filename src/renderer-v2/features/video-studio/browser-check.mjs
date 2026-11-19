@@ -716,6 +716,45 @@ test('tells the current balance when confirming clips, and leaves it out when th
   }
 })
 
+// #1406 P2-1 后半：余额前面报「预计约 $x」，按这次用的模型和分组、一段一次算（价目同画布和个人中心价格表那份）。
+// 视频标「估算」；画图不到一分写「不到 $0.01」；价目是页面打开时读好的，十分钟内再打开确认框不再多读。
+test('quotes the price of the chosen model and group before the balance, from one read of the price list', async () => {
+  const { page, errors } = await openStudio('?balance=12.5&prices=1')
+  await page.locator('[data-testid="video-image-model"][data-model="gpt-image-2"]').waitFor()
+  await page.waitForFunction(() => window.videoStudioPage.balance() === 12.5)
+  await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'prices'))
+  const reads = (await studioCalls(page, 'prices')).length
+  await writeStoryboard(page, '咖啡馆', { title: '咖啡', shots: [{ prompt: '拉花' }, { prompt: '窗外' }] })
+  const confirm = page.getByTestId('video-confirm')
+
+  await page.getByTestId('video-generate-all').click()
+  await confirm.getByText('用「grok-imagine-video-1.5」生成 2 段、每段 6 秒，每段单独计费，预计约 $1.60（估算）。当前余额 $12.50。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '取消' }).click()
+  await confirm.waitFor({ state: 'detached' })
+
+  await page.getByTestId('video-shot-draw-0').click()
+  await confirm.getByText('用「gpt-image-2」按第 1 个镜头的画面描述画一张图，单独计费，预计不到 $0.01。当前余额 $12.50。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '取消' }).click()
+  await confirm.waitFor({ state: 'detached' })
+
+  // 只生成第一段，生成好了再点重新生成：报的是一段的价。
+  await page.getByTestId('video-shot-generate-0').click()
+  await confirm.getByText('用「grok-imagine-video-1.5」生成 1 段、每段 6 秒，每段单独计费，预计约 $0.80（估算）。当前余额 $12.50。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [first] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#00ff88'), first.requestId)
+  await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
+  await page.getByTestId('video-shot-generate-0').click()
+  await confirm.getByText('重新生成这一段？').waitFor()
+  await confirm.getByText('会再扣一次费，预计约 $0.80（估算）。新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '取消' }).click()
+
+  assert.equal((await studioCalls(page, 'prices')).length, reads, 'opening the dialogs again within ten minutes does not read the price list again')
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
 // 审查清单 严重-1 后半：「暂时查不到进度」这类失败时服务端多半还在出，点重新生成先拿原来的请求号接回，接不回来才再花钱。
 test('retrying a clip that failed while the server may still be working picks the old one up before paying again', async () => {
   const { page, errors } = await openStudio()
