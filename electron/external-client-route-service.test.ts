@@ -27,7 +27,7 @@ function createService(fetchAvailableModels: (apiKey: string) => Promise<string[
     scanOne: vi.fn(),
     install: vi.fn(),
     cancelInstall: vi.fn(() => ({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })),
-    launch: vi.fn(async () => undefined),
+    launch: vi.fn(async () => ({})),
     stillRunning: vi.fn(async () => null),
   }
   const context = createServiceContext(store, {
@@ -63,8 +63,9 @@ describe('external client route service', () => {
 
   it('hands launching and cancelling a client to the runtime', async () => {
     const { runtime, service } = createService(async () => [])
+    vi.mocked(runtime.launch).mockResolvedValueOnce({ preparationSkipped: 'elevated' })
 
-    await service.launchExternalClient('claudeDesktop')
+    await expect(service.launchExternalClient('claudeDesktop')).resolves.toEqual({ preparationSkipped: 'elevated' })
     expect(service.cancelExternalClientInstall('opencode')).toEqual({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })
 
     expect(runtime.launch).toHaveBeenCalledWith('claudeDesktop')
@@ -77,7 +78,7 @@ describe('external client route service', () => {
     const order: string[] = []
     const prepareClaudeDesktopLaunch = vi.fn(async (_context: ClaudeDesktopLaunchContext) => { order.push('prepare') })
     const { runtime, service } = createService(async () => [], { prepareClaudeDesktopLaunch })
-    vi.mocked(runtime.launch).mockImplementation(async () => { order.push('launch') })
+    vi.mocked(runtime.launch).mockImplementation(async () => { order.push('launch'); return {} })
 
     await service.launchExternalClient('claudeDesktop')
     await service.launchExternalClient('opencode')
