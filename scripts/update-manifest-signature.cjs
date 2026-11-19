@@ -30,7 +30,6 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { createHash, createPrivateKey, createPublicKey, sign, verify } = require('node:crypto')
-const YAML = require('yaml')
 const { parseLatestMetadata } = require('./update-release-utils.cjs')
 
 const SIGNATURE_FIELD = 'xingmangSignature'
@@ -83,6 +82,8 @@ function readDocument(text, name) {
   // parseLatestMetadata 做完整的结构校验；这里另外拿一份可改写的文档，改完其余内容
   // 原样保留，electron-updater 读到的除了多出的签名字段之外一个字节都不变。
   const metadata = parseLatestMetadata(text, name)
+  // 用到才加载：service-status-signature.cjs 借这里的读公钥、读私钥，service-status 的预览作业不装依赖也要能跑。
+  const YAML = require('yaml')
   const document = YAML.parseDocument(text, { uniqueKeys: true })
   if (document.errors.length > 0) throw new UpdateSignatureError(`${name} 不是有效的 YAML`)
   const files = document.get('files')
