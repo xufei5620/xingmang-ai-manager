@@ -1819,10 +1819,11 @@ test('the Windows manifest is signed before anything is checked or uploaded, and
   // macOS 不签：由 Squirrel.Mac 按钉住的发布证书验签。
   assert.doesNotMatch(String(step.run), /latest-mac/)
   assert.deepEqual(Object.keys(step.env), ['XINGMANG_UPDATE_SIGNING_KEY'])
-  // 签名私钥只给 Windows 和 Linux 这两步签名，别的步骤一个都不许读到。
+  // 签名私钥只给 Windows 和 Linux 这两步签清单、外加状态文件签撤回名单那一步（D85），别的步骤一个都不许读到。
   const linuxSign = publishJob.steps[stepIndex(publishJob, /Sign the Linux update manifests/)]
+  const statusSign = publishJob.steps[stepIndex(publishJob, /Sign the release guard before it goes up/)]
   const readers = publishJob.steps.filter((item) => /XINGMANG_UPDATE_SIGNING_KEY/.test(YAML.stringify(item)))
-  assert.deepEqual(readers, [step, linuxSign])
+  assert.deepEqual(readers, [step, linuxSign, statusSign])
 })
 
 test('both Linux manifests are signed before anything is checked or uploaded, and re-verified live', () => {
@@ -2126,16 +2127,26 @@ test('both macOS release packages are launched before they reach the publish job
 // 分批放量是发版的一项输入（商业级差距报告 G02）：原来要人记着在触发之前先跑 service-status，
 // 0.2.20、0.2.21 都忘了，等于全量发。现在由 publish 作业在换清单之前写好。
 const decideRolloutStep = publishJob.steps.find((step) => step.id === 'rollout')
+const signRolloutStep = publishJob.steps.find((step) => /Sign the release guard before it goes up/.test(step.name || ''))
 const uploadRolloutStep = publishJob.steps.find((step) => /Upload the rollout before the manifests switch/.test(step.name || ''))
+const { PRESERVE_SYMLINKS, createPinnedWorkspace, createTestSigner } = require('./service-status-signature.test-support.cjs')
+const { inspectStatusSignature, signStatus } = require('./service-status-signature.cjs')
+const rolloutSigner = createTestSigner()
 const describeRolloutStep = tagJob.steps.find((step) => /Show the approver how far this release will reach/.test(step.name || ''))
 
 test('the rollout is written by the publish job itself, after the installers check out and before the manifests switch', () => {
   const verify = stepIndex(publishJob, /Verify the uploaded files are downloadable/)
   const decide = publishJob.steps.indexOf(decideRolloutStep)
+  const sign = publishJob.steps.indexOf(signRolloutStep)
   const upload = publishJob.steps.indexOf(uploadRolloutStep)
   const manifest = stepIndex(publishJob, /Publish the update manifests/)
   assert.ok(verify >= 0 && decide > verify, '安装包核对过了才动状态文件：前面停下时线上什么都没变')
   assert.ok(upload > decide && manifest > upload, '放量必须在换清单之前写好、核对过')
+  // D85：撤回名单那几项签上发布者签名才传，签名只拿私钥、跟上传同一个条件。
+  assert.ok(sign > decide && upload > sign, '算好、签上、再传')
+  assert.equal(signRolloutStep.if, uploadRolloutStep.if)
+  assert.deepEqual(Object.keys(signRolloutStep.env), ['XINGMANG_UPDATE_SIGNING_KEY'])
+  assert.equal(signRolloutStep.run, 'node scripts/service-status-signature.cjs sign --file "$RUNNER_TEMP/rollout-status.json"')
   assert.equal(decideRolloutStep.env.ROLLOUT, '${{ inputs.rollout }}')
   assert.match(decideRolloutStep.run, /node scripts\/release-rollout\.cjs plan --version "\$PACKAGE_VERSION" --rollout "\$ROLLOUT"/)
   // 只在算出来要改时才上传；上传的只有状态文件，传完核对客户读到的就是这一份。
@@ -2162,13 +2173,12 @@ test('the run page shows how far the release will reach before either approval',
 
 // 算放量、传状态文件两步真的跑一遍：curl 桩从一个本地「更新目录」取文件，aws 桩把文件写回那个目录
 // （就像传上去马上读得到），并记下传了什么。
+// 状态文件签名用测试那把钥匙（service-status-signature.test-support.cjs）：临时目录里只钉它的公钥。
 function runRolloutSteps({ rollout = '20: 先推给两成电脑（平时都选这个）', artifacts = ['latest.yml', 'latest-mac.yml'], live = {}, statusCode = null, stale = false }) {
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-rollout-'))
+  const workspace = createPinnedWorkspace('xingmang-publish-rollout-', [rolloutSigner.publicKey])
   const binDirectory = path.join(workspace, 'bin')
   const served = path.join(workspace, 'served')
   for (const directory of [binDirectory, served, path.join(workspace, 'release-artifacts')]) fs.mkdirSync(directory)
-  fs.symlinkSync(path.join(root, 'scripts'), path.join(workspace, 'scripts'))
-  fs.symlinkSync(path.join(root, 'node_modules'), path.join(workspace, 'node_modules'))
   for (const name of artifacts) fs.writeFileSync(path.join(workspace, 'release-artifacts', name), manifestText('0.2.23', name))
   for (const [name, text] of Object.entries(live)) fs.writeFileSync(path.join(served, name), text)
   const logPath = path.join(workspace, 'commands.log')
@@ -2215,17 +2225,25 @@ cp "$3" ${JSON.stringify(served)}/"$(basename "$4")"
     R2_BUCKET: 'stub',
     PUBLIC_BASE: 'https://updates.example.test/xingmang-manager',
     ROLLOUT: rollout,
+    NODE_OPTIONS: PRESERVE_SYMLINKS.join(' '),
   }
   const decided = spawnSync(SHELL_PATH, ['-c', decideRolloutStep.run], { cwd: workspace, encoding: 'utf8', env })
   const outputs = readOutputs(outputPath)
-  const uploaded = decided.status === 0 && outputs.write === 'true'
+  const signed = decided.status === 0 && outputs.write === 'true'
+    ? spawnSync(SHELL_PATH, ['-c', signRolloutStep.run], { cwd: workspace, encoding: 'utf8', env: { ...env, XINGMANG_UPDATE_SIGNING_KEY: rolloutSigner.privateKeyText } })
+    : null
+  const uploaded = signed?.status === 0
     ? spawnSync(SHELL_PATH, ['-c', uploadRolloutStep.run], { cwd: workspace, encoding: 'utf8', env })
     : null
   const statusPath = path.join(served, 'service-status.json')
   const status = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, 'utf8')) : null
   const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
   fs.rmSync(workspace, { recursive: true, force: true })
-  return { decided, uploaded, outputs, status, log }
+  return { decided, signed, uploaded, outputs, status, log }
+}
+
+function signedForRollout(status) {
+  return JSON.stringify(signStatus(status, rolloutSigner.privateKey, [rolloutSigner.publicKey]))
 }
 
 test('a first release writes two in ten into the live status file and keeps every other switch', posixOnly, () => {
@@ -2237,10 +2255,13 @@ test('a first release writes two in ten into the live status file and keeps ever
   })
   assert.equal(run.decided.status, 0, run.decided.stdout + run.decided.stderr)
   assert.equal(run.outputs.write, 'true')
+  assert.equal(run.signed.status, 0, run.signed.stdout + run.signed.stderr)
   assert.equal(run.uploaded.status, 0, run.uploaded.stdout + run.uploaded.stderr)
   assert.deepEqual(run.status.rollout, { version: '0.2.23', percent: 20 })
   assert.deepEqual(run.status.badVersions, ['0.2.10'])
   assert.equal(run.status.minimumVersion, '0.2.22')
+  // 传上去的就是签过名的那一份（上传那步还核对了客户读到的跟它逐字节一样）。
+  assert.equal(inspectStatusSignature(run.status, [rolloutSigner.publicKey]), 'signed')
   assert.match(run.log, /^aws s3 cp \S+rollout-status\.json s3:\/\/stub\/xingmang-manager\/service-status\.json /m)
   assert.match(run.uploaded.stdout, /客户会用的地址已经读到新的分批放量/)
 
@@ -2248,15 +2269,44 @@ test('a first release writes two in ten into the live status file and keeps ever
   const blank = runRolloutSteps({})
   assert.equal(blank.uploaded.status, 0, blank.uploaded.stdout + blank.uploaded.stderr)
   assert.deepEqual(blank.status.rollout, { version: '0.2.23', percent: 20 })
+  assert.equal(inspectStatusSignature(blank.status, [rolloutSigner.publicKey]), 'signed')
+})
+
+test('a release that leaves the rollout alone still signs a live status file that is not signed yet (D85)', posixOnly, () => {
+  // 快修选 100、线上又没有放量：放量不用改。可线上那份还没签过的话，第一个验签名的版本一装上就不认撤回名单、
+  // 最低版本，所以照原样重写一份、签上再传。
+  const unsigned = { badVersions: ['0.2.10'], minimumVersion: '0.2.22', maintenance: { active: true } }
+  const quickFix = runRolloutSteps({ rollout: '100', live: { 'latest.yml': manifestText('0.2.22', 'windows'), 'service-status.json': JSON.stringify(unsigned) } })
+  assert.equal(quickFix.decided.status, 0, quickFix.decided.stdout + quickFix.decided.stderr)
+  assert.equal(quickFix.outputs.write, 'true')
+  assert.match(quickFix.decided.stdout, /还没有发布者签名，0\.2\.25 起的客户端不认它们。这次照原样重写一份、签上再传/)
+  assert.equal(quickFix.uploaded.status, 0, quickFix.uploaded.stdout + quickFix.uploaded.stderr)
+  assert.deepEqual(quickFix.status.badVersions, ['0.2.10'])
+  assert.equal(quickFix.status.minimumVersion, '0.2.22')
+  assert.deepEqual(quickFix.status.maintenance, { active: true })
+  assert.equal(quickFix.status.rollout, undefined)
+  assert.equal(inspectStatusSignature(quickFix.status, [rolloutSigner.publicKey]), 'signed')
+
+  // 已经签好的：照旧不动。
+  const settled = runRolloutSteps({ rollout: '100', live: { 'latest.yml': manifestText('0.2.22', 'windows'), 'service-status.json': signedForRollout(unsigned) } })
+  assert.equal(settled.decided.status, 0, settled.decided.stdout + settled.decided.stderr)
+  assert.equal(settled.outputs.write, 'false')
+  assert.equal(settled.uploaded, null)
 })
 
 test('a rerun leaves the rollout alone, and anything unreadable stops before the manifests', posixOnly, () => {
-  const paused = JSON.stringify({ rollout: { version: '0.2.23', percent: 0 } })
+  const paused = signedForRollout({ rollout: { version: '0.2.23', percent: 0 } })
   const rerun = runRolloutSteps({ live: { 'latest.yml': manifestText('0.2.23', 'windows'), 'latest-mac.yml': manifestText('0.2.23', 'mac'), 'service-status.json': paused } })
   assert.equal(rerun.decided.status, 0, rerun.decided.stdout + rerun.decided.stderr)
   assert.equal(rerun.outputs.write, 'false')
   assert.equal(rerun.uploaded, null)
   assert.deepEqual(rerun.status, JSON.parse(paused))
+  // 线上那份没签过名：放量照样不动，只是签上再传（停住的那 0 不会被放回两成）。
+  const unsignedRerun = runRolloutSteps({ live: { 'latest.yml': manifestText('0.2.23', 'windows'), 'latest-mac.yml': manifestText('0.2.23', 'mac'), 'service-status.json': JSON.stringify({ rollout: { version: '0.2.23', percent: 0 } }) } })
+  assert.equal(unsignedRerun.outputs.write, 'true')
+  assert.equal(unsignedRerun.uploaded.status, 0, unsignedRerun.uploaded.stdout + unsignedRerun.uploaded.stderr)
+  assert.deepEqual(unsignedRerun.status.rollout, { version: '0.2.23', percent: 0 })
+  assert.equal(inspectStatusSignature(unsignedRerun.status, [rolloutSigner.publicKey]), 'signed')
 
   const busy = runRolloutSteps({ statusCode: 503 })
   assert.notEqual(busy.decided.status, 0)
@@ -2264,7 +2314,7 @@ test('a rerun leaves the rollout alone, and anything unreadable stops before the
   assert.equal(busy.log, '')
 
   // 传上去了，客户会用的地址读回来的却不是这一份（缓存）：停下，不往下换清单。
-  const stale = runRolloutSteps({ stale: true, live: { 'service-status.json': '{}' } })
+  const stale = runRolloutSteps({ stale: true, live: { 'service-status.json': signedForRollout({}) } })
   assert.equal(stale.decided.status, 0, stale.decided.stdout + stale.decided.stderr)
   assert.notEqual(stale.uploaded.status, 0)
   assert.match(stale.uploaded.stdout, /::error::分批放量传上去了，但客户会用的地址读到的不是这一份/)
