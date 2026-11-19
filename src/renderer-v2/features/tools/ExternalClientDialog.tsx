@@ -20,7 +20,16 @@ const clientHints: Record<ExternalToolId, string> = {
   opencode: '命令行版和桌面版共用这份配置。',
 }
 
-export function ExternalClientDialog({ api, tool, signedIn, ready = false, version = null, strictKeyFormat = false, liveConfig = null, onClose, onSaved }: {
+// Windows 上从星芒点「打开」时先替它放好聊天和 Code 要用的 Claude Code 程序（electron/claude-desktop-code-seed.ts），
+// 那一份不用再连官网；Cowork 的工作区国内没有来源，还得连官网。字是 yoyo 2026-11-04 回「放程序字改」批的。
+const claudeDesktopSeededHint = '保存后要完全退出再重新打开 Claude Desktop。从星芒点「打开」时，星芒会先替它放好聊天和 Code 要用的程序；Cowork 要用的工作区（约 1.3GB）还得这台电脑连得上 Claude 官网才下得动。'
+
+/** 配置框最上面那一句。codeSeeded：这台电脑上从星芒打开 Claude Desktop 前会先替它放程序（Windows）。 */
+export function externalClientHint(tool: ExternalToolId, codeSeeded: boolean): string {
+  return tool === 'claudeDesktop' && codeSeeded ? claudeDesktopSeededHint : clientHints[tool]
+}
+
+export function ExternalClientDialog({ api, tool, signedIn, ready = false, version = null, strictKeyFormat = false, liveConfig = null, codeSeeded = false, onClose, onSaved }: {
   api: XingmangApi
   tool: ExternalToolId
   signedIn: boolean
@@ -35,6 +44,8 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
    * Claude Code 常常是弹窗打开以后才写好密钥。缺省 = 只在打开时读一次。
    */
   liveConfig?: AppConfigSummary | null
+  /** 这台电脑上从星芒打开 Claude Desktop 前会先替它放好 Claude Code 程序（Windows）。缺省 = 不会，照旧说要连官网。 */
+  codeSeeded?: boolean
   onClose(): void
   onSaved(): void
 }) {
@@ -164,7 +175,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
     footer={<><DialogExitButton disabled={Boolean(busy)}>{result ? '完成' : '取消'}</DialogExitButton><Button variant="primary" icon={Save} loading={busy === 'save'} disabled={Boolean(busy) || (detected ? !model || !models.includes(model) : source === 'manual' && !secret.trim())}
       onClick={() => void (detected ? save(model, models) : detectThenSave())} testId="external-client-save">{detected ? '保存配置' : '保存并检测'}</Button></>}>
     <div className="v2-client-head"><BrandIcon tool={tool} /><strong>{definition.name}</strong>{version && <span>v{version.replace(/^v/, '')}</span>}</div>
-    <p className="v2-field-note">{clientHints[tool]}</p>
+    <p className="v2-field-note">{externalClientHint(tool, codeSeeded)}</p>
     <fieldset className="v2-config-controls" disabled={Boolean(busy)}>
       <div className="v2-config-key"><OptionPicker label="访问密钥" value={source} options={sourceOptions} onChange={changeSource} testId="external-client-source" />
         {keyError && <p role="status">{accountKeyListFailureText(keyError)}</p>}

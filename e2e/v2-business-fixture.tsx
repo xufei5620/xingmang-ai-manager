@@ -831,6 +831,7 @@ const apiMethods = {
     record('open-invoice-portal', args)
     if (query.has('invoiceFail')) throw new Error("Error invoking remote method 'account:open-invoice-portal': Error: 没能打开开票中心，请稍后再试；还不行请找客服。")
   },
+  onExternalClientLaunchProgress: () => () => undefined,
   getAccountSession: async () => ({
     authenticated: true,
     ...(query.has('sub2apiReliability') ? { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: {
