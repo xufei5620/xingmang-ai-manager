@@ -23,7 +23,7 @@ import { cliInstallStageLabel, cliNeedsNodeRuntime, planCliInstall, prepareShare
 import { jobToolName, withoutTool } from './tool-jobs'
 import { rememberRevertedToolUpdate } from './update-notice'
 import { uninstallHandOffNotice } from './uninstall-handoff'
-import { clientLaunchWaitLabel } from './launch-notice'
+import { clientLaunchWaitLabel, externalLaunchWarning } from './launch-notice'
 import { externalAutoConnectAttemptKey, externalAutoConnectEligible, externalDetectedAutoConnectTarget, type ExternalAutoConnectOutcome } from './external-client-auto-connect'
 import { externalClientConnectedText } from './external-client-notice'
 import { installedToolSyncLabel } from './useToolbox'
@@ -364,9 +364,13 @@ export function useToolInstall(options: ToolInstallOptions) {
     try {
       // 只等这一家自己正在装的那一次，别的工具在装不等（I11 的登记例外）。
       const waitLabel = clientLaunchWaitLabel(toolbox.jobs, id, jobToolName)
-      const launched = await toolbox.run(`launch:${id}`, waitLabel, () => toolsApi.launchExternal(id))
+      const outcome: { result?: Awaited<ReturnType<typeof toolsApi.launchExternal>> } = {}
+      const launched = await toolbox.run(`launch:${id}`, waitLabel, async () => { outcome.result = await toolsApi.launchExternal(id) })
+      if (!launched || !mounted.current || !epoch()) return
       // 打开以后变的只有这一行的「运行中」：不再整轮重扫，那会让三行按钮一起变灰（第三十一批 C）。
-      if (launched && mounted.current && epoch()) toolbox.noteExternalLaunched(id)
+      toolbox.noteExternalLaunched(id)
+      const warning = externalLaunchWarning(outcome.result)
+      if (warning) toast.show(warning, 'warn')
     } catch (cause) { if (mounted.current && epoch()) throw cause }
   }
   // Claude Desktop 卡上的「切回官方账号 / 改用当前账号」：只改它登录页那个选择。星芒那份配置用不上了

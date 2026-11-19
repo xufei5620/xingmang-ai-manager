@@ -519,6 +519,24 @@ test('external clients recognize complete manual configurations without claiming
   } finally { await page.close() }
 })
 
+// yoyo 2026-11-19「提示改」：星芒是右键「以管理员身份运行」的，打开 Claude Desktop 前没替它放程序（有意的），
+// 打开以后说一句怎么办；正常打开的星芒不说。
+test('opening Claude Desktop from an elevated 星芒 says how to let it prepare the program, and only then', async () => {
+  const notice = '星芒现在是以管理员身份打开的，没法替 Claude Desktop 准备程序。关掉星芒、直接双击打开，再点「打开」。'
+  for (const elevated of [true, false]) {
+    const page = await open(`externalInstalled=1&externalOther=claudeDesktop&externalLocalReady=claudeDesktop${elevated ? '&externalLaunchElevated=1' : ''}`)
+    try {
+      const claude = page.getByTestId('tool-row-claudeDesktop')
+      await claude.getByText('已配好', { exact: true }).waitFor()
+      await claude.getByRole('button', { name: '打开', exact: true }).click()
+      await claude.getByText(/运行中/).waitFor()
+      if (elevated) await waitForToast(page, notice)
+      else await assertNoToast(page, notice)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 // #1111 第 1 条：Claude Desktop 改用当前账号时原来那份连接用不上了，弹连接框之前先说一句为什么弹。
 test('switching Claude Desktop back to the account says why the connection dialog opens', async () => {
   const page = await open('externalInstalled=1&externalReady=claudeDesktop&externalAccountOwned=claudeDesktop&externalReconnect=1')

@@ -158,6 +158,17 @@ export interface ExternalClientLaunchProgress {
   percent: number | null
 }
 
+/**
+ * 点「打开」以后、客户端已经交出去时，还要客户知道的事。现在只有一件：Windows 上星芒是开着 UAC 时右键
+ * 「以管理员身份运行」的（trusted-only），打开 Claude Desktop 前那一步不往它的文件夹里写程序
+ * （claude-desktop-code-seed.ts 的 not-same-user：普通权限的程序也能改那个文件夹，有意不写，见 AGENTS.md I8），
+ * 客户要正常打开星芒再点一次。
+ * 只回原因，那句话由界面拼（字是 yoyo 2026-11-19 回「提示改」批的）。缺省 = 没什么要说的（旧行为）。
+ */
+export interface ExternalClientLaunchResult {
+  preparationSkipped?: 'elevated'
+}
+
 export type ExternalClientCredential =
   | { kind: 'configured'; provider: ProviderId }
   | { kind: 'account'; keyId: number }

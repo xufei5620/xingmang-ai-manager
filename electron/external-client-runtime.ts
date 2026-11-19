@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { inspectAppxVolumeLink } from './appx-volume-link'
-import type { ClaudeDesktopSeedClient } from './claude-desktop-code-seed'
+import type { ClaudeDesktopCodeSeedOutcome, ClaudeDesktopSeedClient } from './claude-desktop-code-seed'
 import {
   buildClaudeDesktopInstallFailureMessage, classifyClaudeDesktopInstallFailure, isPlainClaudeDesktopInstallMessage,
 } from './claude-desktop-install-failure'
@@ -15,7 +15,7 @@ import {
 } from './command-runner'
 import {
   externalClientOfficialDownloadUrls, isExternalToolId,
-  type DesktopAppUpdateRequest, type ExternalClientInstallProgress, type ExternalClientRuntimeStatus,
+  type DesktopAppUpdateRequest, type ExternalClientInstallProgress, type ExternalClientLaunchResult, type ExternalClientRuntimeStatus,
 } from './external-client-contract'
 import type { ExternalToolId, WorkBuddyEdition } from './external-tool-config'
 import {
@@ -175,7 +175,7 @@ export interface ExternalClientRuntimeOptions {
    * （claude-desktop-code-seed.ts）。在这一家的打开里跑（等它自己正在装的那次装完、打开前那次检测之后），
    * 所以同一家的安装照旧等它；抛错也照常打开。缺省 = 不做。
    */
-  prepareClaudeDesktopLaunch?: (client: ClaudeDesktopSeedClient) => Promise<unknown>
+  prepareClaudeDesktopLaunch?: (client: ClaudeDesktopSeedClient) => Promise<ClaudeDesktopCodeSeedOutcome | void>
   /**
    * Mac 上查星芒存储桶里这几家的最新版，首页据此提醒「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）。
    * 缺省 = 不查、不提醒（测试与旧调用方照旧），生产由 system-service 打开。
@@ -329,6 +329,14 @@ function wingetFailureMessage(error: unknown): string {
 function installationError(message: string, originalError: unknown): Error {
   return Object.assign(new Error(message), { originalError })
 }
+/**
+ * 放程序那一步的结果里，哪些要客户自己动手、随打开结果带回界面。只有「星芒是以管理员身份运行的」这一种：
+ * 别的跳过（开着、远程关了、没网、盘满）要么本来就不该放，要么下次打开会再试，说了客户也做不了什么。
+ */
+export function buildExternalClientLaunchResult(outcome: ClaudeDesktopCodeSeedOutcome | void): ExternalClientLaunchResult {
+  return outcome?.status === 'skipped' && outcome.reason === 'not-same-user' ? { preparationSkipped: 'elevated' } : {}
+}
+
 function installKey(tool: ExternalToolId): string {
   return `external-client:install:${tool}`
 }
@@ -734,7 +742,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   const resolveMachinePaths = options.resolveMachinePaths ?? resolveWindowsMachinePaths
   const jobs = new Map<ExternalToolId, { promise: Promise<ExternalClientRuntimeStatus>; observers: Set<(event: ExternalClientInstallProgress) => void>; last: ExternalClientInstallProgress | null }>()
   // 正在打开的那几家：连点两下合成一次；同一家的安装要等它打开完再动手（见 install）。
-  const launches = new Map<ExternalToolId, Promise<void>>()
+  const launches = new Map<ExternalToolId, Promise<ExternalClientLaunchResult>>()
   const installCancellations = new InstallCancellationRegistry()
   let inFlightScan: { promise: Promise<ExternalClientRuntimeStatus[]>; generation: number } | null = null
   const now = options.now ?? Date.now
@@ -1288,7 +1296,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   function cancelInstall(tool: ExternalToolId): InstallCancellationOutcome {
     return installCancellations.cancel(installKey(tool))
   }
-  function launch(tool: ExternalToolId): Promise<void> {
+  function launch(tool: ExternalToolId): Promise<ExternalClientLaunchResult> {
     if (!isExternalToolId(tool)) return Promise.reject(new Error('未知客户端'))
     const existing = launches.get(tool)
     if (existing) return existing
@@ -1306,13 +1314,15 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       const client = inspection.clients.find((item) => item.tool === tool)
       if (!client) throw new Error(inspection.errors[tool] || '尚未检测到客户端，请先安装并重新检测')
       let prepareMs: number | undefined
+      let result: ExternalClientLaunchResult = {}
       if (platform === 'win32' && tool === 'claudeDesktop' && options.prepareClaudeDesktopLaunch) {
         // 它要的 Claude Code 程序国内从官网下不动：先替它从 npm 镜像放好。放不成照常打开。
         const preparing = now()
-        await options.prepareClaudeDesktopLaunch({
+        const outcome = await options.prepareClaudeDesktopLaunch({
           path: client.path, running: client.running, isRunning: () => stillRunning(tool, client.path),
         }).catch(() => undefined)
         prepareMs = now() - preparing
+        result = buildExternalClientLaunchResult(outcome)
       }
       if (platform === 'win32') {
         const machinePaths = resolveMachinePaths()
@@ -1330,6 +1340,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       catch { /* 客户端已经交出去了：用时记不下也不能让这次打开报失败，不然客户再点一次就开出第二个窗口。 */ }
       try { options.onLaunched?.(tool, client.path) }
       catch { /* 同上：已经交出去了。 */ }
+      return result
     })
     launches.set(tool, launched)
     const settle = () => {
