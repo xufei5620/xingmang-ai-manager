@@ -2692,6 +2692,7 @@ if (!hasSingleInstanceLock) {
       accountSessionReady,
       accountStartupGate,
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
+      skillArchiveDirectory: path.join(managerDataDirectory, 'skill-archives'),
       announcementImages: createAnnouncementImageReader({ fetch: networkRoutes.announcementImageFetch }),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,

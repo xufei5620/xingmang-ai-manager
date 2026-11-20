@@ -1458,6 +1458,17 @@ const apiMethods = {
     record('copy-mcp', input)
     if (query.get('copyMcpFail') === input.to) throw new Error('扩展操作失败，已有配置保留')
   },
+  // 技能「从压缩包导入」：选文件窗口和解压都在主进程，夹具直接交回一个解好的技能文件夹；
+  // skillArchive=empty 时照主进程原话报没找到技能。
+  chooseSkillArchive: async () => {
+    record('choose-skill-archive')
+    if (query.get('skillArchive') === 'empty') throw new Error('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。')
+    return { archiveName: 'pdf-helper.zip', directory: 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper' }
+  },
+  importSkill: async (input: Parameters<V2Bridge['importSkill']>[0]) => {
+    record('import-skill', input)
+    return []
+  },
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   ...(query.has('customMarket') ? customMarketMethods : {}),
   ...codexRemoteMethods,
