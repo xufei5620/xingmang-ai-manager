@@ -289,7 +289,10 @@ describe('main-hang-watchdog-worker in a real worker thread', () => {
       })
       await new Promise((resolve) => worker.once('online', resolve))
       worker.postMessage({ type: 'resume' })
-      const finishedAt = blockThisThreadForTest(4000)
+      // The pause is due at ~0.3 s; the rest is room for a slow runner, where enabling
+      // the debugger first announces every script this test process has loaded.
+      // Kept under vitest's default 5 s so the file also passes when run on its own.
+      const finishedAt = blockThisThreadForTest(3500)
       worker.postMessage({ type: 'beat' })
       const capture = parseMainHangCapture(await reported)
       expect(finishedAt).toBeGreaterThan(0)
