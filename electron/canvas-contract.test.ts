@@ -20,7 +20,7 @@ describe('desktop canvas capabilities', () => {
     expect([...desktopCanvasCapabilities.executableNodeKinds].sort()).toEqual(Object.keys(executors).sort())
   })
 
-  it('switches on the balance chip, the run quote, masked edits, text nodes, page-drawn pictures, frame extraction, image tools, reference orders and scene tasks and off every feature the desktop does not have yet', () => {
+  it('switches on the balance chip, the run quote, masked edits, text nodes, page-drawn pictures, frame extraction, image tools, reference orders, scene tasks and router strategies and off every feature the desktop does not have yet', () => {
     // 画布完善第 2b 条: the chip reads canvas-host:get-account-summary, the quote
     // canvas-host:get-price-snapshot. 第 5 条: an image-edit node's mask rides
     // canvas-host:start-run and goes out as the edits request's mask PNG
@@ -34,8 +34,10 @@ describe('desktop canvas capabilities', () => {
     // the same way. 第 8 条第一步: picture roles and video reference orders
     // reorder what the node already receives (canvas-reference-order.ts). 第二
     // 步: the four scene tasks write the prompt from fixed options in the main
-    // process (canvas-scene-tasks.ts). The rest stays off.
-    const { accountSummary, quote, imageEditMask, textGenerate, byteUpload, frameExtract, imageTools, referenceOrder, scenarioTemplates, ...rest } = desktopCanvasCapabilities.features
+    // process (canvas-scene-tasks.ts). D06: a router hands on what its
+    // strategy picks (canvas-node-executors.ts selectCanvasRouterInputs), so
+    // an old project's 「保留全部输入」 hands every picture on. The rest stays off.
+    const { accountSummary, quote, imageEditMask, textGenerate, byteUpload, frameExtract, imageTools, referenceOrder, scenarioTemplates, routerStrategy, ...rest } = desktopCanvasCapabilities.features
     expect(accountSummary).toBe(true)
     expect(quote).toBe(true)
     expect(imageEditMask).toBe(true)
@@ -45,6 +47,7 @@ describe('desktop canvas capabilities', () => {
     expect(imageTools).toBe(true)
     expect(referenceOrder).toBe(true)
     expect(scenarioTemplates).toBe(true)
+    expect(routerStrategy).toBe(true)
     expect(Object.values(rest).every((enabled) => enabled === false)).toBe(true)
     // Image nodes send 2-4 independent one-image requests (canvas-run-engine.ts).
     expect(desktopCanvasCapabilities.imageCandidates.maximum).toBe(4)

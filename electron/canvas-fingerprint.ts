@@ -137,6 +137,9 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
       interiorTask: input.node.data.interiorTask,
       exteriorTask: input.node.data.exteriorTask,
       storyboardTask: input.node.data.storyboardTask,
+      // Only a router with a strategy carries it (D06); every router that ran
+      // before keeps its key. The web host keys the whole node data as well.
+      routerStrategy: input.node.data.routerStrategy,
     },
     upstream: input.upstream
       .map((entry) => ({

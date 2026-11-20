@@ -91,10 +91,16 @@ describe('canvasInspectorParameterRows', () => {
 
   it('covers settings-driven nodes', () => {
     expect(summary('frame-extract', { settings: { timestampSeconds: 2.5 } })).toEqual([{ label: '时间点', value: '2.5 秒' }])
-    // v2 把没选策略的路由写成「优先首个可用输入」，可桌面主进程（000f913 canvas-node-executors 的 passThrough）
-    // 照样交出全部输入，settings.strategy 也到不了主进程。内核照实写；老桌面没有路由策略开关，也不叫人去选。
-    expect(summary('router', { settings: { strategy: 'all' } })).toEqual([{ label: '路由策略', value: '旧配置：保留全部输入' }])
-    expect(summary('router')).toEqual([{ label: '路由策略', value: '旧配置：保留全部输入' }])
+    // v2 把没选策略的路由写成「优先首个可用输入」。桌面主进程的 passThrough 把全部输入当候选，可交给下游单图
+    // 端口的只有第一个（canvas-run-engine 的 collectInputs 只取 output.asset），settings.strategy 也到不了主进程，
+    // 所以 v2 选的「保留全部输入」照样只用第一张（D06）。内核照实写，老配置不再叫「保留全部输入」；
+    // 当年明确选的「保留全部输入」按版本化的 all 运行，宿主不支持路由策略就在付费前挡下，选项和说明一起显示。
+    expect(summary('router', { settings: { strategy: 'all' } })).toEqual([
+      { label: '路由策略', value: '保留全部输入' },
+      { label: '输入选择', value: '按保存的连线顺序，保留归一化后的全部文本及媒体输入。' },
+      { label: '执行范围', value: '上游仍按原运行范围执行，可能产生费用；路由只选择已完成的输入，不提供失败容错。' },
+    ])
+    expect(summary('router')).toEqual([{ label: '路由策略', value: '旧配置：每种素材只交出一个' }])
     expect(summary('group')).toEqual([{ label: '分组名称', value: '新建分组' }])
     expect(summary('drama-shot', { settings: { shotId: 's01', gate: 'blocked' } })).toEqual([
       { label: '镜号', value: 's01' },

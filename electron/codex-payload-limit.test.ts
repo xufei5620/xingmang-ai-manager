@@ -158,7 +158,7 @@ interface WatcherHarness {
   watchFails: { current: boolean }
 }
 
-function watcherHarness(options: { onPayloadTooLarge?: (event: CodexPayloadTooLargeEvent) => void } = {}): WatcherHarness {
+function watcherHarness(options: { onPayloadTooLarge?: (event: CodexPayloadTooLargeEvent) => void; clock?: { current: number } } = {}): WatcherHarness {
   const root = temporaryDirectory()
   const sessionsDirectory = path.join(root, 'sessions')
   const dayDirectory = path.join(sessionsDirectory, '2026', '10', '28')
@@ -178,7 +178,7 @@ function watcherHarness(options: { onPayloadTooLarge?: (event: CodexPayloadTooLa
       options.onPayloadTooLarge?.(event)
     },
     onLargeSession: (event) => { large.push(event) },
-    now: () => now,
+    now: () => options.clock?.current ?? now,
     log: (_level, event) => { logs.push(event) },
     watch(directory, change, error) {
       if (watchFails.current) throw new Error('ENOENT')
@@ -355,6 +355,36 @@ describe('codex rollout watcher', () => {
     await run.watcher.flush()
     expect(run.found).toHaveLength(2)
     expect(run.scheduled.filter((entry) => entry.delayMs === 30_000)).toHaveLength(1)
+    run.watcher.dispose()
+  })
+
+  // A07：以前每读一次都记成「刚写过」，不再写的会话记录一直每 30 秒被打开看一次。
+  it('stops looking back at a record that has not changed for ten minutes and still catches its next write', async () => {
+    const clock = { current: now }
+    const run = watcherHarness({ clock })
+    run.watcher.start()
+    const file = run.filePath(sessionA)
+    fs.writeFileSync(file, `${otherLine()}\n`)
+    run.touch(run.relative(sessionA))
+    await run.watcher.flush()
+    // 回头看了几次都没变，不算又写过。
+    for (const minutes of [3, 6, 9]) {
+      clock.current = now + minutes * minuteMs
+      await run.watcher.pollNow()
+    }
+    // 十分钟没变就不再回头看：这时没有目录通知写进来的，回头看那一下读不到。
+    clock.current = now + 11 * minuteMs
+    fs.appendFileSync(file, `${turnFailedLine(lineOneUrl)}\n`)
+    await run.watcher.pollNow()
+    expect(run.found).toEqual([])
+    // 目录通知照样认，读到了就又算最近写过，接着回头看。
+    run.touch(run.relative(sessionA))
+    await run.watcher.flush()
+    expect(run.found).toHaveLength(1)
+    clock.current = now + 13 * minuteMs
+    fs.appendFileSync(file, `${turnFailedLine(lineOneUrl, now + 1)}\n`)
+    await run.watcher.pollNow()
+    expect(run.found).toHaveLength(2)
     run.watcher.dispose()
   })
 

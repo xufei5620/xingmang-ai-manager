@@ -137,7 +137,7 @@ export const desktopCanvasCapabilities: CanvasHostCapabilities = {
     imageTools: true,
     frameExtract: true,
     scenarioTemplates: true,
-    routerStrategy: false,
+    routerStrategy: true,
     generateAudio: false,
     referenceOrder: true,
     cloud: false,
