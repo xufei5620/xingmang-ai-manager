@@ -834,6 +834,17 @@ export interface NewApiChangePasswordInput {
   newPassword: string
 }
 
+/**
+ * Where a password change stands, reported to the caller that keeps 记住密码
+ * in step (ipc/handlers/account.ts, N6) every time it moves. 'unconfirmed':
+ * the change went out and no definite answer came back, so the server may
+ * well have stored the new password already. 'refused': the server answered
+ * that it stored nothing. 'changed': the server answered that it stored the
+ * new password -- which stays true even if this call still fails afterwards
+ * because the login moved on. No report at all: the change never went out.
+ */
+export type NewApiPasswordChangeOutcome = 'unconfirmed' | 'refused' | 'changed'
+
 // Deliberately minimal -- I3. The server's actual response to a successful
 // password change carries a fresh access_token (see
 // parseChangePasswordResponseData's comment for what that is for); it must
@@ -1004,8 +1015,9 @@ export interface NewApiClientService extends RelayBackendClient {
   // parseChangePasswordResponseData's own comment for exactly what happens
   // to *this* session afterward (short version: it keeps working, no
   // re-login needed) versus every *other* session (signed out immediately,
-  // new-api's own security response to a password change).
-  changePassword(input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult>
+  // new-api's own security response to a password change). onOutcome hears
+  // where the change itself stands (NewApiPasswordChangeOutcome).
+  changePassword(input: NewApiChangePasswordInput, onOutcome?: (outcome: NewApiPasswordChangeOutcome) => void): Promise<NewApiChangePasswordResult>
   listLoginSessions(): Promise<NewApiLoginSession[]>
   revokeLoginSession(sid: string): Promise<NewApiRevokeLoginSessionResult>
   revokeOtherLoginSessions(): Promise<NewApiRevokeOtherLoginSessionsResult>
@@ -2647,6 +2659,26 @@ function unwrapPasswordChangeEnvelope(raw: NewApiRawResponse, secrets: readonly 
   })
 }
 
+// Whether the reply to PUT /api/user/self proves the new password was NOT
+// stored. Read from v1.0.0-rc.44 controller/user.go UpdateSelf: every check
+// that runs before model.ChangeUserPassword stores it (input, the step-up
+// proof, the current password, the password policy) refuses with new-api's
+// own JSON under 500 -- code-less, or a writeSecurityOperationError code that
+// is not AUTH_*. What can still fail after the store (PublishUserAuthCache,
+// AdvanceCurrentSessionToUserVersion) leaves through writeAuthSessionError as
+// an AUTH_* code with 401/409/429/500, and the auth middleware refuses with
+// the same AUTH_* codes before the handler even runs, so an AUTH_* refusal
+// proves nothing either way. A 4xx that is not JSON at all is the rate
+// limiter or a gateway turning the request away before new-api saw it. A 5xx,
+// a 2xx that is not new-api's JSON, or no reply at all may have come back
+// after the password was already changed (N6).
+function passwordChangeRefusedBeforeStore(raw: NewApiRawResponse): boolean {
+  const envelope = isRecord(raw.payload) ? raw.payload : null
+  if (!envelope) return raw.status >= 400 && raw.status < 500
+  if (envelope.success === true || raw.status >= 500) return false
+  return !(typeof envelope.code === 'string' && envelope.code.startsWith('AUTH_'))
+}
+
 // Captures every Set-Cookie the server sent, stripped down to bare
 // "name=value" pairs (attributes like Path/HttpOnly/SameSite dropped). The
 // main process has no browser cookie jar (RECON 坑3), so this is the only
@@ -4134,8 +4166,22 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // Runs alone on this login (createSessionRequestGate): nothing else may
   // reach the server between the change and the server moving this login to
   // the new auth version.
-  const changePassword = (input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult> => requestGate.exclusive(() => (
-    runWithSession(async (current) => {
+  const changePassword = (
+    input: NewApiChangePasswordInput,
+    onOutcome?: (outcome: NewApiPasswordChangeOutcome) => void,
+  ): Promise<NewApiChangePasswordResult> => requestGate.exclusive(() => {
+    // A 401 on the change is retried after a silent refresh. If an earlier
+    // attempt went out without a definite answer, a later attempt's refusal
+    // cannot take that back -- the first one may have landed, which is also
+    // why the second one's current-password check would then fail. Only a
+    // definite yes settles it.
+    let latest: NewApiPasswordChangeOutcome | undefined
+    let unansweredEarlier = false
+    const report = (outcome: NewApiPasswordChangeOutcome) => {
+      latest = outcome
+      onOutcome?.(outcome)
+    }
+    return runWithSession(async (current) => {
       const originalPassword = input.originalPassword
       const newPassword = input.newPassword
       // Not trimmed: both must be forwarded exactly as typed, same reasoning
@@ -4157,17 +4203,22 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         '修改密码',
       )
       const proofToken = parseSecurityProofToken(unwrapPasswordChangeEnvelope(verified, [originalPassword, current.accessToken]))
+      const headers = proofToken ? { ...authHeaders(current), 'X-Security-Proof': proofToken } : authHeaders(current)
+      if (latest === 'unconfirmed') unansweredEarlier = true
+      report('unconfirmed')
       const raw = await performRequest(
         ctx,
         selfPath,
         {
           method: 'PUT',
           body: { password: newPassword, original_password: originalPassword },
-          headers: proofToken ? { ...authHeaders(current), 'X-Security-Proof': proofToken } : authHeaders(current),
+          headers,
         },
         '修改密码',
       )
+      if (!unansweredEarlier && passwordChangeRefusedBeforeStore(raw)) report('refused')
       const data = unwrapPasswordChangeEnvelope(raw, [originalPassword, newPassword, current.accessToken, ...(proofToken ? [proofToken] : [])])
+      report('changed')
       const bundle = parseChangePasswordResponseData(data)
       // Optimistic in-place swap so the very next authenticated call in this
       // same session does not spuriously 401 against the now-superseded old
@@ -4177,7 +4228,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       if (bundle && session === current) setSession({ ...current, accessToken: bundle.accessToken }, false)
       return { changed: true }
     })
-  ))
+  })
 
   const listLoginSessions = (): Promise<NewApiLoginSession[]> => (
     withSession(async (current) => {

@@ -154,6 +154,28 @@ describe('macOS desktop app updates', () => {
     expect(stuck.signals.every(([, signal]) => signal === 'SIGTERM')).toBe(true)
   })
 
+  it('does not start closing an app once the customer has cancelled (F03)', async () => {
+    const mac = processTable([[101, 501, `${claude}/Contents/MacOS/Claude`]])
+    const controller = new AbortController()
+    controller.abort()
+    await expect(prepareMacosDesktopReplacement({ ...mac.options, closeRunning: true, signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(mac.signals).toEqual([])
+  })
+
+  it('finishes closing an app it already asked to quit even if a cancel comes in meanwhile', async () => {
+    // Stopping halfway would leave helpers behind; the replacement step itself checks the cancel afterwards.
+    const controller = new AbortController()
+    const mac = processTable([
+      [101, 501, `${claude}/Contents/MacOS/Claude`],
+      [102, 501, `${claude}/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper`],
+    ], (pid, table) => {
+      table.delete(pid)
+      controller.abort()
+    })
+    await prepareMacosDesktopReplacement({ ...mac.options, closeRunning: true, signal: controller.signal })
+    expect(mac.signals).toEqual([[101, 'SIGTERM'], [102, 'SIGTERM']])
+  })
+
   it('treats a process that ended between the listing and the signal as closed', async () => {
     const mac = processTable([[101, 501, `${claude}/Contents/MacOS/Claude`]], (pid, table) => {
       table.delete(pid)
