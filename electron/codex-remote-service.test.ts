@@ -347,6 +347,8 @@ async function setup(options: {
   imageStore?: boolean
   /** 渠道一连就抛（FakeFailingChannel）。 */
   startFails?: boolean
+  /** 这台 Windows 电脑登录的账号本身就带管理员权限（CodexRemoteServiceOptions.alwaysElevatedAccount）。 */
+  alwaysElevatedAccount?: boolean
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -438,6 +440,7 @@ async function setup(options: {
       return [apiKey]
     },
     inspectAvailability: () => unavailable.reason,
+    ...(options.alwaysElevatedAccount ? { alwaysElevatedAccount: true } : {}),
     checkCodexReady: async () => options.codexProblem ?? null,
     onStateChanged: (snapshot) => { snapshots.push(snapshot) },
     ...(options.readBalanceUsd ? { readBalanceUsd: options.readBalanceUsd } : {}),
@@ -886,6 +889,20 @@ describe('codex-remote-service enabling', () => {
     elevated.unavailable.reason = '星芒正以管理员身份运行'
     await expect(elevated.service.setChannelEnabled('feishu', true)).rejects.toThrow('管理员')
     expect((await elevated.service.snapshot()).available).toBe(false)
+  })
+
+  it('tells the card when remote control runs on an account that is an administrator by itself', async () => {
+    const plain = await setup()
+    expect((await plain.service.snapshot()).alwaysElevated).toBeUndefined()
+
+    const s = await setup({ alwaysElevatedAccount: true })
+    expect(await s.service.snapshot()).toMatchObject({ available: true, alwaysElevated: true })
+    // The reminder is about what Codex may do here; with remote control unavailable
+    // there is nothing for it to warn about, and the unavailable notice says enough.
+    s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
+    const suspended = await s.service.snapshot()
+    expect(suspended.available).toBe(false)
+    expect(suspended.alwaysElevated).toBeUndefined()
   })
 
   it('refuses to start when Codex is not installed on this computer', async () => {
