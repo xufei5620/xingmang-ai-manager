@@ -25,6 +25,35 @@ export function parseNodeRouterStrategy(kind: string, value: unknown): CanvasRou
   return parseCanvasRouterStrategy(value)
 }
 
+/** Before versioned strategies a router saved its choice as settings.strategy,
+ * and no run ever received it, so 「保留全部输入」 still handed one picture on
+ * (D06). That 'all' was the user's explicit choice: it now runs as the
+ * versioned all. Every other old value keeps the historical behavior, which
+ * is no strategy at all. */
+export function isLegacyRouterAllSetting(kind: string, settings: Readonly<Record<string, unknown>> | undefined): boolean {
+  return kind === 'router' && Boolean(settings) && !Object.hasOwn(settings!, 'routerStrategy') && settings!.strategy === 'all'
+}
+
+/** The strategy a saved node runs with, or undefined for the historical router. */
+export function resolveNodeRouterStrategy(kind: string, settings: Readonly<Record<string, unknown>> | undefined): CanvasRouterStrategy | undefined {
+  if (settings && Object.hasOwn(settings, 'routerStrategy')) {
+    if (kind !== 'router') throw new Error('路由策略只能保存在路由节点中，当前没有丢弃配置后继续')
+    return parseCanvasRouterStrategy(settings.routerStrategy)
+  }
+  return isLegacyRouterAllSetting(kind, settings) ? { version: 1, strategy: 'all' } : undefined
+}
+
+/** The run node's routerStrategy field for a saved node; absent for the historical router. */
+export function routerStrategyRunField(kind: string, settings: Readonly<Record<string, unknown>> | undefined): { routerStrategy?: CanvasRouterStrategy } {
+  const routerStrategy = resolveNodeRouterStrategy(kind, settings)
+  return routerStrategy ? { routerStrategy } : {}
+}
+
+/** Whether the saved node carries a strategy, versioned or the old explicit all. */
+export function nodeHasRouterStrategySetting(kind: string, settings: Readonly<Record<string, unknown>> | undefined): boolean {
+  return Boolean(settings && Object.hasOwn(settings, 'routerStrategy')) || isLegacyRouterAllSetting(kind, settings)
+}
+
 /** Callers supply saved edge order and each edge's existing output order.
  * This selects completed values only; it neither schedules nor skips upstream
  * generation, and must never be used as a provider retry/failover mechanism. */

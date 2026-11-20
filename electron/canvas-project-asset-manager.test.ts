@@ -348,4 +348,51 @@ describe('CanvasProjectAssetManager', () => {
     expect(firstFiles).not.toContain(chatImage.fileName)
     await expect(manager.storeBase64(7, png)).rejects.toThrow('项目尚未选择')
   })
+
+  it('shows a picture imported again from the recycle bin in the library, once, as the user left it (R28-7)', async () => {
+    const assets = context(temporaryRoot('xingmang-reimport-output-'))
+    const sourceRoot = temporaryRoot('xingmang-reimport-source-')
+    function pngFile(name: string, width: number): string {
+      const bytes = Buffer.alloc(24)
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes)
+      bytes.write('IHDR', 12, 'ascii')
+      bytes.writeUInt32BE(width, 16)
+      bytes.writeUInt32BE(3, 20)
+      const filePath = path.join(sourceRoot, name)
+      fs.writeFileSync(filePath, bytes)
+      return filePath
+    }
+    // What the canvas does for a picked or dropped file (canvas-window.ts importCanvasAsset).
+    async function importFile(filePath: string) {
+      const asset = await assets.images.storeLocalFile(7, filePath)
+      await assets.media.setSource(7, asset.assetId, 'imported')
+      return asset
+    }
+    async function listed(view: 'all' | 'trash') {
+      const page = await assets.media.listOwnedPage(7, { view })
+      return page.items.map((item) => ({ assetId: item.assetId, displayName: item.displayName, favorite: item.favorite, tags: item.tags }))
+    }
+
+    const poster = pngFile('poster.png', 2)
+    const first = await importFile(poster)
+    await assets.media.rename(7, first.assetId, '海报')
+    await assets.media.updateMetadata(7, first.assetId, { favorite: true, tags: ['主视觉'] })
+    await assets.media.softDelete(7, first.assetId)
+    await expect(listed('all')).resolves.toEqual([])
+
+    const again = await importFile(poster)
+    expect(again.assetId).toBe(first.assetId)
+    const kept = { assetId: first.assetId, displayName: '海报', favorite: true, tags: ['主视觉'] }
+    await expect(listed('all')).resolves.toEqual([kept])
+    await expect(listed('trash')).resolves.toEqual([])
+
+    // Importing what is already in the library adds nothing; other content is a new picture.
+    await importFile(poster)
+    const other = await importFile(pngFile('other.png', 5))
+    expect(other.assetId).not.toBe(first.assetId)
+    const library = await listed('all')
+    expect(library).toHaveLength(2)
+    expect(library).toEqual(expect.arrayContaining([kept, expect.objectContaining({ assetId: other.assetId, favorite: false, tags: [] })]))
+    await expect(listed('trash')).resolves.toEqual([])
+  })
 })

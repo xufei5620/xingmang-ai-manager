@@ -46,6 +46,13 @@ export function workspaceName(path: string): string {
   return segments[segments.length - 1] || trimmed || path.trim()
 }
 
+// 同一个文件夹算一个的那把钥匙。只有 Windows 的路径（盘符或 \\ 开头）不分大小写，两种写法算一个；
+// Mac 和 Linux 上记录里写法不同的就是两个文件夹：Linux 和 Mac 区分大小写的盘上本来就是两个，
+// 各家命令行接着聊时也是按记下来的这串路径找。以前一律折成小写，/work/Foo 和 /work/foo 只剩一个入口（D27）。
+function workspaceKey(path: string): string {
+  return /^(?:[a-zA-Z]:|\\\\)/.test(path) ? path.toLocaleLowerCase() : path
+}
+
 /**
  * 从已有的会话记录里推出某个工具最近用过的目录。不新增任何持久化：
  * 会话记录本来就存了 cwd，首页「最近」卡已经在显示它。
@@ -66,7 +73,7 @@ export function recentWorkspaces(
     const path = session.cwd.trim()
     // Windows 路径大小写不敏感，同一个目录的两种写法不该各占一格；
     // 留下最近一次用过的那种写法给用户看。
-    const key = path.toLocaleLowerCase()
+    const key = workspaceKey(path)
     if (picked.has(key)) continue
     picked.set(key, { path, name: workspaceName(path) })
     if (picked.size >= limit) break
@@ -158,7 +165,7 @@ export function latestSessionIdsByWorkspace(
     const path = session.cwd.trim()
     if (path === '') continue
     // 与 recentWorkspaces 同一条理由:Windows 路径大小写不敏感。
-    const key = `${session.provider}\u0000${path.toLocaleLowerCase()}`
+    const key = `${session.provider}\u0000${workspaceKey(path)}`
     if (seen.has(key)) continue
     seen.add(key)
     latest.add(session.id)

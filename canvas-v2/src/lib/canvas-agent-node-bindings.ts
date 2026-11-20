@@ -1,4 +1,4 @@
-import { parseNodeRouterStrategy } from '../runtime/router-strategy'
+import { nodeHasRouterStrategySetting, routerStrategyRunField } from '../runtime/router-strategy'
 import { parseNodeStoryboardTask } from '../storyboard/storyboard-task'
 import { parseNodeExteriorTask } from '../exterior/exterior-task'
 import { parseNodeInteriorTask } from '../interior/interior-task'
@@ -15,10 +15,10 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 function cardinalityNodes(nodes: Iterable<WorkflowNode>): Map<string, CanvasRunGraph['nodes'][number]> {
-  return new Map([...nodes].map(node => [node.id, { id: node.id, kind: node.kind, definitionVersion: node.definitionVersion ?? 1, data: { prompt: '', model: '', ...(Object.hasOwn(node.data.settings ?? {}, 'routerStrategy') ? { routerStrategy: parseNodeRouterStrategy(node.kind, node.data.settings?.routerStrategy) } : {}), ...(node.kind === 'image-input' && node.data.result ? { adoptedAssetId: node.data.result.assetId } : {}), ...(isImageTransformNodeKind(node.kind) ? { imageTransform: imageTransformRecipeForNode(node.kind, node.data.settings)! } : {}) } }]))
+  return new Map([...nodes].map(node => [node.id, { id: node.id, kind: node.kind, definitionVersion: node.definitionVersion ?? 1, data: { prompt: '', model: '', ...routerStrategyRunField(node.kind, node.data.settings), ...(node.kind === 'image-input' && node.data.result ? { adoptedAssetId: node.data.result.assetId } : {}), ...(isImageTransformNodeKind(node.kind) ? { imageTransform: imageTransformRecipeForNode(node.kind, node.data.settings)! } : {}) } }]))
 }
 function outputCount(node: WorkflowNode, handle: string, nodes: Iterable<WorkflowNode>, edges: readonly WorkflowEdge[]): number {
-  if (node.kind === 'router' && Object.hasOwn(node.data.settings ?? {}, 'routerStrategy')) {
+  if (node.kind === 'router' && nodeHasRouterStrategySetting(node.kind, node.data.settings)) {
     const count = canvasImageInputCardinality([{ source: node.id, sourceHandle: handle }], cardinalityNodes(nodes), edges)
     if (!count.exact) throw new Error('Agent 不能猜测尚未确认的路由图片位置，请先核对完整来源')
     return count.minimum
@@ -151,7 +151,7 @@ export function canvasAgentInputSourcesContext(node: WorkflowNode, workflow: Wor
     const index = selected.findIndex((source) => source.id === edge.source)
     const image = ['out:image', 'out:images'].includes(edge.sourceHandle)
     let imageCount: number | null = image ? 1 : null
-    if (edge.sourceHandle === 'out:images' || index >= 0 && selected[index].kind === 'router' && Object.hasOwn(selected[index].data.settings ?? {}, 'routerStrategy')) {
+    if (edge.sourceHandle === 'out:images' || index >= 0 && selected[index].kind === 'router' && nodeHasRouterStrategySetting(selected[index].kind, selected[index].data.settings)) {
       imageCount = null
       if (index >= 0) {
         try { imageCount = outputCount(selected[index], edge.sourceHandle, selected, workflow.edges) } catch { /* The current input is an unknown batch, never infer from old candidates. */ }

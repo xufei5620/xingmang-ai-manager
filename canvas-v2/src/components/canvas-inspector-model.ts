@@ -16,6 +16,7 @@ import {
 } from '../models'
 import type { CanvasNode } from '../nodes/WorkflowNodes'
 import { canvasRouterStrategyPresentation, routerExecutionScopeNotice } from '../nodes/router-strategy-presentation'
+import { nodeHasRouterStrategySetting } from '../runtime/router-strategy'
 import { inspectImageResolutionSelection } from '../runtime/image-resolution-selection'
 import type { CanvasCapabilityProfile } from '../host-capabilities'
 import { hostFeatureControlShown } from './host-feature-controls'
@@ -205,7 +206,7 @@ export function canvasInspectorParameterRows(node: Pick<CanvasInspectorNode, 'ki
     const strategy = canvasRouterStrategyPresentation(node.settings)
     rows.push({ label: '路由策略', value: strategy.label })
     // Without router strategies the node offers no control (#4), so the rows that ask for a choice stay out too.
-    if (hostFeatureControlShown(capabilities, 'routerStrategy', Object.hasOwn(node.settings, 'routerStrategy'))) rows.push({ label: '输入选择', value: strategy.description }, { label: '执行范围', value: routerExecutionScopeNotice })
+    if (hostFeatureControlShown(capabilities, 'routerStrategy', nodeHasRouterStrategySetting(node.kind, node.settings))) rows.push({ label: '输入选择', value: strategy.description }, { label: '执行范围', value: routerExecutionScopeNotice })
   }
   if (node.kind === 'note') {
     rows.push({ label: '便签', value: typeof node.settings.text === 'string' && node.settings.text.trim() ? node.settings.text : '未填写' })

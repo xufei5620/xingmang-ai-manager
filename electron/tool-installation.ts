@@ -5,6 +5,7 @@ import { cliCatalog, type ProviderId } from './catalog'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { releaseStagedDarwinCli } from './darwin-cli-staging'
 import { verifyDarwinClaudeNativeExecutable } from './macos-claude'
+import { DarwinCliProvenanceError } from './macos-code-signing'
 import {
   commandEnvironment,
   findExecutable,
@@ -84,6 +85,34 @@ export interface ResolveCliCommandOptions {
    * （第三十四批 A）。只决定拿哪个 node 跑工具，交给工具的环境不变。
    */
   nodeDirectories?: readonly string[]
+}
+
+/**
+ * Mac 上命令行里找到的 Codex / Grok 不是 npm 装的，又核不出是官方安装器那一份：目录对不上、签名不是
+ * OpenAI / xAI 的、或者报的版本和目录写的对不上（Mac 验收 R1：测试机上是第三方打的 Codex 包）。
+ * 星芒不跑来路不明的程序，打开时说这一句；首页同一个判断给「用星芒装一份」（ToolStatus.unrecognizedInstall）。
+ * 抄盘、起进程这类说明不了来路的失败不算这一种，照旧按原样报。
+ */
+export class UnrecognizedDarwinCliError extends Error {
+  constructor(cause: unknown) {
+    super('这一份不是星芒装的，星芒核对不了它是不是官方原版，为了安全没有打开。到首页点「用星芒装一份」，装好就能打开。', { cause })
+  }
+}
+
+/** 选中的那一份认不出（布局不对）就是 R1 那一种；核签名、核版本没过的同样算。 */
+async function stageRecognizedDarwinSelection<T>(select: () => T, stage: (selection: T) => Promise<string>): Promise<{ selection: T; executable: string }> {
+  let selection: T
+  try {
+    selection = select()
+  } catch (error) {
+    throw new UnrecognizedDarwinCliError(error)
+  }
+  try {
+    return { selection, executable: await stage(selection) }
+  } catch (error) {
+    if (error instanceof DarwinCliProvenanceError) throw new UnrecognizedDarwinCliError(error)
+    throw error
+  }
 }
 
 export interface ResolvedCliCommand extends CommandSpec {
@@ -856,13 +885,15 @@ export async function resolveCliCommand(
       platform,
       arch: options.arch,
     }
-    const selection = resolveDarwinCodexStandaloneSelection(selectionOptions)
-    const executable = await stageDarwinCodexStandaloneSelection({
-      ...selectionOptions,
-      selection,
-      runCommand: runDarwinVerificationCommand,
-      retention: options.darwinStagingRetention,
-    })
+    const { selection, executable } = await stageRecognizedDarwinSelection(
+      () => resolveDarwinCodexStandaloneSelection(selectionOptions),
+      (selected) => stageDarwinCodexStandaloneSelection({
+        ...selectionOptions,
+        selection: selected,
+        runCommand: runDarwinVerificationCommand,
+        retention: options.darwinStagingRetention,
+      }),
+    )
     return {
       executable,
       argv: [],
@@ -874,17 +905,16 @@ export async function resolveCliCommand(
   }
   if (platform === 'darwin' && provider === 'grok' && installation.source === 'native') {
     const homeDirectory = env.HOME || os.homedir()
-    const selected = resolveDarwinGrokCanonicalSelection(
-      homeDirectory,
-      installation.commandPath,
+    const { executable } = await stageRecognizedDarwinSelection(
+      () => resolveDarwinGrokCanonicalSelection(homeDirectory, installation.commandPath),
+      (selected) => stageDarwinGrokCanonicalSelection({
+        homeDirectory,
+        selection: selected,
+        expectedVersion: selected.version,
+        runCommand: runDarwinVerificationCommand,
+        retention: options.darwinStagingRetention,
+      }),
     )
-    const executable = await stageDarwinGrokCanonicalSelection({
-      homeDirectory,
-      selection: selected,
-      expectedVersion: selected.version,
-      runCommand: runDarwinVerificationCommand,
-      retention: options.darwinStagingRetention,
-    })
     return {
       executable,
       argv: [],
