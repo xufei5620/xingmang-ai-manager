@@ -6,7 +6,7 @@ import { desktopUpdateFailedLine, externalUpdateTarget, type DesktopUpdateTool }
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, ListRow, PageHead, Pill, Progress, Skeleton, ToolCard, toastDurationMs, useToast, type MenuItem, type MenuNote } from '../../ui'
-import { accountSwitchTarget, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, brokenConfigDetails, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, configDirectoryMenuItem, externalInstallHint, greeting, needsManualInstall, officialAccountSubtitle, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, spacedName, toolUpdateOffer, updateButtonHint, updatesOutsideApp, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
+import { accountSwitchTarget, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, brokenConfigDetails, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, configDirectoryMenuItem, externalInstallHint, greeting, isUnrecognizedInstall, needsManualInstall, officialAccountSubtitle, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, spacedName, toolUpdateOffer, updateButtonHint, updatesOutsideApp, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { BalanceUsage, ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { accountKeyChangeInProgress, accountKeyChangePending, bootstrapOnlyFollowedRoute, type AccountBootstrapProgress, type AccountBootstrapResult } from './account-bootstrap'
@@ -218,6 +218,12 @@ const configChangedDetail = '配置被别的程序改过，没在用当前账号
 
 /** 装好了、还没连上：外接客户端和命令行工具同一句，旁边一颗「确认连接」。 */
 const unconfiguredDetail = '已装好，还没连上当前账号'
+
+/**
+ * Mac 上找到的 Codex / Grok 不是星芒装的、星芒也认不出来路（Mac 验收 R1）：以前卡上照样一颗「打开」，
+ * 点了只说没打开成。现在写清楚为什么，旁边一颗「用星芒装一份」。
+ */
+const unrecognizedInstallDetail = '不是星芒装的，星芒没法替你打开'
 
 /**
  * CC Switch 留下的配置：客户多半不知道本软件登录后不会动它，只看到工具「装好了」
@@ -730,7 +736,9 @@ export function Home(props: HomeProps) {
     const shadowed = Boolean(config) && settled && codexNeedsRepair(config!, tool.provider)
     // 修完就能用的，「打开」照旧给：点下去先修再打开（App 的 launch），不让人先去配置里绕一圈。
     const repairLaunch = shadowed && readyOnceRepaired(config!, tool.provider)
-    const openable = tool.configured || repairLaunch
+    // 认不出来路的那份（R1）星芒不替它跑：「打开」和挑文件夹那几项都不给，卡上换成「用星芒装一份」。
+    const unrecognized = !tool.error && isUnrecognizedInstall(tool.status)
+    const openable = (tool.configured || repairLaunch) && !unrecognized
     const hooksStale = Boolean(config) && settled && cliHooksNeedRepair(config!)
     const hooksDetail = config?.cliHooksShellChanged ? cliHooksShellChangedDetail : cliHooksStaleDetail
     const hooksAutoRepaired = Boolean(config) && settled && cliHooksWereAutoRepaired(config!)
@@ -773,10 +781,10 @@ export function Home(props: HomeProps) {
     const waitingForScan = loading && !launchReadyBeforeScan(tool)
     // 扫描结束后仍可能在写入和复核新线路，旧配置不能在这段时间被工具读走。
     const waitingForAccount = openable && launchWaitingForAccount(tool.provider)
-    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : configUnavailable ? '重新配置'
+    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : unrecognized ? '用星芒装一份' : configUnavailable ? '重新配置'
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? installFailure ? '重试' : manualInstall ? '安装指南' : '安装'
       : openable ? '打开' : status === 'notEnabled' && props.onHelp ? '找客服' : '确认连接'
-    const primary = () => configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
+    const primary = () => unrecognized ? props.onInstall(tool.id) : configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
       // 账号没开通的，「确认连接」点进去是配置框，帮不上忙：换成去找客服（主路卡点 F5）。
       : !openable ? status === 'notEnabled' && props.onHelp ? props.onHelp() : props.onConfigure(tool.id)
       : startsFresh ? props.onLaunchInNewFolder?.(tool.id, true) : props.onLaunch(tool.id, lastWorkspace?.path)
@@ -788,7 +796,7 @@ export function Home(props: HomeProps) {
     // 配置里实际写的星芒线路（xm 三线路 C12）；codexDesktop 读的是 Codex 那份配置，标签跟着一起显示。
     const routeLabel = config && !broken && !ownershipPending ? toolRouteLabel(config, tool.source) : null
     const sourceLabel = sourceChipLabels[tool.source === 'official' || tool.source === 'manual' ? tool.source : 'account']
-    return { installJob, launchJob, switchJob, repairJob, job, config, configUnavailable, status, zeroBalance, broken, ccSwitch, foreignKey, shadowed, openable,
+    return { installJob, launchJob, switchJob, repairJob, job, config, configUnavailable, status, zeroBalance, broken, ccSwitch, foreignKey, shadowed, unrecognized, openable,
       hooksStale, hooksDetail, hooksAutoRepaired, hooksMissing, installFailure, updateFailure, opensWorkspace, workspaces, lastWorkspace, startsFresh, manualInstall,
       elevationHint, waitingForScan, waitingForAccount, primaryLabel, primary, primaryDisabled, officialLine, officialPending, routeLabel, sourceLabel,
       ownershipPending }
@@ -881,7 +889,7 @@ export function Home(props: HomeProps) {
         ...(revert && revert !== rollback && props.onRevert ? [{ label: `退回更新前的 ${versionText(revert)}…`, testId: `tool-${tool.id}-revert`, onSelect: () => props.onRevert?.(tool.id, revert) }] : []),
         // 「安装卸载」页拆掉以后重装从这里点（问2）：同那一页的「重新安装」，版本由主进程按已验证名单定。
         // 别的软件管着的、星芒装不了的不给，同那一页。
-        ...(!externalManaged && !tool.error && managedInstall(tool.id) ? [{ label: '重新安装', testId: `tool-${tool.id}-reinstall`, onSelect: () => props.onInstall(tool.id) }] : []),
+        ...(!externalManaged && !tool.error && !state.unrecognized && managedInstall(tool.id) ? [{ label: '重新安装', testId: `tool-${tool.id}-reinstall`, onSelect: () => props.onInstall(tool.id) }] : []),
         // 界面上一直只把配置路径写成一行灰字，而 `.` 开头的目录在资源管理器和
         // 访达里默认都看不见，用户和客服只能手敲路径。
         ...(props.onOpenConfigDirectory ? [{
@@ -903,7 +911,7 @@ export function Home(props: HomeProps) {
    * 「v… 有已知问题，回到 v…」或「可更新到 v…」。别的软件管着的安装只给一句说明，点不了。
    */
   function toolLink(tool: ToolPresentation, state: ToolState): ReactNode {
-    if (state.job) return null
+    if (state.job || state.unrecognized) return null
     const repairBusy = Boolean(state.repairJob)
     if (state.status === 'codexShadowed' && props.onSwitchAccount) {
       return <button type="button" className="xm-tool-card-link" title="改之前会先备份原来的设置" onClick={() => props.onSwitchAccount?.(tool.id, 'account')} data-testid={`tool-${tool.id}-repair-codex`}><span>修好它</span></button>
@@ -964,6 +972,7 @@ export function Home(props: HomeProps) {
       : job?.label ?? tool.error
       ?? (state.installFailure ? `没装上：${state.installFailure.reason.replace(/[。.\s]+$/, '')}，已撤回`
         : state.updateFailure ? desktopUpdateFailedLine
+        : state.unrecognized ? unrecognizedInstallDetail
         : status === 'configBroken' && state.broken ? brokenConfigDetails[state.broken]
         : status === 'configChanged' ? configChangedDetail
         : status === 'codexShadowed' ? codexShadowedDetail
@@ -975,17 +984,19 @@ export function Home(props: HomeProps) {
         : !tool.status.installed ? state.elevationHint ?? homeToolBlurbs[tool.id]
         : tool.id === 'codexDesktop' ? tool.versionAdvice?.blockedReason ?? null : null)
     const metaTone = state.installFailure || state.updateFailure || status === 'detectionFailed' || status === 'configBroken' ? 'bad' as const
-      : ['configChanged', 'ccSwitch', 'codexShadowed', 'cliHooksStale', 'otherSiteKey', 'otherAccountKey'].includes(status) ? 'warn' as const : undefined
+      : state.unrecognized || ['configChanged', 'ccSwitch', 'codexShadowed', 'cliHooksStale', 'otherSiteKey', 'otherAccountKey'].includes(status) ? 'warn' as const : undefined
     const meta = detail ?? line?.text ?? ''
     // 底下左边：切换中写在做什么；正常的是来源牌；出问题的是彩色小牌；没装的是灰字「未安装」。
     const badge = state.switchJob ? <span className="v2-tool-card-busy" role="status"><Spinner />{`${state.switchJob.label}…`}</span>
       : installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
       : state.installFailure && props.onShowInstallFailure ? <Button variant="ghost" size="sm" onClick={() => props.onShowInstallFailure?.(tool.id)} testId={`tool-${tool.id}-why`}>看原因</Button>
       : state.updateFailure && props.onShowDesktopUpdateFailure ? <Button variant="ghost" size="sm" onClick={() => props.onShowDesktopUpdateFailure?.('codexDesktop')} testId={`tool-${tool.id}-why`}>看原因</Button>
+      // 认不出来路的那份（R1）跑不起来，切账号的来源牌帮不上忙，把地方让给「用星芒装一份」。
+      : state.unrecognized ? null
       : status === 'missing' ? <span className="v2-tool-card-off">{statusText}</span>
       : (status === 'ready' && !state.zeroBalance) || status === 'official' ? sourceMenu(tool, state)
         : statusPill
-    // 检测失败时按钮是「重新检测」，不配下载箭头（#1132）。
+    // 检测失败时按钮是「重新检测」，不配下载箭头（#1132）。「用星芒装一份」也不配：卡上放不下箭头加六个字。
     const primaryButton = <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(state.launchJob)}
       disabled={state.primaryDisabled}
       title={state.lastWorkspace ? `在 ${state.lastWorkspace.path} 打开` : undefined}
@@ -999,7 +1010,9 @@ export function Home(props: HomeProps) {
       ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstall(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
       : null
       : state.switchJob ? null
-        : fixButton ?? rechargeButton ?? primaryButton
+        // 程序都跑不起来时修配置、充值都帮不上忙，先给装的那颗；装好以后那几样照旧出来。
+        : state.unrecognized ? primaryButton
+          : fixButton ?? rechargeButton ?? primaryButton
     return <ToolCard key={tool.id} tool={tool.id} off={!tool.status.installed && !installJob && !tool.error} meta={meta} metaTone={metaTone}
       metaTitle={detail ?? line?.title ?? undefined} link={toolLink(tool, state)} badge={badge} actions={actions}
       progress={typeof installJob?.percent === 'number' ? installJob.percent : undefined}
@@ -1228,6 +1241,8 @@ export function Home(props: HomeProps) {
   const cliStates = tools.filter((tool) => tool.status.installed && !jobs[tool.id]).map((tool) => ({ tool, status: toolState(tool).status }))
   const issueNames = [...new Map(cliStates.filter((entry) => entry.status === 'configBroken' || entry.status === 'configChanged')
     .map((entry) => [entry.tool.provider, `${spacedName(entry.tool.provider === 'codex' ? 'Codex' : entry.tool.name)}${entry.status === 'configBroken' ? '的配置文件坏了' : '的配置被改过'}`] as const)).values()]
+  // 认不出来路的那份（R1）打不开：页头不能还说「都配好了」。
+  const unrecognizedNames = tools.filter((tool) => !jobs[tool.id] && !tool.error && isUnrecognizedInstall(tool.status)).map((tool) => tool.name)
   const unconnected = [...cliStates.filter((entry) => entry.status === 'unconfigured').map((entry) => entry.tool.name),
     ...installedExternal.filter((tool) => tool.status.installed && tool.configurationStatus === 'unconfigured' && !tool.status.detectionError).map((tool) => tool.name)]
   const nodeReady = Boolean(snapshot && (snapshot.system.runtime.node.installed || nodeOptional) && !nodeInstallerPartMissing(snapshot.system.runtime))
@@ -1236,6 +1251,7 @@ export function Home(props: HomeProps) {
     : offline ? '现在没网，已经装好的工具照常能用。'
     : configFailure || !snapshot ? undefined
     : issueNames.length ? `${issueNames.join('，')}，在下面的卡片里处理。`
+    : unrecognizedNames.length ? `${spacedName(unrecognizedNames.join('、'))}不是星芒装的，星芒打不开，点卡片上的「用星芒装一份」。`
     : unconnected.length ? `${spacedName(unconnected.join('、'))}还没连上当前账号。`
     // 检测失败的卡不算装着（installed 为假），不先拦下来就会落到「还没装工具」或「都配好了」，跟下面红着的卡对不上（D12）。
     : undetectedCount > 0 ? `有 ${undetectedCount} 个工具没检测出来，点卡片上的「重新检测」再试一次。`

@@ -1450,9 +1450,13 @@ const apiMethods = {
   getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('largeTextByDefault') ? { largeTextByDefault: true as const } : {}) }),
   // transfer=usage-off：「搬到新电脑」的文件里「匿名使用统计」是关，这台还是新装的开，主进程交来「直接关」；
   // transfer=usage-on：文件里是开，这台关过（配 usageOff），只进询问框（X-3）。没有对话，不用登录。
+  // transfer=theme-dark：文件里是深色，这台还是新装的浅色，主进程交来「直接换」（D24）。
   importAppData: async () => {
     record('import-app-data')
     const transfer = query.get('transfer')
+    if (transfer === 'theme-dark') {
+      return { conversations: [], settings: { version: 2, theme: 'dark' }, conflictingSettings: { version: 2 }, conflictLabels: [] }
+    }
     if (transfer !== 'usage-off' && transfer !== 'usage-on') throw new Error('未提供测试方法 importAppData')
     return {
       conversations: [],

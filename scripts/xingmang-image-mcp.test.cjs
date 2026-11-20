@@ -449,6 +449,39 @@ test('MCP server says why Nano Banana returned no image', async () => {
   })
 })
 
+test('MCP server turns a relay error without a reason into a plain sentence and logs the original only', async () => {
+  // new-api fills an empty upstream reason with the error type name (Mac acceptance R9: Grok edits showed "openai_error").
+  function respond(request) {
+    if (request.url === '/v1/images/edits') return { status: 400, body: { error: { message: 'openai_error', type: 'openai_error' } } }
+    if (jsonBody(request).model === 'gpt-image-2.5-sunburst') return { status: 502, body: '<html>Bad Gateway</html>' }
+    return { status: 400, body: { code: 'Client specified an invalid argument', error: 'Prompt is too long' } }
+  }
+  await withServer({ codexApiKey: 'sk-codex-not-real', apiKey: 'sk-image-not-real' }, respond, async ({ call, child, root }) => {
+    let log = ''
+    child.stderr.on('data', (chunk) => { log += chunk })
+    const imagePath = path.join(root, 'photo.png')
+    await writeFile(imagePath, pngBytes)
+    const edit = await call('tools/call', {
+      name: 'generate_image',
+      arguments: { prompt: 'make the sky purple', model: 'grok-imagine-image', images: [imagePath] },
+    })
+    assert.equal(edit.result.isError, true)
+    assert.equal(edit.result.content[0].text, 'grok-imagine-image 这次没能改图，图片服务没说原因。可以换回默认的 GPT 图片模型再试一次。')
+
+    const draw = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat', model: 'gpt-image-2.5-sunburst' } })
+    assert.equal(draw.result.isError, true)
+    assert.equal(draw.result.content[0].text, 'gpt-image-2.5-sunburst 这次没能出图，图片服务没说原因。可以稍后再试一次。')
+
+    // A reason the upstream wrote as a plain string still reaches the AI word for word.
+    const said = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat', model: 'grok-imagine-image' } })
+    assert.equal(said.result.isError, true)
+    assert.equal(said.result.content[0].text, 'Prompt is too long')
+
+    assert.match(log, /HTTP 400：openai_error/)
+    assert.match(log, /HTTP 502：没有内容/)
+  })
+})
+
 test('MCP server draws Grok images through the Images API asking for base64 and no size', async () => {
   await withServer({ codexApiKey: 'sk-codex-not-real', apiKey: 'sk-image-not-real' }, grokOk, async ({ call, requests }) => {
     const generated = await call('tools/call', {
@@ -617,6 +650,59 @@ test('generate script exits with code 1 and only the real error when the relay r
   assert.equal(failed.stdout, '')
   assert.match(failed.stderr, /prompt rejected/)
   assert.doesNotMatch(failed.stderr, /sk-leaked-value|Assertion/)
+})
+
+test('generate script turns a relay error without a reason into a plain sentence', async () => {
+  // new-api fills an empty upstream reason with the error type name (Mac acceptance R9: Grok edits showed "openai_error").
+  function placeholder() {
+    return { status: 400, body: { error: { message: 'openai_error', type: 'openai_error' } } }
+  }
+  const edit = await runGenerate({ codexApiKey: 'sk-codex-not-real', apiKey: 'sk-image-not-real' }, placeholder, async (root) => {
+    await writeFile(path.join(root, 'a.png'), pngBytes)
+    return ['--model', 'grok-imagine-image', '--image', path.join(root, 'a.png')]
+  })
+  assert.equal(edit.code, 1)
+  assert.equal(edit.stdout, '')
+  assert.equal(edit.stderr.trim(), 'grok-imagine-image 这次没能改图，图片服务没说原因。可以换回默认的 GPT 图片模型再试一次。')
+  assert.equal(edit.requests[0].url, '/v1/images/edits')
+
+  function badGateway() {
+    return { status: 502, body: '<html>Bad Gateway</html>' }
+  }
+  const config = { apiKey: 'sk-test-not-real', model: 'gpt-image-2.6-flare', fallbackModels: ['gpt-image-2'] }
+  const draw = await runGenerate(config, badGateway, [])
+  assert.equal(draw.code, 1)
+  assert.deepEqual(requestedModels(draw.requests), ['gpt-image-2.6-flare', 'gpt-image-2'])
+  assert.equal(draw.stderr.trim(), 'gpt-image-2 这次没能出图，图片服务没说原因。可以稍后再试一次。')
+
+  // A reason the upstream wrote as a plain string still reaches the AI word for word.
+  function plainString() {
+    return { status: 400, body: { code: 'Client specified an invalid argument', error: 'Prompt is too long' } }
+  }
+  const said = await runGenerate({ apiKey: 'sk-image-not-real' }, plainString, ['--model', 'grok-imagine-image'])
+  assert.equal(said.code, 1)
+  assert.equal(said.stderr.trim(), 'Prompt is too long')
+})
+
+test('generate script and the MCP server agree on which relay errors say nothing', async () => {
+  const { isUnexplainedUpstreamMessage, unexplainedFailureMessage } = await import(pathToFileURL(generatePath).href)
+  for (const message of ['', '   ', 'openai_error', 'upstream_error', 'new_api_error', ' gemini_error ', 'claude_error', null, undefined, 42]) {
+    assert.equal(isUnexplainedUpstreamMessage(message), true, String(message))
+  }
+  for (const message of ['model price not configured', '分组 图片模型 下模型 gpt-image-3 无可用渠道', 'insufficient_quota', 'error', 'HTTP 500']) {
+    assert.equal(isUnexplainedUpstreamMessage(message), false, message)
+  }
+  assert.equal(unexplainedFailureMessage('nano-banana-2', 'gemini', false), 'nano-banana-2 这次没能出图，图片服务没说原因。可以换回默认的 GPT 图片模型再试一次。')
+  const generate = await readFile(generatePath, 'utf8')
+  const server = await readFile(serverPath, 'utf8')
+  for (const shared of [
+    'const PLACEHOLDER_ERROR_MESSAGE_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*_error$/i',
+    "const next = family === 'openai' ? '可以稍后再试一次。' : '可以换回默认的 GPT 图片模型再试一次。'",
+    'return `${model} 这次没能${action}，图片服务没说原因。${next}`',
+  ]) {
+    assert.ok(generate.includes(shared), shared)
+    assert.ok(server.includes(shared), shared)
+  }
 })
 
 test('generate script falls through the account default chain in order', async () => {

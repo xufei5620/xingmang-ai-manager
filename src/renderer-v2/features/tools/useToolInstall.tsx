@@ -16,7 +16,7 @@ import { offlineActionMessage } from '../shell/online-status'
 import type { ToolInstallIntent } from './Home'
 import { manualUninstallState, type ManualUninstallState } from './ManualUninstall'
 import { managedSwitchVersion } from './managed-switch'
-import { canSwitchToManagedInstall, presentTools, providerFor, recommendedVersionVerb, spacedName, type ToolId } from './model'
+import { canSwitchToManagedInstall, isUnrecognizedInstall, presentTools, providerFor, recommendedVersionVerb, spacedName, type ToolId } from './model'
 import { describeNodeReplaceOutcome } from './node-replace'
 import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './runtime-install-outcome'
 import { cliInstallStageLabel, cliNeedsNodeRuntime, planCliInstall, prepareSharedRuntime, runtimeStageFailureMessage, type InstallRuntimeId } from './runtime-readiness'
@@ -107,7 +107,8 @@ export function useToolInstall(options: ToolInstallOptions) {
     let uninstalling = false
     let finishing = false
     let outcome: ToolInstallOutcome = 'installed'
-    const updating = Boolean(current?.status.installed)
+    // 认不出来路的那份旁边另装一份（R1）是第一次装星芒自己的，不说成「已更新」。
+    const updating = Boolean(current?.status.installed) && !isUnrecognizedInstall(current?.status)
     // 收尾必须留在同一个安装任务里。任务一结束工具行就回落到安装前的快照：
     // 同步 Key 和重新检测还没跑完，版本号已经退回旧值、「更新」按钮跟着回弹，
     // 用户看到的是「装完了又要装一次」（yoyo 2026-09-20 真机反馈①）。
