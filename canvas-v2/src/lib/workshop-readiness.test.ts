@@ -321,7 +321,7 @@ describe('workshop preparation requirements', () => {
     const result = analyzeWorkshopReadiness(workflow([source, node('image', 'image-generate'), node('group', 'group'), node('note', 'note')], [edge('disabled', 'image', 'out:text', 'in:text')]))
     expect(result.nodes).toEqual([])
     expect(result.skippedNodeCount).toBe(2)
-    expect(result.skippedNodes).toEqual([{ nodeId: 'disabled', reasonCode: 'disabled', message: '节点已禁用' }, { nodeId: 'image', reasonCode: 'upstream-skip', message: '上游节点已跳过' }])
+    expect(result.skippedNodes).toEqual([{ nodeId: 'disabled', reasonCode: 'disabled', message: '节点已禁用' }, { nodeId: 'image', reasonCode: 'upstream-skip', message: '前面连着的节点跳过了，这个也跟着跳过' }])
     expect(result.requestCounts.image).toBe(0)
   })
 

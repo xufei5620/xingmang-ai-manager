@@ -738,13 +738,18 @@ describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
     expect(nodeRuntimeElevationFailureMessage(null)).toBeNull()
   })
 
-  it('says the account needs an administrator password when it is not in the group', () => {
+  it('sends an account outside the administrators group to an administrator account', () => {
     // 普通账号取消授权和管理员取消授权是同一个退出码，「再点一次」对前者没用。
-    expect(nodeRuntimeElevationFailureMessage(1223, 'standard')).toContain('不在管理员组')
-    expect(nodeRuntimeElevationFailureMessage(740, 'standard')).toContain('管理员账号的密码')
+    expect(nodeRuntimeElevationFailureMessage(1223, 'standard')).toContain('本身没有管理员权限')
+    expect(nodeRuntimeElevationFailureMessage(740, 'standard')).toContain('换一个有管理员权限的账号')
     expect(nodeRuntimeElevationFailureMessage(1223, 'administrator')).toContain('重新点击安装')
     // 探测不出来时保持原来的说法，不吓唬本来就有权限的用户。
-    expect(nodeRuntimeElevationFailureMessage(1223)).not.toContain('不在管理员组')
+    expect(nodeRuntimeElevationFailureMessage(1223)).not.toContain('本身没有管理员权限')
+    // 普通账号在授权窗口输了别的管理员账号的密码，提权那一步只认本人（2225），「用当前账号的管理员身份重试」做不到。
+    expect(nodeRuntimeElevationFailureMessage(2225, 'standard'))
+      .toBe('管理员授权用的是另一个 Windows 账号，已停止安装以免装到别的账号名下。这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。公司或学校的电脑请找管理电脑的人帮忙。')
+    expect(nodeRuntimeElevationFailureMessage(2225, 'administrator')).toContain('请用当前 Windows 账号的管理员身份重试')
+    expect(nodeRuntimeElevationFailureMessage(2225)).toContain('请用当前 Windows 账号的管理员身份重试')
     expect(nodeRuntimeElevationFailureMessage(13, 'standard')).toContain('签名校验失败')
   })
 })
@@ -1293,7 +1298,7 @@ describe('whether a failed Node.js MSI install moves on to the next download sou
       const { failure, requested, msiRuns, progress } = await installWhileMsiFails(() => new Error(declined))
       const message = `Node.js 自动安装失败：${declined}`
 
-      expect(declined).toContain('这个 Windows 账号不在管理员组')
+      expect(declined).toContain('这个 Windows 账号本身没有管理员权限')
       expect(failure instanceof Error ? failure.message : null).toBe(message)
       expect(msiRuns).toHaveLength(1)
       expect(requested.every((url) => url.startsWith('https://npmmirror.com/'))).toBe(true)
@@ -1340,7 +1345,7 @@ describe('the sentence a failed Node.js install leaves on screen', () => {
       }
     }
     expect(describeNodeInstallFailure([new Error(nodeRuntimeElevationFailureMessage(1223, 'standard') ?? '')]))
-      .toBe('Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。这个 Windows 账号不在管理员组，需要在授权窗口里输入一个管理员账号的密码才能继续；公司或学校的电脑请联系 IT 协助。')
+      .toBe('Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。公司或学校的电脑请找管理电脑的人帮忙。')
     // msiexec 自己报的 1602（用户取消）没有按账号写好的话，照旧是那句短的。
     expect(describeNodeInstallFailure([new Error('命令执行失败（退出码 1602）：powershell.exe')]))
       .toBe('Node.js 自动安装失败：已取消管理员授权，Node.js 尚未安装。')

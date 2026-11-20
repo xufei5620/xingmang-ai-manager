@@ -1,19 +1,32 @@
-import { describe, expect, it } from 'vitest'
+import fc from 'fast-check'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   addVideoStudioClipBytes,
   maxVideoStudioClipBytes,
   maxVideoStudioMusicBytes,
   maxVideoStudioTotalBytes,
+  minVideoStudioTotalBytes,
   parseVideoStudioComposeRequest,
   parseVideoStudioWorkerMessage,
   parseVideoStudioWorkerReply,
+  videoStudioTotalBytesLimit,
 } from './compose-protocol'
 
 const options = { aspect: '9:16', resolution: 720, fit: 'cover', frameRate: 30 }
+const megabyte = 1024 * 1024
 
 function clip(bytes = 8) {
   return { data: new ArrayBuffer(bytes) }
 }
+
+/** 只有 byteLength、不真分配内存的「片段」，用来试几百 MB 的上限。 */
+function sizedClip(bytes: number) {
+  const data = { byteLength: bytes }
+  Object.setPrototypeOf(data, ArrayBuffer.prototype)
+  return { data }
+}
+
+afterEach(() => { vi.unstubAllGlobals() })
 
 describe('video studio compose protocol', () => {
   it('keeps only the fields it knows from a compose request', () => {
@@ -93,6 +106,59 @@ describe('video studio compose protocol', () => {
     expect(addVideoStudioClipBytes(0, maxVideoStudioClipBytes)).toBe(maxVideoStudioClipBytes)
     expect(addVideoStudioClipBytes(maxVideoStudioClipBytes, maxVideoStudioClipBytes)).toBe(maxVideoStudioTotalBytes)
     expect(() => addVideoStudioClipBytes(maxVideoStudioTotalBytes, 1)).toThrow('片段加起来超过 1 GB 了，少放几段再拼')
+  })
+
+  it('tightens the total to an eighth of the memory, between 256 MB and 1 GB', () => {
+    expect(videoStudioTotalBytesLimit(32)).toBe(maxVideoStudioTotalBytes)
+    expect(videoStudioTotalBytesLimit(8)).toBe(maxVideoStudioTotalBytes)
+    expect(videoStudioTotalBytesLimit(6)).toBe(768 * megabyte)
+    expect(videoStudioTotalBytesLimit(4)).toBe(512 * megabyte)
+    expect(videoStudioTotalBytesLimit(2)).toBe(minVideoStudioTotalBytes)
+    expect(videoStudioTotalBytesLimit(0.25)).toBe(minVideoStudioTotalBytes)
+    expect(minVideoStudioTotalBytes).toBe(256 * megabyte)
+  })
+
+  it('keeps the old 1 GB when the memory is unknown or makes no sense', () => {
+    for (const memory of [null, 0, -4, Number.NaN, Number.POSITIVE_INFINITY, '4', {}]) {
+      expect(videoStudioTotalBytesLimit(memory)).toBe(maxVideoStudioTotalBytes)
+    }
+    // Node has a navigator without deviceMemory, the same as an engine that does not report it.
+    expect(videoStudioTotalBytesLimit()).toBe(maxVideoStudioTotalBytes)
+    vi.stubGlobal('navigator', undefined)
+    expect(videoStudioTotalBytesLimit()).toBe(maxVideoStudioTotalBytes)
+  })
+
+  it('stops the page and the worker at the same memory-based total, naming the number it stopped at', () => {
+    vi.stubGlobal('navigator', { deviceMemory: 4 })
+    expect(addVideoStudioClipBytes(0, 512 * megabyte)).toBe(512 * megabyte)
+    expect(() => addVideoStudioClipBytes(512 * megabyte, 1)).toThrow('片段加起来超过 512 MB 了，少放几段再拼')
+    const tooMuch = { kind: 'compose', request: { clips: [sizedClip(300 * megabyte), sizedClip(300 * megabyte)], options } }
+    expect(() => parseVideoStudioWorkerMessage(tooMuch)).toThrow('片段加起来超过 512 MB 了，少放几段再拼')
+
+    vi.stubGlobal('navigator', { deviceMemory: 2 })
+    expect(() => addVideoStudioClipBytes(200 * megabyte, 100 * megabyte)).toThrow('片段加起来超过 256 MB 了，少放几段再拼')
+    expect(() => parseVideoStudioWorkerMessage(tooMuch)).toThrow('片段加起来超过 256 MB 了，少放几段再拼')
+
+    // An 8 GB computer keeps the room it had: two 300 MB clips still go through.
+    vi.stubGlobal('navigator', { deviceMemory: 8 })
+    expect(parseVideoStudioWorkerMessage(tooMuch).request.clips).toHaveLength(2)
+    expect(addVideoStudioClipBytes(0, maxVideoStudioTotalBytes)).toBe(maxVideoStudioTotalBytes)
+  })
+
+  it('uses a limit handed in over the one it reads, so the page reads the memory once per export', () => {
+    vi.stubGlobal('navigator', { deviceMemory: 8 })
+    expect(() => addVideoStudioClipBytes(0, 300 * megabyte, 256 * megabyte)).toThrow('片段加起来超过 256 MB 了，少放几段再拼')
+    expect(() => parseVideoStudioComposeRequest({ clips: [sizedClip(300 * megabyte)], options }, 256 * megabyte)).toThrow('片段加起来超过 256 MB 了，少放几段再拼')
+  })
+
+  it('always lands on a whole number of MB between 256 MB and 1 GB that never shrinks as memory grows, with random inputs', () => {
+    fc.assert(fc.property(fc.double({ noNaN: true }), fc.double({ noNaN: true }), (a, b) => {
+      const limit = videoStudioTotalBytesLimit(a)
+      expect(limit).toBeGreaterThanOrEqual(minVideoStudioTotalBytes)
+      expect(limit).toBeLessThanOrEqual(maxVideoStudioTotalBytes)
+      expect(limit % megabyte).toBe(0)
+      if (a > 0 && b > a && Number.isFinite(b)) expect(videoStudioTotalBytesLimit(b)).toBeGreaterThanOrEqual(limit)
+    }))
   })
 
   it('accepts only compose messages in the worker', () => {

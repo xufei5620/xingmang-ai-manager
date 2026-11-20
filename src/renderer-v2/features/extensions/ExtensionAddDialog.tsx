@@ -556,7 +556,7 @@ export function ExtensionAddDialog({
         }
       >
         <p>
-          插件里带的技能、命令和外接工具，装好后每次打开 {toolName} 都会自动运行，能像你本人一样读写这台电脑上的文件。
+          插件里带的技能、命令和连接，装好后每次打开 {toolName} 都会自动运行，能像你本人一样读写这台电脑上的文件。
         </p>
         <dl className="v2-business-kv">
           <dt>来源</dt>

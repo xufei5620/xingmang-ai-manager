@@ -9,6 +9,7 @@ import {
   requiresCodexAppxElevation,
 } from './codex-desktop-appx'
 import { scanPowerShell, unbalancedBracket, type PowerShellScan } from './powershell-script-scan.test-support'
+import type { WindowsElevationCapability } from './windows-elevation'
 
 const packagePath = 'C:\\Temp\\Codex Desktop.msix'
 const injectedPackagePath = "D:\\下载缓存\\O'Brien; $(Write-Output XINGMANG_TEST_INJECTION) & Codex.msix"
@@ -21,7 +22,7 @@ function fixture() {
   const resolvePowerShell = vi.fn(() => powershell)
   const onElevationRequired = vi.fn()
   // 提权探测在单测里一律注入：真跑它会在 Windows 分片上多起一次 PowerShell。
-  const inspectElevationCapability = vi.fn(async () => 'unknown' as const)
+  const inspectElevationCapability = vi.fn(async (): Promise<WindowsElevationCapability> => 'unknown')
   const install = (file = packagePath, hash = sha256Base64) => addCodexDesktopPackage(file, { sha256Base64: hash, onElevationRequired }, { run, resolvePowerShell, inspectElevationCapability })
   return { run, resolvePowerShell, onElevationRequired, inspectElevationCapability, install }
 }
@@ -128,6 +129,18 @@ describe('Codex Desktop Appx installation flow', () => {
     else expect((failure as Error).message).toContain(diagnostic)
     expect(f.run).toHaveBeenCalledTimes(2)
     expect(f.onElevationRequired).toHaveBeenCalledOnce()
+  })
+
+  // 普通账号在授权窗口输了别的管理员账号的密码：提权那一步认出不是本人就停（2225）。
+  // 以前这里不问账号类型，只会叫他「由当前账号的管理员会话完成」，普通账号做不到。
+  it('asks whether the account can elevate when the prompt was answered by another account', async () => {
+    const f = fixture()
+    f.inspectElevationCapability.mockResolvedValueOnce('standard')
+    f.run.mockRejectedValueOnce(elevationRequired()).mockRejectedValueOnce(Object.assign(new Error('broker process exited'), { code: 2225 }))
+    const failure = await f.install().catch((error: unknown) => error)
+    expect(f.inspectElevationCapability).toHaveBeenCalledOnce()
+    expect((failure as Error).message).toContain('换一个有管理员权限的账号登录这台电脑，在那个账号里装和用')
+    expect((failure as Error).message).not.toContain('管理员会话')
   })
 
   it('does not retry even if the elevated attempt repeats the elevation HRESULT', async () => {
@@ -287,11 +300,16 @@ describe('codexDesktopElevationFailureMessage', () => {
     expect(codexDesktopElevationFailureMessage(Number.NaN)).toBeNull()
   })
 
-  it('points a standard account at an administrator password instead of a retry', () => {
-    expect(codexDesktopElevationFailureMessage(1223, 'standard')).toContain('不在管理员组')
-    expect(codexDesktopElevationFailureMessage(740, 'standard')).toContain('管理员账号的密码')
+  it('points a standard account at an administrator account instead of a retry', () => {
+    const advice = '这个 Windows 账号本身没有管理员权限，在这里装不了 Codex 桌面端。要用的话，换一个有管理员权限的账号登录这台电脑，在那个账号里装和用。公司或学校的电脑请找管理电脑的人帮忙。'
+    expect(codexDesktopElevationFailureMessage(1223, 'standard')).toBe(`已取消管理员授权，Codex 桌面端安装未开始。${advice}`)
+    expect(codexDesktopElevationFailureMessage(740, 'standard')).toBe(`未获得管理员权限，Codex 桌面端安装已停止。${advice}`)
+    // 普通账号输了别的管理员账号的密码也装不成（提权那一步只认本人），同样指去管理员账号。
+    expect(codexDesktopElevationFailureMessage(2225, 'standard')).toBe(`授权使用了不同的 Windows 账号，已停止安装以免注册到其他用户。${advice}`)
+    expect(codexDesktopElevationFailureMessage(2225)).toContain('请由当前 Windows 账号的管理员会话完成安装')
+    expect(codexDesktopElevationFailureMessage(740, 'standard', claudeAppxProduct)).toContain('在这里装不了 Claude Desktop。')
     expect(codexDesktopElevationFailureMessage(1223, 'administrator')).toContain('重新点击安装')
-    expect(codexDesktopElevationFailureMessage(1223)).not.toContain('不在管理员组')
+    expect(codexDesktopElevationFailureMessage(1223)).not.toContain('本身没有管理员权限')
   })
 })
 
