@@ -1045,10 +1045,9 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
         // 更新按钮，不做来源标注；其余三个 CLI 的安装通道是 npm，标注来源后原生/其他
         // 来源装的那份才好挡住 npm 重装。
         // 认不出来路的那份不说成「官方安装器」：它就是从 ~/.local/bin 找到的，也可能是别人打的包。
-        // 认得出是 OpenAI 原版、但放在官方安装器目录以外的（别的工具解开的）同样不算官方安装器。
         installSource: provider === 'grok'
           ? undefined
-          : unrecognized || safeNativeCommand?.verifiedDarwinStandalone?.relocated
+          : unrecognized
             ? 'path'
             : classifyCliInstallDisplaySource(installation, {
                 env: cliEnvironment,
@@ -1059,8 +1058,7 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
           ? provider === 'grok'
             ? installation.commandPath
             : platform === 'darwin' && safeNativeCommand?.verifiedDarwinStandalone
-              ? safeNativeCommand.verifiedDarwinStandalone.launcherPath
-                ?? safeNativeCommand.verifiedDarwinStandalone.executablePath
+              ? safeNativeCommand.verifiedDarwinStandalone.executablePath
               : safeNativeCommand?.executable ?? null
           : installation.commandPath,
         installDirectory: installation.installDirectory,

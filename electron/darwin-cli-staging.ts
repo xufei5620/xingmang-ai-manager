@@ -2,7 +2,6 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { runCommand, trustedCommandEnvironment } from './command-runner'
-import { DarwinCliProvenanceError } from './macos-code-signing'
 
 export interface DarwinCliFileIdentity {
   dev: bigint
@@ -17,15 +16,7 @@ export interface StageVerifiedDarwinCliOptions {
   executableName: string
   sourcePath: string
   sourceIdentity: DarwinCliFileIdentity
-  /**
-   * The macOS bundle (`*.app`) that holds sourcePath as its main executable. Its other
-   * files are copied around the executable so that the private copy is the whole bundle:
-   * a binary signed with restricted entitlements is killed at launch unless it runs from
-   * inside the bundle that embeds its provisioning profile. Absent = a plain executable.
-   */
-  bundleRoot?: string
-  /** bundlePath is the private copy of bundleRoot, or null for a plain executable. */
-  verify: (executablePath: string, bundlePath: string | null) => Promise<void>
+  verify: (executablePath: string) => Promise<void>
   /**
    * Retained acquisitions stay leased until explicit release and stay on disk after this
    * process exits: Terminal may still be running them. A later start removes them once no
@@ -173,19 +164,6 @@ interface StaleDarwinCliDirectory {
   files: string[]
 }
 
-/** A staged bundle keeps its executable three levels down (X.app/Contents/MacOS/x). */
-const maxStagedTreeDepth = 8
-
-async function stagedFiles(directory: string, depth = 0): Promise<string[]> {
-  const files: string[] = []
-  for (const child of await fs.promises.readdir(directory, { withFileTypes: true })) {
-    const childPath = path.join(directory, child.name)
-    if (child.isFile()) files.push(childPath)
-    else if (child.isDirectory() && depth < maxStagedTreeDepth) files.push(...await stagedFiles(childPath, depth + 1))
-  }
-  return files
-}
-
 function namesDirectory(openPath: string, directoryName: string): boolean {
   return openPath.split(path.sep).includes(directoryName)
 }
@@ -221,7 +199,10 @@ export async function cleanupStaleDarwinCliDirectories(
       const stats = await fs.promises.lstat(directory)
       if (!stats.isDirectory() || stats.isSymbolicLink()) return null
       if (currentUid !== undefined && stats.uid !== currentUid) return null
-      return { name: entry.name, directory, files: await stagedFiles(directory) }
+      const files = (await fs.promises.readdir(directory, { withFileTypes: true }))
+        .filter((child) => child.isFile())
+        .map((child) => path.join(directory, child.name))
+      return { name: entry.name, directory, files }
     } catch {
       // A concurrently removed or inaccessible stale directory is harmless.
       return null
@@ -347,89 +328,6 @@ async function copyOpenedFile(
   await destination.sync()
 }
 
-const bundleNamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.app$/
-const maxBundleEntries = 256
-const maxBundleDepth = 6
-const maxBundleSideBytes = 64 * 1024 * 1024
-
-interface BundleCopyBudget {
-  entries: number
-  bytes: number
-}
-
-async function copyBundleFile(source: string, destination: string, budget: BundleCopyBudget): Promise<void> {
-  let input: fs.promises.FileHandle | null = null
-  let output: fs.promises.FileHandle | null = null
-  try {
-    input = await fs.promises.open(source, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
-    const stats = await input.stat()
-    if (!stats.isFile()) throw new DarwinCliProvenanceError('Darwin CLI bundle 里只能有普通文件和文件夹')
-    budget.bytes += stats.size
-    if (budget.bytes > maxBundleSideBytes) throw new DarwinCliProvenanceError('Darwin CLI bundle 超出暂存上限')
-    output = await fs.promises.open(destination, 'wx', (stats.mode & 0o111) !== 0 ? 0o500 : 0o400)
-    await copyOpenedFile(input, output)
-  } finally {
-    await output?.close().catch(() => undefined)
-    await input?.close().catch(() => undefined)
-  }
-}
-
-/**
- * Copies every file of a bundle except its main executable, which the caller copies
- * through the descriptor its identity was checked on. Links and special files are
- * refused rather than followed: the vendor's bundle has none, and the private copy has
- * to be the very tree that codesign then judges.
- */
-async function copyBundleTree(
-  source: string,
-  destination: string,
-  mainExecutable: string,
-  depth: number,
-  budget: BundleCopyBudget,
-): Promise<void> {
-  await fs.promises.mkdir(destination, { mode: 0o700 })
-  for (const child of await fs.promises.readdir(source, { withFileTypes: true })) {
-    budget.entries += 1
-    if (budget.entries > maxBundleEntries) throw new DarwinCliProvenanceError('Darwin CLI bundle 超出暂存上限')
-    const from = path.join(source, child.name)
-    const to = path.join(destination, child.name)
-    if (from === mainExecutable) continue
-    if (child.isDirectory()) {
-      if (depth >= maxBundleDepth) throw new DarwinCliProvenanceError('Darwin CLI bundle 超出暂存上限')
-      await copyBundleTree(from, to, mainExecutable, depth + 1, budget)
-    } else if (child.isFile()) {
-      await copyBundleFile(from, to, budget)
-    } else {
-      throw new DarwinCliProvenanceError('Darwin CLI bundle 里只能有普通文件和文件夹')
-    }
-  }
-}
-
-interface DarwinBundleLayout {
-  root: string
-  name: string
-  /** The main executable, relative to the bundle root. */
-  executable: string
-}
-
-function bundleLayout(options: StageVerifiedDarwinCliOptions): DarwinBundleLayout | null {
-  if (options.bundleRoot === undefined) return null
-  const root = options.bundleRoot
-  const name = path.basename(root)
-  const executable = path.relative(root, options.sourcePath)
-  if (
-    !path.isAbsolute(root)
-    || !bundleNamePattern.test(name)
-    || !executable
-    || executable === '..'
-    || executable.startsWith(`..${path.sep}`)
-    || path.isAbsolute(executable)
-  ) {
-    throw new Error('Darwin CLI bundle executable must sit inside its bundle')
-  }
-  return { root, name, executable }
-}
-
 /**
  * Copies a verified executable through a bound descriptor and reverifies the private copy.
  * Retained copies outlive this process because Terminal keeps running them after open.
@@ -441,7 +339,6 @@ export async function stageVerifiedDarwinCli(
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(options.executableName)) {
     throw new Error('Darwin CLI staged executable name is invalid')
   }
-  const bundle = bundleLayout(options)
   const retention = options.retention ?? 'retained'
   const baseDirectory = options.baseDirectory ?? os.tmpdir()
   // Housekeeping only: it never touches this process's directories, so the copy below does
@@ -487,17 +384,7 @@ export async function stageVerifiedDarwinCli(
       `xingmang-darwin-cli-${process.pid}-`,
     ))
     await fs.promises.chmod(directory, 0o700)
-    const privateDirectory = await fs.promises.realpath(directory)
-    const bundlePath = bundle ? path.join(privateDirectory, bundle.name) : null
-    if (bundle && bundlePath) {
-      await copyBundleTree(bundle.root, bundlePath, path.join(bundle.root, bundle.executable), 0, {
-        entries: 0,
-        bytes: 0,
-      })
-    }
-    const executablePath = bundle && bundlePath
-      ? path.join(bundlePath, bundle.executable)
-      : path.join(privateDirectory, options.executableName)
+    const executablePath = path.join(await fs.promises.realpath(directory), options.executableName)
     destination = await fs.promises.open(executablePath, 'wx', 0o500)
     await copyOpenedFile(source, destination)
     await destination.close()
@@ -514,7 +401,7 @@ export async function stageVerifiedDarwinCli(
       throw new Error('Darwin CLI private staging did not produce a regular executable')
     }
 
-    await options.verify(executablePath, bundlePath)
+    await options.verify(executablePath)
     if (!sameIdentity(await fs.promises.lstat(executablePath, { bigint: true }), {
       dev: stagedIdentity.dev,
       ino: stagedIdentity.ino,

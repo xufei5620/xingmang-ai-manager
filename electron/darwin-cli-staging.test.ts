@@ -13,7 +13,6 @@ import {
   releaseStagedDarwinCli,
   stageVerifiedDarwinCli,
 } from './darwin-cli-staging'
-import { DarwinCliProvenanceError } from './macos-code-signing'
 
 const temporaryDirectories: string[] = []
 
@@ -114,23 +113,6 @@ describe('stale Darwin CLI staging cleanup', () => {
     ])
 
     expect(fs.existsSync(staged.directory)).toBe(false)
-  })
-
-  it('looks inside a staged bundle for the executable a terminal still runs', async () => {
-    const root = temporaryDirectory()
-    const bundled = staleDirectoryFixture(root, 'xingmang-darwin-cli-99999998-app', null)
-    const executable = path.join(bundled.directory, 'CodexCLI.app', 'Contents', 'MacOS', 'codex')
-    fs.mkdirSync(path.dirname(executable), { recursive: true })
-    fs.writeFileSync(executable, '#!/bin/sh\n', { mode: 0o500 })
-    const probed: string[][] = []
-
-    await cleanupStaleDarwinCliDirectories(root, onlyThisProcessIsAlive, async (files) => {
-      probed.push([...files])
-      return [executable]
-    })
-
-    expect(probed).toEqual([[executable]])
-    expect(fs.existsSync(executable)).toBe(true)
   })
 
   it('asks lsof for the named files only and reads back just the name fields', () => {
@@ -473,75 +455,5 @@ describe.runIf(process.platform === 'darwin')('private Darwin CLI staging lifecy
     expect(await listOpenDarwinFiles([executable])).toEqual([])
     await cleanupStaleDarwinCliDirectories(root, (pid) => pid === process.pid)
     expect(fs.existsSync(staged.directory)).toBe(false)
-  })
-
-  it('stages a whole bundle around its main executable and hands the copy to verification', async () => {
-    const root = temporaryDirectory()
-    const bundleRoot = path.join(root, 'CodexCLI.app')
-    const sourcePath = path.join(bundleRoot, 'Contents', 'MacOS', 'codex')
-    fs.mkdirSync(path.dirname(sourcePath), { recursive: true })
-    fs.mkdirSync(path.join(bundleRoot, 'Contents', '_CodeSignature'))
-    fs.writeFileSync(sourcePath, '#!/bin/sh\n', { mode: 0o755 })
-    fs.writeFileSync(path.join(bundleRoot, 'Contents', 'embedded.provisionprofile'), 'profile')
-    fs.writeFileSync(path.join(bundleRoot, 'Contents', '_CodeSignature', 'CodeResources'), 'seal')
-    const stats = fs.statSync(sourcePath, { bigint: true })
-    const seen: Array<{ executablePath: string; bundlePath: string | null }> = []
-
-    const staged = await stageVerifiedDarwinCli({
-      executableName: 'codex',
-      sourcePath,
-      sourceIdentity: {
-        dev: stats.dev,
-        ino: stats.ino,
-        mode: stats.mode,
-        size: stats.size,
-        ctimeNs: stats.ctimeNs,
-        mtimeNs: stats.mtimeNs,
-      },
-      bundleRoot,
-      retention: 'ephemeral',
-      baseDirectory: root,
-      verify: async (executablePath, bundlePath) => {
-        seen.push({ executablePath, bundlePath })
-      },
-    })
-
-    const stagedBundle = path.dirname(path.dirname(path.dirname(staged)))
-    expect(seen).toEqual([{ executablePath: staged, bundlePath: stagedBundle }])
-    expect(path.basename(stagedBundle)).toBe('CodexCLI.app')
-    expect(fs.readFileSync(path.join(stagedBundle, 'Contents', 'embedded.provisionprofile'), 'utf8')).toBe('profile')
-    expect(fs.readFileSync(path.join(stagedBundle, 'Contents', '_CodeSignature', 'CodeResources'), 'utf8')).toBe('seal')
-    expect(fs.readFileSync(staged, 'utf8')).toBe('#!/bin/sh\n')
-    await releaseStagedDarwinCli(staged)
-    expect(fs.existsSync(path.dirname(stagedBundle))).toBe(false)
-  })
-
-  it('refuses a bundle that holds a symbolic link and leaves nothing staged', async () => {
-    const root = temporaryDirectory()
-    const bundleRoot = path.join(root, 'CodexCLI.app')
-    const sourcePath = path.join(bundleRoot, 'Contents', 'MacOS', 'codex')
-    fs.mkdirSync(path.dirname(sourcePath), { recursive: true })
-    fs.writeFileSync(sourcePath, '#!/bin/sh\n', { mode: 0o755 })
-    fs.symlinkSync('/etc/hosts', path.join(bundleRoot, 'Contents', 'embedded.provisionprofile'))
-    const stats = fs.statSync(sourcePath, { bigint: true })
-    const before = fs.readdirSync(root)
-
-    await expect(stageVerifiedDarwinCli({
-      executableName: 'codex',
-      sourcePath,
-      sourceIdentity: {
-        dev: stats.dev,
-        ino: stats.ino,
-        mode: stats.mode,
-        size: stats.size,
-        ctimeNs: stats.ctimeNs,
-        mtimeNs: stats.mtimeNs,
-      },
-      bundleRoot,
-      retention: 'ephemeral',
-      baseDirectory: root,
-      verify: async () => undefined,
-    })).rejects.toBeInstanceOf(DarwinCliProvenanceError)
-    expect(fs.readdirSync(root)).toEqual(before)
   })
 })

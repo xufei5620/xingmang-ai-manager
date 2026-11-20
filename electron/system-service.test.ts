@@ -2102,61 +2102,6 @@ describe('createSystemService', () => {
     expect(snapshot.clis.claude.unrecognizedInstall).toBeUndefined()
   })
 
-  // R1 那台的 Codex：认得出是 OpenAI 发布的 provisioned 包，但放在别的工具的文件夹里。
-  it('shows a recognised OpenAI Codex package outside the official installer folder as another source', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-relocated-codex-scan-'))
-    temporaryDirectories.push(directory)
-    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
-    vi.stubEnv('HOME', directory)
-    const releaseRoot = path.join(directory, '.local', 'share', 'openchatcut-codex', '0.164.0-alpha.11.1')
-    const resolveCli = vi.fn<typeof resolveVerifiedToolCommand>(async (provider) => {
-      if (provider !== 'codex') throw new Error('spawn EAGAIN')
-      return {
-        executable: path.join(directory, 'staged', 'CodexCLI.app', 'Contents', 'MacOS', 'codex'),
-        argv: [],
-        verifiedDarwinStandalone: {
-          requestedExecutablePath: path.join(directory, '.local', 'bin', 'codex'),
-          codexHome: path.join(directory, '.codex'),
-          releaseRoot,
-          executablePath: path.join(releaseRoot, 'CodexCLI.app', 'Contents', 'MacOS', 'codex'),
-          bundlePath: path.join(releaseRoot, 'CodexCLI.app'),
-          launcherPath: path.join(releaseRoot, 'bin', 'codex'),
-          relocated: true,
-          target: 'aarch64-apple-darwin',
-          version: '0.164.0-alpha.11.1',
-          fileIdentity: { dev: 1n, ino: 2n, mode: 0o100755n, size: 3n, ctimeNs: 4n, mtimeNs: 5n },
-        },
-      }
-    })
-    const service = createSystemService(
-      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
-      {
-        platform: 'darwin',
-        findExecutable: async () => null,
-        resolveCliCommand: resolveCli,
-        macosCodexAppDetector: vi.fn(async () => ({ app: null, detectionFailed: false, detectionError: null })),
-        resolveCliInstallation: async (provider) => provider !== 'codex' ? null : ({
-          commandPath: path.join(directory, '.local', 'bin', 'codex'),
-          installDirectory: path.join(directory, '.local', 'bin'),
-          packageRoot: null,
-          npmPrefix: null,
-          packageVersion: null,
-          source: 'native',
-        }),
-      },
-    )
-
-    const snapshot = await service.scanSystem(false)
-
-    expect(snapshot.clis.codex).toMatchObject({
-      installed: true,
-      version: '0.164.0-alpha.11.1',
-      installSource: 'path',
-      path: path.join(releaseRoot, 'bin', 'codex'),
-    })
-    expect(snapshot.clis.codex.unrecognizedInstall).toBeUndefined()
-  })
-
   // 断网开应用时，四家 CLI 的最新版探测会一个个耗满自己的超时（npm 8 秒、Grok
   // 清单 10 秒），首屏要十几秒才出来，而已装版本其实一瞬间就从本地读到了。
   it('stops waiting on the npm latest probes when the network location probe says the machine is offline', async () => {
