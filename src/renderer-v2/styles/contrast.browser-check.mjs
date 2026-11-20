@@ -133,8 +133,10 @@ test('Windows high contrast (forced colors) redraws selection, switches, progres
     // v4 settings have no select left (language is plain text, routes are a segment), and
     // the run log's source filter became chips in batch 10, so check the scope select of
     // the add-a-connection dialog instead.
-    await page.getByTestId('nav-mcp').click()
-    await page.getByTestId('mcp-add').first().click()
+    // 0.2.25 起外接工具合进「插件」页，「自定义连接」在右上角「添加」里。
+    await page.getByTestId('nav-extensions').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-mcp').click()
     const add = page.getByRole('dialog', { name: '自定义连接', exact: true })
     const select = await style(add.getByRole('combobox', { name: '装到哪里', exact: true }), ['appearance'])
     assert.equal(select.appearance, 'auto', 'the native arrow replaces the gradient one')

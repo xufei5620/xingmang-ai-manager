@@ -3,7 +3,8 @@ import type { AuthMode } from '../auth'
 import { chatParametersSection } from '../shell/command-search'
 import type { FeedbackRequest } from '../../pages-maintenance'
 import { accountTabs, resolveAccountLanding, resolveFeedbackLanding, settingsGroups, settingsItems, type SettingsGroupId } from '../../registry/business'
-import { createPageAlias, retiredPageAlias, settingsPageAlias, type PageId } from '../../registry/pages'
+import { createPageAlias, extensionPageAlias, retiredPageAlias, settingsPageAlias, type PageId } from '../../registry/pages'
+import { requestExtensionsView } from './extension-tool-intent'
 import { hasPendingSettingsGroup, requestSettingsGroup } from './settings-group-intent'
 import { requestRowFocus } from './row-focus'
 import type { AppApi, AppToast, Perform } from './runtime-context'
@@ -57,9 +58,12 @@ export function useAppNavigation({ app, perform, toast, accelerationAvailable, r
     if (requested === 'acceleration' && !accelerationAvailable) return
     // 加速、备份、更新并进了设置（v4 批09）：托盘、系统通知、教程、错误框还叫老页面名，这里换成设置里那张卡。
     // 「安装卸载」页拆掉了（第 10 批）：还叫它的跳转落到首页，工具卡片上装、卸、重装。
+    // 精选、外接工具、技能、插件合成了一页「插件」（0.2.25）：还叫老页面名的落到新页对应那一栏。
     const alias = settingsPageAlias(requested)
+    const extensionsView = extensionPageAlias(requested)
+    if (extensionsView) requestExtensionsView(extensionsView)
     // 视频剪辑并进了「创作」（融合第 1 步）：还叫它的跳转落到「创作」里。画布在上面已经直接开窗口了。
-    const target: PageId = alias ? 'settings' : retiredPageAlias(requested) ?? createPageAlias(requested) ?? requested
+    const target: PageId = alias ? 'settings' : extensionsView ? 'extensions' : retiredPageAlias(requested) ?? createPageAlias(requested) ?? requested
     const section = alias ?? requestedSection
     // 「创作」花的是账号额度，没登录先登录。
     const needsAccount = target === 'account' || target === 'chat'

@@ -171,12 +171,14 @@ function renderShell(props: Partial<Parameters<typeof Shell>[0]> = {}): string {
 }
 
 describe('renderer-v2 v4 sidebar', () => {
-  it('lists the pages in v4 order, with the 扩展 group named and the last group set off by a line', () => {
+  // 0.2.25 起精选、外接工具、技能、插件合成一页「插件」，接在第一组最后，「扩展」小标题跟着没了（扩展合并方案第二版）。
+  it('lists the pages in v4 order, with 插件 closing the first group and the last group set off by a line', () => {
     const markup = renderShell()
     const scroll = markup.slice(markup.indexOf('data-testid="sidebar-scroll"'), markup.indexOf('data-testid="sidebar-pinned"'))
     const order = [...scroll.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])
-    expect(order).toEqual(['home', 'chat', 'sessions', 'featured', 'mcp', 'skills', 'plugins', 'tutorial', 'health', 'feedback'])
-    expect(scroll).toContain('role="group" aria-label="扩展"><p class="v2-nav-group-label" aria-hidden="true">扩展</p>')
+    expect(order).toEqual(['home', 'chat', 'sessions', 'extensions', 'tutorial', 'health', 'feedback'])
+    expect(scroll).toContain('<span>插件</span>')
+    expect(scroll).not.toContain('v2-nav-group-label')
     expect(scroll).toContain('<hr class="v2-nav-separator" aria-hidden="true"/>')
     expect(scroll).toContain('<span>反馈与客服</span>')
     // 聊天、画布、视频剪辑并成一项（融合第 1 步，yoyo 回「融合改」）：侧栏上没有往外开窗口的那一行了。
@@ -305,7 +307,8 @@ describe('renderer-v2 sidebar pages per computer', () => {
 
   it('keeps every page when nothing says otherwise', () => {
     const markup = renderShell()
-    for (const id of ['home', 'chat', 'sessions', 'featured', 'mcp', 'skills', 'plugins', 'recharge', 'tutorial', 'health', 'feedback', 'settings']) expect(markup).toContain(`data-testid="nav-${id}"`)
+    for (const id of ['home', 'chat', 'sessions', 'extensions', 'recharge', 'tutorial', 'health', 'feedback', 'settings']) expect(markup).toContain(`data-testid="nav-${id}"`)
+    for (const id of ['featured', 'mcp', 'skills', 'plugins']) expect(markup).not.toContain(`data-testid="nav-${id}"`)
   })
 
   // 融合第 1 步：「聊天」「画布 ↗」「视频剪辑」三项换成「创作」一项，画布项目和视频都在那一页左边那一列里。

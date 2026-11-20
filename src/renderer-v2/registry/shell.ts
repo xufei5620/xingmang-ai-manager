@@ -11,9 +11,9 @@ export interface ShellNavigationGroup {
 // 2026-11-06 加了画布、视频剪辑以后这列长了两行，窗口矮时最下面一组最先滚出去，
 // 「充值」原来排在那组第一个，跟着看不见（yoyo 回「充值改」）。
 // 2026-11-20 聊天、画布、视频剪辑合成「创作」一项（yoyo 回「融合改」）：画布项目和视频都在那一页左边那一列里。
+// 0.2.25 起「扩展」小标题和下面四行（精选、外接工具、技能、插件）合成一行「插件」，接在第一组最后（扩展合并方案第二版）。
 export const shellNavigation: readonly ShellNavigationGroup[] = [
-  { entries: ['home', 'chat', 'sessions'] },
-  { label: '扩展', entries: ['featured', 'mcp', 'skills', 'plugins'] },
+  { entries: ['home', 'chat', 'sessions', 'extensions'] },
   { entries: ['tutorial', 'health', 'feedback'] },
 ]
 /** 界面导览三步：没有标题，第一步按系统只写一种快捷键。 */

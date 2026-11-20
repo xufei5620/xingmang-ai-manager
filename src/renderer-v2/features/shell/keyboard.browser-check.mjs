@@ -140,7 +140,9 @@ test('on a short screen 充值 and Settings stay pinned in view and the list abo
       ['nav-recharge', 'nav-settings'], '充值 and 设置 sit in the pinned part, nothing else does')
     for (const id of ['nav-more', 'nav-maintenance', 'nav-acceleration', 'nav-backups', 'nav-updates'])
       assert.equal(await page.getByTestId(id).count(), 0, `${id} is gone from the sidebar`)
-    // 上面那段放不下了自己滚，下沿渐隐，看得出还有。
+    // 上面那段放不下了自己滚，下沿渐隐，看得出还有。0.2.25 精选、外接工具、技能、插件合成一行「插件」以后，
+    // 这一列在 672 高里整列放得下、不用滚；再矮一截（大约 540 以下）才滚，滚动这一半在 520 高里核。
+    await page.setViewportSize({ width: 1280, height: 520 })
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'bottom')
     await page.getByTestId('sidebar-scroll').evaluate((element) => { element.scrollTop = element.scrollHeight })
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'top')
@@ -158,7 +160,9 @@ test('the 充值 entry stays in view on a short window on both systems', async (
     const page = await open(os === 'mac' ? 'os=mac' : '')
     try {
       await page.setViewportSize({ width: 1280, height: 586 })
-      await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'bottom')
+      // 0.2.25 侧栏少了四行以后，586 高里 Windows 那边整列放得下、不再渐隐，只等钉住的那段落到窗口里。
+      await page.waitForFunction((height) => window.innerHeight === height
+        && (document.querySelector('[data-testid="sidebar-pinned"]')?.getBoundingClientRect().bottom ?? Infinity) <= height, 586)
       assert.equal(await visibleInSidebar(page, 'nav-recharge'), true, `${os}: nav-recharge is in view and not covered`)
       assert.equal(await visibleInSidebar(page, 'nav-settings'), true, `${os}: nav-settings is in view and not covered`)
       await clean(page)

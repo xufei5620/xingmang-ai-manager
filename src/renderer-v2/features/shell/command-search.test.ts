@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { createPageAlias, pageRegistry, retiredPageAlias, settingsPageAlias } from '../../registry/pages'
+import { createPageAlias, extensionPageAlias, pageRegistry, retiredPageAlias, settingsPageAlias } from '../../registry/pages'
 import { tutorialTopics, tutorialTopicsFor } from '../../registry/tutorials'
 import { chatParametersSection, maximumTutorialResults, searchCommands } from './command-search'
 
 // 游戏加速、备份、更新并进了设置（v4 批09），「安装卸载」拆掉了（批10），画布、视频剪辑并进了「创作」（融合第 1 步）：
-// 它们还在页面表里（老入口靠它换到新去处），但不再单独出页面结果。
-const searchablePages = pageRegistry.filter((page) => settingsPageAlias(page.id) === null && retiredPageAlias(page.id) === null && createPageAlias(page.id) === null)
+// 它们还在页面表里（老入口靠它换到新去处），但不再单独出页面结果。精选、外接工具、插件 0.2.25 合进「插件」页，同理；
+// 「技能」照旧单独一条，落到「插件」页的技能那一栏。
+const searchablePages = pageRegistry.filter((page) => settingsPageAlias(page.id) === null && retiredPageAlias(page.id) === null && createPageAlias(page.id) === null
+  && (extensionPageAlias(page.id) === null || page.id === 'skills'))
 
 describe('searchCommands', () => {
   it('lists the everyday actions, then every page, when nothing is typed', () => {
@@ -82,6 +84,13 @@ describe('searchCommands', () => {
     ])
     expect(searchCommands('工作流').some((item) => item.key === 'action:open-canvas')).toBe(true)
     expect(searchCommands('画布', { pageVisible: (page) => page !== 'canvas' }).some((item) => item.key === 'action:open-canvas')).toBe(false)
+  })
+
+  // 扩展合并方案第二版：老页面名和它们的说法都落到「插件」这一页，「技能」单独一条。
+  it('finds the plugins page by the names of the four pages merged into it', () => {
+    for (const word of ['精选', '外接工具', 'MCP', '插件', '插件市场', '自定义连接']) expect(searchCommands(word).find((item) => item.group === 'page'), word).toMatchObject({ page: 'extensions' })
+    expect(searchCommands('技能').find((item) => item.group === 'page')).toMatchObject({ page: 'skills', label: '技能' })
+    for (const page of ['featured', 'mcp', 'plugins']) expect(searchCommands('').some((item) => item.group === 'page' && item.page === page), page).toBe(false)
   })
 
   it('finds the cards that moved into settings by their old page names', () => {

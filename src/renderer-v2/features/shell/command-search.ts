@@ -90,8 +90,9 @@ function score(entry: Entry, words: readonly string[]) {
 // 加速、备份、更新并进了设置：不再单独出页面结果，搜到的是设置里那一行（「网络加速」那张卡、「备份迁移 › 工具配置备份」）。
 // 「安装卸载」页拆掉了（第 10 批）：搜「安装」「卸载」给首页，搜 Node.js、Python 给检查页。
 // 画布、视频剪辑并进了「创作」（融合第 1 步）：搜它们的老名字给「创作」；搜「画布」另有一条「打开画布窗口」（actionEntries）。
+// 精选、外接工具、插件并进了「插件」页（0.2.25）：不再单独出结果，说法挪进了「插件」；「技能」照旧一条，点了落到「插件」页的「技能」那一栏。
 function pageEntries(options: CommandSearchOptions): Entry[] {
-  return pageRegistry.flatMap(page => page.id === 'acceleration' || page.id === 'backups' || page.id === 'updates' || page.id === 'maintenance' || page.id === 'canvas' || page.id === 'video' || !(options.pageVisible?.(page.id) ?? true) ? []
+  return pageRegistry.flatMap(page => page.id === 'acceleration' || page.id === 'backups' || page.id === 'updates' || page.id === 'maintenance' || page.id === 'featured' || page.id === 'mcp' || page.id === 'plugins' || page.id === 'canvas' || page.id === 'video' || !(options.pageVisible?.(page.id) ?? true) ? []
     : [{ result: { key: `page:${page.id}`, group: 'page', label: page.label, page: page.id }, label: page.label, keywords: [page.id, ...pageSearchKeywords[page.id]] }])
 }
 

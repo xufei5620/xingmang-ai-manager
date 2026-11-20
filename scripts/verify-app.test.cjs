@@ -137,7 +137,7 @@ test('the page table and the sign-in path still match the renderer', async () =>
   const { verifyPages } = await planModule
   const registry = read('src/renderer-v2/registry/pages.ts')
   const registryIds = [...registry.matchAll(/\{ id: '([a-z-]+)', label: '([^']+)'/g)].map((match) => ({ id: match[1], label: match[2] }))
-  const aliases = ['acceleration', 'backups', 'updates', 'maintenance']
+  const aliases = ['acceleration', 'backups', 'updates', 'maintenance', 'featured', 'mcp', 'skills', 'plugins']
   assert.ok(aliases.every((id) => registryIds.some((page) => page.id === id)), 'the alias pages moved; revisit verifyPages')
   assert.deepEqual(verifyPages.map((page) => page.id), registryIds.filter((page) => !aliases.includes(page.id)).map((page) => page.id),
     'every sidebar page belongs in verifyPages, in registry order')
@@ -147,10 +147,8 @@ test('the page table and the sign-in path still match the renderer', async () =>
   assert.match(shell, /data-testid=\{`nav-\$\{id\}`\}/)
   for (const page of verifyPages) {
     if (page.window === 'canvas') continue
-    assert.ok(sources.includes(`data-testid="page-${page.id}"`) || (page.id === 'mcp' || page.id === 'skills' || page.id === 'plugins'),
-      `page-${page.id} is gone from renderer-v2`)
+    assert.ok(sources.includes(`data-testid="page-${page.id}"`), `page-${page.id} is gone from renderer-v2`)
   }
-  assert.match(read('src/renderer-v2/features/extensions/ExtensionsPage.tsx'), /data-testid=\{`page-\$\{page\}`\}/)
   assert.match(read('src/renderer-v2/pages-account.tsx'), /id=\{`v2-account-tab-\$\{tab\}`\}/)
   // login-dialog is built from the dialog mode.
   assert.match(read('src/renderer-v2/features/auth/AuthFlow.tsx'), /: mode\}-dialog`/)

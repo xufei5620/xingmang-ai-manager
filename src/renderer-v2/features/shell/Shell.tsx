@@ -513,7 +513,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
         </header>
         <OfflineBanner />
         {banner}
-        <main ref={viewport} id="v2-main" tabIndex={-1} className={`v2-content${activePage === 'chat' ? ' v2-content-chat' : ''}`} data-testid="page-viewport">{children}</main>
+        <main ref={viewport} id="v2-main" tabIndex={-1} className={`v2-content${activePage === 'chat' ? ' v2-content-chat' : activePage === 'extensions' ? ' v2-content-extensions' : ''}`} data-testid="page-viewport">{children}</main>
         <p className="v2-visually-hidden" role="status" aria-live="polite" data-testid="shell-page-announcement">{pageAnnouncement}</p>
         <footer className="v2-statusbar" data-testid="shell-statusbar">
           <button type="button" onClick={adapter.openHealth} title={environment?.detail} data-testid="statusbar-environment"><i className={`v2-dot${environmentDot}`} />{environmentLabel}</button>
