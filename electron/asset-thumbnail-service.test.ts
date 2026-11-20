@@ -26,7 +26,7 @@ function fixture(overrides: {
     resolveVideoPath: vi.fn(async () => 'C:/library/2026-08-14/clip.mp4'),
   }
   const renderer = {
-    fromImageBytes: vi.fn(async (): Promise<Buffer | null> => Buffer.from('derived')),
+    fromImageBytes: vi.fn(async (_bytes: Buffer, _mimeType: string, _maxEdge: number): Promise<Buffer | null> => Buffer.from('derived')),
     fromMediaFile: vi.fn(async (): Promise<Buffer | null> => Buffer.from('cover-frame')),
   }
   const onFailure = vi.fn()
