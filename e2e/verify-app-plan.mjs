@@ -10,7 +10,8 @@
 // Pages reachable from the sidebar, in sidebar order. `account` has no sidebar
 // row of its own; the account card at the bottom of the sidebar opens it.
 // `canvas` opens a separate window. The settings aliases (acceleration, backups,
-// updates) and the retired maintenance page are not listed: they land on other
+// updates), the retired maintenance page and the four pages merged into 插件 in
+// 0.2.25 (featured, mcp, skills, plugins) are not listed: they land on other
 // pages, so a step naming them would screenshot something it did not ask for.
 export const verifyPages = Object.freeze([
   { id: 'home', label: '首页' },
@@ -18,10 +19,7 @@ export const verifyPages = Object.freeze([
   { id: 'sessions', label: '记录' },
   { id: 'canvas', label: '画布', window: 'canvas' },
   { id: 'video', label: '视频剪辑' },
-  { id: 'featured', label: '精选' },
-  { id: 'mcp', label: '外接工具' },
-  { id: 'skills', label: '技能' },
-  { id: 'plugins', label: '插件' },
+  { id: 'extensions', label: '插件' },
   { id: 'tutorial', label: '教程' },
   { id: 'health', label: '检查' },
   { id: 'feedback', label: '反馈与客服' },

@@ -1,4 +1,4 @@
-import { Archive, BookOpen, Clapperboard, Clock, Flag, Globe2, Home, Infinity as InfinityIcon, MessageSquare, Package, Plug, RefreshCw, Settings, Sparkles, Star, User, Wrench, Zap, type LucideIcon } from 'lucide-react'
+import { Archive, BookOpen, Clapperboard, Clock, Flag, Globe2, Home, Infinity as InfinityIcon, MessageSquare, Package, Plug, Puzzle, RefreshCw, Settings, Sparkles, Star, User, Wrench, Zap, type LucideIcon } from 'lucide-react'
 
 export const pages = [
   { id: 'home', label: '首页', icon: 'home', group: 'daily', template: 'T5', testId: 'page-home' },
@@ -7,6 +7,7 @@ export const pages = [
   { id: 'canvas', label: '画布', icon: 'infinity', group: 'daily', template: '独立窗口', testId: 'nav-canvas' },
   { id: 'video', label: '视频剪辑', icon: 'clapperboard', group: 'daily', template: 'T1', testId: 'page-video' },
   { id: 'acceleration', label: '网络加速', icon: 'globe-2', group: 'daily', template: 'T5', testId: 'page-acceleration' },
+  { id: 'extensions', label: '插件', icon: 'puzzle', group: 'extend', template: '专用', testId: 'page-extensions' },
   { id: 'featured', label: '精选', icon: 'star', group: 'extend', template: 'T1', testId: 'page-featured' },
   { id: 'mcp', label: '外接工具', icon: 'plug', group: 'extend', template: 'T1', testId: 'page-mcp' },
   { id: 'skills', label: '技能', icon: 'sparkles', group: 'extend', template: 'T1', testId: 'page-skills' },
@@ -23,7 +24,7 @@ export const pages = [
 export type PageId = typeof pages[number]['id'];
 export type PageGroup = 'daily' | 'extend' | 'maintain' | 'account'
 export interface PageDefinition { id: PageId; label: string; icon: LucideIcon; group: PageGroup; testId: string; external?: boolean }
-const pageIcons: Record<PageId, LucideIcon> = { home: Home, chat: MessageSquare, sessions: Clock, canvas: InfinityIcon, video: Clapperboard, acceleration: Globe2, featured: Star, mcp: Plug, skills: Sparkles, plugins: Package, tutorial: BookOpen, health: Zap, maintenance: Wrench, backups: Archive, feedback: Flag, updates: RefreshCw, settings: Settings, account: User }
+const pageIcons: Record<PageId, LucideIcon> = { home: Home, chat: MessageSquare, sessions: Clock, canvas: InfinityIcon, video: Clapperboard, acceleration: Globe2, extensions: Puzzle, featured: Star, mcp: Plug, skills: Sparkles, plugins: Package, tutorial: BookOpen, health: Zap, maintenance: Wrench, backups: Archive, feedback: Flag, updates: RefreshCw, settings: Settings, account: User }
 export const pageRegistry: readonly PageDefinition[] = pages.map((page) => ({ id: page.id, label: page.label, icon: pageIcons[page.id], group: page.group as PageGroup, testId: page.testId, external: page.id === 'canvas' }))
 /**
  * v4 起游戏加速、备份、更新三页并进设置（第 9 批），页面 id 留作别名：托盘、系统通知、
@@ -44,19 +45,30 @@ export type RetiredPageAlias = keyof typeof retiredPageAliases
 export function retiredPageAlias(page: PageId): typeof retiredPageAliases[RetiredPageAlias] | null {
   return page === 'maintenance' ? retiredPageAliases[page] : null
 }
-/** 顶部搜索用的常用说法，界面上不显示；Record 漏页是编译错。别名页不单独出结果，说法挪进了它们的新去处。 */
-export const pageSearchKeywords: Record<Exclude<PageId, SettingsPageAlias | RetiredPageAlias>, readonly string[]> = {
+/**
+ * 0.2.25 起精选、外接工具、技能、插件四页合成一页「插件」（扩展合并方案第二版，yoyo 11-20 回「改」），页面 id 留作别名：
+ * 教程、首页、旧测试和别处「去外接工具」这类跳转照样能跳，落到新页的「插件」或「技能」那一栏（值是那一栏）。
+ */
+export const extensionPageAliases = { featured: 'plugins', mcp: 'plugins', skills: 'skills', plugins: 'plugins' } as const;
+export type ExtensionPageAlias = keyof typeof extensionPageAliases
+export type ExtensionsView = typeof extensionPageAliases[ExtensionPageAlias]
+export function extensionPageAlias(page: PageId): ExtensionsView | null {
+  return page === 'featured' || page === 'mcp' || page === 'skills' || page === 'plugins' ? extensionPageAliases[page] : null
+}
+/**
+ * 顶部搜索用的常用说法，界面上不显示；Record 漏页是编译错。别名页不单独出结果，说法挪进了它们的新去处。
+ * 「技能」例外：它在新页里是单独一栏，搜「技能」还出一条，点了落到那一栏（命令搜索按别名跳）。
+ */
+export const pageSearchKeywords: Record<Exclude<PageId, SettingsPageAlias | RetiredPageAlias | Exclude<ExtensionPageAlias, 'skills'>>, readonly string[]> = {
   // v4 起工具的安装、更新、回到推荐版本、重新安装、卸载都在首页卡片上；余额卡上有还能用几天。
   home: ['主页', '我的工具', '打开工具', '配置', '换模型', '工具卡片', '接着上次', '还能用几天', '更新工具', '回到推荐版本', '退回版本', '重新安装', '卸载工具', '装', '安装', '删', '卸载', '重装', '下载'],
   chat: ['对话', '问答', '提问', '生图', '画图', '分组', '模型'],
   sessions: ['历史', '会话', '聊天记录', '接着聊'],
   canvas: ['画图', '生图', '工作流'],
   video: ['视频', '剪视频', '剪辑', '生成视频', '一句话出片', '分镜', '短视频', '拼视频', '字幕'],
-  featured: ['推荐', '好用的', '扩展推荐', '星芒精选'],
-  // 入口改了名、页签合了页，旧说法照样搜得到。
-  mcp: ['MCP', '外部工具', '自定义连接', '添加连接', '连接'],
+  // 四页合成一页以后，旧页名和它们的说法都落到这里（搜「技能」另有「技能」那一条）。
+  extensions: ['精选', '星芒精选', '推荐', '好用的', '扩展推荐', '外接工具', 'MCP', '外部工具', '自定义连接', '添加连接', '连接', 'Plugin', '扩展', '市场', '插件市场', '官方市场', '添加插件市场'],
   skills: ['Skill', '从文件夹导入', '导入技能'],
-  plugins: ['Plugin', '扩展', '市场', '插件市场', '官方市场'],
   tutorial: ['帮助', '怎么用', '说明', '新手'],
   // 「安装卸载」页拆掉以后，Node.js、Python、Git 在这一页装（第 10 批）。
   health: ['检测', '诊断', '体检', '环境', '运行环境', 'Node.js', 'Python', 'Git', '装不上', '代理', '证书', '测试连接'],
