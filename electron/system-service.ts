@@ -669,19 +669,6 @@ export interface NpmPackageReleaseMetadata {
   integrity: string
 }
 
-export function assertNpmReleaseIntegrityMatches(
-  trusted: NpmPackageReleaseMetadata,
-  candidate: NpmPackageReleaseMetadata,
-): void {
-  if (
-    candidate.name !== trusted.name
-    || candidate.version !== trusted.version
-    || candidate.integrity !== trusted.integrity
-  ) {
-    throw new Error('国内 npm 镜像的包名、版本或 SHA-512 完整性元数据与 npm 官方源不一致')
-  }
-}
-
 export interface SystemServiceOptions {
   managerDataDirectory?: string
   /** 首页扫描结果落在哪；缺省不落盘（测试与旧行为）。 */

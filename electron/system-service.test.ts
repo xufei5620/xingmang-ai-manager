@@ -60,7 +60,6 @@ import {
 import { buildCliVersionAdvice, cliVerifiedVersions } from './cli-verified-versions'
 import {
   assertNpmPackageLocksEquivalent,
-  assertNpmReleaseIntegrityMatches,
   assertNpmReleaseMatchesOfficialLock,
   buildCliLaunchQueueKey,
   buildCliStatus,
@@ -3370,7 +3369,7 @@ describe('npm registry metadata', () => {
     }), '@openai/codex')).toBeNull()
   })
 
-  it('queries with redirects disabled and rejects mirror metadata drift', async () => {
+  it('queries release metadata with redirects disabled', async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(init?.redirect).toBe('error')
       return new Response(JSON.stringify({
@@ -3387,10 +3386,6 @@ describe('npm registry metadata', () => {
     )
     expect(trusted.version).toBe('0.146.0')
     expect(fetchMock).toHaveBeenCalledOnce()
-    expect(() => assertNpmReleaseIntegrityMatches(trusted, {
-      ...trusted,
-      integrity: `sha512-${Buffer.alloc(64, 0x33).toString('base64')}`,
-    })).toThrow('与 npm 官方源不一致')
   })
 
   it('accepts registry host differences only when the complete lock graph matches', () => {
