@@ -151,7 +151,10 @@ export interface NewApiClientOptions {
   // Main process only. Await durable updates to an already-saved account
   // after refresh rotates its cookie, including restore candidates whose
   // subsequent /self validation can fail. This must never activate a user.
-  onCredentialRotation?: (persistable: NewApiPersistableSession) => void | Promise<void>
+  // `previous` is the credential this refresh presented: the host saves the
+  // replacement only over that one, so a late refresh of an older login can
+  // never overwrite a newer login of the same user.
+  onCredentialRotation?: (persistable: NewApiPersistableSession, previous: NewApiPersistableSession) => void | Promise<void>
   // Main process only. Asked once after a request fails at the network layer
   // (timeout, proxy, connection failure): resolve true when the host has just
   // taken this client's requests off a system proxy that stopped forwarding,
@@ -3136,9 +3139,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     })
   }
 
-  const persistRotation = async (refreshed: InternalSession): Promise<void> => {
+  const persistRotation = async (refreshed: InternalSession, previous: InternalSession): Promise<void> => {
     try {
-      await options.onCredentialRotation?.({ userId: refreshed.userId, cookies: [...refreshed.cookies] })
+      await options.onCredentialRotation?.({ userId: refreshed.userId, cookies: [...refreshed.cookies] },
+        { userId: previous.userId, cookies: [...previous.cookies] })
     } catch {
       // Callback errors may include storage contents. Never surface them.
       throw new NewApiCredentialPersistenceError()
@@ -3156,7 +3160,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         const refreshed = await refreshAllowingLostAnswer(current)
         assertCurrentOwner(current)
         if (session !== current) return requireSession()
-        try { await persistRotation(refreshed) } catch (error) {
+        try { await persistRotation(refreshed, current) } catch (error) {
           assertCurrentOwner(current)
           // The server has consumed the old cookie. Keep the replacement in
           // memory even when the OS could not save it, without changing owner.
@@ -4377,7 +4381,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       // The seed came from a validated main-process cookie envelope. The
       // refresh response belongs to that cookie, but is not an active login
       // until /self confirms its user below. Save rotation without promotion.
-      await persistRotation(refreshed)
+      await persistRotation(refreshed, seed)
       assertAuthAttempt(attempt, owner)
     } catch (error) {
       assertAuthAttempt(attempt, owner)

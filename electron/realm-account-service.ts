@@ -517,9 +517,9 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   async function keepRotatedCredential(candidate: RuntimeHandle, saved: RealmSavedAccount): Promise<void> {
     try {
       const rotated = candidateSaved(candidate, saved)
-      const stored = await options.vault.get(saved)
-      // 只在本机记录还是出发时那一份时写回；这期间重新登录过同一个账号就以那次为准。
-      if (stored && JSON.stringify(stored) === JSON.stringify(saved)) await options.vault.updateSession(rotated)
+      // 只在本机记录还是出发时那一份时写回；这期间重新登录过同一个账号就以那次为准。比较和写在
+      // 账号库里是一步（rotateCredential），先读再写的话，那次登录可能正好落在两步中间被盖掉。
+      await options.vault.rotateCredential(saved, saved.credential, rotated.credential)
     } catch { /* the next retry reports whatever is still wrong */ }
   }
   async function switchSavedAccount(id: string): Promise<RealmAccountSessionState> {
