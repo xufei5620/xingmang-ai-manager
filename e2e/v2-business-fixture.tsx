@@ -115,6 +115,8 @@ const record = (name: string, args?: unknown) => {
   document.documentElement.dataset.calls = JSON.stringify(calls)
 }
 const failOnce = new Set<string>()
+// 开票记录里那份待审核的申请撤回以后，再读就是「已撤回」。
+let invoiceWithdrawn = false
 window.failNextRead = (read) => { failOnce.add(read) }
 let releaseHeldExtension: (() => void) | undefined
 window.releaseExtension = () => { releaseHeldExtension?.(); releaseHeldExtension = undefined }
@@ -822,10 +824,88 @@ const apiMethods = {
   onNodeRuntimeInstallProgress: () => () => undefined,
   onPythonRuntimeInstallProgress: () => () => undefined,
   onCodexDesktopLaunchProgress: () => () => undefined,
-  // 「开发票」只叫主进程开开票窗口，不带参数；invoiceFail 时与主进程那条通道抛错一样。
-  openAccountInvoicePortal: async (...args: unknown[]) => {
-    record('open-invoice-portal', args)
-    if (query.has('invoiceFail')) throw new Error("Error invoking remote method 'account:open-invoice-portal': Error: 没能打开开票中心，请稍后再试；还不行请找客服。")
+  // 「我的订单」里直接开发票。主进程按当前账号去开票系统，界面只给订单编号、金额、抬头内容这些。
+  // invoice=held / issued：订单 2 正在开票 / 已经开好；invoiceProfiles：已经有一个抬头；
+  // invoiceFail=reason：开票系统给了原因（中文原话）；invoiceFail=1：没给原因（主进程抛的是英文标记）。
+  getAccountInvoiceOrders: async () => {
+    record('list-invoice-orders')
+    const state = query.get('invoice')
+    const topupRef = query.has('sub2apiReliability') ? 'sub2api:payment_order:2' : 'newapi:top_up:2'
+    return {
+      minimumRequestMinor: '20000',
+      orders: [
+        {
+          originRef: topupRef, kind: 'topup' as const, accountOrderId: 2,
+          availableMinor: state === 'held' || state === 'issued' ? '0' : '30000',
+          heldMinor: state === 'held' ? '30000' : '0',
+          issuedMinor: state === 'issued' ? '30000' : '0',
+          currency: 'CNY', occurredAt: time,
+        },
+        {
+          originRef: 'newapi:subscription_order:5', kind: 'subscription' as const, accountOrderId: null,
+          availableMinor: '9900', heldMinor: '0', issuedMinor: '0', currency: 'CNY', occurredAt: '2026-09-01T08:00:00.000Z',
+        },
+      ],
+    }
+  },
+  getAccountInvoiceProfiles: async () => {
+    record('list-invoice-profiles')
+    return query.has('invoiceProfiles')
+      ? [{ profileId: '11111111-1111-4111-8111-111111111111', data: { kind: 'business' as const, title: '杭州某某科技有限公司', taxId: '91330100MA2XXXXXXX', email: 'finance@example.com' } }]
+      : []
+  },
+  getAccountInvoiceRequests: async (...args: unknown[]) => {
+    record('list-invoice-requests', args)
+    if (fail === 'invoiceRecords') throw new Error("Error invoking remote method 'account:list-invoice-requests': InvoiceCenterError: INVOICE_CENTER_NO_REASON")
+    if (query.has('invoiceEmpty')) return { requests: [], nextCursor: null }
+    const issuedRef = query.has('sub2apiReliability') ? 'sub2api:payment_order:2' : 'newapi:top_up:2'
+    return {
+      nextCursor: null,
+      requests: [
+        {
+          requestId: '22222222-2222-4222-8222-222222222222', status: invoiceWithdrawn ? 'withdrawn' : 'pending_review', revision: invoiceWithdrawn ? 2 : 1,
+          amountMinor: '50000', currency: 'CNY', title: '杭州某某科技有限公司', createdAt: time, reason: '', invoiceNumber: null,
+          lines: [{ originRef: 'newapi:top_up:9', amountMinor: '50000', excluded: false }],
+        },
+        {
+          requestId: '33333333-3333-4333-8333-333333333333', status: 'issued', revision: 3,
+          amountMinor: '30000', currency: 'CNY', title: '杭州某某科技有限公司', createdAt: time, reason: '', invoiceNumber: '24332000000012345678',
+          lines: [{ originRef: issuedRef, amountMinor: '30000', excluded: false }],
+        },
+        {
+          requestId: '44444444-4444-4444-8444-444444444444', status: 'rejected', revision: 2,
+          amountMinor: '26000', currency: 'CNY', title: '张三', createdAt: time, reason: '抬头写错了，请改成单位全称再申请。', invoiceNumber: null,
+          lines: [{ originRef: 'newapi:top_up:7', amountMinor: '26000', excluded: false }],
+        },
+      ],
+    }
+  },
+  saveAccountInvoiceProfile: async (input: Parameters<V2Bridge['saveAccountInvoiceProfile']>[0]) => {
+    record('save-invoice-profile', input)
+    return { profileId: '55555555-5555-4555-8555-555555555555', data: input.profile }
+  },
+  submitAccountInvoiceRequest: async (input: Parameters<V2Bridge['submitAccountInvoiceRequest']>[0]) => {
+    record('submit-invoice-request', input)
+    const failure = query.get('invoiceFail')
+    if (failure === 'reason') throw new Error("Error invoking remote method 'account:submit-invoice-request': InvoiceCenterError: 这几笔订单里有一笔已经开过票了，请刷新后再选。")
+    if (failure) throw new Error("Error invoking remote method 'account:submit-invoice-request': InvoiceCenterError: INVOICE_CENTER_NO_REASON")
+    return {
+      requestId: '66666666-6666-4666-8666-666666666666', status: 'pending_review', revision: 1, amountMinor: input.amountsMinor[0] ?? '0',
+      currency: 'CNY', title: '杭州某某科技有限公司', createdAt: time, reason: '', invoiceNumber: null, lines: [],
+    }
+  },
+  withdrawAccountInvoiceRequest: async (input: Parameters<V2Bridge['withdrawAccountInvoiceRequest']>[0]) => {
+    record('withdraw-invoice-request', input)
+    if (query.get('invoiceFail') === 'withdraw') throw new Error("Error invoking remote method 'account:withdraw-invoice-request': InvoiceCenterError: INVOICE_CENTER_NO_REASON")
+    invoiceWithdrawn = true
+    return {
+      requestId: input.requestId, status: 'withdrawn', revision: input.expectedRevision + 1, amountMinor: '50000', currency: 'CNY',
+      title: '杭州某某科技有限公司', createdAt: time, reason: '', invoiceNumber: null, lines: [],
+    }
+  },
+  saveAccountInvoiceDocument: async (requestId: string) => {
+    record('save-invoice-document', requestId)
+    return { saved: true }
   },
   onExternalClientLaunchProgress: () => () => undefined,
   getAccountSession: async () => ({

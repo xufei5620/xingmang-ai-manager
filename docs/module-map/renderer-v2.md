@@ -99,6 +99,7 @@
 
 ## features/account/ 个人中心
 - `features/account/AccountRecharge.tsx` — 充值订阅页与订单列表：充值档位、付款方式单选卡、等待支付结果、买套餐弹窗、付款结果提示。
+- `features/account/AccountInvoice.tsx` / `features/account/invoice.ts` — 「我的订单」里直接开发票：每笔后面的「开发票 / 开票中 / 下载发票」、「开发票」框（勾订单凑够最低金额、选或新建抬头、带幂等键提交）、「开票记录」框（撤回要确认、开好的下载）；开票系统是哪个、以谁的身份去由主进程定（`electron/invoice-center-client.ts`），界面只给订单编号、金额和抬头内容，金额按「分」的字符串用 BigInt 算。
 - `features/account/recharge.ts` — 充值订阅页上由数据拼的话和算的数（付款结果文案、到账额度、套餐价格与期限、订阅开通后工具要不要换 Key）；纯函数，字以字表批07为准。
 - `features/account/topup-tier.ts` / `features/account/topup-bonus.ts` — 充值档位卡：实付由服务端试算、客户端不自己乘比例（价格活动都在后台改）；「充 100 送 10」式的赠送换算（首页活动卡也用）。
 - `features/account/payment-method-label.ts` — 后台没填渠道显示名时，把渠道代码（如 alipay）换成中文。

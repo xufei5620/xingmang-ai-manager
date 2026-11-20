@@ -57,7 +57,7 @@ export const otherAppsAnchor = 'other-apps'
 export const accountSections = [
   { value: accountSwitchAnchor, tab: 'overview', label: '切换账号', keywords: accountSwitchKeywords },
   { value: accountProfileAnchor, tab: 'overview', label: '编辑资料', keywords: ['改名', '改头像', '换头像', '显示名称'] },
-  { value: 'orders', tab: 'recharge', label: '我的订单', keywords: ['订单', '到账', '没到账', '付款记录'], gated: true },
+  { value: 'orders', tab: 'recharge', label: '我的订单', keywords: ['订单', '到账', '没到账', '付款记录', '发票', '开票', '开发票', '报销'], gated: true },
   { value: 'tasks', tab: 'usage', label: '生成任务', keywords: ['任务', '生成进度', '异步任务'], gated: true },
   { value: 'prices', tab: 'usage', label: '价格表', keywords: ['价格', '单价', '模型价格', '多少钱', '哪个贵', '价目'], gated: true },
   { value: 'change-password', tab: 'security', label: '修改密码', keywords: ['改密码', '密码'] },

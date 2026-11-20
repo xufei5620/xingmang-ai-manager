@@ -13,6 +13,7 @@ import {
   SearchInput,
   Segment,
   Skeleton,
+  useToast,
 } from '../../ui'
 import {
   displayDate,
@@ -47,6 +48,8 @@ import { buildBalanceRunway } from '../app/balance-runway'
 import { offlineActionMessage } from '../shell/online-status'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import type { AccountSummary } from './AccountOverview'
+import { InvoiceApplyDialog, InvoiceRecordsDialog, InvoiceRowControl, useInvoiceDownload, useInvoiceOverview } from './AccountInvoice'
+import { invoiceRowAction, invoiceSubmittedText } from './invoice'
 import { shortDate } from './account-center'
 import { paymentMethodLabel } from './payment-method-label'
 import { creditedMoney, describeTopupTier, isQuotableAmount, payableSymbol, sameTopupInfo, useTopupQuotes } from './topup-tier'
@@ -54,8 +57,6 @@ import {
   balancePurchaseLine,
   billingPreferenceNote,
   buildSubscriptionPaymentInput,
-  invoicePortalOpenedText,
-  invoicePortalOpenFailed,
   orderPaidText,
   ordersSearchEmpty,
   orderStateFor,
@@ -1033,21 +1034,9 @@ function subscriptionExpiry(endsAt: string): string {
 }
 
 /**
- * 「开发票」：主进程按当前账号开一个开票窗口（electron/invoice-portal-window.ts），这里不给地址也不带任何凭据。
- * 打不开时不管原因都只说一句批过的话（原因进不了客户能做的事里）。
- */
-async function openInvoicePortal(api: V2Bridge): Promise<void> {
-  try {
-    await api.openAccountInvoicePortal()
-  } catch {
-    throw new Error(invoicePortalOpenFailed)
-  }
-}
-
-/**
  * 「我的订单」：充值订阅这一页最下面一节，两行一条（v4）。支付窗口开着的那一单尾巴上写
  * 「支付窗口开着」；付款回跳、充值页「查看我的订单」都按订单号重新查（paymentReturn 每次加一）。
- * 标题行的「开发票」在新窗口打开这个账号的开票中心，在那边按到账订单申请。
+ * 有开票系统的账号，每笔后面出「开发票 / 开票中 / 下载发票」，标题行出「开票记录」（AccountInvoice.tsx）。
  */
 export function AccountOrders({
   api,
@@ -1055,7 +1044,8 @@ export function AccountOrders({
   refreshRequest,
   openTradeNo,
   multiplierAccount,
-  invoicePortal,
+  invoiceCenter,
+  openHelp,
 }: {
   api: V2Bridge
   paymentReturn?: { sequence: number; order: string | null }
@@ -1064,10 +1054,16 @@ export function AccountOrders({
   openTradeNo?: string | null
   /** 历史账号：订单上记的是人民币那一档。 */
   multiplierAccount?: boolean
-  /** 这个账号有没有开票中心；缺省 = 没有，不出「开发票」。 */
-  invoicePortal?: boolean
+  /** 这个账号的站点有没有开票系统；缺省 = 没有，不出开票的按钮。 */
+  invoiceCenter?: boolean
+  /** 开发票没成、开票系统也没给原因时那颗「联系客服」；缺省 = 不出。 */
+  openHelp?: () => void
 }) {
-  const operation = useOperation()
+  const toast = useToast()
+  const invoice = useInvoiceOverview(api, Boolean(invoiceCenter))
+  const invoiceDownload = useInvoiceDownload(api)
+  const [invoiceApply, setInvoiceApply] = useState<string | null>(null)
+  const [invoiceRecords, setInvoiceRecords] = useState(false)
   const [page, setPage] = useState(1)
   // 框里的字和拿去查的词分开（F4）：去掉首尾空白再查，只打了空格（输入法下按空格是全角空格）
   // 就当没填，不再把整张列表变成「没读出来」；停手 300 毫秒才查，手打一个二十多位的订单号
@@ -1088,10 +1084,16 @@ export function AccountOrders({
     [api, page, keyword],
   )
   const resource = useResource(load)
-  useRefreshRequest(refreshRequest, () => void resource.reload())
+  useRefreshRequest(refreshRequest, () => {
+    void resource.reload()
+    void invoice.reload()
+  })
   const failed = Boolean(resource.error) && !resource.loading
-  // 付款有了结果（到账、超时、没付成、窗口关了）都重读一次，状态跟着变。
-  useEffect(() => api.onAccountPaymentWindowTerminal(() => void resource.reload()), [api, resource.reload])
+  // 付款有了结果（到账、超时、没付成、窗口关了）都重读一次，状态跟着变；刚到账的那笔也许已经能开发票了。
+  useEffect(() => api.onAccountPaymentWindowTerminal(() => {
+    void resource.reload()
+    void invoice.reload()
+  }), [api, resource.reload, invoice.reload])
   // 刚打开支付窗口：新下的那一单要出现在列表里，标着「支付窗口开着」。
   const seenTradeNo = useRef(openTradeNo ?? null)
   useEffect(() => {
@@ -1115,20 +1117,15 @@ export function AccountOrders({
     <section className="v2-acct-section" data-anchor="orders" data-testid="account-orders-section">
       <div className="v2-acct-section-head">
         <h2>我的订单</h2>
-        {invoicePortal && (
+        {invoiceCenter && (
           <Button
             size="sm"
             variant="ghost"
             icon={ReceiptText}
-            disabled={Boolean(operation.busy)}
-            onClick={() => void operation.execute(
-              '打开开票中心',
-              () => openInvoicePortal(api),
-              invoicePortalOpenedText(Boolean(multiplierAccount)),
-            )}
+            onClick={() => setInvoiceRecords(true)}
             testId="account-orders-invoice"
           >
-            开发票
+            开票记录
           </Button>
         )}
         <SearchInput
@@ -1137,7 +1134,6 @@ export function AccountOrders({
           placeholder="搜索订单号"
         />
       </div>
-      <ResultNotice error={operation.error} detail={operation.detail} />
       <Card padding="none">
         {failed ? (
           <ListReadFailure
@@ -1165,6 +1161,15 @@ export function AccountOrders({
                     </p>
                   </div>
                   <Pill tone={state.tone}>{state.label}</Pill>
+                  {invoiceCenter && (
+                    <InvoiceRowControl
+                      action={invoiceRowAction(order.id, invoice.snapshot, invoice.requests)}
+                      orderId={order.id}
+                      downloading={invoiceDownload.downloading}
+                      onApply={(entry) => setInvoiceApply(entry.originRef)}
+                      onDownload={(requestId) => void invoiceDownload.download(requestId)}
+                    />
+                  )}
                 </div>
               )
             })}
@@ -1183,6 +1188,30 @@ export function AccountOrders({
         failed={failed}
         onChange={setPage}
       />
+      {invoiceApply && (
+        <InvoiceApplyDialog
+          api={api}
+          snapshot={invoice.snapshot}
+          initialOriginRef={invoiceApply}
+          onClose={() => setInvoiceApply(null)}
+          onSubmitted={() => {
+            setInvoiceApply(null)
+            toast.show(invoiceSubmittedText, 'ok')
+            void invoice.reload()
+          }}
+          onSupport={openHelp}
+        />
+      )}
+      {invoiceRecords && (
+        <InvoiceRecordsDialog
+          api={api}
+          downloading={invoiceDownload.downloading}
+          onDownload={(requestId) => void invoiceDownload.download(requestId)}
+          onChanged={() => void invoice.reload()}
+          onClose={() => setInvoiceRecords(false)}
+          onSupport={openHelp}
+        />
+      )}
     </section>
   )
 }

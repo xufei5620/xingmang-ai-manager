@@ -460,41 +460,198 @@ test('account exposes the six v4 tabs and keeps server orders and keys visible',
   }
 })
 
-test('the orders head asks the main process to open the invoice window without naming a site or account', async () => {
-  // 两个账号登录开票中心用的名字不同：星芒账号是用户名，历史账号是邮箱。开哪一个由主进程按当前账号定，
-  // 界面这一下不带地址、不带账号。
-  for (const [route, loginName] of [
-    ['page=account', '用户名'],
-    ['page=account&sub2apiReliability=1', '邮箱'],
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+async function openOrders(page) {
+  await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+  const orders = page.getByTestId('account-orders-section')
+  await orders.getByText('TEST-ORDER').waitFor()
+  return orders
+}
+
+test('each order with something left to invoice offers it, and the request carries only order numbers, amounts and the title', async () => {
+  // 两个账号都一样：开哪个开票系统、以谁的身份，由主进程按当前登录定，界面只给订单编号、金额和抬头。
+  for (const [route, originRef] of [
+    ['page=account', 'newapi:top_up:2'],
+    ['page=account&sub2apiReliability=1', 'sub2api:payment_order:2'],
   ]) {
     const page = await fixture(route)
     try {
-      await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
-      const orders = page.getByTestId('account-orders-section')
-      await orders.getByRole('button', { name: '开发票', exact: true }).click()
-      await waitForToast(page, `开票中心已在新窗口打开；要登录的话，用这个账号的${loginName}和密码。`)
-      assert.deepEqual(
-        (await calls(page)).filter((call) => call.name === 'open-invoice-portal').map((call) => call.args),
-        [[]],
-      )
-      assert.equal(await orders.getByRole('alert').count(), 0)
+      const orders = await openOrders(page)
+      await orders.getByRole('button', { name: '开票记录', exact: true }).waitFor()
+      await orders.getByTestId('account-order-invoice-2').click()
+      const dialog = page.getByTestId('account-invoice-apply')
+      await dialog.getByText('已选 1 笔，合计 ¥300.00', { exact: true }).waitFor()
+      assert.equal(await dialog.getByTestId('account-invoice-apply-shortfall').count(), 0)
+      // 还没有抬头：直接出新建抬头那几项；单位要填税号才能提交。
+      await dialog.getByTestId('account-invoice-profile-title').fill(' 杭州某某科技有限公司 ')
+      await dialog.getByTestId('account-invoice-profile-email').fill('finance@example.com')
+      assert.equal(await dialog.getByTestId('account-invoice-apply-submit').isDisabled(), true)
+      await dialog.getByTestId('account-invoice-profile-tax-id').fill('91330100MA2XXXXXXX')
+      await dialog.getByTestId('account-invoice-apply-submit').click()
+      await waitForToast(page, '已提交开票申请，财务审核后开具。')
+      const recorded = await calls(page)
+      const profile = recorded.find((call) => call.name === 'save-invoice-profile').args
+      assert.match(profile.idempotencyKey, uuidPattern)
+      assert.deepEqual(profile.profile, { kind: 'business', title: '杭州某某科技有限公司', taxId: '91330100MA2XXXXXXX', email: 'finance@example.com' })
+      const submit = recorded.find((call) => call.name === 'submit-invoice-request').args
+      assert.deepEqual(Object.keys(submit).sort(), ['amountsMinor', 'idempotencyKey', 'originRefs', 'profileId'])
+      assert.deepEqual(submit.originRefs, [originRef])
+      assert.deepEqual(submit.amountsMinor, ['30000'])
+      assert.equal(submit.profileId, '55555555-5555-4555-8555-555555555555')
+      assert.match(submit.idempotencyKey, uuidPattern)
+      await dialog.waitFor({ state: 'hidden' })
     } finally {
       await page.close()
     }
   }
 })
 
-test('the invoice button says the approved line when the invoice window does not open', async () => {
-  const page = await fixture('page=account&invoiceFail=1')
+test('the invoice dialog holds submission until the ticked orders reach the minimum', async () => {
+  const page = await fixture('page=account&invoiceProfiles=1')
   try {
-    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
-    const orders = page.getByTestId('account-orders-section')
-    await orders.getByRole('button', { name: '开发票', exact: true }).click()
-    await orders.getByRole('alert').filter({ hasText: '没能打开开票中心，请稍后再试；还不行请找客服。' }).waitFor()
-    // 订单照常列着：打不开开票中心不影响看订单。
-    await orders.getByText('TEST-ORDER').waitFor()
+    const orders = await openOrders(page)
+    await orders.getByTestId('account-order-invoice-2').click()
+    const dialog = page.getByTestId('account-invoice-apply')
+    // 已有的抬头默认选上，不出新建那几项。
+    await dialog.getByTestId('account-invoice-profile').waitFor()
+    assert.equal(await dialog.getByTestId('account-invoice-profile-title').count(), 0)
+    const boxes = dialog.getByRole('checkbox')
+    assert.equal(await boxes.count(), 2)
+    await boxes.nth(0).uncheck()
+    await boxes.nth(1).check()
+    await dialog.getByText('已选 1 笔，合计 ¥99.00', { exact: true }).waitFor()
+    await dialog.getByText('每次至少开 ¥200.00，还差 ¥101.00，可以再勾几笔。', { exact: true }).waitFor()
+    assert.equal(await dialog.getByTestId('account-invoice-apply-submit').isDisabled(), true)
+    await boxes.nth(0).check()
+    await dialog.getByText('已选 2 笔，合计 ¥399.00', { exact: true }).waitFor()
+    assert.equal(await dialog.getByTestId('account-invoice-apply-shortfall').count(), 0)
+    await dialog.getByTestId('account-invoice-apply-submit').click()
+    await waitForToast(page, '已提交开票申请，财务审核后开具。')
+    const submit = (await calls(page)).find((call) => call.name === 'submit-invoice-request').args
+    assert.deepEqual(submit.originRefs, ['newapi:top_up:2', 'newapi:subscription_order:5'])
+    assert.deepEqual(submit.amountsMinor, ['30000', '9900'])
+    assert.equal(submit.profileId, '11111111-1111-4111-8111-111111111111')
+    assert.equal((await calls(page)).filter((call) => call.name === 'save-invoice-profile').length, 0)
   } finally {
     await page.close()
+  }
+})
+
+test('a refused invoice request says the invoice system reason, or the approved line with support when it gave none', async () => {
+  for (const [route, text, support] of [
+    ['page=account&help=1&invoiceProfiles=1&invoiceFail=reason', '这几笔订单里有一笔已经开过票了，请刷新后再选。', false],
+    ['page=account&help=1&invoiceProfiles=1&invoiceFail=1', '没提交成功，请稍后再试；还不行请找客服。', true],
+  ]) {
+    const page = await fixture(route)
+    try {
+      const orders = await openOrders(page)
+      await orders.getByTestId('account-order-invoice-2').click()
+      const dialog = page.getByTestId('account-invoice-apply')
+      await dialog.getByTestId('account-invoice-apply-submit').click()
+      const failure = dialog.getByTestId('account-invoice-apply-failure')
+      await failure.getByText(text, { exact: true }).waitFor()
+      assert.doesNotMatch(await failure.innerText(), /INVOICE_CENTER|Error/)
+      assert.equal(await failure.getByRole('button', { name: '联系客服', exact: true }).count(), support ? 1 : 0)
+      // 再点一次是同一次申请：幂等键不变，开票系统不会多建一份。
+      await dialog.getByTestId('account-invoice-apply-submit').click()
+      await failure.getByText(text, { exact: true }).waitFor()
+      const keys = (await calls(page)).filter((call) => call.name === 'submit-invoice-request').map((call) => call.args.idempotencyKey)
+      assert.equal(keys.length, 2)
+      assert.equal(keys[0], keys[1])
+      if (support) {
+        // 「联系客服」先关掉这个框，再去帮助页。
+        await failure.getByRole('button', { name: '联系客服', exact: true }).click()
+        await dialog.waitFor({ state: 'hidden' })
+        assert.equal((await calls(page)).filter((call) => call.name === 'open-help').length, 1)
+      }
+    } finally {
+      await page.close()
+    }
+  }
+})
+
+test('an order already in a request says so, and an issued one downloads through the main process', async () => {
+  const held = await fixture('page=account&invoice=held')
+  try {
+    const orders = await openOrders(held)
+    await orders.getByTestId('account-order-invoice-pending-2').getByText('开票中', { exact: true }).waitFor()
+    assert.equal(await orders.getByTestId('account-order-invoice-2').count(), 0)
+  } finally {
+    await held.close()
+  }
+  const issued = await fixture('page=account&invoice=issued')
+  try {
+    const orders = await openOrders(issued)
+    await orders.getByTestId('account-order-invoice-download-2').click()
+    await issued.waitForFunction(() => document.documentElement.dataset.calls?.includes('save-invoice-document'))
+    assert.deepEqual(
+      (await calls(issued)).filter((call) => call.name === 'save-invoice-document').map((call) => call.args),
+      ['33333333-3333-4333-8333-333333333333'],
+    )
+  } finally {
+    await issued.close()
+  }
+})
+
+test('the invoice records list each request, withdraw after a confirmation and download issued invoices', async () => {
+  const page = await fixture('page=account')
+  try {
+    const orders = await openOrders(page)
+    await orders.getByRole('button', { name: '开票记录', exact: true }).click()
+    const dialog = page.getByTestId('account-invoice-records')
+    const pending = dialog.getByTestId('account-invoice-record-22222222-2222-4222-8222-222222222222')
+    const issued = dialog.getByTestId('account-invoice-record-33333333-3333-4333-8333-333333333333')
+    const rejected = dialog.getByTestId('account-invoice-record-44444444-4444-4444-8444-444444444444')
+    await pending.getByText('杭州某某科技有限公司　¥500.00', { exact: true }).waitFor()
+    await pending.getByText('待审核', { exact: true }).waitFor()
+    await issued.getByText('已开具', { exact: true }).waitFor()
+    assert.match(await issued.innerText(), /申请，发票号码 24332000000012345678/)
+    await rejected.getByText('财务说明：抬头写错了，请改成单位全称再申请。', { exact: true }).waitFor()
+    assert.equal(await rejected.getByRole('button').count(), 0)
+    assert.equal(await issued.getByRole('button', { name: '撤回', exact: true }).count(), 0)
+
+    await issued.getByRole('button', { name: '下载发票', exact: true }).click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('save-invoice-document'))
+
+    await pending.getByRole('button', { name: '撤回', exact: true }).click()
+    const confirm = page.getByTestId('account-invoice-withdraw-confirm')
+    await confirm.getByText('撤回这次开票申请？', { exact: true }).waitFor()
+    await confirm.getByText('撤回后这些订单可以重新申请。', { exact: true }).waitFor()
+    await confirm.getByRole('button', { name: '撤回', exact: true }).click()
+    await pending.getByText('已撤回', { exact: true }).waitFor()
+    const withdraw = (await calls(page)).find((call) => call.name === 'withdraw-invoice-request').args
+    assert.equal(withdraw.requestId, '22222222-2222-4222-8222-222222222222')
+    assert.equal(withdraw.expectedRevision, 1)
+    assert.match(withdraw.idempotencyKey, uuidPattern)
+    await dialog.getByRole('button', { name: '关闭', exact: true }).last().click()
+    await dialog.waitFor({ state: 'hidden' })
+  } finally {
+    await page.close()
+  }
+})
+
+test('the invoice records say when there is nothing yet and when they cannot be read', async () => {
+  const empty = await fixture('page=account&invoiceEmpty=1')
+  try {
+    const orders = await openOrders(empty)
+    await orders.getByRole('button', { name: '开票记录', exact: true }).click()
+    await empty.getByTestId('account-invoice-records').getByText('还没有开过发票', { exact: true }).waitFor()
+  } finally {
+    await empty.close()
+  }
+  const failed = await fixture('page=account&fail=invoiceRecords')
+  try {
+    const orders = await openOrders(failed)
+    await orders.getByRole('button', { name: '开票记录', exact: true }).click()
+    const dialog = failed.getByTestId('account-invoice-records')
+    await dialog.getByText('开票记录暂时没有读到', { exact: true }).waitFor()
+    assert.doesNotMatch(await dialog.innerText(), /INVOICE_CENTER/)
+    await dialog.getByRole('button', { name: '重新加载', exact: true }).waitFor()
+    // 订单照常列着：读不到开票记录不影响看订单。
+    await orders.getByText('TEST-ORDER').waitFor()
+  } finally {
+    await failed.close()
   }
 })
 

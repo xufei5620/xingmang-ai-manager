@@ -1132,6 +1132,29 @@ dl.v2-health-more dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap
 .v2-recharge-order-copy { flex: 1; min-width: 0; }
 .v2-recharge-order-copy strong { font-size: 13.5px; font-weight: 600; }
 .v2-recharge-order-copy p { margin: 2px 0 0; color: var(--text-3); font-size: var(--font-small); line-height: 1.6; overflow-wrap: anywhere; }
+/* 「我的订单」里直接开发票：每笔后面的「开票中」，「开发票」框和「开票记录」框（样子见 0.2.25 批过的四张图）。 */
+.v2-recharge-order > .xm-btn { flex: none; }
+.v2-invoice-pending { flex: none; color: var(--text-3); font-size: var(--font-small); white-space: nowrap; }
+.v2-invoice-body { display: grid; gap: 16px; }
+.v2-invoice-section { display: grid; gap: 8px; }
+.v2-invoice-heading { font-size: 13.5px; font-weight: 600; }
+.v2-invoice-list { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-input); }
+.v2-invoice-order { display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; }
+.v2-invoice-order + .v2-invoice-order, .v2-invoice-record + .v2-invoice-record { border-top: 1px solid var(--line); }
+.v2-invoice-order > span { flex: 1; min-width: 0; }
+.v2-invoice-order > b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.v2-invoice-total, .v2-invoice-shortfall, .v2-invoice-footnote { margin: 0; font-size: var(--font-small); line-height: 1.6; }
+.v2-invoice-total { color: var(--text-2); }
+.v2-invoice-shortfall { color: var(--warn-tx); }
+.v2-invoice-footnote { color: var(--text-3); }
+.v2-invoice-fields { display: grid; gap: 10px; }
+.v2-invoice-more { justify-self: start; white-space: normal; text-align: left; }
+.v2-invoice-record { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; }
+.v2-invoice-record-copy { flex: 1; min-width: 0; }
+.v2-invoice-record-copy strong { font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+.v2-invoice-record-copy p { margin: 2px 0 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.6; overflow-wrap: anywhere; }
+.v2-invoice-record > .xm-btn, .v2-invoice-record > .xm-pill { flex: none; }
+.v2-invoice-loading { display: grid; gap: 8px; padding: 12px 0; }
 .v2-acct-section-head > .xm-search { width: 220px; }
 /*
  * 用量账单 v4（第 07 批）：时间范围一排，三个数，花费趋势和按模型两张卡；
