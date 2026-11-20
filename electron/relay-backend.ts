@@ -51,6 +51,7 @@ import type {
   NewApiAffiliateTransferInput,
   NewApiChangePasswordInput,
   NewApiChangePasswordResult,
+  NewApiPasswordChangeOutcome,
   NewApiCliKeyResult,
   NewApiCodexStartupTicket,
   NewApiLoginInput,
@@ -281,8 +282,8 @@ export interface RelayBackendClient {
   createKey(input: NewApiAccountKeyCreateInput): Promise<void>
   /** ipc.ts: account:update-key */
   updateKey(input: NewApiAccountKeyUpdateInput): Promise<void>
-  /** ipc.ts: account:change-password */
-  changePassword(input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult>
+  /** ipc.ts: account:change-password. onOutcome: see NewApiPasswordChangeOutcome; a backend that cannot tell never reports. */
+  changePassword(input: NewApiChangePasswordInput, onOutcome?: (outcome: NewApiPasswordChangeOutcome) => void): Promise<NewApiChangePasswordResult>
   /** ipc.ts: account:list-login-sessions */
   listLoginSessions(): Promise<NewApiLoginSession[]>
   /** ipc.ts: account:revoke-login-session */

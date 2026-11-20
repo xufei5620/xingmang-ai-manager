@@ -18,6 +18,8 @@ import {
   keyToolInstalled,
   limitKeyNameEdit,
   localSpendDays,
+  passwordChangeFailure,
+  passwordChangeUnconfirmedNotice,
   passwordRules,
   runwayDaysText,
   shortDate,
@@ -27,6 +29,8 @@ import {
   subscriptionOverviewText,
   validatePasswordChange,
 } from './account-center'
+import { passwordChangeUnconfirmedMessage } from '../../../../electron/password-change-unconfirmed'
+import { errorMessage } from '../../business-common'
 
 const now = new Date(2026, 9, 15, 9, 30)
 
@@ -388,5 +392,24 @@ describe('affiliateTransferTitleQuota', () => {
     for (const amount of ['', '1', '3.456']) {
       expect(affiliateTransferTitleQuota({ wholeOnly: true, amount, available: 3.456, quotaPerUnit: 1 })).toBe(3.456)
     }
+  })
+})
+
+describe('passwordChangeFailure', () => {
+  it('turns the main process\'s "no answer" sentence into the advice the password dialog shows (N6)', () => {
+    const unconfirmed = new Error(`Error invoking remote method 'account:change-password': Error: ${passwordChangeUnconfirmedMessage}`)
+    const shown = passwordChangeFailure(unconfirmed)
+    expect(shown).toBeInstanceOf(Error)
+    expect(errorMessage(shown)).toBe(passwordChangeUnconfirmedNotice)
+    expect(passwordChangeUnconfirmedNotice).toBe('没等到账号服务的回话，新密码可能已经改好了。先别再改一次：下次登录时先试新密码，登不上再用原来的密码。')
+  })
+
+  it('hands every other failure on untouched', () => {
+    const wrong = new Error("Error invoking remote method 'account:change-password': Error: 原密码错误")
+    const timeout = new Error('连接账号服务超时，请检查网络后再试。')
+    expect(passwordChangeFailure(wrong)).toBe(wrong)
+    expect(passwordChangeFailure(timeout)).toBe(timeout)
+    const longer = new Error(`前面还有话${passwordChangeUnconfirmedMessage}`)
+    expect(passwordChangeFailure(longer)).toBe(longer)
   })
 })

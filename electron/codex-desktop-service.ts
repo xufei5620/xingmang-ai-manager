@@ -3633,10 +3633,13 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           bundle: app.path,
           name: 'Codex 桌面端',
           closeRunning: request.closeRunning,
+          ...(signal ? { signal } : {}),
           runProcess,
           uid: getuid(),
           ...quitMacosDesktopApp,
         }),
+        // 从挪开旧版起不再接受取消（11-18 F03）：接受了也停不下，界面会说「已取消」，装着的却是新版。
+        onReplaceStarting: () => cancellation?.seal(codexDesktopInstallSealReason),
       },
     }).catch((error: unknown) => {
       // 安装模块已经把更新没成说成「旧版还在」那几句；别的（没从它那儿出来的）同样没动旧版，不说成「没装好」。

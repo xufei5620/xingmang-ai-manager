@@ -657,6 +657,58 @@ describe('macOS desktop app updates in place', () => {
     expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
   })
 
+  it.skipIf(process.platform === 'win32')('keeps the old copy when a cancel is accepted while the app is being closed (F03)', async () => {
+    const controller = new AbortController()
+    // Closing the app does not follow the cancel; the customer's click lands while it quits.
+    const f = updateSetup({}, async () => { controller.abort() })
+    const sealed = vi.fn()
+    f.options.signal = controller.signal
+    f.options.replace = { ...f.options.replace!, onReplaceStarting: sealed }
+
+    const error = await installMacosDesktopApp(f.options).then(() => null, (reason: unknown) => reason)
+
+    expect((error as Error).name).toBe('AbortError')
+    expect(f.prepare).toHaveBeenCalledTimes(1)
+    expect(sealed).not.toHaveBeenCalled()
+    expect(installedBinary(f.installedPath)).toBe('old binary')
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('does not close the app for a cancel accepted while the new copy was being moved next to it (F03)', async () => {
+    const controller = new AbortController()
+    const f = updateSetup()
+    f.options.signal = controller.signal
+    renameRefusing((_from, to) => {
+      if (/^\.OpenCode\.app\.xingmang-[0-9a-f]{12}$/.test(path.posix.basename(to))) controller.abort()
+      return null
+    })
+
+    const error = await installMacosDesktopApp(f.options).then(() => null, (reason: unknown) => reason)
+
+    expect((error as Error).name).toBe('AbortError')
+    expect(f.prepare).not.toHaveBeenCalled()
+    expect(installedBinary(f.installedPath)).toBe('old binary')
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
+  })
+
+  it.skipIf(process.platform === 'win32')('tells the caller to stop taking cancels after the app is closed and before the old copy moves (F03)', async () => {
+    const order: string[] = []
+    const f = updateSetup({}, async () => { order.push('prepare') })
+    f.options.replace = {
+      ...f.options.replace!,
+      onReplaceStarting: () => {
+        order.push('sealed')
+        expect(installedBinary(f.installedPath)).toBe('old binary')
+      },
+    }
+
+    await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: '1.18.34', path: f.installedPath })
+
+    expect(order).toEqual(['prepare', 'sealed'])
+    expect(installedBinary(f.installedPath)).toBe('binary')
+  })
+
   it.skipIf(process.platform === 'win32')('clears an old copy a finished update could not delete, and nothing else', async () => {
     const f = updateSetup()
     fs.mkdirSync(path.join(f.applications, '.OpenCode.app.xingmang-old-0123456789ab', 'Contents'), { recursive: true })
