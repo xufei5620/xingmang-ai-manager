@@ -4811,7 +4811,7 @@ test('the crash reporting notice appears once after login and records the choice
     await page.getByTestId('page-home').waitFor()
     const notice = page.getByTestId('startup-notice-crash-reporting')
     await notice.waitFor()
-    await notice.getByText('软件出错时会发送错误报告', { exact: true }).waitFor()
+    await notice.getByText('软件出错或卡住时会发送错误报告', { exact: true }).waitFor()
     assert.match(await notice.textContent(), /海外的错误收集服务/)
     assert.equal(await notice.getByRole('button', { name: '关闭', exact: true }).count(), 0)
     await page.getByTestId('startup-notice-crash-reporting-secondary').click()
