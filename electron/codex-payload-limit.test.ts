@@ -7,10 +7,12 @@ import {
   codexPayloadNoticeTtlMs,
   codexPayloadStaleMs,
   codexRolloutSessionId,
+  catchUpMaxFiles,
   createCodexPayloadLimitService,
   createCodexPayloadNoticeBoard,
   createCodexPayloadStateStore,
   createCodexRolloutWatcher,
+  findRecentCodexRollouts,
   parseCodexPayloadState,
   parseCodexPayloadTooLarge,
   rolloutTailBytes,
@@ -148,6 +150,8 @@ interface WatcherHarness {
   fire(delayMs: number): void
   /** Simulates the directory notification for a file under the sessions directory. */
   touch(relative: string | null): void
+  /** Simulates the directory watch failing after it started. */
+  breakWatch(): void
   filePath(sessionId: string): string
   relative(sessionId: string): string
   watchFails: { current: boolean }
@@ -165,6 +169,7 @@ function watcherHarness(options: { onPayloadTooLarge?: (event: CodexPayloadTooLa
   const logs: string[] = []
   const watchFails = { current: false }
   let onChange: ((fileName: string | null) => void) | null = null
+  let onError: (() => void) | null = null
   const watcher = createCodexRolloutWatcher({
     sessionsDirectory,
     onPayloadTooLarge: (event) => {
@@ -174,11 +179,12 @@ function watcherHarness(options: { onPayloadTooLarge?: (event: CodexPayloadTooLa
     onLargeSession: (event) => { large.push(event) },
     now: () => now,
     log: (_level, event) => { logs.push(event) },
-    watch(directory, change) {
+    watch(directory, change, error) {
       if (watchFails.current) throw new Error('ENOENT')
       expect(directory).toBe(sessionsDirectory)
       onChange = change
-      return { close() { onChange = null } }
+      onError = error
+      return { close() { onChange = null; onError = null } }
     },
     schedule(callback, delayMs) {
       const entry = { callback, delayMs }
@@ -207,6 +213,7 @@ function watcherHarness(options: { onPayloadTooLarge?: (event: CodexPayloadTooLa
       entry.callback()
     },
     touch(relative) { onChange?.(relative) },
+    breakWatch() { onError?.() },
     filePath: (sessionId) => path.join(dayDirectory, rolloutName(sessionId)),
     relative: (sessionId) => path.join('2026', '10', '28', rolloutName(sessionId)),
   }
@@ -377,7 +384,109 @@ describe('codex rollout watcher', () => {
     expect(run.found).toEqual([])
     expect(run.scheduled).toEqual([])
   })
+
+  it('picks up a refusal written just before the watch started, once', async () => {
+    const run = watcherHarness()
+    writeRollout(run.filePath(sessionA), `${otherLine()}\n${turnFailedLine(lineOneUrl)}\n`, now - minuteMs)
+    run.watcher.start()
+    await run.watcher.flush()
+    expect(run.found).toEqual([{ sessionId: sessionA, url: lineOneUrl, at: now, rolloutBytes: fs.statSync(run.filePath(sessionA)).size }])
+    await run.watcher.pollNow()
+    await run.watcher.flush()
+    expect(run.found).toHaveLength(1)
+    run.watcher.dispose()
+  })
+
+  it('picks up a refusal written while the sessions directory could not be watched yet', async () => {
+    const run = watcherHarness()
+    run.watchFails.current = true
+    run.watcher.start()
+    // 头一回用 Codex：目录这一分钟里才有，413 那一行写完以后再没动过，不会再有目录通知。
+    writeRollout(run.filePath(sessionA), `${turnFailedLine(lineOneUrl)}\n`, now)
+    run.watchFails.current = false
+    run.fire(60_000)
+    await run.watcher.flush()
+    expect(run.found.map((event) => event.sessionId)).toEqual([sessionA])
+    run.watcher.dispose()
+  })
+
+  it('picks up what was written while the watch was broken without reporting anything twice', async () => {
+    const run = watcherHarness()
+    run.watcher.start()
+    const file = run.filePath(sessionA)
+    fs.writeFileSync(file, `${turnFailedLine(lineOneUrl)}\n`)
+    run.touch(run.relative(sessionA))
+    await run.watcher.flush()
+    expect(run.found).toHaveLength(1)
+
+    run.breakWatch()
+    fs.appendFileSync(file, `${turnFailedLine(lineOneUrl, now + 1)}\n`)
+    fs.utimesSync(file, new Date(now), new Date(now))
+    writeRollout(run.filePath(sessionB), `${turnFailedLine(lineOneUrl, now + 2)}\n`, now)
+    run.fire(60_000)
+    await run.watcher.flush()
+    expect(run.found.map((event) => [event.sessionId, event.at]).sort()).toEqual([
+      [sessionA, now], [sessionA, now + 1], [sessionB, now + 2],
+    ])
+    run.watcher.dispose()
+  })
+
+  it('only looks back at a few records written in the last minutes in recent day folders', async () => {
+    const run = watcherHarness()
+    writeRollout(run.filePath(sessionB), `${turnFailedLine(lineOneUrl)}\n`, now - codexPayloadStaleMs - minuteMs)
+    const recent = Array.from({ length: catchUpMaxFiles + 2 }, (_, index) => numberedSession(index))
+    recent.forEach((sessionId, index) => writeRollout(run.filePath(sessionId), `${turnFailedLine(lineOneUrl)}\n`, now - index * 1_000))
+    run.watcher.start()
+    await run.watcher.flush()
+    expect(run.found.map((event) => event.sessionId).sort()).toEqual(recent.slice(0, catchUpMaxFiles).sort())
+    run.watcher.dispose()
+
+    // 新开的对话一天一个文件夹，31 个以前的文件夹不再翻，哪怕里面的记录刚写过。
+    const older = watcherHarness()
+    writeRollout(older.filePath(sessionA), `${turnFailedLine(lineOneUrl)}\n`, now)
+    for (let day = 1; day <= 31; day++) fs.mkdirSync(path.join(older.sessionsDirectory, '2026', '11', String(day).padStart(2, '0')), { recursive: true })
+    expect(await findRecentCodexRollouts(older.sessionsDirectory, now)).toEqual([])
+    fs.rmdirSync(path.join(older.sessionsDirectory, '2026', '11', '01'))
+    expect(await findRecentCodexRollouts(older.sessionsDirectory, now)).toEqual([older.relative(sessionA)])
+  })
+
+  it('finds nothing when the sessions directory is missing and skips names that are not Codex date folders or rollouts', async () => {
+    const root = temporaryDirectory()
+    expect(await findRecentCodexRollouts(path.join(root, 'missing'), now)).toEqual([])
+    const sessionsDirectory = path.join(root, 'sessions')
+    for (const relative of [path.join('notes', '10', '28'), path.join('2026', 'oct', '28'), path.join('2026', '10', 'today')]) {
+      fs.mkdirSync(path.join(sessionsDirectory, relative), { recursive: true })
+      writeRollout(path.join(sessionsDirectory, relative, rolloutName(sessionA)), `${turnFailedLine(lineOneUrl)}\n`, now)
+    }
+    fs.mkdirSync(path.join(sessionsDirectory, '2026', '10', '28'), { recursive: true })
+    writeRollout(path.join(sessionsDirectory, '2026', '10', '28', 'notes.jsonl'), `${turnFailedLine(lineOneUrl)}\n`, now)
+    expect(await findRecentCodexRollouts(sessionsDirectory, now)).toEqual([])
+  })
+
+  it.runIf(process.platform !== 'win32')('never follows a symlinked date folder or rollout while looking back', async () => {
+    const run = watcherHarness()
+    const elsewhere = path.join(path.dirname(run.sessionsDirectory), 'elsewhere')
+    fs.mkdirSync(path.join(elsewhere, '11', '01'), { recursive: true })
+    writeRollout(path.join(elsewhere, '11', '01', rolloutName(sessionA)), `${turnFailedLine(lineOneUrl)}\n`, now)
+    fs.symlinkSync(path.join(elsewhere, '11'), path.join(run.sessionsDirectory, '2026', '11'))
+    const target = path.join(elsewhere, 'target.jsonl')
+    writeRollout(target, `${turnFailedLine(lineOneUrl)}\n`, now)
+    fs.symlinkSync(target, run.filePath(sessionB))
+    run.watcher.start()
+    await run.watcher.flush()
+    expect(run.found).toEqual([])
+    run.watcher.dispose()
+  })
 })
+
+function writeRollout(file: string, content: string, modifiedAt: number): void {
+  fs.writeFileSync(file, content)
+  fs.utimesSync(file, new Date(modifiedAt), new Date(modifiedAt))
+}
+
+function numberedSession(index: number): string {
+  return `00000000-0000-4000-8000-0000000001${index.toString(16).padStart(2, '0')}`
+}
 
 interface ServiceHarness {
   service: ReturnType<typeof createCodexPayloadLimitService>
