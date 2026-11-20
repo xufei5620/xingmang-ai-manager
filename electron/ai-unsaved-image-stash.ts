@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { inspectAiImage, type AiStoredAsset } from './ai-asset-store'
+import { inspectAiImage, type AiImageKeptPlace, type AiStoredAsset } from './ai-asset-store'
 import { ensureSafeDataDirectory, removeSafeDataFile, writeAtomicSafeBinaryFile } from './safe-local-data'
 import { classifyStorageFailure } from './startup-failure'
 
@@ -22,7 +22,7 @@ const DEFAULT_MAXIMUM_MEMORY_BYTES = 128 * 1024 * 1024
 // 软件开着时自己再试的间隔：越往后越疏，到 30 分钟封顶，都存好了就停。
 const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000]
 
-export type AiUnsavedImagePlace = 'disk' | 'memory'
+export type AiUnsavedImagePlace = AiImageKeptPlace
 
 export type AiUnsavedImageEvent =
   | { kind: 'kept'; userId: number; place: AiUnsavedImagePlace; bytes: number; diskError?: unknown }
