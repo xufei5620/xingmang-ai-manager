@@ -1,7 +1,7 @@
 import { currentAccountGroupName } from '../../../../electron/catalog'
 import { redactSecretShapes } from '../../../../electron/redaction-patterns'
 import { AI_CHAT_LIMITS, AI_CHAT_TEXT_FILE_LIMITS } from '../../../../electron/ai-chat-protocol'
-import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatTextFile, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatTextFile, ChatConversationExportInput, XingmangApi } from '../../../../electron/ipc-contract'
 import { addChatPhrase, createConversation, createId, createWorkspace, defaultChatSettings, MAX_CHAT_PHRASE_LENGTH, MAX_CHAT_PHRASES, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 
 // 读不出来时那条红条的前半句；后半句「现在聊的内容不会保存……」在 useChatController 里接上。
@@ -798,7 +798,8 @@ function timeText(value: number): string {
 
 /** 「导出这段对话」的纯文本：标题、每条消息谁说的和什么时候，图片只留一句说明。 */
 export function conversationPlainText(conversation: Conversation): string {
-  const lines = [conversation.title || '新对话', '']
+  // 对话名跟正文一样先打码：自己改的名字、导进来的对话名都可能夹着密钥（Mac 验收 R5）。
+  const lines = [redactPersistentChatText(conversation.title) || '新对话', '']
   for (const message of conversation.messages) {
     const who = message.role === 'user' ? '我' : 'AI'
     const when = timeText(message.createdAt)
@@ -811,4 +812,8 @@ export function conversationPlainText(conversation: Conversation): string {
     lines.push('')
   }
   return lines.join('\n')
+}
+/** 交给主进程的那两样：保存框里建议的文件名取对话名，跟文件第一行一样打过码。 */
+export function conversationExport(conversation: Conversation): ChatConversationExportInput {
+  return { title: redactPersistentChatText(conversation.title), text: conversationPlainText(conversation) }
 }
