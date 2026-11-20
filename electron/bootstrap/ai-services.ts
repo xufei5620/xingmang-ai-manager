@@ -89,11 +89,11 @@ export function createGlobalVideoAssetWriter(options: {
 
 function createNativeThumbnailRenderer(): AssetThumbnailRenderer {
   return {
-    async fromImageBytes(bytes, mimeType) {
+    async fromImageBytes(bytes, mimeType, maxEdge) {
       const image = nativeImage.createFromBuffer(bytes)
       if (image.isEmpty()) return null
       const { width, height } = image.getSize()
-      const contained = assetThumbnailSize(width, height)
+      const contained = assetThumbnailSize(width, height, maxEdge)
       const resized = image.resize({ ...contained, quality: 'better' })
       if (resized.isEmpty()) return null
       return mimeType === 'image/jpeg' ? resized.toJPEG(82) : resized.toPNG()

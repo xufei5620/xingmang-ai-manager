@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { AssetThumbnailStore, MAXIMUM_THUMBNAIL_BYTES } from './asset-thumbnail-store'
+import { AssetThumbnailStore, MAXIMUM_LARGE_THUMBNAIL_BYTES, MAXIMUM_THUMBNAIL_BYTES } from './asset-thumbnail-store'
 import { assetThumbnailVersion } from './asset-thumbnail'
 
 const assetId = 'a'.repeat(43)
@@ -24,6 +24,26 @@ describe('AssetThumbnailStore', () => {
     await thumbnails.write(7, assetId, { bytes: Buffer.from('derived'), mimeType: 'image/jpeg' })
     await expect(thumbnails.read(7, assetId)).resolves.toEqual({ bytes: Buffer.from('derived'), mimeType: 'image/jpeg' })
     expect(fs.existsSync(path.join(cacheRoot, 'user-7', assetThumbnailVersion, `${assetId}.jpg`))).toBe(true)
+  })
+
+  it('keeps the chat sized still image beside the grid tile without either answering for the other', async () => {
+    const { cacheRoot, thumbnails } = store()
+    await thumbnails.write(7, assetId, { bytes: Buffer.from('large'), mimeType: 'image/png' }, 'large')
+    await expect(thumbnails.read(7, assetId)).resolves.toBeNull()
+    await expect(thumbnails.read(7, assetId, 'large')).resolves.toEqual({ bytes: Buffer.from('large'), mimeType: 'image/png' })
+    await thumbnails.write(7, assetId, { bytes: Buffer.from('tile'), mimeType: 'image/png' })
+    await expect(thumbnails.read(7, assetId)).resolves.toEqual({ bytes: Buffer.from('tile'), mimeType: 'image/png' })
+    expect(fs.readdirSync(path.join(cacheRoot, 'user-7', assetThumbnailVersion)).sort()).toEqual([`${assetId}.large.png`, `${assetId}.png`])
+  })
+
+  it('lets the chat sized still image past the tile limit but not past its own', async () => {
+    const { thumbnails } = store()
+    const bytes = Buffer.alloc(MAXIMUM_THUMBNAIL_BYTES + 1, 1)
+    await expect(thumbnails.write(7, assetId, { bytes, mimeType: 'image/png' })).rejects.toThrow('超过安全上限')
+    await thumbnails.write(7, assetId, { bytes, mimeType: 'image/png' }, 'large')
+    await expect(thumbnails.read(7, assetId, 'large')).resolves.toEqual({ bytes, mimeType: 'image/png' })
+    await expect(thumbnails.write(7, assetId, { bytes: Buffer.alloc(MAXIMUM_LARGE_THUMBNAIL_BYTES + 1), mimeType: 'image/png' }, 'large'))
+      .rejects.toThrow('超过安全上限')
   })
 
   it('reports a miss for an asset that has never been derived', async () => {
