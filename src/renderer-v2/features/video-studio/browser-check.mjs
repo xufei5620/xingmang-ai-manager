@@ -159,6 +159,27 @@ test('dips to black between shots and fades out at the end, picture and sound to
   await page.close()
 })
 
+test('still dips to black, not white, when the shots carry captions', async () => {
+  const { page, errors } = await open()
+  const colors = await page.evaluate(async () => {
+    const harness = window.videoStudioHarness
+    const clip = (color) => harness.makeClip({ width: 320, height: 240, frameRate: 30, seconds: 2, color })
+    const clips = [{ data: await clip('#ff0000'), caption: '第一句' }, { data: await clip('#0000ff'), caption: '第二句' }]
+    const options = { aspect: '16:9', resolution: 480, fit: 'cover', frameRate: 30, transition: 'fade', fadeOut: true }
+    const film = await harness.compose({ clips, options })
+    // 字幕在下面，量上面没字幕的地方：第一段中间、换段前最后一帧、换段后第一帧、片尾最后一帧。
+    const probe = { colors: [{ time: 1, x: 427, y: 60 }, { time: 1.98, x: 427, y: 60 }, { time: 2.02, x: 427, y: 60 }, { time: 3.98, x: 427, y: 60 }] }
+    return (await harness.inspect(film.data, probe)).colors
+  })
+  assert.deepEqual(errors, [])
+  const [middle, beforeCut, afterCut, end] = colors
+  closeColor(middle, [255, 0, 0], 'first shot in full')
+  closeColor(beforeCut, [0, 0, 0], 'the captioned shot dips to black')
+  closeColor(afterCut, [0, 0, 0], 'the next captioned shot comes up from black')
+  closeColor(end, [0, 0, 0], 'the captioned film fades out to black')
+  await page.close()
+})
+
 test('prints the caption at the size and place asked for', async () => {
   const { page, errors } = await open()
   const summary = await page.evaluate(async () => {
@@ -650,6 +671,52 @@ test('keeps the warning when paying again for an unanswered clip does not go thr
   await page.close()
 })
 
+// 总单 #42（11-18 复核 N2）：交出去前主进程没能在本机记下这一单（磁盘满、文件被杀毒软件占着），提交到一半关掉了软件。
+// 重开以后先去主进程接；主进程查不到也不能变回「还没生成」，照「结果不明」提醒，再生成之前确认框说清可能多扣一次。
+test('keeps the may-have-been-charged warning after reopening when the main process could not write the submission down', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '草原', { title: '草原', shots: [{ prompt: '骏马' }, { prompt: '牧羊' }, { prompt: '落日' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 3)
+  const [first, second, third] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  // 主进程说第一段、第三段交出去前没记下；第三段随后被服务端明确拒了，页面等到了这个结果。
+  for (const clip of [first, third]) {
+    await page.evaluate((requestId) => window.videoStudioPage.progress({ requestId, stage: 'processing', unrecorded: true }), clip.requestId)
+  }
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '这次的描述没通过安全审核，换个说法再试'), third.requestId)
+  await page.getByTestId('video-shot-2').getByText('这次的描述没通过安全审核，换个说法再试').waitFor()
+
+  // 第一段、第二段还在提交时关掉软件。重开以后三段都先去接（第三段记着失败的那一单），主进程那边都查不到。
+  await page.reload()
+  await page.waitForFunction(() => window.videoStudioPage.pendingResumes().length === 3)
+  for (const clip of [first, second, third]) await page.evaluate((requestId) => window.videoStudioPage.dropResume(requestId), clip.requestId)
+  // 第一段是主进程没记下的那一单：照结果不明提醒。第二段主进程记得下（查不到就是没交出去或被拒了），第三段页面等到过结果：都回到「还没生成」。
+  await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
+  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-1').getByText('还没生成').waitFor()
+  await page.getByTestId('video-shot-2').getByText('还没生成').waitFor()
+  assert.deepEqual(await studioCalls(page, 'generate'), [])
+
+  // 再打开一次：照样提醒，没有任务号可接，也不去接。
+  await page.reload()
+  await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
+  assert.deepEqual(await studioCalls(page, 'resume'), [])
+
+  // 重新生成第一段：确认框说清可能多扣一次，勾了「我已了解影响」才能点；确认后沿用原来的请求号（MiniMax 拿它去重）。
+  await page.getByTestId('video-shot-generate-0').click()
+  const confirm = page.getByTestId('video-confirm')
+  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^这一段上次提交时没收到星芒的答复/).waitFor()
+  assert.equal(await confirm.getByRole('button', { name: '开始生成' }).isDisabled(), true)
+  await confirm.getByRole('checkbox').check()
+  await confirm.getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [again] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  assert.equal(again.requestId, first.requestId)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
 // #1489 R28-4：模型表还没读完就点了生成，读完以后记着的模型换成了默认的；排在后面的那一段照客户确认时的模型出，不悄悄换。
 test('makes every queued clip with the model the person confirmed, even if the model list settles on another one meanwhile', async () => {
   const { page, errors } = await openStudio()
@@ -693,6 +760,45 @@ test('tells the current balance when confirming clips, and leaves it out when th
     assert.deepEqual(errors, [])
     await page.close()
   }
+})
+
+// #1406 P2-1 后半：余额前面报「预计约 $x」，按这次用的模型和分组、一段一次算（价目同画布和个人中心价格表那份）。
+// 视频标「估算」；画图不到一分写「不到 $0.01」；价目是页面打开时读好的，十分钟内再打开确认框不再多读。
+test('quotes the price of the chosen model and group before the balance, from one read of the price list', async () => {
+  const { page, errors } = await openStudio('?balance=12.5&prices=1')
+  await page.locator('[data-testid="video-image-model"][data-model="gpt-image-2"]').waitFor()
+  await page.waitForFunction(() => window.videoStudioPage.balance() === 12.5)
+  await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'prices'))
+  const reads = (await studioCalls(page, 'prices')).length
+  await writeStoryboard(page, '咖啡馆', { title: '咖啡', shots: [{ prompt: '拉花' }, { prompt: '窗外' }] })
+  const confirm = page.getByTestId('video-confirm')
+
+  await page.getByTestId('video-generate-all').click()
+  await confirm.getByText('用「grok-imagine-video-1.5」生成 2 段、每段 6 秒，每段单独计费，预计约 $1.60（估算）。当前余额 $12.50。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '取消' }).click()
+  await confirm.waitFor({ state: 'detached' })
+
+  await page.getByTestId('video-shot-draw-0').click()
+  await confirm.getByText('用「gpt-image-2」按第 1 个镜头的画面描述画一张图，单独计费，预计不到 $0.01。当前余额 $12.50。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '取消' }).click()
+  await confirm.waitFor({ state: 'detached' })
+
+  // 只生成第一段，生成好了再点重新生成：报的是一段的价。
+  await page.getByTestId('video-shot-generate-0').click()
+  await confirm.getByText('用「grok-imagine-video-1.5」生成 1 段、每段 6 秒，每段单独计费，预计约 $0.80（估算）。当前余额 $12.50。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [first] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#00ff88'), first.requestId)
+  await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
+  await page.getByTestId('video-shot-generate-0').click()
+  await confirm.getByText('重新生成这一段？').waitFor()
+  await confirm.getByText('会再扣一次费，预计约 $0.80（估算）。新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '取消' }).click()
+
+  assert.equal((await studioCalls(page, 'prices')).length, reads, 'opening the dialogs again within ten minutes does not read the price list again')
+  assert.deepEqual(errors, [])
+  await page.close()
 })
 
 // 审查清单 严重-1 后半：「暂时查不到进度」这类失败时服务端多半还在出，点重新生成先拿原来的请求号接回，接不回来才再花钱。
@@ -998,6 +1104,10 @@ test('fades between shots and at the end of the joined film once chosen, and kee
   await page.getByTestId('video-transition').waitFor()
   assert.equal(await page.getByTestId('video-transition').inputValue(), 'fade')
   assert.equal(await page.getByTestId('video-fade-out').getByRole('switch').getAttribute('aria-checked'), 'true')
+  // 换回直接切，成片就对不上了，不再挂着（Mac 验收 R8）。
+  await page.getByTestId('video-result').waitFor()
+  await page.getByTestId('video-transition').selectOption('cut')
+  assert.equal(await page.getByTestId('video-result').count(), 0)
   assert.deepEqual(errors, [])
   await page.close()
 })
@@ -1056,6 +1166,10 @@ test('moves the burnt-in captions to the top once chosen, and keeps the choice a
   await page.getByTestId('video-caption-position').waitFor()
   assert.equal(await page.getByTestId('video-caption-position').inputValue(), 'top')
   assert.equal(await page.getByTestId('video-caption-size').inputValue(), 'large')
+  // 字幕换个大小，成片就对不上了，不再挂着（Mac 验收 R8）。
+  await page.getByTestId('video-result').waitFor()
+  await page.getByTestId('video-caption-size').selectOption('small')
+  assert.equal(await page.getByTestId('video-result').count(), 0)
   // 关了「加字幕」，这两项跟着收起来。
   await page.getByTestId('video-captions').getByRole('switch').click()
   assert.equal(await page.getByTestId('video-caption-position').count(), 0)
@@ -1180,6 +1294,57 @@ test('keeps several films in the draft box, switches between them and picks a wa
   assert.equal(await page.getByTestId('video-drafts').count(), 0)
   assert.deepEqual(await studioCalls(page, 'resume'), [])
   assert.equal(await page.getByTestId('video-error').count(), 0)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 11-18 复核 A01：「接着做」时这台电脑上存不下手上那一格，就整个不换，草稿箱也写回原来的样子；重开以后两份都找得回来。
+// 先存不下的是草稿箱那一格时也一样不换。
+test('keeps both films when switching drafts runs out of room on this computer', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '咖啡馆', { title: '咖啡', shots: [{ prompt: '拉花' }] })
+  await page.getByTestId('video-new').click()
+  await page.getByTestId('video-drafts').waitFor()
+  await writeStoryboard(page, '海边日落', { title: '日落', shots: [{ prompt: '海浪' }] })
+
+  async function failNextWrite(cell) {
+    await page.evaluate((target) => {
+      const original = Storage.prototype.setItem
+      Storage.prototype.setItem = function (key, value) {
+        const drafts = key.endsWith(':drafts')
+        if (key.startsWith('xingmang-ui-v2:video-studio:') && (target === 'drafts') === drafts) {
+          Storage.prototype.setItem = original
+          throw new DOMException('full', 'QuotaExceededError')
+        }
+        return original.call(this, key, value)
+      }
+    }, cell)
+  }
+
+  for (const cell of ['project', 'drafts']) {
+    await failNextWrite(cell)
+    await page.getByTestId('video-draft-open-0').click()
+    await page.getByTestId('video-storage-warning').waitFor()
+    assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '海浪', `${cell}: the film in hand stays`)
+    assert.match(await page.getByTestId('video-draft-0').textContent(), /^咖啡/, `${cell}: the draft stays in the box`)
+    assert.match(await page.getByTestId('video-storage-warning').textContent(), /这台电脑上存不下更多草稿了，删掉几份不要的再试。/)
+
+    await page.reload()
+    await page.getByTestId('video-shot-0').waitFor()
+    assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '海浪', `${cell}: the film in hand is still there after reopening`)
+    assert.match(await page.getByTestId('video-draft-0').textContent(), /^咖啡/, `${cell}: the draft is still in the box after reopening`)
+    assert.equal(await page.getByTestId('video-draft-1').count(), 0)
+  }
+
+  // 有地方了再点就换过去，换下来的进草稿箱。
+  await page.getByTestId('video-draft-open-0').click()
+  await page.waitForFunction(() => document.querySelector('[data-testid="video-shot-prompt-0"]')?.value === '拉花')
+  assert.match(await page.getByTestId('video-draft-0').textContent(), /^日落/)
+  assert.equal(await page.getByTestId('video-storage-warning').count(), 0)
+  await page.reload()
+  await page.getByTestId('video-shot-0').waitFor()
+  assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '拉花')
+  assert.match(await page.getByTestId('video-draft-0').textContent(), /^日落/)
   assert.deepEqual(errors, [])
   await page.close()
 })

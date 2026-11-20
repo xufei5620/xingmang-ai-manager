@@ -20,6 +20,7 @@ import {
   type DesktopAppUpdateRequest,
   type ExternalClientConfigResult,
   type ExternalClientInstallProgress,
+  type ExternalClientLaunchResult,
   externalClientNames,
   type ExternalClientRuntimeStatus,
   type ExternalClientSourceSwitchResult,
@@ -413,7 +414,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     if (clientPath === null) return false
     return await externalClientRuntime.stillRunning?.(tool, clientPath) ?? null
   }
-  async function launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<void> {
+  async function launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<ExternalClientLaunchResult> {
     // Claude Desktop 第一次用、每次自己升级以后都要从官网下 1GB 多的组件，国内直连下不动：先在后台替他连上
     // 加速（#1373）。连不上照常打开（它永不抛错，这里再兜一层）。
     if (tool === 'claudeDesktop' && serviceOptions.prepareClaudeDesktopLaunch) {
@@ -421,7 +422,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     }
     const unwatch = tool === 'claudeDesktop' && target ? claudeDesktopSeedProgress.watch(target) : null
     try {
-      await externalClientRuntime.launch(tool)
+      return await externalClientRuntime.launch(tool)
     } catch (error) {
       if (tool === 'claudeDesktop') launchedClientPaths.set(tool, null)
       throw error
@@ -1051,9 +1052,12 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       runtimeLog?.log('info', 'config', 'external-client.route.recorded', `${name} 已在当前连接线路上，补记归属`, detail)
       return await describeExternalClient(status)
     }
+    // 开着先不写：星芒账号隔 5 分钟回头看一眼，关了自动换（C11）；历史账号照旧等客户点「重新检测」。
+    // 一开始就开着的、拉清单那几秒里才打开的（下面 catch 那一支）都按这一份标，不然后者关掉以后没人回头看（总单 #34）。
+    const deferred = { routePending: true, ...(activeSite.id === 'solov' ? { routeRecheck: true } : {}) }
     if (status.running) {
       runtimeLog?.log('info', 'config', 'external-client.route.deferred', `${name} 还开着，连接线路暂未改动`, detail)
-      return { ...client, routePending: true, ...(activeSite.id === 'solov' ? { routeRecheck: true } : {}) }
+      return { ...client, ...deferred }
     }
     const latest = { status, moved: false }
     try {
@@ -1079,7 +1083,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     } catch (error) {
       if (latest.status.running) {
         runtimeLog?.log('info', 'config', 'external-client.route.deferred', `${name} 还开着，连接线路暂未改动`, detail)
-        return { ...client, ...latest.status, routePending: true }
+        return { ...client, ...latest.status, ...deferred }
       }
       // 拉不到模型清单、型号不在了、写之前客户刚改过配置也走这里：这次不动，下次检测再试。
       // 地址已经换好、只是归属没记上的，下次检测补记（上面 recorded 那一支）。

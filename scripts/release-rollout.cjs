@@ -19,6 +19,8 @@ const path = require('node:path')
 // describe、不装依赖也能 require 这个脚本。
 const { UPDATE_MANIFEST_NAMES, compareReleaseVersions, parseLatestMetadata } = require('./update-release-utils.cjs')
 const { StatusInputError, applyStatusChanges, describeStatus, parseCurrentStatus, validReleasePlatforms } = require('./service-status.cjs')
+const { inspectStatusSignature } = require('./service-status-signature.cjs')
+const { readPinnedPublicKeys } = require('./update-manifest-signature.cjs')
 
 const PLAIN_VERSION = /^\d{1,5}\.\d{1,5}\.\d{1,5}$/
 // 每份清单是哪个平台的，写法与 service-status.cjs 的平台表一致（只对这几种安装包分批时用）。
@@ -165,6 +167,19 @@ function planReleaseRollout({ version, percent, current = {}, publishing, live }
   }
 }
 
+/**
+ * 放量不用改、可线上那份撤回名单那几项没签上发布者签名（或签名对不上）时，照原样重写一份交给下一步签名再传
+ * （D85）：0.2.25 起的客户端只认签过名的撤回名单、放量、最低版本。第一个带签名校验的版本发出去时，线上那份
+ * 必须已经签好，不然新客户端一装上就把这几项当没读到；选 100、线上又没有放量的快修也不能漏掉这一步。
+ * 签名对得上就返回 null，状态文件照旧不动。
+ */
+function describeResign(current, pinnedKeys) {
+  const state = inspectStatusSignature(current, pinnedKeys)
+  if (state === 'signed') return null
+  const reason = state === 'unsigned' ? '还没有发布者签名' : '跟发布者签名对不上（有人没走工作流改过）'
+  return `线上状态文件的撤回名单、分批放量、最低版本${reason}，0.2.25 起的客户端不认它们。这次照原样重写一份、签上再传，内容不变。`
+}
+
 function parseArguments(argv) {
   const [command, ...rest] = argv
   const options = {}
@@ -199,10 +214,12 @@ function main(argv) {
       publishing: publishingManifests(options.artifacts),
       live: readLiveVersions(options.live),
     })
-    console.log(plan.message)
-    if (options.summary) fs.appendFileSync(options.summary, `### 分批放量\n\n${plan.message}\n`)
-    if (plan.input === null) return
-    const next = applyStatusChanges(current, { rollout: plan.input })
+    const resign = currentText !== null && plan.input === null ? describeResign(current, readPinnedPublicKeys()) : null
+    const message = resign ? `${plan.message}\n\n${resign}` : plan.message
+    console.log(message)
+    if (options.summary) fs.appendFileSync(options.summary, `### 分批放量\n\n${message}\n`)
+    if (plan.input === null && !resign) return
+    const next = applyStatusChanges(current, plan.input === null ? {} : { rollout: plan.input })
     fs.writeFileSync(options.output, `${JSON.stringify(next, null, 2)}\n`)
     for (const line of describeStatus(next)) console.log(line)
     return
@@ -221,4 +238,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { RolloutInputError, describeRolloutChoice, parseRolloutChoice, planReleaseRollout }
+module.exports = { RolloutInputError, describeResign, describeRolloutChoice, parseRolloutChoice, planReleaseRollout }

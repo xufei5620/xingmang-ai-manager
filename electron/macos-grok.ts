@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { releaseStagedDarwinCli, stageVerifiedDarwinCli } from './darwin-cli-staging'
-import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
+import { DarwinCliProvenanceError, darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 import { sameLocalPathIdentity } from './path-identity'
 import type {
   NativeCliDirectoryIdentity,
@@ -20,7 +20,12 @@ export interface DarwinGrokCanonicalSelection {
   executablePath: string
   linkIdentity: NativeCliSymbolicLinkIdentity
   linkTarget: string
-  version: string
+  /**
+   * The release the link names. null for xAI's install script layout since 2026-11
+   * (`../downloads/grok-macos-<arch>`, no version in the file name): only the
+   * verified binary itself can tell, see readDarwinGrokSelectionVersion.
+   */
+  version: string | null
   fileIdentity: DarwinGrokFileIdentity
 }
 
@@ -53,14 +58,15 @@ export interface VerifyDarwinGrokCanonicalInstallationOptions {
 
 export interface VerifyDarwinGrokExecutableOptions {
   executablePath: string
-  expectedVersion: string
+  expectedVersion: string | null
   runCommand: VerifyDarwinGrokCanonicalInstallationOptions['runCommand']
 }
 
 export interface StageDarwinGrokCanonicalSelectionOptions {
   homeDirectory: string
   selection: DarwinGrokCanonicalSelection
-  expectedVersion: string
+  /** Must equal selection.version; null only for the unversioned layout, where any release xAI signed is accepted. */
+  expectedVersion: string | null
   runCommand: VerifyDarwinGrokCanonicalInstallationOptions['runCommand']
   retention?: 'ephemeral' | 'retained'
 }
@@ -232,6 +238,21 @@ function versionFromOfficialLinkTarget(linkTarget: string): string | null {
   return version && grokReleaseVersionPattern.test(version) ? version : null
 }
 
+/**
+ * xAI's install script stopped putting the version in the downloaded file name
+ * (2026-11, `binary_path="$DOWNLOAD_DIR/grok-$platform"` in cli/install.sh): both
+ * `grok` and `agent` now point at `../downloads/grok-macos-<arch>`, and each update
+ * overwrites that same file. Exactly the default sibling layout the script builds
+ * is accepted; the Linux name (`grok-linux-…`) is not, Linux keeps its own rules.
+ */
+function isUnversionedOfficialLinkTarget(linkTarget: string): boolean {
+  const parts = linkTarget.split(path.sep)
+  return parts.length === 3
+    && parts[0] === '..'
+    && parts[1] === 'downloads'
+    && /^grok-macos-(?:aarch64|x86_64)$/.test(parts[2])
+}
+
 function isOfficialUninstallLinkTarget(linkTarget: string): boolean {
   if (/^grok-.+$/.test(linkTarget) && path.basename(linkTarget) === linkTarget) {
     return versionFromOfficialLinkTarget(linkTarget) !== null
@@ -338,7 +359,9 @@ export function resolveDarwinGrokCanonicalSelection(
   const link = requiredRelativeLink(linkPath)
   const linkTarget = link.target
   const version = versionFromOfficialLinkTarget(linkTarget)
-  if (!version) throw new Error('Grok canonical link target is not an official versioned macOS binary')
+  if (!version && !isUnversionedOfficialLinkTarget(linkTarget)) {
+    throw new Error('Grok canonical link target is not an official versioned macOS binary')
+  }
 
   const grokRoot = fs.realpathSync(path.join(homeDirectory, '.grok'))
   const executablePathResolved = fs.realpathSync(path.resolve(path.dirname(linkPath), linkTarget))
@@ -399,6 +422,23 @@ export function captureDarwinGrokCanonicalLink(homeDirectory: string): DarwinGro
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'ENOENT') return { canonicalLinkPath: linkPath, existed: false }
     throw error
+  }
+}
+
+/**
+ * ~/.grok/bin/grok 已经被别的东西占着、又不是能原样放回去的那几种（手做的链接、普通文件）时，npm 的
+ * 安装脚本一跑就盖掉它，装坏了也放不回去，所以一个字节都还没下就停，说一句客户照着能做的（同
+ * linux-grok.ts 的 runLinuxGrokPostInstallTransaction）。以前这一下在下载完才报，英文原话被说成两遍
+ * 「npm 没有装成」。首页对这种认不出的给的是「用星芒装一份」（Mac 验收 R1），所以句尾指回那颗按钮。
+ */
+export function assertDarwinGrokCanonicalLinkReplaceable(homeDirectory: string): void {
+  try {
+    captureDarwinGrokCanonicalLink(homeDirectory)
+  } catch (error) {
+    throw new Error(
+      '这台电脑上已经有一份 Grok CLI，不是用星芒装的。为了不弄坏它，已停止安装。请先用你原来装它的方式卸载，再回来点「用星芒装一份」。',
+      { cause: error },
+    )
   }
 }
 
@@ -499,26 +539,31 @@ export async function runDarwinGrokPostInstallTransaction<T>(
   }
 }
 
-/** Verifies xAI identity and the exact expected runtime version for one executable. */
+/**
+ * Verifies xAI identity and the runtime version for one executable, and returns
+ * that version. With an expected version it must match exactly; without one (the
+ * unversioned layout) it only has to be a well-formed release.
+ */
 async function verifyDarwinGrokExecutable(
   options: VerifyDarwinGrokExecutableOptions,
-): Promise<void> {
+): Promise<string> {
   try {
     await options.runCommand({
       executable: '/usr/bin/codesign',
       argv: darwinDeveloperIdVerificationArgv(xaiTeamId, options.executablePath),
     })
   } catch (error) {
-    throw new Error('Grok 可执行文件未通过 xAI Developer ID 签名校验', { cause: error })
+    throw new DarwinCliProvenanceError('Grok 可执行文件未通过 xAI Developer ID 签名校验', { cause: error })
   }
   const versionResult = await options.runCommand({
     executable: options.executablePath,
     argv: ['--version'],
   })
   const reportedVersion = grokVersionOutputPattern.exec(versionResult.stdout.trim())?.[1] ?? null
-  if (reportedVersion !== options.expectedVersion) {
-    throw new Error('Grok canonical executable reported a version different from the pinned release')
+  if (reportedVersion === null || (options.expectedVersion !== null && reportedVersion !== options.expectedVersion)) {
+    throw new DarwinCliProvenanceError('Grok canonical executable reported a version different from the pinned release')
   }
+  return reportedVersion
 }
 
 /** Copies the canonical source through a bound descriptor and verifies only the private copy. */
@@ -536,11 +581,13 @@ export async function stageDarwinGrokCanonicalSelection(
       sourcePath: options.selection.executablePath,
       sourceIdentity: options.selection.fileIdentity,
       retention: options.retention,
-      verify: (stagedExecutable) => verifyDarwinGrokExecutable({
-        executablePath: stagedExecutable,
-        expectedVersion: options.expectedVersion,
-        runCommand: options.runCommand,
-      }),
+      verify: async (stagedExecutable) => {
+        await verifyDarwinGrokExecutable({
+          executablePath: stagedExecutable,
+          expectedVersion: options.expectedVersion,
+          runCommand: options.runCommand,
+        })
+      },
     })
     assertDarwinGrokSelectionUnchanged(options.homeDirectory, options.selection)
     return executable
@@ -554,10 +601,11 @@ interface InspectStagedDarwinGrokExecutableOptions<T> {
   executableName: string
   sourcePath: string
   sourceIdentity: DarwinGrokFileIdentity
-  expectedVersion: string
+  expectedVersion: string | null
   runCommand: VerifyDarwinGrokCanonicalInstallationOptions['runCommand']
   assertSourceUnchanged: () => void
-  inspect: (executablePath: string) => Promise<T>
+  /** Gets the private staged copy and the version that copy reported. */
+  inspect: (executablePath: string, reportedVersion: string) => Promise<T>
 }
 
 async function inspectStagedDarwinGrokExecutable<T>(
@@ -574,12 +622,12 @@ async function inspectStagedDarwinGrokExecutable<T>(
       sourceIdentity: options.sourceIdentity,
       retention: 'ephemeral',
       verify: async (stagedExecutable) => {
-        await verifyDarwinGrokExecutable({
+        const reportedVersion = await verifyDarwinGrokExecutable({
           executablePath: stagedExecutable,
           expectedVersion: options.expectedVersion,
           runCommand: options.runCommand,
         })
-        result = await options.inspect(stagedExecutable)
+        result = await options.inspect(stagedExecutable, reportedVersion)
         inspected = true
       },
     })
@@ -610,6 +658,67 @@ export async function inspectDarwinGrokVerifiedSelection<T>(
     ),
     inspect: options.inspect,
   })
+}
+
+// 不带版本号的那份核过一次就记住它报的版本：键是程序文件的身份，更新过（换了文件、改了内容）就对不上，
+// 重新核。只为首页显示版本，打开时照旧每次核签名（stageDarwinGrokCanonicalSelection）。
+const verifiedUnversionedGrokVersions = new Map<string, string>()
+const maximumVerifiedUnversionedGrokVersions = 8
+
+function unversionedGrokVersionKey(selection: DarwinGrokCanonicalSelection): string {
+  const identity = selection.fileIdentity
+  return [
+    selection.executablePath,
+    identity.dev,
+    identity.ino,
+    identity.mode,
+    identity.size,
+    identity.ctimeNs,
+    identity.mtimeNs,
+  ].join('\0')
+}
+
+export interface ReadDarwinGrokSelectionVersionOptions {
+  homeDirectory: string
+  selection: DarwinGrokCanonicalSelection
+  runCommand: VerifyDarwinGrokCanonicalInstallationOptions['runCommand']
+}
+
+/**
+ * The version the home page shows for a canonical selection. A versioned link
+ * answers from its name, as before, without running anything. The unversioned
+ * layout (Mac acceptance R1: the xAI install script's own install showed no
+ * version and could not be opened) is asked only through a private staged copy
+ * that first passed xAI's codesign check, and the answer is remembered per file
+ * identity so a scan does not copy the 100+ MB binary every time.
+ */
+export async function readDarwinGrokSelectionVersion(
+  options: ReadDarwinGrokSelectionVersionOptions,
+): Promise<string> {
+  if (options.selection.version !== null) return options.selection.version
+  const key = unversionedGrokVersionKey(options.selection)
+  const known = verifiedUnversionedGrokVersions.get(key)
+  if (known) return known
+  const version = await inspectStagedDarwinGrokExecutable({
+    executableName: 'grok',
+    sourcePath: options.selection.executablePath,
+    sourceIdentity: options.selection.fileIdentity,
+    expectedVersion: null,
+    runCommand: options.runCommand,
+    assertSourceUnchanged: () => assertDarwinGrokSelectionUnchanged(
+      options.homeDirectory,
+      options.selection,
+    ),
+    inspect: async (_executablePath, reportedVersion) => reportedVersion,
+  })
+  verifiedUnversionedGrokVersions.delete(key)
+  verifiedUnversionedGrokVersions.set(key, version)
+  while (verifiedUnversionedGrokVersions.size > maximumVerifiedUnversionedGrokVersions) {
+    const oldest = verifiedUnversionedGrokVersions.keys().next().value
+    if (oldest === undefined) break
+    verifiedUnversionedGrokVersions.delete(oldest)
+  }
+  return version
 }
 
 /** Verifies the exact canonical xAI executable selected by the official versioned link. */

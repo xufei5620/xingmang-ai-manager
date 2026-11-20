@@ -130,7 +130,7 @@ import {
   type ExternalToolConfigOptions,
   type ExternalToolId,
 } from './external-tool-config'
-import { type DesktopAppUpdateRequest, type ExternalClientConfigResult, type ExternalClientSourceSwitchResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
+import { type DesktopAppUpdateRequest, type ExternalClientConfigResult, type ExternalClientLaunchResult, type ExternalClientSourceSwitchResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
 import { createExternalClientRuntime } from './external-client-runtime'
 import type { MacosDesktopLatestVersionLookup } from './macos-desktop-app-update'
 import { type ExternalClientCheckResult } from './external-client-connection'
@@ -188,6 +188,12 @@ export interface ToolStatus {
    * undefined，渲染层此时退回中性的「已安装」。
    */
   installSource?: CliInstallDisplaySource
+  /**
+   * 只在 Mac 上的 Codex / Grok 出现：找到的那份不是 npm 装的，又核不出是官方安装器那一份，星芒不替它跑
+   * （tool-installation.ts 的 UnrecognizedDarwinCliError，Mac 验收 R1）。首页这时不给「打开」，给
+   * 「用星芒装一份」；主进程也不再拿「不会另装一份」拦这次安装。缺省 = 认得出或不适用。
+   */
+  unrecognizedInstall?: boolean
   /**
    * 这个工具装上去会落在哪个目录。未装时 installDirectory 为 null，而用户要
    * 查写入权限或加杀毒白名单需要的正是这个路径；已装时两者指同一处。算不出
@@ -618,7 +624,7 @@ export interface SystemService {
   installExternalClient(tool: ExternalToolId, target: RendererMessageTarget, request?: DesktopAppUpdateRequest): Promise<ExternalClientStatus>
   cancelExternalClientInstall(tool: ExternalToolId): InstallCancellationOutcome
   /** target：点「打开」的那个窗口，Claude Desktop 打开前替它放程序的进度发给它；缺省 = 不发。 */
-  launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<void>
+  launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<ExternalClientLaunchResult>
   /** 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择，星芒那份配置留着。 */
   switchExternalClientSource(tool: ExternalToolId, target: 'account' | 'official', assertBeforeWrite?: () => void): Promise<ExternalClientSourceSwitchResult>
   /**
@@ -667,19 +673,6 @@ export interface NpmPackageReleaseMetadata {
   name: string
   version: string
   integrity: string
-}
-
-export function assertNpmReleaseIntegrityMatches(
-  trusted: NpmPackageReleaseMetadata,
-  candidate: NpmPackageReleaseMetadata,
-): void {
-  if (
-    candidate.name !== trusted.name
-    || candidate.version !== trusted.version
-    || candidate.integrity !== trusted.integrity
-  ) {
-    throw new Error('国内 npm 镜像的包名、版本或 SHA-512 完整性元数据与 npm 官方源不一致')
-  }
 }
 
 export interface SystemServiceOptions {

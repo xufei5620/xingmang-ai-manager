@@ -1,13 +1,15 @@
 // Linux 安装包内容的权限收口：electron-builder 打完 linux-unpacked、交给 fpm 之前，
 // 去掉每个文件和目录的组写、其他人写。
 //
-// Electron 45's Linux zips store their entries as 0666/0777 (43 and 44 shipped
-// 0644/0755), and electron-builder copies those modes into linux-unpacked
-// verbatim, umask or not. fpm packs that tree as it stands, so dpkg would
-// install /opt/xingmang-ai-manager writable by every local user: anyone could
-// replace the main binary, a shared library, or chrome-sandbox right before
-// postinst makes it setuid root. verify-linux-deb.cjs refuses such a deb; this
-// makes the build produce one it accepts instead of relying on upstream modes.
+// Electron 45.1.0's Linux zips stored their entries as 0666/0777 (43 and 44
+// shipped 0644/0755; 45.2.3 through 45.4.1 are back to 0644/0755, but nothing
+// upstream promises it stays that way), and electron-builder copies those modes
+// into linux-unpacked verbatim, umask or not. fpm packs that tree as it stands,
+// so dpkg would install /opt/xingmang-ai-manager writable by every local user:
+// anyone could replace the main binary, a shared library, or chrome-sandbox
+// right before postinst makes it setuid root. verify-linux-deb.cjs refuses such
+// a deb; this makes the build produce one it accepts instead of relying on
+// upstream modes.
 const fs = require('node:fs/promises')
 const path = require('node:path')
 

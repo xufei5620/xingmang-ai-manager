@@ -25,6 +25,7 @@ import {
   probeRunningCliProcesses,
 } from './cli-process-probe'
 import { buildCliUpdateRecord } from './cli-update-history'
+import { resolveCliUserHomeDirectory } from './cli-user-home'
 import { resolveCliInstallVersion } from './cli-verified-versions'
 import {
   commandEnvironment,
@@ -62,6 +63,7 @@ import {
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
+  assertDarwinGrokCanonicalLinkReplaceable,
   resolveDarwinGrokCanonicalSelection,
   runDarwinGrokPostInstallTransaction,
 } from './macos-grok'
@@ -1053,13 +1055,20 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
    * 那时装没装都没有结论，界面给的是「重新检测」，不会走到这里。
    */
   async function assertNpmChannelOwnsCli(provider: ProviderId): Promise<void> {
-    if (provider === 'grok') return
+    if (provider === 'grok') {
+      if (grokInstallStrategyFor(platform) === 'darwin-official-npm') assertDarwinGrokCanonicalLinkReplaceable(os.homedir())
+      return
+    }
     let installSource: CliInstallDisplaySource | undefined
     try {
       // 同 inspectCliUpdate：这里只用得上 npm 在哪，不为它的版本号多起一次 `npm --version`。
       const npmPath = await findInstalledExecutable('npm')
       const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmPath)
-      installSource = (await inspectCliTool(provider, npmPath, npmGlobalRoot)).status.installSource
+      const { status } = await inspectCliTool(provider, npmPath, npmGlobalRoot)
+      // Mac 上认不出来路、星芒也不替它跑的那份（R1）：客户点的就是「用星芒装一份」，不拿「不会另装一份」拦。
+      // 装好以后星芒先找到自己那份（darwinCommandPathCandidates 里星芒的目录排在前面），打开的也是它。
+      if (status.unrecognizedInstall) return
+      installSource = status.installSource
     } catch {
       return
     }
@@ -1198,7 +1207,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
           cancellation?.seal(grokBinarySwapSealReason)
           const installed = await installDownloadedGrokBinary(downloadedGrokBinary, sameUserInstall
             ? {
-                managedRoot: path.join(os.homedir(), '.grok', 'bin'),
+                managedRoot: path.join(resolveCliUserHomeDirectory(process.env, platform), '.grok', 'bin'),
                 protectInstallDirectory: false,
               }
             : {})

@@ -152,6 +152,8 @@ export interface ToolRouteControllerDependencies {
   probe(line: RelayEndpointId): Promise<ToolRouteProbeResult>
   /** 读线路状态文件；读不到给 null。 */
   readStatus(options: { fresh: boolean }): Promise<RouteStatus | null>
+  /** 本机已安装的生图技能脚本认不认香港地址（需求 5.1.3 第 2 条）。缺省 false：第一批没有这样的脚本。 */
+  skillSupportsHongKong?(): boolean
   /** 要出的提示（已经按 7 天 / 24 小时限过频）。 */
   notify?(notice: ToolRouteNotice): void
   schedule?(callback: () => void, delayMs: number): () => void
@@ -197,8 +199,11 @@ export function toolRouteLegitimateAddresses(line: RelayEndpointId, status: Rout
   return entry.proxied ? { cloudflare: true } : { cloudflare: false, ips: entry.legitIps }
 }
 
-// 香港的域名还没定；定了以后在 relay-sites.ts 加上 origin、让 probe 认得它，再打开这里。
-const hongKongOriginAvailable = false
+// 香港的域名还没定；定了以后在 relay-sites.ts 加上 origin、让 probe 认得它，再打开这里，同一版在
+// bootstrap/network-routes.ts 接上 skillSupportsHongKong（技能脚本认香港地址，C13）。
+// satisfies 把开关钉在 RelayEndpointId 上：里面还没有 direct-hk 时改成 true 编不过，加了 direct-hk 不改成 true
+// 也编不过。chooseTarget 把候选收窄成 RelayEndpointId 靠的就是这一条（H5）。
+const hongKongOriginAvailable = false satisfies ('direct-hk' extends RelayEndpointId ? true : false)
 
 /**
  * L2 能不能新分配（需求 5.1.3）：状态文件读得到、两个开关都开着、不是服务端在处理整体故障、本机的
@@ -553,7 +558,12 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
       void finishIncidentWait(active)
       return
     }
-    await chooseTarget(active, reason, failure, token)
+    const hongKongAssignable = toolRouteHongKongAssignable({
+      status,
+      incident,
+      skillSupportsHongKong: dependencies.skillSupportsHongKong?.() ?? false,
+    })
+    await chooseTarget(active, reason, failure, token, hongKongAssignable)
   }
 
   // 服务端处理整体故障时等够 5 分钟：当前线路好了就接着用；还不通只切 CF，不切香港。
@@ -582,12 +592,19 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
     applySwitch(active, 'primary', 'incident')
   }
 
-  async function chooseTarget(active: NonNullable<typeof round>, reason: 'failed' | 'hijack', failure: ToolRouteProbeResult, token: number): Promise<void> {
+  async function chooseTarget(
+    active: NonNullable<typeof round>,
+    reason: 'failed' | 'hijack',
+    failure: ToolRouteProbeResult,
+    token: number,
+    hongKongAssignable: boolean,
+  ): Promise<void> {
     const failed = current
-    for (const candidate of toolRouteLineOrder) {
-      if (candidate === failed) continue
-      // L2 四个条件都满足才选（toolRouteHongKongAssignable）。第一批它恒为 false，也没有地址可探。
-      if (candidate === 'direct-hk') continue
+    // L2 四个条件都满足才探（toolRouteHongKongAssignable，第一批恒为 false）。收窄成 RelayEndpointId 不骗编译器：
+    // hongKongAssignable 只有开关打开才可能为 true，开关又钉在 RelayEndpointId 里有没有 direct-hk 上。
+    const candidates = toolRouteLineOrder.filter((line): line is Extract<ToolRouteLineId, RelayEndpointId> =>
+      line !== failed && (line !== 'direct-hk' || hongKongAssignable))
+    for (const candidate of candidates) {
       const result = await probe(candidate)
       if (disposed || token !== epoch || round !== active) return
       if (!result.ok) continue

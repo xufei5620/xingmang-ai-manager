@@ -54,6 +54,8 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 - **别用 `pkill -f <脚本名>` 收拾卡住的命令。** 命令行里带这串字的 shell 自己也会被杀掉。用进程号杀。（沿用 10-03）
 - **`npm test` 和 `npm run test:v2` 可以在同一个目录里同时后台跑**，没冒过假红。（沿用 11-09）
 - **容器里没有 zsh**（11-11 验），`electron/macos-platform.test.ts` 里真跑 zsh 的那批用例会自动跳过，不算失败。想让它们在容器里真跑，`apt-get install -y zsh`。（沿用 11-10）
+- **只在 Mac 上跑的用例（`it.runIf(process.platform === 'darwin')`）可以先在容器里粗跑一遍**（11-19 验）。写一个 setup 文件，里面只有 `Object.defineProperty(process, 'platform', { value: 'darwin' })`；再写一个 vitest 配置，`root` 指向仓库、`include` 列要跑的测试文件、`setupFiles` 指向它。两个文件都放仓库外面（草稿目录），配置里别 `import 'vitest/config'`（仓库外解析不到），直接 `export default ({ root, test: { … } })`，再 `npx vitest run --config <那个配置>`。`electron/macos-grok.test.ts`、`tool-installation.test.ts`、`macos-codex.test.ts` 这样跑 134 条全过。它只对注入了假 `codesign` 的用例有意义，真去调 `/usr/bin/codesign`、`open` 的过不了也不该当真；结论以 PR 上 Mac 作业为准，PR 里写明是这样跑的。
+- **首页卡片要配图时，现成的夹具截不到**（11-19 验）。`scripts/audit/v2-page-screenshot.mjs` 只收 `e2e/` 下的 `*-fixture.html`，而 `e2e/v2-business-fixture` 只渲染业务页，不渲染首页。临时在 `e2e/` 下放一对 `*-fixture.html` / `.tsx`：照 `src/renderer-v2/main.tsx` 引那几份样式（再加 `business.css`），用 `Shell` 包 `Home`，假数据照 `Home.test.tsx` 的 `render()` 写，`api` 用一个所有方法都回 `null` 的 `Proxy`。截完把这对文件删掉，别提交。
 - **容器里你是 root**（11-11 验）。Linux 版客户端拒绝以 root 启动，真开客户端要先处理这个（见第 7 节）。
 - **容器自带的 Claude Code（`/opt/node22/bin/claude`）以前让 `npm test` 红 29 条装工具的用例，已修**（11-18 验）：`electron/system-service.{certificate-trust,disk-space,download-stall,install-cancel}.test.ts` 的夹具现在把 PATH 换成夹具自己的目录，不再读容器的 PATH。直接跑 `npm test` / `npm run selfcheck` 就是 0 失败，不用再把那份挪出 PATH。自己写装 CLI 的用例时照同样写，见 `docs/TEST-BASELINE.md`「装命令行工具的用例：夹具要连 PATH 一起换掉」。
 
@@ -71,6 +73,12 @@ node node_modules/electron/install.js
 ```
 
 缓存子目录名是「下载目录网址」的 sha256。安装脚本照常按包里的校验和核对后才解压，这条退路没有绕过校验。
+
+**在容器里打 Windows 目录包**（比对打包前后的文件清单时用，11-20 验）：`npm run compile` 之后，
+`XINGMANG_LOCAL_BUILD=1 CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --config electron-builder.config.cjs --win --x64 --dir --publish never`
+能出 `release/win-unpacked`，不用装 wine。打包器自己下 win32 压缩包时经代理断在一成多（同一个 `assert(!this.paused)`），
+照上面的办法把 `electron-v$V-win32-x64.zip` 用 curl 下进同一个缓存目录再打，打包器照样按 `checksums.json` 核对。
+Linux 目录包把 `--win` 换成 `--linux dir`、加 `XINGMANG_LINUX_PACKAGE=1`。Mac 包不在容器里打（项目规矩）。
 
 ## 5. 容器能连哪些网站
 
@@ -135,6 +143,25 @@ CI 的 Windows（`windows-package`）和 Mac（`macos-test`）作业每个 PR �
 只写一个 `settings.json` 种子时要带 `workspace`（非空字符串）和 `uiSkin`：缺 `workspace` 整份会被换成默认值，你种的「提示已看过」一起丢；缺 `uiSkin` 会被当成老文件、主题强制改成浅色。有了 `settings.json` 客户端就当这台机器跑过，没有 `last-run-version.json` 又会弹「已更新到…」（11-17 验）。
 
 容器没设 `LANG`。起 Electron 时带上 `LANG=C.UTF-8`，否则碰到中文文件名会整个崩掉，只打一行 `Trace/breakpoint trap`，看着像产品的毛病。11-12 验：同一个剪贴板探针粘贴复制的 `截图.png`，不带 `LANG` 每次都崩，带上就正常；英文文件名两种都正常。
+
+### 7.1 验证崩溃、卡住上报真发得出去（11-20 验）
+
+`verify:app` 起的是开发态，`app.isPackaged` 是 false，崩溃上报不发。要看一条报错真从客户端发到 Sentry 那个地址、格式对不对，用一个本机假的 Sentry 接收端：
+
+1. 给 Electron 二进制做一个**硬链接**，名字不叫 `electron`（比如 `ln -f node_modules/electron/dist/electron node_modules/electron/dist/xingmang-ai-manager`），用它起，`app.isPackaged` 就是 true。软链接不行，读到的还是原名。
+2. 入口指向一个只有 `package.json`（name 写 `xingmang-ai-manager`，version 写要冒充的版本）的目录，里面的 main 再 require 夹具。直接给一个 .js 文件，`app.getVersion()` 是 Electron 自己的版本号，release 就不对。
+3. 夹具在 require `dist-electron/platform/entry.js` 之前：`app.commandLine.appendSwitch('host-resolver-rules', 'MAP o4512110916009984.ingest.us.sentry.io 127.0.0.1:<端口>')` 只把 Sentry 地址指到本机，加 `no-proxy-server`；`setCertificateVerifyProc` 只给这一个地址放行自签证书；`webRequest.onBeforeRequest` 拦掉别的网址；`process.geteuid = () => 1000`（同上面第 1 条）。
+4. 假接收端就是一个 `https.createServer`，把收到的每个请求体存下来。envelope 第三行是事件 JSON，看 release、environment、level、mechanism 和帧。
+5. 触发：`XINGMANG_CRASH_REPORT_TEST=1` 发一条自检；`webContents.forcefullyCrashRenderer()` 是界面进程崩；卡住上报只在抽中的两成打开里发，夹具里 require 入口那一刻临时把 `Math.random` 换成返回 0 的，require 完换回来。
+
+### 7.2 在容器里编一遍 Windows 安装程序（11-20 验）
+
+改了 `build/installer.nsh`，容器里能用 electron-builder 的真模板把安装、卸载两半都带 `-WX` 编一遍，语法错、没人调用的函数当场红；装、卸、升级的行为容器里跑不了（没有 wine），只能靠 PR 上的 `uninstall-smoke`。
+
+1. `node -e "require('app-builder-lib/out/toolsets/windows.js').getMakeNsisPath().then(r=>console.log(r))"` 先把 makensis 下到缓存（第一次可能断，再跑一次）。
+2. 摆一个假的 `win-unpacked`：主程序 `星芒AI管理工具.exe`（随便一个 exe）、`resources/`、`locales/` 和几个文件就行。
+3. 安装程序要 `!include` 打包时写出的名单 `build/installer-package-entries.nsh`（D05），`--prepackaged` 不跑 afterPack，先手动写：`node -e "require('./scripts/windows-installer-package-entries.cjs').writePackageEntriesInclude({appOutDir:'<假目录>',buildResourcesDir:'build',executableName:'星芒AI管理工具.exe'})"`。这份文件不进仓库，编完删掉。
+4. 写一个小脚本：先 `require('electron-builder')`（先引 `app-builder-lib` 里的单个文件会报循环依赖），把 `app-builder-lib/out/vm/WineVm` 的 `WineVmManager.prototype.exec` 换成「往 `<安装包名>__uninstaller.exe` 拷一个随便的 exe」，再调 `build({ config: require('./electron-builder.config.cjs'), targets: Platform.WINDOWS.createTarget(['nsis'], Arch.x64), prepackaged: '<假目录>', publish: 'never' })`，环境带 `XINGMANG_LOCAL_BUILD=1 CSC_IDENTITY_AUTO_DISCOVERY=false XINGMANG_OUTPUT_DIR=<临时目录>`。卸载程序那一遍先编，假装 wine 跑完以后接着编安装程序那一遍。想看生成的整份脚本，同样换掉 `NsisTarget.prototype.executeMakensis` 把第三个参数存下来。
 
 ## 8. 仓库里的规则，云端线程读到哪些
 

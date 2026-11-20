@@ -55,6 +55,30 @@ export interface FeedbackDescriberOptions {
   readPrivacySwitches: () => FeedbackPrivacySwitches
 }
 
+export interface ConfiguredApiKeys {
+  /** 读到的 Key，没写 Key 的工具不占位。 */
+  values: string[]
+  /** 这次读不了配置的工具和原因，给日志用，不进报告。 */
+  unreadable: { provider: ProviderId; error: unknown }[]
+}
+
+// 导出诊断、写反馈报告时要把本机各工具配置里写着的 Key 当敏感值遮掉。一家的配置读不了（目录被换成联接、
+// 文件多了一个硬链接、没权限）时拒绝去读是对的（I8），但只该少这一家的 Key：以前一家抛错就让已经做完的
+// 诊断整份导不出来，反馈报告里「最近一次自检」整段退成「未能读取」（D12）。
+export function inspectConfiguredApiKeys(readApiKey: (provider: ProviderId) => string): ConfiguredApiKeys {
+  const values: string[] = []
+  const unreadable: ConfiguredApiKeys['unreadable'] = []
+  for (const provider of providerIds) {
+    try {
+      const value = readApiKey(provider)
+      if (value) values.push(value)
+    } catch (error) {
+      unreadable.push({ provider, error })
+    }
+  }
+  return { values, unreadable }
+}
+
 export function createDiagnostics(options: DiagnosticsWiringOptions) {
   const {
     routes: { relayRouting, relayRouteController, toolRouting, toolRouteController, latestRouteStatus, latestToolProbes, observedRelayFetch, resolveSystemProxy, systemProxyFetch, siteDirectFetch },
@@ -63,6 +87,9 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
   } = options
   const windowsCliExecutionMode = windowsCliExecution.mode
   let latestDiagnostics: DiagnosticsReport | null = null
+  // 跑出 latestDiagnostics 的那一轮从各家配置里读到的 Key：导出或写反馈报告时哪家配置读不了了，照样按它遮。
+  // 只在主进程内存里，不进报告、不过 IPC（I3）。
+  let latestDiagnosticsKeys: string[] = []
   // 「星芒 AI 网络」一项要说清用的是哪条线路；「自动」走先走的那条没查通时它改查备用那条，并把失败报过来。
   // 各工具「连接设置」、电脑里另外设过的工具地址比的是工具线路（xm 三线路）；历史账号两套是同一套，不另给。
   function diagnosticsToolRoute(siteId: string | undefined): DiagnosticsDependencies['toolRoute'] {
@@ -119,10 +146,17 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
       },
     },
   )
-  // 诊断导出与反馈报告都要把本机真正写着的那几把 Key 当敏感值剔掉。
-  const sensitiveKeyValues = () => providerIds
-    .map((provider) => inspectProviderConfig(provider, rootedOptions.system.providerRoots).apiKey)
-    .filter(Boolean)
+  // 诊断导出与反馈报告都要把本机真正写着的那几把 Key 当敏感值剔掉：现读一遍，再补上跑出这份报告那一轮读到的。
+  function sensitiveKeyValues(purpose: 'export' | 'feedback'): string[] {
+    const { values, unreadable } = inspectConfiguredApiKeys(
+      (provider) => inspectProviderConfig(provider, rootedOptions.system.providerRoots).apiKey,
+    )
+    for (const { provider, error } of unreadable) {
+      runtimeLog.log('warn', 'diagnostics', 'sensitive-keys.unreadable',
+        '有一个工具的配置这次读不了，报告照常生成，这一家的 Key 按上一轮检查读到的遮', { provider, purpose, error })
+    }
+    return [...latestDiagnosticsKeys, ...values]
+  }
   const diagnosticsService = {
     run: async (options: DiagnosticsRunOptions = {}) => {
       const [{ diagnosticsScanReuseMs, runDiagnostics }, { lookupWithPublicDns, lookupWithSystemDns }] = await Promise.all([
@@ -134,9 +168,16 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
       // 就照旧自己探，不为此专门起一轮扫描。
       const recent = options.reuseRecentScan ? systemService.recentScan(diagnosticsScanReuseMs) : null
       const recentScan = recent ? await recent.catch(() => null) : null
-      latestDiagnostics = await runDiagnostics({
+      const runKeys: string[] = []
+      const report = await runDiagnostics({
         recentScan,
         ...rootedOptions.diagnostics,
+        // 跟缺省的读法一样，只是把这一轮读到的 Key 记下来，跟报告一起留着（D12）。
+        inspectProvider: (provider, roots) => {
+          const inspection = inspectProviderConfig(provider, roots)
+          if (inspection.apiKey) runKeys.push(inspection.apiKey)
+          return inspection
+        },
         app: {
           name: '星芒AI管理工具',
           version: app.getVersion(),
@@ -179,7 +220,9 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
         // 「项目文件夹里的设置」看的是用户最近一次选的项目文件夹，每次检查现读。
         workspace: systemService.readStoredConfig().workspace,
       })
-      return latestDiagnostics
+      latestDiagnostics = report
+      latestDiagnosticsKeys = runKeys
+      return report
     },
     // 检查页的一键处理。要删哪几项、挪哪个文件在点的那一刻按当前环境和当前站点重算，
     // 不信渲染层给的任何名字或路径（I5）。
@@ -238,7 +281,7 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
       if (!latestDiagnostics) throw new Error('请先运行一次健康诊断')
       return createDiagnosticsExport(latestDiagnostics, {
         ...rootedOptions.diagnosticExport,
-        sensitiveValues: sensitiveKeyValues(),
+        sensitiveValues: sensitiveKeyValues('export'),
       })
     },
   }
@@ -296,17 +339,21 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
     // 客服的第二个问题是「到底能不能用」——这答案用户在「检查」页点过一次就有
     // 了，没必要再让他截图发过来。只读上一次的结果，生成报告不重跑自检、不发
     // 网络请求。
-    runtimeLog.attachSelfCheckDescriber(async () => buildFeedbackSelfCheckLines({
-      report: latestDiagnostics,
-      readConnection: (provider) => latestConnectionChecks.get(provider) ?? null,
-      now: new Date(),
-      // 诊断结论本身不该带 Key，但这份报告是要发到客服群里的，所以跟诊断导出
-      // 过同一遍脱敏（I13）。
-      redact: (value) => redactDiagnosticText(value, {
-        ...rootedOptions.diagnosticExport,
-        sensitiveValues: sensitiveKeyValues(),
-      }),
-    }))
+    runtimeLog.attachSelfCheckDescriber(async () => {
+      // 一份报告只读一遍各家配置，用到才读：读不了的那家只记一条日志，不是每行一条。
+      let sensitiveValues: string[] | undefined
+      return buildFeedbackSelfCheckLines({
+        report: latestDiagnostics,
+        readConnection: (provider) => latestConnectionChecks.get(provider) ?? null,
+        now: new Date(),
+        // 诊断结论本身不该带 Key，但这份报告是要发到客服群里的，所以跟诊断导出
+        // 过同一遍脱敏（I13）。
+        redact: (value) => {
+          sensitiveValues ??= sensitiveKeyValues('feedback')
+          return redactDiagnosticText(value, { ...rootedOptions.diagnosticExport, sensitiveValues })
+        },
+      })
+    })
   }
   return { diagnosticsService, attachFeedbackDescribers }
 }

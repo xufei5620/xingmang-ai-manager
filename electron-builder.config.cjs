@@ -9,6 +9,7 @@ const { Arch } = require('builder-util')
 const packageVersion = require('./package.json').version
 const { resolveAccelerationBundleResources, verifyAccelerationBundleCore } = require('./scripts/stage-acceleration-bundle.cjs')
 const { ensureNoGroupOrOtherWrite } = require('./scripts/linux-payload-modes.cjs')
+const { writePackageEntriesInclude } = require('./scripts/windows-installer-package-entries.cjs')
 const { resolveLockedElectronZipChecksums } = require('./scripts/electron-zip-checksums.cjs')
 const { buildReleaseCopyright } = require('./scripts/release-copyright.cjs')
 const { feedReleaseNotes } = require('./scripts/extract-release-notes.cjs')
@@ -30,6 +31,8 @@ function resolveReleaseInfo() {
 }
 
 const outputDirectory = process.env.XINGMANG_OUTPUT_DIR?.trim() || 'release'
+// 同一次打包里各个 Windows 架构的顶层条目并在一起，安装程序只有一个（见 afterPack）。
+const windowsPackageEntries = new Set()
 const localBuildMode = process.env.XINGMANG_LOCAL_BUILD === '1'
 const releaseMode = !localBuildMode && process.env.XINGMANG_RELEASE === '1'
 const freeMacReleaseMode = !localBuildMode && process.env.XINGMANG_MAC_FREE_RELEASE === '1'
@@ -366,7 +369,20 @@ module.exports = {
   // Runs on linux-unpacked before fpm turns it into the deb; see
   // scripts/linux-payload-modes.cjs for why the Electron 45 payload needs it.
   // Windows and macOS payloads are left byte-for-byte as they were.
+  //
+  // Windows 这一步只读 win-unpacked：列出安装包自己带的顶层条目，写成 build/installer.nsh
+  // 要 !include 的名单。安装程序只把名单上的记进清单，客户自己放进安装目录的文件升级、卸载
+  // 都不动（11-18 复核 D05）。名单写不出来就让打包失败，installer.nsh 少了它也编译不过。
   afterPack: async (context) => {
+    if (context.electronPlatformName === 'win32') {
+      writePackageEntriesInclude({
+        appOutDir: context.appOutDir,
+        buildResourcesDir: context.packager.info.buildResourcesDir,
+        executableName: `${context.packager.appInfo.productFilename}.exe`,
+        collected: windowsPackageEntries,
+      })
+      return
+    }
     if (context.electronPlatformName !== 'linux') return
     await ensureNoGroupOrOtherWrite(context.appOutDir)
   },

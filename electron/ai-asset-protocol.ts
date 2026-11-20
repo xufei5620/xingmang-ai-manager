@@ -4,10 +4,6 @@ import { parseSingleByteRange, type ByteRange } from './byte-range'
 
 export type AiAssetProtocolMediaKind = 'image' | 'video' | 'audio'
 
-// 一次 Range 请求最多回这么多。播放器拖进度条发的多是「从这里到结尾」，照单全收就是每拖一次把后半个文件读进内存
-// （0.2.24 深查 P-3：200 MB 的视频拖 8 次读了 1.6 GB）。回得比要的短是 206 允许的，播放器读完这一截再要下一截。
-export const maximumVideoRangeBytes = 8 * 1024 * 1024
-
 // Structural, main-process-only dependencies keep this handler testable
 // without importing Electron or constructing the filesystem-backed stores.
 export interface AiAssetProtocolOptions {
@@ -85,19 +81,21 @@ export function createAiAssetProtocolHandler(options: AiAssetProtocolOptions): (
       const picked: { range: ByteRange | null, unsatisfiable: boolean } = { range: null, unsatisfiable: false }
       // Decides what to serve once the size is known: nothing for HEAD, the
       // whole file without a Range header, else the single range asked for.
-      const select = (totalBytes: number, cap?: number): ByteRange | null => {
+      // 开放式的「bytes=N-」要回到文件结尾，不能截短：0.2.24 每次最多回 8 MB，Electron 的播放器拿到这一截
+      // 不会再要下一截，大于 8 MB 的视频播到一半就停（#1631 引入，Mac 验收 B1）。省内存靠的是只从 N 读起。
+      const select = (totalBytes: number): ByteRange | null => {
         if (head) return null
         if (!rangeHeader) return { start: 0, end: totalBytes - 1 }
         const parsed = parseSingleByteRange(rangeHeader, totalBytes)
         if (!parsed) { picked.unsatisfiable = true; return null }
-        picked.range = cap ? { start: parsed.start, end: Math.min(parsed.end, parsed.start + cap - 1) } : parsed
+        picked.range = parsed
         return picked.range
       }
       let mimeType: string
       let totalBytes: number
       let body: Buffer
       if (url.hostname === 'video') {
-        const owned = await options.assets.readOwnedVideoRange(userId, assetId, (size) => select(size, maximumVideoRangeBytes))
+        const owned = await options.assets.readOwnedVideoRange(userId, assetId, select)
         totalBytes = owned.totalBytes
         body = owned.bytes
         mimeType = owned.asset.mimeType

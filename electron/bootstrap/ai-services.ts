@@ -661,6 +661,8 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
       audioAssets, mediaAssets, canvasPromptPresets, canvasProjects, canvasProjectAssets,
       chatService, imageService, canvasImageService, videoService, chatVideoService, canvasRuns, assetProtocol, chatAttachments, aiOutputPlacement,
+      // 两个站点共用的那一层作品文件夹（设置页量占用用，A08）：用到时才算，算不出来只让那一行没算出来，不拖垮整个账号的服务。
+      aiOutputSharedRoot: () => roots.sharedAssetOutputDirectory(aiOutputRoot),
       unsavedImages }
   }
   const businesses = new Map<RealmAccountSiteId, ReturnType<typeof createBusiness>>()
