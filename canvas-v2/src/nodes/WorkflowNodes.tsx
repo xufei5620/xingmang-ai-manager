@@ -44,6 +44,7 @@ import {
   imageModelPresets,
   imageQualityOptions,
   presetVideoModels,
+  recognisedImageModel,
   defaultVideoModel,
   defaultVideoSeconds,
   videoAspectRatioOptions,
@@ -72,6 +73,7 @@ import { resolveCanvasNodeModelAvailability, type CanvasNodeModelAvailability } 
 import { NodeModelSourceSelect } from '../components/NodeModelSourceSelect'
 import { parseImageReferenceOrder, resolveImageReferenceSlots } from '../commerce/image-reference-order'
 import { RouterStrategyControls } from './RouterStrategyControls'
+import { nodeHasRouterStrategySetting } from '../runtime/router-strategy'
 import { canvasNodeKindAvailable, type CanvasCapabilityProfile } from '../host-capabilities'
 import { hostCandidateCountChoices, hostFeatureControlShown } from '../components/host-feature-controls'
 import { hostNoteTextEditAccepted, hostNoteTextProblem } from '../persistence/host-project-fields'
@@ -972,8 +974,8 @@ function NodeSettings({ id, data, kind, readOnly }: { id: string; data: Workflow
     )
   }
   if (kind === 'router') {
-    // A legacy router already does what a host without strategies does; only a saved strategy needs showing there.
-    if (!hostFeatureControlShown(capabilities, 'routerStrategy', Object.hasOwn(data.settings ?? {}, 'routerStrategy'))) return null
+    // A historical router already does what a host without strategies does; only a saved strategy (the old explicit all included) needs showing there.
+    if (!hostFeatureControlShown(capabilities, 'routerStrategy', nodeHasRouterStrategySetting(kind, data.settings))) return null
     return <RouterStrategyControls settings={data.settings} disabled={readOnly || data.__canvasDisabled === true || data.__canvasLocked === true || data.status === 'running' || data.status === 'queued'} onChange={(patch) => handlers.onSettingsChange(id, patch)} />
   }
   if (kind === 'gallery') {
@@ -1345,7 +1347,7 @@ function NodeShell({ id, data: flowData, kind, selected }: { id: string; data: W
         const sizeSupport = resolution.choices.find((choice) => choice.value === '1K')
         return (
           <>
-            {selectedModel && !imageModelPresets.some((entry) => entry.id === selectedModel) && <p className="wf-error is-validation" role="note"><AlertTriangle size={13} />自定义图像模型的尺寸、画质和编辑兼容性尚未检测，请核对服务能力。</p>}
+            {selectedModel && !recognisedImageModel(selectedModel) && <p className="wf-error is-validation" role="note"><AlertTriangle size={13} />自定义图像模型的尺寸、画质和编辑兼容性尚未检测，请核对服务能力。</p>}
             <select className="nodrag wf-model" aria-label="图像模型" value={selectedModel} onChange={(event) => handlers.onModelChange(id, event.target.value)}>
               {!mediaModelAvailable && <option value={selectedModel} disabled>{selectedModel ? `${imageModelPreset(selectedModel).label}（当前分组不可用）` : '请先配置图像来源与模型'}</option>}
               {imageModels.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}

@@ -838,9 +838,8 @@ describe('canvas request parser', () => {
     expect(historical.data).toEqual({ prompt: 'p', model: 'm' })
     // The shape is checked whether or not strategies run.
     expect(() => parseCanvasStartRunInput(kernelNode('router', { routerStrategy: { version: 1, strategy: 'all', apiKey: 'secret' } }), { ...referenceOrderOff, routerStrategy: true })).toThrow('画布路由策略包含未知字段')
-    // The shipped declaration still refuses them: they switch on together
-    // with the kernel that runs an old project's 「保留全部输入」 as all.
-    expect(parseCanvasStartRunInput(kernelNode('router', { routerStrategy: { version: 1, strategy: 'all' } })).graph.nodes[0].desktopUnsupported).toBe(`「路由策略」${kernelRefusal}`)
+    // The shipped desktop declaration runs them.
+    expect(parseCanvasStartRunInput(kernelNode('router', { routerStrategy: { version: 1, strategy: 'all' } })).graph.nodes[0].data.routerStrategy).toEqual({ version: 1, strategy: 'all' })
   })
 
   it('bounds the kernel settings one run may carry as a whole', () => {
