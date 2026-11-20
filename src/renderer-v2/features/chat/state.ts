@@ -7,6 +7,7 @@ import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { rawErrorMessage, speaksChinese, userFacingErrorMessage } from '../../business-common'
 import { canEditImages, canReadImages, chatLimits, inspectModel, noImageEditModelMessage } from './api'
+import { redactPersistentChatText } from './storage'
 
 export type ChatMode = 'text' | 'image'
 export type MessageStatus = 'pending' | 'streaming' | 'complete' | 'canceled' | 'error'
@@ -240,7 +241,13 @@ export function groupConversationList(conversations: readonly Conversation[], no
 }
 
 // 自动取的名字是第一句话的前 32 个字；自己起的名字放宽一点，再长列表里也显示不下。
+const AUTO_CONVERSATION_TITLE_LENGTH = 32
 export const MAX_CONVERSATION_TITLE_LENGTH = 40
+// 先打码再截：密钥正好跨在第 32 个字上时，截下来的半截认不出是密钥，存盘时打不上码，
+// 导出时也原样带出去（Mac 验收 R5）。列表里看到的名字跟存下来的一样，都是打过码的。
+export function autoConversationTitle(text: string): string {
+  return redactPersistentChatText(text).slice(0, AUTO_CONVERSATION_TITLE_LENGTH)
+}
 /** 空名字不改；改名不动 updatedAt，免得一段旧对话改个名就跑到「今天」里去。 */
 export function renameConversation(conversation: Conversation, title: string): Conversation {
   const next = title.trim().slice(0, MAX_CONVERSATION_TITLE_LENGTH)
@@ -435,7 +442,7 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   const snapshot = { ...settings, parameters: { ...settings.parameters } }
   const assistant: ChatMessage = { id: assistantId, role: 'assistant', content: '', reasoning: '', status: 'pending', createdAt: Date.now(), requestId: input.requestId, settings: snapshot }
   const fresh = !input.retryId && !input.editId
-  const title = conversation.messages.length || conversation.renamed ? conversation.title : prompt.slice(0, 32) || files[0]?.name.slice(0, 32) || '图片提问'
+  const title = conversation.messages.length || conversation.renamed ? conversation.title : autoConversationTitle(prompt) || autoConversationTitle(files[0]?.name ?? '') || '图片提问'
   const { draftImages: _sent, draftFiles: _sentFiles, ...rest } = conversation
   return { conversation: { ...(fresh ? rest : conversation), title, updatedAt: Date.now(), draft: fresh ? '' : conversation.draft, messages: [...history, assistant] }, requestId: input.requestId, assistantId, settings: snapshot, prompt, messages, images }
 }
