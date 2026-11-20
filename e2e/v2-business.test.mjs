@@ -3428,7 +3428,7 @@ test('a purchase dialog left open follows a reread plan list instead of charging
 })
 
 test('a plan taken down while its purchase dialog is open cannot be bought from the stale dialog', async () => {
-  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1&planBalancePay=1')
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1&planBalancePay=1', (next) => next.clock.install())
   try {
     await page.getByRole('button', { name: '购买', exact: true }).click()
     const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
@@ -3444,6 +3444,13 @@ test('a plan taken down while its purchase dialog is open cannot be bought from 
     assert.deepEqual(await subscriptionCalls(page), [])
     await assertNoToast(page, '外部订阅已开通')
     await page.getByTestId('account-recharge-plans').waitFor({ state: 'detached' })
+
+    // 框还开着，后台又把它上架了：窗口回到前台重读以后，那条收起、付款按钮能点。
+    await page.evaluate(() => window.subscriptionPlanHarness.restore())
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await notice.waitFor({ state: 'detached' })
+    assert.equal(await pay.isDisabled(), false)
   } finally {
     await page.close()
   }

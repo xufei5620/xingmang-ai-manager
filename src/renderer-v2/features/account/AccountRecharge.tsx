@@ -488,6 +488,8 @@ export function AccountRecharge({
     }
     const notice = purchasePlanNotice(next.change, seen, plan)
     if (notice) setPurchaseNotice({ ...notice, gone: next.change === 'gone' })
+    // 又上架了：「刚下架了」那条和灰着的付款按钮一起收起；价格那条留着，客户还没再点过。
+    else setPurchaseNotice((current) => current?.gone ? null : current)
     return next.change === 'none'
   }
   // 框开着时列表在后台重读过（窗口回到前台、付款结果回来）：框里跟着换，不再摆着旧价。
