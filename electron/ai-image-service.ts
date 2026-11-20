@@ -9,7 +9,7 @@ import {
   BoundedOperationQueue,
   type BoundedOperationHandle,
 } from './bounded-operation-queue'
-import { AI_IMAGE_KEPT_UNSAVED_ERROR_CODE, inspectAiImage } from './ai-asset-store'
+import { AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE, AI_IMAGE_KEPT_UNSAVED_ERROR_CODE, inspectAiImage } from './ai-asset-store'
 import { readBoundedResponseBytes } from './bounded-response'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiOperationProgressObserver, AiOperationProgressStage } from './ai-operation-progress'
@@ -195,6 +195,12 @@ function imageRequestFailure(status: number, detail: string, evidence = detail):
  * 对话页认「先别重新生成」原样上屏（renderer-v2 的 chatErrorMessage）。
  */
 export const aiImageKeptUnsavedMessage = '图片已经生成、也已经扣费了，但没能存进作品库，已经先替你收着。先别重新生成，清出一些空间后会自动存进作品库。'
+
+/**
+ * 同一种情形，但暂存文件夹也写不进、只留在内存里（11-18 复核 A02，总单 #61）：一退出就没了，上面那句没提这个，
+ * 客户以为收好了就退出。补存照旧会自己再试，所以仍说「会自动存进作品库」。对话页认的「先别重新生成」要留着。
+ */
+export const aiImageKeptInMemoryMessage = '图片已经生成、也已经扣费了，但电脑上暂时存不下，先替你收在星芒里，一退出就没了。先别重新生成，也先别退出星芒，清出一些空间后会自动存进作品库。'
 
 function ambiguousImageSubmission(): Error {
   return new Error('生图提交结果不明确，服务端可能仍在生成图片，请勿立即重复提交')
@@ -419,6 +425,9 @@ export function createAiImageService(options: {
             }
             if ((error as { code?: unknown } | null)?.code === AI_IMAGE_KEPT_UNSAVED_ERROR_CODE) {
               throw new Error(aiImageKeptUnsavedMessage, { cause: error })
+            }
+            if ((error as { code?: unknown } | null)?.code === AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE) {
+              throw new Error(aiImageKeptInMemoryMessage, { cause: error })
             }
             // 原因挂在 cause 上：界面只说这一句，运行日志（ipc.ts 记失败时连 cause 一起写）里要看得到是盘满、没权限还是被占用（深查 S-1）。
             throw new Error('图片已生成但本地保存失败，这次可能已经扣费，请勿立即重复提交；先看看保存位置所在的磁盘空间够不够', { cause: error })
