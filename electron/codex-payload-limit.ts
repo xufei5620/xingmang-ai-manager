@@ -132,6 +132,9 @@ interface TrackedRollout {
   offset: number
   /** offset 落在行首；跳过一整段太长的行以后不是。 */
   aligned: boolean
+  /** 上次读的时候文件多大。 */
+  size: number
+  /** 上次看到它变了（第一次见、变大、被截短重写）的时刻。 */
   touchedAt: number
 }
 
@@ -271,17 +274,19 @@ export function createCodexRolloutWatcher(options: CodexRolloutWatcherOptions) {
       return
     }
     const { buffer, start, size } = range
+    // 只有真变了才算又写过：每读一次都算的话，不再写的会话记录永远是「最近写过」，一直每 30 秒被打开看一次（A07）。
+    const touchedAt = previous === undefined || previous.size !== size ? now() : previous.touchedAt
     const lastNewline = buffer.lastIndexOf(0x0a)
     let lines: string[] = []
     if (lastNewline < 0) {
       // 一整行都还没写完：在行首的接着等它写完；这一段已经比一次能读的还长（截图那种），这一行不要了，从末尾接着读。
       const waiting = range.aligned && buffer.length < rolloutTailBytes
-      remember(relative, { offset: waiting ? start : size, aligned: waiting, touchedAt: now() })
+      remember(relative, { offset: waiting ? start : size, aligned: waiting, size, touchedAt })
     } else {
       lines = buffer.subarray(0, lastNewline).toString('utf8').split('\n')
       // 从一行中间读起的，第一行是半截。
       if (!range.aligned) lines.shift()
-      remember(relative, { offset: start + lastNewline + 1, aligned: true, touchedAt: now() })
+      remember(relative, { offset: start + lastNewline + 1, aligned: true, size, touchedAt })
     }
     for (const line of lines) {
       const found = parseCodexPayloadTooLarge(line)
