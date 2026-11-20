@@ -1156,6 +1156,39 @@ describe('external clients follow the connection route the user selected (batch 
     expect(routeLogs(f)).toContainEqual(['info', 'config', 'external-client.route.deferred', expect.any(String), { tool: 'workbuddy', from: 'primary', to: 'direct' }])
   })
 
+  // 总单 #34（11-18 N9、全面检查 D-5）：拉清单那几秒里才打开的，跟一开始就开着的一样，关掉以后星芒自己换（C11），
+  // 不再要客户回来点「重新检测」。
+  it('checks back on a client opened while the model list was being fetched and moves it by itself once it has quit', async () => {
+    const f = fixture()
+    const { files, before } = await configureAll(f)
+    const service = await restartOn(f, 'direct')
+    let cached: ExternalClientRuntimeStatus[] | null = null
+    vi.mocked(f.runtime.scan).mockImplementation(async (options) => {
+      if (options?.force || options?.fresh || !cached) cached = structuredClone(f.runtimeStatuses)
+      return structuredClone(cached)
+    })
+    // 真的盘点认出装着的都带程序位置，回头看它关没关（stillRunning）认的就是这个。
+    const workbuddy = f.runtimeStatuses.find((status) => status.tool === 'workbuddy')!
+    workbuddy.path = path.join(f.directory, 'WorkBuddy', 'WorkBuddy.exe')
+    const answer = f.relayFetch.getMockImplementation()!
+    let opened = false
+    f.relayFetch.mockImplementation(async (...request) => {
+      if (!opened) workbuddy.running = opened = true
+      return answer(...request)
+    })
+    const client = (await service.scanExternalClients()).find((entry) => entry.tool === 'workbuddy')
+
+    expect(client).toMatchObject({ running: true, routePending: true, routeRecheck: true })
+    expect(f.routeTimers.map((timer) => timer.delayMs)).toEqual([5 * 60 * 1000])
+
+    workbuddy.running = false
+    f.routeTimers.splice(0)[0].callback()
+    await vi.waitFor(() => expect(f.routeFollowed).toHaveBeenCalled(), { timeout: 10_000 })
+    expect(f.runtime.stillRunning).toHaveBeenCalledWith('workbuddy', workbuddy.path)
+    expect(fs.readFileSync(files.get('workbuddy')!, 'utf8')).toBe(before.get('workbuddy')!.replaceAll(primaryOrigin, directOrigin))
+    expect(f.routeTimers).toEqual([])
+  })
+
   it.each<[string, Partial<ExternalClientRuntimeStatus>]>([
     ['cannot tell whether it is installed', { detectionError: '部分软件安装记录无法读取，暂时不能确认客户端是否未安装，请重试检测' }],
     ['no longer finds it installed', { installed: false }],
