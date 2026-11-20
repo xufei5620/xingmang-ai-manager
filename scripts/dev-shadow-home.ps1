@@ -88,7 +88,7 @@ if ($Reset -and (Test-Path $Shadow)) {
 New-Item -ItemType Directory -Force -Path $Shadow, $roaming, $local, $npmPrefix | Out-Null
 
 foreach ($name in $launchEnvironment.Keys) {
-  [Environment]::SetEnvironmentVariable($name, [string]$launchEnvironment[$name], 'Process')
+  Set-Item -LiteralPath "Env:$name" -Value ([string]$launchEnvironment[$name])
 }
 
 Write-Host "[shadow-home] HOME/USERPROFILE -> $Shadow"
