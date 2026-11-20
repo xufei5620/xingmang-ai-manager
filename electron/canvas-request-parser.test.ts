@@ -822,6 +822,26 @@ describe('canvas request parser', () => {
     }
   })
 
+  it('keeps a router strategy where the desktop runs strategies and refuses it anywhere else (D06)', () => {
+    for (const strategy of ['first-available', 'all'] as const) {
+      const routed = parseCanvasStartRunInput(kernelNode('router', { routerStrategy: { version: 1, strategy } }), { ...referenceOrderOff, routerStrategy: true }).graph.nodes[0]
+      expect(routed.desktopUnsupported).toBeUndefined()
+      expect(routed.data).toEqual({ prompt: 'p', model: 'm', routerStrategy: { version: 1, strategy } })
+      // Only a router hands inputs on by a strategy; on another node it is not dropped quietly.
+      const elsewhere = parseCanvasStartRunInput(kernelNode('gallery', { routerStrategy: { version: 1, strategy } }), { ...referenceOrderOff, routerStrategy: true }).graph.nodes[0]
+      expect(elsewhere.desktopUnsupported).toBe(`「路由策略」${kernelRefusal}`)
+      expect(elsewhere.data).toEqual({ prompt: 'p', model: 'm' })
+    }
+    // A router without one is the historical router, still run as it was.
+    const historical = parseCanvasStartRunInput(kernelNode('router', {}), { ...referenceOrderOff, routerStrategy: true }).graph.nodes[0]
+    expect(historical.desktopUnsupported).toBeUndefined()
+    expect(historical.data).toEqual({ prompt: 'p', model: 'm' })
+    // The shape is checked whether or not strategies run.
+    expect(() => parseCanvasStartRunInput(kernelNode('router', { routerStrategy: { version: 1, strategy: 'all', apiKey: 'secret' } }), { ...referenceOrderOff, routerStrategy: true })).toThrow('画布路由策略包含未知字段')
+    // The shipped desktop declaration runs them.
+    expect(parseCanvasStartRunInput(kernelNode('router', { routerStrategy: { version: 1, strategy: 'all' } })).graph.nodes[0].data.routerStrategy).toEqual({ version: 1, strategy: 'all' })
+  })
+
   it('bounds the kernel settings one run may carry as a whole', () => {
     // Each node is within every per-value limit; together they are not. A
     // tile choice on a picture node is only bounded, never read.
