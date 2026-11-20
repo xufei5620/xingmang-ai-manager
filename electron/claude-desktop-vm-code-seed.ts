@@ -12,7 +12,7 @@
  *
  * 所以跟 Windows 那一半（claude-desktop-code-seed.ts）一样：从国内 npm 镜像下同一版的包，照旧拿 npm 官方源的
  * SHA-512 对账（不放宽），照它的格式放好。不占星芒存储桶的流量。只在放工作区那一步里跑（claude-desktop-
- * workspace-seed.ts：客户用了 Cowork、`.cowork-adopted` 在了才跑），远程开关跟工作区共用。
+ * workspace-seed.ts：装好 Claude Desktop、星芒开机、从星芒打开时各跑一次，排在工作区前面），远程开关跟工作区共用。
  */
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'

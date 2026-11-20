@@ -222,8 +222,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     onProgress: (event) => claudeDesktopSeedProgress.report(event),
     log: componentLog,
   })
-  // Cowork 的工作区（约 1.3 GB）从星芒的下载站放，它虚拟机里那份 Linux 版 Claude Code 从 npm 镜像放；
-  // 只给用了 Cowork 的电脑，从星芒打开以后在后台做。
+  // Cowork 的工作区（约 1.3 GB）从星芒的下载站放，它虚拟机里那份 Linux 版 Claude Code 从 npm 镜像放。
+  // 装好或更新好 Claude、开机、从星芒点「打开」都叫一次，在后台做（seedClaudeDesktopWorkspace）。
   const claudeDesktopWorkspaceSeeder = createClaudeDesktopWorkspaceSeeder({
     platform,
     executionMode: windowsExecutionMode,
@@ -259,7 +259,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     onLaunchTiming: (timing) => runtimeLog?.log('info', 'system', 'external-client.launch-timing', '打开桌面客户端前各段用时', { ...timing }),
     onLaunched: (tool, clientPath) => {
       launchedClientPaths.set(tool, clientPath)
-      if (tool === 'claudeDesktop') claudeDesktopWorkspaceSeeder.scheduleAfterLaunch(clientPath)
+      if (tool === 'claudeDesktop') void claudeDesktopWorkspaceSeeder.seed(clientPath)
     },
     prepareClaudeDesktopLaunch: async (client) => {
       if (platform !== 'darwin') return claudeDesktopCodeSeeder.prepare(client)
@@ -465,6 +465,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       }
     }
     const status = await (request ? externalClientRuntime.install(tool, forward, request) : externalClientRuntime.install(tool, forward))
+    // 装好或更新好 Claude Desktop 就在后台把它的工作区下好，不等客户点进 Cowork（yoyo 2026-11-20）。
+    if (tool === 'claudeDesktop' && status.installed && status.path && !status.detectionError) void claudeDesktopWorkspaceSeeder.seed(status.path)
     const described = await describeExternalClient(status)
     // 就地替换而不是追加：这份快照的顺序就是反馈报告与界面读到的顺序。
     latestExternalClients = latestExternalClients?.some((entry) => entry.tool === tool)
@@ -598,6 +600,21 @@ export function createExternalClientRouteService(context: ServiceContext, depend
         connectionVerified: connection?.ok === true, connection }
     }
     return queueExternalConfigWork(work)
+  }
+  /**
+   * 开机替已经装着的 Claude Desktop 把工作区下好（升到这一版之前装的、从开始菜单直接打开从不点星芒「打开」的，
+   * 也能补上）。只看这台电脑装没装、装在哪，不看登录、不管开没开；永不抛错，原因只进运行日志。
+   */
+  async function seedClaudeDesktopWorkspace(): Promise<void> {
+    try {
+      const status = (await externalClientRuntime.scan()).find((entry) => entry.tool === 'claudeDesktop')
+      if (!status?.installed || !status.path || status.detectionError) return
+      await claudeDesktopWorkspaceSeeder.seed(status.path)
+    } catch (error) {
+      runtimeLog?.log('warn', 'install', 'claude-desktop.workspace-seed.skipped', '开机没认出 Claude Desktop 装在哪，这次不放工作区', {
+        reason: 'target-unresolved', cause: redactHomeDirectory(error instanceof Error ? error.message : String(error), providerRoots.userHome, platform),
+      })
+    }
   }
   // 开机补型号正在跑的那一次：main.ts 开机只叫一次，这里再挡一下同时叫两次。
   let toppingUpClaudeDesktopModels: Promise<void> | null = null
@@ -1229,5 +1246,6 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     followManagedKeysNow,
     cancelPendingExternalRouteRecheck,
     topUpClaudeDesktopModels,
+    seedClaudeDesktopWorkspace,
   }
 }

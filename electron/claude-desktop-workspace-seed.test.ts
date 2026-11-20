@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ClaudeDesktopComponentManifest, ClaudeDesktopVmFile } from './claude-desktop-component-manifest'
 import { claudeDesktopWorkspaceObjectKey } from './claude-desktop-component-keys'
 import {
+  claudeDesktopWorkspaceBundleDirectory,
   claudeDesktopWorkspaceFilePaths,
-  claudeDesktopWorkspacePaths,
   claudeDesktopWorkspaceRedeliverMs,
   claudeDesktopWorkspaceRetryCooldownMs,
   createClaudeDesktopWorkspaceSeeder,
@@ -41,7 +41,8 @@ function vmFile(name: string, content: Buffer, rawSize: number | null = null): C
 
 interface FixtureOptions {
   platform?: NodeJS.Platform
-  adopted?: boolean
+  /** Claude has run before, so its workspace folder already exists. Default true. */
+  bundleExists?: boolean
   overrides?: Partial<ClaudeDesktopWorkspaceSeederOptions>
   serve?: (url: string, files: Map<string, Buffer>) => Response | null
 }
@@ -59,11 +60,8 @@ function workspaceFixture(fixtureOptions: FixtureOptions = {}) {
     code: null,
     vm: { sha, files: { unix: { arm64: files }, win32: { x64: files } } },
   }
-  const { bundleDirectory, adoptedMarkerPath } = claudeDesktopWorkspacePaths(profile)
-  if (fixtureOptions.adopted !== false) {
-    fs.mkdirSync(bundleDirectory, { recursive: true })
-    fs.writeFileSync(adoptedMarkerPath, '')
-  }
+  const bundleDirectory = claudeDesktopWorkspaceBundleDirectory(profile)
+  if (fixtureOptions.bundleExists !== false) fs.mkdirSync(bundleDirectory, { recursive: true })
   const platform = fixtureOptions.platform ?? 'darwin'
   const platformKey = platform === 'win32' ? 'win32' : 'unix'
   const architecture = platform === 'win32' ? 'x64' : 'arm64'
@@ -97,7 +95,7 @@ function workspaceFixture(fixtureOptions: FixtureOptions = {}) {
     ...fixtureOptions.overrides,
   })
   return {
-    root, profile, asar, files, contents, manifest, bundleDirectory, adoptedMarkerPath, seeder, fetchMock, log, readManifest, stateDirectory, served,
+    root, profile, asar, files, contents, manifest, bundleDirectory, seeder, fetchMock, log, readManifest, stateDirectory, served,
     advance(milliseconds: number) { clock += milliseconds },
   }
 }
@@ -108,9 +106,8 @@ function listBundle(directory: string): string[] {
 
 describe('claude desktop workspace seed: names and places', () => {
   it('uses the same file names Claude reads its cache from', () => {
-    const { bundleDirectory, adoptedMarkerPath } = claudeDesktopWorkspacePaths('/p/Claude-3p', path.posix)
+    const bundleDirectory = claudeDesktopWorkspaceBundleDirectory('/p/Claude-3p', path.posix)
     expect(bundleDirectory).toBe('/p/Claude-3p/vm_bundles/claudevm.bundle')
-    expect(adoptedMarkerPath).toBe('/p/Claude-3p/vm_bundles/claudevm.bundle/.cowork-adopted')
     expect(claudeDesktopWorkspaceFilePaths(bundleDirectory, 'rootfs.img', path.posix)).toEqual({
       raw: '/p/Claude-3p/vm_bundles/claudevm.bundle/rootfs.img',
       rawOrigin: '/p/Claude-3p/vm_bundles/claudevm.bundle/.rootfs.img.origin',
@@ -159,7 +156,7 @@ describe('claude desktop workspace seed: putting it in place', () => {
     })
     const total = f.files.reduce((sum, file) => sum + file.size, 0)
     expect(await seeder.seed('/Applications/Claude.app')).toEqual({ status: 'placed', sha, files: 2, bytes: total })
-    expect(listBundle(f.bundleDirectory)).toEqual(['.cowork-adopted', '.rootfs.img.zst.origin', '.vmlinuz.zst.origin', 'rootfs.img.zst', 'vmlinuz.zst'])
+    expect(listBundle(f.bundleDirectory)).toEqual(['.rootfs.img.zst.origin', '.vmlinuz.zst.origin', 'rootfs.img.zst', 'vmlinuz.zst'])
     for (const [name, content] of f.contents) {
       expect(fs.readFileSync(path.join(f.bundleDirectory, `${name}.zst`)).equals(content)).toBe(true)
       expect(fs.readFileSync(path.join(f.bundleDirectory, `.${name}.zst.origin`), 'utf8')).toBe(sha)
@@ -192,12 +189,14 @@ describe('claude desktop workspace seed: putting it in place', () => {
     expect(fs.existsSync(path.join(f.bundleDirectory, 'vmlinuz.zst'))).toBe(false)
   })
 
-  it('does not download a byte until Claude has asked for the workspace itself', async () => {
-    const f = workspaceFixture({ adopted: false })
-    expect(await f.seeder.seed('/Applications/Claude.app')).toEqual({ status: 'skipped', reason: 'not-adopted' })
-    expect(f.fetchMock).not.toHaveBeenCalled()
-    expect(fs.existsSync(f.bundleDirectory)).toBe(false)
-    expect(f.log).toHaveBeenCalledWith('info', 'claude-desktop.workspace-seed.skipped', expect.any(String), expect.objectContaining({ reason: 'not-adopted' }))
+  it('places the workspace right after install, before Claude has ever run or asked for it', async () => {
+    // yoyo 2026-11-20: download it once at install time instead of waiting for the customer to open Cowork.
+    const f = workspaceFixture({ bundleExists: false })
+    expect(fs.existsSync(f.profile)).toBe(false)
+    const total = f.files.reduce((sum, file) => sum + file.size, 0)
+    expect(await f.seeder.seed('/Applications/Claude.app')).toEqual({ status: 'placed', sha, files: 2, bytes: total })
+    expect(listBundle(f.bundleDirectory)).toEqual(['.rootfs.img.zst.origin', '.vmlinuz.zst.origin', 'rootfs.img.zst', 'vmlinuz.zst'])
+    expect(fs.existsSync(path.join(f.bundleDirectory, '.cowork-adopted'))).toBe(false)
   })
 
   it('throws away a bucket file that does not match the checksum in Claude itself', async () => {
@@ -211,7 +210,7 @@ describe('claude desktop workspace seed: putting it in place', () => {
       },
     })
     expect(await f.seeder.seed('/Applications/Claude.app')).toEqual({ status: 'skipped', reason: 'download-failed' })
-    expect(listBundle(f.bundleDirectory)).toEqual(['.cowork-adopted'])
+    expect(listBundle(f.bundleDirectory)).toEqual([])
     expect(fs.existsSync(path.join(f.stateDirectory, 'delivered.json'))).toBe(false)
     expect(f.log).toHaveBeenCalledWith('warn', 'claude-desktop.workspace-seed.skipped', expect.any(String), expect.objectContaining({ reason: 'download-failed', file: 'rootfs.img' }))
   })
@@ -225,7 +224,7 @@ describe('claude desktop workspace seed: putting it in place', () => {
       },
     })
     expect(await f.seeder.seed('/Applications/Claude.app')).toEqual({ status: 'skipped', reason: 'download-failed' })
-    expect(listBundle(f.bundleDirectory)).toEqual(['.cowork-adopted'])
+    expect(listBundle(f.bundleDirectory)).toEqual([])
   })
 
   it('refuses a redirect out of the bucket', async () => {
@@ -235,7 +234,7 @@ describe('claude desktop workspace seed: putting it in place', () => {
     expect(f.fetchMock.mock.calls.every((call) => (call[1] as RequestInit | undefined)?.redirect === 'manual')).toBe(true)
   })
 
-  it('waits a while after a failed download instead of pulling the same files again on every recheck', async () => {
+  it('waits a while after a failed download instead of pulling the same files again on every call', async () => {
     let broken = true
     const f = workspaceFixture({ serve: () => (broken ? new Response('gone', { status: 503 }) : null) })
     expect(await f.seeder.seed('/Applications/Claude.app')).toEqual({ status: 'skipped', reason: 'download-failed' })
@@ -352,43 +351,12 @@ describe('claude desktop workspace seed: putting it in place', () => {
   })
 })
 
-describe('claude desktop workspace seed: after launching Claude', () => {
-  it('looks right away and again later, keeps only the latest round, and stops on dispose', async () => {
-    const timers: { callback: () => void; milliseconds: number; cancelled: boolean }[] = []
-    const setTimer = (callback: () => void, milliseconds: number) => {
-      const timer = { callback, milliseconds, cancelled: false }
-      timers.push(timer)
-      return { cancel() { timer.cancelled = true } }
-    }
-    const f = workspaceFixture({ adopted: false, overrides: { setTimer, recheckDelaysMs: [180_000, 600_000] } })
-    f.seeder.scheduleAfterLaunch('/Applications/Claude.app')
-    f.seeder.scheduleAfterLaunch('/Applications/Claude.app')
-    expect(timers.map((timer) => [timer.milliseconds, timer.cancelled])).toEqual([[180_000, true], [600_000, true], [180_000, false], [600_000, false]])
-    // The round started right away is still running: seed() hands back that same run, so this waits for it
-    // to finish instead of polling the log.
-    await expect(f.seeder.seed('/Applications/Claude.app')).resolves.toEqual({ status: 'skipped', reason: 'not-adopted' })
-    expect(f.fetchMock).not.toHaveBeenCalled()
-
-    // The customer opened Cowork in the meantime, so Claude wrote its marker.
-    fs.mkdirSync(f.bundleDirectory, { recursive: true })
-    fs.writeFileSync(f.adoptedMarkerPath, '')
-    timers[2].callback()
-    await expect(f.seeder.seed('/Applications/Claude.app')).resolves.toMatchObject({ status: 'placed', files: 2 })
-    expect(f.log).toHaveBeenCalledWith('info', 'claude-desktop.workspace-seed.placed', expect.any(String), expect.anything())
-    expect(f.fetchMock).toHaveBeenCalledTimes(2)
-
-    f.seeder.dispose()
-    expect(timers[3].cancelled).toBe(true)
-    f.seeder.scheduleAfterLaunch('/Applications/Claude.app')
-    expect(timers).toHaveLength(4)
-  })
-
-  it('schedules nothing where Claude has no workspace', () => {
-    const setTimer = vi.fn(() => ({ cancel() {} }))
-    const f = workspaceFixture({ overrides: { platform: 'linux', setTimer } })
-    f.seeder.scheduleAfterLaunch('/opt/Claude')
-    expect(setTimer).not.toHaveBeenCalled()
+describe('claude desktop workspace seed: where Claude has no workspace', () => {
+  it('reads and downloads nothing on Linux', async () => {
+    const f = workspaceFixture({ overrides: { platform: 'linux' } })
+    expect(await f.seeder.seed('/opt/Claude')).toEqual({ status: 'skipped', reason: 'unsupported-platform' })
     expect(f.readManifest).not.toHaveBeenCalled()
+    expect(f.fetchMock).not.toHaveBeenCalled()
   })
 })
 
@@ -398,7 +366,7 @@ describe('claude desktop workspace seed: remote switch mid-way', () => {
     const f = workspaceFixture({ overrides: { isOff: () => off, onProgress: () => { off = true } } })
     expect(await f.seeder.seed('/Applications/Claude.app')).toEqual({ status: 'skipped', reason: 'remote-off' })
     expect(f.fetchMock).toHaveBeenCalledTimes(1)
-    expect(listBundle(f.bundleDirectory)).toEqual(['.cowork-adopted', '.rootfs.img.zst.origin', 'rootfs.img.zst'])
+    expect(listBundle(f.bundleDirectory)).toEqual(['.rootfs.img.zst.origin', 'rootfs.img.zst'])
     expect(fs.existsSync(path.join(f.stateDirectory, 'delivered.json'))).toBe(false)
   })
 })

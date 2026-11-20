@@ -3,7 +3,7 @@ import { externalClientHint } from './ExternalClientDialog'
 
 describe('externalClientHint', () => {
   it('tells Windows and Mac users that 星芒 places both the program and the Cowork workspace', () => {
-    expect(externalClientHint('claudeDesktop', true)).toBe('保存后要完全退出再重新打开 Claude Desktop。从星芒点「打开」时，星芒会先替它放好聊天和 Code 要用的程序；第一次进 Cowork 以后，星芒还会在后台替它下好工作区（约 1.3GB），几分钟后在 Claude 里点「Retry」就能用。这些都不用连 Claude 官网。')
+    expect(externalClientHint('claudeDesktop', true)).toBe('保存后要完全退出再重新打开 Claude Desktop。从星芒点「打开」时，星芒会先替它放好聊天和 Code 要用的程序；Cowork 要用的工作区（约 1.3GB）星芒也会自动在后台替它下好。这些都不用连 Claude 官网。')
   })
 
   it('keeps the old sentence where 星芒 does not place the program, and for the other clients', () => {

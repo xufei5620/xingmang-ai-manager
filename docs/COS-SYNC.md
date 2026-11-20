@@ -203,7 +203,7 @@ Claude Desktop 自己要从官网下两样东西，国内下不动：点进 Cowo
 - 不核安装包签名：安装包在这里只用来知道该搬哪几个官网文件。客户电脑上放之前还要拿它**自己装的那份** Claude 里写的校验值再核一遍，桶里的东西对不上就丢掉不放，所以桶出了问题最多是客户白下一次。
 - 没有 `latest.json`：客户端按自己的 Claude 版本算位置，桶里只增不改。一版工作区四个平台约 5.2 GB、换一版传一次（往上海分块约 190~300 KB/s，每份一个半小时上下，单个文件分块期限 4 小时，作业限 330 分钟）；程序包跟 Claude Code 版本走，大约一周一次。旧版不删，要清可以在桶上设生命周期规则（桶设置，负责人决定）。
 - 大文件要走分块上传，所以 `cos-sync` 环境的 `XINGMANG_COS_MULTIPART_ENABLED` 得是 `true`（Codex 桌面端那条同步已经靠它传 700 MB 以上的包）；关着时工作区那四部分会在上传那一步失败报警，程序包那部分照常。
-- 客户端那部分（0.2.25 起）带远程开关：`claude-desktop-workspace-seed` 关工作区，`claude-desktop-code-seed` 关 Mac 程序（跟 Windows 放程序共用），见 `docs/SERVICE-STATUS.md`。账单不对先关开关，同步可以照跑。客户端只给 Claude 已经留下 `.cowork-adopted`（这台电脑跑得了虚拟机、客户点进过 Cowork）的电脑下工作区，同一版每台电脑 7 天内最多下一次。
+- 客户端那部分（0.2.25 起）带远程开关：`claude-desktop-workspace-seed` 关工作区，`claude-desktop-code-seed` 关 Mac 程序（跟 Windows 放程序共用），见 `docs/SERVICE-STATUS.md`。账单不对先关开关，同步可以照跑。客户端在装好或更新好 Claude Desktop、开机、从星芒点「打开」时就下工作区，不等客户点进 Cowork（yoyo 11-20 定），每台约 1.3 GB；同一版每台电脑 7 天内最多下一次。
 
 打开 **Actions → sync-claude-components-cos → Run workflow**，分支选 `main` 即可手动跑一次（五部分都跑，已经在桶里的跳过）。日志里搜 `"event":"plan"` 看这次读到的工作区版本、Claude Code 版本和要搬的文件，搜 `stage-failed` 看卡在哪一步。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。
 

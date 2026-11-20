@@ -8,15 +8,16 @@
  *   它就当这个文件好了。
  * - 它自己的离线版和「提前下好」用的是同一个缓存格式：`<name>.zst`（官网原样的压缩包）加 `.<name>.zst.origin`
  *   （版本号）。它要用时先看缓存，在就自己解开、按清单核 sha256，核不上把缓存删了重下。
- * - 它下之前会先写一个 `.cowork-adopted`（只在这台电脑跑得了虚拟机时）。
  *
  * 所以这里只放官网原样的 `<name>.zst` 和 `.<name>.zst.origin`，不自己解、不碰它解开的那份，最后核对交给它。
  * 星芒这边：版本和每个文件的 sha256、大小都取自客户电脑上**已经装好的那份 Claude** 自己的程序，桶里的东西
  * 对不上就扔掉，所以桶出了问题最多白下一次，放不进 Claude 的文件夹。
  *
- * 费流量（每台约 1.3 GB，按腾讯云 0.5 元/GB 计），所以只给「真要用」的电脑下：`.cowork-adopted` 在（这台跑得了
- * 虚拟机、它也已经开始要了）、工作区又没好的时候才下；同一版每台电脑一周最多下一次（它不认我们放的，就不再白下）；
- * 远程开关 claude-desktop-workspace-seed 随时能关。从星芒点「打开」以后在后台下，不挡着打开，Claude 开着也照放
+ * 什么时候下：Claude 装好就下，不等客户点进 Cowork（yoyo 2026-11-20「这个下载不能在安装的时候一次性下载好嘛」）。
+ * 清单写在 Claude 自己的程序里，装好那一刻就读得到；以前等 Claude 写下 `.cowork-adopted`（它要开始下了）才下，
+ * 只是为了省流量。现在星芒装好或更新好 Claude、开机、从星芒点「打开」这三处都叫一次（external-client-route-service.ts），
+ * 每台约 1.3 GB（按腾讯云 0.5 元/GB 计），不用 Cowork 的电脑也下。同一版每台电脑一周最多下一次（它不认我们放的，
+ * 就不再白下），盘不够不下，远程开关 claude-desktop-workspace-seed 随时能关。都在后台，不挡着打开，Claude 开着也照放
  * （只写缓存那两个名字，它解开的那份一点不碰）。
  */
 import { createHash, randomUUID } from 'node:crypto'
@@ -49,7 +50,6 @@ export type ClaudeDesktopWorkspaceSkipReason =
   | 'manifest-not-found'
   | 'architecture-missing'
   | 'target-unresolved'
-  | 'not-adopted'
   | 'recently-delivered'
   | 'recently-failed'
   | 'disk-space'
@@ -73,11 +73,6 @@ export interface ClaudeDesktopWorkspaceProgress {
   sha: string
   transferred: number
   total: number
-}
-
-export interface ClaudeDesktopWorkspacePaths {
-  bundleDirectory: string
-  adoptedMarkerPath: string
 }
 
 export interface ClaudeDesktopWorkspaceFilePaths {
@@ -108,30 +103,23 @@ export interface ClaudeDesktopWorkspaceSeederOptions {
   linuxCode?: ClaudeDesktopLinuxCodeSeeder
   pathModule?: path.PlatformPath
   timeoutMs?: number
-  /** 从星芒打开以后隔多久再看一次（Claude 开起来、客户点进 Cowork 它才写 `.cowork-adopted`）。 */
-  recheckDelaysMs?: readonly number[]
   onProgress?(event: ClaudeDesktopWorkspaceProgress): void
   onPlaced?(event: { sha: string; files: number; bytes: number }): void
   log?(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void
   now?(): number
   resumeDelaysMs?: readonly number[]
-  setTimer?(callback: () => void, milliseconds: number): { cancel(): void }
 }
 
 export interface ClaudeDesktopWorkspaceSeeder {
-  /** 永不抛错。 */
+  /** 永不抛错。正在下的时候再叫，交回同一次。 */
   seed(clientPath: string): Promise<ClaudeDesktopWorkspaceSeedOutcome>
-  /** 从星芒打开 Claude 以后调：马上看一次，之后隔几分钟再看几次。 */
-  scheduleAfterLaunch(clientPath: string): void
-  dispose(): void
 }
 
 /** 一次最多为这件事等多久：1.3 GB 按每秒 150 KB 约两个半小时。再慢就停，下次打开再来（从头下）。 */
 export const claudeDesktopWorkspaceSeedTimeoutMs = 3 * 60 * 60_000
 /** 同一版同一台电脑隔多久才许再从桶里下一次。 */
 export const claudeDesktopWorkspaceRedeliverMs = 7 * 24 * 60 * 60_000
-const defaultRecheckDelaysMs: readonly number[] = [3 * 60_000, 10 * 60_000]
-// 没下成以后这么久之内不再下：这次打开后面那几回复查不会把同一份 1.3 GB 再从头下两遍。重启星芒以后照常再试。
+// 没下成以后这么久之内不再下：开机、装完、点「打开」接连叫的几次不会把同一份 1.3 GB 再从头下几遍。重启星芒以后照常再试。
 export const claudeDesktopWorkspaceRetryCooldownMs = 30 * 60_000
 const fileNamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const stagingNamePattern = /^xingmang-[0-9a-f-]{36}-[A-Za-z0-9._-]{1,64}-zst$/
@@ -148,9 +136,9 @@ class WorkspaceSkip extends Error {
   }
 }
 
-export function claudeDesktopWorkspacePaths(profileDirectory: string, paths: path.PlatformPath = path): ClaudeDesktopWorkspacePaths {
-  const bundleDirectory = paths.join(profileDirectory, 'vm_bundles', 'claudevm.bundle')
-  return { bundleDirectory, adoptedMarkerPath: paths.join(bundleDirectory, '.cowork-adopted') }
+/** Claude 放工作区的那个文件夹。 */
+export function claudeDesktopWorkspaceBundleDirectory(profileDirectory: string, paths: path.PlatformPath = path): string {
+  return paths.join(profileDirectory, 'vm_bundles', 'claudevm.bundle')
 }
 
 export function claudeDesktopWorkspaceFilePaths(bundleDirectory: string, name: string, paths: path.PlatformPath = path): ClaudeDesktopWorkspaceFilePaths {
@@ -223,19 +211,11 @@ export function createClaudeDesktopWorkspaceSeeder(options: ClaudeDesktopWorkspa
   const now = options.now ?? Date.now
   const readManifest = options.readManifest ?? readClaudeDesktopComponentManifest
   const diskSpace = options.readDiskSpace ?? ((target: string) => readDiskSpace(target))
-  const recheckDelays = options.recheckDelaysMs ?? defaultRecheckDelaysMs
-  const setTimer = options.setTimer ?? ((callback: () => void, milliseconds: number) => {
-    const timer = setTimeout(callback, milliseconds)
-    timer.unref?.()
-    return { cancel: () => clearTimeout(timer) }
-  })
   const statePath = path.join(options.stateDirectory, 'delivered.json')
   const manifests = new Map<string, { stamp: string; manifest: ClaudeDesktopComponentManifest }>()
   const reportedReady = new Set<string>()
-  const timers = new Set<{ cancel(): void }>()
   const failedAt = new Map<string, number>()
   let inFlight: Promise<ClaudeDesktopWorkspaceSeedOutcome> | null = null
-  let disposed = false
 
   function log(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void {
     try { options.log?.(level, event, message, detail) }
@@ -347,9 +327,7 @@ export function createClaudeDesktopWorkspaceSeeder(options: ClaudeDesktopWorkspa
     const files = manifest.vm.files[platformKey][target.architecture]
     if (!files?.length) throw new WorkspaceSkip('architecture-missing', 'Claude Desktop 的工作区清单里没有这台电脑的', { platform: platformKey, architecture: target.architecture })
     const sha = manifest.vm.sha
-    const { bundleDirectory, adoptedMarkerPath } = claudeDesktopWorkspacePaths(target.profileDirectory, paths)
-    // 它要了才下：这台电脑跑不了虚拟机、客户也从没点过 Cowork 的，一个字节都不下。
-    if (await regularFileSize(adoptedMarkerPath) === null) throw new WorkspaceSkip('not-adopted', 'Claude Desktop 还没要过工作区，这次不下')
+    const bundleDirectory = claudeDesktopWorkspaceBundleDirectory(target.profileDirectory, paths)
 
     // 虚拟机里那份 Linux 版 Claude Code 先放（小、来源是 npm 国内镜像，不占桶的流量）。
     if (options.linuxCode) {
@@ -441,7 +419,7 @@ export function createClaudeDesktopWorkspaceSeeder(options: ClaudeDesktopWorkspa
     const pending = seedNow(clientPath).catch((error: unknown): ClaudeDesktopWorkspaceSeedOutcome => {
       if (error instanceof WorkspaceSkip) {
         // 这几样是「本来就不该做」，不是出了岔子。
-        const quiet = ['unsupported-platform', 'not-same-user', 'remote-off', 'not-adopted', 'recently-delivered', 'recently-failed'].includes(error.reason)
+        const quiet = ['unsupported-platform', 'not-same-user', 'remote-off', 'recently-delivered', 'recently-failed'].includes(error.reason)
         log(quiet ? 'info' : 'warn', 'claude-desktop.workspace-seed.skipped', error.message, { reason: error.reason, ...error.detail })
         return { status: 'skipped', reason: error.reason }
       }
@@ -453,26 +431,5 @@ export function createClaudeDesktopWorkspaceSeeder(options: ClaudeDesktopWorkspa
     return pending
   }
 
-  return {
-    seed,
-    scheduleAfterLaunch(clientPath) {
-      if (disposed || claudeDesktopVmPlatformKey(options.platform) === null) return
-      // 连点几次「打开」只留最后一轮复查。
-      for (const handle of timers) handle.cancel()
-      timers.clear()
-      void seed(clientPath)
-      for (const delay of recheckDelays) {
-        const handle = setTimer(() => {
-          timers.delete(handle)
-          if (!disposed) void seed(clientPath)
-        }, delay)
-        timers.add(handle)
-      }
-    },
-    dispose() {
-      disposed = true
-      for (const handle of timers) handle.cancel()
-      timers.clear()
-    },
-  }
+  return { seed }
 }
