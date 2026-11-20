@@ -334,6 +334,7 @@ function register(
     detail: vi.fn(),
     exportMarkdown: vi.fn(),
     resolveWorkspace: vi.fn(),
+    invalidateListCache: vi.fn(),
   }
   const runtimeLog = {
     directory: runtimeLogDirectory,
@@ -6619,6 +6620,39 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       await expect(electronMocks.handlers.get('sessions:export')!(trustedEvent(), badId)).rejects.toThrow('会话 ID 格式错误')
       expect(() => electronMocks.handlers.get('sessions:archive')!(trustedEvent(), badId)).toThrow('会话 ID 格式错误')
       expect(() => electronMocks.handlers.get('sessions:restore')!(trustedEvent(), badId)).toThrow('会话 ID 格式错误')
+    })
+  })
+
+  describe('sessions:archive and sessions:restore (R-3)', () => {
+    const validId = 'a1b2c3d4-e5f6-47a8-89ab-cdef01234567'
+
+    it('drops the reusable session listing only after the archive has landed', async () => {
+      const { sessionsService, providerSessionsService } = register()
+      let finish: (value: unknown) => void = () => undefined
+      sessionsService.archive.mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+
+      const pending = electronMocks.handlers.get('sessions:archive')!(trustedEvent(), validId)
+      await Promise.resolve()
+      expect(providerSessionsService.invalidateListCache).not.toHaveBeenCalled()
+      finish({ sessionId: validId })
+
+      await expect(pending).resolves.toEqual({ sessionId: validId })
+      expect(providerSessionsService.invalidateListCache).toHaveBeenCalledTimes(1)
+    })
+
+    it('drops the reusable session listing even when a restore fails halfway', async () => {
+      const { sessionsService, providerSessionsService } = register()
+      sessionsService.restore.mockRejectedValueOnce(new Error('恢复失败'))
+
+      await expect(electronMocks.handlers.get('sessions:restore')!(trustedEvent(), validId)).rejects.toThrow('恢复失败')
+      expect(providerSessionsService.invalidateListCache).toHaveBeenCalledTimes(1)
+    })
+
+    it('leaves the listing alone when the session id is rejected up front', () => {
+      const { providerSessionsService } = register()
+
+      expect(() => electronMocks.handlers.get('sessions:archive')!(trustedEvent(), '../x')).toThrow('会话 ID 格式错误')
+      expect(providerSessionsService.invalidateListCache).not.toHaveBeenCalled()
     })
   })
 

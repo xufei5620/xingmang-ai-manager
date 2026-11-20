@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { createThirdPartyCollector } from './scripts/third-party-collector.mjs'
+import { rendererSingleCopyPackages } from './scripts/renderer-single-copy.mjs'
 
 const legacyRequire = createRequire(new URL('./tooling/legacy-renderer/package.json', import.meta.url))
 const requestedRenderer = process.env.XINGMANG_RENDERER?.trim()
@@ -47,6 +48,10 @@ export default defineConfig({
   define: { __XINGMANG_RENDERER__: JSON.stringify(renderer) },
   base: './',
   resolve: {
+    // U06: 画布目录单独装过依赖时，依赖扫描会从 canvas-v2/index.html 摸到那里的第二份 React，
+    // 这几个包一律从仓库根目录解析（为什么、名单怎么定见 scripts/renderer-single-copy.mjs）。
+    // legacy 用下面的别名把 React 指到它自己那份 18，不套这张表。
+    dedupe: renderer === 'v2' ? [...rendererSingleCopyPackages] : [],
     alias: renderer === 'v2' ? [] : [
       { find: /^react$/, replacement: legacyRequire.resolve('react') },
       { find: /^react\/jsx-runtime$/, replacement: legacyRequire.resolve('react/jsx-runtime') },

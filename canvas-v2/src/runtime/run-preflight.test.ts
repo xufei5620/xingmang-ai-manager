@@ -36,7 +36,7 @@ describe('paid node prompt admission', () => {
       const value = graph(kind, prompt), before = structuredClone(value)
       const result = inspect(value)
       expect(result).toMatchObject({ canStart: false, blockedCount: 1, paidRequestCount: 0, imageRequestCount: 0, videoRequestCount: 0, textRequestCount: 0, cacheHitCount: 0 })
-      expect(result.items.find((item) => item.nodeId === 'target')).toMatchObject({ action: 'blocked', requestCount: 0, reasonCode: 'invalid-parameters', reason: '生成节点没有提示词，请填写提示词或连接上游文字节点' })
+      expect(result.items.find((item) => item.nodeId === 'target')).toMatchObject({ action: 'blocked', requestCount: 0, reasonCode: 'invalid-parameters', reason: '生成节点没有提示词，请填写提示词，或者连一个文字节点进来' })
       expect(value).toEqual(before)
     }
   })
@@ -66,7 +66,7 @@ describe('paid node prompt admission', () => {
     const value = graph('image-edit')
     value.nodes.push({ id: 'words', kind: 'prompt', definitionVersion: 1, data: { prompt: 'Words elsewhere', model: '' } }, { id: 'other', kind: 'output', definitionVersion: 1, data: { prompt: '', model: '' } })
     value.edges.push({ id: 'elsewhere', source: 'words', sourceHandle: 'out:text', target: 'other', targetHandle: 'in:text' })
-    expect(inspect(value).items.find((item) => item.nodeId === 'target')).toMatchObject({ action: 'blocked', reason: '生成节点没有提示词，请填写提示词或连接上游文字节点' })
+    expect(inspect(value).items.find((item) => item.nodeId === 'target')).toMatchObject({ action: 'blocked', reason: '生成节点没有提示词，请填写提示词，或者连一个文字节点进来' })
   })
   it('preserves disabled, upstream-skip and existing block reasons before prompt admission', () => {
     const disabled = graph('image-generate'); disabled.nodes[0].disabled = true

@@ -62,7 +62,7 @@ describe('host run compatibility', () => {
   })
 
   it('names an upstream node the host cannot run', () => {
-    expect(canvasRunUpstreamUnsupportedReason([node('prompt'), node('text-generate')], v2)).toBe('上游的「文字生成」节点当前客户端暂不支持')
+    expect(canvasRunUpstreamUnsupportedReason([node('prompt'), node('text-generate')], v2)).toBe('前面连着的「文字生成」节点当前客户端暂不支持')
     expect(canvasRunUpstreamUnsupportedReason([node('prompt')], v2)).toBeUndefined()
   })
 
@@ -133,7 +133,7 @@ describe('host run compatibility', () => {
     expect(all.canStart).toBe(false)
     expect(all.items.map((item) => [item.nodeId, item.reasonCode, item.reason])).toEqual([
       ['text-generate', 'unsupported-host', '「文字生成」节点当前客户端暂不支持'],
-      ['image-generate', 'unsupported-host', '上游的「文字生成」节点当前客户端暂不支持'],
+      ['image-generate', 'unsupported-host', '前面连着的「文字生成」节点当前客户端暂不支持'],
     ])
     const downstream = buildCanvasRunPreflight({ ...base, scope: { kind: 'selection', nodeIds: ['image-generate'] }, capabilities: v2 })
     expect(downstream.canStart).toBe(false)
