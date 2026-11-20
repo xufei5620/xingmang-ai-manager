@@ -4229,6 +4229,9 @@ test('the start page offers a film and the canvas under the examples, and says o
 
     // 那条提示关掉以后不再出现，重开也不出现。
     await page.getByTestId('chat-conversation-new').click()
+    // 点了两次「新建」，左边没有多出空的「新对话」：没发过话的那一页不进列表。
+    assert.equal(await page.locator('.chat-conversation-list [data-testid^="chat-conversation-"]').count(), 0)
+    assert.equal(await page.locator('.chat-conversation:not([hidden]) > .chat-bar strong').textContent(), '新建')
     await intro.getByRole('button').click()
     await intro.waitFor({ state: 'detached' })
     await page.reload()

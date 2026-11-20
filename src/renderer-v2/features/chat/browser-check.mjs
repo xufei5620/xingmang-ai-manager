@@ -616,6 +616,41 @@ test('new conversations preserve unsent drafts and local history can be restored
   } finally { await page.close() }
 })
 
+// 融合第 1 步：「新建」也是做视频、开画布的入口，点得多。以前每点一次左边就多一条空的「新对话」。
+test('the new button returns to the blank page without listing an empty conversation, and the first message is what lists it', async () => {
+  const page = await open()
+  try {
+    const first = await send(page, 'first topic')
+    await emit(page, { type: 'content', requestId: first.requestId, content: 'first answer' })
+    await emit(page, { type: 'complete', requestId: first.requestId })
+    const rows = page.locator('.chat-conversation-select')
+    const title = page.locator('.chat-bar strong')
+    assert.equal(await rows.count(), 1)
+    assert.equal(await title.textContent(), 'first topic')
+    const model = await page.getByTestId('chat-model').getAttribute('data-model')
+    for (let click = 0; click < 3; click += 1) await page.getByTestId('chat-conversation-new').click()
+    await page.getByTestId('chat-empty').waitFor()
+    assert.equal(await rows.count(), 1)
+    assert.equal(await page.locator('.chat-conversation-select[aria-current=page]').count(), 0)
+    assert.equal(await title.textContent(), '新建')
+    // 空白页跟着刚才那段对话的模型走。
+    assert.equal(await page.getByTestId('chat-model').getAttribute('data-model'), model)
+    // 回到那段对话再点「新建」，还是同一页空白，不多一条。
+    await rows.first().click()
+    await page.locator('.chat-message').first().waitFor()
+    await page.getByTestId('chat-conversation-new').click()
+    await page.getByTestId('chat-empty').waitFor()
+    assert.equal(await rows.count(), 1)
+    // 发了第一句才算一段对话。
+    await page.getByTestId('chat-composer-input').fill('second topic')
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.chatHarness.calls.filter((item) => item.method === 'start').length === 2)
+    assert.equal(await rows.count(), 2)
+    assert.equal(await title.textContent(), 'second topic')
+    assert.equal(await page.locator('.chat-conversation-select[aria-current=page]').textContent().then((text) => text.startsWith('second topic')), true)
+  } finally { await page.close() }
+})
+
 test('a late image from a previous account does not appear in the current account', async () => {
   const page = await open()
   try {

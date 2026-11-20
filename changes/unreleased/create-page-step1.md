@@ -17,4 +17,6 @@
 - 新增四条主窗口通道（`ipc-contract.ts`，CODEOWNERS 看得见）：`canvas:list-projects`（只回编号、名字、时间，项目内容不出主进程）、
   `canvas:open-project`（编号先按格式校验，再在当前账号没归档的项目里认过才用；开画布窗口并直接进这个项目）、`video-studio:read-projects`、
   `video-studio:write-projects`。没有新增 `canvas-host:*` 通道，`canvas-v2/` 没动。
+- 「新建」不再先往列表里加一条空的「新对话」（`useChatController` 的 `newConversation`）：回到不进列表的那段空白对话，发了第一句才列出来；
+  空白页的模型和设置跟着刚才那段对话走，打了字没发的照旧先存成一段对话。存满 200 段时改在发第一句时提示。起始页从头看起，不再停在最底下。
 - 没做的：出视频并进输入框（第 2 步）、主窗口作品库（第 3 步）、出图框合一（第 4 步）、画布互通和「放进画布」（第 5 步，等 yoyo 亲手打同意句）。
