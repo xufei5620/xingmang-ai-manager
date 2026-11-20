@@ -418,6 +418,10 @@ const methods = {
     return { enabled: hidden, applied: 'written' as const }
   },
   getPlatformCapabilities: async () => capabilities,
+  // 「插件」页（0.2.25）一进来就三家一起读，装了 Codex 就另读它的登录状态和市场；默认什么都没有，要内容的用例自己换。
+  listMcpServers: async () => [],
+  listSkills: async () => [],
+  listPlugins: async () => ({ plugins: [], marketplaces: [] }),
   getAccountSession: async () => {
     if (nextAccountSessionHeld) {
       nextAccountSessionHeld = false
