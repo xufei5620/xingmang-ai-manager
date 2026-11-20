@@ -1,0 +1,354 @@
+{
+  "note": "由 scripts/build-plugin-icons.mjs 生成，别手改。",
+  "source": {
+    "catalog": "openai/plugins",
+    "commit": "981b02c0c44058b595f3b4180002c3ae3c806d40",
+    "repos": {
+      "crowdstrike-falcon-foundry": {
+        "url": "https://github.com/CrowdStrike/foundry-skills.git",
+        "commit": "c18b23e0c6ca675461ef7aa212ece90de5e4cf5d"
+      },
+      "crowdstrike-falcon-fusion": {
+        "url": "https://github.com/CrowdStrike/fusion-skills.git",
+        "commit": "74b9e02736b583e684704197c868edfe9c85bb9d"
+      },
+      "qodo": {
+        "url": "https://github.com/qodo-ai/qodo-skills.git",
+        "commit": "20f9ba53696889dd05fd4c8ba53dd3fbef6809bb"
+      }
+    }
+  },
+  "size": 96,
+  "icons": {
+    "game-studio": {
+      "light": {
+        "file": "codex/game-studio.png",
+        "sha256": "8ce77ccfe5d29e55a96c92b11cdf1e71f9afc0b8c5ddc7137eb3dd8b32037348"
+      }
+    },
+    "superpowers": {
+      "light": {
+        "file": "codex/superpowers.png",
+        "sha256": "b63d399d6726768ec596735bd126bc3709d415fce43a9c9f3ef7dc89abf251f4"
+      }
+    },
+    "circleci": {
+      "light": {
+        "file": "codex/circleci.png",
+        "sha256": "e846f6463c45cd02ae3041728420377df5b92359c73459281960f2df8d5ee510"
+      },
+      "dark": {
+        "file": "codex/circleci-dark.png",
+        "sha256": "7fd4accfd2ad010b23752a555b6c4bbecb5243324acc16c411b7f8b7177dc326"
+      }
+    },
+    "sentry": {
+      "light": {
+        "file": "codex/sentry.png",
+        "sha256": "c7dcdef98df0b44f66bb86be09649bce585298f80b300ebf27963fd43c86231b"
+      }
+    },
+    "build-ios-apps": {
+      "light": {
+        "file": "codex/build-ios-apps.png",
+        "sha256": "8a93b2faa1260158e848884c83c678b63ad027ae8eb96e4466342abeb4ad4eac"
+      }
+    },
+    "build-macos-apps": {
+      "light": {
+        "file": "codex/build-macos-apps.png",
+        "sha256": "8a93b2faa1260158e848884c83c678b63ad027ae8eb96e4466342abeb4ad4eac"
+      }
+    },
+    "build-web-apps": {
+      "light": {
+        "file": "codex/build-web-apps.png",
+        "sha256": "0a648a371d7613f77410e021ea164debf124c9249b99fc446508b8eab299b99c"
+      }
+    },
+    "build-web-data-visualization": {
+      "light": {
+        "file": "codex/build-web-data-visualization.png",
+        "sha256": "f07783135a3f4c9d82e324431df7579220663fde4ca38ea8ffe342c7a466a6fd"
+      }
+    },
+    "test-android-apps": {
+      "light": {
+        "file": "codex/test-android-apps.png",
+        "sha256": "be6fe6c736a9bf8537bed54580592c1ac151e4d6ff2217091b9996ebb163889a"
+      }
+    },
+    "life-science-research": {
+      "light": {
+        "file": "codex/life-science-research.png",
+        "sha256": "b189a9feacc1c159e11362849eaefb6011fbbd38c747b30bfb13c5e8d988fd6e"
+      }
+    },
+    "zotero": {
+      "light": {
+        "file": "codex/zotero.png",
+        "sha256": "45c5db65f3aa9b20ffdfa0dd1bd9d1a413368045f64697e15871565a2171f65e"
+      }
+    },
+    "expo": {
+      "light": {
+        "file": "codex/expo.png",
+        "sha256": "71d7c64d62841803667736721786dac4cd7adea3ba9422cabe3a6b4981e8f7b3"
+      }
+    },
+    "coderabbit": {
+      "light": {
+        "file": "codex/coderabbit.png",
+        "sha256": "7ca0fef2eada13bcbe89ac54499d93623f49ebd67e7274ad96481cff8fe57f9d"
+      },
+      "dark": {
+        "file": "codex/coderabbit-dark.png",
+        "sha256": "2e2f535c0c9f56d21c92350f9943d28c221f66507eaa291ce8f7913f0b30e313"
+      }
+    },
+    "remotion": {
+      "light": {
+        "file": "codex/remotion.png",
+        "sha256": "a34cb0bf79fa55d12943d5751618c7a952ec61c05ba06e064da38d8385e7b434"
+      },
+      "dark": {
+        "file": "codex/remotion-dark.png",
+        "sha256": "1bc23b35d192e3266bc6e74bd005ba813190d5ee7cd0c05fdb4456a04a71b489"
+      }
+    },
+    "plugin-eval": {
+      "light": {
+        "file": "codex/plugin-eval.png",
+        "sha256": "571e0958163bfb22a9fed1c1534feb3e3cffe81a16bcd0a1bb6d40e52309bcca"
+      }
+    },
+    "temporal": {
+      "light": {
+        "file": "codex/temporal.png",
+        "sha256": "e3fd7ad4b0aca9bbba9e716bd39efa00458304cd22d7f6d01d122066a664bbf1"
+      }
+    },
+    "hyperframes": {
+      "light": {
+        "file": "codex/hyperframes.png",
+        "sha256": "60c2c7504f50e78246cc380c29e22dd4fafafa07bd091e1be9855b1cbed61d46"
+      }
+    },
+    "codex-security": {
+      "light": {
+        "file": "codex/codex-security.png",
+        "sha256": "381faf31291c657d41ded0f1fdcc2d6f9058731ae424e8989d22a88f9057d3a2"
+      }
+    },
+    "twilio-developer-kit": {
+      "light": {
+        "file": "codex/twilio-developer-kit.png",
+        "sha256": "aaa78a85fa2eb0e26f2387e78b19bce8a2b01887b2b96f14f0b3e7253bde6f1d"
+      }
+    },
+    "openai-developers": {
+      "light": {
+        "file": "codex/openai-developers.png",
+        "sha256": "8a7202151d6043d656834e08d6c4799f3f9658ad8ed19676ac9034e119d859cf"
+      }
+    },
+    "mixpanel-headless": {
+      "light": {
+        "file": "codex/mixpanel-headless.png",
+        "sha256": "bf0c2193851c1274fb0b4b0c2508c74a339ef445024fae72a3f7aed0d6854834"
+      }
+    },
+    "nvidia": {
+      "light": {
+        "file": "codex/nvidia.png",
+        "sha256": "7fc443cb09748af8a43f188b5aac6e70f2a2c9809d6d33c9c6556eecb67e06f3"
+      }
+    },
+    "ngs-analysis": {
+      "light": {
+        "file": "codex/ngs-analysis.png",
+        "sha256": "d5ffda2473272a5c375a9d53ef426d0461d758c83820d856d932d56a262a5d79"
+      }
+    },
+    "magicpath": {
+      "light": {
+        "file": "codex/magicpath.png",
+        "sha256": "db694703142b139d87fcd1afc9a40feec36004ad06303487e3143a3520e59f05"
+      }
+    },
+    "openai-ads-conversions": {
+      "light": {
+        "file": "codex/openai-ads-conversions.png",
+        "sha256": "bd91874024688f9e85427eaef893ed6b531558d610bf1a0160c7b6903e98411b"
+      }
+    },
+    "boltz-api-cli": {
+      "light": {
+        "file": "codex/boltz-api-cli.png",
+        "sha256": "71d6246d0b93a70ca0d8d76b5566aa958da2433330e5bd43a2e63512b2abfdad"
+      }
+    },
+    "linear": {
+      "light": {
+        "file": "codex/linear.png",
+        "sha256": "587a51ddbbc75c7c7dbbd5d07d440d6ef6c1616a81694d83f3406871098e7983"
+      }
+    },
+    "figma": {
+      "light": {
+        "file": "codex/figma.png",
+        "sha256": "a3dfc7baec24dfdecb5d3a4f803868c49d9ba754e15fd4d6d1f6cd223f510895"
+      },
+      "dark": {
+        "file": "codex/figma-dark.png",
+        "sha256": "a3dfc7baec24dfdecb5d3a4f803868c49d9ba754e15fd4d6d1f6cd223f510895"
+      }
+    },
+    "notion": {
+      "light": {
+        "file": "codex/notion.png",
+        "sha256": "a39011fd61d3d51451dc0c5d4d2541493f8ee1e50e28e33d38ecb7b00982c4c8"
+      },
+      "dark": {
+        "file": "codex/notion-dark.png",
+        "sha256": "824d0debc69b4fa0659fd45c8a0cca2bf0fa575f3905761ef0531fb48ee0299a"
+      }
+    },
+    "slack": {
+      "light": {
+        "file": "codex/slack.png",
+        "sha256": "f428acb44bd4807171290065d924a903f6b135da8446bc39a2a6d844a53e2c99"
+      }
+    },
+    "atlassian-rovo": {
+      "light": {
+        "file": "codex/atlassian-rovo.png",
+        "sha256": "48a0ce3b9418748774a89720c60fa5281cbbd6ba9c1204e30c233faee477779e"
+      },
+      "dark": {
+        "file": "codex/atlassian-rovo-dark.png",
+        "sha256": "ee75eb6d5a38f9ec73b2c762fa512bddcb3742d3cc8d1c710a7117969e5c4d53"
+      }
+    },
+    "datadog": {
+      "light": {
+        "file": "codex/datadog.png",
+        "sha256": "f1d779d33792d08c2d7cea98fb17629ce96d2aab82a03c47a3d6fd58b6092a10"
+      }
+    },
+    "dropbox": {
+      "light": {
+        "file": "codex/dropbox.png",
+        "sha256": "fbf5367f6a8687c0be275c311e7188459013b4e1bf851e817a32bfde2d93cb5d"
+      },
+      "dark": {
+        "file": "codex/dropbox-dark.png",
+        "sha256": "16a2d51fec6f8b5b4655ae2ac200767e972350cf552784883e53c30d06a0a098"
+      }
+    },
+    "granola": {
+      "light": {
+        "file": "codex/granola.png",
+        "sha256": "c6cccce4475e8acc3f0c200c3afa7eb93bb7f78488a086f1d83bde649e4beccd"
+      }
+    },
+    "vercel": {
+      "light": {
+        "file": "codex/vercel.png",
+        "sha256": "8c27622e79c7505285affd43eadc63b746b90ba3266a1a082f871ca22697c88b"
+      }
+    },
+    "canva": {
+      "light": {
+        "file": "codex/canva.png",
+        "sha256": "44beaec3d6f7a921b21d8e9138163a4dc6d7eeda893c89b23dd8e37e83827815"
+      }
+    },
+    "cloudflare": {
+      "light": {
+        "file": "codex/cloudflare.png",
+        "sha256": "a29bd373d8cc4d73a4f091cfb05995af7eed7f453c3f169f99644d5f0cb20830"
+      }
+    },
+    "monday-com": {
+      "light": {
+        "file": "codex/monday-com.png",
+        "sha256": "0fc7d537144691d8831c7e7e9da7c869bc0b9aaf4fd7195f8adae5fee1a774a7"
+      }
+    },
+    "posthog": {
+      "light": {
+        "file": "codex/posthog.png",
+        "sha256": "ac116f0087336e7e9d4f78c175e97483a6daafb5ea86a75b4014f396336d725d"
+      },
+      "dark": {
+        "file": "codex/posthog-dark.png",
+        "sha256": "ac116f0087336e7e9d4f78c175e97483a6daafb5ea86a75b4014f396336d725d"
+      }
+    },
+    "stripe": {
+      "light": {
+        "file": "codex/stripe.png",
+        "sha256": "58a31071a9ac374f9fb12d7a2400076d0c4691d0a6037fa54f13376731b19425"
+      }
+    },
+    "supabase": {
+      "light": {
+        "file": "codex/supabase.png",
+        "sha256": "ccbde2a37f1e0e25c64e53e5b19d8ceede3209a932500c9fbfa1492cba9c2f3f"
+      }
+    },
+    "product-design": {
+      "light": {
+        "file": "codex/product-design.png",
+        "sha256": "b5bccee115795d46a38d5e1a2b59dbf3bda1bee5d00209a5f42185a6420d40cb"
+      }
+    },
+    "clickup": {
+      "light": {
+        "file": "codex/clickup.png",
+        "sha256": "647f8616f7e29413c42127ab3512739312d38c97dbae06079bb265cae28ed8d9"
+      }
+    },
+    "chatcut": {
+      "light": {
+        "file": "codex/chatcut.png",
+        "sha256": "e6c3e5a38a1f6549adb1aea5e5e40f46c9913962389d4b425041d7f99b787bf5"
+      }
+    },
+    "crowdstrike-falcon-foundry": {
+      "light": {
+        "file": "codex/crowdstrike-falcon-foundry.png",
+        "sha256": "1594d83d8a1c07bb788c094e5e975c70ec2cfe6f11553bc1b779eae16862d438"
+      }
+    },
+    "crowdstrike-falcon-fusion": {
+      "light": {
+        "file": "codex/crowdstrike-falcon-fusion.png",
+        "sha256": "1594d83d8a1c07bb788c094e5e975c70ec2cfe6f11553bc1b779eae16862d438"
+      }
+    },
+    "qodo": {
+      "light": {
+        "file": "codex/qodo.png",
+        "sha256": "17684bc0b25d63576d59fa5355e4756ac140d8ef8e7c98568da19d33e9d30c91"
+      }
+    },
+    "github": {
+      "light": {
+        "file": "codex/github.png",
+        "sha256": "2f3da0b8747e7cfaeb2e3faa58ac9247f1a52e4e16782fe61457cc0a0139f797"
+      },
+      "dark": {
+        "file": "codex/github-dark.png",
+        "sha256": "4b36b467f601824de67d8812b2d80711de282781ed1580ddebe0e026c39a0d06"
+      }
+    }
+  },
+  "missing": [
+    "aws-core",
+    "consensus",
+    "higgsfield"
+  ],
+  "rejected": []
+}

@@ -352,8 +352,18 @@ function officialDarwinGrokUninstallResult(
     spec.argv.length === 1
     && spec.argv[0] === '--version'
   ) {
+    // The version belongs to the binary, not to the name its private copy was
+    // staged under. Since D19 the probe in front of an uninstall moves `agent`
+    // onto grok's 0.2.118 file, and that copy (still named "agent") must then
+    // answer 0.2.118.
     const executableName = path.basename(spec.executable)
-    const version = executableName === 'agent' || executableName.includes('0.2.111')
+    let contents = ''
+    try {
+      contents = fs.readFileSync(spec.executable, 'utf8')
+    } catch {
+      contents = ''
+    }
+    const version = contents === 'agent binary' || executableName.includes('0.2.111')
       ? '0.2.111'
       : '0.2.118'
     return { stdout: `grok ${version}\n`, stderr: '' }
@@ -2967,7 +2977,9 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     })
     expect(targetReplaced).toBe(true)
     expect(fs.readlinkSync(grokLink)).toBe(fixture.grokTarget)
-    expect(fs.readlinkSync(agentLink)).toBe(fixture.agentTarget)
+    // D19: the probe uninstallCli runs first already moved agent off the stale
+    // 0.2.111 file onto grok's; the rollback puts back exactly what was planned.
+    expect(fs.readlinkSync(agentLink)).toBe(fixture.grokTarget)
   })
 
   it('returns manual-required instead of uninstalled while verified program paths remain', async () => {
@@ -3047,7 +3059,10 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
 
     expect(fs.readdirSync(fixture.bin).filter((name) => name.endsWith('.removing'))).toEqual([])
     expect(fs.existsSync(fixture.grokBinary)).toBe(false)
-    expect(fs.existsSync(fixture.agentBinary)).toBe(false)
+    // D19: the probe in front of the uninstall moved agent onto grok's file, so
+    // 0.2.111 was no longer a program either link kept. It is now an old download
+    // like any other: mentioned, never deleted automatically (internal #18).
+    expect(fs.existsSync(fixture.agentBinary)).toBe(true)
     expect(fs.readFileSync(path.join(fixture.bin, 'keep.txt'), 'utf8')).toBe('keep')
     expect(fs.readFileSync(fixture.configFile, 'utf8')).toBe('config')
     expect(fs.readFileSync(fixture.sessionFile, 'utf8')).toBe('session')
@@ -3253,6 +3268,29 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok readiness self-heal (
     expect(status.installed).toBe(true)
     expect(status.version).toBe('0.2.118')
     expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(fixture.grokTarget)
+  })
+
+  // 11-18 复核 D19：以前用星芒更新过、agent 还停在旧版的 Mac，下一次扫描就对上，不用等下一次更新。
+  it('moves an agent link left on an older version onto grok the next time anything probes', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(fixture.agentTarget)
+    vi.stubEnv('HOME', fs.realpathSync(fixture.home))
+    vi.stubEnv('PATH', fixture.bin)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('no network in tests') }))
+    const store = new AppSettingsStore(path.join(fixture.home, 'settings.json'), fixture.home)
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        throw new Error(`Unexpected command during a readiness probe: ${spec.executable} ${spec.argv.join(' ')}`)
+      },
+    })
+
+    const status = await service.inspectCliUpdate('grok', false)
+
+    expect(status.installed).toBe(true)
+    expect(status.version).toBe('0.2.118')
+    expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(fixture.grokTarget)
+    expect(fs.readFileSync(fixture.agentBinary, 'utf8')).toBe('agent binary')
   })
 
   it('repairs the same gap through a full system scan, not just the single-CLI update check', async () => {

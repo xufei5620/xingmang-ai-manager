@@ -3,6 +3,7 @@ import { accountSiteId, sessionScope } from './account-context'
 import { VideoStudioPage } from './features/video-studio'
 import { ExtensionsPage, SessionsPage } from './pages-management'
 import { FeaturedPage } from './pages-featured'
+import { PluginsHub } from './features/extensions/PluginsHub'
 import {
   FeedbackPage,
   HealthPage,
@@ -117,6 +118,10 @@ export function BusinessPage({
     )
   if (page === 'sessions')
     return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} installedProviders={installedProviders} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
+  if (page === 'extensions')
+    return <PluginsHub api={api} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} onOpenHome={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
+  // 下面四页已经合进「插件」：侧栏和搜索都不再给，App 里跳过去也会落到「插件」（registry/pages.ts 的 extensionPageAliases）。
+  // 这里先留着，夹具按旧页面名直接画的老回归还在用；下一个 PR 把回归搬到新页以后一起删。
   if (page === 'featured')
     return <FeaturedPage api={api} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} onOpenHome={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
   if (page === 'mcp')
