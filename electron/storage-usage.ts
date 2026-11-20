@@ -146,13 +146,13 @@ const THUMBNAIL_LABEL = 'AI 素材缩略图'
 const thumbnailAccountPattern = /^user-[1-9]\d*$/
 // asset-thumbnail.ts 的 assetThumbnailVersion（现在是 v2）；以前的版本留下的也认，换版本后它们没人用了。
 const thumbnailVersionPattern = /^v\d{1,4}$/
-// asset-thumbnail-store.ts 写的名字：43 位作品编号加 .png 或 .jpg。写到一半的临时文件不认、不删。
-const thumbnailFilePattern = /^[A-Za-z0-9_-]{43}\.(?:png|jpg)$/
+// asset-thumbnail-store.ts 写的名字：43 位作品编号加 .png 或 .jpg，聊天用的大一档中间多一个 .large。写到一半的临时文件不认、不删。
+const thumbnailFilePattern = /^[A-Za-z0-9_-]{43}(?:\.large)?\.(?:png|jpg)$/
 const DELETE_CONCURRENCY = 8
 
 /**
  * Empties the thumbnail cache laid out by asset-thumbnail-store.ts as
- * `<root>/user-<id>/<version>/<assetId>.<ext>`. Every thumbnail is derived
+ * `<root>/user-<id>/<version>/<assetId>[.large].<ext>`. Every thumbnail is derived
  * from an asset that stays where it is, and the store regenerates any it
  * cannot find the next time the library shows it.
  *
