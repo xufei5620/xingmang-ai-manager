@@ -86,6 +86,21 @@
 - [ ] 侧边栏「刷新余额」按钮
 - [ ] 各种通知弹窗都在右下角,没有飘出屏幕
 
+### 2.6 先看清这台机器是哪种账号(2026-11-19 踩过)
+
+测试机常登系统自带的 Administrator,或者整台关了授权弹窗(注册表 `EnableLUA=0`)。这两种电脑上,「以管理员身份运行」和「普通权限」的结论跟客户的大多数电脑不一样,先在普通打开的 PowerShell 里看一眼再判断是不是缺陷:
+
+```powershell
+[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System').EnableLUA
+whoami /groups /fo csv /nh | Select-String 'S-1-16-'
+```
+
+- SID 以 `-500` 结尾 = 自带 Administrator;`EnableLUA` 是 0 = 关了授权弹窗;第三行是 `S-1-16-12288` = 普通打开的窗口也是管理员权限。
+- 这种账号上星芒每次打开都是管理员权限,双击也一样。检查页「运行权限」是绿的「账号本身就带管理员权限」;手机遥控会说「星芒正以管理员身份运行」不让开(`electron/bootstrap/codex-remote.ts`,有意的)。
+- 关了授权弹窗的电脑上,管理员组里的任何账号都一样;不在管理员组的账号装运行环境、Codex 桌面端时连授权窗口都不弹,直接报「未获得管理员权限」。
+- 开着授权弹窗的电脑上,普通账号在授权窗口输别的管理员账号的密码也装不成:提权那一步只认当前账号本人(退出码 2225)。要测普通账号,先用管理员账号装好运行环境(装给整台电脑),再切过去装命令行工具。
+
 ---
 
 ## 3. 发现问题时给我什么
