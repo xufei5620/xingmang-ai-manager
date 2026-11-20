@@ -95,6 +95,14 @@ export interface AiVideoAssetWriter {
   ): Promise<{ asset: { mimeType?: string; fileName?: string }; bytes: Buffer }>
 }
 
+export interface AiVideoProgressObserver extends AiOperationProgressObserver {
+  /**
+   * 这一单马上要交给服务端，本机那条「交出去了、还没回音」的记录却没写进去（磁盘满、文件被杀毒软件占着）。
+   * 视频剪辑页收到后替主进程记下这一笔：关掉重开以后主进程查不到这一单，不能当它没发过（总单 #42，N2）。
+   */
+  onSubmissionUnrecorded?(): void
+}
+
 export interface AiVideoCancelResult {
   /** 本机不再等这次生成；不代表服务端的任务被取消了，界面不能据此说「取消成功」。 */
   canceled: boolean
@@ -698,7 +706,7 @@ export function createAiVideoService(options: {
   async function generate(
     senderId: number,
     input: AiVideoGenerationInput,
-    progress?: AiOperationProgressObserver,
+    progress?: AiVideoProgressObserver,
   ): Promise<GeneratedAiVideoAsset> {
     if (!Number.isSafeInteger(senderId) || senderId <= 0) throw new Error('视频窗口标识格式错误')
     const requestId = requiredIdentifier(input.requestId, '视频请求标识', 160)
@@ -708,6 +716,13 @@ export function createAiVideoService(options: {
       senderId, requestId, expectedUserId: input.expectedUserId, controller: new AbortController(), dispatched: false,
     }
     let reservationId: string | undefined
+    // 交出去前那条「结果不明」的记录没写进去（见下面 markUnconfirmed）。
+    let unrecorded = false
+    const unclearSubmission = async (): Promise<Error> => {
+      // 磁盘满、文件被占这类多半一会儿就过去：这时补写进去，重开以后主进程自己就能照实说「结果不明」。
+      if (unrecorded && operation.userId) await options.tasks.markUnconfirmed(operation.userId, requestId).catch(() => undefined)
+      return ambiguousVideoSubmission()
+    }
     active.set(key, operation)
     const settled = observeAiOperation(options.onRequestStarted)
     try {
@@ -761,11 +776,16 @@ export function createAiVideoService(options: {
       if (operation.controller.signal.aborted) throw operation.controller.signal.reason
       // Written before the POST so that any way of losing the reply, the app
       // being killed included, still leaves "sent, outcome unknown" behind for
-      // resumeRequest. Losing the write only loses that warning, never the clip,
-      // so it does not hold the request up. A record left by an earlier unclear
+      // resumeRequest. A failed write does not hold the request up (it costs
+      // the clip nothing), but it must not cost the warning either: the page
+      // is told to keep the record itself, and the write is tried once more if
+      // the outcome does turn out unclear. A record left by an earlier unclear
       // attempt under the same id stays even if this one never gets through:
       // that attempt may still have been paid for.
-      const earlierUnclear = await options.tasks.markUnconfirmed(credential.userId, requestId).catch(() => true)
+      const earlierUnclear = await options.tasks.markUnconfirmed(credential.userId, requestId).catch(() => {
+        unrecorded = true
+        return true
+      })
       const forgetSubmission = async () => {
         if (!earlierUnclear) await options.tasks.clearUnconfirmed(credential.userId, requestId).catch(() => undefined)
       }
@@ -774,6 +794,9 @@ export function createAiVideoService(options: {
         throw operation.controller.signal.reason
       }
       operation.dispatched = true
+      if (unrecorded) {
+        try { progress?.onSubmissionUnrecorded?.() } catch { /* the page's copy is a fallback; it must not stop paid work */ }
+      }
       reportRelayDispatch(progress, true)
       let submitted: { response: Response; payload?: Record<string, unknown> }
       try {
@@ -808,7 +831,7 @@ export function createAiVideoService(options: {
           await forgetSubmission()
           throw new Error(networkFailureMessages[unsent])
         }
-        throw ambiguousVideoSubmission()
+        throw await unclearSubmission()
       }
       const { response } = submitted
       // 提交这一下就是扣费那一下；画布跑完按这个号到用量记录里对实扣（画布完善第 2b 条第 3 步）。
@@ -819,10 +842,10 @@ export function createAiVideoService(options: {
           await forgetSubmission()
           throw videoRequestFailure(response.status, '', response.headers.get('retry-after'))
         }
-        throw ambiguousVideoSubmission()
+        throw await unclearSubmission()
       }
       if (!response.ok) {
-        if (response.status >= 500) throw ambiguousVideoSubmission()
+        if (response.status >= 500) throw await unclearSubmission()
         await forgetSubmission()
         throw videoRequestFailure(response.status, errorDetail(payload), response.headers.get('retry-after'), capability.provider)
       }
@@ -830,7 +853,7 @@ export function createAiVideoService(options: {
       try {
         taskId = requiredTaskId(payload.id)
       } catch {
-        throw ambiguousVideoSubmission()
+        throw await unclearSubmission()
       }
       // A prompt too odd to record must not sink a task the server already
       // accepted; the clip then simply lands without one.
@@ -876,7 +899,7 @@ export function createAiVideoService(options: {
     } catch (error) {
       if (operation.controller.signal.aborted) {
         if (operation.taskId) throw new Error('已停止等待；服务端可能仍在生成视频，下次启动会继续查询')
-        if (operation.dispatched) throw ambiguousVideoSubmission()
+        if (operation.dispatched) throw await unclearSubmission()
         throw new Error('已取消视频请求')
       }
       throw error
@@ -1020,7 +1043,7 @@ export function createAiVideoService(options: {
     return operation
   }
   return {
-    generate: (senderId: number, input: AiVideoGenerationInput, progress?: AiOperationProgressObserver) => {
+    generate: (senderId: number, input: AiVideoGenerationInput, progress?: AiVideoProgressObserver) => {
       const result = track(generate(senderId, input, progress))
       // generate 自己会拒掉同一个窗口里重复的请求号；那一次不能顶掉正在出的那一份。
       return typeof input.requestId === 'string' ? remember(requestKey(senderId, input.requestId.trim()), result) : result
