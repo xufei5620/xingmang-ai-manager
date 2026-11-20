@@ -7320,6 +7320,39 @@ describe('installing or uninstalling a CLI', () => {
       error: 'Command failed: powershell.exe',
     }))
   })
+
+  // D17：Windows 上 Grok 装进个人文件夹（USERPROFILE）下的 .grok\bin，判断能不能卸、真去卸却先看 HOME，
+  // 客户设了 HOME（Git、MSYS 常见）就把刚装好的那份判成不能安全卸载。两个调用点都在这一条里：先判断能不能卸，再去删。
+  // Mac、Linux 上模拟 Windows 的服务；真 Windows 上要删的文件名跟着 process.platform 走，照着放，CI 的 Windows 作业照真的跑。
+  it('uninstalls a Windows Grok from the profile folder when HOME points somewhere else', async () => {
+    const profile = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-grok-profile-')))
+    const customHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-grok-custom-home-')))
+    temporaryDirectories.push(profile, customHome)
+    const bin = path.join(profile, '.grok', 'bin')
+    const fileNames = process.platform === 'win32' ? ['grok.exe', 'agent.exe', 'version.json'] : ['grok', 'agent']
+    const command = path.join(bin, fileNames[0])
+    fs.mkdirSync(bin, { recursive: true })
+    for (const name of fileNames) fs.writeFileSync(path.join(bin, name), `${name} content`)
+    vi.stubEnv('USERPROFILE', profile)
+    vi.stubEnv('HOME', customHome)
+    const removeWindowsUserPath = vi.fn(async () => 'removed' as const)
+    const service = createService({
+      platform: 'win32',
+      windowsExecutionMode: 'same-user',
+      providerRoots: { userHome: profile, codexHome: path.join(profile, '.codex') },
+      resolveCliInstallation: vi.fn(async (provider: ProviderId) => provider === 'grok' && fs.existsSync(command)
+        ? { commandPath: command, installDirectory: bin, packageRoot: null, npmPrefix: null, source: 'native' as const }
+        : null),
+      findExecutable: vi.fn(async () => null),
+      runCommand: versionProbeRunner(),
+      removeWindowsUserPath,
+    })
+
+    await expect(service.uninstallCli('grok')).resolves.toMatchObject({ outcome: 'uninstalled' })
+
+    for (const name of fileNames) expect(fs.existsSync(path.join(bin, name))).toBe(false)
+    await vi.waitFor(() => expect(removeWindowsUserPath).toHaveBeenCalledWith(bin))
+  })
 })
 
 describe('trusting the workspace the user picked before opening a CLI', () => {
