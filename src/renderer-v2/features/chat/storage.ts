@@ -115,7 +115,8 @@ function readConversation(value: unknown): Conversation {
   const messages = conversation.messages.map(readMessage)
   assertUniqueIds(messages)
   if (conversation.draftImages !== undefined && !Array.isArray(conversation.draftImages)) throw new ChatStorageError('聊天图片列表无效，原始记录已保留')
-  const draftImages = (conversation.draftImages ?? []).map(readAsset)
+  // 0.2.24 及以前同一张图的两份会一起进输入框、发不出去，存下来的草稿里可能还留着两份，读回来只留第一份（R28-6）。
+  const draftImages = (conversation.draftImages ?? []).map(readAsset).filter((image, index, list) => list.findIndex((item) => item.assetId === image.assetId) === index)
   const draftFiles = readTextFiles(conversation.draftFiles)
   return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), ...(draftImages.length ? { draftImages } : {}), ...(draftFiles.length ? { draftFiles } : {}), settings: readSettings(conversation.settings), messages, ...(conversation.lengthNoticeDismissed === true ? { lengthNoticeDismissed: true } : {}), ...(conversation.pinned === true ? { pinned: true } : {}), ...(conversation.renamed === true ? { renamed: true } : {}) }
 }
