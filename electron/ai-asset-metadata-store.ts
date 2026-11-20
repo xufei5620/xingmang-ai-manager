@@ -554,11 +554,14 @@ export class AiAssetMetadataStore {
     try {
       legacy = parseStoredItems(content, userId)
     } catch {
-      await this.backupAside(legacyPath, 'corrupt')
+      // Left where it is when it cannot be moved: nothing writes over the
+      // single file any more, so it is simply set aside on a later operation.
+      await this.backupAside(legacyPath, 'corrupt').catch(() => undefined)
       return []
     }
     if (await this.mergeIntoShards(userId, legacy) !== null) return legacy
-    await this.backupAside(legacyPath, 'migrated')
+    // Merging again later is harmless (the newer record wins).
+    await this.backupAside(legacyPath, 'migrated').catch(() => undefined)
     return []
   }
 
@@ -578,24 +581,53 @@ export class AiAssetMetadataStore {
     return failure
   }
 
+  /**
+   * One shard's records. Only a shard that is not there reads as empty. Every
+   * caller that writes puts back what it read plus one change, so a shard that
+   * is there but cannot be read right now (an antivirus scan or a sync client
+   * holding it, a link this store refuses to follow) must throw and stay as it
+   * is: read as empty, one saved favorite would replace every name, tag,
+   * favorite and recycle-bin mark beside it (R28-5). Only content that is not
+   * valid metadata is set aside as a .corrupt backup, and the shard starts over
+   * only once that backup exists.
+   */
   private async readShard(userId: number, shard: number): Promise<AiAssetMetadataItem[]> {
     const filePath = this.shardPath(userId, shard)
+    let content: string | null
     try {
-      const content = await readSafeUtf8File(filePath, FILE_LABEL, this.maximumShardBytes)
-      return content === null ? [] : parseStoredItems(content, userId, shard)
+      content = await readSafeUtf8File(filePath, FILE_LABEL, this.maximumShardBytes)
+    } catch (error) {
+      // A file where the shard folder belongs: no shard can be stored under it,
+      // and Windows already reports that as a missing file.
+      if ((error as NodeJS.ErrnoException | null)?.code === 'ENOTDIR') return []
+      // Every write stays under the ceiling, so a larger shard was not written
+      // by this store and waiting would never make it readable.
+      if (!await this.exceedsShardCeiling(filePath)) throw error
+      await this.backupAside(filePath, 'corrupt')
+      return []
+    }
+    if (content === null) return []
+    try {
+      return parseStoredItems(content, userId, shard)
     } catch {
       await this.backupAside(filePath, 'corrupt')
       return []
     }
   }
 
-  private async backupAside(filePath: string, reason: 'corrupt' | 'migrated'): Promise<void> {
+  private async exceedsShardCeiling(filePath: string): Promise<boolean> {
     try {
-      if (!assertSafeDataFile(filePath, FILE_LABEL)) return
-      await fs.promises.rename(filePath, `${filePath}.${reason}-${this.now().getTime()}-${this.randomUUID()}.bak`)
+      const stats = await fs.promises.lstat(filePath)
+      return stats.isFile() && stats.nlink === 1 && stats.size > this.maximumShardBytes
     } catch {
-      // Unsafe or locked paths remain untouched.
+      return false
     }
+  }
+
+  /** Renames a file aside. Throws while the file is still in place; one already gone needs no backup. */
+  private async backupAside(filePath: string, reason: 'corrupt' | 'migrated'): Promise<void> {
+    if (!assertSafeDataFile(filePath, FILE_LABEL)) return
+    await fs.promises.rename(filePath, `${filePath}.${reason}-${this.now().getTime()}-${this.randomUUID()}.bak`)
   }
 
   private async writeShard(userId: number, shard: number, items: AiAssetMetadataItem[], budget: WriteBudget): Promise<void> {
