@@ -5,7 +5,7 @@ import { managedKeyQuotaExhaustedMessage, managedKeyStoppedMessage } from './acc
 import { accountKeyNameMaxBytes, accountKeyNameTooLongMessage, buildAccountKeyName, utf8Length } from './catalog'
 import { resolveChineseServerMessage } from './new-api-messages'
 import { classifyNetworkFailure, isProxyAuthFailure, isServiceUnavailableResponse, networkFailureMessages, proxyAuthRequiredMessage, proxyAuthRequiredStatus, type NetworkFailureReason } from './network-failure'
-import type { RelayBackendCapabilities, RelayBackendClient, RelayNotice, RelayNoticeBulletin, RelayNoticeBulletinType, RelayNoticeReadMode } from './relay-backend'
+import type { InvoiceAccountCredential, RelayBackendCapabilities, RelayBackendClient, RelayNotice, RelayNoticeBulletin, RelayNoticeBulletinType, RelayNoticeReadMode } from './relay-backend'
 import { relaySites } from './relay-sites'
 import { carryRequestDiagnostics, noteRequestDiagnostics, requestDiagnosticsOf, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { parseNewApiUsagePricing } from './usage-pricing-parser'
@@ -1026,6 +1026,9 @@ export interface NewApiClientService extends RelayBackendClient {
   // Codex startup tunnel presents; see issueCodexStartupTicket below for why a
   // refusal there never signs the account out.
   issueCodexStartupTicket(): Promise<NewApiCodexStartupTicket>
+  // Main-process-only. Lends the access token to the invoice center's desktop
+  // session exchange; see lendInvoiceCredential below.
+  lendInvoiceCredential<T>(exchange: (credential: InvoiceAccountCredential) => Promise<T | null>): Promise<T | null>
   // Exchanges the captured refresh cookie for a new access_token. Every
   // authenticated call already retries through this same path once on a 401
   // (see withSession below); exposed directly too for a caller that wants to
@@ -4491,6 +4494,25 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return parseCodexStartupTicket(unwrapEnvelope(raw, label, [current.accessToken]))
   })
 
+  // 开发票换桌面令牌（invoice-center-client.ts）：开票系统拿这份 access token 去问 new-api「这是谁」，只问一次。
+  // access token 15 分钟一换，客户这边又不知道它还剩多久，所以开票系统说核实不了（exchange 回 null）时先当成过期了，
+  // 续一次再借；续过还核实不了，就是那边自己不认，原样回 null，不走 withSession 那条「再 401 就清掉登录」的路：
+  // 开票那边拒了，只该让这次开票失败，不能把客户登出。续期本身被 new-api 拒了照旧抛登录失效，同 Codex 那张票。
+  const lendInvoiceCredential = <T>(exchange: (credential: InvoiceAccountCredential) => Promise<T | null>): Promise<T | null> => requestGate.shared(async () => {
+    const lend = (current: InternalSession): InvoiceAccountCredential => {
+      assertCurrentOwner(current)
+      return { accessToken: current.accessToken, userId: String(current.userId) }
+    }
+    let current = requireSession()
+    let result = await exchange(lend(current))
+    assertCurrentOwner(current)
+    if (result !== null) return result
+    current = await refreshCurrentSession(current)
+    result = await exchange(lend(current))
+    assertCurrentOwner(current)
+    return result
+  })
+
   const restoreSession = async (persisted: NewApiPersistableSession): Promise<boolean> => {
     if (session) return true
     return switchSession(persisted)
@@ -4543,6 +4565,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     revokeOtherLoginSessions,
     provisionCliKey,
     issueCodexStartupTicket,
+    lendInvoiceCredential,
     refreshAccessToken,
     getPersistableSession,
     getSessionRevision: () => authAttemptGeneration,

@@ -33,10 +33,10 @@
 - 查什么：拖动区里加的装饰层、提示行、角标排在按钮后面时，用真鼠标点一次被它盖着的按钮：xvfb 起真 Electron、`frame:false` 窗口里 `xdotool mousemove x y click 1`，或打包版真机点。Playwright 的点击不经过系统的拖动区判断，CI 的 Chromium 151 也不继承 `app-region`；`src/renderer-v2/testing/app-check.mjs` 的 `windowDragOverControls` 只按 152 的规矩核对侧栏和顶栏。
 - 出自：#1574（2026-11-08）。#1508 升到 Electron 45 后 `app-region` 会传给子元素，侧栏账号卡整张变成拖窗口的地方，点头像进不了个人中心。CI 全绿，yoyo 在 0.2.23 上点出来的。
 
-### R02 付款窗口、开票窗口
+### R02 付款窗口
 
-- 触发：文件 `electron/payment-window.ts` `electron/invoice-portal-window.ts` `electron/security.ts`
-- 查什么：真开一次付款页（开票中心同理）：窗口出来、能关、主窗口照常能点；付款页上某个资源卡住时「打开支付窗口」不能一直转；代理软件关着时也开一次。导航和外链白名单只许收紧，放宽要 yoyo 亲手打字同意（I12、I15）。
+- 触发：文件 `electron/payment-window.ts` `electron/security.ts`
+- 查什么：真开一次付款页：窗口出来、能关、主窗口照常能点；付款页上某个资源卡住时「打开支付窗口」不能一直转；代理软件关着时也开一次。导航和外链白名单只许收紧，放宽要 yoyo 亲手打字同意（I12、I15）。
 - 出自：0.2.22 热修 #1405（2026-10-26）：等整页加载完才算打开、易支付先跳一张页被当成打不开、模态窗口关不掉，客户用支付宝充值打不开（#1458）。#1823（PX-2）：代理软件关了付款页打不开。
 
 ### R03 写进工具配置的模板

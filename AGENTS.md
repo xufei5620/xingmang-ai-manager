@@ -39,7 +39,7 @@
 
 - **跨进程通道有三套，各自一组「契约 + preload + 注册」**：主窗口业务通道 `ipc-contract.ts` + `preload.ts` + `ipc.ts`；主窗口系统设置与通知 `platform/contract.ts` + `platform/preload.ts` + `platform/ipc.ts`（`xingmang-platform:*`）；画布窗口 `canvas-contract.ts` + `canvas-preload.ts` + `canvas-window.ts`（`canvas-host:*`）。三个 preload 里的通道表都是 sandbox 约束下的有意重复（见 I7、T1）。
 - **本项目的复杂度不在业务，在提权、可信路径与原子写入这套边界上**——`command-runner.ts` / `windows-elevation.ts` / `windows-machine-paths.ts` / `trusted-temp.ts` / `config-files.ts` / `config-files-context.ts`（见第 4 节）。
-- **画布是全项目唯一运行第三方前端代码且有宿主桥的地方**（源码 `canvas-v2/`，产物 `dist-canvas/` 不入 git），全部 AI 调用都在主进程完成（见 I15、T13）。另外两个加载外部网页的是充值的支付窗口 `payment-window.ts` 和「开发票」的开票窗口 `invoice-portal-window.ts`，都不挂 preload（见 I15）。
+- **画布是全项目唯一运行第三方前端代码且有宿主桥的地方**（源码 `canvas-v2/`，产物 `dist-canvas/` 不入 git），全部 AI 调用都在主进程完成（见 I15、T13）。另一个加载外部网页的是充值的支付窗口 `payment-window.ts`，不挂 preload（见 I15）。
 
 **改跨平台代码前先读 `electron/platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
 
@@ -109,6 +109,8 @@ XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm run test:v2
 
 *已登记的例外*：明文跨 IPC 只走这几条专用通道，全都在 `ipc-channel-policy.ts` 里标了成功不记日志（同 I13）：`config:reveal-api-key`；`account:reveal-key`（复制账号密钥时取一次明文）；`account:reset-password` 的返回值（服务端生成的新密码）与 `account:copy-reset-password` 的入参；「记住密码」的 `account:get-remembered-login` / `account:set-remembered-login`——这一对是**有意的产品取舍**（勾了就要看见填好的登录框，渲染层没别的途径拿到它），落盘由 `account-credential-store.ts` 以 `safeStorage` 加密。**只能是专用通道**，明文永不许搭普通查询（登录态快照、账号资料、诊断导出）的便车；新增一条要在这里登记。
 
+*账号凭据借给开票系统*（「我的订单」里直接开发票，yoyo 2026-11-20 在选择卡片上选了「免登录」）：`invoice-center-client.ts` 把当前账号的 access token（星芒账号另带用户编号）交给本站点的开票系统，让它问一次账号站「这是谁」，换回开票系统自己的桌面令牌，再用桌面令牌调开票接口。这是账号凭据唯一一处发往账号站以外的主机：只在主进程、只发 `relay-sites.ts` 的 `invoiceOrigin`、不带 Cookie 和 Origin、拒绝跳转（I10）；桌面令牌只在内存里，不落盘、不过 IPC、不进日志，换人或退出就撤销。不要把这条路扩到别的主机，也不要让渲染层碰到这两样令牌。
+
 **I4. 所有 `ipcMain.handle` 必须经 `registerTrustedHandler`。**
 它统一做 sender URL 校验、结构化日志、dispose 注册。**两处例外，都只服务一个窗口、且校验比它更窄**：`canvas-host:*` 由 `canvas-window.ts` 的 `registerCanvasHandler` 注册（`assertTrustedCanvasSender` 只放行画布窗口自身的 sender，主窗口调会被拒）；`xingmang-platform:*` 由 `platform/ipc.ts` 的 `registerPlatformHandlers` 注册（`assertPlatformOwner` 只放行主窗口主框架）。两者都要自己补齐日志这一半：platform 侧走 `registerPlatformHandlers` 的 `log` 回调，由 `platform/runtime-log-bridge.ts` 接到 `runtimeLog`（handler 比 `RuntimeLogStore` 先注册，中间这段缓冲后补发）。新通道不许效仿，除非同样只服务一个隔离窗口。
 
@@ -156,8 +158,6 @@ renderer-v2 还直接从一批 `electron/*` 模块导入运行时值。真正守
 *违反后果*：画布上游一次投毒 = 拿到你给它的一切；今天它既摸不到主进程 IPC，也拿不到 Key。
 
 支付窗口（`payment-window.ts`）是另一个加载外部网页的窗口，付款页来自支付商、不归我们控制。它守的是更严的一条：**不挂 preload**（页面拿不到任何宿主桥）、`sandbox` 加每次随机的 `partition`、权限请求与下载一律拒绝、导航和新窗口只放行白名单 origin。给它加 preload 或放宽导航前，先回答同一个问题：付款页被换掉以后，这个能力能干什么？
-
-开票窗口（`invoice-portal-window.ts`，「我的订单」的「开发票」）显示开票中心，那是 xingmang-console 仓库的客户门户，不归本仓。它同样不挂 preload、`sandbox`、权限请求一律拒绝、导航只放行开票中心那一个 origin、新窗口一律拒绝。跟支付窗口不同的两处是有意的：分区按账号持久（开票中心的登录要记着），换人、退出时关窗并清掉上一个人的分区；下载只收开票中心页面自己的 `blob:` 发票文件，先落临时文件、按开头字节认过类型，再经保存框原子写（I8），Chromium 不直接写客户选的位置。开哪个账号的开票中心只由主进程按当前登录定，渲染层那条通道不带参数。
 
 ---
 

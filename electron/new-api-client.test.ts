@@ -4268,6 +4268,60 @@ describe('refreshAccessToken', () => {
   })
 })
 
+describe('lendInvoiceCredential', () => {
+  function rotatedTokenResponse(): Response {
+    return jsonResponse({ success: true, message: '', data: { access_token: 'rotated-token', access_expires_at: null } })
+  }
+
+  it('lends the current access token with the user id and sends nothing to new-api itself', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const exchange = vi.fn(async () => 'desktop-token')
+
+    await expect(client.lendInvoiceCredential(exchange)).resolves.toBe('desktop-token')
+
+    expect(exchange).toHaveBeenCalledExactlyOnceWith({ accessToken: 'test-access-token-abc', userId: '42' })
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('renews an access token the invoice center could not verify once and lends the new one', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(rotatedTokenResponse())
+    const exchange = vi.fn<(credential: { accessToken: string; userId?: string }) => Promise<string | null>>()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce('desktop-token')
+
+    await expect(client.lendInvoiceCredential(exchange)).resolves.toBe('desktop-token')
+
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(`${testBaseUrl}/api/user/auth/refresh`)
+    expect(exchange.mock.calls.map(([credential]) => credential.accessToken)).toEqual(['test-access-token-abc', 'rotated-token'])
+  })
+
+  // The invoice center refusing this account must only fail the invoice; it can
+  // never be allowed to sign the customer out of the account.
+  it('keeps the account signed in when the invoice center keeps refusing a freshly renewed token', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(rotatedTokenResponse())
+    const exchange = vi.fn(async () => null)
+
+    await expect(client.lendInvoiceCredential(exchange)).resolves.toBeNull()
+
+    expect(exchange).toHaveBeenCalledTimes(2)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(client.isAuthenticated()).toBe(true)
+  })
+
+  it('does not lend anything while signed out', async () => {
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: vi.fn<NewApiFetch>() })
+    const exchange = vi.fn(async () => 'desktop-token')
+
+    await expect(client.lendInvoiceCredential(exchange)).rejects.toThrow('请先登录星芒账号')
+    expect(exchange).not.toHaveBeenCalled()
+  })
+})
+
 describe('issueCodexStartupTicket', () => {
   const issuedTicket = 'a'.repeat(43)
 

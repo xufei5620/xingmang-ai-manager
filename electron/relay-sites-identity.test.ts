@@ -98,10 +98,10 @@ describe('explicit relay site identity', () => {
     ])
   })
 
-  it('sends each account to its own invoice portal', () => {
-    // The two portals are separate logins: an xm account sent to the api
-    // portal (or the reverse) would be told its password is wrong.
-    expect(requireRelaySite('solov').invoicePortalUrl).toBe('https://invoice-xm.solov.cc/orders')
-    expect(requireRelaySite('solov-api').invoicePortalUrl).toBe('https://invoice-api.solov.cc/orders')
+  it('sends each account to its own invoice center', () => {
+    // The invoice center decides the site from the portal a request reaches:
+    // an xm account's token sent to the api portal (or the reverse) is refused.
+    expect(requireRelaySite('solov').invoiceOrigin).toBe('https://invoice-xm.solov.cc')
+    expect(requireRelaySite('solov-api').invoiceOrigin).toBe('https://invoice-api.solov.cc')
   })
 })

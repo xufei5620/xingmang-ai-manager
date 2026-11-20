@@ -51,7 +51,7 @@ import type { SensitiveClipboard } from './sensitive-clipboard'
 import type { NetworkSettingsKind, ProxyBypassOutcome } from './proxy-bypass'
 import type { StaleProxyClearResult } from './stale-proxy-environment'
 import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
-import type { InvoicePortalWindowController } from './invoice-portal-window'
+import type { InvoiceCenterClient } from './invoice-center-client'
 import type { PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import type { AiChatHistoryStore } from './ai-chat-history-store'
@@ -85,6 +85,7 @@ import { registerExtensionHandlers } from './ipc/handlers/extensions'
 import { registerAccountHandlers } from './ipc/handlers/account'
 import { registerAccelerationHandlers } from './ipc/handlers/acceleration'
 import { registerAccountBillingHandlers } from './ipc/handlers/account-billing'
+import { registerAccountInvoiceHandlers } from './ipc/handlers/account-invoice'
 import { registerAccountUsageHandlers } from './ipc/handlers/account-usage'
 import { registerAccountKeyHandlers } from './ipc/handlers/account-keys'
 import { registerAiChatHandlers } from './ipc/handlers/ai-chat'
@@ -159,8 +160,8 @@ export interface IpcRegistrationOptions {
   // only the user's amount/method choice and delegates the returned form to
   // this isolated window controller without serializing its signed fields.
   paymentWindow: Pick<PaymentWindowController, 'open' | 'openUrl' | 'close' | 'destroy'> & Partial<Pick<PaymentWindowController, 'openQrCode'>>
-  /** 「开发票」打开的开票窗口；省略 = 这条通道报打不开。 */
-  invoicePortalWindow?: Pick<InvoicePortalWindowController, 'open'>
+  /** 「我的订单」里开发票（invoice-center-client.ts）；省略 = 那几条通道按读不到处理。 */
+  invoiceCenter?: InvoiceCenterClient
   // Resolves once main.ts's startup session-restore attempt (see
   // realm-account-service.ts's restoreActive) has settled,
   // success or failure -- awaited by account:get-session so the renderer's
@@ -436,6 +437,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerAccountHandlers(ctx)
   registerAccelerationHandlers(ctx)
   registerAccountBillingHandlers(ctx)
+  registerAccountInvoiceHandlers(ctx)
   registerAccountUsageHandlers(ctx)
   registerAccountKeyHandlers(ctx)
   registerAiChatHandlers(ctx)

@@ -216,7 +216,15 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:quote-topup': { log: 'normal', account: 'scoped' },
   'account:create-topup-payment': { log: 'normal', account: 'scoped' },
   'account:close-payment-window': { log: 'normal', account: 'scoped' },
-  'account:open-invoice-portal': { log: 'normal', account: 'scoped' },
+  'account:list-invoice-orders': { label: '开票订单读取', log: 'normal', account: 'scoped' },
+  // 抬头、开票记录里有客户填的单位名称、税号、邮箱（I13）。
+  'account:list-invoice-profiles': { label: '发票抬头读取', log: 'quiet-success', account: 'scoped' },
+  'account:list-invoice-requests': { label: '开票记录读取', log: 'quiet-success', account: 'scoped' },
+  'account:save-invoice-profile': { label: '发票抬头保存', log: 'secret-input', account: 'scoped' },
+  'account:submit-invoice-request': { label: '开票申请提交', log: 'normal', account: 'scoped' },
+  'account:withdraw-invoice-request': { label: '开票申请撤回', log: 'normal', account: 'scoped' },
+  // 不进账号工作：保存框要等客户选位置，放在账号工作里换账号就得陪着等。取文件那一下换了人，开票客户端自己作废。
+  'account:save-invoice-document': { label: '发票下载', log: 'normal', account: 'none' },
   'account:list-topup-orders': { log: 'normal', account: 'scoped' },
   'account:redeem-topup-code': { log: 'normal', account: 'scoped' },
   'account:transfer-affiliate-quota': { log: 'normal', account: 'scoped' },

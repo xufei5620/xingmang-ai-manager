@@ -216,6 +216,7 @@ function accountServiceStub(): NewApiClientService {
     revokeOtherLoginSessions: vi.fn() as never,
     provisionCliKey: vi.fn() as never,
     issueCodexStartupTicket: vi.fn() as never,
+    lendInvoiceCredential: vi.fn() as never,
     refreshAccessToken: vi.fn() as never,
     getPersistableSession: vi.fn(() => null),
     getSessionRevision: vi.fn(() => 0),
@@ -8493,20 +8494,83 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(paymentWindow.destroy).not.toHaveBeenCalled()
     })
 
-    it('opens the invoice window for the signed-in account only, never for a site or account the renderer names', async () => {
-      const accountService = accountServiceStub()
-      const invoicePortalWindow = { open: vi.fn(async () => undefined) }
-      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { invoicePortalWindow })
-      const openInvoicePortal = electronMocks.handlers.get('account:open-invoice-portal')!
+    it('hands the invoice center only validated invoice input, never a site, account or currency the renderer names', async () => {
+      const profile = { profileId: '11111111-1111-4111-8111-111111111111', data: { kind: 'personal' as const, title: '张三', taxId: '', email: 'a@example.com' } }
+      const request = { requestId: '22222222-2222-4222-8222-222222222222', status: 'pending_review', revision: 1, amountMinor: '30000', currency: 'CNY', title: '张三', createdAt: '2026-11-20T00:00:00Z', reason: '', invoiceNumber: null, lines: [] }
+      const invoiceCenter = {
+        listOrders: vi.fn(async () => ({ orders: [], minimumRequestMinor: '20000' })),
+        listProfiles: vi.fn(async () => [profile]),
+        listRequests: vi.fn(async () => ({ requests: [request], nextCursor: null })),
+        saveProfile: vi.fn(async () => profile),
+        submitRequest: vi.fn(async () => request),
+        withdrawRequest: vi.fn(async () => ({ ...request, status: 'withdrawn', revision: 2 })),
+        downloadDocument: vi.fn(),
+        setAccount: vi.fn(),
+      }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { invoiceCenter })
+      const key = '33333333-3333-4333-8333-333333333333'
 
-      await expect(openInvoicePortal(trustedEvent())).rejects.toThrow('没能打开开票中心，请稍后再试；还不行请找客服。')
-      expect(invoicePortalWindow.open).not.toHaveBeenCalled()
+      await expect(electronMocks.handlers.get('account:list-invoice-orders')!(trustedEvent(), { siteId: 'solov-api', userId: 1 }))
+        .resolves.toEqual({ orders: [], minimumRequestMinor: '20000' })
+      expect(invoiceCenter.listOrders).toHaveBeenCalledWith()
+      await electronMocks.handlers.get('account:list-invoice-requests')!(trustedEvent(), { cursor: 'next-page' })
+      expect(invoiceCenter.listRequests).toHaveBeenCalledWith({ cursor: 'next-page' })
 
-      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 42 } } as never)
-      accountService.getActiveSiteId = vi.fn(() => 'solov-api' as const)
-      // Anything the renderer passes is ignored: the main process picks the portal and the login.
-      await expect(openInvoicePortal(trustedEvent(), { siteId: 'solov', userId: 1 })).resolves.toBeUndefined()
-      expect(invoicePortalWindow.open).toHaveBeenCalledWith({ siteId: 'solov-api', userId: 42 })
+      await electronMocks.handlers.get('account:submit-invoice-request')!(trustedEvent(), {
+        idempotencyKey: key, profileId: profile.profileId, originRefs: ['newapi:top_up:7'], amountsMinor: ['30000'],
+      })
+      expect(invoiceCenter.submitRequest).toHaveBeenCalledWith({ idempotencyKey: key, profileId: profile.profileId, originRefs: ['newapi:top_up:7'], amountsMinor: ['30000'] })
+      // The customer, the site and the currency come from the main process alone.
+      for (const extra of [{ customerRef: 'source:x:user:1' }, { currency: 'USD' }, { siteId: 'solov' }]) {
+        await expect(electronMocks.handlers.get('account:submit-invoice-request')!(trustedEvent(), {
+          idempotencyKey: key, profileId: profile.profileId, originRefs: ['newapi:top_up:7'], amountsMinor: ['30000'], ...extra,
+        })).rejects.toThrow('开票申请包含未知字段')
+      }
+      await expect(electronMocks.handlers.get('account:submit-invoice-request')!(trustedEvent(), {
+        idempotencyKey: key, profileId: profile.profileId, originRefs: ['newapi:top_up:7', 'newapi:top_up:8'], amountsMinor: ['30000'],
+      })).rejects.toThrow('开票订单格式错误')
+      expect(invoiceCenter.submitRequest).toHaveBeenCalledOnce()
+
+      await electronMocks.handlers.get('account:save-invoice-profile')!(trustedEvent(), {
+        idempotencyKey: key, profile: { kind: 'business', title: ' 某某科技有限公司 ', taxId: '91330100MA2XXXXXXX', email: 'f@example.com' },
+      })
+      expect(invoiceCenter.saveProfile).toHaveBeenCalledWith({ idempotencyKey: key, profile: { kind: 'business', title: '某某科技有限公司', taxId: '91330100MA2XXXXXXX', email: 'f@example.com' } })
+      await expect(electronMocks.handlers.get('account:save-invoice-profile')!(trustedEvent(), {
+        idempotencyKey: key, profile: { kind: 'business', title: '某某科技有限公司', taxId: '', email: 'f@example.com' },
+      })).rejects.toThrow('税号格式错误')
+      await expect(electronMocks.handlers.get('account:save-invoice-profile')!(trustedEvent(), {
+        idempotencyKey: 'not-a-key', profile: { kind: 'personal', title: '张三', email: 'a@example.com' },
+      })).rejects.toThrow('操作编号格式错误')
+
+      await electronMocks.handlers.get('account:withdraw-invoice-request')!(trustedEvent(), { idempotencyKey: key, requestId: request.requestId, expectedRevision: 1 })
+      expect(invoiceCenter.withdrawRequest).toHaveBeenCalledWith({ idempotencyKey: key, requestId: request.requestId, expectedRevision: 1 })
+      await expect(electronMocks.handlers.get('account:withdraw-invoice-request')!(trustedEvent(), { idempotencyKey: key, requestId: '../x', expectedRevision: 1 }))
+        .rejects.toThrow('开票申请格式错误')
+    })
+
+    it('saves an invoice document only where the customer picks in the save dialog', async () => {
+      const invoiceCenter = {
+        listOrders: vi.fn(), listProfiles: vi.fn(), listRequests: vi.fn(), saveProfile: vi.fn(), submitRequest: vi.fn(), withdrawRequest: vi.fn(), setAccount: vi.fn(),
+        downloadDocument: vi.fn(async () => ({ bytes: Buffer.from('%PDF-1.7 test'), type: 'pdf' as const, suggestedName: '../invoice-22222222.pdf' })),
+      }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { invoiceCenter, downloadsDirectory: () => 'C:\\Users\\me\\Downloads' })
+      electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: true })
+
+      await expect(electronMocks.handlers.get('account:save-invoice-document')!(trustedEvent(), '22222222-2222-4222-8222-222222222222'))
+        .resolves.toEqual({ saved: false })
+      expect(invoiceCenter.downloadDocument).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222')
+      const dialogOptions = electronMocks.showSaveDialog.mock.calls.at(-1)!.at(-1) as { title: string; defaultPath: string }
+      expect(dialogOptions.title).toBe('保存发票')
+      expect(path.basename(dialogOptions.defaultPath.replace(/\\/g, '/'))).toBe('invoice-22222222.pdf')
+      await expect(electronMocks.handlers.get('account:save-invoice-document')!(trustedEvent(), 'C:\\Windows\\x'))
+        .rejects.toThrow('开票申请格式错误')
+      expect(invoiceCenter.downloadDocument).toHaveBeenCalledOnce()
+    })
+
+    it('fails the invoice channels without reaching the network when this host has no invoice center', async () => {
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub())
+
+      await expect(electronMocks.handlers.get('account:list-invoice-orders')!(trustedEvent())).rejects.toThrow('INVOICE_CENTER_NO_REASON')
     })
 
     it('downloads announcement images for the signed-in account site only, never a site the renderer names', async () => {
@@ -8529,15 +8593,6 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(electronMocks.handlers.get('account:get-notice-image')!(trustedEvent(), 'https://xm.solov.cc/qr.png'))
         .rejects.toThrow('公告图片暂时显示不了，请更新或重启软件')
-    })
-
-    it('says the approved line when this host has no invoice window', async () => {
-      const accountService = accountServiceStub()
-      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 42 } } as never)
-      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
-
-      await expect(electronMocks.handlers.get('account:open-invoice-portal')!(trustedEvent()))
-        .rejects.toThrow('没能打开开票中心，请稍后再试；还不行请找客服。')
     })
 
     it('validates the backend payment form before opening the window or returning its trade number', async () => {
@@ -10049,6 +10104,9 @@ describe('IPC channel log and account policies', () => {
       'account:register',
       'account:remove-saved',
       'account:reset-password',
+      // 发票下载要等客户在保存框里选位置，放进账号工作会让换账号一直等着这个框；取文件那一下由开票客户端
+      // 自己核对账号换没换（invoice-center-client.ts 的 generation）。
+      'account:save-invoice-document',
       'account:send-reset-code',
       'account:send-verification-code',
       'account:set-remembered-login',
@@ -10120,6 +10178,8 @@ describe('IPC channel log and account policies', () => {
         'account:get-tasks',
         'account:get-usage',
         'account:list-groups',
+        'account:list-invoice-profiles',
+        'account:list-invoice-requests',
         'account:list-key-models',
         'account:list-keys',
         'account:reset-password',
@@ -10170,6 +10230,7 @@ describe('IPC channel log and account policies', () => {
         'account:sync-local-notice-reads',
       ],
       'log: secret-input': [
+        'account:save-invoice-profile',
         'account:submit-two-factor-code',
         'codex-remote:save-feishu-credentials',
       ],

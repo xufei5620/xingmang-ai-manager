@@ -138,6 +138,16 @@ export type RelayTopupCheckout = NewApiPaymentForm | {
   currency: string
 }
 
+/**
+ * The account credential the invoice center verifies once with this site's
+ * account service (lendInvoiceCredential). new-api needs the user id beside the
+ * Bearer token (New-Api-User); sub2api reads the user from the token alone.
+ */
+export interface InvoiceAccountCredential {
+  accessToken: string
+  userId?: string
+}
+
 // Optional operation flags preserve legacy NewAPI sessions. Other backends
 // must explicitly opt in; a read capability never implies write support.
 export interface RelayBackendCapabilities {
@@ -193,6 +203,14 @@ export interface RelayBackendClient {
    * Never crosses IPC or reaches a log. Backends whose site runs no tunnel service omit it.
    */
   issueCodexStartupTicket?(): Promise<NewApiCodexStartupTicket>
+  /**
+   * Main-only: lend this account's short-lived access token to one invoice-center
+   * desktop-session exchange (invoice-center-client.ts), which shows it once to this
+   * site's own account service and hands back a token of its own. `exchange` resolves
+   * null when the invoice center could not verify the token; the backend renews it
+   * once and asks again. The token never crosses IPC, a DTO or a log.
+   */
+  lendInvoiceCredential?<T>(exchange: (credential: InvoiceAccountCredential) => Promise<T | null>): Promise<T | null>
 
   /** ipc.ts: account:get-status */
   getStatus(): Promise<NewApiAccountStatus>

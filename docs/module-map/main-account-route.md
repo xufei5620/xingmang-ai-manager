@@ -93,7 +93,8 @@
 - `sensitive-clipboard.ts` — 复制出去的密钥、找回密码后拿到的新密码，60 秒后从剪贴板清掉。只清自己放进去的那段，软件退出前（`prepareToQuit` 里的 `flush()`）立刻清：剪贴板读回比对是异步的，will-quit 里来不及。`ipc.ts` 在用
 
 ## 计费、充值、订阅、公告
-- `invoice-portal-window.ts` — 「我的订单」的「开发票」开的开票窗口，显示当前账号的开票中心（xingmang-console 的客户门户）。不挂 preload，导航只放行开票中心那一个 origin，登录按账号存持久分区、换人退出时清掉；下载只收那个页面自己的 `blob:` 发票文件（PDF、PNG、JPEG，8MB 内），认过类型再经保存框原子写
+- `invoice-center-client.ts` — 「我的订单」里直接开发票：主进程跟开票系统（xingmang-console 的开票模块，契约在那边的 `platform/contracts/auth/invoice-desktop-session.v1.md`）说话的一层。借当前账号的 access token 换开票系统的桌面令牌（`RelayBackendClient.lendInvoiceCredential`），令牌只在内存里，401 时重换一次，换人退出就撤销；读订单、抬头、开票记录，提交、撤回，取发票文件。只发 `relay-sites.ts` 的 `invoiceOrigin`，不带 Cookie 和 Origin，超时、响应上限、拒绝跳转齐全；回来的数据逐项核对形状再换成驼峰交给界面（类型在 `invoice-center-types.ts`）
+- `invoice-document-save.ts` — 「下载发票」：取文件、按开头字节认类型（PDF、PNG、JPEG，8MB 内），客户在保存框里选位置，原子写；没成就弹 0.2.24 批过的那句「发票没保存下来」
 - `payment-window.ts` — 充值和订阅付款用的独立窗口。后端给的付款表单、URL、二维码都先校验；页面导航只放行白名单 origin 和回调域 `api.solov.cc`（I12）；只有后端查到的订单状态才算付款成功。关了窗口还会在后台继续问 15 分钟
 - `payment-methods-off.ts` — 充值方式开关（`service-status.ts` 的 `paymentMethodsOff`）：从充值信息里去掉这台电脑该藏的付款方式，页面开着时才被藏掉的、点付款时拦下。只藏软件里的，站上不动
 - `payment-status-reader.ts` — 查订单状态前，先把订单绑到下单时的站点、用户和会话代数上；任何一样变了就报 STALE，不再问

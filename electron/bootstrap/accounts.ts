@@ -7,15 +7,16 @@ import { AccountSessionStore } from '../account-session-store'
 import { relayStatusProbeUrl } from '../relay-status-probe'
 import { ipcEventChannels } from '../ipc-contract'
 import { createNewApiClient, type NewApiRetryOffProxyFailure } from '../new-api-client'
-import { parseRealmSavedAccount, type RealmAccountOwner, type RealmCredential, type RealmSavedAccount } from '../realm-account'
+import { parseRealmSavedAccount, RealmAccountError, type RealmAccountOwner, type RealmCredential, type RealmSavedAccount } from '../realm-account'
 import type { RealmAccountClientHandle, RealmAccountSiteId } from '../realm-account-service'
 import { createSessionRealmAccountVault, type RealmAccountVault } from '../realm-account-vault'
 import { createFileRealmAccountVault } from '../realm-account-vault-file'
+import type { InvoiceAccountCredential, RelayBackendClient } from '../relay-backend'
 import { requireRelaySite } from '../relay-sites'
 import type { RuntimeLogStore } from '../runtime-log'
 import { inspectSafeStorageBackend, resolveCredentialPersistence } from '../safe-storage-backend'
 import { SavedAccountsStore } from '../saved-accounts'
-import { createSub2ApiRelayBackend } from '../sub2api-relay-backend'
+import { createSub2ApiRelayBackend, type Sub2ApiRelayBackend } from '../sub2api-relay-backend'
 import { createVaultRecoveryNotifier } from '../vault-recovery-notice'
 import type { NetworkRoutes } from './network-routes'
 
@@ -81,6 +82,31 @@ export interface AccountClientFactoryOptions {
 }
 
 /** 账号服务换站点、恢复登录时用它给每个站点建客户端（createRealmAccountService 的 createClient）。 */
+/**
+ * 历史账号开发票换桌面令牌时借出的 access token（invoice-center-client.ts，RelayBackendClient.lendInvoiceCredential）。
+ * sub2api-relay-backend.ts 不改，所以加在这一层：手上那份凭据就是 getSavedAccount() 回的。它只在账号站回 401 时才续期，
+ * 自己不知道快到期了；开票系统说核实不了（exchange 回 null）时，先用一次普通的读取（getProfile）让它照老规矩续，
+ * 换来新的就再借一次，没换（账号站照样认这份）就是开票那边不认，原样回 null。续期被拒、账号失效时它照旧把登录清掉。
+ */
+export function withSub2ApiInvoiceCredential(backend: Pick<Sub2ApiRelayBackend, 'client' | 'getSavedAccount'>): RelayBackendClient {
+  function heldToken(): { userId: string; accessToken: string } {
+    const saved = backend.getSavedAccount()
+    if (!saved || saved.credential.kind !== 'sub2api') throw new RealmAccountError('SIGNED_OUT')
+    return { userId: saved.userId, accessToken: saved.credential.accessToken }
+  }
+  async function lendInvoiceCredential<T>(exchange: (credential: InvoiceAccountCredential) => Promise<T | null>): Promise<T | null> {
+    const before = heldToken()
+    const first = await exchange({ accessToken: before.accessToken })
+    if (first !== null) return first
+    await backend.client.getProfile()
+    const after = heldToken()
+    if (after.userId !== before.userId) throw new RealmAccountError('STALE')
+    if (after.accessToken === before.accessToken) return null
+    return exchange({ accessToken: after.accessToken })
+  }
+  return Object.freeze({ ...backend.client, lendInvoiceCredential })
+}
+
 export function createAccountClientFactory(options: AccountClientFactoryOptions) {
   const { vault, routes: { relayRouting, proxyBypass, routedAccountRelayFetch, routedAccountFetch }, runtimeLog } = options
   // 系统代理活着却不转发时（代理软件换了线路、规则把账号服务挡了），账号请求只会
@@ -130,7 +156,7 @@ export function createAccountClientFactory(options: AccountClientFactoryOptions)
           if (!held) return
           await persistRotation(siteId, rotated, held, rotated.credential)
         } })
-      return { ...backend, restore: (record) => {
+      return { ...backend, client: withSub2ApiInvoiceCredential(backend), restore: (record) => {
         held = record.credential
         return backend.restore(record)
       } }

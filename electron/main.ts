@@ -148,7 +148,7 @@ import {
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createManualRedirectFetch } from './manual-redirect-fetch'
 import { createPaymentWindowController, resolvePaymentAppLaunchScheme, type PaymentWindowProxyMode } from './payment-window'
-import { createInvoicePortalWindowController, type InvoicePortalIdentity } from './invoice-portal-window'
+import { createInvoiceCenterClient, invoiceCenterNoReason, type InvoiceCenterAccount } from './invoice-center-client'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
 import { removeMacLoginItem, removeMacManagedTools, resolveMacAppBundlePath, runMacUninstall } from './macos-uninstall'
@@ -1958,7 +1958,6 @@ if (!hasSingleInstanceLock) {
         previous?.chatVideoService.cancelAll()
         previous?.canvasRuns.shutdown()
         paymentWindow.destroy()
-        invoicePortalWindow.destroy()
         // 补设置那次还在本机看工具开没开的，不陪它等 PowerShell 跑完；叫停管到下面这段等完，
         // 晚一步才开始的那次也不等（system-service.ts 的 stopTemplateFillWaits）。
         const resumeTemplateFill = systemService.stopTemplateFillWaits?.()
@@ -1978,8 +1977,8 @@ if (!hasSingleInstanceLock) {
         if (state.restoring) relayRouteController.ensureWatching(state.restoring.account.siteId)
         const identity = buildAccountIdentity(siteId, state.account?.userId, accounts.client.getSessionRevision!())
         sendToMainWindow('onAccountSessionChanged', state)
-        // 换了人或退出：开票窗口关掉，上一个人的开票登录清掉；续期这类同一个人的变化它自己会略过。
-        invoicePortalWindow.setAccount(invoicePortalIdentity(siteId, state))
+        // 换了人或退出：上一个人的开票桌面登录丢掉、告诉开票系统撤销；续期这类同一个人的变化它自己会略过。
+        invoiceCenter.setAccount(invoiceCenterAccount(siteId, state))
         if (!accountIdentity.advance(identity)) return
         // 只在换了人时才让加速作废在路上的请求：续期换凭据、付款后刷新也会走到这里，
         // 那时推进加速的代数会让正在查的状态报「账号已变更」，查询途中还会把正在跑的加速停掉。
@@ -2347,42 +2346,28 @@ if (!hasSingleInstanceLock) {
         }
       },
     })
-    function invoicePortalIdentity(
+    function invoiceCenterAccount(
       siteId: string,
       state: { authenticated: boolean; account?: { userId: number } | null },
-    ): InvoicePortalIdentity | null {
-      return state.authenticated && state.account ? { siteId, userId: state.account.userId } : null
+    ): InvoiceCenterAccount | null {
+      if (!state.authenticated || !state.account || (siteId !== 'solov' && siteId !== 'solov-api')) return null
+      return { siteId, userId: state.account.userId }
     }
-    // 「我的订单」的「开发票」开的窗口（invoice-portal-window.ts）。开票中心的登录按账号各记一份。
-    const invoicePortalWindow = createInvoicePortalWindowController({
-      iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
-      temporaryDirectory: () => path.join(managerDataDirectory, 'invoice-downloads'),
-      downloadsDirectory: () => app.getPath('downloads'),
-      proxyMode: externalPageProxyMode,
-      onBlockedNavigation: (targetUrl) => {
-        let origin = 'invalid-url'
-        try {
-          origin = new URL(targetUrl).origin
-        } catch {
-          // Keep malformed URLs out of logs; the policy has already blocked it.
-        }
-        runtimeLog.log('warn', 'invoice', 'navigation.blocked', '已阻止开票窗口跳转到开票中心以外的地址', { origin })
+    // 「我的订单」里直接开发票（invoice-center-client.ts）：借当前账号的登录换开票系统的桌面令牌，令牌只在它的内存里。
+    // 走默认会话：跟着系统代理和星芒的改直连走，账号那份 cookie 罐子不带（credentials: 'omit'）。
+    const invoiceCenter = createInvoiceCenterClient({
+      fetchImpl: (url, init) => chromiumSessionFetch(session.defaultSession)(url, init),
+      currentAccount: () => invoiceCenterAccount(accounts.getSiteId(), accountService.getSessionState()),
+      lendCredential: (exchange) => {
+        const lend = accounts.client.lendInvoiceCredential
+        if (!lend) return Promise.reject(new Error(invoiceCenterNoReason))
+        return lend(exchange)
       },
-      // 只记类别和错误码：发票文件名带申请编号，地址带登录态，都不进日志（I13）。
-      onEvent: (event) => {
-        if (event.kind === 'download.saved') {
-          runtimeLog.log('info', 'invoice', 'download.saved', '发票已另存', { type: event.type, bytes: event.bytes })
-        } else if (event.kind === 'download.rejected') {
-          runtimeLog.log('warn', 'invoice', 'download.rejected', '开票窗口里的下载不是发票文件，已拦下')
-        } else if (event.kind === 'download.failed') {
-          runtimeLog.log('warn', 'invoice', 'download.failed', '发票没能另存', { code: event.code })
-        } else {
-          runtimeLog.log('warn', 'invoice', 'storage.clear-failed', '上一个账号的开票登录没清干净', { code: event.code })
-        }
-      },
+      // 只记事件名和错误码：令牌、账号凭据、开票系统回的原话都不进日志（I13）。
+      log: (level, event, message, detail) => runtimeLog.log(level, 'invoice', event, message, detail),
     })
-    // 开机恢复登录可能已经在这之前完成了，先把当前是谁告诉它，第一次真换人才清得对。
-    invoicePortalWindow.setAccount(invoicePortalIdentity(accounts.getSiteId(), accountService.getSessionState()))
+    // 开机恢复登录可能已经在这之前完成了，先把当前是谁告诉它，第一次真换人才撤销得对。
+    invoiceCenter.setAccount(invoiceCenterAccount(accounts.getSiteId(), accountService.getSessionState()))
 
     // Normalize the effective record (file, .bak, or defaults) through the same
     // serialized queue as every other settings write, but only touch the disk
@@ -2646,7 +2631,7 @@ if (!hasSingleInstanceLock) {
       },
       accountService,
       paymentWindow,
-      invoicePortalWindow,
+      invoiceCenter,
       accountSessionReady,
       accountStartupGate,
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
@@ -2873,7 +2858,6 @@ if (!hasSingleInstanceLock) {
     quitCleanup.add('asset-protocol-and-windows', () => {
       protocol.unhandle('xingmang-asset')
       paymentWindow.destroy()
-      invoicePortalWindow.destroy()
       canvasController.dispose()
     })
     quitCleanup.add('updater', () => updaterService.dispose())
@@ -3265,7 +3249,6 @@ if (!hasSingleInstanceLock) {
         // 一样先放掉画布、支付窗口，不然安装器发起的退出会被它们拦住。
         try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
         try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
-        try { invoicePortalWindow.destroy() } catch (cause) { runtimeLog.exception('invoice', 'shutdown.failed', cause) }
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
         }
@@ -3300,7 +3283,6 @@ if (!hasSingleInstanceLock) {
         forceExitTimer.unref()
         try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
         try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
-        try { invoicePortalWindow.destroy() } catch (cause) { runtimeLog.exception('invoice', 'shutdown.failed', cause) }
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
         }
@@ -3485,8 +3467,7 @@ if (!hasSingleInstanceLock) {
           forceExitTimer.unref()
           try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
           try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
-          try { invoicePortalWindow.destroy() } catch (cause) { runtimeLog.exception('invoice', 'shutdown.failed', cause) }
-          for (const window of BrowserWindow.getAllWindows()) {
+            for (const window of BrowserWindow.getAllWindows()) {
             if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
           }
           // 先让这次调用的结果回到界面，再退。
@@ -3509,8 +3490,7 @@ if (!hasSingleInstanceLock) {
           // 没起来时星芒照常开着，画布还要能再打开（下面 abort 里放回来）。
           try { canvasController.suspendForQuit() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
           try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
-          try { invoicePortalWindow.destroy() } catch (cause) { runtimeLog.exception('invoice', 'shutdown.failed', cause) }
-          for (const window of BrowserWindow.getAllWindows()) {
+            for (const window of BrowserWindow.getAllWindows()) {
             if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
           }
         })
@@ -3602,7 +3582,6 @@ if (!hasSingleInstanceLock) {
     // since window-all-closed only quits when every window is gone).
     mainWindow.on('closed', () => {
       paymentWindow.destroy()
-      invoicePortalWindow.destroy()
       canvasController.dispose()
     })
     // 客户回到星芒窗口：等着外部客户端退出再换线路的，看一眼退了没有（xm 三线路 C11）。

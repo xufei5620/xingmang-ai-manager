@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseRealmSavedAccount, type RealmSavedAccount } from '../realm-account'
 import { createRealmAccountService } from '../realm-account-service'
 import { createSessionRealmAccountVault, type RealmAccountVault } from '../realm-account-vault'
+import type { RelayBackendClient } from '../relay-backend'
 import type { RuntimeLogStore } from '../runtime-log'
-import { createAccountClientFactory, createAccountStorage, type AccountClientFactoryOptions } from './accounts'
+import { createAccountClientFactory, createAccountStorage, withSub2ApiInvoiceCredential, type AccountClientFactoryOptions } from './accounts'
 
 vi.mock('electron', () => ({
   safeStorage: {
@@ -133,6 +134,66 @@ describe('account clients', () => {
       refusedBy: '登录状态续期',
       code: 'AUTH_SESSION_REVOKED',
     }))
+  })
+})
+
+describe('history account invoice credential', () => {
+  function savedWith(accessToken: string, userId = '7'): RealmSavedAccount {
+    return { realmId: 'api-account', userId, credential: { kind: 'sub2api', accessToken, refreshToken: 'fixture-refresh', expiresAt: 0 } } as unknown as RealmSavedAccount
+  }
+  function backendWith(saved: () => RealmSavedAccount | null, getProfile: () => Promise<unknown>) {
+    return { client: { getProfile } as unknown as RelayBackendClient, getSavedAccount: saved }
+  }
+
+  it('lends the held access token without the user id the history account service does not need', async () => {
+    const getProfile = vi.fn(async () => ({}))
+    const client = withSub2ApiInvoiceCredential(backendWith(() => savedWith('fixture-access'), getProfile))
+    const exchange = vi.fn(async () => 'desktop-token')
+
+    await expect(client.lendInvoiceCredential!(exchange)).resolves.toBe('desktop-token')
+
+    expect(exchange).toHaveBeenCalledExactlyOnceWith({ accessToken: 'fixture-access' })
+    expect(getProfile).not.toHaveBeenCalled()
+  })
+
+  it('lets the backend renew a token the invoice center could not verify, then lends the new one once', async () => {
+    let current = savedWith('fixture-expired')
+    const getProfile = vi.fn(async () => { current = savedWith('fixture-renewed'); return {} })
+    const client = withSub2ApiInvoiceCredential(backendWith(() => current, getProfile))
+    const exchange = vi.fn<(credential: { accessToken: string }) => Promise<string | null>>()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce('desktop-token')
+
+    await expect(client.lendInvoiceCredential!(exchange)).resolves.toBe('desktop-token')
+
+    expect(exchange.mock.calls.map(([credential]) => credential.accessToken)).toEqual(['fixture-expired', 'fixture-renewed'])
+  })
+
+  it('stops after one refusal when the account service still accepts the same token', async () => {
+    const getProfile = vi.fn(async () => ({}))
+    const client = withSub2ApiInvoiceCredential(backendWith(() => savedWith('fixture-access'), getProfile))
+    const exchange = vi.fn(async () => null)
+
+    await expect(client.lendInvoiceCredential!(exchange)).resolves.toBeNull()
+    expect(exchange).toHaveBeenCalledOnce()
+  })
+
+  it('never lends one account token on behalf of another account that signed in meanwhile', async () => {
+    let current = savedWith('fixture-first', '7')
+    const getProfile = vi.fn(async () => { current = savedWith('fixture-second', '8'); return {} })
+    const client = withSub2ApiInvoiceCredential(backendWith(() => current, getProfile))
+    const exchange = vi.fn(async () => null)
+
+    await expect(client.lendInvoiceCredential!(exchange)).rejects.toMatchObject({ code: 'STALE' })
+    expect(exchange).toHaveBeenCalledOnce()
+  })
+
+  it('does not lend anything while signed out', async () => {
+    const client = withSub2ApiInvoiceCredential(backendWith(() => null, vi.fn()))
+    const exchange = vi.fn(async () => 'desktop-token')
+
+    await expect(client.lendInvoiceCredential!(exchange)).rejects.toMatchObject({ code: 'SIGNED_OUT' })
+    expect(exchange).not.toHaveBeenCalled()
   })
 })
 

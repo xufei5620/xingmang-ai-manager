@@ -7,6 +7,17 @@ import type { VideoStudioPlan, VideoStudioPlanRequest } from './video-studio-pla
 export type { VideoStudioPlan, VideoStudioPlanAspect, VideoStudioPlanShot } from './video-studio-plan'
 import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountSummary } from './saved-accounts'
+import type {
+  InvoiceDocumentSaveResult,
+  InvoiceOrdersSnapshot,
+  InvoiceProfile,
+  InvoiceProfileSaveInput,
+  InvoiceRequest,
+  InvoiceRequestsPage,
+  InvoiceRequestsQuery,
+  InvoiceSubmitInput,
+  InvoiceWithdrawInput,
+} from './invoice-center-types'
 import type { WeixinLoginPollInput, WeixinLoginSnapshot } from './codex-remote-weixin-login-state'
 import type { StaleProxyClearResult } from './stale-proxy-environment'
 import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
@@ -502,6 +513,22 @@ export interface AccountPaymentWindowTerminalEvent {
 }
 export type AccountTopupOrdersQuery = NewApiTopupOrdersQuery
 export type AccountTopupOrdersPage = NewApiTopupOrdersPage
+export type {
+  InvoiceDocumentSaveResult,
+  InvoiceOrder,
+  InvoiceOrdersSnapshot,
+  InvoiceProfile,
+  InvoiceProfileData,
+  InvoiceProfileKind,
+  InvoiceProfileSaveInput,
+  InvoiceRequest,
+  InvoiceRequestLine,
+  InvoiceRequestsPage,
+  InvoiceRequestsQuery,
+  InvoiceRequestStatus,
+  InvoiceSubmitInput,
+  InvoiceWithdrawInput,
+} from './invoice-center-types'
 export type AccountRedemptionResult = NewApiRedemptionResult
 export type AccountAffiliateTransferInput = NewApiAffiliateTransferInput
 export type AccountSubscriptionPlan = NewApiSubscriptionPlan
@@ -1352,8 +1379,16 @@ export interface XingmangInvokeContract {
     AccountTopupPaymentResult
   >
   closeAccountPaymentWindow: IpcInvokeDefinition<'account:close-payment-window', [], void>
-  // 「我的订单」的「开发票」：主进程按当前账号打开开票窗口（invoice-portal-window.ts），入参为空，地址和账号都不经渲染层。
-  openAccountInvoicePortal: IpcInvokeDefinition<'account:open-invoice-portal', [], void>
+  // 「我的订单」里开发票（invoice-center-client.ts）：开票系统是哪个、以谁的身份去，都由主进程按当前登录定，
+  // 这几条都不收账号和地址；桌面令牌和账号凭据一样不回渲染层（I3）。
+  getAccountInvoiceOrders: IpcInvokeDefinition<'account:list-invoice-orders', [], InvoiceOrdersSnapshot>
+  getAccountInvoiceProfiles: IpcInvokeDefinition<'account:list-invoice-profiles', [], InvoiceProfile[]>
+  getAccountInvoiceRequests: IpcInvokeDefinition<'account:list-invoice-requests', [query?: InvoiceRequestsQuery], InvoiceRequestsPage>
+  saveAccountInvoiceProfile: IpcInvokeDefinition<'account:save-invoice-profile', [input: InvoiceProfileSaveInput], InvoiceProfile>
+  submitAccountInvoiceRequest: IpcInvokeDefinition<'account:submit-invoice-request', [input: InvoiceSubmitInput], InvoiceRequest>
+  withdrawAccountInvoiceRequest: IpcInvokeDefinition<'account:withdraw-invoice-request', [input: InvoiceWithdrawInput], InvoiceRequest>
+  // 只给申请编号：文件由主进程取、认类型，保存位置由客户在保存框里选。
+  saveAccountInvoiceDocument: IpcInvokeDefinition<'account:save-invoice-document', [requestId: string], InvoiceDocumentSaveResult>
   getAccountTopupOrders: IpcInvokeDefinition<
     'account:list-topup-orders',
     [input: AccountTopupOrdersQuery],
@@ -1827,7 +1862,13 @@ export const ipcInvokeChannels = {
   quoteAccountTopupAmount: 'account:quote-topup',
   createAccountTopupPayment: 'account:create-topup-payment',
   closeAccountPaymentWindow: 'account:close-payment-window',
-  openAccountInvoicePortal: 'account:open-invoice-portal',
+  getAccountInvoiceOrders: 'account:list-invoice-orders',
+  getAccountInvoiceProfiles: 'account:list-invoice-profiles',
+  getAccountInvoiceRequests: 'account:list-invoice-requests',
+  saveAccountInvoiceProfile: 'account:save-invoice-profile',
+  submitAccountInvoiceRequest: 'account:submit-invoice-request',
+  withdrawAccountInvoiceRequest: 'account:withdraw-invoice-request',
+  saveAccountInvoiceDocument: 'account:save-invoice-document',
   getAccountTopupOrders: 'account:list-topup-orders',
   redeemAccountTopupCode: 'account:redeem-topup-code',
   transferAccountAffiliateQuota: 'account:transfer-affiliate-quota',
