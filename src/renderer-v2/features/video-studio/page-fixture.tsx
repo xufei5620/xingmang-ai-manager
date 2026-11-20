@@ -1,12 +1,13 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { AiChatAsset, AiChatImageInput, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioPlan, VideoStudioPlanInput, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AccountPriceList, AiChatAsset, AiChatImageInput, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioPlan, VideoStudioPlanInput, XingmangApi } from '../../../../electron/ipc-contract'
 import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
 import { ToastProvider } from '../../ui'
 import { AccountBalanceContext } from '../app/balance-context'
 import { createAccountBalanceStore } from '../app/balance-store'
 import '../../app.css'
 import './browser-fixture'
+import type { VideoStudioPriceBridge } from './prices'
 import type { VideoStudioBridge } from './useVideoStudio'
 import { VideoStudioPage } from './VideoStudioPage'
 
@@ -49,6 +50,16 @@ const balanceStore = balanceQuery === null ? null : createAccountBalanceStore({
   read: async () => ({ quota: Number(balanceQuery) * 500_000, usedQuota: 0, quotaPerUnit: 500_000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, displayAmount: Number(balanceQuery) }),
 })
 balanceStore?.setScope(query.get('balanceScope') ?? 'xm-account:7')
+// 地址带 ?prices=1 时价格表回下面这几行（主进程已经乘好分组倍率，同个人中心价格表那条通道）：确认框里那句「预计约 $x」。
+// 不带 = 一行都没有，确认框照旧只报余额。同一个模型在别的分组价不同，确认框得按这次用的分组报。
+const priceList: AccountPriceList = query.get('prices') === '1'
+  ? { rows: [
+    { model: 'grok-imagine-video-1.5', group: '图片模型', kind: 'call', perCall: 0.8 },
+    { model: 'grok-imagine-video-1.5', group: 'GPT', kind: 'call', perCall: 2 },
+    { model: 'gpt-image-2', group: '图片模型', kind: 'call', perCall: 0.004 },
+    { model: 'minimax-h3-base', group: '图片模型', kind: 'tiered' },
+  ] }
+  : { rows: [] }
 const groups = [{ name: 'GPT', description: '聊天', ratio: 1, recommended: true }, { name: '图片模型', description: '图片和视频', ratio: 1 }]
 const groupModels: Record<string, string[]> = { GPT: ['gpt-5.6-sol', 'claude-test'], 图片模型: ['gpt-image-2', 'grok-imagine-video-1.5', 'minimax-h3-base'] }
 function record(method: string, input?: unknown) { calls.push({ method, input }) }
@@ -59,7 +70,8 @@ function nextAssetId(): string {
 function clipFor(assetId: string, seconds = 1): AiVideoClip {
   return { assetId, thumbnailUrl: `xingmang-asset://thumb/v2/video/${assetId}`, width: 320, height: 240, durationSeconds: seconds }
 }
-const bridge: VideoStudioBridge = {
+const bridge: VideoStudioBridge & VideoStudioPriceBridge = {
+  getAccountPriceList: async () => { record('prices'); return priceList },
   listAiChatGroups: async () => { record('groups'); return groups },
   prepareAiChatGroup: async (group) => {
     record('prepare', group)

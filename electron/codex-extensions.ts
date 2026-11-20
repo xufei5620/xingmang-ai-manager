@@ -109,6 +109,12 @@ export interface HttpMcpInput {
 
 export type AddMcpInput = StdioMcpInput | HttpMcpInput
 
+/** 列给渲染层的 DTO，加上 Codex 原样给的条目；后者带着环境变量的值，只在主进程里用。 */
+interface McpServerList {
+  servers: McpServerDto[]
+  entries: unknown[]
+}
+
 export interface PluginDto {
   pluginId: string
   name: string
@@ -678,7 +684,7 @@ function sanitizeMcpServer(
 // A failed add is only treated as "persisted before the failure" when the
 // listed server carries what was requested. A same-named older entry would
 // otherwise make a failed replacement look like it succeeded (#539).
-function mcpServerMatchesInput(server: McpServerDto, input: AddMcpInput): boolean {
+function mcpServerMatchesInput(server: McpServerDto, entry: unknown, input: AddMcpInput): boolean {
   if (input.type === 'stdio') {
     const requestedArgs = input.args ?? []
     return server.transportType === 'stdio'
@@ -686,11 +692,27 @@ function mcpServerMatchesInput(server: McpServerDto, input: AddMcpInput): boolea
       && server.args.length === requestedArgs.length
       && server.args.every((argument, index) => argument === requestedArgs[index])
       && sameNames(server.envNames, Object.keys(input.env ?? {}))
+      && persistedEnvMatches(entry, input.env ?? {})
   }
   return server.transportType === 'http'
     && server.url !== null
     && sameHttpUrl(server.url, input.url)
     && (server.bearerTokenEnvVar ?? '') === (input.bearerTokenEnvVar ?? '')
+}
+
+// The DTO only carries env names, so swapping just a key's value would pass the
+// name check while the old value is still the one saved. Compare the values
+// against the raw entry Codex reported, here in the main process, so they never
+// join the DTO the renderer gets. Anything that is not a plain name -> string
+// map counts as "could not read it back" and keeps the original failure.
+function persistedEnvMatches(entry: unknown, requested: Readonly<Record<string, string>>): boolean {
+  const transport = isRecord(entry) && isRecord(entry.transport) ? entry.transport : null
+  if (!transport) return false
+  const saved = transport.env ?? {}
+  if (!isRecord(saved)) return false
+  const requestedNames = Object.keys(requested)
+  return Object.keys(saved).length === requestedNames.length
+    && requestedNames.every((envName) => Object.hasOwn(saved, envName) && saved[envName] === requested[envName])
 }
 
 function sameNames(left: readonly string[], right: readonly string[]): boolean {
@@ -1190,7 +1212,15 @@ export class CodexExtensionService {
   }
 
   async listMcpServers(): Promise<McpServerDto[]> {
-    if (!await this.cliInstalled()) return this.listConfiguredMcpServers()
+    return (await this.readMcpServerList()).servers
+  }
+
+  /**
+   * 列表连同 Codex 原样给的条目一起读：添加失败后对账要比环境变量的值（O10），那些值只在主进程里比，
+   * 回渲染层的 McpServerDto 照旧只带名字。
+   */
+  private async readMcpServerList(): Promise<McpServerList> {
+    if (!await this.cliInstalled()) return this.readConfiguredMcpServerList()
     const output = await this.invoke(['mcp', 'list', '--json'])
     const userNames = mcpUserNames(this.configPath)
     const entries = parseJsonArray(output, 'Codex MCP 列表')
@@ -1203,21 +1233,28 @@ export class CodexExtensionService {
         // Unknown ownership remains system/read-only if Plugin discovery fails.
       }
     }
-    return entries
+    const servers = entries
       .map((entry) => sanitizeMcpServer(entry, userNames, pluginNames))
       .sort((left, right) => left.name.localeCompare(right.name))
+    return { servers, entries }
+  }
+
+  private listConfiguredMcpServers(): McpServerDto[] {
+    return this.readConfiguredMcpServerList().servers
   }
 
   /**
    * 没装 Codex CLI 时只列用户那份 config.toml：项目里那几层要看 Codex 信不信任那个项目，插件带的要问 CLI，
    * 这两样都不列。名字里带点号这类的星芒删不了（assertSimpleName），也不列，免得整张表读不出来。
    */
-  private listConfiguredMcpServers(): McpServerDto[] {
-    const entries = [...readCodexMcpServerEntries(this.configPath)].filter(([name]) => NAME_PATTERN.test(name))
-    const userNames = new Set(entries.map(([name]) => name))
-    return entries
-      .map(([name, entry]) => sanitizeMcpServer(configuredMcpServer(name, entry), userNames, new Set()))
+  private readConfiguredMcpServerList(): McpServerList {
+    const configured = [...readCodexMcpServerEntries(this.configPath)].filter(([name]) => NAME_PATTERN.test(name))
+    const userNames = new Set(configured.map(([name]) => name))
+    const entries = configured.map(([name, entry]) => configuredMcpServer(name, entry))
+    const servers = entries
+      .map((entry) => sanitizeMcpServer(entry, userNames, new Set()))
       .sort((left, right) => left.name.localeCompare(right.name))
+    return { servers, entries }
   }
 
   async getMcpServer(name: string): Promise<McpServerDto> {
@@ -1296,9 +1333,10 @@ export class CodexExtensionService {
     try {
       await this.invoke(argv, { sensitiveValues, timeoutMs: 120_000 })
     } catch (error) {
-      const reconciled = await this.listMcpServers()
-      const persisted = reconciled.find((server) => server.name === name)
-      if (persisted && mcpServerMatchesInput(persisted, input)) return reconciled
+      const { servers, entries } = await this.readMcpServerList()
+      const persisted = servers.find((server) => server.name === name)
+      const persistedEntry = entries.find((entry) => isRecord(entry) && entry.name === name)
+      if (persisted && mcpServerMatchesInput(persisted, persistedEntry, input)) return servers
       throw withCommandOutput(error)
     }
     const reconciled = await this.listMcpServers()

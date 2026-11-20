@@ -6,6 +6,7 @@ import { isRecord } from './input-guards'
 import { accountGroupRoles, isManagedCliGroupName, type AccountGroupHints } from './managed-cli-groups'
 import { isProxyConnectionFailure } from './network-failure'
 import { remoteFeatureIds, resolveRemoteFeatureId, type RemoteFeatureId } from './remote-features'
+import { updateSigningPublicKeys, verifyPublisherSignature } from './update-package-signature'
 
 /**
  * 更新目录上的一份状态文件（`service-status.json`），给发布者一个不发版就能对
@@ -22,6 +23,9 @@ import { remoteFeatureIds, resolveRemoteFeatureId, type RemoteFeatureId } from '
  * 已经允许这个账号用的分组里挑，不能让客户端用上任何它本来用不了的分组。型号表（cliModels）同理：
  * 只在账号模型列表里真有的型号里挑，下架名单也只换掉账号已经不再列出的型号；挑默认型号时名单把账号列着的
  * 能对话的型号全写进去了，照旧在账号列着的里挑，不让登录自动配置失败（#1154）。
+ *
+ * 撤回名单、分批放量、最低版本是例外：撤回名单能让客户端「退回」旧版、最低版本能把人挡在门外，
+ * 所以 0.2.25 起这几项要带发布者签名，验不过当没读到（D85，见 releaseGuardSignatureField 那段）。
  */
 export const serviceStatusFileName = 'service-status.json'
 
@@ -108,7 +112,17 @@ export interface ServiceStatus {
    * 时钟晚一天以上都当没写。
    */
   updatedAt?: string
+  /**
+   * 撤回名单、分批放量、最低版本（连同它们的平台表和 updatedAt）没带发布者签名（unsigned）或签名对不上
+   * （signature）时写上（D85）。这时那几项一律当没读到：badVersions 空、rollout 和 minimumVersion 是 null、
+   * 不带 updatedAt，调用方照「这一次没读到状态文件」办——撤回名单和放量接着用记着的，最低版本接着用这次
+   * 运行读成功的那份。没写这一项就是签名验过了。别的项（维护提示、开关、对照表）不受影响。
+   */
+  releaseGuardRejected?: ReleaseGuardRejection
 }
+
+/** 状态文件里撤回名单那几项为什么没采用：没签名，或签名对不上。 */
+export type ReleaseGuardRejection = 'unsigned' | 'signature'
 
 /**
  * 已知问题提示挂在哪：all 是每一页都出，其余各是一页（recharge 是个人中心的充值页签）。
@@ -513,7 +527,7 @@ function readKnownIssuePage(value: unknown): KnownIssuePage | null {
 }
 
 // 提示里不许带网址（发布脚本 scripts/service-status.cjs 的 LINK_LIKE 同一个写法）：界面照纯文字摆、点不开，
-// 而这份文件没有签名，带网址的「已知问题」正是有人改了它以后最想塞给客户的东西（比如「请到某某网址充值」）。
+// 而这一项不在发布者签名里（签名只管撤回名单那几项），带网址的「已知问题」正是有人改了它以后最想塞给客户的东西（比如「请到某某网址充值」）。
 const linkLike = /[a-z][a-z0-9+.-]*:\/\/|www\.|[a-z0-9-]+\.(?:com|cn|cc|net|org|top|xyz|fun|io|me|vip|shop|site|link|info|biz)\b/i
 
 // 认不出的页（以后的版本才有的那一页）整条不显示：这台电脑上没有那一页，挂到别处只会说错地方。
@@ -617,16 +631,76 @@ export function resolveFeaturesOffFor(
   return remoteFeatureIds.filter((feature) => off.has(feature))
 }
 
+// 撤回名单、放量、最低版本的发布者签名（D85，出处是深查「自身更新」Z-4 第 2 条）。
+//
+// Why: the status file sits in the same R2 bucket as the manifests, and whoever
+// can write there (or controls the Los Angeles relay that serves the direct
+// line) needs no signing key to list the running version as withdrawn and put
+// back a genuinely signed older manifest: the client would then "roll back" to
+// that older, already-fixed-against release. A minimum version far in the
+// future locks every customer out behind the update gate, and a 0% rollout
+// holds a fix back from everyone. These are the fields that let the file make a
+// client do something it otherwise would not, so they, and the updatedAt that
+// decides which copy is newer, are signed with the publisher's Ed25519 key (the
+// one that signs latest.yml, see update-package-signature.ts). The key lives
+// only in the GitHub `release` environment.
+//
+// The signature covers the fields' values, not the file's bytes: the signed text
+// is a canonical JSON of the fields present (keys sorted, no whitespace). So a
+// hand edit of the maintenance notice that leaves these fields and the signature
+// alone still verifies, and a change to any of them does not. The rest of the
+// file stays unsigned on purpose: it can only make the client do less or say
+// one more sentence, and the Cloudflare hand-edit path for maintenance must keep
+// working when GitHub is down. scripts/service-status-signature.cjs builds the
+// same text; service-status.test.ts pins the two together.
+export const releaseGuardSignatureField = 'releaseGuardSignature'
+const releaseGuardPayloadHeader = 'xingmang-service-status-guard/v1'
+const releaseGuardFields = ['badVersions', 'badVersionPlatforms', 'rollout', 'minimumVersion', 'minimumVersionPlatforms', 'updatedAt'] as const
+
+// Writes the text instead of building an object, so a "__proto__" key in the file
+// is just another key here.
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
+/** 签名签的那串字：状态文件里撤回名单那几项的原样（没写的不带），排好键的 JSON。 */
+export function buildReleaseGuardPayload(document: Record<string, unknown>): string {
+  const fields: Record<string, unknown> = {}
+  for (const key of releaseGuardFields) {
+    if (Object.hasOwn(document, key)) fields[key] = document[key]
+  }
+  return `${releaseGuardPayloadHeader}\n${canonicalJson(fields)}\n`
+}
+
+/** 撤回名单那几项的签名验得过吗；验不过说明是没签名还是签名不对。永不抛错。 */
+export function inspectReleaseGuardSignature(
+  document: Record<string, unknown>,
+  publicKeys: readonly string[] = updateSigningPublicKeys,
+): ReleaseGuardRejection | null {
+  const signature = document[releaseGuardSignatureField]
+  if (signature === undefined || signature === null || signature === '') return 'unsigned'
+  return verifyPublisherSignature(buildReleaseGuardPayload(document), signature, publicKeys) ? null : 'signature'
+}
+
+export interface ServiceStatusParseOptions {
+  /** 认哪几把发布者公钥；测试才传，正式用的是 update-package-signature.ts 里内置的那几把。 */
+  publicKeys?: readonly string[]
+}
+
 /** 解析状态文件；格式不对的部分一律按「没有」处理，永不抛错。 */
-export function parseServiceStatus(text: string, now: Date): ServiceStatus {
-  return parseServiceStatusDocument(text, now) ?? emptyServiceStatus
+export function parseServiceStatus(text: string, now: Date, options: ServiceStatusParseOptions = {}): ServiceStatus {
+  return parseServiceStatusDocument(text, now, options) ?? emptyServiceStatus
 }
 
 /**
  * 同上，只是整份不是 JSON 对象时返回 null，不给空白的那一份。门户页、半截内容这类 200 回来的
  * 东西算「没读到」：对维护提示两者一样，但分组对照要靠它接着用上一次读到的那份（lastKnown）。
  */
-export function parseServiceStatusDocument(text: string, now: Date): ServiceStatus | null {
+export function parseServiceStatusDocument(text: string, now: Date, options: ServiceStatusParseOptions = {}): ServiceStatus | null {
   let parsed: unknown
   try {
     parsed = JSON.parse(text.replace(/^\uFEFF/, ''))
@@ -636,11 +710,14 @@ export function parseServiceStatusDocument(text: string, now: Date): ServiceStat
   if (!isRecord(parsed)) return null
   const accountGroups = readAccountGroups(parsed.accountGroups)
   const cliModels = readCliModels(parsed.cliModels)
-  const updatedAt = readUpdatedAt(parsed.updatedAt, now)
-  const badVersions = readBadVersions(parsed.badVersions)
-  const badVersionPlatforms = readBadVersionPlatforms(parsed.badVersionPlatforms, badVersions)
-  const minimumVersion = readMinimumVersion(parsed.minimumVersion)
-  const minimumVersionPlatforms = minimumVersion ? readReleasePlatforms(parsed.minimumVersionPlatforms) : null
+  // 撤回名单那几项签名验不过就整组当没写（D85），连 updatedAt 一起：它决定哪份更新，同样不能由没签名的人定。
+  const releaseGuardRejected = inspectReleaseGuardSignature(parsed, options.publicKeys)
+  const guard: Record<string, unknown> = releaseGuardRejected ? {} : parsed
+  const updatedAt = readUpdatedAt(guard.updatedAt, now)
+  const badVersions = readBadVersions(guard.badVersions)
+  const badVersionPlatforms = readBadVersionPlatforms(guard.badVersionPlatforms, badVersions)
+  const minimumVersion = readMinimumVersion(guard.minimumVersion)
+  const minimumVersionPlatforms = minimumVersion ? readReleasePlatforms(guard.minimumVersionPlatforms) : null
   const knownIssues = readKnownIssues(parsed.knownIssues)
   const paymentMethodsOff = readPaymentMethodsOff(parsed.paymentMethodsOff)
   const featuresOff = readFeaturesOff(parsed.featuresOff)
@@ -648,7 +725,7 @@ export function parseServiceStatusDocument(text: string, now: Date): ServiceStat
     maintenance: readMaintenance(parsed.maintenance, now),
     badVersions,
     ...(badVersionPlatforms ? { badVersionPlatforms } : {}),
-    rollout: readRollout(parsed.rollout),
+    rollout: readRollout(guard.rollout),
     minimumVersion,
     ...(minimumVersionPlatforms ? { minimumVersionPlatforms } : {}),
     ...(parsed.toolRouteRewrite === 'merge' ? { toolRouteRewrite: 'merge' as const } : {}),
@@ -658,10 +735,11 @@ export function parseServiceStatusDocument(text: string, now: Date): ServiceStat
     ...(paymentMethodsOff ? { paymentMethodsOff } : {}),
     ...(featuresOff ? { featuresOff } : {}),
     ...(updatedAt ? { updatedAt } : {}),
+    ...(releaseGuardRejected ? { releaseGuardRejected } : {}),
   }
 }
 
-export interface ServiceStatusReaderOptions {
+export interface ServiceStatusReaderOptions extends ServiceStatusParseOptions {
   url: string
   fetch: (url: string, init: RequestInit) => Promise<Response>
   timeoutMs?: number
@@ -721,7 +799,7 @@ async function readServiceStatusOnce(options: ServiceStatusReaderOptions): Promi
       return null
     }
     const text = await readBoundedResponseText(response, maxStatusBytes, '服务状态文件').catch(() => null)
-    return text === null ? null : parseServiceStatusDocument(text, (options.now ?? (() => new Date()))())
+    return text === null ? null : parseServiceStatusDocument(text, (options.now ?? (() => new Date()))(), { publicKeys: options.publicKeys })
   } finally {
     clearTimeout(timer)
   }

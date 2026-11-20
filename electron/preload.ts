@@ -479,7 +479,7 @@ const xingmangApi: XingmangApi = {
   getAccountProfile: () => invoke('getAccountProfile'),
   updateAccountDisplayName: (input) => invoke('updateAccountDisplayName', input),
   getAccountUsage: (input) => invoke('getAccountUsage', input),
-  getAccountDashboard: (input) => invoke('getAccountDashboard', input),
+  getAccountDashboard: (input, expectedAccountScope) => expectedAccountScope === undefined ? invoke('getAccountDashboard', input) : invoke('getAccountDashboard', input, expectedAccountScope),
   getAccountTasks: (input) => invoke('getAccountTasks', input),
   getAccountKeys: (input) => invoke('getAccountKeys', input),
   getAccountUsableGroups: () => invoke('getAccountUsableGroups'),

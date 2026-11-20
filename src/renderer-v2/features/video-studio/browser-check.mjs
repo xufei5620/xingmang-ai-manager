@@ -159,6 +159,27 @@ test('dips to black between shots and fades out at the end, picture and sound to
   await page.close()
 })
 
+test('still dips to black, not white, when the shots carry captions', async () => {
+  const { page, errors } = await open()
+  const colors = await page.evaluate(async () => {
+    const harness = window.videoStudioHarness
+    const clip = (color) => harness.makeClip({ width: 320, height: 240, frameRate: 30, seconds: 2, color })
+    const clips = [{ data: await clip('#ff0000'), caption: '第一句' }, { data: await clip('#0000ff'), caption: '第二句' }]
+    const options = { aspect: '16:9', resolution: 480, fit: 'cover', frameRate: 30, transition: 'fade', fadeOut: true }
+    const film = await harness.compose({ clips, options })
+    // 字幕在下面，量上面没字幕的地方：第一段中间、换段前最后一帧、换段后第一帧、片尾最后一帧。
+    const probe = { colors: [{ time: 1, x: 427, y: 60 }, { time: 1.98, x: 427, y: 60 }, { time: 2.02, x: 427, y: 60 }, { time: 3.98, x: 427, y: 60 }] }
+    return (await harness.inspect(film.data, probe)).colors
+  })
+  assert.deepEqual(errors, [])
+  const [middle, beforeCut, afterCut, end] = colors
+  closeColor(middle, [255, 0, 0], 'first shot in full')
+  closeColor(beforeCut, [0, 0, 0], 'the captioned shot dips to black')
+  closeColor(afterCut, [0, 0, 0], 'the next captioned shot comes up from black')
+  closeColor(end, [0, 0, 0], 'the captioned film fades out to black')
+  await page.close()
+})
+
 test('prints the caption at the size and place asked for', async () => {
   const { page, errors } = await open()
   const summary = await page.evaluate(async () => {
@@ -693,6 +714,45 @@ test('tells the current balance when confirming clips, and leaves it out when th
     assert.deepEqual(errors, [])
     await page.close()
   }
+})
+
+// #1406 P2-1 后半：余额前面报「预计约 $x」，按这次用的模型和分组、一段一次算（价目同画布和个人中心价格表那份）。
+// 视频标「估算」；画图不到一分写「不到 $0.01」；价目是页面打开时读好的，十分钟内再打开确认框不再多读。
+test('quotes the price of the chosen model and group before the balance, from one read of the price list', async () => {
+  const { page, errors } = await openStudio('?balance=12.5&prices=1')
+  await page.locator('[data-testid="video-image-model"][data-model="gpt-image-2"]').waitFor()
+  await page.waitForFunction(() => window.videoStudioPage.balance() === 12.5)
+  await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'prices'))
+  const reads = (await studioCalls(page, 'prices')).length
+  await writeStoryboard(page, '咖啡馆', { title: '咖啡', shots: [{ prompt: '拉花' }, { prompt: '窗外' }] })
+  const confirm = page.getByTestId('video-confirm')
+
+  await page.getByTestId('video-generate-all').click()
+  await confirm.getByText('用「grok-imagine-video-1.5」生成 2 段、每段 6 秒，每段单独计费，预计约 $1.60（估算）。当前余额 $12.50。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '取消' }).click()
+  await confirm.waitFor({ state: 'detached' })
+
+  await page.getByTestId('video-shot-draw-0').click()
+  await confirm.getByText('用「gpt-image-2」按第 1 个镜头的画面描述画一张图，单独计费，预计不到 $0.01。当前余额 $12.50。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '取消' }).click()
+  await confirm.waitFor({ state: 'detached' })
+
+  // 只生成第一段，生成好了再点重新生成：报的是一段的价。
+  await page.getByTestId('video-shot-generate-0').click()
+  await confirm.getByText('用「grok-imagine-video-1.5」生成 1 段、每段 6 秒，每段单独计费，预计约 $0.80（估算）。当前余额 $12.50。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [first] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#00ff88'), first.requestId)
+  await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
+  await page.getByTestId('video-shot-generate-0').click()
+  await confirm.getByText('重新生成这一段？').waitFor()
+  await confirm.getByText('会再扣一次费，预计约 $0.80（估算）。新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '取消' }).click()
+
+  assert.equal((await studioCalls(page, 'prices')).length, reads, 'opening the dialogs again within ten minutes does not read the price list again')
+  assert.deepEqual(errors, [])
+  await page.close()
 })
 
 // 审查清单 严重-1 后半：「暂时查不到进度」这类失败时服务端多半还在出，点重新生成先拿原来的请求号接回，接不回来才再花钱。

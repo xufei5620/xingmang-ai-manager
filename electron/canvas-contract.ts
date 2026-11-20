@@ -47,6 +47,7 @@ export const canvasHostChannels = {
   renameProject: 'canvas-host:rename-project',
   duplicateProject: 'canvas-host:duplicate-project',
   setProjectArchived: 'canvas-host:set-project-archived',
+  closeProject: 'canvas-host:close-project',
   createProjectInDefaultFolder: 'canvas-host:create-project-in-default-folder',
   relinkProjectFolder: 'canvas-host:relink-project-folder',
   deleteProject: 'canvas-host:delete-project',

@@ -22,6 +22,7 @@ import {
   quitInstallPrompt,
   resolveDownloadedVersionToRecord,
   resolveRecordToWriteAtLaunch,
+  undoLaunchInstallAttempt,
   undoQuitInstallAttempt,
   type LaunchInstallInput,
   type LaunchInstallModeInput,
@@ -57,6 +58,7 @@ function input(patch: Partial<LaunchInstallInput> = {}): LaunchInstallInput {
     recordAtLaunch: { downloadedVersion: '0.2.12', attemptedVersion: null },
     elapsedSinceLaunchMs: 5_000,
     busy: false,
+    working: false,
     ...patch,
   }
 }
@@ -78,6 +80,12 @@ describe('decideLaunchInstall', () => {
   it('does not interrupt someone who is already using the app', () => {
     expect(decideLaunchInstall(input({ elapsedSinceLaunchMs: LAUNCH_INSTALL_WINDOW_MS + 1 }))).toBeNull()
     expect(decideLaunchInstall(input({ busy: true }))).toBeNull()
+  })
+
+  it('does not restart over a chat reply, a canvas run, a video being stitched or an open payment page', () => {
+    // O07: those stop with the app and do not pick up again after the restart.
+    expect(decideLaunchInstall(input({ working: true }))).toBeNull()
+    expect(decideLaunchInstall(input({ working: false }))).toBe('0.2.12')
   })
 
   it('stays out of the way when auto-update is off or the package is not ready', () => {
@@ -120,7 +128,7 @@ describe('resolveLaunchInstallMode', () => {
 
 describe('shouldStillInstallAtLaunch', () => {
   function recheck(patch: Partial<LaunchInstallRecheckInput> = {}): LaunchInstallRecheckInput {
-    return { version: '0.2.12', autoUpdate: true, snapshot: snapshot(), busy: false, mode: 'notice', windowShown: false, accelerationActive: false, ...patch }
+    return { version: '0.2.12', autoUpdate: true, snapshot: snapshot(), busy: false, working: false, mode: 'notice', windowShown: false, accelerationActive: false, ...patch }
   }
 
   it('goes ahead when nothing changed while the notice was up', () => {
@@ -134,6 +142,13 @@ describe('shouldStillInstallAtLaunch', () => {
       expect(shouldStillInstallAtLaunch(recheck({ mode, busy: true }))).toBe(false)
       expect(shouldStillInstallAtLaunch(recheck({ mode, snapshot: snapshot({ availableVersion: '0.2.13' }) }))).toBe(false)
       expect(shouldStillInstallAtLaunch(recheck({ mode, snapshot: snapshot({ phase: 'available' }) }))).toBe(false)
+    }
+  })
+
+  it('backs off when a chat, canvas, video stitch or payment started while the notice was up', () => {
+    for (const mode of ['notice', 'background', 'window'] as const) {
+      expect(shouldStillInstallAtLaunch(recheck({ mode, windowShown: mode === 'window', working: true }))).toBe(false)
+      expect(shouldStillInstallAtLaunch(recheck({ mode, windowShown: mode === 'window', working: false }))).toBe(true)
     }
   })
 
@@ -403,6 +418,33 @@ describe('quit-time auto install', () => {
     expect(undoQuitInstallAttempt(tried, null)).toBeNull()
     expect(undoQuitInstallAttempt(tried, { version: '0.2.13', previous: null })).toBeNull()
     expect(undoQuitInstallAttempt(record, { version: '0.2.12', previous: null })).toBeNull()
+  })
+})
+
+describe('undoLaunchInstallAttempt', () => {
+  const record = { ...emptyPendingUpdateRecord, downloadedVersion: '0.2.12' }
+
+  it('takes back a launch attempt that backed off before installing, so it is neither a failure nor skipped next time', () => {
+    const tried = { ...record, attemptedVersion: '0.2.12' }
+    const undone = undoLaunchInstallAttempt(tried, { version: '0.2.12', previous: null })
+    expect(undone).toEqual(record)
+    // Left in place, the next launch would call it a failed install and stop installing it on its own.
+    expect(resolvePreviousAutoInstallFailure('0.2.12', '0.2.11', tried)).toBe('0.2.12')
+    expect(resolvePreviousAutoInstallFailure('0.2.12', '0.2.11', undone ?? tried)).toBeNull()
+    expect(decideLaunchInstall(input({ recordAtLaunch: undone ?? tried }))).toBe('0.2.12')
+    expect(undoLaunchInstallAttempt({ ...record, attemptedVersion: '0.2.12' }, { version: '0.2.12', previous: '0.2.11' })).toEqual({ ...record, attemptedVersion: '0.2.11' })
+  })
+
+  it('drops the background install written with it, so a later relaunch shows its window', () => {
+    const tried = { ...record, attemptedVersion: '0.2.12', backgroundInstall: { version: '0.2.12', startedAt: 1_760_000_000_000 } }
+    expect(undoLaunchInstallAttempt(tried, { version: '0.2.12', previous: null })).toEqual({ ...record, backgroundInstall: null })
+  })
+
+  it('leaves the record alone when this launch wrote nothing or it has changed since', () => {
+    const tried = { ...record, attemptedVersion: '0.2.12' }
+    expect(undoLaunchInstallAttempt(tried, null)).toBeNull()
+    expect(undoLaunchInstallAttempt(tried, { version: '0.2.13', previous: null })).toBeNull()
+    expect(undoLaunchInstallAttempt(record, { version: '0.2.12', previous: null })).toBeNull()
   })
 })
 
