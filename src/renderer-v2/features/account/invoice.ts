@@ -1,6 +1,6 @@
 // 「我的订单」里直接开发票的纯逻辑：每笔订单后面出什么、开发票框里的合计和差额、开票记录的状态。
 // 金额都是「分」的十进制字符串（主进程从开票系统原样带过来），这里用 BigInt 算，不转成 JS 数字。
-// 界面上的字是 2026-11-20 yoyo 回「发票改」批的原字；撤回失败那句是后加的，等他回「改」。
+// 界面上的字是 2026-11-20 yoyo 回「发票改」批的原字；撤回失败那句是后加的，同一天他回「撤回改」批了。
 import type {
   InvoiceOrder,
   InvoiceOrdersSnapshot,
@@ -177,7 +177,7 @@ export function rememberIdempotencyKey(previous: IdempotencyKeyMemo | null, sign
 
 export const invoiceSubmittedText = '已提交开票申请，财务审核后开具。'
 export const invoiceSubmitFailed = '没提交成功，请稍后再试；还不行请找客服。'
-// 撤回失败那句是照「没提交成功」那句的样子新写的，还没批（等 yoyo 回「改」）。
+// 撤回失败那句是照「没提交成功」那句的样子新写的，2026-11-20 yoyo 回「撤回改」。
 export const invoiceWithdrawFailed = '没撤回成功，请稍后再试；还不行请找客服。'
 export const invoiceFootnote = '只开人民币普通发票。财务审核后开具，开好以后在「开票记录」里下载。'
 export const invoiceMoreFieldsLabel = '更多（选填）：地址、电话、开户银行、银行账号'
