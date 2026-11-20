@@ -77,6 +77,8 @@ import { clearDisplayCrashRecord, inspectDisplayLaunch, isDisplayCrash, pruneSta
 import { ConfigBackupStore } from './backups'
 import { crashReportDist, crashReportDsn, crashReportEnvironmentName, crashReportRelease, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
 import { createCrashReporter } from './crash-reporter'
+import { collectRendererCallStack, mainHangReportInput, rendererHangReportInput, shouldReportHangsThisSession } from './hang-report'
+import { createMainHangWatchdog } from './main-hang-watchdog'
 import { classifyNetworkFailure } from './network-failure'
 import { PlatformSettingsStore } from './platform/settings-store'
 import { platformCapabilitiesFor } from './platform-capabilities'
@@ -96,7 +98,7 @@ import { createMainStallMonitor, createUsageStatsReporter } from './usage-stats-
 import { activeProviderIds, cliCatalog, isProviderId } from './catalog'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
-import { applicationSecurityResponseHeaders } from './app-protocol'
+import { applicationResponseHeaders, rendererCallStackFeature } from './app-protocol'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasAccountSummaryReader } from './canvas-account-summary'
 import { createCanvasPriceSnapshotReader } from './canvas-price-snapshot'
@@ -347,7 +349,7 @@ function registerApplicationProtocol(policy: ApplicationUrlPolicy): void {
       callback({ error: -6 })
       return
     }
-    callback({ path: target, headers: applicationSecurityResponseHeaders() })
+    callback({ path: target, headers: applicationResponseHeaders() })
   })
 }
 
@@ -563,6 +565,7 @@ function createWindow(
       unresponsiveCounted = true
       noteUsageEvent?.({ kind: 'hang', hang: 'unresponsive' })
     }
+    reportRendererHang(window, runtimeLog)
     responsiveness.handleUnresponsive()
   })
   window.on('responsive', () => {
@@ -712,6 +715,25 @@ async function presentStartupFailure(error: unknown, logPath: string | null): Pr
 // launch) is simply dropped: the reporter must never become a second source
 // of startup errors.
 let reportCrashSendFailure: ((error: unknown) => void) | null = null
+// 卡住时上报卡在哪（hang-report.ts）：这次打开抽没抽中、界面那一回报过没有。一次打开最多各报一回。
+const hangReportsSampled = shouldReportHangsThisSession(Math.random())
+let rendererHangReported = false
+
+/**
+ * 窗口没响应时问出界面正跑在哪段代码。只问这一次打开里的第一回，问不出来（页面一句 JS 都不跑、
+ * 3 秒没回）就算了；跟着「自动发送错误报告」开关走，关着就连问都不问。
+ */
+function reportRendererHang(window: BrowserWindow, runtimeLog: RuntimeLogStore): void {
+  if (rendererHangReported || !hangReportsSampled || !crashReportingEnabled()) return
+  rendererHangReported = true
+  void collectRendererCallStack(window.webContents.mainFrame).then((callStack) => {
+    if (!callStack) {
+      runtimeLog.log('info', 'renderer', 'window.unresponsive.stack-missing', '界面没响应时没能取到它卡在哪')
+      return
+    }
+    crashReporter.report(rendererHangReportInput(callStack))
+  })
+}
 // 匿名使用统计（usage-stats.ts）建得比主窗口晚一点；在那之前、和退出以后，窗口没响应就不数。
 let noteUsageEvent: ((event: UsageStatsEvent) => void) | null = null
 
@@ -823,6 +845,10 @@ const linuxImeSwitches = process.platform === 'linux'
   ? appValue(() => resolveLinuxImeSwitches({ env: process.env, hasSwitch: (name) => app.commandLine.hasSwitch(name) }), [])
   : []
 for (const imeSwitch of linuxImeSwitches) app.commandLine.appendSwitch(imeSwitch.name, imeSwitch.value)
+// 窗口没响应时要问得出界面卡在哪（collectJavaScriptCallStack）：Chromium 这项要在 ready 之前打开，页面还要
+// 带 Document-Policy 头（app-protocol.ts）。只是让这一个接口能用，页面能做的事不变。已经有人给了
+// --enable-features 就接在后面，不把人家的冲掉。
+app.commandLine.appendSwitch('enable-features', [app.commandLine.getSwitchValue('enable-features'), rendererCallStackFeature].filter(Boolean).join(','))
 // 这次是自动改的兼容方式、用户还没在提示里选：设置里动过这个开关就算选过了。
 let displayCompatPending = displayLaunch?.mode === 'auto-compat'
 // Set once the runtime log exists; a GPU crash before that is still recorded
@@ -2095,9 +2121,31 @@ if (!hasSingleInstanceLock) {
       if (kind === 'anonymousUsage' && !enabled) void usageStats.discard()
     })
     // 只在星芒有窗口在前台时量主进程卡没卡住：后台被系统放慢的不算，也不在后台空转。
-    const mainStallMonitor = createMainStallMonitor({ onStall: () => { usageStats.record({ kind: 'hang', hang: 'stall' }) } })
-    const resumeStallMonitor = () => { mainStallMonitor.resume() }
-    const pauseStallMonitor = () => { mainStallMonitor.pause() }
+    // 卡住时上报卡在哪（hang-report.ts）：这次打开第一次卡住 2 秒以上才起后台线程，等下一回卡 5 秒以上时抓。
+    const mainHangWatchdog = createMainHangWatchdog({
+      onHang: (capture) => {
+        runtimeLog.log('warn', 'main', 'main.hang', '主进程卡住了一阵，已记下卡在哪', {
+          stalledMs: Math.round(capture.stalledMs),
+          afterRecovery: capture.afterRecovery,
+        })
+        crashReporter.report(mainHangReportInput(capture))
+      },
+      onError: (error) => { runtimeLog.exception('telemetry', 'main-hang.watchdog.failed', error) },
+    })
+    const mainStallMonitor = createMainStallMonitor({
+      onStall: () => {
+        usageStats.record({ kind: 'hang', hang: 'stall' })
+        if (hangReportsSampled && crashReportingEnabled()) mainHangWatchdog.arm()
+      },
+    })
+    const resumeStallMonitor = () => {
+      mainStallMonitor.resume()
+      mainHangWatchdog.resume()
+    }
+    const pauseStallMonitor = () => {
+      mainStallMonitor.pause()
+      mainHangWatchdog.pause()
+    }
     app.on('browser-window-focus', resumeStallMonitor)
     app.on('browser-window-blur', pauseStallMonitor)
     // 最先停：后面那些步骤退出时报的错、窗口没响应都不算客户碰到的。
@@ -2105,6 +2153,7 @@ if (!hasSingleInstanceLock) {
       app.off('browser-window-focus', resumeStallMonitor)
       app.off('browser-window-blur', pauseStallMonitor)
       mainStallMonitor.stop()
+      mainHangWatchdog.stop()
       detachPrivacyListener()
       usageStats.stop()
       noteUsageEvent = null
@@ -2688,6 +2737,8 @@ if (!hasSingleInstanceLock) {
           }
         : {}),
       onSettingsChanged: (update) => {
+        // 关了「自动发送错误报告」就连卡在哪也不再抓，这次打开不再起后台线程。
+        if (update.crashReporting === false) mainHangWatchdog.stop()
         if (update.hardwareAcceleration !== undefined) {
           // 用户对显示方式做了选择（设置页开关，或兼容提示里的两颗按钮）：之前的崩溃
           // 有了交代，从头再数；这次启动里也不再提示。
