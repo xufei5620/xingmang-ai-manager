@@ -3481,6 +3481,115 @@ describe('changePassword', () => {
       .rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
   })
+
+  // N6: 记住密码 follows these reports (ipc/handlers/account.ts). A failed call
+  // must not read as "the password is unchanged" once the change went out.
+  describe('reporting where the change stands', () => {
+    const input = { originalPassword: 'old-password-1', newPassword: 'new-password-2' }
+    const refreshedResponse = () => jsonResponse({ success: true, message: '', data: { access_token: 'refreshed-token', access_expires_at: null } })
+    const connectionReset = () => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }) })
+
+    async function changeAnswered(answer: () => Response | Error) {
+      const fetchImpl = vi.fn<NewApiFetch>()
+      const client = await authenticatedClient(fetchImpl)
+      fetchImpl.mockResolvedValueOnce(proofResponse())
+      fetchImpl.mockImplementationOnce(async () => {
+        const reply = answer()
+        if (reply instanceof Error) throw reply
+        return reply
+      })
+      const outcomes: string[] = []
+      const failure = await client.changePassword(input, (outcome) => outcomes.push(outcome)).then(() => null, (error: unknown) => error)
+      return { outcomes, failure, puts: requestsTo(fetchImpl, '/api/user/self', 'PUT').length }
+    }
+
+    it('reports unconfirmed while the change is out, then changed once the server stores it', async () => {
+      const server = rc40PasswordServer({ password: 'old-password-1' })
+      const client = await authenticatedClient(server.fetchImpl)
+      const outcomes: string[] = []
+
+      await client.changePassword(input, (outcome) => outcomes.push(outcome))
+
+      expect(outcomes).toEqual(['unconfirmed', 'changed'])
+    })
+
+    it('reports nothing when the change never went out', async () => {
+      const server = rc40PasswordServer({ password: 'old-password-1' })
+      const refused = await authenticatedClient(server.fetchImpl)
+      const outcomes: string[] = []
+      await expect(refused.changePassword({ ...input, originalPassword: 'wrong-password' }, (outcome) => outcomes.push(outcome))).rejects.toThrow(/^原密码错误$/)
+
+      const fetchImpl = vi.fn<NewApiFetch>()
+      const unreachable = await authenticatedClient(fetchImpl)
+      fetchImpl.mockRejectedValueOnce(connectionReset())
+      await expect(unreachable.changePassword(input, (outcome) => outcomes.push(outcome))).rejects.toThrow()
+
+      expect(outcomes).toEqual([])
+      expect(requestsTo(fetchImpl, '/api/user/self', 'PUT')).toHaveLength(0)
+    })
+
+    it.each([
+      ['a wrong current password', () => jsonResponse({ success: false, code: 'CURRENT_PASSWORD_INVALID', message: 'Current password is incorrect.' })],
+      ['the password policy', () => jsonResponse({ success: false, code: 'PASSWORD_POLICY_REJECTED', message: 'password too short' })],
+      ['a spent proof', () => jsonResponse({ success: false, code: 'SECURITY_PROOF_INVALID', message: '安全验证状态无效' }, { status: 403 })],
+      ['a code-less refusal', () => failureResponse('Invalid parameters')],
+      ['the rate limiter', () => new Response(null, { status: 429 })],
+    ])('reports refused when the server turns the change down before storing it: %s', async (_name, answer) => {
+      const { outcomes, failure } = await changeAnswered(answer)
+
+      expect(failure).toBeInstanceOf(Error)
+      expect(outcomes).toEqual(['unconfirmed', 'refused'])
+    })
+
+    it.each([
+      ['a connection reset', connectionReset],
+      ['a timeout', () => new DOMException('aborted', 'AbortError')],
+      ['a gateway error page', () => new Response('<html>502 Bad Gateway</html>', { status: 502, headers: { 'Content-Type': 'text/html' } })],
+      ['a gateway timeout', () => new Response(null, { status: 504 })],
+      ['a failure after the store', () => jsonResponse({ success: false, code: 'AUTH_INTERNAL_ERROR', message: 'Internal Server Error' }, { status: 500 })],
+      ['a page that is not the server\'s JSON', () => new Response('<html>portal</html>', { status: 200, headers: { 'Content-Type': 'text/html' } })],
+    ])('leaves the change unconfirmed, and does not send it again, after %s', async (_name, answer) => {
+      const { outcomes, failure, puts } = await changeAnswered(answer)
+
+      expect(failure).toBeInstanceOf(Error)
+      expect(outcomes).toEqual(['unconfirmed'])
+      expect(puts).toBe(1)
+    })
+
+    it('keeps it unconfirmed when the retry after a 401 is turned down, since the first attempt may have landed', async () => {
+      const fetchImpl = vi.fn<NewApiFetch>()
+      const client = await authenticatedClient(fetchImpl)
+      fetchImpl
+        .mockResolvedValueOnce(proofResponse('proof-1'))
+        // What writeAuthSessionError sends when AdvanceCurrentSessionToUserVersion fails after the store.
+        .mockResolvedValueOnce(jsonResponse({ success: false, code: 'AUTH_SESSION_REVOKED', message: 'Unauthorized' }, { status: 401 }))
+        .mockResolvedValueOnce(refreshedResponse())
+        .mockResolvedValueOnce(proofResponse('proof-2'))
+        .mockResolvedValueOnce(jsonResponse({ success: false, code: 'CURRENT_PASSWORD_INVALID', message: 'Current password is incorrect.' }))
+      const outcomes: string[] = []
+
+      await expect(client.changePassword(input, (outcome) => outcomes.push(outcome))).rejects.toThrow(/^原密码错误$/)
+
+      expect(outcomes).toEqual(['unconfirmed', 'unconfirmed'])
+      expect(requestsTo(fetchImpl, '/api/user/self', 'PUT')).toHaveLength(2)
+    })
+
+    it('reports changed when the retry after a 401 is stored', async () => {
+      const fetchImpl = vi.fn<NewApiFetch>()
+      const client = await authenticatedClient(fetchImpl)
+      fetchImpl
+        .mockResolvedValueOnce(proofResponse('proof-1'))
+        .mockResolvedValueOnce(jsonResponse({ success: false, code: 'AUTH_TOKEN_EXPIRED', message: 'Unauthorized' }, { status: 401 }))
+        .mockResolvedValueOnce(refreshedResponse())
+        .mockResolvedValueOnce(proofResponse('proof-2'))
+        .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { access_token: 'rotated-access-token', access_expires_at: null } }))
+      const outcomes: string[] = []
+
+      await expect(client.changePassword(input, (outcome) => outcomes.push(outcome))).resolves.toEqual({ changed: true })
+
+      expect(outcomes).toEqual(['unconfirmed', 'unconfirmed', 'changed'])
+    })
+  })
 })
 
 describe('provisionCliKey with a used-up per-key cap', () => {

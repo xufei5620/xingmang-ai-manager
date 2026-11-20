@@ -22,6 +22,7 @@ import {
   probeRunningCliProcesses,
 } from './cli-process-probe'
 import { resolveCliRevertVersion } from './cli-update-history'
+import { resolveCliUserHomeDirectory } from './cli-user-home'
 import { buildCliVersionAdvice, type CliVersionAdvice } from './cli-verified-versions'
 import { isCodexDesktopCliInstallation } from './codex-desktop'
 import { desktopUpdateFields } from './codex-desktop-service'
@@ -1009,7 +1010,7 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
           managedNativeDirectory: process.platform === 'win32' && provider === 'grok'
             ? managedNativeProviderRoot('grok')
             : null,
-          homeDirectory: cliEnvironment.HOME?.trim() || os.homedir(),
+          homeDirectory: resolveCliUserHomeDirectory(cliEnvironment, platform),
           platform,
           verifiedDarwinStandalone: safeNativeCommand?.verifiedDarwinStandalone ?? null,
           windowsExecutionMode,

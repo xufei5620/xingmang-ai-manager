@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages, proxyAuthRequiredMessage } from '../../../../electron/network-failure'
+import { passwordChangeUnconfirmedMessage } from '../../../../electron/password-change-unconfirmed'
 import { authDiskFullMessage, authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, macKeychainRefusedMessage, normalizeEmail, normalizeLoginAccount, parseInviteCode, passwordChangeOutcomeUnknown, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, verificationMailboxMissingMessage, verificationMailNotSentMessage, verificationNotSentMessage, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
@@ -409,6 +410,12 @@ describe('recovery password change outcome', () => {
     expect(passwordChangeOutcomeUnknown(authFailure(lost, '设新密码').kind)).toBe(true)
     expect(passwordChangeOutcomeUnknown(authFailure(unanswered, '设新密码').kind)).toBe(true)
     expect(passwordChangeOutcomeUnknown(authFailure(new Error('x'), '设新密码', false).kind)).toBe(true)
+  })
+  it('reads the main process\'s "no answer" sentence as an unknown outcome and shows it as a plain reason (N6)', () => {
+    const unconfirmed = new Error(`Error invoking remote method 'account:change-password': Error: ${passwordChangeUnconfirmedMessage}`)
+    const failure = authFailure(unconfirmed, '设新密码')
+    expect(passwordChangeOutcomeUnknown(failure.kind)).toBe(true)
+    expect(failure.message).toBe('设新密码没有成功：没等到账号服务的回话。')
   })
   it('trusts a refusal the server spelled out', () => {
     expect(passwordChangeOutcomeUnknown(authFailure(new Error('HTTP 429 Too Many Requests'), '设新密码').kind)).toBe(false)

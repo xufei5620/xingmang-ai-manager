@@ -2790,7 +2790,7 @@ describe('Codex Desktop updates on macOS', () => {
       .resolves.toEqual({ action: 'updated', previousVersion: '26.930.31730', installedVersion: '26.1003.2' })
     expect(closed.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({
       tool: 'codexDesktop', architecture: 'arm64',
-      replace: { installedPath: '/Applications/ChatGPT.app', installedVersion: '26.930.31730', beforeReplace: expect.any(Function) },
+      replace: { installedPath: '/Applications/ChatGPT.app', installedVersion: '26.930.31730', beforeReplace: expect.any(Function), onReplaceStarting: expect.any(Function) },
     }))
     expect(closed.progress().at(-1)).toBe('Codex 桌面端已更新到 v26.1003.2')
     expect(closed.signals).toEqual([])
@@ -2810,6 +2810,31 @@ describe('Codex Desktop updates on macOS', () => {
     const plain = updateFixture(installed('26.930.31730'))
     await expect(plain.service.installCodexDesktop(plain.target)).resolves.toMatchObject({ action: 'unchanged' })
     expect(plain.installMacosDesktopApp).not.toHaveBeenCalled()
+  })
+
+  it('refuses a cancel once the Mac installer starts swapping in the new copy, and closes nothing after an accepted one (F03)', async () => {
+    let refusal: unknown
+    const swapping = updateFixture(installed('26.930.31730'), {
+      installMacosDesktopApp: async (options) => {
+        await options.replace?.beforeReplace()
+        options.replace?.onReplaceStarting?.()
+        refusal = swapping.service.cancelCodexDesktopInstall()
+        return { version: '26.1003.2', path: '/Applications/ChatGPT.app' }
+      },
+    })
+    await expect(swapping.service.installCodexDesktop(swapping.target, { update: true, closeRunning: false })).resolves.toMatchObject({ action: 'updated' })
+    expect(refusal).toEqual({ cancelled: false, reason: '正在安装 Codex 桌面端，这一步中断会留下装了一半的程序，请等它结束。' })
+
+    const cancelled = updateFixture(installed('26.930.31730', '/Applications/ChatGPT.app', true), {
+      installMacosDesktopApp: async (options) => {
+        expect(cancelled.service.cancelCodexDesktopInstall()).toEqual({ cancelled: true, reason: null })
+        await options.replace?.beforeReplace()
+        return { version: '26.1003.2', path: '/Applications/ChatGPT.app' }
+      },
+    })
+    const error = await cancelled.service.installCodexDesktop(cancelled.target, { update: true, closeRunning: true }).catch((cause: unknown) => cause)
+    expect(isInstallCancelledError(error)).toBe(true)
+    expect(cancelled.signals).toEqual([])
   })
 
   it('reports an update that found nothing newer as unchanged', async () => {
