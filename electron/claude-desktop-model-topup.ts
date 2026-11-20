@@ -42,6 +42,11 @@ export interface ClaudeDesktopModelTopUpOptions {
   /** 照 Claude Desktop 的开机检查发一个字，回 true 才算通。 */
   probe: (model: string) => Promise<boolean>
   /**
+   * 换了账号、退出登录就抛错（总单 #67）。每试一个之前、试完记录之前各看一眼：剩下的不再拿上一个账号的密钥接着试，
+   * 这次也什么都不记，下次开机按当时的账号重来。缺省 = 不看（旧行为）。
+   */
+  assertCurrent?: () => void
+  /**
    * 把试通了的写进菜单：写之前重读一遍、再看一眼 Claude Desktop 还关着，只加不减。交回真放进去的那几个；写不成就抛错，
    * 这次的记录也不记，下次开机重来。
    */
@@ -97,7 +102,12 @@ export async function runClaudeDesktopModelTopUp(options: ClaudeDesktopModelTopU
   const previous = await readSafeUtf8File(filePath, recordLabel, recordMaximumBytes)
   const known = parseClaudeDesktopModelTopUpRecord(previous, options.menu.apiKey)
   const candidates = claudeDesktopTopUpCandidates(options.menu.models, options.offered, known)
-  const tried = await probeClaudeDesktopModels(candidates, options.probe)
+  // probeClaudeDesktopModels 把 probe 抛的错当没通，所以试完再看一眼，换了账号就整次作废、不往下写。
+  const tried = await probeClaudeDesktopModels(candidates, async (model) => {
+    options.assertCurrent?.()
+    return options.probe(model)
+  })
+  options.assertCurrent?.()
   const room = Math.max(0, claudeDesktopTopUpMaximumModels - options.menu.models.length)
   const wanted = tried.passed.slice(0, room)
   const added = wanted.length ? await options.add(wanted) : []
