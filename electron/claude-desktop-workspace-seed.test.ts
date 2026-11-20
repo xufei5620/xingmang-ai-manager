@@ -364,14 +364,17 @@ describe('claude desktop workspace seed: after launching Claude', () => {
     f.seeder.scheduleAfterLaunch('/Applications/Claude.app')
     f.seeder.scheduleAfterLaunch('/Applications/Claude.app')
     expect(timers.map((timer) => [timer.milliseconds, timer.cancelled])).toEqual([[180_000, true], [600_000, true], [180_000, false], [600_000, false]])
-    await vi.waitFor(() => expect(f.log).toHaveBeenCalledWith('info', 'claude-desktop.workspace-seed.skipped', expect.any(String), expect.objectContaining({ reason: 'not-adopted' })))
+    // The round started right away is still running: seed() hands back that same run, so this waits for it
+    // to finish instead of polling the log.
+    await expect(f.seeder.seed('/Applications/Claude.app')).resolves.toEqual({ status: 'skipped', reason: 'not-adopted' })
     expect(f.fetchMock).not.toHaveBeenCalled()
 
     // The customer opened Cowork in the meantime, so Claude wrote its marker.
     fs.mkdirSync(f.bundleDirectory, { recursive: true })
     fs.writeFileSync(f.adoptedMarkerPath, '')
     timers[2].callback()
-    await vi.waitFor(() => expect(f.log).toHaveBeenCalledWith('info', 'claude-desktop.workspace-seed.placed', expect.any(String), expect.anything()))
+    await expect(f.seeder.seed('/Applications/Claude.app')).resolves.toMatchObject({ status: 'placed', files: 2 })
+    expect(f.log).toHaveBeenCalledWith('info', 'claude-desktop.workspace-seed.placed', expect.any(String), expect.anything())
     expect(f.fetchMock).toHaveBeenCalledTimes(2)
 
     f.seeder.dispose()
