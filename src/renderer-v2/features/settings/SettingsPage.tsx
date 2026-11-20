@@ -479,9 +479,13 @@ export function SettingsPage({
           : '设置没有保存成功，可以再点一次「导入」',
       )
     if (patch && !(await update(patch, { quiet: true }))) throw settingsFailed()
-    if (systemApi && anonymousUsage !== undefined) {
+    // 主题：有系统界面设置时，开机用哪套颜色看的是那边的主题偏好（platform-api.ts 的 bindPlatformAppearance），
+    // settings.json 里那一项只是跟着它；只写设置文件的话当下变了色，重开又变回原来的（D24）。再走一遍主题卡片那条路。
+    const theme = systemApi ? patch?.theme : undefined
+    if (systemApi && (theme || anonymousUsage !== undefined)) {
       try {
-        setSystemState(await systemApi.setPrivacyPreference('anonymousUsage', anonymousUsage))
+        if (theme) setSystemState(await systemApi.setThemePreference(theme))
+        if (anonymousUsage !== undefined) setSystemState(await systemApi.setPrivacyPreference('anonymousUsage', anonymousUsage))
       } catch (error) {
         // 和上面 update 一样：页顶红条说哪儿坏了，导入那句说设置没存上。
         setSaveError(errorMessage(error))

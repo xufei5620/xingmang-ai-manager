@@ -190,13 +190,14 @@ export class AiUnsavedImageStash {
   }
 
   /**
-   * 把这个账号暂存着的图补存进作品库。不抛错，返回这次补存好了几张。还有没补存上的（登录时盘还满着），
+   * 把这个账号暂存着的图补存进作品库。不抛错，返回这次补存好了几张。还有没补存上的（登录时盘还满着、暂存文件夹一时读不了），
    * 软件开着时隔一阵接着试，不用等下次重开。
    */
   flush(userId: number): Promise<number> {
     return this.enqueue(async () => {
       const restored = await this.flushUser(userId)
-      if ((await this.pendingUserIds()).includes(userId)) this.scheduleRetry()
+      const pending = await this.pendingUserIds()
+      if (pending.unreadable || pending.users.includes(userId)) this.scheduleRetry()
       return restored
     }).catch(() => 0)
   }
@@ -279,21 +280,28 @@ export class AiUnsavedImageStash {
     return restored
   }
 
-  private async pendingUserIds(): Promise<number[]> {
+  /**
+   * 还有图等着补存的账号。暂存文件夹一时读不了（杀毒软件、同步盘正占着，一时没权限）说不清里面有没有，
+   * 不能当它空了：读不了的那个账号照样算还有，整个暂存文件夹读不了就记 unreadable，隔一阵接着试
+   * （11-18 复核 A05，总单 #62）。只有文件夹不在才是真没有。
+   */
+  private async pendingUserIds(): Promise<{ users: number[]; unreadable: boolean }> {
     const users = new Set<number>(this.memory.keys())
+    let unreadable = false
     let entries: fs.Dirent[] = []
     try {
       entries = await fs.promises.readdir(this.root, { withFileTypes: true })
-    } catch {
-      // 文件夹还没建过（从没暂存过）或读不了：只看内存里的。
+    } catch (error) {
+      // 文件夹还没建过（从没暂存过）：只看内存里的。
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') unreadable = true
     }
     for (const entry of entries) {
       const match = entry.isDirectory() ? USER_DIRECTORY_PATTERN.exec(entry.name) : null
       if (!match) continue
-      const files = await listStashedFiles(path.join(this.root, entry.name)).catch(() => [])
-      if (files.length > 0) users.add(Number(match[1]))
+      const files = await listStashedFiles(path.join(this.root, entry.name)).catch(() => null)
+      if (files === null || files.length > 0) users.add(Number(match[1]))
     }
-    return [...users]
+    return { users: [...users], unreadable }
   }
 
   private scheduleRetry(): void {
@@ -308,8 +316,9 @@ export class AiUnsavedImageStash {
 
   private async retry(): Promise<void> {
     const remaining = await this.enqueue(async () => {
-      for (const userId of await this.pendingUserIds()) await this.flushUser(userId)
-      return (await this.pendingUserIds()).length
+      for (const userId of (await this.pendingUserIds()).users) await this.flushUser(userId)
+      const pending = await this.pendingUserIds()
+      return pending.users.length + (pending.unreadable ? 1 : 0)
     }).catch(() => 1)
     if (remaining === 0) {
       this.retryAttempt = 0
