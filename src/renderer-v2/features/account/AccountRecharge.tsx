@@ -54,6 +54,7 @@ import {
   balancePurchaseLine,
   billingPreferenceNote,
   buildSubscriptionPaymentInput,
+  followPurchasePlan,
   invoicePortalOpenedText,
   invoicePortalOpenFailed,
   orderPaidText,
@@ -68,6 +69,8 @@ import {
   planSubscription,
   planTermText,
   planUsageText,
+  purchaseMethodFor,
+  purchasePlanNotice,
   rechargeRunwayText,
   redeemSuccessText,
   resetTopupQuoteForMethod,
@@ -281,6 +284,8 @@ export function AccountRecharge({
   }
   const [purchase, setPurchase] = useState<Plan | null>(null)
   const [purchaseMethod, setPurchaseMethod] = useState('balance')
+  // 框开着时后台改了这个套餐（价格、内容）或者下架了：框顶那条说清楚；下架了付款按钮灰着（N3）。
+  const [purchaseNotice, setPurchaseNotice] = useState<{ title: string; body: string; gone: boolean } | null>(null)
   const [redeemOpen, setRedeemOpen] = useState(false)
   const [payment, setPayment] = useState<PendingPayment | null>(null)
   const [paymentTerminal, setPaymentTerminal] = useState<PaymentTerminal | null>(null)
@@ -470,12 +475,36 @@ export function AccountRecharge({
     )
   }
   const purchaseLine = purchase ? balancePurchaseLine(balanceUsd, purchase) : null
+  // 套餐列表重读回来、点付款之前都走这里：框里换成后台现在那份；价格、内容变了或者下架了，
+  // 框顶摆出那条并返回 false，付款先停下让客户再看一眼。
+  function followPlans(seen: Plan, fresh: readonly Plan[]): boolean {
+    const next = followPurchasePlan(seen, fresh)
+    const plan = next.plan
+    if (plan && plan !== seen) {
+      setPurchase(plan)
+      const channels = subscriptionPaymentMethods(plan, methods, info.data ?? undefined)
+      const short = balancePurchaseLine(balanceUsd, plan).short
+      setPurchaseMethod((current) => purchaseMethodFor(plan, channels, short, current))
+    }
+    const notice = purchasePlanNotice(next.change, seen, plan)
+    if (notice) setPurchaseNotice({ ...notice, gone: next.change === 'gone' })
+    return next.change === 'none'
+  }
+  // 框开着时列表在后台重读过（窗口回到前台、付款结果回来）：框里跟着换，不再摆着旧价。
+  useEffect(() => {
+    const fresh = subscriptions.data?.plans
+    if (purchase && fresh) followPlans(purchase, fresh)
+  }, [subscriptions.data, purchase])
   const purchasePlan = () => {
     if (!purchase) return
     const plan = purchase
     void operation.execute(
       'subscribe',
       async () => {
+        // 服务端只认套餐编号、照这一刻的价扣：先按编号再读一遍，跟框里写的对不上就不下单。
+        const fresh = await api.getAccountSubscriptionPlans()
+        subscriptions.setData((current) => current && { ...current, plans: fresh })
+        if (!followPlans(plan, fresh)) return false
         if (purchaseMethod === 'balance') {
           if (!accountSupports(session, 'supportsSubscriptionBalancePurchase')) throw new Error('当前账号暂不支持余额购买订阅。')
           if (purchaseLine?.short) throw new Error('余额不够，换一种支付方式')
@@ -504,8 +533,9 @@ export function AccountRecharge({
         await subscriptions.reload()
         changed()
         if (purchaseMethod === 'balance') applySubscriptionToTools()
+        return true
       },
-      purchaseMethod === 'balance' ? `${plan.title}已开通` : '已打开支付窗口',
+      (done) => !done ? null : purchaseMethod === 'balance' ? `${plan.title}已开通` : '已打开支付窗口',
     )
   }
   // 报价、充值码、买套餐三个弹窗共用一个 operation：打开时先清掉上一回的报错，弹窗里也只摆
@@ -517,8 +547,9 @@ export function AccountRecharge({
     const channels = subscriptionPaymentMethods(plan, methods, info.data ?? undefined)
     const short = balancePurchaseLine(balanceUsd, plan).short
     operation.clear()
+    setPurchaseNotice(null)
     setPurchase(plan)
-    setPurchaseMethod(plan.allowBalancePay && (!short || channels.length === 0) ? 'balance' : channels[0]?.type ?? '')
+    setPurchaseMethod(purchaseMethodFor(plan, channels, short))
   }
   function openRedeem() {
     setCodeError('')
@@ -1003,7 +1034,7 @@ export function AccountRecharge({
               variant="primary"
               icon={purchaseMethod === 'balance' ? Wallet : CreditCard}
               loading={operation.busy === 'subscribe'}
-              disabled={!purchaseMethod}
+              disabled={!purchaseMethod || purchaseNotice?.gone}
               onClick={purchasePlan}
             >
               {purchaseMethod === 'balance' && purchase ? `用余额支付 ${planPriceText(purchase)}` : '打开支付窗口'}
@@ -1011,6 +1042,9 @@ export function AccountRecharge({
           </>
         }
       >
+        {purchaseNotice && (
+          <Notice tone="warn" title={purchaseNotice.title} body={purchaseNotice.body} testId="account-subscription-plan-changed" />
+        )}
         {purchase && (
           <div className="v2-recharge-plan-price">
             <b>{planPriceText(purchase)}</b>

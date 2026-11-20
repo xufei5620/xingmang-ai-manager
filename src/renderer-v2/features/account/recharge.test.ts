@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
+import type { AccountSubscriptionPlan, AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
 import {
   balancePurchaseLine,
   billingPreferenceNote,
+  followPurchasePlan,
   invoicePortalOpenedText,
   invoicePortalOpenFailed,
   isSubscriptionTradeNo,
@@ -17,6 +18,8 @@ import {
   planSubscription,
   planTermText,
   planUsageText,
+  purchaseMethodFor,
+  purchasePlanNotice,
   rechargeRunwayText,
   redeemSuccessText,
   subscriptionResetSuffix,
@@ -44,6 +47,31 @@ function subscription(overrides: Partial<Subscription> = {}): Subscription {
 }
 
 const duration = { durationUnit: 'day' as const, durationValue: 30, customSeconds: 0 }
+
+function plan(overrides: Partial<AccountSubscriptionPlan> = {}): AccountSubscriptionPlan {
+  return {
+    id: 7,
+    title: '月卡',
+    subtitle: '',
+    priceAmount: 29,
+    currency: 'CNY',
+    durationUnit: 'month',
+    durationValue: 1,
+    customSeconds: 0,
+    allowBalancePay: true,
+    allowWalletOverflow: false,
+    maxPurchasePerUser: 0,
+    totalAmount: 1000,
+    upgradeGroup: '',
+    downgradeGroup: '',
+    quotaResetPeriod: 'never',
+    quotaResetCustomSeconds: 0,
+    stripePriceId: null,
+    creemProductId: null,
+    waffoPancakeProductId: null,
+    ...overrides,
+  }
+}
 
 describe('recharge', () => {
   it('credits a multiplier tier by its rate and treats other tiers as the credited amount', () => {
@@ -171,6 +199,60 @@ describe('recharge', () => {
     expect(balancePurchaseLine(10, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $10.00，扣完剩 $0.00', short: false })
     expect(balancePurchaseLine(100, { priceAmount: 68, currency: 'CNY' })).toEqual({ text: null, short: false })
     expect(balancePurchaseLine(null, { priceAmount: 10, currency: 'USD' })).toEqual({ text: null, short: false })
+  })
+
+  it('follows the plan in an open purchase dialog to what the server lists now', () => {
+    const seen = plan()
+    const same = plan({ subtitle: '换了副标题', stripePriceId: 'price_1' })
+    // 对得上就换成后台现在那份（支付渠道这类跟着新的走），不报变化。
+    expect(followPurchasePlan(seen, [plan({ id: 8 }), same])).toEqual({ change: 'none', plan: same })
+    expect(followPurchasePlan(seen, [plan({ id: 8 })])).toEqual({ change: 'gone', plan: null })
+    expect(followPurchasePlan(seen, [])).toEqual({ change: 'gone', plan: null })
+    expect(followPurchasePlan(seen, [plan({ priceAmount: 39 })]).change).toBe('price')
+    expect(followPurchasePlan(seen, [plan({ currency: 'USD' })]).change).toBe('price')
+    // 币种大小写、空着按美元，跟 planPriceText 同一个读法，不算变了价。
+    expect(followPurchasePlan(plan({ currency: '' }), [plan({ currency: 'usd' })]).change).toBe('none')
+    expect(followPurchasePlan(seen, [plan({ durationValue: 3 })]).change).toBe('terms')
+    expect(followPurchasePlan(seen, [plan({ durationUnit: 'custom', customSeconds: 30 * 86_400 })]).change).toBe('terms')
+    expect(followPurchasePlan(seen, [plan({ totalAmount: 500 })]).change).toBe('terms')
+    expect(followPurchasePlan(seen, [plan({ totalAmount: null })]).change).toBe('terms')
+    expect(followPurchasePlan(seen, [plan({ quotaResetPeriod: 'daily' })]).change).toBe('terms')
+    // 价格和内容一起变了，按变了价说：价是客户最先要知道的。
+    expect(followPurchasePlan(seen, [plan({ priceAmount: 39, durationValue: 3 })]).change).toBe('price')
+    // 按月算的套餐，后台那个用不上的自定义秒数动了，客户看到的时长没变。
+    expect(followPurchasePlan(seen, [plan({ customSeconds: 60 })]).change).toBe('none')
+  })
+
+  it('tells the customer what changed about the plan before they pay again', () => {
+    expect(purchasePlanNotice('none', plan(), plan())).toBeNull()
+    expect(purchasePlanNotice('price', plan(), plan({ priceAmount: 39 }))).toEqual({
+      title: '价格刚调整过',
+      body: '刚才是 ¥29，现在是 ¥39。下面写的是现在的价格，没问题再点一次。',
+    })
+    expect(purchasePlanNotice('price', { priceAmount: 5, currency: 'USD' }, { priceAmount: 9.9, currency: 'USD' })?.body)
+      .toBe('刚才是 $5，现在是 $9.90。下面写的是现在的价格，没问题再点一次。')
+    expect(purchasePlanNotice('terms', plan(), plan())).toEqual({
+      title: '套餐内容刚调整过',
+      body: '价格没变，时长或额度改了。下面写的是现在的内容，没问题再点一次。',
+    })
+    expect(purchasePlanNotice('gone', plan(), null)).toEqual({ title: '这个套餐刚下架了', body: '关掉这个框，看看别的套餐。' })
+  })
+
+  it('keeps the chosen way to pay while it still works and otherwise picks like a fresh dialog', () => {
+    const channels = [{ type: 'alipay' }, { type: 'stripe' }]
+    // 刚打开：余额够就用余额，不够换第一个在线渠道；没有在线渠道还是摆余额（点了说余额不够）。
+    expect(purchaseMethodFor({ allowBalancePay: true }, channels, false)).toBe('balance')
+    expect(purchaseMethodFor({ allowBalancePay: true }, channels, true)).toBe('alipay')
+    expect(purchaseMethodFor({ allowBalancePay: true }, [], true)).toBe('balance')
+    expect(purchaseMethodFor({ allowBalancePay: false }, channels, false)).toBe('alipay')
+    expect(purchaseMethodFor({ allowBalancePay: false }, [], false)).toBe('')
+    // 框开着时套餐换了：选好的还能用就不动。
+    expect(purchaseMethodFor({ allowBalancePay: true }, channels, false, 'stripe')).toBe('stripe')
+    expect(purchaseMethodFor({ allowBalancePay: true }, channels, false, 'balance')).toBe('balance')
+    // 涨价以后余额不够了、或者不让用余额了、或者那个渠道这个套餐用不了了：重新挑。
+    expect(purchaseMethodFor({ allowBalancePay: true }, channels, true, 'balance')).toBe('alipay')
+    expect(purchaseMethodFor({ allowBalancePay: false }, channels, false, 'balance')).toBe('alipay')
+    expect(purchaseMethodFor({ allowBalancePay: true }, [{ type: 'alipay' }], false, 'stripe')).toBe('balance')
   })
 
   it('reports a redeemed balance code with the amount that arrived', () => {
