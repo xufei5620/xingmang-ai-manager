@@ -141,8 +141,9 @@ test('on a short screen 充值 and Settings stay pinned in view and the list abo
     for (const id of ['nav-more', 'nav-maintenance', 'nav-acceleration', 'nav-backups', 'nav-updates'])
       assert.equal(await page.getByTestId(id).count(), 0, `${id} is gone from the sidebar`)
     // 上面那段放不下了自己滚，下沿渐隐，看得出还有。0.2.25 精选、外接工具、技能、插件合成一行「插件」以后，
-    // 这一列在 672 高里整列放得下、不用滚；再矮一截（大约 540 以下）才滚，滚动这一半在 520 高里核。
-    await page.setViewportSize({ width: 1280, height: 520 })
+    // 这一列在 672 高里整列放得下、不用滚。同一版里「聊天」「画布」「视频剪辑」又并成一行「创作」，再少两行：
+    // 量过是 500 以下才滚（Mac 顶上让三个点，520 就滚），滚动这一半在 440 高里核。
+    await page.setViewportSize({ width: 1280, height: 440 })
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'bottom')
     await page.getByTestId('sidebar-scroll').evaluate((element) => { element.scrollTop = element.scrollHeight })
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'top')
