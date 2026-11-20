@@ -114,30 +114,76 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 它没换成上面那个共用驱动：两边判断「该拨了」的条件不一样（这边看收到的字节数，那边看响应体在不在等下一块），
 这条的断言又是正好 30 分钟，换驱动是另一件事，这里只改计数。
 
-### MCP 页点「自定义连接」超时：没坐实
+### 点击停在 `performing click action`：卡住时自己留现场（根因待下一次现场）
 
 | 项 | 内容 |
 |---|---|
-| 用例 | `e2e/v2-business.test.mjs` 里 adding a uvx connection without Python… 和 a uvx connection missing uv… 两条，连着红 |
-| 指纹 | `windows-test (renderer-v2-e2e)`，都是 `locator.click: Timeout 5000ms exceeded`，等的是 `getByTestId('mcp-add')`，调用日志停在最后一行 `performing click action`（quality run 42992280184 第一轮，PR #1756） |
-| 结论 | 根因没坐实，没改代码 |
+| 第一次 | 11-11 PR #1756，quality run 42992280184：`e2e/v2-business.test.mjs` 的 adding a uvx connection without Python… 和 a uvx connection missing uv… 连着红，点 `getByTestId('mcp-add')` 超时 5 秒 |
+| 第二次 | 11-20 PR #2003，quality run 44742552348：`e2e/v2-local-avatar.test.mjs` 第一条 crops a local image to a 256px PNG…，点「更换头像」超时 7 秒 |
+| 第三次 | 11-20 PR #1949，quality run 44741601202：同一条头像用例，同样点「更换头像」超时 7 秒，比 #2003 早 5 分钟（13:24 对 13:29 UTC），不同的 runner |
+| 第四次 | 11-20 PR #2011（只改主进程），quality run 44753304773：还是这条头像用例、同样超时 7 秒，14:31 UTC |
+| 指纹 | 都在 `windows-test (renderer-v2-e2e)`；调用日志里按钮已找到、可见、可点、位置稳定、滚动完，最后一行停在 `performing click action` |
+| 结论 | 四次日志都分不出是哪一半停了，根因没坐实；`e2e/click-stall.mjs` 让下一次自己留下分得清的现场 |
+
+四次的共同形状：**一段大约 10 秒的卡顿，不只卡这一条**。11-11 两条用例各开各的页面，从 09:08:59.6 到 09:09:10.5
+都点不动，过后同一颗 `mcp-add` 又点得动；11-20 #2003 那条卡满 7 秒，紧接着下一条（新开的页面）用了 5.1 秒，
+同一套用例绿跑时是 1.0 秒，再往后三条都正常（0.8 秒左右）；#1949 那条整条 14.0 秒（打开页面就比平时慢，
+再卡满 7 秒），下一条 2.2 秒；#2011 那条整条 12.0 秒，下一条 3.6 秒。
+
+11-20 三次都是头像套件的第一条（新起的浏览器、冷的 Vite 缓存），都是点下去要开弹框的那一下，打开页面都比平时慢
+（5–7 秒，平时 3 秒上下）。前两次合并出来的提交都在 main 65350f7（#1996）上，runner 镜像和 Chromium 版本跟
+12:55 那次绿跑一样；同一个底子上的重跑和别的 PR 都绿过（#2003 重跑 44744907491、#1949 44748220311、main c83d18a
+44742755802），#2011 只改了主进程，碰不到这个页面。所以不是哪一次合并必然带出来的，但 13:00 到 14:30 UTC 之间
+跑完的 PR 里三次红在同一处，频率明显比之前高。
 
 已经排除的：
 
-- **不是页面没挂上**：两条都在 0.9 秒内挂好，按钮已经找到、可见、可点、位置稳定，日志里也没有
-  `[fixture] … lost navigation`。
-- **不是被别的东西挡住**：被挡住时 Playwright 会写「intercepts pointer events」并自己重试。这里是卡在点击
-  本身：鼠标事件发出去以后，那一页一直没回应。
-- **不是这一步本来就慢**：抽了 14 轮绿的 Windows 记录，这两条每次 0.9–2.7 秒，跟整套用例的中位数同比例，
-  没有一次接近 5 秒；本机把 CPU 降到八分之一速度点这颗按钮也只要约 0.5 秒（开弹框那一下最长 0.4 秒），
-  要再慢几十倍才撞得到 5 秒。
-- **不是这颗按钮或这一页固定会卡**：同一轮里紧接着的 curated MCP install（同一页，也开弹框）1.7 秒过；
-  9 秒后 the add dialogs name the tool they add to… 点的正是同一颗 `mcp-add`，也过了。
+- **不是页面没挂上、不是被挡住**：按钮找到、可见、可点、稳定，日志里没有 `[fixture] … lost navigation`；
+  被挡住时 Playwright 会写「intercepts pointer events」并自己重试，这里没有。
+- **不是这一步本来就慢**：抽 14 轮绿的 Windows 记录，MCP 那两条每次 0.9–2.7 秒；本机把 CPU 降到八分之一
+  速度点 `mcp-add` 约 0.5 秒。头像那条绿跑整条 4.5 秒（含冷启动打开页面）。
+- **不是整个浏览器停了**：11-11 第二条用例的页面恰好在卡顿中间打开，0.9 秒挂好，挂载等待一直在
+  `page.evaluate`，「位置稳定」那一步还要页面连着出两帧，都过了，然后点击才卡住。浏览器接命令、页面跑脚本、
+  出帧都还在。
+- **不是 Vite 冷启动中途整页重载**：本机（Linux）清掉缓存冷启动连跑头像那条，挂载后没有收到过 full-reload，
+  点击 70–90 毫秒。
 
-推测（没坐实）：两条用例各自新开的页面，在同一段大约 12 秒里点击都没回应，过后又好了，更像那台 runner
-上浏览器的输入通路卡了一阵，不像页面代码的问题。再见同样指纹先按规矩重跑一次；如果同一处再红，或者别的
-用例也停在 `performing click action`，就不是偶发，那时要抓现场：失败时截图，并在页面里跑一句
-`page.evaluate(() => 1)` 看它还回不回应，分清是这一页卡住还是整个浏览器卡住。
+剩下两种可能，指向不同的地方，只有卡顿当时取的东西分得开：
+
+1. **鼠标事件没送到页面**：Playwright 点击先发一次鼠标移动，Chromium 要等页面处理完这次移动才回话。
+   浏览器的输入通路或者出帧在那 10 秒里停了，就是这一种。
+2. **点下去了，页面之后不回话**：点击打开弹框，弹框那一路在等某个整机共用的东西，页面主线程被占住，
+   Playwright 收尾时问页面的那一句就一直等。
+
+本机把这个指纹做出来过：页面在鼠标移到按钮上时占住主线程 4.5 秒，点击就停在同一行（`e2e/click-stall.test.mjs`）。
+
+**现在卡住时会留下什么**：经 `e2e/harness.mjs` 开的页面（两个 e2e 套件都是），点击超时且调用日志停在
+`performing click action` 时，`e2e/click-stall.mjs` 当场并排探一遍（每项最多等 3 秒），结果接在这条报错后面，
+截图放进 `artifacts/click-stall/`，Windows 作业红了会以 `click-stall-<分片>` 上传：
+
+```
+click stall evidence, taken 7004ms after the click started (each probe waits at most 3000ms):
+- page.evaluate on the stuck page: answered in 3ms (open dialogs 1, focused yes, visible, active element button)
+- next animation frame on the stuck page: drawn in 17ms
+- a new mouse move sent to the stuck page: acknowledged in 21ms
+- screenshot of the stuck page: artifacts/click-stall/1763645354000-4321.png (40ms)
+- a fresh page in the same browser: opened in 120ms, clicked in 15ms, click landed
+- Node event loop: longest delay 22ms while the click waited
+- runner CPU: 41% busy over 500ms
+```
+
+怎么读：
+
+| 看到的 | 说明 | 往哪查 |
+|---|---|---|
+| `page.evaluate` 没回话，同一浏览器新开页点得动 | 这一页的主线程被占住，别的页面没事（第 2 种）：点下去以后弹框那一路在等东西 | 截图、`open dialogs` 看点击到没到；查弹框打开时同步等的东西（字体、剪贴板、焦点） |
+| `page.evaluate` 回话、`open dialogs 0`，新鼠标移动或新开页的点击也没回话 | 页面活着，鼠标事件送不进去，而且整个浏览器都这样（第 1 种） | 浏览器输入通路；再看 `next animation frame`，没出帧就是出帧停了 |
+| `page.evaluate` 回话、新开页点得动，只有卡住那次没回话 | 那一次的鼠标事件丢了，之后又好了 | 记下来，攒够几次再看规律 |
+| 整机 CPU 接近 100%，或 Node 事件循环延迟上秒 | runner 自己被占满，或者测试进程自己卡了，先别怪浏览器 | runner 上同时在跑什么 |
+
+再见这个指纹：先把报错后面这几行和截图贴进 `docs/CI-RERUN-LEDGER.md` 那一行（照规矩只重跑一次），按上表查，
+查清后把这一节改成结论。别的套件（`src/renderer-v2/**/browser-check.mjs`、`app-check.mjs` 自己起浏览器，
+不经 harness）想要同样的现场，给它开出来的任意一个页面调一次 `watchClickStalls(page)` 即可，一个进程装一次就够。
 
 > 云端/CI 容器提示：`test:browser`、`test:v2:browser` 里的 Playwright 套件要真浏览器，若容器预装的 Chromium 版本号与 `@playwright/test` 期望不符会报 "Executable doesn't exist"——环境问题不是回归，但也不算跑过：按 `AGENTS.md` 第 3 节设 `XINGMANG_E2E_CHROMIUM` 指向容器那份 Chromium 重跑，照样要 0 失败（scripts 套件不受影响；vitest 里只有 `electron/codex-desktop-cdp.browser.test.ts` 起浏览器，它也认这个变量）。Claude Code 云端容器里是 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm test`（`npm run selfcheck` 会自己设上，容器里别的坑见 `docs/CLOUD-SANDBOX.md`）；只复跑一条用例时用 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium node --test --test-name-pattern=<用例名> <套件文件>`。
 
