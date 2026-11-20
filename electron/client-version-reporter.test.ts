@@ -172,16 +172,20 @@ describe('client version reporter', () => {
 
   it('shares one run when the timer and an account change land together', async () => {
     let release: (response: Response) => void = () => undefined
+    let markStarted: () => void = () => undefined
+    const started = new Promise<void>((resolve) => { markStarted = resolve })
     const calls: FetchCall[] = []
     function fetchImpl(url: string, init: RequestInit): Promise<Response> {
       calls.push({ url, init })
+      markStarted()
       return new Promise((resolve) => { release = resolve })
     }
     const { reporter } = reporterWith({ fetchImpl })
 
     const first = reporter.runOnce()
     const second = reporter.runOnce()
-    await vi.waitFor(() => expect(calls).toHaveLength(1))
+    // The request only goes out after the local record is read and written (real disk I/O): wait for it, not a fixed timeout.
+    await started
     release(new Response(null, { status: 204 }))
     await expect(first).resolves.toBe('sent')
     await expect(second).resolves.toBe('sent')
