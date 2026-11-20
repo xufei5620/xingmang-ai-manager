@@ -6506,10 +6506,10 @@ function CanvasWorkspace({
     disabled: boolean
   }> = [
     { kind: 'all', label: '运行全部', description: '运行画布上所有能运行的节点', disabled: nodes.length === 0 },
-    { kind: 'dirty', label: `只运行改过的 (${dirtyNodeIds.size})`, description: '运行改过的节点，连同要用到的上游节点', disabled: dirtyNodeIds.size === 0 },
-    { kind: 'selection', label: `运行选中的节点 (${selectedRunnableCount})`, description: '运行选中的节点，连同要用到的上游节点', disabled: selectedRunnableCount === 0 },
+    { kind: 'dirty', label: `只运行改过的 (${dirtyNodeIds.size})`, description: '运行改过的节点，连同前面要用到的节点', disabled: dirtyNodeIds.size === 0 },
+    { kind: 'selection', label: `运行选中的节点 (${selectedRunnableCount})`, description: '运行选中的节点，连同前面要用到的节点', disabled: selectedRunnableCount === 0 },
     { kind: 'to-node', label: '运行到选中节点', description: '先选中一个能运行的节点', disabled: selectedRunnableCount !== 1 },
-    { kind: 'from-node', label: '从选中节点向后运行', description: '运行选中节点和后面连着的节点，缺的上游一起运行', disabled: selectedRunnableCount !== 1 },
+    { kind: 'from-node', label: '从选中节点向后运行', description: '运行选中节点和后面连着的节点，前面还没结果的一起运行', disabled: selectedRunnableCount !== 1 },
   ]
   const activeRunOption = runScopeOptions.find((option) => option.kind === runScopeKind) ?? runScopeOptions[0]
 

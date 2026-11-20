@@ -85,7 +85,7 @@ export function canvasRunNodeUnsupportedReason(node: RunNode, profile: CanvasCap
  */
 export function canvasRunUpstreamUnsupportedReason(upstream: readonly RunNode[], profile: CanvasCapabilityProfile): string | undefined {
   const unavailable = upstream.find((node) => !canvasNodeKindAvailable(node.kind, profile))
-  return unavailable ? `上游的「${nodeTitle(unavailable.kind)}」节点当前客户端暂不支持` : undefined
+  return unavailable ? `前面连着的「${nodeTitle(unavailable.kind)}」节点当前客户端暂不支持` : undefined
 }
 
 function withoutUndefined<T extends object>(value: T): T {
