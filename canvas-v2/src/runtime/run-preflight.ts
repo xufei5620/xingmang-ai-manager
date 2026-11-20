@@ -35,6 +35,9 @@ const assetInputKinds = new Set(['image-input', 'video-input', 'audio-input'])
  */
 export const dramaParseMaximumRequestCount = 2
 
+/** 运行前检查里，上次的结果还在、之后没改过的付费节点那一行。 */
+export const keptResultReason = '上次的结果还在，之后也没改过，通常直接用上次的，不扣费；对不上才重新生成（会扣费）'
+
 export type CanvasPreflightSeverity = 'info' | 'warning' | 'blocking'
 export type CanvasPreflightAction = 'execute' | 'cached' | 'skip' | 'blocked'
 export type CanvasPreflightReasonCode = 'disabled' | 'upstream-skip' | 'missing-group' | 'unavailable-source' | 'unavailable-model' | 'missing-asset' | 'drama-gate' | 'invalid-parameters' | 'unsupported-host'
@@ -65,6 +68,12 @@ export interface CanvasRunPreflightItem {
   webSearch?: true
   /** Maximum independent requests if the server cache misses. */
   requestCount: number
+  /**
+   * A paid node that still shows its last result and whose inputs were not
+   * edited since. The host usually reuses that result, but only the host can
+   * prove its fingerprint, so requestCount still carries the full upper bound.
+   */
+  keptResult?: true
   group?: string
   model?: string
   reason?: string
@@ -82,6 +91,8 @@ export interface CanvasRunPreflight {
   skippedCount: number
   blockedCount: number
   paidRequestCount: number
+  /** How much of paidRequestCount comes from keptResult nodes. Omitted means none. */
+  keptResultRequestCount?: number
   imageRequestCount: number
   videoRequestCount: number
   textRequestCount: number
@@ -89,6 +100,20 @@ export interface CanvasRunPreflight {
   risk: CanvasPreflightSeverity
   warnings: string[]
   canStart: boolean
+}
+
+/**
+ * 确认框里「最多扣费生成 N 次」那段话，报价夹在 beforeQuote 和 afterQuote 中间。
+ * 要扣费的全是上次的结果还在、没改过的节点时，先说通常不扣，上限放到「万一」后面；
+ * 只有一部分是这种节点时照旧先写上限，再说其中几次通常不扣。上限一次都不减，理由见 keptResult。
+ */
+export function canvasRunPaidNotice(preflight: Pick<CanvasRunPreflight, 'paidRequestCount' | 'keptResultRequestCount' | 'scope'>): { beforeQuote: string; afterQuote: string } {
+  const paid = preflight.paidRequestCount
+  const kept = Math.min(preflight.keptResultRequestCount ?? 0, paid)
+  const toNode = preflight.scope.kind === 'to-node'
+  if (kept > 0 && kept === paid) return { beforeQuote: `要扣费的节点上次都出过结果，之后也没改过，这次通常直接用上次的结果，不扣费。万一对不上要重新生成，最多扣费生成 ${paid} 次`, afterQuote: '。' }
+  if (kept > 0) return { beforeQuote: `这次最多扣费生成 ${paid} 次`, afterQuote: `。其中 ${kept} 次是上次出过结果、之后没改过的节点，通常直接用上次的结果，不扣费${toNode ? '；选中的节点会重新生成' : ''}。` }
+  return { beforeQuote: `这次最多扣费生成 ${paid} 次`, afterQuote: `。${toNode ? '选中的节点会重新生成，前面的节点输入没变就用上次的结果。' : '输入跟上次一样的直接用上次的结果，不扣费。'}` }
 }
 
 export function selectCanvasRunNodeIds(graph: CanvasRunGraph, scope: CanvasRunScope): Set<string> {
@@ -144,8 +169,8 @@ export function sameCanvasRunGraphSnapshot(left: CanvasRunGraph, right: CanvasRu
 
 function scopeLabel(scope: CanvasRunScope): string {
   if (scope.kind === 'all') return '全部节点'
-  if (scope.kind === 'dirty') return `改过的 ${scope.nodeIds.length} 个节点，连同要用到的上游节点`
-  if (scope.kind === 'selection') return `选中的 ${scope.nodeIds.length} 个节点，连同要用到的上游节点`
+  if (scope.kind === 'dirty') return `改过的 ${scope.nodeIds.length} 个节点，连同前面要用到的节点`
+  if (scope.kind === 'selection') return `选中的 ${scope.nodeIds.length} 个节点，连同前面要用到的节点`
   if (scope.kind === 'from-node') return '从选中节点向后运行'
   return '运行到选中节点'
 }
@@ -219,7 +244,7 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
       .filter((sourceId) => selected.has(sourceId))
       .some((sourceId) => planNode(sourceId).action === 'skip')) {
       action = 'skip'
-      reason = '上游节点已跳过'
+      reason = '前面连着的节点跳过了，这个也跟着跳过'
       reasonCode = 'upstream-skip'
     } else if (input.capabilities && hostUnsupportedReason(node, input.capabilities)) {
       action = 'blocked'
@@ -265,7 +290,7 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
     if (action !== 'blocked' && action !== 'skip' && paid && !node.data.commerceTask && !node.data.interiorTask && !node.data.exteriorTask && !node.data.storyboardTask
       && !node.data.prompt.trim() && !input.graph.edges.some((edge) => edge.target === node.id && edge.targetHandle === 'in:text')) {
       action = 'blocked'
-      reason = '生成节点没有提示词，请填写提示词或连接上游文字节点'
+      reason = '生成节点没有提示词，请填写提示词，或者连一个文字节点进来'
       reasonCode = 'invalid-parameters'
     }
     if (action !== 'blocked' && action !== 'skip' && imageRunNodeKinds.has(node.kind)) {
@@ -339,6 +364,11 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
         reasonCode = 'invalid-parameters'
       }
     }
+    // 跑完什么都不动再运行，确认框照旧按上限写「最多扣费生成 N 次」，看着像要再扣一遍（桌面 0.2.25 总单第 57 项）。
+    // 上限不减：画布上的结果证明不了宿主那边的指纹还对得上（换了默认来源、缓存被挤掉都会重新生成），
+    // 桌面证明不了时照样重新生成，靠的就是确认框已经把上限告诉了客户。这里只把「通常不扣」的那部分标出来。
+    const keptResult = paid && action === 'execute' && cached.has(node.id)
+      && !(input.scope.kind === 'to-node' && input.scope.nodeId === node.id)
     const item: CanvasRunPreflightItem = {
       nodeId: node.id,
       kind: node.kind,
@@ -346,9 +376,10 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
       paid,
       ...(node.data.textWebSearch === true ? { webSearch: true as const } : {}),
       requestCount: action === 'execute' ? imageRunNodeKinds.has(node.kind) ? imageCandidateCount : videoRunNodeKinds.has(node.kind) ? videoCandidateCount : node.kind === 'drama-parse' ? dramaParseMaximumRequestCount : 1 : 0,
+      ...(keptResult ? { keptResult: true as const } : {}),
       ...(group ? { group } : {}),
       ...(node.data.model ? { model: node.data.model } : {}),
-      ...(reason ? { reason } : {}),
+      ...(keptResult ? { reason: keptResultReason } : reason ? { reason } : {}),
       ...(reasonCode ? { reasonCode } : {}),
     }
     visiting.delete(nodeId)
@@ -368,6 +399,7 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
   const skippedCount = items.filter((item) => item.action === 'skip').length
   const blockedCount = items.filter((item) => item.action === 'blocked').length
   const paidRequestCount = items.filter((item) => item.paid).reduce((total, item) => total + item.requestCount, 0)
+  const keptResultRequestCount = items.filter((item) => item.keptResult).reduce((total, item) => total + item.requestCount, 0)
   const imageRequestCount = items.filter((item) => imageRunNodeKinds.has(item.kind)).reduce((total, item) => total + item.requestCount, 0)
   const videoRequestCount = items.filter((item) => videoRunNodeKinds.has(item.kind)).reduce((total, item) => total + item.requestCount, 0)
   const textRequestCount = items.filter((item) => item.action === 'execute' && textRunNodeKinds.has(item.kind)).reduce((total, item) => total + item.requestCount, 0)
@@ -390,6 +422,7 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
     skippedCount,
     blockedCount,
     paidRequestCount,
+    ...(keptResultRequestCount > 0 ? { keptResultRequestCount } : {}),
     imageRequestCount,
     videoRequestCount,
     textRequestCount,

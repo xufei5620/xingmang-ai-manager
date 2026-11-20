@@ -49,6 +49,11 @@ export function portableImageEditMask(mask: ImageEditMask): ImageEditMask {
   return portable
 }
 
+// One sentence for every place that refuses an unsupported model: the run
+// preflight and node card are what the customer sees first, so they must also
+// say the mask is never dropped in favour of a whole-image edit.
+export const imageEditMaskUnsupportedModelMessage = '当前模型尚未接通蒙版局部修改，请选择支持的 GPT Image 模型；不会改为整图生成'
+
 export function imageEditMaskModelSupported(model: string): boolean {
   return ['gpt-image-1', 'gpt-image-2', 'gpt-image-2-2026-04-21'].includes(model)
 }
@@ -109,7 +114,7 @@ export function rasterizeImageEditMask(value: ImageEditMask): ImageEditMaskRaste
 
 /** This check is also performed before cache reads: a stale mask never becomes an ordinary edit. */
 export function assertImageEditMaskInput(mask: ImageEditMask, model: string, sources: readonly { assetId: string; width?: number; height?: number }[]): void {
-  if (!imageEditMaskModelSupported(model)) throw new Error('当前模型尚未接通蒙版局部修改，请选择支持的 GPT Image 模型；不会改为整图生成')
+  if (!imageEditMaskModelSupported(model)) throw new Error(imageEditMaskUnsupportedModelMessage)
   if (!mask.sourceAssetId) throw new Error('请打开蒙版编辑器，核对并绑定当前原图后再运行')
   if (sources.length !== 1 || sources[0].assetId !== mask.sourceAssetId) throw new Error('局部修改需要唯一且与蒙版绑定一致的原图；原图已变化，请重新核对蒙版')
   if (sources[0].width !== mask.width || sources[0].height !== mask.height) throw new Error('原图像素尺寸与蒙版不一致，请重新核对蒙版后运行')

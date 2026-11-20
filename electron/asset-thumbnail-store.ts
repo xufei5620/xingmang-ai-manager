@@ -6,6 +6,7 @@ import {
   assetThumbnailFileName,
   assetThumbnailVersion,
   type AssetThumbnailMimeType,
+  type AssetThumbnailSizeName,
 } from './asset-thumbnail'
 
 const FILE_LABEL = 'AI 素材缩略图'
@@ -18,6 +19,17 @@ const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
  */
 export const MAXIMUM_THUMBNAIL_BYTES = 1024 * 1024
 
+/**
+ * The 768 pixel chat image is 2.4 MB as raw RGBA, and PNG never grows past raw
+ * by more than its framing. Four megabytes holds the worst case and still
+ * refuses something that is plainly not a derived image.
+ */
+export const MAXIMUM_LARGE_THUMBNAIL_BYTES = 4 * 1024 * 1024
+
+function maximumBytes(size: AssetThumbnailSizeName): number {
+  return size === 'large' ? MAXIMUM_LARGE_THUMBNAIL_BYTES : MAXIMUM_THUMBNAIL_BYTES
+}
+
 export interface StoredAssetThumbnail {
   bytes: Buffer
   mimeType: AssetThumbnailMimeType
@@ -25,7 +37,8 @@ export interface StoredAssetThumbnail {
 
 /**
  * On-disk cache of derived thumbnails, laid out as
- * `<root>/user-<id>/<version>/<assetId>.<ext>`.
+ * `<root>/user-<id>/<version>/<assetId>.<ext>`, with the chat's larger still
+ * image beside it as `<assetId>.large.<ext>`.
  *
  * The version segment matches the one in the request URL, so bumping the
  * pipeline version orphans the previous generation in one step instead of
@@ -43,19 +56,19 @@ export class AssetThumbnailStore {
     return path.join(this.cacheRoot, `user-${userId}`, assetThumbnailVersion)
   }
 
-  private candidatePaths(userId: number, assetId: string): Array<{ filePath: string; mimeType: AssetThumbnailMimeType }> {
+  private candidatePaths(userId: number, assetId: string, size: AssetThumbnailSizeName): Array<{ filePath: string; mimeType: AssetThumbnailMimeType }> {
     const directory = this.directory(userId)
     return (['image/png', 'image/jpeg'] as const).map((mimeType) => ({
-      filePath: path.join(directory, assetThumbnailFileName(assetId, mimeType)),
+      filePath: path.join(directory, assetThumbnailFileName(assetId, mimeType, size)),
       mimeType,
     }))
   }
 
-  async read(userId: number, assetId: string): Promise<StoredAssetThumbnail | null> {
+  async read(userId: number, assetId: string, size: AssetThumbnailSizeName = 'tile'): Promise<StoredAssetThumbnail | null> {
     assertCacheKey(userId, assetId)
-    for (const candidate of this.candidatePaths(userId, assetId)) {
+    for (const candidate of this.candidatePaths(userId, assetId, size)) {
       try {
-        return { bytes: await readBoundedFile(candidate.filePath, MAXIMUM_THUMBNAIL_BYTES, FILE_LABEL), mimeType: candidate.mimeType }
+        return { bytes: await readBoundedFile(candidate.filePath, maximumBytes(size), FILE_LABEL), mimeType: candidate.mimeType }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
         // A damaged or tampered cache entry must not fail the request: the
@@ -66,13 +79,13 @@ export class AssetThumbnailStore {
     return null
   }
 
-  async write(userId: number, assetId: string, thumbnail: StoredAssetThumbnail): Promise<void> {
+  async write(userId: number, assetId: string, thumbnail: StoredAssetThumbnail, size: AssetThumbnailSizeName = 'tile'): Promise<void> {
     assertCacheKey(userId, assetId)
     if (thumbnail.bytes.byteLength === 0) throw new Error(`${FILE_LABEL}内容为空`)
-    if (thumbnail.bytes.byteLength > MAXIMUM_THUMBNAIL_BYTES) throw new Error(`${FILE_LABEL}超过安全上限`)
+    if (thumbnail.bytes.byteLength > maximumBytes(size)) throw new Error(`${FILE_LABEL}超过安全上限`)
     const directory = this.directory(userId)
     ensureSafeDataDirectory(directory, FILE_LABEL)
-    await writeAtomicSafeBinaryFile(path.join(directory, assetThumbnailFileName(assetId, thumbnail.mimeType)), thumbnail.bytes, FILE_LABEL)
+    await writeAtomicSafeBinaryFile(path.join(directory, assetThumbnailFileName(assetId, thumbnail.mimeType, size)), thumbnail.bytes, FILE_LABEL)
   }
 
   /** Used when an account signs out so one user's derived images never outlive their session. */

@@ -1650,6 +1650,40 @@ test('the records table puts each record on one row with tool chips that count',
   } finally { await page.close() }
 })
 
+// 记录页的搜索框停手 300 毫秒才搜（R-3）：一个字一个字打完只搜一次，而且让主进程拿几秒内扫过的那份重新筛；
+// 点重新加载照旧现扫，清空马上搜。时钟停着，等多久由测试这边拨。
+test('the records search waits for typing to pause and reuses the recent scan, while a reload rescans (R-3)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1', true)
+  function listReads() {
+    return page.evaluate(() => window.v2Test.calls
+      .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 20).map((entry) => entry.args[0]))
+  }
+  try {
+    await page.getByTestId('nav-sessions').click()
+    // 记录页是懒加载的，占位要摆满 300 毫秒才换下，往前拨一秒。
+    await page.clock.runFor(1_000)
+    const sessions = page.getByTestId('page-sessions')
+    await sessions.getByTestId('sessions-row-claude:1').waitFor()
+    // 进页那一次是现扫。
+    assert.deepEqual((await listReads())[0], { provider: 'all', search: '', page: 1, pageSize: 20 })
+    const before = (await listReads()).length
+    const search = sessions.getByTestId('sessions-search')
+    await search.pressSequentially('登录页')
+    await page.clock.runFor(299)
+    assert.equal((await listReads()).length, before)
+    await page.clock.runFor(1)
+    await expect.poll(async () => (await listReads()).slice(before))
+      .toEqual([{ provider: 'all', search: '登录页', page: 1, pageSize: 20, reuseRecentScan: true }])
+    await sessions.getByTestId('sessions-reload').click()
+    await expect.poll(async () => (await listReads()).at(-1)).toEqual({ provider: 'all', search: '登录页', page: 1, pageSize: 20 })
+    await search.fill('')
+    await page.clock.runFor(1)
+    await expect.poll(async () => (await listReads()).at(-1))
+      .toEqual({ provider: 'all', search: '', page: 1, pageSize: 20, reuseRecentScan: true })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an exported report can be revealed in its folder and says so when it moved (第八批 5)', async () => {
   const page = await open('allInstalled=1')
   try {
@@ -9597,7 +9631,7 @@ test('the skills chapter explains importing for every tool and the card list com
     await entry.click()
     const article = tutorial.getByTestId('tutorial-article')
     await expect(article.getByRole('heading', { level: 2 })).toHaveText('技能')
-    await expect(article).toContainText('选好工具，再选一个本机的技能文件夹导入。')
+    await expect(article).toContainText('选一个本机的技能文件夹，勾上要给哪几家用。')
     await expect(article.locator('details[data-extra-title="Claude Code、Grok CLI 没有导入按钮？"]')).toHaveCount(0)
     await tutorial.getByTestId('tutorial-back').click()
     await expect(entry).toBeFocused()
@@ -9624,8 +9658,8 @@ test('tutorial actions navigate to their tool and retain the selected chapter an
     await tutorial.getByTestId('tutorial-topic-mcp').click()
     const article = tutorial.getByTestId('tutorial-article')
     const heading = await article.getByRole('heading', { level: 2 }).innerText()
-    await article.getByRole('button', { name: '打开外接工具', exact: true }).first().click()
-    // 外接工具 0.2.25 起合进「插件」页，按钮落到那一页。
+    await article.getByRole('button', { name: '打开插件', exact: true }).first().click()
+    // 外接工具 0.2.25 起合进「插件」页，这一章的按钮也改叫「打开插件」，落到那一页。
     await expect(page.getByTestId('page-extensions')).toBeVisible()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'listProviderExtensions'))
     await page.getByTestId('nav-tutorial').click()

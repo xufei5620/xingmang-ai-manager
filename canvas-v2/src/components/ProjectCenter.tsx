@@ -86,8 +86,14 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
   const [actionName, setActionName] = useState('')
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSaving, setActionSaving] = useState(false)
+  const actionConfirmRef = useRef<HTMLButtonElement>(null)
   const hasDraft = (creating && createName.trim().length > 0) || action !== null
   useEffect(() => { onDraftChange?.(hasDraft); return () => onDraftChange?.(false) }, [hasDraft, onDraftChange])
+  // 归档框里没有输入框，焦点不挪的话还留在背后那个「归档项目」图标上，按回车按的是它，框不动（桌面 Mac 验收 R16）。
+  // 框一打开就把焦点放到「确认归档」上；处理中按钮禁用、焦点会掉出框，没归档成回来时再放回去，回车能再试一次。
+  useEffect(() => {
+    if (action?.kind === 'archive' && !actionSaving) actionConfirmRef.current?.focus()
+  }, [action, actionSaving])
   const activeProjects = useMemo(() => projects.filter((project) => !project.archivedAt).sort((left, right) => recentTimestamp(right) - recentTimestamp(left)), [projects])
   const archivedProjects = useMemo(() => projects.filter((project) => project.archivedAt).sort((left, right) => Date.parse(right.archivedAt!) - Date.parse(left.archivedAt!)), [projects])
   const currentView = paged ? query!.view === 'archived' ? 'archived' : 'recent' : view
@@ -338,7 +344,7 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
             {actionError && <p className="canvas-project-dialog-error" role="alert">{actionError}</p>}
             <footer>
               <button type="button" disabled={actionSaving} onClick={() => setAction(null)}>取消</button>
-              <button type="submit" className={action.kind === 'archive' ? 'is-warning' : 'is-primary'} disabled={actionSaving || (action.kind !== 'archive' && !actionName.trim())}>
+              <button ref={actionConfirmRef} type="submit" className={action.kind === 'archive' ? 'is-warning' : 'is-primary'} disabled={actionSaving || (action.kind !== 'archive' && !actionName.trim())}>
                 {actionSaving ? '处理中…' : action.kind === 'rename' ? '保存名称' : action.kind === 'duplicate' ? copy.duplicate : '确认归档'}
               </button>
             </footer>
