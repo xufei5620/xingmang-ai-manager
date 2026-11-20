@@ -21,7 +21,7 @@ import { useChatController } from './useChatController'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import { inspectChatLink, plainText } from './links'
 import { prepareChatMath, readChatMath, renderChatMath, type ChatMath } from './math'
-import { conversationPlainText, loadChatHistory, mergeSessionIntoHistory, type LoadedChatHistory } from './storage'
+import { conversationExport, loadChatHistory, mergeSessionIntoHistory, type LoadedChatHistory } from './storage'
 import './chat.css'
 
 const remarkPlugins = [remarkGfm]
@@ -194,7 +194,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     if (!item) return
     const ticket = owner.capture()
     try {
-      const result = await api.exportText({ title: item.title, text: conversationPlainText(item) })
+      const result = await api.exportText(conversationExport(item))
       if (ticket() && result) chat.setNotice('这段对话已存成文本文件')
     } catch (cause) {
       // 没权限、盘满了跟设置页导出同一套说法（D16）；认不出原因的照旧说可以重试。
