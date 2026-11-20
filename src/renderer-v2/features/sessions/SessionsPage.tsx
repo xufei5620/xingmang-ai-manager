@@ -51,6 +51,8 @@ type Session = Awaited<
 >['items'][number]
 // 记录页显示着、窗口回到前面时，离上次读不到这么久就不再读（同 useNetworkLocation 的 focusRefreshIntervalMs）。
 const recordsForegroundReloadMs = 30_000
+// 搜索框停手这么久才拿去搜（R-3，同密钥页、订单页）。
+const searchSettleMs = 300
 // 详情里「对话开头」先给几条；多出来的点「看全部」再展开，整段对话照旧都在。
 const transcriptPreviewCount = 2
 type SessionToolFilter = Provider | 'all'
@@ -151,12 +153,37 @@ export function SessionsPage({
   const [provider, setProvider] = useState<SessionToolFilter>('all')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
-  const load = useCallback(
-    () =>
-      api.listProviderSessions({ provider, search: query, page, pageSize: 20 }).then(withoutRetiredSessions),
-    [api, provider, query, page],
-  )
+  // 框里的字和拿去搜的词分开（R-3）：停手 300 毫秒才搜，打一个词不再每个字都让主进程把各工具的
+  // 会话文件夹翻一遍；清空马上搜。跟密钥页、订单页的搜索一个做法，换了词从第一页看起。
+  const [keyword, setKeyword] = useState('')
+  useEffect(() => {
+    const next = query.trim()
+    if (next === keyword) return
+    const timer = window.setTimeout(() => {
+      setKeyword(next)
+      setPage(1)
+    }, next ? searchSettleMs : 0)
+    return () => window.clearTimeout(timer)
+  }, [query, keyword])
+  // 换搜索词、换工具、翻页只是把同一批记录重新筛一遍：主进程几秒内扫过的那份直接用（R-3）。
+  // 进页、再显示、点重新加载、归档删除之后走 reloadList，照旧现扫。
+  const listScanned = useRef(false)
+  const load = useCallback(() => {
+    const reuseRecentScan = listScanned.current
+    listScanned.current = true
+    return api.listProviderSessions({
+      provider,
+      search: keyword,
+      page,
+      pageSize: 20,
+      ...(reuseRecentScan ? { reuseRecentScan } : {}),
+    }).then(withoutRetiredSessions)
+  }, [api, provider, keyword, page])
   const resource = useResource(load)
+  function reloadList() {
+    listScanned.current = false
+    return resource.reload()
+  }
   // 「接着聊」只能出现在每个(工具 × 目录)组合最近的那一条上,而当前这一页是
   // 过滤加分页之后的切片,判断不出全局最近。所以另取一份不带过滤的最新记录来
   // 定这件事,上限就是主进程允许的一页最大条数;更老的组合不给按钮(宁可少给)。
@@ -192,7 +219,7 @@ export function SessionsPage({
   const lastRead = useRef(Number.NEGATIVE_INFINITY)
   const reloadRecords = () => {
     lastRead.current = performance.now()
-    void Promise.all([resource.reload(), latestResource.reload(), ...(selected ? [detailResource.reload()] : [])])
+    void Promise.all([reloadList(), latestResource.reload(), ...(selected ? [detailResource.reload()] : [])])
   }
   useReloadWhenShown(active, reloadRecords)
   const latestReloadRecords = useRef(reloadRecords)
@@ -238,7 +265,7 @@ export function SessionsPage({
         // 所以按钮的判断依据要跟着一起重读。首页「最近」缓存着同一份列表，
         // 不通知它的话一分钟内回首页还看得到刚归档的那条（#544）。
         onSessionsChanged?.()
-        await Promise.all([resource.reload(), latestResource.reload()])
+        await Promise.all([reloadList(), latestResource.reload()])
       },
       session.archived ? `已恢复「${title}」` : `已归档「${title}」`,
     )
@@ -261,7 +288,7 @@ export function SessionsPage({
         }
         setSelected(null)
         onSessionsChanged?.()
-        await Promise.all([resource.reload(), latestResource.reload()])
+        await Promise.all([reloadList(), latestResource.reload()])
       },
       `已删除「${sessionTitle(target)}」`,
     )
@@ -293,7 +320,7 @@ export function SessionsPage({
     latestResource.setData(fresh)
     if (resumeStillLatest(session, fresh.items)) return true
     // 刚聊的那条多半也该出现在这一页上，列表一起换。
-    void resource.reload()
+    void reloadList()
     return false
   }
   /**
@@ -339,7 +366,7 @@ export function SessionsPage({
           // 没有选择器可退(换个目录就接不上这条对话),所以换一句实话,并把
           // 列表重读一遍让这一行跟着置灰。
           if (!isMissingWorkspace(cause)) throw cause
-          void Promise.all([resource.reload(), latestResource.reload()])
+          void Promise.all([reloadList(), latestResource.reload()])
           throw new Error('这条记录的文件夹已经不在了，接不上上次的对话。')
         }
       },
@@ -372,7 +399,7 @@ export function SessionsPage({
         } catch (cause) {
           // 目录刚被删掉的那一瞬间:按钮还亮着,主进程已经打不开了。顺手把列表
           // 重读一遍,让这一行跟着置灰。
-          void Promise.all([resource.reload(), latestResource.reload()])
+          void Promise.all([reloadList(), latestResource.reload()])
           throw cause
         }
       },
@@ -422,7 +449,7 @@ export function SessionsPage({
             loading={resource.loading}
             aria-label="重新加载"
             title="重新加载"
-            onClick={() => void Promise.all([resource.reload(), latestResource.reload()])}
+            onClick={() => void Promise.all([reloadList(), latestResource.reload()])}
             testId="sessions-reload"
           />
         }
@@ -451,10 +478,7 @@ export function SessionsPage({
         />
         <SearchInput
           value={query}
-          onChange={(value) => {
-            setQuery(value)
-            setPage(1)
-          }}
+          onChange={setQuery}
           placeholder="搜索标题、文件夹或模型"
           testId="sessions-search"
         />
@@ -471,9 +495,10 @@ export function SessionsPage({
           {...resource}
           error={resource.error}
           count={resource.data?.items.length ?? 0}
-          query={query}
-          filtered={Boolean(query)}
-          retry={() => void resource.reload()}
+          // 空状态说的是现在这份结果搜的那个词，不是框里还没停手的字。
+          query={keyword}
+          filtered={Boolean(keyword)}
+          retry={() => void reloadList()}
           clear={() => setQuery('')}
           emptyDescription="在首页打开工具，聊过的对话会出现在这里。"
           searchTitle="没有找到相关记录"

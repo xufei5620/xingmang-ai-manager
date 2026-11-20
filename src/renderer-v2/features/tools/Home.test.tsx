@@ -1014,7 +1014,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { python: true }) })
     expect(markup).toContain('data-testid="home-runtime-guide-python"')
     expect(markup).toContain('brew install python')
-    expect(markup).toContain('命令行工具都用不到它，外接工具里个别要用它的才需要')
+    expect(markup).toContain('命令行工具都用不到它，插件里个别要用它的才需要')
     expect(markup).not.toContain('四个命令行工具')
     expect(markup).toContain('要装的话下面两种装法选一种就行')
     expect(markup).not.toContain('Gemini CLI 需要它')

@@ -2118,7 +2118,7 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
     await form.getByTestId('plugins-form-submit').click()
     const confirm = page.getByRole('dialog', { name: '给 Grok CLI 装这个插件？', exact: true })
     await confirm.waitFor()
-    await confirm.getByText('插件里带的技能、命令和外接工具，装好后每次打开 Grok CLI 都会自动运行，能像你本人一样读写这台电脑上的文件。', { exact: true }).waitFor()
+    await confirm.getByText('插件里带的技能、命令和连接，装好后每次打开 Grok CLI 都会自动运行，能像你本人一样读写这台电脑上的文件。', { exact: true }).waitFor()
     await confirm.getByText('owner/repo', { exact: true }).waitFor()
     await confirm.getByText('只装你认识、信得过的来源；拿不准就先别装。', { exact: true }).waitFor()
     assert.equal((await callsNamed(page, 'extension')).length, 0, '点「添加」只弹框，不装')
