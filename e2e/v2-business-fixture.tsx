@@ -632,6 +632,13 @@ const backup = {
     ? { keyOwnership: 'other' as const, keyAccountName: 'old-user' }
     : { keyOwnership: 'current' as const, keyAccountName: null }),
 }
+// brokenBackup：再加两份校验没过的（R2-2）。一份清单还读得出来，知道是 Codex 的、哪天存的；一份清单读不出来，时间也没有。
+type BackupRow = Awaited<ReturnType<V2Bridge['listBackups']>>[number]
+const brokenBackups: BackupRow[] = [
+  { id: 'backup-torn', provider: 'codex', reason: 'pre-save', createdAt: '2026-09-06T01:00:00Z', fileCount: 0, existingFileCount: 0, totalSize: 0, valid: false, error: '备份文件必须是普通文件' },
+  { id: 'backup-unreadable', provider: null, reason: null, createdAt: null, fileCount: 0, existingFileCount: 0, totalSize: 0, valid: false, error: '备份清单不是有效 JSON' },
+]
+let backupRows: BackupRow[] = empty ? [] : query.has('brokenBackup') ? [backup, ...brokenBackups] : [backup]
 // longNames：后台给出不能断行的超长分组名、支付方式名、模型名，看它们撑不撑出卡片（#1133 第 7 条）。
 const longName = query.has('longNames') ? 'SuperLongIdentifierWithoutAnySpacesOrBreakOpportunities_20261017_ABCDEFGHIJKLMNOPQRSTUVWXYZ' : ''
 const key = {
@@ -747,6 +754,68 @@ const systemSnapshot: Awaited<ReturnType<V2Bridge['scanSystem']>> = {
     },
   },
 }
+// 「插件」页（page=extensions）一次读齐三种：每家装了哪些、官方市场里还能装哪些。
+// hubRemoved 记下「从所有工具里移除」卸掉的，下一次读列表就不再有它（extensionOk 时）。
+const hubRemoved = new Set<string>()
+function hubItem(
+  provider: 'claude' | 'codex' | 'grok',
+  kind: 'mcp' | 'skill' | 'plugin',
+  id: string,
+  name: string,
+  description: string,
+  installed: boolean,
+) {
+  return {
+    provider,
+    kind,
+    id,
+    name,
+    description,
+    installed,
+    enabled: installed,
+    scope: installed ? ('user' as const) : null,
+    currentVersion: installed ? '1.0.0' : null,
+    latestVersion: '1.0.0',
+    source: { kind: kind === 'skill' ? ('local' as const) : ('native' as const), locator: kind === 'skill' ? `C:/skills/${id}/SKILL.md` : null, reference: null },
+    update: installed ? { state: 'up-to-date' as const, reason: '已是最新', checkedAt: time } : { state: 'unsupported' as const, reason: '扩展尚未安装', checkedAt: null },
+    operations: { install: true, uninstall: true, enable: installed, disable: installed, update: false },
+  }
+}
+function hubItems(provider: Parameters<V2Bridge['listProviderExtensions']>[0]) {
+  if (empty) return provider === 'codex' && codexCatalogReady ? [codexCatalogPlugin] : []
+  const claudeMarket = [
+    ['supabase', 'Supabase', 'Database operations, auth, storage and realtime'],
+    ['vercel', 'Vercel', 'Manage deployments, check build status'],
+    ['stripe', 'Stripe', 'Stripe development plugin for Claude'],
+    ['cloudflare', 'Cloudflare', 'Build and deploy on Cloudflare Workers'],
+    ['datadog', 'Datadog', 'Query logs, metrics and traces'],
+  ] as const
+  const codexMarket = [
+    ['linear', 'Linear', 'Plan and build products'],
+    ['figma', 'Figma', 'Figma design-to-code workflows'],
+    ['twilio-developer-kit', 'Twilio Developer Kit', 'Build, debug and ship on Twilio'],
+    ['temporal', 'Temporal', 'Develop with Temporal'],
+  ] as const
+  const items =
+    provider === 'claude'
+      ? [
+          hubItem('claude', 'mcp', 'browser', 'browser', '', true),
+          hubItem('claude', 'mcp', 'files', 'files', '', true),
+          hubItem('claude', 'mcp', 'test-extension', '测试连接', '本机测试连接', true),
+          hubItem('claude', 'plugin', 'code-review@claude-plugins-official', 'code-review', '', true),
+          hubItem('claude', 'skill', 'test-skill', '测试技能', '本机测试技能', true),
+          ...claudeMarket.map(([id, name, line]) => hubItem('claude', 'plugin', `${id}@claude-plugins-official`, name, line, false)),
+        ]
+      : provider === 'codex'
+        ? [
+            hubItem('codex', 'mcp', 'browser', 'browser', '', true),
+            hubItem('codex', 'plugin', 'sentry@openai-api-curated', 'Sentry', 'Inspect recent Sentry issues and events', true),
+            ...codexMarket.map(([id, name, line]) => hubItem('codex', 'plugin', `${id}@openai-api-curated`, name, line, false)),
+            ...(codexCatalogReady ? [codexCatalogPlugin] : []),
+          ]
+        : []
+  return items.filter((item) => !hubRemoved.has(`${provider}:${item.kind}:${item.id}`))
+}
 // 扩展三页共用的列表；listProviderExtensions 先记一笔再交给它，用例数得出读了几次。
 function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[0]) {
   return {
@@ -763,7 +832,7 @@ function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[
     ...(provider === 'codex'
       ? { marketplace: { name: 'openai-api-curated', registered: codexCatalogReady, reason: null } }
       : {}),
-    items: [
+    items: page === 'extensions' ? hubItems(provider) : [
       ...(provider === 'codex' && page === 'plugins' && codexCatalogReady ? [codexCatalogPlugin] : []),
       ...(query.has('scopedExtensions') && provider === 'claude' && page === 'plugins'
         ? [scopedExtension('plugin', 'local-plugin', '本项目插件', 'local')]
@@ -1367,7 +1436,10 @@ const apiMethods = {
     record('extension', input)
     if (query.has('extensionHold') && input.action !== 'uninstall') await new Promise<void>((resolve) => { releaseHeldExtension = resolve })
     // extensionOk：改动照常成功，用来看成功以后那句提示。
-    if (query.has('extensionOk')) return extensionList(input.provider)
+    if (query.has('extensionOk')) {
+      if (page === 'extensions' && input.action === 'uninstall') hubRemoved.add(`${input.provider}:${input.kind}:${input.id}`)
+      return extensionList(input.provider)
+    }
     throw new Error('扩展操作失败，已有配置保留')
   },
   // Codex 插件的开关走它自己的接口（主进程改 config.toml），不走上面那条通用的扩展改动。
@@ -1389,7 +1461,11 @@ const apiMethods = {
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   ...(query.has('customMarket') ? customMarketMethods : {}),
   ...codexRemoteMethods,
-  listBackups: async () => (empty ? [] : [backup]),
+  listBackups: async () => backupRows,
+  deleteBackup: async (id: string) => {
+    record('deleteBackup', id)
+    backupRows = backupRows.filter((row) => row.id !== id)
+  },
   createBackup: async (provider: Parameters<V2Bridge['createBackup']>[0]) => {
     record('create-backup', provider)
     return { ...backup, id: `backup-${provider}`, provider }
