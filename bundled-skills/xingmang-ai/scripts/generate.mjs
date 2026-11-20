@@ -36,12 +36,35 @@ const QUALITIES = ['low', 'medium', 'high', 'auto']
 const BACKGROUNDS = ['opaque', 'transparent', 'auto']
 
 class GenerateError extends Error {
-  constructor(message, retryable = false, upstream = false) {
+  constructor(message, retryable = false, upstream = false, unexplained = false) {
     super(message)
     this.retryable = retryable
     // 中转明确回了错误（不是连不上、超时）：自动挑的默认模型这样失败时，按顺序换下一个再试。
     this.upstream = upstream
+    // 中转回了错误却没说原因：报错时换成一句人话，不把状态码或错误类别名交给 AI 转述。
+    this.unexplained = unexplained
   }
+}
+
+// new-api 拿不到上游的原因时，拿错误类别名充当原因（relaykit/types/error.go 的 ToOpenAIError：
+// openai_error、upstream_error、new_api_error 这类），等于什么都没说。
+const PLACEHOLDER_ERROR_MESSAGE_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*_error$/i
+
+/**
+ * 中转回的原因是不是等于没说：空的，或者只有一个错误类别名。
+ */
+export function isUnexplainedUpstreamMessage(message) {
+  const text = typeof message === 'string' ? message.trim() : ''
+  return !text || PLACEHOLDER_ERROR_MESSAGE_PATTERN.test(text)
+}
+
+/**
+ * 没说原因时给 AI 和客户的那句话。Nano Banana、Grok 是点名才用的，建议换回默认的 GPT 图片模型。
+ */
+export function unexplainedFailureMessage(model, family, editing) {
+  const action = editing ? '改图' : '出图'
+  const next = family === 'openai' ? '可以稍后再试一次。' : '可以换回默认的 GPT 图片模型再试一次。'
+  return `${model} 这次没能${action}，图片服务没说原因。${next}`
 }
 
 // 不在这里 process.exit：Windows 上 fetch 的连接还在关，直接退出会打出 libuv 的 Assertion 并以 127 退出。
@@ -372,8 +395,13 @@ function upstreamFailure(result) {
   } catch {
     payload = null
   }
-  const message = payload?.error?.message || payload?.message || `HTTP ${result.status}`
-  return new GenerateError(redactUpstream(message), [401, 403, 429, 503].includes(result.status), true)
+  // xAI 这类上游把原因直接写成字符串 error，也算说了原因。
+  const message = typeof payload?.error === 'string' ? payload.error : payload?.error?.message || payload?.message
+  const retryable = [401, 403, 429, 503].includes(result.status)
+  if (typeof message !== 'string' || isUnexplainedUpstreamMessage(message)) {
+    return new GenerateError(`图片服务没说原因（HTTP ${result.status}）`, retryable, true, true)
+  }
+  return new GenerateError(redactUpstream(message), retryable, true)
 }
 
 function extractImagePayload(payload) {
@@ -545,6 +573,7 @@ async function main() {
   let bytes
   let usedModel
   let lastError
+  let lastModel
   for (const model of models) {
     for (let index = 0; index < keys.length; index += 1) {
       try {
@@ -553,12 +582,16 @@ async function main() {
         break
       } catch (error) {
         lastError = error instanceof Error ? error : new GenerateError('生成失败')
+        lastModel = model
         const retryable = error instanceof GenerateError && error.retryable
         if (!retryable || index === keys.length - 1) break
         process.stderr.write('Codex Key 未能出图，已改用生图分组 Key。\n')
       }
     }
     if (bytes || !(lastError instanceof GenerateError) || !lastError.upstream) break
+  }
+  if (!bytes && lastError instanceof GenerateError && lastError.unexplained) {
+    fail(unexplainedFailureMessage(lastModel, family, images.length > 0))
   }
   if (!bytes) fail(lastError ? lastError.message : '生成失败')
   if (usedModel !== requested) process.stderr.write(`${requested} 没能出图，已改用 ${usedModel}。\n`)
