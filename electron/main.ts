@@ -140,6 +140,7 @@ import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { syncXingmangImageMcpConfigs } from './config-files'
 import { attachNotUtf8ConfigRewriteLog } from './config-files-context'
+import { configReadCacheMaxAgeMs } from './config-read-cache'
 import { rootedMainServiceOptions } from './main-service-options'
 import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
@@ -1339,6 +1340,8 @@ if (!hasSingleInstanceLock) {
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
+      // 开机那两秒里首页、开机补密钥、线路跟随接连读五遍工具配置，读下的几秒内接着用（0.2.24 深查 R3）。
+      configReadCacheMs: configReadCacheMaxAgeMs,
       externalClientSnapshotCacheFile: path.join(managerDataDirectory, 'external-client-snapshot.json'),
       appVersion: app.getVersion(),
       getRelaySiteId: () => readAccountSiteId(),

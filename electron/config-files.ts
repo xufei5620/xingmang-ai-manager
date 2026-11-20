@@ -8,6 +8,7 @@ import { providerBaseUrls, type ProviderId } from './catalog'
 import { relayProviderBaseUrlEquals, relayProviderBaseUrlMatches, relaySiteEndpointIdForBaseUrl, relaySites } from './relay-sites'
 import { readEnvLineValue, readJsonString, readTomlBoolean, readTomlString, rewriteEnvValue, rewriteJsonStrings, rewriteTomlStrings, rewriteTomlValues, type StringValueEdit, type ValueEdit } from './tool-route-rewrite'
 import { readBoundedFileSync } from './bounded-file'
+import { type RecordedConfigRead, statStamp } from './config-read-cache'
 import { isCodexConfigBroken, salvageCodexConfigText } from './codex-config-syntax'
 import { isClaudeSettingsBroken, isCodexAuthBroken, isGeminiSettingsBroken } from './cli-config-health'
 import { tomlErrorLocation } from './toml-error-location'
@@ -300,6 +301,8 @@ export { executeFilePlans, providerConfigPaths }
 // 写之前那份。
 interface InspectionReads {
   files: Map<string, Buffer | null>
+  // 读每一份之前它的样子（config-read-cache.ts 的 statStamp），config:get 的缓存拿它看文件动没动。
+  stamps: Map<string, string | null>
   json: Map<string, Record<string, unknown> | null>
   toml: Map<string, { parsed: Record<string, unknown> } | { error: unknown }>
 }
@@ -308,7 +311,7 @@ let inspectionReads: InspectionReads | null = null
 
 export function withSharedConfigReads<T>(inspect: () => T): T {
   if (inspectionReads) return inspect()
-  inspectionReads = { files: new Map(), json: new Map(), toml: new Map() }
+  inspectionReads = { files: new Map(), stamps: new Map(), json: new Map(), toml: new Map() }
   try {
     return inspect()
   } finally {
@@ -316,20 +319,35 @@ export function withSharedConfigReads<T>(inspect: () => T): T {
   }
 }
 
+/**
+ * 同 withSharedConfigReads，另外交回这一遍读过哪几份文件、读之前各是什么样（config:get 几秒内接着用读下的那份，
+ * 靠它看文件被外面改过没有，0.2.24 深查 R3）。已经在一遍里时交回的是那一遍到这里为止读过的，只会多不会少。
+ */
+export function withRecordedConfigReads<T>(inspect: () => T): RecordedConfigRead<T> {
+  return withSharedConfigReads(() => {
+    const value = inspect()
+    return { value, stamps: new Map(inspectionReads?.stamps) }
+  })
+}
+
 // 和 readText 同一套：不是单链接普通文件、读不了都当没有。
 function readConfigBytes(filePath: string): Buffer | null {
-  const reads = inspectionReads?.files
-  if (reads?.has(filePath)) return reads.get(filePath) ?? null
+  const reads = inspectionReads
+  if (reads?.files.has(filePath)) return reads.files.get(filePath) ?? null
   let content: Buffer | null = null
+  let stamp: string | null = null
   try {
     const info = fs.lstatSync(filePath)
+    if (reads) stamp = statStamp(info)
     if (info.isFile() && info.nlink <= 1 && !info.isSymbolicLink()) {
       content = readBoundedFileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件')
     }
-  } catch {
+  } catch (error) {
     content = null
+    if (stamp === null && (error as NodeJS.ErrnoException).code === 'ENOENT') stamp = 'missing'
   }
-  reads?.set(filePath, content)
+  reads?.files.set(filePath, content)
+  reads?.stamps.set(filePath, stamp)
   return content
 }
 
