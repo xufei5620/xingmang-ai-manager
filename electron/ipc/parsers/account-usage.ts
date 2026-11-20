@@ -97,6 +97,18 @@ export function parseAccountDashboardQuery(value: unknown): NewApiAccountDashboa
   return { startTimestamp: startTimestamp as number, endTimestamp: endTimestamp as number }
 }
 
+/**
+ * 查看板时可以带上「这是替哪个账号查的」，跟渲染层 account-context.ts 的 accountScope 同一个写法。
+ * 不带就是旧行为，账号中心的看板照旧不带。
+ */
+export function parseOptionalExpectedAccountScope(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !/^(?:xm-account|api-account):(?:guest|[1-9]\d{0,14})$/.test(value)) {
+    throw new Error('数据看板查询的账号格式错误')
+  }
+  return value
+}
+
 const accountTaskQueryFields = new Set([
   'page', 'pageSize', 'platform', 'taskId', 'status', 'action', 'startTimestamp', 'endTimestamp',
 ])

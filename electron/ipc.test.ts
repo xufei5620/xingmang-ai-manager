@@ -4078,6 +4078,135 @@ describe('registerIpcHandlers', () => {
     expect(handedOver.map((work) => work.signal.aborted)).toEqual([true, true])
   })
 
+  // N5：上一个账号点的「打开」，在查续聊记录、打开前试写、问文件夹这些等待期间换了账号，不能按新账号的配置打开。
+  describe('launch keeps the account it was clicked under', () => {
+    function pending<T>() {
+      let resolve!: (value: T) => void
+      const promise = new Promise<T>((settle) => { resolve = settle })
+      return { promise, resolve }
+    }
+    // 跟真的启动服务一样：轮到它时由 run 核对点的时候那个账号，叫停了的不进队列。
+    function launchThroughQueue(service: SystemService): string[] {
+      const launched: string[] = []
+      vi.mocked(service.launchProvider).mockImplementation(async (provider, _workspace, _mode, _resume, work) => {
+        if (work?.signal.aborted) throw work.signal.reason
+        async function launch() {
+          launched.push(provider)
+          return {}
+        }
+        return work ? work.run(launch) : launch()
+      })
+      return launched
+    }
+
+    it('does not open under the account switched to while the folder write check was running', async () => {
+      let revision = 0
+      const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+      const probing = pending<undefined>()
+      const probe = vi.fn(() => probing.promise)
+      const service = serviceStub()
+      const launched = launchThroughQueue(service)
+      register(service, undefined, undefined, undefined, undefined, undefined, { accountWork }, {
+        workspaceWriteCheck: { platform: 'win32', probe },
+      })
+
+      const result = electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'))
+      await vi.waitFor(() => expect(probe).toHaveBeenCalled())
+      revision = 1
+      probing.resolve(undefined)
+
+      await expect(result).rejects.toThrow('账号刚切换过，请再试一次')
+      expect(service.launchProvider).not.toHaveBeenCalled()
+      expect(launched).toEqual([])
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+    })
+
+    // 换账号一开始就叫停还没轮到的「打开」（quiesce → abortQueued）；点下去就记下的这一次也在里面，
+    // 不靠前后两个账号的编号对不对得上。
+    it('does not resume a conversation once an account change has started during the record lookup', async () => {
+      const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
+      const lookup = pending<string>()
+      const service = serviceStub()
+      const launched = launchThroughQueue(service)
+      const { providerSessionsService } = register(service, undefined, undefined, undefined, undefined, undefined, { accountWork })
+      providerSessionsService.resolveWorkspace.mockReturnValueOnce(lookup.promise)
+
+      const result = electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      accountWork.abortQueued()
+      lookup.resolve(nativeFolder('C:\\projects\\demo'))
+
+      await expect(result).rejects.toThrow('账号刚切换过，请再试一次')
+      expect(service.launchProvider).not.toHaveBeenCalled()
+      expect(launched).toEqual([])
+    })
+
+    it('lets the queue refuse a launch whose folder question was answered after the account changed', async () => {
+      let revision = 0
+      const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+      const answer = pending<{ response: number }>()
+      electronMocks.showMessageBox.mockReturnValueOnce(answer.promise)
+      const service = serviceStub()
+      const launched = launchThroughQueue(service)
+      register(service, undefined, undefined, undefined, undefined, undefined, { accountWork })
+
+      const result = electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'grok', path.join(os.homedir(), 'Desktop'))
+      await vi.waitFor(() => expect(electronMocks.showMessageBox).toHaveBeenCalled())
+      revision = 1
+      answer.resolve({ response: 2 })
+
+      await expect(result).rejects.toThrow('账号刚切换过，请再试一次')
+      expect(launched).toEqual([])
+    })
+
+    it('keeps the Codex Desktop click on its account while the status file is still being read at startup', async () => {
+      let revision = 0
+      const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+      const statusRead = pending<undefined>()
+      const remoteFeatures = createRemoteFeatureGate({ settled: () => statusRead.promise })
+      const service = serviceStub()
+      const launched: string[] = []
+      vi.mocked(service.launchCodexDesktop).mockImplementation(async (_mode, _target, launchOptions) => {
+        async function launch() {
+          launched.push('codexDesktop')
+          return {} as never
+        }
+        return launchOptions?.accountWork ? launchOptions.accountWork.run(launch) : launch()
+      })
+      register(service, undefined, undefined, undefined, undefined, undefined, { accountWork }, { remoteFeatures })
+
+      const result = electronMocks.handlers.get('desktop:launch-codex')!(trustedEvent(), 'open')
+      revision = 1
+      statusRead.resolve(undefined)
+
+      await expect(result).rejects.toThrow('账号刚切换过，请再试一次')
+      expect(launched).toEqual([])
+    })
+
+    it('still opens when the account stays the same, and gives the click record back however the request ends', async () => {
+      const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
+      const taken = vi.spyOn(accountWork, 'queue')
+      const service = serviceStub()
+      const launched = launchThroughQueue(service)
+      register(service, undefined, undefined, undefined, undefined, undefined, { accountWork }, {
+        workspaceWriteCheck: { platform: 'win32', probe: async () => undefined },
+      })
+      const launch = electronMocks.handlers.get('cli:launch')!
+
+      await expect(launch(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'))).resolves.toEqual({})
+      expect(launched).toEqual(['claude'])
+      // 主目录那一问点了「换一个文件夹」，选择器里又取消：没打开。
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+      await expect(launch(trustedEvent(), 'codex', os.homedir())).resolves.toEqual({ declined: true })
+      vi.mocked(service.launchProvider).mockRejectedValueOnce(new Error('终端没起来'))
+      await expect(launch(trustedEvent(), 'grok', nativeFolder('C:\\projects\\demo'))).rejects.toThrow('终端没起来')
+
+      // 三次都已经结束，之后再换账号叫停的名单里没有它们，不会一直挂着。
+      accountWork.abortQueued()
+      expect(taken.mock.results.map((entry) => (entry.value as QueuedAccountWork).signal.aborted)).toEqual([false, false, false])
+    })
+  })
+
   // 已知13：开机先摆上次落盘的客户端结果。那一读只读文件，不盘点、不记检测失败，也不陪账号恢复等。
   it('answers the startup read of the last saved client rows without scanning or waiting for the account, and logs it as that read', async () => {
     const restored = new Promise<void>(() => undefined)
@@ -7118,6 +7247,60 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(() => handler(trustedEvent(), { startTimestamp: 20, endTimestamp: 10 })).toThrow('开始时间不能晚于结束时间')
       expect(() => handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2_592_002 })).toThrow('不能超过 30 天')
       expect(() => handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2, userId: 9 })).toThrow('未知字段')
+      expect(accountService.getDashboard).not.toHaveBeenCalled()
+    })
+
+    // 11-18 D11: the home week-spend loader reads the session, then queries the
+    // dashboard in separate calls. A switch in between used to return the new
+    // account's spend, which the renderer then filed under the old account.
+    it('refuses a query made for an account that is no longer the current one', () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 8 } as never })
+      register(undefined, undefined, undefined, accountService)
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      const range = { startTimestamp: 1_700_000_000, endTimestamp: 1_700_086_400 }
+      expect(() => handler(trustedEvent(), range, 'xm-account:7')).toThrow('账号刚切换过，请再试一次')
+      // Same user id on the other site is a different account.
+      expect(() => handler(trustedEvent(), range, 'api-account:8')).toThrow('账号刚切换过，请再试一次')
+      expect(() => handler(trustedEvent(), range, 'xm-account:guest')).toThrow('账号刚切换过，请再试一次')
+      expect(accountService.getDashboard).not.toHaveBeenCalled()
+    })
+
+    it('checks the expected account in the same tick that starts the request', async () => {
+      const accountService = accountServiceStub()
+      let userId = 7
+      vi.mocked(accountService.getSessionState).mockImplementation(() => ({ authenticated: true, account: { userId } as never }))
+      vi.mocked(accountService.getDashboard).mockImplementation(async () => {
+        // The request is already bound to account 7 by the time anything else runs.
+        userId = 8
+        return { startTimestamp: 1, endTimestamp: 2, buckets: [], models: [], quota: 100, count: 1, tokens: 1, discardedCount: 0 }
+      })
+      register(undefined, undefined, undefined, accountService)
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      const pending = handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2 }, 'xm-account:7')
+      expect(accountService.getDashboard).toHaveBeenCalledTimes(1)
+      await expect(pending).resolves.toMatchObject({ quota: 100 })
+      expect(() => handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2 }, 'xm-account:7')).toThrow('账号刚切换过')
+      expect(accountService.getDashboard).toHaveBeenCalledTimes(1)
+    })
+
+    it('tells the two account sites apart by the active site', async () => {
+      const accountService = { ...accountServiceStub(), getActiveSiteId: vi.fn(() => 'solov-api' as const) }
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } as never })
+      vi.mocked(accountService.getDashboard).mockResolvedValue({ startTimestamp: 1, endTimestamp: 2, buckets: [], models: [], quota: 0, count: 0, tokens: 0, discardedCount: 0 })
+      register(undefined, undefined, undefined, accountService)
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      expect(() => handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2 }, 'xm-account:7')).toThrow('账号刚切换过')
+      await expect(handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2 }, 'api-account:7')).resolves.toMatchObject({ quota: 0 })
+    })
+
+    it('rejects a malformed expected account before calling the service', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      const range = { startTimestamp: 1, endTimestamp: 2 }
+      for (const scope of [7, '', 'xm-account:', 'xm-account:0', 'other:7', 'xm-account:7 ', 'xm-account:../7', null]) {
+        expect(() => handler(trustedEvent(), range, scope)).toThrow('数据看板查询的账号格式错误')
+      }
       expect(accountService.getDashboard).not.toHaveBeenCalled()
     })
   })

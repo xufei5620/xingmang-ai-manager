@@ -4,7 +4,7 @@ import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
 import { IMAGE_GROUP_MODEL_ORDER } from '../../../../electron/ai-chat-protocol'
-import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatAssetSaveErrorMessage, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH, customImageSizeRule, imageSizeFits } from './state'
+import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, chatAssetSaveErrorMessage, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH, customImageSizeRule, imageSizeFits } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -387,6 +387,19 @@ describe('v2 chat request transitions', () => {
     // 消息删光了再发，自己起的名字不被第一句话盖掉；没改过名的照旧按第一句起名。
     expect(planTurn({ ...renamed, messages: [] }, { prompt: '新的问题', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).conversation.title).toBe('重命名脚本')
     expect(planTurn({ ...conversation, messages: [] }, { prompt: '新的问题', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).conversation.title).toBe('新的问题')
+  })
+  // 以前先截 32 个字再打码：密钥跨在第 32 个字上时，截下的半截认不出是密钥，存盘、导出都留着（Mac 验收 R5）。
+  it('masks a key before cutting the automatic title, so no half of it stays behind', () => {
+    const grokKey = `xai-${'Fk3q'.repeat(10)}`
+    const prompt = `帮我看看这个密钥为什么连不上 Grok：${grokKey}`
+    const title = planTurn(readyConversation(), { prompt, requestId: 'r', assistantId: 'a', userMessageId: 'u' }).conversation.title
+    expect(title).toBe('帮我看看这个密钥为什么连不上 Grok：[密钥未保存]')
+    expect(title).not.toContain('Fk3q')
+    const githubToken = `ghp_${'Zt8w'.repeat(9)}`
+    expect(autoConversationTitle(`${'看'.repeat(24)} ${githubToken}`)).toBe(`${'看'.repeat(24)} [密钥未保存]`)
+    const fileTitle = planTurn(readyConversation(), { prompt: '', files: [{ name: `日志 ${'很长的文件名'.repeat(3)}${githubToken}.txt`, size: 2, text: '内容', truncated: false }], requestId: 'r', assistantId: 'a', userMessageId: 'u' }).conversation.title
+    expect(fileTitle).not.toContain('Zt8w')
+    expect(autoConversationTitle('长'.repeat(40))).toBe('长'.repeat(32))
   })
   it('pins and unpins without touching anything else', () => {
     const conversation = readyConversation()

@@ -15,6 +15,11 @@ import type { RendererRestartWork } from './ipc-contract'
  * 要靠界面那套已读记录来判断）。重新加载那段时间要发给界面的跳转（托盘跳页、托盘打开工具、系统通知
  * 点进来）先存着，界面第一次报告手上有没有事，就算它准备好了，再一并发过去。
  *
+ * 重新加载没成（本地页面一时读不出来、加载到一半界面进程没了）：还算「正在重新加载」，存着的跳转也留着，
+ * 只是下次窗口出来时再加载一次（11-18 复核 U05：原先停在这里，要重启整个程序）。
+ * 失败了不自己接着重试，免得一直读不出来时每隔一会儿就拉起一个界面进程；也不退回「关着」，崩溃恢复
+ * 那边自己重载成功时，界面报告上来还要有人接。
+ *
  * 这里只管状态和时机，真正关进程、重新加载、查主进程有没有事都由宿主给（main.ts），所以能单测。
  */
 
@@ -29,6 +34,7 @@ export type RendererReleaseLogEvent =
   | 'release.deferred'
   | 'release.skipped'
   | 'restore.started'
+  | 'restore.failed'
   | 'restore.ready'
 
 export interface RendererReleaseOptions {
@@ -40,8 +46,8 @@ export interface RendererReleaseOptions {
   mainBlocker(): string | null
   /** 关掉界面进程。返回 false = 这次关不了（例如进程和别的窗口共用），这一轮不再试。 */
   release(): boolean
-  /** 重新加载界面。 */
-  reload(): void
+  /** 重新加载界面。返回加载的结果（loadURL 的 Promise）：失败了就等下次窗口出来再加载一次。 */
+  reload(): Promise<unknown> | void
   /** 界面关掉了：托盘余额、余额提醒、新公告这些改由主进程在后台看着。 */
   onReleased?(): void
   /** 界面开始重新加载：主进程那套后台查看停下。 */
@@ -79,7 +85,10 @@ export interface RendererRelease {
   reportActivity(busy: boolean, work?: readonly RendererRestartWork[]): void
   /** 界面关着就重新加载。返回 true = 这次加载归它管（调用方别再自己重载）。 */
   restore(reason: RendererRestoreReason): boolean
-  /** 界面进程没了：是不是这里自己关的。是就别当崩溃处理。 */
+  /**
+   * 界面进程没了：是不是这里自己关的。是就别当崩溃处理。不是、而且正赶上重新加载，这次重新加载就算没成，
+   * 下次窗口出来再加载一次；眼下的自动重载照旧归崩溃恢复。
+   */
   consumeExpectedExit(): boolean
   /** 要发给界面的跳转：界面开着就马上发；关着或正在重新加载先存着（同一个 key 只留最后一次）。 */
   deliver(key: string, send: () => void): void
@@ -105,6 +114,10 @@ export function createRendererRelease(options: RendererReleaseOptions): Renderer
   let shownOnce = false
   let restoredBoot = false
   let restoreStartedAt = 0
+  // 第几次重新加载：迟到的加载结果只认最新这一次的。
+  let restoreAttempt = 0
+  // 最近这次重新加载没成，下次窗口出来要再加载。
+  let restoreFailed = false
   let timer: unknown = null
   let deferredReason: string | null = null
   let disposed = false
@@ -162,17 +175,38 @@ export function createRendererRelease(options: RendererReleaseOptions): Renderer
     write('release.done')
     try { options.onReleased?.() } catch (error) { report(error) }
   }
+  const failRestore = (attempt: number, cause: 'load' | 'renderer-gone', error?: unknown) => {
+    // 已经准备好了、又重新加载了一次、已经报过没成，或者窗口没了：这个结果过期了。
+    if (disposed || state !== 'restoring' || attempt !== restoreAttempt || restoreFailed) return
+    restoreFailed = true
+    write('restore.failed', { cause })
+    if (error !== undefined) report(error)
+  }
   const restore = (reason: RendererRestoreReason): boolean => {
     if (disposed) return false
-    if (state === 'restoring') return true
-    if (state !== 'released') return false
+    if (state === 'restoring' && !restoreFailed) return true
+    if (state === 'live') return false
+    const retry = state === 'restoring'
     state = 'restoring'
-    // 关之前窗口一次都没出来过的，这次照第一次打开来。
-    restoredBoot = shownOnce
+    restoreFailed = false
+    restoreAttempt += 1
+    const attempt = restoreAttempt
+    // 关之前窗口一次都没出来过的，这次照第一次打开来。再试的那次还是同一回重新加载，不重新算：
+    // 第一次叫出窗口时没载出来，那一下不算用户看见过。
+    if (!retry) restoredBoot = shownOnce
     restoreStartedAt = now()
-    write('restore.started', { reason })
-    try { options.onRestoring?.() } catch (error) { report(error) }
-    try { options.reload() } catch (error) { report(error) }
+    write('restore.started', retry ? { reason, retry: true } : { reason })
+    if (!retry) {
+      try { options.onRestoring?.() } catch (error) { report(error) }
+    }
+    let loading: Promise<unknown> | void
+    try {
+      loading = options.reload()
+    } catch (error) {
+      failRestore(attempt, 'load', error)
+      return true
+    }
+    void Promise.resolve(loading).catch((error: unknown) => { failRestore(attempt, 'load', error) })
     return true
   }
   const flush = () => {
@@ -207,6 +241,7 @@ export function createRendererRelease(options: RendererReleaseOptions): Renderer
       reporting = true
       if (state !== 'restoring') return
       state = 'live'
+      restoreFailed = false
       // 关掉时那一声「界面进程没了」早该到了；万一没到，别让它把以后真的崩溃吞掉。
       expectedExit = false
       write('restore.ready', { ms: Math.max(0, now() - restoreStartedAt) })
@@ -216,9 +251,12 @@ export function createRendererRelease(options: RendererReleaseOptions): Renderer
     },
     restore,
     consumeExpectedExit() {
-      if (!expectedExit) return false
-      expectedExit = false
-      return true
+      if (expectedExit) {
+        expectedExit = false
+        return true
+      }
+      failRestore(restoreAttempt, 'renderer-gone')
+      return false
     },
     deliver(key, send) {
       if (disposed) return

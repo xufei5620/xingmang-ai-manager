@@ -1414,9 +1414,13 @@ export interface XingmangInvokeContract {
     [input: AccountUsageQuery],
     AccountUsagePage
   >
+  /**
+   * 第二个参数是「替哪个账号查的」（写法同 accountScope）：给了，主进程先核对当前账号就是它，
+   * 不是就报「账号刚切换过」。首页近 7 天的柱子按账号记在本机，靠它保证记下的是这个账号的数（D11）。
+   */
   getAccountDashboard: IpcInvokeDefinition<
     'account:get-dashboard',
-    [input: AccountDashboardQuery],
+    [input: AccountDashboardQuery, expectedAccountScope?: string],
     AccountDashboardData
   >
   getAccountTasks: IpcInvokeDefinition<

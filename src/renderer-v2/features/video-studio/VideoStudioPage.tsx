@@ -35,6 +35,7 @@ import {
   type VideoStudioShot,
   type VideoStudioTrimSide,
 } from './project'
+import { useVideoStudioPriceList, videoStudioPerCallUsd, videoStudioQuoteText, type VideoStudioPriceBridge } from './prices'
 import { formatVideoStudioDuration, isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, isVideoStudioTransition, videoStudioAspects, videoStudioFits, videoStudioResolutions, videoStudioTransitions } from './timeline'
 import { useVideoStudio, type VideoStudioBridge, type VideoStudioController, type VideoStudioOptions } from './useVideoStudio'
 import './video-studio.css'
@@ -43,7 +44,7 @@ import './video-studio.css'
 export type VideoStudioAccess = 'ready' | 'guest' | 'unsupported' | 'suspended'
 
 export interface VideoStudioPageProps {
-  bridge: VideoStudioBridge
+  bridge: VideoStudioBridge & VideoStudioPriceBridge
   accountScope: string
   site: ChatSite
   access: VideoStudioAccess
@@ -75,9 +76,11 @@ export function VideoStudioPage({ bridge, accountScope, site, access, active = t
 function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccount, options }: Omit<VideoStudioPageProps, 'access' | 'onLogin'> & { active: boolean }) {
   const studio = useVideoStudio(bridge, accountScope, site, true, options)
   // 确认框「每段单独计费」后面报一句当前余额（yoyo 2026-10-29 批的字「余额改」，#1406 P2-1）。读不到就不写这句，
-  // 同充值页卡头；按型号报准价格放到 0.2.23 之后。
+  // 同充值页卡头。
   const { snapshot: balanceState } = useSharedAccountBalance()
   const balance = balanceState.scope === accountScope ? balanceState.balance : null
+  // 余额前面再报「预计约 $x」（#1406 P2-1 后半）：页面一露面就读好价目，确认框打开时已经在手上；放久了打开确认框时再读一次。
+  const prices = useVideoStudioPriceList(bridge, accountScope, active)
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null)
   const { project } = studio
   const { settings, shots, exported } = project
@@ -87,7 +90,8 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
   const missing = shots.filter((shot) => !shot.clip).length
   const quotaAction = /余额|额度/.test(studio.error) && onOpenAccount
   const folderAction = /AI 作品文件夹/.test(studio.notice)
-  const confirmGenerate = (ids: string[]) => setConfirmation({ kind: 'generate', ids })
+  const confirmGenerate = (ids: string[]) => { prices.refresh(); setConfirmation({ kind: 'generate', ids }) }
+  const confirmDraw = (id: string) => { prices.refresh(); setConfirmation({ kind: 'draw', id }) }
   const runConfirmation = () => {
     const current = confirmation
     setConfirmation(null)
@@ -110,6 +114,10 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
   const confirmSeconds = confirmShots.length ? videoStudioCommonSeconds(project, confirmShots) : null
   const drawIndex = confirmation?.kind === 'draw' ? shots.findIndex((shot) => shot.id === confirmation.id) : -1
   const redrawing = drawIndex >= 0 && Boolean(shots[drawIndex].image)
+  // 按这次要用的模型和分组报价，一段一次；视频站点还可能按时长、尺寸调，标「估算」（同画布）。没有按次的价就不写。
+  const quote = confirmation?.kind === 'generate' ? videoStudioQuoteText(videoStudioPerCallUsd(prices.list, settings.videoModel, settings.videoGroup), confirmCount, true)
+    : confirmation?.kind === 'draw' ? videoStudioQuoteText(videoStudioPerCallUsd(prices.list, settings.imageModel, settings.imageGroup), 1, false)
+    : null
 
   return <section className="v2-page video-studio" data-page-id="video" data-testid="page-video">
     <PageHead title="视频剪辑" lead={pageLead}
@@ -163,7 +171,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
           onRemove={() => shot.clip ? setConfirmation({ kind: 'remove', id: shot.id }) : studio.removeShot(shot.id)}
           onGenerate={() => confirmGenerate([shot.id])} onOpen={() => shot.clip && void studio.openClip(shot.clip.assetId)}
           onPickImage={() => void studio.pickShotImage(shot.id)} onRemoveImage={() => studio.removeShotImage(shot.id)}
-          canDraw={Boolean(settings.imageModel && settings.imageGroup)} onDraw={() => setConfirmation({ kind: 'draw', id: shot.id })} onStopDrawing={() => void studio.stopDrawing(shot.id)}
+          canDraw={Boolean(settings.imageModel && settings.imageGroup)} onDraw={() => confirmDraw(shot.id)} onStopDrawing={() => void studio.stopDrawing(shot.id)}
           onTrim={(side, seconds) => studio.setShotTrim(shot.id, side, seconds)} onSeconds={(seconds) => studio.setShotSeconds(shot.id, seconds)} />)}
       </ol>
       {canAddVideoStudioShot(project) && <Button variant="ghost" icon={Plus} disabled={studio.planning || composing} onClick={studio.addShot} testId="video-shot-add">加一个镜头</Button>}
@@ -222,9 +230,9 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
     {active && confirmation && <Confirm testId="video-confirm"
       title={confirmation.kind === 'generate' ? regenerating ? '重新生成这一段？' : `生成 ${confirmCount} 段视频？` : confirmation.kind === 'draw' ? redrawing ? '再画一张？' : '画一张镜头图？' : confirmation.kind === 'plan' ? '重新写分镜？' : confirmation.kind === 'reset' ? '重新开始？' : confirmation.kind === 'drop-draft' ? '删掉这份草稿？' : '删掉这个镜头？'}
       body={confirmation.kind === 'generate'
-        ? <><p>{regenerating ? '会再扣一次费，新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。' : `用「${settings.videoModel}」生成 ${confirmCount} 段、${confirmSeconds === null ? `共 ${confirmShots.reduce((total, shot) => total + videoStudioShotSeconds(shot, settings), 0)} 秒` : `每段 ${confirmSeconds} 秒`}，每段单独计费。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{unconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
+        ? <><p>{regenerating ? `会再扣一次费，${quote ? `${quote}。` : ''}新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。` : `用「${settings.videoModel}」生成 ${confirmCount} 段、${confirmSeconds === null ? `共 ${confirmShots.reduce((total, shot) => total + videoStudioShotSeconds(shot, settings), 0)} 秒` : `每段 ${confirmSeconds} 秒`}，每段单独计费${quote ? `，${quote}` : ''}。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{unconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
         // yoyo 2026-11-09 批的字（「画图改」）。
-        : confirmation.kind === 'draw' ? <><p>{redrawing ? '会再扣一次费，新图画好以后换掉现在这一张；旧的那张还在 AI 作品文件夹里。' : `用「${settings.imageModel}」按第 ${drawIndex + 1} 个镜头的画面描述画一张图，单独计费。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p><p>中途停下的话，已经交给服务端的这一张照样扣费。</p></>
+        : confirmation.kind === 'draw' ? <><p>{redrawing ? `会再扣一次费，${quote ? `${quote}。` : ''}新图画好以后换掉现在这一张；旧的那张还在 AI 作品文件夹里。` : `用「${settings.imageModel}」按第 ${drawIndex + 1} 个镜头的画面描述画一张图，单独计费${quote ? `，${quote}` : ''}。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p><p>中途停下的话，已经交给服务端的这一张照样扣费。</p></>
         : confirmation.kind === 'plan' ? <p>现在的镜头和片段会换成新写的分镜。生成过的片段还在 AI 作品文件夹里，这里不再列出。</p>
         : confirmation.kind === 'reset' ? <p>想法、分镜和片段都从这一页清掉。生成过的片段和拼好的成片还在 AI 作品文件夹里。</p>
         : confirmation.kind === 'drop-draft' ? <p>这份分镜从草稿箱里拿掉。生成过的片段和拼好的成片还在 AI 作品文件夹里。</p>

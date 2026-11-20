@@ -102,8 +102,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
-    # The longest shard is ~9 minutes. This is a backstop for a wedged runner,
-    # not a bound anything is expected to approach.
+    # The longest shards take ~11 minutes. This is a backstop for a wedged
+    # runner, not a bound anything is expected to approach.
     timeout-minutes: 25
     strategy:
       # A failing shard must not cancel its siblings. Splitting the job is only
@@ -133,9 +133,12 @@ jobs:
           # every test passing. A fourth slice by count would have moved that
           # cluster to --shard=2/4 whole, so vitest.config.ts deals the
           # measured-slow files apart first (scripts/vitest-shards.mjs) and the
-          # rest after them. Each quarter should land near 6 minutes. When one
-          # drifts well past its siblings, re-measure the table; when they all
-          # near 15 together, deal to a fifth instead of raising this.
+          # rest after them. Each quarter was planned near 6 minutes; re-measured
+          # on 2026-11-19, when the suite had grown to some 38 runner-minutes
+          # and one quarter ran 12.9 against 7.7 to 8.9, each should land near
+          # 10. When one drifts well past its siblings, re-measure the table;
+          # when they all near 15 together, deal to a fifth instead of raising
+          # this.
           - shard: vitest-1
             command: npm run test:vitest:1
             timeout: 15

@@ -104,35 +104,18 @@ function readAndValidatePackageLock() {
   return validatePackageLockSources(JSON.parse(fs.readFileSync(lockPath, 'utf8')))
 }
 
+// GHSA-g3hv-75wg-m249（minimatch）不再放行：package.json 的 overrides 按版本把
+// app-builder-lib 用的 ^10.2.5 和 @electron/universal 用的 ^9.0.3 换成 11.0.5，
+// 三个平台打包前后的文件清单一致。别改写成 "app-builder-lib": { "minimatch": … }，
+// 那会把底下 glob 7、dir-compare 用的 3.x 也换成 11，它们调的默认导出 11 里没有。
+
+// GHSA-fc5q-39xc-vjpf（picomatch）不再放行：GitHub 2026-11-18 撤回了这条公告，
+// picomatch 维护者在 micromatch/picomatch#235 说 glob 本来就是正则、不收不可信的规则
+// 就不是漏洞；npm audit 从此不再报它。picomatch 没发新版，树里还是 4.0.5。
+
 // 这里放宽的是安全校验：每加一条、每延一次期，都要 yoyo 亲手打字同意，并写明到期日。
-// GHSA-g3hv-75wg-m249：2026-10-31 北京时间 16:39，yoyo 回「同意 minimatch 例外到 11-30」。
-// 只有 minimatch 11 修了，它换了匹配引擎，作者明说不回补旧版；electron-builder
-// 26.18.1 和 27.0.0-alpha.14 仍要 ^10。强换 11 会直接报错：11 没有默认导出，
-// asar 3.4.1、dir-compare 4.2.0 调的正是它；glob 7 把 Minimatch#set 里的段当正则
-// 用，11 里那是别的对象。出事的 firstPhasePreProcess 只在 optimizationLevel >= 2
-// 时走到，树里没有调用方传它，3.x / 5.x 根本没有这段代码；规则全来自自家打包配置，
-// 客户装的那部分依赖（audit:production）不含 minimatch。到期后照常变红，那时回头
-// 看上游有没有换到 11。
-// GHSA-fc5q-39xc-vjpf：2026-11-18 北京时间 13:49，yoyo 回「同意 picomatch 例外到 12-15」。
-// 公告范围是 <=4.0.7，也就是 picomatch 发过的每一版，npm 上最新的就是 4.0.7；上游
-// 修复 micromatch/picomatch#194 还没合。vite 8.3.8、vitest 5.1.0、tinyglobby 0.2.17
-// 这些最新版仍要 ^4，没有能换掉它的版本。出事要「+(*)」这类单分支重复的 extglob
-// 规则，规则全来自自家 vite / vitest 配置，里面没有 extglob；vite 开发服务器只在
-// 开发机本地跑。客户装的那部分依赖（audit:production）不含 picomatch。到期后照常
-// 变红，那时回头看上游有没有发修好的版本。
-const temporaryAdvisoryExceptions = [{
-  url: 'https://github.com/advisories/GHSA-g3hv-75wg-m249',
-  packageName: 'minimatch',
-  maxSeverity: 'moderate',
-  // 北京时间 2026-11-30 当天结束。
-  expiresAt: '2026-11-30T16:00:00.000Z',
-}, {
-  url: 'https://github.com/advisories/GHSA-fc5q-39xc-vjpf',
-  packageName: 'picomatch',
-  maxSeverity: 'high',
-  // 北京时间 2026-12-15 当天结束。
-  expiresAt: '2026-12-15T16:00:00.000Z',
-}]
+// 表空着的时候，npm audit 报出任何一条公告都会让审计变红。
+const temporaryAdvisoryExceptions = []
 
 const severityRank = { info: 0, low: 1, moderate: 2, high: 3, critical: 4 }
 
@@ -207,9 +190,9 @@ function exceptedAdvisoryCoverage(report, exceptions) {
   }
 
   // Each node is capped by the worst excepted advisory it actually reaches, not
-  // by the highest ceiling on the list: otherwise a chain that only reaches the
-  // moderate minimatch advisory could report "high" because the picomatch
-  // exception allows high.
+  // by the highest ceiling on the list: otherwise a chain that only reaches a
+  // moderate excepted advisory could report "high" because another exception
+  // on the list allows high.
   for (const [name, node] of Object.entries(vulnerabilities)) {
     const worst = worstReachableAdvisorySeverity(vulnerabilities, name)
     if (worst < 0 || severityRank[node.severity] > worst) return null

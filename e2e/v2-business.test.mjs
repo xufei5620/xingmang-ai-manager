@@ -1067,6 +1067,87 @@ test('a half-typed tool key limit is refused instead of being saved as no limit'
   }
 })
 
+// F01：「每个工具的额度上限」和下面的密钥列表各读各的，两边的保存都是整条覆盖。
+const keyUpdates = async (page) => (await calls(page)).filter((call) => call.name === 'updateAccountKey').map((call) => call.args)
+async function openKeyEditor(page, name) {
+  await page.getByRole('button', { name: `密钥 ${name} 的更多操作`, exact: true }).click()
+  await page.getByRole('menuitem', { name: '编辑', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: `编辑「${name}」`, exact: true })
+  await dialog.getByLabel('名称', { exact: true }).waitFor()
+  return dialog
+}
+
+test('renaming a key in the list keeps the cap just set for its tool', async () => {
+  const page = await fixture('page=account&managedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['default', 'GPT', 'Claude-MAX']))
+    const card = page.getByTestId('tool-key-limits')
+    await card.getByTestId('tool-key-limit-input-codex').fill('5')
+    await card.getByTestId('tool-key-limit-save-codex').click()
+    await waitForToast(page, '额度上限已保存')
+    // 列表跟着重读：Codex 那一行也写着刚设的上限，不再是「不限额度」。
+    await page.getByTestId('account-key-row-12').getByText('剩余 $5.00', { exact: true }).waitFor()
+    const dialog = await openKeyEditor(page, 'xingmang-desktop-codex')
+    await dialog.getByLabel('名称', { exact: true }).fill('我的 Codex')
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    await waitForToast(page, '已保存「我的 Codex」')
+    const updates = await keyUpdates(page)
+    assert.equal(updates.length, 2)
+    assert.deepEqual(updates[1], { id: 12, name: '我的 Codex', group: 'GPT', remainQuota: 500, unlimitedQuota: false, expiredTime: -1 })
+    await page.getByTestId('account-key-row-12').getByText('剩余 $5.00', { exact: true }).waitFor()
+  } finally { await page.close() }
+})
+
+test('a key editor opened before the cap changed elsewhere does not put the old one back', async () => {
+  const page = await fixture('page=account&managedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['default', 'GPT', 'Claude-MAX']))
+    await page.getByTestId('account-key-row-12').waitFor()
+    const dialog = await openKeyEditor(page, 'xingmang-desktop-codex')
+    // 编辑框开着的时候，别处给这把设了 $7 上限和到期日；框里还是「不限额度」「不改」。
+    const expiredAt = '2027-03-01T00:00:00.000Z'
+    await page.evaluate((at) => window.changeKeyElsewhere(12, { unlimitedQuota: false, remainQuota: 700, expiredAt: at }), expiredAt)
+    await dialog.getByLabel('名称', { exact: true }).fill('我的 Codex')
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    await waitForToast(page, '已保存「我的 Codex」')
+    const expiredTime = Date.parse(expiredAt) / 1000
+    assert.deepEqual((await keyUpdates(page)).at(-1), { id: 12, name: '我的 Codex', group: 'GPT', remainQuota: 700, unlimitedQuota: false, expiredTime })
+    // 客户自己点了「不限额度」的照旧放开，到期日不动。
+    const again = await openKeyEditor(page, '我的 Codex')
+    await again.getByTestId('account-key-quota-mode').getByRole('button', { name: '不限额度', exact: true }).click()
+    await again.getByRole('button', { name: '保存', exact: true }).click()
+    await waitForToast(page, '已保存「我的 Codex」')
+    assert.deepEqual((await keyUpdates(page)).at(-1), { id: 12, name: '我的 Codex', group: 'GPT', remainQuota: 0, unlimitedQuota: true, expiredTime })
+  } finally { await page.close() }
+})
+
+test('saving a tool cap keeps what the list or another device just changed on that key', async () => {
+  const page = await fixture('page=account&managedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['default', 'GPT', 'Claude-MAX']))
+    const row = page.getByTestId('tool-key-limits').getByTestId('tool-key-limit-claude')
+    await row.getByText(/上限剩余 \$12\.00/).waitFor()
+    // 在列表里把 Claude 那把的额度改成 $20：上面的卡片跟着重读。
+    const dialog = await openKeyEditor(page, 'xingmang-desktop-claude')
+    await dialog.getByLabel('可用额度', { exact: true }).fill('20')
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    await waitForToast(page, '已保存「xingmang-desktop-claude」')
+    await row.getByText(/上限剩余 \$20\.00/).waitFor()
+    // 卡片读完以后，别处又改了这把的名字和到期日；卡片上还是旧的。
+    const expiredAt = '2027-03-01T00:00:00.000Z'
+    await page.evaluate((at) => window.changeKeyElsewhere(11, { name: 'renamed-claude', expiredAt: at }), expiredAt)
+    await row.getByTestId('tool-key-limit-input-claude').fill('9')
+    await row.getByTestId('tool-key-limit-save-claude').click()
+    await waitForToast(page, '额度上限已保存')
+    assert.deepEqual((await keyUpdates(page)).at(-1), {
+      id: 11, name: 'renamed-claude', group: 'Claude-MAX', remainQuota: 900, unlimitedQuota: false, expiredTime: Date.parse(expiredAt) / 1000,
+    })
+  } finally { await page.close() }
+})
+
 test('a profile read once stays on screen when a later refresh cannot read it', async () => {
   const page = await fixture('page=account')
   try {
