@@ -1,4 +1,5 @@
 import type { ActiveProviderId } from '../../../../electron/catalog'
+import type { ExtensionsView } from '../../registry/pages'
 
 /**
  * 从一页扩展跳到另一页时要先选好的工具：技能页选着 Codex CLI 点「去看插件」，插件页要落在 Codex CLI 上，
@@ -28,5 +29,30 @@ export function subscribeExtensionTool(listener: () => void): () => void {
   listeners.add(listener)
   return () => {
     listeners.delete(listener)
+  }
+}
+
+/**
+ * 「插件」页要落在哪一栏（「插件」或「技能」）：老页面名（精选、外接工具、技能、插件）跳过来时先放在这里，
+ * 页面挂上或已经挂着时取走，同上面那份。取走即清空。
+ */
+let pendingView: ExtensionsView | null = null
+const viewListeners = new Set<() => void>()
+
+export function requestExtensionsView(view: ExtensionsView): void {
+  pendingView = view
+  for (const listener of viewListeners) listener()
+}
+
+export function takeExtensionsView(): ExtensionsView | null {
+  const view = pendingView
+  pendingView = null
+  return view
+}
+
+export function subscribeExtensionsView(listener: () => void): () => void {
+  viewListeners.add(listener)
+  return () => {
+    viewListeners.delete(listener)
   }
 }
