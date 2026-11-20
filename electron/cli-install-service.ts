@@ -25,6 +25,7 @@ import {
   probeRunningCliProcesses,
 } from './cli-process-probe'
 import { buildCliUpdateRecord } from './cli-update-history'
+import { resolveCliUserHomeDirectory } from './cli-user-home'
 import { resolveCliInstallVersion } from './cli-verified-versions'
 import {
   commandEnvironment,
@@ -1198,7 +1199,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
           cancellation?.seal(grokBinarySwapSealReason)
           const installed = await installDownloadedGrokBinary(downloadedGrokBinary, sameUserInstall
             ? {
-                managedRoot: path.join(os.homedir(), '.grok', 'bin'),
+                managedRoot: path.join(resolveCliUserHomeDirectory(process.env, platform), '.grok', 'bin'),
                 protectInstallDirectory: false,
               }
             : {})

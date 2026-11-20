@@ -1748,7 +1748,7 @@ describe('macOS external desktop lifecycle', () => {
     expect(status).toMatchObject({ installed: true, version: '1.18.34', latestVersion: '1.18.34', updateAvailable: false })
     expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({
       tool: 'opencode', architecture: 'arm64',
-      replace: { installedPath: '/Applications/OpenCode.app', installedVersion: '1.18.30', beforeReplace: expect.any(Function) },
+      replace: { installedPath: '/Applications/OpenCode.app', installedVersion: '1.18.30', beforeReplace: expect.any(Function), onReplaceStarting: expect.any(Function) },
     }))
     expect(progress.at(-1)).toBe('OpenCode 已更新到 v1.18.34')
   })
@@ -1763,6 +1763,31 @@ describe('macOS external desktop lifecycle', () => {
     const listing = agreed.execute.mock.calls.find(([spec]) => spec.executable === '/bin/ps' && spec.argv.includes('pid=,uid=,comm='))
     expect(listing?.[0]).toEqual({ executable: '/bin/ps', argv: ['-axo', 'pid=,uid=,comm='] })
     expect(listing?.[1]?.trustedOnly).toBe(false)
+  })
+  it('refuses a cancel once the Mac installer starts swapping in the new client, so the outcome matches what the customer was told (F03)', async () => {
+    let refusal: unknown
+    const f = macUpdateFixture({ installMacosDesktopApp: async (options) => {
+      await options.replace?.beforeReplace()
+      options.replace?.onReplaceStarting?.()
+      refusal = f.runtime.cancelInstall('opencode')
+      return { version: '1.18.34', path: '/Applications/OpenCode.app' }
+    } })
+    await expect(f.runtime.install('opencode', undefined, { update: true, closeRunning: false })).resolves.toMatchObject({ installed: true })
+    expect(refusal).toEqual({ cancelled: false, reason: '正在安装 OpenCode，这一步中断会留下装了一半的程序，请等它结束。' })
+  })
+  it('does not close a running client for a cancel accepted before the swap began (F03)', async () => {
+    const kill = vi.fn()
+    const f = macUpdateFixture({
+      quitMacosDesktopApp: { kill, wait: async () => undefined },
+      installMacosDesktopApp: async (options) => {
+        expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: true, reason: null })
+        await options.replace?.beforeReplace()
+        return { version: '1.18.34', path: '/Applications/OpenCode.app' }
+      },
+    })
+    f.open()
+    await expect(f.runtime.install('opencode', undefined, { update: true, closeRunning: true })).rejects.toThrow('OpenCode 安装已取消')
+    expect(kill).not.toHaveBeenCalled()
   })
   it('says so when the update found nothing newer to put in', async () => {
     const progress: string[] = []

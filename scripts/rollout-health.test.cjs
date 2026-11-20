@@ -10,6 +10,7 @@ const {
   LONG_OBSERVATION_HOURS,
   MIN_OBSERVATION_HOURS,
   assessRolloutHealth,
+  parseManifestVersions,
   planRolloutHealth,
   readActiveRollout,
   renderRolloutHealth,
@@ -205,6 +206,79 @@ test('a rollout held to some platforms is judged on those platforms, not on the 
   assert.equal(assessMac([...windows, ...machines(25, { os: 'm15' }), ...machines(60, { app: '0.2.23', os: 'm15' })]).verdict, 'open')
 })
 
+test('a platform with machines still on the old version and not one check-in from the new one is not vouched for by the others (R29-05)', () => {
+  const windows = [...machines(200, {}), ...machines(100, { app: '0.2.23' })]
+  const macSilent = [...windows, ...machines(60, { app: '0.2.23', os: 'm15' })]
+  // Mac 上有客户（还在旧版的每天在打卡），新版一条都没有：可能是 Mac 包下不下来、装之前就挂了，打卡里连
+  // 「装没装上」都没有。Windows 升得再好也不放开。
+  const waiting = assess(macSilent, 30)
+  assert.equal(waiting.verdict, 'wait')
+  assert.match(waiting.headline, /^再等等，0\.2\.24 先不放开：发出去 30 小时，Mac 上新版一条打卡都还没有，别的平台升得好顶不了它。$/)
+  // 表里有 Mac 这一格，看得到它还在旧版的那些。
+  assert.deepEqual(waiting.table.map((scope) => scope.label), ['合计', 'Windows', 'Mac'])
+
+  // 两天后还是一条都没有：说看不出、交给人看，不建议放开。
+  const later = assess(macSilent, LONG_OBSERVATION_HOURS + 1)
+  assert.equal(later.verdict, 'unknown')
+  assert.match(later.headline, /^看不出 0\.2\.24 在 Mac 上稳不稳：发出去 45 小时，Mac 上新版一条打卡都没收到，别的平台升得好顶不了它。/)
+  const report = renderRolloutHealth(later, hoursLater(45))
+  assert.match(report, /「还停在旧版本的电脑下过新版没有」/)
+  assert.match(report, /「分批放量」填 `0\.2\.24 0`/)
+
+  // Mac 有新版打卡就不是「一条都没有」，照旧按合计看（样本少的规矩不在这一条里改）。
+  assert.equal(assess([...macSilent, ...machines(1, { os: 'm15' })], 30).verdict, 'open')
+  // 一个平台连还在旧版的电脑都没有（没有客户），不用它的新版打卡。
+  assert.equal(assess(windows, 30).verdict, 'open')
+})
+
+test('every platform a held rollout covers needs check-ins of its own (R29-05)', () => {
+  const linuxAndMac = { version: '0.2.24', percent: 20, platforms: ['linux', 'mac'] }
+  function assessHeld(records, hours = 30) {
+    return assessRolloutHealth({ rollout: linuxAndMac, releasedAt: released, records, now: hoursLater(hours) })
+  }
+  const linux = [...machines(40, { os: 'lx' }), ...machines(80, { app: '0.2.23', os: 'lx' })]
+  // 放量管着 Linux 和 Mac，Mac 一条打卡都没有：Linux 的样本够了也不放开。
+  const waiting = assessHeld(linux)
+  assert.equal(waiting.verdict, 'wait')
+  assert.match(waiting.headline, /Mac 上新版一条打卡都还没有/)
+  assert.deepEqual(waiting.table.map((scope) => scope.label), ['合计', 'Mac', 'Linux'])
+  const later = assessHeld(linux, LONG_OBSERVATION_HOURS + 1)
+  assert.equal(later.verdict, 'unknown')
+  assert.match(later.headline, /^看不出 0\.2\.24 在 Mac 上稳不稳/)
+  // 两个平台都有新版打卡：照旧放开。
+  assert.equal(assessHeld([...linux, ...machines(25, { os: 'm15' }), ...machines(60, { app: '0.2.23', os: 'm15' })]).verdict, 'open')
+})
+
+test('a platform whose update manifest is not on the new version is not waited for', async () => {
+  const windows = [...machines(200, {}), ...machines(100, { app: '0.2.23' })]
+  // Linux 先不发，线上 Linux 清单还是 0.2.23，那边的电脑本来拿不到 0.2.24。
+  const linuxHeld = [...windows, ...machines(30, { app: '0.2.23', os: 'lx' })]
+  assert.equal(assess(linuxHeld, 30, { publishedPlatforms: ['windows', 'mac'] }).verdict, 'open')
+  assert.equal(assess(linuxHeld, 30, { publishedPlatforms: ['windows', 'mac', 'linux'] }).verdict, 'wait')
+
+  const manifestVersions = parseManifestVersions('latest.yml=0.2.24 latest-mac.yml=0.2.24 latest-linux.yml=0.2.23 latest-linux-arm64.yml=0.2.23')
+  assert.deepEqual([...manifestVersions], [['latest.yml', '0.2.24'], ['latest-mac.yml', '0.2.24'], ['latest-linux.yml', '0.2.23'], ['latest-linux-arm64.yml', '0.2.23']])
+  // 认不出的清单名、版本号整条不要。
+  assert.deepEqual([...parseManifestVersions('latest.yml=v0.2.24 other.yml=0.2.24 latest-mac.yml=latest latest-linux.yml= =0.2.24')], [['latest.yml', '0.2.24']])
+  assert.equal(parseManifestVersions('').size, 0)
+
+  function run(manifests) {
+    return runRolloutHealth({
+      status: { rollout },
+      publishedDates: new Map([['0.2.24', released]]),
+      manifestVersions: parseManifestVersions(manifests),
+      releasedAt: released,
+      now: hoursLater(30),
+      collectUsage: async () => ({ usage: { records: linuxHeld, sampleInterval: 1 } }),
+    })
+  }
+  assert.equal((await run('latest.yml=0.2.24 latest-mac.yml=0.2.24 latest-linux.yml=0.2.23 latest-linux-arm64.yml=0.2.23')).verdict, 'open')
+  // Linux 两个架构有一份到了新版，Linux 就算发了。
+  assert.equal((await run('latest.yml=0.2.24 latest-mac.yml=0.2.24 latest-linux.yml=0.2.23 latest-linux-arm64.yml=0.2.24')).verdict, 'wait')
+  // 不知道清单（旧的调用方式）时每个平台都当发了，宁可多等。
+  assert.equal((await run('')).verdict, 'wait')
+})
+
 test('two days without a single check-in from the new version says it cannot tell', () => {
   const result = assess(machines(80, { app: '0.2.23' }), LONG_OBSERVATION_HOURS + 1)
   assert.equal(result.verdict, 'unknown')
@@ -295,6 +369,9 @@ test('the health workflow only reads, at noon Beijing time or on demand, with th
   const check = job.steps.find((step) => String(step.run || '').includes('scripts/rollout-health.cjs check'))
   assert.equal(check.env.CLOUDFLARE_ANALYTICS_TOKEN, '${{ secrets.CLOUDFLARE_ANALYTICS_TOKEN }}')
   assert.equal(check.env.RELEASED_AT, '${{ steps.release.outputs.published }}')
+  // 每份清单是哪一版也交给脚本：清单还不是这一版的平台不要求有新版打卡（R29-05）。
+  assert.equal(check.env.MANIFEST_VERSIONS, '${{ steps.live.outputs.manifests }}')
+  assert.match(check.run, /--manifest-versions "\$MANIFEST_VERSIONS"/)
   assert.match(check.run, /GITHUB_STEP_SUMMARY/)
   // 状态文件读不到（404 以外）就停下，不把「读不到」说成「没在放量」。
   const live = job.steps.find((step) => step.id === 'live')
@@ -304,6 +381,48 @@ test('the health workflow only reads, at noon Beijing time or on demand, with th
   const release = job.steps.find((step) => step.id === 'release')
   assert.equal(release.env.GH_TOKEN, '${{ github.token }}')
   assert.equal(release.if, "${{ steps.live.outputs.version != '' }}")
+})
+
+test('the feed step hands over which version each live manifest is on', { skip: process.platform === 'win32' && '这个作业只在 ubuntu-latest 上跑' }, () => {
+  const workflow = YAML.parse(fs.readFileSync(path.join(root, '.github', 'workflows', 'rollout-health.yml'), 'utf8'))
+  const step = Object.values(workflow.jobs)[0].steps.find((entry) => entry.id === 'live')
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-rollout-feed-'))
+  const bin = path.join(workspace, 'bin')
+  const feed = path.join(workspace, 'feed')
+  const temp = path.join(workspace, 'temp')
+  for (const directory of [bin, feed, temp]) fs.mkdirSync(directory)
+  // 假的 curl：按地址最后一段从 feed 目录拿文件，没有就是 404。Linux arm64 那份故意不放。
+  fs.writeFileSync(path.join(bin, 'curl'), [
+    '#!/bin/bash',
+    'out=""; url=""',
+    'while [ $# -gt 0 ]; do',
+    '  case "$1" in',
+    '    --output|--write-out|--max-time) [ "$1" = --output ] && out="$2"; shift 2 ;;',
+    '    --*) shift ;;',
+    '    *) url="$1"; shift ;;',
+    '  esac',
+    'done',
+    'name="${url##*/}"',
+    'if [ -f "$FEED/$name" ]; then cp "$FEED/$name" "$out"; printf 200; else printf 404; fi',
+    '',
+  ].join('\n'))
+  fs.chmodSync(path.join(bin, 'curl'), 0o755)
+  fs.writeFileSync(path.join(feed, 'service-status.json'), JSON.stringify({ rollout }))
+  fs.writeFileSync(path.join(feed, 'latest.yml'), "version: 0.2.24\nreleaseDate: '2026-11-03T03:00:00.000Z'\n")
+  fs.writeFileSync(path.join(feed, 'latest-mac.yml'), "version: 0.2.24\nreleaseDate: '2026-11-03T03:10:00.000Z'\n")
+  fs.writeFileSync(path.join(feed, 'latest-linux.yml'), "version: '0.2.23'\nreleaseDate: '2026-11-02T03:00:00.000Z'\n")
+  const output = path.join(workspace, 'github-output')
+  const result = spawnSync('/bin/bash', ['-c', step.run], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, FEED: feed, RUNNER_TEMP: temp, GITHUB_OUTPUT: output, PUBLIC_BASE: 'https://feed.invalid/xingmang-manager' },
+  })
+  const written = fs.existsSync(output) ? fs.readFileSync(output, 'utf8') : ''
+  fs.rmSync(workspace, { recursive: true, force: true })
+  assert.equal(result.status, 0, result.stderr)
+  const outputs = Object.fromEntries(written.trim().split('\n').map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]))
+  assert.equal(outputs.version, '0.2.24')
+  assert.deepEqual([...parseManifestVersions(outputs.manifests)], [['latest.yml', '0.2.24'], ['latest-mac.yml', '0.2.24'], ['latest-linux.yml', '0.2.23']])
 })
 
 test('only a plain release time from GitHub reaches the check, anything else falls back to the packaging time', { skip: process.platform === 'win32' && '这个作业只在 ubuntu-latest 上跑' }, () => {

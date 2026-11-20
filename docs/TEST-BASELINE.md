@@ -148,6 +148,7 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 云端容器和 Mac 上都过、到 Windows `vitest-*` 才红的，多半是下面两种写法，写用例时就避开：
 
 - **把显示出来的路径写死成斜杠**。手机遥控、诊断这类按本机分隔符显示路径（`remoteDisplayPath`、`redactHomeDirectory`），Windows 上是 `~\projects\demo`。期望值用 `path.join('~', 'projects', name)` 拼，别写 `'~/projects/demo'`。
+- **临时目录用 `fs.realpathSync` 取，又跟被测代码报回来的路径比**。Windows runner 的 `os.tmpdir()` 是短名 `C:\Users\RUNNER~1\…`，`fs.realpathSync`（JS 实现）不展开，卸载这类按真实路径核过目录的代码报回来的是长名 `C:\Users\runneradmin\…`，`toHaveBeenCalledWith` 就对不上（#1975）。要比路径的用 `fs.realpathSync.native`，Mac、Linux 上两者一样。
 - **服务里写死了 `platform: 'darwin'`，又拿真文件夹去撞路径规矩**。`codex-remote-service.test.ts` 的 `setup()` 缺省按 darwin 起服务；Windows 上真文件夹是 `C:\…`，按 darwin 的规矩不算绝对路径，「主目录不能当干活的文件夹」这类拦截根本不触发，用例期望的报错就不来。要验拦截的那条传 `setup({ platform: process.platform })`，跟直接测 `validateRemoteWorkspace` 那条一样按本机规矩。
 
 ## 看落盘的文件，要等写盘本身（2026-11-12）

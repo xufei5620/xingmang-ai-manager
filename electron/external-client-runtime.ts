@@ -1099,7 +1099,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
    * Mac 上换掉装着的那一份（yoyo 2026-10-27「桌面端更新改」）：和安装同一套下载、核对，装着的那份要是官方原版，
    * 换之前它开着就按客户的意思关掉（prepareMacosDesktopReplacement），换不成旧版原样留着。
    */
-  async function updateOnMac(tool: ExternalToolId, current: ExternalClientRuntimeStatus, request: DesktopAppUpdateRequest, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void, signal: AbortSignal): Promise<{ unchanged: boolean }> {
+  async function updateOnMac(tool: ExternalToolId, current: ExternalClientRuntimeStatus, request: DesktopAppUpdateRequest, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void, cancellation: InstallCancellationHandle): Promise<{ unchanged: boolean }> {
+    const signal = cancellation.signal
     if (!current.path || !current.version) throw new Error(`${definitions[tool].name} 的版本号读不出来，没法比新旧`)
     const clientPath = current.path
     await options.assertDiskSpace?.(`${definitions[tool].name} 更新失败`)
@@ -1114,13 +1115,16 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       replace: {
         installedPath: clientPath,
         installedVersion: current.version,
-        // 关掉它这一步不跟取消走：已经开始关了，半路停下只会留下一个关了一半的客户端。
+        // 关掉它这一步只在请它退出之前看取消：已经开始关了，半路停下只会留下一个关了一半的客户端。
+        // 关完要不要换，安装模块会再看一次取消。
         beforeReplace: () => prepareMacosDesktopReplacement({
-          bundle: clientPath, name: definitions[tool].name, closeRunning: request.closeRunning,
+          bundle: clientPath, name: definitions[tool].name, closeRunning: request.closeRunning, signal,
           runProcess: (plan) => execute({ executable: plan.executable, argv: [...plan.argv] }, { env: environment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 8 * 1024 * 1024 }),
           uid: options.getuid?.() ?? process.getuid?.() ?? -1,
           ...options.quitMacosDesktopApp,
         }),
+        // 从挪开旧版起不再接受取消（11-18 F03）：接受了也停不下，界面会说「已取消」，装着的却是新版。
+        onReplaceStarting: () => cancellation.seal(installSealReason(tool)),
       },
     })
     return { unchanged: result.unchanged === true }
@@ -1226,7 +1230,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         const current = status(tool, before, winget)
         // 更新只在 Mac 上有：Windows 上点不到「可更新到 v…」，照旧当安装。
         if (current.installed && request?.update && platform === 'darwin') {
-          const { unchanged } = await updateOnMac(tool, current, request, report, cancellation.signal)
+          const { unchanged } = await updateOnMac(tool, current, request, report, cancellation)
           report('checking', '正在验证安装结果')
           const after = (await withUpdateOffers([status(tool, await inspect(), winget)]))[0]
           if (!after.installed) throw new Error(after.detectionError || '安装命令已结束，但未检测到客户端，请检查安装器结果后重试检测')

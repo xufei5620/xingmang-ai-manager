@@ -8,7 +8,7 @@ import { mergeAppSettings, type AppSettings, type AppSettingsUpdate } from './ap
 import type { NativeConfigSaveResult } from './config-files'
 import type { ConnectionCheckResult } from './connection-check'
 import type { DiagnosticFixKind } from './diagnostic-fixes'
-import type { NewApiClientService } from './new-api-client'
+import type { NewApiClientService, NewApiPasswordChangeOutcome } from './new-api-client'
 import { ipcInvokeChannels, type AccountKeysPage } from './ipc-contract'
 import { ipcChannelPolicies } from './ipc-channel-policy'
 import { listedProviderSessionProviders, providerSessionProviders } from './provider-sessions'
@@ -22,7 +22,8 @@ import { DEFAULT_CODEX_MODEL } from './cli-model-defaults'
 import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { XINGMANG_AI_SKILL_KEY_NAME, XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
-import { noteRequestDiagnostics } from './request-diagnostics'
+import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
+import { passwordChangeUnconfirmedMessage } from './password-change-unconfirmed'
 import { PaymentCheckoutRejected } from './payment-window'
 import { assetThumbnailUrl } from './asset-thumbnail'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
@@ -8771,7 +8772,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.changePassword).toHaveBeenCalledWith({
         originalPassword: 'current-password-1',
         newPassword: 'new-password-2',
-      })
+      }, expect.any(Function))
     })
 
     it('rejects a non-record payload', () => {
@@ -8811,7 +8812,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.changePassword).toHaveBeenCalledWith({
         originalPassword: ' old-password-1 ',
         newPassword: ' new-password-2 ',
-      })
+      }, expect.any(Function))
     })
 
     it('never reaches the account service -- and never the real production client -- when validation fails', () => {
@@ -8909,6 +8910,84 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toThrow('原密码错误')
       expect(store.read).not.toHaveBeenCalled()
       expect(store.save).not.toHaveBeenCalled()
+    })
+
+    // N6: the change went out, then the call failed. Where the change stood
+    // decides what 记住密码 keeps.
+    function failingAfter(accountService: ReturnType<typeof accountServiceStub>, outcomes: NewApiPasswordChangeOutcome[], error: Error) {
+      vi.mocked(accountService.changePassword).mockImplementation(async (_input, onOutcome) => {
+        for (const outcome of outcomes) onOutcome?.(outcome)
+        throw error
+      })
+    }
+
+    it('drops this account\'s remembered password when the change went out and no answer came back', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'Alice')
+      const lost = new Error('连接账号服务超时，请检查网络后再试。')
+      noteRequestDiagnostics(lost, { line: 'direct', status: 504, cfRay: 'test-ray' })
+      failingAfter(accountService, ['unconfirmed'], lost)
+      const store = rememberedStore('Alice')
+      const { runtimeLog } = register(undefined, undefined, undefined, accountService, store)
+
+      const failure = await Promise.resolve(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change))
+        .then(() => null, (error: unknown) => error)
+
+      // Says what is known instead of "check the network and retry", keeping
+      // the original failure -- and so its route and status -- for the log.
+      expect(failure).toBeInstanceOf(Error)
+      expect((failure as Error).message).toBe(passwordChangeUnconfirmedMessage)
+      expect((failure as Error).cause).toBe(lost)
+      expect(requestDiagnosticsOf(failure)).toEqual({ line: 'direct', status: 504, cfRay: 'test-ray' })
+      expect(store.clear).toHaveBeenCalledTimes(1)
+      expect(store.save).not.toHaveBeenCalled()
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('new-password-2')
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('old-password-1')
+    })
+
+    it('remembers the new password when the server stored it but the call still failed afterwards', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'Alice')
+      failingAfter(accountService, ['unconfirmed', 'changed'], new Error('账号刚切换过，请再试一次'))
+      const store = rememberedStore('Alice')
+      register(undefined, undefined, undefined, accountService, store)
+
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toThrow('账号刚切换过')
+
+      expect(store.save).toHaveBeenCalledExactlyOnceWith('Alice', 'new-password-2')
+      expect(store.clear).not.toHaveBeenCalled()
+    })
+
+    it('keeps the remembered password when the server refused the change', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'Alice')
+      failingAfter(accountService, ['unconfirmed', 'refused'], new Error('原密码错误'))
+      const store = rememberedStore('Alice')
+      register(undefined, undefined, undefined, accountService, store)
+
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toThrow('原密码错误')
+
+      expect(store.save).not.toHaveBeenCalled()
+      expect(store.clear).not.toHaveBeenCalled()
+    })
+
+    it('leaves another account\'s remembered login alone when the change is unconfirmed', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'alice', 7)
+      failingAfter(accountService, ['unconfirmed'], new Error('连接账号服务超时，请检查网络后再试。'))
+      const other = rememberedStore('bob@example.test')
+      register(undefined, undefined, undefined, accountService, undefined, undefined, {
+        realmAccounts: {
+          getSiteId: () => 'solov',
+          loginHintOwner: async () => ({ realmId: 'xm-account', userId: '8' }),
+        } as never,
+        accountCredentialsForSite: () => other,
+      })
+
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toThrow(passwordChangeUnconfirmedMessage)
+
+      expect(other.clear).not.toHaveBeenCalled()
+      expect(other.save).not.toHaveBeenCalled()
     })
   })
 
