@@ -45,6 +45,6 @@ describe('generation input expansion and deduplication', () => {
     const count = canvasGenerationImageInputCardinality([current.edges[1]], new Map(current.nodes.map((node) => [node.id, node])))
     expect(count).toMatchObject({ minimum: 1, exact: false, hasBatch: true })
     expect(canvasGenerationImageInputError('image-generate', count)).toBeNull()
-    expect(canvasGenerationImageInputError('image-edit', { ...count, connections: 0 })).toContain('至少一条')
+    expect(canvasGenerationImageInputError('image-edit', { ...count, connections: 0 })).toContain('还没连原图')
   })
 })

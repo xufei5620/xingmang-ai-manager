@@ -205,6 +205,13 @@ export function splitShellCommands(script: string): string[][] {
     word += char
     inWord = true
   }
+  // A quote that never closes makes the shell refuse the line, so the
+  // half-read command it swallowed ran nothing and names no program.
+  if (quote) {
+    words = []
+    word = ''
+    inWord = false
+  }
   endCommand()
   return commands
 }
@@ -224,7 +231,9 @@ export function shellScriptProgramNames(script: string): string[] {
     }
     if (position >= words.length) continue
     const name = presentableProgramName(words[position])
-    if (name) names.push(name)
+    // Quotes can glue a name together out of pieces (n'p'm); a name that is
+    // not written out whole in the script is not shown rather than guessed.
+    if (name && script.includes(name)) names.push(name)
   }
   return names
 }

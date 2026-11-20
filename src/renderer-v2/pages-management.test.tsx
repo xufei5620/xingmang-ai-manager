@@ -861,7 +861,7 @@ describe('the update state of a connection', () => {
       update,
     })
     expect(extensionUpdateStatus(npm)).toBe(
-      '有新版本 1.2.0。外接工具不在这里更新：精选里加的用的是星芒核过的版本，不用管它；自己加的想换新版本，先移除，再按新版本号加一次。',
+      '有新版本 1.2.0。这一条不在这里更新：推荐里的用的是星芒核过的版本，不用管它；自己加的想换新版本，先移除，再按新版本号加一次。',
     )
     // Git 来源的「版本」是一串提交号，不往句子里放。
     const git = listItem({
@@ -870,7 +870,7 @@ describe('the update state of a connection', () => {
       source: { kind: 'git', locator: 'https://github.com/acme/mcp.git', reference: 'a'.repeat(40) },
       update,
     })
-    expect(extensionUpdateStatus(git)).toMatch(/^有新版本。外接工具不在这里更新/)
+    expect(extensionUpdateStatus(git)).toMatch(/^有新版本。这一条不在这里更新/)
   })
 
   it('keeps the main process wording everywhere else', () => {

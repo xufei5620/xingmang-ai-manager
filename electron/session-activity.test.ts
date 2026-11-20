@@ -49,6 +49,13 @@ describe('shellScriptProgramNames', () => {
     expect(shellScriptProgramNames('sk-abcdefghijklmnop1234 --flag')).toEqual([])
     expect(shellScriptProgramNames('OPENAI_API_KEY=sk-abcdefghijklmnop1234 codex exec hi')).toEqual(['codex'])
   })
+
+  it('names no program it would have to piece together from quotes', () => {
+    expect(shellScriptProgramNames('a\'a')).toEqual([])
+    expect(shellScriptProgramNames('n\'p\'m test')).toEqual([])
+    expect(shellScriptProgramNames('npm test; echo \'never closed')).toEqual(['npm'])
+    expect(shellScriptProgramNames('\'npm\' test')).toEqual(['npm'])
+  })
 })
 
 describe('patchFilePaths', () => {
