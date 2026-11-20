@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { rendererSingleCopyPackages } from '../scripts/renderer-single-copy.mjs'
 import { createPageErrorCollector } from './page-errors.mjs'
 
 // T-B1: 十四个浏览器套件各自抄了一遍「起 Vite dev server + 起 Chromium + 开一个记录
@@ -82,6 +83,11 @@ export async function createFixtureServer(inlineConfig = {}) {
     const port = await reserveFreePort()
     const server = await createServer({
       ...inlineConfig,
+      // U06: 多数 renderer-v2 夹具传 configFile:false，吃不到 vite.config.ts 里的同一条规则；
+      // 画布目录单独装过依赖时，依赖扫描会从 canvas-v2/index.html 摸到那里的第二份 React，
+      // 谁先被扫到用谁。所有夹具 server 都从这里起，在这里统一只认仓库根目录那一份
+      // （scripts/renderer-single-copy.mjs）。跟配置文件里的那份合并时重复项无害。
+      resolve: { ...inlineConfig.resolve, dedupe: [...rendererSingleCopyPackages, ...(inlineConfig.resolve?.dedupe ?? [])] },
       // strictPort:true 是这件事的重点：钉住预约到的号，不许 Vite 再自己往上探，
       // 否则它又会从某个别人可能也在用的端口开始。
       server: { host: '127.0.0.1', ...inlineConfig.server, port, strictPort: true },
