@@ -150,6 +150,42 @@ describe('AiUnsavedImageStash', () => {
     await expect(small.stash.keep(42, png(2, 2))).resolves.toBeNull()
   })
 
+  // 11-18 复核 A06（总单 #63）：上限是整个暂存文件夹的，几个账号共用一台电脑时不能各存满一份。
+  it('counts every account on this computer toward one disk limit, while each keeps only its own pictures', async () => {
+    const { outputRoot, events, stash } = setup({ maximumDiskBytes: 50, maximumMemoryBytes: 0 })
+    await expect(stash.keep(42, png(1, 1))).resolves.toBe('disk')
+    await expect(stash.keep(7, png(2, 2))).resolves.toBe('disk')
+    // 48 of 50 bytes are taken between the two accounts, so a third picture has nowhere to go, whoever paid for it.
+    await expect(stash.keep(7, png(3, 3))).resolves.toBeNull()
+    await expect(stash.keep(99, png(4, 4))).resolves.toBeNull()
+    expect(events.filter((event) => event.kind === 'dropped').map((event) => event.userId)).toEqual([7, 99])
+    // The same picture again takes no new room.
+    await expect(stash.keep(42, png(1, 1))).resolves.toBe('disk')
+
+    // Storing one account's pictures frees room for everyone, and nobody gets another account's picture.
+    await expect(stash.flush(42)).resolves.toBe(1)
+    expect(libraryFiles(outputRoot, 42)).toHaveLength(1)
+    expect(libraryFiles(outputRoot, 7)).toEqual([])
+    await expect(stash.keep(99, png(4, 4))).resolves.toBe('disk')
+    await expect(stash.flush(7)).resolves.toBe(1)
+    await expect(stash.flush(99)).resolves.toBe(1)
+    expect(fs.readFileSync(path.join(outputRoot, 'user-99', '2026-11-15', libraryFiles(outputRoot, 99)[0]))).toEqual(png(4, 4))
+  })
+
+  it('keeps a picture off the disk when it cannot tell how much another account has set aside', async () => {
+    const { root, stash } = setup()
+    await expect(stash.keep(7, png(2, 2))).resolves.toBe('disk')
+    const readdir = fs.promises.readdir
+    vi.spyOn(fs.promises, 'readdir').mockImplementation((async (...args: Parameters<typeof readdir>) => {
+      if (path.resolve(String(args[0])) === path.join(root, 'user-7')) {
+        throw Object.assign(new Error('EPERM: operation not permitted, scandir'), { code: 'EPERM' })
+      }
+      return readdir(...args)
+    }) as typeof readdir)
+    await expect(stash.keep(42, png(1, 1))).resolves.toBe('memory')
+    expect(fs.existsSync(path.join(root, 'user-42', stashedImageFileName(png(1, 1))))).toBe(false)
+  })
+
   it('stops a round on a full disk and stores everything on the next one', async () => {
     const { outputRoot, events, stash } = setup()
     await stash.keep(42, png(1, 1))
