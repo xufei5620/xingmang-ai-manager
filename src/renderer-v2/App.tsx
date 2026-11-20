@@ -279,7 +279,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }, [navigate, scope])
   const {
     modelSwap, restartDialog, setRestartDialog, chineseDialog, setChineseDialog,
-    cancelPendingLaunchDialogs, prepareToolLaunch, launch, requestLaunch, requestLaunchInLastWorkspace, answerChineseRuntimePatch,
+    cancelPendingLaunchDialogs, prepareToolLaunch, launch, requestLaunch, requestLaunchWhenFree, requestLaunchInLastWorkspace, answerChineseRuntimePatch,
   } = useToolLaunch({ native, app, toolsApi, toolbox, toast, perform, settings, setSettings, platform, os, scope, mounted, accountEpoch, accountBootstrapRef, switchToolAccount, openToolConfig, setSwitchRestartOffer,
     chineseSuspended: featuresOff.includes('codex-desktop-chinese') })
   const closeAccountDialogs = useCallback(() => { setConfigTool(null); setExternalClient(null) }, [])
@@ -307,7 +307,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // Mac 上桌面端的「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）：星芒关掉的那一份更新完走首页同一个「打开」。
   const { desktopUpdateTargets, desktopUpdateFailures, requestDesktopUpdate, showDesktopUpdateFailure } = useDesktopAppUpdate({
     toolsApi, toolbox, toast, offline, mounted, accountEpoch, setConfirmation, setOperationError,
-    reopen: (tool) => { if (tool === 'codexDesktop') requestLaunch('codexDesktop'); else void perform('打开客户端', () => launchExternal(tool)) },
+    reopen: (tool) => { if (tool === 'codexDesktop') requestLaunchWhenFree('codexDesktop'); else void perform('打开客户端', () => launchExternal(tool)) },
   })
   // 「配置文件坏了」的「修好它」：首页卡片、配置窗口和打开工具时的错误框都走这里。retry 是错误框里那次
   // 没打开的打开，修好了替客户再开一次，不用回首页再点。

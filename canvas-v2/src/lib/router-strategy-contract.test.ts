@@ -50,9 +50,23 @@ describe('versioned workflow router strategy capability', () => {
     expect(() => assertRouterStrategyRun(content(), run({ version: 1, strategy: 'all' }), ['route'])).toThrow('已保存')
     expect(() => assertRouterStrategyRun(content({ nodes: [{ id: 'route', kind: 'router', data: { settings: { strategy: 'all' } } }], edges: workflow().edges }), run(), ['route'])).toThrow('已保存')
   })
+  it('binds an old explicit keep-all router as the versioned all and refuses a run that drops it (D06)', () => {
+    const legacyAll = content({ nodes: [{ id: 'route', kind: 'router', data: { settings: { strategy: 'all' } } }], edges: workflow().edges })
+    expect(() => assertRouterStrategyRun(legacyAll, run({ version: 1, strategy: 'all' }), ['route'])).not.toThrow()
+    expect(() => assertRouterStrategyRun(legacyAll, { ...run(), nodes: [{ id: 'route', kind: 'router', data: {} }] }, ['route'])).toThrow('已保存')
+    expect(() => assertRouterStrategyRun(legacyAll, run({ version: 1, strategy: 'first-available' }), ['route'])).toThrow('已保存')
+    expect(() => assertRouterStrategyRun(legacyAll, { nodes: [], edges: [] }, ['route'])).toThrow('缺少')
+    expect(routerStrategyRunSignature(legacyAll, ['route'])).toBe(routerStrategyRunSignature(content(workflow({ version: 1, strategy: 'all' })), ['route']))
+    // The wire marker stays explicit: version gates and transfer formats do not change for old projects.
+    expect(graphHasRouterStrategy(JSON.parse(legacyAll))).toBe(false)
+    expect(() => assertRouterStrategyWorkflow(legacyAll, undefined)).not.toThrow()
+  })
   it('leaves legacy-only and unrelated selected nodes unchanged', () => {
     const legacy = { nodes: [{ id: 'route', kind: 'router', data: {} }], edges: [] }
     expect(() => assertRouterStrategyRun(content(legacy), legacy, ['route'])).not.toThrow()
+    const firstAvailable = { nodes: [{ id: 'route', kind: 'router', data: { settings: { strategy: 'first-available' } } }], edges: [] }
+    expect(() => assertRouterStrategyRun(content(firstAvailable), legacy, ['route'])).not.toThrow()
+    expect(routerStrategyRunSignature(content(firstAvailable), ['route'])).toBe('[]')
     expect(() => assertRouterStrategyRun(content(), { nodes: [], edges: [] }, ['other'])).not.toThrow()
   })
   it('pins scope-selected configuration and input order in the signature', () => {

@@ -1188,6 +1188,107 @@ describe('executeCanvasRun multi-image nodes', () => {
   })
 })
 
+describe('executeCanvasRun router strategies (D06)', () => {
+  const imageA = asset('a'.repeat(43))
+  const imageB = asset('b'.repeat(43))
+  const video = { kind: 'video' as const, assetId: 'v'.repeat(43), localUrl: `xingmang-asset://video/${'v'.repeat(43)}`, mimeType: 'video/mp4' }
+  const realRouter = createCanvasNodeExecutors({
+    imageService: { generate: async () => { throw new Error('unused') }, cancel: () => ({ canceled: false, mayStillComplete: false }) },
+  }).router
+
+  function routed(strategy: 'first-available' | 'all' | undefined, prompts: [string, string] = ['先说', '再说']): CanvasRunGraph {
+    const router = node('router', 'router')
+    if (strategy) router.data.routerStrategy = { version: 1, strategy }
+    return graph([
+      node('note-a', 'text', prompts[0]), node('note-b', 'text', prompts[1]),
+      node('image-a', 'image-input'), node('image-b', 'image-input'), node('clip', 'video-input'),
+      router, node('picture', 'image-generate'), node('movie', 'video-generate'),
+    ], [
+      { id: 't1', source: 'note-a', sourceHandle: 'out:text', target: 'router', targetHandle: 'in:text' },
+      { id: 't2', source: 'note-b', sourceHandle: 'out:text', target: 'router', targetHandle: 'in:text' },
+      { id: 'i1', source: 'image-a', sourceHandle: 'out:image', target: 'router', targetHandle: 'in:images' },
+      { id: 'i2', source: 'image-b', sourceHandle: 'out:image', target: 'router', targetHandle: 'in:images' },
+      // The same picture over a second connection is one input, as on the web host.
+      { id: 'i3', source: 'image-a', sourceHandle: 'out:image', target: 'router', targetHandle: 'in:images' },
+      { id: 'v1', source: 'clip', sourceHandle: 'out:video', target: 'router', targetHandle: 'in:videos' },
+      { id: 'r-text', source: 'router', sourceHandle: 'out:text', target: 'picture', targetHandle: 'in:text' },
+      { id: 'r-image', source: 'router', sourceHandle: 'out:image', target: 'picture', targetHandle: 'in:images' },
+      { id: 'r-video', source: 'router', sourceHandle: 'out:video', target: 'movie', targetHandle: 'in:videos' },
+    ])
+  }
+
+  function routedExecutors(picture: CanvasNodeExecutor, movie: CanvasNodeExecutor = async () => ({ assets: [video] })): CanvasNodeExecutors {
+    return executors({
+      'image-input': async ({ node }) => ({ assets: [node.id === 'image-a' ? imageA : imageB] }),
+      'video-input': async () => ({ assets: [video] }),
+      router: realRouter,
+      'image-generate': picture,
+      'video-generate': movie,
+    })
+  }
+
+  it('hands every picture over one connection when the router keeps all inputs', async () => {
+    const picture = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('g'.repeat(43))] }))
+    const movie = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [video] }))
+    const record = await executeCanvasRun(runOptions(routed('all'), { executors: routedExecutors(picture, movie) }))
+    expect(record.status).toBe('succeeded')
+    const inputs = picture.mock.calls[0][0].inputs
+    expect(inputs.images).toEqual([imageA, imageB])
+    // Each picture is named by its place on the router's connection, the way a role or tile names it.
+    expect(inputs.imageSources).toEqual([
+      { edgeId: 'r-image', outputIndex: 0, asset: imageA },
+      { edgeId: 'r-image', outputIndex: 1, asset: imageB },
+    ])
+    // The text comes once, over the text connection, not again with the pictures.
+    expect(inputs.text).toBe('先说\n再说')
+    // A mixed router still hands its video over the video port.
+    expect(movie.mock.calls[0][0].inputs.videos).toEqual([video])
+    expect(record.nodes.find((entry) => entry.nodeId === 'router')?.attempts.at(-1)?.candidates.map((candidate) => candidate.asset.assetId))
+      .toEqual([imageA.assetId, imageB.assetId, video.assetId])
+  })
+
+  it('hands the first of each kind and the first text that is not blank when the router takes the first available', async () => {
+    const picture = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('g'.repeat(43))] }))
+    const movie = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [video] }))
+    await executeCanvasRun(runOptions(routed('first-available', ['  ', '再说']), { executors: routedExecutors(picture, movie) }))
+    const inputs = picture.mock.calls[0][0].inputs
+    expect(inputs.images).toEqual([imageA])
+    expect(inputs.text).toBe('再说')
+    expect(movie.mock.calls[0][0].inputs.videos).toEqual([video])
+  })
+
+  it('keeps the historical router handing one picture over a single connection', async () => {
+    const picture = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('g'.repeat(43))] }))
+    await executeCanvasRun(runOptions(routed(undefined), { executors: routedExecutors(picture) }))
+    // Every connection from it hands the picture it shows, the text one too;
+    // that is how it always ran, and the second picture never arrives.
+    const inputs = picture.mock.calls[0][0].inputs
+    expect(inputs.image).toEqual(imageA)
+    expect(inputs.images).not.toContainEqual(imageB)
+  })
+
+  it('runs the downstream node again when the strategy changes what it receives, and reuses it when nothing changed', async () => {
+    const cache = new Map<string, CanvasRunCacheEntry>()
+    const picture = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('g'.repeat(43))] }))
+    async function run(strategy: 'first-available' | 'all' | undefined) {
+      return executeCanvasRun(runOptions(routed(strategy), {
+        executors: routedExecutors(picture),
+        resolveCache: async (fingerprint) => cache.get(fingerprint) ?? null,
+        storeCache: async (entry) => { cache.set(entry.fingerprint, entry) },
+      }))
+    }
+    await run(undefined)
+    expect(picture).toHaveBeenCalledTimes(1)
+    // An old project's 「保留全部输入」 now hands both pictures on: another request, not the old result.
+    const upgraded = await run('all')
+    expect(upgraded.nodes.find((entry) => entry.nodeId === 'picture')?.state).toBe('succeeded')
+    expect(picture).toHaveBeenCalledTimes(2)
+    const unchanged = await run('all')
+    expect(unchanged.nodes.find((entry) => entry.nodeId === 'picture')?.state).toBe('cached')
+    expect(picture).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('canvasRunDescendants', () => {
   it('fails a node the desktop cannot run without reaching an executor when a caller skips the service check', async () => {
     // A node the parser marked would otherwise fall back to an executor, so

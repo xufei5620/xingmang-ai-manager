@@ -17,6 +17,12 @@ describe('actual App versioned router graph boundary', () => {
     expect(toWorkflowNode(restored).data.settings).toEqual(original.data.settings)
     expect(toCanvasRunGraph([restored], [], { image: '', video: '' }).nodes[0].data.routerStrategy).toBeUndefined()
   })
+  it('runs an old explicit keep-all router as the versioned all without rewriting its saved settings (D06)', () => {
+    const original = node({ strategy: 'all' }), restored = editorNodeToCanvasNode({ ...original, type: original.kind })
+    expect(toWorkflowNode(restored).data.settings).toEqual({ strategy: 'all' })
+    expect(toCanvasRunGraph([restored], [], { image: '', video: '' }).nodes[0].data.routerStrategy).toEqual({ version: 1, strategy: 'all' })
+    expect(workflowNodeData('router', { strategy: 'all' }).settings).toEqual({ strategy: 'all' })
+  })
   it('roundtrips the explicit mode into the real run graph and retains original incoming edge order', () => {
     const original = { ...createEmptyWorkflow('New router'), nodes: [node({ routerStrategy: marker })] }, parsed = parseWorkflowFile(serializeWorkflow(original))!
     expect(parsed.nodes[0].data.settings?.routerStrategy).toEqual(marker)
