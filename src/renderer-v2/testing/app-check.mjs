@@ -4149,6 +4149,28 @@ test('partial Key configuration keeps successful tools and retries recoverably',
   } finally { await page.close() }
 })
 
+// 总单 17：写密钥那一轮没写成的工具，客户自己点「确认连接」→「保存并检测」→「完成」连好以后，首页那条黄条
+// 跟着收起。以前要重开软件才消失，标题下面却已经写着「都配好了」。
+test('connecting a tool by hand after the key round failed takes its line off the home banner', async () => {
+  const page = await open('claudeUnconfigured=1&bootstrapPartial=1')
+  try {
+    const banner = page.getByTestId('home-bootstrap-result')
+    await expect(banner).toContainText('Claude 分组暂时不可用')
+    await page.getByTestId('tool-claude-primary').click()
+    const dialog = page.getByTestId('config-dialog')
+    await dialog.waitFor()
+    const primary = dialog.getByTestId('tool-save-config')
+    await expect(primary).toHaveText('保存并检测')
+    await primary.click()
+    await expect(primary).toHaveText('完成')
+    await primary.click()
+    await expect(dialog).toHaveCount(0)
+    await connectedBadge(page, 'claude').waitFor()
+    await expect(banner).toHaveCount(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 决定单 D7：登录那一轮账号密钥写完，再把装着、从没配置过的客户端替他连一次；界面上不另说。
 test('logging in connects an installed never-configured client once after the account keys are written', async () => {
   const page = await open('guest=1&externalInstalled=1&externalPristine=opencode')

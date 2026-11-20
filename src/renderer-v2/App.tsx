@@ -229,11 +229,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const siteId = accountSiteId(session)
   const relaySite = resolveRelaySite(siteId)
   const avatarIdentity = session.account ? { origin: accountOrigin(session), userId: session.account.userId } : undefined
-  const { accountBootstrap, accountBootstrapRef, runAccountBootstrap, rewriteAccountKeys, applySubscriptionToTools, followSessionChange, abandonAccountBootstrap, suppressRestore } = useAccountBootstrap({
+  const { accountBootstrap, accountBootstrapRef, runAccountBootstrap, rewriteAccountKeys, applySubscriptionToTools, followSessionChange, abandonAccountBootstrap, suppressRestore, settleToolKeyFailure } = useAccountBootstrap({
     native, settings, toast, toolbox, session, scope, siteId, boot, auth, offline, noteStartupCheck, mounted, accountEpoch, setAuth, setWorkspaceEntered, restoredBoot,
   })
   const { toolConfigConfirmed, keepCurrentToolConfig, switchToolAccount, repairToolHooks, repairBrokenToolConfig, confirmToolKeyWritten, finishConfigSave, commandConfirmation, answerCommandConfirmation } = useToolAccountActions({
-    toolsApi, toolbox, toast, session, mounted, accountEpoch, configTool, setConfigTool, setAuth, setCcSwitchReminder, setSwitchRestartOffer,
+    toolsApi, toolbox, toast, session, mounted, accountEpoch, configTool, setConfigTool, setAuth, setCcSwitchReminder, setSwitchRestartOffer, settleToolKeyFailure,
   })
   // 官方账号与手填密钥重写不动（重写流程本身会跳过它们），所以按钮按当前配置的
   // 来源决定给不给，而不是见到密钥层失败就画一颗出来。
