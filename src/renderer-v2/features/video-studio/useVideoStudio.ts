@@ -21,6 +21,7 @@ import {
   buildVideoStudioCatalogs,
   buildVideoStudioClipRequest,
   buildVideoStudioImageRequest,
+  changeVideoStudioSettings,
   createVideoStudioId,
   createVideoStudioProject,
   finishVideoStudioShotDrawing,
@@ -208,7 +209,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       setStorageWarning('这台电脑上存不下这份分镜，关掉软件以后要重新写。生成好的片段照样在作品库里。')
     }
   }
-  const changeSettings = (patch: Partial<VideoStudioSettings>) => commit((current) => ({ ...current, settings: { ...current.settings, ...patch } }))
+  const changeSettings = (patch: Partial<VideoStudioSettings>) => commit((current) => changeVideoStudioSettings(current, patch))
   const settleModels = () => {
     const current = projectRef.current.settings
     const context = { groups: groupsRef.current, site, settled: pendingChatGroups(groupsRef.current, preparationsRef.current).size === 0 }
