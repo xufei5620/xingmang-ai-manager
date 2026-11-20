@@ -195,23 +195,43 @@ export async function inspectWindowsElevationCapability(
 }
 
 /**
+ * 提权装好的东西归谁，决定普通账号该往哪儿走。Node.js 是机器级 MSI，换个管理员账号装一次，
+ * 这台电脑上每个账号都能用；Codex 桌面端、Claude Desktop 走 Add-AppxPackage，只注册给装它的那个账号。
+ */
+export type WindowsElevatedInstallTarget =
+  | { kind: 'machine' }
+  | { kind: 'account'; product: string }
+
+/**
  * The sentence appended when the account provably cannot elevate on its own.
  * Deliberately not an instruction to re-run the app as administrator: running
  * elevated bypasses the problem instead of fixing it, and this app is built to
  * run unelevated (I2 keeps the elevation boundary narrow on purpose).
+ *
+ * Nor is it "type an administrator's password at the prompt": both elevated
+ * installers refuse a token that belongs to another account (exit 2225), so
+ * over-the-shoulder credentials never finish the install. The old sentence sent
+ * standard users round that loop. The way out is installing from an account
+ * that is itself an administrator.
  */
-export function windowsStandardAccountAdvice(): string {
-  return '这个 Windows 账号不在管理员组，需要在授权窗口里输入一个管理员账号的密码才能继续；公司或学校的电脑请联系 IT 协助。'
+export function windowsStandardAccountAdvice(target: WindowsElevatedInstallTarget = { kind: 'machine' }): string {
+  const tail = '公司或学校的电脑请找管理电脑的人帮忙。'
+  if (target.kind === 'account') {
+    const product = /^[A-Za-z0-9]/.test(target.product) ? ` ${target.product}` : target.product
+    return `这个 Windows 账号本身没有管理员权限，在这里装不了${product}。要用的话，换一个有管理员权限的账号登录这台电脑，在那个账号里装和用。${tail}`
+  }
+  return `这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。${tail}`
 }
 
 /** 用户在授权窗口点了「否」或直接关掉。 */
 export function windowsElevationCancelledMessage(
   subject: string,
   capability: WindowsElevationCapability = 'unknown',
+  target: WindowsElevatedInstallTarget = { kind: 'machine' },
 ): string {
   const head = `已取消管理员授权，${subject}安装未开始。`
   return capability === 'standard'
-    ? `${head}${windowsStandardAccountAdvice()}`
+    ? `${head}${windowsStandardAccountAdvice(target)}`
     : `${head}重新点击安装即可再次授权。`
 }
 
@@ -219,10 +239,11 @@ export function windowsElevationCancelledMessage(
 export function windowsElevationDeniedMessage(
   subject: string,
   capability: WindowsElevationCapability = 'unknown',
+  target: WindowsElevatedInstallTarget = { kind: 'machine' },
 ): string {
   const head = `未获得管理员权限，${subject}安装已停止。`
   return capability === 'standard'
-    ? `${head}${windowsStandardAccountAdvice()}`
+    ? `${head}${windowsStandardAccountAdvice(target)}`
     : `${head}请在弹出的授权窗口点击「是」；如果这台电脑用的是普通账号，需要输入一个管理员账号的密码。`
 }
 
