@@ -104,6 +104,11 @@ interface InspectionScope {
   reuseVerifiedSignatures?: boolean
   /** 只看这一个客户端（打开它之前）：没点的那几家跟这次打开无关，不该让人多等。 */
   only?: ExternalToolId
+  /**
+   * 打开之前那次：Mac 上同一个应用名认到第一份就停，打开的就是它；另一份开没开跟这次打开无关，不该让人多等它的签名核对。
+   * 别的检测不传：开没开要几份一起算（总单 #35）。Windows 上不看它。
+   */
+  firstCopy?: boolean
 }
 /** 判断应用包变没变要看的那几项；fs.Stats 本身就满足。 */
 interface BundleEntryStats { dev: number; ino: number; mtimeMs: number; size: number; isFile(): boolean }
@@ -931,6 +936,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     const errors: Inspection['errors'] = {}
     for (const tool of scope.only ? [scope.only] : tools) {
       // WorkBuddy 两版各找一遍（国内版在前），两版都装着就都认；别的客户端只有一种应用名。
+      // 「应用程序」和家目录下的「应用程序」各有一份的，两份都认：显示、打开用前面那份，开没开两份一起算（status），
+      // 开着的是后一份也不改它们共用的那份配置（总单 #35，以前认到第一份就不往下看）。打开之前那次只认前面那份（firstCopy）。
       const programs = tool === 'workbuddy' ? workBuddyPrograms : [{ edition: undefined, bundle: definitions[tool].bundle, bundleId: definitions[tool].bundleId }]
       for (const definition of programs) for (const directory of ['/Applications', path.posix.join(userHome, 'Applications')]) {
         const candidate = path.posix.join(directory, definition.bundle)
@@ -972,7 +979,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
           const running = processes.stdout.split(/\r?\n/).some((line) => line.trim().startsWith(`${canonical}/Contents/MacOS/`))
           clients.push({ tool, path: canonical, version: versionValue(data.CFBundleShortVersionString), running, ...(definition.edition ? { edition: definition.edition } : {}) })
           delete errors[tool]
-          break
+          if (scope.firstCopy) break
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') errors[tool] = errorText(error)
         }
@@ -997,7 +1004,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     return {
       tool, installed: Boolean(client), version: client?.version ?? null, path: client?.path ?? null,
       installDirectory: client ? (platform === 'win32' ? path.win32.dirname(client.path) : client.path) : null,
-      // 两版 WorkBuddy 有一版开着就算开着：换线路、换 Key 照旧等它退出。
+      // 同一家认出来几份（两版 WorkBuddy、几条卸载登记、Mac 上两个「应用程序」）有一份开着就算开着：换线路、换 Key 照旧等它退出。
       running: located.some((item) => item.running),
       installSupported: tool !== 'workbuddy' && platformHint === null && (platform === 'darwin' || Boolean(route?.oneClick)),
       launchSupported: Boolean(client) && (platform === 'win32' || (platform === 'darwin' && !runningAsRoot())),
@@ -1309,7 +1316,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       const startedAt = now()
       // 只看要打开的这一个：没点的那几家跟这次打开无关，不该让人多等它们的检测和签名核对。
       // Windows 上验过并且通过、文件和版本都没变的不再现验（已知68，理由见 windowsExternalClientInventoryScript 上面）。
-      const inspection = await inspect({ only: tool, reuseVerifiedSignatures: platform === 'win32' })
+      const inspection = await inspect({ only: tool, reuseVerifiedSignatures: platform === 'win32', firstCopy: true })
       const inspectedAt = now()
       const client = inspection.clients.find((item) => item.tool === tool)
       if (!client) throw new Error(inspection.errors[tool] || '尚未检测到客户端，请先安装并重新检测')
