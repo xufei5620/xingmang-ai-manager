@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createWorkspace, type ChatMessage, type ChatWorkspace } from './state'
-import { answerHistoryFlushRequests, autosaveDelay, autosaveMaxWaitMs, autosaveQuietMs, ChatStorageError, conversationLimitMessage, conversationPlainText, createHistoryWriter, flushChatHistory, registerHistoryFlusher, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, MAX_CONVERSATIONS, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText, runHistoryImport } from './storage'
+import { answerHistoryFlushRequests, autosaveDelay, autosaveMaxWaitMs, autosaveQuietMs, ChatStorageError, conversationLimitMessage, conversationExport, conversationPlainText, createHistoryWriter, flushChatHistory, registerHistoryFlusher, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, MAX_CONVERSATIONS, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText, runHistoryImport } from './storage'
 
 const scope = 'xm-account:7'
 const legacyKey = 'xingmang-ai-chat:v1:7'
@@ -97,6 +97,12 @@ describe('lossless chat history files', () => {
     const restored = await saveAndReopen(state, files)
     expect(restored.state.conversations[0].draftImages).toEqual(state.conversations[0].draftImages)
     expect(files.raw()).not.toContain('xingmang-asset://')
+    // 旧版本把同一张图的两份一起放进了输入框（R28-6），读回来只留一份，不然这条还是发不出去。
+    const copies = workspace()
+    const kept = state.conversations[0].draftImages ?? []
+    copies.conversations[0].draftImages = [...kept, ...kept]
+    const healed = await saveAndReopen(copies, memoryFiles())
+    expect(healed.state.conversations[0].draftImages).toEqual(state.conversations[0].draftImages)
     const broken = workspace()
     Object.assign(broken.conversations[0], { draftImages: 'not a list' })
     // Only that conversation is refused (and kept aside); the record as a whole still reads.
@@ -1033,6 +1039,29 @@ describe('moving history to another computer', () => {
     expect(merged.state.conversations).toHaveLength(2)
   })
 
+  // A09：旧电脑导出前在输入框里又打了几句、带了文件，消息没变。
+  it('brings in an unsent draft from the file when the messages match and this computer has none', () => {
+    const state = workspace(scope, 2)
+    state.conversations[0].messages = [message(0), message(1)]
+    const file = { name: '需求.md', size: 15, text: '第一版需求', truncated: false }
+    const drafted = { ...state.conversations[0], draft: '旧电脑上没发的那句', draftFiles: [file], updatedAt: state.conversations[0].updatedAt + 5000 }
+    const merged = mergeImportedConversations(state, [drafted])
+    expect(merged).toMatchObject({ added: 0, updated: 1, skipped: 0 })
+    const local = merged.state.conversations.find((conversation) => conversation.id === state.conversations[0].id)
+    expect(local).toMatchObject({ draft: '旧电脑上没发的那句', draftFiles: [file], updatedAt: state.conversations[0].updatedAt })
+    expect(local?.messages).toEqual(state.conversations[0].messages)
+    expect(merged.state.conversations).toHaveLength(2)
+    // The same file imported again changes nothing and adds no copy.
+    expect(mergeImportedConversations(merged.state, [drafted])).toMatchObject({ added: 0, updated: 0, skipped: 0 })
+    // A draft this computer already has wins; the file's draft does not overwrite it.
+    const typedHere = { ...state, conversations: state.conversations.map((conversation, index) => index === 0 ? { ...conversation, draft: '这台电脑上打的' } : conversation) }
+    const kept = mergeImportedConversations(typedHere, [drafted])
+    expect(kept).toMatchObject({ added: 0, updated: 0, skipped: 0 })
+    expect(kept.state.conversations.find((conversation) => conversation.id === state.conversations[0].id)?.draft).toBe('这台电脑上打的')
+    // A blank draft in the file brings nothing.
+    expect(mergeImportedConversations(state, [{ ...state.conversations[0], draft: '   ' }])).toMatchObject({ added: 0, updated: 0, skipped: 0 })
+  })
+
   it('saves a diverged file copy beside this computer copy, once, and keeps updating that copy', () => {
     const state = workspace(scope, 1)
     state.conversations[0] = { ...state.conversations[0], title: '写周报', messages: [message(0), message(1, { content: '新电脑上聊的' })] }
@@ -1206,6 +1235,17 @@ describe('moving history to another computer', () => {
     expect(text).not.toContain('abcdef123456')
     expect(text).toContain('[1 张图片，没有放进这个文件]')
     expect(text).toContain('[没有回复成功：网络断了]')
+  })
+  // 以前文件第一行和保存框里的文件名都是对话名原样（Mac 验收 R5）：自己改的名字、导进来的对话名都可能夹着密钥。
+  it('masks keys in the exported title and in the suggested file name', () => {
+    const relayKey = `sk-${'fake-relay-'.repeat(3)}value`
+    const conversation = { ...createConversation(undefined, 'c'), title: `测试 ${relayKey}`, renamed: true, messages: [message(0, { content: '好的', createdAt: 0 })] }
+    expect(conversationPlainText(conversation).startsWith('测试 [密钥未保存]\n')).toBe(true)
+    const exported = conversationExport(conversation)
+    expect(exported.title).toBe('测试 [密钥未保存]')
+    expect(exported.text).toBe(conversationPlainText(conversation))
+    expect(JSON.stringify(exported)).not.toContain('fake-relay')
+    expect(conversationPlainText({ ...conversation, title: '' }).startsWith('新对话\n')).toBe(true)
   })
 })
 

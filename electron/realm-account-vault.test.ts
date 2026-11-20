@@ -1,9 +1,10 @@
 import { strict as assert } from 'node:assert'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
+import fc from 'fast-check'
 import { describe, it } from 'vitest'
 import {
   parseRealmSavedAccount, realmAccountSummary, realmForExplicitSite, realmOwnerKey, RealmAccountError,
-  type AccountRealmId, type RealmSavedAccount,
+  type AccountRealmId, type RealmCredential, type RealmSavedAccount,
 } from './realm-account'
 import {
   createRealmAccountVault, createSessionRealmAccountVault, migrateLegacySavedAccount, realmStorageScope, realmVaultDiskFullMessage,
@@ -208,6 +209,72 @@ describe('realm account contracts and encrypted vault', () => {
     assert.equal((await example.vault.list()).length, 1)
     await example.vault.forget(account())
     assert.equal((await example.vault.list()).length, 0)
+  })
+})
+
+// 0.2.25 总单第 19 项（11-18 复核 O08）：开机重试那次续期晚回来时，客户已经又登了同一个号。
+describe('credential rotation against a newer login of the same account', () => {
+  function cookies(value: string): RealmCredential { return { kind: 'new-api', cookies: [`session=${value}`] } }
+  function tokens(value: string): RealmCredential { return { kind: 'sub2api', accessToken: `access-${value}`, refreshToken: `refresh-${value}`, expiresAt: null } }
+
+  it('saves a refreshed credential over the one it was refreshed from and keeps the rest of the record', async () => {
+    const example = storageFixture()
+    await example.vault.activate(account())
+    assert.equal(await example.vault.rotateCredential(account(), account().credential, cookies('rotated')), 'saved')
+    assert.deepEqual(await example.vault.get(account()), { ...account(), credential: cookies('rotated') })
+    assert.equal(realmOwnerKey((await example.vault.active())!), realmOwnerKey(account()))
+  })
+  it('leaves a newer login of the same account untouched', async () => {
+    for (const realmId of ['xm-account', 'api-account'] as const) {
+      const example = storageFixture()
+      const credential = (value: string) => realmId === 'xm-account' ? cookies(value) : tokens(value)
+      const fresh = parseRealmSavedAccount({ ...account(realmId), credential: credential('fresh-login') })
+      await example.vault.activate(fresh)
+      const writes = example.writes()
+      assert.equal(await example.vault.rotateCredential(account(realmId), account(realmId).credential, credential('late-retry')), 'superseded')
+      assert.deepEqual(await example.vault.get(fresh), fresh)
+      assert.equal(example.writes(), writes)
+    }
+  })
+  it('captures the credentials before waiting its turn', async () => {
+    const example = storageFixture()
+    await example.vault.activate(account())
+    const next = ['session=rotated']
+    const pending = example.vault.rotateCredential(account(), account().credential, { kind: 'new-api', cookies: next })
+    next[0] = 'session=changed'
+    assert.equal(await pending, 'saved')
+    assert.deepEqual((await example.vault.get(account()))?.credential, cookies('rotated'))
+  })
+  it('does not write again when the record already holds the refreshed credential', async () => {
+    const example = storageFixture()
+    await example.vault.activate(parseRealmSavedAccount({ ...account(), credential: cookies('rotated') }))
+    const writes = example.writes()
+    assert.equal(await example.vault.rotateCredential(account(), account().credential, cookies('rotated')), 'saved')
+    assert.equal(example.writes(), writes)
+  })
+  it('never creates a record that is no longer on this computer', async () => {
+    const example = storageFixture()
+    await example.vault.activate(account('api-account', '7'))
+    assert.equal(await example.vault.rotateCredential(account(), account().credential, cookies('rotated')), 'absent')
+    assert.equal(await example.vault.get(account()), null)
+    assert.deepEqual(await example.vault.get(account('api-account', '7')), account('api-account', '7'))
+  })
+  it('never replaces a credential other than the expected one, with random inputs', async () => {
+    const value = fc.stringMatching(/^[a-z0-9]{1,12}$/)
+    await fc.assert(fc.asyncProperty(value, value, value, async (stored, expected, next) => {
+      const example = storageFixture()
+      const record = parseRealmSavedAccount({ ...account(), credential: cookies(stored) })
+      await example.vault.activate(record)
+      const result = await example.vault.rotateCredential(account(), cookies(expected), cookies(next))
+      const after = await example.vault.get(account())
+      if (stored === expected || stored === next) {
+        assert.equal(result, 'saved')
+        assert.deepEqual(after, { ...record, credential: cookies(next) })
+      } else {
+        assert.equal(result, 'superseded')
+        assert.deepEqual(after, record)
+      }
+    }), { numRuns: 100 })
   })
 })
 

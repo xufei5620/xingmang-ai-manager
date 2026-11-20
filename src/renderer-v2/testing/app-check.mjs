@@ -519,6 +519,24 @@ test('external clients recognize complete manual configurations without claiming
   } finally { await page.close() }
 })
 
+// yoyo 2026-11-19「提示改」：星芒是右键「以管理员身份运行」的，打开 Claude Desktop 前没替它放程序（有意的），
+// 打开以后说一句怎么办；正常打开的星芒不说。
+test('opening Claude Desktop from an elevated 星芒 says how to let it prepare the program, and only then', async () => {
+  const notice = '星芒现在是以管理员身份打开的，没法替 Claude Desktop 准备程序。关掉星芒、直接双击打开，再点「打开」。'
+  for (const elevated of [true, false]) {
+    const page = await open(`externalInstalled=1&externalOther=claudeDesktop&externalLocalReady=claudeDesktop${elevated ? '&externalLaunchElevated=1' : ''}`)
+    try {
+      const claude = page.getByTestId('tool-row-claudeDesktop')
+      await claude.getByText('已配好', { exact: true }).waitFor()
+      await claude.getByRole('button', { name: '打开', exact: true }).click()
+      await claude.getByText(/运行中/).waitFor()
+      if (elevated) await waitForToast(page, notice)
+      else await assertNoToast(page, notice)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 // #1111 第 1 条：Claude Desktop 改用当前账号时原来那份连接用不上了，弹连接框之前先说一句为什么弹。
 test('switching Claude Desktop back to the account says why the connection dialog opens', async () => {
   const page = await open('externalInstalled=1&externalReady=claudeDesktop&externalAccountOwned=claudeDesktop&externalReconnect=1')
@@ -1264,6 +1282,35 @@ test('macOS opens an installed desktop app when Codex CLI and Node are missing',
     assert.deepEqual(calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args), [['open']])
     assert.equal(calls.some((entry) => ['launchCli', 'installCli', 'installNodeRuntime', 'chooseWorkspace'].includes(entry.method)), false)
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 11-18 F05（0.2.25 总单第 38 项）：Mac 上更新 Codex 桌面端时星芒把它关了，更新完要帮它重开。那一刻别的工具
+// 正在打开（这里是 Codex 命令行停在半路），以前这次重开被 requestLaunch 直接丢掉；现在等那次走完再开。
+test('macOS reopens the Codex desktop app after an update even if another tool was opening meanwhile', async () => {
+  const page = await open('os=mac&codexMacUpdate=1&launchPending=1')
+  try {
+    const update = page.getByTestId('tool-codexDesktop-update')
+    await update.waitFor()
+    assert.equal(await update.innerText(), '可更新到 v1.3.0')
+    await page.evaluate(() => window.v2Test.holdNextInstall())
+    await update.click()
+    const prompt = page.getByRole('dialog', { name: 'Codex 桌面端还开着' })
+    await prompt.getByRole('button', { name: '关掉并更新' }).click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCodexDesktop'))
+    // 更新还在半路，客户先去打开 Codex 命令行，那次打开停在主进程那一步。
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.evaluate(() => window.v2Test.releaseInstall())
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'getCodexDesktopStatus').length > 0
+      && !document.querySelector('[data-testid="tool-codexDesktop-update"]'))
+    await page.waitForTimeout(200)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop')), false, '命令行还在打开，桌面端排在它后面')
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
+    const desktop = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args))
+    assert.deepEqual(desktop, [['open']])
     await clean(page)
   } finally { await page.close() }
 })
@@ -2838,6 +2885,27 @@ test('the guide opens a used CLI in the folder its home card shows, and can stil
     calls = await page.evaluate(() => window.v2Test.calls)
     assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[]])
     assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').at(-1).args, ['codex', 'C:\\Selected Project'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 11-18 复核 N11：「这个文件夹不建议打开」那一问里点「先不打开」，工具没起来，引导以前照样当做完、整个关掉。
+test('the guide stays on its last step when the user declines to open the folder (N11)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&launchDeclined=1')
+  const launches = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length)
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.getAttribute('title') === '在 C:\\work\\my-app 打开')
+    await guideReadyFor(page, 'claude')
+    await page.getByTestId('guide-open-tool').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.waitForFunction(() => !document.querySelector('[data-testid="guide-open-tool"]')?.disabled)
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
+    assert.equal(await page.getByTestId('guide-error').count(), 0)
+    assert.equal(await launches(), 1)
+    // 接着在这一步再点一次，这回打开了才算走完。
+    await page.getByTestId('guide-open-tool').click()
+    await page.getByTestId('start-guide').waitFor({ state: 'detached' })
+    assert.equal(await launches(), 2)
     await clean(page)
   } finally { await page.close() }
 })

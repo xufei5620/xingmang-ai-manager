@@ -75,6 +75,8 @@ interface HarnessOptions {
   legacy?: RelayRouteConclusions
   status?: RouteStatus | null
   clock?: number
+  /** What the installed image skill script says about Hong Kong addresses; left out = the dependency is not wired. */
+  skillSupportsHongKong?: boolean
 }
 
 async function settle(): Promise<void> {
@@ -93,6 +95,7 @@ function harness(options: HarnessOptions = {}) {
   const snapshots: ToolRouteSnapshot[] = []
   const events: Array<{ event: string; detail: Record<string, unknown> }> = []
   const routeStatus = { current: options.status === undefined ? null : options.status }
+  let hongKongSkillChecks = 0
   const controller = createToolRouteController({
     preference: options.preference ?? 'auto',
     readState: () => options.stored === undefined ? { line: 'direct', failures: {}, notices: {} } : options.stored,
@@ -106,6 +109,12 @@ function harness(options: HarnessOptions = {}) {
       statusReads.push(fresh)
       return routeStatus.current
     },
+    ...(options.skillSupportsHongKong === undefined ? {} : {
+      skillSupportsHongKong: () => {
+        hongKongSkillChecks++
+        return options.skillSupportsHongKong === true
+      },
+    }),
     notify: (notice) => { notices.push(notice) },
     schedule(callback, delayMs) {
       const timer = { callback, dueAt: clock + delayMs, order: order++ }
@@ -126,6 +135,7 @@ function harness(options: HarnessOptions = {}) {
     notices,
     snapshots,
     routeStatus,
+    hongKongSkillChecks: () => hongKongSkillChecks,
     now: () => clock,
     advance(ms: number) { clock += ms },
     events: (event: string) => events.filter((entry) => entry.event === event).map((entry) => entry.detail),
@@ -590,6 +600,18 @@ describe('tool route controller', () => {
     const recommended = status({ hk_enabled: true, hk_recommended: true })
     expect(toolRouteHongKongAssignable({ status: recommended, incident: false, skillSupportsHongKong: true })).toBe(false)
     expect(toolRouteHongKongAssignable({ status: null, incident: false, skillSupportsHongKong: true })).toBe(false)
+  })
+
+  it('asks the Hong Kong rule when downgrading and skips Hong Kong while its switch is off', async () => {
+    // Every condition except the switch says yes: the status file recommends Hong Kong, no incident, the
+    // skill script supports it. The downgrade has to go through toolRouteHongKongAssignable (H5) and,
+    // with the switch still off, never probe Hong Kong.
+    const run = harness({ status: status({ hk_enabled: true, hk_recommended: true }), skillSupportsHongKong: true })
+    await failDirectThreeRounds(run)
+    expect(run.hongKongSkillChecks()).toBeGreaterThan(0)
+    expect(run.probes).toEqual(['direct', 'direct', 'direct', 'primary'])
+    expect(run.controller.line()).toBe('primary')
+    expect(run.controller.snapshot().lastChange).toMatchObject({ from: 'direct', to: 'primary', reason: 'failed' })
   })
 
   it('picks legitimate addresses per line from the status file', () => {

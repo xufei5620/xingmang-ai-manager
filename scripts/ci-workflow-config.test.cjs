@@ -1593,6 +1593,7 @@ test('the installer smokes run inside quality on the pull requests that touch th
     'electron/app-settings.ts',
     'electron-builder.config.cjs',
     'build/installer.nsh',
+    'scripts/windows-installer-package-entries.cjs',
     'package.json',
     'package-lock.json',
     'scripts/upgrade-smoke.cjs',
@@ -1618,11 +1619,13 @@ test('the installer smokes run inside quality on the pull requests that touch th
     'scripts/windows-install-directory-acl-smoke.ps1',
     'scripts/windows-file-association-smoke.ps1',
     'scripts/windows-upgrade-blocked-smoke.ps1',
+    'scripts/windows-upgrade-user-files-smoke.ps1',
+    'scripts/windows-installer-package-entries.cjs',
     '.github/workflows/windows-uninstall-smoke.yml',
   ]) {
     assert.equal(touchesUninstallSmoke(['README.md', file]), true, file)
   }
-  for (const file of ['electron/ipc.ts', 'electron/platform/entry.test.ts', 'scripts/windows-acceleration-recovery.test.cjs']) {
+  for (const file of ['electron/ipc.ts', 'electron/platform/entry.test.ts', 'scripts/windows-acceleration-recovery.test.cjs', 'scripts/windows-installer-package-entries.test.cjs']) {
     assert.equal(touchesUninstallSmoke(['README.md', file]), false, file)
   }
 
@@ -2027,6 +2030,9 @@ const fixtureReadinessConsumers = [
   // scan below never saw it; it clicked straight after page.goto on a 7s action
   // default. Found by the Windows-shard check further down.
   'e2e/v2-local-avatar.test.mjs',
+  // Opens a data: page through the shared retry so the stall it stages is the
+  // only thing that can fail it.
+  'e2e/click-stall.test.mjs',
 ]
 
 // A hand-kept list only covers what someone remembered to add. These are the
@@ -2434,6 +2440,38 @@ test('the realm smoke clicks 稍后继续 until the start guide has really close
   assert.match(pauseStartGuide, /while \(await pause\.count\(\)\)/, 'it must click again while the guide is still there')
   assert.match(pauseStartGuide, /state: 'detached'/, 'it must wait for the guide to go before deciding the click landed')
   assert.match(realmSmoke.slice(end), /await pauseStartGuide\(page\)/, 'every UI login must close the guide through it')
+})
+
+// The renderer-v2-e2e shard twice failed a click whose call log ended at
+// "performing click action" (#1756 on 2026-11-11, #2003 on 2026-11-20), and
+// neither log could say whether the mouse events never reached the page or
+// the page stopped answering after them. The evidence that separates the two
+// is only there while the stall lasts, so every page the harness hands out
+// takes it on such a click, and the Windows job keeps the screenshot.
+test('a stalled browser click reports what the page and the browser were doing', async () => {
+  const harness = fs.readFileSync(path.join(root, 'e2e', 'harness.mjs'), 'utf8')
+  assert.match(harness, /from '\.\/click-stall\.mjs'/, 'the harness must take click stall evidence')
+  assert.match(harness, /const page = watchClickStalls\(pageErrors\.watch\(await browser\.newPage\(/,
+    'every page the harness hands out must take the evidence on a stalled click')
+
+  const clickStall = await import(require('node:url').pathToFileURL(path.join(root, 'e2e', 'click-stall.mjs')).href)
+  assert.equal(path.relative(root, clickStall.clickStallArtifactsDir).split(path.sep).join('/'), 'artifacts/click-stall')
+  // Inside the roughly ten seconds the stalls on record lasted, so the probes
+  // describe the stall rather than whatever came after it.
+  assert.ok(clickStall.clickStallProbeTimeoutMs <= 5_000)
+
+  const steps = workflow.jobs['windows-test'].steps
+  const uploadIndex = steps.findIndex((step) => step.name === 'Upload screenshots of stalled clicks')
+  assert.ok(uploadIndex > shardStepIndex(), 'the screenshots are uploaded after the shard that took them')
+  const upload = steps[uploadIndex]
+  assert.equal(upload.if, 'failure()', 'only a failed shard has a stalled click to show')
+  assert.match(upload.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/, 'pinned to a full commit like every other action here')
+  assert.equal(upload.with.path, 'artifacts/click-stall/')
+  assert.match(upload.with.name, /matrix\.shard/, 'each shard keeps its own screenshots')
+  assert.equal(upload.with['if-no-files-found'], 'ignore')
+
+  // The live check that a stall really produces the evidence runs wherever npm test does.
+  assert.match(packageJson.scripts['test:browser'], /\be2e\/click-stall\.test\.mjs\b/)
 })
 
 // A React render crash or an unhandled rejection inside a fixture leaves the

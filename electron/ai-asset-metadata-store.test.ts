@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiAssetMetadataStore, aiAssetMetadataShardOf, mergeAiAssetMetadataItems } from './ai-asset-metadata-store'
 
 const roots: string[] = []
@@ -10,6 +10,33 @@ const assetId = 'a'.repeat(43)
 
 function idFor(seed: string): string {
   return createHash('sha256').update(seed).digest('base64url')
+}
+
+/** An identifier other than `assetId` that lands in the same shard, so one shard holds both records. */
+function idInShardOf(seed: string): string {
+  const shard = aiAssetMetadataShardOf(assetId)
+  for (let attempt = 0; ; attempt += 1) {
+    const candidate = idFor(`${seed}-${attempt}`)
+    if (candidate !== assetId && aiAssetMetadataShardOf(candidate) === shard) return candidate
+  }
+}
+
+function shardPathOf(root: string, userId: number, id: string): string {
+  return path.join(root, `user-${userId}`, 'asset-metadata', `shard-${aiAssetMetadataShardOf(id).toString(16)}.json`)
+}
+
+function busy(operation: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(`EBUSY: resource busy or locked, ${operation}`), { code: 'EBUSY' })
+}
+
+/** Fails every open of one file the way an antivirus scan holding it does, until the returned function is called. */
+function holdForScan(filePath: string): () => void {
+  const open = fs.promises.open
+  const spy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
+    if (path.resolve(String(args[0])) === path.resolve(filePath)) throw busy('open')
+    return open(...args)
+  })
+  return () => spy.mockRestore()
 }
 
 function shardFiles(accountRoot: string): string[] {
@@ -35,6 +62,7 @@ function fixture() {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -68,6 +96,34 @@ describe('AiAssetMetadataStore', () => {
     const { store } = fixture()
     await expect(store.restore(7, assetId)).rejects.toThrow('不在回收站')
     await store.rename(7, assetId, '产品主视觉')
+    await expect(store.restore(7, assetId)).rejects.toThrow('不在回收站')
+  })
+
+  it('brings a recycled asset back with its name, tags and favorite when it is stored again (R28-7)', async () => {
+    // The stores are content-addressed, so importing a file again returns the
+    // id of the copy in the bin; recording its source is that second import.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-asset-metadata-'))
+    roots.push(root)
+    let clock = new Date('2026-08-14T09:00:00.000Z')
+    const store = new AiAssetMetadataStore({ outputRoot: root, now: () => clock })
+    await store.rename(7, assetId, '产品主视觉')
+    await store.updatePreferences(7, assetId, { favorite: true, tags: ['角色'] })
+    await store.setSource(7, assetId, 'generated', '一只猫')
+    await store.softDelete(7, assetId)
+
+    clock = new Date('2026-08-15T09:00:00.000Z')
+    const stored = await store.setSource(7, assetId, 'imported')
+    expect(stored).not.toHaveProperty('deletedAt')
+    const expected = {
+      displayName: '产品主视觉',
+      favorite: true,
+      tags: ['角色'],
+      source: 'imported',
+      prompt: '一只猫',
+      updatedAt: '2026-08-15T09:00:00.000Z',
+    }
+    await expect(store.getMany(7, [assetId])).resolves.toEqual({ [assetId]: expected })
+    await expect(new AiAssetMetadataStore({ outputRoot: root }).getMany(7, [assetId])).resolves.toEqual({ [assetId]: expected })
     await expect(store.restore(7, assetId)).rejects.toThrow('不在回收站')
   })
 
@@ -253,6 +309,67 @@ describe('AiAssetMetadataStore', () => {
     await expect(store.getAll(7)).resolves.toEqual({})
     expect(fs.existsSync(misplaced)).toBe(false)
     expect(fs.readdirSync(shardDirectory)).toContain(`shard-${wrong.toString(16)}.json.corrupt-1786698000000-metadata-backup-id.bak`)
+  })
+
+  it('leaves a shard it cannot read right now as it is and saves nothing over it', async () => {
+    const { root, store } = fixture()
+    const sibling = idInShardOf('sibling')
+    await store.rename(7, assetId, '产品主视觉')
+    await store.updatePreferences(7, assetId, { favorite: true, tags: ['海报'] })
+    await store.softDelete(7, sibling)
+    const shardPath = shardPathOf(root, 7, assetId)
+    const before = fs.readFileSync(shardPath, 'utf8')
+    const release = holdForScan(shardPath)
+
+    // Read as empty, the next save would write one record over the name, the
+    // tags, the favorite and the recycle-bin mark beside it (R28-5).
+    await expect(store.getAll(7)).rejects.toThrow('EBUSY')
+    await expect(store.getMany(7, [assetId])).rejects.toThrow('EBUSY')
+    await expect(store.updatePreferences(7, sibling, { favorite: true })).rejects.toThrow('EBUSY')
+    await expect(store.markUsed(7, assetId)).rejects.toThrow('EBUSY')
+    expect(fs.readFileSync(shardPath, 'utf8')).toBe(before)
+    expect(fs.readdirSync(path.dirname(shardPath)).filter((name) => name.endsWith('.bak'))).toEqual([])
+
+    release()
+    await store.updatePreferences(7, sibling, { favorite: true })
+    await expect(store.getAll(7)).resolves.toEqual({
+      [assetId]: { displayName: '产品主视觉', favorite: true, tags: ['海报'], updatedAt: '2026-08-14T09:00:00.000Z' },
+      [sibling]: { favorite: true, deletedAt: '2026-08-14T09:00:00.000Z', updatedAt: '2026-08-14T09:00:00.000Z' },
+    })
+  })
+
+  it('starts a broken shard over only once the broken file is out of the way', async () => {
+    const { root, store } = fixture()
+    const shardPath = shardPathOf(root, 7, assetId)
+    fs.mkdirSync(path.dirname(shardPath), { recursive: true })
+    fs.writeFileSync(shardPath, '{broken', 'utf8')
+    const rename = vi.spyOn(fs.promises, 'rename').mockRejectedValueOnce(busy('rename'))
+
+    // The backup could not be made, so writing now would leave no copy at all.
+    await expect(store.rename(7, assetId, '新名字')).rejects.toThrow('EBUSY')
+    expect(fs.readFileSync(shardPath, 'utf8')).toBe('{broken')
+    rename.mockRestore()
+
+    await expect(store.rename(7, assetId, '新名字')).resolves.toMatchObject({ displayName: '新名字' })
+    expect(fs.readFileSync(`${shardPath}.corrupt-1786698000000-metadata-backup-id.bak`, 'utf8')).toBe('{broken')
+  })
+
+  it('sets aside a shard larger than it would ever write instead of refusing it forever', async () => {
+    const { root, store } = fixture()
+    await store.setSource(7, assetId, 'generated', '猫'.repeat(2_000))
+    const shardPath = shardPathOf(root, 7, assetId)
+    const size = fs.statSync(shardPath).size
+    const smaller = new AiAssetMetadataStore({
+      outputRoot: root,
+      now: () => new Date('2026-08-14T09:00:00.000Z'),
+      randomUUID: () => 'metadata-backup-id',
+      maximumShardBytes: size - 1,
+    })
+
+    // No write of this store can produce it, so waiting would never make it
+    // readable; it is treated like any other content that is not metadata.
+    await expect(smaller.getAll(7)).resolves.toEqual({})
+    expect(fs.statSync(`${shardPath}.corrupt-1786698000000-metadata-backup-id.bak`).size).toBe(size)
   })
 
   it('merges legacy records without dropping either side and is idempotent', async () => {

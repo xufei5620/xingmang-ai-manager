@@ -52,6 +52,7 @@ async function fixture(options: {
   }
   const timers: Timer[] = []
   const clock = { now: 1_000_000_000_000 }
+  const account = { current: owner }
   const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
   const followed = vi.fn()
   const payloadRestart = vi.fn()
@@ -59,7 +60,7 @@ async function fixture(options: {
   const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
     managerDataDirectory: root,
     providerRoots: roots,
-    getExternalClientAccountId: () => owner,
+    getExternalClientAccountId: () => account.current,
     ...(options.siteId ? { getRelaySiteId: () => options.siteId as string } : {}),
     ...(options.appLine
       ? {
@@ -97,7 +98,7 @@ async function fixture(options: {
     if (!service.noteCodexPayloadRestart) throw new Error('noteCodexPayloadRestart missing')
     return service.noteCodexPayloadRestart()
   }
-  return { root, roots, service, follow, read, overwrite, ownership, line, timers, clock, relayFetch, followed, payloadRestart, notePayloadRestart, toolStatus }
+  return { root, roots, service, follow, read, overwrite, ownership, line, timers, clock, account, relayFetch, followed, payloadRestart, notePayloadRestart, toolStatus }
 }
 
 describe('tool route follow', () => {
@@ -233,6 +234,112 @@ describe('tool route follow', () => {
     // 提示只给界面半小时。
     f.clock.now += 20 * 60 * 1000
     expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+  })
+
+  // 因为连不上换的线路，第一次没改成（文件被占住这类）、过五分钟重试才改成（D21）：开着的工具照样要提示重开。
+  describe('when the fault switch only lands on a retry', () => {
+    const codexRunning: RunningToolsReport = { running: ['codex'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false }
+
+    // 用一个读不了的目录顶替配置文件；返回把原样放回去的那一步。
+    function breakConfig(f: Awaited<ReturnType<typeof fixture>>, provider: ProviderId = 'codex') {
+      const [config] = providerConfigPaths(provider, f.roots)
+      const content = fs.readFileSync(config, 'utf8')
+      fs.rmSync(config)
+      fs.mkdirSync(config)
+      return () => {
+        fs.rmSync(config, { recursive: true })
+        fs.writeFileSync(config, content)
+      }
+    }
+
+    // 到点重试一次，等这一轮真改完（改完、提示定了才叫 onToolRouteFollowed），不靠 vi.waitFor 的默认一秒。
+    async function retryNow(f: Awaited<ReturnType<typeof fixture>>) {
+      const timer = f.timers.find((candidate) => candidate.delayMs === toolRouteRetryDelayMs)
+      if (!timer) throw new Error('no retry scheduled')
+      f.timers.splice(f.timers.indexOf(timer), 1)
+      f.clock.now += toolRouteRetryDelayMs
+      const done = new Promise<void>((resolve) => { f.followed.mockImplementationOnce(() => resolve()) })
+      timer.callback()
+      await done
+    }
+
+    it('asks the open tool to restart once the retry rewrites its config', async () => {
+      const log = vi.fn()
+      const f = await fixture({ report: codexRunning, log })
+      const repair = breakConfig(f)
+      expect(await f.follow({ reason: 'route-changed', fault: true })).toEqual({ rewritten: [] })
+      expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+      repair()
+      await retryNow(f)
+      expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe(direct.codex)
+      expect(f.service.readStoredConfig().toolRouteRestartHint).toEqual({ id: f.clock.now, codex: { cli: true, desktop: null, canRestartDesktop: false } })
+      // 客服从日志看得出这一下是连不上那次换线的补写。
+      expect(log).toHaveBeenCalledWith('info', 'config', 'route.followed', expect.any(String), expect.objectContaining({
+        provider: 'codex', reason: 'retry', fault: true, readback: true,
+      }))
+      expect(log.mock.calls.filter((call) => call[2] === 'route.restart-hint')).toHaveLength(1)
+    })
+
+    // Codex 不管开没开都会提一句（编辑器插件看不出开没开），所以拿 Grok 看「关了不提」。
+    it('says nothing when the tool is already closed by the time the retry lands', async () => {
+      const f = await fixture({ providers: ['grok'] })
+      const repair = breakConfig(f, 'grok')
+      await f.follow({ reason: 'route-changed', fault: true })
+      repair()
+      await retryNow(f)
+      expect(f.service.getConfig(false).providers.grok.actualBaseUrl).toBe(direct.grok)
+      expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+      expect(f.service.getConfig(false).providers.grok.relayRouteState).toBeUndefined()
+    })
+
+    it('still says nothing for a retry of a switch made by choice', async () => {
+      const f = await fixture({ report: codexRunning })
+      const repair = breakConfig(f)
+      await f.follow({ reason: 'route-changed' })
+      repair()
+      await retryNow(f)
+      expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe(direct.codex)
+      expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+    })
+
+    it('forgets the fault once the route changes again by choice before the retry', async () => {
+      const f = await fixture({ report: codexRunning })
+      const repair = breakConfig(f)
+      await f.follow({ reason: 'route-changed', fault: true })
+      await f.follow({ reason: 'route-changed' })
+      repair()
+      await retryNow(f)
+      expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+    })
+
+    it('does not carry the fault over to another account', async () => {
+      const f = await fixture({ report: codexRunning })
+      const repair = breakConfig(f)
+      await f.follow({ reason: 'route-changed', fault: true })
+      repair()
+      // 换了个账号，它也替 Codex 写好了配置：重试改过去跟那次连不上无关，不提示。
+      f.account.current = JSON.stringify(['solov', 10])
+      await f.ownership.write('codex', inspectProviderConfig('codex', f.roots, primary), 'account', f.account.current, 2)
+      await retryNow(f)
+      expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe(direct.codex)
+      expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+    })
+
+    it('keeps the pending tool apart from the others: each is asked once, by its own round', async () => {
+      const f = await fixture({ providers: ['codex', 'grok'], report: { ...codexRunning, running: ['codex', 'grok'] } })
+      const repair = breakConfig(f, 'codex')
+      expect(await f.follow({ reason: 'route-changed', fault: true })).toEqual({ rewritten: ['grok'] })
+      expect(f.service.readStoredConfig().toolRouteRestartHint).toEqual({ id: f.clock.now, grok: 'running' })
+      // 中间另一轮只看 Grok（一分钟后回头看那次）：不冲掉 Codex 还欠着的那句。
+      expect(await f.follow({ reason: 'verify', providers: ['grok'] })).toEqual({ rewritten: [] })
+      repair()
+      await retryNow(f)
+      expect(f.service.readStoredConfig().toolRouteRestartHint).toEqual({ id: f.clock.now, codex: { cli: true, desktop: null, canRestartDesktop: false } })
+      // 改完以后再回头看，在线路上就不再动，也不再提。
+      const hint = f.service.readStoredConfig().toolRouteRestartHint
+      expect(await f.follow({ reason: 'verify', providers: ['codex', 'grok'] })).toEqual({ rewritten: [] })
+      expect(f.service.readStoredConfig().toolRouteRestartHint).toEqual(hint)
+    })
   })
 
   it('does not ask when the route moved by choice rather than a fault', async () => {

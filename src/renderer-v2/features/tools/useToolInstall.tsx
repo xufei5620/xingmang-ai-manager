@@ -16,14 +16,14 @@ import { offlineActionMessage } from '../shell/online-status'
 import type { ToolInstallIntent } from './Home'
 import { manualUninstallState, type ManualUninstallState } from './ManualUninstall'
 import { managedSwitchVersion } from './managed-switch'
-import { canSwitchToManagedInstall, presentTools, providerFor, recommendedVersionVerb, spacedName, type ToolId } from './model'
+import { canSwitchToManagedInstall, isUnrecognizedInstall, presentTools, providerFor, recommendedVersionVerb, spacedName, type ToolId } from './model'
 import { describeNodeReplaceOutcome } from './node-replace'
 import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './runtime-install-outcome'
 import { cliInstallStageLabel, cliNeedsNodeRuntime, planCliInstall, prepareSharedRuntime, runtimeStageFailureMessage, type InstallRuntimeId } from './runtime-readiness'
 import { jobToolName, withoutTool } from './tool-jobs'
 import { rememberRevertedToolUpdate } from './update-notice'
 import { uninstallHandOffNotice } from './uninstall-handoff'
-import { clientLaunchWaitLabel } from './launch-notice'
+import { clientLaunchWaitLabel, externalLaunchWarning } from './launch-notice'
 import { externalAutoConnectAttemptKey, externalAutoConnectEligible, externalDetectedAutoConnectTarget, type ExternalAutoConnectOutcome } from './external-client-auto-connect'
 import { externalClientConnectedText } from './external-client-notice'
 import { installedToolSyncLabel } from './useToolbox'
@@ -107,7 +107,8 @@ export function useToolInstall(options: ToolInstallOptions) {
     let uninstalling = false
     let finishing = false
     let outcome: ToolInstallOutcome = 'installed'
-    const updating = Boolean(current?.status.installed)
+    // 认不出来路的那份旁边另装一份（R1）是第一次装星芒自己的，不说成「已更新」。
+    const updating = Boolean(current?.status.installed) && !isUnrecognizedInstall(current?.status)
     // 收尾必须留在同一个安装任务里。任务一结束工具行就回落到安装前的快照：
     // 同步 Key 和重新检测还没跑完，版本号已经退回旧值、「更新」按钮跟着回弹，
     // 用户看到的是「装完了又要装一次」（yoyo 2026-09-20 真机反馈①）。
@@ -364,9 +365,13 @@ export function useToolInstall(options: ToolInstallOptions) {
     try {
       // 只等这一家自己正在装的那一次，别的工具在装不等（I11 的登记例外）。
       const waitLabel = clientLaunchWaitLabel(toolbox.jobs, id, jobToolName)
-      const launched = await toolbox.run(`launch:${id}`, waitLabel, () => toolsApi.launchExternal(id))
+      const outcome: { result?: Awaited<ReturnType<typeof toolsApi.launchExternal>> } = {}
+      const launched = await toolbox.run(`launch:${id}`, waitLabel, async () => { outcome.result = await toolsApi.launchExternal(id) })
+      if (!launched || !mounted.current || !epoch()) return
       // 打开以后变的只有这一行的「运行中」：不再整轮重扫，那会让三行按钮一起变灰（第三十一批 C）。
-      if (launched && mounted.current && epoch()) toolbox.noteExternalLaunched(id)
+      toolbox.noteExternalLaunched(id)
+      const warning = externalLaunchWarning(outcome.result)
+      if (warning) toast.show(warning, 'warn')
     } catch (cause) { if (mounted.current && epoch()) throw cause }
   }
   // Claude Desktop 卡上的「切回官方账号 / 改用当前账号」：只改它登录页那个选择。星芒那份配置用不上了

@@ -3,12 +3,14 @@ import { describe, expect, it } from 'vitest'
 import type { AiVideoClip } from '../../../../electron/ipc-contract'
 import { tutorialTopics } from '../../registry/tutorials'
 import { applyVideoStudioPlan, createVideoStudioProject, defaultVideoStudioSettings, maxVideoStudioDrafts, serializeVideoStudioDrafts, serializeVideoStudioProject, videoStudioDraftsStorageKey, videoStudioShotImage, videoStudioStorageKey, type VideoStudioDraft, type VideoStudioProject } from './project'
+import type { VideoStudioPriceBridge } from './prices'
 import type { VideoStudioBridge, VideoStudioStorage } from './useVideoStudio'
 import { VideoStudioPage, type VideoStudioAccess } from './VideoStudioPage'
 
 // 只渲染首屏：effect 不跑，所以这里不会读模型、不会发任何请求。
 function unused(): never { throw new Error('not expected during a static render') }
-const bridge: VideoStudioBridge = {
+const bridge: VideoStudioBridge & VideoStudioPriceBridge = {
+  getAccountPriceList: unused,
   listAiChatGroups: unused,
   prepareAiChatGroup: unused,
   planVideoStudio: unused,

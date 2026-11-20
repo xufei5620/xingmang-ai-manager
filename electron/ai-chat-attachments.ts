@@ -104,8 +104,14 @@ export function createChatAttachmentService(options: ChatAttachmentServiceOption
       }
       prepared.push(prepareChatImage(bytes, options.codec))
     }
+    // The store is content-addressed, so two copies of one picture under
+    // different names come back as the same asset. A message may not carry
+    // an image twice (the protocol rejects it), so each asset is returned once.
     const assets: AiStoredAsset[] = []
-    for (const bytes of prepared) assets.push(await options.store.storeLocalBytes(userId, bytes))
+    for (const bytes of prepared) {
+      const asset = await options.store.storeLocalBytes(userId, bytes)
+      if (!assets.some((item) => item.assetId === asset.assetId)) assets.push(asset)
+    }
     return assets
   }
 

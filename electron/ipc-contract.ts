@@ -39,10 +39,10 @@ import type {
   ExternalToolId,
 } from './external-tool-config'
 export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
-import type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress } from './external-client-contract'
+import type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress, ExternalClientLaunchResult } from './external-client-contract'
 import type { ExternalClientCheckResult } from './external-client-connection'
 export type { ExternalClientCheckResult } from './external-client-connection'
-export type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress } from './external-client-contract'
+export type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress, ExternalClientLaunchResult } from './external-client-contract'
 import type {
   ManagedCliConfigurationOutcome,
   ManagedCliKeySyncSummary,
@@ -850,6 +850,11 @@ export interface AiVideoProgressEvent {
   value?: number
   /** 服务端说这单排得比平时慢。 */
   delayed?: boolean
+  /**
+   * 这一单交出去前，主进程没能在本机记下「交出去了、还没回音」。页面替它记着：重开以后主进程查不到这一单时，
+   * 照「提交结果不明」提醒可能已扣费，不能当它没发过（总单 #42，N2）。
+   */
+  unrecorded?: boolean
 }
 
 export interface VideoStudioPlanInput extends VideoStudioPlanRequest {
@@ -986,7 +991,8 @@ export interface XingmangInvokeContract {
   installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId, request?: DesktopAppUpdateRequest], ExternalClientStatus>
   /** 中止正在进行的客户端安装;Windows 上已经交给系统去装的那一步会被拒绝并给出原因。 */
   cancelExternalClientInstall: IpcInvokeDefinition<'external-clients:cancel-install', [tool: ExternalToolId], InstallCancelResult>
-  launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], void>
+  /** 回打开以后还要客户知道的事（ExternalClientLaunchResult），没有就是空对象。 */
+  launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], ExternalClientLaunchResult>
   /**
    * 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择（官方登录 / 第三方），星芒那份配置留着。
    * 只有 Claude Desktop 支持；切回当前账号时那份用不上了回 reconnect，界面接着打开配置窗口。
@@ -1413,9 +1419,13 @@ export interface XingmangInvokeContract {
     [input: AccountUsageQuery],
     AccountUsagePage
   >
+  /**
+   * 第二个参数是「替哪个账号查的」（写法同 accountScope）：给了，主进程先核对当前账号就是它，
+   * 不是就报「账号刚切换过」。首页近 7 天的柱子按账号记在本机，靠它保证记下的是这个账号的数（D11）。
+   */
   getAccountDashboard: IpcInvokeDefinition<
     'account:get-dashboard',
-    [input: AccountDashboardQuery],
+    [input: AccountDashboardQuery, expectedAccountScope?: string],
     AccountDashboardData
   >
   getAccountTasks: IpcInvokeDefinition<

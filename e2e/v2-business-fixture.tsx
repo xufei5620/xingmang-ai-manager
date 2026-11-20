@@ -49,6 +49,8 @@ declare global {
       deferNext(): void
       release(): void
     }
+    // 别处（另一台电脑、网页）改了 managedKeys 里的一把：只改夹具里存着的，页面不知道、不重读（F01）。
+    changeKeyElsewhere: (id: number, patch: { name?: string; remainQuota?: number; unlimitedQuota?: boolean; expiredAt?: string | null }) => void
     keyGroupsHarness: {
       requests: number
       setGroups(names: string[]): void
@@ -642,7 +644,7 @@ const key = {
   unlimitedQuota: false,
   usedQuota: 10,
   createdAt: time,
-  expiredAt: null,
+  expiredAt: null as string | null,
   accessedAt: time,
 }
 // 「按工具分账」按托管 Key 的固定名称认工具，夹具照搬真实命名：一把有上限、
@@ -673,6 +675,10 @@ const managedKeys = query.has('managedKeys')
       { ...key, id: 12, name: 'xingmang-desktop-codex', group: 'GPT', unlimitedQuota: true, remainQuota: 0, usedQuota: 200 },
     ]
   : null
+window.changeKeyElsewhere = (id, patch) => {
+  const stored = managedKeys?.find((entry) => entry.id === id)
+  if (stored) Object.assign(stored, patch)
+}
 let activeUserId = 7
 let taskReads = 0
 let detailReads = 0
@@ -946,11 +952,21 @@ const apiMethods = {
       page: 1,
       pageSize: 20,
       total: empty ? 0 : managedKeys ? managedKeys.length : 1,
-      keys: empty ? [] : managedKeys ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
+      // 每次读都给一份新的，跟真的跨进程一样：页面手里那份不会跟着夹具里存的悄悄变。
+      keys: empty ? [] : managedKeys?.map((entry) => ({ ...entry })) ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
     }
   },
   updateAccountKey: async (input: Parameters<V2Bridge['updateAccountKey']>[0]) => {
     record('updateAccountKey', input)
+    // managedKeys 那几把照真后台整条覆盖，下一次读就是写进去的样子；不限额时后台留着原来的剩余额度。
+    const stored = managedKeys?.find((entry) => entry.id === input.id)
+    if (stored) Object.assign(stored, {
+      name: input.name,
+      group: input.group,
+      unlimitedQuota: input.unlimitedQuota,
+      remainQuota: input.unlimitedQuota ? stored.remainQuota : input.remainQuota,
+      expiredAt: input.expiredTime === -1 ? null : new Date(input.expiredTime * 1000).toISOString(),
+    })
   },
   revokeAccountKey: async (id: number) => {
     record('revokeAccountKey', id)
@@ -1434,9 +1450,13 @@ const apiMethods = {
   getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('largeTextByDefault') ? { largeTextByDefault: true as const } : {}) }),
   // transfer=usage-off：「搬到新电脑」的文件里「匿名使用统计」是关，这台还是新装的开，主进程交来「直接关」；
   // transfer=usage-on：文件里是开，这台关过（配 usageOff），只进询问框（X-3）。没有对话，不用登录。
+  // transfer=theme-dark：文件里是深色，这台还是新装的浅色，主进程交来「直接换」（D24）。
   importAppData: async () => {
     record('import-app-data')
     const transfer = query.get('transfer')
+    if (transfer === 'theme-dark') {
+      return { conversations: [], settings: { version: 2, theme: 'dark' }, conflictingSettings: { version: 2 }, conflictLabels: [] }
+    }
     if (transfer !== 'usage-off' && transfer !== 'usage-on') throw new Error('未提供测试方法 importAppData')
     return {
       conversations: [],

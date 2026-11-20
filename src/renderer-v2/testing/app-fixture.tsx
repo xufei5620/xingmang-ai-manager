@@ -248,6 +248,12 @@ if (query.has('cliUpdateFailed')) {
   system.clis.claude = { ...system.clis.claude, updateAvailable: false, updateCheck: 'failed',
     updateError: '已安装 CLI 的版本号无法解析，不能判断是否有更新' }
 }
+// ?codexMacUpdate（配 os=mac）：Codex 桌面端开着，存储桶里有 1.3.0，首页那一行给「可更新到 v1.3.0」。
+// 点了更新，holdNextInstall 能把它压在半路，releaseInstall 才换上新版；同主进程，换的时候星芒把它关掉了。
+if (query.has('codexMacUpdate')) {
+  system.desktopApps.codex = { ...system.desktopApps.codex, running: true, latestVersion: '1.3.0', updateAvailable: true,
+    updateCheck: 'checked', updateState: 'available', mirrorVersion: '1.3.0', mirrorUpdateAvailable: true }
+}
 if (query.has('desktopDetectionFailed')) {
   system.desktopApps.codex = { ...system.desktopApps.codex, installed: false, version: null, path: null, appVersion: null,
     detectionFailed: true, detectionError: '已找到 Codex 应用，但签名验证未完成，请重新检测' }
@@ -618,9 +624,11 @@ const methods = {
     cancelExternalInstall?.(new Error(`${tool} 安装已取消`))
     return { cancelled: true, reason: null }
   },
+  // ?externalLaunchElevated：同主进程在「星芒是右键以管理员身份运行的」时打开 Claude Desktop 的回法。
   launchExternalClient: async (tool) => {
     if (query.has('externalLaunchPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
     externalStatuses.find((entry) => entry.tool === tool)!.running = true
+    return tool === 'claudeDesktop' && query.has('externalLaunchElevated') ? { preparationSkipped: 'elevated' } : {}
   },
   // 同主进程：只改 Claude Desktop 登录页那个选择，星芒那份留着；?externalReconnect 时那份已经用不上。
   switchExternalClientSource: async (tool, target) => {
@@ -716,6 +724,8 @@ const methods = {
   launchCli: async (_provider, workspace) => {
     // ?workspaceGone：记录里的 my-app 已经被删了，同主进程打开时报这一句（provider-launch-service.ts 的 launchProviderOperation）。
     if (query.has('workspaceGone') && workspace === 'C:\\work\\my-app') throw new Error('工作目录不存在，请重新选择')
+    // ?launchDeclined：头一次打开时在「这个文件夹不建议打开」那一问里点了「先不打开」，主进程回 declined（N11）。
+    if (query.has('launchDeclined') && window.v2Test.calls.filter((call) => call.method === 'launchCli').length === 1) return { declined: true }
     if (query.has('launchRemembers')) {
       launchedWorkspace = config.workspace
       return { rememberedWorkspace: launchedWorkspace, ...(launchedWorkspace === fixtureStarterWorkspace ? { rememberedWorkspaceFresh: true } : {}) }
@@ -797,7 +807,16 @@ const methods = {
     leftoverCleanups += 1
     return { remaining: leftoverCleanups === 1 ? 1 : 0 }
   },
-  installCodexDesktop: async () => ({ action: 'unchanged', previousVersion: '1.2.3', installedVersion: '1.2.3' }),
+  installCodexDesktop: async () => {
+    if (!query.has('codexMacUpdate')) return { action: 'unchanged' as const, previousVersion: '1.2.3', installedVersion: '1.2.3' }
+    if (nextInstallHeld) {
+      nextInstallHeld = false
+      await new Promise<void>((resolve, reject) => { releaseInstall = (error) => error ? reject(new Error(error)) : resolve() })
+    }
+    system.desktopApps.codex = { ...system.desktopApps.codex, version: '1.3.0', appVersion: '1.3.0', latestVersion: '1.3.0', running: false,
+      updateAvailable: false, updateState: 'latest', mirrorUpdateAvailable: false }
+    return { action: 'updated' as const, previousVersion: '1.2.3', installedVersion: '1.3.0' }
+  },
   getAccountKeys: async () => {
     const held = heldAccountKeys
     if (held) await new Promise<void>((resolve) => held.push(resolve))

@@ -27,6 +27,16 @@ describe('realm data roots', () => {
     expect(api.assetOutputDirectory(legacyOutput)).toBe(path.join(legacyOutput, 'realms', 'api-account'))
   })
 
+  it('finds the shared media base back from either realm\'s media root', () => {
+    const xm = resolveRealmDataRoots(manager, 'xm-account')
+    const api = resolveRealmDataRoots(manager, 'api-account')
+    // Both realms answer the same base, so the settings page counts the same folder whichever site is current (A08).
+    expect(xm.sharedAssetOutputDirectory(xm.assetOutputDirectory(legacyOutput))).toBe(legacyOutput)
+    expect(api.sharedAssetOutputDirectory(api.assetOutputDirectory(legacyOutput))).toBe(legacyOutput)
+    expect(() => api.sharedAssetOutputDirectory(legacyOutput)).toThrow('资产输出目录无效')
+    expect(() => xm.sharedAssetOutputDirectory('')).toThrow('资产输出目录无效')
+  })
+
   it('rejects invalid realms and user IDs', () => {
     expect(() => resolveRealmDataRoot(manager, 'solov')).toThrow('账号数据域无效')
     expect(() => resolveRealmDataRoots(manager, 'solov-api')).toThrow('账号数据域无效')

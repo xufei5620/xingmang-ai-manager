@@ -768,9 +768,84 @@ describe('createAiVideoService', () => {
     )) as unknown as typeof fetch
     const { service, tasks } = setup(fetchImpl)
     vi.mocked(tasks.markUnconfirmed).mockRejectedValueOnce(new Error('AI 视频任务记录超过安全上限'))
+    const onSubmissionUnrecorded = vi.fn()
     await expect(service.generate(41, {
       requestId: 'shot-unrecorded', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
-    })).resolves.toMatchObject({ taskId: 'task_unrecorded' })
+    }, { onStage: vi.fn(), onSubmissionUnrecorded })).resolves.toMatchObject({ taskId: 'task_unrecorded' })
+    expect(onSubmissionUnrecorded).toHaveBeenCalledOnce()
+    // The task id came back, so there was nothing unclear to write down again.
+    expect(tasks.markUnconfirmed).toHaveBeenCalledOnce()
+  })
+
+  // 总单 #42（11-18 复核 N2）：交出去前那条「结果不明」写不进去时，重开以后不能当这一单没发过。
+  it('asks the page to keep the record before the POST leaves when the store cannot, and writes it once the outcome is unclear', async () => {
+    const order: string[] = []
+    const fetchImpl = vi.fn(async () => {
+      order.push('post')
+      return jsonResponse({ error: { message: 'upstream exploded' } }, 502)
+    }) as unknown as typeof fetch
+    const { service, tasks } = setup(fetchImpl)
+    vi.mocked(tasks.markUnconfirmed).mockRejectedValueOnce(new Error('EPERM: operation not permitted, rename'))
+    const onSubmissionUnrecorded = vi.fn(() => { order.push('unrecorded') })
+    await expect(service.generate(41, {
+      requestId: 'shot-locked', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    }, { onStage: vi.fn(), onSubmissionUnrecorded })).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+    expect(order).toEqual(['unrecorded', 'post'])
+    // The file was only locked for a moment: the second try lands, and the next launch can answer for itself.
+    expect(tasks.markUnconfirmed).toHaveBeenCalledTimes(2)
+    await expect(service.resumeRequest(41, 7, 'shot-locked')).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+  })
+
+  it('leaves the answer to the page when the record still cannot be written after an unclear outcome', async () => {
+    const fetchImpl = vi.fn(async () => { throw new TypeError('socket reset') }) as unknown as typeof fetch
+    const { service, tasks } = setup(fetchImpl)
+    vi.mocked(tasks.markUnconfirmed).mockRejectedValue(new Error('ENOSPC: no space left on device'))
+    const onSubmissionUnrecorded = vi.fn()
+    await expect(service.generate(41, {
+      requestId: 'shot-disk-full', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    }, { onStage: vi.fn(), onSubmissionUnrecorded })).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+    expect(onSubmissionUnrecorded).toHaveBeenCalledOnce()
+    expect(tasks.markUnconfirmed).toHaveBeenCalledTimes(2)
+    // Nothing on this side to go on: the page holds the only copy, which is why it was told before the POST.
+    await expect(service.resumeRequest(41, 7, 'shot-disk-full')).resolves.toBeNull()
+  })
+
+  it('says nothing to the page when the record is written, or when the request is stopped before it leaves', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: { message: 'upstream exploded' } }, 502)) as unknown as typeof fetch
+    const written = setup(fetchImpl)
+    const told = vi.fn()
+    await expect(written.service.generate(41, {
+      requestId: 'shot-written', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    }, { onStage: vi.fn(), onSubmissionUnrecorded: told })).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+    expect(told).not.toHaveBeenCalled()
+    expect(written.tasks.markUnconfirmed).toHaveBeenCalledOnce()
+
+    const neverSent = vi.fn() as unknown as typeof fetch
+    const stopped = setup(neverSent)
+    vi.mocked(stopped.tasks.markUnconfirmed).mockImplementationOnce(async () => {
+      expect(stopped.service.cancel(41, 'shot-stopped-unrecorded')).toEqual({ canceled: true, mayStillComplete: false })
+      throw new Error('ENOSPC: no space left on device')
+    })
+    await expect(stopped.service.generate(41, {
+      requestId: 'shot-stopped-unrecorded', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    }, { onStage: vi.fn(), onSubmissionUnrecorded: told })).rejects.toThrow('已取消视频请求')
+    expect(neverSent).not.toHaveBeenCalled()
+    expect(told).not.toHaveBeenCalled()
+  })
+
+  it('still sends the paid request when the page cannot be told the record is missing', async () => {
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => (
+      init?.method === 'POST'
+        ? jsonResponse({ id: 'task_untold', status: 'queued' })
+        : String(input).endsWith('/content')
+          ? mp4Response()
+          : jsonResponse({ id: 'task_untold', status: 'completed' })
+    )) as unknown as typeof fetch
+    const { service, tasks } = setup(fetchImpl)
+    vi.mocked(tasks.markUnconfirmed).mockRejectedValueOnce(new Error('ENOSPC: no space left on device'))
+    await expect(service.generate(41, {
+      requestId: 'shot-untold', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    }, { onStage: vi.fn(), onSubmissionUnrecorded: () => { throw new Error('window gone') } })).resolves.toMatchObject({ taskId: 'task_untold' })
   })
 
   it('rejects a video model missing from the selected group before paid dispatch', async () => {
