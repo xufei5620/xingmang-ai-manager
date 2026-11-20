@@ -12,7 +12,7 @@ import { diagnosticFolderUnavailableMessage } from '../app/diagnostic-folder'
 import { inspectModel } from '../chat/api'
 import { pendingChatGroups, type ChatGroupPreparation, type ChatSite } from '../chat/state'
 import { composeInVideoStudioWorker } from './compose-client'
-import { addVideoStudioClipBytes, videoStudioMusicUnreadableMessage, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult } from './compose-protocol'
+import { addVideoStudioClipBytes, videoStudioMusicUnreadableMessage, videoStudioTotalBytesLimit, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult } from './compose-protocol'
 import { VideoStudioError, describeVideoStudioFailure, isVideoStudioAbort } from './errors'
 import {
   addVideoStudioShot,
@@ -431,6 +431,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
     try {
       const clips: VideoStudioComposeRequest['clips'] = []
       let totalBytes = 0
+      const totalBytesLimit = videoStudioTotalBytesLimit()
       for (const [index, shot] of current.shots.entries()) {
         setComposeState({ phase: 'reading', done: index, total: current.shots.length })
         let bytes: Uint8Array
@@ -441,7 +442,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
           throw new Error(isGoneFromLibrary(message) ? `第 ${index + 1} 段片段在作品库里找不到了，重新生成这一段再拼` : videoStudioErrorMessage(reason, `第 ${index + 1} 段片段读不出来，请稍后再试`))
         }
         if (controller.signal.aborted || !alive()) return
-        totalBytes = addVideoStudioClipBytes(totalBytes, bytes.byteLength)
+        totalBytes = addVideoStudioClipBytes(totalBytes, bytes.byteLength, totalBytesLimit)
         // 交给后台线程时字节是转移过去的，要一份自己独占的 ArrayBuffer。
         const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
         clips.push({
