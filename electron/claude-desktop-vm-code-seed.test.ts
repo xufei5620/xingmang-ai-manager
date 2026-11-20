@@ -155,7 +155,8 @@ describe('claude desktop vm code seed: putting it in place', () => {
     const f = vmFixture()
     expect(await f.seeder.seed({ profileDirectory: f.profile, architecture: 'x64', pins: pins() })).toEqual({ status: 'placed', version: '2.1.309' })
     expect(fs.readFileSync(f.seedPaths.binaryPath).equals(f.executable)).toBe(true)
-    expect(fs.statSync(f.seedPaths.binaryPath).mode & 0o777).toBe(0o755)
+    // NTFS has no executable bit (Node reports 0o666), so the mode Claude expects is only visible off Windows.
+    if (process.platform !== 'win32') expect(fs.statSync(f.seedPaths.binaryPath).mode & 0o777).toBe(0o755)
     expect(JSON.parse(fs.readFileSync(f.seedPaths.payloadPath, 'utf8'))).toEqual({ sha256: createHash('sha256').update(f.executable).digest('hex'), size: f.executable.length })
     expect(fs.readFileSync(f.seedPaths.verifiedPath, 'utf8')).toBe(x64Checksum)
     expect(fs.readdirSync(f.seedPaths.installDirectory).sort()).toEqual(['.payload', '.verified', 'claude'])

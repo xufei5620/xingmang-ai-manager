@@ -18,6 +18,10 @@ import {
 import { desktopPackageBucketOrigin } from './desktop-package-bucket'
 
 const temporaryRoots: string[] = []
+// The seeder only ever runs on a Mac and refuses a bundle whose program lost its executable bit. NTFS has no
+// such bit (Node reports every writable file as 0o666), so the cases that unpack a bundle for real run on
+// macOS and Linux CI only; the refusals and the gates still run on Windows.
+const posixFileModes = process.platform !== 'win32'
 function temporaryDirectory(): string {
   // realpath: macOS hands out /var/... which is a link to /private/var, and the safe writers refuse links.
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-claude-mac-seed-')))
@@ -196,7 +200,7 @@ describe('claude desktop mac code seed: what Claude wants', () => {
 })
 
 describe('claude desktop mac code seed: unpacking the bundle', () => {
-  it('unpacks folders and files with only the executable bit kept', async () => {
+  it.runIf(posixFileModes)('unpacks folders and files with only the executable bit kept', async () => {
     const target = temporaryDirectory()
     const entries = bundleEntries()
     entries[6] = { ...entries[6], mode: 0o4777 }
@@ -246,7 +250,7 @@ describe('claude desktop mac code seed: unpacking the bundle', () => {
 })
 
 describe('claude desktop mac code seed: putting it in place', () => {
-  it('downloads the official bundle from the bucket and installs it exactly where Claude looks', async () => {
+  it.runIf(posixFileModes)('downloads the official bundle from the bucket and installs it exactly where Claude looks', async () => {
     const f = macFixture()
     expect(await f.seeder.prepare(client())).toEqual({ status: 'placed', version: '2.1.309' })
     expect(f.fetchMock).toHaveBeenCalledTimes(1)
@@ -263,7 +267,7 @@ describe('claude desktop mac code seed: putting it in place', () => {
     expect(f.fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('replaces an install folder Claude left unfinished', async () => {
+  it.runIf(posixFileModes)('replaces an install folder Claude left unfinished', async () => {
     const f = macFixture()
     fs.mkdirSync(path.join(f.seedPaths.installDirectory, 'claude.app', 'Contents'), { recursive: true })
     fs.writeFileSync(path.join(f.seedPaths.installDirectory, 'claude.app', 'Contents', 'stale'), 'half')
@@ -297,7 +301,7 @@ describe('claude desktop mac code seed: putting it in place', () => {
     expect(fs.readdirSync(f.seedPaths.versionDirectory)).toEqual([])
   })
 
-  it('leaves Claude alone while it runs, or when it was opened during the download', async () => {
+  it.runIf(posixFileModes)('leaves Claude alone while it runs, or when it was opened during the download', async () => {
     const running = macFixture()
     expect(await running.seeder.prepare(client({ running: true }))).toEqual({ status: 'skipped', reason: 'running' })
     expect(running.fetchMock).not.toHaveBeenCalled()
@@ -306,7 +310,7 @@ describe('claude desktop mac code seed: putting it in place', () => {
     expect(fs.readdirSync(meanwhile.seedPaths.versionDirectory)).toEqual([])
   })
 
-  it('refuses to delete through a link planted as the install folder', async () => {
+  it.runIf(posixFileModes)('refuses to delete through a link planted as the install folder', async () => {
     const f = macFixture()
     const elsewhere = path.join(f.root, 'elsewhere')
     fs.mkdirSync(elsewhere)
@@ -318,7 +322,7 @@ describe('claude desktop mac code seed: putting it in place', () => {
     expect(fs.readdirSync(f.seedPaths.versionDirectory).filter((name) => name.startsWith('xingmang-'))).toEqual([])
   })
 
-  it('cleans up its own leftovers from an interrupted run and nothing else', async () => {
+  it.runIf(posixFileModes)('cleans up its own leftovers from an interrupted run and nothing else', async () => {
     const f = macFixture()
     fs.mkdirSync(f.seedPaths.versionDirectory, { recursive: true })
     const oldArchive = path.join(f.seedPaths.versionDirectory, 'xingmang-0f8fad5b-d9cb-469f-a165-70867728950e.tar.zst')
