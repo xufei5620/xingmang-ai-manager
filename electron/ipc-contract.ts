@@ -850,6 +850,11 @@ export interface AiVideoProgressEvent {
   value?: number
   /** 服务端说这单排得比平时慢。 */
   delayed?: boolean
+  /**
+   * 这一单交出去前，主进程没能在本机记下「交出去了、还没回音」。页面替它记着：重开以后主进程查不到这一单时，
+   * 照「提交结果不明」提醒可能已扣费，不能当它没发过（总单 #42，N2）。
+   */
+  unrecorded?: boolean
 }
 
 export interface VideoStudioPlanInput extends VideoStudioPlanRequest {

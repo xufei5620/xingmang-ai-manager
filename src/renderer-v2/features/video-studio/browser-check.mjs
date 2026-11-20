@@ -671,6 +671,52 @@ test('keeps the warning when paying again for an unanswered clip does not go thr
   await page.close()
 })
 
+// 总单 #42（11-18 复核 N2）：交出去前主进程没能在本机记下这一单（磁盘满、文件被杀毒软件占着），提交到一半关掉了软件。
+// 重开以后先去主进程接；主进程查不到也不能变回「还没生成」，照「结果不明」提醒，再生成之前确认框说清可能多扣一次。
+test('keeps the may-have-been-charged warning after reopening when the main process could not write the submission down', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '草原', { title: '草原', shots: [{ prompt: '骏马' }, { prompt: '牧羊' }, { prompt: '落日' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 3)
+  const [first, second, third] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  // 主进程说第一段、第三段交出去前没记下；第三段随后被服务端明确拒了，页面等到了这个结果。
+  for (const clip of [first, third]) {
+    await page.evaluate((requestId) => window.videoStudioPage.progress({ requestId, stage: 'processing', unrecorded: true }), clip.requestId)
+  }
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '这次的描述没通过安全审核，换个说法再试'), third.requestId)
+  await page.getByTestId('video-shot-2').getByText('这次的描述没通过安全审核，换个说法再试').waitFor()
+
+  // 第一段、第二段还在提交时关掉软件。重开以后三段都先去接（第三段记着失败的那一单），主进程那边都查不到。
+  await page.reload()
+  await page.waitForFunction(() => window.videoStudioPage.pendingResumes().length === 3)
+  for (const clip of [first, second, third]) await page.evaluate((requestId) => window.videoStudioPage.dropResume(requestId), clip.requestId)
+  // 第一段是主进程没记下的那一单：照结果不明提醒。第二段主进程记得下（查不到就是没交出去或被拒了），第三段页面等到过结果：都回到「还没生成」。
+  await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
+  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-1').getByText('还没生成').waitFor()
+  await page.getByTestId('video-shot-2').getByText('还没生成').waitFor()
+  assert.deepEqual(await studioCalls(page, 'generate'), [])
+
+  // 再打开一次：照样提醒，没有任务号可接，也不去接。
+  await page.reload()
+  await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
+  assert.deepEqual(await studioCalls(page, 'resume'), [])
+
+  // 重新生成第一段：确认框说清可能多扣一次，勾了「我已了解影响」才能点；确认后沿用原来的请求号（MiniMax 拿它去重）。
+  await page.getByTestId('video-shot-generate-0').click()
+  const confirm = page.getByTestId('video-confirm')
+  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^这一段上次提交时没收到星芒的答复/).waitFor()
+  assert.equal(await confirm.getByRole('button', { name: '开始生成' }).isDisabled(), true)
+  await confirm.getByRole('checkbox').check()
+  await confirm.getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [again] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  assert.equal(again.requestId, first.requestId)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
 // #1489 R28-4：模型表还没读完就点了生成，读完以后记着的模型换成了默认的；排在后面的那一段照客户确认时的模型出，不悄悄换。
 test('makes every queued clip with the model the person confirmed, even if the model list settles on another one meanwhile', async () => {
   const { page, errors } = await openStudio()
