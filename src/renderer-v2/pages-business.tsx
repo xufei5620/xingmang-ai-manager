@@ -26,8 +26,6 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   onAccountTabChange?: Parameters<typeof AccountPage>[0]['onTabChange']
   /** 从活动卡片点某一档进来时要选好的充值金额；缺省 = 充值页照常从默认金额开始。 */
   accountRechargeAmount?: number
-  /** 账号概览里和首页同源的那几样数；缺省 = 概览不写还能用几天、另有订阅、近 7 天花费。 */
-  accountSummary?: Parameters<typeof AccountPage>[0]['summary']
   /** 密钥管理「配置到工具」下拉里的工具和它们的状态；缺省 = 只列名字。 */
   accountKeyTools?: Parameters<typeof AccountPage>[0]['keyTools']
   /**
@@ -70,7 +68,6 @@ export function BusinessPage({
   accountTabRequest,
   accountRechargeAmount,
   accountSession,
-  accountSummary,
   accountKeyTools,
   tutorialTopic,
   paymentReturn,
@@ -98,7 +95,6 @@ export function BusinessPage({
         rechargeAmount={accountRechargeAmount}
         paymentReturn={paymentReturn}
         accountSession={accountSession}
-        summary={accountSummary}
         keyTools={accountKeyTools}
         onLogin={actions.openLogin}
         onAccountChanged={actions.onAccountChanged ?? actions.refresh}

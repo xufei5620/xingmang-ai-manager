@@ -3,7 +3,8 @@ import { ArrowRight, BookOpen, Check, ChevronRight, Download, FolderOpen, Info, 
 import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
 import { desktopUpdateFailedLine, externalUpdateTarget, type DesktopUpdateTool } from './desktop-update'
-import { useSharedAccountBalance } from '../app/balance-context'
+import { useSharedBalanceSelector, useSharedBalanceStore } from '../app/balance-context'
+import { sameFlatRecord, subscribeBalanceReads } from '../app/balance-store'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, ListRow, PageHead, Pill, Progress, Skeleton, ToolCard, toastDurationMs, useToast, type MenuItem, type MenuNote } from '../../ui'
 import { accountSwitchTarget, cliHooksMissing, cliHooksNeedRepair, cliHooksWereAutoRepaired, brokenConfigDetails, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, subscriptionWarning, canUninstallTool, ccSwitchLeftoverFor, foreignKeyKind, configDirectoryMenuItem, externalInstallHint, greeting, isUnrecognizedInstall, needsManualInstall, officialAccountSubtitle, ownershipAwaitingAccount, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, spacedName, toolUpdateOffer, updateButtonHint, updatesOutsideApp, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
@@ -35,7 +36,7 @@ import { OfficialQuotaDialog } from './OfficialQuotaDialog'
 import { ToolConversationsDialog } from './ToolConversationsDialog'
 import { buildUninstallGuide, UninstallGuideDialog, type UninstallGuide, type UninstallGuideTool } from './UninstallGuide'
 import { buildSourceMenuItems, SourceMenu, sourceChipLabels } from './SourceMenu'
-import { weekSpendHint, weekSpendLabel, type WeekSpend } from './week-spend'
+import { sameWeekSpend, weekSpendHint, weekSpendLabel, type WeekSpend } from './week-spend'
 import { currentWindowOs, windowOsFor } from '../app/window-os'
 import { readWindowSession, writeWindowSession } from '../../window-session'
 
@@ -382,6 +383,49 @@ function cachedWeekSpend(api: ToolsApi, scope: string | undefined, wanted: boole
   return wanted && scope !== undefined ? api.peekWeekSpend(scope) : null
 }
 
+interface HomeBalanceCardProps {
+  /** 标题那一行（「账号余额」和「用量账单」）。 */
+  head: ReactNode
+  /** 大字：金额或「—」。 */
+  amount: ReactNode
+  hasBalance: boolean
+  /** 没金额时旁边那行小字在等什么：恢复登录、读余额；null = 没登录，不写。 */
+  waiting: 'restoring' | 'reading' | null
+  /** 刷新键点了做的事；缺省（没登录、外面没挂余额）= 不放刷新键。 */
+  onRefresh?: () => void
+  recharge: ReactNode
+  /** 订阅、还能用几天、近 7 天花费那几行。 */
+  children: ReactNode
+}
+
+/**
+ * 余额卡的外框和每次刷新都会变的那几样：转圈、「最后更新于」、更新失败（R8）。它自己订阅余额，
+ * 每分钟一次的刷新只重画这一小块；金额和下面那几行是首页画好交进来的，余额没变就原样留着，
+ * 首页的工具卡也不跟着重画。
+ */
+function HomeBalanceCard({ head, amount, hasBalance, waiting, onRefresh, recharge, children }: HomeBalanceCardProps) {
+  const loading = useSharedBalanceSelector((state) => state.loading)
+  const updatedAt = useSharedBalanceSelector((state) => state.updatedAt)
+  const failure = useSharedBalanceSelector((state) => state.error)
+  const { offline } = useOnlineStatus()
+  const hint = balanceStatusText({ balanceLoading: loading, balanceUpdatedAt: updatedAt, balanceError: failure, offline })
+  // 大字只放数字或「—」；没数字时旁边那行小字说清是在恢复登录、在读，还是没读到，别在读的时候说「暂未读到」。
+  const label = hasBalance || !waiting ? null
+    : waiting === 'restoring' ? '正在恢复登录'
+      : failure && !loading ? '暂时没有读到' : '正在读取余额'
+  return <section className="v2-home-balance" data-testid="home-balance-card" title={hint}>
+    {head}
+    <div className="v2-home-balance-top">
+      {amount}
+      {label && <small data-testid="home-balance-label">{label}</small>}
+      {onRefresh && <Button variant="ghost" size="xs" icon={RefreshCw} loading={loading} aria-label="刷新账号余额" title={hint} onClick={onRefresh} testId="home-balance-refresh" />}
+      {recharge}
+    </div>
+    {failure && <p className="v2-balance-error" role="status" title={failure}>更新失败，{hasBalance ? '显示上次余额' : '请重试'}</p>}
+    {children}
+  </section>
+}
+
 /** 「已给 Claude Code 配好密钥，可以直接用了」：一个工具说名字，几个说个数。 */
 function configuredKeysText(who: string) {
   return `已给 ${spacedName(who)}配好密钥，可以直接用了`
@@ -459,14 +503,10 @@ function RestartNotice({ restart }: { restart: () => Promise<void> }) {
 
 export function Home(props: HomeProps) {
   const { snapshot, account, balance, jobs, loading, error } = props
-  const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
+  // 首页不订阅整份余额（R8）：转圈、最后更新时间、更新失败每次刷新都变，交给余额卡自己（HomeBalanceCard）。
+  const balanceStore = useSharedBalanceStore()
   const { offline } = useOnlineStatus()
   const restartPending = useRestartPending()
-  const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error, offline })
-  // 大字只放数字或「—」；没数字时旁边那行小字说清是在恢复登录、在读，还是没读到，别在读的时候说「暂未读到」。
-  const balanceLabel = balance || (!account && !props.accountRestoring) ? null
-    : props.accountRestoring ? '正在恢复登录'
-      : balanceState.error && !balanceState.loading ? '暂时没有读到' : '正在读取余额'
   const toast = useToast()
   const [recent, setRecent] = useState<MultiProviderSessionPage | null>(null)
   const [recentError, setRecentError] = useState('')
@@ -478,6 +518,9 @@ export function Home(props: HomeProps) {
   // 卡片「…」里「接着之前的对话…」开着的那个工具；null = 窗口没开。
   const [conversationsTool, setConversationsTool] = useState<ToolId | null>(null)
   const [usage, setUsage] = useState<BalanceUsage | null>(() => cachedUsage(props.api, props.accountScope))
+  // 跟着余额重读用量时要看「这一刻卡片上摆着的」，那时首页不一定重画过，所以另记一份。
+  const usageShown = useRef(usage)
+  usageShown.current = usage
   const [usageError, setUsageError] = useState('')
   const trendWanted = props.supportsUsageTrend === true && props.supportsUsage !== false
   const [week, setWeek] = useState<WeekSpend | null>(() => cachedWeekSpend(props.api, props.accountScope, trendWanted))
@@ -493,29 +536,37 @@ export function Home(props: HomeProps) {
   // 用量和近 7 天跟着余额走（F3）：一直停在首页时余额每分钟在变，这两样以前只在进首页、换账号时读，
   // 「近 7 天花费」和靠它算的「约还能用 N 天」一下午不动。余额每读到一次（updatedAt 变了）就再要一次，
   // 一分钟的缓存照旧挡着，不会每回都去问后台；点刷新时先作废缓存，见 refreshBalanceCard。
-  const balanceUpdatedAt = balanceState.updatedAt
+  // 只听「余额读到了」、读回来跟手上一样就不换：首页不用跟着每次刷新整页重画（R8）。
   useEffect(() => {
     let current = true
-    // 先摆上一次查到的（一分钟内就是它本身，不会再发请求），查回来再换；刷新失败时
-    // 手上已经有数就留着它，没有才说读不到。缓存刚作废（点了刷新）、手上已经有数时不先清空，
-    // 免得卡片一闪一跳；换账号整页重挂（外层 key={scope}），留着的不会是上一个账号的。
-    const cached = cachedUsage(props.api, props.accountScope)
     const wanted = Boolean(account) && props.supportsUsage !== false
-    if (cached || !wanted) { setUsage(cached); setUsageError('') }
-    // 「手上的数」= 这一刻卡片上摆着的：点刷新作废了缓存、重读又失败时，照旧留着它，不换成「暂未读到」。
-    const kept = cached ?? usage
-    if (wanted) void props.api.balanceUsage(props.accountScope).then((value) => { if (current) { setUsage(value); setUsageError('') } }).catch(() => { if (current && !kept) setUsageError('用量暂未读到') })
-    return () => { current = false }
-  }, [account?.userId, props.accountScope, props.api, props.supportsUsage, balanceUpdatedAt, usageRefresh])
+    function read() {
+      // 先摆上一次查到的（一分钟内就是它本身，不会再发请求），查回来再换；刷新失败时
+      // 手上已经有数就留着它，没有才说读不到。缓存刚作废（点了刷新）、手上已经有数时不先清空，
+      // 免得卡片一闪一跳；换账号整页重挂（外层 key={scope}），留着的不会是上一个账号的。
+      const cached = cachedUsage(props.api, props.accountScope)
+      if (cached || !wanted) { setUsage((shown) => sameFlatRecord(shown, cached) ? shown : cached); setUsageError('') }
+      // 「手上的数」= 这一刻卡片上摆着的：点刷新作废了缓存、重读又失败时，照旧留着它，不换成「暂未读到」。
+      const kept = cached ?? usageShown.current
+      if (wanted) void props.api.balanceUsage(props.accountScope).then((value) => { if (current) { setUsage((shown) => sameFlatRecord(shown, value) ? shown : value); setUsageError('') } }).catch(() => { if (current && !kept) setUsageError('用量暂未读到') })
+    }
+    read()
+    const stop = balanceStore ? subscribeBalanceReads(balanceStore, read) : undefined
+    return () => { current = false; stop?.() }
+  }, [account?.userId, props.accountScope, props.api, props.supportsUsage, balanceStore, usageRefresh])
   useEffect(() => {
     let current = true
-    // 七根柱子读不到就不画，合计照旧按上面那份用量写，不另报错。不先清空同上。
-    const cached = cachedWeekSpend(props.api, props.accountScope, trendWanted)
     const wanted = Boolean(account) && trendWanted
-    if (cached || !wanted) setWeek(cached)
-    if (wanted) void props.api.weekSpend(props.accountScope).then((value) => { if (current) setWeek(value) }).catch(() => undefined)
-    return () => { current = false }
-  }, [account?.userId, props.accountScope, props.api, trendWanted, balanceUpdatedAt, usageRefresh])
+    function read() {
+      // 七根柱子读不到就不画，合计照旧按上面那份用量写，不另报错。不先清空同上。
+      const cached = cachedWeekSpend(props.api, props.accountScope, trendWanted)
+      if (cached || !wanted) setWeek((shown) => sameWeekSpend(shown, cached) ? shown : cached)
+      if (wanted) void props.api.weekSpend(props.accountScope).then((value) => { if (current) setWeek((shown) => sameWeekSpend(shown, value) ? shown : value) }).catch(() => undefined)
+    }
+    read()
+    const stop = balanceStore ? subscribeBalanceReads(balanceStore, read) : undefined
+    return () => { current = false; stop?.() }
+  }, [account?.userId, props.accountScope, props.api, trendWanted, balanceStore, usageRefresh])
   /** 余额旁边的刷新：点了是要看现在的数，用量和近 7 天不认一分钟的缓存，跟余额一起重读（F3）。 */
   function refreshBalanceCard() {
     if (!balanceStore) return
@@ -1298,15 +1349,10 @@ export function Home(props: HomeProps) {
                 : <div className="v2-home-recent-empty">还没有对话。打开工具聊过之后，最近的对话会出现在这里。</div>}
         </div>
       </section>
-      <section className="v2-home-balance" data-testid="home-balance-card" title={balanceHint}>
-        <div className="v2-home-balance-head"><h2>账号余额</h2>{props.supportsUsage !== false && <button type="button" className="v2-more-link" onClick={() => props.onNavigate('account', 'usage')} data-testid="home-usage-link">用量账单<ChevronRight size={13} aria-hidden="true" /></button>}</div>
-        <div className="v2-home-balance-top">
-          <strong className={lowMoney ? 'is-warn' : undefined} data-testid="home-balance">{dollars === null ? '—' : money(dollars)}</strong>
-          {balanceLabel && <small data-testid="home-balance-label">{balanceLabel}</small>}
-          {balanceStore && account && <Button variant="ghost" size="xs" icon={RefreshCw} loading={balanceState.loading} aria-label="刷新账号余额" title={balanceHint} onClick={refreshBalanceCard} testId="home-balance-refresh" />}
-          {props.supportsBilling !== false && <Button variant="secondary" size="sm" onClick={() => props.onNavigate('account', 'recharge')} testId="home-recharge">充值</Button>}
-        </div>
-        {balanceState.error && <p className="v2-balance-error" role="status" title={balanceState.error}>更新失败，{balance ? '显示上次余额' : '请重试'}</p>}
+      <HomeBalanceCard hasBalance={Boolean(balance)} waiting={props.accountRestoring ? 'restoring' : account ? 'reading' : null} onRefresh={balanceStore && account ? refreshBalanceCard : undefined}
+        head={<div className="v2-home-balance-head"><h2>账号余额</h2>{props.supportsUsage !== false && <button type="button" className="v2-more-link" onClick={() => props.onNavigate('account', 'usage')} data-testid="home-usage-link">用量账单<ChevronRight size={13} aria-hidden="true" /></button>}</div>}
+        amount={<strong className={lowMoney ? 'is-warn' : undefined} data-testid="home-balance">{dollars === null ? '—' : money(dollars)}</strong>}
+        recharge={props.supportsBilling !== false && <Button variant="secondary" size="sm" onClick={() => props.onNavigate('account', 'recharge')} testId="home-recharge">充值</Button>}>
         {subscriptionLine && <p className="v2-home-balance-sub" data-testid="home-subscription">{subscriptionLine}</p>}
         {runwayLine && <p className={`v2-home-balance-days${lowMoney && runway?.days != null ? ' is-warn' : ''}`} data-testid="home-balance-days">{runwayLine}</p>}
         {account && props.supportsUsage !== false && weekTotal !== null && <div className="v2-home-week" data-testid="home-week-spend">
@@ -1322,7 +1368,7 @@ export function Home(props: HomeProps) {
             })}
           </div>}
         </div>}
-      </section>
+      </HomeBalanceCard>
     </div>
     <section className="v2-home-tools" data-testid="home-your-tools">
       <div className="v2-home-section-head"><h2>工具</h2><span>{[`已装 ${installedCount} 个`, ...(undetectedCount > 0 ? [`${undetectedCount} 个没检测出来`] : [])].join(' · ')}</span></div>
