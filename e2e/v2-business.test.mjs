@@ -2825,6 +2825,39 @@ test('backup rows are named by the time they were taken and the tool, never by a
   }
 })
 
+// R2-2：校验没过的那份原来跟已下线的工具一起被筛掉，原因和删除入口一起不见了。现在单独一行：
+// 说清用不了、不给预览、不能恢复、能删；认不出工具的只在「全部工具」里。
+test('a broken backup keeps its row, cannot be previewed or restored, and can be deleted', async () => {
+  const page = await fixture('page=backups&brokenBackup')
+  try {
+    const card = page.getByTestId('page-backups')
+    const torn = page.getByTestId('backups-row-backup-torn')
+    const unreadable = page.getByTestId('backups-row-backup-unreadable')
+    await torn.locator('.xm-row-desc').getByText('Codex CLI 配置，这份备份用不了，可以删掉', { exact: true }).waitFor()
+    await torn.getByText('校验失败', { exact: true }).waitFor()
+    assert.equal(await torn.getByRole('button', { name: '预览', exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('backups-restore-backup-torn').isDisabled(), true)
+    await unreadable.locator('.xm-row-desc').getByText('这份备份用不了，可以删掉', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('backups-restore-backup-unreadable').isDisabled(), true)
+    await card.getByText('3 份备份', { exact: true }).waitFor()
+    await card.getByRole('button', { name: 'Codex CLI', exact: true }).click()
+    await card.getByText('2 份备份', { exact: true }).waitFor()
+    await torn.waitFor()
+    assert.equal(await unreadable.count(), 0)
+    await card.getByRole('button', { name: '全部工具', exact: true }).click()
+    // 没有时间的那份，删除确认不写「删除 暂未记录 的备份？」。
+    await unreadable.getByRole('button', { name: '删除这份备份', exact: true }).click()
+    const confirm = page.getByRole('dialog', { name: '删除这份备份？', exact: true })
+    await confirm.getByRole('button', { name: '删除', exact: true }).click()
+    await waitForToast(page, '备份已删除')
+    await unreadable.waitFor({ state: 'detached' })
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'deleteBackup').map((call) => call.args), ['backup-unreadable'])
+    await card.getByText('2 份备份', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
 test('backup list names whose key a backup holds and warns before restoring another account key', async () => {
   const page = await fixture('page=backups&backupOtherKey')
   try {
