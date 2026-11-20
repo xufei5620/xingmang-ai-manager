@@ -55,9 +55,16 @@ export interface VideoStudioShot {
    * 上一次提交没等到服务端的答复（回包丢了、服务端出错、提交到一半点了停止）：那一单可能已经扣了钱，
    * 却没有任务号，接不回来。跟请求号一起存下，重开以后照样是「没生成出来」加主进程那句提醒，
    * 不能变回「还没生成」；再生成时确认框另外说清可能多扣一次，并沿用这个请求号（#1489 N2）。
-   * 沿用请求号重新出着的时候也留着，只是不存；出成了才去掉。
+   * 沿用请求号重新出着的时候也留着，只是不存（存成下面的 unrecorded）；出成了才去掉。
    */
   unconfirmed?: boolean
+  /**
+   * 正在出的这一单交出去前，主进程没能在本机记下「交出去了、还没回音」（磁盘满、文件被杀毒软件占着），由页面替它记着，
+   * 跟请求号一起存下；沿用请求号重新出的那一单（上一次结果不明，主进程也可能没记下）存的时候同样记成这个。
+   * 重开以后先拿请求号去主进程查（任务、出好的片段、结果不明的记录）；都查不到也不能当它没发过，
+   * 照「提交结果不明」提醒可能已扣费，再生成时确认框说清可能多扣一次（总单 #42，N2）。等到这一单的结果就去掉。
+   */
+  unrecorded?: boolean
   // 下面几项只在这一次打开页面时有，不存。
   /** 正在让 AI 画这一镜的图：那一次的请求号（停下时拿它去取消）。 */
   drawing?: string
@@ -590,7 +597,12 @@ export function serializeVideoStudioProject(project: VideoStudioProject): unknow
       id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.image ? { image: { assetId: shot.image.assetId } } : {}), ...(shot.seconds ? { seconds: shot.seconds } : {}), ...(shot.clip ? { clip: shot.clip } : {}),
       ...(shot.clip && shot.trimStart ? { trimStart: shot.trimStart } : {}), ...(shot.clip && shot.trimEnd ? { trimEnd: shot.trimEnd } : {}),
       // 沿用请求号重新出着的那一单不记 unconfirmed：重开以后照样去接，主进程那边记着上一次结果不明，接回时会照实回答。
-      ...(shot.requestId ? { requestId: shot.requestId, ...(shot.unconfirmed && shot.status !== 'generating' ? { unconfirmed: true } : {}) } : {}),
+      // 可上一次也可能是主进程没记下的那种（写不进去），所以记成 unrecorded：接不回来时照样提醒，同这一单交出去前没记下。
+      ...(shot.requestId ? {
+        requestId: shot.requestId,
+        ...(shot.unconfirmed && shot.status !== 'generating' ? { unconfirmed: true } : {}),
+        ...(shot.unrecorded || (shot.unconfirmed && shot.status === 'generating') ? { unrecorded: true } : {}),
+      } : {}),
     })),
     ...(project.music ? { music: project.music } : {}),
     ...(project.exported ? { exported: project.exported } : {}),
@@ -638,6 +650,8 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
     const image = isRecord(entry.image) ? videoStudioShotImage(entry.image.assetId) : null
     const requestId = typeof entry.requestId === 'string' && requestIdPattern.test(entry.requestId) ? entry.requestId : undefined
     const unconfirmed = Boolean(requestId) && entry.unconfirmed === true
+    // 主进程没记下的那一单照样去接（status 是 generating）：接不回来时页面按这一笔提醒，不变回「还没生成」。
+    const unrecorded = Boolean(requestId) && !unconfirmed && entry.unrecorded === true
     // 剪掉多少只跟着片段读；两头加起来剪得超过可选范围的整个不认，免得拼的时候才报「剪掉首尾后没法用」。
     const trimStart = clip && isVideoStudioTrim(entry.trimStart) ? entry.trimStart : 0
     const trimEnd = clip && isVideoStudioTrim(entry.trimEnd) ? entry.trimEnd : 0
@@ -654,6 +668,7 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
       ...(trimmed && trimEnd ? { trimEnd } : {}),
       ...(requestId ? { requestId } : {}),
       ...(unconfirmed ? { unconfirmed, error: aiVideoUnconfirmedSubmissionMessage } : {}),
+      ...(unrecorded ? { unrecorded } : {}),
       status: unconfirmed ? 'failed' : requestId ? 'generating' : clip ? 'done' : 'idle',
     })
   }

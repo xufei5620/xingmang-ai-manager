@@ -124,7 +124,7 @@ const draftsFullWarning = '这台电脑上存不下更多草稿了，删掉几�
 
 /** 只留镜头本身和上一段片段，这一次出片的请求号、进度和报错都去掉。 */
 function shotWithoutRun(shot: VideoStudioShot) {
-  const { requestId: _requestId, unconfirmed: _unconfirmed, stage: _stage, progress: _progress, delayed: _delayed, error: _error, ...rest } = shot
+  const { requestId: _requestId, unconfirmed: _unconfirmed, unrecorded: _unrecorded, stage: _stage, progress: _progress, delayed: _delayed, error: _error, ...rest } = shot
   return rest
 }
 
@@ -266,7 +266,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     for (const [shotId, requestId] of running.current) {
       if (requestId !== event.requestId) continue
       commit((current) => updateVideoStudioShot(current, shotId, (shot) => shot.requestId === requestId
-        ? { ...shot, status: 'generating', stage: event.stage, ...(event.value === undefined ? {} : { progress: event.value }), delayed: event.delayed === true }
+        ? { ...shot, status: 'generating', stage: event.stage, ...(event.value === undefined ? {} : { progress: event.value }), delayed: event.delayed === true, ...(event.unrecorded ? { unrecorded: true } : {}) }
         : shot))
     }
   }), [bridge])
@@ -356,7 +356,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
 
   /**
    * 等一段片段回来：新发的（generateAiVideo）和接回来的（resumeAiVideo）走同一套收尾。接回来是 null 就是主进程没有这一单，
-   * 缺省回到「还没生成」，给了 onMissing 就交给它。停下时已经交给服务端的那一单，不收尾，接着拿请求号去接回。
+   * 缺省回到「还没生成」，给了 onMissing 就交给它；主进程当初没记下的那一单（unrecorded）查不到不等于没发过，照「提交结果不明」算。
+   * 停下时已经交给服务端的那一单，不收尾，接着拿请求号去接回。
    */
   async function awaitClip(shotId: string, requestId: string, request: () => Promise<AiVideoClip | null>, onMissing?: () => void) {
     const alive = owner.capture()
@@ -369,7 +370,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       if (!clip && onMissing) { next = onMissing; return }
       commit((current) => {
         const updated = updateVideoStudioShot(current, shotId, (item) => item.requestId !== requestId ? item
-          : clip ? { ...withoutVideoStudioTrim(shotWithoutRun(item)), clip, status: 'done' } : settleShot(item))
+          : clip ? { ...withoutVideoStudioTrim(shotWithoutRun(item)), clip, status: 'done' }
+            : settleShot(item, item.unrecorded ? aiVideoUnconfirmedSubmissionMessage : undefined))
         return clip ? { ...updated, exported: undefined } : updated
       })
     } catch (reason) {

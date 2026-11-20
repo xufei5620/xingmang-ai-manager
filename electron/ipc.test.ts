@@ -27,6 +27,7 @@ import { passwordChangeUnconfirmedMessage } from './password-change-unconfirmed'
 import { PaymentCheckoutRejected } from './payment-window'
 import { assetThumbnailUrl } from './asset-thumbnail'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
+import type { AiVideoProgressObserver } from './ai-video-service'
 import type { AiStoredAudioAsset } from './ai-audio-asset-store'
 
 const electronMocks = vi.hoisted(() => ({
@@ -1412,6 +1413,31 @@ describe('registerIpcHandlers', () => {
       await expect(electronMocks.handlers.get('video:generate')!(trustedEvent(), input)).rejects.toThrow('请先登录星芒账号')
       expect(signedOut.generate).not.toHaveBeenCalled()
       second.dispose()
+    })
+
+    it('tells the page to keep a submission the main process could not write down, then gets that copy onto disk', async () => {
+      const videoService = videoServiceStub()
+      videoService.generate.mockImplementationOnce(async (_senderId: number, _input: unknown, progress?: AiVideoProgressObserver) => {
+        progress?.onSubmissionUnrecorded?.()
+        await progress?.onStage('downloading')
+        return storedClip
+      })
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { videoService })
+      const flushStorageData = vi.fn()
+      const base = trustedEvent(undefined, 17)
+      const event = { ...base, sender: { ...base.sender, session: { flushStorageData } } }
+      await expect(electronMocks.handlers.get('video:generate')!(event, {
+        requestId: 'shot-unrecorded', group: '视频分组', model: 'grok-video', prompt: '海浪', seconds: '6',
+      })).resolves.toEqual(clip)
+      expect(event.sender.send.mock.calls).toEqual([
+        ['video:progress', { requestId: 'shot-unrecorded', stage: 'processing', unrecorded: true }],
+        ['video:progress', { requestId: 'shot-unrecorded', stage: 'downloading' }],
+      ])
+      // Once before the request went out (the page's request id), and once more shortly after the page wrote this down:
+      // the main process holds no copy of its own, so a crash in Chromium's few seconds of write delay would lose both.
+      expect(flushStorageData).toHaveBeenCalledTimes(1)
+      await vi.waitFor(() => expect(flushStorageData).toHaveBeenCalledTimes(2), { timeout: 5_000 })
+      dispose()
     })
 
     it('refuses a new storyboard or clip while video studio is switched off but still collects one already paid for', async () => {
