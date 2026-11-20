@@ -36,16 +36,21 @@ describe('config:get disk reads', () => {
     const inspect = vi.fn(inspectProviderConfig)
     const { service } = fixture({ inspectProviderConfig: inspect })
     service.getConfig(false)
+    // 一遍读几次跟平台有关（Windows 上 Grok 的钩子状态会再查一次配置），只比第二遍有没有多读。
+    const firstSummary = inspect.mock.calls.length
+    expect(firstSummary).toBeGreaterThanOrEqual(providerIds.length)
     service.getConfig(false)
-    expect(inspect).toHaveBeenCalledTimes(providerIds.length)
+    expect(inspect).toHaveBeenCalledTimes(firstSummary)
   })
 
   it('still reads every time when no window is configured', () => {
     const inspect = vi.fn(inspectProviderConfig)
     const { service } = fixture({ inspectProviderConfig: inspect, configReadCacheMs: undefined })
     service.getConfig(false)
+    const firstSummary = inspect.mock.calls.length
+    expect(firstSummary).toBeGreaterThanOrEqual(providerIds.length)
     service.getConfig(false)
-    expect(inspect).toHaveBeenCalledTimes(providerIds.length * 2)
+    expect(inspect).toHaveBeenCalledTimes(firstSummary * 2)
   })
 
   it('reads again after Xingmang writes a tool config', () => {
