@@ -238,6 +238,7 @@ describe('main process quit cleanup', () => {
         "app.off('browser-window-focus', resumeStallMonitor)",
         "app.off('browser-window-blur', pauseStallMonitor)",
         'mainStallMonitor.stop()',
+        'mainHangWatchdog.stop()',
         'detachPrivacyListener()',
         'usageStats.stop()',
         'noteUsageEvent = null',
@@ -504,8 +505,30 @@ describe('main process application protocol', () => {
     const { source } = mainSource()
     const body = moduleFunction(source, 'registerApplicationProtocol').getText(source)
     expect(body).toContain("registerFileProtocol('xingmang'")
-    expect(body).toContain('callback({ path: target, headers: applicationSecurityResponseHeaders() })')
+    // applicationResponseHeaders 是安全头再加一个 Document-Policy，app-protocol.test.ts 钉着安全头一条不少。
+    expect(body).toContain('callback({ path: target, headers: applicationResponseHeaders() })')
     expect(body).not.toMatch(/callback\(\{ path: target \}\)/)
+  })
+})
+
+describe('main process hang reports', () => {
+  // 卡住时上报卡在哪（hang-report.ts）：跟着「自动发送错误报告」开关走、只在抽中的那部分打开里抓、一次打开各报一回。
+  it('asks the renderer where it is stuck only when sampled, switched on and not asked yet', () => {
+    const { source } = mainSource()
+    const body = moduleFunction(source, 'reportRendererHang').getText(source)
+    expect(body).toContain('if (rendererHangReported || !hangReportsSampled || !crashReportingEnabled()) return')
+    expect(body.indexOf('rendererHangReported = true')).toBeLessThan(body.indexOf('collectRendererCallStack('))
+    expect(readMainWiringSource()).toContain("    reportRendererHang(window, runtimeLog)\n")
+  })
+
+  it('arms the main-process watchdog only from a counted stall, only when sampled and switched on', () => {
+    const sourceText = readMainWiringSource()
+    expect(sourceText).toContain('if (hangReportsSampled && crashReportingEnabled()) mainHangWatchdog.arm()')
+    expect(sourceText).toContain('if (update.crashReporting === false) mainHangWatchdog.stop()')
+  })
+
+  it('switches the call stack feature on without dropping an --enable-features someone else passed', () => {
+    expect(readMainWiringSource()).toContain("app.commandLine.appendSwitch('enable-features', [app.commandLine.getSwitchValue('enable-features'), rendererCallStackFeature].filter(Boolean).join(','))")
   })
 })
 

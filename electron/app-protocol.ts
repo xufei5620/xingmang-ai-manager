@@ -20,3 +20,13 @@ export const applicationContentSecurityPolicy = [
 export function applicationSecurityResponseHeaders(): Record<string, string[]> {
   return { 'Content-Security-Policy': [applicationContentSecurityPolicy] }
 }
+
+// 窗口没响应时主进程要问出界面卡在哪段代码（main.ts reportRendererHang 调 collectJavaScriptCallStack）。Chromium
+// 只替带了这个 Document-Policy 的页面取栈，而且这项功能要先用 --enable-features 打开（main.ts 在 ready 之前开）。
+// 它只决定 Chromium 能不能替我们取页面的调用栈，页面自己多不了任何本事。
+export const rendererCallStackDocumentPolicy = 'include-js-call-stacks-in-crash-reports'
+export const rendererCallStackFeature = 'DocumentPolicyIncludeJSCallStacksInCrashReports'
+
+export function applicationResponseHeaders(): Record<string, string[]> {
+  return { ...applicationSecurityResponseHeaders(), 'Document-Policy': [rendererCallStackDocumentPolicy] }
+}
