@@ -97,6 +97,12 @@ describe('lossless chat history files', () => {
     const restored = await saveAndReopen(state, files)
     expect(restored.state.conversations[0].draftImages).toEqual(state.conversations[0].draftImages)
     expect(files.raw()).not.toContain('xingmang-asset://')
+    // 旧版本把同一张图的两份一起放进了输入框（R28-6），读回来只留一份，不然这条还是发不出去。
+    const copies = workspace()
+    const kept = state.conversations[0].draftImages ?? []
+    copies.conversations[0].draftImages = [...kept, ...kept]
+    const healed = await saveAndReopen(copies, memoryFiles())
+    expect(healed.state.conversations[0].draftImages).toEqual(state.conversations[0].draftImages)
     const broken = workspace()
     Object.assign(broken.conversations[0], { draftImages: 'not a list' })
     // Only that conversation is refused (and kept aside); the record as a whole still reads.

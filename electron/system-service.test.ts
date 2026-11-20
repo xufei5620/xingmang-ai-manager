@@ -45,7 +45,7 @@ import type { CliModelHints } from './cli-model-defaults'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-process-probe'
 import { classifyOperationError, presentOperationError } from '../src/renderer-v2/operation-error'
-import { managedNodeRuntimeBinDirectory, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import { managedNativeProviderRoot, managedNodeRuntimeBinDirectory, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import { ensureManagedNpmLayout } from './managed-cli'
 import { installLeftoverMinimumAgeMs, sweepInstallLeftovers, type InstallLeftoverLocation } from './install-leftovers'
 import { LinuxTerminalLaunchError, linuxTerminalFailureMessages } from './linux-terminal'
@@ -7353,6 +7353,33 @@ describe('installing or uninstalling a CLI', () => {
 
     for (const name of fileNames) expect(fs.existsSync(path.join(bin, name))).toBe(false)
     await vi.waitFor(() => expect(removeWindowsUserPath).toHaveBeenCalledWith(bin))
+  })
+
+  // 装失败时失败框「复制路径」复制的是这里报的落点（toolInstallDirectory）。Windows 普通身份下 Grok 装进个人文件夹下的
+  // .grok\bin（installCli 的 sameUserInstall），以前这里却一律报 ProgramData 下的托管目录，客户照着去查权限、加白名单都找错地方。
+  it('reports the folder a Windows Grok install would really use as its install target', async () => {
+    const profile = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-target-profile-')))
+    const customHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-target-custom-home-')))
+    temporaryDirectories.push(profile, customHome)
+    vi.stubEnv('USERPROFILE', profile)
+    vi.stubEnv('HOME', customHome)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    function windowsService(windowsExecutionMode: 'same-user' | 'trusted-only') {
+      return createService({
+        platform: 'win32',
+        windowsExecutionMode,
+        providerRoots: { userHome: profile, codexHome: path.join(profile, '.codex') },
+        resolveCliInstallation: vi.fn(async () => null),
+        findExecutable: vi.fn(async () => null),
+        runCommand: versionProbeRunner(),
+      })
+    }
+
+    await expect(windowsService('same-user').inspectCliUpdate('grok', false))
+      .resolves.toMatchObject({ installed: false, installTarget: path.join(profile, '.grok', 'bin') })
+    // 管理员身份装进 ProgramData 下的托管目录，照旧。
+    await expect(windowsService('trusted-only').inspectCliUpdate('grok', false))
+      .resolves.toMatchObject({ installed: false, installTarget: managedNativeProviderRoot('grok') })
   })
 })
 

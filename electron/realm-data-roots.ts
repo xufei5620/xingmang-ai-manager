@@ -17,6 +17,12 @@ export interface RealmDataRoots {
   readonly assetThumbnailsDirectory: string
   /** Place a generated-media base (current or legacy) for this realm: xm uses it as is, api-account nests below it. */
   assetOutputDirectory(legacyRoot: string): string
+  /**
+   * The inverse of assetOutputDirectory(): the base this realm's media root was
+   * placed under. Both realms share it (api-account's root is inside xm's), so
+   * measuring the base counts each realm's media once whichever realm is current.
+   */
+  sharedAssetOutputDirectory(realmRoot: string): string
   accountDirectory(userId: number): string
 }
 
@@ -53,6 +59,14 @@ export function resolveRealmDataRoots(managerDataDirectory: string, realmInput: 
     const base = path.resolve(legacyRoot)
     return realmId === 'xm-account' ? base : path.join(base, 'realms', 'api-account')
   }
+  const sharedAssetOutputDirectory = (realmRoot: string): string => {
+    if (typeof realmRoot !== 'string' || !realmRoot.trim() || realmRoot.includes('\0')) throw new Error('资产输出目录无效')
+    const resolved = path.resolve(realmRoot)
+    if (realmId === 'xm-account') return resolved
+    const realms = path.dirname(resolved)
+    if (path.basename(resolved) !== 'api-account' || path.basename(realms) !== 'realms') throw new Error('资产输出目录无效')
+    return path.dirname(realms)
+  }
   return Object.freeze({
     realmId,
     rootDirectory,
@@ -64,6 +78,7 @@ export function resolveRealmDataRoots(managerDataDirectory: string, realmInput: 
     chatVideoTasksDirectory: path.join(rootDirectory, 'chat-video-tasks'),
     assetThumbnailsDirectory: path.join(rootDirectory, 'asset-thumbnails'),
     assetOutputDirectory,
+    sharedAssetOutputDirectory,
     accountDirectory,
   })
 }

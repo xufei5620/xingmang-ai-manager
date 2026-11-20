@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { isActiveProviderId } from './catalog'
 import type { ConfigBackupPruneResult, ConfigBackupSummary } from './backups'
 import type { InstallLeftoverSweepResult } from './install-leftovers'
@@ -16,8 +17,13 @@ import {
 export const RETAINED_BACKUPS_AFTER_CLEANUP = 10
 
 export interface StorageUsageServiceDependencies {
-  /** 当前账号的 AI 作品现在存在哪（「打开文件夹」打开的那一个）。 */
+  /**
+   * 两个站点共用的那个 AI 作品文件夹：历史账号的作品在它下面的 realms/api-account 里。量这一层，
+   * 换站点时数字不变（A08）；「打开文件夹」打开的仍是当前站点那一个，不归这里管。
+   */
   worksDirectory(): string
+  /** 这台电脑上两个站点、各个账号的画布项目自己选的文件夹里放作品的那一层（A08）。 */
+  canvasProjectAssetDirectories(): Promise<readonly string[]>
   /** 两个账号站点各自那份作品缩略图。 */
   thumbnailDirectories(): readonly string[]
   chatHistoryDirectory: string
@@ -47,6 +53,29 @@ function shownBackup(backup: ConfigBackupSummary): boolean {
 }
 
 /**
+ * 去掉重复的和被别的套住的（A08）：画布项目的文件夹可以选在作品文件夹里面，两个项目、两个站点也可以共用一个文件夹，
+ * 同一份文件只算一遍。返回留下的原样字符串，一模一样的留前面那条；Windows 上不分大小写，和 path-identity.ts 一样。
+ */
+export function outermostDirectories(directories: readonly string[], platform: NodeJS.Platform = process.platform): string[] {
+  const flavor = platform === 'win32' ? path.win32 : path.posix
+  const entries = directories.map((directory) => {
+    const resolved = flavor.resolve(directory)
+    return { directory, key: platform === 'win32' ? resolved.toLowerCase() : resolved }
+  })
+  const keys = new Set(entries.map((entry) => entry.key))
+  const kept = new Set<string>()
+  return entries.filter((entry) => {
+    if (kept.has(entry.key)) return false
+    // 往上一层层找，比两两比较快：项目可以有几百个，层数只有十来层。
+    for (let current = entry.key, parent = flavor.dirname(current); parent !== current; current = parent, parent = flavor.dirname(current)) {
+      if (keys.has(parent)) return false
+    }
+    kept.add(entry.key)
+    return true
+  }).map((entry) => entry.directory)
+}
+
+/**
  * 「设置 › 备份迁移 › 星芒占用的空间」的主进程那一半（决定单 D100）。只在客户打开这一组时由界面问一次，
  * 不在后台常驻算；六行各问各的，快的先出来，所有读盘共用一个限流（storage-usage.ts）。
  *
@@ -59,8 +88,38 @@ export function createStorageUsageService(dependencies: StorageUsageServiceDepen
     for (const directory of directories) total += await measureDirectoryBytes(directory, { gate })
     return total
   }
+  /**
+   * 作品文件夹量不出来就是这一行没算出来；画布项目的文件夹是客户自己选的，可能在拔掉的盘上、或者不让读，
+   * 量不出来的当没有，只在日志里记几处没算上（不记路径，I13）。
+   */
+  async function measureWorks(): Promise<number> {
+    const shared = dependencies.worksDirectory()
+    let projects: readonly string[] = []
+    try {
+      projects = await dependencies.canvasProjectAssetDirectories()
+    } catch (error) {
+      dependencies.log.log('warn', 'storage', 'storage.canvas-projects.unreadable', '画布项目的文件夹没读出来，AI 作品只算了作品文件夹', {
+        code: (error as NodeJS.ErrnoException).code ?? 'unknown',
+      })
+    }
+    let total = 0
+    let skipped = 0
+    for (const directory of outermostDirectories([shared, ...projects])) {
+      if (directory === shared) {
+        total += await measureDirectoryBytes(directory, { gate })
+        continue
+      }
+      try {
+        total += await measureDirectoryBytes(directory, { gate })
+      } catch {
+        skipped += 1
+      }
+    }
+    if (skipped) dependencies.log.log('warn', 'storage', 'storage.measure.partial', '有几个画布项目的文件夹没算上', { part: 'works', skipped })
+    return total
+  }
   async function measure(part: StorageUsagePart): Promise<StorageUsagePartReport> {
-    if (part === 'works') return { bytes: await measureAll([dependencies.worksDirectory()]) }
+    if (part === 'works') return { bytes: await measureWorks() }
     if (part === 'thumbnails') return { bytes: await measureAll(dependencies.thumbnailDirectories()) }
     if (part === 'chat-history') return { bytes: await measureAll([dependencies.chatHistoryDirectory]) }
     if (part === 'logs') return { bytes: await measureAll([dependencies.logDirectory]) }
