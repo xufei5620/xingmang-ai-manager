@@ -96,6 +96,8 @@ import {
   type UsageUpdateView,
 } from './usage-stats'
 import { createMainStallMonitor, createUsageStatsReporter } from './usage-stats-reporter'
+import { buildClientVersionReport, shouldSendClientVersionReport } from './client-version-report'
+import { createClientVersionReporter } from './client-version-reporter'
 import { activeProviderIds, cliCatalog, isProviderId } from './catalog'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
@@ -737,6 +739,8 @@ function reportRendererHang(window: BrowserWindow, runtimeLog: RuntimeLogStore):
 }
 // 匿名使用统计（usage-stats.ts）建得比主窗口晚一点；在那之前、和退出以后，窗口没响应就不数。
 let noteUsageEvent: ((event: UsageStatsEvent) => void) | null = null
+// 客户端版本上报（client-version-report.ts）也建得比账号服务晚；在那之前、和退出以后，登录态变了不用管。
+let noteAccountChangedForVersionReport: (() => void) | null = null
 
 /**
  * 一个 Chromium 会话的 fetch。net.fetch 碰到 redirect: 'manual' 不交回跳转，直接报「Redirect was
@@ -1978,6 +1982,7 @@ if (!hasSingleInstanceLock) {
         if (state.restoring) relayRouteController.ensureWatching(state.restoring.account.siteId)
         const identity = buildAccountIdentity(siteId, state.account?.userId, accounts.client.getSessionRevision!())
         sendToMainWindow('onAccountSessionChanged', state)
+        noteAccountChangedForVersionReport?.()
         // 换了人或退出：开票窗口关掉，上一个人的开票登录清掉；续期这类同一个人的变化它自己会略过。
         invoicePortalWindow.setAccount(invoicePortalIdentity(siteId, state))
         if (!accountIdentity.advance(identity)) return
@@ -2118,6 +2123,41 @@ if (!hasSingleInstanceLock) {
     noteUsageEvent = (event) => { usageStats.record(event) }
     if (unexpectedExit) usageStats.record({ kind: 'hang', hang: 'unexpectedExit' })
     usageStats.start()
+    // 客户端版本上报（client-version-report.ts，yoyo 11-20 选的「软件主动报给控制台」）：登录着才报，每天最多一次
+    // 站点、这个站的用户编号、版本、系统、芯片，给 console.solov.cc 的用户详情用。跟上面的匿名统计是两路，不受那个开关管。
+    const clientVersionReporter = shouldSendClientVersionReport({
+      packaged: app.isPackaged,
+      localBuild: applicationPackage.xingmangLocalBuild === true,
+      env: process.env,
+    }) ? createClientVersionReporter({
+        filePath: path.join(managerDataDirectory, 'client-version-report.json'),
+        collect: () => {
+          const accountState = accountService.getSessionState()
+          return buildClientVersionReport({
+            siteId: accounts.getSiteId(),
+            authenticated: accountState.authenticated,
+            userId: accountState.account?.userId,
+            appVersion: app.getVersion(),
+            platform: process.platform,
+            arch: process.arch,
+          })
+        },
+        fetchImpl: (url, init) => chromiumSessionFetch(session.defaultSession)(url, init),
+        // 日志里只写结果，不写用户编号（I13）。
+        onSendFailure: (error) => {
+          const reason = classifyNetworkFailure(error)
+          runtimeLog.log('info', 'client-version', 'send.failed', '客户端版本这次没报上去，过一会儿再试', reason ? { networkFailure: reason } : undefined)
+        },
+        onRejected: (status) => {
+          runtimeLog.log('info', 'client-version', 'send.rejected', '控制台这次没收下客户端版本，过一会儿再试', { status })
+        },
+        onLocalFailure: (error) => { runtimeLog.exception('client-version', 'local.failed', error) },
+      })
+      : null
+    if (clientVersionReporter) {
+      noteAccountChangedForVersionReport = () => { clientVersionReporter.accountChanged() }
+      clientVersionReporter.start()
+    }
     // 设置里一关就删掉本机攒的计数（方案第 5 节「关掉后立刻停，计数文件一起删掉」），不等最多 6 小时后的那次定时检查。
     const detachPrivacyListener = attachPrivacyChangeListener((kind, enabled) => {
       if (kind === 'anonymousUsage' && !enabled) void usageStats.discard()
@@ -2159,6 +2199,8 @@ if (!hasSingleInstanceLock) {
       detachPrivacyListener()
       usageStats.stop()
       noteUsageEvent = null
+      clientVersionReporter?.stop()
+      noteAccountChangedForVersionReport = null
     })
     let lastUpdateForUsage: UsageUpdateView | null = null
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
