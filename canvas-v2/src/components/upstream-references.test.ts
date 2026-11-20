@@ -147,12 +147,20 @@ describe('upstream media reference stability', () => {
 
   it.each(['first-available', undefined])('keeps %s typed router references scalar and refuses a future configuration', (strategy) => {
     const original = nodes(), source = original[0]
-    source.type = 'router'; source.data.settings = strategy ? { routerStrategy: { version: 1, strategy } } : { strategy: 'all' }
+    source.type = 'router'; source.data.settings = strategy ? { routerStrategy: { version: 1, strategy } } : { strategy: 'first-available' }
     source.data.candidates = ['image-a', 'image-b'].map((assetId) => ({ candidateId: assetId, attemptId: 'original', createdAt: '2026-10-11T00:00:00Z', asset: { kind: 'image' as const, assetId, localUrl: `/asset/${assetId}` } }))
     const refs = createCanvasUpstreamReferenceSelector()(original, edges, []).get('target')!
     expect(refs).toHaveLength(1); expect(refs[0].batch).toBe(false)
     source.data.settings.routerStrategy = { version: 2, strategy: 'all' }
     const invalid = createCanvasUpstreamReferenceSelector()(original, edges, []).get('target')!
     expect(invalid).toHaveLength(1); expect(invalid[0]).toMatchObject({ status: 'waiting', label: expect.stringContaining('待核对') }); expect(invalid[0].asset).toBeUndefined()
+  })
+
+  it('lists every input of an old explicit keep-all router, as the run now hands them on (D06)', () => {
+    const original = nodes(), source = original[0]
+    source.type = 'router'; source.data.settings = { strategy: 'all' }
+    source.data.candidates = ['image-a', 'image-b'].map((assetId) => ({ candidateId: assetId, attemptId: 'original', createdAt: '2026-10-11T00:00:00Z', asset: { kind: 'image' as const, assetId, localUrl: `/asset/${assetId}` } }))
+    const refs = createCanvasUpstreamReferenceSelector()(original, edges, []).get('target')!
+    expect(refs.map((reference) => reference.asset?.assetId)).toEqual(['image-a', 'image-b']); expect(refs.every((reference) => reference.batch)).toBe(true)
   })
 })

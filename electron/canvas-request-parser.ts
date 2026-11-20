@@ -40,6 +40,7 @@ import {
   type CanvasImageReferenceOrder,
   type CanvasImageTransformRecipe,
   type CanvasInteriorTask,
+  type CanvasRouterStrategy,
   type CanvasRunGraph,
   type CanvasRunGraphNode,
   type CanvasRunImageCandidateCount,
@@ -484,6 +485,20 @@ function sceneTaskFields(kind: CanvasRunNodeKind, data: Record<string, unknown>,
 }
 
 /**
+ * The kernel's routerStrategy (xingmang-canvas runtime/router-strategy.ts):
+ * version 1 and one of two choices, nothing else. Kept only on a router while
+ * the desktop runs strategies (canvas-node-executors.ts selectCanvasRouterInputs).
+ */
+function optionalRouterStrategy(kind: CanvasRunNodeKind, value: unknown, run: boolean): CanvasRouterStrategy | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value) || value.version !== 1 || (value.strategy !== 'first-available' && value.strategy !== 'all')) {
+    throw new Error('画布路由策略格式错误')
+  }
+  assertOnlyFields(value, ['version', 'strategy'], '画布路由策略')
+  return run && kind === 'router' ? { version: 1, strategy: value.strategy } : undefined
+}
+
+/**
  * Returns why the desktop cannot run this node as the kernel asked, or
  * undefined when every kernel field is absent or equal to what the desktop
  * already does. The wording names what the user switched on, never a field.
@@ -508,14 +523,12 @@ function kernelFieldsUnsupported(
   // default and false is an explicit request for a silent video. The desktop
   // sends neither, so only undefined leaves the request unchanged.
   if (optionalBoolean(data.generateAudio, '画布生成音频设置') !== undefined) reasons.push('生成音频设置')
+  // Parsed for its shape whatever the switch; kept by optionalRouterStrategy
+  // only where it runs. A host that runs no strategies refuses it rather than
+  // run the historical router, which hands each connection one input (D06).
   if (data.routerStrategy !== undefined) {
-    // The desktop router forwards every text and the images (or else the
-    // videos) it receives, which is neither kernel strategy for mixed inputs.
-    if (!isRecord(data.routerStrategy) || data.routerStrategy.version !== 1 || (data.routerStrategy.strategy !== 'first-available' && data.routerStrategy.strategy !== 'all')) {
-      throw new Error('画布路由策略格式错误')
-    }
-    assertOnlyFields(data.routerStrategy, ['version', 'strategy'], '画布路由策略')
-    reasons.push('路由策略')
+    optionalRouterStrategy(kind, data.routerStrategy, false)
+    if (!(options.routerStrategy && kind === 'router')) reasons.push('路由策略')
   }
   if (data.videoProtocol !== undefined) {
     if (data.videoProtocol !== 'relay-videos' && data.videoProtocol !== 'xai-native' && data.videoProtocol !== 'ark-seedance') throw new Error('画布视频接口格式错误')
@@ -780,6 +793,8 @@ export interface CanvasStartRunParseOptions {
    * picture roles, so they run only with referenceOrder too.
    */
   scenarioTemplates?: boolean
+  /** Whether router nodes run the kernel's two strategies (D06); defaults to desktopCanvasCapabilities.features.routerStrategy. */
+  routerStrategy?: boolean
 }
 
 export function parseCanvasStartRunInput(
@@ -789,6 +804,7 @@ export function parseCanvasStartRunInput(
     imageTools: desktopCanvasCapabilities.features.imageTools,
     referenceOrder: desktopCanvasCapabilities.features.referenceOrder,
     scenarioTemplates: desktopCanvasCapabilities.features.scenarioTemplates,
+    routerStrategy: desktopCanvasCapabilities.features.routerStrategy,
   },
 ): CanvasStartRunInput {
   if (!isRecord(value)) throw new Error('画布运行请求格式错误')
@@ -824,6 +840,7 @@ export function parseCanvasStartRunInput(
       ? (typeof entry.data.frameTimestampSeconds === 'number' ? entry.data.frameTimestampSeconds : 0)
       : undefined
     const imageEditMask = optionalImageEditMask(kind, entry.data.imageEditMask, kernelFieldBudget)
+    const routerStrategy = optionalRouterStrategy(kind, entry.data.routerStrategy, options.routerStrategy === true)
     if (!Number.isSafeInteger(entry.definitionVersion) || (entry.definitionVersion as number) < 1 || (entry.definitionVersion as number) > 10_000) throw new Error('画布节点版本格式错误')
     if (entry.disabled !== undefined && typeof entry.disabled !== 'boolean') throw new Error('画布节点禁用状态格式错误')
     const prompt = canvasPrompt(entry.data.prompt, '画布节点提示词', 100_000)
@@ -884,6 +901,7 @@ export function parseCanvasStartRunInput(
         ...(referenceOrders.imageReferenceOrder ? { imageReferenceOrder: referenceOrders.imageReferenceOrder } : {}),
         ...(referenceOrders.videoReferenceOrder ? { videoReferenceOrder: referenceOrders.videoReferenceOrder } : {}),
         ...sceneTasks,
+        ...(routerStrategy ? { routerStrategy } : {}),
       },
     }
     // As on the web host: a task without the picture roles it needs, two tasks

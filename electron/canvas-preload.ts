@@ -85,7 +85,7 @@ const capabilities = deepFreeze({
     imageTools: true,
     frameExtract: true,
     scenarioTemplates: true,
-    routerStrategy: false,
+    routerStrategy: true,
     generateAudio: false,
     referenceOrder: true,
     cloud: false,

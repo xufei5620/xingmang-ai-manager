@@ -12,11 +12,18 @@ function fixture(settings?: Record<string, unknown>, disabled = false) {
 }
 
 describe('explicit router strategy controls', () => {
-  it.each([undefined, { strategy: 'first-available' }, { strategy: 'all' }])('shows actual legacy all behavior without writing new settings for %j', (settings) => {
+  it.each([undefined, { strategy: 'first-available' }])('shows the actual one-per-media historical behavior without writing new settings for %j', (settings) => {
     const before = structuredClone(settings), f = fixture(settings)
-    expect(f.html).toContain('旧配置实际保留全部输入'); expect(f.html).toContain('value="legacy-all" disabled="" selected=""')
-    expect(f.html).toContain('请明确选择后启用新策略'); expect(f.html).toContain('上游仍按原运行范围执行，可能产生费用')
+    expect(f.html).toContain('图片、视频、音频各只交出一个'); expect(f.html).toContain('value="legacy-all" disabled="" selected=""')
+    expect(f.html).toContain('旧配置：每种素材只交出一个（待明确选择）'); expect(f.html).not.toContain('旧配置：保留全部输入')
+    expect(f.html).toContain('请选择「保留全部输入」'); expect(f.html).toContain('上游仍按原运行范围执行，可能产生费用')
     expect(f.onChange).not.toHaveBeenCalled(); expect(settings).toEqual(before)
+  })
+  it('shows the old explicit keep-all choice as the all it runs with, without writing new settings (D06)', () => {
+    const settings = { strategy: 'all' }, f = fixture(settings)
+    expect(f.html).toContain('<option value="all" selected="">保留全部输入</option>'); expect(f.html).not.toContain('value="legacy-all"')
+    expect(f.html).toContain('归一化后的全部文本及媒体输入'); expect(f.onChange).not.toHaveBeenCalled(); expect(settings).toEqual({ strategy: 'all' })
+    f.choose('first-available'); expect(f.onChange).toHaveBeenCalledExactlyOnceWith({ routerStrategy: { version: 1, strategy: 'first-available' } })
   })
   it.each(['first-available', 'all'])('writes the versioned %s strategy only after the actual selection event', (strategy) => {
     const f = fixture({ strategy: 'first-available' }); f.choose(strategy)

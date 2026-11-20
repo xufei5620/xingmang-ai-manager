@@ -1,11 +1,30 @@
 import { describe, expect, it } from 'vitest'
-import { parseCanvasRouterStrategy, parseNodeRouterStrategy, selectCanvasRouterInputs } from './router-strategy'
+import { isLegacyRouterAllSetting, nodeHasRouterStrategySetting, parseCanvasRouterStrategy, parseNodeRouterStrategy, resolveNodeRouterStrategy, routerStrategyRunField, selectCanvasRouterInputs } from './router-strategy'
 
 describe('explicit workflow router strategy version one', () => {
   it('preserves an absent historical marker and rejects misplaced new configuration', () => {
     expect(parseNodeRouterStrategy('router', undefined)).toBeUndefined()
     expect(() => parseNodeRouterStrategy('prompt', { version: 1, strategy: 'all' })).toThrow('只能')
     expect(parseCanvasRouterStrategy({ version: 1, strategy: 'all' })).toEqual({ version: 1, strategy: 'all' })
+  })
+  it('runs the old explicit keep-all choice as the versioned all and leaves every other old value historical (D06)', () => {
+    const all = { version: 1, strategy: 'all' }
+    expect(resolveNodeRouterStrategy('router', { strategy: 'all' })).toEqual(all)
+    expect(routerStrategyRunField('router', { strategy: 'all', title: '路由' })).toEqual({ routerStrategy: all })
+    expect(nodeHasRouterStrategySetting('router', { strategy: 'all' })).toBe(true)
+    for (const settings of [undefined, {}, { strategy: 'first-available' }, { strategy: 'unknown' }]) {
+      expect(resolveNodeRouterStrategy('router', settings)).toBeUndefined()
+      expect(routerStrategyRunField('router', settings)).toEqual({})
+      expect(nodeHasRouterStrategySetting('router', settings)).toBe(false)
+    }
+    // A versioned value always wins over the old selector, and only routers carry either.
+    expect(resolveNodeRouterStrategy('router', { strategy: 'all', routerStrategy: { version: 1, strategy: 'first-available' } })).toEqual({ version: 1, strategy: 'first-available' })
+    expect(isLegacyRouterAllSetting('router', { strategy: 'all', routerStrategy: { version: 1, strategy: 'first-available' } })).toBe(false)
+    expect(isLegacyRouterAllSetting('gallery', { strategy: 'all' })).toBe(false)
+    expect(resolveNodeRouterStrategy('gallery', { strategy: 'all' })).toBeUndefined()
+    expect(() => resolveNodeRouterStrategy('prompt', { routerStrategy: all })).toThrow('只能')
+    expect(() => resolveNodeRouterStrategy('router', { routerStrategy: undefined })).toThrow()
+    expect(() => resolveNodeRouterStrategy('router', { strategy: 'all', routerStrategy: { version: 2, strategy: 'all' } })).toThrow()
   })
   it.each([undefined, null, [], {}, 'first-available', { version: 2, strategy: 'all' }, { version: 1, strategy: 'unknown' }, { version: 1, strategy: 'all', fallback: true }])('rejects malformed or future configuration without normalizing it %#', (value) => {
     expect(() => parseCanvasRouterStrategy(value)).toThrow()

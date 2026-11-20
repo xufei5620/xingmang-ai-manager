@@ -511,6 +511,8 @@ function installedOpenCode(applications: string): string {
 }
 
 function updateSetup(processes: FakeProcessOptions = {}, beforeReplace: () => Promise<void> = async () => undefined) {
+  // What plutil reads from the installed copy; a test changes it on the same object to have the app update itself.
+  if (!('existingVersion' in processes)) processes.existingVersion = '1.18.30'
   const f = setup({}, processes)
   const installedPath = installedOpenCode(f.applications)
   const prepare = vi.fn(beforeReplace)
@@ -707,6 +709,44 @@ describe('macOS desktop app updates in place', () => {
 
     expect(order).toEqual(['prepare', 'sealed'])
     expect(installedBinary(f.installedPath)).toBe('binary')
+  })
+
+  it.skipIf(process.platform === 'win32')('leaves alone, without closing it, a copy that updated itself past the download meanwhile (F04)', async () => {
+    // Detection read 1.18.30 when the update started; by the time the download is in, the app reports 1.18.40.
+    const f = updateSetup({ existingVersion: '1.18.40' })
+
+    await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: '1.18.40', path: f.installedPath, unchanged: true })
+
+    expect(f.prepare).not.toHaveBeenCalled()
+    expect(installedBinary(f.installedPath)).toBe('old binary')
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('reads the version again after closing the app, whose own updater may swap it on quit (F04)', async () => {
+    const processes: FakeProcessOptions = { existingVersion: '1.18.30' }
+    const f = updateSetup(processes, async () => { processes.existingVersion = '1.18.34' })
+    const sealed = vi.fn()
+    f.options.replace = { ...f.options.replace!, onReplaceStarting: sealed }
+
+    await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: '1.18.34', path: f.installedPath, unchanged: true })
+
+    expect(f.prepare).toHaveBeenCalledTimes(1)
+    expect(sealed).not.toHaveBeenCalled()
+    expect(installedBinary(f.installedPath)).toBe('old binary')
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
+  })
+
+  it.skipIf(process.platform === 'win32')('does not replace a copy whose version can no longer be read (F04)', async () => {
+    const f = updateSetup({ existingVersion: undefined })
+
+    const error = await failure(installMacosDesktopApp(f.options))
+
+    expect(error.message).toBe(macosDesktopUpdateFailedMessage)
+    expect(error.detail).toContain('读不出')
+    expect(f.prepare).not.toHaveBeenCalled()
+    expect(installedBinary(f.installedPath)).toBe('old binary')
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
   })
 
   it.skipIf(process.platform === 'win32')('clears an old copy a finished update could not delete, and nothing else', async () => {
@@ -1490,7 +1530,7 @@ describe('macOS installer from the Xingmang bucket', () => {
   })
 
   it.skipIf(process.platform === 'win32')('updates from a stale bucket when the vendor cannot be reached and its version is newer', async () => {
-    const f = bucketSetup('codexDesktop', { checkedAt: staleCheckedAt, vendorOffline: true })
+    const f = bucketSetup('codexDesktop', { checkedAt: staleCheckedAt, vendorOffline: true }, {}, { existingVersion: chatgptVersion })
     const installedPath = installedChatgpt(f.applications)
     f.options.replace = { installedPath, installedVersion: chatgptVersion, beforeReplace: async () => undefined }
     await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: bucketCodexVersion, path: installedPath })

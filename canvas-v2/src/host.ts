@@ -863,6 +863,15 @@ export interface CanvasHostBridge {
   renameProject(projectId: string, name: string): Promise<CanvasStoredProjectSummary>
   duplicateProject(projectId: string, name: string): Promise<{ project: CanvasStoredProjectSummary; content: string; projectProvenance?: Array<{ name: string; license: string; notice?: string }> } | null>
   setProjectArchived(projectId: string, archived: boolean): Promise<CanvasStoredProjectSummary>
+  /**
+   * The canvas went back to the project center after the open project's last
+   * save. A host that keeps its own record of which project this page has open
+   * (desktop: the read-only account library is only for "no project open")
+   * forgets it. Carries only the project id; the host leaves any other record
+   * alone. Hosts that do not track it (web) leave it out. Resolves false when
+   * the host had nothing to forget.
+   */
+  closeProject?(projectId: string): Promise<boolean>
   onAccountChange(listener: (change: CanvasAccountChange) => void): () => void
   onRunEvent(listener: (event: CanvasRunEvent | CanvasRunChargeEvent) => void): () => void
   onThemeChange(listener: (theme: 'light' | 'dark') => void): () => void

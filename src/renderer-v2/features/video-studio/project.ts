@@ -522,6 +522,15 @@ export function videoStudioComposeKey(project: VideoStudioProject): string {
 }
 
 /**
+ * 改设置。画面比例、铺法、转场、淡出、字幕开关和大小位置这些拼片用得上的一变，上一次的成片就跟现在对不上了，
+ * 不再挂在这里（文件还在作品库里），同剪片段、换配乐（Mac 验收 R8）；只换模型、改想法这类拼片用不上的，成片照旧挂着。
+ */
+export function changeVideoStudioSettings(project: VideoStudioProject, patch: Partial<VideoStudioSettings>): VideoStudioProject {
+  const next = { ...project, settings: { ...project.settings, ...patch } }
+  return next.exported && videoStudioComposeKey(next) !== videoStudioComposeKey(project) ? { ...next, exported: undefined } : next
+}
+
+/**
  * 选好一首歌：换一首时原声那一项照旧，头一回选默认「调小」（加了配乐多半是想听歌）。
  * 配乐一变，上一次的成片就跟现在对不上了，不再挂在这里。
  */

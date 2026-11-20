@@ -1,3 +1,5 @@
+import { imageModelFamily } from './image-model-family'
+
 export type ImageRequestResolution = '1K' | '2K' | '4K'
 
 export interface ImageRequestParametersInput {
@@ -34,6 +36,11 @@ export function imageRequestModelControls(model: string): ImageRequestModelContr
   if (providerSizedModels.has(name)) return { supportsSize: false, supportsQuality: false }
   if (name === 'gemini-3.1-flash-image') return { supportsSize: true, supportsQuality: false }
   if (name === 'gpt-image-1') return { supportsSize: true, supportsQuality: true, fixedSizes: gptImage1Sizes }
+  // 按名字认出来的同家型号照这一家的规矩：即梦、Grok 和走 Images 接口的别家由服务定尺寸（通义只认几种固定尺寸，
+  // seedream 4.5 最小就是 2K，替它定的尺寸会被拒），Gemini 不发画质。
+  const family = imageModelFamily(model)
+  if (family === 'jimeng' || family === 'grok-image' || family === 'images-api') return { supportsSize: false, supportsQuality: false }
+  if (family === 'gemini-image') return { supportsSize: true, supportsQuality: false }
   return { supportsSize: true, supportsQuality: true }
 }
 
