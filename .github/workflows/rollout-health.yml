@@ -41,7 +41,8 @@ jobs:
           echo "base=${base%/}" >> "$GITHUB_OUTPUT"
 
       # 状态文件 404 就是没在放量；别的读不到一律停下，免得把「读不到」说成「没在放量」。清单只取
-      # 版本号和出包时间（releaseDate）两行，交给脚本判断放量的那一版是不是已经发出去了。
+      # 版本号和出包时间（releaseDate）两行，交给脚本判断放量的那一版是不是已经发出去了；每份清单是哪一版
+      # 也交过去，清单还不是这一版的平台（Linux 先不发这类）不要求有新版打卡（R29-05）。
       - name: Read the rollout and the versions the feed is publishing now
         id: live
         env:
@@ -55,18 +56,21 @@ jobs:
             *) echo "::error::读取线上状态文件失败（HTTP $code），看不出现在放没放量，过一会儿手动重跑"; exit 1 ;;
           esac
           dates=""
+          manifests=""
           for manifest in latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml; do
             code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/$manifest" --write-out '%{http_code}' "$PUBLIC_BASE/$manifest")
             case "$code" in
               200)
                 version=$(sed -n 's/^version:[[:space:]]*//p' "$RUNNER_TEMP/$manifest" | head -n 1 | tr -d "'\"[:space:]")
                 released=$(sed -n 's/^releaseDate:[[:space:]]*//p' "$RUNNER_TEMP/$manifest" | head -n 1 | tr -d "'\"[:space:]")
-                dates="$dates $version=$released" ;;
+                dates="$dates $version=$released"
+                manifests="$manifests $manifest=$version" ;;
               404) ;;
               *) echo "::error::读取线上 $manifest 失败（HTTP $code），过一会儿手动重跑"; exit 1 ;;
             esac
           done
           echo "dates=$dates" >> "$GITHUB_OUTPUT"
+          echo "manifests=$manifests" >> "$GITHUB_OUTPUT"
           echo "version=$(node scripts/rollout-health.cjs rollout-version --status "$RUNNER_TEMP/service-status.json")" >> "$GITHUB_OUTPUT"
 
       # 发布作业最后建的那个 Release 的时间就是这一版到客户手上的时间；查不到（还没建成、收尾那步红了）
@@ -88,8 +92,9 @@ jobs:
         env:
           CLOUDFLARE_ANALYTICS_TOKEN: ${{ secrets.CLOUDFLARE_ANALYTICS_TOKEN }}
           PUBLISHED_DATES: ${{ steps.live.outputs.dates }}
+          MANIFEST_VERSIONS: ${{ steps.live.outputs.manifests }}
           RELEASED_AT: ${{ steps.release.outputs.published }}
         run: |
           set -euo pipefail
           node scripts/rollout-health.cjs check --status "$RUNNER_TEMP/service-status.json" \
-            --published-dates "$PUBLISHED_DATES" --released-at "$RELEASED_AT" | tee -a "$GITHUB_STEP_SUMMARY"
+            --published-dates "$PUBLISHED_DATES" --manifest-versions "$MANIFEST_VERSIONS" --released-at "$RELEASED_AT" | tee -a "$GITHUB_STEP_SUMMARY"
