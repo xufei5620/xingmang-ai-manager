@@ -7,10 +7,12 @@
 // 这里只 import system-service.ts 的类型。
 import fs from 'node:fs'
 import os from 'node:os'
+import path from 'node:path'
 import { offeredModelUpgradeKey, type SeededToolDefault } from './app-settings'
 import { activeProviderIds, type ProviderId, providerIds } from './catalog'
 import { type CcSwitchLeftover, inspectCcSwitchInstalled, resolveCcSwitchLeftover } from './cc-switch-leftover'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
+import { createConfigReadCache } from './config-read-cache'
 import {
   buildCliHookInvocation,
   cliHookEventsDirectory,
@@ -73,7 +75,7 @@ import {
   type SeededToolDefaults,
   takeBackCodexModelCatalog,
   toNativeConfigSummary,
-  withSharedConfigReads,
+  withRecordedConfigReads,
 } from './config-files'
 import { type EditorId, ensureEditorClaudeLoginPromptDisabled } from './editor-claude-login-prompt'
 import type { MacosCodexAppInspection } from './macos-codex-app'
@@ -285,6 +287,16 @@ export function createCachedProbe<T>(probe: () => Promise<T>, ttlMs: number, now
   }
 }
 
+/** config:get 每次要从磁盘读的那几样，几秒内接着用（config-read-cache.ts）。 */
+interface ConfigFileReads {
+  routeRecords: ToolRouteFollowState['providers']
+  providers: Record<ProviderId, {
+    current: NativeConfigInspection
+    hooks: { stale: boolean; shellChanged: boolean; missing: boolean } | null
+    ownership: ToolConfigOwnership
+  }>
+}
+
 /** 保存配置要用、但归别处管的几样，由 createSystemService 传进来。 */
 export interface ConfigSaveServiceDependencies {
   /** 首页检测那边：Codex 命令行装没装、哪一版（核型号名单用），哪些工具正开着（补设置、换型号前看）。 */
@@ -400,28 +412,27 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     })
   }
 
-  function buildConfigSummary(previewOnboarding: boolean, cachedKeys: readonly StoredManagedCliKey[] = []): AppConfigSummary {
-    // 看配置和看钩子读的是同一份文件，这一整遍只读一遍。
-    return withSharedConfigReads(() => buildConfigSummaryFromFiles(previewOnboarding, cachedKeys))
-  }
+  // config:get 要的那几样里从磁盘读的（四家的配置和钩子、来源记录、线路跟随记录）几秒内接着用（0.2.24 深查 R3）：
+  // 开机那两秒里首页、开机补密钥、线路跟随接连要五遍，每遍几百次磁盘查询。星芒自己写过、读过的文件动过、
+  // 账号或站点线路换了都重读，见 config-read-cache.ts。只给 config:get 用：保存、核对快照照旧每次现读。
+  const configReads = createConfigReadCache<ConfigFileReads>({ maxAgeMs: serviceOptions.configReadCacheMs ?? 0 })
 
-  function buildConfigSummaryFromFiles(previewOnboarding: boolean, cachedKeys: readonly StoredManagedCliKey[]): AppConfigSummary {
+  function buildConfigSummary(previewOnboarding: boolean, cachedKeys: readonly StoredManagedCliKey[] = []): AppConfigSummary {
     const stored = store.read()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     const ccSwitchInstalled = inspectCcSwitchInstalled(providerRoots.userHome)
     const rememberedWorkspace = rememberedWorkspaceFor(stored.workspace)
-    const routeRecords = toolRouteFollow.read().providers
+    const { routeRecords, providers } = readConfigFiles(previewOnboarding, owner)
     const result = {
       workspace: stored.workspace,
       ...(rememberedWorkspace ? { rememberedWorkspace } : {}),
       ...(rememberedWorkspace && isUntouchedStarterWorkspace(rememberedWorkspace, platform) ? { rememberedWorkspaceFresh: true } : {}),
       providers: Object.fromEntries(
         providerIds.map((id) => {
-          const current = inspectNativeProviderConfig(id)
-          const hooks = previewOnboarding ? null : managedCliHooksState(id)
+          const { current, hooks, ownership } = providers[id]
           return [id, {
             ...toNativeConfigSummary(current),
-            configurationOwnership: configOwnership.read(id, current, owner),
+            configurationOwnership: ownership,
             configurationAccountMatched: Boolean(owner) && current.hasApiKey && current.matchesRelay
               && cachedKeys.some((entry) => entry.provider === id && entry.key === current.apiKey),
             configurationKeyReplaced: Boolean(owner) && current.hasApiKey && current.matchesRelay
@@ -457,6 +468,28 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       }
     }
     return result
+  }
+
+  function readConfigFiles(previewOnboarding: boolean, owner: string | null): ConfigFileReads {
+    // 读的结果跟着这几样变：引导预览不看钩子，来源要比对账号，「是不是当前线路」要比对站点地址。
+    const key = JSON.stringify([previewOnboarding, owner, activeRelaySite().providerBaseUrls])
+    // 各家的配置文件夹也盯着：多了、少了一份文件（官方登录写出 auth.json、挪开一份），文件夹本身就变了。
+    const watched = providerIds.flatMap((id) => {
+      const paths = providerConfigPaths(id, providerRoots)
+      return [path.dirname(paths[0]), ...paths]
+    })
+    // 看配置和看钩子读的是同一份文件，这一整遍只读一遍。
+    return configReads.read(key, watched, () => withRecordedConfigReads(() => ({
+      routeRecords: toolRouteFollow.read().providers,
+      providers: Object.fromEntries(providerIds.map((id) => {
+        const current = inspectNativeProviderConfig(id)
+        return [id, {
+          current,
+          hooks: previewOnboarding ? null : managedCliHooksState(id),
+          ownership: configOwnership.read(id, current, owner),
+        }]
+      })) as ConfigFileReads['providers'],
+    })))
   }
 
   function inspectCodexReadiness(previewOnboarding: boolean): CodexReadinessStatus {

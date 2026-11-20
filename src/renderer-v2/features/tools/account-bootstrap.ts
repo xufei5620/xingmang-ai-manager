@@ -547,7 +547,8 @@ export async function bootstrapAccountTools(
 
   await assertAccount(api, expectedUserId, expectedSiteId)
   onProgress({ phase: 'verifying', label: '正在复核密钥、服务地址和模型', percent: 88, ...connectedChanges })
-  const verified = await api.getConfig()
+  // 一家都没写的（开机恢复时大多是这样）没有要复核的，不再多读一遍配置（0.2.24 深查 R3）。
+  const verified = plan.targets.length ? await api.getConfig() : config
   await assertAccount(api, expectedUserId, expectedSiteId)
 
   const configured: ActiveProviderId[] = []

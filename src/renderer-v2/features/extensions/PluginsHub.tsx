@@ -1156,7 +1156,7 @@ export function PluginsHub({
       >
         <p>
           {deletion?.install.item.kind === 'plugin'
-            ? '插件里带的技能、命令和外接工具会一起移除。'
+            ? '插件里带的技能、命令和连接会一起移除。'
             : deletion?.install.item.kind === 'skill'
               ? '其他工具里的不受影响。以后要用，再「从文件夹导入」一次。'
               : deletion?.entry.group === 'custom'

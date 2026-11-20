@@ -164,7 +164,7 @@ describe('ProviderSessionProbeCache', () => {
     expect(second.size).toBe(1)
   })
 
-  it('evicts the least recently used entry and keeps the touched one', async () => {
+  it('keeps the entries it already holds when full and leaves the new file out (R-3)', async () => {
     const filePath = path.join(temporaryDirectory(), 'probe-cache.json')
     const cache = new ProviderSessionProbeCache({ filePath, maxEntries: 2 })
     await cache.ready()
@@ -172,9 +172,42 @@ describe('ProviderSessionProbeCache', () => {
     cache.set('/b.jsonl', entry('2:2:2'))
     cache.get('/a.jsonl')
     cache.set('/c.jsonl', entry('3:3:3'))
-    expect(cache.keys()).toEqual(['/a.jsonl', '/c.jsonl'])
+    expect(cache.keys()).toEqual(['/a.jsonl', '/b.jsonl'])
+    expect(cache.get('/c.jsonl')).toBeNull()
     await cache.persist()
     expect(storedDocument(filePath).entries).toHaveLength(2)
+  })
+
+  it('still replaces a cached file whose fingerprint changed while full', async () => {
+    const cache = new ProviderSessionProbeCache({ maxEntries: 2 })
+    await cache.ready()
+    cache.set('/a.jsonl', entry('1:1:1'))
+    cache.set('/b.jsonl', entry('2:2:2'))
+    cache.set('/a.jsonl', entry('9:9:9', { title: '改过的标题' }))
+    expect(cache.size).toBe(2)
+    expect(cache.get('/a.jsonl')).toMatchObject({ fingerprint: '9:9:9', state: { title: '改过的标题' } })
+    expect(cache.keys()).toEqual(['/b.jsonl', '/a.jsonl'])
+  })
+
+  it('keeps hitting on repeated sweeps over more files than it can hold (R-3)', async () => {
+    // Every list sweeps the same files in the same order. Least-recently-used
+    // eviction threw out each entry just before the next sweep reached it, so
+    // with one file too many nothing ever hit.
+    const cache = new ProviderSessionProbeCache({ maxEntries: 3 })
+    await cache.ready()
+    const files = ['/1.jsonl', '/2.jsonl', '/3.jsonl', '/4.jsonl']
+    function sweep(): number {
+      let hits = 0
+      for (const file of files) {
+        if (cache.get(file)?.fingerprint === `${file}:1`) hits += 1
+        else cache.set(file, entry(`${file}:1`))
+      }
+      cache.pruneScope('claude', new Set(files))
+      return hits
+    }
+    expect(sweep()).toBe(0)
+    expect(sweep()).toBe(3)
+    expect(sweep()).toBe(3)
   })
 
   it('prunes only the entries of the swept scope that were not seen again', async () => {

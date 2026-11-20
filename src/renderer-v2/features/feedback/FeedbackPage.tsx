@@ -206,7 +206,7 @@ export function FeedbackPage({
     { id: 'health', title: '工具装不上，或者打开就闪退', action: '先跑一遍检查', go: () => navigate?.('health') },
     ...(ordersVisible === false ? [] : [{ id: 'orders', title: '付了款，余额没变', action: '看我的订单', go: () => navigate?.('account', 'orders') }]),
     { id: 'tutorial', title: '不知道从哪里开始用', action: '看教程', go: () => navigate?.('tutorial') },
-    { id: 'mcp', title: '想把 AI 连上浏览器或文件夹', action: '去外接工具', go: () => navigate?.('mcp') },
+    { id: 'mcp', title: '想把 AI 连上浏览器或文件夹', action: '去插件', go: () => navigate?.('mcp') },
   ]
   const form = (
     <div className="v2-fb-grid">
