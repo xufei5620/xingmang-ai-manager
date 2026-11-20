@@ -110,3 +110,12 @@ export function darwinDeveloperIdVerificationArgv(
     targetPath,
   ]
 }
+
+/**
+ * A command-line binary that is not the vendor's Developer ID release, or not the
+ * release its install layout names. Callers keep this apart from I/O failures (a
+ * full disk while staging, a `--version` that crashed): this one says the file in
+ * front of us is somebody else's build, so the app must not run it and can only
+ * offer to install its own copy instead (Mac acceptance R1).
+ */
+export class DarwinCliProvenanceError extends Error {}

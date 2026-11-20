@@ -3,17 +3,22 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { releaseStagedDarwinCli } from './darwin-cli-staging'
+import { DarwinCliProvenanceError } from './macos-code-signing'
 import {
+  assertDarwinGrokCanonicalLinkReplaceable,
   captureDarwinGrokAgentLinkPresence,
   captureDarwinGrokCanonicalLink,
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
   listDarwinGrokHistoricalQuarantineFiles,
   listDarwinGrokOrphanedDownloads,
+  readDarwinGrokSelectionVersion,
   resolveDarwinGrokCanonicalSelection,
   restoreDarwinGrokAgentLink,
   restoreDarwinGrokCanonicalLink,
   runDarwinGrokPostInstallTransaction,
+  stageDarwinGrokCanonicalSelection,
   verifyDarwinGrokUninstallPlan,
   verifyDarwinGrokCanonicalInstallation,
 } from './macos-grok'
@@ -37,6 +42,27 @@ function createFixture(version = '0.2.118') {
   const alias = path.join(aliasDirectory, 'grok')
   fs.symlinkSync(canonicalLink, alias)
   return { home, grokRoot, bin, downloads, binary, canonicalLink, alias }
+}
+
+/**
+ * What xAI's install script builds since 2026-11 (cli/install.sh: `binary_path="$DOWNLOAD_DIR/grok-$platform"`):
+ * one file without a version, and both `grok` and `agent` linked to it relatively.
+ */
+function createUnversionedFixture(arch: 'aarch64' | 'x86_64' = 'aarch64') {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-grok-unversioned-'))
+  temporaryDirectories.push(home)
+  const grokRoot = path.join(home, '.grok')
+  const bin = path.join(grokRoot, 'bin')
+  const downloads = path.join(grokRoot, 'downloads')
+  const binary = path.join(downloads, `grok-macos-${arch}`)
+  const linkTarget = path.join('..', 'downloads', path.basename(binary))
+  const canonicalLink = path.join(bin, 'grok')
+  fs.mkdirSync(bin, { recursive: true })
+  fs.mkdirSync(downloads, { recursive: true })
+  fs.writeFileSync(binary, 'fixture binary', { mode: 0o700 })
+  fs.symlinkSync(linkTarget, canonicalLink)
+  fs.symlinkSync(linkTarget, path.join(bin, 'agent'))
+  return { home, grokRoot, bin, downloads, binary, linkTarget, canonicalLink }
 }
 
 function commandRunner(options: { teamId?: string; version?: string } = {}) {
@@ -395,7 +421,7 @@ describe.runIf(process.platform === 'darwin')('macOS Grok canonical selection', 
     await expect(inspectDarwinGrokVerifiedSelection({
       homeDirectory: fixture.home,
       selection,
-      expectedVersion: selection.version,
+      expectedVersion: '0.2.118',
       runCommand: commandRunner(),
       inspect: async (executablePath) => {
         inspectedPath = executablePath
@@ -524,6 +550,196 @@ describe.runIf(process.platform === 'darwin')('macOS Grok canonical selection', 
 // `agent`. These cover the install-side repair — a July install's leftover
 // `agent` link masked the gap until a from-scratch reinstall had no such
 // leftover to fall back on.
+// Mac 验收 R1：xAI 安装脚本装的 Grok，文件名里不再带版本号，以前首页读不出版本、点「打开」也打不开。
+describe.runIf(process.platform === 'darwin')('macOS Grok from the unversioned xAI install script layout', () => {
+  it('accepts the layout and leaves the version to the verified binary', () => {
+    const fixture = createUnversionedFixture()
+
+    expect(resolveDarwinGrokCanonicalSelection(fixture.home)).toMatchObject({
+      linkTarget: fixture.linkTarget,
+      version: null,
+      executablePath: fs.realpathSync(fixture.binary),
+    })
+    expect(resolveDarwinGrokCanonicalSelection(fixture.home, fixture.canonicalLink).version).toBeNull()
+    expect(resolveDarwinGrokCanonicalSelection(createUnversionedFixture('x86_64').home).version).toBeNull()
+  })
+
+  it.each([
+    ['the Linux file name', path.join('..', 'downloads', 'grok-linux-x86_64')],
+    ['an architecture xAI does not name that way', path.join('..', 'downloads', 'grok-macos-arm64')],
+    ['a file beside the link instead of under downloads', 'grok-macos-aarch64'],
+    ['another directory under ~/.grok', path.join('..', 'custom', 'grok-macos-aarch64')],
+  ])('still rejects %s', (_name, target) => {
+    const fixture = createUnversionedFixture()
+    const binary = path.resolve(fixture.bin, target)
+    fs.mkdirSync(path.dirname(binary), { recursive: true })
+    fs.writeFileSync(binary, 'look-alike', { mode: 0o700 })
+    fs.unlinkSync(fixture.canonicalLink)
+    fs.symlinkSync(target, fixture.canonicalLink)
+
+    expect(() => resolveDarwinGrokCanonicalSelection(fixture.home)).toThrow('not an official versioned macOS binary')
+  })
+
+  it('reads the version only from a verified private copy and remembers it until the file changes', async () => {
+    const fixture = createUnversionedFixture()
+    const sourceExecutable = fs.realpathSync(fixture.binary)
+    const calls: Array<{ executable: string; argv: readonly string[] }> = []
+    const runCommand = async (spec: { executable: string; argv: readonly string[] }) => {
+      if (spec.executable === sourceExecutable || spec.argv.includes(sourceExecutable)) {
+        throw new Error('source executable poison reached command runner')
+      }
+      calls.push(spec)
+      return commandRunner({ version: '1.0.89' })(spec)
+    }
+
+    const selection = resolveDarwinGrokCanonicalSelection(fixture.home)
+    await expect(readDarwinGrokSelectionVersion({ homeDirectory: fixture.home, selection, runCommand }))
+      .resolves.toBe('1.0.89')
+    const stagedExecutable = calls[0]?.argv.at(-1)
+    expect(stagedExecutable).toEqual(expect.any(String))
+    expect(stagedExecutable).not.toBe(sourceExecutable)
+    expect(calls).toEqual([
+      expect.objectContaining({ executable: '/usr/bin/codesign', argv: expect.arrayContaining(['--verify', stagedExecutable]) }),
+      { executable: stagedExecutable, argv: ['--version'] },
+    ])
+    expect(fs.existsSync(path.dirname(stagedExecutable!))).toBe(false)
+
+    // A second scan of the same file does not copy and run it again.
+    await expect(readDarwinGrokSelectionVersion({ homeDirectory: fixture.home, selection, runCommand }))
+      .resolves.toBe('1.0.89')
+    expect(calls).toHaveLength(2)
+
+    // The script overwrites the same file on update; a new identity is checked again.
+    fs.writeFileSync(fixture.binary, 'updated fixture binary', { mode: 0o700 })
+    const updated = resolveDarwinGrokCanonicalSelection(fixture.home)
+    await expect(readDarwinGrokSelectionVersion({
+      homeDirectory: fixture.home,
+      selection: updated,
+      runCommand: async (spec) => {
+        calls.push(spec)
+        return commandRunner({ version: '1.0.90' })(spec)
+      },
+    })).resolves.toBe('1.0.90')
+    expect(calls).toHaveLength(4)
+  })
+
+  it('answers a versioned link from its name without running anything', async () => {
+    const fixture = createFixture()
+    const runCommand = vi.fn(commandRunner())
+
+    await expect(readDarwinGrokSelectionVersion({
+      homeDirectory: fixture.home,
+      selection: resolveDarwinGrokCanonicalSelection(fixture.home),
+      runCommand,
+    })).resolves.toBe('0.2.118')
+    expect(runCommand).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a binary xAI did not sign', commandRunner({ teamId: 'WRONGTEAM0' })],
+    ['a binary that does not report a release', async (spec: { executable: string; argv: readonly string[] }) => (
+      spec.argv[0] === '--version' ? { stdout: 'not grok\n', stderr: '' } : commandRunner()(spec)
+    )],
+  ])('refuses %s as somebody else\'s build and does not remember it', async (_name, runCommand) => {
+    const fixture = createUnversionedFixture()
+    const selection = resolveDarwinGrokCanonicalSelection(fixture.home)
+
+    await expect(readDarwinGrokSelectionVersion({ homeDirectory: fixture.home, selection, runCommand }))
+      .rejects.toBeInstanceOf(DarwinCliProvenanceError)
+    await expect(readDarwinGrokSelectionVersion({ homeDirectory: fixture.home, selection, runCommand: commandRunner({ version: '1.0.89' }) }))
+      .resolves.toBe('1.0.89')
+  })
+
+  it('stages it for opening with whatever release xAI signed, but never as a pinned release', async () => {
+    const fixture = createUnversionedFixture()
+    const selection = resolveDarwinGrokCanonicalSelection(fixture.home)
+
+    const executable = await stageDarwinGrokCanonicalSelection({
+      homeDirectory: fixture.home,
+      selection,
+      expectedVersion: null,
+      runCommand: commandRunner({ version: '1.0.89' }),
+      retention: 'ephemeral',
+    })
+    try {
+      expect(executable).not.toBe(fs.realpathSync(fixture.binary))
+      expect(fs.readFileSync(executable, 'utf8')).toBe('fixture binary')
+    } finally {
+      await releaseStagedDarwinCli(executable)
+    }
+    await expect(stageDarwinGrokCanonicalSelection({
+      homeDirectory: fixture.home,
+      selection,
+      expectedVersion: null,
+      runCommand: commandRunner({ teamId: 'WRONGTEAM0', version: '1.0.89' }),
+      retention: 'ephemeral',
+    })).rejects.toBeInstanceOf(DarwinCliProvenanceError)
+    // An install that pinned a release never takes this layout as having installed it.
+    await expect(inspectDarwinGrokVerifiedSelection({
+      homeDirectory: fixture.home,
+      selection,
+      expectedVersion: '1.0.89',
+      runCommand: commandRunner({ version: '1.0.89' }),
+      inspect: async () => undefined,
+    })).rejects.toThrow('link version')
+  })
+
+  it('puts the layout back when an install over it fails verification', async () => {
+    const fixture = createUnversionedFixture()
+    const npmBinary = path.join(fixture.bin, 'grok-1.0.77')
+    fs.writeFileSync(npmBinary, 'npm binary', { mode: 0o700 })
+
+    expect(captureDarwinGrokCanonicalLink(fixture.home)).toEqual({
+      canonicalLinkPath: fixture.canonicalLink,
+      existed: true,
+      linkTarget: fixture.linkTarget,
+    })
+    expect(() => assertDarwinGrokCanonicalLinkReplaceable(fixture.home)).not.toThrow()
+    await expect(runDarwinGrokPostInstallTransaction({
+      homeDirectory: fixture.home,
+      lifecycle: async () => {
+        fs.unlinkSync(fixture.canonicalLink)
+        fs.symlinkSync(path.basename(npmBinary), fixture.canonicalLink)
+      },
+      verify: async () => { throw new Error('service inspection rejected canonical selection') },
+    })).rejects.toThrow('service inspection')
+
+    expect(fs.readlinkSync(fixture.canonicalLink)).toBe(fixture.linkTarget)
+  })
+
+  it('still leaves uninstalling this layout to its own installer', async () => {
+    const fixture = createUnversionedFixture()
+
+    await expect(verifyDarwinGrokUninstallPlan({
+      homeDirectory: fixture.home,
+      runCommand: commandRunner({ version: '1.0.89' }),
+    })).rejects.toThrow('official uninstall layout')
+    expect(fs.readlinkSync(fixture.canonicalLink)).toBe(fixture.linkTarget)
+  })
+})
+
+describe.runIf(process.platform === 'darwin')('assertDarwinGrokCanonicalLinkReplaceable', () => {
+  it('lets an install start when nothing or an official link is in the way', () => {
+    const fixture = createFixture()
+    expect(() => assertDarwinGrokCanonicalLinkReplaceable(fixture.home)).not.toThrow()
+    fs.unlinkSync(fixture.canonicalLink)
+    expect(() => assertDarwinGrokCanonicalLinkReplaceable(fixture.home)).not.toThrow()
+  })
+
+  it.each([
+    ['an absolute link', (fixture: ReturnType<typeof createFixture>) => fs.symlinkSync(fixture.binary, fixture.canonicalLink)],
+    ['a plain file', (fixture: ReturnType<typeof createFixture>) => fs.writeFileSync(fixture.canonicalLink, 'hand-made', { mode: 0o700 })],
+  ])('stops before downloading, in words the customer can act on, when %s is in the way', (_name, setup) => {
+    const fixture = createFixture()
+    fs.unlinkSync(fixture.canonicalLink)
+    setup(fixture)
+
+    expect(() => assertDarwinGrokCanonicalLinkReplaceable(fixture.home)).toThrow(
+      '这台电脑上已经有一份 Grok CLI，不是用星芒装的。为了不弄坏它，已停止安装。请先用你原来装它的方式卸载，再回来点「用星芒装一份」。',
+    )
+  })
+})
+
 describe.runIf(process.platform === 'darwin')('ensureDarwinGrokAgentLink', () => {
   it('creates a sibling agent link pointing at the exact target the canonical grok link resolved to', async () => {
     const fixture = createFixture()

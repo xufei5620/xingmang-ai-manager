@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { relayProviderBaseUrls } from '../../../../electron/relay-sites'
-import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, greeting, isExternallyManagedInstall, officialAccountSubtitle, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, spacedName, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, greeting, isExternallyManagedInstall, isUnrecognizedInstall, officialAccountSubtitle, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, spacedName, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -613,6 +613,16 @@ describe('renderer install source labelling', () => {
     expect(updatesOutsideApp('codex', { installed: true, installSource: 'native', uninstall })).toBe(true)
     expect(updatesOutsideApp('claude', { installed: true, installSource: 'path', uninstall })).toBe(true)
     expect(updatesOutsideApp('claude', { installed: true, installSource: 'npm', uninstall })).toBe(false)
+  })
+
+  it('offers the app install only for an installed copy the main process could not recognise', () => {
+    expect(isUnrecognizedInstall({ installed: true, unrecognizedInstall: true })).toBe(true)
+    // 认得出、不适用、没装的都不算；没装的那份即使带着旧标记也不算。
+    expect(isUnrecognizedInstall({ installed: true })).toBe(false)
+    expect(isUnrecognizedInstall({ installed: true, unrecognizedInstall: false })).toBe(false)
+    expect(isUnrecognizedInstall({ installed: false, unrecognizedInstall: true })).toBe(false)
+    expect(isUnrecognizedInstall(null)).toBe(false)
+    expect(isUnrecognizedInstall(undefined)).toBe(false)
   })
 
   it('gives a source-specific passive hint instead of an npm update', () => {
