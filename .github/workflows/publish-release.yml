@@ -1360,6 +1360,15 @@ jobs:
             echo 'write=false' >> "$GITHUB_OUTPUT"
           fi
 
+      # 撤回名单、分批放量、最低版本签上发布者签名再传（D85，scripts/service-status-signature.cjs 开头）：
+      # 0.2.25 起的客户端只认签过名的这几项。线上那份还没签过时，上一步就算放量不用改也会照原样重写一份交到这里，
+      # 所以第一个带签名校验的版本发出去之前，线上那份一定已经签好。私钥只给这一步，上传那步拿不到它。
+      - name: Sign the release guard before it goes up
+        if: ${{ steps.rollout.outputs.write == 'true' }}
+        env:
+          XINGMANG_UPDATE_SIGNING_KEY: ${{ secrets.XINGMANG_UPDATE_SIGNING_KEY }}
+        run: node scripts/service-status-signature.cjs sign --file "$RUNNER_TEMP/rollout-status.json"
+
       # 传上去、确认客户会用的地址读到的就是这一份，才往下换清单。读到的不是（缓存）就停在换清单之前，
       # 过几分钟用 Re-run failed jobs 重跑：上传前那道关认得出同一批文件，会放行。洛杉矶那份
       # （xm-direct）是 nginx 原样转发这里、不加缓存（服务端 10-17 核过），不用另核。

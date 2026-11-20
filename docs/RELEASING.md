@@ -417,7 +417,7 @@ git push origin v0.2.6
 | `R2_BUCKET` | 桶名 | 上传 |
 | `R2_ACCESS_KEY_ID` | R2 凭据 | 上传 |
 | `R2_SECRET_ACCESS_KEY` | R2 凭据 | 上传 |
-| `XINGMANG_UPDATE_SIGNING_KEY` | 更新包签名私钥（Ed25519，PKCS8 DER 的 base64），生成方法见下面「更新包签名」 | 上传前给 Windows 和 Linux 的清单签名、回退时补签；`acceleration-nodes` 给在线加速节点签名 |
+| `XINGMANG_UPDATE_SIGNING_KEY` | 更新包签名私钥（Ed25519，PKCS8 DER 的 base64），生成方法见下面「更新包签名」 | 上传前给 Windows 和 Linux 的清单签名、回退时补签；`acceleration-nodes` 给在线加速节点签名；`service-status`、`rollback-release` 和发布作业给状态文件里的撤回名单、分批放量、最低版本签名（`docs/SERVICE-STATUS.md`「发布者签名」） |
 
 R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整桶、不要给删除。
 
@@ -437,6 +437,7 @@ Windows 安装包没有数字签名，`latest.yml` 又和安装包放在同一�
 - 私钥只在 release 环境的 secret 里，从不进桶。所以就算 R2 上传密钥泄露，别人传上去的包也签不出客户端认的签名。
 - macOS 不签：Squirrel.Mac 已经按已装应用钉住的发布证书验苹果签名，那张证书的私钥同样只在 release 环境里，再加一道挡的是同一件事。
 - Linux 的 deb 本身不另签：dpkg 装包时不看包内签名，签了也没人核；更新这条路由上面的清单签名挡住，客户第一次从教程站下载的 deb 和 Windows 安装包一样，没有发布者签名可核。客户端认不认签名由 `update-package-signature.ts` 的 `shouldVerifyUpdateSignature` 决定。
+- 状态文件 `service-status.json` 里的撤回名单、分批放量、最低版本（连同 `updatedAt`）也用这把钥匙签（D85，2026-11-20 起）：撤回名单能让客户端「退回」旧版，拿到 R2 上传密钥的人不用私钥就能把当前版本写进去、再换上一份真签过名的旧清单。写这份文件的三处（`service-status`、`rollback-release`、`publish` 作业写分批放量那一步）上传前都签，0.2.25 起的客户端验不过就当这几项没读到，细节见 `docs/SERVICE-STATUS.md`「发布者签名」。
 - 回退（`rollback-release`）时，Windows 和 Linux 的备份清单本来就带签名的只验签；加签名之前发的老版本备份没有签名，要和 GitHub Release 上同版本的安装包（`*Setup.exe` / `*.deb`）逐字节对上才补签。Linux 从第一次对外发起就带签名，正常只走验签。GitHub Release 上找不到那个安装包时原样退回并给一条黄色提示：老客户端照样退得回去，认签名的新客户端停在被撤回的版本上。
 
 **生成密钥（只做一次，在产品所有者自己的电脑上做）。** 私钥绝不能出现在聊天、工单、邮件或仓库里。
@@ -453,7 +454,7 @@ Windows 安装包没有数字签名，`latest.yml` 又和安装包放在同一�
 4. 仓库 **Settings → Environments → release → Environment secrets → Add environment secret**，Name 填 `XINGMANG_UPDATE_SIGNING_KEY`，Value 粘贴，点 **Add secret**。
 5. 把这个文件另存一份到安全的地方（U 盘或密码管理器）。**丢了它，就再也签不出老客户端认的包**，只能先发一版带新公钥的客户端、让所有人手动重装一次。
 
-**换钥匙**：`updateSigningPublicKeys` 可以同时放几把。先把新公钥加进去发一版，等大部分人升上去之后再把 secret 换成新私钥，最后再从名单里删掉旧公钥。在线加速节点（`docs/GLOBAL-ACCELERATION.md`「在线换节点」）用的是同一把钥匙、同一份名单，换钥匙时一起换：secret 换成新私钥以后，再跑一次 `acceleration-nodes` 用新钥匙重签线上那份。
+**换钥匙**：`updateSigningPublicKeys` 可以同时放几把。先把新公钥加进去发一版，等大部分人升上去之后再把 secret 换成新私钥，最后再从名单里删掉旧公钥。在线加速节点（`docs/GLOBAL-ACCELERATION.md`「在线换节点」）用的是同一把钥匙、同一份名单，换钥匙时一起换：secret 换成新私钥以后，再跑一次 `acceleration-nodes` 用新钥匙重签线上那份。状态文件同理：再跑一次 `service-status`（各项都留空就行），用新钥匙重签撤回名单那几项；删旧公钥之前不跑的话，只认新公钥的客户端会当撤回名单、放量、最低版本没读到。
 
 #### 出处证明
 

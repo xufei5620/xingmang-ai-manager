@@ -633,6 +633,78 @@ describe('CodexSessionsService', () => {
     expect(fs.readFileSync(directTarget, 'utf8')).toBe('existing archive')
   })
 
+  // D13: reads only accept a rollout that really lives inside CODEX_HOME, so a
+  // move into a folder linked out of it used to succeed and then leave the
+  // session impossible to open or restore from the app.
+  it('refuses to archive into an archived_sessions folder linked outside CODEX_HOME before touching anything', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const outside = path.join(data.root, 'outside-archive')
+    fs.mkdirSync(outside)
+    // Junctions need no privilege on Windows; POSIX ignores the type argument.
+    fs.symlinkSync(outside, path.join(data.codexHome, 'archived_sessions'), 'junction')
+    const sessions = service(data)
+
+    await expect(sessions.archive('session-1')).rejects.toThrow('归档目录不在 CODEX_HOME 内')
+
+    expect(fs.readdirSync(outside)).toEqual([])
+    expect(fs.existsSync(data.rolloutPath)).toBe(true)
+    expect(fs.existsSync(sessions.operationJournalPath)).toBe(false)
+    const live = new DatabaseSync(data.databasePath, { readOnly: true })
+    expect(live.prepare('SELECT archived, rollout_path FROM threads WHERE id = ?').get('session-1'))
+      .toMatchObject({ archived: 0, rollout_path: data.rolloutPath })
+    live.close()
+    await expect(sessions.detail('session-1')).resolves.toMatchObject({ session: { id: 'session-1', rolloutAvailable: true } })
+  })
+
+  it('restores into sessions/recovered when the original folder now links outside CODEX_HOME', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const sessions = service(data)
+    await sessions.archive('session-1')
+    const originalDirectory = path.dirname(data.rolloutPath)
+    const outside = path.join(data.root, 'outside-sessions')
+    fs.mkdirSync(outside)
+    fs.rmdirSync(originalDirectory)
+    fs.symlinkSync(outside, originalDirectory, 'junction')
+
+    const restored = await sessions.restore('session-1')
+
+    expect(restored.archived).toBe(false)
+    expect(restored.rolloutPath).toBe(path.join(data.codexHome, 'sessions', 'recovered', path.basename(data.rolloutPath)))
+    expect(fs.readdirSync(outside)).toEqual([])
+    await expect(sessions.detail('session-1')).resolves.toMatchObject({
+      session: { id: 'session-1', archived: false, rolloutAvailable: true },
+    })
+  })
+
+  it('keeps an archived session readable when every restore folder links outside CODEX_HOME', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const sessions = service(data)
+    const archived = await sessions.archive('session-1')
+    const sessionsDirectory = path.join(data.codexHome, 'sessions')
+    const outside = path.join(data.root, 'outside-sessions')
+    fs.renameSync(sessionsDirectory, outside)
+    fs.symlinkSync(outside, sessionsDirectory, 'junction')
+    const before = fs.readFileSync(sessions.operationJournalPath, 'utf8')
+
+    await expect(sessions.restore('session-1')).rejects.toThrow('恢复目录不在 CODEX_HOME 内')
+
+    expect(fs.existsSync(archived.rolloutPath)).toBe(true)
+    expect(fs.existsSync(path.join(outside, 'recovered'))).toBe(false)
+    expect(fs.readFileSync(sessions.operationJournalPath, 'utf8')).toBe(before)
+    await expect(sessions.detail('session-1')).resolves.toMatchObject({
+      session: { id: 'session-1', archived: true, rolloutAvailable: true },
+    })
+  })
+
   it('recovers a JSONL move when the process stopped before the SQLite transaction committed', async () => {
     const data = fixture('session-1')
     const database = createThreadsDatabase(data.databasePath)

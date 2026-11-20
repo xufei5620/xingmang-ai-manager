@@ -26,7 +26,7 @@ import { cliCatalog, isActiveProviderId, type ProviderId } from '../../catalog'
 import { runWhenOn } from '../../remote-feature-gate'
 import { toolLaunchOffMessage } from '../../remote-features'
 import type { CliLaunchMode, CliLaunchResult } from '../../system-service'
-import type { QueuedAccountWork } from '../../account-work-gate'
+import { staleAccountMessage, type AccountWorkGate } from '../../account-work-gate'
 import {
   parseChooseWorkspaceOptions,
   parseCliLaunchMode,
@@ -35,6 +35,14 @@ import {
   parseWorkspace,
 } from '../parsers/tools'
 import type { IpcHandlerContext } from './context'
+
+type LaunchAccountWork = ReturnType<AccountWorkGate['queue']>
+
+// 点「打开」时记下的账号，在试写、查记录这些等待以后换过或正在换（N5）：后面的提问框不再弹，跟排队时换了
+// 账号一样回「账号刚切换过，请再试一次」，让用户在现在这个账号下重新点。真正挡住打开的是队列里那道 run。
+function assertLaunchAccountCurrent(accountWork: LaunchAccountWork | undefined): void {
+  if (accountWork && (accountWork.signal.aborted || !accountWork.isCurrent())) throw new Error(staleAccountMessage)
+}
 
 function sameLaunchWorkspace(left: string, right: string): boolean {
   const a = path.resolve(left)
@@ -227,17 +235,26 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
       return null
     }
   }
-  function launchProviderWith(provider: ProviderId, target: string, launchMode: CliLaunchMode, resumeSessionId: string | null) {
-    const accountWork = options.accountWork?.queue()
-    if (accountWork) return launchQueued(accountWork, () => service.launchProvider(provider, target, launchMode, resumeSessionId, accountWork))
+  function launchProviderWith(
+    provider: ProviderId,
+    target: string,
+    launchMode: CliLaunchMode,
+    resumeSessionId: string | null,
+    accountWork: LaunchAccountWork | undefined,
+  ) {
+    if (accountWork) return service.launchProvider(provider, target, launchMode, resumeSessionId, accountWork)
     return resumeSessionId === null
       ? service.launchProvider(provider, target, launchMode)
       : service.launchProvider(provider, target, launchMode, resumeSessionId)
   }
-  // 点两下同一个「打开」时第二下跟着第一下那份排队，它自己那份从没交给队列：请求一结束就交还。
-  function launchQueued<T>(accountWork: QueuedAccountWork & { release(): void }, launch: () => Promise<T>): Promise<T> {
+  // 点下去那一刻就记下是哪个账号（N5）。以前要等续聊查询、打开前试写、问完文件夹都做完，真要排进安装队列
+  // 时才记，这中间换了账号，上一个账号点的「打开」就按新账号的配置打开。记下的这份不算账号工作，换账号不用
+  // 等它（#1085），只会让它作废；没打开、先不打开、点两下时第二下跟着第一下那份排队，请求一结束都交还。
+  function launchForClickedAccount<T>(launch: (accountWork: LaunchAccountWork | undefined) => T): T | Promise<Awaited<T>> {
+    const accountWork = options.accountWork?.queue()
+    if (!accountWork) return launch(undefined)
     try {
-      return Promise.resolve(launch()).finally(() => accountWork.release())
+      return Promise.resolve(launch(accountWork)).finally(() => accountWork.release())
     } catch (error) {
       accountWork.release()
       throw error
@@ -250,16 +267,14 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
     const launchMode = parseCliLaunchMode(mode)
     const resumeRecordId = parseCodexResumeRecordId(provider, launchMode, recordId)
     // 在问「这个文件夹不建议打开」之前拦：关着的工具不该先弹一个文件夹的问题。
-    return runWhenOn(options.remoteFeatures, `launch:${provider}`, toolLaunchOffMessage(cliCatalog[provider].name), () => {
-      if (resumeRecordId === null) return launchCliInWorkspace(event, provider, target, launchMode, null)
-      return (async () => launchCliInWorkspace(
-        event,
-        provider,
-        target,
-        launchMode,
-        await verifiedCodexResumeSessionId(resumeRecordId, target),
-      ))()
-    })
+    return launchForClickedAccount((accountWork) => runWhenOn(options.remoteFeatures, `launch:${provider}`, toolLaunchOffMessage(cliCatalog[provider].name), () => {
+      if (resumeRecordId === null) return launchCliInWorkspace(event, provider, target, launchMode, null, accountWork)
+      return (async () => {
+        const resumeSessionId = await verifiedCodexResumeSessionId(resumeRecordId, target)
+        assertLaunchAccountCurrent(accountWork)
+        return launchCliInWorkspace(event, provider, target, launchMode, resumeSessionId, accountWork)
+      })()
+    }))
   })
   function launchCliInWorkspace(
     event: IpcMainInvokeEvent,
@@ -267,6 +282,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
     target: string,
     launchMode: CliLaunchMode,
     resumeSessionId: string | null,
+    accountWork: LaunchAccountWork | undefined,
   ) {
     const sensitivity = classifyLocalWorkspace(target)
     if (
@@ -274,7 +290,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
       || !sensitiveWorkspaceAsksAtLaunch(sensitivity, launchMode === 'resumeLast')
       || consumeConfirmedSensitiveWorkspace(target)
     ) {
-      return launchUnlessUnwritable(event, provider, target, launchMode, resumeSessionId, sensitivity)
+      return launchUnlessUnwritable(event, provider, target, launchMode, resumeSessionId, sensitivity, accountWork)
     }
     // 首页「打开」从记录推出来的目录、最近记录、记录页「接着上次对话」、老版本记住的目录都
     // 不经过选择器，所以在这里再问一次。续接对话换了目录就接不上，那一问只给「先不打开」，
@@ -283,7 +299,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
       const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
       const allowChooseAnother = launchMode === 'new'
       const decision = await askAboutSensitiveWorkspace(parentWindow, sensitivity, allowChooseAnother)
-      if (decision === 'continue') return launchUnlessUnwritable(event, provider, target, launchMode, resumeSessionId, sensitivity)
+      if (decision === 'continue') return launchUnlessUnwritable(event, provider, target, launchMode, resumeSessionId, sensitivity, accountWork)
       let replacement: string | null = null
       if (decision === 'create') {
         replacement = await createStarterWorkspaceOrExplain(parentWindow, '接下来会重新打开文件夹选择窗口，可以在里面自己新建一个文件夹再选它。')
@@ -301,7 +317,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
       await rememberWorkspace(replacement)
       // 换来的目录和从选择器直接选的一样先试写：首页「打开」进主目录那一问以后，换的多半是
       // 文档里的项目文件夹，受控文件夹访问拦的正是那儿。
-      return launchUnlessUnwritable(event, provider, replacement, launchMode, null, classifyLocalWorkspace(replacement))
+      return launchUnlessUnwritable(event, provider, replacement, launchMode, null, classifyLocalWorkspace(replacement), accountWork)
     })()
   }
   // 桌面、文档、下载问过「仍然打开」以后，照旧先试写一次（launchIfWritable）；
@@ -313,12 +329,13 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
     launchMode: CliLaunchMode,
     resumeSessionId: string | null,
     sensitivity: SensitiveWorkspaceKind | null,
+    accountWork: LaunchAccountWork | undefined,
   ) {
     const writeCheckPlatform = options.workspaceWriteCheck?.platform ?? process.platform
     if (!shouldCheckWorkspaceWritable(sensitivity, writeCheckPlatform)) {
-      return launchProviderWith(provider, target, launchMode, resumeSessionId)
+      return launchProviderWith(provider, target, launchMode, resumeSessionId, accountWork)
     }
-    return launchIfWritable(event, provider, target, launchMode, resumeSessionId)
+    return launchIfWritable(event, provider, target, launchMode, resumeSessionId, accountWork)
   }
   // 受控文件夹访问、安全软件的文档保护开着时，工具照样起得来，但 AI 一改文件就是一串
   // 英文 EPERM，客户只看到「说改了但文件没变」。以前写信任、生成 AGENTS.md 失败只记一条
@@ -329,6 +346,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
     target: string,
     launchMode: CliLaunchMode,
     resumeSessionId: string | null,
+    accountWork: LaunchAccountWork | undefined,
   ) {
     const startedAt = Date.now()
     const writability = await inspectWorkspaceWritable(target, options.workspaceWriteCheck ? { probe: options.workspaceWriteCheck.probe } : {})
@@ -338,12 +356,13 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
       : writability === 'read-only'
         ? '选中的文件夹在只读的盘上，照常打开，打开后在首页提醒'
         : '打开前试写了选中的文件夹', { provider, result: writability, durationMs: Date.now() - startedAt })
+    assertLaunchAccountCurrent(accountWork)
     // 盘本身只读（光盘、写保护的 U 盘）不是受控文件夹访问，下面那一问的原因对不上：不拦，打开后首页说一句（D17）。
     if (writability === 'read-only') {
-      const result = await launchProviderWith(provider, target, launchMode, resumeSessionId)
+      const result = await launchProviderWith(provider, target, launchMode, resumeSessionId, accountWork)
       return { ...result, workspaceReadOnly: true }
     }
-    if (writability !== 'denied') return launchProviderWith(provider, target, launchMode, resumeSessionId)
+    if (writability !== 'denied') return launchProviderWith(provider, target, launchMode, resumeSessionId, accountWork)
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const prompt = buildWorkspaceNotWritablePrompt({ allowCreate: launchMode === 'new' })
     const messageBoxOptions = {
@@ -361,7 +380,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
       : await dialog.showMessageBox(messageBoxOptions)
     if (answer.response === prompt.continueIndex) {
       options.runtimeLog.log('info', 'config', 'workspace.write-check.continued', '文件夹不让写入，用户仍然照常打开', { provider })
-      return launchProviderWith(provider, target, launchMode, resumeSessionId)
+      return launchProviderWith(provider, target, launchMode, resumeSessionId, accountWork)
     }
     let replacement: string | null = null
     if (answer.response === prompt.createIndex) {
@@ -375,15 +394,12 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
     }
     consumeConfirmedSensitiveWorkspace(replacement)
     await rememberWorkspace(replacement)
-    return launchProviderWith(provider, replacement, launchMode, null)
+    return launchProviderWith(provider, replacement, launchMode, null, accountWork)
   }
   registerTrustedHandler('desktop:launch-codex', (event, mode: unknown) => {
     const launchMode = parseDesktopLaunchMode(mode)
-    return runWhenOn(options.remoteFeatures, 'launch:codexDesktop', toolLaunchOffMessage('Codex 桌面端'), () => {
-      const accountWork = options.accountWork?.queue()
-      return accountWork
-        ? launchQueued(accountWork, () => service.launchCodexDesktop(launchMode, event.sender, { accountWork }))
-        : service.launchCodexDesktop(launchMode, event.sender)
-    })
+    return launchForClickedAccount((accountWork) => runWhenOn(options.remoteFeatures, 'launch:codexDesktop', toolLaunchOffMessage('Codex 桌面端'), () => accountWork
+      ? service.launchCodexDesktop(launchMode, event.sender, { accountWork })
+      : service.launchCodexDesktop(launchMode, event.sender)))
   })
 }

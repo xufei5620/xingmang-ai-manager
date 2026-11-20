@@ -1338,7 +1338,9 @@ export function createUpdaterService(
   }
 
   const applyServiceStatus = (status: ServiceStatus | null) => {
-    if (status) {
+    // 撤回名单、放量、最低版本没签名或签名不对（D85）：这几项照「这一次没读到」办，别的项照常用这一份。
+    const guardRead = status !== null && !status.releaseGuardRejected
+    if (status && guardRead) {
       adoptReleaseGuard({
         badVersions: status.badVersions ?? [],
         ...(status.badVersionPlatforms ? { badVersionPlatforms: status.badVersionPlatforms } : {}),
@@ -1362,7 +1364,7 @@ export function createUpdaterService(
     // 最低版本同样只认读成功的那份：下载新版本时这一次读超时，那层「必须更新」就整层收起，下一次读到又盖回来，
     // 客户以为没事了接着用（RC-01）。只在读到了、文件里确实撤掉了才放人。这份只在这次运行里沿用、不记到本地：
     // 撤掉强制更新以后，重开软件还读不到文件的电脑不能一直被拦着。开发态装不了更新，拦下来只会把人困住。
-    const required = !status
+    const required = !guardRead
       ? minimumRequired
       : enabled && !development
         ? resolveRequiredVersion(runtime.currentVersion, resolveMinimumVersionFor(status, releasePlatforms))
@@ -2351,11 +2353,11 @@ export function createUpdaterService(
           }
           // The timeout only releases the startup UI. Keep the updater request
           // alive so a slow network can still download the discovered release.
-          if (autoDownload()) {
-            void checkPromise.then((lateSnapshot) => {
-              if (lateSnapshot.phase === 'available') downloadInBackground()
-            }, (error: unknown) => runtime.reportBackgroundError?.(error))
-          }
+          // 下不下按查完那一刻的设置定（D23）：超时到查完之间客户关掉了自动更新，这次就不下，停在「有新版本」
+          // 等客户自己点；反过来这段时间里刚打开的，autoUpdateChanged 那时还没有可下的版本，这里接着下。
+          void checkPromise.then((lateSnapshot) => {
+            if (lateSnapshot.phase === 'available' && autoDownload()) downloadInBackground()
+          }, (error: unknown) => runtime.reportBackgroundError?.(error))
           emit({
             phase: 'error',
             checkedAt: now().toISOString(),

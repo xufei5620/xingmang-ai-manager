@@ -1,4 +1,5 @@
-import type { AccountLoginSession, AccountSubscriptionBillingPreference, AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
+import type { AccountKey, AccountKeyUpdateInput, AccountLoginSession, AccountSubscriptionBillingPreference, AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
+import { accountKeyExpiredTime, accountKeyQuota, type AccountKeyQuotaSite } from '../../../../electron/account-key-quota'
 import { subscriptionExpiringDays, subscriptionLowUsd } from '../../../../electron/subscription-summary'
 import { accountKeyNameMaxBytes, truncateUtf8, utf8Length } from '../../../../electron/catalog'
 
@@ -228,6 +229,69 @@ export function keyExpiredTime(choice: KeyExpiryChoice, { custom, current, now }
   const at = new Date(custom).getTime()
   if (!Number.isFinite(at) || at <= now) throw new Error('到期时间必须晚于现在。')
   return Math.floor(at / 1000)
+}
+
+/** 编辑一把已有密钥时，框里填着的样子。 */
+export interface KeyEditForm {
+  name: string
+  group: string
+  /** 客户在「额度」那两格（不限 / 限额、可用额度）里动过没有：没动 = 照这把密钥现在的额度写回去。 */
+  quotaEdited: boolean
+  unlimited: boolean
+  quota: string
+  expiry: KeyExpiryChoice
+  customExpiry: string
+}
+
+/** 客户这次真改了的几项；没改的不在里面，留给 keyEditUpdate 照这把密钥现在的样子补。 */
+export interface KeyEditChanges {
+  name?: string
+  group?: string
+  quota?: { remainQuota: number; unlimitedQuota: boolean }
+  expiredTime?: number
+}
+
+/**
+ * 编辑已有密钥：只挑出客户这次真改了的几项（F01）。名称、分组跟打开时一样就算没改；额度看那两格动没动过；
+ * 到期时间选了「不改」就没改。额度改了才查「大于 0」，在读最新那条之前就拦下，填错了不用等一趟网络。
+ */
+export function keyEditChanges(
+  form: KeyEditForm,
+  opened: { name: string; group: string },
+  { quotaPerUnit, siteId, now }: { quotaPerUnit: number; siteId: AccountKeyQuotaSite; now: number },
+): KeyEditChanges {
+  const changes: KeyEditChanges = {}
+  if (form.name !== opened.name) changes.name = form.name
+  if (form.group !== opened.group) changes.group = form.group
+  if (form.quotaEdited) {
+    const amount = Number(form.quota)
+    if (!form.unlimited && !(amount > 0)) throw new Error('请填写大于 0 的可用额度')
+    changes.quota = { remainQuota: accountKeyQuota(amount, quotaPerUnit, siteId, form.unlimited), unlimitedQuota: form.unlimited }
+  }
+  if (form.expiry !== 'keep') changes.expiredTime = keyExpiredTime(form.expiry, { custom: form.customExpiry, current: -1, now })
+  return changes
+}
+
+/**
+ * 把客户改的几项落到这把密钥「现在」的样子上，拼成一次更新（F01）。两个后端的更新都是整条覆盖，没改的几项
+ * 得照现在写回去，不能照编辑框打开那一刻：在「每个工具的额度上限」里刚设了上限、再到列表里只改个名，
+ * 列表那份旧的「不限额度」会把刚设的上限冲掉。latest 是保存前现读的那一条。
+ */
+export function keyEditUpdate(
+  id: number,
+  changes: KeyEditChanges,
+  latest: Pick<AccountKey, 'name' | 'group' | 'remainQuota' | 'unlimitedQuota' | 'expiredAt'>,
+): AccountKeyUpdateInput {
+  // 额度没动、这把的上限又已经用完：跟以前一样请客户自己填一个数，不替他把 0 写回去（历史账号收不下 0）。
+  if (!changes.quota && !latest.unlimitedQuota && !(latest.remainQuota > 0)) throw new Error('请填写大于 0 的可用额度')
+  return {
+    id,
+    name: changes.name ?? latest.name,
+    group: changes.group ?? latest.group,
+    remainQuota: changes.quota ? changes.quota.remainQuota : latest.unlimitedQuota ? 0 : latest.remainQuota,
+    unlimitedQuota: changes.quota ? changes.quota.unlimitedQuota : latest.unlimitedQuota,
+    expiredTime: changes.expiredTime ?? accountKeyExpiredTime(latest.expiredAt),
+  }
 }
 
 /**
