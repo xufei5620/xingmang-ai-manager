@@ -1437,6 +1437,49 @@ Write-Output ('RECOVERY_CHECKS=' + $script:checks)
   assert.match(output, /RECOVERY_CHECKS=35/)
 }])
 
+// The development shadow-home launcher (T01). A developer's own shell often
+// carries CODEX_HOME or XINGMANG_CODEX_HOME_OVERRIDE pointing at the everyday
+// ~/.codex, and both outrank USERPROFILE, so the dev build kept writing the real
+// Codex configuration. -CheckOnly prints the environment the script would start
+// the dev build with and stops before creating, clearing or launching anything;
+// the app's own resolvers then have to land inside the shadow folder whichever
+// variable was inherited. Windows PowerShell 5.1 is the one the script's usage
+// line names, and it is also the one that misreads a script saved without a BOM.
+const { defaultProviderConfigRoots, resolveCodexHomeContext } = compiled('codex-home')
+const shadowHomeScript = path.join(repo, 'scripts', 'dev-shadow-home.ps1')
+checks.push(['the dev shadow-home launcher points every Codex folder at the shadow folder', async () => {
+  // The long-name form: the runner's TEMP is an 8.3 short path, which .NET expands.
+  const root = fs.realpathSync.native(scratch)
+  const shadow = path.join(root, 'shadow home')
+  const expected = path.join(shadow, '.codex')
+  const inheritedCodexHome = path.join(root, 'everyday home', '.codex')
+  const inheritedOverride = path.join(root, 'everyday override', '.codex')
+  const codexVariables = new Set(['CODEX_HOME', 'XINGMANG_CODEX_HOME_OVERRIDE'])
+  const base = Object.fromEntries(Object.entries(process.env).filter(([name]) => !codexVariables.has(name.toUpperCase())))
+  const cases = [
+    ['nothing inherited', {}],
+    ['CODEX_HOME inherited', { CODEX_HOME: inheritedCodexHome }],
+    ['the development override inherited', { XINGMANG_CODEX_HOME_OVERRIDE: inheritedOverride }],
+    ['both inherited', { CODEX_HOME: inheritedCodexHome, XINGMANG_CODEX_HOME_OVERRIDE: inheritedOverride }],
+  ]
+  for (const [label, inherited] of cases) {
+    const output = await runPowerShell(['-ExecutionPolicy', 'Bypass', '-File', shadowHomeScript, '-Shadow', shadow, '-CheckOnly'], { ...base, ...inherited })
+    const launched = JSON.parse(output.trim())
+    const env = { ...base, ...inherited, ...launched }
+    assert.equal(launched.USERPROFILE, shadow, label)
+    const context = resolveCodexHomeContext({ isPackaged: false, env, userHome: launched.USERPROFILE })
+    assert.equal(context.codexHome, expected, label)
+    assert.equal(context.codexEnv.CODEX_HOME, expected, label)
+    assert.equal(defaultProviderConfigRoots(launched.USERPROFILE, env).codexHome, expected, label)
+  }
+  // A relative -Shadow comes from the PowerShell location, not the process
+  // folder: the app refuses to start on a relative development override.
+  const relative = await runPowerShell(['-ExecutionPolicy', 'Bypass', '-Command',
+    `Set-Location -LiteralPath '${root.replaceAll("'", "''")}'; & '${shadowHomeScript.replaceAll("'", "''")}' -Shadow 'shadow home' -CheckOnly`], base)
+  assert.equal(JSON.parse(relative.trim()).XINGMANG_CODEX_HOME_OVERRIDE, expected)
+  assert.equal(fs.existsSync(shadow), false, '-CheckOnly must not create the shadow folder')
+}])
+
 // The same probes with autoloading switched off right after their imports, so
 // a forgotten module is named instead of costing the whole scan. Printed only.
 // The two ACL probes are left out: they call Microsoft.PowerShell.Security\Get-Acl

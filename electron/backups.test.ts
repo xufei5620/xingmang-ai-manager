@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiKeyDigest, classifyBackupKey, ConfigBackupStore, type ConfigBackupAccountContext } from './backups'
+import { apiKeyDigest, classifyBackupKey, ConfigBackupStore, resolveBackupIdTime, type ConfigBackupAccountContext } from './backups'
 import type { ProviderId } from './catalog'
 import { providerConfigPaths } from './config-files'
 import { renameWithTransientRetrySync } from './safe-local-data'
@@ -751,6 +751,71 @@ describe('ConfigBackupStore', () => {
     fs.mkdirSync(corruptDirectory, { recursive: true })
     fs.writeFileSync(path.join(corruptDirectory, 'manifest.json'), '{invalid', 'utf8')
     expect(store.list()).toContainEqual(expect.objectContaining({ id: 'corrupt-manifest', valid: false }))
+  })
+
+  // R2-2: a broken backup keeps a row the card can show, name and delete.
+  it('keeps the tool, reason and time of a broken backup whose manifest still reads', () => {
+    const { home, userData } = fixture()
+    const [configPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'original')
+    const store = new ConfigBackupStore({
+      userDataDirectory: userData,
+      homeDirectory: home,
+      now: () => new Date(Date.UTC(2026, 10, 18, 6, 30, 0)),
+    })
+    const torn = store.create('codex', 'pre-save')
+    const backupRelativePath = store.inspect(torn.id).files.find((file) => file.existed)?.backupRelativePath
+    fs.rmSync(path.join(userData, 'backups', torn.id, ...backupRelativePath!.split('/')))
+
+    expect(store.list()).toEqual([{
+      id: torn.id,
+      provider: 'codex',
+      reason: 'pre-save',
+      createdAt: '2026-11-18T06:30:00.000Z',
+      fileCount: 0,
+      existingFileCount: 0,
+      totalSize: 0,
+      valid: false,
+      error: expect.any(String),
+    }])
+    expect(() => store.restore(torn.id)).toThrow()
+    store.delete(torn.id)
+    expect(store.list()).toEqual([])
+  })
+
+  it('names a broken backup of the retired tool so it stays out of the list', () => {
+    const { home, userData } = fixture()
+    const [settingsPath] = providerConfigPaths('gemini', fixtureProviderRoots(home))
+    writeConfig(settingsPath, '{"model":{"name":"gemini-3.8-flash-high"}}\n')
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const gemini = store.create('gemini', 'manual')
+    const backupRelativePath = store.inspect(gemini.id).files.find((file) => file.existed)?.backupRelativePath
+    fs.writeFileSync(path.join(userData, 'backups', gemini.id, ...backupRelativePath!.split('/')), 'longer than before', 'utf8')
+
+    expect(store.list()).toEqual([expect.objectContaining({ id: gemini.id, provider: 'gemini', valid: false })])
+  })
+
+  it('dates a backup whose manifest cannot be read by the time in its folder name', () => {
+    const { home, userData } = fixture()
+    const id = `20261118063000123-${randomUUID()}`
+    fs.mkdirSync(path.join(userData, 'backups', id), { recursive: true })
+    fs.writeFileSync(path.join(userData, 'backups', id, 'manifest.json'), '{invalid', 'utf8')
+    fs.mkdirSync(path.join(userData, 'backups', 'corrupt-manifest'), { recursive: true })
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+
+    expect(store.list()).toEqual([
+      expect.objectContaining({ id, provider: null, reason: null, createdAt: '2026-11-18T06:30:00.123Z', valid: false }),
+      expect.objectContaining({ id: 'corrupt-manifest', provider: null, createdAt: null, valid: false }),
+    ])
+  })
+
+  it('reads the time out of a backup id only when it is one backupId() could have made', () => {
+    const uuid = randomUUID()
+    expect(resolveBackupIdTime(`20261118063000123-${uuid}`)).toBe('2026-11-18T06:30:00.123Z')
+    expect(resolveBackupIdTime(`20261318063000123-${uuid}`)).toBeNull()
+    expect(resolveBackupIdTime(`20261131063000123-${uuid}`)).toBeNull()
+    expect(resolveBackupIdTime('20261118063000123-not-a-uuid')).toBeNull()
+    expect(resolveBackupIdTime('corrupt-manifest')).toBeNull()
   })
 
   it('rejects oversized source files and manifests before copying or hashing them', () => {

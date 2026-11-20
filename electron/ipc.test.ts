@@ -4709,6 +4709,40 @@ describe('registerIpcHandlers', () => {
     expect(electronMocks.writeText).toHaveBeenCalledWith('sanitized report\n')
   })
 
+  // 0.2.24 性能深查 R4：开机界面每次都把深浅色发一遍。先换窗口颜色再记；记不进去（C 盘满、杀毒锁住
+  // 文件）只记一条日志，标题栏和页面照样换上，不再弹「系统外观没有同步」。
+  it('applies window:set-theme before saving it, and keeps the applied theme when the save fails', async () => {
+    const service = serviceStub()
+    const order: string[] = []
+    const setWindowTheme = vi.fn(() => { order.push('apply') })
+    vi.mocked(service.updateStoredConfig).mockImplementation(async (update) => {
+      order.push('save')
+      return mergeAppSettings(stubStoredConfig, update)
+    })
+    const { dispose, runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, { setWindowTheme })
+    try {
+      const handler = electronMocks.handlers.get('window:set-theme')!
+      const event = trustedEvent()
+      await expect(handler(event, 'dark')).resolves.toBeUndefined()
+      expect(order).toEqual(['apply', 'save'])
+      expect(setWindowTheme).toHaveBeenCalledWith(event.sender, 'dark')
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, theme: 'dark' })
+
+      vi.mocked(service.updateStoredConfig).mockRejectedValueOnce(new Error('ENOSPC: no space left on device'))
+      await expect(handler(event, 'light')).resolves.toBeUndefined()
+      expect(setWindowTheme).toHaveBeenLastCalledWith(event.sender, 'light')
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'window', 'window.theme.save-failed', expect.any(String), {
+        theme: 'light',
+        reason: 'ENOSPC: no space left on device',
+      })
+
+      await expect(handler(event, 'sepia')).rejects.toThrow('未知的主题')
+      expect(setWindowTheme).toHaveBeenCalledTimes(2)
+    } finally {
+      dispose()
+    }
+  })
+
   it('delegates canvas:open to the injected openCanvasWindow callback, and rejects untrusted senders the same as every other channel', async () => {
     const openCanvasWindow = vi.fn(async () => undefined)
     const openCanvasAssetLibrary = vi.fn(async () => undefined)

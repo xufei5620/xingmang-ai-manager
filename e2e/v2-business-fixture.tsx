@@ -633,6 +633,13 @@ const backup = {
     ? { keyOwnership: 'other' as const, keyAccountName: 'old-user' }
     : { keyOwnership: 'current' as const, keyAccountName: null }),
 }
+// brokenBackup：再加两份校验没过的（R2-2）。一份清单还读得出来，知道是 Codex 的、哪天存的；一份清单读不出来，时间也没有。
+type BackupRow = Awaited<ReturnType<V2Bridge['listBackups']>>[number]
+const brokenBackups: BackupRow[] = [
+  { id: 'backup-torn', provider: 'codex', reason: 'pre-save', createdAt: '2026-09-06T01:00:00Z', fileCount: 0, existingFileCount: 0, totalSize: 0, valid: false, error: '备份文件必须是普通文件' },
+  { id: 'backup-unreadable', provider: null, reason: null, createdAt: null, fileCount: 0, existingFileCount: 0, totalSize: 0, valid: false, error: '备份清单不是有效 JSON' },
+]
+let backupRows: BackupRow[] = empty ? [] : query.has('brokenBackup') ? [backup, ...brokenBackups] : [backup]
 // longNames：后台给出不能断行的超长分组名、支付方式名、模型名，看它们撑不撑出卡片（#1133 第 7 条）。
 const longName = query.has('longNames') ? 'SuperLongIdentifierWithoutAnySpacesOrBreakOpportunities_20261017_ABCDEFGHIJKLMNOPQRSTUVWXYZ' : ''
 const key = {
@@ -1470,7 +1477,11 @@ const apiMethods = {
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   ...(query.has('customMarket') ? customMarketMethods : {}),
   ...codexRemoteMethods,
-  listBackups: async () => (empty ? [] : [backup]),
+  listBackups: async () => backupRows,
+  deleteBackup: async (id: string) => {
+    record('deleteBackup', id)
+    backupRows = backupRows.filter((row) => row.id !== id)
+  },
   createBackup: async (provider: Parameters<V2Bridge['createBackup']>[0]) => {
     record('create-backup', provider)
     return { ...backup, id: `backup-${provider}`, provider }

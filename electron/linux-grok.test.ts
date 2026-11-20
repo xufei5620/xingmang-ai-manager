@@ -215,6 +215,53 @@ describe.runIf(process.platform === 'linux')('Linux Grok install verification an
     })).rejects.toThrow('这台电脑的芯片类型 Grok CLI 不支持')
   })
 
+  // 11-18 复核 D19：更新或装回旧版时 postinstall 只改 grok，agent 以前一直留在第一次装的那一版。
+  it('moves the agent link onto the version an update just installed', async () => {
+    const fixture = createFixture()
+    writePlatformPackage(fixture)
+    writeInstalledLayout(fixture, '1.0.40')
+    fs.symlinkSync('grok-1.0.40', path.join(fixture.bin, 'agent'))
+
+    await runLinuxGrokPostInstallTransaction({
+      homeDirectory: fixture.home,
+      lifecycle: async () => writeInstalledLayout(fixture),
+      verify: () => verify(fixture, versionRunner()),
+    })
+
+    expect(fs.readlinkSync(path.join(fixture.bin, 'grok'))).toBe(`grok-${version}`)
+    expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(`grok-${version}`)
+    expect(fs.readdirSync(fixture.bin).filter((name) => name.startsWith('.'))).toEqual([])
+  })
+
+  it('puts the agent link back on the previous version when verification of an update fails', async () => {
+    const fixture = createFixture()
+    writePlatformPackage(fixture)
+    writeInstalledLayout(fixture, '1.0.40')
+    fs.symlinkSync('grok-1.0.40', path.join(fixture.bin, 'agent'))
+
+    await expect(runLinuxGrokPostInstallTransaction({
+      homeDirectory: fixture.home,
+      lifecycle: async () => writeInstalledLayout(fixture),
+      verify: () => verify(fixture, versionRunner('grok 1.0.46\n')),
+    })).rejects.toThrow('Grok CLI 装好后报告的版本和这次装的不一致')
+
+    expect(fs.readlinkSync(path.join(fixture.bin, 'grok'))).toBe('grok-1.0.40')
+    expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe('grok-1.0.40')
+  })
+
+  it('leaves an agent link the customer pointed elsewhere as it is', async () => {
+    const fixture = createFixture()
+    writePlatformPackage(fixture)
+    writeInstalledLayout(fixture)
+    const ownProgram = path.join(fixture.root, 'my-agent')
+    fs.writeFileSync(ownProgram, 'mine', { mode: 0o755 })
+    fs.symlinkSync(ownProgram, path.join(fixture.bin, 'agent'))
+
+    await verify(fixture, versionRunner())
+
+    expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(ownProgram)
+  })
+
   it('puts the previous version back when verification fails after postinstall', async () => {
     const fixture = createFixture()
     writePlatformPackage(fixture)
