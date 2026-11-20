@@ -136,7 +136,7 @@
 - `relay-request-id.ts` — 从中转的回答里取请求号（`X-Oneapi-Request-Id`，只认 64 字以内的字母数字和 `._:-`），交给上面那个观察钩子；钩子出错一律吞掉，记账失败不影响付过钱的生成
 
 ### 缩略图
-- `asset-thumbnail.ts` / `asset-thumbnail-store.ts` / `asset-thumbnail-service.ts` — 素材缩略图：URL 格式与严格解析（版本号进 URL，升版即整代作废）、磁盘缓存（`<root>/user-<id>/<版本>/`，单张有上限）、生成服务（逐个串行解码免得卡主线程，同一素材的并发请求共用一次生成；视频封面只有 Windows 和 macOS 能取）。`asset-thumbnail.ts` 零依赖、进渲染层（I6）：视频剪辑读回存着的工程时按编号重拼当前版本的地址
+- `asset-thumbnail.ts` / `asset-thumbnail-store.ts` / `asset-thumbnail-service.ts` — 素材缩略图：URL 格式与严格解析（版本号进 URL，升版即整代作废）、两档大小（作品库的 320 和聊天的 768，后者只有图片、文件名带 `.large`）、磁盘缓存（`<root>/user-<id>/<版本>/`，单张有上限）、生成服务（逐个串行解码免得卡主线程，同一素材的并发请求共用一次生成；视频封面只有 Windows 和 macOS 能取）。`asset-thumbnail.ts` 零依赖、进渲染层（I6）：视频剪辑读回存着的工程时按编号重拼当前版本的地址
 
 ## `electron/platform/` 平台层
 

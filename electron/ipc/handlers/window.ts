@@ -15,8 +15,18 @@ export function registerWindowHandlers(ctx: IpcHandlerContext): void {
   })
   registerTrustedHandler('window:set-theme', async (event, theme: unknown) => {
     if (theme !== 'light' && theme !== 'dark') throw new Error('未知的主题')
-    await service.updateStoredConfig({ version: 2, theme })
+    // 先换窗口颜色，再记进设置文件。这份记录只管下次开窗头一帧的底色，界面每次开机都按系统外观再发
+    // 一遍；C 盘满或杀毒锁住文件写不进去时，不该让这次标题栏和页面停在旧颜色上、再弹一张「系统外观
+    // 没有同步」，记一条日志，下次开机照旧再记（0.2.24 性能深查 R4）。
     options.setWindowTheme(event.sender, theme)
+    try {
+      await service.updateStoredConfig({ version: 2, theme })
+    } catch (error) {
+      options.runtimeLog.log('warn', 'window', 'window.theme.save-failed', '深浅色已经换上，没能记进设置文件', {
+        theme,
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
   })
   registerTrustedHandler('window:get-capabilities', () => options.getWindowCapabilities?.() ?? { tray: false, notifications: false })
   registerTrustedHandler('window:report-activity', (event, raw: unknown) => {
