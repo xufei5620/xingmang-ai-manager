@@ -242,6 +242,8 @@ describe('main process quit cleanup', () => {
         'detachPrivacyListener()',
         'usageStats.stop()',
         'noteUsageEvent = null',
+        'clientVersionReporter?.stop()',
+        'noteAccountChangedForVersionReport = null',
       ],
       'acceleration-power': ["powerMonitor.off('suspend', onSuspend)", "powerMonitor.off('resume', onResume)"],
       'cli-hook-events': ['cliHookEvents.dispose()'],
