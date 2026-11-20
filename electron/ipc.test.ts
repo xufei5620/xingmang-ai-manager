@@ -210,6 +210,7 @@ function accountServiceStub(): NewApiClientService {
     revealKey: vi.fn() as never,
     createKey: vi.fn(async () => undefined),
     updateKey: vi.fn(async () => undefined),
+    enableKey: vi.fn(async () => undefined),
     changePassword: vi.fn() as never,
     listLoginSessions: vi.fn() as never,
     revokeLoginSession: vi.fn() as never,
@@ -8204,6 +8205,55 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), -5)).rejects.toThrow()
       expect(accountService.revokeKey).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('account:enable-key', () => {
+    it('forwards a valid id to the account service and leaves the cached tool keys alone', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 101, username: 'yoyo', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => []),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      const chatKeyStore = { removeByKeyId: vi.fn(async () => undefined) }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, { chatKeyStore })
+
+      await expect(electronMocks.handlers.get('account:enable-key')!(trustedEvent(), 42)).resolves.toBeUndefined()
+
+      expect(accountService.enableKey).toHaveBeenCalledWith(42)
+      // Enabling changes neither the secret, the name nor the group, so the tool
+      // that holds this key still matches its cached entry.
+      expect(managedCliKeys.remove).not.toHaveBeenCalled()
+      expect(chatKeyStore.removeByKeyId).not.toHaveBeenCalled()
+    })
+
+    it('passes the account service refusal through unchanged', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.enableKey).mockRejectedValue(new Error('这把密钥已经过了到期时间'))
+
+      await expect(electronMocks.handlers.get('account:enable-key')!(trustedEvent(), 7)).rejects.toThrow('这把密钥已经过了到期时间')
+    })
+
+    it('says so when the signed-in account backend cannot enable keys', async () => {
+      const accountService: NewApiClientService = { ...accountServiceStub(), enableKey: undefined } as unknown as NewApiClientService
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+
+      await expect(electronMocks.handlers.get('account:enable-key')!(trustedEvent(), 7)).rejects.toThrow('当前账号暂时不能在这里启用密钥')
+    })
+
+    it('rejects a malformed id before reaching the account service -- it lands in a URL path segment (I5)', async () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:enable-key')!
+
+      for (const id of ['7', 1.5, 0, -1, null, undefined, Number.MAX_SAFE_INTEGER + 1]) {
+        await expect(handler(trustedEvent(), id)).rejects.toThrow('密钥 ID 格式错误')
+      }
+      expect(accountService.enableKey).not.toHaveBeenCalled()
     })
   })
 

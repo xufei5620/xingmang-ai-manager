@@ -355,6 +355,14 @@ export function keyMetaParts(
 }
 
 /**
+ * 这一行要不要摆「启用」（总单 Q2）：网页上停用的、到期的、额度用完的都摆。到期和用完的，点了以后主进程
+ * 先看到期时间和额度是不是已经改过，没改就说先改什么。只有星芒账号有；历史账号的后台这里接不上，不摆。
+ */
+export function keyCanEnable(key: Pick<AccountKey, 'status'>, siteId: 'solov' | 'solov-api'): boolean {
+  return siteId !== 'solov-api' && (key.status === 2 || key.status === 3 || key.status === 4)
+}
+
+/**
  * 「配置到工具」下拉里这个工具算不算装了：每一份检测结果没检测成是 null（不拦），装了是 true。
  * Codex CLI 和 Codex 桌面端共用一份配置，只装了桌面端也能把密钥写进去，所以两份合起来看，有一份装了就算装了。
  */

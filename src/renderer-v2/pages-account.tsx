@@ -9,6 +9,7 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  Power,
   RefreshCw,
   Trash2,
   UserRound,
@@ -78,6 +79,7 @@ import {
   keyEditChanges,
   keyEditUpdate,
   keyExpiredTime,
+  keyCanEnable,
   keyMetaParts,
   keyToolChoice,
   limitKeyNameEdit,
@@ -1032,6 +1034,19 @@ function AccountKeys({
       },
       `${keyToolName(provider)} 已换上新密钥`,
     )
+  // 一页可能好几把都停着：记下点的是哪一把，转圈只转那一颗。
+  const enabling = useRef<number | null>(null)
+  function enableKey(key: AccountKey) {
+    enabling.current = key.id
+    void operation.execute(
+      'enable',
+      async () => {
+        await api.enableAccountKey(key.id)
+        await reloadAfterWrite()
+      },
+      `已启用「${key.name}」`,
+    )
+  }
   function copyKey(key: AccountKey) {
     void operation.execute('copy', () => api.copyAccountKey(key.id), `已复制「${key.name}」的密钥，1 分钟后从剪贴板清除`)
   }
@@ -1259,6 +1274,20 @@ function AccountKeys({
                 }
                 actions={
                   <>
+                    {keyCanEnable(key, siteId) && (
+                      <Button
+                        size="sm"
+                        icon={Power}
+                        // 跟「配置到工具」一样，读屏要念出是哪一把的。
+                        aria-label={`启用密钥 ${key.name}`}
+                        loading={operation.busy === 'enable' && enabling.current === key.id}
+                        disabled={Boolean(operation.busy)}
+                        testId={`account-key-enable-${key.id}`}
+                        onClick={() => enableKey(key)}
+                      >
+                        启用
+                      </Button>
+                    )}
                     <Menu
                       label={`把密钥 ${key.name} 配置到工具`}
                       heading="把这把密钥写进"

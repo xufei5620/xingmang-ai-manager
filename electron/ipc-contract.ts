@@ -1438,6 +1438,8 @@ export interface XingmangInvokeContract {
   /** 用量账单的价格表；没有按型号价目的账号（历史账号）回 null。 */
   getAccountPriceList: IpcInvokeDefinition<'account:get-price-list', [], AccountPriceList | null>
   revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
+  /** 密钥管理的「启用」：把停用、到期、额度用完的那把重新打开。只有星芒账号有，历史账号不显示这颗按钮。 */
+  enableAccountKey: IpcInvokeDefinition<'account:enable-key', [id: number], void>
   copyAccountKey: IpcInvokeDefinition<'account:copy-key', [id: number], void>
   /** 找回密码后复制新密码：走主进程写剪贴板，60 秒后自动清掉。 */
   copyResetPassword: IpcInvokeDefinition<'account:copy-reset-password', [password: string], void>
@@ -1851,6 +1853,7 @@ export const ipcInvokeChannels = {
   getAccountUsableGroups: 'account:list-groups',
   getAccountPriceList: 'account:get-price-list',
   revokeAccountKey: 'account:revoke-key',
+  enableAccountKey: 'account:enable-key',
   copyAccountKey: 'account:copy-key',
   copyResetPassword: 'account:copy-reset-password',
   revealAccountKey: 'account:reveal-key',

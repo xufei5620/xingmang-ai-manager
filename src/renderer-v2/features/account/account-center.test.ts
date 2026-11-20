@@ -13,6 +13,7 @@ import {
   keyEditUpdate,
   keyExpiredTime,
   type KeyEditForm,
+  keyCanEnable,
   keyMetaParts,
   keyToolChoice,
   keyToolInstalled,
@@ -307,6 +308,12 @@ describe('account center keys', () => {
     expect(keyToolChoice({ ...claude, installed: false }, false)).toEqual({ hint: '未安装', disabled: true })
     expect(keyToolChoice({ ...claude, official: true }, false)).toEqual({ hint: '官方账号', disabled: false })
     expect(keyToolChoice({ ...claude, installed: null }, false)).toEqual({ hint: '', disabled: false })
+  })
+
+  it('offers 启用 on a disabled, expired or used-up key of the current account only (Q2)', () => {
+    expect([1, 2, 3, 4, 0, 5].map((status) => keyCanEnable({ status }, 'solov'))).toEqual([false, true, true, true, false, false])
+    // 历史账号的后台没有接「启用」，那边一把都不摆。
+    expect([1, 2, 3, 4].map((status) => keyCanEnable({ status }, 'solov-api'))).toEqual([false, false, false, false])
   })
 
   it('counts a tool as installed when either Codex client is, and does not block on a failed detection', () => {

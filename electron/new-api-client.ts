@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { sanitizeUpstreamDetail } from './command-runner'
-import { managedKeyQuotaExhaustedMessage, managedKeyStoppedMessage } from './account-key-quota'
+import { accountKeyEnableExpiredMessage, accountKeyEnableUsedUpMessage, managedKeyQuotaExhaustedMessage, managedKeyStoppedMessage } from './account-key-quota'
 import { accountKeyNameMaxBytes, accountKeyNameTooLongMessage, buildAccountKeyName, utf8Length } from './catalog'
 import { resolveChineseServerMessage } from './new-api-messages'
 import { classifyNetworkFailure, isProxyAuthFailure, isServiceUnavailableResponse, networkFailureMessages, proxyAuthRequiredMessage, proxyAuthRequiredStatus, type NetworkFailureReason } from './network-failure'
@@ -1005,6 +1005,13 @@ export interface NewApiClientService extends RelayBackendClient {
   // the key's model limits and group. Verified against the exact
   // v1.0.0-rc.24 tag xm.solov.cc is pinned to.
   updateKey(input: NewApiAccountKeyUpdateInput): Promise<void>
+  // PUT /api/token/?status_only=true with {id, status: 1} -- the request the
+  // web's own 令牌管理 「启用」 sends. With status_only, UpdateToken
+  // (controller/token.go, checked against the v1.0.0-rc.44 and rc.51 tags)
+  // copies nothing but status onto the stored record, so unlike updateKey no
+  // other field has to be read back and resent. It reads the record first all
+  // the same, for a different reason -- see enableKey's own comment.
+  enableKey(id: number): Promise<void>
   // POST /api/verify (the original password for a one-time proof), then
   // PUT /api/user/self with {password, original_password} and that proof in
   // X-Security-Proof -- rc.40, which xm.solov.cc runs, refuses the PUT without
@@ -4163,6 +4170,50 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     })
   )
 
+  // The server refuses an enable only while the key is still marked expired
+  // (status 3) or used up (status 4) AND is still past its expiry / out of
+  // quota. A key someone disabled (status 2) after its expiry or quota had
+  // already run out is switched back on without complaint, and the relay
+  // flips it straight back the first time it is used (model/token.go
+  // ValidateUserToken) -- reporting 「已启用」 for that would send the customer
+  // off with a key that still does not work. So both conditions are checked
+  // here first, on the same Unix-seconds boundary hasStoppedCliKey uses, and
+  // the customer is told what to change before trying again. A key that is
+  // already enabled is left as it is.
+  const enableKey = (id: number): Promise<void> => (
+    withSession(async (current) => {
+      if (!Number.isInteger(id) || id <= 0) throw new Error('密钥 ID 格式错误')
+      const currentRaw = await performRequest(
+        ctx,
+        tokenIdPath(id),
+        { method: 'GET', headers: authHeaders(current) },
+        '密钥读取',
+      )
+      const existing = unwrapEnvelope(currentRaw, '密钥读取', [current.accessToken])
+      if (
+        !isRecord(existing)
+        || typeof existing.status !== 'number'
+        || typeof existing.expired_time !== 'number'
+        || typeof existing.remain_quota !== 'number'
+        || typeof existing.unlimited_quota !== 'boolean'
+      ) {
+        throw new Error('没读到这把密钥现在的状态，先没启用。请稍后再试。')
+      }
+      if (existing.status === 1) return
+      if (existing.expired_time !== -1 && existing.expired_time <= Math.floor(Date.now() / 1_000)) {
+        throw new Error(accountKeyEnableExpiredMessage)
+      }
+      if (!existing.unlimited_quota && existing.remain_quota <= 0) throw new Error(accountKeyEnableUsedUpMessage)
+      const raw = await performRequest(
+        ctx,
+        `${tokenCollectionPath}?status_only=true`,
+        { method: 'PUT', body: { id, status: 1 }, headers: authHeaders(current) },
+        '密钥启用',
+      )
+      unwrapEnvelope(raw, '密钥启用', [current.accessToken])
+    })
+  )
+
   // Runs alone on this login (createSessionRequestGate): nothing else may
   // reach the server between the change and the server moving this login to
   // the new auth version.
@@ -4537,6 +4588,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     revokeKey,
     createKey,
     updateKey,
+    enableKey,
     changePassword,
     listLoginSessions,
     revokeLoginSession,

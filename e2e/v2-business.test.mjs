@@ -1401,6 +1401,44 @@ test('key search finds a key that lives on a later page and starts from the firs
   } finally { await page.close() }
 })
 
+test('a stopped key offers 启用 on its own row and turns back on when it is pressed (Q2)', async () => {
+  const page = await fixture('page=account&stoppedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const disabled = page.getByTestId('account-key-row-21')
+    await disabled.getByText('已停用', { exact: true }).waitFor()
+    // 正常那把不摆「启用」。
+    assert.equal(await page.getByTestId('account-key-enable-1').count(), 0)
+    const enable = page.getByRole('button', { name: '启用密钥 disabled-key', exact: true })
+    assert.equal(await enable.innerText(), '启用')
+    await enable.click()
+    await waitForToast(page, '已启用「disabled-key」')
+    await page.getByTestId('account-key-enable-21').waitFor({ state: 'detached' })
+    assert.equal(await disabled.getByText('已停用', { exact: true }).count(), 0)
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'enableAccountKey').map((call) => call.args), [21])
+  } finally { await page.close() }
+})
+
+test('enabling a key past its expiry says to change the expiry first and keeps the button', async () => {
+  const page = await fixture('page=account&stoppedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByRole('button', { name: '启用密钥 expired-key', exact: true }).click()
+    await page.getByText('这把密钥已经过了到期时间，先点这一行右边的「⋯」，选「编辑」把到期时间往后改，再点「启用」。', { exact: true }).waitFor()
+    await page.getByTestId('account-key-row-22').getByText('已过期', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('account-key-enable-22').isEnabled(), true)
+  } finally { await page.close() }
+})
+
+test('a 历史账号 key list never offers 启用, since that backend cannot turn keys back on here', async () => {
+  const page = await fixture('page=account&stoppedKeys=1&sub2apiReliability=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByTestId('account-key-row-21').getByText('已停用', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('button', { name: /^启用密钥/ }).count(), 0)
+  } finally { await page.close() }
+})
+
 test('revoking a key no tool is using only says it cannot be undone and never rewrites a tool', async () => {
   const page = await fixture('page=account')
   try {
