@@ -73,6 +73,8 @@ const valueImportable = [
   'electron/npm-failure-reasons',
   // 粘贴的密钥去掉夹着的空格和零宽字符，页面查格式与主进程检测、保存共用一份（J7）；文件本身什么都不 import。
   'electron/pasted-api-key',
+  // 改密码发出去却没等到准话时那句话，主进程报错、改密码框照它认出「可能已经改好了」（N6）；文件本身什么都不 import。
+  'electron/password-change-unconfirmed',
   // 错误框「给客服看的原话」和「复制给客服」要和日志、反馈报告用同一张 Key 打码表（第二十批 2、3）。
   'electron/redaction-patterns',
   'electron/relay-quota-failure',

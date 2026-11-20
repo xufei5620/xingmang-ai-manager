@@ -2,6 +2,8 @@ import type { AccountKey, AccountKeyUpdateInput, AccountLoginSession, AccountSub
 import { accountKeyExpiredTime, accountKeyQuota, type AccountKeyQuotaSite } from '../../../../electron/account-key-quota'
 import { subscriptionExpiringDays, subscriptionLowUsd } from '../../../../electron/subscription-summary'
 import { accountKeyNameMaxBytes, truncateUtf8, utf8Length } from '../../../../electron/catalog'
+import { passwordChangeUnconfirmedMessage } from '../../../../electron/password-change-unconfirmed'
+import { stripIpcErrorPrefix } from '../../ipc-error-prefix'
 
 /**
  * 个人中心 v4（账号概览、账号安全、密钥管理、邀请返利）上那些由数据拼出来的话。都是纯函数，
@@ -213,6 +215,18 @@ export function validatePasswordChange(input: { originalPassword: string; passwo
   if (input.password.length < rules.minimum) throw new Error(`新密码至少 ${rules.minimum} 位`)
   if (input.password.length > rules.maximum) throw new Error(`新密码不能超过 ${rules.maximum} 位`)
   if (input.password !== input.confirmPassword) throw new Error('两次密码不一致')
+}
+
+/**
+ * 改密码那一下发出去了却没等到准话（N6，主进程那句是 passwordChangeUnconfirmedMessage）：新密码可能已经改好了。
+ * 再改一次的话，原密码那格填旧的会被说成「原密码错误」，所以先叫人别改，下次登录先试新的。
+ */
+export const passwordChangeUnconfirmedNotice = '没等到账号服务的回话，新密码可能已经改好了。先别再改一次：下次登录时先试新密码，登不上再用原来的密码。'
+
+/** 修改密码弹窗失败时交给错误框的东西：没等到准话的换成上面那句，别的原样交出去。 */
+export function passwordChangeFailure(error: unknown): unknown {
+  const message = error instanceof Error ? stripIpcErrorPrefix(error.message).trim() : ''
+  return message === passwordChangeUnconfirmedMessage ? new Error(passwordChangeUnconfirmedNotice) : error
 }
 
 export type KeyExpiryChoice = 'keep' | 'never' | '30' | '90' | 'custom'
