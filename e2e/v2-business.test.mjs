@@ -4646,6 +4646,21 @@ test('importing a moved computer carries the usage-stats switch and asks before 
   }
 })
 
+// D24：导入「搬到新电脑」的文件，主题当下变了色，重开又变回原来的：只写了 settings.json，开机看的系统界面设置里那份主题偏好没动。
+test('importing a moved computer keeps its theme after a restart by saving the system theme preference too', async () => {
+  const page = await fixture('page=settings&system=1&transfer=theme-dark')
+  try {
+    await page.getByRole('tab', { name: '备份迁移', exact: true }).click()
+    await page.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '导入了你的设置。')
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.filter((call) => call.name === 'settings').map((call) => call.args), [{ version: 2, theme: 'dark' }])
+    assert.deepEqual(recorded.filter((call) => call.name === 'platform-theme').map((call) => call.args), ['dark'])
+  } finally {
+    await page.close()
+  }
+})
+
 test('a system notification settings page that will not open keeps the test notification line and says where to look', async () => {
   const page = await fixture('page=settings&system=1&fail=notification-settings')
   try {

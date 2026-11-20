@@ -169,6 +169,14 @@ export function updatesOutsideApp(
   return isExternallyManagedInstall(status) && !canSwitchToManagedInstall(id, status)
 }
 
+/**
+ * Mac 上找到的 Codex / Grok 星芒认不出来路，也不替它跑（主进程的 unrecognizedInstall，Mac 验收 R1）。
+ * 首页对它不给「打开」，给「用星芒装一份」；装好以后星芒先找到自己那份。
+ */
+export function isUnrecognizedInstall(status: Pick<ToolStatus, 'installed' | 'unrecognizedInstall'> | null | undefined): boolean {
+  return status?.installed === true && status.unrecognizedInstall === true
+}
+
 /** 外部来源安装时那句被动提示；npm 装的或来源未知的返回 null。 */
 export function externalInstallHint(installSource: ToolStatus['installSource']): string | null {
   if (installSource === 'native') return '该版本由官方安装器管理，请用它自己的方式更新'

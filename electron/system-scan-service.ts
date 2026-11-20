@@ -26,12 +26,13 @@ import { resolveCliUserHomeDirectory } from './cli-user-home'
 import { buildCliVersionAdvice, type CliVersionAdvice } from './cli-verified-versions'
 import { isCodexDesktopCliInstallation } from './codex-desktop'
 import { desktopUpdateFields } from './codex-desktop-service'
-import { cleanCommandOutput, commandEnvironment, trustedCommandEnvironment } from './command-runner'
+import { cleanCommandOutput, commandEnvironment, runCommand, trustedCommandEnvironment } from './command-runner'
 import { readCodexAuthTokens } from './config-files'
 import { fetchGrokStableVersion } from './grok-update'
 import { resolveLinuxGrokInstalledVersion } from './linux-grok'
 import { isCommandLineToolsShimBacked, isMacOsCommandLineToolsShim } from './macos-command-line-tools'
-import { ensureDarwinGrokAgentLink, resolveDarwinGrokCanonicalSelection } from './macos-grok'
+import { DarwinCliProvenanceError } from './macos-code-signing'
+import { ensureDarwinGrokAgentLink, readDarwinGrokSelectionVersion, resolveDarwinGrokCanonicalSelection } from './macos-grok'
 import { managedNativeProviderRoot, managedNpmPrefix } from './managed-cli-paths'
 import { classifyNetworkFailure, toolCertificateMessages } from './network-failure'
 import { createNetworkLocationCache, reloadNetworkProxyConfiguration } from './network-location-cache'
@@ -62,9 +63,19 @@ import type {
   SystemSnapshot,
   ToolStatus,
 } from './system-service'
-import { buildToolStatusFromSettled, scanReuseMs, type ServiceContext } from './system-service-context'
+import {
+  buildDarwinTrustedVerificationRunner,
+  buildToolStatusFromSettled,
+  scanReuseMs,
+  type ServiceContext,
+} from './system-service-context'
 import { createSystemSnapshotCache } from './system-snapshot-cache'
-import { classifyCliInstallDisplaySource, type CliInstallation, cliUninstallCapability } from './tool-installation'
+import {
+  classifyCliInstallDisplaySource,
+  type CliInstallation,
+  cliUninstallCapability,
+  UnrecognizedDarwinCliError,
+} from './tool-installation'
 import { isExactCliVersion, isNewerVersion, nodeVersionStatus } from './versions'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
@@ -154,6 +165,42 @@ interface GrokLocalVersionOptions {
   platform?: NodeJS.Platform
   homeDirectory?: string
   managedDirectory?: string | null
+  /** Mac 上核 xAI 签名、问不带版本号那份的版本用；缺省用主进程的受信环境跑。 */
+  runCommand?: DarwinGrokVerificationRunner
+}
+
+type DarwinGrokVerificationRunner = (
+  spec: { executable: string; argv: readonly string[] },
+) => Promise<{ stdout: string; stderr: string }>
+
+export interface DarwinGrokVersionProbe {
+  version: string | null
+  /** 找到的这份 Grok 不是官方那几种布局，或者签名、版本核不过：星芒不替它跑（Mac 验收 R1）。 */
+  unrecognized: boolean
+}
+
+/**
+ * Mac 上 Grok 的版本只认 ~/.grok/bin/grok 那条链接选中的、xAI 签过名的程序。读不出来分两种：
+ * 认不出它（不是这几种布局、签名或版本不对）和一时没核成（抄盘、起进程失败），只有前一种让首页
+ * 改给「用星芒装一份」。
+ */
+export async function probeDarwinGrokVersion(
+  homeDirectory: string,
+  executablePath: string,
+  runVerification: DarwinGrokVerificationRunner,
+): Promise<DarwinGrokVersionProbe> {
+  let selection: ReturnType<typeof resolveDarwinGrokCanonicalSelection>
+  try {
+    selection = resolveDarwinGrokCanonicalSelection(homeDirectory, executablePath)
+  } catch {
+    return { version: null, unrecognized: true }
+  }
+  try {
+    const version = await readDarwinGrokSelectionVersion({ homeDirectory, selection, runCommand: runVerification })
+    return { version, unrecognized: false }
+  } catch (error) {
+    return { version: null, unrecognized: error instanceof DarwinCliProvenanceError }
+  }
 }
 
 export async function readGrokLocalVersionForExecutable(
@@ -162,14 +209,12 @@ export async function readGrokLocalVersionForExecutable(
 ): Promise<string | null> {
   const platform = options.platform ?? process.platform
   if (platform === 'darwin') {
-    try {
-      return resolveDarwinGrokCanonicalSelection(
-        options.homeDirectory ?? os.homedir(),
-        executablePath,
-      ).version
-    } catch {
-      return null
-    }
+    const probe = await probeDarwinGrokVersion(
+      options.homeDirectory ?? os.homedir(),
+      executablePath,
+      options.runCommand ?? buildDarwinTrustedVerificationRunner(runCommand),
+    )
+    return probe.version
   }
   if (platform === 'linux') {
     // npm 的 postinstall 不写 version.json，版本在 ~/.grok/bin/grok 指向的文件名里（Linux 版拆分 ③）。
@@ -953,10 +998,15 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
         installation: null,
       }
     }
+    // Mac 上认不出来路的 Codex / Grok（R1）：首页改给「用星芒装一份」，见 ToolStatus.unrecognizedInstall。
+    let unrecognized = false
     const safeNativeCommand = installation.source === 'native' && provider !== 'grok'
       ? await resolveVerifiedCliCommand(provider, cliEnvironment, windowsExecutionMode, {
           darwinStagingRetention: 'ephemeral',
-        }).catch(() => null)
+        }).catch((error: unknown) => {
+          unrecognized = platform === 'darwin' && error instanceof UnrecognizedDarwinCliError
+          return null
+        })
       : null
     try {
       let version = installation.source === 'npm'
@@ -971,8 +1021,19 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
                 cliEnvironment,
               )
             : null
-      if (provider === 'grok') {
+      if (provider === 'grok' && platform === 'darwin') {
+        const probe = await probeDarwinGrokVersion(
+          cliEnvironment.HOME?.trim() || os.homedir(),
+          installation.commandPath,
+          buildDarwinTrustedVerificationRunner(executeCommand),
+        )
+        version = probe.version
+        // npm 装的那份（客户自己的 npm 前缀）打开时不走这条核对，读不出版本也照样能打开。
+        unrecognized = installation.source === 'native' && probe.unrecognized
+      } else if (provider === 'grok') {
         version = await readGrokLocalVersionForExecutable(installation.commandPath)
+      }
+      if (provider === 'grok') {
         if (platform === 'darwin') {
           await ensureDarwinGrokAgentLinkQuietly(cliEnvironment.HOME?.trim() || os.homedir())
         }
@@ -985,12 +1046,16 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
         // Grok 的安装/更新走原生通道（非 npm），首页对它保留朴素的「已安装」与既有
         // 更新按钮，不做来源标注；其余三个 CLI 的安装通道是 npm，标注来源后原生/其他
         // 来源装的那份才好挡住 npm 重装。
+        // 认不出来路的那份不说成「官方安装器」：它就是从 ~/.local/bin 找到的，也可能是别人打的包。
         installSource: provider === 'grok'
           ? undefined
-          : classifyCliInstallDisplaySource(installation, {
-              env: cliEnvironment,
-              platform,
-            }),
+          : unrecognized
+            ? 'path'
+            : classifyCliInstallDisplaySource(installation, {
+                env: cliEnvironment,
+                platform,
+              }),
+        ...(unrecognized ? { unrecognizedInstall: true } : {}),
         path: installation.source === 'native'
           ? provider === 'grok'
             ? installation.commandPath

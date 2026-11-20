@@ -1039,6 +1039,29 @@ describe('moving history to another computer', () => {
     expect(merged.state.conversations).toHaveLength(2)
   })
 
+  // A09：旧电脑导出前在输入框里又打了几句、带了文件，消息没变。
+  it('brings in an unsent draft from the file when the messages match and this computer has none', () => {
+    const state = workspace(scope, 2)
+    state.conversations[0].messages = [message(0), message(1)]
+    const file = { name: '需求.md', size: 15, text: '第一版需求', truncated: false }
+    const drafted = { ...state.conversations[0], draft: '旧电脑上没发的那句', draftFiles: [file], updatedAt: state.conversations[0].updatedAt + 5000 }
+    const merged = mergeImportedConversations(state, [drafted])
+    expect(merged).toMatchObject({ added: 0, updated: 1, skipped: 0 })
+    const local = merged.state.conversations.find((conversation) => conversation.id === state.conversations[0].id)
+    expect(local).toMatchObject({ draft: '旧电脑上没发的那句', draftFiles: [file], updatedAt: state.conversations[0].updatedAt })
+    expect(local?.messages).toEqual(state.conversations[0].messages)
+    expect(merged.state.conversations).toHaveLength(2)
+    // The same file imported again changes nothing and adds no copy.
+    expect(mergeImportedConversations(merged.state, [drafted])).toMatchObject({ added: 0, updated: 0, skipped: 0 })
+    // A draft this computer already has wins; the file's draft does not overwrite it.
+    const typedHere = { ...state, conversations: state.conversations.map((conversation, index) => index === 0 ? { ...conversation, draft: '这台电脑上打的' } : conversation) }
+    const kept = mergeImportedConversations(typedHere, [drafted])
+    expect(kept).toMatchObject({ added: 0, updated: 0, skipped: 0 })
+    expect(kept.state.conversations.find((conversation) => conversation.id === state.conversations[0].id)?.draft).toBe('这台电脑上打的')
+    // A blank draft in the file brings nothing.
+    expect(mergeImportedConversations(state, [{ ...state.conversations[0], draft: '   ' }])).toMatchObject({ added: 0, updated: 0, skipped: 0 })
+  })
+
   it('saves a diverged file copy beside this computer copy, once, and keeps updating that copy', () => {
     const state = workspace(scope, 1)
     state.conversations[0] = { ...state.conversations[0], title: '写周报', messages: [message(0), message(1, { content: '新电脑上聊的' })] }
