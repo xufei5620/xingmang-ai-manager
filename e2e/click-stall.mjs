@@ -4,19 +4,22 @@ import path from 'node:path'
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 
-// The Windows renderer-v2-e2e shard has twice failed a click whose call log
-// ends at "performing click action": two MCP tests in a row on 2026-11-11
-// (#1756, quality run 42992280184) and the first avatar test on 2026-11-20
-// (#2003, run 44742552348). Each time the element was found, visible, enabled
-// and stable, the mouse events went out, and nothing came back for the whole
-// action timeout; the next test's fresh page stalled or ran slow as well, and
-// about ten seconds after the first click everything was fine again. What those logs cannot say is which half stopped:
-// either the mouse events never reached the page, or the click landed and the
-// page stopped answering after it. The two point at different machinery (the
-// browser's input pipeline or frame production, against whatever the click set
-// off in the page), and only something taken while the stall is still going on
-// can tell them apart. So a click that stalls this way takes that evidence
-// itself and appends it to its own error, where the red run already shows it.
+// The Windows renderer-v2-e2e shard has failed a click whose call log ends at
+// "performing click action" four times: two MCP tests in a row on 2026-11-11
+// (#1756, quality run 42992280184) and the first avatar test three times on
+// 2026-11-20 within about an hour, on different runners (#1949, run
+// 44741601202; #2003, run 44742552348; #2011, run 44753304773). Each time the
+// element was found, visible, enabled and stable, the mouse events went out,
+// and nothing came back for the whole action timeout; the next test's fresh
+// page stalled or ran slow as well, and about ten seconds after the first
+// click everything was fine again. What those logs cannot say is which half
+// stopped: either the mouse events never reached the page, or the click landed
+// and the page stopped answering after it. The two point at different
+// machinery (the browser's input pipeline or frame production, against
+// whatever the click set off in the page), and only something taken while the
+// stall is still going on can tell them apart. So a click that stalls this way
+// takes that evidence itself and appends it to its own error, where the red
+// run already shows it.
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
