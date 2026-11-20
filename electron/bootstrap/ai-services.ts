@@ -17,7 +17,7 @@ import { AI_CHAT_STREAM_LIMITS, createAiChatService } from '../ai-chat-service'
 import { createAiImageService } from '../ai-image-service'
 import { createAiMediaAssetService, type AiMediaAssetService } from '../ai-media-asset-service'
 import { chooseAiOutputRoot, migrateLegacyAiOutput, resolveLegacyAiOutputRoot } from '../ai-output-location'
-import { AiUnsavedImageStash, unsavedImageLogEntry } from '../ai-unsaved-image-stash'
+import { AiUnsavedImageStash, unsavedImageLogEntry, type AiUnsavedImagePlace } from '../ai-unsaved-image-stash'
 import { AiVideoAssetStore } from '../ai-video-asset-store'
 import { createAiVideoService, type AiVideoAssetWriter } from '../ai-video-service'
 import { AiVideoTaskStore } from '../ai-video-task-store'
@@ -241,7 +241,8 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     }
     // 付过钱的图存不进去时先暂存、腾出空间后补存进作品库（深查 S-1）。对话、画布项目两边的图都补存进
     // 这个账号的作品库：画布项目文件夹写不进多半是文件夹本身出了状况（被移走、U 盘拔了），补回原处还是失败。
-    const keepUnsavedImage = async (userId: number, bytes: Buffer): Promise<boolean> => (await unsavedImages.keep(userId, bytes)) !== null
+    // 收在哪要原样交回去：只留在内存里的，生图那边得提醒先别退出（总单 #61）。
+    const keepUnsavedImage = (userId: number, bytes: Buffer): Promise<AiUnsavedImagePlace | null> => unsavedImages.keep(userId, bytes)
     const assetStore = new AiAssetStore({
       outputRoot: aiOutputRoot,
       keepUnsaved: keepUnsavedImage,
