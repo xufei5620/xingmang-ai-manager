@@ -15,7 +15,7 @@ import { classifyStorageFailure } from './startup-failure'
 const FILE_LABEL = '暂存的 AI 图片'
 const STASHED_FILE_PATTERN = /^[a-f0-9]{64}\.(png|jpg|webp)$/
 const USER_DIRECTORY_PATTERN = /^user-([1-9]\d{0,15})$/
-// 一张图最大 64 MB（AiAssetStore 的上限）。暂存只是兜底，盘上、内存里各自有个总量上限，
+// 一张图最大 64 MB（AiAssetStore 的上限）。暂存只是兜底，盘上、内存里各自有个总量上限，所有账号合起来算，
 // 超了就不再收：宁可这一张照旧丢掉，也不能把本来就快满的盘或者内存再撑爆。
 const DEFAULT_MAXIMUM_DISK_BYTES = 512 * 1024 * 1024
 const DEFAULT_MAXIMUM_MEMORY_BYTES = 128 * 1024 * 1024
@@ -218,9 +218,22 @@ export class AiUnsavedImageStash {
     ensureSafeDataDirectory(directory, FILE_LABEL)
     const files = await listStashedFiles(directory)
     if (files.some((file) => file.name === fileName)) return
-    const used = files.reduce((total, file) => total + file.size, 0)
-    if (used + bytes.length > this.maximumDiskBytes) throw new Error('暂存的 AI 图片已经太多了')
+    if (await this.diskBytesInUse() + bytes.length > this.maximumDiskBytes) throw new Error('暂存的 AI 图片已经太多了')
     await writeAtomicSafeBinaryFile(path.join(directory, fileName), bytes, FILE_LABEL)
+  }
+
+  /**
+   * 盘上所有账号暂存着的字节数合计。上限管的是整个暂存文件夹，不是每个账号各一份：几个账号共用一台电脑、
+   * 各自存满也不能叠成几倍（11-18 复核 A06，总单 #63），跟内存那份上限一样。哪个账号的文件夹读不了就说不清
+   * 用了多少，这一张不往盘上放（照样先留在内存里）：宁可少暂存，也不把快满的盘再撑爆。
+   */
+  private async diskBytesInUse(): Promise<number> {
+    let total = 0
+    for (const entry of await fs.promises.readdir(this.root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !USER_DIRECTORY_PATTERN.test(entry.name)) continue
+      for (const file of await listStashedFiles(path.join(this.root, entry.name))) total += file.size
+    }
+    return total
   }
 
   private keepInMemory(userId: number, key: string, bytes: Buffer): boolean {
