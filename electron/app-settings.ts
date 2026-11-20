@@ -631,6 +631,28 @@ async function performAtomicSettingsWrite(
   }
 }
 
+/**
+ * 磁盘上已经是这份内容就不写，写了返回 true。开机界面会把当前深浅色发一遍（window:set-theme），
+ * 关窗会存一遍窗口位置，多数时候什么都没变，以前也照样走一遍临时文件、fsync、拷 .bak、改名
+ * （0.2.24 性能深查 R4）。C 盘一满、或杀毒软件锁住这个文件，这次白写还会失败，跟开机那次整理
+ * （normalizeAppSettings）想避开的是同一件事，所以两处用同一个口径。
+ */
+async function writeSettingsIfChanged(
+  filePath: string,
+  settings: AppSettings,
+  hooks: AppSettingsWriteHooks,
+): Promise<boolean> {
+  let current: string | null = null
+  try {
+    current = readSafeUtf8FileSync(filePath, '应用设置文件', MAX_SETTINGS_BYTES)
+  } catch {
+    // Unreadable primary: fall through and rewrite it from the effective record.
+  }
+  if (current === settingsContent(settings)) return false
+  await performAtomicSettingsWrite(filePath, settings, hooks)
+  return true
+}
+
 function enqueueSettingsOperation<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
   const queueKey = path.resolve(filePath).toLowerCase()
   const previous = writeQueues.get(queueKey) ?? Promise.resolve()
@@ -746,7 +768,7 @@ export function updateAppSettings(
   // window.
   return enqueueSettingsOperation(filePath, async () => {
     const merged = mergeAppSettings(readAppSettings(filePath, homeDirectory), update)
-    await performAtomicSettingsWrite(filePath, merged, hooks)
+    await writeSettingsIfChanged(filePath, merged, hooks)
     return merged
   })
 }
@@ -763,15 +785,7 @@ export function normalizeAppSettings(
 ): Promise<{ settings: AppSettings; written: boolean }> {
   return enqueueSettingsOperation(filePath, async () => {
     const settings = mergeAppSettings(readAppSettings(filePath, homeDirectory), { version: 2 })
-    let current: string | null = null
-    try {
-      current = readSafeUtf8FileSync(filePath, '应用设置文件', MAX_SETTINGS_BYTES)
-    } catch {
-      // Unreadable primary: fall through and rewrite it from the effective record.
-    }
-    if (current === settingsContent(settings)) return { settings, written: false }
-    await performAtomicSettingsWrite(filePath, settings, {})
-    return { settings, written: true }
+    return { settings, written: await writeSettingsIfChanged(filePath, settings, {}) }
   })
 }
 
