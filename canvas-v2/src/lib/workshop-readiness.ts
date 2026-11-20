@@ -1,4 +1,4 @@
-import { parseNodeRouterStrategy } from '../runtime/router-strategy'
+import { routerStrategyRunField } from '../runtime/router-strategy'
 import { parseNodeStoryboardTask } from '../storyboard/storyboard-task'
 import { parseNodeExteriorTask } from '../exterior/exterior-task'
 import { parseNodeInteriorTask } from '../interior/interior-task'
@@ -69,7 +69,7 @@ function runNode(node: WorkflowNode): CanvasRunGraph['nodes'][number] {
     ...(node.data.videoCandidateCount !== undefined ? { videoCandidateCount: node.data.videoCandidateCount } : {}),
     ...(node.data.textWebSearch !== undefined ? { textWebSearch: node.data.textWebSearch } : {}),
     ...(imageTransform ? { imageTransform } : {}),
-    ...(Object.hasOwn(settings, 'routerStrategy') ? { routerStrategy: parseNodeRouterStrategy(node.kind, settings.routerStrategy) } : {}),
+    ...routerStrategyRunField(node.kind, settings),
     ...(Object.hasOwn(settings, 'interiorTask') ? { interiorTask: parseNodeInteriorTask(node.kind, settings.interiorTask) } : {}),
     ...(Object.hasOwn(settings, 'exteriorTask') ? { exteriorTask: parseNodeExteriorTask(node.kind, settings.exteriorTask) } : {}),
     ...(Object.hasOwn(settings, 'storyboardTask') ? { storyboardTask: parseNodeStoryboardTask(node.kind, settings.storyboardTask) } : {}),

@@ -917,11 +917,12 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
         platform,
         npmGlobalRoot,
         managedNpmPrefix: managed,
+        // 同 installCli：Windows 上只有管理员身份才装进 ProgramData，普通身份装进个人文件夹下的 .grok\bin。
         managedNativeRoot: provider !== 'grok'
           ? null
-          : platform === 'win32'
+          : platform === 'win32' && windowsExecutionMode !== 'same-user'
             ? managedNativeProviderRoot('grok')
-            : path.join(commandEnvironment().HOME?.trim() || os.homedir(), '.grok', 'bin'),
+            : path.join(resolveCliUserHomeDirectory(commandEnvironment(), platform), '.grok', 'bin'),
       })
     } catch {
       return null

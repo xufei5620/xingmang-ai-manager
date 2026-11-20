@@ -32,6 +32,7 @@ import {
   setVideoStudioShotSeconds,
   setVideoStudioShotTrim,
   canStartVideoStudioProject,
+  changeVideoStudioSettings,
   settleVideoStudioModels,
   startVideoStudioProject,
   startVideoStudioShotDrawing,
@@ -309,6 +310,22 @@ describe('video studio project', () => {
     expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, fadeOut: true } })).not.toBe(key)
     expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, captionSize: 'large' } })).not.toBe(key)
     expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, captionPosition: 'top' } })).not.toBe(key)
+  })
+
+  it('lets go of the film once a setting that ends up in it changes, and keeps it for settings that do not', () => {
+    const project = planned()
+    const film: VideoStudioProject = { ...project, shots: project.shots.map((shot, index) => ({ ...shot, clip: clip('abc'[index]), status: 'done' })), exported: clip('f') }
+    for (const patch of [{ captionSize: 'large' }, { captionPosition: 'top' }, { transition: 'fade' }, { fadeOut: true }, { aspect: '16:9' }, { fit: 'contain' }, { resolution: 1080 }, { captions: false }] as const) {
+      const changed = changeVideoStudioSettings(film, patch)
+      expect(changed.settings).toMatchObject(patch)
+      expect(changed.exported, JSON.stringify(patch)).toBeUndefined()
+    }
+    // Models, the idea, how many shots and how long each are only for what gets made next; the film made from the clips in hand still matches.
+    for (const patch of [{ videoModel: 'minimax-h3-base', videoGroup: 'vip' }, { textModel: 'gpt-5.6-sol' }, { imageModel: 'gpt-image-2', imageGroup: 'default' }, { idea: '换个想法' }, { shotCount: 4 }, { secondsPerShot: 8 }]) {
+      expect(changeVideoStudioSettings(film, patch).exported, JSON.stringify(patch)).toEqual(clip('f'))
+    }
+    // Picking the value already chosen keeps the film too.
+    expect(changeVideoStudioSettings(film, { captionSize: film.settings.captionSize, transition: film.settings.transition }).exported).toEqual(clip('f'))
   })
 
   it('cuts straight between shots without a fade at the end unless asked, also for projects saved before the choice existed', () => {
