@@ -302,6 +302,10 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:generate-image': Error: ${kept}`))).toBe(kept)
     // Shown text goes through here again when the reply is marked failed.
     expect(chatErrorMessage(kept)).toBe(kept)
+    // Held only in memory: the do-not-quit half must reach the page too (A02).
+    const inMemory = '图片已经生成、也已经扣费了，但电脑上暂时存不下，先替你收在星芒里，一退出就没了。先别重新生成，也先别退出星芒，清出一些空间后会自动存进作品库。'
+    expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:generate-image': Error: ${inMemory}`))).toBe(inMemory)
+    expect(chatErrorMessage(inMemory)).toBe(inMemory)
   })
   it('shows the network reason the main process gave when an image request never left', () => {
     for (const reason of ['offline', 'dns', 'proxy', 'refused', 'intercepted'] as const) {
