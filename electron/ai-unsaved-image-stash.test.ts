@@ -266,6 +266,69 @@ describe('AiUnsavedImageStash', () => {
     expect(quiet).toEqual([])
   })
 
+  // 11-18 复核 A05（总单 #62）：暂存文件夹一时读不了，不能当它空了就不再自己补存。
+  it.each([
+    ['the whole stash folder', (root: string, target: string) => target === root],
+    ['the account folder inside it', (root: string, target: string) => target === path.join(root, 'user-42')],
+  ])('keeps trying by itself when %s cannot be read for a while', async (_label, blocks) => {
+    const parent = temporaryDirectory()
+    const root = path.join(parent, 'stash')
+    const outputRoot = path.join(parent, 'output')
+    const scheduled: Array<{ run: () => Promise<void>; delayMs: number }> = []
+    const stash = new AiUnsavedImageStash({
+      root,
+      target: new AiAssetStore({ outputRoot, now: () => new Date(2026, 10, 15, 12, 0, 0) }),
+      retryDelaysMs: [1_000, 5_000],
+      scheduleRetry: (run, delayMs) => { scheduled.push({ run, delayMs }) },
+    })
+    await expect(stash.keep(42, png())).resolves.toBe('disk')
+    expect(scheduled.map((entry) => entry.delayMs)).toEqual([1_000])
+
+    const readdir = fs.promises.readdir
+    vi.spyOn(fs.promises, 'readdir').mockImplementation((async (...args: Parameters<typeof readdir>) => {
+      if (blocks(root, path.resolve(String(args[0])))) {
+        throw Object.assign(new Error('EPERM: operation not permitted, scandir'), { code: 'EPERM' })
+      }
+      return readdir(...args)
+    }) as typeof readdir)
+    await scheduled.shift()?.run()
+    expect(libraryFiles(outputRoot, 42)).toEqual([])
+    // It could not tell whether anything is waiting, so it does not treat the folder as empty.
+    expect(scheduled.map((entry) => entry.delayMs)).toEqual([5_000])
+
+    vi.restoreAllMocks()
+    await scheduled.shift()?.run()
+    expect(libraryFiles(outputRoot, 42)).toHaveLength(1)
+    expect(scheduled).toEqual([])
+  })
+
+  it('keeps trying after a sign-in that could not read the stash folder', async () => {
+    const parent = temporaryDirectory()
+    const root = path.join(parent, 'stash')
+    const library = new AiAssetStore({ outputRoot: path.join(parent, 'output') })
+    // Left over from an earlier run of the program.
+    await new AiUnsavedImageStash({ root, target: library, scheduleRetry: () => undefined }).keep(42, png())
+    const scheduled: number[] = []
+    const stash = new AiUnsavedImageStash({ root, target: library, scheduleRetry: (_run, delayMs) => { scheduled.push(delayMs) } })
+
+    const readdir = fs.promises.readdir
+    vi.spyOn(fs.promises, 'readdir').mockImplementation((async (...args: Parameters<typeof readdir>) => {
+      if (path.resolve(String(args[0])).startsWith(path.resolve(root))) {
+        throw Object.assign(new Error('EBUSY: resource busy or locked, scandir'), { code: 'EBUSY' })
+      }
+      return readdir(...args)
+    }) as typeof readdir)
+    await expect(stash.flush(42)).resolves.toBe(0)
+    expect(scheduled).toEqual([60_000])
+
+    // A folder that was never made has nothing waiting in it: no retry for that.
+    vi.restoreAllMocks()
+    const quiet: number[] = []
+    const fresh = new AiUnsavedImageStash({ root: path.join(parent, 'never-made'), target: library, scheduleRetry: (_run, delayMs) => { quiet.push(delayMs) } })
+    await expect(fresh.flush(42)).resolves.toBe(0)
+    expect(quiet).toEqual([])
+  })
+
   it('never throws while the store is already failing', async () => {
     const { stash } = setup()
 
