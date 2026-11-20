@@ -9,6 +9,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { cliCatalog, type ProviderId } from './catalog'
 import { isChineseSentence } from './chinese-sentence'
+import { resolveCliUserHomeDirectory } from './cli-user-home'
 import {
   buildClaudeNativeLayout,
   buildClaudeRetainedFiles,
@@ -308,8 +309,8 @@ export function createCliUninstallService(context: ServiceContext, dependencies:
 
   /** 返回命令入口已经删掉、但没能删掉的程序文件（只有 Linux 会有）。 */
   async function uninstallNativeGrok(installation: CliInstallation): Promise<string[]> {
-    const cliEnvironment = commandEnvironment()
-    const homeDirectory = cliEnvironment.HOME?.trim() || os.homedir()
+    // 和装的时候、判断能不能卸的时候按同一个主目录找（D17）：Windows 上是个人文件夹，不看 HOME。
+    const homeDirectory = resolveCliUserHomeDirectory(commandEnvironment(), platform)
     const userDirectory = path.resolve(homeDirectory, '.grok', 'bin')
     if (platform === 'darwin') {
       await uninstallVerifiedDarwinGrokInstallation({

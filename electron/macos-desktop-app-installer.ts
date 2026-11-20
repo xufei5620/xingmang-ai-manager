@@ -181,6 +181,11 @@ export interface MacosDesktopAppReplacement {
   installedVersion: string
   /** 新版已经放在旧版旁边、动手换之前调：调用方在这里确认它关着（要关就在这里关）。抛错就不换。 */
   beforeReplace(): Promise<void>
+  /**
+   * beforeReplace 之后、挪开旧版之前同步调，这时取消已经看过最后一次：调用方在这里封存取消。再往后接受的
+   * 取消拦不住换上新版，界面却会说「已取消」（11-18 F03）。缺省 = 不封存。
+   */
+  onReplaceStarting?(): void
 }
 
 export interface MacosDesktopAppInstallResult {
@@ -742,13 +747,18 @@ function errorText(error: unknown): string {
  * 更新时换上新版。新版先放到旧版旁边的隐藏名字下（同一块盘直接改名，跨盘先整个拷过来，同 placeBundle），
  * 调 beforeReplace 之后才动旧版：旧版改名挪开、新版改名换上，两步都只是改名，一眨眼的事。新版没换上就把
  * 旧版挪回去。macOS 13 起「App 管理」没允许星芒时，挪旧版那一步系统回 EPERM，旧版没动。
+ *
+ * 客户点的取消在关它之前、关完之后各看一次，接受了就不换，旧版原样留着；看完最后一次就交给
+ * onReplaceStarting 封存，这之后点的取消不再接受（11-18 F03：以前这一段不看取消，界面说「已取消」，
+ * 装着的却换成了新版）。
  */
 async function replaceBundle(
   source: MacosDesktopAppSource,
   bundle: string,
   destination: string,
   runProcess: InstallMacosDesktopAppOptions['runProcess'],
-  beforeReplace: () => Promise<void>,
+  replace: MacosDesktopAppReplacement,
+  signal: AbortSignal | undefined,
 ): Promise<void> {
   const directory = path.posix.dirname(destination)
   const incoming = path.posix.join(directory, `${copyNamePrefix(destination)}${randomBytes(6).toString('hex')}`)
@@ -759,7 +769,12 @@ async function replaceBundle(
       if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
       await runProcess({ executable: '/usr/bin/ditto', argv: [bundle, incoming], timeoutMs: copyTimeoutMs })
     }
-    await beforeReplace()
+    // 挪新版过来的时候点的取消：它还开着就别去关它。
+    signal?.throwIfAborted()
+    await replace.beforeReplace()
+    // 关它那一步可能不跟取消走（调用方的事），关完再看一次。和下面的封存之间没有 await，取消插不进来。
+    signal?.throwIfAborted()
+    replace.onReplaceStarting?.()
     const backup = path.posix.join(directory, `${backupNamePrefix(destination)}${randomBytes(6).toString('hex')}`)
     try {
       await fs.promises.rename(destination, backup)
@@ -1206,7 +1221,7 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
         return { version: replace.installedVersion, path: destination, unchanged: true }
       }
       report('installing', '正在放进「应用程序」')
-      await replaceBundle(source, unpacked.bundle, destination, options.runProcess, replace.beforeReplace)
+      await replaceBundle(source, unpacked.bundle, destination, options.runProcess, replace, options.signal)
       return { version: unpacked.version, path: destination }
     }
     report('installing', '正在放进「应用程序」')

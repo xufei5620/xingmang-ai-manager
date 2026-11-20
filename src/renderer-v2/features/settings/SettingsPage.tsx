@@ -1162,7 +1162,7 @@ export function SettingsPage({
       ),
       'crash-reporting': row(
         'crash-reporting',
-        '出错时把错误信息、版本和系统信息发到海外的错误收集服务；不含账号、密钥、文件路径和对话内容',
+        '出错或卡住时把错误信息、版本和系统信息发到海外的错误收集服务；不含账号、密钥、文件路径和对话内容',
         <Switch
           aria-label="自动发送错误报告"
           checked={settings.crashReporting !== false}
