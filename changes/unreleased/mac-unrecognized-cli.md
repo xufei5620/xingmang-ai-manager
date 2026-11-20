@@ -16,3 +16,6 @@
 - xAI 官方安装脚本现在（核对时 stable 是 1.0.89）把程序放成不带版本号的 `~/.grok/downloads/grok-macos-<arch>`，`grok` 和 `agent`
   两条链接都指向它。`macos-grok.ts` 认这种布局：版本不再从文件名读，改成核过 xAI 签名的私有副本跑一次 `--version`，
   按文件身份缓存（最多 8 条，文件一变就重核）；带版本号的老布局照旧不跑程序。这种布局的卸载不在这次范围内，仍按原来的拒绝走。
+- 测试机那份 Codex 其实是 OpenAI 同一版本里另发的 provisioned 包（`bin/codex` 是固定的 sh 启动脚本，本体在
+  `CodexCLI.app`），被别的软件解到了 `~/.local/share/openchatcut-codex/<版本>`。yoyo 11-20 定不放宽「只认官方安装文件夹」
+  这条位置限制，这种照旧按认不出处理、首页给「用星芒装一份」，别再当缺陷去认它。
