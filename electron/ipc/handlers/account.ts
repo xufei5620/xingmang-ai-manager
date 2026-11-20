@@ -8,6 +8,7 @@ import type { RelayBackendClient } from '../../relay-backend'
 import { normalizeRealmLoginIdentifier } from '../../realm-account-vault'
 import { realmForExplicitSite } from '../../realm-account'
 import { clearXingmangAiSkillSecrets } from '../../xingmang-ai-skill'
+import { passwordChangeUnconfirmedMessage } from '../../password-change-unconfirmed'
 import type { AccountSessionState } from '../../ipc-contract'
 import { isRecord } from '../../input-guards'
 import { requiredString } from '../parsers/common'
@@ -279,6 +280,11 @@ export function registerAccountHandlers(ctx: IpcHandlerContext): void {
     }, async (error: unknown) => {
       if (account && outcome === 'changed') await replaceRememberedPassword(siteId, account, parsed.newPassword)
       else if (account && outcome === 'unconfirmed') await replaceRememberedPassword(siteId, account, null)
+      // The underlying failure (a timeout, a gateway page) would send the user
+      // to check the network and try again, and that retry's current-password
+      // check fails if the first change landed. Say what is actually known;
+      // the original stays as the cause for the log's route and request id.
+      if (outcome === 'unconfirmed') throw new Error(passwordChangeUnconfirmedMessage, { cause: error })
       throw error
     })
   })

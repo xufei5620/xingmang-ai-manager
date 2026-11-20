@@ -19,8 +19,14 @@
   `refused` 或者根本没发出去：不动。认账号沿用 `rememberedLoginNamesAccount`，处理中换了账号不会清掉别的账号记住的登录。
   `relay-backend.ts` 的 `RelayBackendClient.changePassword` 跟着加这个可选参数，`realm-account-service.ts` 的代理原样转交，
   账号切走后结果被换成 STALE，处理器照样能知道密码已经改了。
+- 说法（yoyo 11-20 回「密码改」批的）：`unconfirmed` 时处理器把报错换成 `passwordChangeUnconfirmedMessage`「没等到账号服务的回话。」
+  （新文件 `electron/password-change-unconfirmed.ts`，进渲染层名单；原来的报错挂在 `cause` 上，日志照旧记得住线路、状态码和请求编号）。
+  「账号安全」改密码框认出它（`features/account/account-center.ts` 的 `passwordChangeFailure`），红字换成
+  「没等到账号服务的回话，新密码可能已经改好了。先别再改一次：下次登录时先试新密码，登不上再用原来的密码。」
+  以前这里说「连接账号服务超时，请检查网络后再试」，客户照做再改一次，原密码那格填旧的就被说成「原密码错误」。
+  找回密码第 3 步不认这句，仍按「结果不明」去拿新密码试登；只有试出新密码没设上那一支会显示「设新密码没有成功：没等到账号服务的回话。」。
 - 历史账号不在这次范围：它的客户端把「原密码错误」和连不上都报成同一个 `NETWORK`，分不出有没有改上，`sub2api-relay-backend.ts` 也不改，
   所以它不报 `onOutcome`，失败时跟以前一样不动记住的密码。
 - 用例：`new-api-client.test.ts` 按回话逐种钉住报告（成功、各种存之前的拒绝、断连、超时、502/504、存好后的 `AUTH_INTERNAL_ERROR`、门户页、
   401 后重来被拒、401 后重来成功）；`ipc.test.ts` 钉住处理器三种走向和不碰别的账号，其中「没等到准话就清掉」「已存好就记新密码」两条在旧代码上红；
-  `realm-account-service.test.ts` 钉住账号切走后回调照样送到。
+  `realm-account-service.test.ts` 钉住账号切走后回调照样送到；`account-center.test.ts`、`features/auth/state.test.ts` 钉住两处说法。

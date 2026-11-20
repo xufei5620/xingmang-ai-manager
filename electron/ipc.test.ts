@@ -22,7 +22,8 @@ import { DEFAULT_CODEX_MODEL } from './cli-model-defaults'
 import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { XINGMANG_AI_SKILL_KEY_NAME, XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
-import { noteRequestDiagnostics } from './request-diagnostics'
+import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
+import { passwordChangeUnconfirmedMessage } from './password-change-unconfirmed'
 import { PaymentCheckoutRejected } from './payment-window'
 import { assetThumbnailUrl } from './asset-thumbnail'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
@@ -8924,12 +8925,20 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const accountService = accountServiceStub()
       signedInAs(accountService, 'Alice')
       const lost = new Error('连接账号服务超时，请检查网络后再试。')
+      noteRequestDiagnostics(lost, { line: 'direct', status: 504, cfRay: 'test-ray' })
       failingAfter(accountService, ['unconfirmed'], lost)
       const store = rememberedStore('Alice')
       const { runtimeLog } = register(undefined, undefined, undefined, accountService, store)
 
-      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toBe(lost)
+      const failure = await Promise.resolve(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change))
+        .then(() => null, (error: unknown) => error)
 
+      // Says what is known instead of "check the network and retry", keeping
+      // the original failure -- and so its route and status -- for the log.
+      expect(failure).toBeInstanceOf(Error)
+      expect((failure as Error).message).toBe(passwordChangeUnconfirmedMessage)
+      expect((failure as Error).cause).toBe(lost)
+      expect(requestDiagnosticsOf(failure)).toEqual({ line: 'direct', status: 504, cfRay: 'test-ray' })
       expect(store.clear).toHaveBeenCalledTimes(1)
       expect(store.save).not.toHaveBeenCalled()
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('new-password-2')
@@ -8975,7 +8984,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         accountCredentialsForSite: () => other,
       })
 
-      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toThrow('超时')
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toThrow(passwordChangeUnconfirmedMessage)
 
       expect(other.clear).not.toHaveBeenCalled()
       expect(other.save).not.toHaveBeenCalled()

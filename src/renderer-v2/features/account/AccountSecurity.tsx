@@ -7,7 +7,7 @@ import type { V2Bridge } from '../../types'
 import type { AccountSessionState } from '../../../../electron/ipc-contract'
 import { rememberedLoginAction, rememberedLoginForgottenMessage, sessionOnlyLoginNotice } from '../app/remembered-login'
 import { describeLoginDevice } from './login-device-label'
-import { deviceActivityText, passwordRules, validatePasswordChange } from './account-center'
+import { deviceActivityText, passwordChangeFailure, passwordRules, validatePasswordChange } from './account-center'
 
 export interface PasswordFormState {
   busy: string
@@ -61,7 +61,7 @@ function PasswordDialog({ api, historical, onClose, onChanged }: { api: V2Bridge
                 'password',
                 async () => {
                   validatePasswordChange({ originalPassword, password, confirmPassword }, rules)
-                  await api.changeAccountPassword({ originalPassword, newPassword: password })
+                  await api.changeAccountPassword({ originalPassword, newPassword: password }).catch((reason: unknown) => { throw passwordChangeFailure(reason) })
                   onClose()
                   onChanged()
                 },
