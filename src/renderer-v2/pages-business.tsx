@@ -1,9 +1,9 @@
 import { AccountPage } from './pages-account'
 import { accountSiteId, sessionScope } from './account-context'
 import { VideoStudioPage } from './features/video-studio'
-import { ExtensionsPage, SessionsPage } from './pages-management'
-import { FeaturedPage } from './pages-featured'
-import { PluginsHub } from './features/extensions/PluginsHub'
+import { SessionsPage } from './pages-management'
+// pages-maintenance 要排在 PluginsHub 前面：业务页那份样式表里教程页那几份样式排在 extensions.css 前面，先后由 import
+// 的先后定（#1335 第 6 条）。原来是旧外接工具页先 import pages-maintenance 再带进 extensions.css，旧页删了以后由这里接着保住。
 import {
   FeedbackPage,
   HealthPage,
@@ -11,6 +11,7 @@ import {
   TutorialPage,
   type BusinessActions,
 } from './pages-maintenance'
+import { PluginsHub } from './features/extensions/PluginsHub'
 import type { V2Bridge, V2Page, V2SystemState } from './types'
 import './business.css'
 
@@ -120,16 +121,6 @@ export function BusinessPage({
     return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} installedProviders={installedProviders} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
   if (page === 'extensions')
     return <PluginsHub api={api} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} onOpenHome={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
-  // 下面四页已经合进「插件」：侧栏和搜索都不再给，App 里跳过去也会落到「插件」（registry/pages.ts 的 extensionPageAliases）。
-  // 这里先留着，夹具按旧页面名直接画的老回归还在用；下一个 PR 把回归搬到新页以后一起删。
-  if (page === 'featured')
-    return <FeaturedPage api={api} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} onOpenHome={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
-  if (page === 'mcp')
-    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onSystemChanged={actions.onSystemChanged} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
-  if (page === 'skills')
-    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenPlugins={actions.navigate ? () => actions.navigate?.('plugins') : undefined} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
-  if (page === 'plugins')
-    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
   if (page === 'health') return <HealthPage api={api} accountSession={accountSession} {...actions} />
   if (page === 'feedback') return <FeedbackPage api={api} {...actions} />
   if (page === 'settings') return <SettingsPage api={api} {...actions} onBackupRestored={onBackupRestored} installedProviders={installedProviders} />
@@ -145,8 +136,6 @@ export function BusinessPage({
 
 export {
   AccountPage,
-  ExtensionsPage,
-  FeaturedPage,
   SessionsPage,
   FeedbackPage,
   HealthPage,

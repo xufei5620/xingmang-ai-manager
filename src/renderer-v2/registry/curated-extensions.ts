@@ -199,12 +199,6 @@ export function parseCuratedExtensions(raw: unknown): CuratedExtension[] {
 
 export const curatedExtensions = parseCuratedExtensions(catalog);
 
-/** 页面只展示当前 tab 的类别、且当前工具支持的那几条。 */
-export function curatedItemsFor(kind: CuratedKind, provider: ProviderId): CuratedExtension[] {
-  if (!isActiveProviderId(provider)) return [];
-  return curatedExtensions.filter(item => item.kind === kind && item.providers.includes(provider));
-}
-
 /**
  * 确认框里必须原样列出「将要执行的确切命令」，所以这里只拼展示文本，不做转义也不
  * 交给 shell——真正的执行仍是主进程的 execFile + argv 数组（I1）。
