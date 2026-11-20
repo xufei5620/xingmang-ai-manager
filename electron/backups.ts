@@ -628,6 +628,47 @@ function backupId(now: Date): string {
   return `${timestamp}-${randomUUID()}`
 }
 
+/**
+ * backupId() 起的目录名里带着建备份的时刻（UTC，到毫秒）。清单读不出来时靠它说出是哪一天的那份，
+ * 列表上那一行才认得出来（R2-2）；不是 backupId() 起的名字、或者时刻不成立的，返回 null。
+ */
+export function resolveBackupIdTime(id: string): string | null {
+  const match = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{3})-/.exec(id)
+  if (!match || !RETAINED_BACKUP_ID_PATTERN.test(id)) return null
+  const [, year, month, day, hour, minute, second, millisecond] = match.map(Number)
+  const time = new Date(Date.UTC(year, month - 1, day, hour, minute, second, millisecond))
+  // Date.UTC 会把 13 月、32 日之类顺延成别的日子；拼回去对不上的不认。
+  if (Number.isNaN(time.getTime()) || time.toISOString().replace(/[-:TZ.]/g, '').slice(0, 17) !== id.slice(0, 17)) return null
+  return time.toISOString()
+}
+
+/**
+ * 校验没过的那一份在列表上照样占一行（R2-2）：界面上要看得见、能删，不能恢复。清单本身还读得出来的
+ * （只是文件缺了、被改过、目标不认）就说出是哪个工具、什么时候、为什么存的，已下线的工具也由此照旧不列；
+ * 清单读不出来的，时间退回目录名里的那个，工具留空。
+ */
+function brokenSummary(id: string, error: unknown, manifest: ConfigBackupManifest | null): ConfigBackupSummary {
+  return {
+    id,
+    provider: manifest?.provider ?? null,
+    reason: manifest?.reason ?? null,
+    createdAt: manifest?.createdAt ?? resolveBackupIdTime(id),
+    fileCount: 0,
+    existingFileCount: 0,
+    totalSize: 0,
+    valid: false,
+    error: error instanceof Error ? error.message : '备份无效',
+  }
+}
+
+function readableManifest(userDataDirectory: string, id: string): ConfigBackupManifest | null {
+  try {
+    return readManifest(validateBackupDirectory(userDataDirectory, id))
+  } catch {
+    return null
+  }
+}
+
 export class ConfigBackupStore {
   private readonly userDataDirectory: string
   private readonly providerRoots: ProviderConfigRoots
@@ -659,17 +700,7 @@ export class ConfigBackupStore {
           const validated = validateBackupManifest(this.userDataDirectory, this.providerRoots, entry.name)
           return summaryFromManifest(validated.manifest, context)
         } catch (error) {
-          return {
-            id: entry.name,
-            provider: null,
-            reason: null,
-            createdAt: null,
-            fileCount: 0,
-            existingFileCount: 0,
-            totalSize: 0,
-            valid: false,
-            error: error instanceof Error ? error.message : '备份无效',
-          }
+          return brokenSummary(entry.name, error, readableManifest(this.userDataDirectory, entry.name))
         }
       })
       .sort((left, right) => (right.createdAt ?? '').localeCompare(left.createdAt ?? '') || right.id.localeCompare(left.id))

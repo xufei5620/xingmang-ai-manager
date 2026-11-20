@@ -12,6 +12,8 @@
   --control-primary-kbd-bg: rgba(0,0,0,.08);
   --control-primary-kbd-line: rgba(0,0,0,.12);
   --control-switch-thumb: #FFFFFF;
+  /* 插件官方图标是画在白底上的方图，深浅两套都垫白底，跟它在官方目录里的样子一样（「插件」页）。 */
+  --surface-logo-tile: #FFFFFF;
   --control-switch-thumb-shadow: 0 1px 2px rgba(0,0,0,.3);
   --surface-drawer-shadow: -20px 0 60px rgba(0,0,0,.35);
   --surface-card-shadow: var(--sh-1);
