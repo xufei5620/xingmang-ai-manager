@@ -99,6 +99,34 @@ describe('AiAssetMetadataStore', () => {
     await expect(store.restore(7, assetId)).rejects.toThrow('不在回收站')
   })
 
+  it('brings a recycled asset back with its name, tags and favorite when it is stored again (R28-7)', async () => {
+    // The stores are content-addressed, so importing a file again returns the
+    // id of the copy in the bin; recording its source is that second import.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-asset-metadata-'))
+    roots.push(root)
+    let clock = new Date('2026-08-14T09:00:00.000Z')
+    const store = new AiAssetMetadataStore({ outputRoot: root, now: () => clock })
+    await store.rename(7, assetId, '产品主视觉')
+    await store.updatePreferences(7, assetId, { favorite: true, tags: ['角色'] })
+    await store.setSource(7, assetId, 'generated', '一只猫')
+    await store.softDelete(7, assetId)
+
+    clock = new Date('2026-08-15T09:00:00.000Z')
+    const stored = await store.setSource(7, assetId, 'imported')
+    expect(stored).not.toHaveProperty('deletedAt')
+    const expected = {
+      displayName: '产品主视觉',
+      favorite: true,
+      tags: ['角色'],
+      source: 'imported',
+      prompt: '一只猫',
+      updatedAt: '2026-08-15T09:00:00.000Z',
+    }
+    await expect(store.getMany(7, [assetId])).resolves.toEqual({ [assetId]: expected })
+    await expect(new AiAssetMetadataStore({ outputRoot: root }).getMany(7, [assetId])).resolves.toEqual({ [assetId]: expected })
+    await expect(store.restore(7, assetId)).rejects.toThrow('不在回收站')
+  })
+
   it('forgets a record entirely so it cannot outlive its file', async () => {
     const { store } = fixture()
     await store.rename(7, assetId, '产品主视觉')

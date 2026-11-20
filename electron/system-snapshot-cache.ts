@@ -229,7 +229,7 @@ function withoutVersionVerdicts(snapshot: SystemSnapshot): SystemSnapshot {
  * 按自己的推荐版本名单算出来的、会不会被按钮当成要装的版本交给主进程，是就在
  * withoutVersionVerdicts 里一起去掉，再把它记进这份清单。这一道只为分类，不用加格式版本号。
  */
-type CliOptionalFields = 'tooOld' | 'versionStatus' | 'detectionFailed' | 'detectionError' | 'installSource' | 'installTarget'
+type CliOptionalFields = 'tooOld' | 'versionStatus' | 'detectionFailed' | 'detectionError' | 'installSource' | 'unrecognizedInstall' | 'installTarget'
   | 'updateSource' | 'updateCheck' | 'updateState' | 'updateCheckedAt' | 'updateError' | 'versionAdvice' | 'revertVersion'
   | 'retired'
 

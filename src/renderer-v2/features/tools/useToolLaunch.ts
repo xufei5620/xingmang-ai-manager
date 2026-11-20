@@ -60,6 +60,8 @@ export function useToolLaunch(options: ToolLaunchOptions) {
   /** 还在准备（主进程那边还没开始打开）的「打开中」，按工具记着怎么放掉；见 holdLaunch。 */
   const preparingLaunches = useRef(new Map<ToolId, () => void>())
   const launchRequest = useRef<{ id: ToolId; epoch: () => boolean } | null>(null)
+  /** 等 launchRequest 那次走完再开的那一个，见 requestLaunchWhenFree。 */
+  const deferredLaunch = useRef<{ id: ToolId; epoch: () => boolean } | null>(null)
   const cancelPendingLaunchDialogs = useCallback(() => {
     // 上一个账号点的「打开」后面每一步都会自己停下（launchIsCurrent），卡片上的「打开中」不陪它
     // 等完读配置、核对模型，新账号点「打开」也不被它挡住。主进程已经在打开的不放，照旧等它做完。
@@ -329,7 +331,27 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       } catch (cause) {
         if (launchIsCurrent(request.epoch)) throw cause
       }
-    }, id).finally(() => { if (launchRequest.current === request) launchRequest.current = null })
+    }, id).finally(() => {
+      if (launchRequest.current !== request) return
+      launchRequest.current = null
+      const deferred = deferredLaunch.current
+      deferredLaunch.current = null
+      // 排着的那一下是换账号之前的就不开了（同 launchIsCurrent）。
+      if (deferred && launchIsCurrent(deferred.epoch)) requestLaunch(deferred.id)
+    })
+  }
+  /**
+   * 不是客户点的「打开」：Mac 上更新 Codex 桌面端时星芒把它关了，更新完替客户重开。那一刻别的工具正在打开，
+   * requestLaunch 会把这一下当成重复点击丢掉，客户得自己再去开一次（11-18 F05）。这里排在那次后面，等它走完再开；
+   * 正在打开的就是这个工具的，那次本来就会开它，不再叠一次。只排一个，后来的顶掉先来的。
+   */
+  function requestLaunchWhenFree(id: ToolId) {
+    const inFlight = launchRequest.current
+    if (inFlight?.epoch() && inFlight.id !== id && !launchParkedOnAccount(inFlight.id)) {
+      deferredLaunch.current = { id, epoch: accountEpoch.capture() }
+      return
+    }
+    requestLaunch(id)
   }
   /**
    * 记住的目录随时可能被删掉或改名。那种情况下退回目录选择器，用户点一次
@@ -361,6 +383,6 @@ export function useToolLaunch(options: ToolLaunchOptions) {
   }
   return {
     modelSwap, restartDialog, setRestartDialog, chineseDialog, setChineseDialog,
-    cancelPendingLaunchDialogs, prepareToolLaunch, launch, requestLaunch, requestLaunchInLastWorkspace, answerChineseRuntimePatch,
+    cancelPendingLaunchDialogs, prepareToolLaunch, launch, requestLaunch, requestLaunchWhenFree, requestLaunchInLastWorkspace, answerChineseRuntimePatch,
   }
 }
