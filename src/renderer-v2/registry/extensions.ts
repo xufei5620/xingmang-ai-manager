@@ -70,3 +70,26 @@ export const pluginCatalogTitles: Partial<Record<ActiveProviderId, string>> = {
   claude: 'Anthropic 官方市场',
   codex: 'OpenAI 插件目录',
 };
+
+/**
+ * 「插件」页（精选、外接工具、技能、插件合成的那一页）里三家的叫法：列表、筛选、提示里写「Claude」「GPT」「Grok」，
+ * 安装框每一行底下的小字写清具体是哪几个工具（扩展合并方案第二版，yoyo 11-20 回「改」）。
+ * 技能那一行只写 Claude Code：Claude 桌面端里的 Claude Code 读不读这份技能还没真机核过，先不往大里说。
+ */
+export const extensionFamilies: Record<ActiveProviderId, { name: string; hint: string; skillHint: string }> = {
+  claude: { name: 'Claude', hint: 'Claude Code，以及 Claude 桌面端里的 Claude Code', skillHint: 'Claude Code' },
+  codex: { name: 'GPT', hint: 'Codex CLI 和 Codex 桌面端，两边都能用', skillHint: 'Codex CLI 和 Codex 桌面端，两边都能用' },
+  grok: { name: 'Grok', hint: 'Grok CLI', skillHint: 'Grok CLI' },
+};
+
+/** 两家官方插件市场的名字：从这两个市场来的插件归「Claude 官方」「GPT 官方」，别的市场来的归「自己加的」。 */
+export const officialPluginMarkets: Partial<Record<ActiveProviderId, string>> = {
+  claude: 'claude-plugins-official',
+  codex: 'openai-api-curated',
+};
+
+/**
+ * 「推荐」里的分组：精选里的外接工具放「常用」，插件放「写代码」；表里点名的另算（「逐步思考」放「写代码」）。
+ * 精选清单不加字段，清单里新加的按类型落组。
+ */
+export const curatedHubGroups: Readonly<Record<string, 'common' | 'coding'>> = { 'sequential-thinking': 'coding' };

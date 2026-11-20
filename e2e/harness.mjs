@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
 import { rendererSingleCopyPackages } from '../scripts/renderer-single-copy.mjs'
+import { watchClickStalls } from './click-stall.mjs'
 import { createPageErrorCollector } from './page-errors.mjs'
 
 // T-B1: 十四个浏览器套件各自抄了一遍「起 Vite dev server + 起 Chromium + 开一个记录
@@ -235,7 +236,9 @@ export function createBrowserFixture(options = {}) {
   }
 
   async function newPage({ viewport = options.viewport ?? defaultViewport, sameOriginOnly = options.sameOriginOnly, ...rest } = {}) {
-    const page = pageErrors.watch(await browser.newPage({ viewport, ...rest }))
+    // A click that stalls after its mouse events went out reports what the page
+    // and the browser were doing at that moment (e2e/click-stall.mjs).
+    const page = watchClickStalls(pageErrors.watch(await browser.newPage({ viewport, ...rest })), options.clickStall)
     if (options.actionTimeoutMs) page.setDefaultTimeout(options.actionTimeoutMs)
     if (options.navigationTimeoutMs) page.setDefaultNavigationTimeout(options.navigationTimeoutMs)
     // 夹具只该向自己的 dev server 取东西。放行外部请求会让一次意外的真实出网变成
