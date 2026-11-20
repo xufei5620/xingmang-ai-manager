@@ -183,9 +183,11 @@ function codexStandaloneManualUninstallCommand(
     `${selection.version}-${selection.target}`,
   )
   if (
-    !equivalentPath(selection.releaseRoot, expectedReleaseRoot, platform)
+    selection.relocated
+    || !equivalentPath(selection.releaseRoot, expectedReleaseRoot, platform)
     || !equivalentPath(
-      selection.executablePath,
+      // The provisioned package keeps the signed binary in CodexCLI.app; bin/codex is its launcher.
+      selection.launcherPath ?? selection.executablePath,
       path.posix.join(expectedReleaseRoot, 'bin', 'codex'),
       platform,
     )

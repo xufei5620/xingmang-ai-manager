@@ -1,6 +1,6 @@
 ## 用户
 
-- Mac 上别处装的 Codex CLI、Grok CLI 星芒打不开时，首页会写明原因，并给一颗「用星芒装一份」；xAI 新版安装脚本装的 Grok CLI 现在也认得出、能正常打开。
+- Mac 上别处装的 Codex CLI、Grok CLI 星芒打不开时，首页会写明原因，并给一颗「用星芒装一份」；xAI 新版安装脚本装的 Grok CLI、别的软件替你装的 OpenAI 原版 Codex CLI，现在也认得出、能正常打开。
 
 ## 开发
 
@@ -16,3 +16,9 @@
 - xAI 官方安装脚本现在（核对时 stable 是 1.0.89）把程序放成不带版本号的 `~/.grok/downloads/grok-macos-<arch>`，`grok` 和 `agent`
   两条链接都指向它。`macos-grok.ts` 认这种布局：版本不再从文件名读，改成核过 xAI 签名的私有副本跑一次 `--version`，
   按文件身份缓存（最多 8 条，文件一变就重核）；带版本号的老布局照旧不跑程序。这种布局的卸载不在这次范围内，仍按原来的拒绝走。
+- OpenAI 同一个版本里还发 provisioned 包（`codex-provisioned-package-<target>.tar.gz`，同一份 SHA256SUMS 里）：`bin/codex` 换成一段
+  固定的 sh 启动脚本，本体挪进带描述文件的 `CodexCLI.app`。测试机上那份就是它，只是被别的工具解到了
+  `~/.local/share/openchatcut-codex/<版本>`。`macos-codex.ts` 现在认它：启动脚本只核和 OpenAI 原文一字不差、从不运行；
+  整个 `CodexCLI.app` 抄进私有目录（`darwin-cli-staging.ts` 的 `bundleRoot`，本体带受限 entitlements，单抄本体起不来），
+  按 OpenAI 团队号加签名标识 `codex` 核签名，再跑一次 `--version` 对上 `codex-package.json` 的版本。放在官方安装器目录以外的
+  只认这一种包，来源显示「其他来源」，不给「移到废纸篓」的卸载命令。

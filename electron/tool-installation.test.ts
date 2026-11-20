@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { disposeStagedDarwinCliRecords } from './darwin-cli-staging'
 import { DarwinCliProvenanceError } from './macos-code-signing'
-import type { DarwinCodexStandaloneSelection } from './macos-codex'
+import { OPENAI_PROVISIONED_CODEX_LAUNCHER, type DarwinCodexStandaloneSelection } from './macos-codex'
 import {
   classifyCliInstallDisplaySource,
   cliLaunchArgv,
@@ -435,6 +435,64 @@ describe('CLI installation resolution', () => {
     expect(error).toBeInstanceOf(UnrecognizedDarwinCliError)
     expect((error as Error).message).toBe('这一份不是星芒装的，星芒核对不了它是不是官方原版，为了安全没有打开。到首页点「用星芒装一份」，装好就能打开。')
     expect(runCommand).not.toHaveBeenCalled()
+  })
+
+  // Mac 验收 R1 那台：OpenAI 发布的 provisioned 包被别的工具解到 ~/.local/share/openchatcut-codex/<版本>。
+  it.runIf(process.platform === 'darwin')('opens OpenAI\'s provisioned package another tool unpacked, from a private copy of its bundle', async () => {
+    const home = temporaryDirectory()
+    const target = process.arch === 'x64' ? 'x86_64-apple-darwin' : 'aarch64-apple-darwin'
+    const version = '0.164.0-alpha.11.1'
+    const releaseRoot = path.join(home, '.local', 'share', 'openchatcut-codex', version)
+    const launcher = write(path.join(releaseRoot, 'bin', 'codex'), OPENAI_PROVISIONED_CODEX_LAUNCHER)
+    write(path.join(releaseRoot, 'CodexCLI.app', 'Contents', 'MacOS', 'codex'), '#!/bin/sh\n')
+    write(path.join(releaseRoot, 'CodexCLI.app', 'Contents', 'embedded.provisionprofile'), 'profile')
+    write(path.join(releaseRoot, 'codex-package.json'), JSON.stringify({
+      layoutVersion: 1,
+      version,
+      target,
+      variant: 'codex',
+      entrypoint: 'bin/codex',
+    }))
+    const bin = path.join(home, '.local', 'bin')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.symlinkSync(launcher, path.join(bin, 'codex'))
+    fs.mkdirSync(path.join(home, '.Trash'))
+    const env = { HOME: home, PATH: bin }
+    const runCommand = vi.fn(async (spec: { executable: string; argv: readonly string[] }) => (
+      spec.argv[0] === '--version' ? { stdout: `codex-cli ${version}\n`, stderr: '' } : { stdout: '', stderr: '' }
+    ))
+
+    const command = await resolveCliCommand('codex', env, 'trusted-only', {
+      arch: process.arch,
+      platform: 'darwin',
+      npmGlobalRoot: path.join(home, 'missing-node-modules'),
+      runCommand,
+      darwinStagingRetention: 'ephemeral',
+    })
+    const installation = await resolveCliInstallation('codex', {
+      env,
+      npmGlobalRoot: path.join(home, 'missing-node-modules'),
+      platform: 'darwin',
+    })
+
+    try {
+      expect(command.verifiedDarwinStandalone).toMatchObject({
+        version,
+        relocated: true,
+        launcherPath: fs.realpathSync(launcher),
+      })
+      expect(command.executable.endsWith(path.join('CodexCLI.app', 'Contents', 'MacOS', 'codex'))).toBe(true)
+      expect(command.executable.startsWith(fs.realpathSync(releaseRoot))).toBe(false)
+      expect(runCommand.mock.calls.map(([spec]) => spec.executable)).not.toContain(fs.realpathSync(launcher))
+      // 不是官方安装器放的，「移到废纸篓」那条命令不给。
+      expect(cliUninstallCapability('codex', installation!, {
+        homeDirectory: home,
+        platform: 'darwin',
+        verifiedDarwinStandalone: command.verifiedDarwinStandalone,
+      }).manualCommand).toBeNull()
+    } finally {
+      await command.release?.()
+    }
   })
 
   it.runIf(process.platform !== 'win32')('refuses a Grok link outside the official layouts as unrecognized without running anything', async () => {
