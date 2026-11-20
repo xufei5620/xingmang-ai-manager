@@ -3,7 +3,7 @@
 import { savedAccountId } from '../../saved-accounts'
 import { parseLocalNoticeReadSync } from '../../announcement-read-store'
 import { resolveRelaySite } from '../../relay-sites'
-import { validateLoginSessionId, NewApiTwoFactorExpiredError } from '../../new-api-client'
+import { validateLoginSessionId, NewApiTwoFactorExpiredError, type NewApiPasswordChangeOutcome } from '../../new-api-client'
 import type { RelayBackendClient } from '../../relay-backend'
 import { normalizeRealmLoginIdentifier } from '../../realm-account-vault'
 import { realmForExplicitSite } from '../../realm-account'
@@ -212,20 +212,23 @@ export function registerAccountHandlers(ctx: IpcHandlerContext): void {
     const owner = await options.realmAccounts?.loginHintOwner(normalized)
     return Boolean(owner && owner.realmId === realmForExplicitSite(siteId) && owner.userId === String(account.userId))
   }
-  // The password change / reset already succeeded by the time these run, so
-  // they never throw: a failure here must not turn a successful change into an
-  // error toast. Neither logs anything -- the stored value is a password (I3).
+  // The password change / reset already succeeded (or may have) by the time
+  // these run, so they never throw: a failure here must not turn a successful
+  // change into an error toast, nor bury the change's own error. Neither logs
+  // anything -- the stored value is a password (I3). A null password drops
+  // this account's remembered login instead of rewriting it.
   const replaceRememberedPassword = async (
     siteId: 'solov' | 'solov-api',
     account: { userId: number, username: string },
-    password: string,
+    password: string | null,
   ): Promise<void> => {
     const store = rememberedLoginStore(siteId)
     const remembered = await store?.read().catch(() => null)
     if (!store || !remembered) return
     const matches = await rememberedLoginNamesAccount(siteId, remembered.identifier, account).catch(() => false)
     if (!matches) return
-    await store.save(remembered.identifier, password).catch(() => store.clear().catch(() => undefined))
+    if (password === null) await store.clear().catch(() => undefined)
+    else await store.save(remembered.identifier, password).catch(() => store.clear().catch(() => undefined))
   }
   const forgetRememberedPassword = async (siteId: 'solov' | 'solov-api', email: string): Promise<void> => {
     const store = rememberedLoginStore(siteId)
@@ -263,9 +266,20 @@ export function registerAccountHandlers(ctx: IpcHandlerContext): void {
     // is signed in afterwards.
     const siteId = options.realmAccounts?.getSiteId() ?? 'solov'
     const account = accountService.getSessionState().account
-    return accountService.changePassword(parsed).then(async (result) => {
+    // A failed call does not mean the password is unchanged (N6): the reply
+    // may have been lost after the server stored the new one, or the login
+    // may have moved on after it said yes. Keeping the old remembered
+    // password then prefills one that no longer works. With no answer either
+    // way it is dropped, and the new one is not remembered in its place:
+    // nothing confirmed it.
+    let outcome: NewApiPasswordChangeOutcome | undefined
+    return accountService.changePassword(parsed, (next) => { outcome = next }).then(async (result) => {
       if (account) await replaceRememberedPassword(siteId, account, parsed.newPassword)
       return result
+    }, async (error: unknown) => {
+      if (account && outcome === 'changed') await replaceRememberedPassword(siteId, account, parsed.newPassword)
+      else if (account && outcome === 'unconfirmed') await replaceRememberedPassword(siteId, account, null)
+      throw error
     })
   })
   registerTrustedHandler('account:list-login-sessions', () => accountService.listLoginSessions())
