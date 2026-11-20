@@ -50,6 +50,7 @@ import { createCodexPayloadNoticeBoard } from './codex-payload-limit'
 import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, measureInstallLeftovers, sweepInstallLeftovers } from './install-leftovers'
 import { resolveRealmDataRoots } from './realm-data-roots'
+import { listCanvasProjectAssetDirectories } from './canvas-project-store'
 import { createStorageUsageService } from './storage-usage-service'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
@@ -1440,6 +1441,7 @@ if (!hasSingleInstanceLock) {
       codexHome: codexContext.codexHome,
       runtimeLog,
       readAccountSiteId: () => readAccountSiteId(),
+      readAccountOwner: () => readExternalClientAccountId(),
       routes: networkRoutes,
       systemService,
       notices: codexPayloadNotices,
@@ -2605,7 +2607,9 @@ if (!hasSingleInstanceLock) {
     const sensitiveClipboard = createSensitiveClipboard({ clipboard })
     // 「设置 › 备份迁移 › 星芒占用的空间」（决定单 D100）：只在客户打开那一组时问，不在后台算。
     const storageUsage = createStorageUsageService({
-      worksDirectory: () => currentBusiness().aiOutputPlacement.root,
+      worksDirectory: () => currentBusiness().aiOutputSharedRoot(),
+      canvasProjectAssetDirectories: async () => (await Promise.all((['xm-account', 'api-account'] as const)
+        .map((realm) => listCanvasProjectAssetDirectories(resolveRealmDataRoots(managerDataDirectory, realm).canvasProjectsDirectory)))).flat(),
       thumbnailDirectories: () => (['xm-account', 'api-account'] as const)
         .map((realm) => resolveRealmDataRoots(managerDataDirectory, realm).assetThumbnailsDirectory),
       chatHistoryDirectory: path.join(managerDataDirectory, 'chat-history'),

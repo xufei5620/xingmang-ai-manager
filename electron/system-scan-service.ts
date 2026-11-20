@@ -22,6 +22,7 @@ import {
   probeRunningCliProcesses,
 } from './cli-process-probe'
 import { resolveCliRevertVersion } from './cli-update-history'
+import { resolveCliUserHomeDirectory } from './cli-user-home'
 import { buildCliVersionAdvice, type CliVersionAdvice } from './cli-verified-versions'
 import { isCodexDesktopCliInstallation } from './codex-desktop'
 import { desktopUpdateFields } from './codex-desktop-service'
@@ -961,11 +962,12 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
         platform,
         npmGlobalRoot,
         managedNpmPrefix: managed,
+        // 同 installCli：Windows 上只有管理员身份才装进 ProgramData，普通身份装进个人文件夹下的 .grok\bin。
         managedNativeRoot: provider !== 'grok'
           ? null
-          : platform === 'win32'
+          : platform === 'win32' && windowsExecutionMode !== 'same-user'
             ? managedNativeProviderRoot('grok')
-            : path.join(commandEnvironment().HOME?.trim() || os.homedir(), '.grok', 'bin'),
+            : path.join(resolveCliUserHomeDirectory(commandEnvironment(), platform), '.grok', 'bin'),
       })
     } catch {
       return null
@@ -1074,7 +1076,7 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
           managedNativeDirectory: process.platform === 'win32' && provider === 'grok'
             ? managedNativeProviderRoot('grok')
             : null,
-          homeDirectory: cliEnvironment.HOME?.trim() || os.homedir(),
+          homeDirectory: resolveCliUserHomeDirectory(cliEnvironment, platform),
           platform,
           verifiedDarwinStandalone: safeNativeCommand?.verifiedDarwinStandalone ?? null,
           windowsExecutionMode,

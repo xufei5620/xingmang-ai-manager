@@ -435,10 +435,14 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   if (images.length && settings.mode === 'image' && !canEditImages(settings.model)) throw new Error(noImageEditModelMessage)
   if (images.length && settings.mode === 'text' && !canReadImages(settings.model)) throw new Error(noImageModelMessage)
   const messages = contextMessages(history, settings)
-  // 用户自己发的每条都在发出前查过长度，超长的只可能是 AI 的某条回复。不在这里拦，
-  // 主进程会按单条上限拒掉，落到兜底「请稍后重试」，怎么重试都一样。
-  if (messages.some((message) => message.content.length > chatLimits.messageLength)) throw new Error(conversationReplyTooLongMessage)
-  if (messages.length > chatLimits.messageCount || messages.reduce((total, message) => total + message.content.length, 0) > chatLimits.totalMessageLength) throw new Error(conversationTooLongMessage)
+  // 生图只发这一句描述和参考图，前面的对话一条都不带，前文再长也不该拦它（N7）；
+  // 描述本身照样受上面单条上限管。重新生成看的是那条回复当时的模式，不看现在选的。
+  if (settings.mode === 'text') {
+    // 用户自己发的每条都在发出前查过长度，超长的只可能是 AI 的某条回复。不在这里拦，
+    // 主进程会按单条上限拒掉，落到兜底「请稍后重试」，怎么重试都一样。
+    if (messages.some((message) => message.content.length > chatLimits.messageLength)) throw new Error(conversationReplyTooLongMessage)
+    if (messages.length > chatLimits.messageCount || messages.reduce((total, message) => total + message.content.length, 0) > chatLimits.totalMessageLength) throw new Error(conversationTooLongMessage)
+  }
   const snapshot = { ...settings, parameters: { ...settings.parameters } }
   const assistant: ChatMessage = { id: assistantId, role: 'assistant', content: '', reasoning: '', status: 'pending', createdAt: Date.now(), requestId: input.requestId, settings: snapshot }
   const fresh = !input.retryId && !input.editId
@@ -534,9 +538,16 @@ export function fileAttachmentErrorMessage(error: unknown): string {
   return speaksChinese(message) ? redactSecretPatterns(message) : '文件没有加上，请再试一次'
 }
 
+// 作品库按内容存图，同一张图换个文件名再选一次拿回的是同一个编号。一批里有两份时只留第一份：
+// 以前只跟输入框里已有的比，同一批里的两份都进了输入框，发送时被当成重复图片拒掉，点哪张移除都是两张一起没（R28-6）。
 export function addDraftImages(conversation: Conversation, images: readonly AiChatAsset[]): Conversation {
   const present = conversation.draftImages ?? []
-  const fresh = images.filter((image) => !present.some((item) => item.assetId === image.assetId))
+  const seen = new Set(present.map((item) => item.assetId))
+  const fresh = images.filter((image) => {
+    if (seen.has(image.assetId)) return false
+    seen.add(image.assetId)
+    return true
+  })
   if (!fresh.length) return conversation
   return { ...conversation, draftImages: [...present, ...fresh].slice(0, chatLimits.imagesPerMessage) }
 }

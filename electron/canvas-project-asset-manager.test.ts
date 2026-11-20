@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { missingAiAssetMessages } from './ai-asset-missing'
 import { AiAssetStore } from './ai-asset-store'
 import { createAiImageService } from './ai-image-service'
 import { AiAudioAssetStore } from './ai-audio-asset-store'
@@ -78,6 +79,54 @@ describe('CanvasProjectAssetManager', () => {
 
     await expect(manager.resolveOwnedFilePath(7, stored.assetId, 'image')).resolves.toContain(projectRoot)
     await expect(manager.resolveOwnedFilePath(7, 'z'.repeat(43), 'image')).rejects.toThrow('不存在或无权访问')
+  })
+
+  it('finds the copy in a duplicated project once the remembered original is gone', async () => {
+    // O14: a copied project keeps its assets' ids, so the place remembered for
+    // the original must not hide the copy once the original's files move.
+    const projectDataRoot = temporaryRoot('xingmang-copy-projects-')
+    const originalWorkspace = temporaryRoot('xingmang-copy-original-')
+    const copyWorkspace = temporaryRoot('xingmang-copy-target-')
+    const projects = new CanvasProjectStore(projectDataRoot)
+    const original = await projects.create(7, '原项目', originalWorkspace)
+    const manager = new CanvasProjectAssetManager({ projects, global: context(temporaryRoot('xingmang-copy-global-'), 2), create: context })
+    const image = await manager.storeBase64(7, png, { projectId: original.project.id })
+    const video = await manager.storeMp4(7, mp4(), { taskId: 'video_copy', projectId: original.project.id })
+    await expect(manager.readOwned(7, image.assetId, 'image')).resolves.toMatchObject({ asset: { assetId: image.assetId } })
+    await expect(manager.readOwnedVideoRange(7, video.assetId, () => null)).resolves.toMatchObject({ totalBytes: mp4().length })
+
+    await projects.duplicate(7, original.project.id, '副本', copyWorkspace)
+    fs.renameSync(path.join(originalWorkspace, 'assets'), path.join(originalWorkspace, 'moved-away'))
+
+    await expect(manager.readOwned(7, image.assetId, 'image')).resolves.toMatchObject({ asset: { assetId: image.assetId } })
+    await expect(manager.readOwned(7, image.assetId)).resolves.toMatchObject({ asset: { assetId: image.assetId } })
+    await expect(manager.resolveOwnedFilePath(7, image.assetId, 'image')).resolves.toContain(copyWorkspace)
+    await expect(manager.readOwnedVideoRange(7, video.assetId, () => ({ start: 4, end: 7 }))).resolves.toEqual({
+      asset: { mimeType: 'video/mp4' }, totalBytes: mp4().length, bytes: mp4().subarray(4, 8),
+    })
+    await expect(manager.resolveOwnedFilePath(7, video.assetId, 'video')).resolves.toContain(copyWorkspace)
+    // Another account with the same asset id still finds nothing.
+    await expect(manager.readOwned(8, image.assetId, 'image')).rejects.toThrow('不存在或无权访问')
+  })
+
+  it('still refuses a remembered asset whose only remaining copy fails the file checks', async () => {
+    const projectDataRoot = temporaryRoot('xingmang-link-projects-')
+    const originalWorkspace = temporaryRoot('xingmang-link-original-')
+    const copyWorkspace = temporaryRoot('xingmang-link-target-')
+    const projects = new CanvasProjectStore(projectDataRoot)
+    const original = await projects.create(7, '原项目', originalWorkspace)
+    const manager = new CanvasProjectAssetManager({ projects, global: context(temporaryRoot('xingmang-link-global-'), 2), create: context })
+    const image = await manager.storeBase64(7, png, { projectId: original.project.id })
+    await projects.duplicate(7, original.project.id, '副本', copyWorkspace)
+    const copied = await manager.resolveOwnedFilePath(7, image.assetId, 'image')
+    expect(copied).toContain(originalWorkspace)
+    fs.renameSync(path.join(originalWorkspace, 'assets'), path.join(originalWorkspace, 'moved-away'))
+    // A second name for the copy's file: the store refuses multi-link files.
+    const copyFile = copied.replace(originalWorkspace, copyWorkspace)
+    fs.linkSync(copyFile, path.join(temporaryRoot('xingmang-link-elsewhere-'), 'second-name.png'))
+
+    // The copy is not served, and the error is still the one the remembered place gave.
+    await expect(manager.readOwned(7, image.assetId, 'image')).rejects.toThrow(missingAiAssetMessages.image)
   })
 
   it('probes the project context before a paid request without touching the probe for resumed work', async () => {

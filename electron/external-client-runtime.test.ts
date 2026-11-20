@@ -813,6 +813,23 @@ describe('external desktop client lifecycle', () => {
     expect(f.launchProcess).toHaveBeenCalledWith(expect.objectContaining({ executable: explorer, argv: [elsewhere] }))
   })
 
+  // 总单 #35（11-18 N10）：同一版装了两份（自己目录下一份、Program Files 一份，两条卸载登记）时，开着哪份都算开着，
+  // 跟登记的先后无关；首页显示、打开用的是先认出来的那份。
+  it('counts either of two installs of the same edition as running, whichever record comes first', async () => {
+    const f = fixture()
+    const mine = candidate('opencode')
+    const machine = candidate('opencode', { path: 'C:\\Program Files\\OpenCode\\OpenCode.exe' })
+    const opencode = async () => (await f.runtime.scan({ force: true })).find((status) => status.tool === 'opencode')
+    for (const [first, second] of [[mine, machine], [machine, mine]]) {
+      f.setInventory([first, { ...second, running: true }])
+      expect(await opencode()).toMatchObject({ installed: true, path: first.path, running: true, detectionError: null })
+      f.setInventory([{ ...first, running: true }, second])
+      expect(await opencode()).toMatchObject({ installed: true, path: first.path, running: true })
+      f.setInventory([first, second])
+      expect(await opencode()).toMatchObject({ installed: true, path: first.path, running: false })
+    }
+  })
+
   // 2026-11-18 拆官方安装包核实：海外版 WorkBuddy AI 是另一个程序名、另一条卸载登记，星芒以前认不出。
   describe('WorkBuddy editions on Windows', () => {
     const overseasPath = 'C:\\Users\\Tester\\AppData\\Local\\Programs\\WorkBuddyAI\\WorkBuddyAI.exe'
@@ -1731,7 +1748,7 @@ describe('macOS external desktop lifecycle', () => {
     expect(status).toMatchObject({ installed: true, version: '1.18.34', latestVersion: '1.18.34', updateAvailable: false })
     expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({
       tool: 'opencode', architecture: 'arm64',
-      replace: { installedPath: '/Applications/OpenCode.app', installedVersion: '1.18.30', beforeReplace: expect.any(Function) },
+      replace: { installedPath: '/Applications/OpenCode.app', installedVersion: '1.18.30', beforeReplace: expect.any(Function), onReplaceStarting: expect.any(Function) },
     }))
     expect(progress.at(-1)).toBe('OpenCode 已更新到 v1.18.34')
   })
@@ -1746,6 +1763,31 @@ describe('macOS external desktop lifecycle', () => {
     const listing = agreed.execute.mock.calls.find(([spec]) => spec.executable === '/bin/ps' && spec.argv.includes('pid=,uid=,comm='))
     expect(listing?.[0]).toEqual({ executable: '/bin/ps', argv: ['-axo', 'pid=,uid=,comm='] })
     expect(listing?.[1]?.trustedOnly).toBe(false)
+  })
+  it('refuses a cancel once the Mac installer starts swapping in the new client, so the outcome matches what the customer was told (F03)', async () => {
+    let refusal: unknown
+    const f = macUpdateFixture({ installMacosDesktopApp: async (options) => {
+      await options.replace?.beforeReplace()
+      options.replace?.onReplaceStarting?.()
+      refusal = f.runtime.cancelInstall('opencode')
+      return { version: '1.18.34', path: '/Applications/OpenCode.app' }
+    } })
+    await expect(f.runtime.install('opencode', undefined, { update: true, closeRunning: false })).resolves.toMatchObject({ installed: true })
+    expect(refusal).toEqual({ cancelled: false, reason: '正在安装 OpenCode，这一步中断会留下装了一半的程序，请等它结束。' })
+  })
+  it('does not close a running client for a cancel accepted before the swap began (F03)', async () => {
+    const kill = vi.fn()
+    const f = macUpdateFixture({
+      quitMacosDesktopApp: { kill, wait: async () => undefined },
+      installMacosDesktopApp: async (options) => {
+        expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: true, reason: null })
+        await options.replace?.beforeReplace()
+        return { version: '1.18.34', path: '/Applications/OpenCode.app' }
+      },
+    })
+    f.open()
+    await expect(f.runtime.install('opencode', undefined, { update: true, closeRunning: true })).rejects.toThrow('OpenCode 安装已取消')
+    expect(kill).not.toHaveBeenCalled()
   })
   it('says so when the update found nothing newer to put in', async () => {
     const progress: string[] = []
@@ -1793,6 +1835,39 @@ describe('macOS external desktop lifecycle', () => {
     expect((await machine(['/Applications/WorkBuddy.app', '/Applications/WorkBuddy AI.app'], swapped).scan())[0]).toMatchObject({
       installed: true, detectionError: null, workBuddyEditions: ['domestic'],
     })
+  })
+  // 总单 #35（11-18 N10、全面检查 D-4）：「应用程序」和自己家目录下的「应用程序」各有一份时，以前认到第一份就不往下看，
+  // 开着的是第二份也当没开，照样改两份共用的那份配置。
+  it('counts a running copy in the home Applications folder when /Applications has another copy', async () => {
+    const copies = ['/Applications/Claude.app', '/Users/tester/Applications/Claude.app']
+    function machine(installed: readonly string[], running: readonly string[]) {
+      const execute = vi.fn<typeof runCommand>(async (spec) => {
+        if (spec.executable === '/usr/bin/plutil') return commandResult(spec, JSON.stringify({ CFBundleIdentifier: 'com.anthropic.claudefordesktop', CFBundleShortVersionString: '1.5.0' }))
+        return commandResult(spec, spec.executable === '/bin/ps' ? running.map((bundle) => `${bundle}/Contents/MacOS/Claude\n`).join('') : '')
+      })
+      const verifyPath = vi.fn(async (candidate: string) => {
+        if (installed.some((bundle) => candidate === bundle || candidate.startsWith(`${bundle}/`))) return candidate
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+      })
+      return { execute, runtime: createExternalClientRuntime({ platform: 'darwin', architecture: 'arm64', userHome: '/Users/tester', runCommand: execute, verifyPath, getuid: () => 501 }) }
+    }
+    const claude = async (installed: readonly string[], running: readonly string[]) => (await machine(installed, running).runtime.scan()).find((status) => status.tool === 'claudeDesktop')
+
+    // 哪一份开着都算开着；首页显示、打开用的照旧是「应用程序」里那份。
+    for (const running of [[copies[1]], [copies[0]], copies]) {
+      expect(await claude(copies, running), running.join()).toMatchObject({ installed: true, path: copies[0], running: true, detectionError: null })
+    }
+    expect(await claude(copies, [])).toMatchObject({ installed: true, path: copies[0], running: false })
+    // 只装了一份的不变。
+    expect(await claude([copies[1]], [copies[1]])).toMatchObject({ installed: true, path: copies[1], running: true })
+    expect(await claude([copies[0]], [])).toMatchObject({ installed: true, path: copies[0], running: false })
+
+    // 打开的是「应用程序」里那份：另一份不为这次打开再核一遍签名。
+    const opening = machine(copies, [])
+    await opening.runtime.launch('claudeDesktop')
+    const commands = opening.execute.mock.calls.map(([spec]) => spec)
+    expect(commands).toContainEqual(expect.objectContaining({ executable: '/usr/bin/open', argv: ['-a', copies[0]] }))
+    expect(commands.filter((spec) => spec.executable === '/usr/sbin/spctl').map((spec) => spec.argv.at(-1))).toEqual([copies[0]])
   })
   it('reports missing apps without inventing an automatic macOS installer', async () => {
     // WorkBuddy is the one client without a Mac package the toolbox could verify.

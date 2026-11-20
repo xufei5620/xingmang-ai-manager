@@ -45,7 +45,7 @@ import type { CliModelHints } from './cli-model-defaults'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-process-probe'
 import { classifyOperationError, presentOperationError } from '../src/renderer-v2/operation-error'
-import { managedNodeRuntimeBinDirectory, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import { managedNativeProviderRoot, managedNodeRuntimeBinDirectory, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import { ensureManagedNpmLayout } from './managed-cli'
 import { installLeftoverMinimumAgeMs, sweepInstallLeftovers, type InstallLeftoverLocation } from './install-leftovers'
 import { LinuxTerminalLaunchError, linuxTerminalFailureMessages } from './linux-terminal'
@@ -7360,6 +7360,67 @@ describe('installing or uninstalling a CLI', () => {
       provider: 'grok',
       error: 'Command failed: powershell.exe',
     }))
+  })
+
+  // D17：Windows 上 Grok 装进个人文件夹（USERPROFILE）下的 .grok\bin，判断能不能卸、真去卸却先看 HOME，
+  // 客户设了 HOME（Git、MSYS 常见）就把刚装好的那份判成不能安全卸载。两个调用点都在这一条里：先判断能不能卸，再去删。
+  // Mac、Linux 上模拟 Windows 的服务；真 Windows 上要删的文件名跟着 process.platform 走，照着放，CI 的 Windows 作业照真的跑。
+  it('uninstalls a Windows Grok from the profile folder when HOME points somewhere else', async () => {
+    // native：Windows runner 的临时目录是短名 RUNNER~1，卸载报回来的是展开后的长名，两边要按同一种写法比。
+    const profile = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-grok-profile-')))
+    const customHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-grok-custom-home-')))
+    temporaryDirectories.push(profile, customHome)
+    const bin = path.join(profile, '.grok', 'bin')
+    const fileNames = process.platform === 'win32' ? ['grok.exe', 'agent.exe', 'version.json'] : ['grok', 'agent']
+    const command = path.join(bin, fileNames[0])
+    fs.mkdirSync(bin, { recursive: true })
+    for (const name of fileNames) fs.writeFileSync(path.join(bin, name), `${name} content`)
+    vi.stubEnv('USERPROFILE', profile)
+    vi.stubEnv('HOME', customHome)
+    const removeWindowsUserPath = vi.fn(async () => 'removed' as const)
+    const service = createService({
+      platform: 'win32',
+      windowsExecutionMode: 'same-user',
+      providerRoots: { userHome: profile, codexHome: path.join(profile, '.codex') },
+      resolveCliInstallation: vi.fn(async (provider: ProviderId) => provider === 'grok' && fs.existsSync(command)
+        ? { commandPath: command, installDirectory: bin, packageRoot: null, npmPrefix: null, source: 'native' as const }
+        : null),
+      findExecutable: vi.fn(async () => null),
+      runCommand: versionProbeRunner(),
+      removeWindowsUserPath,
+    })
+
+    await expect(service.uninstallCli('grok')).resolves.toMatchObject({ outcome: 'uninstalled' })
+
+    for (const name of fileNames) expect(fs.existsSync(path.join(bin, name))).toBe(false)
+    await vi.waitFor(() => expect(removeWindowsUserPath).toHaveBeenCalledWith(bin))
+  })
+
+  // 装失败时失败框「复制路径」复制的是这里报的落点（toolInstallDirectory）。Windows 普通身份下 Grok 装进个人文件夹下的
+  // .grok\bin（installCli 的 sameUserInstall），以前这里却一律报 ProgramData 下的托管目录，客户照着去查权限、加白名单都找错地方。
+  it('reports the folder a Windows Grok install would really use as its install target', async () => {
+    const profile = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-target-profile-')))
+    const customHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-target-custom-home-')))
+    temporaryDirectories.push(profile, customHome)
+    vi.stubEnv('USERPROFILE', profile)
+    vi.stubEnv('HOME', customHome)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    function windowsService(windowsExecutionMode: 'same-user' | 'trusted-only') {
+      return createService({
+        platform: 'win32',
+        windowsExecutionMode,
+        providerRoots: { userHome: profile, codexHome: path.join(profile, '.codex') },
+        resolveCliInstallation: vi.fn(async () => null),
+        findExecutable: vi.fn(async () => null),
+        runCommand: versionProbeRunner(),
+      })
+    }
+
+    await expect(windowsService('same-user').inspectCliUpdate('grok', false))
+      .resolves.toMatchObject({ installed: false, installTarget: path.join(profile, '.grok', 'bin') })
+    // 管理员身份装进 ProgramData 下的托管目录，照旧。
+    await expect(windowsService('trusted-only').inspectCliUpdate('grok', false))
+      .resolves.toMatchObject({ installed: false, installTarget: managedNativeProviderRoot('grok') })
   })
 })
 

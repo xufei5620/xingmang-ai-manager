@@ -3,7 +3,7 @@ import type { AiChatAsset, AiChatTextFile } from '../../../../electron/ipc-contr
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
-import { IMAGE_GROUP_MODEL_ORDER } from '../../../../electron/ai-chat-protocol'
+import { buildChatCompletionsRequest, IMAGE_GROUP_MODEL_ORDER } from '../../../../electron/ai-chat-protocol'
 import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, chatAssetSaveErrorMessage, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH, customImageSizeRule, imageSizeFits } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
@@ -176,6 +176,26 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage(thrown)).toBe(conversationTooLongMessage)
     expect(isConversationTooLongMessage(conversationTooLongMessage)).toBe(true)
     expect(isConversationTooLongMessage('请求太频繁，请稍候再试')).toBe(false)
+  })
+  it('lets a short picture request through a conversation too long to send back, because a picture is drawn from its own description alone (N7)', () => {
+    const text = readyConversation()
+    text.messages = Array.from({ length: chatLimits.messageCount }, (_, index): ChatMessage => ({ id: `m-${index}`, role: index % 2 ? 'assistant' : 'user', content: `line ${index}`, reasoning: '', status: 'complete', createdAt: index }))
+    const image = { ...text, settings: { ...text.settings, mode: 'image' as const, model: 'gpt-image-2' } }
+    const ask = (conversation: typeof text, prompt = 'an orange cat') => planTurn(conversation, { prompt, requestId: 'r', assistantId: 'a', userMessageId: 'u' })
+    // The same history still stops a text turn, so the limit itself has not moved.
+    expect(() => ask(text)).toThrow(conversationTooLongMessage)
+    const plan = ask(image)
+    expect(plan.settings.mode).toBe('image')
+    expect(plan.prompt).toBe('an orange cat')
+    // An earlier reply too long to send back is not sent with a picture request either.
+    const longReply = { ...image, messages: [{ ...image.messages[0] }, { ...image.messages[1], content: 'a'.repeat(chatLimits.messageLength + 1) }] }
+    expect(() => ask(longReply)).not.toThrow()
+    expect(() => ask({ ...longReply, settings: text.settings })).toThrow(conversationReplyTooLongMessage)
+    // Redrawing a picture uses that reply's own settings, so a long conversation does not stop it either.
+    const drawn = plan.conversation.messages.map((message) => message.id === 'a' ? { ...message, status: 'complete' as const } : message)
+    expect(() => planTurn({ ...plan.conversation, settings: text.settings, messages: drawn }, { prompt: '', retryId: 'a', requestId: 'r2', assistantId: 'a2', userMessageId: 'u2' })).not.toThrow()
+    // The description itself is still held to the single message limit.
+    expect(() => ask(image, 'a'.repeat(chatLimits.messageLength + 1))).toThrow(`单条消息最多 ${chatLimits.messageLength} 个字符`)
   })
   it('warns once a text conversation carries seven tenths of either limit and stays quiet after it is dismissed', () => {
     const conversation = readyConversation()
@@ -649,6 +669,21 @@ describe('v2 chat attached images', () => {
     expect(conversation.draftImages?.map((item) => item.assetId[0])).toEqual(['A', 'B', 'C', 'D'])
     for (const letter of ['A', 'B', 'C', 'D']) conversation = removeDraftImage(conversation, letter.repeat(43))
     expect('draftImages' in conversation).toBe(false)
+  })
+
+  // R28-6：两个文件名不同、内容相同的图片一次选进来，作品库给的是同一个编号。
+  it('keeps one copy when a single pick brings the same picture twice, so the message still sends', () => {
+    const letters = (conversation: ReturnType<typeof visionConversation>) => conversation.draftImages?.map((item) => item.assetId[0])
+    let conversation = addDraftImages(visionConversation(), [image('A'), image('A')])
+    expect(letters(conversation)).toEqual(['A'])
+    conversation = addDraftImages(conversation, [image('B'), image('A'), image('B'), image('C')])
+    expect(letters(conversation)).toEqual(['A', 'B', 'C'])
+    conversation = addDraftImages(conversation, [image('D'), image('D'), image('E')])
+    expect(letters(conversation)).toEqual(['A', 'B', 'C', 'D'])
+    const plan = planTurn(conversation, { prompt: '', images: conversation.draftImages, requestId: 'r', assistantId: 'a', userMessageId: 'u' })
+    expect(() => buildChatCompletionsRequest({ model: conversation.settings.model, messages: plan.messages })).not.toThrow()
+    conversation = removeDraftImage(conversation, 'B'.repeat(43))
+    expect(letters(conversation)).toEqual(['A', 'C', 'D'])
   })
 
   it('shows the main-process reason for a failed pick without the IPC prefix', () => {

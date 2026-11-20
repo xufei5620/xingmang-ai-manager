@@ -782,6 +782,22 @@ describe('realm account service', () => {
     gate.resolve({ changed: true })
     await expect(pending).rejects.toMatchObject({ code: 'STALE' })
   })
+  it('still lets the caller hear that the password changed when the result is rejected after a switch (N6)', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    const gate = deferred<{ changed: true }>()
+    f.clients[1].client.changePassword = async (_input, onOutcome) => {
+      onOutcome?.('unconfirmed')
+      onOutcome?.('changed')
+      return gate.promise
+    }
+    const outcomes: string[] = []
+    const pending = f.service.client.changePassword({ originalPassword: 'test-old', newPassword: 'test-new' }, (outcome) => outcomes.push(outcome))
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    gate.resolve({ changed: true })
+    await expect(pending).rejects.toMatchObject({ code: 'STALE' })
+    expect(outcomes).toEqual(['unconfirmed', 'changed'])
+  })
   it('returns success when new-api revokes the current device session', async () => {
     const f = fixture()
     await f.service.login(login)

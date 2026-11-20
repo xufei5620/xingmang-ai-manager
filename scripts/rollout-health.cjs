@@ -15,7 +15,7 @@
 //
 // 仓库公开，运行页谁都能看，所以和版本统计一样只写每 100 台·天几次和「样本够不够」，不写台数。
 const fs = require('node:fs')
-const { compareReleaseVersions } = require('./update-release-utils.cjs')
+const { UPDATE_MANIFESTS, compareReleaseVersions } = require('./update-release-utils.cjs')
 const { StatusInputError, parseCurrentStatus, parsePublishedDates } = require('./service-status.cjs')
 const { StatsError, collectUsageSince } = require('./update-feed-stats.cjs')
 
@@ -58,6 +58,8 @@ const METRICS = [
   { id: 'tools', label: '装工具失败', count: (record) => totalOf(record.installs) },
 ]
 const SCOPES = [['all', '合计'], ['windows', 'Windows'], ['mac', 'Mac'], ['linux', 'Linux']]
+const PLATFORM_IDS = SCOPES.map(([id]) => id).filter((id) => id !== 'all')
+const PLAIN_VERSION = /^\d{1,5}\.\d{1,5}\.\d{1,5}$/
 
 class RolloutHealthError extends Error {}
 
@@ -102,6 +104,39 @@ function controlledPlatformsOf(rollout) {
   return known.length ? known : null
 }
 
+/** 一份更新清单对应打卡里的哪个平台（打卡把 macOS 记成 mac）；不是更新清单是 null。 */
+function manifestPlatformOf(name) {
+  const entry = Object.entries(UPDATE_MANIFESTS).find(([, names]) => names.includes(name))
+  if (!entry) return null
+  return entry[0] === 'macos' ? 'mac' : entry[0]
+}
+
+/**
+ * 工作流传进来的「清单名=版本号」（latest.yml=0.2.24 latest-mac.yml=0.2.24 …），返回清单名 → 版本号。
+ * 认不出的清单名、版本号整条不要；404 的清单工作流本来就不传。
+ */
+function parseManifestVersions(input) {
+  const versions = new Map()
+  for (const token of String(input ?? '').split(/\s+/).filter(Boolean)) {
+    const separator = token.indexOf('=')
+    if (separator <= 0) continue
+    const name = token.slice(0, separator)
+    const version = normalizeVersion(token.slice(separator + 1))
+    if (manifestPlatformOf(name) && PLAIN_VERSION.test(version)) versions.set(name, version)
+  }
+  return versions
+}
+
+/**
+ * 线上更新清单已经是放量这一版的平台。Linux 两个架构各一份，有一份到了就算。不知道清单（没传）时是 null，
+ * 当每个平台都发了。
+ */
+function publishedPlatformsOf(manifestVersions, version) {
+  if (!manifestVersions || manifestVersions.size === 0) return null
+  const platforms = [...manifestVersions].filter(([, live]) => compareVersions(live, version) === 0).map(([name]) => manifestPlatformOf(name))
+  return PLATFORM_IDS.filter((id) => platforms.includes(id))
+}
+
 function describeScopes(ids) {
   return ids.map((id) => SCOPES.find(([scope]) => scope === id)[1]).join('、')
 }
@@ -143,9 +178,11 @@ function formatHours(hours) {
 /**
  * 体检本身，纯函数。records 是 update-feed-stats.cjs 的 summarizeUsage 认出来的打卡（带 weight）；
  * releasedAt 是新版发出去的时刻（毫秒），approximate 表示只知道出包时间、实际发出去可能更晚。
- * 返回 { verdict, rollout, headline, reasons, notes, table }，verdict 是 open / stop / wait / unknown。
+ * publishedPlatforms 是线上清单已经是这一版的平台（publishedPlatformsOf），null 表示不知道、当都发了。
+ * 返回 { verdict, rollout, headline, reasons, notes, table, silent }，verdict 是 open / stop / wait / unknown；
+ * silent 是该有新版打卡、却一条都没有的平台。
  */
-function assessRolloutHealth({ rollout, releasedAt, approximate = false, records, now }) {
+function assessRolloutHealth({ rollout, releasedAt, approximate = false, records, now, publishedPlatforms = null }) {
   const version = rollout.version
   const hours = (now.getTime() - releasedAt) / HOUR_MS
   const newRecords = records.filter((record) => record.app === version)
@@ -155,7 +192,14 @@ function assessRolloutHealth({ rollout, releasedAt, approximate = false, records
   // 那些会被别的平台升上去的摊薄在合计里（R29-05，#1380 那次就是 Mac 大半停在旧版）。所以有电脑试着装过
   // 新版的平台、这次放量管着的平台都单列一格。
   const seen = [...newRecords, ...baselineRecords.filter((record) => failedToInstall(record, version))]
-  const scopes = SCOPES.filter(([id]) => id === 'all' || controlled?.includes(id) || seen.some((record) => record.platform === id))
+  // 只看「试着装过」还不够：新版下不下来、装之前就挂了的平台，打卡里连「装没装上」都没有，新版那边也一条
+  // 都没有，样本够不够又按合计算，别的平台升上去的照样把它顶过去（R29-05 复查时剩下的那一半）。所以这次放量
+  // 该推到的平台要各自有新版打卡：放量管着的平台都算；不限平台时，有电脑还停在旧版打卡的平台（有客户）算。
+  // 线上清单还不是这一版的平台（Linux 先不发，Linux 清单停在旧版）那边的电脑本来拿不到，不算。
+  const expected = PLATFORM_IDS.filter((id) => (!publishedPlatforms || publishedPlatforms.includes(id))
+    && (controlled ? controlled.includes(id) : baselineRecords.some((record) => record.platform === id)))
+  const silent = expected.filter((id) => !newRecords.some((record) => record.platform === id))
+  const scopes = SCOPES.filter(([id]) => id === 'all' || controlled?.includes(id) || silent.includes(id) || seen.some((record) => record.platform === id))
   const reasons = []
   // 有电脑下好了新版没装上、可试着装过的还太少，看不出是个别电脑还是整个平台都装不上的平台。
   const unsettled = []
@@ -223,6 +267,14 @@ function assessRolloutHealth({ rollout, releasedAt, approximate = false, records
   } else if (newDays < MIN_MACHINE_DAYS && hours < LONG_OBSERVATION_HOURS) {
     verdict = 'wait'
     headline = `再等等，${version} 先不放开：发出去 ${formatHours(hours)} 小时，${subject}新版的打卡还不到 ${MIN_MACHINE_DAYS} 台·天，看不准。`
+  } else if (silent.length && hours < LONG_OBSERVATION_HOURS) {
+    verdict = 'wait'
+    headline = `再等等，${version} 先不放开：发出去 ${formatHours(hours)} 小时，${describeScopes(silent)} 上新版一条打卡都还没有，别的平台升得好顶不了它。`
+  } else if (silent.length) {
+    // 和整个新版一条打卡都没有一样，两天后说看不出、交给人看：可能是新版没推到这个平台、装不上，也可能只是
+    // 这个平台的客户少、正好没轮到，打卡里分不出来。
+    verdict = 'unknown'
+    headline = `看不出 ${version} 在 ${describeScopes(silent)} 上稳不稳：发出去 ${formatHours(hours)} 小时，${describeScopes(silent)} 上新版一条打卡都没收到，别的平台升得好顶不了它。照老办法看客服群和反馈报告再定。`
   } else {
     verdict = 'open'
     let rough = ''
@@ -230,14 +282,16 @@ function assessRolloutHealth({ rollout, releasedAt, approximate = false, records
     else if (unsettled.length) rough = `（${describeScopes(unsettled.map((spot) => spot.id))} 上试着装新版的还少，装不装得上只能粗看）`
     headline = `建议放开 ${version}：发出去 ${formatHours(hours)} 小时，${comparable ? '和还在旧版的电脑比' : '只看新版自己'}，闪退、卡住、付款页、装工具都没有明显变差${rough}。`
   }
-  return { verdict, rollout, hours, headline, reasons, notes, table }
+  return { verdict, rollout, hours, headline, reasons, notes, table, silent }
 }
 
 const NEXT_STEPS = {
   open: (version) => `要放开就跑一次 **service-status**，「分批放量」填 \`none\`，批一次（docs/RELEASING.md「分批放量」）。不急的话也可以再看一天，${version} 照现在的比例继续推。`,
   stop: (version) => `先跑一次 **service-status**，「分批放量」填 \`${version} 0\` 停住：自动检查一个都不推，已经装上的不受影响。再照 docs/RELEASING.md 第 8 节看要不要撤回或退回。`,
   wait: () => '不用动，明天中午这一次会再看。',
-  unknown: () => '看看每天打卡是不是整个没收到（update-feed-stats 最后一节）：都没有的话是打卡出了问题，不是这一版的问题。',
+  unknown: (version, result) => (result.silent?.length
+    ? `去 update-feed-stats 的「还停在旧版本的电脑下过新版没有」看 ${describeScopes(result.silent)} 那边：下过新版却没升上来是装不上，没下过是新版没推到它们。拿不准先跑一次 **service-status**，「分批放量」填 \`${version} 0\` 停住，再照老办法看客服群和反馈报告。`
+    : '看看每天打卡是不是整个没收到（update-feed-stats 最后一节）：都没有的话是打卡出了问题，不是这一版的问题。'),
 }
 const VERDICT_TITLES = { open: '建议放开', stop: '建议停住', wait: '再等等', unknown: '看不出' }
 
@@ -265,7 +319,7 @@ function renderRolloutHealth(result, checkedAt) {
     '',
     `现在线上：${result.rollout.version} ${result.rollout.percent === 0 ? '先不自动推，只给自己点「检查更新」的人' : `先推给 ${result.rollout.percent}% 的电脑`}${result.rollout.platforms ? `（只管 ${result.rollout.platforms.join('、')}）` : ''}。`,
     '',
-    `**下一步**：${NEXT_STEPS[result.verdict](result.rollout.version)}`,
+    `**下一步**：${NEXT_STEPS[result.verdict](result.rollout.version, result)}`,
     '',
   ]
   if (result.table.length) lines.push('### 新版和还在旧版的电脑比', '', ...renderTable(result.table), '')
@@ -278,6 +332,7 @@ function renderRolloutHealth(result, checkedAt) {
     `- 放开的条件：发出去满 ${MIN_OBSERVATION_HOURS} 小时、新版样本够、没有上面的情况；样本一直不够的，满 ${LONG_OBSERVATION_HOURS} 小时也建议放开，写明只能粗看。`,
     `- 每个平台单独算：有新版打卡的、有电脑下好了新版没装上的、这次放量管着的平台各占一格。某个平台试着装的一台都没升上去，攒到 ${MIN_EVENTS} 台·天就停住；`
       + '试着装的还太少就再等等，不拿别的平台升得好顶它。放量只管某几个平台时，样本够不够按那几个平台算。',
+    `- 该推到的平台（放量管着的；不限平台时是有电脑还停在旧版、线上清单已经是新版的）新版一条打卡都没有，满 ${LONG_OBSERVATION_HOURS} 小时以前再等等，之后说看不出，不建议放开。`,
     '- Sentry 上新冒出来的报错没算进来：发版用的 Sentry 令牌只能传对照表、读不了报错（商业级差距报告 G06）。放量期间去 Sentry 按这一版的 release 筛一眼；同一个报错一小时超过 10 次 Sentry 会直接发邮件。',
   )
   for (const note of result.notes) lines.push(`- ${note}`)
@@ -324,19 +379,20 @@ function rolloutVersion(file) {
   return readActiveRollout(readStatus(file))?.version ?? ''
 }
 
-async function runRolloutHealth({ status, publishedDates, releasedAt, now = new Date(), collectUsage }) {
+async function runRolloutHealth({ status, publishedDates, manifestVersions = new Map(), releasedAt, now = new Date(), collectUsage }) {
   const plan = planRolloutHealth({ status, publishedDates, releasedAt, now })
   if (plan.done) return { verdict: plan.done.verdict, report: renderRolloutHealth(plan.done, now) }
+  const publishedPlatforms = publishedPlatformsOf(manifestVersions, plan.rollout.version)
   // 刚发出去一个小时以内，Cloudflare 里还没有新版的打卡，也省一次查询。
   if (now.getTime() - plan.releasedAt < HOUR_MS) {
-    const result = assessRolloutHealth({ rollout: plan.rollout, releasedAt: plan.releasedAt, approximate: plan.approximate, records: [], now })
+    const result = assessRolloutHealth({ rollout: plan.rollout, releasedAt: plan.releasedAt, approximate: plan.approximate, records: [], now, publishedPlatforms })
     return { verdict: result.verdict, report: renderRolloutHealth(result, now) }
   }
   const { usage } = await collectUsage(plan.from, now)
   if (!usage) {
     return { verdict: 'unknown', report: `**放量体检：看不出。** 这个套餐的 Cloudflare 统计不能按请求路径分，每天打卡没法数。照老办法看客服群和反馈报告再定 ${plan.rollout.version} 放不放开。\n` }
   }
-  const result = assessRolloutHealth({ rollout: plan.rollout, releasedAt: plan.releasedAt, approximate: plan.approximate, records: usage.records, now })
+  const result = assessRolloutHealth({ rollout: plan.rollout, releasedAt: plan.releasedAt, approximate: plan.approximate, records: usage.records, now, publishedPlatforms })
   let report = renderRolloutHealth(result, now)
   if (usage.sampleInterval > 1) report += `- 这段时间 Cloudflare 是抽样记的（最多每 ${Math.round(usage.sampleInterval)} 次记 1 次），每条按抽样倍数折算，数字有误差。\n`
   return { verdict: result.verdict, report }
@@ -349,10 +405,11 @@ async function main(argv) {
     console.log(rolloutVersion(options.status))
     return
   }
-  if (command !== 'check') throw new RolloutHealthError('用法：rollout-health.cjs rollout-version --status <file> | check --status <file> --published-dates <…> [--released-at <ISO 时间>]')
+  if (command !== 'check') throw new RolloutHealthError('用法：rollout-health.cjs rollout-version --status <file> | check --status <file> --published-dates <…> [--manifest-versions <…>] [--released-at <ISO 时间>]')
   const { verdict, report } = await runRolloutHealth({
     status: readStatus(options.status),
     publishedDates: parsePublishedDates(options['published-dates']),
+    manifestVersions: parseManifestVersions(options['manifest-versions']),
     releasedAt: Date.parse(String(options['released-at'] ?? '')),
     collectUsage: (from, now) => collectUsageSince({ token: process.env.CLOUDFLARE_ANALYTICS_TOKEN, from, now }),
   })
@@ -377,6 +434,7 @@ module.exports = {
   MIN_OBSERVATION_HOURS,
   RolloutHealthError,
   assessRolloutHealth,
+  parseManifestVersions,
   planRolloutHealth,
   readActiveRollout,
   renderRolloutHealth,

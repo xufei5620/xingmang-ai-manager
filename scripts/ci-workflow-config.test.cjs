@@ -1593,6 +1593,7 @@ test('the installer smokes run inside quality on the pull requests that touch th
     'electron/app-settings.ts',
     'electron-builder.config.cjs',
     'build/installer.nsh',
+    'scripts/windows-installer-package-entries.cjs',
     'package.json',
     'package-lock.json',
     'scripts/upgrade-smoke.cjs',
@@ -1618,11 +1619,13 @@ test('the installer smokes run inside quality on the pull requests that touch th
     'scripts/windows-install-directory-acl-smoke.ps1',
     'scripts/windows-file-association-smoke.ps1',
     'scripts/windows-upgrade-blocked-smoke.ps1',
+    'scripts/windows-upgrade-user-files-smoke.ps1',
+    'scripts/windows-installer-package-entries.cjs',
     '.github/workflows/windows-uninstall-smoke.yml',
   ]) {
     assert.equal(touchesUninstallSmoke(['README.md', file]), true, file)
   }
-  for (const file of ['electron/ipc.ts', 'electron/platform/entry.test.ts', 'scripts/windows-acceleration-recovery.test.cjs']) {
+  for (const file of ['electron/ipc.ts', 'electron/platform/entry.test.ts', 'scripts/windows-acceleration-recovery.test.cjs', 'scripts/windows-installer-package-entries.test.cjs']) {
     assert.equal(touchesUninstallSmoke(['README.md', file]), false, file)
   }
 
