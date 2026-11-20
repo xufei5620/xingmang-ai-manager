@@ -33,6 +33,7 @@
 - `startup-failure.ts` — 启动出错时给小白看的弹框：按 errno 链分成磁盘满 / 被杀毒软件占着 / 安装不完整 / 其他，原文只在点「复制错误信息」时出去且先抹用户目录与密钥（I13）
 - `unexpected-exit.ts` — 主进程未捕获异常时不弹 Electron 的英文框：记一笔、自动重开一次，下次打开用中文说明并给「复制给客服」；10 分钟内已重开过就不再重开，避免窗口一闪一闪
 - `crash-report.ts` / `crash-reporter.ts` — 崩溃自动上报 Sentry。前者全是纯函数（DSN 校验只认 `*.ingest.sentry.io`、脱敏、事件与 envelope 构造、开关判定），后者负责发送（按会话去重限量、超时、拒绝重定向、读回包限量，I10）。没用 `@sentry/electron`；开关是 `AppSettings.crashReporting`，缺省开，环境变量可关；本机快包和 CI 里起的打包版不报（同每天打卡），测试包记在 `testing` 环境（`xingmangTestingBuild`）。报错带 release 和 dist（平台-芯片），帧地址改写成 `app:///dist-electron/…`、`app:///dist/…`，和发版后传给 Sentry 的对照表对上（`docs/RELEASING.md` §9）
+- `hang-report.ts` / `main-hang-watchdog.ts` / `main-hang-watchdog-worker.ts` — 卡住时上报卡在哪段代码（2026-11-20 yoyo「卡顿做」）。走崩溃上报同一套（同一个开关、打码、帧地址改写），级别是 `warning`，只在抽中的两成打开里报，一次打开主进程、界面各最多一回（护住 Sentry 免费版每月 5000 条，别让崩溃被挤掉）。主进程那半：匿名统计的卡住计时器这次打开第一次报卡住 2 秒以上才起后台线程（约 10 MB），窗口在前台时每秒收一次心跳，5 秒没心跳就用进程内调试会话（`Session.connectToMainThread`，**不开端口**）让主线程停一下、抄下调用栈立刻放行，抓一次就关线程；worker 只许依赖 Node 自带模块（要能单独从 app.asar 里加载），由测试钉住。界面那半：窗口「没响应」时问 `collectJavaScriptCallStack`，要 `--enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports` 加上协议回包里的 `Document-Policy` 头（`app-protocol.ts` 的 `applicationResponseHeaders`），最多等 3 秒
 - `usage-stats.ts` / `usage-stats-reporter.ts` — 匿名使用统计（每天打卡，2026-10-26 yoyo 选的推荐档）。前者是纯函数：一天那条地址的每一段都从固定缩写表或版本号样式来，报错原文只在内存里归成五类之一，开关判定、计数文件的解析；后者负责本机计数文件（`safe-local-data` 原子写）和发送（两个固定地址、一天最多成功一次最多试三次、不带 cookie、拒绝重定向、超时、读回包限量，I10），另有主进程卡顿计时。开关是系统界面设置里的 `privacy.anonymousUsage`，没碰过 = 开；工作流解码在 `scripts/update-feed-stats.cjs`
 
 ## 诊断、日志与反馈

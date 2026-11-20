@@ -41,7 +41,7 @@ export interface CrashReportEvent {
   event_id: string
   timestamp: number
   platform: 'node'
-  level: 'fatal' | 'error'
+  level: CrashReportLevel
   logger: string
   release: string
   dist: string
@@ -52,12 +52,15 @@ export interface CrashReportEvent {
   extra?: Record<string, string>
 }
 
+/** `warning` is a hang (hang-report.ts): nothing crashed, the app was stuck for a while. */
+export type CrashReportLevel = 'fatal' | 'error' | 'warning'
+
 export interface CrashReportInput {
   /** Which process and hook produced this, e.g. `main.uncaught-exception`. */
   mechanism: string
   source: 'main' | 'renderer'
   error: unknown
-  level?: 'fatal' | 'error'
+  level?: CrashReportLevel
   /** Short free-text marker (a component stack, a renderer route). */
   context?: string
 }
