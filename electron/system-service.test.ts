@@ -7325,8 +7325,9 @@ describe('installing or uninstalling a CLI', () => {
   // 客户设了 HOME（Git、MSYS 常见）就把刚装好的那份判成不能安全卸载。两个调用点都在这一条里：先判断能不能卸，再去删。
   // Mac、Linux 上模拟 Windows 的服务；真 Windows 上要删的文件名跟着 process.platform 走，照着放，CI 的 Windows 作业照真的跑。
   it('uninstalls a Windows Grok from the profile folder when HOME points somewhere else', async () => {
-    const profile = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-grok-profile-')))
-    const customHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-grok-custom-home-')))
+    // native：Windows runner 的临时目录是短名 RUNNER~1，卸载报回来的是展开后的长名，两边要按同一种写法比。
+    const profile = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-grok-profile-')))
+    const customHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-grok-custom-home-')))
     temporaryDirectories.push(profile, customHome)
     const bin = path.join(profile, '.grok', 'bin')
     const fileNames = process.platform === 'win32' ? ['grok.exe', 'agent.exe', 'version.json'] : ['grok', 'agent']
