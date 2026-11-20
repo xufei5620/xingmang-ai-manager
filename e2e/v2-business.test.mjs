@@ -1746,6 +1746,22 @@ test('session detail exposes a retry action after a temporary read failure', asy
   }
 })
 
+test('session detail shows what each AI turn ran and changed, folded to names only', async () => {
+  const page = await fixture('page=sessions&turnActivity=1')
+  try {
+    await page.getByTestId('sessions-view-codex:session-1').click()
+    const drawer = page.getByTestId('session-detail-drawer')
+    const line = drawer.getByTestId('session-detail-turn-activity')
+    await line.getByText('这一轮：跑了 3 条命令，改了 2 个文件，有 1 步没成功', { exact: true }).waitFor()
+    assert.equal(await line.getByText('sum.ts、sum.test.ts', { exact: true }).isVisible(), false)
+    await line.getByText('这一轮：跑了 3 条命令，改了 2 个文件，有 1 步没成功', { exact: true }).click()
+    await line.getByText('sum.ts、sum.test.ts', { exact: true }).waitFor()
+    await line.getByText('npm、git', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
 test('extension toggle preserves original state and reports mutation failure', async () => {
   const page = await fixture('page=mcp')
   try {

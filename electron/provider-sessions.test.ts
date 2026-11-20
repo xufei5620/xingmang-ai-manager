@@ -533,6 +533,37 @@ describe('ProviderSessionsService', () => {
     expect(detail.messages.map((message) => message.text)).toContain('第一条会话')
   })
 
+  it('hangs what a Claude Code turn ran and changed on its last AI reply, with names only', async () => {
+    const data = fixture()
+    writeJsonLines(path.join(data.claude, 'project-a', 'tools.jsonl'), [
+      { type: 'user', sessionId: 'tools', message: { role: 'user', content: '帮我修一下测试' } },
+      { type: 'assistant', sessionId: 'tools', message: { role: 'assistant', content: [{ type: 'text', text: '我先跑一下测试' }] } },
+      { type: 'assistant', sessionId: 'tools', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'cd /home/someone/app && npm test -- --token=abc' } }] } },
+      { type: 'user', sessionId: 'tools', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: 'FAIL' }] } },
+      { type: 'assistant', sessionId: 'tools', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'Edit', input: { file_path: '/home/someone/app/src/sum.ts', old_string: 'a', new_string: 'b' } }] } },
+      { type: 'user', sessionId: 'tools', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', is_error: false, content: 'ok' }] } },
+      { type: 'assistant', sessionId: 'tools', message: { role: 'assistant', content: [{ type: 'text', text: '改好了' }] } },
+      { type: 'user', sessionId: 'tools', message: { role: 'user', content: '谢谢' } },
+    ])
+    const sessions = service(data, codexReader([]))
+    const page = await sessions.list({ provider: 'claude' })
+    const detail = await sessions.detail(page.items[0].id)
+
+    expect(detail.messages.map((message) => message.text)).toEqual(['帮我修一下测试', '我先跑一下测试', '改好了', '谢谢'])
+    expect(detail.messages.map((message) => message.activity)).toEqual([
+      undefined,
+      undefined,
+      { commands: 1, commandNames: ['npm'], fileCount: 1, files: ['sum.ts'], failedSteps: 1 },
+      undefined,
+    ])
+    expect(JSON.stringify(detail)).not.toContain('--token=abc')
+    expect(JSON.stringify(detail.messages)).not.toContain('/home/someone')
+
+    const outputPath = path.join(data.root, 'exports', 'tools.md')
+    await sessions.exportMarkdown(page.items[0].id, outputPath)
+    expect(fs.readFileSync(outputPath, 'utf8')).not.toContain('sum.ts')
+  })
+
   it('streams all messages to Markdown while detail retains a bounded tail', async () => {
     const data = fixture()
     const entries = Array.from({ length: 300 }, (_, index) => ({

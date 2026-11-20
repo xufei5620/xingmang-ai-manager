@@ -1360,6 +1360,23 @@ const apiMethods = {
     detailReads += 1
     if (query.has('detailFailure') && detailReads === 1)
       throw new Error('会话详情暂时不可读')
+    if (query.has('turnActivity')) {
+      return {
+        session,
+        messages: [
+          { role: 'user', text: '帮我把测试修好', timestamp: time },
+          {
+            role: 'assistant',
+            text: '测试已经修好了',
+            timestamp: time,
+            activity: { commands: 3, commandNames: ['npm', 'git'], fileCount: 2, files: ['sum.ts', 'sum.test.ts'], failedSteps: 1 },
+          },
+        ],
+        messageStats: { total: 2, user: 1, assistant: 1, system: 0, other: 0, invalidLines: 0 },
+        messagesTruncated: false,
+        sourceTruncated: false,
+      }
+    }
     return {
       session,
       messages: [{ role: 'user', text: '这是一条测试消息', timestamp: time }],
