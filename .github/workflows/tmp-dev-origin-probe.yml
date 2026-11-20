@@ -1,0 +1,53 @@
+# 临时：核 macOS 开发版首屏慢在哪一段（e2e/macos-dev-origin.test.mjs 两周内两次超时），核完就删
+name: tmp-dev-origin-probe
+on:
+  push:
+    branches: [claude/project-thread-b2bc4e]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      PROBE_VITE_LOG: info
+      PROBE_PROFILE_MS: '20000'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      - name: Restore the Electron download for this version
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Caches/electron
+          key: electron-${{ runner.os }}-arm64-x64-${{ hashFiles('node_modules/electron/package.json') }}
+      - name: Install the Electron binary
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs
+      - run: npm run compile
+      - name: Cold Vite cache, three rounds
+        run: |
+          for i in 1 2 3; do
+            echo "=== cold round $i"
+            rm -rf node_modules/.vite
+            node tmp-probe/probe.mjs || echo "round $i failed"
+          done
+      - name: Warm Vite cache, three rounds
+        run: |
+          for i in 1 2 3; do
+            echo "=== warm round $i"
+            node tmp-probe/probe.mjs || echo "round $i failed"
+          done
+      - run: npx --no-install playwright install chromium
+      - name: Same order as macos-test (browser suites first), three rounds
+        run: |
+          npm run test:browser > /dev/null 2>&1 || echo "test:browser failed"
+          for i in 1 2 3; do
+            echo "=== after-browser round $i"
+            node tmp-probe/probe.mjs || echo "round $i failed"
+          done
