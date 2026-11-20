@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { aiImageKeptUnsavedMessage, chargedAfterStopAssetTag, createAiImageService, type AiImageAssetWriter } from './ai-image-service'
+import { aiImageKeptInMemoryMessage, aiImageKeptUnsavedMessage, chargedAfterStopAssetTag, createAiImageService, type AiImageAssetWriter } from './ai-image-service'
 import { networkFailureMessages } from './network-failure'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
 
@@ -264,6 +264,21 @@ describe('AI image service', () => {
     expect((error as Error).message).toBe(aiImageKeptUnsavedMessage)
     expect(aiImageKeptUnsavedMessage).toBe('图片已经生成、也已经扣费了，但没能存进作品库，已经先替你收着。先别重新生成，清出一些空间后会自动存进作品库。')
     expect((error as Error).cause).toBe(setAside)
+  })
+
+  it('warns that quitting loses a paid image the stash could only hold in memory (A02)', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const heldInMemory = Object.assign(new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服'), { code: 'AI_IMAGE_KEPT_IN_MEMORY' })
+    vi.mocked(assets.storeBase64).mockRejectedValue(heldInMemory)
+
+    const error = await service.generate(4, {
+      requestId: 'memory-set-aside', group: '生图分组', model: 'gpt-image-2', prompt: '图',
+    }).then(() => null, (reason: unknown) => reason)
+
+    expect((error as Error).message).toBe(aiImageKeptInMemoryMessage)
+    expect(aiImageKeptInMemoryMessage).toBe('图片已经生成、也已经扣费了，但电脑上暂时存不下，先替你收在星芒里，一退出就没了。先别重新生成，也先别退出星芒，清出一些空间后会自动存进作品库。')
+    expect((error as Error).cause).toBe(heldInMemory)
   })
 
   it('treats a successful response without images as ambiguous and never retries it', async () => {

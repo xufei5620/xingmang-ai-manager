@@ -36,14 +36,15 @@ export type DarwinGrokCanonicalLinkSnapshot =
   | { canonicalLinkPath: string; existed: true; linkTarget: string }
 
 /**
- * Unlike the canonical grok link, ensureDarwinGrokAgentLink never modifies an
- * agent link that already exists (see its docstring below) — so whether it
- * existed before the transaction started is the entire snapshot a rollback
- * needs; there is no prior target to remember and restore.
+ * ensureDarwinGrokAgentLink may move an existing agent link onto the version
+ * `grok` was just switched to (see its docstring below), so a rollback has to
+ * put the previous target back, not only remove a link it created. linkTarget
+ * is null when the path held something other than a symlink: ensure never
+ * touches that, so there is nothing to restore.
  */
 export type DarwinGrokAgentLinkSnapshot =
   | { agentLinkPath: string; existed: false }
-  | { agentLinkPath: string; existed: true }
+  | { agentLinkPath: string; existed: true; linkTarget: string | null }
 
 export interface DarwinGrokCommandResult {
   stdout: string
@@ -156,29 +157,58 @@ function agentLinkPath(homeDirectory: string): string {
  * same way Windows does: point `agent` at the exact binary `grok` was just
  * codesign- and version-verified against.
  *
- * Idempotent and non-destructive by design — ensure* only fills an absence.
- * Whatever already occupies ~/.grok/bin/agent (a fuller official install, a
- * user's own file, a previous run of this same repair) is left completely
- * untouched; this never inspects or overwrites existing content there.
+ * 11-18 复核 D19：以前这里只补「没有」的情况，已经有的一概不动。可星芒每次更新或装回旧版，npm 只改
+ * `grok`，于是 `agent` 一直指着第一次装的那一版。现在 `agent` 已经是一条指向官方那几种布局
+ * （downloads 下带或不带版本号的 macOS 程序、npm 放在旁边的 `grok-<版本>`）的链接、又跟 `grok`
+ * 不一样时，原子地换成跟 `grok` 一样；xAI 自己的安装器本来就让两条指向同一个文件。
+ *
+ * Still idempotent and conservative: a regular file, or a link aimed anywhere
+ * outside those official shapes (something the customer made by hand), is
+ * left exactly as it is.
  */
 export async function ensureDarwinGrokAgentLink(
   homeDirectory: string,
   canonical: DarwinGrokCanonicalSelection,
 ): Promise<void> {
   const linkPath = agentLinkPath(homeDirectory)
+  let current: fs.Stats
   try {
-    await fs.promises.lstat(linkPath)
-    return
+    current = await fs.promises.lstat(linkPath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    try {
+      await fs.promises.symlink(canonical.linkTarget, linkPath)
+    } catch (symlinkError) {
+      // A concurrent creator (this same repair racing itself, or a fuller
+      // official install landing at the same moment) already won; either way
+      // something now exists at the path this function promises to ensure.
+      if ((symlinkError as NodeJS.ErrnoException).code === 'EEXIST') return
+      throw symlinkError
+    }
+    return
   }
+  if (!current.isSymbolicLink()) return
+  const currentTarget = await fs.promises.readlink(linkPath)
+  if (currentTarget === canonical.linkTarget || !isOfficialAgentLinkTarget(currentTarget)) return
+  await replaceGrokBinLink(linkPath, canonical.linkTarget, '.agent-retarget-')
+}
+
+/** The shapes xAI's installers, its npm postinstall, or this repair leave at ~/.grok/bin/agent. */
+function isOfficialAgentLinkTarget(linkTarget: string): boolean {
+  return isOfficialUninstallLinkTarget(linkTarget) || isUnversionedOfficialLinkTarget(linkTarget)
+}
+
+/**
+ * Swaps a ~/.grok/bin link in one rename so `agent` never disappears in
+ * between; rename(2) replaces the old link itself, it does not follow it.
+ */
+async function replaceGrokBinLink(linkPath: string, linkTarget: string, temporaryPrefix: string): Promise<void> {
+  const temporaryLink = path.join(path.dirname(linkPath), `${temporaryPrefix}${randomUUID()}`)
+  await fs.promises.symlink(linkTarget, temporaryLink)
   try {
-    await fs.promises.symlink(canonical.linkTarget, linkPath)
+    await fs.promises.rename(temporaryLink, linkPath)
   } catch (error) {
-    // A concurrent creator (this same repair racing itself, or a fuller
-    // official install landing at the same moment) already won; either way
-    // something now exists at the path this function promises to ensure.
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return
+    await fs.promises.unlink(temporaryLink).catch(() => undefined)
     throw error
   }
 }
@@ -473,15 +503,24 @@ export async function restoreDarwinGrokCanonicalLink(
   }
 }
 
-/** Captures only whether the agent link already existed, mirroring ensureDarwinGrokAgentLink's absence-only contract. */
-export function captureDarwinGrokAgentLinkPresence(homeDirectory: string): DarwinGrokAgentLinkSnapshot {
+/**
+ * Captures what ~/.grok/bin/agent was before the transaction: absent, a link
+ * (with its target, since ensureDarwinGrokAgentLink may move it), or something
+ * else that ensure never touches.
+ */
+export function captureDarwinGrokAgentLink(homeDirectory: string): DarwinGrokAgentLinkSnapshot {
   const linkPath = agentLinkPath(homeDirectory)
+  let stats: fs.Stats
   try {
-    fs.lstatSync(linkPath)
-    return { agentLinkPath: linkPath, existed: true }
+    stats = fs.lstatSync(linkPath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     return { agentLinkPath: linkPath, existed: false }
+  }
+  return {
+    agentLinkPath: linkPath,
+    existed: true,
+    linkTarget: stats.isSymbolicLink() ? fs.readlinkSync(linkPath) : null,
   }
 }
 
@@ -497,25 +536,30 @@ export function captureDarwinGrokAgentLinkPresence(homeDirectory: string): Darwi
  * agent.exe as an ordinary member of the same commitManagedReplacements
  * transaction as grok.exe, so one rollback undoes both there.
  *
- * Idempotent by construction, matching ensureDarwinGrokAgentLink's own
- * contract in reverse: a link that already existed before the transaction
- * started is never touched (nothing to roll back — same as calling this
- * after a rollback that already ran, or after a lifecycle that never reached
- * the ensure step at all). Anything other than a symlink now occupying the
- * path was not something ensureDarwinGrokAgentLink could have created (it
- * only ever calls fs.symlink), so it is left alone rather than treated as a
- * rollback failure.
+ * D19 后 ensure 会把旧的 `agent` 挪到新版上，所以这里也要把它挪回原来那一版：`grok` 退回旧版、
+ * `agent` 却留在没核过的新版上，两条又对不上了。
+ *
+ * Idempotent: restoring twice, or after a lifecycle that never reached the
+ * ensure step, changes nothing. Anything other than a symlink now occupying
+ * the path was not something ensureDarwinGrokAgentLink could have created (it
+ * only ever creates symlinks), so it is left alone rather than treated as a
+ * rollback failure; the same goes for a path that held a non-symlink before.
  */
 export async function restoreDarwinGrokAgentLink(snapshot: DarwinGrokAgentLinkSnapshot): Promise<void> {
-  if (snapshot.existed) return
   let current: fs.Stats | null = null
   try {
     current = await fs.promises.lstat(snapshot.agentLinkPath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  if (!current || !current.isSymbolicLink()) return
-  await fs.promises.unlink(snapshot.agentLinkPath)
+  if (current && !current.isSymbolicLink()) return
+  if (!snapshot.existed) {
+    if (current) await fs.promises.unlink(snapshot.agentLinkPath)
+    return
+  }
+  if (snapshot.linkTarget === null) return
+  if (current && await fs.promises.readlink(snapshot.agentLinkPath) === snapshot.linkTarget) return
+  await replaceGrokBinLink(snapshot.agentLinkPath, snapshot.linkTarget, '.agent-rollback-')
 }
 
 /** Keeps rollback active until lifecycle work and every caller-supplied service verification succeed. */
@@ -523,7 +567,7 @@ export async function runDarwinGrokPostInstallTransaction<T>(
   options: DarwinGrokPostInstallTransactionOptions<T>,
 ): Promise<T> {
   const snapshot = captureDarwinGrokCanonicalLink(options.homeDirectory)
-  const agentSnapshot = captureDarwinGrokAgentLinkPresence(options.homeDirectory)
+  const agentSnapshot = captureDarwinGrokAgentLink(options.homeDirectory)
   try {
     await options.lifecycle()
     return await options.verify()

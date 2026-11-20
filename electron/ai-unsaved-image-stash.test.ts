@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AI_IMAGE_KEPT_UNSAVED_ERROR_CODE, AiAssetStore, type AiStoredAsset } from './ai-asset-store'
+import { AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE, AI_IMAGE_KEPT_UNSAVED_ERROR_CODE, AiAssetStore, type AiImageKeptPlace, type AiStoredAsset } from './ai-asset-store'
 import {
   AiUnsavedImageStash,
   stashedImageFileName,
@@ -32,12 +32,12 @@ function diskFull(): Error {
   return Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
 }
 
-/** Makes every temporary-file write of an AiAssetStore fail the way a full disk does. */
-function failTemporaryFileWrites(): void {
+/** Makes every temporary-file write of an AiAssetStore (only those under `within` when given) fail the way a full disk does. */
+function failTemporaryFileWrites(within?: string): void {
   const open = fs.promises.open
   vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
     const handle = await open(...args)
-    if (String(args[0]).endsWith('.tmp')) {
+    if (String(args[0]).endsWith('.tmp') && (within === undefined || String(args[0]).startsWith(within + path.sep))) {
       handle.writeFile = async () => {
         throw diskFull()
       }
@@ -392,7 +392,7 @@ describe('AiUnsavedImageStash', () => {
 describe('AiAssetStore with an unsaved-image stash', () => {
   function storeWithStash() {
     const outputRoot = path.join(temporaryDirectory(), 'output')
-    const keepUnsaved = vi.fn(async () => true)
+    const keepUnsaved = vi.fn(async (): Promise<AiImageKeptPlace | null> => 'disk')
     const store = new AiAssetStore({ outputRoot, keepUnsaved, now: () => new Date(2026, 10, 15, 12, 0, 0) })
     return { store, keepUnsaved }
   }
@@ -409,14 +409,45 @@ describe('AiAssetStore with an unsaved-image stash', () => {
     expect((error as Error).cause).toMatchObject({ code: 'ENOSPC' })
   })
 
+  it('marks an image the stash could only hold in memory apart from one kept on disk (A02)', async () => {
+    const { store, keepUnsaved } = storeWithStash()
+    keepUnsaved.mockResolvedValue('memory')
+
+    failTemporaryFileWrites()
+    const error = await store.storeBase64(42, png().toString('base64')).then(() => null, (reason: unknown) => reason)
+
+    // Gone once the app quits, so the image service has to say so.
+    expect(error).toMatchObject({ code: AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE })
+    expect((error as Error).cause).toMatchObject({ code: 'ENOSPC' })
+  })
+
+  it('passes on where a real stash put the image, disk or memory alone', async () => {
+    const { parent, outputRoot, root, library } = setup()
+    const onDisk = new AiUnsavedImageStash({ root, target: library, scheduleRetry: () => undefined })
+    const blocked = path.join(parent, 'blocked')
+    fs.writeFileSync(blocked, 'a file where the folder should be')
+    const inMemory = new AiUnsavedImageStash({ root: path.join(blocked, 'ai-unsaved-images'), target: library, scheduleRetry: () => undefined })
+    const keptOnDisk = new AiAssetStore({ outputRoot, keepUnsaved: (userId, bytes) => onDisk.keep(userId, bytes) })
+    const keptInMemory = new AiAssetStore({ outputRoot, keepUnsaved: (userId, bytes) => inMemory.keep(userId, bytes) })
+
+    // Only the library's own folder is full; the stash folder next to it still takes the picture.
+    failTemporaryFileWrites(outputRoot)
+    const diskError = await keptOnDisk.storeBase64(42, png(5, 5).toString('base64')).then(() => null, (reason: unknown) => reason)
+    const memoryError = await keptInMemory.storeBase64(42, png(6, 6).toString('base64')).then(() => null, (reason: unknown) => reason)
+
+    expect(diskError).toMatchObject({ code: AI_IMAGE_KEPT_UNSAVED_ERROR_CODE })
+    expect(memoryError).toMatchObject({ code: AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE })
+  })
+
   it('does not claim the image was set aside when the stash could not take it', async () => {
     const outputRoot = path.join(temporaryDirectory(), 'output')
-    const store = new AiAssetStore({ outputRoot, keepUnsaved: async () => false })
+    const store = new AiAssetStore({ outputRoot, keepUnsaved: async () => null })
 
     failTemporaryFileWrites()
     const error = await store.storeBase64(42, png().toString('base64')).then(() => null, (reason: unknown) => reason)
 
     expect((error as { code?: unknown }).code).not.toBe(AI_IMAGE_KEPT_UNSAVED_ERROR_CODE)
+    expect((error as { code?: unknown }).code).not.toBe(AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE)
   })
 
   it('keeps the same error when the stash itself fails', async () => {
