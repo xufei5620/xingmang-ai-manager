@@ -157,6 +157,7 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 
 - 写法：等存好本身。手机遥控的图用 `setup()` 返回的 `imagesSaved(count)`（第 count 张存好时 resolve），别的存放处照这个办法包一层 `save`。
 - 等的东西前面排着几次原子写的，也别用 `vi.waitFor`：它默认只等 1 秒，每次写一两百毫秒，凑上五六次就过了。手机遥控每处理一句话都先把消息编号记进设置、每张图都存一次，「keeps at most five images waiting for the next prompt」等第二句回话前要写 7 次，11-18 #1929、11-20 main 和 #1940 在 Windows `vitest-2` 上各红一次（指纹：只等到「收到图片……」，「一次最多带 5 张图片，这张没收。」没到；慢的时候一句都没等到，`expected [] to deeply equal`）。手机上收到的话用假渠道的 `sentUntil(done)` 等发送本身，再照常断言全部内容。
+- 被测代码自己不等落盘的（返回之后才写），等那次原子写本身。`scanExternalClients` 返回时上次检测结果还没写，`external-client-service.test.ts`「shows the next start the last whole detection…」原来用 `vi.waitFor` 读文件等，#2000 在 Windows `vitest-2` 上跑道慢一阵时就红了（指纹：1 秒出头 `ENOENT … external-client-snapshot.json`，#2006）。现在那个文件 `vi.mock('./safe-local-data')` 原样转给真的 `writeAtomicSafeUtf8File`，写完告诉一声：注册在触发之前，`const saved = atomicWrites.next(path.resolve(file), '要写进去的内容')`，触发后 `await saved`。本地复现：在 `external-client-snapshot-cache.ts` 的 `write` 里写盘前临时等 1.1 秒，旧写法当场红。
 - 本地复现：在 `writeAtomicSafeFile` 的 `handle.writeFile` 后面临时加一句 `await new Promise((resolve) => setTimeout(resolve, 150))`，旧写法当场红。别提交这句。
 
 ## 刚过零点那几分钟才红的时间写法（2026-11-12，#1809）
