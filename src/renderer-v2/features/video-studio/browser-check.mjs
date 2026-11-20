@@ -1297,3 +1297,54 @@ test('keeps several films in the draft box, switches between them and picks a wa
   assert.deepEqual(errors, [])
   await page.close()
 })
+
+// 11-18 复核 A01：「接着做」时这台电脑上存不下手上那一格，就整个不换，草稿箱也写回原来的样子；重开以后两份都找得回来。
+// 先存不下的是草稿箱那一格时也一样不换。
+test('keeps both films when switching drafts runs out of room on this computer', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '咖啡馆', { title: '咖啡', shots: [{ prompt: '拉花' }] })
+  await page.getByTestId('video-new').click()
+  await page.getByTestId('video-drafts').waitFor()
+  await writeStoryboard(page, '海边日落', { title: '日落', shots: [{ prompt: '海浪' }] })
+
+  async function failNextWrite(cell) {
+    await page.evaluate((target) => {
+      const original = Storage.prototype.setItem
+      Storage.prototype.setItem = function (key, value) {
+        const drafts = key.endsWith(':drafts')
+        if (key.startsWith('xingmang-ui-v2:video-studio:') && (target === 'drafts') === drafts) {
+          Storage.prototype.setItem = original
+          throw new DOMException('full', 'QuotaExceededError')
+        }
+        return original.call(this, key, value)
+      }
+    }, cell)
+  }
+
+  for (const cell of ['project', 'drafts']) {
+    await failNextWrite(cell)
+    await page.getByTestId('video-draft-open-0').click()
+    await page.getByTestId('video-storage-warning').waitFor()
+    assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '海浪', `${cell}: the film in hand stays`)
+    assert.match(await page.getByTestId('video-draft-0').textContent(), /^咖啡/, `${cell}: the draft stays in the box`)
+    assert.match(await page.getByTestId('video-storage-warning').textContent(), /这台电脑上存不下更多草稿了，删掉几份不要的再试。/)
+
+    await page.reload()
+    await page.getByTestId('video-shot-0').waitFor()
+    assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '海浪', `${cell}: the film in hand is still there after reopening`)
+    assert.match(await page.getByTestId('video-draft-0').textContent(), /^咖啡/, `${cell}: the draft is still in the box after reopening`)
+    assert.equal(await page.getByTestId('video-draft-1').count(), 0)
+  }
+
+  // 有地方了再点就换过去，换下来的进草稿箱。
+  await page.getByTestId('video-draft-open-0').click()
+  await page.waitForFunction(() => document.querySelector('[data-testid="video-shot-prompt-0"]')?.value === '拉花')
+  assert.match(await page.getByTestId('video-draft-0').textContent(), /^日落/)
+  assert.equal(await page.getByTestId('video-storage-warning').count(), 0)
+  await page.reload()
+  await page.getByTestId('video-shot-0').waitFor()
+  assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '拉花')
+  assert.match(await page.getByTestId('video-draft-0').textContent(), /^日落/)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
