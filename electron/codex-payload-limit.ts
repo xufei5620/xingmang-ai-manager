@@ -417,12 +417,17 @@ export interface CodexPayloadState {
   warned: Record<string, number>
 }
 
-/** 处理一次 413 的结果，记进日志的 action。 */
-export type CodexPayloadAction = 'switched' | 'already' | 'locked' | 'unreachable' | 'unfollowed' | 'too-large'
+/** 处理一次 413 的结果，记进日志的 action。stale = 处理到一半换了账号、退出了或者 Codex 换成了官方账号，不算数（R29-03）。 */
+export type CodexPayloadAction = 'switched' | 'already' | 'locked' | 'unreachable' | 'unfollowed' | 'too-large' | 'stale'
 
 export interface CodexPayloadLimitDependencies {
   /** 当前登录的是哪个站（solov / solov-api）。 */
   activeSiteId(): string
+  /**
+   * 当前登录的是谁（站点加用户编号），没登录、登录还没恢复好给 null。只用来认出处理到一半换了人（R29-03）；
+   * 缺省 = 只按站点认。
+   */
+  accountOwner?(): string | null
   /** 这个站开机时生效的线路偏好。 */
   preference(siteId: RelayRouteSiteId): RelayRoutePreference
   /** 这个站这会儿写进工具配置的线路（星芒账号是工具线路，历史账号是应用线路）。 */
@@ -436,9 +441,9 @@ export interface CodexPayloadLimitDependencies {
   holdDirect(siteId: RelayRouteSiteId, trigger: string): Promise<RelayRouteHoldResult>
   /**
    * 换到（或者本来就在）线路 2 以后：Codex 的配置跟过去、提示客户重开。Codex 的配置星芒没法替客户改到线路 2 的
-   * 返回 false，这时改说「新开对话」。
+   * 返回 false，这时改说「新开对话」。stillCurrent() 变成 false（换了账号、Codex 换成了官方账号）就别再提示重开。
    */
-  followCodex(siteId: RelayRouteSiteId, result: 'switched' | 'already'): Promise<boolean>
+  followCodex(siteId: RelayRouteSiteId, result: 'switched' | 'already', stillCurrent: () => boolean): Promise<boolean>
   notify(kind: CodexPayloadNoticeKind): void
   readState(): CodexPayloadState | null
   writeState(state: CodexPayloadState): Promise<void>
@@ -516,10 +521,14 @@ export function createCodexPayloadLimitService(dependencies: CodexPayloadLimitDe
     persist()
   }
 
-  // 这一回没换成：不算处理过，隔一阵再报再试（R29-02）。处理的那一阵先记成处理过，同时来的两条照旧只处理一次。
-  function allowRetry(sessionId: string): void {
+  function forgetHandled(sessionId: string): void {
     state = { ...state, handled: Object.fromEntries(Object.entries(state.handled).filter(([recorded]) => recorded !== sessionId)) }
     persist()
+  }
+
+  // 这一回没换成：不算处理过，隔一阵再报再试（R29-02）。处理的那一阵先记成处理过，同时来的两条照旧只处理一次。
+  function allowRetry(sessionId: string): void {
+    forgetHandled(sessionId)
     retryAfter.delete(sessionId)
     retryAfter.set(sessionId, now() + codexPayloadRetryMs)
     while (retryAfter.size > maxRememberedSessions) retryAfter.delete(retryAfter.keys().next().value!)
@@ -529,14 +538,28 @@ export function createCodexPayloadLimitService(dependencies: CodexPayloadLimitDe
     try { dependencies.notify(kind) } catch { /* 出提示失败不影响别的 */ }
   }
 
-  async function decide(siteId: RelayRouteSiteId, line: RelayEndpointId): Promise<CodexPayloadAction> {
+  function currentOwner(): string | null {
+    return dependencies.accountOwner?.() ?? null
+  }
+
+  // 等线路结果、等 Codex 的配置跟过去这几步里换了站、换了人、退出了，或者 Codex 换成了官方账号，这一次的结果不再算数：
+  // 不再让 Codex 跟、不再提示（R29-03）。开机时登录还没恢复好，谁都认不出（owner 是 null），这时只看站点：之后恢复出来的
+  // 那个人就是接着这个对话的人。线路已经换过去的不往回换：线路是整个站的，不是哪个人的。
+  function stillCurrent(siteId: string, owner: string | null): boolean {
+    if (dependencies.activeSiteId() !== siteId || !dependencies.codexOnRelay()) return false
+    return owner === null || currentOwner() === owner
+  }
+
+  async function decide(siteId: RelayRouteSiteId, line: RelayEndpointId, current: () => boolean): Promise<CodexPayloadAction> {
     if (line === 'direct') return 'too-large'
     const preference = dependencies.preference(siteId)
     if (preference === 'primary') return 'locked'
     const result = preference === 'direct' ? 'already' : await dependencies.holdDirect(siteId, 'payload-too-large')
+    if (!current()) return 'stale'
     if (result === 'fixed') return 'locked'
     if (result === 'unreachable') return 'unreachable'
-    const followed = await dependencies.followCodex(siteId, result).catch(() => false)
+    const followed = await dependencies.followCodex(siteId, result, current).catch(() => false)
+    if (!current()) return 'stale'
     return followed ? result : 'unfollowed'
   }
 
@@ -548,15 +571,20 @@ export function createCodexPayloadLimitService(dependencies: CodexPayloadLimitDe
       // 不是星芒的线路（官方账号、别家中转）。
       if (!endpoint) return
       const activeSiteId = dependencies.activeSiteId()
-      if (endpoint.siteId !== activeSiteId || seen(event.sessionId, endpoint.endpointId)) return
+      // Codex 已经换成官方账号：这一行是换之前在星芒线路上留下的，再换线、再提示都是旧事（R29-03）。
+      if (endpoint.siteId !== activeSiteId || !dependencies.codexOnRelay() || seen(event.sessionId, endpoint.endpointId)) return
+      const owner = currentOwner()
       record(endpoint.endpointId === 'direct' ? 'handledDirect' : 'handled', event.sessionId)
-      const action = await decide(endpoint.siteId, endpoint.endpointId)
+      const action = await decide(endpoint.siteId, endpoint.endpointId, () => stillCurrent(activeSiteId, owner))
       if (action === 'unreachable' || action === 'unfollowed') allowRetry(event.sessionId)
-      if (action !== 'switched' && action !== 'already') notify(action)
+      // 不算数的这一次不记成处理过：换回来、换了人以后同一个对话再报，照常处理。
+      if (action === 'stale') forgetHandled(event.sessionId)
+      if (action !== 'switched' && action !== 'already' && action !== 'stale') notify(action)
       log('info', 'relay.route.payload-too-large', action === 'switched'
         ? 'Codex 有个对话太大、线路1发不出去，已换到线路2'
         : action === 'already' ? 'Codex 有个对话太大、线路1发不出去，已经在线路2上，提示重开 Codex'
-          : 'Codex 有个对话太大、发不出去，提示新开对话', {
+          : action === 'stale' ? 'Codex 有个对话太大，处理到一半换了账号或者换成了官方账号，这次不再提示'
+            : 'Codex 有个对话太大、发不出去，提示新开对话', {
         sessionId: event.sessionId,
         siteId: endpoint.siteId,
         from: endpoint.endpointId,

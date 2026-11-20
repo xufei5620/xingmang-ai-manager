@@ -20,10 +20,31 @@
 # 而卸载时执行的是 electron-builder 默认的 `RMDir /r $INSTDIR`——整个目录连
 # 同用户自己的文件一起删掉。现在两头都堵：装的时候不让选非空目录，卸的时候
 # 按安装清单逐条删，删完只用不带 /r 的 RMDir 收尾，目录里还剩别的东西就留着。
+# 清单只记安装包自己带的东西（XINGMANG_PACKAGE_ENTRIES），装好以后客户自己放进安装
+# 目录的文件不进清单，升级、卸载都不动（11-18 复核 D05）。
 
 # 安装清单写在注册表里，不写成安装目录下的文件——清单文件自己又会成为
 # "目录里多出来的一样东西"，而且卸载时还得处理它自己的编码和残留。
 !define XINGMANG_INSTALLED_ENTRIES_KEY "${INSTALL_REGISTRY_KEY}\InstalledEntries"
+
+# 清单里的 Format 值。2 = 只记了安装包自己带的东西（这一版起）；没有这个值的是以前的安装程序
+# 写的，那时把安装目录里看到的都记上了，客户自己放进去的文件也在里面，升级前要先划掉，见
+# xingmangForgetForeignInstalledEntries。
+!define XINGMANG_INSTALLED_ENTRIES_FORMAT 2
+
+!ifndef BUILD_UNINSTALLER
+  # 安装包自己带的顶层条目，一串「|名字|名字|」，定义 XINGMANG_PACKAGE_ENTRIES。打包时由
+  # electron-builder.config.cjs 的 afterPack 按 win-unpacked 现场写到 build/ 下（为什么不写死在这里
+  # 见 scripts/windows-installer-package-entries.cjs）。文件不在、名单是空的，都在这里编译失败：
+  # 名单空了，清单就只剩卸载程序一项，下一次升级旧文件一个都挪不走。
+  !include "installer-package-entries.nsh"
+  !ifndef XINGMANG_PACKAGE_ENTRIES
+    !error "installer-package-entries.nsh did not define XINGMANG_PACKAGE_ENTRIES"
+  !endif
+  !if "${XINGMANG_PACKAGE_ENTRIES}" == ""
+    !error "XINGMANG_PACKAGE_ENTRIES is empty"
+  !endif
+!endif
 
 # 与 electron/uninstall-cleanup-entry.ts 的 uninstallCleanupArgument 是同一个值，
 # scripts/windows-installer-uninstall-cleanup.test.cjs 钉住两边一致。
@@ -229,7 +250,33 @@
       FunctionEnd
     !endif
 
-    # 安装收尾时把安装目录的顶层条目记成清单，卸载时只删这些。
+    # 入栈一个顶层条目的名字，出栈 "1" 表示它是这个安装包自己的东西，否则 "0"：安装包带的
+    # （XINGMANG_PACKAGE_ENTRIES），或者模板解压完写进去的卸载程序（和它的图标）。比较不分
+    # 大小写（StrContains 里用的是 StrCmp），跟 Windows 认文件名一样。
+    Function xingmangIsPackageEntry
+      Exch $R0
+      Push $R1
+      ${StrContains} $R1 "|$R0|" "${XINGMANG_PACKAGE_ENTRIES}"
+      ${If} $R1 != ""
+      ${OrIf} $R0 == "${UNINSTALL_FILENAME}"
+        StrCpy $R0 "1"
+      !ifdef UNINSTALLER_ICON
+      ${ElseIf} $R0 == "uninstallerIcon.ico"
+        StrCpy $R0 "1"
+      !endif
+      ${Else}
+        StrCpy $R0 "0"
+      ${EndIf}
+      Pop $R1
+      Exch $R0
+    FunctionEnd
+
+    # 安装收尾时把安装目录里属于这个安装包的顶层条目记成清单，卸载、下一次升级只动这些。
+    #
+    # 只记 xingmangIsPackageEntry 认得的，不再把目录里看到的都记上：客户或管理员自己放进安装
+    # 目录的文件，升级时旧卸载程序本来就不动，这里要是又把它记成软件文件，下一次升级、卸载就会
+    # 当成我们的挪走删掉（11-18 复核 D05）。卸载程序总在，所以清单至少有一项，不会掉进卸载时
+    # 「没有清单就整个目录删掉」的老路。
     Function xingmangRecordInstalledEntries
       DeleteRegKey SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}"
       StrCpy $R2 0
@@ -239,6 +286,10 @@
         StrCmp $R4 "" xingmangRecordDone
         StrCmp $R4 "." xingmangRecordNext
         StrCmp $R4 ".." xingmangRecordNext
+        Push $R4
+        Call xingmangIsPackageEntry
+        Pop $R6
+        StrCmp $R6 "1" 0 xingmangRecordNext
         ClearErrors
         WriteRegStr SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "$R2" "$R4"
         ${If} ${Errors}
@@ -253,6 +304,7 @@
       FindClose $R3
       # Count 最后写：写不全就干脆不写，卸载程序会当成"没有清单"按旧办法处理。
       ${If} $R5 == "ok"
+        WriteRegDWORD SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "Format" ${XINGMANG_INSTALLED_ENTRIES_FORMAT}
         WriteRegDWORD SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "Count" $R2
       ${EndIf}
     FunctionEnd
@@ -285,6 +337,50 @@
           ${EndIf}
           IntOp $R2 $R2 + 1
         ${Loop}
+      ${EndIf}
+      Pop $R3
+      Pop $R2
+      Pop $R1
+      Pop $R0
+    FunctionEnd
+
+    # 以前的安装程序把安装目录里看到的都记进了清单，客户自己放进去的文件也在里面（11-18 复核
+    # D05），而升级时最先跑的是那一版的卸载程序，它照清单挪走、删掉。所以跟上面那个函数一样，
+    # 赶在它之前把清单里不是安装包自己的项划掉：卸载程序读到空项就跳过，那个文件原样留着。
+    #
+    # 认不出来的一律当成客户的。旧版本带过、这一版不带了的软件文件因此会留在目录里，卸载后
+    # 目录也删不干净，可总比删掉客户的东西好。这一版起写的清单带 Format，只记安装包自己的
+    # 东西，以后升级照单全收，不再划。
+    #
+    # 只删注册表里的记录，不碰任何文件；Count 不动。
+    Function xingmangForgetForeignInstalledEntries
+      Push $R0
+      Push $R1
+      Push $R2
+      Push $R3
+      ClearErrors
+      ReadRegDWORD $R0 SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "Format"
+      ${If} ${Errors}
+      ${OrIf} $R0 < ${XINGMANG_INSTALLED_ENTRIES_FORMAT}
+        ClearErrors
+        ReadRegDWORD $R1 SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "Count"
+        ${IfNot} ${Errors}
+          StrCpy $R2 0
+          ${DoWhile} $R2 < $R1
+            ClearErrors
+            ReadRegStr $R3 SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "$R2"
+            ${IfNot} ${Errors}
+            ${AndIf} $R3 != ""
+              Push $R3
+              Call xingmangIsPackageEntry
+              Pop $R3
+              ${If} $R3 != "1"
+                DeleteRegValue SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "$R2"
+              ${EndIf}
+            ${EndIf}
+            IntOp $R2 $R2 + 1
+          ${Loop}
+        ${EndIf}
       ${EndIf}
       Pop $R3
       Pop $R2
@@ -645,8 +741,10 @@
     Push $INSTDIR
     Call xingmangLockInstallDirectory
   !endif
-  # 同样赶在模板执行旧的卸载程序之前，见 xingmangForgetMissingInstalledEntries。
+  # 同样赶在模板执行旧的卸载程序之前，见 xingmangForgetMissingInstalledEntries 和
+  # xingmangForgetForeignInstalledEntries。
   Call xingmangForgetMissingInstalledEntries
+  Call xingmangForgetForeignInstalledEntries
 !macroend
 
 # 模板跑完旧版本的卸载程序后在这里看结果（installUtil.nsh 的 handleUninstallResult）；定义了这个宏，
@@ -793,6 +891,6 @@
   DeleteRegValue SHELL_CONTEXT "Software\Classes\${XINGMANG_CANVAS_PROGID}\shell\open" ""
   System::Call 'Shell32::SHChangeNotify(i 0x8000000, i 0, i 0, i 0)'
 
-  # 升级安装也要记：清单跟着这一次实际装进去的文件走。
+  # 升级安装也要记：清单跟着这一次实际装进去的文件走，只记安装包自己的。
   Call xingmangRecordInstalledEntries
 !macroend

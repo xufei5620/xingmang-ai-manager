@@ -3,7 +3,7 @@ import type { AiChatAsset, AiChatTextFile } from '../../../../electron/ipc-contr
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
-import { IMAGE_GROUP_MODEL_ORDER } from '../../../../electron/ai-chat-protocol'
+import { buildChatCompletionsRequest, IMAGE_GROUP_MODEL_ORDER } from '../../../../electron/ai-chat-protocol'
 import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, chatAssetSaveErrorMessage, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH, customImageSizeRule, imageSizeFits } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
@@ -669,6 +669,21 @@ describe('v2 chat attached images', () => {
     expect(conversation.draftImages?.map((item) => item.assetId[0])).toEqual(['A', 'B', 'C', 'D'])
     for (const letter of ['A', 'B', 'C', 'D']) conversation = removeDraftImage(conversation, letter.repeat(43))
     expect('draftImages' in conversation).toBe(false)
+  })
+
+  // R28-6：两个文件名不同、内容相同的图片一次选进来，作品库给的是同一个编号。
+  it('keeps one copy when a single pick brings the same picture twice, so the message still sends', () => {
+    const letters = (conversation: ReturnType<typeof visionConversation>) => conversation.draftImages?.map((item) => item.assetId[0])
+    let conversation = addDraftImages(visionConversation(), [image('A'), image('A')])
+    expect(letters(conversation)).toEqual(['A'])
+    conversation = addDraftImages(conversation, [image('B'), image('A'), image('B'), image('C')])
+    expect(letters(conversation)).toEqual(['A', 'B', 'C'])
+    conversation = addDraftImages(conversation, [image('D'), image('D'), image('E')])
+    expect(letters(conversation)).toEqual(['A', 'B', 'C', 'D'])
+    const plan = planTurn(conversation, { prompt: '', images: conversation.draftImages, requestId: 'r', assistantId: 'a', userMessageId: 'u' })
+    expect(() => buildChatCompletionsRequest({ model: conversation.settings.model, messages: plan.messages })).not.toThrow()
+    conversation = removeDraftImage(conversation, 'B'.repeat(43))
+    expect(letters(conversation)).toEqual(['A', 'C', 'D'])
   })
 
   it('shows the main-process reason for a failed pick without the IPC prefix', () => {

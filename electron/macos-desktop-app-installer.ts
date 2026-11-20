@@ -177,7 +177,7 @@ export interface InstallMacosDesktopAppOptions {
 export interface MacosDesktopAppReplacement {
   /** 检测认出来的那一份：只能是 /Applications 或 ~/Applications 里这个应用本身。 */
   installedPath: string
-  /** 它的版本号（CFBundleShortVersionString）；下下来的不比它新就不换。 */
+  /** 它的版本号（CFBundleShortVersionString）；下下来的不比它新就不换。真换之前还会现读一次（11-18 F04）。 */
   installedVersion: string
   /** 新版已经放在旧版旁边、动手换之前调：调用方在这里确认它关着（要关就在这里关）。抛错就不换。 */
   beforeReplace(): Promise<void>
@@ -751,15 +751,19 @@ function errorText(error: unknown): string {
  * 客户点的取消在关它之前、关完之后各看一次，接受了就不换，旧版原样留着；看完最后一次就交给
  * onReplaceStarting 封存，这之后点的取消不再接受（11-18 F03：以前这一段不看取消，界面说「已取消」，
  * 装着的却换成了新版）。
+ *
+ * 装着的版本也在关它之前、关完之后各读一次，已经不比 version（下下来的那版）旧就什么都不动，返回读到的版本；
+ * 换上了返回 null（11-18 F04，见 installedNotOlder）。
  */
 async function replaceBundle(
   source: MacosDesktopAppSource,
   bundle: string,
+  version: string,
   destination: string,
   runProcess: InstallMacosDesktopAppOptions['runProcess'],
   replace: MacosDesktopAppReplacement,
   signal: AbortSignal | undefined,
-): Promise<void> {
+): Promise<string | null> {
   const directory = path.posix.dirname(destination)
   const incoming = path.posix.join(directory, `${copyNamePrefix(destination)}${randomBytes(6).toString('hex')}`)
   try {
@@ -771,7 +775,12 @@ async function replaceBundle(
     }
     // 挪新版过来的时候点的取消：它还开着就别去关它。
     signal?.throwIfAborted()
+    // 下载那几分钟里它自己升过级的，不用为了换它去关它。
+    let current = await installedNotOlder(destination, version, runProcess)
+    if (current) return current
     await replace.beforeReplace()
+    current = await installedNotOlder(destination, version, runProcess)
+    if (current) return current
     // 关它那一步可能不跟取消走（调用方的事），关完再看一次。和下面的封存之间没有 await，取消插不进来。
     signal?.throwIfAborted()
     replace.onReplaceStarting?.()
@@ -801,9 +810,26 @@ async function replaceBundle(
     }
     // 删不掉（比如「App 管理」只拦删除）不影响已经换上的新版；下次更新前 recoverInterruptedReplacement 再删。
     await removeTree(backup).catch(() => undefined)
+    return null
   } finally {
     await removeTree(incoming).catch(() => undefined)
   }
+}
+
+/**
+ * 换之前现读一次装着的版本（11-18 F04）。下载那几分钟里它可能自己升过级：这几家自带的升级多半在它退出时才换
+ * （推测，Squirrel、Sparkle 的默认做法），所以关掉它之后还要再读一次；开始时读到的版本号已经不算数。读到的不比
+ * version（下下来的那版）旧就返回它，调用方什么都不动，免得把它换回低版；比它旧返回 null。读不出来就不换：
+ * 比不了新旧的一律不换（同 compareMacosDesktopVersions）。
+ */
+async function installedNotOlder(
+  destination: string,
+  version: string,
+  runProcess: InstallMacosDesktopAppOptions['runProcess'],
+): Promise<string | null> {
+  const installed = await readBundleVersion(destination, runProcess)
+  if (!installed) throw new MacosDesktopInstallError(macosDesktopUpdateFailedMessage, `换之前读不出 ${destination} 的版本号，这次不换`)
+  return compareMacosDesktopVersions(version, installed) === 1 ? null : installed
 }
 
 /** 更新前核对装着的那一份：普通目录（不是链接），签名是这个客户端官方团队的 Developer ID、bundle id 对得上。 */
@@ -1221,7 +1247,9 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
         return { version: replace.installedVersion, path: destination, unchanged: true }
       }
       report('installing', '正在放进「应用程序」')
-      await replaceBundle(source, unpacked.bundle, destination, options.runProcess, replace, options.signal)
+      // 下载期间它自己升到了不比这版低的版本：同样什么都不动，报它现在的版本。
+      const current = await replaceBundle(source, unpacked.bundle, unpacked.version, destination, options.runProcess, replace, options.signal)
+      if (current) return { version: current, path: destination, unchanged: true }
       return { version: unpacked.version, path: destination }
     }
     report('installing', '正在放进「应用程序」')
