@@ -4,7 +4,7 @@ import { createToolRouteRoutingSnapshot, type RelayEndpointId, type RelayRoutePr
 import type { RelayRouteHoldResult } from '../relay-route-controller'
 import { codexPayloadRouting, type CodexPayloadWatchOptions } from './codex-payload-watch'
 
-function wiring(options: { siteId?: string; preferences?: RelayRoutePreferences; toolLine?: RelayEndpointId; officialCodex?: boolean; restarted?: boolean } = {}) {
+function wiring(options: { siteId?: string; owner?: string; preferences?: RelayRoutePreferences; toolLine?: RelayEndpointId; officialCodex?: boolean; restarted?: boolean } = {}) {
   const calls: string[] = []
   const toolHold = vi.fn(async (_trigger: string): Promise<RelayRouteHoldResult> => 'switched')
   const appHold = vi.fn(async (_siteId: string, _trigger: string): Promise<RelayRouteHoldResult> => 'switched')
@@ -32,6 +32,7 @@ function wiring(options: { siteId?: string; preferences?: RelayRoutePreferences;
   } as unknown as CodexPayloadWatchOptions['routes']
   const routing = codexPayloadRouting({
     readAccountSiteId: () => options.siteId ?? 'solov',
+    ...(options.owner ? { readAccountOwner: () => options.owner ?? null } : {}),
     routes,
     systemService: {
       followToolRoutes,
@@ -65,17 +66,30 @@ describe('codex payload watch wiring', () => {
 
   it('waits for the xm Codex config to follow before asking for a restart', async () => {
     const run = wiring()
-    expect(await run.routing.followCodex('solov', 'switched')).toBe(true)
+    expect(await run.routing.followCodex('solov', 'switched', () => true)).toBe(true)
     expect(run.followToolRoutes).toHaveBeenCalledWith({ reason: 'payload', providers: ['codex'] })
     expect(run.calls).toEqual(['follow', 'restart-hint'])
-    expect(await wiring({ restarted: false }).routing.followCodex('solov', 'already')).toBe(false)
+    expect(await wiring({ restarted: false }).routing.followCodex('solov', 'already', () => true)).toBe(false)
+  })
+
+  // R29-03：等 Codex 的配置跟过去的时候换了账号、Codex 换成了官方账号，重开提示就是给上一个人的。
+  it('does not ask for a restart once the account or the Codex source changed while the config was following', async () => {
+    const run = wiring()
+    expect(await run.routing.followCodex('solov', 'switched', () => false)).toBe(false)
+    expect(run.calls).toEqual(['follow'])
+    expect(run.noteCodexPayloadRestart).not.toHaveBeenCalled()
+  })
+
+  it('tells who is signed in so a late result can be told apart', () => {
+    expect(wiring().routing.accountOwner?.()).toBeNull()
+    expect(wiring({ owner: '["solov",36]' }).routing.accountOwner?.()).toBe('["solov",36]')
   })
 
   it('leaves a fresh historical switch to the whole rewrite and asks right away when already on line 2', async () => {
     const run = wiring({ siteId: 'solov-api' })
-    expect(await run.routing.followCodex('solov-api', 'switched')).toBe(true)
+    expect(await run.routing.followCodex('solov-api', 'switched', () => true)).toBe(true)
     expect(run.calls).toEqual([])
-    expect(await run.routing.followCodex('solov-api', 'already')).toBe(true)
+    expect(await run.routing.followCodex('solov-api', 'already', () => true)).toBe(true)
     expect(run.calls).toEqual(['restart-hint'])
     expect(run.followToolRoutes).not.toHaveBeenCalled()
   })
