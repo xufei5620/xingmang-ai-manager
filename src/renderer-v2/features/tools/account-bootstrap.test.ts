@@ -1271,7 +1271,6 @@ describe('account bootstrap configuration preflight', () => {
     const getConfig = vi.fn()
       .mockResolvedValueOnce(before)
       .mockResolvedValueOnce(after)
-      .mockResolvedValueOnce(after)
     const configureManagedCliKeys = vi.fn(async () => ({ configured: [], failed: [] }))
     const api: AccountBootstrapBridge = {
       getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
@@ -1280,8 +1279,30 @@ describe('account bootstrap configuration preflight', () => {
       configureManagedCliKeys,
     }
     await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
-    expect(getConfig).toHaveBeenCalledTimes(3)
+    // The preflight read and the fresh read after Key sync; nothing was written, so there is nothing to verify.
+    expect(getConfig).toHaveBeenCalledTimes(2)
     expect(configureManagedCliKeys).not.toHaveBeenCalled()
+  })
+
+  it('verifies with a third config read only when this round wrote a tool', async () => {
+    const before = config()
+    const written = config()
+    written.providers.claude = { ...written.providers.claude, exists: true, hasApiKey: true, matchesRelay: true,
+      actualBaseUrl: written.providers.claude.baseUrl, model: 'claude-model', configurationOwnership: 'account' }
+    const getConfig = vi.fn()
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(before)
+      .mockResolvedValueOnce(written)
+    const configureManagedCliKeys = vi.fn(async () => ({ configured: ['claude' as ProviderId], failed: [] }))
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      getConfig, getSettings: vi.fn(async () => settings), scanSystem: vi.fn(async () => system(['claude'])),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [{ provider: 'claude' as ProviderId, group: 'group', name: 'claude' }], failed: [] })),
+      configureManagedCliKeys,
+    }
+    await bootstrapAccountTools(api, 17, undefined, 'restore', undefined, null)
+    expect(configureManagedCliKeys).toHaveBeenCalledTimes(1)
+    expect(getConfig).toHaveBeenCalledTimes(3)
   })
 })
 
