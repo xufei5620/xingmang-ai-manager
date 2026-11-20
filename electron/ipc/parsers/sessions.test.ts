@@ -51,3 +51,16 @@ describe('parseProviderSessionListQuery', () => {
     expect(() => parseProviderSessionListQuery({ page: 0 })).toThrow('页码格式错误')
   })
 })
+
+describe('parseProviderSessionListQuery searchContent', () => {
+  it('passes the content search switch through only when it is exactly true', () => {
+    expect(parseProviderSessionListQuery({ search: '发票', searchContent: true })).toMatchObject({ search: '发票', searchContent: true })
+    expect(parseProviderSessionListQuery({ search: '发票', searchContent: false })).not.toHaveProperty('searchContent')
+    expect(parseProviderSessionListQuery({ search: '发票' })).not.toHaveProperty('searchContent')
+  })
+
+  it('rejects a content search switch that is not a boolean', () => {
+    expect(() => parseProviderSessionListQuery({ searchContent: 'yes' })).toThrow('会话搜索方式格式错误')
+    expect(() => parseProviderSessionListQuery({ searchContent: 1 })).toThrow('会话搜索方式格式错误')
+  })
+})

@@ -564,6 +564,65 @@ describe('ProviderSessionsService', () => {
     expect(fs.readFileSync(outputPath, 'utf8')).not.toContain('sum.ts')
   })
 
+  it('finds a session by something said in it only when content search is on', async () => {
+    const data = fixture()
+    writeJsonLines(path.join(data.claude, 'project-a', 'said.jsonl'), [
+      { type: 'user', sessionId: 'said', timestamp: '2026-07-24T01:00:00.000Z', message: { role: 'user', content: '帮我整理一下报表' } },
+      { type: 'assistant', sessionId: 'said', timestamp: '2026-07-24T01:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: '报表里有三张 Invoice 没开' }] } },
+      { type: 'custom-title', sessionId: 'said', customTitle: '整理报表' },
+    ])
+    seedCodexSession(data.codexHome, 'codex-said', 'Codex 会话')
+    fs.appendFileSync(path.join(data.codexHome, 'sessions', 'codex-said.jsonl'), `${JSON.stringify({
+      timestamp: '2026-07-24T00:00:01.000Z',
+      type: 'response_item',
+      payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '已经开好 invoice 了' }] },
+    })}\n`, 'utf8')
+    const sessions = service(data, new CodexSessionsService({
+      codexHome: data.codexHome,
+      managerDataDirectory: path.join(data.root, 'manager-data'),
+    }))
+
+    expect((await sessions.list({ search: 'invoice' })).total).toBe(0)
+    const page = await sessions.list({ search: 'INVOICE', searchContent: true })
+    expect(page.items.map((item) => item.provider).sort()).toEqual(['claude', 'codex'])
+    expect(page.items.find((item) => item.provider === 'codex')?.id).toBe('codex:codex-said')
+    expect(page.stats.byProvider).toMatchObject({ codex: 1, claude: 1 })
+    // 标题本来就对得上的照旧列出来，不用等翻内容。
+    expect((await sessions.list({ search: '整理报表', searchContent: true })).total).toBe(1)
+    expect((await sessions.list({ search: '从没说过的话', searchContent: true })).total).toBe(0)
+  })
+
+  it('only reads the most recent hundred sessions when searching what was said', async () => {
+    const data = fixture()
+    for (let index = 0; index < 101; index += 1) {
+      const minute = String(index).padStart(3, '0')
+      writeJsonLines(path.join(data.claude, 'project-a', `s-${minute}.jsonl`), [
+        {
+          type: 'user',
+          sessionId: `s-${minute}`,
+          timestamp: new Date(Date.UTC(2026, 6, 24, 0, index)).toISOString(),
+          message: { role: 'user', content: `第 ${index} 段` },
+        },
+        {
+          type: 'assistant',
+          sessionId: `s-${minute}`,
+          timestamp: new Date(Date.UTC(2026, 6, 24, 0, index, 1)).toISOString(),
+          message: { role: 'assistant', content: [{ type: 'text', text: index === 0 ? '最早那段提过暗号' : index === 100 ? '最近那段提过口令' : '好的' }] },
+        },
+      ])
+    }
+    const sessions = service(data, codexReader([]))
+    expect((await sessions.list({ provider: 'claude', search: '暗号', searchContent: true })).total).toBe(0)
+    expect((await sessions.list({ provider: 'claude', search: '口令', searchContent: true })).total).toBe(1)
+  })
+
+  it('leaves Codex out of content search when its reader cannot search content', async () => {
+    const data = fixture()
+    const codex = codexReader([codexSummary('codex-native')])
+    const sessions = service(data, codex)
+    await expect(sessions.list({ search: '正文里的话', searchContent: true })).resolves.toMatchObject({ total: 0 })
+  })
+
   it('streams all messages to Markdown while detail retains a bounded tail', async () => {
     const data = fixture()
     const entries = Array.from({ length: 300 }, (_, index) => ({

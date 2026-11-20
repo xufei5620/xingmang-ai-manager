@@ -53,6 +53,8 @@ type Session = Awaited<
 const recordsForegroundReloadMs = 30_000
 // 详情里「对话开头」先给几条；多出来的点「看全部」再展开，整段对话照旧都在。
 const transcriptPreviewCount = 2
+// 「也搜对话里说过的话」要去翻最近一批对话：打字时先不搜，停下来这么久再发（总单 Q4 C3）。
+const contentSearchDelayMs = 400
 type SessionToolFilter = Provider | 'all'
 /**
  * 工具按钮上的数。列表那一份已经按工具筛过、按搜索词滤过，数不出别的工具有几条，
@@ -151,10 +153,25 @@ export function SessionsPage({
   const [provider, setProvider] = useState<SessionToolFilter>('all')
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
+  const [searchContent, setSearchContent] = useState(false)
+  // 勾上「也搜对话里说过的话」时发给主进程的是停手后的那个词，不是每敲一个字都去翻一遍对话。
+  const [contentQuery, setContentQuery] = useState('')
+  useEffect(() => {
+    if (!searchContent) return
+    const timer = window.setTimeout(() => setContentQuery(query), contentSearchDelayMs)
+    return () => window.clearTimeout(timer)
+  }, [searchContent, query])
+  const searchText = searchContent ? contentQuery : query
   const load = useCallback(
     () =>
-      api.listProviderSessions({ provider, search: query, page, pageSize: 20 }).then(withoutRetiredSessions),
-    [api, provider, query, page],
+      api.listProviderSessions({
+        provider,
+        search: searchText,
+        ...(searchContent ? { searchContent: true } : {}),
+        page,
+        pageSize: 20,
+      }).then(withoutRetiredSessions),
+    [api, provider, searchText, searchContent, page],
   )
   const resource = useResource(load)
   // 「接着聊」只能出现在每个(工具 × 目录)组合最近的那一条上,而当前这一页是
@@ -458,7 +475,26 @@ export function SessionsPage({
           placeholder="搜索标题、文件夹或模型"
           testId="sessions-search"
         />
+        <label className="v2-sessions-search-content">
+          <input
+            type="checkbox"
+            checked={searchContent}
+            onChange={(event) => {
+              setSearchContent(event.target.checked)
+              // 刚勾上时手里的词立刻去翻，不再等那 400 毫秒。
+              setContentQuery(query)
+              setPage(1)
+            }}
+            data-testid="sessions-search-content"
+          />
+          <span>也搜对话里说过的话</span>
+        </label>
       </div>
+      {searchContent && query.trim() !== '' && (resource.loading || query !== contentQuery) && (
+        <p className="v2-sessions-searching" role="status" data-testid="sessions-search-content-status">
+          正在翻对话内容…
+        </p>
+      )}
       <ResultNotice
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
@@ -476,7 +512,7 @@ export function SessionsPage({
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
           emptyDescription="在首页打开工具，聊过的对话会出现在这里。"
-          searchTitle="没有找到相关记录"
+          searchTitle={searchContent ? `最近的对话里没有找到「${query.trim()}」` : '没有找到相关记录'}
           searchDescription="换个关键词，或者切换到「全部」再看看。"
           action={
             onOpenTools && (

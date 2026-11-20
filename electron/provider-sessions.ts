@@ -10,6 +10,7 @@ import {
   type CodexSessionPage,
   type CodexSessionsCapabilities,
 } from './codex-sessions'
+import { mapWithConcurrency } from './async-map'
 import { DirectoryEntryLimitError, readDirectoryEntries } from './bounded-directory'
 import { isRetiredProviderId } from './catalog'
 import type {
@@ -104,6 +105,11 @@ export interface ProviderSessionDetail {
 export interface ProviderSessionListQuery {
   provider?: ProviderSessionProvider | 'all'
   search?: string
+  /**
+   * 记录页「也搜对话里说过的话」：标题、文件夹、模型都对不上的，再翻最近一批对话的内容。
+   * 缺省 = 只比对标题、文件夹、模型（旧行为）。
+   */
+  searchContent?: boolean
   page?: number
   pageSize?: number
 }
@@ -146,6 +152,8 @@ export interface CodexSessionReader {
     truncated?: boolean
   }>
   delete(sessionId: string): Promise<CodexSessionDeleteResult>
+  /** 缺省 = 这份读取器不会翻内容，Codex 的记录就只按标题搜（旧行为）。 */
+  contentMatches?(sessionId: string, needle: string, maxBytes: number): Promise<boolean>
 }
 
 export interface ProviderSessionsOptions {
@@ -208,6 +216,17 @@ const MAX_DISCOVERY_ENTRIES = 500_000
 const DETAIL_MESSAGE_LIMIT = 250
 const MESSAGE_TEXT_LIMIT = 24_000
 const MAX_PROBE_CACHE_ENTRIES = 10_000
+// 「也搜对话里说过的话」只翻最近这么多条，每条只读开头这么多：不建索引、不常驻，客户点一下
+// 勾就要等的事，得在几秒内翻完。更早的、更长的照旧只按标题找得到。
+const CONTENT_SEARCH_SESSION_LIMIT = 100
+const CONTENT_SEARCH_BYTE_LIMIT = 16 * 1024 * 1024
+const CONTENT_SEARCH_CONCURRENCY = 4
+// 翻页、切回这一页都会再搜一遍；同一条记录没变、搜的词也没变时直接用上次的结论。
+const MAX_CONTENT_SEARCH_CACHE_ENTRIES = 2_000
+
+// Thrown out of a message consumer to stop reading a transcript at the first
+// match; scanJsonLines closes the file in its finally block on the way out.
+const contentFound = new Error('content found')
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -935,6 +954,7 @@ export class ProviderSessionsService {
   private readonly maxFilesPerProvider: number
   private readonly probeCache: ProviderSessionProbeCache
   private readonly candidateIndex = new Map<string, SourceCandidate>()
+  private readonly contentSearchCache = new Map<string, boolean>()
 
   constructor(options: ProviderSessionsOptions = {}) {
     const home = os.homedir()
@@ -1025,10 +1045,13 @@ export class ProviderSessionsService {
     }
 
     const search = query.search?.trim().toLocaleLowerCase() ?? ''
-    const filtered = search
-      ? items.filter((item) => [item.title, item.cwd, item.model, item.nativeId, item.provider]
-        .some((value) => value.toLocaleLowerCase().includes(search)))
-      : items
+    const metadataMatches = (item: ProviderSessionSummary) => [item.title, item.cwd, item.model, item.nativeId, item.provider]
+      .some((value) => value.toLocaleLowerCase().includes(search))
+    let filtered = search ? items.filter(metadataMatches) : items
+    if (search && query.searchContent) {
+      const contentHits = await this.searchContent(items.filter((item) => !metadataMatches(item)), search)
+      filtered = items.filter((item) => metadataMatches(item) || contentHits.has(item.id))
+    }
     filtered.sort((left, right) => (
       (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0)
       || left.provider.localeCompare(right.provider)
@@ -1084,6 +1107,49 @@ export class ProviderSessionsService {
           || content.stats.invalidLines > 0,
       sourceTruncated: content.sourceTruncated,
     }
+  }
+
+  /**
+   * 最近 CONTENT_SEARCH_SESSION_LIMIT 条里，对话内容说过 `needle` 的那几条的 id。一条读不了
+   * （被占用、被删、格式不认识）就当没说过，不让整页搜索报错。
+   */
+  private async searchContent(candidates: readonly ProviderSessionSummary[], needle: string): Promise<Set<string>> {
+    const recent = [...candidates]
+      .filter((item) => item.detailAvailable)
+      .sort((left, right) => (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0))
+      .slice(0, CONTENT_SEARCH_SESSION_LIMIT)
+    const verdicts = await mapWithConcurrency(recent, CONTENT_SEARCH_CONCURRENCY, async (item) => {
+      const key = `${item.id}\u0000${item.updatedAt ?? ''}\u0000${item.messageCount ?? ''}\u0000${needle}`
+      const cached = this.contentSearchCache.get(key)
+      if (cached !== undefined) return cached
+      let found = false
+      try {
+        found = await this.sessionContentMatches(item, needle)
+      } catch {
+        found = false
+      }
+      this.contentSearchCache.set(key, found)
+      while (this.contentSearchCache.size > MAX_CONTENT_SEARCH_CACHE_ENTRIES) {
+        this.contentSearchCache.delete(this.contentSearchCache.keys().next().value as string)
+      }
+      return found
+    })
+    return new Set(recent.filter((_, index) => verdicts[index]).map((item) => item.id))
+  }
+
+  private async sessionContentMatches(item: ProviderSessionSummary, needle: string): Promise<boolean> {
+    if (item.provider === 'codex') {
+      return this.codexService.contentMatches?.(item.nativeId, needle, CONTENT_SEARCH_BYTE_LIMIT) ?? false
+    }
+    try {
+      await this.readExternalMessages(item, (message) => {
+        if (message.text.toLocaleLowerCase().includes(needle)) throw contentFound
+      }, 0, Math.min(this.maxTranscriptBytes, CONTENT_SEARCH_BYTE_LIMIT))
+    } catch (error) {
+      if (error === contentFound) return true
+      throw error
+    }
+    return false
   }
 
   /**
@@ -1383,6 +1449,7 @@ export class ProviderSessionsService {
     session: ProviderSessionSummary,
     consumer?: MessageConsumer,
     retainLimit = DETAIL_MESSAGE_LIMIT,
+    byteLimit = this.maxTranscriptBytes,
   ): Promise<MessageReadResult> {
     const messages: ProviderSessionMessage[] = []
     const stats = emptyMessageStats()
@@ -1404,7 +1471,7 @@ export class ProviderSessionsService {
     }
     let sourceTruncated = false
     if (session.provider === 'claude') {
-      const scan = await scanJsonLines(session.sourcePath, this.maxTranscriptBytes, this.maxJsonLineBytes, async (value) => {
+      const scan = await scanJsonLines(session.sourcePath, byteLimit, this.maxJsonLineBytes, async (value) => {
         const entry = asRecord(value)
         if (entry && activity) observeClaudeActivity(activity, entry)
         await accept(entry ? parseClaudeMessage(entry) : null)
@@ -1415,13 +1482,13 @@ export class ProviderSessionsService {
       if (session.sourcePath.toLowerCase().endsWith('.jsonl')) {
         const state = newProbeState(await safeRegularFileStat(session.sourcePath))
         const seenMessageIds = new Set<string>()
-        const scan = await scanJsonLines(session.sourcePath, this.maxTranscriptBytes, this.maxJsonLineBytes, async (value) => {
+        const scan = await scanJsonLines(session.sourcePath, byteLimit, this.maxJsonLineBytes, async (value) => {
           for (const message of applyGeminiDocument(state, value, seenMessageIds)) await accept(message)
         })
         stats.invalidLines += scan.invalidLines
         sourceTruncated = scan.sourceTruncated
       } else {
-        const document = await readJsonBounded(session.sourcePath, this.maxTranscriptBytes)
+        const document = await readJsonBounded(session.sourcePath, byteLimit)
         stats.invalidLines += document.invalidLines
         sourceTruncated = document.sourceTruncated
         if (document.value) {
@@ -1430,7 +1497,7 @@ export class ProviderSessionsService {
         }
       }
     } else if (path.basename(session.sourcePath).toLowerCase() === 'chat_history.jsonl') {
-      const scan = await scanJsonLines(session.sourcePath, this.maxTranscriptBytes, this.maxJsonLineBytes, async (value) => {
+      const scan = await scanJsonLines(session.sourcePath, byteLimit, this.maxJsonLineBytes, async (value) => {
         await accept(parseGrokMessage(value))
       })
       stats.invalidLines += scan.invalidLines

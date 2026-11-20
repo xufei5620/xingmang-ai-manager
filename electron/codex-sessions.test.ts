@@ -438,6 +438,20 @@ describe('CodexSessionsService', () => {
     expect(detail.messageStats.total).toBe(3)
   })
 
+  it('tells whether a session said something, reading only the first bytes it is allowed to', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const sessions = service(data)
+    const size = fs.statSync(data.rolloutPath).size
+
+    await expect(sessions.contentMatches('session-1', '检查完成', size)).resolves.toBe(true)
+    await expect(sessions.contentMatches('session-1', '没说过', size)).resolves.toBe(false)
+    // The assistant line sits at the end of the file; a limit that stops short of it cannot see it.
+    await expect(sessions.contentMatches('session-1', '检查完成', size - 40)).resolves.toBe(false)
+  })
+
   it('drops an oversized JSONL record while preserving later valid messages', async () => {
     const data = fixture('session-1')
     const laterMessage = JSON.stringify({
