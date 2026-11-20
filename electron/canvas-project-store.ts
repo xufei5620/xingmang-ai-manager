@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { mapWithConcurrency } from './async-map'
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-data'
 import { copyBoundedFileExclusive, readBoundedUtf8File } from './bounded-file'
 import { parseCanvasProjectWorkflow } from './canvas-project-package'
@@ -15,6 +16,7 @@ const maximumCopiedEntries = 100_000
 const maximumCopiedBytes = 100 * 1024 * 1024 * 1024
 const maximumReferenceValues = 250_000
 const projectIdPattern = /^[a-f0-9-]{36}$/
+const accountDirectoryPattern = /^user-[1-9]\d*$/
 const assetIdPattern = /^[A-Za-z0-9_-]{43}$/
 
 export type CanvasProjectWorkspaceStatus = 'ready' | 'missing' | 'legacy'
@@ -216,6 +218,52 @@ async function copyProjectAssets(sourceWorkspace: string, targetWorkspace: strin
     await fs.promises.rm(targetRoot, { recursive: true, force: true }).catch(() => undefined)
     throw error
   }
+}
+
+/**
+ * The folder inside each project's work folder where its media go, for every
+ * project of every account under one realm's canvas-projects directory: the
+ * settings page counts it as AI works (A08). Both realms' media sit below it
+ * (canvas-project-asset-manager.ts puts api-account's in assets/realms/api-account),
+ * and the rest of the work folder may be the user's own files, so only this
+ * folder is counted.
+ *
+ * Read-only, and without the existence checks list() makes: a folder that is
+ * gone or on an unplugged drive is still returned and measures as nothing. A
+ * project file that cannot be read is left out, as list() leaves it out.
+ */
+export async function listCanvasProjectAssetDirectories(rootDirectory: string): Promise<string[]> {
+  const root = path.resolve(rootDirectory)
+  let accounts: string[]
+  try {
+    accounts = (await fs.promises.readdir(root)).filter((name) => accountDirectoryPattern.test(name))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+  const directories: string[] = []
+  for (const account of accounts) {
+    let names: string[]
+    try {
+      names = await fs.promises.readdir(path.join(root, account))
+    } catch {
+      continue
+    }
+    const files = names
+      .filter((name) => name.endsWith('.json') && projectIdPattern.test(path.basename(name, '.json')))
+      .slice(0, maximumStoredProjects)
+    const found = await mapWithConcurrency(files, 4, async (name) => {
+      try {
+        const raw = JSON.parse(await readBoundedUtf8File(path.join(root, account, name), 20 * 1024 * 1024, '画布项目')) as { workspaceDirectory?: unknown } | null
+        if (typeof raw?.workspaceDirectory !== 'string') return null
+        return path.join(normalizedWorkspaceDirectory(raw.workspaceDirectory, false), 'assets')
+      } catch {
+        return null
+      }
+    })
+    for (const directory of found) if (directory) directories.push(directory)
+  }
+  return directories
 }
 
 export class CanvasProjectStore {

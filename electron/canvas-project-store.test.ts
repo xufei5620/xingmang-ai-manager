@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { CanvasProjectStore } from './canvas-project-store'
+import { CanvasProjectStore, listCanvasProjectAssetDirectories } from './canvas-project-store'
 import { setRelocatedFolderPolicy } from './relocated-folders'
 
 const roots: string[] = []
@@ -423,5 +423,31 @@ describe('CanvasProjectStore on a relocated documents folder', () => {
     const store = new CanvasProjectStore(path.join(root, 'projects'))
 
     await expect(store.create(36, '搬家后的项目', documents)).rejects.toThrow()
+  })
+})
+
+describe('listCanvasProjectAssetDirectories', () => {
+  it('lists the media folder of every bound project of every account, archived or missing ones included', async () => {
+    const { root, workspace, store } = createFixture('asset-folders')
+    const second = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-asset-folders-'))
+    roots.push(second)
+    const first = await store.create(36, '第一个', workspace)
+    await store.setArchived(36, first.project.id, true)
+    await store.create(41, '另一个账号的', second)
+    fs.rmSync(second, { recursive: true, force: true })
+    // A legacy project without its own folder, a broken record and stray files are left out.
+    seedProjects(root, 36, 1, false)
+    fs.writeFileSync(path.join(root, 'user-36', `${randomUUID()}.json`), '{ not json')
+    fs.writeFileSync(path.join(root, 'user-36', 'notes.json'), JSON.stringify({ workspaceDirectory: path.join(os.tmpdir(), 'elsewhere') }))
+    fs.mkdirSync(path.join(root, 'user-0'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'user-0', `${randomUUID()}.json`), JSON.stringify({ workspaceDirectory: path.join(os.tmpdir(), 'elsewhere') }))
+
+    const directories = await listCanvasProjectAssetDirectories(root)
+
+    expect(directories.sort()).toEqual([path.join(path.resolve(workspace), 'assets'), path.join(path.resolve(second), 'assets')].sort())
+  })
+
+  it('has nothing to list before the first project', async () => {
+    await expect(listCanvasProjectAssetDirectories(path.join(os.tmpdir(), `xingmang-no-canvas-${randomUUID()}`))).resolves.toEqual([])
   })
 })
