@@ -940,6 +940,57 @@ describe('startup settings normalization', () => {
   })
 })
 
+describe('unchanged settings updates (0.2.24 性能深查 R4)', () => {
+  const windowState = { bounds: { x: 120, y: 80, width: 1280, height: 820 }, maximized: false }
+
+  // 开机界面把当前深浅色发一遍、关窗存一遍窗口位置，多数时候什么都没变。
+  it('leaves the file, its backup and the replace hook alone when an update changes nothing on disk', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ theme: 'dark', windowState }))
+    const content = fs.readFileSync(filePath, 'utf8')
+    const before = fs.statSync(filePath)
+    let hookCalls = 0
+    const hooks = { beforeReplace: () => { hookCalls += 1 } }
+
+    const unchanged = await updateAppSettings(filePath, { version: 2, theme: 'dark' }, hooks)
+    await updateAppSettings(filePath, { version: 2, windowState }, hooks)
+
+    expect(unchanged).toEqual(settings({ theme: 'dark', windowState }))
+    expect(hookCalls).toBe(0)
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(content)
+    expect(fs.statSync(filePath).ino).toBe(before.ino)
+    expect(fs.statSync(filePath).mtimeMs).toBe(before.mtimeMs)
+    expect(fs.existsSync(`${filePath}.bak`)).toBe(false)
+
+    await updateAppSettings(filePath, { version: 2, theme: 'light' }, hooks)
+    expect(hookCalls).toBe(1)
+    expect(readAppSettings(filePath).theme).toBe('light')
+    expect(readAppSettings(`${filePath}.bak`).theme).toBe('dark')
+  })
+
+  // C 盘满、杀毒锁住文件：没变的那次不碰盘，也就不会因为写不进去而失败。
+  it('does not fail an unchanged update when the settings file could not be replaced', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ theme: 'dark' }))
+    const locked = { beforeReplace: () => { throw new Error('disk full') } }
+
+    await expect(updateAppSettings(filePath, { version: 2, theme: 'dark' }, locked)).resolves.toMatchObject({ theme: 'dark' })
+    await expect(updateAppSettings(filePath, { version: 2, theme: 'light' }, locked)).rejects.toThrow('disk full')
+    expect(readAppSettings(filePath).theme).toBe('dark')
+  })
+
+  it('still rewrites a primary it cannot parse even when the backup already holds the same record', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ theme: 'dark' }))
+    await writeAppSettings(filePath, settings({ theme: 'light' }))
+    fs.writeFileSync(filePath, '{ broken', 'utf8')
+
+    const merged = await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    expect(merged.theme).toBe('dark')
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toMatchObject({ theme: 'dark' })
+  })
+})
+
 describe('settings read cache (0.2.22 性能体检第 8 条)', () => {
   it('serves repeated reads of an unchanged file without reopening it', () => {
     const filePath = temporarySettingsPath()

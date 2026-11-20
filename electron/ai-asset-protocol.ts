@@ -1,5 +1,5 @@
 import type { ActiveIdentityReader } from './active-identity'
-import { assetThumbnailVersion, parseAssetThumbnailPath } from './asset-thumbnail'
+import { assetThumbnailVersion, parseAssetThumbnailPath, type AssetThumbnailSizeName } from './asset-thumbnail'
 import { parseSingleByteRange, type ByteRange } from './byte-range'
 
 export type AiAssetProtocolMediaKind = 'image' | 'video' | 'audio'
@@ -25,7 +25,7 @@ export interface AiAssetProtocolOptions {
     }>
   }
   thumbnails: {
-    resolve(userId: number, assetId: string, kind: 'image' | 'video'): Promise<{
+    resolve(userId: number, assetId: string, kind: 'image' | 'video', size: AssetThumbnailSizeName): Promise<{
       bytes: Buffer
       mimeType: string
     } | null>
@@ -61,7 +61,7 @@ export function createAiAssetProtocolHandler(options: AiAssetProtocolOptions): (
       if (!Number.isSafeInteger(userId) || userId <= 0 || String(userId) !== identity.userId) return emptyResponse(404)
 
       if (thumbnail) {
-        const derived = await options.thumbnails.resolve(userId, assetId, thumbnail.mediaKind)
+        const derived = await options.thumbnails.resolve(userId, assetId, thumbnail.mediaKind, thumbnail.size)
         options.identities.assertCurrent(identity)
         if (!derived || request.signal.aborted) return emptyResponse(404)
         return new Response(request.method === 'HEAD' ? null : derived.bytes, {
