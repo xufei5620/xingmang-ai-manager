@@ -4,7 +4,7 @@ import path from 'node:path'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { releaseStagedDarwinCli, stageVerifiedDarwinCli } from './darwin-cli-staging'
 import { isRecord } from './input-guards'
-import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
+import { DarwinCliProvenanceError, darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 
 const OPENAI_TEAM_ID = '2DC432GLL2'
 const MAX_CODEX_PACKAGE_MANIFEST_BYTES = 512 * 1024
@@ -220,7 +220,7 @@ async function verifyDarwinCodexExecutable(
       argv: darwinDeveloperIdVerificationArgv(OPENAI_TEAM_ID, options.executablePath),
     })
   } catch (error) {
-    throw new Error('Codex standalone 未通过 OpenAI Developer ID 签名校验', { cause: error })
+    throw new DarwinCliProvenanceError('Codex standalone 未通过 OpenAI Developer ID 签名校验', { cause: error })
   }
 
   const versionResult = await options.runCommand({
@@ -228,7 +228,7 @@ async function verifyDarwinCodexExecutable(
     argv: ['--version'],
   })
   if (versionResult.stdout.trim() !== `codex-cli ${options.expectedVersion}`) {
-    throw new Error('Codex standalone runtime version 与 manifest version 不一致')
+    throw new DarwinCliProvenanceError('Codex standalone runtime version 与 manifest version 不一致')
   }
 }
 

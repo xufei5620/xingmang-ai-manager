@@ -56,6 +56,7 @@ import {
   resolveCliCommand as resolveVerifiedToolCommand,
   resolveCliInstallation as resolveCliInstallationForTest,
   type CliInstallation,
+  UnrecognizedDarwinCliError,
 } from './tool-installation'
 import { buildCliVersionAdvice, cliVerifiedVersions } from './cli-verified-versions'
 import {
@@ -2058,6 +2059,46 @@ describe('createSystemService', () => {
     // 没装的工具不带来源。
     expect(snapshot.clis.gemini).toMatchObject({ installed: false })
     expect(snapshot.clis.gemini.installSource).toBeUndefined()
+  })
+
+  // Mac 验收 R1：命令行里找到的 Codex / Grok 既不是 npm 装的、又核不出是官方安装器那一份，首页要能改给
+  // 「用星芒装一份」；一时没核成（起进程失败这类）的不算，照旧按原来的来源显示。
+  it('marks a Mac Codex and Grok that cannot be recognised as unrecognised installs found on the path', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-unrecognized-install-scan-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    // Grok 的判断读 ~/.grok/bin/grok 那条链接；这个家目录里没有，命令行上那份就是认不出的。
+    vi.stubEnv('HOME', directory)
+    const resolveCli = vi.fn<typeof resolveVerifiedToolCommand>(async (provider) => {
+      if (provider === 'codex') throw new UnrecognizedDarwinCliError(new Error('not the standalone layout'))
+      throw new Error('spawn EAGAIN')
+    })
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'darwin',
+        findExecutable: async () => null,
+        resolveCliCommand: resolveCli,
+        macosCodexAppDetector: vi.fn(async () => ({ app: null, detectionFailed: false, detectionError: null })),
+        resolveCliInstallation: async (provider) => provider === 'gemini' ? null : ({
+          commandPath: `/opt/third-party/${provider}`,
+          installDirectory: '/opt/third-party',
+          packageRoot: null,
+          npmPrefix: null,
+          packageVersion: null,
+          source: 'native',
+        }),
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    expect(snapshot.clis.codex).toMatchObject({ installed: true, installSource: 'path', unrecognizedInstall: true })
+    expect(snapshot.clis.grok).toMatchObject({ installed: true, version: null, unrecognizedInstall: true })
+    expect(snapshot.clis.grok.installSource).toBeUndefined()
+    // 核对时起进程失败说明不了来路，不改口。
+    expect(snapshot.clis.claude.installed).toBe(true)
+    expect(snapshot.clis.claude.unrecognizedInstall).toBeUndefined()
   })
 
   // 断网开应用时，四家 CLI 的最新版探测会一个个耗满自己的超时（npm 8 秒、Grok
