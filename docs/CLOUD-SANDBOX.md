@@ -142,6 +142,16 @@ CI 的 Windows（`windows-package`）和 Mac（`macos-test`）作业每个 PR �
 
 容器没设 `LANG`。起 Electron 时带上 `LANG=C.UTF-8`，否则碰到中文文件名会整个崩掉，只打一行 `Trace/breakpoint trap`，看着像产品的毛病。11-12 验：同一个剪贴板探针粘贴复制的 `截图.png`，不带 `LANG` 每次都崩，带上就正常；英文文件名两种都正常。
 
+### 7.1 验证崩溃、卡住上报真发得出去（11-20 验）
+
+`verify:app` 起的是开发态，`app.isPackaged` 是 false，崩溃上报不发。要看一条报错真从客户端发到 Sentry 那个地址、格式对不对，用一个本机假的 Sentry 接收端：
+
+1. 给 Electron 二进制做一个**硬链接**，名字不叫 `electron`（比如 `ln -f node_modules/electron/dist/electron node_modules/electron/dist/xingmang-ai-manager`），用它起，`app.isPackaged` 就是 true。软链接不行，读到的还是原名。
+2. 入口指向一个只有 `package.json`（name 写 `xingmang-ai-manager`，version 写要冒充的版本）的目录，里面的 main 再 require 夹具。直接给一个 .js 文件，`app.getVersion()` 是 Electron 自己的版本号，release 就不对。
+3. 夹具在 require `dist-electron/platform/entry.js` 之前：`app.commandLine.appendSwitch('host-resolver-rules', 'MAP o4512110916009984.ingest.us.sentry.io 127.0.0.1:<端口>')` 只把 Sentry 地址指到本机，加 `no-proxy-server`；`setCertificateVerifyProc` 只给这一个地址放行自签证书；`webRequest.onBeforeRequest` 拦掉别的网址；`process.geteuid = () => 1000`（同上面第 1 条）。
+4. 假接收端就是一个 `https.createServer`，把收到的每个请求体存下来。envelope 第三行是事件 JSON，看 release、environment、level、mechanism 和帧。
+5. 触发：`XINGMANG_CRASH_REPORT_TEST=1` 发一条自检；`webContents.forcefullyCrashRenderer()` 是界面进程崩；卡住上报只在抽中的两成打开里发，夹具里 require 入口那一刻临时把 `Math.random` 换成返回 0 的，require 完换回来。
+
 ## 8. 仓库里的规则，云端线程读到哪些
 
 - 根目录 `CLAUDE.md`（导入 `AGENTS.md`）每个线程开工就读。
