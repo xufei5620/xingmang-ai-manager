@@ -1440,6 +1440,7 @@ if (!hasSingleInstanceLock) {
       codexHome: codexContext.codexHome,
       runtimeLog,
       readAccountSiteId: () => readAccountSiteId(),
+      readAccountOwner: () => readExternalClientAccountId(),
       routes: networkRoutes,
       systemService,
       notices: codexPayloadNotices,
