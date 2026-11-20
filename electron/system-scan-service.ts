@@ -109,6 +109,8 @@ const maximumGrokVersionMetadataBytes = 16 * 1024
  * update check repairs the gap on its own, regardless of how grok ended up
  * without its companion link — independent of, and in addition to, the
  * transaction every install/reinstall already runs.
+ * 11-18 复核 D19 起，ensure 也会把留在旧版上的官方 `agent` 链接挪到 `grok` 那一版，所以以前更新过、
+ * `agent` 已经指歪的 Mac，下一次扫描就自己对上了。
  *
  * Best-effort by design: a failure here (permissions, a mid-scan uninstall,
  * a non-canonical install) must never turn a healthy "installed" status into

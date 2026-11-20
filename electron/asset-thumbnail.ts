@@ -15,24 +15,47 @@ export const assetThumbnailVersion = 'v2'
  */
 export const assetThumbnailMaxEdge = 320
 
+/**
+ * The chat shows an image in a box up to 300 CSS pixels on its long edge. At
+ * a 2x display and the largest automatic zoom (1.25) that is 750 device
+ * pixels, so the grid's 320 pixel tile would visibly blur there; 768 stays
+ * sharp while still decoding to a fraction of a 2048 or 4096 pixel original
+ * (总单 78 R-2). Only still images get this size: nothing shows a video
+ * cover that large.
+ */
+export const assetThumbnailLargeMaxEdge = 768
+
 export type AssetThumbnailMimeType = 'image/png' | 'image/jpeg'
 
 export type AssetThumbnailMediaKind = 'image' | 'video'
 
+/** `tile` is the grid's 320 pixel thumbnail; `large` is the 768 pixel still image the chat shows. */
+export type AssetThumbnailSizeName = 'tile' | 'large'
+
 export interface AssetThumbnailRequest {
   version: string
   mediaKind: AssetThumbnailMediaKind
+  size: AssetThumbnailSizeName
   assetId: string
+}
+
+export function assetThumbnailMaxEdgeFor(size: AssetThumbnailSizeName): number {
+  return size === 'large' ? assetThumbnailLargeMaxEdge : assetThumbnailMaxEdge
 }
 
 export function assetThumbnailUrl(assetId: string, mediaKind: AssetThumbnailMediaKind): string {
   return `xingmang-asset://thumb/${assetThumbnailVersion}/${mediaKind}/${assetId}`
 }
 
+export function assetLargeImageThumbnailUrl(assetId: string): string {
+  return `xingmang-asset://thumb/${assetThumbnailVersion}/image-large/${assetId}`
+}
+
 /**
  * Parses the path of a thumbnail request. Returns null for anything that is not
- * exactly `<version>/<mediaKind>/<assetId>`, which keeps traversal, empty
- * segments and malformed identifiers out of the store lookup entirely.
+ * exactly `<version>/<kind>/<assetId>`, which keeps traversal, empty segments
+ * and malformed identifiers out of the store lookup entirely. The kind is
+ * `image`, `video` or `image-large`; there is no large video cover.
  *
  * The media kind only selects which store is asked; that store still proves
  * ownership, so a request naming the wrong kind resolves to nothing rather
@@ -41,11 +64,23 @@ export function assetThumbnailUrl(assetId: string, mediaKind: AssetThumbnailMedi
 export function parseAssetThumbnailPath(pathname: string): AssetThumbnailRequest | null {
   const segments = pathname.replace(/^\//, '').split('/')
   if (segments.length !== 3) return null
-  const [version, mediaKind, assetId] = segments
+  const [version, kind, assetId] = segments
   if (!/^v[0-9]+$/.test(version ?? '')) return null
-  if (mediaKind !== 'image' && mediaKind !== 'video') return null
+  const parsed = parseThumbnailKind(kind)
+  if (!parsed) return null
   if (!ASSET_ID_PATTERN.test(assetId ?? '')) return null
-  return { version: version as string, mediaKind, assetId: assetId as string }
+  return { version: version as string, ...parsed, assetId: assetId as string }
+}
+
+// A switch rather than a lookup object: `constructor` or `__proto__` must not
+// read as a kind.
+function parseThumbnailKind(kind: string | undefined): Pick<AssetThumbnailRequest, 'mediaKind' | 'size'> | null {
+  switch (kind) {
+    case 'image': return { mediaKind: 'image', size: 'tile' }
+    case 'video': return { mediaKind: 'video', size: 'tile' }
+    case 'image-large': return { mediaKind: 'image', size: 'large' }
+    default: return null
+  }
 }
 
 /**
@@ -57,8 +92,8 @@ export function assetThumbnailMimeType(sourceMimeType: string): AssetThumbnailMi
   return sourceMimeType === 'image/jpeg' ? 'image/jpeg' : 'image/png'
 }
 
-export function assetThumbnailFileName(assetId: string, mimeType: AssetThumbnailMimeType): string {
-  return `${assetId}.${mimeType === 'image/jpeg' ? 'jpg' : 'png'}`
+export function assetThumbnailFileName(assetId: string, mimeType: AssetThumbnailMimeType, size: AssetThumbnailSizeName = 'tile'): string {
+  return `${assetId}${size === 'large' ? '.large' : ''}.${mimeType === 'image/jpeg' ? 'jpg' : 'png'}`
 }
 
 /**
