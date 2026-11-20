@@ -192,6 +192,6 @@ Claude 本地配置改造的 10 个相关测试文件 **688 项通过、32 项�
 | `electron/ipc.ts`、`external-client-contract.ts`、`system-service.ts` | 参数校验、主进程凭据解析、模型授权、账号和站点绑定 |
 | `electron/external-tool-config.ts` | WorkBuddy/OpenCode 增量配置与文件事务 |
 | `electron/claude-desktop-config.ts`、`claude-desktop-paths.ts`、`claude-desktop-manifest.ts`、`claude-desktop-policy.ts` | Claude 本地第三方配置事务、安装清单与虚拟化对应路径、只读策略冲突检查 |
-| `electron/external-client-service.test.ts` | 服务接线与写入边界集成测试 |
+| `electron/external-client-service.test.ts`、`.route-follow.test.ts`、`.key-follow.test.ts`、`.account-follow.test.ts` | 服务接线与写入边界集成测试（按 describe 拆成四个文件，共用 `external-client-service.test-support.ts` 的夹具，#2006） |
 
 本轮另将三个次级页面按需加载，同条件生产首屏 JavaScript 减少 19.7%，并验证导航保活与账号隔离，详见 [首屏加载报告](../artifacts/startup-audit-report.md)。该结果不代表 Electron 整体冷/热启动速度，客户端配置测试也不作为启动提速证据。
