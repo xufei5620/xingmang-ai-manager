@@ -425,11 +425,13 @@ describe('guide install failure wording', () => {
     expect(guideInstallFailure(new Error('HTTP 401 unauthorized'), 'Codex').message).toBe('Codex 没装上（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「需要帮助」。')
   })
 
-  // 认出原因以后原话折起来，普通账号那句「输管理员账号的密码 / 找 IT」得接在红字里才看得见（#1096）。
+  // 认出原因以后原话折起来，普通账号那句「换个管理员账号去装 / 找管理电脑的人」得接在红字里才看得见（#1096）。
+  // 主进程那句说的是错误框的「重试」，引导里那颗按钮叫「再试一次」。
   it('keeps the account-specific next step in view when the administrator prompt was declined', () => {
-    const standardAdvice = '这个 Windows 账号不在管理员组，需要在授权窗口里输入一个管理员账号的密码才能继续；公司或学校的电脑请联系 IT 协助。'
+    const standardAdvice = '这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。公司或学校的电脑请找管理电脑的人帮忙。'
     const standard = guideInstallFailure(new Error(`Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`), 'Claude Code')
-    expect(standard.message).toBe(`运行环境没装上（没拿到管理员授权），Claude Code 还没开始装。${standardAdvice}点「再试一次」，还不行就点「需要帮助」。`)
+    expect(standard.message).toBe(`运行环境没装上（没拿到管理员授权），Claude Code 还没开始装。${standardAdvice.replace('「重试」', '「再试一次」')}点「再试一次」，还不行就点「需要帮助」。`)
+    expect(standard.message).not.toContain('「重试」')
     expect(standard.reason).toBe('没拿到管理员授权')
     expect(guideInstallFailure(new Error('已取消管理员授权，Codex 桌面端安装未开始。重新点击安装即可再次授权。'), 'Codex 桌面端').message)
       .toBe('Codex 桌面端 没装上（没拿到管理员授权）。重新点击安装即可再次授权。点「再试一次」，还不行就点「需要帮助」。')

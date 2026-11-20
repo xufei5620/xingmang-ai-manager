@@ -116,7 +116,8 @@
 
 余额与账号读取：
 - `features/app/balance-store.ts` — **软件里唯一按时去服务端拉数据的地方**：余额在用户看着时每分钟一次、被挡住或在后台每 10 分钟一次；公告、订阅都搭它的车，每次读回的余额也交给主进程判断余额低和花费突增。连续几次本机网络失败也由它认出来，给断网横幅用。
-- `features/app/balance-context.tsx` — 余额 store 的 React 接口：按账号作用域共用一份，StrictMode 重连时等最后一个使用者离开才释放；顺带给出当前能用的订阅。
+- `features/app/balance-context.tsx` — 余额 store 的 React 接口：按账号作用域共用一份，StrictMode 重连时等最后一个使用者离开才释放；顺带给出当前能用的订阅。根组件只建 store、不订阅（R8）：要用余额的地方用 `useSharedBalanceSelector` 只挑要的那一样，或者用 `AccountBalanceSelect` 把挑出来的值交给一小块去画；别在 `App.tsx` 里订阅整份快照，那会让每分钟一次的刷新把整个界面重画一遍（`testing/app-check.mjs` 有用例数重画次数钉住）。
+- `features/app/account-money.tsx` — 侧栏账号卡、状态栏、个人中心要的那几样钱数（余额折美元、还能用几天、账号概览摘要、低余额档）在这里算，套在根组件外面；外壳放在 `AccountMoneyView` 里，余额刷新时只有外壳跟着重画，页面不动。
 - `features/app/subscription-cache.ts` — 订阅读取缓存：跟着余额读回顺带看、几分钟内读过不再读，刚买完订阅强制再读。
 - `features/app/balance-runway.ts` — 「余额还能用多久」：按近 7 天用量算、订阅剩余也算进去；侧栏账号卡、侧栏「余额低」、首页、账号概览读同一个判断。
 - 「余额低」「花费突然变多」两个系统通知已搬到主进程（`electron/balance-alerts.ts`、`electron/spend-spike.ts`），界面关着也照常提醒；界面这边只剩设置里的开关。

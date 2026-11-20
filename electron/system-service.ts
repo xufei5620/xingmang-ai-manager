@@ -681,6 +681,11 @@ export interface SystemServiceOptions {
   systemSnapshotCacheFile?: string
   /** 外部客户端检测结果落在哪；缺省不落盘（测试与旧行为）。见 external-client-snapshot-cache.ts。 */
   externalClientSnapshotCacheFile?: string
+  /**
+   * config:get 读下的工具配置在几毫秒内接着用（config-read-cache.ts，0.2.24 深查 R3）。缺省 = 0，每次现读
+   * （测试与旧行为）：测试常在同一毫秒里原地改写同样长的文件，靠文件身份和修改时间分不出来。
+   */
+  configReadCacheMs?: number
   /** 记进落盘的旧结果；别的版本写的也认，但不带推荐版本这类判断（见 system-snapshot-cache.ts）。 */
   appVersion?: string
   /** Native profile roots and policy reads are isolated in tests. */
