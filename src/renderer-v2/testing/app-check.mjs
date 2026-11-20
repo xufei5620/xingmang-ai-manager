@@ -1611,7 +1611,8 @@ test('the arrow of a home suggestion still opens the row', async () => {
     const arrow = await page.getByTestId('home-suggestion-mcp').locator('.xm-row-actions svg').boundingBox()
     assert.ok(arrow, 'the arrow is on the row')
     await page.mouse.click(arrow.x + arrow.width / 2, arrow.y + arrow.height / 2)
-    await page.getByTestId('page-mcp').waitFor()
+    // 外接工具 0.2.25 起合进「插件」页。
+    await page.getByTestId('page-extensions').waitFor()
     await clean(page)
   } finally { await page.close() }
   const fresh = await open('allInstalled=1')
@@ -2004,12 +2005,12 @@ test('the records page 接着聊 checks the newest records first and holds back 
 })
 
 // 已知5：外接工具、技能、插件这几页去过以后只藏不卸，在首页或终端里装好、删掉东西再回来，看到的还是
-// 第一次进去时那份。再显示时各自重读一次；外接工具的连接检测要挨个连一遍，照旧不跟着重跑。
-// （「安装卸载」页第 10 批拆掉了，它那一段跟着去掉。）
-test('the extension pages read again when shown again (已知5)', async () => {
+// 第一次进去时那份。再显示时重读一次；外接工具的连接检测要挨个连一遍，照旧不跟着重跑。
+// （「安装卸载」页第 10 批拆掉了，它那一段跟着去掉。0.2.25 起四页合成「插件」一页，一次读齐各家。）
+test('the plugins page reads again when shown again (已知5)', async () => {
   const page = await open()
   const calls = (method) => page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).length, method)
-  // 第一次进来读几次不固定（开发模式挂两遍、检测结果晚到时换默认工具），等它不再涨再数。
+  // 第一次进来读几次不固定（开发模式挂两遍、检测结果晚到时重读），等它不再涨再数。
   async function settled(method) {
     let previous = -1
     let current = await calls(method)
@@ -2023,31 +2024,79 @@ test('the extension pages read again when shown again (已知5)', async () => {
   try {
     await page.evaluate(() => {
       window.xingmang.listProviderExtensions = async (provider) => ({
-        provider, checkedAt: '2026-09-22T00:00:00Z', items: [], warnings: [],
+        provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
         capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+        items: provider === 'claude' ? [{
+          provider, kind: 'mcp', id: 'docs', name: 'docs', description: '本机测试连接',
+          installed: true, enabled: true, scope: 'user', currentVersion: null, latestVersion: null,
+          source: { kind: 'npm', locator: 'docs-package', reference: null },
+          update: { state: 'up-to-date', reason: '', checkedAt: null },
+          operations: { install: false, uninstall: true, enable: true, disable: true, update: false },
+        }] : [],
       })
       window.xingmang.checkProviderMcpHealth = async (provider) => ({
         provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
       })
     })
-    for (const id of ['mcp', 'skills', 'plugins']) {
-      await page.getByTestId(`nav-${id}`).click()
-      await page.getByTestId(`page-${id}`).waitFor()
-      const lists = await settled('listProviderExtensions')
-      const health = await settled('checkProviderMcpHealth')
-      await page.getByTestId('nav-home').click()
-      await page.getByTestId('page-home').waitFor()
-      await page.getByTestId(`nav-${id}`).click()
-      await expect.poll(() => calls('listProviderExtensions')).toBe(lists + 1)
-      assert.equal(await calls('checkProviderMcpHealth'), health)
-    }
+    await page.getByTestId('nav-extensions').click()
+    await page.getByTestId('page-extensions').waitFor()
+    const lists = await settled('listProviderExtensions')
+    const health = await settled('checkProviderMcpHealth')
+    assert.ok(health > 0, 'the connections are checked once on the first visit')
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    await page.getByTestId('nav-extensions').click()
+    await expect.poll(() => calls('listProviderExtensions')).toBeGreaterThan(lists)
+    await settled('listProviderExtensions')
+    assert.equal(await calls('checkProviderMcpHealth'), health)
+    // 换到「技能」那一栏用的是同一份，不再读。
+    const shown = await calls('listProviderExtensions')
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-skills').waitFor()
+    assert.equal(await settled('listProviderExtensions'), shown)
     await clean(page)
   } finally { await page.close() }
 })
 
-// 逆向报告 B4：在一个工具下改连接、点「重新检测」，等它跑完的工夫换到别的工具，跑完以后不能再照原来那个
-// 工具读一遍、把它的列表和检测结果摆到新工具下面。
-test('an extension action that finishes after switching tools leaves the new tool list on screen (B4)', async () => {
+// 逆向报告 B4：改连接、点「重新加载」，等它跑完的工夫去看了另一条，跑完以后不能把原来那条的详情换回来，
+// 也不能多读一遍。0.2.25 起四页合成「插件」一页，没有按工具分的页签了，换工具换成了换一条看。
+const hubLinkList = () => {
+  let held = null
+  window.releaseHeld = () => held?.()
+  window.hold = () => new Promise((resolve) => { held = () => { held = null; resolve() } })
+  let holdNextList = false
+  window.holdNextList = () => { holdNextList = true }
+  window.xingmang.listProviderExtensions = async (provider) => {
+    if (holdNextList) {
+      holdNextList = false
+      await window.hold()
+    }
+    return {
+      provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
+      capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+      items: [{
+        provider, kind: 'mcp', id: `${provider}-link`, name: `${provider}-link`, description: '本机测试连接',
+        installed: true, enabled: true, scope: 'user', currentVersion: null, latestVersion: null,
+        source: { kind: 'npm', locator: `${provider}-package`, reference: null },
+        update: { state: 'up-to-date', reason: '', checkedAt: null },
+        operations: { install: false, uninstall: true, enable: true, disable: true, update: false },
+      }],
+    }
+  }
+  window.xingmang.listMcpServers = async () => []
+  window.xingmang.listSkills = async () => []
+  window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
+  window.xingmang.checkProviderMcpHealth = async (provider) => ({
+    provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
+  })
+}
+
+async function openHubEntry(page, name) {
+  await page.getByTestId('hub-installed').getByRole('button', { name: new RegExp(name) }).click()
+  await expect(page.getByTestId('hub-detail').getByRole('heading', { level: 2 })).toHaveText(name)
+}
+
+test('an extension action that finishes after opening another entry leaves that entry on screen (B4)', async () => {
   const page = await open()
   const calls = (method) => page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).map((entry) => entry.args[0]), method)
   // 落不落那一次多余的读取要等它不再涨才知道，同「已知5」那条。
@@ -2062,121 +2111,55 @@ test('an extension action that finishes after switching tools leaves the new too
     return calls(method)
   }
   try {
-    await page.evaluate(() => {
-      let held = null
-      window.releaseHeld = () => held?.()
-      function hold() {
-        return new Promise((resolve) => { held = () => { held = null; resolve() } })
-      }
-      let holdNextList = false
-      window.holdNextList = () => { holdNextList = true }
-      window.xingmang.listProviderExtensions = async (provider) => {
-        if (holdNextList) {
-          holdNextList = false
-          await hold()
-        }
-        return {
-          provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
-          capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
-          items: [{
-            provider, kind: 'mcp', id: `${provider}-link`, name: `${provider}-link`, description: '本机测试连接',
-            installed: true, enabled: true, scope: 'user', currentVersion: null, latestVersion: null,
-            source: { kind: 'npm', locator: `${provider}-package`, reference: null },
-            update: { state: 'up-to-date', reason: '', checkedAt: null },
-            operations: { install: false, uninstall: true, enable: true, disable: true, update: false },
-          }],
-        }
-      }
-      // 换到 Codex CLI 时页面还要读它自己的连接、技能、插件清单（夹具里 Grok CLI 没装，换不过去）。
-      window.xingmang.listMcpServers = async () => []
-      window.xingmang.listSkills = async () => []
-      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
-      window.xingmang.checkProviderMcpHealth = async (provider) => ({
-        provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
-      })
-      window.xingmang.mutateProviderExtension = () => hold()
-    })
-    await page.getByTestId('nav-mcp').click()
-    const mcp = page.getByTestId('page-mcp')
-    await mcp.getByTestId('mcp-row-claude-link').waitFor()
-    // 在 Claude Code 下停用连接，没跑完就换到 Codex CLI（夹具里 Grok CLI 没装，选它只出安装那一条）。
-    await mcp.getByTestId('mcp-toggle-claude-link').getByRole('switch').click()
+    await page.evaluate(hubLinkList)
+    await page.evaluate(() => { window.xingmang.mutateProviderExtension = () => window.hold() })
+    await page.getByTestId('nav-extensions').click()
+    await openHubEntry(page, 'claude-link')
+    // 停用 Claude 那一份，没跑完就去看 codex-link。
+    await page.getByTestId('hub-toggle-claude').getByRole('switch').click()
     await expect.poll(async () => (await calls('mutateProviderExtension')).length).toBe(1)
-    await mcp.getByRole('tab', { name: /^Codex CLI/ }).click()
-    await mcp.getByTestId('mcp-row-codex-link').waitFor()
+    await openHubEntry(page, 'codex-link')
     const lists = (await settled('listProviderExtensions')).length
     await page.evaluate(() => window.releaseHeld())
     await waitForToast(page, '已停用「claude-link」')
-    await expect(mcp.getByTestId('mcp-row-codex-link')).toBeVisible()
-    assert.equal(await mcp.getByTestId('mcp-row-claude-link').count(), 0)
-    assert.equal((await settled('listProviderExtensions')).length, lists)
+    await expect(page.getByTestId('hub-detail').getByRole('heading', { level: 2 })).toHaveText('codex-link')
+    // 跑完重读一遍各家（Claude、Codex 两家各一次），不多读。
+    assert.equal((await settled('listProviderExtensions')).length, lists + 2)
 
-    // 在 Codex CLI 下点「重新检测」，列表还没读回来就换到 Claude Code：检测不再替 Codex CLI 跑。
+    // 点「重新加载」，列表还没读回来就去看 claude-link：读回来以后两家各测一次连接，详情还是 claude-link。
+    await page.getByTestId('hub-back').click()
     const health = (await settled('checkProviderMcpHealth')).length
     await page.evaluate(() => window.holdNextList())
-    await mcp.getByTestId('mcp-health-recheck').click()
-    await expect.poll(async () => (await calls('listProviderExtensions')).length).toBe(lists + 1)
-    await mcp.getByRole('tab', { name: /^Claude Code/ }).click()
-    await mcp.getByTestId('mcp-row-claude-link').waitFor()
+    await page.getByTestId('hub-reload').click()
+    await openHubEntry(page, 'claude-link')
     await page.evaluate(() => window.releaseHeld())
-    assert.deepEqual((await settled('checkProviderMcpHealth')).slice(health), ['claude'])
-    await expect(mcp.getByTestId('mcp-row-claude-link')).toBeVisible()
-    assert.equal(await mcp.getByTestId('mcp-row-codex-link').count(), 0)
+    assert.deepEqual((await settled('checkProviderMcpHealth')).slice(health).sort(), ['claude', 'codex'])
+    await expect(page.getByTestId('hub-detail').getByRole('heading', { level: 2 })).toHaveText('claude-link')
     await clean(page)
   } finally { await page.close() }
 })
 
-// 同一处的另一半：操作没跑完就换了工具，跑完才落下来的失败不能挂到新工具下面，换回原来那个工具再看到它。
-test('an extension action that fails after switching tools shows its failure under the tool it ran for', async () => {
+// 同一处的另一半：操作没跑完就回了列表，跑完才落下来的失败照样写在页面上，按钮也放开。
+test('an extension action that fails after leaving its entry still says so on the page', async () => {
   const page = await open()
   try {
+    await page.evaluate(hubLinkList)
     await page.evaluate(() => {
       let fail = null
       window.failHeld = (message) => fail?.(message)
-      window.xingmang.listProviderExtensions = async (provider) => ({
-        provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
-        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
-        items: [{
-          provider, kind: 'mcp', id: `${provider}-link`, name: `${provider}-link`, description: '本机测试连接',
-          installed: true, enabled: true, scope: 'user', currentVersion: null, latestVersion: null,
-          source: { kind: 'npm', locator: `${provider}-package`, reference: null },
-          update: { state: 'up-to-date', reason: '', checkedAt: null },
-          operations: { install: false, uninstall: true, enable: true, disable: true, update: false },
-        }],
-      })
-      // 换到 Codex CLI 时页面还要读它自己的连接、技能、插件清单（夹具里 Grok CLI 没装，换不过去）。
-      window.xingmang.listMcpServers = async () => []
-      window.xingmang.listSkills = async () => []
-      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
-      window.xingmang.checkProviderMcpHealth = async (provider) => ({
-        provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
-      })
       window.xingmang.mutateProviderExtension = () => new Promise((resolve, reject) => {
         fail = (message) => { fail = null; reject(new Error(message)) }
       })
     })
-    await page.getByTestId('nav-mcp').click()
-    const mcp = page.getByTestId('page-mcp')
-    const failure = mcp.getByRole('alert').filter({ hasText: 'claude-link 没能停用' })
-    await mcp.getByTestId('mcp-row-claude-link').waitFor()
-    // 在 Claude Code 下停用连接，没跑完就换到 Codex CLI，这时它失败了。
-    await mcp.getByTestId('mcp-toggle-claude-link').getByRole('switch').click()
-    await expect(mcp.getByTestId('mcp-add')).toBeDisabled()
-    await mcp.getByRole('tab', { name: /^Codex CLI/ }).click()
-    await mcp.getByTestId('mcp-row-codex-link').waitFor()
+    await page.getByTestId('nav-extensions').click()
+    await openHubEntry(page, 'claude-link')
+    await page.getByTestId('hub-toggle-claude').getByRole('switch').click()
+    await expect(page.getByTestId('hub-remove-all')).toBeDisabled()
+    await page.getByTestId('hub-back').click()
+    await expect(page.getByTestId('hub-add')).toBeDisabled()
     await page.evaluate(() => window.failHeld('claude-link 没能停用'))
-    await expect(mcp.getByTestId('mcp-add')).toBeEnabled()
-    assert.equal(await failure.count(), 0)
-    // 换回 Claude Code 才看到；再换走照旧清掉，回来也不再出来。
-    await mcp.getByRole('tab', { name: /^Claude Code/ }).click()
-    await mcp.getByTestId('mcp-row-claude-link').waitFor()
-    await expect(failure).toBeVisible()
-    await mcp.getByRole('tab', { name: /^Codex CLI/ }).click()
-    await mcp.getByTestId('mcp-row-codex-link').waitFor()
-    assert.equal(await failure.count(), 0)
-    await mcp.getByRole('tab', { name: /^Claude Code/ }).click()
-    await mcp.getByTestId('mcp-row-claude-link').waitFor()
-    assert.equal(await failure.count(), 0)
+    await expect(page.getByTestId('hub-add')).toBeEnabled()
+    await expect(page.getByTestId('page-extensions').getByRole('alert').filter({ hasText: 'claude-link 没能停用' })).toBeVisible()
     await clean(page)
   } finally { await page.close() }
 })
@@ -2205,44 +2188,51 @@ test('a reminder setting fixed on startup is announced once and leaves the card 
   } finally { await page.close() }
 })
 
-// 只装了 Codex 桌面端、没装 Codex CLI：外接工具和技能照样在 Codex 那一格管，名字写「Codex 桌面端」、不标「未安装」；
-// 删和加一样走 Codex 自己那一边（主进程直接改 config.toml）；插件那一格只说去桌面端自己的插件页里装。
-test('with only the Codex desktop app, the extension pages manage Codex connections and skills and send plugins to the app', async () => {
+// 只装了 Codex 桌面端、没装 Codex CLI：外接工具和技能照样能给 GPT 加、删，提示里那一家叫「Codex 桌面端」；
+// 删和加一样走 Codex 自己那一边（主进程直接改 config.toml）；插件要 Codex CLI，「GPT 官方」那块只说先去装，
+// 不去替他下插件目录。0.2.25 起四页合成「插件」一页。
+const desktopDocsList = (enabledAtFirst = true) => {
+  let enabled = enabledAtFirst
+  window.xingmang.listProviderExtensions = async (provider) => ({
+    provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
+    capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
+    items: provider === 'codex' ? [{
+      provider, kind: 'mcp', id: 'docs', name: 'docs', description: 'npx（2 个参数）',
+      installed: true, enabled, scope: 'user', currentVersion: null, latestVersion: null,
+      source: { kind: 'source-unknown', locator: null, reference: null },
+      update: { state: 'source-unknown', reason: '', checkedAt: null },
+      operations: { install: true, uninstall: true, enable: true, disable: true, update: false },
+    }] : [],
+  })
+  window.xingmang.mutateProviderExtension = async (input) => {
+    enabled = input.action === 'enable'
+    return window.xingmang.listProviderExtensions(input.provider)
+  }
+  window.xingmang.listMcpServers = async () => []
+  window.xingmang.listSkills = async () => []
+  window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
+  window.xingmang.addMcpServer = async () => []
+  window.xingmang.removeMcpServer = async () => []
+  window.xingmang.checkProviderMcpHealth = async (provider) => ({
+    provider, checkedAt: '2026-09-22T00:00:00Z', supported: false, reason: null, entries: [],
+  })
+}
+
+test('with only the Codex desktop app, the plugins page manages Codex connections and skills and asks for the CLI before plugins', async () => {
   const page = await open('desktopOnly=1')
   try {
-    await page.evaluate(() => {
-      window.xingmang.listProviderExtensions = async (provider) => ({
-        provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
-        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
-        items: provider === 'codex' ? [{
-          provider, kind: 'mcp', id: 'docs', name: 'docs', description: 'npx（2 个参数）',
-          installed: true, enabled: true, scope: 'user', currentVersion: null, latestVersion: null,
-          source: { kind: 'source-unknown', locator: null, reference: null },
-          update: { state: 'source-unknown', reason: '', checkedAt: null },
-          operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
-        }] : [],
-      })
-      window.xingmang.listMcpServers = async () => []
-      window.xingmang.listSkills = async () => []
-      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
-      window.xingmang.addMcpServer = async () => []
-      window.xingmang.removeMcpServer = async () => []
-      window.xingmang.checkProviderMcpHealth = async (provider) => ({
-        provider, checkedAt: '2026-09-22T00:00:00Z', supported: false, reason: null, entries: [],
-      })
-    })
-    await page.getByTestId('nav-mcp').click()
-    const mcp = page.getByTestId('page-mcp')
-    const codexTab = mcp.getByRole('tab', { name: /^Codex 桌面端/ })
-    await expect(codexTab).toHaveAttribute('aria-selected', 'true')
-    assert.equal(await codexTab.getByText('未安装').count(), 0)
-    assert.equal(await mcp.getByRole('tab', { name: /^Codex CLI/ }).count(), 0)
-    await mcp.getByTestId('mcp-row-docs').waitFor()
-    assert.equal(await mcp.getByTestId('mcp-tool-missing').count(), 0)
-    assert.equal(await mcp.getByTestId('mcp-codex-shared').count(), 0)
+    await page.evaluate(desktopDocsList)
+    await page.getByTestId('nav-extensions').click()
+    const hub = page.getByTestId('page-extensions')
+    await hub.getByTestId('hub-installed').getByRole('button', { name: /docs/ }).waitFor()
+    // 插件要命令行工具：两家官方那块都只说先去装，不替他下插件目录。
+    await expect(hub.getByTestId('hub-codex-missing')).toContainText('装好 Codex CLI 才能看 GPT 官方插件。')
+    await expect(hub.getByTestId('hub-codex-open-home')).toBeVisible()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'ensureProviderMarketplace')), false)
 
     // 加：勾选框写「Codex 桌面端」能勾，没装的两家灰着；网络服务的高级设置里没有 OAuth 那两项。
-    await mcp.getByTestId('mcp-add').first().click()
+    await hub.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-mcp').click()
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     const picker = dialog.getByTestId('mcp-form-tools')
     await expect(picker.getByTestId('mcp-form-tools-codex')).toBeEnabled()
@@ -2260,38 +2250,26 @@ test('with only the Codex desktop app, the extension pages manage Codex connecti
       { name: 'github', type: 'http', url: 'https://api.example.test/mcp' },
     ])
 
-    // 删：走 removeMcpServer，不跑 CLI 那条通用的。
-    await mcp.getByTestId('mcp-menu-docs').click()
+    // 删：详情里 GPT 那一行的「…」，走 removeMcpServer，不跑 CLI 那条通用的。
+    await hub.getByTestId('hub-installed').getByRole('button', { name: /docs/ }).click()
+    await hub.getByTestId('hub-where-menu-codex').click()
     await page.getByRole('menuitem', { name: '从 Codex 桌面端 移除…', exact: true }).click()
-    await page.getByTestId('mcp-delete-confirm').click()
+    await page.getByTestId('hub-delete-confirm').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'removeMcpServer'))
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'removeMcpServer').map((entry) => entry.args[0])), ['docs'])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'mutateProviderExtension')), false)
 
-    // 技能：Codex 那一格照常能从文件夹导入。
-    await page.getByTestId('nav-skills').click()
-    const skills = page.getByTestId('page-skills')
-    await expect(skills.getByRole('tab', { name: /^Codex 桌面端/ })).toHaveAttribute('aria-selected', 'true')
-    await expect(skills.getByTestId('skills-add').first()).toBeEnabled()
-
-    // 插件：只有一句话，不放「添加插件」「添加市场」，也不去读列表、不替他下插件目录。
-    const pluginLists = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'listProviderExtensions').length)
-    await page.getByTestId('nav-plugins').click()
-    const plugins = page.getByTestId('page-plugins')
-    await expect(plugins.getByRole('tab', { name: /^Codex 桌面端/ })).toHaveAttribute('aria-selected', 'true')
-    await expect(plugins.getByTestId('plugins-codex-desktop')).toContainText('插件请在 Codex 桌面端里装')
-    await expect(plugins.getByTestId('plugins-codex-desktop')).toContainText('打开 Codex 桌面端，在它自己的插件页里装、卸载或停用。')
-    assert.equal(await plugins.getByTestId('plugins-add').count(), 0)
-    assert.equal(await plugins.getByTestId('plugins-market-add').count(), 0)
-    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'listProviderExtensions').length), pluginLists)
-    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'ensureProviderMarketplace')), false)
-
-    // 精选：外接工具能勾给「Codex 桌面端」。
-    await page.getByTestId('nav-featured').click()
-    await page.getByTestId('featured-install-github').click()
-    const tools = page.getByTestId('featured-install-tools')
-    await expect(tools.getByTestId('featured-install-tools-codex')).toBeEnabled()
-    await expect(tools.getByTestId('featured-install-tools-codex')).toHaveText('Codex 桌面端')
+    // 推荐里的外接工具能勾给 GPT；技能照常能从文件夹导进 GPT。
+    await hub.getByTestId('hub-back').click()
+    await hub.getByTestId('hub-add-mcp-github').click()
+    const install = page.getByTestId('hub-install-dialog')
+    await expect(install.getByTestId('hub-install-tools-codex')).toBeEnabled()
+    await expect(install.getByTestId('hub-install-tools-claude')).toBeDisabled()
+    await install.getByRole('button', { name: '取消', exact: true }).click()
+    await hub.getByTestId('hub-nav-skills').click()
+    await hub.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill').click()
+    await expect(page.getByTestId('hub-skill-import-tools-codex')).toBeEnabled()
     await clean(page)
   } finally { await page.close() }
 })
@@ -2301,47 +2279,23 @@ test('with only the Codex desktop app, the extension pages manage Codex connecti
 test('with only the Codex desktop app, a Codex connection can be switched off and back on', async () => {
   const page = await open('desktopOnly=1')
   try {
-    await page.evaluate(() => {
-      let enabled = true
-      window.xingmang.listProviderExtensions = async (provider) => ({
-        provider, checkedAt: '2026-09-22T00:00:00Z', warnings: [],
-        capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
-        items: provider === 'codex' ? [{
-          provider, kind: 'mcp', id: 'docs', name: 'docs', description: 'npx（2 个参数）',
-          installed: true, enabled, scope: 'user', currentVersion: null, latestVersion: null,
-          source: { kind: 'source-unknown', locator: null, reference: null },
-          update: { state: 'source-unknown', reason: '', checkedAt: null },
-          operations: { install: true, uninstall: true, enable: true, disable: true, update: false },
-        }] : [],
-      })
-      window.xingmang.mutateProviderExtension = async (input) => {
-        enabled = input.action === 'enable'
-        return window.xingmang.listProviderExtensions(input.provider)
-      }
-      window.xingmang.listMcpServers = async () => []
-      window.xingmang.listSkills = async () => []
-      window.xingmang.listPlugins = async () => ({ plugins: [], marketplaces: [] })
-      window.xingmang.removeMcpServer = async () => []
-      window.xingmang.checkProviderMcpHealth = async (provider) => ({
-        provider, checkedAt: '2026-09-22T00:00:00Z', supported: false, reason: null, entries: [],
-      })
-    })
-    await page.getByTestId('nav-mcp').click()
-    const mcp = page.getByTestId('page-mcp')
-    const row = mcp.getByTestId('mcp-row-docs')
-    await row.waitFor()
-    const toggle = mcp.getByTestId('mcp-toggle-docs').getByRole('switch', { name: '停用 docs' })
+    await page.evaluate(desktopDocsList)
+    await page.getByTestId('nav-extensions').click()
+    const hub = page.getByTestId('page-extensions')
+    await hub.getByTestId('hub-installed').getByRole('button', { name: /docs/ }).click()
+    const row = hub.getByTestId('hub-where-codex')
+    const toggle = hub.getByTestId('hub-toggle-codex').getByRole('switch', { name: '停用 docs' })
     await expect(toggle).toHaveAttribute('aria-checked', 'true')
 
     await toggle.click()
     await waitForToast(page, '已停用「docs」')
-    await expect(row.getByText('已停用', { exact: true })).toBeVisible()
-    const on = mcp.getByTestId('mcp-toggle-docs').getByRole('switch', { name: '启用 docs' })
+    await expect(row).toContainText('已停用')
+    const on = hub.getByTestId('hub-toggle-codex').getByRole('switch', { name: '启用 docs' })
     await expect(on).toHaveAttribute('aria-checked', 'false')
 
     await on.click()
     await waitForToast(page, '已启用「docs」')
-    await expect(row.getByText('已停用', { exact: true })).toHaveCount(0)
+    await expect(row).not.toContainText('已停用')
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'mutateProviderExtension').map((entry) => entry.args[0])), [
       { provider: 'codex', kind: 'mcp', action: 'disable', id: 'docs', scope: 'user' },
       { provider: 'codex', kind: 'mcp', action: 'enable', id: 'docs', scope: 'user' },
@@ -2351,8 +2305,9 @@ test('with only the Codex desktop app, a Codex connection can be switched off an
   } finally { await page.close() }
 })
 
-// 两个都装了：Codex 那一格下面说一句它们共用这些设置。
-test('with both the Codex CLI and the desktop app, the Codex tab says they share these settings', async () => {
+// 两个都装了：装到 GPT 那一行写清 Codex CLI 和桌面端两边都能用（原来外接工具页 Codex 那一格下面那句，
+// 0.2.25 起写在安装框和详情里）。
+test('with both the Codex CLI and the desktop app, the GPT row says both of them use it', async () => {
   const page = await open()
   try {
     await page.evaluate(() => {
@@ -2367,11 +2322,11 @@ test('with both the Codex CLI and the desktop app, the Codex tab says they share
         provider, checkedAt: '2026-09-22T00:00:00Z', supported: true, reason: null, entries: [],
       })
     })
-    await page.getByTestId('nav-mcp').click()
-    const mcp = page.getByTestId('page-mcp')
-    assert.equal(await mcp.getByTestId('mcp-codex-shared').count(), 0)
-    await mcp.getByRole('tab', { name: /^Codex CLI/ }).click()
-    await expect(mcp.getByTestId('mcp-codex-shared')).toHaveText('Codex 桌面端和 Codex CLI 共用这些设置，在这里加的两边都能用。')
+    await page.getByTestId('nav-extensions').click()
+    await page.getByTestId('hub-add-mcp-browser').click()
+    const install = page.getByTestId('hub-install-dialog')
+    await expect(install.getByTestId('hub-install-tools-codex')).toContainText('Codex CLI 和 Codex 桌面端，两边都能用')
+    await expect(install.getByTestId('hub-install-tools-claude')).toContainText('Claude Code，以及 Claude 桌面端里的 Claude Code')
     await clean(page)
   } finally { await page.close() }
 })
@@ -3536,7 +3491,7 @@ test('the home runtime card shows the Git version and no warning when Git is pre
     await clean(page)
   } finally { await page.close() }
 })
-// 第四十三批 F：在「外接工具」页点「自动安装 Python」装好以后回首页，「运行环境」里 Python 那一行是版本号，
+// 第四十三批 F：在「外接工具」（0.2.25 起在「插件」页的「自定义连接」里）点「自动安装 Python」装好以后回首页，「运行环境」里 Python 那一行是版本号，
 // 不再写「Python（可选）」、不再给安装按钮。
 test('installing Python from the MCP page brings the home runtime card along', async () => {
   const page = await open('pythonMissing=1')
@@ -3555,9 +3510,10 @@ test('installing Python from the MCP page brings the home runtime card along', a
     await expect(row).toContainText('Python（可选）')
     await page.getByTestId('home-runtime-python').waitFor()
     await page.getByTestId('home-suggestion-mcp').click()
-    await page.getByTestId('page-mcp').waitFor()
-    // 还没有连接时空状态里也有一颗「添加」，点页头那颗。
-    await page.getByTestId('mcp-add').first().click()
+    // 外接工具 0.2.25 起合进「插件」页，「自定义连接」在右上角「添加」里。
+    await page.getByTestId('page-extensions').waitFor()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-mcp').click()
     await page.getByRole('button', { name: '本地程序', exact: true }).click()
     await page.getByTestId('mcp-source').fill('python')
     const notice = page.getByTestId('mcp-runtime-notice')
@@ -9660,11 +9616,15 @@ test('the skills chapter explains importing for every tool and the card list com
         capabilities: { mcp: { list: true, reason: null }, skill: { list: true, reason: null }, plugin: { list: true, reason: null } },
       })
     })
-    await page.getByTestId('nav-skills').click()
-    const skills = page.getByTestId('page-skills')
-    await expect(skills.getByTestId('skills-empty')).toContainText('点「从文件夹导入」，选一个技能文件夹。')
-    await expect(skills.getByTestId('skills-import-unsupported')).toHaveCount(0)
-    await expect(skills.getByTestId('skills-add').first()).toBeEnabled()
+    // 技能 0.2.25 起是「插件」页左边的一栏，导入在右上角「添加」里。
+    await page.getByTestId('nav-extensions').click()
+    const hub = page.getByTestId('page-extensions')
+    await hub.getByTestId('hub-nav-skills').click()
+    await expect(hub.getByTestId('hub-skills-empty')).toHaveText('还没装技能。拿到别人给的技能文件夹时，点右上角「添加」导入。')
+    await expect(hub.getByTestId('hub-add')).toBeEnabled()
+    await hub.getByTestId('hub-add').click()
+    await expect(page.getByTestId('hub-add-skill')).toBeEnabled()
+    await page.keyboard.press('Escape')
     await page.getByTestId('nav-tutorial').click()
     const tutorial = page.getByTestId('page-tutorial')
     const entry = tutorial.getByTestId('tutorial-topic-skills')
@@ -9699,7 +9659,8 @@ test('tutorial actions navigate to their tool and retain the selected chapter an
     const article = tutorial.getByTestId('tutorial-article')
     const heading = await article.getByRole('heading', { level: 2 }).innerText()
     await article.getByRole('button', { name: '打开外接工具', exact: true }).first().click()
-    await expect(page.getByTestId('page-mcp')).toBeVisible()
+    // 外接工具 0.2.25 起合进「插件」页，按钮落到那一页。
+    await expect(page.getByTestId('page-extensions')).toBeVisible()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'listProviderExtensions'))
     await page.getByTestId('nav-tutorial').click()
     await expect(tutorial.getByTestId('tutorial-article').getByRole('heading', { level: 2 })).toHaveText(heading)
