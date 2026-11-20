@@ -47,10 +47,10 @@ export function registerAccountInvoiceHandlers(ctx: IpcHandlerContext): void {
   ))
   registerTrustedHandler('account:save-invoice-document', async (event, requestId: unknown) => {
     const parsed = parseInvoiceDocumentRequestId(requestId)
-    const center = invoiceCenter()
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
     return saveInvoiceDocument(parsed, {
-      download: (id) => center.downloadDocument(id),
+      // 没接上开票客户端也在这里抛：客户看到的照样是那句「发票没保存下来」，不会点了没反应。
+      download: (id) => invoiceCenter().downloadDocument(id),
       downloadsDirectory,
       showSaveDialog: (dialogOptions) => (parent ? dialog.showSaveDialog(parent, dialogOptions) : dialog.showSaveDialog(dialogOptions)),
       showFailure: async (message, button) => {
