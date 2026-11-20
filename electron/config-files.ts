@@ -8,6 +8,7 @@ import { providerBaseUrls, type ProviderId } from './catalog'
 import { relayProviderBaseUrlEquals, relayProviderBaseUrlMatches, relaySiteEndpointIdForBaseUrl, relaySites } from './relay-sites'
 import { readEnvLineValue, readJsonString, readTomlBoolean, readTomlString, rewriteEnvValue, rewriteJsonStrings, rewriteTomlStrings, rewriteTomlValues, type StringValueEdit, type ValueEdit } from './tool-route-rewrite'
 import { readBoundedFileSync } from './bounded-file'
+import { type RecordedConfigRead, statStamp } from './config-read-cache'
 import { isCodexConfigBroken, salvageCodexConfigText } from './codex-config-syntax'
 import { isClaudeSettingsBroken, isCodexAuthBroken, isGeminiSettingsBroken } from './cli-config-health'
 import { tomlErrorLocation } from './toml-error-location'
@@ -165,6 +166,12 @@ export interface NativeConfigInspection {
    * 登录时填的 xAI Key）；null = 没登录。只读这一个字段，令牌与 Key 不读。
    */
   grokLoginMode?: string | null
+  /**
+   * Grok 的 config.toml 里只有它自己的 npm 安装包装完写下的那一两行（isGrokInstallerOnlyConfig），旁边也没有
+   * auth.json：客户一个字没填过、也没登录过 Grok 账号。来源记录据此当成「还没配置」，自动写入照样放行
+   * （总单 17）。只给 Grok；缺省 = 不是这种文件。
+   */
+  grokInstallerOnly?: boolean
   dataDirectory: string
   dataDirectoryExists: boolean
   files: NativeConfigFile[]
@@ -300,6 +307,8 @@ export { executeFilePlans, providerConfigPaths }
 // 写之前那份。
 interface InspectionReads {
   files: Map<string, Buffer | null>
+  // 读每一份之前它的样子（config-read-cache.ts 的 statStamp），config:get 的缓存拿它看文件动没动。
+  stamps: Map<string, string | null>
   json: Map<string, Record<string, unknown> | null>
   toml: Map<string, { parsed: Record<string, unknown> } | { error: unknown }>
 }
@@ -308,7 +317,7 @@ let inspectionReads: InspectionReads | null = null
 
 export function withSharedConfigReads<T>(inspect: () => T): T {
   if (inspectionReads) return inspect()
-  inspectionReads = { files: new Map(), json: new Map(), toml: new Map() }
+  inspectionReads = { files: new Map(), stamps: new Map(), json: new Map(), toml: new Map() }
   try {
     return inspect()
   } finally {
@@ -316,20 +325,35 @@ export function withSharedConfigReads<T>(inspect: () => T): T {
   }
 }
 
+/**
+ * 同 withSharedConfigReads，另外交回这一遍读过哪几份文件、读之前各是什么样（config:get 几秒内接着用读下的那份，
+ * 靠它看文件被外面改过没有，0.2.24 深查 R3）。已经在一遍里时交回的是那一遍到这里为止读过的，只会多不会少。
+ */
+export function withRecordedConfigReads<T>(inspect: () => T): RecordedConfigRead<T> {
+  return withSharedConfigReads(() => {
+    const value = inspect()
+    return { value, stamps: new Map(inspectionReads?.stamps) }
+  })
+}
+
 // 和 readText 同一套：不是单链接普通文件、读不了都当没有。
 function readConfigBytes(filePath: string): Buffer | null {
-  const reads = inspectionReads?.files
-  if (reads?.has(filePath)) return reads.get(filePath) ?? null
+  const reads = inspectionReads
+  if (reads?.files.has(filePath)) return reads.files.get(filePath) ?? null
   let content: Buffer | null = null
+  let stamp: string | null = null
   try {
     const info = fs.lstatSync(filePath)
+    if (reads) stamp = statStamp(info)
     if (info.isFile() && info.nlink <= 1 && !info.isSymbolicLink()) {
       content = readBoundedFileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件')
     }
-  } catch {
+  } catch (error) {
     content = null
+    if (stamp === null && (error as NodeJS.ErrnoException).code === 'ENOENT') stamp = 'missing'
   }
-  reads?.set(filePath, content)
+  reads?.files.set(filePath, content)
+  reads?.stamps.set(filePath, stamp)
   return content
 }
 
@@ -995,6 +1019,35 @@ function readProviderAuthType(provider: ProviderId, paths: string[]): string | u
 interface GrokLogin {
   mode: string
   email: string | null
+}
+
+// Grok 的 npm 安装包（1.0.77 的 bin/postinstall.js）装完会自己写 ~/.grok/config.toml：读出原有内容（读不出就当空的），
+// 往 [cli] 里放 installer = "npm"，npm 给 @xai-official 配了源（或设了 GROK_NPM_REGISTRY）时再放 npm_registry，然后整份写回。
+// 所以从没配置过的电脑上，装完就多出一份只有这一两行的文件：没有密钥、地址、型号，客户一个字没填过。以前它被当成
+// 「来源不明」挡住自动写入，Mac、Linux 新装的 Grok 不会自动连上，只能点「确认连接」（全面检查 I-1）。
+// 只认这一种样子：只有 [cli] 一张表，里面只有这两个键、都是字符串，installer 一定在。多一张表、多一个键（包括星芒
+// 自己写的 auto_update）都不算，照旧当来源不明保护起来。合并写入只往里加，这一两行原样留着。
+const grokInstallerKeys = new Set(['installer', 'npm_registry'])
+
+export function isGrokInstallerOnlyConfig(parsed: Record<string, unknown> | null): boolean {
+  if (!parsed) return false
+  const tables = Object.keys(parsed)
+  if (tables.length !== 1 || tables[0] !== 'cli') return false
+  const cli = parsed.cli
+  if (!isJsonRecord(cli) || typeof cli.installer !== 'string') return false
+  return Object.entries(cli).every(([key, value]) => grokInstallerKeys.has(key) && typeof value === 'string')
+}
+
+// 旁边有 auth.json（登录过 Grok 账号，或读不出是什么）就不算：那份文件加上安装那几行，可能正是客户在用的官方登录。
+function readGrokInstallerOnly(file: NativeConfigFile): boolean {
+  if (!file.exists || file.notUtf8) return false
+  try {
+    fs.lstatSync(path.join(path.dirname(file.path), 'auth.json'))
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false
+  }
+  return isGrokInstallerOnlyConfig(readToml(file.path))
 }
 
 // auth.json 按「签发方::客户端」分区，例如 `https://auth.x.ai::<uuid>`，每个分区里是
@@ -1978,7 +2031,10 @@ function inspectProviderConfigFiles(
       ...readCodexProviderSelection(paths, baseUrl),
     } : {}),
     ...readConfigFilesBroken(provider, paths),
-    ...(provider === 'grok' ? { grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null } : {}),
+    ...(provider === 'grok' ? {
+      grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null,
+      ...(readGrokInstallerOnly(files[0]) ? { grokInstallerOnly: true } : {}),
+    } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {
       try {

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Archive, ArrowRight, ArrowUpRight, Check, ChevronDown, Download, FileText, FolderOpen, Home, Image, KeyRound, MessageSquare, Monitor, MoreHorizontal, Package, Play, Plug, RefreshCw, ScanLine, Search, Settings2, ShieldCheck, Sparkles, Terminal, UserRound, Wrench } from 'lucide-react'
+import { Archive, ArrowRight, ArrowUpRight, Check, ChevronDown, Download, FileText, FolderOpen, Globe, Home, Image, KeyRound, MessageSquare, Monitor, MoreHorizontal, Package, Play, Plus, RefreshCw, ScanLine, Search, Settings2, ShieldCheck, Sparkles, Terminal, UserRound, Wrench } from 'lucide-react'
 import type { TutorialIllustrationId } from '../../registry/tutorials'
 import './tutorial-illustration.css'
 
@@ -16,9 +16,9 @@ const illustrationDescriptions: Record<TutorialIllustrationId, { title: string; 
   launch: { title: '在自己的文件夹里开始', description: '点击工具卡片上的打开，按提示选择工作文件夹。工具会在这个文件夹打开，随后在工具窗口中输入自己的任务。', hint: '先用测试文件夹练习，再让 AI 处理正式项目。' },
   chat: { title: '不打开终端，也能直接提问', description: '左侧选择聊天，在输入框底部选择文本对话和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '先确认模型，再描述你希望完成的事。' },
   canvas: { title: '把提示词连到图像节点', description: '在画布中添加提示词和图像节点，连接两个节点，检查生成配置，再运行此节点。图中未执行生成。', hint: '连接节点后再运行；保存工作流不等于生成图片。' },
-  extensions: { title: '先选工具，再添加能力', description: '在外接工具页面先选择要配置的 AI 工具，再点自定义连接。技能和插件分别在自己的页面管理。', hint: '扩展按工具分别管理，先确认当前选中的是哪个工具。' },
-  skills: { title: '技能要导入到对应的工具', description: '在技能页面先选择工具，例如 Codex CLI，再点击从文件夹导入。列表可查看技能的来源与范围；系统自带的技能只能查看。', hint: '不同工具的导入能力不同；先选工具，再看可用操作。' },
-  plugins: { title: '在插件页面选择工具和来源', description: '在插件页面选择要使用插件的工具，再点击添加插件；装好的在上面的列表里，下面是官方目录，市场能力以当前工具实际支持为准。', hint: '先确认插件适用的工具，再按作者提供的来源添加。' },
+  extensions: { title: '在「插件」页挑好，一次装进几家', description: '在插件页的推荐里找到要用的那一条，点右边的加号，在装到哪里勾上要用的几家再安装。服务方给了配置时，点右上角添加里的自定义连接。', hint: '装之前先看它要哪些权限，只装任务确实需要的。' },
+  skills: { title: '导入一次，给几家用', description: '在插件页左边点技能，再点右上角添加里的从文件夹导入，选好文件夹，勾上要给哪几家用。列表能看到技能装在哪几家；Codex 自带的只能查看。', hint: '已经装在一家的，点那一行的加号复制给另一家。' },
+  plugins: { title: '官方插件只能装进自己那一家', description: '在插件页的推荐里往下翻，Claude 官方只能装进 Claude，GPT 官方只能装进 GPT。点标题展开看全部，点加号安装；作者给了来源时，点右上角添加里的添加插件。', hint: '先确认插件适用的工具，再按作者提供的来源添加。' },
   backup: { title: '改设置前，先留一份配置备份', description: '在「设置 › 备份迁移」点「立即备份」，选工具。随后核对列表中的工具和时间，通过预览确认包含的配置文件。图中未创建真实备份。', hint: '备份范围是工具配置；项目代码需要另外备份。' },
   health: { title: '有问题时，从检查开始', description: '进入检查页面运行检查，阅读异常项给出的处理建议，完成处理后重新检查；需要帮助时进入帮助与客服。', hint: '先看具体异常，再按建议处理，完成后重新检查。' },
 }
@@ -134,21 +134,21 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
       </div>
     case 'extensions':
       return <div className="tutorial-illustration-extensions">
-        <div className="tutorial-illustration-row"><Plug size={19} /><strong>外接工具</strong><Control>自定义连接</Control><Marker>2</Marker></div>
-        <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>Claude Code</Control><Control>Codex CLI</Control></div>
-        <div className="tutorial-illustration-row tutorial-illustration-runtime"><ShieldCheck size={20} /><div><strong>确认它需要哪些权限</strong><small>只添加任务确实需要的连接</small></div></div>
+        <div className="tutorial-illustration-row"><Globe size={19} /><strong>浏览器</strong><Control><Plus size={14} /></Control><Marker>1</Marker></div>
+        <div className="tutorial-illustration-options"><Marker>2</Marker><span className="tutorial-illustration-muted">装到哪里：</span><Control primary>Claude</Control><Control primary>GPT</Control><Control>Grok</Control></div>
+        <div className="tutorial-illustration-row tutorial-illustration-runtime"><ShieldCheck size={20} /><div><strong>确认它需要哪些权限</strong><small>只装任务确实需要的</small></div></div>
       </div>
     case 'skills':
       return <div className="tutorial-illustration-extensions">
         <div className="tutorial-illustration-row"><Sparkles size={19} /><strong>技能</strong><Control>从文件夹导入</Control><Marker>2</Marker></div>
-        <div className="tutorial-illustration-options"><Marker>1</Marker><Control>Claude Code</Control><Control primary>Codex CLI</Control></div>
-        <div className="tutorial-illustration-row tutorial-illustration-runtime"><FileText size={20} /><div><strong>看清来源与范围</strong><small>系统自带 · 我的（全局） · 当前项目</small></div></div>
+        <div className="tutorial-illustration-options"><Marker>1</Marker><span className="tutorial-illustration-muted">装到哪里：</span><Control primary>Claude</Control><Control primary>GPT</Control><Control>Grok</Control></div>
+        <div className="tutorial-illustration-row tutorial-illustration-runtime"><FileText size={20} /><div><strong>看清来源与范围</strong><small>Codex 自带 · 我的（全局） · 当前项目</small></div></div>
       </div>
     case 'plugins':
       return <div className="tutorial-illustration-extensions">
         <div className="tutorial-illustration-row"><Package size={19} /><strong>插件</strong><Control>添加插件</Control><Marker>2</Marker></div>
-        <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>Claude Code</Control><Control>Codex CLI</Control></div>
-        <div className="tutorial-illustration-options"><Control primary>已装到 Claude Code</Control><Control>官方目录</Control><span className="tutorial-illustration-muted">市场能力以当前工具为准</span></div>
+        <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>Claude 官方</Control><Control>GPT 官方</Control></div>
+        <div className="tutorial-illustration-options"><span className="tutorial-illustration-muted">插件各家格式不通用</span></div>
       </div>
     case 'backup':
       return <div className="tutorial-illustration-backup">

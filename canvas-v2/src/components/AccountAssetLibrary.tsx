@@ -3,8 +3,8 @@ import { ArrowLeft, ChevronLeft, ChevronRight, Download, Images, LoaderCircle, R
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasListedAssetSummary } from '../host'
 import { SafeImage } from './MediaPreview'
 import {
-  accountAssetDetail, accountAssetItems, accountAssetLastPageOffset, accountAssetLibraryNote, accountAssetName,
-  accountAssetPageSize, accountAssetQuery, accountAssetRangeLabel, accountAssetSearchMaxLength, validateAccountAssetPage,
+  accountAssetDetail, accountAssetItems, accountAssetLibraryNote, accountAssetName,
+  accountAssetPageSize, accountAssetQuery, accountAssetRangeLabel, accountAssetSearchMaxLength, accountAssetStepBackOffset, validateAccountAssetPage,
 } from './account-asset-library-model'
 import './account-asset-library.css'
 
@@ -120,8 +120,9 @@ export function AccountAssetLibrary({ onListAssets, onSave, onClose }: AccountAs
       void onListAssets(query).then((next) => {
         if (current !== listing.current) return
         const checked = validateAccountAssetPage(next, query)
-        if (checked.items.length === 0 && checked.offset > 0 && checked.offset >= checked.total) {
-          setOffset(accountAssetLastPageOffset(checked))
+        const stepBack = accountAssetStepBackOffset(checked)
+        if (stepBack !== null) {
+          setOffset(stepBack)
           return
         }
         setPage(checked)

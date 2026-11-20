@@ -1,4 +1,4 @@
-import { imageEditMaskModelSupported, parseImageEditMask, rasterizeImageEditMask, type ImageEditMask } from './image-edit-mask'
+import { imageEditMaskModelSupported, imageEditMaskUnsupportedModelMessage, parseImageEditMask, rasterizeImageEditMask, type ImageEditMask } from './image-edit-mask'
 import type { AssetRef, WorkflowNodeData } from '../model'
 
 export function parseNodeImageEditMask(kind: string, value: unknown): ImageEditMask | undefined {
@@ -35,9 +35,13 @@ export function imageMaskConfigurationError(value: unknown, kind: string, model:
   if (value === undefined) return null
   try {
     const mask = parseNodeImageEditMask(kind, value)!
-    if (!imageEditMaskModelSupported(model)) throw new Error('当前模型尚未接通蒙版局部修改，请选择支持的 GPT Image 模型')
+    if (!imageEditMaskModelSupported(model)) throw new Error(imageEditMaskUnsupportedModelMessage)
     if (!mask.sourceAssetId) throw new Error('请打开蒙版编辑器，核对并绑定当前原图后再运行')
-    if (sources.length !== 1 || sources[0].batch || sources[0].assetId !== mask.sourceAssetId) throw new Error('原图已变化或不是唯一单图，请重新核对蒙版')
+    // Same words as the desktop host's own check, so a canvas that blocks first
+    // does not tell the customer something different from the host.
+    if (sources.length === 0) throw new Error('请先连接一张原图')
+    if (sources.length > 1 || sources[0].batch) throw new Error('局部修改只能用一张原图')
+    if (sources[0].assetId !== mask.sourceAssetId) throw new Error('原图已变化，请重新核对蒙版')
     if (sources[0].width !== undefined && sources[0].width !== mask.width || sources[0].height !== undefined && sources[0].height !== mask.height) throw new Error('原图尺寸已变化，请重新核对蒙版')
     if (!mask.strokes.some((stroke) => stroke.tool === 'brush') || checkPixels && !rasterizeImageEditMask(mask).editedPixels) throw new Error('请先涂抹希望修改的区域，空蒙版不能生成')
     return null
