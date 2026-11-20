@@ -75,6 +75,19 @@ describe('chat attachment service', () => {
     expect(files.storeLocalBytes).toHaveBeenCalledWith(7, expect.any(Buffer))
   })
 
+  // R28-6：作品库按内容存，同一张图的两份文件拿回同一个编号；一条消息里不能带两遍。
+  it('returns each stored picture once when two picked files hold the same image', async () => {
+    const contents: Record<string, Buffer> = { '/a.png': png(800, 600), '/a-copy.png': png(800, 600), '/b.png': png(640, 480) }
+    const files = store({
+      readLocalFile: vi.fn(async (filePath: string) => contents[filePath]),
+      storeLocalBytes: vi.fn(async (_userId: number, bytes: Buffer) => asset(String(bytes.readUInt32BE(16)).padStart(43, 'a'))),
+    })
+    const picked = createChatAttachmentService({ store: files, codec: codec(10), pickFiles: async () => ['/a.png', '/a-copy.png', '/b.png'], readClipboardImage: async () => null, readClipboardFiles: async () => [] })
+    expect((await picked.pick(7, 4)).map((item) => item.assetId)).toEqual(['800'.padStart(43, 'a'), '640'.padStart(43, 'a')])
+    const pasted = createChatAttachmentService({ store: files, codec: codec(10), pickFiles: async () => [], readClipboardImage: async () => null, readClipboardFiles: async () => ['/a.png', '/a-copy.png'] })
+    expect((await pasted.paste(7, 4)).map((item) => item.assetId)).toEqual(['800'.padStart(43, 'a')])
+  })
+
   it('stores nothing when the picker is canceled, too many are chosen, or one file is bad', async () => {
     const canceled = store()
     await expect(createChatAttachmentService({ store: canceled, codec: codec(10), pickFiles: async () => [], readClipboardImage: async () => null, readClipboardFiles: async () => [] }).pick(7, 4)).resolves.toEqual([])

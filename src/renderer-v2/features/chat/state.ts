@@ -534,9 +534,16 @@ export function fileAttachmentErrorMessage(error: unknown): string {
   return speaksChinese(message) ? redactSecretPatterns(message) : '文件没有加上，请再试一次'
 }
 
+// 作品库按内容存图，同一张图换个文件名再选一次拿回的是同一个编号。一批里有两份时只留第一份：
+// 以前只跟输入框里已有的比，同一批里的两份都进了输入框，发送时被当成重复图片拒掉，点哪张移除都是两张一起没（R28-6）。
 export function addDraftImages(conversation: Conversation, images: readonly AiChatAsset[]): Conversation {
   const present = conversation.draftImages ?? []
-  const fresh = images.filter((image) => !present.some((item) => item.assetId === image.assetId))
+  const seen = new Set(present.map((item) => item.assetId))
+  const fresh = images.filter((image) => {
+    if (seen.has(image.assetId)) return false
+    seen.add(image.assetId)
+    return true
+  })
   if (!fresh.length) return conversation
   return { ...conversation, draftImages: [...present, ...fresh].slice(0, chatLimits.imagesPerMessage) }
 }
