@@ -1286,6 +1286,35 @@ test('macOS opens an installed desktop app when Codex CLI and Node are missing',
   } finally { await page.close() }
 })
 
+// 11-18 F05（0.2.25 总单第 38 项）：Mac 上更新 Codex 桌面端时星芒把它关了，更新完要帮它重开。那一刻别的工具
+// 正在打开（这里是 Codex 命令行停在半路），以前这次重开被 requestLaunch 直接丢掉；现在等那次走完再开。
+test('macOS reopens the Codex desktop app after an update even if another tool was opening meanwhile', async () => {
+  const page = await open('os=mac&codexMacUpdate=1&launchPending=1')
+  try {
+    const update = page.getByTestId('tool-codexDesktop-update')
+    await update.waitFor()
+    assert.equal(await update.innerText(), '可更新到 v1.3.0')
+    await page.evaluate(() => window.v2Test.holdNextInstall())
+    await update.click()
+    const prompt = page.getByRole('dialog', { name: 'Codex 桌面端还开着' })
+    await prompt.getByRole('button', { name: '关掉并更新' }).click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCodexDesktop'))
+    // 更新还在半路，客户先去打开 Codex 命令行，那次打开停在主进程那一步。
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.evaluate(() => window.v2Test.releaseInstall())
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'getCodexDesktopStatus').length > 0
+      && !document.querySelector('[data-testid="tool-codexDesktop-update"]'))
+    await page.waitForTimeout(200)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop')), false, '命令行还在打开，桌面端排在它后面')
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
+    const desktop = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args))
+    assert.deepEqual(desktop, [['open']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the launch button reuses the directory the tool was last opened in (N7)', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {
