@@ -1,7 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { applicationContentSecurityPolicy, applicationSecurityResponseHeaders } from './app-protocol'
+import {
+  applicationContentSecurityPolicy,
+  applicationResponseHeaders,
+  applicationSecurityResponseHeaders,
+  rendererCallStackDocumentPolicy,
+} from './app-protocol'
 
 function declaredPagePolicy(): string {
   const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8')
@@ -37,5 +42,24 @@ describe('applicationSecurityResponseHeaders', () => {
     const first = applicationSecurityResponseHeaders()
     first['Content-Security-Policy']?.push("connect-src *")
     expect(applicationSecurityResponseHeaders()['Content-Security-Policy']).toEqual([applicationContentSecurityPolicy])
+  })
+})
+
+describe('applicationResponseHeaders', () => {
+  it('is the security headers unchanged plus the policy that lets a hung page report its call stack', () => {
+    expect(applicationResponseHeaders()).toEqual({
+      ...applicationSecurityResponseHeaders(),
+      'Document-Policy': [rendererCallStackDocumentPolicy],
+    })
+    expect(applicationResponseHeaders()['Content-Security-Policy']).toEqual([applicationContentSecurityPolicy])
+    expect(rendererCallStackDocumentPolicy).toBe('include-js-call-stacks-in-crash-reports')
+  })
+
+  it('hands every response its own header lists', () => {
+    const first = applicationResponseHeaders()
+    first['Content-Security-Policy']?.push('connect-src *')
+    first['Document-Policy']?.push('anything')
+    expect(applicationResponseHeaders()['Content-Security-Policy']).toEqual([applicationContentSecurityPolicy])
+    expect(applicationResponseHeaders()['Document-Policy']).toEqual([rendererCallStackDocumentPolicy])
   })
 })
