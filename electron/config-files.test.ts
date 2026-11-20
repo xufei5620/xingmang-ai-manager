@@ -89,6 +89,7 @@ import { relayProviderBaseUrls } from './relay-sites'
 import type { CliHookInvocation } from './cli-hooks'
 import { renameWithTransientRetrySync } from './safe-local-data'
 import { projectInstructionsDigest } from './project-instructions'
+import { applyStandingInstructions } from './standing-instructions'
 import { isOpenAiModelId } from '../src/renderer-v2/features/tools/model-filter'
 
 const temporaryHomes: string[] = []
@@ -5766,6 +5767,52 @@ describe('the global reply language Codex and Grok read', () => {
     writeFile(path.join(configDirectory('grok', roots), 'AGENTS.md'), 'Always answer in English.\n')
     expect(managedGlobalResponseLanguagePresent('grok', roots)).toBe(false)
     expect(managedGlobalResponseLanguagePresent('claude', roots)).toBe(false)
+  })
+
+  it('still places it in front when AGENTS.md holds only the standing instructions block', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    for (const provider of ['codex', 'grok'] as const) {
+      // The customer saved standing instructions before signing in, so the block is all the file has.
+      expect(applyStandingInstructions(provider, '回答简短一点', roots).outcome).toBe('written')
+      const placed = path.join(configDirectory(provider, roots), 'AGENTS.md')
+      const block = fs.readFileSync(placed, 'utf8')
+
+      saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, providerBaseUrls)
+
+      expect(fs.readFileSync(placed, 'utf8')).toBe(`${MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS}\n${block}`)
+      expect(managedGlobalResponseLanguagePresent(provider, roots)).toBe(true)
+      expect(relayTemplateDefaultsPending(provider, roots, providerBaseUrls)).toBe(false)
+    }
+  })
+
+  it('still recognises its own instructions with the standing instructions block after them, and clearing gives them back', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    for (const provider of ['codex', 'grok'] as const) {
+      saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, providerBaseUrls)
+      const placed = path.join(configDirectory(provider, roots), 'AGENTS.md')
+      expect(applyStandingInstructions(provider, '回答简短一点', roots).outcome).toBe('written')
+      expect(fs.readFileSync(placed, 'utf8').startsWith(MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS)).toBe(true)
+      expect(managedGlobalResponseLanguagePresent(provider, roots)).toBe(true)
+
+      expect(applyStandingInstructions(provider, '', roots).outcome).toBe('removed')
+      expect(fs.readFileSync(placed, 'utf8')).toBe(MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS)
+    }
+  })
+
+  it('treats AGENTS.md with the customer\'s own words around the block as theirs', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const placed = path.join(configDirectory('codex', roots), 'AGENTS.md')
+    writeFile(placed, 'Always answer in English.\n')
+    expect(applyStandingInstructions('codex', '回答简短一点', roots).outcome).toBe('written')
+    const before = fs.readFileSync(placed, 'utf8')
+
+    saveProviderConfig('codex', 'sk-fixture', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+    expect(fs.readFileSync(placed, 'utf8')).toBe(before)
+    expect(managedGlobalResponseLanguagePresent('codex', roots)).toBe(false)
   })
 })
 

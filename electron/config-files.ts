@@ -84,6 +84,7 @@ import {
 } from './cli-hooks'
 import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, claudeRelayModelPickerUpdates, removeClaudeRelayModelPicker } from './claude-model-picker'
 import { projectInstructionsDigest } from './project-instructions'
+import { withoutStandingInstructions } from './standing-instructions'
 import {
   applyCodexRelayModelCatalog,
   codexModelCatalogFileName,
@@ -880,10 +881,18 @@ export function managedGlobalResponseLanguagePresent(provider: ProviderId, roots
   try {
     const roots = normalizeProviderConfigRoots(rootsInput)
     const content = readSafeUtf8FileSync(path.join(providerConfigRoot(provider, roots), 'AGENTS.md'), '工具全局说明', MAX_GLOBAL_RESPONSE_LANGUAGE_BYTES)
-    return content !== null && PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS.includes(projectInstructionsDigest(content))
+    return content !== null && PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS.includes(projectInstructionsDigest(languageInstructionsPart(content)))
   } catch {
     return false
   }
+}
+
+/**
+ * 文件里去掉星芒「长期嘱咐」那一段（standing-instructions.ts）以后剩下的，末尾的空行收成一个：那一段接在
+ * 「用中文回复」后面时垫了一个空行，拿掉以后还认得出是星芒放的那一版。
+ */
+function languageInstructionsPart(content: string): string {
+  return withoutStandingInstructions(content).replace(/(?:\r?\n)+$/, '\n')
 }
 
 function globalInstructionFileNames(provider: ProviderId): readonly string[] {
@@ -914,8 +923,22 @@ function globalResponseLanguagePlans(provider: ProviderId, roots: ProviderConfig
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return []
   }
   const wanted = new Set(names.map((name) => name.toLowerCase()))
-  if (entries.some((entry) => wanted.has(entry.toLowerCase()))) return []
-  return [{ path: path.join(providerRoot, 'AGENTS.md'), content: MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS }]
+  const present = entries.filter((entry) => wanted.has(entry.toLowerCase()))
+  const agentsPath = path.join(providerRoot, 'AGENTS.md')
+  if (present.length === 0) return [{ path: agentsPath, content: MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS }]
+  // 只有星芒「长期嘱咐」那一段的 AGENTS.md（总单 Q4 C5，客户还没登录星芒账号时就存了嘱咐）不算客户自己的说明：
+  // 照样放「用中文回复」，那一段原样接在后面。读不了的宁可不放。
+  if (present.length === 1 && present[0] === 'AGENTS.md') {
+    try {
+      const content = readSafeUtf8FileSync(agentsPath, '工具全局说明', MAX_GLOBAL_RESPONSE_LANGUAGE_BYTES)
+      if (content !== null && content.trim() !== '' && withoutStandingInstructions(content).trim() === '') {
+        return [{ path: agentsPath, content: `${MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS}\n${content}` }]
+      }
+    } catch {
+      return []
+    }
+  }
+  return []
 }
 
 function nestedString(source: Record<string, unknown> | null, keys: string[]): string {

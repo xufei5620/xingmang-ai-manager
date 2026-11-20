@@ -144,6 +144,7 @@ import {
 } from './system-service-context'
 import { createCliInstallService } from './cli-install-service'
 import { createConfigSaveService } from './config-save-service'
+import type { StandingInstructionsSaveResult } from './standing-instructions'
 import { createOfficialCredentialService } from './official-credential-service'
 import { createToolRouteFollowService } from './tool-route-follow-service'
 import { createExternalClientRouteService } from './external-client-route-service'
@@ -478,6 +479,8 @@ export interface SystemService {
   setClaudeWriteBoundary?(enabled: boolean, backup?: () => void): Promise<ClaudeToggleResult>
   /** 设置里「Claude Code 提交代码时不署名」，同上。可选 = 旧实现不提供。 */
   setClaudeCommitAttribution?(hidden: boolean, backup?: () => void): Promise<ClaudeToggleResult>
+  /** 设置里「给 AI 的长期嘱咐」：写进三家工具的全局说明，再记下这段话。不抛错。可选 = 旧实现不提供。 */
+  saveStandingInstructions?(text: string): Promise<StandingInstructionsSaveResult>
   /**
    * 切回官方账号以后要不要问「要不要让官方 Claude Code 先问再执行？」：还是「不逐条确认就执行」、这台电脑上又没问过。
    * 不抛错。可选 = 旧实现不提供（当不用问）。
@@ -1245,6 +1248,7 @@ export function createSystemService(
     repairCliHooks,
     setClaudeWriteBoundary,
     setClaudeCommitAttribution,
+    saveStandingInstructions,
     autoRepairStaleCliHooks,
     restoreCliHooksRemovedByUninstall,
     toolModelChecker,
@@ -1389,6 +1393,7 @@ export function createSystemService(
     repairCliHooks,
     setClaudeWriteBoundary,
     setClaudeCommitAttribution,
+    saveStandingInstructions,
     autoRepairStaleCliHooks,
     restoreCliHooksRemovedByUninstall,
     switchToOfficialAccount,
