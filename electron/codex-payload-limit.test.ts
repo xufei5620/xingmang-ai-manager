@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   codexPayloadNearingBytes,
   codexPayloadNoticeTtlMs,
+  codexPayloadRetryMs,
   codexPayloadStaleMs,
   codexRolloutSessionId,
   catchUpMaxFiles,
@@ -582,6 +583,68 @@ describe('codex payload limit service', () => {
     expect(run.followCodex).not.toHaveBeenCalled()
     expect(run.notices).toEqual(['unreachable'])
     expect(run.logs[0].detail).toMatchObject({ action: 'unreachable', to: null })
+  })
+
+  // R29-02：线路 2 一时没查通、Codex 的配置一时没跟过去，以前记成处理过，这个对话以后再报都不管了。
+  it('tries a conversation again a while after line 2 did not answer, and moves it once line 2 is back', async () => {
+    const holdDirect = vi.fn<CodexPayloadLimitDependencies['holdDirect']>()
+      .mockResolvedValueOnce('unreachable')
+      .mockResolvedValue('switched')
+    const run = serviceHarness({ holdDirect })
+    await run.service.payloadTooLarge(refused(lineOneUrl))
+    expect(run.notices).toEqual(['unreachable'])
+    // 客户接着发：一会儿以内不再查线路、不再提示。
+    run.clock.current = now + minuteMs
+    await run.service.payloadTooLarge(refused(lineOneUrl, sessionA, now + minuteMs))
+    expect(holdDirect).toHaveBeenCalledTimes(1)
+
+    run.clock.current = now + codexPayloadRetryMs
+    await run.service.payloadTooLarge(refused(lineOneUrl, sessionA, now + codexPayloadRetryMs))
+    expect(holdDirect).toHaveBeenCalledTimes(2)
+    expect(run.followCodex).toHaveBeenCalledWith('solov', 'switched')
+    expect(run.notices).toEqual(['unreachable'])
+    expect(run.logs.map((entry) => entry.detail.action)).toEqual(['unreachable', 'switched'])
+    // 换成了就算处理过。
+    run.clock.current = now + 2 * codexPayloadRetryMs
+    await run.service.payloadTooLarge(refused(lineOneUrl, sessionA, now + 2 * codexPayloadRetryMs))
+    expect(holdDirect).toHaveBeenCalledTimes(2)
+    await settle()
+    expect(run.writes.at(-1)?.handled).toEqual({ [sessionA]: now + codexPayloadRetryMs })
+  })
+
+  it('tries again after Codex could not follow to line 2, and reminds again when line 2 still does not answer', async () => {
+    const followCodex = vi.fn<CodexPayloadLimitDependencies['followCodex']>()
+      .mockRejectedValueOnce(new Error('config busy'))
+      .mockResolvedValue(true)
+    const run = serviceHarness({ followCodex })
+    await run.service.payloadTooLarge(refused(lineOneUrl))
+    run.clock.current = now + codexPayloadRetryMs
+    await run.service.payloadTooLarge(refused(lineOneUrl, sessionA, now + codexPayloadRetryMs))
+    expect(followCodex).toHaveBeenCalledTimes(2)
+    expect(run.notices).toEqual(['unfollowed'])
+
+    const down = serviceHarness({ hold: 'unreachable' })
+    await down.service.payloadTooLarge(refused(lineOneUrl))
+    down.clock.current = now + codexPayloadRetryMs
+    await down.service.payloadTooLarge(refused(lineOneUrl, sessionA, now + codexPayloadRetryMs))
+    expect(down.notices).toEqual(['unreachable', 'unreachable'])
+  })
+
+  it('does not remember a conversation that could not be moved, so a restart tries it again, and never calls it nearly full', async () => {
+    const run = serviceHarness({ hold: 'unreachable' })
+    await Promise.all([run.service.payloadTooLarge(refused(lineOneUrl)), run.service.payloadTooLarge(refused(lineOneUrl, sessionA, now + 1))])
+    expect(run.holdDirect).toHaveBeenCalledTimes(1)
+    await settle()
+    expect(run.writes.at(-1)).toEqual({ handled: {}, handledDirect: {}, warned: {} })
+    // 已经超过线路 1 的上限了：过了重试的那一阵也不说「快到了」。
+    run.clock.current = now + 2 * codexPayloadRetryMs
+    run.service.largeSession({ sessionId: sessionA, rolloutBytes: codexPayloadNearingBytes })
+    expect(run.notices).toEqual(['unreachable'])
+
+    const saved = run.writes.at(-1) ?? null
+    const restarted = serviceHarness({ readState: () => saved })
+    await restarted.service.payloadTooLarge(refused(lineOneUrl))
+    expect(restarted.holdDirect).toHaveBeenCalledTimes(1)
   })
 
   it('asks for a new conversation when Codex could not be moved to line 2', async () => {

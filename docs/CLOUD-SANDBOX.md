@@ -152,6 +152,15 @@ CI 的 Windows（`windows-package`）和 Mac（`macos-test`）作业每个 PR �
 4. 假接收端就是一个 `https.createServer`，把收到的每个请求体存下来。envelope 第三行是事件 JSON，看 release、environment、level、mechanism 和帧。
 5. 触发：`XINGMANG_CRASH_REPORT_TEST=1` 发一条自检；`webContents.forcefullyCrashRenderer()` 是界面进程崩；卡住上报只在抽中的两成打开里发，夹具里 require 入口那一刻临时把 `Math.random` 换成返回 0 的，require 完换回来。
 
+### 7.2 在容器里编一遍 Windows 安装程序（11-20 验）
+
+改了 `build/installer.nsh`，容器里能用 electron-builder 的真模板把安装、卸载两半都带 `-WX` 编一遍，语法错、没人调用的函数当场红；装、卸、升级的行为容器里跑不了（没有 wine），只能靠 PR 上的 `uninstall-smoke`。
+
+1. `node -e "require('app-builder-lib/out/toolsets/windows.js').getMakeNsisPath().then(r=>console.log(r))"` 先把 makensis 下到缓存（第一次可能断，再跑一次）。
+2. 摆一个假的 `win-unpacked`：主程序 `星芒AI管理工具.exe`（随便一个 exe）、`resources/`、`locales/` 和几个文件就行。
+3. 安装程序要 `!include` 打包时写出的名单 `build/installer-package-entries.nsh`（D05），`--prepackaged` 不跑 afterPack，先手动写：`node -e "require('./scripts/windows-installer-package-entries.cjs').writePackageEntriesInclude({appOutDir:'<假目录>',buildResourcesDir:'build',executableName:'星芒AI管理工具.exe'})"`。这份文件不进仓库，编完删掉。
+4. 写一个小脚本：先 `require('electron-builder')`（先引 `app-builder-lib` 里的单个文件会报循环依赖），把 `app-builder-lib/out/vm/WineVm` 的 `WineVmManager.prototype.exec` 换成「往 `<安装包名>__uninstaller.exe` 拷一个随便的 exe」，再调 `build({ config: require('./electron-builder.config.cjs'), targets: Platform.WINDOWS.createTarget(['nsis'], Arch.x64), prepackaged: '<假目录>', publish: 'never' })`，环境带 `XINGMANG_LOCAL_BUILD=1 CSC_IDENTITY_AUTO_DISCOVERY=false XINGMANG_OUTPUT_DIR=<临时目录>`。卸载程序那一遍先编，假装 wine 跑完以后接着编安装程序那一遍。想看生成的整份脚本，同样换掉 `NsisTarget.prototype.executeMakensis` 把第三个参数存下来。
+
 ## 8. 仓库里的规则，云端线程读到哪些
 
 - 根目录 `CLAUDE.md`（导入 `AGENTS.md`）每个线程开工就读。

@@ -48,10 +48,12 @@ function runBeforePack(electronPlatformName, overrides = {}) {
   `], { cwd: root, encoding: 'utf8', env: cleanBuildEnvironment(overrides) })
 }
 
-function runAfterPack(electronPlatformName, appOutDir, overrides = {}) {
+// packager 只给要它的那一支：Windows 的 afterPack 要往 buildResourcesDir 写安装包顶层条目名单（D05）。
+function runAfterPack(electronPlatformName, appOutDir, overrides = {}, packager = undefined) {
+  const context = { electronPlatformName, appOutDir, arch: 1, ...(packager ? { packager } : {}) }
   return spawnSync(process.execPath, ['-e', `
     const config = require(${JSON.stringify(configPath)})
-    config.afterPack({ electronPlatformName: ${JSON.stringify(electronPlatformName)}, appOutDir: ${JSON.stringify(appOutDir)}, arch: 1 })
+    config.afterPack(${JSON.stringify(context)})
       .then(() => process.stdout.write('ok'))
       .catch((error) => { process.stderr.write(String(error && error.message)); process.exit(3) })
   `], { cwd: root, encoding: 'utf8', env: cleanBuildEnvironment(overrides) })
@@ -158,7 +160,16 @@ test('afterPack takes group and other write off the Linux payload only', { skip:
 
   for (const platform of ['win32', 'darwin']) {
     const other = stagePayload(`${platform}-unpacked`)
-    const result = runAfterPack(platform, other, { XINGMANG_LOCAL_BUILD: '1' })
+    let packager
+    if (platform === 'win32') {
+      // Windows 那一支要看见主程序和 resources 才肯写名单；名单写到别处，payload 自己一个字节都不动。
+      fs.writeFileSync(path.join(other, 'app.exe'), 'exe')
+      fs.mkdirSync(path.join(other, 'resources'))
+      const buildResourcesDir = path.join(directory, 'win32-build-resources')
+      fs.mkdirSync(buildResourcesDir)
+      packager = { info: { buildResourcesDir }, appInfo: { productFilename: 'app' } }
+    }
+    const result = runAfterPack(platform, other, { XINGMANG_LOCAL_BUILD: '1' }, packager)
     assert.equal(result.status, 0, result.stderr)
     assert.equal(payloadMode(other), 0o666, platform)
   }
