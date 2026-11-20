@@ -256,7 +256,7 @@ export function extensionShowsUpdatePill(item: ExtensionItem): boolean {
 export function extensionUpdateStatus(item: ExtensionItem): string {
   if (item.kind !== 'mcp' || item.update.state !== 'update-available') return item.update.reason || '尚未检查'
   const latest = item.source.kind === 'git' ? null : item.latestVersion
-  return `有新版本${latest ? ` ${latest}` : ''}。外接工具不在这里更新：精选里加的用的是星芒核过的版本，不用管它；自己加的想换新版本，先移除，再按新版本号加一次。`
+  return `有新版本${latest ? ` ${latest}` : ''}。这一条不在这里更新：推荐里的用的是星芒核过的版本，不用管它；自己加的想换新版本，先移除，再按新版本号加一次。`
 }
 
 /**

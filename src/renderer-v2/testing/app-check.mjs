@@ -9597,7 +9597,7 @@ test('the skills chapter explains importing for every tool and the card list com
     await entry.click()
     const article = tutorial.getByTestId('tutorial-article')
     await expect(article.getByRole('heading', { level: 2 })).toHaveText('技能')
-    await expect(article).toContainText('选好工具，再选一个本机的技能文件夹导入。')
+    await expect(article).toContainText('选一个本机的技能文件夹，勾上要给哪几家用。')
     await expect(article.locator('details[data-extra-title="Claude Code、Grok CLI 没有导入按钮？"]')).toHaveCount(0)
     await tutorial.getByTestId('tutorial-back').click()
     await expect(entry).toBeFocused()
@@ -9624,8 +9624,8 @@ test('tutorial actions navigate to their tool and retain the selected chapter an
     await tutorial.getByTestId('tutorial-topic-mcp').click()
     const article = tutorial.getByTestId('tutorial-article')
     const heading = await article.getByRole('heading', { level: 2 }).innerText()
-    await article.getByRole('button', { name: '打开外接工具', exact: true }).first().click()
-    // 外接工具 0.2.25 起合进「插件」页，按钮落到那一页。
+    await article.getByRole('button', { name: '打开插件', exact: true }).first().click()
+    // 外接工具 0.2.25 起合进「插件」页，这一章的按钮也改叫「打开插件」，落到那一页。
     await expect(page.getByTestId('page-extensions')).toBeVisible()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'listProviderExtensions'))
     await page.getByTestId('nav-tutorial').click()
