@@ -35,8 +35,8 @@ export type IpcLogPolicy = 'normal' | 'quiet-success' | 'secret-input' | 'silent
  * - scoped：在账号工作里跑，换账号要等它跑完才动手；跑完时账号已经换了，结果作废，报「账号刚切换过，请再试一次」。
  * - scoped-may-end-session：同上，但这一下自己就可能结束或换掉登录（改密码、踢掉当前这台设备），
  *   跑完不核对账号换没换。
- * - scoped-queued：要在安装队列里排在别的安装后面（I11）。排着队那段不算账号工作，处理函数交给队列时
- *   才拿 accountWork.queue()，轮到它执行才算进去（#1085）；开机照旧先等账号恢复完。
+ * - scoped-queued：要在安装队列里排在别的安装后面（I11）。排着队那段不算账号工作：处理函数一进来就拿
+ *   accountWork.queue() 记下点的时候是哪个账号（N5），轮到它执行才算进去（#1085）；开机照旧先等账号恢复完。
  */
 export type IpcAccountPolicy = 'none' | 'scoped' | 'scoped-may-end-session' | 'scoped-queued'
 

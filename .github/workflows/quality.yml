@@ -102,8 +102,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
-    # The longest shard is ~9 minutes. This is a backstop for a wedged runner,
-    # not a bound anything is expected to approach.
+    # The longest shards take ~11 minutes. This is a backstop for a wedged
+    # runner, not a bound anything is expected to approach.
     timeout-minutes: 25
     strategy:
       # A failing shard must not cancel its siblings. Splitting the job is only
@@ -133,9 +133,12 @@ jobs:
           # every test passing. A fourth slice by count would have moved that
           # cluster to --shard=2/4 whole, so vitest.config.ts deals the
           # measured-slow files apart first (scripts/vitest-shards.mjs) and the
-          # rest after them. Each quarter should land near 6 minutes. When one
-          # drifts well past its siblings, re-measure the table; when they all
-          # near 15 together, deal to a fifth instead of raising this.
+          # rest after them. Each quarter was planned near 6 minutes; re-measured
+          # on 2026-11-19, when the suite had grown to some 38 runner-minutes
+          # and one quarter ran 12.9 against 7.7 to 8.9, each should land near
+          # 10. When one drifts well past its siblings, re-measure the table;
+          # when they all near 15 together, deal to a fifth instead of raising
+          # this.
           - shard: vitest-1
             command: npm run test:vitest:1
             timeout: 15
@@ -272,6 +275,18 @@ jobs:
         # which one, instead of cancelling the job at its cap with no verdict.
         timeout-minutes: ${{ matrix.timeout }}
         run: ${{ matrix.command }}
+      # A browser click that stalls after its mouse events went out appends what
+      # the page and the browser were doing to its own error, and saves a
+      # screenshot of the stuck page here (e2e/click-stall.mjs). The error text
+      # is already in the log; this keeps the picture of the page next to it.
+      - name: Upload screenshots of stalled clicks
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: click-stall-${{ matrix.shard }}
+          path: artifacts/click-stall/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Fail if the test run left files in the working tree
         shell: bash
         run: |

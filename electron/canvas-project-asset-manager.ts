@@ -195,33 +195,7 @@ export class CanvasProjectAssetManager {
         }
       }
     }
-    const cachedProjectId = this.locations.get(locationKey(userId, kind, assetId))
-    if (cachedProjectId !== undefined) {
-      const context = cachedProjectId === null ? this.global : await this.forProject(userId, cachedProjectId)
-      return this.readFromContext(context, userId, assetId, kind)
-    }
-    try {
-      const owned = await this.readFromContext(this.global, userId, assetId, kind)
-      this.locations.set(locationKey(userId, kind, assetId), null)
-      return owned
-    } catch {
-      // Project workspaces are searched below. Asset identifiers are random,
-      // so the first owned match is unambiguous and is cached for range reads.
-    }
-    const projects = await this.projects.list(userId)
-    for (const project of projects) {
-      if (!project.workspaceConfigured) continue
-      try {
-        const context = await this.forProject(userId, project.id)
-        const owned = await this.readFromContext(context, userId, assetId, kind)
-        this.remember(userId, kind, assetId, project.id, context)
-        return owned
-      } catch {
-        // A missing workspace or non-matching asset does not hide assets in
-        // the remaining user-owned projects.
-      }
-    }
-    throw new Error('AI 素材不存在或无权访问')
+    return this.locate(userId, kind, assetId, (context) => this.readFromContext(context, userId, assetId, kind))
   }
 
   /**
@@ -235,32 +209,7 @@ export class CanvasProjectAssetManager {
     select: (totalBytes: number) => ByteRange | null,
   ): Promise<AiVideoOwnedRangeRead> {
     assertUserId(userId)
-    const cachedProjectId = this.locations.get(locationKey(userId, 'video', assetId))
-    if (cachedProjectId !== undefined) {
-      const context = cachedProjectId === null ? this.global : await this.forProject(userId, cachedProjectId)
-      return context.videos.readOwnedRange(userId, assetId, select)
-    }
-    try {
-      const owned = await this.global.videos.readOwnedRange(userId, assetId, select)
-      this.locations.set(locationKey(userId, 'video', assetId), null)
-      return owned
-    } catch {
-      // Fall through to the user's project workspaces, exactly as readOwned does.
-    }
-    const projects = await this.projects.list(userId)
-    for (const project of projects) {
-      if (!project.workspaceConfigured) continue
-      try {
-        const context = await this.forProject(userId, project.id)
-        const owned = await context.videos.readOwnedRange(userId, assetId, select)
-        this.remember(userId, 'video', assetId, project.id, context)
-        return owned
-      } catch {
-        // A missing workspace or non-matching asset does not hide assets in
-        // the remaining user-owned projects.
-      }
-    }
-    throw new Error('AI 素材不存在或无权访问')
+    return this.locate(userId, 'video', assetId, (context) => context.videos.readOwnedRange(userId, assetId, select))
   }
 
   /**
@@ -275,30 +224,63 @@ export class CanvasProjectAssetManager {
     kind: 'image' | 'video' | 'audio',
   ): Promise<string> {
     assertUserId(userId)
-    const cachedProjectId = this.locations.get(locationKey(userId, kind, assetId))
-    if (cachedProjectId !== undefined) {
-      const context = cachedProjectId === null ? this.global : await this.forProject(userId, cachedProjectId)
-      return this.filePathFromContext(context, userId, assetId, kind)
+    return this.locate(userId, kind, assetId, (context) => this.filePathFromContext(context, userId, assetId, kind))
+  }
+
+  /**
+   * Runs `read` where this account keeps an asset: the place remembered for
+   * it first, then the global library, then each project folder. Asset
+   * identifiers are random, so the first owned match is unambiguous and is
+   * remembered for the range reads that follow.
+   *
+   * The remembered place is only a guess. A copied project keeps the ids of
+   * the assets it copied, so when the original's files are moved or deleted,
+   * or its folder is unplugged, the copy must still be found (O14). Each
+   * candidate goes through its own store's full file checks; nothing here
+   * reads a path that is not inside one of this account's libraries.
+   */
+  private async locate<T>(
+    userId: number,
+    kind: 'image' | 'video' | 'audio',
+    assetId: string,
+    read: (context: CanvasProjectAssetContext) => Promise<T>,
+  ): Promise<T> {
+    const key = locationKey(userId, kind, assetId)
+    const remembered = this.locations.get(key)
+    let rememberedError: unknown
+    if (remembered !== undefined) {
+      try {
+        return await read(remembered === null ? this.global : await this.forProject(userId, remembered))
+      } catch (error) {
+        // Leave a place a concurrent store or lookup has just remembered.
+        if (this.locations.get(key) === remembered) this.locations.delete(key)
+        rememberedError = error
+      }
     }
-    try {
-      const filePath = await this.filePathFromContext(this.global, userId, assetId, kind)
-      this.locations.set(locationKey(userId, kind, assetId), null)
-      return filePath
-    } catch {
-      // Fall through to the user's project workspaces, exactly as readOwned does.
+    if (remembered !== null) {
+      try {
+        const found = await read(this.global)
+        this.locations.set(key, null)
+        return found
+      } catch {
+        // Project workspaces are searched below.
+      }
     }
     const projects = await this.projects.list(userId)
     for (const project of projects) {
-      if (!project.workspaceConfigured) continue
+      if (!project.workspaceConfigured || project.id === remembered) continue
       try {
         const context = await this.forProject(userId, project.id)
-        const filePath = await this.filePathFromContext(context, userId, assetId, kind)
+        const found = await read(context)
         this.remember(userId, kind, assetId, project.id, context)
-        return filePath
+        return found
       } catch {
-        // A missing workspace does not hide assets in the remaining projects.
+        // A missing workspace or non-matching asset does not hide assets in
+        // the remaining user-owned projects.
       }
     }
+    // With no copy anywhere, say what the remembered place said, as before.
+    if (rememberedError !== undefined) throw rememberedError
     throw new Error('AI 素材不存在或无权访问')
   }
 

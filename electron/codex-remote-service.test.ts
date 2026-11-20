@@ -2574,7 +2574,10 @@ describe('codex-remote-service images', () => {
     for (const ref of refs) channel.images.set(ref, { ok: true, bytes: pngBytes })
     channel.handlers?.onInbound(imageMessage(alice, refs.slice(0, 4)))
     channel.handlers?.onInbound(imageMessage(alice, refs.slice(4)))
-    await vi.waitFor(() => expect(channel.texts()).toEqual([receivedImage, '一次最多带 5 张图片，这张没收。']))
+    // 等发送本身，不用 vi.waitFor 的 1 秒：第二句之前要原子写 7 次（两条消息各记一次编号进设置、存 5 张图），
+    // Windows CI 上一次一两百毫秒，凑满 1 秒就等不全（11-18 #1929、11-20 main 和 #1940 各红一次）。
+    await channel.sentUntil(() => channel.texts().length >= 2)
+    expect(channel.texts()).toEqual([receivedImage, '一次最多带 5 张图片，这张没收。'])
     expect(channel.fetched).toEqual(refs.slice(0, 5))
     expect(storedImages(s.imageDirectory)).toHaveLength(5)
   })

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { before, after, test } from 'node:test'
+import { expect } from '@playwright/test'
 import { openFixturePage } from './fixture-readiness.mjs'
 import { actionTimeoutMs, createBrowserFixture, navigationTimeoutMs } from './harness.mjs'
 import { assertNoToast, recordToasts, waitForToast } from './toast-recording.mjs'
@@ -1065,6 +1066,87 @@ test('a half-typed tool key limit is refused instead of being saved as no limit'
   } finally {
     await page.close()
   }
+})
+
+// F01：「每个工具的额度上限」和下面的密钥列表各读各的，两边的保存都是整条覆盖。
+const keyUpdates = async (page) => (await calls(page)).filter((call) => call.name === 'updateAccountKey').map((call) => call.args)
+async function openKeyEditor(page, name) {
+  await page.getByRole('button', { name: `密钥 ${name} 的更多操作`, exact: true }).click()
+  await page.getByRole('menuitem', { name: '编辑', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: `编辑「${name}」`, exact: true })
+  await dialog.getByLabel('名称', { exact: true }).waitFor()
+  return dialog
+}
+
+test('renaming a key in the list keeps the cap just set for its tool', async () => {
+  const page = await fixture('page=account&managedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['default', 'GPT', 'Claude-MAX']))
+    const card = page.getByTestId('tool-key-limits')
+    await card.getByTestId('tool-key-limit-input-codex').fill('5')
+    await card.getByTestId('tool-key-limit-save-codex').click()
+    await waitForToast(page, '额度上限已保存')
+    // 列表跟着重读：Codex 那一行也写着刚设的上限，不再是「不限额度」。
+    await page.getByTestId('account-key-row-12').getByText('剩余 $5.00', { exact: true }).waitFor()
+    const dialog = await openKeyEditor(page, 'xingmang-desktop-codex')
+    await dialog.getByLabel('名称', { exact: true }).fill('我的 Codex')
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    await waitForToast(page, '已保存「我的 Codex」')
+    const updates = await keyUpdates(page)
+    assert.equal(updates.length, 2)
+    assert.deepEqual(updates[1], { id: 12, name: '我的 Codex', group: 'GPT', remainQuota: 500, unlimitedQuota: false, expiredTime: -1 })
+    await page.getByTestId('account-key-row-12').getByText('剩余 $5.00', { exact: true }).waitFor()
+  } finally { await page.close() }
+})
+
+test('a key editor opened before the cap changed elsewhere does not put the old one back', async () => {
+  const page = await fixture('page=account&managedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['default', 'GPT', 'Claude-MAX']))
+    await page.getByTestId('account-key-row-12').waitFor()
+    const dialog = await openKeyEditor(page, 'xingmang-desktop-codex')
+    // 编辑框开着的时候，别处给这把设了 $7 上限和到期日；框里还是「不限额度」「不改」。
+    const expiredAt = '2027-03-01T00:00:00.000Z'
+    await page.evaluate((at) => window.changeKeyElsewhere(12, { unlimitedQuota: false, remainQuota: 700, expiredAt: at }), expiredAt)
+    await dialog.getByLabel('名称', { exact: true }).fill('我的 Codex')
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    await waitForToast(page, '已保存「我的 Codex」')
+    const expiredTime = Date.parse(expiredAt) / 1000
+    assert.deepEqual((await keyUpdates(page)).at(-1), { id: 12, name: '我的 Codex', group: 'GPT', remainQuota: 700, unlimitedQuota: false, expiredTime })
+    // 客户自己点了「不限额度」的照旧放开，到期日不动。
+    const again = await openKeyEditor(page, '我的 Codex')
+    await again.getByTestId('account-key-quota-mode').getByRole('button', { name: '不限额度', exact: true }).click()
+    await again.getByRole('button', { name: '保存', exact: true }).click()
+    await waitForToast(page, '已保存「我的 Codex」')
+    assert.deepEqual((await keyUpdates(page)).at(-1), { id: 12, name: '我的 Codex', group: 'GPT', remainQuota: 0, unlimitedQuota: true, expiredTime })
+  } finally { await page.close() }
+})
+
+test('saving a tool cap keeps what the list or another device just changed on that key', async () => {
+  const page = await fixture('page=account&managedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['default', 'GPT', 'Claude-MAX']))
+    const row = page.getByTestId('tool-key-limits').getByTestId('tool-key-limit-claude')
+    await row.getByText(/上限剩余 \$12\.00/).waitFor()
+    // 在列表里把 Claude 那把的额度改成 $20：上面的卡片跟着重读。
+    const dialog = await openKeyEditor(page, 'xingmang-desktop-claude')
+    await dialog.getByLabel('可用额度', { exact: true }).fill('20')
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    await waitForToast(page, '已保存「xingmang-desktop-claude」')
+    await row.getByText(/上限剩余 \$20\.00/).waitFor()
+    // 卡片读完以后，别处又改了这把的名字和到期日；卡片上还是旧的。
+    const expiredAt = '2027-03-01T00:00:00.000Z'
+    await page.evaluate((at) => window.changeKeyElsewhere(11, { name: 'renamed-claude', expiredAt: at }), expiredAt)
+    await row.getByTestId('tool-key-limit-input-claude').fill('9')
+    await row.getByTestId('tool-key-limit-save-claude').click()
+    await waitForToast(page, '额度上限已保存')
+    assert.deepEqual((await keyUpdates(page)).at(-1), {
+      id: 11, name: 'renamed-claude', group: 'Claude-MAX', remainQuota: 900, unlimitedQuota: false, expiredTime: Date.parse(expiredAt) / 1000,
+    })
+  } finally { await page.close() }
 })
 
 test('a profile read once stays on screen when a later refresh cannot read it', async () => {
@@ -4565,6 +4647,21 @@ test('importing a moved computer carries the usage-stats switch and asks before 
   }
 })
 
+// D24：导入「搬到新电脑」的文件，主题当下变了色，重开又变回原来的：只写了 settings.json，开机看的系统界面设置里那份主题偏好没动。
+test('importing a moved computer keeps its theme after a restart by saving the system theme preference too', async () => {
+  const page = await fixture('page=settings&system=1&transfer=theme-dark')
+  try {
+    await page.getByRole('tab', { name: '备份迁移', exact: true }).click()
+    await page.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '导入了你的设置。')
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.filter((call) => call.name === 'settings').map((call) => call.args), [{ version: 2, theme: 'dark' }])
+    assert.deepEqual(recorded.filter((call) => call.name === 'platform-theme').map((call) => call.args), ['dark'])
+  } finally {
+    await page.close()
+  }
+})
+
 test('a system notification settings page that will not open keeps the test notification line and says where to look', async () => {
   const page = await fixture('page=settings&system=1&fail=notification-settings')
   try {
@@ -4683,6 +4780,163 @@ test('cancelling the password dialog drops the typed secrets and Esc confirms be
       ]),
       ['', '', ''],
     )
+  } finally {
+    await page.close()
+  }
+})
+
+// 0.2.25 扩展合并方案第二版：精选、外接工具、技能、插件合成一页「插件」。
+const hub = 'page=extensions&installedProviders=claude,codex'
+
+test('the plugins page groups the recommended entries and folds each official group at four', async () => {
+  const page = await fixture(hub)
+  try {
+    const list = page.getByTestId('hub-plugins')
+    for (const group of ['common', 'coding', 'claude', 'codex']) await list.getByTestId(`hub-section-${group}`).waitFor()
+    // 逐步思考挪到「写代码」；官方插件分在各自那一组，只能装进那一家。
+    await list.getByTestId('hub-section-coding').getByTestId('hub-row-mcp-sequential-thinking').waitFor()
+    const claude = list.getByTestId('hub-section-claude')
+    await expect(claude.getByText('Anthropic 官方市场，只能装进 Claude', { exact: true })).toBeVisible()
+    assert.equal(await claude.locator('.v2-hub-row').count(), 4)
+    const toggle = claude.getByTestId('hub-section-claude-toggle')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await toggle.click()
+    assert.equal(await claude.locator('.v2-hub-row').count(), 5)
+    await expect(list.getByTestId('hub-section-codex').getByText('OpenAI 插件目录，只能装进 GPT', { exact: true })).toBeVisible()
+    // 读屏读整行那一句；装上了的有「…」，还能装的有「+」。
+    await expect(list.getByTestId('hub-open-mcp-browser')).toHaveAttribute('aria-label', '浏览器，能装到：Claude、GPT、Grok；已装到：Claude、GPT')
+    await list.getByTestId('hub-menu-mcp-browser').waitFor()
+    await list.getByTestId('hub-add-mcp-memory').waitFor()
+    // 左边「已安装」：连不上的那条有橙点，鼠标停上去说是哪种。
+    const installed = page.getByTestId('hub-installed')
+    await expect(page.locator('.v2-hub-side-label')).toContainText('5')
+    await expect(installed.getByRole('button', { name: /测试连接/ }).locator('.v2-hub-warn')).toHaveAttribute('title', '连不上')
+    await expect(page.getByText('这些都是第三方软件，由它们各自的作者维护和更新，不随星芒一起发布。装之前请先看清它要哪些权限。', { exact: true }).first()).toBeVisible()
+    // 「自己加的」只放自己加的那条连接。
+    await page.getByTestId('hub-tab-custom').click()
+    await list.getByTestId('hub-row-mcp-test-extension').waitFor()
+    assert.equal(await list.locator('.v2-hub-row').count(), 1)
+  } finally {
+    await page.close()
+  }
+})
+
+test('installing from the plugins page puts a recommended connection into every family picked', async () => {
+  const page = await fixture(`${hub}&extensionOk`)
+  try {
+    await page.getByTestId('hub-add-mcp-sequential-thinking').click()
+    const dialog = page.getByRole('dialog', { name: '安装「逐步思考」', exact: true })
+    const tools = dialog.getByRole('group', { name: '装到哪里', exact: true })
+    await expect(tools.getByTestId('hub-install-tools-claude')).toHaveAttribute('aria-pressed', 'true')
+    await expect(tools.getByTestId('hub-install-tools-codex')).toHaveAttribute('aria-pressed', 'true')
+    await expect(tools.getByTestId('hub-install-tools-grok')).toBeDisabled()
+    await expect(tools.getByTestId('hub-install-tools-grok')).toContainText('这台电脑还没装 Grok CLI')
+    await tools.getByTestId('hub-install-tools-grok-home').waitFor()
+    const submit = dialog.getByTestId('hub-install-submit')
+    await expect(submit).toHaveText('装到 2 个')
+    await tools.getByTestId('hub-install-tools-codex').click()
+    await expect(submit).toHaveText('安装')
+    await tools.getByTestId('hub-install-tools-codex').click()
+    await submit.click()
+    await waitForToast(page, '已安装「逐步思考」，给 Claude Code、Codex CLI 使用，下次打开工具时生效')
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => [call.args.provider, call.args.kind, call.args.action, call.args.id]), [['claude', 'mcp', 'install', 'sequential-thinking']])
+    assert.deepEqual((await callsNamed(page, 'add-mcp')).map((call) => call.args.name), ['sequential-thinking'])
+  } finally {
+    await page.close()
+  }
+})
+
+test('a GPT official plugin installs only into GPT and the Claude row says why not', async () => {
+  const page = await fixture(`${hub}&extensionOk`)
+  try {
+    await page.getByTestId('hub-add-plugin-linear-openai-api-curated').click()
+    const dialog = page.getByRole('dialog', { name: '安装「Linear」', exact: true })
+    await expect(dialog.getByTestId('hub-install-tools-claude')).toBeDisabled()
+    await expect(dialog.getByTestId('hub-install-tools-claude')).toContainText('插件各家格式不通用，这一条只有 GPT 版')
+    await dialog.getByTestId('hub-install-submit').click()
+    await waitForToast(page, '已安装「Linear」，给 Codex CLI 使用，下次打开工具时生效')
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'codex', kind: 'plugin', action: 'install', id: 'linear@openai-api-curated' })
+  } finally {
+    await page.close()
+  }
+})
+
+test('an entry opens to where it is installed and what it does, and comes out of every tool at once', async () => {
+  const page = await fixture(`${hub}&extensionOk`)
+  try {
+    await page.getByTestId('hub-installed').getByRole('button', { name: /本地文件/ }).click()
+    const detail = page.getByTestId('hub-detail')
+    await expect(detail.getByRole('heading', { level: 2 })).toHaveText('本地文件')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('已装好')
+    await expect(detail.getByTestId('hub-where-codex')).toContainText('还没装')
+    await detail.getByTestId('hub-where-add-codex').waitFor()
+    await expect(detail.getByTestId('hub-where-grok')).toContainText('这台电脑还没装 Grok CLI')
+    await expect(detail.getByTestId('hub-detail-add')).toHaveText('装到 GPT')
+    await expect(detail.getByTestId('hub-detail-about')).toContainText('MCP 服务器')
+    await detail.getByTestId('hub-remove-all').click()
+    const confirm = page.getByRole('dialog', { name: '从所有工具里移除「本地文件」？', exact: true })
+    await expect(confirm).toContainText('会从 Claude Code 里一起移除。以后想用再装回来就行。')
+    await confirm.getByTestId('hub-remove-confirm').click()
+    await waitForToast(page, '已从 Claude Code 移除「本地文件」')
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'files', scope: 'user' })
+    // 推荐里的那一条还在，详情照旧开着，只是哪家都没装了；左边清单里没有它了。
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('还没装')
+    assert.equal(await page.getByTestId('hub-installed').getByRole('button', { name: /本地文件/ }).count(), 0)
+    await detail.getByTestId('hub-back').click()
+    await page.getByTestId('hub-section-common').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('the plugins page searches across groups, filters by family and says when nothing matches', async () => {
+  const page = await fixture(hub)
+  try {
+    const search = page.getByTestId('hub-search')
+    await search.fill('浏览器')
+    await page.getByTestId('hub-row-mcp-browser').waitFor()
+    assert.equal(await page.locator('.v2-hub-row').count(), 1)
+    await search.fill('插件 Stripe')
+    await page.getByTestId('hub-row-plugin-stripe-claude-plugins-official').waitFor()
+    await search.fill('找不到的东西')
+    await page.getByTestId('hub-search-empty').waitFor()
+    await page.getByTestId('hub-clear').click()
+    await page.getByTestId('hub-section-common').waitFor()
+    // 装到：GPT 时 Claude 官方那一组不放，没装的 Grok 写「还没装」。
+    await page.getByTestId('hub-filter').click()
+    await expect(page.getByTestId('hub-filter-grok')).toContainText('还没装')
+    await page.getByTestId('hub-filter-codex').click()
+    await expect(page.getByTestId('hub-filter')).toHaveText('装到：GPT')
+    assert.equal(await page.getByTestId('hub-section-claude').count(), 0)
+    await page.getByTestId('hub-section-codex').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('without the Codex CLI the GPT official group asks for it and offers the home page', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude')
+  try {
+    await expect(page.getByTestId('hub-codex-missing')).toHaveText('装好 Codex CLI 才能看 GPT 官方插件。去首页安装')
+    await page.getByTestId('hub-codex-open-home').waitFor()
+    assert.equal(await page.getByTestId('hub-row-plugin-sentry-openai-api-curated').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('the skills view lists skills on this computer and sends OpenAI skills to the GPT official group', async () => {
+  const page = await fixture(hub)
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('技能')
+    await page.getByTestId('hub-section-skill').getByTestId('hub-row-skill-测试技能').waitFor()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill').waitFor()
+    await page.keyboard.press('Escape')
+    await page.getByTestId('skills-codex-plugins').click()
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('插件')
+    await expect(page.getByTestId('hub-section-codex-toggle')).toHaveAttribute('aria-expanded', 'true')
   } finally {
     await page.close()
   }

@@ -21,6 +21,7 @@ import {
   buildVideoStudioCatalogs,
   buildVideoStudioClipRequest,
   buildVideoStudioImageRequest,
+  changeVideoStudioSettings,
   createVideoStudioId,
   createVideoStudioProject,
   finishVideoStudioShotDrawing,
@@ -122,9 +123,36 @@ function loadDrafts(storage: VideoStudioStorage | null, scope: string): VideoStu
 
 const draftsFullWarning = '这台电脑上存不下更多草稿了，删掉几份不要的再试。'
 
+/**
+ * 换一份工程（新建、「接着做」）时往这台电脑上写。草稿箱和手上这一份各占一格，先写草稿箱、再写手上这一份；
+ * 手上这一格没写成，就把草稿箱写回换之前的样子，两格都还是换之前的，这次不换（false）。不然「接着做」拿出来的
+ * 那一份已经不在草稿箱里、手上那一格又还是原来那份，关掉软件它就没了（11-18 复核 A01）。
+ * 写回用的是页面上的草稿箱：它跟那一格里的一样或更少（删草稿没写成时），换之前放得下，写回也放得下。
+ */
+export function storeVideoStudioSwitch(storage: VideoStudioStorage | null, scope: string, before: readonly VideoStudioDraft[], next: { project: VideoStudioProject, drafts: readonly VideoStudioDraft[] }): boolean {
+  if (!storage) return true
+  const draftsKey = videoStudioDraftsStorageKey(scope)
+  try {
+    storage.setItem(draftsKey, JSON.stringify(serializeVideoStudioDrafts(next.drafts)))
+  } catch {
+    return false
+  }
+  try {
+    storage.setItem(videoStudioStorageKey(scope), JSON.stringify(serializeVideoStudioProject(next.project)))
+    return true
+  } catch {
+    try {
+      storage.setItem(draftsKey, JSON.stringify(serializeVideoStudioDrafts(before)))
+    } catch {
+      // 写回也没写成：这台电脑的存储多半整个出了问题。页面上不换，草稿箱里那一份还在，下次写草稿箱时一起写回去。
+    }
+    return false
+  }
+}
+
 /** 只留镜头本身和上一段片段，这一次出片的请求号、进度和报错都去掉。 */
 function shotWithoutRun(shot: VideoStudioShot) {
-  const { requestId: _requestId, unconfirmed: _unconfirmed, stage: _stage, progress: _progress, delayed: _delayed, error: _error, ...rest } = shot
+  const { requestId: _requestId, unconfirmed: _unconfirmed, unrecorded: _unrecorded, stage: _stage, progress: _progress, delayed: _delayed, error: _error, ...rest } = shot
   return rest
 }
 
@@ -208,7 +236,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       setStorageWarning('这台电脑上存不下这份分镜，关掉软件以后要重新写。生成好的片段照样在作品库里。')
     }
   }
-  const changeSettings = (patch: Partial<VideoStudioSettings>) => commit((current) => ({ ...current, settings: { ...current.settings, ...patch } }))
+  const changeSettings = (patch: Partial<VideoStudioSettings>) => commit((current) => changeVideoStudioSettings(current, patch))
   const settleModels = () => {
     const current = projectRef.current.settings
     const context = { groups: groupsRef.current, site, settled: pendingChatGroups(groupsRef.current, preparationsRef.current).size === 0 }
@@ -266,7 +294,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     for (const [shotId, requestId] of running.current) {
       if (requestId !== event.requestId) continue
       commit((current) => updateVideoStudioShot(current, shotId, (shot) => shot.requestId === requestId
-        ? { ...shot, status: 'generating', stage: event.stage, ...(event.value === undefined ? {} : { progress: event.value }), delayed: event.delayed === true }
+        ? { ...shot, status: 'generating', stage: event.stage, ...(event.value === undefined ? {} : { progress: event.value }), delayed: event.delayed === true, ...(event.unrecorded ? { unrecorded: true } : {}) }
         : shot))
     }
   }), [bridge])
@@ -289,16 +317,14 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
 
   /**
    * 换一份工程（新建、从草稿箱拿一份出来）。手上有事在跑就不换：出着的片段、画着的图、拼着的片都按镜头编号挂回
-   * 「现在这一份」，换走了就挂不上。先存草稿箱再换：存不下就整个不换，手上这一份不会丢。
+   * 「现在这一份」，换走了就挂不上。先把两格都存好再换：哪一格存不下就整个不换，手上这一份和草稿箱里那一份都不会丢。
    */
   const switchProject = (change: (current: VideoStudioProject, stored: readonly VideoStudioDraft[]) => { project: VideoStudioProject, drafts: VideoStudioDraft[] } | null) => {
     const current = projectRef.current
     if (planning || running.current.size || queue.current.length || composeAbort.current || current.shots.some((shot) => isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot))) return
     const next = change(current, draftsRef.current)
     if (!next) return
-    try {
-      storage?.setItem(videoStudioDraftsStorageKey(scope), JSON.stringify(serializeVideoStudioDrafts(next.drafts)))
-    } catch {
+    if (!storeVideoStudioSwitch(storage, scope, draftsRef.current, next)) {
       setStorageWarning(draftsFullWarning)
       return
     }
@@ -306,7 +332,10 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     setDraftsState(next.drafts)
     projectTurn.invalidate()
     setError(''); setNotice('')
-    commit(() => next.project)
+    // 两格上面都写好了，这里只把页面换过去。
+    projectRef.current = next.project
+    setProjectState(next.project)
+    setStorageWarning('')
     settleModels()
     // 草稿里记着上次没等到结果的片段（重开软件时读回来就是「生成中」），照重开页面那样拿请求号去接回，只查不提交。
     resumeOpenClips()
@@ -356,7 +385,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
 
   /**
    * 等一段片段回来：新发的（generateAiVideo）和接回来的（resumeAiVideo）走同一套收尾。接回来是 null 就是主进程没有这一单，
-   * 缺省回到「还没生成」，给了 onMissing 就交给它。停下时已经交给服务端的那一单，不收尾，接着拿请求号去接回。
+   * 缺省回到「还没生成」，给了 onMissing 就交给它；主进程当初没记下的那一单（unrecorded）查不到不等于没发过，照「提交结果不明」算。
+   * 停下时已经交给服务端的那一单，不收尾，接着拿请求号去接回。
    */
   async function awaitClip(shotId: string, requestId: string, request: () => Promise<AiVideoClip | null>, onMissing?: () => void) {
     const alive = owner.capture()
@@ -369,7 +399,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       if (!clip && onMissing) { next = onMissing; return }
       commit((current) => {
         const updated = updateVideoStudioShot(current, shotId, (item) => item.requestId !== requestId ? item
-          : clip ? { ...withoutVideoStudioTrim(shotWithoutRun(item)), clip, status: 'done' } : settleShot(item))
+          : clip ? { ...withoutVideoStudioTrim(shotWithoutRun(item)), clip, status: 'done' }
+            : settleShot(item, item.unrecorded ? aiVideoUnconfirmedSubmissionMessage : undefined))
         return clip ? { ...updated, exported: undefined } : updated
       })
     } catch (reason) {

@@ -38,7 +38,7 @@ Nano Banana（`nano-banana-2` / `gemini-3.1-flash-image`、`nano-banana-pro`）�
 
 ## 安全边界
 
-- Key 不写进任何工具的配置，只通过环境变量 `XINGMANG_IMAGE_CONFIG_PATH` 告诉脚本 `config.json` 在哪；脚本先用 Codex Key，401/403/429/503 时换生图分组 Key。上游报错里的 `sk-…`、`Bearer …` 打码。
+- Key 不写进任何工具的配置，只通过环境变量 `XINGMANG_IMAGE_CONFIG_PATH` 告诉脚本 `config.json` 在哪；脚本先用 Codex Key，401/403/429/503 时换生图分组 Key。上游报错里的 `sk-…`、`Bearer …` 打码。中转没说原因时（只有状态码，或者 new-api 拿 `openai_error` 这类错误类别名充当原因），两个脚本都换成「〈模型〉这次没能出图/改图，图片服务没说原因」加一句该怎么办；画图工具把原话写进 stderr（宿主记进日志，不进对话），命令行脚本的 stderr 就是 AI 读的，原话不打（0.2.25 总单第 51 项，Mac 验收 R9）。
 - 只连 `https://xm.solov.cc` / `https://api.solov.cc` / `https://xm-direct.solov.cc` 的 `/v1/images/generations`、`/v1/images/edits` 与 Nano Banana 的 `/v1beta/models/{model}:generateContent`，拒绝重定向，300 秒超时（管到读完响应体），响应 32MB 上限，模型只收上面三套规则认得出的。
 - 改图读取的原图：必须是绝对路径、单个普通文件（拒符号链接，lstat 与 fstat 同一文件）、不超过 20MB、按文件头判定为 PNG/JPEG/WebP，最多 4 张。被提示词注入要求「改一下 ~/.ssh/id_rsa」时，内容校验会拒绝上传。
 - 退出账号只清 Key，工具条目保留；调用时会提示重新登录，不会用旧凭据。

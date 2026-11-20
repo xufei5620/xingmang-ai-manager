@@ -15,7 +15,7 @@ import { classifyStorageFailure } from './startup-failure'
 const FILE_LABEL = '暂存的 AI 图片'
 const STASHED_FILE_PATTERN = /^[a-f0-9]{64}\.(png|jpg|webp)$/
 const USER_DIRECTORY_PATTERN = /^user-([1-9]\d{0,15})$/
-// 一张图最大 64 MB（AiAssetStore 的上限）。暂存只是兜底，盘上、内存里各自有个总量上限，
+// 一张图最大 64 MB（AiAssetStore 的上限）。暂存只是兜底，盘上、内存里各自有个总量上限，所有账号合起来算，
 // 超了就不再收：宁可这一张照旧丢掉，也不能把本来就快满的盘或者内存再撑爆。
 const DEFAULT_MAXIMUM_DISK_BYTES = 512 * 1024 * 1024
 const DEFAULT_MAXIMUM_MEMORY_BYTES = 128 * 1024 * 1024
@@ -190,13 +190,14 @@ export class AiUnsavedImageStash {
   }
 
   /**
-   * 把这个账号暂存着的图补存进作品库。不抛错，返回这次补存好了几张。还有没补存上的（登录时盘还满着），
+   * 把这个账号暂存着的图补存进作品库。不抛错，返回这次补存好了几张。还有没补存上的（登录时盘还满着、暂存文件夹一时读不了），
    * 软件开着时隔一阵接着试，不用等下次重开。
    */
   flush(userId: number): Promise<number> {
     return this.enqueue(async () => {
       const restored = await this.flushUser(userId)
-      if ((await this.pendingUserIds()).includes(userId)) this.scheduleRetry()
+      const pending = await this.pendingUserIds()
+      if (pending.unreadable || pending.users.includes(userId)) this.scheduleRetry()
       return restored
     }).catch(() => 0)
   }
@@ -217,9 +218,22 @@ export class AiUnsavedImageStash {
     ensureSafeDataDirectory(directory, FILE_LABEL)
     const files = await listStashedFiles(directory)
     if (files.some((file) => file.name === fileName)) return
-    const used = files.reduce((total, file) => total + file.size, 0)
-    if (used + bytes.length > this.maximumDiskBytes) throw new Error('暂存的 AI 图片已经太多了')
+    if (await this.diskBytesInUse() + bytes.length > this.maximumDiskBytes) throw new Error('暂存的 AI 图片已经太多了')
     await writeAtomicSafeBinaryFile(path.join(directory, fileName), bytes, FILE_LABEL)
+  }
+
+  /**
+   * 盘上所有账号暂存着的字节数合计。上限管的是整个暂存文件夹，不是每个账号各一份：几个账号共用一台电脑、
+   * 各自存满也不能叠成几倍（11-18 复核 A06，总单 #63），跟内存那份上限一样。哪个账号的文件夹读不了就说不清
+   * 用了多少，这一张不往盘上放（照样先留在内存里）：宁可少暂存，也不把快满的盘再撑爆。
+   */
+  private async diskBytesInUse(): Promise<number> {
+    let total = 0
+    for (const entry of await fs.promises.readdir(this.root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !USER_DIRECTORY_PATTERN.test(entry.name)) continue
+      for (const file of await listStashedFiles(path.join(this.root, entry.name))) total += file.size
+    }
+    return total
   }
 
   private keepInMemory(userId: number, key: string, bytes: Buffer): boolean {
@@ -279,21 +293,28 @@ export class AiUnsavedImageStash {
     return restored
   }
 
-  private async pendingUserIds(): Promise<number[]> {
+  /**
+   * 还有图等着补存的账号。暂存文件夹一时读不了（杀毒软件、同步盘正占着，一时没权限）说不清里面有没有，
+   * 不能当它空了：读不了的那个账号照样算还有，整个暂存文件夹读不了就记 unreadable，隔一阵接着试
+   * （11-18 复核 A05，总单 #62）。只有文件夹不在才是真没有。
+   */
+  private async pendingUserIds(): Promise<{ users: number[]; unreadable: boolean }> {
     const users = new Set<number>(this.memory.keys())
+    let unreadable = false
     let entries: fs.Dirent[] = []
     try {
       entries = await fs.promises.readdir(this.root, { withFileTypes: true })
-    } catch {
-      // 文件夹还没建过（从没暂存过）或读不了：只看内存里的。
+    } catch (error) {
+      // 文件夹还没建过（从没暂存过）：只看内存里的。
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') unreadable = true
     }
     for (const entry of entries) {
       const match = entry.isDirectory() ? USER_DIRECTORY_PATTERN.exec(entry.name) : null
       if (!match) continue
-      const files = await listStashedFiles(path.join(this.root, entry.name)).catch(() => [])
-      if (files.length > 0) users.add(Number(match[1]))
+      const files = await listStashedFiles(path.join(this.root, entry.name)).catch(() => null)
+      if (files === null || files.length > 0) users.add(Number(match[1]))
     }
-    return [...users]
+    return { users: [...users], unreadable }
   }
 
   private scheduleRetry(): void {
@@ -308,8 +329,9 @@ export class AiUnsavedImageStash {
 
   private async retry(): Promise<void> {
     const remaining = await this.enqueue(async () => {
-      for (const userId of await this.pendingUserIds()) await this.flushUser(userId)
-      return (await this.pendingUserIds()).length
+      for (const userId of (await this.pendingUserIds()).users) await this.flushUser(userId)
+      const pending = await this.pendingUserIds()
+      return pending.users.length + (pending.unreadable ? 1 : 0)
     }).catch(() => 1)
     if (remaining === 0) {
       this.retryAttempt = 0

@@ -10,7 +10,7 @@ import { brokenConfigLaunchMessages } from './broken-config-launch'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './chinese-runtime-choice'
 import { offersCodexDesktopRestartOnOpen } from './codex-desktop-open'
 import { resolveToolKeySyncFailure } from './key-sync-failure'
-import { launchWaitLabel, launchWarning } from './launch-notice'
+import { launchDeclined, launchWaitLabel, launchWarning } from './launch-notice'
 import { waitWhileAccountConnectionPending } from './launch-wait'
 import { brokenConfigOf, codexNeedsRepair, presentTools, providerFor, readyOnceRepaired, type ToolId, type ToolSource } from './model'
 import { modelSwapOffer, type ModelSwapChoice, type ModelSwapOffer } from './model-check'
@@ -60,6 +60,8 @@ export function useToolLaunch(options: ToolLaunchOptions) {
   /** 还在准备（主进程那边还没开始打开）的「打开中」，按工具记着怎么放掉；见 holdLaunch。 */
   const preparingLaunches = useRef(new Map<ToolId, () => void>())
   const launchRequest = useRef<{ id: ToolId; epoch: () => boolean } | null>(null)
+  /** 等 launchRequest 那次走完再开的那一个，见 requestLaunchWhenFree。 */
+  const deferredLaunch = useRef<{ id: ToolId; epoch: () => boolean } | null>(null)
   const cancelPendingLaunchDialogs = useCallback(() => {
     // 上一个账号点的「打开」后面每一步都会自己停下（launchIsCurrent），卡片上的「打开中」不陪它
     // 等完读配置、核对模型，新账号点「打开」也不被它挡住。主进程已经在打开的不放，照旧等它做完。
@@ -249,6 +251,9 @@ export function useToolLaunch(options: ToolLaunchOptions) {
     // 从这里起是主进程在打开，换了账号也要等它做完，「打开中」不再提前放掉。
     preparingLaunches.current.delete(id)
     const result = await toolsApi.launch(id, workspace, mode)
+    // 「这个文件夹不建议打开」「文件夹不让写入」那两问里点了「先不打开」，工具没起来：不能报打开了。
+    // 新手引导以前照样当这一步做完、把引导关掉（11-18 复核 N11）。
+    if (launchDeclined(result)) return false
     const warning = launchWarning(result)
     if (launchIsCurrent(epoch) && warning) toast.show(warning, 'warn')
     // 刚选的文件夹主进程已经记下，随打开结果带回来；首页按钮马上写「打开 它」，其余工具也不再问。
@@ -326,7 +331,27 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       } catch (cause) {
         if (launchIsCurrent(request.epoch)) throw cause
       }
-    }, id).finally(() => { if (launchRequest.current === request) launchRequest.current = null })
+    }, id).finally(() => {
+      if (launchRequest.current !== request) return
+      launchRequest.current = null
+      const deferred = deferredLaunch.current
+      deferredLaunch.current = null
+      // 排着的那一下是换账号之前的就不开了（同 launchIsCurrent）。
+      if (deferred && launchIsCurrent(deferred.epoch)) requestLaunch(deferred.id)
+    })
+  }
+  /**
+   * 不是客户点的「打开」：Mac 上更新 Codex 桌面端时星芒把它关了，更新完替客户重开。那一刻别的工具正在打开，
+   * requestLaunch 会把这一下当成重复点击丢掉，客户得自己再去开一次（11-18 F05）。这里排在那次后面，等它走完再开；
+   * 正在打开的就是这个工具的，那次本来就会开它，不再叠一次。只排一个，后来的顶掉先来的。
+   */
+  function requestLaunchWhenFree(id: ToolId) {
+    const inFlight = launchRequest.current
+    if (inFlight?.epoch() && inFlight.id !== id && !launchParkedOnAccount(inFlight.id)) {
+      deferredLaunch.current = { id, epoch: accountEpoch.capture() }
+      return
+    }
+    requestLaunch(id)
   }
   /**
    * 记住的目录随时可能被删掉或改名。那种情况下退回目录选择器，用户点一次
@@ -358,6 +383,6 @@ export function useToolLaunch(options: ToolLaunchOptions) {
   }
   return {
     modelSwap, restartDialog, setRestartDialog, chineseDialog, setChineseDialog,
-    cancelPendingLaunchDialogs, prepareToolLaunch, launch, requestLaunch, requestLaunchInLastWorkspace, answerChineseRuntimePatch,
+    cancelPendingLaunchDialogs, prepareToolLaunch, launch, requestLaunch, requestLaunchWhenFree, requestLaunchInLastWorkspace, answerChineseRuntimePatch,
   }
 }

@@ -22,6 +22,8 @@
  *   另一个掐掉。不掐走着的这一次：服务端查得慢（用量明细）的请求照样能在它上面回来。这样换线路那一次
  *   至少还剩调用方时限减去这几秒，不会被前一次耗光（#1053）。
  * - 回了话以后正文读到一半断了（AI 回复写到一半）：已经交给调用方的回应没法重发。
+ * - 线路2的白名单不放行的接口：事先知道的（价目，primaryOnlyPaths）和这半小时里刚被挡过的，走着线路2时直接走
+ *   线路1，不先去碰那张 404（relayLineBlockedMemoryMs）。
  *
  * 报给线路那边的只有网络层的失败（解析不出地址、连不上、TLS 失败、连接被重置或断开、代理回绝了
  * 直连这个地址）、回话的不是星芒（拦截页、跳转、网关错误页），和等到时限连回应头都没等来（直连被
@@ -67,6 +69,8 @@ export interface RelayLineFetchOptions {
    */
   unreported?: boolean
   log?(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void
+  /** 记线路2挡下过的接口用的时钟（relayLineBlockedMemoryMs），只给测试换。 */
+  now?: () => number
 }
 
 /**
@@ -101,6 +105,22 @@ const mailingPaths: ReadonlySet<string> = new Set(['/api/verification', '/api/re
 
 // 公告：下得慢、下不下来都不报给线路那边（#941 第 4 节）。
 const unreportedPaths: ReadonlySet<string> = new Set(['/api/notice'])
+
+// 事先就知道线路2的白名单不放行、只能走线路1的接口：画布「预计约 $x」和个人中心价格表读的价目（#1394「已定」
+// 第 2 条：固定走线路1，不靠线路2放行）。走着线路2时不管是「自动」还是写死的，都直接走线路1。让线路2放行是服务端的事。
+const primaryOnlyPaths: Readonly<Partial<Record<RelayRouteSiteId, ReadonlySet<string>>>> = {
+  solov: new Set(['/api/pricing']),
+}
+
+/**
+ * 「自动」走着线路2时被白名单挡下过的接口记这么久：这段时间里同一个接口（只看路径，不看查询串）直接走线路1，
+ * 不再每次先去线路2碰一下 404 再退回来。0.2.24 Mac 验收 R17：一次打开画布就有 3～6 个请求这样多跑一趟，日志刷
+ * 同样多条「线路2没放行」。过了这段时间再先走线路2试一次，服务端放行了就用回线路2。
+ */
+export const relayLineBlockedMemoryMs = 30 * 60_000
+
+// 记的接口个数的上限：路径里带编号的接口被挡也不会越记越多，满了丢最早记的。
+const maximumRememberedBlockedPaths = 64
 
 const gatewayStatuses: ReadonlySet<number> = new Set([502, 503, 504])
 
@@ -337,6 +357,32 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
   function log(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void {
     try { options.log?.(level, event, message, detail) } catch { /* 记日志失败不影响请求 */ }
   }
+  const now = options.now ?? Date.now
+  // 线路2挡下过的接口（relayLineBlockedMemoryMs）：键是站点和路径，值是记下的时刻。
+  const blockedOnDirect = new Map<string, number>()
+  function blockedKey(siteId: RelayRouteSiteId, path: string): string {
+    return `${siteId} ${path}`
+  }
+  function rememberBlocked(siteId: RelayRouteSiteId, path: string): void {
+    const key = blockedKey(siteId, path)
+    blockedOnDirect.delete(key)
+    blockedOnDirect.set(key, now())
+    for (const oldest of blockedOnDirect.keys()) {
+      if (blockedOnDirect.size <= maximumRememberedBlockedPaths) break
+      blockedOnDirect.delete(oldest)
+    }
+  }
+  function blockedOnDirectLine(siteId: RelayRouteSiteId, path: string): boolean {
+    if (primaryOnlyPaths[siteId]?.has(path)) return true
+    const key = blockedKey(siteId, path)
+    const at = blockedOnDirect.get(key)
+    if (at === undefined) return false
+    const elapsed = now() - at
+    // 时钟往回拨了也算过期：不然改一次系统时间，这个接口就一直不回线路2。
+    if (elapsed >= 0 && elapsed < relayLineBlockedMemoryMs) return true
+    blockedOnDirect.delete(key)
+    return false
+  }
   const fetchOnLine: typeof fetch = async (input, init) => {
     const requested = requestUrl(input)
     const endpoint = requested === null ? null : relayEndpointForUrl(requested)
@@ -346,6 +392,14 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
   }
   async function routed(requested: string, siteId: RelayRouteSiteId, init: RequestInit | undefined, served: { line?: RelayEndpointId }): Promise<Response> {
     const route = router.route(siteId)
+    const path = new URL(requested).pathname
+    // 走着线路2、这个接口线路2又不放行（事先知道的，或者刚被挡过的）：直接走线路1，不先碰线路2的 404，也不再
+    // 退回线路2（那边只会回同一张 404）。线路1没走通不报给线路那边，跟退回线路1那一次没走通一样。
+    if (route.line === 'direct' && blockedOnDirectLine(siteId, path)) {
+      served.line = 'primary'
+      const pinned = onLine(requested, siteId, 'primary')
+      return asRequested(await base(pinned, init), pinned, requested)
+    }
     served.line = route.line
     const sent = onLine(requested, siteId, route.line)
     // 正文是流的发出去就没了，没法重发：照旧走这条线路，不退回。
@@ -354,7 +408,6 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
     const line = route.line
     const other = otherLine(siteId, line)
 
-    const path = new URL(requested).pathname
     const idempotent = isIdempotent(init) && !mailingPaths.has(path)
     const redirectExpected = pathMayRedirect(path)
     const callerSignal = init?.signal ?? undefined
@@ -365,14 +418,16 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
     function logFallback(reason: string): void {
       log('info', 'relay.line.fallback', '走着的那条线路这次没走通，改走另一条重发', { siteId, from: line, to: other, reason, method, path })
     }
-    function logBlocked(message: string): void {
+    // 线路2的白名单挡下了这个接口：记日志，也记下来，之后一阵子这个接口直接走线路1（relayLineBlockedMemoryMs）。
+    function noteBlocked(message: string): void {
+      rememberBlocked(siteId, path)
       log('warn', 'relay.line.blocked', message, { siteId, line: 'direct', method, path })
     }
     // 退到的是直连，直连回的却是白名单 404：那张网页只说明直连不放行这个接口，盖掉的是走着那条真正的错
     // （连接被切断、网关错误页），客户看到「HTTP 404」会和客服一起找错方向。交回走着那条的结果（#1157 第 2 条）。
     function blockedOnTheWayBack(response: Response): boolean {
       if (other !== 'direct' || !blockedByAllowlist(response)) return false
-      logBlocked('线路2没放行这个接口，交回线路1这次的结果')
+      noteBlocked('线路2没放行这个接口，交回线路1这次的结果，之后半小时这个接口不走线路2')
       return true
     }
     // current 是走着那条这次的结果（失败，或者不能用、还没丢掉的回应），另一条也只回了白名单 404 时交回它；
@@ -434,9 +489,9 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
       }
       const unusable = unusableAnswer(response)
       if (unusable?.reason === 'allowlist-404') {
-        // 白名单挡下的是这一个接口，请求没进到服务里：照样重发，后面的请求照样先走直连。
+        // 白名单挡下的是这一个接口，请求没进到服务里：照样重发。别的接口照样先走直连，这个接口半小时内直接走线路1。
         await discard(response)
-        logBlocked('线路2没放行这个接口，这次改走线路1')
+        noteBlocked('线路2没放行这个接口，这次改走线路1，之后半小时这个接口不走线路2')
         return fallBack('allowlist-404', null)
       }
       if (unusable) report(unusable.reason)
@@ -553,7 +608,7 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
               report(unusable.reason)
             } else {
               await discard(outcome.response)
-              logBlocked('线路2没放行这个接口，这次改走线路1')
+              noteBlocked('线路2没放行这个接口，这次改走线路1，之后半小时这个接口不走线路2')
             }
             if (secondOutcome && second) return secondFinal(secondOutcome, second)
             if (!second) {

@@ -49,6 +49,8 @@ declare global {
       deferNext(): void
       release(): void
     }
+    // 别处（另一台电脑、网页）改了 managedKeys 里的一把：只改夹具里存着的，页面不知道、不重读（F01）。
+    changeKeyElsewhere: (id: number, patch: { name?: string; remainQuota?: number; unlimitedQuota?: boolean; expiredAt?: string | null }) => void
     keyGroupsHarness: {
       requests: number
       setGroups(names: string[]): void
@@ -642,7 +644,7 @@ const key = {
   unlimitedQuota: false,
   usedQuota: 10,
   createdAt: time,
-  expiredAt: null,
+  expiredAt: null as string | null,
   accessedAt: time,
 }
 // 「按工具分账」按托管 Key 的固定名称认工具，夹具照搬真实命名：一把有上限、
@@ -673,6 +675,10 @@ const managedKeys = query.has('managedKeys')
       { ...key, id: 12, name: 'xingmang-desktop-codex', group: 'GPT', unlimitedQuota: true, remainQuota: 0, usedQuota: 200 },
     ]
   : null
+window.changeKeyElsewhere = (id, patch) => {
+  const stored = managedKeys?.find((entry) => entry.id === id)
+  if (stored) Object.assign(stored, patch)
+}
 let activeUserId = 7
 let taskReads = 0
 let detailReads = 0
@@ -741,6 +747,68 @@ const systemSnapshot: Awaited<ReturnType<V2Bridge['scanSystem']>> = {
     },
   },
 }
+// 「插件」页（page=extensions）一次读齐三种：每家装了哪些、官方市场里还能装哪些。
+// hubRemoved 记下「从所有工具里移除」卸掉的，下一次读列表就不再有它（extensionOk 时）。
+const hubRemoved = new Set<string>()
+function hubItem(
+  provider: 'claude' | 'codex' | 'grok',
+  kind: 'mcp' | 'skill' | 'plugin',
+  id: string,
+  name: string,
+  description: string,
+  installed: boolean,
+) {
+  return {
+    provider,
+    kind,
+    id,
+    name,
+    description,
+    installed,
+    enabled: installed,
+    scope: installed ? ('user' as const) : null,
+    currentVersion: installed ? '1.0.0' : null,
+    latestVersion: '1.0.0',
+    source: { kind: kind === 'skill' ? ('local' as const) : ('native' as const), locator: kind === 'skill' ? `C:/skills/${id}/SKILL.md` : null, reference: null },
+    update: installed ? { state: 'up-to-date' as const, reason: '已是最新', checkedAt: time } : { state: 'unsupported' as const, reason: '扩展尚未安装', checkedAt: null },
+    operations: { install: true, uninstall: true, enable: installed, disable: installed, update: false },
+  }
+}
+function hubItems(provider: Parameters<V2Bridge['listProviderExtensions']>[0]) {
+  if (empty) return provider === 'codex' && codexCatalogReady ? [codexCatalogPlugin] : []
+  const claudeMarket = [
+    ['supabase', 'Supabase', 'Database operations, auth, storage and realtime'],
+    ['vercel', 'Vercel', 'Manage deployments, check build status'],
+    ['stripe', 'Stripe', 'Stripe development plugin for Claude'],
+    ['cloudflare', 'Cloudflare', 'Build and deploy on Cloudflare Workers'],
+    ['datadog', 'Datadog', 'Query logs, metrics and traces'],
+  ] as const
+  const codexMarket = [
+    ['linear', 'Linear', 'Plan and build products'],
+    ['figma', 'Figma', 'Figma design-to-code workflows'],
+    ['twilio-developer-kit', 'Twilio Developer Kit', 'Build, debug and ship on Twilio'],
+    ['temporal', 'Temporal', 'Develop with Temporal'],
+  ] as const
+  const items =
+    provider === 'claude'
+      ? [
+          hubItem('claude', 'mcp', 'browser', 'browser', '', true),
+          hubItem('claude', 'mcp', 'files', 'files', '', true),
+          hubItem('claude', 'mcp', 'test-extension', '测试连接', '本机测试连接', true),
+          hubItem('claude', 'plugin', 'code-review@claude-plugins-official', 'code-review', '', true),
+          hubItem('claude', 'skill', 'test-skill', '测试技能', '本机测试技能', true),
+          ...claudeMarket.map(([id, name, line]) => hubItem('claude', 'plugin', `${id}@claude-plugins-official`, name, line, false)),
+        ]
+      : provider === 'codex'
+        ? [
+            hubItem('codex', 'mcp', 'browser', 'browser', '', true),
+            hubItem('codex', 'plugin', 'sentry@openai-api-curated', 'Sentry', 'Inspect recent Sentry issues and events', true),
+            ...codexMarket.map(([id, name, line]) => hubItem('codex', 'plugin', `${id}@openai-api-curated`, name, line, false)),
+            ...(codexCatalogReady ? [codexCatalogPlugin] : []),
+          ]
+        : []
+  return items.filter((item) => !hubRemoved.has(`${provider}:${item.kind}:${item.id}`))
+}
 // 扩展三页共用的列表；listProviderExtensions 先记一笔再交给它，用例数得出读了几次。
 function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[0]) {
   return {
@@ -757,7 +825,7 @@ function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[
     ...(provider === 'codex'
       ? { marketplace: { name: 'openai-api-curated', registered: codexCatalogReady, reason: null } }
       : {}),
-    items: [
+    items: page === 'extensions' ? hubItems(provider) : [
       ...(provider === 'codex' && page === 'plugins' && codexCatalogReady ? [codexCatalogPlugin] : []),
       ...(query.has('scopedExtensions') && provider === 'claude' && page === 'plugins'
         ? [scopedExtension('plugin', 'local-plugin', '本项目插件', 'local')]
@@ -946,11 +1014,21 @@ const apiMethods = {
       page: 1,
       pageSize: 20,
       total: empty ? 0 : managedKeys ? managedKeys.length : 1,
-      keys: empty ? [] : managedKeys ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
+      // 每次读都给一份新的，跟真的跨进程一样：页面手里那份不会跟着夹具里存的悄悄变。
+      keys: empty ? [] : managedKeys?.map((entry) => ({ ...entry })) ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
     }
   },
   updateAccountKey: async (input: Parameters<V2Bridge['updateAccountKey']>[0]) => {
     record('updateAccountKey', input)
+    // managedKeys 那几把照真后台整条覆盖，下一次读就是写进去的样子；不限额时后台留着原来的剩余额度。
+    const stored = managedKeys?.find((entry) => entry.id === input.id)
+    if (stored) Object.assign(stored, {
+      name: input.name,
+      group: input.group,
+      unlimitedQuota: input.unlimitedQuota,
+      remainQuota: input.unlimitedQuota ? stored.remainQuota : input.remainQuota,
+      expiredAt: input.expiredTime === -1 ? null : new Date(input.expiredTime * 1000).toISOString(),
+    })
   },
   revokeAccountKey: async (id: number) => {
     record('revokeAccountKey', id)
@@ -1351,7 +1429,10 @@ const apiMethods = {
     record('extension', input)
     if (query.has('extensionHold') && input.action !== 'uninstall') await new Promise<void>((resolve) => { releaseHeldExtension = resolve })
     // extensionOk：改动照常成功，用来看成功以后那句提示。
-    if (query.has('extensionOk')) return extensionList(input.provider)
+    if (query.has('extensionOk')) {
+      if (page === 'extensions' && input.action === 'uninstall') hubRemoved.add(`${input.provider}:${input.kind}:${input.id}`)
+      return extensionList(input.provider)
+    }
     throw new Error('扩展操作失败，已有配置保留')
   },
   // Codex 插件的开关走它自己的接口（主进程改 config.toml），不走上面那条通用的扩展改动。
@@ -1434,9 +1515,13 @@ const apiMethods = {
   getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('largeTextByDefault') ? { largeTextByDefault: true as const } : {}) }),
   // transfer=usage-off：「搬到新电脑」的文件里「匿名使用统计」是关，这台还是新装的开，主进程交来「直接关」；
   // transfer=usage-on：文件里是开，这台关过（配 usageOff），只进询问框（X-3）。没有对话，不用登录。
+  // transfer=theme-dark：文件里是深色，这台还是新装的浅色，主进程交来「直接换」（D24）。
   importAppData: async () => {
     record('import-app-data')
     const transfer = query.get('transfer')
+    if (transfer === 'theme-dark') {
+      return { conversations: [], settings: { version: 2, theme: 'dark' }, conflictingSettings: { version: 2 }, conflictLabels: [] }
+    }
     if (transfer !== 'usage-off' && transfer !== 'usage-on') throw new Error('未提供测试方法 importAppData')
     return {
       conversations: [],

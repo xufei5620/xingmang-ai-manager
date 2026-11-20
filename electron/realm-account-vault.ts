@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   isRealmRecord, parseRealmSavedAccount, realmAccountSummary, realmOwnerKey, RealmAccountError,
   requireAccountRealm, requireRealmUserId,
-  type AccountRealmId, type RealmAccountOwner, type RealmAccountSummary, type RealmSavedAccount,
+  type AccountRealmId, type RealmAccountOwner, type RealmAccountSummary, type RealmCredential, type RealmSavedAccount,
 } from './realm-account'
 import { classifyStorageFailure } from './startup-failure'
 
@@ -96,11 +96,37 @@ export interface RealmAccountVault {
   loginHintOwner(identifier: string): Promise<RealmAccountOwner | null>
   /** Refresh credentials in place. Never create a record or change activeId. */
   updateSession(account: RealmSavedAccount): Promise<void>
+  /**
+   * Save a refreshed credential only over the one its session presented to
+   * the server. A record that now holds anything else belongs to a newer
+   * login of the same owner (the user signed in again while a late refresh
+   * was in flight); that login wins and the record is left untouched. Other
+   * fields are kept. Never creates a record or changes activeId.
+   */
+  rotateCredential(owner: RealmAccountOwner, expected: RealmCredential, next: RealmCredential): Promise<RealmCredentialRotation>
   signOut(owner?: RealmAccountOwner): Promise<void>
   forget(owner: RealmAccountOwner): Promise<void>
   importLegacy(accounts: readonly unknown[]): Promise<number>
   migrateLegacy(accounts: readonly unknown[], active?: unknown): Promise<number>
   hasMigratedLegacy(): Promise<boolean>
+}
+
+/** saved：记录里现在就是新凭据；absent：这个账号已不在本机；superseded：记录已换成别的登录，没动。 */
+export type RealmCredentialRotation = 'saved' | 'absent' | 'superseded'
+
+function captureRealmCredential(value: RealmCredential): RealmCredential {
+  return value.kind === 'new-api' ? Object.freeze({ kind: 'new-api', cookies: Object.freeze([...value.cookies]) })
+    : Object.freeze({ kind: 'sub2api', accessToken: value.accessToken, refreshToken: value.refreshToken, expiresAt: value.expiresAt })
+}
+
+function sameRealmCredential(left: RealmCredential, right: RealmCredential): boolean {
+  if (left.kind === 'new-api' && right.kind === 'new-api') {
+    return left.cookies.length === right.cookies.length && left.cookies.every((cookie, index) => cookie === right.cookies[index])
+  }
+  if (left.kind === 'sub2api' && right.kind === 'sub2api') {
+    return left.accessToken === right.accessToken && left.refreshToken === right.refreshToken && left.expiresAt === right.expiresAt
+  }
+  return false
 }
 
 /** Namespace for every new store/cache. No raw ID or origin can become a path component. */
@@ -330,6 +356,21 @@ export function createRealmAccountVault(storage: RealmVaultStorage): RealmAccoun
         const id = realmOwnerKey(captured)
         if (!data.accounts.some((entry) => realmOwnerKey(entry) === id)) return
         await write({ ...data, accounts: data.accounts.map((entry) => realmOwnerKey(entry) === id ? captured : entry) })
+      })
+    },
+    rotateCredential: (owner: RealmAccountOwner, expectedInput: RealmCredential, nextInput: RealmCredential) => {
+      const key = realmOwnerKey(owner)
+      const expected = captureRealmCredential(expectedInput)
+      const next = captureRealmCredential(nextInput)
+      return enqueue(async (): Promise<RealmCredentialRotation> => {
+        const data = await read()
+        const stored = data.accounts.find((entry) => realmOwnerKey(entry) === key)
+        if (!stored) return 'absent'
+        if (sameRealmCredential(stored.credential, next)) return 'saved'
+        if (!sameRealmCredential(stored.credential, expected)) return 'superseded'
+        const captured = parseRealmSavedAccount({ ...stored, credential: next })
+        await write({ ...data, accounts: data.accounts.map((entry) => realmOwnerKey(entry) === key ? captured : entry) })
+        return 'saved'
       })
     },
     signOut: (owner?: RealmAccountOwner) => {
