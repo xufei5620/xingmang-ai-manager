@@ -3,7 +3,7 @@ import { platformApi } from '../../platform-api'
 import { chatTextFileFullMessage } from '../../../../electron/ai-chat-protocol'
 import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase, pastedNothingMessage, customImageSizeRule, imageSizeFits } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase, pastedNothingMessage, customImageSizeRule, imageSizeFits } from './state'
 import { autosaveDelay, ChatStorageError, conversationLimitMessage, createHistoryWriter, MAX_CONVERSATIONS, registerHistoryFlusher, unreadableConversationsNotice, type LoadedChatHistory } from './storage'
 import { useLatestRequest } from '../../latest-request'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
@@ -253,7 +253,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     if (stateRef.current.conversations.length + (keepDraft ? 2 : 1) > MAX_CONVERSATIONS) { setError(conversationLimitMessage); return }
     const next = createConversation(current.settings)
     commit((workspace) => {
-      const preserved = keepDraft ? saveConversation(workspace, { ...current, title: current.draft.trim().slice(0, 32) }) : workspace
+      const preserved = keepDraft ? saveConversation(workspace, { ...current, title: autoConversationTitle(current.draft.trim()) }) : workspace
       return { ...preserved, conversations: [next, ...preserved.conversations], activeId: next.id }
     })
     setError('')

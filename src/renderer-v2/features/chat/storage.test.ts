@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createWorkspace, type ChatMessage, type ChatWorkspace } from './state'
-import { answerHistoryFlushRequests, autosaveDelay, autosaveMaxWaitMs, autosaveQuietMs, ChatStorageError, conversationLimitMessage, conversationPlainText, createHistoryWriter, flushChatHistory, registerHistoryFlusher, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, MAX_CONVERSATIONS, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText, runHistoryImport } from './storage'
+import { answerHistoryFlushRequests, autosaveDelay, autosaveMaxWaitMs, autosaveQuietMs, ChatStorageError, conversationLimitMessage, conversationExport, conversationPlainText, createHistoryWriter, flushChatHistory, registerHistoryFlusher, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, MAX_CONVERSATIONS, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText, runHistoryImport } from './storage'
 
 const scope = 'xm-account:7'
 const legacyKey = 'xingmang-ai-chat:v1:7'
@@ -1206,6 +1206,17 @@ describe('moving history to another computer', () => {
     expect(text).not.toContain('abcdef123456')
     expect(text).toContain('[1 张图片，没有放进这个文件]')
     expect(text).toContain('[没有回复成功：网络断了]')
+  })
+  // 以前文件第一行和保存框里的文件名都是对话名原样（Mac 验收 R5）：自己改的名字、导进来的对话名都可能夹着密钥。
+  it('masks keys in the exported title and in the suggested file name', () => {
+    const relayKey = `sk-${'fake-relay-'.repeat(3)}value`
+    const conversation = { ...createConversation(undefined, 'c'), title: `测试 ${relayKey}`, renamed: true, messages: [message(0, { content: '好的', createdAt: 0 })] }
+    expect(conversationPlainText(conversation).startsWith('测试 [密钥未保存]\n')).toBe(true)
+    const exported = conversationExport(conversation)
+    expect(exported.title).toBe('测试 [密钥未保存]')
+    expect(exported.text).toBe(conversationPlainText(conversation))
+    expect(JSON.stringify(exported)).not.toContain('fake-relay')
+    expect(conversationPlainText({ ...conversation, title: '' }).startsWith('新对话\n')).toBe(true)
   })
 })
 
