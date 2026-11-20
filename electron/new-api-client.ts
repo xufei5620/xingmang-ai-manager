@@ -3084,8 +3084,12 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return buildAuthHeaders(current)
   }
 
+  const isCurrentAuthAttempt = (attempt: number, owner: number): boolean => (
+    attempt === authAttemptGeneration && owner === ownerGeneration
+  )
+
   const assertAuthAttempt = (attempt: number, owner: number): void => {
-    if (attempt !== authAttemptGeneration || owner !== ownerGeneration) throw new NewApiSessionChangedError()
+    if (!isCurrentAuthAttempt(attempt, owner)) throw new NewApiSessionChangedError()
   }
 
   const assertResultOwner = (current: InternalSession, allowSessionClear: boolean): void => {
@@ -3514,13 +3518,15 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     const owner = ownerGeneration
     const body: Record<string, unknown> = { username, password }
     if (input.turnstileToken) body.turnstile = input.turnstileToken
+    const secrets = [password, ...(input.turnstileToken ? [input.turnstileToken] : [])]
     let raw: NewApiRawResponse
     try { raw = await performRequest(ctx, loginPath, { method: 'POST', body }, '账号登录') }
     catch (error) { assertAuthAttempt(attempt, owner); throw error }
-    assertAuthAttempt(attempt, owner)
-    const data = withRequestDiagnostics(raw, () => (
-      parseLoginResponseData(unwrapLoginEnvelope(raw, [password, ...(input.turnstileToken ? [input.turnstileToken] : [])]))
-    ))
+    if (!isCurrentAuthAttempt(attempt, owner)) {
+      endAbandonedLogin(raw, () => parseLoginResponseData(unwrapLoginEnvelope(raw, secrets)))
+      throw new NewApiSessionChangedError()
+    }
+    const data = withRequestDiagnostics(raw, () => parseLoginResponseData(unwrapLoginEnvelope(raw, secrets)))
     const cookies = extractSessionCookies(raw.headers)
     setSession({ accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account })
     // Strip accessToken before it ever leaves the main process (I3/I13).
@@ -3542,7 +3548,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     let raw: NewApiRawResponse
     try { raw = await performRequest(ctx, loginTwoFactorPath, { method: 'POST', body }, '两步验证登录') }
     catch (error) { assertAuthAttempt(attempt, owner); throw error }
-    assertAuthAttempt(attempt, owner)
+    if (!isCurrentAuthAttempt(attempt, owner)) {
+      endAbandonedLogin(raw, () => parseLoginResponseData(unwrapTwoFactorLoginEnvelope(raw, [code, input.flowToken])))
+      throw new NewApiSessionChangedError()
+    }
     const data = withRequestDiagnostics(raw, () => parseLoginResponseData(unwrapTwoFactorLoginEnvelope(raw, [code, input.flowToken])))
     const cookies = extractSessionCookies(raw.headers)
     setSession({ accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account })
@@ -3582,6 +3591,28 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     const headers: Record<string, string> = { ...buildAuthHeaders(current) }
     if (current.cookies.length > 0) headers.Cookie = current.cookies.join('; ')
     await postServerLogout(headers)
+  }
+
+  // 0.2.25 总单第 72 项（11-18 复核 D25）: a login answered after this attempt
+  // was abandoned -- the account service stopped waiting and dropped this
+  // client, or a newer login or sign-out took over -- has still opened a
+  // session on the server. Nobody will ever hold its credentials, so it would
+  // sit there for its full 30-day TTL and count toward the 50-session limit
+  // (AUTH_SESSION_LIMIT). End it once with its own credentials, never the
+  // current session's, and never touch local state or onSessionChange.
+  // Aborting the request instead would not help: an abort cannot prove the
+  // server never created the session, and it throws away the only answer
+  // that names it. A refused or unreadable answer opened nothing to end.
+  const endAbandonedLogin = (raw: NewApiRawResponse, read: () => NewApiRawLoginData): void => {
+    let late: NewApiRawLoginData
+    try { late = read() } catch { return }
+    const cookies = extractSessionCookies(raw.headers)
+    const headers: Record<string, string> = {
+      ...buildAuthHeaders({ accessToken: late.accessToken, userId: late.account.userId, cookies, profile: late.account }),
+    }
+    if (cookies.length > 0) headers.Cookie = cookies.join('; ')
+    log('info', 'session.login.abandoned', '登录的回话来晚了，这次登录已经不用：服务器上刚开的这个登录当场注销', {})
+    void postServerLogout(headers)
   }
 
   // A stored record carries only {userId, cookies}: no access token, so the

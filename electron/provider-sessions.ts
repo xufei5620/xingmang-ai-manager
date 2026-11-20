@@ -96,6 +96,11 @@ export interface ProviderSessionListQuery {
   search?: string
   page?: number
   pageSize?: number
+  /**
+   * true = 只是换了搜索词、工具或页码：几秒内刚扫过一遍的话直接拿那份重新筛、分页，
+   * 不再把各工具的会话文件夹从头扫一遍（R-3）。缺省 = 每次现扫（旧行为）。
+   */
+  reuseRecentScan?: boolean
 }
 
 export interface ProviderSessionPage {
@@ -151,6 +156,8 @@ export interface ProviderSessionsOptions {
   /** Omitted keeps the probe cache memory-only, as it was before 0.2.9. */
   probeCacheFile?: string
   onProbeCacheWarning?: (warning: ProviderSessionProbeCacheWarning) => void
+  /** Clock for the recent-scan reuse window; omitted uses Date.now. */
+  now?: () => number
 }
 
 interface ProviderRoots {
@@ -170,6 +177,18 @@ interface DiscoveryResult {
   files: string[]
   skipped: number
   errors: number
+}
+
+/** 一个工具扫一遍的结果：它的全部会话，外部工具另记扫完时会话目录还在不在。 */
+interface ProviderSweep {
+  items: ProviderSessionSummary[]
+  available: boolean
+}
+
+interface ProviderSweepEntry {
+  promise: Promise<ProviderSweep>
+  /** 扫完的时刻；还在扫时是 null。 */
+  settledAt: number | null
 }
 
 interface JsonLineScanResult {
@@ -198,6 +217,9 @@ const MAX_DISCOVERY_ENTRIES = 500_000
 const DETAIL_MESSAGE_LIMIT = 250
 const MESSAGE_TEXT_LIMIT = 24_000
 const MAX_PROBE_CACHE_ENTRIES = 10_000
+// 会话页换搜索词、换工具、翻页时，扫完不到这么久的那份直接拿来筛（R-3）。进页、再显示、
+// 点重新加载都不带 reuseRecentScan，照旧现扫，所以这里只管一次搜索、翻页的那十几秒。
+const RECENT_SCAN_REUSE_MS = 10_000
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -925,9 +947,12 @@ export class ProviderSessionsService {
   private readonly maxFilesPerProvider: number
   private readonly probeCache: ProviderSessionProbeCache
   private readonly candidateIndex = new Map<string, SourceCandidate>()
+  private readonly sweeps = new Map<ProviderSessionProvider, ProviderSweepEntry>()
+  private readonly now: () => number
 
   constructor(options: ProviderSessionsOptions = {}) {
     const home = os.homedir()
+    this.now = options.now ?? Date.now
     this.codexService = options.codexService ?? new CodexSessionsService({ codexHome: options.codexHome })
     this.roots = {
       claude: path.resolve(options.claudeProjectsRoot ?? path.join(home, '.claude', 'projects')),
@@ -983,17 +1008,20 @@ export class ProviderSessionsService {
   async list(query: ProviderSessionListQuery = {}): Promise<ProviderSessionPage> {
     const provider = query.provider ?? 'all'
     const selected = provider === 'all' ? [...listedProviderSessionProviders] : [provider]
+    // Claimed before the first await, so a request sent alongside this one
+    // (the records page reads its page and the latest 100 together) joins the
+    // same sweeps instead of racing them.
+    const claimed = this.claimSweeps(selected, query.reuseRecentScan === true)
     const capabilities = await this.capabilities()
     const items: ProviderSessionSummary[] = []
-    for (const current of selected) {
+    for (const [index, current] of selected.entries()) {
       try {
-        const providerItems = current === 'codex'
-          ? await this.listCodexSessions()
-          : await this.listExternalSessions(current)
+        const sweep = await claimed[index]
+        const providerItems = sweep.items
         items.push(...providerItems)
         if (current !== 'codex') {
           const capability = capabilities[current]
-          capability.available = await existingDirectory(this.roots[current])
+          capability.available = sweep.available
           capability.readable = capability.available
           capability.reason = capability.available
             ? `已读取 ${providerItems.length} 个本地会话；该 Provider 仅开放只读管理`
@@ -1121,6 +1149,15 @@ export class ProviderSessionsService {
    * 不在该工具记录目录之内、经过链接或是多链接文件，整条都不删。
    */
   async delete(id: string): Promise<ProviderSessionDeleteResult> {
+    try {
+      return await this.deleteRecord(id)
+    } finally {
+      // 删了一半出错也可能已经少了文件，扫过的那份一律作废。
+      this.invalidateListCache()
+    }
+  }
+
+  private async deleteRecord(id: string): Promise<ProviderSessionDeleteResult> {
     const provider = providerFromId(id)
     if (provider === 'codex') {
       const nativeId = id.slice('codex:'.length)
@@ -1180,6 +1217,65 @@ export class ProviderSessionsService {
         delete: available,
       },
     }
+  }
+
+  /**
+   * 忘掉扫过的会话列表：下一次列表不管带不带 reuseRecentScan 都现扫。本服务删记录之后自己会调；
+   * Codex 的归档、恢复走的是另一条通道，由那边的处理器调。还在扫的那一轮也一起丢开，免得删除之前
+   * 开始扫的结果被删除之后的请求接着用。
+   */
+  invalidateListCache(): void {
+    this.sweeps.clear()
+  }
+
+  /**
+   * One sweep per provider, in order. New sweeps still run one provider after
+   * another, as the list always did, so a full listing never walks several
+   * session folders at once.
+   */
+  private claimSweeps(providers: readonly ProviderSessionProvider[], reuseRecent: boolean): Promise<ProviderSweep>[] {
+    const claimed: Promise<ProviderSweep>[] = []
+    let previous: Promise<unknown> = Promise.resolve()
+    for (const provider of providers) {
+      const sweep = this.sweep(provider, reuseRecent, previous)
+      // Awaited in the list loop; this only keeps a later provider's failure
+      // from surfacing as an unhandled rejection while an earlier one runs.
+      sweep.catch(() => undefined)
+      claimed.push(sweep)
+      previous = sweep
+    }
+    return claimed
+  }
+
+  /**
+   * One provider's full listing, shared between overlapping requests. A
+   * request that only changes the search, provider filter or page may also
+   * take a sweep that finished within RECENT_SCAN_REUSE_MS; every other
+   * request starts a new one unless one is already running.
+   */
+  private sweep(provider: ProviderSessionProvider, reuseRecent: boolean, after: Promise<unknown>): Promise<ProviderSweep> {
+    const known = this.sweeps.get(provider)
+    if (known && (known.settledAt === null
+      || (reuseRecent && this.now() - known.settledAt < RECENT_SCAN_REUSE_MS))) {
+      return known.promise
+    }
+    const started = after.then(() => undefined, () => undefined).then(() => this.sweepProvider(provider))
+    const entry: ProviderSweepEntry = { promise: started, settledAt: null }
+    this.sweeps.set(provider, entry)
+    entry.promise.then(
+      () => { entry.settledAt = this.now() },
+      () => {
+        // A failed sweep is never reused: the next request tries again.
+        if (this.sweeps.get(provider) === entry) this.sweeps.delete(provider)
+      },
+    )
+    return entry.promise
+  }
+
+  private async sweepProvider(provider: ProviderSessionProvider): Promise<ProviderSweep> {
+    if (provider === 'codex') return { items: await this.listCodexSessions(), available: true }
+    const items = await this.listExternalSessions(provider)
+    return { items, available: await existingDirectory(this.roots[provider]) }
   }
 
   private async listCodexSessions(): Promise<ProviderSessionSummary[]> {

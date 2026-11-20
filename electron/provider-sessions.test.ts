@@ -901,6 +901,163 @@ describe('ProviderSessionsService', () => {
   })
 })
 
+describe('ProviderSessionsService.list recent-scan reuse (R-3)', () => {
+  // One Codex sweep of up to 100 threads reads page 1 and then the total once more.
+  const codexListCallsPerSweep = 2
+
+  function clockedService(data: Fixture, codex: CodexSessionReader) {
+    let now = 1_000_000
+    const sessions = service(data, codex, { now: () => now })
+    return { sessions, advance: (ms: number) => { now += ms } }
+  }
+
+  function writeClaudeSession(data: Fixture, name: string, title: string): void {
+    writeJsonLines(path.join(data.claude, 'project-r3', `${name}.jsonl`), [
+      { type: 'custom-title', sessionId: name, customTitle: title },
+      { type: 'user', sessionId: name, cwd: 'C:/claude', message: { role: 'user', content: title } },
+    ])
+  }
+
+  it('shares one sweep between requests that overlap', async () => {
+    const data = fixture()
+    const codex = codexReader([codexSummary('codex-a'), { ...codexSummary('codex-b'), title: '登录页' }])
+    // Hold the sweep open so the second request really arrives while it runs.
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const listPage = codex.list
+    codex.list = vi.fn(async (query) => {
+      await gate
+      return listPage(query)
+    })
+    const sessions = service(data, codex)
+
+    const pending = Promise.all([
+      sessions.list({ provider: 'codex', search: '登录', page: 1, pageSize: 20 }),
+      sessions.list({ provider: 'codex', page: 1, pageSize: 100 }),
+    ])
+    await vi.waitFor(() => expect(codex.list).toHaveBeenCalledTimes(1))
+    release()
+    const [filtered, latest] = await pending
+
+    expect(codex.list).toHaveBeenCalledTimes(codexListCallsPerSweep)
+    expect(filtered.items.map((item) => item.nativeId)).toEqual(['codex-b'])
+    expect(latest.total).toBe(2)
+  })
+
+  it('filters and pages a recent sweep again instead of rescanning when asked to reuse it', async () => {
+    const data = fixture()
+    const codex = codexReader([codexSummary('codex-a'), { ...codexSummary('codex-b'), title: '登录页' }])
+    const { sessions, advance } = clockedService(data, codex)
+
+    await sessions.list({ provider: 'codex' })
+    advance(9_000)
+    const searched = await sessions.list({ provider: 'codex', search: '登录', reuseRecentScan: true })
+    const paged = await sessions.list({ provider: 'codex', page: 2, pageSize: 1, reuseRecentScan: true })
+
+    expect(codex.list).toHaveBeenCalledTimes(codexListCallsPerSweep)
+    expect(searched.items.map((item) => item.nativeId)).toEqual(['codex-b'])
+    expect(paged).toMatchObject({ page: 2, pages: 2, total: 2 })
+  })
+
+  it('rescans once the reuse window has passed', async () => {
+    const data = fixture()
+    const codex = codexReader()
+    const { sessions, advance } = clockedService(data, codex)
+
+    await sessions.list({ provider: 'codex' })
+    advance(10_000)
+    await sessions.list({ provider: 'codex', search: 'x', reuseRecentScan: true })
+
+    expect(codex.list).toHaveBeenCalledTimes(codexListCallsPerSweep * 2)
+  })
+
+  it('always rescans a request that does not ask to reuse, so a reload sees new sessions', async () => {
+    const data = fixture()
+    writeClaudeSession(data, 'old', '旧对话')
+    const { sessions } = clockedService(data, codexReader([]))
+
+    expect((await sessions.list({ provider: 'claude' })).total).toBe(1)
+    writeClaudeSession(data, 'new', '刚开的对话')
+
+    // Only a search or page change within the window may miss it ...
+    expect((await sessions.list({ provider: 'claude', reuseRecentScan: true })).total).toBe(1)
+    // ... a plain request (entering the page, reloading) rescans as before.
+    const reloaded = await sessions.list({ provider: 'claude' })
+    expect(reloaded.items.map((item) => item.title).sort()).toEqual(['刚开的对话', '旧对话'])
+  })
+
+  it('reuses each tool on its own when the tool filter changes', async () => {
+    const data = fixture()
+    writeClaudeSession(data, 'one', 'Claude 对话')
+    const codex = codexReader()
+    const { sessions } = clockedService(data, codex)
+
+    await sessions.list({ provider: 'all' })
+    const realpath = vi.spyOn(fsPromises, 'realpath')
+    try {
+      const claude = await sessions.list({ provider: 'claude', reuseRecentScan: true })
+      const codexOnly = await sessions.list({ provider: 'codex', reuseRecentScan: true })
+      expect(claude.items.map((item) => item.title)).toEqual(['Claude 对话'])
+      expect(codexOnly.total).toBe(1)
+      expect(realpath).not.toHaveBeenCalled()
+    } finally {
+      realpath.mockRestore()
+    }
+    expect(codex.list).toHaveBeenCalledTimes(codexListCallsPerSweep)
+  })
+
+  it('rescans after a record is deleted, even for a request that asks to reuse', async () => {
+    const data = fixture()
+    writeClaudeSession(data, 'keep', '留着的')
+    writeClaudeSession(data, 'drop', '要删的')
+    const { sessions } = clockedService(data, codexReader([]))
+    const before = await sessions.list({ provider: 'claude' })
+    const target = before.items.find((item) => item.title === '要删的')
+    expect(target).toBeDefined()
+
+    await sessions.delete(target?.id ?? '')
+
+    const after = await sessions.list({ provider: 'claude', search: '的', reuseRecentScan: true })
+    expect(after.items.map((item) => item.title)).toEqual(['留着的'])
+  })
+
+  it('does not hand a sweep that started before an invalidation to a later request', async () => {
+    const data = fixture()
+    let release: () => void = () => undefined
+    const codex = codexReader([codexSummary('before')])
+    const firstPage = codex.list
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    codex.list = vi.fn(async (query) => {
+      await gate
+      return firstPage(query)
+    })
+    const sessions = service(data, codex)
+
+    const stale = sessions.list({ provider: 'codex' })
+    sessions.invalidateListCache()
+    const fresh = sessions.list({ provider: 'codex', reuseRecentScan: true })
+    release()
+    await Promise.all([stale, fresh])
+
+    // Two sweeps, not one shared: the second request did not join the first.
+    expect(codex.list).toHaveBeenCalledTimes(codexListCallsPerSweep * 2)
+  })
+
+  it('does not keep a failed sweep for the next request', async () => {
+    const data = fixture()
+    const codex = codexReader()
+    vi.mocked(codex.list).mockRejectedValueOnce(new Error('数据库正忙'))
+    const { sessions } = clockedService(data, codex)
+
+    const failed = await sessions.list({ provider: 'codex' })
+    expect(failed.capabilities.codex.readable).toBe(false)
+    const retried = await sessions.list({ provider: 'codex', reuseRecentScan: true })
+
+    expect(retried.capabilities.codex.readable).toBe(true)
+    expect(retried.total).toBe(1)
+  })
+})
+
 describe('ProviderSessionsService.delete', () => {
   async function idOf(sessions: ProviderSessionsService, provider: 'claude' | 'gemini' | 'grok'): Promise<string> {
     const page = await sessions.list({ provider, pageSize: 100 })
