@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { ArrowLeft, Bell, ChevronRight, ExternalLink, Gift, X } from 'lucide-react'
 import { Button, Dialog } from '../../ui'
 import { userFacingErrorMessage } from '../../business-common'
 import { useLatestRequest } from '../../latest-request'
 import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../../external-link-fallback'
+import { MarkdownView, preloadMarkdown } from '../../markdown-view'
 import { writeLocalPreference } from '../app/preferences'
 import { useOnlineStatus } from './useOnlineStatus'
 import type { RelayNotice, RelayNoticeReadMode } from '../../../../electron/relay-backend'
@@ -884,8 +883,9 @@ export function AnnouncementContent({
   const imageOrigin = announcementOrigin(noticeUrl)
   return (
     <div className="v2-announcement-content">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+      <MarkdownView
+        gfm
+        text={text}
         components={{
           img: ({ alt, src }) => {
             const safeSrc = safeAnnouncementImage(src ?? null, imageOrigin)
@@ -904,9 +904,7 @@ export function AnnouncementContent({
             ? <input type="checkbox" checked={Boolean(checked)} disabled readOnly aria-hidden="true" />
             : null,
         }}
-      >
-        {text}
-      </ReactMarkdown>
+      />
     </div>
   )
 }
@@ -1122,6 +1120,8 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     setBlockedLink(null)
     returnToRow.current = null
     if (shown) setAttempt((value) => value + 1)
+    // 排公告正文的那份代码不在首屏包里（R9），框一打开就跟读公告并着读进来。
+    if (shown) void preloadMarkdown()
   }, [shown])
   // 公告里的链接多半不在可直接打开的名单里；被拦下时把地址复制给用户，
   // 其它失败仍走原来的错误提示。

@@ -1,5 +1,4 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
-import QRCode from 'qrcode'
 import type { AccountSessionState, PlatformCapabilities } from '../../../../electron/ipc-contract'
 import { resolveSupportServiceUrl } from '../../../../electron/relay-sites'
 import type { FeedbackSupport } from '../../pages-maintenance'
@@ -37,7 +36,10 @@ export function useSupportContact({ app, session, version, os, platform, systemL
   useEffect(() => { if (operationError) setLastFailure(supportFailureOf(operationError, new Date())) }, [operationError, setLastFailure])
   useEffect(() => {
     let current = true
-    void QRCode.toDataURL(supportUrl, { width: 192, margin: 1, errorCorrectionLevel: 'M' })
+    // 二维码库不放进首屏包（总单 77，R9）：首屏画出来以后再从本机读进来，欢迎页那张图照样马上出来。
+    // 读不进来跟生成失败一样，显示「在浏览器打开」那句。
+    void import('qrcode')
+      .then((QRCode) => QRCode.toDataURL(supportUrl, { width: 192, margin: 1, errorCorrectionLevel: 'M' }))
       .then((data) => { if (current) setSupportQr({ url: supportUrl, data }) })
       .catch(() => { if (current) setSupportQr({ url: supportUrl, data: null }) })
     return () => { current = false }

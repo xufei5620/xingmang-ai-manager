@@ -284,7 +284,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 - ❌ **不要用 zod / valibot / ajv 替换 `ipc.ts` 用的手写 parse 函数（在 `electron/ipc/parsers/`）** — 它们产出的是能直接上屏的中文错误文案
 - ❌ **不要开 `noUncheckedIndexedAccess` / `exactOptionalPropertyTypes`** — 实测前者会新增近百条错误，抽查全是已被前置校验保护的下标访问，**零个真 bug**。现在的 `strict: true` 已经足够
 - ❌ **不要顺手加 jsdom / happy-dom** — 组件测试已经有 `renderToStaticMarkup` 这条不需要 DOM 环境的路子（见 T7），换 DOM 环境是需要跨 agent 对齐的基础设施改动。`e2e/` 的套件已经是更高性价比的替代
-- ❌ **不要把路由级 code-splitting / React.lazy 铺开** — JS 从本地磁盘加载且开了 `codeCache`，一般页面拆了收益为负。已有的例外：renderer-v2 `App.tsx` 对聊天、业务页、加速页三个重页面按需加载，首屏 JS 实测少约两成（README「启动性能状态」）；再加要拿同样的实测说话
+- ❌ **不要把路由级 code-splitting / React.lazy 铺开** — JS 从本地磁盘加载且开了 `codeCache`，一般页面拆了收益为负。已有的例外：renderer-v2 `App.tsx` 对聊天、业务页、加速页三个重页面按需加载，首屏 JS 实测少约两成；公告、协议的 Markdown 排版和客服二维码库点开才读（总单 77 R9，首屏 JS 再少 14.8%），两次都记在 README「启动性能状态」；再加要拿同样的实测说话
 - ❌ **不要引入 react-window / react-virtualized** — 最长的会话列表已在 SQL 层分页到每页 ≤100
 - ❌ **不要给主进程上 bundler** — 会模糊信任链模块的边界，那是本项目的核心可审计资产
 - ❌ **不要为了让测试在非 Windows 通过而改断言** — 用平台门控，否则会弱化对 Windows 行为的验证；画布边界门禁脚本同理，不要为了让它过而改断言
