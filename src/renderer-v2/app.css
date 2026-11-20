@@ -311,6 +311,10 @@ button.v2-promo-tier:focus-visible { outline: 2px solid var(--focus); outline-of
 .v2-client-config-path { overflow-wrap: anywhere; }
 .v2-client-config-path > summary { cursor: pointer; }
 .v2-client-config-path > p { margin: 4px 0 0; }
+/* 检测模型时分组被拒：红框里一句话加「换一把能用的」，原话收在下面的「查看详情」。 */
+.v2-key-group-rejected { margin: 0 0 16px; }
+.v2-key-group-rejected > .v2-callout { margin: 0 0 6px; }
+.v2-key-group-rejected > details { color: var(--text-2); font-size: var(--font-small); }
 .v2-first-run { display: grid; gap: 8px; }
 .v2-first-run p { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: var(--line-body); }
 .v2-first-run-line { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }

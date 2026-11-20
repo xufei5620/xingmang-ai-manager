@@ -6,6 +6,7 @@ import {
   matchRelayQuotaFailureMessage,
   modelProbeFailurePrefix,
   relayQuotaFailureInMessage,
+  isKeyGroupRejectionMessage,
   relayQuotaFailureMessages,
 } from './relay-quota-failure'
 
@@ -87,6 +88,24 @@ describe('relay quota failure classification', () => {
     expect(relayQuotaFailureInMessage('模型查询失败，服务返回 4010')).toBeNull()
     expect(relayQuotaFailureInMessage('模型查询超时，请检查网络后重试')).toBeNull()
     expect(modelProbeFailurePrefix).toBe('模型查询失败，服务返回')
+  })
+
+  it.each([
+    '模型查询失败，服务返回 403：无权访问 Claude-ANTI 分组 (request id: 2026111913373533017023682)',
+    '模型查询失败，服务返回 403：分组 Claude-MAX订阅 已被弃用',
+    '模型查询失败，服务返回 403：No permission to access group Claude AWS-B',
+    '模型查询失败，服务返回 403：Group grok-image has been deprecated',
+    'Error invoking remote method \'account:list-key-models\': Error: 模型查询失败，服务返回 403：无权访问 vip 分组',
+  ])('reads "%s" as a key in a group the account can no longer use', (message) => {
+    expect(isKeyGroupRejectionMessage(message)).toBe(true)
+  })
+
+  it('reads a group rejection only from the model probe sentence with a 403', () => {
+    expect(isKeyGroupRejectionMessage('当前账号不可使用分组「Claude-ANTI」')).toBe(false)
+    expect(isKeyGroupRejectionMessage('账号接口返回 403：无权访问 vip 分组')).toBe(false)
+    expect(isKeyGroupRejectionMessage('模型查询失败，服务返回 401：无效的令牌')).toBe(false)
+    expect(isKeyGroupRejectionMessage('模型查询失败，服务返回 4030：无权访问 vip 分组')).toBe(false)
+    expect(isKeyGroupRejectionMessage('模型查询失败，服务返回 403：用户额度不足, 剩余额度: ＄0.000000')).toBe(false)
   })
 
   it('never names a site and always says what to do next', () => {
