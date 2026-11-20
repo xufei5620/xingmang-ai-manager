@@ -128,6 +128,11 @@
 - `claude-desktop-msix-installer.ts` — Windows 上 Claude Desktop 的离线 MSIX 一路（存储桶或 Claude 官网，官网只认 `claude.ai` 入口与 `downloads.claude.ai/releases/` 的逐跳重定向），PowerShell 只读核对包身份与 Anthropic 签名，再交给 `codex-desktop-appx.ts` 的共用安装（带服务的包走 UAC）
 - `claude-desktop-acceleration.ts` — 从星芒打开 Claude Desktop 前悄悄替用户连上加速，好让它从 `downloads.claude.ai` 下得到 Claude Code 程序和 Cowork 工作区（#1373）：约束同 `codex-desktop-acceleration.ts`，Claude 退出或连满一小时就断，和 Codex 桌面端共用同一次会话时先用完的那边交给另一边（`heldElsewhere`）。不含 Electron 依赖
 - `claude-desktop-install-failure.ts` — Claude Desktop 没装上时那句话（按原因分类，原话只进日志）和官网下载页地址（外链白名单全等收录，I12）；主进程与渲染层共用，不许引 Node
+- `claude-desktop-code-seed.ts` — Windows 上从星芒打开 Claude Desktop 前，从国内 npm 镜像替它放好 Claude Code 程序（按官方源 SHA-512 对账，只在同用户模式）；读 `app.asar` 的几个只读工具也在这里
+- `claude-desktop-component-manifest.ts` / `claude-desktop-component-keys.ts` — 从 Claude 自己的 `app.asar` 读出它要的工作区和 Claude Code 版本、校验值；算这些文件在星芒存储桶里的位置（同步作业和客户端共用）
+- `claude-desktop-workspace-seed.ts` — 客户点进过 Cowork 以后，从星芒存储桶替 Claude Desktop 放好 Cowork 工作区（官网原样 `.zst` + `.origin`，它自己解开再核），打开后在后台做
+- `claude-desktop-vm-code-seed.ts` — Cowork 虚拟机里那份 Linux 版 Claude Code，从国内 npm 镜像放进 `claude-code-vm/<版本>/`
+- `claude-desktop-mac-code-seed.ts` — Mac 上打开 Claude Desktop 前从星芒存储桶放好带签名的 `claude.app` 程序包（核 SHA-256、自写 tar 解析、核 Mach-O 芯片）
 
 ## 托管密钥的分组与换新
 - `managed-cli-groups.ts` — 给每个工具和画图挑账号里用哪个分组：xm 站分组只按名字认（没有编号），服务状态文件里的分组对照让站上改名时不用等发版；订阅分组、历史账号那套后端的平台字段也在这里判。签 Key、对话凭据、账号页都用它

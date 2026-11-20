@@ -20,11 +20,13 @@ const clientHints: Record<ExternalToolId, string> = {
   opencode: '命令行版和桌面版共用这份配置。',
 }
 
-// Windows 上从星芒点「打开」时先替它放好聊天和 Code 要用的 Claude Code 程序（electron/claude-desktop-code-seed.ts），
-// 那一份不用再连官网；Cowork 的工作区国内没有来源，还得连官网。字是 yoyo 2026-11-04 回「放程序字改」批的。
-const claudeDesktopSeededHint = '保存后要完全退出再重新打开 Claude Desktop。从星芒点「打开」时，星芒会先替它放好聊天和 Code 要用的程序；Cowork 要用的工作区（约 1.3GB）还得这台电脑连得上 Claude 官网才下得动。'
+// 从星芒点「打开」时先替它放好聊天和 Code 要用的 Claude Code 程序（Windows 从 npm 镜像，electron/claude-desktop-code-seed.ts；
+// Mac 从星芒下载站，claude-desktop-mac-code-seed.ts）；客户点进过 Cowork 以后，打开后十来分钟里在后台从下载站替它放好
+// 工作区（claude-desktop-workspace-seed.ts），它的下载失败提示上点「Retry」就会用这份。Claude 第三方模式只有英文界面，
+// 按钮名照它的原文写。
+const claudeDesktopSeededHint = '保存后要完全退出再重新打开 Claude Desktop。从星芒点「打开」时，星芒会先替它放好聊天和 Code 要用的程序；第一次进 Cowork 以后，星芒还会在后台替它下好工作区（约 1.3GB），几分钟后在 Claude 里点「Retry」就能用。这些都不用连 Claude 官网。'
 
-/** 配置框最上面那一句。codeSeeded：这台电脑上从星芒打开 Claude Desktop 前会先替它放程序（Windows）。 */
+/** 配置框最上面那一句。codeSeeded：这台电脑上从星芒打开 Claude Desktop 前会先替它放程序和工作区（Windows、Mac）。 */
 export function externalClientHint(tool: ExternalToolId, codeSeeded: boolean): string {
   return tool === 'claudeDesktop' && codeSeeded ? claudeDesktopSeededHint : clientHints[tool]
 }
@@ -44,7 +46,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
    * Claude Code 常常是弹窗打开以后才写好密钥。缺省 = 只在打开时读一次。
    */
   liveConfig?: AppConfigSummary | null
-  /** 这台电脑上从星芒打开 Claude Desktop 前会先替它放好 Claude Code 程序（Windows）。缺省 = 不会，照旧说要连官网。 */
+  /** 这台电脑上从星芒打开 Claude Desktop 前会先替它放好 Claude Code 程序和工作区（Windows、Mac）。缺省 = 不会，照旧说要连官网。 */
   codeSeeded?: boolean
   onClose(): void
   onSaved(): void
