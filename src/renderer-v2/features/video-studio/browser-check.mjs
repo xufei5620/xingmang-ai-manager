@@ -1104,6 +1104,10 @@ test('fades between shots and at the end of the joined film once chosen, and kee
   await page.getByTestId('video-transition').waitFor()
   assert.equal(await page.getByTestId('video-transition').inputValue(), 'fade')
   assert.equal(await page.getByTestId('video-fade-out').getByRole('switch').getAttribute('aria-checked'), 'true')
+  // 换回直接切，成片就对不上了，不再挂着（Mac 验收 R8）。
+  await page.getByTestId('video-result').waitFor()
+  await page.getByTestId('video-transition').selectOption('cut')
+  assert.equal(await page.getByTestId('video-result').count(), 0)
   assert.deepEqual(errors, [])
   await page.close()
 })
@@ -1162,6 +1166,10 @@ test('moves the burnt-in captions to the top once chosen, and keeps the choice a
   await page.getByTestId('video-caption-position').waitFor()
   assert.equal(await page.getByTestId('video-caption-position').inputValue(), 'top')
   assert.equal(await page.getByTestId('video-caption-size').inputValue(), 'large')
+  // 字幕换个大小，成片就对不上了，不再挂着（Mac 验收 R8）。
+  await page.getByTestId('video-result').waitFor()
+  await page.getByTestId('video-caption-size').selectOption('small')
+  assert.equal(await page.getByTestId('video-result').count(), 0)
   // 关了「加字幕」，这两项跟着收起来。
   await page.getByTestId('video-captions').getByRole('switch').click()
   assert.equal(await page.getByTestId('video-caption-position').count(), 0)
