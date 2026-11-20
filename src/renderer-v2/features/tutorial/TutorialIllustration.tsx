@@ -9,12 +9,12 @@ const illustrationDescriptions: Record<TutorialIllustrationId, { title: string; 
   'desktop-config': { title: '用默认选择，保存配置', description: '在 Codex 桌面端配置中选择当前账号，密钥选择自动准备，默认模型保留自动选择的结果，然后点击保存并检测。', hint: '保存只改账号、密钥和模型，其他设置会留着。' },
   'desktop-message': { title: '先发一句话，看看它的回复', description: '在独立的 Codex 桌面窗口里输入一个简单的中文问题，例如请用中文告诉我你能帮我做什么，再发送并等待回复。简单提问不用先选项目文件夹。图中回复仅为示意。', hint: '能收到回复，就可以开始问自己的问题了。' },
   'desktop-project': { title: '处理文件时，选择本地项目', description: '需要处理本地文件时，在 Codex 桌面端里选择项目文件夹，再输入具体任务，等待并阅读回复。简单提问可以直接新建对话。示例问题要求先说明项目内容，不修改文件；图中回复仅为示意。', hint: '先用练习项目熟悉操作；允许改文件前，先看清它准备做什么。' },
-  home: { title: '先认识三个常用入口', description: '首页工具区用于安装、配置和打开工具；左侧聊天可以直接提问；左下角账号入口用于登录和查看余额。', hint: '首页管工具，聊天直接用，左下角管账号。' },
+  home: { title: '先认识三个常用入口', description: '首页工具区用于安装、配置和打开工具；左侧创作可以直接提问；左下角账号入口用于登录和查看余额。', hint: '首页管工具，创作直接用，左下角管账号。' },
   account: { title: '先登录自己的星芒账号', description: '点击星芒左下角的未登录账号区域，按提示登录。完成后，左下角会显示自己的账号昵称，先确认登录的是自己准备使用的账号。图中不包含真实账号。', hint: '左下角出现自己的账号昵称，就完成这一步了。' },
   install: { title: '找到工具，点击安装', description: '在首页找到想使用的工具，点击卡片右下角的安装。缺的 Node.js 会自动准备好，首页「运行环境」那张卡里能看到装好了没有。', hint: '先装一个需要的工具，不必一次全部安装。' },
   config: { title: '确认来源、密钥和模型', description: '配置窗口内选择当前账号，确认密钥与默认模型，然后点击保存配置；其他自定义设置会保留。', hint: '点「保存配置」即可，其他自定义设置会保留。' },
   launch: { title: '在自己的文件夹里开始', description: '点击工具卡片上的打开，按提示选择工作文件夹。工具会在这个文件夹打开，随后在工具窗口中输入自己的任务。', hint: '先用测试文件夹练习，再让 AI 处理正式项目。' },
-  chat: { title: '不打开终端，也能直接提问', description: '左侧选择聊天，在输入框底部选择文本对话和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '先确认模型，再描述你希望完成的事。' },
+  chat: { title: '不打开终端，也能直接提问', description: '左侧选择创作，在输入框底部选择文本对话和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '先确认模型，再描述你希望完成的事。' },
   canvas: { title: '把提示词连到图像节点', description: '在画布中添加提示词和图像节点，连接两个节点，检查生成配置，再运行此节点。图中未执行生成。', hint: '连接节点后再运行；保存工作流不等于生成图片。' },
   extensions: { title: '先选工具，再添加能力', description: '在外接工具页面先选择要配置的 AI 工具，再点自定义连接。技能和插件分别在自己的页面管理。', hint: '扩展按工具分别管理，先确认当前选中的是哪个工具。' },
   skills: { title: '技能要导入到对应的工具', description: '在技能页面先选择工具，例如 Codex CLI，再点击从文件夹导入。列表可查看技能的来源与范围；系统自带的技能只能查看。', hint: '不同工具的导入能力不同；先选工具，再看可用操作。' },
@@ -81,7 +81,7 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
       return <div className="tutorial-illustration-split">
         <div className="tutorial-illustration-rail">
           <span className="is-selected"><Home size={16} />首页</span>
-          <span><Marker>2</Marker>聊天</span>
+          <span><Marker>2</Marker>创作</span>
           <span className="tutorial-illustration-rail-account"><Marker>3</Marker>账号</span>
         </div>
         <Pane title={<><Marker>1</Marker>首页工具区</>}>
@@ -122,7 +122,7 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
       </div>
     case 'chat':
       return <div className="tutorial-illustration-chat">
-        <div className="tutorial-illustration-row"><MessageSquare size={18} /><strong>聊天</strong><span className="tutorial-illustration-muted">先从一个具体问题开始</span></div>
+        <div className="tutorial-illustration-row"><MessageSquare size={18} /><strong>创作</strong><span className="tutorial-illustration-muted">先从一个具体问题开始</span></div>
         <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>文本对话</Control><Control>模型<ChevronDown size={14} /></Control></div>
         <div className="tutorial-illustration-compose"><p>请帮我把这段工作笔记整理成一份清晰的待办清单。</p><span><Marker>2</Marker><Control primary>发送消息<ArrowUpRight size={15} /></Control></span></div>
       </div>

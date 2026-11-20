@@ -3622,8 +3622,8 @@ test('login synchronizes account Keys, configures installed tools, and route sel
   } finally { await page.close() }
 })
 
-// Y3：「做图、做视频」跟聊天一样什么都不装；没登录先登录，登好了引导按新账号重开也不再弹，直接进视频剪辑页。
-test('the images-and-videos guide choice signs in and lands on the video page without installing anything', async () => {
+// Y3：「做图、做视频」跟聊天一样什么都不装；没登录先登录，登好了引导按新账号重开也不再弹，直接进「创作」、右边开着一条新视频。
+test('the images-and-videos guide choice signs in and lands on a new film on the create page without installing anything', async () => {
   const page = await open('guest=1')
   try {
     await page.getByTestId('welcome-steps').click()
@@ -3633,7 +3633,10 @@ test('the images-and-videos guide choice signs in and lands on the video page wi
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('login-submit').click()
-    await page.waitForFunction(() => document.querySelector('[data-testid="nav-video"]')?.getAttribute('aria-current') === 'page')
+    await page.waitForFunction(() => document.querySelector('[data-testid="nav-chat"]')?.getAttribute('aria-current') === 'page')
+    await page.getByTestId('create-video-pane').waitFor()
+    assert.equal(await page.getByTestId('create-video-name').textContent(), '新视频')
+    await page.getByTestId('video-idea-input').waitFor()
     assert.equal(await page.getByTestId('start-guide').count(), 0)
     const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.equal(methods.some((method) => ['installCli', 'installNodeRuntime', 'installCodexDesktop', 'launchCodexDesktop'].includes(method)), false)
@@ -3641,7 +3644,7 @@ test('the images-and-videos guide choice signs in and lands on the video page wi
   } finally { await page.close() }
 })
 
-test('closing the login box from the images-and-videos choice does not send a later login to the video page', async () => {
+test('closing the login box from the images-and-videos choice does not send a later login to a film on the create page', async () => {
   const page = await open('guest=1')
   try {
     await page.getByTestId('welcome-steps').click()
@@ -3657,7 +3660,8 @@ test('closing the login box from the images-and-videos choice does not send a la
     await page.getByTestId('login-submit').click()
     // 这次是从欢迎页登录的：照旧弹出新账号的引导，不当成刚才那一下。
     await page.getByTestId('start-guide').waitFor()
-    assert.notEqual(await page.getByTestId('nav-video').getAttribute('aria-current'), 'page')
+    assert.notEqual(await page.getByTestId('nav-chat').getAttribute('aria-current'), 'page')
+    assert.equal(await page.getByTestId('create-video-pane').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -3941,6 +3945,349 @@ test('the chat page opens the canvas asset library from the top bar and reports 
     await button.click()
     await page.getByTestId('operation-error').waitFor()
     await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// —— 融合第 1 步：侧栏的「聊天」「无限画布」「视频剪辑」并成「创作」一项，做过的对话、视频、画布项目排在左边一列 ——
+// 钟定在北京时间中午 12 点：夹具里的视频、画布项目按「20 分钟前」「2 小时前」「3 天前」算时间，哪一天不随跑的时刻变。
+const createNoon = new Date('2026-11-20T04:00:00Z')
+function openCreate(query = '') {
+  return open(query, createNoon, null, 'Asia/Shanghai')
+}
+function createRows(page) {
+  return page.locator('.chat-conversation-list .chat-conversation-select').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-testid')))
+}
+function fixtureCalls(page, method) {
+  return page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).map((entry) => entry.args), method)
+}
+
+test('the create page lists films and canvas projects in one column with conversations, newest first, and narrows it by kind and by name', async () => {
+  const page = await openCreate('videoFilms=1&canvasProjects=1')
+  try {
+    // 侧栏只剩「创作」一项，原来的两项不在了。
+    assert.match(await page.getByTestId('nav-chat').textContent(), /创作/)
+    assert.equal(await page.getByTestId('nav-canvas').count(), 0)
+    assert.equal(await page.getByTestId('nav-video').count(), 0)
+    await page.getByTestId('nav-chat').click()
+    const list = page.getByRole('navigation', { name: '做过的东西列表' })
+    await list.getByTestId('create-item-canvas-fixture-canvas-old').waitFor()
+    await list.getByTestId('create-item-video-fixture-film-sea').waitFor()
+    assert.deepEqual(await list.locator('.chat-conversation-day').allTextContents(), ['今天', '更早'])
+    assert.deepEqual(await createRows(page), ['create-item-video-fixture-film-cat', 'create-item-canvas-fixture-canvas-poster', 'create-item-video-fixture-film-sea', 'create-item-canvas-fixture-canvas-old'])
+    assert.equal(await page.getByTestId('create-item-video-fixture-film-cat').textContent(), '橘猫回家2 个镜头 · 已生成 0 段')
+    assert.equal(await page.getByTestId('create-item-video-fixture-film-sea').textContent(), '海边那条还没写分镜')
+    assert.equal(await page.getByTestId('create-item-canvas-fixture-canvas-poster').textContent(), '双 11 主图画布项目')
+    assert.equal(await page.getByTestId('chat-conversation-search').getAttribute('placeholder'), '搜索做过的东西')
+    assert.equal((await page.getByTestId('chat-conversation-new').textContent()).trim(), '新建')
+
+    // 说一句话：这段对话排进同一列，在「今天」最前面。
+    await page.getByTestId('chat-composer-input').fill('帮我想三个店名')
+    await page.getByTestId('chat-send').click()
+    await page.getByTestId('chat-stop').click()
+    await page.waitForFunction(() => document.querySelectorAll('.chat-conversation-list [data-testid^="chat-conversation-"]').length === 1)
+    const rows = await createRows(page)
+    assert.match(rows[0], /^chat-conversation-/)
+    assert.deepEqual(rows.slice(1), ['create-item-video-fixture-film-cat', 'create-item-canvas-fixture-canvas-poster', 'create-item-video-fixture-film-sea', 'create-item-canvas-fixture-canvas-old'])
+
+    // 只看一类。
+    const kinds = page.getByRole('group', { name: '只看哪一类', exact: true })
+    assert.deepEqual(await kinds.getByRole('button').allTextContents(), ['全部', '对话', '视频', '画布'])
+    await page.getByTestId('create-filter-video').click()
+    assert.deepEqual(await createRows(page), ['create-item-video-fixture-film-cat', 'create-item-video-fixture-film-sea'])
+    await page.getByTestId('create-filter-canvas').click()
+    assert.deepEqual(await createRows(page), ['create-item-canvas-fixture-canvas-poster', 'create-item-canvas-fixture-canvas-old'])
+    await page.getByTestId('create-filter-chat').click()
+    assert.deepEqual(await createRows(page), [rows[0]])
+    await page.getByTestId('create-filter-all').click()
+    assert.equal((await createRows(page)).length, 5)
+
+    // 搜名字：视频和画布项目按名字找，搜不到说搜的是什么。
+    await page.getByTestId('chat-conversation-search').fill('海')
+    assert.deepEqual(await createRows(page), ['create-item-video-fixture-film-sea', 'create-item-canvas-fixture-canvas-old'])
+    await page.getByTestId('create-filter-canvas').click()
+    assert.deepEqual(await createRows(page), ['create-item-canvas-fixture-canvas-old'])
+    await page.getByTestId('chat-conversation-search').fill('没有这个')
+    assert.equal(await page.getByTestId('chat-conversation-search-empty').textContent(), '没有找到「没有这个」相关的内容')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a kind with nothing in it says so, and an account that never made anything is told where to start', async () => {
+  const page = await openCreate('canvasProjects=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-item-canvas-fixture-canvas-poster').waitFor()
+    await page.getByTestId('create-filter-video').click()
+    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '这一类还没做过。')
+    await clean(page)
+  } finally { await page.close() }
+  const empty = await openCreate()
+  try {
+    await empty.getByTestId('nav-chat').click()
+    await empty.getByTestId('chat-empty').waitFor()
+    assert.equal(await empty.getByTestId('chat-conversation-empty').textContent(), '还没做过东西。在右边的框里说一句试试。')
+    // 那排筛选按这个账号能做哪几类列，不看做没做过。
+    assert.deepEqual(await empty.getByRole('group', { name: '只看哪一类', exact: true }).getByRole('button').allTextContents(), ['全部', '对话', '视频', '画布'])
+    await clean(empty)
+  } finally { await empty.close() }
+})
+
+// 三类各读各的：哪一类这一次没读出来，就在列表最下面说哪一类，别的照列。
+test('the column lists what it could read and names the kind it could not', async () => {
+  for (const [method, note, listed] of [
+    ['readAiChatHistory', '以前的对话暂时读不出来', ['create-item-video-fixture-film-cat', 'create-item-canvas-fixture-canvas-poster']],
+    ['readVideoStudioProjects', '以前的视频暂时读不出来', ['create-item-canvas-fixture-canvas-poster']],
+    ['listCanvasProjects', '画布项目暂时读不出来', ['create-item-video-fixture-film-cat']],
+  ]) {
+    const page = await openCreate('videoFilms=1&canvasProjects=1')
+    try {
+      await page.evaluate((name) => { window.v2Test.fail = name }, method)
+      await page.getByTestId('nav-chat').click()
+      for (const id of listed) await page.getByTestId(id).waitFor()
+      await page.getByTestId('create-list-note').waitFor()
+      assert.deepEqual(await page.getByTestId('create-list-note').allTextContents(), [note], method)
+      // 起始页照常能用。
+      await page.getByTestId('create-start').waitFor()
+      await page.evaluate(() => { window.v2Test.fail = '' })
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
+test('a film opens from the column into its workbench on the right, and is renamed and deleted from there', async () => {
+  const page = await openCreate('videoFilms=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-item-video-fixture-film-cat').click()
+    const pane = page.getByTestId('create-video-pane')
+    await pane.waitFor()
+    assert.equal(await page.getByTestId('create-video-name').textContent(), '橘猫回家')
+    await page.getByTestId('video-shot-prompt-0').waitFor()
+    assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '雨夜街头的橘猫')
+    assert.equal(await page.getByTestId('create-item-video-fixture-film-cat').getAttribute('aria-current'), 'page')
+    // 对话那一半只是藏起来；工作台自己没有页面标题，也没有「新建」「重新开始」「草稿箱」。
+    assert.equal(await page.getByTestId('chat-composer-input').isVisible(), false)
+    assert.equal(await pane.locator('h1').count(), 0)
+    for (const id of ['video-new', 'video-reset', 'video-drafts']) assert.equal(await page.getByTestId(id).count(), 0, id)
+
+    // 点另一条：右边跟着换。
+    await page.getByTestId('create-item-video-fixture-film-sea').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="create-video-name"]')?.textContent === '海边那条')
+    await page.waitForFunction(() => document.querySelector('[data-testid="video-idea-input"]')?.value === '海边日落，镜头慢慢拉远')
+
+    // 改名：顶上和左边那一行一起换，写进它那个文件。
+    await page.getByTestId('create-video-rename').click()
+    const dialog = page.getByTestId('create-video-rename-dialog')
+    await dialog.getByRole('heading', { name: '给这条视频改个名', exact: true }).waitFor()
+    const input = page.getByRole('textbox', { name: '视频名字', exact: true })
+    assert.equal(await input.inputValue(), '海边那条')
+    assert.equal(await page.getByTestId('create-video-rename-save').isDisabled(), true, 'nothing to save until the name changes')
+    await input.fill('  海边   日落  ')
+    await page.getByTestId('create-video-rename-save').click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.equal(await page.getByTestId('create-video-name').textContent(), '海边 日落')
+    assert.equal(await page.getByTestId('create-item-video-fixture-film-sea').textContent(), '海边 日落还没写分镜')
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'writeVideoStudioProjects'
+      && entry.args[0].put.some((file) => file.key === 'fixture-film-sea' && JSON.parse(file.content).name === '海边 日落')))
+
+    // 从左边那一行的菜单删掉没开着的那一条：先问一句，开着的不受影响。
+    await page.getByTestId('create-item-menu-video-fixture-film-cat').click()
+    const menu = page.getByRole('menu', { name: '视频操作', exact: true })
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['改名', '删掉这一条…'])
+    await page.getByTestId('create-video-remove-fixture-film-cat').click()
+    const confirm = page.getByTestId('create-video-remove-confirm')
+    await confirm.getByRole('heading', { name: '删掉「橘猫回家」？', exact: true }).waitFor()
+    await confirm.getByText('分镜和设置会删掉。已经生成的片段和成片还在作品库里，不会删。', { exact: true }).waitFor()
+    await confirm.getByRole('button', { name: '删掉', exact: true }).click()
+    await page.getByTestId('create-item-video-fixture-film-cat').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => window.v2Test.videoFilms().ids.join() === 'fixture-film-sea')
+    assert.equal(await page.getByTestId('create-video-name').textContent(), '海边 日落')
+
+    // 删掉开着的这一条：右边回到起始页。
+    await page.getByTestId('create-video-remove').click()
+    await confirm.getByRole('heading', { name: '删掉「海边 日落」？', exact: true }).waitFor()
+    await confirm.getByRole('button', { name: '删掉', exact: true }).click()
+    await pane.waitFor({ state: 'detached' })
+    await page.getByTestId('chat-empty').waitFor()
+    await page.waitForFunction(() => window.v2Test.videoFilms().ids.length === 0)
+    assert.equal(await page.locator('[data-testid^="create-item-video-"]').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a canvas project shows its name and when it was changed, opens in the canvas window, and leaves the column once it is gone', async () => {
+  const page = await openCreate('canvasProjects=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-item-canvas-fixture-canvas-poster').click()
+    const pane = page.getByTestId('create-canvas-pane')
+    await pane.waitFor()
+    assert.equal(await page.getByTestId('create-canvas-name').textContent(), '双 11 主图')
+    assert.equal(await page.getByTestId('create-canvas-time').textContent(), '画布项目 · 今天 10:00 改过')
+    await pane.getByText('画布开在一个大窗口里，可以一边让它跑，一边回这里做别的。', { exact: true }).waitFor()
+    await pane.getByText('改名、复制、归档、删除在画布窗口的「项目中心」里做。', { exact: true }).waitFor()
+    assert.equal((await page.getByTestId('create-canvas-open').textContent()).trim(), '打开画布')
+    await page.getByTestId('create-canvas-open').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openCanvasProject'))
+    assert.deepEqual(await fixtureCalls(page, 'openCanvasProject'), [['fixture-canvas-poster']])
+    // 左边那一行的菜单里也能打开，不用先点开它。
+    await page.getByTestId('create-item-menu-canvas-fixture-canvas-old').click()
+    assert.deepEqual(await page.getByRole('menu', { name: '画布项目操作', exact: true }).getByRole('menuitem').allTextContents(), ['打开画布'])
+    await page.getByTestId('create-canvas-open-fixture-canvas-old').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'openCanvasProject').length === 2)
+    assert.deepEqual((await fixtureCalls(page, 'openCanvasProject'))[1], ['fixture-canvas-old'])
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+
+    // 在画布窗口里把它删了、另一个改了名，回到这个窗口：这一行没了，右边回到对话这边。
+    await page.evaluate(() => {
+      window.v2Test.setCanvasProjects([{ id: 'fixture-canvas-old', name: '门店海报 第二版', updatedAt: Date.now() }])
+      window.dispatchEvent(new Event('focus'))
+    })
+    await page.getByTestId('create-item-canvas-fixture-canvas-poster').waitFor({ state: 'detached' })
+    await pane.waitFor({ state: 'detached' })
+    assert.equal(await page.getByTestId('create-item-canvas-fixture-canvas-old').textContent(), '门店海报 第二版画布项目')
+    await page.getByTestId('chat-composer-input').waitFor()
+
+    // 画布窗口没开成：照别的操作一样报出来。
+    await page.getByTestId('create-item-canvas-fixture-canvas-old').click()
+    await pane.waitFor()
+    await page.evaluate(() => { window.v2Test.fail = 'openCanvasProject'; window.v2Test.failMessage = '画布窗口没能打开' })
+    await page.getByTestId('create-canvas-open').click()
+    await page.getByTestId('operation-error').waitFor()
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the start page offers a film and the canvas under the examples, and says only once that the three pages were merged', async () => {
+  const page = await openCreate('videoFilms=1&canvasProjects=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    const intro = page.getByTestId('create-intro')
+    await intro.getByText('聊天、画布、视频剪辑合到这一页了', { exact: true }).waitFor()
+    await intro.getByText('以前的对话、画布项目、视频草稿都在左边这一列，一个没少。', { exact: true }).waitFor()
+    const empty = page.getByTestId('chat-empty')
+    await empty.getByRole('heading', { name: '想做点什么？', exact: true }).waitFor()
+    await empty.getByText('问问题、写东西、画图，都在下面这一个框里说。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    await page.getByTestId('create-start').getByText('一句话说不清的，从这里开始', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('create-card-video').textContent(), '做一条带字幕的短视频写一句想法，AI 写分镜、一段一段出，再拼成一条')
+    assert.equal(await page.getByTestId('create-card-canvas').textContent(), '在画布上一步步做多张图、精修、套模板，人物每一镜都长得一样也在这里开在大窗口里')
+
+    // 画布那张卡开的是画布窗口。
+    await page.getByTestId('create-card-canvas').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openCanvasWindow'))
+    // 视频那张卡新开一条空的：什么都没写就不列进左边，也不存。
+    await page.getByTestId('create-card-video').click()
+    await page.getByTestId('create-video-pane').waitFor()
+    assert.equal(await page.getByTestId('create-video-name').textContent(), '新视频')
+    await page.getByTestId('video-idea-input').waitFor()
+    assert.equal(await page.getByTestId('video-idea-input').inputValue(), '')
+    assert.equal(await page.locator('[data-testid^="create-item-video-"]').count(), 2)
+    // 写了想法它就进了左边那一列，排最前面。
+    await page.getByTestId('video-idea-input').fill('新品口红 15 秒')
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid^="create-item-video-"]').length === 3)
+    assert.equal(await page.locator('.chat-conversation-list .chat-conversation-select').first().textContent(), '新品口红 15 秒还没写分镜')
+    assert.equal(await page.getByTestId('create-video-name').textContent(), '新品口红 15 秒')
+    await page.waitForFunction(() => window.v2Test.videoFilms().ids.length === 3)
+
+    // 「新建」回到起始页；这条视频在左边，点一下接着做。
+    await page.getByTestId('chat-conversation-new').click()
+    await empty.waitFor()
+    assert.equal(await page.getByTestId('create-video-pane').isVisible(), false)
+    await page.locator('.chat-conversation-list .chat-conversation-select').first().click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="video-idea-input"]')?.value === '新品口红 15 秒')
+
+    // 那条提示关掉以后不再出现，重开也不出现。
+    await page.getByTestId('chat-conversation-new').click()
+    await intro.getByRole('button').click()
+    await intro.waitFor({ state: 'detached' })
+    await page.reload()
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-item-canvas-fixture-canvas-poster').waitFor()
+    await page.getByTestId('create-start').waitFor()
+    assert.equal(await intro.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an account with nothing made before is not told about the merge, now or after it has made something', async () => {
+  const page = await openCreate()
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-start').waitFor()
+    await page.waitForFunction(() => window.localStorage.getItem('xingmang-ui-v2:create-intro-seen') === '1')
+    assert.equal(await page.getByTestId('create-intro').count(), 0)
+    await page.getByTestId('create-card-video').click()
+    await page.getByTestId('video-idea-input').fill('海边日落')
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid^="create-item-video-"]').length === 1)
+    await page.getByTestId('chat-conversation-new').click()
+    await page.getByTestId('create-start').waitFor()
+    assert.equal(await page.getByTestId('create-intro').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 总单 #79：0.2.24 把视频草稿存在本机存储里，升级后头一次打开各抄一份成文件；老的那两格不删不改，退回 0.2.24 还在。
+test('films left by 0.2.24 are copied into files on the first open and stay where the old version reads them', async () => {
+  const page = await openCreate('legacyVideoDrafts=1')
+  try {
+    const legacy = () => page.evaluate(() => Object.fromEntries(Object.entries(window.localStorage).filter(([key]) => key.startsWith('xingmang-ui-v2:video-studio:'))))
+    const before = await legacy()
+    assert.deepEqual(Object.keys(before).sort(), ['xingmang-ui-v2:video-studio:xm-account:17', 'xingmang-ui-v2:video-studio:xm-account:17:drafts'])
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-item-video-legacy-current').waitFor()
+    // 手头那一条排最前面（它在老版本里正开着），草稿箱里的按当时放进去的时间。
+    assert.deepEqual(await createRows(page), ['create-item-video-legacy-current', 'create-item-video-fixture-draft-sea'])
+    assert.equal(await page.getByTestId('create-item-video-legacy-current').textContent(), '橘猫回家2 个镜头 · 已生成 0 段')
+    assert.equal(await page.getByTestId('create-item-video-fixture-draft-sea').textContent(), '海边日落，镜头慢慢拉远还没写分镜')
+    await page.waitForFunction(() => window.v2Test.videoFilms().index !== null)
+    assert.deepEqual((await page.evaluate(() => window.v2Test.videoFilms())).ids.sort(), ['fixture-draft-sea', 'legacy-current'])
+    assert.deepEqual(await legacy(), before)
+    // 以前做过东西的，头一次看到这一页时说一句三页合了。
+    await page.getByTestId('create-intro').waitFor()
+    // 点开抄过来的那一条：分镜原样在。
+    await page.getByTestId('create-item-video-legacy-current').click()
+    await page.getByTestId('video-shot-prompt-1').waitFor()
+    assert.equal(await page.getByTestId('video-shot-prompt-1').inputValue(), '橘猫跳上台阶')
+    assert.deepEqual(await legacy(), before)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a historical account gets conversations and canvas projects on the create page, without films', async () => {
+  const page = await openCreate('sub2api=1&canvasProjects=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-item-canvas-fixture-canvas-poster').waitFor()
+    assert.deepEqual(await page.getByRole('group', { name: '只看哪一类', exact: true }).getByRole('button').allTextContents(), ['全部', '对话', '画布'])
+    await page.getByTestId('create-start').waitFor()
+    assert.equal(await page.getByTestId('create-card-video').count(), 0)
+    assert.equal(await page.getByTestId('create-card-canvas').count(), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('searching for the old page names leads to the create page, and the canvas window opens straight from the search box', async () => {
+  const page = await openCreate('videoFilms=1')
+  try {
+    const box = page.getByRole('searchbox', { name: '搜索或跳转' })
+    await page.keyboard.press('Control+k')
+    await box.fill('画布')
+    assert.equal((await page.getByTestId('command-result-page:chat').textContent()).trim(), '创作')
+    assert.equal(await page.getByTestId('command-result-page:canvas').count(), 0)
+    assert.equal((await page.getByTestId('command-result-action:open-canvas').textContent()).trim(), '打开画布窗口')
+    await page.getByTestId('command-result-action:open-canvas').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openCanvasWindow'))
+    // 开画布窗口不换页：还在首页。
+    assert.equal(await page.getByTestId('nav-home').getAttribute('aria-current'), 'page')
+
+    await page.keyboard.press('Control+k')
+    await box.fill('视频剪辑')
+    assert.equal(await page.getByTestId('command-result-page:video').count(), 0)
+    await page.getByTestId('command-result-page:chat').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="nav-chat"]')?.getAttribute('aria-current') === 'page')
+    await page.getByTestId('create-item-video-fixture-film-cat').waitFor()
     await clean(page)
   } finally { await page.close() }
 })

@@ -1217,11 +1217,11 @@ test('an empty chat says where conversations go, and its examples only fill the 
   const page = await open()
   try {
     await ready(page)
-    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '聊过的对话会存在这里')
+    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '还没做过东西。在右边的框里说一句试试。')
     assert.equal(await page.getByText('还没有对话', { exact: true }).count(), 0)
     const empty = page.getByTestId('chat-empty')
-    await empty.getByRole('heading', { name: '有什么想问的？', exact: true }).waitFor()
-    await empty.getByText('不开终端，直接和模型对话。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    await empty.getByRole('heading', { name: '想做点什么？', exact: true }).waitFor()
+    await empty.getByText('问问题、写东西、画图，都在下面这一个框里说。额度与工具共用同一个账号。', { exact: true }).waitFor()
     assert.deepEqual(await empty.getByRole('button').allTextContents(), ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
     await page.getByTestId('chat-example-3').click()
     const input = page.getByTestId('chat-composer-input')
@@ -1234,7 +1234,7 @@ test('an empty chat says where conversations go, and its examples only fill the 
     assert.equal(await empty.getByRole('button').count(), 0)
     await input.fill('')
     await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
-    await empty.getByText('不开终端，直接和模型对话。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    await empty.getByText('问问题、写东西、画图，都在下面这一个框里说。额度与工具共用同一个账号。', { exact: true }).waitFor()
     assert.equal(await empty.getByRole('button').count(), 0, 'the examples are questions, not pictures')
   } finally { await page.close() }
 })
@@ -1420,7 +1420,7 @@ test('the conversation list groups by day, finds by title and clears everything 
   state.draftConversation.draft = '还没发出去的话'
   const page = await open('', { [storedChatKey]: JSON.stringify(state) })
   try {
-    const list = page.getByRole('navigation', { name: '已保存的对话' })
+    const list = page.getByRole('navigation', { name: '做过的东西列表' })
     await list.getByTestId('chat-conversation-older').waitFor()
     assert.deepEqual(await list.locator('.chat-conversation-day').allTextContents(), ['今天', '昨天', '更早'])
     assert.equal(await page.getByTestId('chat-conversation-today').textContent(), '今天聊的2 条消息')
@@ -1429,7 +1429,7 @@ test('the conversation list groups by day, finds by title and clears everything 
     await page.getByTestId('chat-conversation-search').fill('昨天')
     assert.deepEqual(await list.locator('.chat-conversation-select strong').allTextContents(), ['昨天聊的'])
     await page.getByTestId('chat-conversation-search').fill('没有这个')
-    assert.equal(await page.getByTestId('chat-conversation-search-empty').textContent(), '没有找到「没有这个」相关的对话')
+    assert.equal(await page.getByTestId('chat-conversation-search-empty').textContent(), '没有找到「没有这个」相关的内容')
     await page.getByTestId('chat-conversation-search').fill('')
     await page.getByRole('button', { name: '「今天聊的」更多操作', exact: true }).click()
     const menu = page.getByRole('menu', { name: '对话操作', exact: true })
@@ -1471,7 +1471,7 @@ test('a conversation can be renamed and pinned to the top, and both survive a re
   state.activeId = 'today'
   const page = await open('', { [storedChatKey]: JSON.stringify(state) })
   try {
-    const list = page.getByRole('navigation', { name: '已保存的对话' })
+    const list = page.getByRole('navigation', { name: '做过的东西列表' })
     await list.getByTestId('chat-conversation-older').waitFor()
     const menu = page.getByRole('menu', { name: '对话操作', exact: true })
     await page.getByRole('button', { name: '「很久以前聊的」更多操作', exact: true }).click()

@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { pageRegistry, retiredPageAlias, settingsPageAlias } from '../../registry/pages'
+import { createPageAlias, pageRegistry, retiredPageAlias, settingsPageAlias } from '../../registry/pages'
 import { tutorialTopics, tutorialTopicsFor } from '../../registry/tutorials'
 import { chatParametersSection, maximumTutorialResults, searchCommands } from './command-search'
 
-// 游戏加速、备份、更新并进了设置（v4 批09），「安装卸载」拆掉了（批10）：它们还在页面表里（老入口靠它换到
-// 新去处），但不再单独出页面结果。
-const searchablePages = pageRegistry.filter((page) => settingsPageAlias(page.id) === null && retiredPageAlias(page.id) === null)
+// 游戏加速、备份、更新并进了设置（v4 批09），「安装卸载」拆掉了（批10），画布、视频剪辑并进了「创作」（融合第 1 步）：
+// 它们还在页面表里（老入口靠它换到新去处），但不再单独出页面结果。
+const searchablePages = pageRegistry.filter((page) => settingsPageAlias(page.id) === null && retiredPageAlias(page.id) === null && createPageAlias(page.id) === null)
 
 describe('searchCommands', () => {
   it('lists the everyday actions, then every page, when nothing is typed', () => {
@@ -13,7 +13,7 @@ describe('searchCommands', () => {
     expect(empty.filter((item) => item.group === 'page').map((item) => item.page)).toEqual(searchablePages.map((page) => page.id))
     expect(empty.map((item) => item.group)).toEqual([...empty.filter((item) => item.group === 'action').map(() => 'action'), ...searchablePages.map(() => 'page')])
     expect(searchCommands('').filter((item) => item.group === 'page').every((item) => item.section === undefined)).toBe(true)
-    expect(searchCommands('').filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['充值', '查看用量账单', '开始检查', '帮助与客服', '运行日志', '聊天参数设置'])
+    expect(searchCommands('').filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['充值', '查看用量账单', '开始检查', '帮助与客服', '运行日志', '打开画布窗口', '聊天参数设置'])
   })
 
   it('offers switching to the other theme only, and sign-out only while signed in', () => {
@@ -50,7 +50,7 @@ describe('searchCommands', () => {
 
   it('leaves out the top-up and usage actions when the account cannot open those tabs', () => {
     const labels = searchCommands('', { accountTabVisible: (tab) => tab !== 'recharge' && tab !== 'usage' }).filter((item) => item.group === 'action').map((item) => item.label)
-    expect(labels).toEqual(['开始检查', '帮助与客服', '运行日志', '聊天参数设置'])
+    expect(labels).toEqual(['开始检查', '帮助与客服', '运行日志', '打开画布窗口', '聊天参数设置'])
   })
 
   it('opens the chat parameters dialog from the action group, and leaves it out when chat is not on this computer', () => {
@@ -62,6 +62,26 @@ describe('searchCommands', () => {
 
   it('still finds every page by its own name first', () => {
     for (const page of searchablePages) expect(searchCommands(page.label)[0]).toMatchObject({ group: 'page', page: page.id })
+  })
+
+  // 融合第 1 步（yoyo 回「融合改」）：侧栏的「聊天」「画布」「视频剪辑」并成「创作」，搜老名字和老说法都到「创作」。
+  it('finds the create page by the old names of chat, canvas and the video studio', () => {
+    for (const word of ['创作', '聊天', '画布', '视频剪辑', '生图', '剪辑', '分镜', '对话', '工作流']) {
+      expect(searchCommands(word).find((item) => item.group === 'page'), word).toEqual({ key: 'page:chat', group: 'page', label: '创作', page: 'chat' })
+    }
+    // 两个老页面不再单独出结果。
+    for (const word of ['画布', '视频剪辑', '']) expect(searchCommands(word).some((item) => item.group === 'page' && (item.page === 'canvas' || item.page === 'video')), word).toBe(false)
+  })
+
+  // 侧栏原来点一下就开画布窗口；并进「创作」以后，搜「画布」多一条「打开画布窗口」，选它还是一步。
+  it('offers opening the canvas window straight from a search for the canvas', () => {
+    const hits = searchCommands('画布')
+    expect(hits.filter((item) => item.group === 'page' || item.group === 'action')).toEqual([
+      { key: 'page:chat', group: 'page', label: '创作', page: 'chat' },
+      { key: 'action:open-canvas', group: 'action', label: '打开画布窗口', page: 'canvas' },
+    ])
+    expect(searchCommands('工作流').some((item) => item.key === 'action:open-canvas')).toBe(true)
+    expect(searchCommands('画布', { pageVisible: (page) => page !== 'canvas' }).some((item) => item.key === 'action:open-canvas')).toBe(false)
   })
 
   it('finds the cards that moved into settings by their old page names', () => {

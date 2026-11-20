@@ -1,8 +1,9 @@
-import { Archive, BookOpen, Clapperboard, Clock, Flag, Globe2, Home, Infinity as InfinityIcon, MessageSquare, Package, Plug, RefreshCw, Settings, Sparkles, Star, User, Wrench, Zap, type LucideIcon } from 'lucide-react'
+import { Archive, BookOpen, Clapperboard, Clock, Flag, Globe2, Home, Infinity as InfinityIcon, Package, Plug, RefreshCw, Settings, Sparkles, Star, User, WandSparkles, Wrench, Zap, type LucideIcon } from 'lucide-react'
 
 export const pages = [
   { id: 'home', label: '首页', icon: 'home', group: 'daily', template: 'T5', testId: 'page-home' },
-  { id: 'chat', label: '聊天', icon: 'message-square', group: 'daily', template: '专用', testId: 'page-chat' },
+  // 聊天、画布、视频剪辑合成的一页（融合第 1 步）。id 和 testId 没换：记着上次停在哪一页的、托盘、旧测试都还叫它 chat。
+  { id: 'chat', label: '创作', icon: 'wand-sparkles', group: 'daily', template: '专用', testId: 'page-chat' },
   { id: 'sessions', label: '记录', icon: 'clock', group: 'daily', template: 'T3', testId: 'page-sessions' },
   { id: 'canvas', label: '画布', icon: 'infinity', group: 'daily', template: '独立窗口', testId: 'nav-canvas' },
   { id: 'video', label: '视频剪辑', icon: 'clapperboard', group: 'daily', template: 'T1', testId: 'page-video' },
@@ -23,7 +24,7 @@ export const pages = [
 export type PageId = typeof pages[number]['id'];
 export type PageGroup = 'daily' | 'extend' | 'maintain' | 'account'
 export interface PageDefinition { id: PageId; label: string; icon: LucideIcon; group: PageGroup; testId: string; external?: boolean }
-const pageIcons: Record<PageId, LucideIcon> = { home: Home, chat: MessageSquare, sessions: Clock, canvas: InfinityIcon, video: Clapperboard, acceleration: Globe2, featured: Star, mcp: Plug, skills: Sparkles, plugins: Package, tutorial: BookOpen, health: Zap, maintenance: Wrench, backups: Archive, feedback: Flag, updates: RefreshCw, settings: Settings, account: User }
+const pageIcons: Record<PageId, LucideIcon> = { home: Home, chat: WandSparkles, sessions: Clock, canvas: InfinityIcon, video: Clapperboard, acceleration: Globe2, featured: Star, mcp: Plug, skills: Sparkles, plugins: Package, tutorial: BookOpen, health: Zap, maintenance: Wrench, backups: Archive, feedback: Flag, updates: RefreshCw, settings: Settings, account: User }
 export const pageRegistry: readonly PageDefinition[] = pages.map((page) => ({ id: page.id, label: page.label, icon: pageIcons[page.id], group: page.group as PageGroup, testId: page.testId, external: page.id === 'canvas' }))
 /**
  * v4 起游戏加速、备份、更新三页并进设置（第 9 批），页面 id 留作别名：托盘、系统通知、
@@ -44,14 +45,23 @@ export type RetiredPageAlias = keyof typeof retiredPageAliases
 export function retiredPageAlias(page: PageId): typeof retiredPageAliases[RetiredPageAlias] | null {
   return page === 'maintenance' ? retiredPageAliases[page] : null
 }
+/**
+ * 聊天、画布、视频剪辑合成了「创作」一页（融合第 1 步）。「画布」「视频剪辑」两个页面 id 留着：教程、引导、旧测试
+ * 还叫它们。「视频剪辑」落到「创作」里最近那一条视频上；「画布」照旧直接开画布窗口（useAppNavigation）。
+ * 两个都不进侧栏、不单独出搜索结果，说法挪进了「创作」。
+ */
+export const createPageAliases = { canvas: 'chat', video: 'chat' } as const;
+export type CreatePageAlias = keyof typeof createPageAliases
+export function createPageAlias(page: PageId): typeof createPageAliases[CreatePageAlias] | null {
+  return page === 'canvas' || page === 'video' ? createPageAliases[page] : null
+}
 /** 顶部搜索用的常用说法，界面上不显示；Record 漏页是编译错。别名页不单独出结果，说法挪进了它们的新去处。 */
-export const pageSearchKeywords: Record<Exclude<PageId, SettingsPageAlias | RetiredPageAlias>, readonly string[]> = {
+export const pageSearchKeywords: Record<Exclude<PageId, SettingsPageAlias | RetiredPageAlias | CreatePageAlias>, readonly string[]> = {
   // v4 起工具的安装、更新、回到推荐版本、重新安装、卸载都在首页卡片上；余额卡上有还能用几天。
   home: ['主页', '我的工具', '打开工具', '配置', '换模型', '工具卡片', '接着上次', '还能用几天', '更新工具', '回到推荐版本', '退回版本', '重新安装', '卸载工具', '装', '安装', '删', '卸载', '重装', '下载'],
-  chat: ['对话', '问答', '提问', '生图', '画图', '分组', '模型'],
+  // 老名字「聊天」「画布」「视频剪辑」和它们原来的说法都落到这一页。
+  chat: ['聊天', '对话', '问答', '提问', '生图', '画图', '分组', '模型', '画布', '工作流', '视频剪辑', '视频', '剪视频', '剪辑', '生成视频', '一句话出片', '分镜', '短视频', '拼视频', '字幕'],
   sessions: ['历史', '会话', '聊天记录', '接着聊'],
-  canvas: ['画图', '生图', '工作流'],
-  video: ['视频', '剪视频', '剪辑', '生成视频', '一句话出片', '分镜', '短视频', '拼视频', '字幕'],
   featured: ['推荐', '好用的', '扩展推荐', '星芒精选'],
   // 入口改了名、页签合了页，旧说法照样搜得到。
   mcp: ['MCP', '外部工具', '自定义连接', '添加连接', '连接'],

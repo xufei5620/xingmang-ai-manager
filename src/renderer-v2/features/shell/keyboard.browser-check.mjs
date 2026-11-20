@@ -274,7 +274,7 @@ test('switch account found from the command palette lands on the current-login b
   } finally { await page.close() }
 })
 
-// KB-5：聊天页去过一次就藏着挂在正文最前面，它的「搜索对话」永远排第一；原来按「/」取的是它，
+// KB-5：「创作」页去过一次就藏着挂在正文最前面，它的「搜索做过的东西」永远排第一；原来按「/」取的是它，
 // 聚焦不上又把「/」吞了，别的页按「/」都没反应。
 async function pressSlashFromPage(page) {
   await page.getByTestId('page-viewport').focus()
@@ -297,7 +297,7 @@ test('pressing / focuses the search box of the page in front, also after the cha
   try {
     await page.getByTestId('nav-chat').click()
     await page.getByTestId('chat-conversation-search').waitFor()
-    assert.deepEqual(await pressSlashFromPage(page), { testId: 'chat-conversation-search', label: '搜索对话', id: '', value: '', prevented: true })
+    assert.deepEqual(await pressSlashFromPage(page), { testId: 'chat-conversation-search', label: '搜索做过的东西', id: '', value: '', prevented: true })
 
     await page.getByTestId('nav-tutorial').click()
     await page.getByTestId('page-tutorial').waitFor()

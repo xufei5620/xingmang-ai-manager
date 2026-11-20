@@ -721,10 +721,16 @@ test('keeps the may-have-been-charged warning after reopening when the main proc
 test('makes every queued clip with the model the person confirmed, even if the model list settles on another one meanwhile', async () => {
   const { page, errors } = await openStudio()
   await writeStoryboard(page, '城市', { title: '城市', shots: [{ prompt: '一' }, { prompt: '二' }, { prompt: '三' }, { prompt: '四' }] })
-  await page.evaluate(() => {
-    const key = 'xingmang-ui-v2:video-studio:xm-account:7'
+  // 先等手上那一笔存完，再改存着的那份：不然关页面时补存的那一笔会把这里改的盖回去。
+  await page.evaluate(async () => {
+    await window.videoStudioPage.flush()
+    const key = 'fixture:video-studio-projects:xm-account:7'
     const stored = JSON.parse(localStorage.getItem(key))
-    stored.settings.videoModel = 'grok-imagine-video'
+    for (const [id, content] of Object.entries(stored.projects)) {
+      const file = JSON.parse(content)
+      file.project.settings.videoModel = 'grok-imagine-video'
+      stored.projects[id] = JSON.stringify(file)
+    }
     localStorage.setItem(key, JSON.stringify(stored))
   })
   await page.goto(`${base}/src/renderer-v2/features/video-studio/page-fixture.html?models=held`)
@@ -1233,67 +1239,113 @@ test('lays a picked song under the joined film, with the clip sound turned down 
   await page.close()
 })
 
-// 清单第 9 项：草稿箱。手上这一份「新建一条」以后进草稿箱，「接着做」换回来；草稿里没等到结果的那段，
-// 换回来时照重开页面那样拿请求号去接回，不再付一次钱。
-test('keeps several films in the draft box, switches between them and picks a waiting clip back up without paying again', async () => {
+// 融合第 1 步（总单 #79）：每条视频各存各的，一条一个文件。开着的那一条手上有事时不换别的；换回去时，
+// 没等到结果的那段照重开页面那样拿请求号去接回，不再付一次钱。
+test('keeps several films side by side, switches between them and picks a waiting clip back up without paying again', async () => {
   const { page, errors } = await openStudio()
+  const films = () => page.evaluate(() => window.videoStudioPage.films())
+  // 刚打开、什么都没写的那一条不列出来，也不存。
+  assert.deepEqual(await films(), [])
   await writeStoryboard(page, '咖啡馆', { title: '咖啡', shots: [{ prompt: '拉花' }, { prompt: '窗外' }] })
   await page.getByTestId('video-generate-all').click()
   await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
   await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
   const [first, second] = await page.evaluate(() => window.videoStudioPage.pendingClips())
-  // 生成着的时候不能换：出好的片段要挂回这一份。
-  assert.equal(await page.getByTestId('video-new').isDisabled(), true, 'no new film while clips are on their way')
+  // 生成着的时候不能换：出好的片段要挂回这一条。
+  assert.equal(await page.evaluate(() => window.videoStudioPage.newFilm()), 'busy', 'no new film while clips are on their way')
+  assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '拉花')
   await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#884400'), first.requestId)
   await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_1）。'), second.requestId)
   await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
   await page.getByTestId('video-shot-1').getByText('没生成出来').waitFor()
-  assert.equal(await page.getByTestId('video-drafts').count(), 0)
+  const [coffee] = await films()
+  assert.deepEqual({ name: coffee.name, progress: coffee.progress, open: coffee.open }, { name: '咖啡', progress: '2 个镜头 · 已生成 1 段', open: true })
 
-  await page.getByTestId('video-new').click()
-  await page.getByTestId('video-drafts').waitFor()
-  assert.equal(await page.getByTestId('video-idea-input').inputValue(), '')
+  // 新开一条：是空的，画面比例、模型这些照上一条；咖啡那一条原样留在列表里。
+  const sunsetId = await page.evaluate(() => window.videoStudioPage.newFilm())
+  assert.notEqual(sunsetId, coffee.id)
+  await page.waitForFunction(() => document.querySelector('[data-testid="video-idea-input"]')?.value === '')
   assert.equal(await page.getByTestId('video-shots').count(), 0)
-  assert.match(await page.getByTestId('video-draft-0').textContent(), /咖啡2 个镜头 · 已生成 1 段 · 今天 \d\d:\d\d/)
-  assert.equal(await page.getByTestId('video-drafts').locator('.xm-card-head small').textContent(), '1 份')
+  await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
+  assert.deepEqual((await films()).map((film) => film.name), ['咖啡'])
+  // 没写东西又点一次新建，还是这一条空的，不会攒出一堆空白的。
+  assert.equal(await page.evaluate(() => window.videoStudioPage.newFilm()), sunsetId)
 
   await writeStoryboard(page, '海边日落', { title: '日落', shots: [{ prompt: '海浪' }] })
-  // 重开页面：手上这一份和草稿箱都在；草稿里那段没等到结果的，在草稿箱里不去接。
+  assert.deepEqual((await films()).map((film) => [film.name, film.open]), [['日落', true], ['咖啡', false]])
+  // 重开页面：两条都在，接着的是最近动过的那一条；另一条里没等到结果的那段，没打开它就不去接。
   await page.reload()
   await page.getByTestId('video-shot-0').waitFor()
   assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '海浪')
-  assert.match(await page.getByTestId('video-draft-0').textContent(), /^咖啡/)
+  assert.deepEqual((await films()).map((film) => [film.name, film.progress, film.open]), [['日落', '1 个镜头 · 已生成 0 段', true], ['咖啡', '2 个镜头 · 已生成 1 段', false]])
   assert.deepEqual(await studioCalls(page, 'resume'), [])
 
-  // 「接着做」：咖啡换回来，日落进草稿箱；那段没等到的拿原来的请求号去接，不新提交。
-  await page.getByTestId('video-draft-open-0').click()
+  // 换回咖啡：那段没等到的拿原来的请求号去接，不新提交；日落原样留着。
+  assert.equal(await page.evaluate((id) => window.videoStudioPage.openFilm(id), coffee.id), 'opened')
   await page.waitForFunction((requestId) => window.videoStudioPage.pendingResumes().includes(requestId), second.requestId)
-  assert.deepEqual(await studioCalls(page, 'resume'), [second.requestId])
+  // 换一条视频是工作台重新挂一次，开发版 StrictMode 把发起接回的那一下跑两遍（同上面重开页面那几条），所以按请求号去重了比。
+  assert.deepEqual([...new Set(await studioCalls(page, 'resume'))], [second.requestId])
   assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '拉花')
   await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
   await page.getByTestId('video-shot-1').getByText('生成中').waitFor()
-  assert.match(await page.getByTestId('video-draft-0').textContent(), /^日落1 个镜头 · 已生成 0 段/)
-  assert.equal(await page.getByTestId('video-drafts').count(), 1)
-  assert.equal(await page.getByTestId('video-draft-0').count(), 1)
-  assert.equal(await page.getByTestId('video-draft-1').count(), 0)
-  // 接着的时候也不能换。
-  assert.equal(await page.getByTestId('video-draft-open-0').isDisabled(), true)
-  assert.equal(await page.getByTestId('video-new').isDisabled(), true)
+  // 光是打开看一眼不算动过它：日落还排在前面。
+  assert.deepEqual((await films()).map((film) => [film.name, film.open]), [['日落', false], ['咖啡', true]])
+  // 接着的时候也不能换、不能删它。
+  assert.equal(await page.evaluate((id) => window.videoStudioPage.openFilm(id), sunsetId), 'busy')
+  assert.equal(await page.evaluate(() => window.videoStudioPage.newFilm()), 'busy')
+  assert.equal(await page.evaluate((id) => window.videoStudioPage.removeFilm(id), coffee.id), false)
+  assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '拉花')
   await page.evaluate((requestId) => window.videoStudioPage.finishResume(requestId, '#004488'), second.requestId)
   await page.getByTestId('video-shot-1').getByText('已生成').waitFor()
   // 重开页面以后一单都没新提交：那段是接回来的。
   assert.deepEqual(await studioCalls(page, 'generate'), [])
 
-  // 删掉一份草稿要先确认。
-  await page.getByTestId('video-draft-remove-0').click()
-  await page.getByTestId('video-confirm').getByText('删掉这份草稿？').waitFor()
-  await page.getByTestId('video-confirm').getByRole('button', { name: '删掉' }).click()
-  await page.waitForFunction(() => !document.querySelector('[data-testid="video-drafts"]'))
+  // 改名只换名字；删掉没开着的那一条，开着的不受影响。
+  await page.evaluate((id) => window.videoStudioPage.renameFilm(id, '  晨间\n咖啡  '), coffee.id)
+  assert.equal(await page.evaluate((id) => window.videoStudioPage.removeFilm(id), sunsetId), true)
+  assert.deepEqual((await films()).map((film) => film.name), ['晨间 咖啡'])
+  assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '拉花')
   await page.reload()
   await page.getByTestId('video-shot-1').getByText('已生成').waitFor()
-  assert.equal(await page.getByTestId('video-drafts').count(), 0)
+  assert.deepEqual((await films()).map((film) => [film.name, film.progress, film.open]), [['晨间 咖啡', '2 个镜头 · 已生成 2 段', true]])
   assert.deepEqual(await studioCalls(page, 'resume'), [])
   assert.equal(await page.getByTestId('video-error').count(), 0)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 存不下的时候页面上要说，存得下了提醒自己收掉；没存下的那一笔下一次改动时补上。
+test('says so when a film cannot be saved on this computer, and saves it once writing works again', async () => {
+  const { page, errors } = await openStudio()
+  await page.evaluate(() => window.videoStudioPage.failProjectWrites(true))
+  await page.getByTestId('video-idea-input').fill('海边')
+  await page.getByTestId('video-storage-warning').getByText('这台电脑上存不下这份分镜，关掉软件以后要重新写。生成好的片段照样在作品库里。').waitFor()
+  await page.evaluate(() => window.videoStudioPage.failProjectWrites(false))
+  await page.getByTestId('video-idea-input').fill('海边日落')
+  await page.waitForFunction(() => !document.querySelector('[data-testid="video-storage-warning"]'))
+  await page.reload()
+  await page.waitForFunction(() => document.querySelector('[data-testid="video-idea-input"]')?.value === '海边日落')
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 打字时一个字一次改动，不必每个字都过一次主进程；发付费请求之前那一笔不等。
+test('saves typing in batches, and writes a clip request down at once before it is sent', async () => {
+  const { page, errors } = await openStudio()
+  const before = await page.evaluate(() => window.videoStudioPage.projectWrites())
+  await page.getByTestId('video-idea-input').pressSequentially('一只橘猫在下雨的街头找回家的路', { delay: 5 })
+  await page.evaluate(() => window.videoStudioPage.flush())
+  const typed = await page.evaluate(() => window.videoStudioPage.projectWrites()) - before
+  assert.ok(typed >= 1 && typed <= 4, `fifteen keystrokes should take a few writes, took ${typed}`)
+  await writeStoryboard(page, '橘猫', { title: '橘猫', shots: [{ prompt: '街头' }] })
+  await page.evaluate(() => window.videoStudioPage.flush())
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  // 请求发出去的那一刻，带着请求号的那一份已经落下了：这时候断电，重开还能拿它去接回。
+  const [pending] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  const stored = await page.evaluate(() => Object.values(JSON.parse(localStorage.getItem('fixture:video-studio-projects:xm-account:7')).projects).map((content) => JSON.parse(content).project.shots.map((shot) => shot.requestId)))
+  assert.deepEqual(stored, [[pending.requestId]])
   assert.deepEqual(errors, [])
   await page.close()
 })

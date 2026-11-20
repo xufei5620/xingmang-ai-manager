@@ -10,8 +10,9 @@ export interface ShellNavigationGroup {
 // 这里是会跟着滚的那一列；「充值」「设置」不在里面，钉在它下面、账号卡上面（Shell.tsx）。
 // 2026-11-06 加了画布、视频剪辑以后这列长了两行，窗口矮时最下面一组最先滚出去，
 // 「充值」原来排在那组第一个，跟着看不见（yoyo 回「充值改」）。
+// 2026-11-20 聊天、画布、视频剪辑合成「创作」一项（yoyo 回「融合改」）：画布项目和视频都在那一页左边那一列里。
 export const shellNavigation: readonly ShellNavigationGroup[] = [
-  { entries: ['home', 'chat', 'sessions', 'canvas', 'video'] },
+  { entries: ['home', 'chat', 'sessions'] },
   { label: '扩展', entries: ['featured', 'mcp', 'skills', 'plugins'] },
   { entries: ['tutorial', 'health', 'feedback'] },
 ]

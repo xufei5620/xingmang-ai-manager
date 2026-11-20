@@ -155,7 +155,9 @@ test('the page table and the sign-in path still match the renderer', async () =>
   // login-dialog is built from the dialog mode.
   assert.match(read('src/renderer-v2/features/auth/AuthFlow.tsx'), /: mode\}-dialog`/)
   for (const testId of ['sidebar-account-open', 'welcome-page', 'welcome-login', 'login-account', 'login-password',
-    'auth-agree', 'login-submit', 'start-guide', 'guide-pause', 'auth-source', 'auth-source-expand', 'nav-canvas', 'page-viewport']) {
+    'auth-agree', 'login-submit', 'start-guide', 'guide-pause', 'auth-source', 'auth-source-expand', 'page-viewport',
+    // The canvas window and a new film open from the start page of 「创作」.
+    'chat-conversation-new', 'chat-empty', 'create-card-canvas', 'create-card-video']) {
     assert.ok(sources.includes(`"${testId}"`) || sources.includes(`'${testId}'`), `${testId} is gone from renderer-v2`)
   }
 })

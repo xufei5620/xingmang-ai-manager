@@ -1,6 +1,4 @@
 import { AccountPage } from './pages-account'
-import { accountSiteId, sessionScope } from './account-context'
-import { VideoStudioPage } from './features/video-studio'
 import { ExtensionsPage, SessionsPage } from './pages-management'
 import { FeaturedPage } from './pages-featured'
 import {
@@ -59,8 +57,6 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   onLogout?: Parameters<typeof AccountPage>[0]['onLogout']
   /** 个人中心退出登录确认框里补的那句（有工具正在装、卸时）；缺省 = 只说原来那句。 */
   logoutNote?: Parameters<typeof AccountPage>[0]['logoutNote']
-  /** 状态文件关掉了视频剪辑（remote-features.ts）：整页换成「暂时停用」那一块；缺省 = 没关（旧行为）。 */
-  videoSuspended?: boolean
 }
 
 export function BusinessPage({
@@ -86,7 +82,6 @@ export function BusinessPage({
   onAccountTabChange,
   onLogout,
   logoutNote,
-  videoSuspended,
   ...actions
 }: BusinessPageProps) {
   if (page === 'account')
@@ -133,12 +128,7 @@ export function BusinessPage({
   if (page === 'feedback') return <FeedbackPage api={api} {...actions} />
   if (page === 'settings') return <SettingsPage api={api} {...actions} onBackupRestored={onBackupRestored} installedProviders={installedProviders} />
   if (page === 'tutorial') return <TutorialPage {...actions} topic={tutorialTopic} />
-  if (page === 'video') {
-    const site = accountSession ? accountSiteId(accountSession) : 'solov'
-    const access = !accountSession?.authenticated ? 'guest' : site === 'solov-api' ? 'unsupported' : videoSuspended ? 'suspended' : 'ready'
-    return <VideoStudioPage bridge={api} accountScope={accountSession ? sessionScope(accountSession) : 'guest'} site={site} access={access} active={actions.active}
-      onLogin={actions.openLogin ? () => actions.openLogin?.() : undefined} onOpenAccount={actions.navigate ? (tab) => actions.navigate?.('account', tab) : undefined} />
-  }
+  // 聊天、画布、视频剪辑合成了「创作」（融合第 1 步）：视频工作台在 features/create 里，跟对话同一页，不在这里画。
   return null
 }
 

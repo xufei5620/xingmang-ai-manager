@@ -101,7 +101,8 @@ import { resolveToolKeySyncFailure } from './features/tools/key-sync-failure'
 import './business.css'
 
 const BusinessPage = lazy(() => import('./pages-business').then((module) => ({ default: module.BusinessPage })))
-const ChatPage = lazy(() => import('./features/chat').then((module) => ({ default: module.ChatPage })))
+// 「创作」：聊天、画布、视频剪辑合成的一页（融合第 1 步），对话那一半还是 features/chat。
+const CreatePage = lazy(() => import('./features/create').then((module) => ({ default: module.CreatePage })))
 const AccelerationPage = lazy(() => import('./features/acceleration/AccelerationPage').then((module) => ({ default: module.AccelerationPage })))
 const pageLoading = <PageLoading />
 
@@ -266,7 +267,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (rescanFingerprint(toolbox.snapshot, toolbox.externalClients) === rescanBefore) toast.show('检测完了，工具和运行环境都没有变化', 'neutral')
   }, [rescanBefore, toast, toolbox.error, toolbox.externalClients, toolbox.externalError, toolbox.externalLoading, toolbox.loading, toolbox.snapshot])
   const {
-    page, setPage, chatScope, setChatScope, chatParametersPending, setChatParametersPending, visitedPages, settingsGroup, setSettingsGroup,
+    page, setPage, chatScope, setChatScope, chatParametersPending, setChatParametersPending, createVideoPending, setCreateVideoPending, visitedPages, settingsGroup, setSettingsGroup,
     accountTab, shownAccountTab, setShownAccountTab, tutorialTopic, settingsRequest, healthRequest, feedbackRequest, navigate, searchTutorial, startCheck,
   } = useAppNavigation({ app, perform, toast, accelerationAvailable, restoring, restoreRetrying, authenticated: session.authenticated, scope, setAuth, setGuide })
   // 设置页的「重看界面导览」：回到首页立刻重播一遍，同时把「还没看完」记进本机，
@@ -491,7 +492,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}${logoutChatImageNote()}`, label: '退出登录', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
-            {renderedChatScope === scope && <div key={chatMount} className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} onOpenAssets={() => void perform('打开素材库', app.openCanvasAssets)} /></Suspense></div>}
+            {renderedChatScope === scope && <div key={chatMount} className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><CreatePage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} onOpenAssets={() => void perform('打开素材库', app.openCanvasAssets)}
+              site={siteId} videoAccess={siteId === 'solov-api' ? 'unsupported' : featuresOff.includes('video-studio') ? 'suspended' : 'ready'} openVideo={createVideoPending} onVideoOpened={() => setCreateVideoPending(false)}
+              onOpenCanvas={() => void perform('打开画布', app.openCanvas)} onOpenCanvasProject={(projectId) => perform('打开画布', () => native.openCanvasProject(projectId))} /></Suspense></div>}
             {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsUsageTrend={accountSupports(session, 'supportsDashboardTrends')} supportsBilling={accountSupports(session, 'supportsBilling')} supportsKeys={session.authenticated && visibleAccountTab('keys', session)} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} subscriptionUnknown={subscriptionUnknown} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={visibleExternalClients(os, toolbox.externalClients)} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               toolRouteStatus={session.authenticated && siteId === 'solov' ? settings?.relayToolRouteStatus : undefined}
@@ -525,7 +528,6 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
                   updateAvailable={Boolean(update && !update.error && (update.phase === 'available' || update.phase === 'downloading' || update.phase === 'downloaded'))}
                   accelerating={acceleration.snapshot.state?.phase === 'active'}
-                  videoSuspended={featuresOff.includes('video-studio')}
                   onSettingsGroupChange={setSettingsGroup}
                   // 平台读回来之前按窗口所在系统猜：Linux 上不先挂一张加速卡再撤掉（同侧栏和顶部搜索那一份判断）。
                   accelerationCard={accelerationAvailable ? (shown) => <div data-testid="page-acceleration">

@@ -7,10 +7,10 @@
 | id | 标签 | Lucide 图标 | 分组 | 模板 | 命令面板 | testid |
 |---|---|---|---|---|---|---|
 | home | 首页 | home | daily | T5 | 跳转 | page-home |
-| chat | 聊天 | message-square | daily | 专用 | 跳转 | page-chat |
+| chat | 创作（2026-11-20 前叫聊天；聊天、画布、视频剪辑合成的一页） | wand-sparkles | daily | 专用 | 跳转（老名字「聊天」「画布」「视频剪辑」都搜得到） | page-chat |
 | sessions | 记录 | clock | daily | T3 | 跳转 | page-sessions |
-| canvas | 画布 ↗ | infinity | daily | 独立窗口 | 跳转 | nav-canvas |
-| video | 视频剪辑（2026-10-25 新增，历史账号登录时不出） | clapperboard | daily | T1 | 跳转 | page-video |
+| canvas | 画布 ↗（2026-11-20 并进「创作」，侧栏不出；`navigate('canvas')` 照旧开画布窗口） | infinity | daily | 独立窗口 | 不出页面结果；常用操作里有「打开画布窗口」 | —（`nav-canvas` 随侧栏那一项撤了） |
+| video | 视频剪辑（2026-10-25 新增；2026-11-20 并进「创作」，侧栏不出；`navigate('video')` 落到「创作」并接着最近那条视频，没有就新开一条） | clapperboard | daily | T1 | 不出 | —（工作台在 `create-video-pane` 里） |
 | acceleration | 网络加速（2026-10-21 前叫游戏加速） | globe-2 | daily | T5 | 跳转 | page-acceleration |
 | mcp | 外接工具 | plug | extend | T1 | 跳转 | page-mcp |
 | skills | 技能 | sparkles | extend | T1 | 跳转 | page-skills |

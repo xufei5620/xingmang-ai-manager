@@ -125,8 +125,8 @@ const actionIcons: Partial<Record<string, LucideIcon>> = {
 }
 const toolActionIcons: Partial<Record<CommandAction, LucideIcon>> = { openTool: Play, installTool: Download, configureTool: SlidersHorizontal }
 
-// 按「/」跳到的搜索框：只找正文里看得见、点得着的那个。聊天页去过一次就一直挂在正文最前面、只是藏起来，
-// 它的「搜索对话」排第一；取第一个就永远是它，focus() 一个藏起来的框不起作用，别的页按「/」也就没反应了。
+// 按「/」跳到的搜索框：只找正文里看得见、点得着的那个。「创作」页去过一次就一直挂在正文最前面、只是藏起来，
+// 它的「搜索做过的东西」排第一；取第一个就永远是它，focus() 一个藏起来的框不起作用，别的页按「/」也就没反应了。
 function pageSearchField(main: HTMLElement | null) {
   if (!main) return null
   return focusable(main).find((element): element is HTMLInputElement => element instanceof HTMLInputElement && element.matches('input[type="search"], input[aria-label*="搜索"]')) ?? null
