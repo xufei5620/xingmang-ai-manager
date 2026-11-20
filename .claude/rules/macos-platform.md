@@ -37,7 +37,7 @@ Windows 问「**低于 Administrator 的主体能不能写这里**」，因为�
 
 **终端固定用系统自带的 Terminal**（#57）：`launchMacosTerminal` 交给 `open -a` 的是绝对路径 `/System/Applications/Utilities/Terminal.app`，不按名字查（按名字查由 LaunchServices 决定开哪个程序，同名程序能顶替，等于 I14 在 macOS 上没落实）。最低系统是 macOS 13，那里的 Terminal 一定在这个位置、在只读系统卷上，所以不做回退，也不要加「找不到就按名字查」。
 
-**来源可信（codesign / Team ID）是与本条正交的另一条轴**，由 `macos-codex.ts` / `macos-grok.ts` / `macos-codex-app.ts` / `macos-claude.ts` 负责，不在这三个函数的职责内。前三者配私有暂存（`darwin-cli-staging.ts`），因为它们要在可变的版本链接树里绑定一次「选择」。OpenAI 的 provisioned 包（`bin/codex` 是一段固定的 sh 启动脚本，本体在 `CodexCLI.app` 里）要把**整个 `CodexCLI.app`** 抄进私有目录再核签名、再起：本体带受限 entitlements（`keychain-access-groups` 等），不在内嵌描述文件的那个 bundle 里运行就会被系统直接结束，只抄本体会打不开。启动脚本永远不跑，只核它和 OpenAI 原文一字不差；`macos-claude.ts` **刻意不暂存**：native claude 解析后就是一个普通文件，校验的路径就是交给 spawn 的路径，剩下的竞态属于同 uid 主体（不在防御模型内），而那个二进制有 200 MB 以上，每次会话复制一份不值得。
+**来源可信（codesign / Team ID）是与本条正交的另一条轴**，由 `macos-codex.ts` / `macos-grok.ts` / `macos-codex-app.ts` / `macos-claude.ts` 负责，不在这三个函数的职责内。前三者配私有暂存（`darwin-cli-staging.ts`），因为它们要在可变的版本链接树里绑定一次「选择」。OpenAI 的 provisioned 包（`bin/codex` 是一段固定的 sh 启动脚本，本体在 `CodexCLI.app` 里）要把**整个 `CodexCLI.app`** 抄进私有目录再核签名、再起：本体带受限 entitlements（`keychain-access-groups` 等），离开内嵌描述文件的那个 bundle 一起就被系统直接结束，只抄本体会打不开。启动脚本永远不跑，只核它和 OpenAI 原文一字不差；`macos-claude.ts` **刻意不暂存**：native claude 解析后就是一个普通文件，校验的路径就是交给 spawn 的路径，剩下的竞态属于同 uid 主体（不在防御模型内），而那个二进制有 200 MB 以上，每次会话复制一份不值得。
 
 **Mac 包没有麦克风、摄像头、录音的用途说明**（SP-2）：Electron 自带的那三条英文说明在 `electron-builder.config.cjs` 的 `macUnusedElectronUsageDescriptions` 里删掉了，`scripts/verify-macos-free-artifacts.cjs` 在打出来的包上核对它们不在。没写说明就碰这几样设备，macOS 不弹询问框，直接结束碰它的进程（星芒直接拉起的子进程也算在星芒头上）。所以要加语音输入、拍照这类功能，同一个改动里先把中文说明加回去，再放开 `main.ts` 的权限白名单。蓝牙两条刻意留着：网页蓝牙不过那张白名单，删了任何网页都能让星芒被结束，理由写在配置旁边。
 
