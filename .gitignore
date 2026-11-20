@@ -10,6 +10,8 @@ dist-third-party/
 dist-sourcemaps/
 release/
 release-*/
+# 打包时按 win-unpacked 写出的安装包顶层条目名单（scripts/windows-installer-package-entries.cjs）
+build/installer-package-entries.nsh
 .project-surgeon.bak.*/
 .project-surgeon/
 .workflow/

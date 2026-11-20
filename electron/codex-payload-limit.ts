@@ -55,6 +55,11 @@ const yearDirectoryPattern = /^\d{4}$/
 const monthOrDayDirectoryPattern = /^\d{2}$/
 /** 处理过、提醒过的会话记录多少个、多久。 */
 const maxRememberedSessions = 64
+/**
+ * 线路 1 上报 413、这一回没换成（线路 2 这会儿没查通、Codex 的配置没跟过去）的对话，隔这么久再报才再试一次
+ * （R29-02）：这两样多半一会儿就好，不能记成处理过就再也不管；也不能客户每发一句就查一次线路、弹一次提示。
+ */
+export const codexPayloadRetryMs = 2 * 60_000
 const rememberedSessionMs = 30 * 24 * 60 * 60_000
 
 const sessionIdPattern = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i
@@ -461,7 +466,8 @@ function pruneSessions(records: Record<string, number>, at: number): Record<stri
 
 /**
  * 认出一次 413 以后怎么办（需求三）：同一个会话在每条线路上只处理、只提示一次；线路 2 上提示过新开对话的，
- * 回到线路 1 再报也不管（线路 2 都发不出去，线路 1 更不行，再换一次线只会让客户白重开一次 Codex）。
+ * 回到线路 1 再报也不管（线路 2 都发不出去，线路 1 更不行，再换一次线只会让客户白重开一次 Codex）。线路 1 上
+ * 线路 2 没查通、Codex 没跟过去的不算处理过，隔 codexPayloadRetryMs 再报再试一次。
  * - 地址是线路 2：已经超过线路 2 的上限，只提示新开对话。
  * - 地址是线路 1：设置里选了只用线路 1，只提示；「自动」的站线路 2 查得通就换过去、让 Codex 跟过去、提示重开，
  *   查不通只提示；已经在线路 2 上了（换线以前开的对话），提示重开。
@@ -477,6 +483,11 @@ export function createCodexPayloadLimitService(dependencies: CodexPayloadLimitDe
     state = { handled: {}, handledDirect: {}, warned: {} }
   }
   let writing: Promise<void> = Promise.resolve()
+  /**
+   * 线路 1 上这一回没换成的对话：会话 ID → 这个时刻以前再报不管（codexPayloadRetryMs）。只在内存里，重启后再报就再试；
+   * 过了时刻也留着，提前提醒那条认它（这个对话已经超过线路 1 的上限，不该再说「快到了」）。
+   */
+  const retryAfter = new Map<string, number>()
 
   function log(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void {
     try { dependencies.log?.(level, event, message, detail) } catch { /* 记日志失败不影响别的 */ }
@@ -485,17 +496,33 @@ export function createCodexPayloadLimitService(dependencies: CodexPayloadLimitDe
   /** 线路 2 上提示过新开对话的，哪条线路再报都不管（见上）。 */
   function seen(sessionId: string, line: RelayEndpointId): boolean {
     if (Object.hasOwn(state.handledDirect, sessionId)) return true
-    return line === 'primary' && Object.hasOwn(state.handled, sessionId)
+    if (line !== 'primary') return false
+    if (Object.hasOwn(state.handled, sessionId)) return true
+    const until = retryAfter.get(sessionId)
+    return until !== undefined && now() < until
   }
 
-  function record(field: keyof CodexPayloadState, sessionId: string): void {
-    const at = now()
-    state = { ...state, [field]: pruneSessions({ ...state[field], [sessionId]: at }, at) }
+  function persist(): void {
     const copy = copyState(state)
     // 一个写完再写下一个。存不下最多重启以后同一个对话再提示一次。
     writing = writing.then(() => dependencies.writeState(copy)).catch(() => {
       log('warn', 'codex-payload.persist-failed', '处理过的 Codex 对话没有记下来，重启后可能再提示一次', {})
     })
+  }
+
+  function record(field: keyof CodexPayloadState, sessionId: string): void {
+    const at = now()
+    state = { ...state, [field]: pruneSessions({ ...state[field], [sessionId]: at }, at) }
+    persist()
+  }
+
+  // 这一回没换成：不算处理过，隔一阵再报再试（R29-02）。处理的那一阵先记成处理过，同时来的两条照旧只处理一次。
+  function allowRetry(sessionId: string): void {
+    state = { ...state, handled: Object.fromEntries(Object.entries(state.handled).filter(([recorded]) => recorded !== sessionId)) }
+    persist()
+    retryAfter.delete(sessionId)
+    retryAfter.set(sessionId, now() + codexPayloadRetryMs)
+    while (retryAfter.size > maxRememberedSessions) retryAfter.delete(retryAfter.keys().next().value!)
   }
 
   function notify(kind: CodexPayloadNoticeKind): void {
@@ -524,6 +551,7 @@ export function createCodexPayloadLimitService(dependencies: CodexPayloadLimitDe
       if (endpoint.siteId !== activeSiteId || seen(event.sessionId, endpoint.endpointId)) return
       record(endpoint.endpointId === 'direct' ? 'handledDirect' : 'handled', event.sessionId)
       const action = await decide(endpoint.siteId, endpoint.endpointId)
+      if (action === 'unreachable' || action === 'unfollowed') allowRetry(event.sessionId)
       if (action !== 'switched' && action !== 'already') notify(action)
       log('info', 'relay.route.payload-too-large', action === 'switched'
         ? 'Codex 有个对话太大、线路1发不出去，已换到线路2'
@@ -539,7 +567,7 @@ export function createCodexPayloadLimitService(dependencies: CodexPayloadLimitDe
     },
     largeSession(event: CodexLargeSessionEvent): void {
       if (dependencies.warnNearing === false || event.rolloutBytes < codexPayloadNearingBytes) return
-      if (seen(event.sessionId, 'primary') || Object.hasOwn(state.warned, event.sessionId)) return
+      if (seen(event.sessionId, 'primary') || retryAfter.has(event.sessionId) || Object.hasOwn(state.warned, event.sessionId)) return
       const siteId = dependencies.activeSiteId()
       if (!isRouteSite(siteId) || !dependencies.codexOnRelay() || dependencies.toolLine(siteId) !== 'primary') return
       record('warned', event.sessionId)

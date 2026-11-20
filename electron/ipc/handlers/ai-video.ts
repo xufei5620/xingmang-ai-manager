@@ -6,8 +6,9 @@ import { BrowserWindow, dialog, type OpenDialogOptions, type WebContents } from 
 import { assetThumbnailUrl } from '../../asset-thumbnail'
 import { BoundedOperationQueue } from '../../bounded-operation-queue'
 import { CanvasGenerationAdmission } from '../../canvas-generation-admission'
-import type { AiOperationProgressObserver, AiOperationProgressStage } from '../../ai-operation-progress'
+import type { AiOperationProgressStage } from '../../ai-operation-progress'
 import type { AiStoredVideoAsset } from '../../ai-video-asset-store'
+import type { AiVideoProgressObserver } from '../../ai-video-service'
 import { ipcEventChannels, type AiVideoClip, type AiVideoProgressEvent, type VideoStudioMusic } from '../../ipc-contract'
 import { videoStudioOffMessage } from '../../remote-features'
 import { buildVideoStudioPlanMessages, parseVideoStudioPlanJson, videoStudioMusicUnreadableMessage } from '../../video-studio-plan'
@@ -27,6 +28,9 @@ const planTemperature = 0.7
 // 读片段、存成片一次搬一整段视频（最多 512 MB）。页面本来就一段一段读、拼完才存一次，主进程这边再按窗口排成
 // 一队、一次只搬一段：页面出错或被投毒时连发，也撑不爆主进程内存。排队的再多就直接拒，正常用碰不到。
 const maximumQueuedClipTransfers = 12
+// 主进程没记下那一单时，页面替它记的那一笔几时落盘（见 createAiVideoProgressForwarder）。页面收到消息到写进
+// localStorage 只要几毫秒，留够余量，又远短于 Chromium 自己攒着不落盘的那几秒。
+const unrecordedFlushDelayMs = 500
 
 // 写进作品库失败（磁盘满、没权限）时音频库那句原话照说；别的（格式不认、太大、读的时候文件变了）对客户来说
 // 都是「这首歌用不了」，换成页面上同一句。
@@ -70,12 +74,21 @@ function sendProgress(sender: WebContents, event: AiVideoProgressEvent): void {
   if (!sender.isDestroyed()) sender.send(ipcEventChannels.onAiVideoProgress, event)
 }
 
-export function createAiVideoProgressForwarder(sender: WebContents, requestId: string): AiOperationProgressObserver {
+export function createAiVideoProgressForwarder(sender: WebContents, requestId: string): AiVideoProgressObserver {
   let stage: AiOperationProgressStage = 'processing'
   return {
     onStage(next) {
       stage = next
       sendProgress(sender, { requestId, stage })
+    },
+    onSubmissionUnrecorded() {
+      sendProgress(sender, { requestId, stage, unrecorded: true })
+      // 页面收到就同步写进 localStorage，可 Chromium 要攒几秒才落盘；主进程这时已经记不下了，这几秒里强退，
+      // 重开以后两边都查不到这一单。过一会儿再让它落一次盘（同 flushPageStorage，只是尽力）。
+      const timer = setTimeout(() => {
+        if (!sender.isDestroyed()) flushPageStorage(sender)
+      }, unrecordedFlushDelayMs)
+      timer.unref?.()
     },
     onProgress(update) {
       sendProgress(sender, {

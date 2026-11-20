@@ -430,14 +430,49 @@ describe('video studio project', () => {
     expect(videoStudioUnconfirmedIndexes(restored!, ['shot-3'])).toEqual([])
 
     // Being paid for again under the same id: reopening picks it back up, and the main process answers for the earlier attempt.
+    // It may have nothing on that attempt (it could not write it down either), so the shot carries the page's own note:
+    // nothing found then still reads as unclear, not as never sent (总单 #42).
     const retrying = restoreVideoStudioProject(JSON.parse(JSON.stringify(serializeVideoStudioProject({
       ...unclear, shots: [{ ...unclear.shots[0], status: 'generating', error: undefined }],
     }))))
-    expect(retrying?.shots).toEqual([{ id: 'shot-1', prompt: '雨夜街头的橘猫', caption: '下雨了', requestId: 'lost', status: 'generating' }])
+    expect(retrying?.shots).toEqual([{ id: 'shot-1', prompt: '雨夜街头的橘猫', caption: '下雨了', requestId: 'lost', unrecorded: true, status: 'generating' }])
 
     // The mark means nothing without the request it belongs to.
     const orphan = restoreVideoStudioProject({ version: 1, settings: defaultVideoStudioSettings(), title: '', shots: [{ id: 'x', prompt: '一', caption: '', unconfirmed: true }] })
     expect(orphan?.shots).toEqual([{ id: 'x', prompt: '一', caption: '', status: 'idle' }])
+  })
+
+  // 总单 #42（11-18 复核 N2）：交出去前主进程没记下的那一单，页面替它记着；重开以后照样先去接，接不回来再按结果不明提醒。
+  it('keeps the page note of a submission the main process could not write down across a reopen', () => {
+    const project = planned()
+    const running: VideoStudioProject = {
+      ...project,
+      shots: [
+        { ...project.shots[0], status: 'generating', requestId: 'unrecorded', unrecorded: true, stage: 'processing', progress: 10 },
+        { ...project.shots[1], status: 'generating', requestId: 'recorded', stage: 'processing' },
+      ],
+    }
+    const restored = restoreVideoStudioProject(JSON.parse(JSON.stringify(serializeVideoStudioProject(running))))
+    expect(restored?.shots).toEqual([
+      { id: 'shot-1', prompt: '雨夜街头的橘猫', caption: '下雨了', requestId: 'unrecorded', unrecorded: true, status: 'generating' },
+      { id: 'shot-2', prompt: '橘猫穿过人群', caption: '', requestId: 'recorded', status: 'generating' },
+    ])
+    expect(videoStudioUnconfirmedIndexes(restored!, ['shot-1', 'shot-2'])).toEqual([])
+
+    // A shot already settled as unclear keeps that, and the note means nothing without the request it belongs to.
+    const stored = restoreVideoStudioProject({
+      version: 1, settings: defaultVideoStudioSettings(), title: '',
+      shots: [
+        { id: 'a', prompt: '一', caption: '', requestId: 'lost', unconfirmed: true, unrecorded: true },
+        { id: 'b', prompt: '二', caption: '', unrecorded: true },
+        { id: 'c', prompt: '三', caption: '', requestId: 'odd', unrecorded: 'yes' },
+      ],
+    })
+    expect(stored?.shots).toEqual([
+      { id: 'a', prompt: '一', caption: '', requestId: 'lost', unconfirmed: true, error: aiVideoUnconfirmedSubmissionMessage, status: 'failed' },
+      { id: 'b', prompt: '二', caption: '', status: 'idle' },
+      { id: 'c', prompt: '三', caption: '', requestId: 'odd', status: 'generating' },
+    ])
   })
 
   it('reads back a damaged record without trusting it', () => {

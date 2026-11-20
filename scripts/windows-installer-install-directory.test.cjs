@@ -127,6 +127,68 @@ test('the whole install directory is only wiped on the no-manifest fallback path
   assert.match(remove.slice(remove.indexOf('RMDir /r $INSTDIR')), /^\s*Return$/m)
 })
 
+// 11-18 复核 D05：清单以前是安装目录里看到的全部，客户自己放进去的文件也被记成软件文件，
+// 下一次升级就被挪走删掉。真装真升级的那一半在 scripts/windows-upgrade-user-files-smoke.ps1。
+test('the manifest records only what the package itself carries', () => {
+  const contents = readCustomInclude()
+  const install = bodyOf(contents, 'Function xingmangRecordInstalledEntries', 'FunctionEnd')
+  // 每一项先问 xingmangIsPackageEntry，认不出的跳过，不写进清单。
+  const ask = install.search(/Push \$R4\n\s*Call xingmangIsPackageEntry\n\s*Pop \$R6\n\s*StrCmp \$R6 "1" 0 xingmangRecordNext\n/)
+  assert.notEqual(ask, -1, 'entries are recorded without asking whether they belong to the package')
+  assert.ok(ask < install.indexOf('WriteRegStr'), 'the check must come before the entry is written')
+  assert.equal(install.match(/WriteRegStr/g).length, 1)
+
+  const isOurs = bodyOf(contents, 'Function xingmangIsPackageEntry', 'FunctionEnd')
+  // 安装包带的：整个名字两头带竖线去找，ffmpeg.dll.bak 这类只多几个字的对不上。
+  assert.match(isOurs, /\$\{StrContains\} \$R1 "\|\$R0\|" "\$\{XINGMANG_PACKAGE_ENTRIES\}"/)
+  // 模板解压完写进去的卸载程序也是我们的；清单因此至少有一项，卸载时不会走「没有清单就整个删」。
+  assert.match(isOurs, /\$\{OrIf\} \$R0 == "\$\{UNINSTALL_FILENAME\}"/)
+  assert.match(isOurs, /!ifdef UNINSTALLER_ICON\n\s*\$\{ElseIf\} \$R0 == "uninstallerIcon\.ico"/)
+  // 除此之外一律不是：没有别的「是」。
+  assert.equal(isOurs.match(/StrCpy \$R0 "1"/g).length, 2)
+  assert.match(isOurs, /\$\{Else\}\n\s*StrCpy \$R0 "0"/)
+  assert.match(isOurs, /^Function xingmangIsPackageEntry\n\s*Exch \$R0\n\s*Push \$R1\n/)
+  assert.match(isOurs, /Pop \$R1\n\s*Exch \$R0\n\s*$/)
+})
+
+test('a manifest written from now on says it records only the package', () => {
+  const contents = readCustomInclude()
+  assert.match(contents, /^!define XINGMANG_INSTALLED_ENTRIES_FORMAT 2$/m)
+  const install = bodyOf(contents, 'Function xingmangRecordInstalledEntries', 'FunctionEnd')
+  const format = install.indexOf('WriteRegDWORD SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "Format" ${XINGMANG_INSTALLED_ENTRIES_FORMAT}')
+  const count = install.indexOf('WriteRegDWORD SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "Count" $R2')
+  // 跟 Count 一样只在条目全写成时写，而且在 Count 之前：Count 写成了才算有清单。
+  assert.ok(format !== -1 && count > format && format > install.indexOf('WriteRegStr'))
+  assert.match(install.slice(install.indexOf('${If} $R5 == "ok"'), count), /"Format"/)
+})
+
+test('an older manifest loses whatever is not the package before the old uninstaller runs', () => {
+  const contents = readCustomInclude()
+  const init = bodyOf(contents, '!macro customInit', '!macroend')
+  // .onInit 里、模板执行旧卸载程序之前，排在去掉已经不在的项之后。
+  assert.match(init, /^\s*Call xingmangForgetMissingInstalledEntries\n\s*Call xingmangForgetForeignInstalledEntries$/m)
+
+  const forget = bodyOf(contents, 'Function xingmangForgetForeignInstalledEntries', 'FunctionEnd')
+  // 这一版起写的清单（Format 够新）照单全收，旧版本带过、这一版不带的软件文件以后照常清掉。
+  assert.match(forget, /ReadRegDWORD \$R0 SHELL_CONTEXT "\$\{XINGMANG_INSTALLED_ENTRIES_KEY\}" "Format"\n\s*\$\{If\} \$\{Errors\}\n\s*\$\{OrIf\} \$R0 < \$\{XINGMANG_INSTALLED_ENTRIES_FORMAT\}\n/)
+  assert.match(forget, /ReadRegDWORD \$R1 SHELL_CONTEXT "\$\{XINGMANG_INSTALLED_ENTRIES_KEY\}" "Count"/)
+  assert.match(forget, /Push \$R3\n\s*Call xingmangIsPackageEntry\n\s*Pop \$R3\n\s*\$\{If\} \$R3 != "1"\n\s*DeleteRegValue SHELL_CONTEXT "\$\{XINGMANG_INSTALLED_ENTRIES_KEY\}" "\$R2"/)
+  // 只删记录，不碰文件；Count 不动，卸载程序读到空项本来就跳过。
+  for (const forbidden of [/\bDelete\b(?!RegValue)/, /\bRMDir\b/, /\bRename\b/, /\bExec/, /WriteReg/, /DeleteRegKey/]) {
+    assert.doesNotMatch(forget, forbidden)
+  }
+  // $R0～$R3 原样还给 .onInit。
+  assert.match(forget, /^Function xingmangForgetForeignInstalledEntries\n\s*Push \$R0\n\s*Push \$R1\n\s*Push \$R2\n\s*Push \$R3\n/)
+  assert.match(forget, /Pop \$R3\n\s*Pop \$R2\n\s*Pop \$R1\n\s*Pop \$R0\n\s*$/)
+
+  // 都在安装程序那一半：卸载程序里没人调用，-WX 下打包当场失败；名单也只给安装程序编进去。
+  const header = bodyOf(contents, '!macro customHeader', '!macroend')
+  const installerHalf = header.slice(header.indexOf('!ifndef BUILD_UNINSTALLER'), header.indexOf('!ifdef BUILD_UNINSTALLER'))
+  for (const name of ['xingmangIsPackageEntry', 'xingmangForgetForeignInstalledEntries', 'xingmangRecordInstalledEntries']) {
+    assert.ok(installerHalf.includes(`Function ${name}\n`), name)
+  }
+})
+
 test('the installed entries registry key hangs off the install registry key', () => {
   const contents = readCustomInclude()
   // 挂在 ${INSTALL_REGISTRY_KEY} 下面，卸载收尾的 DeleteRegKey 会连它一起删掉。
