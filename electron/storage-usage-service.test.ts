@@ -28,7 +28,7 @@ function summary(id: string, provider: ConfigBackupSummary['provider']): ConfigB
 function fixture(overrides: Partial<StorageUsageServiceDependencies> = {}) {
   const log = vi.fn()
   const backups = {
-    list: vi.fn(() => [summary('c1', 'codex'), summary('c2', 'claude'), summary('g1', 'gemini'), summary('bad', null)]),
+    list: vi.fn(() => [summary('c1', 'codex'), summary('c2', 'claude'), summary('g1', 'gemini'), summary('bad', null), { ...summary('torn', 'codex'), valid: false }]),
     rootDirectory: () => path.join(root, 'backups'),
     removeAllButNewest: vi.fn(async () => ({ removed: 3, failed: 0, freedBytes: 12_000 })),
   }
@@ -67,7 +67,8 @@ describe('createStorageUsageService', () => {
     await expect(service.inspect('thumbnails')).resolves.toEqual({ bytes: 500 })
     await expect(service.inspect('chat-history')).resolves.toEqual({ bytes: 40 })
     await expect(service.inspect('logs')).resolves.toEqual({ bytes: 60 })
-    // Only the backups the card above shows are counted: not the retired tool's, not the broken one.
+    // Only usable backups of tools still offered are counted: not the retired tool's, not the broken ones
+    // (a broken one whose manifest still names its tool included).
     await expect(service.inspect('backups')).resolves.toEqual({ bytes: 70, backupCount: 2 })
     await expect(service.inspect('downloads')).resolves.toEqual({ bytes: 300 * 1024 * 1024, installing: false })
   })
@@ -143,7 +144,7 @@ describe('createStorageUsageService', () => {
     expect(RETAINED_BACKUPS_AFTER_CLEANUP).toBe(10)
     const [keep, include] = backups.removeAllButNewest.mock.calls[0] as unknown as [number, (backup: ConfigBackupSummary) => boolean]
     expect(keep).toBe(10)
-    expect([summary('a', 'codex'), summary('b', 'gemini'), summary('c', null)].map(include)).toEqual([true, false, false])
+    expect([summary('a', 'codex'), summary('b', 'gemini'), summary('c', null), { ...summary('d', 'codex'), valid: false }].map(include)).toEqual([true, false, false, false])
   })
 
   it('reports downloads it could not remove and logs only the numbers', async () => {

@@ -51,6 +51,23 @@ export function backupDescription(backup: Pick<Backup, 'provider' | 'reason' | '
   return `${providerName(backup.provider)} 配置，${backupDetail(backup)}`
 }
 
+/**
+ * 校验没过的那一行（R2-2）：大小和原因都说不准了，只说是哪个工具的、用不了、可以删。
+ * 主进程给的原因是写给程序看的（带路径、文件名），不上屏。清单都读不出来的认不出工具，只说后半句。
+ */
+export function brokenBackupDescription(provider: string | null | undefined): string {
+  return isActiveProviderId(provider) ? `${providerName(provider)} 配置，这份备份用不了，可以删掉` : '这份备份用不了，可以删掉'
+}
+
+/**
+ * 列表上摆哪几份：还在用的工具的，加上校验没过、连工具都认不出来的（R2-2，原来一并被筛掉，坏的那份
+ * 看不见也删不掉）。已下线的工具（Gemini）照旧不列；认不出工具的只在「全部工具」里。
+ */
+export function visibleBackups<T extends Pick<Backup, 'provider' | 'valid'>>(items: readonly T[], provider: Provider | 'all'): T[] {
+  const shown = items.filter((item) => isActiveProviderId(item.provider) || (!item.valid && item.provider === null))
+  return provider === 'all' ? shown : shown.filter((item) => item.provider === provider)
+}
+
 function backupTime(createdAt: string | null | undefined, now: number): string {
   const time = createdAt ? Date.parse(createdAt) : Number.NaN
   return formatClockTime(time, now) ?? displayDate(createdAt)
@@ -143,8 +160,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
     }
     if (sequence()) setRestoreCheck(next)
   }
-  const all = resource.data?.filter((item) => isActiveProviderId(item.provider)) ?? []
-  const list = provider === 'all' ? all : all.filter((item) => item.provider === provider)
+  const list = visibleBackups(resource.data ?? [], provider)
   const installedTools = backupTools.filter((tool) => !installedProviders || installedProviders.includes(tool.id))
   function create(targets: readonly Provider[]) {
     void operation.execute(
@@ -222,10 +238,11 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
             leading={<BrandIcon tool={backup.provider ?? ''} size={18} />}
             title={backupTime(backup.createdAt, now)}
             badge={<><Pill tone={backup.valid ? 'neutral' : 'bad'}>{backupReasonTag(backup)}</Pill><BackupKeyPill backup={backup} /></>}
-            desc={backupDescription(backup)}
+            desc={backup.valid ? backupDescription(backup) : brokenBackupDescription(backup.provider)}
             actions={
               <>
-                <Button size="sm" variant="ghost" icon={FileText} onClick={() => inspect(backup)}>预览</Button>
+                {/* 坏的那份打不开，不给「预览」；「恢复」照旧灰着，删除照常。 */}
+                {backup.valid && <Button size="sm" variant="ghost" icon={FileText} onClick={() => inspect(backup)}>预览</Button>}
                 <Button size="sm" disabled={!backup.valid} onClick={() => setRestoring(backup)} testId={`backups-restore-${backup.id}`}>恢复</Button>
                 <Button size="sm" variant="ghost" icon={Trash2} aria-label="删除这份备份" onClick={() => setDeletion(backup)} testId={`backups-delete-${backup.id}`} />
               </>
@@ -318,7 +335,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
       </Dialog>
       <Dialog
         open={Boolean(deletion)}
-        title={`删除 ${deletion ? backupTime(deletion.createdAt, now) : ''} 的备份？`}
+        title={deletion?.createdAt ? `删除 ${backupTime(deletion.createdAt, now)} 的备份？` : '删除这份备份？'}
         onClose={() => setDeletion(null)}
         footer={
           <>

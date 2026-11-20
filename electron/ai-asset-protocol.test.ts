@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert'
 import { describe, it } from 'vitest'
 import { createActiveIdentityReader } from './active-identity'
 import { createAiAssetProtocolHandler, type AiAssetProtocolOptions } from './ai-asset-protocol'
-import { assetThumbnailUrl, assetThumbnailVersion } from './asset-thumbnail'
+import { assetLargeImageThumbnailUrl, assetThumbnailUrl, assetThumbnailVersion } from './asset-thumbnail'
 
 const assetId = 'a'.repeat(43)
 const mediaUrl = `xingmang-asset://image/${assetId}`
@@ -41,7 +41,7 @@ function fixture() {
         return { bytes, totalBytes: media.bytes.byteLength, asset: { mimeType: 'video/mp4' } }
       },
     },
-    thumbnails: { async resolve(owner, id, kind) { calls.push({ kind: `thumb:${kind}`, userId: owner, assetId: id }); return thumbnail } },
+    thumbnails: { async resolve(owner, id, kind, size) { calls.push({ kind: `thumb:${kind}:${size}`, userId: owner, assetId: id }); return thumbnail } },
   }
   return {
     options, media, thumbnail, calls, videoReads, handler: createAiAssetProtocolHandler(options),
@@ -78,7 +78,16 @@ describe('account-owned asset protocol', () => {
     assert.equal(response.headers.get('cache-control'), 'no-store')
     assert.equal(response.headers.get('content-type'), 'image/png')
     assert.equal(await response.text(), 'thumbnail')
-    assert.deepEqual(example.calls, [{ kind: 'thumb:image', userId: 7, assetId }])
+    assert.deepEqual(example.calls, [{ kind: 'thumb:image:tile', userId: 7, assetId }])
+  })
+
+  it('asks for the larger still image the chat shows under its own kind', async () => {
+    const example = fixture()
+    const response = await example.handler(new Request(assetLargeImageThumbnailUrl(assetId)))
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('cache-control'), 'no-store')
+    assert.equal(await response.text(), 'thumbnail')
+    assert.deepEqual(example.calls, [{ kind: 'thumb:image:large', userId: 7, assetId }])
   })
 
   it('versions URLs to avoid reusing previously cacheable v1 responses', async () => {
@@ -219,7 +228,8 @@ describe('account-owned asset protocol', () => {
     `xingmang-asset://image:81/${assetId}`, `${mediaUrl}?x=1`, `${mediaUrl}#x`,
     'xingmang-asset://image/%ZZ', `xingmang-asset://image/${'a'.repeat(42)}`,
     `${mediaUrl}/extra`, `xingmang-asset://thumb/v2/audio/${assetId}`,
-    `xingmang-asset://thumb/v2/image/${assetId}/extra`,
+    `xingmang-asset://thumb/v2/image/${assetId}/extra`, `xingmang-asset://thumb/v2/video-large/${assetId}`,
+    `xingmang-asset://thumb/v2/constructor/${assetId}`, `xingmang-asset://thumb/v1/image-large/${assetId}`,
   ]) {
     it(`rejects unsupported URL shapes before reading storage: ${url}`, async () => {
       const example = fixture()
