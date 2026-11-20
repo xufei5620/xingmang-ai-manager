@@ -469,6 +469,13 @@ export class AiAssetMetadataStore {
       const item = this.upsert(items, assetId, updatedAt)
       item.source = normalizedSource
       if (normalizedPrompt) item.prompt = normalizedPrompt
+      // A source is recorded only right after a store wrote these bytes, and the
+      // stores are content-addressed: importing a file whose copy sits in the
+      // recycle bin hands back that copy's id. The user has just asked for it
+      // again, so it leaves the bin with its name, tags and favorite as they
+      // were. Left in the bin, the import said it worked and the library still
+      // hid the picture (11-18 R28-7).
+      delete item.deletedAt
       await this.writeShard(userId, aiAssetMetadataShardOf(assetId), items, 'grow')
       return structuredClone(item)
     })
