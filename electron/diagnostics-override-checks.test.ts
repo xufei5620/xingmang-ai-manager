@@ -45,9 +45,11 @@ function relayInspection(provider: ProviderId, home: string): NativeConfigInspec
     hasApiKey: true,
     matchesRelay: true,
     apiKey: 'sk-super-secret-value',
+    model: 'gpt-5.6-sol',
     dataDirectory: path.join(home, `.${provider}`),
     dataDirectoryExists: true,
     files: [],
+    updatedAt: '2026-07-24T00:00:00.000Z',
   }
 }
 
