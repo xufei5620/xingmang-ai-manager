@@ -133,6 +133,11 @@ export interface MacosDesktopReplacementOptions {
   name: string
   /** 客户在「还开着」那个框里点了「关掉并更新」。 */
   closeRunning: boolean
+  /**
+   * 客户点的取消。只在请它退出之前看：已经请了就关到底，半路停下会留下没走的帮手进程。关完要不要换由
+   * replaceBundle 再看一次（11-18 F03）。
+   */
+  signal?: AbortSignal
   runProcess(plan: MacosDesktopAppProcess): Promise<CommandResult>
   /** 当前用户；别的账户里开着的那份星芒关不了。 */
   uid: number
@@ -151,7 +156,8 @@ function waitFor(milliseconds: number): Promise<void> {
  * 新版已经放在旧版旁边、换之前调（MacosDesktopAppReplacement.beforeReplace）。它关着就直接换；开着而
  * 客户点过「关掉并更新」，先请它正常退出：主程序收到 SIGTERM（Electron 做的那几家收到它和点「退出」
  * 一样收尾），等一会儿还有没走的帮手进程再请一次，还不走就不换（不强杀，客户手头的东西不能丢）。
- * 客户没点过（点的时候它关着，下载那几分钟里又打开了）就不换，下次点会先问。抛错 = 不换，旧版原样留着。
+ * 客户没点过（点的时候它关着，下载那几分钟里又打开了）就不换，下次点会先问。客户在请它退出之前点了取消
+ * 也不关。抛错 = 不换，旧版原样留着。
  */
 export async function prepareMacosDesktopReplacement(options: MacosDesktopReplacementOptions): Promise<void> {
   const wait = options.wait ?? waitFor
@@ -186,6 +192,8 @@ export async function prepareMacosDesktopReplacement(options: MacosDesktopReplac
   if (!options.closeRunning) throw new Error(`${options.name} 在下载新版的时候被打开了，客户没同意关掉它，这次不换`)
   if (processes.some((entry) => entry.uid !== options.uid)) throw new Error(`${options.name} 在这台 Mac 的别的账户里开着，星芒关不了它`)
   const main = processes.filter((entry) => entry.executable.startsWith(`${options.bundle}/Contents/MacOS/`))
+  // 列进程那几秒里客户点了取消：还没请它退出，就不关了。
+  options.signal?.throwIfAborted()
   terminate(main.length > 0 ? main : processes)
   let remaining = await goneWithin(quitMainWaitMs)
   if (remaining.length === 0) return

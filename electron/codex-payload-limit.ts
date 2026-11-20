@@ -9,8 +9,8 @@
  * 认法：Codex 每一轮结束往会话记录（CODEX_HOME/sessions/年/月/日/rollout-…-<会话 ID>.jsonl）写一行
  * event_msg / task_complete，没发出去时带着 error.message，原文是「unexpected status 413 Payload Too Large:
  * <网页>, url: <地址>, cf-ray: …」（0.163、0.164 的命令行和桌面端那种 app-server 连法连本机假接口实测）。更老的
- * 版本可能另写一行 error 事件，一起认。这里只盯新写进的那一段：目录有动静才读，每个文件只读末尾，一次最多读
- * rolloutTailBytes，一行太长（截图）不解析。
+ * 版本可能另写一行 error 事件，一起认。这里只盯新写进的那一段：目录有动静才读（刚盯上时另外回头看一眼最近写过的
+ * 几个），每个文件只读末尾，一次最多读 rolloutTailBytes，一行太长（截图）不解析。
  *
  * 会话记录目录用户可写，内容一律当敌意输入（I5、I8）：文件名只认 Codex 的固定格式，只读单链接普通文件、不跟
  * 符号链接；一行里只取地址和时刻，地址只拿去和 relay-sites.ts 的各条线路逐个比 origin。报错原文、地址都不进日志
@@ -18,6 +18,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { mapWithConcurrency } from './async-map'
 import { isRecord } from './input-guards'
 import { relayEndpointForUrl, type RelayEndpointId, type RelayRoutePreference, type RelayRouteSiteId } from './relay-sites'
 import type { RelayRouteHoldResult } from './relay-route-controller'
@@ -42,6 +43,16 @@ const activeWindowMs = 10 * 60_000
 const watchRetryMs = 60_000
 /** 同时记着读到哪的会话记录最多这么多个。 */
 const maxTrackedFiles = 32
+/**
+ * 盯上目录时回头找的范围（R29-01）：最近这么多个日期文件夹、一共最多看这么多个文件的修改时间，最后只读最近写过的
+ * 这么多个。日期文件夹按对话开始那天分，长对话一直写在开始那天的文件夹里，所以不能只看今天。
+ */
+const catchUpMaxDays = 31
+const catchUpMaxEntries = 512
+export const catchUpMaxFiles = 8
+const catchUpConcurrency = 4
+const yearDirectoryPattern = /^\d{4}$/
+const monthOrDayDirectoryPattern = /^\d{2}$/
 /** 处理过、提醒过的会话记录多少个、多久。 */
 const maxRememberedSessions = 64
 const rememberedSessionMs = 30 * 24 * 60 * 60_000
@@ -173,6 +184,54 @@ async function readRolloutRange(filePath: string, tracked: TrackedRollout | unde
   }
 }
 
+// 只列名字像年、月、日的真文件夹，从新到旧：符号链接、联接不跟（I8），别的东西不看。
+async function listDateDirectories(directory: string, pattern: RegExp): Promise<string[]> {
+  const entries = await fs.promises.readdir(directory, { withFileTypes: true }).catch(() => [])
+  return entries.filter((entry) => entry.isDirectory() && pattern.test(entry.name)).map((entry) => entry.name).sort().reverse()
+}
+
+async function recentDayDirectories(sessionsDirectory: string): Promise<string[]> {
+  const days: string[] = []
+  for (const year of await listDateDirectories(sessionsDirectory, yearDirectoryPattern)) {
+    for (const month of await listDateDirectories(path.join(sessionsDirectory, year), monthOrDayDirectoryPattern)) {
+      for (const day of await listDateDirectories(path.join(sessionsDirectory, year, month), monthOrDayDirectoryPattern)) {
+        days.push(path.join(year, month, day))
+        if (days.length >= catchUpMaxDays) return days
+      }
+    }
+  }
+  return days
+}
+
+/**
+ * 会话目录下最近写过（修改时间离 at 不到 codexPayloadStaleMs）的会话记录，最近写的在前，相对目录的路径（R29-01）。
+ * 有界：只翻最近 catchUpMaxDays 个日期文件夹、最多看 catchUpMaxEntries 个文件、给出最多 catchUpMaxFiles 个；
+ * 目录没有、读不了都给空的，从不抛错。只看修改时间不读内容，读还是走 readRolloutRange 那套单链接普通文件的检查。
+ */
+export async function findRecentCodexRollouts(sessionsDirectory: string, at: number): Promise<string[]> {
+  const candidates: string[] = []
+  for (const day of await recentDayDirectories(sessionsDirectory)) {
+    const entries = await fs.promises.readdir(path.join(sessionsDirectory, day), { withFileTypes: true }).catch(() => [])
+    // 文件名带着对话开始的时刻：同一天里后开的排前面，满了先丢早开的。
+    const names = entries.filter((entry) => entry.isFile() && codexRolloutSessionId(entry.name)).map((entry) => entry.name).sort().reverse()
+    for (const name of names) {
+      if (candidates.length >= catchUpMaxEntries) break
+      candidates.push(path.join(day, name))
+    }
+    if (candidates.length >= catchUpMaxEntries) break
+  }
+  const recent = await mapWithConcurrency(candidates, catchUpConcurrency, async (relative) => {
+    const stats = await fs.promises.lstat(path.join(sessionsDirectory, relative)).catch(() => null)
+    if (!stats || !stats.isFile() || Math.abs(at - stats.mtimeMs) > codexPayloadStaleMs) return null
+    return { relative, modifiedAt: stats.mtimeMs }
+  })
+  return recent
+    .filter((entry): entry is { relative: string; modifiedAt: number } => entry !== null)
+    .sort((left, right) => right.modifiedAt - left.modifiedAt)
+    .slice(0, catchUpMaxFiles)
+    .map((entry) => entry.relative)
+}
+
 /** 盯着 Codex 的会话记录，报「这一轮因为太大没发出去」和「记录已经很大了」。 */
 export function createCodexRolloutWatcher(options: CodexRolloutWatcherOptions) {
   const now = options.now ?? Date.now
@@ -185,6 +244,7 @@ export function createCodexRolloutWatcher(options: CodexRolloutWatcherOptions) {
   let cancelPoll: (() => void) | null = null
   let cancelRetry: (() => void) | null = null
   let running: Promise<void> = Promise.resolve()
+  let catchingUp: Promise<void> = Promise.resolve()
   let disposed = false
 
   function log(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void {
@@ -266,6 +326,17 @@ export function createCodexRolloutWatcher(options: CodexRolloutWatcherOptions) {
     }, activePollMs)
   }
 
+  // 盯上之前写完、之后再没动过的会话记录，目录通知不会再来：每次刚盯上（第一次、目录晚出现、盯断了重新盯上）都回头
+  // 找一次最近写过的（R29-01）。先盯上再找，中间写进来的有通知兜着。记着读到哪的接着读，同一行不会再报；没记着的
+  // 只读末尾，以前报过的再报一次，也由 createCodexPayloadLimitService 按对话和线路挡掉，不会再提示。
+  function catchUp(): void {
+    const at = now()
+    catchingUp = catchingUp.then(async () => {
+      if (disposed) return
+      for (const relative of await findRecentCodexRollouts(options.sessionsDirectory, at)) queue(relative)
+    }).catch(() => undefined)
+  }
+
   function retryLater(): void {
     if (disposed || cancelRetry) return
     cancelRetry = schedule(() => {
@@ -289,6 +360,7 @@ export function createCodexRolloutWatcher(options: CodexRolloutWatcherOptions) {
       return
     }
     log('info', 'codex-payload.watch-started', '开始看 Codex 的对话记录，对话太大发不出去时帮客户换线路')
+    catchUp()
   }
 
   return {
@@ -297,8 +369,9 @@ export function createCodexRolloutWatcher(options: CodexRolloutWatcherOptions) {
       begin()
       if (!cancelPoll) poll()
     },
-    /** 测试用：把目录动静马上处理掉。 */
-    flush(): Promise<void> {
+    /** 测试用：等回头找完，把目录动静马上处理掉。 */
+    async flush(): Promise<void> {
+      await catchingUp
       cancelSweep?.()
       cancelSweep = null
       return sweep()

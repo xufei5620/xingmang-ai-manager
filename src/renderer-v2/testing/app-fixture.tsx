@@ -722,6 +722,8 @@ const methods = {
   launchCli: async (_provider, workspace) => {
     // ?workspaceGone：记录里的 my-app 已经被删了，同主进程打开时报这一句（provider-launch-service.ts 的 launchProviderOperation）。
     if (query.has('workspaceGone') && workspace === 'C:\\work\\my-app') throw new Error('工作目录不存在，请重新选择')
+    // ?launchDeclined：头一次打开时在「这个文件夹不建议打开」那一问里点了「先不打开」，主进程回 declined（N11）。
+    if (query.has('launchDeclined') && window.v2Test.calls.filter((call) => call.method === 'launchCli').length === 1) return { declined: true }
     if (query.has('launchRemembers')) {
       launchedWorkspace = config.workspace
       return { rememberedWorkspace: launchedWorkspace, ...(launchedWorkspace === fixtureStarterWorkspace ? { rememberedWorkspaceFresh: true } : {}) }

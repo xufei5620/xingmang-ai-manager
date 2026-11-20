@@ -2815,6 +2815,27 @@ test('the guide opens a used CLI in the folder its home card shows, and can stil
   } finally { await page.close() }
 })
 
+// 11-18 复核 N11：「这个文件夹不建议打开」那一问里点「先不打开」，工具没起来，引导以前照样当做完、整个关掉。
+test('the guide stays on its last step when the user declines to open the folder (N11)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&launchDeclined=1')
+  const launches = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length)
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.getAttribute('title') === '在 C:\\work\\my-app 打开')
+    await guideReadyFor(page, 'claude')
+    await page.getByTestId('guide-open-tool').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await page.waitForFunction(() => !document.querySelector('[data-testid="guide-open-tool"]')?.disabled)
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
+    assert.equal(await page.getByTestId('guide-error').count(), 0)
+    assert.equal(await launches(), 1)
+    // 接着在这一步再点一次，这回打开了才算走完。
+    await page.getByTestId('guide-open-tool').click()
+    await page.getByTestId('start-guide').waitFor({ state: 'detached' })
+    assert.equal(await launches(), 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the guide falls back to the folder picker when the folder its home card shows is gone (D46)', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1&workspaceGone=1')
   try {
