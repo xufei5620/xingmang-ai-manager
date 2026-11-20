@@ -1,5 +1,5 @@
 import type { AssetThumbnailStore, StoredAssetThumbnail } from './asset-thumbnail-store'
-import { assetThumbnailMimeType, type AssetThumbnailMimeType } from './asset-thumbnail'
+import { assetThumbnailMaxEdgeFor, assetThumbnailMimeType, type AssetThumbnailMimeType, type AssetThumbnailSizeName } from './asset-thumbnail'
 
 export interface AssetThumbnailSource {
   /** Original media bytes, already ownership checked by the owning store. */
@@ -13,8 +13,8 @@ export interface AssetThumbnailSource {
  * Skia encoder and cannot run under vitest.
  */
 export interface AssetThumbnailRenderer {
-  /** Decodes and contains still image bytes. Returns null when the source is undecodable. */
-  fromImageBytes(bytes: Buffer, mimeType: AssetThumbnailMimeType): Promise<Buffer | null>
+  /** Decodes and contains still image bytes in a `maxEdge` square. Returns null when the source is undecodable. */
+  fromImageBytes(bytes: Buffer, mimeType: AssetThumbnailMimeType, maxEdge: number): Promise<Buffer | null>
   /**
    * Extracts a cover frame from a media file on disk. Returns null when the
    * platform has no thumbnail provider, which is every platform except Windows
@@ -46,15 +46,17 @@ export function createAssetThumbnailService(options: {
   const inFlight = new Map<string, Promise<StoredAssetThumbnail | null>>()
   let queue: Promise<unknown> = Promise.resolve()
 
-  async function resolve(userId: number, assetId: string, mediaType: AssetThumbnailMediaType): Promise<StoredAssetThumbnail | null> {
+  async function resolve(userId: number, assetId: string, mediaType: AssetThumbnailMediaType, size: AssetThumbnailSizeName = 'tile'): Promise<StoredAssetThumbnail | null> {
     // Audio has no visual frame to derive; the tray draws its own placeholder.
     if (mediaType === 'audio') return null
-    const cached = await options.store.read(userId, assetId)
+    // Video covers come from the platform shell at one fixed size.
+    if (mediaType === 'video' && size !== 'tile') return null
+    const cached = await options.store.read(userId, assetId, size)
     if (cached) return cached
-    const key = `${userId}:${assetId}`
+    const key = `${userId}:${assetId}:${size}`
     const existing = inFlight.get(key)
     if (existing) return existing
-    const pending = enqueue(() => generate(userId, assetId, mediaType)).finally(() => inFlight.delete(key))
+    const pending = enqueue(() => generate(userId, assetId, mediaType, size)).finally(() => inFlight.delete(key))
     inFlight.set(key, pending)
     return pending
   }
@@ -65,18 +67,18 @@ export function createAssetThumbnailService(options: {
     return result
   }
 
-  async function generate(userId: number, assetId: string, mediaType: AssetThumbnailMediaType): Promise<StoredAssetThumbnail | null> {
+  async function generate(userId: number, assetId: string, mediaType: AssetThumbnailMediaType, size: AssetThumbnailSizeName): Promise<StoredAssetThumbnail | null> {
     try {
       // Another request may have finished while this one waited its turn.
-      const cached = await options.store.read(userId, assetId)
+      const cached = await options.store.read(userId, assetId, size)
       if (cached) return cached
       const thumbnail = mediaType === 'video'
         ? await renderVideo(userId, assetId)
-        : await renderImage(userId, assetId)
+        : await renderImage(userId, assetId, size)
       if (!thumbnail) return null
       // A cache write failure must not fail the request: the caller still has a
       // perfectly good thumbnail, it will just be regenerated next time.
-      await options.store.write(userId, assetId, thumbnail).catch((error) => {
+      await options.store.write(userId, assetId, thumbnail, size).catch((error) => {
         options.onFailure?.(assetId, error instanceof Error ? error.message : String(error))
       })
       return thumbnail
@@ -86,10 +88,10 @@ export function createAssetThumbnailService(options: {
     }
   }
 
-  async function renderImage(userId: number, assetId: string): Promise<StoredAssetThumbnail | null> {
+  async function renderImage(userId: number, assetId: string, size: AssetThumbnailSizeName): Promise<StoredAssetThumbnail | null> {
     const source = await options.sources.readImage(userId, assetId)
     const mimeType = assetThumbnailMimeType(source.mimeType)
-    const bytes = await options.renderer.fromImageBytes(source.bytes, mimeType)
+    const bytes = await options.renderer.fromImageBytes(source.bytes, mimeType, assetThumbnailMaxEdgeFor(size))
     return bytes && bytes.byteLength > 0 ? { bytes, mimeType } : null
   }
 

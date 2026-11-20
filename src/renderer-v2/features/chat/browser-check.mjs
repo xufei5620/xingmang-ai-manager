@@ -471,6 +471,13 @@ test('says the picture is gone from the computer, instead of asking to retry, wh
     const preview = page.locator('.chat-asset-preview img[data-failed="true"]')
     await preview.waitFor()
     assert.equal(await preview.getAttribute('alt'), gone)
+    // 格子里放的是缩好的那张（总单 78 R-2），原图没了格子可能还显示得出来；点开大图读的是原图，得照实说不在了。
+    await page.locator('.chat-asset-preview').click()
+    const enlarged = page.getByTestId('chat-image-preview').locator('.chat-preview-image')
+    await page.waitForFunction(() => document.querySelector('.chat-preview-image')?.getAttribute('alt') === '这张图已经不在电脑上了，可能被移走或删掉了。')
+    assert.equal(await enlarged.getAttribute('alt'), gone)
+    await page.keyboard.press('Escape')
+    await page.getByTestId('chat-image-preview').waitFor({ state: 'detached' })
     const shown = page.locator('.chat-banner[data-tone="bad"] > span')
     await page.getByTestId('chat-asset-copy').click()
     await shown.waitFor()
