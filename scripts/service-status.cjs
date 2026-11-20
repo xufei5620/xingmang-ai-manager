@@ -60,7 +60,7 @@ const PLATFORM_AWARE_CLIENT = '0.2.20'
 const REMOTE_SWITCH_CLIENT = '0.2.23'
 // 挂在哪一页、按钮去哪，与客户端 knownIssuePages / knownIssueActions 一致；条数上限与它的 maxKnownIssues 等一致。
 const KNOWN_ISSUE_PAGES = ['all', 'home', 'chat', 'recharge', 'settings']
-const KNOWN_ISSUE_PAGE_LABELS = { all: '每一页', home: '首页', chat: '聊天', recharge: '充值页', settings: '设置' }
+const KNOWN_ISSUE_PAGE_LABELS = { all: '每一页', home: '首页', chat: '创作（0.2.24 及以前叫聊天）', recharge: '充值页', settings: '设置' }
 const KNOWN_ISSUE_ACTIONS = ['update', 'support']
 const KNOWN_ISSUE_ACTION_LABELS = { update: '「查看更新」', support: '「找客服」' }
 const MAX_KNOWN_ISSUES = 8

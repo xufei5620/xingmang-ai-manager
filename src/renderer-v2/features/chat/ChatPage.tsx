@@ -139,8 +139,9 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     const frame = requestAnimationFrame(() => {
       if (list.current) {
         const following = lastDisplayedConversation.current === conversation.id && stickToBottom.current
-        list.current.scrollTop = following ? list.current.scrollHeight : scrolls.current.get(conversation.id) ?? list.current.scrollHeight
-        stickToBottom.current = list.current.scrollHeight - list.current.scrollTop - list.current.clientHeight < 80
+        // 起始页（还没有消息）从头看起：窗口矮、放不下时先看到「想做点什么？」，不是两张卡的下半截。发了第一句照旧跟到底。
+        list.current.scrollTop = !conversation.messages.length ? 0 : following ? list.current.scrollHeight : scrolls.current.get(conversation.id) ?? list.current.scrollHeight
+        stickToBottom.current = !conversation.messages.length || list.current.scrollHeight - list.current.scrollTop - list.current.clientHeight < 80
         lastDisplayedConversation.current = conversation.id
       }
       const navigation = surface.current?.querySelector<HTMLElement>('.chat-conversation-list')
@@ -148,7 +149,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     })
     return () => cancelAnimationFrame(frame)
   }, [conversation.id, active])
-  useEffect(() => { if (active && stickToBottom.current && list.current) list.current.scrollTop = list.current.scrollHeight }, [conversation.messages, active])
+  useEffect(() => { if (active && stickToBottom.current && list.current) list.current.scrollTop = conversation.messages.length ? list.current.scrollHeight : 0 }, [conversation.messages, active])
   useEffect(() => { setCustomSize(false); setEditing(null); setConfirmation(null); setParametersOpen(false); setPhrasesOpen(false) }, [conversation.id])
   // 参数对话框跟着页面走：切走就关掉（没应用的改动不留），跟原来的弹出层一样。
   useEffect(() => { if (!active) { setParametersOpen(false); setPhrasesOpen(false) } }, [active])
@@ -288,6 +289,8 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   }
   const switchConversation = (id: string) => { if (list.current) scrolls.current.set(conversation.id, list.current.scrollTop); chat.openConversation(id); create?.actions.leave() }
   const startNew = () => { chat.newConversation(); create?.actions.leave() }
+  // 起始页：还没发过话、也没自己起过名的那一段。顶上写「新建」，发了第一句才换成对话的名字。
+  const startPage = !chat.state.activeId || (!conversation.messages.length && !conversation.renamed)
   // 对话列表的行也是 memo 的，同样只拿一个稳定的对象，里面总是调最新的处理函数。
   const latestConversationActions = useRef<ConversationActions | null>(null)
   latestConversationActions.current = { open: switchConversation, exportText: (id) => void exportConversation(id), remove: (id) => setConfirmation({ kind: 'delete-conversation', id }), rename: (id) => { const item = chat.state.conversations.find((candidate) => candidate.id === id); if (item) setRenaming({ id, text: item.title }) }, pin: chat.pinConversation }
@@ -353,9 +356,9 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     </aside>
     {create?.pane}
     <div className="chat-conversation" hidden={Boolean(extraSelected)}>
-      <header className="chat-bar"><strong title={conversation.title}>{chat.state.activeId ? conversation.title : '新建'}</strong><div className="chat-bar-actions">{onOpenAssets && <Button icon={Images} variant="ghost" size="sm" aria-label="看做过的图" title="看做过的图：在画布窗口的项目中心打开素材库，聊天里做的图和发过的图都在里面" onClick={onOpenAssets} testId="chat-assets-open" />}<Button icon={SlidersHorizontal} variant="ghost" size="sm" aria-label="参数设置" title="参数设置" onClick={() => setParametersOpen(true)} testId="chat-parameters-open" /><Button icon={Trash2} variant="ghost" size="sm" aria-label="清空对话" title="清空对话" disabled={pending || !conversation.messages.length} onClick={() => setConfirmation({ kind: 'clear' })} testId="chat-conversation-clear" /><Button icon={FileText} variant="ghost" size="sm" aria-label="导出这段对话" title="导出这段对话" disabled={pending || !conversation.messages.length} onClick={() => void exportConversation(conversation.id)} testId="chat-conversation-export" /></div></header>
+      <header className="chat-bar"><strong title={startPage ? undefined : conversation.title}>{startPage ? '新建' : conversation.title}</strong><div className="chat-bar-actions">{onOpenAssets && <Button icon={Images} variant="ghost" size="sm" aria-label="看做过的图" title="看做过的图：在画布窗口的项目中心打开素材库，聊天里做的图和发过的图都在里面" onClick={onOpenAssets} testId="chat-assets-open" />}<Button icon={SlidersHorizontal} variant="ghost" size="sm" aria-label="参数设置" title="参数设置" onClick={() => setParametersOpen(true)} testId="chat-parameters-open" /><Button icon={Trash2} variant="ghost" size="sm" aria-label="清空对话" title="清空对话" disabled={pending || !conversation.messages.length} onClick={() => setConfirmation({ kind: 'clear' })} testId="chat-conversation-clear" /><Button icon={FileText} variant="ghost" size="sm" aria-label="导出这段对话" title="导出这段对话" disabled={pending || !conversation.messages.length} onClick={() => void exportConversation(conversation.id)} testId="chat-conversation-export" /></div></header>
       {(chat.groupError || chat.error || chat.notice || chat.storageError || preparationWarning) && <div className="chat-banner" data-tone={chat.groupError || chat.error || chat.storageError ? 'bad' : 'neutral'} role={chat.groupError || chat.error || chat.storageError ? 'alert' : 'status'}><span>{chat.storageError || chat.groupError || chat.error || chat.notice || preparationWarning}</span>{chat.historyUnreadable && chat.storageError && <Button size="xs" icon={RefreshCw} loading={reloading} disabled={running} onClick={() => void reloadHistory()} testId="chat-history-reload">重新读取</Button>}{chat.groupError && <Button size="xs" icon={RefreshCw} onClick={() => void chat.refreshGroups()} testId="chat-groups-retry">重试</Button>}{!chat.groupError && !chat.storageError && chat.error === offlineSendMessage && <Button size="xs" icon={RefreshCw} disabled={pending} onClick={() => void chat.retryOfflineSend()} testId="chat-send-retry">重试</Button>}{!chat.groupError && !chat.storageError && isConversationTooLongMessage(chat.error) && <Button size="xs" variant="primary" icon={Plus} onClick={chat.continueInNew} testId="chat-continue-new">带着这句话开新对话</Button>}{!chat.groupError && !chat.storageError && !preparationWarning && <Button variant="ghost" size="xs" icon={X} aria-label="关闭提示" title="关闭提示" onClick={() => { chat.setError(''); chat.setNotice('') }} />}</div>}
-      <div className="chat-messages" ref={list} aria-label="消息记录" onScroll={(event) => { if (!active) return; const element = event.currentTarget; stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80; scrolls.current.set(conversation.id, element.scrollTop) }}>
+      <div className="chat-messages" ref={list} aria-label="消息记录" onScroll={(event) => { if (!active) return; const element = event.currentTarget; stickToBottom.current = !conversation.messages.length || element.scrollHeight - element.scrollTop - element.clientHeight < 80; scrolls.current.set(conversation.id, element.scrollTop) }}>
         {!conversation.messages.length && create?.intro?.(chat.state.conversations.length)}
         {/* 「做视频」那三个字等出视频进了这个框（融合第 2 步）再加。 */}
         {!conversation.messages.length && <div className="chat-empty" data-start={create?.cards ? 'true' : undefined} data-testid="chat-empty"><Logo kind="symbol" height={create?.cards ? 44 : 56} /><h2>想做点什么？</h2><p>问问题、写东西、画图，都在下面这一个框里说。额度与工具共用同一个账号。</p>{textMode && !conversation.draft.trim() && <div className="chat-empty-examples">{chatExamples.map((text, index) => <Button key={text} size="sm" onClick={() => fillExample(text)} testId={`chat-example-${index + 1}`}>{text}</Button>)}</div>}</div>}

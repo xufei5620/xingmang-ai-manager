@@ -10875,7 +10875,7 @@ test('a sidebar floated open from the keyboard keeps focus on its toggle and fol
   } finally { await page.close() }
 })
 
-// #1361：窄条图标的名字提示以前冒在图标正下方、还接鼠标，正好盖住下一个图标的大半截；鼠标从「首页」挪到「聊天」
+// #1361：窄条图标的名字提示以前冒在图标正下方、还接鼠标，正好盖住下一个图标的大半截；鼠标从「首页」挪到「聊天」（现在叫「创作」）
 // 点下去，点到的是「首页」的提示，页面不动。照 v4 原型改成冒在图标右边、不接鼠标。
 test('a rail icon names itself beside the rail, so moving down to the next icon clicks that icon', async () => {
   const page = await open()
@@ -10901,7 +10901,7 @@ test('a rail icon names itself beside the rail, so moving down to the next icon 
     const target = { x: chat.left + chat.width / 2, y: (chat.top + chat.bottom) / 2 }
     await page.mouse.move(target.x, target.y, { steps: 8 })
     assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-testid]')?.getAttribute('data-testid'), target), 'nav-chat')
-    await expect(page.getByRole('tooltip')).toHaveText('聊天')
+    await expect(page.getByRole('tooltip')).toHaveText('创作')
     await page.mouse.down()
     await page.mouse.up()
     await page.getByTestId('page-chat').waitFor()
