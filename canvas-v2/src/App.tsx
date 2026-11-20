@@ -212,7 +212,7 @@ import { clearSavedTemplateProjectSubmission, createTemplateProjectSubmission, r
 import { TemplateProjectRecovery } from './components/TemplateProjectRecovery'
 import { builtinNodeRegistry } from './domain/builtin-node-definitions'
 import { assertRouterStrategyWorkflowConfiguration } from './lib/router-strategy-contract'
-import { parseNodeRouterStrategy } from './runtime/router-strategy'
+import { routerStrategyRunField } from './runtime/router-strategy'
 import { canvasNodeDisplayGeometry } from './domain/node-display-geometry'
 import { operationDefaultsForTemplateNode } from './domain/workflow-node-config'
 import { NodeLibrary } from './components/NodeLibrary'
@@ -231,6 +231,7 @@ import { canvasRunInputForHost, withoutHostDisabledDefaults } from './runtime/ho
 import { promptPresetInputForHost, promptPresetUpdateForHost } from './library/host-prompt-presets'
 import { createProjectCopyForHost } from './persistence/host-project-copy'
 import { createBlankProjectForHost } from './persistence/host-project-create'
+import { closeProjectForHost } from './persistence/host-project-close'
 import { canvasCapabilities, canvasNodeKindAvailable } from './host-capabilities'
 import { canvasHostEntryPoints, withoutUnavailableNodeEntries } from './host-entry-points'
 import { workflowExportedNotice, workflowSavedNotice } from './editor/workflow-file-notices'
@@ -445,7 +446,7 @@ export function toCanvasRunGraph(
       ...(node.disabled ? { disabled: true } : {}),
       data: {
         prompt: node.data.prompt,
-        ...(Object.hasOwn(node.data.settings ?? {}, 'routerStrategy') ? { routerStrategy: parseNodeRouterStrategy(node.type ?? '', node.data.settings?.routerStrategy) } : {}),
+        ...(node.type === 'router' || Object.hasOwn(node.data.settings ?? {}, 'routerStrategy') ? routerStrategyRunField(node.type ?? '', node.data.settings) : {}),
         model: node.data.model || (node.data.group !== undefined ? '' : ['text-generate', 'drama-parse'].includes(node.type ?? '') ? groups.textModel ?? '' : ['image', 'image-generate', 'image-edit'].includes(node.type ?? '') ? groups.imageModel ?? '' : ['video', 'video-generate'].includes(node.type ?? '') ? groups.videoModel ?? '' : ''),
         ...(['image', 'image-generate', 'image-edit'].includes(node.type ?? '') ? { group: node.data.group ?? groups.image } : {}),
         ...(['video', 'video-generate'].includes(node.type ?? '') ? { group: node.data.group ?? groups.video, ...((node.data.group !== undefined ? sourceCatalog[node.data.group]?.videoProtocol : groups.videoProtocol) ? { videoProtocol: node.data.group !== undefined ? sourceCatalog[node.data.group]?.videoProtocol : groups.videoProtocol } : {}) } : {}),
@@ -7963,6 +7964,8 @@ function CanvasWorkspace({
     setAutoSaveState('saving')
     try {
       await queueProjectSave(activeProject, serializeWorkflow(workflowSnapshot()), revision)
+      // Before the project center shows: the desktop host serves its read-only library only once it knows no project is open.
+      await closeProjectForHost(hostBridge(), activeProject.id)
       runsRequestRevisionRef.current += 1
       pendingRunProjectionIdsRef.current.clear()
       runInputGraphsRef.current.clear()

@@ -139,7 +139,20 @@ export interface CanvasRunGraphNode {
     interiorTask?: CanvasInteriorTask
     exteriorTask?: CanvasExteriorTask
     storyboardTask?: CanvasStoryboardTask
+    /**
+     * Router nodes only: which of the inputs it hands on. Absent is the
+     * historical router, which keeps every input as a candidate but hands each
+     * single-picture connection one of them; the old 「保留全部输入」 arrives
+     * as all (D06).
+     */
+    routerStrategy?: CanvasRouterStrategy
   }
+}
+
+/** The kernel's CanvasRouterStrategy (xingmang-canvas runtime/router-strategy.ts). */
+export interface CanvasRouterStrategy {
+  version: 1
+  strategy: 'first-available' | 'all'
 }
 
 export type CanvasCommercePreserve = 'shape' | 'color' | 'logo' | 'composition'
