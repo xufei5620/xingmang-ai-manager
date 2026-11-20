@@ -15,3 +15,7 @@
 - 用例：`electron/linux-grok.test.ts` 新增更新后 `agent` 跟到新版、核对失败退回旧版、手做链接不动三条（Linux 上跑）；
   `electron/macos-grok.test.ts` 把原来钉住「指着旧版也不动」的那条改成跟到新版，另加不带版本号布局、已对上不重写、
   事务里挪过又退回、快照记目标等用例（只在 macOS 上跑，CI 的 macos-test 作业跑）。新加的「跟到新版」「快照记目标」类用例在旧代码上红。
+- `electron/system-service.test.ts` 的 Mac 卸载用例夹具本来就是「agent 停在 0.2.111、grok 在 0.2.118」这种指歪的样子，而 `uninstallCli`
+  动手前先探一次（会把 agent 对上）。所以假的 `--version` 改成按程序文件内容答版本、不按暂存时起的名字答；退回的那条现在期望 agent
+  回到探过以后的 0.2.118；「帮我清理」那条里 0.2.111 不再被任何链接引用，成了跟别的旧安装包一样只提醒、不自动删的文件（internal #18）。
+  另加一条：首页一探就把指歪的 agent 对上。
