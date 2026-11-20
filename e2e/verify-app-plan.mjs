@@ -18,6 +18,7 @@ export const verifyPages = Object.freeze([
   { id: 'sessions', label: '记录' },
   { id: 'canvas', label: '画布', window: 'canvas' },
   { id: 'video', label: '视频剪辑' },
+  { id: 'remote', label: '手机遥控' },
   { id: 'featured', label: '精选' },
   { id: 'mcp', label: '外接工具' },
   { id: 'skills', label: '技能' },

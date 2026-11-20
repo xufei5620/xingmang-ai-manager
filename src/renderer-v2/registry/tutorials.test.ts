@@ -3,6 +3,7 @@ import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
 import { accountTabs, feedbackTabs, macDesktopTutorialTopic, macRuntimeTutorialTopic, settingsGroups, settingsItemLabel, settingsItems, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
 import { videoStudioAspectNames, videoStudioClipSoundNames, videoStudioTransitionNames } from '../features/video-studio/project';
 import { linuxUpdateDiskCleanupSteps, macKeychainTutorialTitle, tutorialTopics, tutorialTopicsFor, updateDiskCleanupDetail, updateDiskCleanupSteps, updateDiskCleanupStepsFor, updateDiskCleanupTitle, type TutorialStep } from './tutorials';
+import { pageRegistry } from './pages';
 
 function step(topicId: string, action: string): TutorialStep {
   const found = tutorialTopics.find((topic) => topic.id === topicId)?.steps.find((entry) => entry.action === action);
@@ -167,12 +168,13 @@ describe('tutorial wording that follows the current app', () => {
     for (const entry of editor?.steps ?? []) expect(entry.page, entry.action).toBe('home');
   });
 
-  it('lands every phone remote step on the remote card in settings', () => {
+  it('lands every phone remote step on the remote page in the sidebar', () => {
     const remote = tutorialTopics.find((topic) => topic.id === 'phone-remote');
     expect(remote?.title).toBe('用手机遥控 Codex');
     for (const entry of remote?.steps ?? []) {
-      expect(entry, entry.action).toMatchObject({ page: 'settings', section: 'codex-remote' });
-      expect(entry.where, entry.action).toContain(`工具管理 › ${settingsItemLabel('codex-remote')}`);
+      expect(entry, entry.action).toMatchObject({ page: 'remote' });
+      expect(entry, entry.action).not.toHaveProperty('section');
+      expect(entry.where, entry.action).toContain(`左侧栏 › ${pageRegistry.find((page) => page.id === 'remote')?.label}`);
     }
     expect(JSON.stringify(remote)).toContain('长期用建议选飞书');
   });

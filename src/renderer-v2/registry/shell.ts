@@ -11,7 +11,7 @@ export interface ShellNavigationGroup {
 // 2026-11-06 加了画布、视频剪辑以后这列长了两行，窗口矮时最下面一组最先滚出去，
 // 「充值」原来排在那组第一个，跟着看不见（yoyo 回「充值改」）。
 export const shellNavigation: readonly ShellNavigationGroup[] = [
-  { entries: ['home', 'chat', 'sessions', 'canvas', 'video'] },
+  { entries: ['home', 'chat', 'sessions', 'canvas', 'video', 'remote'] },
   { label: '扩展', entries: ['featured', 'mcp', 'skills', 'plugins'] },
   { entries: ['tutorial', 'health', 'feedback'] },
 ]

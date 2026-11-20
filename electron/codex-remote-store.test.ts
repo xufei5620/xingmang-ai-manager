@@ -89,6 +89,14 @@ describe('codex-remote-store', () => {
     }
   })
 
+  it('reads back only a model name that looks like one, anything else meaning follow the computer', () => {
+    expect(parseCodexRemoteSettings({ version: 1, model: 'gpt-6.2' }).model).toBe('gpt-6.2')
+    expect(parseCodexRemoteSettings({ version: 1, model: 'claude/opus-5.5@2026:latest+1' }).model).toBe('claude/opus-5.5@2026:latest+1')
+    for (const value of ['', ' gpt', '-rf', 'gpt 6', 'gpt\n6', 'x'.repeat(129), 6, null, ['gpt-6.2']]) {
+      expect(parseCodexRemoteSettings({ version: 1, model: value })).not.toHaveProperty('model')
+    }
+  })
+
   // YF-19：电脑上加过的几个文件夹。正在用的那个一定在单子上，单子最多 5 个、不重复、只要绝对路径。
   it('keeps at most five distinct absolute folders and always the one in use', () => {
     const a = path.resolve('/w/a')

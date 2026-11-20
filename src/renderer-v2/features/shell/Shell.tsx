@@ -529,7 +529,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
             onClick={accelerationLine ? () => adapter.navigate?.('acceleration') : adapter.refreshNetwork}>
             <span aria-live="polite">{networkRefreshing ? '正在检测网络位置…' : accelerationLine ? `加速中 · ${accelerationLine}` : networkStatusLabel(network)}</span>
           </button>}
-          {remoteActive && <button type="button" className="v2-status-remote" onClick={() => adapter.navigate?.('settings', 'codex-remote')} disabled={!adapter.navigate} title="手机遥控 Codex 开着，点击查看或关闭" data-testid="statusbar-remote"><i className="v2-dot is-accent" />手机遥控中</button>}
+          {remoteActive && <button type="button" className="v2-status-remote" onClick={() => adapter.navigate?.('remote')} disabled={!adapter.navigate} title="手机遥控 Codex 开着，点击查看或关闭" data-testid="statusbar-remote"><i className="v2-dot is-accent" />手机遥控中</button>}
           <span className="v2-status-spacer" />
           {installedCount !== undefined && <button type="button" onClick={() => adapter.navigate?.('home')} data-testid="statusbar-tools">已装 {installedCount} 个工具</button>}
           <button type="button" className={`v2-status-version${update ? ' has-update' : ''}`} onClick={update === 'ready' ? adapter.installUpdate ?? adapter.openUpdates : adapter.openUpdates} data-testid="statusbar-version">{versionLabel}</button>

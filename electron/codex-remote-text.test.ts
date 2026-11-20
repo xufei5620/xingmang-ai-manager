@@ -182,6 +182,18 @@ describe('codex-remote-text', () => {
     expect(text).toContain('回「同意 2」或「拒绝 2」')
   })
 
+  // yoyo 2026-11-19「改」：Codex 自己说的那句排在命令前头、标「Codex 说：」，命令原文单起一行「命令原文：」放最后。
+  it('puts what Codex says before the raw command and labels the raw command', () => {
+    expect(formatApprovalText({ approvalId: '4', nonce: 'nonce-of-four', kind: 'command', summary: 'mkdir 测试', cwd: 'D:\\hi', reason: '在 hi 文件夹里新建「测试」文件夹。' }))
+      .toBe('Codex 想运行命令（第 4 条）：\nCodex 说：在 hi 文件夹里新建「测试」文件夹。\n在：D:\\hi\n命令原文：\nmkdir 测试\n回「同意 4」或「拒绝 4」。')
+    expect(formatApprovalBody({ approvalId: '5', nonce: 'nonce-of-five', kind: 'file-change', summary: '新建 a.txt +1 -0 行', reason: '加一个说明文件' }))
+      .toBe('Codex 想改文件（第 5 条）：\nCodex 说：加一个说明文件\n新建 a.txt +1 -0 行')
+    expect(formatApprovalBody({ approvalId: '6', nonce: 'nonce-of-six', kind: 'network', summary: 'registry.npmjs.org', reason: '装依赖' }))
+      .toBe('Codex 想连网站（第 6 条）：\nCodex 说：装依赖\nregistry.npmjs.org')
+    expect(formatApprovalBody({ approvalId: '7', nonce: 'nonce-of-seven', kind: 'command', summary: '', reason: '要跑一条命令' }))
+      .toBe('Codex 想运行命令（第 7 条）：\nCodex 说：要跑一条命令')
+  })
+
   it('titles each kind of approval for what Codex wants to do', () => {
     expect(approvalTitle('command')).toBe('Codex 想运行命令')
     expect(approvalTitle('terminal-input')).toBe('Codex 想往正在运行的程序里输入')

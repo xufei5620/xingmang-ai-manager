@@ -20,7 +20,7 @@ export const remoteMessages = {
   newThread: '已开始新对话。',
   // 语音、文件这些（YF-14，yoyo 2026-11-11「图片改」）：图片能发了，这句跟着改。
   unsupported: '暂时只支持文字和图片。语音、文件发不过来，请打成字。',
-  help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、文件夹、关闭遥控、重试、帮助。\nCodex 要改文件、跑会改东西的命令时会先问你，回「同意」或「拒绝」；只是看文件不问。',
+  help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、文件夹、关闭遥控、重试、帮助。\nCodex 要做需要你同意的事时会先问你，回「同意」或「拒绝」。',
   closedOnComputer: '手机遥控已在电脑上关闭。',
   // 手机上发「关闭遥控」（Fable 手机遥控 YF-17，yoyo 2026-11-11「第三批改」）：开着的渠道都收到这一句。
   closedFromPhone: '手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。',
@@ -351,12 +351,17 @@ export function formatApprovalText(request: RemoteApprovalRequest): string {
   return `${formatApprovalBody(request)}\n回「同意 ${request.approvalId}」或「拒绝 ${request.approvalId}」。`
 }
 
-/** 审批的正文（要做什么、在哪、为什么），不带「回 同意 N」那句：处理过的卡片只留这些（YK-8，「同意卡改」一并批的）。 */
+/**
+ * 审批的正文（要做什么、在哪、为什么），不带「回 同意 N」那句：处理过的卡片只留这些（YK-8，「同意卡改」一并批的）。
+ * Codex 自己说的那句排在命令前头、标「Codex 说：」，命令原文放最后、前面单起一行「命令原文：」
+ * （yoyo 2026-11-19「改」）：小白先看懂要做什么，再决定要不要细看那段命令。
+ */
 export function formatApprovalBody(request: RemoteApprovalRequest): string {
   const lines = [`${approvalTitle(request.kind)}（第 ${request.approvalId} 条）：`]
-  if (request.summary) lines.push(request.summary)
+  if (request.reason) lines.push(`Codex 说：${request.reason}`)
   if (request.cwd) lines.push(`在：${request.cwd}`)
-  if (request.reason) lines.push(`原因：${request.reason}`)
+  if (request.summary && request.kind === 'command') lines.push('命令原文：')
+  if (request.summary) lines.push(request.summary)
   return lines.join('\n')
 }
 

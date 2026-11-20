@@ -38,6 +38,16 @@ export function isRemoteIdleCloseHours(value: unknown): value is RemoteIdleClose
   return typeof value === 'number' && (remoteIdleCloseHours as readonly number[]).includes(value)
 }
 
+/**
+ * 「手机上用的模型」单独选的型号（yoyo 2026-11-19「改」）。主进程只认长得像型号名的字串，免得渲染层塞进来的东西
+ * 原样交给 Codex；能不能用由渲染层只列首页 Codex「默认模型」那张单来保证。不存 = 跟电脑上的 Codex 一样。
+ */
+export const remoteModelMaxLength = 128
+
+export function isRemoteModel(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= remoteModelMaxLength && /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/.test(value)
+}
+
 /** 平台给的发送人。userId 是平台里稳定的那个编号（飞书 open_id、微信 iLink 的用户编号）。 */
 export interface RemotePeer {
   channel: RemoteChannelId
@@ -356,5 +366,7 @@ export interface CodexRemoteSnapshot {
   codexStartFailed?: boolean
   /** 手机上最近一条（YF-13）；这次打开遥控以后还没发来过、或者遥控全关了就不带。 */
   lastRequest?: CodexRemoteLastRequestSnapshot
+  /** 「手机上用的模型」单独选的型号；缺省 = 跟电脑上的 Codex 一样。 */
+  model?: string
   channels: Record<RemoteChannelId, CodexRemoteChannelSnapshot>
 }

@@ -3880,9 +3880,8 @@ test('the settings search lists matching rows in place, links back to their grou
 
 // YF-4：「怎么建飞书机器人」六步下面两颗，飞书开发者后台交给浏览器（白名单只收这一个网址），教程是星芒自己的那一章。
 test('the Feishu setup steps open the developer console in the browser and the phone remote tutorial in place', async () => {
-  const page = await fixture('page=settings')
+  const page = await fixture('page=remote')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const form = page.getByTestId('settings-remote-card').getByTestId('settings-remote-feishu-form')
     await form.getByText('怎么建飞书机器人', { exact: true }).click()
     await form.getByRole('button', { name: '打开飞书开放平台', exact: true }).click()
@@ -3903,9 +3902,8 @@ test('the Feishu setup steps open the developer console in the browser and the p
 
 // YF-19：电脑上加几个干活的文件夹，正在用的标出来，别的能换过去、能移除；满 5 个「添加一个」灰掉。
 test('the phone remote card lists several working folders, switches between them and stops adding at five', async () => {
-  const page = await fixture('page=settings&remoteReady&remoteFolders')
+  const page = await fixture('page=remote&remoteReady&remoteFolders')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     const list = card.getByTestId('settings-remote-workspace-list')
     await list.waitFor()
@@ -3940,9 +3938,8 @@ test('the phone remote card lists several working folders, switches between them
 
 // 手机遥控 Codex：先选文件夹、填飞书应用，打开遥控，再配对；App Secret 不进记录，填错了当场说。
 test('the phone remote card walks through folder, Feishu app, switch and pairing, and never records the app secret', async () => {
-  const page = await fixture('page=settings')
+  const page = await fixture('page=remote')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     await card.getByTestId('settings-remote-feishu-state').getByText('没打开', { exact: true }).waitFor()
     const toggle = card.getByRole('switch', { name: '打开飞书遥控', exact: true })
@@ -3968,7 +3965,8 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     assert.equal(await card.getByTestId('settings-remote-feishu-pair').isDisabled(), true)
     await toggle.click()
     await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
-    await card.getByText('Codex 空闲', { exact: true }).waitFor()
+    // 说 Codex 在干什么的那句挪到了页头右边。
+    await page.getByTestId('settings-remote-meta').getByText('Codex 空闲', { exact: true }).waitFor()
     await card.getByTestId('settings-remote-feishu-pair').click()
     await card.getByTestId('settings-remote-feishu-code').getByText('482915', { exact: true }).waitFor()
     await card.getByText('在飞书里打开你建的机器人，私聊发这 6 位数字。10 分钟内有效。', { exact: true }).waitFor()
@@ -4020,9 +4018,8 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
 
 // D23：飞书停下来时只说三种固定的话，各配按钮：重新填写、重新连接、找客服。
 test('the Feishu block says one of three fixed sentences when it stops and gives each its buttons', async () => {
-  const page = await fixture('page=settings&remoteReady=1&help=1')
+  const page = await fixture('page=remote&remoteReady=1&help=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).click()
     await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
@@ -4058,13 +4055,17 @@ test('the Feishu block says one of three fixed sentences when it stops and gives
 
 // 微信那一块：二维码由主进程画好给过来；手机上要输数字时停下来等输，输错了当场说；登录好了卡上换成机器人编号。
 test('the WeChat block logs in through the QR dialog, asks for the number on the phone and then shows the bot', async () => {
-  const page = await fixture('page=settings')
+  const page = await fixture('page=remote')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
+    // 微信那一块要在连接方式里点「微信」才摆出来；标签「实验功能」在那张卡上。
+    assert.equal(await card.getByTestId('settings-remote-weixin').count(), 0)
+    const tab = card.getByTestId('remote-method-weixin')
+    await tab.click()
+    assert.equal(await tab.getAttribute('aria-selected'), 'true')
+    await tab.getByText('实验功能', { exact: true }).waitFor()
     const block = card.getByTestId('settings-remote-weixin')
     await block.getByTestId('settings-remote-weixin-warning').getByText('实验功能，随时可能断', { exact: true }).waitFor()
-    await block.getByText('实验功能', { exact: true }).waitFor()
     await block.getByText('先在上面用微信扫码登录。', { exact: true }).waitFor()
     assert.equal(await card.getByRole('switch', { name: '打开微信遥控', exact: true }).isDisabled(), true)
     assert.equal(await card.getByRole('button', { name: '退出微信登录', exact: true }).count(), 0)
@@ -4124,9 +4125,8 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
 
 // YK-5：手机上收到「Codex 没能启动」，电脑卡片上也有一条黄条，点一下去首页；Codex 又起来了就收起。
 test('the phone remote card says Codex could not start and leads to the home page until Codex starts again', async () => {
-  const page = await fixture('page=settings&remoteReady=1')
+  const page = await fixture('page=remote&remoteReady=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     await card.getByTestId('settings-remote-workspace-row').waitFor()
     assert.equal(await card.getByTestId('settings-remote-codex-failed').count(), 0)
@@ -4145,9 +4145,8 @@ test('the phone remote card says Codex could not start and leads to the home pag
 
 // YF-9：卡片最后一行「打开星芒时自动打开遥控」默认关，点开、点关都记给主进程，开着时飞书那个开关不跟着动。
 test('the phone remote card lets the customer turn on opening the remote whenever the manager starts, off by default', async () => {
-  const page = await fixture('page=settings&remoteReady=1')
+  const page = await fixture('page=remote&remoteReady=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     const row = card.getByTestId('settings-remote-auto-start')
     await row.getByText('开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。', { exact: true }).waitFor()
@@ -4167,9 +4166,8 @@ test('the phone remote card lets the customer turn on opening the remote wheneve
 
 // YF-10：「多久没消息就自动关」缺省「不自动关」带小字；选 12 小时小字收起、「打开遥控」那行说明带上 12 小时，再选回不自动关又出来。
 test('the phone remote card picks how long it may idle before closing, never by default', async () => {
-  const page = await fixture('page=settings&remoteReady=1')
+  const page = await fixture('page=remote&remoteReady=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     const row = card.getByTestId('settings-remote-idle-close')
     const neverHint = '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。'
@@ -4189,25 +4187,49 @@ test('the phone remote card picks how long it may idle before closing, never by 
   }
 })
 
-// YF-7：飞书登录过、微信没登录时微信收成一行，点标题才摊开说明和警告。
-test('the phone remote card folds a channel that is not logged in while the other one is', async () => {
-  const page = await fixture('page=settings&remoteReady=1')
+// 0.2.25：连接方式两张卡是一组页签，点哪张下面摆哪张的设置；方向键也能换。飞书登录过就先摆飞书，微信那一大块和警告不摊着（YF-7 的用意）。
+test('the phone remote page switches between the two ways to connect and shows only the chosen one\'s settings', async () => {
+  const page = await fixture('page=remote&remoteReady=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
-    const weixin = card.getByTestId('settings-remote-weixin')
-    const toggle = weixin.getByRole('button', { name: '微信', exact: true })
-    assert.equal(await toggle.getAttribute('aria-expanded'), 'false')
-    await weixin.getByText('没打开', { exact: true }).waitFor()
-    assert.equal(await weixin.getByTestId('settings-remote-weixin-warning').count(), 0)
-    assert.equal(await weixin.getByText('实验功能', { exact: true }).count(), 0)
-    await toggle.click()
-    await weixin.getByTestId('settings-remote-weixin-warning').getByText('实验功能，随时可能断', { exact: true }).waitFor()
-    assert.equal(await toggle.getAttribute('aria-expanded'), 'true')
-    await toggle.click()
-    await weixin.getByTestId('settings-remote-weixin-warning').waitFor({ state: 'detached' })
-    // 飞书登录过，不收。
-    assert.equal(await card.getByTestId('settings-remote-feishu').getByRole('button', { name: '飞书', exact: true }).count(), 0)
+    const feishuTab = card.getByTestId('remote-method-feishu')
+    const weixinTab = card.getByTestId('remote-method-weixin')
+    assert.equal(await feishuTab.getAttribute('aria-selected'), 'true')
+    await weixinTab.getByText('没打开', { exact: true }).waitFor()
+    await card.getByRole('heading', { name: '飞书的设置', exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-weixin').count(), 0)
+    await weixinTab.click()
+    await card.getByTestId('settings-remote-weixin').getByTestId('settings-remote-weixin-warning').waitFor()
+    await card.getByRole('heading', { name: '微信的设置', exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu').count(), 0)
+    assert.equal(await weixinTab.getAttribute('aria-selected'), 'true')
+    assert.equal(await feishuTab.getAttribute('aria-selected'), 'false')
+    await weixinTab.press('ArrowLeft')
+    await card.getByTestId('settings-remote-feishu').waitFor()
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'remote-method-feishu')
+    // 两种方式共用的设置一直在下面，不跟着换。
+    await page.getByTestId('remote-shared').getByTestId('settings-remote-workspace-row').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+// 「手机上用的模型」：选项跟首页 Codex「配置」里那张单一样，第一项跟电脑上一样；选了就交给主进程记下。
+test('the phone remote page picks the model for the phone from the Codex list and can follow the computer again', async () => {
+  const page = await fixture('page=remote&remoteReady=1')
+  try {
+    const row = page.getByTestId('settings-remote-model')
+    const select = row.getByRole('combobox', { name: '手机上用的模型', exact: true })
+    await row.getByText('要换就去首页 Codex 的「配置」里改，电脑和手机一起换。', { exact: true }).waitFor()
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid="settings-remote-model-choice"] option').length === 4)
+    assert.deepEqual(await select.locator('option').allInnerTexts(), ['跟电脑上一样（fixture-model）', 'fixture-model', 'gpt-6.3-sol', 'gpt-6.1-mini'])
+    await select.selectOption('gpt-6.3-sol')
+    await row.getByText('只在手机上用这个，电脑上的 Codex 不变。', { exact: true }).waitFor()
+    assert.equal(await select.inputValue(), 'gpt-6.3-sol')
+    await select.selectOption('')
+    await row.getByText('要换就去首页 Codex 的「配置」里改，电脑和手机一起换。', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'remote-model')).map((call) => call.args), ['gpt-6.3-sol', null])
+    assert.equal(await page.getByRole('alert').count(), 0)
   } finally {
     await page.close()
   }
@@ -4215,9 +4237,8 @@ test('the phone remote card folds a channel that is not logged in while the othe
 
 // YF-13：「最近一次」只说几点发来的、做到哪儿了，不摆手机上的原话；「都拒绝」「停下这一轮」交给主进程，「在记录里看」去记录页。
 test('the phone remote card shows the last phone request and can stop it, decline what waits and open the records', async () => {
-  const page = await fixture('page=settings&remoteReady=1')
+  const page = await fixture('page=remote&remoteReady=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     await page.evaluate(() => window.remoteHarness.phoneRequest({ minutesAgo: 3, state: 'running', pendingApprovals: 2 }))
     // 遥控没开着时不出这一行。
@@ -4246,9 +4267,8 @@ test('the phone remote card shows the last phone request and can stop it, declin
 
 // YF-12：遥控开着、余额不到 $1 时提醒出门前先充值，照样让开；点「去充值」到个人中心的充值。
 test('the phone remote card warns about a low balance once the remote is on and leads to the top-up', async () => {
-  const page = await fixture('page=settings&remoteReady=1&remoteLowBalance=1')
+  const page = await fixture('page=remote&remoteReady=1&remoteLowBalance=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     await card.getByTestId('settings-remote-workspace-row').waitFor()
     assert.equal(await card.getByTestId('settings-remote-low-balance').count(), 0)
@@ -4264,9 +4284,8 @@ test('the phone remote card warns about a low balance once the remote is on and 
 })
 
 test('the phone remote card says why it cannot be turned on while the manager runs as administrator', async () => {
-  const page = await fixture('page=settings&remoteElevated=1&remoteReady=1')
+  const page = await fixture('page=remote&remoteElevated=1&remoteReady=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     await card.getByTestId('settings-remote-unavailable').getByText('星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。').waitFor()
     assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).isDisabled(), true)
@@ -4277,14 +4296,14 @@ test('the phone remote card says why it cannot be turned on while the manager ru
   }
 })
 
-test('searching the settings for Feishu finds the phone remote card', async () => {
+// 0.2.25 手机遥控挪到了左侧栏：设置里搜「飞书」不再落到一张卡上（顶部搜索落到那一页，见 command-search.test.ts）。
+test('searching the settings for Feishu no longer finds a phone remote card there', async () => {
   const page = await fixture('page=settings')
   try {
     await page.getByTestId('settings-search').fill('飞书')
-    const results = page.getByTestId('settings-search-results')
-    await results.waitFor()
-    assert.deepEqual(await results.locator('[data-anchor]').evaluateAll((rows) => rows.map((row) => row.dataset.anchor)), ['codex-remote'])
-    await results.getByTestId('settings-remote-card').waitFor()
+    await page.getByTestId('settings-search-empty').waitFor()
+    assert.equal(await page.getByTestId('settings-remote-card').count(), 0)
+    assert.equal(await page.locator('[data-anchor="codex-remote"]').count(), 0)
   } finally {
     await page.close()
   }

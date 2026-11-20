@@ -12,6 +12,7 @@
 | canvas | 画布 ↗ | infinity | daily | 独立窗口 | 跳转 | nav-canvas |
 | video | 视频剪辑（2026-10-25 新增，历史账号登录时不出） | clapperboard | daily | T1 | 跳转 | page-video |
 | acceleration | 网络加速（2026-10-21 前叫游戏加速） | globe-2 | daily | T5 | 跳转 | page-acceleration |
+| remote | 手机遥控（2026-11-19 新增，原来是设置 › 工具管理的整卡） | smartphone | daily | T1 | 跳转 | page-remote |
 | mcp | 外接工具 | plug | extend | T1 | 跳转 | page-mcp |
 | skills | 技能 | sparkles | extend | T1 | 跳转 | page-skills |
 | plugins | 插件 | package | extend | T1 | 跳转 | page-plugins |

@@ -29,6 +29,7 @@ import {
   buildFileChangeSummary,
   buildRemoteMcpServerOverrides,
   buildThreadStartParams,
+  configuredCodexModel,
   collectCredentialSecrets,
   codexRemoteBusyMessages,
   CodexRemoteService,
@@ -1641,6 +1642,41 @@ describe('codex-remote-service turns', () => {
     expect(codex.requests('thread/start')).toHaveLength(1)
   })
 
+  // 「手机上用的模型」（yoyo 2026-11-19「改」）：选了就开对话时带上；开着的对话中途改，下一句的 turn/start 里改，
+  // 改回「跟电脑上一样」时明着带上电脑上那个，不然 Codex 一直用着之前单独选的。
+  it('uses the phone model when one is chosen and follows the computer model again when set back', async () => {
+    const s = await setup({ now: () => Date.UTC(2026, 10, 11, 6, 0, 0), configRead: { result: { config: { model: 'gpt-6.2' } } } })
+    expect((await s.service.setModel('gpt-6.3-sol')).model).toBe('gpt-6.3-sol')
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect(codex.requests('thread/start')[0].params).toMatchObject({ model: 'gpt-6.3-sol' })
+    expect(codex.requests('turn/start')[0].params).not.toHaveProperty('model')
+    async function nextTurn(count: number) {
+      codex.notify('turn/completed', { threadId: 'th-1', turn: { id: `tu-${count - 1}`, status: 'completed' } })
+      await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+      channel.handlers?.onInbound(text(alice, `第 ${count} 句`))
+      await codex.requestedUntil('turn/start', count)
+      return codex.requests('turn/start')[count - 1].params
+    }
+    expect(await s.service.setModel(null)).not.toHaveProperty('model')
+    expect(await nextTurn(2)).toMatchObject({ threadId: 'th-1', model: 'gpt-6.2' })
+    expect(codex.requests('config/read').at(-1)?.params).toEqual({ cwd: s.workspace })
+    expect(await nextTurn(3)).not.toHaveProperty('model')
+    await s.service.setModel('gpt-6.1-mini')
+    expect(await nextTurn(4)).toMatchObject({ model: 'gpt-6.1-mini' })
+    expect(await nextTurn(5)).not.toHaveProperty('model')
+    expect(codex.requests('thread/start')).toHaveLength(1)
+    expect((await s.store.readSettings()).model).toBe('gpt-6.1-mini')
+  })
+
+  it('opens the thread without a model when the phone follows the computer', async () => {
+    expect(buildThreadStartParams('/p')).not.toHaveProperty('model')
+    expect(buildThreadStartParams('/p', {}, null)).not.toHaveProperty('model')
+    expect(buildThreadStartParams('/p', {}, 'gpt-6.3-sol')).toMatchObject({ model: 'gpt-6.3-sol' })
+    expect(configuredCodexModel({ config: { model: 'gpt-6.2' } })).toBe('gpt-6.2')
+    for (const value of [null, {}, { config: null }, { config: { model: '' } }, { config: { model: 7 } }]) expect(configuredCodexModel(value)).toBeNull()
+  })
+
   it('stops a running turn on request', async () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
@@ -3240,7 +3276,7 @@ describe('codex-remote-service approvals', () => {
     }, 'a')
     await approvalCardsSent(channel, 1)
     expect(approvalsSent(channel)[0]).toMatchObject({ kind: 'network', summary: 'registry.npmjs.org' })
-    expect(channel.texts()).toContain('[approval] Codex 想连网站（第 1 条）：\nregistry.npmjs.org\n原因：要下载依赖\n回「同意 1」或「拒绝 1」。')
+    expect(channel.texts()).toContain('[approval] Codex 想连网站（第 1 条）：\nCodex 说：要下载依赖\nregistry.npmjs.org\n回「同意 1」或「拒绝 1」。')
     channel.handlers?.onInbound(text(alice, '同意'))
     expect((await site).result).toEqual({ decision: 'accept' })
 
@@ -3252,7 +3288,7 @@ describe('codex-remote-service approvals', () => {
     }, 'b')
     await approvalCardsSent(channel, 2)
     expect(approvalsSent(channel)[1]).toMatchObject({ kind: 'terminal-input', summary: 'write_stdin --session-id 3 yes' })
-    expect(channel.texts().some((line) => line.startsWith('[approval] Codex 想往正在运行的程序里输入（第 2 条）：\nwrite_stdin --session-id 3 yes\n'))).toBe(true)
+    expect(channel.texts().some((line) => line.startsWith('[approval] Codex 想往正在运行的程序里输入（第 2 条）：\n') && line.includes('\nwrite_stdin --session-id 3 yes\n回「同意 2」'))).toBe(true)
     channel.handlers?.onInbound(text(alice, '拒绝'))
     expect((await input).result).toEqual({ decision: 'decline' })
   })
