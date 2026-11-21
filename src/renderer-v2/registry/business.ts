@@ -480,6 +480,8 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'claude-write-boundary', group: 'tools', label: '只让 Claude Code 改项目文件夹里的文件', keywords: ['文件夹外面', '乱改文件', '改错文件', '写文件', '权限'] },
   // 提交代码、发 PR 时不带 Claude 的署名（同类对比 备选 6），默认关。
   { id: 'claude-commit-attribution', group: 'tools', label: 'Claude Code 提交代码时不署名', keywords: ['署名', 'Co-Authored-By', 'commit', 'git', 'PR', '提交记录'] },
+  // 一段话写进三家工具各自的全局说明里星芒那一段（总单 Q4 C5），客户自己写的不动，换回官方账号也照样有效。
+  { id: 'standing-instructions', group: 'tools', label: '给 AI 的长期嘱咐', keywords: ['嘱咐', '长期', '每次都', '记住', '全局说明', '规矩', 'CLAUDE.md', 'AGENTS.md', '提示词', '说话方式'] },
   { id: 'latest-cli', group: 'tools', label: '命令行工具总是装最新版', keywords: ['最新版', '推荐版本'] },
   { id: 'install-location', group: 'tools', label: '安装位置', keywords: ['装在哪'] },
   { id: 'terminal', group: 'tools', label: '终端', keywords: ['命令行'] },

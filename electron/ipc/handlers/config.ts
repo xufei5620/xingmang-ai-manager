@@ -2,6 +2,7 @@
 // 换线路定点改写要的账号信息也在这里交给 system-service，撤销时一并收回。
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
 import os from 'node:os'
+import { validateStandingInstructions } from '../../standing-instructions'
 import { apiKeyDigest } from '../../backups'
 import { isActiveProviderId, type ProviderId } from '../../catalog'
 import { configureManagedClis, type ManagedCliKeyStoreLike } from '../../account-cli-provisioner'
@@ -186,6 +187,11 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
     if (typeof hidden !== 'boolean') throw new Error('开关格式错误')
     if (!service.setClaudeCommitAttribution) throw new Error('这个版本还不能改这个开关')
     return service.setClaudeCommitAttribution(hidden, await claudeToggleBackup())
+  })
+  registerTrustedHandler('config:save-standing-instructions', async (_event, text: unknown) => {
+    const instructions = validateStandingInstructions(text)
+    if (!service.saveStandingInstructions) throw new Error('这个版本还不能保存长期嘱咐')
+    return service.saveStandingInstructions(instructions)
   })
   async function switchAccountSourceOnce(provider: ProviderId, target: 'account' | 'official') {
     if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再改用当前账号')

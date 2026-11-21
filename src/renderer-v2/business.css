@@ -295,6 +295,27 @@
   color: var(--text-3);
   font-size: var(--font-small);
 }
+/* 「给 AI 的长期嘱咐」（总单 Q4 C5）：框在上，字数和保存在右下，没写上的那几家在最下面。 */
+.v2-standing-instructions {
+  display: grid;
+  gap: 8px;
+}
+.v2-standing-instructions textarea {
+  min-height: 96px;
+  resize: vertical;
+  line-height: 1.6;
+}
+.v2-standing-instructions-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.v2-standing-instructions-count {
+  color: var(--text-3);
+  font-size: var(--font-small-compact);
+  font-variant-numeric: tabular-nums;
+}
 /* 页内搜索：每一行上面写它在哪一组，点组名跳过去。 */
 .v2-settings-hit {
   display: flex;

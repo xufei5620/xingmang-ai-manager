@@ -467,6 +467,21 @@ describe('relay endpoint selections', () => {
     expect(mergeAppSettings(settings(), { version: 2, relayEndpointIds: {} })).not.toHaveProperty('relayEndpointIds')
   })
 
+  it('keeps the standing instructions across saves of other settings and clears them with an empty update', async () => {
+    const filePath = temporarySettingsPath()
+    await updateAppSettings(filePath, { version: 2, standingInstructions: '回答简短一点' })
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    expect(readAppSettings(filePath).standingInstructions).toBe('回答简短一点')
+    await updateAppSettings(filePath, { version: 2, standingInstructions: '' })
+    expect(readAppSettings(filePath)).not.toHaveProperty('standingInstructions')
+
+    // A hand-edited value that is not text, or longer than the settings page allows, reads back as never written.
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), standingInstructions: 42 }))
+    expect(readAppSettings(filePath)).not.toHaveProperty('standingInstructions')
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), standingInstructions: '字'.repeat(2001) }))
+    expect(readAppSettings(filePath)).not.toHaveProperty('standingInstructions')
+  })
+
   it('preserves concurrent endpoint updates to different sites', async () => {
     const filePath = temporarySettingsPath()
     await Promise.all([

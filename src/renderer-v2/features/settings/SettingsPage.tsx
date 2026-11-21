@@ -46,6 +46,7 @@ import { shortcutTools } from '../../registry/tools'
 import { AppUninstallRow } from '../app/AppUninstall'
 import { BackupCard } from './BackupCard'
 import { StorageCard } from './StorageCard'
+import { StandingInstructionsField } from './StandingInstructions'
 import { CodexRemoteCard } from './codex-remote/CodexRemoteCard'
 import { VersionCard } from './VersionCard'
 import { RelayRouteRestartNotice, RelayRouteRow } from '../app/RelayRouteSettings'
@@ -946,6 +947,35 @@ export function SettingsPage({
             switchClaudeToggle('claude-commit-attribution', 'claudeHidesCommitAttribution', () => api.setClaudeCommitAttribution(hidden), claudeCommitAttributionNotice)
           }
         />,
+      ),
+      'standing-instructions': row(
+        'standing-instructions',
+        '写在这里的话，Claude Code、Codex、Grok 在每个文件夹里都会照着做。比如：回答简短一点；我是做外贸的。',
+        <StandingInstructionsField
+          api={api}
+          saved={settings.standingInstructions ?? ''}
+          busy={Boolean(operation.busy)}
+          save={(run, done) =>
+            void operation.execute(
+              'standing-instructions',
+              async () => {
+                const result = await run()
+                resource.setData((previous) =>
+                  previous
+                    ? { ...previous, settings: { ...previous.settings, standingInstructions: result.text || undefined } }
+                    : previous,
+                )
+                return result
+              },
+              (result) => {
+                const text = done(result)
+                if (text) showToast(text, 'ok')
+                return null
+              },
+            )
+          }
+        />,
+        { wide: true, testId: 'settings-standing-instructions' },
       ),
       'latest-cli': row(
         'latest-cli',

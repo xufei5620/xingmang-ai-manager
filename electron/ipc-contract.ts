@@ -58,6 +58,7 @@ import type {
   RepositoryContext as CodexRepositoryContext,
   SkillDto,
 } from './codex-extensions'
+import type { StandingInstructionsSaveResult } from './standing-instructions'
 import type { SkillArchiveExtraction } from './skill-archive'
 import type {
   ProviderExtensionMutation,
@@ -1065,6 +1066,12 @@ export interface XingmangInvokeContract {
    */
   setClaudeCommitAttribution: IpcInvokeDefinition<'config:set-claude-commit-attribution', [hidden: boolean], ClaudeToggleResult>
   /**
+   * 设置 › 工具管理「给 AI 的长期嘱咐」（总单 Q4 C5）：把这段话写进 Claude Code、Codex、Grok 各自全局说明里星芒那一段
+   * （标记外面客户自己写的不动，空字符串 = 拿掉那一段），再记进设置。三家各自的结果都回来，一家写不上不抛错；
+   * 上次存下的那段话随 settings:get 的 standingInstructions 回来。
+   */
+  saveStandingInstructions: IpcInvokeDefinition<'config:save-standing-instructions', [text: string], StandingInstructionsSaveResult>
+  /**
    * 切回官方账号后那一问（Fable 复查第一轮 3）的回答。ask：Claude Code 现在是官方账号的样子、还是「不逐条确认就执行」时，
    * 先备份，再只撤 permissions.defaultMode = bypassPermissions 和 skipDangerousModePermissionPrompt = true 这两项；
    * 配置这会儿又接着别的地址就抛错不改。keep：什么都不改。两种都记下问过了，以后不再问。
@@ -1728,6 +1735,7 @@ export const ipcInvokeChannels = {
   repairCliHooks: 'config:repair-cli-hooks',
   setClaudeWriteBoundary: 'config:set-claude-write-boundary',
   setClaudeCommitAttribution: 'config:set-claude-commit-attribution',
+  saveStandingInstructions: 'config:save-standing-instructions',
   answerClaudeCommandConfirmation: 'config:answer-claude-command-confirmation',
   inspectRunningTools: 'tools:inspect-running',
   checkToolModels: 'tools:check-models',

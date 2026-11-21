@@ -72,6 +72,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'config:repair-cli-hooks': { log: 'normal', account: 'scoped' },
   'config:set-claude-write-boundary': { label: '只让 Claude Code 改项目文件夹里的文件', log: 'normal', account: 'scoped' },
   'config:set-claude-commit-attribution': { label: 'Claude Code 提交代码时不署名', log: 'normal', account: 'scoped' },
+  // 嘱咐里可能写了客户自己的情况（「我是做外贸的」），入参不进日志；写进了哪几家由服务那边记。
+  'config:save-standing-instructions': { label: '给 AI 的长期嘱咐', log: 'secret-input', account: 'scoped' },
   'config:answer-claude-command-confirmation': { label: '官方 Claude Code 先问再执行', log: 'normal', account: 'scoped' },
   'tools:inspect-running': { label: '换账号后检查哪些工具还开着', log: 'normal', account: 'none' },
   'tools:check-models': { label: '打开工具前核对当前账号能用的模型', log: 'normal', account: 'scoped' },

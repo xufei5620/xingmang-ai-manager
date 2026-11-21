@@ -3424,6 +3424,19 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), false)).rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
   })
 
+  it('saves the standing instructions for the AI only after checking what the renderer sent', async () => {
+    const service = serviceStub()
+    service.saveStandingInstructions = vi.fn(async (text: string) => ({ text, tools: [] }))
+    register(service)
+    const handler = electronMocks.handlers.get('config:save-standing-instructions')!
+
+    await expect(handler(trustedEvent(), '  回答简短一点\r\n我是做外贸的  ')).resolves.toEqual({ text: '回答简短一点\n我是做外贸的', tools: [] })
+    await expect(handler(trustedEvent(), 42)).rejects.toThrow('长期嘱咐格式错误')
+    await expect(handler(trustedEvent(), '字'.repeat(2001))).rejects.toThrow('最多 2000 个字')
+    await expect(handler(trustedEvent(), '星芒AI管理工具：给 AI 的长期嘱咐（结束）')).rejects.toThrow('标记')
+    expect(service.saveStandingInstructions).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps a restorable backup before a reset save and refuses to reset without one', async () => {
     const service = serviceStub()
     const create = vi.fn(() => ({ id: 'backup-1' }))
@@ -10244,6 +10257,7 @@ describe('IPC channel log and account policies', () => {
       'log: secret-input': [
         'account:submit-two-factor-code',
         'codex-remote:save-feishu-credentials',
+        'config:save-standing-instructions',
       ],
       'log: silent': [
         'chat:generate-image',
