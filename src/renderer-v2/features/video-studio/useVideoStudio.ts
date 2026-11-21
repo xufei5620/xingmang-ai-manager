@@ -50,6 +50,7 @@ import {
   videoStudioShotProblem,
   type VideoStudioClipSound,
   type VideoStudioClipSource,
+  type VideoStudioImageDraft,
   type VideoStudioProject,
   type VideoStudioSettings,
   type VideoStudioShot,
@@ -540,18 +541,16 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
 
   // 「让 AI 画一张」：用对话页出图那条（chat:generate-image，凭据在主进程、画好的图存进作品库），这里只拿编号，
   // 画好以后和自己选的图一样用。先出图便宜，客户满意了再拿它出视频。余额、额度不够照页面顶上那条说（带「前往充值」）。
-  const drawShotImage = async (id: string) => {
+  // 画面描述、型号、尺寸这些是出图框里填好交过来的（融合第 4 步，ShotImageDialog），不再读这条视频自己记的画图型号。
+  const drawShotImage = async (id: string, draft: VideoStudioImageDraft) => {
     if (planning || composeAbort.current) return
-    const { shots, settings } = projectRef.current
-    const shot = shots.find((item) => item.id === id)
-    if (!shot || isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot) || !settings.imageModel || !settings.imageGroup) return
-    const problem = videoStudioShotProblem(shot, shots.indexOf(shot))
-    if (problem) { setError(problem); return }
+    const shot = projectRef.current.shots.find((item) => item.id === id)
+    if (!shot || isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot) || !draft.model || !draft.group || !videoStudioPlainText(draft.prompt)) return
     const requestId = createVideoStudioId(), alive = owner.capture()
     setError(''); setNotice('')
     commit((current) => startVideoStudioShotDrawing(current, id, requestId))
     try {
-      const [asset] = await bridge.generateAiImage(buildVideoStudioImageRequest(settings, shot, requestId))
+      const [asset] = await bridge.generateAiImage(buildVideoStudioImageRequest(draft, requestId))
       if (!alive()) return
       // 付了钱的图回来了：同片段，马上存。
       commit((current) => finishVideoStudioShotDrawing(current, id, requestId, asset ? { assetId: asset.assetId } : { error: '没有收到生成的图片' }), { urgent: true })
@@ -569,7 +568,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
       stoppedDrawings.current.delete(requestId)
     }
   }
-  // 「停止画图」：已经交给服务端的这一张照样扣费（确认框里说过）。主进程说已经画完、正在回的，就等它回来照常换上。
+  // 「停止画图」：已经交给服务端的这一张照样扣费（出图框里说过）。主进程说已经画完、正在回的，就等它回来照常换上。
   const stopDrawing = async (id: string) => {
     const requestId = projectRef.current.shots.find((item) => item.id === id)?.drawing
     if (!requestId || stoppedDrawings.current.has(requestId)) return
@@ -614,7 +613,6 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
     selectVideoModel: (model: string, group: string) => commit((current) => selectVideoStudioVideoModel(current, model, group)),
     setShotSeconds: (id: string, seconds: number) => commit((current) => setVideoStudioShotSeconds(current, id, seconds)),
     selectTextModel: (model: string, group: string) => changeSettings({ textModel: model, textGroup: group }),
-    selectImageModel: (model: string, group: string) => changeSettings({ imageModel: model, imageGroup: group }),
     setShotTrim: (id: string, side: VideoStudioTrimSide, seconds: number) => commit((current) => setVideoStudioShotTrim(current, id, side, seconds)),
     drawShotImage,
     stopDrawing,
@@ -623,6 +621,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
     removeShot: (id: string) => commit((current) => ({ ...removeVideoStudioShot(current, id), exported: undefined })),
     addShot: () => commit((current) => addVideoStudioShot(current)),
     pickShotImage,
+    // 出图框「添加参考图」：同对话里加图片那条（chat:pick-images），选好的图存进作品库、回编号。出错由出图框自己说。
+    pickReferenceImages: (room: number) => bridge.pickAiChatImages(room),
     removeShotImage: (id: string) => commit((current) => removeVideoStudioShotImage(current, id)),
     pickLibraryImage,
     pickLibraryClip,
