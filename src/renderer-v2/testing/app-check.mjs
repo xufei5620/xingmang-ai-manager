@@ -9139,6 +9139,56 @@ test('ordinary desktop launch preserves the opened app and exposes a Chinese-loc
   } finally { await page.close() }
 })
 
+// 2026-11-21（「重启框改」「加重启」）：Windows 不肯起已装好的 Codex 时，错误框第一颗是「立即重启」、没有「重置 Codex」；
+// 认不出原因的那种，「立即重启」排在「重置 Codex」后面。两处都弹 Codex 那一版重启框，不挂页顶「需要重启电脑」那条。
+test('a Codex Desktop that Windows will not start offers a restart that asks once and leaves no page-top reminder', async () => {
+  const page = await open('codexLaunchFailure=activation')
+  try {
+    await page.getByTestId('tool-codexDesktop-primary').click()
+    const dialog = page.getByTestId('operation-error')
+    await dialog.getByText('Codex 未能启动', { exact: true }).waitFor()
+    const labels = (await dialog.locator('footer button').allTextContents()).map((text) => text.trim())
+    assert.deepEqual(labels, ['返回', '立即重启', '重试', '复制给客服', '联系客服'])
+    await expect(dialog.getByTestId('operation-error-restartComputer')).toHaveClass(/xm-btn-primary/)
+    await page.screenshot({ path: path.join(artifacts, 'codex-desktop-activation-broken.png') })
+    await dialog.getByTestId('operation-error-restartComputer').click()
+    const restart = page.getByTestId('runtime-restart-dialog')
+    await restart.getByText('重启电脑', { exact: true }).waitFor()
+    await expect(restart).toContainText('重启后请打开星芒，再次点击 Codex 桌面端的「打开」。')
+    await expect(restart).not.toContainText('Node.js')
+    await page.screenshot({ path: path.join(artifacts, 'codex-desktop-restart-confirm.png') })
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'restartWindows').length), 0)
+    await restart.getByTestId('runtime-restart-now').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'restartWindows'))
+    await expect(restart).toHaveCount(0)
+    await waitForToast(page, '电脑将在约 15 秒后重启。')
+    // Codex 那一版不记「还差重启」：换到别的页面也不出页顶那条。
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').waitFor()
+    assert.equal(await page.getByTestId('restart-reminder').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an unexplained Codex Desktop launch failure keeps retry first and adds the restart after 重置 Codex', async () => {
+  const page = await open('codexLaunchFailure=generic')
+  try {
+    await page.getByTestId('tool-codexDesktop-primary').click()
+    const dialog = page.getByTestId('operation-error')
+    await dialog.getByText('Codex 打开失败', { exact: true }).waitFor()
+    const labels = (await dialog.locator('footer button').allTextContents()).map((text) => text.trim())
+    assert.deepEqual(labels, ['返回', '重试', '重置 Codex', '立即重启', '复制给客服', '联系客服'])
+    await expect(dialog.getByTestId('operation-error-retry')).toHaveClass(/xm-btn-primary/)
+    await expect(dialog.getByTestId('operation-error-detail')).toContainText('在开始菜单中搜索「ChatGPT」并直接打开')
+    const footer = await dialog.locator('footer').evaluate((element) => ({ scroll: element.scrollWidth, client: element.clientWidth }))
+    assert.ok(footer.scroll <= footer.client, `错误框底部按钮溢出：${JSON.stringify(footer)}`)
+    await page.screenshot({ path: path.join(artifacts, 'codex-desktop-not-started.png') })
+    await dialog.getByTestId('operation-error-restartComputer').click()
+    await page.getByTestId('runtime-restart-dialog').getByText('重启电脑', { exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第十一批候选 6：保存不再二选一，「重置」收进「高级」，仍要二次确认（v4 起确认就在原处，不另弹窗）。
 test('reset lives under advanced, needs a confirmation and cancelling it keeps the draft without writing', async () => {
   for (const theme of ['light', 'dark']) {
