@@ -51,7 +51,7 @@ describe('data transfer wording', () => {
   })
 
   it('switches usage stats back on only when the user chose the file in the question', () => {
-    // X-3：这台关过的「匿名使用统计」，点「保留这台电脑的」照旧关着。
+    // X-3：这台关过的「匿名使用统计」，点「保留本机设置」照旧关着。
     expect(anonymousUsageFrom({ conflictingAnonymousUsage: true }, false)).toBeUndefined()
     expect(anonymousUsageFrom({ conflictingAnonymousUsage: true }, true)).toBe(true)
     expect(anonymousUsageFrom({ anonymousUsage: false }, false)).toBe(false)

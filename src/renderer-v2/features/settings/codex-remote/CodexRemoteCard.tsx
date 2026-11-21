@@ -28,19 +28,19 @@ import {
  * 卡片最上面那段。只说客户关心的：在哪儿用、花谁的额度、命令要谁点头、什么时候断开。
  * 末尾那句提醒：同意也是在同一个聊天里点的，绑定的飞书或微信账号落到谁手里，谁就能指挥这台电脑（#1407）。
  */
-export const codexRemoteIntro = '在手机上私聊你自己的机器人，就能让这台电脑上的 Codex 干活，用的是星芒的线路和额度。只认配对过的那一个人；Codex 要改文件、跑会改东西的命令，都先在聊天里问你，你回「同意」才动手；只是看文件不问。谁能用你绑定的飞书或微信发消息，谁就能指挥这台电脑，账号别借给别人。'
+export const codexRemoteIntro = '在手机上私聊您的机器人，即可远程操作本机的 Codex，使用星芒的线路和额度。仅响应已配对的用户；Codex 修改文件或执行会产生改动的命令前，将先在聊天中征求您的确认，回复「同意」后才执行，仅查看文件时不询问。任何能使用您绑定的飞书或微信发送消息的人，均可操作本机，请勿将账号借予他人。'
 
 /**
  * 登录的 Windows 账号本身就带管理员权限（自带 Administrator、关了授权弹窗）时说明下面那句（yoyo 2026-11-20 亲手打字同意放宽，
  * 这句是同意的一部分）。这种电脑上怎么打开星芒都是管理员身份，遥控照常能开，但 Codex 改文件、跑命令也都带着管理员权限，
  * 手机上点头前要多看一眼。只在主进程判定是这种账号（快照 alwaysElevated）时摆出来。
  */
-export const codexRemoteAdminAccountNotice = '这台电脑登录的 Windows 账号本身就带管理员权限，Codex 在这里改文件、跑命令也都带着管理员权限，手机上回「同意」前看清楚它要做什么。'
+export const codexRemoteAdminAccountNotice = '本机登录的 Windows 账号自带管理员权限，Codex 在此修改文件、执行命令时同样具有管理员权限。在手机上回复「同意」前，请确认其将执行的操作。'
 
 /** 凭据存不到下次打开时卡上那条（Linux 没有系统钥匙串时只记在内存里，见 codex-remote-store.ts）。 */
 export const codexRemotePersistenceNotices = {
-  'session-only': { tone: 'neutral', title: '凭据只记到这次关掉星芒', body: '这台电脑没有系统钥匙串，下次打开星芒要重新填。' },
-  unavailable: { tone: 'warn', title: '凭据存不下', body: '这台电脑没法安全保存凭据，手机遥控暂时用不了。' },
+  'session-only': { tone: 'neutral', title: '凭据仅在本次运行期间保存', body: '本机没有系统钥匙串，下次打开星芒时需重新填写。' },
+  unavailable: { tone: 'warn', title: '凭据无法保存', body: '本机无法安全保存凭据，手机遥控暂不可用。' },
 } as const
 
 /**
@@ -48,22 +48,22 @@ export const codexRemotePersistenceNotices = {
  * 坐回电脑前得一眼看出是哪儿坏了、去哪儿修。Codex 下次起来了、或者遥控全关了就收起（主进程清掉 codexStartFailed）。
  */
 export const codexStartFailedNotice = {
-  title: 'Codex 没能启动',
-  body: '手机上刚发来的那条没有做。去首页看一下 Codex，好了以后在手机上再发一次。',
+  title: 'Codex 启动失败',
+  body: '手机刚发送的指令未执行。请前往首页检查 Codex，恢复后在手机上重新发送。',
   action: '去首页看 Codex',
 } as const
 
 /**
  * 「干活的文件夹」那一行（YF-19）：电脑上能加几个，手机上发「文件夹」看、发「文件夹 2」换。只加了一个时跟以前一样
- * 只写路径；不止一个时一个一行，正在用的标出来，别的能「用这个」「移除」。
+ * 只写路径；不止一个时一个一行，正在用的标出来，别的能「使用此文件夹」「移除」。
  */
 export const codexRemoteWorkspaceText = {
   title: '干活的文件夹',
-  empty: '还没选。Codex 只在这个文件夹里干活，选一个具体的项目文件夹。',
+  empty: '尚未选择。Codex 仅在此文件夹中运行，请选择具体的项目文件夹。',
   choose: '选择文件夹',
   add: '添加一个',
   inUse: '正在用',
-  use: '用这个',
+  use: '使用此文件夹',
   remove: '移除',
   phoneHint: '手机上发「文件夹」也能换。',
   full: (max: number) => `最多 ${max} 个，先移除一个再添加。`,
@@ -76,20 +76,20 @@ export const codexRemoteWorkspaceText = {
  */
 export const codexRemoteAutoStartText = {
   title: '打开星芒时自动打开遥控',
-  description: '开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。',
-  failed: (reason: string) => `上次打开星芒时没能自动打开：${reason}`,
+  description: '开启后，每次打开星芒将自动连接，无需在此手动开启。如星芒设为开机自启，即使无人在电脑前，也可通过手机操作。如有顾虑，请勿开启。',
+  failed: (reason: string) => `上次打开星芒时未能自动开启：${reason}`,
 } as const
 
 /**
- * 「多久没消息就自动关」那一行（YF-10，yoyo 2026-11-11 亲手打字「不自动关」「默认不关」）。缺省是「不自动关」，
+ * 「无消息自动关闭时间」那一行（YF-10，yoyo 2026-11-11 亲手打字「不自动关」「默认不关」）。缺省是「不自动关」，
  * 选它时下面那句小字说清楚还有哪几种办法关；选了时长不写小字，「打开遥控」那行的说明会带上时长。
  */
 export const codexRemoteIdleCloseText = {
-  title: '多久没消息就自动关',
+  title: '无消息自动关闭时间',
   never: '不自动关',
-  neverHint: '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。',
+  neverHint: '仅在电脑端、托盘中关闭，或在手机上发送「关闭遥控」时才会关闭。',
   // Mac 上没有托盘，星芒的图标在屏幕顶部的菜单栏里（#1745，yoyo 2026-11-11「菜单栏改」）。
-  neverHintMac: '只有你在电脑上、菜单栏里关，或者手机上发「关闭遥控」才会关。',
+  neverHintMac: '仅在电脑端、菜单栏中关闭，或在手机上发送「关闭遥控」时才会关闭。',
 } as const
 
 /**
@@ -124,7 +124,7 @@ const idleCloseOptions = [
  * （飞书重新填凭据、微信重新扫码），放在 remoteChannelSections 的 logoutHint。
  */
 export const codexRemoteConfirmText = {
-  unbind: { title: '解绑？', body: '解绑后，这个人就不能再用手机遥控这台电脑了，要用得重新配对。', ok: '解绑' },
+  unbind: { title: '解绑？', body: '解绑后，该用户将无法通过手机遥控本机，如需使用需重新配对。', ok: '解绑' },
   logout: { title: (channelTitle: string) => `退出${channelTitle}登录？`, ok: '退出登录' },
 } as const
 
@@ -176,7 +176,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navig
     binding = (
       <SettingRow
         title="绑定的人"
-        description={peer ? boundPeerText(peer) : channel.enabled ? '还没配对。点「开始配对」，把配对码私聊发给机器人。' : '还没配对。打开遥控后才能配对。'}
+        description={peer ? boundPeerText(peer) : channel.enabled ? '尚未配对。请点击「开始配对」，将配对码私聊发送给机器人。' : '尚未配对。开启遥控后方可配对。'}
         control={
           <>
             <Button
@@ -394,7 +394,7 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
       )}
       <div className="v2-remote-notices">
         {!snapshot.available && snapshot.unavailableReason && (
-          <Notice tone="warn" title="这台电脑现在不能打开手机遥控" body={snapshot.unavailableReason} testId="settings-remote-unavailable" />
+          <Notice tone="warn" title="本机当前无法开启手机遥控" body={snapshot.unavailableReason} testId="settings-remote-unavailable" />
         )}
         {snapshot.codexStartFailed && (
           <Notice

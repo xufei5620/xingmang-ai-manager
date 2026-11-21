@@ -20,8 +20,8 @@ export function settingsPatchFrom(...updates: AppSettingsV2Update[]): Omit<AppSe
 }
 
 /**
- * 这次要写的「匿名使用统计」（X-3），没有要改的返回 undefined。overwrite = 询问框里点了「换成文件里的」；
- * 点「保留这台电脑的」时这台关过的照旧关着。
+ * 这次要写的「匿名使用统计」（X-3），没有要改的返回 undefined。overwrite = 询问框里点了「使用文件中的设置」；
+ * 点「保留本机设置」时这台关过的照旧关着。
  */
 export function anonymousUsageFrom(
   preview: Pick<DataTransferImportPreview, 'anonymousUsage' | 'conflictingAnonymousUsage'>,
