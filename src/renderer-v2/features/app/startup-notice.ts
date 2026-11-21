@@ -217,7 +217,7 @@ export function displayRelaunchNotice(): StartupNotice {
 }
 
 /**
- * 出错时会自动把错误报告发到海外，这件事以前只写在设置页的一行开关旁边，没人主动
+ * 出错或卡住时（卡住是 #1971 起）会自动把错误报告发到海外，这件事以前只写在设置页的一行开关旁边，没人主动
  * 说过。登录进来后说一次：缺省照旧开着（告知不等于改缺省），给一颗「不想发送」当场
  * 关掉。不写服务名，用户要知道的是「发去海外、能关」。已经关掉的人不用再告诉他。
  */
@@ -227,8 +227,8 @@ export function crashReportingNotice(settings: Pick<AppSettingsV2, 'crashReporti
     id: 'crash-reporting',
     failure: false,
     tone: 'neutral',
-    title: '软件出错时会发送错误报告',
-    body: '软件出错时，会自动把一份错误报告发到海外的错误收集服务，帮我们更快修好问题。报告里不含你的账号、密钥、文件路径和聊天内容。以后想改，可以在「设置」的「隐私数据」里关掉。',
+    title: '软件出错或卡住时会发送错误报告',
+    body: '软件出错或卡住时，会自动把一份错误报告发到海外的错误收集服务，帮我们更快修好问题。报告里不含你的账号、密钥、文件路径和聊天内容。以后想改，可以在「设置」的「隐私数据」里关掉。',
     action: { label: '知道了', crashReporting: 'keep' },
     secondaryAction: { label: '不想发送', crashReporting: 'off' },
     waitsForOnboarding: true,
