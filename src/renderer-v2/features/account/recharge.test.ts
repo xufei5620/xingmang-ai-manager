@@ -226,16 +226,16 @@ describe('recharge', () => {
   it('tells the customer what changed about the plan before they pay again', () => {
     expect(purchasePlanNotice('none', plan(), plan())).toBeNull()
     expect(purchasePlanNotice('price', plan(), plan({ priceAmount: 39 }))).toEqual({
-      title: '价格刚调整过',
-      body: '刚才是 ¥29，现在是 ¥39。下面写的是现在的价格，没问题再点一次。',
+      title: '价格已更新',
+      body: '价格由 ¥29 调整为 ¥39，请确认后重新支付。',
     })
     expect(purchasePlanNotice('price', { priceAmount: 5, currency: 'USD' }, { priceAmount: 9.9, currency: 'USD' })?.body)
-      .toBe('刚才是 $5，现在是 $9.90。下面写的是现在的价格，没问题再点一次。')
+      .toBe('价格由 $5 调整为 $9.90，请确认后重新支付。')
     expect(purchasePlanNotice('terms', plan(), plan())).toEqual({
-      title: '套餐内容刚调整过',
-      body: '价格没变，时长或额度改了。下面写的是现在的内容，没问题再点一次。',
+      title: '套餐内容已更新',
+      body: '套餐的时长或额度已调整，价格不变，请确认后重新支付。',
     })
-    expect(purchasePlanNotice('gone', plan(), null)).toEqual({ title: '这个套餐刚下架了', body: '关掉这个框，看看别的套餐。' })
+    expect(purchasePlanNotice('gone', plan(), null)).toEqual({ title: '该套餐已下架', body: '请关闭此窗口，选择其他套餐。' })
   })
 
   it('keeps the chosen way to pay while it still works and otherwise picks like a fresh dialog', () => {

@@ -3385,8 +3385,8 @@ test('a plan repriced while its purchase dialog is open is shown at the new pric
 
     await purchase.getByRole('button', { name: '打开支付窗口', exact: true }).click()
     const notice = purchase.getByTestId('account-subscription-plan-changed')
-    await notice.getByText('价格刚调整过', { exact: true }).waitFor()
-    assert.equal(await notice.getByText('刚才是 ¥29，现在是 ¥39。下面写的是现在的价格，没问题再点一次。', { exact: true }).count(), 1)
+    await notice.getByText('价格已更新', { exact: true }).waitFor()
+    assert.equal(await notice.getByText('价格由 ¥29 调整为 ¥39，请确认后重新支付。', { exact: true }).count(), 1)
     await purchase.getByText('¥39', { exact: true }).waitFor()
     assert.equal(await purchase.getByText('¥29', { exact: true }).count(), 0)
     // 没下单，卡片上的价也换了。
@@ -3415,7 +3415,7 @@ test('a purchase dialog left open follows a reread plan list instead of charging
     await page.clock.fastForward(61_000)
     await page.evaluate(() => window.dispatchEvent(new Event('focus')))
     await purchase.getByTestId('account-subscription-plan-changed')
-      .getByText('刚才是 $5，现在是 $8。下面写的是现在的价格，没问题再点一次。', { exact: true }).waitFor()
+      .getByText('价格由 $5 调整为 $8，请确认后重新支付。', { exact: true }).waitFor()
     await purchase.getByText('余额 $10.00，扣完剩 $2.00', { exact: true }).waitFor()
     assert.deepEqual(await subscriptionCalls(page), [])
 
@@ -3438,8 +3438,8 @@ test('a plan taken down while its purchase dialog is open cannot be bought from 
 
     await pay.click()
     const notice = purchase.getByTestId('account-subscription-plan-changed')
-    await notice.getByText('这个套餐刚下架了', { exact: true }).waitFor()
-    assert.equal(await notice.getByText('关掉这个框，看看别的套餐。', { exact: true }).count(), 1)
+    await notice.getByText('该套餐已下架', { exact: true }).waitFor()
+    assert.equal(await notice.getByText('请关闭此窗口，选择其他套餐。', { exact: true }).count(), 1)
     assert.equal(await pay.isDisabled(), true)
     assert.deepEqual(await subscriptionCalls(page), [])
     await assertNoToast(page, '外部订阅已开通')

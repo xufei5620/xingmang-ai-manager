@@ -351,18 +351,18 @@ function planCurrency(plan: Pick<AccountSubscriptionPlan, 'currency'>): string {
   return (plan.currency || 'USD').toUpperCase()
 }
 
-/** 框里那份套餐变了时框顶那条（N3）；没变为 null。price 那句把刚才看到的价和现在的价都写出来。 */
+/** 框里那份套餐变了时框顶那条（N3，yoyo 11-21 要书面口吻）；没变为 null。price 那句把调整前后的价都写出来。 */
 export function purchasePlanNotice(
   change: PurchasePlanChange,
   before: Pick<AccountSubscriptionPlan, 'priceAmount' | 'currency'>,
   after: Pick<AccountSubscriptionPlan, 'priceAmount' | 'currency'> | null,
 ): { title: string; body: string } | null {
   if (change === 'price' && after) return {
-    title: '价格刚调整过',
-    body: `刚才是 ${planPriceText(before)}，现在是 ${planPriceText(after)}。下面写的是现在的价格，没问题再点一次。`,
+    title: '价格已更新',
+    body: `价格由 ${planPriceText(before)} 调整为 ${planPriceText(after)}，请确认后重新支付。`,
   }
-  if (change === 'terms') return { title: '套餐内容刚调整过', body: '价格没变，时长或额度改了。下面写的是现在的内容，没问题再点一次。' }
-  if (change === 'gone') return { title: '这个套餐刚下架了', body: '关掉这个框，看看别的套餐。' }
+  if (change === 'terms') return { title: '套餐内容已更新', body: '套餐的时长或额度已调整，价格不变，请确认后重新支付。' }
+  if (change === 'gone') return { title: '该套餐已下架', body: '请关闭此窗口，选择其他套餐。' }
   return null
 }
 
