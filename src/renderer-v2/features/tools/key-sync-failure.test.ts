@@ -35,7 +35,7 @@ describe('key sync failure wording', () => {
   // 0.2.24 深查 D3：工具那把密钥在网页上停用或到期，主进程停下说的那句要原样上屏，不被归成别的错。
   it('shows the stop sentence for a key disabled or expired on the web as it is', () => {
     expect(keySyncFailureText('codex', managedKeyStoppedMessage))
-      .toBe('Codex CLI：这个工具的密钥已经停用或到期，软件不会自动换一把新的。到星芒网页的「令牌管理」里重新启用，或者在「个人中心 › 密钥管理」把它撤销后再试')
+      .toBe('Codex CLI：这个工具的密钥已经停用或到期，软件不会自动换一把新的。到「个人中心 › 密钥管理」找到它点「启用」，或者把它撤销后再试')
   })
 
   it('shows the history account stop sentence as it is', () => {
