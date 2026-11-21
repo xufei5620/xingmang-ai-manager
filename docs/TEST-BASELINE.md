@@ -242,6 +242,63 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 - 给检查页加新项时：别一个接一个地把一串候选文件交给 `readSafeUtf8File`。多半不在的先异步排除，读盘按 `mapWithConcurrency` 限流。
 - 复现（别提交）：写一个 `.mjs`，把 `fs.lstatSync` / `statSync` / `existsSync` 包一层、每次空转 250 微秒，`realpathSync` 按路径级数空转，用 `NODE_OPTIONS="--import <它>"` 加载；再把 `TMPDIR` 指到一个六级深的目录（照 runner 的 `C:\Users\RUNNER~1\AppData\Local\Temp`），单跑 `diagnostics.test.ts`。11-21 验：250 微秒时旧写法红 3 条（含这一条），400 微秒红 30 条、几乎全是这一项；改完 250 微秒全过，400 微秒只剩一条整条 5 秒的测试级超时（直接跑 vitest 用的默认时限，`npm test` 是 30 秒）。
 
+## Mac 开发版首屏那条欢迎页没出来：#2025 把客服二维码改成按需加载，页面多出一个 1 秒多的长任务（2026-11-21）
+
+| 项 | 内容 |
+|---|---|
+| 用例 | `e2e/macos-dev-origin.test.mjs` › the configured macOS development origin renders the real Electron app（`macos-test` 的 `npm run test:mac:dev-origin`） |
+| 11-20 两次 | PR #2025，run 44770306041（整条 12.8 秒）、44780691705（13.2 秒）：页面加载完以后欢迎页 5 秒没被看到，报错只有 `failedRequests=[]` |
+| 这两次的根因 | #2025 把 `src/renderer-v2/features/app/useSupportContact.ts` 的 `import QRCode from 'qrcode'` 改成首屏画出来以后再 `import('qrcode')`。Mac runner 上页面主线程因此在首屏前后多出一个长任务，每轮 1.1~1.6 秒，编译后第一次 4.4 秒。Playwright 判断「看得见」要在页面主线程里跑一段脚本，长任务没完它就问不进去；有几轮长任务落在欢迎页画出来之前，欢迎页本身也跟着晚。冷的第一次再碰上机器忙，就过了 5 秒。#2025 已在它自己的 PR 里把这一处改回静态导入，Markdown 照样按需加载 |
+| 11-18 那次 | PR #1896，quality run 44301446616：`test timed out after 30000ms`，各步自己的超时一个都没报。早于 #2025，跟它无关。当时用例还连生产、各步不打点，没有现场，根因没坐实；现在再出现，看最后打出的是哪一步就知道卡在哪 |
+
+**怎么查出来的**（Mac 上的数字都来自 macos-15 runner 上的一次性探测工作流，照 `macos-test` 的顺序先跑 `test:browser`、`test:mac:release-keychain`、`test:mac:proxy`，每份代码先「编译再跑」几轮、再「直接跑」几轮）：
+
+- Playwright 看到页面加载完，到它看到欢迎页，隔了多久（run 44880468302、44883260566）：
+  - main：33~225 毫秒，编译后第一次 0.8 秒。
+  - #2025 的底座 0b99e0c：27~198 毫秒，编译后第一次 0.7 秒。
+  - #2025 原样：每轮 1.0~1.6 秒，编译后第一次 3.9~4.9 秒。更早一轮探测里真复现过一次 5 秒没看到（run 44877870419）。
+  - #2025 只把 `useSupportContact.ts` 改回静态导入：39~486 毫秒，编译后第一次 0.8 秒，跟 main 一样。
+- 页面自己记的时刻：四份代码都是加载完 0.1~0.4 秒就把欢迎页放进 DOM、有了尺寸。慢的是测试那头看到它。
+- 三处卡顿一起记：主进程（每 50 毫秒打一次点）、测试进程（Vite 开发服务器和 Playwright 的轮询都在这个 node 进程里）、页面长任务。前两处每份代码都一样，都在 0.4 秒以内。只有 #2025 每轮多出一个 1.09~1.61 秒（冷的 4.39 秒）的页面长任务，Playwright 看到欢迎页的时刻就是这个长任务结束的时刻。
+- 长任务里在干什么（run 44887090187）：抓到的那一轮，JS 采样里 qrcode.js 的 `renderToDataURL` 自己占了 1229 毫秒，`clearCanvas` 47 毫秒，也就是 `QRCode.toDataURL` 把二维码画到画布上、再 `canvas.toDataURL()` 编成图片那一步。别的几轮长任务早于采样开始，没抓到：开始采样的命令本身也要等页面主线程空出来。
+- 为什么静态导入时同一步不慢：推测是时机不同，没核。静态导入时它在首屏第一次绘制之前就跑完，画布还是软件画布；按需加载时它落在首屏画出来之后，画布已经交给 GPU，`toDataURL` 要同步从 GPU 读回像素，CI 的 Mac 虚拟机没有真显卡，这一步就要一秒多。真机上大概不会这么慢，也没演过。
+- Linux 上两份代码没差别（加载完到欢迎页都是 150~220 毫秒），本地复现不了。
+
+**排除了什么**（都实测过）：
+
+- 开机那五条读取慢（设置、平台能力、账号会话、更新状态、窗口能力）：Linux 上 0~2 毫秒回，Mac 上 0~14 毫秒。账号会话那条最多等账号恢复 3 秒（`account-startup-gate.ts`），新用户没有要恢复的账号，不用等。
+- Vite 预构建缓存对不上、中途补预构建、整页重载：同一份缓存（14 个依赖），0 次重载。
+- 生产网络慢、连不上、答得慢（以前这条用例真连 `xm.solov.cc` 两条线路）：Linux 上让请求 4 秒才被拒、或 0~1.5 秒才答，欢迎页照样在加载完后 16~180 毫秒出来。
+- 主进程或测试进程卡住：见上，三份代码一样。
+
+**改了什么**（不调超时、不跳过）：
+
+- 用例不再连生产：改用 `e2e/signed-out-smoke-isolation.mjs` 的 `withSignedOutSmokeIsolation` 启动，两个账号站点的公开状态由夹具答，别的请求一律拒绝，只放行这次用例自己的本机开发服务器（新加的 `rendererOrigins`，只认 `http://127.0.0.1:端口`），用例最后用 `verifySignedOutSmokeIsolation` 核一遍。网络从此不是变量。
+- 每一步完成时打一行 `# <步骤> at N ms`（`dev server ready`、`electron launched`、`first window`、`document loaded`、`welcome visible`、`electron closed`），撞上 30 秒总时限也照样打出来。
+- 绿的时候也打一行 `# timeline: {…}`，时刻都是从用例开始算的毫秒：`renderer.welcome`（欢迎页进 DOM）、`renderer.welcomeShown`（有尺寸且 `checkVisibility()` 通过，就是 Playwright 说的看得见）、`renderer.lateRequests`（加载完之后页面又拉了哪些模块、各用多久）、`renderer.longTasks`（`[开始, 毫秒]`）、`mainProcessStalls`、`testProcessStalls`。攒几次就知道离 5 秒多远。
+- 欢迎页 5 秒没被看到时，报错后面接一段 JSON：上面这些，再加 `visibleAfterMore`（再等 3 秒看是晚到还是根本没出来）、`screen`（页面上有哪些 `data-testid`、前 200 个字）、`mainProcess`（主进程多久回话）、`bootstrapReads`（开机那五条读取从页面再问一遍各自多久回）、`fixture`（`e2e/harness.mjs` 的 `observeFixtureBootstrap`：Vite 整页重载、补预构建、没回的脚本）、`failedRequests`、`mainOutput`（主进程最后 20 行输出）。
+
+**下次再红怎么读**：
+
+- `visibleAfterMore` 是「N ms later」，`renderer.longTasks` 里有一条结束时刻跟 Playwright 看到的时刻对得上：页面主线程被占住了，看那段时间拉了什么（`lateRequests`），再比一下这个 PR 改了首屏哪些导入。
+- `renderer.welcome` 没有、`screen` 停在启动页（「正在准备星芒 AI」）、`bootstrapReads` 里有 `unanswered`：那一条读取卡在主进程。
+- `mainProcess` 是 `unanswered`，或 `mainProcessStalls` 里有秒级的：主进程整个卡住。
+- `testProcessStalls` 里有秒级的：测试进程自己卡住（Vite 转换或 Playwright 本身）。
+- `fixture.fullReloads` 大于 0 或 `pendingScripts` 有东西：Vite。
+- 打出了 `welcome visible`、没打出 `electron closed` 就撞了 30 秒：关窗卡住。
+
+**给改首屏导入的人**：把首屏要用的东西挪到首屏画出来以后再做，Mac runner 上可能多出秒级的页面长任务，Linux 上看不出来；画布上的 `toDataURL` 这一类同步读像素的调用最明显。改了首屏的导入方式或先后，就在 PR 的 `macos-test` 日志里看一眼这条用例的 `# timeline`：`longTasks` 有没有多出秒级的一条。
+
+**探测时踩到的**（以后要在 Mac 上临时探测 Electron，照这几条）：
+
+- 用脚本入口起 Electron（`electron.launch({ args: ['some-entry.cjs'] })`）却不调 `app.setAppPath`，应用名会变成 `Electron`，首窗一直不出来（Mac 上第一轮探测 9 次全是这样）。要包一层又要应用名照旧，照 `withSignedOutSmokeIsolation` 写一个带同名 `package.json` 的启动目录。
+- Playwright 起的 Electron 不认 `NODE_OPTIONS=--require`，要预加载就放进启动参数：`['-r', hook, '.']`。
+- 往 `bootstrap.cjs` 前面拼代码时自己补分号：下一行是 `(function …)(…)`，不补就被当成上一行的调用，整段不执行，症状也是首窗不出来。
+- `ElectronApplication.evaluate(fn, arg)` 调 `fn` 时第一个参数是 electron 模块，`arg` 是第二个。
+- 开发版首屏拉的模块超过资源计时缓冲的 250 条，晚到的进不去 `performance.getEntriesByType('resource')`，要用 `PerformanceObserver` 记。
+- 要在用例里录性能追踪：Electron 的 `contentTracing.stopRecording()` 写出的是 protobuf，不是 JSON；用页面的 CDP 会话 `Tracing.start({ transferMode: 'ReturnAsStream', streamFormat: 'json' })`，再用 `IO.read` 读回来。
+- 在 Mac 上连跑用一次性探测工作流（`docs/COLLABORATION.md` §3）。一次推送只认最后那个提交，探测提交要单独推；跑起来以后再推别的提交不影响它，它跑的是自己那个提交。用完删掉分支上的工作流文件。
+
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 
 `fast-check` 写的随机输入测试（各测试文件末尾 `… with random inputs` 那几节：打码、外链白名单、会话编号、换线路改配置、粘贴密钥整理、PowerShell 单引号和通配符转义）每次跑用不同的随机种子，同一条这次绿、下次红是可能的。红的那次是库碰巧造出了一个打破规矩的输入，**代码真有这个缺口**：不按「重跑就过」放过，也不许把生成器改窄躲过去。
