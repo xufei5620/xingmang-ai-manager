@@ -2565,7 +2565,7 @@ test('backup restore requires preview and confirmation before touching files', a
     assert.equal(await page.getByTestId('backup-preview-drawer').count(), 1)
     await preview.getByText('已校验，文件完整', { exact: true }).waitFor()
     await preview.getByText('恢复前会先把当前配置另存一份，恢复后需要重新打开工具。', { exact: true }).waitFor()
-    await preview.getByText('备份在这台电脑上，里面可能有密钥，别随便发给别人。', { exact: true }).waitFor()
+    await preview.getByText('备份保存在本机，其中可能包含密钥，请勿随意提供给他人。', { exact: true }).waitFor()
     await preview
       .getByRole('button', { name: '恢复这份配置', exact: true })
       .click()
@@ -2609,10 +2609,10 @@ test('an empty backup list says where backups come from and backs up the tool pi
   try {
     const card = page.getByTestId('page-backups')
     const state = page.getByTestId('backups-empty')
-    await state.getByText('还没有备份', { exact: true }).waitFor()
+    await state.getByText('暂无备份', { exact: true }).waitFor()
     await state.getByText('点「立即备份」存一份当前的工具配置。', { exact: true }).waitFor()
     await card.getByRole('button', { name: 'Grok CLI', exact: true }).click()
-    await state.getByText('Grok CLI 还没有备份', { exact: true }).waitFor()
+    await state.getByText('Grok CLI 暂无备份', { exact: true }).waitFor()
     await page.getByTestId('backups-create').click()
     await page.getByRole('menu', { name: '立即备份', exact: true }).waitFor()
     await page.getByTestId('backups-create-grok').click()
@@ -2620,7 +2620,7 @@ test('an empty backup list says where backups come from and backs up the tool pi
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'create-backup').map((call) => call.args), ['grok'])
     // 选回「全部工具」：空状态不再点名哪个工具。
     await card.getByRole('button', { name: '全部工具', exact: true }).click()
-    await state.getByText('还没有备份', { exact: true }).waitFor()
+    await state.getByText('暂无备份', { exact: true }).waitFor()
   } finally {
     await page.close()
   }
@@ -2645,7 +2645,7 @@ test('the storage card lists six sizes and only cleans old backups after a confi
     await waitForToast(page, '已清理，腾出约 120 MB。')
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'clean-storage').map((call) => call.args), ['backups'])
     // 只重算清掉的那一行：剩下最近 10 份，按钮灰掉。
-    await card.getByTestId('settings-storage-row-backups').getByText('只有最近 10 份，不用清理', { exact: true }).waitFor()
+    await card.getByTestId('settings-storage-row-backups').getByText('仅保留最近 10 份，无需清理', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-storage-clean-backups').isDisabled(), true)
 
     await card.getByTestId('settings-storage-clean-thumbnails').click()
@@ -2692,11 +2692,11 @@ test('a broken backup keeps its row, cannot be previewed or restored, and can be
     const card = page.getByTestId('page-backups')
     const torn = page.getByTestId('backups-row-backup-torn')
     const unreadable = page.getByTestId('backups-row-backup-unreadable')
-    await torn.locator('.xm-row-desc').getByText('Codex CLI 配置，这份备份用不了，可以删掉', { exact: true }).waitFor()
+    await torn.locator('.xm-row-desc').getByText('Codex CLI 配置，此备份不可用，可删除', { exact: true }).waitFor()
     await torn.getByText('校验失败', { exact: true }).waitFor()
     assert.equal(await torn.getByRole('button', { name: '预览', exact: true }).count(), 0)
     assert.equal(await page.getByTestId('backups-restore-backup-torn').isDisabled(), true)
-    await unreadable.locator('.xm-row-desc').getByText('这份备份用不了，可以删掉', { exact: true }).waitFor()
+    await unreadable.locator('.xm-row-desc').getByText('此备份不可用，可删除', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('backups-restore-backup-unreadable').isDisabled(), true)
     await card.getByText('3 份备份', { exact: true }).waitFor()
     await card.getByRole('button', { name: 'Codex CLI', exact: true }).click()
@@ -3066,7 +3066,7 @@ test('row overflow menus are named after the row they act on', async () => {
     const shown = await backupRowTime(row)
     await row.getByRole('button', { name: '删除这份备份', exact: true }).click()
     const confirm = backups.getByRole('dialog', { name: `删除 ${shown} 的备份？`, exact: true })
-    await confirm.getByText('删除后就不能用它恢复配置了。', { exact: true }).waitFor()
+    await confirm.getByText('删除后将无法使用此备份恢复配置。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '取消', exact: true }).click()
     await confirm.waitFor({ state: 'hidden' })
     assert.equal((await calls(backups)).some((call) => call.name === 'deleteBackup'), false)
@@ -3137,7 +3137,7 @@ test('the version card names the current and the new version and shows what to k
   // 只有更新状态读不到：设置页照常打开，版本卡说没读到，不一直挂着「正在读取」。
   const failed = await fixture('page=updates&fail=update')
   try {
-    await failed.getByTestId('updates-current-version').getByText('版本暂未读到', { exact: true }).waitFor()
+    await failed.getByTestId('updates-current-version').getByText('版本暂未获取', { exact: true }).waitFor()
     assert.equal(await failed.getByText('正在读取更新状态…', { exact: true }).count(), 0)
     assert.equal(await failed.getByTestId('updates-new-version').count(), 0)
   } finally {
@@ -3150,7 +3150,7 @@ test('the version card names the current and the new version and shows what to k
 test('the version and backup cards still show when the settings themselves cannot be read', async () => {
   const updates = await fixture('page=updates&fail=settings-read')
   try {
-    await updates.getByText('设置暂时没有读到', { exact: true }).waitFor()
+    await updates.getByText('设置暂时无法获取', { exact: true }).waitFor()
     assert.equal(await updates.getByRole('tab', { name: '版本更新' }).getAttribute('aria-selected'), 'true')
     await updates.getByTestId('updates-current-version').getByText('当前版本 v0.1.31', { exact: true }).waitFor()
     assert.equal(await updates.getByTestId('updates-new-version').innerText(), '有新版本 v0.1.32')
@@ -3161,7 +3161,7 @@ test('the version and backup cards still show when the settings themselves canno
   }
   const backups = await fixture('page=backups&fail=settings-read')
   try {
-    await backups.getByText('设置暂时没有读到', { exact: true }).waitFor()
+    await backups.getByText('设置暂时无法获取', { exact: true }).waitFor()
     assert.equal(await backups.getByRole('tab', { name: '备份迁移' }).getAttribute('aria-selected'), 'true')
     await backups.getByTestId('backups-row-backup-1').waitFor()
   } finally {
@@ -3772,13 +3772,13 @@ test('settings that wait on the system state say they were not read and read aga
   try {
     await page.getByText('系统状态暂时读不到', { exact: true }).waitFor()
     const contrast = page.locator('[data-anchor="high-contrast"]')
-    await contrast.getByText('暂未读到', { exact: true }).waitFor()
+    await contrast.getByText('暂未获取', { exact: true }).waitFor()
     assert.equal(await page.getByText('本机不支持', { exact: true }).count(), 0)
     await page.getByRole('button', { name: '重新读取', exact: true }).click()
     await page.getByRole('switch', { name: '高对比度', exact: true }).waitFor()
     assert.equal(await page.getByText('系统状态暂时读不到', { exact: true }).count(), 0)
     assert.equal(await page.getByRole('button', { name: '重新读取', exact: true }).count(), 0)
-    assert.equal(await contrast.getByText('暂未读到', { exact: true }).count(), 0)
+    assert.equal(await contrast.getByText('暂未获取', { exact: true }).count(), 0)
   } finally {
     await page.close()
   }
@@ -3844,8 +3844,8 @@ test('the settings search lists matching rows in place, links back to their grou
     assert.equal(await page.getByRole('tab', { name: '启动关闭', exact: true }).getAttribute('aria-selected'), 'true')
     // 几个字都要对上；对不上给一句换个说法。
     await search.fill('镜像 托盘')
-    await page.getByTestId('settings-search-empty').getByText('没有找到相关设置', { exact: true }).waitFor()
-    await page.getByText('换个说法试试，比如「托盘」「镜像」「快捷键」。', { exact: true }).waitFor()
+    await page.getByTestId('settings-search-empty').getByText('未找到相关设置', { exact: true }).waitFor()
+    await page.getByText('请尝试其他关键词，如「托盘」「镜像」「快捷键」。', { exact: true }).waitFor()
     // 点左栏的组也会清掉搜索。
     await page.getByRole('tab', { name: '外观显示', exact: true }).click()
     await page.waitForFunction(() => document.querySelector('[data-testid="settings-search"]')?.value === '')
@@ -3890,7 +3890,7 @@ test('the phone remote card lists several working folders, switches between them
     const rowOf = (folder) => list.locator('.v2-remote-folder').filter({ hasText: folder })
     await rowOf('~/projects/demo').getByTestId('settings-remote-workspace-in-use').getByText('正在用', { exact: true }).waitFor()
     await list.getByText('手机上发「文件夹」也能换。', { exact: true }).waitFor()
-    await rowOf('~/projects/blog').getByRole('button', { name: '用这个', exact: true }).click()
+    await rowOf('~/projects/blog').getByRole('button', { name: '使用此文件夹', exact: true }).click()
     await rowOf('~/projects/blog').getByTestId('settings-remote-workspace-in-use').waitFor()
     assert.equal(await rowOf('~/projects/demo').getByRole('button', { name: '移除', exact: true }).count(), 1)
     await rowOf('~/projects/shop').getByRole('button', { name: '移除', exact: true }).click()
@@ -3921,7 +3921,7 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
   try {
     await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
-    await card.getByTestId('settings-remote-feishu-state').getByText('没打开', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-state').getByText('未开启', { exact: true }).waitFor()
     const toggle = card.getByRole('switch', { name: '打开飞书遥控', exact: true })
     assert.equal(await toggle.isDisabled(), true)
     await card.getByText('先在上面填好飞书应用。', { exact: true }).waitFor()
@@ -3940,15 +3940,15 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     assert.equal(await card.getByTestId('settings-remote-feishu-form').count(), 0)
     assert.equal(await card.getByRole('alert').count(), 0)
     // YF-1：保存以后还差的几步留在卡上，配对成功才收起。
-    await card.getByTestId('settings-remote-feishu-next').getByText('保存好了。再做下面几步，手机上才收得到', { exact: true }).waitFor()
-    await card.getByText('还没配对。打开遥控后才能配对。', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-next').getByText('已保存。请完成以下步骤，手机端方可接收消息', { exact: true }).waitFor()
+    await card.getByText('尚未配对。开启遥控后方可配对。', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-pair').isDisabled(), true)
     await toggle.click()
     await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
     await card.getByText('Codex 空闲', { exact: true }).waitFor()
     await card.getByTestId('settings-remote-feishu-pair').click()
     await card.getByTestId('settings-remote-feishu-code').getByText('482915', { exact: true }).waitFor()
-    await card.getByText('在飞书里打开你建的机器人，私聊发这 6 位数字。10 分钟内有效。', { exact: true }).waitFor()
+    await card.getByText('在飞书中打开您创建的机器人，私聊发送这 6 位数字。10 分钟内有效。', { exact: true }).waitFor()
     // 手机那头发对了配对码：主进程推一份新快照，卡上换成绑定的人。
     await page.evaluate(() => window.remoteHarness.pair('小明'))
     await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对$/).waitFor()
@@ -3959,7 +3959,7 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     const confirm = card.getByTestId('settings-remote-feishu-confirm')
     await card.getByTestId('settings-remote-feishu-unbind').click()
     await confirm.getByRole('heading', { name: '解绑？', exact: true }).waitFor()
-    await confirm.getByText('解绑后，这个人就不能再用手机遥控这台电脑了，要用得重新配对。', { exact: true }).waitFor()
+    await confirm.getByText('解绑后，该用户将无法通过手机遥控本机，如需使用需重新配对。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '取消', exact: true }).click()
     await confirm.waitFor({ state: 'detached' })
     assert.equal(await card.getByTestId('settings-remote-feishu-unbind').count(), 1)
@@ -3967,7 +3967,7 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await card.getByTestId('settings-remote-feishu-unbind').click()
     await confirm.getByRole('button', { name: '解绑', exact: true }).click()
     await confirm.waitFor({ state: 'detached' })
-    await card.getByText('还没配对。点「开始配对」，把配对码私聊发给机器人。', { exact: true }).waitFor()
+    await card.getByText('尚未配对。请点击「开始配对」，将配对码私聊发送给机器人。', { exact: true }).waitFor()
     // 退出登录也先问：确认后凭据清掉、遥控关掉，回到填应用的框。
     await card.getByRole('button', { name: '退出飞书登录', exact: true }).click()
     await confirm.getByRole('heading', { name: '退出飞书登录？', exact: true }).waitFor()
@@ -4061,7 +4061,7 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
     await code.fill('2580')
     await dialog.getByTestId('settings-remote-weixin-code-submit').click()
     // 过了手机上那串数字：扫码的人直接绑上，不用配对码（YF-5）。
-    await dialog.getByText('微信登录好了，已经绑定你这个微信。下一步打开下面的「打开遥控」。', { exact: true }).waitFor()
+    await dialog.getByText('微信已登录并已绑定当前微信。请开启下方「打开遥控」。', { exact: true }).waitFor()
     await block.getByText('已登录：ClawBot decb', { exact: true }).waitFor()
     await block.getByText(/^尾号 c0de 的账号/).waitFor()
     await dialog.getByTestId('settings-remote-weixin-close').click()
@@ -4099,7 +4099,7 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
   }
 })
 
-// YK-5：手机上收到「Codex 没能启动」，电脑卡片上也有一条黄条，点一下去首页；Codex 又起来了就收起。
+// YK-5：手机上收到「Codex 启动失败」，电脑卡片上也有一条黄条，点一下去首页；Codex 又起来了就收起。
 test('the phone remote card says Codex could not start and leads to the home page until Codex starts again', async () => {
   const page = await fixture('page=settings&remoteReady=1')
   try {
@@ -4109,8 +4109,8 @@ test('the phone remote card says Codex could not start and leads to the home pag
     assert.equal(await card.getByTestId('settings-remote-codex-failed').count(), 0)
     await page.evaluate(() => window.remoteHarness.codexStartFailed(true))
     const notice = card.getByTestId('settings-remote-codex-failed')
-    await notice.getByText('Codex 没能启动', { exact: true }).waitFor()
-    await notice.getByText('手机上刚发来的那条没有做。去首页看一下 Codex，好了以后在手机上再发一次。', { exact: true }).waitFor()
+    await notice.getByText('Codex 启动失败', { exact: true }).waitFor()
+    await notice.getByText('手机刚发送的指令未执行。请前往首页检查 Codex，恢复后在手机上重新发送。', { exact: true }).waitFor()
     await notice.getByRole('button', { name: '去首页看 Codex', exact: true }).click()
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
     await page.evaluate(() => window.remoteHarness.codexStartFailed(false))
@@ -4127,7 +4127,7 @@ test('the phone remote card lets the customer turn on opening the remote wheneve
     await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     const row = card.getByTestId('settings-remote-auto-start')
-    await row.getByText('开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。', { exact: true }).waitFor()
+    await row.getByText('开启后，每次打开星芒将自动连接，无需在此手动开启。如星芒设为开机自启，即使无人在电脑前，也可通过手机操作。如有顾虑，请勿开启。', { exact: true }).waitFor()
     const toggle = row.getByRole('switch', { name: '打开星芒时自动打开遥控', exact: true })
     assert.equal(await toggle.getAttribute('aria-checked'), 'false')
     await toggle.click()
@@ -4149,9 +4149,9 @@ test('the phone remote card picks how long it may idle before closing, never by 
     await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     const row = card.getByTestId('settings-remote-idle-close')
-    const neverHint = '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。'
+    const neverHint = '仅在电脑端、托盘中关闭，或在手机上发送「关闭遥控」时才会关闭。'
     await row.getByText(neverHint, { exact: true }).waitFor()
-    const choice = row.getByRole('group', { name: '多久没消息就自动关', exact: true })
+    const choice = row.getByRole('group', { name: '无消息自动关闭时间', exact: true })
     assert.equal(await choice.getByRole('button', { name: '不自动关', exact: true }).getAttribute('aria-pressed'), 'true')
     await card.getByText('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次。', { exact: true }).waitFor()
     await choice.getByRole('button', { name: '12 小时', exact: true }).click()
@@ -4175,7 +4175,7 @@ test('the phone remote card folds a channel that is not logged in while the othe
     const weixin = card.getByTestId('settings-remote-weixin')
     const toggle = weixin.getByRole('button', { name: '微信', exact: true })
     assert.equal(await toggle.getAttribute('aria-expanded'), 'false')
-    await weixin.getByText('没打开', { exact: true }).waitFor()
+    await weixin.getByText('未开启', { exact: true }).waitFor()
     assert.equal(await weixin.getByTestId('settings-remote-weixin-warning').count(), 0)
     assert.equal(await weixin.getByText('实验功能', { exact: true }).count(), 0)
     await toggle.click()
@@ -4204,15 +4204,15 @@ test('the phone remote card shows the last phone request and can stop it, declin
     await row.getByText('最近一次', { exact: true }).waitFor()
     // 刚过零点那几分钟，几分钟前发来的算昨天，前面带上日期（「11 月 11 日 23:57」）。
     assert.match(await row.getByTestId('settings-remote-last-request-text').innerText(), /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 发来一条，正在处理，已经 3 分钟$/)
-    await row.getByText('等你同意 2 条，要在手机上回。', { exact: true }).waitFor()
+    await row.getByText('待确认 2 条，请在手机上回复。', { exact: true }).waitFor()
     await row.getByRole('button', { name: '都拒绝', exact: true }).click()
     await row.getByTestId('settings-remote-last-request-waiting').waitFor({ state: 'detached' })
     assert.equal(await row.getByRole('button', { name: '都拒绝', exact: true }).count(), 0)
     await row.getByRole('button', { name: '停下这一轮', exact: true }).click()
-    await page.waitForFunction(() => /那一条停下了$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
+    await page.waitForFunction(() => /已停止$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
     assert.equal(await row.getByRole('button', { name: '停下这一轮', exact: true }).count(), 0)
     await page.evaluate(() => window.remoteHarness.phoneRequest({ minutesAgo: 20, state: 'failed', reason: '余额不够了，充值后再发一次。' }))
-    await page.waitForFunction(() => /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 那一条没做完：余额不够了，充值后再发一次。$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
+    await page.waitForFunction(() => /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 未完成：余额不够了，充值后再发一次。$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
     await row.getByRole('button', { name: '在记录里看', exact: true }).click()
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'sessions')
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'remote-decline-approvals' || call.name === 'remote-stop-turn').map((call) => call.name), ['remote-decline-approvals', 'remote-stop-turn'])
@@ -4259,7 +4259,7 @@ test('the phone remote card opens on a Windows account that is an administrator 
   try {
     await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
-    await card.getByTestId('settings-remote-admin-account').getByText('这台电脑登录的 Windows 账号本身就带管理员权限，Codex 在这里改文件、跑命令也都带着管理员权限，手机上回「同意」前看清楚它要做什么。').waitFor()
+    await card.getByTestId('settings-remote-admin-account').getByText('本机登录的 Windows 账号自带管理员权限，Codex 在此修改文件、执行命令时同样具有管理员权限。在手机上回复「同意」前，请确认其将执行的操作。').waitFor()
     assert.equal(await card.getByTestId('settings-remote-unavailable').count(), 0)
     assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).isDisabled(), false)
     assert.equal(await card.getByTestId('settings-remote-workspace').isDisabled(), false)
@@ -4538,7 +4538,7 @@ test('desktop notifications start on, the master switch gates test notifications
     await testNotice.click()
     // 系统里把星芒的通知关了也照样「发得出去」，所以不说「已发送」（决定单 D68）；旁边那颗按钮打开了，那句才收起。
     const handedOff = page.locator('.xm-toast', {
-      hasText: '已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。',
+      hasText: '测试通知已提交给系统。如未收到，请在系统通知设置中确认星芒的通知已开启。',
     })
     await handedOff
       .getByRole('button', { name: '打开系统通知设置', exact: true })
@@ -4573,7 +4573,7 @@ test('desktop notifications start on, the master switch gates test notifications
     )
     await page
       .getByText(
-        '每天最多发一次版本、系统、装了哪些工具、安装和更新是否成功；不含账号、密钥、文件路径和对话内容，也没有电脑编号',
+        '每天最多发送一次版本、操作系统、已安装工具及安装更新结果；不包含账号、密钥、文件路径、对话内容及设备标识',
         { exact: true },
       )
       .waitFor()
@@ -4601,7 +4601,7 @@ test('desktop notifications start on, the master switch gates test notifications
 })
 
 // X-3：「搬到新电脑」以前带走「自动发送错误报告：关」，却不带「匿名使用统计：关」。新电脑没动过的直接关上；
-// 这台关过、文件里是开的先问，点「保留这台电脑的」照旧关着，只有点了「换成文件里的」才打开。
+// 这台关过、文件里是开的先问，点「保留本机设置」照旧关着，只有点了「使用文件中的设置」才打开。
 test('importing a moved computer carries the usage-stats switch and asks before turning it back on', async () => {
   const privacyCalls = async (page) => (await calls(page)).filter((call) => call.name === 'platform-privacy').map((call) => call.args)
   let page = await fixture('page=settings&system=1&transfer=usage-off')
@@ -4619,7 +4619,7 @@ test('importing a moved computer carries the usage-stats switch and asks before 
   page = await fixture('page=settings&system=1&usageOff=1&transfer=usage-on')
   try {
     await page.getByRole('tab', { name: '备份迁移', exact: true }).click()
-    const ask = page.getByText('这台电脑上你已经改过这几项，和文件里的不一样：匿名使用统计。', { exact: true })
+    const ask = page.getByText('以下设置在本机已修改，与文件中的不同：匿名使用统计。', { exact: true })
     await page.getByTestId('settings-transfer-import').click()
     await ask.waitFor()
     await page.getByTestId('settings-transfer-keep').click()
@@ -4658,13 +4658,13 @@ test('a system notification settings page that will not open keeps the test noti
     await page.getByRole('tab', { name: '消息通知', exact: true }).click()
     await page.getByRole('button', { name: '发测试通知', exact: true }).click()
     const handedOff = page.locator('.xm-toast', {
-      hasText: '已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。',
+      hasText: '测试通知已提交给系统。如未收到，请在系统通知设置中确认星芒的通知已开启。',
     })
     await handedOff
       .getByRole('button', { name: '打开系统通知设置', exact: true })
       .click()
     await page
-      .locator('.xm-toast', { hasText: '没能打开系统通知设置，请在系统设置里找「通知」。' })
+      .locator('.xm-toast', { hasText: '无法打开系统通知设置，请在系统设置中找到「通知」。' })
       .waitFor()
     assert.equal(await handedOff.count(), 1)
     assert.equal(

@@ -100,7 +100,7 @@ async function openSettingsGroup(page, label) {
 async function openVersionCard(page) {
   const settings = await openSettingsGroup(page, '版本更新')
   const card = settings.getByTestId('page-updates')
-  await expect(card.getByTestId('updates-current-version')).toHaveText(/^当前版本 v|^版本暂未读到$/)
+  await expect(card.getByTestId('updates-current-version')).toHaveText(/^当前版本 v|^版本暂未获取$/)
   return card
 }
 async function openBackupCard(page) {
@@ -723,12 +723,12 @@ test('the Claude Code write boundary switch starts off and goes through its own 
     const settings = await openSettingsGroup(page, '工具管理')
     const row = settings.getByTestId('settings-claude-write-boundary').getByRole('switch', { name: '只让 Claude Code 改项目文件夹里的文件', exact: true })
     await expect(row).toHaveAttribute('aria-checked', 'false')
-    await settings.getByText('开着时，Claude Code 写文件、改文件只在你打开的那个文件夹里做，要改外面的会被拒绝。它在终端里跑的命令不受这个限制。', { exact: true }).waitFor()
+    await settings.getByText('开启后，Claude Code 仅能在当前打开的文件夹中写入和修改文件，修改其他位置将被拒绝。其在终端中执行的命令不受此限制。', { exact: true }).waitFor()
     await row.click()
-    await waitForToast(page, '已打开，新开的 Claude Code 会按这个来。')
+    await waitForToast(page, '已开启，新打开的 Claude Code 将按此设置运行。')
     await expect(row).toHaveAttribute('aria-checked', 'true')
     await row.click()
-    await waitForToast(page, '已关掉，新开的 Claude Code 不再拦。')
+    await waitForToast(page, '已关闭，新打开的 Claude Code 将不再限制文件修改范围。')
     await expect(row).toHaveAttribute('aria-checked', 'false')
     const calls = await page.evaluate(() => window.v2Test.calls)
     assert.deepEqual(calls.filter((entry) => entry.method === 'setClaudeWriteBoundary').map((entry) => entry.args), [[true], [false]])
@@ -744,9 +744,9 @@ test('the Claude Code commit attribution switch starts off and goes through its 
     const settings = await openSettingsGroup(page, '工具管理')
     const row = settings.getByTestId('settings-claude-commit-attribution').getByRole('switch', { name: 'Claude Code 提交代码时不署名', exact: true })
     await expect(row).toHaveAttribute('aria-checked', 'false')
-    await settings.getByText('开着时，Claude Code 替你提交代码（git commit）和发 PR 时，不再在末尾加上 Claude 的署名。', { exact: true }).waitFor()
+    await settings.getByText('开启后，Claude Code 提交代码（git commit）和创建 PR 时，将不再在末尾添加 Claude 署名。', { exact: true }).waitFor()
     await row.click()
-    await waitForToast(page, '已打开，新开的 Claude Code 提交代码时不再署名。')
+    await waitForToast(page, '已开启，新打开的 Claude Code 提交代码时将不再署名。')
     await expect(row).toHaveAttribute('aria-checked', 'true')
     await expect(settings.getByTestId('settings-claude-write-boundary').getByRole('switch')).toHaveAttribute('aria-checked', 'false')
     const calls = await page.evaluate(() => window.v2Test.calls)
@@ -762,7 +762,7 @@ test('the Claude Code write boundary switch says so when the customer\'s own Cla
     const settings = await openSettingsGroup(page, '工具管理')
     const row = settings.getByTestId('settings-claude-write-boundary').getByRole('switch')
     await row.click()
-    await waitForToast(page, '开关记下了。Claude Code 自己的设置里你写过这一项，星芒没有改它。')
+    await waitForToast(page, '设置已记录。Claude Code 自身设置中已有此项，星芒未作修改。')
     await expect(row).toHaveAttribute('aria-checked', 'true')
     await clean(page)
   } finally { await page.close() }
@@ -6110,7 +6110,7 @@ test('the version card asks about running installs before restarting and stays q
     await restart.click()
     const confirm = page.getByRole('dialog', { name: '重启并安装更新？' })
     // D9：装完会自己重新打开，不再叫客户「重新打开工具箱」。
-    await confirm.getByText('请先保存当前工作。星芒会先关掉，装好自动重新打开。', { exact: true }).waitFor()
+    await confirm.getByText('请先保存当前工作。星芒将关闭，安装完成后自动重新打开。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '重启并安装', exact: true }).click()
     await confirm.waitFor({ state: 'hidden' })
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installUpdate').map((entry) => entry.args)), [[{ askIfInstalling: true }]])
@@ -6437,7 +6437,7 @@ test('the restart-to-install dialog warns about the keychain prompt on Mac and t
       if (expected) await dialog.getByTestId('updates-mac-keychain-hint').getByText('始终允许', { exact: false }).waitFor()
       assert.equal(await dialog.getByTestId('updates-mac-keychain-hint').count(), expected, query || 'windows')
       // 反过来，Windows 要提醒的是授权窗口点「是」，Mac 上没有这个窗口。
-      if (!expected) await dialog.getByTestId('updates-windows-consent-hint').getByText('点「是」', { exact: false }).waitFor()
+      if (!expected) await dialog.getByTestId('updates-windows-consent-hint').getByText('点击「是」', { exact: false }).waitFor()
       assert.equal(await dialog.getByTestId('updates-windows-consent-hint').count(), expected ? 0 : 1, query || 'windows')
       await clean(page)
     } finally { await page.close() }
@@ -6488,7 +6488,7 @@ test('a Windows account outside the administrators group is told an administrato
     // 原话叫他点的就是卡底这颗按钮：自己点照样能装，确认框说清要输管理员密码。
     await updates.getByRole('button', { name: '重启并安装', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
-    await dialog.getByTestId('updates-windows-consent-hint').getByText('Windows 会弹出一个授权窗口，要在里面输入管理员密码；点了「否」这次就装不上。', { exact: true }).waitFor()
+    await dialog.getByTestId('updates-windows-consent-hint').getByText('Windows 将弹出授权窗口，请在其中输入管理员密码；如点击「否」，本次将无法安装。', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '稍后安装', exact: true }).click()
 
     await emit({ phase: 'downloaded', progress: null, installNeedsAdminPassword: false })
@@ -6629,7 +6629,7 @@ test('an app already running with administrator rights does not promise a consen
       await updates.getByRole('button', { name: '重启并安装', exact: true }).click()
       const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
       await dialog.waitFor()
-      if (!elevated) await dialog.getByTestId('updates-windows-consent-hint').getByText('点「是」', { exact: false }).waitFor()
+      if (!elevated) await dialog.getByTestId('updates-windows-consent-hint').getByText('点击「是」', { exact: false }).waitFor()
       assert.equal(await dialog.getByTestId('updates-windows-consent-hint').count(), elevated ? 0 : 1, query)
       await clean(page)
     } finally { await page.close() }

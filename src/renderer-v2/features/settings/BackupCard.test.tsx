@@ -43,10 +43,10 @@ describe('broken backups', () => {
   })
 
   it('says a broken backup cannot be used and can be deleted, naming the tool when known', () => {
-    expect(brokenBackupDescription('codex')).toBe('Codex CLI 配置，这份备份用不了，可以删掉')
-    expect(brokenBackupDescription('claude')).toBe('Claude Code 配置，这份备份用不了，可以删掉')
-    expect(brokenBackupDescription(null)).toBe('这份备份用不了，可以删掉')
-    expect(brokenBackupDescription('gemini')).toBe('这份备份用不了，可以删掉')
+    expect(brokenBackupDescription('codex')).toBe('Codex CLI 配置，此备份不可用，可删除')
+    expect(brokenBackupDescription('claude')).toBe('Claude Code 配置，此备份不可用，可删除')
+    expect(brokenBackupDescription(null)).toBe('此备份不可用，可删除')
+    expect(brokenBackupDescription('gemini')).toBe('此备份不可用，可删除')
   })
 })
 

@@ -14,7 +14,7 @@ export function newerRemoteSnapshot(current: CodexRemoteSnapshot | null, next: C
 }
 
 export function remoteTaskLabel(snapshot: Pick<CodexRemoteSnapshot, 'task' | 'pendingApprovals'>): string {
-  if (snapshot.task === 'waiting-approval') return `等你同意 ${snapshot.pendingApprovals} 条`
+  if (snapshot.task === 'waiting-approval') return `待确认 ${snapshot.pendingApprovals} 条`
   if (snapshot.task === 'idle') return '空闲'
   return '正在处理'
 }
@@ -23,7 +23,7 @@ export function remoteAnyEnabled(snapshot: Pick<CodexRemoteSnapshot, 'channels'>
   return Object.values(snapshot.channels).some((channel) => channel.enabled)
 }
 
-/** 卡片标题右边那句：有渠道开着才说 Codex 在干什么；都没开时不写，各渠道的小标签已经说了「没打开」。 */
+/** 卡片标题右边那句：有渠道开着才说 Codex 在干什么；都没开时不写，各渠道的小标签已经说了「未开启」。 */
 export function remoteCardMeta(snapshot: Pick<CodexRemoteSnapshot, 'task' | 'pendingApprovals' | 'channels'>): string | null {
   return remoteAnyEnabled(snapshot) ? `Codex ${remoteTaskLabel(snapshot)}` : null
 }
@@ -31,7 +31,7 @@ export function remoteCardMeta(snapshot: Pick<CodexRemoteSnapshot, 'task' | 'pen
 /**
  * 「打开遥控」那一行的说明：还差哪一步就说哪一步，都齐了说开着时电脑睡不睡、什么时候会断开。
  * 开了「打开星芒时自动打开遥控」（YF-9）时不再说「下次打开星芒要再打开一次」：那时下次会自己连上，留着就说反了。
- * 「闲着几小时也会自动断开」跟着「多久没消息就自动关」选的时长走，选了「不自动关」（YF-10 的缺省）就不说。
+ * 「闲着几小时也会自动断开」跟着「无消息自动关闭时间」选的时长走，选了「不自动关」（YF-10 的缺省）就不说。
  * Mac 上没有托盘，说「收到菜单栏」（#1745 的说法，yoyo 2026-11-11「菜单栏改」）。
  */
 export function remoteSwitchHint(
@@ -51,7 +51,7 @@ export function remoteSwitchHint(
 export function remoteChannelStateLabel(status: RemoteChannelStatus): string {
   switch (status.state) {
     case 'stopped':
-      return '没打开'
+      return '未开启'
     case 'connecting':
       return '正在连接'
     case 'connected':
@@ -59,7 +59,7 @@ export function remoteChannelStateLabel(status: RemoteChannelStatus): string {
     case 'needs-login':
       return '要重新登录'
     case 'error':
-      return '出错了'
+      return '出错'
   }
 }
 
@@ -80,7 +80,7 @@ export const pairingGroupOnlyText = '收到的是群里的消息，不算。要�
  */
 export function pairingAttemptText(channel: Pick<CodexRemoteChannelSnapshot, 'pairing' | 'pairingLocked'>, quietHint: string): string | null {
   const pairing = channel.pairing
-  if (!pairing) return channel.pairingLocked ? '这个码已经作废，请重新开始配对。' : null
+  if (!pairing) return channel.pairingLocked ? '此配对码已失效，请重新开始配对。' : null
   if (pairing.failures) return `配对码错了 ${pairing.failures} 次`
   if (pairing.quiet === 'group-only') return pairingGroupOnlyText
   if (pairing.quiet === 'nothing') return quietHint
@@ -128,17 +128,17 @@ export function lastRequestText(request: CodexRemoteLastRequestSnapshot, now: nu
     case 'running':
       return `${at} 发来一条，正在处理，已经 ${remoteElapsedText(now - request.receivedAt)}`
     case 'done':
-      return `${at} 那一条做完了`
+      return `${at} 已完成`
     case 'stopped':
-      return `${at} 那一条停下了`
+      return `${at} 已停止`
     case 'failed':
-      return request.reason ? `${at} 那一条没做完：${request.reason}` : `${at} 那一条没做完。`
+      return request.reason ? `${at} 未完成：${request.reason}` : `${at} 未完成。`
   }
 }
 
 /** 「最近一次」下面那句：有等你同意的才说，同意要在手机上点（YF-13）。 */
 export function pendingApprovalsText(count: number): string | null {
-  return count > 0 ? `等你同意 ${count} 条，要在手机上回。` : null
+  return count > 0 ? `待确认 ${count} 条，请在手机上回复。` : null
 }
 
 /** 余额低于这个数（美元）、又没有能用的订阅时，开着遥控的卡片上提醒先充值（YF-12）。 */
