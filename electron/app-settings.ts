@@ -307,6 +307,43 @@ export interface AppSettingsWriteHooks {
 }
 
 const writeQueues = new Map<string, Promise<void>>()
+
+/**
+ * settings.json 每换成一份新内容就在这里说一声。主窗口的界面缩放以前靠每 0.5 秒 stat 一次这个文件
+ * 来发现变化（platform/renderer-v2.ts，0.2.24 性能深查 R5），缩到托盘也照跑；能写这个文件的只有本进程
+ * 里下面这几个函数，换完直接通知就够了。内容没变不写，也就不通知。
+ */
+const settingsWriteListeners = new Map<string, Set<() => void>>()
+
+function settingsFileKey(filePath: string): string {
+  return path.resolve(filePath).toLowerCase()
+}
+
+/** 订阅这份设置文件被换成新内容；返回退订函数。监听器抛错不影响那次写入。 */
+export function onAppSettingsWritten(filePath: string, listener: () => void): () => void {
+  const key = settingsFileKey(filePath)
+  const listeners = settingsWriteListeners.get(key) ?? new Set<() => void>()
+  listeners.add(listener)
+  settingsWriteListeners.set(key, listeners)
+  return () => {
+    const current = settingsWriteListeners.get(key)
+    if (!current) return
+    current.delete(listener)
+    if (current.size === 0) settingsWriteListeners.delete(key)
+  }
+}
+
+function notifySettingsWritten(filePath: string): void {
+  const listeners = settingsWriteListeners.get(settingsFileKey(filePath))
+  if (!listeners) return
+  for (const listener of [...listeners]) {
+    try {
+      listener()
+    } catch {
+      // The file is already replaced; a listener failing must not turn that write into a rejection.
+    }
+  }
+}
 const MAX_SETTINGS_BYTES = 1024 * 1024
 
 export function defaultAppSettings(homeDirectory = os.homedir()): AppSettings {
@@ -629,10 +666,33 @@ async function performAtomicSettingsWrite(
       removeIfPresent(backupTemporaryPath),
     ])
   }
+  notifySettingsWritten(filePath)
+}
+
+/**
+ * 磁盘上已经是这份内容就不写，写了返回 true。开机界面会把当前深浅色发一遍（window:set-theme），
+ * 关窗会存一遍窗口位置，多数时候什么都没变，以前也照样走一遍临时文件、fsync、拷 .bak、改名
+ * （0.2.24 性能深查 R4）。C 盘一满、或杀毒软件锁住这个文件，这次白写还会失败，跟开机那次整理
+ * （normalizeAppSettings）想避开的是同一件事，所以两处用同一个口径。
+ */
+async function writeSettingsIfChanged(
+  filePath: string,
+  settings: AppSettings,
+  hooks: AppSettingsWriteHooks,
+): Promise<boolean> {
+  let current: string | null = null
+  try {
+    current = readSafeUtf8FileSync(filePath, '应用设置文件', MAX_SETTINGS_BYTES)
+  } catch {
+    // Unreadable primary: fall through and rewrite it from the effective record.
+  }
+  if (current === settingsContent(settings)) return false
+  await performAtomicSettingsWrite(filePath, settings, hooks)
+  return true
 }
 
 function enqueueSettingsOperation<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
-  const queueKey = path.resolve(filePath).toLowerCase()
+  const queueKey = settingsFileKey(filePath)
   const previous = writeQueues.get(queueKey) ?? Promise.resolve()
   const result = previous.then(operation)
   const tail = result.then(() => undefined, () => undefined)
@@ -746,7 +806,7 @@ export function updateAppSettings(
   // window.
   return enqueueSettingsOperation(filePath, async () => {
     const merged = mergeAppSettings(readAppSettings(filePath, homeDirectory), update)
-    await performAtomicSettingsWrite(filePath, merged, hooks)
+    await writeSettingsIfChanged(filePath, merged, hooks)
     return merged
   })
 }
@@ -763,15 +823,7 @@ export function normalizeAppSettings(
 ): Promise<{ settings: AppSettings; written: boolean }> {
   return enqueueSettingsOperation(filePath, async () => {
     const settings = mergeAppSettings(readAppSettings(filePath, homeDirectory), { version: 2 })
-    let current: string | null = null
-    try {
-      current = readSafeUtf8FileSync(filePath, '应用设置文件', MAX_SETTINGS_BYTES)
-    } catch {
-      // Unreadable primary: fall through and rewrite it from the effective record.
-    }
-    if (current === settingsContent(settings)) return { settings, written: false }
-    await performAtomicSettingsWrite(filePath, settings, {})
-    return { settings, written: true }
+    return { settings, written: await writeSettingsIfChanged(filePath, settings, {}) }
   })
 }
 

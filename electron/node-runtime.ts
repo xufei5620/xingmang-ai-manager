@@ -29,6 +29,7 @@ import {
   windowsElevationCancelledMessage,
   windowsElevationDeniedMessage,
   windowsPowerShellExecutable,
+  windowsStandardAccountAdvice,
   type WindowsElevationCapability,
 } from './windows-elevation'
 import { compareVersionsBy, minimumSupportedNodeVersion, nodeVersionStatus, parseNodeReleaseVersion } from './versions'
@@ -999,7 +1000,8 @@ export function buildNodeRuntimeUacBrokerScript(
  *
  * 1223 和 740 说的是两件不同的事：一个是用户在授权窗口点了「否」，一个是没拿到
  * 管理员权限。普通账号上两条都会出现，而「重新点一次」对它没用，所以探到账号不在
- * 管理员组时换成另一句（见 windows-elevation.ts）。
+ * 管理员组时换成另一句（见 windows-elevation.ts）。普通账号在授权窗口输了别的管理员账号的
+ * 密码会落到 2225，「用当前账号的管理员身份重试」对它同样做不到，也换成那一句。
  */
 export function nodeRuntimeElevationFailureMessage(
   exitCode: number | null,
@@ -1009,7 +1011,9 @@ export function nodeRuntimeElevationFailureMessage(
     case 1223:
       return windowsElevationCancelledMessage('Node.js', capability)
     case 2225:
-      return '管理员授权用的是另一个 Windows 账号，已停止安装以免装到别的账号名下。请用当前 Windows 账号的管理员身份重试。'
+      return `管理员授权用的是另一个 Windows 账号，已停止安装以免装到别的账号名下。${capability === 'standard'
+        ? windowsStandardAccountAdvice()
+        : '请用当前 Windows 账号的管理员身份重试。'}`
     case 740:
       return windowsElevationDeniedMessage('Node.js', capability)
     case 13:
@@ -1073,8 +1077,8 @@ async function runUacProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal)
     })
   } catch (error) {
     if (!(error instanceof CommandRunnerError)) throw error
-    // 只有会提到「授权」的那两条才值得多花一次探测。
-    const capability = error.exitCode === 1223 || error.exitCode === 740
+    // 只有会提到「授权」的那几条才值得多花一次探测。
+    const capability = error.exitCode === 1223 || error.exitCode === 740 || error.exitCode === 2225
       ? await inspectWindowsElevationCapability({ env: plan.env ?? process.env, machinePaths })
       : 'unknown'
     const message = nodeRuntimeElevationFailureMessage(error.exitCode, capability)

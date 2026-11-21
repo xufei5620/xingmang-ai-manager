@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import type { AccountBalance } from '../../../../electron/ipc-contract'
 import type { UsableSubscription } from '../../../../electron/subscription-summary'
 import type { BalanceUsage, ToolsApi } from '../tools/api'
+
+/** 余额折成美元；还没读到、换算比例不对时为 null。 */
+export function balanceDollars(balance: AccountBalance | null): number | null {
+  return balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null
+}
 
 /**
  * 「余额还能用多久」：侧栏账号卡上那行小字、进度条，和侧栏「充值」后面的「余额低」读同一个判断
@@ -97,7 +103,8 @@ export function useRunwayUsage(api: Pick<ToolsApi, 'balanceUsage' | 'peekBalance
   useEffect(() => {
     if (!scope) return
     const peeked = api.peekBalanceUsage(scope)
-    if (peeked) setUsage({ scope, usage: peeked })
+    // 缓存里还是手上这一份就不换：每次都换一个新外壳，余额每刷新一次侧栏就多重画一遍（R8）。
+    if (peeked) setUsage((current) => current?.scope === scope && current.usage === peeked ? current : { scope, usage: peeked })
     const last = loadedAt.current
     if (last?.scope === scope && Date.now() - last.at < runwayUsageRefreshMs) return
     loadedAt.current = { scope, at: Date.now() }

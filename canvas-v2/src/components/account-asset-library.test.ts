@@ -6,7 +6,7 @@ import type { CanvasAssetPage, CanvasListedAssetSummary } from '../host'
 import { AccountAssetLibraryView, type AccountAssetLibraryViewProps } from './AccountAssetLibrary'
 import {
   accountAssetDetail, accountAssetItems, accountAssetLastPageOffset, accountAssetLibraryInProjectNotice, accountAssetLibraryNote, accountAssetLibraryRequested, accountAssetQuery,
-  accountAssetRangeLabel, validateAccountAssetPage, withoutAccountAssetLibraryRoute,
+  accountAssetRangeLabel, accountAssetStepBackOffset, validateAccountAssetPage, withoutAccountAssetLibraryRoute,
 } from './account-asset-library-model'
 
 function image(index: number, extra: Partial<CanvasListedAssetSummary> = {}): CanvasListedAssetSummary {
@@ -57,9 +57,32 @@ describe('account asset library', () => {
   it('refuses a page that does not answer the query it was sent for', () => {
     const query = accountAssetQuery('', 24)
     expect(validateAccountAssetPage(page([image(0)], 24, 25), query).items).toHaveLength(1)
-    for (const wrong of [page([image(0)], 0, 25), { ...page([image(0)], 24, 25), limit: 48 }, page([image(0)], 24, 24), { ...page([], 24, 30), items: 'x' }]) {
+    for (const wrong of [page([image(0)], 0, 25), { ...page([image(0)], 24, 25), limit: 48 }, page([image(0)], 24, 24), page([image(0)], 24, 20), { ...page([], 24, 30), items: 'x' }]) {
       expect(() => validateAccountAssetPage(wrong as CanvasAssetPage, query)).toThrow('素材列表返回的信息不完整，请重新读取。')
     }
+  })
+
+  it('steps back to the last page that still has pictures when the library shrank under the open page', () => {
+    function answer(items: CanvasListedAssetSummary[], offset: number, total: number): CanvasAssetPage {
+      return validateAccountAssetPage(page(items, offset, total), accountAssetQuery('', offset))
+    }
+    // 30 pictures, page 2 open (25–30); six are deleted elsewhere, so refreshing page 2 finds it past the end.
+    expect(accountAssetStepBackOffset(answer([], 24, 20))).toBe(0)
+    // Deleted down to nothing, and a page that ends exactly where the library now ends.
+    expect(accountAssetStepBackOffset(answer([], 24, 0))).toBe(0)
+    expect(accountAssetStepBackOffset(answer([], 24, 24))).toBe(0)
+    // Several pages gone at once: page 4 of 100 pictures, 50 left, lands on page 3 (49–50).
+    expect(accountAssetStepBackOffset(answer([], 72, 50))).toBe(48)
+    // The page it lands on is shown as it is, and paging works from there.
+    const landed = answer([image(0), image(1)], 48, 50)
+    expect(accountAssetStepBackOffset(landed)).toBeNull()
+    expect(accountAssetRangeLabel(landed)).toBe('49–50 / 50 张图片')
+    const footer = view({ page: landed })
+    expect(footer).toMatch(/<button type="button" aria-label="上一页图片">/)
+    expect(footer).toMatch(/<button type="button" aria-label="下一页图片" disabled="">/)
+    // A first page, an empty library and a page with pictures never step anywhere.
+    expect(accountAssetStepBackOffset(answer([], 0, 0))).toBeNull()
+    expect(accountAssetStepBackOffset(answer([image(0)], 24, 25))).toBeNull()
   })
 
   it('shows only pictures it can display, never ones in the recycle bin, and nothing else a host sends along', () => {

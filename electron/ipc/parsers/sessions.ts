@@ -54,6 +54,9 @@ export function parseProviderSessionListQuery(value: unknown): ProviderSessionLi
     if (typeof value.search !== 'string') throw new Error('会话搜索内容格式错误')
     if (value.search.length > 256) throw new Error('会话搜索内容过长')
   }
+  if (value.reuseRecentScan !== undefined && typeof value.reuseRecentScan !== 'boolean') {
+    throw new Error('会话查询格式错误')
+  }
   const integer = (entry: unknown, label: string) => {
     if (entry === undefined) return undefined
     if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < 1) {
@@ -66,5 +69,6 @@ export function parseProviderSessionListQuery(value: unknown): ProviderSessionLi
     search: typeof value.search === 'string' ? value.search : undefined,
     page: integer(value.page, '页码'),
     pageSize: integer(value.pageSize, '分页大小'),
+    ...(value.reuseRecentScan === true ? { reuseRecentScan: true } : {}),
   }
 }
