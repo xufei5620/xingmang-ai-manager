@@ -167,6 +167,12 @@ export interface NativeConfigInspection {
    * 登录时填的 xAI Key）；null = 没登录。只读这一个字段，令牌与 Key 不读。
    */
   grokLoginMode?: string | null
+  /**
+   * Grok 的 config.toml 里只有它自己的 npm 安装包装完写下的那一两行（isGrokInstallerOnlyConfig），旁边也没有
+   * auth.json：客户一个字没填过、也没登录过 Grok 账号。来源记录据此当成「还没配置」，自动写入照样放行
+   * （总单 17）。只给 Grok；缺省 = 不是这种文件。
+   */
+  grokInstallerOnly?: boolean
   dataDirectory: string
   dataDirectoryExists: boolean
   files: NativeConfigFile[]
@@ -1036,6 +1042,35 @@ function readProviderAuthType(provider: ProviderId, paths: string[]): string | u
 interface GrokLogin {
   mode: string
   email: string | null
+}
+
+// Grok 的 npm 安装包（1.0.77 的 bin/postinstall.js）装完会自己写 ~/.grok/config.toml：读出原有内容（读不出就当空的），
+// 往 [cli] 里放 installer = "npm"，npm 给 @xai-official 配了源（或设了 GROK_NPM_REGISTRY）时再放 npm_registry，然后整份写回。
+// 所以从没配置过的电脑上，装完就多出一份只有这一两行的文件：没有密钥、地址、型号，客户一个字没填过。以前它被当成
+// 「来源不明」挡住自动写入，Mac、Linux 新装的 Grok 不会自动连上，只能点「确认连接」（全面检查 I-1）。
+// 只认这一种样子：只有 [cli] 一张表，里面只有这两个键、都是字符串，installer 一定在。多一张表、多一个键（包括星芒
+// 自己写的 auto_update）都不算，照旧当来源不明保护起来。合并写入只往里加，这一两行原样留着。
+const grokInstallerKeys = new Set(['installer', 'npm_registry'])
+
+export function isGrokInstallerOnlyConfig(parsed: Record<string, unknown> | null): boolean {
+  if (!parsed) return false
+  const tables = Object.keys(parsed)
+  if (tables.length !== 1 || tables[0] !== 'cli') return false
+  const cli = parsed.cli
+  if (!isJsonRecord(cli) || typeof cli.installer !== 'string') return false
+  return Object.entries(cli).every(([key, value]) => grokInstallerKeys.has(key) && typeof value === 'string')
+}
+
+// 旁边有 auth.json（登录过 Grok 账号，或读不出是什么）就不算：那份文件加上安装那几行，可能正是客户在用的官方登录。
+function readGrokInstallerOnly(file: NativeConfigFile): boolean {
+  if (!file.exists || file.notUtf8) return false
+  try {
+    fs.lstatSync(path.join(path.dirname(file.path), 'auth.json'))
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false
+  }
+  return isGrokInstallerOnlyConfig(readToml(file.path))
 }
 
 // auth.json 按「签发方::客户端」分区，例如 `https://auth.x.ai::<uuid>`，每个分区里是
@@ -2019,7 +2054,10 @@ function inspectProviderConfigFiles(
       ...readCodexProviderSelection(paths, baseUrl),
     } : {}),
     ...readConfigFilesBroken(provider, paths),
-    ...(provider === 'grok' ? { grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null } : {}),
+    ...(provider === 'grok' ? {
+      grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null,
+      ...(readGrokInstallerOnly(files[0]) ? { grokInstallerOnly: true } : {}),
+    } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {
       try {

@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as TOML from '@iarna/toml'
+import fc from 'fast-check'
 import {
   applyClaudeToggle,
   buildCodexApiKeyAuth,
@@ -56,6 +57,7 @@ import {
   inspectOfficialLogin,
   inspectProviderConfig,
   inspectRetiredGeminiIntegrations,
+  isGrokInstallerOnlyConfig,
   MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS,
   PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS,
   inspectCodexWorkspacePermissionsText,
@@ -4533,6 +4535,34 @@ describe('switching a provider back to the official subscription account', () =>
     expect(JSON.stringify(summary)).not.toContain('secret')
   })
 
+  // 总单 17：Grok 的 npm 安装包装完自己写下的那一两行（1.0.77 的 bin/postinstall.js 用 @iarna/toml 整份写回），
+  // 客户一个字没填过。只认这一种，多一个键、多一张表、旁边有 auth.json 都不算。
+  it('recognizes the config Grok\'s own npm installer leaves behind and nothing more', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('grok', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    const read = () => inspectProviderConfig('grok', roots, providerBaseUrls)
+    fs.writeFileSync(configPath, TOML.stringify({ cli: { installer: 'npm' } }), 'utf8')
+    expect(read()).toMatchObject({ exists: true, hasApiKey: false, grokLoginMode: null, grokInstallerOnly: true })
+    fs.writeFileSync(configPath, TOML.stringify({ cli: { installer: 'npm', npm_registry: 'https://registry.npmmirror.com/' } }), 'utf8')
+    expect(read().grokInstallerOnly).toBe(true)
+    const others: Array<Parameters<typeof TOML.stringify>[0]> = [
+      { cli: { installer: 'npm', auto_update: false } },
+      { cli: { installer: 'npm' }, features: { video_gen: false } },
+      { cli: { npm_registry: 'https://registry.npmjs.org/' } },
+      { cli: { installer: 'npm', npm_registry: true } },
+      { cli: {} },
+    ]
+    for (const other of others) {
+      fs.writeFileSync(configPath, TOML.stringify(other), 'utf8')
+      expect(read(), JSON.stringify(other)).not.toHaveProperty('grokInstallerOnly')
+    }
+    fs.writeFileSync(configPath, TOML.stringify({ cli: { installer: 'npm' } }), 'utf8')
+    fs.writeFileSync(path.join(path.dirname(configPath), 'auth.json'), '{}', 'utf8')
+    expect(read()).not.toHaveProperty('grokInstallerOnly')
+  })
+
   it('classifies the account mode from an inspection', () => {
     const home = temporaryHome()
     expect(providerAccountMode(inspectProviderConfig('codex', providerRoots(home), providerBaseUrls))).toBe('official')
@@ -6237,5 +6267,41 @@ describe('Claude commit attribution toggle', () => {
     saveProviderConfig('claude', 'sk-relay-3', testModels.claude, 'merge', roots, {}, providerBaseUrls, undefined, undefined, undefined, undefined, { claudeWritesInsideProject: true })
     expect(read()).not.toHaveProperty('attribution')
     expect((read().permissions as Record<string, unknown>).blockWritesOutsideWorkingDirectories).toBe(true)
+  })
+})
+
+// 总单 17 的随机输入：「只有 Grok 安装程序写的那一两行」才当成还没配置，客户多写的任何一个字都让它不算；
+// 合并写入只往里加，安装那几行一个字不改。
+describe('Grok installer-only config with random inputs', () => {
+  const key = fc.string({ minLength: 1, maxLength: 12 })
+  const scalar = fc.oneof(fc.string({ maxLength: 20 }), fc.boolean(), fc.integer())
+  const installerTable = fc.record({ installer: fc.string({ maxLength: 40 }), npm_registry: fc.string({ maxLength: 60 }) }, { requiredKeys: ['installer'] })
+
+  it('accepts every config holding only what the installer writes', () => {
+    fc.assert(fc.property(installerTable, (cli) => isGrokInstallerOnlyConfig({ cli })))
+  })
+
+  it('rejects a config with any other table or any other key in [cli]', () => {
+    fc.assert(fc.property(installerTable, key.filter((name) => name !== 'cli'), scalar, (cli, table, value) => (
+      !isGrokInstallerOnlyConfig({ cli, [table]: value }) && !isGrokInstallerOnlyConfig({ cli, [table]: { inner: value } })
+    )))
+    fc.assert(fc.property(installerTable, key.filter((name) => name !== 'installer' && name !== 'npm_registry'), scalar, (cli, extra, value) => (
+      !isGrokInstallerOnlyConfig({ cli: { ...cli, [extra]: value } })
+    )))
+  })
+
+  it('keeps the installer lines word for word when the account config is merged in', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('grok', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fc.assert(fc.property(installerTable, (cli) => {
+      fs.writeFileSync(configPath, TOML.stringify({ cli }), 'utf8')
+      saveProviderConfig('grok', 'sk-relay', testModels.grok, 'merge', roots, {}, providerBaseUrls)
+      const written = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+      const inspection = inspectProviderConfig('grok', roots, providerBaseUrls)
+      return JSON.stringify(written.cli) === JSON.stringify({ ...cli, auto_update: false })
+        && inspection.apiKey === 'sk-relay' && inspection.matchesRelay
+    }), { numRuns: 25 })
   })
 })

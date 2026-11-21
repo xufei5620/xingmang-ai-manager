@@ -2568,6 +2568,60 @@ test('the balance card re-reads usage and the last 7 days along with the balance
   } finally { await page.close() }
 })
 
+// 数每次提交里哪些组件重画了：先于 React 装上 DevTools 那个钩子，React 每提交一次就交来一棵树，
+// 这一次真画过的组件带 PerformedWork（flags 第 1 位）。只数函数、类、forwardRef、memo 这几种组件。
+function countRendersBeforeReact() {
+  const renders = {}
+  window.__renders = renders
+  function isComponent(fiber) { return [0, 1, 11, 14, 15].includes(fiber.tag) }
+  function nameOf(fiber) {
+    let type = fiber.type
+    if (type && type.type) type = type.type
+    if (type && type.render) type = type.render
+    return (type && (type.displayName || type.name)) || 'anonymous'
+  }
+  function walk(next) {
+    if (isComponent(next) && next.alternate && (next.flags & 1)) renders[nameOf(next)] = (renders[nameOf(next)] ?? 0) + 1
+    if (next.child === next.alternate?.child) return
+    for (let child = next.child; child; child = child.sibling) if (child.alternate) walk(child)
+  }
+  let id = 0
+  window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+    supportsFiber: true, isDisabled: false, renderers: new Map(),
+    inject(renderer) { this.renderers.set(++id, renderer); return id },
+    onCommitFiberRoot(_id, root) { walk(root.current) },
+    onCommitFiberUnmount() {}, onPostCommitFiberRoot() {}, onScheduleFiberRoot() {}, checkDCE() {},
+  }
+}
+
+// R8：以前根组件订阅整份余额，每分钟一次的刷新要把整个界面一百多个组件重画三遍，停在首页时工具卡片也跟着画。
+// 现在读回来的余额没变时，只有摆余额的那几块（首页余额卡、侧栏账号卡、状态栏）跟着转圈、停转，根组件和首页本身不动。
+// 时钟停着；用量变了以后两秒那次重读，跟每分钟那次走的是同一条读余额的路。
+test('a balance re-read that changes nothing redraws the balance spots, not the whole window or the home tool cards', async () => {
+  const page = await open('allInstalled=1', true, countRendersBeforeReact)
+  const balanceReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountBalance').length)
+  try {
+    await expect(page.getByTestId('home-balance-days')).toHaveText('按最近用量约还能用 43 天')
+    await expect(page.getByTestId('home-balance-refresh')).toBeEnabled()
+    const reads = await balanceReads()
+    await page.evaluate(() => { for (const name of Object.keys(window.__renders)) delete window.__renders[name] })
+    await page.evaluate(() => window.v2Test.emit('onAccountUsageChanged', { scope: 'xm-account:17' }))
+    await page.clock.runFor(2_000)
+    await expect.poll(balanceReads).toBe(reads + 1)
+    await expect(page.getByTestId('home-balance-refresh')).toBeEnabled()
+    // 读余额落地那一下是微任务，早就落地了；再等一下，让读回来以后的重读（用量、订阅）也都回来。
+    await page.waitForTimeout(200)
+    const renders = await page.evaluate(() => ({ ...window.__renders }))
+    const seen = JSON.stringify(renders)
+    // 余额卡转了圈又停下：钩子确实在数，余额那一块也确实重画了。
+    assert.ok((renders.HomeBalanceCard ?? 0) >= 1, seen)
+    assert.ok((renders.Shell ?? 0) >= 1, seen)
+    for (const name of ['RuntimeApp', 'Home', 'ToolCard', 'StartGuide']) assert.equal(renders[name] ?? 0, 0, `${name} redrew: ${seen}`)
+    await expect(page.getByTestId('home-balance-days')).toHaveText('按最近用量约还能用 43 天')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // #1362 第 1 条：今天花得最多时，今天那根柱子最高，柱顶上的金额以前顶到「近 7 天花费」那一行，跟七天合计叠在一起。
 // 测试数据每天花多少按星期几给，星期五最多，所以把时钟定在一个星期五：UTC 中午，哪个时区的跑机看都还是星期五
 // （以前跟着真实日期走，只有星期五跑才绿）。
@@ -4243,6 +4297,28 @@ test('partial Key configuration keeps successful tools and retries recoverably',
     await page.getByRole('button', { name: '重新同步' }).click()
     await connectedBadge(page, 'claude').waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length), 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 总单 17：写密钥那一轮没写成的工具，客户自己点「确认连接」→「保存并检测」→「完成」连好以后，首页那条黄条
+// 跟着收起。以前要重开软件才消失，标题下面却已经写着「都配好了」。
+test('connecting a tool by hand after the key round failed takes its line off the home banner', async () => {
+  const page = await open('claudeUnconfigured=1&bootstrapPartial=1')
+  try {
+    const banner = page.getByTestId('home-bootstrap-result')
+    await expect(banner).toContainText('Claude 分组暂时不可用')
+    await page.getByTestId('tool-claude-primary').click()
+    const dialog = page.getByTestId('config-dialog')
+    await dialog.waitFor()
+    const primary = dialog.getByTestId('tool-save-config')
+    await expect(primary).toHaveText('保存并检测')
+    await primary.click()
+    await expect(primary).toHaveText('完成')
+    await primary.click()
+    await expect(dialog).toHaveCount(0)
+    await connectedBadge(page, 'claude').waitFor()
+    await expect(banner).toHaveCount(0)
     await clean(page)
   } finally { await page.close() }
 })

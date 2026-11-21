@@ -635,6 +635,11 @@ export interface SystemService {
    * 默认那个不动，它开着就这次不补。从不抛错。可选 = 旧实现不提供。
    */
   topUpClaudeDesktopModels?(): Promise<void>
+  /**
+   * 开机后台替已经装着的 Claude Desktop 从星芒下载站放好 Cowork 工作区（claude-desktop-workspace-seed.ts）。
+   * 没装、放过了、盘不够、远程关了都不下；从不抛错。可选 = 旧实现不提供。
+   */
+  seedClaudeDesktopWorkspace?(): Promise<void>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
   /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
@@ -1137,6 +1142,7 @@ export function createSystemService(
     followManagedKeysNow,
     cancelPendingExternalRouteRecheck,
     topUpClaudeDesktopModels,
+    seedClaudeDesktopWorkspace,
   } = createExternalClientRouteService(context, {
     fetchAvailableModels,
   })
@@ -1462,6 +1468,7 @@ export function createSystemService(
     launchExternalClient,
     switchExternalClientSource,
     topUpClaudeDesktopModels,
+    seedClaudeDesktopWorkspace,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
     enqueueCodexRemoteLaunch: (launch) => installationQueue.enqueue(codexRemoteLaunchQueueKey, launch),

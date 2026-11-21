@@ -315,6 +315,43 @@ export interface AppSettingsWriteHooks {
 }
 
 const writeQueues = new Map<string, Promise<void>>()
+
+/**
+ * settings.json 每换成一份新内容就在这里说一声。主窗口的界面缩放以前靠每 0.5 秒 stat 一次这个文件
+ * 来发现变化（platform/renderer-v2.ts，0.2.24 性能深查 R5），缩到托盘也照跑；能写这个文件的只有本进程
+ * 里下面这几个函数，换完直接通知就够了。内容没变不写，也就不通知。
+ */
+const settingsWriteListeners = new Map<string, Set<() => void>>()
+
+function settingsFileKey(filePath: string): string {
+  return path.resolve(filePath).toLowerCase()
+}
+
+/** 订阅这份设置文件被换成新内容；返回退订函数。监听器抛错不影响那次写入。 */
+export function onAppSettingsWritten(filePath: string, listener: () => void): () => void {
+  const key = settingsFileKey(filePath)
+  const listeners = settingsWriteListeners.get(key) ?? new Set<() => void>()
+  listeners.add(listener)
+  settingsWriteListeners.set(key, listeners)
+  return () => {
+    const current = settingsWriteListeners.get(key)
+    if (!current) return
+    current.delete(listener)
+    if (current.size === 0) settingsWriteListeners.delete(key)
+  }
+}
+
+function notifySettingsWritten(filePath: string): void {
+  const listeners = settingsWriteListeners.get(settingsFileKey(filePath))
+  if (!listeners) return
+  for (const listener of [...listeners]) {
+    try {
+      listener()
+    } catch {
+      // The file is already replaced; a listener failing must not turn that write into a rejection.
+    }
+  }
+}
 const MAX_SETTINGS_BYTES = 1024 * 1024
 
 export function defaultAppSettings(homeDirectory = os.homedir()): AppSettings {
@@ -648,6 +685,7 @@ async function performAtomicSettingsWrite(
       removeIfPresent(backupTemporaryPath),
     ])
   }
+  notifySettingsWritten(filePath)
 }
 
 /**
@@ -673,7 +711,7 @@ async function writeSettingsIfChanged(
 }
 
 function enqueueSettingsOperation<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
-  const queueKey = path.resolve(filePath).toLowerCase()
+  const queueKey = settingsFileKey(filePath)
   const previous = writeQueues.get(queueKey) ?? Promise.resolve()
   const result = previous.then(operation)
   const tail = result.then(() => undefined, () => undefined)
