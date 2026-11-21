@@ -16,6 +16,7 @@ import {
   type ProviderConfigRoots,
 } from './codex-home'
 import { configBackupSuffix, staleConfigBackups, uniqueConfigBackupPath } from './config-file-backups'
+import { noteToolConfigWrite } from './config-read-cache'
 import type { FilePlan, FileRemovePlan, NativeConfigSaveResult, NativeConfigWriteHooks } from './config-files'
 import { assertNoReparseComponents, renameWithTransientRetrySync } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
@@ -555,6 +556,9 @@ export function executeFilePlans(
   // 写回的那份已经是 UTF-8，下回再换线路就照常删，留下的不会越攒越多。
   backupRetention: 'rotate' | 'discard' = 'rotate',
 ): NativeConfigSaveResult {
+  // config:get 几秒内接着用的那份到此作废（config-read-cache.ts）。这里从头到尾是同步的，开头记一笔就够：
+  // 写完之前没人插得进来读；写不成回滚了也照样作废，多重读一遍不要紧。
+  noteToolConfigWrite()
   const targets = plans.map((plan) => plan.path)
   let prepared: PreparedFilePlan[]
   try {

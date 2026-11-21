@@ -64,10 +64,11 @@ import { useLatestRequest } from './latest-request'
 import { resolveRelaySite } from '../../electron/ipc-contract'
 import { LocalAvatar } from './LocalAvatar'
 import { useSharedAccountBalance } from './features/app/balance-context'
+import { useAccountMoney } from './features/app/account-money'
 import { AccountUsagePage, type UsageView } from './features/account/AccountUsage'
 import { AccountOrders, AccountRecharge } from './features/account/AccountRecharge'
 import { ToolKeyLimits } from './features/account/ToolKeyLimits'
-import { AccountOverview, type AccountSummary } from './features/account/AccountOverview'
+import { AccountOverview } from './features/account/AccountOverview'
 import { AccountProfileDialog } from './features/account/AccountProfileDialog'
 import { AccountSecurity } from './features/account/AccountSecurity'
 import { OtherAppsCard } from './features/account/OtherApps'
@@ -292,7 +293,6 @@ export function AccountPage({
   rechargeAmount,
   paymentReturn,
   accountSession,
-  summary,
   keyTools,
   onLogin,
   onAccountChanged,
@@ -322,8 +322,6 @@ export function AccountPage({
   paymentReturn?: { sequence: number; order: string | null }
   /** 外壳手上的登录状态：页面自己读回来之前先拿它摆出页签。缺省 = 等页面自己读。 */
   accountSession?: AccountSessionState
-  /** 外壳和首页同源的那几样数（还能用几天、能扣的订阅、近 7 天花费）；缺省 = 概览不写这几行。 */
-  summary?: AccountSummary
   /** 「配置到工具」下拉里的工具，带装没装、是不是官方登录；缺省 = 只列名字，都能点。 */
   keyTools?: readonly KeyToolTarget[]
   onLogin?: (target?: LoginTarget) => void
@@ -379,6 +377,9 @@ export function AccountPage({
     openLanding('orders')
   }
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
+  // 外壳和首页同源的那几样数（还能用几天、能扣的订阅、近 7 天花费）：外面没套时概览不写这几行。
+  // 直接读外壳算好的那份，不经外壳一层层传进来：外壳不再跟着余额刷新重画（R8）。
+  const summary = useAccountMoney()?.accountSummary
   const [visited, setVisited] = useState<AccountTab[]>([tab])
   useEffect(() => {
     setVisited((values) => (values.includes(tab) ? values : [...values, tab]))

@@ -11,7 +11,7 @@ import { instantiateWorkshopGraph } from '../editor/workshop-graph'
 import { buildCanvasRunPreflight } from '../runtime/run-preflight'
 import { createHostExecutors } from '../engine/executors'
 import { parseNodeImageEditMask, resolveImageMaskSource, imageMaskConfigurationError } from './image-mask-workflow'
-import { portableImageEditMask, type ImageEditMask } from './image-edit-mask'
+import { assertImageEditMaskInput, imageEditMaskUnsupportedModelMessage, portableImageEditMask, type ImageEditMask } from './image-edit-mask'
 
 const first = 'a'.repeat(43), selected = 'b'.repeat(43)
 function recipe(): ImageEditMask { return { version: 1, sourceAssetId: selected, width: 384, height: 256, strokes: [{ tool: 'brush', size: .1, points: Array.from({ length: 300 }, (_, i) => ({ x: i / 300, y: .5 })) }] } }
@@ -94,6 +94,24 @@ describe('image mask configuration chain', () => {
     }
   })
 
+  it('tells two source images, a whole group and a changed source apart in the same words as the desktop host', () => {
+    const original = workflow()
+    const other = { ...structuredClone(original.nodes[0]), id: 'other', position: { x: 0, y: 300 } }
+    other.data.result = { kind: 'image', assetId: first, localUrl: `xingmang-asset://image/${first}`, width: 384, height: 256 }
+    const initial = toCanvasRunGraph([...original.nodes, other].map(toCanvasNode), original.edges, { image: 'provider', video: '' })
+    function reason(change: (graph: typeof initial) => void): string | undefined {
+      const graph = structuredClone(initial); change(graph)
+      const plan = buildCanvasRunPreflight({ graph, scope: { kind: 'all' }, imageModels: ['gpt-image-1'], videoModels: [] })
+      expect(plan).toMatchObject({ canStart: false, paidRequestCount: 0 })
+      return plan.items.find((item) => item.nodeId === 'edit')?.reason
+    }
+    expect(reason((graph) => { graph.edges.push({ ...graph.edges[0], id: 'second', source: 'other' }) })).toBe('局部修改只能用一张原图')
+    expect(reason((graph) => { graph.edges[0].sourceHandle = 'out:images' })).toBe('局部修改只能用一张原图')
+    expect(reason((graph) => { graph.nodes[0].data.adoptedAssetId = first })).toBe('原图已变化，请重新核对蒙版')
+    expect(imageMaskConfigurationError(recipe(), 'image-edit', 'gpt-image-1', [])).toBe('请先连接一张原图')
+    expect(imageMaskConfigurationError(recipe(), 'image-edit', 'gpt-image-1', [{ assetId: selected }, { assetId: first }])).toBe('局部修改只能用一张原图')
+  })
+
   it('never degrades a mask to an unmasked legacy request', async () => {
     const host = { generateImage: vi.fn(), editImage: vi.fn(), generateVideo: vi.fn(), cancelRequest: vi.fn() }
     const executors = createHostExecutors({ imageGroup: 'provider', videoGroup: '', host })
@@ -102,5 +120,15 @@ describe('image mask configuration chain', () => {
       await expect(executors[kind](node, {}, new AbortController().signal)).rejects.toThrow('不会退回普通图像编辑')
     }
     expect(host.generateImage).not.toHaveBeenCalled(); expect(host.editImage).not.toHaveBeenCalled()
+  })
+
+  it('says an unsupported model never falls back to a whole-image edit, in the run check and the node card alike', () => {
+    const original = workflow(), graph = toCanvasRunGraph(original.nodes.map(toCanvasNode), original.edges, { image: 'provider', video: '' })
+    graph.nodes[1].data.model = 'dall-e-2'
+    const plan = buildCanvasRunPreflight({ graph, scope: { kind: 'all' }, imageModels: ['gpt-image-1', 'dall-e-2'], videoModels: [] })
+    expect(plan).toMatchObject({ canStart: false, paidRequestCount: 0 })
+    expect(plan.items.find((item) => item.nodeId === 'edit')?.reason).toBe('当前模型尚未接通蒙版局部修改，请选择支持的 GPT Image 模型；不会改为整图生成')
+    expect(imageMaskConfigurationError(recipe(), 'image-edit', 'dall-e-2', [{ assetId: selected, width: 384, height: 256 }])).toBe(imageEditMaskUnsupportedModelMessage)
+    expect(() => assertImageEditMaskInput(recipe(), 'dall-e-2', [{ assetId: selected, width: 384, height: 256 }])).toThrow(imageEditMaskUnsupportedModelMessage)
   })
 })

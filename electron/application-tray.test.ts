@@ -1,11 +1,15 @@
 import { EventEmitter } from 'node:events'
-import { describe, expect, it, vi } from 'vitest'
+import fc from 'fast-check'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Menu, MenuItemConstructorOptions, NativeImage } from 'electron'
 import {
   buildApplicationTrayMenu,
   createApplicationTray,
+  nextTrayBalanceTextChangeAt,
   resolveTrayUpdateEntry,
   trayBalanceLabel,
+  trayBalanceStaleAfterMs,
+  trayBalanceText,
   trayKeepAwakeLabel,
   traySubscriptionLabel,
   type ApplicationTrayOptions,
@@ -499,6 +503,138 @@ describe('application tray subscription line', () => {
     const labels = (subscriptionLabel?: string) => buildApplicationTrayMenu({ accountLabel: 'u', balanceUsd: 0, subscriptionLabel, installedTools: [] }, actions, () => undefined).map((entry) => entry.label)
     expect(labels('剩余 USD 9.00 · 10月3日到期').slice(3, 5)).toEqual(['余额：USD 0.00', '订阅：剩余 USD 9.00 · 10月3日到期'])
     expect(labels()).not.toContainEqual(expect.stringContaining('订阅'))
+  })
+})
+
+// F8-3：托盘里的余额是最后一次读到的，后来一直读不到也照旧显示。读到太久的要写多久以前，登录了一个都没读到要说「暂未读到」。
+describe('application tray balance that could not be read again', () => {
+  const minute = 60_000
+  const readAt = Date.parse('2026-11-20T08:00:00Z')
+  const at = (ms: number) => readAt + ms
+  const signedIn = { balanceUsd: 12.3, balanceReadAt: readAt, signedIn: true }
+
+  afterEach(() => { vi.useRealTimers() })
+
+  it('tells a signed-in account that has no balance yet apart from nobody being signed in', () => {
+    expect(trayBalanceText({ signedIn: true }, readAt)).toBe('暂未读到')
+    expect(trayBalanceText({ balanceUsd: null, balanceReadAt: null, signedIn: true }, readAt)).toBe('暂未读到')
+    expect(trayBalanceText({ balanceUsd: Number.NaN, balanceReadAt: readAt, signedIn: true }, readAt)).toBe('暂未读到')
+    expect(trayBalanceText({ signedIn: false }, readAt)).toBe('\u2014')
+    expect(trayBalanceText({}, readAt)).toBe('\u2014')
+  })
+
+  it('shows the amount alone until it is fifteen minutes old, then how long ago it was read', () => {
+    expect(trayBalanceStaleAfterMs).toBe(15 * minute)
+    expect(trayBalanceText(signedIn, readAt)).toBe('USD 12.30')
+    expect(trayBalanceText(signedIn, at(10 * minute + 30_000))).toBe('USD 12.30')
+    expect(trayBalanceText(signedIn, at(15 * minute - 1))).toBe('USD 12.30')
+    expect(trayBalanceText(signedIn, at(15 * minute))).toBe('USD 12.30（15 分钟前）')
+    expect(trayBalanceText(signedIn, at(23 * minute + 59_000))).toBe('USD 12.30（23 分钟前）')
+    expect(trayBalanceText(signedIn, at(60 * minute - 1))).toBe('USD 12.30（59 分钟前）')
+    expect(trayBalanceText(signedIn, at(60 * minute))).toBe('USD 12.30（1 小时前）')
+    expect(trayBalanceText(signedIn, at(135 * minute))).toBe('USD 12.30（2 小时前）')
+    expect(trayBalanceText(signedIn, at(24 * 60 * minute - 1))).toBe('USD 12.30（23 小时前）')
+    expect(trayBalanceText(signedIn, at(24 * 60 * minute))).toBe('USD 12.30（一天多以前）')
+    expect(trayBalanceText({ ...signedIn, balanceUsd: 0 }, at(20 * minute))).toBe('USD 0.00（20 分钟前）')
+  })
+
+  it('keeps the old wording without a read time, and counts from the read once a clock set back catches up', () => {
+    expect(trayBalanceText({ balanceUsd: 12.3, signedIn: true }, at(3 * 60 * minute))).toBe('USD 12.30')
+    expect(trayBalanceText({ ...signedIn, balanceReadAt: Number.NaN }, at(3 * 60 * minute))).toBe('USD 12.30')
+    expect(nextTrayBalanceTextChangeAt({ ...signedIn, balanceReadAt: Number.NaN }, readAt)).toBeNull()
+    expect(trayBalanceText(signedIn, at(-30 * minute))).toBe('USD 12.30')
+    expect(nextTrayBalanceTextChangeAt(signedIn, at(-30 * minute))).toBe(at(15 * minute))
+    expect(nextTrayBalanceTextChangeAt({ balanceUsd: 12.3 }, readAt)).toBeNull()
+    expect(nextTrayBalanceTextChangeAt({ signedIn: true }, readAt)).toBeNull()
+  })
+
+  it('names the next moment the wording changes, at most once a minute, and stops after a day', () => {
+    expect(nextTrayBalanceTextChangeAt(signedIn, readAt)).toBe(at(15 * minute))
+    expect(nextTrayBalanceTextChangeAt(signedIn, at(15 * minute))).toBe(at(16 * minute))
+    expect(nextTrayBalanceTextChangeAt(signedIn, at(59 * minute + 10_000))).toBe(at(60 * minute))
+    expect(nextTrayBalanceTextChangeAt(signedIn, at(90 * minute))).toBe(at(120 * minute))
+    expect(nextTrayBalanceTextChangeAt(signedIn, at(23 * 60 * minute + 1))).toBe(at(24 * 60 * minute))
+    expect(nextTrayBalanceTextChangeAt(signedIn, at(24 * 60 * minute))).toBeNull()
+  })
+
+  it('names exactly the moments the wording changes, with random inputs', () => {
+    const day = 24 * 60 * minute
+    fc.assert(fc.property(fc.integer({ min: -minute, max: 2 * day }), fc.integer({ min: 0, max: day }), (age, probe) => {
+      const now = at(age)
+      const next = nextTrayBalanceTextChangeAt(signedIn, now)
+      const text = trayBalanceText(signedIn, now)
+      if (next === null) {
+        expect(trayBalanceText(signedIn, now + probe)).toBe(text)
+        return
+      }
+      expect(next).toBeGreaterThan(now)
+      expect(next - now).toBeLessThanOrEqual(60 * minute)
+      // 一变就是下一档：最多一分钟重建一次菜单。
+      const after = nextTrayBalanceTextChangeAt(signedIn, next)
+      if (after !== null) expect(after - next).toBeGreaterThanOrEqual(minute)
+      // 到点之前一个字都不变，到点那一刻就变：不会漏掉一次，也不会白重建菜单。
+      expect(trayBalanceText(signedIn, Math.min(now + probe, next - 1))).toBe(text)
+      expect(trayBalanceText(signedIn, next)).not.toBe(text)
+    }), { numRuns: 500 })
+  })
+
+  it('rebuilds the menu and tooltip on its own when the wording changes, from a fresh snapshot each time', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(readAt)
+    const getSnapshot = vi.fn((): ApplicationTraySnapshot => ({ installedTools: [], accountLabel: 'u', ...signedIn }))
+    const { runtime, handle } = fixture({ getSnapshot })
+    const lastBalanceRow = () => vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0][3].label
+    expect(lastBalanceRow()).toBe('余额：USD 12.30')
+    const built = vi.mocked(runtime.buildMenu).mock.calls.length
+    vi.advanceTimersByTime(15 * minute - 1)
+    expect(vi.mocked(runtime.buildMenu).mock.calls.length).toBe(built)
+    vi.advanceTimersByTime(1)
+    expect(lastBalanceRow()).toBe('余额：USD 12.30（15 分钟前）')
+    expect(handle.setToolTip).toHaveBeenLastCalledWith('星芒AI管理工具\n余额：USD 12.30（15 分钟前）')
+    vi.advanceTimersByTime(minute)
+    expect(lastBalanceRow()).toBe('余额：USD 12.30（16 分钟前）')
+    expect(getSnapshot).toHaveBeenCalledTimes(3)
+  })
+
+  it('starts counting again from a newer read and does nothing extra while the balance is fresh', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(readAt)
+    let snapshot: ApplicationTraySnapshot = { installedTools: [], ...signedIn }
+    const { controller, runtime } = fixture({ getSnapshot: () => snapshot })
+    vi.advanceTimersByTime(10 * minute)
+    snapshot = { installedTools: [], ...signedIn, balanceUsd: 11, balanceReadAt: at(10 * minute) }
+    controller.updateSnapshot()
+    const built = vi.mocked(runtime.buildMenu).mock.calls.length
+    vi.advanceTimersByTime(15 * minute - 1)
+    expect(vi.mocked(runtime.buildMenu).mock.calls.length).toBe(built)
+    expect(vi.getTimerCount()).toBe(1)
+    vi.advanceTimersByTime(1)
+    expect(vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0][3].label).toBe('余额：USD 11.00（15 分钟前）')
+  })
+
+  it('keeps no timer when there is nothing that will change, and drops it when the tray goes away', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(readAt)
+    const unread = fixture({ getSnapshot: () => ({ installedTools: [], signedIn: true }) })
+    expect(vi.mocked(unread.runtime.buildMenu).mock.calls.at(-1)![0][3].label).toBe('余额：暂未读到')
+    expect(unread.handle.setToolTip).toHaveBeenLastCalledWith('星芒AI管理工具\n余额：暂未读到')
+    expect(vi.getTimerCount()).toBe(0)
+    unread.controller.dispose()
+
+    const getSnapshot = vi.fn((): ApplicationTraySnapshot => ({ installedTools: [], ...signedIn }))
+    const read = fixture({ getSnapshot })
+    expect(vi.getTimerCount()).toBe(1)
+    read.controller.dispose()
+    expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(2 * 60 * minute)
+    expect(getSnapshot).toHaveBeenCalledOnce()
+
+    vi.setSystemTime(readAt)
+    const failing = fixture({ getSnapshot: () => ({ installedTools: [], ...signedIn }) })
+    failing.handle.setContextMenu.mockImplementationOnce(() => { throw new Error('native menu failed') })
+    vi.advanceTimersByTime(15 * minute)
+    expect(failing.controller.available).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
 

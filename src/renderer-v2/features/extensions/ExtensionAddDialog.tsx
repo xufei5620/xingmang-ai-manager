@@ -1,5 +1,5 @@
 // 「自定义连接」「从文件夹导入」「添加插件」「添加插件市场」那张表单，和 Grok 装插件前那句「信任并安装」（0.2.25 从
-// ExtensionsPage.tsx 原样搬出来）。外接工具、技能、插件三页和合成以后的「插件」页共用这一份，字和校验一处改。
+// 旧外接工具页原样搬出来，旧页已删）。字和校验只在这一处改。
 import { useMemo, useState, type ReactNode } from 'react'
 import { Download, FolderOpen, Plus } from 'lucide-react'
 import { Button, Dialog, Input, Notice, Segment, Select, Textarea } from '../../ui'
@@ -556,7 +556,7 @@ export function ExtensionAddDialog({
         }
       >
         <p>
-          插件里带的技能、命令和外接工具，装好后每次打开 {toolName} 都会自动运行，能像你本人一样读写这台电脑上的文件。
+          插件里带的技能、命令和连接，装好后每次打开 {toolName} 都会自动运行，能像你本人一样读写这台电脑上的文件。
         </p>
         <dl className="v2-business-kv">
           <dt>来源</dt>

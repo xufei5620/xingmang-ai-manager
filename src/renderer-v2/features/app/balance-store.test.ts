@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccountBalance } from '../../../../electron/ipc-contract'
 import { proxyAuthRequiredMessage } from '../../../../electron/network-failure'
-import { createAccountBalanceStore, type AccountBalanceStore } from './balance-store'
+import { createAccountBalanceStore, sameFlatRecord, subscribeBalanceReads, type AccountBalanceStore } from './balance-store'
 
 const balance = (displayAmount: number): AccountBalance => ({
   quota: displayAmount * 500_000, usedQuota: 0, quotaPerUnit: 500_000,
@@ -391,5 +391,68 @@ describe('shared account balance network failure streak', () => {
     expect(store.getSnapshot().networkFailures).toBe(2)
     store.setScope('new-api:2')
     expect(store.getSnapshot().networkFailures).toBe(0)
+  })
+})
+
+// R8: the root used to take the whole snapshot, so every refresh re-rendered the
+// whole window three times. What narrow subscribers rely on is pinned here.
+describe('shared account balance for narrow subscribers', () => {
+  const stores: AccountBalanceStore[] = []
+  function create(read: () => Promise<AccountBalance>) {
+    const store = createAccountBalanceStore({ read })
+    stores.push(store)
+    return store
+  }
+  afterEach(() => { stores.splice(0).forEach((store) => store.dispose()) })
+
+  it('keeps the same balance object when a refresh reads back the same amount', async () => {
+    const read = vi.fn<() => Promise<AccountBalance>>().mockResolvedValue(balance(12))
+    const store = create(read)
+    store.setScope('new-api:1')
+    await store.refresh()
+    const first = store.getSnapshot()
+    read.mockResolvedValue(balance(12))
+    await store.refresh('manual')
+    const second = store.getSnapshot()
+    expect(second).not.toBe(first)
+    expect(second.updatedAt).not.toBeNull()
+    expect(second.balance).toBe(first.balance)
+    read.mockResolvedValue(balance(11))
+    await store.refresh('manual')
+    expect(store.getSnapshot().balance).not.toBe(first.balance)
+    expect(store.getSnapshot().balance).toEqual(balance(11))
+  })
+
+  it('tells read listeners once per landed read, not for the spinner, failures or an account clear', async () => {
+    const read = vi.fn<() => Promise<AccountBalance>>().mockResolvedValue(balance(5))
+    const store = create(read)
+    const onRead = vi.fn()
+    const stop = subscribeBalanceReads(store, onRead)
+    store.setScope('new-api:1')
+    await store.refresh()
+    expect(onRead).toHaveBeenCalledTimes(1)
+    read.mockRejectedValueOnce(new Error('后台暂时不可用'))
+    await store.refresh('manual')
+    expect(onRead).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(store.getSnapshot().loading).toBe(false))
+    await store.refresh('manual')
+    expect(onRead).toHaveBeenCalledTimes(2)
+    store.setScope('new-api:2')
+    expect(store.getSnapshot().updatedAt).toBeNull()
+    expect(onRead).toHaveBeenCalledTimes(2)
+    await vi.waitFor(() => expect(onRead).toHaveBeenCalledTimes(3))
+    stop()
+    await store.refresh('manual')
+    expect(onRead).toHaveBeenCalledTimes(3)
+  })
+
+  it('compares flat records field by field', () => {
+    expect(sameFlatRecord(null, null)).toBe(true)
+    expect(sameFlatRecord(balance(1), null)).toBe(false)
+    expect(sameFlatRecord(balance(1), balance(1))).toBe(true)
+    expect(sameFlatRecord(balance(1), balance(2))).toBe(false)
+    expect(sameFlatRecord({ monthQuota: 1, weekQuota: 2 }, { monthQuota: 1, weekQuota: 2 })).toBe(true)
+    expect(sameFlatRecord<Record<string, number>>({ monthQuota: 1 }, { monthQuota: 1, weekQuota: 2 })).toBe(false)
+    expect(sameFlatRecord<Record<string, number | undefined>>({ monthQuota: 1, weekQuota: undefined }, { monthQuota: 1, dayQuota: undefined })).toBe(false)
   })
 })
