@@ -11,7 +11,7 @@ import type {
   PlatformSystemState,
   XingmangPlatformApi,
 } from '../electron/platform/contract'
-import type { AccountPaymentWindowTerminalEvent, FeedbackMessageCopyRequest, ProviderId } from '../electron/ipc-contract'
+import type { AccountPaymentWindowTerminalEvent, AccountSubscriptionPlan, FeedbackMessageCopyRequest, ProviderId } from '../electron/ipc-contract'
 import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
 import { KeyRewriteSkippedError } from '../src/renderer-v2/features/tools/account-bootstrap'
@@ -36,6 +36,13 @@ declare global {
       holdNext(): void
       release(): void
       fail(message: string): void
+    }
+    // 后台改了 subscriptionExternal 那个套餐（patch）、下架了它（remove）或者又上架了（restore）：
+    // 只改夹具里存着的，页面下一次读套餐列表才看得到（N3）。
+    subscriptionPlanHarness: {
+      set(patch: Partial<AccountSubscriptionPlan>): void
+      remove(): void
+      restore(): void
     }
     // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
     // toolKeyLimits：下一次按 100 一页读密钥（「每个工具的额度上限」那张卡）没读到。
@@ -116,6 +123,16 @@ const record = (name: string, args?: unknown) => {
 }
 const failOnce = new Set<string>()
 window.failNextRead = (read) => { failOnce.add(read) }
+// planBalancePay：那个套餐按美元标价、能用余额买（$5，余额 $10 够付）。
+let externalPlanPatch: Partial<AccountSubscriptionPlan> = query.has('planBalancePay')
+  ? { currency: 'USD', priceAmount: 5, allowBalancePay: true }
+  : {}
+let externalPlanRemoved = false
+window.subscriptionPlanHarness = {
+  set(patch) { externalPlanPatch = { ...externalPlanPatch, ...patch } },
+  remove() { externalPlanRemoved = true },
+  restore() { externalPlanRemoved = false },
+}
 let releaseHeldExtension: (() => void) | undefined
 window.releaseExtension = () => { releaseHeldExtension?.(); releaseHeldExtension = undefined }
 function failingOnce(read: string) {
@@ -1190,7 +1207,7 @@ const apiMethods = {
     if (type === 'subscription' || type === 'concurrency') return { type, quotaAdded: 0 }
     return { quotaAdded: 5 }
   },
-  getAccountSubscriptionPlans: async () => query.has('subscriptionExternal') ? [{
+  getAccountSubscriptionPlans: async () => query.has('subscriptionExternal') && !externalPlanRemoved ? [{
     id: 1,
     title: '外部订阅',
     subtitle: '测试外部支付状态',
@@ -1210,6 +1227,7 @@ const apiMethods = {
     stripePriceId: 'stripe-price',
     creemProductId: null,
     waffoPancakeProductId: null,
+    ...externalPlanPatch,
   }] : [],
   createAccountSubscriptionPayment: async (
     input: Parameters<V2Bridge['createAccountSubscriptionPayment']>[0],

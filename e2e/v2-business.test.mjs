@@ -3225,6 +3225,91 @@ test('subscription payment terminal events clear the pending state and explain t
   }
 })
 
+// N3：买套餐的框开着时后台改了价。服务端下单只认套餐编号、照那一刻的价扣，所以点付款前要再核一遍。
+const subscriptionCalls = async (page) =>
+  (await calls(page)).filter((call) => /create-subscription-payment|purchase-subscription-balance/.test(call.name))
+
+test('a plan repriced while its purchase dialog is open is shown at the new price before any order is placed', async () => {
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1')
+  try {
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
+    await purchase.getByText('¥29', { exact: true }).waitFor()
+    await page.evaluate(() => window.subscriptionPlanHarness.set({ priceAmount: 39 }))
+
+    await purchase.getByRole('button', { name: '打开支付窗口', exact: true }).click()
+    const notice = purchase.getByTestId('account-subscription-plan-changed')
+    await notice.getByText('价格已更新', { exact: true }).waitFor()
+    assert.equal(await notice.getByText('价格由 ¥29 调整为 ¥39，请确认后重新支付。', { exact: true }).count(), 1)
+    await purchase.getByText('¥39', { exact: true }).waitFor()
+    assert.equal(await purchase.getByText('¥29', { exact: true }).count(), 0)
+    // 没下单，卡片上的价也换了。
+    assert.deepEqual(await subscriptionCalls(page), [])
+    await page.getByTestId('account-recharge-plans').getByText('¥39', { exact: true }).waitFor()
+
+    // 看过新价再点一次才下单，等结果那块写的也是新价。
+    await purchase.getByRole('button', { name: '打开支付窗口', exact: true }).click()
+    await page.getByTestId('account-payment-notice').getByText('XM-VISUAL-SUBSCRIPTION', { exact: true }).waitFor()
+    assert.deepEqual((await subscriptionCalls(page)).map((call) => call.name), ['create-subscription-payment'])
+    await page.locator('.v2-recharge-big', { hasText: '¥39' }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('a purchase dialog left open follows a reread plan list instead of charging the balance at the old price', async () => {
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1&planBalancePay=1', (next) => next.clock.install())
+  try {
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
+    await purchase.getByRole('button', { name: '用余额支付 $5', exact: true }).waitFor()
+
+    // 框一直开着，客户切走一阵再回来：窗口回到前台时列表重读，框里跟着换成新价。
+    await page.evaluate(() => window.subscriptionPlanHarness.set({ priceAmount: 8 }))
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await purchase.getByTestId('account-subscription-plan-changed')
+      .getByText('价格由 $5 调整为 $8，请确认后重新支付。', { exact: true }).waitFor()
+    await purchase.getByText('余额 $10.00，扣完剩 $2.00', { exact: true }).waitFor()
+    assert.deepEqual(await subscriptionCalls(page), [])
+
+    await purchase.getByRole('button', { name: '用余额支付 $8', exact: true }).click()
+    await waitForToast(page, '外部订阅已开通')
+    assert.deepEqual(await subscriptionCalls(page), [{ name: 'purchase-subscription-balance', args: 1 }])
+  } finally {
+    await page.close()
+  }
+})
+
+test('a plan taken down while its purchase dialog is open cannot be bought from the stale dialog', async () => {
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1&planBalancePay=1', (next) => next.clock.install())
+  try {
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
+    const pay = purchase.getByRole('button', { name: '用余额支付 $5', exact: true })
+    await pay.waitFor()
+    await page.evaluate(() => window.subscriptionPlanHarness.remove())
+
+    await pay.click()
+    const notice = purchase.getByTestId('account-subscription-plan-changed')
+    await notice.getByText('该套餐已下架', { exact: true }).waitFor()
+    assert.equal(await notice.getByText('请关闭此窗口，选择其他套餐。', { exact: true }).count(), 1)
+    assert.equal(await pay.isDisabled(), true)
+    assert.deepEqual(await subscriptionCalls(page), [])
+    await assertNoToast(page, '外部订阅已开通')
+    await page.getByTestId('account-recharge-plans').waitFor({ state: 'detached' })
+
+    // 框还开着，后台又把它上架了：窗口回到前台重读以后，那条收起、付款按钮能点。
+    await page.evaluate(() => window.subscriptionPlanHarness.restore())
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await notice.waitFor({ state: 'detached' })
+    assert.equal(await pay.isDisabled(), false)
+  } finally {
+    await page.close()
+  }
+})
+
 test('the payment terminal listener survives re-renders and still resolves a pending order', async () => {
   const page = await fixture('page=account&subscriptionExternal=1')
   try {
