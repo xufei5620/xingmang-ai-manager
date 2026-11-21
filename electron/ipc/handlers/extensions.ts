@@ -77,10 +77,6 @@ export function registerExtensionHandlers(ctx: IpcHandlerContext): void {
     if (!isActiveProviderId(provider)) throw new Error('未知的 AI 工具')
     return recordExtensionWarnings(await options.providerExtensionService.list(provider))
   })
-  registerTrustedHandler('extensions:list-all', async () => {
-    const snapshots = await options.providerExtensionService.listAll()
-    return snapshots.map(recordExtensionWarnings)
-  })
   registerTrustedHandler('extensions:mutate', (_event, input: unknown) => (
     options.providerExtensionService.mutate(parseProviderExtensionMutation(input))
   ))
