@@ -118,7 +118,7 @@ describe('renderer-v2 home partial read failures (R-S8)', () => {
 
   it('marks the connection column unknown rather than claiming the key is missing', () => {
     const markup = render({}, undefined, { snapshot: unreadableConfig(), failures: configFailure })
-    expect(markup).toContain('>配置未读到<')
+    expect(markup).toContain('>配置未获取<')
     expect(markup).not.toContain('已安装，尚未关联当前账号')
     expect(markup).toContain('重新配置')
   })
@@ -135,7 +135,7 @@ describe('renderer-v2 home partial read failures (R-S8)', () => {
     const markup = render({})
     expect(markup).not.toContain('data-testid="home-config-failure"')
     expect(markup).not.toContain('配置暂未读到')
-    expect(markup).not.toContain('>配置未读到<')
+    expect(markup).not.toContain('>配置未获取<')
   })
 })
 
@@ -148,14 +148,14 @@ describe('renderer-v2 home tool line status', () => {
   it('shows a quiet line while the server is switching and the outage with a rescan button', () => {
     const markup = render({}, undefined, { toolRouteStatus: { serverSwitching: true, outage: { id: 1, reason: 'reset', appReachable: true } } })
     expect(markup).toContain('data-testid="home-route-server-switching"')
-    expect(markup).toContain('服务端正在切换线路，稍等几分钟')
-    expect(markup).toMatch(/data-testid="home-route-outage"[^>]*>.*星芒本身能连上。.*重新检测/)
+    expect(markup).toContain('服务端正在切换线路，请稍候几分钟')
+    expect(markup).toMatch(/data-testid="home-route-outage"[^>]*>.*星芒服务连接正常。.*重新检测/)
   })
 
   it('says once that the Cloudflare line is in use after a hijack', () => {
     const markup = render({}, undefined, { toolRouteStatus: { hijack: { id: Date.now() } } })
     expect(markup).toContain('data-testid="home-route-hijack"')
-    expect(markup).toContain('已为你改用线路1，不影响使用。')
+    expect(markup).toContain('已自动改用线路1，不影响使用。')
   })
 })
 
@@ -214,13 +214,13 @@ describe('renderer-v2 home install cancellation', () => {
       model: 'claude-opus-5-5', configurationSource: 'xingmang', configurationError: null } as typeof claudeDesktop
     const official = { ...connected, configured: false, configurationReady: false, configurationSource: 'other', officialAccount: true } as typeof claudeDesktop
     const switchable = desktopRow(render({}, undefined, { externalClients: [connected], onSwitchExternalSource: noop }))
-    expect(switchable).toContain('现在用当前账号，点击切换')
+    expect(switchable).toContain('正在使用当前账号，点击切换')
     expect(switchable).not.toContain('v2-source-chip is-static')
     // 没接这个回调的宿主照旧是不可点的来源牌。
     expect(desktopRow(render({}, undefined, { externalClients: [connected] }))).toContain('v2-source-chip is-static')
 
     const onOfficial = desktopRow(render({}, undefined, { externalClients: [official], onSwitchExternalSource: noop }))
-    expect(onOfficial).toContain('现在用官方账号，点击切换')
+    expect(onOfficial).toContain('正在使用官方账号，点击切换')
     expect(onOfficial).toContain('Claude 账号 · v2.42304.0')
     expect(onOfficial).not.toContain('待连接')
     expect(onOfficial).not.toContain('确认连接')
@@ -563,7 +563,7 @@ describe('renderer-v2 home before the startup scan finishes', () => {
 })
 
 // 官方安装器/其他来源装的 CLI：如实标源，且不给 npm 更新按钮，改用被动提示。
-// 官方安装器装的 Claude Code 例外：星芒卸得掉，按钮照给，点了先问再换成星芒装的。
+// 官方安装器装的 Claude Code 例外：星芒卸得掉，按钮照给，点了先问再改用星芒安装。
 describe('renderer-v2 home native install source', () => {
   const nativeClaude = { ...cliStatus, installSource: 'native', updateAvailable: true, latestVersion: '9.9.9' }
   const npmClaude = { ...cliStatus, installSource: 'npm', updateAvailable: true, latestVersion: '9.9.9' }
@@ -581,7 +581,7 @@ describe('renderer-v2 home native install source', () => {
   it('keeps the passive hint for a Claude Code installed some other way', () => {
     const markup = render({}, { claude: { ...nativeClaude, installSource: 'path' }, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
     expect(markup).toContain('data-testid="tool-claude-external-managed"')
-    expect(markup).toContain('这一份不是星芒装的，要更新请用它原来的安装方式')
+    expect(markup).toContain('此版本并非由星芒安装，如需更新请使用原安装方式')
     expect(markup).not.toContain('data-testid="tool-claude-update"')
     expect(markup).not.toContain('可更新到')
   })
@@ -695,7 +695,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
   function bootstrapResult(overrides: Partial<AccountBootstrapResult> = {}): AccountBootstrapResult {
     return { readyKeys: [], configured: [], failed: [], skipped: [], warnings: [], networkBlocked: false, ...overrides }
   }
-  const offline = '当前网络不可用，已装好的工具照常能用；联网后会自动补写密钥。'
+  const offline = '当前网络不可用，已安装的工具可正常使用；联网后将自动写入密钥。'
 
   it('tells the user the client will write the keys itself once the network returns', () => {
     const markup = render({}, undefined, {
@@ -725,7 +725,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
       },
       onBootstrapRetry: () => undefined,
     })
-    expect(markup).toContain('Grok CLI：当前账号还不能用，需要的话请联系客服开通')
+    expect(markup).toContain('Grok CLI：当前账号尚未开通，如需使用请联系客服')
     expect(markup).toContain('账号未开通')
     expect(markup).not.toContain('已安装，尚未关联当前账号')
     expect(markup).not.toContain('分组')
@@ -779,7 +779,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
   })
 
   it('tells the user to wait and resync instead of waiting for the network when a certificate was swapped', () => {
-    const certificate = '连星芒时被网络上的设备拦下了，这次没写好密钥。已装好的工具照常能用；稍等一两分钟点「重新同步」，还不行就换个网络（比如手机热点）。'
+    const certificate = '连接星芒时被网络设备拦截，本次密钥未写入。已安装的工具可正常使用；请稍候一两分钟后点击「重新同步」，如仍失败，请切换网络（如手机热点）。'
     const blocked = render({}, undefined, {
       bootstrap: {
         phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
@@ -806,7 +806,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
       },
       onBootstrapRetry: () => undefined,
     })
-    expect(markup).toContain('稍等一两分钟点「重新同步」')
+    expect(markup).toContain('请稍候一两分钟后点击「重新同步」')
     expect(markup).toContain('>重新同步<')
   })
 
@@ -816,7 +816,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
       onBootstrapRetry: () => undefined,
     })
     expect(markup).toContain(offline)
-    expect(markup).not.toContain('密钥没写好：')
+    expect(markup).not.toContain('密钥写入失败：')
     expect(markup).not.toContain('账号 Key 初始化没有完成：')
   })
 
@@ -825,7 +825,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
       bootstrap: { phase: 'syncing', label: 'Key 初始化没有完成', percent: 100, scope: 'scope', error: '星芒账号已变化，已停止本次密钥配置' },
       onBootstrapRetry: () => undefined,
     })
-    expect(markup).toContain('密钥没写好：星芒账号已变化，已停止本次密钥配置')
+    expect(markup).toContain('密钥写入失败：星芒账号已变化，已停止本次密钥配置')
     expect(markup).not.toContain(offline)
   })
 
@@ -944,8 +944,8 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
   it('lets a Mac customer prepare Node.js with one button instead of Terminal steps', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { node: true }) })
     expect(markup).toContain('data-testid="home-runtime-node-managed"')
-    expect(markup).toContain('这台 Mac 上还没有 Node.js')
-    expect(markup).toContain('不用输开机密码')
+    expect(markup).toContain('此 Mac 尚未安装 Node.js')
+    expect(markup).toContain('无需输入开机密码')
     expect(markup).toContain('准备 Node.js')
     // 终端和 Homebrew 那套挪进教程，首页不再放。
     expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
@@ -955,11 +955,11 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
   })
 
-  // Linux 版拆分 ②：原来这里是「去官网下载 Node.js」加一段「用系统自带的包管理器装上」。
+  // Linux 版拆分 ②：原来这里是「去官网下载 Node.js」加一段「请使用系统自带的包管理器安装」。
   it('lets a Linux customer prepare Node.js with one button instead of a website', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('linux', { node: true }) })
     expect(markup).toContain('data-testid="home-runtime-node-managed"')
-    expect(markup).toContain('这台电脑上还没有能用的 Node.js')
+    expect(markup).toContain('本机尚无可用的 Node.js')
     expect(markup).toContain('准备 Node.js')
     expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
     expect(markup).not.toContain('去官网下载 Node.js')
@@ -1014,12 +1014,12 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { python: true }) })
     expect(markup).toContain('data-testid="home-runtime-guide-python"')
     expect(markup).toContain('brew install python')
-    expect(markup).toContain('命令行工具都用不到它，插件里个别要用它的才需要')
+    expect(markup).toContain('命令行工具均不依赖它，仅个别插件需要')
     expect(markup).not.toContain('四个命令行工具')
-    expect(markup).toContain('要装的话下面两种装法选一种就行')
+    expect(markup).toContain('如需使用，请任选以下一种方式安装')
     expect(markup).not.toContain('Gemini CLI 需要它')
     expect(markup).not.toContain('版本可能过旧')
-    expect(markup).toContain('去官网下载 Python（可选环境）')
+    expect(markup).toContain('前往官网下载 Python（可选环境）')
     expect(markup).toContain('data-testid="home-runtime-python"')
     expect(markup).toContain('data-testid="home-runtime-tutorial"')
     expect(markup).toContain('装 Python 的完整步骤在教程里也有一份')
@@ -1032,7 +1032,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
   it('tells a Linux customer Python is optional and never sends them to python.org or the Mac chapter', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('linux', { python: true }) })
     expect(markup).toContain('data-testid="home-runtime-guide-python"')
-    expect(markup).toContain('命令行工具都用不到它')
+    expect(markup).toContain('命令行工具均不依赖它')
     expect(markup).not.toContain('四个命令行工具')
     expect(markup).toContain('sudo apt install python3')
     expect(markup).not.toContain('data-testid="home-runtime-python"')
@@ -1057,9 +1057,9 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
   it('says the UAC prompt is coming before the Windows user presses install', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('windows', { node: true, python: true }) })
     expect(markup).toContain('data-testid="home-runtime-node-elevation"')
-    expect(markup).toContain('这一步需要管理员授权')
+    expect(markup).toContain('此步骤需要管理员授权')
     // Python 按当前用户装，不提权，所以这句只出现一次。
-    expect(markup.match(/这一步需要管理员授权/g)).toHaveLength(1)
+    expect(markup.match(/此步骤需要管理员授权/g)).toHaveLength(1)
     expect(markup).not.toContain('Python 才装得上')
   })
 
@@ -1095,7 +1095,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
   it('keeps the elevation notice off macOS, where nothing here elevates', () => {
     const markup = render({}, undefined, { snapshot: runtimeSnapshot('macos', { node: true }) })
     expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
-    expect(markup).not.toContain('这一步需要管理员授权')
+    expect(markup).not.toContain('此步骤需要管理员授权')
   })
 
   it('keeps the elevation notices off a Windows app that already runs with administrator rights', () => {
@@ -1149,7 +1149,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('says so on the row and offers to write the account Key back', () => {
       const markup = render({}, undefined, { snapshot: editedSnapshot(), onRewriteKey: () => undefined, onKeepConfig: () => undefined })
-      expect(markup).toContain('配置被改过')
+      expect(markup).toContain('配置已变更')
       expect(markup).toContain('配置已被其他程序修改，未使用当前账号的密钥')
       expect(markup).toContain('data-testid="tool-claude-rewrite-key"')
       expect(markup).toContain('>重新写入密钥<')
@@ -1165,7 +1165,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('keeps the old row untouched when the host offers no rewrite action', () => {
       const markup = render({}, undefined, { snapshot: editedSnapshot() })
-      expect(markup).toContain('配置被改过')
+      expect(markup).toContain('配置已变更')
       expect(markup).not.toContain('data-testid="tool-claude-rewrite-key"')
     })
   })
@@ -1185,7 +1185,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('stops calling the row ready and offers to fix it', () => {
       const markup = render({}, undefined, { snapshot: shadowedSnapshot(), onSwitchAccount: () => undefined })
-      expect(markup).toContain('连接设置要修')
+      expect(markup).toContain('连接设置待修复')
       expect(markup).toContain('配置中有一项 Codex 无法识别，打开后将无法连接')
       expect(markup).toContain('data-testid="tool-codex-repair-codex"')
       expect(markup).toContain('立即修复')
@@ -1205,7 +1205,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
   // 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml，命令行和桌面端都打不开。
   // 原来首页把它当成没有配置，写的是「还没配 Key」。
   describe('a configuration the tool itself cannot read', () => {
-    const brokenDetail = 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留'
+    const brokenDetail = 'Codex 无法读取此配置，打开时将报错。修复前将先备份，历史会话保留'
     function brokenSnapshot(codex: Record<string, unknown> = {}): ToolboxSnapshot {
       const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
       return {
@@ -1231,7 +1231,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const markup = render({}, undefined, { snapshot: brokenSnapshot(), onRepairConfig: () => undefined })
       for (const tool of ['codex', 'codexDesktop']) {
         const row = toolRow(markup, tool)
-        expect(row, tool).toContain('配置坏了')
+        expect(row, tool).toContain('配置已损坏')
         expect(row, tool).toContain(`>${brokenDetail}<`)
         const button = rowButton(row, `tool-${tool}-repair-config`)
         expect(button, tool).toContain('title="修改前将自动备份原设置"')
@@ -1244,7 +1244,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const unparsed = brokenSnapshot({ matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' })
       const markup = render({}, undefined, { snapshot: unparsed, onRepairConfig: () => undefined })
       for (const tool of ['codex', 'codexDesktop']) {
-        expect(toolRow(markup, tool), tool).toContain('配置坏了')
+        expect(toolRow(markup, tool), tool).toContain('配置已损坏')
         expect(toolRow(markup, tool), tool).not.toContain('已安装，尚未关联当前账号')
         expect(toolRow(markup, tool), tool).toContain(`data-testid="tool-${tool}-repair-config"`)
       }
@@ -1254,15 +1254,15 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const chatgpt = brokenSnapshot({ hasApiKey: false, matchesRelay: false, actualBaseUrl: '', codexAuthMode: 'chatgpt', configurationOwnership: 'missing' })
       const markup = render({}, undefined, { snapshot: chatgpt, onRepairConfig: () => undefined })
       for (const tool of ['codex', 'codexDesktop']) {
-        expect(toolRow(markup, tool), tool).toContain('配置坏了')
+        expect(toolRow(markup, tool), tool).toContain('配置已损坏')
         expect(toolRow(markup, tool), tool).toContain(`data-testid="tool-${tool}-repair-config"`)
       }
     })
 
     it('puts the broken file ahead of the fixes that would have to read it', () => {
       const markup = render({}, undefined, { snapshot: brokenSnapshot({ codexProviderShadowed: true }), onRepairConfig: () => undefined, onSwitchAccount: () => undefined })
-      expect(toolRow(markup, 'codex')).toContain('配置坏了')
-      expect(markup).not.toContain('连接设置要修')
+      expect(toolRow(markup, 'codex')).toContain('配置已损坏')
+      expect(markup).not.toContain('连接设置待修复')
       expect(markup).not.toContain('data-testid="tool-codex-repair-codex"')
     })
 
@@ -1274,7 +1274,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('shows the state without a button when the host offers no fix', () => {
       const markup = render({}, undefined, { snapshot: brokenSnapshot() })
-      expect(toolRow(markup, 'codex')).toContain('配置坏了')
+      expect(toolRow(markup, 'codex')).toContain('配置已损坏')
       expect(markup).not.toContain('-repair-config"')
     })
 
@@ -1300,8 +1300,8 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const broken = withConfig({ claude: { ...unreadable, configBroken: true }, gemini: { ...unreadable, configBroken: true } })
       const markup = render({}, undefined, { snapshot: broken, onRepairConfig: () => undefined })
       const row = toolRow(markup, 'claude')
-      expect(row).toContain('配置坏了')
-      expect(row).toContain('>Claude Code 读不了这份配置，打开会报错。修之前会先备份，历史会话保留<')
+      expect(row).toContain('配置已损坏')
+      expect(row).toContain('>Claude Code 无法读取此配置，打开时将报错。修复前将先备份，历史会话保留<')
       expect(row).not.toContain('官方账号')
       expect(rowButton(row, 'tool-claude-repair-config')).toContain('立即修复')
       expect(toolRow(markup, 'codex')).toContain('data-testid="tool-codex-source"')
@@ -1315,8 +1315,8 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const markup = render({}, undefined, { snapshot: withConfig({ codex: { ...unreadable, codexAuthBroken: true } }), onRepairConfig: () => undefined })
       for (const tool of ['codex', 'codexDesktop']) {
         const row = toolRow(markup, tool)
-        expect(row, tool).toContain('配置坏了')
-        expect(row, tool).toContain('>Codex 读不了登录信息，打开会要你重新登录。修之前会先备份，历史会话保留<')
+        expect(row, tool).toContain('配置已损坏')
+        expect(row, tool).toContain('>Codex 无法读取登录信息，打开时将要求重新登录。修复前将先备份，历史会话保留<')
         expect(row, tool).not.toContain('官方账号')
         expect(rowButton(row, `tool-${tool}-repair-config`), tool).toContain('立即修复')
       }
@@ -1331,7 +1331,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     it('still calls a readable setup without a key the official account', () => {
       const markup = render({}, undefined, { snapshot: withConfig({ claude: unreadable }), onRepairConfig: () => undefined })
       expect(toolRow(markup, 'claude')).toContain('官方账号')
-      expect(toolRow(markup, 'claude')).not.toContain('配置坏了')
+      expect(toolRow(markup, 'claude')).not.toContain('配置已损坏')
     })
 
     // 开机先画的是上次的检测结果，文件可能已经被改好了，等这次的结果再说。
@@ -1340,7 +1340,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const cached = { ...base, system: { ...base.system, cachedAt: '2026-10-06T00:00:00.000Z' } } as unknown as ToolboxSnapshot
       const markup = render({}, undefined, { snapshot: cached, onRepairConfig: () => undefined })
       expect(markup).toContain('data-testid="tool-row-codex"')
-      expect(markup).not.toContain('配置坏了')
+      expect(markup).not.toContain('配置已损坏')
       expect(markup).not.toContain('-repair-config"')
     })
   })
@@ -1360,7 +1360,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('says the reminder settings need fixing, offers the fix and still opens the tool', () => {
       const markup = render({}, undefined, { snapshot: staleSnapshot(), onRepairHooks: () => undefined })
-      expect(markup).toContain('提醒设置要修')
+      expect(markup).toContain('通知设置待修复')
       expect(markup).toContain('「完成通知」设置指向旧位置，每次运行将多出一条报错')
       expect(markup).toContain('data-testid="tool-claude-repair-hooks"')
       expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开/)
@@ -1386,7 +1386,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const markup = render({}, undefined, { snapshot: repaired, onRepairHooks: () => undefined })
       expect(markup).not.toContain('自动改好')
       expect(markup).toMatch(/data-testid="tool-row-claude"[\s\S]*?fixture-model · v1\.2\.3/)
-      expect(markup).not.toContain('提醒设置要修')
+      expect(markup).not.toContain('通知设置待修复')
       expect(markup).not.toContain('data-testid="tool-claude-repair-hooks"')
       expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开/)
     })
@@ -1443,7 +1443,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       expect(markup).toContain('「完成与出错通知」和「运行时防止休眠」尚未启用，点击「启用」将先准备运行环境')
       expect(markup).toContain('data-testid="tool-grok-add-hooks"')
       expect(markup).not.toContain('data-testid="tool-grok-repair-hooks"')
-      expect(markup).not.toContain('提醒设置要修')
+      expect(markup).not.toContain('通知设置待修复')
       expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*打开/)
       expect(markup).not.toContain('data-testid="tool-claude-add-hooks"')
     })
@@ -1456,7 +1456,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
   })
 
   // 以前用 CC Switch 配过的电脑：登录后软件不改来源没确认的配置，工具还连着以前那家，
-  // 以前首页只挂一个中性的「用的是别处的配置」。现在要说清是 CC Switch，并给一颗按钮。
+  // 以前首页只挂一个中性的「正在使用其他来源的配置」。现在要说清是 CC Switch，并给一颗按钮。
   describe('a tool still configured by CC Switch', () => {
     function ccSwitchSnapshot(leftover: 'proxy' | 'provider', extra: Record<string, unknown> = {}): ToolboxSnapshot {
       const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
@@ -1473,7 +1473,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('names CC Switch and offers to switch the tool to the current account', () => {
       const markup = render({}, undefined, { snapshot: ccSwitchSnapshot('provider'), onSwitchAccount: () => undefined, onKeepConfig: () => undefined })
-      expect(markup).toContain('>被接管<')
+      expect(markup).toContain('>已被接管<')
       expect(markup).toContain('正在使用 CC Switch 中选择的连接，未使用当前账号')
       expect(markup).toContain('data-testid="tool-claude-replace-cc-switch"')
       expect(markup).toContain('改用当前账号')
@@ -1493,7 +1493,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('keeps the old neutral row when the host offers no switch action', () => {
       const markup = render({}, undefined, { snapshot: ccSwitchSnapshot('provider') })
-      expect(markup).toContain('>被接管<')
+      expect(markup).toContain('>已被接管<')
       expect(markup).not.toContain('data-testid="tool-claude-replace-cc-switch"')
     })
   })
@@ -1511,7 +1511,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('says a key from another site is not the current account\'s and offers to switch by name', () => {
       const markup = render({}, undefined, { snapshot: foreignSnapshot({ matchesRelay: false, actualBaseUrl: 'https://elsewhere.example/v1' }), onSwitchAccount: () => undefined })
-      expect(markup).toContain('>打不开<')
+      expect(markup).toContain('>无法打开<')
       expect(markup).toContain('无法在此打开，改用当前账号后即可使用')
       expect(markup).toContain('data-testid="tool-claude-use-account"')
       expect(markup).not.toContain('elsewhere.example')
@@ -1527,13 +1527,13 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('leaves the switch button out when the host offers no switch action', () => {
       const markup = render({}, undefined, { snapshot: foreignSnapshot({ matchesRelay: false, actualBaseUrl: 'https://elsewhere.example/v1' }) })
-      expect(markup).toContain('>打不开<')
+      expect(markup).toContain('>无法打开<')
       expect(markup).not.toContain('data-testid="tool-claude-use-account"')
     })
   })
 
   // 开机账号恢复超过启动画面的等待上限时先进首页，这时读到的配置没有账号可比。
-  // 恢复完补读之前，一行都不许说「配置被改过」或「用的是别处的配置」。
+  // 恢复完补读之前，一行都不许说「配置已变更」或「正在使用其他来源的配置」。
   describe('while the account is still being restored at startup', () => {
     function pendingSnapshot(ownership: 'unknown' | 'changed', extra: Record<string, unknown> = {}): ToolboxSnapshot {
       const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
@@ -1546,7 +1546,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it.each(['unknown', 'changed'] as const)('shows a relay-matching %s configuration as ready, not as edited or third-party', (ownership) => {
       const markup = render({}, undefined, { snapshot: pendingSnapshot(ownership), onRewriteKey: () => undefined, onKeepConfig: () => undefined })
-      expect(markup).not.toContain('配置被改过')
+      expect(markup).not.toContain('配置已变更')
       expect(markup).not.toContain('>别处的配置<')
       expect(markup).not.toContain('不是当前账号的')
       expect(markup).not.toContain('rewrite-key')
@@ -1555,13 +1555,13 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('still reports a configuration pointing somewhere else, which no account could claim', () => {
       const markup = render({}, undefined, { snapshot: pendingSnapshot('unknown', { matchesRelay: false, actualBaseUrl: 'https://elsewhere.example/v1' }) })
-      expect(markup).toContain('>打不开<')
+      expect(markup).toContain('>无法打开<')
     })
 
     it('goes back to the real verdict once the re-read config no longer carries the pending mark', () => {
       const base = pendingSnapshot('changed')
       const settled = { ...base, config: { ...base.config, ownershipPending: undefined } } as ToolboxSnapshot
-      expect(render({}, undefined, { snapshot: settled })).toContain('配置被改过')
+      expect(render({}, undefined, { snapshot: settled })).toContain('配置已变更')
     })
   })
 })
@@ -1699,7 +1699,7 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
     const button = rowButton(markup, 'workbuddy')
     expect(button).toContain('重新检测')
     expect(button).not.toContain('disabled')
-    expect(markup).toContain('装好 WorkBuddy 后，星芒会自动连上当前账号')
+    expect(markup).toContain('安装 WorkBuddy 后，星芒将自动关联当前账号')
     expect(markup).toContain('未安装')
     for (const gone of ['去官网下载', '安装指南', '暂不支持', '办公助手，可以接当前账号的模型']) expect(markup, gone).not.toContain(gone)
   })
@@ -1757,7 +1757,7 @@ describe('renderer-v2 home balance for subscription customers', () => {
 
   it('warns about renewal when the subscription is about to end and the wallet cannot take over', () => {
     const markup = render({}, undefined, { balance: empty, subscription: { ...subscription, expiringSoon: true } })
-    expect(markup).toContain('订阅 10月3日到期，到期后会从余额扣费。')
+    expect(markup).toContain('订阅 10月3日到期，到期后将从余额扣费。')
     expect(markup).toContain('去续费')
     expect(markup).not.toContain('home-low-balance')
   })
@@ -1871,7 +1871,7 @@ describe('renderer-v2 home tool cards with an empty wallet', () => {
   it('keeps the problem a card already shows ahead of the empty wallet', () => {
     const changed = render({}, undefined, { balance: empty, onRewriteKey: () => undefined, snapshot: withConfig('claude', { configurationOwnership: 'changed', configurationAccountMatched: false }) })
     const row = toolRow(changed, 'claude')
-    expect(row).toContain('配置被改过')
+    expect(row).toContain('配置已变更')
     expect(row).toContain('data-testid="tool-claude-rewrite-key"')
     expect(row).not.toContain('余额为零')
   })
@@ -1914,8 +1914,8 @@ describe('renderer-v2 home runtime card', () => {
 describe('renderer-v2 home runtime card when only the Codex desktop app is in use', () => {
   const missing = { installed: false, version: null, detectionFailed: false }
   const notInstalled = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null }
-  const optionalElevation = 'Node.js 是命令行工具需要的运行环境，装工具时会自动准备，一般不用单独点。准备时 Windows 会弹一次授权窗口，请选「是」；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。'
-  const requiredElevation = '这一步需要管理员授权：准备 Node.js 时 Windows 会弹一次授权窗口，请选「是」，Node.js 才装得上；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。'
+  const optionalElevation = 'Node.js 是命令行工具所需的运行环境，安装工具时将自动准备，通常无需单独操作。准备时 Windows 将弹出授权窗口，请选择「是」；如本机登录的是普通账号，还需输入管理员账号密码。'
+  const requiredElevation = '此步骤需要管理员授权：准备 Node.js 时 Windows 将弹出授权窗口，请选择「是」以完成 Node.js 的安装；如本机登录的是普通账号，还需输入管理员账号密码。'
 
   function machine(platform: 'windows' | 'macos', clis: Record<string, unknown> = {}): ToolboxSnapshot {
     const base = snapshot({ claude: notInstalled, codex: notInstalled, grok: notInstalled, gemini: notInstalled, ...clis })
@@ -1947,7 +1947,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
     expect(elevation).toContain('is-quiet')
     expect(elevation).toContain(optionalElevation)
-    expect(markup).not.toContain('这一步需要管理员授权')
+    expect(markup).not.toContain('此步骤需要管理员授权')
     // 按钮一颗不少：想先准备好的照样能点。
     expect(markup).toContain('data-testid="home-runtime-node"')
     expect(markup).toContain('data-testid="home-runtime-python"')
@@ -1961,7 +1961,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     const markup = render({}, undefined, { snapshot: elevated })
     const elevation = opening(markup, 'home-runtime-node-elevation', '</p>')
     expect(elevation).toContain('is-quiet')
-    expect(elevation).toContain('Node.js 是命令行工具需要的运行环境，装工具时会自动准备，一般不用单独点。')
+    expect(elevation).toContain('Node.js 是命令行工具所需的运行环境，安装工具时将自动准备，通常无需单独操作。')
     expect(markup).not.toContain('授权窗口')
     expect(markup).not.toContain('管理员授权')
   })
@@ -2060,7 +2060,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     const quiet = render({}, undefined, { snapshot: machine('macos') })
     const managed = opening(quiet, 'home-runtime-node-managed', '</p>')
     expect(managed).toContain('is-quiet')
-    expect(managed).toContain('这台 Mac 上还没有 Node.js')
+    expect(managed).toContain('此 Mac 尚未安装 Node.js')
     expect(opening(quiet, 'home-runtime-row-node', '</div>')).toContain('可选 · 未安装')
     expect(quiet).not.toContain('data-testid="home-runtime-git-hint"')
     expect(quiet).not.toContain('data-testid="home-runtime-node-elevation"')
@@ -2068,7 +2068,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
     const inUse = render({}, undefined, { snapshot: machine('macos', { claude: cliStatus }) })
     const warned = opening(inUse, 'home-runtime-node-managed', '</p>')
     expect(warned).not.toContain('is-quiet')
-    expect(warned).toContain('这台 Mac 上还没有 Node.js')
+    expect(warned).toContain('此 Mac 尚未安装 Node.js')
     expect(inUse).toContain('data-testid="home-runtime-git-hint"')
   })
 })
@@ -2390,7 +2390,7 @@ describe('renderer-v2 home desktop app updates on macOS', () => {
       desktopUpdateFailures: { opencode: {}, codexDesktop: {} }, onShowDesktopUpdateFailure: noop,
     })
     for (const tool of ['opencode', 'codexDesktop']) {
-      expect(row(markup, tool), tool).toContain('没更新成，旧版还在，照常能用')
+      expect(row(markup, tool), tool).toContain('更新失败，旧版本仍可正常使用')
       expect(row(markup, tool), tool).toContain(`data-testid="tool-${tool}-why"`)
     }
   })

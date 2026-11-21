@@ -174,7 +174,7 @@ test('a failed post-save config read warns that the model saved but the summary 
     await page.getByTestId('model-swap-question').waitFor()
     await page.evaluate(() => { window.v2Test.fail = 'getConfig' })
     await page.getByTestId('model-swap-confirm').click()
-    await page.getByText(/模型已保存，但最新配置没有读到/).waitFor()
+    await page.getByText(/模型已保存，但最新配置尚未获取/).waitFor()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     assert.match(await page.getByTestId('tool-row-codex').innerText(), /fixture-model/)
     assert.equal(await page.getByText(/模型没换成，先照旧打开/).count(), 0)

@@ -692,7 +692,7 @@ describe('a CLI download that stops moving', () => {
       elapsedMs,
     })))
     // The progress line keeps its existing plain sentence; the approved words go to the install log.
-    expect(installProgressLabel(official[0])).toBe('还在下载，已经等了 15 秒。网慢时会久一点，不用管它。')
+    expect(installProgressLabel(official[0])).toBe('仍在下载，已等待 15 秒。网络较慢时耗时会更长，请耐心等待。')
     // A beat every fifteen seconds for up to half an hour stays out of the runtime log.
     expect(fixture.runtimeLog.log.mock.calls.some(([, , , message]) => String(message).startsWith('仍在从'))).toBe(false)
 

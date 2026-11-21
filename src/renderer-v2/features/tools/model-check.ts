@@ -30,21 +30,21 @@ function modelName(model: string): string {
 }
 
 export function modelSwapTitle(offer: ModelSwapOffer): string {
-  return offer.kind === 'upgrade' ? `${offer.toolName} 有更新的型号` : '默认模型用不了了'
+  return offer.kind === 'upgrade' ? `${offer.toolName} 有更新的型号` : '默认模型已不可用'
 }
 
 export function modelSwapQuestion(offer: ModelSwapOffer): string {
   if (offer.kind === 'upgrade') {
     const next = modelName(offer.replacement)
-    return `当前账号可以用 ${next}，比现在用的 ${modelName(offer.model)} 新。要换成 ${next} 吗？以后也可以在「配置」里换回来。`
+    return `当前账号可使用 ${next}，比当前的 ${modelName(offer.model)} 更新。是否更换为 ${next}？之后可在「配置」中改回。`
   }
-  return `${offer.toolName} 里设的「${offer.model}」这个模型，当前账号用不了了。换成「${offer.replacement}」再打开吗？`
+  return `${offer.toolName} 中设置的模型「${offer.model}」当前账号已无法使用。是否更换为「${offer.replacement}」后打开？`
 }
 
 export function modelSwapConfirmLabel(offer: ModelSwapOffer): string {
-  return `换成 ${offer.kind === 'upgrade' ? modelName(offer.replacement) : offer.replacement}`
+  return `更换为 ${offer.kind === 'upgrade' ? modelName(offer.replacement) : offer.replacement}`
 }
 
 export function modelSwapKeepLabel(offer: ModelSwapOffer): string {
-  return offer.kind === 'upgrade' ? '先不换' : '照旧打开'
+  return offer.kind === 'upgrade' ? '暂不更换' : '照旧打开'
 }

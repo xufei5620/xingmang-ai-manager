@@ -153,9 +153,9 @@ export function createToolsApi(bridge: XingmangApi) {
         bridge.getConfig(), bridge.getPlatformCapabilities(),
       ])
       const failures: ToolboxPartitionFailure[] = []
-      if (system.status === 'rejected') failures.push({ partition: 'system', message: errorMessage(system.reason, '工具检测没有完成，请重试。') })
-      if (config.status === 'rejected') failures.push({ partition: 'config', message: errorMessage(config.reason, '工具配置没有读到，请重试。') })
-      if (platform.status === 'rejected') failures.push({ partition: 'platform', message: errorMessage(platform.reason, '当前系统支持的操作没有读到，请重试。') })
+      if (system.status === 'rejected') failures.push({ partition: 'system', message: errorMessage(system.reason, '工具检测未完成，请重试。') })
+      if (config.status === 'rejected') failures.push({ partition: 'config', message: errorMessage(config.reason, '工具配置获取失败，请重试。') })
+      if (platform.status === 'rejected') failures.push({ partition: 'platform', message: errorMessage(platform.reason, '当前系统支持的操作获取失败，请重试。') })
       if (system.status !== 'fulfilled' || platform.status !== 'fulfilled') return { snapshot: null, failures }
       return {
         snapshot: {
@@ -176,7 +176,7 @@ export function createToolsApi(bridge: XingmangApi) {
       try {
         return { config: await bridge.getConfig(), failure: null }
       } catch (cause) {
-        return { config: null, failure: { partition: 'config', message: errorMessage(cause, '工具配置没有读到，请重试。') } }
+        return { config: null, failure: { partition: 'config', message: errorMessage(cause, '工具配置获取失败，请重试。') } }
       }
     },
     readExternal: (force = false) => bridge.scanExternalClients(force),
@@ -218,7 +218,7 @@ export function createToolsApi(bridge: XingmangApi) {
     cancelInstall: (id: ToolId): Promise<InstallCancelResult> => id === 'codexDesktop'
       ? bridge.cancelCodexDesktopInstall()
       : bridge.cancelCliInstall(id),
-    // options 只有「换成星芒装的」会带（reinstall），见 CliUninstallOptions。
+    // options 只有「改用星芒安装」会带（reinstall），见 CliUninstallOptions。
     uninstall: async (id: ToolId, options?: CliUninstallOptions) => {
       const result = await (id === 'codexDesktop' ? bridge.uninstallCodexDesktop() : bridge.uninstallCli(id, options))
       recentSessions.invalidate()

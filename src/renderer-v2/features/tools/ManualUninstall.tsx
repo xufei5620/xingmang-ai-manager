@@ -60,10 +60,10 @@ export function ManualUninstallDialog({ state, platform, onClose, cleanUp, onHel
     void cleanUp(tool).then((result) => {
       if (result.remaining > 0) {
         setCleaning(false)
-        setProblem(`还有 ${result.remaining} 个文件没删掉。关掉所有 ${state.name} 窗口后再点一次「一键清理」；还是不行，请联系客服。`)
+        setProblem(`仍有 ${result.remaining} 个文件未删除。请关闭所有 ${state.name} 窗口后再次点击「一键清理」；如仍失败，请联系客服。`)
         return
       }
-      toast.show('清理好了。', 'ok')
+      toast.show('清理完成。', 'ok')
       onClose()
     }, (cause) => {
       setCleaning(false)
@@ -77,11 +77,11 @@ export function ManualUninstallDialog({ state, platform, onClose, cleanUp, onHel
   const support = onHelp && (!state.manualCommand || problem)
     ? <Button testId="manual-uninstall-support" onClick={onHelp} disabled={cleaning}>联系客服</Button>
     : null
-  return <Dialog open title={tool ? `${state.name} 还有文件没删干净` : `${state.name} 需要手动清理`} width={640} onClose={onClose} busy={cleaning} testId="manual-uninstall"
+  return <Dialog open title={tool ? `${state.name} 仍有文件未清理` : `${state.name} 需要手动清理`} width={640} onClose={onClose} busy={cleaning} testId="manual-uninstall"
     footer={<>{support}<Button onClick={onClose} disabled={cleaning}>知道了</Button></>}>
     <p role="alert" data-testid="manual-uninstall-reason">{state.reason}</p>
     {state.manualCommand ? <>
-      <p>{tool ? `点「一键清理」，星芒再核对一遍就替你删掉；也可以复制下面的命令，在${shell}里自己执行。` : `在${shell}里执行下面这条命令即可完成清理。`}</p>
+      <p>{tool ? `点击「一键清理」，星芒核对后将自动删除；也可复制下方命令，在${shell}中手动执行。` : `在${shell}中执行下方命令即可完成清理。`}</p>
       <pre className="v2-business-code" data-testid="manual-uninstall-command">{state.manualCommand}</pre>
       {tool ? <div className="v2-manual-uninstall-actions">
         <Button variant="primary" size="sm" icon={Trash2} loading={cleaning} testId="manual-uninstall-cleanup" onClick={clean}>一键清理</Button>
@@ -89,6 +89,6 @@ export function ManualUninstallDialog({ state, platform, onClose, cleanUp, onHel
         {copiedNote}
       </div> : <>{copy}{copiedNote}</>}
       {problem && <div role="alert" className="v2-callout is-bad" data-testid="manual-uninstall-cleanup-problem"><span>{problem}</span></div>}
-    </> : <p>这次没能确认哪些文件能安全删掉，先别自己删，点「联系客服」。</p>}
+    </> : <p>本次未能确认可安全删除的文件，请勿自行删除，请点击「联系客服」。</p>}
   </Dialog>
 }

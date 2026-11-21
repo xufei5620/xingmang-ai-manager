@@ -37,8 +37,8 @@ describe('external client saved notice', () => {
 
   it('says the key list failed to load without a doubled full stop', () => {
     expect(accountKeyListFailureText('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。'))
-      .toBe('账号密钥列表读取失败：操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。可以使用已有工具密钥或自行填写。')
+      .toBe('账号密钥列表获取失败：操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。可使用已有工具密钥或手动填写。')
     expect(accountKeyListFailureText('网络连不上，请检查网络后重试'))
-      .toBe('账号密钥列表读取失败：网络连不上，请检查网络后重试。可以使用已有工具密钥或自行填写。')
+      .toBe('账号密钥列表获取失败：网络连不上，请检查网络后重试。可使用已有工具密钥或手动填写。')
   })
 })

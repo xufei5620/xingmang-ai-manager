@@ -15,7 +15,7 @@ type AppSettings = Awaited<ReturnType<V2Bridge['getSettings']>>
 type Provider = ActiveProviderId
 /**
  * installed：装好了；restart：运行环境要重启电脑才算装完；skipped：没有开始（取消、已在装或要自己下载）；
- * declined：客户在「换成星芒装的」确认框里点了取消，什么都没动，也不用说什么。
+ * declined：客户在「改用星芒安装」确认框里点了取消，什么都没动，也不用说什么。
  */
 export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped' | 'declined'
 /** 「联系客服」卡上的几样：二维码按当前账号换，身份行和最近一次出错由 App 算好（同帮助与客服弹窗）。 */

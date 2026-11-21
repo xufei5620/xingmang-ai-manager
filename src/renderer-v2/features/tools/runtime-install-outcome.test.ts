@@ -32,7 +32,7 @@ function pythonResult(overrides: Partial<PythonRuntimeInstallResult> = {}): Pyth
 describe('describeRuntimeInstallOutcome', () => {
   it('asks for a Windows restart when the MSI returned 3010', () => {
     expect(describeRuntimeInstallOutcome('node', nodeResult({ systemRestartRequired: true }))).toEqual({
-      message: 'Node.js 装好了，重启电脑后就能用。',
+      message: 'Node.js 已安装，重启电脑后生效。',
       tone: 'warn',
       restartRequired: true,
     })
@@ -47,19 +47,19 @@ describe('describeRuntimeInstallOutcome', () => {
       expect(outcome.tone).toBe('ok')
       expect(outcome.message).not.toMatch(/重开|重启/)
     }
-    expect(describeRuntimeInstallOutcome('python', pythonResult()).message).toBe('Python 3.12 已装好')
+    expect(describeRuntimeInstallOutcome('python', pythonResult()).message).toBe('Python 3.12 已安装')
   })
 
   it('names the installed Python version once, whatever form the host reports it in', () => {
-    expect(describeRuntimeInstallOutcome('python', pythonResult({ version: '3.12.9' })).message).toBe('Python 3.12.9 已装好')
-    expect(describeRuntimeInstallOutcome('python', pythonResult({ version: 'Python 3.12.9' })).message).toBe('Python 3.12.9 已装好')
-    expect(describeRuntimeInstallOutcome('python', pythonResult({ version: null })).message).toBe('Python 装好了。')
+    expect(describeRuntimeInstallOutcome('python', pythonResult({ version: '3.12.9' })).message).toBe('Python 3.12.9 已安装')
+    expect(describeRuntimeInstallOutcome('python', pythonResult({ version: 'Python 3.12.9' })).message).toBe('Python 3.12.9 已安装')
+    expect(describeRuntimeInstallOutcome('python', pythonResult({ version: null })).message).toBe('Python 已安装。')
   })
 
   it('says it was already there when nothing was installed', () => {
     const outcome = describeRuntimeInstallOutcome('node', nodeResult({
       action: 'unchanged', method: null, source: null, pathRefreshRequired: false,
     }))
-    expect(outcome).toEqual({ message: 'Node.js 本来就装好了，不用重复安装。', tone: 'ok', restartRequired: false })
+    expect(outcome).toEqual({ message: 'Node.js 已安装，无需重复安装。', tone: 'ok', restartRequired: false })
   })
 })

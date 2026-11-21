@@ -166,7 +166,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [workspaceEntered, setWorkspaceEntered] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
   const [auth, setAuth] = useState<AuthMode | null>(null)
-  // 登录框要预先对准的保存账号（#480）；只有「重新登录这个账号」给，关框就清。
+  // 登录框要预先对准的保存账号（#480）；只有「重新登录该账号」给，关框就清。
   const [authTarget, setAuthTarget] = useState<LoginTarget | null>(null)
   const [legal, setLegal] = useState<LegalDocumentKind | null>(null)
   const [configTool, setConfigTool] = useState<ToolId | null>(null)

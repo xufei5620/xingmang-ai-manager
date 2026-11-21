@@ -8,8 +8,8 @@ describe('runtimeButtonLabel', () => {
   })
 
   it('says the button opens a download page where the customer installs it', () => {
-    expect(runtimeButtonLabel('node', 'external')).toBe('去官网下载 Node.js')
-    expect(runtimeButtonLabel('python', 'external')).toBe('去官网下载 Python（可选环境）')
+    expect(runtimeButtonLabel('node', 'external')).toBe('前往官网下载 Node.js')
+    expect(runtimeButtonLabel('python', 'external')).toBe('前往官网下载 Python（可选环境）')
   })
 
   it('falls back to the managed wording before the snapshot arrives', () => {
@@ -27,7 +27,7 @@ describe('runtimeInstallGuide', () => {
   it('gives macOS both routes plus the copyable Homebrew command', () => {
     const guide = runtimeInstallGuide('node', 'macos', 'external')
     expect(guide?.command).toBe(runtimeHomebrewCommand('node'))
-    expect(guide?.summary).toContain('这台 Mac 上没有找到 Node.js')
+    expect(guide?.summary).toContain('此 Mac 未找到 Node.js')
     expect(guide?.steps.length).toBe(3)
     expect(guide?.steps[0]).toContain('Homebrew')
     // 第二条要和按钮上写的字一模一样，否则用户照着找不到那颗按钮。
@@ -45,9 +45,9 @@ describe('runtimeInstallGuide', () => {
   // 第二十八批 C：命令行工具都不用 Python 了，Mac 上这段不再说 Gemini 要它、劝客户另装一份。
   it('tells a Mac customer Python is only for the odd connection, and how to install it if they want', () => {
     const guide = runtimeInstallGuide('python', 'macos', 'external')
-    expect(guide?.summary).toBe('这台 Mac 上没有找到 Python（命令行工具都用不到它，插件里个别要用它的才需要）。星芒不会替你装它，要装的话下面两种装法选一种就行。')
+    expect(guide?.summary).toBe('此 Mac 未找到 Python（命令行工具均不依赖它，仅个别插件需要）。星芒不会自动安装，如需使用，请任选以下一种方式安装。')
     expect(guide?.command).toBe('brew install python')
-    expect(runtimeInstallGuide('node', 'macos', 'external')?.summary).toBe('这台 Mac 上没有找到 Node.js（命令行工具都靠它来安装和启动）。星芒不会替你装它，下面两种装法选一种就行。')
+    expect(runtimeInstallGuide('node', 'macos', 'external')?.summary).toBe('此 Mac 未找到 Node.js（命令行工具都靠它来安装和启动）。星芒不会自动安装，请任选以下一种方式安装。')
   })
 
   it('drops the Homebrew line on other external platforms rather than suggesting a wrong command', () => {
@@ -60,7 +60,7 @@ describe('runtimeInstallGuide', () => {
 describe('Python on Linux', () => {
   it('says no CLI needs it and gives the apt command instead of a website or the Mac chapter', () => {
     const guide = runtimeInstallGuide('python', 'linux', 'external')
-    expect(guide?.summary).toBe('这台电脑上没有找到 Python。命令行工具都用不到它，不装也没关系。')
+    expect(guide?.summary).toBe('本机未找到 Python。命令行工具均不依赖它，可不安装。')
     expect(guide?.command).toBe(linuxPythonInstallCommand)
     expect(guide?.command).toBe('sudo apt install python3')
     expect(guide?.noTutorial).toBe(true)
@@ -84,12 +84,12 @@ describe('Python on Linux', () => {
 
 describe('managedRuntimeNotice', () => {
   it('keeps the macOS sentence exactly as it was', () => {
-    expect(managedRuntimeNotice('node', 'macos', 'managed')).toBe('这台 Mac 上还没有 Node.js，命令行工具都靠它来安装和启动。点「准备 Node.js」，星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。')
+    expect(managedRuntimeNotice('node', 'macos', 'managed')).toBe('此 Mac 尚未安装 Node.js，命令行工具都靠它来安装和启动。点击「准备 Node.js」，星芒将下载官方版本并放在专用文件夹中，无需输入开机密码，也不影响本机其他软件。')
   })
 
   it('tells Linux customers the app prepares Node.js itself instead of sending them to a website', () => {
     const notice = managedRuntimeNotice('node', 'linux', 'managed')
-    expect(notice).toBe('这台电脑上还没有能用的 Node.js，命令行工具都靠它来安装和启动。点「准备 Node.js」，星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。')
+    expect(notice).toBe('本机尚无可用的 Node.js，命令行工具都靠它来安装和启动。点击「准备 Node.js」，星芒将下载官方版本并放在专用文件夹中，无需输入开机密码，也不影响本机其他软件。')
     expect(notice).not.toContain('官网')
   })
 

@@ -45,7 +45,7 @@ export const accountProfileAnchor = 'edit-profile'
 export const accountSwitchAnchor = 'switch-account'
 export const accountSwitchKeywords = ['换账号', '切账号', '换号'] as const
 /**
- * 密钥管理最下面「用在别的软件里」那张卡（Q1）：首页工具区最后一格、顶部搜索「接口地址」落到这里。
+ * 密钥管理最下面「在其他软件中使用」那张卡（Q1）：首页工具区最后一格、顶部搜索「接口地址」落到这里。
  */
 export const otherAppsAnchor = 'other-apps'
 /**
@@ -63,7 +63,7 @@ export const accountSections = [
   { value: 'change-password', tab: 'security', label: '修改密码', keywords: ['改密码', '密码'] },
   { value: 'remember-password', tab: 'security', label: '记住密码', keywords: [] },
   { value: 'devices', tab: 'security', label: '登录设备', keywords: ['设备', '下线', '其他电脑', '登录记录'], gated: true },
-  { value: otherAppsAnchor, tab: 'keys', label: '用在别的软件里', keywords: ['接口地址', 'API 地址', 'API 域名', 'Base URL', 'baseURL', '别的软件', '其他软件', '第三方软件', 'Cherry Studio', 'Chatbox', '沉浸式翻译'], gated: true },
+  { value: otherAppsAnchor, tab: 'keys', label: '在其他软件中使用', keywords: ['用在别的软件里', '接口地址', 'API 地址', 'API 域名', 'Base URL', 'baseURL', '别的软件', '其他软件', '第三方软件', 'Cherry Studio', 'Chatbox', '沉浸式翻译'], gated: true },
 ] as const satisfies ReadonlyArray<{ value: string; tab: AccountTabValue; label: string; keywords: readonly string[]; gated?: boolean }>
 export type AccountSectionValue = (typeof accountSections)[number]['value']
 /** 外面点名要去的地方：一个页签，或者页签里的一处落点。 */

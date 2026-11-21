@@ -659,7 +659,7 @@ const key = {
 // 「按工具分账」按托管 Key 的固定名称认工具，夹具照搬真实命名：一把有上限、
 // 一把不限额，另外两个工具还没签发过，这样四种格子在一张表里都能看到。
 // 撤销工具在用的 Key：keyInUse 让那把 Test key 标成 Claude Code 在用；
-// replaceFails=N 让自动换新的前 N 次失败，好看到「再换一次」那条出路。
+// replaceFails=N 让自动换新的前 N 次失败，好看到「重新更换」那条出路。
 const keyInUse = query.has('keyInUse')
 let replaceFailures = Number(query.get('replaceFails') ?? 0)
 // replaceSkipped：那个工具的配置是手填的，自动换新把它跳过（#478）。
@@ -948,7 +948,7 @@ const apiMethods = {
   switchSavedAccount: async (id: string) => {
     record('switch-account', id)
     // 与主进程 SAVED_EXPIRED 同一句（electron/realm-account.ts）。
-    if (fail === 'switch') throw new Error('这个保存的账号登录已失效，当前账号没有变化。点「重新登录这个账号」再登一次就行。')
+    if (fail === 'switch') throw new Error('这个保存的账号登录已失效，当前账号没有变化。点「重新登录该账号」再登一次就行。')
     activeUserId = 8
     for (const config of Object.values(configs.providers)) {
       if (config.configurationOwnership === 'account') config.configurationOwnership = 'unknown'

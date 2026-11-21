@@ -50,12 +50,12 @@ describe('recent-display', () => {
   })
 
   it('tells which tool the resume button opens', () => {
-    expect(recentResumeHint({ provider: 'codex', cwd: 'C:\\work\\my-project' })).toBe('用 Codex CLI 接着 my-project 里最近的一条对话')
-    expect(recentResumeHint({ provider: 'claude', cwd: 'C:\\work\\gone', cwdExists: false })).toBe('这个文件夹已经不在了，接不上上次的对话')
+    expect(recentResumeHint({ provider: 'codex', cwd: 'C:\\work\\my-project' })).toBe('使用 Codex CLI 继续 my-project 中最近的一条对话')
+    expect(recentResumeHint({ provider: 'claude', cwd: 'C:\\work\\gone', cwdExists: false })).toBe('该文件夹已不存在，无法继续上次的对话')
   })
 
   it('names the folder whose newest chat took over the resume, or says this folder', () => {
-    expect(recentReplacedHint({ cwd: 'C:\\work\\my-app' })).toBe('my-app 里刚有新的对话，已换成最新那条，再点一次「继续对话」')
-    expect(recentReplacedHint({ cwd: '' })).toBe('这个文件夹里刚有新的对话，已换成最新那条，再点一次「继续对话」')
+    expect(recentReplacedHint({ cwd: 'C:\\work\\my-app' })).toBe('my-app 中有新的对话，已切换到最新一条，请再次点击「继续对话」')
+    expect(recentReplacedHint({ cwd: '' })).toBe('这个文件夹中有新的对话，已切换到最新一条，请再次点击「继续对话」')
   })
 })

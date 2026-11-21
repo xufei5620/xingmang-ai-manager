@@ -547,7 +547,7 @@ test('a key that was not written offers resync on the connect step and moves on 
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-key-sync-failure').waitFor()
-    assert.equal(await page.getByTestId('guide-key-sync-failure').textContent(), 'Claude Code：密钥没有写进去，点「重新同步」再试')
+    assert.equal(await page.getByTestId('guide-key-sync-failure').textContent(), 'Claude Code：密钥写入失败，请点击「重新同步」')
     assert.equal((await page.getByTestId('guide-key-sync-retry').textContent())?.trim(), '重新同步')
     assert.match(await page.getByTestId('guide-key-sync-retry').getAttribute('class') ?? '', /xm-btn-primary/)
     assert.match(await page.getByTestId('guide-config').getAttribute('class') ?? '', /xm-btn-secondary/)

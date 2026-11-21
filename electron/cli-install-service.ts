@@ -1607,7 +1607,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
           // 慢但一直在下的最多等 30 分钟（第三十七批 A）。
           const stallWatch = createNpmDownloadStallWatch(() => measureDirectoryBytes(attemptRoot))
           const downloadStartedAt = performance.now()
-          // 同解析那一步：带上已用时，界面进度那一行就换成现成的「还在下载，已经等了……」，
+          // 同解析那一步：带上已用时，界面进度那一行就换成现成的「仍在下载，已等待……」，
           // 这句原话进安装日志；运行日志不记这种每隔几秒一条的（第三十七批 D）。
           const downloadTicker = setInterval(() => {
             const elapsedMs = Math.round(performance.now() - downloadStartedAt)

@@ -101,7 +101,7 @@ export function registerToolHandlers(ctx: IpcHandlerContext): void {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     const uninstallOptions = parseCliUninstallOptions(input)
     const providerName = cliCatalog[provider].name
-    // 「换成星芒装的」是先卸后装：装那一半关着时连卸也不做，不然客户手上的那份没了、新的又装不上。
+    // 「改用星芒安装」是先卸后装：装那一半关着时连卸也不做，不然客户手上的那份没了、新的又装不上。
     if (uninstallOptions.reinstall) await options.remoteFeatures?.assertOn(`install:${provider}`, toolInstallOffMessage(providerName))
     options.runtimeLog.log('info', 'maintenance', 'cli.uninstall.started', `开始卸载 ${providerName}`, {
       provider,

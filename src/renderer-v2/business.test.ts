@@ -147,7 +147,7 @@ describe('v2 business boundaries', () => {
   it('names the current account in the page head and says plainly when its profile was not read', () => {
     expect(accountHeadLead({ username: 'alice', email: 'a@example.test' }, '星芒账号')).toBe('a@example.test · 星芒账号')
     expect(accountHeadLead({ username: 'alice', email: '' }, '历史账号')).toBe('alice · 历史账号')
-    expect(accountHeadLead(null, '星芒账号')).toBe('当前账号的资料暂时没有读到')
+    expect(accountHeadLead(null, '星芒账号')).toBe('当前账号资料获取失败')
   })
 
   it('counts only the folded filters that a query actually applied', () => {

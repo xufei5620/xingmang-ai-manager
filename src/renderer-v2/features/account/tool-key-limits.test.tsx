@@ -47,7 +47,7 @@ describe('tool key limit rows', () => {
   it('describes a limited tool, an unlimited one and a tool without a key yet', () => {
     expect(toolKeyLimitDescription(claude)).toBe('已用 $4.00 · 上限剩余 $12.00')
     expect(toolKeyLimitDescription(codex)).toBe('已用 $3.00 · 不限额度')
-    expect(toolKeyLimitDescription(grok)).toBe('还没有这把密钥，在首页配一次这个工具就会自动准备好。')
+    expect(toolKeyLimitDescription(grok)).toBe('暂无此密钥，在首页配置该工具后将自动创建。')
   })
 
   it('prefills the field with the current limit and leaves it blank when there is none', () => {
@@ -90,8 +90,8 @@ describe('tool key limit rows', () => {
   it('says the tool is refusing requests once its limit is spent, instead of showing a bare zero', () => {
     const spent = { ...claude, remaining: 0 }
     expect(toolKeyLimitReached(spent)).toBe(true)
-    expect(toolKeyLimitDescription(spent)).toContain('上限已用完')
-    expect(toolKeyLimitDescription(spent)).toContain('把上限改大或留空即可恢复')
+    expect(toolKeyLimitDescription(spent)).toContain('额度上限已用尽')
+    expect(toolKeyLimitDescription(spent)).toContain('调高上限或留空即可恢复')
     expect(toolKeyLimitDescription(spent)).not.toContain('上限剩余')
     const html = renderToStaticMarkup(
       <ToolKeyLimitRow limit={spent} value="0" busy={false} disabled={false} onChange={() => undefined} onSave={() => undefined} />,

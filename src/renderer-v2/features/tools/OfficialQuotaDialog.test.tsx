@@ -14,11 +14,11 @@ describe('renderer-v2 official ChatGPT quota dialog', () => {
   it('counts the reset credits as times rather than an amount', () => {
     const markup = render(account)
     expect(markup).toContain('已用 80%')
-    expect(markup).toContain('<p>还能手动恢复额度 2 次</p>')
+    expect(markup).toContain('<p>可手动恢复额度 2 次</p>')
     expect(markup).not.toContain('剩余额度')
   })
 
   it('leaves the line out when ChatGPT did not say', () => {
-    expect(render({ ...account, resetCredits: null })).not.toContain('还能手动恢复额度')
+    expect(render({ ...account, resetCredits: null })).not.toContain('可手动恢复额度')
   })
 })

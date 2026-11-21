@@ -340,7 +340,7 @@ test('ToolRow uses six fixed columns, real brands and exact theme tokens across 
     try {
       const row = page.getByTestId('gallery-tool-row');
       assert.match(await row.innerText(), /Claude Code/);
-      assert.match(await row.innerText(), /已配好/);
+      assert.match(await row.innerText(), /已配置/);
       assert.doesNotMatch(await row.innerText(), /星芒中转|ready/);
       const columns = await row.evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' '));
       assert.equal(columns.length, 6); assert.deepEqual(columns.slice(-2), ['92px', '32px']);

@@ -173,7 +173,7 @@ export function accountTabNeeds(tab: AccountTab): { profile: boolean; balance: b
 
 /** 页头名字下面那句：邮箱和哪种账号（v4 字表批06）。资料没读到就直说，不拿别的话顶上。 */
 export function accountHeadLead(profile: Pick<Profile, 'username' | 'email'> | null, source: string): string {
-  if (!profile) return '当前账号的资料暂时没有读到'
+  if (!profile) return '当前账号资料获取失败'
   return `${profile.email || profile.username} · ${source}`
 }
 
@@ -268,7 +268,7 @@ function AccountReadFailure({
     <Empty
       testId="account-read-error"
       icon={XCircle}
-      title="当前账号的资料暂时没有读到"
+      title="当前账号资料获取失败"
       description={<FailureReason error={failure.message} detail={failure.detail} />}
       action={
         <>
@@ -345,7 +345,7 @@ export function AccountPage({
   onOpenHelp?: () => void
   /** 去「检查」页；缺省 = 订阅开通后工具没换过去时，不给「前往检查页」。 */
   onOpenHealth?: () => void
-  /** 「用在别的软件里」最底下的「告诉我们」，去反馈表单；缺省 = 不出那一行。 */
+  /** 「在其他软件中使用」最底下的「告诉我们」，去反馈表单；缺省 = 不出那一行。 */
   onRequestApp?: () => void
   /** 现在摆出来的是哪个页签，顶栏的「个人中心 / 页签名」跟着它；缺省 = 不报。 */
   onTabChange?: (tab: AccountTab) => void
@@ -430,7 +430,7 @@ export function AccountPage({
       api.getAccountProfile(),
       balanceStore ? balanceStore.refresh('foreground').then(() => {
         const state = balanceStore.getSnapshot()
-        if (!state.balance) throw new Error(state.error || '余额暂时没有读到，请稍后重试。')
+        if (!state.balance) throw new Error(state.error || '余额获取失败，请稍后重试。')
         return state.balance
       }) : api.getAccountBalance(),
     ])
@@ -696,7 +696,7 @@ export function AccountPage({
         <Empty
           icon={UserRound}
           title="登录后查看个人中心"
-          description="工具里已经写入的配置会继续保留。"
+          description="已写入工具的配置将继续保留。"
           action={
             <Button variant="primary" icon={UserRound} onClick={() => onLogin?.()}>
               登录账号
@@ -860,11 +860,11 @@ function AccountKeys({
   const [expiry, setExpiry] = useState<KeyExpiryChoice>('never')
   const [customExpiry, setCustomExpiry] = useState('')
   const [removing, setRemoving] = useState<AccountKey | null>(null)
-  // 撤销了工具在用的 Key、自动换新却没成：记下是哪个工具，好给一颗「再换一次」。
+  // 撤销了工具在用的 Key、自动换新却没成：记下是哪个工具，好给一颗「重新更换」。
   // skipped = 这个工具的配置不归自动流程管（手填、来源没确认等），再换一次也还是跳过，
-  // 要给的是「去配置」（#478）。
+  // 要给的是「前往配置」（#478）。
   const [replaceFailed, setReplaceFailed] = useState<{ provider: Provider; skipped: boolean } | null>(null)
-  // 点「去配置」只是打开了设置窗口，用户可能取消，也可能保存失败，工具手里还是那把撤销掉的
+  // 点「前往配置」只是打开了设置窗口，用户可能取消，也可能保存失败，工具手里还是那把撤销掉的
   // Key。所以警告要等那个工具的设置真的保存、并读回之后才收起（#546）。只认点开之后
   // 新来的信号，之前留下的那次不算。
   const confirmedSequence = useRef(toolConfigConfirmed?.sequence ?? 0)
@@ -1030,10 +1030,10 @@ function AccountKeys({
     operation.execute(
       'replace',
       async () => {
-        if (!(await replaceKey(provider))) throw new Error(`${keyToolName(provider)} 还是没换上新密钥，请检查网络后再点一次。`)
+        if (!(await replaceKey(provider))) throw new Error(`${keyToolName(provider)} 仍未更换为新密钥，请检查网络后重试。`)
         await reloadAfterWrite()
       },
-      `${keyToolName(provider)} 已换上新密钥`,
+      `${keyToolName(provider)} 已更换为新密钥`,
     )
   // 一页可能好几把都停着：记下点的是哪一把，转圈只转那一颗。
   const enabling = useRef<number | null>(null)
@@ -1095,7 +1095,7 @@ function AccountKeys({
         onChange={setGroup}
         testId="account-key-group-choices"
       />
-      <small className="v2-acct-field-hint">{groupDescription || '分组决定这把密钥能用哪些模型、按什么价格算；拿不准就用已经选好的。'}</small>
+      <small className="v2-acct-field-hint">{groupDescription || '分组决定该密钥可用的模型及计价方式；如不确定，请保留默认选择。'}</small>
     </div>
   ) : (
     <Select
@@ -1120,7 +1120,7 @@ function AccountKeys({
         ]
       }
       value={group}
-      hint={groupDescription || '分组决定这把密钥能用哪些模型、按什么价格算；拿不准就用已经选好的。'}
+      hint={groupDescription || '分组决定该密钥可用的模型及计价方式；如不确定，请保留默认选择。'}
       onChange={(event) => setGroup(event.target.value)}
     />
   )
@@ -1129,7 +1129,7 @@ function AccountKeys({
       {/* 工具用的密钥在首页配置工具时会自动准备好，新手不该从这页手动建一把
           （新手引导梳理 9-25 第 5 条）。v4 收成最上面一行小字。 */}
       <div className="v2-acct-keys-top">
-        <p className="v2-acct-muted" data-testid="account-keys-auto-hint">登录后每个工具会自动配好密钥，一般不用管。</p>
+        <p className="v2-acct-muted" data-testid="account-keys-auto-hint">登录后将自动为各工具配置密钥，通常无需手动操作。</p>
         <SearchInput
           value={query}
           onChange={setQuery}
@@ -1159,8 +1159,8 @@ function AccountKeys({
       {replaceFailed && onRewriteKey && (replaceFailed.skipped ? (
         <Notice
           tone="warn"
-          title={`${keyToolName(replaceFailed.provider)} 还在用刚撤销的密钥`}
-          body={`${keyToolName(replaceFailed.provider)} 的配置不是按当前账号自动写的，这次没有替你改，它现在会连不上。${onConfigureTool ? '点「去配置」改用当前账号就好。' :'到首页打开它的设置，改用当前账号就好。'}`}
+          title={`${keyToolName(replaceFailed.provider)} 仍在使用已撤销的密钥`}
+          body={`${keyToolName(replaceFailed.provider)} 的配置并非由当前账号自动写入，本次未作修改，当前将无法连接。${onConfigureTool ? '请点击「前往配置」改用当前账号。' : '请在首页打开其设置并改用当前账号。'}`}
           testId="account-key-replace-skipped"
           actions={onConfigureTool && (
             <Button
@@ -1169,15 +1169,15 @@ function AccountKeys({
               testId="account-key-replace-configure"
               onClick={() => onConfigureTool(replaceFailed.provider)}
             >
-              去配置
+              前往配置
             </Button>
           )}
         />
       ) : (
         <Notice
           tone="warn"
-          title={`${keyToolName(replaceFailed.provider)} 暂时用不了`}
-          body={`刚撤销的是 ${keyToolName(replaceFailed.provider)} 正在用的密钥，新密钥没有换上。点「再换一次」就好。`}
+          title={`${keyToolName(replaceFailed.provider)} 暂时无法使用`}
+          body={`已撤销的密钥正被 ${keyToolName(replaceFailed.provider)} 使用，新密钥未能更换。请点击「重新更换」。`}
           testId="account-key-replace-failed"
           actions={
             <Button
@@ -1188,7 +1188,7 @@ function AccountKeys({
               testId="account-key-replace-retry"
               onClick={() => void retryReplaceKey(replaceFailed.provider)}
             >
-              再换一次
+              重新更换
             </Button>
           }
         />
@@ -1204,10 +1204,10 @@ function AccountKeys({
           filtered={Boolean(query)}
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
-          emptyTitle="还没有密钥"
-          emptyDescription="新建一把，或者在工具配置里选「自动准备」。"
-          searchTitle="没有找到相关密钥"
-          searchDescription="换个名称或分组试试。"
+          emptyTitle="暂无密钥"
+          emptyDescription="请新建密钥，或在工具配置中选择「自动准备」。"
+          searchTitle="未找到相关密钥"
+          searchDescription="请尝试其他名称或分组。"
           action={
             <Button size="sm" icon={Plus} onClick={() => edit('new')} testId="keys-empty-add">
               新建密钥
@@ -1252,7 +1252,7 @@ function AccountKeys({
                         size="xs"
                         icon={shown ? EyeOff : Eye}
                         aria-label={shown ? '隐藏密钥' : '显示密钥'}
-                        title={shown ? '隐藏密钥' : '不要把完整密钥发给别人'}
+                        title={shown ? '隐藏密钥' : '请勿将完整密钥提供给他人'}
                         loading={operation.busy === 'reveal' && revealing.current === key.id}
                         disabled={Boolean(operation.busy) && operation.busy !== 'reveal'}
                         onClick={() => toggleReveal(key)}
@@ -1290,10 +1290,10 @@ function AccountKeys({
                       </Button>
                     )}
                     <Menu
-                      label={`把密钥 ${key.name} 配置到工具`}
-                      heading="把这把密钥写进"
+                      label={`将密钥 ${key.name} 配置到工具`}
+                      heading="将此密钥写入"
                       // 一页好几把密钥，每行都有一颗「配置到工具」：读屏要念出是哪一把的。
-                      anchor={<Button size="sm" iconRight={ChevronDown} disabled={Boolean(operation.busy)} aria-label={`把密钥 ${key.name} 配置到工具`}>配置到工具</Button>}
+                      anchor={<Button size="sm" iconRight={ChevronDown} disabled={Boolean(operation.busy)} aria-label={`将密钥 ${key.name} 配置到工具`}>配置到工具</Button>}
                       items={toolTargets.map((target) => {
                         const choice = keyToolChoice(target, inUse === target.provider)
                         return {
@@ -1368,7 +1368,7 @@ function AccountKeys({
         {created ? (
           <div className="v2-acct-created" role="status" data-testid="account-key-created">
             <strong>「{created}」已创建</strong>
-            <p>想让某个工具用它，在列表里点「配置到工具」。</p>
+            <p>如需在工具中使用，请在列表中点击「配置到工具」。</p>
           </div>
         ) : (
           <>
@@ -1378,7 +1378,7 @@ function AccountKeys({
               label="名称"
               value={name}
               maxLength={50}
-              hint="方便你认出它"
+              hint="便于识别"
               onCompositionStart={(event) => {
                 nameCompositionBase.current = event.currentTarget.value
               }}
@@ -1442,7 +1442,7 @@ function AccountKeys({
                 type="number"
                 min="0"
                 step="0.01"
-                hint="美元，用完后这把密钥会暂停，不影响账号余额"
+                hint="美元，用尽后该密钥将暂停使用，不影响账号余额"
                 value={quota}
                 onChange={(event) => {
                   setQuota(event.target.value)
@@ -1481,7 +1481,7 @@ function AccountKeys({
                       return { name: removing.name, provider: provider && replaced ? provider : null }
                     },
                     (result) => result.provider
-                      ? `已撤销「${result.name}」，${keyToolName(result.provider)} 已换用新的密钥`
+                      ? `已撤销「${result.name}」，${keyToolName(result.provider)} 已更换为新密钥`
                       : `已撤销「${result.name}」`,
                   )
               }}
@@ -1491,19 +1491,19 @@ function AccountKeys({
           </>
         }
       >
-        <p>撤销后这把密钥马上失效，找不回来。</p>
+        <p>撤销后该密钥将立即失效且无法恢复。</p>
         {isProvider(removing?.managedProvider) && (
           <p>
             {onRewriteKey
-              ? `${keyToolName(removing.managedProvider)} 正在用它，会马上换一把新的写进去，不影响使用。`
-              : `${keyToolName(removing.managedProvider)} 正在用它，撤销后它会连不上。`}
+              ? `${keyToolName(removing.managedProvider)} 正在使用该密钥，将立即写入新密钥，不影响使用。`
+              : `${keyToolName(removing.managedProvider)} 正在使用该密钥，撤销后将无法连接。`}
           </p>
         )}
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={Boolean(selected)}
-        title={selected ? `把「${selected.key.name}」写进 ${toolTargets.find((target) => target.provider === selected.provider)?.name ?? keyToolName(selected.provider)}？` : ''}
+        title={selected ? `是否将「${selected.key.name}」写入 ${toolTargets.find((target) => target.provider === selected.provider)?.name ?? keyToolName(selected.provider)}？` : ''}
         onClose={closeConfigure}
         footer={
           <>
@@ -1548,7 +1548,7 @@ function AccountKeys({
         }
       >
         <ResultNotice error={operation.error} detail={operation.detail} target={configureFailureTarget} />
-        <p>写入后会改用当前账号，用量从余额里扣。原来的配置会先备份。{selected?.provider === 'codex' && 'Codex CLI 与桌面端共用同一份配置。'}</p>
+        <p>写入后将改用当前账号，用量从余额中扣除。原配置将自动备份。{selected?.provider === 'codex' && 'Codex CLI 与桌面端共用同一份配置。'}</p>
         <Select
           aria-label="选择模型"
           options={models.map((value) => ({ value, label: value }))}
@@ -1558,7 +1558,7 @@ function AccountKeys({
             operation.busy === 'models'
               ? '正在读取可用模型…'
               : modelsLoaded && models.length === 0
-                ? '这把密钥没有可用模型，请换一把密钥，或编辑它换个分组。'
+                ? '该密钥无可用模型，请更换密钥，或编辑密钥更换分组。'
                 : undefined
           }
           testId="account-key-configure-model"
@@ -1635,7 +1635,7 @@ function AccountInvite({
               testId="account-invite-transfer"
             >
               {/* 没有可转的分两种：赚过、都转完了，和从来没赚过（后者写「已全部转入」像是转过了）。 */}
-              {profile.affQuota > 0 ? '转入余额' : profile.affHistoryQuota > 0 ? '已全部转入' : '还没有返利'}
+              {profile.affQuota > 0 ? '转入余额' : profile.affHistoryQuota > 0 ? '已全部转入' : '暂无返利'}
             </Button>
           </div>
         </section>
@@ -1663,7 +1663,7 @@ function AccountInvite({
       <Dialog
         open={transfer}
         // 标题写这次要转的数：星芒账号可以只转一部分，以前填了 $3 这里还写全部可转的数（余额 F8-1）。
-        title={`把 ${quotaMoney(affiliateTransferTitleQuota({
+        title={`是否将 ${quotaMoney(affiliateTransferTitleQuota({
           wholeOnly,
           amount,
           available: profile.affQuota,
@@ -1702,7 +1702,7 @@ function AccountInvite({
           </>
         }
       >
-        <p>转入后可以直接用来调用模型，不能再转回返利。</p>
+        <p>转入后可直接用于调用模型，且不可转回返利。</p>
         <Input
           label="转入金额（美元）"
           type="number"
