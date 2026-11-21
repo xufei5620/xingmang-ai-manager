@@ -58,6 +58,7 @@ import type {
   RepositoryContext as CodexRepositoryContext,
   SkillDto,
 } from './codex-extensions'
+import type { SkillArchiveExtraction } from './skill-archive'
 import type {
   ProviderExtensionMutation,
   ProviderExtensionsSnapshot,
@@ -1261,6 +1262,12 @@ export interface XingmangInvokeContract {
   logoutMcpServer: IpcInvokeDefinition<'mcp:logout', [name: string], McpServer[]>
   listSkills: IpcInvokeDefinition<'skills:list', [], SkillItem[]>
   importSkill: IpcInvokeDefinition<'skills:import', [input: ImportSkillInput], SkillItem[]>
+  /**
+   * 技能「从压缩包导入」的「选择压缩包」：主进程弹原生选择框，把选中的 .zip 查完解到星芒自己的数据
+   * 文件夹，交回技能那一层的位置，再照「从文件夹导入」那样逐家导入（那边的检查照旧再做一遍）。
+   * 不收渲染层给的路径；取消返回 null，压缩包打不开、不安全、没有技能时报中文原因。
+   */
+  chooseSkillArchive: IpcInvokeDefinition<'skills:choose-archive', [], SkillArchiveExtraction | null>
   toggleSkill: IpcInvokeDefinition<
     'skills:toggle',
     [skillPath: string, enabled: boolean],
@@ -1785,6 +1792,7 @@ export const ipcInvokeChannels = {
   logoutMcpServer: 'mcp:logout',
   listSkills: 'skills:list',
   importSkill: 'skills:import',
+  chooseSkillArchive: 'skills:choose-archive',
   toggleSkill: 'skills:toggle',
   uninstallSkill: 'skills:uninstall',
   listPlugins: 'plugins:list',
