@@ -32,7 +32,7 @@ export function parseAccountKeysQuery(value: unknown): NewApiAccountKeysQuery {
   }
 }
 
-// account:revoke-key's sole argument. A destructive, id-addressed operation
+// account:revoke-key's sole argument (account:enable-key takes the same id). A destructive, id-addressed operation
 // that lands directly in a URL path segment (new-api-client.ts's
 // tokenIdPath) -- must be a genuine positive integer before it gets
 // anywhere near that, same "reject anything that isn't obviously a real id"

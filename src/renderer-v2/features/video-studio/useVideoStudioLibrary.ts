@@ -36,6 +36,14 @@ export interface VideoStudioLibrary {
   /** 这一条的名字、时间和工程；没有这一条是 null。 */
   get(id: string): VideoStudioItem | null
   source(id: string): VideoStudioSource
+  /**
+   * 工作台外面往这一条里写（对话里的「拿去拼成片」）。写完这一条换一个版本号（revision）：开着它的那个工作台
+   * 手上还是旧的，外面按版本号给 key 让它照新的重新读；旧工作台之后再交来的一律不收，不会把刚写的盖回去。
+   * 没有这一条是 false。
+   */
+  replace(id: string, project: VideoStudioProject): boolean
+  /** 这一条被 replace 写过几次。 */
+  revision(id: string): number
   rename(id: string, name: string): void
   remove(id: string): void
   /** 手上没交出去的马上交，连同还在路上的都落定了才交回；不抛错。 */
@@ -71,6 +79,7 @@ export function useVideoStudioLibrary(bridge: VideoStudioLibraryBridge, scope: s
   const dirty = useRef(new Set<string>())
   const removed = useRef(new Set<string>())
   const versions = useRef(new Map<string, number>())
+  const revisions = useRef(new Map<string, number>())
   const timer = useRef<number | null>(null)
   const inFlight = useRef(new Set<Promise<void>>())
   const mounted = useRef(true)
@@ -159,15 +168,26 @@ export function useVideoStudioLibrary(bridge: VideoStudioLibraryBridge, scope: s
     if (entry.listed) mark(id, options.urgent)
     redraw()
   }
-  const source = (id: string): VideoStudioSource => ({
-    read: () => {
-      const entry = entries.current.get(id)
-      if (!entry) return createVideoStudioProject()
-      try { return restoreVideoStudioProject(JSON.parse(entry.content)) ?? entry.item.project } catch { return entry.item.project }
-    },
-    write: (project, options) => write(id, project, options),
-    warning,
-  })
+  const revision = (id: string) => revisions.current.get(id) ?? 0
+  const source = (id: string): VideoStudioSource => {
+    const issued = revision(id)
+    return {
+      read: () => {
+        const entry = entries.current.get(id)
+        if (!entry) return createVideoStudioProject()
+        try { return restoreVideoStudioProject(JSON.parse(entry.content)) ?? entry.item.project } catch { return entry.item.project }
+      },
+      // 发出去以后这一条被外面换过（replace），拿着它的是照旧内容开的工作台：它再交来的不收。
+      write: (project, options) => { if (revision(id) === issued) write(id, project, options) },
+      warning,
+    }
+  }
+  const replace = (id: string, project: VideoStudioProject): boolean => {
+    if (!entries.current.has(id)) return false
+    revisions.current.set(id, revision(id) + 1)
+    write(id, project, { touch: true, urgent: true })
+    return true
+  }
   const rename = (id: string, name: string) => {
     const entry = entries.current.get(id)
     const next = cleanVideoStudioItemName(name)
@@ -183,11 +203,12 @@ export function useVideoStudioLibrary(bridge: VideoStudioLibraryBridge, scope: s
     entries.current.delete(id)
     dirty.current.delete(id)
     versions.current.delete(id)
+    revisions.current.delete(id)
     if (entry.listed) { removed.current.add(id); void send() }
     redraw()
   }
 
-  return { status, items: listed, warning, create, get: (id: string) => entries.current.get(id)?.item ?? null, source, rename, remove, flush }
+  return { status, items: listed, warning, create, get: (id: string) => entries.current.get(id)?.item ?? null, source, replace, revision, rename, remove, flush }
 }
 
 /**

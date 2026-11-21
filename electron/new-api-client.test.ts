@@ -59,7 +59,7 @@ import {
 import { buildAccountKeyName, managedCliKeyProfiles } from './catalog'
 import { createRelayEndpointRoutingSnapshot } from './relay-sites'
 import { networkFailureMessages, proxyAuthRequiredMessage } from './network-failure'
-import { buildManagedCliKeyLimitUpdate, managedKeyStoppedMessage, resolveManagedCliKeyLimits } from './account-key-quota'
+import { accountKeyEnableExpiredMessage, accountKeyEnableUsedUpMessage, buildManagedCliKeyLimitUpdate, managedKeyStoppedMessage, resolveManagedCliKeyLimits } from './account-key-quota'
 import { matchAccountErrorMessage } from '../src/renderer-v2/features/auth/account-errors'
 import { classifyOperationError } from '../src/renderer-v2/operation-error'
 import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
@@ -3218,6 +3218,139 @@ describe('updateKey', () => {
   })
 })
 
+describe('enableKey', () => {
+  // GET /api/token/:id's record (controller/token.go GetToken), trimmed to the
+  // fields enableKey reads plus the masked key it must never resend.
+  function tokenDetail(fields: Record<string, unknown>): Response {
+    return jsonResponse({
+      success: true,
+      message: '',
+      data: {
+        id: 42,
+        name: 'yoyo-GPT',
+        key: 'sk-abcd**********1234',
+        status: 2,
+        expired_time: -1,
+        remain_quota: 0,
+        unlimited_quota: true,
+        group: 'GPT',
+        ...fields,
+      },
+    })
+  }
+  const nowSeconds = () => Math.floor(Date.now() / 1_000)
+
+  it('reads the key, then sends the web\'s status-only enable with nothing but the id and status', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    fetchImpl.mockResolvedValueOnce(tokenDetail({ status: 2 }))
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '' }))
+
+    await client.enableKey(42)
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    const [getUrl, getInit] = fetchImpl.mock.calls[0]
+    expect(String(getUrl)).toBe(`${testBaseUrl}/api/token/42`)
+    expect(getInit?.method).toBe('GET')
+    const [putUrl, putInit] = fetchImpl.mock.calls[1]
+    expect(String(putUrl)).toBe(`${testBaseUrl}/api/token/?status_only=true`)
+    expect(putInit?.method).toBe('PUT')
+    // status_only copies only status (UpdateToken, rc.44/rc.51); the masked key
+    // from the GET must never ride along (I3).
+    expect(JSON.parse(String(putInit?.body))).toEqual({ id: 42, status: 1 })
+  })
+
+  it('enables an expired or used-up key once its expiry or quota has been changed', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    fetchImpl
+      .mockResolvedValueOnce(tokenDetail({ id: 42, status: 3, expired_time: nowSeconds() + 86_400 }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '' }))
+      .mockResolvedValueOnce(tokenDetail({ id: 43, status: 4, unlimited_quota: false, remain_quota: 500_000 }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '' }))
+
+    await client.enableKey(42)
+    await client.enableKey(43)
+
+    const puts = fetchImpl.mock.calls.filter(([, init]) => init?.method === 'PUT')
+    expect(puts.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([{ id: 42, status: 1 }, { id: 43, status: 1 }])
+  })
+
+  it('stops with what to change first when the key is past its expiry, whatever its status says', async () => {
+    // The server only refuses status 3; a disabled (status 2) key past its
+    // expiry would be switched on and flipped straight back on first use.
+    for (const status of [2, 3]) {
+      const fetchImpl = vi.fn<NewApiFetch>()
+      const client = await authenticatedClient(fetchImpl)
+      fetchImpl.mockClear()
+      fetchImpl.mockResolvedValueOnce(tokenDetail({ status, expired_time: nowSeconds() - 60 }))
+
+      await expect(client.enableKey(42)).rejects.toThrow(accountKeyEnableExpiredMessage)
+      expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
+    }
+    expect(accountKeyEnableExpiredMessage).toBe('这把密钥已经过了到期时间，先点这一行右边的「⋯」，选「编辑」把到期时间往后改，再点「启用」。')
+  })
+
+  it('stops with what to change first when a capped key has no quota left, whatever its status says', async () => {
+    for (const status of [2, 4]) {
+      const fetchImpl = vi.fn<NewApiFetch>()
+      const client = await authenticatedClient(fetchImpl)
+      fetchImpl.mockClear()
+      fetchImpl.mockResolvedValueOnce(tokenDetail({ status, unlimited_quota: false, remain_quota: 0 }))
+
+      await expect(client.enableKey(42)).rejects.toThrow(accountKeyEnableUsedUpMessage)
+      expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
+    }
+    expect(accountKeyEnableUsedUpMessage).toBe('这把密钥的额度已经用完，先点这一行右边的「⋯」，选「编辑」把额度调高或改成「不限额度」，再点「启用」。')
+  })
+
+  it('leaves an already enabled key alone', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    fetchImpl.mockResolvedValueOnce(tokenDetail({ status: 1 }))
+
+    await expect(client.enableKey(42)).resolves.toBeUndefined()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not send the enable when the key detail lacks a field it has to check', async () => {
+    for (const missing of ['status', 'expired_time', 'remain_quota', 'unlimited_quota']) {
+      const fetchImpl = vi.fn<NewApiFetch>()
+      const client = await authenticatedClient(fetchImpl)
+      fetchImpl.mockClear()
+      fetchImpl.mockResolvedValueOnce(tokenDetail({ [missing]: null }))
+
+      await expect(client.enableKey(42)).rejects.toThrow('没读到这把密钥现在的状态，先没启用。请稍后再试。')
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('passes the server\'s own refusal through in Chinese', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    fetchImpl.mockResolvedValueOnce(tokenDetail({ status: 2 }))
+    // rc.43+ envelopes carry the i18n key next to the English sentence (common.ApiErrorT).
+    const refusal = 'Token quota is exhausted and cannot be enabled. Please modify the remaining quota or set it to unlimited'
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: false, message: refusal, message_key: refusal }))
+
+    await expect(client.enableKey(42)).rejects.toThrow('令牌可用额度已用尽，无法启用')
+  })
+
+  it('rejects a non-positive id without touching the network', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+
+    await expect(client.enableKey(0)).rejects.toThrow('密钥 ID 格式错误')
+    await expect(client.enableKey(1.5)).rejects.toThrow('密钥 ID 格式错误')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
 // POST /api/verify's success envelope on rc.40 (service/security_verification.go
 // SecurityProof, written by controller/secure_verification.go UniversalVerify).
 function proofResponse(proofToken = 'proof-token-1'): Response {
@@ -3738,7 +3871,7 @@ describe('provisionCliKey with a tool key stopped on the web', () => {
       .mockResolvedValueOnce(listing([{ ...enabled, ...change }]))
 
     await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow(managedKeyStoppedMessage)
-    expect(managedKeyStoppedMessage).toBe('这个工具的密钥已经停用或到期，软件不会自动换一把新的。到星芒网页的「令牌管理」里重新启用，或者在「个人中心 › 密钥管理」把它撤销后再试。')
+    expect(managedKeyStoppedMessage).toBe('这个工具的密钥已经停用或到期，软件不会自动换一把新的。到「个人中心 › 密钥管理」找到它点「启用」，或者把它撤销后再试。')
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 
