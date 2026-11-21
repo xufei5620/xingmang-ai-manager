@@ -132,13 +132,13 @@ export function isGuideToolRoute(route: GuideRoute | null | undefined): route is
   return Boolean(route) && route !== 'chat' && route !== 'create'
 }
 
-const steps: readonly { id: GuideStep; title: string }[] = [{ id: 'choose', title: '选一种开始方式' }, { id: 'prepare', title: '准备工具' }, { id: 'connect', title: '确认连接' }, { id: 'ready', title: '可以开始了' }]
+const steps: readonly { id: GuideStep; title: string }[] = [{ id: 'choose', title: '选一种开始方式' }, { id: 'prepare', title: '准备工具' }, { id: 'connect', title: '确认连接' }, { id: 'ready', title: '准备就绪' }]
 
 /** 第一步每个选项下面那句话（v4）。Linux 上没有桌面端，Codex CLI 那句不提「和桌面端共用」。 */
 function guideChoiceNote(id: ToolDef['id'], platform: StartGuideProps['platform']): string {
-  if (id === 'codexDesktop') return '不开终端，装好就能改代码'
+  if (id === 'codexDesktop') return '无需终端，安装后即可编写代码'
   if (id === 'codex') return platform === 'linux' ? '终端版' : '终端版，和桌面端共用配置'
-  if (id === 'claude') return '在终端里让 AI 读项目、改代码'
+  if (id === 'claude') return '在终端中由 AI 阅读项目、修改代码'
   return '在终端里用 Grok 读项目、改代码'
 }
 
@@ -209,7 +209,7 @@ export interface GuideFailure {
   detail?: string
 }
 
-const unrecognized = '（没认出是哪一类问题，原话在下面）'
+const unrecognized = '（未能识别问题类型，原始信息如下）'
 
 /** 认不出原因时往哪儿指：有「复制给客服」就让他复制，没有才说「需要帮助」。 */
 function guideFailureTail(unknown: boolean, copyable: boolean): string {
@@ -273,7 +273,7 @@ export function guideStepFailure(error: unknown, action: string, copyable = fals
   // 引导里原话折在「给客服看的原话」里，所以把那一句取出来放上红字，外面包的「改用当前账号没有完成：」不重复。
   const linked = key === 'configLink' ? configLinkRefusalIn(message) : null
   if (linked) {
-    const tail = copyable ? '不会弄就点「复制给客服」发给客服。' : '不会弄就点「需要帮助」。'
+    const tail = copyable ? '如需协助，请点击「复制给客服」并发送给客服。' : '如需协助，请点击「需要帮助」。'
     return { message: `${action}没有成功：${linked}${tail}`, reason: errors.configLink.title, detail: guideDetail(error, linked) }
   }
   if (key !== 'unknown') {
@@ -400,10 +400,10 @@ function GuideFirstTaskPrompt({ prompt, copiedNotice, disabled }: { prompt: stri
     )
   }
   return <div className="auth-guide-first-task" data-testid="guide-first-task">
-    <span className="auth-guide-first-task-label">试试第一句话</span>
+    <span className="auth-guide-first-task-label">发送第一条消息</span>
     <p><code data-testid="guide-first-task-prompt">{prompt}</code></p>
     <Button size="xs" variant="ghost" icon={Copy} disabled={disabled} onClick={copyPrompt} testId="guide-first-task-copy">复制</Button>
-    {failed && <p className="auth-guide-first-task-note" role="status" data-testid="guide-first-task-copy-status">没能复制，可以手动选中上面这句话复制</p>}
+    {failed && <p className="auth-guide-first-task-note" role="status" data-testid="guide-first-task-copy-status">复制失败，请手动选中上方内容复制</p>}
   </div>
 }
 
@@ -450,7 +450,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   // 装着的版本旧了（或有已知问题）只是一句建议加一颗按钮，「下一步」照常能点（Q50）。
   // 只在工具和运行环境都齐了时才提：没齐的时候先要做的是把它们准备好。
   const update = readiness.prepared && tool?.update ? tool.update : null
-  const updateLabel = update?.newer === false ? '换成推荐版本' : '更新'
+  const updateLabel = update?.newer === false ? '切换到推荐版本' : '更新'
   const oneButton = Boolean(tool && !tool.installed && route !== 'codexDesktop' && (!guideNeedsNodeRuntime(route, tool) || tool.runtimeReady || tool.runtimeAutoPrepare))
   // Node.js 由本软件准备的平台，运行环境那几句说「自动」「一键」，别把人支到软件外面去。
   // Mac、Linux 按能力判断（Mac 第十六批 2 起、Linux 版拆分 ② 起由本软件准备）。Mac 以前照旧写
@@ -459,7 +459,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const currentStep = steps.findIndex((item) => item.id === step)
   const locked = busy || Boolean(pending)
   const saveProgress = (chosen: GuideRoute, currentStep: GuideStep) => {
-    if (!writeGuideProgress(getGuideStorage(), resumeKey, { route: chosen, step: currentStep })) setStorageWarning('引导进度没有保存到本机，当前步骤仍可继续')
+    if (!writeGuideProgress(getGuideStorage(), resumeKey, { route: chosen, step: currentStep })) setStorageWarning('引导进度保存失败，当前步骤可继续')
     else setStorageWarning('')
   }
   const choose = (chosen: GuideRoute) => { if (locked) return; createAfterLogin.current = false; setRoute(chosen); setSwitched(null); setError(''); setFailed(null); saveProgress(chosen, 'choose') }
@@ -590,23 +590,23 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const switchLabel = switchAccountLabel(accountName)
   // 来源没确认时按 Key 的归属分三种说法；没接「改用」的调用方仍走旧的「打开配置」那条路。
   const foreign = tool?.source === 'unknown' && onSwitchAccount ? tool.keyState ?? 'otherSite' : null
-  const codexShared = route === 'codex' || route === 'codexDesktop' ? 'Codex CLI 和 Codex 桌面端共用这份设置，会一起改。' : ''
-  const foreignLead = { otherSite: `${name} 现在用的不是当前账号的密钥。`, otherAccount: `${name} 现在用的密钥可能不是当前账号的。`, changed: `${name} 的配置在软件之外被改动过。` }
+  const codexShared = route === 'codex' || route === 'codexDesktop' ? 'Codex CLI 与 Codex 桌面端共用此设置，将同步修改。' : ''
+  const foreignLead = { otherSite: `${name} 现在用的不是当前账号的密钥。`, otherAccount: `${name} 当前使用的密钥可能不属于当前账号。`, changed: `${name} 的配置在软件之外被改动过。` }
   const switchButton = signedIn ? switchLabel : '登录后改用我的账号'
   // 装完自动写密钥没写成（主路卡点 F14）：先说首页那句，主按钮是「重新同步」，不叫客户自己去选来源、密钥和模型。
   // 别处的 Key 是被跳过、不是没写成，照旧走「改用」那条路。
   const keySyncFailure = isGuideToolRoute(route) && signedIn && !foreign && !readiness.connected ? tool?.keySyncFailure ?? null : null
   const offerKeySync = Boolean(keySyncFailure?.retry && onBootstrapRetry)
-  const foreignCallout = { otherSite: `点「${switchButton}」就能接着往下走。改之前会先把现在的设置备份一份。`, otherAccount: `能直接用，但用量可能算到别的账号上。点「${switchButton}」换成你自己的，改之前会先备份。`, changed: `现在还能用。想恢复成你账号的设置，点「${switchButton}」，改之前会先备份。` }
+  const foreignCallout = { otherSite: `点击「${switchButton}」继续。修改前将自动备份当前设置。`, otherAccount: `可直接使用，但用量可能计入其他账号。点击「${switchButton}」切换为当前账号，修改前将自动备份。`, changed: `当前仍可使用。如需恢复为当前账号的设置，请点击「${switchButton}」，修改前将自动备份。` }
   // 官方账号本来就能用，「改用」只是旁边一颗次要按钮；没登录时不给，免得点了先弹登录。
   const offerSwitch = Boolean(onSwitchAccount && (foreign || (tool?.source === 'official' && signedIn)))
   const switchedHere = switched && switched.route === route ? switched.result : null
-  const sourceLabel = tool?.source === 'official' ? tool.officialLoginRequired ? `${officialName}（未登录）` : officialName : tool?.source === 'account' ? '当前账号' : tool?.source === 'manual' ? '自己的密钥' : tool?.source === 'unknown' ? '用的是别处的配置' : '尚未选择连接方式'
+  const sourceLabel = tool?.source === 'official' ? tool.officialLoginRequired ? `${officialName}（未登录）` : officialName : tool?.source === 'account' ? '当前账号' : tool?.source === 'manual' ? '自己的密钥' : tool?.source === 'unknown' ? '正在使用其他来源的配置' : '尚未选择连接方式'
   // 切换的回执：失败时原因一定要留着（余额不足、网络不通），只去掉和标题重复的开头；
   // 真有备份编号才说能找回。
   function switchReceipt(result: AccountSourceSwitchResult) {
-    const backup = result.backupId.trim() ? '原来的设置已备份，在「设置 › 备份迁移」里能找回。' : ''
-    if (result.target === 'official') return `已换回 ${officialName}。${result.loginRequired ? `还要打开 ${name}，用 ${officialName}登录一次。` : ''}${backup}`
+    const backup = result.backupId.trim() ? '原设置已备份，可在「设置 › 备份迁移」中恢复。' : ''
+    if (result.target === 'official') return `已切换回 ${officialName}。${result.loginRequired ? `请打开 ${name}，并使用 ${officialName}登录。` : ''}${backup}`
     if (result.verified) return `已${switchLabel}。${backup}`
     return `${result.message.replace(/^已改用当前账号[，。]?/, '')}${backup}`
   }
@@ -616,11 +616,11 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   // 第 3 步：没装好、没登录、已用当前账号或官方账号连好、聊天这几种照 v4 一张卡说清；别处的 Key、官方账号还没登录、
   // 手动填的密钥这些要人看一眼的，照旧是说明加按钮，下面再带结果卡。
   const connectCard = !isGuideToolRoute(route) || foreign || tool?.officialLoginRequired || !readiness.prepared ? null
-    : tool?.source === 'official' ? <GuideStateCard tone="ok" icon={Check} title={`已用${spaceBefore(officialName)}连好 ${name}`}>额度走你自己的官方订阅，不扣当前账号的余额。想改用当前账号，在首页的工具卡片上切换。</GuideStateCard>
-      : tool?.source === 'account' && readiness.connected && signedIn ? <GuideStateCard tone="ok" icon={Check} title={`已用当前账号连好 ${name}`}>账号专属密钥已写入，额度和余额共用，不需要你再填任何东西。</GuideStateCard>
-        : !signedIn && !readiness.connected ? <GuideStateCard tone="off" icon={UserRound} title="登录后自动连接">登录账号后，我们会给 {name} 写好专属密钥，不用手动配置。</GuideStateCard>
+    : tool?.source === 'official' ? <GuideStateCard tone="ok" icon={Check} title={`已用${spaceBefore(officialName)}连好 ${name}`}>费用由官方订阅承担，不扣除当前账号余额。如需改用当前账号，请在首页工具卡片上切换。</GuideStateCard>
+      : tool?.source === 'account' && readiness.connected && signedIn ? <GuideStateCard tone="ok" icon={Check} title={`已用当前账号连好 ${name}`}>账号专属密钥已写入，与账号余额共用额度，无需额外填写。</GuideStateCard>
+        : !signedIn && !readiness.connected ? <GuideStateCard tone="off" icon={UserRound} title="登录后自动连接">登录后将自动为 {name} 写入专属密钥，无需手动配置。</GuideStateCard>
           : null
-  const notPrepared = isGuideToolRoute(route) && !readiness.prepared ? <GuideStateCard tone="off" icon={Download} title={`${spaceAfter(name)}还没装好`}>回上一步装好，再来这里连接。</GuideStateCard> : null
+  const notPrepared = isGuideToolRoute(route) && !readiness.prepared ? <GuideStateCard tone="off" icon={Download} title={`${spaceAfter(name)}尚未安装`}>请返回上一步完成安装后再连接。</GuideStateCard> : null
   const readyToOpen = readiness.prepared && readiness.connected
   const showRecharge = Boolean(step === 'ready' && onFailureAction && route && readyToOpen && result?.usesAccountBalance)
   const unverifiedSwitch = switchedHere?.target === 'account' && !switchedHere.verified
@@ -637,7 +637,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     <span className="auth-footer-spacer" />
     <span className="auth-guide-count">第 {currentStep + 1} 步，共 4 步</span>
     {step !== 'choose' && <Button variant="secondary" disabled={locked} onClick={() => { setError(''); move(steps[currentStep - 1].id) }} testId="guide-back">上一步</Button>}
-    {step !== 'ready' && !(step === 'connect' && foreign === 'otherSite') && <Button variant="primary" disabled={locked || !route || (step === 'prepare' && !readiness.prepared) || connectPending} title={connectPending && !locked ? '先把上面那项连好' : undefined} onClick={next} testId="guide-next">下一步</Button>}
+    {step !== 'ready' && !(step === 'connect' && foreign === 'otherSite') && <Button variant="primary" disabled={locked || !route || (step === 'prepare' && !readiness.prepared) || connectPending} title={connectPending && !locked ? '请先完成上一项连接' : undefined} onClick={next} testId="guide-next">下一步</Button>}
     {/* 最后一步的「打开」「进入首页」放在底栏，跟「上一步」排在一起，内容再长也不用往下翻（D46，新手流程 N5）。 */}
     {step === 'ready' && <>
       <Button variant="secondary" disabled={locked || !route || !readyToOpen} onClick={() => { if (route) complete(route, 'home') }} testId="guide-home">进入首页</Button>
@@ -650,37 +650,37 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
       {/* 步骤名已经在上面那条进度里；这一行只给读屏和换步时落焦点用。 */}
       <h3 ref={heading} tabIndex={-1} className="auth-guide-heading" data-testid="guide-heading">{steps[currentStep].title}</h3>
       <div className="auth-guide-body">
-        {step === 'choose' && <><p className="auth-guide-lead">先挑一个，之后随时可以装别的。</p><fieldset className="auth-guide-choices" disabled={locked}><legend>开始方式</legend>{options.map((item) => <label className="auth-guide-choice" data-selected={route === item.id} key={item.id}><input type="radio" name="start-guide-route" value={item.id} checked={route === item.id} onChange={() => choose(item.id as GuideRoute)} data-testid={`guide-route-${item.id}`} /><BrandIcon tool={item.id} size={40} variant="tile" /><span className="auth-guide-choice-text"><strong>{item.name}{item.id === recommended && <Pill tone="accent" testId="guide-recommended">推荐</Pill>}</strong><span>{guideChoiceNote(item.id, platform)}</span></span></label>)}<label className="auth-guide-choice" data-selected={route === 'chat'}><input type="radio" name="start-guide-route" value="chat" checked={route === 'chat'} onChange={() => choose('chat')} data-testid="guide-route-chat" /><span className="auth-guide-chat-tile"><MessageSquare size={18} aria-hidden="true" /></span><span className="auth-guide-choice-text"><strong>先在星芒里聊天</strong><span>什么都不用装，直接问问题</span></span></label>{(createAvailable || route === 'create') && <label className="auth-guide-choice" data-selected={route === 'create'}><input type="radio" name="start-guide-route" value="create" checked={route === 'create'} onChange={() => choose('create')} data-testid="guide-route-create" /><span className="auth-guide-chat-tile"><Clapperboard size={18} aria-hidden="true" /></span><span className="auth-guide-choice-text"><strong>做图、做视频</strong><span>什么都不用装，用画布和视频剪辑</span></span></label>}</fieldset></>}
-        {step === 'prepare' && route === 'chat' && <GuideStateCard tone="ok" icon={Check} title="不用准备">聊天直接在星芒里进行，额度和余额共用。</GuideStateCard>}
+        {step === 'choose' && <><p className="auth-guide-lead">请选择一项，之后可随时安装其他工具。</p><fieldset className="auth-guide-choices" disabled={locked}><legend>开始方式</legend>{options.map((item) => <label className="auth-guide-choice" data-selected={route === item.id} key={item.id}><input type="radio" name="start-guide-route" value={item.id} checked={route === item.id} onChange={() => choose(item.id as GuideRoute)} data-testid={`guide-route-${item.id}`} /><BrandIcon tool={item.id} size={40} variant="tile" /><span className="auth-guide-choice-text"><strong>{item.name}{item.id === recommended && <Pill tone="accent" testId="guide-recommended">推荐</Pill>}</strong><span>{guideChoiceNote(item.id, platform)}</span></span></label>)}<label className="auth-guide-choice" data-selected={route === 'chat'}><input type="radio" name="start-guide-route" value="chat" checked={route === 'chat'} onChange={() => choose('chat')} data-testid="guide-route-chat" /><span className="auth-guide-chat-tile"><MessageSquare size={18} aria-hidden="true" /></span><span className="auth-guide-choice-text"><strong>先在星芒里聊天</strong><span>无需安装，直接提问</span></span></label>{(createAvailable || route === 'create') && <label className="auth-guide-choice" data-selected={route === 'create'}><input type="radio" name="start-guide-route" value="create" checked={route === 'create'} onChange={() => choose('create')} data-testid="guide-route-create" /><span className="auth-guide-chat-tile"><Clapperboard size={18} aria-hidden="true" /></span><span className="auth-guide-choice-text"><strong>做图、做视频</strong><span>无需安装，使用画布和视频剪辑</span></span></label>}</fieldset></>}
+        {step === 'prepare' && route === 'chat' && <GuideStateCard tone="ok" icon={Check} title="无需准备">聊天直接在星芒里进行，额度和余额共用。</GuideStateCard>}
         {step === 'prepare' && isGuideToolRoute(route) && <>
-          <p className="auth-guide-lead">{readiness.prepared ? update ? `${name} 已经装好，但${update.knownIssue ? '这个版本有已知问题，用起来会出错' : '版本旧了'}，建议先${update.manualHint ? '用它原来的方式更新' : `点「${updateLabel}」`}。${update.knownIssue ? '' : '不更新也能直接点「下一步」。'}` : `${name} 已经装好。` : oneButton ? '点「安装」就行，缺的运行环境会一并装好。' : `核对 ${name} 的安装状态，再按顺序准备。`}</p>
+          <p className="auth-guide-lead">{readiness.prepared ? update ? `${name} 已安装，但${update.knownIssue ? '该版本存在已知问题，使用时可能出错' : '版本较旧'}，建议先${update.manualHint ? '用它原来的方式更新' : `点击「${updateLabel}」`}。${update.knownIssue ? '' : '也可不更新，直接点击「下一步」。'}` : `${name} 已安装。` : oneButton ? '请点击「安装」，所需运行环境将一并安装。' : `核对 ${name} 的安装状态，再按顺序准备。`}</p>
           {!tool || tool.detectionError ? <p className="auth-error" role="alert">暂时无法确认工具是否已安装，请重新检测。</p> : <div className="auth-guide-checklist">
-            {guideNeedsNodeRuntime(route, tool) && <div className="auth-guide-check-row"><Terminal size={20} aria-hidden="true" /><div><strong>运行环境</strong><p>{tool.runtimeReady ? '运行环境已就绪' : oneButton ? '点「安装」时会一并装好' : runtimeByApp ? '命令行工具需要运行环境' : '在应用外安装完成后回来重新检测'}</p></div><Pill tone={tool.runtimeReady ? 'ok' : oneButton ? 'neutral' : 'warn'}>{tool.runtimeReady ? '已就绪' : oneButton ? '自动准备' : '待准备'}</Pill>{!tool.runtimeReady && !oneButton && onInstallRuntime && <Button size="sm" icon={Download} disabled={locked} onClick={() => void run('准备环境', onInstallRuntime)} testId="guide-node">{runtimeByApp ? '一键安装' : '安装指南'}</Button>}</div>}
-            <div className="auth-guide-check-row"><BrandIcon tool={route} size={26} /><div><strong>{name}</strong><p>{installing ? signedIn ? '正在安装并配置账号…' : '正在安装…' : tool.installed ? `已安装${tool.version ? ` v${tool.version}` : ''}${update?.target ? `，${update.newer ? '新版' : '推荐版本'}是 ${update.target}` : readiness.prepared ? '，可以直接用' : ''}` : '还没有安装'}</p></div><Pill tone={tool.installed && !update ? 'ok' : 'warn'} testId="guide-tool-status">{!tool.installed ? '未安装' : update ? update.knownIssue ? '有已知问题' : '可更新' : '已装好'}</Pill>{update && !update.manualHint && <Button size="sm" icon={Download} disabled={locked} onClick={updateTool} testId="guide-update">{updateLabel}</Button>}{!tool.installed && tool.supported !== false && tool.installMode !== 'unavailable' && <Button size="sm" icon={Download} disabled={locked || (!oneButton && guideNeedsNodeRuntime(route, tool) && !tool.runtimeReady)} onClick={install} testId="guide-install">{tool.installMode === 'external' ? '安装指南' : '安装'}</Button>}</div>
+            {guideNeedsNodeRuntime(route, tool) && <div className="auth-guide-check-row"><Terminal size={20} aria-hidden="true" /><div><strong>运行环境</strong><p>{tool.runtimeReady ? '运行环境已就绪' : oneButton ? '安装时将一并安装' : runtimeByApp ? '命令行工具需要运行环境' : '在应用外安装完成后回来重新检测'}</p></div><Pill tone={tool.runtimeReady ? 'ok' : oneButton ? 'neutral' : 'warn'}>{tool.runtimeReady ? '已就绪' : oneButton ? '自动准备' : '待准备'}</Pill>{!tool.runtimeReady && !oneButton && onInstallRuntime && <Button size="sm" icon={Download} disabled={locked} onClick={() => void run('准备环境', onInstallRuntime)} testId="guide-node">{runtimeByApp ? '一键安装' : '安装指南'}</Button>}</div>}
+            <div className="auth-guide-check-row"><BrandIcon tool={route} size={26} /><div><strong>{name}</strong><p>{installing ? signedIn ? '正在安装并配置账号…' : '正在安装…' : tool.installed ? `已安装${tool.version ? ` v${tool.version}` : ''}${update?.target ? `，${update.newer ? '新版' : '推荐版本'}是 ${update.target}` : readiness.prepared ? '，可直接使用' : ''}` : '未安装'}</p></div><Pill tone={tool.installed && !update ? 'ok' : 'warn'} testId="guide-tool-status">{!tool.installed ? '未安装' : update ? update.knownIssue ? '有已知问题' : '可更新' : '已安装'}</Pill>{update && !update.manualHint && <Button size="sm" icon={Download} disabled={locked} onClick={updateTool} testId="guide-update">{updateLabel}</Button>}{!tool.installed && tool.supported !== false && tool.installMode !== 'unavailable' && <Button size="sm" icon={Download} disabled={locked || (!oneButton && guideNeedsNodeRuntime(route, tool) && !tool.runtimeReady)} onClick={install} testId="guide-install">{tool.installMode === 'external' ? '安装指南' : '安装'}</Button>}</div>
             {update?.manualHint && <p className="auth-hint" data-testid="guide-update-manual">{update.manualHint}</p>}
-            {(tool.supported === false || tool.installMode === 'unavailable') && <p className="auth-error">当前平台暂不支持这个工具，请返回选择其他开始方式。</p>}
+            {(tool.supported === false || tool.installMode === 'unavailable') && <p className="auth-error">当前平台暂不支持该工具，请返回选择其他开始方式。</p>}
           </div>}
-          <div><Button variant="ghost" size="sm" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-installed-rescan">我已装好，重新检测</Button></div>
+          <div><Button variant="ghost" size="sm" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-installed-rescan">已安装，重新检测</Button></div>
         </>}
         {step === 'prepare' && !signedIn && <p className="auth-guide-note"><Info size={15} aria-hidden="true" /><span>登录后会自动连接账号。</span></p>}
-        {step === 'connect' && route === 'chat' && <>{signedIn ? <GuideStateCard tone="ok" icon={Check} title="账号已就绪">聊天和工具共用同一份余额。</GuideStateCard> : <GuideStateCard tone="off" icon={UserRound} title="登录后自动连接">登录账号后，我们会给 {name} 写好专属密钥，不用手动配置。</GuideStateCard>}{!signedIn && <div className="auth-form-actions"><Button variant="primary" icon={LogIn} onClick={onLogin} testId="guide-login">登录账号</Button></div>}</>}
+        {step === 'connect' && route === 'chat' && <>{signedIn ? <GuideStateCard tone="ok" icon={Check} title="账号已就绪">聊天和工具共用同一份余额。</GuideStateCard> : <GuideStateCard tone="off" icon={UserRound} title="登录后自动连接">登录后将自动为 {name} 写入专属密钥，无需手动配置。</GuideStateCard>}{!signedIn && <div className="auth-form-actions"><Button variant="primary" icon={LogIn} onClick={onLogin} testId="guide-login">登录账号</Button></div>}</>}
         {step === 'connect' && isGuideToolRoute(route) && readiness.prepared && <>
           {keySyncFailure && <p className="auth-error" role="alert" data-testid="guide-key-sync-failure">{keySyncFailure.text}</p>}
-          {connectCard ?? <>{foreign ? <p className="auth-guide-lead" data-testid="guide-foreign-key" data-key-state={foreign}>{foreignLead[foreign]}</p> : <p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p>}<p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{foreign ? `${foreignCallout[foreign]}${codexShared}` : tool?.source === 'unknown' ? '你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。' : tool?.officialLoginRequired ? `当前选的是官方账号，但还没有在 ${name} 里登录。请打开 ${name} 用 ChatGPT 账号登录后回来重新检测，或打开配置改用当前账号。` : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p></>}
+          {connectCard ?? <>{foreign ? <p className="auth-guide-lead" data-testid="guide-foreign-key" data-key-state={foreign}>{foreignLead[foreign]}</p> : <p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p>}<p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{foreign ? `${foreignCallout[foreign]}${codexShared}` : tool?.source === 'unknown' ? '原有配置已保留。请先查看处理步骤，确认需保留的设置后再选择连接方式。' : tool?.officialLoginRequired ? `当前选择的是官方账号，但尚未在 ${name} 中登录。请打开 ${name}，并使用 ChatGPT 账号登录后重新检测，或在配置中改用当前账号。` : readiness.connected ? '当前连接已确认。如需更换密钥、模型或工作文件夹，请打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p></>}
           {officialNote && <p className="auth-hint" data-testid="guide-official-note">{officialNote}</p>}{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}
           <div className="auth-form-actions">{!signedIn && !foreign && !readiness.connected && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-login">登录账号</Button>}{offerKeySync && <Button variant="primary" icon={KeyRound} disabled={locked} onClick={retryKeySync} testId="guide-key-sync-retry">重新同步</Button>}{offerSwitch && <Button icon={KeyRound} variant={foreign === 'otherSite' ? 'primary' : 'secondary'} loading={pending === '改用当前账号'} disabled={locked} onClick={switchAccount} testId="guide-switch-account">{switchButton}</Button>}{foreign !== 'otherSite' && <><Button icon={Settings} variant={readiness.connected || offerSwitch || offerKeySync || !signedIn ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' && !foreign ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去连好'}</Button><Button variant="ghost" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></>}</div>
           {!connectCard && result && <GuideResultCard result={result} />}
         </>}
         {(step === 'connect' || step === 'ready') && notPrepared}
         {step === 'ready' && <>
-          {readiness.prepared && <p className="auth-guide-lead" data-testid={walletFirst ? 'guide-wallet-empty' : undefined}>{walletFirst ? walletEmptyLead : route === 'chat' ? '从一个问题开始，慢慢熟悉星芒。' : readiness.connected ? unverifiedSwitch ? `${name} 已改用你的账号，但这次没能确认能用。` : `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>}
+          {readiness.prepared && <p className="auth-guide-lead" data-testid={walletFirst ? 'guide-wallet-empty' : undefined}>{walletFirst ? walletEmptyLead : route === 'chat' ? '从一个问题开始，慢慢熟悉星芒。' : readiness.connected ? unverifiedSwitch ? `${name} 已改用当前账号，但未能确认连接可用。` : `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>}
           {walletFirst && route && <div className="auth-form-actions" data-testid="guide-recharge"><Button variant="primary" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">去充值</Button></div>}
           {/* 「已用当前账号连好。想换密钥或模型，点这里」引导里不再出（D46）：新手用不着，下面一行已经写着用的是当前账号。 */}
           {switchedHere && <div className="auth-hint auth-guide-connected" data-testid="guide-switched-note" data-backup-id={switchedHere.backupId.trim() || undefined}><p>{switchReceipt(switchedHere)}</p>{switchedHere.target === 'account' && !switchedHere.verified && onFailureAction && guideFailureExits(switchedHere.message).map((action) => <Button key={action.id} size="sm" disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div>}
           {result && <GuideResultCard result={result} collapse />}
           {/* 只给那句中文：「新开一个终端，敲这一条」引导里不给（D46），点「打开」星芒就替他敲了，首页那份照旧。 */}
           {definition?.firstRun && readyToOpen && <FirstRunSteps key={`${route}:${tool?.freshFolder === true}`} name={name} firstRun={definition.firstRun} testId="guide-first-run" freshFolder={tool?.freshFolder === true} withCommand={false} />}
-          {result?.prompt && readyToOpen && <GuideFirstTaskPrompt key={route} prompt={result.prompt} copiedNotice={route === 'chat' ? '已复制，粘贴到聊天里试试' : `已复制，粘贴到 ${spaceAfter(name)}里试试`} disabled={locked} />}
+          {result?.prompt && readyToOpen && <GuideFirstTaskPrompt key={route} prompt={result.prompt} copiedNotice={route === 'chat' ? '已复制，请粘贴到对话中发送' : `已复制，请粘贴到 ${spaceAfter(name)}中发送`} disabled={locked} />}
           <div className="auth-guide-ready-actions">
             {!signedIn && !readyToOpen && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-ready-login">去登录</Button>}
             {offerOtherFolder && readyToOpen && <Button variant="secondary" icon={FolderOpen} disabled={locked} onClick={() => launch(true)} testId="guide-open-tool-choose-folder">{chooseWorkspaceLabel}</Button>}
@@ -691,7 +691,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
             <Button variant="ghost" size="sm" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-ready-rescan">重新检测</Button>
           </div>
         </>}
-        {pending && <p className="auth-hint" role="status">正在{pending}，请稍候</p>}{progress && locked && <Progress value={progress.percent} label={progress.label} testId="guide-progress" />}{error && <p className="auth-error" role="alert" data-testid="guide-error">{error}</p>}{error && failureNote?.detail && <details className="auth-guide-raw" open={!failureNote.reason} data-testid="guide-error-raw"><summary>给客服看的原话</summary><pre>{failureNote.detail}</pre></details>}{error && (replaceFirst || failed || (support && failureNote) || (onFailureAction && failureExits.some((action) => action.id !== 'replaceNode'))) && <div className="auth-form-actions auth-guide-exits">{error && replaceFirst && failed && <Button variant="primary" disabled={locked} onClick={() => onFailureAction?.('replaceNode', () => void run(failed.action, failed.work))} testId="guide-exit-replaceNode">换成新版 Node.js</Button>}{error && failed && <Button icon={RefreshCw} disabled={locked} onClick={() => void run(failed.action, failed.work)} testId="guide-retry">再试一次</Button>}{error && support && failureNote && <Button icon={Copy} disabled={locked} onClick={copySupport} testId="guide-copy-support">复制给客服</Button>}{error && onFailureAction && failureExits.filter((action) => action.id !== 'replaceNode').map((action) => <Button key={action.id} disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div>}{error && supportCopy && <p className="auth-hint" role="status" data-testid="guide-copy-support-status">{supportCopy.state === 'ok' ? '已复制，发给客服就行' : '没能写进剪贴板，手动选中下面这几行复制就行'}</p>}{error && supportCopy?.state === 'failed' && <pre className="auth-guide-support-text" data-testid="guide-copy-support-text">{supportCopy.text}</pre>}{storageWarning && <p className="auth-hint" role="status">{storageWarning}</p>}
+        {pending && <p className="auth-hint" role="status">正在{pending}，请稍候</p>}{progress && locked && <Progress value={progress.percent} label={progress.label} testId="guide-progress" />}{error && <p className="auth-error" role="alert" data-testid="guide-error">{error}</p>}{error && failureNote?.detail && <details className="auth-guide-raw" open={!failureNote.reason} data-testid="guide-error-raw"><summary>给客服看的原话</summary><pre>{failureNote.detail}</pre></details>}{error && (replaceFirst || failed || (support && failureNote) || (onFailureAction && failureExits.some((action) => action.id !== 'replaceNode'))) && <div className="auth-form-actions auth-guide-exits">{error && replaceFirst && failed && <Button variant="primary" disabled={locked} onClick={() => onFailureAction?.('replaceNode', () => void run(failed.action, failed.work))} testId="guide-exit-replaceNode">换成新版 Node.js</Button>}{error && failed && <Button icon={RefreshCw} disabled={locked} onClick={() => void run(failed.action, failed.work)} testId="guide-retry">再试一次</Button>}{error && support && failureNote && <Button icon={Copy} disabled={locked} onClick={copySupport} testId="guide-copy-support">复制给客服</Button>}{error && onFailureAction && failureExits.filter((action) => action.id !== 'replaceNode').map((action) => <Button key={action.id} disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div>}{error && supportCopy && <p className="auth-hint" role="status" data-testid="guide-copy-support-status">{supportCopy.state === 'ok' ? '已复制，请发送给客服' : '复制失败，请手动选中以下内容复制'}</p>}{error && supportCopy?.state === 'failed' && <pre className="auth-guide-support-text" data-testid="guide-copy-support-text">{supportCopy.text}</pre>}{storageWarning && <p className="auth-hint" role="status">{storageWarning}</p>}
       </div>
     </div>
   </Dialog>

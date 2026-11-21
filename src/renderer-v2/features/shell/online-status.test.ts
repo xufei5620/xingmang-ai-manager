@@ -51,7 +51,7 @@ describe('renderer-v2 offline cause', () => {
     // D32 单子上的原句，一字不改。
     expect(offlineBannerTexts.proxyAuth).toBe('电脑设置的代理要账号密码，星芒现在用不了它，请联系管理员或换个网络。')
     expect(offlineBannerTexts.proxyAuth).not.toContain('代理软件')
-    expect(offlineBannerTexts.proxy).toBe('电脑里设置的代理连不上，所以现在上不了网。请重新打开你的代理软件，或者把系统代理关掉。')
+    expect(offlineBannerTexts.proxy).toBe('系统代理无法连接，导致无法上网。请重新打开代理软件，或关闭系统代理。')
   })
 
   it('tells a broken proxy and a sign-in portal apart from a plain outage', () => {
@@ -73,9 +73,9 @@ describe('renderer-v2 offline cause', () => {
 describe('renderer-v2 balance status while offline', () => {
   it('says the balance will refresh later instead of reporting an update failure', () => {
     const view = { balanceError: '余额暂时没有读到，请检查网络后重试。', balanceUpdatedAt: null }
-    expect(balanceStatusText({ ...view, offline: true })).toBe('没网，稍后自动刷新；余额尚未更新')
+    expect(balanceStatusText({ ...view, offline: true })).toBe('网络未连接，恢复后将自动刷新；余额尚未更新')
     expect(balanceStatusText(view)).toBe('更新失败：余额暂时没有读到，请检查网络后重试。；余额尚未更新')
-    expect(balanceFailureLabel(true)).toBe('没网，稍后自动刷新')
+    expect(balanceFailureLabel(true)).toBe('网络未连接，恢复后将自动刷新')
     expect(balanceFailureLabel(false)).toBe('更新失败')
   })
 

@@ -102,7 +102,7 @@ export function externalLaunchWarning(result: ExternalClientLaunchResult | void 
 const runtimeNames: Record<string, string> = { node: 'Node.js', python: 'Python', git: 'Git' }
 
 /**
- * 退出登录确认框在「已配好的工具会保留。」后面补的那句（#1097 第 2 部分）。退出不打断
+ * 退出登录确认框在「已配置的工具将保留。」后面补的那句（#1097 第 2 部分）。退出不打断
  * 正在装、卸的工具，装完也不会再替原来的账号写密钥（第 1 部分），说一句免得以为装了一半
  * 的会被丢掉。「打开」「改用当前账号」这类几秒就完的不算；都没有时回空串，确认框照旧只有
  * 原来那句（v4 交接包定的）。
@@ -120,7 +120,7 @@ export function logoutJobsNote(
     if (job.kind === 'uninstall') uninstalling.push(name)
     else installing.push(name)
   }
-  const installNote = installing.length ? `正在安装的 ${spacedName(installing.join('、'))}会继续装完。` : ''
-  const uninstallNote = uninstalling.length ? `正在卸载的 ${spacedName(uninstalling.join('、'))}会继续卸完。` : ''
+  const installNote = installing.length ? `正在安装的 ${spacedName(installing.join('、'))}将继续完成安装。` : ''
+  const uninstallNote = uninstalling.length ? `正在卸载的 ${spacedName(uninstalling.join('、'))}将继续完成卸载。` : ''
   return installNote + uninstallNote
 }

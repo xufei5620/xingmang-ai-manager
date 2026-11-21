@@ -3021,8 +3021,8 @@ describe('diagnostics', () => {
 })
 
 describe('the home folder leftovers check', () => {
-  const instructions = '个人文件夹里有一份星芒早先放的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
-    + '有的工具会连它一起读、照它办事，比如改代码前先等你确认。不需要的话点「挪开这份说明」。'
+  const instructions = '个人文件夹中有一份星芒早期放置的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
+    + '部分工具会一并读取并遵照执行，例如修改代码前先等待您确认。如不需要，请点击「停用此说明」。'
 
   it('passes when nothing was left behind', () => {
     expect(homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: [] })).toEqual({

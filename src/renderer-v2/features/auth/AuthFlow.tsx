@@ -23,10 +23,10 @@ function isRetryableAction(action: string): action is RetryableAction {
   return (retryableActions as readonly string[]).includes(action)
 }
 const passwordResetNotice = '密码已重设，已自动登录'
-const tempPasswordSignedInMessage = '新密码没设上，你已经用下面这个临时密码登录了。先复制存好，再点「继续」进软件；以后可以在「个人中心 › 账号安全」里改密码。'
-const tempPasswordLoginMessage = '新密码没设上，你的账号现在用的是下面这个临时密码。复制它去登录，登录后可以在「个人中心 › 账号安全」里再改。'
-const unconfirmedPasswordMessage = '没能确认新密码有没有设上。新密码已经替你填好，点「登录」试一下；登不上就点「找回密码」重新来一次。'
-const sessionLostMessage = '刚才的登录没有保持住，账号和密码已经替你填好，再点一次「登录」就行。'
+const tempPasswordSignedInMessage = '新密码设置失败，已使用以下临时密码登录。请复制并妥善保存后点击「继续」；之后可在「个人中心 › 账号安全」中修改密码。'
+const tempPasswordLoginMessage = '新密码设置失败，账号当前密码为以下临时密码。请复制后登录，登录后可在「个人中心 › 账号安全」中修改。'
+const unconfirmedPasswordMessage = '无法确认新密码是否生效。新密码已自动填入，请点击「登录」；如无法登录，请点击「找回密码」重新设置。'
+const sessionLostMessage = '登录状态未能保持，账号和密码已自动填入，请再次点击「登录」。'
 /** 红字下面那排出口按什么给：哪一步、为什么失败；没网那种等网络回来后红字换成提示，出口留着。 */
 interface FailureExit {
   action: string
@@ -181,7 +181,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     function reconnected() {
       setFailure((current) => current?.kind === 'offline' ? { ...current, reconnected: true } : current)
       setError((current) => current === authOfflineMessage ? '' : current)
-      setMessage('网络回来了，点下面的「再试一次」就行。')
+      setMessage('网络已恢复，请点击「重试」。')
     }
     window.addEventListener('online', reconnected)
     return () => window.removeEventListener('online', reconnected)
@@ -290,7 +290,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     // 系统密码保管恢复以后它还能用。
     if (!sessionOnly) {
       try { await api.setRemembered(login.remember ? { identifier: login.username, password } : null, login.siteId) }
-      catch { rememberError = '已登录，但记住密码的设置没有保存成功' }
+      catch { rememberError = '已登录，但「记住密码」设置保存失败' }
     }
     if (current()) { setPassword(''); leaveTwoFactor(); clearRecoveredPassword(); onAuthenticated(result, { rememberError, notice }) }
   }
@@ -380,13 +380,13 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     const email = checkEmail()
     if (!isEmail(email)) { setFieldErrors((errors) => ({ ...errors, email: '请填写正确的邮箱' })); return }
     if (registerCooldown.seconds || !passesTypoCheck(email)) return
-    void run('发送验证码', async (current) => { await api.sendVerification(email); if (current()) { registerCooldown.start(); setCodeSent(true); setMessage(`验证码已发到 ${email}。几分钟内没收到的话，看看垃圾邮件。`) } })
+    void run('发送验证码', async (current) => { await api.sendVerification(email); if (current()) { registerCooldown.start(); setCodeSent(true); setMessage(`验证码已发送至 ${email}。如数分钟内未收到，请检查垃圾邮件。`) } })
   }
   // agreedNow：刚在弹框里点了「同意并注册」，勾选还没落进状态，这一次直接按勾上算。
   const submitRegistration = (agreedNow = false) => {
-    if (!status) { setError('注册还没准备好，请稍等，或点「重新读取」后再注册'); return }
+    if (!status) { setError('注册服务尚未就绪，请稍候，或点击「重新读取」后再注册'); return }
     if (!status.registerEnabled || !status.passwordRegisterEnabled) { setError('目前暂未开放账号注册'); return }
-    if (status.turnstileCheckEnabled) { setError('账号服务要先做一次安全验证，请在浏览器里完成注册'); return }
+    if (status.turnstileCheckEnabled) { setError('账号服务需要进行安全验证，请在浏览器中完成注册'); return }
     const draft = { ...registration, email: checkEmail(), code: normalizeEmailVerificationCode(registration.code), agreed: registration.agreed || agreedNow }
     const errors = validateRegistration(draft, status.emailVerificationEnabled, codeSent)
     setFieldErrors(errors)
@@ -397,7 +397,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       catch (reason) {
         // 用户名是替他从邮箱取的，撞名是这条路上最可能遇到的失败：直接指到那一格。
         if (!isUsernameTakenError(reason)) throw reason
-        if (current()) { usernameFollowsEmail.current = false; setFieldErrors((errors) => ({ ...errors, username: '这个用户名已经有人用了，换一个试试' })); setFocusTarget('register-user') }
+        if (current()) { usernameFollowsEmail.current = false; setFieldErrors((errors) => ({ ...errors, username: '该用户名已被占用，请更换' })); setFocusTarget('register-user') }
         return
       }
       if (!current()) return
@@ -407,7 +407,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
         if (current()) {
           setMode('login'); setIdentifier(draft.username.trim()); setPassword(''); setAgreed(draft.agreed); loginTouched.current = true
           setRegistration((previous) => ({ ...previous, password: '', code: '' }))
-          setMessage('账号已创建，自动登录没有完成，请输入密码继续')
+          setMessage('账号已创建，自动登录未完成，请输入密码继续')
           showFailure(reason, '自动登录')
         }
         return
@@ -429,11 +429,11 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const sendReset = () => {
     if (!source.supportsPasswordReset) return
     const email = checkRecoveryEmail()
-    if (!isEmail(email)) { setError('请填写注册时用的邮箱'); return }
+    if (!isEmail(email)) { setError('请填写注册邮箱'); return }
     if (resetCooldown.seconds) return
     void run('发送重置邮件', async (current) => {
       await api.sendReset(email, siteId)
-      if (current()) { resetCooldown.start(); setRecoveryStep(2); setMessage('如果这个邮箱注册过，几分钟内会收到重置邮件。没收到的话，看看垃圾邮件。') }
+      if (current()) { resetCooldown.start(); setRecoveryStep(2); setMessage('如该邮箱已注册，数分钟内将收到重置邮件。如未收到，请检查垃圾邮件。') }
     })
   }
   const submitReset = () => {
@@ -449,7 +449,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   }
   const showTempPassword = () => {
     if (locked.current) return
-    setTempShown(true); setError(''); setChosenErrors({}); setMessage('用临时密码登录后，记得在「账号安全」里改成自己的密码。')
+    setTempShown(true); setError(''); setChosenErrors({}); setMessage('使用临时密码登录后，请在「账号安全」中修改密码。')
   }
   const updateChosen = (key: 'password' | 'confirm', value: string) => {
     setChosen((draft) => ({ ...draft, [key]: value }))
@@ -476,7 +476,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       if (current()) await finishLogin(result, attempt, current)
     })
   }
-  const tempLoginNotice = '已用临时密码登录，记得改成自己的密码'
+  const tempLoginNotice = '已使用临时密码登录，请及时修改密码'
   const continueWithTempPassword = () => {
     const result = recovered
     if (!result) return
@@ -516,7 +516,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     leaveTwoFactor(); if (mode === 'login') setPassword(''); setError(''); setMessage('')
   }
   const copyPassword = () => void run('复制新密码', async (current) => {
-    try { await api.copyPassword(newPassword); if (current()) setMessage('临时密码已复制，1 分钟后会从剪贴板里清掉，请尽快粘贴') }
+    try { await api.copyPassword(newPassword); if (current()) setMessage('临时密码已复制，将在 1 分钟后从剪贴板清除，请尽快粘贴') }
     catch { if (current()) { setCopyFallback(true); setReveal(true); setError('无法访问剪贴板，请选中临时密码后手动复制'); window.setTimeout(() => { const input = document.getElementById('forgot-new-password'); if (input instanceof HTMLInputElement) { input.focus(); input.select() } }, 0) } }
   })
   const openAccountWebsite = () => void run('打开账号官网', async () => {
@@ -539,17 +539,17 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   // 账号或密码不对时「找回密码」跟在红字后面，是那一行里的链接；其余出口在红字下面一排。
   const forgotInline = Boolean(failure && exitsVisible && failure.kind === 'credentials' && mode === 'login' && !twoFactor && source.supportsPasswordReset)
   const exitButtons = failure && exitsVisible ? [
-    ['offline', 'unreachable', 'network', 'unknown'].includes(failure.kind) && isRetryableAction(failure.action) && <Button key="retry" size="xs" icon={RefreshCw} disabled={busy} onClick={() => { if (isRetryableAction(failure.action)) retryFailure(failure.action) }} testId="auth-exit-retry">再试一次</Button>,
-    failure.kind === 'credentials' && mode === 'login' && !twoFactor && <Button key="register" size="xs" icon={UserPlus} disabled={busy} onClick={() => changeMode('register')} testId="auth-exit-register">还没有账号，去注册</Button>,
+    ['offline', 'unreachable', 'network', 'unknown'].includes(failure.kind) && isRetryableAction(failure.action) && <Button key="retry" size="xs" icon={RefreshCw} disabled={busy} onClick={() => { if (isRetryableAction(failure.action)) retryFailure(failure.action) }} testId="auth-exit-retry">重试</Button>,
+    failure.kind === 'credentials' && mode === 'login' && !twoFactor && <Button key="register" size="xs" icon={UserPlus} disabled={busy} onClick={() => changeMode('register')} testId="auth-exit-register">没有账号？立即注册</Button>,
     failure.kind === 'code' && mode === 'register' && status?.emailVerificationEnabled && <Button key="code" size="xs" icon={Mail} disabled={busy || Boolean(registerCooldown.seconds)} onClick={sendVerification} testId="auth-exit-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重新获取` : '重新获取验证码'}</Button>,
-    failure.kind === 'taken' && mode === 'register' && <Button key="login" size="xs" icon={LogIn} disabled={busy} onClick={() => changeMode('login', normalizeEmail(registration.email))} testId="auth-exit-login">用这个邮箱去登录</Button>,
+    failure.kind === 'taken' && mode === 'register' && <Button key="login" size="xs" icon={LogIn} disabled={busy} onClick={() => changeMode('login', normalizeEmail(registration.email))} testId="auth-exit-login">使用该邮箱登录</Button>,
     failure.kind === 'taken' && mode === 'register' && <Button key="forgot" size="xs" icon={KeyRound} disabled={busy} onClick={() => goRecovery(normalizeEmail(registration.email))} testId="auth-exit-forgot">找回密码</Button>,
     failure.kind === 'keychain' && onRelaunch && <Button key="relaunch" size="xs" icon={RotateCcw} disabled={busy} onClick={onRelaunch} testId="auth-exit-relaunch">重新打开星芒</Button>,
-    onHelp && <Button key="help" size="xs" variant="ghost" icon={Headset} disabled={busy} onClick={onHelp} testId="auth-exit-help">找客服</Button>,
+    onHelp && <Button key="help" size="xs" variant="ghost" icon={Headset} disabled={busy} onClick={onHelp} testId="auth-exit-help">联系客服</Button>,
   ].filter(Boolean) : []
 
   if (legal) return <LegalDocument api={api} kind={legal} onClose={() => setLegal(null)} />
-  if (routesOpen && connectionSettings) return <Dialog key="connection-routes" open title="切换连接线路" subtitle="返回后可继续填写；新线路要重开星芒才生效。" width={640} onClose={() => setRoutesOpen(false)} busy={routesBusy} testId="auth-connection-routes" footer={<Button disabled={routesBusy} onClick={() => setRoutesOpen(false)} testId="auth-connection-back">返回继续填写</Button>}>
+  if (routesOpen && connectionSettings) return <Dialog key="connection-routes" open title="切换连接线路" subtitle="返回后可继续填写；新线路将在重启星芒后生效。" width={640} onClose={() => setRoutesOpen(false)} busy={routesBusy} testId="auth-connection-routes" footer={<Button disabled={routesBusy} onClick={() => setRoutesOpen(false)} testId="auth-connection-back">返回继续填写</Button>}>
     {connectionSettings(setRoutesBusy)}
   </Dialog>
   function link(label: string, testId: string, onClick: () => void, disabled = busy) {
@@ -574,11 +574,11 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const routesLink = Boolean(connectionSettings) && !(mode === 'recovery' && recoveryStep === 3)
   const alternatives = twoFactor ? [link(twoFactor.backup ? '用验证器里的数字' : '手机不在身边？用备用码登录', 'login-2fa-switch', switchTwoFactorInput)]
     : [
-      mode === 'login' && siteId === 'solov' && <span key="register">还没有账号？{link('注册新账号', 'login-register', () => changeMode('register'))}</span>,
-      mode === 'register' && <span key="login">已经有账号？{link('去登录', 'register-login', () => changeMode('login'))}</span>,
+      mode === 'login' && siteId === 'solov' && <span key="register">没有账号？{link('注册新账号', 'login-register', () => changeMode('register'))}</span>,
+      mode === 'register' && <span key="login">已有账号？{link('前往登录', 'register-login', () => changeMode('login'))}</span>,
       // 第 3 步离开前临时密码还没给客户看过，回登录框会把人锁在外面；那一步的出口是「先不设」。
-      mode === 'recovery' && (!source.supportsPasswordReset || recoveryStep < 3) && <span key="back">想起来了？{link('回去登录', 'forgot-back-login', () => changeMode('login', recoveryEmail.trim()))}</span>,
-      recoveryResetStep && recoveryStep === 3 && !tempShown && <span key="temp">{link('先不设，用系统给的临时密码', 'forgot-use-temp', showTempPassword)}</span>,
+      mode === 'recovery' && (!source.supportsPasswordReset || recoveryStep < 3) && <span key="back">已想起密码？{link('返回登录', 'forgot-back-login', () => changeMode('login', recoveryEmail.trim()))}</span>,
+      recoveryResetStep && recoveryStep === 3 && !tempShown && <span key="temp">{link('暂不设置，使用系统生成的临时密码', 'forgot-use-temp', showTempPassword)}</span>,
       switchSource && <span key="source">{link(mode === 'login' ? '用历史账号登录' : '找回历史账号的密码', 'auth-source-expand', openHistorySource)}</span>,
       routesLink && <span key="routes">{link('切换连接线路', 'auth-connection-settings', () => setRoutesOpen(true))}</span>,
     ].filter(Boolean)
@@ -594,21 +594,21 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       {notice}
       {mode !== 'register' && sourceVisible && !twoFactor && !(mode === 'recovery' && recoveryStep === 3) && <div className="auth-source"><span className="auth-source-label">账号来源</span><Segment label="账号来源" value={siteId} onChange={changeSource} testId="auth-source" options={Object.entries(accountSources).map(([value, entry]) => ({ value, label: entry.label, disabled: busy }))} /></div>}
       {twoFactor && <>
-        <p className="auth-lead" data-testid="login-2fa-hint">{twoFactor.backup ? '输入一个没用过的备用码。' : '打开手机上的验证器，输入星芒账号那一行的 6 位数字。'}</p>
+        <p className="auth-lead" data-testid="login-2fa-hint">{twoFactor.backup ? '请输入一个未使用过的备用码。' : '请打开手机验证器，输入星芒账号对应的 6 位数字。'}</p>
         {field(twoFactor.backup ? '备用码' : '验证码', 'login-2fa-code', twoFactorCode, setTwoFactorCode, { autoComplete: twoFactor.backup ? 'off' : 'one-time-code', placeholder: twoFactor.backup ? '备用码' : '6 位数字', maxLength: 64, mono: true })}
       </>}
       {mode === 'login' && !twoFactor && <>
-        {field(siteId === 'solov-api' ? '注册邮箱' : '用户名或邮箱', 'login-account', identifier, (value) => { loginTouched.current = true; setIdentifier(value) }, { autoComplete: 'username', placeholder: siteId === 'solov-api' ? '输入历史账号的注册邮箱' : '注册时填的用户名或邮箱' })}
+        {field(siteId === 'solov-api' ? '注册邮箱' : '用户名或邮箱', 'login-account', identifier, (value) => { loginTouched.current = true; setIdentifier(value) }, { autoComplete: 'username', placeholder: siteId === 'solov-api' ? '输入历史账号的注册邮箱' : '注册时填写的用户名或邮箱' })}
         {field('密码', 'login-password', password, (value) => { loginTouched.current = true; setPassword(value) }, { password: true, autoComplete: 'current-password', placeholder: '输入密码' })}
         <div className="auth-remember-row">{sessionOnly ? <p className="auth-hint" data-testid="login-session-only">{sessionOnlyLoginNotice}</p> : rememberBox('login-remember')}{link('找回密码', 'login-forgot', () => changeMode('recovery'))}</div>
         {agreement(agreed, setAgreed)}
       </>}
       {mode === 'register' && <>
         {statusError && <div className="auth-status-error" role="alert"><p className="auth-error" data-testid="register-status-error"><CircleAlert size={15} aria-hidden="true" /><span>{statusError}</span></p><Button size="sm" icon={RefreshCw} onClick={() => setStatusRevision((value) => value + 1)} testId="register-status-retry">重新读取</Button></div>}
-        {!status && !statusError && <p className="auth-hint" role="status" data-testid="register-status-loading">{statusRetrying ? '网络有点慢，正在再试一次…' : '正在准备注册…'}</p>}
+        {!status && !statusError && <p className="auth-hint" role="status" data-testid="register-status-loading">{statusRetrying ? '网络响应较慢，正在重试…' : '正在准备注册…'}</p>}
         {status && (!status.registerEnabled || !status.passwordRegisterEnabled) && <p className="auth-error" role="alert"><CircleAlert size={15} aria-hidden="true" /><span>目前暂未开放账号注册</span></p>}
         {field('邮箱', 'register-email', registration.email, updateEmail, { type: 'email', autoComplete: 'email', placeholder: '常用邮箱（如 QQ 邮箱）', error: fieldErrors.email, onBlur: checkEmailOnLeave, addon: status?.emailVerificationEnabled ? <Button size="xs" onClick={sendVerification} disabled={busy || Boolean(registerCooldown.seconds)} testId="register-send-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重发` : '获取验证码'}</Button> : undefined })}
-        {emailSuggestion && <p className="auth-typo" role="status" data-testid="register-email-suggestion">你是不是想填 <b>{emailSuggestion}</b>？{link('改成这个', 'register-email-fix', () => updateEmail(emailSuggestion, true))}{typoConfirmedEmail === normalizeEmail(registration.email) && ` 没填错的话，再点一次「${status?.emailVerificationEnabled ? '获取验证码' : '注册并登录'}」。`}</p>}
+        {emailSuggestion && <p className="auth-typo" role="status" data-testid="register-email-suggestion">您是否要填写 <b>{emailSuggestion}</b>？{link('使用此地址', 'register-email-fix', () => updateEmail(emailSuggestion, true))}{typoConfirmedEmail === normalizeEmail(registration.email) && ` 如确认无误，请再次点击「${status?.emailVerificationEnabled ? '获取验证码' : '注册并登录'}」。`}</p>}
         <div className="auth-two-fields">{status?.emailVerificationEnabled && field('验证码', 'register-code', registration.code, (value) => updateRegistration('code', value), { autoComplete: 'one-time-code', placeholder: '邮件里的 6 位验证码', mono: true, error: fieldErrors.code })}{field('用户名', 'register-user', registration.username, updateUsername, { autoComplete: 'username', placeholder: '最多 20 位', error: fieldErrors.username, maxLength: 20 })}</div>
         {/* 设新密码的框不加 maxLength：粘进来的长密码会被悄悄截短，账号按截短的设好，客户拿原密码就登不上。超长的整串留在框里，交给长度规则当场说。 */}
         {field('密码', 'register-password', registration.password, (value) => updateRegistration('password', value), { password: true, autoComplete: 'new-password', placeholder: '8 至 20 位', error: fieldErrors.password })}
@@ -616,19 +616,19 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
           : <div className="auth-more">{link('有邀请码？', 'register-invite-toggle', () => { setInviteOpen(true); setFocusTarget('register-invite') })}</div>}
         {agreement(registration.agreed, (value) => updateRegistration('agreed', value))}
         {/* 按钮灰着却不说为什么，客户只会一遍遍去点。 */}
-        {!status && <p className="auth-hint" data-testid="register-submit-hint">{statusError ? '要先连上账号服务，「注册并登录」才能点。' : '准备好之后就能点「注册并登录」。'}</p>}
+        {!status && <p className="auth-hint" data-testid="register-submit-hint">{statusError ? '需连接账号服务后才能「注册并登录」。' : '准备就绪后即可「注册并登录」。'}</p>}
       </>}
-      {mode === 'recovery' && !source.supportsPasswordReset && <p className="auth-note" data-testid="forgot-official-help"><Info size={15} aria-hidden="true" /><span>历史账号不能在星芒里重置密码。请前往历史账号官网使用找回入口；官网没有找回入口的话，请联系官网客服恢复访问。</span></p>}
+      {mode === 'recovery' && !source.supportsPasswordReset && <p className="auth-note" data-testid="forgot-official-help"><Info size={15} aria-hidden="true" /><span>历史账号不支持在星芒中重置密码。请前往历史账号官网找回；如官网未提供找回入口，请联系官网客服。</span></p>}
       {recoveryResetStep && !twoFactor && <>
         <ol className="auth-stepper" aria-label="找回密码进度">{['获取邮件', '粘贴重置码', '设新密码'].map((text, index) => <li key={text} aria-current={recoveryStep === index + 1 ? 'step' : undefined} data-completed={index + 1 < recoveryStep}><i aria-hidden="true" /><span>{text}</span></li>)}</ol>
-        {recoveryStep === 1 && <><p className="auth-lead">填写注册时用的邮箱，我们会发一封带重置码的邮件。</p>{field('注册邮箱', 'forgot-email', recoveryEmail, setRecoveryEmail, { type: 'email', autoComplete: 'email', placeholder: 'name@example.com' })}</>}
-        {recoveryStep === 2 && <>{field('重置码或邮件链接', 'forgot-token', recoveryText, setRecoveryText, { placeholder: '把邮件里的重置码或整条链接粘贴过来', autoComplete: 'off', mono: true })}<div className="auth-link-row">{link('修改邮箱', 'forgot-change-email', () => { setRecoveryStep(1); setError('') })}{link(resetCooldown.seconds ? `${resetCooldown.seconds} 秒后重发` : '重新发送', 'forgot-resend', sendReset, busy || Boolean(resetCooldown.seconds))}</div></>}
+        {recoveryStep === 1 && <><p className="auth-lead">请填写注册邮箱，系统将发送包含重置码的邮件。</p>{field('注册邮箱', 'forgot-email', recoveryEmail, setRecoveryEmail, { type: 'email', autoComplete: 'email', placeholder: 'name@example.com' })}</>}
+        {recoveryStep === 2 && <>{field('重置码或邮件链接', 'forgot-token', recoveryText, setRecoveryText, { placeholder: '请粘贴邮件中的重置码或完整链接', autoComplete: 'off', mono: true })}<div className="auth-link-row">{link('修改邮箱', 'forgot-change-email', () => { setRecoveryStep(1); setError('') })}{link(resetCooldown.seconds ? `${resetCooldown.seconds} 秒后重发` : '重新发送', 'forgot-resend', sendReset, busy || Boolean(resetCooldown.seconds))}</div></>}
         {recoveryStep === 3 && !tempShown && <>
           {field('新密码', 'forgot-set-password', chosen.password, (value) => updateChosen('password', value), { password: true, autoComplete: 'new-password', placeholder: '8 至 20 位', error: chosenErrors.password })}
-          {field('再输一次', 'forgot-set-confirm', chosen.confirm, (value) => updateChosen('confirm', value), { password: true, autoComplete: 'new-password', placeholder: '和上面一样', error: chosenErrors.confirm })}
+          {field('再次输入', 'forgot-set-confirm', chosen.confirm, (value) => updateChosen('confirm', value), { password: true, autoComplete: 'new-password', placeholder: '和上面一样', error: chosenErrors.confirm })}
           {sessionOnly ? <p className="auth-hint" data-testid="forgot-session-only">{sessionOnlyLoginNotice}</p> : rememberBox('forgot-remember')}
         </>}
-        {recoveryStep === 3 && tempShown && <><div className="auth-temp-password"><label htmlFor="forgot-new-password">临时密码</label><Input id="forgot-new-password" testId="forgot-new-password" readOnly type={reveal ? 'text' : 'password'} value={newPassword} aria-label="临时密码" mono /><Button variant="ghost" size="xs" icon={reveal ? EyeOff : Eye} onClick={() => setReveal(!reveal)} testId="forgot-show-password">{reveal ? '隐藏' : '显示'}</Button><Button variant="ghost" size="xs" icon={Copy} onClick={copyPassword} disabled={busy} testId="forgot-copy-password">复制</Button></div>{copyFallback && <p className="auth-hint">选中临时密码后使用系统复制操作，再返回登录。</p>}</>}
+        {recoveryStep === 3 && tempShown && <><div className="auth-temp-password"><label htmlFor="forgot-new-password">临时密码</label><Input id="forgot-new-password" testId="forgot-new-password" readOnly type={reveal ? 'text' : 'password'} value={newPassword} aria-label="临时密码" mono /><Button variant="ghost" size="xs" icon={reveal ? EyeOff : Eye} onClick={() => setReveal(!reveal)} testId="forgot-show-password">{reveal ? '隐藏' : '显示'}</Button><Button variant="ghost" size="xs" icon={Copy} onClick={copyPassword} disabled={busy} testId="forgot-copy-password">复制</Button></div>{copyFallback && <p className="auth-hint">请选中临时密码并复制，然后返回登录。</p>}</>}
       </>}
       {message && <p className="auth-message" role="status" data-testid="auth-message"><Info size={15} aria-hidden="true" /><span>{message}</span></p>}
       {error && <p className="auth-error" role="alert" data-testid="auth-error"><CircleAlert size={15} aria-hidden="true" /><span>{error}{forgotInline && <>{' '}{link('找回密码', 'auth-exit-forgot', () => goRecovery(identifier.trim()))}</>}</span></p>}

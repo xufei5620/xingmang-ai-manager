@@ -21,7 +21,7 @@ describe('network settings buttons on the check page', () => {
     expect(diagnosticNetworkSettings({ code: 'PROXY_ENVIRONMENT', state: 'warn', details: { fix: 'open-proxy-settings' } })).toBeNull()
   })
   it('points to the system settings when the page could not be opened', () => {
-    expect(networkSettingsUnavailableMessages.dns).toBe('没能打开网络设置，请在系统设置里找「网络」。')
-    expect(networkSettingsUnavailableMessages.proxy).toBe('没能打开系统代理设置，请在系统设置里找「代理」。')
+    expect(networkSettingsUnavailableMessages.dns).toBe('无法打开网络设置，请在系统设置中查找「网络」。')
+    expect(networkSettingsUnavailableMessages.proxy).toBe('无法打开系统代理设置，请在系统设置中查找「代理」。')
   })
 })

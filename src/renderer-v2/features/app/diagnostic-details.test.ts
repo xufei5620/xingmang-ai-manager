@@ -6,7 +6,7 @@ describe('diagnostic detail rows', () => {
   it('translates field names and yes/no values instead of showing raw keys', () => {
     expect(diagnosticDetailRows({ elevated: false, required: false, canElevate: true })).toEqual([
       { key: 'elevated', label: '以管理员身份运行', value: '否' },
-      { key: 'canElevate', label: '这个账号能临时获得管理员权限', value: '是' },
+      { key: 'canElevate', label: '该系统账号可临时获取管理员权限', value: '是' },
     ])
     expect(diagnosticDetailRows({ relocated: 1, folder1: '用户文件夹', to1: 'D 盘' })).toEqual([
       { key: 'relocated', label: '被搬走的文件夹数', value: '1' },

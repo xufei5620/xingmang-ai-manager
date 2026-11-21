@@ -105,7 +105,7 @@ test('the command palette finds tutorials by the problem and hands unmatched tex
     await page.keyboard.press('Control+k')
     await search.fill('qqqq')
     assert.equal(await page.getByTestId('command-palette').getByRole('option').count(), 0)
-    await page.getByText('没有找到「qqqq」相关的内容').waitFor()
+    await page.getByText('未找到与「qqqq」相关的内容').waitFor()
     await page.getByTestId('command-search-tutorial').click()
     await page.getByTestId('page-tutorial').waitFor()
     // 教程页上一步已经开着，页面出现时新的搜索词可能还没落进输入框，要等它落进去。
@@ -192,7 +192,7 @@ test('the command palette has no title bar, stays put while the results change a
     await palette.getByRole('option').first().waitFor()
     assert.equal((await palette.boundingBox()).y, top, 'more results grow the box downwards only')
     await search.fill('qqqq')
-    await page.getByText('没有找到「qqqq」相关的内容').waitFor()
+    await page.getByText('未找到与「qqqq」相关的内容').waitFor()
     assert.equal((await palette.boundingBox()).y, top, 'fewer results do not move the box either')
     // 搜索框里有字时第一下 Esc 先清空（浏览器自带的），第二下关框，和原来一样。
     await page.keyboard.press('Escape')

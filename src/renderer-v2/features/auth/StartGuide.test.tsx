@@ -158,10 +158,10 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).toMatch(/class="[^"]*xm-btn-secondary[^"]*"[^>]*data-testid="guide-open-tool"/)
     expect(markup).not.toMatch(/data-testid="guide-open-tool"[^>]*disabled/)
     // D47：下面的结果卡跟着说先充值，不再两句叫人去打开。
-    expect(markup).toContain('设置已读到。')
-    expect(markup).toContain('>先充值<')
-    expect(markup).toContain('充值后回来点「打开」就能用。')
-    expect(markup).not.toContain('打开工具试一次')
+    expect(markup).toContain('已读取设置。')
+    expect(markup).toContain('>请先充值<')
+    expect(markup).toContain('充值后点击「打开」即可使用。')
+    expect(markup).not.toContain('打开工具验证')
     stubResumedGuide('chat', 'ready')
     const chat = render([guideTool()], { onFailureAction: () => undefined, walletEmpty: true })
     expect(chat).toContain('data-testid="guide-wallet-empty"')
@@ -230,7 +230,7 @@ describe('renderer-v2 start guide first run', () => {
     stubResumedGuide('claude', 'prepare')
     const markup = render([guideTool({ installed: false, configured: false, source: 'none', runtimeReady: false, runtimeAutoPrepare: true })], { onInstallRuntime: async () => undefined })
     expect(markup).not.toContain('data-testid="guide-node"')
-    expect(markup).toContain('点「安装」时会一并装好')
+    expect(markup).toContain('安装时将一并安装')
     expect(markup).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
     expect(markup).not.toMatch(/Node\.js 和 Python|PATH|LTS/)
   })
@@ -275,7 +275,7 @@ describe('renderer-v2 start guide first run', () => {
   it('lets a Linux customer install a CLI with one button once the app prepares Node.js', () => {
     stubResumedGuide('claude', 'prepare')
     const markup = render([guideTool({ installed: false, runtimeReady: false, runtimeAutoPrepare: true })], { platform: 'linux', onInstallRuntime: async () => undefined })
-    expect(markup).toContain('点「安装」时会一并装好')
+    expect(markup).toContain('安装时将一并安装')
     expect(markup).toMatch(/<button[^>]*data-testid="guide-install"(?![^>]*disabled)/)
     expect(markup).not.toContain('data-testid="guide-node"')
     expect(markup).not.toContain('在应用外安装')
@@ -309,7 +309,7 @@ describe('renderer-v2 start guide first run', () => {
   it('says an installed tool is out of date and offers the update without blocking the next step', () => {
     stubResumedGuide('claude', 'prepare')
     const markup = render([guideTool({ version: '2.1.42', update: { version: '2.1.277', target: '2.1.277', newer: true, knownIssue: false, manualHint: null } })])
-    expect(markup).toContain('Claude Code 已经装好，但版本旧了，建议先点「更新」。不更新也能直接点「下一步」。')
+    expect(markup).toContain('Claude Code 已安装，但版本较旧，建议先点击「更新」。也可不更新，直接点击「下一步」。')
     expect(markup).toContain('已安装 v2.1.42，新版是 2.1.277')
     expect(markup).toMatch(/data-testid="guide-tool-status"[^>]*>可更新</)
     expect(markup).toMatch(/<button[^>]*data-testid="guide-update"(?![^>]*disabled)/)
@@ -319,7 +319,7 @@ describe('renderer-v2 start guide first run', () => {
   it('calls a version with a known problem what it is and stops advertising the skip', () => {
     stubResumedGuide('codex', 'prepare')
     const markup = render([guideTool({ id: 'codex', version: '0.155.0', update: { version: '0.155.1', target: '0.155.1', newer: true, knownIssue: true, manualHint: null } })])
-    expect(markup).toContain('Codex CLI 已经装好，但这个版本有已知问题，用起来会出错，建议先点「更新」。')
+    expect(markup).toContain('Codex CLI 已安装，但该版本存在已知问题，使用时可能出错，建议先点击「更新」。')
     expect(markup).not.toContain('不更新也能')
     expect(markup).toMatch(/data-testid="guide-tool-status"[^>]*>有已知问题</)
     expect(markup).toMatch(/<button[^>]*data-testid="guide-next"(?![^>]*disabled)/)
@@ -336,14 +336,14 @@ describe('renderer-v2 start guide first run', () => {
   it('keeps the plain installed wording when nothing needs updating, and says nothing until the tool is ready', () => {
     stubResumedGuide('claude', 'prepare')
     const current = render([guideTool({ version: '2.1.277' })])
-    expect(current).toContain('Claude Code 已经装好。')
-    expect(current).toMatch(/data-testid="guide-tool-status"[^>]*>已装好</)
-    expect(current).toContain('已安装 v2.1.277，可以直接用')
+    expect(current).toContain('Claude Code 已安装。')
+    expect(current).toMatch(/data-testid="guide-tool-status"[^>]*>已安装</)
+    expect(current).toContain('已安装 v2.1.277，可直接使用')
     expect(current).not.toContain('data-testid="guide-update"')
     const offer = { version: '2.1.277', target: '2.1.277', newer: true, knownIssue: false, manualHint: null }
     const notReady = render([guideTool({ version: '2.1.42', runtimeReady: false, update: offer })], { onInstallRuntime: async () => undefined })
     expect(notReady).not.toContain('data-testid="guide-update"')
-    expect(notReady).not.toContain('版本旧了')
+    expect(notReady).not.toContain('版本较旧')
   })
 })
 
@@ -355,9 +355,9 @@ describe('guide setup result card', () => {
     const markup = render([guideTool({ id: 'codexDesktop', version: '1.2.3' })])
     expect(markup).toContain('data-testid="guide-result"')
     expect(markup).toContain('data-testid="guide-result-install"')
-    expect(markup).toContain('已装好（版本 1.2.3）')
+    expect(markup).toContain('已安装（版本 1.2.3）')
     expect(markup).toContain('data-testid="guide-result-billing"')
-    expect(markup).toContain('花的是当前账号的余额。')
+    expect(markup).toContain('从当前账号余额扣除。')
     expect(markup).toContain('Codex 桌面端 已准备好。打开工具，即可开始第一次任务。')
     expect(markup).toContain('data-testid="guide-first-task-copy"')
     expect(markup).toContain('data-testid="guide-ready-rescan"')
@@ -368,8 +368,8 @@ describe('guide setup result card', () => {
     stubResumedGuide('codexDesktop', 'connect')
     const markup = render([guideTool({ id: 'codexDesktop', source: 'official', officialLoginRequired: true })])
     expect(markup).toContain('data-testid="guide-result-connection"')
-    expect(markup).toContain('ChatGPT 账号，还没登录')
-    expect(markup).toContain('不扣当前账号的余额')
+    expect(markup).toContain('ChatGPT 账号，未登录')
+    expect(markup).toContain('不扣除当前账号余额')
     expect(markup).not.toContain('data-testid="guide-first-task-copy"')
   })
 
@@ -378,12 +378,12 @@ describe('guide setup result card', () => {
     stubResumedGuide('claude', 'ready')
     const clear = render([guideTool({ version: '2.1.319' })], { accountName: 'peaker' })
     expect(clear).toContain('data-collapsed="true"')
-    expect(clear).toContain('已装好（版本 2.1.319）')
+    expect(clear).toContain('已安装（版本 2.1.319）')
     expect(clear).toContain('当前账号 peaker')
-    expect(clear).toContain('费用：花的是当前账号的余额。')
+    expect(clear).toContain('费用：从当前账号余额扣除。')
     expect(clear).not.toContain('data-testid="guide-result-next"')
     expect(clear).not.toContain('>安装情况<')
-    expect(clear).not.toContain('设置已读到，打开工具试一次。')
+    expect(clear).not.toContain('已读取设置，请打开工具验证。')
     // 有新版：整张摊开，说清能以后再更新。
     const update = render([guideTool({ version: '2.1.300', update: { version: '2.1.319', target: '2.1.319', newer: true, knownIssue: false, manualHint: null } })])
     expect(update).not.toContain('data-collapsed')
@@ -391,10 +391,10 @@ describe('guide setup result card', () => {
     // 余额 $0：「先充值」那一行要看到。
     const empty = render([guideTool()], { onFailureAction: () => undefined, walletEmpty: true })
     expect(empty).not.toContain('data-collapsed')
-    expect(empty).toContain('>先充值<')
+    expect(empty).toContain('>请先充值<')
     // 桌面端用密钥连的，那句「切到 Codex」不看就会报错。
     stubResumedGuide('codexDesktop', 'ready')
-    expect(render([guideTool({ id: 'codexDesktop' })])).toContain('把模式切到「Codex」')
+    expect(render([guideTool({ id: 'codexDesktop' })])).toContain('将模式切换为「Codex」')
     // 第 3 步那张不收。
     stubResumedGuide('claude', 'connect')
     expect(render([guideTool({ source: 'manual' })])).not.toContain('data-collapsed')
@@ -403,7 +403,7 @@ describe('guide setup result card', () => {
   it('takes back readiness when the installed status is no longer confirmed', () => {
     stubResumedGuide('codexDesktop', 'ready')
     const markup = render([guideTool({ id: 'codexDesktop', installed: false })])
-    expect(markup).toContain('还没装好')
+    expect(markup).toContain('尚未安装')
     expect(markup).toMatch(/<button[^>]*data-testid="guide-open-tool"[^>]*disabled/)
     expect(markup).not.toContain('data-testid="guide-first-task-copy"')
   })
@@ -415,14 +415,14 @@ describe('guide install failure wording', () => {
     expect(runtime).toBe('运行环境没装上（下载超时），Claude Code 还没开始装。点「再试一次」，还不行就点「需要帮助」。')
     const tool = guideInstallFailure(new Error('Claude Code 安装失败：ENOSPC: no space left on device'), 'Claude Code').message
     expect(tool).toBe('Claude Code 没装上（磁盘空间不够）。点「再试一次」，还不行就点「需要帮助」。')
-    expect(guideInstallFailure(new Error('something odd'), 'Codex').message).toBe('Codex 没装上（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「需要帮助」。')
+    expect(guideInstallFailure(new Error('something odd'), 'Codex').message).toBe('Codex 没装上（未能识别问题类型，原始信息如下）。点「再试一次」，还不行就点「需要帮助」。')
   })
 
   it('never borrows the login wording about the Xingmang server or kept input', () => {
     const message = guideInstallFailure(new Error('fetch failed'), 'Codex').message
     expect(message).not.toMatch(/星芒服务器|输入已保留/)
     expect(message).toContain('网络连不上')
-    expect(guideInstallFailure(new Error('HTTP 401 unauthorized'), 'Codex').message).toBe('Codex 没装上（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「需要帮助」。')
+    expect(guideInstallFailure(new Error('HTTP 401 unauthorized'), 'Codex').message).toBe('Codex 没装上（未能识别问题类型，原始信息如下）。点「再试一次」，还不行就点「需要帮助」。')
   })
 
   // 认出原因以后原话折起来，普通账号那句「换个管理员账号去装 / 找管理电脑的人」得接在红字里才看得见（#1096）。
@@ -525,11 +525,11 @@ describe('guide step failure wording', () => {
     // 主进程那句（electron/config-link-refusal.ts）经 account-source-switch 包一层后的样子（#1100 第2条）。
     const raw = '改用当前账号没有完成：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。已恢复到切换前的配置。'
     const failure = guideStepFailure(new Error(raw), '改用当前账号', true)
-    expect(failure.message).toBe('改用当前账号没有成功：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。不会弄就点「复制给客服」发给客服。')
+    expect(failure.message).toBe('改用当前账号没有成功：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。如需协助，请点击「复制给客服」并发送给客服。')
     expect(failure.reason).toBe('配置文件是个链接')
     // 包在外面的那层（已恢复到切换前的配置）还在给客服看的原话里。
     expect(failure.detail).toBe(raw)
-    expect(guideStepFailure(new Error(raw), '改用当前账号').message).toMatch(/不会弄就点「需要帮助」。$/)
+    expect(guideStepFailure(new Error(raw), '改用当前账号').message).toMatch(/如需协助，请点击「需要帮助」。$/)
   })
 
   it('keeps a Chinese reason the main process already wrote, with paths redacted', () => {
@@ -540,7 +540,7 @@ describe('guide step failure wording', () => {
   it('does not show an English failure as is because its redacted path reads as Chinese', () => {
     // 脱敏后的占位词「本机路径」本身是汉字，以前这句英文整句上屏（第三十批 A）。
     const failure = guideStepFailure(new Error("ENOENT: no such file or directory, open 'C:\\Users\\张三\\.codex\\auth.json'"), '确认连接', true)
-    expect(failure.message).toBe('确认连接没有成功（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「复制给客服」发给客服。')
+    expect(failure.message).toBe('确认连接没有成功（未能识别问题类型，原始信息如下）。点「再试一次」，还不行就点「复制给客服」发给客服。')
     expect(failure.detail).toBe("ENOENT: no such file or directory, open '本机路径")
   })
 
@@ -548,14 +548,14 @@ describe('guide step failure wording', () => {
     for (const reason of ['fetch failed', 'something odd', 'Node.js 下载超时，请检查网络后重试', '请先确认账号连接，再打开工具。']) {
       expect(guideStepFailure(new Error(reason), '打开工具').message).not.toMatch(/星芒服务器|输入已保留/)
     }
-    expect(guideStepFailure(new Error('something odd'), '打开工具').message).toBe('打开工具没有成功（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「需要帮助」。')
+    expect(guideStepFailure(new Error('something odd'), '打开工具').message).toBe('打开工具没有成功（未能识别问题类型，原始信息如下）。点「再试一次」，还不行就点「需要帮助」。')
   })
 })
 
 describe('guide failure reason and raw text for support', () => {
   it('keeps the raw text when the reason is not recognised and points at copying it for support', () => {
     const failure = guideInstallFailure(new Error('npm ERR! code E999 weird thing'), 'Claude Code', false, true)
-    expect(failure.message).toBe('Claude Code 没装上（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「复制给客服」发给客服。')
+    expect(failure.message).toBe('Claude Code 没装上（未能识别问题类型，原始信息如下）。点「再试一次」，还不行就点「复制给客服」发给客服。')
     expect(failure.reason).toBeUndefined()
     expect(failure.detail).toBe('npm ERR! code E999 weird thing')
   })
@@ -569,7 +569,7 @@ describe('guide failure reason and raw text for support', () => {
 
   it('drops nothing on the step failures either and masks keys', () => {
     const failure = guideStepFailure(new Error('helper said no for sk-abcdefghijklmnopqrstuvwxyz0123456789'), '改用当前账号', true)
-    expect(failure.message).toContain('（没认出是哪一类问题，原话在下面）')
+    expect(failure.message).toContain('（未能识别问题类型，原始信息如下）')
     expect(failure.message).toContain('点「复制给客服」发给客服')
     expect(failure.detail).toBe('helper said no for [REDACTED]')
   })
@@ -621,7 +621,7 @@ describe('guide choose step descriptions', () => {
   it('describes each start option by what it does', () => {
     stubResumedGuide('claude', 'choose')
     const markup = render(['claude', 'codex', 'codexDesktop', 'grok'].map((id) => guideTool({ id: id as GuideToolState['id'] })), { platform: 'win' })
-    for (const text of ['在终端里让 AI 读项目、改代码', '终端版，和桌面端共用配置', '不开终端，装好就能改代码', '在终端里用 Grok 读项目、改代码', '什么都不用装，直接问问题', '先挑一个，之后随时可以装别的。']) expect(markup).toContain(text)
+    for (const text of ['在终端中由 AI 阅读项目、修改代码', '终端版，和桌面端共用配置', '无需终端，安装后即可编写代码', '在终端里用 Grok 读项目、改代码', '无需安装，直接提问', '请选择一项，之后可随时安装其他工具。']) expect(markup).toContain(text)
     expect(markup).not.toContain('运行环境')
   })
 
@@ -654,7 +654,7 @@ describe('guide routes that install nothing', () => {
     // 不接上一条用例留下的进度：要看的是第一步。
     const html = render([guideTool()], { resumeKey: undefined })
     expect(html.indexOf('先在星芒里聊天')).toBeLessThan(html.indexOf('做图、做视频'))
-    expect(html).toContain('什么都不用装，用画布和视频剪辑')
+    expect(html).toContain('无需安装，使用画布和视频剪辑')
     expect(html).toContain('data-testid="guide-route-create"')
     expect(render([guideTool()], { resumeKey: undefined, createAvailable: false })).not.toContain('guide-route-create')
   })
@@ -697,8 +697,8 @@ describe('guide connect step with a key the current account did not write', () =
     stubResumedGuide('codexDesktop', 'connect')
     const markup = render([guideTool({ id: 'codexDesktop', source: 'unknown', configured: false, keyState: 'otherSite' })], switchable)
     expect(markup).toContain('Codex 桌面端 现在用的不是当前账号的密钥。')
-    expect(markup).toContain('点「改用 peaker」就能接着往下走')
-    expect(markup).toContain('Codex CLI 和 Codex 桌面端共用这份设置，会一起改。')
+    expect(markup).toContain('点击「改用 peaker」继续')
+    expect(markup).toContain('Codex CLI 与 Codex 桌面端共用此设置，将同步修改。')
     expect(markup).toContain('data-testid="guide-switch-account"')
     expect(markup).toContain('>改用 peaker<')
     expect(markup).not.toContain('data-testid="guide-next"')
@@ -716,8 +716,8 @@ describe('guide connect step with a key the current account did not write', () =
   it('lets a usable key from another account on this site through, with the switch as a second choice', () => {
     stubResumedGuide('claude', 'connect')
     const markup = render([guideTool({ source: 'unknown', keyState: 'otherAccount' })], switchable)
-    expect(markup).toContain('现在用的密钥可能不是当前账号的')
-    expect(markup).toContain('用量可能算到别的账号上')
+    expect(markup).toContain('当前使用的密钥可能不属于当前账号')
+    expect(markup).toContain('用量可能计入其他账号')
     expect(markup).toContain('data-testid="guide-next"')
     expect(markup).not.toMatch(/data-testid="guide-next"[^>]*disabled/)
   })
@@ -777,14 +777,14 @@ describe('guide connect step after the account key was not written', () => {
   it('says what is missing on the grey next button and names the configure button plainly', () => {
     stubResumedGuide('claude', 'connect')
     const markup = render([guideTool({ configured: false, source: 'none' })])
-    expect(markup).toMatch(/<button title="先把上面那项连好"[^>]*data-testid="guide-next"[^>]*disabled/)
+    expect(markup).toMatch(/<button title="请先完成上一项连接"[^>]*data-testid="guide-next"[^>]*disabled/)
     expect(markup).toMatch(/data-testid="guide-config"[^>]*>.*?<span>去连好<\/span>/)
     expect(markup).not.toContain('去完成连接配置')
     // 连好了就不灰，也不挂这句。
     const connected = render([guideTool()])
-    expect(connected).not.toContain('先把上面那项连好')
+    expect(connected).not.toContain('请先完成上一项连接')
     // 正忙着的时候灰着是别的原因，不说这句。
-    expect(render([guideTool({ configured: false, source: 'none' })], { busy: true })).not.toContain('先把上面那项连好')
+    expect(render([guideTool({ configured: false, source: 'none' })], { busy: true })).not.toContain('请先完成上一项连接')
   })
 
   it('says why with the home banner sentence and makes resync the main button', () => {

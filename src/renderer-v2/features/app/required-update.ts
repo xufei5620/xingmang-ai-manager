@@ -64,7 +64,7 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
     case 'available':
       // 主进程量盘发现不够时直接返回、阶段仍是 available，按钮照旧写「立即更新」的话，
       // 点下去什么都不发生，客户会被锁在门外还不知道为什么。
-      if (update.diskShortfall) return { ...base, action: 'download', label: '空间够了，再试一次', diskShortfall: update.diskShortfall }
+      if (update.diskShortfall) return { ...base, action: 'download', label: '重新检查空间', diskShortfall: update.diskShortfall }
       return { ...base, action: 'download', label: '立即更新' }
     case 'cancelled':
       return { ...base, action: 'download', label: '立即更新' }
@@ -95,8 +95,8 @@ export function requiredUpdateGate(update: GateSnapshot | null | undefined, inst
 function gateFailure(update: GateSnapshot): Pick<RequiredUpdateGateState, 'label' | 'failure' | 'failureTitle'> {
   const labels = updateFailureLabel(update.failedStep)
   const failure = update.error?.code === 'STARTUP_UPDATE_TIMEOUT'
-    ? '网络有点慢，这次没来得及查完有没有新版本。点「重试」再查一次。'
-    : update.error?.message || '更新没有完成，没认出是哪一类问题，原因已经记下来了。再试一次；还不行请找客服。'
+    ? '网络响应较慢，版本检查未完成，请点击「重试」。'
+    : update.error?.message || '更新未完成，原因未能识别，已记录日志。请重试；如仍失败，请联系客服。'
   return { label: labels.retry, failure, failureTitle: labels.title }
 }
 

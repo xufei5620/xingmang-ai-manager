@@ -11,7 +11,7 @@ export class FailureBoundary extends Component<{ native: XingmangApi; children: 
   }
   render() {
     return this.state.failed
-      ? <Splash phase="界面暂时没有打开" error="本机已保存的数据仍在。可以重新打开界面；尚未保存的编辑需要重新填写。" onRetry={() => this.setState({ failed: false })} />
+      ? <Splash phase="界面加载失败" error="本机已保存的数据不受影响。请重新打开界面，未保存的内容需重新填写。" onRetry={() => this.setState({ failed: false })} />
       : this.props.children
   }
 }
