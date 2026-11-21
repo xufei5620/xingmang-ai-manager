@@ -632,6 +632,11 @@ export interface SystemService {
    * 默认那个不动，它开着就这次不补。从不抛错。可选 = 旧实现不提供。
    */
   topUpClaudeDesktopModels?(): Promise<void>
+  /**
+   * 开机后台替已经装着的 Claude Desktop 从星芒下载站放好 Cowork 工作区（claude-desktop-workspace-seed.ts）。
+   * 没装、放过了、盘不够、远程关了都不下；从不抛错。可选 = 旧实现不提供。
+   */
+  seedClaudeDesktopWorkspace?(): Promise<void>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
   /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
@@ -681,6 +686,11 @@ export interface SystemServiceOptions {
   systemSnapshotCacheFile?: string
   /** 外部客户端检测结果落在哪；缺省不落盘（测试与旧行为）。见 external-client-snapshot-cache.ts。 */
   externalClientSnapshotCacheFile?: string
+  /**
+   * config:get 读下的工具配置在几毫秒内接着用（config-read-cache.ts，0.2.24 深查 R3）。缺省 = 0，每次现读
+   * （测试与旧行为）：测试常在同一毫秒里原地改写同样长的文件，靠文件身份和修改时间分不出来。
+   */
+  configReadCacheMs?: number
   /** 记进落盘的旧结果；别的版本写的也认，但不带推荐版本这类判断（见 system-snapshot-cache.ts）。 */
   appVersion?: string
   /** Native profile roots and policy reads are isolated in tests. */
@@ -1129,6 +1139,7 @@ export function createSystemService(
     followManagedKeysNow,
     cancelPendingExternalRouteRecheck,
     topUpClaudeDesktopModels,
+    seedClaudeDesktopWorkspace,
   } = createExternalClientRouteService(context, {
     fetchAvailableModels,
   })
@@ -1452,6 +1463,7 @@ export function createSystemService(
     launchExternalClient,
     switchExternalClientSource,
     topUpClaudeDesktopModels,
+    seedClaudeDesktopWorkspace,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
     enqueueCodexRemoteLaunch: (launch) => installationQueue.enqueue(codexRemoteLaunchQueueKey, launch),

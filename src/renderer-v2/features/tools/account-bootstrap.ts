@@ -109,6 +109,24 @@ export function subscriptionSwitchResult(result: Pick<AccountBootstrapResult, 'r
   return result?.regrouped ?? []
 }
 
+/**
+ * 客户自己把这个工具连好了（配置窗口里写进密钥、改用当前账号、修好它）：这一轮替它写密钥没写成的那一条就过时了，
+ * 首页横幅、引导第 3 步不该再挂着它（总单 17：点了「确认连接」连好以后黄条还在，重开软件才消失）。只拿掉这一家的，
+ * 别家没写成的照旧留着；拿掉以后没写成的、要留意的一条都不剩，「被网络拦住」那句也跟着收起。什么都没拿掉就原样
+ * 交回，免得白白重画。
+ */
+export function settleBootstrapToolFailure(result: AccountBootstrapResult, provider: ProviderId): AccountBootstrapResult {
+  const failed = result.failed.filter((entry) => entry.provider !== provider)
+  const keyChangeFailed = result.keyChangeFailed?.filter((entry) => entry.provider !== provider)
+  if (failed.length === result.failed.length && keyChangeFailed?.length === result.keyChangeFailed?.length) return result
+  const networkBlocked = result.networkBlocked && (failed.length > 0 || result.warnings.length > 0)
+  const settled: AccountBootstrapResult = { ...result, failed, networkBlocked }
+  if (keyChangeFailed?.length) settled.keyChangeFailed = keyChangeFailed
+  else delete settled.keyChangeFailed
+  if (!networkBlocked) delete settled.networkBlockedByCertificate
+  return settled
+}
+
 export interface AccountBootstrapPlan {
   /** 只会是还在用的工具：类型上就排除已下线的那几个，编译器不让它们被交给主进程写 Key。 */
   targets: ActiveProviderId[]
@@ -547,7 +565,8 @@ export async function bootstrapAccountTools(
 
   await assertAccount(api, expectedUserId, expectedSiteId)
   onProgress({ phase: 'verifying', label: '正在复核密钥、服务地址和模型', percent: 88, ...connectedChanges })
-  const verified = await api.getConfig()
+  // 一家都没写的（开机恢复时大多是这样）没有要复核的，不再多读一遍配置（0.2.24 深查 R3）。
+  const verified = plan.targets.length ? await api.getConfig() : config
   await assertAccount(api, expectedUserId, expectedSiteId)
 
   const configured: ActiveProviderId[] = []

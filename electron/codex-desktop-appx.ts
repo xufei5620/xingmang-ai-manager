@@ -9,6 +9,7 @@ import {
   resolveWindowsPowerShellExecutable,
   windowsElevationCancelledMessage,
   windowsElevationDeniedMessage,
+  windowsStandardAccountAdvice,
   type WindowsElevationCapability,
 } from './windows-elevation'
 
@@ -209,7 +210,7 @@ export async function addWindowsDesktopAppxPackage(
     const cancelled = code === 1223 || /\b0x800704c7\b/i.test(errorDetail(error))
     // 「取消了授权」和「这个账号没有权限」在普通账号上会是同一个退出码，先问一次
     // 当前账号在不在管理员组，再决定说哪一句。
-    const capability = cancelled || code === 740
+    const capability = cancelled || code === 740 || code === 2225
       ? await (dependencies.inspectElevationCapability ?? inspectWindowsElevationCapability)()
       : 'unknown'
     const message = codexDesktopElevationFailureMessage(cancelled ? 1223 : code, capability, product)
@@ -220,23 +221,28 @@ export async function addWindowsDesktopAppxPackage(
 }
 
 /**
- * 提权安装失败后要说的那一句。1223 是用户自己取消，740 是没拿到管理员权限——
- * 普通账号两种都会遇到，所以拿到 'standard' 时改说要管理员账号的密码。
+ * 提权安装失败后要说的那一句。1223 是用户自己取消，740 是没拿到管理员权限，2225 是授权窗口里
+ * 输的是别的账号——普通账号三种都会遇到，而哪种都装不成（提权那一步只认当前账号本人），
+ * 所以拿到 'standard' 时改说换个管理员账号去装。桌面端只注册给装它的那个账号，
+ * 不能像运行环境那样装一次大家都能用。
  */
 export function codexDesktopElevationFailureMessage(
   exitCode: number,
   capability: WindowsElevationCapability = 'unknown',
   product: WindowsAppxProduct = codexAppxProduct,
 ): string | null {
+  const target = { kind: 'account', product: product.name } as const
   switch (exitCode) {
     case 1223:
-      return windowsElevationCancelledMessage(subjectBeforeChinese(product), capability)
+      return windowsElevationCancelledMessage(subjectBeforeChinese(product), capability, target)
     case 2225:
-      return '授权使用了不同的 Windows 账号，已停止安装以免注册到其他用户。请由当前 Windows 账号的管理员会话完成安装。'
+      return `授权使用了不同的 Windows 账号，已停止安装以免注册到其他用户。${capability === 'standard'
+        ? windowsStandardAccountAdvice(target)
+        : '请由当前 Windows 账号的管理员会话完成安装。'}`
     case 13:
       return `授权期间 ${productSlug(product)} 安装包发生变化，已停止安装，请重新下载。`
     case 740:
-      return windowsElevationDeniedMessage(subjectBeforeChinese(product), capability)
+      return windowsElevationDeniedMessage(subjectBeforeChinese(product), capability, target)
     default:
       return null
   }
