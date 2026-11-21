@@ -426,6 +426,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       workspace: stored.workspace,
       ...(rememberedWorkspace ? { rememberedWorkspace } : {}),
       ...(rememberedWorkspace && isUntouchedStarterWorkspace(rememberedWorkspace, platform) ? { rememberedWorkspaceFresh: true } : {}),
+      ...(rememberedWorkspace && stored.workspaceChosenAt !== undefined ? { rememberedWorkspaceChosenAt: stored.workspaceChosenAt } : {}),
       providers: Object.fromEntries(
         providerIds.map((id) => {
           const { current, hooks, ownership } = providers[id]

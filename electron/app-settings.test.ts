@@ -556,6 +556,39 @@ describe('field-wise settings updates (①栏11)', () => {
     expect(mergeAppSettings(base, { version: 2, workspace: 'D:\\Elsewhere' }).workspace).toBe('D:\\Elsewhere')
   })
 
+  // 0.2.25 总单 Q1：设置页「更换」那一刻跟着那个文件夹走，首页「打开」拿它跟各工具最近一条对话比。
+  it('keeps the settings-page folder choice time only while the stored folder is that folder', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ workspace: 'D:\\Old' }))
+
+    const chosen = await updateAppSettings(filePath, { version: 2, workspace: 'D:\\Chosen', workspaceChosenAt: 1_700_000_000_000 })
+    expect(chosen).toMatchObject({ workspace: 'D:\\Chosen', workspaceChosenAt: 1_700_000_000_000 })
+    expect(readAppSettings(filePath)).toMatchObject({ workspace: 'D:\\Chosen', workspaceChosenAt: 1_700_000_000_000 })
+    // The renderer-side marker never reaches the file.
+    expect(readAppSettings(filePath)).not.toHaveProperty('workspaceChosen')
+
+    // Unrelated writes and a rewrite of the same folder keep it.
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    await updateAppSettings(filePath, { version: 2, workspace: 'D:\\Chosen' })
+    expect(readAppSettings(filePath).workspaceChosenAt).toBe(1_700_000_000_000)
+
+    // Another path (the home folder picker) switching to a different folder drops it.
+    const elsewhere = await updateAppSettings(filePath, { version: 2, workspace: 'D:\\Picked' })
+    expect(elsewhere).not.toHaveProperty('workspaceChosenAt')
+    expect(readAppSettings(filePath)).not.toHaveProperty('workspaceChosenAt')
+  })
+
+  it('reads back only a sane folder choice time', () => {
+    const filePath = temporarySettingsPath()
+    for (const workspaceChosenAt of [0, -5, 1.5, Number.MAX_VALUE, '1700000000000', null, true]) {
+      fs.writeFileSync(filePath, JSON.stringify({ ...settings(), workspaceChosenAt }), 'utf8')
+      expect(readAppSettings(filePath)).not.toHaveProperty('workspaceChosenAt')
+    }
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), workspaceChosenAt: 1_700_000_000_000 }), 'utf8')
+    expect(readAppSettings(filePath).workspaceChosenAt).toBe(1_700_000_000_000)
+    expect(mergeAppSettings(settings(), { version: 2, workspace: 'D:\\X', workspaceChosenAt: Number.NaN })).not.toHaveProperty('workspaceChosenAt')
+  })
+
   it('keeps the CLI version preference absent until the user asks for latest, and clears it again', async () => {
     const filePath = temporarySettingsPath()
     // Absent = 装已验证名单里的推荐版本,这是 N1 有意的默认。

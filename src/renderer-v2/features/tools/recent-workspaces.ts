@@ -81,20 +81,39 @@ export function recentWorkspaces(
   return [...picked.values()]
 }
 
+/** 这个工具最近一条有文件夹的对话是什么时候（毫秒）；一条都没有 = null。跟 recentWorkspaces 排序用的是同一个时间。 */
+function latestSessionTime(sessions: readonly SessionSummary[], provider: ProviderId): number | null {
+  let latest: number | null = null
+  for (const session of sessions) {
+    if (session.provider !== provider || session.cwd.trim() === '') continue
+    const time = session.updatedAt ?? session.createdAt ?? 0
+    if (latest === null || time > latest) latest = time
+  }
+  return latest
+}
+
 /**
  * 「打开」按钮用的目录：先看这个工具自己的会话记录；一条都没有时（刚装好、或者
  * 上次打开没聊就关了），退回用户上次在本软件里选过的文件夹。几个工具因此只问一次。
  * remembered 由主进程给出，已经排除了主目录和其他敏感目录。
+ * rememberedChosenAt 是设置页「更换」选定 remembered 的那一刻（0.2.25 总单 Q1）：比这个工具最近一条对话还新，
+ * 就把它排到最前面，「打开」先进刚换的这个；之后又在别的文件夹里用过这个工具，那条对话更新，以那次为准。
  */
 export function launchWorkspaces(
   sessions: readonly SessionSummary[],
   provider: ProviderId,
   remembered?: string | null,
+  rememberedChosenAt?: number,
 ): RecentWorkspace[] {
   const recent = recentWorkspaces(sessions, provider)
-  if (recent.length || !remembered?.trim()) return recent
-  const path = remembered.trim()
-  return [{ path, name: workspaceName(path) }]
+  const path = remembered?.trim()
+  if (!path) return recent
+  const chosen = { path, name: workspaceName(path) }
+  if (!recent.length) return [chosen]
+  const latest = latestSessionTime(sessions, provider)
+  if (rememberedChosenAt === undefined || latest === null || rememberedChosenAt <= latest) return recent
+  const key = workspaceKey(path)
+  return [chosen, ...recent.filter((workspace) => workspaceKey(workspace.path) !== key)].slice(0, RECENT_LIMIT)
 }
 
 /**
@@ -125,6 +144,17 @@ export function opensUntouchedStarterWorkspace(
   if (target.createsFolder) return true
   const workspace = target.workspace?.trim()
   return Boolean(workspace && config?.rememberedWorkspaceFresh === true && workspace === config.rememberedWorkspace?.trim())
+}
+
+/**
+ * 设置页刚换过项目文件夹（Q1）：首页手上那份配置里记着的文件夹和换的时刻都还是旧的，得重读一次，首页「打开」
+ * 才马上换成新的这个。只看设置页换的那一刻变没变，别的设置改了不重读。
+ */
+export function workspaceChoiceChanged(
+  previous: { workspaceChosenAt?: number } | null | undefined,
+  next: { workspaceChosenAt?: number },
+): boolean {
+  return next.workspaceChosenAt !== undefined && next.workspaceChosenAt !== previous?.workspaceChosenAt
 }
 
 /** 主按钮上的文字。目录名太长时截断，鼠标停上去还能看到完整路径。 */

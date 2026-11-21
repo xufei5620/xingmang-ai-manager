@@ -815,10 +815,13 @@ export function Home(props: HomeProps) {
     const zeroBalance = walletEmpty && status === 'ready' && tool.source === 'account'
     // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，拿它当「打开」的默认值，
     // 「…」里再给原来的选择器（N7）。这个工具还没有记录时用上次在本软件里选过的文件夹，
-    // 几个命令行工具合起来只问一次。Codex 桌面端自己管工作区，不走这条路。
+    // 几个命令行工具合起来只问一次；设置页刚换过项目文件夹、之后还没用过这个工具的，先进换的那个（Q1）。
+    // Codex 桌面端自己管工作区，不走这条路。
     const opensWorkspace = !configUnavailable && !tool.error && tool.status.installed
       && openable && tool.id !== 'codexDesktop'
-    const workspaces = opensWorkspace ? launchWorkspaces(recent?.items ?? [], tool.provider, snapshot?.config.rememberedWorkspace) : []
+    const workspaces = opensWorkspace
+      ? launchWorkspaces(recent?.items ?? [], tool.provider, snapshot?.config.rememberedWorkspace, snapshot?.config.rememberedWorkspaceChosenAt)
+      : []
     const lastWorkspace = job ? null : workspaces[0] ?? null
     // 这个工具没聊过、也从没选过文件夹（已知40）：「打开」直接替他建好项目文件夹在里面打开，
     // 判法跟引导最后一步共用（startsInNewFolder）。

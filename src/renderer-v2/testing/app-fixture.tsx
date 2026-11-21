@@ -90,6 +90,13 @@ function fixtureRouteLines(): RelayRouteLines {
   }
   return { solov: lineOf('solov'), 'solov-api': lineOf('solov-api') }
 }
+// 同主进程（app-settings.ts 的合并、settings:save 处理器）：设置页「更换」带着 workspaceChosen 才记下那一刻；
+// 别处换成另一个文件夹，那一刻就不算数了（0.2.25 总单 Q1）。
+function fixtureRememberWorkspace(workspace: string, chosenOnSettingsPage: boolean) {
+  const { workspaceChosenAt, ...rest } = settings
+  const kept = chosenOnSettingsPage ? Date.now() : workspace === settings.workspace ? workspaceChosenAt : undefined
+  settings = { ...rest, workspace, ...(kept === undefined ? {} : { workspaceChosenAt: kept }) }
+}
 function settingsView(): AppSettingsV2 {
   return { ...settings, relayRouteLines: fixtureRouteLines() }
 }
@@ -439,7 +446,7 @@ const methods = {
     return accelerationDemo.redeemAccelerationCode!(scope, code)
   },
   getSettings: async () => settingsView(),
-  saveSettings: async (patch) => { settings = { ...settings, relayEndpointIds: patch.relayEndpointIds ?? settings.relayEndpointIds, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown, checkUpdatesOnStartup: patch.checkUpdatesOnStartup ?? settings.checkUpdatesOnStartup, autoUpdate: patch.autoUpdate ?? settings.autoUpdate }; return settingsView() },
+  saveSettings: async (patch) => { if (patch.workspace !== undefined) fixtureRememberWorkspace(patch.workspace, patch.workspaceChosen === true); settings = { ...settings, relayEndpointIds: patch.relayEndpointIds ?? settings.relayEndpointIds, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown, checkUpdatesOnStartup: patch.checkUpdatesOnStartup ?? settings.checkUpdatesOnStartup, autoUpdate: patch.autoUpdate ?? settings.autoUpdate }; return settingsView() },
   // ?writeBoundary=kept|later：主进程没当场改 Claude Code 的配置（客户自己写过这一项 / 现在不是星芒在管它的配置），开关照样记下。
   setClaudeWriteBoundary: async (enabled: boolean) => {
     settings = { ...settings, claudeWritesInsideProject: enabled }
@@ -607,6 +614,11 @@ const methods = {
     if (launchedWorkspace) result.rememberedWorkspace = launchedWorkspace
     // 同主进程（isUntouchedStarterWorkspace）：夹具里替用户建的那个文件夹一直空着。
     if (launchedWorkspace === fixtureStarterWorkspace) result.rememberedWorkspaceFresh = true
+    // 同主进程：设置页换的那一个，首页据此先进它（Q1）。
+    if (settings.workspaceChosenAt !== undefined) {
+      result.rememberedWorkspace = settings.workspace
+      result.rememberedWorkspaceChosenAt = settings.workspaceChosenAt
+    }
     // 同主进程：恢复中没有账号可比，来源只会是 unknown，并带上「待定」标记。
     if (session.restoring) {
       result.ownershipPending = true
@@ -673,7 +685,7 @@ const methods = {
   chooseWorkspace: async (options) => {
     if (query.has('workspaceCancel')) return null
     const workspace = options?.createStarter ? fixtureStarterWorkspace : 'C:\\Selected Project'
-    settings = { ...settings, workspace }
+    fixtureRememberWorkspace(workspace, false)
     config.workspace = workspace
     return workspace
   },
