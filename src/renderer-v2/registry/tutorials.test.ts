@@ -108,7 +108,7 @@ describe('tutorial wording that follows the current app', () => {
     expect(text).toContain(`「${settingsItemLabel('auto-update')}」`);
     expect(text).toContain(`「${updateFailureLabels.install.retry}」`);
     expect(update.expected).toContain(`「${updateLabels['not-available']}」`);
-    expect(text).toContain('「退回更新前的 v…」');
+    expect(text).toContain('「回退到更新前的 v…」');
     expect(text).not.toContain('区分两种更新入口');
   });
 
@@ -293,7 +293,7 @@ describe('linux tutorials', () => {
     expect(text).toContain('输入开机密码');
     expect(text).toContain('从应用菜单重新打开');
     expect(text).toContain(linuxUpdateDiskCleanupSteps);
-    expect(text).toContain('「退回更新前的 v…」');
+    expect(text).toContain('「回退到更新前的 v…」');
     expect(updates?.steps.length).toBe(tutorialTopics.find((topic) => topic.id === updatesTutorialTopic)?.steps.length);
     expect(updateDiskCleanupStepsFor('linux')).toBe(linuxUpdateDiskCleanupSteps);
   });

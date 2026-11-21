@@ -307,10 +307,10 @@ export function AccountRecharge({
     }
     const activate = activated.current
     if (!activate) return
-    setSubscriptionTools({ tone: 'ok', title: '正在把工具换成订阅额度', body: '换好之前工具照常能用。' })
+    setSubscriptionTools({ tone: 'ok', title: '正在将工具切换为订阅额度', body: '切换完成前工具可正常使用。' })
     activate().then(
       (switched) => setSubscriptionTools(subscriptionToolsNotice({ followsPreference: false, switched })),
-      (error: unknown) => setSubscriptionTools(subscriptionToolsNotice({ followsPreference: false, error: errorMessage(error, '工具这次没有换成功。') })),
+      (error: unknown) => setSubscriptionTools(subscriptionToolsNotice({ followsPreference: false, error: errorMessage(error, '工具切换失败。') })),
     )
   }
   const applySubscriptionRef = useRef(applySubscriptionToTools)
@@ -662,7 +662,7 @@ export function AccountRecharge({
             <>
               {subscriptionTools.action === 'health' && openHealth && (
                 <Button size="sm" onClick={openHealth} testId="account-subscription-health">
-                  去检查页
+                  前往检查页
                 </Button>
               )}
               <Button size="sm" onClick={() => setSubscriptionTools(null)}>收起提示</Button>
@@ -679,8 +679,8 @@ export function AccountRecharge({
             <Empty
               testId="account-recharge-error"
               icon={XCircle}
-              title="充值信息暂时没有读到"
-              description={offline ? '现在连不上网，联网后点「重新加载」。' : <FailureReason error={info.error} detail={info.detail} />}
+              title="充值信息加载失败"
+              description={offline ? '网络未连接，请联网后点击「重新加载」。' : <FailureReason error={info.error} detail={info.detail} />}
               action={
                 <>
                   <Button size="sm" icon={RefreshCw} onClick={() => void info.reload()} testId="account-recharge-retry">
@@ -702,7 +702,7 @@ export function AccountRecharge({
                 <Notice
                   tone="neutral"
                   title="暂时没有可用的支付渠道"
-                  body="请稍后重试或联系客服。有充值码的话，点「有充值码？」兑换。"
+                  body="请稍后重试或联系客服。如有充值码，可点击「有充值码？」兑换。"
                   testId="account-recharge-no-methods"
                   actions={openHelp && (
                     <Button size="sm" icon={HelpCircle} onClick={openHelp}>
@@ -744,7 +744,7 @@ export function AccountRecharge({
                   min={topupMinimum}
                   step="1"
                   inputMode="numeric"
-                  placeholder={`最低 ${topupMinimum}，填整数`}
+                  placeholder={`最低 ${topupMinimum}，请输入整数`}
                   value={custom !== '' ? custom : presetAmounts.includes(presetValue) ? '' : String(presetValue)}
                   error={amountBad ? topupAmountError(topupMinimum) : undefined}
                   onChange={(event) => {
@@ -841,7 +841,7 @@ export function AccountRecharge({
               )}
               {afterUsd !== null && <Row label="充值后余额"><b>{dollars(afterUsd)}</b></Row>}
               {runway?.days !== null && runway?.days !== undefined && (
-                <Row label="按最近用量"><span>{rechargeRunwayText(runway.days)}</span></Row>
+                <Row label="按近期用量"><span>{rechargeRunwayText(runway.days)}</span></Row>
               )}
             </div>
             <Button
@@ -897,7 +897,7 @@ export function AccountRecharge({
             />
           ))
         ) : (
-          <p>{subscriptions.loading ? '正在读取订阅…' : '还没有订阅'}</p>
+          <p>{subscriptions.loading ? '正在读取订阅…' : '暂无订阅'}</p>
         )}
       </Card>
       {!subscriptionsFailed && plans.length > 0 && (
@@ -981,7 +981,7 @@ export function AccountRecharge({
             <Row label="支付方式"><span>{paymentMethod ? paymentMethodLabel(paymentMethod) : ''}</span></Row>
           </div>
         )}
-        <p className="v2-acct-note">实际扣款以支付页面为准。付完后支付窗口会自动关闭，余额自动刷新。</p>
+        <p className="v2-acct-note">实际扣款以支付页面为准。支付完成后，支付窗口将自动关闭并刷新余额。</p>
         <ResultNotice {...dialogFailure('payment')} />
       </Dialog>
       <Dialog
@@ -1021,7 +1021,7 @@ export function AccountRecharge({
           }}
           autoComplete="off"
         />
-        <p className="v2-acct-note">兑换到当前账号，余额和权益会自动更新。一个码只能用一次。</p>
+        <p className="v2-acct-note">兑换至当前账号后，余额和权益将自动更新。每个充值码仅可使用一次。</p>
         <ResultNotice {...dialogFailure('redeem')} />
       </Dialog>
       <Dialog
@@ -1210,7 +1210,7 @@ export function AccountOrders({
         ) : keyword.trim() ? (
           <Empty icon={CreditCard} {...ordersSearchEmpty(keyword, Boolean(multiplierAccount))} />
         ) : (
-          <Empty icon={CreditCard} title="还没有订单" description="充值后，订单会出现在这里。" />
+          <Empty icon={CreditCard} title="暂无订单" description="充值后，订单将显示在此处。" />
         )}
       </Card>
       <Pagination

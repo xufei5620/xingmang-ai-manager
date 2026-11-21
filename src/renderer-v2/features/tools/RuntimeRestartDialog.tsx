@@ -26,31 +26,31 @@ export function RuntimeRestartDialog({ onClose, restart }: { onClose: () => void
   function now() {
     if (busy) return
     if (pendingBusinessOperations().length > 0) {
-      setError('还有操作没做完，等它做完再重启电脑。')
+      setError('有操作尚未完成，请等待完成后再重启电脑。')
       return
     }
     setBusy(true)
     setError('')
     void restart().then(() => {
       onClose()
-      toast.show('电脑大约 15 秒后重启。', 'warn')
+      toast.show('电脑将在约 15 秒后重启。', 'warn')
     }, (cause) => {
       setBusy(false)
-      setError(errorMessage(cause, '重启没有发出去，请自己重启一次电脑。'))
+      setError(errorMessage(cause, '重启指令发送失败，请手动重启电脑。'))
     })
   }
   return <Dialog
     open
-    title="Node.js 装好了，重启电脑后就能用"
+    title="Node.js 已安装，重启电脑后生效"
     onClose={onClose}
     busy={busy}
     initialFocus={intro}
     testId="runtime-restart-dialog"
-    footer={<Button variant="primary" icon={RotateCcw} loading={busy} onClick={now} testId="runtime-restart-now">现在重启</Button>}
+    footer={<Button variant="primary" icon={RotateCcw} loading={busy} onClick={now} testId="runtime-restart-now">立即重启</Button>}
   >
     <div ref={intro} tabIndex={-1}>
-      <p>Windows 要重启一次才算把 Node.js 装完，重启之前装命令行工具可能会失败。</p>
-      <p>点「现在重启」，电脑大约 15 秒后重启，请先保存手上没保存的文件。不想现在重启就关掉这个框，之后自己重启一次也行。</p>
+      <p>Windows 需重启后才能完成 Node.js 安装，重启前安装命令行工具可能失败。</p>
+      <p>点击「立即重启」后，电脑将在约 15 秒后重启，请先保存未保存的文件。如暂不重启，可关闭此窗口，稍后手动重启。</p>
     </div>
     {error && <p className="v2-business-notice is-error" role="alert" data-testid="runtime-restart-error">{error}</p>}
   </Dialog>
@@ -65,9 +65,9 @@ export function RestartReminder({ restart }: { restart: () => Promise<void> }) {
   const [open, setOpen] = useState(false)
   if (!pending) return null
   return <>
-    <div className="v2-restart-reminder"><Notice tone="warn" icon={RotateCcw} title="还差重启一次电脑"
-      body="刚装好的运行环境要重启电脑后才算装完，重启之前装工具可能会失败。"
-      actions={<Button size="sm" icon={RotateCcw} onClick={() => setOpen(true)} testId="restart-reminder-now">现在重启</Button>}
+    <div className="v2-restart-reminder"><Notice tone="warn" icon={RotateCcw} title="需要重启电脑"
+      body="运行环境需重启电脑后才能完成安装，重启前安装工具可能失败。"
+      actions={<Button size="sm" icon={RotateCcw} onClick={() => setOpen(true)} testId="restart-reminder-now">立即重启</Button>}
       testId="restart-reminder" /></div>
     {open && <RuntimeRestartDialog onClose={() => setOpen(false)} restart={restart} />}
   </>
