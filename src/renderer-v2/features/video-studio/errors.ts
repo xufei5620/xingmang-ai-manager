@@ -9,7 +9,7 @@ export class VideoStudioError extends Error {
 
 // 回包读不懂、后台线程停了、片段交不过去、请求本身不对，都是程序自己出的岔子，客户照着做不了什么，
 // 统一说这一句，不提「线程」「编码器」。
-export const videoStudioComposeGlitchMessage = '拼的时候出了点问题，请再试一次'
+export const videoStudioComposeGlitchMessage = '合成时出现问题，请重试'
 
 export function videoStudioAbortError(): DOMException {
   return new DOMException('已取消', 'AbortError')
@@ -27,9 +27,9 @@ export function describeVideoStudioFailure(error: unknown): string {
   if (error instanceof VideoStudioError) return error.message
   if (isVideoStudioAbort(error)) return '已取消'
   if (error instanceof RangeError || (error instanceof DOMException && error.name === 'QuotaExceededError')) {
-    return '电脑内存不够拼这么长的片子，少放几段或调低清晰度再试'
+    return '内存不足，无法合成此长度的视频，请减少片段或降低清晰度后重试'
   }
-  return '拼接视频时出错了，换几段片段或调低清晰度再试一次'
+  return '视频合成出错，请更换部分片段或降低清晰度后重试'
 }
 
 // 给诊断看的英文原文，截短后才放进回包，免得一大段堆栈跟着跨线程。

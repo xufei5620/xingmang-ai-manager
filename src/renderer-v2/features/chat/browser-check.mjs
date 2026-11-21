@@ -295,13 +295,13 @@ test('web links in model output copy their address instead of opening, and other
     assert.equal(await page.locator('.chat-bubble a').count(), 0)
     assert.equal(await link.evaluate((element) => element.tagName), 'BUTTON')
     assert.equal((await link.textContent())?.trim(), 'the docs（example.com）')
-    assert.equal(await link.getAttribute('title'), '点一下复制网址')
+    assert.equal(await link.getAttribute('title'), '点击复制网址')
     assert.equal((await page.getByTestId('chat-link').nth(1).textContent())?.trim(), 'https://example.org/x')
     const mail = page.getByText('mail', { exact: true })
     assert.equal(await mail.evaluate((element) => element.tagName), 'SPAN')
     assert.equal(await mail.getAttribute('title'), '链接不可直接打开：mailto:a@example.com')
     await link.click()
-    await waitForToast(page, '网址已复制，粘贴到浏览器地址栏就能打开')
+    await waitForToast(page, '网址已复制，粘贴到浏览器地址栏即可打开')
     assert.equal(await page.evaluate(() => window.__copied), 'https://example.com/guide')
   } finally { await page.close() }
 })
@@ -567,7 +567,7 @@ test('says the picture is gone from the computer, instead of asking to retry, wh
     await page.getByTestId('chat-asset-save').click()
     await shown.waitFor()
     assert.equal(await shown.innerText(), gone)
-    assert.equal(await page.getByText(/可以重试|请稍后重试/).count(), 0)
+    assert.equal(await page.getByText(/请重试|请稍后重试/).count(), 0)
   } finally { await page.close() }
 })
 
@@ -652,7 +652,7 @@ test('formulas in replies render as math while money, code and the user message 
     assert.match((await assistant.locator('.chat-bubble').textContent()) ?? '', /余额只剩 \$5，充 \$10/)
     const broken = assistant.locator('.chat-math-raw')
     assert.equal((await broken.textContent())?.trim(), '$\\frac{a$')
-    assert.equal(await broken.getAttribute('title'), '这个公式没能显示，保留原文')
+    assert.equal(await broken.getAttribute('title'), '公式无法显示，已保留原文')
     const size = await assistant.locator('.chat-math-block').evaluate((element) => element.getBoundingClientRect().height)
     assert.ok(size > 20, `display formula should be laid out as math, got ${size}px`)
     await assistant.getByTestId('chat-code-copy').click()
@@ -810,7 +810,7 @@ test('when the group of the current model goes away the model stays named and se
     const prepared = (await calls(page, 'prepare')).length
     await page.evaluate(() => { window.chatHarness.setGroups(['group-b']); window.dispatchEvent(new Event('focus')) })
     await page.getByTestId('chat-group-unavailable').waitFor()
-    assert.equal(await page.getByTestId('chat-group-unavailable').textContent(), '当前模型已不可用，请换一个模型。已保存的消息和草稿继续保留。')
+    assert.equal(await page.getByTestId('chat-group-unavailable').textContent(), '当前模型已不可用，请更换模型。已保存的消息和草稿将继续保留。')
     // 后台刷新不悄悄换模型：按钮上照旧写着 gpt-test，菜单里只剩还在的分组的模型。
     assert.deepEqual(await picked(page), { group: 'group-a', model: 'gpt-test', label: 'gpt-test' })
     assert.deepEqual(await menuSections(page), [{ vendor: '其他', models: [{ label: 'other-model', hint: 'group-b分组', checked: false }] }])
@@ -955,7 +955,7 @@ test('a group whose models were not read is mentioned under the composer, and �
   try {
     await ready(page)
     await allPrepared(page)
-    assert.equal(await page.getByTestId('chat-groups-partly-failed').textContent(), '有几个分组的模型没读到，可以点模型菜单里的「刷新模型」再试。')
+    assert.equal(await page.getByTestId('chat-groups-partly-failed').textContent(), '部分分组的模型未能获取，请点击模型菜单中的「刷新模型」。')
     const menu = await modelMenu(page)
     assert.deepEqual((await vendorSections(menu)).map((section) => section.vendor), ['OpenAI', 'Claude'])
     await page.evaluate(() => window.chatHarness.failPreparation(null))
@@ -975,7 +975,7 @@ test('when no group has its models read the menu says to refresh and nothing can
     await allPrepared(page)
     assert.equal((await picked(page)).label, '暂无可用模型')
     const menu = await modelMenu(page)
-    assert.equal(await menu.locator('.xm-menu-empty').textContent(), '没读到模型，点「刷新模型」再试')
+    assert.equal(await menu.locator('.xm-menu-empty').textContent(), '未获取到模型，请点击「刷新模型」')
     await closeMenu(page, menu)
     assert.equal(await page.locator('.chat-composer .chat-message-error').count(), 1)
     await page.getByTestId('chat-composer-input').fill('cannot go out yet')
@@ -1092,7 +1092,7 @@ test('generating an image takes reference pictures and a generated one to keep e
     assert.equal(await page.locator('[data-role="user"] .chat-asset-preview').count(), 1)
     await page.evaluate((id) => window.chatHarness.completeImage(id), request.requestId)
     await page.getByRole('button', { name: '查看生成图片' }).waitFor()
-    // 用户自己发的参考图上没有「拿这张接着改」，生成的图上有。
+    // 用户自己发的参考图上没有「基于此图继续编辑」，生成的图上有。
     assert.equal(await page.locator('[data-role="user"]').getByTestId('chat-asset-reuse').count(), 0)
     // 切回文本对话再点它：回到「生成图片」，这张图放进输入框当参考图。
     await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话' }).click()
@@ -1110,7 +1110,7 @@ test('generating an image takes reference pictures and a generated one to keep e
     await page.locator('.chat-draft-image').first().waitFor()
     await pickModel(page, 'gemini-3.1-flash-image')
     assert.equal(await page.getByTestId('chat-images-unsupported').textContent(), '当前模型不支持图片编辑，请更换支持图片编辑的模型，或先移除图片')
-    assert.equal(await attach.getAttribute('title'), '这个模型不能照着图片改，换一个能改图的模型才能加图片')
+    assert.equal(await attach.getAttribute('title'), '当前模型不支持图片编辑，请更换支持图片编辑的模型后再添加图片')
     await page.getByTestId('chat-composer-input').fill('还是那张图')
     assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
     await page.getByTestId('chat-draft-image-remove').click()
@@ -1339,11 +1339,11 @@ test('an empty chat says where conversations go, and its examples only fill the 
   const page = await open()
   try {
     await ready(page)
-    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '还没做过东西。在右边的框里说一句试试。')
+    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '暂无内容。请在右侧输入框中输入您的需求。')
     assert.equal(await page.getByText('还没有对话', { exact: true }).count(), 0)
     const empty = page.getByTestId('chat-empty')
-    await empty.getByRole('heading', { name: '想做点什么？', exact: true }).waitFor()
-    await empty.getByText('问问题、写东西、画图，都在下面这一个框里说。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    await empty.getByRole('heading', { name: '今天想创作什么？', exact: true }).waitFor()
+    await empty.getByText('提问、写作、绘图均可在下方输入框中完成，额度与工具共用同一账号。', { exact: true }).waitFor()
     assert.deepEqual(await empty.getByRole('button').allTextContents(), ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
     await page.getByTestId('chat-example-3').click()
     const input = page.getByTestId('chat-composer-input')
@@ -1356,7 +1356,7 @@ test('an empty chat says where conversations go, and its examples only fill the 
     assert.equal(await empty.getByRole('button').count(), 0)
     await input.fill('')
     await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
-    await empty.getByText('问问题、写东西、画图，都在下面这一个框里说。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    await empty.getByText('提问、写作、绘图均可在下方输入框中完成，额度与工具共用同一账号。', { exact: true }).waitFor()
     assert.equal(await empty.getByRole('button').count(), 0, 'the examples are questions, not pictures')
   } finally { await page.close() }
 })
@@ -1413,7 +1413,7 @@ test('history that cannot be read is left alone, and reading it again brings it 
     await page.getByTestId('chat-composer-input').waitFor()
     const banner = page.getByRole('alert').filter({ hasText: '历史聊天记录暂时无法读取，原文件未作修改。当前对话内容不会保存，关闭软件后将丢失。' })
     await banner.waitFor()
-    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '以前的对话暂时读不出来')
+    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '历史对话读取失败')
     const meanwhile = await send(page, 'said meanwhile')
     await emit(page, { type: 'content', requestId: meanwhile.requestId, content: 'answer meanwhile' })
     await emit(page, { type: 'complete', requestId: meanwhile.requestId })
@@ -1551,27 +1551,27 @@ test('the conversation list groups by day, finds by title and clears everything 
     await page.getByTestId('chat-conversation-search').fill('昨天')
     assert.deepEqual(await list.locator('.chat-conversation-select strong').allTextContents(), ['昨天聊的'])
     await page.getByTestId('chat-conversation-search').fill('没有这个')
-    assert.equal(await page.getByTestId('chat-conversation-search-empty').textContent(), '没有找到「没有这个」相关的内容')
+    assert.equal(await page.getByTestId('chat-conversation-search-empty').textContent(), '未找到「没有这个」相关的内容')
     await page.getByTestId('chat-conversation-search').fill('')
     await page.getByRole('button', { name: '「今天聊的」更多操作', exact: true }).click()
     const menu = page.getByRole('menu', { name: '对话操作', exact: true })
-    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['改名', '置顶', '导出这段对话', '删除这段对话…'])
-    await menu.getByRole('menuitem', { name: '导出这段对话', exact: true }).click()
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['重命名', '置顶', '导出此对话', '删除此对话…'])
+    await menu.getByRole('menuitem', { name: '导出此对话', exact: true }).click()
     await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'export-text'))
     assert.equal((await calls(page, 'export-text'))[0].input.title, '今天聊的')
     await page.getByRole('button', { name: '「昨天聊的」更多操作', exact: true }).click()
-    await menu.getByRole('menuitem', { name: '删除这段对话…', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '删除此对话…', exact: true }).click()
     const confirm = page.getByTestId('chat-confirm')
     await confirm.getByRole('heading', { name: '删除「昨天聊的」？', exact: true }).waitFor()
-    await confirm.getByText('这段对话会从这台电脑上删掉，找不回来。已产生的用量不会改变。', { exact: true }).waitFor()
+    await confirm.getByText('该对话将从本机删除且无法恢复，已产生的用量不受影响。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '删除', exact: true }).click()
     await page.getByTestId('chat-conversation-yesterday').waitFor({ state: 'detached' })
-    // 页头的「导出这段对话」导出正在看的这一段。
+    // 页头的「导出此对话」导出正在看的这一段。
     await page.getByTestId('chat-conversation-export').click()
     await page.waitForFunction(() => window.chatHarness.calls.filter((item) => item.method === 'export-text').length === 2)
     await page.getByTestId('chat-conversations-clear').click()
     await confirm.getByRole('heading', { name: '清空全部对话？', exact: true }).waitFor()
-    await confirm.getByText('聊天记录会从这台电脑上全部删掉，找不回来。用量账单不受影响。', { exact: true }).waitFor()
+    await confirm.getByText('聊天记录将从本机全部删除且无法恢复，用量账单不受影响。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '全部清空', exact: true }).click()
     await waitForToast(page, '对话已清空')
     assert.equal(await list.locator('.chat-conversation-select').count(), 0)
@@ -1597,9 +1597,9 @@ test('a conversation can be renamed and pinned to the top, and both survive a re
     await list.getByTestId('chat-conversation-older').waitFor()
     const menu = page.getByRole('menu', { name: '对话操作', exact: true })
     await page.getByRole('button', { name: '「很久以前聊的」更多操作', exact: true }).click()
-    await menu.getByRole('menuitem', { name: '改名', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '重命名', exact: true }).click()
     const dialog = page.getByTestId('chat-rename-dialog')
-    await dialog.getByRole('heading', { name: '给这段对话改个名', exact: true }).waitFor()
+    await dialog.getByRole('heading', { name: '重命名对话', exact: true }).waitFor()
     const input = page.getByTestId('chat-rename-input')
     assert.equal(await input.inputValue(), '很久以前聊的')
     assert.equal(await input.evaluate((element) => element === document.activeElement), true)
@@ -1622,12 +1622,12 @@ test('a conversation can be renamed and pinned to the top, and both survive a re
     await list.getByTestId('chat-conversation-older').waitFor()
     assert.deepEqual(await list.locator('.chat-conversation-day').allTextContents(), ['置顶', '今天'])
     await page.getByRole('button', { name: '「年终总结」更多操作', exact: true }).click()
-    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['改名', '取消置顶', '导出这段对话', '删除这段对话…'])
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['重命名', '取消置顶', '导出此对话', '删除此对话…'])
     await menu.getByRole('menuitem', { name: '取消置顶', exact: true }).click()
     await page.waitForFunction(() => [...document.querySelectorAll('.chat-conversation-day')].map((item) => item.textContent).join() === '今天,更早')
     // 取消也能退出改名框，不改名字。
     await page.getByRole('button', { name: '「今天聊的」更多操作', exact: true }).click()
-    await menu.getByRole('menuitem', { name: '改名', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '重命名', exact: true }).click()
     await input.fill('不要了')
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await dialog.waitFor({ state: 'detached' })
@@ -1641,7 +1641,7 @@ test('a conversation that could not be saved says whether to pick another folder
   const expected = {
     denied: '该位置不允许保存文件，请选择其他文件夹（如「下载」）后重新导出。',
     full: '该磁盘空间已满，请清理部分空间或选择其他磁盘后重新导出。',
-    other: '这段对话没有导出成功，可以重试',
+    other: '对话导出失败，请重试',
   }
   const state = storedWorkspace()
   state.conversations[0].messages = [{ id: 'm1', role: 'user', content: '你好', status: 'complete', createdAt: 1 }, { id: 'm2', role: 'assistant', content: '你好呀', reasoning: '', status: 'complete', createdAt: 2 }]
@@ -1959,7 +1959,7 @@ test('a video still being made when the app closed is picked back up by its requ
     const dialog = page.getByTestId('chat-confirm')
     await dialog.waitFor()
     assert.deepEqual(await dialog.locator('p').allTextContents(), [
-      '重新生成会发起新的付费请求，并替换这条及之后的回复。',
+      '重新生成会发起新的付费请求，并替换此条及之后的回复。',
       '用「grok-imagine-video-1.5」生成 1 段、5 秒，单独计费，预计约 $0.25（估算）。当前余额 $12.40。',
       '生成一段需要几分钟。中途停止时，已提交至服务端的片段仍会继续生成并扣费。',
     ])
@@ -1990,7 +1990,7 @@ test('regenerating a video whose submission got no answer reuses its request id 
     await failed.getByRole('button', { name: '重新生成', exact: true }).click()
     const dialog = page.getByTestId('chat-confirm')
     await dialog.waitFor()
-    assert.equal(await page.getByTestId('chat-confirm-unconfirmed').textContent(), '这一段上次提交时没收到星芒的答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。')
+    assert.equal(await page.getByTestId('chat-confirm-unconfirmed').textContent(), '这一段上次提交时未收到星芒的响应：费用可能已扣除，但片段无法取回。重新生成将再次计费，可能产生重复扣费。')
     const confirm = dialog.getByRole('button', { name: '重新生成', exact: true })
     assert.equal(await confirm.isDisabled(), true)
     await dialog.getByRole('checkbox').check()

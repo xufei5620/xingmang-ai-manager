@@ -711,7 +711,7 @@ describe('renderer config directory menu entry', () => {
   it('does not claim the folder is missing when the config block simply was not read', () => {
     expect(configDirectoryMenuItem({ configDirectoryReady: true }, true))
       .toEqual({ label: '打开配置文件夹（配置暂未获取）', disabled: true })
-    expect(configDirectoryMenuItem({ configDirectoryReady: false }, true).label).not.toContain('还没生成')
+    expect(configDirectoryMenuItem({ configDirectoryReady: false }, true).label).not.toContain('尚未生成')
   })
 
   it('reads the folder state the main process reported, per tool', () => {

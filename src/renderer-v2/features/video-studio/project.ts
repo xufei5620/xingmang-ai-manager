@@ -522,8 +522,8 @@ export function videoStudioPlainText(value: string): string {
 
 /** 这一镜交给视频模型之前要先改好的地方；没问题是 null。 */
 export function videoStudioShotProblem(shot: VideoStudioShot, index: number): string | null {
-  if (!videoStudioPlainText(shot.prompt)) return `第 ${index + 1} 个镜头还没写画面描述`
-  if (shot.prompt.length > videoStudioPlanLimits.maximumPromptLength) return `第 ${index + 1} 个镜头的画面描述太长了，删到 ${videoStudioPlanLimits.maximumPromptLength} 个字以内`
+  if (!videoStudioPlainText(shot.prompt)) return `第 ${index + 1} 个镜头尚未填写画面描述`
+  if (shot.prompt.length > videoStudioPlanLimits.maximumPromptLength) return `第 ${index + 1} 个镜头的画面描述过长，请删减至 ${videoStudioPlanLimits.maximumPromptLength} 个字以内`
   return null
 }
 
@@ -659,7 +659,7 @@ export function videoStudioUnconfirmedIndexes(project: VideoStudioProject, ids: 
  */
 export function videoStudioUnconfirmedWarning(indexes: readonly number[], total: number): string {
   const subject = total === 1 ? '这一段' : indexes.length === total ? '这几段' : `其中第 ${indexes.map((index) => index + 1).join('、')} 段`
-  return `${subject}上次提交时没收到星芒的答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。`
+  return `${subject}上次提交时未收到星芒的响应：费用可能已扣除，但片段无法取回。重新生成将再次计费，可能产生重复扣费。`
 }
 
 /** 能拼了：至少一个镜头，每个镜头都有片段、没有正在生成的。 */
@@ -890,12 +890,12 @@ export function restoreVideoStudioDrafts(value: unknown, createId: () => string 
 /** 列表里一条视频的名字（客户没另起名时）：片名，没有就用想法开头那几个字。 */
 export function videoStudioDraftName(project: VideoStudioProject): string {
   const idea = videoStudioPlainText(project.settings.idea).replace(/\s+/g, ' ')
-  return project.title.trim() || (idea.length > 24 ? `${idea.slice(0, 24)}…` : idea) || '没起名的视频'
+  return project.title.trim() || (idea.length > 24 ? `${idea.slice(0, 24)}…` : idea) || '未命名视频'
 }
 
 /** 列表里一条视频下面那行小字：几个镜头、生成了几段、拼没拼成片。 */
 export function videoStudioDraftProgress(project: VideoStudioProject): string {
-  if (!project.shots.length) return '还没写分镜'
+  if (!project.shots.length) return '尚未编写分镜'
   const made = project.shots.filter((shot) => shot.clip).length
-  return [`${project.shots.length} 个镜头`, `已生成 ${made} 段`, project.exported ? '已拼成片' : ''].filter(Boolean).join(' · ')
+  return [`${project.shots.length} 个镜头`, `已生成 ${made} 段`, project.exported ? '已合成成片' : ''].filter(Boolean).join(' · ')
 }

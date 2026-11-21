@@ -60,7 +60,7 @@ interface Entry {
 
 // 攒这么久交一次：打字时一个字一次改动，不必每个字都过一次主进程。付费请求之前那一笔不等（urgent）。
 const saveDelayMs = 400
-const storageWarning = '这台电脑上存不下这份分镜，关掉软件以后要重新写。生成好的片段照样在作品库里。'
+const storageWarning = '本机无法保存此分镜，关闭软件后需重新编写。已生成的片段仍保留在作品库中。'
 
 function defaultStorage(): Pick<Storage, 'getItem'> | null {
   try { return window.localStorage } catch { return null }

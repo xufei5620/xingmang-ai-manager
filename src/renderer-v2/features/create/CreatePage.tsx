@@ -146,7 +146,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const videoShown = selected?.kind === 'video' && selected.id === session.openId && Boolean(openItem)
   const project = selected?.kind === 'canvas' ? canvas.projects.find((entry) => entry.id === selected.id) ?? null : null
   // 开着的那一条视频手上有事（写分镜、出片、画图、拼片）时不换别的：出好的东西要挂回它身上。
-  const sayBusy = () => toast.show(`「${openName}」还有事在做（写分镜、生成或拼片），等它停下再打开别的视频。`, 'warn')
+  const sayBusy = () => toast.show(`「${openName}」正在处理中（编写分镜、生成或合成），请待其完成后再打开其他视频。`, 'warn')
   const showVideo = (id: string) => {
     const result = session.open(id)
     if (result === 'busy') sayBusy()
@@ -155,7 +155,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const startVideo = () => {
     const started = session.start()
     if (started === 'busy') sayBusy()
-    else if (started === 'full') toast.show(`视频最多存 ${maxVideoStudioProjects} 条，先删掉几条不要的再新建。`, 'warn')
+    else if (started === 'full') toast.show(`最多保存 ${maxVideoStudioProjects} 条视频，请先删除不需要的视频后再新建。`, 'warn')
     else { setLibraryOpen(false); setSelected({ kind: 'video', id: started.id }) }
   }
   // 每次点开都再读一遍：视频工作台里刚出的片段、刚拼好的成片要在里面。
@@ -165,7 +165,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   // （library.replace 换版本号，下面工作台的 key 跟着换）；它手上有事（写分镜、生成、拼片）就先不加，等它停下。
   const addClip: ChatPageVideo['addClip'] = (filmId, source, made) => {
     const id = filmId ?? library.create()
-    if (!id) return { error: `视频最多存 ${maxVideoStudioProjects} 条，先删掉几条不要的再新建。` }
+    if (!id) return { error: `最多保存 ${maxVideoStudioProjects} 条视频，请先删除不需要的视频后再新建。` }
     const item = library.get(id)
     const refusal = videoClipRefusal(item, filmId === null, id === session.openId && session.busy)
     if (!item || refusal) return { error: refusal ?? '' }
@@ -208,7 +208,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const startFilmFromClips = (sources: VideoStudioClipSource[], origin: LibraryOrigin | undefined) => {
     const started = session.start()
     if (started === 'busy') { sayBusy(); return }
-    if (started === 'full') { toast.show(`视频最多存 ${maxVideoStudioProjects} 条，先删掉几条不要的再新建。`, 'warn'); return }
+    if (started === 'full') { toast.show(`最多保存 ${maxVideoStudioProjects} 条视频，请先删除不需要的视频后再新建。`, 'warn'); return }
     const item = library.get(started.id)
     if (!item) return
     library.replace(started.id, createVideoStudioProjectFromClips(sources, libraryClipMade(sources[0].clip, origin), item.project.settings))
@@ -280,8 +280,8 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const pane = <>
     {openItem && <div className="chat-conversation create-pane" hidden={!videoShown} data-testid="create-video-pane">
       <header className="chat-bar"><strong title={openName} data-testid="create-video-name">{openName}</strong><div className="chat-bar-actions">
-        <Button icon={Pencil} variant="ghost" size="sm" aria-label="改名" title="改名" onClick={() => startRename(openItem.id)} testId="create-video-rename" />
-        <Button icon={Trash2} variant="ghost" size="sm" aria-label="删掉这一条" title="删掉这一条" disabled={session.busy} onClick={() => setRemoving(openItem.id)} testId="create-video-remove" />
+        <Button icon={Pencil} variant="ghost" size="sm" aria-label="重命名" title="重命名" onClick={() => startRename(openItem.id)} testId="create-video-rename" />
+        <Button icon={Trash2} variant="ghost" size="sm" aria-label="删除此视频" title="删除此视频" disabled={session.busy} onClick={() => setRemoving(openItem.id)} testId="create-video-remove" />
       </div></header>
       <div className="create-studio"><Suspense fallback={<PageLoading />}>
         <VideoStudioPage key={`${openItem.id}:${library.revision(openItem.id)}`} bridge={bridge} accountScope={accountScope} site={site} access={videoAccess} active={active && videoShown}
@@ -309,7 +309,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
     intro: (conversationCount) => <CreateIntro state={intro} ready={active && library.status !== 'loading' && canvas.status !== 'loading'}
       hasEarlierWork={conversationCount > 0 || library.items.length > 0 || canvas.projects.length > 0}
       onDecide={(show) => { rememberIntroSeen(); setIntro(show ? 'shown' : 'gone') }} onDismiss={() => setIntro('gone')} />,
-    notes: [...(videosListed && library.status === 'unreadable' ? ['以前的视频暂时读不出来'] : []), ...(canvas.status === 'unreadable' ? ['画布项目暂时读不出来'] : [])],
+    notes: [...(videosListed && library.status === 'unreadable' ? ['历史视频读取失败'] : []), ...(canvas.status === 'unreadable' ? ['画布项目读取失败'] : [])],
     video: {
       access: videoAccess,
       quote: (model, group) => videoStudioQuoteText(videoStudioPerCallUsd(prices.list, model, group), 1, true),
@@ -335,13 +335,13 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
 
   return <>
     <ChatPage {...chat} bridge={bridge} accountScope={accountScope} active={active} create={create} />
-    {active && renaming && <Dialog open title="给这条视频改个名" width={480} onClose={() => setRenaming(null)} dirty={renameReady} testId="create-video-rename-dialog"
+    {active && renaming && <Dialog open title="重命名视频" width={480} onClose={() => setRenaming(null)} dirty={renameReady} testId="create-video-rename-dialog"
       footer={<><Button onClick={() => setRenaming(null)}>取消</Button><Button variant="primary" disabled={!renameReady} onClick={saveRename} testId="create-video-rename-save">保存</Button></>}>
-      <Input aria-label="视频名字" value={renaming.text} onChange={(event) => setRenaming({ ...renaming, text: event.target.value })}
+      <Input aria-label="视频名称" value={renaming.text} onChange={(event) => setRenaming({ ...renaming, text: event.target.value })}
         onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); saveRename() } }} maxLength={maxVideoStudioItemNameLength} autoFocus testId="create-video-rename-input" />
     </Dialog>}
-    {active && removingItem && <Confirm testId="create-video-remove-confirm" title={`删掉「${videoStudioItemName(removingItem)}」？`}
-      body={<p>分镜和设置会删掉。已经生成的片段和成片还在作品库里，不会删。</p>} okLabel="删掉" danger onOk={removeVideo} onClose={() => setRemoving(null)} />}
+    {active && removingItem && <Confirm testId="create-video-remove-confirm" title={`是否删除「${videoStudioItemName(removingItem)}」？`}
+      body={<p>分镜和设置将被删除，已生成的片段和成片仍保留在作品库中。</p>} okLabel="删除" danger onOk={removeVideo} onClose={() => setRemoving(null)} />}
   </>
 }
 
@@ -395,10 +395,10 @@ function StartCard({ icon: Icon, title, body, note, onClick, testId }: { icon: L
  */
 export function CreateStartCards({ video, clips = false, onVideo, onCanvas, onClips }: { video: boolean, clips?: boolean, onVideo: () => void, onCanvas: () => void, onClips?: () => void }) {
   return <div className="create-start" data-testid="create-start">
-    <div className="create-start-label">一句话说不清的，从这里开始</div>
+    <div className="create-start-label">复杂创作从这里开始</div>
     <div className="create-cards">
-      {video && <StartCard icon={Clapperboard} title="做一条带字幕的短视频" body="写一句想法，AI 写分镜、一段一段出，再拼成一条" onClick={onVideo} testId="create-card-video" />}
-      <StartCard icon={InfinityIcon} title="在画布上一步步做" body="多张图、精修、套模板，人物每一镜都长得一样也在这里" note="开在大窗口里" onClick={onCanvas} testId="create-card-canvas" />
+      {video && <StartCard icon={Clapperboard} title="做一条带字幕的短视频" body="输入创意，AI 将编写分镜、分段生成并合成为完整视频" onClick={onVideo} testId="create-card-video" />}
+      <StartCard icon={InfinityIcon} title="在画布中分步创作" body="支持多图、精修、模板，以及保持人物在各镜头中一致" note="开在大窗口里" onClick={onCanvas} testId="create-card-canvas" />
       {clips && onClips && <StartCard icon={Film} title="用已有片段合成视频" body="从作品库选择片段，添加字幕和配乐，在本机合成，不产生费用" onClick={onClips} testId="create-card-clips" />}
     </div>
   </div>
@@ -416,12 +416,12 @@ export function CanvasProjectPane({ project, opening, onOpen, now }: { project: 
         <span className="create-canvas-icon" aria-hidden="true"><InfinityIcon size={30} /></span>
         <div className="create-canvas-copy">
           <strong data-testid="create-canvas-name">{project.name}</strong>
-          <span data-testid="create-canvas-time">{project.updatedAt > 0 ? `画布项目 · ${createTimeText(project.updatedAt, now)} 改过` : '画布项目'}</span>
+          <span data-testid="create-canvas-time">{project.updatedAt > 0 ? `画布项目 · ${createTimeText(project.updatedAt, now)} 修改` : '画布项目'}</span>
           <div className="create-canvas-actions"><Button variant="primary" icon={ArrowUpRight} loading={opening} onClick={onOpen} testId="create-canvas-open">打开画布</Button></div>
-          <small>画布开在一个大窗口里，可以一边让它跑，一边回这里做别的。</small>
+          <small>画布在独立窗口中打开，运行期间可返回此处继续其他操作。</small>
         </div>
       </div>
-      <p className="create-quiet">改名、复制、归档、删除在画布窗口的「项目中心」里做。</p>
+      <p className="create-quiet">重命名、复制、归档和删除请在画布窗口的「项目中心」中操作。</p>
     </div>
   </div>
 }
@@ -433,5 +433,5 @@ export function CanvasProjectPane({ project, opening, onOpen, now }: { project: 
 export function CreateIntro({ state, ready, hasEarlierWork, onDecide, onDismiss }: { state: 'undecided' | 'shown' | 'gone', ready: boolean, hasEarlierWork: boolean, onDecide: (show: boolean) => void, onDismiss: () => void }) {
   useEffect(() => { if (state === 'undecided' && ready) onDecide(hasEarlierWork) }, [state, ready, hasEarlierWork])
   if (state !== 'shown') return null
-  return <Notice tone="accent" title="聊天、画布、视频剪辑合到这一页了" body="以前的对话、画布项目、视频草稿都在左边这一列，一个没少。生成的图片和视频可在左下角「作品库」中查看。" onDismiss={onDismiss} testId="create-intro" />
+  return <Notice tone="accent" title="聊天、画布和视频剪辑已合并至此页" body="历史对话、画布项目和视频草稿均已保留在左侧列表中。生成的图片和视频可在左下角「作品库」中查看。" onDismiss={onDismiss} testId="create-intro" />
 }
