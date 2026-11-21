@@ -2,12 +2,16 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { ArrowUpRight, Clapperboard, Infinity as InfinityIcon, Pencil, Trash2, type LucideIcon } from 'lucide-react'
 import type { CanvasProjectListEntry, XingmangApi } from '../../../../electron/ipc-contract'
 import { Button, Confirm, Dialog, Input, Notice, useToast } from '../../ui'
+import { dollars } from '../../business-common'
 import { useLatestRequest } from '../../latest-request'
+import { useSharedBalanceSelector } from '../app/balance-context'
 import { PageLoading } from '../app/PageLoading'
-import { ChatPage, type ChatPageCreate, type ChatPageProps } from '../chat/ChatPage'
+import { ChatPage, type ChatPageCreate, type ChatPageProps, type ChatPageVideo } from '../chat/ChatPage'
+import type { ChatVideoFilm } from '../chat/ChatVideo'
 import type { ChatSite } from '../chat/state'
 import { cleanVideoStudioItemName, maxVideoStudioItemNameLength, maxVideoStudioProjects, videoStudioItemName, type VideoStudioItem } from '../video-studio/library'
-import { videoStudioDraftProgress } from '../video-studio/project'
+import { useVideoStudioPriceList, videoStudioPerCallUsd, videoStudioQuoteText } from '../video-studio/prices'
+import { appendVideoStudioClip, canAddVideoStudioShot, createVideoStudioProjectFromClip, videoStudioDraftProgress } from '../video-studio/project'
 import { useVideoStudioLibrary, useVideoStudioSession } from '../video-studio/useVideoStudioLibrary'
 import type { VideoStudioAccess } from '../video-studio/VideoStudioPage'
 import { createTimeText, type CreateExtraItem, type CreateExtraKind, type CreateSelection } from './list'
@@ -96,13 +100,19 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const [intro, setIntro] = useState<'undecided' | 'shown' | 'gone'>(() => introSeen() ? 'gone' : 'undecided')
   const videosListed = videoAccess !== 'unsupported'
   const videos = videosListed ? library.items : noVideos
+  // 输入框「生成视频」那一档发送前问价用的价目和余额，同视频工作台的确认框。价目不随这一页露面就读：
+  // 切到那一档、打开确认框时对话页来要（refresh），不做视频的客户不用白读一次。
+  const balance = useSharedBalanceSelector((state) => state.scope === accountScope ? state.balance : null)
+  const prices = useVideoStudioPriceList(bridge, accountScope, false)
   // 列表的行是 memo 的：同一条视频、同一个项目没变时交出去的还是同一个对象。
-  const rows = useRef({ videos: new WeakMap<VideoStudioItem, CreateExtraItem>(), projects: new WeakMap<CanvasProjectListEntry, CreateExtraItem>() })
+  const rows = useRef({ videos: new WeakMap<VideoStudioItem, CreateExtraItem>(), projects: new WeakMap<CanvasProjectListEntry, CreateExtraItem>(), films: new WeakMap<VideoStudioItem, ChatVideoFilm>() })
   const items: CreateExtraItem[] = [
     ...videos.map((item) => cached<VideoStudioItem, CreateExtraItem>(rows.current.videos, item, () => ({ kind: 'video', id: item.id, title: videoStudioItemName(item), detail: videoStudioDraftProgress(item.project), updatedAt: item.updatedAt }))),
     ...canvas.projects.map((entry) => cached<CanvasProjectListEntry, CreateExtraItem>(rows.current.projects, entry, () => ({ kind: 'canvas', id: entry.id, title: entry.name, detail: '画布项目', updatedAt: entry.updatedAt }))),
   ]
   const stableItems = useStableList(items)
+  // 「添加到视频」菜单里列的视频：一行一条，「橘猫回家　4 个镜头」；镜头放满了的灰着。
+  const films = useStableList(videos.map((item) => cached<VideoStudioItem, ChatVideoFilm>(rows.current.films, item, () => createVideoFilm(item))))
 
   const openItem = session.openId ? library.get(session.openId) : null
   const openName = openItem ? videoStudioItemName(openItem) : ''
@@ -120,6 +130,17 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
     if (started === 'busy') sayBusy()
     else if (started === 'full') toast.show(`视频最多存 ${maxVideoStudioProjects} 条，先删掉几条不要的再新建。`, 'warn')
     else setSelected({ kind: 'video', id: started.id })
+  }
+  // 对话里的一段视频「添加到视频」：接到选的那一条最后（null 是新建一条）。开着的正是那一条时，写完它按新的重新读
+  // （library.replace 换版本号，下面工作台的 key 跟着换）；它手上有事（写分镜、生成、拼片）就先不加，等它停下。
+  const addClip: ChatPageVideo['addClip'] = (filmId, source, made) => {
+    const id = filmId ?? library.create()
+    if (!id) return { error: `视频最多存 ${maxVideoStudioProjects} 条，先删掉几条不要的再新建。` }
+    const item = library.get(id)
+    const refusal = videoClipRefusal(item, filmId === null, id === session.openId && session.busy)
+    if (!item || refusal) return { error: refusal ?? '' }
+    library.replace(id, filmId === null ? createVideoStudioProjectFromClip(source, made, item.project.settings) : appendVideoStudioClip(item.project, source))
+    return { id, title: videoStudioItemName(library.get(id) ?? item) }
   }
   const openCanvasProject = (projectId: string) => {
     if (opening) return
@@ -161,7 +182,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
         <Button icon={Trash2} variant="ghost" size="sm" aria-label="删掉这一条" title="删掉这一条" disabled={session.busy} onClick={() => setRemoving(openItem.id)} testId="create-video-remove" />
       </div></header>
       <div className="create-studio"><Suspense fallback={<PageLoading />}>
-        <VideoStudioPage key={openItem.id} bridge={bridge} accountScope={accountScope} site={site} access={videoAccess} active={active && videoShown}
+        <VideoStudioPage key={`${openItem.id}:${library.revision(openItem.id)}`} bridge={bridge} accountScope={accountScope} site={site} access={videoAccess} active={active && videoShown}
           source={library.source(openItem.id)} onBusyChange={session.setBusy} onOpenAccount={chat.onOpenAccount} />
       </Suspense></div>
     </div>}
@@ -186,6 +207,15 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
       hasEarlierWork={conversationCount > 0 || library.items.length > 0 || canvas.projects.length > 0}
       onDecide={(show) => { rememberIntroSeen(); setIntro(show ? 'shown' : 'gone') }} onDismiss={() => setIntro('gone')} />,
     notes: [...(videosListed && library.status === 'unreadable' ? ['以前的视频暂时读不出来'] : []), ...(canvas.status === 'unreadable' ? ['画布项目暂时读不出来'] : [])],
+    video: {
+      access: videoAccess,
+      quote: (model, group) => videoStudioQuoteText(videoStudioPerCallUsd(prices.list, model, group), 1, true),
+      refreshPrices: prices.refresh,
+      balance: balance ? dollars(balance.displayAmount) : null,
+      films,
+      addClip,
+      openFilm: showVideo,
+    },
   }
 
   return <>
@@ -201,6 +231,25 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
 }
 
 const noVideos: readonly VideoStudioItem[] = []
+
+/** 「添加到视频」菜单里的一行：名字、几个镜头；放满了的点不了。没写分镜的那句跟左边那一列用同一个出处，两处不会说得不一样。 */
+export function createVideoFilm(item: VideoStudioItem): ChatVideoFilm {
+  const count = item.project.shots.length
+  const full = !canAddVideoStudioShot(item.project)
+  return { id: item.id, title: videoStudioItemName(item), detail: full ? `${count} 个镜头，已满` : count ? `${count} 个镜头` : videoStudioDraftProgress(item.project), ...(full ? { full } : {}) }
+}
+
+/**
+ * 对话里的一段视频现在接不到这条视频上时要说的那句话；能接是 null。fresh：这一条是为这一段刚新建的（不用看放没放满）。
+ * busy：它正开着，手上有事（写分镜、生成、拼片），出好的东西要挂回它身上，这时从外面改会被盖掉。
+ */
+export function videoClipRefusal(item: VideoStudioItem | null, fresh: boolean, busy: boolean): string | null {
+  if (!item) return '该视频已删除，请选择其他视频。'
+  const name = videoStudioItemName(item)
+  if (busy) return `「${name}」正在进行其他操作（编写分镜、生成或合成），请待其完成后再添加。`
+  if (!fresh && !canAddVideoStudioShot(item.project)) return `「${name}」的镜头数量已达上限，请选择其他视频，或新建视频。`
+  return null
+}
 
 function cached<Key extends object, Value>(cache: WeakMap<Key, Value>, key: Key, build: () => Value): Value {
   const known = cache.get(key)

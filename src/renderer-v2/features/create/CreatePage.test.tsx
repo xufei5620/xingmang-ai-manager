@@ -1,7 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { tutorialTopics } from '../../registry/tutorials'
-import { CanvasProjectPane, CreateIntro, CreateStartCards } from './CreatePage'
+import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
+import { addVideoStudioShot, createVideoStudioProject } from '../video-studio/project'
+import { CanvasProjectPane, CreateIntro, CreateStartCards, createVideoFilm, videoClipRefusal } from './CreatePage'
 
 function nothing() { /* a static render never calls back */ }
 
@@ -80,5 +82,37 @@ describe('the pieces of the create page that are its own', () => {
     expect(words).not.toContain('左侧视频剪辑')
     expect(tutorialWords('canvas')).toContain('在画布上一步步做')
     expect(html).toContain('<strong>在画布上一步步做</strong>')
+  })
+})
+
+describe('a film in the 添加到视频 menu', () => {
+  function film(shots: number, name?: string) {
+    let project = createVideoStudioProject()
+    for (let index = 0; index < shots; index += 1) project = addVideoStudioShot(project, () => `shot-${index}`)
+    return { id: 'film-1', updatedAt: 1, project, ...(name ? { name } : {}) }
+  }
+
+  it('reads as the name and how many shots it has', () => {
+    expect(createVideoFilm(film(4, '橘猫回家'))).toEqual({ id: 'film-1', title: '橘猫回家', detail: '4 个镜头' })
+    expect(createVideoFilm(film(0))).toEqual({ id: 'film-1', title: '新视频', detail: '还没写分镜' })
+  })
+
+  it('is greyed out with the reason once every shot slot is taken', () => {
+    const full = createVideoFilm(film(videoStudioPlanLimits.maximumShots, '新品口红'))
+    expect(full).toEqual({ id: 'film-1', title: '新品口红', detail: `${videoStudioPlanLimits.maximumShots} 个镜头，已满`, full: true })
+    expect(createVideoFilm(film(videoStudioPlanLimits.maximumShots - 1))).not.toHaveProperty('full')
+  })
+
+  it('takes a clip unless it is gone, busy, or full', () => {
+    expect(videoClipRefusal(film(4, '橘猫回家'), false, false)).toBeNull()
+    expect(videoClipRefusal(null, false, false)).toBe('该视频已删除，请选择其他视频。')
+    // The open workbench hangs finished work back on its own copy: a write from outside while it works would be lost.
+    expect(videoClipRefusal(film(4, '橘猫回家'), false, true)).toBe('「橘猫回家」正在进行其他操作（编写分镜、生成或合成），请待其完成后再添加。')
+    expect(videoClipRefusal(film(videoStudioPlanLimits.maximumShots, '新品口红'), false, false)).toBe('「新品口红」的镜头数量已达上限，请选择其他视频，或新建视频。')
+  })
+
+  it('does not ask whether a film made for this clip is full', () => {
+    // 新建的那一条照最近一条的设置起，里面的镜头会整份换成这一段：看它原来几个镜头没有意义。
+    expect(videoClipRefusal(film(videoStudioPlanLimits.maximumShots), true, false)).toBeNull()
   })
 })
