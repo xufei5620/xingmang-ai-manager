@@ -9,6 +9,7 @@ import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/too
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import { buildClaudeDesktopInstallFailureMessage } from '../../../electron/claude-desktop-install-failure'
+import { codexDesktopActivationBrokenSentence } from '../../../electron/codex-desktop-known-issues'
 import { accountScope } from '../account-context'
 import { createConversation, createWorkspace } from '../features/chat/state'
 import { exportableConversations } from '../features/chat/storage'
@@ -808,7 +809,15 @@ const methods = {
     if (query.has('launchReadOnly')) return { workspaceReadOnly: true }
     return query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {}
   },
-  launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。' } } : {}) }),
+  launchCodexDesktop: async () => {
+    // ?codexLaunchFailure=activation：Windows 不肯起已装好的 Codex（0x80270254）；=generic：等了 38 秒没起来。
+    // 两句都是主进程 describeCodexDesktopLaunchFailure 写出来的原样。
+    const failure = query.get('codexLaunchFailure')
+    if (failure === 'activation') throw new Error(`Codex 桌面端没有打开：${codexDesktopActivationBrokenSentence(38)}`)
+    if (failure === 'generic') throw new Error('Codex 桌面端没有打开：等待 38 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex 命令行版；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
+    return { restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。' } } : {}) }
+  },
+  restartWindows: async () => undefined,
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),
   setCodexDesktopLocale: async (locale) => {
     settings = { ...settings, codexDesktopChineseRuntimePatch: locale === 'zh-CN' ? 'enabled' : 'disabled' }

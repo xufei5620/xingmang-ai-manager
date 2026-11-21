@@ -40,7 +40,9 @@ import {
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
   initialCodexDesktopChineseLocale,
+  buildCodexDesktopActivationFailureSummary,
   describeCodexDesktopLaunchFailure,
+  resolveCodexDesktopStartMenuName,
   describeCodexDesktopLaunchWait,
   buildCodexDesktopResetScript,
   buildCodexDesktopStartAppProbeScript,
@@ -101,7 +103,7 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { codexDesktopInstallFailureReasons } from './codex-desktop-install-failure'
-import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
+import { codexDesktopActivationBrokenMarker, codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
 import {
   desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketIndexStaleError, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
 } from './desktop-package-bucket'
@@ -196,17 +198,30 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
   })
 
   it('says how long it waited and gives a start-menu check the customer can do alone', () => {
-    const noWindow = describeCodexDesktopLaunchFailure({ waitedSeconds: 47, processSeen: true })
-    expect(noWindow.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
-    expect(noWindow).toContain('等了 47 秒')
-    expect(noWindow).toContain('Codex 已经启动，但它的窗口一直没出来')
-    expect(noWindow).toContain('开始菜单里搜「Codex」直接点开')
-    expect(noWindow).toContain('Codex 这一版自己的问题，不是星芒')
-    expect(noWindow).toContain('联系客服')
+    // The approved wording (「开始菜单改」), word for word, with the name Windows shows in the Start menu.
+    const notStarted = describeCodexDesktopLaunchFailure({ waitedSeconds: 38, processSeen: false }, null, false, 'ChatGPT')
+    expect(notStarted).toBe('Codex 桌面端没有打开：等待 38 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。'
+      + '如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，'
+      + '可等待微软商店更新，或先使用 Codex 命令行版；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
 
-    const notStarted = describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false })
-    expect(notStarted).toContain('等了 45 秒，Codex 没有启动起来')
-    expect(notStarted).not.toContain('窗口一直没出来')
+    // Windows handed back a process id and it was gone by the end: it started and quit on its own.
+    const exited = describeCodexDesktopLaunchFailure({ waitedSeconds: 38, processSeen: true }, null, false, 'ChatGPT')
+    expect(exited.startsWith('Codex 桌面端没有打开：等待 38 秒，Codex 启动后随即退出，未出现窗口。请关闭所有 Codex 窗口后点击「重试」。')).toBe(true)
+    expect(exited.slice(exited.indexOf('请关闭'))).toBe(notStarted.slice(notStarted.indexOf('请关闭')))
+    expect(exited).not.toContain('Codex 未能启动')
+  })
+
+  it('names the Start menu entry the way Windows shows it, and falls back to Codex when that name is unusable', () => {
+    function searched(name?: string | null): string {
+      const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }, null, false, name)
+      return /开始菜单中搜索「([^」]*)」/.exec(message)?.[1] ?? ''
+    }
+    expect(searched('ChatGPT')).toBe('ChatGPT')
+    expect(searched('  Codex Beta ')).toBe('Codex Beta')
+    for (const unusable of [undefined, null, '', '   ', 'a\nb', 'ab\u0007', '「ChatGPT」', 'x'.repeat(41)]) {
+      expect(searched(unusable)).toBe('Codex')
+    }
+    expect(resolveCodexDesktopStartMenuName('x'.repeat(40))).toBe('x'.repeat(40))
   })
 
   // Windows only refuses sandboxed store apps on these accounts; Codex Desktop
@@ -229,7 +244,7 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(message).toContain('你装的这一版（26.924.2738.0）')
     expect(message).toContain(codexDesktopKnownIssueMarker)
     expect(message).toContain('「改用 Codex 命令行版」')
-    expect(message).not.toContain('开始菜单里搜「Codex」')
+    expect(message).not.toContain('开始菜单')
     expect(message).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store/i)
 
     const noOutcome = describeCodexDesktopLaunchFailure(undefined, '26.924.2738.0')
@@ -237,6 +252,32 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(noOutcome).toContain(codexDesktopKnownIssueMarker)
 
     expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }, null)).not.toContain(codexDesktopKnownIssueMarker)
+  })
+
+  it('asks for a restart, and nothing else, when Windows refused to start an installed Codex', () => {
+    const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 38, processSeen: false }, null, true)
+    expect(message).toBe('Codex 桌面端没有打开：Codex 已安装，但 Windows 未能启动它，等待 38 秒仍未检测到 Codex 运行。重启电脑后通常可以恢复。')
+    expect(message).toContain(codexDesktopActivationBrokenMarker)
+    // The code stays in the runtime log; the customer sees no hex and no start-menu detour.
+    expect(message).not.toMatch(/0x[0-9A-F]{8}|AppModel|AppX|Appx|开始菜单/i)
+    // A known-broken version is a different problem (it times out after starting); the Windows refusal wins.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 38, processSeen: false }, '26.924.2738.0', true))
+      .not.toContain(codexDesktopKnownIssueMarker)
+    expect(describeCodexDesktopLaunchFailure(undefined, null, true)).toBe('Codex 桌面端没有打开：Codex 已安装，但 Windows 未能启动它，未检测到 Codex 运行。重启电脑后通常可以恢复。')
+    // Without the flag nothing changes.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false })).not.toContain(codexDesktopActivationBrokenMarker)
+  })
+
+  it('calls it a Windows refusal only when the activation said not installed and never handed back a process', () => {
+    const refused = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80270254)')
+    const timedOut = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x8027025A)')
+
+    expect(buildCodexDesktopActivationFailureSummary([timedOut, refused], null)).toEqual({ windowsActivationBroken: true, cause: refused })
+    // A process id means Windows did start it: that is the 「启动后随即退出」 case, not this one.
+    expect(buildCodexDesktopActivationFailureSummary([refused], 18420)).toEqual({ windowsActivationBroken: false, cause: refused })
+    expect(buildCodexDesktopActivationFailureSummary([timedOut], null)).toEqual({ windowsActivationBroken: false, cause: timedOut })
+    // Nothing failed (plain Explorer launch, nothing came up): no cause to attach.
+    expect(buildCodexDesktopActivationFailureSummary([], null)).toEqual({ windowsActivationBroken: false })
   })
 
   it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {
