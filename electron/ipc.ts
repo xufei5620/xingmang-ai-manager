@@ -32,6 +32,7 @@ import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
 import type { AiAudioAssetStore } from './ai-audio-asset-store'
 import type { AiVideoAssetStore } from './ai-video-asset-store'
+import type { AiMediaAssetService } from './ai-media-asset-service'
 import type { AiVideoService } from './ai-video-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type {
@@ -90,6 +91,7 @@ import { registerAccountBillingHandlers } from './ipc/handlers/account-billing'
 import { registerAccountUsageHandlers } from './ipc/handlers/account-usage'
 import { registerAccountKeyHandlers } from './ipc/handlers/account-keys'
 import { registerAiChatHandlers } from './ipc/handlers/ai-chat'
+import { registerAiLibraryHandlers } from './ipc/handlers/ai-library'
 import { registerAiVideoHandlers } from './ipc/handlers/ai-video'
 import { registerDataTransferHandlers } from './ipc/handlers/data-transfer'
 import { registerCodexRemoteHandlers } from './ipc/handlers/codex-remote'
@@ -302,6 +304,8 @@ export interface IpcRegistrationOptions {
   // 视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
   videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
+  // 「创作 › 作品库」列当前账号做过的图片和视频（融合第 3 步）。只用它不读文件的那一个列法；改名、删除这些主窗口不碰。
+  mediaAssets?: Pick<AiMediaAssetService, 'listOwnedLibrary'>
   // 视频剪辑的配乐：客户选的歌存进这个作品库的音频那一格，拼片时再按编号读回来。
   audioAssets?: Pick<AiAudioAssetStore, 'storeLocalFile' | 'readOwned'>
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
@@ -450,6 +454,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerAccountKeyHandlers(ctx)
   registerAiChatHandlers(ctx)
   registerAiVideoHandlers(ctx)
+  registerAiLibraryHandlers(ctx)
   registerDataTransferHandlers(ctx)
   registerCodexRemoteHandlers(ctx)
   registerCodexRemoteWeixinHandlers(ctx)

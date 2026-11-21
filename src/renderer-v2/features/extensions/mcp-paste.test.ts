@@ -117,7 +117,7 @@ describe('parseMcpPaste', () => {
       '[mcp_servers.a]\nstarted = 1979-05-27',
       '[mcp_servers.a]\ncommand = "npx"\ncommand = "uvx"',
     ]) {
-      expect(parseMcpPaste(text)).toMatchObject({ status: 'failed', problem: expect.stringContaining('原样复制过来') })
+      expect(parseMcpPaste(text)).toMatchObject({ status: 'failed', problem: expect.stringContaining('原样复制到此处') })
     }
   })
 
@@ -133,7 +133,7 @@ describe('parseMcpPaste', () => {
         '[mcp_servers.a.constructor.prototype]\npolluted = "yes"',
         '[mcp_servers.a]\ncommand = "npx"\nprototype = "yes"',
       ]) {
-        expect(parseMcpPaste(text)).toMatchObject({ status: 'failed', problem: expect.stringContaining('原样复制过来') })
+        expect(parseMcpPaste(text)).toMatchObject({ status: 'failed', problem: expect.stringContaining('原样复制到此处') })
       }
       expect(Object.getOwnPropertyNames(Object.prototype)).toEqual(before)
     } finally {
@@ -221,12 +221,12 @@ describe('parseMcpPaste', () => {
     expect(servers(result).map((server) => [server.name, server.config, server.problem])).toEqual([
       ['old', null, expect.stringContaining('SSE')],
       ['guessed', null, expect.stringContaining('SSE')],
-      ['socket', null, '它用的连接方式这里加不了，换提供方给的其他写法试试。'],
-      ['empty', null, '这一段里没找到启动命令或服务地址。'],
-      ['args', null, expect.stringContaining('附加参数格式不对')],
-      ['env', null, expect.stringContaining('附加设置格式不对')],
-      ['headers', null, expect.stringContaining('请求头格式不对')],
-      ['scheme', null, '服务地址要以 http:// 或 https:// 开头'],
+      ['socket', null, '该连接方式无法在此添加，请尝试提供方给出的其他配置。'],
+      ['empty', null, '未在内容中找到启动命令或服务地址。'],
+      ['args', null, expect.stringContaining('附加参数格式不正确')],
+      ['env', null, expect.stringContaining('附加设置格式不正确')],
+      ['headers', null, expect.stringContaining('请求头格式不正确')],
+      ['scheme', null, '服务地址需以 http:// 或 https:// 开头'],
     ])
     expect(servers(parseMcpPaste('claude mcp add --transport sse asana https://mcp.asana.com/sse'))[0]?.problem).toContain('SSE')
     expect(servers(parseMcpPaste('https://mcp.example.com/sse'))[0]?.problem).toContain('SSE')
@@ -235,11 +235,11 @@ describe('parseMcpPaste', () => {
   it('fails in plain words when nothing usable is in the paste', () => {
     expect(parseMcpPaste('   ')).toEqual({ status: 'empty' })
     for (const text of ['随便写的一句话', 'hello world', '{ "mcpServers": ', 'npx "unterminated', 'line one\nline two']) {
-      expect(parseMcpPaste(text)).toMatchObject({ status: 'failed', problem: expect.stringContaining('原样复制过来') })
+      expect(parseMcpPaste(text)).toMatchObject({ status: 'failed', problem: expect.stringContaining('原样复制到此处') })
     }
     expect(parseMcpPaste('{ "theme": "dark" }')).toEqual({
       status: 'failed',
-      problem: '这段里没找到启动命令或服务地址，可能少复制了一部分，对照提供方说明再看看。',
+      problem: '未在内容中找到启动命令或服务地址，可能复制不完整，请对照提供方说明检查。',
     })
   })
 })
@@ -338,19 +338,19 @@ describe('mcpPastePlaceholders', () => {
 describe('mcpPasteNotice', () => {
   it('says what was found, what still needs the customer, and how to add the rest of a multi-server paste', () => {
     expect(mcpPasteNotice({ status: 'empty' }, 0)).toBeNull()
-    expect(mcpPasteNotice(parseMcpPaste('hello world'), 0)).toMatchObject({ tone: 'warn', title: '没认出这段配置' })
+    expect(mcpPasteNotice(parseMcpPaste('hello world'), 0)).toMatchObject({ tone: 'warn', title: '无法识别此配置' })
     expect(mcpPasteNotice(parseMcpPaste('{ "command": "npx", "args": ["-y", "@acme/tool"] }'), 0)).toEqual({
       tone: 'ok',
-      title: '认出来了：本地程序「tool」',
-      body: '下面几项已经替你填好，看一眼再点「添加」。',
+      title: '已识别：本地程序「tool」',
+      body: '已自动填写下方各项，请确认后点击「添加」。',
     })
     const pair = parseMcpPaste('{ "mcpServers": { "a": { "url": "https://a.example.com/mcp", "headers": { "Authorization": "Bearer <token>" } }, "b": { "type": "sse", "url": "https://b.example.com/sse" } } }')
     expect(mcpPasteNotice(pair, 0)).toEqual({
       tone: 'warn',
-      title: '认出来了：网络服务「a」',
-      body: '下面几项已经替你填好。Authorization 看起来还是说明里的示例文字，换成你自己的再点「添加」。一次加一个，加好以后再粘贴同一段，选下一个。',
+      title: '已识别：网络服务「a」',
+      body: '已自动填写下方各项。Authorization 仍为说明中的示例文字，请替换为实际内容后点击「添加」。每次添加一个，添加后可再次粘贴同一段内容并选择下一个。',
     })
-    expect(mcpPasteNotice(pair, 1)).toMatchObject({ tone: 'warn', title: '「b」加不了' })
+    expect(mcpPasteNotice(pair, 1)).toMatchObject({ tone: 'warn', title: '「b」无法添加' })
   })
 
   it('labels unnamed servers by position and writes headers one per line', () => {

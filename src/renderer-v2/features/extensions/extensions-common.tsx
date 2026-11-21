@@ -76,7 +76,7 @@ export function officialMarketplaceNotice(
         }
       : {
           tone: 'warn',
-          title: '官方插件目录还没下载',
+          title: '官方插件目录尚未下载',
           body:
             marketplace.reason ||
             '下载之后这里才会出现可以安装的插件，网络慢时要等一会儿。',
@@ -95,10 +95,10 @@ export function officialMarketplaceNotice(
   }
   return {
     tone: 'warn',
-    title: '还没有添加官方插件市场',
+    title: '尚未添加官方插件市场',
     body:
       marketplace.reason ||
-      '添加之后这里才会出现可以安装的插件。添加需要这台电脑上装有 Git。',
+      '添加后将在此显示可安装的插件。添加需要本机已安装 Git。',
     needsAction: true,
     actionLabel: '添加官方市场',
   }
@@ -213,7 +213,7 @@ export function extensionRowState(
 export function extensionUpdateStatus(item: ExtensionItem): string {
   if (item.kind !== 'mcp' || item.update.state !== 'update-available') return item.update.reason || '尚未检查'
   const latest = item.source.kind === 'git' ? null : item.latestVersion
-  return `有新版本${latest ? ` ${latest}` : ''}。这一条不在这里更新：推荐里的用的是星芒核过的版本，不用管它；自己加的想换新版本，先移除，再按新版本号加一次。`
+  return `有新版本${latest ? ` ${latest}` : ''}。此项不在此处更新：推荐项使用经星芒核验的版本，无需处理；自行添加的如需更新，请先移除，再按新版本号重新添加。`
 }
 
 /**
@@ -299,12 +299,12 @@ export async function runExtensionAction(
   }
   if (item.provider === 'codex' && item.kind === 'skill') {
     const matched = nativeSkill && findNativeSkill([nativeSkill], item)
-    if (!matched) throw new Error('这个技能的文件位置已经变化，请刷新列表后再操作。')
-    if (!matched.managed || matched.scope === 'system') throw new Error('这个技能是只读的，不能在这里修改。')
+    if (!matched) throw new Error('该技能的文件位置已变更，请刷新列表后再操作。')
+    if (!matched.managed || matched.scope === 'system') throw new Error('该技能为只读，无法在此修改。')
     if (action === 'enable' || action === 'disable')
       await api.toggleSkill(matched.path, action === 'enable')
     else if (action === 'uninstall') await api.uninstallSkill(matched.path)
-    else throw new Error('Codex 技能不支持这个操作。')
+    else throw new Error('Codex 技能不支持此操作。')
     return
   }
   const scope = extensionMutationScope(item.scope)
@@ -446,12 +446,12 @@ export function customMcpProblem(input: {
   existing?: readonly string[]
 }): string | null {
   const name = input.name.trim()
-  if (!name) return '请给这个连接起个名字'
+  if (!name) return '请为此连接命名'
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(name)) return '名称只能用字母、数字和 - _，最多 40 位'
-  if (input.existing?.includes(name)) return `已经有叫「${name}」的连接了，换个名字`
+  if (input.existing?.includes(name)) return `已存在名为「${name}」的连接，请更换名称`
   const source = input.source.trim()
   if (input.transport === 'stdio') return source ? null : '请填写启动命令'
-  return /^https?:\/\/\S/i.test(source) ? null : '服务地址要以 http:// 或 https:// 开头'
+  return /^https?:\/\/\S/i.test(source) ? null : '服务地址需以 http:// 或 https:// 开头'
 }
 // Codex 的 `mcp list --json` 只报 unknown、unsupported、not_logged_in、bearer_token、o_auth 这几个词（0.46.0 到
 // 0.163.0 都一样）。以前认的是 authenticated、logged_in，Codex 从来不报，登录过的、带令牌的也一直挂着「需要登录授权」。
@@ -464,7 +464,7 @@ export function mcpNeedsLogin(status: string) {
   return status.toLowerCase() === 'not_logged_in'
 }
 /**
- * 「能连上 / 连不上 / 未检测」这一行小标。没有报告 = 这一轮还没检测过，
+ * 「连接正常 / 无法连接 / 未检测」这一行小标。没有报告 = 这一轮还没检测过，
  * 这时一颗小标都不画，免得旧结果看起来像刚测的。
  */
 export function mcpHealthView(
@@ -475,8 +475,8 @@ export function mcpHealthView(
   if (checking) return { tone: 'neutral', label: '检测中', detail: null }
   if (!report) return null
   const entry = report.entries.find((candidate) => candidate.id === id)
-  if (entry?.state === 'connected') return { tone: 'ok', label: '能连上', detail: entry.detail }
-  if (entry?.state === 'failed') return { tone: 'warn', label: '连不上', detail: entry.detail }
+  if (entry?.state === 'connected') return { tone: 'ok', label: '连接正常', detail: entry.detail }
+  if (entry?.state === 'failed') return { tone: 'warn', label: '无法连接', detail: entry.detail }
   // 报告里没有这一条时，原因用整份报告那一句（工具不支持、或这次没测完），
   // 而不是留空让用户猜。工具给不出原因就什么都不写，不替它编。
   return { tone: 'neutral', label: '未检测', detail: entry?.detail ?? report.reason }
@@ -529,17 +529,17 @@ export function mcpRuntimeNotice(
   if (needs === 'python' && runtimes.python) return null
   const sentences = [
     needs === 'uv'
-      ? `这条连接要用 uv 启动，这台电脑上没有找到 uv${runtimes.python ? '' : '，也没有找到 Python'}。`
-      : '这条连接要靠 Python 运行，这台电脑上还没有装。',
+      ? `此连接需使用 uv 启动，本机未找到 uv${runtimes.python ? '' : '，也未找到 Python'}。`
+      : '此连接需 Python 运行，本机尚未安装。',
   ]
   if (!runtimes.python) {
     sentences.push(management === 'managed'
-      ? '可以先装好 Python 再回来添加。'
-      : `可以在终端里执行 ${runtimeHomebrewCommand('python')} 装好 Python，再回来添加。`)
+      ? '请先安装 Python 后再添加。'
+      : `可在终端中执行 ${runtimeHomebrewCommand('python')} 安装 Python 后再添加。`)
   }
   // uv 星芒装不了，客户多半也不会开命令行敲 pip，所以缺它的时候交给客服教（D20），配一颗「联系客服」。
-  if (needs === 'uv') sentences.push('这个工具还要一个叫 uv 的小组件，点「联系客服」，客服教你装。')
-  sentences.push('仍然可以直接添加，但工具用到它的时候会连不上。')
+  if (needs === 'uv') sentences.push('该工具还需安装 uv 组件，请点击「联系客服」获取安装指导。')
+  sentences.push('仍可直接添加，但工具调用时将无法连接。')
   return {
     title: '这条连接还差一样东西',
     body: sentences.join(''),
@@ -555,7 +555,7 @@ function parseJsonField(value: string, fallback: string, label: string): unknown
   try {
     return JSON.parse(value || fallback)
   } catch {
-    throw new Error(`${label}的格式不对。填文件夹时请用上面的「选择文件夹」，软件会替你填好；手填路径时每个 \\ 要写成两个。`)
+    throw new Error(`${label}格式不正确。填写文件夹请使用上方「选择文件夹」自动填写；手动填写路径时，每个 \\ 需写成两个。`)
   }
 }
 export function parseCommandArguments(value: string): string[] {
@@ -583,7 +583,7 @@ export function parseEnvironmentVariables(
     throw new Error('附加设置照提供方说明原样粘贴，例如 {"名称": "值"}。')
   return result as Record<string, string>
 }
-const headerFormatError = '请求头每行写一个，格式是「名称: 值」，比如 Authorization: Bearer 你的密钥。'
+const headerFormatError = '请求头每行一个，格式为「名称: 值」，例如 Authorization: Bearer 您的密钥。'
 /**
  * 网络服务的请求头：一行一个「名称: 值」，和提供方说明、Claude Code 的 --header 一个写法；照「附加设置」那样
  * 贴一个 JSON 对象进来也认。主进程收到以后还要用同一份规矩（mcp-http-headers.ts）再过一遍。
@@ -721,7 +721,7 @@ export function fillCuratedPlaceholders(
  */
 export function curatedVersionText(item: CuratedExtension): string {
   if (item.install.type !== 'plugin')
-    return item.pinnedVersion ? `固定在 ${item.pinnedVersion}` : '由对方在线提供，没有本地版本'
+    return item.pinnedVersion ? `固定在 ${item.pinnedVersion}` : '由服务方在线提供，无本地版本'
   const commit = item.marketplaceCommit ? `，我们复核过的是 ${item.marketplaceCommit.slice(0, 12)} 那一版` : ''
   const declared = item.pinnedVersion ? `插件自己声明的版本是 ${item.pinnedVersion}。` : ''
   return `${declared}安装的是官方市场当前的版本${commit}。`
@@ -735,7 +735,7 @@ export function CuratedDetails({ item, hideScope }: { item: CuratedExtension; hi
       <p>{item.summary}</p>
       <div className="v2-curated-tags">
         {item.requiresAccount && <Pill tone="accent">需要先登录</Pill>}
-        {item.risks.length === 0 ? <Pill tone="ok">没有特别的风险</Pill> : item.risks.map(curatedRiskPill)}
+        {item.risks.length === 0 ? <Pill tone="ok">无特殊风险</Pill> : item.risks.map(curatedRiskPill)}
       </div>
       <CuratedRiskDetails item={item} />
       <dl className="v2-business-kv">
@@ -763,7 +763,7 @@ export function CuratedDetails({ item, hideScope }: { item: CuratedExtension; hi
         {!hideScope && (
           <>
             <dt>装到哪里</dt>
-            <dd>我的（全局），当前这个工具在任何文件夹里打开都能用</dd>
+            <dd>我的（全局），该工具在任意文件夹中打开均可使用</dd>
           </>
         )}
       </dl>

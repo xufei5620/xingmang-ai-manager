@@ -17,6 +17,7 @@ import { VideoStudioError, describeVideoStudioFailure, isVideoStudioAbort } from
 import {
   addVideoStudioShot,
   applyVideoStudioPlan,
+  assignVideoStudioShotClip,
   assignVideoStudioShotImages,
   buildVideoStudioCatalogs,
   buildVideoStudioClipRequest,
@@ -29,6 +30,7 @@ import {
   moveVideoStudioShot,
   removeVideoStudioMusic,
   removeVideoStudioShot,
+  removeVideoStudioShotClip,
   removeVideoStudioShotImage,
   selectVideoStudioVideoModel,
   setVideoStudioClipSound,
@@ -40,12 +42,15 @@ import {
   updateVideoStudioShot,
   videoStudioComposeCaptions,
   videoStudioComposeKey,
+  withoutVideoStudioBorrowed,
   withoutVideoStudioTrim,
   videoStudioComposeSound,
   videoStudioPlainText,
   videoStudioReadyToCompose,
   videoStudioShotProblem,
   type VideoStudioClipSound,
+  type VideoStudioClipSource,
+  type VideoStudioImageDraft,
   type VideoStudioProject,
   type VideoStudioSettings,
   type VideoStudioShot,
@@ -302,7 +307,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
       // 付了钱的片段回来了：马上存，不等攒那一会儿。
       commit((current) => {
         const updated = updateVideoStudioShot(current, shotId, (item) => item.requestId !== requestId ? item
-          : clip ? { ...withoutVideoStudioTrim(shotWithoutRun(item)), clip, status: 'done' }
+          : clip ? { ...withoutVideoStudioBorrowed(withoutVideoStudioTrim(shotWithoutRun(item))), clip, status: 'done' }
             : settleShot(item, item.unrecorded ? aiVideoUnconfirmedSubmissionMessage : undefined))
         return clip ? { ...updated, exported: undefined } : updated
       }, { urgent: true })
@@ -508,6 +513,19 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
     }
   }
 
+  // 「从作品库选图」「使用已有片段」（融合第 3 步）：选择框由「创作」页开（pick），这里只等它交回编号，挂到这一镜上。
+  // 选的时候换成了别的视频（这个工作台卸掉了），选好的不挂到换上来的那一条上。
+  const pickLibraryImage = async (id: string, pick: () => Promise<string | null>) => {
+    const alive = owner.capture()
+    const assetId = await pick()
+    if (alive() && assetId) commit((current) => assignVideoStudioShotImages(current, id, [assetId]))
+  }
+  const pickLibraryClip = async (id: string, pick: () => Promise<VideoStudioClipSource | null>) => {
+    const alive = owner.capture()
+    const picked = await pick()
+    if (alive() && picked) commit((current) => assignVideoStudioShotClip(current, id, picked))
+  }
+
   // 「加配乐」：歌由主进程弹系统对话框选、存进作品库，这里只拿编号、歌名和时长。
   const pickMusic = async () => {
     // 对话框开着时换成了别的视频（这个工作台卸掉了），选好的歌不挂到换上来的那一条上（歌照样在作品库里）。
@@ -523,18 +541,16 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
 
   // 「让 AI 画一张」：用对话页出图那条（chat:generate-image，凭据在主进程、画好的图存进作品库），这里只拿编号，
   // 画好以后和自己选的图一样用。先出图便宜，客户满意了再拿它出视频。余额、额度不够照页面顶上那条说（带「前往充值」）。
-  const drawShotImage = async (id: string) => {
+  // 画面描述、型号、尺寸这些是出图框里填好交过来的（融合第 4 步，ShotImageDialog），不再读这条视频自己记的画图型号。
+  const drawShotImage = async (id: string, draft: VideoStudioImageDraft) => {
     if (planning || composeAbort.current) return
-    const { shots, settings } = projectRef.current
-    const shot = shots.find((item) => item.id === id)
-    if (!shot || isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot) || !settings.imageModel || !settings.imageGroup) return
-    const problem = videoStudioShotProblem(shot, shots.indexOf(shot))
-    if (problem) { setError(problem); return }
+    const shot = projectRef.current.shots.find((item) => item.id === id)
+    if (!shot || isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot) || !draft.model || !draft.group || !videoStudioPlainText(draft.prompt)) return
     const requestId = createVideoStudioId(), alive = owner.capture()
     setError(''); setNotice('')
     commit((current) => startVideoStudioShotDrawing(current, id, requestId))
     try {
-      const [asset] = await bridge.generateAiImage(buildVideoStudioImageRequest(settings, shot, requestId))
+      const [asset] = await bridge.generateAiImage(buildVideoStudioImageRequest(draft, requestId))
       if (!alive()) return
       // 付了钱的图回来了：同片段，马上存。
       commit((current) => finishVideoStudioShotDrawing(current, id, requestId, asset ? { assetId: asset.assetId } : { error: '没有收到生成的图片' }), { urgent: true })
@@ -552,7 +568,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
       stoppedDrawings.current.delete(requestId)
     }
   }
-  // 「停止画图」：已经交给服务端的这一张照样扣费（确认框里说过）。主进程说已经画完、正在回的，就等它回来照常换上。
+  // 「停止画图」：已经交给服务端的这一张照样扣费（出图框里说过）。主进程说已经画完、正在回的，就等它回来照常换上。
   const stopDrawing = async (id: string) => {
     const requestId = projectRef.current.shots.find((item) => item.id === id)?.drawing
     if (!requestId || stoppedDrawings.current.has(requestId)) return
@@ -597,7 +613,6 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
     selectVideoModel: (model: string, group: string) => commit((current) => selectVideoStudioVideoModel(current, model, group)),
     setShotSeconds: (id: string, seconds: number) => commit((current) => setVideoStudioShotSeconds(current, id, seconds)),
     selectTextModel: (model: string, group: string) => changeSettings({ textModel: model, textGroup: group }),
-    selectImageModel: (model: string, group: string) => changeSettings({ imageModel: model, imageGroup: group }),
     setShotTrim: (id: string, side: VideoStudioTrimSide, seconds: number) => commit((current) => setVideoStudioShotTrim(current, id, side, seconds)),
     drawShotImage,
     stopDrawing,
@@ -606,7 +621,12 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
     removeShot: (id: string) => commit((current) => ({ ...removeVideoStudioShot(current, id), exported: undefined })),
     addShot: () => commit((current) => addVideoStudioShot(current)),
     pickShotImage,
+    // 出图框「添加参考图」：同对话里加图片那条（chat:pick-images），选好的图存进作品库、回编号。出错由出图框自己说。
+    pickReferenceImages: (room: number) => bridge.pickAiChatImages(room),
     removeShotImage: (id: string) => commit((current) => removeVideoStudioShotImage(current, id)),
+    pickLibraryImage,
+    pickLibraryClip,
+    removeShotClip: (id: string) => commit((current) => removeVideoStudioShotClip(current, id)),
     pickMusic,
     removeMusic: () => commit((current) => removeVideoStudioMusic(current)),
     setClipSound: (clipSound: VideoStudioClipSound) => commit((current) => setVideoStudioClipSound(current, clipSound)),
