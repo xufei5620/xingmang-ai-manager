@@ -1,4 +1,4 @@
-# 临时：在 Mac 上比 main、#2025、#2025 的底座 main 三份代码的开发版首屏，带主进程卡顿记录（e2e/macos-dev-origin.test.mjs），核完就删
+# 临时：在 Mac 上给 main 和 #2025 两份代码的开发版首屏录一份性能追踪，看 #2025 那个长任务在干什么（e2e/tmp-dev-origin-trace.test.mjs），核完就删
 name: tmp-dev-origin-probe
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        code: [this-branch, with-2025, base-0b99e0c]
+        code: [with-2025, this-branch]
     runs-on: macos-15
     timeout-minutes: 40
     steps:
@@ -23,12 +23,7 @@ jobs:
         run: |
           git fetch --no-tags origin refs/pull/2025/merge
           git checkout --detach FETCH_HEAD
-          git checkout "$GITHUB_SHA" -- e2e/macos-dev-origin.test.mjs e2e/signed-out-smoke-isolation.mjs
-      - name: Go back to the main commit #2025 is merged onto
-        if: matrix.code == 'base-0b99e0c'
-        run: |
-          git checkout --detach 0b99e0c27176c77e08f20e37c33c6bcd0e8e613c
-          git checkout "$GITHUB_SHA" -- e2e/macos-dev-origin.test.mjs e2e/signed-out-smoke-isolation.mjs
+          git checkout "$GITHUB_SHA" -- e2e/tmp-dev-origin-trace.test.mjs e2e/signed-out-smoke-isolation.mjs
       - run: git log --oneline -1 && git status --short
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -49,16 +44,16 @@ jobs:
           npm run test:browser > /dev/null 2>&1 || echo "test:browser failed"
           npm run test:mac:release-keychain > /dev/null 2>&1 || echo "release-keychain failed"
           npm run test:mac:proxy > /dev/null 2>&1 || echo "mac:proxy failed"
-      - name: Compile then test, as test:mac:dev-origin does, three rounds
+      - name: Compile then test, as test:mac:dev-origin does, two rounds
         run: |
-          for i in 1 2 3; do
+          for i in 1 2; do
             echo "=== compile round $i"
             npm run compile > /dev/null 2>&1 || echo "compile failed"
-            node --test e2e/macos-dev-origin.test.mjs 2>&1 | grep -E '^(not )?ok 2|^# (dev server|electron|first window|document|welcome|timeline)|error:' || true
+            node --test --test-name-pattern 'renders the real' e2e/tmp-dev-origin-trace.test.mjs 2>&1 | grep -E '^(not )?ok|^# (document|welcome|timeline|profile|trace)|error:' || true
           done
-      - name: Test only, four rounds
+      - name: Test only, three rounds
         run: |
-          for i in 1 2 3 4; do
+          for i in 1 2 3; do
             echo "=== plain round $i"
-            node --test e2e/macos-dev-origin.test.mjs 2>&1 | grep -E '^(not )?ok 2|^# (dev server|electron|first window|document|welcome|timeline)|error:' || true
+            node --test --test-name-pattern 'renders the real' e2e/tmp-dev-origin-trace.test.mjs 2>&1 | grep -E '^(not )?ok|^# (document|welcome|timeline|profile|trace)|error:' || true
           done
