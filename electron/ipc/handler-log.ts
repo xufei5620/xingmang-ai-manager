@@ -34,9 +34,7 @@ export function ipcSuccessMessage(channel: IpcInvokeChannel, args: unknown[], re
     ?? (isRecord(args[0]) ? providerDisplayName(args[0].provider) : null)
   const count = collectionSize(result)
   if (channel === 'workspace:choose' && result === null) return '已取消选择工作目录'
-  if ((channel === 'sessions:export' || channel === 'provider-sessions:export') && result === null) {
-    return '已取消导出会话'
-  }
+  if (channel === 'provider-sessions:export' && result === null) return '已取消导出会话'
   if ((channel === 'diagnostics:export' || channel === 'runtime-logs:export-feedback') && result === null) {
     return '已取消导出报告'
   }

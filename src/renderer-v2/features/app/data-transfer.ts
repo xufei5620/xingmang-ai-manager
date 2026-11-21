@@ -44,7 +44,7 @@ export interface DataTransferImportOutcome {
   settingsChanged: boolean
 }
 
-const deleteThenRetry = '在「聊天」里删掉一些不要的，再点一次「导入」就能补上。'
+const deleteThenRetry = '在「创作」里删掉一些不要的，再点一次「导入」就能补上。'
 
 export function dataTransferImportMessage(outcome: DataTransferImportOutcome): string {
   const { fileConversations, added, updated, skipped, signedIn, settingsChanged } = outcome

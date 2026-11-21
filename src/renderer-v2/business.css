@@ -907,6 +907,13 @@
   gap: 6px;
   margin: 8px 0;
 }
+/* 风险标签各自那句说明，紧跟在标签下面（Mac 验收 R10）。 */
+.v2-curated-risk-details {
+  margin: 0 0 8px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
 .v2-business-release-notes-list {
   white-space: normal;
   padding-left: 1.2em;

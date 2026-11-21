@@ -65,4 +65,14 @@ export function registerWindowHandlers(ctx: IpcHandlerContext): void {
   })
   registerTrustedHandler('canvas:open', () => options.openCanvasWindow())
   registerTrustedHandler('canvas:open-asset-library', () => options.openCanvasAssetLibrary())
+  // 「创作」左边那一列里的画布项目（融合第 1 步）。这两条只在主窗口这一侧，画布窗口够不着（I4），画布那边一个能力都没加：
+  // 列出来的只有编号、名字和时间；打开时编号原样交给 canvas-window.ts，由它在当前账号的项目里认过才用（I5）。
+  registerTrustedHandler('canvas:list-projects', () => {
+    if (!options.listCanvasProjects) throw new Error('画布项目暂时读不出来')
+    return options.listCanvasProjects()
+  })
+  registerTrustedHandler('canvas:open-project', (_event, projectId: unknown) => {
+    if (!options.openCanvasProject) throw new Error('画布项目暂时打不开')
+    return options.openCanvasProject(projectId)
+  })
 }
