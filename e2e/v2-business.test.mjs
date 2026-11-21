@@ -3546,7 +3546,7 @@ test('a payment window closed before settlement keeps confirming and points to t
     await page.getByText('等待支付结果', { exact: true }).waitFor()
     await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-TOPUP', confirming: true }))
     const notice = page.getByTestId('account-payment-notice')
-    await notice.getByText('星芒还在确认到账', { exact: false }).waitFor()
+    await notice.getByText('到账后余额将自动更新', { exact: false }).waitFor()
     await notice.getByText('正在确认订单 XM-VISUAL-TOPUP 是否到账…', { exact: true }).waitFor()
     assert.equal(await notice.getByRole('button', { name: '查看我的订单', exact: true }).count(), 1)
 

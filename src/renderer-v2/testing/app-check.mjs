@@ -630,7 +630,7 @@ test('a background recheck that fails after opening a desktop client keeps the l
   try {
     const row = page.getByTestId('tool-row-workbuddy')
     const opener = page.getByTestId('tool-workbuddy-primary')
-    const unread = page.getByRole('alert').filter({ hasText: '客户端状态暂未读到' })
+    const unread = page.getByRole('alert').filter({ hasText: '无法获取客户端状态' })
     await row.getByTestId('tool-workbuddy-source').waitFor()
     await expect(opener).toBeEnabled()
     const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
@@ -830,7 +830,7 @@ test('a failed first desktop client scan takes the last saved rows down instead 
     const row = page.getByTestId('tool-row-workbuddy')
     await row.getByText('v0.9.0 · cached-model', { exact: true }).waitFor()
     await page.evaluate(() => { window.v2Test.fail = 'scanExternalClients'; window.v2Test.releaseScan() })
-    await page.getByRole('alert').filter({ hasText: '客户端状态暂未读到' }).waitFor()
+    await page.getByRole('alert').filter({ hasText: '无法获取客户端状态' }).waitFor()
     assert.equal(await row.count(), 0)
     assert.equal(await page.getByTestId('home-external-detecting').count(), 0)
     await clean(page)
@@ -2432,7 +2432,7 @@ test('home shows the last usage right away instead of asking the account backend
   const usageReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountUsage').length)
   const usageLine = page.getByTestId('home-balance-days')
   try {
-    await expect(usageLine).toContainText('约还能用')
+    await expect(usageLine).toContainText('按近期用量预计可用')
     // 本月、最近 7 天各一次；开发模式的 StrictMode 挂载两遍也只落到这一次。
     assert.equal(await usageReads(), 2)
 
@@ -2445,7 +2445,7 @@ test('home shows the last usage right away instead of asking the account backend
     })
     await page.getByTestId('nav-sessions').click()
     await page.getByTestId('nav-home').click()
-    await expect(usageLine).toContainText('约还能用')
+    await expect(usageLine).toContainText('按近期用量预计可用')
     assert.equal(await page.evaluate(() => window.__usageBlank), false)
     assert.equal(await usageReads(), 2)
     await clean(page)
