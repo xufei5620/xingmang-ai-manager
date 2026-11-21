@@ -48,7 +48,9 @@ function apiUser(state) {
   return { id: 7, username: loginAccount, email: loginAccount, balance: state.balance, status: 'active', role: 'user' }
 }
 
-const models = Object.freeze(['claude-sonnet-5', 'claude-haiku-5', 'gpt-6-astra', 'grok-5', 'gpt-image-2'])
+// One model of each kind, so every mode of the composer (text, image, video) has something to pick in a
+// screenshot run. Listing a model does not make the fixture generate with it: see generationRoute below.
+const models = Object.freeze(['claude-sonnet-5', 'claude-haiku-5', 'gpt-6-astra', 'grok-5', 'gpt-image-2', 'grok-imagine-video-1.5'])
 
 function answerXm(state, { method, route, body }) {
   const ok = (data, cookie) => ({ status: 200, payload: { success: true, message: '', data }, cookie })

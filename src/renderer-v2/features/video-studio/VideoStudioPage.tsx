@@ -25,6 +25,7 @@ import {
   videoStudioTotalSeconds,
   videoStudioTrimOptions,
   videoStudioUnconfirmedIndexes,
+  videoStudioUnconfirmedWarning,
   type VideoStudioShot,
   type VideoStudioTrimSide,
 } from './project'
@@ -218,7 +219,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
     {active && confirmation && <Confirm testId="video-confirm"
       title={confirmation.kind === 'generate' ? regenerating ? '重新生成这一段？' : `生成 ${confirmCount} 段视频？` : confirmation.kind === 'draw' ? redrawing ? '再画一张？' : '画一张镜头图？' : confirmation.kind === 'plan' ? '重新写分镜？' : '删掉这个镜头？'}
       body={confirmation.kind === 'generate'
-        ? <><p>{regenerating ? `会再扣一次费，${quote ? `${quote}。` : ''}新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。` : `用「${settings.videoModel}」生成 ${confirmCount} 段、${confirmSeconds === null ? `共 ${confirmShots.reduce((total, shot) => total + videoStudioShotSeconds(shot, settings), 0)} 秒` : `每段 ${confirmSeconds} 秒`}，每段单独计费${quote ? `，${quote}` : ''}。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{unconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
+        ? <><p>{regenerating ? `会再扣一次费，${quote ? `${quote}。` : ''}新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。` : `用「${settings.videoModel}」生成 ${confirmCount} 段、${confirmSeconds === null ? `共 ${confirmShots.reduce((total, shot) => total + videoStudioShotSeconds(shot, settings), 0)} 秒` : `每段 ${confirmSeconds} 秒`}，每段单独计费${quote ? `，${quote}` : ''}。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{videoStudioUnconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
         // yoyo 2026-11-09 批的字（「画图改」）。
         : confirmation.kind === 'draw' ? <><p>{redrawing ? `会再扣一次费，${quote ? `${quote}。` : ''}新图画好以后换掉现在这一张；旧的那张还在 AI 作品文件夹里。` : `用「${settings.imageModel}」按第 ${drawIndex + 1} 个镜头的画面描述画一张图，单独计费${quote ? `，${quote}` : ''}。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p><p>中途停下的话，已经交给服务端的这一张照样扣费。</p></>
         : confirmation.kind === 'plan' ? <p>现在的镜头和片段会换成新写的分镜。生成过的片段还在 AI 作品文件夹里，这里不再列出。</p>
@@ -229,12 +230,6 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
       requireAck={unconfirmed.length > 0}
       onOk={runConfirmation} onClose={() => setConfirmation(null)} />}
   </section>
-}
-
-/** 确认框里那句「可能多扣一次」。indexes 是这几段在分镜里的位置（从 0 数），total 是这次要生成几段。 */
-function unconfirmedWarning(indexes: readonly number[], total: number): string {
-  const subject = total === 1 ? '这一段' : indexes.length === total ? '这几段' : `其中第 ${indexes.map((index) => index + 1).join('、')} 段`
-  return `${subject}上次提交时没收到星芒的答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。`
 }
 
 function secondsOptions(model: string, current: number) {
