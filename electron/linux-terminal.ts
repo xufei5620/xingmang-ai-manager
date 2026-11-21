@@ -418,9 +418,9 @@ export function buildLinuxTerminalScript(plan: LinuxTerminalScriptPlan): string 
  */
 export const linuxTerminalFailureMessages = {
   notFound: '这台电脑上没找到能打开命令窗口的程序（终端）。打开系统自带的应用商店，搜「终端」装一个，装好后回星芒再点「打开」。',
-  notStarted: '命令窗口没能打开。再点一次「打开」试试；还不行就点「找客服」，把这句话发给客服。',
-  notShown: '命令窗口一直没有出现。再点一次「打开」试试；还不行就点「找客服」，把这句话发给客服。',
-  noLauncherDirectory: '这台电脑的临时文件夹用不了，命令窗口没能打开。重启电脑后再试；还不行就点「找客服」。',
+  notStarted: '命令窗口没能打开。再点一次「打开」试试；还不行就点「联系客服」，把这句话发给客服。',
+  notShown: '命令窗口一直没有出现。再点一次「打开」试试；还不行就点「联系客服」，把这句话发给客服。',
+  noLauncherDirectory: '这台电脑的临时文件夹用不了，命令窗口没能打开。重启电脑后再试；还不行就点「联系客服」。',
 } as const
 
 export interface LinuxTerminalAttempt {

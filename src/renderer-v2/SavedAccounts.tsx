@@ -76,9 +76,9 @@ export function SavedAccounts({
   }, [resource.data?.origin, resource.data?.session.account?.userId])
   const [remove, setRemove] = useState<string | null>(null)
   // 切过去才发现登录已失效的那一个保存账号（全面检测 Q12）：当前账号没变，
-  // 这一行给个「重新登录这个账号」，不然用户只看到一句失败、不知道下一步。
+  // 这一行给个「重新登录该账号」，不然用户只看到一句失败、不知道下一步。
   const [expired, setExpired] = useState<string | null>(null)
-  // 对话页还在出图时点了「切换」、「添加另一个账号」或「重新登录这个账号」：先问一句，点「仍然切换」才接着做（D44）。
+  // 对话页还在出图时点了「切换」、「添加另一个账号」或「重新登录该账号」：先问一句，点「仍然切换」才接着做（D44）。
   const [imageBusyNext, setImageBusyNext] = useState<ImageBusyNext | null>(null)
   const waitForImage = useRef<HTMLButtonElement>(null)
   function isCurrent(account: { userId: number; origin: string }) {
@@ -133,19 +133,19 @@ export function SavedAccounts({
   const switchedTo = result ? resource.data?.accounts.find((account) => account.id === result.accountId)?.username : undefined
   return (
     <div data-testid="saved-accounts-list">
-      {variant === 'dialog' && <p className="v2-saved-accounts-lead">切换后，下面勾上的工具会一起换成新账号的密钥。</p>}
+      {variant === 'dialog' && <p className="v2-saved-accounts-lead">切换后，下方勾选的工具将同步更换为新账号的密钥。</p>}
       <ResultNotice {...operation} />
       {result && (
         <Notice
           tone={result.failed.length || result.skipped.length || restartHint ? 'warn' : 'ok'}
           title={
-            result.failed.length || result.skipped.length ? '账号已切换，部分工具没有同步' : accountSwitchedTitle(switchedTo, result.origin)
+            result.failed.length || result.skipped.length ? '账号已切换，部分工具未同步' : accountSwitchedTitle(switchedTo, result.origin)
           }
           body={
             <>
               {result.configured.length
                 ? `已同步：${result.configured.map((id) => tools.find((tool) => tool.id === id)?.name ?? id).join('、')}`
-                : '没有重写未勾选的工具配置。'}
+                : '未勾选的工具配置保持不变。'}
               {[...result.failed, ...result.skipped].map((entry) => (
                 <span key={entry.provider}>
                   <br />
@@ -179,7 +179,7 @@ export function SavedAccounts({
                     preserveAccountSwitchResult(next)
                     setResult(next)
                   },
-                  'Codex 桌面端已重开，用上当前账号了。',
+                  'Codex 桌面端已重新打开，正在使用当前账号。',
                 )
               }
             >
@@ -191,8 +191,8 @@ export function SavedAccounts({
       )}
       {alone ? (
         <div className="v2-business-card-inset v2-business-saved-alone" data-testid="saved-accounts-alone">
-          <p><strong>还没有保存别的账号。</strong></p>
-          <p>点下面的「添加另一个账号」，以后在这里一键切换。</p>
+          <p><strong>暂无其他已保存的账号。</strong></p>
+          <p>点击下方「添加另一个账号」，之后可在此一键切换。</p>
           <Button icon={Plus} onClick={() => unlessChatImageBusy({ login: undefined })} testId="account-add">
             添加另一个账号
           </Button>
@@ -206,8 +206,8 @@ export function SavedAccounts({
             error={resource.error}
             count={resource.data?.accounts.length ?? 0}
             retry={() => void resource.reload()}
-            emptyTitle="还没有保存别的账号"
-            emptyDescription="点下面的「添加另一个账号」，以后在这里一键切换。"
+            emptyTitle="暂无其他已保存的账号"
+            emptyDescription="点击下方「添加另一个账号」，之后可在此一键切换。"
           >
             {resource.data?.accounts.map((account) => {
               const current = isCurrent(account)
@@ -236,7 +236,7 @@ export function SavedAccounts({
                           onClick={() => unlessChatImageBusy({ login: savedAccountLoginTarget(account) })}
                           testId={`saved-account-relogin-${account.id}`}
                         >
-                          重新登录这个账号
+                          重新登录该账号
                         </Button>
                       )}
                       {!current && (
@@ -259,7 +259,7 @@ export function SavedAccounts({
           </ListState>
           <details className="v2-business-account-sync" open={variant !== 'card'}>
             <summary>同步到工具</summary>
-            <p>勾上的工具会一起换成要切过去的账号，不勾的保持原样。</p>
+            <p>勾选的工具将同步切换到目标账号，未勾选的保持不变。</p>
             {desktopClientsHint && <p data-testid="account-sync-desktop-clients">{desktopClientsHint}</p>}
             <ResultNotice error={sync.error} detail={sync.detail} />
             {sync.loading && <p role="status">正在检查工具配置…</p>}
@@ -362,7 +362,7 @@ export function SavedAccounts({
  * 自己填的、换到另一个站的不跟，这里把出路说清楚。Linux 上首页不列这几个客户端，就不提。
  */
 export function accountSwitchDesktopClientsHint(os: WindowOs): string | null {
-  return os === 'linux' ? null : 'Claude Desktop、WorkBuddy、OpenCode 借的是某个工具的密钥时，勾上那个工具就跟着换（星芒账号和历史账号互切时不换）；自己填的密钥不会换，切完要换的话，到首页它的卡片上点「…」里的「配置…」，再点「保存并检测」。'
+  return os === 'linux' ? null : 'Claude Desktop、WorkBuddy、OpenCode 使用某个工具的密钥时，勾选该工具即同步更换（星芒账号与历史账号互切时除外）；自行填写的密钥不会更换，如需更换，请在首页对应卡片点击「…」中的「配置…」，再点击「保存并检测」。'
 }
 
 type SyncProvider = AccountSyncCandidate['provider']
@@ -400,7 +400,7 @@ export function accountSwitchedTitle(name: string | undefined, origin: string): 
 }
 
 /**
- * 「重新登录这个账号」要把登录框直接对到这一行的来源和用户名（#480）。以前只是打开
+ * 「重新登录该账号」要把登录框直接对到这一行的来源和用户名（#480）。以前只是打开
  * 登录框，默认星芒账号、用户名空着，历史账号的用户得自己改回来源再重填，改漏了就登错站。
  * 来源认不出时不预选，照常打开登录框。
  *

@@ -70,7 +70,7 @@ export function useAppNavigation({ app, perform, toast, accelerationAvailable, r
     // 「创作」花的是账号额度，没登录先登录。
     const needsAccount = target === 'account' || target === 'chat'
     if (needsAccount && restoring) {
-      toast.show(restoreRetrying ? '暂时连不上服务，登录还在，连上后会自动恢复，不用重新登录。' : '正在恢复上次的登录，稍等一下再试。')
+      toast.show(restoreRetrying ? '暂时无法连接服务，登录状态已保留，连接恢复后将自动恢复，无需重新登录。' : '正在恢复上次登录，请稍后重试。')
       return
     }
     if (needsAccount && !authenticated) { setAuth('login'); return }

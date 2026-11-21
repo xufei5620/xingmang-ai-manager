@@ -238,7 +238,7 @@ describe('home week spend', () => {
 
   it('refuses an account whose backend only reports an all-time total', async () => {
     const { bridge } = fixture([{ userId: 7 }], 'all-time-summary')
-    await expect(createWeekSpendLoader(bridge, () => new Date(2026, 9, 15)).read()).rejects.toThrow('这个账号读不出每天的花费')
+    await expect(createWeekSpendLoader(bridge, () => new Date(2026, 9, 15)).read()).rejects.toThrow('该账号无法获取每日花费')
   })
 })
 

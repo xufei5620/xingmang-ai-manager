@@ -421,7 +421,7 @@ export function PluginsHub({
         )}
         {help && (
           <Button size="sm" onClick={help} testId="mcp-runtime-support">
-            找客服
+            联系客服
           </Button>
         )}
       </>

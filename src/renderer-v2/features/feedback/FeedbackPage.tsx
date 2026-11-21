@@ -1,5 +1,5 @@
 // 反馈与客服页（#1070 第 11 步，从 pages-maintenance.tsx 原样搬来）：留言反馈、运行日志、预览与复制/导出反馈报告，
-// 右边那张「找客服」卡。pages-maintenance.tsx 照旧转出这里的导出名；各业务页共用的参数类型在 business-actions.ts。
+// 右边那张「联系客服」卡。pages-maintenance.tsx 照旧转出这里的导出名；各业务页共用的参数类型在 business-actions.ts。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChevronDown,
@@ -121,7 +121,7 @@ export function FeedbackPage({
   const [source, setSource] = useState(feedbackRequest?.installLog ? installRuntimeLogArea : anyRuntimeLogValue)
   const [onlyCurrentBoot, setOnlyCurrentBoot] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
-  // 刚点过「清除」：列表空着时说「日志已清空」，不说「还没有运行日志」。下一次读到日志就不再算。
+  // 刚点过「清除」：列表空着时说「日志已清空」，不说「暂无运行日志」。下一次读到日志就不再算。
   const [cleared, setCleared] = useState(false)
   const [type, setType] = useState<FeedbackMessageType>('bug')
   const [description, setDescription] = useState('')
@@ -261,7 +261,7 @@ export function FeedbackPage({
       <div className="v2-fb-side">
         {support && (
           <section className="v2-acct-card is-focus v2-fb-support" data-testid="feedback-support-card">
-            <h2>找客服</h2>
+            <h2>联系客服</h2>
             <div className="v2-fb-support-qr">
               {support.qr && <img src={support.qr} alt="微信客服二维码" />}
               <div>
@@ -309,7 +309,7 @@ export function FeedbackPage({
           actions={
             navigate ? (
               <Button size="sm" icon={HeartPulse} onClick={() => navigate('health')}>
-                去检查页
+                前往检查页
               </Button>
             ) : undefined
           }
@@ -560,7 +560,7 @@ export function FeedbackPage({
             tone="accent"
             icon={HeartPulse}
             title="报告里还没有检查结果"
-            body="点「去检查」，等检查页查完再回来复制或导出，客服能少问你几句。"
+            body="点「前往检查」，等检查页查完再回来复制或导出，客服能少问你几句。"
             actions={
               <Button
                 size="sm"
@@ -571,7 +571,7 @@ export function FeedbackPage({
                 }}
                 testId="feedback-report-go-check"
               >
-                去检查
+                前往检查
               </Button>
             }
             testId="feedback-report-unchecked"

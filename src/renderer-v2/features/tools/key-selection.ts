@@ -87,9 +87,9 @@ export function keysInUsableGroups<T extends Pick<AccountKey, 'group'>>(keys: re
  */
 export function manualKeyIssue(secret: string, strict: boolean): string | null {
   const value = normalizePastedApiKey(secret)
-  if (!value) return '请粘贴你在星芒创建的密钥'
+  if (!value) return '请粘贴在星芒创建的密钥'
   if (isMaskedApiKey(value)) return maskedApiKeyMessage
-  if (strict && (!value.startsWith('sk-') || value.length < 20)) return '这不像星芒的密钥：应以 sk- 开头，20 位以上'
+  if (strict && (!value.startsWith('sk-') || value.length < 20)) return '密钥格式不正确：应以 sk- 开头，且不少于 20 位'
   return null
 }
 
@@ -118,5 +118,5 @@ export async function readAllAccountKeys(readPage: XingmangApi['getAccountKeys']
     if (keys.length >= result.total) return { page: 1, pageSize: keys.length, total: keys.length, keys }
     if (!result.keys.length) throw new Error('密钥列表未完整返回，请重新读取。')
   }
-  throw new Error('密钥超过 5000 把，请先在密钥管理中整理后重试。')
+  throw new Error('密钥数量超过 5000 个，请先在密钥管理中整理后重试。')
 }

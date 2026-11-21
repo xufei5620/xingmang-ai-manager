@@ -29,16 +29,16 @@ describe('KnownIssueNotice', () => {
   })
 
   it('always tells the user there is nothing to fix on their side', () => {
-    expect(knownIssueBody(recharge)).toBe('支付宝暂时打不开付款页，请先用微信付款。 这不是你这边的问题，修好以后这条提示会自己消失。')
+    expect(knownIssueBody(recharge)).toBe('支付宝暂时打不开付款页，请先用微信付款。 此问题与本机无关，修复后提示将自动消失。')
   })
 
   it('renders in the startup corner with the one button the publisher picked', () => {
     const markup = renderToStaticMarkup(<StartupNotices notices={[]} onDismiss={() => undefined} onOpen={() => undefined}
       leading={[<KnownIssueNotice key="known-issue" issue={recharge} onDismiss={() => undefined} onAction={() => undefined} />]} />)
     expect(markup).toContain('data-testid="known-issue-notice"')
-    expect(markup).toContain('我们已经知道这个问题')
+    expect(markup).toContain('已知问题，正在修复')
     expect(markup).toContain('data-testid="known-issue-notice-support"')
-    expect(markup).toContain('>找客服<')
+    expect(markup).toContain('>联系客服<')
     expect(markup).toContain('aria-label="关闭"')
     expect(markup).not.toContain('href=')
     const update = renderToStaticMarkup(<KnownIssueNotice issue={home} onDismiss={() => undefined} onAction={() => undefined} />)

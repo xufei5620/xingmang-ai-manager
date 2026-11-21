@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
 import { RefreshCw } from 'lucide-react'
 import type { LegalDocumentKind } from '../../../../electron/ipc-contract'
 import { Button, Dialog } from '../../ui'
 import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../../external-link-fallback'
+import { MarkdownView, preloadMarkdown } from '../../markdown-view'
 import type { AuthApi } from './api'
 import { authErrorMessage } from './state'
 
@@ -16,6 +16,8 @@ export function LegalDocument({ api, kind, onClose }: { api: AuthApi; kind: Lega
   useEffect(() => {
     let current = true
     setBusy(true); setMarkdown(''); setError(''); setBlockedLink(null)
+    // 排版那份代码不在首屏包里（R9），跟读协议并着从本机读进来。
+    void preloadMarkdown()
     void api.getLegal(kind).then((document) => { if (current) setMarkdown(document.markdown) }, (reason: unknown) => { if (current) setError(authErrorMessage(reason, '读取文档')) }).finally(() => { if (current) setBusy(false) })
     return () => { current = false }
   }, [api, kind, revision])
@@ -24,7 +26,7 @@ export function LegalDocument({ api, kind, onClose }: { api: AuthApi; kind: Lega
       {busy && <p role="status">正在读取文档</p>}
       {blockedLink && <BlockedLinkHint notice={blockedLink} testId="legal-document-blocked-link" />}
       {error && <div role="alert"><p className="auth-error">{error}</p><Button icon={RefreshCw} onClick={() => setRevision((value) => value + 1)} testId="legal-document-retry">重新读取</Button></div>}
-      {!busy && !error && (markdown ? <ReactMarkdown components={{ img: ({ alt }) => <span>{alt ?? ''}</span>, a: ({ href, children }) => <a href={href} onClick={(event) => { event.preventDefault(); if (href) void openExternalOrCopy(href, api.openExternal).then(setBlockedLink, (reason: unknown) => setError(authErrorMessage(reason, '打开链接'))) }}>{children}</a> }}>{markdown}</ReactMarkdown> : <p>暂未提供文档内容，请稍后重试。</p>)}
+      {!busy && !error && (markdown ? <MarkdownView fallback={<p role="status">正在读取文档</p>} text={markdown} components={{ img: ({ alt }) => <span>{alt ?? ''}</span>, a: ({ href, children }) => <a href={href} onClick={(event) => { event.preventDefault(); if (href) void openExternalOrCopy(href, api.openExternal).then(setBlockedLink, (reason: unknown) => setError(authErrorMessage(reason, '打开链接'))) }}>{children}</a> }} /> : <p>暂未提供文档内容，请稍后重试。</p>)}
     </div>
   </Dialog>
 }

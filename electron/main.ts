@@ -128,6 +128,7 @@ import { createAccountRestoreRetry } from './account-restore-retry'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { guardProcessOutputStreams } from './process-stream-errors'
+import { ensureCiUserAgentMarker } from './ci-user-agent'
 import { configureRelocatedFolderAccess } from './relocated-folders'
 import { createRemoteFeatureGate } from './remote-feature-gate'
 import { RuntimeLogStore } from './runtime-log'
@@ -221,6 +222,9 @@ import { remoteChannelsReadyToEnable, type CodexRemoteReleaseAction } from './co
 import { feishuDeveloperConsoleUrl, type CodexRemoteSnapshot } from './codex-remote-channel'
 
 guardProcessOutputStreams()
+// GitHub Actions 里起的星芒，请求的 UA 末尾带「 ci」，服务端数装机量时剔掉（ci-user-agent.ts）。
+// 要赶在任何会话、任何请求之前，所以放在这里。
+ensureCiUserAgentMarker(app, process.env)
 
 const applicationPackage = require('../package.json') as {
   xingmangAccelerationBundle?: unknown
@@ -237,7 +241,7 @@ const nonSiteExternalUrlAllowlist = [
   // 首页 WorkBuddy 一行，以及缺少系统 winget 时 Claude Desktop、OpenCode 两行的「去官网下载」（逐条全等）。
   ...Object.values(externalClientOfficialDownloadUrls),
   'https://chatgpt.com/download/',
-  // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
+  // Codex 桌面端装不上时错误框里的「前往微软商店安装」（第十九批 5）。
   codexDesktopStoreUrl,
   // Claude Desktop 装不上时错误框里的「下载离线安装包」：教程站「备用安装包」那一节（D64）。
   claudeDesktopOfflinePackagesUrl,

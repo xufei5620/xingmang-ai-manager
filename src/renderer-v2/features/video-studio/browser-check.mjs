@@ -893,7 +893,7 @@ test('opens the AI output folder from a notice that mentions it', async () => {
   assert.equal(await page.getByTestId('video-error').count(), 0)
   await page.evaluate(() => window.videoStudioPage.folderOpens(false))
   await page.getByTestId('video-notice-folder').click()
-  await page.getByTestId('video-error').getByText('这个文件夹现在打不开，重开星芒后再试一次。').waitFor()
+  await page.getByTestId('video-error').getByText('无法打开该文件夹，请重新打开星芒后重试。').waitFor()
   assert.equal(await page.getByTestId('video-notice-folder').count(), 1, 'the notice stays so the folder can be tried again')
   assert.deepEqual(errors, [])
   await page.close()
@@ -1007,14 +1007,14 @@ test('draws a shot picture with AI before paying for the clip, and starts the cl
   await page.evaluate((requestId) => window.videoStudioPage.failDrawing(requestId, '图片没画出来：描述里有不能画的内容'), pending.requestId)
   assert.equal(await page.getByTestId('video-shot-draw-error-1').textContent(), '图片没画出来：描述里有不能画的内容')
 
-  // 余额不够：照页面顶上那条说，带「去充值」，这一镜下面不另写。
+  // 余额不够：照页面顶上那条说，带「前往充值」，这一镜下面不另写。
   await page.getByTestId('video-shot-draw-1').click()
   await confirm.getByRole('button', { name: '开始画' }).click()
   await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
   assert.equal(await page.getByTestId('video-shot-draw-error-1').count(), 0)
   pending = (await page.evaluate(() => window.videoStudioPage.pendingDrawings()))[0]
   await page.evaluate((requestId) => window.videoStudioPage.failDrawing(requestId, '当前账号余额不足，充值后再试就行，不用重新登录，也不用重写密钥'), pending.requestId)
-  await page.getByTestId('video-error').getByRole('button', { name: '去充值' }).waitFor()
+  await page.getByTestId('video-error').getByRole('button', { name: '前往充值' }).waitFor()
   assert.equal(await page.getByTestId('video-shot-draw-error-1').count(), 0)
 
   await page.getByTestId('video-shot-draw-1').click()

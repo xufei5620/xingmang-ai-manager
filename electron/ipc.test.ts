@@ -212,6 +212,7 @@ function accountServiceStub(): NewApiClientService {
     revealKey: vi.fn() as never,
     createKey: vi.fn(async () => undefined),
     updateKey: vi.fn(async () => undefined),
+    enableKey: vi.fn(async () => undefined),
     changePassword: vi.fn() as never,
     listLoginSessions: vi.fn() as never,
     revokeLoginSession: vi.fn() as never,
@@ -3474,7 +3475,7 @@ describe('registerIpcHandlers', () => {
     expect(service.saveConfig).not.toHaveBeenCalled()
   })
 
-  // 首页「配置文件坏了」的「修好它」和配置里「重置为初始状态」选官方账号都走这条：
+  // 首页「配置文件坏了」的「立即修复」和配置里「重置为初始状态」选官方账号都走这条：
   // 答应过先备份，备份页里就得找得回来（以前只留配置旁边会被挤掉的 .bak）。
   it('keeps a restorable backup before an official reset and refuses to reset without one', async () => {
     const service = serviceStub()
@@ -3498,7 +3499,7 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), 'codex', 'reset')).rejects.toThrow('没能先备份当前配置，这次没有重置')
     expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
 
-    // 「修好它」（repair）同样先备份，备份不成就不动手。
+    // 「立即修复」（repair）同样先备份，备份不成就不动手。
     create.mockClear()
     await handler(trustedEvent(), 'codex', 'repair')
     expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
@@ -7982,7 +7983,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         )
       })
 
-      // 来源没确认时配置窗口里只有「改用当前账号」：工具读不了的配置照原文件改只会报错，改走「修好它」那一种：
+      // 来源没确认时配置窗口里只有「改用当前账号」：工具读不了的配置照原文件改只会报错，改走「立即修复」那一种：
       // 读不了的那份重建，Codex 只坏了 auth.json 时 config.toml 里客户自己的设置照留（X-1）。
       it('repairs a config the tool cannot read when switching it to the current account', async () => {
         for (const [current, mode] of [
@@ -8298,6 +8299,55 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), -5)).rejects.toThrow()
       expect(accountService.revokeKey).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('account:enable-key', () => {
+    it('forwards a valid id to the account service and leaves the cached tool keys alone', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 101, username: 'yoyo', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => []),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      const chatKeyStore = { removeByKeyId: vi.fn(async () => undefined) }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, { chatKeyStore })
+
+      await expect(electronMocks.handlers.get('account:enable-key')!(trustedEvent(), 42)).resolves.toBeUndefined()
+
+      expect(accountService.enableKey).toHaveBeenCalledWith(42)
+      // Enabling changes neither the secret, the name nor the group, so the tool
+      // that holds this key still matches its cached entry.
+      expect(managedCliKeys.remove).not.toHaveBeenCalled()
+      expect(chatKeyStore.removeByKeyId).not.toHaveBeenCalled()
+    })
+
+    it('passes the account service refusal through unchanged', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.enableKey).mockRejectedValue(new Error('这把密钥已经过了到期时间'))
+
+      await expect(electronMocks.handlers.get('account:enable-key')!(trustedEvent(), 7)).rejects.toThrow('这把密钥已经过了到期时间')
+    })
+
+    it('says so when the signed-in account backend cannot enable keys', async () => {
+      const accountService: NewApiClientService = { ...accountServiceStub(), enableKey: undefined } as unknown as NewApiClientService
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+
+      await expect(electronMocks.handlers.get('account:enable-key')!(trustedEvent(), 7)).rejects.toThrow('当前账号暂时不能在这里启用密钥')
+    })
+
+    it('rejects a malformed id before reaching the account service -- it lands in a URL path segment (I5)', async () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:enable-key')!
+
+      for (const id of ['7', 1.5, 0, -1, null, undefined, Number.MAX_SAFE_INTEGER + 1]) {
+        await expect(handler(trustedEvent(), id)).rejects.toThrow('密钥 ID 格式错误')
+      }
+      expect(accountService.enableKey).not.toHaveBeenCalled()
     })
   })
 
@@ -9656,7 +9706,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.provisionCliKey).not.toHaveBeenCalled()
       expect(service.saveConfig).not.toHaveBeenCalled()
 
-      // 首页「修好它」（repair）也是先备份再写，模式原样交给保存。
+      // 首页「立即修复」（repair）也是先备份再写，模式原样交给保存。
       create.mockClear()
       await expect(handler(trustedEvent(), { ...input, mode: 'repair' })).resolves.toEqual({ configured: ['codex'], failed: [] })
       expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)

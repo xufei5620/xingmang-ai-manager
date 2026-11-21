@@ -17,8 +17,8 @@ type Provider = ActiveProviderId
 export function installResultMessage(result: ToolInstallOutcome | 'cancelled'): string | null {
   if (result === 'declined') return null
   if (result === 'cancelled') return '安装已取消'
-  if (result === 'restart') return '运行环境已装好，重启电脑后再点一次「安装」'
-  if (result === 'skipped') return '这个工具正在安装，等它做完就好'
+  if (result === 'restart') return '运行环境已安装，请重启电脑后再次点击「安装」'
+  if (result === 'skipped') return '该工具正在安装中，请稍候'
   return '安装完成，工具状态已更新'
 }
 

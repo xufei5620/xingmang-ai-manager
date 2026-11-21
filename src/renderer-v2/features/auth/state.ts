@@ -171,7 +171,7 @@ export function validateNewPassword(password: string, confirm: string): { passwo
   const errors: { password?: string; confirm?: string } = {}
   if (password.length < minPasswordLength) errors.password = `新密码至少 ${minPasswordLength} 位`
   else if (password.length > maxPasswordLength) errors.password = `新密码不能超过 ${maxPasswordLength} 位`
-  if (!confirm) errors.confirm = '请再输一次新密码'
+  if (!confirm) errors.confirm = '请再次输入新密码'
   else if (password !== confirm) errors.confirm = '两次密码不一致'
   return errors
 }
@@ -202,9 +202,9 @@ export interface AuthFailure {
 
 // 超时、连接被切断这两种，客户那边最常见的真实原因是开着加速器或代理软件，
 // 和注册窗读设置那一路（registrationUnreachableMessage）同一个说法。
-export const authOfflineMessage = '这台电脑现在没连上网。连上网后再试一次。'
-export const authUnreachableMessage = '连不上账号服务。开着加速器或代理软件的话先关掉；还不行就换一个网络（例如手机热点）再试一次。'
-const authNetworkFallbackMessage = '连不上账号服务，请检查网络后再试一次。'
+export const authOfflineMessage = '网络未连接，请联网后重试。'
+export const authUnreachableMessage = '无法连接账号服务。如开启了加速器或代理软件，请先关闭；如仍无法连接，请切换网络（如手机热点）后重试。'
+const authNetworkFallbackMessage = '无法连接账号服务，请检查网络后重试。'
 
 /** 去掉 IPC 包装（「Error invoking remote method …」和紧跟着的错误类名），剩下服务端或主进程的原话。 */
 function unwrappedReason(message: string): string {
@@ -213,7 +213,7 @@ function unwrappedReason(message: string): string {
 
 /**
  * 服务端或主进程已经写好的中文原话，去掉 IPC 包装后原样给客户看。只放行纯中文的：
- * 带英文字母的多半是堆栈、地址或错误码，客户看不懂，这时宁可只说「没有成功」。
+ * 带英文字母的多半是堆栈、地址或错误码，客户看不懂，这时宁可只说「失败」。
  */
 function plainChineseReason(message: string): string | null {
   const text = unwrappedReason(message).replace(/[。.！!，,；;\s]+$/, '')
@@ -221,9 +221,9 @@ function plainChineseReason(message: string): string | null {
   return text
 }
 
-export const verificationMailboxMissingMessage = '这个邮箱地址收不到信。请检查有没有写错，或者换一个常用邮箱（如 QQ 邮箱）再试。'
-export const verificationMailNotSentMessage = '验证码邮件没发出去，不是你这边网络的问题。可以换一个常用邮箱（如 QQ 邮箱）再试，还不行请找客服。'
-export const verificationNotSentMessage = '账号服务这次没有正常回应，验证码没有发出去。请点「再试一次」；一直这样的话，点下面的「切换连接线路」换一条线路再试。'
+export const verificationMailboxMissingMessage = '该邮箱无法接收邮件，请检查是否填写正确，或更换常用邮箱（如 QQ 邮箱）后重试。'
+export const verificationMailNotSentMessage = '验证码邮件发送失败（非本机网络问题）。请更换常用邮箱（如 QQ 邮箱）后重试；如仍失败，请联系客服。'
+export const verificationNotSentMessage = '账号服务响应异常，验证码未发送。请点击「重试」；如持续失败，请点击下方「切换连接线路」后重试。'
 
 /**
  * 「获取验证码」时服务器发信那一步失败：new-api 的 SendEmailVerification 把发信邮箱（SMTP）的原话
@@ -245,14 +245,14 @@ function verificationMailFailure(message: string): AuthFailure | null {
   return null
 }
 
-export const authDiskFullMessage = '电脑的系统盘满了，清出一些空间再登录。'
+export const authDiskFullMessage = '系统盘空间不足，请清理后再登录。'
 
 /**
  * Mac 上星芒每换一版，第一次读本机登录信息系统都会弹钥匙串密码框（registry/tutorials.ts 的
  * macKeychainTutorialDetail）。客户点了拒绝或把框关了，这次运行里就一直读不到，重开星芒系统会再问一次。
  * 以前这里只说「完全退出软件后重试」，客户不知道重开以后那个框要怎么点。
  */
-export const macKeychainRefusedMessage = 'Mac 钥匙串这次没放行，星芒读不到本机的登录信息，原来的账号都还在。点「重新打开星芒」，弹出钥匙串密码框时输入这台 Mac 的开机密码，点「始终允许」就好。一直提示密码不对的话，试试以前用过的旧开机密码。'
+export const macKeychainRefusedMessage = 'Mac 钥匙串未授权，星芒无法读取本机登录信息，已保存的账号不受影响。请点击「重新打开星芒」，在钥匙串弹窗中输入本机开机密码并点击「始终允许」。如持续提示密码错误，请尝试以前使用的开机密码。'
 
 /** os 只用来认 Mac 的钥匙串那一种；缺省按不是 Mac 处理。 */
 export function authFailure(error: unknown, action: string, online = true, os?: WindowOs): AuthFailure {
@@ -268,11 +268,11 @@ export function authFailure(error: unknown, action: string, online = true, os?: 
   // 系统盘满了、本机账号库写不进去（realm-account-vault.ts 的 realmVaultDiskFullMessage，同样有意重复）。
   // 以前跟下面那句一样叫客户重开、找客服，重开多少次盘还是满的。前半句也是「账号安全存储不可用」，所以排在前面。
   if (/账号安全存储不可用：磁盘空间不足/.test(message)) return { message: authDiskFullMessage, kind: 'final' }
-  if (/账号安全存储不可用|本地账号存储/.test(message)) return { message: '这台电脑上存的登录信息暂时读不出来，原来的没动。请完全退出星芒再打开；还不行点「找客服」。', kind: 'support' }
+  if (/账号安全存储不可用|本地账号存储/.test(message)) return { message: '暂时无法读取本机登录信息，已保存的数据不受影响。请完全退出并重新打开星芒；如仍有问题，请点击「联系客服」。', kind: 'support' }
   // 两步验证第二步的几句已经是给用户看的话，原样上屏；不然会被下面「验证码」「频繁」两条宽正则改写。
   const twoFactor = twoFactorMessages.find((text) => message.includes(text))
   if (twoFactor) return { message: twoFactor, kind: 'final' }
-  if (requiresBrowserAuthentication(error)) return { message: '这个账号开了双重验证，星芒里还验证不了。请到账号官网登录，或找官网客服。', kind: 'final' }
+  if (requiresBrowserAuthentication(error)) return { message: '该账号已开启双重验证，星芒暂不支持此验证方式。请前往账号官网登录，或联系官网客服。', kind: 'final' }
   // 主进程已经把受限网络下的失败分好类并写好了中文（DNS / 证书被替换 / 门户认证
   // 未完成 / 连接被切断），原样上屏。放在启发式之前：下面那几条正则宽到会把
   // 「证书被替换」也说成「连接超时」，那会让用户在一个换网络才能解决的问题上
@@ -294,7 +294,7 @@ export function authFailure(error: unknown, action: string, online = true, os?: 
   // otherwise hit /密码|password/ and come out as "账号或密码不正确".
   const known = matchAccountError(message)
   if (known) return { message: known.friendly, kind: known.kind ?? 'unknown' }
-  if (/429|频繁|too many|rate limit/i.test(message)) return { message: '请求太频繁，请稍等一分钟再试', kind: 'wait' }
+  if (/429|频繁|too many|rate limit/i.test(message)) return { message: '请求过于频繁，请 1 分钟后重试', kind: 'wait' }
   if (/已存在|占用|already exists/i.test(message)) return { message: '用户名或邮箱已被使用，请检查后重试', kind: 'taken' }
   // 发验证码那一步还没有验证码可错：主进程的「发送邮箱验证码失败，服务返回 HTTP 403」（对面回了一张网页）
   // 只因为带着「验证码」三个字，以前被说成验证码不对。
@@ -305,12 +305,12 @@ export function authFailure(error: unknown, action: string, online = true, os?: 
   const choosingPassword = action === '重置密码' || action === '设新密码'
   if (!choosingPassword && /用户名|密码|credential|password|unauthorized/i.test(message)) return { message: '账号或密码不正确，请检查后重试', kind: 'credentials' }
   if (/timeout|timed.?out|超时|network|fetch|connect|网络/i.test(message)) return { message: authNetworkFallbackMessage, kind: 'unreachable' }
-  if (/turnstile|人机/i.test(message)) return { message: '账号服务要先做一次安全验证，在浏览器里完成后再试', kind: 'final' }
+  if (/turnstile|人机/i.test(message)) return { message: '账号服务需要进行安全验证，请在浏览器中完成后重试', kind: 'final' }
   const plain = plainChineseReason(message)
-  if (plain) return { message: `${action}没有成功：${plain}。`, kind: 'unknown' }
+  if (plain) return { message: `${action}失败：${plain}。`, kind: 'unknown' }
   // 剩下的是直连那头回了别的服务的话（如 Not Found）、本机网络软件弄坏连接这类，换条线路比「稍后重试」管用。
   if (sendingCode) return { message: verificationNotSentMessage, kind: 'unknown' }
-  return { message: `${action}没有成功，输入已保留，请稍后重试`, kind: 'unknown' }
+  return { message: `${action}失败，已保留输入内容，请稍后重试`, kind: 'unknown' }
 }
 
 export function authErrorMessage(error: unknown, action: string): string {
@@ -343,8 +343,8 @@ export function passwordChangeOutcomeUnknown(kind: AuthFailureKind): boolean {
  * - 超时、被切断这两种最常见的真实原因是客户开着加速器或代理软件（星芒自己的加速 10-30 已下线，
  *   不再说「别的」），先叫人关掉，还不行再照 network-failure.ts 那张表叫人换个网络。
  */
-export const registrationOfflineMessage = '这台电脑现在没连上网。连上网后会自动重新读取。'
-export const registrationUnreachableMessage = '连不上账号服务。开着加速器或代理软件的话先关掉；还不行就换一个网络（例如手机热点），再点「重新读取」。'
+export const registrationOfflineMessage = '网络未连接，联网后将自动重新读取。'
+export const registrationUnreachableMessage = '无法连接账号服务。如开启了加速器或代理软件，请先关闭；如仍无法连接，请切换网络（如手机热点）后点击「重新读取」。'
 
 export interface RegistrationStatusFailure {
   message: string

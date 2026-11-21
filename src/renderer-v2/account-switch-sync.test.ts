@@ -181,8 +181,8 @@ describe('saved account explicit CLI key sync', () => {
       })
       expect(result.configured).toEqual([])
       expect(result.skipped).toEqual([
-        { provider: 'claude', message: '用的是别处的配置，保持原配置' },
-        { provider: 'codex', message: '用的是别处的配置，保持原配置' },
+        { provider: 'claude', message: '正在使用其他来源的配置，保持原配置' },
+        { provider: 'codex', message: '正在使用其他来源的配置，保持原配置' },
       ])
       expect(h.api.configureManagedCliKeys).not.toHaveBeenCalled()
     })
@@ -268,7 +268,7 @@ describe('saved account explicit CLI key sync', () => {
     }))
     h.context.configs.claude.matchesRelay = false
     expect(accountSyncCandidates(h.context, null)).toContainEqual(expect.objectContaining({
-      provider: 'claude', eligible: false, reason: '用的是别处的配置',
+      provider: 'claude', eligible: false, reason: '正在使用其他来源的配置',
     }))
   })
   it('does not inspect or write CLI configs after switching fails', async () => {

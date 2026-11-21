@@ -9,7 +9,7 @@ import type { SystemServiceOptions } from './system-service'
 
 // #1070 第 3 步把卸载那一段搬成了 createCliUninstallService。卸的全过程仍由 system-service 的测试经
 // createSystemService 覆盖；这里钉住搬家新接上的那几处：传进来的读工具状态、装着的时候不让卸、
-// 卸 Codex 后让型号名单那边重新找它、没记下残留时「帮我清理」什么都不动，以及手机遥控还在用 Codex 时不卸。
+// 卸 Codex 后让型号名单那边重新找它、没记下残留时「一键清理」什么都不动，以及手机遥控还在用 Codex 时不卸。
 
 const temporaryDirectories: string[] = []
 

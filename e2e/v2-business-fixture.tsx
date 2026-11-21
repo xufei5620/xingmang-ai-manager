@@ -14,6 +14,7 @@ import type {
 import type { AccountPaymentWindowTerminalEvent, AccountSubscriptionPlan, FeedbackMessageCopyRequest, ProviderId } from '../electron/ipc-contract'
 import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
+import { accountKeyEnableExpiredMessage } from '../electron/account-key-quota'
 import { KeyRewriteSkippedError } from '../src/renderer-v2/features/tools/account-bootstrap'
 import { settingsPageAlias } from '../src/renderer-v2/registry/pages'
 import { settingsItems } from '../src/renderer-v2/registry/business'
@@ -224,7 +225,7 @@ const remoteState: {
 const feishuProblemStatuses = {
   credential: { state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' },
   'connection-limit': { state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' },
-  other: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other' },
+  other: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「联系客服」。', problem: 'other' },
 } as const
 // 微信那一块只测扫码登录：手机上要输数字，输 2580 才对，对了以后再查一次就登录好了。过了数字，主进程直接把扫码人
 // 记成绑定的人（YF-5），这里也跟着绑上。
@@ -550,7 +551,7 @@ const balance = {
 // remoteLowBalance：外壳那份共享余额只剩 $0.80（手机遥控卡上的余额提醒，YF-12）。别的页不读它，照旧读 getAccountBalance。
 const lowBalanceStore: AccountBalanceStore | null = query.has('remoteLowBalance')
   ? (() => {
-      const snapshot = { scope: 'fixture', balance: { ...balance, quota: 80 }, loading: false, updatedAt: 1, error: null, networkFailures: 0 }
+      const snapshot = { scope: 'fixture', balance: { ...balance, quota: 80 }, loading: false, updatedAt: 1, error: null, reads: 0, networkFailures: 0 }
       return {
         getSnapshot: () => snapshot,
         subscribe: () => () => undefined,
@@ -609,7 +610,7 @@ const missingFolderSession = {
   ...session,
   cwdExists: false,
 }
-// 同一个工具、同一个目录的第二条(更旧的)记录:「接着聊」是按目录接最近一条,
+// 同一个工具、同一个目录的第二条(更旧的)记录:「继续对话」是按目录接最近一条,
 // 所以只有最近那条该有按钮。默认不出现,免得改动现有用例看到的行数。
 const olderSameFolderSession = {
   ...session,
@@ -658,7 +659,7 @@ const key = {
 // 「按工具分账」按托管 Key 的固定名称认工具，夹具照搬真实命名：一把有上限、
 // 一把不限额，另外两个工具还没签发过，这样四种格子在一张表里都能看到。
 // 撤销工具在用的 Key：keyInUse 让那把 Test key 标成 Claude Code 在用；
-// replaceFails=N 让自动换新的前 N 次失败，好看到「再换一次」那条出路。
+// replaceFails=N 让自动换新的前 N 次失败，好看到「重新更换」那条出路。
 const keyInUse = query.has('keyInUse')
 let replaceFailures = Number(query.get('replaceFails') ?? 0)
 // replaceSkipped：那个工具的配置是手填的，自动换新把它跳过（#478）。
@@ -681,6 +682,15 @@ const managedKeys = query.has('managedKeys')
   ? [
       { ...key, id: 11, name: 'xingmang-desktop-claude', group: 'Claude-MAX', unlimitedQuota: false, remainQuota: 1200, usedQuota: 600 },
       { ...key, id: 12, name: 'xingmang-desktop-codex', group: 'GPT', unlimitedQuota: true, remainQuota: 0, usedQuota: 200 },
+    ]
+  : null
+// stoppedKeys：一把网页上停用的、一把过了到期时间的、一把正常的，看「启用」摆在哪几行、点了怎样（总单 Q2）。
+// 到期那把照主进程 enableKey 的规矩不给开，回同一句话。
+const stoppedKeys = query.has('stoppedKeys')
+  ? [
+      { ...key, id: 21, name: 'disabled-key', status: 2, unlimitedQuota: true, remainQuota: 0 },
+      { ...key, id: 22, name: 'expired-key', status: 3, expiredAt: '2026-01-01T00:00:00.000Z' },
+      { ...key },
     ]
   : null
 window.changeKeyElsewhere = (id, patch) => {
@@ -938,7 +948,7 @@ const apiMethods = {
   switchSavedAccount: async (id: string) => {
     record('switch-account', id)
     // 与主进程 SAVED_EXPIRED 同一句（electron/realm-account.ts）。
-    if (fail === 'switch') throw new Error('这个保存的账号登录已失效，当前账号没有变化。点「重新登录这个账号」再登一次就行。')
+    if (fail === 'switch') throw new Error('这个保存的账号登录已失效，当前账号没有变化。点「重新登录该账号」再登一次就行。')
     activeUserId = 8
     for (const config of Object.values(configs.providers)) {
       if (config.configurationOwnership === 'account') config.configurationOwnership = 'unknown'
@@ -991,9 +1001,9 @@ const apiMethods = {
     return {
       page: 1,
       pageSize: 20,
-      total: empty ? 0 : managedKeys ? managedKeys.length : 1,
+      total: empty ? 0 : (stoppedKeys ?? managedKeys)?.length ?? 1,
       // 每次读都给一份新的，跟真的跨进程一样：页面手里那份不会跟着夹具里存的悄悄变。
-      keys: empty ? [] : managedKeys?.map((entry) => ({ ...entry })) ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
+      keys: empty ? [] : (stoppedKeys ?? managedKeys)?.map((entry) => ({ ...entry })) ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
     }
   },
   updateAccountKey: async (input: Parameters<V2Bridge['updateAccountKey']>[0]) => {
@@ -1007,6 +1017,12 @@ const apiMethods = {
       remainQuota: input.unlimitedQuota ? stored.remainQuota : input.remainQuota,
       expiredAt: input.expiredTime === -1 ? null : new Date(input.expiredTime * 1000).toISOString(),
     })
+  },
+  enableAccountKey: async (id: number) => {
+    record('enableAccountKey', id)
+    const stored = stoppedKeys?.find((entry) => entry.id === id)
+    if (stored?.expiredAt) throw new Error(accountKeyEnableExpiredMessage)
+    if (stored) stored.status = 1
   },
   revokeAccountKey: async (id: number) => {
     record('revokeAccountKey', id)

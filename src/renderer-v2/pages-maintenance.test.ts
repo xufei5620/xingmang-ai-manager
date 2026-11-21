@@ -248,7 +248,7 @@ describe('tutorial topics', () => {
     }
   })
 
-  it('states the three rules that decide whether 「接着聊」 is available', () => {
+  it('states the three rules that decide whether 「继续对话」 is available', () => {
     // 这三条都是命令行工具本身的限制（只能按文件夹找回最近一条），用户看不出来，
     // 写错了会让人以为按钮坏了。
     const text = tutorialText('sessions')
@@ -465,15 +465,15 @@ describe('settings page lead', () => {
 // Fable 第二轮 Q6：拨完开关那句小提示按主进程实际做了什么说，没改 Claude Code 配置的两种不说「已打开」。
 describe('Claude Code write boundary notice', () => {
   it('says the switch took effect only when the config was written or already matched', () => {
-    expect(settingsPage.claudeWriteBoundaryNotice({ enabled: true, applied: 'written' })).toEqual({ text: '已打开，新开的 Claude Code 会按这个来。', tone: 'ok' })
-    expect(settingsPage.claudeWriteBoundaryNotice({ enabled: true, applied: 'unchanged' })).toEqual({ text: '已打开，新开的 Claude Code 会按这个来。', tone: 'ok' })
-    expect(settingsPage.claudeWriteBoundaryNotice({ enabled: false, applied: 'written' })).toEqual({ text: '已关掉，新开的 Claude Code 不再拦。', tone: 'ok' })
+    expect(settingsPage.claudeWriteBoundaryNotice({ enabled: true, applied: 'written' })).toEqual({ text: '已开启，新打开的 Claude Code 将按此设置运行。', tone: 'ok' })
+    expect(settingsPage.claudeWriteBoundaryNotice({ enabled: true, applied: 'unchanged' })).toEqual({ text: '已开启，新打开的 Claude Code 将按此设置运行。', tone: 'ok' })
+    expect(settingsPage.claudeWriteBoundaryNotice({ enabled: false, applied: 'written' })).toEqual({ text: '已关闭，新打开的 Claude Code 将不再限制文件修改范围。', tone: 'ok' })
   })
 
   it('tells the customer when their own Claude Code setting was left alone or the write waits for the next save', () => {
     for (const enabled of [true, false]) {
-      expect(settingsPage.claudeWriteBoundaryNotice({ enabled, applied: 'kept' })).toEqual({ text: '开关记下了。Claude Code 自己的设置里你写过这一项，星芒没有改它。', tone: 'warn' })
-      expect(settingsPage.claudeWriteBoundaryNotice({ enabled, applied: 'later' })).toEqual({ text: '开关记下了，下次星芒替 Claude Code 保存配置时一起写进去。', tone: 'ok' })
+      expect(settingsPage.claudeWriteBoundaryNotice({ enabled, applied: 'kept' })).toEqual({ text: '设置已记录。Claude Code 自身设置中已有此项，星芒未作修改。', tone: 'warn' })
+      expect(settingsPage.claudeWriteBoundaryNotice({ enabled, applied: 'later' })).toEqual({ text: '设置已记录，将在下次保存 Claude Code 配置时一并写入。', tone: 'ok' })
     }
   })
 })
@@ -481,9 +481,9 @@ describe('Claude Code write boundary notice', () => {
 // 同类对比 备选 6：「不署名」开关的小提示，没改 Claude Code 配置的两种跟上面那个开关说同一套。
 describe('Claude Code commit attribution notice', () => {
   it('names what changes for the next Claude Code and falls back to the shared kept and later wording', () => {
-    expect(settingsPage.claudeCommitAttributionNotice({ enabled: true, applied: 'written' })).toEqual({ text: '已打开，新开的 Claude Code 提交代码时不再署名。', tone: 'ok' })
-    expect(settingsPage.claudeCommitAttributionNotice({ enabled: false, applied: 'unchanged' })).toEqual({ text: '已关掉，新开的 Claude Code 提交代码时照常署名。', tone: 'ok' })
-    expect(settingsPage.claudeCommitAttributionNotice({ enabled: true, applied: 'kept' })).toEqual({ text: '开关记下了。Claude Code 自己的设置里你写过署名这一项，星芒没有改它。', tone: 'warn' })
+    expect(settingsPage.claudeCommitAttributionNotice({ enabled: true, applied: 'written' })).toEqual({ text: '已开启，新打开的 Claude Code 提交代码时将不再署名。', tone: 'ok' })
+    expect(settingsPage.claudeCommitAttributionNotice({ enabled: false, applied: 'unchanged' })).toEqual({ text: '已关闭，新打开的 Claude Code 提交代码时将照常署名。', tone: 'ok' })
+    expect(settingsPage.claudeCommitAttributionNotice({ enabled: true, applied: 'kept' })).toEqual({ text: '设置已记录。Claude Code 自身设置中已有署名项，星芒未作修改。', tone: 'warn' })
     expect(settingsPage.claudeCommitAttributionNotice({ enabled: true, applied: 'later' })).toEqual(settingsPage.claudeWriteBoundaryNotice({ enabled: true, applied: 'later' }))
   })
 })
@@ -492,7 +492,7 @@ describe('settings page before the settings arrive', () => {
   it('says it is still reading instead of claiming anything is unsupported', () => {
     const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))
     expect(markup).toContain('正在读取设置…')
-    expect(markup).not.toContain('这台电脑上用不了')
+    expect(markup).not.toContain('本机不可用')
     expect(markup).toContain('<span>版本更新</span></button>')
     expect(markup).not.toContain('<span>账号</span></button>')
     expect(markup).toContain('aria-label="搜索设置"')

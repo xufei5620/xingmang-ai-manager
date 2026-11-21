@@ -263,7 +263,7 @@ export function HubInstallDialog({
         {/* 缺 uv 星芒装不了，交给客服教（D20）。 */}
         {notice.support && onOpenHelp && (
           <Button size="sm" icon={Headset} onClick={onOpenHelp} testId="mcp-runtime-support">
-            找客服
+            联系客服
           </Button>
         )}
       </>

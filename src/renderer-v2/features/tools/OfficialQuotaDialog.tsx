@@ -45,7 +45,7 @@ export function OfficialQuotaDialog({ email, initial, refresh, onClose }: {
     if (lock.current) return
     lock.current = true; setBusy(true); setError('')
     try { const value = await refresh(); if (active.current) setOfficial(value) }
-    catch (cause) { if (active.current) setError(errorMessage(cause, '官方额度暂时没有读到')) }
+    catch (cause) { if (active.current) setError(errorMessage(cause, '官方额度暂时无法获取')) }
     finally { lock.current = false; if (active.current) setBusy(false) }
   }
   return <Dialog open title="ChatGPT 账号额度" width={480} onClose={onClose} busy={busy} testId="codex-quota-dialog"
@@ -59,8 +59,8 @@ export function OfficialQuotaDialog({ email, initial, refresh, onClose }: {
         return <div className="v2-quota-window" key={window.id}><div className="v2-quota-row"><span>{window.label}</span><strong>已用 {used}%</strong></div>
           <Progress value={used} tone={used > 80 ? 'warn' : 'accent'} />{window.resetAt && <small>{quotaFutureText(window.resetAt, true)} 恢复</small>}</div>
       })}
-      {official.resetCredits !== null && <p>还能手动恢复额度 {official.resetCredits} 次</p>}
-      <p className="v2-quota-note">用完后可以在 Codex 配置里改用当前账号接着用。</p>
-    </div> : <p>官方额度暂未读取，刷新后查看。</p>}
+      {official.resetCredits !== null && <p>可手动恢复额度 {official.resetCredits} 次</p>}
+      <p className="v2-quota-note">用尽后可在 Codex 配置中改用当前账号继续使用。</p>
+    </div> : <p>官方额度暂未获取，请刷新后查看。</p>}
   </Dialog>
 }

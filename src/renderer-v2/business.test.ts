@@ -147,7 +147,7 @@ describe('v2 business boundaries', () => {
   it('names the current account in the page head and says plainly when its profile was not read', () => {
     expect(accountHeadLead({ username: 'alice', email: 'a@example.test' }, '星芒账号')).toBe('a@example.test · 星芒账号')
     expect(accountHeadLead({ username: 'alice', email: '' }, '历史账号')).toBe('alice · 历史账号')
-    expect(accountHeadLead(null, '星芒账号')).toBe('当前账号的资料暂时没有读到')
+    expect(accountHeadLead(null, '星芒账号')).toBe('当前账号资料获取失败')
   })
 
   it('counts only the folded filters that a query actually applied', () => {
@@ -327,7 +327,7 @@ describe('v2 business boundaries', () => {
       'CLAUDE_BYPASS_PERMISSIONS',
       // D35：Claude Code 自己设置里的代理是客户自己设的值，只提示、不给按钮。
       'CLAUDE_SETTINGS_PROXY',
-      // 能挪的那份说明在行里直接给「挪开这份说明」；信任只说一声，没有能处理它的页。
+      // 能挪的那份说明在行里直接给「停用此说明」；信任只说一声，没有能处理它的页。
       'HOME_FOLDER_LEFTOVERS',
       'DISK_SPACE',
       'ADMINISTRATOR',
@@ -404,7 +404,7 @@ describe('v2 business boundaries', () => {
     expect(diagnosticTarget('SYSTEM_PROXY_SOFTWARE', blocking, 'solov')).toBeNull()
     expect(diagnosticSection('SYSTEM_PROXY_SOFTWARE', blocking, 'solov')).toBeUndefined()
   })
-  // 「Node.js 太旧」那一种在检查页那一行里直接给「换成新版 Node.js」，不再跳去「安装卸载」页。
+  // 「Node.js 太旧」那一种在检查页那一行里直接给「更新 Node.js」，不再跳去「安装卸载」页。
   it('sends no certificate verdict away from the check page', () => {
     for (const verdict of ['outdatedNode', 'untrusted', 'elevated', 'direct', 'systemTrusted', 'unknown']) {
       expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict })).toBeNull()
@@ -422,7 +422,7 @@ describe('v2 business boundaries', () => {
           "Error invoking remote method 'account:change-password': Error: This account has no password set.",
         ),
       ),
-    ).toBe('这个账号还没设过密码，先点「找回密码」设一个')
+    ).toBe('该账号尚未设置密码，请点击「找回密码」进行设置')
     expect(errorMessage(new Error('User has been banned'))).toBe(
       '该账号已被封禁，请联系客服',
     )
@@ -441,12 +441,12 @@ describe('v2 business boundaries', () => {
     // #1095：Windows 上 .NET 的文件拒绝访问不是登录过期。
     expect(
       errorMessage(new Error("System.UnauthorizedAccessException: Access to the path 'C:\\Users\\someone\\.codex\\config.toml' is denied.")),
-    ).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
+    ).toBe('操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。')
     expect(errorMessage(new Error('ETIMEDOUT timeout'))).toContain('请检查网络后重试')
     expect(errorMessage(new Error('unexpected upstream failure xyz-123'))).toBe(
-      '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。',
+      '操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。',
     )
-    expect(errorMessage('plain string')).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
+    expect(errorMessage('plain string')).toBe('操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。')
   })
   it('keeps async activities visible until completion and rejects invalid query ranges', () => {
     const before = pendingBusinessOperations().length

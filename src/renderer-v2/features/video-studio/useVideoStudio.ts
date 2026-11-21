@@ -539,7 +539,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
   }
 
   // 「让 AI 画一张」：用对话页出图那条（chat:generate-image，凭据在主进程、画好的图存进作品库），这里只拿编号，
-  // 画好以后和自己选的图一样用。先出图便宜，客户满意了再拿它出视频。余额、额度不够照页面顶上那条说（带「去充值」）。
+  // 画好以后和自己选的图一样用。先出图便宜，客户满意了再拿它出视频。余额、额度不够照页面顶上那条说（带「前往充值」）。
   const drawShotImage = async (id: string) => {
     if (planning || composeAbort.current) return
     const { shots, settings } = projectRef.current

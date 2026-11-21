@@ -12,7 +12,7 @@ import { useEffect, useState } from 'react'
 const active = new Set<symbol>()
 
 /** 换账号、退出登录前对话页还在出图时说的那一句（D44）。几处入口都用这一句，不另写。 */
-export const chatImageSwitchWarning = '对话还在出图，换账号会停掉这张图，可能已经扣费。'
+export const chatImageSwitchWarning = '对话正在生成图片，切换账号将中止生成，可能已产生扣费。'
 
 export function markChatImageWork(token: symbol, busy: boolean): void {
   if (busy) active.add(token)

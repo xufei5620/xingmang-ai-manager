@@ -317,8 +317,8 @@ export function balancePurchaseLine(balanceUsd: number | null, plan: Pick<Accoun
   if (balanceUsd === null || (plan.currency || 'USD').toUpperCase() !== 'USD') return { text: null, short: false }
   const left = Math.round((balanceUsd - plan.priceAmount) * 100) / 100
   return left < 0
-    ? { text: `余额 ${dollars(balanceUsd)}，还差 ${dollars(-left)}`, short: true }
-    : { text: `余额 ${dollars(balanceUsd)}，扣完剩 ${dollars(left)}`, short: false }
+    ? { text: `余额 ${dollars(balanceUsd)}，尚差 ${dollars(-left)}`, short: true }
+    : { text: `余额 ${dollars(balanceUsd)}，扣除后剩余 ${dollars(left)}`, short: false }
 }
 
 /**

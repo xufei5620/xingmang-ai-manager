@@ -29,8 +29,8 @@ export function passwordFormDirty(form: PasswordFormState): boolean {
 /** 改密码之后这台电脑还登不登着，两种账号不一样（T12）。 */
 function passwordCopy(historical: boolean) {
   return historical
-    ? { row: '改完后当前登录会失效，要用新密码重新登录', dialog: '修改密码后当前登录会失效，请使用新密码重新登录。', done: '密码已修改，请用新密码重新登录' }
-    : { row: '改完后这台电脑会保持登录，其他设备需要重新登录', dialog: '改完后这台电脑会保持登录，其他设备需要重新登录', done: '密码已修改，这台电脑保持登录' }
+    ? { row: '修改后当前登录将失效，需使用新密码重新登录', dialog: '修改密码后当前登录会失效，请使用新密码重新登录。', done: '密码已修改，请用新密码重新登录' }
+    : { row: '修改后本机保持登录，其他设备需重新登录', dialog: '修改后本机保持登录，其他设备需重新登录', done: '密码已修改，本机保持登录' }
 }
 
 function PasswordDialog({ api, historical, onClose, onChanged }: { api: V2Bridge; historical: boolean; onClose: () => void; onChanged: () => void }) {
@@ -78,7 +78,7 @@ function PasswordDialog({ api, historical, onClose, onChanged }: { api: V2Bridge
       <p>{copy.dialog}</p>
       <Input label="原密码" password value={originalPassword} placeholder="现在用的密码" onChange={(event) => setOriginal(event.target.value)} autoComplete="current-password" />
       <Input label="新密码" password value={password} placeholder={`${rules.minimum} 至 ${rules.maximum} 位`} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" />
-      <Input label="再输一次" password value={confirmPassword} placeholder="和上面一样" onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" />
+      <Input label="再次输入" password value={confirmPassword} placeholder="和上面一样" onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" />
     </Dialog>
   )
 }
@@ -106,8 +106,8 @@ function Devices({ api, onChanged, refreshRequest }: { api: V2Bridge; onChanged:
           error={resource.error}
           count={resource.data?.length ?? 0}
           retry={() => void resource.reload()}
-          emptyTitle="没有读到登录设备"
-          emptyDescription="点「重新加载」再读一次。"
+          emptyTitle="登录设备获取失败"
+          emptyDescription="请点击「重新加载」。"
           action={<Button size="sm" icon={RefreshCw} onClick={() => void resource.reload()} testId="devices-empty-retry">重新加载</Button>}
         >
           {resource.data?.map((session) => {
@@ -120,7 +120,7 @@ function Devices({ api, onChanged, refreshRequest }: { api: V2Bridge; onChanged:
                 desc={deviceActivityText(session, now)}
                 actions={session.current
                   ? <Pill tone="accent">当前设备</Pill>
-                  : <Button size="sm" variant="ghost" icon={Trash2} onClick={() => setRevoke({ sid: session.sid, name })}>让它下线</Button>}
+                  : <Button size="sm" variant="ghost" icon={Trash2} onClick={() => setRevoke({ sid: session.sid, name })}>下线此设备</Button>}
               />
             )
           })}
@@ -128,7 +128,7 @@ function Devices({ api, onChanged, refreshRequest }: { api: V2Bridge; onChanged:
       </Card>
       <Dialog
         open={Boolean(revoke)}
-        title={revoke === 'others' ? '让其他设备都下线？' : revoke ? `让「${revoke.name}」下线？` : ''}
+        title={revoke === 'others' ? '是否下线所有其他设备？' : revoke ? `是否下线「${revoke.name}」？` : ''}
         onClose={() => setRevoke(null)}
         busy={operation.busy === 'revoke'}
         footer={
@@ -159,8 +159,8 @@ function Devices({ api, onChanged, refreshRequest }: { api: V2Bridge; onChanged:
           </>
         }
       >
-        <p>{revoke === 'others' ? '除了这台电脑，其他设备要重新登录才能看账号信息，上面配好的工具照常能用。' : '它要重新登录才能看账号信息，那台电脑上配好的工具照常能用。'}</p>
-        <p>担心密钥泄露的话，去「密钥管理」撤销对应的密钥。</p>
+        <p>{revoke === 'others' ? '除本机外，其他设备需重新登录才能查看账号信息，其上已配置的工具可正常使用。' : '该设备需重新登录才能查看账号信息，其上已配置的工具可正常使用。'}</p>
+        <p>如担心密钥泄露，请前往「密钥管理」撤销对应密钥。</p>
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </>
@@ -183,7 +183,7 @@ export function AccountSecurity({
   onChanged: () => void
   /** 让设备下线了：账号概览那张卡上的台数跟着重读。 */
   onDevicesChanged: () => void
-  /** 「去密钥管理」；缺省 = 这个账号没有密钥管理，不出这一节。 */
+  /** 「前往密钥管理」；缺省 = 这个账号没有密钥管理，不出这一节。 */
   onOpenKeys?: () => void
 }) {
   const historical = accountSiteId(session) === 'solov-api'
@@ -208,7 +208,7 @@ export function AccountSecurity({
         <SettingRow
           anchor="remember-password"
           title="记住密码"
-          description={session.sessionOnly ? sessionOnlyLoginNotice : '清掉后下次登录要重新输入'}
+          description={session.sessionOnly ? sessionOnlyLoginNotice : '清除后下次登录需重新输入'}
           control={!session.sessionOnly && remembered.kind === 'forget' && (
             <Button
               size="sm"
@@ -239,9 +239,9 @@ export function AccountSecurity({
           <div className="v2-acct-section-head"><h2>密钥</h2></div>
           <Card padding="none">
             <SettingRow
-              title={keys.data !== null ? `你有 ${keys.data} 把密钥` : '密钥'}
-              description="觉得哪把泄露了，就撤销它"
-              control={<Button size="sm" icon={KeyRound} onClick={onOpenKeys} testId="account-security-keys">去密钥管理</Button>}
+              title={keys.data !== null ? `您共有 ${keys.data} 个密钥` : '密钥'}
+              description="如有密钥泄露，请及时撤销"
+              control={<Button size="sm" icon={KeyRound} onClick={onOpenKeys} testId="account-security-keys">前往密钥管理</Button>}
             />
           </Card>
         </>

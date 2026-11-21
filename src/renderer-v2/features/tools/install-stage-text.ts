@@ -5,12 +5,12 @@ import type { InstallProgress, InstallProgressStage } from '../../../../electron
  * 还有 npm 自己的英文输出，小白看了只会以为出错了；原话照旧进任务日志和运行日志。
  */
 const stageText: Record<Exclude<InstallProgressStage, 'raw-output'>, string> = {
-  version: '正在确认要装的版本…',
-  download: '正在下载，第一次可能要几分钟，请别关窗口…',
-  'switch-route': '这条下载线路不太顺，已经换了一条接着装…',
-  verify: '正在检查下载的文件是否完整、有没有被改过…',
+  version: '正在确认安装版本…',
+  download: '正在下载，首次下载可能需要几分钟，请勿关闭窗口…',
+  'switch-route': '当前下载线路不稳定，已切换线路继续安装…',
+  verify: '正在校验下载文件的完整性…',
   install: '正在装到电脑上…',
-  'final-check': '装好了，正在最后检查一遍…',
+  'final-check': '安装完成，正在进行最终检查…',
 }
 
 export function formatWaitedDuration(elapsedMs: number): string {
@@ -28,7 +28,7 @@ export function installProgressLabel(event: Pick<InstallProgress, 'message' | 's
   if (!event.stage) return event.message
   if (event.stage === 'raw-output') return null
   if (event.stage === 'download' && typeof event.elapsedMs === 'number') {
-    return `还在下载，已经等了 ${formatWaitedDuration(event.elapsedMs)}。网慢时会久一点，不用管它。`
+    return `仍在下载，已等待 ${formatWaitedDuration(event.elapsedMs)}。网络较慢时耗时会更长，请耐心等待。`
   }
   return stageText[event.stage]
 }

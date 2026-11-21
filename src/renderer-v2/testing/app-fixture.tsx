@@ -309,7 +309,7 @@ const fixtureStarterWorkspace = 'C:\\Users\\fixture\\Documents\\XingmangProjects
 let releaseBalance: (error?: string) => void = () => undefined
 let balanceReads = 0
 let nextBalanceHeld = false
-// emptyWallet：当前账号余额是 $0（新账号还没充值），首页工具卡换「去充值」。
+// emptyWallet：当前账号余额是 $0（新账号还没充值），首页工具卡换「前往充值」。
 let balanceOverride: number | null = query.has('emptyWallet') ? 0 : null
 // 今天又花了多少（额度单位）：本月、最近 7 天的合计和今天那根柱子都加上它（F3，停在首页时用量跟着余额刷新）。
 let extraSpend = 0
@@ -427,7 +427,7 @@ function recentWorkspaceSession(id: string, provider: ProviderId, cwd: string, u
 }
 const recentWorkspaceSessions = [
   recentWorkspaceSession('1', 'claude', 'C:\\work\\my-app', 400),
-  // older-app 的目录已经被删掉了:卡片上这一行的「接着聊」该按不动（候选 7）。
+  // older-app 的目录已经被删掉了:卡片上这一行的「继续对话」该按不动（候选 7）。
   recentWorkspaceSession('2', 'claude', 'C:\\work\\older-app', 300, false),
   recentWorkspaceSession('3', 'claude', 'C:\\work\\my-app', 200),
   // 这条 Codex 记录只剩摘要（rollout 文件不在了）：记录页照样能点开，详情里说明只有摘要、不能导出。
@@ -864,7 +864,7 @@ const methods = {
     }
     return { outcome: 'uninstalled' as const, previousVersion }
   },
-  // 「帮我清理」：第一次那个文件还被占着，第二次删掉了。
+  // 「一键清理」：第一次那个文件还被占着，第二次删掉了。
   cleanUninstallLeftovers: async () => {
     leftoverCleanups += 1
     return { remaining: leftoverCleanups === 1 ? 1 : 0 }
@@ -896,7 +896,7 @@ const methods = {
   getAccountKeyOptions: async (provider: ProviderId) => {
     const reads = (keyMetadataReads.get(provider) ?? 0) + 1
     keyMetadataReads.set(provider, reads)
-    if (query.get('keyMetadataFail') === provider) throw new Error('当前密钥信息暂时没有读到')
+    if (query.get('keyMetadataFail') === provider) throw new Error('当前密钥信息暂时无法获取')
     if (query.get('keyMetadataPending') === provider && reads === 1) await new Promise<void>((resolve) => pendingKeyMetadata.set(provider, resolve))
     const automatic = resolveManagedCliKeyProfiles(session.siteId)[provider]
     const keyId = selectedKeyIds.get(provider)

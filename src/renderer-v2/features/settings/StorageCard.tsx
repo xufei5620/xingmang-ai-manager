@@ -43,7 +43,7 @@ export function storageSizeText(bytes: number): string {
 /** 每一行右边：还在算、没算出来，或者大小。 */
 export function storageRowValue(report: StorageUsagePartReport | undefined): string {
   if (!report) return '正在算…'
-  return report.bytes === null ? '没算出来' : storageSizeText(report.bytes)
+  return report.bytes === null ? '无法计算' : storageSizeText(report.bytes)
 }
 
 /** 最上面那一行的合计：六行都回来了才加，没算出来的那几行不算在里面；一行都没算出来就说没算出来。 */
@@ -51,7 +51,7 @@ export function storageTotalText(reports: StorageReports): string {
   const values = storageRows.map((row) => reports[row.part])
   if (values.some((report) => !report)) return '正在算…'
   const known = values.flatMap((report) => (report && report.bytes !== null ? [report.bytes] : []))
-  if (!known.length) return '没算出来'
+  if (!known.length) return '无法计算'
   return `一共${storageSizeText(known.reduce((sum, bytes) => sum + bytes, 0))}`
 }
 
@@ -63,7 +63,7 @@ export function storageRowDescription(row: StorageRowDefinition, report: Storage
 /** 清完的提示条，三个「清理」共用；有文件被占着没删掉时换成另一句。 */
 export function storageCleanedText(result: StorageCleanResult): string {
   return result.kept > 0
-    ? `有些文件正被占用，没删掉，腾出${storageSizeText(result.freedBytes)}。关掉正在用的工具后可以再清一次。`
+    ? `部分文件正被占用，未能删除，已释放${storageSizeText(result.freedBytes)}。关闭正在使用的工具后可再次清理。`
     : `已清理，腾出${storageSizeText(result.freedBytes)}。`
 }
 
@@ -109,7 +109,7 @@ function rowActions(part: StorageUsagePart, report: StorageUsagePartReport | und
     const nothingToClean = typeof count === 'number' && count <= retainedBackups
     return (
       <>
-        {nothingToClean && <DisabledNote text={`只有最近 ${retainedBackups} 份，不用清理`} />}
+        {nothingToClean && <DisabledNote text={`仅保留最近 ${retainedBackups} 份，无需清理`} />}
         <CleanButton target="backups" label="清理旧备份" busy={busy} disabled={typeof count !== 'number' || nothingToClean} onClick={props.onAskBackupCleanup} />
       </>
     )
@@ -132,7 +132,7 @@ export function StorageCardView(props: StorageCardViewProps) {
   return (
     <Card
       title="星芒占用的空间"
-      meta="星芒在这台电脑上存了哪些东西、各占多少。清理只删能重新生成或重新下载的东西，作品和聊天记录不会动。"
+      meta="星芒在本机保存的内容及占用空间。清理仅删除可重新生成或重新下载的内容，作品和聊天记录不受影响。"
       padding="none"
       testId="settings-storage"
     >
@@ -173,7 +173,7 @@ export function StorageCard({ api, active, onBackupsCleaned }: {
   const operation = useOperation()
   const toast = useToast()
   const inspect = useCallback((part: StorageUsagePart, current: () => boolean) => {
-    // 包一层：桥上缺这个方法（旧主进程）时同步抛的错也落到「没算出来」，不让整页崩。
+    // 包一层：桥上缺这个方法（旧主进程）时同步抛的错也落到「无法计算」，不让整页崩。
     void Promise.resolve()
       .then(() => api.inspectStorageUsage(part))
       .catch((): StorageUsagePartReport => ({ bytes: null }))

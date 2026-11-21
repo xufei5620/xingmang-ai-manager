@@ -40,7 +40,7 @@ describe('app uninstall row', () => {
     expect(markup).toContain('卸载星芒')
     expect(markup).not.toContain('去安装卸载')
     expect(markup).toContain('data-anchor="uninstall"')
-    expect(markup).toContain('打开 Windows「设置 → 应用」，找到「星芒AI管理工具」卸载；工具和它们的配置会保留')
+    expect(markup).toContain('请打开 Windows「设置 → 应用」，找到「星芒AI管理工具」并卸载，工具及其配置将保留')
     expect(markup).not.toContain('settings-app-uninstall-open')
     expect(markup).not.toContain('<button')
   })
@@ -49,7 +49,7 @@ describe('app uninstall row', () => {
     const markup = renderToStaticMarkup(
       <AppUninstallRow api={{ uninstallApp: async () => ({ trashed: true, leftovers: [] }) }} isMac={false} isLinux />,
     )
-    expect(markup).toContain('用系统的软件管理器卸载星芒；工具和它们的配置会保留')
+    expect(markup).toContain('请使用系统软件管理器卸载星芒，工具及其配置将保留')
     expect(markup).not.toContain('Windows')
   })
 
@@ -63,9 +63,9 @@ describe('app uninstall dialog', () => {
   it('leaves both extra clean-ups unticked by default', () => {
     const markup = dialog()
     expect(markup).toContain('卸载星芒')
-    expect(markup).toContain('工具的配置会保留，Claude Code、Codex 这些工具也会留着，照样能用。卸完星芒会退出。')
+    expect(markup).toContain('工具配置及 Claude Code、Codex 等工具均保留，可继续使用。卸载完成后星芒将退出。')
     expect(markup).toContain('同时清除登录记录和聊天记录')
-    expect(markup).toContain('连同星芒替你装的命令行工具一起删')
+    expect(markup).toContain('同时删除星芒安装的命令行工具')
     expect(markup).not.toContain('卸载并退出')
     expect(markup).not.toMatch(/type="checkbox"[^>]*checked/)
     expect(markup).not.toContain('app-uninstall-remove-tools-warning')
@@ -76,19 +76,19 @@ describe('app uninstall dialog', () => {
     expect(markup.match(/checked=""/g)).toHaveLength(2)
   })
 
-  // 勾了「连同…一起删」才说会删掉哪些、删前先备份（macos-uninstall.ts 先跑 backupCliConfigs）。
+  // 勾了「同时删除…」才说会删掉哪些、删前先备份（macos-uninstall.ts 先跑 backupCliConfigs）。
   it('warns what the tool clean-up removes only once it is ticked', () => {
     const markup = dialog({ removeTools: true })
     expect(markup).toContain('data-testid="app-uninstall-remove-tools-warning"')
     expect(markup).toContain(appUninstallRemoveToolsWarning)
-    expect(appUninstallRemoveToolsWarning).toContain('你自己装的不动')
+    expect(appUninstallRemoveToolsWarning).toContain('自行安装的不受影响')
   })
 
   // Mac 上 Grok 在 ~/.grok，removeMacManagedTools 不删它（0.2.24 深查 Mac M2 / 决定单 D8）：
   // 提醒不能再把 Grok 算进「会删掉」里，要说清楚这里不删、去哪儿删。
   it('does not promise to remove Grok and points to its own uninstall', () => {
     expect(appUninstallRemoveToolsWarning).toBe(
-      '会删掉星芒替你装的 Claude Code、Codex CLI，你自己装的不动。Grok CLI 装在你自己的个人文件夹里，这里不删；要删的话，先在主页 Grok 那张卡片上点「卸载工具」。删之前会先备份它们的配置。',
+      '将删除由星芒安装的 Claude Code、Codex CLI，自行安装的不受影响。Grok CLI 位于个人文件夹，此处不删除；如需删除，请先在首页 Grok 卡片上点击「卸载工具」。删除前将自动备份配置。',
     )
     expect(appUninstallRemoveToolsWarning).not.toContain('Codex CLI、Grok CLI')
   })
@@ -101,10 +101,10 @@ describe('appUninstallNotice', () => {
 
   it('tells the user to drag it themselves when the Trash step failed', () => {
     expect(appUninstallNotice({ trashed: false, leftovers: [] })).toBe(
-      '没能把星芒移到废纸篓。请退出星芒，在访达的「应用程序」里把它拖进废纸篓。提醒设置已经收回了。',
+      '无法将星芒移至废纸篓。请退出星芒，在访达「应用程序」中将其拖入废纸篓。通知设置已移除。',
     )
     expect(appUninstallNotice({ trashed: false, leftovers: ['cli-hooks', 'records'] })).toContain(
-      '另外，有工具里的提醒设置没收回来、登录记录和聊天记录没有清除。',
+      '另外，部分工具的通知设置未能移除、登录记录和聊天记录未清除。',
     )
   })
 })

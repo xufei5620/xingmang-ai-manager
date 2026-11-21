@@ -2,7 +2,7 @@ import type { CliLaunchResult, CodexDesktopLaunchResult, ExternalClientLaunchPro
 import { spacedName } from './model'
 
 const unverifiedChineseLocale = 'Codex 已打开，中文界面尚未确认生效，请在配置中再次启用。'
-const readOnlyWorkspace = '这个文件夹只能看不能改，AI 改不了里面的文件，建议换一个。'
+const readOnlyWorkspace = '该文件夹为只读，AI 无法修改其中的文件，建议更换文件夹。'
 
 /**
  * 打开成功之后还要提醒用户的那一句。两套结果各带各的：Codex 桌面端是中文界面
@@ -28,19 +28,19 @@ export function launchDeclined(result: CodexDesktopLaunchResult | CliLaunchResul
 }
 
 /**
- * 记录页「接着聊」成功后那句话。用户选了「先不打开」就什么都不说，
+ * 记录页「继续对话」成功后那句话。用户选了「先不打开」就什么都不说，
  * 不能再说「已打开」。
  */
 export function resumeSessionNotice(result: CliLaunchResult | void | undefined, toolName: string, cwd: string): string | null {
   if (launchDeclined(result)) return null
-  const opened = `已打开${toolName}，接着 ${cwd} 里最近的一条对话`
+  const opened = `已打开${toolName}，继续 ${cwd} 中最近的一条对话`
   const warning = launchWarning(result)
   return warning ? `${opened}。${warning}` : opened
 }
 
 // 这几类任务不拿来说在等谁：另一个工具的「打开」几秒就完；「改用当前账号」「修提醒设置」、
-// 配置文件坏了的「修好它」只改配置、不进安装队列，「打开」根本不等它们，以前却会说成
-// 「正在等 另一个工具 安装完」。
+// 配置文件坏了的「立即修复」只改配置、不进安装队列，「打开」根本不等它们，以前却会说成
+// 「正在等待 另一个工具 安装完成」。
 const notWaitedOn = ['launch:', 'switch:', 'repair-hooks:', 'repair-config:']
 
 /**
@@ -58,9 +58,9 @@ export function launchWaitLabel(
   if (!ahead) return idle
   const [key, job] = ahead
   // Git 不在工具表里，和 Node.js、Python 一样摆在首页「运行环境」那张卡上。
-  if (key === 'node' || key === 'python' || key === 'git') return '正在等运行环境准备好，好了马上打开'
+  if (key === 'node' || key === 'python' || key === 'git') return '正在等待运行环境准备完成，完成后将立即打开'
   const action = /卸载/.test(job.label) ? '卸载' : '安装'
-  return `正在等 ${nameOf(key) ?? '另一个工具'} ${action}完，${action}完马上打开`
+  return `正在等待 ${nameOf(key) ?? '另一个工具'} ${action}完成，完成后将立即打开`
 }
 
 /**
@@ -84,7 +84,7 @@ export function clientLaunchWaitLabel(
  */
 export function clientLaunchProgressLabel(event: ExternalClientLaunchProgress): string {
   const percent = event.percent === null ? '' : `（${event.percent}%）`
-  return `正在替 Claude Desktop 准备聊天要用的程序${percent}，好了马上打开`
+  return `正在为 Claude Desktop 准备聊天所需程序${percent}，完成后将立即打开`
 }
 
 /**
@@ -94,7 +94,7 @@ export function clientLaunchProgressLabel(event: ExternalClientLaunchProgress): 
  */
 export function externalLaunchWarning(result: ExternalClientLaunchResult | void | undefined): string | null {
   if (result?.preparationSkipped === 'elevated')
-    return '星芒现在是以管理员身份打开的，没法替 Claude Desktop 准备程序。关掉星芒、直接双击打开，再点「打开」。'
+    return '星芒当前以管理员身份运行，无法为 Claude Desktop 准备程序。请关闭星芒后直接双击打开，再点击「打开」。'
   return null
 }
 
@@ -102,7 +102,7 @@ export function externalLaunchWarning(result: ExternalClientLaunchResult | void 
 const runtimeNames: Record<string, string> = { node: 'Node.js', python: 'Python', git: 'Git' }
 
 /**
- * 退出登录确认框在「已配好的工具会保留。」后面补的那句（#1097 第 2 部分）。退出不打断
+ * 退出登录确认框在「已配置的工具将保留。」后面补的那句（#1097 第 2 部分）。退出不打断
  * 正在装、卸的工具，装完也不会再替原来的账号写密钥（第 1 部分），说一句免得以为装了一半
  * 的会被丢掉。「打开」「改用当前账号」这类几秒就完的不算；都没有时回空串，确认框照旧只有
  * 原来那句（v4 交接包定的）。
@@ -120,7 +120,7 @@ export function logoutJobsNote(
     if (job.kind === 'uninstall') uninstalling.push(name)
     else installing.push(name)
   }
-  const installNote = installing.length ? `正在安装的 ${spacedName(installing.join('、'))}会继续装完。` : ''
-  const uninstallNote = uninstalling.length ? `正在卸载的 ${spacedName(uninstalling.join('、'))}会继续卸完。` : ''
+  const installNote = installing.length ? `正在安装的 ${spacedName(installing.join('、'))}将继续完成安装。` : ''
+  const uninstallNote = uninstalling.length ? `正在卸载的 ${spacedName(uninstalling.join('、'))}将继续完成卸载。` : ''
   return installNote + uninstallNote
 }

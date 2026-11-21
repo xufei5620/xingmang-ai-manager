@@ -99,7 +99,7 @@ XINGMANG_MAC_SIGNING_SHA256="记录的 64 位 SHA-256 指纹" \
 npm run dist:mac:free
 ```
 
-runner 会只为 electron-builder 子进程自动启用免费发布模式，调用者不需要设置该模式变量。该命令先执行发布身份预检，再生成 arm64 与 x64 各一份 DMG 和 ZIP，以及两份 ZIP blockmap、`latest-mac.yml` 和 `SHA256SUMS`。产物校验之前，六个文件会由 `scripts/rename-macos-chip-artifacts.cjs` 从 electron-builder 的构建名统一改成带芯片名的发行名（`…-Apple-Silicon-arm64.…` 与 `…-Intel-x64.…`），`latest-mac.yml` 的引用同步改写；命名只在 `scripts/macos-artifact-names.cjs` 定义一处，架构后缀必须保留，electron-updater 靠 URL 里的 `arm64` 子串分架构下载。公开安装库存必须精确为两份 DMG 加两份 ZIP；自动更新清单必须只精确引用两份 ZIP；顶层 blockmap 必须只包含两份 ZIP blockmap；`SHA256SUMS` 必须覆盖这六个文件。runner 还会校验严格的 codesign 结果、固定证书指纹及 blockmap 格式。它使用 `--publish never`，只构建和验证本地产物，绝不会上传文件。
+runner 会只为 electron-builder 子进程自动启用免费发布模式，调用者不需要设置该模式变量。该命令先执行发布身份预检，再生成 arm64 与 x64 各一份 DMG 和 ZIP，以及两份 ZIP blockmap、`latest-mac.yml` 和 `SHA256SUMS`。产物校验之前，六个文件会由 `scripts/rename-macos-chip-artifacts.cjs` 从 electron-builder 的构建名统一改成带芯片名的发行名（`…-Apple-Silicon-arm64.…` 与 `…-Intel-x64.…`），`latest-mac.yml` 的引用同步改写；命名只在 `scripts/macos-artifact-names.cjs` 定义一处，架构后缀必须保留，electron-updater 靠 URL 里的 `arm64` 子串分架构下载。改名之后、校验之前，两份 DMG 由 `scripts/compress-macos-dmg.cjs` 用系统自带的 `hdiutil convert -format ULMO` 从 zlib 转成 LZMA 压缩（客户第一次下载小两三成；electron-builder 26.15.3 的 `dmg.format` 还不认 ULMO），转完核对 `hdiutil imageinfo` 报的格式再换回原名，所以校验挂载的就是发出去的那一份。ZIP 不动，自动更新不受影响。公开安装库存必须精确为两份 DMG 加两份 ZIP；自动更新清单必须只精确引用两份 ZIP；顶层 blockmap 必须只包含两份 ZIP blockmap；`SHA256SUMS` 必须覆盖这六个文件。runner 还会校验严格的 codesign 结果、固定证书指纹及 blockmap 格式。它使用 `--publish never`，只构建和验证本地产物，绝不会上传文件。
 
 ### 携带私有加速线路（可选，默认不带）
 

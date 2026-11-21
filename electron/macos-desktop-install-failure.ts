@@ -4,7 +4,7 @@
  * Mac 上一键装桌面端没装成时，客户看到的那句话。
  *
  * 主进程（macos-desktop-app-installer.ts）照这里拼，渲染层（operation-error.ts）照这里
- * 认出这一类、配上「看安装指南」按钮：两边共用一份字面量，改了一边另一边不会认不出来。
+ * 认出这一类、配上「查看安装指南」按钮：两边共用一份字面量，改了一边另一边不会认不出来。
  * 原因原话（HTTP 状态、退出码之类）不进这句话，挂在错误的 detail 上进运行日志。
  *
  * 这个模块同时给主进程和渲染层用，所以和 network-failure.ts 一样不许引 Node（I6）。
@@ -51,7 +51,7 @@ export function macosDesktopInstallFailedMessage(name: string): string {
 /**
  * 装到一半磁盘写满了（装之前已经查过空间，很少见）。只在 Mac 上用，和装之前就查出来的那句
  * （disk-space.ts 的 describeInsufficientDiskSpace）都说「磁盘空间不足」，只是量不到还剩多少；
- * 渲染层按「磁盘空间不足」归到「磁盘空间不够」，不配「看安装指南」：自己下载也一样放不下。
+ * 渲染层按「磁盘空间不足」归到「磁盘空间不够」，不配「查看安装指南」：自己下载也一样放不下。
  */
 export function macosDesktopDiskFullMessage(name: string): string {
   return `${subject(name)}安装失败：安装目录所在磁盘空间不足，请先清理磁盘再试`

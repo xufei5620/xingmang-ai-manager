@@ -78,21 +78,21 @@ describe('requiredUpdateGate', () => {
   it('does not promise the app keeps working when the startup check times out behind the gate', () => {
     const gate = requiredUpdateGate(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'STARTUP_UPDATE_TIMEOUT', message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。' } }))
     expect(gate).toMatchObject({ action: 'check', label: '重试' })
-    expect(gate?.failure).toContain('点「重试」')
+    expect(gate?.failure).toContain('请点击「重试」')
     expect(gate?.failure).not.toContain('不影响现在使用')
   })
 
   it('falls back to a plain sentence when a failure carries no message', () => {
     const gate = requiredUpdateGate(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'X', message: '' } }))
-    expect(gate?.failure).toContain('找客服')
+    expect(gate?.failure).toContain('联系客服')
     expect(gate?.failure).not.toContain('查看日志')
   })
 
   it('explains a disk shortfall instead of offering a button that silently does nothing', () => {
-    // 主进程量盘不够时不抛错，阶段停在 available：门要带上缺口，按钮换成「再试一次」。
+    // 主进程量盘不够时不抛错，阶段停在 available：门要带上缺口，按钮换成「重试」。
     const diskShortfall = { neededBytes: 1800 * 1024 ** 2, freeBytes: 1200 * 1024 ** 2 }
     expect(requiredUpdateGate(snapshot({ diskShortfall })))
-      .toMatchObject({ action: 'download', label: '空间够了，再试一次', diskShortfall, failure: null })
+      .toMatchObject({ action: 'download', label: '重新检查空间', diskShortfall, failure: null })
     expect(requiredUpdateGate(snapshot())).toMatchObject({ label: '立即更新', diskShortfall: null })
     // 清出空间、开始下载后，缺口随阶段一起清掉，门回到正常的进度条。
     expect(requiredUpdateGate(snapshot({ phase: 'downloading', diskShortfall: null })))

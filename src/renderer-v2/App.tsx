@@ -166,7 +166,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [workspaceEntered, setWorkspaceEntered] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
   const [auth, setAuth] = useState<AuthMode | null>(null)
-  // 登录框要预先对准的保存账号（#480）；只有「重新登录这个账号」给，关框就清。
+  // 登录框要预先对准的保存账号（#480）；只有「重新登录该账号」给，关框就清。
   const [authTarget, setAuthTarget] = useState<LoginTarget | null>(null)
   const [legal, setLegal] = useState<LegalDocumentKind | null>(null)
   const [configTool, setConfigTool] = useState<ToolId | null>(null)
@@ -193,7 +193,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [homeNoticeRoom, setHomeNoticeRoom] = useState(2)
   // 首页「重新检测」点下去那一刻的工具和运行环境（rescanFingerprint）；null = 没在等这一轮检测。
   const [rescanBefore, setRescanBefore] = useState<string | null>(null)
-  // 错误框里点了「换成新版 Node.js」：先问一次，确认后换完接着重做刚才失败的那一步。
+  // 错误框里点了「更新 Node.js」：先问一次，确认后换完接着重做刚才失败的那一步。
   const [nodeReplace, setNodeReplace] = useState<{ retry?: () => void } | null>(null)
   const scope = sessionScope(session)
   // 装完工具同步 Key 要对的是「现在」的账号，安装闭包里那份会话还停在点安装那一刻（#1097）。
@@ -267,7 +267,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (rescanBefore === null || toolbox.loading || toolbox.externalLoading) return
     setRescanBefore(null)
     if (toolbox.error || toolbox.externalError) return
-    if (rescanFingerprint(toolbox.snapshot, toolbox.externalClients) === rescanBefore) toast.show('检测完了，工具和运行环境都没有变化', 'neutral')
+    if (rescanFingerprint(toolbox.snapshot, toolbox.externalClients) === rescanBefore) toast.show('检测完成，工具和运行环境无变化', 'neutral')
   }, [rescanBefore, toast, toolbox.error, toolbox.externalClients, toolbox.externalError, toolbox.externalLoading, toolbox.loading, toolbox.snapshot])
   const {
     page, setPage, chatScope, setChatScope, chatParametersPending, setChatParametersPending, createVideoPending, setCreateVideoPending, createLibraryPending, setCreateLibraryPending, visitedPages, settingsGroup, setSettingsGroup,
@@ -287,7 +287,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     chineseSuspended: featuresOff.includes('codex-desktop-chinese') })
   const closeAccountDialogs = useCallback(() => { setConfigTool(null); setExternalClient(null) }, [])
   const leaveWorkspace = useCallback(() => { setGuide(false); setPage('home'); setWorkspaceEntered(false) }, [setPage])
-  const finishGuide = (id: GuideRoute, landing: GuideLanding) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }
+  const finishGuide = (id: GuideRoute, landing: GuideLanding) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已就绪，但引导偏好保存失败。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }
   // 等会话换成登好的那个账号再走完：登录回调里那一刻的 navigate 还当没登录，会再弹一次登录框。
   useEffect(() => {
     if (!guideCreateAfterLogin.current || !session.authenticated) return
@@ -312,7 +312,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     toolsApi, toolbox, toast, offline, mounted, accountEpoch, setConfirmation, setOperationError,
     reopen: (tool) => { if (tool === 'codexDesktop') requestLaunchWhenFree('codexDesktop'); else void perform('打开客户端', () => launchExternal(tool)) },
   })
-  // 「配置文件坏了」的「修好它」：首页卡片、配置窗口和打开工具时的错误框都走这里。retry 是错误框里那次
+  // 「配置文件坏了」的「立即修复」：首页卡片、配置窗口和打开工具时的错误框都走这里。retry 是错误框里那次
   // 没打开的打开，修好了替客户再开一次，不用回首页再点。
   function repairBrokenConfig(id: ToolId, retry?: () => void) {
     void perform('重置为初始状态', async () => {
@@ -519,7 +519,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {!session.authenticated && !restoring && !workspaceEntered ? <Welcome platform={os} onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
         onHistoryLogin={() => { setAuthTarget({ siteId: 'solov-api', identifier: '' }); setAuth('login') }} theme={settings?.theme} onThemeToggle={toggleTheme}
         reducedMotion={settings?.reducedMotion} supportQrUrl={qr} onReducedMotionChange={(reducedMotion) => void perform('保存外观', async () => setSettings(await app.savePreferences({ version: 2, reducedMotion })))} />
-        : <AccountMoneyView key={scope}>{(money) => <AppFrame activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: restoreRetrying ? '暂时连不上，登录还在' : restoring ? '正在恢复登录' : session.account?.username, email: restoreRetrying ? '稍后自动重试，不用重新登录' : restoring ? '网络慢时要多等一会儿' : undefined, restoring: restoreRetrying ? 'retrying' : restoring ? 'pending' : undefined, sourceTag: siteId === 'solov-api' ? accountSources[siteId].label : undefined, balance: money.balanceAmount === null ? undefined : dollars(money.balanceAmount), subscription: subscription ? `订阅：${subscriptionSummaryText(subscription, dollars)}` : undefined, balanceLoading: money.balanceState.loading, balanceUpdatedAt: money.balanceState.updatedAt, balanceError: money.balanceState.error,
+        : <AccountMoneyView key={scope}>{(money) => <AppFrame activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: restoreRetrying ? '暂时无法连接，登录状态已保留' : restoring ? '正在恢复登录' : session.account?.username, email: restoreRetrying ? '将自动重试，无需重新登录' : restoring ? '网络较慢时需稍候' : undefined, restoring: restoreRetrying ? 'retrying' : restoring ? 'pending' : undefined, sourceTag: siteId === 'solov-api' ? accountSources[siteId].label : undefined, balance: money.balanceAmount === null ? undefined : dollars(money.balanceAmount), subscription: subscription ? `订阅：${subscriptionSummaryText(subscription, dollars)}` : undefined, balanceLoading: money.balanceState.loading, balanceUpdatedAt: money.balanceState.updatedAt, balanceError: money.balanceState.error,
             plan: session.authenticated && !restoring && money.balanceAmount !== null ? subscription ? subscription.name ?? undefined : subscriptionUnknown ? undefined : '按量付费' : undefined, runway: money.runway }} platform={os}
           accountTab={page === 'account' ? shownAccountTab : undefined} theme={settings?.theme} announcementOpen={announcementOpen}
           update={update && !update.error ? update.phase === 'downloaded' ? 'ready' : update.phase === 'available' || update.phase === 'downloading' ? 'available' : undefined : undefined}
@@ -562,7 +562,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), installUpdate: openInstallConfirm, openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
             startCheck,
             ...(toggleTheme ? { toggleTheme } : {}),
-            logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}${logoutChatImageNote()}`, label: '退出登录', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
+            logout: () => setConfirmation({ title: '退出登录？', body: `已配置的工具将保留。${logoutJobsNote(toolbox.jobs, jobToolName)}${logoutChatImageNote()}`, label: '退出登录', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
           }}>
           {pageHost}
         </AppFrame>}</AccountMoneyView>}
@@ -625,7 +625,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     </Dialog>}
     {help && <Dialog open title="帮助与客服" onClose={() => setHelp(false)} width={640} testId="support-dialog">
       {/* 左边扫码、右边复制身份，常去的几处排成下面的六格（v4 第 10 批，代替原来那排按钮和「设置里还有」「左边「更多」里还有」）。 */}
-      <div className="v2-support"><div className="v2-support-contact">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p>
+      <div className="v2-support"><div className="v2-support-contact">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码联系客服</h3><p>安装、充值到账等问题均可咨询。</p>
         {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}
         <Button size="sm" onClick={openSupport}>在浏览器打开</Button></div>
         <SupportIdentity line={supportIdentity} lastFailure={lastFailureLine} onCopy={copySupportIdentity} /></div>
@@ -651,8 +651,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           // 复制上了才收起卡片；没复制上就打开帮助框，那里的文字能手动选中复制。
           const text = buildSupportBundle(supportInput, action.supportFailure)
           const copied = navigator.clipboard?.writeText ? navigator.clipboard.writeText(text) : Promise.reject(new Error('clipboard unavailable'))
-          void copied.then(() => { dismissStartupNotice(id); toast.show('已复制，发给客服就行', 'ok') },
-            () => { setHelp(true); toast.show('没复制上，请在「帮助与客服」里手动选中文字复制。', 'warn') })
+          void copied.then(() => { dismissStartupNotice(id); toast.show('已复制，请发送给客服', 'ok') },
+            () => { setHelp(true); toast.show('复制失败，请在「帮助与客服」中手动选中文字复制。', 'warn') })
           return
         }
         dismissStartupNotice(id)
@@ -668,14 +668,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {nodeReplace && <NodeReplaceDialog version={toolbox.snapshot?.system.runtime.node.version} onClose={() => setNodeReplace(null)} onConfirm={() => {
       const retry = nodeReplace.retry
       setNodeReplace(null)
-      void perform('换成新版 Node.js', () => replaceNode(retry))
+      void perform('更新 Node.js', () => replaceNode(retry))
     }} />}
     {storeNewerVersion && <Dialog open title="微软商店里有更新的一版" onClose={() => setStoreNewerVersion(null)} width={480} testId="codex-desktop-store-newer" footer={<>
-      <Button onClick={() => setStoreNewerVersion(null)}>先不用</Button>
-      <Button variant="primary" testId="codex-desktop-store-newer-open" onClick={() => { setStoreNewerVersion(null); void perform('打开微软商店', openCodexDesktopStore) }}>去微软商店装</Button>
-    </>}><p>国内下载线路还没跟上，这台电脑上的 Codex 桌面端这次没有变。微软商店里已经有 {storeNewerVersion}，想用最新版就去商店点「更新」或「获取」。</p></Dialog>}
+      <Button onClick={() => setStoreNewerVersion(null)}>暂不使用</Button>
+      <Button variant="primary" testId="codex-desktop-store-newer-open" onClick={() => { setStoreNewerVersion(null); void perform('打开微软商店', openCodexDesktopStore) }}>前往微软商店安装</Button>
+    </>}><p>国内下载线路尚未同步，本机 Codex 桌面端未更新。微软商店已提供 {storeNewerVersion}，如需最新版本，请前往商店点击「更新」或「获取」。</p></Dialog>}
     {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} cleanUp={(tool) => toolsApi.cleanUninstallLeftovers(tool)} onHelp={() => setHelp(true)} />}
-    {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<>
+    {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作未完成" onClose={() => setAccountReadError(null)} footer={<>
       <Button onClick={() => setAccountReadError(null)}>返回</Button>
       {accountReadErrorAction(accountReadError.message) === 'relogin'
         ? <Button variant="primary" testId="account-read-relogin" onClick={() => { setAccountReadError(null); setAuth('login') }}>重新登录</Button>
@@ -683,28 +683,28 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     </>}><p role="alert">{accountReadError.message}</p></Dialog>}
     {ccSwitchReminder && <Dialog open title="请先退出 CC Switch" onClose={() => setCcSwitchReminder(false)} width={480} testId="cc-switch-reminder"
       footer={<Button variant="primary" onClick={() => setCcSwitchReminder(false)}>知道了</Button>}>
-      <p>这个工具以前用 CC Switch 配过。CC Switch 还开着的话，会把刚改好的设置又改回去。不再用它的话，请把它退出（包括托盘里的图标）。</p>
+      <p>该工具曾通过 CC Switch 配置。CC Switch 运行时会覆盖刚修改的设置，如不再使用，请完全退出 CC Switch（包括托盘图标）。</p>
     </Dialog>}
     {commandConfirmation && <CommandConfirmationDialog busy={commandConfirmation === 'answering'}
-      onAnswer={(choice) => void perform(choice === 'ask' ? '改回先问我' : '保持现在这样', () => answerCommandConfirmation(choice))} />}
-    {switchRestartOffer && <Dialog open title="Codex 桌面端还开着" onClose={() => setSwitchRestartOffer(null)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
-      <Button variant="ghost" onClick={() => setSwitchRestartOffer(null)}>先不用</Button>
+      onAnswer={(choice) => void perform(choice === 'ask' ? '恢复为每次询问' : '保持当前设置', () => answerCommandConfirmation(choice))} />}
+    {switchRestartOffer && <Dialog open title="Codex 桌面端正在运行" onClose={() => setSwitchRestartOffer(null)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
+      <Button variant="ghost" onClick={() => setSwitchRestartOffer(null)}>暂不使用</Button>
       <Button variant="primary" testId="switch-restart-codex-desktop" onClick={() => void perform('重开 Codex 桌面端', async () => { await launch('codexDesktop', 'restart'); setSwitchRestartOffer(null) })}>帮我重开</Button>
-    </>}><p>{switchRestartOffer === 'official' ? '它还在用刚才的账号，要重开才会换回官方账号。' : '它还在用刚才的账号，要重开才会用上当前账号。'}重开会打断它正在进行的回答。</p></Dialog>}
-    {restartDialog && <Dialog open title="Codex 桌面端还开着" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
+    </>}><p>{switchRestartOffer === 'official' ? '当前仍在使用之前的账号，重新打开后将切换为官方账号。' : '当前仍在使用之前的账号，重新打开后将切换为当前账号。'}重新打开将中断正在进行的回答。</p></Dialog>}
+    {restartDialog && <Dialog open title="Codex 桌面端正在运行" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
       <Button variant="ghost" onClick={() => setRestartDialog(false)}>取消</Button>
       <Button onClick={() => void perform('重开 Codex', async () => { await launch('codexDesktop', 'restart'); setRestartDialog(false) })}>重开 Codex</Button>
       <Button variant="primary" onClick={() => void perform('打开 Codex', async () => { await launch('codexDesktop'); setRestartDialog(false) })}>打开窗口</Button>
-    </>}><p>可以直接切到开着的窗口。刚改过配置的话，点「重开 Codex」才会用上。</p></Dialog>}
+    </>}><p>可直接切换到已打开的窗口。如刚修改过配置，请点击「重开 Codex」使其生效。</p></Dialog>}
     {/* 显示中文要在本机开一个调试端口（早先审查标过的安全点），所以仍然问一次、不替用户默认开。
         两个按钮同等样式，键盘焦点落在「先不用」：随手一按回车不会开端口，想要中文的人点一下就行。
         Codex 的中文开关每次启动时才拿，只有星芒打开的那一下连了加速、开了通道，开机后直接点 Codex 自己的图标还是英文，
         所以第一段末尾先说清，免得客户以为汉化掉了。 */}
-    {chineseDialog && <Dialog open title="要让 Codex 的界面显示中文吗？" onClose={() => setChineseDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} initialFocus={chineseDecline} footer={<>
-      <Button ref={chineseDecline} testId="codex-chinese-decline" onClick={() => void perform('打开 Codex', () => answerChineseRuntimePatch('disabled'))}>先不用</Button>
+    {chineseDialog && <Dialog open title="是否将 Codex 界面显示为中文？" onClose={() => setChineseDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} initialFocus={chineseDecline} footer={<>
+      <Button ref={chineseDecline} testId="codex-chinese-decline" onClick={() => void perform('打开 Codex', () => answerChineseRuntimePatch('disabled'))}>暂不使用</Button>
       <Button testId="codex-chinese-enable" onClick={() => void perform('启用中文界面', () => answerChineseRuntimePatch('enabled'))}>显示中文</Button>
-    </>}><p>选「显示中文」后，星芒每次打开 Codex 时会顺带开一个本机通道，用来把界面换成中文；关掉 Codex，通道也跟着关上。通道开着时，这台电脑上的其他程序和其他用户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。</p>
-      <p>不用也没关系，Codex 照样能用，只是界面是英文。只问这一次，以后想改，随时可以在 Codex 桌面端的配置里打开或关掉。</p></Dialog>}
+    </>}><p>选择「显示中文」后，星芒每次打开 Codex 时将同时开启一个本机通道用于界面汉化，Codex 关闭时通道随之关闭。通道开启期间，本机其他程序和用户也可连接并控制 Codex；多人共用电脑时，建议选择「暂不使用」。中文界面仅在从星芒打开时生效，直接点击 Codex 图标打开仍为英文。</p>
+      <p>不开启不影响使用，Codex 界面将保持英文。此提示仅显示一次，之后可随时在 Codex 桌面端配置中开启或关闭。</p></Dialog>}
     {/* 默认模型换不换由用户点，不替付费客户自动换（第十二批候选 5、第十五批 6）；关掉对话框 = 这次先不打开。 */}
     {modelSwap && <Dialog open title={modelSwapTitle(modelSwap.offer)} onClose={() => modelSwap.answer('cancel')} footer={<>
       <Button testId="model-swap-keep" onClick={() => modelSwap.answer('keep')}>{modelSwapKeepLabel(modelSwap.offer)}</Button>

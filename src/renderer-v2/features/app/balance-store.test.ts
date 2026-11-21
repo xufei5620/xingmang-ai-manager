@@ -119,7 +119,7 @@ describe('shared account balance refresh', () => {
     const lastUpdate = store.getSnapshot().updatedAt
     read.mockRejectedValueOnce(new Error('Failed to fetch'))
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(store.getSnapshot()).toMatchObject({ balance: balance(100), updatedAt: lastUpdate, loading: false, error: '余额暂时没有读到，请检查网络后重试。' })
+    expect(store.getSnapshot()).toMatchObject({ balance: balance(100), updatedAt: lastUpdate, loading: false, error: '余额获取失败，请检查网络后重试。' })
     read.mockResolvedValue(balance(90))
     await store.refresh()
     expect(store.getSnapshot()).toMatchObject({ balance: balance(90), updatedAt: Date.now(), error: null })
@@ -286,7 +286,7 @@ describe('shared account balance refresh', () => {
     await vi.advanceTimersByTimeAsync(0)
     store.scheduleActivity('new-api:1')
     store.setScope(null)
-    expect(store.getSnapshot()).toEqual({ scope: null, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 })
+    expect(store.getSnapshot()).toEqual({ scope: null, balance: null, loading: false, updatedAt: null, error: null, reads: 1, networkFailures: 0 })
     pending.resolve(balance(100))
     await request
     await vi.advanceTimersByTimeAsync(90_000)
@@ -398,8 +398,12 @@ describe('shared account balance network failure streak', () => {
 // whole window three times. What narrow subscribers rely on is pinned here.
 describe('shared account balance for narrow subscribers', () => {
   const stores: AccountBalanceStore[] = []
+  // A fast machine lands several reads inside one millisecond. Pinning the
+  // clock makes that the only case, so a read listener keyed on the timestamp
+  // fails every run instead of once in a while on CI.
+  const landedAt = Date.parse('2026-11-21T00:00:00Z')
   function create(read: () => Promise<AccountBalance>) {
-    const store = createAccountBalanceStore({ read })
+    const store = createAccountBalanceStore({ read, now: () => landedAt })
     stores.push(store)
     return store
   }

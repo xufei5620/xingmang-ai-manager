@@ -652,5 +652,5 @@ function ChatFormula({ math }: { math: ChatMath }) {
 
 function ErrorLine({ message, onOpenAccount }: { message?: string; onOpenAccount?: ChatPageProps['onOpenAccount'] }) {
   const action = onOpenAccount ? chatErrorAction(message) : null
-  return <p className="chat-message-error" role="alert">{message}{action && <Button size="xs" variant="ghost" onClick={() => onOpenAccount?.(action)} testId={`chat-error-${action}`}>{action === 'recharge' ? '去充值' : '去调额度'}</Button>}</p>
+  return <p className="chat-message-error" role="alert">{message}{action && <Button size="xs" variant="ghost" onClick={() => onOpenAccount?.(action)} testId={`chat-error-${action}`}>{action === 'recharge' ? '前往充值' : '去调额度'}</Button>}</p>
 }

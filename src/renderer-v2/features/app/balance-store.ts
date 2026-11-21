@@ -9,6 +9,11 @@ export interface AccountBalanceSnapshot {
   updatedAt: number | null
   error: string | null
   /**
+   * 这个 store 一共读到过几次余额，只增不减，换账号也不归零。「又读到一次」只能认它：快机器上
+   * 前后两次读能落在同一毫秒，updatedAt 一模一样，按时间戳认会漏掉一次。
+   */
+  reads: number
+  /**
    * 连着几次读余额都是本机网络的问题（没网、代理挂了、门户认证没做完）；读成功或
    * 换成别的失败就归零。余额是唯一定时去服务端拉数据的地方，顶部的断网横幅靠它
    * 认出 navigator.onLine 看不出来的那几种断网。
@@ -53,16 +58,16 @@ export function sameFlatRecord<T extends object>(a: T | null, b: T | null): bool
 }
 
 /**
- * 余额每读到一次（updatedAt 变了，换账号清空的那一下不算）就调一次 onRead。只关心「读到了」，
+ * 余额每读到一次（reads 加了一，换账号清空的那一下不算）就调一次 onRead。只关心「读到了」，
  * 不关心转圈、出错：跟着余额顺带去读别的（用量、订阅）的地方用它，不用为此订阅整份余额（R8）。
  */
 export function subscribeBalanceReads(store: AccountBalanceStore, onRead: () => void): () => void {
-  let seen = store.getSnapshot().updatedAt
+  let seen = store.getSnapshot().reads
   return store.subscribe(() => {
-    const { updatedAt } = store.getSnapshot()
-    if (updatedAt === seen) return
-    seen = updatedAt
-    if (updatedAt !== null) onRead()
+    const { reads } = store.getSnapshot()
+    if (reads === seen) return
+    seen = reads
+    onRead()
   })
 }
 
@@ -73,7 +78,7 @@ export function createAccountBalanceStore({ read, now = Date.now, focused = alwa
   /** Whether the user is looking at the window; decides the refresh pace. */
   focused?: () => boolean
 }): AccountBalanceStore {
-  let snapshot: AccountBalanceSnapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 }
+  let snapshot: AccountBalanceSnapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, reads: 0, networkFailures: 0 }
   const listeners = new Set<() => void>()
   let visible = true
   let disposed = false
@@ -160,7 +165,7 @@ export function createAccountBalanceStore({ read, now = Date.now, focused = alwa
             const balance = await read()
             if (!current()) return
             // 跟上次一样就留着上次那一份，只认余额数字的地方（根组件挑的几样、首页）不用跟着重画（R8）。
-            publish({ balance: sameFlatRecord(snapshot.balance, balance) ? snapshot.balance : balance, updatedAt: now(), error: null, networkFailures: 0, networkFailureReason: undefined })
+            publish({ balance: sameFlatRecord(snapshot.balance, balance) ? snapshot.balance : balance, updatedAt: now(), error: null, reads: snapshot.reads + 1, networkFailures: 0, networkFailureReason: undefined })
           } catch (cause) {
             if (!current()) return
             const reason = localNetworkFailureReason(cause) ?? undefined
@@ -227,7 +232,7 @@ export function createAccountBalanceStore({ read, now = Date.now, focused = alwa
       activityDueAt = null
       inFlight = null
       listeners.clear()
-      snapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 }
+      snapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, reads: 0, networkFailures: 0 }
     },
   }
 }

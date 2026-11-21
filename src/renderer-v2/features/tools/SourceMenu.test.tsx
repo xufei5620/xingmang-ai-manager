@@ -22,8 +22,8 @@ describe('home which-account menu', () => {
     const items = buildSourceMenuItems(input({ manual: { checked: false, onSelect: noop } }))
     expect(words(items)).toEqual([
       { label: '当前账号', description: '按用量从当前账号扣费', checked: true, disabled: undefined, testId: 'tool-claude-source-account' },
-      { label: 'Claude 账号', description: '用你自己的官方订阅登录', checked: false, disabled: undefined, testId: 'tool-claude-source-official' },
-      { label: '自己填写密钥', description: '粘贴你在星芒创建的密钥', checked: false, disabled: undefined, testId: 'tool-claude-source-manual' },
+      { label: 'Claude 账号', description: '使用您的官方订阅登录', checked: false, disabled: undefined, testId: 'tool-claude-source-official' },
+      { label: '手动填写密钥', description: '粘贴在星芒创建的密钥', checked: false, disabled: undefined, testId: 'tool-claude-source-manual' },
       'divider',
       { label: '更多配置…', description: undefined, checked: undefined, disabled: undefined, testId: undefined },
     ])
@@ -33,7 +33,7 @@ describe('home which-account menu', () => {
     for (const tool of ['codex', 'codexDesktop']) {
       const items = buildSourceMenuItems(input({ tool, provider: 'codex', manual: { checked: false, onSelect: noop } }))
       expect(words(items)[1]).toMatchObject({ label: 'ChatGPT 账号', testId: `tool-${tool}-source-official` })
-      expect(items).toContainEqual({ note: 'Codex CLI 和 Codex 桌面端共用这份配置' })
+      expect(items).toContainEqual({ note: 'Codex CLI 与 Codex 桌面端共用此配置' })
     }
     expect(words(buildSourceMenuItems(input({ tool: 'grok', provider: 'grok' })))[1]).toMatchObject({ label: 'Grok 账号' })
   })
@@ -48,7 +48,7 @@ describe('home which-account menu', () => {
     const signedIn = buildSourceMenuItems(input({ official: { checked: true, signedIn: 'chatgpt@example.test，Plus', onSelect: noop } }))
     expect(words(signedIn)[1]).toMatchObject({ description: 'chatgpt@example.test，Plus', checked: true })
     for (const value of [null, '']) {
-      expect(words(buildSourceMenuItems(input({ official: { checked: true, signedIn: value, onSelect: noop } })))[1]).toMatchObject({ description: '用你自己的官方订阅登录' })
+      expect(words(buildSourceMenuItems(input({ official: { checked: true, signedIn: value, onSelect: noop } })))[1]).toMatchObject({ description: '使用您的官方订阅登录' })
     }
   })
 
@@ -70,9 +70,9 @@ describe('home which-account menu', () => {
     const markup = renderToStaticMarkup(<SourceMenu tool="claude" name="Claude Code" chip="自己的密钥" items={[]} />)
     expect(markup).toContain('data-testid="tool-claude-source-menu"')
     expect(markup).toContain('data-testid="tool-claude-source"')
-    expect(markup).toContain('aria-label="Claude Code 现在用自己的密钥，点击切换"')
+    expect(markup).toContain('aria-label="Claude Code 正在使用自己的密钥，点击切换"')
     expect(markup).toContain('<span>自己的密钥</span>')
     expect(renderToStaticMarkup(<SourceMenu tool="codexDesktop" name="Codex 桌面端" chip="当前账号" items={[]} />))
-      .toContain('aria-label="Codex 桌面端现在用当前账号，点击切换"')
+      .toContain('aria-label="Codex 桌面端正在使用当前账号，点击切换"')
   })
 })

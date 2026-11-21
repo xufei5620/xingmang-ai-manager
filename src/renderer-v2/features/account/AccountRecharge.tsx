@@ -203,7 +203,7 @@ export function AccountRecharge({
   subscriptionPurchased?: () => void
   openOrders?: (order: string | null) => void
   openHelp?: () => void
-  /** 去「检查」页；缺省 = 工具没换过去时不给「去检查页」。 */
+  /** 去「检查」页；缺省 = 工具没换过去时不给「前往检查页」。 */
   openHealth?: () => void
   /** 支付窗口开着的那一单（没有为 null）：「我的订单」那一行据此写「支付窗口开着」。 */
   onPaymentChange?: (tradeNo: string | null) => void
@@ -509,10 +509,10 @@ export function AccountRecharge({
         if (!followPlans(plan, fresh)) return false
         if (purchaseMethod === 'balance') {
           if (!accountSupports(session, 'supportsSubscriptionBalancePurchase')) throw new Error('当前账号暂不支持余额购买订阅。')
-          if (purchaseLine?.short) throw new Error('余额不够，换一种支付方式')
+          if (purchaseLine?.short) throw new Error('余额不足，请选择其他支付方式')
           await api.purchaseAccountSubscriptionWithBalance(plan.id)
         } else {
-          if (!accountSupports(session, 'supportsSubscriptionPayment')) throw new Error('当前账号不能在星芒里买订阅。')
+          if (!accountSupports(session, 'supportsSubscriptionPayment')) throw new Error('当前账号不支持在星芒中购买订阅。')
           const payMethod = methods.find((item) => item.type === purchaseMethod)
           if (!payMethod || payMethod.provider === 'waffo')
             throw new Error('该支付渠道暂不支持订阅。')
@@ -1039,7 +1039,7 @@ export function AccountRecharge({
               disabled={!purchaseMethod || purchaseNotice?.gone}
               onClick={purchasePlan}
             >
-              {purchaseMethod === 'balance' && purchase ? `用余额支付 ${planPriceText(purchase)}` : '打开支付窗口'}
+              {purchaseMethod === 'balance' && purchase ? `使用余额支付 ${planPriceText(purchase)}` : '打开支付窗口'}
             </Button>
           </>
         }

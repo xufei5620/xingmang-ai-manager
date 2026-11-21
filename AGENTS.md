@@ -190,7 +190,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 直接 `await` 后 `setState` 会让慢响应覆盖新数据，切 tab 时 100% 复现。renderer-v2 的写法：组件或 hook 里用 `src/renderer-v2/latest-request.ts` 的 `useLatestRequest()`——每发一次请求先 `const current = latest.begin()`，响应回来 `if (!current()) return`；换了账号或参数、不发新请求时 `latest.invalidate()`；卸载时它自己作废。几件事各自记下发起时的那一刻、互不作废，换账号或关窗时才一起作废的，用 `latest.capture()`：它不开始新请求，只记下这一刻。只在一个 effect 里发、随 effect 清理的请求，也可以用 effect 里的 `let current = true` 取消标记；纯逻辑的控制器里用 revision / epoch（`createLatestRequest()` 是同一套的非 hook 版）。v2 里原来手写的 `useRef(0)` 计数器已在 #1070 第 8 步全部换成这个 hook，剩下的几处 `useRef(0)` 是时间戳、编号或计数，不是竞态守卫；**新代码别再手抄计数器**。冻结的 legacy 树里另有 `src/scan-coordinator.ts` / `src/latest-request.ts` / `src/provider-extension-coordinator.ts` 三个工具（`src/latest-request.ts` 跟 v2 这份同名不同物），v2 不 import 它们。
 
 **T7. 给 `src/` 加组件测试 → 用 `renderToStaticMarkup`，不要加 DOM 环境。**
-仓库**有 `vitest.config.ts`**（三个 project：`legacy` 覆盖 `src/**` 与 `electron/**`、`renderer-v2`、`canvas`，都挂了 `@vitejs/plugin-react`，legacy 另把 React 别名指向 `tooling/legacy-renderer/`）。但三个 project **都没设 `environment`，跑的仍是默认的 `node`**，依赖里也没有 jsdom / happy-dom / @testing-library。现有 `src/**/*.test.tsx` 绝大多数走 `react-dom/server` 的 `renderToStaticMarkup`，断言渲染出的 HTML（`data-testid`、role、class），**零处 `render()`**。新组件测试照这个写法走。
+仓库**有 `vitest.config.ts`**（三个 project：`legacy` 覆盖 `src/**` 与 `electron/**`、`renderer-v2`、`canvas`，都挂了 `@vitejs/plugin-react`，legacy 另把 React 别名指向 `tooling/legacy-renderer/`）。但三个 project **都没设 `environment`，跑的仍是默认的 `node`**，依赖里也没有 jsdom / happy-dom / @testing-library。现有 `src/**/*.test.tsx` 绝大多数走 `react-dom/server` 的 `renderToStaticMarkup`，断言渲染出的 HTML（`data-testid`、role、class），**零处 `render()`**。新组件测试照这个写法走。组件里有 `React.lazy` 的，同步渲染只拿到 Suspense 的占位：改用 `react-dom/static` 的 `prerender` 等它读完，再去掉它插的注释标记（写法见 `src/renderer-v2/markdown-view.test.tsx` 的 `renderSettled`），同样不要 DOM 环境。
 
 **T8. electron 测试已纳入 typecheck，但 `tsconfig.electron.json` 的测试 exclude 千万别删。**
 `npm run typecheck` 跑四段：根 tsconfig（src）、`tsconfig.electron.json`（主进程**产物**配置，仍 exclude 测试）、`tsconfig.electron.test.json`（纳入全部 electron 测试，自带 `noEmit: true`）、`tsconfig.renderer-v2.json`。**基础配置的 exclude 是 dist-electron 不含测试产物的承重墙**——`npm run compile` 用的就是它，删掉 exclude = 测试代码进发布包。测试配置的 `rootDir: "."` 专为孤儿测试 `electron/onboarding-runtime.test.ts`（测的是 `src/onboarding-runtime.ts`）的跨目录 import 而设。
@@ -227,6 +227,9 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 - **例外要回去问**：如果 legacy 连构建或启动都不成立（`R-F1` 那一类「回滚版事实上不可用」），那是「冻结还有没有意义」的问题，回到 yoyo 那里重新拍板，不要自己在 legacy 上做功能性修复。
 
 改到冻结范围内的文件时 `.claude/rules/legacy-renderer.md` 会自动加载，内容与本条一致。
+
+**T15. 新加一个会真开星芒的 CI 作业 → 真开之前先跑 `node scripts/ci-block-production-hosts.cjs`。**
+星芒一打开就查账号站、读更新目录，服务端按 UA 和来源 IP 数装机量，没断网的真开会被数成客户的电脑（2026-11-21 一天 275 台）。这一步把客户端源码里 `solov.cc`、`shenfengwl.fun` 下的全部域名在 runner 上指回本机并逐个核过；要读线上更新目录的步骤（发版门禁的前置检查）得排在它前面。`scripts/ci-block-production-hosts.test.cjs` 扫全部工作流，漏了就红，实在加不了的写进它的例外表并写明原因。漏网的请求靠 CI 里 UA 末尾的「 ci」认（`electron/ci-user-agent.ts`），别删。
 
 ---
 
@@ -284,7 +287,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 - ❌ **不要用 zod / valibot / ajv 替换 `ipc.ts` 用的手写 parse 函数（在 `electron/ipc/parsers/`）** — 它们产出的是能直接上屏的中文错误文案
 - ❌ **不要开 `noUncheckedIndexedAccess` / `exactOptionalPropertyTypes`** — 实测前者会新增近百条错误，抽查全是已被前置校验保护的下标访问，**零个真 bug**。现在的 `strict: true` 已经足够
 - ❌ **不要顺手加 jsdom / happy-dom** — 组件测试已经有 `renderToStaticMarkup` 这条不需要 DOM 环境的路子（见 T7），换 DOM 环境是需要跨 agent 对齐的基础设施改动。`e2e/` 的套件已经是更高性价比的替代
-- ❌ **不要把路由级 code-splitting / React.lazy 铺开** — JS 从本地磁盘加载且开了 `codeCache`，一般页面拆了收益为负。已有的例外：renderer-v2 `App.tsx` 对聊天、业务页、加速页三个重页面按需加载，首屏 JS 实测少约两成（README「启动性能状态」）；再加要拿同样的实测说话
+- ❌ **不要把路由级 code-splitting / React.lazy 铺开** — JS 从本地磁盘加载且开了 `codeCache`，一般页面拆了收益为负。已有的例外：renderer-v2 `App.tsx` 对聊天、业务页、加速页三个重页面按需加载，首屏 JS 实测少约两成；公告、协议的 Markdown 排版点开才读（总单 77 R9，首屏 JS 再少 11.7%），两次都记在 README「启动性能状态」。客服二维码库 R9 也试过改成 `import()`，Mac 开发版开机看见欢迎页慢了 1 秒多、首屏用例越过 5 秒门槛，已改回静态引入：欢迎页首屏就要用的东西别拆；再加要拿同样的实测说话
 - ❌ **不要引入 react-window / react-virtualized** — 最长的会话列表已在 SQL 层分页到每页 ≤100
 - ❌ **不要给主进程上 bundler** — 会模糊信任链模块的边界，那是本项目的核心可审计资产
 - ❌ **不要为了让测试在非 Windows 通过而改断言** — 用平台门控，否则会弱化对 Windows 行为的验证；画布边界门禁脚本同理，不要为了让它过而改断言

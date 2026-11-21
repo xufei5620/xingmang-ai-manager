@@ -27,7 +27,7 @@ export interface RequiredUpdateActions {
  *
  * 它故意关不掉：没有右上角的叉，Esc 和点空白处都不起作用，底下的界面被 showModal
  * 设成不可操作。能做的只有更新和找客服；自动更新走不通时再多一个「打开下载页」。
- * 「找客服」打开的帮助框是后开的模态框，会叠在这层上面。
+ * 「联系客服」打开的帮助框是后开的模态框，会叠在这层上面。
  *
  * 磁盘不够时更新器不下载、也不报错，这层就换成版本更新卡那段「只剩多少、要多少、怎么清理」，
  * 主按钮改成「空间够了，再试一次」；版本更新卡给了「仍要下载」，这里也给，说法相同。
@@ -44,7 +44,7 @@ export function RequiredUpdateGate({ update, windows, linux = false, mac = false
   const [requested, setRequested] = useState(false)
   const [installing, setInstalling] = useState(false)
   const [cleanupOpen, setCleanupOpen] = useState(false)
-  // 「再试一次」在量盘：按钮转圈，量完还不够就多说一句，免得他以为没点上。
+  // 「重试」在量盘：按钮转圈，量完还不够就多说一句，免得他以为没点上。
   const [measuring, setMeasuring] = useState(false)
   const [stillShort, setStillShort] = useState(false)
   const followed = useRef('')
@@ -111,34 +111,34 @@ export function RequiredUpdateGate({ update, windows, linux = false, mac = false
   const shortfallText = gate.diskShortfall ? updateDiskShortfallText(update, false) : null
   const busy = !gate.action || measuring
   return <GateDialog>
-    <header><Download size={20} aria-hidden="true" /><div><h2 id="required-update-title">这个版本需要更新后才能继续用</h2></div></header>
+    <header><Download size={20} aria-hidden="true" /><div><h2 id="required-update-title">当前版本需更新后才能继续使用</h2></div></header>
     <div className="xm-modal-content">
       <div className="xm-dialog-body">
         {update?.installMethod === 'system-installer'
-          ? <p data-testid="required-update-system-installer">为了让工具和账号正常工作，请先更新到 {gate.minimumVersion} 或更新的版本。点「立即更新」，新版本下载好后星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后重新打开星芒就行，账号和设置都会保留。</p>
-          : <p>为了让工具和账号正常工作，请先更新到 {gate.minimumVersion} 或更新的版本。点「立即更新」，新版本会自己下载并装好，中间会重启一次，账号和设置都会保留。</p>}
+          ? <p data-testid="required-update-system-installer">为确保工具和账号正常使用，请更新至 {gate.minimumVersion} 或更高版本。点击「立即更新」后，新版本下载完成时星芒将关闭并打开安装窗口，请点击「安装」并输入开机密码。安装完成后重新打开星芒即可，账号和设置均将保留。</p>
+          : <p>为确保工具和账号正常使用，请更新至 {gate.minimumVersion} 或更高版本。点击「立即更新」后将自动下载并安装，期间软件会重启一次，账号和设置均将保留。</p>}
         {/* 账号不在管理员组时授权窗口要的是管理员密码，「点「是」」对他没用。 */}
         {windows && (update?.installNeedsAdminPassword
-          ? <p data-testid="required-update-admin-password">要输入管理员密码；让有管理员账号的人来点，或联系客服。</p>
-          : <p>装的时候如果弹出「是否允许更改」，点「是」。</p>)}
+          ? <p data-testid="required-update-admin-password">需要管理员密码，请由管理员操作或联系客服。</p>
+          : <p>安装时如弹出「是否允许更改」，请点击「是」。</p>)}
         {mac && <p data-testid="required-update-mac-keychain">{macKeychainUpdateHint}</p>}
         <p data-testid="required-update-versions">现在是 {gate.currentVersion}{gate.availableVersion ? `，将更新到 ${gate.availableVersion}` : ''}</p>
         {gate.percent !== null && <Progress value={gate.percent} label="下载进度" testId="required-update-progress" />}
         {gate.progressDetail && <p className="v2-update-progress-detail" data-testid="required-update-progress-detail">{gate.progressDetail}</p>}
         {shortfallText && <div role="alert" data-testid="required-update-disk">
-          <p><strong>磁盘空间不够，新版本还没开始下载。</strong>{shortfallText}</p>
-          <p>先清出一些空间，再点「空间够了，再试一次」。</p>
-          {stillShort && !measuring && <p data-testid="required-update-disk-still">刚才又量了一次，空间还是不够。</p>}
+          <p><strong>磁盘空间不足，新版本未开始下载。</strong>{shortfallText}</p>
+          <p>请清理磁盘空间后点击「重新检查空间」。</p>
+          {stillShort && !measuring && <p data-testid="required-update-disk-still">已重新检查，磁盘空间仍不足。</p>}
           {cleanupOpen && <p data-testid="required-update-disk-cleanup">{updateDiskCleanupStepsFor(linux ? 'linux' : 'win')}</p>}
           <Button size="sm" icon={BookOpen} testId="required-update-disk-help" onClick={() => setCleanupOpen((open) => !open)}>{cleanupOpen ? '收起' : '怎么清理'}</Button>
         </div>}
         {gate.failure && <div role="alert" data-testid="required-update-failure">
           <p><strong>{gate.failureTitle}。</strong>{userFacingErrorMessage(gate.failure)}</p>
-          {!gate.manualReinstall && <p>试了还是不行，点「打开下载页」下载适合这台电脑的安装包，装好后打开就行。</p>}
+          {!gate.manualReinstall && <p>如仍无法更新，请点击「打开下载页」下载适用于本机的安装包并安装。</p>}
         </div>}
       </div>
       <footer>
-        <Button variant="ghost" testId="required-update-support" onClick={actions.contactSupport}>找客服</Button>
+        <Button variant="ghost" testId="required-update-support" onClick={actions.contactSupport}>联系客服</Button>
         {gate.failure && <Button variant={gate.manualReinstall ? 'primary' : 'secondary'} testId="required-update-download-page" onClick={actions.openDownloadPage}>打开下载页</Button>}
         {/* 空间是估算的：他清出了一点、或者就想试一次，由他决定，和版本更新卡一样。 */}
         {gate.diskShortfall && <Button testId="required-update-download-anyway" disabled={busy} onClick={() => start('download', { ignoreDiskSpace: true })}>仍要下载</Button>}

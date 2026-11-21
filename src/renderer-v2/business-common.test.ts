@@ -203,7 +203,7 @@ describe('errorMessage', () => {
   })
 
   it('keeps its own generic fallback when the caller passes none', () => {
-    expect(errorMessage(new Error('EPIPE'))).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
+    expect(errorMessage(new Error('EPIPE'))).toBe('操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。')
   })
 
   it('does not take an English failure for Chinese because of a redacted path', () => {
@@ -220,7 +220,7 @@ describe('errorMessage', () => {
     ]
     for (const reason of failures) {
       expect(errorMessage(ipc(reason), '保存配置没有成功')).toBe('保存配置没有成功')
-      expect(errorMessage(ipc(reason))).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
+      expect(errorMessage(ipc(reason))).toBe('操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。')
     }
   })
 
@@ -278,10 +278,10 @@ describe('snapshotErrorMessage', () => {
 })
 
 describe('detectionFailureMessage', () => {
-  const permission = '没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。'
-  const busy = '这个工具的文件正被别的程序占着。关掉正在用它的窗口，再点「重新检测」。'
-  const missing = '检测时有个文件找不到了，可能被安全软件拦了或被删掉了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。'
-  const other = '检测这个工具时出了错，原因已经记进日志。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。'
+  const permission = '无权读取该工具的文件，通常是被安全软件拦截。请点击「重新检测」；如仍失败，请在「反馈与客服」页导出报告并发送给客服。'
+  const busy = '该工具的文件正被其他程序占用。请关闭正在使用它的窗口后点击「重新检测」。'
+  const missing = '检测时未找到所需文件，可能已被安全软件拦截或删除。请点击「重新检测」；如仍失败，请在「反馈与客服」页导出报告并发送给客服。'
+  const other = '检测该工具时出错，原因已记录到日志。请点击「重新检测」；如仍失败，请在「反馈与客服」页导出报告并发送给客服。'
 
   it('says in plain words that a permission error is most likely security software', () => {
     expect(detectionFailureMessage("EPERM: operation not permitted, scandir 'C:\\Users\\yoyo\\AppData\\Roaming\\npm'")).toBe(permission)
@@ -307,7 +307,7 @@ describe('detectionFailureMessage', () => {
 
   it('never puts the words behind a Codex desktop probe summary on screen, even in Chinese', () => {
     // 11-18 客户截图：查包那段的中文说法原样上了屏。现在主进程交英文摘要＋原话，界面认开头。
-    const maybeUpdating = '暂时没认出 Codex 桌面端，可能正在更新。等一两分钟点「重新检测」。'
+    const maybeUpdating = '暂未识别到 Codex 桌面端，可能正在更新。请等待一两分钟后点击「重新检测」。'
     expect(detectionFailureMessage('Codex desktop package probe: unrecognized result (no package entry has a usable name, version and install folder): {"packages":{"InstallLocation":"C:\\Users\\张三\\x"}}')).toBe(maybeUpdating)
     expect(detectionFailureMessage('Codex desktop package probe: unrecognized result (empty output)')).toBe(maybeUpdating)
     expect(detectionFailureMessage('Codex desktop package probe: unrecognized result (unknown error text): 当前用户未检测到 Codex Desktop')).toBe(maybeUpdating)
@@ -371,21 +371,21 @@ describe('overflowedPage', () => {
 describe('operationFailureFrom', () => {
   it('keeps the swallowed English original as detail instead of dropping it', () => {
     expect(operationFailureFrom(new Error('spawn EPERM'), '打开 Codex 桌面端'))
-      .toEqual({ message: '打开 Codex 桌面端没有完成', detail: 'spawn EPERM' })
+      .toEqual({ message: '打开 Codex 桌面端未完成', detail: 'spawn EPERM' })
   })
 
   it('folds an English failure that names a file into detail instead of showing it', () => {
     // 错误框以前把这句当成中文放在醒目处，不留 detail（第三十批 A）。
     const cause = new Error("Error invoking remote method 'config:rewrite-key': Error: EPERM: operation not permitted, open 'C:\\Users\\张三\\.codex\\config.toml'")
     expect(operationFailureFrom(cause, '重新写入密钥')).toEqual({
-      message: '重新写入密钥没有完成',
+      message: '重新写入密钥未完成',
       detail: "EPERM: operation not permitted, open '本机路径",
     })
   })
 
   it('leaves no detail when the message already explains the cause', () => {
     expect(operationFailureFrom(new Error('配置文件写入失败：磁盘只读'), '保存')).toEqual({ message: '配置文件写入失败：磁盘只读' })
-    expect(operationFailureFrom(new Error('fetch failed'), '刷新')).toEqual({ message: '网络连不上，请检查网络后重试。' })
+    expect(operationFailureFrom(new Error('fetch failed'), '刷新')).toEqual({ message: '网络连接失败，请检查网络后重试。' })
   })
 
   it('masks keys in the original before it reaches the screen', () => {
@@ -395,11 +395,11 @@ describe('operationFailureFrom', () => {
     expect(failure.detail).toContain('EBUSY')
   })
 
-  it('caps the original at 160 characters and falls back to 操作没有完成 without an action', () => {
+  it('caps the original at 160 characters and falls back to 操作未完成 without an action', () => {
     const failure = operationFailureFrom(new Error('x'.repeat(400)))
-    expect(failure.message).toBe('操作没有完成')
+    expect(failure.message).toBe('操作未完成')
     expect(failure.detail).toHaveLength(160)
-    expect(operationFailureFrom(new Error(''))).toEqual({ message: '操作没有完成' })
+    expect(operationFailureFrom(new Error(''))).toEqual({ message: '操作未完成' })
   })
 })
 
@@ -407,14 +407,14 @@ describe('failureWithDetail', () => {
   it('keeps the generic banner sentence and hands the redacted original over for classification', () => {
     // useOperation 交给页头红条的两样东西：上屏那句照旧，原话只拿来认类别。
     const failure = failureWithDetail(new Error("EBUSY: resource busy or locked, rename 'C:\\Users\\yoyo\\.codex\\config.toml' api_key=abc123"))
-    expect(failure.message).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
+    expect(failure.message).toBe('操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。')
     expect(failure.detail).toContain('EBUSY: resource busy or locked')
     expect(failure.detail).not.toMatch(/yoyo|abc123/)
   })
 
   it('leaves no detail when the shown sentence already explains the cause', () => {
     expect(failureWithDetail(new Error('配置文件写入失败：磁盘只读'))).toEqual({ message: '配置文件写入失败：磁盘只读' })
-    expect(failureWithDetail(new Error('fetch failed'))).toEqual({ message: '网络连不上，请检查网络后重试。' })
-    expect(failureWithDetail(null)).toEqual({ message: '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。' })
+    expect(failureWithDetail(new Error('fetch failed'))).toEqual({ message: '网络连接失败，请检查网络后重试。' })
+    expect(failureWithDetail(null)).toEqual({ message: '操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。' })
   })
 })

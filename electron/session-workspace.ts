@@ -18,7 +18,7 @@ export interface SessionWorkspaceProbe {
  *
  * 刻意不照搬 config-directory.ts 的 lstat + 「拒绝任何 reparse 组件」：那是给
  * 我们自己写出来的配置目录定的规矩，而这里是用户自己的项目目录，`D:\dev` 本来
- * 就可能是个联接。跟随链接、只认「最终是目录」，与旁边那颗「接着聊」判断目录
+ * 就可能是个联接。跟随链接、只认「最终是目录」，与旁边那颗「继续对话」判断目录
  * 存在时（provider-sessions.ts 的 workspaceDirectoryExists）逐字对齐——两颗按钮
  * 挨在一起，一颗能用一颗报错会让用户以为软件坏了。
  */

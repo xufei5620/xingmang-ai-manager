@@ -215,8 +215,8 @@ export function usageFailedFree(record: Pick<AccountUsageRecord, 'type' | 'quota
 
 /** 明细空着时那两句：选了「失败」、筛过、没筛三种（字表批07）。 */
 export function usageEmptyText(filtered: boolean, failOnly: boolean): { title: string; description: string } {
-  if (failOnly) return { title: '这段时间没有失败的调用', description: '换个筛选条件看看。' }
-  return filtered ? { title: '这段时间没有调用', description: '换个筛选条件看看。' } : { title: '这段时间没有调用', description: '' }
+  if (failOnly) return { title: '该时间段无失败的调用', description: '请调整筛选条件。' }
+  return filtered ? { title: '该时间段暂无调用', description: '请调整筛选条件。' } : { title: '该时间段暂无调用', description: '' }
 }
 
 // 历史账号的调用明细按整日查（Sub2API 的接口只认日历日），筛选项也跟星芒账号不一样。
@@ -234,11 +234,11 @@ export const sub2ApiUsageFilterFields: AccountFilterField[] = [
 
 /**
  * 历史账号筛选框下面那句（时间数字格式 N-7）。日子按这台电脑的时区切，原来直接写「时区 Asia/Shanghai」，
- * 英文代号客户看不懂：本机钟跟北京时间一样就不提时区，不一样才补一句按这台电脑的时间算。
+ * 英文代号客户看不懂：本机钟跟北京时间一样就不提时区，不一样才补一句按本机时间计算。
  */
 export function usageCalendarNote(timezone: string, now = new Date()): string {
   const note = '按整日统计，包含结束日期全天，默认最近 7 天。'
-  return sameClockAsBeijing(timezone, now) ? note : `${note}按这台电脑的时间算。`
+  return sameClockAsBeijing(timezone, now) ? note : `${note}按本机时间计算。`
 }
 
 // 比的是此刻墙上的钟，不是时区名：香港、台北这类跟北京同一个钟的也算，认不出的时区当不一样。
@@ -258,7 +258,7 @@ function wallClock(timeZone: string, at: Date): string {
 export function sub2ApiFilterId(value: string | undefined): number | undefined {
   if (!value) return undefined
   const parsed = Number(value)
-  if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error('密钥编号和分组编号要填正整数。')
+  if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error('密钥编号和分组编号须为正整数。')
   return parsed
 }
 

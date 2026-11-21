@@ -67,7 +67,13 @@ function bootSignedOutSmoke(config) {
   }
   function isolateSession(target) {
     target.fetch = fetchMock
-    target.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_details, callback) => {
+    target.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
+      // A development launch loads its renderer from the test's own loopback
+      // Vite server; every other origin stays cancelled.
+      if (config.rendererOrigins.includes(new URL(details.url).origin)) {
+        callback({})
+        return
+      }
       calls.push({ transport: 'renderer', outcome: 'denied' })
       callback({ cancel: true })
     })
@@ -103,11 +109,21 @@ function bootSignedOutSmoke(config) {
   require(config.entry)
 }
 
-export async function withSignedOutSmokeIsolation(options, testRoot) {
+/**
+ * `rendererOrigins` lists the loopback dev-server origins (exactly
+ * `http://127.0.0.1:<port>`) a development launch may load its renderer from.
+ * Compiled launches pass none, so every renderer request stays cancelled.
+ */
+export async function withSignedOutSmokeIsolation(options, testRoot, { rendererOrigins = [] } = {}) {
   const projectRoot = path.resolve('.')
   const fixtureRoot = path.resolve(testRoot)
   assert.ok(fixtureRoot.startsWith(`${path.join(projectRoot, 'artifacts')}${path.sep}`), 'Smoke launcher must stay inside its fixture directory')
   assert.equal(options.args[0], '.', 'Smoke must launch the compiled application')
+  for (const origin of rendererOrigins) {
+    const url = new URL(origin)
+    assert.ok(url.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port !== '' && url.origin === origin,
+      `Only a loopback dev server may serve the isolated renderer: ${origin}`)
+  }
   const launcher = path.join(fixtureRoot, 'launcher')
   const metadata = JSON.parse(await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8'))
   await fs.mkdir(launcher, { recursive: true })
@@ -116,14 +132,18 @@ export async function withSignedOutSmokeIsolation(options, testRoot) {
   await fs.writeFile(path.join(launcher, 'package.json'), JSON.stringify({ name: metadata.name,
     productName: metadata.productName, version: metadata.version, main: 'bootstrap.cjs' }), 'utf8')
   const config = { projectRoot, home: options.env.USERPROFILE ?? options.env.HOME,
-    entry: path.join(projectRoot, 'dist-electron/platform/entry.js') }
+    entry: path.join(projectRoot, 'dist-electron/platform/entry.js'), rendererOrigins }
   await fs.writeFile(path.join(launcher, 'bootstrap.cjs'), `(${bootSignedOutSmoke.toString()})(${JSON.stringify(config)})\n`, 'utf8')
   return { ...options, args: [launcher, ...options.args.slice(1)] }
 }
 
-export async function verifySignedOutSmokeIsolation(application) {
+/**
+ * `requirePublicStatus: false` is for a run that stops before the login
+ * dialog, where nothing guarantees the public account status was read yet.
+ */
+export async function verifySignedOutSmokeIsolation(application, { requirePublicStatus = true } = {}) {
   const result = await application.evaluate(() => globalThis.__signedOutSmoke.isolation())
   assert.deepEqual(result.deniedTransports, ['globalFetch', 'electronFetch', 'sessionFetch', 'electronRequest', 'http', 'https', 'externalBrowser'])
-  assert.ok(result.publicStatusRequests > 0, 'The login dialog must have read mocked account status')
+  if (requirePublicStatus) assert.ok(result.publicStatusRequests > 0, 'The login dialog must have read mocked account status')
   return result
 }

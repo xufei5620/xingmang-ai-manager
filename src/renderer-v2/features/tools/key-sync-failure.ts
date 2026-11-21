@@ -22,12 +22,12 @@ const unavailableGroupPatterns: readonly RegExp[] = [
  */
 export function keySyncFailureReason(message: string): string {
   const safe = userFacingErrorMessage(message).replace(/[。；;.\s]+$/, '')
-  if (isAccountNotEnabledFailure(safe)) return '当前账号还不能用，需要的话请联系客服开通'
+  if (isAccountNotEnabledFailure(safe)) return '当前账号尚未开通，如需使用请联系客服'
   // 写 Key 就是写工具的配置文件：没权限时说「写不进配置文件」，不说安装目录（已知29）。
   const hint = presentOperationError(safe, 'config')
   if (hint) return hint.title
   if (speaksChinese(safe)) return redactSecretPatterns(safe)
-  return '密钥没有写进去，点「重新同步」再试'
+  return '密钥写入失败，请点击「重新同步」'
 }
 
 /** 这条失败是不是「账号没开通这个工具」：重新同步、重新写入都救不了，只能找客服。 */
@@ -54,18 +54,18 @@ export function keySyncFailureText(provider: string, message: string): string {
  * 自相矛盾且没交代下一步。网络类失败改说这一句：已装好的工具照常能用，网络回来
  * 之后客户端自己会补写，用户什么都不用做。「重新同步」按钮保留，想立刻试的照点。
  */
-const offlineBootstrapNotice = '当前网络不可用，已装好的工具照常能用；联网后会自动补写密钥。'
+const offlineBootstrapNotice = '当前网络不可用，已安装的工具可正常使用；联网后将自动写入密钥。'
 
 /**
  * 拦住同步的是证书被换掉时，电脑一直联着网，等不来「联网后自动补写」，换这一句。「自动」线路下
  * 星芒约半分钟到一分钟会自己换到 CF，所以先叫客户稍等再点「重新同步」，还不行再换网络。
  */
-const certificateBootstrapNotice = '连星芒时被网络上的设备拦下了，这次没写好密钥。已装好的工具照常能用；稍等一两分钟点「重新同步」，还不行就换个网络（比如手机热点）。'
+const certificateBootstrapNotice = '连接星芒时被网络设备拦截，本次密钥未写入。已安装的工具可正常使用；请稍候一两分钟后点击「重新同步」，如仍失败，请切换网络（如手机热点）。'
 
 /** 整轮同步没跑完（还没轮到逐个工具）时说的那句。 */
 export function bootstrapErrorText(error: string): string {
   if (isCertificateFailureText(error)) return certificateBootstrapNotice
-  return isNetworkFailureText(error) ? offlineBootstrapNotice : `密钥没写好：${keySyncFailureReason(error)}`
+  return isNetworkFailureText(error) ? offlineBootstrapNotice : `密钥写入失败：${keySyncFailureReason(error)}`
 }
 
 /** 这一轮没写完、拦住它的全是网络时，不逐个工具说原因，说这一句。 */

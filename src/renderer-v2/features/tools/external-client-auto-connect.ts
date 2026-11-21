@@ -117,16 +117,16 @@ export async function autoConnectExternalClient(
     const saved = await bridge.configureExternalTool(tool, request)
     return { kind: 'connected', model: saved.model, verified: saved.connection ? connectionCheckView(saved.connection).tone === 'ok' : false }
   } catch (cause) {
-    return { kind: 'failed', message: errorMessage(cause, '没有连上') }
+    return { kind: 'failed', message: errorMessage(cause, '未连接') }
   }
 }
 
-const triggerLabels: Record<ExternalAutoConnectTrigger, string> = { install: '装好后', login: '登录后', detect: '认出来后' }
+const triggerLabels: Record<ExternalAutoConnectTrigger, string> = { install: '安装完成后', login: '登录后', detect: '认出来后' }
 
 const skipReasonLabels: Record<Extract<ExternalAutoConnectOutcome, { kind: 'skipped' }>['reason'], string> = {
-  'no-key': '挑不出能自动用的密钥',
-  'no-model': '这把密钥里挑不出拿得准的型号',
-  'account-changed': '账号中途变了',
+  'no-key': '无可自动使用的密钥',
+  'no-model': '无法从该密钥中确定合适的模型',
+  'account-changed': '账号已在中途变更',
 }
 
 /**
@@ -140,7 +140,7 @@ export function describeExternalAutoConnect(
 ): { level: RendererLogLevel; message: string } {
   const name = clientConnections.find((entry) => entry.id === tool)?.name ?? tool
   const head = `${name} 自动连接（${triggerLabels[trigger]}）`
-  if (outcome.kind === 'connected') return { level: outcome.verified ? 'info' : 'warn', message: `${head}：已写好${outcome.verified ? '' : '，连接自检没通过'}` }
-  if (outcome.kind === 'skipped') return { level: 'info', message: `${head}：没连，${skipReasonLabels[outcome.reason]}` }
-  return { level: 'warn', message: `${head}：没连成，${outcome.message.replace(/[。.\s]+$/, '')}` }
+  if (outcome.kind === 'connected') return { level: outcome.verified ? 'info' : 'warn', message: `${head}：已写好${outcome.verified ? '' : '，连接自检未通过'}` }
+  if (outcome.kind === 'skipped') return { level: 'info', message: `${head}：未连接，${skipReasonLabels[outcome.reason]}` }
+  return { level: 'warn', message: `${head}：连接失败，${outcome.message.replace(/[。.\s]+$/, '')}` }
 }

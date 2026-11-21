@@ -3,7 +3,7 @@ import { parseTree, stripComments, type Node } from 'jsonc-parser'
 
 /**
  * 工具自己读不读得了它的 JSON 配置（Codex 的 config.toml 见 codex-config-syntax.ts）。读不了时
- * 这几个工具都不会照着星芒写进去的 Key 和地址走，首页据此说「配置文件坏了」并给「修好它」。
+ * 这几个工具都不会照着星芒写进去的 Key 和地址走，首页据此说「配置文件坏了」并给「立即修复」。
  *
  * 三个工具的读法各不一样，星芒自己的读法（去掉开头的 BOM、坏字节换成占位符）又比它们都宽，
  * 所以星芒读得出 Key 不代表工具读得了。每一条都在沙箱里拿真工具逐条试过；没试过的写法一律

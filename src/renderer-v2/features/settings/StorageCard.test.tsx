@@ -57,7 +57,7 @@ describe('storage card wording (D100, 空间页改)', () => {
 
   it('says it is still working out a row, could not work it out, or how big it is', () => {
     expect(storageRowValue(undefined)).toBe('正在算…')
-    expect(storageRowValue({ bytes: null })).toBe('没算出来')
+    expect(storageRowValue({ bytes: null })).toBe('无法计算')
     expect(storageRowValue({ bytes: 20 * megabyte })).toBe('约 20 MB')
   })
 
@@ -66,7 +66,7 @@ describe('storage card wording (D100, 空间页改)', () => {
     expect(storageTotalText({ ...settled, logs: undefined })).toBe('正在算…')
     expect(storageTotalText({ ...settled, works: { bytes: 2 * gigabyte }, thumbnails: { bytes: 0.5 * gigabyte }, 'chat-history': { bytes: 0.5 * gigabyte }, logs: { bytes: null }, backups: { bytes: 0.2 * gigabyte }, downloads: { bytes: 0 } })).toBe('一共约 3.2 GB')
     const nothing = Object.fromEntries(storageRows.map((row) => [row.part, { bytes: null }]))
-    expect(storageTotalText(nothing)).toBe('没算出来')
+    expect(storageTotalText(nothing)).toBe('无法计算')
   })
 
   it('counts the backups in the row only once it knows how many there are', () => {
@@ -77,7 +77,7 @@ describe('storage card wording (D100, 空间页改)', () => {
 
   it('tells how much a clean freed, and when some files were in use', () => {
     expect(storageCleanedText({ freedBytes: 120 * megabyte, kept: 0 })).toBe('已清理，腾出约 120 MB。')
-    expect(storageCleanedText({ freedBytes: 80 * megabyte, kept: 3 })).toBe('有些文件正被占用，没删掉，腾出约 80 MB。关掉正在用的工具后可以再清一次。')
+    expect(storageCleanedText({ freedBytes: 80 * megabyte, kept: 3 })).toBe('部分文件正被占用，未能删除，已释放约 80 MB。关闭正在使用的工具后可再次清理。')
   })
 })
 
@@ -85,7 +85,7 @@ describe('storage card', () => {
   it('shows the approved title, lead and six rows in order with their sizes', () => {
     const markup = render()
     expect(markup).toContain('<h2>星芒占用的空间</h2>')
-    expect(markup).toContain('星芒在这台电脑上存了哪些东西、各占多少。清理只删能重新生成或重新下载的东西，作品和聊天记录不会动。')
+    expect(markup).toContain('星芒在本机保存的内容及占用空间。清理仅删除可重新生成或重新下载的内容，作品和聊天记录不受影响。')
     expect(markup).toContain('data-testid="settings-storage-total">一共约 3.1 GB</div>')
     const titles = ['AI 作品', '作品缩略图', '聊天记录', '运行日志', '工具配置备份', '装工具时下载的文件']
     expect(storageRows.map((row) => row.title)).toEqual(titles)
@@ -119,7 +119,7 @@ describe('storage card', () => {
   it('greys out 清理旧备份 with a note when only the newest ten are there', () => {
     const markup = render({ reports: { ...settled, backups: { bytes: 4000, backupCount: 10 } } })
     expect(button(markup, 'settings-storage-clean-backups')).toContain('disabled')
-    expect(rowMarkup(markup, 'backups')).toContain('只有最近 10 份，不用清理')
+    expect(rowMarkup(markup, 'backups')).toContain('仅保留最近 10 份，无需清理')
   })
 
   it('greys out the download clean with a note while a tool is installing', () => {
@@ -128,12 +128,12 @@ describe('storage card', () => {
     expect(rowMarkup(markup, 'downloads')).toContain('正在装工具，装完再清理')
   })
 
-  it('says 正在算… on every row and the total before anything is back, and 没算出来 on a row that failed', () => {
+  it('says 正在算… on every row and the total before anything is back, and 无法计算 on a row that failed', () => {
     const pending = render({ reports: {} })
     expect(pending.match(/正在算…/g)).toHaveLength(7)
     expect(button(pending, 'settings-storage-clean-thumbnails')).toContain('disabled')
     const failed = render({ reports: { ...settled, logs: { bytes: null } } })
-    expect(failed).toContain('data-testid="settings-storage-size-logs">没算出来</span>')
+    expect(failed).toContain('data-testid="settings-storage-size-logs">无法计算</span>')
   })
 
   it('starts out working everything out', () => {

@@ -5,10 +5,10 @@ import { keySyncFailureReason, keySyncFailureText, resolveToolKeySyncFailure } f
 
 describe('key sync failure wording', () => {
   it('names the tool and translates raw English failures', () => {
-    expect(keySyncFailureText('codex', 'fetch failed')).toBe('Codex CLI：网络连不上')
+    expect(keySyncFailureText('codex', 'fetch failed')).toBe('Codex CLI：网络连接失败')
     // 写 Key 写的是配置文件，不是安装目录（已知29）。
-    expect(keySyncFailureText('claude', 'EPERM: operation not permitted')).toBe('Claude Code：写不进配置文件')
-    expect(keySyncFailureText('grok', 'unexpected token in JSON')).toBe('Grok CLI：密钥没有写进去，点「重新同步」再试')
+    expect(keySyncFailureText('claude', 'EPERM: operation not permitted')).toBe('Claude Code：无法写入配置文件')
+    expect(keySyncFailureText('grok', 'unexpected token in JSON')).toBe('Grok CLI：密钥写入失败，请点击「重新同步」')
   })
 
   it('keeps Chinese reasons but never shows the home folder path', () => {
@@ -21,9 +21,9 @@ describe('key sync failure wording', () => {
   it('does not take an English failure for Chinese because its redacted path is', () => {
     // 脱敏后的占位词「本机路径」本身是汉字，以前这两句英文原样上屏（第三十批 A）。
     expect(keySyncFailureText('claude', "ENOENT: no such file or directory, open 'C:\\Users\\张三\\.claude\\settings.json'"))
-      .toBe('Claude Code：密钥没有写进去，点「重新同步」再试')
+      .toBe('Claude Code：密钥写入失败，请点击「重新同步」')
     expect(keySyncFailureText('codex', "EISDIR: illegal operation on a directory, read '/Users/alice/.codex/config.toml'"))
-      .toBe('Codex CLI：密钥没有写进去，点「重新同步」再试')
+      .toBe('Codex CLI：密钥写入失败，请点击「重新同步」')
   })
 
   it('masks keys in a Chinese reason it shows as is', () => {
@@ -35,7 +35,7 @@ describe('key sync failure wording', () => {
   // 0.2.24 深查 D3：工具那把密钥在网页上停用或到期，主进程停下说的那句要原样上屏，不被归成别的错。
   it('shows the stop sentence for a key disabled or expired on the web as it is', () => {
     expect(keySyncFailureText('codex', managedKeyStoppedMessage))
-      .toBe('Codex CLI：这个工具的密钥已经停用或到期，软件不会自动换一把新的。到星芒网页的「令牌管理」里重新启用，或者在「个人中心 › 密钥管理」把它撤销后再试')
+      .toBe('Codex CLI：这个工具的密钥已经停用或到期，软件不会自动换一把新的。到「个人中心 › 密钥管理」找到它点「启用」，或者把它撤销后再试')
   })
 
   it('shows the history account stop sentence as it is', () => {
@@ -44,7 +44,7 @@ describe('key sync failure wording', () => {
   })
 
   it('does not repeat the tool name the reason already starts with', () => {
-    expect(keySyncFailureText('grok', 'Grok CLI 没有收到配置完成结果，请重新检测')).toBe('Grok CLI 没有收到配置完成结果，请重新检测')
+    expect(keySyncFailureText('grok', 'Grok CLI 未收到配置完成结果，请重新检测')).toBe('Grok CLI 未收到配置完成结果，请重新检测')
   })
 
   it('lets a Codex failure that names the desktop app stand on its own', () => {
@@ -55,15 +55,15 @@ describe('key sync failure wording', () => {
 
   it('turns an unavailable account group into advice the customer can act on', () => {
     expect(keySyncFailureText('claude', '分组不存在、不可用或名称重复，请确认账号可用分组'))
-      .toBe('Claude Code：当前账号还不能用，需要的话请联系客服开通')
+      .toBe('Claude Code：当前账号尚未开通，如需使用请联系客服')
     expect(keySyncFailureText('grok', '当前账号不可使用分组「Grok-中转/订阅」'))
-      .toBe('Grok CLI：当前账号还不能用，需要的话请联系客服开通')
+      .toBe('Grok CLI：当前账号尚未开通，如需使用请联系客服')
   })
 })
 
 describe('key sync failure for one tool', () => {
-  const offline = '当前网络不可用，已装好的工具照常能用；联网后会自动补写密钥。'
-  const certificate = '连星芒时被网络上的设备拦下了，这次没写好密钥。已装好的工具照常能用；稍等一两分钟点「重新同步」，还不行就换个网络（比如手机热点）。'
+  const offline = '当前网络不可用，已安装的工具可正常使用；联网后将自动写入密钥。'
+  const certificate = '连接星芒时被网络设备拦截，本次密钥未写入。已安装的工具可正常使用；请稍候一两分钟后点击「重新同步」，如仍失败，请切换网络（如手机热点）。'
   function result(overrides: { failed?: Array<{ provider: 'claude' | 'codex' | 'grok'; message: string }>; networkBlocked?: boolean; networkBlockedByCertificate?: boolean } = {}) {
     return { result: { failed: [], networkBlocked: false, ...overrides } }
   }
@@ -77,14 +77,14 @@ describe('key sync failure for one tool', () => {
 
   it('uses the home banner sentence and offers the resync button', () => {
     expect(resolveToolKeySyncFailure(result({ failed: [{ provider: 'claude', message: 'unexpected token in JSON' }] }), 'claude'))
-      .toEqual({ text: 'Claude Code：密钥没有写进去，点「重新同步」再试', retry: true })
+      .toEqual({ text: 'Claude Code：密钥写入失败，请点击「重新同步」', retry: true })
   })
 
   it('names the desktop app when that is what the customer picked', () => {
     expect(resolveToolKeySyncFailure(result({ failed: [{ provider: 'codex', message: 'unexpected token in JSON' }] }), 'codex', 'codexDesktop'))
-      .toEqual({ text: 'Codex 桌面端：密钥没有写进去，点「重新同步」再试', retry: true })
+      .toEqual({ text: 'Codex 桌面端：密钥写入失败，请点击「重新同步」', retry: true })
     // 原话点的是 Codex CLI 也算点过名，不念成「Codex 桌面端：Codex CLI ……」。
-    expect(keySyncFailureText('codexDesktop', 'Codex CLI 没有收到配置完成结果，请重新检测')).toBe('Codex CLI 没有收到配置完成结果，请重新检测')
+    expect(keySyncFailureText('codexDesktop', 'Codex CLI 未收到配置完成结果，请重新检测')).toBe('Codex CLI 未收到配置完成结果，请重新检测')
   })
 
   it('says the network sentences the home banner says when the network stopped it', () => {
@@ -97,11 +97,11 @@ describe('key sync failure for one tool', () => {
   it('covers a round that threw before it reached any tool', () => {
     expect(resolveToolKeySyncFailure({ error: `账号 Key 初始化没有完成：${networkFailureMessages.dns}` }, 'grok')).toEqual({ text: offline, retry: true })
     expect(resolveToolKeySyncFailure({ error: `账号 Key 初始化没有完成：${networkFailureMessages.tls}` }, 'grok')).toEqual({ text: certificate, retry: true })
-    expect(resolveToolKeySyncFailure({ error: '当前分组未返回可用模型' }, 'grok')).toEqual({ text: '密钥没写好：当前分组未返回可用模型', retry: true })
+    expect(resolveToolKeySyncFailure({ error: '当前分组未返回可用模型' }, 'grok')).toEqual({ text: '密钥写入失败：当前分组未返回可用模型', retry: true })
   })
 
   it('offers no resync for a tool the account has not enabled, as the home banner does', () => {
     expect(resolveToolKeySyncFailure(result({ failed: [{ provider: 'grok', message: '分组不存在、不可用或名称重复，请确认账号可用分组' }] }), 'grok'))
-      .toEqual({ text: 'Grok CLI：当前账号还不能用，需要的话请联系客服开通', retry: false })
+      .toEqual({ text: 'Grok CLI：当前账号尚未开通，如需使用请联系客服', retry: false })
   })
 })

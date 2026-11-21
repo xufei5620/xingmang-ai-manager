@@ -149,7 +149,7 @@ export function LocalAvatarDialog({
     try {
       drawAvatarCrop(preview.current, bitmap, crop)
     } catch (cause) {
-      setError(errorMessage(cause, '头像预览没有准备好。'))
+      setError(errorMessage(cause, '头像预览尚未就绪。'))
     }
   }, [bitmap, crop])
   const choose = async (file: File | undefined) => {
@@ -184,7 +184,7 @@ export function LocalAvatarDialog({
       avatar.save(preview.current.toDataURL('image/png'))
       onClose()
     } catch (cause) {
-      setError(errorMessage(cause, '头像没有保存成功，预览已保留。'))
+      setError(errorMessage(cause, '头像保存失败，预览已保留。'))
     }
   }
   return (
@@ -218,7 +218,7 @@ export function LocalAvatarDialog({
       {error && (
         <Notice
           tone="bad"
-          title="头像没有保存"
+          title="头像未保存"
           body={error}
           testId="account-avatar-error"
         />

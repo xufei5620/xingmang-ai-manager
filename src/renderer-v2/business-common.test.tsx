@@ -9,7 +9,7 @@ describe('renderer-v2 result notice', () => {
     const markup = renderToStaticMarkup(<ResultNotice error={raw} />)
     // EBUSY 是文件被占用，不是杀毒拦截：这一句要把用户送去关工具窗口。
     expect(markup).toContain('工具正在运行')
-    expect(markup).toContain('先关掉正在使用这个工具的窗口')
+    expect(markup).toContain('请关闭正在使用该工具的窗口')
     expect(markup).toContain(raw)
   })
 
@@ -20,7 +20,7 @@ describe('renderer-v2 result notice', () => {
 
   it('names the failure from the original it folded away, without showing the original', () => {
     // useOperation 把带路径的英文换成通用兜底句以后，标题要靠原话认出来（第三十批 A）。
-    const shown = '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。'
+    const shown = '操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。'
     const original = "EBUSY: resource busy or locked, rename '本机路径 -> '本机路径"
     const markup = renderToStaticMarkup(<ResultNotice error={shown} detail={original} />)
     expect(markup).toContain('工具正在运行')
@@ -31,7 +31,7 @@ describe('renderer-v2 result notice', () => {
 
   it('lets the shown sentence decide before the folded original', () => {
     const markup = renderToStaticMarkup(<ResultNotice error="Grok CLI 安装失败：ENOSPC: no space left on device" detail="EBUSY: resource busy or locked" />)
-    expect(markup).toContain('磁盘空间不够')
+    expect(markup).toContain('磁盘可用空间不足')
     expect(markup).not.toContain('工具正在运行')
   })
 
@@ -57,8 +57,8 @@ describe('renderer-v2 result notice', () => {
   it('offers support in plain words when the plugin catalog backups cannot be cleared', () => {
     const raw = 'Codex 插件目录里的旧备份清不掉，这次没有改动'
     const markup = renderToStaticMarkup(<ResultNotice error={raw} onSupport={() => undefined} />)
-    expect(markup).toContain('插件目录暂时改不动')
-    expect(markup).toContain('重启电脑后再试一次')
+    expect(markup).toContain('插件目录暂时无法修改')
+    expect(markup).toContain('请重启电脑后重试')
     expect(markup).toContain('data-testid="result-notice-support"')
     expect(markup).not.toContain('plugins-xingmang-backup')
     // A page that cannot open help, or a failure support cannot help with: no button.
@@ -79,27 +79,27 @@ describe('renderer-v2 result notice', () => {
 describe('renderer-v2 result notice lead', () => {
   it('leads with the title the red banner shows when the catalog knows the failure', () => {
     const error = 'Grok CLI 安装失败：npm 官方源：EPERM: operation not permitted, mkdir'
-    expect(resultNoticeLead(error)).toBe('写不进安装目录')
-    expect(renderToStaticMarkup(<ResultNotice error={error} />)).toContain('<strong>写不进安装目录</strong>')
+    expect(resultNoticeLead(error)).toBe('无法写入安装目录')
+    expect(renderToStaticMarkup(<ResultNotice error={error} />)).toContain('<strong>无法写入安装目录</strong>')
   })
 
   it('says the config file could not be written when the page writes a tool config', () => {
     // 已知29：恢复备份、扩展页、配置窗口写的是配置文件，不是安装目录。
     const error = "恢复备份失败：EPERM: operation not permitted, open '本机路径'"
     const markup = renderToStaticMarkup(<ResultNotice error={error} target="config" />)
-    expect(markup).toContain('<strong>写不进配置文件</strong>，常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。')
-    expect(markup).not.toContain('写不进安装目录')
-    expect(renderToStaticMarkup(<ResultNotice error={error} />)).toContain('<strong>写不进安装目录</strong>')
+    expect(markup).toContain('<strong>无法写入配置文件</strong>，通常是被安全软件拦截，或该文件正被其他程序占用。请关闭正在使用该工具的窗口后点击「重试」；如仍失败，请点击「联系客服」。')
+    expect(markup).not.toContain('无法写入安装目录')
+    expect(renderToStaticMarkup(<ResultNotice error={error} />)).toContain('<strong>无法写入安装目录</strong>')
   })
 
   it('tells an export to pick another folder or free up the disk, never the install directory', () => {
     // D16：检查报告、反馈报告、聊天记录导出时存的是客户选的位置。上屏是兜底句，原话在 detail 里。
-    const error = '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。'
+    const error = '操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。'
     const denied = renderToStaticMarkup(<ResultNotice error={error} detail="EPERM: operation not permitted, open '本机路径'" target="export" />)
-    expect(denied).toContain('<strong>这个位置不让星芒存文件</strong>，换个文件夹（比如「下载」）再导出。')
+    expect(denied).toContain('<strong>该位置不允许保存文件</strong>，请选择其他文件夹（如「下载」）后重新导出。')
     expect(denied).not.toContain('安装目录')
     const full = renderToStaticMarkup(<ResultNotice error={error} detail="ENOSPC: no space left on device, write" target="export" />)
-    expect(full).toContain('<strong>这块盘满了</strong>，清出一些空间，或者换一块盘再导出。')
+    expect(full).toContain('<strong>该磁盘空间已满</strong>，请清理部分空间或选择其他磁盘后重新导出。')
     expect(full).not.toContain('临时文件夹')
   })
 
@@ -146,8 +146,8 @@ describe('renderer-v2 list empty states', () => {
 
   it('names the words that found nothing and offers to clear the search', () => {
     const markup = emptyList({ filtered: true, query: ' zzz ' })
-    expect(markup).toContain('没有找到「zzz」')
-    expect(markup).toContain('换个词试试。')
+    expect(markup).toContain('未找到「zzz」')
+    expect(markup).toContain('请尝试其他关键词。')
     expect(markup).toContain('>清除搜索<')
     expect(markup).not.toContain('清空筛选')
   })
@@ -156,7 +156,7 @@ describe('renderer-v2 list empty states', () => {
     const markup = renderToStaticMarkup(<ListState page="sessions" noun="会话" searchTitle="没有找到相关记录" searchDescription="换个关键词，或者切换到「全部」再看看。" filtered query="zzz" loading={false} error="" count={0} retry={() => undefined} clear={() => undefined}>{null}</ListState>)
     expect(markup).toContain('没有找到相关记录')
     expect(markup).toContain('换个关键词，或者切换到「全部」再看看。')
-    expect(markup).not.toContain('没有找到「zzz」')
+    expect(markup).not.toContain('未找到「zzz」')
   })
 
   it('keeps the filter wording when only a range filter is set', () => {
@@ -168,17 +168,17 @@ describe('renderer-v2 list empty states', () => {
   // 每处空着时说自己的去处，不再都是「从页面上的添加入口开始。」
   it('lets a page name its own empty title and next step', () => {
     const markup = renderToStaticMarkup(<ListState page="health" noun="检查结果" emptyDescription="点右上角「开始检查」。" loading={false} error="" count={0} retry={() => undefined}>{null}</ListState>)
-    expect(markup).toContain('还没有检查结果')
+    expect(markup).toContain('暂无检查结果')
     expect(markup).toContain('点右上角「开始检查」。')
     expect(markup).not.toContain('从页面上的添加入口开始。')
     const titled = renderToStaticMarkup(<ListState page="mcp" noun="外接工具" emptyTitle="还没有添加连接" loading={false} error="" count={0} retry={() => undefined}>{null}</ListState>)
     expect(titled).toContain('还没有添加连接')
-    expect(titled).not.toContain('还没有外接工具')
+    expect(titled).not.toContain('暂无外接工具')
   })
 
   it('lets a page say what to do when the list could not be read', () => {
     const markup = renderToStaticMarkup(<ListState page="feedback" noun="运行日志" errorDescription="点「重新加载」再试；还不行，点「打开日志目录」直接看日志文件。" loading={false} error="操作没有成功，请重试或查看反馈日志。" count={0} retry={() => undefined}>{null}</ListState>)
-    expect(markup).toContain('运行日志暂时没有读到')
+    expect(markup).toContain('运行日志暂时无法获取')
     expect(markup).toContain('点「重新加载」再试；还不行，点「打开日志目录」直接看日志文件。')
     expect(markup).not.toContain('请重试或查看反馈日志')
     expect(markup).toContain('>重新加载<')
