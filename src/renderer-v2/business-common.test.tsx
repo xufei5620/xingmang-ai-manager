@@ -153,9 +153,9 @@ describe('renderer-v2 list empty states', () => {
   })
 
   it('lets a page word its own search miss', () => {
-    const markup = renderToStaticMarkup(<ListState page="sessions" noun="会话" searchTitle="没有找到相关记录" searchDescription="换个关键词，或者切换到「全部」再看看。" filtered query="zzz" loading={false} error="" count={0} retry={() => undefined} clear={() => undefined}>{null}</ListState>)
-    expect(markup).toContain('没有找到相关记录')
-    expect(markup).toContain('换个关键词，或者切换到「全部」再看看。')
+    const markup = renderToStaticMarkup(<ListState page="sessions" noun="会话" searchTitle="未找到相关记录" searchDescription="请更换关键词，或切换到「全部」查看。" filtered query="zzz" loading={false} error="" count={0} retry={() => undefined} clear={() => undefined}>{null}</ListState>)
+    expect(markup).toContain('未找到相关记录')
+    expect(markup).toContain('请更换关键词，或切换到「全部」查看。')
     expect(markup).not.toContain('未找到「zzz」')
   })
 

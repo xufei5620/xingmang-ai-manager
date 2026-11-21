@@ -27,7 +27,7 @@ describe('paid Codex check in HealthPage', () => {
   it('stays hidden until the page knows Codex is installed and leaves the self-check wording alone', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     expect(markup).not.toContain('health-codex-responses')
-    expect(markup).toContain('确认每个工具都能连上、账号有效；装好的桌面端也一起测')
+    expect(markup).toContain('确认各工具连接正常、账号有效；已安装的桌面端一并检测')
   })
 })
 
@@ -89,7 +89,7 @@ describe('health page order', () => {
     expect(items.map((item) => item.code)).toEqual(['A', 'B', 'C', 'D', 'E', 'F'])
   })
 
-  it('labels each self-check row 正常, 有问题 or 没测成 and keeps an unconfigured tool grey', () => {
+  it('labels each self-check row 正常, 有问题 or 检测未完成 and keeps an unconfigured tool grey', () => {
     const base = { siteId: 'solov', endpoint: null, model: null, detail: null, status: null, durationMs: 1, checkedAt: '2026-10-04T00:00:00Z', nextStep: '照着做' }
     const ok = { ...base, provider: 'claude' as const, ok: true, layer: 'network' as const, summary: '连接正常' }
     const broken = { ...base, provider: 'codex' as const, ok: false, layer: 'credential' as const, summary: '密钥不对' }
@@ -99,7 +99,7 @@ describe('health page order', () => {
     expect(connectionRowStatus({ result: broken })).toEqual({ label: '有问题', tone: 'bad' })
     expect(connectionRowStatus({ result: service })).toEqual({ label: '有问题', tone: 'warn' })
     expect(connectionRowStatus({ result: unconfigured })).toEqual({ label: '未配置', tone: 'neutral' })
-    expect(connectionRowStatus({ result: null })).toEqual({ label: '没测成', tone: 'bad' })
+    expect(connectionRowStatus({ result: null })).toEqual({ label: '检测未完成', tone: 'bad' })
     const rows = [
       { id: 'claude', result: ok }, { id: 'opencode', result: unconfigured }, { id: 'codex', result: broken },
       { id: 'workbuddy', result: null }, { id: 'grok', result: service },
@@ -117,7 +117,7 @@ describe('feedback report notices', () => {
   })
 
   it('tells the user the report was refreshed after the preview expired', () => {
-    expect(feedbackCopyNotice({ entries: 3, regenerated: fresh })).toBe('报告已更新到最新日志并复制，发给客服就行')
+    expect(feedbackCopyNotice({ entries: 3, regenerated: fresh })).toBe('报告已更新至最新日志并复制，请发送给客服')
     expect(feedbackExportNotice({ outputPath: 'C:/r.txt', regenerated: fresh })).toEqual({
       text: '报告已更新到最新日志并导出：C:/r.txt',
       revealPath: 'C:/r.txt',
@@ -138,9 +138,9 @@ describe('feedback and support page', () => {
     expect(markup).toContain('role="tablist"')
     expect(markup).toContain('留言反馈')
     expect(markup).toContain('运行日志')
-    expect(markup).toContain('描述一下发生了什么')
-    expect(markup).toContain('比如：点「打开」后终端闪一下就关了')
-    expect(markup).toContain('微信号或邮箱（会一起复制，发给客服时方便他回你）')
+    expect(markup).toContain('问题描述')
+    expect(markup).toContain('例如：点击「打开」后终端窗口闪退')
+    expect(markup).toContain('微信号或邮箱（将一并复制，便于客服联系您）')
     expect(markup).toContain('已自动隐去密钥和个人路径')
     expect(markup).toContain('复制给客服')
     expect(markup).toContain('data-testid="feedback-support-card"')
@@ -167,7 +167,7 @@ describe('feedback and support page', () => {
     expect(markup).toContain('data-testid="feedback-search"')
     expect(markup).toContain('打开日志文件夹')
     expect(markup).toContain('aria-label="刷新"')
-    expect(markup).toContain('日志只保存在这台电脑上。')
+    expect(markup).toContain('日志仅保存在本机。')
     // 留言那一块还挂着（写到一半的字不丢），只是藏起来。
     expect(markup).toContain('id="feedback-panel-form" role="tabpanel" aria-label="留言反馈" hidden=""')
     expect(markup).toContain('id="feedback-panel-log" role="tabpanel" aria-label="运行日志" data-testid')

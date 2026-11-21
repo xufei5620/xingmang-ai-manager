@@ -1754,13 +1754,13 @@ test('a record whose folder is gone keeps the resume button in place but disable
     assert.equal(await resume.isDisabled(), true)
     assert.equal(
       await resume.getAttribute('title'),
-      '这条记录的文件夹已经不在了，接不上上次的对话',
+      '该记录的文件夹已不存在，无法继续上次的对话',
     )
     // v4：文件夹那一格挂着警告图标，悬停说一句，路径照旧显示。
     await page.getByTestId('sessions-missing-codex:session-1').waitFor()
     assert.equal(
       await page.getByTestId('sessions-missing-codex:session-1').getAttribute('title'),
-      '这个文件夹已经不在了',
+      '该文件夹已不存在',
     )
     // 按不动就不该有任何一次启动请求发出去。
     await resume.click({ force: true }).catch(() => {})
@@ -1897,7 +1897,7 @@ test('waiting for a connection to be authorized in the browser can be cancelled 
   }
 })
 
-// 第五部分第 25、28 条：每条连接各说各的检测结果，工具给的原因一起上屏；没测成直说；不后台轮询，
+// 第五部分第 25、28 条：每条连接各说各的检测结果，工具给的原因一起上屏；检测未完成直说；不后台轮询，
 // 「重新加载」先重读列表再检测。
 test('a connection shows its own checked answer with the reason, and 重新加载 reads the list again before checking', async () => {
   const page = await fixture(`${hubClaudeOnly}&mcpHealthFail`)
@@ -2610,7 +2610,7 @@ test('an empty backup list says where backups come from and backs up the tool pi
     const card = page.getByTestId('page-backups')
     const state = page.getByTestId('backups-empty')
     await state.getByText('暂无备份', { exact: true }).waitFor()
-    await state.getByText('点「立即备份」存一份当前的工具配置。', { exact: true }).waitFor()
+    await state.getByText('请点击「立即备份」保存当前的工具配置。', { exact: true }).waitFor()
     await card.getByRole('button', { name: 'Grok CLI', exact: true }).click()
     await state.getByText('Grok CLI 暂无备份', { exact: true }).waitFor()
     await page.getByTestId('backups-create').click()
@@ -2751,13 +2751,13 @@ test('feedback opens on the message form and copies what the customer wrote toge
     assert.equal(await page.getByTestId('feedback-panel-log').isHidden(), true)
     // 没写描述就点：就地提示，不复制、不打开客服。
     await page.getByTestId('feedback-send').click()
-    await form.getByText('请先描述一下发生了什么', { exact: true }).waitFor()
+    await form.getByText('请先描述遇到的问题', { exact: true }).waitFor()
     assert.equal((await calls(page)).some((call) => call.name === 'copy-clipboard' || call.name === 'open-support'), false)
     await page.getByTestId('feedback-type').getByRole('button', { name: '功能建议', exact: true }).click()
     await page.getByTestId('feedback-description').fill('点「打开」后终端闪一下就关了')
     await page.getByTestId('feedback-contact').fill('wx-test')
     await page.getByTestId('feedback-send').click()
-    await waitForToast(page, '已复制，发给客服就行')
+    await waitForToast(page, '已复制，请发送给客服')
     // J1：留言交给主进程拼好、现取报告、写剪贴板；页面自己不写剪贴板，客户等报告时切去微信也复制得上。
     const sent = (await calls(page)).filter((call) => call.name === 'copy-feedback-message').map((call) => call.args)
     assert.deepEqual(sent, [{
@@ -2788,7 +2788,7 @@ test('feedback still copies what the customer wrote when the diagnostic report c
     await page.getByTestId('feedback-form').waitFor()
     await page.getByTestId('feedback-description').fill('点「打开」后终端闪一下就关了')
     await page.getByTestId('feedback-send').click()
-    await waitForToast(page, '反馈报告没生成出来，只复制了你写的内容，发给客服就行')
+    await waitForToast(page, '反馈报告生成失败，已复制您填写的内容，请发送给客服')
     const sent = (await calls(page)).filter((call) => call.name === 'copy-feedback-message').map((call) => call.args)
     assert.equal(sent.length, 1)
     assert.equal(sent[0].type, 'bug')
@@ -2811,7 +2811,7 @@ test('feedback lists the first things to try and the support card next to the fo
     const tries = page.getByTestId('feedback-try')
     assert.deepEqual(
       await tries.locator('.v2-fb-try-item > span > span').allInnerTexts(),
-      ['工具装不上，或者打开就闪退', '付了款，余额没变', '不知道从哪里开始用', '想把 AI 连上浏览器或文件夹'],
+      ['工具无法安装或打开后闪退', '已付款，余额未变化', '不清楚如何开始使用', '需要将 AI 连接到浏览器或文件夹'],
     )
     await page.getByTestId('feedback-try-orders').click()
     await page.getByTestId('feedback-try-health').click()
@@ -2892,7 +2892,7 @@ test('feedback shows one line per log entry that opens in place and counts this 
     await panel.getByRole('button', { name: '打开日志文件夹', exact: true }).waitFor()
     await panel.getByRole('button', { name: '刷新', exact: true }).waitFor()
     assert.equal(await page.getByTestId('feedback-clear').isEnabled(), true)
-    await panel.getByText('日志只保存在这台电脑上。', { exact: true }).waitFor()
+    await panel.getByText('日志仅保存在本机。', { exact: true }).waitFor()
     // 筛选后列表跟着走。
     await page.getByTestId('feedback-source').getByRole('button', { name: '更新', exact: true }).click()
     await page.waitForFunction(() => document.querySelectorAll('.v2-feedback-log').length === 2)
@@ -2908,7 +2908,7 @@ test('feedback cannot clear logs it has none of and says how to read them when t
     assert.equal(await empty.getByTestId('feedback-error-count').count(), 0)
     const state = empty.getByTestId('feedback-empty')
     await state.getByText('暂无运行日志', { exact: true }).waitFor()
-    await state.getByText('软件运行时的事件会记录在这里。', { exact: true }).waitFor()
+    await state.getByText('软件运行时的事件将记录在此处。', { exact: true }).waitFor()
     assert.equal(await empty.getByTestId('feedback-clear').isDisabled(), true)
   } finally {
     await empty.close()
@@ -2917,7 +2917,7 @@ test('feedback cannot clear logs it has none of and says how to read them when t
   try {
     await openRunLog(failed)
     const state = failed.getByTestId('feedback-error')
-    await state.getByText('点「重新加载」再试；还不行，点「打开日志文件夹」直接看日志文件。', { exact: true }).waitFor()
+    await state.getByText('请点击「重新加载」；如仍无法加载，请点击「打开日志文件夹」直接查看日志文件。', { exact: true }).waitFor()
     await state.getByRole('button', { name: '重新加载', exact: true }).waitFor()
     assert.equal(await failed.getByTestId('feedback-clear').isDisabled(), true)
   } finally {
@@ -2930,7 +2930,7 @@ test('feedback clears the run log only after asking and then says it was cleared
   try {
     await page.getByTestId('feedback-clear').click()
     const confirm = page.getByRole('dialog', { name: '清除全部运行日志？', exact: true })
-    await confirm.getByText('清除后找不回来。要发反馈的话，建议先保留日志。', { exact: true }).waitFor()
+    await confirm.getByText('清除后无法恢复。如需提交反馈，建议先保留日志。', { exact: true }).waitFor()
     await confirm.getByText('仅清除运行日志，不会删除工具配置、账号或对话记录。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '取消', exact: true }).click()
     await confirm.waitFor({ state: 'hidden' })
@@ -2940,7 +2940,7 @@ test('feedback clears the run log only after asking and then says it was cleared
     await waitForToast(page, '日志已清除')
     const state = page.getByTestId('feedback-empty')
     await state.getByText('日志已清空', { exact: true }).waitFor()
-    await state.getByText('之后的操作会重新记录在这里。', { exact: true }).waitFor()
+    await state.getByText('后续操作将重新记录在此处。', { exact: true }).waitFor()
     assert.equal((await calls(page)).filter((call) => call.name === 'clear-logs').length, 1)
   } finally {
     await page.close()
@@ -2980,7 +2980,7 @@ test('feedback copy and export retain the preview snapshot id', async () => {
     await page.getByTestId('feedback-report-text').waitFor()
     // 脱敏提示挪进了预览框，一行细条（v4 第 10 批）。
     const privacy = page.getByTestId('feedback-privacy')
-    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '密钥、密码和电脑用户名都已隐去。发送前再看一眼有没有私有项目名称和地址。')
+    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '密钥、密码和电脑用户名均已隐藏。发送前请确认不含私有项目名称和地址。')
     assert.ok((await privacy.boundingBox()).height <= 50)
     // 报告里已经有检查结果时不提醒先去检查。
     assert.equal(await page.getByTestId('feedback-report-unchecked').count(), 0)
@@ -3014,8 +3014,8 @@ test('the feedback preview sends the customer to the check page when the report 
     // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「联系客服」卡上那颗。
     await page.getByTestId('feedback-preview').click()
     const hint = page.getByTestId('feedback-report-unchecked')
-    await hint.getByText('报告里还没有检查结果', { exact: true }).waitFor()
-    await hint.getByText('点「前往检查」，等检查页查完再回来复制或导出，客服能少问你几句。', { exact: true }).waitFor()
+    await hint.getByText('报告中暂无检查结果', { exact: true }).waitFor()
+    await hint.getByText('请点击「前往检查」，检查完成后再复制或导出报告，便于客服快速定位问题。', { exact: true }).waitFor()
     await hint.getByRole('button', { name: '前往检查', exact: true }).click()
     await page.getByTestId('feedback-report-text').waitFor({ state: 'detached' })
     assert.deepEqual(

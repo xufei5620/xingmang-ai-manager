@@ -230,7 +230,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
         count={list.length}
         retry={() => void resource.reload()}
         emptyTitle={provider === 'all' ? '暂无备份' : `${providerName(provider)} 暂无备份`}
-        emptyDescription="点「立即备份」存一份当前的工具配置。"
+        emptyDescription="请点击「立即备份」保存当前的工具配置。"
       >
         {list.map((backup) => (
           <ListRow
