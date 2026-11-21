@@ -2,7 +2,7 @@ import { inspectModel } from './api'
 import { defaultChatSettings, imageSizeFits, pickChatGroup, type ChatCatalogEntry, type ChatGroupContext, type ChatSettings } from './state'
 
 /**
- * 出图用的那一份设置（融合第 4 步）：对话里「生成图片」那一档和视频工作台「让 AI 画一张」的出图框记的是同一份，
+ * 出图用的那一份设置（融合第 4 步）：对话里「生成图片」那一档和视频工作台「AI 生成图片」的出图框记的是同一份，
  * 在一边改了，另一边跟着变。按账号分开，记在这台电脑上；对话记录里每段对话原来那几个字段照旧存着，格式没动。
  */
 export type SharedImageSettings = Pick<ChatSettings, 'model' | 'group' | 'size' | 'quality' | 'imageResolution'>

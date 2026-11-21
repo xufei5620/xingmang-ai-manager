@@ -61,7 +61,7 @@ describe('external-link-fallback', () => {
       expect(message).toContain('浏览器')
       expect(message).not.toMatch(/白名单|允许列表|协议|不允许/)
     }
-    expect(blockedLinkMessage({ copied: true, url: 'x' })).toContain('已经帮你复制好了')
+    expect(blockedLinkMessage({ copied: true, url: 'x' })).toContain('已自动复制')
     const html = renderToStaticMarkup(<BlockedLinkHint notice={{ copied: false, url: 'https://xm.solov.cc/a?b=1&c=2' }} testId="blocked" />)
     expect(html).toContain('role="status"')
     expect(html).toContain('data-testid="blocked"')

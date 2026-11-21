@@ -252,11 +252,11 @@ describe('tutorial topics', () => {
     // 这三条都是命令行工具本身的限制（只能按文件夹找回最近一条），用户看不出来，
     // 写错了会让人以为按钮坏了。
     const text = tutorialText('sessions')
-    expect(text).toContain('最近的一次对话')
+    expect(text).toContain('最近一次对话')
     expect(text).toContain('已归档')
     expect(text).toContain('文件夹已不存在')
     // 记录只在本机、保留期放长到一年，与记录页页头同一口径。
-    expect(text).toContain('只存在这台电脑上')
+    expect(text).toContain('仅保存在本机')
     expect(text).toContain('一年')
   })
 
@@ -292,7 +292,7 @@ describe('tutorial topics', () => {
     // 原文取自四家推荐版本对本地假接口的实测（服务端返回按 new-api rc.24 源码构造）。
     // 小白最容易踩的是 Claude Code 在余额不足时也说「Please run /login」，照做会走官方登录。
     const text = tutorialText('messages')
-    for (const phrase of ['Please run /login', '用户额度不足', 'token quota is not enough', 'API key 额度已用完', 'Quota exceeded', '无效的令牌', '不要照做'])
+    for (const phrase of ['Please run /login', '用户额度不足', 'token quota is not enough', 'API key 额度已用完', 'Quota exceeded', '无效的令牌', '请勿照做'])
       expect(text, `对照表缺少「${phrase}」`).toContain(phrase)
     expect(text).not.toMatch(/星芒余额|solov|Sub2API/)
   })
@@ -316,8 +316,8 @@ describe('tutorial topics', () => {
     const text = [...(start?.steps.map((step) => step.detail) ?? []), ...(start?.reminders ?? [])].join('\n')
     expect(text).toContain('都可能出错')
     expect(text).toContain('合并或执行之前自己再过一遍')
-    expect(text).toContain('来路不明')
-    expect(text).toContain('藏着让 AI 去做别的事的指令')
+    expect(text).toContain('来源不明')
+    expect(text).toContain('诱导 AI 执行其他操作的指令')
   })
 
   it('tells a Mac customer to let the app prepare Node.js and how to install both by hand', () => {
@@ -331,10 +331,10 @@ describe('tutorial topics', () => {
     expect(text).toContain(runtimeHomebrewCommand('python'))
     expect(text).toContain(runtimeButtonLabel('node', 'managed'))
     expect(text).toContain(runtimeButtonLabel('python', 'external'))
-    expect(text).toContain('不用输开机密码')
+    expect(text).toContain('无需输入开机密码')
     expect(text).toContain('.pkg')
     // 不代装、不提权这条口径要写在教程里，和运行环境卡一致。
-    expect(text).toContain('星芒不会替你跑这条命令')
+    expect(text).toContain('星芒不会代为执行此命令')
     expect(text).toContain('重新检测')
   })
 

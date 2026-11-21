@@ -168,7 +168,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
   // 在接回的那几单：只查不提交，停了也省不下钱，「停止生成」不去碰它们，免得这一镜又变回「还没生成」。
   const billed = useRef(new Set<string>())
   const composeAbort = useRef<AbortController | null>(null)
-  // 点过「停止画图」的那几次画图：主进程随后回的「已取消」不当成没画出来。
+  // 点过「停止生成图片」的那几次画图：主进程随后回的「已取消」不当成没画出来。
   const stoppedDrawings = useRef(new Set<string>())
 
   const commit = (change: (current: VideoStudioProject) => VideoStudioProject, { touch = true, urgent = false }: CommitOptions = {}) => {
@@ -539,7 +539,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
     }
   }
 
-  // 「让 AI 画一张」：用对话页出图那条（chat:generate-image，凭据在主进程、画好的图存进作品库），这里只拿编号，
+  // 「AI 生成图片」：用对话页出图那条（chat:generate-image，凭据在主进程、画好的图存进作品库），这里只拿编号，
   // 画好以后和自己选的图一样用。先出图便宜，客户满意了再拿它出视频。余额、额度不够照页面顶上那条说（带「前往充值」）。
   // 画面描述、型号、尺寸这些是出图框里填好交过来的（融合第 4 步，ShotImageDialog），不再读这条视频自己记的画图型号。
   const drawShotImage = async (id: string, draft: VideoStudioImageDraft) => {
@@ -568,7 +568,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
       stoppedDrawings.current.delete(requestId)
     }
   }
-  // 「停止画图」：已经交给服务端的这一张照样扣费（出图框里说过）。主进程说已经画完、正在回的，就等它回来照常换上。
+  // 「停止生成图片」：已经交给服务端的这一张照样扣费（出图框里说过）。主进程说已经画完、正在回的，就等它回来照常换上。
   const stopDrawing = async (id: string) => {
     const requestId = projectRef.current.shots.find((item) => item.id === id)?.drawing
     if (!requestId || stoppedDrawings.current.has(requestId)) return

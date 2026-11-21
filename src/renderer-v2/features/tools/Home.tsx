@@ -916,7 +916,7 @@ export function Home(props: HomeProps) {
       // 故意改过配置的人也要有出路，否则那颗黄牌会一直挂着。认下之后这个工具
       // 就按「自己填写的密钥」处理，下次在配置里改回当前账号时标记自动清掉。
       (state.status === 'configChanged' || state.status === 'ccSwitch') && props.onKeepConfig
-        ? [{ label: '就用现在这份配置', testId: `tool-${tool.id}-keep-config`, onSelect: () => props.onKeepConfig?.(tool.id) }] : [],
+        ? [{ label: '保留当前配置', testId: `tool-${tool.id}-keep-config`, onSelect: () => props.onKeepConfig?.(tool.id) }] : [],
       [
         ...(blockedOpen ? [{ label: '打开', testId: `tool-${tool.id}-open`, disabled: launchBlocked, onSelect: state.primary }] : []),
         ...(conversationsOffered ? [{ label: conversationsMenuLabel, testId: `tool-${tool.id}-conversations`, onSelect: () => setConversationsTool(tool.id) }] : []),

@@ -67,7 +67,7 @@ export interface VideoStudioLibraryPicker {
 type Confirmation = { kind: 'generate', ids: string[] } | { kind: 'plan' } | { kind: 'remove', id: string }
 
 /**
- * 一条视频的工作台：「想法」「分镜」「拼成一条视频」三张卡。它放在「创作」页右边（融合第 1 步），这条视频的名字、
+ * 一条视频的工作台：「想法」「分镜」「合成视频」三张卡。它放在「创作」页右边（融合第 1 步），这条视频的名字、
  * 「重命名」「删除此视频」在外面那一条顶栏上，这里不再有整页的大标题、「新建一条」「重新开始」和草稿箱：
  * 每一条视频都是左边那一列里的一行。
  */
@@ -96,7 +96,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
   // 余额前面再报「预计约 $x」（#1406 P2-1 后半）：页面一露面就读好价目，确认框打开时已经在手上；放久了打开确认框时再读一次。
   const prices = useVideoStudioPriceList(bridge, accountScope, active)
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null)
-  // 「让 AI 画一张」点的是哪个镜头：出图框开着时是它的编号（融合第 4 步）。镜头被删了，框跟着关。
+  // 「AI 生成图片」点的是哪个镜头：出图框开着时是它的编号（融合第 4 步）。镜头被删了，框跟着关。
   const [drawTarget, setDrawTarget] = useState<string | null>(null)
   const { project } = studio
   const { settings, shots, exported } = project
@@ -159,9 +159,9 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
       <div className="video-studio-actions">
         {studio.planning
           ? <Button icon={Square} onClick={() => void studio.stopPlan()} testId="video-plan-stop">停止</Button>
-          : <Button variant="primary" icon={Wand2} disabled={!settings.idea.trim() || generating || drawing || composing} onClick={writePlan} testId="video-plan">{shots.length ? '重新写分镜' : '写分镜'}</Button>}
-        {studio.planning && <span className="video-studio-hint" role="status">AI 正在写分镜…</span>}
-        <small className="video-studio-hint">写分镜按文字模型的用量计费；之后每生成一段视频单独计费。</small>
+          : <Button variant="primary" icon={Wand2} disabled={!settings.idea.trim() || generating || drawing || composing} onClick={writePlan} testId="video-plan">{shots.length ? '重新编写分镜' : '编写分镜'}</Button>}
+        {studio.planning && <span className="video-studio-hint" role="status">AI 正在编写分镜…</span>}
+        <small className="video-studio-hint">编写分镜按文字模型的用量计费；此后每生成一段视频单独计费。</small>
       </div>
     </Card>
 
@@ -183,7 +183,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
       {canAddVideoStudioShot(project) && <Button variant="ghost" icon={Plus} disabled={studio.planning || composing} onClick={studio.addShot} testId="video-shot-add">加一个镜头</Button>}
     </Card>}
 
-    {shots.length > 0 && <Card title="拼成一条视频" testId="video-export">
+    {shots.length > 0 && <Card title="合成视频" testId="video-export">
       <div className="video-studio-options">
         <Select label="清晰度" value={String(settings.resolution)} disabled={composing} options={videoStudioResolutions.map((resolution) => ({ value: String(resolution), label: `${resolution}p` }))}
           onChange={(event) => { const resolution = Number(event.target.value); if (isVideoStudioResolution(resolution)) studio.changeSettings({ resolution }) }} testId="video-resolution" />
@@ -205,7 +205,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
       <div className="video-studio-actions">
         {composing
           ? <Button icon={Square} disabled={studio.composeState.phase === 'storing'} onClick={studio.stopCompose} testId="video-compose-stop">停止</Button>
-          : <Button variant="primary" icon={Film} disabled={studio.planning || !videoStudioReadyToCompose(project)} onClick={() => void studio.compose()} testId="video-compose">拼成一条视频</Button>}
+          : <Button variant="primary" icon={Film} disabled={studio.planning || !videoStudioReadyToCompose(project)} onClick={() => void studio.compose()} testId="video-compose">合成视频</Button>}
         {!composing && studio.planning && <small className="video-studio-hint">请等待分镜编写完成后再合成。</small>}
         {!composing && !studio.planning && !videoStudioReadyToCompose(project) && <small className="video-studio-hint">{generating ? '请等待所有片段生成完成后再合成。' : `仍有 ${missing} 个镜头未生成片段。`}</small>}
         {!composing && !studio.planning && videoStudioReadyToCompose(project) && <small className="video-studio-hint">在本机合成，不产生费用。</small>}
@@ -249,10 +249,10 @@ function secondsOptions(model: string, current: number) {
   return all.map((seconds) => ({ value: String(seconds), label: `${seconds} 秒` }))
 }
 
-// 画镜头图的型号不在这里选了：点「让 AI 画一张」时在出图框里选，同对话里「生成图片」那一档（融合第 4 步）。
+// 画镜头图的型号不在这里选了：点「AI 生成图片」时在出图框里选，同对话里「生成图片」那一档（融合第 4 步）。
 const modelPickerNames: Record<'text' | 'video', { title: string, menu: string, empty: string }> = {
-  text: { title: '写分镜', menu: '写分镜的模型', empty: '暂无可用的文字模型' },
-  video: { title: '出视频', menu: '出视频的模型', empty: '暂无可用的视频模型' },
+  text: { title: '编写分镜', menu: '编写分镜的模型', empty: '暂无可用的文字模型' },
+  video: { title: '生成视频', menu: '生成视频的模型', empty: '暂无可用的视频模型' },
 }
 
 function ModelPicker({ studio, kind }: { studio: VideoStudioController, kind: 'text' | 'video' }) {
@@ -329,8 +329,8 @@ function ShotRow({ shot, index, total, captions, seconds, videoModel, locked, on
       <div className="video-studio-shot-image">
         {drawing
           ? <>
-            <Pill tone="accent" dot>正在画图</Pill>
-            <Button size="sm" variant="ghost" icon={Square} onClick={onStopDrawing} testId={`video-shot-draw-stop-${index}`}>停止画图</Button>
+            <Pill tone="accent" dot>正在生成图片</Pill>
+            <Button size="sm" variant="ghost" icon={Square} onClick={onStopDrawing} testId={`video-shot-draw-stop-${index}`}>停止生成图片</Button>
           </>
           : borrowed
           ? <>
@@ -341,14 +341,14 @@ function ShotRow({ shot, index, total, captions, seconds, videoModel, locked, on
           ? <>
             {/* 已经生成过片段时左边是片段，选的图在这里留一张小的，看得出用的是哪张。 */}
             {shot.clip && <span className="video-studio-shot-image-preview" aria-hidden="true" data-testid={`video-shot-image-preview-${index}`}><ClipThumbnail src={shot.image.url} /></span>}
-            <Button size="sm" variant="ghost" icon={ImagePlus} disabled={busy || locked} onClick={onPickImage} testId={`video-shot-image-change-${index}`}>换一张</Button>
+            <Button size="sm" variant="ghost" icon={ImagePlus} disabled={busy || locked} onClick={onPickImage} testId={`video-shot-image-change-${index}`}>更换图片</Button>
             <Button size="sm" variant="ghost" icon={X} disabled={busy || locked} onClick={onRemoveImage} testId={`video-shot-image-remove-${index}`}>不使用此图</Button>
-            <Button size="sm" variant="ghost" icon={Brush} title={drawTip} disabled={busy || locked} onClick={onDraw} testId={`video-shot-draw-${index}`}>再画一张</Button>
+            <Button size="sm" variant="ghost" icon={Brush} title={drawTip} disabled={busy || locked} onClick={onDraw} testId={`video-shot-draw-${index}`}>重新生成图片</Button>
             {libraryButtons}
           </>
           : <>
-            <Button size="sm" variant="ghost" icon={ImagePlus} title="生成时从这张图动起来，适合商品图、人物照片" disabled={busy || locked} onClick={onPickImage} testId={`video-shot-image-${index}`}>用一张图开头</Button>
-            <Button size="sm" variant="ghost" icon={Brush} title={drawTip} disabled={busy || locked} onClick={onDraw} testId={`video-shot-draw-${index}`}>让 AI 画一张</Button>
+            <Button size="sm" variant="ghost" icon={ImagePlus} title="生成时以此图作为首帧，适合商品图、人物照片" disabled={busy || locked} onClick={onPickImage} testId={`video-shot-image-${index}`}>用一张图开头</Button>
+            <Button size="sm" variant="ghost" icon={Brush} title={drawTip} disabled={busy || locked} onClick={onDraw} testId={`video-shot-draw-${index}`}>AI 生成图片</Button>
             {libraryButtons}
           </>}
       </div>
@@ -382,12 +382,12 @@ function MusicRow({ studio, disabled }: { studio: VideoStudioController, disable
   const music = studio.project.music
   if (!music) {
     return <div className="video-studio-music" data-testid="video-music">
-      <Button size="sm" icon={Music} title="从电脑里选一首歌当背景音乐，支持 MP3、M4A、WAV、OGG" disabled={disabled} onClick={() => void studio.pickMusic()} testId="video-music-add">加配乐</Button>
+      <Button size="sm" icon={Music} title="从本机选择一首歌曲作为背景音乐，支持 MP3、M4A、WAV、OGG" disabled={disabled} onClick={() => void studio.pickMusic()} testId="video-music-add">加配乐</Button>
     </div>
   }
   return <div className="video-studio-music" data-testid="video-music">
     <span className="video-studio-music-name" title={music.name} data-testid="video-music-name"><Music size={14} aria-hidden="true" /><span>{music.name}</span></span>
-    <Button size="sm" variant="ghost" icon={RefreshCw} disabled={disabled} onClick={() => void studio.pickMusic()} testId="video-music-change">换一首</Button>
+    <Button size="sm" variant="ghost" icon={RefreshCw} disabled={disabled} onClick={() => void studio.pickMusic()} testId="video-music-change">更换配乐</Button>
     <Button size="sm" variant="ghost" icon={X} disabled={disabled} onClick={studio.removeMusic} testId="video-music-remove">不使用配乐</Button>
     <Select label="片段原声" value={music.clipSound} disabled={disabled} options={videoStudioClipSounds.map((sound) => ({ value: sound, label: videoStudioClipSoundNames[sound] }))}
       onChange={(event) => { const sound = videoStudioClipSounds.find((candidate) => candidate === event.target.value); if (sound) studio.setClipSound(sound) }} testId="video-clip-sound" />

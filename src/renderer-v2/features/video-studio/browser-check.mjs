@@ -917,7 +917,7 @@ test('starts shots from pictures picked on the computer and keeps them after reo
   const { page, errors } = await openStudio()
   await writeStoryboard(page, '新款水杯', { title: '水杯', shots: [{ prompt: '水杯在桌上' }, { prompt: '倒水' }, { prompt: '拿起水杯' }] })
   const [first, second] = ['m', 'n'].map((letter) => letter.repeat(43))
-  assert.equal(await page.getByTestId('video-shot-image-0').getAttribute('title'), '生成时从这张图动起来，适合商品图、人物照片')
+  assert.equal(await page.getByTestId('video-shot-image-0').getAttribute('title'), '生成时以此图作为首帧，适合商品图、人物照片')
 
   // 在对话框里点了取消：什么都不变。
   await page.getByTestId('video-shot-image-0').click()
@@ -933,7 +933,7 @@ test('starts shots from pictures picked on the computer and keeps them after reo
   assert.equal(await page.getByTestId('video-shot-image-2').textContent(), '用一张图开头')
   for (const index of [0, 1]) {
     const row = page.getByTestId(`video-shot-${index}`)
-    assert.equal(await row.getByTestId(`video-shot-image-change-${index}`).textContent(), '换一张')
+    assert.equal(await row.getByTestId(`video-shot-image-change-${index}`).textContent(), '更换图片')
     assert.equal(await row.getByTestId(`video-shot-image-remove-${index}`).textContent(), '不使用此图')
   }
 
@@ -964,7 +964,7 @@ test('starts shots from pictures picked on the computer and keeps them after reo
   await page.close()
 })
 
-// 「让 AI 画一张」：弹出来的是跟对话里「生成图片」同一个出图框（融合第 4 步），交出去走对话页出图那条（这里是假的桥）。
+// 「AI 生成图片」：弹出来的是跟对话里「生成图片」同一个出图框（融合第 4 步），交出去走对话页出图那条（这里是假的桥）。
 // 画好的图和自己选的图一样当这一镜的开头；停下、没画出来、余额不够各有去处。
 test('draws a shot picture with AI in the shared picture dialog before paying for the clip, and starts the clip from it', async () => {
   const { page, errors } = await openStudio('?balance=12.5')
@@ -975,7 +975,7 @@ test('draws a shot picture with AI in the shared picture dialog before paying fo
   assert.equal(await page.getByTestId('video-image-model').count(), 0)
   assert.equal(await page.getByTestId('video-idea').getByText('画镜头图').count(), 0)
   const draw = page.getByTestId('video-shot-draw-0')
-  assert.equal(await draw.textContent(), '让 AI 画一张')
+  assert.equal(await draw.textContent(), 'AI 生成图片')
   assert.equal(await draw.getAttribute('title'), '根据此镜头的画面描述先生成一张图片，确认后再用于生成视频；生成图片单独计费')
 
   await draw.click()
@@ -1006,16 +1006,16 @@ test('draws a shot picture with AI in the shared picture dialog before paying fo
 
   // 画着的时候：这一镜的描述、出视频、删都不让动，也不能整批生成；别的镜头照样能画。
   const row = page.getByTestId('video-shot-0')
-  await row.getByText('正在画图').waitFor()
-  assert.equal(await page.getByTestId('video-shot-draw-stop-0').textContent(), '停止画图')
+  await row.getByText('正在生成图片').waitFor()
+  assert.equal(await page.getByTestId('video-shot-draw-stop-0').textContent(), '停止生成图片')
   for (const id of ['video-shot-prompt-0', 'video-shot-generate-0', 'video-shot-remove-0', 'video-generate-all', 'video-plan']) assert.equal(await page.getByTestId(id).isDisabled(), true, id)
   assert.equal(await page.getByTestId('video-shot-image-0').count(), 0)
 
   await page.evaluate(([requestId, assetId]) => window.videoStudioPage.finishDrawing(requestId, assetId), [request.requestId, first])
   // 假桥里的作品库地址打不开，缩略图会退成底色；换上的是哪一张，最后出视频时看请求。
   await page.getByTestId('video-shot-image-thumb-0').waitFor()
-  assert.equal(await row.getByText('正在画图').count(), 0)
-  assert.equal(await draw.textContent(), '再画一张')
+  assert.equal(await row.getByText('正在生成图片').count(), 0)
+  assert.equal(await draw.textContent(), '重新生成图片')
 
   // 再画一张，中途停下：已经画好的那张留着，不报错。
   await draw.click()
@@ -1324,7 +1324,7 @@ test('lays a picked song under the joined film, with the clip sound turned down 
   for (const index of [0, 1]) await page.getByTestId(`video-shot-${index}`).getByText('已生成').waitFor()
 
   const add = page.getByTestId('video-music-add')
-  assert.equal(await add.getAttribute('title'), '从电脑里选一首歌当背景音乐，支持 MP3、M4A、WAV、OGG')
+  assert.equal(await add.getAttribute('title'), '从本机选择一首歌曲作为背景音乐，支持 MP3、M4A、WAV、OGG')
   assert.equal(await add.textContent(), '加配乐')
   // 在对话框里点了取消：什么都不变。
   await add.click()
@@ -1338,7 +1338,7 @@ test('lays a picked song under the joined film, with the clip sound turned down 
   await page.evaluate(() => window.videoStudioPage.pickSong({ name: '海风', seconds: 0.8, frequency: 660 }))
   await add.click()
   await page.getByTestId('video-music-name').getByText('海风').waitFor()
-  assert.equal(await page.getByTestId('video-music-change').textContent(), '换一首')
+  assert.equal(await page.getByTestId('video-music-change').textContent(), '更换配乐')
   assert.equal(await page.getByTestId('video-music-remove').textContent(), '不使用配乐')
   assert.equal(await page.getByTestId('video-clip-sound').inputValue(), 'quiet')
   assert.deepEqual(await page.getByTestId('video-clip-sound').locator('option').allTextContents(), ['照常', '调小', '关掉'])
