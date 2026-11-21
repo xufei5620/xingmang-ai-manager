@@ -11,6 +11,7 @@ import {
   curatedRiskLabels,
   curatedRuntimeLabels,
   type CuratedExtension,
+  type CuratedRisk,
 } from '../../registry/curated-extensions'
 import { tools } from '../../registry/tools'
 import { runtimeHomebrewCommand } from '../tools/runtime-install-guide'
@@ -734,16 +735,9 @@ export function CuratedDetails({ item, hideScope }: { item: CuratedExtension; hi
       <p>{item.summary}</p>
       <div className="v2-curated-tags">
         {item.requiresAccount && <Pill tone="accent">需要先登录</Pill>}
-        {item.risks.length === 0 ? (
-          <Pill tone="ok">没有特别的风险</Pill>
-        ) : (
-          item.risks.map((risk) => (
-            <Pill key={risk} tone="warn">
-              {curatedRiskLabels[risk].label}
-            </Pill>
-          ))
-        )}
+        {item.risks.length === 0 ? <Pill tone="ok">没有特别的风险</Pill> : item.risks.map(curatedRiskPill)}
       </div>
+      <CuratedRiskDetails item={item} />
       <dl className="v2-business-kv">
         <dt>提供方</dt>
         <dd>{item.publisher}</dd>
@@ -789,11 +783,28 @@ export function curatedTags(item: CuratedExtension) {
   return (
     <>
       {item.requiresAccount && <Pill tone="accent">需要先登录</Pill>}
-      {item.risks.map((risk) => (
-        <Pill key={risk} tone="warn">
-          {curatedRiskLabels[risk].label}
-        </Pill>
-      ))}
+      {item.risks.map(curatedRiskPill)}
     </>
+  )
+}
+
+// 风险标签只有几个字，光看「第三方维护」不知道具体指什么。registry 里每个标签配的那句说明（11-10 已批）鼠标停上去
+// 能看到，标签下面也由 CuratedRiskDetails 原样写出来（Mac 验收 R10）。
+function curatedRiskPill(risk: CuratedRisk) {
+  const { label, detail } = curatedRiskLabels[risk]
+  return (
+    <Pill key={risk} tone="warn">
+      <span title={detail}>{label}</span>
+    </Pill>
+  )
+}
+
+/** 标签下面那一段：每个风险标签的说明各一句，按标签的先后接在一起；没有风险标签就什么都不出。 */
+export function CuratedRiskDetails({ item }: { item: CuratedExtension }) {
+  if (item.risks.length === 0) return null
+  return (
+    <p className="v2-curated-risk-details" data-testid={`curated-risk-details-${item.id}`}>
+      {item.risks.map((risk) => curatedRiskLabels[risk].detail).join('')}
+    </p>
   )
 }

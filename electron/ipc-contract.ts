@@ -1,7 +1,7 @@
 // @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
 
 import type { AppSettings, AppSettingsUpdate, AppTheme as StoredAppTheme } from './app-settings'
-import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
+import type { AiAnswerCutOff, AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
 import type { MiniMaxVideoAspectRatio, MiniMaxVideoMode, MiniMaxVideoResolution } from './ai-chat-protocol'
 import type { VideoStudioPlan, VideoStudioPlanRequest } from './video-studio-plan'
 export type { VideoStudioPlan, VideoStudioPlanAspect, VideoStudioPlanShot } from './video-studio-plan'
@@ -65,11 +65,7 @@ import type {
   ProviderMcpHealthReport,
 } from './provider-extensions'
 import type {
-  CodexSessionDetail,
-  CodexSessionExportResult,
-  CodexSessionListQuery,
   CodexSessionMutationResult,
-  CodexSessionPage,
   CodexSessionSummary,
   SessionArchiveFilter as CodexSessionArchiveFilter,
 } from './codex-sessions'
@@ -344,12 +340,8 @@ export interface UpdateInstallOptions {
 export type InstalledRelease = MainInstalledRelease
 export type UpdateSnapshot = MainUpdateSnapshot
 export type SessionArchiveFilter = CodexSessionArchiveFilter
-export type SessionListQuery = CodexSessionListQuery
 export type SessionSummary = CodexSessionSummary
-export type SessionPageResult = CodexSessionPage
-export type SessionDetailResult = CodexSessionDetail
 export type SessionMutationResult = CodexSessionMutationResult
-export type SessionExportResult = CodexSessionExportResult
 export type MultiProviderSessionProvider = ProviderSessionProvider
 export type MultiProviderSessionListQuery = ProviderSessionListQuery
 export type MultiProviderSessionSummary = ProviderSessionSummary
@@ -690,11 +682,13 @@ export interface AiChatTextFile {
 }
 
 export type AiChatErrorCode = MainAiChatStreamErrorCode
+export type AiChatCutOff = AiAnswerCutOff
 
 export type AiChatStreamEvent =
   | { requestId: string; type: 'content'; content: string }
   | { requestId: string; type: 'reasoning'; content: string }
-  | { requestId: string; type: 'complete' }
+  /** cutOff：回答没写完就停了（到了长度上限 / 被内容审核拦下），已经出来的字照留；缺省 = 正常说完。 */
+  | { requestId: string; type: 'complete'; cutOff?: AiChatCutOff }
   | { requestId: string; type: 'canceled'; mayStillComplete?: boolean }
   | { requestId: string; type: 'error'; code?: AiChatErrorCode; message: string }
 
@@ -1204,13 +1198,6 @@ export interface XingmangInvokeContract {
    * 缺省 = 已经交给安装程序（旧行为）。
    */
   installUpdate: IpcInvokeDefinition<'update:install', [options?: UpdateInstallOptions], { accepted: true; postponed?: true }>
-  listSessions: IpcInvokeDefinition<'sessions:list', [query: SessionListQuery], SessionPageResult>
-  getSessionDetail: IpcInvokeDefinition<'sessions:detail', [sessionId: string], SessionDetailResult>
-  exportSession: IpcInvokeDefinition<
-    'sessions:export',
-    [sessionId: string],
-    SessionExportResult | null
-  >
   archiveSession: IpcInvokeDefinition<
     'sessions:archive',
     [sessionId: string],
@@ -1328,11 +1315,6 @@ export interface XingmangInvokeContract {
     'extensions:list',
     [provider: ProviderId],
     ProviderExtensionsSnapshot
-  >
-  listAllProviderExtensions: IpcInvokeDefinition<
-    'extensions:list-all',
-    [],
-    ProviderExtensionsSnapshot[]
   >
   mutateProviderExtension: IpcInvokeDefinition<
     'extensions:mutate',
@@ -1793,9 +1775,6 @@ export const ipcInvokeChannels = {
   checkForUpdates: 'update:check',
   downloadUpdate: 'update:download',
   installUpdate: 'update:install',
-  listSessions: 'sessions:list',
-  getSessionDetail: 'sessions:detail',
-  exportSession: 'sessions:export',
   archiveSession: 'sessions:archive',
   restoreSession: 'sessions:restore',
   listProviderSessions: 'provider-sessions:list',
@@ -1844,7 +1823,6 @@ export const ipcInvokeChannels = {
   upgradeMarketplace: 'marketplaces:upgrade',
   removeMarketplace: 'marketplaces:remove',
   listProviderExtensions: 'extensions:list',
-  listAllProviderExtensions: 'extensions:list-all',
   mutateProviderExtension: 'extensions:mutate',
   ensureProviderMarketplace: 'extensions:ensure-marketplace',
   checkProviderMcpHealth: 'extensions:check-mcp-health',
