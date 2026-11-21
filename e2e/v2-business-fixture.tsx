@@ -230,6 +230,8 @@ function remoteSnapshot(): RemoteSnapshot {
     revision: remoteRevision,
     available: !elevated,
     ...(elevated ? { unavailableReason: '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。' } : {}),
+    // 登录的 Windows 账号本身就带管理员权限（自带 Administrator、关了授权弹窗）：能开，卡上多一句提醒。
+    ...(!elevated && query.has('remoteAdminAccount') ? { alwaysElevated: true } : {}),
     credentialPersistence: query.has('remoteSessionOnly') ? 'session-only' : 'durable',
     workspaceDirectory: remoteState.workspaceDirectory,
     ...(remoteState.workspaces.length > 1 ? { workspaces: [...remoteState.workspaces] } : {}),
