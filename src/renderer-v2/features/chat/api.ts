@@ -53,7 +53,7 @@ export const inspectModel = resolveAiModelCapability
 export const canReadImages = supportsChatImageInput
 export const validateChatRequest = buildChatCompletionsRequest
 export const validateImageRequest = buildImageGenerationRequest
-export const noImageEditModelMessage = '这个模型不能照着图片改，请换一个能改图的模型，或者先把图片去掉'
+export const noImageEditModelMessage = '当前模型不支持图片编辑，请更换支持图片编辑的模型，或先移除图片'
 // 能照着参考图改的出图模型（走 Images API 的 edits），主进程生图服务按同一张型号表再核一次。
 export function canEditImages(model: string): boolean {
   try {

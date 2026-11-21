@@ -1093,7 +1093,7 @@ test('remembers what the picture dialog chose in the settings shared with chat, 
   assert.deepEqual(await studioCalls(page, 'pick-images'), [4])
   // 带着参考图换到不会改图的型号：说清楚、点不了「生成图片」，换回来就好。
   await pickChoice(page, 'video-image-model', '模型', 'gemini-3.1-flash-image')
-  await dialog.getByTestId('video-draw-references-blocked').getByText('这个模型不能照着图片改，请换一个能改图的模型，或者先把图片去掉', { exact: true }).waitFor()
+  await dialog.getByTestId('video-draw-references-blocked').getByText('当前模型不支持图片编辑，请更换支持图片编辑的模型，或先移除图片', { exact: true }).waitFor()
   assert.equal(await dialog.getByTestId('video-draw-ok').isDisabled(), true)
   assert.equal(await dialog.getByTestId('video-draw-attach').isDisabled(), true)
   assert.equal(await dialog.getByTestId('video-draw-attach').getAttribute('title'), '当前模型不支持图片编辑，请更换支持图片编辑的模型后再添加图片')
