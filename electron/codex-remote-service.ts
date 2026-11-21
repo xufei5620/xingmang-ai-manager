@@ -221,6 +221,11 @@ export interface CodexRemoteServiceOptions {
   readCodexSecrets(): Promise<readonly string[]>
   /** 这台电脑现在能不能开遥控；不能就给上屏的原因（比如星芒以管理员身份运行）。 */
   inspectAvailability(): string | null
+  /**
+   * 这台 Windows 电脑登录的账号本身就带管理员权限（自带 Administrator、关了授权弹窗），能开遥控，卡片上多一句提醒。
+   * 一次运行里不会变。缺省 = 不是。
+   */
+  alwaysElevatedAccount?: boolean
   /** 打开渠道前看一眼 Codex 命令行工具在不在；不在就给上屏的原因。缺省 = 不看，等真用到时再报。 */
   checkCodexReady?(): Promise<string | null>
   /**
@@ -1139,6 +1144,7 @@ export class CodexRemoteService {
       revision: this.revision,
       available: unavailableReason === null,
       ...(unavailableReason ? { unavailableReason } : {}),
+      ...(this.options.alwaysElevatedAccount && unavailableReason === null ? { alwaysElevated: true } : {}),
       credentialPersistence: this.options.store.credentialPersistence(),
       workspaceDirectory: settings.workspaceDirectory
         ? remoteDisplayPath(settings.workspaceDirectory, this.options.homeDirectory, this.platform)

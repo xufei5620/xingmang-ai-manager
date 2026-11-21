@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../../../electron/ipc-contract'
 import type { V2Bridge } from '../../../types'
-import { CodexRemoteCard, CodexRemotePanel, codexRemoteAutoStartText, codexRemoteConfirmText, codexRemoteIdleCloseText, remoteLowBalanceAmount } from './CodexRemoteCard'
+import { CodexRemoteCard, CodexRemotePanel, codexRemoteAdminAccountNotice, codexRemoteAutoStartText, codexRemoteConfirmText, codexRemoteIdleCloseText, remoteLowBalanceAmount } from './CodexRemoteCard'
 import { remoteChannelSections } from './channel-sections'
 import { feishuBotChatLink, feishuBotQrText, feishuGuideActions, feishuSetupSteps } from './FeishuRemoteSection'
 
@@ -210,6 +210,17 @@ describe('codex remote card', () => {
     expect(markup).toContain('星芒正以管理员身份运行。')
     expect(switchMarkup(markup)).toContain('disabled=""')
     expect(markup).toMatch(/data-testid="settings-remote-workspace" disabled=""/)
+  })
+
+  // yoyo typed his consent on 2026-11-20, this sentence included.
+  it('warns right under the intro when the Windows account is an administrator by itself', () => {
+    expect(codexRemoteAdminAccountNotice).toBe('这台电脑登录的 Windows 账号本身就带管理员权限，Codex 在这里改文件、跑命令也都带着管理员权限，手机上回「同意」前看清楚它要做什么。')
+    const markup = render(snapshot({ alwaysElevated: true, workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }))
+    expect(markup).toContain(`<span>${codexRemoteAdminAccountNotice}</span>`)
+    expect(markup.indexOf('v2-remote-intro')).toBeLessThan(markup.indexOf('data-testid="settings-remote-admin-account"'))
+    expect(markup).not.toContain('这台电脑现在不能打开手机遥控')
+    expect(switchMarkup(markup)).not.toContain('disabled=""')
+    expect(render(snapshot())).not.toContain('settings-remote-admin-account')
   })
 
   it('puts the WeChat block after Feishu, marked experimental, with its own scan and logout', () => {
