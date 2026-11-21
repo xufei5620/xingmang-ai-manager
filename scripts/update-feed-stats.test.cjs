@@ -13,9 +13,13 @@ const {
   parseDays,
   parseInstallerPath,
   parseUsagePath,
+  planCountWindow,
   planWindow,
+  renderUsageCounts,
+  summarizeDailyCounts,
   summarizeInstallerDownloads,
   summarizeStaleMachines,
+  summarizeVersionCoverage,
 } = require('./update-feed-stats.cjs')
 
 const root = path.resolve(__dirname, '..')
@@ -205,7 +209,7 @@ test('only the status file and the daily check-ins are queried, with the token s
   const grouped = cloudflare.calls.slice(2).map((call) => JSON.parse(call.init.body))
   const status = grouped.filter((payload) => payload.variables.filter.clientRequestPath)
   const usage = grouped.filter((payload) => payload.variables.filter.clientRequestPath_like === USAGE_FILTER)
-  assert.equal(grouped.length, 4)
+  assert.equal(grouped.length, 5)
   assert.equal(status.length, 2)
   for (const payload of status) {
     assert.equal(payload.variables.zoneTag, ZONE_ID)
@@ -214,13 +218,15 @@ test('only the status file and the daily check-ins are queried, with the token s
   }
   assert.deepEqual(status.map((payload) => payload.variables.filter.datetime_geq), ['2026-10-06T12:00:00Z', '2026-10-07T12:00:00Z'])
   // The check-ins carry everything in the path: no address, no hour, no status code.
-  assert.equal(usage.length, 2)
+  // The last one reaches back from the window's start to midnight UTC, so the first day's count is whole.
+  assert.equal(usage.length, 3)
   for (const payload of usage) {
     assert.equal(payload.variables.zoneTag, ZONE_ID)
     assert.match(payload.query, /dimensions \{ clientRequestPath \}/)
     assert.equal(Object.keys(payload.variables.filter).sort().join(','), 'clientRequestPath_like,datetime_geq,datetime_lt')
   }
-  assert.deepEqual(usage.map((payload) => payload.variables.filter.datetime_geq), ['2026-10-06T12:00:00Z', '2026-10-07T12:00:00Z'])
+  assert.deepEqual(usage.map((payload) => payload.variables.filter.datetime_geq), ['2026-10-06T12:00:00Z', '2026-10-07T12:00:00Z', '2026-10-06T00:00:00Z'])
+  assert.equal(usage[2].variables.filter.datetime_lt, '2026-10-06T12:00:00Z')
 })
 
 test('a piece that fills a whole page is split in half until every group fits', async () => {
@@ -233,8 +239,9 @@ test('a piece that fills a whole page is split in half until every group fits', 
     },
   })
   const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
-  // 24h -> 12h -> 6h: four pieces of six hours, the later ones see ip-a on 0.2.15. The check-ins fit in one page.
-  assert.equal(cloudflare.calls.length, 2 + 1 + 2 + 4 + 1)
+  // 24h -> 12h -> 6h: four pieces of six hours, the later ones see ip-a on 0.2.15. The check-ins fit in one page,
+  // and so does the stretch from midnight UTC up to the window that the daily counts add.
+  assert.equal(cloudflare.calls.length, 2 + 1 + 2 + 4 + 1 + 1)
   assert.match(report, /\| 0\.2\.15 \| 50\.0% \| 0\.0% \| 0\.0% \| \*\*50\.0%\*\* \|/)
   assert.match(report, /\| 0\.2\.14 \| 50\.0% \| 0\.0% \| 0\.0% \| \*\*50\.0%\*\* \|/)
 })
@@ -642,7 +649,7 @@ test('the report follows installer downloads by hour and states its scope, still
   const status = grouped.filter((payload) => payload.variables.filter.clientRequestPath)
   const installers = grouped.filter((payload) => payload.variables.filter.clientRequestPath_like === '/xingmang-manager/XingMang-AI-Manager-%')
   const manifests = grouped.filter((payload) => payload.variables.filter.clientRequestPath_like === '/xingmang-manager/latest%.yml')
-  assert.equal(grouped.length, 4)
+  assert.equal(grouped.length, 5)
   assert.equal(status.length, 1)
   assert.equal(installers.length, 1)
   assert.equal(manifests.length, 1)
@@ -679,10 +686,11 @@ test('without hourly groups the installer section says it cannot be worked out a
   const cloudflare = createCloudflare({ groups: () => [row(windows15, 'ip-a')] })
   const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
   const grouped = cloudflare.calls.slice(2).map((call) => JSON.parse(call.init.body))
-  // The status file, and the check-ins, which need the path alone.
-  assert.equal(grouped.length, 2)
+  // The status file, and the check-ins (the window and the stretch from midnight UTC before it), which need the path alone.
+  assert.equal(grouped.length, 3)
   assert.equal(grouped[0].variables.filter.clientRequestPath, '/xingmang-manager/service-status.json')
   assert.equal(grouped[1].variables.filter.clientRequestPath_like, USAGE_FILTER)
+  assert.equal(grouped[2].variables.filter.clientRequestPath_like, USAGE_FILTER)
   assert.match(report, /### 下过新版安装包的电脑后来怎样/)
   assert.match(report, /查不到来源 IP、请求路径或小时，这一项没法算/)
 })
@@ -767,7 +775,7 @@ test('a check-in path with anything outside the vocabulary is not counted at all
   for (const variant of variants) assert.equal(parseUsagePath(variant), null, String(variant))
 })
 
-test('the check-in section reads one whole day for shares and every day for rates, without counts', async () => {
+test('the check-in section reads one whole day for shares and every day for rates, which hold no counts', async () => {
   const cloudflare = createCloudflare({
     usage: (filter) => (filter.datetime_geq !== '2026-10-06T12:00:00Z' ? [] : [
       // Three Windows 11 machines seen once under one-in-three sampling.
@@ -814,8 +822,9 @@ test('the check-in section reads one whole day for shares and every day for rate
   assert.match(section, /最多每 3 次记 1 次/)
   assert.match(section, /另有 14\.3% 的打卡地址认不出/)
   assert.match(section, /nginx 原样转发到这里的（服务端 10-17 核过），所以也记在这里/)
-  // Public run pages: shares and rates only, never a count of machines or check-ins.
-  assert.doesNotMatch(section, /\| (?:1|2|3|4|5|6|7) \|/)
+  // The day's shares and the rates stay shares and rates; the counts have a section of their own above them.
+  assert.doesNotMatch(section.slice(section.indexOf('### 2026-10-07 这一天的电脑')), /\| (?:1|2|3|4|5|6|7) \|/)
+  assert.ok(section.indexOf('### 每天多少台') < section.indexOf('### 2026-10-07 这一天的电脑'))
 })
 
 test('G06: the newest versions each get their own crash, freeze and update-error rates', async () => {
@@ -902,4 +911,151 @@ test('the stats workflow only reads, on demand or once a day, with the read-only
   assert.equal(run.env.DAYS, "${{ github.event_name == 'schedule' && '1' || inputs.days }}")
   assert.match(run.run, /--days "\$DAYS"/)
   assert.match(run.run, /GITHUB_STEP_SUMMARY/)
+})
+
+// The daily counts are the one place the report holds machine counts (yoyo, 2026-11-21: on the run page, unsealed).
+
+function usagePiece(...rows) {
+  return { rows: rows.map(([pathName, count = 1, sampleInterval = 1]) => ({ count, sampleInterval, path: pathName })) }
+}
+
+const countWindow = { start: Date.parse('2026-10-07T00:00:00Z'), end: Date.parse('2026-10-08T12:00:00Z') }
+
+test('each day counts one machine per check-in, by platform and version, with what may be resends set apart', () => {
+  const daily = summarizeDailyCounts([
+    usagePiece(
+      [usagePath({ app: '0.2.24' })],
+      // Two identical check-ins: a resend, or two machines set up the same way.
+      [usagePath({ app: '0.2.24', os: 'w10' }), 2],
+      [usagePath({ app: '0.2.23', os: 'm15' })],
+      [usagePath({ app: 'x', os: 'lx' })],
+      [usagePath({ day: '20261008', app: '0.2.24' })],
+      // A clock a year off lands on no day of the window.
+      [usagePath({ day: '20251007', app: '0.2.24' })],
+      ['/xingmang-manager/stats/v1/d-20261007/a-hello'],
+    ),
+    // The same path in another piece is the same kind of check-in.
+    usagePiece([usagePath({ app: '0.2.24', os: 'w10' })]),
+  ], countWindow)
+  assert.deepEqual(daily.days.map((day) => day.day), ['20261007', '20261008'])
+  const [whole, half] = daily.days
+  assert.equal(whole.machines, 6)
+  assert.deepEqual(whole.platforms, { windows: 4, mac: 1, linux: 1, other: 0 })
+  assert.deepEqual(whole.versions.get('0.2.24'), { windows: 4, mac: 0, linux: 0, other: 0 })
+  assert.deepEqual(whole.versions.get('0.2.23'), { windows: 0, mac: 1, linux: 0, other: 0 })
+  assert.deepEqual(whole.versions.get(null), { windows: 0, mac: 0, linux: 1, other: 0 })
+  assert.equal(whole.repeated, 2)
+  assert.equal(whole.margin, 0)
+  assert.equal(whole.complete, true)
+  assert.equal(half.machines, 1)
+  assert.equal(half.complete, false)
+  assert.equal(half.to, countWindow.end)
+  assert.equal(daily.offDays, 1)
+})
+
+test('under sampling a day is scaled up by the interval and carries a 95% margin', () => {
+  const daily = summarizeDailyCounts([usagePiece([usagePath(), 4, 10], [usagePath({ os: 'w10' }), 1, 10])], countWindow)
+  const [day] = daily.days
+  assert.equal(day.machines, 50)
+  assert.equal(day.sampleInterval, 10)
+  // 5 sampled check-ins, each standing for 10 with variance 10 × 9.
+  assert.equal(Math.round(day.margin), Math.round(1.96 * Math.sqrt(5 * 90)))
+  // Four identical sampled rows: three beyond the first, each standing for ten.
+  assert.equal(day.repeated, 30)
+})
+
+test('the counts reach back to midnight UTC before the window, but never past what Cloudflare keeps', () => {
+  const limits = { notOlderThanMs: 8 * 86400000, maxDurationMs: 6 * 3600000 }
+  const window = planWindow(now, 1, limits)
+  const counts = planCountWindow(now, window, limits)
+  assert.equal(counts.start, Date.parse('2026-10-07T00:00:00Z'))
+  assert.equal(counts.end, window.end)
+  // Twelve hours before the window, cut to what one query may cover.
+  assert.deepEqual(counts.gap.map((piece) => [formatIso(piece.start), formatIso(piece.end)]), [
+    ['2026-10-07T00:00:00Z', '2026-10-07T06:00:00Z'],
+    ['2026-10-07T06:00:00Z', '2026-10-07T12:00:00Z'],
+  ])
+  const short = { notOlderThanMs: 30 * 3600000, maxDurationMs: 86400000 }
+  const clamped = planCountWindow(now, planWindow(now, 1, short), short)
+  // 30 hours back from 12:00:30, plus ten minutes of margin, rounded up to the minute.
+  assert.equal(clamped.start, Date.parse('2026-10-07T06:11:00Z'))
+  const midnight = new Date('2026-10-08T00:00:30.000Z')
+  assert.deepEqual(planCountWindow(midnight, planWindow(midnight, 1, limits), limits).gap, [])
+})
+
+function formatIso(milliseconds) {
+  return new Date(milliseconds).toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
+test('the counts say how many machines a day, per platform and version, and how sure that is', () => {
+  const daily = summarizeDailyCounts([
+    usagePiece(
+      ...Array.from({ length: 30 }, (_, index) => [usagePath({ app: '0.2.24', tools: `cc~2.1.${index}_cx~0_gk~x_gm~0_cdx~0_cd~0_wb~0_oc~0` })]),
+      [usagePath({ app: '0.2.24' }), 2],
+      ...Array.from({ length: 12 }, (_, index) => [usagePath({ app: '0.2.23', os: 'm15', tools: `cc~2.1.${index}_cx~0_gk~x_gm~0_cdx~0_cd~0_wb~0_oc~0` })]),
+      [usagePath({ day: '20261008', app: '0.2.24' }), 5],
+    ),
+  ], countWindow)
+  const text = renderUsageCounts(daily).join('\n')
+  assert.match(text, /### 每天多少台/)
+  assert.match(text, /不是在用的总台数/)
+  assert.match(text, /\| 日期 \| Windows \| Mac \| Linux \| 合计 \| 误差 \| 这一天数全了没有 \|/)
+  assert.match(text, /\| 2026-10-07 \| 32 \| 12 \| 0 \| \*\*44\*\* \| 没抽样，是数出来的；重发最多多算 1 台 \| 整天 \|/)
+  assert.match(text, /\| 2026-10-08 \| 5 \| 0 \| 0 \| \*\*5\*\* \| 没抽样，是数出来的；重发最多多算 4 台 \| 只数到北京时间 2026-10-08 20:00，这天还没过完，偏少 \|/)
+  assert.match(text, /\| 日期 \| 0\.2\.24 \| 0\.2\.23 \|\n\|---\|---:\|---:\|\n\| 2026-10-07 \| 32 \| 12 \|\n\| 2026-10-08 \| 5 \| 0 \|/)
+  assert.match(text, /2026-10-07（最后一个整天）各版本按系统/)
+  assert.match(text, /\| 0\.2\.24 \| 32 \| 0 \| 0 \| \*\*32\*\* \|/)
+  assert.match(text, /\| \*\*合计\*\* \| \*\*32\*\* \| \*\*12\*\* \| \*\*0\*\* \| \*\*44\*\* \|/)
+
+  const sampled = renderUsageCounts(summarizeDailyCounts([usagePiece([usagePath(), 4, 10])], countWindow)).join('\n')
+  assert.match(sampled, /\| 2026-10-07 \| 40 \| 0 \| 0 \| \*\*40\*\* \| 抽样折算（最多每 10 次记 1 次），±37（95%）；重发最多多算 30 台 \| 整天 \|/)
+})
+
+test('the report counts each day in the open, says what the count leaves out, and scales it up to the machines in use', async () => {
+  const cloudflare = createCloudflare({
+    groups: (filter) => (filter.datetime_geq === '2026-10-07T12:00:00Z'
+      ? [row(windows15, '203.0.113.7'), row(mac15.replace('/0.2.15 ', '/0.2.23 '), '203.0.113.8'), row(mac15, '203.0.113.9'), row(mac15, '203.0.113.10')]
+      : []),
+    usage: (filter) => {
+      // The stretch from midnight UTC that only the counts read.
+      if (filter.datetime_lt === '2026-10-07T12:00:00Z') return [usageRow(usagePath({ app: '0.2.23', os: 'm15' }), 7)]
+      return [usageRow(usagePath({ app: '0.2.23', os: 'm15' }), 6), usageRow(usagePath({ day: '20261008', app: '0.2.23' }), 9)]
+    },
+  })
+  const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
+  const section = report.slice(report.indexOf('## 每天打卡（匿名使用统计）'))
+  assert.match(section, /### 每天多少台\n/)
+  assert.match(section, /\| 2026-10-07 \| 0 \| 13 \| 0 \| \*\*13\*\* \| 没抽样，是数出来的；重发最多多算 12 台 \| 整天 \|/)
+  assert.match(section, /\| 2026-10-08 \| 9 \| 0 \| 0 \| \*\*9\*\* \|/)
+  assert.match(section, /### 台数覆盖了多少在用的电脑/)
+  assert.match(section, /- \*\*Mac 33\.3%\*\*：Mac 各个版本都读这里的状态文件/)
+  assert.match(section, /- \*\*Windows 0\.0%\*\*：0\.2\.18 起走线路2 的/)
+  assert.match(section, /0\.2\.22 及更早/)
+  assert.match(section, /关掉了「匿名使用统计」的/)
+  assert.match(section, /按这个比例折算，2026-10-07 这天在用的电脑大约/)
+  assert.match(section, /- Mac：13 台 ÷ 33\.3% ≈ \*\*39 台\*\*。还没算关了统计的/)
+  assert.match(section, /- Windows：状态文件那张表里没有 0\.2\.23 及以上的Windows，折算不了。/)
+  assert.match(section, /「电脑」是 Windows 1、Mac 3、Linux 0，合计 4。.*这个数不是台数/)
+  assert.ok(section.indexOf('### 台数覆盖了多少在用的电脑') < section.indexOf('这一天的电脑'))
+  // Still no address anywhere.
+  assert.doesNotMatch(report, /203\.0\.113/)
+})
+
+test('without client addresses the coverage cannot be worked out, but the counts still are', async () => {
+  const cloudflare = createCloudflare({
+    limits: settings({ availableFields: ['avg_sampleInterval', 'count', 'dimensions_clientRequestPath', 'dimensions_userAgent'] }),
+    groups: () => [row(windows15, '')],
+    usage: () => [usageRow(usagePath({ app: '0.2.23' }), 6)],
+  })
+  const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
+  assert.match(report, /### 每天多少台/)
+  assert.match(report, /老版本占几成算不出来，也折算不了在用台数/)
+})
+
+test('the IP-counted sections say their machines overcount and point to the check-ins for numbers', async () => {
+  const cloudflare = createCloudflare({ groups: () => [row(windows15, '203.0.113.7')] })
+  const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
+  assert.match(report, /这里的「电脑」不是真的台数，会多算/)
+  assert.match(report, /要台数看下面「每天打卡」那一节/)
+  assert.match(report, /Linux 一栏只有测试用的电脑，不是客户/)
 })

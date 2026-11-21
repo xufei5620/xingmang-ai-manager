@@ -36,6 +36,8 @@ export function useSupportContact({ app, session, version, os, platform, systemL
   // 弹过的错误框都记成「最近一次出错」，关掉以后再找客服也带得上。
   useEffect(() => { if (operationError) setLastFailure(supportFailureOf(operationError, new Date())) }, [operationError, setLastFailure])
   useEffect(() => {
+    // 二维码库照旧静态引入、留在首屏包里：欢迎页首屏就要这张图。总单 77 R9 试过改成 import()，
+    // Mac 上开发版开机到看见欢迎页要多 1 秒多，首屏测试 5 秒的门槛被越过两次（查根因探测 run 44880468302），就改回来了。
     let current = true
     void QRCode.toDataURL(supportUrl, { width: 192, margin: 1, errorCorrectionLevel: 'M' })
       .then((data) => { if (current) setSupportQr({ url: supportUrl, data }) })

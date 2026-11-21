@@ -299,6 +299,13 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 - 要在用例里录性能追踪：Electron 的 `contentTracing.stopRecording()` 写出的是 protobuf，不是 JSON；用页面的 CDP 会话 `Tracing.start({ transferMode: 'ReturnAsStream', streamFormat: 'json' })`，再用 `IO.read` 读回来。
 - 在 Mac 上连跑用一次性探测工作流（`docs/COLLABORATION.md` §3）。一次推送只认最后那个提交，探测提交要单独推；跑起来以后再推别的提交不影响它，它跑的是自己那个提交。用完删掉分支上的工作流文件。
 
+## 按时间戳认「又来了一次」：快机器上同一毫秒落两次（2026-11-21）
+
+`balance-store.ts` 的 `subscribeBalanceReads` 以前看 `snapshot.updatedAt`（`Date.now()` 毫秒）变没变来认「余额又读到一次」。`balance-store.test.ts`「tells read listeners once per landed read…」用真时钟、假 `read` 立刻回，前后两次读在快 runner 上落进同一毫秒，第二次就漏了（指纹：`expected "vi.fn()" to be called 2 times, but got 1 times`，指着「失败一次后再读一次」那行；11-21 在 linux-test 上 #1994、#2062 各红一次）。客户电脑上每次读余额都要过网络，两次落在同一毫秒几乎不会，但「每次都告诉一声」的约定确实没守住。
+
+- 修法：store 在快照里记 `reads`（读到过几次，只增不减，换账号也不归零），`subscribeBalanceReads` 认它不认时间戳。`updatedAt` 照旧只管「多久以前读的」。
+- 写法：要认「又发生了一次」的，数次数或给每次一个编号，别拿时间戳当编号；用例里的 store 能注入 `now` 的，钉成一个常数，同一毫秒就成了唯一情况，按时间戳认的写法每次都红。那个用例所在的分组现在就是这样钉的。
+
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 
 `fast-check` 写的随机输入测试（各测试文件末尾 `… with random inputs` 那几节：打码、外链白名单、会话编号、换线路改配置、粘贴密钥整理、PowerShell 单引号和通配符转义）每次跑用不同的随机种子，同一条这次绿、下次红是可能的。红的那次是库碰巧造出了一个打破规矩的输入，**代码真有这个缺口**：不按「重跑就过」放过，也不许把生成器改窄躲过去。
