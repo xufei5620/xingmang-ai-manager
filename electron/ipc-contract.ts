@@ -1,7 +1,7 @@
 // @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
 
 import type { AppSettings, AppSettingsUpdate, AppTheme as StoredAppTheme } from './app-settings'
-import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
+import type { AiAnswerCutOff, AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
 import type { MiniMaxVideoAspectRatio, MiniMaxVideoMode, MiniMaxVideoResolution } from './ai-chat-protocol'
 import type { VideoStudioPlan, VideoStudioPlanRequest } from './video-studio-plan'
 export type { VideoStudioPlan, VideoStudioPlanAspect, VideoStudioPlanShot } from './video-studio-plan'
@@ -683,11 +683,13 @@ export interface AiChatTextFile {
 }
 
 export type AiChatErrorCode = MainAiChatStreamErrorCode
+export type AiChatCutOff = AiAnswerCutOff
 
 export type AiChatStreamEvent =
   | { requestId: string; type: 'content'; content: string }
   | { requestId: string; type: 'reasoning'; content: string }
-  | { requestId: string; type: 'complete' }
+  /** cutOff：回答没写完就停了（到了长度上限 / 被内容审核拦下），已经出来的字照留；缺省 = 正常说完。 */
+  | { requestId: string; type: 'complete'; cutOff?: AiChatCutOff }
   | { requestId: string; type: 'canceled'; mayStillComplete?: boolean }
   | { requestId: string; type: 'error'; code?: AiChatErrorCode; message: string }
 

@@ -27,6 +27,8 @@ import { passwordChangeUnconfirmedMessage } from './password-change-unconfirmed'
 import { PaymentCheckoutRejected } from './payment-window'
 import { assetThumbnailUrl } from './asset-thumbnail'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
+import { AiAnswerCutOffError, aiAnswerCutOffMessages } from './ai-answer-cut-off'
+import { videoStudioPlanTooLongMessage } from './video-studio-plan'
 import type { AiVideoProgressObserver } from './ai-video-service'
 import type { AiStoredAudioAsset } from './ai-audio-asset-store'
 
@@ -1561,6 +1563,14 @@ describe('registerIpcHandlers', () => {
       // A failed request is not asked again: that would only pay twice for the same failure.
       chatService.completeOnce.mockReset().mockRejectedValueOnce(new Error('当前余额不足'))
       await expect(planHandler(trustedEvent(), input)).rejects.toThrow('当前余额不足')
+      expect(chatService.completeOnce).toHaveBeenCalledOnce()
+
+      // An answer cut off at the output cap would be cut off again: no second paid request, and say what to change.
+      chatService.completeOnce.mockReset().mockRejectedValueOnce(new AiAnswerCutOffError('length'))
+      await expect(planHandler(trustedEvent(), input)).rejects.toThrow(videoStudioPlanTooLongMessage)
+      expect(chatService.completeOnce).toHaveBeenCalledOnce()
+      chatService.completeOnce.mockReset().mockRejectedValueOnce(new AiAnswerCutOffError('filtered'))
+      await expect(planHandler(trustedEvent(), input)).rejects.toThrow(aiAnswerCutOffMessages.filtered)
       expect(chatService.completeOnce).toHaveBeenCalledOnce()
 
       chatService.completeOnce.mockReset().mockImplementation(({ signal }) => new Promise((_resolve, reject) => {
