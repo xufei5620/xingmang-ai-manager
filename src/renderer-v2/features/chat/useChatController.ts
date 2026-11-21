@@ -247,16 +247,26 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     const group = activeConversation(stateRef.current).settings.group
     if (group && !preparations[group]) void prepareGroup(group)
   }
+  // 「新建」回到那段还没发过话的空白对话：它不进左边的列表，发了第一句才算一段对话（融合第 1 步；以前每点一次
+  // 左边就多一条空的「新对话」，现在「新建」也是做视频、开画布的入口，点得多，不能再攒）。存满 200 段时不在这里拦，
+  // 发第一句时 send 会说。
   const newConversation = () => {
     const current = activeConversation(stateRef.current)
-    const keepDraft = current.id === stateRef.current.draftConversation.id && Boolean(current.draft.trim())
-    if (stateRef.current.conversations.length + (keepDraft ? 2 : 1) > MAX_CONVERSATIONS) { setError(conversationLimitMessage); return }
-    const next = createConversation(current.settings)
+    const onBlank = current.id === stateRef.current.draftConversation.id
+    // 空白页上打了字没发又点「新建」：照旧先把它存成一段对话（名字取打的字），再给一页新的空白。
+    const keepDraft = onBlank && Boolean(current.draft.trim())
+    if (keepDraft && stateRef.current.conversations.length + 1 > MAX_CONVERSATIONS) { setError(conversationLimitMessage); return }
     commit((workspace) => {
-      const preserved = keepDraft ? saveConversation(workspace, { ...current, title: autoConversationTitle(current.draft.trim()) }) : workspace
-      return { ...preserved, conversations: [next, ...preserved.conversations], activeId: next.id }
+      if (keepDraft) return { ...saveConversation(workspace, { ...current, title: autoConversationTitle(current.draft.trim()) }), activeId: null }
+      if (onBlank) return workspace
+      // 从别的对话过来：空白页跟着那段对话的模型和设置走；它自己还留着没发的字、图、文件时原样不动。
+      const blank = workspace.draftConversation
+      const untouched = !blank.draft.trim() && !blank.draftImages?.length && !blank.draftFiles?.length
+      return { ...workspace, activeId: null, draftConversation: untouched ? createConversation(current.settings) : blank }
     })
     setError('')
+    const group = activeConversation(stateRef.current).settings.group
+    if (group && !preparations[group]) void prepareGroup(group)
   }
   const send = async (options: SendOptions = {}) => {
     const current = activeConversation(stateRef.current)
