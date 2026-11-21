@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 45
     env:
       PROBE_VITE_LOG: info
-      PROBE_PROFILE_MS: '20000'
+      PROBE_PROFILE_MS: '12000'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,13 +30,10 @@ jobs:
         timeout-minutes: 20
         run: node scripts/ci-ensure-electron-binary.cjs
       - run: npm run compile
-      - name: Cold Vite cache, three rounds
+      - name: Cold Vite cache, one round
         run: |
-          for i in 1 2 3; do
-            echo "=== cold round $i"
-            rm -rf node_modules/.vite
-            node tmp-probe/probe.mjs || echo "round $i failed"
-          done
+          rm -rf node_modules/.vite
+          node tmp-probe/probe.mjs || echo "cold round failed"
       - name: Warm Vite cache, three rounds
         run: |
           for i in 1 2 3; do
@@ -44,10 +41,13 @@ jobs:
             node tmp-probe/probe.mjs || echo "round $i failed"
           done
       - run: npx --no-install playwright install chromium
-      - name: Same order as macos-test (browser suites first), three rounds
+      - name: Same predecessors as macos-test, then compile and probe like test:mac:dev-origin, four rounds
         run: |
           npm run test:browser > /dev/null 2>&1 || echo "test:browser failed"
-          for i in 1 2 3; do
-            echo "=== after-browser round $i"
+          npm run test:mac:release-keychain > /dev/null 2>&1 || echo "release-keychain failed"
+          npm run test:mac:proxy > /dev/null 2>&1 || echo "mac:proxy failed"
+          for i in 1 2 3 4; do
+            echo "=== ci-like round $i"
+            npm run compile > /dev/null 2>&1 || echo "compile failed"
             node tmp-probe/probe.mjs || echo "round $i failed"
           done

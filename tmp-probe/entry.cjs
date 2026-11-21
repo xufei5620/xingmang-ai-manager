@@ -2,7 +2,8 @@
 // 临时探测：按段计时 macOS 开发版首屏，核完就删（不进 main）。
 // Times main-process milestones, event-loop stalls and the five bootstrap IPC
 // handlers, samples a CPU profile, then hands over to the real entry.
-const t0 = Date.now()
+// Shares the probe script's zero so both logs line up on one clock.
+const t0 = Number(process.env.PROBE_T0) || Date.now()
 const fs = require('node:fs')
 function log(event, extra) { const l = `[probe-main] ${Date.now() - t0}ms ${event}${extra ? ' ' + JSON.stringify(extra) : ''}`; try { if (process.env.PROBE_LOG_FILE) fs.appendFileSync(process.env.PROBE_LOG_FILE, l + '\n') } catch {} }
 if (process.platform === 'linux' && typeof process.geteuid === 'function' && process.geteuid() === 0) process.geteuid = () => 1000
@@ -20,6 +21,7 @@ const lag = setInterval(() => {
 }, 20)
 lag.unref?.()
 const { app, ipcMain, session, net: electronNet } = require('electron')
+if (process.env.PROBE_APP_PATH) app.setAppPath(process.env.PROBE_APP_PATH)
 const blockedHosts = /(^|\.)solov\.cc$/
 const handle = ipcMain.handle.bind(ipcMain)
 const interesting = new Set(['settings:get', 'platform:get-capabilities', 'account:get-session', 'update:get-state', 'window:get-capabilities'])
@@ -32,7 +34,9 @@ function guard(ses) {
   ses.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (d, cb) => {
     let host = ''
     try { host = new URL(d.url).hostname } catch {}
-    if (blockedHosts.test(host)) { log('net.blocked', { host }); cb({ cancel: true }); return }
+    // PROBE_NET_DELAY_MS stands in for a slow or stalled production round trip
+    // without ever letting the request leave the machine.
+    if (blockedHosts.test(host)) { log('net.blocked', { host, path: new URL(d.url).pathname, method: d.method }); setTimeout(() => cb({ cancel: true }), Number(process.env.PROBE_NET_DELAY_MS || 0)); return }
     if (host !== '127.0.0.1') log('net', { host })
     cb({})
   })

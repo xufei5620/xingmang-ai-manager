@@ -1,5 +1,7 @@
 // 临时探测：按段计时 macOS 开发版首屏，核完就删（不进 main）。
 import fs from 'node:fs/promises'
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,15 +19,19 @@ mark('vite.listening')
 const args = [path.join(here, 'entry.cjs'), `--user-data-dir=${path.join(stateRoot, 'user-data')}`]
 if (process.getuid?.() === 0) args.push('--no-sandbox')
 const mainLog = path.join(stateRoot, 'main.log')
-const app = await electron.launch({ args, cwd: projectRoot, timeout: 60_000, env: { ...process.env, PROBE_LOG_FILE: mainLog, PROBE_REAL_ENTRY: path.join(projectRoot, 'dist-electron/platform/entry.js'), HOME: home, USERPROFILE: home, VITE_DEV_SERVER_URL: `http://127.0.0.1:${port}`, XINGMANG_DISABLE_SINGLE_INSTANCE: '1' } })
+const app = await electron.launch({ args, cwd: projectRoot, timeout: 60_000, env: { ...process.env, PROBE_LOG_FILE: mainLog, PROBE_APP_PATH: projectRoot, PROBE_T0: String(t0), PROBE_REAL_ENTRY: path.join(projectRoot, 'dist-electron/platform/entry.js'), HOME: home, USERPROFILE: home, VITE_DEV_SERVER_URL: `http://127.0.0.1:${port}`, XINGMANG_DISABLE_SINGLE_INSTANCE: '1' } })
 mark('electron.launched')
+process.on('exit', () => { try { console.log(require('node:fs').readFileSync(mainLog, 'utf8').trimEnd()) } catch { console.log('(no main log)') } })
 const page = await app.firstWindow({ timeout: 60_000 })
-mark('firstWindow')
+mark('firstWindow', { url: page.url() })
+page.on('framenavigated', (frame) => { if (frame === page.mainFrame()) mark('framenavigated', { url: frame.url().slice(0, 80) }) })
+page.on('domcontentloaded', () => mark('event.domcontentloaded', { url: page.url().slice(0, 80) }))
 const evidence = observeFixtureBootstrap(page, server)
 page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning' || /vite/i.test(m.text())) mark('console', { type: m.type(), text: m.text().slice(0, 200) }) })
 await page.waitForLoadState('domcontentloaded', { timeout: 60_000 })
 const dcl = Date.now() - t0
-mark('domcontentloaded')
+mark('domcontentloaded', { url: page.url().slice(0, 80) })
+mark('renderer-clock', await page.evaluate((zero) => ({ navigationStartAt: Math.round(performance.timeOrigin - zero) }), t0).catch((error) => ({ error: String(error).slice(0, 120) })))
 await page.evaluate(() => {
   window.__probeLong = []
   try { new PerformanceObserver((list) => { for (const e of list.getEntries()) window.__probeLong.push([Math.round(e.startTime), Math.round(e.duration)]) }).observe({ type: 'longtask', buffered: true }) } catch (error) { window.__probeLong.push(['unsupported', String(error)]) }
@@ -54,6 +60,5 @@ mark('evidence', await evidence.snapshot())
 // Let the main-process profile summary print before closing.
 await new Promise((r) => setTimeout(r, Math.max(0, Number(process.env.PROBE_PROFILE_MS || 15000) - (Date.now() - t0)) + 1500))
 await app.close().catch(() => undefined)
-console.log((await fs.readFile(mainLog, 'utf8').catch(() => '(no main log)\n')).trimEnd())
-await server.close(); await fs.rm(stateRoot, { recursive: true, force: true })
+await server.close()
 mark('done')
