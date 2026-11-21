@@ -1873,13 +1873,13 @@ test('waiting for a connection to be authorized in the browser can be cancelled 
     const row = detail.getByTestId('hub-where-codex')
     await expect(row).toContainText('需要登录授权')
     await row.getByTestId('hub-auth-codex').click()
-    await row.getByText('等你在浏览器里授权', { exact: true }).waitFor()
+    await row.getByText('等待在浏览器中授权', { exact: true }).waitFor()
     // 等授权时整页别的按钮都灰着；这颗「取消」是唯一能停下来的地方，读屏要说清停的是哪一条。
     const cancel = row.getByRole('button', { name: '停止等待 测试连接 授权', exact: true })
     assert.equal(await cancel.textContent(), '取消')
     await cancel.click()
     await row.getByText('正在停止', { exact: true }).waitFor()
-    await waitForToast(page, '已取消，测试连接 还没有授权')
+    await waitForToast(page, '已取消，测试连接 尚未授权')
     await row.getByText('登录授权', { exact: true }).waitFor()
     assert.equal(await cancel.count(), 0)
     assert.equal(await row.getByTestId('hub-auth-codex').isEnabled(), true)
@@ -1912,7 +1912,7 @@ test('a connection shows its own checked answer with the reason, and 重新加�
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'mcp-health').length === 2)
     detail = await openInstalled(page, '测试连接')
     // 「连不上」本身不够用，工具给出的那句原因必须一起上屏。
-    await expect(detail.getByTestId('hub-where-claude')).toContainText('连不上')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('无法连接')
     await detail.getByText('启动失败：找不到 uvx', { exact: true }).waitFor()
     const names = (await calls(page)).map((call) => call.name)
     assert.equal(names.filter((name) => name === 'list-extensions').length, reads + 1)
@@ -1930,9 +1930,9 @@ test('adding a uvx connection without Python says so first and still lets it thr
     await page.getByTestId('mcp-source').fill('uvx')
     const notice = page.getByTestId('mcp-runtime-notice')
     await notice.waitFor()
-    await notice.getByText(/没有找到 uv/).waitFor()
+    await notice.getByText(/未找到 uv/).waitFor()
     // 提示只是提示：它不该把「添加」按下去的路堵死。
-    await notice.getByText(/仍然可以直接添加/).waitFor()
+    await notice.getByText(/仍可直接添加/).waitFor()
     await notice.getByTestId('mcp-install-python').click()
     await page.getByText('测试环境不装 Python').first().waitFor()
     // npx 型的命令不该被这条提示牵连。
@@ -1951,7 +1951,7 @@ test('a uvx connection missing uv points to customer support with a button inste
     await page.getByRole('button', { name: '本地程序', exact: true }).click()
     await page.getByTestId('mcp-source').fill('uvx')
     const notice = page.getByTestId('mcp-runtime-notice')
-    await notice.getByText(/这个工具还要一个叫 uv 的小组件，点「联系客服」，客服教你装。/).waitFor()
+    await notice.getByText(/该工具还需安装 uv 组件，请点击「联系客服」获取安装指导。/).waitFor()
     assert.equal(await notice.getByText(/pip install uv/).count(), 0)
     await notice.getByTestId('mcp-runtime-support').click()
     assert.equal((await callsNamed(page, 'open-help')).length, 1)
@@ -2022,11 +2022,11 @@ test('a recommended entry that needs a folder asks for it in the same dialog bef
     assert.equal(await submit.innerText(), '继续填写')
     await submit.click()
     const notice = dialog.getByTestId('curated-input-directory')
-    await notice.getByText(/点「选择文件夹」挑一个，软件会替你填好，不用手改。/).waitFor()
+    await notice.getByText(/点击「选择文件夹」选择后将自动填写，无需手动修改。/).waitFor()
     await notice.getByTestId('curated-choose-directory').waitFor()
     // 占位符没换就提交要当场拦住，而不是写进一条起不来的连接。
     await submit.click()
-    await dialog.getByText('{{directory}} 还没换成真实内容，请先填好再添加。', { exact: true }).waitFor()
+    await dialog.getByText('{{directory}} 尚未替换为实际内容，请填写后再添加。', { exact: true }).waitFor()
     assert.equal((await callsNamed(page, 'extension')).length, 0)
     assert.equal((await callsNamed(page, 'add-mcp')).length, 0)
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
@@ -2044,7 +2044,7 @@ test('the GPT official catalog downloads by itself on the first visit without an
     await page.getByTestId('hub-search').fill('Game Studio')
     await page.getByTestId('hub-row-plugin-game-studio-openai-api-curated').waitFor()
     await page.waitForTimeout(300)
-    assert.equal(await page.getByText('插件目录已下载，下面就是可以安装的插件。').count(), 0)
+    assert.equal(await page.getByText('插件目录已下载，下方为可安装的插件。').count(), 0)
     assert.equal((await callsNamed(page, 'ensure-marketplace')).length, 1)
   } finally {
     await page.close()
@@ -2057,7 +2057,7 @@ test('when the GPT official catalog fails to download the group says why and off
     // 第一次按国内常见的样子失败：说清楚原因，留一颗按钮让用户自己再点。
     await page.getByText(/插件目录没有下载下来/).first().waitFor()
     const notice = page.getByTestId('hub-section-codex').getByTestId('hub-codex-marketplace')
-    await notice.getByText('官方插件目录还没下载').waitFor()
+    await notice.getByText('官方插件目录尚未下载').waitFor()
     assert.equal((await callsNamed(page, 'ensure-marketplace')).length, 1)
     await notice.getByTestId('hub-codex-marketplace-add').click()
     await notice.waitFor({ state: 'detached' })
@@ -2073,14 +2073,14 @@ test('when the GPT official catalog fails to download the group says why and off
 test('with nothing installed the plugins page says how to add one', async () => {
   const page = await fixture(`${hubClaudeOnly}&empty`)
   try {
-    await expect(page.locator('.v2-hub-side-empty')).toHaveText('还没装插件')
+    await expect(page.locator('.v2-hub-side-empty')).toHaveText('暂未安装插件')
     // 推荐照样摆着，能直接点「+」装。
     await page.getByTestId('hub-add-mcp-browser').waitFor()
     await page.getByTestId('hub-tab-custom').click()
-    await page.getByTestId('hub-custom-empty').getByText('还没自己加过。服务方给了连接配置时，点右上角「添加」。', { exact: true }).waitFor()
+    await page.getByTestId('hub-custom-empty').getByText('暂无自定义连接。获取服务方提供的连接配置后，请点击右上角「添加」。', { exact: true }).waitFor()
     await page.getByTestId('hub-nav-skills').click()
-    await page.getByTestId('hub-skills-empty').getByText('还没装技能。拿到别人给的技能文件夹时，点右上角「添加」导入。', { exact: true }).waitFor()
-    await expect(page.locator('.v2-hub-side-empty')).toHaveText('还没装技能')
+    await page.getByTestId('hub-skills-empty').getByText('暂未安装技能。获取技能文件夹后，请点击右上角「添加」导入。', { exact: true }).waitFor()
+    await expect(page.locator('.v2-hub-side-empty')).toHaveText('暂未安装技能')
   } finally {
     await page.close()
   }
@@ -2104,7 +2104,7 @@ test('the add menu names what each dialog adds and asks which tool a plugin goes
     await openHubAdd(page, 'plugin')
     const chooser = page.getByRole('dialog', { name: '装到哪里', exact: true })
     await expect(chooser.getByTestId('hub-tool-chooser-grok')).toBeDisabled()
-    await expect(chooser.getByTestId('hub-tool-chooser-grok')).toContainText('这台电脑还没装 Grok CLI')
+    await expect(chooser.getByTestId('hub-tool-chooser-grok')).toContainText('本机尚未安装 Grok CLI')
     await chooser.getByTestId('hub-tool-chooser-codex').click()
     await page.getByRole('dialog', { name: '给 Codex CLI 添加插件', exact: true }).waitFor()
   } finally {
@@ -2125,11 +2125,11 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
     assert.deepEqual(await form.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）'])
     await form.getByTestId('plugins-source').fill('owner/repo')
     await form.getByTestId('plugins-form-submit').click()
-    const confirm = page.getByRole('dialog', { name: '给 Grok CLI 装这个插件？', exact: true })
+    const confirm = page.getByRole('dialog', { name: '是否为 Grok CLI 安装此插件？', exact: true })
     await confirm.waitFor()
-    await confirm.getByText('插件里带的技能、命令和连接，装好后每次打开 Grok CLI 都会自动运行，能像你本人一样读写这台电脑上的文件。', { exact: true }).waitFor()
+    await confirm.getByText('插件中的技能、命令和连接在安装后，每次打开 Grok CLI 时都会自动运行，并可像您本人一样读写本机文件。', { exact: true }).waitFor()
     await confirm.getByText('owner/repo', { exact: true }).waitFor()
-    await confirm.getByText('只装你认识、信得过的来源；拿不准就先别装。', { exact: true }).waitFor()
+    await confirm.getByText('请仅安装来源可信的插件；如不确定，请暂不安装。', { exact: true }).waitFor()
     assert.equal((await callsNamed(page, 'extension')).length, 0, '点「添加」只弹框，不装')
     // 先不装：回到表单，填过的来源还在，什么都没装。
     await confirm.getByRole('button', { name: '先不装', exact: true }).click()
@@ -2228,12 +2228,12 @@ test('removing a connection from one tool says which tool it leaves and that the
     await detail.getByTestId('hub-where-claude').getByRole('button', { name: 'browser 更多操作', exact: true }).click()
     await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「browser」？', exact: true })
-    await dialog.getByText('其他工具里的不受影响。以后想用再装回来就行。', { exact: true }).waitFor()
+    await dialog.getByText('其他工具中的不受影响。如需使用，可重新安装。', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '移除', exact: true }).click()
     await waitForToast(page, '已从 Claude Code 移除「browser」')
     assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'browser', scope: 'user' })
-    await expect(detail.getByTestId('hub-where-claude')).toContainText('还没装')
-    await expect(detail.getByTestId('hub-where-codex')).toContainText('已装好')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('未安装')
+    await expect(detail.getByTestId('hub-where-codex')).toContainText('已安装')
     // 自己加的那条，提醒的是要重新填一遍。
     await detail.getByTestId('hub-back').click()
     const custom = await openInstalled(page, '测试连接')
@@ -2256,7 +2256,7 @@ test('the remove confirmation waits for another extension change and says why in
     await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「测试连接」？', exact: true })
     const remove = dialog.getByRole('button', { name: '移除', exact: true })
-    assert.equal(await dialog.getByTestId('hub-delete-busy').innerText(), '上一个操作还没完成，完成后才能移除。')
+    assert.equal(await dialog.getByTestId('hub-delete-busy').innerText(), '上一操作尚未完成，请完成后再移除。')
     assert.equal(await remove.isDisabled(), true)
     assert.equal(await remove.getAttribute('aria-busy'), null)
     await page.evaluate(() => window.releaseExtension())
@@ -2278,7 +2278,7 @@ test('removing a custom plugin market asks first and only removes it after confi
       await markets.getByRole('button', { name: '市场 my-market 的更多操作', exact: true }).click()
       await page.getByRole('menuitem', { name: '移除市场', exact: true }).click()
       const dialog = page.getByRole('dialog', { name: '移除市场「my-market」？', exact: true })
-      await dialog.getByText('移除后，这个市场就不在列表里了，要用时得重新添加。', { exact: true }).waitFor()
+      await dialog.getByText('移除后，该市场将不再显示在列表中，如需使用需重新添加。', { exact: true }).waitFor()
       return dialog
     }
     let dialog = await openRemoval()
@@ -2308,7 +2308,7 @@ test('a custom connection checks its name first and then goes to every tool pick
     await dialog.getByText('名称只能用字母、数字和 - _，最多 40 位', { exact: true }).waitFor()
     await page.getByTestId('mcp-name').fill('test-extension')
     await submit.click()
-    await dialog.getByText('已经有叫「test-extension」的连接了，换个名字', { exact: true }).waitFor()
+    await dialog.getByText('已存在名为「test-extension」的连接，请更换名称', { exact: true }).waitFor()
     assert.equal((await callsNamed(page, 'extension')).length, 0)
     await page.getByTestId('mcp-name').fill('my-db')
     // 只给 Claude Code 时能选「当前项目」；勾上 Codex CLI（只有全局一层）就只剩「我的（全局）」，两边都装成全局。
@@ -2338,7 +2338,7 @@ test('a whole command line in the launch box goes to the tool as the program and
     await openHubAdd(page, 'mcp')
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     const source = page.getByTestId('mcp-source')
-    const splitHint = dialog.getByText('已经帮你把后面的参数分出去了', { exact: true })
+    const splitHint = dialog.getByText('已自动拆分后续参数', { exact: true })
     await page.getByTestId('mcp-name').fill('amap')
     await source.fill('npx')
     assert.equal(await splitHint.count(), 0)
@@ -2377,21 +2377,21 @@ test('a pasted provider config fills the custom connection and carries its heade
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     const paste = dialog.getByTestId('mcp-paste')
     await paste.fill('随便写的一句话')
-    await dialog.getByTestId('mcp-paste-result').getByText('没认出这段配置', { exact: true }).waitFor()
+    await dialog.getByTestId('mcp-paste-result').getByText('无法识别此配置', { exact: true }).waitFor()
     await paste.fill(JSON.stringify({
       mcpServers: {
         docs: { type: 'http', url: 'https://docs.example.test/mcp', headers: { Authorization: 'Bearer sk-docs' } },
         files: { command: 'npx', args: ['-y', 'files-server'], env: { ROOT: '<你的文件夹>' } },
       },
     }))
-    await dialog.getByText('认出来了：网络服务「docs」', { exact: true }).waitFor()
+    await dialog.getByText('已识别：网络服务「docs」', { exact: true }).waitFor()
     assert.equal(await dialog.getByTestId('mcp-name').inputValue(), 'docs')
     assert.equal(await dialog.getByTestId('mcp-source').inputValue(), 'https://docs.example.test/mcp')
     assert.equal(await dialog.getByTestId('mcp-headers').inputValue(), 'Authorization: Bearer sk-docs')
     // 第二条照样能选，示例文字要他自己换，提示里点名是哪一项。
     await dialog.getByTestId('mcp-paste-choice').selectOption('1')
-    await dialog.getByText('认出来了：本地程序「files」', { exact: true }).waitFor()
-    await dialog.getByText('下面几项已经替你填好。ROOT 看起来还是说明里的示例文字，换成你自己的再点「添加」。一次加一个，加好以后再粘贴同一段，选下一个。', { exact: true }).waitFor()
+    await dialog.getByText('已识别：本地程序「files」', { exact: true }).waitFor()
+    await dialog.getByText('已自动填写下方各项。ROOT 仍为说明中的示例文字，请替换为实际内容后点击「添加」。每次添加一个，添加后可再次粘贴同一段内容并选择下一个。', { exact: true }).waitFor()
     assert.equal(await dialog.getByTestId('mcp-source').inputValue(), 'npx')
     await dialog.getByTestId('mcp-paste-choice').selectOption('0')
     // 他自己改过的名字，再选一次也不动。
@@ -2421,10 +2421,10 @@ test('a custom connection leaves alone a same-named one another picked tool alre
     await openHubAdd(page, 'mcp')
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     await dialog.getByTestId('mcp-paste').fill('claude mcp add --transport http github https://api.example.test/mcp')
-    await dialog.getByText('认出来了：网络服务「github」', { exact: true }).waitFor()
+    await dialog.getByText('已识别：网络服务「github」', { exact: true }).waitFor()
     await dialog.getByTestId('mcp-form-tools-codex').click()
     await dialog.getByTestId('mcp-form-submit').click()
-    await dialog.getByText('Codex CLI 里已经有叫「github」的连接了，为了不动原来那条，这次没有添加。换个名字，或者不勾 Codex CLI。', { exact: true }).waitFor()
+    await dialog.getByText('Codex CLI 中已存在名为「github」的连接，为保留原连接，本次未添加。请更换名称，或取消勾选 Codex CLI。', { exact: true }).waitFor()
     assert.equal((await callsNamed(page, 'extension')).length, 0)
     assert.equal((await callsNamed(page, 'add-mcp')).length, 0)
   } finally {
@@ -2443,7 +2443,7 @@ test('a connection added in Claude Code is copied to the tools that do not have 
     await dialog.getByText('连接里填过的密钥、环境变量和请求头会原样带过去，装在那些工具的「我的（全局）」里，下次打开工具时生效。', { exact: true }).waitFor()
     const tools = dialog.getByRole('group', { name: '装到哪里', exact: true })
     await expect(tools.getByTestId('hub-install-tools-codex')).toBeDisabled()
-    await expect(tools.getByTestId('hub-install-tools-codex')).toContainText('已经装好了')
+    await expect(tools.getByTestId('hub-install-tools-codex')).toContainText('已安装')
     await expect(tools.getByTestId('hub-install-tools-grok')).toHaveAttribute('aria-pressed', 'true')
     await dialog.getByTestId('hub-install-submit').click()
     await waitForToast(page, '已安装「docs」，给 Grok CLI 使用，下次打开工具时生效')
@@ -2499,12 +2499,12 @@ test('copying is offered only where another tool can still take the connection',
   }
 })
 
-// 没装的工具不去读它的列表；那一家那一行写「这台电脑还没装」，给「去首页安装」。
+// 没装的工具不去读它的列表；那一家那一行写「这台电脑还没装」，给「前往首页安装」。
 test('a tool that is not installed is not read and each entry leads to the home page to install it', async () => {
   const page = await fixture('page=extensions&installedProviders=codex')
   try {
     const detail = await openInstalled(page, '浏览器')
-    await expect(detail.getByTestId('hub-where-claude')).toContainText('这台电脑还没装 Claude Code')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('本机尚未安装 Claude Code')
     await detail.getByTestId('hub-where-home-claude').click()
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
     assert.deepEqual([...new Set((await callsNamed(page, 'list-extensions')).map((call) => call.args))], ['codex'])
@@ -2526,18 +2526,18 @@ test('a curated entry spells out what its risk tag means under the tags in its d
   }
 })
 
-// 「扩展改」第 3 条（10-24）：能用它的工具一个都没装时直说，给「去首页安装」，不给「+」。
+// 「扩展改」第 3 条（10-24）：能用它的工具一个都没装时直说，给「前往首页安装」，不给「+」。
 test('an entry says on each family that the tool is not installed when none is, and leads to the home page', async () => {
   const page = await fixture('page=extensions&installedProviders=')
   try {
     await page.getByTestId('hub-open-mcp-sequential-thinking').click()
     const detail = page.getByTestId('hub-detail')
     for (const [id, name] of [['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['grok', 'Grok CLI']])
-      await expect(detail.getByTestId(`hub-where-${id}`)).toContainText(`这台电脑还没装 ${name}`)
+      await expect(detail.getByTestId(`hub-where-${id}`)).toContainText(`本机尚未安装 ${name}`)
     assert.equal(await detail.getByTestId('hub-detail-add').count(), 0)
     await detail.getByTestId('hub-back').click()
     assert.equal(await page.getByTestId('hub-add-mcp-sequential-thinking').count(), 0)
-    await expect(page.getByTestId('hub-claude-missing')).toContainText('装好 Claude Code 才能看 Claude 官方插件。')
+    await expect(page.getByTestId('hub-claude-missing')).toContainText('安装 Claude Code 后可查看 Claude 官方插件。')
     await page.getByTestId('hub-claude-open-home').click()
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
     assert.equal((await callsNamed(page, 'list-extensions')).length, 0)
@@ -4800,7 +4800,7 @@ test('the plugins page groups the recommended entries and folds each official gr
     // 左边「已安装」：连不上的那条有橙点，鼠标停上去说是哪种。
     const installed = page.getByTestId('hub-installed')
     await expect(page.locator('.v2-hub-side-label')).toContainText('5')
-    await expect(installed.getByRole('button', { name: /测试连接/ }).locator('.v2-hub-warn')).toHaveAttribute('title', '连不上')
+    await expect(installed.getByRole('button', { name: /测试连接/ }).locator('.v2-hub-warn')).toHaveAttribute('title', '无法连接')
     await expect(page.getByText('这些都是第三方软件，由它们各自的作者维护和更新，不随星芒一起发布。装之前请先看清它要哪些权限。', { exact: true }).first()).toBeVisible()
     // 「自己加的」只放自己加的那条连接。
     await page.getByTestId('hub-tab-custom').click()
@@ -4820,7 +4820,7 @@ test('installing from the plugins page puts a recommended connection into every 
     await expect(tools.getByTestId('hub-install-tools-claude')).toHaveAttribute('aria-pressed', 'true')
     await expect(tools.getByTestId('hub-install-tools-codex')).toHaveAttribute('aria-pressed', 'true')
     await expect(tools.getByTestId('hub-install-tools-grok')).toBeDisabled()
-    await expect(tools.getByTestId('hub-install-tools-grok')).toContainText('这台电脑还没装 Grok CLI')
+    await expect(tools.getByTestId('hub-install-tools-grok')).toContainText('本机尚未安装 Grok CLI')
     await tools.getByTestId('hub-install-tools-grok-home').waitFor()
     const submit = dialog.getByTestId('hub-install-submit')
     await expect(submit).toHaveText('装到 2 个')
@@ -4857,20 +4857,20 @@ test('an entry opens to where it is installed and what it does, and comes out of
     await page.getByTestId('hub-installed').getByRole('button', { name: /本地文件/ }).click()
     const detail = page.getByTestId('hub-detail')
     await expect(detail.getByRole('heading', { level: 2 })).toHaveText('本地文件')
-    await expect(detail.getByTestId('hub-where-claude')).toContainText('已装好')
-    await expect(detail.getByTestId('hub-where-codex')).toContainText('还没装')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('已安装')
+    await expect(detail.getByTestId('hub-where-codex')).toContainText('未安装')
     await detail.getByTestId('hub-where-add-codex').waitFor()
-    await expect(detail.getByTestId('hub-where-grok')).toContainText('这台电脑还没装 Grok CLI')
+    await expect(detail.getByTestId('hub-where-grok')).toContainText('本机尚未安装 Grok CLI')
     await expect(detail.getByTestId('hub-detail-add')).toHaveText('装到 GPT')
     await expect(detail.getByTestId('hub-detail-about')).toContainText('MCP 服务器')
     await detail.getByTestId('hub-remove-all').click()
     const confirm = page.getByRole('dialog', { name: '从所有工具里移除「本地文件」？', exact: true })
-    await expect(confirm).toContainText('会从 Claude Code 里一起移除。以后想用再装回来就行。')
+    await expect(confirm).toContainText('将同时从 Claude Code 中移除。如需使用，可重新安装。')
     await confirm.getByTestId('hub-remove-confirm').click()
     await waitForToast(page, '已从 Claude Code 移除「本地文件」')
     assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'files', scope: 'user' })
     // 推荐里的那一条还在，详情照旧开着，只是哪家都没装了；左边清单里没有它了。
-    await expect(detail.getByTestId('hub-where-claude')).toContainText('还没装')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('未安装')
     assert.equal(await page.getByTestId('hub-installed').getByRole('button', { name: /本地文件/ }).count(), 0)
     await detail.getByTestId('hub-back').click()
     await page.getByTestId('hub-section-common').waitFor()
@@ -4894,7 +4894,7 @@ test('the plugins page searches across groups, filters by family and says when n
     await page.getByTestId('hub-section-common').waitFor()
     // 装到：GPT 时 Claude 官方那一组不放，没装的 Grok 写「还没装」。
     await page.getByTestId('hub-filter').click()
-    await expect(page.getByTestId('hub-filter-grok')).toContainText('还没装')
+    await expect(page.getByTestId('hub-filter-grok')).toContainText('未安装')
     await page.getByTestId('hub-filter-codex').click()
     await expect(page.getByTestId('hub-filter')).toHaveText('装到：GPT')
     assert.equal(await page.getByTestId('hub-section-claude').count(), 0)
@@ -4907,7 +4907,7 @@ test('the plugins page searches across groups, filters by family and says when n
 test('without the Codex CLI the GPT official group asks for it and offers the home page', async () => {
   const page = await fixture('page=extensions&installedProviders=claude')
   try {
-    await expect(page.getByTestId('hub-codex-missing')).toHaveText('装好 Codex CLI 才能看 GPT 官方插件。去首页安装')
+    await expect(page.getByTestId('hub-codex-missing')).toHaveText('安装 Codex CLI 后可查看 GPT 官方插件。前往首页安装')
     await page.getByTestId('hub-codex-open-home').waitFor()
     assert.equal(await page.getByTestId('hub-row-plugin-sentry-openai-api-curated').count(), 0)
   } finally {

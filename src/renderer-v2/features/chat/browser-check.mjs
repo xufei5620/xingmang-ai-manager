@@ -437,6 +437,69 @@ test('image controls use real model capabilities and asset actions use opaque id
   } finally { await page.close() }
 })
 
+// 融合第 4 步：出图的型号、尺寸、画质、分辨率按账号记一份，对话里「生成图片」那一档和视频工作台的出图框共用。
+// 在一段对话里改了，另一段的「生成图片」跟着变；别处（出图框）改了，开着的这一段也跟着变；文本对话和别的账号不受影响。
+test('image settings are remembered once per account and follow into other conversations and changes made elsewhere', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    await allPrepared(page)
+    const shared = (id = 7) => page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? 'null'), `xingmang-ui-v2:image-settings:xm-account:${id}`)
+    const controls = async () => ({ ...(await picked(page)), size: await page.getByTestId('chat-image-size').getAttribute('data-value'), quality: await page.getByTestId('chat-image-quality').getAttribute('data-value'), resolution: await page.getByTestId('chat-image-resolution').getAttribute('data-value') })
+    // 只是切到「生成图片」不算改过，还没有可记的。
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.equal(await shared(), null)
+    await pickChoice(page, 'chat-image-quality', '画质', '高')
+    await pickChoice(page, 'chat-image-size', '尺寸', '1536 × 1024')
+    assert.deepEqual(await shared(), { model: 'gpt-image-2', group: 'group-a', size: '1536x1024', quality: 'high', imageResolution: '1K' })
+    // 手填到一半、还不合规矩的尺寸不记。
+    await pickChoice(page, 'chat-image-size', '尺寸', '自定义尺寸')
+    await page.getByTestId('chat-image-width').fill('1000')
+    assert.equal((await shared()).size, '1536x1024')
+    await page.getByTestId('chat-image-width').fill('1008')
+    assert.equal((await shared()).size, '1008x1024')
+    await pickChoice(page, 'chat-image-size', '尺寸', '1536 × 1024')
+    const first = await send(page, 'A test scene')
+    assert.deepEqual([first.size, first.quality], ['1536x1024', 'high'])
+    await page.evaluate((id) => window.chatHarness.completeImage(id), first.requestId)
+    await page.getByRole('button', { name: '查看生成图片' }).waitFor()
+
+    // 新开一段对话切到「生成图片」：就是刚才那一份，不回默认。
+    await page.getByTestId('chat-conversation-new').click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.deepEqual(await controls(), { group: 'group-a', model: 'gpt-image-2', label: 'gpt-image-2', size: '1536x1024', quality: 'high', resolution: '1K' })
+    // 文本对话那一档不跟着动，切回来还在。
+    await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话' }).click()
+    assert.equal(await page.getByTestId('chat-image-size').count(), 0)
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.equal((await controls()).quality, 'high')
+
+    // 别处改了这一份（视频工作台的出图框点了「生成图片」）：开着的这一段马上跟着变。
+    await page.evaluate(() => window.chatHarness.shareImageSettings({ model: 'gemini-3.1-flash-image', group: 'group-a', size: '1280x720', quality: 'auto', imageResolution: '2K' }))
+    await page.locator('[data-testid="chat-model"][data-model="gemini-3.1-flash-image"]').waitFor()
+    assert.equal(await page.getByTestId('chat-image-size').getAttribute('data-value'), '1280x720')
+    assert.equal(await page.getByTestId('chat-image-resolution').getAttribute('data-value'), '2K')
+    // 记的型号这会儿不在模型表里：型号留着自己的，尺寸、分辨率照样跟过来。
+    await page.evaluate(() => window.chatHarness.shareImageSettings({ model: 'gone-image-model', group: 'group-a', size: '1024x1536', quality: 'auto', imageResolution: '4K' }))
+    await page.locator('[data-testid="chat-image-size"][data-value="1024x1536"]').waitFor()
+    assert.equal((await picked(page)).model, 'gemini-3.1-flash-image')
+    assert.equal(await page.getByTestId('chat-image-resolution').getAttribute('data-value'), '4K')
+
+    // 重开页面还在；换一个账号是另一份，从默认开始。
+    await page.reload()
+    await ready(page)
+    await allPrepared(page)
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.equal(await page.getByTestId('chat-image-size').getAttribute('data-value'), '1024x1536')
+    await page.evaluate(() => window.chatHarness.switchScope(8))
+    await ready(page)
+    await allPrepared(page)
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.deepEqual(await controls(), { group: 'group-a', model: 'gpt-image-2', label: 'gpt-image-2', size: '1024x1024', quality: 'low', resolution: '1K' })
+    assert.equal(await shared(8), null)
+  } finally { await page.close() }
+})
+
 // 表单 F5：自定义尺寸手打成不合规的，不发；离开尺寸框或点发送时，尺寸框下面说清规矩，改对了就收起来。
 test('a custom image size the model cannot draw is held back with its rule under the size box', async () => {
   const page = await open()

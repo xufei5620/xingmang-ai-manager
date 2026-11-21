@@ -3,12 +3,13 @@ import { platformApi } from '../../platform-api'
 import { chatTextFileFullMessage } from '../../../../electron/ai-chat-protocol'
 import type { AiChatAsset, AiChatGroupSummary, AiVideoClip, AiVideoGenerateInput } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMessage, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase, pastedNothingMessage, customImageSizeRule, imageSizeFits, videoStartImageLimitMessage } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMessage, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase, pastedNothingMessage, customImageSizeRule, videoStartImageLimitMessage } from './state'
 import { autosaveDelay, ChatStorageError, conversationLimitMessage, createHistoryWriter, MAX_CONVERSATIONS, registerHistoryFlusher, unreadableConversationsNotice, type LoadedChatHistory } from './storage'
 import { useLatestRequest } from '../../latest-request'
 import { videoStudioErrorMessage } from '../video-studio/useVideoStudio'
 import { buildChatVideoRequest, chatVideoBilledNotice, chatVideoBusyMessage, chatVideoFailedMessage, chatVideoRetry, chatVideoSecondsFor, completeChatVideo, maxParallelChatVideos, pendingChatVideos, settleChatVideo, type ChatVideoProgress } from './video'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
+import { applySharedImageSettings, fitImageOptions, readSharedImageSettings, sharedImageSettingsOf, subscribeSharedImageSettings, writeSharedImageSettings } from './image-settings'
 import { isWindowInFront } from '../tools/install-notice'
 
 export interface GroupPreparation { phase: 'loading' | 'ready' | 'error'; models: string[]; error?: string; warning?: string }
@@ -96,6 +97,22 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     }
     commit((current) => ({ ...current, conversations: current.conversations.map(settle), draftConversation: settle(current.draftConversation) }))
     if (moved.from && moved.to) setNotice(`原来的分组「${moved.from}」已不可用，已换成「${moved.to}」，之后按「${moved.to}」分组计费。`)
+    syncImageSettings()
+  }
+  // 出图设置对话里和视频工作台的出图框记的是同一份（image-settings.ts，融合第 4 步）。当前这段对话在「生成图片」
+  // 那一档时跟着那一份走：切到这一档、打开这段对话、那边改了、模型表读完时各对一次。正在回答的不动；只换设置，
+  // 不算客户动过这段对话（不改它的时间，左边那一列不重排）。
+  const syncImageSettings = () => {
+    const current = activeConversation(stateRef.current)
+    if (current.settings.mode !== 'image' || isGenerating(current)) return
+    const groups = groupsRef.current
+    const settings = applySharedImageSettings(current.settings, readSharedImageSettings(scope), buildChatCatalog(groups, preparationsRef.current, 'image'), { groups, site })
+    if (settings !== current.settings) commit((workspace) => changeConversation(workspace, current.id, (item) => ({ ...item, settings })))
+  }
+  // 客户在「生成图片」那一档改了型号、尺寸、画质、分辨率：记成那一份。
+  const rememberImageSettings = (settings: ChatSettings) => {
+    const shared = sharedImageSettingsOf(settings)
+    if (shared) writeSharedImageSettings(scope, shared)
   }
   // 交回准备好的模型；分组不可用、准备失败或被更新的准备盖掉时是 null。
   const prepareGroup = async (group: string, keepMissing = false): Promise<string[] | null> => {
@@ -343,23 +360,33 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const sizeRule = customImageSizeRule(conversation.settings)
   useEffect(() => { if (!sizeRule) setSizeRuleRevealed(false) }, [sizeRule])
   const updateActive = (change: (conversation: Conversation) => Conversation) => { const id = activeConversation(stateRef.current).id; commit((current) => changeConversation(current, id, change)) }
-  const changeSettings = (patch: Partial<ChatSettings>) => updateActive((item) => ({ ...item, settings: { ...item.settings, ...patch } }))
+  const changeSettings = (patch: Partial<ChatSettings>) => {
+    const next = { ...activeConversation(stateRef.current).settings, ...patch }
+    updateActive((item) => ({ ...item, settings: { ...item.settings, ...patch } }))
+    if (patch.size !== undefined || patch.quality !== undefined || patch.imageResolution !== undefined) rememberImageSettings(next)
+  }
   // 选了哪个模型，就用有它的那个分组计费（同一个模型几个分组都有时按 pickChatGroup 的次序挑）。
   const selectModel = (model: string) => {
     const current = activeConversation(stateRef.current).settings
     const entry = buildChatCatalog(groupsRef.current, preparationsRef.current, current.mode).find((item) => item.model === model)
     if (!entry) return
     const group = pickChatGroup(entry.groups, { current: current.group, mode: current.mode, groups: groupsRef.current, site })
+    const next = normalizeModel({ ...current, model, group })
     updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, model, group }) }))
+    rememberImageSettings(next)
   }
+  // 视频工作台的出图框那边改了（或者这边自己刚记下）：当前对话在「生成图片」那一档就跟上。
+  useEffect(() => subscribeSharedImageSettings((changed) => { if (changed === scope) syncImageSettings() }), [scope])
   const selectMode = (mode: ChatMode) => {
     const current = activeConversation(stateRef.current).settings
     const groups = groupsRef.current, prepared = preparationsRef.current
     const next = settleChatModel({ ...current, mode, model: '' }, buildChatCatalog(groups, prepared, mode), { pending: pendingChatGroups(groups, prepared), groups, site })
     updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, mode, ...next }) }))
+    syncImageSettings()
   }
   const openConversation = (id: string | null) => {
     commit((current) => ({ ...current, activeId: id }))
+    syncImageSettings()
     setError('')
     const group = activeConversation(stateRef.current).settings.group
     if (group && !preparations[group]) void prepareGroup(group)
@@ -381,6 +408,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       const untouched = !blank.draft.trim() && !blank.draftImages?.length && !blank.draftFiles?.length
       return { ...workspace, activeId: null, draftConversation: untouched ? createConversation(current.settings) : blank }
     })
+    syncImageSettings()
     setError('')
     const group = activeConversation(stateRef.current).settings.group
     if (group && !preparations[group]) void prepareGroup(group)
@@ -598,5 +626,5 @@ function normalizeModel(settings: ChatSettings): ChatSettings {
   // 换了视频模型：记着的时长挪到这个模型能出的、离原来最近的那一档（没设过的不写，用的时候再按型号算）。
   if (capability.kind === 'video') return settings.videoSeconds === undefined ? settings : { ...settings, videoSeconds: chatVideoSecondsFor(settings) }
   if (capability.kind !== 'image') return settings
-  return { ...settings, size: imageSizeFits(settings.size, capability.sizePolicy) ? settings.size : capability.sizePolicy.default, quality: capability.qualities.includes(settings.quality) ? settings.quality : capability.defaultQuality ?? 'auto', imageResolution: capability.resolutions.includes(settings.imageResolution) ? settings.imageResolution : capability.defaultResolution }
+  return fitImageOptions(settings.model, settings)
 }

@@ -315,6 +315,14 @@ async function openStudio(search = '') {
   return { page, errors }
 }
 
+// 点开一个下拉菜单选一项（同对话页的浏览器用例）。
+async function pickChoice(page, testId, label, name) {
+  await page.getByTestId(testId).click()
+  const menu = page.getByRole('menu', { name: label, exact: true })
+  await menu.getByRole('menuitemradio', { name, exact: true }).click()
+  await menu.waitFor({ state: 'detached' })
+}
+
 function studioCalls(page, method) {
   return page.evaluate((name) => window.videoStudioPage.calls.filter((call) => call.method === name).map((call) => call.input), method)
 }
@@ -772,7 +780,6 @@ test('tells the current balance when confirming clips, and leaves it out when th
 // 视频标「估算」；画图不到一分写「不到 $0.01」；价目是页面打开时读好的，十分钟内再打开确认框不再多读。
 test('quotes the price of the chosen model and group before the balance, from one read of the price list', async () => {
   const { page, errors } = await openStudio('?balance=12.5&prices=1')
-  await page.locator('[data-testid="video-image-model"][data-model="gpt-image-2"]').waitFor()
   await page.waitForFunction(() => window.videoStudioPage.balance() === 12.5)
   await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'prices'))
   const reads = (await studioCalls(page, 'prices')).length
@@ -784,10 +791,16 @@ test('quotes the price of the chosen model and group before the balance, from on
   await confirm.getByRole('button', { name: '取消' }).click()
   await confirm.waitFor({ state: 'detached' })
 
+  // 画图的价在出图框左下角，按框里选的型号和它的分组算。
   await page.getByTestId('video-shot-draw-0').click()
-  await confirm.getByText('用「gpt-image-2」按第 1 个镜头的画面描述画一张图，单独计费，预计不到 $0.01。当前余额 $12.50。', { exact: true }).waitFor()
-  await confirm.getByRole('button', { name: '取消' }).click()
-  await confirm.waitFor({ state: 'detached' })
+  const drawDialog = page.getByTestId('video-draw-dialog')
+  await drawDialog.locator('[data-testid="video-image-model"][data-model="gpt-image-2"]').waitFor()
+  await drawDialog.getByTestId('video-draw-cost').getByText('按实际用量计费，预计不到 $0.01。当前余额 $12.50。', { exact: true }).waitFor()
+  // 换一个价目里没有的型号：不写「预计」那半句。
+  await pickChoice(page, 'video-image-model', '模型', 'gemini-3.1-flash-image')
+  await drawDialog.getByTestId('video-draw-cost').getByText('按实际用量计费。当前余额 $12.50。', { exact: true }).waitFor()
+  await drawDialog.getByTestId('video-draw-cancel').click()
+  await drawDialog.waitFor({ state: 'detached' })
 
   // 只生成第一段，生成好了再点重新生成：报的是一段的价。
   await page.getByTestId('video-shot-generate-0').click()
@@ -951,27 +964,45 @@ test('starts shots from pictures picked on the computer and keeps them after reo
   await page.close()
 })
 
-// 「让 AI 画一张」：走对话页出图那条（这里是假的桥），画好的图和自己选的图一样当这一镜的开头；停下、没画出来、余额不够各有去处。
-test('draws a shot picture with AI before paying for the clip, and starts the clip from it', async () => {
+// 「让 AI 画一张」：弹出来的是跟对话里「生成图片」同一个出图框（融合第 4 步），交出去走对话页出图那条（这里是假的桥）。
+// 画好的图和自己选的图一样当这一镜的开头；停下、没画出来、余额不够各有去处。
+test('draws a shot picture with AI in the shared picture dialog before paying for the clip, and starts the clip from it', async () => {
   const { page, errors } = await openStudio('?balance=12.5')
-  await page.locator('[data-testid="video-image-model"][data-model="gpt-image-2"]').waitFor()
   await page.waitForFunction(() => window.videoStudioPage.balance() === 12.5)
   await writeStoryboard(page, '新款水杯', { title: '水杯', shots: [{ prompt: '水杯在桌上' }, { prompt: '倒水' }] })
   const [first, second] = ['d', 'e'].map((letter) => letter.repeat(43))
+  // 画镜头图的型号不在「想法」卡里了，点了按钮在出图框里选。
+  assert.equal(await page.getByTestId('video-image-model').count(), 0)
+  assert.equal(await page.getByTestId('video-idea').getByText('画镜头图').count(), 0)
   const draw = page.getByTestId('video-shot-draw-0')
   assert.equal(await draw.textContent(), '让 AI 画一张')
   assert.equal(await draw.getAttribute('title'), '按这一镜的画面描述先画一张图，满意了再拿它生成视频；画图单独计费')
 
   await draw.click()
-  const confirm = page.getByTestId('video-confirm')
-  await confirm.getByText('画一张镜头图？').waitFor()
-  await confirm.getByText('用「gpt-image-2」按第 1 个镜头的画面描述画一张图，单独计费。当前余额 $12.50。', { exact: true }).waitFor()
-  await confirm.getByText('中途停下的话，已经交给服务端的这一张照样扣费。', { exact: true }).waitFor()
-  await confirm.getByRole('button', { name: '开始画' }).click()
+  const dialog = page.getByTestId('video-draw-dialog')
+  await dialog.getByRole('heading', { name: '为第 1 个镜头生成图片', exact: true }).waitFor()
+  await dialog.getByText('与对话中的「生成图片」共用同一设置，生成的图片将保存至作品库。', { exact: true }).waitFor()
+  await dialog.getByText('生成开始后如中途停止，服务端仍可能继续生成并计费。', { exact: true }).waitFor()
+  assert.equal(await dialog.getByTestId('video-draw-prompt').inputValue(), '水杯在桌上')
+  await dialog.locator('[data-testid="video-image-model"][data-model="gpt-image-2"][data-group="图片模型"]').waitFor()
+  // 竖屏 9:16 的视频：尺寸先按画面挑好（720p）；画质、分辨率同对话里的默认。
+  assert.equal(await dialog.getByTestId('video-draw-size').getAttribute('data-value'), '720x1280')
+  assert.equal(await dialog.getByTestId('video-draw-quality').textContent(), '画质：低')
+  assert.equal(await dialog.getByTestId('video-draw-resolution').textContent(), '分辨率：1K')
+  assert.equal(await dialog.getByTestId('video-draw-cost').textContent(), '按实际用量计费。当前余额 $12.50。')
+  assert.equal(await dialog.getByTestId('video-draw-ok').textContent(), '生成图片')
+  // 取消：什么都不交。
+  await dialog.getByTestId('video-draw-cancel').click()
+  await dialog.waitFor({ state: 'detached' })
+  assert.equal((await studioCalls(page, 'image')).length, 0)
+
+  await draw.click()
+  await dialog.getByTestId('video-draw-ok').click()
+  await dialog.waitFor({ state: 'detached' })
   await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
   const [request] = await studioCalls(page, 'image')
-  // 竖屏 9:16 按 720p 出图；画质不写，用模型缺省最便宜的那一档。
-  assert.deepEqual({ ...request, requestId: typeof request.requestId }, { requestId: 'string', group: '图片模型', model: 'gpt-image-2', prompt: '水杯在桌上', size: '720x1280' })
+  // 交出去的同对话里「生成图片」那一档：尺寸、画质、分辨率都带上。
+  assert.deepEqual({ ...request, requestId: typeof request.requestId }, { requestId: 'string', group: '图片模型', model: 'gpt-image-2', prompt: '水杯在桌上', size: '720x1280', quality: 'low', imageResolution: '1K' })
 
   // 画着的时候：这一镜的描述、出视频、删都不让动，也不能整批生成；别的镜头照样能画。
   const row = page.getByTestId('video-shot-0')
@@ -988,9 +1019,8 @@ test('draws a shot picture with AI before paying for the clip, and starts the cl
 
   // 再画一张，中途停下：已经画好的那张留着，不报错。
   await draw.click()
-  await confirm.getByText('再画一张？').waitFor()
-  await confirm.getByText('会再扣一次费，新图画好以后换掉现在这一张；旧的那张还在 AI 作品文件夹里。', { exact: true }).waitFor()
-  await confirm.getByRole('button', { name: '再画一张' }).click()
+  await dialog.getByText('与对话中的「生成图片」共用同一设置，生成的图片将保存至作品库。生成后将替换此镜头当前的图片，原图仍保留在作品库中。', { exact: true }).waitFor()
+  await dialog.getByTestId('video-draw-ok').click()
   await page.getByTestId('video-shot-draw-stop-0').click()
   await draw.waitFor()
   assert.equal((await studioCalls(page, 'cancel-image')).length, 1)
@@ -1000,7 +1030,8 @@ test('draws a shot picture with AI before paying for the clip, and starts the cl
 
   // 第二镜没画出来：原因写在这一镜下面，再画一次就清掉。
   await page.getByTestId('video-shot-draw-1').click()
-  await confirm.getByRole('button', { name: '开始画' }).click()
+  await dialog.getByRole('heading', { name: '为第 2 个镜头生成图片', exact: true }).waitFor()
+  await dialog.getByTestId('video-draw-ok').click()
   await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
   let [pending] = await page.evaluate(() => window.videoStudioPage.pendingDrawings())
   assert.equal(pending.prompt, '倒水')
@@ -1009,7 +1040,7 @@ test('draws a shot picture with AI before paying for the clip, and starts the cl
 
   // 余额不够：照页面顶上那条说，带「前往充值」，这一镜下面不另写。
   await page.getByTestId('video-shot-draw-1').click()
-  await confirm.getByRole('button', { name: '开始画' }).click()
+  await dialog.getByTestId('video-draw-ok').click()
   await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
   assert.equal(await page.getByTestId('video-shot-draw-error-1').count(), 0)
   pending = (await page.evaluate(() => window.videoStudioPage.pendingDrawings()))[0]
@@ -1018,7 +1049,7 @@ test('draws a shot picture with AI before paying for the clip, and starts the cl
   assert.equal(await page.getByTestId('video-shot-draw-error-1').count(), 0)
 
   await page.getByTestId('video-shot-draw-1').click()
-  await confirm.getByRole('button', { name: '开始画' }).click()
+  await dialog.getByTestId('video-draw-ok').click()
   await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
   pending = (await page.evaluate(() => window.videoStudioPage.pendingDrawings()))[0]
   await page.evaluate(([requestId, assetId]) => window.videoStudioPage.finishDrawing(requestId, assetId), [pending.requestId, second])
@@ -1029,9 +1060,107 @@ test('draws a shot picture with AI before paying for the clip, and starts the cl
   await page.getByTestId('video-shot-image-thumb-0').waitFor()
   await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
   await page.getByTestId('video-generate-all').click()
-  await confirm.getByRole('button', { name: '开始生成' }).click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
   await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
   assert.deepEqual((await studioCalls(page, 'generate')).map((input) => input.imageAssetIds), [[first], [second]])
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 出图框里改的东西各归各处：画面只管这一张图，不写回镜头；型号、画质、分辨率和手选的尺寸记进跟对话共用的那一份，
+// 下次打开（别的镜头、重开页面）还是它；按视频画面自动挑的尺寸不记。参考图跟着请求走，换到不会改图的型号时拦住。
+test('remembers what the picture dialog chose in the settings shared with chat, sends reference pictures, and leaves the shot description alone', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '新款水杯', { title: '水杯', shots: [{ prompt: '水杯在桌上' }, { prompt: '倒水' }] })
+  const dialog = page.getByTestId('video-draw-dialog')
+  const sharedKey = 'xingmang-ui-v2:image-settings:xm-account:7'
+  const shared = () => page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? 'null'), sharedKey)
+  assert.equal(await shared(), null)
+
+  await page.getByTestId('video-shot-draw-0').click()
+  // 读不到余额：左下角只说怎么计费。
+  assert.equal(await dialog.getByTestId('video-draw-cost').textContent(), '按实际用量计费。')
+  await dialog.getByTestId('video-draw-prompt').fill('水杯在桌上，逆光')
+  await pickChoice(page, 'video-draw-quality', '画质', '高')
+  await pickChoice(page, 'video-draw-resolution', '分辨率', '2K')
+  assert.equal(await dialog.getByTestId('video-draw-quality').textContent(), '画质：高')
+  // 加两张参考图：缩略图排在画面下面，能拿掉。
+  const [one, two] = ['r', 's'].map((letter) => letter.repeat(43))
+  await page.evaluate((ids) => window.videoStudioPage.pickImages(ids), [one, two])
+  assert.equal(await dialog.getByTestId('video-draw-attach').getAttribute('title'), '添加参考图后，将参照该图片生成')
+  await dialog.getByTestId('video-draw-attach').click()
+  await dialog.getByTestId('video-draw-reference-remove').nth(1).waitFor()
+  assert.deepEqual(await studioCalls(page, 'pick-images'), [4])
+  // 带着参考图换到不会改图的型号：说清楚、点不了「生成图片」，换回来就好。
+  await pickChoice(page, 'video-image-model', '模型', 'gemini-3.1-flash-image')
+  await dialog.getByTestId('video-draw-references-blocked').getByText('这个模型不能照着图片改，请换一个能改图的模型，或者先把图片去掉', { exact: true }).waitFor()
+  assert.equal(await dialog.getByTestId('video-draw-ok').isDisabled(), true)
+  assert.equal(await dialog.getByTestId('video-draw-attach').isDisabled(), true)
+  assert.equal(await dialog.getByTestId('video-draw-attach').getAttribute('title'), '当前模型不支持图片编辑，请更换支持图片编辑的模型后再添加图片')
+  // 这个型号没有画质档位，那一格不出来。
+  assert.equal(await dialog.getByTestId('video-draw-quality').count(), 0)
+  await pickChoice(page, 'video-image-model', '模型', 'gpt-image-2')
+  assert.equal(await dialog.getByTestId('video-draw-references-blocked').count(), 0)
+  assert.equal(await dialog.getByTestId('video-draw-quality').textContent(), '画质：高')
+  await dialog.getByTestId('video-draw-reference-remove').first().click()
+  assert.equal(await dialog.getByTestId('video-draw-reference-remove').count(), 1)
+  await dialog.getByTestId('video-draw-ok').click()
+  await dialog.waitFor({ state: 'detached' })
+  await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
+  let [request] = await studioCalls(page, 'image')
+  assert.deepEqual({ ...request, requestId: typeof request.requestId }, { requestId: 'string', group: '图片模型', model: 'gpt-image-2', prompt: '水杯在桌上，逆光', size: '720x1280', quality: 'high', imageResolution: '2K', sourceAssetIds: [two] })
+  // 框里改的画面只管这一张图：镜头自己的描述没变。
+  assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '水杯在桌上')
+  // 记下的那一份：型号、画质、分辨率照框里的；尺寸是按竖屏自动挑的，不记，还是对话里的默认。
+  assert.deepEqual(await shared(), { model: 'gpt-image-2', group: '图片模型', size: '1024x1024', quality: 'high', imageResolution: '2K' })
+  await page.evaluate(([requestId, assetId]) => window.videoStudioPage.finishDrawing(requestId, assetId), [request.requestId, 't'.repeat(43)])
+  await page.getByTestId('video-shot-image-thumb-0').waitFor()
+
+  // 另一个镜头打开：画质、分辨率跟着上一次；画面是它自己的，参考图不带过来。
+  await page.getByTestId('video-shot-draw-1').click()
+  assert.equal(await dialog.getByTestId('video-draw-prompt').inputValue(), '倒水')
+  assert.equal(await dialog.getByTestId('video-draw-quality').textContent(), '画质：高')
+  assert.equal(await dialog.getByTestId('video-draw-resolution').textContent(), '分辨率：2K')
+  assert.equal(await dialog.getByTestId('video-draw-size').getAttribute('data-value'), '720x1280')
+  assert.equal(await dialog.getByTestId('video-draw-reference-remove').count(), 0)
+  // 手选一个尺寸：这回记下来。
+  await pickChoice(page, 'video-draw-size', '尺寸', '1024 × 1536')
+  // 画面清空了点不了。
+  await dialog.getByTestId('video-draw-prompt').fill('  ')
+  assert.equal(await dialog.getByTestId('video-draw-ok').isDisabled(), true)
+  await dialog.getByTestId('video-draw-prompt').fill('倒水')
+  await dialog.getByTestId('video-draw-ok').click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
+  request = (await studioCalls(page, 'image'))[1]
+  assert.deepEqual({ ...request, requestId: typeof request.requestId }, { requestId: 'string', group: '图片模型', model: 'gpt-image-2', prompt: '倒水', size: '1024x1536', quality: 'high', imageResolution: '2K' })
+  assert.deepEqual(await shared(), { model: 'gpt-image-2', group: '图片模型', size: '1024x1536', quality: 'high', imageResolution: '2K' })
+  await page.evaluate(([requestId, assetId]) => window.videoStudioPage.finishDrawing(requestId, assetId), [request.requestId, 'u'.repeat(43)])
+  await page.getByTestId('video-shot-image-thumb-1').waitFor()
+
+  // 重开页面：记的那一份还在；这个尺寸本来就是竖的，跟竖屏视频对得上，原样用。
+  await page.reload()
+  await page.getByTestId('video-shot-image-thumb-1').waitFor()
+  await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
+  await page.getByTestId('video-shot-draw-0').click()
+  await dialog.locator('[data-testid="video-image-model"][data-model="gpt-image-2"]').waitFor()
+  assert.equal(await dialog.getByTestId('video-draw-size').getAttribute('data-value'), '1024x1536')
+  assert.equal(await dialog.getByTestId('video-draw-quality').textContent(), '画质：高')
+
+  // 手填尺寸：填得不合这个型号的规矩时不交，在下面说清规矩；改对了才交。
+  await pickChoice(page, 'video-draw-size', '尺寸', '自定义尺寸')
+  await dialog.getByTestId('video-draw-width').fill('1000')
+  await dialog.getByTestId('video-draw-ok').click()
+  await dialog.getByTestId('video-draw-size-rule').waitFor()
+  // 重开页面以后假桥从头记：这一回还没交过。
+  assert.equal((await studioCalls(page, 'image')).length, 0)
+  await dialog.getByTestId('video-draw-width').fill('1008')
+  await dialog.getByTestId('video-draw-height').fill('1792')
+  assert.equal(await dialog.getByTestId('video-draw-size-rule').count(), 0)
+  await dialog.getByTestId('video-draw-ok').click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
+  request = (await studioCalls(page, 'image'))[0]
+  assert.equal(request.size, '1008x1792')
+  assert.equal((await shared()).size, '1008x1792')
   assert.deepEqual(errors, [])
   await page.close()
 })

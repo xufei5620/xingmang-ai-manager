@@ -2,7 +2,8 @@ import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-vid
 import type { ImageSizePolicy } from '../../../../electron/ai-chat-protocol'
 import type { AiChatGroupSummary, AiChatImageInput, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioMusic, VideoStudioPlan } from '../../../../electron/ipc-contract'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
-import { buildChatCatalog, DEFAULT_VIDEO_MODELS, pickChatGroup, resolveDefaultChatModel, type ChatCatalogEntry, type ChatGroupPreparation, type ChatSite } from '../chat/state'
+import { buildChatCatalog, DEFAULT_VIDEO_MODELS, pickChatGroup, resolveDefaultChatModel, type ChatCatalogEntry, type ChatGroupContext, type ChatGroupPreparation, type ChatSite } from '../chat/state'
+import { defaultImageOptions, fitImageOptions, type ImageOptionValues, type SharedImageSettings } from '../chat/image-settings'
 import { inspectModel } from '../chat/api'
 import { readVideoClip, readVideoRequestId } from './clip'
 import { isVideoStudioCaptionPosition, isVideoStudioCaptionSize, type VideoStudioCaptionPosition, type VideoStudioCaptionSize } from './captions'
@@ -552,16 +553,72 @@ export function videoStudioImageSize(policy: ImageSizePolicy, aspect: VideoStudi
   return `${fit(width)}x${fit(height)}`
 }
 
-/** 让 AI 按这一镜的画面描述画一张图的请求；画质用模型自己的缺省（最便宜的那一档），先出图就是为了省钱。 */
-export function buildVideoStudioImageRequest(settings: VideoStudioSettings, shot: VideoStudioShot, requestId: string): AiChatImageInput {
-  let size: string | undefined
+/** 出图框里填好的那一份（融合第 4 步）：画面描述、型号和计费分组、尺寸、画质、分辨率；带了参考图就照图改。 */
+export interface VideoStudioImageDraft extends ImageOptionValues {
+  prompt: string
+  model: string
+  group: string
+  sourceAssetIds?: readonly string[]
+}
+
+/** 出图框交出去的请求，写法同对话里「生成图片」那一档（useChatController 的 imageInput）：型号没有画质档位就不带画质。 */
+export function buildVideoStudioImageRequest(draft: VideoStudioImageDraft, requestId: string): AiChatImageInput {
+  let quality: AiChatImageInput['quality']
   try {
-    const capability = inspectModel(settings.imageModel)
-    if (capability.kind === 'image') size = videoStudioImageSize(capability.sizePolicy, settings.aspect)
+    const capability = inspectModel(draft.model)
+    if (capability.kind === 'image' && capability.qualities.length) quality = draft.quality
   } catch {
     // 认不出的模型交给主进程去拒。
   }
-  return { requestId, group: settings.imageGroup, model: settings.imageModel, prompt: videoStudioPlainText(shot.prompt), ...(size ? { size } : {}) }
+  return {
+    requestId, group: draft.group, model: draft.model, prompt: videoStudioPlainText(draft.prompt), size: draft.size,
+    ...(quality ? { quality } : {}), imageResolution: draft.imageResolution,
+    ...(draft.sourceAssetIds?.length ? { sourceAssetIds: [...draft.sourceAssetIds] } : {}),
+  }
+}
+
+/**
+ * 出图框一打开选哪个型号：记的那一份（对话里「生成图片」用的也是它）→ 这条视频以前在「画镜头图」里选的 →
+ * 默认的出图型号。计费分组跟着记的走，记的那个分组里没有这个型号了就按 pickChatGroup 的次序另挑。表是空的就都是空串。
+ */
+export function videoStudioImageModelChoice(shared: Pick<SharedImageSettings, 'model' | 'group'> | null, settings: Pick<VideoStudioSettings, 'imageModel' | 'imageGroup'>, catalog: readonly ChatCatalogEntry[], context: ChatGroupContext): { model: string, group: string } {
+  const pick = (model: string, group: string) => {
+    const entry = model ? catalog.find((item) => item.model === model) : undefined
+    return entry ? { model: entry.model, group: entry.groups.includes(group) ? group : pickChatGroup(entry.groups, { ...context, current: '', mode: 'image' }) } : null
+  }
+  return (shared && pick(shared.model, shared.group)) ?? pick(settings.imageModel, settings.imageGroup) ?? pick(resolveDefaultChatModel('image', catalog.map((item) => item.model)), '') ?? { model: '', group: '' }
+}
+
+function imageSizeShape(size: string): 'wide' | 'tall' | 'square' | null {
+  const match = /^(\d+)x(\d+)$/.exec(size)
+  if (!match) return null
+  const ratio = Number(match[1]) / Number(match[2])
+  return ratio > 1.05 ? 'wide' : ratio < 0.95 ? 'tall' : 'square'
+}
+
+/**
+ * 出图框里这个型号用什么尺寸、画质、分辨率。客户在框里改过的（touched）优先，其次是记的那一份，一次都没记过就是
+ * 对话里的默认；型号不收的换成它自己的默认。尺寸客户没改过时，记的那个横竖跟这条视频的画面对不上，就按画面另挑
+ * （videoStudioImageSize）：这张图是拿来当第一帧的，横竖不对出来的视频就不对。手填到一半的尺寸原样留着，点「生成图片」前再核。
+ */
+export function videoStudioImageOptions(model: string, aspect: VideoStudioAspect, shared: ImageOptionValues | null, touched: Partial<ImageOptionValues>): ImageOptionValues {
+  const base = shared ?? defaultImageOptions()
+  const fitted = fitImageOptions(model, { size: base.size, quality: touched.quality ?? base.quality, imageResolution: touched.imageResolution ?? base.imageResolution })
+  if (touched.size !== undefined) return { ...fitted, size: touched.size }
+  let capability: ReturnType<typeof inspectModel>
+  try { capability = inspectModel(model) } catch { return fitted }
+  if (capability.kind !== 'image') return fitted
+  const wanted = aspect === '16:9' ? 'wide' : aspect === '9:16' ? 'tall' : 'square'
+  return imageSizeShape(fitted.size) === wanted ? fitted : { ...fitted, size: videoStudioImageSize(capability.sizePolicy, aspect) }
+}
+
+/**
+ * 点了「生成图片」以后记下的那一份：型号、画质、分辨率照框里的。尺寸只有客户在框里改过才记；按这条视频的画面
+ * 自动挑的那个不记，不然对话里的尺寸会跟着某条视频的横竖变。
+ */
+export function videoStudioImageSettingsToShare(draft: VideoStudioImageDraft, shared: ImageOptionValues | null, sizeTouched: boolean): SharedImageSettings {
+  const size = sizeTouched ? draft.size : fitImageOptions(draft.model, { size: (shared ?? defaultImageOptions()).size, quality: draft.quality, imageResolution: draft.imageResolution }).size
+  return { model: draft.model, group: draft.group, size, quality: draft.quality, imageResolution: draft.imageResolution }
 }
 
 /**
