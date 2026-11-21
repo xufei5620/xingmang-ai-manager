@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mcpCopyChoices, mcpCopyOffered, mcpNameTakenIn, parseHttpHeaders } from './extensions-common'
+import { mcpCopyOffered, mcpNameTakenIn, parseHttpHeaders } from './extensions-common'
 import type { V2Bridge } from '../../types'
 
 type Snapshot = Awaited<ReturnType<V2Bridge['listProviderExtensions']>>
@@ -80,18 +80,5 @@ describe('mcpCopyOffered', () => {
     expect(mcpCopyOffered('claude', { ...item, operations: { ...item.operations, uninstall: false } })).toBe(false)
     expect(mcpCopyOffered('claude', { ...item, installed: false })).toBe(false)
     expect(mcpCopyOffered('claude', { ...item, kind: 'skill' })).toBe(false)
-  })
-})
-
-describe('mcpCopyChoices', () => {
-  it('lists every other tool and greys out the ones that already have the name or are not installed', () => {
-    expect(mcpCopyChoices('claude', undefined, ['codex']).map(({ id, note }) => [id, note])).toEqual([
-      ['codex', '已添加'],
-      ['grok', null],
-    ])
-    expect(mcpCopyChoices('codex', ['codex', 'claude'], []).map(({ id, note }) => [id, note])).toEqual([
-      ['claude', null],
-      ['grok', '未安装'],
-    ])
   })
 })

@@ -4,21 +4,24 @@ import type { StartupCheckId, StartupNotice, StartupNoticeAction } from './start
 
 /**
  * 角落里同时摊开几张。升级后第一次开机，「已更新」「设置已补齐」「环境检查」「维护」
- * 能一起来，全摊开时 1366×768 的屏幕第四张就出了底边，最后那张的按钮点不到；
- * 卡片还正好盖住首页右上角那排按钮。多出来的折成一行，想看再点开。
+ * 能一起来，全摊开时 1366×768 的屏幕第四张就出了底边，最后那张的按钮点不到。
+ * 以前摊开两张，0.2.24 装机时「匿名使用情况」和「已更新」两张叠起来，盖住了首页的
+ * 工具卡和最近记录（yoyo 11-18）。现在一次只摊开一张，其余折成一行「还有 N 条提示」，
+ * 点掉这张下一张顶上来。
  */
-export const STARTUP_NOTICE_VISIBLE_LIMIT = 2
+export const STARTUP_NOTICE_VISIBLE_LIMIT = 1
 
 /**
- * 只能摊开两张时先给哪两张：要用户二选一的排最前（不选就一直挂着、也关不掉），
- * 然后是出了事要他知道的，再是有空看一眼的，最后是纯告知、「知道了」就完的。
+ * 一次只摊开一张时先给哪张：要选显示方式的排最前（显示已经换了，不选就一直挂着），
+ * 然后是出了事要他知道的，再是有空看一眼的，再是纯告知、「知道了」就完的；登录后说一次的
+ * 错误报告、使用统计两张告知卡排最后：它们不急，客户刚更新完先告诉他「已更新」。
  * 写成无缺省的 Record：新增一种提示时编译器会逼着给它排个位置。
  */
 const startupNoticeRank: Record<StartupCheckId, number> = {
   'display-compat': 0,
   'display-relaunch': 0,
-  'crash-reporting': 0,
-  'usage-stats': 0,
+  'crash-reporting': 4,
+  'usage-stats': 4,
   'unexpected-exit': 1,
   'vault-recovered': 1,
   'settings-save': 1,

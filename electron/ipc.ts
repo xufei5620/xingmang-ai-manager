@@ -143,6 +143,8 @@ export interface IpcRegistrationOptions {
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
   providerExtensionService: ProviderExtensionService
+  /** 技能「从压缩包导入」解开放在哪（main.ts 传数据文件夹下的 skill-archives）；省略 = 那条通道报暂时不能用。 */
+  skillArchiveDirectory?: string
   // Defaults to a real client talking to the production New-Api instance
   // when the host app does not supply one; tests inject a stub the same way
   // they do for other services. Typed as the backend-agnostic

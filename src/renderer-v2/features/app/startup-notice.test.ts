@@ -76,19 +76,28 @@ describe('startup check notices', () => {
     expect(startupCheckLogContext('diagnostics')).toBe('renderer-v2 startup check: diagnostics')
   })
 
-  it('announces the first launch after an update with its first changes and only an acknowledgement', () => {
-    // yoyo 定的原则：用户是小白，这张卡片不让人做选择，只有一颗「知道了」。
+  it('announces the first launch after an update with its first changes, an acknowledgement and a way to the rest', () => {
+    // yoyo 定的原则：用户是小白，这张卡片不让人做选择。「看全部改动」只是带他去看，不算选择。
+    // 正文那句引导语去掉了（yoyo 11-18 嫌卡片太高、挡首页），只留标题和几条改动。
     const notice = updatedNotice('0.2.9', { justUpdated: true, previousVersion: '0.2.8', notes: ['第一件事：细节', '第二件事。更多', '第三件事', '第四件事'] })
     expect(notice).toEqual({
       id: 'updated',
       failure: false,
       tone: 'ok',
       title: '已更新到 0.2.9',
-      body: '这一版的主要改动如下，另外 1 项在「设置 › 版本更新」里可以看到。',
+      body: '',
       items: ['第一件事', '第二件事', '第三件事'],
       action: { label: '知道了', dismiss: true },
+      secondaryAction: { label: '看全部改动', page: 'settings', section: 'version' },
     })
-    expect(updatedNotice('0.2.9', { justUpdated: true, previousVersion: '0.2.8', notes: ['唯一一件'] })?.body).toBe('这一版的改动：')
+  })
+
+  it('leaves out the way to the rest when every change already fits on the card', () => {
+    const notice = updatedNotice('0.2.9', { justUpdated: true, previousVersion: '0.2.8', notes: ['第一件事', '第二件事', '第三件事'] })
+    expect(notice?.body).toBe('')
+    expect(notice?.items).toEqual(['第一件事', '第二件事', '第三件事'])
+    expect(notice?.action).toEqual({ label: '知道了', dismiss: true })
+    expect(notice?.secondaryAction).toBeUndefined()
   })
 
   it('still confirms the update when the build carried no notes', () => {
@@ -97,6 +106,7 @@ describe('startup check notices', () => {
     expect(notice?.body).toBe('已经在用新版本了，可以照常使用。')
     expect(notice?.items).toBeUndefined()
     expect(notice?.action).toEqual({ label: '知道了', dismiss: true })
+    expect(notice?.secondaryAction).toBeUndefined()
   })
 
   it('keeps only the leading clause of a change and trims it to fit the corner card', () => {
@@ -226,7 +236,7 @@ describe('usageStatsNotice', () => {
       failure: false,
       tone: 'neutral',
       title: '软件会发送匿名使用情况',
-      body: '为了知道新版本有没有顺利装上、哪里容易出错，星芒每天最多发一次匿名使用情况：版本、电脑系统、装了哪些工具、安装和更新是否成功。不含你的账号、密钥、文件路径和聊天内容，也没有能认出这台电脑的编号。以后想改，可以在「设置」的「隐私数据」里关掉。',
+      body: '每天最多一次，用来发现哪里容易出错。只发版本、电脑系统、装了哪些工具、安装更新是否成功，不发账号、密钥、文件和聊天，也认不出是哪台电脑。在「设置 › 隐私数据」里能关。',
       action: { label: '知道了', usageStats: 'keep' },
       secondaryAction: { label: '不想发送', usageStats: 'off' },
       waitsForOnboarding: true,

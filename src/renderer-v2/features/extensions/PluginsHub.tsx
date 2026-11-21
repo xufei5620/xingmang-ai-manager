@@ -1,13 +1,15 @@
 // 「插件」页：精选、外接工具、技能、插件四页合成的一页（扩展合并方案第二版，yoyo 11-20 回「改」），照 GPT 桌面端插件页的
 // 版式套 v4 的颜色和组件。左边一窄栏放「插件」「技能」和「已安装」清单，右边按「常用」「写代码」「Claude 官方」「GPT 官方」
 // 分组列出来，点「+」勾几家一次装好。读、装、卸、启停全走原来那几条（listProviderExtensions、submitMcpInstall、
-// mutateProviderExtension、Codex 自己那几个接口），不加新的通道。合并、分组、每家什么情况的判断在 plugins-hub-model.ts。
+// mutateProviderExtension、Codex 自己那几个接口）；只有技能「从压缩包导入」多一条选压缩包的通道（chooseSkillArchive，总单 Q4 C4）。
+// 合并、分组、每家什么情况的判断在 plugins-hub-model.ts。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Download,
+  FileArchive,
   FileText,
   FolderOpen,
   Lock,
@@ -286,6 +288,7 @@ export function PluginsHub({
   const [addRequest, setAddRequest] = useState<(ExtensionAddRequest & { kind: 'mcp' | 'plugin'; provider: Provider; key: number }) | null>(null)
   const [choosingTool, setChoosingTool] = useState(false)
   const [importing, setImporting] = useState(0)
+  const [importFrom, setImportFrom] = useState<'folder' | 'archive'>('folder')
   // 「从所有工具里移除」时哪一家没卸掉：记在那一行下面，别的照卸。
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
   const authCancel = useRef('')
@@ -840,7 +843,9 @@ export function PluginsHub({
         </section>
         <section className="v2-hub-card" data-testid="hub-detail-about">
           <h3>它会做什么</h3>
-          <div className="v2-hub-about">
+          {/* resource-detail-drawer 是旧外接工具页详情框留下的 testid（再往前是旧界面的 ResourceDetails），旧页删了以后挂在
+              新页详情的这一块上：同样是说明加提供方、来源那几行，check:v2 要求旧 testid 不丢。 */}
+          <div className="v2-hub-about" data-testid="resource-detail-drawer">
             {entry.summary && <p>{entry.summary}</p>}
             <dl className="v2-business-kv">
               {publisher && (
@@ -891,9 +896,18 @@ export function PluginsHub({
     )
   }
 
+  function openImport(from: 'folder' | 'archive') {
+    operation.clear()
+    setImportFrom(from)
+    setImporting((current) => current + 1)
+  }
+
   const addMenu =
     view === 'skills'
-      ? [{ label: '从文件夹导入', icon: FolderOpen, testId: 'hub-add-skill', onSelect: () => { operation.clear(); setImporting((current) => current + 1) } }]
+      ? [
+          { label: '从文件夹导入', icon: FolderOpen, testId: 'hub-add-skill', onSelect: () => openImport('folder') },
+          { label: '从压缩包导入', icon: FileArchive, testId: 'hub-add-skill-archive', onSelect: () => openImport('archive') },
+        ]
       : [
           { label: '自定义连接', icon: Plug, testId: 'hub-add-mcp', onSelect: () => openAdd('add', 'mcp', defaultProvider) },
           {
@@ -1055,6 +1069,7 @@ export function PluginsHub({
         <HubSkillImportDialog
           key={importing}
           api={api}
+          from={importFrom}
           tools={activeProviderIds.filter((id) => skillImportable[id] === 'ready')}
           importable={skillImportable}
           operation={operation}
@@ -1115,6 +1130,8 @@ export function PluginsHub({
         }
       >
         <p>{`会从 ${removing ? extensionToolNames(removable(removing).map((install) => install.provider), codexViaDesktop && removing.kind !== 'plugin') : ''} 里一起移除。以后想用再装回来就行。`}</p>
+        {/* 别的改动（开关、更新）还没回来时「移除」灰着：说一句为什么，不让按钮干转（同原来外接工具页）。 */}
+        {operation.busy && operation.busy !== 'hub-remove' && <p role="status" data-testid="hub-remove-busy">上一个操作还没完成，完成后才能移除。</p>}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
       <Dialog
@@ -1163,6 +1180,11 @@ export function PluginsHub({
                 ? '其他工具里的不受影响。自己加的要重新填一遍。'
                 : '其他工具里的不受影响。以后想用再装回来就行。'}
         </p>
+        {operation.busy && operation.busy !== 'delete' && (
+          <p role="status" data-testid="hub-delete-busy">
+            {deletion?.install.item.kind === 'plugin' ? '上一个操作还没完成，完成后才能卸载。' : '上一个操作还没完成，完成后才能移除。'}
+          </p>
+        )}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
       <Dialog
@@ -1194,6 +1216,9 @@ export function PluginsHub({
         }
       >
         <p>移除后，这个市场就不在列表里了，要用时得重新添加。</p>
+        {operation.busy && operation.busy !== 'market-delete' && (
+          <p role="status" data-testid="plugins-market-delete-busy">上一个操作还没完成，完成后才能移除。</p>
+        )}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
     </section>

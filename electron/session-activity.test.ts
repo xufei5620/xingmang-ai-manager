@@ -163,6 +163,17 @@ describe('createSessionActivityTracker', () => {
     expect(reply.activity).toMatchObject({ fileCount: 2, files: ['index.ts', 'index.ts'] })
   })
 
+  it('does not list a file whose name is only blank space', () => {
+    const tracker = createSessionActivityTracker()
+    const reply: SessionActivityHolder = {}
+    tracker.message('assistant', reply)
+    tracker.editedFiles('a', ['a/ / '])
+    tracker.editedFiles('b', ['src\\  '])
+    tracker.editedFiles('c', ['src/app.ts'])
+    tracker.finish()
+    expect(reply.activity).toMatchObject({ fileCount: 1, files: ['app.ts'] })
+  })
+
   it('reads Codex terminal calls, patches and their results', () => {
     const tracker = createSessionActivityTracker()
     const reply: SessionActivityHolder = {}

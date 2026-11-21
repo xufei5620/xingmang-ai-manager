@@ -232,11 +232,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const siteId = accountSiteId(session)
   const relaySite = resolveRelaySite(siteId)
   const avatarIdentity = session.account ? { origin: accountOrigin(session), userId: session.account.userId } : undefined
-  const { accountBootstrap, accountBootstrapRef, runAccountBootstrap, rewriteAccountKeys, applySubscriptionToTools, followSessionChange, abandonAccountBootstrap, suppressRestore } = useAccountBootstrap({
+  const { accountBootstrap, accountBootstrapRef, runAccountBootstrap, rewriteAccountKeys, applySubscriptionToTools, followSessionChange, abandonAccountBootstrap, suppressRestore, settleToolKeyFailure } = useAccountBootstrap({
     native, settings, toast, toolbox, session, scope, siteId, boot, auth, offline, noteStartupCheck, mounted, accountEpoch, setAuth, setWorkspaceEntered, restoredBoot,
   })
   const { toolConfigConfirmed, keepCurrentToolConfig, switchToolAccount, repairToolHooks, repairBrokenToolConfig, confirmToolKeyWritten, finishConfigSave, commandConfirmation, answerCommandConfirmation } = useToolAccountActions({
-    toolsApi, toolbox, toast, session, mounted, accountEpoch, configTool, setConfigTool, setAuth, setCcSwitchReminder, setSwitchRestartOffer,
+    toolsApi, toolbox, toast, session, mounted, accountEpoch, configTool, setConfigTool, setAuth, setCcSwitchReminder, setSwitchRestartOffer, settleToolKeyFailure,
   })
   // 官方账号与手填密钥重写不动（重写流程本身会跳过它们），所以按钮按当前配置的
   // 来源决定给不给，而不是见到密钥层失败就画一颗出来。
@@ -602,7 +602,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {externalClient && <ExternalClientDialog key={`${scope}:${externalClient}`} api={native} tool={externalClient} signedIn={session.authenticated} strictKeyFormat={siteId === 'solov'}
       liveConfig={toolbox.failures.some((failure) => failure.partition === 'config') ? null : toolbox.snapshot?.config ?? null}
       ready={externalClientReady(toolbox.externalClients, externalClient)} version={toolbox.externalClients.find((client) => client.tool === externalClient)?.version ?? null}
-      codeSeeded={platform?.platform === 'windows'} onClose={() => setExternalClient(null)} onSaved={finishExternalConfigSave} />}
+      codeSeeded={platform?.platform === 'windows' || platform?.platform === 'macos'} onClose={() => setExternalClient(null)} onSaved={finishExternalConfigSave} />}
     {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}:${codexModelFilter}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated} initialModelFilter={codexModelFilter}
       strictKeyFormat={siteId === 'solov'} onOfficialQuota={() => setOfficialQuotaOpen(true)} onBackups={() => navigate('backups')}
       onClose={() => setConfigTool(null)} onRepair={(id) => repairBrokenConfig(id)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onKeyWritten={confirmToolKeyWritten} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)}

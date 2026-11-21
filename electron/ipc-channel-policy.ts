@@ -163,6 +163,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'mcp:logout': { label: 'MCP 退出登录', log: 'normal', account: 'none' },
   'skills:list': { label: 'Skills 列表读取', log: 'normal', account: 'none' },
   'skills:import': { label: 'Skill 导入', log: 'normal', account: 'none' },
+  'skills:choose-archive': { label: 'Skill 从压缩包导入', log: 'normal', account: 'none' },
   'skills:toggle': { label: 'Skill 启用状态修改', log: 'normal', account: 'none' },
   'skills:uninstall': { label: 'Skill 卸载', log: 'normal', account: 'none' },
   'plugins:list': { label: 'Plugins 列表读取', log: 'normal', account: 'none' },

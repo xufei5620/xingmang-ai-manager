@@ -1090,6 +1090,18 @@ test('the Windows packaging job runs every smoke that has no other home', () => 
   }
 })
 
+// With the walk of the real client right in front of it, the probes' first
+// Appx checks stalled for a minute or two after that client exited and twice
+// ran out their 90 s budget (#2041); quality.yml says what the runs showed.
+test('the PowerShell probes run before the walk of the real client in the packaging job', () => {
+  const commands = runSteps('windows-package')
+  const probes = commands.indexOf('node e2e/windows-powershell-probes-smoke.mjs')
+  const walk = commands.indexOf('node e2e/verify-app.mjs --out output/verify-app')
+  assert.notEqual(probes, -1)
+  assert.notEqual(walk, -1)
+  assert.ok(probes < walk, 'the PowerShell probe smoke must not start right after the real client has exited')
+})
+
 test('real PowerShell runs once in the packaging job, never in the unit test shards', () => {
   const commands = runSteps('windows-package')
   const packageSteps = workflow.jobs['windows-package'].steps
