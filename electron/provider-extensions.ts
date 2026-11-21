@@ -8,7 +8,7 @@ import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
 import { DirectoryEntryLimitError, readDirectoryEntries } from './bounded-directory'
 import { readBoundedResponseText } from './bounded-response'
-import { activeProviderIds, cliCatalog, providerIds, type ProviderId } from './catalog'
+import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
   copySkillImport,
   moveSkillToTrash,
@@ -2352,11 +2352,6 @@ export class ProviderExtensionService {
         entries: [],
       }
     }
-  }
-
-  async listAll(): Promise<ProviderExtensionsSnapshot[]> {
-    // 下线的工具（Gemini CLI）不再列：星芒不再替它装、开关扩展。
-    return Promise.all(activeProviderIds.map((provider) => this.list(provider)))
   }
 
   /**
