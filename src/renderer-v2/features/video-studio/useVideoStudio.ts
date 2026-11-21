@@ -17,6 +17,7 @@ import { VideoStudioError, describeVideoStudioFailure, isVideoStudioAbort } from
 import {
   addVideoStudioShot,
   applyVideoStudioPlan,
+  assignVideoStudioShotClip,
   assignVideoStudioShotImages,
   buildVideoStudioCatalogs,
   buildVideoStudioClipRequest,
@@ -29,6 +30,7 @@ import {
   moveVideoStudioShot,
   removeVideoStudioMusic,
   removeVideoStudioShot,
+  removeVideoStudioShotClip,
   removeVideoStudioShotImage,
   selectVideoStudioVideoModel,
   setVideoStudioClipSound,
@@ -40,12 +42,14 @@ import {
   updateVideoStudioShot,
   videoStudioComposeCaptions,
   videoStudioComposeKey,
+  withoutVideoStudioBorrowed,
   withoutVideoStudioTrim,
   videoStudioComposeSound,
   videoStudioPlainText,
   videoStudioReadyToCompose,
   videoStudioShotProblem,
   type VideoStudioClipSound,
+  type VideoStudioClipSource,
   type VideoStudioProject,
   type VideoStudioSettings,
   type VideoStudioShot,
@@ -302,7 +306,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
       // 付了钱的片段回来了：马上存，不等攒那一会儿。
       commit((current) => {
         const updated = updateVideoStudioShot(current, shotId, (item) => item.requestId !== requestId ? item
-          : clip ? { ...withoutVideoStudioTrim(shotWithoutRun(item)), clip, status: 'done' }
+          : clip ? { ...withoutVideoStudioBorrowed(withoutVideoStudioTrim(shotWithoutRun(item))), clip, status: 'done' }
             : settleShot(item, item.unrecorded ? aiVideoUnconfirmedSubmissionMessage : undefined))
         return clip ? { ...updated, exported: undefined } : updated
       }, { urgent: true })
@@ -508,6 +512,19 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
     }
   }
 
+  // 「从作品库选图」「使用已有片段」（融合第 3 步）：选择框由「创作」页开（pick），这里只等它交回编号，挂到这一镜上。
+  // 选的时候换成了别的视频（这个工作台卸掉了），选好的不挂到换上来的那一条上。
+  const pickLibraryImage = async (id: string, pick: () => Promise<string | null>) => {
+    const alive = owner.capture()
+    const assetId = await pick()
+    if (alive() && assetId) commit((current) => assignVideoStudioShotImages(current, id, [assetId]))
+  }
+  const pickLibraryClip = async (id: string, pick: () => Promise<VideoStudioClipSource | null>) => {
+    const alive = owner.capture()
+    const picked = await pick()
+    if (alive() && picked) commit((current) => assignVideoStudioShotClip(current, id, picked))
+  }
+
   // 「加配乐」：歌由主进程弹系统对话框选、存进作品库，这里只拿编号、歌名和时长。
   const pickMusic = async () => {
     // 对话框开着时换成了别的视频（这个工作台卸掉了），选好的歌不挂到换上来的那一条上（歌照样在作品库里）。
@@ -607,6 +624,9 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
     addShot: () => commit((current) => addVideoStudioShot(current)),
     pickShotImage,
     removeShotImage: (id: string) => commit((current) => removeVideoStudioShotImage(current, id)),
+    pickLibraryImage,
+    pickLibraryClip,
+    removeShotClip: (id: string) => commit((current) => removeVideoStudioShotClip(current, id)),
     pickMusic,
     removeMusic: () => commit((current) => removeVideoStudioMusic(current)),
     setClipSound: (clipSound: VideoStudioClipSound) => commit((current) => setVideoStudioClipSound(current, clipSound)),

@@ -23,6 +23,12 @@
 .chat-conversation-item > .xm-menu { margin-right: 4px; opacity: 0; transition: opacity var(--duration-fast) var(--ease-standard); }
 .chat-conversation-item:hover > .xm-menu, .chat-conversation-item[data-active='true'] > .xm-menu, .chat-conversation-item > .xm-menu:focus-within, .chat-conversation-item > .xm-menu:has([aria-expanded='true']) { opacity: 1; }
 .chat-conversation-empty { margin: 0; padding: 14px 10px; color: var(--text-3); font-size: 12px; line-height: 1.5; }
+/* 左下角的「作品库」（融合第 3 步）：做过的图和视频都在里面，后面的数是一共多少件。 */
+.chat-library-foot { margin-top: 6px; padding-top: 8px; box-shadow: inset 0 1px 0 var(--line); }
+.chat-library-entry { position: relative; display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; column-gap: 8px; width: 100%; padding: 7px 10px 7px 8px; border: 0; border-radius: 8px; corner-shape: squircle; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: background var(--duration-fast) var(--ease-standard); }
+.chat-library-entry:hover { background: var(--panel-hover); }.chat-library-entry[data-active='true'] { background: var(--nav-on); box-shadow: var(--nav-on-sh); }
+.chat-library-entry[data-active='true']::before { content: ''; position: absolute; left: 0; top: 11px; bottom: 11px; width: 3px; border-radius: 2px; background: var(--gold); }
+.chat-library-entry > strong { font-size: 13px; font-weight: 600; }.chat-library-entry > b { color: var(--text-3); font-size: var(--font-micro); font-weight: 500; font-variant-numeric: tabular-nums; }
 .chat-conversations-foot { padding-top: 8px; }.chat-conversations-foot > .xm-btn { color: var(--text-3); }.chat-conversations-foot > .xm-btn:hover:not(:disabled) { color: var(--bad-tx); }
 .chat-conversation { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 /* 右边换成一条视频或一个画布项目时，对话这一块只藏不卸（回复照收）。 */
