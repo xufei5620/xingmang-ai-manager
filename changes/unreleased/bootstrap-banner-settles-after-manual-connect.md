@@ -6,7 +6,7 @@
 - 新增纯函数 `settleBootstrapToolFailure`（`features/tools/account-bootstrap.ts`）：只拿掉这一家的 `failed` 和
   `keyChangeFailed`，别家的照留；拿掉以后没写成的、要留意的都不剩时 `networkBlocked` 一起收起。`useAccountBootstrap`
   给出 `settleToolKeyFailure`，`useToolAccountActions` 在三处成功以后叫它：配置窗口写进密钥且读回成功
-  （`confirmToolKeyWritten`，只留着原来那把 Key 的保存不走这里）、首页「改用当前账号 / 切回官方账号」、「修好它」。
+  （`confirmToolKeyWritten`，只留着原来那把 Key 的保存不走这里）、首页「改用当前账号 / 切回官方账号」、「立即修复」。
 - 用例：`app-check.mjs` 照真机那条路点一遍（旧代码上红：黄条还在）；`account-bootstrap.test.ts` 钉住只拿掉这一家、
   没东西可拿时原样交回、网络那句什么时候收什么时候留。
 - 给客户看的那句和前一半（新装 Grok 自动连上）并在 `grok-installer-config-counts-as-blank.md` 里。
