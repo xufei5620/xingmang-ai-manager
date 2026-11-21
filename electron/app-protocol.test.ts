@@ -38,6 +38,19 @@ describe('applicationSecurityResponseHeaders', () => {
     expect(rules.has('child-src')).toBe(false)
   })
 
+  // Why this is safe: the only scheme media may load from is xingmang-asset:, which the main process answers
+  // itself and only with the signed-in account's own library files (ai-asset-protocol.ts). Leaving out 'self',
+  // blob:, data: and every remote origin means a compromised page still cannot play, or beacon through, anything else.
+  it('lets the page play media from the asset library only', () => {
+    const rules = directives(applicationContentSecurityPolicy)
+    expect(rules.get('media-src')).toBe('xingmang-asset:')
+    expect(rules.get('img-src')).toBe("'self' data: xingmang-asset:")
+    for (const [name, sources] of rules) {
+      expect(sources, name).not.toMatch(/\*|https?:|wss?:|blob:|filesystem:/)
+      if (name !== 'style-src') expect(sources, name).not.toContain('unsafe')
+    }
+  })
+
   it('hands every response its own header list', () => {
     const first = applicationSecurityResponseHeaders()
     first['Content-Security-Policy']?.push("connect-src *")
