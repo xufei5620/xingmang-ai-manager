@@ -117,6 +117,12 @@ export interface CanvasNodeInputs {
   videos?: CanvasRunAsset[]
   audio?: CanvasRunAsset
   audios?: CanvasRunAsset[]
+  /**
+   * Only for a router with a strategy (D06): each text that came over a text
+   * connection, in connection order, so first-available can take the first
+   * one that is not blank.
+   */
+  texts?: string[]
 }
 
 export interface CanvasNodeExecutionResult {
@@ -275,6 +281,33 @@ function preferredImageToolCandidates(node: CanvasRunGraphNode, candidates: Canv
   const selected = adopted >= 0 ? adopted : candidates.findIndex((candidate) => candidate.outputIndex === (node.data.imageOutputIndex ?? 0))
   if (selected <= 0) return candidates
   return [candidates[selected], ...candidates.slice(0, selected), ...candidates.slice(selected + 1)]
+}
+
+/** The kernel's builtin router hands one kind over each media port. */
+function routerPortKind(sourceHandle: string): CanvasRunAsset['kind'] | undefined {
+  if (sourceHandle === 'out:image') return 'image'
+  if (sourceHandle === 'out:video') return 'video'
+  if (sourceHandle === 'out:audio') return 'audio'
+  return undefined
+}
+
+function hasRouterStrategy(node: CanvasRunGraphNode | undefined): boolean {
+  return node?.kind === 'router' && node.data.routerStrategy !== undefined
+}
+
+/**
+ * What one connection from a router with a strategy hands on, as the web
+ * host's buildRunNodeOutput does (xingmang-canvas lib/canvas-runs.ts): 「保留全部输入」
+ * hands every selected item of the port's kind, first-available the first
+ * one. A router without a strategy keeps the historical single picture and
+ * is not handled here (undefined).
+ */
+function routedAssets(source: CanvasRunGraphNode | undefined, sourceHandle: string, output: NodeOutput): CanvasRunAsset[] | undefined {
+  if (!source || !hasRouterStrategy(source)) return undefined
+  const kind = routerPortKind(sourceHandle)
+  if (!kind) return []
+  const assets = (output.assets ?? (output.asset ? [output.asset] : [])).filter((asset) => asset.kind === kind)
+  return source.data.routerStrategy?.strategy === 'all' ? assets : assets.slice(0, 1)
 }
 
 function nodeOutputAssets(candidates: readonly CanvasRunCandidate[]): Pick<NodeOutput, 'asset' | 'assets'> {
@@ -632,16 +665,40 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
   const mediaSources: CanvasImageToolSource<CanvasRunAsset>[] = []
   const videos: CanvasRunAsset[] = []
   const audios: CanvasRunAsset[] = []
+  const texts: string[] = []
+  const routesInputs = hasRouterStrategy(index.nodesById.get(nodeId))
   const fingerprintInputs = []
   for (const edge of index.incoming.get(nodeId) ?? []) {
     const output = outputs.get(edge.source)
     if (!output) continue
-    if (output.text !== undefined) inputs.text = inputs.text === undefined ? output.text : `${inputs.text}\n${output.text}`
+    const source = index.nodesById.get(edge.source)
+    // A router with a strategy hands its text over its text port only, as
+    // the web host does; a picture connection from it brings no prompt.
+    const text = hasRouterStrategy(source) && edge.sourceHandle !== 'out:text' ? undefined : output.text
+    if (text !== undefined) inputs.text = inputs.text === undefined ? text : `${inputs.text}\n${text}`
+    if (routesInputs && text !== undefined && edge.sourceHandle === 'out:text') texts.push(text)
     // A batch connection hands on every picture the node made, each named by
     // its place in the batch, as the web host does; any other connection
     // hands on the one picture the canvas shows.
     const batch = edge.sourceHandle === batchImageHandle
-    const pictures = batch
+    const routed = batch ? undefined : routedAssets(source, edge.sourceHandle, output)
+    if (routed) {
+      for (const [outputIndex, asset] of routed.entries()) {
+        if (asset.kind === 'image') {
+          inputs.image ??= asset
+          images.push(asset)
+          imageSources.push({ edgeId: edge.id, outputIndex, asset })
+        } else if (asset.kind === 'video') {
+          inputs.video ??= asset
+          videos.push(asset)
+        } else {
+          inputs.audio ??= asset
+          audios.push(asset)
+        }
+        mediaSources.push({ edgeId: edge.id, outputIndex, asset })
+      }
+    }
+    const pictures = routed ? [] : batch
       ? (output.assets ?? (output.asset ? [output.asset] : [])).filter((asset) => asset.kind === 'image')
       : output.asset?.kind === 'image' ? [output.asset] : []
     for (const [outputIndex, asset] of pictures.entries()) {
@@ -650,12 +707,12 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
       imageSources.push({ edgeId: edge.id, outputIndex, asset })
       mediaSources.push({ edgeId: edge.id, outputIndex, asset })
     }
-    if (!batch && output.asset?.kind === 'video') {
+    if (!routed && !batch && output.asset?.kind === 'video') {
       inputs.video ??= output.asset
       videos.push(output.asset)
       mediaSources.push({ edgeId: edge.id, outputIndex: 0, asset: output.asset })
     }
-    if (!batch && output.asset?.kind === 'audio') {
+    if (!routed && !batch && output.asset?.kind === 'audio') {
       inputs.audio ??= output.asset
       audios.push(output.asset)
       mediaSources.push({ edgeId: edge.id, outputIndex: 0, asset: output.asset })
@@ -665,11 +722,12 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
       sourceHandle: edge.sourceHandle,
       targetHandle: edge.targetHandle,
       fingerprint: output.fingerprint,
-      ...(output.text !== undefined ? { text: output.text } : {}),
+      ...(text !== undefined ? { text } : {}),
       // Which slice the canvas shows does not change what a batch hands on,
       // so choosing another one leaves a batch connection's key alone (the
-      // kernel's run-input-matching.ts does not mark it stale either).
-      ...(batch ? { assets: pictures } : output.asset ? { asset: output.asset } : {}),
+      // kernel's run-input-matching.ts does not mark it stale either). A
+      // routed connection is keyed by what it hands on, one or all.
+      ...(batch ? { assets: pictures } : routed ? (routed.length === 1 ? { asset: routed[0] } : routed.length > 1 ? { assets: routed } : {}) : output.asset ? { asset: output.asset } : {}),
     })
   }
   if (images.length > 0) {
@@ -678,6 +736,7 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
   }
   if (videos.length > 0) inputs.videos = videos
   if (audios.length > 0) inputs.audios = audios
+  if (texts.length > 0) inputs.texts = texts
   return { inputs, fingerprintInputs, mediaSources }
 }
 

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, FolderOpen, FolderPlus, Headset, Home, RefreshCw, Zap } from 'lucide-react'
 import { Button, Card, Confirm, Notice, Pill, Segment, SettingRow, Switch, useBalanceTier } from '../../../ui'
 import { dollars, ResultNotice, useOperation, useResource } from '../../../business-common'
-import { useSharedAccountBalance } from '../../app/balance-context'
+import { useSharedBalanceSelector } from '../../app/balance-context'
 import { isRemoteIdleCloseHours, remoteChannelIds, remoteIdleCloseHours } from '../../../../../electron/codex-remote-channel'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot, RemoteChannelId } from '../../../../../electron/ipc-contract'
 import type { V2Bridge, V2Page } from '../../../types'
@@ -580,6 +580,7 @@ export function remoteLowBalanceAmount(tier: ReturnType<typeof useBalanceTier>, 
 
 function useRemoteLowBalance(): number | null {
   const tier = useBalanceTier()
-  const { snapshot } = useSharedAccountBalance()
-  return remoteLowBalanceAmount(tier, snapshot.balance)
+  // 只挑余额本身，设置页藏着时不跟着每次刷新重画（R8）。
+  const balance = useSharedBalanceSelector((state) => state.balance)
+  return remoteLowBalanceAmount(tier, balance)
 }

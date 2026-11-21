@@ -12,7 +12,7 @@ import { diagnosticFolderUnavailableMessage } from '../app/diagnostic-folder'
 import { inspectModel } from '../chat/api'
 import { pendingChatGroups, type ChatGroupPreparation, type ChatSite } from '../chat/state'
 import { composeInVideoStudioWorker } from './compose-client'
-import { addVideoStudioClipBytes, videoStudioMusicUnreadableMessage, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult } from './compose-protocol'
+import { addVideoStudioClipBytes, videoStudioMusicUnreadableMessage, videoStudioTotalBytesLimit, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult } from './compose-protocol'
 import { VideoStudioError, describeVideoStudioFailure, isVideoStudioAbort } from './errors'
 import {
   addVideoStudioShot,
@@ -21,6 +21,7 @@ import {
   buildVideoStudioCatalogs,
   buildVideoStudioClipRequest,
   buildVideoStudioImageRequest,
+  changeVideoStudioSettings,
   createVideoStudioId,
   createVideoStudioProject,
   finishVideoStudioShotDrawing,
@@ -122,6 +123,33 @@ function loadDrafts(storage: VideoStudioStorage | null, scope: string): VideoStu
 
 const draftsFullWarning = '这台电脑上存不下更多草稿了，删掉几份不要的再试。'
 
+/**
+ * 换一份工程（新建、「接着做」）时往这台电脑上写。草稿箱和手上这一份各占一格，先写草稿箱、再写手上这一份；
+ * 手上这一格没写成，就把草稿箱写回换之前的样子，两格都还是换之前的，这次不换（false）。不然「接着做」拿出来的
+ * 那一份已经不在草稿箱里、手上那一格又还是原来那份，关掉软件它就没了（11-18 复核 A01）。
+ * 写回用的是页面上的草稿箱：它跟那一格里的一样或更少（删草稿没写成时），换之前放得下，写回也放得下。
+ */
+export function storeVideoStudioSwitch(storage: VideoStudioStorage | null, scope: string, before: readonly VideoStudioDraft[], next: { project: VideoStudioProject, drafts: readonly VideoStudioDraft[] }): boolean {
+  if (!storage) return true
+  const draftsKey = videoStudioDraftsStorageKey(scope)
+  try {
+    storage.setItem(draftsKey, JSON.stringify(serializeVideoStudioDrafts(next.drafts)))
+  } catch {
+    return false
+  }
+  try {
+    storage.setItem(videoStudioStorageKey(scope), JSON.stringify(serializeVideoStudioProject(next.project)))
+    return true
+  } catch {
+    try {
+      storage.setItem(draftsKey, JSON.stringify(serializeVideoStudioDrafts(before)))
+    } catch {
+      // 写回也没写成：这台电脑的存储多半整个出了问题。页面上不换，草稿箱里那一份还在，下次写草稿箱时一起写回去。
+    }
+    return false
+  }
+}
+
 /** 只留镜头本身和上一段片段，这一次出片的请求号、进度和报错都去掉。 */
 function shotWithoutRun(shot: VideoStudioShot) {
   const { requestId: _requestId, unconfirmed: _unconfirmed, unrecorded: _unrecorded, stage: _stage, progress: _progress, delayed: _delayed, error: _error, ...rest } = shot
@@ -208,7 +236,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       setStorageWarning('这台电脑上存不下这份分镜，关掉软件以后要重新写。生成好的片段照样在作品库里。')
     }
   }
-  const changeSettings = (patch: Partial<VideoStudioSettings>) => commit((current) => ({ ...current, settings: { ...current.settings, ...patch } }))
+  const changeSettings = (patch: Partial<VideoStudioSettings>) => commit((current) => changeVideoStudioSettings(current, patch))
   const settleModels = () => {
     const current = projectRef.current.settings
     const context = { groups: groupsRef.current, site, settled: pendingChatGroups(groupsRef.current, preparationsRef.current).size === 0 }
@@ -289,16 +317,14 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
 
   /**
    * 换一份工程（新建、从草稿箱拿一份出来）。手上有事在跑就不换：出着的片段、画着的图、拼着的片都按镜头编号挂回
-   * 「现在这一份」，换走了就挂不上。先存草稿箱再换：存不下就整个不换，手上这一份不会丢。
+   * 「现在这一份」，换走了就挂不上。先把两格都存好再换：哪一格存不下就整个不换，手上这一份和草稿箱里那一份都不会丢。
    */
   const switchProject = (change: (current: VideoStudioProject, stored: readonly VideoStudioDraft[]) => { project: VideoStudioProject, drafts: VideoStudioDraft[] } | null) => {
     const current = projectRef.current
     if (planning || running.current.size || queue.current.length || composeAbort.current || current.shots.some((shot) => isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot))) return
     const next = change(current, draftsRef.current)
     if (!next) return
-    try {
-      storage?.setItem(videoStudioDraftsStorageKey(scope), JSON.stringify(serializeVideoStudioDrafts(next.drafts)))
-    } catch {
+    if (!storeVideoStudioSwitch(storage, scope, draftsRef.current, next)) {
       setStorageWarning(draftsFullWarning)
       return
     }
@@ -306,7 +332,10 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     setDraftsState(next.drafts)
     projectTurn.invalidate()
     setError(''); setNotice('')
-    commit(() => next.project)
+    // 两格上面都写好了，这里只把页面换过去。
+    projectRef.current = next.project
+    setProjectState(next.project)
+    setStorageWarning('')
     settleModels()
     // 草稿里记着上次没等到结果的片段（重开软件时读回来就是「生成中」），照重开页面那样拿请求号去接回，只查不提交。
     resumeOpenClips()
@@ -497,6 +526,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     try {
       const clips: VideoStudioComposeRequest['clips'] = []
       let totalBytes = 0
+      const totalBytesLimit = videoStudioTotalBytesLimit()
       for (const [index, shot] of current.shots.entries()) {
         setComposeState({ phase: 'reading', done: index, total: current.shots.length })
         let bytes: Uint8Array
@@ -507,7 +537,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
           throw new Error(isGoneFromLibrary(message) ? `第 ${index + 1} 段片段在作品库里找不到了，重新生成这一段再拼` : videoStudioErrorMessage(reason, `第 ${index + 1} 段片段读不出来，请稍后再试`))
         }
         if (controller.signal.aborted || !alive()) return
-        totalBytes = addVideoStudioClipBytes(totalBytes, bytes.byteLength)
+        totalBytes = addVideoStudioClipBytes(totalBytes, bytes.byteLength, totalBytesLimit)
         // 交给后台线程时字节是转移过去的，要一份自己独占的 ArrayBuffer。
         const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
         clips.push({

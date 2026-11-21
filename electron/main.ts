@@ -50,6 +50,7 @@ import { createCodexPayloadNoticeBoard } from './codex-payload-limit'
 import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, measureInstallLeftovers, sweepInstallLeftovers } from './install-leftovers'
 import { resolveRealmDataRoots } from './realm-data-roots'
+import { listCanvasProjectAssetDirectories } from './canvas-project-store'
 import { createStorageUsageService } from './storage-usage-service'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
@@ -95,6 +96,8 @@ import {
   type UsageUpdateView,
 } from './usage-stats'
 import { createMainStallMonitor, createUsageStatsReporter } from './usage-stats-reporter'
+import { buildClientVersionReport, shouldSendClientVersionReport } from './client-version-report'
+import { createClientVersionReporter } from './client-version-reporter'
 import { activeProviderIds, cliCatalog, isProviderId } from './catalog'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
@@ -139,6 +142,7 @@ import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { syncXingmangImageMcpConfigs } from './config-files'
 import { attachNotUtf8ConfigRewriteLog } from './config-files-context'
+import { configReadCacheMaxAgeMs } from './config-read-cache'
 import { rootedMainServiceOptions } from './main-service-options'
 import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
@@ -736,6 +740,8 @@ function reportRendererHang(window: BrowserWindow, runtimeLog: RuntimeLogStore):
 }
 // 匿名使用统计（usage-stats.ts）建得比主窗口晚一点；在那之前、和退出以后，窗口没响应就不数。
 let noteUsageEvent: ((event: UsageStatsEvent) => void) | null = null
+// 客户端版本上报（client-version-report.ts）也建得比账号服务晚；在那之前、和退出以后，登录态变了不用管。
+let noteAccountChangedForVersionReport: (() => void) | null = null
 
 /**
  * 一个 Chromium 会话的 fetch。net.fetch 碰到 redirect: 'manual' 不交回跳转，直接报「Redirect was
@@ -1338,6 +1344,8 @@ if (!hasSingleInstanceLock) {
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
+      // 开机那两秒里首页、开机补密钥、线路跟随接连读五遍工具配置，读下的几秒内接着用（0.2.24 深查 R3）。
+      configReadCacheMs: configReadCacheMaxAgeMs,
       externalClientSnapshotCacheFile: path.join(managerDataDirectory, 'external-client-snapshot.json'),
       appVersion: app.getVersion(),
       getRelaySiteId: () => readAccountSiteId(),
@@ -1440,6 +1448,7 @@ if (!hasSingleInstanceLock) {
       codexHome: codexContext.codexHome,
       runtimeLog,
       readAccountSiteId: () => readAccountSiteId(),
+      readAccountOwner: () => readExternalClientAccountId(),
       routes: networkRoutes,
       systemService,
       notices: codexPayloadNotices,
@@ -1654,7 +1663,7 @@ if (!hasSingleInstanceLock) {
     let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
-    // 什么时候读到的，画布余额条拿它写「几分钟前读的」，也拿它决定要不要再读一次（canvas-account-summary.ts）。
+    // 什么时候读到的，画布余额条拿它写「几分钟前读的」，也拿它决定要不要再读一次（canvas-account-summary.ts）；托盘余额读到太久没再读到时也拿它写多久以前（F8-3）。
     let latestTrayBalanceAt: number | null = null
     // 画布最近一次运行结束的时间：这之前读到的余额不算新，画布余额条要再读一次（canvas-account-summary.ts）。
     let canvasRunEndedAt: number | null = null
@@ -1976,6 +1985,7 @@ if (!hasSingleInstanceLock) {
         if (state.restoring) relayRouteController.ensureWatching(state.restoring.account.siteId)
         const identity = buildAccountIdentity(siteId, state.account?.userId, accounts.client.getSessionRevision!())
         sendToMainWindow('onAccountSessionChanged', state)
+        noteAccountChangedForVersionReport?.()
         // 换了人或退出：开票窗口关掉，上一个人的开票登录清掉；续期这类同一个人的变化它自己会略过。
         invoicePortalWindow.setAccount(invoicePortalIdentity(siteId, state))
         if (!accountIdentity.advance(identity)) return
@@ -2116,6 +2126,41 @@ if (!hasSingleInstanceLock) {
     noteUsageEvent = (event) => { usageStats.record(event) }
     if (unexpectedExit) usageStats.record({ kind: 'hang', hang: 'unexpectedExit' })
     usageStats.start()
+    // 客户端版本上报（client-version-report.ts，yoyo 11-20 选的「软件主动报给控制台」）：登录着才报，每天最多一次
+    // 站点、这个站的用户编号、版本、系统、芯片，给 console.solov.cc 的用户详情用。跟上面的匿名统计是两路，不受那个开关管。
+    const clientVersionReporter = shouldSendClientVersionReport({
+      packaged: app.isPackaged,
+      localBuild: applicationPackage.xingmangLocalBuild === true,
+      env: process.env,
+    }) ? createClientVersionReporter({
+        filePath: path.join(managerDataDirectory, 'client-version-report.json'),
+        collect: () => {
+          const accountState = accountService.getSessionState()
+          return buildClientVersionReport({
+            siteId: accounts.getSiteId(),
+            authenticated: accountState.authenticated,
+            userId: accountState.account?.userId,
+            appVersion: app.getVersion(),
+            platform: process.platform,
+            arch: process.arch,
+          })
+        },
+        fetchImpl: (url, init) => chromiumSessionFetch(session.defaultSession)(url, init),
+        // 日志里只写结果，不写用户编号（I13）。
+        onSendFailure: (error) => {
+          const reason = classifyNetworkFailure(error)
+          runtimeLog.log('info', 'client-version', 'send.failed', '客户端版本这次没报上去，过一会儿再试', reason ? { networkFailure: reason } : undefined)
+        },
+        onRejected: (status) => {
+          runtimeLog.log('info', 'client-version', 'send.rejected', '控制台这次没收下客户端版本，过一会儿再试', { status })
+        },
+        onLocalFailure: (error) => { runtimeLog.exception('client-version', 'local.failed', error) },
+      })
+      : null
+    if (clientVersionReporter) {
+      noteAccountChangedForVersionReport = () => { clientVersionReporter.accountChanged() }
+      clientVersionReporter.start()
+    }
     // 设置里一关就删掉本机攒的计数（方案第 5 节「关掉后立刻停，计数文件一起删掉」），不等最多 6 小时后的那次定时检查。
     const detachPrivacyListener = attachPrivacyChangeListener((kind, enabled) => {
       if (kind === 'anonymousUsage' && !enabled) void usageStats.discard()
@@ -2157,6 +2202,8 @@ if (!hasSingleInstanceLock) {
       detachPrivacyListener()
       usageStats.stop()
       noteUsageEvent = null
+      clientVersionReporter?.stop()
+      noteAccountChangedForVersionReport = null
     })
     let lastUpdateForUsage: UsageUpdateView | null = null
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
@@ -2449,6 +2496,11 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => accountSessionReady).then(() => new Promise<void>((resolve) => {
       setTimeout(resolve, claudeDesktopModelTopUpStartupDelayMs).unref()
     })).then(() => systemService.topUpClaudeDesktopModels?.()).catch(() => undefined)
+    // Claude Desktop 的 Cowork 工作区（约 1.3 GB）国内从它官网下不动：开机检测跑完再等一会儿，替已经装着的从星芒
+    // 下载站放好（external-client-route-service.ts 的 seedClaudeDesktopWorkspace）。不看登录，放过的、盘不够的不下。
+    void startupQuiet.whenOver().then(() => new Promise<void>((resolve) => {
+      setTimeout(resolve, claudeDesktopModelTopUpStartupDelayMs).unref()
+    })).then(() => systemService.seedClaudeDesktopWorkspace?.()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,
@@ -2605,7 +2657,9 @@ if (!hasSingleInstanceLock) {
     const sensitiveClipboard = createSensitiveClipboard({ clipboard })
     // 「设置 › 备份迁移 › 星芒占用的空间」（决定单 D100）：只在客户打开那一组时问，不在后台算。
     const storageUsage = createStorageUsageService({
-      worksDirectory: () => currentBusiness().aiOutputPlacement.root,
+      worksDirectory: () => currentBusiness().aiOutputSharedRoot(),
+      canvasProjectAssetDirectories: async () => (await Promise.all((['xm-account', 'api-account'] as const)
+        .map((realm) => listCanvasProjectAssetDirectories(resolveRealmDataRoots(managerDataDirectory, realm).canvasProjectsDirectory)))).flat(),
       thumbnailDirectories: () => (['xm-account', 'api-account'] as const)
         .map((realm) => resolveRealmDataRoots(managerDataDirectory, realm).assetThumbnailsDirectory),
       chatHistoryDirectory: path.join(managerDataDirectory, 'chat-history'),
@@ -3532,6 +3586,9 @@ if (!hasSingleInstanceLock) {
         return {
           accountLabel: state.account?.username ?? null,
           balanceUsd: latestTrayBalance && latestTrayBalance.quotaPerUnit > 0 ? latestTrayBalance.quota / latestTrayBalance.quotaPerUnit : null,
+          // 读到太久还没再读到时，余额后面写多久以前；登录了一个都没读到写「暂未读到」（F8-3）。
+          balanceReadAt: latestTrayBalanceAt,
+          signedIn: state.authenticated && Boolean(state.account),
           subscriptionLabel: traySubscriptionLabel(latestTraySubscription, latestTrayBalance?.quotaPerUnit ?? 0, Date.now()),
           installedTools: [
             ...(latestTraySystem?.desktopApps.codex.installed ? [{ id: 'codexDesktop', label: 'Codex 桌面端' }] : []),

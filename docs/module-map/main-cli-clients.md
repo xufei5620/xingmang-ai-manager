@@ -115,6 +115,7 @@
 - `external-client-connection.ts` — 三家的连接自检：回读客户端自己的配置，用里面那把密钥问一次星芒（WorkBuddy、OpenCode 查模型清单不花额度，Claude Desktop 照它自己的样子发一个字）；客户端里真正发的对话本机测不到，结论照实说，不假绿
 - `external-client-ownership.ts` — 记「这份客户端配置是替哪个账号写的」：只存地址加密钥的 sha256，是本机证据不是凭据库（I3）
 - `external-client-snapshot-cache.ts` — 上一次三家的检测结果留在本机，下次启动先拿它画首页那几行；只用来「先画个样子」，主进程里要回答装没装、配给谁的地方都不读它
+- `external-client-service.test-support.ts` — 测试专用：`external-client-service*.test.ts` 四个文件共用的夹具（经 `createSystemService` 接三家客户端真的配置读写，客户端运行时、中转请求、换线路的定时器是假的）。原来一个 138 条的文件在 Windows 上占几分钟、分片拆不开，按 describe 拆开了（#2006）；`tsconfig.electron.json` 排除 `*.test-support.ts`，不进发布包
 - `desktop-package-bucket.ts` — **星芒腾讯云存储桶的共用下载器**：Codex / Claude 桌面端和 Mac 版 OpenCode 的官方离线包都从这里先下，插件目录和 Grok 也借它的取法。桶地址是常量、对象 key 形状固定、拒一切重定向（I10），清单里的大小与 SHA-256 绑住下载，调用方照样核官方签名，桶被改了最多白下一次、装不进东西；同步脚本是 `scripts/sync-*-cos.cjs`
 - `claude-desktop-config.ts` — Claude Desktop 的第三方推理（网关）配置：写 `configLibrary` 与 `claude_desktop_config.json`，「切回官方账号」只把 `deploymentMode` 改成 `1p`；输入里有 Key，绝不回传渲染层（I3）
 - `claude-desktop-local-transaction.ts` — 上面那几份文件的事务写入：先写临时文件、留 `.bak.<随机>` 备份（每个文件只留最近 5 份）、失败回滚（I9），只清自己起名的备份
@@ -127,6 +128,11 @@
 - `claude-desktop-msix-installer.ts` — Windows 上 Claude Desktop 的离线 MSIX 一路（存储桶或 Claude 官网，官网只认 `claude.ai` 入口与 `downloads.claude.ai/releases/` 的逐跳重定向），PowerShell 只读核对包身份与 Anthropic 签名，再交给 `codex-desktop-appx.ts` 的共用安装（带服务的包走 UAC）
 - `claude-desktop-acceleration.ts` — 从星芒打开 Claude Desktop 前悄悄替用户连上加速，好让它从 `downloads.claude.ai` 下得到 Claude Code 程序和 Cowork 工作区（#1373）：约束同 `codex-desktop-acceleration.ts`，Claude 退出或连满一小时就断，和 Codex 桌面端共用同一次会话时先用完的那边交给另一边（`heldElsewhere`）。不含 Electron 依赖
 - `claude-desktop-install-failure.ts` — Claude Desktop 没装上时那句话（按原因分类，原话只进日志）和官网下载页地址（外链白名单全等收录，I12）；主进程与渲染层共用，不许引 Node
+- `claude-desktop-code-seed.ts` — Windows 上从星芒打开 Claude Desktop 前，从国内 npm 镜像替它放好 Claude Code 程序（按官方源 SHA-512 对账，只在同用户模式）；读 `app.asar` 的几个只读工具也在这里
+- `claude-desktop-component-manifest.ts` / `claude-desktop-component-keys.ts` — 从 Claude 自己的 `app.asar` 读出它要的工作区和 Claude Code 版本、校验值；算这些文件在星芒存储桶里的位置（同步作业和客户端共用）
+- `claude-desktop-workspace-seed.ts` — 从星芒存储桶替 Claude Desktop 放好 Cowork 工作区（官网原样 `.zst` + `.origin`，它自己解开再核）；装好、开机、点「打开」时在后台做
+- `claude-desktop-vm-code-seed.ts` — Cowork 虚拟机里那份 Linux 版 Claude Code，从国内 npm 镜像放进 `claude-code-vm/<版本>/`
+- `claude-desktop-mac-code-seed.ts` — Mac 上打开 Claude Desktop 前从星芒存储桶放好带签名的 `claude.app` 程序包（核 SHA-256、自写 tar 解析、核 Mach-O 芯片）
 
 ## 托管密钥的分组与换新
 - `managed-cli-groups.ts` — 给每个工具和画图挑账号里用哪个分组：xm 站分组只按名字认（没有编号），服务状态文件里的分组对照让站上改名时不用等发版；订阅分组、历史账号那套后端的平台字段也在这里判。签 Key、对话凭据、账号页都用它

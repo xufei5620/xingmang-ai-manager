@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
 import { accountTabs, feedbackTabs, macDesktopTutorialTopic, macRuntimeTutorialTopic, settingsGroups, settingsItemLabel, settingsItems, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
@@ -155,6 +156,18 @@ describe('tutorial wording that follows the current app', () => {
   });
 
   // Fable 第二轮 Q5：Claude Code 2.1.318 起不再自己往编辑器里装插件，客户得知道要自己装、装完不用登录。
+  // 画布「更多操作」里「导出项目（含素材）」只在宿主接了网页便携包导出时才出现，桌面画布没接，
+  // 客户只看得到「导出工作流」；它导出的文件里只内嵌图片，视频和音频不带（canvas-project-package.ts）。
+  it('names the canvas export entry the desktop canvas menu actually shows', () => {
+    const canvasApp = readFileSync(new URL('../../../canvas-v2/src/App.tsx', import.meta.url), 'utf8');
+    const canvasPreload = readFileSync(new URL('../../../electron/canvas-preload.ts', import.meta.url), 'utf8');
+    const text = JSON.stringify(tutorialTopics.find((topic) => topic.id === 'canvas'));
+    expect(canvasApp).toContain('>导出工作流</button>');
+    expect(canvasPreload).not.toContain('previewProjectExport');
+    expect(text).toContain('「更多操作」里选「导出工作流」，图片会一起导出');
+    expect(text).not.toContain('导出项目（含素材）');
+  });
+
   it('tells editor users to install the extension themselves and to save the Claude Code config again if it still asks to sign in', () => {
     const editor = tutorialTopics.find((topic) => topic.id === 'editor');
     expect(editor?.category).toBe('tools');

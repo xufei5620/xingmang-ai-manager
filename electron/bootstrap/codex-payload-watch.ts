@@ -19,6 +19,8 @@ export interface CodexPayloadWatchOptions {
   codexHome: string
   runtimeLog: RuntimeLogStore
   readAccountSiteId: () => string
+  /** 当前登录的是谁（站点加用户编号），没登录给 null：认出处理到一半换了人（R29-03）。 */
+  readAccountOwner?: () => string | null
   routes: Pick<NetworkRoutes, 'relayRouteController' | 'toolRouteController' | 'toolRouting' | 'notifyRelayRouteChanged'>
   systemService: Pick<SystemService, 'followToolRoutes' | 'noteCodexPayloadRestart' | 'readStoredConfig'>
   notices: CodexPayloadNoticeBoard
@@ -27,24 +29,26 @@ export interface CodexPayloadWatchOptions {
 }
 
 type CodexPayloadRouting = Pick<CodexPayloadLimitDependencies,
-  'activeSiteId' | 'preference' | 'toolLine' | 'codexOnRelay' | 'holdDirect' | 'followCodex' | 'notify'>
+  'activeSiteId' | 'accountOwner' | 'preference' | 'toolLine' | 'codexOnRelay' | 'holdDirect' | 'followCodex' | 'notify'>
 
 /** 不碰文件的那一半：哪个站换哪套线路、Codex 的配置怎么跟过去、提示往哪发。 */
 export function codexPayloadRouting(options: Omit<CodexPayloadWatchOptions, 'managerDataDirectory' | 'codexHome' | 'runtimeLog'>): CodexPayloadRouting {
   const { routes, systemService } = options
   return {
     activeSiteId: () => options.readAccountSiteId(),
+    accountOwner: () => options.readAccountOwner?.() ?? null,
     preference: (siteId) => routes.toolRouting.preferences[siteId],
     toolLine: (siteId) => routes.toolRouting.lines()[siteId].line,
     codexOnRelay: () => !systemService.readStoredConfig().officialProviders?.includes('codex'),
     holdDirect: (siteId, trigger) => siteId === 'solov'
       ? routes.toolRouteController.holdDirect(trigger)
       : routes.relayRouteController.holdDirect(siteId, trigger),
-    async followCodex(siteId, result) {
+    async followCodex(siteId, result, stillCurrent) {
       if (siteId === 'solov') {
         // 星芒账号的工具配置由主进程定点改（tool-route-follow-service.ts）：换线那一声已经在改了，这里再叫一次 Codex，
-        // 等它改完再看配置在不在线路 2 上。
+        // 等它改完再看配置在不在线路 2 上。等的时候换了账号、Codex 换成了官方账号，就别再提示重开（R29-03）。
         await systemService.followToolRoutes?.({ reason: 'payload', providers: ['codex'] })
+        if (!stillCurrent()) return false
         return await systemService.noteCodexPayloadRestart?.() ?? false
       }
       // 历史账号的工具配置由界面整份写入跟过去（useRelayRouteSync），写完那一步（noteRouteFollowRestart）再提示重开。

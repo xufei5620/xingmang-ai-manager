@@ -126,7 +126,7 @@ export function parseProbeCacheDocument(
   if (record.version !== PROBE_CACHE_VERSION) return null
   if (!Array.isArray(record.entries)) return null
   const entries = new Map<string, ProviderSessionProbeEntry>()
-  // Oldest first on disk, so replaying the array rebuilds the same LRU order.
+  // Oldest first on disk, so replaying the array rebuilds the same order.
   for (const value of record.entries) {
     const parsed = parseEntry(value)
     if (!parsed) continue
@@ -145,7 +145,7 @@ export function serializeProbeCache(
   const encoded: string[] = []
   let used = 0
   // Filled newest first so that a cache over the byte budget keeps the
-  // sessions the user is most likely to open next.
+  // entries probed most recently.
   for (let index = ordered.length - 1; index >= 0; index -= 1) {
     const [key, entry] = ordered[index] as [string, ProviderSessionProbeEntry]
     const line = JSON.stringify({ key, scope: entry.scope, fingerprint: entry.fingerprint, state: entry.state })
@@ -181,20 +181,29 @@ export class ProviderSessionProbeCache {
     return this.loading
   }
 
+  /**
+   * A hit does not reorder anything. The list sweeps every session in the
+   * same order each time, so with more sessions than maxEntries a
+   * least-recently-used order evicted exactly the entry the next sweep needed
+   * first and no probe ever hit (R-3).
+   */
   get(key: string): ProviderSessionProbeEntry | null {
-    const entry = this.entries.get(key)
-    if (!entry) return null
-    this.entries.delete(key)
-    this.entries.set(key, entry)
-    return entry
+    return this.entries.get(key) ?? null
   }
 
+  /**
+   * An entry stays for as long as its file keeps the same fingerprint: a
+   * changed file replaces it, a deleted one is dropped by the next full sweep
+   * (pruneScope). When the cache is full a new file is simply not remembered,
+   * so a sweep over too many sessions still hits on the ones already cached
+   * instead of evicting them one by one.
+   */
   set(key: string, entry: ProviderSessionProbeEntry): void {
+    if (!this.entries.has(key) && this.entries.size >= this.maxEntries) return
+    // Re-inserting moves a re-probed entry to the newest end, which is the end
+    // persist() keeps first when the byte budget runs out.
     this.entries.delete(key)
     this.entries.set(key, entry)
-    while (this.entries.size > this.maxEntries) {
-      this.entries.delete(this.entries.keys().next().value as string)
-    }
     this.dirty = true
   }
 

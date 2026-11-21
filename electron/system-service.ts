@@ -189,6 +189,12 @@ export interface ToolStatus {
    */
   installSource?: CliInstallDisplaySource
   /**
+   * 只在 Mac 上的 Codex / Grok 出现：找到的那份不是 npm 装的，又核不出是官方安装器那一份，星芒不替它跑
+   * （tool-installation.ts 的 UnrecognizedDarwinCliError，Mac 验收 R1）。首页这时不给「打开」，给
+   * 「用星芒装一份」；主进程也不再拿「不会另装一份」拦这次安装。缺省 = 认得出或不适用。
+   */
+  unrecognizedInstall?: boolean
+  /**
    * 这个工具装上去会落在哪个目录。未装时 installDirectory 为 null，而用户要
    * 查写入权限或加杀毒白名单需要的正是这个路径；已装时两者指同一处。算不出
    * 落点（非 CLI 工具、探测不到 npm 全局根）时缺省，界面据此不出「复制路径」。
@@ -626,6 +632,11 @@ export interface SystemService {
    * 默认那个不动，它开着就这次不补。从不抛错。可选 = 旧实现不提供。
    */
   topUpClaudeDesktopModels?(): Promise<void>
+  /**
+   * 开机后台替已经装着的 Claude Desktop 从星芒下载站放好 Cowork 工作区（claude-desktop-workspace-seed.ts）。
+   * 没装、放过了、盘不够、远程关了都不下；从不抛错。可选 = 旧实现不提供。
+   */
+  seedClaudeDesktopWorkspace?(): Promise<void>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
   /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
@@ -669,25 +680,17 @@ export interface NpmPackageReleaseMetadata {
   integrity: string
 }
 
-export function assertNpmReleaseIntegrityMatches(
-  trusted: NpmPackageReleaseMetadata,
-  candidate: NpmPackageReleaseMetadata,
-): void {
-  if (
-    candidate.name !== trusted.name
-    || candidate.version !== trusted.version
-    || candidate.integrity !== trusted.integrity
-  ) {
-    throw new Error('国内 npm 镜像的包名、版本或 SHA-512 完整性元数据与 npm 官方源不一致')
-  }
-}
-
 export interface SystemServiceOptions {
   managerDataDirectory?: string
   /** 首页扫描结果落在哪；缺省不落盘（测试与旧行为）。 */
   systemSnapshotCacheFile?: string
   /** 外部客户端检测结果落在哪；缺省不落盘（测试与旧行为）。见 external-client-snapshot-cache.ts。 */
   externalClientSnapshotCacheFile?: string
+  /**
+   * config:get 读下的工具配置在几毫秒内接着用（config-read-cache.ts，0.2.24 深查 R3）。缺省 = 0，每次现读
+   * （测试与旧行为）：测试常在同一毫秒里原地改写同样长的文件，靠文件身份和修改时间分不出来。
+   */
+  configReadCacheMs?: number
   /** 记进落盘的旧结果；别的版本写的也认，但不带推荐版本这类判断（见 system-snapshot-cache.ts）。 */
   appVersion?: string
   /** Native profile roots and policy reads are isolated in tests. */
@@ -1136,6 +1139,7 @@ export function createSystemService(
     followManagedKeysNow,
     cancelPendingExternalRouteRecheck,
     topUpClaudeDesktopModels,
+    seedClaudeDesktopWorkspace,
   } = createExternalClientRouteService(context, {
     fetchAvailableModels,
   })
@@ -1459,6 +1463,7 @@ export function createSystemService(
     launchExternalClient,
     switchExternalClientSource,
     topUpClaudeDesktopModels,
+    seedClaudeDesktopWorkspace,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
     enqueueCodexRemoteLaunch: (launch) => installationQueue.enqueue(codexRemoteLaunchQueueKey, launch),

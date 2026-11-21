@@ -847,7 +847,7 @@ describe('windows elevation capability', () => {
     const cancelled = windowsElevationCancelledMessage('Node.js', 'administrator')
     expect(cancelled).toContain('已取消管理员授权')
     expect(cancelled).toContain('重新点击安装')
-    expect(cancelled).not.toContain('不在管理员组')
+    expect(cancelled).not.toContain('本身没有管理员权限')
 
     const blocked = windowsElevationCancelledMessage('Node.js', 'standard')
     expect(blocked).toContain('已取消管理员授权')
@@ -857,7 +857,25 @@ describe('windows elevation capability', () => {
 
   it('keeps the old advice when the probe could not answer', () => {
     expect(windowsElevationDeniedMessage('Codex 桌面端')).toContain('点击「是」')
-    expect(windowsElevationDeniedMessage('Codex 桌面端', 'standard')).toContain('管理员账号的密码')
+    expect(windowsElevationDeniedMessage('Codex 桌面端', 'standard')).not.toContain('点击「是」')
+  })
+
+  // Both elevated installers refuse a token from another account (exit 2225), so a
+  // standard user who types an administrator's password still gets nothing. The advice
+  // used to say exactly that, which sent people in a circle.
+  it('sends a standard account to an administrator account instead of the password prompt', () => {
+    expect(windowsStandardAccountAdvice()).toBe('这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。公司或学校的电脑请找管理电脑的人帮忙。')
+    expect(windowsStandardAccountAdvice({ kind: 'account', product: 'Codex 桌面端' })).toBe(
+      '这个 Windows 账号本身没有管理员权限，在这里装不了 Codex 桌面端。要用的话，换一个有管理员权限的账号登录这台电脑，在那个账号里装和用。公司或学校的电脑请找管理电脑的人帮忙。',
+    )
+    for (const advice of [windowsStandardAccountAdvice(), windowsStandardAccountAdvice({ kind: 'account', product: 'Claude Desktop' })]) {
+      expect(advice).not.toContain('密码')
+      expect(advice).not.toContain('管理员组')
+    }
+    // 桌面端只注册给装它的那个账号，不能说装一次大家都能用。
+    expect(windowsStandardAccountAdvice({ kind: 'account', product: 'Claude Desktop' })).not.toContain('每个账号都能用')
+    expect(windowsElevationDeniedMessage('Claude Desktop ', 'standard', { kind: 'account', product: 'Claude Desktop' }))
+      .toBe('未获得管理员权限，Claude Desktop 安装已停止。这个 Windows 账号本身没有管理员权限，在这里装不了 Claude Desktop。要用的话，换一个有管理员权限的账号登录这台电脑，在那个账号里装和用。公司或学校的电脑请找管理电脑的人帮忙。')
   })
 
   it('never proposes running this app elevated as the fix', () => {

@@ -298,6 +298,50 @@ describe('realm account service', () => {
     expect(f.service.client.getSessionState().authenticated).toBe(false)
     expect(await f.vault.active()).toBeNull()
   })
+  // 0.2.25 总单第 72 项（11-18 复核 D25）：收尾等了 27 秒，登录 5 秒回话。
+  function withSlowLogin(f: ReturnType<typeof fixture>, answered: Promise<void>, overrides: Partial<RealmAccountServiceOptions>) {
+    return createRealmAccountService({ ...f.options, ...overrides, createClient: (siteId, callback) => {
+      const result = f.options.createClient(siteId, callback)
+      const original = vi.mocked(result.client.login).getMockImplementation()!
+      vi.mocked(result.client.login).mockImplementation(async (input) => { await answered; return original(input) })
+      return result
+    } })
+  }
+  it('gives the login request a budget of its own after a slow quiesce', async () => {
+    vi.useFakeTimers()
+    try {
+      const drained = deferred<void>()
+      const answered = deferred<void>()
+      const f = fixture()
+      const service = withSlowLogin(f, answered.promise, { quiesce: () => drained.promise, prepareTimeoutMs: 30000 })
+      const outcome = service.login(login).then((result) => result, (error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(27000)
+      drained.resolve()
+      await vi.advanceTimersByTimeAsync(5000)
+      answered.resolve()
+      expect(await outcome).toMatchObject({ siteId: 'solov', account: { userId: 7 } })
+      expect(service.client.getSessionState().account?.userId).toBe(7)
+      expect((await f.vault.active())?.userId).toBe('7')
+    } finally { vi.useRealTimers() }
+  })
+  it('still times out a login request that outlives its own budget and keeps nothing it answers late', async () => {
+    vi.useFakeTimers()
+    try {
+      const answered = deferred<void>()
+      const f = fixture()
+      const service = withSlowLogin(f, answered.promise, { prepareTimeoutMs: 30000 })
+      const outcome = service.login(login).then((result) => result, (error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(await outcome).toMatchObject({ code: 'TIMEOUT' })
+      const candidate = f.clients[f.clients.length - 1]
+      expect(candidate.client.logout).toHaveBeenCalledOnce()
+      answered.resolve()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(service.client.getSessionState().authenticated).toBe(false)
+      expect(await f.vault.active()).toBeNull()
+      expect(() => service.assertReady()).not.toThrow()
+    } finally { vi.useRealTimers() }
+  })
   for (const reject of [false, true]) it(`rejects stale ${reject ? 'errors' : 'values'} after a backend switch`, async () => {
     const f = fixture()
     await f.service.login(login)

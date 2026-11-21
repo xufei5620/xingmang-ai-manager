@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { before, after, test } from 'node:test'
+import { expect } from '@playwright/test'
 import { openFixturePage } from './fixture-readiness.mjs'
 import { actionTimeoutMs, createBrowserFixture, navigationTimeoutMs } from './harness.mjs'
 import { assertNoToast, recordToasts, waitForToast } from './toast-recording.mjs'
@@ -1745,49 +1746,93 @@ test('session detail exposes a retry action after a temporary read failure', asy
   }
 })
 
-test('extension toggle preserves original state and reports mutation failure', async () => {
-  const page = await fixture('page=mcp')
+const callsNamed = async (page, name) =>
+  (await calls(page)).filter((call) => call.name === name)
+
+// 0.2.25 精选、外接工具、技能、插件合成一页「插件」以后，原来四页上的这些用例搬到新页上测同一件事；
+// 新页自己的几条在文件后面（const hub 那一段）。只装 Claude Code 的那几条不读 Codex，免得一进页就替用户下载
+// GPT 官方插件目录、多出几次读列表，数调用数时对不上。
+const hubClaudeOnly = 'page=extensions&installedProviders=claude'
+const hubAllTools = 'page=extensions&installedProviders=claude,codex,grok'
+
+// 点左边「已安装」里的一条，打开它的详情。
+async function openInstalled(page, name) {
+  await page.getByTestId('hub-installed').getByRole('button', { name: new RegExp(name) }).click()
+  const detail = page.getByTestId('hub-detail')
+  await expect(detail.getByRole('heading', { level: 2 })).toHaveText(name)
+  return detail
+}
+
+// 装了 Codex 时「插件」页一进来就替用户下载 GPT 官方插件目录（夹具里一开始没下载），下载那一阵别的操作都不接；
+// 等目录里那条搜得出来、「添加」能点了再往下。
+async function hubCatalogReady(page) {
+  await page.getByTestId('hub-search').fill('Game Studio')
+  await page.getByTestId('hub-row-plugin-game-studio-openai-api-curated').waitFor()
+  await page.getByTestId('hub-search').fill('')
+  await expect(page.getByTestId('hub-add')).toBeEnabled()
+}
+
+// 右上角「添加」里的一项：mcp（自定义连接）、plugin（添加插件）、market（添加插件市场）、skill（从文件夹导入）。
+async function openHubAdd(page, item) {
+  await page.getByTestId('hub-add').click()
+  await page.getByTestId(`hub-add-${item}`).click()
+}
+
+test('a switch in the details keeps its state when the change fails and sends the listed scope back', async () => {
+  const page = await fixture(hubClaudeOnly)
   try {
+    const detail = await openInstalled(page, '测试连接')
     // 开关的名字说的是点下去会怎样（v4 批12）。
-    const control = page.getByRole('switch', { name: '停用 测试扩展', exact: true })
+    const control = detail.getByRole('switch', { name: '停用 测试连接', exact: true })
     await control.click()
-    await page.getByText('扩展操作失败，已有配置保留').waitFor()
+    await page.getByText('扩展操作失败，已有配置保留').first().waitFor()
     assert.equal(await control.getAttribute('aria-checked'), 'true')
-    assert.deepEqual(
-      (await calls(page)).find((call) => call.name === 'extension').args,
-      {
-        provider: 'claude',
-        kind: 'mcp',
-        action: 'disable',
-        id: 'test-extension',
-        // 列表给出的层要原样带回去，否则项目里的那份会被当成全局的去改（#488）。
-        scope: 'user',
-      },
-    )
+    // 列表给出的层要原样带回去，否则项目里的那份会被当成全局的去改（#488）。
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
+      provider: 'claude', kind: 'mcp', action: 'disable', id: 'test-extension', scope: 'user',
+    })
   } finally {
     await page.close()
   }
 })
 
-test('waiting for MCP browser authorization can be cancelled without a failure banner', async () => {
-  const page = await fixture('page=mcp&installedProviders=codex&mcpAuth')
+// Codex 没有插件启停命令：开关走它自己的接口改 config.toml，通用的扩展改动对 Codex 插件只认装和卸。
+test('a Codex plugin switch goes through the Codex plugin interface and names the plugin in the toast', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex&extensionOk')
   try {
-    const row = page.getByTestId('mcp-row-test-extension')
-    await row.getByTestId('mcp-auth-test-extension').click()
+    await hubCatalogReady(page)
+    const detail = await openInstalled(page, 'Sentry')
+    await detail.getByRole('switch', { name: '停用 Sentry', exact: true }).click()
+    await waitForToast(page, '已停用「Sentry」')
+    assert.deepEqual((await callsNamed(page, 'toggle-plugin')).map((call) => call.args), [['sentry@openai-api-curated', false]])
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('waiting for a connection to be authorized in the browser can be cancelled without a failure banner', async () => {
+  const page = await fixture('page=extensions&installedProviders=codex&mcpAuth')
+  try {
+    await hubCatalogReady(page)
+    const detail = await openInstalled(page, '测试连接')
+    const row = detail.getByTestId('hub-where-codex')
+    await expect(row).toContainText('需要登录授权')
+    await row.getByTestId('hub-auth-codex').click()
     await row.getByText('等你在浏览器里授权', { exact: true }).waitFor()
-    // 等授权时整页别的按钮都灰着；这颗「取消」是唯一能停下来的地方，读屏要说清停的是哪一行。
-    const cancel = row.getByRole('button', { name: '停止等待 测试扩展 授权', exact: true })
+    // 等授权时整页别的按钮都灰着；这颗「取消」是唯一能停下来的地方，读屏要说清停的是哪一条。
+    const cancel = row.getByRole('button', { name: '停止等待 测试连接 授权', exact: true })
     assert.equal(await cancel.textContent(), '取消')
     await cancel.click()
     await row.getByText('正在停止', { exact: true }).waitFor()
-    await waitForToast(page, '已取消，测试扩展 还没有授权')
+    await waitForToast(page, '已取消，测试连接 还没有授权')
     await row.getByText('登录授权', { exact: true }).waitFor()
-    assert.equal(await row.getByTestId('mcp-auth-cancel-test-extension').count(), 0)
-    assert.equal(await row.getByTestId('mcp-auth-test-extension').isEnabled(), true)
+    assert.equal(await cancel.count(), 0)
+    assert.equal(await row.getByTestId('hub-auth-codex').isEnabled(), true)
     // 取消是正常结束：不弹红条，也不说「已授权」。
     assert.equal(await page.getByText('未完成', { exact: false }).count(), 0)
     assert.equal(
-      await page.evaluate(() => window.__v2Toasts.entries.some((entry) => entry.text === '测试扩展 已授权')),
+      await page.evaluate(() => window.__v2Toasts.entries.some((entry) => entry.text === '测试连接 已授权')),
       false,
     )
     const recorded = await calls(page)
@@ -1798,33 +1843,35 @@ test('waiting for MCP browser authorization can be cancelled without a failure b
   }
 })
 
-test('each MCP connection carries its own checked answer and the reason behind it', async () => {
-  const page = await fixture('page=mcp')
+// 第五部分第 25、28 条：每条连接各说各的检测结果，工具给的原因一起上屏；没测成直说；不后台轮询，
+// 「重新加载」先重读列表再检测。
+test('a connection shows its own checked answer with the reason, and 重新加载 reads the list again before checking', async () => {
+  const page = await fixture(`${hubClaudeOnly}&mcpHealthFail`)
   try {
-    const pill = page.getByTestId('mcp-health-test-extension')
-    await pill.getByText('连不上', { exact: true }).waitFor()
+    let detail = await openInstalled(page, '测试连接')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('未检测')
+    await detail.getByText('连接检测没有跑完', { exact: true }).waitFor()
+    assert.equal((await callsNamed(page, 'mcp-health')).length, 1)
+    const reads = (await callsNamed(page, 'list-extensions')).length
+    await detail.getByTestId('hub-back').click()
+    await page.getByTestId('hub-reload').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'mcp-health').length === 2)
+    detail = await openInstalled(page, '测试连接')
     // 「连不上」本身不够用，工具给出的那句原因必须一起上屏。
-    await page.getByText('启动失败：找不到 uvx', { exact: true }).waitFor()
-    assert.equal(
-      (await calls(page)).filter((call) => call.name === 'mcp-health').length,
-      1,
-    )
-    // 不后台轮询：再有结果只能是用户自己点出来的。
-    await page.getByTestId('mcp-health-recheck').click()
-    await pill.getByText('连不上', { exact: true }).waitFor()
-    assert.equal(
-      (await calls(page)).filter((call) => call.name === 'mcp-health').length,
-      2,
-    )
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('连不上')
+    await detail.getByText('启动失败：找不到 uvx', { exact: true }).waitFor()
+    const names = (await calls(page)).map((call) => call.name)
+    assert.equal(names.filter((name) => name === 'list-extensions').length, reads + 1)
+    assert.ok(names.lastIndexOf('list-extensions') < names.lastIndexOf('mcp-health'), '先重读列表，再检测连接')
   } finally {
     await page.close()
   }
 })
 
 test('adding a uvx connection without Python says so first and still lets it through', async () => {
-  const page = await fixture('page=mcp')
+  const page = await fixture(hubClaudeOnly)
   try {
-    await page.getByTestId('mcp-add').click()
+    await openHubAdd(page, 'mcp')
     await page.getByRole('button', { name: '本地程序', exact: true }).click()
     await page.getByTestId('mcp-source').fill('uvx')
     const notice = page.getByTestId('mcp-runtime-notice')
@@ -1844,9 +1891,9 @@ test('adding a uvx connection without Python says so first and still lets it thr
 
 // D20：缺 uv 不再叫客户去命令行敲 pip，交给客服教，并给一颗「找客服」。
 test('a uvx connection missing uv points to customer support with a button instead of a pip command', async () => {
-  const page = await fixture('page=mcp&help')
+  const page = await fixture(`${hubClaudeOnly}&help`)
   try {
-    await page.getByTestId('mcp-add').click()
+    await openHubAdd(page, 'mcp')
     await page.getByRole('button', { name: '本地程序', exact: true }).click()
     await page.getByTestId('mcp-source').fill('uvx')
     const notice = page.getByTestId('mcp-runtime-notice')
@@ -1859,240 +1906,165 @@ test('a uvx connection missing uv points to customer support with a button inste
   }
 })
 
-test('curated MCP install confirms the exact command before writing any configuration', async () => {
-  const page = await fixture('page=mcp')
+test('installing a recommended connection shows the exact command and writes nothing before 安装', async () => {
+  const page = await fixture(hubClaudeOnly)
   try {
-    const shelf = page.getByTestId('curated-shelf')
-    await shelf.waitFor()
-    await shelf.getByTestId('curated-install-browser').click()
-    const confirm = page.getByTestId('curated-confirm')
-    await confirm.waitFor()
-    // 确认框必须原样给出将要执行的命令和那句免责说明，用户才知道自己在同意什么。
-    await confirm.getByText('npx -y @playwright/mcp@0.0.82', { exact: true }).waitFor()
-    await confirm.getByText(/第三方软件/).first().waitFor()
-    assert.equal(
-      (await calls(page)).some((call) => call.name === 'extension'),
-      false,
-    )
-    await confirm.getByTestId('curated-confirm-submit').click()
-    await confirm.getByText('扩展操作失败，已有配置保留').waitFor()
-    assert.deepEqual(
-      (await calls(page)).find((call) => call.name === 'extension').args,
-      {
-        provider: 'claude',
-        kind: 'mcp',
-        action: 'install',
-        id: 'browser',
-        scope: 'user',
-        mcp: {
-          type: 'stdio',
-          command: 'npx',
-          args: ['-y', '@playwright/mcp@0.0.82'],
-          env: {},
-        },
-      },
-    )
+    await page.getByTestId('hub-add-mcp-sequential-thinking').click()
+    const dialog = page.getByRole('dialog', { name: '安装「逐步思考」', exact: true })
+    // 安装框必须原样给出将要执行的命令和那句免责说明，用户才知道自己在同意什么。
+    await dialog.getByText('npx -y @modelcontextprotocol/server-sequential-thinking@2026.8.31', { exact: true }).waitFor()
+    await dialog.getByText(/第三方软件/).first().waitFor()
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+    await dialog.getByTestId('hub-install-submit').click()
+    await dialog.getByText('扩展操作失败，已有配置保留').first().waitFor()
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
+      provider: 'claude',
+      kind: 'mcp',
+      action: 'install',
+      id: 'sequential-thinking',
+      scope: 'user',
+      mcp: { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking@2026.8.31'], env: {} },
+    })
   } finally {
     await page.close()
   }
 })
 
-test('the curated plugin shelf shows both commands and installs through the existing plugin path', async () => {
-  const page = await fixture('page=plugins')
+test('a recommended Claude plugin lists both commands, says which version lands and installs only into Claude', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex')
   try {
-    const shelf = page.getByTestId('curated-shelf')
-    await shelf.waitFor()
-    await shelf.getByTestId('curated-install-code-review').click()
-    const confirm = page.getByTestId('curated-confirm')
-    await confirm.waitFor()
-    // 装插件要先保证官方市场在册，所以确认框里必须是两条命令，少列一条就是没说全。
-    await confirm
-      .getByText('claude plugin marketplace add anthropics/claude-plugins-official', { exact: true })
-      .waitFor()
-    await confirm
-      .getByText('claude plugin install code-review@claude-plugins-official', { exact: true })
-      .waitFor()
-    // 官方市场装到的是它当下那一份，钉不住版本这件事要在点确认之前说出来。
-    await confirm.getByText(/安装的是官方市场当前的版本/).waitFor()
-    await confirm.getByText(/第三方软件/).first().waitFor()
-    assert.equal(
-      (await calls(page)).some((call) => call.name === 'extension'),
-      false,
-    )
-    await confirm.getByTestId('curated-confirm-submit').click()
-    await confirm.getByText('扩展操作失败，已有配置保留').waitFor()
-    // 精选不另开通道：走的还是页面上「添加插件」那一条出口。
-    assert.deepEqual(
-      (await calls(page)).find((call) => call.name === 'extension').args,
-      {
-        provider: 'claude',
-        kind: 'plugin',
-        action: 'install',
-        source: 'code-review@claude-plugins-official',
-      },
-    )
+    await hubCatalogReady(page)
+    await page.getByTestId('hub-add-plugin-feature-dev-claude-plugins-official').click()
+    const dialog = page.getByRole('dialog', { name: '安装「功能开发流程」', exact: true })
+    // 装插件要先保证官方市场在册，所以安装框里是两条命令，少列一条就是没说全。
+    await dialog.getByText('claude plugin marketplace add anthropics/claude-plugins-official', { exact: true }).waitFor()
+    await dialog.getByText('claude plugin install feature-dev@claude-plugins-official', { exact: true }).waitFor()
+    // 官方市场装到的是它当下那一份，钉不住版本这件事要在点「安装」之前说出来。
+    await dialog.getByText(/安装的是官方市场当前的版本/).waitFor()
+    await dialog.getByText(/第三方软件/).first().waitFor()
+    // 插件各家格式不通用：另两家灰着说为什么。
+    await expect(dialog.getByTestId('hub-install-tools-codex')).toBeDisabled()
+    await expect(dialog.getByTestId('hub-install-tools-codex')).toContainText('插件各家格式不通用，这一条只有 Claude 版')
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+    await dialog.getByTestId('hub-install-submit').click()
+    await dialog.getByText('扩展操作失败，已有配置保留').first().waitFor()
+    // 精选不另开通道：走的还是「添加插件」那一条出口。
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
+      provider: 'claude', kind: 'plugin', action: 'install', source: 'feature-dev@claude-plugins-official',
+    })
   } finally {
     await page.close()
   }
 })
 
-test('the Codex plugin market downloads the official catalog by itself and lists what can be installed', async () => {
-  const page = await fixture('page=plugins&codexCatalogOffline')
+test('a recommended entry that needs a folder asks for it in the same dialog before adding', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex')
   try {
-    // 插件页合成一页：选到 Codex CLI，官方目录就在已装列表下面。
-    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
-    // 第一次按国内常见的样子失败：说清楚原因，留一颗按钮让用户开加速后自己再点。
-    await page.getByText(/插件目录没有下载下来/).first().waitFor()
-    const notice = page.getByTestId('plugins-official-marketplace')
-    await notice.getByText('官方插件目录还没下载').waitFor()
-    assert.equal(
-      (await calls(page)).filter((call) => call.name === 'ensure-marketplace').length,
-      1,
-    )
-    await notice.getByTestId('plugins-official-marketplace-add').click()
-    await notice.getByText('官方插件目录已就绪').waitFor()
-    const row = page.getByTestId('plugins-row-game-studio@openai-api-curated')
-    await row.getByText('Design and prototype browser games').waitFor()
-    await row.getByTestId('plugins-install-game-studio@openai-api-curated').waitFor()
-    assert.deepEqual(
-      (await calls(page)).filter((call) => call.name === 'ensure-marketplace').map((call) => call.args),
-      ['codex', 'codex'],
-    )
-  } finally {
-    await page.close()
-  }
-})
-
-test('a curated entry that needs a folder prefills the form instead of installing a broken connection', async () => {
-  const page = await fixture('page=mcp')
-  try {
-    await page.getByTestId('curated-install-files').click()
-    await page.getByTestId('curated-confirm-submit').click()
-    const notice = page.getByTestId('curated-input-directory')
-    await notice.waitFor()
-    await notice.getByText(/点「选择文件夹」挑一个/).waitFor()
+    await hubCatalogReady(page)
+    // 本地文件已经装在 Claude 里，「+」装的是 GPT 那一份。
+    await page.getByTestId('hub-add-mcp-files').click()
+    const dialog = page.getByTestId('hub-install-dialog')
+    const submit = dialog.getByTestId('hub-install-submit')
+    assert.equal(await submit.innerText(), '继续填写')
+    await submit.click()
+    const notice = dialog.getByTestId('curated-input-directory')
+    await notice.getByText(/点「选择文件夹」挑一个，软件会替你填好，不用手改。/).waitFor()
     await notice.getByTestId('curated-choose-directory').waitFor()
-    assert.equal(
-      (await calls(page)).some((call) => call.name === 'extension'),
-      false,
-    )
     // 占位符没换就提交要当场拦住，而不是写进一条起不来的连接。
-    await page.getByTestId('mcp-form-submit').click()
-    await page
-      .getByText('{{directory}} 还没换成真实内容，请先填好再添加。')
-      .first()
-      .waitFor()
-    assert.equal(
-      (await calls(page)).some((call) => call.name === 'extension'),
-      false,
-    )
+    await submit.click()
+    await dialog.getByText('{{directory}} 还没换成真实内容，请先填好再添加。', { exact: true }).waitFor()
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+    assert.equal((await callsNamed(page, 'add-mcp')).length, 0)
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByTestId('featured-recommend').click()
+    // 「反馈与客服」分两个页签（v4 第 10 批）：想要新的连接落在「留言反馈」。
+    assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['feedback', 'form'])
   } finally {
     await page.close()
   }
 })
 
-const callsNamed = async (page, name) =>
-  (await calls(page)).filter((call) => call.name === name)
-
-// 第五部分第 23、24 条：自己加的连接在上，「星芒精选」在下；一个词同时筛两边。
-test('the MCP page lists its own connections above the curated shelf and one search narrows both', async () => {
-  const page = await fixture('page=mcp')
+test('the GPT official catalog downloads by itself on the first visit without an extra success note', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex')
   try {
-    const list = page.getByTestId('mcp-list')
-    await page.getByRole('heading', { name: '已装到 Claude Code', exact: true }).waitFor()
-    await list.getByTestId('mcp-row-test-extension').waitFor()
-    const shelf = page.getByTestId('curated-shelf')
-    await shelf.getByText('我们挑过的，装之前会先给你看它要什么权限', { exact: true }).waitFor()
-    const listBox = await list.boundingBox()
-    const shelfBox = await shelf.boundingBox()
-    assert.ok(listBox.y + listBox.height <= shelfBox.y, '自己的列表排在「星芒精选」上面')
-    // 精选每张卡只留「添加」：要不要联网放在点「添加」后的确认框里说。
-    assert.equal(await shelf.getByText(/联网/).count(), 0)
-    const search = page.getByTestId('mcp-search')
-    await search.fill('GitHub')
-    await shelf.getByTestId('curated-install-github').waitFor()
-    await shelf.getByTestId('curated-install-browser').waitFor({ state: 'detached' })
-    // 精选一条都不匹配就整块收起；搜不到的那句在已装列表那张卡里。
-    await search.fill('no-such-connection-8472')
-    await shelf.waitFor({ state: 'detached' })
-    await list.getByTestId('mcp-filter-empty').getByText('没有找到「no-such-connection-8472」', { exact: true }).waitFor()
+    await page.getByTestId('hub-search').fill('Game Studio')
+    await page.getByTestId('hub-row-plugin-game-studio-openai-api-curated').waitFor()
+    await page.waitForTimeout(300)
+    assert.equal(await page.getByText('插件目录已下载，下面就是可以安装的插件。').count(), 0)
+    assert.equal((await callsNamed(page, 'ensure-marketplace')).length, 1)
   } finally {
     await page.close()
   }
 })
 
-test('an empty MCP list says how to add one and 看看精选 lands on the first install', async () => {
-  const page = await fixture('page=mcp&empty')
+test('when the GPT official catalog fails to download the group says why and offers to try again', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex&codexCatalogOffline')
   try {
-    const empty = page.getByTestId('mcp-empty')
-    await empty.getByText('还没有给 Claude Code 装外接工具', { exact: true }).waitFor()
-    await empty.getByText('装下面「星芒精选」里的，或点右上角「自定义连接」接你自己的。', { exact: true }).waitFor()
-    await empty.getByRole('button', { name: '自定义连接', exact: true }).waitFor()
-    await empty.getByTestId('mcp-see-curated').click()
-    await page.waitForFunction(() => document.activeElement?.dataset.testid?.startsWith('curated-install-'))
+    // 第一次按国内常见的样子失败：说清楚原因，留一颗按钮让用户自己再点。
+    await page.getByText(/插件目录没有下载下来/).first().waitFor()
+    const notice = page.getByTestId('hub-section-codex').getByTestId('hub-codex-marketplace')
+    await notice.getByText('官方插件目录还没下载').waitFor()
+    assert.equal((await callsNamed(page, 'ensure-marketplace')).length, 1)
+    await notice.getByTestId('hub-codex-marketplace-add').click()
+    await notice.waitFor({ state: 'detached' })
+    await page.getByTestId('hub-search').fill('Game Studio')
+    await page.getByTestId('hub-row-plugin-game-studio-openai-api-curated').getByText('Design and prototype browser games').waitFor()
+    await page.getByTestId('hub-add-plugin-game-studio-openai-api-curated').waitFor()
+    assert.deepEqual((await callsNamed(page, 'ensure-marketplace')).map((call) => call.args), ['codex', 'codex'])
   } finally {
     await page.close()
   }
 })
 
-// 第五部分第 25、28 条：没检测成就别写「上次检测」；「重新检测」先重读列表再检测。
-test('an MCP check that did not finish says so, and 重新检测 reads the list again before checking', async () => {
-  const page = await fixture('page=mcp&mcpHealthFail')
+test('with nothing installed the plugins page says how to add one', async () => {
+  const page = await fixture(`${hubClaudeOnly}&empty`)
   try {
-    await page.getByTestId('mcp-health-failed').getByText('这次没检测成', { exact: true }).waitFor()
-    assert.equal(await page.getByText(/上次检测/).count(), 0)
-    const reads = (await callsNamed(page, 'list-extensions')).length
-    await page.getByTestId('mcp-health-recheck').click()
-    await page.getByText(/^上次检测 /).waitFor()
-    assert.equal(await page.getByTestId('mcp-health-failed').count(), 0)
-    const names = (await calls(page)).map((call) => call.name)
-    assert.equal(names.filter((name) => name === 'list-extensions').length, reads + 1)
-    assert.ok(names.lastIndexOf('list-extensions') < names.lastIndexOf('mcp-health'), '先重读列表，再检测连接')
+    await expect(page.locator('.v2-hub-side-empty')).toHaveText('还没装插件')
+    // 推荐照样摆着，能直接点「+」装。
+    await page.getByTestId('hub-add-mcp-browser').waitFor()
+    await page.getByTestId('hub-tab-custom').click()
+    await page.getByTestId('hub-custom-empty').getByText('还没自己加过。服务方给了连接配置时，点右上角「添加」。', { exact: true }).waitFor()
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-skills-empty').getByText('还没装技能。拿到别人给的技能文件夹时，点右上角「添加」导入。', { exact: true }).waitFor()
+    await expect(page.locator('.v2-hub-side-empty')).toHaveText('还没装技能')
   } finally {
     await page.close()
   }
 })
 
-// 第五部分第 26 条：弹框标题带上工具名，选项上面有小标题。v4 批12：外接工具的弹框叫「自定义连接」，
-// 下面选给哪几个工具用，所以标题不再带某一个工具的名字。
-test('the add dialogs name the tool they add to and label their choices', async () => {
-  const mcp = await fixture('page=mcp')
+// 第五部分第 26 条：弹框标题带上它要做的事，选项上面有小标题。「装到：全部」时添加插件先问装进哪一家。
+test('the add menu names what each dialog adds and asks which tool a plugin goes into', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex')
   try {
-    await mcp.getByTestId('mcp-add').first().click()
-    const dialog = mcp.getByRole('dialog', { name: '自定义连接', exact: true })
-    await dialog.waitFor()
+    await hubCatalogReady(page)
+    await openHubAdd(page, 'mcp')
+    const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     await dialog.getByText('类型', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '网络服务', exact: true }).waitFor()
     await dialog.getByRole('combobox', { name: '装到哪里', exact: true }).waitFor()
     const tools = dialog.getByRole('group', { name: '给这些工具用', exact: true })
     assert.equal(await tools.getByRole('button', { name: 'Claude Code', exact: true }).getAttribute('aria-pressed'), 'true')
     assert.equal(await tools.getByRole('button', { name: 'Codex CLI', exact: true }).getAttribute('aria-pressed'), 'false')
+    await page.keyboard.press('Escape')
+    await dialog.waitFor({ state: 'detached' })
+    await openHubAdd(page, 'plugin')
+    const chooser = page.getByRole('dialog', { name: '装到哪里', exact: true })
+    await expect(chooser.getByTestId('hub-tool-chooser-grok')).toBeDisabled()
+    await expect(chooser.getByTestId('hub-tool-chooser-grok')).toContainText('这台电脑还没装 Grok CLI')
+    await chooser.getByTestId('hub-tool-chooser-codex').click()
+    await page.getByRole('dialog', { name: '给 Codex CLI 添加插件', exact: true }).waitFor()
   } finally {
-    await mcp.close()
-  }
-  const plugins = await fixture('page=plugins')
-  try {
-    await plugins.getByTestId('plugins-add').first().click()
-    await plugins.getByRole('dialog', { name: '给 Claude Code 添加插件', exact: true }).waitFor()
-  } finally {
-    await plugins.close()
-  }
-  const skills = await fixture('page=skills')
-  try {
-    await skills.getByRole('tab', { name: /^Codex CLI/ }).click()
-    await skills.getByTestId('skills-add').first().click()
-    await skills.getByRole('dialog', { name: '给 Codex CLI 导入技能', exact: true }).waitFor()
-  } finally {
-    await skills.close()
+    await page.close()
   }
 })
 
 // Grok 装插件不带 --trust 一律被拒；带上以后插件里的命令每次打开 Grok 都会跑，所以先弹框问（yoyo 10-17 定）。
 test('a Grok plugin installs with --trust only after the user confirms, and other tools never ask', async () => {
-  const page = await fixture('page=plugins&extensionOk')
+  const page = await fixture(`${hubAllTools}&extensionOk`)
   try {
-    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
-    await page.getByTestId('plugins-add').first().click()
+    await hubCatalogReady(page)
+    await openHubAdd(page, 'plugin')
+    await page.getByTestId('hub-tool-chooser-grok').click()
     const form = page.getByRole('dialog', { name: '给 Grok CLI 添加插件', exact: true })
     await form.waitFor()
     // Grok 的插件命令没有范围参数，选「当前项目」也装进全局（#1092），所以只给「我的（全局）」。
@@ -2101,7 +2073,7 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
     await form.getByTestId('plugins-form-submit').click()
     const confirm = page.getByRole('dialog', { name: '给 Grok CLI 装这个插件？', exact: true })
     await confirm.waitFor()
-    await confirm.getByText('插件里带的技能、命令和外接工具，装好后每次打开 Grok CLI 都会自动运行，能像你本人一样读写这台电脑上的文件。', { exact: true }).waitFor()
+    await confirm.getByText('插件里带的技能、命令和连接，装好后每次打开 Grok CLI 都会自动运行，能像你本人一样读写这台电脑上的文件。', { exact: true }).waitFor()
     await confirm.getByText('owner/repo', { exact: true }).waitFor()
     await confirm.getByText('只装你认识、信得过的来源；拿不准就先别装。', { exact: true }).waitFor()
     assert.equal((await callsNamed(page, 'extension')).length, 0, '点「添加」只弹框，不装')
@@ -2118,8 +2090,8 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
       { provider: 'grok', kind: 'plugin', action: 'install', source: 'owner/repo', scope: 'user', trust: true },
     ])
     // Claude Code 没有这一问，也不带 trust。
-    await page.getByRole('tab', { name: /^Claude Code/ }).click()
-    await page.getByTestId('plugins-add').first().click()
+    await openHubAdd(page, 'plugin')
+    await page.getByTestId('hub-tool-chooser-claude').click()
     const claudeForm = page.getByRole('dialog', { name: '给 Claude Code 添加插件', exact: true })
     assert.deepEqual(await claudeForm.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）', '当前项目'])
     await claudeForm.getByTestId('plugins-source').fill('owner/repo')
@@ -2134,178 +2106,108 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
   }
 })
 
-// 第五部分第 28 条；10-24 起 Claude Code、Grok CLI 的技能也在这里从文件夹导入（「扩展改」第 2 条），
-// 主进程照 Codex 那套复制进它们自己的技能文件夹，界面走通用的 mutate。
-test('Claude Code and Grok CLI import skills from a folder like Codex CLI', async () => {
-  const page = await fixture('page=skills&empty&extensionOk')
+// 第五部分第 28 条；10-24 起 Claude Code、Grok CLI 的技能也能从文件夹导入（「扩展改」第 2 条），主进程照 Codex 那套
+// 复制进它们自己的技能文件夹，界面走通用的 mutate；Codex 走它自己的导入。合页以后一次导进勾上的几家。
+test('a skill folder is imported into every family picked, and 重新加载 reads the lists again', async () => {
+  const page = await fixture(`${hubAllTools}&extensionOk`)
   try {
-    const empty = page.getByTestId('skills-empty')
-    await empty.getByText('点「从文件夹导入」，选一个技能文件夹。', { exact: true }).waitFor()
-    assert.equal(await page.getByTestId('skills-import-unsupported').count(), 0, '不再放「不能在这里导入」那一行')
-    const add = empty.getByTestId('skills-add')
-    assert.equal(await add.isDisabled(), false)
-    assert.equal(await add.getAttribute('title'), null)
-    await add.click()
-    const form = page.getByRole('dialog', { name: '给 Claude Code 导入技能', exact: true })
-    assert.deepEqual(await form.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）', '当前项目'])
-    await form.getByLabel('技能文件夹路径', { exact: true }).fill('/Users/demo/skills/reviewer')
-    await form.getByTestId('skills-form-submit').click()
-    await form.waitFor({ state: 'detached' })
-    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
-      provider: 'claude', kind: 'skill', action: 'install', source: '/Users/demo/skills/reviewer', scope: 'user',
-    })
-    // Grok CLI 同样能导入；工具条上的「重新加载」照样重读。
-    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
-    await empty.getByText('点「从文件夹导入」，选一个技能文件夹。', { exact: true }).waitFor()
-    await empty.getByTestId('skills-add').click()
-    await page.getByRole('dialog', { name: '给 Grok CLI 导入技能', exact: true }).waitFor()
-    await page.getByRole('button', { name: '取消', exact: true }).click()
+    await hubCatalogReady(page)
+    await page.getByTestId('hub-nav-skills').click()
+    await openHubAdd(page, 'skill')
+    const dialog = page.getByRole('dialog', { name: '从文件夹导入', exact: true })
+    assert.deepEqual(await dialog.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）', '当前项目'])
+    for (const id of ['claude', 'codex', 'grok'])
+      assert.equal(await dialog.getByTestId(`hub-skill-import-tools-${id}`).getAttribute('aria-pressed'), 'true')
+    await dialog.getByTestId('hub-skill-import-tools-codex').click()
+    await dialog.getByLabel('技能文件夹路径', { exact: true }).fill('/Users/demo/skills/reviewer')
+    await dialog.getByTestId('hub-skill-import-submit').click()
+    await waitForToast(page, '已添加「reviewer」，给 Claude Code、Grok CLI 使用，下次打开工具时生效')
+    await dialog.waitFor({ state: 'detached' })
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args), [
+      { provider: 'claude', kind: 'skill', action: 'install', source: '/Users/demo/skills/reviewer', scope: 'user' },
+      { provider: 'grok', kind: 'skill', action: 'install', source: '/Users/demo/skills/reviewer', scope: 'user' },
+    ])
+    assert.equal((await callsNamed(page, 'importSkill')).length, 0)
     const reads = (await callsNamed(page, 'list-extensions')).length
-    await page.getByTestId('skills-reload').click()
+    await page.getByTestId('hub-reload').click()
     await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls).filter((call) => call.name === 'list-extensions').length > count, reads)
   } finally {
     await page.close()
   }
 })
 
-// 第五部分第 29、31 条：「已安装」先放装了的，再放精选；有新版本的行上直接给「更新」。
-test('installed plugins come before the curated shelf and an update sits on the row', async () => {
-  const page = await fixture('page=plugins')
+// 第五部分第 31 条：有新版本的，行上「…」里和详情那一家那一行上都给「更新」。
+test('an entry with a newer version offers 更新 in its menu and on the tool it is installed in', async () => {
+  const page = await fixture(`${hubClaudeOnly}&pluginUpdate`)
   try {
-    const list = page.getByTestId('plugins-list')
-    const row = list.getByTestId('plugins-row-test-extension')
-    await row.waitFor()
-    assert.equal(await list.locator('.xm-card-head').count(), 0, '列表卡不加标题')
-    const shelf = page.getByTestId('curated-shelf')
-    await shelf.waitFor()
-    const listBox = await list.boundingBox()
-    const shelfBox = await shelf.boundingBox()
-    assert.ok(listBox.y + listBox.height <= shelfBox.y, '装了的排在「星芒精选」上面')
-    const update = row.getByTestId('plugins-update-test-extension')
-    await update.waitFor()
-    const updateBox = await update.boundingBox()
-    const switchBox = await row.getByRole('switch').boundingBox()
-    assert.ok(updateBox.x + updateBox.width <= switchBox.x, '「更新」在开关左边')
-    await update.click()
+    await page.getByRole('button', { name: '代码审查 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '更新', exact: true }).click()
     await page.getByText('扩展操作失败，已有配置保留').first().waitFor()
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
+      provider: 'claude', kind: 'plugin', action: 'update', id: 'code-review@claude-plugins-official', scope: 'user',
+    })
+    const detail = await openInstalled(page, '代码审查')
+    await detail.getByTestId('hub-where-claude').getByRole('button', { name: '更新', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'extension').length === 2)
     assert.equal((await callsNamed(page, 'extension')).at(-1).args.action, 'update')
-    // 「…」菜单里那一项照留。
-    await row.getByRole('button', { name: /更多操作/ }).click()
-    await page.getByRole('menuitem', { name: '更新', exact: true }).waitFor()
   } finally {
     await page.close()
   }
 })
 
-// 已知2 跟进：详情里 local 写「当前项目」。v4 批12：「范围」筛选换成按范围分组，local 归「本地」那一组；
-// 详情从抽屉换成弹窗，testId 沿用。
-test('installed plugins are grouped by the layer they live in and details open in a dialog', async () => {
-  const plugins = await fixture('page=plugins&scopedExtensions')
+// 已知2 跟进：只在这个项目里用的（local）那一份，详情里写清楚只在当前项目。
+test('an entry installed only in this project says so in its details', async () => {
+  const page = await fixture(`${hubClaudeOnly}&scopedExtensions`)
   try {
-    const user = plugins.getByTestId('plugins-group-user')
-    const local = plugins.getByTestId('plugins-group-local')
-    await user.getByTestId('plugins-row-test-extension').waitFor()
-    await user.getByText('你的所有项目都能用', { exact: true }).waitFor()
-    await local.getByText('只在当前项目、只给你自己', { exact: true }).waitFor()
-    const row = local.getByTestId('plugins-row-local-plugin')
-    assert.equal(await local.getByTestId('plugins-row-test-extension').count(), 0)
-    assert.equal(await plugins.getByTestId('plugins-scope').count(), 0, '不再有「范围」筛选')
-    await row.getByRole('button', { name: /更多操作/ }).click()
-    await plugins.getByRole('menuitem', { name: '查看详情', exact: true }).click()
-    const details = plugins.getByTestId('resource-detail-drawer')
-    assert.equal(await details.evaluate((element) => element.tagName), 'DIALOG')
-    assert.equal(await details.locator('dt', { hasText: /^范围$/ }).locator('xpath=following-sibling::dd[1]').innerText(), '当前项目')
-    await details.locator('[data-modal-close]').click()
-    await details.waitFor({ state: 'detached' })
-  } finally {
-    await plugins.close()
-  }
-})
-
-test('an empty installed plugin list points at the catalog below and 看看精选 lands on the first install', async () => {
-  const page = await fixture('page=plugins&empty')
-  try {
-    const empty = page.getByTestId('plugins-empty')
-    await empty.getByText('还没有给 Claude Code 装插件', { exact: true }).waitFor()
-    await empty.getByText('从下面的官方目录里挑一个。', { exact: true }).waitFor()
-    // 「已安装」「市场」两个页签合成了一页。
-    assert.equal(await page.getByRole('tab', { name: '市场', exact: true }).count(), 0)
-    await empty.getByTestId('plugins-see-curated').click()
-    await page.waitForFunction(() => document.activeElement?.dataset.testid?.startsWith('curated-install-'))
+    const detail = await openInstalled(page, '本项目插件')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('只在当前项目、只给你自己')
   } finally {
     await page.close()
   }
 })
 
-// 第五部分第 30 条：没有插件市场的工具直说。合页以后它的已装列表就在上面，不用再「去已安装」。
-test('a tool without a plugin market says so under its installed list', async () => {
-  const page = await fixture('page=plugins')
+test('removing a connection from one tool says which tool it leaves and that the others keep theirs', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex&extensionOk')
   try {
-    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
-    const notice = page.getByTestId('plugins-market-unavailable')
-    await notice.getByText('Grok CLI 没有插件市场', { exact: true }).waitFor()
-    await notice.getByText('它的插件装好后在上面的列表里管理。', { exact: true }).waitFor()
-    assert.equal(await page.getByTestId('plugins-market-go-installed').count(), 0)
-    await page.getByTestId('plugins-search').waitFor()
-    await page.getByTestId('plugins-list').getByTestId('plugins-row-test-extension').waitFor()
-  } finally {
-    await page.close()
-  }
-})
-
-test('the Codex plugin catalog fetched on choosing Codex CLI brings no extra success note', async () => {
-  const page = await fixture('page=plugins')
-  try {
-    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
-    await page.getByTestId('plugins-row-game-studio@openai-api-curated').waitFor()
-    await page.waitForTimeout(300)
-    assert.equal(await page.getByText('插件目录已下载，下面就是可以安装的插件。').count(), 0)
-    assert.equal((await callsNamed(page, 'ensure-marketplace')).length, 1)
-  } finally {
-    await page.close()
-  }
-})
-
-// v4 批12：页签上带数量，开关、删除、自定义连接成功后都说清是哪一个、给了哪个工具。
-test('the tool tabs carry the count and a switched-off connection is named in the toast', async () => {
-  const page = await fixture('page=mcp&extensionOk')
-  try {
-    const claude = page.getByRole('tab', { name: /^Claude Code/ })
-    await claude.locator('.v2-ext-tab-count').getByText('1', { exact: true }).waitFor()
-    assert.equal(await page.getByRole('tab', { name: /^Codex CLI/ }).locator('.v2-ext-tab-count').count(), 0, '没去过的工具不数')
-    await page.getByText('Claude Code 官方叫「MCP 服务器」', { exact: true }).waitFor()
-    await page.getByRole('switch', { name: '停用 测试扩展', exact: true }).click()
-    await page.getByText('已停用「测试扩展」', { exact: true }).waitFor()
-  } finally {
-    await page.close()
-  }
-})
-
-// Codex 没有插件启停命令：开关走它自己的接口改 config.toml，通用的扩展改动对 Codex 插件只认装和卸。
-test('a Codex plugin switch goes through the Codex plugin interface and names the plugin in the toast', async () => {
-  const page = await fixture('page=plugins&extensionOk')
-  try {
-    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
-    await page.getByTestId('plugins-row-game-studio@openai-api-curated').waitFor()
-    await page.getByRole('switch', { name: '停用 测试扩展', exact: true }).click()
-    await page.getByText('已停用「测试扩展」', { exact: true }).waitFor()
-    assert.deepEqual((await callsNamed(page, 'toggle-plugin')).map((call) => call.args), [['test-extension', false]])
-    assert.equal((await callsNamed(page, 'extension')).length, 0)
-  } finally {
-    await page.close()
-  }
-})
-
-test('removing a connection says which tool it leaves and that the others keep theirs', async () => {
-  const page = await fixture('page=mcp&extensionOk')
-  try {
-    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
+    await hubCatalogReady(page)
+    const detail = await openInstalled(page, '浏览器')
+    await detail.getByTestId('hub-where-claude').getByRole('button', { name: 'browser 更多操作', exact: true }).click()
     await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「测试扩展」？', exact: true })
-    await dialog.getByText('其他工具里的不受影响。精选里的以后可以在精选里再加，自己加的要重新填一遍。', { exact: true }).waitFor()
+    const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「browser」？', exact: true })
+    await dialog.getByText('其他工具里的不受影响。以后想用再装回来就行。', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '移除', exact: true }).click()
-    await page.getByText('已从 Claude Code 移除「测试扩展」', { exact: true }).waitFor()
-    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'test-extension', scope: 'user' })
+    await waitForToast(page, '已从 Claude Code 移除「browser」')
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'browser', scope: 'user' })
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('还没装')
+    await expect(detail.getByTestId('hub-where-codex')).toContainText('已装好')
+    // 自己加的那条，提醒的是要重新填一遍。
+    await detail.getByTestId('hub-back').click()
+    const custom = await openInstalled(page, '测试连接')
+    await custom.getByTestId('hub-where-claude').getByRole('button', { name: '测试连接 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
+    await page.getByRole('dialog', { name: '从 Claude Code 移除「测试连接」？', exact: true })
+      .getByText('其他工具里的不受影响。自己加的要重新填一遍。', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('the remove confirmation waits for another extension change and says why instead of spinning', async () => {
+  const page = await fixture(`${hubClaudeOnly}&extensionOk&extensionHold`)
+  try {
+    const detail = await openInstalled(page, '测试连接')
+    await detail.getByRole('switch', { name: '停用 测试连接', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'extension'))
+    await detail.getByTestId('hub-where-claude').getByRole('button', { name: '测试连接 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「测试连接」？', exact: true })
+    const remove = dialog.getByRole('button', { name: '移除', exact: true })
+    assert.equal(await dialog.getByTestId('hub-delete-busy').innerText(), '上一个操作还没完成，完成后才能移除。')
+    assert.equal(await remove.isDisabled(), true)
+    assert.equal(await remove.getAttribute('aria-busy'), null)
+    await page.evaluate(() => window.releaseExtension())
+    await dialog.getByTestId('hub-delete-busy').waitFor({ state: 'detached' })
+    assert.equal(await remove.isDisabled(), false)
   } finally {
     await page.close()
   }
@@ -2313,9 +2215,10 @@ test('removing a connection says which tool it leaves and that the others keep t
 
 // D67：自己加的市场点「移除市场」先问一句，点「移除」才真的移除，点「取消」什么都不动。
 test('removing a custom plugin market asks first and only removes it after confirming', async () => {
-  const page = await fixture('page=plugins&customMarket')
+  const page = await fixture('page=extensions&installedProviders=claude,codex&customMarket')
   try {
-    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
+    await hubCatalogReady(page)
+    await page.getByTestId('hub-tab-custom').click()
     const markets = page.getByTestId('plugins-custom-markets')
     const openRemoval = async () => {
       await markets.getByRole('button', { name: '市场 my-market 的更多操作', exact: true }).click()
@@ -2338,30 +2241,11 @@ test('removing a custom plugin market asks first and only removes it after confi
   }
 })
 
-test('the remove confirmation waits for another extension change and says why instead of spinning', async () => {
-  const page = await fixture('page=mcp&extensionOk&extensionHold')
-  try {
-    await page.getByRole('switch', { name: '停用 测试扩展', exact: true }).click()
-    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'extension'))
-    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「测试扩展」？', exact: true })
-    const remove = dialog.getByRole('button', { name: '移除', exact: true })
-    assert.equal(await dialog.getByTestId('mcp-delete-busy').innerText(), '上一个操作还没完成，完成后才能移除。')
-    assert.equal(await remove.isDisabled(), true)
-    assert.equal(await remove.getAttribute('aria-busy'), null)
-    await page.evaluate(() => window.releaseExtension())
-    await dialog.getByTestId('mcp-delete-busy').waitFor({ state: 'detached' })
-    assert.equal(await remove.isDisabled(), false)
-  } finally {
-    await page.close()
-  }
-})
-
 test('a custom connection checks its name first and then goes to every tool picked', async () => {
-  const page = await fixture('page=mcp&extensionOk')
+  const page = await fixture('page=extensions&installedProviders=claude,codex&extensionOk')
   try {
-    await page.getByTestId('mcp-add').first().click()
+    await hubCatalogReady(page)
+    await openHubAdd(page, 'mcp')
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     const submit = dialog.getByTestId('mcp-form-submit')
     await page.getByTestId('mcp-source').fill('npx')
@@ -2395,9 +2279,9 @@ test('a custom connection checks its name first and then goes to every tool pick
 // F6：「启动命令」里直接填整行命令，交给工具前拆成程序和参数，带引号的路径整段算程序；表单里他填的字不动，
 // 框下面说一声参数已经分出去了。
 test('a whole command line in the launch box goes to the tool as the program and its arguments', async () => {
-  const page = await fixture('page=mcp&extensionOk')
+  const page = await fixture(`${hubClaudeOnly}&extensionOk`)
   try {
-    await page.getByTestId('mcp-add').first().click()
+    await openHubAdd(page, 'mcp')
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     const source = page.getByTestId('mcp-source')
     const splitHint = dialog.getByText('已经帮你把后面的参数分出去了', { exact: true })
@@ -2414,7 +2298,7 @@ test('a whole command line in the launch box goes to the tool as the program and
       { type: 'stdio', command: 'npx', args: ['-y', '@amap/amap-maps-mcp-server'], env: {} },
     ])
 
-    await page.getByTestId('mcp-add').first().click()
+    await openHubAdd(page, 'mcp')
     await page.getByTestId('mcp-name').fill('local-tool')
     await source.fill('"C:\\Program Files\\My Tool\\tool.exe"')
     assert.equal(await splitHint.count(), 0)
@@ -2432,9 +2316,10 @@ test('a whole command line in the launch box goes to the tool as the program and
 
 // 同类对比第 1 条：提供方给的一整段配置直接粘贴，替他填好表单；带密钥的网络服务连请求头一起给到每个勾上的工具。
 test('a pasted provider config fills the custom connection and carries its headers to every tool', async () => {
-  const page = await fixture('page=mcp&extensionOk')
+  const page = await fixture('page=extensions&installedProviders=claude,codex&extensionOk')
   try {
-    await page.getByTestId('mcp-add').first().click()
+    await hubCatalogReady(page)
+    await openHubAdd(page, 'mcp')
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     const paste = dialog.getByTestId('mcp-paste')
     await paste.fill('随便写的一句话')
@@ -2476,9 +2361,10 @@ test('a pasted provider config fills the custom connection and carries its heade
 })
 
 test('a custom connection leaves alone a same-named one another picked tool already has', async () => {
-  const page = await fixture('page=mcp&extensionOk&codexMcp=github')
+  const page = await fixture('page=extensions&installedProviders=claude,codex&extensionOk&codexMcp=github')
   try {
-    await page.getByTestId('mcp-add').first().click()
+    await hubCatalogReady(page)
+    await openHubAdd(page, 'mcp')
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     await dialog.getByTestId('mcp-paste').fill('claude mcp add --transport http github https://api.example.test/mcp')
     await dialog.getByText('认出来了：网络服务「github」', { exact: true }).waitFor()
@@ -2492,23 +2378,21 @@ test('a custom connection leaves alone a same-named one another picked tool alre
   }
 })
 
-// 同类对比 备选 5：Claude Code 全局里的一条连接「也装到别的工具」。界面只把名字交给主进程，已经有同名的不给勾。
-test('a Claude Code connection is copied to the other tools that do not have it yet', async () => {
-  const page = await fixture('page=mcp&extensionOk&claudeMcp=docs&codexMcp=docs')
+// 同类对比 备选 5：Claude Code 全局里自己加的一条连接，「+」装到别的工具。界面只把名字交给主进程，已经有的不给勾。
+test('a connection added in Claude Code is copied to the tools that do not have it yet', async () => {
+  const page = await fixture(`${hubAllTools}&extensionOk&claudeMcp=docs&codexMcp=docs`)
   try {
-    const row = page.getByTestId('mcp-row-docs')
-    await row.getByRole('button', { name: 'docs 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).click()
-    const dialog = page.getByTestId('mcp-copy')
-    await dialog.getByText('把「docs」也装到别的工具', { exact: true }).waitFor()
-    const codex = dialog.getByTestId('mcp-copy-tools-codex')
-    const grok = dialog.getByTestId('mcp-copy-tools-grok')
-    await codex.getByText('已添加', { exact: true }).waitFor()
-    assert.equal(await grok.getAttribute('aria-pressed'), 'true', '查回来以后能装的先勾上')
-    assert.equal(await codex.isDisabled(), true)
-    assert.equal(await dialog.getByTestId('mcp-copy-tools-claude').count(), 0, '不列来源那个工具')
-    await dialog.getByTestId('mcp-copy-confirm').click()
-    await waitForToast(page, '已添加「docs」，给 Grok CLI 使用，下次打开工具时生效')
+    await hubCatalogReady(page)
+    await page.getByTestId('hub-tab-custom').click()
+    await page.getByTestId('hub-add-mcp-docs').click()
+    const dialog = page.getByRole('dialog', { name: '安装「docs」', exact: true })
+    await dialog.getByText('连接里填过的密钥、环境变量和请求头会原样带过去，装在那些工具的「我的（全局）」里，下次打开工具时生效。', { exact: true }).waitFor()
+    const tools = dialog.getByRole('group', { name: '装到哪里', exact: true })
+    await expect(tools.getByTestId('hub-install-tools-codex')).toBeDisabled()
+    await expect(tools.getByTestId('hub-install-tools-codex')).toContainText('已经装好了')
+    await expect(tools.getByTestId('hub-install-tools-grok')).toHaveAttribute('aria-pressed', 'true')
+    await dialog.getByTestId('hub-install-submit').click()
+    await waitForToast(page, '已安装「docs」，给 Grok CLI 使用，下次打开工具时生效')
     await dialog.waitFor({ state: 'detached' })
     assert.deepEqual((await callsNamed(page, 'copy-mcp')).map((call) => call.args), [{ from: 'claude', to: 'grok', name: 'docs' }])
     assert.equal((await callsNamed(page, 'extension')).length, 0)
@@ -2519,17 +2403,20 @@ test('a Claude Code connection is copied to the other tools that do not have it 
 })
 
 test('a copy that fails for one tool keeps the ones already done and retries only the rest', async () => {
-  const page = await fixture('page=mcp&extensionOk&claudeMcp=docs&copyMcpFail=grok')
+  const page = await fixture(`${hubAllTools}&extensionOk&claudeMcp=docs&copyMcpFail=grok`)
   try {
-    await page.getByTestId('mcp-row-docs').getByRole('button', { name: 'docs 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).click()
-    const dialog = page.getByTestId('mcp-copy')
-    await dialog.locator('[data-testid="mcp-copy-tools-grok"][aria-pressed="true"]').waitFor()
-    assert.equal(await dialog.getByTestId('mcp-copy-tools-codex').getAttribute('aria-pressed'), 'true')
-    await dialog.getByTestId('mcp-copy-confirm').click()
+    await hubCatalogReady(page)
+    await page.getByTestId('hub-tab-custom').click()
+    await page.getByTestId('hub-add-mcp-docs').click()
+    const dialog = page.getByRole('dialog', { name: '安装「docs」', exact: true })
+    await expect(dialog.getByTestId('hub-install-tools-codex')).toHaveAttribute('aria-pressed', 'true')
+    await expect(dialog.getByTestId('hub-install-tools-grok')).toHaveAttribute('aria-pressed', 'true')
+    await dialog.getByTestId('hub-install-submit').click()
     await dialog.getByText('扩展操作失败，已有配置保留').first().waitFor()
-    await dialog.getByTestId('mcp-copy-tools-codex').getByText('已添加', { exact: true }).waitFor()
-    await dialog.getByTestId('mcp-copy-confirm').click()
+    // 装上了的从勾选里拿掉，再点一次只补剩下的。
+    await expect(dialog.getByTestId('hub-install-tools-codex')).toHaveAttribute('aria-pressed', 'false')
+    await expect(dialog.getByTestId('hub-install-tools-grok')).toHaveAttribute('aria-pressed', 'true')
+    await dialog.getByTestId('hub-install-submit').click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-mcp').length === 3)
     await dialog.getByText('扩展操作失败，已有配置保留').first().waitFor()
     assert.deepEqual((await callsNamed(page, 'copy-mcp')).map((call) => call.args.to), ['codex', 'grok', 'grok'])
@@ -2538,152 +2425,57 @@ test('a copy that fails for one tool keeps the ones already done and retries onl
   }
 })
 
-// 测试扩展在三个工具里都有：没有能装的，「装上」点不了；Grok 的连接不给这一项（读不全）。
-test('copying is offered only where every other tool can still take the connection', async () => {
-  const page = await fixture('page=mcp&extensionOk')
+// 三家都有的那条没有能装的，行上只给「…」；只有 Grok 里有的读不全，不给装到别的工具。
+test('copying is offered only where another tool can still take the connection', async () => {
+  const page = await fixture(`${hubAllTools}&codexMcp=test-extension&grokMcp=test-extension`)
   try {
-    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).click()
-    const dialog = page.getByTestId('mcp-copy')
-    await dialog.getByTestId('mcp-copy-tools-grok').getByText('已添加', { exact: true }).waitFor()
-    assert.equal(await dialog.getByTestId('mcp-copy-confirm').isDisabled(), true)
-    await dialog.getByRole('button', { name: '取消', exact: true }).click()
-    await dialog.waitFor({ state: 'detached' })
-    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
-    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '从 Grok CLI 移除…', exact: true }).waitFor()
-    assert.equal(await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).count(), 0)
+    await page.getByTestId('hub-tab-custom').click()
+    await page.getByTestId('hub-menu-mcp-test-extension').waitFor()
+    assert.equal(await page.getByTestId('hub-add-mcp-test-extension').count(), 0)
   } finally {
     await page.close()
   }
-})
-
-test('a tool that is not installed offers its own install in place of the list', async () => {
-  const page = await fixture('page=skills&installedProviders=codex')
+  const grokOnly = await fixture(`${hubAllTools}&grokMcp=only-grok`)
   try {
-    await page.getByText('Codex CLI 官方叫「技能（Skills）」', { exact: true }).waitFor()
-    const claude = page.getByRole('tab', { name: /^Claude Code/ })
-    await claude.getByText('未安装', { exact: true }).waitFor()
-    await claude.click()
-    const bar = page.getByTestId('skills-tool-missing')
-    await bar.getByText('还没有安装 Claude Code', { exact: true }).waitFor()
-    await bar.getByText('装好后就能添加下面的技能。', { exact: true }).waitFor()
-    assert.equal(await page.getByTestId('skills-list').count(), 0)
-    await bar.getByRole('button', { name: '安装 Claude Code', exact: true }).click()
-    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'install-tool'))
-    assert.deepEqual((await callsNamed(page, 'install-tool')).map((call) => call.args), ['claude'])
-    // 没装的工具不去问它的列表。
-    assert.deepEqual((await callsNamed(page, 'list-extensions')).map((call) => call.args), ['codex'])
+    await grokOnly.getByTestId('hub-tab-custom').click()
+    await grokOnly.getByTestId('hub-menu-mcp-only-grok').waitFor()
+    assert.equal(await grokOnly.getByTestId('hub-add-mcp-only-grok').count(), 0)
   } finally {
-    await page.close()
+    await grokOnly.close()
   }
 })
 
-// 「在上面的列表里管理」要上面真有列表：Grok CLI 没装时只给安装那一条。
-test('a missing tool without a plugin market shows only its install bar', async () => {
-  const page = await fixture('page=plugins&installedProviders=claude')
+// 没装的工具不去读它的列表；那一家那一行写「这台电脑还没装」，给「去首页安装」。
+test('a tool that is not installed is not read and each entry leads to the home page to install it', async () => {
+  const page = await fixture('page=extensions&installedProviders=codex')
   try {
-    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
-    await page.getByTestId('plugins-tool-missing').getByText('还没有安装 Grok CLI', { exact: true }).waitFor()
-    assert.equal(await page.getByTestId('plugins-market-unavailable').count(), 0)
-  } finally {
-    await page.close()
-  }
-})
-
-test('the Codex skills page points at the plugins that now carry the official skills', async () => {
-  const page = await fixture('page=skills')
-  try {
-    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
-    const notice = page.getByTestId('skills-codex-official')
-    await notice.getByText('OpenAI 的官方技能现在放在插件里', { exact: true }).waitFor()
-    await notice.getByRole('button', { name: '去看插件', exact: true }).click()
-    assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'plugins')
-  } finally {
-    await page.close()
-  }
-})
-
-// v4 批12 精选页：现有的 10 条，一次装进勾选的几个工具。
-test('the featured page installs an entry into every tool picked through the existing paths', async () => {
-  const page = await fixture('page=featured&extensionOk')
-  try {
-    await page.getByTestId('featured-card-browser').waitFor()
-    await page.getByTestId('featured-install-sequential-thinking').click()
-    const dialog = page.getByRole('dialog', { name: '添加「逐步思考」', exact: true })
-    await dialog.getByText('npx -y @modelcontextprotocol/server-sequential-thinking@2026.8.31', { exact: true }).waitFor()
-    const tools = dialog.getByRole('group', { name: '给这些工具用', exact: true })
-    for (const name of ['Claude Code', 'Codex CLI', 'Grok CLI'])
-      assert.equal(await tools.getByRole('button', { name, exact: true }).getAttribute('aria-pressed'), 'true')
-    await tools.getByRole('button', { name: 'Grok CLI', exact: true }).click()
-    await dialog.getByTestId('featured-install-submit').click()
-    await page.getByText('已添加「逐步思考」，给 Claude Code、Codex CLI 使用', { exact: true }).waitFor()
-    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args.provider), ['claude'])
-    assert.deepEqual((await callsNamed(page, 'add-mcp')).map((call) => call.args.name), ['sequential-thinking'])
-    // 插件只有 Claude Code 能用：另两个灰着写「不支持」。
-    await page.getByTestId('featured-kind').getByRole('button', { name: '插件', exact: true }).click()
-    await page.getByTestId('featured-card-browser').waitFor({ state: 'detached' })
-    await page.getByTestId('featured-install-code-review').click()
-    const plugin = page.getByRole('dialog', { name: '安装「代码审查」', exact: true })
-    const codex = plugin.getByRole('group', { name: '给这些工具用', exact: true }).getByRole('button', { name: /^Codex CLI/ })
-    await codex.getByText('不支持', { exact: true }).waitFor()
-    assert.equal(await codex.isDisabled(), true)
-    await plugin.getByTestId('featured-install-submit').click()
-    await page.getByText('已安装「代码审查」，给 Claude Code 使用', { exact: true }).waitFor()
-    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'plugin', action: 'install', source: 'code-review@claude-plugins-official' })
-  } finally {
-    await page.close()
-  }
-})
-
-test('a featured entry that needs a folder asks for it in the same dialog before adding', async () => {
-  const page = await fixture('page=featured')
-  try {
-    await page.getByTestId('featured-install-files').click()
-    const dialog = page.getByTestId('featured-install-dialog')
-    const submit = dialog.getByTestId('featured-install-submit')
-    assert.equal(await submit.innerText(), '继续填写')
-    await submit.click()
-    await dialog.getByTestId('curated-input-directory').getByText(/点「选择文件夹」挑一个，软件会替你填好，不用手改。/).waitFor()
-    await submit.click()
-    await dialog.getByText('{{directory}} 还没换成真实内容，请先填好再添加。', { exact: true }).waitFor()
-    assert.equal((await callsNamed(page, 'extension')).length, 0)
-    await dialog.getByRole('button', { name: '取消', exact: true }).click()
-    await page.getByTestId('featured-recommend').click()
-    // 「反馈与客服」分两个页签（v4 第 10 批）：想要新的连接落在「留言反馈」。
-    assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['feedback', 'form'])
-  } finally {
-    await page.close()
-  }
-})
-
-// 「扩展改」第 3 条（10-24）：能用它的工具一个都没装时，添加框直说，给「去首页安装」。
-test('a featured entry says when none of its tools is installed and leads to the home page', async () => {
-  const page = await fixture('page=featured&installedProviders=')
-  try {
-    await page.getByTestId('featured-install-sequential-thinking').click()
-    const dialog = page.getByRole('dialog', { name: '添加「逐步思考」', exact: true })
-    const notice = dialog.getByTestId('featured-no-tool')
-    await notice.getByText('还没装能用它的工具', { exact: true }).waitFor()
-    await notice.getByText('这一条给 Claude Code、Codex CLI、Grok CLI 用，这台电脑上一个都还没装。先去首页装一个，装好回来再添加。', { exact: true }).waitFor()
-    await notice.getByTestId('featured-open-home').click()
-    await dialog.waitFor({ state: 'detached' })
+    const detail = await openInstalled(page, '浏览器')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('这台电脑还没装 Claude Code')
+    await detail.getByTestId('hub-where-home-claude').click()
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
-    // 插件说「安装」；只要有一个工具装了，就不出这一条。
-    await page.getByTestId('featured-kind').getByRole('button', { name: '插件', exact: true }).click()
-    await page.getByTestId('featured-install-code-review').click()
-    const plugin = page.getByRole('dialog', { name: '安装「代码审查」', exact: true })
-    await plugin.getByText('这一条给 Claude Code 用，这台电脑上一个都还没装。先去首页装一个，装好回来再安装。', { exact: true }).waitFor()
+    assert.deepEqual([...new Set((await callsNamed(page, 'list-extensions')).map((call) => call.args))], ['codex'])
   } finally {
     await page.close()
   }
-  const installed = await fixture('page=featured&installedProviders=claude')
+})
+
+// 「扩展改」第 3 条（10-24）：能用它的工具一个都没装时直说，给「去首页安装」，不给「+」。
+test('an entry says on each family that the tool is not installed when none is, and leads to the home page', async () => {
+  const page = await fixture('page=extensions&installedProviders=')
   try {
-    await installed.getByTestId('featured-install-sequential-thinking').click()
-    await installed.getByRole('dialog', { name: '添加「逐步思考」', exact: true }).getByTestId('featured-install-submit').waitFor()
-    assert.equal(await installed.getByTestId('featured-no-tool').count(), 0)
+    await page.getByTestId('hub-open-mcp-sequential-thinking').click()
+    const detail = page.getByTestId('hub-detail')
+    for (const [id, name] of [['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['grok', 'Grok CLI']])
+      await expect(detail.getByTestId(`hub-where-${id}`)).toContainText(`这台电脑还没装 ${name}`)
+    assert.equal(await detail.getByTestId('hub-detail-add').count(), 0)
+    await detail.getByTestId('hub-back').click()
+    assert.equal(await page.getByTestId('hub-add-mcp-sequential-thinking').count(), 0)
+    await expect(page.getByTestId('hub-claude-missing')).toContainText('装好 Claude Code 才能看 Claude 官方插件。')
+    await page.getByTestId('hub-claude-open-home').click()
+    assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
+    assert.equal((await callsNamed(page, 'list-extensions')).length, 0)
   } finally {
-    await installed.close()
+    await page.close()
   }
 })
 
@@ -2820,6 +2612,39 @@ test('backup rows are named by the time they were taken and the tool, never by a
     await row.locator('.xm-row-desc').getByText(/^Codex CLI 配置，0\.1 KB$/).waitFor()
     assert.equal(await page.getByTestId('page-backups').getByText('backup-1').count(), 0)
     assert.equal(await page.getByTestId('backups-search').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+// R2-2：校验没过的那份原来跟已下线的工具一起被筛掉，原因和删除入口一起不见了。现在单独一行：
+// 说清用不了、不给预览、不能恢复、能删；认不出工具的只在「全部工具」里。
+test('a broken backup keeps its row, cannot be previewed or restored, and can be deleted', async () => {
+  const page = await fixture('page=backups&brokenBackup')
+  try {
+    const card = page.getByTestId('page-backups')
+    const torn = page.getByTestId('backups-row-backup-torn')
+    const unreadable = page.getByTestId('backups-row-backup-unreadable')
+    await torn.locator('.xm-row-desc').getByText('Codex CLI 配置，这份备份用不了，可以删掉', { exact: true }).waitFor()
+    await torn.getByText('校验失败', { exact: true }).waitFor()
+    assert.equal(await torn.getByRole('button', { name: '预览', exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('backups-restore-backup-torn').isDisabled(), true)
+    await unreadable.locator('.xm-row-desc').getByText('这份备份用不了，可以删掉', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('backups-restore-backup-unreadable').isDisabled(), true)
+    await card.getByText('3 份备份', { exact: true }).waitFor()
+    await card.getByRole('button', { name: 'Codex CLI', exact: true }).click()
+    await card.getByText('2 份备份', { exact: true }).waitFor()
+    await torn.waitFor()
+    assert.equal(await unreadable.count(), 0)
+    await card.getByRole('button', { name: '全部工具', exact: true }).click()
+    // 没有时间的那份，删除确认不写「删除 暂未记录 的备份？」。
+    await unreadable.getByRole('button', { name: '删除这份备份', exact: true }).click()
+    const confirm = page.getByRole('dialog', { name: '删除这份备份？', exact: true })
+    await confirm.getByRole('button', { name: '删除', exact: true }).click()
+    await waitForToast(page, '备份已删除')
+    await unreadable.waitFor({ state: 'detached' })
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'deleteBackup').map((call) => call.args), ['backup-unreadable'])
+    await card.getByText('2 份备份', { exact: true }).waitFor()
   } finally {
     await page.close()
   }
@@ -4731,6 +4556,21 @@ test('importing a moved computer carries the usage-stats switch and asks before 
   }
 })
 
+// D24：导入「搬到新电脑」的文件，主题当下变了色，重开又变回原来的：只写了 settings.json，开机看的系统界面设置里那份主题偏好没动。
+test('importing a moved computer keeps its theme after a restart by saving the system theme preference too', async () => {
+  const page = await fixture('page=settings&system=1&transfer=theme-dark')
+  try {
+    await page.getByRole('tab', { name: '备份迁移', exact: true }).click()
+    await page.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '导入了你的设置。')
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.filter((call) => call.name === 'settings').map((call) => call.args), [{ version: 2, theme: 'dark' }])
+    assert.deepEqual(recorded.filter((call) => call.name === 'platform-theme').map((call) => call.args), ['dark'])
+  } finally {
+    await page.close()
+  }
+})
+
 test('a system notification settings page that will not open keeps the test notification line and says where to look', async () => {
   const page = await fixture('page=settings&system=1&fail=notification-settings')
   try {
@@ -4849,6 +4689,163 @@ test('cancelling the password dialog drops the typed secrets and Esc confirms be
       ]),
       ['', '', ''],
     )
+  } finally {
+    await page.close()
+  }
+})
+
+// 0.2.25 扩展合并方案第二版：精选、外接工具、技能、插件合成一页「插件」。
+const hub = 'page=extensions&installedProviders=claude,codex'
+
+test('the plugins page groups the recommended entries and folds each official group at four', async () => {
+  const page = await fixture(hub)
+  try {
+    const list = page.getByTestId('hub-plugins')
+    for (const group of ['common', 'coding', 'claude', 'codex']) await list.getByTestId(`hub-section-${group}`).waitFor()
+    // 逐步思考挪到「写代码」；官方插件分在各自那一组，只能装进那一家。
+    await list.getByTestId('hub-section-coding').getByTestId('hub-row-mcp-sequential-thinking').waitFor()
+    const claude = list.getByTestId('hub-section-claude')
+    await expect(claude.getByText('Anthropic 官方市场，只能装进 Claude', { exact: true })).toBeVisible()
+    assert.equal(await claude.locator('.v2-hub-row').count(), 4)
+    const toggle = claude.getByTestId('hub-section-claude-toggle')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await toggle.click()
+    assert.equal(await claude.locator('.v2-hub-row').count(), 5)
+    await expect(list.getByTestId('hub-section-codex').getByText('OpenAI 插件目录，只能装进 GPT', { exact: true })).toBeVisible()
+    // 读屏读整行那一句；装上了的有「…」，还能装的有「+」。
+    await expect(list.getByTestId('hub-open-mcp-browser')).toHaveAttribute('aria-label', '浏览器，能装到：Claude、GPT、Grok；已装到：Claude、GPT')
+    await list.getByTestId('hub-menu-mcp-browser').waitFor()
+    await list.getByTestId('hub-add-mcp-memory').waitFor()
+    // 左边「已安装」：连不上的那条有橙点，鼠标停上去说是哪种。
+    const installed = page.getByTestId('hub-installed')
+    await expect(page.locator('.v2-hub-side-label')).toContainText('5')
+    await expect(installed.getByRole('button', { name: /测试连接/ }).locator('.v2-hub-warn')).toHaveAttribute('title', '连不上')
+    await expect(page.getByText('这些都是第三方软件，由它们各自的作者维护和更新，不随星芒一起发布。装之前请先看清它要哪些权限。', { exact: true }).first()).toBeVisible()
+    // 「自己加的」只放自己加的那条连接。
+    await page.getByTestId('hub-tab-custom').click()
+    await list.getByTestId('hub-row-mcp-test-extension').waitFor()
+    assert.equal(await list.locator('.v2-hub-row').count(), 1)
+  } finally {
+    await page.close()
+  }
+})
+
+test('installing from the plugins page puts a recommended connection into every family picked', async () => {
+  const page = await fixture(`${hub}&extensionOk`)
+  try {
+    await page.getByTestId('hub-add-mcp-sequential-thinking').click()
+    const dialog = page.getByRole('dialog', { name: '安装「逐步思考」', exact: true })
+    const tools = dialog.getByRole('group', { name: '装到哪里', exact: true })
+    await expect(tools.getByTestId('hub-install-tools-claude')).toHaveAttribute('aria-pressed', 'true')
+    await expect(tools.getByTestId('hub-install-tools-codex')).toHaveAttribute('aria-pressed', 'true')
+    await expect(tools.getByTestId('hub-install-tools-grok')).toBeDisabled()
+    await expect(tools.getByTestId('hub-install-tools-grok')).toContainText('这台电脑还没装 Grok CLI')
+    await tools.getByTestId('hub-install-tools-grok-home').waitFor()
+    const submit = dialog.getByTestId('hub-install-submit')
+    await expect(submit).toHaveText('装到 2 个')
+    await tools.getByTestId('hub-install-tools-codex').click()
+    await expect(submit).toHaveText('安装')
+    await tools.getByTestId('hub-install-tools-codex').click()
+    await submit.click()
+    await waitForToast(page, '已安装「逐步思考」，给 Claude Code、Codex CLI 使用，下次打开工具时生效')
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => [call.args.provider, call.args.kind, call.args.action, call.args.id]), [['claude', 'mcp', 'install', 'sequential-thinking']])
+    assert.deepEqual((await callsNamed(page, 'add-mcp')).map((call) => call.args.name), ['sequential-thinking'])
+  } finally {
+    await page.close()
+  }
+})
+
+test('a GPT official plugin installs only into GPT and the Claude row says why not', async () => {
+  const page = await fixture(`${hub}&extensionOk`)
+  try {
+    await page.getByTestId('hub-add-plugin-linear-openai-api-curated').click()
+    const dialog = page.getByRole('dialog', { name: '安装「Linear」', exact: true })
+    await expect(dialog.getByTestId('hub-install-tools-claude')).toBeDisabled()
+    await expect(dialog.getByTestId('hub-install-tools-claude')).toContainText('插件各家格式不通用，这一条只有 GPT 版')
+    await dialog.getByTestId('hub-install-submit').click()
+    await waitForToast(page, '已安装「Linear」，给 Codex CLI 使用，下次打开工具时生效')
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'codex', kind: 'plugin', action: 'install', id: 'linear@openai-api-curated' })
+  } finally {
+    await page.close()
+  }
+})
+
+test('an entry opens to where it is installed and what it does, and comes out of every tool at once', async () => {
+  const page = await fixture(`${hub}&extensionOk`)
+  try {
+    await page.getByTestId('hub-installed').getByRole('button', { name: /本地文件/ }).click()
+    const detail = page.getByTestId('hub-detail')
+    await expect(detail.getByRole('heading', { level: 2 })).toHaveText('本地文件')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('已装好')
+    await expect(detail.getByTestId('hub-where-codex')).toContainText('还没装')
+    await detail.getByTestId('hub-where-add-codex').waitFor()
+    await expect(detail.getByTestId('hub-where-grok')).toContainText('这台电脑还没装 Grok CLI')
+    await expect(detail.getByTestId('hub-detail-add')).toHaveText('装到 GPT')
+    await expect(detail.getByTestId('hub-detail-about')).toContainText('MCP 服务器')
+    await detail.getByTestId('hub-remove-all').click()
+    const confirm = page.getByRole('dialog', { name: '从所有工具里移除「本地文件」？', exact: true })
+    await expect(confirm).toContainText('会从 Claude Code 里一起移除。以后想用再装回来就行。')
+    await confirm.getByTestId('hub-remove-confirm').click()
+    await waitForToast(page, '已从 Claude Code 移除「本地文件」')
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'files', scope: 'user' })
+    // 推荐里的那一条还在，详情照旧开着，只是哪家都没装了；左边清单里没有它了。
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('还没装')
+    assert.equal(await page.getByTestId('hub-installed').getByRole('button', { name: /本地文件/ }).count(), 0)
+    await detail.getByTestId('hub-back').click()
+    await page.getByTestId('hub-section-common').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('the plugins page searches across groups, filters by family and says when nothing matches', async () => {
+  const page = await fixture(hub)
+  try {
+    const search = page.getByTestId('hub-search')
+    await search.fill('浏览器')
+    await page.getByTestId('hub-row-mcp-browser').waitFor()
+    assert.equal(await page.locator('.v2-hub-row').count(), 1)
+    await search.fill('插件 Stripe')
+    await page.getByTestId('hub-row-plugin-stripe-claude-plugins-official').waitFor()
+    await search.fill('找不到的东西')
+    await page.getByTestId('hub-search-empty').waitFor()
+    await page.getByTestId('hub-clear').click()
+    await page.getByTestId('hub-section-common').waitFor()
+    // 装到：GPT 时 Claude 官方那一组不放，没装的 Grok 写「还没装」。
+    await page.getByTestId('hub-filter').click()
+    await expect(page.getByTestId('hub-filter-grok')).toContainText('还没装')
+    await page.getByTestId('hub-filter-codex').click()
+    await expect(page.getByTestId('hub-filter')).toHaveText('装到：GPT')
+    assert.equal(await page.getByTestId('hub-section-claude').count(), 0)
+    await page.getByTestId('hub-section-codex').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('without the Codex CLI the GPT official group asks for it and offers the home page', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude')
+  try {
+    await expect(page.getByTestId('hub-codex-missing')).toHaveText('装好 Codex CLI 才能看 GPT 官方插件。去首页安装')
+    await page.getByTestId('hub-codex-open-home').waitFor()
+    assert.equal(await page.getByTestId('hub-row-plugin-sentry-openai-api-curated').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('the skills view lists skills on this computer and sends OpenAI skills to the GPT official group', async () => {
+  const page = await fixture(hub)
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('技能')
+    await page.getByTestId('hub-section-skill').getByTestId('hub-row-skill-测试技能').waitFor()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill').waitFor()
+    await page.keyboard.press('Escape')
+    await page.getByTestId('skills-codex-plugins').click()
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('插件')
+    await expect(page.getByTestId('hub-section-codex-toggle')).toHaveAttribute('aria-expanded', 'true')
   } finally {
     await page.close()
   }

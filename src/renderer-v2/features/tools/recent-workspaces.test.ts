@@ -124,6 +124,15 @@ describe('recentWorkspaces', () => {
     expect(items).toEqual([{ path: 'C:\\Work\\Alpha', name: 'Alpha' }])
   })
 
+  // D27
+  it('lists two Mac or Linux folders that differ only in case as two entries', () => {
+    const items = recentWorkspaces([
+      session({ id: 'a', cwd: '/home/u/Foo', updatedAt: 40 }),
+      session({ id: 'b', cwd: '/home/u/foo', updatedAt: 20 }),
+    ], 'claude')
+    expect(items).toEqual([{ path: '/home/u/Foo', name: 'Foo' }, { path: '/home/u/foo', name: 'foo' }])
+  })
+
   it('falls back to the creation time when a session has no update time', () => {
     const items = recentWorkspaces([
       session({ id: 'a', cwd: '/home/u/alpha', updatedAt: null, createdAt: 50 }),
@@ -248,6 +257,30 @@ describe('latestSessionIdsByWorkspace', () => {
     const ids = latestSessionIdsByWorkspace([
       session({ id: 'claude:new', cwd: 'C:\\Work\\Alpha' }),
       session({ id: 'claude:old', cwd: 'c:\\work\\alpha' }),
+    ])
+
+    expect([...ids]).toEqual(['claude:new'])
+  })
+
+  // D27：Mac 和 Linux 上大小写不同的是两个文件夹，各有各的「接着聊」。
+  it('keeps two folders that differ only in case apart on Mac and Linux', () => {
+    const ids = latestSessionIdsByWorkspace([
+      session({ id: 'claude:upper', cwd: '/work/Foo' }),
+      session({ id: 'claude:lower', cwd: '/work/foo' }),
+      session({ id: 'claude:older-upper', cwd: '/work/Foo' }),
+    ])
+
+    expect([...ids]).toEqual(['claude:upper', 'claude:lower'])
+    expect(folderConversations([
+      session({ id: 'grok:upper', provider: 'grok', cwd: '/Users/u/Project' }),
+      session({ id: 'grok:lower', provider: 'grok', cwd: '/Users/u/project' }),
+    ], 'grok').map((item) => item.id)).toEqual(['grok:upper', 'grok:lower'])
+  })
+
+  it('still treats two spellings of one Windows network path as the same folder', () => {
+    const ids = latestSessionIdsByWorkspace([
+      session({ id: 'claude:new', cwd: '\\\\NAS\\Share\\Alpha' }),
+      session({ id: 'claude:old', cwd: '\\\\nas\\share\\alpha' }),
     ])
 
     expect([...ids]).toEqual(['claude:new'])

@@ -115,7 +115,8 @@ function readConversation(value: unknown): Conversation {
   const messages = conversation.messages.map(readMessage)
   assertUniqueIds(messages)
   if (conversation.draftImages !== undefined && !Array.isArray(conversation.draftImages)) throw new ChatStorageError('聊天图片列表无效，原始记录已保留')
-  const draftImages = (conversation.draftImages ?? []).map(readAsset)
+  // 0.2.24 及以前同一张图的两份会一起进输入框、发不出去，存下来的草稿里可能还留着两份，读回来只留第一份（R28-6）。
+  const draftImages = (conversation.draftImages ?? []).map(readAsset).filter((image, index, list) => list.findIndex((item) => item.assetId === image.assetId) === index)
   const draftFiles = readTextFiles(conversation.draftFiles)
   return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), ...(draftImages.length ? { draftImages } : {}), ...(draftFiles.length ? { draftFiles } : {}), settings: readSettings(conversation.settings), messages, ...(conversation.lengthNoticeDismissed === true ? { lengthNoticeDismissed: true } : {}), ...(conversation.pinned === true ? { pinned: true } : {}), ...(conversation.renamed === true ? { renamed: true } : {}) }
 }
@@ -700,6 +701,14 @@ function updatedFromFile(local: Conversation, incoming: Conversation): Conversat
   }
 }
 
+// 消息两边一样、只是旧电脑导出前又在输入框里打了几句没发：这台电脑上的输入框空着就补进来，
+// 两边都打了留这台电脑上的。以前消息一样就算「已经有了」，草稿过不来（A09）。图片只在本机，导入时已经去掉。
+function draftFromFile(local: Conversation, incoming: Conversation): Conversation | null {
+  if (local.draft.trim() || local.draftImages?.length || local.draftFiles?.length) return null
+  if (!incoming.draft.trim() && !incoming.draftFiles?.length) return null
+  return { ...local, draft: incoming.draft, ...(incoming.draftFiles?.length ? { draftFiles: incoming.draftFiles } : {}) }
+}
+
 /**
  * 这台电脑上的对话一个不删（D02：以前合起来超过上限时按修改时间截断，会悄悄删掉本机最老的几个）。
  * 同一个对话（编号相同）：两边一样、或者这台电脑上的更新，不动；文件里那份是接着这台电脑上的往下聊的，
@@ -721,7 +730,12 @@ export function mergeImportedConversations(state: ChatWorkspace, imported: Conve
       const local = present.get(incoming.id)
       if (!local) { fresh.push(incoming); claimed.add(incoming.id); break }
       const relation = relationOf(local.messages, incoming.messages)
-      if (relation === 'same' || relation === 'local-newer') break
+      if (relation === 'same') {
+        const drafted = draftFromFile(local, incoming)
+        if (drafted) { replaced.set(local.id, drafted); claimed.add(local.id) }
+        break
+      }
+      if (relation === 'local-newer') break
       if (relation === 'file-newer') { replaced.set(local.id, updatedFromFile(local, incoming)); claimed.add(local.id); break }
       let copyId = importedCopyId(conversation.id, attempt)
       while (fileIds.has(copyId) || claimed.has(copyId) || copyId === state.draftConversation.id) copyId = importedCopyId(conversation.id, ++attempt)

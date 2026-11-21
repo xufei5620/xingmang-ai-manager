@@ -4,7 +4,7 @@ import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { BrandIcon, Button, Card, ChoiceMenu, Confirm, Empty, Input, Notice, PageHead, Pill, Progress, Select, Switch, Textarea } from '../../ui'
 import { dollars } from '../../business-common'
 import { formatClockTime } from '../../calendar-time'
-import { useSharedAccountBalance } from '../app/balance-context'
+import { useSharedBalanceSelector } from '../app/balance-context'
 import { chatModelVendor, chatModelVendors, pickChatGroup, type ChatCatalogEntry, type ChatSite } from '../chat/state'
 import { isVideoStudioCaptionPosition, isVideoStudioCaptionSize, videoStudioCaptionPositions, videoStudioCaptionSizes } from './captions'
 import {
@@ -77,8 +77,8 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
   const studio = useVideoStudio(bridge, accountScope, site, true, options)
   // 确认框「每段单独计费」后面报一句当前余额（yoyo 2026-10-29 批的字「余额改」，#1406 P2-1）。读不到就不写这句，
   // 同充值页卡头。
-  const { snapshot: balanceState } = useSharedAccountBalance()
-  const balance = balanceState.scope === accountScope ? balanceState.balance : null
+  // 只挑余额本身：转圈、更新时间这些每次刷新都变，订阅整份会让这一页去过以后藏着也跟着重画（R8）。
+  const balance = useSharedBalanceSelector((state) => state.scope === accountScope ? state.balance : null)
   // 余额前面再报「预计约 $x」（#1406 P2-1 后半）：页面一露面就读好价目，确认框打开时已经在手上；放久了打开确认框时再读一次。
   const prices = useVideoStudioPriceList(bridge, accountScope, active)
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null)

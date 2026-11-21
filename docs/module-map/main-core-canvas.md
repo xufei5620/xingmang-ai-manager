@@ -51,6 +51,7 @@
 
 - `config-files.ts` — 各 CLI 配置文件的读写：**两阶段提交 + .bak 备份 + 失败回滚**（I9，Codex 一次要同时改 `config.toml` 和 `auth.json`）；`toNativeConfigSummary` 剥掉 `apiKey`，明文只走 `config:reveal-api-key`（I3）；切官方账号、路由跟随、钩子、状态行、工作区信任（字段实测见 `docs/WORKSPACE-TRUST.md`）也在这里；下线的 Gemini CLI 专用的那些在 `gemini-retired.ts`，这里只留各个 `switch` 里的 gemini 分支。按 provider 分支的几个 `switch` **没有 default 分支**，是新增 provider 时的穷尽性保障，别重构成策略类（T2）；用户自己设过的值不动；改 `providerConfigPaths` 要顾及备份、诊断、启动前校验等消费者（T10）
 - `config-files-context.ts` — `config-files.ts` 和从它拆出去的文件共用的读写底层（#1070 第 10 步原样搬出，`executeFilePlans`、`providerConfigPaths` 由 `config-files.ts` 照旧导出）：读配置文本（只认单链接普通文件、去掉字节顺序标记、2MB 上限），写之前的路径检查 `assertSafeConfigPath`（I8，含「C 盘搬家」那条例外），两阶段提交 + .bak + 失败回滚的 `executeFilePlans`（I9），各家配置的位置 `providerConfigPaths`（T10），几家都用的 JSON 小工具。只 import `config-files.ts` 的类型，免得两个文件互相 require
+- `config-read-cache.ts` — `config:get` 从磁盘读的那部分（四家的配置和钩子、来源记录、线路跟随记录）留 3 秒（0.2.24 深查 R3，只在正式运行开，`main.ts` 传 `configReadCacheMs`）：星芒自己写过（`noteToolConfigWrite` / `trackToolConfigWrite`，`executeFilePlans`、Codex 定点改写、来源记录、线路跟随记录都记一笔）、读过的文件或各家配置文件夹动过（读之前取的身份/大小/修改时间，`config-files.ts` 的 `withRecordedConfigReads` 交回）、账号或站点线路换了都重读。**新加写工具配置、来源记录、线路跟随记录的地方要记这一笔**；新加进摘要、要从磁盘读的东西放进 `config-save-service.ts` 的 `readConfigFiles`，跟着内存状态变的放在它外面现算
 - `gemini-retired.ts` — 下线的 Gemini CLI 在配置这一侧的专用代码（#1070 第 10 步从 `config-files.ts` 原样搬出，原来导出的名字 `config-files.ts` 照旧导出）：照 Gemini 的规矩读写 settings.json 与 trustedFolders.json（允许注释、改写时留住注释、重复键拒绝），保存配置时补的那几项（不自己升级、会话留一年、后台型号指到中转、关使用统计和旁边那笔记录），目录信任和项目说明文件名，收回星芒写进去的做完提醒和画图工具（`removeRetiredGeminiIntegrations`）。老客户电脑上的 Gemini 不卸不删，这些照旧要能读能写；`config-files.ts` 各个 `switch (provider)` 里的 gemini 分支留在原处调这里（T2）。整块删 Gemini 时删这个文件，再顺着编译错删那几个分支
 - `config-save-service.ts` — **保存工具配置的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `saveConfig`、`getConfig`、`revealApiKey`、`repairCliHooks`、`fillToolTemplateDefaults`、`checkToolModels` 这些）：保存配置（挪开官方 Console Key、写失败放回，记来源，换完星芒签的 Key 让外部客户端跟上）、换型号和刷新菜单的定点改写、配置摘要，打开前的型号核对（`tool-model-check.ts`），开机补模板缺省项，Codex 随包型号名单的写入和读不进时收回，写进各家工具的钩子和状态行（含 Grok 换终端后重写、这次启动替用户修过的钩子），退役 Gemini 留下的接入清理，设置里「只让 Claude Code 改项目文件夹里的文件」「Claude Code 提交代码时不署名」拨动时当场对齐 Claude Code 配置（`setClaudeWriteBoundary` / `setClaudeCommitAttribution`，通道 `config:set-claude-write-boundary` / `config:set-claude-commit-attribution`，两个共用 `setClaudeToggle`，改前先备份，写进的那一项记成星芒填的）。首页检测、外部客户端、线路跟随、官方账号那几样由门面传进来
 - `config-file-backups.ts` — 配置文件旁边那份 `.bak.<时间戳>` 怎么起名、「每个文件只留最近 5 份」该删哪几份；`config-files.ts` 的保存事务和 `codex-config-toml.ts` 往同一个目录放、一起数，名字只能出自这里（#1068）
@@ -135,7 +136,7 @@
 - `relay-request-id.ts` — 从中转的回答里取请求号（`X-Oneapi-Request-Id`，只认 64 字以内的字母数字和 `._:-`），交给上面那个观察钩子；钩子出错一律吞掉，记账失败不影响付过钱的生成
 
 ### 缩略图
-- `asset-thumbnail.ts` / `asset-thumbnail-store.ts` / `asset-thumbnail-service.ts` — 素材缩略图：URL 格式与严格解析（版本号进 URL，升版即整代作废）、磁盘缓存（`<root>/user-<id>/<版本>/`，单张有上限）、生成服务（逐个串行解码免得卡主线程，同一素材的并发请求共用一次生成；视频封面只有 Windows 和 macOS 能取）。`asset-thumbnail.ts` 零依赖、进渲染层（I6）：视频剪辑读回存着的工程时按编号重拼当前版本的地址
+- `asset-thumbnail.ts` / `asset-thumbnail-store.ts` / `asset-thumbnail-service.ts` — 素材缩略图：URL 格式与严格解析（版本号进 URL，升版即整代作废）、两档大小（作品库的 320 和聊天的 768，后者只有图片、文件名带 `.large`）、磁盘缓存（`<root>/user-<id>/<版本>/`，单张有上限）、生成服务（逐个串行解码免得卡主线程，同一素材的并发请求共用一次生成；视频封面只有 Windows 和 macOS 能取）。`asset-thumbnail.ts` 零依赖、进渲染层（I6）：视频剪辑读回存着的工程时按编号重拼当前版本的地址
 
 ## `electron/platform/` 平台层
 

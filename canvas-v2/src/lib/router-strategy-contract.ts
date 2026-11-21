@@ -1,4 +1,4 @@
-import { parseCanvasRouterStrategy, type CanvasRouterStrategy } from '../runtime/router-strategy'
+import { isLegacyRouterAllSetting, parseCanvasRouterStrategy, type CanvasRouterStrategy } from '../runtime/router-strategy'
 
 interface RouterBinding { nodeId: string; routerStrategy: CanvasRouterStrategy }
 interface RouterRunGraph { nodes: readonly { id: string; kind: string; data: { routerStrategy?: unknown } }[]; edges: readonly { id: string; source: string; sourceHandle: string; target: string; targetHandle: string }[] }
@@ -16,8 +16,11 @@ export function assertRouterStrategyClientVersion(version: unknown, required: bo
   if (version !== undefined && version !== 1 || required && version !== 1) throw new Error('当前页面版本不支持已保存的路由策略，请刷新后重试；未覆盖工程或启动运行')
 }
 
-/** The editable workflow and the immutable run graph have distinct placements. */
-function collectWorkflowRouters(value: unknown): RouterBinding[] {
+/** The editable workflow and the immutable run graph have distinct placements.
+ * A run binds the old explicit all as well (D06): the saved project and the
+ * run graph the page builds from it must agree on it, so a stale page that
+ * still drops it is refused instead of handing on only the first input. */
+function collectWorkflowRouters(value: unknown, legacyAll = false): RouterBinding[] {
   if (marked(value) || record(value) && marked(value.settings)) throw new Error('路由策略保存位置不正确，不能丢弃后继续')
   const result: RouterBinding[] = []
   const ids = new Set<string>()
@@ -27,9 +30,10 @@ function collectWorkflowRouters(value: unknown): RouterBinding[] {
     const settings = node.data.settings
     const kind = node.kind ?? node.type
     if (kind === 'router' && Object.hasOwn(settings, 'strategy') && settings.strategy !== 'first-available' && settings.strategy !== 'all') throw new Error('旧版路由策略选项无法核对，请明确重新选择；不会改用其他策略')
-    if (!Object.hasOwn(settings, 'routerStrategy')) continue
+    const legacy = legacyAll && typeof kind === 'string' && isLegacyRouterAllSetting(kind, settings)
+    if (!Object.hasOwn(settings, 'routerStrategy') && !legacy) continue
     if (kind !== 'router') throw new Error('路由策略只能保存在路由节点中')
-    const config = parseCanvasRouterStrategy(settings.routerStrategy)
+    const config: CanvasRouterStrategy = legacy ? { version: 1, strategy: 'all' } : parseCanvasRouterStrategy(settings.routerStrategy)
     if (typeof node.id !== 'string' || !node.id || ids.has(node.id)) throw new Error('路由节点编号无法核对；未丢弃策略')
     ids.add(node.id); result.push({ nodeId: node.id, routerStrategy: config })
   }
@@ -53,7 +57,7 @@ function inputOrder(value: unknown, nodeId: string): Array<{ id: string; source:
  * a historical immutable run must never inherit later project semantics. */
 export function assertRouterStrategyRun(content: string, graph: RouterRunGraph, selectedNodeIds: readonly string[]): void {
   const raw: unknown = JSON.parse(content)
-  const saved = new Map(collectWorkflowRouters(raw).map((entry) => [entry.nodeId, entry.routerStrategy]))
+  const saved = new Map(collectWorkflowRouters(raw, true).map((entry) => [entry.nodeId, entry.routerStrategy]))
   const selected = new Set(selectedNodeIds)
   for (const node of graph.nodes) {
     if (!selected.has(node.id)) continue
@@ -69,5 +73,5 @@ export function assertRouterStrategyRun(content: string, graph: RouterRunGraph, 
 export function routerStrategyRunSignature(content: string, selectedNodeIds: readonly string[]): string {
   const raw: unknown = JSON.parse(content)
   const selected = new Set(selectedNodeIds)
-  return JSON.stringify(collectWorkflowRouters(raw).filter((entry) => selected.has(entry.nodeId)).sort((a, b) => a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0).map((entry) => ({ ...entry, incoming: inputOrder(raw, entry.nodeId) })))
+  return JSON.stringify(collectWorkflowRouters(raw, true).filter((entry) => selected.has(entry.nodeId)).sort((a, b) => a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0).map((entry) => ({ ...entry, incoming: inputOrder(raw, entry.nodeId) })))
 }

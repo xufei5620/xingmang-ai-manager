@@ -1,7 +1,6 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import type { App, BrowserWindow } from 'electron'
-import { AppSettingsStore } from '../app-settings'
+import { AppSettingsStore, onAppSettingsWritten } from '../app-settings'
 import { setWindowChrome, titleBarOverlayHeight, v4WindowChrome } from '../window-presentation'
 import { calculatePlatformZoom } from './zoom'
 
@@ -29,9 +28,11 @@ export function installRendererV2Platform(app: App): void {
         const fullscreen = process.platform === 'darwin' ? input.meta && input.control && input.key.toLowerCase() === 'f' : input.key === 'F11'
         if (fullscreen) { event.preventDefault(); window.setFullScreen(!window.isFullScreen()) }
       })
-      fs.watchFile(settingsFile, { interval: 500, persistent: false }, apply)
+      // 设置文件只有本进程写，写完 app-settings.ts 直接通知，不再每 0.5 秒 stat 一次（0.2.24 性能深查 R5）。
+      // 手改 settings.json 里的缩放，下次拖动窗口或重开时生效。
+      const stopFollowingSettings = onAppSettingsWritten(settingsFile, apply)
       function cleanup() {
-        fs.unwatchFile(settingsFile, apply)
+        stopFollowingSettings()
         window.removeListener('resize', apply)
         dispose.delete(cleanup)
       }

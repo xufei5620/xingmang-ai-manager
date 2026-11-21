@@ -158,7 +158,7 @@ interface WatcherHarness {
   watchFails: { current: boolean }
 }
 
-function watcherHarness(options: { onPayloadTooLarge?: (event: CodexPayloadTooLargeEvent) => void } = {}): WatcherHarness {
+function watcherHarness(options: { onPayloadTooLarge?: (event: CodexPayloadTooLargeEvent) => void; clock?: { current: number } } = {}): WatcherHarness {
   const root = temporaryDirectory()
   const sessionsDirectory = path.join(root, 'sessions')
   const dayDirectory = path.join(sessionsDirectory, '2026', '10', '28')
@@ -178,7 +178,7 @@ function watcherHarness(options: { onPayloadTooLarge?: (event: CodexPayloadTooLa
       options.onPayloadTooLarge?.(event)
     },
     onLargeSession: (event) => { large.push(event) },
-    now: () => now,
+    now: () => options.clock?.current ?? now,
     log: (_level, event) => { logs.push(event) },
     watch(directory, change, error) {
       if (watchFails.current) throw new Error('ENOENT')
@@ -358,6 +358,36 @@ describe('codex rollout watcher', () => {
     run.watcher.dispose()
   })
 
+  // A07：以前每读一次都记成「刚写过」，不再写的会话记录一直每 30 秒被打开看一次。
+  it('stops looking back at a record that has not changed for ten minutes and still catches its next write', async () => {
+    const clock = { current: now }
+    const run = watcherHarness({ clock })
+    run.watcher.start()
+    const file = run.filePath(sessionA)
+    fs.writeFileSync(file, `${otherLine()}\n`)
+    run.touch(run.relative(sessionA))
+    await run.watcher.flush()
+    // 回头看了几次都没变，不算又写过。
+    for (const minutes of [3, 6, 9]) {
+      clock.current = now + minutes * minuteMs
+      await run.watcher.pollNow()
+    }
+    // 十分钟没变就不再回头看：这时没有目录通知写进来的，回头看那一下读不到。
+    clock.current = now + 11 * minuteMs
+    fs.appendFileSync(file, `${turnFailedLine(lineOneUrl)}\n`)
+    await run.watcher.pollNow()
+    expect(run.found).toEqual([])
+    // 目录通知照样认，读到了就又算最近写过，接着回头看。
+    run.touch(run.relative(sessionA))
+    await run.watcher.flush()
+    expect(run.found).toHaveLength(1)
+    clock.current = now + 13 * minuteMs
+    fs.appendFileSync(file, `${turnFailedLine(lineOneUrl, now + 1)}\n`)
+    await run.watcher.pollNow()
+    expect(run.found).toHaveLength(2)
+    run.watcher.dispose()
+  })
+
   it('keeps reading after a listener throws', async () => {
     const run = watcherHarness({ onPayloadTooLarge: () => { throw new Error('listener failed') } })
     run.watcher.start()
@@ -528,6 +558,12 @@ function refused(url: string, sessionId = sessionA, at = now): CodexPayloadTooLa
   return { sessionId, url, at, rolloutBytes: 120 * 1024 * 1024 }
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve: (value: T) => void = () => undefined
+  const promise = new Promise<T>((settle) => { resolve = settle })
+  return { promise, resolve: (value) => resolve(value) }
+}
+
 async function settle(): Promise<void> {
   for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve))
 }
@@ -537,7 +573,7 @@ describe('codex payload limit service', () => {
     const run = serviceHarness()
     await run.service.payloadTooLarge(refused(lineOneUrl))
     expect(run.holdDirect).toHaveBeenCalledWith('solov', 'payload-too-large')
-    expect(run.followCodex).toHaveBeenCalledWith('solov', 'switched')
+    expect(run.followCodex).toHaveBeenCalledWith('solov', 'switched', expect.any(Function))
     // 换成了：提示重开由 Codex 配置跟过去的那一步出。
     expect(run.notices).toEqual([])
     expect(run.logs).toEqual([{
@@ -601,7 +637,7 @@ describe('codex payload limit service', () => {
     run.clock.current = now + codexPayloadRetryMs
     await run.service.payloadTooLarge(refused(lineOneUrl, sessionA, now + codexPayloadRetryMs))
     expect(holdDirect).toHaveBeenCalledTimes(2)
-    expect(run.followCodex).toHaveBeenCalledWith('solov', 'switched')
+    expect(run.followCodex).toHaveBeenCalledWith('solov', 'switched', expect.any(Function))
     expect(run.notices).toEqual(['unreachable'])
     expect(run.logs.map((entry) => entry.detail.action)).toEqual(['unreachable', 'switched'])
     // 换成了就算处理过。
@@ -647,6 +683,82 @@ describe('codex payload limit service', () => {
     expect(restarted.holdDirect).toHaveBeenCalledTimes(1)
   })
 
+  // R29-03：等线路结果、等 Codex 跟过去的时候换了账号、退出了、换成了官方账号，以前结果回来照样换、照样提示。
+  it('drops a late result once the account changed while line 2 was being checked, and handles the conversation again later', async () => {
+    const who = { owner: '["solov",36]' as string | null }
+    const pending = deferred<RelayRouteHoldResult>()
+    const holdDirect = vi.fn<CodexPayloadLimitDependencies['holdDirect']>()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue('already')
+    const run = serviceHarness({ holdDirect, accountOwner: () => who.owner })
+    const handling = run.service.payloadTooLarge(refused(lineOneUrl))
+    who.owner = '["solov",37]'
+    pending.resolve('switched')
+    await handling
+    expect(run.followCodex).not.toHaveBeenCalled()
+    expect(run.notices).toEqual([])
+    expect(run.logs.map((entry) => entry.detail.action)).toEqual(['stale'])
+    await settle()
+    expect(run.writes.at(-1)?.handled).toEqual({})
+    // 换过来的这个人接着在这个对话里报错：照常处理。
+    await run.service.payloadTooLarge(refused(lineOneUrl, sessionA, now + 1))
+    expect(run.followCodex).toHaveBeenCalledWith('solov', 'already', expect.any(Function))
+  })
+
+  it('drops a late result after signing out, switching site or moving Codex to the official account', async () => {
+    const who = { owner: '["solov",36]' as string | null, site: 'solov', relay: true }
+    const situation = { accountOwner: () => who.owner, activeSiteId: () => who.site, codexOnRelay: () => who.relay }
+
+    const unreachable = deferred<RelayRouteHoldResult>()
+    const signedOut = serviceHarness({ ...situation, holdDirect: vi.fn(() => unreachable.promise) })
+    const first = signedOut.service.payloadTooLarge(refused(lineOneUrl))
+    who.owner = null
+    unreachable.resolve('unreachable')
+    await first
+    expect(signedOut.notices).toEqual([])
+
+    who.owner = '["solov",36]'
+    const moved = deferred<RelayRouteHoldResult>()
+    const otherSite = serviceHarness({ ...situation, holdDirect: vi.fn(() => moved.promise) })
+    const second = otherSite.service.payloadTooLarge(refused(lineOneUrl))
+    who.site = 'solov-api'
+    moved.resolve('switched')
+    await second
+    expect(otherSite.followCodex).not.toHaveBeenCalled()
+
+    who.site = 'solov'
+    const following = deferred<boolean>()
+    const official = serviceHarness({ ...situation, followCodex: vi.fn((_siteId, _result, current: () => boolean) => following.promise.then((followed) => followed && current())) })
+    const third = official.service.payloadTooLarge(refused(lineOneUrl))
+    await settle()
+    who.relay = false
+    following.resolve(true)
+    await third
+    expect(official.notices).toEqual([])
+    expect(official.logs.map((entry) => entry.detail.action)).toEqual(['stale'])
+  })
+
+  it('leaves alone a refusal written on the account line once Codex is on the official account', async () => {
+    const run = serviceHarness({ codexOnRelay: () => false })
+    await run.service.payloadTooLarge(refused(lineOneUrl))
+    await run.service.payloadTooLarge(refused(lineTwoUrl))
+    expect(run.holdDirect).not.toHaveBeenCalled()
+    expect(run.notices).toEqual([])
+    expect(run.writes).toEqual([])
+  })
+
+  it('still handles a refusal seen before the sign-in was restored at startup', async () => {
+    const who = { owner: null as string | null }
+    const pending = deferred<RelayRouteHoldResult>()
+    const run = serviceHarness({ accountOwner: () => who.owner, holdDirect: vi.fn(() => pending.promise) })
+    const handling = run.service.payloadTooLarge(refused(lineOneUrl))
+    who.owner = '["solov",36]'
+    pending.resolve('switched')
+    await handling
+    expect(run.followCodex).toHaveBeenCalledWith('solov', 'switched', expect.any(Function))
+    expect(run.logs.map((entry) => entry.detail.action)).toEqual(['switched'])
+  })
+
   it('asks for a new conversation when Codex could not be moved to line 2', async () => {
     const run = serviceHarness({ followed: false })
     await run.service.payloadTooLarge(refused(lineOneUrl))
@@ -660,13 +772,13 @@ describe('codex payload limit service', () => {
     const pinned = serviceHarness({ preference: () => 'direct' })
     await pinned.service.payloadTooLarge(refused(lineOneUrl))
     expect(pinned.holdDirect).not.toHaveBeenCalled()
-    expect(pinned.followCodex).toHaveBeenCalledWith('solov', 'already')
+    expect(pinned.followCodex).toHaveBeenCalledWith('solov', 'already', expect.any(Function))
     expect(pinned.notices).toEqual([])
     expect(pinned.logs[0].detail).toMatchObject({ action: 'already', to: 'direct' })
 
     const moved = serviceHarness({ hold: 'already' })
     await moved.service.payloadTooLarge(refused(lineOneUrl))
-    expect(moved.followCodex).toHaveBeenCalledWith('solov', 'already')
+    expect(moved.followCodex).toHaveBeenCalledWith('solov', 'already', expect.any(Function))
   })
 
   it('only asks for a new conversation when it is too large for line 2 as well', async () => {
@@ -681,7 +793,7 @@ describe('codex payload limit service', () => {
   it('still asks for a new conversation when a conversation moved off line 1 is too large for line 2 too, also after a restart', async () => {
     const run = serviceHarness()
     await run.service.payloadTooLarge(refused(lineOneUrl))
-    expect(run.followCodex).toHaveBeenCalledWith('solov', 'switched')
+    expect(run.followCodex).toHaveBeenCalledWith('solov', 'switched', expect.any(Function))
     await run.service.payloadTooLarge(refused(lineTwoUrl, sessionA, now + 1))
     await run.service.payloadTooLarge(refused(lineTwoUrl, sessionA, now + 2))
     expect(run.notices).toEqual(['too-large'])
@@ -716,7 +828,7 @@ describe('codex payload limit service', () => {
     const historical = serviceHarness({ activeSiteId: () => 'solov-api' })
     await historical.service.payloadTooLarge(refused(historicalLineOneUrl))
     expect(historical.holdDirect).toHaveBeenCalledWith('solov-api', 'payload-too-large')
-    expect(historical.followCodex).toHaveBeenCalledWith('solov-api', 'switched')
+    expect(historical.followCodex).toHaveBeenCalledWith('solov-api', 'switched', expect.any(Function))
 
     const run = serviceHarness()
     for (const url of [historicalLineOneUrl, 'https://relay.example/v1/responses', 'http://127.0.0.1:18413/v1/responses', 'not a url']) {

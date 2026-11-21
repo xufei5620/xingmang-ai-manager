@@ -1,8 +1,9 @@
 import { AccountPage } from './pages-account'
 import { accountSiteId, sessionScope } from './account-context'
 import { VideoStudioPage } from './features/video-studio'
-import { ExtensionsPage, SessionsPage } from './pages-management'
-import { FeaturedPage } from './pages-featured'
+import { SessionsPage } from './pages-management'
+// pages-maintenance 要排在 PluginsHub 前面：业务页那份样式表里教程页那几份样式排在 extensions.css 前面，先后由 import
+// 的先后定（#1335 第 6 条）。原来是旧外接工具页先 import pages-maintenance 再带进 extensions.css，旧页删了以后由这里接着保住。
 import {
   FeedbackPage,
   HealthPage,
@@ -10,6 +11,7 @@ import {
   TutorialPage,
   type BusinessActions,
 } from './pages-maintenance'
+import { PluginsHub } from './features/extensions/PluginsHub'
 import type { V2Bridge, V2Page, V2SystemState } from './types'
 import './business.css'
 
@@ -26,8 +28,6 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   onAccountTabChange?: Parameters<typeof AccountPage>[0]['onTabChange']
   /** 从活动卡片点某一档进来时要选好的充值金额；缺省 = 充值页照常从默认金额开始。 */
   accountRechargeAmount?: number
-  /** 账号概览里和首页同源的那几样数；缺省 = 概览不写还能用几天、另有订阅、近 7 天花费。 */
-  accountSummary?: Parameters<typeof AccountPage>[0]['summary']
   /** 密钥管理「配置到工具」下拉里的工具和它们的状态；缺省 = 只列名字。 */
   accountKeyTools?: Parameters<typeof AccountPage>[0]['keyTools']
   /**
@@ -70,7 +70,6 @@ export function BusinessPage({
   accountTabRequest,
   accountRechargeAmount,
   accountSession,
-  accountSummary,
   accountKeyTools,
   tutorialTopic,
   paymentReturn,
@@ -98,7 +97,6 @@ export function BusinessPage({
         rechargeAmount={accountRechargeAmount}
         paymentReturn={paymentReturn}
         accountSession={accountSession}
-        summary={accountSummary}
         keyTools={accountKeyTools}
         onLogin={actions.openLogin}
         onAccountChanged={actions.onAccountChanged ?? actions.refresh}
@@ -121,14 +119,8 @@ export function BusinessPage({
     )
   if (page === 'sessions')
     return <SessionsPage api={api} onSessionsChanged={onSessionsChanged} beforeResume={beforeResume} installedProviders={installedProviders} onOpenTools={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
-  if (page === 'featured')
-    return <FeaturedPage api={api} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} onOpenHome={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
-  if (page === 'mcp')
-    return <ExtensionsPage api={api} kind="mcp" onOpenHelp={actions.openHelp} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onSystemChanged={actions.onSystemChanged} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
-  if (page === 'skills')
-    return <ExtensionsPage api={api} kind="skill" onOpenHelp={actions.openHelp} onOpenPlugins={actions.navigate ? () => actions.navigate?.('plugins') : undefined} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
-  if (page === 'plugins')
-    return <ExtensionsPage api={api} kind="plugin" onOpenHelp={actions.openHelp} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} installTool={actions.installTool} toolJobs={actions.toolJobs} active={actions.active} />
+  if (page === 'extensions')
+    return <PluginsHub api={api} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} onOpenHome={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
   if (page === 'health') return <HealthPage api={api} accountSession={accountSession} {...actions} />
   if (page === 'feedback') return <FeedbackPage api={api} {...actions} />
   if (page === 'settings') return <SettingsPage api={api} {...actions} onBackupRestored={onBackupRestored} installedProviders={installedProviders} />
@@ -144,8 +136,6 @@ export function BusinessPage({
 
 export {
   AccountPage,
-  ExtensionsPage,
-  FeaturedPage,
   SessionsPage,
   FeedbackPage,
   HealthPage,

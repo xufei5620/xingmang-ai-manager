@@ -275,6 +275,18 @@ jobs:
         # which one, instead of cancelling the job at its cap with no verdict.
         timeout-minutes: ${{ matrix.timeout }}
         run: ${{ matrix.command }}
+      # A browser click that stalls after its mouse events went out appends what
+      # the page and the browser were doing to its own error, and saves a
+      # screenshot of the stuck page here (e2e/click-stall.mjs). The error text
+      # is already in the log; this keeps the picture of the page next to it.
+      - name: Upload screenshots of stalled clicks
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: click-stall-${{ matrix.shard }}
+          path: artifacts/click-stall/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Fail if the test run left files in the working tree
         shell: bash
         run: |
@@ -413,23 +425,24 @@ jobs:
         # fifteen seconds.
         timeout-minutes: 5
         run: node e2e/renderer-v2-native-close-race.mjs
-      # npm run verify:app with no steps: the compiled client signed in against
-      # the local account-site fixture, every sidebar page opened and kept as a
-      # screenshot plus its text. It is the same walk a thread runs in its Linux
-      # container, so a real-device note can point at this commit's Windows
-      # screens instead of asking someone to click (docs/COLLABORATION.md §7.6).
-      # A page that throws or no longer opens fails it.
-      - name: Walk every page of the real client and keep the screenshots
-        # The script budgets itself to about 7 minutes for this walk; a healthy
-        # one is well under a minute. This is the backstop.
-        timeout-minutes: 9
-        run: node e2e/verify-app.mjs --out output/verify-app
       # The one place the main process's PowerShell probes run for real. They
       # used to run inside the vitest shards, where a cold PowerShell start on a
       # busy runner could use up the whole budget, return nothing and fail an
       # unrelated pull request. The unit tests now check the generated scripts
       # and the parsers without starting a process; this step proves the
       # compiled scripts still run and still print what the parsers read.
+      #
+      # It runs before the walk of the real client below, not after it (#2041).
+      # While the walk sat directly in front of it (#1887 to #2041), the first
+      # check here that loads the Appx module, the ConstrainedLanguage Codex
+      # one, took over 10 s on about half the runs and ran out its 90 s budget
+      # twice (#1897, #2000). Both times the Appx checks right after it stalled
+      # as well, while the ones in between that never load Appx kept their
+      # usual half second, which points at something the walk's client leaves
+      # behind when it exits holding Appx up for a minute or two (what, the log
+      # cannot show). In 16 runs sampled before
+      # #1887, with this step right after the close race smoke, the same check
+      # took 6 to 8 s every time.
       - name: Run the PowerShell probes against this runner once
         # Each probe carries its own bound and the script prints how long each
         # took; this is the backstop for a hang that outlives them. Raised from
@@ -437,6 +450,18 @@ jobs:
         # PowerShell starts, each a few seconds cold on this runner.
         timeout-minutes: 12
         run: node e2e/windows-powershell-probes-smoke.mjs
+      # npm run verify:app with no steps: the compiled client signed in against
+      # the local account-site fixture, every sidebar page opened and kept as a
+      # screenshot plus its text. It is the same walk a thread runs in its Linux
+      # container, so a real-device note can point at this commit's Windows
+      # screens instead of asking someone to click (docs/COLLABORATION.md §7.6).
+      # A page that throws or no longer opens fails it. It stays after the
+      # PowerShell probes above, for the reason written there.
+      - name: Walk every page of the real client and keep the screenshots
+        # The script budgets itself to about 7 minutes for this walk; a healthy
+        # one is well under a minute. This is the backstop.
+        timeout-minutes: 9
+        run: node e2e/verify-app.mjs --out output/verify-app
       - run: npm run build:win:ci
       - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked
       - run: node e2e/packaged-hardening-smoke.mjs "release/win-unpacked/星芒AI管理工具.exe"

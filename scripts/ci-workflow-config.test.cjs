@@ -1090,6 +1090,18 @@ test('the Windows packaging job runs every smoke that has no other home', () => 
   }
 })
 
+// With the walk of the real client right in front of it, the probes' first
+// Appx checks stalled for a minute or two after that client exited and twice
+// ran out their 90 s budget (#2041); quality.yml says what the runs showed.
+test('the PowerShell probes run before the walk of the real client in the packaging job', () => {
+  const commands = runSteps('windows-package')
+  const probes = commands.indexOf('node e2e/windows-powershell-probes-smoke.mjs')
+  const walk = commands.indexOf('node e2e/verify-app.mjs --out output/verify-app')
+  assert.notEqual(probes, -1)
+  assert.notEqual(walk, -1)
+  assert.ok(probes < walk, 'the PowerShell probe smoke must not start right after the real client has exited')
+})
+
 test('real PowerShell runs once in the packaging job, never in the unit test shards', () => {
   const commands = runSteps('windows-package')
   const packageSteps = workflow.jobs['windows-package'].steps
@@ -2030,6 +2042,9 @@ const fixtureReadinessConsumers = [
   // scan below never saw it; it clicked straight after page.goto on a 7s action
   // default. Found by the Windows-shard check further down.
   'e2e/v2-local-avatar.test.mjs',
+  // Opens a data: page through the shared retry so the stall it stages is the
+  // only thing that can fail it.
+  'e2e/click-stall.test.mjs',
 ]
 
 // A hand-kept list only covers what someone remembered to add. These are the
@@ -2437,6 +2452,38 @@ test('the realm smoke clicks 稍后继续 until the start guide has really close
   assert.match(pauseStartGuide, /while \(await pause\.count\(\)\)/, 'it must click again while the guide is still there')
   assert.match(pauseStartGuide, /state: 'detached'/, 'it must wait for the guide to go before deciding the click landed')
   assert.match(realmSmoke.slice(end), /await pauseStartGuide\(page\)/, 'every UI login must close the guide through it')
+})
+
+// The renderer-v2-e2e shard twice failed a click whose call log ended at
+// "performing click action" (#1756 on 2026-11-11, #2003 on 2026-11-20), and
+// neither log could say whether the mouse events never reached the page or
+// the page stopped answering after them. The evidence that separates the two
+// is only there while the stall lasts, so every page the harness hands out
+// takes it on such a click, and the Windows job keeps the screenshot.
+test('a stalled browser click reports what the page and the browser were doing', async () => {
+  const harness = fs.readFileSync(path.join(root, 'e2e', 'harness.mjs'), 'utf8')
+  assert.match(harness, /from '\.\/click-stall\.mjs'/, 'the harness must take click stall evidence')
+  assert.match(harness, /const page = watchClickStalls\(pageErrors\.watch\(await browser\.newPage\(/,
+    'every page the harness hands out must take the evidence on a stalled click')
+
+  const clickStall = await import(require('node:url').pathToFileURL(path.join(root, 'e2e', 'click-stall.mjs')).href)
+  assert.equal(path.relative(root, clickStall.clickStallArtifactsDir).split(path.sep).join('/'), 'artifacts/click-stall')
+  // Inside the roughly ten seconds the stalls on record lasted, so the probes
+  // describe the stall rather than whatever came after it.
+  assert.ok(clickStall.clickStallProbeTimeoutMs <= 5_000)
+
+  const steps = workflow.jobs['windows-test'].steps
+  const uploadIndex = steps.findIndex((step) => step.name === 'Upload screenshots of stalled clicks')
+  assert.ok(uploadIndex > shardStepIndex(), 'the screenshots are uploaded after the shard that took them')
+  const upload = steps[uploadIndex]
+  assert.equal(upload.if, 'failure()', 'only a failed shard has a stalled click to show')
+  assert.match(upload.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/, 'pinned to a full commit like every other action here')
+  assert.equal(upload.with.path, 'artifacts/click-stall/')
+  assert.match(upload.with.name, /matrix\.shard/, 'each shard keeps its own screenshots')
+  assert.equal(upload.with['if-no-files-found'], 'ignore')
+
+  // The live check that a stall really produces the evidence runs wherever npm test does.
+  assert.match(packageJson.scripts['test:browser'], /\be2e\/click-stall\.test\.mjs\b/)
 })
 
 // A React render crash or an unhandled rejection inside a fixture leaves the

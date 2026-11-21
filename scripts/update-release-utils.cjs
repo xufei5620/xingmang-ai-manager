@@ -50,11 +50,25 @@ function isLoopback(hostname) {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]'
 }
 
+// The URL parser drops some control characters before it resolves anything, so
+// a check on the raw text and the address fetch() finally requests can
+// disagree. Refuse them outright: every later check must see exactly what the
+// request will use.
+const URL_CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/
+
+// files[].url is resolved against this placeholder directory before anything is
+// requested. A relative reference that lands on another origin or above this
+// directory does the same against the real update directory, whatever its depth.
+const ARTIFACT_PATH_PROBE_BASE = new URL('https://updates.invalid/feed/')
+
 function normalizeUpdateBaseUrl(rawUrl, { allowLocalHttp = false } = {}) {
   if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
     throw validationError('UPDATE_URL_MISSING', '更新地址不能为空')
   }
 
+  if (URL_CONTROL_CHARACTERS.test(rawUrl.trim())) {
+    throw validationError('UPDATE_URL_INVALID', '更新地址不能包含控制字符')
+  }
   let parsed
   try {
     parsed = new URL(rawUrl.trim())
@@ -88,6 +102,9 @@ function safeRelativeArtifactPath(value, fieldName = 'files[].url') {
     throw validationError('METADATA_FILE_MISSING', `${fieldName} 不能为空`)
   }
   const raw = value.trim()
+  if (URL_CONTROL_CHARACTERS.test(raw)) {
+    throw validationError('METADATA_FILE_UNSAFE', `${fieldName} 不能包含控制字符`)
+  }
   if (raw.includes('\\') || raw.startsWith('/') || /^[a-z][a-z\d+.-]*:/i.test(raw)) {
     throw validationError('METADATA_FILE_UNSAFE', `${fieldName} 必须是更新目录内的相对路径`)
   }
@@ -98,11 +115,15 @@ function safeRelativeArtifactPath(value, fieldName = 'files[].url') {
     if (rawPath.split('/').some((segment) => segment === '.' || segment === '..')) {
       throw validationError('METADATA_FILE_TRAVERSAL', `${fieldName} 包含不安全的路径段`)
     }
-    const artifactUrl = new URL(raw, 'https://updates.invalid/')
+    const artifactUrl = new URL(raw, ARTIFACT_PATH_PROBE_BASE)
+    if (artifactUrl.origin !== ARTIFACT_PATH_PROBE_BASE.origin
+      || !artifactUrl.pathname.startsWith(ARTIFACT_PATH_PROBE_BASE.pathname)) {
+      throw validationError('METADATA_FILE_UNSAFE', `${fieldName} 必须是更新目录内的相对路径`)
+    }
     if (artifactUrl.search || artifactUrl.hash) {
       throw validationError('METADATA_FILE_SUFFIX', `${fieldName} 不得包含查询参数或片段`)
     }
-    decoded = decodeURIComponent(artifactUrl.pathname.slice(1))
+    decoded = decodeURIComponent(artifactUrl.pathname.slice(ARTIFACT_PATH_PROBE_BASE.pathname.length))
   } catch (error) {
     if (error instanceof ReleaseValidationError) throw error
     throw validationError('METADATA_FILE_INVALID', `${fieldName} 包含无效的 URL 编码`)
@@ -625,7 +646,8 @@ async function responseBuffer(response, byteLimit, label = '更新服务器响�
 function assertUrlWithinUpdateBase(url, normalizedBaseUrl) {
   const target = new URL(url)
   const base = new URL(normalizedBaseUrl)
-  if (target.origin !== base.origin || !target.pathname.startsWith(base.pathname)) {
+  if (target.origin !== base.origin || !target.pathname.startsWith(base.pathname)
+    || target.username || target.password || target.search || target.hash) {
     throw validationError('REMOTE_URL_OUTSIDE_BASE', '更新资源 URL 超出配置的更新目录')
   }
 }
@@ -643,7 +665,11 @@ function assertSafeResponseUrl(response, requestedUrl, normalizedBaseUrl) {
   }
 }
 
-async function fetchWithTimeout(url, options, timeoutMs) {
+// The directory check runs before fetch(), not only on the response: a target
+// outside the update directory must cost no request at all, rather than one
+// whose answer is thrown away afterwards.
+async function fetchWithinUpdateBase(url, normalizedBaseUrl, options, timeoutMs) {
+  assertUrlWithinUpdateBase(url, normalizedBaseUrl)
   try {
     const headers = new Headers(options.headers)
     headers.set('Accept-Encoding', 'identity')
@@ -682,7 +708,7 @@ async function verifyRemoteArtifacts({ normalizedBaseUrl, metadata, metadataFile
       )
     }
     const assetUrl = new URL(file.encodedPath, normalizedBaseUrl).href
-    const response = await fetchWithTimeout(assetUrl, {}, timeoutMs)
+    const response = await fetchWithinUpdateBase(assetUrl, normalizedBaseUrl, {}, timeoutMs)
     assertSafeResponseUrl(response, assetUrl, normalizedBaseUrl)
     if (!response.ok) {
       await cancelResponseBody(response)
@@ -712,7 +738,7 @@ async function verifyRemoteArtifacts({ normalizedBaseUrl, metadata, metadataFile
     for (const file of blockmapFiles) {
       const blockmapPath = `${file.relativePath}.blockmap`
       const blockmapUrl = new URL(`${file.encodedPath}.blockmap`, normalizedBaseUrl).href
-      const blockmapResponse = await fetchWithTimeout(blockmapUrl, {}, timeoutMs)
+      const blockmapResponse = await fetchWithinUpdateBase(blockmapUrl, normalizedBaseUrl, {}, timeoutMs)
       assertSafeResponseUrl(blockmapResponse, blockmapUrl, normalizedBaseUrl)
       if (!blockmapResponse.ok) {
         await cancelResponseBody(blockmapResponse)
@@ -744,7 +770,7 @@ async function verifyRemoteChannel({
   timeoutMs = 30_000,
 }) {
   const metadataUrl = new URL(metadataFile, normalizedBaseUrl).href
-  const metadataResponse = await fetchWithTimeout(metadataUrl, {
+  const metadataResponse = await fetchWithinUpdateBase(metadataUrl, normalizedBaseUrl, {
     headers: { Accept: 'application/yaml, text/yaml, text/plain;q=0.9, */*;q=0.1' },
   }, timeoutMs)
   assertSafeResponseUrl(metadataResponse, metadataUrl, normalizedBaseUrl)

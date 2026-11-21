@@ -152,6 +152,16 @@
 .xm-brand-tile { border-radius: 11px; corner-shape: squircle; background: var(--panel-2); box-shadow: var(--tile-ring); }
 [data-theme="light"] .xm-brand-tile { background: var(--panel-solid); }
 .xm-brand img, .xm-logo { display: block; object-fit: contain; }
+/* 「插件」页一行左边的图标块：目录自带的图片铺满白底小方块，带深色版的在深色界面换深色版、底色换深；品牌标按品牌色画，深色界面里黑色的标换白。 */
+.xm-plugin-icon { display: inline-grid; place-items: center; flex: none; overflow: hidden; border-radius: 10px; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); color: var(--text-2); }
+.xm-plugin-icon.is-brand svg { fill: var(--plugin-brand); }
+[data-theme="dark"] .xm-plugin-icon.is-brand svg { fill: var(--plugin-brand-dark); }
+.xm-plugin-icon.is-image { background: var(--surface-logo-tile); }
+.xm-plugin-icon.is-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.xm-plugin-icon.is-image .xm-plugin-icon-dark { display: none; }
+[data-theme="dark"] .xm-plugin-icon.has-dark { background: var(--panel); }
+[data-theme="dark"] .xm-plugin-icon.has-dark .xm-plugin-icon-light { display: none; }
+[data-theme="dark"] .xm-plugin-icon.has-dark .xm-plugin-icon-dark { display: block; }
 .xm-logo { max-width: 100%; object-position: left center; }
 .xm-segment { display: inline-flex; gap: 2px; padding: 3px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-input); }
 .xm-segment button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--control-xs); padding: 0 12px; border: 0; background: transparent; border-radius: 6px; color: var(--text-2); font: inherit; font-size: var(--font-small); cursor: pointer; }

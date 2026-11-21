@@ -101,18 +101,22 @@ describe('clearThumbnailCache', () => {
   it('removes the thumbnails of every account and version and reports what that freed', async () => {
     writeFile(`asset-thumbnails/user-7/v2/${assetId}.png`, 3000)
     writeFile(`asset-thumbnails/user-7/v2/${otherAssetId}.jpg`, 2000)
+    // The chat's larger still images sit beside the grid tiles.
+    writeFile(`asset-thumbnails/user-7/v2/${assetId}.large.png`, 7000)
+    writeFile(`asset-thumbnails/user-7/v2/${otherAssetId}.large.jpg`, 4000)
     // A generation the pipeline no longer serves.
     writeFile(`asset-thumbnails/user-9/v1/${assetId}.png`, 500)
 
     const result = await clearThumbnailCache(path.join(root, 'asset-thumbnails'))
 
-    expect(result).toEqual({ freedBytes: 5500, kept: 0 })
+    expect(result).toEqual({ freedBytes: 16500, kept: 0 })
     // The emptied folders go too; the root itself stays for the store to write into.
     expect(fs.readdirSync(path.join(root, 'asset-thumbnails'))).toEqual([])
   })
 
   it('leaves anything it does not recognise exactly where it is', async () => {
     const unknownFile = writeFile('asset-thumbnails/user-7/v2/notes.txt', 10)
+    const unknownSize = writeFile(`asset-thumbnails/user-7/v2/${assetId}.huge.png`, 10)
     const halfWritten = writeFile(`asset-thumbnails/user-7/v2/.${assetId}.png.0f8fad5b-d9cb-469f-a165-70867728950e.tmp`, 10)
     const strayAccount = writeFile(`asset-thumbnails/someone/v2/${assetId}.png`, 10)
     const strayVersion = writeFile(`asset-thumbnails/user-7/latest/${assetId}.png`, 10)
@@ -122,7 +126,7 @@ describe('clearThumbnailCache', () => {
     const result = await clearThumbnailCache(path.join(root, 'asset-thumbnails'))
 
     expect(result).toEqual({ freedBytes: 100, kept: 0 })
-    for (const kept of [unknownFile, halfWritten, strayAccount, strayVersion, rootFile]) expect(fs.existsSync(kept)).toBe(true)
+    for (const kept of [unknownFile, unknownSize, halfWritten, strayAccount, strayVersion, rootFile]) expect(fs.existsSync(kept)).toBe(true)
   })
 
   it('keeps a thumbnail that has a second hard link, counting it as not removed', async () => {

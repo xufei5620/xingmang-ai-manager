@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AI_IMAGE_KEPT_UNSAVED_ERROR_CODE, AiAssetStore, type AiStoredAsset } from './ai-asset-store'
+import { AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE, AI_IMAGE_KEPT_UNSAVED_ERROR_CODE, AiAssetStore, type AiImageKeptPlace, type AiStoredAsset } from './ai-asset-store'
 import {
   AiUnsavedImageStash,
   stashedImageFileName,
@@ -32,12 +32,12 @@ function diskFull(): Error {
   return Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
 }
 
-/** Makes every temporary-file write of an AiAssetStore fail the way a full disk does. */
-function failTemporaryFileWrites(): void {
+/** Makes every temporary-file write of an AiAssetStore (only those under `within` when given) fail the way a full disk does. */
+function failTemporaryFileWrites(within?: string): void {
   const open = fs.promises.open
   vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
     const handle = await open(...args)
-    if (String(args[0]).endsWith('.tmp')) {
+    if (String(args[0]).endsWith('.tmp') && (within === undefined || String(args[0]).startsWith(within + path.sep))) {
       handle.writeFile = async () => {
         throw diskFull()
       }
@@ -148,6 +148,42 @@ describe('AiUnsavedImageStash', () => {
     const small = setup({ maximumDiskBytes: 30, maximumMemoryBytes: 0 })
     await expect(small.stash.keep(42, png(1, 1))).resolves.toBe('disk')
     await expect(small.stash.keep(42, png(2, 2))).resolves.toBeNull()
+  })
+
+  // 11-18 复核 A06（总单 #63）：上限是整个暂存文件夹的，几个账号共用一台电脑时不能各存满一份。
+  it('counts every account on this computer toward one disk limit, while each keeps only its own pictures', async () => {
+    const { outputRoot, events, stash } = setup({ maximumDiskBytes: 50, maximumMemoryBytes: 0 })
+    await expect(stash.keep(42, png(1, 1))).resolves.toBe('disk')
+    await expect(stash.keep(7, png(2, 2))).resolves.toBe('disk')
+    // 48 of 50 bytes are taken between the two accounts, so a third picture has nowhere to go, whoever paid for it.
+    await expect(stash.keep(7, png(3, 3))).resolves.toBeNull()
+    await expect(stash.keep(99, png(4, 4))).resolves.toBeNull()
+    expect(events.filter((event) => event.kind === 'dropped').map((event) => event.userId)).toEqual([7, 99])
+    // The same picture again takes no new room.
+    await expect(stash.keep(42, png(1, 1))).resolves.toBe('disk')
+
+    // Storing one account's pictures frees room for everyone, and nobody gets another account's picture.
+    await expect(stash.flush(42)).resolves.toBe(1)
+    expect(libraryFiles(outputRoot, 42)).toHaveLength(1)
+    expect(libraryFiles(outputRoot, 7)).toEqual([])
+    await expect(stash.keep(99, png(4, 4))).resolves.toBe('disk')
+    await expect(stash.flush(7)).resolves.toBe(1)
+    await expect(stash.flush(99)).resolves.toBe(1)
+    expect(fs.readFileSync(path.join(outputRoot, 'user-99', '2026-11-15', libraryFiles(outputRoot, 99)[0]))).toEqual(png(4, 4))
+  })
+
+  it('keeps a picture off the disk when it cannot tell how much another account has set aside', async () => {
+    const { root, stash } = setup()
+    await expect(stash.keep(7, png(2, 2))).resolves.toBe('disk')
+    const readdir = fs.promises.readdir
+    vi.spyOn(fs.promises, 'readdir').mockImplementation((async (...args: Parameters<typeof readdir>) => {
+      if (path.resolve(String(args[0])) === path.join(root, 'user-7')) {
+        throw Object.assign(new Error('EPERM: operation not permitted, scandir'), { code: 'EPERM' })
+      }
+      return readdir(...args)
+    }) as typeof readdir)
+    await expect(stash.keep(42, png(1, 1))).resolves.toBe('memory')
+    expect(fs.existsSync(path.join(root, 'user-42', stashedImageFileName(png(1, 1))))).toBe(false)
   })
 
   it('stops a round on a full disk and stores everything on the next one', async () => {
@@ -266,6 +302,69 @@ describe('AiUnsavedImageStash', () => {
     expect(quiet).toEqual([])
   })
 
+  // 11-18 复核 A05（总单 #62）：暂存文件夹一时读不了，不能当它空了就不再自己补存。
+  it.each([
+    ['the whole stash folder', (root: string, target: string) => target === root],
+    ['the account folder inside it', (root: string, target: string) => target === path.join(root, 'user-42')],
+  ])('keeps trying by itself when %s cannot be read for a while', async (_label, blocks) => {
+    const parent = temporaryDirectory()
+    const root = path.join(parent, 'stash')
+    const outputRoot = path.join(parent, 'output')
+    const scheduled: Array<{ run: () => Promise<void>; delayMs: number }> = []
+    const stash = new AiUnsavedImageStash({
+      root,
+      target: new AiAssetStore({ outputRoot, now: () => new Date(2026, 10, 15, 12, 0, 0) }),
+      retryDelaysMs: [1_000, 5_000],
+      scheduleRetry: (run, delayMs) => { scheduled.push({ run, delayMs }) },
+    })
+    await expect(stash.keep(42, png())).resolves.toBe('disk')
+    expect(scheduled.map((entry) => entry.delayMs)).toEqual([1_000])
+
+    const readdir = fs.promises.readdir
+    vi.spyOn(fs.promises, 'readdir').mockImplementation((async (...args: Parameters<typeof readdir>) => {
+      if (blocks(root, path.resolve(String(args[0])))) {
+        throw Object.assign(new Error('EPERM: operation not permitted, scandir'), { code: 'EPERM' })
+      }
+      return readdir(...args)
+    }) as typeof readdir)
+    await scheduled.shift()?.run()
+    expect(libraryFiles(outputRoot, 42)).toEqual([])
+    // It could not tell whether anything is waiting, so it does not treat the folder as empty.
+    expect(scheduled.map((entry) => entry.delayMs)).toEqual([5_000])
+
+    vi.restoreAllMocks()
+    await scheduled.shift()?.run()
+    expect(libraryFiles(outputRoot, 42)).toHaveLength(1)
+    expect(scheduled).toEqual([])
+  })
+
+  it('keeps trying after a sign-in that could not read the stash folder', async () => {
+    const parent = temporaryDirectory()
+    const root = path.join(parent, 'stash')
+    const library = new AiAssetStore({ outputRoot: path.join(parent, 'output') })
+    // Left over from an earlier run of the program.
+    await new AiUnsavedImageStash({ root, target: library, scheduleRetry: () => undefined }).keep(42, png())
+    const scheduled: number[] = []
+    const stash = new AiUnsavedImageStash({ root, target: library, scheduleRetry: (_run, delayMs) => { scheduled.push(delayMs) } })
+
+    const readdir = fs.promises.readdir
+    vi.spyOn(fs.promises, 'readdir').mockImplementation((async (...args: Parameters<typeof readdir>) => {
+      if (path.resolve(String(args[0])).startsWith(path.resolve(root))) {
+        throw Object.assign(new Error('EBUSY: resource busy or locked, scandir'), { code: 'EBUSY' })
+      }
+      return readdir(...args)
+    }) as typeof readdir)
+    await expect(stash.flush(42)).resolves.toBe(0)
+    expect(scheduled).toEqual([60_000])
+
+    // A folder that was never made has nothing waiting in it: no retry for that.
+    vi.restoreAllMocks()
+    const quiet: number[] = []
+    const fresh = new AiUnsavedImageStash({ root: path.join(parent, 'never-made'), target: library, scheduleRetry: (_run, delayMs) => { quiet.push(delayMs) } })
+    await expect(fresh.flush(42)).resolves.toBe(0)
+    expect(quiet).toEqual([])
+  })
+
   it('never throws while the store is already failing', async () => {
     const { stash } = setup()
 
@@ -293,7 +392,7 @@ describe('AiUnsavedImageStash', () => {
 describe('AiAssetStore with an unsaved-image stash', () => {
   function storeWithStash() {
     const outputRoot = path.join(temporaryDirectory(), 'output')
-    const keepUnsaved = vi.fn(async () => true)
+    const keepUnsaved = vi.fn(async (): Promise<AiImageKeptPlace | null> => 'disk')
     const store = new AiAssetStore({ outputRoot, keepUnsaved, now: () => new Date(2026, 10, 15, 12, 0, 0) })
     return { store, keepUnsaved }
   }
@@ -310,14 +409,45 @@ describe('AiAssetStore with an unsaved-image stash', () => {
     expect((error as Error).cause).toMatchObject({ code: 'ENOSPC' })
   })
 
+  it('marks an image the stash could only hold in memory apart from one kept on disk (A02)', async () => {
+    const { store, keepUnsaved } = storeWithStash()
+    keepUnsaved.mockResolvedValue('memory')
+
+    failTemporaryFileWrites()
+    const error = await store.storeBase64(42, png().toString('base64')).then(() => null, (reason: unknown) => reason)
+
+    // Gone once the app quits, so the image service has to say so.
+    expect(error).toMatchObject({ code: AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE })
+    expect((error as Error).cause).toMatchObject({ code: 'ENOSPC' })
+  })
+
+  it('passes on where a real stash put the image, disk or memory alone', async () => {
+    const { parent, outputRoot, root, library } = setup()
+    const onDisk = new AiUnsavedImageStash({ root, target: library, scheduleRetry: () => undefined })
+    const blocked = path.join(parent, 'blocked')
+    fs.writeFileSync(blocked, 'a file where the folder should be')
+    const inMemory = new AiUnsavedImageStash({ root: path.join(blocked, 'ai-unsaved-images'), target: library, scheduleRetry: () => undefined })
+    const keptOnDisk = new AiAssetStore({ outputRoot, keepUnsaved: (userId, bytes) => onDisk.keep(userId, bytes) })
+    const keptInMemory = new AiAssetStore({ outputRoot, keepUnsaved: (userId, bytes) => inMemory.keep(userId, bytes) })
+
+    // Only the library's own folder is full; the stash folder next to it still takes the picture.
+    failTemporaryFileWrites(outputRoot)
+    const diskError = await keptOnDisk.storeBase64(42, png(5, 5).toString('base64')).then(() => null, (reason: unknown) => reason)
+    const memoryError = await keptInMemory.storeBase64(42, png(6, 6).toString('base64')).then(() => null, (reason: unknown) => reason)
+
+    expect(diskError).toMatchObject({ code: AI_IMAGE_KEPT_UNSAVED_ERROR_CODE })
+    expect(memoryError).toMatchObject({ code: AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE })
+  })
+
   it('does not claim the image was set aside when the stash could not take it', async () => {
     const outputRoot = path.join(temporaryDirectory(), 'output')
-    const store = new AiAssetStore({ outputRoot, keepUnsaved: async () => false })
+    const store = new AiAssetStore({ outputRoot, keepUnsaved: async () => null })
 
     failTemporaryFileWrites()
     const error = await store.storeBase64(42, png().toString('base64')).then(() => null, (reason: unknown) => reason)
 
     expect((error as { code?: unknown }).code).not.toBe(AI_IMAGE_KEPT_UNSAVED_ERROR_CODE)
+    expect((error as { code?: unknown }).code).not.toBe(AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE)
   })
 
   it('keeps the same error when the stash itself fails', async () => {
