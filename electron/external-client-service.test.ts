@@ -809,6 +809,46 @@ describe('external client system-service integration', () => {
     })
   })
 
+  // 总单 #67（11-18 A03）：试型号那一阵换了账号或退出登录，剩下的不再拿上一个账号的密钥接着试，这次也不记；
+  // 切回原来那个账号，下次开机照常补。
+  it.each([['switches to another account', 18], ['signs out', null]] as const)(
+    'stops trying models with the previous account key once the customer %s, and catches up after switching back',
+    async (_case, next) => {
+      const f = fixture()
+      messagesFetch(f, ['claude-opus-5-5', 'claude-fable-5', 'claude-haiku-4-5'])
+      const saved = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+      const before = fs.readFileSync(saved.path, 'utf8')
+      // 账号上了 6 个新型号，比同时试的个数（3）多：换账号以后才轮到的那几个不该再发出去。
+      const listed = ['claude-opus-5-5', 'claude-fable-5', 'claude-sonnet-5-5', 'claude-haiku-4-5', 'claude-opus-4-8', 'claude-haiku-4-6']
+      let switched = false
+      f.relayFetch.mockImplementation(async (url, init) => {
+        if (!String(url).endsWith('/v1/messages')) return Response.json({ data: [selectedModel, ...listed].map((id) => ({ id })) })
+        if (!switched) {
+          switched = true
+          f.setUser(next)
+        }
+        const model = (JSON.parse(String(init?.body)) as { model: string }).model
+        return Response.json({ id: 'msg_fixture', type: 'message', role: 'assistant', model, content: [{ type: 'text', text: 'H' }], stop_reason: 'max_tokens' })
+      })
+      f.relayFetch.mockClear()
+      await f.restart().topUpClaudeDesktopModels?.()
+
+      expect(messagesProbed(f).length).toBeLessThanOrEqual(3)
+      expect(fs.readFileSync(saved.path, 'utf8')).toBe(before)
+      expect(targetFiles(f.managerDataDirectory).filter((file) => file.includes('claude-desktop-models'))).toEqual([])
+      expect(f.runtimeLog.log).toHaveBeenCalledWith('warn', 'config', 'external-client.claude-desktop.models.top-up-failed', expect.any(String), {
+        reason: '账号已变化，这次不补型号',
+      })
+
+      f.setUser(17)
+      switched = true
+      f.relayFetch.mockClear()
+      await f.restart().topUpClaudeDesktopModels?.()
+      expect(messagesProbed(f).sort()).toEqual([...listed].sort())
+      expect((claudeDesktopMenu(f, saved.path) as { name: string }[]).map((entry) => entry.name)).toEqual(expect.arrayContaining([selectedModel, ...listed]))
+    },
+  )
+
   it('does not touch a Claude Desktop profile that is not the current account, nor run without one', async () => {
     const f = fixture()
     messagesFetch(f, ['claude-opus-5-5', 'claude-fable-5', 'claude-haiku-4-5'])
