@@ -1,9 +1,6 @@
-## 用户
-
-- AI 回答因长度上限或内容审核没写完时，会明确提示内容不完整，不再显示成正常说完。
-
 ## 开发
 
+- 给客户看的那句并进了 `n7-image-ignores-history-length.md` 的「## 用户」（一版最多 60 条）。
 - 0.2.25 总单第 24 项（11-18 复核 D10）：中转回的 `finish_reason` 以前只看有没有，`length` / `content_filter` 跟 `stop` 一样当说完。
   新增 `electron/ai-answer-cut-off.ts`：`resolveAnswerCutOff` 把 `length` / `max_tokens` / `max_output_tokens` 认作到了长度上限，
   `content_filter` / `safety` / `refusal` 认作被内容审核拦下（new-api 不认识的原因会原样透传，所以连上游原名一起认）。

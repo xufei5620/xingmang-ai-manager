@@ -1,4 +1,4 @@
-import { StrictMode } from 'react'
+import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { AccountPriceList, AiChatAsset, AiChatImageInput, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioPlan, VideoStudioPlanInput, XingmangApi } from '../../../../electron/ipc-contract'
 import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
@@ -8,11 +8,15 @@ import { createAccountBalanceStore } from '../app/balance-store'
 import '../../app.css'
 import './browser-fixture'
 import type { VideoStudioPriceBridge } from './prices'
+import { videoStudioItemName, type VideoStudioLibraryBridge } from './library'
+import { createVideoStudioProject, videoStudioDraftProgress } from './project'
 import type { VideoStudioBridge } from './useVideoStudio'
+import { useVideoStudioLibrary, useVideoStudioSession, type VideoStudioLibrary, type VideoStudioSession, type VideoStudioSource } from './useVideoStudioLibrary'
 import { VideoStudioPage } from './VideoStudioPage'
 
-// 视频剪辑页在真浏览器里走一遍：假的主进程桥（分镜、出片段、读片段、存成片都在这里应答），
+// 视频工作台在真浏览器里走一遍：假的主进程桥（分镜、出片段、读片段、存成片、存视频草稿都在这里应答），
 // 片段是 browser-fixture 现做的纯色视频，拼片走真的后台线程。不碰网络。
+// 真应用里开哪一条视频由「创作」页定；这里一打开就接着最近动过的那一条，一条都没有就开一条空的。
 
 const query = new URLSearchParams(location.search)
 document.documentElement.dataset.theme = query.get('theme') ?? 'light'
@@ -70,7 +74,41 @@ function nextAssetId(): string {
 function clipFor(assetId: string, seconds = 1): AiVideoClip {
   return { assetId, thumbnailUrl: `xingmang-asset://thumb/v2/video/${assetId}`, width: 320, height: 240, durationSeconds: seconds }
 }
-const bridge: VideoStudioBridge & VideoStudioPriceBridge = {
+// 做过的视频：真应用里主进程一条存一个文件（electron/video-studio-project-store.ts），这里记在 localStorage 里，重开页面还在。
+const accountScope = 'xm-account:7'
+function projectsKey(scope: string) { return `fixture:video-studio-projects:${scope}` }
+function storedProjects(scope: string): { index: string | null, projects: Record<string, string> } {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(projectsKey(scope)) ?? 'null')
+    if (value && typeof value === 'object') {
+      const { index, projects } = value as { index?: unknown, projects?: Record<string, string> }
+      return { index: typeof index === 'string' ? index : null, projects: { ...projects } }
+    }
+  } catch {
+    // 读不出就当一条都没有。
+  }
+  return { index: null, projects: {} }
+}
+// 存视频草稿的那条通道一共应答了几次、下一次要不要报错（这台电脑上存不下）。
+let projectWrites = 0
+let projectWritesFail = false
+const bridge: VideoStudioBridge & VideoStudioPriceBridge & VideoStudioLibraryBridge = {
+  readVideoStudioProjects: async (scope) => {
+    const stored = storedProjects(scope)
+    return { index: stored.index, projects: Object.entries(stored.projects).map(([key, content]) => ({ key, content })) }
+  },
+  // 当场写完再回：关页面那一下（pagehide）交出来的最后一笔，真应用里主进程接着写完，这里页面一走就没人写了。
+  writeVideoStudioProjects: (input) => {
+    projectWrites += 1
+    if (projectWritesFail) return Promise.reject(new Error("Error invoking remote method 'video-studio:write-projects': Error: 视频草稿没有存下来"))
+    const stored = storedProjects(input.scope)
+    for (const file of input.put) stored.projects[file.key] = file.content
+    for (const key of input.remove) delete stored.projects[key]
+    if (input.index !== undefined) stored.index = input.index
+    localStorage.setItem(projectsKey(input.scope), JSON.stringify(stored))
+    return Promise.resolve()
+  },
+  reportRendererError: async (payload) => { record('report', payload) },
   getAccountPriceList: async () => { record('prices'); return priceList },
   listAiChatGroups: async () => { record('groups'); return groups },
   prepareAiChatGroup: async (group) => {
@@ -187,6 +225,17 @@ declare global {
       finishDrawing(requestId: string, assetId: string): void
       failDrawing(requestId: string, message: string): void
       balance(): number | null
+      /** 左边那一列里会列出来的视频，新的在前；open 是现在开着的那一条。 */
+      films(): Array<{ id: string, name: string, progress: string, open: boolean }>
+      /** 新开一条空的并打开；开着的那一条手上有事是 busy。 */
+      newFilm(): string
+      openFilm(id: string): string
+      removeFilm(id: string): boolean
+      renameFilm(id: string, name: string): void
+      /** 手上攒着没存的马上存，存完才回。 */
+      flush(): Promise<void>
+      projectWrites(): number
+      failProjectWrites(value: boolean): void
     }
   }
 }
@@ -226,9 +275,39 @@ window.videoStudioPage = {
     drawing?.reject(new Error(`Error invoking remote method 'chat:generate-image': Error: ${message}`))
   },
   balance: () => balanceStore?.getSnapshot().balance?.displayAmount ?? null,
+  films: () => host.library?.items.map((item) => ({ id: item.id, name: videoStudioItemName(item), progress: videoStudioDraftProgress(item.project), open: item.id === host.session?.openId })) ?? [],
+  newFilm: () => { const started = host.session?.start(); return typeof started === 'object' ? started.id : started ?? 'loading' },
+  openFilm: (id) => host.session?.open(id) ?? 'loading',
+  removeFilm: (id) => host.session?.remove(id) ?? false,
+  renameFilm: (id, name) => { host.library?.rename(id, name) },
+  flush: async () => { await host.library?.flush() },
+  projectWrites: () => projectWrites,
+  failProjectWrites: (value) => { projectWritesFail = value },
 }
 
+// 页面最近一次渲染拿到的那两样，给上面那几个测试用的入口用。
+const host: { library?: VideoStudioLibrary, session?: VideoStudioSession } = {}
+const emptySource: VideoStudioSource = { read: () => createVideoStudioProject(), write: () => undefined, warning: '' }
+
 const access = query.get('access') === 'guest' ? 'guest' : query.get('access') === 'unsupported' ? 'unsupported' : 'ready'
+
+function Studio() {
+  const library = useVideoStudioLibrary(bridge, accountScope)
+  const session = useVideoStudioSession(library)
+  host.library = library
+  host.session = session
+  const { openId } = session
+  useEffect(() => {
+    if (library.status !== 'ready' || openId) return
+    const latest = library.items[0]
+    if (latest) session.open(latest.id); else session.start()
+  }, [library.status, openId])
+  const common = { bridge: bridge as XingmangApi, accountScope, site: 'solov' as const, onLogin: () => record('login'), onOpenAccount: (tab: 'recharge' | 'keys') => record('account', tab) }
+  if (access !== 'ready') return <VideoStudioPage {...common} access={access} source={emptySource} />
+  if (!openId) return null
+  return <VideoStudioPage key={openId} {...common} access="ready" source={library.source(openId)} onBusyChange={session.setBusy} />
+}
+
 createRoot(document.getElementById('root')!).render(<StrictMode><AccountBalanceContext.Provider value={balanceStore}><ToastProvider><div style={{ maxWidth: 1000, margin: '0 auto', padding: 24 }}>
-  <VideoStudioPage bridge={bridge as XingmangApi} accountScope="xm-account:7" site="solov" access={access} onLogin={() => record('login')} onOpenAccount={(tab) => record('account', tab)} />
+  <Studio />
 </div></ToastProvider></AccountBalanceContext.Provider></StrictMode>)

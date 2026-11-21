@@ -13,6 +13,7 @@ import type { AiVideoProgressObserver } from '../../ai-video-service'
 import { ipcEventChannels, type AiVideoClip, type AiVideoProgressEvent, type VideoStudioMusic } from '../../ipc-contract'
 import { videoStudioOffMessage } from '../../remote-features'
 import { buildVideoStudioPlanMessages, parseVideoStudioPlanJson, videoStudioMusicUnreadableMessage, videoStudioPlanTooLongMessage } from '../../video-studio-plan'
+import { parseVideoStudioProjectsScope, parseVideoStudioProjectsWrite } from '../../video-studio-project-store'
 import { requiredString } from '../parsers/common'
 import {
   parseAiAudioAssetId,
@@ -196,6 +197,10 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     await options.remoteFeatures?.assertOn('video-studio', videoStudioOffMessage)
     observeSender(event.sender)
     flushPageStorage(event.sender)
+    // 这一镜的请求号现在跟着分镜存在主进程的文件里（video-studio:write-projects，页面在发这一单之前先发那一次保存）：
+    // 等它写完再交给服务端，强退、断电以后重开才找得回已经付了钱的这一单（同上面 flushPageStorage 防的那件事）。
+    // 保存自己失败了不拦这一单（idle 不会抛），页面那边另有「存不下这份分镜」的提示。
+    await options.videoStudioProjects?.idle()
     const asset = await generation.run(event.sender.id, () => videoService.generate(
       event.sender.id,
       { ...parsed, expectedUserId },
@@ -274,6 +279,17 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     currentUserId()
     // 跟读片段同一队：歌也可能上百兆，排到了再认一次账号。
     return transferClip(event.sender, async () => (await store.readOwned(currentUserId(), id)).bytes)
+  })
+
+  // 视频的分镜一条一个文件（总单 #79）。同聊天记录那两条：不等账号（换账号途中，上一个账号最后那一次保存还要落下去），
+  // 归属由页面带的 scope 定，只经它的哈希当目录名；里面写什么主进程不看，大小和个数在 store 里卡。
+  registerTrustedHandler('video-studio:read-projects', (_event, scope: unknown) => {
+    if (!options.videoStudioProjects) throw new Error('视频草稿存储未就绪')
+    return options.videoStudioProjects.read(parseVideoStudioProjectsScope(scope))
+  })
+  registerTrustedHandler('video-studio:write-projects', (_event, input: unknown) => {
+    if (!options.videoStudioProjects) throw new Error('视频草稿存储未就绪')
+    return options.videoStudioProjects.write(parseVideoStudioProjectsWrite(input))
   })
 
   // 交给系统按 .mp4 的默认程序打开（Windows 上经资源管理器转交，不从本进程直接起，system-shell.ts）。
