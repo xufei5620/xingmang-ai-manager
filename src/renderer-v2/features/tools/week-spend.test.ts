@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { XingmangApi } from '../../../../electron/ipc-contract'
-import { createWeekSpendLoader, readSettledWeekSpend, weekSpendDays, weekSpendHint, weekSpendKey, weekSpendLabel, type WeekSpendStorage } from './week-spend'
+import { createWeekSpendLoader, readSettledWeekSpend, sameWeekSpend, weekSpendDays, weekSpendHint, weekSpendKey, weekSpendLabel, type WeekSpend, type WeekSpendStorage } from './week-spend'
 
 type Range = { startTimestamp: number; endTimestamp: number }
 
@@ -239,5 +239,27 @@ describe('home week spend', () => {
   it('refuses an account whose backend only reports an all-time total', async () => {
     const { bridge } = fixture([{ userId: 7 }], 'all-time-summary')
     await expect(createWeekSpendLoader(bridge, () => new Date(2026, 9, 15)).read()).rejects.toThrow('这个账号读不出每天的花费')
+  })
+})
+
+describe('home week spend comparison', () => {
+  const day = (start: number, quota: number, end = start + 1) => ({ start, end, quota })
+  const spend = (scope: string, days: WeekSpend['days']): WeekSpend => ({ scope, days })
+
+  // R8: the home page keeps what it already shows when a re-read draws the same bars.
+  it('treats a re-read with the same bars as unchanged even though today ends later', () => {
+    const before = spend('xm-account:7', [day(1, 10), day(2, 20, 50)])
+    expect(sameWeekSpend(before, spend('xm-account:7', [day(1, 10), day(2, 20, 90)]))).toBe(true)
+    expect(sameWeekSpend(before, before)).toBe(true)
+    expect(sameWeekSpend(null, null)).toBe(true)
+  })
+
+  it('sees another account, another day or a new spend as a change', () => {
+    const before = spend('xm-account:7', [day(1, 10), day(2, 20)])
+    expect(sameWeekSpend(before, spend('xm-account:8', [day(1, 10), day(2, 20)]))).toBe(false)
+    expect(sameWeekSpend(before, spend('xm-account:7', [day(2, 20), day(3, 0)]))).toBe(false)
+    expect(sameWeekSpend(before, spend('xm-account:7', [day(1, 10), day(2, 25)]))).toBe(false)
+    expect(sameWeekSpend(before, spend('xm-account:7', [day(1, 10)]))).toBe(false)
+    expect(sameWeekSpend(before, null)).toBe(false)
   })
 })

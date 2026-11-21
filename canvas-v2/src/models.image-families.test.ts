@@ -83,25 +83,25 @@ describe('image models recognised by family', () => {
   it('lists them in a desktop image group after the presets, in the account order', () => {
     // 桌面的分组不声明用途：预设按预设次序，认得出的同家型号接在后面，次序照账号列表。
     expect(availableModelsForKind('image', xmImageGroup)).toEqual([
-      'gpt-image-2.5-flare', 'gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst',
+      'gpt-image-2.6-flare', 'gpt-image-2.5-flare', 'gpt-image-2', 'gpt-image-2.6-sunburst', 'gpt-image-2.5-sunburst',
       'nano-banana-pro', 'doubao-seedream-4-0-250828', 'flux-2-pro', 'nano-banana-2',
     ])
     expect(listedImageModelFamily('gpt-image-1.5')).toBeNull()
     expect(listedImageModelFamily('gpt-image-2-2026-04-21')).toBeNull()
   })
 
-  it('adds GPT Image 2.6 Flare and Sunburst after the 2.5 models without changing the default of a new project', () => {
+  it('labels GPT Image 2.6 Flare as recommended and makes it the default of a new project when the group has it', () => {
     expect(imageModelPresets.slice(0, 5).map(({ id, label }) => ({ id, label }))).toEqual([
-      { id: 'gpt-image-2.5-flare', label: 'GPT Image 2.5 Flare(推荐)' },
+      { id: 'gpt-image-2.6-flare', label: 'GPT Image 2.6 Flare(推荐)' },
+      { id: 'gpt-image-2.5-flare', label: 'GPT Image 2.5 Flare' },
       { id: 'gpt-image-2', label: 'GPT Image 2' },
-      { id: 'gpt-image-2.5-sunburst', label: 'GPT Image 2.5 Sunburst' },
-      { id: 'gpt-image-2.6-flare', label: 'GPT Image 2.6 Flare' },
       { id: 'gpt-image-2.6-sunburst', label: 'GPT Image 2.6 Sunburst' },
+      { id: 'gpt-image-2.5-sunburst', label: 'GPT Image 2.5 Sunburst' },
     ])
-    expect(imageModelPresets.filter((preset) => preset.label.includes('推荐')).map((preset) => preset.id)).toEqual(['gpt-image-2.5-flare'])
+    expect(imageModelPresets.filter((preset) => preset.label.includes('推荐')).map((preset) => preset.id)).toEqual(['gpt-image-2.6-flare'])
     const fresh = withPreferredMediaDefaults({}, [{ name: '图片模型' }, { name: 'Gemini' }])
-    expect(withResolvedMediaModels(fresh, availableModelsForKind('image', xmImageGroup), [], []).imageModel).toBe('gpt-image-2.5-flare')
-    expect(withResolvedMediaModels(fresh, availableModelsForKind('image', ['gpt-image-2.6-flare', 'gpt-image-2']), [], []).imageModel).toBe('gpt-image-2')
+    expect(withResolvedMediaModels(fresh, availableModelsForKind('image', xmImageGroup), [], []).imageModel).toBe('gpt-image-2.6-flare')
+    expect(withResolvedMediaModels(fresh, availableModelsForKind('image', ['gpt-image-2.5-flare', 'gpt-image-2']), [], []).imageModel).toBe('gpt-image-2.5-flare')
     // 分组里只有新认出来的型号时，新项目就用它，不再空着。
     expect(withResolvedMediaModels(fresh, availableModelsForKind('image', ['gpt-5.6-sol', 'nano-banana-2']), [], []).imageModel).toBe('nano-banana-2')
     expect(withResolvedMediaModels({ image: '图片模型', imageModel: 'gpt-image-2' }, availableModelsForKind('image', xmImageGroup), [], []).imageModel).toBe('gpt-image-2')
@@ -160,7 +160,7 @@ describe('image models recognised by family', () => {
     expect(validateImageModelOptions({ model: 'nano-banana-2', operation: 'edit', size: '1280x720', referenceImageCount: 1 }, desktop)).toContain('模型「Nano Banana 2」不支持图片编辑')
     // 改图节点的型号下拉只给能改图的（WorkflowNodes 按 supportsEdits 过滤）。
     expect(availableImageModelPresets(availableModelsForKind('image', xmImageGroup), true).filter((preset) => preset.supportsEdits).map((preset) => preset.id))
-      .toEqual(['gpt-image-2.5-flare', 'gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'])
+      .toEqual(['gpt-image-2.6-flare', 'gpt-image-2.5-flare', 'gpt-image-2', 'gpt-image-2.6-sunburst', 'gpt-image-2.5-sunburst'])
   })
 
   it('still lists every other name for a source that declares an image purpose, after the recognised ones', () => {

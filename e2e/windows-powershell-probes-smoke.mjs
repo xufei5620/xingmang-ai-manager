@@ -56,7 +56,9 @@ function runPowerShell(argv, env = process.env) {
     const child = execFile(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', ...argv], {
       env, encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024, timeout: probeBudgetMs,
     }, (error, stdout, stderr) => {
-      if (error) reject(new Error(`${error.message}${error.killed ? ` (killed after ${probeBudgetMs}ms)` : ''}\n${stderr}`))
+      // What the script had printed before it was killed tells a script that
+      // never got to its output from one that printed it and then did not exit.
+      if (error) reject(new Error(`${error.message}${error.killed ? ` (killed after ${probeBudgetMs}ms)` : ''}\n${stderr}${error.killed ? `\nstdout before the kill: ${stdout ? stdout.slice(0, 2000) : '(nothing)'}` : ''}`))
       else resolve(stdout)
     })
     // Nothing is piped in; a console host waiting on stdin must not hold the probe.
@@ -165,10 +167,16 @@ const checks = [
   // escaping, which has to come back ASCII-only and read as the same text; the
   // stand-in for an installed Codex is built from Select-Object alone, which
   // ConstrainedLanguage allows, so the version still reaches the parser.
+  //
+  // Each segment is its own powershell.exe and prints its own time. Twice
+  // (#1897, #2000) this check ran out the 90 s budget and the log could not say
+  // which of the five had hung (#2041); a segment that fails now names itself
+  // and the ones before it.
   ['Codex merged and package probes still answer in ConstrainedLanguage', async () => {
     const failingAppx = "function Get-AppxPackage { throw 'The AppX Deployment Service is not running.' }\n"
     const installedAppx = String.raw`function Get-AppxPackage { 'x' | Select-Object @{n='Name';e={'OpenAI.Codex'}}, @{n='Version';e={'26.1103.4239.0'}}, @{n='PackageFullName';e={'OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0'}}, @{n='PackageFamilyName';e={'OpenAI.Codex_2p2nqsd0c76g0'}}, @{n='InstallLocation';e={'C:\Program Files\WindowsApps\OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0'}} }
 `
+    const timings = []
     for (const [label, script, combined, expect] of [
       ['merged', buildCodexDesktopCombinedProbeScript(), true, 'conclusion'],
       ['package', buildCodexDesktopPackageProbeScript(), false, 'conclusion'],
@@ -176,7 +184,11 @@ const checks = [
       ['merged with Codex installed', installedAppx + buildCodexDesktopCombinedProbeScript(), true, 'installed'],
       ['package with Codex installed', installedAppx + buildCodexDesktopPackageProbeScript(), false, 'installed'],
     ]) {
-      const output = await runConstrained(script)
+      const startedAt = Date.now()
+      const output = await runConstrained(script).catch((error) => {
+        throw new Error(`segment "${label}" failed after ${Date.now() - startedAt}ms (before it: ${timings.join(', ') || 'none'}): ${error?.message ?? error}`)
+      })
+      timings.push(`${label} ${Date.now() - startedAt}ms`)
       assert.match(output.trim(), /^[\x00-\x7F]+$/, `${label}: ${output}`)
       const probe = combined ? parseCodexDesktopCombinedProbeJson(output).packageProbe : parseCodexDesktopPackageProbeJson(output)
       if (expect === 'error') {
@@ -189,6 +201,7 @@ const checks = [
         assert.ok(probe.value !== null || probe.confirmedAbsent === true || probe.error !== null, `${label}: ${output}`)
       }
     }
+    console.log(`info Codex merged and package probes in ConstrainedLanguage, per segment: ${timings.join(', ')}`)
   }],
   // The process segment names this user and session with two .NET calls that
   // ConstrainedLanguage refuses, so it failed whole there and the home page
