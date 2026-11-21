@@ -5424,6 +5424,46 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: desktop })
     })
 
+    // 0.2.25 总单 Q1：设置页「更换」只能说「是设置页换的」，是哪一刻由主进程记。
+    it('stamps a folder the settings page chose with the host clock, never the renderer\'s', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+      const desktop = path.join(os.homedir(), 'Desktop')
+      const now = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
+      try {
+        await expect(handler(trustedEvent(), { version: 2, workspace: desktop, workspaceChosen: true, workspaceChosenAt: 42 }))
+          .resolves.toMatchObject({ workspace: desktop, workspaceChosenAt: 1_700_000_000_000 })
+        expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: desktop, workspaceChosenAt: 1_700_000_000_000 })
+      } finally {
+        now.mockRestore()
+      }
+    })
+
+    it('does not stamp a folder save that did not come from the settings page choice', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+      const desktop = path.join(os.homedir(), 'Desktop')
+
+      // The frozen legacy renderer echoes the whole record, workspace and stored time included.
+      await handler(trustedEvent(), { version: 2, workspace: desktop, workspaceChosenAt: 42, theme: 'light' })
+      expect(service.updateStoredConfig).toHaveBeenLastCalledWith({ version: 2, workspace: desktop, theme: 'light' })
+      // The marker alone, without a folder, means nothing.
+      await handler(trustedEvent(), { version: 2, workspaceChosen: true, theme: 'light' })
+      expect(service.updateStoredConfig).toHaveBeenLastCalledWith({ version: 2, theme: 'light' })
+      await handler(trustedEvent(), { version: 2, workspace: desktop, workspaceChosen: false })
+      expect(service.updateStoredConfig).toHaveBeenLastCalledWith({ version: 2, workspace: desktop })
+      await expect(handler(trustedEvent(), { version: 2, workspace: desktop, workspaceChosen: 'yes' })).rejects.toThrow('项目文件夹设置')
+    })
+
+    it('does not stamp a chosen folder that is not remembered, like the picker does', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, workspace: path.join(os.homedir(), '.codex'), workspaceChosen: true }))
+        .resolves.toMatchObject({ workspace: stubStoredConfig.workspace })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2 })
+    })
+
     it('accepts a narrow single-field update and merges it over the stored record (①栏11)', async () => {
       // Regression for the stale-whole-record race: the sidebar "更多" toggle
       // now sends ONLY its own field, so an in-flight full save can no longer

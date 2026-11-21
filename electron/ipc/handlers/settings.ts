@@ -16,6 +16,16 @@ function withoutUnrememberedWorkspace(update: AppSettingsUpdate, platform: NodeJ
   return kept
 }
 
+// 设置页「更换」选定的文件夹记下是哪一刻（0.2.25 总单 Q1）：首页「打开」拿它跟各工具最近一次对话比，换得更晚就先进它。
+// 时刻只由这里定，渲染层只能说「是设置页换的」；workspace 被上面那条拦下没存的，也就不记。
+function withWorkspaceChoiceTime(update: AppSettingsUpdate, now: number): AppSettingsUpdate {
+  if (update.workspaceChosen === undefined) return update
+  const stamped = { ...update }
+  delete stamped.workspaceChosen
+  if (update.workspaceChosen && stamped.workspace !== undefined) stamped.workspaceChosenAt = now
+  return stamped
+}
+
 export function registerSettingsHandlers(ctx: IpcHandlerContext): void {
   const { options, registerTrustedHandler, service } = ctx
   registerTrustedHandler('settings:get', () => service.readStoredConfig())
@@ -32,7 +42,10 @@ export function registerSettingsHandlers(ctx: IpcHandlerContext): void {
         throw new Error('当前连接线路只读，请保存线路选择后重开软件')
       }
     }
-    const update = withoutUnrememberedWorkspace(parseSettingsUpdate(settings, process.platform), process.platform, os.homedir())
+    const update = withWorkspaceChoiceTime(
+      withoutUnrememberedWorkspace(parseSettingsUpdate(settings, process.platform), process.platform, os.homedir()),
+      Date.now(),
+    )
     const next = await service.updateStoredConfig(update)
     // Side effects read the MERGED record, not the raw update: a narrow
     // update (e.g. the sidebar toggle) carries no workspace/theme of its own.

@@ -911,7 +911,8 @@ export function SettingsPage({
                 'workspace',
                 async () => {
                   const workspace = await api.chooseWorkspace()
-                  if (workspace) await update({ workspace })
+                  // 带上 workspaceChosen：首页「打开」据此先进这里换的文件夹（Q1）。
+                  if (workspace) await update({ workspace, workspaceChosen: true })
                 },
                 '',
               )

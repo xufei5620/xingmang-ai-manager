@@ -325,6 +325,8 @@ export interface CliLaunchResult {
   rememberedWorkspace?: string | null
   /** 同 AppConfigSummary.rememberedWorkspaceFresh，跟着上面那个文件夹走。缺省 = 不是。 */
   rememberedWorkspaceFresh?: boolean
+  /** 同 AppConfigSummary.rememberedWorkspaceChosenAt，跟着上面那个文件夹走。缺省 = 不是设置页换的。 */
+  rememberedWorkspaceChosenAt?: number
 }
 
 export type ToolUninstallResult =
@@ -422,6 +424,11 @@ export interface AppConfigSummary {
    * （isUntouchedStarterWorkspace）。界面据此把第一句话换成让 AI 动手做点东西（D45）。缺省 = 不是。
    */
   rememberedWorkspaceFresh?: boolean
+  /**
+   * rememberedWorkspace 是设置页「更换」选定的，这是那一刻（AppSettings.workspaceChosenAt，毫秒）。首页「打开」
+   * 据此在它比这个工具最近一条对话还新时先进它（0.2.25 总单 Q1）。缺省 = 不是设置页换的，照旧先看对话记录。
+   */
+  rememberedWorkspaceChosenAt?: number
   providers: Record<ProviderId, NativeConfigSummary>
   /**
    * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，

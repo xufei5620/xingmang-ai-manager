@@ -2839,6 +2839,38 @@ test('a folder picked for one CLI opens the others there without asking again', 
   } finally { await page.close() }
 })
 
+// 0.2.25 总单 Q1：设置页换了项目文件夹，首页「打开」先进刚换的那个，不再回到各工具上次聊天的文件夹；
+// 之后这个工具又在别的文件夹里用过，以那次为准。
+test('the open button goes to the folder just chosen in settings until the tool is used elsewhere (Q1)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    const claude = page.getByTestId('tool-claude-primary')
+    await expect(claude).toHaveAttribute('title', '在 C:\\work\\my-app 打开')
+    await expect(page.getByTestId('tool-codex-primary')).toHaveAttribute('title', '在 C:\\work\\codex-app 打开')
+    const settings = await openSettingsGroup(page, '工具管理')
+    await settings.getByRole('button', { name: '更换', exact: true }).click()
+    await waitForToast(page, '已保存')
+    const saved = (await page.evaluate(() => window.v2Test.calls)).filter((entry) => entry.method === 'saveSettings')
+    assert.deepEqual(saved.map((entry) => entry.args[0]), [{ version: 2, workspace: 'C:\\Selected Project', workspaceChosen: true }])
+    await page.getByTestId('nav-home').click()
+    await expect(claude).toHaveAttribute('title', '在 C:\\Selected Project 打开')
+    await expect(page.getByTestId('tool-codex-primary')).toHaveAttribute('title', '在 C:\\Selected Project 打开')
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-claude-primary"]')?.disabled)
+    await claude.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const launched = (await page.evaluate(() => window.v2Test.calls)).filter((entry) => entry.method === 'launchCli')
+    assert.deepEqual(launched.map((entry) => entry.args.slice(0, 2)), [['claude', 'C:\\Selected Project']])
+    assert.equal((await page.evaluate(() => window.v2Test.calls)).filter((entry) => entry.method === 'chooseWorkspace').length, 1)
+
+    // 后来又在 my-app 里接着聊了 Claude Code：它回到 my-app，还没再用过的 Codex 照旧先进设置页换的那个。
+    await page.evaluate(() => window.v2Test.addRecentSession('7', 'claude', 'C:\\work\\my-app', Date.now() + 60_000))
+    await page.getByTestId('home-rescan').click()
+    await expect(claude).toHaveAttribute('title', '在 C:\\work\\my-app 打开')
+    await expect(page.getByTestId('tool-codex-primary')).toHaveAttribute('title', '在 C:\\Selected Project 打开')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // D45（新手流程 N4）：新建的项目文件夹是空的，问「介绍一下这个项目」只会换来「这里什么都没有」。
 // 「打开」会替他新建、或者记着的正是那个还空着的文件夹时，「运行第一条命令」那句换成让它动手做点东西。
 test('the first-run card asks for a small web page while the folder is the empty one the app made (D45)', async () => {

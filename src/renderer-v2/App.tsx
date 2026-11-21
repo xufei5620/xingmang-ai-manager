@@ -19,6 +19,7 @@ import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { OfficialQuotaDialog } from './features/tools/OfficialQuotaDialog'
 import { Home, homeWalletEmpty } from './features/tools/Home'
 import { rescanFingerprint } from './features/tools/rescan-change'
+import { workspaceChoiceChanged } from './features/tools/recent-workspaces'
 import { externalClientReady, visibleExternalClients } from './features/tools/external-model'
 import { createToolsApi } from './features/tools/api'
 import { logoutJobsNote } from './features/tools/launch-notice'
@@ -341,7 +342,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     return () => { delete document.documentElement.dataset.rendererReady }
   }, [])
   // 引导最后一步那颗「打开」跟首页同一套（D46）：落在哪个文件夹按会话记录定，引导开着时读一份。
-  const guideLaunchTarget = useGuideLaunch(toolsApi, guide, recentRevision, toolbox.snapshot?.config.rememberedWorkspace)
+  const guideLaunchTarget = useGuideLaunch(toolsApi, guide, recentRevision, toolbox.snapshot?.config.rememberedWorkspace, toolbox.snapshot?.config.rememberedWorkspaceChosenAt)
   const guideTools: GuideToolState[] = toolbox.snapshot ? presentTools(toolbox.snapshot).map((tool) => ({
     id: tool.id, installed: tool.status.installed, configured: tool.configured, source: guideSource(tool.source),
     version: tool.currentVersion ?? undefined, model: tool.model, detectionError: Boolean(tool.error),
@@ -505,7 +506,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           installedProviders={installedProviders}
           codexDesktopInstalled={codexDesktopInstalled}
           onSystemChanged={() => { markDiagnosticsStale(); refreshRecent(); void toolbox.refresh(true).catch(() => undefined) }}
-          onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
+          onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={(next) => {
+            // 设置页换了项目文件夹：重读一次配置，首页「打开」马上换成新的（Q1）。
+            const workspaceChanged = workspaceChoiceChanged(settings, next)
+            setSettings(next)
+            if (workspaceChanged) void toolbox.refreshConfig().catch(() => undefined)
+          }} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
           openGuide={() => setGuide(true)} replayTour={replayTour} chatTransfer={chatTransfer}
           installTool={install} cancelToolInstall={(tool) => toolbox.cancel(tool)} toolJobs={toolbox.jobs}
           onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys}
