@@ -6,12 +6,13 @@ import { BrowserWindow, dialog, type OpenDialogOptions, type WebContents } from 
 import { assetThumbnailUrl } from '../../asset-thumbnail'
 import { BoundedOperationQueue } from '../../bounded-operation-queue'
 import { CanvasGenerationAdmission } from '../../canvas-generation-admission'
+import { AiAnswerCutOffError } from '../../ai-answer-cut-off'
 import type { AiOperationProgressStage } from '../../ai-operation-progress'
 import type { AiStoredVideoAsset } from '../../ai-video-asset-store'
 import type { AiVideoProgressObserver } from '../../ai-video-service'
 import { ipcEventChannels, type AiVideoClip, type AiVideoProgressEvent, type VideoStudioMusic } from '../../ipc-contract'
 import { videoStudioOffMessage } from '../../remote-features'
-import { buildVideoStudioPlanMessages, parseVideoStudioPlanJson, videoStudioMusicUnreadableMessage } from '../../video-studio-plan'
+import { buildVideoStudioPlanMessages, parseVideoStudioPlanJson, videoStudioMusicUnreadableMessage, videoStudioPlanTooLongMessage } from '../../video-studio-plan'
 import { requiredString } from '../parsers/common'
 import {
   parseAiAudioAssetId,
@@ -178,6 +179,8 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
       return parseVideoStudioPlanJson(await ask(), parsed)
     } catch (error) {
       if (controller.signal.aborted) throw new Error('已停止写分镜')
+      // 分镜写到一半被截断，再问一次多半照样截断，还多扣一次钱；不重发，直接说清怎么改（D10）。
+      if (error instanceof AiAnswerCutOffError && error.cutOff === 'length') throw new Error(videoStudioPlanTooLongMessage)
       throw error
     } finally {
       if (plans.get(key) === controller) plans.delete(key)
