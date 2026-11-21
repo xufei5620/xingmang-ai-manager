@@ -333,7 +333,7 @@ export async function inspectUninstallAccount(
 //
 // Codex 的位置刻意不读 CODEX_HOME：这一支带着管理员身份，而那个环境变量是普通权限
 // 就能改的，不该由它决定这里去改哪个目录下的文件。设了 CODEX_HOME 的人很少，他们的
-// Codex 提醒设置留着，首页下次会提示「修好它」（如果重装回来）。
+// Codex 提醒设置留着，首页下次会提示「立即修复」（如果重装回来）。
 export function uninstallProviderConfigRoots(userHome = os.homedir()): ProviderConfigRoots {
   return defaultProviderConfigRoots(userHome, {})
 }

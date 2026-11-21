@@ -123,7 +123,7 @@ function dnsRouteSetting(details: Diagnostic['details'], accountSiteId: string |
  * accountSiteId 是登着的那个账号所在的站（signedInSiteId），只有「星芒 AI 网络」用得上；缺省 = 访客。
  */
 export function diagnosticTarget(code: string, details?: Diagnostic['details'], accountSiteId: string | null = null): V2Page | null {
-  // 「安全证书」只有「Node.js 太旧」这一种能在软件里处理，检查页那一行直接给「换成新版 Node.js」，
+  // 「安全证书」只有「Node.js 太旧」这一种能在软件里处理，检查页那一行直接给「更新 Node.js」，
   // 不再跳走（第 10 批拆掉了「安装卸载」页）。收到的证书谁都不认、以管理员身份打开这两种，结论里已经说了怎么办。
   if (code === 'CERTIFICATE_TRUST') return null
   // 文件夹被搬过没有能在软件里一键修的地方，下一步是导出报告找客服。
@@ -131,7 +131,7 @@ export function diagnosticTarget(code: string, details?: Diagnostic['details'], 
   // 加速文件坏了：设置里的游戏加速卡上有「重新检查」和「联系客服」。
   if (code === 'ACCELERATION_BUNDLE') return 'acceleration'
   // 网络和代理软件这两项以前跳「设置 → 网络」，那一组里没有能处理它们的东西，
-  // 「去检查」又跳回这一页，等于绕一圈（新手引导梳理 9-25 第 2 条），就拿掉了。
+  // 「前往检查」又跳回这一页，等于绕一圈（新手引导梳理 9-25 第 2 条），就拿掉了。
   // #872 以后那一组最上面就是「星芒账号线路」：换一条线路有可能救回来的那几种连不上，
   // 「去处理」直接翻到那一行。别的情况和代理软件那一项，结论里已经写了该怎么做。
   if (code === 'XINGMANG_NETWORK') return networkRouteSetting(details, accountSiteId) ? 'settings' : null
@@ -348,8 +348,8 @@ export function HealthPage({
   // 「正常」那一组默认收着：能点的几项（比如 Node.js 的「换成新版」）照旧一行一行摆出来，其余并成一块只写名字。
   // 从别处点名要看的那一项正好收在里面，就先摆出来再翻过去。
   const [showPassing, setShowPassing] = useState(false)
-  // 设置里「安全证书」「网络检查」点「去检查页」：检查结果出来以后翻到那一项、亮一下；
-  // 开机提示「去看看」不知道是哪一项，翻到第一项问题。去过这一页再点名进来时正在重查，
+  // 设置里「安全证书」「网络检查」点「前往检查页」：检查结果出来以后翻到那一项、亮一下；
+  // 开机提示「立即查看」不知道是哪一项，翻到第一项问题。去过这一页再点名进来时正在重查，
   // 等新结果出来再翻，不在几个小时前那份上亮。
   useRowFocus('health', pageRef, Boolean(resource.data) && !resource.loading, (anchor) => {
     const code = anchor === firstProblemAnchor ? (groups.problem[0] ?? groups.optional[0])?.code ?? null : anchor
@@ -557,7 +557,7 @@ export function HealthPage({
     const missing = item.details?.installed === false
     if (item.code === 'CERTIFICATE_TRUST') {
       return item.details?.verdict === 'outdatedNode' && onReplaceNode && canReplaceNode(capability)
-        ? { label: '换成新版 Node.js', testId: `health-fix-${item.code}`, job: 'node', run: onReplaceNode }
+        ? { label: '更新 Node.js', testId: `health-fix-${item.code}`, job: 'node', run: onReplaceNode }
         : null
     }
     if (item.code === 'RUNTIME_NODE') {

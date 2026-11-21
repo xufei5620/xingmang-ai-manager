@@ -3,7 +3,7 @@
  * 混在一起，一律说「请先确认账号连接，再打开工具。」还顺手弹出配置窗口；客户在里面怎么点都修不好
  * （2026-11-18 客户 config.toml 被 PowerShell 5.1 按 GBK 读、UTF-8 写回，中文用户名吃掉了反斜杠）。
  *
- * 句子取首页那行小字（brokenConfigDetails）的前半句，后半句「修之前会先备份」只在有「修好它」的
+ * 句子取首页那行小字（brokenConfigDetails）的前半句，后半句「修之前会先备份」只在有「立即修复」的
  * 地方说：错误框里的说明和按钮由 operation-error 的 configBroken 那一类给；引导、记录页没有那颗
  * 按钮，只上这一句。不放进 model.ts，是因为 operation-error 要按原话认它，而 model.ts 经
  * business-common 又引了 operation-error。这个文件也不许 import model.ts（连 import type 也不行）：

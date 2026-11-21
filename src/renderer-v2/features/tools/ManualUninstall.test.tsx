@@ -17,13 +17,13 @@ describe('renderer-v2 manual uninstall help', () => {
       state={{ name: 'Grok CLI', reason: '安全检查没有通过', manualCommand: null }} />)
     expect(markup).toContain('安全检查没有通过')
     expect(markup).not.toContain('manual-uninstall-command')
-    expect(markup).toContain('这次没能确认哪些文件能安全删掉，先别自己删，点「找客服」。')
+    expect(markup).toContain('这次没能确认哪些文件能安全删掉，先别自己删，点「联系客服」。')
   })
 
   it('gives the support button the no-command wording points at (D21)', () => {
     const state = { name: 'Grok CLI', reason: '安全检查没有通过', manualCommand: null }
     const markup = renderToStaticMarkup(<ManualUninstallDialog platform="macos" onClose={() => undefined} onHelp={() => undefined} state={state} />)
-    expect(markup).toMatch(/data-testid="manual-uninstall-support"[^>]*><span>找客服<\/span><\/button>/)
+    expect(markup).toMatch(/data-testid="manual-uninstall-support"[^>]*><span>联系客服<\/span><\/button>/)
     expect(markup.indexOf('manual-uninstall-support')).toBeLessThan(markup.indexOf('知道了'))
     // 没给入口就不画一颗点了没反应的按钮。
     expect(renderToStaticMarkup(<ManualUninstallDialog platform="macos" onClose={() => undefined} state={state} />)).not.toContain('manual-uninstall-support')
@@ -39,8 +39,8 @@ describe('renderer-v2 manual uninstall help', () => {
     const markup = renderToStaticMarkup(<ManualUninstallDialog platform="windows" onClose={() => undefined} cleanUp={async () => ({ remaining: 0 })}
       state={{ name: 'Claude Code', reason: '有 1 个旧版本程序文件没能自动删除', manualCommand: "Remove-Item -LiteralPath 'C:\\v\\2.1.3.exe' -Force", cleanUpTool: 'claude' }} />)
     expect(markup).toContain('Claude Code 还有文件没删干净')
-    expect(markup).toContain('点「帮我清理」，星芒再核对一遍就替你删掉；也可以复制下面的命令，在普通 PowerShell里自己执行。')
-    expect(markup).toContain('帮我清理')
+    expect(markup).toContain('点「一键清理」，星芒再核对一遍就替你删掉；也可以复制下面的命令，在普通 PowerShell里自己执行。')
+    expect(markup).toContain('一键清理')
     expect(markup.indexOf('manual-uninstall-cleanup')).toBeGreaterThan(-1)
     expect(markup.indexOf('manual-uninstall-cleanup')).toBeLessThan(markup.indexOf('manual-uninstall-copy'))
     expect(markup).not.toContain('需要手动清理')

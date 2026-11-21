@@ -193,7 +193,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [homeNoticeRoom, setHomeNoticeRoom] = useState(2)
   // 首页「重新检测」点下去那一刻的工具和运行环境（rescanFingerprint）；null = 没在等这一轮检测。
   const [rescanBefore, setRescanBefore] = useState<string | null>(null)
-  // 错误框里点了「换成新版 Node.js」：先问一次，确认后换完接着重做刚才失败的那一步。
+  // 错误框里点了「更新 Node.js」：先问一次，确认后换完接着重做刚才失败的那一步。
   const [nodeReplace, setNodeReplace] = useState<{ retry?: () => void } | null>(null)
   const scope = sessionScope(session)
   // 装完工具同步 Key 要对的是「现在」的账号，安装闭包里那份会话还停在点安装那一刻（#1097）。
@@ -312,7 +312,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     toolsApi, toolbox, toast, offline, mounted, accountEpoch, setConfirmation, setOperationError,
     reopen: (tool) => { if (tool === 'codexDesktop') requestLaunchWhenFree('codexDesktop'); else void perform('打开客户端', () => launchExternal(tool)) },
   })
-  // 「配置文件坏了」的「修好它」：首页卡片、配置窗口和打开工具时的错误框都走这里。retry 是错误框里那次
+  // 「配置文件坏了」的「立即修复」：首页卡片、配置窗口和打开工具时的错误框都走这里。retry 是错误框里那次
   // 没打开的打开，修好了替客户再开一次，不用回首页再点。
   function repairBrokenConfig(id: ToolId, retry?: () => void) {
     void perform('重置为初始状态', async () => {
@@ -668,7 +668,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {nodeReplace && <NodeReplaceDialog version={toolbox.snapshot?.system.runtime.node.version} onClose={() => setNodeReplace(null)} onConfirm={() => {
       const retry = nodeReplace.retry
       setNodeReplace(null)
-      void perform('换成新版 Node.js', () => replaceNode(retry))
+      void perform('更新 Node.js', () => replaceNode(retry))
     }} />}
     {storeNewerVersion && <Dialog open title="微软商店里有更新的一版" onClose={() => setStoreNewerVersion(null)} width={480} testId="codex-desktop-store-newer" footer={<>
       <Button onClick={() => setStoreNewerVersion(null)}>暂不使用</Button>
@@ -687,11 +687,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     </Dialog>}
     {commandConfirmation && <CommandConfirmationDialog busy={commandConfirmation === 'answering'}
       onAnswer={(choice) => void perform(choice === 'ask' ? '恢复为每次询问' : '保持当前设置', () => answerCommandConfirmation(choice))} />}
-    {switchRestartOffer && <Dialog open title="Codex 桌面端还开着" onClose={() => setSwitchRestartOffer(null)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
+    {switchRestartOffer && <Dialog open title="Codex 桌面端正在运行" onClose={() => setSwitchRestartOffer(null)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
       <Button variant="ghost" onClick={() => setSwitchRestartOffer(null)}>暂不使用</Button>
       <Button variant="primary" testId="switch-restart-codex-desktop" onClick={() => void perform('重开 Codex 桌面端', async () => { await launch('codexDesktop', 'restart'); setSwitchRestartOffer(null) })}>帮我重开</Button>
     </>}><p>{switchRestartOffer === 'official' ? '当前仍在使用之前的账号，重新打开后将切换为官方账号。' : '当前仍在使用之前的账号，重新打开后将切换为当前账号。'}重新打开将中断正在进行的回答。</p></Dialog>}
-    {restartDialog && <Dialog open title="Codex 桌面端还开着" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
+    {restartDialog && <Dialog open title="Codex 桌面端正在运行" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
       <Button variant="ghost" onClick={() => setRestartDialog(false)}>取消</Button>
       <Button onClick={() => void perform('重开 Codex', async () => { await launch('codexDesktop', 'restart'); setRestartDialog(false) })}>重开 Codex</Button>
       <Button variant="primary" onClick={() => void perform('打开 Codex', async () => { await launch('codexDesktop'); setRestartDialog(false) })}>打开窗口</Button>

@@ -216,7 +216,7 @@ export interface IpcRegistrationOptions {
   confirmUpdateInstall?(): Promise<boolean>
   /**
    * Mac 上「卸载星芒」。backupCliConfigs 由这里给：备份要用本模块里的账号上下文，和
-   * 「修好它」同一份。不传 = 这台电脑不支持在星芒里卸载。
+   * 「立即修复」同一份。不传 = 这台电脑不支持在星芒里卸载。
    */
   uninstallApp?(request: AppUninstallRequest, backupCliConfigs: () => Promise<void>): Promise<AppUninstallResult>
   takeExternalDeepLink?(target: WebContents): ExternalDeepLink | null

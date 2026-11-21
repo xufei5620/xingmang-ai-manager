@@ -43,7 +43,7 @@ interface Props {
   /** 充值活动卡片只挂在首页；别的页面仍是原来那条细横条。 */
   promoVisible?: boolean
   /**
-   * 当前账号能在软件里充值时才给：卡片和活动条上的「去充值」进「个人中心 › 充值与订阅」。
+   * 当前账号能在软件里充值时才给：卡片和活动条上的「前往充值」进「个人中心 › 充值与订阅」。
    * 带金额时充值页直接选好这一档。
    */
   onTopUp?(amount?: number): void
@@ -1001,7 +1001,7 @@ export function PromoCard({ title, deadline, tiers, lines, others, onTopUp, onDe
             return <li key={tier.amount} className={best ? 'is-best' : undefined}>
               {onTopUp
                 ? <button type="button" className="v2-promo-tier" data-testid={`announcement-promo-tier-${tier.amount}`} onClick={() => onTopUp(tier.amount)}
-                  aria-label={`充 ${formatPromoAmount(tier.pay)} 送 ${tier.percent}%，到账 ${formatPromoAmount(tier.amount)}，去充值`}>{content}</button>
+                  aria-label={`充 ${formatPromoAmount(tier.pay)} 送 ${tier.percent}%，到账 ${formatPromoAmount(tier.amount)}，前往充值`}>{content}</button>
                 : <div className="v2-promo-tier" data-testid={`announcement-promo-tier-${tier.amount}`}>{content}</div>}
             </li>
           })}
@@ -1010,7 +1010,7 @@ export function PromoCard({ title, deadline, tiers, lines, others, onTopUp, onDe
         {lines.map((line, index) => <p key={index}>{line}</p>)}
       </div>}
       <div className="v2-promo-card-actions">
-        {onTopUp && <Button size="sm" variant="primary" onClick={() => onTopUp()} testId="announcement-promo-topup">去充值</Button>}
+        {onTopUp && <Button size="sm" variant="primary" onClick={() => onTopUp()} testId="announcement-promo-topup">前往充值</Button>}
         <Button size="sm" onClick={onDetail} testId="announcement-promo-detail">活动详情</Button>
         <span className="v2-promo-card-spacer" />
         <Button size="sm" variant="ghost" onClick={onSnooze} testId="announcement-promo-snooze" title="今日不再显示，明日将再次显示">今天不再提醒</Button>
@@ -1036,7 +1036,7 @@ export function PromoBar({ items, onTopUp, onHide }: { items: PromoBarItem[]; on
         {item.name}{item.deadline && <small>{item.deadline}</small>}
       </button>)}
     </span>
-    {onTopUp && <Button size="xs" variant="primary" onClick={onTopUp} testId="announcement-promo-bar-topup">去充值</Button>}
+    {onTopUp && <Button size="xs" variant="primary" onClick={onTopUp} testId="announcement-promo-bar-topup">前往充值</Button>}
     <Button size="xs" variant="ghost" icon={X} aria-label="今日不再显示活动提醒" title="今日不再显示，明日将再次提醒" onClick={onHide} testId="announcement-promo-bar-close" />
   </div>
 }

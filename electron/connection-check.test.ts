@@ -86,7 +86,7 @@ describe('buildConnectionProbe', () => {
     if (build.kind !== 'blocked') return
     expect(build.outcome.layer).toBe('config')
     expect(build.outcome.summary).toContain('打开会连不上')
-    expect(build.outcome.nextStep).toContain('修好它')
+    expect(build.outcome.nextStep).toContain('立即修复')
   })
 
   it('builds a one-token Messages request against the configured base URL', () => {

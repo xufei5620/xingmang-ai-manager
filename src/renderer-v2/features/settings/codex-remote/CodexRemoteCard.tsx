@@ -110,7 +110,7 @@ export const codexRemoteLastRequestText = {
 export const codexRemoteLowBalanceNotice = {
   title: (amount: string) => `余额只剩 ${amount}`,
   body: '人不在电脑前时充不了值，建议先充一点再出门。',
-  action: '去充值',
+  action: '前往充值',
 } as const
 
 const idleCloseOptions = [
@@ -140,7 +140,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navig
   const collapsible = remoteChannelCollapsed(snapshot, channel)
   const [expanded, setExpanded] = useState(false)
   const disabled = !snapshot.available || Boolean(busy)
-  // 那句话旁边配的按钮（D23）：同一个应用在别处连着、别的原因没连上，给「重新连接」；后一种再给「找客服」。
+  // 那句话旁边配的按钮（D23）：同一个应用在别处连着、别的原因没连上，给「重新连接」；后一种再给「联系客服」。
   // 凭据不对时就是下面「飞书应用」那一行的「重新填写」，不再摆第二颗。只在开着时给：关着的渠道没什么可重连的。
   const problem = channel.status.state === 'connected' ? undefined : channel.status.problem
   const canReconnect = channel.enabled && (problem === 'connection-limit' || problem === 'other')
@@ -271,7 +271,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navig
             </Button>
             {problem === 'other' && onOpenHelp && (
               <Button size="sm" variant="ghost" icon={Headset} onClick={onOpenHelp} testId={`settings-remote-${id}-support`}>
-                找客服
+                联系客服
               </Button>
             )}
           </div>
@@ -372,7 +372,7 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
   /** 卡上那条红条；没有失败时是空的。 */
   error: ReactNode
   navigate?: (page: V2Page, section?: string) => void
-  /** 渠道没连上时「找客服」打开的帮助框；没给就不摆这颗按钮。 */
+  /** 渠道没连上时「联系客服」打开的帮助框；没给就不摆这颗按钮。 */
   onOpenHelp?: () => void
   /** 余额不到 remoteLowBalanceDollars、又没有能用的订阅时是余额（美元），否则 null（YF-12）。 */
   lowBalance?: number | null

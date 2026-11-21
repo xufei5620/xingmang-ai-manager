@@ -37,19 +37,19 @@ export function supportFailureOf(failure: OperationFailure, at: Date): SupportFa
  * 写的；「重试」只有在这次失败真的可重试时才留得住，「复制路径」只有在真的
  * 知道是哪个目录时才留得住，否则都是按了没反应的按钮。
  *
- * 「换成新版 Node.js」只有 Windows 做得到（Mac 上本软件代下的那份排在客户自己的
- * 后面，装了也用不上）。换不了的时候重试只会撞同一个错，出口换成「找客服」。
+ * 「更新 Node.js」只有 Windows 做得到（Mac 上本软件代下的那份排在客户自己的
+ * 后面，装了也用不上）。换不了的时候重试只会撞同一个错，出口换成「联系客服」。
  */
 export function operationErrorActions(failure: OperationFailure, installDirectory?: string | null, canReplaceNode = false): OperationAction[] {
   const hint = presentOperationFailure(failure)
   const actions = (hint?.actions ?? operationFallbackActions())
     .filter((action) => action.id !== 'retry' || Boolean(failure.retry))
     .filter((action) => action.id !== 'copyPath' || Boolean(installDirectory))
-    // 「修好它」要知道修哪个工具；不知道就只剩「找客服」，不留一颗按了没反应的按钮。
+    // 「立即修复」要知道修哪个工具；不知道就只剩「联系客服」，不留一颗按了没反应的按钮。
     .filter((action) => action.id !== 'repairConfig' || Boolean(failure.tool))
   if (canReplaceNode || !actions.some((action) => action.id === 'replaceNode')) return actions
   const rest = actions.filter((action) => action.id !== 'replaceNode')
-  return rest.some((action) => action.id === 'support') ? rest : [...rest, { id: 'support', label: '找客服' }]
+  return rest.some((action) => action.id === 'support') ? rest : [...rest, { id: 'support', label: '联系客服' }]
 }
 
 export function OperationErrorDialog({ failure, installDirectory, canReplaceNode = false, support, onClose, onAction }: {
@@ -68,7 +68,7 @@ export function OperationErrorDialog({ failure, installDirectory, canReplaceNode
   const [supportCopy, setSupportCopy] = useState<{ state: 'ok' | 'failed'; text: string } | null>(null)
   const hint = presentOperationFailure(failure)
   const actions = operationErrorActions(failure, installDirectory, canReplaceNode)
-  // 有「换成新版 Node.js」「修好它」时它才是出路，重试只会撞同一个错，所以它当主按钮。
+  // 有「更新 Node.js」「立即修复」时它才是出路，重试只会撞同一个错，所以它当主按钮。
   const primary = actions.find((action) => action.id === 'replaceNode' || action.id === 'repairConfig')?.id ?? 'retry'
   const showPath = actions.some((action) => action.id === 'copyPath')
   const copySupport = support && <Button key="copySupport" icon={Copy} testId="operation-error-copySupport" onClick={() => {

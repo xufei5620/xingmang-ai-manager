@@ -111,7 +111,7 @@ export function buildLastFailureLine(failure: SupportFailure, now = Date.now()):
 }
 
 /**
- * testIdPrefix：反馈与客服页的「找客服」卡上也有这一行，帮助与客服弹窗叠在那一页上面时两份同时在，
+ * testIdPrefix：反馈与客服页的「联系客服」卡上也有这一行，帮助与客服弹窗叠在那一页上面时两份同时在，
  * 测试按前缀分开认。缺省 = 帮助弹窗那一份（support）。
  */
 export function SupportIdentity({ line, lastFailure, onCopy, testIdPrefix = 'support' }: { line: string; lastFailure?: string | undefined; onCopy: () => void; testIdPrefix?: string }) {

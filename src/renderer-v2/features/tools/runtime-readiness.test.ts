@@ -110,7 +110,7 @@ describe('install stage wording', () => {
 
   it('says the runtime failed and the tool never started, keeping the raw cause for classification', () => {
     const message = runtimeStageFailureMessage('node', 'Claude Code', 'ETIMEDOUT registry.npmmirror.com')
-    expect(message).toMatch(/^Node\.js 运行环境没装上，Claude Code 还没开始安装。/)
+    expect(message).toMatch(/^Node\.js 运行环境安装失败，Claude Code 尚未开始安装。/)
     expect(message).toContain('ETIMEDOUT')
   })
 
@@ -118,7 +118,7 @@ describe('install stage wording', () => {
     // 拼进句子中间以后，上屏前的 errorMessage 只剥开头，剥不到这里。
     const rejected = new Error("Error invoking remote method 'runtime:install-node': Error: Node.js 自动安装失败：下载安装包时网络不通。检查网络后再点「重试」。")
     expect(runtimeStageFailureMessage('node', 'Claude Code', rejected))
-      .toBe('Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js 自动安装失败：下载安装包时网络不通。检查网络后再点「重试」。')
+      .toBe('Node.js 运行环境安装失败，Claude Code 尚未开始安装。Node.js 自动安装失败：下载安装包时网络不通。检查网络后再点「重试」。')
   })
 })
 

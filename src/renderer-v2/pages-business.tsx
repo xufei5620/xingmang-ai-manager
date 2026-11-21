@@ -36,9 +36,9 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   /** 教程页要停在哪一章；缺省 = 从第一章开始（旧行为）。 */
   tutorialTopic?: Parameters<typeof TutorialPage>[0]['topic']
   paymentReturn?: { sequence: number; order: string | null }
-  /** 记录页「接着聊」成功、归档或恢复后回调，用来作废并重读首页那份「最近」缓存。 */
+  /** 记录页「继续对话」成功、归档或恢复后回调，用来作废并重读首页那份「最近」缓存。 */
   onSessionsChanged?: () => void
-  /** 记录页「接着聊」真打开之前，先过首页「打开」那几道关；缺省 = 不检查（旧行为）。 */
+  /** 记录页「继续对话」真打开之前，先过首页「打开」那几道关；缺省 = 不检查（旧行为）。 */
   beforeResume?: Parameters<typeof SessionsPage>[0]['beforeResume']
   /** 设置 › 备份迁移里恢复成功后回调，用来让首页重读这份配置。 */
   onBackupRestored?: Parameters<typeof SettingsPage>[0]['onBackupRestored']
@@ -46,7 +46,7 @@ export type BusinessPageProps = Omit<BusinessActions, 'navigate'> & {
   onToolConfigSaved?: () => void
   /** 工具设置窗口保存成功并读回之后的信号，用来收起密钥页「还在用刚撤销的密钥」（#546）。 */
   toolConfigConfirmed?: Parameters<typeof AccountPage>[0]['toolConfigConfirmed']
-  /** 装好的命令行工具：扩展三页用它挑默认显示哪个，记录页用它把没装的那家「接着聊」按灰；缺省 = 默认 Claude、不按灰（旧行为）。 */
+  /** 装好的命令行工具：扩展三页用它挑默认显示哪个，记录页用它把没装的那家「继续对话」按灰；缺省 = 默认 Claude、不按灰（旧行为）。 */
   installedProviders?: readonly string[]
   /** 装没装 Codex 桌面端：只装了它时，扩展几页和精选照样替 Codex 加外接工具和技能；缺省 = 当没装（旧行为）。 */
   codexDesktopInstalled?: boolean

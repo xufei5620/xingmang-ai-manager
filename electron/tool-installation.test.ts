@@ -364,7 +364,7 @@ describe('CLI installation resolution', () => {
     // 原先点名 Developer ID 的那一层原样留在 cause 里，排查时还看得到。
     const error = await command.catch((reason: unknown) => reason)
     expect(error).toBeInstanceOf(UnrecognizedDarwinCliError)
-    expect((error as Error).message).toContain('用星芒装一份')
+    expect((error as Error).message).toContain('使用星芒安装')
     expect((error as Error).cause).toBeInstanceOf(DarwinCliProvenanceError)
     expect(((error as Error).cause as Error).message).toContain('Developer ID')
   })
@@ -433,7 +433,7 @@ describe('CLI installation resolution', () => {
     }).catch((reason: unknown) => reason)
 
     expect(error).toBeInstanceOf(UnrecognizedDarwinCliError)
-    expect((error as Error).message).toBe('这一份不是星芒装的，星芒核对不了它是不是官方原版，为了安全没有打开。到首页点「用星芒装一份」，装好就能打开。')
+    expect((error as Error).message).toBe('这一份不是星芒装的，星芒核对不了它是不是官方原版，为了安全没有打开。到首页点「使用星芒安装」，装好就能打开。')
     expect(runCommand).not.toHaveBeenCalled()
   })
 

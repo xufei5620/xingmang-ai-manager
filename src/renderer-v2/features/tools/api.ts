@@ -224,7 +224,7 @@ export function createToolsApi(bridge: XingmangApi) {
       recentSessions.invalidate()
       return result
     },
-    /** 卸载框里的「帮我清理」（已知48）：只说是哪个工具，删哪几个文件由主进程按那次卸载记下的定。 */
+    /** 卸载框里的「一键清理」（已知48）：只说是哪个工具，删哪几个文件由主进程按那次卸载记下的定。 */
     cleanUninstallLeftovers: (id: ActiveProviderId) => bridge.cleanUninstallLeftovers(id),
     /** 只有 Codex 桌面端有这一步，见错误框里的「重置 Codex」。 */
     resetCodexDesktop: () => bridge.resetCodexDesktop(),
@@ -272,7 +272,7 @@ export function createToolsApi(bridge: XingmangApi) {
     openSessionDirectory: (sessionId: string) => bridge.openProviderSessionDirectory(sessionId),
     saveManual: (input: Parameters<XingmangApi['saveConfig']>[0]) => bridge.saveConfig(input),
     saveAccountKey: (input: Parameters<XingmangApi['saveConfigWithAccountKey']>[0]) => bridge.saveConfigWithAccountKey(input),
-    // repair = 首页「修好它」：读不了的那份重建，读得懂的那份只改账号几处（主进程 NativeConfigWriteMode）。
+    // repair = 首页「立即修复」：读不了的那份重建，读得懂的那份只改账号几处（主进程 NativeConfigWriteMode）。
     configureManaged: (tool: ToolId, model?: string, mode: 'merge' | 'reset' | 'repair' = 'merge') => bridge.configureManagedCliKeys({
       providers: [providerFor(tool)], preferredModels: model ? { [providerFor(tool)]: model } : {}, mode, intent: 'explicit',
     }),
@@ -281,7 +281,7 @@ export function createToolsApi(bridge: XingmangApi) {
     answerCommandConfirmation: (choice: ClaudeCommandConfirmationChoice) => bridge.answerClaudeCommandConfirmation(choice),
     // 首页的一键切换：备份、写入、自检、失败回滚都在主进程一次做完。
     switchSource: (tool: ToolId, target: AccountSourceTarget) => bridge.switchAccountSource(providerFor(tool), target),
-    // 提醒设置指向旧位置时的「修好它」：备份、只改那几行、再查一遍都在主进程。
+    // 提醒设置指向旧位置时的「立即修复」：备份、只改那几行、再查一遍都在主进程。
     repairHooks: (tool: ToolId) => bridge.repairCliHooks(providerFor(tool)),
     /** 打开前的模型核对（第十二批候选 5）。核对本身出错也绝不挡住打开，一律当没核。 */
     async checkModels(tool: ToolId): Promise<ToolModelCheck> {

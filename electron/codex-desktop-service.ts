@@ -2519,7 +2519,7 @@ export function shouldRetryCodexDesktopBucketWhenStale(error: unknown): boolean 
 /**
  * Mac 上装不成时的那句话。macos-desktop-app-installer.ts 抛的已经是大白话，磁盘不够、
  * 别重复点这类本来就是写给客户看的也原样交出；其余一律说「没装好」，原话进 detail。
- * 不能走上面那个：「Codex 桌面端没装上：…」在渲染层配的是「去微软商店装」。
+ * 不能走上面那个：「Codex 桌面端没装上：…」在渲染层配的是「前往微软商店安装」。
  */
 export function toCodexDesktopMacInstallFailure(error: unknown): Error {
   if (error instanceof MacosDesktopInstallError) return error
@@ -3798,7 +3798,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           : null
         // 没有商店的电脑上不提「去微软商店更新」：那颗按钮在这里打不开。
         const storeNewerVersion = !attempt.storeUnavailable && latestComparison === -1 && latest.version ? latest.version : null
-        // 渲染层看到 storeNewerVersion 会给一颗「去微软商店装」按钮，这里只说清楚现状。
+        // 渲染层看到 storeNewerVersion 会给一颗「前往微软商店安装」按钮，这里只说清楚现状。
         const mirrorLagNotice = storeNewerVersion
           ? `；微软商店里已经有 ${storeNewerVersion}，国内下载线路还没跟上，可以去微软商店更新`
           : ''

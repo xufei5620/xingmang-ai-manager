@@ -108,7 +108,7 @@ function gateFailure(update: GateSnapshot): Pick<RequiredUpdateGateState, 'label
  */
 export function requiredUpdateFollowUp(update: GateSnapshot | null | undefined): Exclude<RequiredUpdateAction, 'check'> | null {
   if (!update || update.error || !requiredUpdateGate(update)) return null
-  // 空间不够时不替他接着点：再量一次结果多半一样，等他清出空间自己点「再试一次」。
+  // 空间不够时不替他接着点：再量一次结果多半一样，等他清出空间自己点「重试」。
   if (update.phase === 'available') return update.diskShortfall ? null : 'download'
   if (update.phase === 'downloaded') return 'install'
   return null

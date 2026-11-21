@@ -183,7 +183,7 @@ describe('workspaceName', () => {
 })
 
 describe('folderConversations', () => {
-  // 一个文件夹一行，放它最近的那条：「接着聊」只接得上那一条。
+  // 一个文件夹一行，放它最近的那条：「继续对话」只接得上那一条。
   it('keeps one row per folder, the newest chat in it, in the order the list gave', () => {
     const rows = folderConversations([
       session({ id: 'codex:3', provider: 'codex', cwd: 'C:\\work\\alpha', updatedAt: 30 }),
@@ -262,7 +262,7 @@ describe('latestSessionIdsByWorkspace', () => {
     expect([...ids]).toEqual(['claude:new'])
   })
 
-  // D27：Mac 和 Linux 上大小写不同的是两个文件夹，各有各的「接着聊」。
+  // D27：Mac 和 Linux 上大小写不同的是两个文件夹，各有各的「继续对话」。
   it('keeps two folders that differ only in case apart on Mac and Linux', () => {
     const ids = latestSessionIdsByWorkspace([
       session({ id: 'claude:upper', cwd: '/work/Foo' }),

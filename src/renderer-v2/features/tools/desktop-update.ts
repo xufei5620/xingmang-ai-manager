@@ -26,7 +26,7 @@ export function desktopUpdateToolName(tool: DesktopUpdateTool): string {
 /** 它还开着时那一问（10-08 给 Windows Codex 写过的那版字）。 */
 export function desktopUpdateRunningPrompt(tool: DesktopUpdateTool): { title: string; body: string; label: string; cancelLabel: string } {
   return {
-    title: `${spacedName(desktopUpdateToolName(tool))}还开着`,
+    title: `${spacedName(desktopUpdateToolName(tool))}正在运行`,
     body: '更新要先把它关掉，会打断它正在进行的回答。更新完星芒会帮你重新打开。',
     label: '关掉并更新',
     cancelLabel: '先不更新',

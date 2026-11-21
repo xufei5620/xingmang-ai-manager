@@ -85,19 +85,19 @@ export interface StartGuideProps {
   onSwitchAccount?: (route: GuideToolRoute) => Promise<AccountSourceSwitchResult | null>
   /**
    * 第 3 步的「重新同步」：只给这个工具把账号密钥再写一次，跟装完以后那一轮一样。返回 true = 写好了，
-   * 引导替他点「下一步」。缺省 = 不给这颗按钮，写失败时只剩「去连好」。
+   * 引导替他点「下一步」。缺省 = 不给这颗按钮，写失败时只剩「前往连接」。
    */
   onBootstrapRetry?: (route: GuideToolRoute) => Promise<boolean>
   /** 按钮上的账号名；没登录为 null。 */
   accountName?: string | null
   /**
-   * 失败时「找客服」「去充值」「去备份迁移」「换成新版 Node.js」这些出口；缺省 = 只给「再试一次」。
+   * 失败时「联系客服」「前往充值」「前往备份迁移」「更新 Node.js」这些出口；缺省 = 只给「重试」。
    * retry 只在安装类失败时带上：换完 Node.js 要接着重装刚才那个工具。
    */
   onFailureAction?: (action: OperationActionId, retry?: () => void) => void
   /** 这台电脑能不能由本软件把 Node.js 换成新版（只有 Windows）；缺省 = 不能。 */
   canReplaceNode?: boolean
-  /** 当前账号余额是 $0、也没有能用的订阅：最后一步先说这件事，「去充值」放到最上面。缺省 = 不知道，照旧。 */
+  /** 当前账号余额是 $0、也没有能用的订阅：最后一步先说这件事，「前往充值」放到最上面。缺省 = 不知道，照旧。 */
   walletEmpty?: boolean
   onLogin: () => void
   /**
@@ -115,7 +115,7 @@ export interface StartGuideProps {
    * 一样落在 opensIn 说的地方。回 false = 没打开（选文件夹时关了窗口、「先不打开」），引导停在这一步。
    */
   onLaunch: (route: GuideRoute, chooseFolder?: boolean) => Promise<boolean | void>
-  /** landing：走完以后进哪一页。「去聊天」进聊天页，「做图、做视频」进视频剪辑页，「进入首页」「打开 X」「去充值」都先回首页。 */
+  /** landing：走完以后进哪一页。「前往对话」进聊天页，「做图、做视频」进视频剪辑页，「进入首页」「打开 X」「前往充值」都先回首页。 */
   onComplete: (route: GuideRoute, landing: GuideLanding) => void
   onBack?: () => void
   onHelp?: () => void
@@ -166,12 +166,12 @@ const installFailureKeys = new Set<string>(['toolRunning', 'installBlocked', 'do
 
 /**
  * 授权窗口那句（windows-elevation.ts）后半截按账号类型写好了下一步：普通账号换个管理员账号去装、公司电脑找管理电脑的人。
- * 认出原因以后原话折在「给客服看的原话」里，客户不会点开，所以把这半截接在红字里（#1096）。
- * 主进程那句说的是错误框的「重试」，引导里这颗按钮叫「再试一次」，跟网络那几类一样换掉。
+ * 认出原因以后原话折在「原始信息（供客服查看）」里，客户不会点开，所以把这半截接在红字里（#1096）。
+ * 主进程那句说的是错误框的「重试」，引导里这颗按钮同样叫「重试」（第 3 批按钮名统一前叫「再试一次」，那时要换字），原样接上。
  */
 function elevationNextStep(key: string, message: string): string {
   if (key !== 'elevationDeclined') return ''
-  const next = (/(?:已取消管理员授权|未获得管理员权限)，[^。]*。(.+)$/.exec(message)?.[1].trim() ?? '').replace(/「重试」/g, '「再试一次」')
+  const next = (/(?:已取消管理员授权|未获得管理员权限)，[^。]*。(.+)$/.exec(message)?.[1].trim() ?? '')
   return !next || /[。！？]$/.test(next) ? next : `${next}。`
 }
 
@@ -188,15 +188,15 @@ function officialRegistryNextStep(key: string, message: string): string {
 
 /**
  * 网络那几类（证书日期对不上、证书被换、连不上下载源），主进程那句只说原因，下一步交给错误目录
- *（npm-failure-reasons.ts 里这几类的 nextStep 是 null）。引导以前只拿标题放进括号，再叫人点「再试一次」：
+ *（npm-failure-reasons.ts 里这几类的 nextStep 是 null）。引导以前只拿标题放进括号，再叫人点「重试」：
  * 证书被换的那种重试只会撞同一个错，目录里「换个网络（比如手机热点）」那句客户看不到（主路卡点 F12）。
- * 目录正文说的是错误框的「重试」，引导里这颗按钮叫「再试一次」；正文已经说到怎么重试、还不行怎么办，
+ * 目录正文说的是错误框的「重试」，引导里这颗按钮同样叫「重试」；正文已经说到怎么重试、还不行怎么办，
  * 后面不再接那句通用的。
  */
 const installNetworkFailureKeys = new Set<string>(['certDate', 'tlsIntercepted', 'downloadUnreachable'])
 
 function installNetworkNextStep(key: OperationErrorKey): string {
-  return installNetworkFailureKeys.has(key) ? errors[key].body.replace(/「重试」/g, '「再试一次」') : ''
+  return installNetworkFailureKeys.has(key) ? errors[key].body : ''
 }
 
 /**
@@ -213,7 +213,7 @@ const unrecognized = '（未能识别问题类型，原始信息如下）'
 
 /** 认不出原因时往哪儿指：有「复制给客服」就让他复制，没有才说「需要帮助」。 */
 function guideFailureTail(unknown: boolean, copyable: boolean): string {
-  return unknown && copyable ? '点「再试一次」，还不行就点「复制给客服」发给客服。' : '点「再试一次」，还不行就点「需要帮助」。'
+  return unknown && copyable ? '请点击「重试」；如仍失败，请点击「复制给客服」并发送给客服。' : '请点击「重试」；如仍失败，请点击「需要帮助」。'
 }
 
 function guideDetail(error: unknown, shown: string): string | undefined {
@@ -232,15 +232,15 @@ export function guideInstallFailure(error: unknown, name: string, canReplaceNode
   const key = classifyOperationError(message)
   // 这一类重试只会撞同一个错，出路是换 Node.js（第十九批 1）；换完引导接着装。
   if (key === 'toolCertOutdatedNode' && canReplaceNode) {
-    const shown = `${name} 没装上：这台电脑上的 Node.js 太旧，认不了公司电脑装的证书。点「换成新版 Node.js」，换好后星芒会接着装。`
+    const shown = `${name} 安装失败：本机 Node.js 版本过旧，无法识别企业证书。请点击「更新 Node.js」，更新后将自动继续安装。`
     return { message: shown, reason: errors[key].title, detail: guideDetail(error, shown) }
   }
   // 安装走的是下载源，「超时」只能说网络连不上，不能指向星芒服务器（目录里那条的标题
   // 现在也是这么写的，这里单写一份，目录再改也不跟着走）；账号、计费那几类在安装里不会出现，也不借。
-  const reason = key === 'timeout' ? '网络连不上' : installFailureKeys.has(key) ? errors[key].title : undefined
+  const reason = key === 'timeout' ? '网络连接失败' : installFailureKeys.has(key) ? errors[key].title : undefined
   const detail = guideDetail(error, '')
   const why = reason ? `（${reason}）` : detail ? unrecognized : ''
-  const what = /运行环境没装上/.test(message) ? `运行环境没装上${why}，${name} 还没开始装` : `${name} 没装上${why}`
+  const what = /运行环境安装失败/.test(message) ? `运行环境安装失败${why}，${name} 尚未开始安装` : `${name} 安装失败${why}`
   const tail = installNetworkNextStep(key) || guideFailureTail(!reason && Boolean(detail), copyable)
   return { message: `${what}。${elevationNextStep(key, message)}${officialRegistryNextStep(key, message)}${tail}`, reason, detail }
 }
@@ -262,28 +262,28 @@ export function guideStepFailure(error: unknown, action: string, copyable = fals
   const key = classifyOperationError(message, operationTargetOf(action))
   // 这几步多半连的是下载源或本机，「超时」只能说网络连不上，不能指向星芒服务器
   //（同上，不借目录里那条的标题）。
-  if (key === 'timeout') return { message: `${action}没有成功：网络连不上。检查网络后点「再试一次」。`, reason: '网络连不上', detail: guideDetail(error, '') }
-  // 目录里那句叫人点错误框的「重试」「找客服」，引导里这两颗按钮叫「再试一次」「复制给客服」。
+  if (key === 'timeout') return { message: `${action}失败：网络连接失败。请检查网络后点击「重试」。`, reason: '网络连接失败', detail: guideDetail(error, '') }
+  // 目录里那句叫人点错误框的「重试」「联系客服」，引导里这两颗按钮叫「重试」「复制给客服」。
   if (key === 'configPermission') {
     const title = errors[key].title
-    const tail = copyable ? '还不行就点「复制给客服」发给客服。' : '还不行就点「需要帮助」。'
-    return { message: `${action}没有成功：${title}。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，${tail}`, reason: title, detail: guideDetail(error, '') }
+    const tail = copyable ? '如仍失败，请点击「复制给客服」并发送给客服。' : '如仍失败，请点击「需要帮助」。'
+    return { message: `${action}失败：${title}。通常是安全软件拦截或文件被其他程序占用。请关闭正在使用该工具的窗口后点击「重试」，${tail}`, reason: title, detail: guideDetail(error, '') }
   }
   // 配置文件是个链接（#1100 第2条）：是哪个文件、换成什么，只有主进程那句里有。目录正文叫人看「下面这句话」，
-  // 引导里原话折在「给客服看的原话」里，所以把那一句取出来放上红字，外面包的「改用当前账号没有完成：」不重复。
+  // 引导里原话折在「原始信息（供客服查看）」里，所以把那一句取出来放上红字，外面包的「改用当前账号没有完成：」不重复。
   const linked = key === 'configLink' ? configLinkRefusalIn(message) : null
   if (linked) {
     const tail = copyable ? '如需协助，请点击「复制给客服」并发送给客服。' : '如需协助，请点击「需要帮助」。'
-    return { message: `${action}没有成功：${linked}${tail}`, reason: errors.configLink.title, detail: guideDetail(error, linked) }
+    return { message: `${action}失败：${linked}${tail}`, reason: errors.configLink.title, detail: guideDetail(error, linked) }
   }
   if (key !== 'unknown') {
     const { title, body } = errors[key]
-    return { message: `${action}没有成功：${title}。${body ? body.replace(/。?$/, '。') : ''}`, reason: title, detail: guideDetail(error, '') }
+    return { message: `${action}失败：${title}。${body ? body.replace(/。?$/, '。') : ''}`, reason: title, detail: guideDetail(error, '') }
   }
   // 脱完路径的占位词「本机路径」本身是汉字，带路径的英文不能因为它就算成中文（第三十批 A）。
   if (speaksChinese(message)) return { message: redactSecretPatterns(message) }
   const detail = guideDetail(error, '')
-  return { message: `${action}没有成功${detail ? unrecognized : ''}。${guideFailureTail(Boolean(detail), copyable)}`, detail }
+  return { message: `${action}失败${detail ? unrecognized : ''}。${guideFailureTail(Boolean(detail), copyable)}`, detail }
 }
 
 /** 「复制给客服」里「做什么」那一行：说清是引导里的哪一步、哪个工具。 */
@@ -295,24 +295,24 @@ export function guideSupportAction(action: string, name: string): string {
   return `新手引导 · ${action}`
 }
 
-/** 「改用」失败时在「再试一次」之外给的出口；重试已经有自己的按钮，这里不再给。 */
+/** 「改用」失败时在「重试」之外给的出口；重试已经有自己的按钮，这里不再给。 */
 export function guideFailureExits(reason: unknown): OperationAction[] {
   return presentOperationError(userFacingErrorMessage(reason))?.actions.filter((action) => action.id !== 'retry' && action.id !== 'copyPath') ?? []
 }
 
-/** 引导里会装东西的几步：失败时和错误框一样给出口，不只「再试一次」（第十九批 1）。 */
+/** 引导里会装东西的几步：失败时和错误框一样给出口，不只「重试」（第十九批 1）。 */
 const guideInstallActions = new Set(['安装工具', '更新工具', '准备环境'])
 
 /**
- * 安装类失败的出口：和错误框（operationErrorActions）同一张表。「换成新版 Node.js」
- * 只有 Windows 换得了，换不了时重试只会撞同一个错，改给「找客服」；分不出类的
- * 也至少给「找客服」，别让人只剩「再试一次」。
+ * 安装类失败的出口：和错误框（operationErrorActions）同一张表。「更新 Node.js」
+ * 只有 Windows 换得了，换不了时重试只会撞同一个错，改给「联系客服」；分不出类的
+ * 也至少给「联系客服」，别让人只剩「重试」。
  */
 export function guideInstallExits(reason: unknown, canReplaceNode = false): OperationAction[] {
   const all = guideFailureExits(reason)
   const exits = all.filter((action) => canReplaceNode || action.id !== 'replaceNode')
   if (exits.length && exits.length === all.length) return exits
-  return exits.some((action) => action.id === 'support') ? exits : [...exits, { id: 'support', label: '找客服' }]
+  return exits.some((action) => action.id === 'support') ? exits : [...exits, { id: 'support', label: '联系客服' }]
 }
 
 /**
@@ -415,9 +415,9 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const [step, setStep] = useState<GuideStep>(restored?.step ?? 'choose')
   const [pending, setPending] = useState('')
   const [error, setError] = useState('')
-  // 上一次失败的那一步，留着给「再试一次」原样再跑一遍；以前只有「安装」有这颗按钮。
+  // 上一次失败的那一步，留着给「重试」原样再跑一遍；以前只有「安装」有这颗按钮。
   const [failed, setFailed] = useState<{ action: string; work: () => Promise<void> } | null>(null)
-  // 「改用」失败时除了「再试一次」还要给的出口（没开通找客服、余额不足去充值、恢复失败去备份迁移）。
+  // 「改用」失败时除了「重试」还要给的出口（没开通找客服、余额不足去充值、恢复失败去备份迁移）。
   const [failureExits, setFailureExits] = useState<OperationAction[]>([])
   // 这次失败交给客服的那份（原因、原话、哪一步）；复制的是出错那一刻的内容。
   const [failureNote, setFailureNote] = useState<SupportFailure | null>(null)
@@ -610,7 +610,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     if (result.verified) return `已${switchLabel}。${backup}`
     return `${result.message.replace(/^已改用当前账号[，。]?/, '')}${backup}`
   }
-  // 有「换成新版 Node.js」时它才是出路：排在「再试一次」前面、当主按钮，和错误框一个规矩。
+  // 有「更新 Node.js」时它才是出路：排在「重试」前面、当主按钮，和错误框一个规矩。
   const replaceFirst = Boolean(onFailureAction && failureExits.some((action) => action.id === 'replaceNode'))
   const result = route ? buildGuideSetupResult({ route, tool, signedIn, readiness, name, officialName, accountName, switched: switchedHere, walletEmpty }) : null
   // 第 3 步：没装好、没登录、已用当前账号或官方账号连好、聊天这几种照 v4 一张卡说清；别处的 Key、官方账号还没登录、
@@ -624,7 +624,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const readyToOpen = readiness.prepared && readiness.connected
   const showRecharge = Boolean(step === 'ready' && onFailureAction && route && readyToOpen && result?.usesAccountBalance)
   const unverifiedSwitch = switchedHere?.target === 'account' && !switchedHere.verified
-  // 余额是 $0 时打开了也用不了：顶上那句换成首页的原话，「去充值」紧跟在下面当主按钮，
+  // 余额是 $0 时打开了也用不了：顶上那句换成首页的原话，「前往充值」紧跟在下面当主按钮，
   // 不用往下翻（主路卡点 F3）。「打开」照样能点，只是退成次按钮。没试通的改用自己带着出口，不叠这一套。
   const walletFirst = Boolean(showRecharge && result?.walletEmpty && !unverifiedSwitch)
   // 第 3 步还没连好时「下一步」灰着，悬停说一句还差什么（W81）；正忙着的时候灰着是别的原因，不说这句。
@@ -641,7 +641,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     {/* 最后一步的「打开」「进入首页」放在底栏，跟「上一步」排在一起，内容再长也不用往下翻（D46，新手流程 N5）。 */}
     {step === 'ready' && <>
       <Button variant="secondary" disabled={locked || !route || !readyToOpen} onClick={() => { if (route) complete(route, 'home') }} testId="guide-home">进入首页</Button>
-      <Button variant={(signedIn || readyToOpen) && !walletFirst ? 'primary' : 'secondary'} icon={route === 'chat' ? MessageSquare : Play} loading={pending === '打开工具'} disabled={locked || !readyToOpen} onClick={() => launch()} testId={route === 'chat' ? 'guide-chat' : 'guide-open-tool'}>{route === 'chat' ? '去聊天' : `打开 ${name}`}</Button>
+      <Button variant={(signedIn || readyToOpen) && !walletFirst ? 'primary' : 'secondary'} icon={route === 'chat' ? MessageSquare : Play} loading={pending === '打开工具'} disabled={locked || !readyToOpen} onClick={() => launch()} testId={route === 'chat' ? 'guide-chat' : 'guide-open-tool'}>{route === 'chat' ? '前往对话' : `打开 ${name}`}</Button>
     </>}
   </>
   return <Dialog open title="新手引导" width={640} testId="onboarding-page" busy={locked} onClose={pause} initialFocus={heading} footer={footer}>
@@ -668,13 +668,13 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
           {keySyncFailure && <p className="auth-error" role="alert" data-testid="guide-key-sync-failure">{keySyncFailure.text}</p>}
           {connectCard ?? <>{foreign ? <p className="auth-guide-lead" data-testid="guide-foreign-key" data-key-state={foreign}>{foreignLead[foreign]}</p> : <p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p>}<p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{foreign ? `${foreignCallout[foreign]}${codexShared}` : tool?.source === 'unknown' ? '原有配置已保留。请先查看处理步骤，确认需保留的设置后再选择连接方式。' : tool?.officialLoginRequired ? `当前选择的是官方账号，但尚未在 ${name} 中登录。请打开 ${name}，并使用 ChatGPT 账号登录后重新检测，或在配置中改用当前账号。` : readiness.connected ? '当前连接已确认。如需更换密钥、模型或工作文件夹，请打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p></>}
           {officialNote && <p className="auth-hint" data-testid="guide-official-note">{officialNote}</p>}{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}
-          <div className="auth-form-actions">{!signedIn && !foreign && !readiness.connected && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-login">登录账号</Button>}{offerKeySync && <Button variant="primary" icon={KeyRound} disabled={locked} onClick={retryKeySync} testId="guide-key-sync-retry">重新同步</Button>}{offerSwitch && <Button icon={KeyRound} variant={foreign === 'otherSite' ? 'primary' : 'secondary'} loading={pending === '改用当前账号'} disabled={locked} onClick={switchAccount} testId="guide-switch-account">{switchButton}</Button>}{foreign !== 'otherSite' && <><Button icon={Settings} variant={readiness.connected || offerSwitch || offerKeySync || !signedIn ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' && !foreign ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去连好'}</Button><Button variant="ghost" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></>}</div>
+          <div className="auth-form-actions">{!signedIn && !foreign && !readiness.connected && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-login">登录账号</Button>}{offerKeySync && <Button variant="primary" icon={KeyRound} disabled={locked} onClick={retryKeySync} testId="guide-key-sync-retry">重新同步</Button>}{offerSwitch && <Button icon={KeyRound} variant={foreign === 'otherSite' ? 'primary' : 'secondary'} loading={pending === '改用当前账号'} disabled={locked} onClick={switchAccount} testId="guide-switch-account">{switchButton}</Button>}{foreign !== 'otherSite' && <><Button icon={Settings} variant={readiness.connected || offerSwitch || offerKeySync || !signedIn ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' && !foreign ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '前往连接'}</Button><Button variant="ghost" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></>}</div>
           {!connectCard && result && <GuideResultCard result={result} />}
         </>}
         {(step === 'connect' || step === 'ready') && notPrepared}
         {step === 'ready' && <>
           {readiness.prepared && <p className="auth-guide-lead" data-testid={walletFirst ? 'guide-wallet-empty' : undefined}>{walletFirst ? walletEmptyLead : route === 'chat' ? '从一个问题开始，慢慢熟悉星芒。' : readiness.connected ? unverifiedSwitch ? `${name} 已改用当前账号，但未能确认连接可用。` : `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>}
-          {walletFirst && route && <div className="auth-form-actions" data-testid="guide-recharge"><Button variant="primary" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">去充值</Button></div>}
+          {walletFirst && route && <div className="auth-form-actions" data-testid="guide-recharge"><Button variant="primary" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">前往充值</Button></div>}
           {/* 「已用当前账号连好。想换密钥或模型，点这里」引导里不再出（D46）：新手用不着，下面一行已经写着用的是当前账号。 */}
           {switchedHere && <div className="auth-hint auth-guide-connected" data-testid="guide-switched-note" data-backup-id={switchedHere.backupId.trim() || undefined}><p>{switchReceipt(switchedHere)}</p>{switchedHere.target === 'account' && !switchedHere.verified && onFailureAction && guideFailureExits(switchedHere.message).map((action) => <Button key={action.id} size="sm" disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div>}
           {result && <GuideResultCard result={result} collapse />}
@@ -682,16 +682,16 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
           {definition?.firstRun && readyToOpen && <FirstRunSteps key={`${route}:${tool?.freshFolder === true}`} name={name} firstRun={definition.firstRun} testId="guide-first-run" freshFolder={tool?.freshFolder === true} withCommand={false} />}
           {result?.prompt && readyToOpen && <GuideFirstTaskPrompt key={route} prompt={result.prompt} copiedNotice={route === 'chat' ? '已复制，请粘贴到对话中发送' : `已复制，请粘贴到 ${spaceAfter(name)}中发送`} disabled={locked} />}
           <div className="auth-guide-ready-actions">
-            {!signedIn && !readyToOpen && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-ready-login">去登录</Button>}
+            {!signedIn && !readyToOpen && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-ready-login">前往登录</Button>}
             {offerOtherFolder && readyToOpen && <Button variant="secondary" icon={FolderOpen} disabled={locked} onClick={() => launch(true)} testId="guide-open-tool-choose-folder">{chooseWorkspaceLabel}</Button>}
-            {showRecharge && !walletFirst && route && <span className="auth-guide-recharge" data-testid="guide-recharge"><Button variant="ghost" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">去充值</Button></span>}
-            {!signedIn && readyToOpen && <Button variant="secondary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-ready-login">去登录</Button>}
+            {showRecharge && !walletFirst && route && <span className="auth-guide-recharge" data-testid="guide-recharge"><Button variant="ghost" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">前往充值</Button></span>}
+            {!signedIn && readyToOpen && <Button variant="secondary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-ready-login">前往登录</Button>}
             {!signedIn && onRegister && <Button variant="secondary" icon={UserPlus} disabled={locked} onClick={onRegister} testId="guide-ready-register">注册新账号</Button>}
             <span className="auth-footer-spacer" />
             <Button variant="ghost" size="sm" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-ready-rescan">重新检测</Button>
           </div>
         </>}
-        {pending && <p className="auth-hint" role="status">正在{pending}，请稍候</p>}{progress && locked && <Progress value={progress.percent} label={progress.label} testId="guide-progress" />}{error && <p className="auth-error" role="alert" data-testid="guide-error">{error}</p>}{error && failureNote?.detail && <details className="auth-guide-raw" open={!failureNote.reason} data-testid="guide-error-raw"><summary>给客服看的原话</summary><pre>{failureNote.detail}</pre></details>}{error && (replaceFirst || failed || (support && failureNote) || (onFailureAction && failureExits.some((action) => action.id !== 'replaceNode'))) && <div className="auth-form-actions auth-guide-exits">{error && replaceFirst && failed && <Button variant="primary" disabled={locked} onClick={() => onFailureAction?.('replaceNode', () => void run(failed.action, failed.work))} testId="guide-exit-replaceNode">换成新版 Node.js</Button>}{error && failed && <Button icon={RefreshCw} disabled={locked} onClick={() => void run(failed.action, failed.work)} testId="guide-retry">再试一次</Button>}{error && support && failureNote && <Button icon={Copy} disabled={locked} onClick={copySupport} testId="guide-copy-support">复制给客服</Button>}{error && onFailureAction && failureExits.filter((action) => action.id !== 'replaceNode').map((action) => <Button key={action.id} disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div>}{error && supportCopy && <p className="auth-hint" role="status" data-testid="guide-copy-support-status">{supportCopy.state === 'ok' ? '已复制，请发送给客服' : '复制失败，请手动选中以下内容复制'}</p>}{error && supportCopy?.state === 'failed' && <pre className="auth-guide-support-text" data-testid="guide-copy-support-text">{supportCopy.text}</pre>}{storageWarning && <p className="auth-hint" role="status">{storageWarning}</p>}
+        {pending && <p className="auth-hint" role="status">正在{pending}，请稍候</p>}{progress && locked && <Progress value={progress.percent} label={progress.label} testId="guide-progress" />}{error && <p className="auth-error" role="alert" data-testid="guide-error">{error}</p>}{error && failureNote?.detail && <details className="auth-guide-raw" open={!failureNote.reason} data-testid="guide-error-raw"><summary>原始信息（供客服查看）</summary><pre>{failureNote.detail}</pre></details>}{error && (replaceFirst || failed || (support && failureNote) || (onFailureAction && failureExits.some((action) => action.id !== 'replaceNode'))) && <div className="auth-form-actions auth-guide-exits">{error && replaceFirst && failed && <Button variant="primary" disabled={locked} onClick={() => onFailureAction?.('replaceNode', () => void run(failed.action, failed.work))} testId="guide-exit-replaceNode">更新 Node.js</Button>}{error && failed && <Button icon={RefreshCw} disabled={locked} onClick={() => void run(failed.action, failed.work)} testId="guide-retry">重试</Button>}{error && support && failureNote && <Button icon={Copy} disabled={locked} onClick={copySupport} testId="guide-copy-support">复制给客服</Button>}{error && onFailureAction && failureExits.filter((action) => action.id !== 'replaceNode').map((action) => <Button key={action.id} disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div>}{error && supportCopy && <p className="auth-hint" role="status" data-testid="guide-copy-support-status">{supportCopy.state === 'ok' ? '已复制，请发送给客服' : '复制失败，请手动选中以下内容复制'}</p>}{error && supportCopy?.state === 'failed' && <pre className="auth-guide-support-text" data-testid="guide-copy-support-text">{supportCopy.text}</pre>}{storageWarning && <p className="auth-hint" role="status">{storageWarning}</p>}
       </div>
     </div>
   </Dialog>

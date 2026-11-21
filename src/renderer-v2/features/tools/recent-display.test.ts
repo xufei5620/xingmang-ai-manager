@@ -55,7 +55,7 @@ describe('recent-display', () => {
   })
 
   it('names the folder whose newest chat took over the resume, or says this folder', () => {
-    expect(recentReplacedHint({ cwd: 'C:\\work\\my-app' })).toBe('my-app 里刚有新的对话，已换成最新那条，再点一次「接着聊」')
-    expect(recentReplacedHint({ cwd: '' })).toBe('这个文件夹里刚有新的对话，已换成最新那条，再点一次「接着聊」')
+    expect(recentReplacedHint({ cwd: 'C:\\work\\my-app' })).toBe('my-app 里刚有新的对话，已换成最新那条，再点一次「继续对话」')
+    expect(recentReplacedHint({ cwd: '' })).toBe('这个文件夹里刚有新的对话，已换成最新那条，再点一次「继续对话」')
   })
 })

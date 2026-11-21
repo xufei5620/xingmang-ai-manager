@@ -404,7 +404,7 @@ describe('v2 business boundaries', () => {
     expect(diagnosticTarget('SYSTEM_PROXY_SOFTWARE', blocking, 'solov')).toBeNull()
     expect(diagnosticSection('SYSTEM_PROXY_SOFTWARE', blocking, 'solov')).toBeUndefined()
   })
-  // 「Node.js 太旧」那一种在检查页那一行里直接给「换成新版 Node.js」，不再跳去「安装卸载」页。
+  // 「Node.js 太旧」那一种在检查页那一行里直接给「更新 Node.js」，不再跳去「安装卸载」页。
   it('sends no certificate verdict away from the check page', () => {
     for (const verdict of ['outdatedNode', 'untrusted', 'elevated', 'direct', 'systemTrusted', 'unknown']) {
       expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict })).toBeNull()
@@ -441,12 +441,12 @@ describe('v2 business boundaries', () => {
     // #1095：Windows 上 .NET 的文件拒绝访问不是登录过期。
     expect(
       errorMessage(new Error("System.UnauthorizedAccessException: Access to the path 'C:\\Users\\someone\\.codex\\config.toml' is denied.")),
-    ).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
+    ).toBe('操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。')
     expect(errorMessage(new Error('ETIMEDOUT timeout'))).toContain('请检查网络后重试')
     expect(errorMessage(new Error('unexpected upstream failure xyz-123'))).toBe(
-      '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。',
+      '操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。',
     )
-    expect(errorMessage('plain string')).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
+    expect(errorMessage('plain string')).toBe('操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。')
   })
   it('keeps async activities visible until completion and rejects invalid query ranges', () => {
     const before = pendingBusinessOperations().length

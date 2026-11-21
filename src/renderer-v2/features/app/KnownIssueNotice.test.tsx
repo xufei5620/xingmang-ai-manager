@@ -38,7 +38,7 @@ describe('KnownIssueNotice', () => {
     expect(markup).toContain('data-testid="known-issue-notice"')
     expect(markup).toContain('已知问题，正在修复')
     expect(markup).toContain('data-testid="known-issue-notice-support"')
-    expect(markup).toContain('>找客服<')
+    expect(markup).toContain('>联系客服<')
     expect(markup).toContain('aria-label="关闭"')
     expect(markup).not.toContain('href=')
     const update = renderToStaticMarkup(<KnownIssueNotice issue={home} onDismiss={() => undefined} onAction={() => undefined} />)

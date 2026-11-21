@@ -67,7 +67,7 @@ import type { BusinessActions } from '../../business-actions'
 
 type AppSettings = Awaited<ReturnType<V2Bridge['getSettings']>>
 type SettingsUpdate = Parameters<V2Bridge['saveSettings']>[0]
-/** 检查结果里「星芒 AI 网络」那一项的代号；设置里「网络检查」的「去检查页」直接翻到这一项。 */
+/** 检查结果里「星芒 AI 网络」那一项的代号；设置里「网络检查」的「前往检查页」直接翻到这一项。 */
 const networkDiagnosticCode = 'XINGMANG_NETWORK'
 /** 主进程说的「代理路由」是技术词，界面上换成「连接路径」「通过转发连接」，不出现「代理」。 */
 function proxySummaryText(summary: string): string {
@@ -1038,7 +1038,7 @@ export function SettingsPage({
           onClick={() => navigate?.('health', networkDiagnosticCode)}
           testId="settings-network-health"
         >
-          去检查
+          前往检查
         </Button>,
       ),
       certificate: row(
@@ -1050,7 +1050,7 @@ export function SettingsPage({
           onClick={() => navigate?.('health', certificateDiagnosticCode)}
           testId="settings-certificate-health"
         >
-          去检查
+          前往检查
         </Button>,
       ),
       // 「发测试通知」并进了桌面通知这一行：总开关关着时发不出去，按钮跟着灰。

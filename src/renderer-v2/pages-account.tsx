@@ -343,7 +343,7 @@ export function AccountPage({
   onSubscriptionPurchased?: () => void
   /** 打开「联系客服」；缺省 = 不给这个按钮。 */
   onOpenHelp?: () => void
-  /** 去「检查」页；缺省 = 订阅开通后工具没换过去时，不给「去检查页」。 */
+  /** 去「检查」页；缺省 = 订阅开通后工具没换过去时，不给「前往检查页」。 */
   onOpenHealth?: () => void
   /** 「用在别的软件里」最底下的「告诉我们」，去反馈表单；缺省 = 不出那一行。 */
   onRequestApp?: () => void

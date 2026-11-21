@@ -1576,8 +1576,8 @@ test('a conversation can be renamed and pinned to the top, and both survive a re
 test('a conversation that could not be saved says whether to pick another folder or free up the disk', async () => {
   // D16：没权限、盘满了跟设置页导出同一套说法；认不出原因的照旧说可以重试。
   const expected = {
-    denied: '这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。',
-    full: '这块盘满了，清出一些空间，或者换一块盘再导出。',
+    denied: '该位置不允许保存文件，请选择其他文件夹（如「下载」）后重新导出。',
+    full: '该磁盘空间已满，请清理部分空间或选择其他磁盘后重新导出。',
     other: '这段对话没有导出成功，可以重试',
   }
   const state = storedWorkspace()

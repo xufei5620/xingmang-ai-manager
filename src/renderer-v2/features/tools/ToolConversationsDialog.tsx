@@ -18,7 +18,7 @@ export interface ToolConversationsDialogProps {
   api: Pick<ToolsApi, 'toolSessions'>
   provider: ProviderId
   toolName: string
-  /** 「接着聊」这会儿按不动：还在检测、在换密钥、别的工具正在打开（同首页「接着上次」那几行）。 */
+  /** 「继续对话」这会儿按不动：还在检测、在换密钥、别的工具正在打开（同首页「接着上次」那几行）。 */
   resumeDisabled: boolean
   /** 「开新对话」按不动：同卡片上的「打开」。 */
   newDisabled: boolean
@@ -38,9 +38,9 @@ export function ToolConversationsDialog(props: ToolConversationsDialogProps) {
   const [page, setPage] = useState<MultiProviderSessionPage | null>(null)
   const [error, setError] = useState('')
   const [attempt, setAttempt] = useState(0)
-  // 「接着聊」点下去以后正在核对的那一条（见 resume）；null = 没在核对。
+  // 「继续对话」点下去以后正在核对的那一条（见 resume）；null = 没在核对。
   const [checking, setChecking] = useState<string | null>(null)
-  // 上一次「接着聊」换成了同一文件夹更新的那条、没打开时说的那句；再点「接着聊」就清掉。
+  // 上一次「继续对话」换成了同一文件夹更新的那条、没打开时说的那句；再点「继续对话」就清掉。
   const [replaced, setReplaced] = useState('')
   const active = useRef(true)
   useEffect(() => { active.current = true; return () => { active.current = false } }, [])
@@ -86,7 +86,7 @@ export function ToolConversationsDialog(props: ToolConversationsDialogProps) {
           {session.cwdExists === false ? <Pill tone="warn">文件夹已不存在</Pill> : <span className="v2-home-recent-time">{formatRecentTime(session.updatedAt, Date.now())}</span>}
           <span className="v2-home-recent-actions">
             <Button size="xs" variant="ghost" icon={Play} loading={checking === session.id} disabled={props.resumeDisabled || checking !== null || session.cwdExists === false}
-              title={recentResumeHint(session)} onClick={() => void resume(session)} testId={`tool-conversation-resume-${session.id}`}>接着聊</Button>
+              title={recentResumeHint(session)} onClick={() => void resume(session)} testId={`tool-conversation-resume-${session.id}`}>继续对话</Button>
           </span>
         </div>)}</div></>
           : <div className="v2-home-recent-empty">还没有对话。打开工具聊过之后，最近的对话会出现在这里。</div>}

@@ -142,7 +142,7 @@ export function isMissingWorkspace(cause: unknown): boolean {
 }
 
 /**
- * 「接着聊」用的续接参数（claude --continue 一类）是 CLI 自己按工作目录
+ * 「继续对话」用的续接参数（claude --continue 一类）是 CLI 自己按工作目录
  * 找最近一条,不按会话 id 挑。所以这颗按钮只能长在每个(工具 × 目录)组合里最近
  * 的那一条记录上,否则用户点第三条、接上的却是第一条。
  *
@@ -176,7 +176,7 @@ export function latestSessionIdsByWorkspace(
 /**
  * 「接着之前的对话」窗口里的行：这个工具每个文件夹一行，放的是那个文件夹里最近的那条对话。
  * 卡片「…」以前在最上面列最近用过的几个文件夹的整条路径（点了是在那里开新对话），客户看着像
- * 对话记录又看不懂（yoyo 10-16，Mac 0.2.19 测试包截图）。「接着聊」本来就只能接每个文件夹最近
+ * 对话记录又看不懂（yoyo 10-16，Mac 0.2.19 测试包截图）。「继续对话」本来就只能接每个文件夹最近
  * 的那一条（见 latestSessionIdsByWorkspace），所以一个文件夹一行，点哪行接上的就是哪行。
  * sessions 要按时间倒序（主进程的 list 给的就是）。
  */
@@ -190,7 +190,7 @@ export function folderConversations(
 }
 
 /**
- * 「接着聊」交给启动那一层的东西。Codex 自己的 `resume --last` 只在当前连接名下找,
+ * 「继续对话」交给启动那一层的东西。Codex 自己的 `resume --last` 只在当前连接名下找,
  * 切过官方 / 当前账号之后会找不到、直接开个新对话;所以 Codex 带上这条记录的 id,
  * 由主进程核对后按 id 接。其余三家按目录找最近一条本来就找得到,照旧。
  */
@@ -201,7 +201,7 @@ export function resumeLaunchChoice(session: Pick<SessionSummary, 'id' | 'provide
 }
 
 /**
- * 「接着聊」点下去之前要不要先读一份最新的记录再对一次（已知4）。按文件夹接最近一条的那三家要：
+ * 「继续对话」点下去之前要不要先读一份最新的记录再对一次（已知4）。按文件夹接最近一条的那三家要：
  * 手上的列表可能是在终端里聊之前读的，刚聊的那条不在，按钮还挂在同一文件夹更早那条上。
  * Codex 带着记录 id 接，点哪条接哪条，不用对。
  */

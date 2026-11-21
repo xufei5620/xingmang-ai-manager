@@ -171,7 +171,7 @@ export function updatesOutsideApp(
 
 /**
  * Mac 上找到的 Codex / Grok 星芒认不出来路，也不替它跑（主进程的 unrecognizedInstall，Mac 验收 R1）。
- * 首页对它不给「打开」，给「用星芒装一份」；装好以后星芒先找到自己那份。
+ * 首页对它不给「打开」，给「使用星芒安装」；装好以后星芒先找到自己那份。
  */
 export function isUnrecognizedInstall(status: Pick<ToolStatus, 'installed' | 'unrecognizedInstall'> | null | undefined): boolean {
   return status?.installed === true && status.unrecognizedInstall === true
@@ -315,7 +315,7 @@ export const brokenConfigDetails: Record<BrokenConfig, string> = {
 }
 
 /**
- * 「配置文件坏了」的「修好它」按哪边重新生成，等于配置里「高级」的「重置为初始状态」。
+ * 「配置文件坏了」的「立即修复」按哪边重新生成，等于配置里「高级」的「重置为初始状态」。
  * 看得出原来用的是官方登录就照旧用官方账号，不顺手换成当前账号：Codex 登录的是 ChatGPT，
  * 或者只坏了 auth.json、config.toml 里又没有别的服务地址。
  * 其余按当前账号（Claude Code 的官方登录不记在 settings.json 里，看不出来）。
@@ -352,7 +352,7 @@ export function cliHooksWereAutoRepaired(config: Pick<ProviderConfigSummary, 'cl
 
 /**
  * Windows 上只装 Grok 时电脑上还没有运行环境，做完提醒和防睡那几条写不出来（主进程 cliHooksMissing）。
- * Grok 照样能用，首页只说一句缺什么、给「补上」。
+ * Grok 照样能用，首页只说一句缺什么、给「启用」。
  */
 export function cliHooksMissing(config: Pick<ProviderConfigSummary, 'cliHooksMissing'>): boolean {
   return config.cliHooksMissing === true
@@ -457,7 +457,7 @@ export function presentTools(
 
 /**
  * 工具行「…」菜单里「打开配置文件夹」那一项。点不动时置灰而不是藏起来:
- * 用户要找的就是这一项,藏了只会让人以为这个工具压根没有配置文件(「接着聊」
+ * 用户要找的就是这一项,藏了只会让人以为这个工具压根没有配置文件(「继续对话」
  * 在目录已经不在时也是置灰,#319)。原因写进 label,是因为菜单项没有 title 可挂。
  */
 export function configDirectoryMenuItem(

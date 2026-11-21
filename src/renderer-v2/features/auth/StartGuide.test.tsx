@@ -125,8 +125,8 @@ describe('renderer-v2 start guide first run', () => {
     const markup = render([guideTool()], { onFailureAction: () => undefined })
     expect(markup).toContain('data-testid="guide-recharge"')
     expect(markup).toContain('data-testid="guide-recharge-button"')
-    expect(markup).toContain('去充值')
-    // v4 只留一颗「去充值」，不再在旁边写一段怎么充值的说明。
+    expect(markup).toContain('前往充值')
+    // v4 只留一颗「前往充值」，不再在旁边写一段怎么充值的说明。
     expect(markup).not.toContain('左下角余额旁边的「充值」')
     stubResumedGuide('chat', 'ready')
     expect(render([guideTool()], { onFailureAction: () => undefined })).toContain('data-testid="guide-recharge"')
@@ -142,7 +142,7 @@ describe('renderer-v2 start guide first run', () => {
     expect(render([guideTool()], { onFailureAction: () => undefined })).not.toContain('data-testid="guide-recharge"')
   })
 
-  // 主路卡点 F3：余额 $0 时「去充值」排在最底下，要往下翻才看得到。
+  // 主路卡点 F3：余额 $0 时「前往充值」排在最底下，要往下翻才看得到。
   it('leads with the empty wallet and puts top-up first when the current account has nothing to spend', () => {
     stubResumedGuide('claude', 'ready')
     const markup = render([guideTool()], { onFailureAction: () => undefined, walletEmpty: true })
@@ -411,57 +411,57 @@ describe('guide setup result card', () => {
 
 describe('guide install failure wording', () => {
   it('names the stage that failed and points at the retry button', () => {
-    const runtime = guideInstallFailure(new Error('Node.js 运行环境没装上，Claude Code 还没开始安装。下载 Node.js 时 ETIMEDOUT'), 'Claude Code').message
-    expect(runtime).toBe('运行环境没装上（下载超时），Claude Code 还没开始装。点「再试一次」，还不行就点「需要帮助」。')
+    const runtime = guideInstallFailure(new Error('Node.js 运行环境安装失败，Claude Code 尚未开始安装。下载 Node.js 时 ETIMEDOUT'), 'Claude Code').message
+    expect(runtime).toBe('运行环境安装失败（下载超时），Claude Code 尚未开始安装。请点击「重试」；如仍失败，请点击「需要帮助」。')
     const tool = guideInstallFailure(new Error('Claude Code 安装失败：ENOSPC: no space left on device'), 'Claude Code').message
-    expect(tool).toBe('Claude Code 没装上（磁盘空间不够）。点「再试一次」，还不行就点「需要帮助」。')
-    expect(guideInstallFailure(new Error('something odd'), 'Codex').message).toBe('Codex 没装上（未能识别问题类型，原始信息如下）。点「再试一次」，还不行就点「需要帮助」。')
+    expect(tool).toBe('Claude Code 安装失败（磁盘可用空间不足）。请点击「重试」；如仍失败，请点击「需要帮助」。')
+    expect(guideInstallFailure(new Error('something odd'), 'Codex').message).toBe('Codex 安装失败（未能识别问题类型，原始信息如下）。请点击「重试」；如仍失败，请点击「需要帮助」。')
   })
 
   it('never borrows the login wording about the Xingmang server or kept input', () => {
     const message = guideInstallFailure(new Error('fetch failed'), 'Codex').message
     expect(message).not.toMatch(/星芒服务器|输入已保留/)
-    expect(message).toContain('网络连不上')
-    expect(guideInstallFailure(new Error('HTTP 401 unauthorized'), 'Codex').message).toBe('Codex 没装上（未能识别问题类型，原始信息如下）。点「再试一次」，还不行就点「需要帮助」。')
+    expect(message).toContain('网络连接失败')
+    expect(guideInstallFailure(new Error('HTTP 401 unauthorized'), 'Codex').message).toBe('Codex 安装失败（未能识别问题类型，原始信息如下）。请点击「重试」；如仍失败，请点击「需要帮助」。')
   })
 
   // 认出原因以后原话折起来，普通账号那句「换个管理员账号去装 / 找管理电脑的人」得接在红字里才看得见（#1096）。
-  // 主进程那句说的是错误框的「重试」，引导里那颗按钮叫「再试一次」。
+  // 主进程那句说的是错误框的「重试」，引导里那颗按钮也叫「重试」，原样接上、不再换字。
   it('keeps the account-specific next step in view when the administrator prompt was declined', () => {
     const standardAdvice = '这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。公司或学校的电脑请找管理电脑的人帮忙。'
-    const standard = guideInstallFailure(new Error(`Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`), 'Claude Code')
-    expect(standard.message).toBe(`运行环境没装上（没拿到管理员授权），Claude Code 还没开始装。${standardAdvice.replace('「重试」', '「再试一次」')}点「再试一次」，还不行就点「需要帮助」。`)
-    expect(standard.message).not.toContain('「重试」')
-    expect(standard.reason).toBe('没拿到管理员授权')
+    const standard = guideInstallFailure(new Error(`Node.js 运行环境安装失败，Claude Code 尚未开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`), 'Claude Code')
+    expect(standard.message).toBe(`运行环境安装失败（未获得管理员授权），Claude Code 尚未开始安装。${standardAdvice}请点击「重试」；如仍失败，请点击「需要帮助」。`)
+    expect(standard.message).not.toContain('「再试一次」')
+    expect(standard.reason).toBe('未获得管理员授权')
     expect(guideInstallFailure(new Error('已取消管理员授权，Codex 桌面端安装未开始。重新点击安装即可再次授权。'), 'Codex 桌面端').message)
-      .toBe('Codex 桌面端 没装上（没拿到管理员授权）。重新点击安装即可再次授权。点「再试一次」，还不行就点「需要帮助」。')
+      .toBe('Codex 桌面端 安装失败（未获得管理员授权）。重新点击安装即可再次授权。请点击「重试」；如仍失败，请点击「需要帮助」。')
     // 以前那句短的后面没有下一步，红字照常。
-    expect(guideInstallFailure(new Error('Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js 尚未安装。'), 'Claude Code').message)
-      .toBe('运行环境没装上（没拿到管理员授权），Claude Code 还没开始装。点「再试一次」，还不行就点「需要帮助」。')
+    expect(guideInstallFailure(new Error('Node.js 运行环境安装失败，Claude Code 尚未开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js 尚未安装。'), 'Claude Code').message)
+      .toBe('运行环境安装失败（未获得管理员授权），Claude Code 尚未开始安装。请点击「重试」；如仍失败，请点击「需要帮助」。')
     expect(guideInstallExits(new Error(`未获得管理员权限，Node.js安装已停止。${standardAdvice}`)).map((action) => action.id)).toEqual(['support'])
   })
 
   // 主进程那句只说原因、下一步留给错误目录；引导以前只放标题，「换个网络（比如手机热点）」客户看不到（主路卡点 F12）。
   it('tells a network failure to try another network with the catalog wording and the guide button name', () => {
     const intercepted = guideInstallFailure(new Error('Claude Code 安装失败：npm 官方源：安全证书没通过校验（错误码 SELF_SIGNED_CERT_IN_CHAIN）。'), 'Claude Code', false, true)
-    expect(intercepted.message).toBe('Claude Code 没装上（连接被网络拦截）。连接的路上有设备把证书换成了别的（运营商、公司或学校的网络常见）。稍等一两分钟再试；还不行就换个网络（比如手机热点），公司或学校的网络请找网络管理员。')
+    expect(intercepted.message).toBe('Claude Code 安装失败（连接被网络拦截）。连接途中有网络设备替换了证书（运营商、公司或学校网络较常见）。请稍候一两分钟后重试；如仍失败，请切换网络（如手机热点），公司或学校网络请联系网络管理员。')
     expect(intercepted.reason).toBe('连接被网络拦截')
     expect(intercepted.detail).toContain('SELF_SIGNED_CERT_IN_CHAIN')
     expect(guideInstallFailure(new Error('Codex CLI 安装失败：npm 官方源：解析不出下载源的地址（错误码 ENOTFOUND）。'), 'Codex').message)
-      .toBe('Codex 没装上（连不上下载源）。这台电脑现在连不到下载用的服务器，已安装的工具不受影响。检查网络或换个网络（比如手机热点）后，再点「再试一次」。')
+      .toBe('Codex 安装失败（无法连接下载源）。本机暂时无法连接下载服务器，已安装的工具不受影响。请检查网络或切换网络（如手机热点）后点击「重试」。')
     expect(guideInstallFailure(new Error('Claude Code 安装失败：npm 官方源：安全证书没通过校验（错误码 CERT_HAS_EXPIRED）。'), 'Claude Code').message)
-      .toBe('Claude Code 没装上（证书日期对不上）。多半是这台电脑的系统时间不准——证书有没有过期是拿本机时钟比出来的。请把系统时间设为自动同步并确认时区，再重试；确认时间没问题，再换个网络。')
+      .toBe('Claude Code 安装失败（证书日期校验失败）。通常是本机系统时间不准确，证书是否过期以本机时钟为准。请将系统时间设为自动同步并确认时区后重试；如时间无误，请切换网络。')
     // 运行环境那一段没装上也是同一句下一步。
-    expect(guideInstallFailure(new Error('Node.js 运行环境没装上，Claude Code 还没开始安装。下载 Node.js 时 ECONNRESET'), 'Claude Code').message)
-      .toBe('运行环境没装上（连不上下载源），Claude Code 还没开始装。这台电脑现在连不到下载用的服务器，已安装的工具不受影响。检查网络或换个网络（比如手机热点）后，再点「再试一次」。')
+    expect(guideInstallFailure(new Error('Node.js 运行环境安装失败，Claude Code 尚未开始安装。下载 Node.js 时 ECONNRESET'), 'Claude Code').message)
+      .toBe('运行环境安装失败（无法连接下载源），Claude Code 尚未开始安装。本机暂时无法连接下载服务器，已安装的工具不受影响。请检查网络或切换网络（如手机热点）后点击「重试」。')
   })
 
   it('keeps the next step the main process wrote when the official registry check could not connect', () => {
     const network = guideInstallFailure(new Error('Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ENOTFOUND）。换个网络（比如手机热点）后再试。'), 'Claude Code')
-    expect(network.message).toBe('Claude Code 没装上（连不上工具的官方下载站）。换个网络（比如手机热点）后再试。点「再试一次」，还不行就点「需要帮助」。')
-    expect(network.reason).toBe('连不上工具的官方下载站')
+    expect(network.message).toBe('Claude Code 安装失败（无法连接工具的官方下载站）。换个网络（比如手机热点）后再试。请点击「重试」；如仍失败，请点击「需要帮助」。')
+    expect(network.reason).toBe('无法连接工具的官方下载站')
     expect(guideInstallFailure(new Error('Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ECONNRESET）。到「设置 › 网络加速」开启加速后再试。'), 'Claude Code').message)
-      .toBe('Claude Code 没装上（连不上工具的官方下载站）。到「设置 › 网络加速」开启加速后再试。点「再试一次」，还不行就点「需要帮助」。')
+      .toBe('Claude Code 安装失败（无法连接工具的官方下载站）。到「设置 › 网络加速」开启加速后再试。请点击「重试」；如仍失败，请点击「需要帮助」。')
   })
 })
 
@@ -470,12 +470,12 @@ describe('guide install failure exits', () => {
 
   it('offers the Node.js replacement where this app can do it and says the guide carries on', () => {
     expect(guideInstallExits(outdatedNode, true).map((action) => action.id)).toEqual(['replaceNode', 'log'])
-    expect(guideInstallFailure(outdatedNode, 'Claude Code', true).message).toBe('Claude Code 没装上：这台电脑上的 Node.js 太旧，认不了公司电脑装的证书。点「换成新版 Node.js」，换好后星芒会接着装。')
+    expect(guideInstallFailure(outdatedNode, 'Claude Code', true).message).toBe('Claude Code 安装失败：本机 Node.js 版本过旧，无法识别企业证书。请点击「更新 Node.js」，更新后将自动继续安装。')
   })
 
   it('falls back to support where the replacement is out of reach', () => {
     expect(guideInstallExits(outdatedNode, false).map((action) => action.id)).toEqual(['log', 'support'])
-    expect(guideInstallFailure(outdatedNode, 'Claude Code', false).message).toContain('点「再试一次」，还不行就点「需要帮助」')
+    expect(guideInstallFailure(outdatedNode, 'Claude Code', false).message).toContain('请点击「重试」；如仍失败，请点击「需要帮助」')
   })
 
   it('borrows the error dialog exits for the other install failures', () => {
@@ -484,50 +484,50 @@ describe('guide install failure exits', () => {
   })
 
   it('always leaves at least a way to reach support', () => {
-    expect(guideInstallExits(new Error('something odd'))).toEqual([{ id: 'support', label: '找客服' }])
+    expect(guideInstallExits(new Error('something odd'))).toEqual([{ id: 'support', label: '联系客服' }])
   })
 })
 
 describe('guide step failure wording', () => {
   it('names the kind of failure instead of blaming the Xingmang server', () => {
     const runtime = guideStepFailure(new Error('Node.js 下载超时，请检查网络后重试'), '准备环境').message
-    expect(runtime).toBe('准备环境没有成功：下载超时。下载没有完成，已安装的工具不受影响。')
-    expect(guideStepFailure(new Error('ETIMEDOUT'), '检测工具').message).toBe('检测工具没有成功：网络连不上。检查网络后点「再试一次」。')
-    expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备环境').message).toContain('写不进安装目录')
+    expect(runtime).toBe('准备环境失败：下载超时。下载未完成，已安装的工具不受影响。')
+    expect(guideStepFailure(new Error('ETIMEDOUT'), '检测工具').message).toBe('检测工具失败：网络连接失败。请检查网络后点击「重试」。')
+    expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备环境').message).toContain('无法写入安装目录')
   })
 
   it('tells a switch that could not write the config file what to close and which buttons to press (known 29)', () => {
     // 以前叫人去查安装目录的写入权限，可「改用当前账号」写的是工具的配置文件；
-    // 目录里那句说的「重试」「找客服」在引导里叫「再试一次」「复制给客服」。
+    // 目录里那句说的「重试」「联系客服」在引导里叫「重试」「复制给客服」。
     const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。"
     const failure = guideStepFailure(new Error(raw), '改用当前账号', true)
-    expect(failure.message).toBe('改用当前账号没有成功：写不进配置文件。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，还不行就点「复制给客服」发给客服。')
-    expect(failure.reason).toBe('写不进配置文件')
+    expect(failure.message).toBe('改用当前账号失败：无法写入配置文件。通常是安全软件拦截或文件被其他程序占用。请关闭正在使用该工具的窗口后点击「重试」，如仍失败，请点击「复制给客服」并发送给客服。')
+    expect(failure.reason).toBe('无法写入配置文件')
     expect(failure.detail).toContain('EPERM')
     expect(failure.detail).not.toContain('alice')
-    expect(guideStepFailure(new Error(raw), '改用当前账号').message).toMatch(/关掉正在用这个工具的窗口后点「再试一次」，还不行就点「需要帮助」。$/)
-    expect(guideStepFailure(new Error('切换前的备份没有完成，已取消切换，配置没有改动：EACCES: permission denied'), '改用当前账号', true).reason).toBe('写不进配置文件')
+    expect(guideStepFailure(new Error(raw), '改用当前账号').message).toMatch(/请关闭正在使用该工具的窗口后点击「重试」，如仍失败，请点击「需要帮助」。$/)
+    expect(guideStepFailure(new Error('切换前的备份没有完成，已取消切换，配置没有改动：EACCES: permission denied'), '改用当前账号', true).reason).toBe('无法写入配置文件')
     // 装东西的几步照旧是安装目录。
-    expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备环境', true).reason).toBe('写不进安装目录')
+    expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备环境', true).reason).toBe('无法写入安装目录')
   })
 
   it('tells a switch refused by a root-owned settings folder or a read-only file what it really is (D15)', () => {
     // 主进程查出是哪一种时（config-files-context.ts 的 explainConfigWriteFailure）那半句，经 account-source-switch 包一层。
     const adminOwned = guideStepFailure(new Error(`Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`), '改用当前账号', true)
-    expect(adminOwned.message).toBe('改用当前账号没有成功：写不进配置文件。这个工具的设置文件夹归电脑管理员所有，多半是以前用管理员身份运行过它，星芒改不了。点「复制给客服」，客服会教你一步改回来。')
-    expect(adminOwned.reason).toBe('写不进配置文件')
+    expect(adminOwned.message).toBe('改用当前账号失败：无法写入配置文件。该工具的设置文件夹归管理员所有，通常是之前以管理员身份运行过该工具，星芒无法修改。请点击「复制给客服」，客服将指导您恢复。')
+    expect(adminOwned.reason).toBe('无法写入配置文件')
     const readOnly = guideStepFailure(new Error(`Codex CLI 改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`), '改用当前账号', true)
-    expect(readOnly.message).toBe('改用当前账号没有成功：写不进配置文件。这个文件被设成了只读，星芒没动它。要让星芒写进去，先取消只读。')
-    expect(readOnly.reason).toBe('写不进配置文件')
+    expect(readOnly.message).toBe('改用当前账号失败：无法写入配置文件。该文件已设为只读，星芒未作修改。如需写入，请先取消只读属性。')
+    expect(readOnly.reason).toBe('无法写入配置文件')
   })
 
   it('puts the linked config file and what to do about it on the red line instead of the folded raw text', () => {
     // 主进程那句（electron/config-link-refusal.ts）经 account-source-switch 包一层后的样子（#1100 第2条）。
     const raw = '改用当前账号没有完成：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。已恢复到切换前的配置。'
     const failure = guideStepFailure(new Error(raw), '改用当前账号', true)
-    expect(failure.message).toBe('改用当前账号没有成功：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。如需协助，请点击「复制给客服」并发送给客服。')
-    expect(failure.reason).toBe('配置文件是个链接')
-    // 包在外面的那层（已恢复到切换前的配置）还在给客服看的原话里。
+    expect(failure.message).toBe('改用当前账号失败：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。如需协助，请点击「复制给客服」并发送给客服。')
+    expect(failure.reason).toBe('配置文件为链接')
+    // 包在外面的那层（已恢复到切换前的配置）还在原始信息（供客服查看）里。
     expect(failure.detail).toBe(raw)
     expect(guideStepFailure(new Error(raw), '改用当前账号').message).toMatch(/如需协助，请点击「需要帮助」。$/)
   })
@@ -540,7 +540,7 @@ describe('guide step failure wording', () => {
   it('does not show an English failure as is because its redacted path reads as Chinese', () => {
     // 脱敏后的占位词「本机路径」本身是汉字，以前这句英文整句上屏（第三十批 A）。
     const failure = guideStepFailure(new Error("ENOENT: no such file or directory, open 'C:\\Users\\张三\\.codex\\auth.json'"), '确认连接', true)
-    expect(failure.message).toBe('确认连接没有成功（未能识别问题类型，原始信息如下）。点「再试一次」，还不行就点「复制给客服」发给客服。')
+    expect(failure.message).toBe('确认连接失败（未能识别问题类型，原始信息如下）。请点击「重试」；如仍失败，请点击「复制给客服」并发送给客服。')
     expect(failure.detail).toBe("ENOENT: no such file or directory, open '本机路径")
   })
 
@@ -548,29 +548,29 @@ describe('guide step failure wording', () => {
     for (const reason of ['fetch failed', 'something odd', 'Node.js 下载超时，请检查网络后重试', '请先确认账号连接，再打开工具。']) {
       expect(guideStepFailure(new Error(reason), '打开工具').message).not.toMatch(/星芒服务器|输入已保留/)
     }
-    expect(guideStepFailure(new Error('something odd'), '打开工具').message).toBe('打开工具没有成功（未能识别问题类型，原始信息如下）。点「再试一次」，还不行就点「需要帮助」。')
+    expect(guideStepFailure(new Error('something odd'), '打开工具').message).toBe('打开工具失败（未能识别问题类型，原始信息如下）。请点击「重试」；如仍失败，请点击「需要帮助」。')
   })
 })
 
 describe('guide failure reason and raw text for support', () => {
   it('keeps the raw text when the reason is not recognised and points at copying it for support', () => {
     const failure = guideInstallFailure(new Error('npm ERR! code E999 weird thing'), 'Claude Code', false, true)
-    expect(failure.message).toBe('Claude Code 没装上（未能识别问题类型，原始信息如下）。点「再试一次」，还不行就点「复制给客服」发给客服。')
+    expect(failure.message).toBe('Claude Code 安装失败（未能识别问题类型，原始信息如下）。请点击「重试」；如仍失败，请点击「复制给客服」并发送给客服。')
     expect(failure.reason).toBeUndefined()
     expect(failure.detail).toBe('npm ERR! code E999 weird thing')
   })
 
   it('keeps the raw text folded behind a recognised reason', () => {
     const failure = guideInstallFailure(new Error('Claude Code 安装失败：ENOSPC: no space left on device'), 'Claude Code', false, true)
-    expect(failure.reason).toBe('磁盘空间不够')
+    expect(failure.reason).toBe('磁盘可用空间不足')
     expect(failure.detail).toContain('ENOSPC')
-    expect(failure.message).toContain('还不行就点「需要帮助」')
+    expect(failure.message).toContain('如仍失败，请点击「需要帮助」')
   })
 
   it('drops nothing on the step failures either and masks keys', () => {
     const failure = guideStepFailure(new Error('helper said no for sk-abcdefghijklmnopqrstuvwxyz0123456789'), '改用当前账号', true)
     expect(failure.message).toContain('（未能识别问题类型，原始信息如下）')
-    expect(failure.message).toContain('点「复制给客服」发给客服')
+    expect(failure.message).toContain('请点击「复制给客服」并发送给客服')
     expect(failure.detail).toBe('helper said no for [REDACTED]')
   })
 
@@ -756,9 +756,9 @@ describe('guide switch failure exits', () => {
 
   it('offers 找客服 when the switch could not write the config file (known 29, D14)', () => {
     // 已知29 改的只是那句话。出口按「写不进」那一类的按钮走：D14 把它换成「重试、复制路径、找客服」，
-    // 引导里「重试」是「再试一次」、「复制路径」不出，剩下「找客服」。
+    // 引导里「重试」是「重试」、「复制路径」不出，剩下「联系客服」。
     expect(guideFailureExits(new Error("Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。")))
-      .toEqual([{ id: 'support', label: '找客服' }])
+      .toEqual([{ id: 'support', label: '联系客服' }])
   })
 })
 
@@ -773,12 +773,12 @@ describe('guide connect step after the account key was not written', () => {
     return new RegExp(`<button class="([^"]*)"[^>]*data-testid="${testId}"`).exec(markup)?.[1] ?? ''
   }
 
-  // W81 W82：「下一步」灰着时悬停说还差什么；那颗配置按钮叫「去连好」。
+  // W81 W82：「下一步」灰着时悬停说还差什么；那颗配置按钮叫「前往连接」。
   it('says what is missing on the grey next button and names the configure button plainly', () => {
     stubResumedGuide('claude', 'connect')
     const markup = render([guideTool({ configured: false, source: 'none' })])
     expect(markup).toMatch(/<button title="请先完成上一项连接"[^>]*data-testid="guide-next"[^>]*disabled/)
-    expect(markup).toMatch(/data-testid="guide-config"[^>]*>.*?<span>去连好<\/span>/)
+    expect(markup).toMatch(/data-testid="guide-config"[^>]*>.*?<span>前往连接<\/span>/)
     expect(markup).not.toContain('去完成连接配置')
     // 连好了就不灰，也不挂这句。
     const connected = render([guideTool()])

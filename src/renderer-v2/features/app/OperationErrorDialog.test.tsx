@@ -11,7 +11,7 @@ describe('renderer-v2 operation error dialog', () => {
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={{ message: raw, retry: () => undefined }} onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('更新没有装上')
+    expect(markup).toContain('更新安装失败')
     expect(markup).toContain('当前版本不受影响。')
     expect(markup).toContain(raw)
     expect(markup).toContain('operation-error-retry')
@@ -36,7 +36,7 @@ describe('renderer-v2 operation error dialog', () => {
     expect(markup).toContain('操作未完成')
     expect(markup).toContain(raw)
     expect(markup).toContain('查看日志')
-    expect(markup).toContain('找客服')
+    expect(markup).toContain('联系客服')
     // 这次失败没有可重试的入口，按钮就不该画出来。
     expect(markup).not.toContain('operation-error-retry')
   })
@@ -54,8 +54,8 @@ describe('renderer-v2 operation error dialog', () => {
     )
     expect(markup).toContain(raw)
     expect(markup).not.toContain('当前版本不受影响')
-    expect(markup).not.toContain('写不进安装目录')
-    expect(markup).toContain('找客服')
+    expect(markup).not.toContain('无法写入安装目录')
+    expect(markup).toContain('联系客服')
   })
 
   it('shows the directory and offers 复制路径 once the caller knows one', () => {
@@ -65,7 +65,7 @@ describe('renderer-v2 operation error dialog', () => {
       <OperationErrorDialog failure={{ message: raw, tool: 'claude' }} installDirectory={directory}
         onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('写不进安装目录')
+    expect(markup).toContain('无法写入安装目录')
     expect(markup).toContain('operation-error-copyPath')
     // 剪贴板写不进去时用户还要能自己选中它，所以路径必须上屏，不只是躺在按钮后面。
     expect(markup).toContain('operation-error-path')
@@ -80,13 +80,13 @@ describe('renderer-v2 operation error dialog', () => {
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={failure} installDirectory={directory} onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('写不进配置文件')
-    expect(markup).toContain('常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。')
-    expect(markup).not.toContain('写不进安装目录')
+    expect(markup).toContain('无法写入配置文件')
+    expect(markup).toContain('通常是被安全软件拦截，或该文件正被其他程序占用。请关闭正在使用该工具的窗口后点击「重试」；如仍失败，请点击「联系客服」。')
+    expect(markup).not.toContain('无法写入安装目录')
     expect(markup).not.toContain('operation-error-copyPath')
     expect(markup).not.toContain(directory)
-    expect(operationErrorActions(failure, directory).map((action) => action.label)).toEqual(['重试', '查看日志', '找客服'])
-    expect(supportFailureOf(failure, new Date(0)).reason).toBe('写不进配置文件')
+    expect(operationErrorActions(failure, directory).map((action) => action.label)).toEqual(['重试', '查看日志', '联系客服'])
+    expect(supportFailureOf(failure, new Date(0)).reason).toBe('无法写入配置文件')
   })
 
   it('hides 复制路径 when no directory is known, rather than copying an empty string', () => {
@@ -116,8 +116,8 @@ describe('renderer-v2 operation error dialog', () => {
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={{ message, tool: 'codexDesktop', retry: () => undefined }} onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('配置文件坏了')
-    expect(markup).toContain('点「修好它」，会先备份原来的文件，修好后接着打开。')
+    expect(markup).toContain('配置文件已损坏')
+    expect(markup).toContain('点击「立即修复」将先备份原文件，修复后自动打开。')
     expect(markup).toContain(message)
     expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="operation-error-repairConfig"/)
   })
@@ -131,7 +131,7 @@ describe('renderer-v2 operation error dialog', () => {
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={failure} canReplaceNode onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('换成新版 Node.js')
+    expect(markup).toContain('更新 Node.js')
     expect(markup).not.toContain('安装卸载')
     // 换 Node.js 才是出路，它当主按钮，重试退到次要。
     expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="operation-error-replaceNode"/)
@@ -180,16 +180,16 @@ describe('renderer-v2 operation error dialog', () => {
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={failure} support={support} onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('写不进配置文件')
-    expect(markup).toContain('这个工具的设置文件夹归电脑管理员所有，多半是以前用管理员身份运行过它，星芒改不了。点「复制给客服」，客服会教你一步改回来。')
+    expect(markup).toContain('无法写入配置文件')
+    expect(markup).toContain('该工具的设置文件夹归管理员所有，通常是之前以管理员身份运行过该工具，星芒无法修改。请点击「复制给客服」，客服将指导您恢复。')
     expect(markup).not.toContain('常见是安全软件拦了')
     expect(markup).toContain('operation-error-copySupport')
-    expect(operationErrorActions(failure).map((action) => action.label)).toEqual(['重试', '查看日志', '找客服'])
+    expect(operationErrorActions(failure).map((action) => action.label)).toEqual(['重试', '查看日志', '联系客服'])
   })
 
   it('builds the support failure from the recognised heading', () => {
     const at = new Date(2026, 8, 29, 14, 37)
     expect(supportFailureOf({ message: '打开 Codex 桌面端没有完成', action: '打开 Codex 桌面端', detail: 'ENOSPC' }, at))
-      .toEqual({ at, action: '打开 Codex 桌面端', message: '打开 Codex 桌面端没有完成', reason: '磁盘空间不够', detail: 'ENOSPC' })
+      .toEqual({ at, action: '打开 Codex 桌面端', message: '打开 Codex 桌面端没有完成', reason: '磁盘可用空间不足', detail: 'ENOSPC' })
   })
 })

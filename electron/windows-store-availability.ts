@@ -35,7 +35,7 @@ export interface WindowsStoreAvailabilityProbeOptions {
 /**
  * 这台电脑有没有微软商店（第二十一批 2）。LTSC、网上的「精简版」系统里根本没有
  * 这个应用；公司也可能用组策略把它关掉。这两种电脑上先走商店只是空等一步，
- * 装不上时再给一颗「去微软商店装」也打不开。
+ * 装不上时再给一颗「前往微软商店安装」也打不开。
  *
  * Only a definite answer turns the store route off: `false` when the current
  * user has no Microsoft.WindowsStore package or a RemoveWindowsStore policy is
