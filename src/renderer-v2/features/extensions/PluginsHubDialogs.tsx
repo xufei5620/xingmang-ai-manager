@@ -1,7 +1,7 @@
 // 「插件」页的几个对话框：点「+」弹的安装框（精选、官方目录、自己加的连接复制、技能复制都走它）、技能「从文件夹导入」、
 // 「添加插件」时先问装到哪一家。字照扩展合并方案第二版逐字写（yoyo 11-20 回「改」），装的路子全是现有那几条。
 import { useState, type ReactNode } from 'react'
-import { Check, Download, FolderOpen, Headset, Plus } from 'lucide-react'
+import { Check, Download, FileArchive, FolderOpen, Headset, Plus } from 'lucide-react'
 import { BrandIcon, Button, Dialog, Input, Notice, Select } from '../../ui'
 import { ResultNotice, useOperation } from '../../business-common'
 import { curatedDisclaimer, curatedInstallTarget, curatedNeedsInput } from '../../registry/curated-extensions'
@@ -365,9 +365,12 @@ export function HubInstallDialog({
 /**
  * 技能「从文件夹导入」：选一个技能文件夹，一次导进勾上的几家。Codex 走它自己的导入（importSkill），
  * Claude Code、Grok CLI 由主进程照 Codex 那套复制进它们自己的技能文件夹；一家一家导，中途失败只留没导上的。
+ * 「从压缩包导入」（总单 Q4 C4）是同一张表单：压缩包只能从系统的选文件窗口选，主进程查完解开，
+ * 交回解开的那个技能文件夹，后面照「从文件夹导入」一家一家导。
  */
 export function HubSkillImportDialog({
   api,
+  from = 'folder',
   tools,
   importable,
   operation,
@@ -375,6 +378,8 @@ export function HubSkillImportDialog({
   onChanged,
 }: {
   api: V2Bridge
+  /** 从文件夹还是从压缩包导入；缺省是文件夹。 */
+  from?: 'folder' | 'archive'
   /** 能导进去的几家（工具装好了、主进程没说不行），次序同导航；打开时都勾上。 */
   tools: readonly Provider[]
   /** 三家各自能不能导（不能的灰着写「不支持」，没装的写「这台电脑还没装 …」）。 */
@@ -384,6 +389,7 @@ export function HubSkillImportDialog({
   onChanged: () => Promise<void>
 }) {
   const [source, setSource] = useState('')
+  const [archive, setArchive] = useState<{ archiveName: string; directory: string } | null>(null)
   const [scope, setScope] = useState<'user' | 'project'>('user')
   const [selected, setSelected] = useState<Provider[]>([...tools])
   const targets = activeProviderIds.filter((id) => selected.includes(id) && importable[id] === 'ready')
@@ -392,7 +398,7 @@ export function HubSkillImportDialog({
     void operation.execute(
       'hub-import',
       async () => {
-        const path = source.trim()
+        const path = from === 'archive' ? archive?.directory ?? '' : source.trim()
         if (!path) throw new Error('请填写来源。')
         const done: Provider[] = []
         try {
@@ -410,12 +416,15 @@ export function HubSkillImportDialog({
         onClose()
         return done
       },
-      (done) => `已添加「${source.trim().split(/[\\/]/).filter(Boolean).pop() ?? source.trim()}」，给 ${extensionToolNames(done)} 使用，下次打开工具时生效`,
+      (done) => {
+        const path = from === 'archive' ? archive?.directory ?? '' : source.trim()
+        return `已添加「${path.split(/[\\/]/).filter(Boolean).pop() ?? path}」，给 ${extensionToolNames(done)} 使用，下次打开工具时生效`
+      },
     )
   return (
     <Dialog
       open
-      title="从文件夹导入"
+      title={from === 'archive' ? '从压缩包导入' : '从文件夹导入'}
       testId="hub-skill-import"
       busy={busy}
       onClose={() => {
@@ -426,33 +435,64 @@ export function HubSkillImportDialog({
           <Button onClick={onClose} disabled={busy}>
             取消
           </Button>
-          <Button variant="primary" icon={Plus} loading={busy} disabled={targets.length === 0} onClick={submit} testId="hub-skill-import-submit">
+          <Button
+            variant="primary"
+            icon={Plus}
+            loading={busy}
+            disabled={targets.length === 0 || (from === 'archive' && !archive)}
+            onClick={submit}
+            testId="hub-skill-import-submit"
+          >
             添加
           </Button>
         </>
       }
     >
       <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
-      <div className="v2-hub-path-row">
-        <Input label="技能文件夹路径" value={source} onChange={(event) => setSource(event.target.value)} mono testId="hub-skill-import-source" />
-        <Button
-          icon={FolderOpen}
-          disabled={Boolean(operation.busy)}
-          onClick={() =>
-            void operation.execute(
-              'choose-directory',
-              async () => {
-                const chosen = await api.chooseExtensionDirectory()
-                if (chosen) setSource(chosen)
-              },
-              () => null,
-            )
-          }
-          testId="hub-skill-import-choose"
-        >
-          选择文件夹
-        </Button>
-      </div>
+      {from === 'archive' ? (
+        <div className="v2-hub-path-row">
+          <Input label="压缩包" value={archive?.archiveName ?? ''} readOnly mono testId="hub-skill-archive-name" />
+          <Button
+            icon={FileArchive}
+            loading={operation.busy === 'choose-archive'}
+            disabled={Boolean(operation.busy)}
+            onClick={() =>
+              void operation.execute(
+                'choose-archive',
+                async () => {
+                  const chosen = await api.chooseSkillArchive()
+                  if (chosen) setArchive(chosen)
+                },
+                () => null,
+              )
+            }
+            testId="hub-skill-archive-choose"
+          >
+            选择压缩包
+          </Button>
+        </div>
+      ) : (
+        <div className="v2-hub-path-row">
+          <Input label="技能文件夹路径" value={source} onChange={(event) => setSource(event.target.value)} mono testId="hub-skill-import-source" />
+          <Button
+            icon={FolderOpen}
+            disabled={Boolean(operation.busy)}
+            onClick={() =>
+              void operation.execute(
+                'choose-directory',
+                async () => {
+                  const chosen = await api.chooseExtensionDirectory()
+                  if (chosen) setSource(chosen)
+                },
+                () => null,
+              )
+            }
+            testId="hub-skill-import-choose"
+          >
+            选择文件夹
+          </Button>
+        </div>
+      )}
       <Select
         aria-label="添加范围"
         options={[

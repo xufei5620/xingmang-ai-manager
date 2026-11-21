@@ -58,6 +58,7 @@ import type {
   RepositoryContext as CodexRepositoryContext,
   SkillDto,
 } from './codex-extensions'
+import type { SkillArchiveExtraction } from './skill-archive'
 import type {
   ProviderExtensionMutation,
   ProviderExtensionsSnapshot,
@@ -728,6 +729,37 @@ export interface AiChatHistoryFlushRequest {
   requestId: string
 }
 
+/** 一条视频（分镜、设置、片段编号）一份文件；key 由渲染层分配，只含字母、数字、_ 和 -。 */
+export interface VideoStudioProjectFile {
+  key: string
+  content: string
+}
+
+export interface VideoStudioProjectsSnapshot {
+  /** null = 这个账号的视频草稿还没从旧的本机存储（localStorage）抄过来，或者从没做过视频。 */
+  index: string | null
+  /** 这个账号存着的每一条视频。内容主进程不看，渲染层自己认；认不出的那一条它自己跳过。 */
+  projects: VideoStudioProjectFile[]
+}
+
+export interface VideoStudioProjectsWrite {
+  scope: string
+  /** 只在把旧草稿抄过来的那一次带：写在这一次的每一条视频之后。缺省 = 不动索引。 */
+  index?: string
+  /** 这次改过、要重写的那几条。 */
+  put: VideoStudioProjectFile[]
+  /** 客户删掉的那几条。不在这里的文件一个都不删。 */
+  remove: string[]
+}
+
+/** 主窗口「创作」左边那一列里的一个画布项目：只有编号、名字和时间，项目里的东西不出主进程。 */
+export interface CanvasProjectListEntry {
+  id: string
+  name: string
+  /** 最后改动的时间（毫秒）。 */
+  updatedAt: number
+}
+
 /**
  * 「搬到新电脑」导出：聊天对话由渲染层按它自己的格式整理好交过来（已去掉图片和
  * 运行时字段），设置由主进程自己从 settings.json 里挑能带走的几项，渲染层塞不进别的。
@@ -1261,6 +1293,12 @@ export interface XingmangInvokeContract {
   logoutMcpServer: IpcInvokeDefinition<'mcp:logout', [name: string], McpServer[]>
   listSkills: IpcInvokeDefinition<'skills:list', [], SkillItem[]>
   importSkill: IpcInvokeDefinition<'skills:import', [input: ImportSkillInput], SkillItem[]>
+  /**
+   * 技能「从压缩包导入」的「选择压缩包」：主进程弹原生选择框，把选中的 .zip 查完解到星芒自己的数据
+   * 文件夹，交回技能那一层的位置，再照「从文件夹导入」那样逐家导入（那边的检查照旧再做一遍）。
+   * 不收渲染层给的路径；取消返回 null，压缩包打不开、不安全、没有技能时报中文原因。
+   */
+  chooseSkillArchive: IpcInvokeDefinition<'skills:choose-archive', [], SkillArchiveExtraction | null>
   toggleSkill: IpcInvokeDefinition<
     'skills:toggle',
     [skillPath: string, enabled: boolean],
@@ -1472,6 +1510,13 @@ export interface XingmangInvokeContract {
   >
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
   openCanvasAssetLibrary: IpcInvokeDefinition<'canvas:open-asset-library', [], void>
+  /** 「创作」左边那一列要的画布项目：当前账号没归档的那些，只回编号、名字和最后改动的时间。 */
+  listCanvasProjects: IpcInvokeDefinition<'canvas:list-projects', [], CanvasProjectListEntry[]>
+  /**
+   * 把画布窗口开在这个项目上。编号先在当前账号的项目里认过才用；画布开着别的项目时先走它自己的关闭确认，
+   * 客户在那里选了留下就回 false。
+   */
+  openCanvasProject: IpcInvokeDefinition<'canvas:open-project', [projectId: string], boolean>
   getRememberedAccountLogin: IpcInvokeDefinition<'account:get-remembered-login', [siteId?: AccountSiteId], RememberedAccountLogin | null>
   setRememberedAccountLogin: IpcInvokeDefinition<'account:set-remembered-login', [input: RememberedAccountLogin | null, siteId?: AccountSiteId], void>
   createAccountKey: IpcInvokeDefinition<'account:create-key', [input: AccountKeyCreateInput], void>
@@ -1512,6 +1557,9 @@ export interface XingmangInvokeContract {
   openAiVideo: IpcInvokeDefinition<'video:open', [assetId: string], void>
   /** suggestedName：系统对话框里默认的文件名（视频剪辑页传片名），主进程洗成干净的文件名再用。 */
   saveAiVideo: IpcInvokeDefinition<'video:save-as', [assetId: string, suggestedName?: string], { saved: boolean }>
+  /** 这个账号存着的视频（分镜、设置、片段编号），一条一个文件（总单 #79）。 */
+  readVideoStudioProjects: IpcInvokeDefinition<'video-studio:read-projects', [scope: string], VideoStudioProjectsSnapshot>
+  writeVideoStudioProjects: IpcInvokeDefinition<'video-studio:write-projects', [input: VideoStudioProjectsWrite], void>
   readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
   writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
   /** 聊天页把退出前那一次存完了（不管存没存成），回 onAiChatHistoryFlushRequested 给的编号。 */
@@ -1787,6 +1835,7 @@ export const ipcInvokeChannels = {
   logoutMcpServer: 'mcp:logout',
   listSkills: 'skills:list',
   importSkill: 'skills:import',
+  chooseSkillArchive: 'skills:choose-archive',
   toggleSkill: 'skills:toggle',
   uninstallSkill: 'skills:uninstall',
   listPlugins: 'plugins:list',
@@ -1865,6 +1914,8 @@ export const ipcInvokeChannels = {
   revokeOtherAccountLoginSessions: 'account:revoke-other-login-sessions',
   openCanvasWindow: 'canvas:open',
   openCanvasAssetLibrary: 'canvas:open-asset-library',
+  listCanvasProjects: 'canvas:list-projects',
+  openCanvasProject: 'canvas:open-project',
   getRememberedAccountLogin: 'account:get-remembered-login',
   setRememberedAccountLogin: 'account:set-remembered-login',
   createAccountKey: 'account:create-key',
@@ -1890,6 +1941,8 @@ export const ipcInvokeChannels = {
   readVideoStudioMusic: 'video-studio:read-music',
   openAiVideo: 'video:open',
   saveAiVideo: 'video:save-as',
+  readVideoStudioProjects: 'video-studio:read-projects',
+  writeVideoStudioProjects: 'video-studio:write-projects',
   readAiChatHistory: 'chat-history:read',
   writeAiChatHistory: 'chat-history:write',
   confirmAiChatHistoryFlushed: 'chat-history:flushed',

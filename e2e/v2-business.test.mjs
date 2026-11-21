@@ -4801,6 +4801,47 @@ test('without the Codex CLI the GPT official group asks for it and offers the ho
   }
 })
 
+test('a skill can come from a zip picked in the system window, then goes into each ticked tool', async () => {
+  const page = await fixture(`${hub}&extensionOk=1`)
+  const directory = 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper'
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill-archive').click()
+    await expect(page.getByTestId('hub-skill-import')).toContainText('从压缩包导入')
+    // 还没选压缩包时不能点「添加」，也没有能手填路径的框。
+    assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), true)
+    assert.equal(await page.getByTestId('hub-skill-import-source').count(), 0)
+    await page.getByTestId('hub-skill-archive-choose').click()
+    await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('pdf-helper.zip')
+    await page.getByTestId('hub-skill-import-submit').click()
+    await page.getByText(/^已添加「pdf-helper」，给 .+ 使用，下次打开工具时生效$/).waitFor()
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.find((call) => call.name === 'import-skill').args, { sourcePath: directory, scope: 'user' })
+    assert.deepEqual(
+      recorded.filter((call) => call.name === 'extension').map((call) => call.args),
+      [{ provider: 'claude', kind: 'skill', action: 'install', source: directory, scope: 'user' }],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('a zip with no skill in it says so inside the import form', async () => {
+  const page = await fixture(`${hub}&skillArchive=empty`)
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill-archive').click()
+    await page.getByTestId('hub-skill-archive-choose').click()
+    await page.getByTestId('hub-skill-import').getByText('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。').waitFor()
+    await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('')
+    assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), true)
+  } finally {
+    await page.close()
+  }
+})
+
 test('the skills view lists skills on this computer and sends OpenAI skills to the GPT official group', async () => {
   const page = await fixture(hub)
   try {

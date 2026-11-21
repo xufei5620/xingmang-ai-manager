@@ -1319,6 +1319,38 @@ describe('registerIpcHandlers', () => {
     dispose()
   })
 
+  it('validates video draft requests, forwards them to the file store and keeps their content out of the log', async () => {
+    const videoStudioProjects = {
+      read: vi.fn(async () => ({ index: '{"version":1}', projects: [{ key: 'a', content: 'storyboard body' }] })),
+      write: vi.fn(async () => undefined),
+      idle: vi.fn(async () => undefined),
+    }
+    const { runtimeLog, dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { videoStudioProjects })
+    const read = electronMocks.handlers.get('video-studio:read-projects')!
+    const write = electronMocks.handlers.get('video-studio:write-projects')!
+    const input = { scope: 'xm-account:7', put: [{ key: 'a', content: 'storyboard body' }], remove: ['b'] }
+
+    expect(() => write(trustedEvent('https://attacker.example/', 9), input)).toThrow('已拒绝来自非应用页面的操作请求')
+    expect(() => write(trustedEvent(), { ...input, put: [{ key: '../a', content: 'x' }] })).toThrow('视频草稿写入列表无效')
+    expect(() => write(trustedEvent(), { ...input, remove: ['a'] })).toThrow('视频草稿写入和删除列表冲突')
+    expect(() => read(trustedEvent(), 7)).toThrow('视频草稿归属无效')
+    expect(videoStudioProjects.write).not.toHaveBeenCalled()
+    expect(videoStudioProjects.read).not.toHaveBeenCalled()
+
+    // Like the chat record, it is not tied to the live session: the old account's last save lands while a switch is under way.
+    await expect(write(trustedEvent(), input)).resolves.toBeUndefined()
+    expect(videoStudioProjects.write).toHaveBeenCalledWith(input)
+    await expect(read(trustedEvent(), 'xm-account:7')).resolves.toMatchObject({ projects: [{ key: 'a' }] })
+    expect(videoStudioProjects.read).toHaveBeenCalledWith('xm-account:7')
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('storyboard body')
+    dispose()
+
+    const bare = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub())
+    expect(() => electronMocks.handlers.get('video-studio:read-projects')!(trustedEvent(), 'xm-account:7')).toThrow('视频草稿存储未就绪')
+    expect(() => electronMocks.handlers.get('video-studio:write-projects')!(trustedEvent(), input)).toThrow('视频草稿存储未就绪')
+    bare.dispose()
+  })
+
   it('hands the chat page answer to a quit that asked for one, and only from the app itself', () => {
     const chatHistoryFlush = { acknowledge: vi.fn() }
     const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { chatHistoryFlush })
@@ -1399,6 +1431,19 @@ describe('registerIpcHandlers', () => {
         ['video:progress', { requestId: 'video-1', stage: 'processing', value: 42, delayed: true }],
         ['video:progress', { requestId: 'video-1', stage: 'downloading' }],
       ])
+
+      // The request id now lives in the storyboard file the main process writes: the save the page sent just before
+      // has to land before the paid request leaves, for the same reason.
+      let landed = false
+      const videoStudioProjects = { read: vi.fn(), write: vi.fn(), idle: vi.fn(async () => { await Promise.resolve(); landed = true }) }
+      const waiting = videoServiceStub()
+      const landedAtSubmit: boolean[] = []
+      waiting.generate.mockImplementation(async () => { landedAtSubmit.push(landed); return storedClip })
+      const third = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { videoService: waiting, videoStudioProjects })
+      await expect(electronMocks.handlers.get('video:generate')!(trustedEvent(undefined, 17), input)).resolves.toEqual(clip)
+      expect(landedAtSubmit).toEqual([true])
+      third.dispose()
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { videoService })
 
       const cancel = electronMocks.handlers.get('video:cancel')!
       expect(cancel(trustedEvent(undefined, 17), 'video-1')).toEqual({ canceled: true, mayStillComplete: true })
@@ -4781,6 +4826,32 @@ describe('registerIpcHandlers', () => {
       expect(openCanvasAssetLibrary).toHaveBeenCalledTimes(1)
       expect(openCanvasWindow).toHaveBeenCalledTimes(1)
       expect(() => library(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
+
+      // Registrations that predate the project list say so instead of failing somewhere deeper.
+      expect(() => electronMocks.handlers.get('canvas:list-projects')!(trustedEvent())).toThrow('画布项目暂时读不出来')
+      expect(() => electronMocks.handlers.get('canvas:open-project')!(trustedEvent(), 'p')).toThrow('画布项目暂时打不开')
+    } finally {
+      dispose()
+    }
+  })
+
+  it('hands the canvas project list and the open request straight to the canvas controller', async () => {
+    const projects = [{ id: '11111111-1111-4111-8111-111111111111', name: '双十一主图', updatedAt: 1_700_000_000_000 }]
+    const listCanvasProjects = vi.fn(async () => projects)
+    const openCanvasProject = vi.fn(async () => true)
+    const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { listCanvasProjects, openCanvasProject })
+    try {
+      const list = electronMocks.handlers.get('canvas:list-projects')!
+      const open = electronMocks.handlers.get('canvas:open-project')!
+      expect(() => list(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
+      expect(() => open(trustedEvent('https://attacker.example/'), projects[0].id)).toThrow('已拒绝来自非应用页面的操作请求')
+      expect(listCanvasProjects).not.toHaveBeenCalled()
+      expect(openCanvasProject).not.toHaveBeenCalled()
+
+      await expect(list(trustedEvent())).resolves.toEqual(projects)
+      // The id goes on untouched: the controller checks it against this account's projects before using it.
+      await expect(open(trustedEvent(), '../not-an-id')).resolves.toBe(true)
+      expect(openCanvasProject).toHaveBeenCalledWith('../not-an-id')
     } finally {
       dispose()
     }
@@ -10184,8 +10255,11 @@ describe('IPC channel log and account policies', () => {
       .map(([channel]) => channel)
       .sort()
     expect(scoped).toEqual([
+      // 「创作」左边那一列里的画布项目：列的是当前账号的，打开时编号也在当前账号的项目里认。
+      'canvas:list-projects',
       'canvas:open',
       'canvas:open-asset-library',
+      'canvas:open-project',
       'cli:launch',
       'desktop:launch-codex',
       'external-clients:launch',
@@ -10244,6 +10318,7 @@ describe('IPC channel log and account policies', () => {
         'account:reveal-key',
         'account:set-remembered-login',
         'account:sync-managed-cli-keys',
+        'canvas:list-projects',
         'chat-history:flushed',
         'chat-history:read',
         'chat-history:write',
@@ -10276,6 +10351,8 @@ describe('IPC channel log and account policies', () => {
         'update:get-state',
         'update:startup',
         'video-studio:read-music',
+        'video-studio:read-projects',
+        'video-studio:write-projects',
         'video:cancel',
         'video:read-clip',
         'window:report-activity',

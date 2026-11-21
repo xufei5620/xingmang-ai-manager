@@ -152,9 +152,24 @@ async function visible(locator) {
   return locator.filter({ visible: true }).first()
 }
 
-async function openCanvas() {
+// The canvas window and a new film open from the cards on the start page of
+// 「创作」. The start page is what shows when nothing is open there, so go to
+// the page and press 「新建」 first: a conversation or a film left open by an
+// earlier step would otherwise be in the way.
+async function startPageCard(page) {
+  await mainWindow.getByTestId(`nav-${page.via}`).click()
+  await mainWindow.getByTestId(`page-${page.via}`).first().waitFor({ state: 'visible', timeout: stepBudgetMs })
+  await mainWindow.getByTestId('chat-conversation-new').click()
+  const card = mainWindow.getByTestId(page.opener)
+  await mainWindow.getByTestId('chat-empty').waitFor({ state: 'visible', timeout: stepBudgetMs })
+  if (!await card.filter({ visible: true }).count()) throw new Error(`「创作」的起始页上没有「${page.label}」的入口：当前账号或这个平台不显示这一样`)
+  return visible(card)
+}
+
+async function openCanvas(page) {
+  const card = await startPageCard(page)
   const opened = application.waitForEvent('window', { timeout: stepBudgetMs })
-  await mainWindow.getByTestId('nav-canvas').click()
+  await card.click()
   const canvas = await opened
   canvas.on('pageerror', (error) => pageErrors.push(`画布窗口：${error.message}`))
   await canvas.waitForLoadState('domcontentloaded', { timeout: stepBudgetMs })
@@ -166,11 +181,14 @@ async function openCanvas() {
 
 async function openPage(step) {
   const page = findVerifyPage(step.page)
-  if (page.window === 'canvas') return { files: await openCanvas() }
+  if (page.window === 'canvas') return { files: await openCanvas(page) }
   target = mainWindow
-  const opener = mainWindow.getByTestId(page.opener ?? `nav-${page.id}`)
-  if (!await opener.filter({ visible: true }).count()) throw new Error(`侧栏里没有「${page.label}」：当前账号或这个平台不显示这一页`)
-  await (await visible(opener)).click()
+  if (page.via) await (await startPageCard(page)).click()
+  else {
+    const opener = mainWindow.getByTestId(page.opener ?? `nav-${page.id}`)
+    if (!await opener.filter({ visible: true }).count()) throw new Error(`侧栏里没有「${page.label}」：当前账号或这个平台不显示这一页`)
+    await (await visible(opener)).click()
+  }
   await mainWindow.getByTestId(`page-${page.id}`).first().waitFor({ state: 'visible', timeout: stepBudgetMs })
   if (step.section) {
     const tab = mainWindow.locator(`[id="v2-account-tab-${step.section}"]`)
