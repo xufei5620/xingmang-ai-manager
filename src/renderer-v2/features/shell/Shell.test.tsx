@@ -176,12 +176,14 @@ describe('renderer-v2 v4 sidebar', () => {
     const markup = renderShell()
     const scroll = markup.slice(markup.indexOf('data-testid="sidebar-scroll"'), markup.indexOf('data-testid="sidebar-pinned"'))
     const order = [...scroll.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])
-    expect(order).toEqual(['home', 'chat', 'sessions', 'canvas', 'video', 'extensions', 'tutorial', 'health', 'feedback'])
+    expect(order).toEqual(['home', 'chat', 'sessions', 'extensions', 'tutorial', 'health', 'feedback'])
     expect(scroll).toContain('<span>插件</span>')
     expect(scroll).not.toContain('v2-nav-group-label')
     expect(scroll).toContain('<hr class="v2-nav-separator" aria-hidden="true"/>')
     expect(scroll).toContain('<span>反馈与客服</span>')
-    expect(scroll).toContain('<span>画布</span><svg')
+    // 聊天、画布、视频剪辑并成一项（融合第 1 步，yoyo 回「融合改」）：侧栏上没有往外开窗口的那一行了。
+    expect(scroll).toContain('<span>创作</span>')
+    expect(scroll).not.toContain('v2-nav-external')
     expect(scroll).not.toContain('↗')
   })
 
@@ -305,15 +307,17 @@ describe('renderer-v2 sidebar pages per computer', () => {
 
   it('keeps every page when nothing says otherwise', () => {
     const markup = renderShell()
-    for (const id of ['home', 'chat', 'sessions', 'canvas', 'video', 'extensions', 'recharge', 'tutorial', 'health', 'feedback', 'settings']) expect(markup).toContain(`data-testid="nav-${id}"`)
+    for (const id of ['home', 'chat', 'sessions', 'extensions', 'recharge', 'tutorial', 'health', 'feedback', 'settings']) expect(markup).toContain(`data-testid="nav-${id}"`)
     for (const id of ['featured', 'mcp', 'skills', 'plugins']) expect(markup).not.toContain(`data-testid="nav-${id}"`)
   })
 
-  // 视频剪辑只有星芒账号的视频模型能出，历史账号登着时侧栏不列它（App 的 pageVisible）。
-  it('drops the video studio when the adapter says this account cannot use it', () => {
-    const markup = renderShell({ adapter: { pageVisible: (id) => id !== 'video' } })
+  // 融合第 1 步：「聊天」「画布 ↗」「视频剪辑」三项换成「创作」一项，画布项目和视频都在那一页左边那一列里。
+  it('has one 创作 entry where chat, the canvas and the video studio used to be', () => {
+    const markup = renderShell()
+    expect(markup).toMatch(/data-testid="nav-chat"[^>]*>[^]*?<span>创作<\/span>/)
+    expect(markup).not.toContain('data-testid="nav-canvas"')
     expect(markup).not.toContain('data-testid="nav-video"')
-    expect(markup).toContain('data-testid="nav-canvas"')
+    for (const gone of ['<span>聊天</span>', '<span>画布</span>', '<span>视频剪辑</span>']) expect(markup).not.toContain(gone)
   })
 
   // 游戏加速、备份、更新并进了设置（v4 批09），安装卸载拆到首页和检查页（第 10 批）。

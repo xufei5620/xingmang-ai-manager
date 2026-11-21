@@ -2,9 +2,10 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { AiVideoClip } from '../../../../electron/ipc-contract'
 import { tutorialTopics } from '../../registry/tutorials'
-import { applyVideoStudioPlan, createVideoStudioProject, defaultVideoStudioSettings, maxVideoStudioDrafts, serializeVideoStudioDrafts, serializeVideoStudioProject, videoStudioDraftsStorageKey, videoStudioShotImage, videoStudioStorageKey, type VideoStudioDraft, type VideoStudioProject } from './project'
+import { applyVideoStudioPlan, createVideoStudioProject, defaultVideoStudioSettings, videoStudioShotImage, type VideoStudioProject } from './project'
 import type { VideoStudioPriceBridge } from './prices'
-import type { VideoStudioBridge, VideoStudioStorage } from './useVideoStudio'
+import type { VideoStudioBridge } from './useVideoStudio'
+import type { VideoStudioSource } from './useVideoStudioLibrary'
 import { VideoStudioPage, type VideoStudioAccess } from './VideoStudioPage'
 
 // 只渲染首屏：effect 不跑，所以这里不会读模型、不会发任何请求。
@@ -34,15 +35,13 @@ function clip(letter: string): AiVideoClip {
   return { assetId: letter.repeat(43), thumbnailUrl: `xingmang-asset://thumb/v2/video/${letter.repeat(43)}`, width: 720, height: 1280, durationSeconds: 12 }
 }
 
-function storageWith(scope: string, project: VideoStudioProject | null, drafts: readonly VideoStudioDraft[] = []): VideoStudioStorage {
-  const raw = project ? JSON.stringify(serializeVideoStudioProject(project)) : null
-  const box = drafts.length ? JSON.stringify(serializeVideoStudioDrafts(drafts)) : null
-  return { getItem: (key) => key === videoStudioStorageKey(scope) ? raw : key === videoStudioDraftsStorageKey(scope) ? box : null, setItem: () => undefined }
+// 开着的那一条视频存着的样子；首屏渲染不会写回去。
+function sourceOf(project: VideoStudioProject | null, warning = ''): VideoStudioSource {
+  return { read: () => project ?? createVideoStudioProject(), write: () => { throw new Error('a static render must not save the project') }, warning }
 }
 
-function render(access: VideoStudioAccess, project: VideoStudioProject | null = null, drafts: readonly VideoStudioDraft[] = []) {
-  return renderToStaticMarkup(<VideoStudioPage bridge={bridge} accountScope="solov:7" site="solov" access={access} onLogin={() => undefined}
-    options={{ storage: storageWith('solov:7', project, drafts) }} />)
+function render(access: VideoStudioAccess, project: VideoStudioProject | null = null, warning = '') {
+  return renderToStaticMarkup(<VideoStudioPage bridge={bridge} accountScope="solov:7" site="solov" access={access} onLogin={() => undefined} source={sourceOf(project, warning)} />)
 }
 
 function plannedProject(): VideoStudioProject {
@@ -88,12 +87,10 @@ describe('VideoStudioPage', () => {
     expect(markup).toContain('写分镜按文字模型的用量计费；之后每生成一段视频单独计费。')
     expect(markup).not.toContain('data-testid="video-shots"')
     expect(markup).not.toContain('data-testid="video-export"')
-    expect(markup).not.toContain('data-testid="video-reset"')
   })
 
   it('brings back a saved storyboard with the clip it already has and offers only the missing one', () => {
     const markup = render('ready', plannedProject())
-    expect(markup).toContain('data-testid="video-reset"')
     expect(markup).toContain('回家的猫')
     expect(markup).toContain('2 个镜头 · 每段 6 秒 · 共约 12 秒')
     expect(markup).toContain('data-testid="video-shot-0"')
@@ -219,26 +216,18 @@ describe('VideoStudioPage', () => {
     expect(markup).toContain('12 秒 · 720 × 1280')
   })
 
-  it('offers a new film once there is something to keep and lists the draft box under the page', () => {
-    expect(render('ready')).not.toContain('data-testid="video-new"')
-    expect(render('ready')).not.toContain('data-testid="video-drafts"')
-    const project = plannedProject()
-    const markup = render('ready', project, [
-      { id: 'a', savedAt: Date.now(), project: { ...createVideoStudioProject(), settings: { ...defaultVideoStudioSettings(), idea: '海边日落' } } },
-      { id: 'b', savedAt: Date.now(), project: { ...project, exported: clip('z') } },
-    ])
-    expect(markup).toMatch(/title="把这一份放进草稿箱，再从头做一条新的"[^>]*data-testid="video-new"[^>]*>[^]*?新建一条/)
-    expect(markup).toMatch(/data-testid="video-drafts"[^]*?草稿箱[^]*?2 份/)
-    expect(markup).toMatch(/data-testid="video-draft-0"[^]*?海边日落[^]*?还没写分镜 · 今天 \d\d:\d\d/)
-    expect(markup).toMatch(/data-testid="video-draft-1"[^]*?回家的猫[^]*?2 个镜头 · 已生成 1 段 · 已拼成片/)
-    expect(markup).toMatch(/title="现在这一份会先放进草稿箱"[^>]*data-testid="video-draft-open-0"[^>]*>[^]*?接着做/)
-    expect(markup).toMatch(/aria-label="删掉这份草稿"[^>]*title="删掉这份草稿"[^>]*data-testid="video-draft-remove-1"/)
+  // 融合第 1 步：这一页成了「创作」右边的工作台。名字、「改名」「删掉这一条」在外面那条顶栏上，草稿都在左边那一列里。
+  it('is only the workbench of one film: no page title, no new or start-over button and no draft box of its own', () => {
+    const markup = render('ready', plannedProject())
+    expect(markup).not.toContain('xm-page-head')
+    expect(markup).not.toContain('<h1')
+    for (const gone of ['video-new', 'video-reset', 'video-drafts', 'video-draft-0']) expect(markup).not.toContain(`data-testid="${gone}"`)
+    expect(markup).not.toContain('草稿箱')
   })
 
-  it('stops making new films once the draft box is full and says why', () => {
-    const project = plannedProject()
-    const full = Array.from({ length: maxVideoStudioDrafts }, (_, index) => ({ id: `d${index}`, savedAt: Date.now(), project }))
-    expect(render('ready', project, full)).toMatch(new RegExp(`title="草稿箱满了（最多 ${maxVideoStudioDrafts} 份），先删掉几份不要的"[^>]*data-testid="video-new"[^>]*disabled=""`))
+  it('says so on the page when this film could not be saved on this computer', () => {
+    expect(render('ready', plannedProject())).not.toContain('data-testid="video-storage-warning"')
+    expect(render('ready', plannedProject(), '这台电脑上存不下这份分镜，关掉软件以后要重新写。')).toMatch(/data-testid="video-storage-warning"[^]*?这台电脑上存不下这份分镜，关掉软件以后要重新写。/)
   })
 
   // 教程「视频剪辑」一章（清单第 11 项）照这一页的字教：页面改了按钮名、忘了改教程，这里会红。
@@ -249,9 +238,10 @@ describe('VideoStudioPage', () => {
     const project = plannedProject()
     const fresh: VideoStudioProject = { ...project, shots: project.shots.map((shot) => ({ ...shot, clip: undefined, status: 'idle' })) }
     const done: VideoStudioProject = { ...project, shots: project.shots.map((shot, index) => ({ ...shot, clip: clip('ab'[index]), status: 'done' })), music: { assetId: 'm'.repeat(43), name: '晴天', clipSound: 'quiet' }, exported: clip('z') }
-    const markup = [render('ready', fresh), render('ready', project), render('ready', done, [{ id: 'a', savedAt: Date.now(), project: fresh }])].join('')
+    const markup = [render('ready', fresh), render('ready', project), render('ready', done)].join('')
     // 这几个只在确认框、生成中、报余额不够时出现，首屏渲染不到；「生成全部 … 段」里的数是现算的。
-    const elsewhere = ['开始生成', '停止生成', '去充值']
+    // 后面四个在工作台外面：侧栏的「创作」、左上角的「新建」、起始页的卡、顶栏的「删掉这一条」，由 CreatePage 的用例钉住。
+    const elsewhere = ['开始生成', '停止生成', '去充值', '创作', '新建', '做一条带字幕的短视频', '删掉这一条']
     for (const label of quoted.filter((entry) => !elsewhere.includes(entry))) expect(markup, label).toContain(label.replace(' … ', ' 2 '))
     expect(render('unsupported')).toContain(topic?.steps[0].extra?.[0].detail ?? '-')
   })

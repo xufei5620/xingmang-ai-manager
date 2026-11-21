@@ -163,6 +163,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'mcp:logout': { label: 'MCP 退出登录', log: 'normal', account: 'none' },
   'skills:list': { label: 'Skills 列表读取', log: 'normal', account: 'none' },
   'skills:import': { label: 'Skill 导入', log: 'normal', account: 'none' },
+  'skills:choose-archive': { label: 'Skill 从压缩包导入', log: 'normal', account: 'none' },
   'skills:toggle': { label: 'Skill 启用状态修改', log: 'normal', account: 'none' },
   'skills:uninstall': { label: 'Skill 卸载', log: 'normal', account: 'none' },
   'plugins:list': { label: 'Plugins 列表读取', log: 'normal', account: 'none' },
@@ -273,6 +274,9 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:revoke-other-login-sessions': { log: 'normal', account: 'scoped' },
   'canvas:open': { label: '无限画布窗口打开', log: 'normal', account: 'scoped' },
   'canvas:open-asset-library': { label: '无限画布素材库打开', log: 'normal', account: 'scoped' },
+  // 「创作」左边那一列（融合第 1 步）：只回当前账号画布项目的编号、名字和时间；打开时编号先在这个账号的项目里认过。
+  'canvas:list-projects': { label: '画布项目列表读取', log: 'quiet-success', account: 'scoped' },
+  'canvas:open-project': { label: '画布项目打开', log: 'normal', account: 'scoped' },
   // get-remembered-login's result and set-remembered-login's input both carry
   // a plaintext password (the 「记住密码」 credential) -- the same dedicated
   // reveal-channel pattern as config:reveal-api-key, and the same I3/I13
@@ -308,6 +312,9 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // Chat history carries whole conversations and autosaves after every edit:
   // a success line would flood the log, and the payload must never reach it
   // (I13). Failures still log, with the Chinese reason only.
+  // 同聊天记录：换账号途中，上一个账号最后那一次保存还要落下去，所以不等账号；归属由页面带的 scope 定。
+  'video-studio:read-projects': { label: '视频草稿读取', log: 'quiet-success', account: 'none' },
+  'video-studio:write-projects': { label: '视频草稿保存', log: 'quiet-success', account: 'none' },
   'chat-history:read': { label: '聊天记录读取', log: 'quiet-success', account: 'none' },
   'chat-history:write': { label: '聊天记录保存', log: 'quiet-success', account: 'none' },
   // 每次退出都有一条，成功了不值得进反馈报告；没回话的那次主进程等满时限照样退，这里也看不到。

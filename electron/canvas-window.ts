@@ -69,7 +69,8 @@ import type { AiMediaAssetService } from './ai-media-asset-service'
 import type { CanvasRunService } from './canvas-run-service'
 import { parseCanvasRunPreparationCompletion } from './canvas-run-preparations'
 import type { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
-import { findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore } from './canvas-project-store'
+import { findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore, type CanvasStoredProjectSummary } from './canvas-project-store'
+import type { CanvasProjectListEntry } from './ipc-contract'
 import { claimCanvasDefaultProjectFolder, describeCanvasDefaultProjectFolderFailure, releaseCanvasDefaultProjectFolder, releaseCanvasDefaultProjectFolderTree } from './canvas-default-project-folder'
 import { findCanvasRunAssetReferences } from './canvas-asset-references'
 import type { CanvasProjectAssetContext, CanvasProjectAssetManager } from './canvas-project-asset-manager'
@@ -205,6 +206,33 @@ export function importedCanvasProjectName(workflowName: unknown, filePath: strin
   return cleaned(path.basename(filePath).replace(/\.xingcanvas$/i, '')) || '导入的项目'
 }
 
+// 主窗口「创作」那一列最多列这么多个画布项目：没归档的项目本来就封顶 100 个（canvas-project-store.ts）。
+const maximumListedCanvasProjects = 100
+
+/**
+ * What the main window's 「创作」 list gets for the canvas projects: id, name
+ * and last-changed time, newest first, archived ones left out. Project files
+ * are written on the canvas page's behalf, so the name is cut down to one
+ * line of plain text again here and a time that does not parse sorts last
+ * instead of failing the whole list.
+ */
+export function toCanvasProjectList(projects: readonly Pick<CanvasStoredProjectSummary, 'id' | 'name' | 'updatedAt' | 'archivedAt'>[]): CanvasProjectListEntry[] {
+  const listed: CanvasProjectListEntry[] = []
+  for (const project of projects) {
+    if (project.archivedAt || !/^[a-f0-9-]{36}$/.test(project.id)) continue
+    const name = project.name.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 128).trim()
+    const updatedAt = Date.parse(project.updatedAt)
+    listed.push({ id: project.id, name: name || '未命名项目', updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : 0 })
+  }
+  return listed.sort((left, right) => right.updatedAt - left.updatedAt).slice(0, maximumListedCanvasProjects)
+}
+
+/** The project id the main window names when it asks for a project to be opened (I5). */
+export function parseCanvasProjectListId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[a-f0-9-]{36}$/.test(value)) throw new Error('画布项目标识格式错误')
+  return value
+}
+
 export interface CanvasWindowControllerOptions {
   accountWork?: import('./account-work-gate').AccountWorkGate
   /** Absolute path to the packaged infinite-canvas dist/ directory. */
@@ -279,6 +307,22 @@ export interface CanvasWindowController {
    * project is open.
    */
   openAssetLibrary(): Promise<void>
+  /**
+   * The current account's projects for the main window's 「创作」 list: id, name
+   * and last-changed time of the ones not archived, newest first. Nothing a
+   * project contains leaves this process, and the canvas page learns nothing
+   * from the call.
+   */
+  listProjects(): Promise<CanvasProjectListEntry[]>
+  /**
+   * Shows the canvas on one of the current account's projects (the main
+   * window's 「打开画布」). The id comes from the main window and is only used
+   * once it names a project of this account that is not archived. A canvas
+   * already on that project is focused; one on anything else goes through its
+   * own close confirmation first, and the call resolves false when the user
+   * stayed there. Calls run one at a time, in line with openProjectFile().
+   */
+  openProject(projectId: unknown): Promise<boolean>
   /** Applies the global application theme without exposing the settings record to the canvas renderer. */
   setTheme(theme: AppTheme): void
   setAppearance(appearance: CanvasAppearance): void
@@ -1584,6 +1628,61 @@ export function createCanvasWindowController(
     return next
   }
 
+  // 主窗口「创作」左边那一列（融合第 1 步）。只交出编号、名字和最后改动的时间：名字是画布页面写的，
+  // 存的时候已经卡过长度、不许有控制字符（canvas-project-store.ts 的 normalizedProjectName），这里再收一遍，
+  // 主窗口只把它当文字显示。归档的不列，跟项目中心首页一样；条数照没归档项目的上限封顶。
+  async function listProjects(): Promise<CanvasProjectListEntry[]> {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const projects = await options.projects.list(userId)
+    assertCanvasUserUnchanged(userId)
+    return toCanvasProjectList(projects)
+  }
+
+  // 主窗口点了某个项目的「打开画布」。画布这边一个新能力都不加：没开着就带 ?project= 开（双击项目文件走的同一条），
+  // 开着的正是这个项目就把窗口拿到前面，开着别的（或者停在项目中心）先走它自己的关闭确认再重新开。
+  // 编号是主窗口给的，先在这个账号的项目表里找到、而且没归档才用（I5）；找不到就报错，不带着它去开窗口。
+  async function openStoredProject(projectIdInput: unknown): Promise<boolean> {
+    if (hostClosed()) throw new Error('画布宿主已关闭')
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const projectId = parseCanvasProjectListId(projectIdInput)
+    const userId = authenticatedCanvasUserId()
+    const known = (await options.projects.list(userId)).some((project) => project.id === projectId && !project.archivedAt)
+    assertCanvasUserUnchanged(userId)
+    if (!known) throw new Error('这个画布项目找不到了，可能已经在画布里删掉或归档')
+    if (pendingOpen) await pendingOpen.catch(() => undefined)
+    if (canvasWindow && !canvasWindow.isDestroyed()) {
+      const active = activeProjects.get(canvasWindow.webContents.id)
+      if (active?.userId === userId && active.projectId === projectId) {
+        await open()
+        return true
+      }
+      if (!await requestClose()) {
+        if (canvasWindow && !canvasWindow.isDestroyed()) await open()
+        return false
+      }
+    }
+    if (hostClosed()) return false
+    assertCanvasUserUnchanged(userId)
+    if (pendingOpen) await pendingOpen.catch(() => undefined)
+    if (canvasWindow && !canvasWindow.isDestroyed()) {
+      // 关掉那一会儿里又从别处打开了画布：不再关它一次，项目就在项目中心里。
+      await open()
+      return true
+    }
+    pendingOpen = createWindow({ projectId }).finally(() => {
+      pendingOpen = null
+    })
+    await pendingOpen
+    return true
+  }
+
+  function openProject(projectId: unknown): Promise<boolean> {
+    const next = projectFileQueue.then(() => openStoredProject(projectId))
+    projectFileQueue = next.catch(() => undefined)
+    return next
+  }
+
   const unsubscribeRunEvents = options.canvasRuns.subscribe(({ event, userId, ownerId }) => {
     if (!canvasWindow || canvasWindow.isDestroyed()) return
     if (canvasWindow.webContents.id !== ownerId) return
@@ -1916,6 +2015,8 @@ export function createCanvasWindowController(
     open,
     openProjectFile,
     openAssetLibrary,
+    listProjects,
+    openProject,
     setTheme(theme) {
       currentTheme = theme
       currentAppearance = { ...currentAppearance, theme }

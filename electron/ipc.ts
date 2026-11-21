@@ -41,6 +41,7 @@ import type {
   WindowCapabilities,
   AppUninstallRequest,
   AppUninstallResult,
+  CanvasProjectListEntry,
 } from './ipc-contract'
 import { ipcChannelPolicies, type IpcInvokeChannel } from './ipc-channel-policy'
 import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
@@ -55,6 +56,7 @@ import type { InvoicePortalWindowController } from './invoice-portal-window'
 import type { PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import type { AiChatHistoryStore } from './ai-chat-history-store'
+import type { VideoStudioProjectStore } from './video-studio-project-store'
 import type { ChatHistoryFlush } from './chat-history-flush'
 import type { ChatAttachmentService } from './ai-chat-attachments'
 import type { ChatTextFileService } from './ai-chat-text-files'
@@ -143,6 +145,8 @@ export interface IpcRegistrationOptions {
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
   providerExtensionService: ProviderExtensionService
+  /** 技能「从压缩包导入」解开放在哪（main.ts 传数据文件夹下的 skill-archives）；省略 = 那条通道报暂时不能用。 */
+  skillArchiveDirectory?: string
   // Defaults to a real client talking to the production New-Api instance
   // when the host app does not supply one; tests inject a stub the same way
   // they do for other services. Typed as the backend-agnostic
@@ -247,6 +251,10 @@ export interface IpcRegistrationOptions {
   openCanvasWindow(): Promise<void>
   // Same delegation for the canvas home page's read-only library (「看全部作品」).
   openCanvasAssetLibrary(): Promise<void>
+  // 「创作」左边那一列里的画布项目（融合第 1 步）：列出当前账号的项目、把画布开在其中一个上。同样只是转交，
+  // 认账号、认编号、换项目前的关闭确认都在 canvas-window.ts。缺省（早于它的测试）= 报「未就绪」。
+  listCanvasProjects?(): Promise<CanvasProjectListEntry[]>
+  openCanvasProject?(projectId: unknown): Promise<boolean>
   // Backing store for the "记住密码" credential (account-credential-store.ts,
   // safeStorage-encrypted). Optional the same way accountService is: main.ts
   // always passes the real store; when absent (tests that predate it), the
@@ -284,6 +292,8 @@ export interface IpcRegistrationOptions {
   imageService?: AiImageService
   aiAssets?: AiAssetStore
   chatHistory?: AiChatHistoryStore
+  // 视频的分镜一条一个文件（总单 #79，video-studio-project-store.ts）。出片交给服务端之前先等它写完。
+  videoStudioProjects?: VideoStudioProjectStore
   // 退出前问聊天页要的那一次存盘，回执交给它（chat-history-flush.ts）。缺省 = 回执不理。
   chatHistoryFlush?: Pick<ChatHistoryFlush, 'acknowledge'>
   chatAttachments?: ChatAttachmentService
