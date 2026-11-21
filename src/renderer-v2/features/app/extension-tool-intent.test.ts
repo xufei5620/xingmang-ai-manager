@@ -1,22 +1,21 @@
 import { describe, expect, it, vi } from 'vitest'
-import { requestExtensionTool, subscribeExtensionTool, takeExtensionTool } from './extension-tool-intent'
+import { requestExtensionsView, subscribeExtensionsView, takeExtensionsView } from './extension-tool-intent'
 
-describe('extension tool intent', () => {
-  it('hands the requested tool to that page once and leaves other pages alone', () => {
-    requestExtensionTool('plugins', 'codex')
-    expect(takeExtensionTool('skills')).toBeNull()
-    expect(takeExtensionTool('plugins')).toBe('codex')
-    expect(takeExtensionTool('plugins')).toBeNull()
+describe('extensions view intent', () => {
+  it('hands the requested view to the plugins page once', () => {
+    requestExtensionsView('skills')
+    expect(takeExtensionsView()).toBe('skills')
+    expect(takeExtensionsView()).toBeNull()
   })
 
   it('tells a page that is already mounted until it unsubscribes', () => {
     const listener = vi.fn()
-    const stop = subscribeExtensionTool(listener)
-    requestExtensionTool('plugins', 'codex')
+    const stop = subscribeExtensionsView(listener)
+    requestExtensionsView('plugins')
     expect(listener).toHaveBeenCalledTimes(1)
     stop()
-    requestExtensionTool('plugins', 'grok')
+    requestExtensionsView('skills')
     expect(listener).toHaveBeenCalledTimes(1)
-    expect(takeExtensionTool('plugins')).toBe('grok')
+    expect(takeExtensionsView()).toBe('skills')
   })
 })
