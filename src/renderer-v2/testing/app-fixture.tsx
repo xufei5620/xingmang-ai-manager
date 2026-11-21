@@ -865,7 +865,7 @@ const methods = {
   getAccountKeyOptions: async (provider: ProviderId) => {
     const reads = (keyMetadataReads.get(provider) ?? 0) + 1
     keyMetadataReads.set(provider, reads)
-    if (query.get('keyMetadataFail') === provider) throw new Error('当前密钥信息暂时没有读到')
+    if (query.get('keyMetadataFail') === provider) throw new Error('当前密钥信息暂时无法获取')
     if (query.get('keyMetadataPending') === provider && reads === 1) await new Promise<void>((resolve) => pendingKeyMetadata.set(provider, resolve))
     const automatic = resolveManagedCliKeyProfiles(session.siteId)[provider]
     const keyId = selectedKeyIds.get(provider)

@@ -32,13 +32,13 @@ export function toolKeyLimitReached(limit: ManagedCliKeyLimit): boolean {
 }
 
 export function toolKeyLimitDescription(limit: ManagedCliKeyLimit): string {
-  if (!limit.key) return '还没有这把密钥，在首页配一次这个工具就会自动准备好。'
+  if (!limit.key) return '暂无此密钥，在首页配置该工具后将自动创建。'
   const used = `已用 ${dollars(limit.used)}`
   if (limit.unlimited) return `${used} · 不限额度`
   // 「上限剩余 $0.00」不告诉用户任何事:工具已经在报错了,而屏幕上只有一个零。
   // 目录里 noBalance 的正文(「充值到账后立即恢复」)在这里是错的——充值不会
   // 放开单个工具的上限,只有把上限改大才会,所以这句照 N4 的真实语义写。
-  if (toolKeyLimitReached(limit)) return `${used} · 上限已用完，这个工具的请求会被拒绝；把上限改大或留空即可恢复`
+  if (toolKeyLimitReached(limit)) return `${used} · 额度上限已用尽，该工具的请求将被拒绝；调高上限或留空即可恢复`
   return `${used} · 上限剩余 ${dollars(limit.remaining)}`
 }
 
@@ -180,13 +180,13 @@ export function ToolKeyLimits({
   if (resource.data && !layout.rows.length && !operation.error && !resource.error)
     return (
       <p className="v2-business-key-limits-empty" data-testid="tool-key-limits">
-        工具配好后，可以在这里给每个工具设额度上限。
+        工具配置完成后，可在此为每个工具设置额度上限。
       </p>
     )
   return (
     <Card
       title="每个工具的额度上限"
-      meta="留空表示不限额。上限是这个工具还能再用多少，用完只停这一个工具，其余照常；额度不会自动恢复，重新填写即可放开。"
+      meta="留空表示不限额。上限为该工具的剩余可用额度，用尽后仅停用该工具，其他工具不受影响；额度不会自动恢复，重新填写即可解除。"
       testId="tool-key-limits"
     >
       <ResultNotice
@@ -217,7 +217,7 @@ export function ToolKeyLimits({
       )}
       {resource.data && layout.missing.length > 0 && (
         <p className="v2-business-key-limits-missing" data-testid="tool-key-limits-missing">
-          {layout.missing.join('、')} 还没配，配好后会出现在这里。
+          {layout.missing.join('、')} 尚未配置，配置后将显示在此处。
         </p>
       )}
     </Card>

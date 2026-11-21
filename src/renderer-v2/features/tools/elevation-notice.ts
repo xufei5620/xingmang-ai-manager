@@ -32,7 +32,7 @@ export function elevatedInstallNotice(
 ): string | null {
   if (platform !== 'windows' || management !== 'managed' || elevated) return null
   const name = subject === 'node' ? 'Node.js' : 'Codex 桌面端'
-  return `这一步需要管理员授权：点「安装」后 Windows 会弹一次授权窗口，请选「是」，${name} 才装得上；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。`
+  return `此步骤需要管理员授权：点击「安装」后 Windows 将弹出授权窗口，请选择「是」以完成 ${name} 的安装；如本机登录的是普通账号，还需输入管理员账号密码。`
 }
 
 /**
@@ -46,7 +46,7 @@ export function elevatedInstallShortNotice(
   elevated?: boolean,
 ): string | null {
   if (!elevatedInstallNotice(subject, platform, management, elevated)) return null
-  return '安装时需要管理员授权，Windows 会弹一次授权窗口'
+  return '安装时需要管理员授权，Windows 将弹出授权窗口'
 }
 
 /**
@@ -68,9 +68,9 @@ export function homeNodeElevationNotice(
   elevated?: boolean,
 ): string | null {
   if (!elevatedInstallNotice('node', platform, management)) return null
-  const purpose = 'Node.js 是命令行工具需要的运行环境，装工具时会自动准备，一般不用单独点。'
+  const purpose = 'Node.js 是命令行工具所需的运行环境，安装工具时将自动准备，通常无需单独操作。'
   if (elevated) return optional ? purpose : null
   return optional
-    ? `${purpose}准备时 Windows 会弹一次授权窗口，请选「是」；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。`
-    : '这一步需要管理员授权：准备 Node.js 时 Windows 会弹一次授权窗口，请选「是」，Node.js 才装得上；如果这台电脑登录的是普通账号，还要输入一个管理员账号的密码。'
+    ? `${purpose}准备时 Windows 将弹出授权窗口，请选择「是」；如本机登录的是普通账号，还需输入管理员账号密码。`
+    : '此步骤需要管理员授权：准备 Node.js 时 Windows 将弹出授权窗口，请选择「是」以完成 Node.js 的安装；如本机登录的是普通账号，还需输入管理员账号密码。'
 }

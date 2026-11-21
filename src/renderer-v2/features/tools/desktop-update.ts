@@ -27,19 +27,19 @@ export function desktopUpdateToolName(tool: DesktopUpdateTool): string {
 export function desktopUpdateRunningPrompt(tool: DesktopUpdateTool): { title: string; body: string; label: string; cancelLabel: string } {
   return {
     title: `${spacedName(desktopUpdateToolName(tool))}正在运行`,
-    body: '更新要先把它关掉，会打断它正在进行的回答。更新完星芒会帮你重新打开。',
+    body: '更新前需关闭该程序，正在进行的回答将被中断。更新完成后星芒将自动重新打开。',
     label: '关掉并更新',
-    cancelLabel: '先不更新',
+    cancelLabel: '暂不更新',
   }
 }
 
 /** Mac 的「App 管理」拦住了这次更新：带客户去系统设置里打开星芒的开关，回来再点一次。 */
 export function desktopUpdateBlockedPrompt(version: string): { title: string; body: string; label: string; cancelLabel: string } {
   return {
-    title: '要先允许星芒更新 App',
-    body: `Mac 的安全设置拦住了这次更新，旧版还在，照常能用。点「去打开」，在「App 管理」里打开「星芒AI管理工具」的开关，再回来点一次「可更新到 v${version.replace(/^v/, '')}」。`,
-    label: '去打开',
-    cancelLabel: '先不更新',
+    title: '需先允许星芒更新 App',
+    body: `本次更新被 Mac 安全设置拦截，旧版本仍可正常使用。请点击「前往设置」，在「App 管理」中开启「星芒AI管理工具」，然后返回再次点击「可更新到 v${version.replace(/^v/, '')}」。`,
+    label: '前往设置',
+    cancelLabel: '暂不更新',
   }
 }
 
@@ -48,7 +48,7 @@ export function desktopUpdatedMessage(tool: DesktopUpdateTool, version: string):
 }
 
 /** 其它原因没更新成时卡片上那一行（旁边照旧有「看原因」）。 */
-export const desktopUpdateFailedLine = '没更新成，旧版还在，照常能用'
+export const desktopUpdateFailedLine = '更新失败，旧版本仍可正常使用'
 
 export function withoutDesktopTool<T>(record: Partial<Record<DesktopUpdateTool, T>>, tool: DesktopUpdateTool): Partial<Record<DesktopUpdateTool, T>> {
   if (!(tool in record)) return record

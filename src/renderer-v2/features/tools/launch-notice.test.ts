@@ -25,13 +25,13 @@ describe('launchWarning', () => {
 
   // D17：打开前试写不进去，照样打开，首页说这一句。
   it('says the folder can only be read when the launch found it refuses writes', () => {
-    expect(launchWarning({ workspaceReadOnly: true })).toBe('这个文件夹只能看不能改，AI 改不了里面的文件，建议换一个。')
+    expect(launchWarning({ workspaceReadOnly: true })).toBe('该文件夹为只读，AI 无法修改其中的文件，建议更换文件夹。')
     expect(launchWarning({ workspaceReadOnly: false })).toBeNull()
   })
 
   it('says both when a read-only folder also carries settings that override the account', () => {
     expect(launchWarning({ workspaceReadOnly: true, configOverrideNotice: '这个项目文件夹里有自己的设置。' }))
-      .toBe('这个文件夹只能看不能改，AI 改不了里面的文件，建议换一个。这个项目文件夹里有自己的设置。')
+      .toBe('该文件夹为只读，AI 无法修改其中的文件，建议更换文件夹。这个项目文件夹里有自己的设置。')
   })
 })
 
@@ -51,10 +51,10 @@ describe('resumeSessionNotice', () => {
   })
 
   it('confirms the resume, with the override reminder when there is one', () => {
-    expect(resumeSessionNotice({}, 'Claude Code', 'C:\\work')).toBe('已打开Claude Code，接着 C:\\work 里最近的一条对话')
-    expect(resumeSessionNotice(undefined, 'Codex', 'D:\\app')).toBe('已打开Codex，接着 D:\\app 里最近的一条对话')
+    expect(resumeSessionNotice({}, 'Claude Code', 'C:\\work')).toBe('已打开Claude Code，继续 C:\\work 中最近的一条对话')
+    expect(resumeSessionNotice(undefined, 'Codex', 'D:\\app')).toBe('已打开Codex，继续 D:\\app 中最近的一条对话')
     expect(resumeSessionNotice({ configOverrideNotice: '这个项目文件夹里有自己的设置' }, 'Codex', 'D:\\app'))
-      .toBe('已打开Codex，接着 D:\\app 里最近的一条对话。这个项目文件夹里有自己的设置')
+      .toBe('已打开Codex，继续 D:\\app 中最近的一条对话。这个项目文件夹里有自己的设置')
   })
 })
 
@@ -73,33 +73,33 @@ describe('launchWaitLabel', () => {
   })
 
   it('names the install a desktop client launch is waiting behind', () => {
-    expect(launchWaitLabel({ claude: { label: '正在安装' } }, nameOf, '正在打开客户端')).toBe('正在等 Claude Code 安装完，安装完马上打开')
+    expect(launchWaitLabel({ claude: { label: '正在安装' } }, nameOf, '正在打开客户端')).toBe('正在等待 Claude Code 安装完成，完成后将立即打开')
     expect(launchWaitLabel({ 'launch:opencode': { label: '正在打开客户端' }, workbuddy: { label: '正在安装' } }, nameOf, '正在打开客户端'))
-      .toBe('正在等 WorkBuddy 安装完，安装完马上打开')
+      .toBe('正在等待 WorkBuddy 安装完成，完成后将立即打开')
   })
 
   it('does not claim to wait for account switches or reminder repairs, which never join the install queue', () => {
     expect(launchWaitLabel({ 'switch:claude': { label: '正在改用当前账号' } }, nameOf)).toBe('正在打开工具')
     expect(launchWaitLabel({ 'repair-hooks:codex': { label: '正在修提醒设置' } }, nameOf, '正在打开客户端')).toBe('正在打开客户端')
-    expect(launchWaitLabel({ 'repair-config:codex': { label: 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留' } }, nameOf)).toBe('正在打开工具')
+    expect(launchWaitLabel({ 'repair-config:codex': { label: 'Codex 无法读取此配置，打开时将报错。修复前将先备份，历史会话保留' } }, nameOf)).toBe('正在打开工具')
     expect(launchWaitLabel({ 'switch:claude': { label: '正在切回官方账号' }, workbuddy: { label: '正在安装' } }, nameOf))
-      .toBe('正在等 WorkBuddy 安装完，安装完马上打开')
+      .toBe('正在等待 WorkBuddy 安装完成，完成后将立即打开')
   })
 
   it('names the install the launch is waiting behind', () => {
-    expect(launchWaitLabel({ claude: { label: '正在安装' } }, nameOf)).toBe('正在等 Claude Code 安装完，安装完马上打开')
-    expect(launchWaitLabel({ workbuddy: { label: '正在安装' } }, nameOf)).toBe('正在等 WorkBuddy 安装完，安装完马上打开')
-    expect(launchWaitLabel({ gemini: { label: '正在安装' } }, nameOf)).toBe('正在等 另一个工具 安装完，安装完马上打开')
+    expect(launchWaitLabel({ claude: { label: '正在安装' } }, nameOf)).toBe('正在等待 Claude Code 安装完成，完成后将立即打开')
+    expect(launchWaitLabel({ workbuddy: { label: '正在安装' } }, nameOf)).toBe('正在等待 WorkBuddy 安装完成，完成后将立即打开')
+    expect(launchWaitLabel({ gemini: { label: '正在安装' } }, nameOf)).toBe('正在等待 另一个工具 安装完成，完成后将立即打开')
   })
 
   it('says uninstall when an uninstall is ahead', () => {
-    expect(launchWaitLabel({ claude: { label: '正在卸载' } }, nameOf)).toBe('正在等 Claude Code 卸载完，卸载完马上打开')
+    expect(launchWaitLabel({ claude: { label: '正在卸载' } }, nameOf)).toBe('正在等待 Claude Code 卸载完成，完成后将立即打开')
   })
 
   it('talks about the runtime rather than a tool while Node.js, Python or Git is being prepared', () => {
-    expect(launchWaitLabel({ node: { label: '正在准备运行环境' } }, nameOf)).toBe('正在等运行环境准备好，好了马上打开')
-    expect(launchWaitLabel({ python: { label: '正在准备运行环境' } }, nameOf, '正在打开客户端')).toBe('正在等运行环境准备好，好了马上打开')
-    expect(launchWaitLabel({ git: { label: '正在准备安装 Git' } }, nameOf)).toBe('正在等运行环境准备好，好了马上打开')
+    expect(launchWaitLabel({ node: { label: '正在准备运行环境' } }, nameOf)).toBe('正在等待运行环境准备完成，完成后将立即打开')
+    expect(launchWaitLabel({ python: { label: '正在准备运行环境' } }, nameOf, '正在打开客户端')).toBe('正在等待运行环境准备完成，完成后将立即打开')
+    expect(launchWaitLabel({ git: { label: '正在准备安装 Git' } }, nameOf)).toBe('正在等待运行环境准备完成，完成后将立即打开')
   })
 })
 
@@ -115,7 +115,7 @@ describe('clientLaunchWaitLabel', () => {
 
   it('names the client\'s own install when that is what the launch waits for', () => {
     expect(clientLaunchWaitLabel({ claude: { label: '正在安装' }, workbuddy: { label: '正在下载' } }, 'workbuddy', nameOf))
-      .toBe('正在等 WorkBuddy 安装完，安装完马上打开')
+      .toBe('正在等待 WorkBuddy 安装完成，完成后将立即打开')
   })
 })
 
@@ -143,18 +143,18 @@ describe('logoutJobsNote', () => {
 describe('clientLaunchProgressLabel', () => {
   it('says Claude Desktop is getting its program, with the percent while it is known', () => {
     expect(clientLaunchProgressLabel({ tool: 'claudeDesktop', phase: 'downloading', percent: 35 }))
-      .toBe('正在替 Claude Desktop 准备聊天要用的程序（35%），好了马上打开')
+      .toBe('正在为 Claude Desktop 准备聊天所需程序（35%），完成后将立即打开')
     expect(clientLaunchProgressLabel({ tool: 'claudeDesktop', phase: 'downloading', percent: null }))
-      .toBe('正在替 Claude Desktop 准备聊天要用的程序，好了马上打开')
+      .toBe('正在为 Claude Desktop 准备聊天所需程序，完成后将立即打开')
     expect(clientLaunchProgressLabel({ tool: 'claudeDesktop', phase: 'placing', percent: null }))
-      .toBe('正在替 Claude Desktop 准备聊天要用的程序，好了马上打开')
+      .toBe('正在为 Claude Desktop 准备聊天所需程序，完成后将立即打开')
   })
 })
 
 describe('externalLaunchWarning', () => {
   it('tells an elevated 星芒 how to let Claude Desktop get its program, and says nothing otherwise', () => {
     expect(externalLaunchWarning({ preparationSkipped: 'elevated' }))
-      .toBe('星芒现在是以管理员身份打开的，没法替 Claude Desktop 准备程序。关掉星芒、直接双击打开，再点「打开」。')
+      .toBe('星芒当前以管理员身份运行，无法为 Claude Desktop 准备程序。请关闭星芒后直接双击打开，再点击「打开」。')
     expect(externalLaunchWarning({})).toBeNull()
     expect(externalLaunchWarning(undefined)).toBeNull()
   })

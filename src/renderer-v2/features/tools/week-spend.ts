@@ -148,7 +148,7 @@ export function createWeekSpendLoader(
       // 不会把新账号的数交回来、再记到上一个账号名下（D11）。
       const data = await bridge.getAccountDashboard({ startTimestamp: Math.floor(day.start / 1000), endTimestamp: Math.floor(day.end / 1000) }, scope)
       // 只给全部累计、不分时段的后台画不出每天一根柱子。
-      if (data.coverage === 'all-time-summary') throw new Error('这个账号读不出每天的花费')
+      if (data.coverage === 'all-time-summary') throw new Error('该账号无法获取每日花费')
       // 查到一天就存一天：同一趟里别的天没查成，查成的这几天下次也不用再问。
       if (!today && askedAt.getTime() - (day.end + 1000) >= weekSpendSettleMs) {
         settled.set(day.start, data.quota)

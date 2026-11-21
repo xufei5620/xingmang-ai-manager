@@ -101,10 +101,10 @@ export function useToolLaunch(options: ToolLaunchOptions) {
    */
   async function waitForAccountConnection(tool: { id: ToolId; source: ToolSource; provider: ProviderId }, epoch: () => boolean): Promise<'ready' | 'waited' | 'stop'> {
     if (tool.source !== 'account' || !accountConnectionPending(tool.provider)) return 'ready'
-    toast.show('正在连接账号，好了会自动打开。', 'neutral')
+    toast.show('正在关联账号，完成后将自动打开。', 'neutral')
     const outcome = await waitWhileAccountConnectionPending({ pending: () => accountConnectionPending(tool.provider), current: () => launchIsCurrent(epoch) })
     if (outcome === 'stopped') return 'stop'
-    if (outcome === 'timeout') { toast.show('正在同步这个工具的账号连接，请稍后再打开。', 'neutral'); return 'stop' }
+    if (outcome === 'timeout') { toast.show('正在同步该工具的账号连接，请稍后再打开。', 'neutral'); return 'stop' }
     const latest = accountBootstrapRef.current
     const failure = resolveToolKeySyncFailure(latest?.scope === scope ? latest : null, tool.provider, tool.id)
     if (failure) { toast.show(failure.text, 'warn'); return 'stop' }
@@ -124,7 +124,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       let config = await toolsApi.readConfig()
       if (!launchIsCurrent(epoch)) return null
       let tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
-      if (!tool) throw new Error('这台电脑上打不开这个工具')
+      if (!tool) throw new Error('本机无法打开该工具')
       if (tool.error) throw new Error(tool.error)
       if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
       // Shortcuts, tray actions and the records page share this entry, including
@@ -145,7 +145,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
         const fresh = await toolsApi.readConfig()
         if (!launchIsCurrent(epoch)) return null
         tool = presentTools({ ...current, config: fresh }).find((entry) => entry.id === id) ?? tool
-        if (codexNeedsRepair(fresh.providers[tool.provider], tool.provider)) throw new Error('Codex 的连接设置没修好，已保持原样。请在首页点「立即修复」再试一次。')
+        if (codexNeedsRepair(fresh.providers[tool.provider], tool.provider)) throw new Error('Codex 连接设置修复失败，已保持原样。请在首页点击「立即修复」后重试。')
       }
       // 工具自己都读不了的配置文件，在配置窗口里怎么选都修不好（只更新会被拒、密钥也读不准），不再弹它、
       // 也不说「确认账号连接」：错误框直接给「立即修复」，修完接着打开（broken-config-launch.ts）。
@@ -182,13 +182,13 @@ export function useToolLaunch(options: ToolLaunchOptions) {
           }
           catch (cause) {
             if (!launchIsCurrent(epoch)) return null
-            toast.show(`模型没换成，先照旧打开：${errorMessage(cause)}`, 'warn')
+            toast.show(`模型更换失败，已按原设置打开：${errorMessage(cause)}`, 'warn')
           }
           if (!launchIsCurrent(epoch)) return null
           if (saved) {
             const refreshed = await toolbox.refreshSavedConfig(() => launchIsCurrent(epoch))
             if (!launchIsCurrent(epoch)) return null
-            if (!refreshed) toast.show('模型已保存，但最新配置没有读到；工具列表可能仍显示旧模型。请重新检测，无需重复保存。', 'warn')
+            if (!refreshed) toast.show('模型已保存，但最新配置尚未获取，工具列表可能仍显示旧模型。请重新检测，无需重复保存。', 'warn')
           }
         }
       }
@@ -363,7 +363,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       if (!launchIsCurrent(epoch)) return false
       if (!isMissingWorkspace(cause)) throw cause
       // 目录没了就没有「上次那条对话」可接,退回选择器开新的,总比只甩一条错误强。
-      toast.show('上次用的目录已经找不到了，请重新选择。', 'warn')
+      toast.show('上次使用的目录已不存在，请重新选择。', 'warn')
       return openTool(id, 'open', undefined, 'choose', epoch)
     }
   }

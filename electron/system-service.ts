@@ -288,7 +288,7 @@ export interface SystemScanOptions {
 /** 卸载命令行工具的附加要求；缺省 = 只卸载（旧行为）。 */
 export interface CliUninstallOptions {
   /**
-   * 这次卸载是「换成星芒装的」的前一半，卸完渲染层马上用 npm 装回来（第三十一批 B）。
+   * 这次卸载是「改用星芒安装」的前一半，卸完渲染层马上用 npm 装回来（第三十一批 B）。
    * 先按安装那一道门槛看盘：装不下就一个文件都不动，免得客户卸完落得一份都没有。
    */
   reinstall?: boolean

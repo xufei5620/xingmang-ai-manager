@@ -1,7 +1,7 @@
 import type { ToolPresentation } from './model'
 
 /**
- * 「换成星芒装的」要装哪一版（第三十一批 B）。首页的「更新到推荐版本」「更新」和新手引导
+ * 「改用星芒安装」要装哪一版（第三十一批 B）。首页的「更新到推荐版本」「更新」和新手引导
  * 都点名了版本；没点名的只有工具卡片「…」里的「重新安装」，那时和主进程不点名的安装落在同一处
  * （resolveCliInstallVersion：钉在推荐版本上装推荐版本，否则装最新版）。确认框要写出版本号，
  * 装下去的又必须正是写出来的那一版，所以在这里定下来、安装时点名交给主进程。最新版这次
@@ -29,8 +29,8 @@ export interface ManagedSwitchConfirmation {
  */
 export function managedSwitchConfirmation(version: string): ManagedSwitchConfirmation {
   return {
-    title: '换成星芒装的 Claude Code？',
-    body: `这台电脑上的 Claude Code 是官方安装器装的，星芒没法直接更新它。点「换成星芒装的」，星芒会先把它卸掉，再装上 ${version}。工具配置、账号数据和历史记录会保留，以后在星芒里点一下就能更新。`,
-    okLabel: '换成星芒装的',
+    title: '是否改用星芒安装的 Claude Code？',
+    body: `本机的 Claude Code 由官方安装器安装，星芒无法直接更新。点击「改用星芒安装」后，星芒将先卸载原版本，再安装 ${version}。工具配置、账号数据和历史记录将保留，之后可在星芒中一键更新。`,
+    okLabel: '改用星芒安装',
   }
 }

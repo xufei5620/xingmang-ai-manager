@@ -67,7 +67,7 @@ export interface HomeProps {
   supportsBilling?: boolean
   /** 后台给得出按天的花费（历史账号给不出）：余额卡画近 7 天的七根柱子。缺省 = 只写合计。 */
   supportsUsageTrend?: boolean
-  /** 当前账号有密钥管理：工具区最后一格改去「用在别的软件里」。缺省 = 照旧去反馈。 */
+  /** 当前账号有密钥管理：工具区最后一格改去「在其他软件中使用」。缺省 = 照旧去反馈。 */
   supportsKeys?: boolean
   balance: AccountBalance | null
   /** 当前账号能用的订阅；缺省 / null = 没有，一切按钱包说（旧行为）。 */
@@ -359,7 +359,7 @@ export function homeMoneyNotice(dollars: number | null, subscription: UsableSubs
 
 /**
  * 工具区最后一格「想用的工具不在这里？」点了去哪（Q1）：登录了、账号有密钥管理，先去密钥管理最下面
- * 「用在别的软件里」，那里再留一句去反馈；没登录或没有密钥管理的照旧直接去反馈。
+ * 「在其他软件中使用」，那里再留一句去反馈；没登录或没有密钥管理的照旧直接去反馈。
  */
 export function homeToolRequest(signedIn: boolean, supportsKeys: boolean | undefined): { page: PageId; section: string; text: string } {
   return signedIn && supportsKeys === true

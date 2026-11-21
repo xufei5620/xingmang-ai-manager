@@ -208,7 +208,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '配置就是告诉 Codex 使用哪个账号。使用星芒额度时，选「当前账号」。',
         bullets: ['没连上时点卡片上的「确认连接」，连上了点「…」里的「配置…」。', '确认弹窗写的是「Codex 桌面端 配置」。'],
         expected: '「当前账号」已选中。',
-        extra: [{ title: '想用自己的密钥或 ChatGPT 账号？', detail: '自己的星芒密钥选「自己填写密钥」，粘贴完整内容；官方账号选「ChatGPT 账号」，保存后到 Codex 完成官方登录。Codex CLI 与桌面端共用配置，修改会影响两者。' }],
+        extra: [{ title: '想用自己的密钥或 ChatGPT 账号？', detail: '自己的星芒密钥选「手动填写密钥」，粘贴完整内容；官方账号选「ChatGPT 账号」，保存后到 Codex 完成官方登录。Codex CLI 与桌面端共用配置，修改会影响两者。' }],
         illustration: 'desktop-config',
         action: '去首页打开 Codex 配置',
         page: 'home',

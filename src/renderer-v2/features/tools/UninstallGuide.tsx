@@ -53,22 +53,22 @@ function inUserApplications(path: string | null | undefined): boolean {
 export function buildUninstallGuide(tool: UninstallGuideTool, name: string, os: WindowOs, path?: string | null): UninstallGuide | null {
   const systemName = (os === 'mac' ? macBundleName(path) : null) ?? systemNames[tool]
   const title = `怎么卸载 ${name}`
-  const lead = `${spacedName(name)}要在系统里卸载：`
+  const lead = `${spacedName(name)}需在系统中卸载：`
   if (os === 'win') {
     if (tool === 'codexDesktop') return null
-    return { title, lead, after: '卸完回到星芒，点首页的「重新检测」。', steps: [
+    return { title, lead, after: '卸载完成后回到星芒，点击首页的「重新检测」。', steps: [
       '打开 Windows「设置 → 应用 → 已安装的应用」（Windows 10 上叫「应用和功能」）。',
-      `找到 ${systemName}，点右边的「…」→「卸载」（Windows 10 上先点它，再点「卸载」）。`,
+      `找到 ${systemName}，点击右侧的「…」→「卸载」（Windows 10 中先点击该项，再点击「卸载」）。`,
     ] }
   }
   if (os === 'mac') {
     // Mac 上 Codex 桌面端装出来叫 ChatGPT，不点明的话客户在「应用程序」里找不到「Codex」。
     const found = tool === 'codexDesktop' && systemName !== 'Codex' ? `${systemName}（Codex 桌面端在 Mac 上叫这个名字）` : systemName
-    return { title, lead, after: '删完回到星芒，点首页的「重新检测」。', steps: [
+    return { title, lead, after: '删除后回到星芒，点击首页的「重新检测」。', steps: [
       // 开着的程序访达不让拖进废纸篓。
-      `先退出 ${systemName}（在它的窗口里按 ⌘Q）。`,
-      inUserApplications(path) ? '打开访达，按 ⇧⌘H 打开你的个人文件夹，再打开里面的「应用程序」。' : '打开访达，点左边的「应用程序」。',
-      `找到 ${found}，把它拖进废纸篓。`,
+      `请先退出 ${systemName}（在其窗口中按 ⌘Q）。`,
+      inUserApplications(path) ? '打开访达，按 ⇧⌘H 打开个人文件夹，再打开其中的「应用程序」。' : '打开访达，点击左侧的「应用程序」。',
+      `找到 ${found}，将其拖入废纸篓。`,
     ] }
   }
   return null

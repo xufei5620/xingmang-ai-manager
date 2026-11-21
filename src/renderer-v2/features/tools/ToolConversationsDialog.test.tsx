@@ -12,8 +12,8 @@ function render(overrides: Partial<Parameters<typeof ToolConversationsDialog>[0]
 
 describe('renderer-v2 tool conversations dialog', () => {
   it('names the tool in the title', () => {
-    expect(conversationsDialogTitle('Claude Code')).toBe('接着 Claude Code 之前的对话')
-    expect(render()).toContain('接着 Codex CLI 之前的对话')
+    expect(conversationsDialogTitle('Claude Code')).toBe('继续 Claude Code 之前的对话')
+    expect(render()).toContain('继续 Codex CLI 之前的对话')
   })
 
   // 记录是打开窗口时现读的，读回来之前先说在读，不先摆一句「还没有对话」。

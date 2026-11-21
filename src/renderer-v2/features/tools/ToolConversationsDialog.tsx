@@ -9,9 +9,9 @@ import { folderConversations, resumeNeedsRecheck, resumeStillLatest, workspaceNa
 
 type SessionSummary = MultiProviderSessionPage['items'][number]
 
-/** 窗口标题：「接着 Codex CLI 之前的对话」。 */
+/** 窗口标题：「继续 Codex CLI 之前的对话」。 */
 export function conversationsDialogTitle(toolName: string): string {
-  return `接着 ${toolName} 之前的对话`
+  return `继续 ${toolName} 之前的对话`
 }
 
 export interface ToolConversationsDialogProps {
@@ -48,7 +48,7 @@ export function ToolConversationsDialog(props: ToolConversationsDialogProps) {
     let current = true
     setError('')
     void api.toolSessions(provider).then((value) => { if (current) setPage(value) }).catch((cause) => {
-      if (current) setError(errorMessage(cause, '记录暂时没有读到'))
+      if (current) setError(errorMessage(cause, '记录暂时无法获取'))
     })
     return () => { current = false }
   }, [api, provider, attempt])
@@ -89,6 +89,6 @@ export function ToolConversationsDialog(props: ToolConversationsDialogProps) {
               title={recentResumeHint(session)} onClick={() => void resume(session)} testId={`tool-conversation-resume-${session.id}`}>继续对话</Button>
           </span>
         </div>)}</div></>
-          : <div className="v2-home-recent-empty">还没有对话。打开工具聊过之后，最近的对话会出现在这里。</div>}
+          : <div className="v2-home-recent-empty">暂无对话。使用工具对话后，最近的对话将显示在此处。</div>}
   </Dialog>
 }

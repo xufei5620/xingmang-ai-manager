@@ -13,9 +13,9 @@
 export type BrokenConfig = 'codexConfig' | 'codexAuth' | 'claudeSettings'
 
 export const brokenConfigLaunchMessages: Record<BrokenConfig, string> = {
-  codexConfig: 'Codex 读不了这份配置，打开会报错。',
-  codexAuth: 'Codex 读不了登录信息，打开会要你重新登录。',
-  claudeSettings: 'Claude Code 读不了这份配置，打开会报错。',
+  codexConfig: 'Codex 无法读取此配置，打开时将报错。',
+  codexAuth: 'Codex 无法读取登录信息，打开时将要求重新登录。',
+  claudeSettings: 'Claude Code 无法读取此配置，打开时将报错。',
 }
 
 const launchMessages: ReadonlySet<string> = new Set(Object.values(brokenConfigLaunchMessages))

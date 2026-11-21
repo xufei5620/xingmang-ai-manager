@@ -71,16 +71,16 @@ describe('account center wording', () => {
   })
 
   it('counts keys and the ones tools are using', () => {
-    expect(keyCountText(3, 1)).toBe('3 把，1 把正在被工具使用')
-    expect(keyCountText(2, 0)).toBe('2 把')
+    expect(keyCountText(3, 1)).toBe('3 个，其中 1 个正在被工具使用')
+    expect(keyCountText(2, 0)).toBe('2 个')
   })
 
   it('names the invite rebate rate only when the server gave one', () => {
-    expect(inviteRateText(10)).toBe('好友充值后返你 10%')
-    expect(inviteRateText(undefined)).toBe('好友充值后你能拿返利')
-    expect(inviteRateText(0)).toBe('好友充值后你能拿返利')
-    expect(inviteRuleText(10)).toBe('好友用你的链接注册并充值，你得到充值金额的 10%。')
-    expect(inviteRuleText(null)).toBe('好友用你的链接注册并充值后，你能拿到返利。')
+    expect(inviteRateText(10)).toBe('好友充值后返利 10%')
+    expect(inviteRateText(undefined)).toBe('好友充值后可获得返利')
+    expect(inviteRateText(0)).toBe('好友充值后可获得返利')
+    expect(inviteRuleText(10)).toBe('好友通过您的链接注册并充值，您将获得充值金额的 10%。')
+    expect(inviteRuleText(null)).toBe('好友通过您的链接注册并充值后，您将获得返利。')
   })
 
   it('describes each login device by how long ago it was active and its address', () => {
@@ -408,7 +408,7 @@ describe('passwordChangeFailure', () => {
     const shown = passwordChangeFailure(unconfirmed)
     expect(shown).toBeInstanceOf(Error)
     expect(errorMessage(shown)).toBe(passwordChangeUnconfirmedNotice)
-    expect(passwordChangeUnconfirmedNotice).toBe('没等到账号服务的回话，新密码可能已经改好了。先别再改一次：下次登录时先试新密码，登不上再用原来的密码。')
+    expect(passwordChangeUnconfirmedNotice).toBe('未收到账号服务的响应，新密码可能已生效。请勿重复修改：下次登录时请先使用新密码，如无法登录再使用原密码。')
   })
 
   it('hands every other failure on untouched', () => {

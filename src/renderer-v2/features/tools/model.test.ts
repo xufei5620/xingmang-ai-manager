@@ -318,7 +318,7 @@ describe('renderer tool source', () => {
     // 主进程本来就说中文的照旧显示，只把路径脱敏（R-S7b）。
     expect(rows.find((row) => row.id === 'codexDesktop')?.error).toBe('读取 本机路径 失败')
     // 探测失败但主进程没给原因时,原来的中文兜底文案不变。
-    expect(rows.find((row) => row.id === 'codex')?.error).toBe('工具检测没有完成')
+    expect(rows.find((row) => row.id === 'codex')?.error).toBe('工具检测未完成')
     expect(rows.find((row) => row.id === 'grok')?.error).toBeNull()
   })
 
@@ -512,7 +512,7 @@ describe('renderer update offer for the start guide', () => {
     expect(toolUpdateOffer(row({ status: { installed: true, version: '2.1.42', path: null, installDirectory: null, installSource: 'native' } })))
       .toMatchObject({ manualHint: '该版本由官方安装器管理，请用它自己的方式更新' })
     expect(toolUpdateOffer(row({ status: { installed: true, version: '2.1.42', path: null, installDirectory: null, installSource: 'path', uninstall: { available: true, reason: null, manualCommand: null } } })))
-      .toMatchObject({ manualHint: '这一份不是星芒装的，要更新请用它原来的安装方式' })
+      .toMatchObject({ manualHint: '此版本并非由星芒安装，如需更新请使用原安装方式' })
   })
 
   it('offers the official-installer Claude Code the same update button, since the app can switch it over', () => {
@@ -524,7 +524,7 @@ describe('renderer update offer for the start guide', () => {
 
   it('stays quiet for a missing tool or a failed detection', () => {
     expect(toolUpdateOffer(row({ status: { installed: false, version: null, path: null, installDirectory: null } }))).toBeNull()
-    expect(toolUpdateOffer(row({ error: '工具检测没有完成' }))).toBeNull()
+    expect(toolUpdateOffer(row({ error: '工具检测未完成' }))).toBeNull()
   })
 })
 
@@ -536,7 +536,7 @@ describe('renderer tool availability', () => {
     expect(availability.tone).toBe('bad')
     expect(availability.reason).toBe('npm 查询超时')
     // 没探到不是「未找到版本」,那是一个这次并没有得出的结论。
-    expect(availability.versionFallback).toBe('版本未读到')
+    expect(availability.versionFallback).toBe('版本未获取')
   })
 
   it('puts an English probe failure into plain words on the install page as well', () => {
@@ -547,7 +547,7 @@ describe('renderer tool availability', () => {
   it('still says the probe failed when the main process sent no reason', () => {
     const availability = toolAvailability({ installed: false, detectionFailed: true, detectionError: null })
     expect(availability.state).toBe('detectionFailed')
-    expect(availability.reason).toBe('检测没有完成，装没装无法确认')
+    expect(availability.reason).toBe('检测未完成，无法确认是否已安装')
   })
 
   it('keeps a failed probe distinct from "not installed" even when the probe claims installed:false', () => {
@@ -559,7 +559,7 @@ describe('renderer tool availability', () => {
 
   it('reports an unread partition as unknown rather than as a conclusion', () => {
     expect(toolAvailability(undefined, true))
-      .toMatchObject({ state: 'unknown', label: '状态未读到', tone: 'warn', reason: null, versionFallback: '版本未读到' })
+      .toMatchObject({ state: 'unknown', label: '状态未获取', tone: 'warn', reason: null, versionFallback: '版本未获取' })
   })
 
   it('redacts a home directory out of the probe reason before it reaches the row', () => {
@@ -627,7 +627,7 @@ describe('renderer install source labelling', () => {
 
   it('gives a source-specific passive hint instead of an npm update', () => {
     expect(externalInstallHint('native')).toBe('该版本由官方安装器管理，请用它自己的方式更新')
-    expect(externalInstallHint('path')).toBe('这一份不是星芒装的，要更新请用它原来的安装方式')
+    expect(externalInstallHint('path')).toBe('此版本并非由星芒安装，如需更新请使用原安装方式')
     expect(externalInstallHint('npm')).toBeNull()
     expect(externalInstallHint(undefined)).toBeNull()
   })
@@ -683,7 +683,7 @@ describe('renderer CLI update check failure', () => {
 
   it('says the check did not finish when it failed without a reason', () => {
     expect(updateCheckFailure({ updateCheck: 'failed', updateError: null }))
-      .toBe('这次更新检查没有完成，无法判断是否有新版本')
+      .toBe('本次更新检查未完成，无法判断是否有新版本')
   })
 
   it('stays silent when the check succeeded, was skipped, or never ran', () => {
@@ -705,12 +705,12 @@ describe('renderer config directory menu entry', () => {
 
   it('greys the entry out instead of hiding it when nothing has been written yet', () => {
     // 藏起来的代价更大:用户要找的就是这一项,看不到会以为这个工具没有配置文件。
-    expect(configDirectoryMenuItem({ configDirectoryReady: false })).toEqual({ label: '打开配置文件夹（还没生成）', disabled: true })
+    expect(configDirectoryMenuItem({ configDirectoryReady: false })).toEqual({ label: '打开配置文件夹（尚未生成）', disabled: true })
   })
 
   it('does not claim the folder is missing when the config block simply was not read', () => {
     expect(configDirectoryMenuItem({ configDirectoryReady: true }, true))
-      .toEqual({ label: '打开配置文件夹（配置暂未读到）', disabled: true })
+      .toEqual({ label: '打开配置文件夹（配置暂未获取）', disabled: true })
     expect(configDirectoryMenuItem({ configDirectoryReady: false }, true).label).not.toContain('还没生成')
   })
 
@@ -794,20 +794,20 @@ describe('renderer subscription warning', () => {
   })
 
   it('names the end date or the remaining amount once the wallet is low', () => {
-    expect(subscriptionWarning({ ...base, expiringSoon: true }, 1)).toBe('订阅 10月3日到期，到期后会从余额扣费。')
-    expect(subscriptionWarning({ ...base, lowRemaining: true }, 1)).toBe('订阅只剩 $3.00，用完后会从余额扣费。')
+    expect(subscriptionWarning({ ...base, expiringSoon: true }, 1)).toBe('订阅 10月3日到期，到期后将从余额扣费。')
+    expect(subscriptionWarning({ ...base, lowRemaining: true }, 1)).toBe('订阅仅剩 $3.00，用尽后将从余额扣费。')
   })
 
   it('warns regardless of the wallet when only the subscription is spent', () => {
-    expect(subscriptionWarning({ ...base, expiringSoon: true, subscriptionOnly: true }, 100)).toBe('订阅 10月3日到期，到期后工具就用不了了，续费后可继续使用。')
+    expect(subscriptionWarning({ ...base, expiringSoon: true, subscriptionOnly: true }, 100)).toBe('订阅 10月3日到期，到期后工具将无法使用，续费后可继续使用。')
   })
 
   it('does not call a quota that comes back on its own nearly used up, only one about to end (F2)', () => {
     const resets = { ...base, lowRemaining: true, resetsAt: new Date(Date.now() + 3_600_000).toISOString() }
     expect(subscriptionWarning(resets, 1)).toBeNull()
     expect(subscriptionWarning({ ...resets, subscriptionOnly: true }, 100)).toBeNull()
-    expect(subscriptionWarning({ ...resets, expiringSoon: true }, 1)).toBe('订阅 10月3日到期，到期后会从余额扣费。')
-    expect(subscriptionWarning({ ...resets, resetsAt: null }, 1)).toBe('订阅只剩 $3.00，用完后会从余额扣费。')
+    expect(subscriptionWarning({ ...resets, expiringSoon: true }, 1)).toBe('订阅 10月3日到期，到期后将从余额扣费。')
+    expect(subscriptionWarning({ ...resets, resetsAt: null }, 1)).toBe('订阅仅剩 $3.00，用尽后将从余额扣费。')
   })
 })
 

@@ -31,7 +31,7 @@ export function cliRuntimeBlockMessage(runtime: RuntimeSnapshot): string | null 
   if (runtime.node.tooOld === true || runtime.node.versionStatus === 'too-old') {
     return `Node.js 版本过低（当前 ${runtime.node.version ?? '未知'}），请升级到 v${minimumSupportedNodeVersion.major} 或更高版本，再安装命令行工具。`
   }
-  return '已检测到 Node.js，但版本无法识别。请按首页运行环境卡里的步骤重新装一遍，再安装命令行工具。'
+  return '已检测到 Node.js，但版本无法识别。请按首页运行环境卡片中的步骤重新安装后，再安装命令行工具。'
 }
 
 // 命令行工具装之前要先代装的只有 Node.js：要 Python 的只有已下线的 Gemini CLI。

@@ -16,7 +16,7 @@ export function externalClientSavedTone(connection: Pick<ConnectionCheckView, 't
  * 结尾，原样拼进去会变成「……发给客服。。可以使用……」，所以先去掉结尾的句号。
  */
 export function accountKeyListFailureText(reason: string): string {
-  return `账号密钥列表读取失败：${reason.replace(/[。.\s]+$/, '')}。可以使用已有工具密钥或自行填写。`
+  return `账号密钥列表获取失败：${reason.replace(/[。.\s]+$/, '')}。可使用已有工具密钥或手动填写。`
 }
 
 /**
@@ -25,7 +25,7 @@ export function accountKeyListFailureText(reason: string): string {
  * 所以直接点名让他选哪一个。
  */
 export function externalClientConnectedText(tool: ExternalToolId, model: string): string {
-  if (tool === 'claudeDesktop') return '已连好 Claude Desktop，完全退出后从这里点「打开」；第一次发消息要等它下完组件'
+  if (tool === 'claudeDesktop') return 'Claude Desktop 已连接，请完全退出后在此点击「打开」；首次发送消息需等待组件下载完成'
   if (tool === 'workbuddy') return `已连好 WorkBuddy，在它的模型列表里选「${model}」`
-  return '已连好 OpenCode，命令行版和桌面版都能用'
+  return 'OpenCode 已连接，命令行版与桌面版均可使用'
 }

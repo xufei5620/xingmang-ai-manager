@@ -52,9 +52,9 @@ describe('saved account switch desktop clients', () => {
   it('tells Windows and Mac users which desktop clients follow the ticked tool and where to change the rest', () => {
     for (const os of ['win', 'mac'] as const) {
       const hint = accountSwitchDesktopClientsHint(os)
-      expect(hint).toContain('勾上那个工具就跟着换')
-      expect(hint).toContain('星芒账号和历史账号互切时不换')
-      expect(hint).toContain('自己填的密钥不会换')
+      expect(hint).toContain('勾选该工具即同步更换')
+      expect(hint).toContain('星芒账号与历史账号互切时除外')
+      expect(hint).toContain('自行填写的密钥不会更换')
       expect(hint).toContain('「配置…」')
       expect(hint).toContain('「保存并检测」')
     }

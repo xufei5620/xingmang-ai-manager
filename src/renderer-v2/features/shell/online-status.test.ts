@@ -72,9 +72,9 @@ describe('renderer-v2 offline cause', () => {
 
 describe('renderer-v2 balance status while offline', () => {
   it('says the balance will refresh later instead of reporting an update failure', () => {
-    const view = { balanceError: '余额暂时没有读到，请检查网络后重试。', balanceUpdatedAt: null }
+    const view = { balanceError: '余额暂未获取，请检查网络后重试。', balanceUpdatedAt: null }
     expect(balanceStatusText({ ...view, offline: true })).toBe('网络未连接，恢复后将自动刷新；余额尚未更新')
-    expect(balanceStatusText(view)).toBe('更新失败：余额暂时没有读到，请检查网络后重试。；余额尚未更新')
+    expect(balanceStatusText(view)).toBe('更新失败：余额暂未获取，请检查网络后重试。；余额尚未更新')
     expect(balanceFailureLabel(true)).toBe('网络未连接，恢复后将自动刷新')
     expect(balanceFailureLabel(false)).toBe('更新失败')
   })
@@ -84,8 +84,8 @@ describe('renderer-v2 balance status while offline', () => {
     const updated = new Date(2026, 10, 9, 14, 5, 3).getTime()
     expect(balanceStatusText({ balanceUpdatedAt: updated }, new Date(2026, 10, 9, 20, 0).getTime())).toBe('最后更新于 14:05:03')
     expect(balanceStatusText({ balanceUpdatedAt: updated }, new Date(2026, 10, 10, 8, 0).getTime())).toBe('最后更新于 昨天 14:05')
-    expect(balanceStatusText({ balanceUpdatedAt: updated, balanceError: '余额暂时没有读到' }, new Date(2026, 10, 12, 8, 0).getTime()))
-      .toBe('更新失败：余额暂时没有读到；最后更新于 11月9日 14:05')
+    expect(balanceStatusText({ balanceUpdatedAt: updated, balanceError: '余额暂未获取' }, new Date(2026, 10, 12, 8, 0).getTime()))
+      .toBe('更新失败：余额暂未获取；最后更新于 11月9日 14:05')
   })
 
   it('keeps the loading and success wording unchanged when offline', () => {

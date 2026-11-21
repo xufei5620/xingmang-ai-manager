@@ -26,7 +26,7 @@ describe('external client lifecycle presentation', () => {
     expect(value.action).toBe('launch')
     expect(value.ready).toBe(true)
     expect(value.configurationStatus).toBe('unknownSource')
-    expect(value.detail).toContain('用的是别家的设置')
+    expect(value.detail).toContain('正在使用其他来源的设置')
     expect(value.detail).not.toContain('还没填完')
   })
   it('shows a complete manual Claude configuration as ready without associating an account', () => {
@@ -48,7 +48,7 @@ describe('external client lifecycle presentation', () => {
   it('does not mark an incomplete or unreadable Claude configuration as ready', () => {
     const value = present({ tool: 'claudeDesktop', installed: true, configurationSource: 'other', configurationReady: false })
     expect(value).toMatchObject({ ready: false, action: 'configure', configurationStatus: 'unconfigured' })
-    expect(value.detail).toContain('用的是别家的设置，还没填完')
+    expect(value.detail).toContain('正在使用其他来源的设置，尚未填写完整')
     expect(present({ tool: 'claudeDesktop', installed: true, configured: true, configurationReady: true, configurationError: 'config denied' }))
       .toMatchObject({ ready: false, action: 'configure', configurationStatus: 'unconfigured', detail: 'config denied' })
   })
@@ -86,10 +86,10 @@ describe('external client lifecycle presentation', () => {
     // 第四十三批 A：换了线路、客户端开着，这次没换成。
     for (const tool of ['claudeDesktop', 'workbuddy', 'opencode'] as const) {
       expect(present({ tool, installed: true, running: true, version: 'v2.0', model: 'gpt-5.4', configurationSource: 'other', routePending: true }).detail)
-        .toBe('v2.0 · 运行中 · 连接线路暂未改动，完全退出后点「重新检测」')
+        .toBe('v2.0 · 运行中 · 连接线路暂未变更，请完全退出后点击「重新检测」')
     }
     expect(present({ tool: 'claudeDesktop', installed: true, running: true, version: 'v2.0', configurationSource: 'other', configurationReady: true, routePending: true }))
-      .toMatchObject({ configurationStatus: 'ready', action: 'launch', detail: 'v2.0 · 运行中 · 连接线路暂未改动，完全退出后点「重新检测」' })
+      .toMatchObject({ configurationStatus: 'ready', action: 'launch', detail: 'v2.0 · 运行中 · 连接线路暂未变更，请完全退出后点击「重新检测」' })
     expect(present({ installed: true, running: false, version: 'v2.0', model: 'gpt-5.4', configurationSource: 'other', routePending: true }).detail)
       .toBe('v2.0 · gpt-5.4')
   })
@@ -97,20 +97,20 @@ describe('external client lifecycle presentation', () => {
   it('says the route will move by itself once the client quits when the main process rechecks it', () => {
     // xm 三线路 C11：星芒账号的那几行，关掉客户端后星芒自己会换，不用再点「重新检测」。
     expect(present({ installed: true, running: true, version: 'v2.0', model: 'gpt-5.4', configurationSource: 'other', routePending: true, routeRecheck: true }).detail)
-      .toBe('v2.0 · 运行中 · 还开着，完全退出后会自动换到当前线路')
+      .toBe('v2.0 · 运行中 · 正在运行，完全退出后将自动切换到当前线路')
   })
 
   it('says a running client will take the new key by itself once it quits', () => {
     // #1113：借的那个工具换了 Key，客户端开着，退出后星芒自己换。
     for (const tool of ['claudeDesktop', 'workbuddy', 'opencode'] as const) {
       expect(present({ tool, installed: true, running: true, version: 'v2.0', model: 'gpt-5.4', configured: true, configurationSource: 'xingmang', keyPending: true }))
-        .toMatchObject({ action: 'launch', detail: 'v2.0 · 运行中 · 还开着，完全退出后会自动换上新密钥' })
+        .toMatchObject({ action: 'launch', detail: 'v2.0 · 运行中 · 正在运行，完全退出后将自动更换为新密钥' })
     }
     expect(present({ installed: true, running: false, version: 'v2.0', model: 'gpt-5.4', configured: true, configurationSource: 'xingmang', keyPending: true }).detail)
       .toBe('v2.0 · gpt-5.4')
     // A pending route says it first: the route moves in the same pass before the key does.
     expect(present({ installed: true, running: true, version: 'v2.0', model: 'gpt-5.4', configurationSource: 'other', routePending: true, routeRecheck: true, keyPending: true }).detail)
-      .toBe('v2.0 · 运行中 · 还开着，完全退出后会自动换到当前线路')
+      .toBe('v2.0 · 运行中 · 正在运行，完全退出后将自动切换到当前线路')
   })
 })
 

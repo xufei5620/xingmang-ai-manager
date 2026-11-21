@@ -33,11 +33,11 @@ export function presentExternalClients(statuses: ExternalClientStatus[]) {
         : official ? [officialAccountNames.claude, version, status.running ? '运行中' : null].filter(Boolean).join(' · ')
         : [version, status.running ? '运行中' : null,
           // 换了线路、客户端开着这次没换成（第四十三批 A）：这时摆模型名，客户看不出这一行还连着原来那条。
-          status.running && status.routePending ? status.routeRecheck ? '还开着，完全退出后会自动换到当前线路' : '连接线路暂未改动，完全退出后点「重新检测」'
+          status.running && status.routePending ? status.routeRecheck ? '正在运行，完全退出后将自动切换到当前线路' : '连接线路暂未变更，请完全退出后点击「重新检测」'
             // 借的那个工具换了 Key、客户端开着这次没换成（#1113）：摆模型名的话，客户看不出它还拿着旧那把。
-            : status.running && status.keyPending ? '还开着，完全退出后会自动换上新密钥'
+            : status.running && status.keyPending ? '正在运行，完全退出后将自动更换为新密钥'
             : status.model ?? (status.tool === 'claudeDesktop' && status.configurationReady ? '自动获取模型'
-              : status.configurationSource === 'other' ? status.configurationReady === false ? '用的是别家的设置，还没填完' : '用的是别家的设置' : null)].filter(Boolean).join(' · ')),
+              : status.configurationSource === 'other' ? status.configurationReady === false ? '正在使用其他来源的设置，尚未填写完整' : '正在使用其他来源的设置' : null)].filter(Boolean).join(' · ')),
     }]
   })
 }

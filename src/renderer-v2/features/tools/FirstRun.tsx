@@ -33,19 +33,19 @@ export function FirstRunSteps({ name, firstRun, testId, gitHint, freshFolder, wi
   }
   return <div className="v2-first-run" data-testid={testId}>
     {withCommand && <>
-      <p>在你要写代码的那个文件夹里新开一个终端，敲这一条就能启动（点「打开」时，星芒替你敲的也是它）：</p>
+      <p>在项目文件夹中打开终端，输入以下命令即可启动（点击「打开」时，星芒执行的也是这条命令）：</p>
       <div className="v2-first-run-line">
         <code className="v2-business-code" data-testid={`${testId}-command`}>{firstRun.command}</code>
         <Button size="sm" icon={Copy} testId={`${testId}-copy-command`} onClick={() => copy('command', firstRun.command)}>复制命令</Button>
       </div>
     </>}
-    <p>{name} 起来之后，把下面这句话粘进去，看看它能做什么：</p>
+    <p>{name} 启动后，粘贴以下内容，体验它的功能：</p>
     <div className="v2-first-run-line">
       <code className="v2-business-code" data-testid={`${testId}-prompt`} data-fresh-folder={freshFolder ? 'true' : undefined}>{prompt}</code>
       <Button size="sm" icon={Copy} testId={`${testId}-copy-prompt`} onClick={() => copy('prompt', prompt)}>复制这句话</Button>
     </div>
-    {copied && <p className="v2-first-run-note" role="status">{copied === 'command' ? '命令已复制，粘到终端里回车即可' : '这句话已复制，粘到工具里回车即可'}</p>}
-    {failed && <p className="v2-first-run-note" role="status">没能写进剪贴板，手动选中上面的文字复制就行</p>}
+    {copied && <p className="v2-first-run-note" role="status">{copied === 'command' ? '命令已复制，粘到终端里回车即可' : '已复制，粘贴到工具中并回车即可'}</p>}
+    {failed && <p className="v2-first-run-note" role="status">复制失败，请手动选中上方文字复制</p>}
     {gitHint && <p className="v2-first-run-note is-warn" role="status" data-testid={`${testId}-git-hint`}>{gitHint}</p>}
   </div>
 }

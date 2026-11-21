@@ -147,7 +147,7 @@ export function diagnosticTarget(code: string, details?: Diagnostic['details'], 
   // Codex 的额外设置在行里直接给「挪开这份设置」；Claude 跑命令前问不问是用户自己的
   // 选择，结论里说清楚就够了。两项以前都跳首页，首页上没有能处理它们的地方。
   if (code === 'CODEX_DOTENV' || code === 'CLAUDE_BYPASS_PERMISSIONS') return null
-  // Node.js、Python、Git 那几行在检查页里直接给「安装」「换成新版」「安装指南」（第 10 批，按问 2）。
+  // Node.js、Python、Git 那几行在检查页里直接给「安装」「立即更新」「安装指南」（第 10 批，按问 2）。
   if (code === 'RUNTIME_NODE' || code === 'RUNTIME_PYTHON' || code === 'RUNTIME_GIT') return null
   // 命令行工具、Codex 桌面端和它们的连接设置在首页工具卡片上装、修（卡片「…」里有「重新安装」）；
   // npm 跟着 Node.js 一起装，首页的运行环境卡管它。
@@ -345,7 +345,7 @@ export function HealthPage({
   const accountSiteId = accountSession ? signedInSiteId(accountSession) : null
   const diagnostics = sortDiagnosticsBySeverity(resource.data?.items ?? [])
   const groups = groupDiagnostics(diagnostics)
-  // 「正常」那一组默认收着：能点的几项（比如 Node.js 的「换成新版」）照旧一行一行摆出来，其余并成一块只写名字。
+  // 「正常」那一组默认收着：能点的几项（比如 Node.js 的「立即更新」）照旧一行一行摆出来，其余并成一块只写名字。
   // 从别处点名要看的那一项正好收在里面，就先摆出来再翻过去。
   const [showPassing, setShowPassing] = useState(false)
   // 设置里「安全证书」「网络检查」点「前往检查页」：检查结果出来以后翻到那一项、亮一下；
@@ -371,7 +371,7 @@ export function HealthPage({
   const responsesInFlight = useRef(false)
   const responsesEpoch = useLatestRequest()
   // 装没装、这台电脑能装什么：「Codex 干活检查」只对装了 Codex 的人有意义，运行环境那几行的按钮写「安装」还是
-  // 「安装指南」、给不给「换成新版」也看它。没读到时先不显示那张卡、不给那几颗按钮，免得点了只会报错。
+  // 「安装指南」、给不给「立即更新」也看它。没读到时先不显示那张卡、不给那几颗按钮，免得点了只会报错。
   const [machine, setMachine] = useState<MachineState>({ snapshot: null, capability: null })
   const [machineProbe, setMachineProbe] = useState(0)
   // 这一页开着的时候环境变了（首页那边装完了；在这一页点「去处理」改好了设置、重新写了 Key、装好了运行环境），
@@ -565,9 +565,9 @@ export function HealthPage({
         if (capability.nodeRuntimeInstall === 'managed') return onInstallRuntime ? { label: '安装 Node.js', testId: 'maintenance-runtime-action-node', job: 'node', run: () => onInstallRuntime('node') } : null
         return { label: '安装指南', testId: 'maintenance-runtime-action-node', run: () => navigate?.('tutorial', installGuideTopic('node', platform)) }
       }
-      // 装着、却认不了公司证书的 Node.js：「安装」只会回「无需重复安装」，给「换成新版」，点了先确认再换（第十八批 4）。
+      // 装着、却认不了公司证书的 Node.js：「安装」只会回「无需重复安装」，给「立即更新」，点了先确认再换（第十八批 4）。
       return onReplaceNode && nodeReplaceOffered({ platform, nodeRuntimeInstall: capability.nodeRuntimeInstall, node: machine.snapshot?.runtime.node })
-        ? { label: '换成新版', testId: 'maintenance-runtime-action-node', job: 'node', run: onReplaceNode }
+        ? { label: '立即更新', testId: 'maintenance-runtime-action-node', job: 'node', run: onReplaceNode }
         : null
     }
     if (item.code === 'RUNTIME_PYTHON' && missing) {

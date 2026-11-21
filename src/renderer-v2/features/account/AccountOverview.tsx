@@ -166,7 +166,7 @@ export function AccountOverview({
   const runway = summary?.runway
   const usable = summary?.subscription
   const plan = subscription.data
-  // 读完了、没出错、也没有生效中的订阅：「没有订阅」。重读时手上那份先留着。
+  // 读完了、没出错、也没有生效中的订阅：「暂无订阅」。重读时手上那份先留着。
   const subscriptionSettled = !plan && !subscription.loading && !subscription.error
   const preference = plan && accountSupports(session, 'supportsSubscriptionPreference') && plan.preference
     ? billingOptions.find((option) => option.value === plan.preference)?.label
@@ -201,8 +201,8 @@ export function AccountOverview({
           <section className="v2-acct-card" data-testid="account-overview-subscription">
             <div className="v2-acct-card-head">
               <h2>我的订阅</h2>
-              {plan ? <Pill tone={plan.short ? 'warn' : 'ok'}>{plan.short ? '快用完了' : '生效中'}</Pill>
-                : subscriptionSettled && <Pill tone="neutral">没有订阅</Pill>}
+              {plan ? <Pill tone={plan.short ? 'warn' : 'ok'}>{plan.short ? '即将用尽' : '生效中'}</Pill>
+                : subscriptionSettled && <Pill tone="neutral">暂无订阅</Pill>}
             </div>
             {subscription.error ? (
               <ResultNotice error={subscription.error} retry={{ label: '重新加载', onClick: () => void subscription.reload() }} />
@@ -221,7 +221,7 @@ export function AccountOverview({
               <p className="v2-acct-note">现在按用量从余额扣费。</p>
             ) : <PlaceholderBar width="12em" />}
             {supportsBilling && (plan || subscriptionSettled) && (
-              <div className="v2-acct-links"><MoreLink label={plan ? plan.short ? '去续费' : '查看套餐' : '看看套餐'} onClick={() => onNavigate('recharge')} /></div>
+              <div className="v2-acct-links"><MoreLink label={plan ? plan.short ? '前往续费' : '查看套餐' : '查看套餐'} onClick={() => onNavigate('recharge')} /></div>
             )}
           </section>
         )}
@@ -247,7 +247,7 @@ export function AccountOverview({
         <span className="v2-acct-tile" aria-hidden="true"><Monitor size={17} /></span>
         <div>
           <strong>当前登录</strong>
-          <p>{accountSources[siteId].label}，在这台电脑上。退出后，配好的工具会保留。</p>
+          <p>{accountSources[siteId].label}，已在本机登录。退出后，已配置的工具将保留。</p>
         </div>
         <Button size="sm" icon={Users} onClick={onSwitchAccount} disabled={!onSwitchAccount} testId="account-switch">切换账号</Button>
         <Button size="sm" variant="danger" icon={LogOut} onClick={() => { setLogoutImageNote(logoutChatImageNote()); setLogout(true) }} testId="account-overview-logout">退出登录</Button>
