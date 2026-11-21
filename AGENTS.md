@@ -228,6 +228,9 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 
 改到冻结范围内的文件时 `.claude/rules/legacy-renderer.md` 会自动加载，内容与本条一致。
 
+**T15. 新加一个会真开星芒的 CI 作业 → 真开之前先跑 `node scripts/ci-block-production-hosts.cjs`。**
+星芒一打开就查账号站、读更新目录，服务端按 UA 和来源 IP 数装机量，没断网的真开会被数成客户的电脑（2026-11-21 一天 275 台）。这一步把客户端源码里 `solov.cc`、`shenfengwl.fun` 下的全部域名在 runner 上指回本机并逐个核过；要读线上更新目录的步骤（发版门禁的前置检查）得排在它前面。`scripts/ci-block-production-hosts.test.cjs` 扫全部工作流，漏了就红，实在加不了的写进它的例外表并写明原因。漏网的请求靠 CI 里 UA 末尾的「 ci」认（`electron/ci-user-agent.ts`），别删。
+
 ---
 
 ## 6. 代码约定
