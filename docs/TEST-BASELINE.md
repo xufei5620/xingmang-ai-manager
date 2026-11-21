@@ -234,6 +234,14 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 - 复现：在 `writeAtomicSafeFile` 的 `handle.writeFile` 后面临时加 `await new Promise((resolve) => setTimeout(resolve, 150))`，旧写法当场撞 30 秒。11-18 验：聊天记录那条旧写法 30091ms 超时，改完 399ms。别提交这句。
 - 不是产品慢：客户用的时候一次保存只重写改过的那一两个对话加索引，一次写上百个只在「搬到新电脑」导入、头一回从旧的存法搬过来时各有一回。
 
+## 一键检测的用例报「检查超时」：时限管的是同一个主线程（2026-11-21）
+
+`diagnostics.test.ts` 的夹具给每一项 `timeoutMs: 100`，从这一项开始跑算起。可所有检查挤在同一个主线程上，一项的时间里也算着别的项的同步读盘：Windows runner 上单跑一次整份检查就要 70~90 毫秒（日志里只跑一次 `runDiagnostics` 的用例都是这个数，Mac 上 6~20、云端容器 4 左右），哪一项最后跑完，哪一项就贴着线。「电脑里另外设过的工具地址或密钥」（`PROVIDER_ENVIRONMENT_OVERRIDE`）以前把八到十一个终端设置文件一个接一个交给 `readSafeUtf8File`，不在的也要先在主线程上把主目录整条逐级同步核一遍（每一级 `lstatSync` 加 `realpathSync`，后者又逐级 lstat），runner 的临时目录有六七级深。它于是总是最后一个，「passes %s because the written configuration still wins」那几条一次跑三个平台，11-11 在 macos-test、11-20 在 windows-test (vitest-2) 各红一次（指纹：`summary: 检查超时`、`reason: 单项检查超过 100ms`，红在哪个平台不固定）。
+
+- 修法（不调时限）：先用 `fs.promises.lstat` 排除不在的文件，在的（是个链接也算在）照旧整套核过再读；候选按 `async-map.ts` 的 `mapWithConcurrency` 同时读，结果照原来的次序。`diagnostics-override-checks.test.ts` 钉住只有在的文件才走 `readSafeUtf8File`。
+- 给检查页加新项时：别一个接一个地把一串候选文件交给 `readSafeUtf8File`。多半不在的先异步排除，读盘按 `mapWithConcurrency` 限流。
+- 复现（别提交）：写一个 `.mjs`，把 `fs.lstatSync` / `statSync` / `existsSync` 包一层、每次空转 250 微秒，`realpathSync` 按路径级数空转，用 `NODE_OPTIONS="--import <它>"` 加载；再把 `TMPDIR` 指到一个六级深的目录（照 runner 的 `C:\Users\RUNNER~1\AppData\Local\Temp`），单跑 `diagnostics.test.ts`。11-21 验：250 微秒时旧写法红 3 条（含这一条），400 微秒红 30 条、几乎全是这一项；改完 250 微秒全过，400 微秒只剩一条整条 5 秒的测试级超时（直接跑 vitest 用的默认时限，`npm test` 是 30 秒）。
+
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 
 `fast-check` 写的随机输入测试（各测试文件末尾 `… with random inputs` 那几节：打码、外链白名单、会话编号、换线路改配置、粘贴密钥整理、PowerShell 单引号和通配符转义）每次跑用不同的随机种子，同一条这次绿、下次红是可能的。红的那次是库碰巧造出了一个打破规矩的输入，**代码真有这个缺口**：不按「重跑就过」放过，也不许把生成器改窄躲过去。
