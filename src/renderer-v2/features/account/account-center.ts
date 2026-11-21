@@ -75,9 +75,9 @@ export function spendBarHeights(amounts: readonly number[]): number[] {
 
 /** 余额下面那行「还能用多久」，和首页同一个算法（balance-runway），这里只管怎么说。 */
 export function runwayDaysText(days: number): string {
-  if (days > 365) return '按最近用量够用一年以上'
-  if (days < 1) return '按最近用量不到 1 天就会用完'
-  return `按最近用量约还能用 ${days} 天`
+  if (days > 365) return '按近期用量可用一年以上'
+  if (days < 1) return '按近期用量预计不足 1 天'
+  return `按近期用量预计可用 ${days} 天`
 }
 
 export interface SubscriptionOverview {

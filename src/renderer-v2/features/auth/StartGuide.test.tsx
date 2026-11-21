@@ -147,7 +147,7 @@ describe('renderer-v2 start guide first run', () => {
     stubResumedGuide('claude', 'ready')
     const markup = render([guideTool()], { onFailureAction: () => undefined, walletEmpty: true })
     expect(markup).toContain('data-testid="guide-wallet-empty"')
-    expect(markup).toContain('当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。')
+    expect(markup).toContain('当前账号余额为 $0，充值后方可使用 AI 工具。充值即时生效，无需重新设置。')
     expect(markup).not.toContain('已准备好。打开工具，即可开始第一次任务。')
     expect(markup.match(/data-testid="guide-recharge-button"/g)).toHaveLength(1)
     // 紧跟在顶上那句后面，排在结果卡、第一句话前面。
