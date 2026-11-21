@@ -63,7 +63,15 @@ export const managedKeyQuotaExhaustedMessage = '这个工具的额度用完了�
  * 工具那把 Key 在网页上停用了或到期了（0.2.24 深查 D3）：跟上限用完一样是有人特意让它停，
  * 签一把不限额、永不过期的新 Key 等于没停，所以也在这里止步。Key 被删掉、分组改名的照旧换新。
  */
-export const managedKeyStoppedMessage = '这个工具的密钥已经停用或到期，软件不会自动换一把新的。到星芒网页的「令牌管理」里重新启用，或者在「个人中心 › 密钥管理」把它撤销后再试。'
+export const managedKeyStoppedMessage = '这个工具的密钥已经停用或到期，软件不会自动换一把新的。到「个人中心 › 密钥管理」找到它点「启用」，或者把它撤销后再试。'
+
+/**
+ * 密钥管理的「启用」（总单 Q2）停在这两处时说的话。服务端只在密钥还标着「已过期」「额度用完」时才拒绝启用；
+ * 网页上停用过、到期时间或额度其实也已经没了的，它照样打开，可一用又被标回去（见 new-api-client.ts 的 enableKey）。
+ * 所以这两种先说清要先改什么。「编辑」在这一行右边那颗「⋯」里。
+ */
+export const accountKeyEnableExpiredMessage = '这把密钥已经过了到期时间，先点这一行右边的「⋯」，选「编辑」把到期时间往后改，再点「启用」。'
+export const accountKeyEnableUsedUpMessage = '这把密钥的额度已经用完，先点这一行右边的「⋯」，选「编辑」把额度调高或改成「不限额度」，再点「启用」。'
 
 /**
  * 同一件事的历史账号版（0.2.24 Fable 复查第 2 条，yoyo 11-11 回「历史账号也停」）。网页上的叫法照

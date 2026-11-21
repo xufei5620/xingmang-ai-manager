@@ -96,24 +96,24 @@ describe('v2 business boundaries', () => {
     })
     expect(paymentTerminalPresentation('failed')).toMatchObject({
       tone: 'bad',
-      title: '支付没有完成',
+      title: '支付未完成',
     })
   })
 
   it('says a paid subscription is open instead of calling it a top-up', () => {
     expect(paymentTerminalPresentation('success', false, 'subscription')).toMatchObject({ tone: 'ok', title: '订阅已开通' })
-    expect(paymentTerminalPresentation('failed', false, 'subscription')).toMatchObject({ title: '支付没有完成' })
+    expect(paymentTerminalPresentation('failed', false, 'subscription')).toMatchObject({ title: '支付未完成' })
     expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription')).toBe('订单 XM-2 已付款，订阅已开通。')
     expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription', '专业版')).toBe('订单 XM-2 已付款，专业版已开通。')
     expect(paymentTerminalPresentation('success', false, 'subscription').body).toBe('已付款，订阅已开通。')
   })
 
   it('tells the customer whether their tools now draw on the subscription', () => {
-    expect(subscriptionToolsNotice({ followsPreference: true }).body).toBe('工具发出的请求会按「扣费顺序」先用订阅额度。')
+    expect(subscriptionToolsNotice({ followsPreference: true }).body).toBe('工具请求将按「扣费顺序」优先使用订阅额度。')
     expect(subscriptionToolsNotice({ followsPreference: false, switched: ['Claude Code', 'Codex'] })).toMatchObject({
       tone: 'ok', title: '工具已改用订阅额度', body: expect.stringContaining('Claude Code、Codex'),
     })
-    expect(subscriptionToolsNotice({ followsPreference: false, switched: [] }).title).toBe('工具不用重新设置')
+    expect(subscriptionToolsNotice({ followsPreference: false, switched: [] }).title).toBe('工具无需重新设置')
     expect(subscriptionToolsNotice({ followsPreference: false, error: '网络连接失败。' })).toMatchObject({
       tone: 'warn', body: expect.stringContaining('重新写入密钥'), action: 'health',
     })
@@ -176,9 +176,9 @@ describe('v2 business boundaries', () => {
   })
 
   it('tells the user what happens after the payment window closes and where to check', () => {
-    expect(paymentTerminalPresentation('closed', true).body).toContain('星芒还在确认到账')
+    expect(paymentTerminalPresentation('closed', true).body).toContain('到账后余额将自动更新')
     expect(paymentTerminalPresentation('closed').body).toContain('查看我的订单')
-    expect(paymentTerminalPresentation('unconfirmed')).toMatchObject({ tone: 'warn', title: '还没查到这笔订单到账' })
+    expect(paymentTerminalPresentation('unconfirmed')).toMatchObject({ tone: 'warn', title: '暂未确认到账' })
     expect(paymentTerminalPresentation('unconfirmed').body).toContain('联系客服')
     expect(paymentTerminalPresentation('failed').body).toContain('查看我的订单')
     expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-1' })).toBe('订单 XM-1 已到账，余额已更新。')
@@ -189,8 +189,8 @@ describe('v2 business boundaries', () => {
 
   it('validates recharge amounts against the integer IPC contract and channel minimum', () => {
     expect(validateTopupAmount(10, 5)).toBe(10)
-    expect(() => validateTopupAmount(10.5, 5)).toThrow('充值数量不能低于 5，请填整数')
-    expect(() => validateTopupAmount(4, 5)).toThrow('充值数量不能低于 5，请填整数')
+    expect(() => validateTopupAmount(10.5, 5)).toThrow('充值金额不能低于 5，请输入整数')
+    expect(() => validateTopupAmount(4, 5)).toThrow('充值金额不能低于 5，请输入整数')
     expect(() => validateTopupAmount(10, Number.NaN)).toThrow('最低充值金额无效')
   })
 

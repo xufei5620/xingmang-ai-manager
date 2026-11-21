@@ -50,7 +50,7 @@ function render(
   return renderToStaticMarkup(<Home {...props} />)
 }
 
-/** 某个工具的配置里还没有 Key：没有别的说法时，首页那张卡片说「已装好，还没连上当前账号」。 */
+/** 某个工具的配置里还没有 Key：没有别的说法时，首页那张卡片说「已安装，尚未关联当前账号」。 */
 function keylessSnapshot(provider: ProviderId): ToolboxSnapshot {
   const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
   const blank = { ...providerConfig, exists: false, hasApiKey: false, matchesRelay: false, actualBaseUrl: '' }
@@ -119,7 +119,7 @@ describe('renderer-v2 home partial read failures (R-S8)', () => {
   it('marks the connection column unknown rather than claiming the key is missing', () => {
     const markup = render({}, undefined, { snapshot: unreadableConfig(), failures: configFailure })
     expect(markup).toContain('>配置未读到<')
-    expect(markup).not.toContain('已装好，还没连上当前账号')
+    expect(markup).not.toContain('已安装，尚未关联当前账号')
     expect(markup).toContain('重新配置')
   })
 
@@ -297,7 +297,7 @@ describe('renderer-v2 home first-run suggestion', () => {
     expect(pickFirstRunTool(installedTools(), {}, ['claude', 'codex', 'grok'], noRecords)).toBeUndefined()
   })
 
-  // 还没配 Key 时第一条命令敲下去只会报错，那不是「可以试试」。
+  // 还没配 Key 时第一条命令敲下去只会报错，那不是「推荐功能」。
   it('waits until the tool is actually connected', () => {
     expect(pickFirstRunTool(installedTools(allTools, unreadableConfig()), {}, [], noRecords)).toBeUndefined()
   })
@@ -623,7 +623,7 @@ describe('renderer-v2 home unrecognised Mac install', () => {
   it('offers the app install instead of opening an unrecognised Codex and says why', () => {
     const markup = render({}, { claude: cliStatus, codex: unrecognizedCodex, grok: cliStatus, gemini: cliStatus })
     expect(markup).toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*用星芒装一份</)
-    expect(markup).toContain('不是星芒装的，星芒没法替你打开')
+    expect(markup).toContain('非星芒安装，无法在星芒中打开')
     // 「要更新请用它原来的安装方式」那句在这里不对：客户该做的是点旁边那颗按钮。
     expect(markup).not.toContain('data-testid="tool-codex-external-managed"')
     // 跑不起来的那份不给切账号的来源牌，地方让给那颗按钮（卡上放不下两样）。
@@ -633,8 +633,8 @@ describe('renderer-v2 home unrecognised Mac install', () => {
     // 别的工具照旧。
     expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开</)
     // 页头也不能还说「都配好了」。
-    expect(markup).toContain('Codex CLI 不是星芒装的，星芒打不开，点卡片上的「用星芒装一份」。')
-    expect(markup).not.toContain('已安装的工具都配好了')
+    expect(markup).toContain('Codex CLI 非星芒安装，无法在星芒中打开，请点击卡片上的「用星芒装一份」。')
+    expect(markup).not.toContain('已安装的工具均已配置')
   })
 
   it('offers the app install on the top card when the unrecognised Codex is the first installed tool', () => {
@@ -648,13 +648,13 @@ describe('renderer-v2 home unrecognised Mac install', () => {
 
   it('names every unrecognised tool in the page head', () => {
     const markup = render({}, { claude: cliStatus, codex: unrecognizedCodex, grok: unrecognizedGrok, gemini: cliStatus })
-    expect(markup).toContain('Codex CLI、Grok CLI 不是星芒装的，星芒打不开，点卡片上的「用星芒装一份」。')
+    expect(markup).toContain('Codex CLI、Grok CLI 非星芒安装，无法在星芒中打开，请点击卡片上的「用星芒装一份」。')
   })
 
   it('does the same for an unrecognised Grok', () => {
     const markup = render({}, { claude: cliStatus, codex: cliStatus, grok: unrecognizedGrok, gemini: cliStatus })
     expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*用星芒装一份</)
-    expect(markup).toContain('不是星芒装的，星芒没法替你打开')
+    expect(markup).toContain('非星芒安装，无法在星芒中打开')
     expect(markup).toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*打开</)
   })
 
@@ -664,7 +664,7 @@ describe('renderer-v2 home unrecognised Mac install', () => {
     // 装的那一会儿卡上是进度条和「正在安装」，不再说打不开。
     expect(markup).toContain('aria-valuenow="40"')
     expect(markup).toContain('title="正在安装"')
-    expect(markup).not.toContain('不是星芒装的，星芒没法替你打开')
+    expect(markup).not.toContain('非星芒安装，无法在星芒中打开')
   })
 })
 
@@ -716,7 +716,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     const keyless = keylessSnapshot('grok')
     // Without a failure, a tool with no key in its config reads as keyless.
     const waiting = render({}, undefined, { snapshot: keyless })
-    expect(waiting).toContain('已装好，还没连上当前账号')
+    expect(waiting).toContain('已安装，尚未关联当前账号')
     const markup = render({}, undefined, {
       snapshot: keyless,
       bootstrap: {
@@ -727,7 +727,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     })
     expect(markup).toContain('Grok CLI：当前账号还不能用，需要的话请联系客服开通')
     expect(markup).toContain('账号未开通')
-    expect(markup).not.toContain('已装好，还没连上当前账号')
+    expect(markup).not.toContain('已安装，尚未关联当前账号')
     expect(markup).not.toContain('分组')
     // Re-syncing cannot enable a tool on the account, so the banner offers no button for it.
     expect(markup).not.toContain('>重新同步<')
@@ -832,13 +832,13 @@ describe('renderer-v2 home account key bootstrap notice', () => {
   // 已知12：「已给…配好密钥」只是说一声做完了，照右下角提示条的读完时长摆着就收起，不再整场挂着。
   it('lets the all-done line go after the toast reading time', () => {
     const done = { phase: 'verifying' as const, label: 'Key 已写入，正在刷新工具状态', percent: 100, scope: 'scope', result: bootstrapResult({ configured: ['claude', 'codex'] }) }
-    // 「已给 2 个工具配好密钥，可以直接用了」去掉空格 17 个字：2400 + 5 × 200。
-    expect(bootstrapNoticeExpiresAt({ ...done, finishedAt: 1_000 })).toBe(1_000 + 3_400)
-    expect(render({}, undefined, { bootstrap: { ...done, finishedAt: Date.now() } })).toContain('已给 2 个工具配好密钥，可以直接用了')
-    expect(render({}, undefined, { bootstrap: { ...done, finishedAt: Date.now() - 60_000 } })).not.toContain('已给 2 个工具配好密钥，可以直接用了')
+    // 「已为 2 个工具配置密钥，可直接使用」去掉空格 16 个字：2400 + 4 × 200。
+    expect(bootstrapNoticeExpiresAt({ ...done, finishedAt: 1_000 })).toBe(1_000 + 3_200)
+    expect(render({}, undefined, { bootstrap: { ...done, finishedAt: Date.now() } })).toContain('已为 2 个工具配置密钥，可直接使用')
+    expect(render({}, undefined, { bootstrap: { ...done, finishedAt: Date.now() - 60_000 } })).not.toContain('已为 2 个工具配置密钥，可直接使用')
     // 外壳没说什么时候做完的（旧调用方）就照旧一直摆着。
     expect(bootstrapNoticeExpiresAt(done)).toBeNull()
-    expect(render({}, undefined, { bootstrap: done })).toContain('已给 2 个工具配好密钥，可以直接用了')
+    expect(render({}, undefined, { bootstrap: done })).toContain('已为 2 个工具配置密钥，可直接使用')
   })
 
   it('keeps the line up while something still needs the user', () => {
@@ -850,7 +850,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
       },
       onBootstrapRetry: () => undefined,
     })
-    expect(failed).toContain('已给 Claude Code 配好密钥，可以直接用了')
+    expect(failed).toContain('已为 Claude Code 配置密钥，可直接使用')
     expect(failed).toContain('当前分组未返回可用模型')
     const warned = render({}, undefined, {
       bootstrap: {
@@ -872,7 +872,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     result: bootstrapResult({ configured: ['codex'], routeFollowed: ['codex'], ...overrides }),
   })
 
-  // #1104 第 7 条：新客户第一次登录、一个工具都没装时，不说「正在给 工具写入密钥」。
+  // #1104 第 7 条：新客户第一次登录、一个工具都没装时，不说「正在为 工具写入密钥」。
   it('says it is preparing the account key when no installed tool takes one', () => {
     const missing = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null }
     const progress = { phase: 'syncing' as const, label: '正在同步账号专属密钥', percent: 15, scope: 'scope' }
@@ -881,12 +881,12 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     const fresh = render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot, bootstrap: progress })
     expect(fresh).toContain('正在准备账号密钥（15%）')
     expect(fresh).not.toContain('写入密钥（')
-    expect(render({}, undefined, { bootstrap: progress })).toMatch(/正在给 \d+ 个工具写入密钥（15%）/)
+    expect(render({}, undefined, { bootstrap: progress })).toMatch(/正在为 \d+ 个工具写入密钥（15%）/)
   })
 
   it('shows no progress while it quietly moves the tools to the current line', () => {
-    const markup = render({}, undefined, { bootstrap: { phase: 'configuring', label: '正在给 1 个工具写入密钥', percent: 65, scope: 'scope', quiet: true } })
-    expect(markup).not.toContain('正在给 1 个工具写入密钥')
+    const markup = render({}, undefined, { bootstrap: { phase: 'configuring', label: '正在为 1 个工具写入密钥', percent: 65, scope: 'scope', quiet: true } })
+    expect(markup).not.toContain('正在为 1 个工具写入密钥')
     expect(markup).not.toContain('data-testid="home-bootstrap-progress"')
   })
 
@@ -904,7 +904,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     // 开机那一轮不是悄悄的那一轮，只换了线路也一样不说。
     expect(render({}, undefined, { bootstrap: { ...followedRoute(), quiet: undefined } })).not.toContain('data-testid="home-bootstrap-')
     // 同一轮里真写了 Key 的照常说。
-    expect(render({}, undefined, { bootstrap: followedRoute({ configured: ['claude', 'codex'] }) })).toContain('已给 2 个工具配好密钥，可以直接用了')
+    expect(render({}, undefined, { bootstrap: followedRoute({ configured: ['claude', 'codex'] }) })).toContain('已为 2 个工具配置密钥，可直接使用')
   })
 
   it('still shows the failures of a round that moved the tools, without a word about the line', () => {
@@ -1150,7 +1150,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     it('says so on the row and offers to write the account Key back', () => {
       const markup = render({}, undefined, { snapshot: editedSnapshot(), onRewriteKey: () => undefined, onKeepConfig: () => undefined })
       expect(markup).toContain('配置被改过')
-      expect(markup).toContain('配置被别的程序改过，没在用当前账号的密钥')
+      expect(markup).toContain('配置已被其他程序修改，未使用当前账号的密钥')
       expect(markup).toContain('data-testid="tool-claude-rewrite-key"')
       expect(markup).toContain('>重新写入密钥<')
       // 站点名永远不上屏，文案以「当前账号」为主语。
@@ -1186,7 +1186,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     it('stops calling the row ready and offers to fix it', () => {
       const markup = render({}, undefined, { snapshot: shadowedSnapshot(), onSwitchAccount: () => undefined })
       expect(markup).toContain('连接设置要修')
-      expect(markup).toContain('这份配置里有一处 Codex 认不出，打开会连不上')
+      expect(markup).toContain('配置中有一项 Codex 无法识别，打开后将无法连接')
       expect(markup).toContain('data-testid="tool-codex-repair-codex"')
       expect(markup).toContain('修好它')
       // 修完就能用，「打开」照旧给，点下去先修再打开。
@@ -1234,7 +1234,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
         expect(row, tool).toContain('配置坏了')
         expect(row, tool).toContain(`>${brokenDetail}<`)
         const button = rowButton(row, `tool-${tool}-repair-config`)
-        expect(button, tool).toContain('title="改之前会先备份原来的设置"')
+        expect(button, tool).toContain('title="修改前将自动备份原设置"')
         expect(button, tool).toContain('修好它')
       }
       expect(markup).not.toContain('solov')
@@ -1245,7 +1245,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       const markup = render({}, undefined, { snapshot: unparsed, onRepairConfig: () => undefined })
       for (const tool of ['codex', 'codexDesktop']) {
         expect(toolRow(markup, tool), tool).toContain('配置坏了')
-        expect(toolRow(markup, tool), tool).not.toContain('已装好，还没连上当前账号')
+        expect(toolRow(markup, tool), tool).not.toContain('已安装，尚未关联当前账号')
         expect(toolRow(markup, tool), tool).toContain(`data-testid="tool-${tool}-repair-config"`)
       }
     })
@@ -1361,7 +1361,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     it('says the reminder settings need fixing, offers the fix and still opens the tool', () => {
       const markup = render({}, undefined, { snapshot: staleSnapshot(), onRepairHooks: () => undefined })
       expect(markup).toContain('提醒设置要修')
-      expect(markup).toContain('「做完弹通知」的设置记着旧地址，每次用都会多报一行错')
+      expect(markup).toContain('「完成通知」设置指向旧位置，每次运行将多出一条报错')
       expect(markup).toContain('data-testid="tool-claude-repair-hooks"')
       expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开/)
       expect(markup).not.toContain('data-testid="tool-codex-repair-hooks"')
@@ -1405,8 +1405,8 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     })
 
     it('names the fixed tools the way the home page does', () => {
-      expect(cliHooksAutoRepairedText(['codex'])).toBe('Codex 里「做完弹通知」的设置之前记着旧地址，已经自动改好了，不用管。原来的那份备份在「设置 › 备份迁移」里。')
-      expect(cliHooksAutoRepairedText(['claude', 'grok'])).toBe('Claude Code、Grok CLI 里「做完弹通知」的设置之前记着旧地址，已经自动改好了，不用管。原来的那份备份在「设置 › 备份迁移」里。')
+      expect(cliHooksAutoRepairedText(['codex'])).toBe('已自动修复 Codex 的「完成通知」设置，原设置已备份至「设置 › 备份迁移」。')
+      expect(cliHooksAutoRepairedText(['claude', 'grok'])).toBe('已自动修复 Claude Code、Grok CLI 的「完成通知」设置，原设置已备份至「设置 › 备份迁移」。')
     })
 
     // 客户自己装了 Git 或 PowerShell 7，Windows 版 Grok 换了命令行，写下去的那种写法跑不起来了。
@@ -1420,7 +1420,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
         },
       } as unknown as ToolboxSnapshot
       const markup = render({}, undefined, { snapshot: shellChanged, onRepairHooks: () => undefined })
-      expect(markup).toContain('Grok 换了命令行，星芒写的提醒设置要跟着改一下，不然每次都会多报一行错')
+      expect(markup).toContain('Grok 命令行已变更，通知设置需同步更新，否则每次运行将多出一条报错')
       expect(markup).not.toContain('「做完弹通知」的设置记着旧地址')
       expect(markup).toContain('data-testid="tool-grok-repair-hooks"')
     })
@@ -1440,7 +1440,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('says which two things Grok is missing and offers to add them without technical words', () => {
       const markup = render({}, undefined, { snapshot: missingSnapshot(false), onRepairHooks: () => undefined })
-      expect(markup).toContain('做完、出错时的提醒和干活时不让电脑睡着这两项还没开，点「补上」准备好运行环境就有')
+      expect(markup).toContain('「完成与出错通知」和「运行时防止休眠」尚未启用，点击「启用」将先准备运行环境')
       expect(markup).toContain('data-testid="tool-grok-add-hooks"')
       expect(markup).not.toContain('data-testid="tool-grok-repair-hooks"')
       expect(markup).not.toContain('提醒设置要修')
@@ -1450,7 +1450,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('offers to add them straight away once the computer already has what they need', () => {
       const markup = render({}, undefined, { snapshot: missingSnapshot(true), onRepairHooks: () => undefined })
-      expect(markup).toContain('做完、出错时的提醒和干活时不让电脑睡着这两项还没开，点「补上」就有')
+      expect(markup).toContain('「完成与出错通知」和「运行时防止休眠」尚未启用，点击「启用」即可开启')
       expect(markup).toContain('data-testid="tool-grok-add-hooks"')
     })
   })
@@ -1474,7 +1474,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     it('names CC Switch and offers to switch the tool to the current account', () => {
       const markup = render({}, undefined, { snapshot: ccSwitchSnapshot('provider'), onSwitchAccount: () => undefined, onKeepConfig: () => undefined })
       expect(markup).toContain('>被接管<')
-      expect(markup).toContain('还在用 CC Switch 里选的连接，没有用当前账号')
+      expect(markup).toContain('正在使用 CC Switch 中选择的连接，未使用当前账号')
       expect(markup).toContain('data-testid="tool-claude-replace-cc-switch"')
       expect(markup).toContain('改用当前账号')
       expect(markup).not.toContain('>别处的配置<')
@@ -1483,7 +1483,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
 
     it('warns that a proxy takeover only works while CC Switch is running', () => {
       const markup = render({}, undefined, { snapshot: ccSwitchSnapshot('proxy'), onSwitchAccount: () => undefined })
-      expect(markup).toContain('CC Switch 一关就用不了')
+      expect(markup).toContain('关闭 CC Switch 后将无法使用')
     })
 
     it('does not second-guess a configuration the account already owns', () => {
@@ -1512,7 +1512,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     it('says a key from another site is not the current account\'s and offers to switch by name', () => {
       const markup = render({}, undefined, { snapshot: foreignSnapshot({ matchesRelay: false, actualBaseUrl: 'https://elsewhere.example/v1' }), onSwitchAccount: () => undefined })
       expect(markup).toContain('>打不开<')
-      expect(markup).toContain('在这里打不开，改用你的账号就能用')
+      expect(markup).toContain('无法在此打开，改用当前账号后即可使用')
       expect(markup).toContain('data-testid="tool-claude-use-account"')
       expect(markup).not.toContain('elsewhere.example')
       expect(markup).not.toContain('>别处的配置<')
@@ -1521,7 +1521,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     it('warns that a key on the current site may bill another account', () => {
       const markup = render({}, undefined, { snapshot: foreignSnapshot({}), onSwitchAccount: () => undefined })
       expect(markup).toContain('>密钥待确认<')
-      expect(markup).toContain('用量可能算到别的账号上')
+      expect(markup).toContain('用量可能计入其他账号')
       expect(markup).toContain('data-testid="tool-claude-use-account"')
     })
 
@@ -1714,29 +1714,29 @@ describe('renderer-v2 home balance for subscription customers', () => {
   it('keeps the low-balance warning for wallet-only customers', () => {
     const markup = render({}, undefined, { balance: empty })
     expect(markup).toContain('data-testid="home-low-balance"')
-    expect(markup).toContain('当前账号余额是 $0，充值后 AI 工具才能用。')
+    expect(markup).toContain('当前账号余额为 $0，充值后方可使用 AI 工具。')
     expect(markup).not.toContain('余额只剩')
     expect(markup).not.toContain('home-subscription')
   })
 
   it('tells a brand-new account to top up first instead of saying the balance ran low', () => {
-    expect(lowBalanceText(0)).toBe('当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。')
-    expect(lowBalanceText(3.456)).toBe('余额只剩 $3.46，充值后可继续使用。')
+    expect(lowBalanceText(0)).toBe('当前账号余额为 $0，充值后方可使用 AI 工具。充值即时生效，无需重新设置。')
+    expect(lowBalanceText(3.456)).toBe('余额仅剩 $3.46，请及时充值。')
   })
 
   it('says how much the account owes once the last call took the balance below zero', () => {
-    expect(lowBalanceText(-0.03)).toBe('当前账号已欠费 $0.03，充值后才能继续用')
-    expect(lowBalanceText(-0.2)).toBe('当前账号已欠费 $0.20，充值后才能继续用')
-    expect(lowBalanceText(-1234.5)).toBe('当前账号已欠费 $1,234.50，充值后才能继续用')
+    expect(lowBalanceText(-0.03)).toBe('当前账号已欠费 $0.03，请充值后继续使用')
+    expect(lowBalanceText(-0.2)).toBe('当前账号已欠费 $0.20，请充值后继续使用')
+    expect(lowBalanceText(-1234.5)).toBe('当前账号已欠费 $1,234.50，请充值后继续使用')
     // 不到半分钱的欠费，余额那格写 $0.00，这句也照 $0 说，不出「欠费 $0.00」。
     expect(lowBalanceText(-0.004)).toBe(lowBalanceText(0))
-    expect(homeMoneyNotice(-0.03, null, null)).toEqual({ text: '当前账号已欠费 $0.03，充值后才能继续用', renew: false })
+    expect(homeMoneyNotice(-0.03, null, null)).toEqual({ text: '当前账号已欠费 $0.03，请充值后继续使用', renew: false })
   })
 
   it('writes the minus sign in front of the dollar sign on the balance card and keeps the notice in step', () => {
     const markup = render({}, undefined, { balance: { ...empty, quota: -15_000, displayAmount: -0.03 } })
     expect(markup).toMatch(/data-testid="home-balance"[^>]*>-\$0\.03</)
-    expect(markup).toContain('当前账号已欠费 $0.03，充值后才能继续用')
+    expect(markup).toContain('当前账号已欠费 $0.03，请充值后继续使用')
     expect(markup).not.toContain('$-0.03')
     expect(markup).not.toContain('当前账号余额是 $0')
   })
@@ -1898,7 +1898,7 @@ describe('renderer-v2 home runtime card', () => {
 
   it('says on the Node.js row when the part that installs tools is missing', () => {
     const markup = render({}, undefined, { snapshot: withNpm({ installed: false, version: null, detectionFailed: false }) })
-    expect(markup).toContain('22.0.0 · 少了装工具用的组件，重装一次 Node.js 就好')
+    expect(markup).toContain('22.0.0 · 缺少安装组件，请重新安装 Node.js')
   })
 
   it('stays quiet when the check itself failed rather than the part being missing', () => {
@@ -2097,7 +2097,7 @@ describe('Home sections and balance labels', () => {
     const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
     const markup = render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot })
     // v4 只有一组「工具」卡片（装没装都在里面），卡片本身也是 section，这里从卡片区往后找。
-    expect(section(markup, 'home-your-tools')).toMatch(/已装 \d+ 个 · 1 个没检测出来/)
+    expect(section(markup, 'home-your-tools')).toMatch(/已安装 \d+ 个 · 1 个检测失败/)
     expect(markup.slice(markup.indexOf('data-testid="home-tools"'))).toContain('data-testid="tool-row-grok"')
     expect(markup).not.toContain('data-testid="home-available"')
   })
@@ -2110,13 +2110,13 @@ describe('Home sections and balance labels', () => {
       const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
       return render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot })
     }
-    expect(withFailures({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })).toContain('已安装的工具都配好了')
+    expect(withFailures({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })).toContain('已安装的工具均已配置')
     const one = withFailures({ claude: cliStatus, codex: cliStatus, grok: failed, gemini: cliStatus })
-    expect(one).toContain('有 1 个工具没检测出来，点卡片上的「重新检测」再试一次。')
-    expect(one).not.toContain('已安装的工具都配好了')
+    expect(one).toContain('1 个工具检测失败，请点击卡片上的「重新检测」。')
+    expect(one).not.toContain('已安装的工具均已配置')
     const all = withFailures({ claude: failed, codex: failed, grok: failed, gemini: failed })
-    expect(all).toContain('有 3 个工具没检测出来，点卡片上的「重新检测」再试一次。')
-    expect(all).not.toContain('还没装工具，从下面挑一个开始。')
+    expect(all).toContain('3 个工具检测失败，请点击卡片上的「重新检测」。')
+    expect(all).not.toContain('尚未安装工具，请从下方选择。')
   })
 
   it('says what the balance card is waiting for instead of claiming nothing was read', () => {
@@ -2189,7 +2189,7 @@ describe('renderer-v2 home v4 top cards', () => {
   }
 
   it('warns about money only when the recent usage will not last a week', () => {
-    expect(homeMoneyNotice(3, null, { usableUsd: 3, days: 2, low: true })).toEqual({ text: '余额只剩 $3.00，按最近用量约还能用 2 天。用完后工具会暂停', renew: false })
+    expect(homeMoneyNotice(3, null, { usableUsd: 3, days: 2, low: true })).toEqual({ text: '余额仅剩 $3.00，按近期用量预计可用 2 天。用尽后工具将暂停使用', renew: false })
     expect(homeMoneyNotice(3, null, { usableUsd: 3, days: 30, low: false })).toBeNull()
     // 算不出用量时照旧按 $5 报。
     expect(homeMoneyNotice(3, null, { usableUsd: 3, days: null, low: true })).toEqual({ text: lowBalanceText(3), renew: false })
@@ -2209,14 +2209,14 @@ describe('renderer-v2 home v4 top cards', () => {
     expect(markup).toContain('data-testid="home-balance">$0.00<')
     expect(markup).not.toContain('data-testid="home-balance-days"')
     expect(markup).not.toContain('data-testid="home-low-balance"')
-    expect(markup).not.toContain('余额已经用完')
+    expect(markup).not.toContain('余额已用尽')
   })
 
   it('counts the subscription in the money that is left, by how it is billed', () => {
     const subscription = { name: '月卡', remainingUsd: 2, endsAt: '2026-11-03T00:00:00Z', expiringSoon: false, lowRemaining: true, subscriptionOnly: false }
-    expect(homeMoneyNotice(1, subscription, { usableUsd: 3, days: 1, low: true })?.text).toBe('余额加订阅额度只剩 $3.00，按最近用量约还能用 1 天。用完后工具会暂停')
+    expect(homeMoneyNotice(1, subscription, { usableUsd: 3, days: 1, low: true })?.text).toBe('余额与订阅额度合计仅剩 $3.00，按近期用量预计可用 1 天。用尽后工具将暂停使用')
     const only = { ...subscription, subscriptionOnly: true }
-    expect(homeMoneyNotice(1, only, { usableUsd: 2, days: 0, low: true })).toEqual({ text: '月卡只剩 $2.00，按最近用量不到 1 天就会用完。用完后工具会暂停', renew: true })
+    expect(homeMoneyNotice(1, only, { usableUsd: 2, days: 0, low: true })).toEqual({ text: '月卡仅剩 $2.00，按近期用量预计不足 1 天。用尽后工具将暂停使用', renew: true })
   })
 
   it('does not nag every afternoon about a subscription quota that comes back tomorrow (F2)', () => {
@@ -2236,7 +2236,7 @@ describe('renderer-v2 home v4 top cards', () => {
   it('shows the balance, how many days it lasts and one bar per day of the last week', () => {
     const markup = render({}, undefined, { account, accountScope: scope, balance: balance(21), supportsUsageTrend: true, api: api(14, [1, 2, 0, 3, 2, 4, 2]) })
     expect(markup).toContain('data-testid="home-balance">$21.00<')
-    expect(markup).toContain('按最近用量约还能用 10 天')
+    expect(markup).toContain('按近期用量预计可用 10 天')
     expect(markup).toContain('近 7 天花费')
     expect(markup).toContain('<b>$14.00</b>')
     expect(markup.match(/class="v2-home-week-day/g)).toHaveLength(7)
@@ -2254,7 +2254,7 @@ describe('renderer-v2 home v4 top cards', () => {
   it('warns on the home page when the balance runs out within a week', () => {
     const markup = render({}, undefined, { account, accountScope: scope, balance: balance(3), api: api(14) })
     expect(markup).toContain('data-testid="home-low-balance"')
-    expect(markup).toContain('余额只剩 $3.00，按最近用量约还能用 1 天。用完后工具会暂停')
+    expect(markup).toContain('余额仅剩 $3.00，按近期用量预计可用 1 天。用尽后工具将暂停使用')
     expect(markup).toContain('>去充值<')
   })
 
@@ -2289,7 +2289,7 @@ describe('renderer-v2 home v4 top cards', () => {
     const missing = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null }
     const markup = render({}, undefined, { snapshot: managed({ claude: missing, codex: missing, grok: missing, gemini: missing }) })
     expect(markup).toContain('data-testid="home-setup"')
-    expect(markup).toContain('还没装。装好后在这里一键打开')
+    expect(markup).toContain('未安装。安装后可在此一键打开')
     expect(markup).toMatch(/data-testid="home-hero-install"[^>]*>(?:<[^>]+>)*安装 Claude Code/)
   })
 
@@ -2305,12 +2305,12 @@ describe('renderer-v2 home v4 top cards', () => {
   })
 
   it('sends the last tool card to the addresses for other apps once there is a key page to send it to', () => {
-    expect(homeToolRequest(true, true)).toEqual({ page: 'account', section: 'other-apps', text: '看看怎么用在别的软件里' })
+    expect(homeToolRequest(true, true)).toEqual({ page: 'account', section: 'other-apps', text: '查看如何在其他软件中使用' })
     for (const [signedIn, supportsKeys] of [[true, false], [true, undefined], [false, true]] as const)
-      expect(homeToolRequest(signedIn, supportsKeys)).toEqual({ page: 'feedback', section: 'form', text: '告诉我们，我们来接入' })
+      expect(homeToolRequest(signedIn, supportsKeys)).toEqual({ page: 'feedback', section: 'form', text: '提交接入需求' })
     const account = { userId: 7, username: 'fixture' } as unknown as HomeProps['account']
-    expect(render({}, undefined, { account, supportsKeys: true })).toMatch(/data-testid="home-tools-request"[^>]*>(?:<[^>]+>)*想用的工具不在这里？<\/b><span>看看怎么用在别的软件里<\/span>/)
-    expect(render({}, undefined, { account })).toContain('<span>告诉我们，我们来接入</span>')
+    expect(render({}, undefined, { account, supportsKeys: true })).toMatch(/data-testid="home-tools-request"[^>]*>(?:<[^>]+>)*没有找到需要的工具？<\/b><span>查看如何在其他软件中使用<\/span>/)
+    expect(render({}, undefined, { account })).toContain('<span>提交接入需求</span>')
   })
 
   it('says why the last install did not finish and offers to try again', () => {
@@ -2319,7 +2319,7 @@ describe('renderer-v2 home v4 top cards', () => {
       snapshot: managed({ claude: cliStatus, codex: cliStatus, grok: missing, gemini: cliStatus }),
       installFailures: { grok: { reason: '下载超时。' } } as HomeProps['installFailures'], onShowInstallFailure: () => undefined,
     })
-    expect(markup).toContain('没装上：下载超时，已撤回')
+    expect(markup).toContain('安装失败：下载超时，已还原')
     expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*重试/)
     expect(markup).toContain('data-testid="tool-grok-why"')
   })

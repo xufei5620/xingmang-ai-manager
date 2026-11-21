@@ -43,6 +43,7 @@ export function parseReleasedPage(raw: string | null): ReleasedPage | null {
 
 /** 要登录才能看的页：重新加载时账号还没恢复过来就不回去，免得弹出登录框。 */
 export function pageNeedsAccount(page: PageId): boolean {
+  // 'video' 落到「创作」里（融合第 1 步），同样要登录。
   return page === 'account' || page === 'chat' || page === 'video'
 }
 

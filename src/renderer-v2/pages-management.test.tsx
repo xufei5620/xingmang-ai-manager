@@ -98,6 +98,21 @@ describe('curated entry details', () => {
     expect(markup).toContain('用掉的额度比平时多')
   })
 
+  // Mac 验收 R10：每个风险标签在 registry 里都配了一句说明（11-10 已批），原来哪儿都没上屏。现在鼠标停在标签上能看到，
+  // 标签下面也按标签先后原样写出来。随包清单里眼下没有带「第三方维护」的条目，这里拿 github 换上两个标签来测。
+  it('spells out what each risk tag means on hover and right under the tags', () => {
+    const markup = renderToStaticMarkup(<CuratedDetails item={{ ...item('github'), risks: ['remote-exec', 'third-party'] }} hideScope />)
+    expect(markup).toContain('<span title="由该软件的作者维护，不随星芒一起更新。">第三方维护</span>')
+    expect(markup).toContain('<span title="请求由提供方在他们的服务器上处理，不在你电脑上。">内容会发到对方服务器</span>')
+    expect(markup).toContain('data-testid="curated-risk-details-github">请求由提供方在他们的服务器上处理，不在你电脑上。由该软件的作者维护，不随星芒一起更新。</p>')
+    // 说明紧跟在标签那一行后面，排在提供方、命令那几行前面。
+    expect(markup.indexOf('curated-risk-details-github')).toBeLessThan(markup.indexOf('<dt>提供方</dt>'))
+  })
+
+  it('adds no risk sentence when the entry carries no risk tag', () => {
+    expect(renderToStaticMarkup(<CuratedDetails item={item('sequential-thinking')} />)).not.toContain('curated-risk-details')
+  })
+
   // 装插件要先保证官方市场在册，所以确认框里是两条命令；钉不住版本这件事也必须写出来。
   it('lists both plugin commands and says which version will land', () => {
     const markup = renderToStaticMarkup(<CuratedDetails item={item('code-review')} />)

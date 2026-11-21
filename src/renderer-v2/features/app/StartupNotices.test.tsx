@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { orderStartupNotices, StartupNotices } from './StartupNotices'
-import { crashReportingNotice, displayCompatNotice, startupCheckFailure, startupDiagnosticsIssues, toolTemplateFilledNotice, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice } from './startup-notice'
+import { crashReportingNotice, displayCompatNotice, startupCheckFailure, startupDiagnosticsIssues, toolTemplateFilledNotice, unexpectedExitNotice, updatedNotice, usageStatsNotice, vaultRecoveredNotice } from './startup-notice'
 
 function render(notices: Parameters<typeof StartupNotices>[0]['notices']) {
   return renderToStaticMarkup(<StartupNotices notices={notices} onDismiss={() => undefined} onOpen={() => undefined} />)
@@ -47,13 +47,13 @@ describe('StartupNotices', () => {
     expect(markup).not.toContain('aria-modal')
   })
 
-  it('stacks one notice per check', () => {
+  it('lays out one card per check and folds the next check under it', () => {
     const issues = startupDiagnosticsIssues({ warn: 0, fail: 2, error: 0 })
     expect(issues).not.toBeNull()
     const markup = render([startupCheckFailure('update', 'A'), issues!])
     expect(markup).toContain('startup-notice-update')
-    expect(markup).toContain('startup-notice-diagnostics')
-    expect(markup).toContain('环境检查发现 2 项需要处理')
+    expect(markup).not.toContain('startup-notice-diagnostics')
+    expect(markup).toContain('还有 1 条提示')
   })
 
   it('shows the first changes after an update as a light card with a single acknowledgement', () => {
@@ -67,6 +67,16 @@ describe('StartupNotices', () => {
     expect(markup).not.toContain('aria-modal')
   })
 
+  it('adds a way to every change after an update when the card only lists the first few', () => {
+    const markup = render([updatedNotice('0.2.9', { justUpdated: true, previousVersion: '0.2.8', notes: ['一', '二', '三', '四'] })!])
+    expect(markup).toContain('<li>一</li><li>二</li><li>三</li>')
+    expect(markup).not.toContain('四')
+    expect(markup).toContain('startup-notice-updated-primary')
+    expect(markup).toContain('startup-notice-updated-secondary')
+    expect(markup).toContain('看全部改动')
+    expect(markup).not.toContain('aria-label="关闭"')
+  })
+
   it('shows both choices without a close button when the user has to pick one', () => {
     const notice = displayCompatNotice({ displayCompat: 'auto' })
     expect(notice).not.toBeNull()
@@ -78,7 +88,7 @@ describe('StartupNotices', () => {
     expect(markup).not.toContain('aria-label="关闭"')
   })
 
-  it('shows at most two cards and folds the rest into one line', () => {
+  it('shows one card at a time and folds the rest into one line', () => {
     const markup = render([
       updatedNotice('0.2.12', { justUpdated: true, previousVersion: '0.2.11', notes: ['第一件事'] })!,
       toolTemplateFilledNotice(['codex'])!,
@@ -86,30 +96,41 @@ describe('StartupNotices', () => {
       displayCompatNotice({ displayCompat: 'auto' })!,
     ])
     expect(markup).toContain('startup-notice-display-compat')
-    expect(markup).toContain('startup-notice-diagnostics')
+    expect(markup).not.toContain('startup-notice-diagnostics')
     expect(markup).not.toContain('startup-notice-updated')
     expect(markup).not.toContain('startup-notice-template-filled')
-    expect(markup).toContain('还有 2 条提示')
+    expect(markup).toContain('还有 3 条提示')
     expect(markup).toContain('aria-expanded="false"')
   })
 
-  it('counts the maintenance notice against the two visible cards', () => {
-    const markup = renderToStaticMarkup(<StartupNotices notices={[startupCheckFailure('update', 'A'), vaultRecoveredNotice()]}
-      leading={[<div key="maintenance" data-testid="maintenance" />]} onDismiss={() => undefined} onOpen={() => undefined} />)
-    expect(markup).toContain('data-testid="maintenance"')
-    expect(markup).toContain('startup-notice-vault-recovered')
-    expect(markup).not.toContain('startup-notice-update"')
+  it('shows the update before the usage statistics notice when both arrive on the same launch', () => {
+    // yoyo 11-18 装 0.2.24：两张一起叠在首页左下，盖住了工具卡和最近记录。
+    const usage = usageStatsNotice({ crashReportingNoticeShown: true }, true, true)!
+    const markup = render([usage, updatedNotice('0.2.24', { justUpdated: true, previousVersion: '0.2.23', notes: ['一', '二', '三', '四'] })!])
+    expect(markup).toContain('startup-notice-updated')
+    expect(markup).not.toContain('startup-notice-usage-stats')
     expect(markup).toContain('还有 1 条提示')
   })
 
+  it('counts the maintenance notice against the one visible card', () => {
+    const markup = renderToStaticMarkup(<StartupNotices notices={[startupCheckFailure('update', 'A'), vaultRecoveredNotice()]}
+      leading={[<div key="maintenance" data-testid="maintenance" />]} onDismiss={() => undefined} onOpen={() => undefined} />)
+    expect(markup).toContain('data-testid="maintenance"')
+    expect(markup).not.toContain('startup-notice-vault-recovered')
+    expect(markup).not.toContain('startup-notice-update"')
+    expect(markup).toContain('还有 2 条提示')
+  })
+
   it('has no fold line when everything fits', () => {
-    const markup = render([startupCheckFailure('update', 'A'), vaultRecoveredNotice()])
+    const markup = render([vaultRecoveredNotice()])
     expect(markup).not.toContain('startup-notices-toggle')
   })
 
-  it('puts choices first, then trouble, then things to look at, then plain news, keeping arrival order within a group', () => {
+  it('puts display choices first, then trouble, then things to look at, then plain news, then the consent notices, keeping arrival order within a group', () => {
     const crash = crashReportingNotice({ crashReporting: true, crashReportingNoticeShown: false }, true)!
+    const usage = usageStatsNotice({ crashReportingNoticeShown: true }, true, true)!
     const ordered = orderStartupNotices([
+      usage,
       updatedNotice('0.2.12', { justUpdated: true, previousVersion: '0.2.11', notes: [] })!,
       startupCheckFailure('update', 'A'),
       startupDiagnosticsIssues({ warn: 0, fail: 1, error: 0 })!,
@@ -117,7 +138,7 @@ describe('StartupNotices', () => {
       crash,
       displayCompatNotice({ displayCompat: 'auto' })!,
     ])
-    expect(ordered.map((notice) => notice.id)).toEqual(['crash-reporting', 'display-compat', 'vault-recovered', 'update', 'diagnostics', 'updated'])
+    expect(ordered.map((notice) => notice.id)).toEqual(['display-compat', 'vault-recovered', 'update', 'diagnostics', 'updated', 'usage-stats', 'crash-reporting'])
   })
 
   it('keeps both pinned cards visible and folds every startup notice when they fill the corner', () => {

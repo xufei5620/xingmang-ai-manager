@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
 import type { AiVideoClip } from '../../../../electron/ipc-contract'
+import { appendVideoStudioClip, buildVideoClipRequest, canAddVideoStudioShot, createVideoStudioProjectFromClip, videoStudioUnconfirmedWarning } from './project'
+import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import {
   addVideoStudioShot,
   applyVideoStudioPlan,
@@ -17,24 +19,19 @@ import {
   isVideoStudioProjectEmpty,
   maxVideoStudioDrafts,
   moveVideoStudioShot,
-  openVideoStudioDraft,
-  removeVideoStudioDraft,
   removeVideoStudioMusic,
   removeVideoStudioShot,
   removeVideoStudioShotImage,
   restoreVideoStudioDrafts,
   restoreVideoStudioProject,
   selectVideoStudioVideoModel,
-  serializeVideoStudioDrafts,
   serializeVideoStudioProject,
   setVideoStudioClipSound,
   setVideoStudioMusic,
   setVideoStudioShotSeconds,
   setVideoStudioShotTrim,
-  canStartVideoStudioProject,
   changeVideoStudioSettings,
   settleVideoStudioModels,
-  startVideoStudioProject,
   startVideoStudioShotDrawing,
   videoStudioCommonSeconds,
   videoStudioComposeCaptions,
@@ -594,48 +591,27 @@ describe('video studio project', () => {
       .toEqual({ assetId: 'm'.repeat(43), name: `晴 天${'长'.repeat(77)}`, clipSound: 'quiet' })
   })
 
-  it('puts the film in hand into the draft box on a new one, keeping the settings, and refuses when there is nothing to keep or no room', () => {
-    const film = { ...planned(), settings: { ...planned().settings, idea: '回家的猫', aspect: '16:9' as const, videoModel: 'grok-imagine-video-1.5' } }
-    const started = startVideoStudioProject([], film, 1_000, () => 'draft-1')
-    expect(started?.drafts).toEqual([{ id: 'draft-1', savedAt: 1_000, project: film }])
-    expect(started?.project.shots).toEqual([])
-    expect(started?.project.settings).toEqual({ ...film.settings, idea: '' })
-    expect(isVideoStudioProjectEmpty(started?.project ?? film)).toBe(true)
-    // 手上什么都没写，新建也没东西可放。
-    expect(startVideoStudioProject([], createVideoStudioProject(), 1_000)).toBeNull()
-    expect(canStartVideoStudioProject([], { ...createVideoStudioProject(), settings: { ...defaultVideoStudioSettings(), idea: '  ' } })).toBe(false)
-    const full: VideoStudioDraft[] = Array.from({ length: maxVideoStudioDrafts }, (_, index) => ({ id: `draft-${index}`, savedAt: index, project: film }))
-    expect(canStartVideoStudioProject(full, film)).toBe(false)
-    expect(startVideoStudioProject(full, film, 1_000)).toBeNull()
-  })
-
-  it('swaps a draft for the film in hand, drops an empty one and never grows the box by opening', () => {
-    const film = planned()
-    const other = { ...createVideoStudioProject(), settings: { ...defaultVideoStudioSettings(), idea: '海边日落' } }
-    const drafts: VideoStudioDraft[] = [{ id: 'a', savedAt: 1, project: other }]
-    expect(openVideoStudioDraft(drafts, 'a', film, 5, () => 'b')).toEqual({ project: other, drafts: [{ id: 'b', savedAt: 5, project: film }] })
-    expect(openVideoStudioDraft(drafts, 'a', createVideoStudioProject(), 5)).toEqual({ project: other, drafts: [] })
-    expect(openVideoStudioDraft(drafts, 'missing', film, 5)).toBeNull()
-    expect(removeVideoStudioDraft(drafts, 'a')).toEqual([])
-    expect(removeVideoStudioDraft(drafts, 'missing')).toEqual(drafts)
-  })
-
-  it('names a draft by its title or the start of its idea and tells how far it got', () => {
+  it('names a film by its title or the start of its idea and tells how far it got', () => {
     const film = planned()
     expect(videoStudioDraftName(film)).toBe('回家的猫')
     expect(videoStudioDraftName({ ...film, title: '', settings: { ...film.settings, idea: '一只橘猫\n在下雨的东京街头找回家的路，温暖治愈，最后它在家门口被主人抱起来' } })).toBe('一只橘猫 在下雨的东京街头找回家的路，温暖治愈，…')
-    expect(videoStudioDraftName({ ...film, title: '', settings: { ...film.settings, idea: '' } })).toBe('没起名的草稿')
+    expect(videoStudioDraftName({ ...film, title: '', settings: { ...film.settings, idea: '' } })).toBe('没起名的视频')
     expect(videoStudioDraftProgress(createVideoStudioProject())).toBe('还没写分镜')
     const made = { ...film, shots: film.shots.map((shot, index) => index ? shot : { ...shot, clip: clip('a'), status: 'done' as const }) }
     expect(videoStudioDraftProgress(made)).toBe('3 个镜头 · 已生成 1 段')
     expect(videoStudioDraftProgress({ ...made, exported: clip('z') })).toBe('3 个镜头 · 已生成 1 段 · 已拼成片')
   })
 
-  it('stores the draft box next to the film in hand and reads back only drafts it can trust', () => {
+  // 0.2.24 及以前草稿箱在 localStorage 里的写法（当时的 serializeVideoStudioDrafts）。新版不再写它，只在头一次打开时读一遍。
+  function legacyDraftBox(drafts: readonly VideoStudioDraft[]): unknown {
+    return { version: 1, drafts: drafts.map((draft) => ({ id: draft.id, savedAt: draft.savedAt, project: serializeVideoStudioProject(draft.project) })) }
+  }
+
+  it('still reads the draft box older versions kept next to the film in hand, and only drafts it can trust', () => {
     expect(videoStudioDraftsStorageKey('xm:7')).toBe(`${videoStudioStorageKey('xm:7')}:drafts`)
     const film = { ...planned(), shots: planned().shots.map((shot, index) => index ? shot : { ...shot, clip: clip('a'), status: 'done' as const }) }
     const drafts: VideoStudioDraft[] = [{ id: 'draft-1', savedAt: 1_700_000_000_000, project: film }]
-    const stored = JSON.parse(JSON.stringify(serializeVideoStudioDrafts(drafts)))
+    const stored = JSON.parse(JSON.stringify(legacyDraftBox(drafts)))
     expect(restoreVideoStudioDrafts(stored, ids())).toEqual([{ id: 'draft-1', savedAt: 1_700_000_000_000, project: restoreVideoStudioProject(serializeVideoStudioProject(film), ids()) }])
     const project = serializeVideoStudioProject(film)
     expect(restoreVideoStudioDrafts({ version: 2, drafts: [{ id: 'a', savedAt: 1, project }] })).toEqual([])
@@ -655,11 +631,76 @@ describe('video studio project', () => {
     expect(restoreVideoStudioDrafts({ version: 1, drafts: many })).toHaveLength(maxVideoStudioDrafts)
   })
 
-  // 草稿里没等到结果的那段，读回来是「生成中」：换回来时页面拿请求号去接（useVideoStudio 的 switchProject）。
+  // 草稿里没等到结果的那段，读回来是「生成中」：打开这一条时工作台拿请求号去接（useVideoStudio 的 resumeOpenClips）。
   it('reads a draft clip still out as generating, like the film in hand after the page reopens', () => {
     const film = planned()
     const waiting = { ...film, shots: film.shots.map((shot, index) => index === 1 ? { ...shot, requestId: 'req-1', status: 'failed' as const, error: '暂时查不到视频进度' } : shot) }
-    const [draft] = restoreVideoStudioDrafts(serializeVideoStudioDrafts([{ id: 'a', savedAt: 1, project: waiting }]))
+    const [draft] = restoreVideoStudioDrafts(legacyDraftBox([{ id: 'a', savedAt: 1, project: waiting }]))
     expect(draft.project.shots[1]).toMatchObject({ requestId: 'req-1', status: 'generating' })
+  })
+})
+
+describe('a clip handed over from a conversation', () => {
+  const assetId = 'c'.repeat(43)
+  const handed: AiVideoClip = { assetId, thumbnailUrl: assetThumbnailUrl(assetId, 'video'), width: 1280, height: 720, durationSeconds: 5 }
+  const imageAssetId = 'i'.repeat(43)
+  const ids = () => { let next = 0; return () => `shot-${++next}` }
+
+  it('goes in as a finished last shot with its prompt and start image, and nothing is generated again', () => {
+    const project = { ...addVideoStudioShot(createVideoStudioProject(), () => 'first'), title: '橘猫回家' }
+    const next = appendVideoStudioClip(project, { prompt: '  一只橘猫\u000c在雨里走  ', clip: handed, imageAssetId }, ids())
+    expect(next.shots).toHaveLength(2)
+    expect(next.shots[0]).toBe(project.shots[0])
+    expect(next.shots[1]).toMatchObject({ id: 'shot-1', prompt: '一只橘猫在雨里走', caption: '', clip: handed, status: 'done', image: { assetId: imageAssetId } })
+    expect(next.shots[1]).not.toHaveProperty('requestId')
+    expect(next.title).toBe('橘猫回家')
+    expect(appendVideoStudioClip(project, { prompt: '没有开头图', clip: handed }, ids()).shots[1]).not.toHaveProperty('image')
+  })
+
+  it('cuts an overlong prompt to what a shot holds', () => {
+    const next = appendVideoStudioClip(createVideoStudioProject(), { prompt: 'x'.repeat(videoStudioPlanLimits.maximumPromptLength + 20), clip: handed }, ids())
+    expect(next.shots[0].prompt).toHaveLength(videoStudioPlanLimits.maximumPromptLength)
+  })
+
+  it('drops the finished film, because it no longer has every shot in it', () => {
+    const exported = { ...createVideoStudioProject(), exported: { assetId: 'e'.repeat(43), durationSeconds: 12 } }
+    expect(appendVideoStudioClip(exported as ReturnType<typeof createVideoStudioProject>, { prompt: '多一段', clip: handed }, ids())).not.toHaveProperty('exported')
+  })
+
+  it('leaves a full film untouched', () => {
+    let full = createVideoStudioProject()
+    for (let index = 0; index < videoStudioPlanLimits.maximumShots; index += 1) full = addVideoStudioShot(full, () => `s${index}`)
+    expect(canAddVideoStudioShot(full)).toBe(false)
+    expect(appendVideoStudioClip(full, { prompt: '放不下', clip: handed }, ids())).toBe(full)
+  })
+
+  it('starts a new film around the clip: its prompt as the idea, its shape and model, the rest from the base settings', () => {
+    const base = { ...defaultVideoStudioSettings(), textModel: 'gpt-5.6-sol', textGroup: 'GPT', imageModel: 'gpt-image-2', imageGroup: '图片模型', captions: false, idea: '上一条的想法', aspect: '9:16' as const }
+    const film = createVideoStudioProjectFromClip({ prompt: '一只橘猫在雨里走', clip: handed, imageAssetId }, { aspect: '16:9', model: 'minimax-h3-base', group: '图片模型', seconds: 3 }, base, ids())
+    expect(film.settings).toMatchObject({ idea: '一只橘猫在雨里走', aspect: '16:9', videoModel: 'minimax-h3-base', videoGroup: '图片模型', textModel: 'gpt-5.6-sol', imageModel: 'gpt-image-2', captions: false })
+    // MiniMax 最短 5 秒：接着加的镜头不会按一个它出不了的时长去要。
+    expect(film.settings.secondsPerShot).toBe(clampVideoStudioSeconds(3, 'minimax-h3-base'))
+    expect(film.shots).toHaveLength(1)
+    expect(film.shots[0]).toMatchObject({ clip: handed, status: 'done', prompt: '一只橘猫在雨里走' })
+    expect(isVideoStudioProjectEmpty(film)).toBe(false)
+  })
+
+  it('keeps the base length when the clip came without a video model', () => {
+    const film = createVideoStudioProjectFromClip({ prompt: '一只橘猫', clip: handed }, { aspect: '1:1', model: '', group: '', seconds: 9 }, undefined, ids())
+    expect(film.settings).toMatchObject({ aspect: '1:1', videoModel: '', videoGroup: '', secondsPerShot: defaultVideoStudioSettings().secondsPerShot })
+  })
+
+  it('builds the same request for one chat message as for one storyboard shot', () => {
+    const settings = { ...defaultVideoStudioSettings(), videoModel: 'grok-imagine-video-1.5', videoGroup: '图片模型', aspect: '16:9' as const, secondsPerShot: 6 }
+    const shot = { id: 'a', prompt: '橘猫', caption: '', status: 'idle' as const }
+    expect(buildVideoClipRequest({ requestId: 'r1', group: '图片模型', model: 'grok-imagine-video-1.5', prompt: '橘猫', seconds: 6, aspect: '16:9' })).toEqual(buildVideoStudioClipRequest(settings, shot, 'r1'))
+    expect(buildVideoClipRequest({ requestId: 'r2', group: '图片模型', model: 'minimax-h3-base', prompt: '橘猫', seconds: 6, aspect: '9:16', imageAssetId })).toMatchObject({ mode: 'i2va', aspectRatio: '9:16', imageAssetIds: [imageAssetId] })
+  })
+
+  it('words the pay-twice warning for one clip, for all of them and for some of them', () => {
+    expect(videoStudioUnconfirmedWarning([0], 1)).toMatch(/^这一段上次提交时没收到/)
+    expect(videoStudioUnconfirmedWarning([0, 1], 2)).toMatch(/^这几段上次提交时没收到/)
+    expect(videoStudioUnconfirmedWarning([1, 3], 4)).toMatch(/^其中第 2、4 段上次提交时没收到/)
+    expect(videoStudioUnconfirmedWarning([0], 1)).toContain('再生成会重新计费，可能多扣一次。')
   })
 })

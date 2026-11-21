@@ -1,7 +1,7 @@
 // @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
 
 import type { AppSettings, AppSettingsUpdate, AppTheme as StoredAppTheme } from './app-settings'
-import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
+import type { AiAnswerCutOff, AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
 import type { MiniMaxVideoAspectRatio, MiniMaxVideoMode, MiniMaxVideoResolution } from './ai-chat-protocol'
 import type { VideoStudioPlan, VideoStudioPlanRequest } from './video-studio-plan'
 export type { VideoStudioPlan, VideoStudioPlanAspect, VideoStudioPlanShot } from './video-studio-plan'
@@ -58,17 +58,14 @@ import type {
   RepositoryContext as CodexRepositoryContext,
   SkillDto,
 } from './codex-extensions'
+import type { SkillArchiveExtraction } from './skill-archive'
 import type {
   ProviderExtensionMutation,
   ProviderExtensionsSnapshot,
   ProviderMcpHealthReport,
 } from './provider-extensions'
 import type {
-  CodexSessionDetail,
-  CodexSessionExportResult,
-  CodexSessionListQuery,
   CodexSessionMutationResult,
-  CodexSessionPage,
   CodexSessionSummary,
   SessionArchiveFilter as CodexSessionArchiveFilter,
 } from './codex-sessions'
@@ -343,12 +340,8 @@ export interface UpdateInstallOptions {
 export type InstalledRelease = MainInstalledRelease
 export type UpdateSnapshot = MainUpdateSnapshot
 export type SessionArchiveFilter = CodexSessionArchiveFilter
-export type SessionListQuery = CodexSessionListQuery
 export type SessionSummary = CodexSessionSummary
-export type SessionPageResult = CodexSessionPage
-export type SessionDetailResult = CodexSessionDetail
 export type SessionMutationResult = CodexSessionMutationResult
-export type SessionExportResult = CodexSessionExportResult
 export type MultiProviderSessionProvider = ProviderSessionProvider
 export type MultiProviderSessionListQuery = ProviderSessionListQuery
 export type MultiProviderSessionSummary = ProviderSessionSummary
@@ -689,11 +682,13 @@ export interface AiChatTextFile {
 }
 
 export type AiChatErrorCode = MainAiChatStreamErrorCode
+export type AiChatCutOff = AiAnswerCutOff
 
 export type AiChatStreamEvent =
   | { requestId: string; type: 'content'; content: string }
   | { requestId: string; type: 'reasoning'; content: string }
-  | { requestId: string; type: 'complete' }
+  /** cutOff：回答没写完就停了（到了长度上限 / 被内容审核拦下），已经出来的字照留；缺省 = 正常说完。 */
+  | { requestId: string; type: 'complete'; cutOff?: AiChatCutOff }
   | { requestId: string; type: 'canceled'; mayStillComplete?: boolean }
   | { requestId: string; type: 'error'; code?: AiChatErrorCode; message: string }
 
@@ -726,6 +721,37 @@ export interface AiChatHistoryWrite {
 /** 退出前主进程问聊天页要一次存盘（electron/chat-history-flush.ts）；编号每次随机，原样回给 chat-history:flushed。 */
 export interface AiChatHistoryFlushRequest {
   requestId: string
+}
+
+/** 一条视频（分镜、设置、片段编号）一份文件；key 由渲染层分配，只含字母、数字、_ 和 -。 */
+export interface VideoStudioProjectFile {
+  key: string
+  content: string
+}
+
+export interface VideoStudioProjectsSnapshot {
+  /** null = 这个账号的视频草稿还没从旧的本机存储（localStorage）抄过来，或者从没做过视频。 */
+  index: string | null
+  /** 这个账号存着的每一条视频。内容主进程不看，渲染层自己认；认不出的那一条它自己跳过。 */
+  projects: VideoStudioProjectFile[]
+}
+
+export interface VideoStudioProjectsWrite {
+  scope: string
+  /** 只在把旧草稿抄过来的那一次带：写在这一次的每一条视频之后。缺省 = 不动索引。 */
+  index?: string
+  /** 这次改过、要重写的那几条。 */
+  put: VideoStudioProjectFile[]
+  /** 客户删掉的那几条。不在这里的文件一个都不删。 */
+  remove: string[]
+}
+
+/** 主窗口「创作」左边那一列里的一个画布项目：只有编号、名字和时间，项目里的东西不出主进程。 */
+export interface CanvasProjectListEntry {
+  id: string
+  name: string
+  /** 最后改动的时间（毫秒）。 */
+  updatedAt: number
 }
 
 /**
@@ -1172,13 +1198,6 @@ export interface XingmangInvokeContract {
    * 缺省 = 已经交给安装程序（旧行为）。
    */
   installUpdate: IpcInvokeDefinition<'update:install', [options?: UpdateInstallOptions], { accepted: true; postponed?: true }>
-  listSessions: IpcInvokeDefinition<'sessions:list', [query: SessionListQuery], SessionPageResult>
-  getSessionDetail: IpcInvokeDefinition<'sessions:detail', [sessionId: string], SessionDetailResult>
-  exportSession: IpcInvokeDefinition<
-    'sessions:export',
-    [sessionId: string],
-    SessionExportResult | null
-  >
   archiveSession: IpcInvokeDefinition<
     'sessions:archive',
     [sessionId: string],
@@ -1261,6 +1280,12 @@ export interface XingmangInvokeContract {
   logoutMcpServer: IpcInvokeDefinition<'mcp:logout', [name: string], McpServer[]>
   listSkills: IpcInvokeDefinition<'skills:list', [], SkillItem[]>
   importSkill: IpcInvokeDefinition<'skills:import', [input: ImportSkillInput], SkillItem[]>
+  /**
+   * 技能「从压缩包导入」的「选择压缩包」：主进程弹原生选择框，把选中的 .zip 查完解到星芒自己的数据
+   * 文件夹，交回技能那一层的位置，再照「从文件夹导入」那样逐家导入（那边的检查照旧再做一遍）。
+   * 不收渲染层给的路径；取消返回 null，压缩包打不开、不安全、没有技能时报中文原因。
+   */
+  chooseSkillArchive: IpcInvokeDefinition<'skills:choose-archive', [], SkillArchiveExtraction | null>
   toggleSkill: IpcInvokeDefinition<
     'skills:toggle',
     [skillPath: string, enabled: boolean],
@@ -1290,11 +1315,6 @@ export interface XingmangInvokeContract {
     'extensions:list',
     [provider: ProviderId],
     ProviderExtensionsSnapshot
-  >
-  listAllProviderExtensions: IpcInvokeDefinition<
-    'extensions:list-all',
-    [],
-    ProviderExtensionsSnapshot[]
   >
   mutateProviderExtension: IpcInvokeDefinition<
     'extensions:mutate',
@@ -1438,6 +1458,8 @@ export interface XingmangInvokeContract {
   /** 用量账单的价格表；没有按型号价目的账号（历史账号）回 null。 */
   getAccountPriceList: IpcInvokeDefinition<'account:get-price-list', [], AccountPriceList | null>
   revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
+  /** 密钥管理的「启用」：把停用、到期、额度用完的那把重新打开。只有星芒账号有，历史账号不显示这颗按钮。 */
+  enableAccountKey: IpcInvokeDefinition<'account:enable-key', [id: number], void>
   copyAccountKey: IpcInvokeDefinition<'account:copy-key', [id: number], void>
   /** 找回密码后复制新密码：走主进程写剪贴板，60 秒后自动清掉。 */
   copyResetPassword: IpcInvokeDefinition<'account:copy-reset-password', [password: string], void>
@@ -1470,6 +1492,13 @@ export interface XingmangInvokeContract {
   >
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
   openCanvasAssetLibrary: IpcInvokeDefinition<'canvas:open-asset-library', [], void>
+  /** 「创作」左边那一列要的画布项目：当前账号没归档的那些，只回编号、名字和最后改动的时间。 */
+  listCanvasProjects: IpcInvokeDefinition<'canvas:list-projects', [], CanvasProjectListEntry[]>
+  /**
+   * 把画布窗口开在这个项目上。编号先在当前账号的项目里认过才用；画布开着别的项目时先走它自己的关闭确认，
+   * 客户在那里选了留下就回 false。
+   */
+  openCanvasProject: IpcInvokeDefinition<'canvas:open-project', [projectId: string], boolean>
   getRememberedAccountLogin: IpcInvokeDefinition<'account:get-remembered-login', [siteId?: AccountSiteId], RememberedAccountLogin | null>
   setRememberedAccountLogin: IpcInvokeDefinition<'account:set-remembered-login', [input: RememberedAccountLogin | null, siteId?: AccountSiteId], void>
   createAccountKey: IpcInvokeDefinition<'account:create-key', [input: AccountKeyCreateInput], void>
@@ -1510,6 +1539,9 @@ export interface XingmangInvokeContract {
   openAiVideo: IpcInvokeDefinition<'video:open', [assetId: string], void>
   /** suggestedName：系统对话框里默认的文件名（视频剪辑页传片名），主进程洗成干净的文件名再用。 */
   saveAiVideo: IpcInvokeDefinition<'video:save-as', [assetId: string, suggestedName?: string], { saved: boolean }>
+  /** 这个账号存着的视频（分镜、设置、片段编号），一条一个文件（总单 #79）。 */
+  readVideoStudioProjects: IpcInvokeDefinition<'video-studio:read-projects', [scope: string], VideoStudioProjectsSnapshot>
+  writeVideoStudioProjects: IpcInvokeDefinition<'video-studio:write-projects', [input: VideoStudioProjectsWrite], void>
   readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
   writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
   /** 聊天页把退出前那一次存完了（不管存没存成），回 onAiChatHistoryFlushRequested 给的编号。 */
@@ -1745,9 +1777,6 @@ export const ipcInvokeChannels = {
   checkForUpdates: 'update:check',
   downloadUpdate: 'update:download',
   installUpdate: 'update:install',
-  listSessions: 'sessions:list',
-  getSessionDetail: 'sessions:detail',
-  exportSession: 'sessions:export',
   archiveSession: 'sessions:archive',
   restoreSession: 'sessions:restore',
   listProviderSessions: 'provider-sessions:list',
@@ -1785,6 +1814,7 @@ export const ipcInvokeChannels = {
   logoutMcpServer: 'mcp:logout',
   listSkills: 'skills:list',
   importSkill: 'skills:import',
+  chooseSkillArchive: 'skills:choose-archive',
   toggleSkill: 'skills:toggle',
   uninstallSkill: 'skills:uninstall',
   listPlugins: 'plugins:list',
@@ -1795,7 +1825,6 @@ export const ipcInvokeChannels = {
   upgradeMarketplace: 'marketplaces:upgrade',
   removeMarketplace: 'marketplaces:remove',
   listProviderExtensions: 'extensions:list',
-  listAllProviderExtensions: 'extensions:list-all',
   mutateProviderExtension: 'extensions:mutate',
   ensureProviderMarketplace: 'extensions:ensure-marketplace',
   checkProviderMcpHealth: 'extensions:check-mcp-health',
@@ -1851,6 +1880,7 @@ export const ipcInvokeChannels = {
   getAccountUsableGroups: 'account:list-groups',
   getAccountPriceList: 'account:get-price-list',
   revokeAccountKey: 'account:revoke-key',
+  enableAccountKey: 'account:enable-key',
   copyAccountKey: 'account:copy-key',
   copyResetPassword: 'account:copy-reset-password',
   revealAccountKey: 'account:reveal-key',
@@ -1862,6 +1892,8 @@ export const ipcInvokeChannels = {
   revokeOtherAccountLoginSessions: 'account:revoke-other-login-sessions',
   openCanvasWindow: 'canvas:open',
   openCanvasAssetLibrary: 'canvas:open-asset-library',
+  listCanvasProjects: 'canvas:list-projects',
+  openCanvasProject: 'canvas:open-project',
   getRememberedAccountLogin: 'account:get-remembered-login',
   setRememberedAccountLogin: 'account:set-remembered-login',
   createAccountKey: 'account:create-key',
@@ -1887,6 +1919,8 @@ export const ipcInvokeChannels = {
   readVideoStudioMusic: 'video-studio:read-music',
   openAiVideo: 'video:open',
   saveAiVideo: 'video:save-as',
+  readVideoStudioProjects: 'video-studio:read-projects',
+  writeVideoStudioProjects: 'video-studio:write-projects',
   readAiChatHistory: 'chat-history:read',
   writeAiChatHistory: 'chat-history:write',
   confirmAiChatHistoryFlushed: 'chat-history:flushed',

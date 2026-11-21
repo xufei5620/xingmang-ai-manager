@@ -11,9 +11,10 @@ import type {
   PlatformSystemState,
   XingmangPlatformApi,
 } from '../electron/platform/contract'
-import type { AccountPaymentWindowTerminalEvent, FeedbackMessageCopyRequest, ProviderId } from '../electron/ipc-contract'
+import type { AccountPaymentWindowTerminalEvent, AccountSubscriptionPlan, FeedbackMessageCopyRequest, ProviderId } from '../electron/ipc-contract'
 import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
+import { accountKeyEnableExpiredMessage } from '../electron/account-key-quota'
 import { KeyRewriteSkippedError } from '../src/renderer-v2/features/tools/account-bootstrap'
 import { settingsPageAlias } from '../src/renderer-v2/registry/pages'
 import { settingsItems } from '../src/renderer-v2/registry/business'
@@ -36,6 +37,13 @@ declare global {
       holdNext(): void
       release(): void
       fail(message: string): void
+    }
+    // 后台改了 subscriptionExternal 那个套餐（patch）、下架了它（remove）或者又上架了（restore）：
+    // 只改夹具里存着的，页面下一次读套餐列表才看得到（N3）。
+    subscriptionPlanHarness: {
+      set(patch: Partial<AccountSubscriptionPlan>): void
+      remove(): void
+      restore(): void
     }
     // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
     // toolKeyLimits：下一次按 100 一页读密钥（「每个工具的额度上限」那张卡）没读到。
@@ -116,6 +124,16 @@ const record = (name: string, args?: unknown) => {
 }
 const failOnce = new Set<string>()
 window.failNextRead = (read) => { failOnce.add(read) }
+// planBalancePay：那个套餐按美元标价、能用余额买（$5，余额 $10 够付）。
+let externalPlanPatch: Partial<AccountSubscriptionPlan> = query.has('planBalancePay')
+  ? { currency: 'USD', priceAmount: 5, allowBalancePay: true }
+  : {}
+let externalPlanRemoved = false
+window.subscriptionPlanHarness = {
+  set(patch) { externalPlanPatch = { ...externalPlanPatch, ...patch } },
+  remove() { externalPlanRemoved = true },
+  restore() { externalPlanRemoved = false },
+}
 let releaseHeldExtension: (() => void) | undefined
 window.releaseExtension = () => { releaseHeldExtension?.(); releaseHeldExtension = undefined }
 function failingOnce(read: string) {
@@ -229,6 +247,8 @@ function remoteSnapshot(): RemoteSnapshot {
     revision: remoteRevision,
     available: !elevated,
     ...(elevated ? { unavailableReason: '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。' } : {}),
+    // 登录的 Windows 账号本身就带管理员权限（自带 Administrator、关了授权弹窗）：能开，卡上多一句提醒。
+    ...(!elevated && query.has('remoteAdminAccount') ? { alwaysElevated: true } : {}),
     credentialPersistence: query.has('remoteSessionOnly') ? 'session-only' : 'durable',
     workspaceDirectory: remoteState.workspaceDirectory,
     ...(remoteState.workspaces.length > 1 ? { workspaces: [...remoteState.workspaces] } : {}),
@@ -664,6 +684,15 @@ const managedKeys = query.has('managedKeys')
       { ...key, id: 12, name: 'xingmang-desktop-codex', group: 'GPT', unlimitedQuota: true, remainQuota: 0, usedQuota: 200 },
     ]
   : null
+// stoppedKeys：一把网页上停用的、一把过了到期时间的、一把正常的，看「启用」摆在哪几行、点了怎样（总单 Q2）。
+// 到期那把照主进程 enableKey 的规矩不给开，回同一句话。
+const stoppedKeys = query.has('stoppedKeys')
+  ? [
+      { ...key, id: 21, name: 'disabled-key', status: 2, unlimitedQuota: true, remainQuota: 0 },
+      { ...key, id: 22, name: 'expired-key', status: 3, expiredAt: '2026-01-01T00:00:00.000Z' },
+      { ...key },
+    ]
+  : null
 window.changeKeyElsewhere = (id, patch) => {
   const stored = managedKeys?.find((entry) => entry.id === id)
   if (stored) Object.assign(stored, patch)
@@ -972,9 +1001,9 @@ const apiMethods = {
     return {
       page: 1,
       pageSize: 20,
-      total: empty ? 0 : managedKeys ? managedKeys.length : 1,
+      total: empty ? 0 : (stoppedKeys ?? managedKeys)?.length ?? 1,
       // 每次读都给一份新的，跟真的跨进程一样：页面手里那份不会跟着夹具里存的悄悄变。
-      keys: empty ? [] : managedKeys?.map((entry) => ({ ...entry })) ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
+      keys: empty ? [] : (stoppedKeys ?? managedKeys)?.map((entry) => ({ ...entry })) ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
     }
   },
   updateAccountKey: async (input: Parameters<V2Bridge['updateAccountKey']>[0]) => {
@@ -988,6 +1017,12 @@ const apiMethods = {
       remainQuota: input.unlimitedQuota ? stored.remainQuota : input.remainQuota,
       expiredAt: input.expiredTime === -1 ? null : new Date(input.expiredTime * 1000).toISOString(),
     })
+  },
+  enableAccountKey: async (id: number) => {
+    record('enableAccountKey', id)
+    const stored = stoppedKeys?.find((entry) => entry.id === id)
+    if (stored?.expiredAt) throw new Error(accountKeyEnableExpiredMessage)
+    if (stored) stored.status = 1
   },
   revokeAccountKey: async (id: number) => {
     record('revokeAccountKey', id)
@@ -1188,7 +1223,7 @@ const apiMethods = {
     if (type === 'subscription' || type === 'concurrency') return { type, quotaAdded: 0 }
     return { quotaAdded: 5 }
   },
-  getAccountSubscriptionPlans: async () => query.has('subscriptionExternal') ? [{
+  getAccountSubscriptionPlans: async () => query.has('subscriptionExternal') && !externalPlanRemoved ? [{
     id: 1,
     title: '外部订阅',
     subtitle: '测试外部支付状态',
@@ -1208,6 +1243,7 @@ const apiMethods = {
     stripePriceId: 'stripe-price',
     creemProductId: null,
     waffoPancakeProductId: null,
+    ...externalPlanPatch,
   }] : [],
   createAccountSubscriptionPayment: async (
     input: Parameters<V2Bridge['createAccountSubscriptionPayment']>[0],
@@ -1312,6 +1348,23 @@ const apiMethods = {
     detailReads += 1
     if (query.has('detailFailure') && detailReads === 1)
       throw new Error('会话详情暂时不可读')
+    if (query.has('turnActivity')) {
+      return {
+        session,
+        messages: [
+          { role: 'user', text: '帮我把测试修好', timestamp: time },
+          {
+            role: 'assistant',
+            text: '测试已经修好了',
+            timestamp: time,
+            activity: { commands: 3, commandNames: ['npm', 'git'], fileCount: 2, files: ['sum.ts', 'sum.test.ts'], failedSteps: 1 },
+          },
+        ],
+        messageStats: { total: 2, user: 1, assistant: 1, system: 0, other: 0, invalidLines: 0 },
+        messagesTruncated: false,
+        sourceTruncated: false,
+      }
+    }
     return {
       session,
       messages: [{ role: 'user', text: '这是一条测试消息', timestamp: time }],
@@ -1409,6 +1462,17 @@ const apiMethods = {
   copyMcpToTool: async (input: Parameters<V2Bridge['copyMcpToTool']>[0]) => {
     record('copy-mcp', input)
     if (query.get('copyMcpFail') === input.to) throw new Error('扩展操作失败，已有配置保留')
+  },
+  // 技能「从压缩包导入」：选文件窗口和解压都在主进程，夹具直接交回一个解好的技能文件夹；
+  // skillArchive=empty 时照主进程原话报没找到技能。
+  chooseSkillArchive: async () => {
+    record('choose-skill-archive')
+    if (query.get('skillArchive') === 'empty') throw new Error('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。')
+    return { archiveName: 'pdf-helper.zip', directory: 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper' }
+  },
+  importSkill: async (input: Parameters<V2Bridge['importSkill']>[0]) => {
+    record('import-skill', input)
+    return []
   },
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   ...(query.has('customMarket') ? customMarketMethods : {}),

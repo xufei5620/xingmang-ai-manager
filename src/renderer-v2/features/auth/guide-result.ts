@@ -44,7 +44,7 @@ interface GuideSetupInput {
  * 新账号的余额本来就是 0，装好、连好以后发第一句话就会失败（主路卡点 F3）。
  * 跟首页那条提示（Home.tsx 的 lowBalanceText(0)）用同一句原话，测试钉住两处一致。
  */
-export const walletEmptyLead = '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。'
+export const walletEmptyLead = '当前账号余额为 $0，充值后方可使用 AI 工具。充值即时生效，无需重新设置。'
 
 // 和「改用 xxx」按钮用同一种截断，免得同一个名字在两处长短不一。
 function currentAccountLabel(accountName: string | null | undefined): string {

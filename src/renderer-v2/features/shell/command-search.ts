@@ -89,9 +89,10 @@ function score(entry: Entry, words: readonly string[]) {
 
 // 加速、备份、更新并进了设置：不再单独出页面结果，搜到的是设置里那一行（「网络加速」那张卡、「备份迁移 › 工具配置备份」）。
 // 「安装卸载」页拆掉了（第 10 批）：搜「安装」「卸载」给首页，搜 Node.js、Python 给检查页。
+// 画布、视频剪辑并进了「创作」（融合第 1 步）：搜它们的老名字给「创作」；搜「画布」另有一条「打开画布窗口」（actionEntries）。
 // 精选、外接工具、插件并进了「插件」页（0.2.25）：不再单独出结果，说法挪进了「插件」；「技能」照旧一条，点了落到「插件」页的「技能」那一栏。
 function pageEntries(options: CommandSearchOptions): Entry[] {
-  return pageRegistry.flatMap(page => page.id === 'acceleration' || page.id === 'backups' || page.id === 'updates' || page.id === 'maintenance' || page.id === 'featured' || page.id === 'mcp' || page.id === 'plugins' || !(options.pageVisible?.(page.id) ?? true) ? []
+  return pageRegistry.flatMap(page => page.id === 'acceleration' || page.id === 'backups' || page.id === 'updates' || page.id === 'maintenance' || page.id === 'featured' || page.id === 'mcp' || page.id === 'plugins' || page.id === 'canvas' || page.id === 'video' || !(options.pageVisible?.(page.id) ?? true) ? []
     : [{ result: { key: `page:${page.id}`, group: 'page', label: page.label, page: page.id }, label: page.label, keywords: [page.id, ...pageSearchKeywords[page.id]] }])
 }
 
@@ -110,6 +111,8 @@ function actionEntries(options: CommandSearchOptions): Entry[] {
     ...(options.theme === 'light' ? [actionEntry('theme', '切换到深色', { page: 'settings', action: 'theme' }, ['深色', '暗色', '黑色', '主题', '外观', '深浅色', '黑金深色'])] : []),
     actionEntry('help', '帮助与客服', { page: 'feedback', action: 'help' }, ['客服', '帮助', '联系', '二维码', '人工']),
     actionEntry('log', '运行日志', { page: 'feedback', section: 'log' }, ['日志', '报错', '错误记录', '出错记录', '安装日志', '安装记录']),
+    // 侧栏的「画布 ↗」并进「创作」以后，从这里还是一步就开画布窗口（落在它的项目中心）。
+    ...((options.pageVisible?.('canvas') ?? true) ? [actionEntry('open-canvas', '打开画布窗口', { page: 'canvas' }, ['画布', '无限画布', '工作流', '节点', '项目中心'])] : []),
     // 参数按对话保存：落到聊天页当前那段对话，打开它的参数对话框。
     ...((options.pageVisible?.('chat') ?? true) ? [actionEntry('chat-parameters', '聊天参数设置', { page: 'chat', section: chatParametersSection }, ['参数', '系统提示词', '提示词', '随机度', '温度', '最大输出', 'token', '随机种子'])] : []),
   ]

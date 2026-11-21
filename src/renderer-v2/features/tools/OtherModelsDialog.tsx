@@ -83,7 +83,7 @@ export function OtherModelsDialog({ api, tool, config, signedIn, onClose, onSave
   const errorText = typeof error === 'string' ? error : <FailureReason error={error.message} detail={error.detail} target="config" />
   // 「没有别家模型」这句挂在列表下面一直显示；其余的没过（还没读到、还没选）只让「保存」先灰着。
   const listIssue = detected && issue && !choices.some((model) => model !== codexDefault) ? issue : ''
-  return <Dialog open title="Codex 换用别家模型" subtitle="用量从当前账号余额里扣。" width={480} onClose={onClose} busy={Boolean(busy)} dirty={picked} testId="codex-other-models-dialog"
+  return <Dialog open title="Codex 切换模型服务" subtitle="用量从当前账号余额里扣。" width={480} onClose={onClose} busy={Boolean(busy)} dirty={picked} testId="codex-other-models-dialog"
     footer={<><DialogExitButton disabled={Boolean(busy)}>取消</DialogExitButton>{reusable
       ? <Button variant="primary" icon={Save} loading={busy === '保存'} disabled={Boolean(busy) || loading || Boolean(issue)} aria-describedby={listIssue ? statusId : undefined} onClick={() => void save()} testId="tool-save-config">保存</Button>
       : <Button variant="primary" icon={KeyRound} loading={busy === '改用当前账号'} disabled={Boolean(busy) || !onSwitchAccount} onClick={() => void switchAccount()} testId="tool-switch-account">改用当前账号并保存</Button>}</>}>

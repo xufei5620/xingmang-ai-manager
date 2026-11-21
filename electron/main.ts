@@ -28,6 +28,7 @@ import { createAccelerationPreferenceStore } from './acceleration-preference-sto
 import { hasAccelerationProxyRecoveryRecords, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { createAiChatHistoryStore } from './ai-chat-history-store'
+import { createVideoStudioProjectStore } from './video-studio-project-store'
 import { chatTextFileExtensions, createChatTextFileService } from './ai-chat-text-files'
 import { readBoundedFilePrefix } from './bounded-file'
 import { createChatHistoryFlush } from './chat-history-flush'
@@ -2580,6 +2581,8 @@ if (!hasSingleInstanceLock) {
     })
     attachProxyBypassState(() => proxyBypass.active(), () => proxyBypass.siteDirect())
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
+    // 视频的分镜一条一个文件（总单 #79）：以前在界面的 localStorage 里，升级后第一次打开「创作」时抄过来，原来那份不删。
+    const videoStudioProjectStore = createVideoStudioProjectStore({ root: path.join(managerDataDirectory, 'video-projects') })
     // 回复出字时聊天页最多隔两秒才存一次，退出时最后这一截还在界面里：退出前先问它要一次（0.2.24 深查聊天页 C1）。
     // 只问这一页报告过手上有没有事的界面（mainRendererAnswering）：正在重新加载、关掉省内存、崩了的，还有旧回滚界面，
     // 都没人接这一声，问了只会白等到时限。
@@ -2700,6 +2703,7 @@ if (!hasSingleInstanceLock) {
       accountSessionReady,
       accountStartupGate,
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
+      skillArchiveDirectory: path.join(managerDataDirectory, 'skill-archives'),
       announcementImages: createAnnouncementImageReader({ fetch: networkRoutes.announcementImageFetch }),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
@@ -2720,6 +2724,7 @@ if (!hasSingleInstanceLock) {
       videoAssets,
       audioAssets,
       chatHistory: chatHistoryStore,
+      videoStudioProjects: videoStudioProjectStore,
       chatHistoryFlush,
       sessionsService,
       providerSessionsService,
@@ -2835,6 +2840,8 @@ if (!hasSingleInstanceLock) {
       },
       openCanvasWindow: () => canvasController.open(),
       openCanvasAssetLibrary: () => canvasController.openAssetLibrary(),
+      listCanvasProjects: () => canvasController.listProjects(),
+      openCanvasProject: (projectId) => canvasController.openProject(projectId),
       xingmangAiSkill: {
         bundledRoot: bundledXingmangAiSkillRoot,
         userHome: os.homedir(),
@@ -3336,9 +3343,10 @@ if (!hasSingleInstanceLock) {
         if (acceleration?.hasPossibleSession()) runtimeLog.log('info', 'network', 'acceleration.quit.stop', '退出前断开加速、改回网络设置')
         // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。聊天页手上还没交出来的
         // （正在出字的回复、刚打的字）先让它交出来，再等写盘。
+        // 视频的分镜同理：界面听到同一声「要退出了」就把还没发出去的那一次保存发出来（useVideoStudioLibrary.ts），这里等它写完。
         // 开着手机遥控的跟手机说一句「星芒关了」，最多等 1.5 秒（打磨 B8，比 prepareToQuit 那 2 秒的清理预算短）；will-quit 里的 dispose 来不及等网络。
         // 刚复制的密钥还没到 60 秒也现在清掉：剪贴板要异步读回来比对，will-quit 里来不及。
-        await Promise.all([acceleration?.stopAll(), chatHistoryFlush.request().then(() => chatHistoryStore.idle()), codexRemote.farewell(), sensitiveClipboard.flush()])
+        await Promise.all([acceleration?.stopAll(), chatHistoryFlush.request().then(() => Promise.all([chatHistoryStore.idle(), videoStudioProjectStore.idle()])), codexRemote.farewell(), sensitiveClipboard.flush()])
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
       show: showMainWindow,
@@ -3480,6 +3488,7 @@ if (!hasSingleInstanceLock) {
         Promise.resolve().then(() => crashReporter.flush()),
         Promise.resolve().then(() => acceleration?.stopAll()),
         Promise.resolve().then(() => chatHistoryStore.idle()),
+        Promise.resolve().then(() => videoStudioProjectStore.idle()),
         // 视频剪辑的分镜（含刚交出去那一单的请求号）在网页存储里，正常退出才会补写；这里退得急，先让它落盘（KR-4）。
         Promise.resolve().then(() => { if (!mainWindow.isDestroyed()) mainWindow.webContents.session.flushStorageData() }),
       ]).then(() => runtimeLog.idle())

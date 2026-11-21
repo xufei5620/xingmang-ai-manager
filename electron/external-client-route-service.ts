@@ -660,6 +660,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
           buildGatewayMessagesProbe(name, baseUrl, model, menu.apiKey),
           { fetch: serviceOptions.relayFetch, timeoutMs: claudeDesktopModelProbeTimeoutMs },
         )).ok,
+        // 试到一半换了账号、退出了：剩下的不再拿上一个账号的密钥试（总单 #67）。
+        assertCurrent: assertContext,
         add: (models) => queueExternalConfigWork(async () => {
           assertContext()
           // 动文件之前再盘点一次开没开（同换线路）：客户可能是在试型号那几秒里打开的。

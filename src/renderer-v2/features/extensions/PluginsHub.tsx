@@ -1,13 +1,15 @@
 // 「插件」页：精选、外接工具、技能、插件四页合成的一页（扩展合并方案第二版，yoyo 11-20 回「改」），照 GPT 桌面端插件页的
 // 版式套 v4 的颜色和组件。左边一窄栏放「插件」「技能」和「已安装」清单，右边按「常用」「写代码」「Claude 官方」「GPT 官方」
 // 分组列出来，点「+」勾几家一次装好。读、装、卸、启停全走原来那几条（listProviderExtensions、submitMcpInstall、
-// mutateProviderExtension、Codex 自己那几个接口），不加新的通道。合并、分组、每家什么情况的判断在 plugins-hub-model.ts。
+// mutateProviderExtension、Codex 自己那几个接口）；只有技能「从压缩包导入」多一条选压缩包的通道（chooseSkillArchive，总单 Q4 C4）。
+// 合并、分组、每家什么情况的判断在 plugins-hub-model.ts。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Download,
+  FileArchive,
   FileText,
   FolderOpen,
   Lock,
@@ -37,6 +39,7 @@ import { activeProviderIds, type ActiveProviderId } from '../../../../electron/c
 import {
   curatedIcon,
   curatedTags,
+  CuratedRiskDetails,
   curatedVersionText,
   extensionFailureTarget,
   extensionRowState,
@@ -286,6 +289,7 @@ export function PluginsHub({
   const [addRequest, setAddRequest] = useState<(ExtensionAddRequest & { kind: 'mcp' | 'plugin'; provider: Provider; key: number }) | null>(null)
   const [choosingTool, setChoosingTool] = useState(false)
   const [importing, setImporting] = useState(0)
+  const [importFrom, setImportFrom] = useState<'folder' | 'archive'>('folder')
   // 「从所有工具里移除」时哪一家没卸掉：记在那一行下面，别的照卸。
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
   const authCancel = useRef('')
@@ -827,6 +831,7 @@ export function PluginsHub({
             <h2>{entry.name}</h2>
             {publisher && <small>{publisher}</small>}
             {curated && curatedTags(curated) && <div className="v2-curated-tags">{curatedTags(curated)}</div>}
+            {curated && <CuratedRiskDetails item={curated} />}
           </div>
           {addable.length > 0 && (
             <Button variant="primary" icon={Plus} disabled={Boolean(operation.busy)} onClick={() => openInstall(entry)} testId="hub-detail-add">
@@ -893,9 +898,18 @@ export function PluginsHub({
     )
   }
 
+  function openImport(from: 'folder' | 'archive') {
+    operation.clear()
+    setImportFrom(from)
+    setImporting((current) => current + 1)
+  }
+
   const addMenu =
     view === 'skills'
-      ? [{ label: '从文件夹导入', icon: FolderOpen, testId: 'hub-add-skill', onSelect: () => { operation.clear(); setImporting((current) => current + 1) } }]
+      ? [
+          { label: '从文件夹导入', icon: FolderOpen, testId: 'hub-add-skill', onSelect: () => openImport('folder') },
+          { label: '从压缩包导入', icon: FileArchive, testId: 'hub-add-skill-archive', onSelect: () => openImport('archive') },
+        ]
       : [
           { label: '自定义连接', icon: Plug, testId: 'hub-add-mcp', onSelect: () => openAdd('add', 'mcp', defaultProvider) },
           {
@@ -1057,6 +1071,7 @@ export function PluginsHub({
         <HubSkillImportDialog
           key={importing}
           api={api}
+          from={importFrom}
           tools={activeProviderIds.filter((id) => skillImportable[id] === 'ready')}
           importable={skillImportable}
           operation={operation}

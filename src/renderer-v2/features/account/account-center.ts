@@ -75,9 +75,9 @@ export function spendBarHeights(amounts: readonly number[]): number[] {
 
 /** 余额下面那行「还能用多久」，和首页同一个算法（balance-runway），这里只管怎么说。 */
 export function runwayDaysText(days: number): string {
-  if (days > 365) return '按最近用量够用一年以上'
-  if (days < 1) return '按最近用量不到 1 天就会用完'
-  return `按最近用量约还能用 ${days} 天`
+  if (days > 365) return '按近期用量可用一年以上'
+  if (days < 1) return '按近期用量预计不足 1 天'
+  return `按近期用量预计可用 ${days} 天`
 }
 
 export interface SubscriptionOverview {
@@ -352,6 +352,14 @@ export function keyMetaParts(
     currentExpiryText(key.expiredAt, now),
     ...(created ? [`${created}创建`] : []),
   ]
+}
+
+/**
+ * 这一行要不要摆「启用」（总单 Q2）：网页上停用的、到期的、额度用完的都摆。到期和用完的，点了以后主进程
+ * 先看到期时间和额度是不是已经改过，没改就说先改什么。只有星芒账号有；历史账号的后台这里接不上，不摆。
+ */
+export function keyCanEnable(key: Pick<AccountKey, 'status'>, siteId: 'solov' | 'solov-api'): boolean {
+  return siteId !== 'solov-api' && (key.status === 2 || key.status === 3 || key.status === 4)
 }
 
 /**

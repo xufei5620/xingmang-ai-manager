@@ -844,7 +844,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       const result = rewriteManagedCliHooks(provider, providerRoots, { cliHook, claudeStatusLineCommand, addIfMissing: provider === 'grok' })
       const after = managedCliHooksState(provider)
       if (after.stale) throw new Error('提醒设置没修好，原来的设置已备份，可以在「设置 › 备份迁移」里找回')
-      if (cliHook && after.missing) throw new Error('做完提醒和防睡还没补上，先点首页的「补上」准备好运行环境再试')
+      if (cliHook && after.missing) throw new Error('「完成与出错通知」和「运行时防止休眠」尚未启用，请先点击首页的「启用」准备运行环境后重试')
       runtimeLog?.log('info', 'config', 'cli-hooks.repaired', '已把工具里的提醒设置改到这次安装的位置', {
         provider,
         rewritten: Boolean(cliHook),
