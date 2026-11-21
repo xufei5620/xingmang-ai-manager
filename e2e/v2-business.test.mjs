@@ -4118,6 +4118,20 @@ test('the phone remote card says why it cannot be turned on while the manager ru
   }
 })
 
+test('the phone remote card opens on a Windows account that is an administrator by itself, with a reminder under the intro', async () => {
+  const page = await fixture('page=settings&remoteAdminAccount=1&remoteReady=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByTestId('settings-remote-admin-account').getByText('这台电脑登录的 Windows 账号本身就带管理员权限，Codex 在这里改文件、跑命令也都带着管理员权限，手机上回「同意」前看清楚它要做什么。').waitFor()
+    assert.equal(await card.getByTestId('settings-remote-unavailable').count(), 0)
+    assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).isDisabled(), false)
+    assert.equal(await card.getByTestId('settings-remote-workspace').isDisabled(), false)
+  } finally {
+    await page.close()
+  }
+})
+
 test('searching the settings for Feishu finds the phone remote card', async () => {
   const page = await fixture('page=settings')
   try {
