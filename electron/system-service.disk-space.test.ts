@@ -141,7 +141,7 @@ describe('refusing an npm install over a CLI installed another way', () => {
   })
 })
 
-// Mac 验收 R1：首页对认不出来路的 Codex / Grok 给的是「用星芒装一份」，点下去不能再被「不会另装一份」拦回来。
+// Mac 验收 R1：首页对认不出来路的 Codex / Grok 给的是「使用星芒安装」，点下去不能再被「不会另装一份」拦回来。
 describe('installing over a Mac CLI that cannot be recognised', () => {
   function createDarwinFixture(provider: 'codex' | 'grok', resolveCliCommand: () => Promise<never>) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-unrecognized-cli-')))
@@ -209,7 +209,7 @@ describe('installing over a Mac CLI that cannot be recognised', () => {
     const error = await fixture.service.installCli('grok', fixture.target).catch((reason: unknown) => reason)
 
     expect(String(error)).toContain('这台电脑上已经有一份 Grok CLI，不是用星芒装的。为了不弄坏它，已停止安装。')
-    expect(String(error)).toContain('用星芒装一份')
+    expect(String(error)).toContain('使用星芒安装')
     expect(fixture.readDiskSpace).not.toHaveBeenCalled()
     expect(fixture.target.send).not.toHaveBeenCalled()
   })

@@ -3447,7 +3447,7 @@ describe('registerIpcHandlers', () => {
     expect(service.saveConfig).not.toHaveBeenCalled()
   })
 
-  // 首页「配置文件坏了」的「修好它」和配置里「重置为初始状态」选官方账号都走这条：
+  // 首页「配置文件坏了」的「立即修复」和配置里「重置为初始状态」选官方账号都走这条：
   // 答应过先备份，备份页里就得找得回来（以前只留配置旁边会被挤掉的 .bak）。
   it('keeps a restorable backup before an official reset and refuses to reset without one', async () => {
     const service = serviceStub()
@@ -3471,7 +3471,7 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), 'codex', 'reset')).rejects.toThrow('没能先备份当前配置，这次没有重置')
     expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
 
-    // 「修好它」（repair）同样先备份，备份不成就不动手。
+    // 「立即修复」（repair）同样先备份，备份不成就不动手。
     create.mockClear()
     await handler(trustedEvent(), 'codex', 'repair')
     expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
@@ -7955,7 +7955,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         )
       })
 
-      // 来源没确认时配置窗口里只有「改用当前账号」：工具读不了的配置照原文件改只会报错，改走「修好它」那一种：
+      // 来源没确认时配置窗口里只有「改用当前账号」：工具读不了的配置照原文件改只会报错，改走「立即修复」那一种：
       // 读不了的那份重建，Codex 只坏了 auth.json 时 config.toml 里客户自己的设置照留（X-1）。
       it('repairs a config the tool cannot read when switching it to the current account', async () => {
         for (const [current, mode] of [
@@ -9678,7 +9678,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.provisionCliKey).not.toHaveBeenCalled()
       expect(service.saveConfig).not.toHaveBeenCalled()
 
-      // 首页「修好它」（repair）也是先备份再写，模式原样交给保存。
+      // 首页「立即修复」（repair）也是先备份再写，模式原样交给保存。
       create.mockClear()
       await expect(handler(trustedEvent(), { ...input, mode: 'repair' })).resolves.toEqual({ configured: ['codex'], failed: [] })
       expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)

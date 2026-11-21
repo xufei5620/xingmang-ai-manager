@@ -241,7 +241,7 @@ describe('VideoStudioPage', () => {
     const markup = [render('ready', fresh), render('ready', project), render('ready', done)].join('')
     // 这几个只在确认框、生成中、报余额不够时出现，首屏渲染不到；「生成全部 … 段」里的数是现算的。
     // 后面四个在工作台外面：侧栏的「创作」、左上角的「新建」、起始页的卡、顶栏的「删掉这一条」，由 CreatePage 的用例钉住。
-    const elsewhere = ['开始生成', '停止生成', '去充值', '创作', '新建', '做一条带字幕的短视频', '删掉这一条']
+    const elsewhere = ['开始生成', '停止生成', '前往充值', '创作', '新建', '做一条带字幕的短视频', '删掉这一条']
     for (const label of quoted.filter((entry) => !elsewhere.includes(entry))) expect(markup, label).toContain(label.replace(' … ', ' 2 '))
     expect(render('unsupported')).toContain(topic?.steps[0].extra?.[0].detail ?? '-')
   })

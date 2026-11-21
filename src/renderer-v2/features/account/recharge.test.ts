@@ -194,9 +194,9 @@ describe('recharge', () => {
   })
 
   it('compares the balance with a dollar price only and says what is left or missing', () => {
-    expect(balancePurchaseLine(12, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $12.00，扣完剩 $2.00', short: false })
-    expect(balancePurchaseLine(8.5, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $8.50，还差 $1.50', short: true })
-    expect(balancePurchaseLine(10, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $10.00，扣完剩 $0.00', short: false })
+    expect(balancePurchaseLine(12, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $12.00，扣除后剩余 $2.00', short: false })
+    expect(balancePurchaseLine(8.5, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $8.50，尚差 $1.50', short: true })
+    expect(balancePurchaseLine(10, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $10.00，扣除后剩余 $0.00', short: false })
     expect(balancePurchaseLine(100, { priceAmount: 68, currency: 'CNY' })).toEqual({ text: null, short: false })
     expect(balancePurchaseLine(null, { priceAmount: 10, currency: 'USD' })).toEqual({ text: null, short: false })
   })

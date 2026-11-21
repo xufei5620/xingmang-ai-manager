@@ -147,7 +147,7 @@ export interface HomeProps {
   bootstrap?: (AccountBootstrapProgress & { scope: string; result?: AccountBootstrapResult; finishedAt?: number; error?: string; quiet?: boolean }) | null
   onBootstrapRetry?(): void
   /**
-   * 「账号未开通」只有客服能开（主路卡点 F5）：横幅加「找客服」，卡片主按钮也换成它，都打开帮助框里的客服二维码；
+   * 「账号未开通」只有客服能开（主路卡点 F5）：横幅加「联系客服」，卡片主按钮也换成它，都打开帮助框里的客服二维码；
    * 缺省 = 不给那颗按钮、主按钮照旧「确认连接」（旧行为）。
    */
   onHelp?(): void
@@ -197,14 +197,14 @@ export function pickFirstRunTool(installed: ToolPresentation[], jobs: Record<str
 }
 
 /**
- * 「最近」里这一家的对话给不给「接着聊」。它点下去走的是同一个「打开」，没装的那家那一行只有
- * 「先安装」，点「接着聊」只会弹「工具尚未安装，请先完成准备。」（第四十一批 A）：卸掉的工具旧记录还在，
+ * 「最近」里这一家的对话给不给「继续对话」。它点下去走的是同一个「打开」，没装的那家那一行只有
+ * 「先安装」，点「继续对话」只会弹「工具尚未安装，请先完成准备。」（第四十一批 A）：卸掉的工具旧记录还在，
  * 只装了 Codex 桌面端的人在桌面端里聊过的多半也记在 Codex 名下。所以按工具 id 找，不按 provider：
  * 桌面端装着不等于 Codex CLI 装着。检测结果还没回来时照旧摆着、灰着等；检测失败的不当没装（A4），
  * 点了照旧说失败的原因。
  */
 export function recentResumeOffered(tools: readonly ToolPresentation[], provider: ProviderId): boolean {
-  // 已下线的工具（Gemini，yoyo 2026-10-14）首页不再替它打开：它的旧记录不给「接着聊」。
+  // 已下线的工具（Gemini，yoyo 2026-10-14）首页不再替它打开：它的旧记录不给「继续对话」。
   if (!isActiveProviderId(provider)) return false
   const tool = tools.find((entry) => entry.id === provider)
   return tool === undefined || tool.status.installed || tool.error !== null
@@ -222,7 +222,7 @@ const unconfiguredDetail = '已安装，尚未关联当前账号'
 
 /**
  * Mac 上找到的 Codex / Grok 不是星芒装的、星芒也认不出来路（Mac 验收 R1）：以前卡上照样一颗「打开」，
- * 点了只说没打开成。现在写清楚为什么，旁边一颗「用星芒装一份」。
+ * 点了只说没打开成。现在写清楚为什么，旁边一颗「使用星芒安装」。
  */
 const unrecognizedInstallDetail = '非星芒安装，无法在星芒中打开'
 
@@ -238,14 +238,14 @@ const ccSwitchDetails: Record<'proxy' | 'provider', string> = {
 
 /**
  * Codex 老配置把当前账号写在它的内置名下：看着连好了，打开却连不上。一句话说清会
- * 怎样，旁边「修好它」走和「改用当前账号」同一条路（先备份、再写、再自检）。
+ * 怎样，旁边「立即修复」走和「改用当前账号」同一条路（先备份、再写、再自检）。
  */
 const codexShadowedDetail = '配置中有一项 Codex 无法识别，打开后将无法连接'
 
 /**
  * 本软件写进工具里的提醒设置（做完、出错时弹通知，干活时不让电脑睡）指向了旧位置：
  * 卸载后换了文件夹重装、挪了软件、换装了 Node.js 都会这样。工具照样能用，只是每一轮
- * 都多报一行错。「修好它」只改这几行，先备份。客户不知道「提醒设置」是什么，按它干的事叫。
+ * 都多报一行错。「立即修复」只改这几行，先备份。客户不知道「提醒设置」是什么，按它干的事叫。
  */
 const cliHooksStaleDetail = '「完成通知」设置指向旧位置，每次运行将多出一条报错'
 
@@ -277,7 +277,7 @@ export function cliHooksAutoRepairedText(providers: readonly ProviderId[]): stri
   return `已自动修复 ${spacedName(names.join('、'))}的「完成通知」设置，原设置已备份至「设置 › 备份迁移」。`
 }
 /**
- * Windows 上只装 Grok 时没有运行环境，做完提醒和防睡写不上（#695 留下的）。没有运行环境时「补上」
+ * Windows 上只装 Grok 时没有运行环境，做完提醒和防睡写不上（#695 留下的）。没有运行环境时「启用」
  * 先去准备它，装好后主进程自己补；已经有了（客户自己装的）就直接补。
  */
 const cliHooksMissingWithoutRuntimeDetail = '「完成与出错通知」和「运行时防止休眠」尚未启用，点击「启用」将先准备运行环境'
@@ -511,9 +511,9 @@ export function Home(props: HomeProps) {
   const [recent, setRecent] = useState<MultiProviderSessionPage | null>(null)
   const [recentError, setRecentError] = useState('')
   const [recentAttempt, setRecentAttempt] = useState(0)
-  // 「接着聊」点下去以后正在核对的那一条（见 resumeRecent）；null = 没在核对。
+  // 「继续对话」点下去以后正在核对的那一条（见 resumeRecent）；null = 没在核对。
   const [resumeChecking, setResumeChecking] = useState<string | null>(null)
-  // 上一次「接着聊」换成了同一文件夹更新的那条、没打开时说的那句（#1111 第 3 条）；再点「接着聊」就清掉。
+  // 上一次「继续对话」换成了同一文件夹更新的那条、没打开时说的那句（#1111 第 3 条）；再点「继续对话」就清掉。
   const [resumeReplaced, setResumeReplaced] = useState('')
   // 卡片「…」里「接着之前的对话…」开着的那个工具；null = 窗口没开。
   const [conversationsTool, setConversationsTool] = useState<ToolId | null>(null)
@@ -590,7 +590,7 @@ export function Home(props: HomeProps) {
     catch (cause) { if (active.current) toast.show(errorMessage(cause, '无法打开该记录所在的文件夹。'), 'warn') }
   }
   /**
-   * 「接着聊」点下去先对一次「最近」（已知4）。窗口回到前面时的那次重读是异步的：从终端直接点回星芒，
+   * 「继续对话」点下去先对一次「最近」（已知4）。窗口回到前面时的那次重读是异步的：从终端直接点回星芒，
    * 这一下用的还是手上的旧列表，点同一文件夹里更早那条，Claude Code、Grok CLI 接上的
    * 却是刚聊的那条。所以先真去读一份（不认一分钟的缓存，它可能是在终端里聊之前读的）：点的这条已经
    * 不是它那个文件夹最近的了，就换上新列表、这次不打开，按钮自己挪到该挂的那条上。读不到就照旧打开。
@@ -623,7 +623,7 @@ export function Home(props: HomeProps) {
     return () => { current = false }
   }, [props.api, recentAttempt, props.recentRevision])
   // 首页一直开着就不会重新挂载：从这里打开工具、在终端里聊完再切回来，「接着上次」和大卡上
-  // 「上次 …」还是打开前读的那份。刚聊的那条不在，「接着聊」还挂在同一文件夹更早的那条上，
+  // 「上次 …」还是打开前读的那份。刚聊的那条不在，「继续对话」还挂在同一文件夹更早的那条上，
   // 而 Claude Code、Grok CLI 续接是按文件夹找最近一条（#292），点下去接上的是刚聊的那条。
   // 所以窗口回到前面时再读一次：一分钟内又没打开过工具，toolsApi 给的还是原来那一份，不读盘，页面也不变。
   useEffect(() => {
@@ -743,12 +743,12 @@ export function Home(props: HomeProps) {
     if ([tool.id, `launch:${tool.id}`, `switch:${tool.id}`, `repair-hooks:${tool.id}`, `repair-config:${tool.provider}`].some((key) => jobs[key])) return false
     return !accountKeyChangePending({ signedIn: account !== null, restoring: props.accountRestoring === true, bootstrap: props.bootstrap ?? null }, tool.provider)
   }
-  // 「接着聊」点下去走的是同一个「打开」，跟着它那一行走。
+  // 「继续对话」点下去走的是同一个「打开」，跟着它那一行走。
   function resumeReadyBeforeScan(provider: ProviderId): boolean {
     const tool = tools.find((entry) => entry.id === provider)
     return tool !== undefined && launchReadyBeforeScan(tool)
   }
-  // 「接着聊」与记录页同一条规则(#292):续接参数是 CLI 按工作目录找最近一条,
+  // 「继续对话」与记录页同一条规则(#292):续接参数是 CLI 按工作目录找最近一条,
   // 不按会话 id 挑,所以按钮只能长在每个(工具 × 目录)组合最近的那条上,否则
   // 用户点第三条、接上的却是第一条。判断用的是整份最近记录(api.recent 一次取
   // 60 条),不是卡片上显示的那 3 条。
@@ -787,7 +787,7 @@ export function Home(props: HomeProps) {
     const shadowed = Boolean(config) && settled && codexNeedsRepair(config!, tool.provider)
     // 修完就能用的，「打开」照旧给：点下去先修再打开（App 的 launch），不让人先去配置里绕一圈。
     const repairLaunch = shadowed && readyOnceRepaired(config!, tool.provider)
-    // 认不出来路的那份（R1）星芒不替它跑：「打开」和挑文件夹那几项都不给，卡上换成「用星芒装一份」。
+    // 认不出来路的那份（R1）星芒不替它跑：「打开」和挑文件夹那几项都不给，卡上换成「使用星芒安装」。
     const unrecognized = !tool.error && isUnrecognizedInstall(tool.status)
     const openable = (tool.configured || repairLaunch) && !unrecognized
     const hooksStale = Boolean(config) && settled && cliHooksNeedRepair(config!)
@@ -810,7 +810,7 @@ export function Home(props: HomeProps) {
         : bootstrapBusy && !tool.configured ? 'configuring' as const
         : tool.configured ? 'ready' as const : notEnabled ? 'notEnabled' as const : 'unconfigured' as const
     // 用当前账号连着的工具在余额 $0 时打开了也用不了，发第一句话就报错，而卡上还是一颗深色「打开」，
-    // 跟上面「余额是 $0」那条打架（主路卡点 F4）。角标换「余额为零」、主按钮换「去充值」，「打开」照样能点。
+    // 跟上面「余额是 $0」那条打架（主路卡点 F4）。角标换「余额为零」、主按钮换「前往充值」，「打开」照样能点。
     // status 不改：提醒设置没写上那些「已配好」底下的判断照旧。官方账号、自己填的密钥不扣这份余额，不变。
     const zeroBalance = walletEmpty && status === 'ready' && tool.source === 'account'
     // 「打开」以前每次都要重新选一遍目录。会话记录里本来就存着用过的目录，拿它当「打开」的默认值，
@@ -832,9 +832,9 @@ export function Home(props: HomeProps) {
     const waitingForScan = loading && !launchReadyBeforeScan(tool)
     // 扫描结束后仍可能在写入和复核新线路，旧配置不能在这段时间被工具读走。
     const waitingForAccount = openable && launchWaitingForAccount(tool.provider)
-    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : unrecognized ? '用星芒装一份' : configUnavailable ? '重新配置'
+    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : unrecognized ? '使用星芒安装' : configUnavailable ? '重新配置'
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? installFailure ? '重试' : manualInstall ? '安装指南' : '安装'
-      : openable ? '打开' : status === 'notEnabled' && props.onHelp ? '找客服' : '确认连接'
+      : openable ? '打开' : status === 'notEnabled' && props.onHelp ? '联系客服' : '确认连接'
     const primary = () => unrecognized ? props.onInstall(tool.id) : configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
       // 账号没开通的，「确认连接」点进去是配置框，帮不上忙：换成去找客服（主路卡点 F5）。
       : !openable ? status === 'notEnabled' && props.onHelp ? props.onHelp() : props.onConfigure(tool.id)
@@ -902,7 +902,7 @@ export function Home(props: HomeProps) {
     const externalManaged = updatesOutsideApp(tool.id, tool.status)
     // 配置那一块没读到时来源是未知的，不给切换，免得在一份没读到的配置上做决定。
     // 账号还在恢复时来源同样没判定（见 ownershipAwaitingAccount），等恢复完再给。
-    // Codex 读不了的文件，切换只会在合并那一步报错，出路是卡上的「修好它」。
+    // Codex 读不了的文件，切换只会在合并那一步报错，出路是卡上的「立即修复」。
     const switchTarget = state.configUnavailable || state.broken || tool.error || state.ownershipPending ? null : accountSwitchTarget(tool)
     // 被拦着的那几种（配置坏了、被改过……）和余额为零，卡上只放修的那颗按钮，还能用的话「打开」挪进这里。
     const blockedOpen = state.openable && (state.zeroBalance || ['configBroken', 'configChanged', 'ccSwitch', 'otherSiteKey'].includes(state.status))
@@ -965,10 +965,10 @@ export function Home(props: HomeProps) {
     if (state.job || state.unrecognized) return null
     const repairBusy = Boolean(state.repairJob)
     if (state.status === 'codexShadowed' && props.onSwitchAccount) {
-      return <button type="button" className="xm-tool-card-link" title="修改前将自动备份原设置" onClick={() => props.onSwitchAccount?.(tool.id, 'account')} data-testid={`tool-${tool.id}-repair-codex`}><span>修好它</span></button>
+      return <button type="button" className="xm-tool-card-link" title="修改前将自动备份原设置" onClick={() => props.onSwitchAccount?.(tool.id, 'account')} data-testid={`tool-${tool.id}-repair-codex`}><span>立即修复</span></button>
     }
     if (state.status === 'cliHooksStale' && props.onRepairHooks) {
-      return <button type="button" className="xm-tool-card-link" title="修改前将自动备份原设置" disabled={repairBusy} onClick={() => props.onRepairHooks?.(tool.id)} data-testid={`tool-${tool.id}-repair-hooks`}><span>修好它</span></button>
+      return <button type="button" className="xm-tool-card-link" title="修改前将自动备份原设置" disabled={repairBusy} onClick={() => props.onRepairHooks?.(tool.id)} data-testid={`tool-${tool.id}-repair-hooks`}><span>立即修复</span></button>
     }
     if (state.status === 'otherAccountKey' && props.onSwitchAccount) {
       return <button type="button" className="xm-tool-card-link" onClick={() => props.onSwitchAccount?.(tool.id, 'account')} data-testid={`tool-${tool.id}-use-account`}><span>{useAccountLabel}</span></button>
@@ -1007,7 +1007,7 @@ export function Home(props: HomeProps) {
     const statusPill = <Pill tone={statusTone} dot><span title={statusText}>{statusText}</span></Pill>
     const repairBusy = Boolean(state.repairJob)
     const fixButton = status === 'configBroken' && props.onRepairConfig
-      ? <Button variant="secondary" size="sm" loading={repairBusy} title="修改前将自动备份原设置" onClick={() => props.onRepairConfig?.(tool.id)} testId={`tool-${tool.id}-repair-config`}>{repairBusy ? '正在修复' : '修好它'}</Button>
+      ? <Button variant="secondary" size="sm" loading={repairBusy} title="修改前将自动备份原设置" onClick={() => props.onRepairConfig?.(tool.id)} testId={`tool-${tool.id}-repair-config`}>{repairBusy ? '正在修复' : '立即修复'}</Button>
       : status === 'configChanged' && props.onRewriteKey
         // 写密钥那一轮在跑（点了这颗、或别处触发的）时转圈，不让再点。
         ? <Button variant="secondary" size="sm" loading={bootstrapBusy} disabled={bootstrapBusy} onClick={() => props.onRewriteKey?.(tool.id)} testId={`tool-${tool.id}-rewrite-key`}>{bootstrapBusy ? '正在写入' : '重新写入密钥'}</Button>
@@ -1042,12 +1042,12 @@ export function Home(props: HomeProps) {
       : installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
       : state.installFailure && props.onShowInstallFailure ? <Button variant="ghost" size="sm" onClick={() => props.onShowInstallFailure?.(tool.id)} testId={`tool-${tool.id}-why`}>查看原因</Button>
       : state.updateFailure && props.onShowDesktopUpdateFailure ? <Button variant="ghost" size="sm" onClick={() => props.onShowDesktopUpdateFailure?.('codexDesktop')} testId={`tool-${tool.id}-why`}>查看原因</Button>
-      // 认不出来路的那份（R1）跑不起来，切账号的来源牌帮不上忙，把地方让给「用星芒装一份」。
+      // 认不出来路的那份（R1）跑不起来，切账号的来源牌帮不上忙，把地方让给「使用星芒安装」。
       : state.unrecognized ? null
       : status === 'missing' ? <span className="v2-tool-card-off">{statusText}</span>
       : (status === 'ready' && !state.zeroBalance) || status === 'official' ? sourceMenu(tool, state)
         : statusPill
-    // 检测失败时按钮是「重新检测」，不配下载箭头（#1132）。「用星芒装一份」也不配：卡上放不下箭头加六个字。
+    // 检测失败时按钮是「重新检测」，不配下载箭头（#1132）。「使用星芒安装」也不配：卡上放不下箭头加六个字。
     const primaryButton = <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(state.launchJob)}
       disabled={state.primaryDisabled}
       title={state.lastWorkspace ? `在 ${state.lastWorkspace.path} 打开` : undefined}
@@ -1056,7 +1056,7 @@ export function Home(props: HomeProps) {
     // 卡底下放不下两颗按钮还不挤掉角标（一张卡约 235 宽）：同被拦着的那几种，「打开」在「…」第一项。
     // 从那里点了「打开」，打开的那一会儿照旧是转圈的「打开中」。
     const rechargeButton = state.zeroBalance && !state.job
-      ? <Button size="sm" variant="primary" onClick={() => props.onNavigate('account', 'recharge')} testId={`tool-${tool.id}-recharge`}>去充值</Button> : null
+      ? <Button size="sm" variant="primary" onClick={() => props.onNavigate('account', 'recharge')} testId={`tool-${tool.id}-recharge`}>前往充值</Button> : null
     const actions = installJob ? installJob.cancellable
       ? <Button variant="ghost" size="sm" icon={X} loading={installJob.cancelling} onClick={() => props.onCancelInstall(tool.id)} testId={`tool-${tool.id}-cancel`}>{installJob.cancelling ? '正在停止' : '取消'}</Button>
       : null
@@ -1171,8 +1171,8 @@ export function Home(props: HomeProps) {
       <BrandIcon tool={heroTool.id} size={52} variant="tile" />
       <div className="v2-home-hero-copy"><h2>{name}</h2><p title={state.lastWorkspace ? `在 ${state.lastWorkspace.path} 打开` : undefined}>{sub}</p>
         <div className="v2-home-hero-actions">
-          {/* 余额为零时大卡地方够：「去充值」当主按钮排第一，「打开」退成旁边的次按钮，照样能点。 */}
-          {state.zeroBalance && <Button variant="primary" icon={Zap} onClick={() => props.onNavigate('account', 'recharge')} testId="home-hero-recharge">去充值</Button>}
+          {/* 余额为零时大卡地方够：「前往充值」当主按钮排第一，「打开」退成旁边的次按钮，照样能点。 */}
+          {state.zeroBalance && <Button variant="primary" icon={Zap} onClick={() => props.onNavigate('account', 'recharge')} testId="home-hero-recharge">前往充值</Button>}
           {opens
             ? <Button variant={state.zeroBalance ? 'secondary' : 'primary'} icon={Play} loading={Boolean(state.launchJob)} disabled={state.primaryDisabled} title={state.lastWorkspace ? `在 ${state.lastWorkspace.path} 打开` : undefined} onClick={state.primary} testId="home-hero-open"
               kbd={shortcut > 0 ? os === 'mac' ? `⌘${shortcut}` : `Ctrl ${shortcut}` : undefined}>{`打开 ${name}`}</Button>
@@ -1212,7 +1212,7 @@ export function Home(props: HomeProps) {
         {resumable.has(session.id) && !session.archived && offered && <Button size="xs" variant="ghost" icon={Play} loading={resumeChecking === session.id}
           disabled={(loading && !resumeReadyBeforeScan(session.provider)) || launchWaitingForAccount(session.provider) || launchBusy || resumeChecking !== null || session.cwdExists === false}
           onClick={() => void resumeRecent(session)}
-          title={recentResumeHint(session)} testId={`home-recent-resume-${session.id}`}>接着聊</Button>}
+          title={recentResumeHint(session)} testId={`home-recent-resume-${session.id}`}>继续对话</Button>}
         {needsInstall && tool && <Button size="xs" variant="ghost" icon={Download} disabled={Boolean(jobs[tool.id]) || loading} title={`请先安装 ${toolName}`}
           onClick={() => props.onInstall(tool.id)} testId={`home-recent-install-${session.id}`}>先安装</Button>}
         {Boolean(session.cwd) && <Button size="xs" variant="ghost" icon={FolderOpen} disabled={session.cwdExists === false}
@@ -1234,12 +1234,12 @@ export function Home(props: HomeProps) {
     // 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。证书被换掉的那句叫客户点它，
     // 没写成的只是没装的工具时 failed、warnings 都是空的，按钮照样要给。
     const retryWanted = Boolean(props.onBootstrapRetry) && (bootstrapFailed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || bootstrapWarnings.length > 0 || (bootstrapResult.networkBlocked && bootstrapResult.networkBlockedByCertificate))
-    // 账号没开通的只有客服能开（主路卡点 F5）：那句后面给「找客服」，开帮助框里的客服二维码；两种失败都有就两颗都给。
+    // 账号没开通的只有客服能开（主路卡点 F5）：那句后面给「联系客服」，开帮助框里的客服二维码；两种失败都有就两颗都给。
     const supportWanted = Boolean(props.onHelp) && bootstrapFailed.some((entry) => isAccountNotEnabledFailure(entry.message))
     alerts.push(<HomeNotice key="bootstrap-result" tone="warn" role="status" testId="home-bootstrap-result" icon={<TriangleAlert size={15} aria-hidden="true" />}
       action={retryWanted || supportWanted ? <>
         {retryWanted && <Button size="xs" variant="secondary" onClick={props.onBootstrapRetry}>重新同步</Button>}
-        {supportWanted && <Button size="xs" variant="secondary" onClick={props.onHelp} testId="home-bootstrap-support">找客服</Button>}
+        {supportWanted && <Button size="xs" variant="secondary" onClick={props.onHelp} testId="home-bootstrap-support">联系客服</Button>}
       </> : undefined}>
       {bootstrapResult.networkBlocked ? networkBlockedNotice(bootstrapResult) : [configuredText, bootstrapFailed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；'), bootstrapWarnings.join('；')].filter(Boolean).join(' ')}
     </HomeNotice>)
@@ -1263,7 +1263,7 @@ export function Home(props: HomeProps) {
   }
   if (moneyNotice) {
     statusNotices.push(<HomeNotice key="money" tone="warn" testId={moneyNotice.renew && subscription ? 'home-subscription-warning' : 'home-low-balance'} icon={<TriangleAlert size={15} aria-hidden="true" />}
-      action={<Button size="xs" variant="secondary" onClick={() => props.onNavigate('account', 'recharge')}>{moneyNotice.renew ? '去续费' : '去充值'}</Button>}>{moneyNotice.text}</HomeNotice>)
+      action={<Button size="xs" variant="secondary" onClick={() => props.onNavigate('account', 'recharge')}>{moneyNotice.renew ? '去续费' : '前往充值'}</Button>}>{moneyNotice.text}</HomeNotice>)
   }
   if (routeTexts.quiet) statusNotices.push(<HomeNotice key="route-quiet" testId="home-route-server-switching" icon={<Info size={15} aria-hidden="true" />}>{routeTexts.quiet}</HomeNotice>)
   if (routeTexts.hijack) statusNotices.push(<HomeNotice key="route-hijack" testId="home-route-hijack" icon={<Info size={15} aria-hidden="true" />}>{routeTexts.hijack}</HomeNotice>)
@@ -1302,7 +1302,7 @@ export function Home(props: HomeProps) {
     : offline ? '网络未连接，已安装的工具仍可正常使用。'
     : configFailure || !snapshot ? undefined
     : issueNames.length ? `${issueNames.join('，')}，请在下方卡片中处理。`
-    : unrecognizedNames.length ? `${spacedName(unrecognizedNames.join('、'))}非星芒安装，无法在星芒中打开，请点击卡片上的「用星芒装一份」。`
+    : unrecognizedNames.length ? `${spacedName(unrecognizedNames.join('、'))}非星芒安装，无法在星芒中打开，请点击卡片上的「使用星芒安装」。`
     : unconnected.length ? `${spacedName(unconnected.join('、'))}尚未关联当前账号。`
     // 检测失败的卡不算装着（installed 为假），不先拦下来就会落到「还没装工具」或「都配好了」，跟下面红着的卡对不上（D12）。
     : undetectedCount > 0 ? `${undetectedCount} 个工具检测失败，请点击卡片上的「重新检测」。`

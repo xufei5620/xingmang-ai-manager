@@ -30,7 +30,7 @@ import {
 } from './windows-processor'
 
 /**
- * 客户点了「换成新版 Node.js」（公司电脑的证书要 22.19 / 24.6 以上才认）时，已经装着的
+ * 客户点了「更新 Node.js」（公司电脑的证书要 22.19 / 24.6 以上才认）时，已经装着的
  * Node.js 即使够装工具也要照样换。Windows 上换：那边装的是官方安装包，会接替
  * Program Files 里原来那份；Linux 上也换：本软件代下的那份排在 PATH 最前
  * （linux-platform.ts），装上就是它。Mac 上代下的那份排在 PATH 最后，客户自己的旧版
@@ -299,7 +299,7 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
       ? installNodeRuntimeOperation(target, request)
       : withDownloadAcceleration(null, () => installNodeRuntimeOperation(target, request)))
       .then(async (result) => {
-        // 等补完再回，首页随后那次刷新就不再显示「补上」。它自己兜住所有错误，不影响装运行环境的结果。
+        // 等补完再回，首页随后那次刷新就不再显示「启用」。它自己兜住所有错误，不影响装运行环境的结果。
         if (platform === 'win32') await addMissingGrokHooks('runtime-installed')
         return result
       })

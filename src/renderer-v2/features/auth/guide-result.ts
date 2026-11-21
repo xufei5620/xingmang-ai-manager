@@ -102,7 +102,7 @@ function connectionResult(input: GuideSetupInput): { row: GuideResultRow; billin
     // 余额是 $0 时打开了也用不了，「设置已读到」后面不再叫人去打开（D47，新手流程 N6）。
     const detail = switched?.target === 'account'
       ? switched.verified ? '切换时已完成连接测试，连接正常。' : '已修改，但连接测试未通过，原因如下。'
-      : !readiness.connected ? '还没设好，点「去连好」保存一次。'
+      : !readiness.connected ? '尚未设置，请点击「前往连接」保存。'
         : signedIn ? input.walletEmpty ? '已读取设置。' : '已读取设置，请打开工具验证。' : '已读取设置，登录后可核对是否为当前账号。'
     const verified = switched?.target === 'account' && switched.verified
     return {

@@ -316,7 +316,7 @@ describe('announcement reminders', () => {
     expect(h.controller.notify('announcement', 'promo:notice-0a1b2c3d')).toBe('requested')
     expect(h.runtime.create).toHaveBeenLastCalledWith({
       title: '有新的充值活动',
-      body: '当前账号有一个充值活动，回到星芒首页看看，点「去充值」就能参加。',
+      body: '当前账号有一个充值活动，回到星芒首页看看，点「前往充值」就能参加。',
       silent: true,
     })
     expect(h.controller.notify('announcement', 'promo:notice-0a1b2c3d')).toBe('duplicate')

@@ -58,7 +58,7 @@ const transcriptPreviewCount = 2
 type SessionToolFilter = Provider | 'all'
 /**
  * 工具按钮上的数。列表那一份已经按工具筛过、按搜索词滤过，数不出别的工具有几条，
- * 所以用不带筛选的那份（定「接着聊」用的最新 100 条）的统计。已下线的工具不算进「全部」。
+ * 所以用不带筛选的那份（定「继续对话」用的最新 100 条）的统计。已下线的工具不算进「全部」。
  * 还没读到（或读不到）时返回 null，按钮上就不写数，免得像是真的一条没有。
  */
 export function sessionToolCounts(
@@ -133,13 +133,13 @@ export function SessionsPage({
   /** 一条记录都没有时「去打开工具」：回首页「你的工具」。省略 = 不放这颗按钮。 */
   onOpenTools?: () => void
   /**
-   * 「接着聊」真打开之前，先过首页「打开」那几道关：核对默认模型、没连好账号先去连、
+   * 「继续对话」真打开之前，先过首页「打开」那几道关：核对默认模型、没连好账号先去连、
    * Codex 老配置先修。过不了的原因照常抛出来，挂在页顶；返回 false = 不往下走（问话框里
    * 关掉了，或者中途换了账号）。省略 = 不检查（旧行为）。
    */
   beforeResume?: (provider: Provider) => Promise<boolean>
   /**
-   * 装好的命令行工具：没装的那家「接着聊」按不动，说一句要先装好。
+   * 装好的命令行工具：没装的那家「继续对话」按不动，说一句要先装好。
    * 缺省 = 还没检测完，不因此置灰（旧行为）。
    */
   installedProviders?: readonly string[]
@@ -184,7 +184,7 @@ export function SessionsPage({
     listScanned.current = false
     return resource.reload()
   }
-  // 「接着聊」只能出现在每个(工具 × 目录)组合最近的那一条上,而当前这一页是
+  // 「继续对话」只能出现在每个(工具 × 目录)组合最近的那一条上,而当前这一页是
   // 过滤加分页之后的切片,判断不出全局最近。所以另取一份不带过滤的最新记录来
   // 定这件事,上限就是主进程允许的一页最大条数;更老的组合不给按钮(宁可少给)。
   const latestLoad = useCallback(
@@ -212,10 +212,10 @@ export function SessionsPage({
   )
   const detailResource = useResource(detailLoad)
   const detail = detailResource.data
-  // 去过的页面只藏不卸：在终端里聊完回来，这一页还是第一次进来时那份，刚聊的那条不在，「接着聊」还挂在
+  // 去过的页面只藏不卸：在终端里聊完回来，这一页还是第一次进来时那份，刚聊的那条不在，「继续对话」还挂在
   // 同一文件夹更早那条上；Claude Code、Grok CLI 按文件夹接最近一条（#292），点下去接上的是刚聊的
   // 那条。所以再显示时、显示着窗口又回到前面时，两份列表连同开着的详情一起重读，先摆着旧的、读回来再换。
-  // 窗口那一下离上次读不到 30 秒就不读；本页「接着聊」打开了终端就清零，回来头一次切回窗口一定重读。
+  // 窗口那一下离上次读不到 30 秒就不读；本页「继续对话」打开了终端就清零，回来头一次切回窗口一定重读。
   const lastRead = useRef(Number.NEGATIVE_INFINITY)
   const reloadRecords = () => {
     lastRead.current = performance.now()
@@ -310,7 +310,7 @@ export function SessionsPage({
     )
   }
   /**
-   * 「接着聊」点下去先读一份最新的对一次（已知4，同首页 resumeRecent）：窗口回到前面时的那次重读是
+   * 「继续对话」点下去先读一份最新的对一次（已知4，同首页 resumeRecent）：窗口回到前面时的那次重读是
    * 异步的，从终端直接点回来，这一下用的还是旧列表。点的这条已经不是它那个文件夹最近的了，就换上新列表、
    * 这次不打开，按钮自己挪到该挂的那条上。返回 false = 不打开；读不到就照旧打开。
    */
@@ -335,7 +335,7 @@ export function SessionsPage({
     // 列表里本来就不收已下线工具的记录；万一漏进来一条，也不替它打开。
     if (!resumable.has(session.id) || session.archived || session.cwdExists === false || !isProvider(provider))
       return
-    // 「…」里的「接着聊」不置灰，点了说清楚为什么接不上；行上和详情里的按钮是灰的，悬停有同一句。
+    // 「…」里的「继续对话」不置灰，点了说清楚为什么接不上；行上和详情里的按钮是灰的，悬停有同一句。
     if (notInstalled(session)) {
       toast.show(`要先装好 ${providerName(provider)} 才能接着聊`, 'warn')
       return
@@ -345,7 +345,7 @@ export function SessionsPage({
       async () => {
         // 先对一次再过下面那几道关：问完话再说「这次不打开」，客户等于白答了一遍。
         if (resumeNeedsRecheck(session) && !(await recheckResume(session))) return null
-        // 首页「接着聊」打开前要过的那几道关，这里以前一道都没过（第四十批 B）。不往下走就和
+        // 首页「继续对话」打开前要过的那几道关，这里以前一道都没过（第四十批 B）。不往下走就和
         // 问话框里点了关掉一样：什么都不打开，不报错，也不说「已打开」。
         if (beforeResume && !(await beforeResume(provider))) return null
         try {
@@ -377,7 +377,7 @@ export function SessionsPage({
           : resumeSessionNotice(result, providerName(session.provider), session.cwd),
     )
   }
-  /** 行上和详情里「接着聊」那颗按钮的悬停说明：按不动时说为什么。 */
+  /** 行上和详情里「继续对话」那颗按钮的悬停说明：按不动时说为什么。 */
   const resumeTitle = (session: Session) =>
     session.cwdExists === false
       ? '这条记录的文件夹已经不在了，接不上上次的对话'
@@ -419,7 +419,7 @@ export function SessionsPage({
     const operations = capabilityOf(session)?.operations
     const items: Array<MenuItem | 'divider'> = []
     if (canResume)
-      items.push({ label: '接着聊', icon: Play, disabled: busy || missingWorkspace, onSelect: () => resume(session), testId: `sessions-menu-resume-${session.id}` })
+      items.push({ label: '继续对话', icon: Play, disabled: busy || missingWorkspace, onSelect: () => resume(session), testId: `sessions-menu-resume-${session.id}` })
     if (session.cwd)
       items.push({ label: '打开文件夹', icon: FolderOpen, disabled: busy || missingWorkspace, onSelect: () => openDirectory(session), testId: `sessions-open-directory-${session.id}` })
     items.push({ label: '导出对话', icon: Download, disabled: busy || !canExport(session), onSelect: () => exportSession(session), testId: `sessions-menu-export-${session.id}` })
@@ -567,7 +567,7 @@ export function SessionsPage({
                           title={resumeTitle(session)}
                           testId={`sessions-resume-${session.id}`}
                         >
-                          接着聊
+                          继续对话
                         </Button>
                       ) : null}
                       <Menu
@@ -645,7 +645,7 @@ export function SessionsPage({
                       title={resumeTitle(selected)}
                       testId="session-detail-resume"
                     >
-                      接着聊
+                      继续对话
                     </Button>
                   )}
             </>

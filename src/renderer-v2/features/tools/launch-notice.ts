@@ -28,7 +28,7 @@ export function launchDeclined(result: CodexDesktopLaunchResult | CliLaunchResul
 }
 
 /**
- * 记录页「接着聊」成功后那句话。用户选了「先不打开」就什么都不说，
+ * 记录页「继续对话」成功后那句话。用户选了「先不打开」就什么都不说，
  * 不能再说「已打开」。
  */
 export function resumeSessionNotice(result: CliLaunchResult | void | undefined, toolName: string, cwd: string): string | null {
@@ -39,7 +39,7 @@ export function resumeSessionNotice(result: CliLaunchResult | void | undefined, 
 }
 
 // 这几类任务不拿来说在等谁：另一个工具的「打开」几秒就完；「改用当前账号」「修提醒设置」、
-// 配置文件坏了的「修好它」只改配置、不进安装队列，「打开」根本不等它们，以前却会说成
+// 配置文件坏了的「立即修复」只改配置、不进安装队列，「打开」根本不等它们，以前却会说成
 // 「正在等 另一个工具 安装完」。
 const notWaitedOn = ['launch:', 'switch:', 'repair-hooks:', 'repair-config:']
 

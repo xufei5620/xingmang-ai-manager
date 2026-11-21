@@ -65,7 +65,7 @@ describe('external client lifecycle presentation', () => {
     // failure is not shown at all: the row says it in Chinese and the original
     // goes to the runtime log (ipc.ts).
     expect(present({ installed: true, detectionError: "EACCES: permission denied, open 'C:\\Users\\yoyo\\AppData\\Local\\WorkBuddy\\config.json'" }).detail)
-      .toBe('没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。')
+      .toBe('无权读取该工具的文件，通常是被安全软件拦截。请点击「重新检测」；如仍失败，请在「反馈与客服」页导出报告并发送给客服。')
     expect(present({ installed: true, detectionError: '读取 C:\\Users\\yoyo\\AppData\\Local\\WorkBuddy 失败' }).detail)
       .toBe('读取 本机路径 失败')
     // 带空格的文件夹名（Application Support）也整段换掉，以前只剥到空格为止。

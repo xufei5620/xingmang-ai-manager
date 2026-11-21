@@ -3,7 +3,7 @@ import { Button, Dialog } from '../../ui'
 import { nodeReplaceReason } from './node-replace'
 
 /**
- * 换 Node.js 之前问一次（第十八批 4）。错误框里的「换成新版 Node.js」与检查页
+ * 换 Node.js 之前问一次（第十八批 4）。错误框里的「更新 Node.js」与检查页
  * Node.js 那一行的「换成新版」共用。只说清会发生什么，不讲原理：会弹一次系统确认、装好的
  * 工具不用重装、客户自己的项目一般不受影响。
  *

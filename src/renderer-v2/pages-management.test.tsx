@@ -328,9 +328,9 @@ describe('Python runtime notice before adding a connection', () => {
     expect(pythonOnly?.body).not.toContain('Python 装好之后')
   })
 
-  // D20：客户不会开命令行敲 pip，缺 uv 时交给客服教，不管 Python 在不在都是同一句，并给「找客服」。
+  // D20：客户不会开命令行敲 pip，缺 uv 时交给客服教，不管 Python 在不在都是同一句，并给「联系客服」。
   it('sends a missing uv to customer support instead of a pip command', () => {
-    const sentence = '这个工具还要一个叫 uv 的小组件，点「找客服」，客服教你装。'
+    const sentence = '这个工具还要一个叫 uv 的小组件，点「联系客服」，客服教你装。'
     for (const python of [true, false]) {
       for (const management of [managed, external]) {
         const notice = mcpRuntimeNotice('uvx', { python, uv: false }, management)

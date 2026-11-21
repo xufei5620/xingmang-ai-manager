@@ -345,7 +345,7 @@ describe('renderer-v2 home recent resume for tools that are not installed (第�
     expect(recentResumeOffered([], 'claude')).toBe(true)
   })
 
-  // Gemini CLI 已下线（yoyo 2026-10-14）：装着也不再替它打开，它的旧记录不给「接着聊」。
+  // Gemini CLI 已下线（yoyo 2026-10-14）：装着也不再替它打开，它的旧记录不给「继续对话」。
   it('never offers it for the retired Gemini CLI, installed or not', () => {
     expect(recentResumeOffered(presentTools(snapshot(allTools), null), 'gemini')).toBe(false)
     expect(recentResumeOffered([], 'gemini')).toBe(false)
@@ -614,7 +614,7 @@ describe('renderer-v2 home native install source', () => {
 })
 
 // Mac 验收 R1：Mac 上找到的 Codex / Grok 星芒认不出来路，也不替它跑。卡上以前照样一颗「打开」，
-// 点了只说没打开成；现在写明为什么，主按钮换成「用星芒装一份」，点了走安装。
+// 点了只说没打开成；现在写明为什么，主按钮换成「使用星芒安装」，点了走安装。
 describe('renderer-v2 home unrecognised Mac install', () => {
   const unrecognizedCodex = { ...cliStatus, version: null, installSource: 'path', unrecognizedInstall: true,
     uninstall: { available: false, reason: '请用它原来的方式卸载', manualCommand: null } }
@@ -622,7 +622,7 @@ describe('renderer-v2 home unrecognised Mac install', () => {
 
   it('offers the app install instead of opening an unrecognised Codex and says why', () => {
     const markup = render({}, { claude: cliStatus, codex: unrecognizedCodex, grok: cliStatus, gemini: cliStatus })
-    expect(markup).toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*用星芒装一份</)
+    expect(markup).toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*使用星芒安装</)
     expect(markup).toContain('非星芒安装，无法在星芒中打开')
     // 「要更新请用它原来的安装方式」那句在这里不对：客户该做的是点旁边那颗按钮。
     expect(markup).not.toContain('data-testid="tool-codex-external-managed"')
@@ -633,7 +633,7 @@ describe('renderer-v2 home unrecognised Mac install', () => {
     // 别的工具照旧。
     expect(markup).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开</)
     // 页头也不能还说「都配好了」。
-    expect(markup).toContain('Codex CLI 非星芒安装，无法在星芒中打开，请点击卡片上的「用星芒装一份」。')
+    expect(markup).toContain('Codex CLI 非星芒安装，无法在星芒中打开，请点击卡片上的「使用星芒安装」。')
     expect(markup).not.toContain('已安装的工具均已配置')
   })
 
@@ -642,18 +642,18 @@ describe('renderer-v2 home unrecognised Mac install', () => {
     const base = snapshot({ claude: missing, codex: unrecognizedCodex, grok: missing, gemini: missing })
     const platform = { ...base.platform, cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' } }
     const markup = render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot })
-    expect(markup).toMatch(/data-testid="home-hero-open"[^>]*>(?:<[^>]+>)*用星芒装一份</)
+    expect(markup).toMatch(/data-testid="home-hero-open"[^>]*>(?:<[^>]+>)*使用星芒安装</)
     expect(markup).not.toContain('data-testid="home-hero-pick-folder"')
   })
 
   it('names every unrecognised tool in the page head', () => {
     const markup = render({}, { claude: cliStatus, codex: unrecognizedCodex, grok: unrecognizedGrok, gemini: cliStatus })
-    expect(markup).toContain('Codex CLI、Grok CLI 非星芒安装，无法在星芒中打开，请点击卡片上的「用星芒装一份」。')
+    expect(markup).toContain('Codex CLI、Grok CLI 非星芒安装，无法在星芒中打开，请点击卡片上的「使用星芒安装」。')
   })
 
   it('does the same for an unrecognised Grok', () => {
     const markup = render({}, { claude: cliStatus, codex: cliStatus, grok: unrecognizedGrok, gemini: cliStatus })
-    expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*用星芒装一份</)
+    expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*使用星芒安装</)
     expect(markup).toContain('非星芒安装，无法在星芒中打开')
     expect(markup).toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*打开</)
   })
@@ -733,10 +733,10 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     expect(markup).not.toContain('>重新同步<')
     // Without onHelp the card keeps the old primary and the banner offers nothing (0.2.22 打磨 B5 缺省 = 旧行为).
     expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*确认连接</)
-    expect(markup).not.toContain('找客服')
+    expect(markup).not.toContain('>联系客服<')
   })
 
-  // 账号没开通的只有客服能开（主路卡点 F5）：横幅给「找客服」，卡片主按钮也换成它，「确认连接」点进去的配置框帮不上忙。
+  // 账号没开通的只有客服能开（主路卡点 F5）：横幅给「联系客服」，卡片主按钮也换成它，「确认连接」点进去的配置框帮不上忙。
   it('offers support instead of the configuration dialog for a tool the account has not enabled', () => {
     const failure = { provider: 'grok' as const, message: '分组不存在、不可用或名称重复，请确认账号可用分组' }
     const markup = render({}, undefined, {
@@ -750,7 +750,7 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     })
     expect(markup).toContain('data-testid="home-bootstrap-support"')
     expect(markup).not.toContain('>重新同步<')
-    expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*找客服</)
+    expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*联系客服</)
     expect(markup).not.toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*确认连接</)
     // A tool whose failure can be retried keeps both: resync for it, support for the one the account lacks.
     const mixed = render({}, undefined, {
@@ -1188,7 +1188,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       expect(markup).toContain('连接设置要修')
       expect(markup).toContain('配置中有一项 Codex 无法识别，打开后将无法连接')
       expect(markup).toContain('data-testid="tool-codex-repair-codex"')
-      expect(markup).toContain('修好它')
+      expect(markup).toContain('立即修复')
       // 修完就能用，「打开」照旧给，点下去先修再打开。
       expect(markup).toMatch(/data-testid="tool-codex-primary"[^>]*>(?:<[^>]+>)*打开/)
       // 来源仍是当前账号，「切回官方账号」那一项不能丢。
@@ -1235,7 +1235,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
         expect(row, tool).toContain(`>${brokenDetail}<`)
         const button = rowButton(row, `tool-${tool}-repair-config`)
         expect(button, tool).toContain('title="修改前将自动备份原设置"')
-        expect(button, tool).toContain('修好它')
+        expect(button, tool).toContain('立即修复')
       }
       expect(markup).not.toContain('solov')
     })
@@ -1303,9 +1303,9 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       expect(row).toContain('配置坏了')
       expect(row).toContain('>Claude Code 读不了这份配置，打开会报错。修之前会先备份，历史会话保留<')
       expect(row).not.toContain('官方账号')
-      expect(rowButton(row, 'tool-claude-repair-config')).toContain('修好它')
+      expect(rowButton(row, 'tool-claude-repair-config')).toContain('立即修复')
       expect(toolRow(markup, 'codex')).toContain('data-testid="tool-codex-source"')
-      // 已下线的 Gemini CLI 那份坏配置不再有一行，也不给「修好它」。
+      // 已下线的 Gemini CLI 那份坏配置不再有一行，也不给「立即修复」。
       expect(markup).not.toContain('data-testid="tool-row-gemini"')
       expect(markup).not.toContain('tool-gemini-repair-config')
       expect(markup).not.toContain('Gemini')
@@ -1318,7 +1318,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
         expect(row, tool).toContain('配置坏了')
         expect(row, tool).toContain('>Codex 读不了登录信息，打开会要你重新登录。修之前会先备份，历史会话保留<')
         expect(row, tool).not.toContain('官方账号')
-        expect(rowButton(row, `tool-${tool}-repair-config`), tool).toContain('修好它')
+        expect(rowButton(row, `tool-${tool}-repair-config`), tool).toContain('立即修复')
       }
     })
 
@@ -1425,7 +1425,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       expect(markup).toContain('data-testid="tool-grok-repair-hooks"')
     })
 
-    // Windows 上只装 Grok 时没有运行环境，做完提醒和防睡写不上：说缺什么，给「补上」，Grok 照样能打开。
+    // Windows 上只装 Grok 时没有运行环境，做完提醒和防睡写不上：说缺什么，给「启用」，Grok 照样能打开。
     function missingSnapshot(nodeInstalled: boolean): ToolboxSnapshot {
       const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
       return {
@@ -1808,7 +1808,7 @@ describe('renderer-v2 home tool cards with an empty wallet', () => {
     expect(markup).not.toContain('home-low-balance')
   })
 
-  it('turns every card on the current account into 余额为零 with 去充值 as its button', () => {
+  it('turns every card on the current account into 余额为零 with 前往充值 as its button', () => {
     const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
     const withDesktop = { ...base, platform: { ...base.platform, platform: 'windows', codexDesktop: { install: 'managed', launch: true, uninstall: true } } } as unknown as ToolboxSnapshot
     const markup = render({}, undefined, { balance: empty, snapshot: withDesktop })
@@ -1816,7 +1816,7 @@ describe('renderer-v2 home tool cards with an empty wallet', () => {
       const row = toolRow(markup, tool)
       expect(row, tool).toContain('>余额为零<')
       expect(row, tool).toContain('xm-tone-bad')
-      expect(row, tool).toMatch(new RegExp(`data-testid="tool-${tool}-recharge"[^>]*>(?:<[^>]+>)*去充值`))
+      expect(row, tool).toMatch(new RegExp(`data-testid="tool-${tool}-recharge"[^>]*>(?:<[^>]+>)*前往充值`))
       expect(buttonTag(row, `tool-${tool}-recharge`), tool).toContain('xm-btn-primary')
       // 「打开」挪进「…」第一项，卡底下只留一颗按钮，不挤掉角标。
       expect(row, tool).not.toContain(`data-testid="tool-${tool}-primary"`)
@@ -1825,7 +1825,7 @@ describe('renderer-v2 home tool cards with an empty wallet', () => {
     expect(markup).toContain('data-testid="home-low-balance"')
   })
 
-  it('makes 去充值 the main button on the big card and keeps 打开 next to it', () => {
+  it('makes 前往充值 the main button on the big card and keeps 打开 next to it', () => {
     const hero = heroOf(render({}, undefined, { balance: empty }))
     expect(hero).toContain('余额为零')
     expect(hero.indexOf('data-testid="home-hero-recharge"')).toBeGreaterThan(-1)
@@ -1876,7 +1876,7 @@ describe('renderer-v2 home tool cards with an empty wallet', () => {
     expect(row).not.toContain('余额为零')
   })
 
-  it('shows 打开中 instead of 去充值 while the tool is being opened from the menu', () => {
+  it('shows 打开中 instead of 前往充值 while the tool is being opened from the menu', () => {
     const row = toolRow(render({ 'launch:claude': { label: '正在打开工具', log: [] } }, undefined, { balance: empty }), 'claude')
     expect(row).not.toContain('data-testid="tool-claude-recharge"')
     expect(row).toMatch(/data-testid="tool-claude-primary"[^>]*>(?:<[^>]+>)*打开中/)
@@ -2124,7 +2124,7 @@ describe('Home sections and balance labels', () => {
     const reading = render({}, undefined, { account })
     expect(section(reading, 'home-balance')).toContain('—')
     expect(reading).toContain('正在读取余额')
-    expect(reading).not.toContain('暂时没有读到')
+    expect(reading).not.toContain('暂未获取')
     expect(render({}, undefined, { accountRestoring: true })).toContain('正在恢复登录')
   })
 })
@@ -2255,7 +2255,7 @@ describe('renderer-v2 home v4 top cards', () => {
     const markup = render({}, undefined, { account, accountScope: scope, balance: balance(3), api: api(14) })
     expect(markup).toContain('data-testid="home-low-balance"')
     expect(markup).toContain('余额仅剩 $3.00，按近期用量预计可用 1 天。用尽后工具将暂停使用')
-    expect(markup).toContain('>去充值<')
+    expect(markup).toContain('>前往充值<')
   })
 
   it('shows at most two of the passing notices, but every error that needs the customer', () => {

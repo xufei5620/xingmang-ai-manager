@@ -41,7 +41,7 @@ export function knownIssueBody(issue: KnownIssue): string {
   return `${issue.message} 此问题与本机无关，修复后提示将自动消失。`
 }
 
-const knownIssueActionLabels: Record<KnownIssueAction, string> = { update: '查看更新', support: '找客服' }
+const knownIssueActionLabels: Record<KnownIssueAction, string> = { update: '查看更新', support: '联系客服' }
 
 // 一份状态文件最多八条（service-status.ts），记再多也只是这次打开软件关过的那些。
 const maxDismissedKnownIssues = 16

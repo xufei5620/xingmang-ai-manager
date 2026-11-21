@@ -2072,7 +2072,7 @@ describe('createSystemService', () => {
   })
 
   // Mac 验收 R1：命令行里找到的 Codex / Grok 既不是 npm 装的、又核不出是官方安装器那一份，首页要能改给
-  // 「用星芒装一份」；一时没核成（起进程失败这类）的不算，照旧按原来的来源显示。
+  // 「使用星芒安装」；一时没核成（起进程失败这类）的不算，照旧按原来的来源显示。
   it('marks a Mac Codex and Grok that cannot be recognised as unrecognised installs found on the path', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-unrecognized-install-scan-'))
     temporaryDirectories.push(directory)
@@ -7971,7 +7971,7 @@ describe('opening a CLI on macOS', () => {
     const failure: unknown = await launch().catch((error: unknown) => error)
     expect(failure instanceof Error && failure.message).toBe(
       '未能打开 Claude Code：终端窗口打开了，但工具没有跟着起来。先看一眼终端窗口里是不是在问什么（比如要不要更新），'
-      + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「找客服」，把这句话发给客服。',
+      + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「联系客服」，把这句话发给客服。',
     )
     expect(failure instanceof Error && failure.cause).toBeInstanceOf(MacosTerminalNotStartedError)
     const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')

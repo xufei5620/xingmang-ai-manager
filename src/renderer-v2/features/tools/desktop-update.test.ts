@@ -35,13 +35,13 @@ describe('renderer-v2 Mac desktop app updates', () => {
 
   it('uses the wording yoyo approved on 2026-10-27, word for word', () => {
     expect(desktopUpdateRunningPrompt('claudeDesktop')).toEqual({
-      title: 'Claude Desktop 还开着',
+      title: 'Claude Desktop 正在运行',
       body: '更新要先把它关掉，会打断它正在进行的回答。更新完星芒会帮你重新打开。',
       label: '关掉并更新',
       cancelLabel: '先不更新',
     })
-    expect(desktopUpdateRunningPrompt('codexDesktop').title).toBe('Codex 桌面端还开着')
-    expect(desktopUpdateRunningPrompt('opencode').title).toBe('OpenCode 还开着')
+    expect(desktopUpdateRunningPrompt('codexDesktop').title).toBe('Codex 桌面端正在运行')
+    expect(desktopUpdateRunningPrompt('opencode').title).toBe('OpenCode 正在运行')
     expect(desktopUpdatedMessage('claudeDesktop', '3.6556.2')).toBe('Claude Desktop 已更新到 v3.6556.2')
     expect(desktopUpdatedMessage('codexDesktop', 'v26.1003.2')).toBe('Codex 桌面端已更新到 v26.1003.2')
     expect(desktopUpdateBlockedPrompt('3.6556.2')).toEqual({

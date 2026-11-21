@@ -1065,7 +1065,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
       const npmPath = await findInstalledExecutable('npm')
       const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmPath)
       const { status } = await inspectCliTool(provider, npmPath, npmGlobalRoot)
-      // Mac 上认不出来路、星芒也不替它跑的那份（R1）：客户点的就是「用星芒装一份」，不拿「不会另装一份」拦。
+      // Mac 上认不出来路、星芒也不替它跑的那份（R1）：客户点的就是「使用星芒安装」，不拿「不会另装一份」拦。
       // 装好以后星芒先找到自己那份（darwinCommandPathCandidates 里星芒的目录排在前面），打开的也是它。
       if (status.unrecognizedInstall) return
       installSource = status.installSource

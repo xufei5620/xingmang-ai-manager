@@ -88,7 +88,7 @@ export function useToolAccountActions({ toolsApi, toolbox, toast, session, mount
     return outcome.result ?? null
   }, [session.account, session.authenticated, toast, toolbox.refresh, toolbox.run, toolbox.snapshot, toolsApi, setAuth, setCcSwitchReminder, setSwitchRestartOffer, settleToolKeyFailure])
   /**
-   * 首页「提醒设置要修」的「修好它」。主进程先备份、只改钩子与状态行、再查一遍；
+   * 首页「提醒设置要修」的「立即修复」。主进程先备份、只改钩子与状态行、再查一遍；
    * 没修好会抛中文原因，走统一的错误条（perform）。
    */
   const repairToolHooks = useCallback(async (tool: ToolId) => {
@@ -102,7 +102,7 @@ export function useToolAccountActions({ toolsApi, toolbox, toast, session, mount
     })
   }, [toast, toolbox.refreshConfig, toolbox.run, toolsApi])
   /**
-   * 首页「配置文件坏了」的「修好它」：工具自己都读不了它的配置（Codex 的 config.toml、auth.json，
+   * 首页「配置文件坏了」的「立即修复」：工具自己都读不了它的配置（Codex 的 config.toml、auth.json，
    * Claude Code 的 settings.json）。主进程先备份，再按现在用的账号把读不了的那份重新生成，跟配置里「高级」的
    * 「重置为初始状态」一样；只有 Codex 只坏了 auth.json 时不一样：config.toml 只改账号几处，客户自己加的连接、
    * 信任过的文件夹照留（repair，X-1）。看得出原来用官方登录的照旧用官方账号，其余按当前账号

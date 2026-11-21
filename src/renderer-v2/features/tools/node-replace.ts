@@ -3,7 +3,7 @@ import { nodeReadsSystemCertificates } from '../../../../electron/system-certifi
 import type { RuntimeInstallOutcome } from './runtime-install-outcome'
 
 /**
- * 「换成新版 Node.js」（第十八批 4）。公司电脑和安全软件会换掉网上的安全证书，
+ * 「更新 Node.js」（第十八批 4）。公司电脑和安全软件会换掉网上的安全证书，
  * Node.js 要 22.19 / 24.6 以上才认这台电脑装的证书；更旧的那些照样够装工具，所以
  * 「安装」一直回「无需重复安装」，客户照提示走进了死胡同。
  *

@@ -178,7 +178,7 @@ describe('renderer-v2 recharge promo card', () => {
     expect(html).toContain('到账 <strong>4,000</strong>')
     expect(html.match(/赠送最多/g)).toHaveLength(1)
     expect(html).toContain('选择档位即可前往支付。')
-    for (const label of ['去充值', '活动详情', '不再提醒此活动', '今天不再提醒']) expect(html).toContain(label)
+    for (const label of ['前往充值', '活动详情', '不再提醒此活动', '今天不再提醒']) expect(html).toContain(label)
     expect(html).not.toContain('>知道了<')
     expect(html).not.toContain('announcement-promo-lines')
   })
@@ -216,7 +216,7 @@ describe('renderer-v2 activity bar', () => {
     expect(html).toContain('data-testid="announcement-promo-bar"')
     expect(html).toContain('充值满赠<small>10月8日截止，还剩 8 天</small>')
     expect(html).toContain('邀请有礼</button>')
-    expect(html).toContain('去充值')
+    expect(html).toContain('前往充值')
     expect(html).toContain('aria-label="今日不再显示活动提醒"')
   })
 

@@ -225,7 +225,7 @@ const remoteState: {
 const feishuProblemStatuses = {
   credential: { state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' },
   'connection-limit': { state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' },
-  other: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other' },
+  other: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「联系客服」。', problem: 'other' },
 } as const
 // 微信那一块只测扫码登录：手机上要输数字，输 2580 才对，对了以后再查一次就登录好了。过了数字，主进程直接把扫码人
 // 记成绑定的人（YF-5），这里也跟着绑上。
@@ -610,7 +610,7 @@ const missingFolderSession = {
   ...session,
   cwdExists: false,
 }
-// 同一个工具、同一个目录的第二条(更旧的)记录:「接着聊」是按目录接最近一条,
+// 同一个工具、同一个目录的第二条(更旧的)记录:「继续对话」是按目录接最近一条,
 // 所以只有最近那条该有按钮。默认不出现,免得改动现有用例看到的行数。
 const olderSameFolderSession = {
   ...session,

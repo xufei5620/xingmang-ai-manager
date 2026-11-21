@@ -103,7 +103,7 @@ const chatMessages = {
 // 充值活动也借「公告」这一类的偏好开关，说法换成活动自己的。编号前缀由首页的活动卡片写死
 // （promo: 活动开始，promo-daily: 每天第一次提醒）。活动的标题和正文不进通知：点开回到首页看卡片。
 const promoMessages = {
-  arrival: { title: '有新的充值活动', body: '当前账号有一个充值活动，回到星芒首页看看，点「去充值」就能参加。' },
+  arrival: { title: '有新的充值活动', body: '当前账号有一个充值活动，回到星芒首页看看，点「前往充值」就能参加。' },
   daily: { title: '充值活动还在进行', body: '当前账号的充值活动还没结束，回到星芒首页看看。' },
 } as const satisfies Record<string, NotificationMessage>
 

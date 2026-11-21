@@ -181,10 +181,10 @@ describe('codex remote card', () => {
     // 按钮紧跟在那句话下面。
     expect(limit.indexOf('settings-remote-feishu-status-actions')).toBeGreaterThan(limit.indexOf('settings-remote-feishu-status'))
 
-    const other = render(snapshot(ready, { ...saved, status: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other' } }), '', openHelp)
+    const other = render(snapshot(ready, { ...saved, status: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「联系客服」。', problem: 'other' } }), '', openHelp)
     expect(other).toContain('data-testid="settings-remote-feishu-reconnect"')
-    expect(other).toMatch(/data-testid="settings-remote-feishu-support"[^>]*>.*<span>找客服<\/span><\/button>/)
-    // 没有帮助框可开时不摆「找客服」。
+    expect(other).toMatch(/data-testid="settings-remote-feishu-support"[^>]*>.*<span>联系客服<\/span><\/button>/)
+    // 没有帮助框可开时不摆「联系客服」。
     expect(render(snapshot(ready, { ...saved, status: { state: 'error', problem: 'other' } }))).not.toContain('settings-remote-feishu-support')
 
     // 别的操作在跑时先别点；正在重连时转圈。
@@ -365,7 +365,7 @@ describe('codex remote card', () => {
     expect(warned).toContain('xm-tone-warn')
     expect(warned).toContain('<strong>余额只剩 $0.80</strong>')
     expect(warned).toContain('人不在电脑前时充不了值，建议先充一点再出门。')
-    expect(warned).toContain('<span>去充值</span></button>')
+    expect(warned).toContain('<span>前往充值</span></button>')
     expect(renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({}, { ...on, enabled: false })} api={{} as V2Bridge} busy="" run={async () => true} error={null} lowBalance={0.8} />)).not.toContain('settings-remote-low-balance')
     expect(renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({}, on)} api={{} as V2Bridge} busy="" run={async () => true} error={null} lowBalance={null} />)).not.toContain('settings-remote-low-balance')
   })

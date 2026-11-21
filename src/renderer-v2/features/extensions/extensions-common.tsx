@@ -507,7 +507,7 @@ export interface McpRuntimeNotice {
   body: string
   /** 只有真的缺 Python 才给按钮：装 Python 解决不了缺 uv。 */
   installPython: boolean
-  /** 缺 uv 时给「找客服」：星芒装不了它，客服教客户装（D20）。 */
+  /** 缺 uv 时给「联系客服」：星芒装不了它，客服教客户装（D20）。 */
   support: boolean
 }
 
@@ -537,8 +537,8 @@ export function mcpRuntimeNotice(
       ? '可以先装好 Python 再回来添加。'
       : `可以在终端里执行 ${runtimeHomebrewCommand('python')} 装好 Python，再回来添加。`)
   }
-  // uv 星芒装不了，客户多半也不会开命令行敲 pip，所以缺它的时候交给客服教（D20），配一颗「找客服」。
-  if (needs === 'uv') sentences.push('这个工具还要一个叫 uv 的小组件，点「找客服」，客服教你装。')
+  // uv 星芒装不了，客户多半也不会开命令行敲 pip，所以缺它的时候交给客服教（D20），配一颗「联系客服」。
+  if (needs === 'uv') sentences.push('这个工具还要一个叫 uv 的小组件，点「联系客服」，客服教你装。')
   sentences.push('仍然可以直接添加，但工具用到它的时候会连不上。')
   return {
     title: '这条连接还差一样东西',

@@ -123,7 +123,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
 
   return <section className="v2-page video-studio" data-page-id="video" data-testid="page-video">
     {studio.error && <Notice tone="bad" title="没有完成" body={studio.error} onDismiss={() => studio.setError('')}
-      actions={quotaAction ? <Button size="sm" variant="primary" onClick={() => onOpenAccount?.(/额度上限/.test(studio.error) ? 'keys' : 'recharge')}>{/额度上限/.test(studio.error) ? '去调额度' : '去充值'}</Button> : undefined} testId="video-error" />}
+      actions={quotaAction ? <Button size="sm" variant="primary" onClick={() => onOpenAccount?.(/额度上限/.test(studio.error) ? 'keys' : 'recharge')}>{/额度上限/.test(studio.error) ? '去调额度' : '前往充值'}</Button> : undefined} testId="video-error" />}
     {studio.notice && <Notice tone="accent" title="提示" body={studio.notice} onDismiss={() => studio.setNotice('')}
       actions={folderAction ? <Button size="sm" icon={FolderOpen} onClick={() => void studio.openFolder()} testId="video-notice-folder">打开文件夹</Button> : undefined} testId="video-notice" />}
     {studio.storageWarning && <Notice tone="warn" title="存不下这份分镜" body={studio.storageWarning} testId="video-storage-warning" />}

@@ -29,7 +29,7 @@ export function recentSessionSubtitle(session: Pick<SessionSummary, 'provider' |
   return folder ? `${name} · ${folder}` : name
 }
 
-/** 「接着聊」的小提示：写明会用哪个工具打开，免得点下去开的不是想的那个。 */
+/** 「继续对话」的小提示：写明会用哪个工具打开，免得点下去开的不是想的那个。 */
 export function recentResumeHint(session: Pick<SessionSummary, 'provider' | 'cwd' | 'cwdExists'>): string {
   if (session.cwdExists === false) return '这个文件夹已经不在了，接不上上次的对话'
   const folder = session.cwd ? workspaceName(session.cwd) : '这个文件夹'
@@ -37,10 +37,10 @@ export function recentResumeHint(session: Pick<SessionSummary, 'provider' | 'cwd
 }
 
 /**
- * 点「接着聊」才发现同一文件夹刚有更新的对话、这次没打开时，行内说的那一句（#1111 第 3 条）：
+ * 点「继续对话」才发现同一文件夹刚有更新的对话、这次没打开时，行内说的那一句（#1111 第 3 条）：
  * 不说的话，客户只看到按钮转一下、那行标题悄悄换掉，工具没打开。
  */
 export function recentReplacedHint(session: Pick<SessionSummary, 'cwd'>): string {
   const folder = session.cwd ? `${workspaceName(session.cwd)} ` : '这个文件夹'
-  return `${folder}里刚有新的对话，已换成最新那条，再点一次「接着聊」`
+  return `${folder}里刚有新的对话，已换成最新那条，再点一次「继续对话」`
 }

@@ -316,8 +316,8 @@ test('account views distinguish summary-only, failed reads and valid empty resul
   for (const [query, tab, expected, absent] of [
     ['sub2apiReliability=1', '用量账单', '只有累计数', '这个时间段还没有用量'],
     ['fail=dashboard', '用量账单', '花费趋势暂时没有读到', '这个时间段还没有用量'],
-    ['fail=usage', '用量账单', '调用明细暂时没有读到', '这段时间没有调用'],
-    ['sub2apiReliability=1&fail=subscriptions', '充值订阅', '订阅信息暂时没有读到', '暂无订阅'],
+    ['fail=usage', '用量账单', '调用明细暂时无法获取', '这段时间没有调用'],
+    ['sub2apiReliability=1&fail=subscriptions', '充值订阅', '订阅信息暂时无法获取', '暂无订阅'],
   ]) {
     const page = await fixture(`page=account&${query}`)
     try {
@@ -616,10 +616,10 @@ test('an unread profile keeps the account pages and only blocks the ones that ne
 
 test('account lists that could not be read say so with the reason and read again on request', async () => {
   for (const [query, tab, title, reason, absent] of [
-    ['fail=orders', '充值订阅', '订单暂时没有读到', '订单服务暂时不可用', '暂无订单'],
-    ['fail=tasks', '用量账单', '生成任务暂时没有读到', '任务服务暂时不可用', '暂无生成任务'],
-    ['fail=usage', '用量账单', '调用明细暂时没有读到', '调用记录服务暂时不可用', '这段时间没有调用'],
-    ['fail=devices', '账号安全', '登录设备暂时没有读到', '设备服务暂时不可用', '正在读取登录设备…'],
+    ['fail=orders', '充值订阅', '订单暂时无法获取', '订单服务暂时不可用', '暂无订单'],
+    ['fail=tasks', '用量账单', '生成任务暂时无法获取', '任务服务暂时不可用', '暂无生成任务'],
+    ['fail=usage', '用量账单', '调用明细暂时无法获取', '调用记录服务暂时不可用', '这段时间没有调用'],
+    ['fail=devices', '账号安全', '登录设备暂时无法获取', '设备服务暂时不可用', '正在读取登录设备…'],
   ]) {
     const page = await fixture(`page=account&${query}`)
     try {
@@ -739,7 +739,7 @@ test('recharge stays open when subscriptions fail and says when the top-up detai
     const panel = page.getByRole('tabpanel').filter({ visible: true })
     await panel.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
     assert.equal(await panel.getByTestId('account-recharge-submit').isDisabled(), false)
-    await panel.getByText('订阅信息暂时没有读到', { exact: true }).waitFor()
+    await panel.getByText('订阅信息暂时无法获取', { exact: true }).waitFor()
     await panel.getByTestId('account-subscriptions-retry').waitFor()
     assert.equal(await panel.getByTestId('account-recharge-plans').count(), 0)
     assert.equal(await panel.getByRole('group', { name: '扣费顺序' }).count(), 0)
@@ -1211,7 +1211,7 @@ test('a subscription re-read that fails says so instead of still showing no subs
     assert.equal(await choose.count(), 1)
     await page.evaluate(() => window.failNextRead('subscriptions'))
     await page.getByTestId('account-refresh').click()
-    await panel.getByTestId('account-subscriptions-error').getByText('订阅信息暂时没有读到').waitFor()
+    await panel.getByTestId('account-subscriptions-error').getByText('订阅信息暂时无法获取').waitFor()
     assert.equal(await panel.getByText('暂无订阅', { exact: true }).count(), 0)
     assert.equal(await choose.count(), 0)
     // 充值那张卡不受影响。
@@ -1659,7 +1659,7 @@ test('key group failures name the real cause instead of one generic refresh prom
     // 限流：服务端回英文原文，映射成「稍等几秒」，而不是让用户反复点刷新
     await page.evaluate(() => window.keyGroupsHarness.failNext('list groups failed: 429 Too Many Requests'))
     await page.getByTestId('account-key-groups-refresh').click()
-    await dialog.getByText('请求太频繁，稍等几秒再试。', { exact: true }).waitFor()
+    await dialog.getByText('请求次数过多，请稍候几秒后重试。', { exact: true }).waitFor()
     assert.equal(await save.isDisabled(), true)
 
     // 账号被封禁：走 account-errors 的既有匹配表，同样不该退化成刷新提示
@@ -1943,7 +1943,7 @@ test('adding a uvx connection without Python says so first and still lets it thr
   }
 })
 
-// D20：缺 uv 不再叫客户去命令行敲 pip，交给客服教，并给一颗「找客服」。
+// D20：缺 uv 不再叫客户去命令行敲 pip，交给客服教，并给一颗「联系客服」。
 test('a uvx connection missing uv points to customer support with a button instead of a pip command', async () => {
   const page = await fixture(`${hubClaudeOnly}&help`)
   try {
@@ -1951,7 +1951,7 @@ test('a uvx connection missing uv points to customer support with a button inste
     await page.getByRole('button', { name: '本地程序', exact: true }).click()
     await page.getByTestId('mcp-source').fill('uvx')
     const notice = page.getByTestId('mcp-runtime-notice')
-    await notice.getByText(/这个工具还要一个叫 uv 的小组件，点「找客服」，客服教你装。/).waitFor()
+    await notice.getByText(/这个工具还要一个叫 uv 的小组件，点「联系客服」，客服教你装。/).waitFor()
     assert.equal(await notice.getByText(/pip install uv/).count(), 0)
     await notice.getByTestId('mcp-runtime-support').click()
     assert.equal((await callsNamed(page, 'open-help')).length, 1)
@@ -2907,7 +2907,7 @@ test('feedback cannot clear logs it has none of and says how to read them when t
     await openRunLog(empty)
     assert.equal(await empty.getByTestId('feedback-error-count').count(), 0)
     const state = empty.getByTestId('feedback-empty')
-    await state.getByText('还没有运行日志', { exact: true }).waitFor()
+    await state.getByText('暂无运行日志', { exact: true }).waitFor()
     await state.getByText('软件运行时的事件会记录在这里。', { exact: true }).waitFor()
     assert.equal(await empty.getByTestId('feedback-clear').isDisabled(), true)
   } finally {
@@ -2975,7 +2975,7 @@ test('feedback shows the latest 100 entries first and 100 more on request', asyn
 test('feedback copy and export retain the preview snapshot id', async () => {
   const page = await fixture('page=feedback')
   try {
-    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「找客服」卡上那颗。
+    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「联系客服」卡上那颗。
     await page.getByTestId('feedback-preview').click()
     await page.getByTestId('feedback-report-text').waitFor()
     // 脱敏提示挪进了预览框，一行细条（v4 第 10 批）。
@@ -3011,12 +3011,12 @@ test('feedback copy and export retain the preview snapshot id', async () => {
 test('the feedback preview sends the customer to the check page when the report has no check result', async () => {
   const page = await fixture('page=feedback&selfCheckMissing')
   try {
-    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「找客服」卡上那颗。
+    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「联系客服」卡上那颗。
     await page.getByTestId('feedback-preview').click()
     const hint = page.getByTestId('feedback-report-unchecked')
     await hint.getByText('报告里还没有检查结果', { exact: true }).waitFor()
-    await hint.getByText('点「去检查」，等检查页查完再回来复制或导出，客服能少问你几句。', { exact: true }).waitFor()
-    await hint.getByRole('button', { name: '去检查', exact: true }).click()
+    await hint.getByText('点「前往检查」，等检查页查完再回来复制或导出，客服能少问你几句。', { exact: true }).waitFor()
+    await hint.getByRole('button', { name: '前往检查', exact: true }).click()
     await page.getByTestId('feedback-report-text').waitFor({ state: 'detached' })
     assert.deepEqual(
       (await calls(page))
@@ -3300,7 +3300,7 @@ test('a purchase dialog left open follows a reread plan list instead of charging
   try {
     await page.getByRole('button', { name: '购买', exact: true }).click()
     const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
-    await purchase.getByRole('button', { name: '用余额支付 $5', exact: true }).waitFor()
+    await purchase.getByRole('button', { name: '使用余额支付 $5', exact: true }).waitFor()
 
     // 框一直开着，客户切走一阵再回来：窗口回到前台时列表重读，框里跟着换成新价。
     await page.evaluate(() => window.subscriptionPlanHarness.set({ priceAmount: 8 }))
@@ -3308,10 +3308,10 @@ test('a purchase dialog left open follows a reread plan list instead of charging
     await page.evaluate(() => window.dispatchEvent(new Event('focus')))
     await purchase.getByTestId('account-subscription-plan-changed')
       .getByText('价格由 $5 调整为 $8，请确认后重新支付。', { exact: true }).waitFor()
-    await purchase.getByText('余额 $10.00，扣完剩 $2.00', { exact: true }).waitFor()
+    await purchase.getByText('余额 $10.00，扣除后剩余 $2.00', { exact: true }).waitFor()
     assert.deepEqual(await subscriptionCalls(page), [])
 
-    await purchase.getByRole('button', { name: '用余额支付 $8', exact: true }).click()
+    await purchase.getByRole('button', { name: '使用余额支付 $8', exact: true }).click()
     await waitForToast(page, '外部订阅已开通')
     assert.deepEqual(await subscriptionCalls(page), [{ name: 'purchase-subscription-balance', args: 1 }])
   } finally {
@@ -3324,7 +3324,7 @@ test('a plan taken down while its purchase dialog is open cannot be bought from 
   try {
     await page.getByRole('button', { name: '购买', exact: true }).click()
     const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
-    const pay = purchase.getByRole('button', { name: '用余额支付 $5', exact: true })
+    const pay = purchase.getByRole('button', { name: '使用余额支付 $5', exact: true })
     await pay.waitFor()
     await page.evaluate(() => window.subscriptionPlanHarness.remove())
 
@@ -4006,7 +4006,7 @@ test('the Feishu block says one of three fixed sentences when it stops and gives
     const status = card.getByTestId('settings-remote-feishu-status')
 
     await page.evaluate(() => window.remoteHarness.feishuProblem('other'))
-    await status.getByText('没连上，点「重新连接」再试；还不行点「找客服」。', { exact: true }).waitFor()
+    await status.getByText('没连上，点「重新连接」再试；还不行点「联系客服」。', { exact: true }).waitFor()
     await card.getByTestId('settings-remote-feishu-support').click()
     assert.equal((await callsNamed(page, 'open-help')).length, 1)
     await card.getByTestId('settings-remote-feishu-reconnect').click()
@@ -4221,7 +4221,7 @@ test('the phone remote card shows the last phone request and can stop it, declin
   }
 })
 
-// YF-12：遥控开着、余额不到 $1 时提醒出门前先充值，照样让开；点「去充值」到个人中心的充值。
+// YF-12：遥控开着、余额不到 $1 时提醒出门前先充值，照样让开；点「前往充值」到个人中心的充值。
 test('the phone remote card warns about a low balance once the remote is on and leads to the top-up', async () => {
   const page = await fixture('page=settings&remoteReady=1&remoteLowBalance=1')
   try {
@@ -4233,7 +4233,7 @@ test('the phone remote card warns about a low balance once the remote is on and 
     const notice = card.getByTestId('settings-remote-low-balance')
     await notice.getByText('余额只剩 $0.80', { exact: true }).waitFor()
     await notice.getByText('人不在电脑前时充不了值，建议先充一点再出门。', { exact: true }).waitFor()
-    await notice.getByRole('button', { name: '去充值', exact: true }).click()
+    await notice.getByRole('button', { name: '前往充值', exact: true }).click()
     assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['account', 'recharge'])
   } finally {
     await page.close()
@@ -4753,7 +4753,7 @@ test('cancelling the password dialog drops the typed secrets and Esc confirms be
     await dialog.getByLabel('原密码', { exact: true }).fill('old-secret')
     await dialog.getByLabel('新密码', { exact: true }).fill('new-secret-value')
     await page.keyboard.press('Escape')
-    await dialog.getByText('有修改还没保存，关掉会丢掉这些修改', { exact: true }).waitFor()
+    await dialog.getByText('有未保存的修改，关闭后修改将丢失', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '继续编辑', exact: true }).click()
     assert.equal(
       await dialog.getByLabel('原密码', { exact: true }).inputValue(),

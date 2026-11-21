@@ -44,7 +44,7 @@ export function useSupportContact({ app, session, version, os, platform, systemL
       .catch(() => { if (current) setSupportQr({ url: supportUrl, data: null }) })
     return () => { current = false }
   }, [supportUrl])
-  // 帮助弹窗和反馈与客服页「找客服」卡上的同一行身份，复制时连同最近一次出错一起带走。
+  // 帮助弹窗和反馈与客服页「联系客服」卡上的同一行身份，复制时连同最近一次出错一起带走。
   const copySupportIdentity = () => {
     void navigator.clipboard.writeText(lastFailureLine ? `${supportIdentity}\n${lastFailureLine}` : supportIdentity)
       .then(() => toast.show('已复制，请发送给客服', 'ok'), () => toast.show('复制失败，请手动选中该行文字复制。', 'warn'))

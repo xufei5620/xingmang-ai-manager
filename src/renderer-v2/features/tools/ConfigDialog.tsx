@@ -40,7 +40,7 @@ export interface ConfigDialogProps {
   onOfficialQuota?(): void
   onClose(): void
   /**
-   * 工具自己都读不了这份配置时（brokenConfigOf），顶上那行说明旁边的「修好它」：先关掉配置（有没保存的修改照旧先问），
+   * 工具自己都读不了这份配置时（brokenConfigOf），顶上那行说明旁边的「立即修复」：先关掉配置（有没保存的修改照旧先问），
    * 再走首页同一颗按钮。缺省 = 不给这颗按钮（旧行为，只能展开「高级」点重置）。
    */
   onRepair?(tool: ToolId): void
@@ -121,8 +121,8 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
   const sourceStorage = getSourceMarkerStorage()
   const switchLabel = switchAccountLabel(accountName)
   const currentSource = sourceFor(native, provider, sourceStorage)
-  // 工具自己读不了的文件，星芒读不出 Key 时会认成官方账号（已知44）。这时先选上首页「修好它」
-  // 会用的那边，展开「高级」点重置就和点「修好它」一样；读得出官方登录的照旧是官方账号。
+  // 工具自己读不了的文件，星芒读不出 Key 时会认成官方账号（已知44）。这时先选上首页「立即修复」
+  // 会用的那边，展开「高级」点重置就和点「立即修复」一样；读得出官方登录的照旧是官方账号。
   const broken = brokenConfigOf(native, provider)
   const initialSource = currentSource === 'official' && broken && brokenConfigRepairTarget(broken, native) === 'account' ? 'account' : currentSource
   const draft: ConfigDraft = edited ?? {
@@ -494,9 +494,9 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     footer={<><span className="v2-dialog-footer-start v2-config-foot-note">只改账号、密钥和模型，改之前会自动备份。</span><DialogExitButton disabled={Boolean(busy)}>取消</DialogExitButton>
       <Button variant="primary" icon={done ? undefined : Save} loading={saving} disabled={Boolean(busy) || (!done && draft.source === 'unknown')} onClick={primary} testId="tool-save-config">{primaryLabel}</Button></>}>
     <fieldset className="v2-config-controls" disabled={Boolean(busy)}>
-    {/* 读不了的文件，这里改什么都存不进去（只更新会被拒），出路是「修好它」，放在最上面先说（2026-11-18 客户在这里来回点）。 */}
+    {/* 读不了的文件，这里改什么都存不进去（只更新会被拒），出路是「立即修复」，放在最上面先说（2026-11-18 客户在这里来回点）。 */}
     {broken && onRepair && <><p className="v2-callout is-bad" data-testid="tool-broken-config-note">{brokenConfigDetails[broken]}</p><div className="v2-inline-actions">
-      <DialogExitButton variant="primary" after={() => onRepair(tool)} testId="tool-repair-config">修好它</DialogExitButton></div></>}
+      <DialogExitButton variant="primary" after={() => onRepair(tool)} testId="tool-repair-config">立即修复</DialogExitButton></div></>}
     {draft.source === 'unknown' && <><p className="v2-callout is-warn" data-testid="tool-foreign-key-note">{foreignKeyKind(native, 'unknown') === 'otherAccount' ? '这把密钥可能不是当前账号的，用量可能算到别的账号上。' : '这个工具现在用的不是当前账号的密钥，在这里打不开。'}点「{switchLabel}」换成你自己的，改之前会先备份现在的设置。</p><div className="v2-inline-actions">{onSwitchAccount
       ? <Button variant="primary" icon={KeyRound} loading={busy === '改用当前账号'} onClick={() => void switchAccount()} testId="tool-switch-account">{signedIn ? switchLabel : '登录后改用我的账号'}</Button>
       : <Button onClick={() => change({ source: 'account' })}>{switchLabel}</Button>}</div></>}

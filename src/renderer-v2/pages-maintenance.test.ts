@@ -248,7 +248,7 @@ describe('tutorial topics', () => {
     }
   })
 
-  it('states the three rules that decide whether 「接着聊」 is available', () => {
+  it('states the three rules that decide whether 「继续对话」 is available', () => {
     // 这三条都是命令行工具本身的限制（只能按文件夹找回最近一条），用户看不出来，
     // 写错了会让人以为按钮坏了。
     const text = tutorialText('sessions')

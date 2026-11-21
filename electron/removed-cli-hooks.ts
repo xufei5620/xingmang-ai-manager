@@ -142,7 +142,7 @@ export interface RemovedCliHooksRestoreStep {
 
 /**
  * 开机看到一条记录该怎么办。位置对不上（比如后来设了 CODEX_HOME）的划掉不补：卸载改的不是这份文件。
- * 现在已经有的（客户重新保存过配置，或者指向旧位置、归「修好它」管）划掉不补。写得出来的这次补；
+ * 现在已经有的（客户重新保存过配置，或者指向旧位置、归「立即修复」管）划掉不补。写得出来的这次补；
  * 写不出来的（没有运行环境，或 Windows 上 Grok 推到了 cmd）留到下次开机。
  */
 export function planRemovedCliHooksRestore(input: {

@@ -69,7 +69,7 @@ describe('guide setup result', () => {
 
   it('does not claim a relay key or billing route before account configuration is confirmed', () => {
     const result = buildGuideSetupResult({ route: 'codexDesktop', tool: { ...codex, configured: false }, signedIn: true, readiness: { prepared: true, connected: false }, name: 'Codex 桌面端', officialName: 'ChatGPT 账号' })
-    expect(result.connection.detail).toContain('还没设好')
+    expect(result.connection.detail).toContain('尚未设置')
     expect(result.billing).toBe('设置完成后开始从当前账号余额扣除。')
     expect(result.next.value).toBe('请先设置账号')
   })
@@ -174,10 +174,10 @@ describe('guide setup result names', () => {
     expect(changed.connection.detail).toBe('已在星芒外被修改，当前仍可使用。')
   })
 
-  // W82：第 3 步那颗按钮改名「去连好」，结果卡里点名它的那句跟着叫这个名字。
+  // W82：第 3 步那颗按钮改名「前往连接」，结果卡里点名它的那句跟着叫这个名字。
   it('names the configure button by its current label', () => {
     const result = buildGuideSetupResult({ route: 'claude', tool: { ...codex, id: 'claude', configured: false }, signedIn: true, readiness: { prepared: true, connected: false }, name: 'Claude Code', officialName: 'Claude 账号' })
-    expect(result.connection.detail).toBe('还没设好，点「去连好」保存一次。')
+    expect(result.connection.detail).toBe('尚未设置，请点击「前往连接」保存。')
   })
   // D46（新手流程 N5）：一切正常时最后一步把结果卡收成一行；有一行要人看一眼就摊开。
   it('is all clear only when no row needs a look', () => {

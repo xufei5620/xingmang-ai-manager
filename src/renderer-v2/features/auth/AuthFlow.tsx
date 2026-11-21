@@ -16,7 +16,7 @@ import './auth.css'
 export type AuthMode = 'login' | 'register' | 'recovery'
 // 读注册设置第一次没读到时，隔这么久自动再试一次。单次请求的 10 秒超时不动，只多给一次机会。
 const statusRetryDelayMs = 2_000
-// 这几步失败后可以原样再点一次；其余（两步验证的验证码已经用掉、设新密码失败后临时密码已亮出）没有「再试一次」。
+// 这几步失败后可以原样再点一次；其余（两步验证的验证码已经用掉、设新密码失败后临时密码已亮出）没有「重试」。
 const retryableActions = ['登录', '发送验证码', '创建账号', '发送重置邮件', '重置密码'] as const
 type RetryableAction = typeof retryableActions[number]
 function isRetryableAction(action: string): action is RetryableAction {

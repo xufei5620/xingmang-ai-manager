@@ -191,7 +191,7 @@ export interface ToolStatus {
   /**
    * 只在 Mac 上的 Codex / Grok 出现：找到的那份不是 npm 装的，又核不出是官方安装器那一份，星芒不替它跑
    * （tool-installation.ts 的 UnrecognizedDarwinCliError，Mac 验收 R1）。首页这时不给「打开」，给
-   * 「用星芒装一份」；主进程也不再拿「不会另装一份」拦这次安装。缺省 = 认得出或不适用。
+   * 「使用星芒安装」；主进程也不再拿「不会另装一份」拦这次安装。缺省 = 认得出或不适用。
    */
   unrecognizedInstall?: boolean
   /**
@@ -352,13 +352,13 @@ export type ToolUninstallResult =
         /**
          * true = the main process pinned exactly the files manualCommand names
          * and `cli:clean-uninstall-leftovers` may delete them after checking
-         * them again (已知48「帮我清理」). Omitted = the command is all there is.
+         * them again (已知48「一键清理」). Omitted = the command is all there is.
          */
         cleanUpAvailable?: boolean
       }
     }
 
-/** 「帮我清理」之后还剩几个文件（已知48）；0 = 删干净了。 */
+/** 「一键清理」之后还剩几个文件（已知48）；0 = 删干净了。 */
 export interface CliLeftoverCleanupResult {
   remaining: number
 }
@@ -377,7 +377,7 @@ export interface ConfigSavePayload {
   provider: ProviderId
   apiKey: string
   model: string
-  // repair 只有「修好它」「改用当前账号」那两条路用（NativeConfigWriteMode）；配置窗口的 config:save 只收合并和重置。
+  // repair 只有「立即修复」「改用当前账号」那两条路用（NativeConfigWriteMode）；配置窗口的 config:save 只收合并和重置。
   mode: NativeConfigWriteMode
 }
 
@@ -467,7 +467,7 @@ export interface SystemService {
   /** 这台电脑上是否已有这个 CLI 的官方登录，null = 看不出来；可选 = 旧实现不提供。 */
   inspectOfficialLogin?(provider: ProviderId): boolean | null
   /**
-   * 首页「修好它」：把本软件写进这家配置、却指向旧位置的钩子与状态行改成这次的路径
+   * 首页「立即修复」：把本软件写进这家配置、却指向旧位置的钩子与状态行改成这次的路径
    * （这台电脑写不出来就收回），写完再查一遍；还是旧的就抛中文原因。可选 = 旧实现不提供。
    */
   repairCliHooks?(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>>
@@ -534,7 +534,7 @@ export interface SystemService {
   installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void>
   cancelCliInstall(provider: ProviderId): InstallCancellationOutcome
   uninstallCli(provider: ProviderId, options?: CliUninstallOptions): Promise<ToolUninstallResult>
-  /** 「帮我清理」：只删这个工具上次卸载时记下的那几个文件，删前再核对一遍（已知48）。 */
+  /** 「一键清理」：只删这个工具上次卸载时记下的那几个文件，删前再核对一遍（已知48）。 */
   cleanUninstallLeftovers(provider: ProviderId): Promise<CliLeftoverCleanupResult>
   inspectCliUpdate(provider: ProviderId, forceRefresh?: boolean): Promise<CliStatus>
   /** request 只有 Mac 上首页「可更新到 v…」那一下才传（见 DesktopAppUpdateRequest）。 */

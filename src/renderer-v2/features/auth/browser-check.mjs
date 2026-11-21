@@ -588,7 +588,7 @@ test('a failed switch keeps the step and offers the matching way out', async () 
   } finally { await page.close() }
 })
 
-// 已知29：写不进配置文件时不再叫人去查安装目录。出口按「写不进」那一类走，D14 起是「找客服」。
+// 已知29：写不进配置文件时不再叫人去查安装目录。出口按「写不进」那一类走，D14 起是「联系客服」。
 test('a switch that cannot write the config file says what to close and offers support', async () => {
   const page = await open('scenario=guide&installed=1&runtime=1&unknown=1&switchable=1&switchDenied=1')
   try {
@@ -598,36 +598,36 @@ test('a switch that cannot write the config file says what to close and offers s
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-switch-account').click()
     await page.getByTestId('guide-error').waitFor()
-    assert.equal(await page.getByTestId('guide-error').textContent(), '改用当前账号没有成功：写不进配置文件。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，还不行就点「复制给客服」发给客服。')
-    assert.equal((await page.getByTestId('guide-retry').textContent())?.trim(), '再试一次')
+    assert.equal(await page.getByTestId('guide-error').textContent(), '改用当前账号失败：无法写入配置文件。通常是安全软件拦截或文件被其他程序占用。请关闭正在使用该工具的窗口后点击「重试」，如仍失败，请点击「复制给客服」并发送给客服。')
+    assert.equal((await page.getByTestId('guide-retry').textContent())?.trim(), '重试')
     assert.equal((await page.getByTestId('guide-copy-support').textContent())?.trim(), '复制给客服')
-    assert.equal((await page.getByTestId('guide-exit-support').textContent())?.trim(), '找客服')
+    assert.equal((await page.getByTestId('guide-exit-support').textContent())?.trim(), '联系客服')
     assert.equal(await page.getByTestId('guide-exit-log').count(), 0)
     const failure = JSON.parse(await page.evaluate(() => document.documentElement.dataset.guideFailure ?? '{}'))
-    assert.equal(failure.reason, '写不进配置文件')
+    assert.equal(failure.reason, '无法写入配置文件')
     assert.match(failure.detail, /EPERM/)
     assert.doesNotMatch(failure.detail, /Users/)
     await page.getByTestId('guide-copy-support').click()
     await page.getByTestId('guide-copy-support-status').filter({ hasText: '已复制，请发送给客服' }).waitFor()
     const copied = await page.evaluate(() => window.copiedSupport)
     assert.match(copied, /做什么：新手引导 · Codex CLI 改用当前账号/)
-    assert.match(copied, /原因：写不进配置文件/)
-    assert.doesNotMatch(copied, /写不进安装目录|Users/)
+    assert.match(copied, /原因：无法写入配置文件/)
+    assert.doesNotMatch(copied, /无法写入安装目录|Users/)
     await page.getByTestId('guide-retry').click()
     await page.locator('[data-guide-step="ready"]').waitFor()
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'switch', 'switch'])
   } finally { await page.close() }
 })
 
-// 第十九批 1：引导里装工具失败也要有出口。Node.js 太旧认不了证书时，「换成新版 Node.js」
-// 当主按钮，换完引导接着装刚才那个工具；换不了（Mac）时只给「找客服」这类出口。
+// 第十九批 1：引导里装工具失败也要有出口。Node.js 太旧认不了证书时，「更新 Node.js」
+// 当主按钮，换完引导接着装刚才那个工具；换不了（Mac）时只给「联系客服」这类出口。
 test('an install that fails on an outdated Node.js offers the replacement and carries on', async () => {
   const page = await open('scenario=guide&auto=1&switchable=1&certFail=1&replaceNode=1')
   try {
     await page.getByTestId('guide-route-claude').check()
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-install').click()
-    await page.getByTestId('guide-error').filter({ hasText: '点「换成新版 Node.js」，换好后星芒会接着装' }).waitFor()
+    await page.getByTestId('guide-error').filter({ hasText: '请点击「更新 Node.js」，更新后将自动继续安装' }).waitFor()
     assert.match(await page.getByTestId('guide-exit-replaceNode').getAttribute('class') ?? '', /primary/)
     await page.getByTestId('guide-exit-replaceNode').click()
     await page.locator('[data-guide-step="connect"]').waitFor()
@@ -657,10 +657,10 @@ test('an unrecognised install failure keeps the raw text and copies it for suppo
     await page.getByTestId('guide-route-claude').check()
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-install').click()
-    await page.getByTestId('guide-error').filter({ hasText: 'Claude Code 没装上（未能识别问题类型，原始信息如下）。点「再试一次」，还不行就点「复制给客服」发给客服。' }).waitFor()
+    await page.getByTestId('guide-error').filter({ hasText: 'Claude Code 安装失败（未能识别问题类型，原始信息如下）。请点击「重试」；如仍失败，请点击「复制给客服」并发送给客服。' }).waitFor()
     const raw = page.getByTestId('guide-error-raw')
     assert.equal(await raw.getAttribute('open'), '')
-    assert.match(await raw.textContent() ?? '', /给客服看的原话.*E999/)
+    assert.match(await raw.textContent() ?? '', /原始信息（供客服查看）.*E999/)
     assert.doesNotMatch(await raw.textContent() ?? '', /abcdefghijklmnop/)
     const failure = JSON.parse(await page.evaluate(() => document.documentElement.dataset.guideFailure ?? '{}'))
     assert.equal(failure.action, '新手引导 · 安装 Claude Code')
@@ -744,7 +744,7 @@ test('command-line preparation unlocks Node then the CLI from confirmed snapshot
 })
 
 // 第十一批 2：能代装运行环境的平台上，「准备工具」这一步只剩一颗「安装」，
-// Node.js 那一行只报状态；失败时说清是哪一段没装上，并给一颗「再试一次」。
+// Node.js 那一行只报状态；失败时说清是哪一段没装上，并给一颗「重试」。
 test('a command-line tool installs with one button when the runtime can be prepared automatically', async () => {
   const page = await open('scenario=guide&auto=1&installFail=1')
   try {
@@ -755,7 +755,7 @@ test('a command-line tool installs with one button when the runtime can be prepa
     assert.equal(await page.getByTestId('guide-python').count(), 0)
     assert.equal(await page.getByTestId('guide-install').isEnabled(), true)
     await page.getByTestId('guide-install').click()
-    await page.getByTestId('guide-error').filter({ hasText: '运行环境没装上（下载超时），Claude Code 还没开始装' }).waitFor()
+    await page.getByTestId('guide-error').filter({ hasText: '运行环境安装失败（下载超时），Claude Code 尚未开始安装' }).waitFor()
     await page.getByTestId('guide-retry').click()
     // 装好之后替用户点「下一步」；还没连上，所以停在「确认连接」。
     await page.locator('[data-guide-step="connect"]').waitFor()
@@ -766,7 +766,7 @@ test('a command-line tool installs with one button when the runtime can be prepa
 })
 
 // 全面检测 Q8：「打开工具」失败时说主进程给的原因，不借登录那套「输入已保留」，
-// 并且和「安装」一样给一颗「再试一次」。
+// 并且和「安装」一样给一颗「重试」。
 test('a failed tool launch in the guide keeps the real reason and can be retried', async () => {
   const page = await open('scenario=guide&installed=1&connected=1&runtime=1&launchFail=1')
   try {
@@ -830,7 +830,7 @@ test('a real backup and a verified switch appear after account switching, and a 
   } finally { await page.close() }
 })
 
-// 主路卡点 F3：新账号余额 $0 走完引导，「去充值」排在最底下，小屏上要往下翻才看得到。
+// 主路卡点 F3：新账号余额 $0 走完引导，「前往充值」排在最底下，小屏上要往下翻才看得到。
 test('an empty wallet puts top-up in view on the last step without scrolling', async () => {
   const page = await open('scenario=guide&installed=1&connected=1&runtime=1&switchable=1&walletEmpty=1')
   try {

@@ -210,7 +210,7 @@ for (const [label, query, url] of [
   } finally { await page.close() }
 })
 
-// 账号没开通某个工具（签密钥时服务端说分组不可用）：横幅和卡片都给「找客服」，开的是帮助框里的客服二维码，
+// 账号没开通某个工具（签密钥时服务端说分组不可用）：横幅和卡片都给「联系客服」，开的是帮助框里的客服二维码，
 // 不再把人送进帮不上忙的配置框（0.2.22 打磨 B5，主路卡点 F5）。
 test('a tool the account has not enabled sends the customer to support from the banner and the card', async () => {
   const page = await open('allInstalled=1&notEnabled=grok')
@@ -225,7 +225,7 @@ test('a tool the account has not enabled sends the customer to support from the 
     await dialog.locator('[data-modal-close]').click()
     await expect(dialog).toHaveCount(0)
     const primary = page.getByTestId('tool-grok-primary')
-    await expect(primary).toHaveText('找客服')
+    await expect(primary).toHaveText('联系客服')
     await primary.click()
     await dialog.waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length), 0)
@@ -469,7 +469,7 @@ test('a failed Claude Desktop install offers the offline packages first and the 
     async function failInstall() {
       await row.getByRole('button', { name: '安装', exact: true }).click()
       const dialog = page.getByTestId('operation-error')
-      await dialog.getByText('没能装好 Claude Desktop', { exact: true }).waitFor()
+      await dialog.getByText('Claude Desktop 安装未成功', { exact: true }).waitFor()
       return dialog
     }
     async function openedBy(dialog, label) {
@@ -485,14 +485,14 @@ test('a failed Claude Desktop install offers the offline packages first and the 
     assert.ok(footer.scroll <= footer.client, `错误框底部按钮溢出：${JSON.stringify(footer)}`)
     assert.ok(footer.rows > 1, `七颗按钮应该折成两行：${JSON.stringify(footer)}`)
     await page.screenshot({ path: path.join(artifacts, 'claude-desktop-install-failed-exits.png') })
-    await expect(dialog.getByTestId('operation-error-body')).toHaveText('先点「重试」；还不行就点「下载离线安装包」，装好后回星芒点「重新检测」。')
+    await expect(dialog.getByTestId('operation-error-body')).toHaveText('请先点击「重试」；如仍失败，请点击「下载离线安装包」，安装完成后回到星芒点击「重新检测」。')
     const exits = await dialog.locator('[data-testid^="operation-error-claudeDesktop"]').allTextContents()
-    assert.deepEqual(exits, ['下载离线安装包', '去 Claude 官网'])
+    assert.deepEqual(exits, ['下载离线安装包', '前往 Claude 官网'])
     assert.equal(await dialog.getByRole('button', { name: '去官网下载', exact: true }).count(), 0)
     assert.equal(await openedBy(dialog, '下载离线安装包'), 'https://docs-new.solov.cc/guide/manager#offline-packages')
     await expect(dialog).toHaveCount(0)
     dialog = await failInstall()
-    assert.equal(await openedBy(dialog, '去 Claude 官网'), 'https://claude.com/download')
+    assert.equal(await openedBy(dialog, '前往 Claude 官网'), 'https://claude.com/download')
     await clean(page)
   } finally { await page.close() }
 })
@@ -1296,7 +1296,7 @@ test('macOS reopens the Codex desktop app after an update even if another tool w
     assert.equal(await update.innerText(), '可更新到 v1.3.0')
     await page.evaluate(() => window.v2Test.holdNextInstall())
     await update.click()
-    const prompt = page.getByRole('dialog', { name: 'Codex 桌面端还开着' })
+    const prompt = page.getByRole('dialog', { name: 'Codex 桌面端正在运行' })
     await prompt.getByRole('button', { name: '关掉并更新' }).click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installCodexDesktop'))
     // 更新还在半路，客户先去打开 Codex 命令行，那次打开停在主进程那一步。
@@ -1364,7 +1364,7 @@ test('the home recent card resumes the last conversation of that folder (#292)',
     // 同目录更老的 claude:3 点下去会接到 claude:1,那比不给按钮还糟。
     const resume = page.getByTestId('home-recent-resume-claude:1')
     await resume.waitFor()
-    assert.equal(await resume.innerText(), '接着聊')
+    assert.equal(await resume.innerText(), '继续对话')
     assert.equal(await resume.getAttribute('title'), '用 Claude Code 接着 my-app 里最近的一条对话')
     // 下面一行写「工具 · 文件夹名」，完整路径放小提示；时间写清是哪天（夹具的时间在 1970 年前后，随时区落在哪天不一定）。
     const row = page.getByTestId('home-recent-row-claude:1')
@@ -1427,7 +1427,7 @@ test('the card menu lists earlier chats of that tool, one per folder, and resume
   } finally { await page.close() }
 })
 
-// #1111 第 3 条：窗口里点「接着聊」才发现同一文件夹刚有新对话，这次不打开，行内说一句已换成最新那条。
+// #1111 第 3 条：窗口里点「继续对话」才发现同一文件夹刚有新对话，这次不打开，行内说一句已换成最新那条。
 test('the earlier-chats window says it swapped in the newest chat of a folder instead of silently not opening', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {
@@ -1440,7 +1440,7 @@ test('the earlier-chats window says it swapped in the newest chat of a folder in
     await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
     await page.getByTestId('tool-conversation-resume-claude:1').click()
     await page.getByTestId('tool-conversation-row-claude:6').waitFor()
-    assert.equal(await dialog.getByTestId('tool-conversations-replaced').innerText(), 'my-app 里刚有新的对话，已换成最新那条，再点一次「接着聊」')
+    assert.equal(await dialog.getByTestId('tool-conversations-replaced').innerText(), 'my-app 里刚有新的对话，已换成最新那条，再点一次「继续对话」')
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli')), false)
     await page.getByTestId('tool-conversation-resume-claude:6').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
@@ -1500,7 +1500,7 @@ test('the home recent card greys out a row whose folder is gone', async () => {
   } finally { await page.close() }
 })
 
-// 只装了 Codex 桌面端、或卸掉过某个工具时，「最近」里照样有那家的对话。「接着聊」走的是同一个「打开」，
+// 只装了 Codex 桌面端、或卸掉过某个工具时，「最近」里照样有那家的对话。「继续对话」走的是同一个「打开」，
 // 那家没装，点了只会报「工具尚未安装，请先完成准备。」，所以不给这颗按钮；装上以后再给（第四十一批 A）。
 test('the home recent card offers no resume for a tool that is not installed (第四十一批 A)', async () => {
   const page = await open('desktopOnly=1&recentWorkspaces=1')
@@ -1723,7 +1723,7 @@ test('an export the chosen folder will not take says to pick another folder or f
     await health.getByRole('button', { name: '导出检查报告', exact: true }).click()
     const healthNotice = health.locator('.v2-business-notice.is-error')
     await healthNotice.waitFor()
-    assert.match(await healthNotice.innerText(), /这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。/)
+    assert.match(await healthNotice.innerText(), /该位置不允许保存文件，请选择其他文件夹（如「下载」）后重新导出。/)
     assert.doesNotMatch(await healthNotice.innerText(), /安装目录/)
 
     // 设置页「导出聊天记录和设置」时盘满了：不再说安装用的临时文件夹。
@@ -1732,7 +1732,7 @@ test('an export the chosen folder will not take says to pick another folder or f
     await settings.getByTestId('settings-transfer-export').click()
     const settingsNotice = settings.locator('.v2-business-notice.is-error')
     await settingsNotice.waitFor()
-    assert.match(await settingsNotice.innerText(), /这块盘满了，清出一些空间，或者换一块盘再导出。/)
+    assert.match(await settingsNotice.innerText(), /该磁盘空间已满，请清理部分空间或选择其他磁盘后重新导出。/)
     assert.doesNotMatch(await settingsNotice.innerText(), /临时文件夹|安装目录/)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await clean(page)
@@ -1836,7 +1836,7 @@ test('home reuses the recent list instead of rescanning session folders on every
 })
 
 // 首页一直开着就不会重新挂载。以前从这里打开工具、在终端里聊完再切回来，「最近」一直是打开前那份：
-// 刚聊的那条不在，「接着聊」还挂在同一文件夹更早的那条上，点下去接上的却是刚聊的那条（第四十一批 C）。
+// 刚聊的那条不在，「继续对话」还挂在同一文件夹更早的那条上，点下去接上的却是刚聊的那条（第四十一批 C）。
 test('home re-reads the recent list when the window comes back after a tool was opened', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   const homeReads = () => page.evaluate(() => window.v2Test.calls
@@ -1862,14 +1862,14 @@ test('home re-reads the recent list when the window comes back after a tool was 
     await focusWindow()
     await page.getByTestId('home-recent-resume-claude:6').waitFor()
     assert.equal(await homeReads(), 2)
-    // 刚聊的排第一；my-app 里更早的 claude:1 不再挂「接着聊」，不会再有一颗接到别的对话上的按钮。
+    // 刚聊的排第一；my-app 里更早的 claude:1 不再挂「继续对话」，不会再有一颗接到别的对话上的按钮。
     assert.equal(await page.locator('[data-testid^="home-recent-row-"]').first().getAttribute('data-testid'), 'home-recent-row-claude:6')
     assert.equal(await page.getByTestId('home-recent-resume-claude:1').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
 
-// 已知4：从终端直接点回星芒，回到前面时那次重读是异步的，这一下用的还是旧列表：「接着聊」还挂在同一文件夹更早那条上，
+// 已知4：从终端直接点回星芒，回到前面时那次重读是异步的，这一下用的还是旧列表：「继续对话」还挂在同一文件夹更早那条上，
 // Claude Code 按文件夹接最近一条，接上的却是刚聊的那条。点下去先现读一份对一次，点的这条已经不是最近的就这次不打开，
 // 按钮挪到刚聊的那条上；还是最近的就照常打开。
 test('home 接着聊 checks the newest records first and holds back when a newer chat took over the folder (已知4)', async () => {
@@ -1889,7 +1889,7 @@ test('home 接着聊 checks the newest records first and holds back when a newer
     assert.equal(await page.getByTestId('home-recent-resume-claude:1').count(), 0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli')), false)
     // 没打开要说一句为什么（#1111 第 3 条），不然只看到按钮转一下、那行标题悄悄换掉。
-    assert.equal(await page.getByTestId('home-recent-replaced').innerText(), 'my-app 里刚有新的对话，已换成最新那条，再点一次「接着聊」')
+    assert.equal(await page.getByTestId('home-recent-replaced').innerText(), 'my-app 里刚有新的对话，已换成最新那条，再点一次「继续对话」')
     // 挪过去的那颗还是最近的，照常打开。
     await page.waitForFunction(() => document.querySelector('[data-testid="home-recent-resume-claude:6"]')?.disabled === false)
     await page.getByTestId('home-recent-resume-claude:6').click()
@@ -1954,14 +1954,14 @@ test('home re-reads the recent list when the window is shown again, so the open 
   } finally { await page.close() }
 })
 
-// 第四十二批 B：记录页读两份，列表本身（pageSize 20）和定「接着聊」挂在哪条上的最新 100 条；首页那份是 60，不混着数。
+// 第四十二批 B：记录页读两份，列表本身（pageSize 20）和定「继续对话」挂在哪条上的最新 100 条；首页那份是 60，不混着数。
 // 开发模式挂两遍会让第一次进来读几次不固定，所以只数「多了几次」。
 async function recordsReads(page) {
   return page.evaluate(() => [20, 100].map((size) => window.v2Test.calls
     .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === size).length))
 }
 
-// 记录页去过一次以后，在终端里聊完再回来还是第一次进来时那份：刚聊的那条不在，「接着聊」还挂在同一文件夹更早的那条上，
+// 记录页去过一次以后，在终端里聊完再回来还是第一次进来时那份：刚聊的那条不在，「继续对话」还挂在同一文件夹更早的那条上，
 // 而 Claude Code 按文件夹接最近一条（#292），点下去接上的是刚聊的那条。
 test('the records page reads both lists again when it is shown again, so 接着聊 sits on the newest record of the folder', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
@@ -1976,14 +1976,14 @@ test('the records page reads both lists again when it is shown again, so 接着�
     await page.getByTestId('nav-sessions').click()
     await page.getByTestId('sessions-resume-claude:6').waitFor()
     assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
-    // 刚聊的排第一、带「接着聊」；my-app 里更早的 claude:1 不再带，不会接到别的对话上。
+    // 刚聊的排第一、带「继续对话」；my-app 里更早的 claude:1 不再带，不会接到别的对话上。
     assert.equal(await page.locator('[data-testid^="sessions-row-"]').first().getAttribute('data-testid'), 'sessions-row-claude:6')
     assert.equal(await page.getByTestId('sessions-resume-claude:1').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
 
-// 已知4：记录页同一下。停在记录页时在终端里又聊了一条，半分钟内回到窗口不重读；这时点同一文件夹更早那条的「接着聊」，
+// 已知4：记录页同一下。停在记录页时在终端里又聊了一条，半分钟内回到窗口不重读；这时点同一文件夹更早那条的「继续对话」，
 // 先读一份最新的对一次，不是最近的就这次不打开，列表换成新的、按钮挪到刚聊的那条上。
 test('the records page 接着聊 checks the newest records first and holds back when a newer chat took over the folder (已知4)', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
@@ -2378,7 +2378,7 @@ test('the records page reads again when the window comes back after half a minut
   } finally { await page.close() }
 })
 
-// 在记录页点「接着聊」，在终端里聊完切回来：不用等半分钟，回到窗口那一下就重读，开着的详情里也是新的对话，
+// 在记录页点「继续对话」，在终端里聊完切回来：不用等半分钟，回到窗口那一下就重读，开着的详情里也是新的对话，
 // 读的时候不闪成「正在读取对话…」。
 test('after 接着聊 on the records page the next return to the window reads again at once, open record included', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
@@ -2419,7 +2419,7 @@ test('after 接着聊 on the records page the next return to the window reads ag
     })
     await focusWindow()
     await drawer.getByText('刚在终端里问的').waitFor()
-    // 「最新 100 条」多读的那一次是点「接着聊」时先对的一下（已知4）。
+    // 「最新 100 条」多读的那一次是点「继续对话」时先对的一下（已知4）。
     assert.deepEqual(await recordsReads(page), [list + 1, latest + 2])
     await expect(drawer.getByText('上回问到这里')).toBeVisible()
     assert.equal(await page.evaluate(() => window.__sawTranscriptLoading), false)
@@ -2601,13 +2601,13 @@ test('archiving a session on the sessions page refreshes the home recent card ri
     await page.getByTestId('session-detail-drawer').getByRole('button', { name: '归档', exact: true }).click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'archiveSession'))
 
-    // 首页那份「最近」缓存一分钟；以前归档之后回首页，刚归档的那条还挂着「接着聊」（#544）。
+    // 首页那份「最近」缓存一分钟；以前归档之后回首页，刚归档的那条还挂着「继续对话」（#544）。
     await page.getByTestId('nav-home').click()
     await page.getByTestId('home-recent-card').waitFor()
     await page.waitForFunction(() => window.v2Test.calls
       .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 60).length === 2)
     await page.waitForFunction(() => !document.querySelector('[data-testid="home-recent-resume-claude:1"]'))
-    // 同一目录里的 claude:3 现在是最近一条，「接着聊」挪到它身上。
+    // 同一目录里的 claude:3 现在是最近一条，「继续对话」挪到它身上。
     await page.getByTestId('home-recent-resume-claude:3').waitFor()
     await clean(page)
   } finally { await page.close() }
@@ -3140,7 +3140,7 @@ test('a squeezed tool card shortens its status badge, never its button, and keep
     ['allInstalled=1&changedClaude=1', 'claude', '重新写入密钥', '配置被改过'],
     ['nativeCodex=1&codexUpdate=1', 'codex', '打开', null],
     ['detectionFailed=1', 'claude', '重新检测', '检测失败'],
-    ['emptyWallet=1', 'claude', '去充值', '余额为零'],
+    ['emptyWallet=1', 'claude', '前往充值', '余额为零'],
   ]
   for (const [query, tool, label, status] of cases) {
     const page = await open(query)
@@ -3177,17 +3177,17 @@ test('a squeezed tool card shortens its status badge, never its button, and keep
     } finally { await page.close() }
   }
 })
-// 主路卡点 F4：余额是 $0 时首页上面说要先充值，工具卡和大卡的主按钮也是「去充值」；「打开」照样能点。
+// 主路卡点 F4：余额是 $0 时首页上面说要先充值，工具卡和大卡的主按钮也是「前往充值」；「打开」照样能点。
 test('an empty wallet turns the main button on the tool cards into 去充值 and keeps 打开 one click away', async () => {
   const page = await open('emptyWallet=1')
   try {
     await page.getByTestId('home-low-balance').waitFor()
     const row = page.getByTestId('tool-row-claude')
     await row.getByText('余额为零', { exact: true }).waitFor()
-    assert.deepEqual(await row.locator('.xm-tool-card-actions > .xm-btn').allInnerTexts(), ['去充值'])
-    // 大卡：「去充值」排第一当主按钮，「打开 Claude Code」退成旁边的次按钮。
+    assert.deepEqual(await row.locator('.xm-tool-card-actions > .xm-btn').allInnerTexts(), ['前往充值'])
+    // 大卡：「前往充值」排第一当主按钮，「打开 Claude Code」退成旁边的次按钮。
     const hero = page.getByTestId('home-hero')
-    assert.deepEqual((await hero.locator('.v2-home-hero-actions > .xm-btn').allInnerTexts()).map((text) => text.split('\n')[0]), ['去充值', '打开 Claude Code', '选择其他文件夹…'])
+    assert.deepEqual((await hero.locator('.v2-home-hero-actions > .xm-btn').allInnerTexts()).map((text) => text.split('\n')[0]), ['前往充值', '打开 Claude Code', '选择其他文件夹…'])
     assert.match(await page.getByTestId('home-hero-recharge').getAttribute('class'), /xm-btn-primary/)
     assert.match(await page.getByTestId('home-hero-open').getAttribute('class'), /xm-btn-secondary/)
     // 「打开」在「…」第一项，点了照常打开。
@@ -3198,7 +3198,7 @@ test('an empty wallet turns the main button on the tool cards into 去充值 and
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     await page.getByTestId('tool-claude-recharge').waitFor()
     await clean(page)
-    // 卡上的「去充值」进个人中心的充值页。
+    // 卡上的「前往充值」进个人中心的充值页。
     await page.getByTestId('tool-claude-recharge').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="account-tabs"] [aria-selected="true"]')?.textContent === '充值订阅')
     // 默认夹具没接充值、订单那几个读取（会记进 unexpected），这里只看有没有报错。
@@ -3226,7 +3226,7 @@ test('an empty wallet whose subscription could not be read is not called empty a
 test('an English probe failure reads as a plain Chinese sentence on the home row', async () => {
   const page = await open('detectionFailed=eperm')
   try {
-    const sentence = '没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。'
+    const sentence = '无权读取该工具的文件，通常是被安全软件拦截。请点击「重新检测」；如仍失败，请在「反馈与客服」页导出报告并发送给客服。'
     const row = page.getByTestId('tool-row-claude')
     await row.getByText(sentence, { exact: true }).waitFor()
     assert.doesNotMatch(await row.innerText(), /EPERM|operation not permitted/)
@@ -3363,18 +3363,18 @@ test('a switch goes on to install when the uninstall leaves old version files be
     await clean(page)
   } finally { await page.close() }
 })
-// 已知48「帮我清理」：主进程按卸载时记下的文件去删，删不掉就留着框说还剩几个。
+// 已知48「一键清理」：主进程按卸载时记下的文件去删，删不掉就留着框说还剩几个。
 test('the leftover dialog cleans up through the main process and says what is still left', async () => {
   const page = await open('cliUpdate=1&nativeInstall=1&uninstallLeftovers=1')
   try {
     await startManagedSwitch(page)
     const dialog = page.getByRole('dialog', { name: 'Claude Code 还有文件没删干净', exact: true })
-    await dialog.getByText('点「帮我清理」，星芒再核对一遍就替你删掉；也可以复制下面的命令，在普通 PowerShell里自己执行。', { exact: true }).waitFor()
+    await dialog.getByText('点「一键清理」，星芒再核对一遍就替你删掉；也可以复制下面的命令，在普通 PowerShell里自己执行。', { exact: true }).waitFor()
     await dialog.getByTestId('manual-uninstall-cleanup').click()
     // 第一次那个文件还被占着：框留着，红字说还剩几个、接下来怎么办。
     await expect(dialog.getByTestId('manual-uninstall-cleanup-problem'))
-      .toHaveText('还有 1 个文件没删掉。关掉所有 Claude Code 窗口后再点一次「帮我清理」；还是不行，请联系客服。')
-    // 红字叫人找客服，框底就给「找客服」：帮助框叠在上面，关掉还回到这个框（D21）。
+      .toHaveText('还有 1 个文件没删掉。关掉所有 Claude Code 窗口后再点一次「一键清理」；还是不行，请联系客服。')
+    // 红字叫人找客服，框底就给「联系客服」：帮助框叠在上面，关掉还回到这个框（D21）。
     await dialog.getByTestId('manual-uninstall-support').click()
     const support = page.getByTestId('support-dialog')
     await support.waitFor()
@@ -4488,7 +4488,7 @@ test('a launch paints the last saved scan first and swaps in the fresh one witho
   } finally { await page.close() }
 })
 
-// 第三十一批 A：开机检测没跑完时只放开「打开」「接着聊」。点下去配置现读、工具现找，
+// 第三十一批 A：开机检测没跑完时只放开「打开」「继续对话」。点下去配置现读、工具现找，
 // 用不上上次的结果；「安装」照旧等检测跑完。
 test('a connected tool opens while the last saved scan is still on screen, and install keeps waiting', async () => {
   const page = await open('allInstalled=1&cachedScan=1')
@@ -6403,7 +6403,7 @@ test('the required-update gate stays up however many times Esc is pressed', asyn
     await pressEscape()
     assert.equal(await modal(), true)
 
-    // 门里点「找客服」，帮助框叠在门上面：Esc 关的是帮助框，门还在。
+    // 门里点「联系客服」，帮助框叠在门上面：Esc 关的是帮助框，门还在。
     await gate.getByTestId('required-update-support').click()
     const support = page.getByTestId('support-dialog')
     await support.waitFor()
@@ -7078,7 +7078,7 @@ test('running desktop offers a real restart and official quotas can be refreshed
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
     await page.getByRole('button', { name: '重开 Codex', exact: true }).click()
-    await page.getByRole('heading', { name: 'Codex 桌面端还开着' }).waitFor({ state: 'hidden' })
+    await page.getByRole('heading', { name: 'Codex 桌面端正在运行' }).waitFor({ state: 'hidden' })
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'launchCodexDesktop').args), ['restart'])
     await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
     await page.getByRole('menuitem', { name: 'ChatGPT 账号额度…', exact: true }).click()
@@ -7108,7 +7108,7 @@ test('a key from another site is named for the account and switched from the row
   } finally { await page.close() }
 })
 
-// 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml。行上的「修好它」按现在用的账号把读不了的
+// 2026-10-02 客户报的「无法加载组织设置」：Codex 自己读不了 config.toml。行上的「立即修复」按现在用的账号把读不了的
 // 那份重新生成（repair，主进程里跟「重置为初始状态」一样整份重建），不换来源。
 test('a Codex config Codex cannot read is reset from either Codex row on the current account', async () => {
   const page = await open('codexBroken=1')
@@ -7146,7 +7146,7 @@ test('a ChatGPT login whose Codex config cannot be read is reset on the official
 })
 
 // 2026-11-18 客户：中文用户名被读成乱码、吃掉了反斜杠，Codex 读不了 config.toml，星芒也读不出中转地址。
-// 从托盘打开以前只说「请先确认账号连接」还把配置窗口弹出来，在里面怎么点都修不好；现在错误框直接给「修好它」，
+// 从托盘打开以前只说「请先确认账号连接」还把配置窗口弹出来，在里面怎么点都修不好；现在错误框直接给「立即修复」，
 // 修完替客户接着打开。
 test('opening a tool whose config cannot be read offers 修好它 and opens it once repaired', async () => {
   const page = await open('codexUnreadable=1')
@@ -7156,8 +7156,8 @@ test('opening a tool whose config cannot be read offers 修好它 and opens it o
     await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'codex'))
     const dialog = page.getByTestId('operation-error')
     await dialog.waitFor()
-    await expect(dialog.getByRole('heading', { name: '配置文件坏了' })).toBeVisible()
-    await expect(page.getByTestId('operation-error-body')).toHaveText('点「修好它」，会先备份原来的文件，修好后接着打开。')
+    await expect(dialog.getByRole('heading', { name: '配置文件已损坏' })).toBeVisible()
+    await expect(page.getByTestId('operation-error-body')).toHaveText('点击「立即修复」将先备份原文件，修复后自动打开。')
     await expect(page.getByTestId('operation-error-detail')).toHaveText('Codex 读不了这份配置，打开会报错。')
     assert.equal(await dialog.getByText('请先确认账号连接', { exact: false }).count(), 0)
     assert.equal(await page.getByTestId('config-dialog').count(), 0)
@@ -7186,7 +7186,7 @@ test('the config dialog of a tool whose config cannot be read says so and repair
     for (const tool of ['codex', 'codexDesktop']) await connectedBadge(page, tool).waitFor()
     const resets = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].mode === 'repair').map((entry) => entry.args[0].providers))
     assert.deepEqual(resets, [['codex']])
-    // 修好了再开配置窗口，那一行红字和「修好它」都不在了。
+    // 修好了再开配置窗口，那一行红字和「立即修复」都不在了。
     await openToolConfiguration(page, 'codex')
     assert.equal(await page.getByTestId('tool-broken-config-note').count(), 0)
     assert.equal(await page.getByTestId('tool-repair-config').count(), 0)
@@ -7307,7 +7307,7 @@ test('the which-account menus on the CLI and Claude Desktop cards keep every wor
   } finally { await page.close() }
 })
 
-// 只坏了 auth.json 时「修好它」以前也整份重置，config.toml 里客户自己的设置跟着没了（X-1）。主进程按 repair
+// 只坏了 auth.json 时「立即修复」以前也整份重置，config.toml 里客户自己的设置跟着没了（X-1）。主进程按 repair
 // 只重建 auth.json，这里钉住界面交过去的是 repair、不是配置里「重置为初始状态」的 reset。
 test('a Codex login file Codex cannot read is repaired from either Codex row', async () => {
   const page = await open('codexAuthBroken=1')
@@ -8664,7 +8664,7 @@ test('configuration save failures name the cause like the page notice for a save
     const alert = dialog.getByRole('alert').filter({ hasText: '保存配置没有成功' })
     await alert.waitFor()
     assert.equal(await alert.locator('strong').innerText(), '工具正在运行')
-    assert.match(await alert.innerText(), /文件被占用。先关掉正在使用这个工具的窗口，再重试。/)
+    assert.match(await alert.innerText(), /文件被占用。请关闭正在使用该工具的窗口后重试。/)
     assert.doesNotMatch(await alert.innerText(), /EBUSY|fixture|config\.toml/)
     await openConfigAdvanced(page)
     await page.getByTestId('tool-save-reset').click()
@@ -9016,7 +9016,7 @@ test('switching accounts while the model question is open drops it without openi
   } finally { await page.close() }
 })
 
-// 第四十批 B：记录页的「接着聊」以前直接叫主进程打开，首页打开前那几道关（核对默认模型、
+// 第四十批 B：记录页的「继续对话」以前直接叫主进程打开，首页打开前那几道关（核对默认模型、
 // 没连好账号先去连、Codex 老配置先修）一道都没过。
 const recordsResumedNotice = '已打开Claude Code，接着 C:\\work\\my-app 里最近的一条对话'
 async function resumeFromRecords(page) {
@@ -9109,7 +9109,7 @@ test('switching accounts while the records page question is open drops it withou
   } finally { await page.close() }
 })
 
-// 首页、托盘的「打开」一次只放一个，记录页「接着聊」不走那里：记录页那一问还开着时从托盘打开工具，
+// 首页、托盘的「打开」一次只放一个，记录页「继续对话」不走那里：记录页那一问还开着时从托盘打开工具，
 // 后来的一问顶掉它。记录页这次不打开，也不能一直转圈等一个再也没人回答的问题。
 test('a tool opened from the tray while the records page question is open takes the question over', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
@@ -9366,7 +9366,7 @@ test('a failed runtime stage says the tool never started and does not run the CL
   try {
     await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
     await page.getByTestId('tool-grok-primary').click()
-    await page.getByTestId('operation-error-detail').filter({ hasText: 'Node.js 运行环境没装上，Grok CLI 还没开始安装' }).waitFor()
+    await page.getByTestId('operation-error-detail').filter({ hasText: 'Node.js 运行环境安装失败，Grok CLI 尚未开始安装' }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
     await page.getByRole('button', { name: '返回', exact: true }).click()
     await clean(page)
@@ -9439,7 +9439,7 @@ test('a permission failure hands over the install directory instead of offering 
     await page.getByTestId('tool-grok-primary').click()
     const dialog = page.getByTestId('operation-error')
     await dialog.waitFor()
-    assert.match(await dialog.innerText(), /写不进安装目录/)
+    assert.match(await dialog.innerText(), /无法写入安装目录/)
     // 这颗按钮已经没有了：本程序按普通权限运行，提权重试等于换一套安装事务。
     assert.equal(await page.getByRole('button', { name: /管理员/ }).count(), 0)
     const target = '/home/fixture/.npm-global/lib/node_modules/@xai-official/grok'
@@ -9447,7 +9447,7 @@ test('a permission failure hands over the install directory instead of offering 
     await page.getByTestId('operation-error-copyPath').click()
     await page.getByTestId('operation-error-copied').waitFor()
     assert.deepEqual(await page.evaluate(() => window.__copied), [target])
-    // 复制不关对话框：后端原话和「找客服」都还在。
+    // 复制不关对话框：后端原话和「联系客服」都还在。
     assert.equal(await dialog.count(), 1)
     await page.getByRole('button', { name: '返回', exact: true }).click()
     await clean(page)
@@ -9549,7 +9549,7 @@ test('an uninstall that hits a running tool offers 重试, which uninstalls agai
     await page.getByRole('menuitem', { name: '卸载…', exact: true }).click()
     await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).getByRole('button', { name: '卸载 Grok CLI', exact: true }).click()
     const failure = page.getByTestId('operation-error')
-    await failure.getByText('文件被占用。先关掉正在使用这个工具的窗口，再重试。', { exact: true }).waitFor()
+    await failure.getByText('文件被占用。请关闭正在使用该工具的窗口后重试。', { exact: true }).waitFor()
     await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
     await page.getByTestId('operation-error-retry').click()
     await page.locator('[data-testid="tool-row-grok"][data-installed="false"]').waitFor()
@@ -9800,7 +9800,7 @@ test('a failed rewrite says what the backend said instead of claiming it was fix
   } finally { await page.close() }
 })
 
-// 目录里 keyInvalid 的「一键修复」以前没接线，落到「找客服」。
+// 目录里 keyInvalid 的「一键修复」以前没接线，落到「联系客服」。
 test('the one-click repair on an invalid key runs the same rewrite', async () => {
   const page = await open()
   try {
@@ -9808,7 +9808,7 @@ test('the one-click repair on an invalid key runs the same rewrite', async () =>
     await page.evaluate(() => { window.v2Test.fail = 'installCli'; window.v2Test.failMessage = '安装失败：令牌已失效' })
     await page.getByTestId('tool-grok-primary').click()
     await page.getByTestId('operation-error').waitFor()
-    await page.getByTestId('operation-error-body').getByText('工具打不开对话，需要换一把密钥', { exact: true }).waitFor()
+    await page.getByTestId('operation-error-body').getByText('工具无法发起对话，需要更换密钥', { exact: true }).waitFor()
     const before = await page.evaluate(() => {
       window.v2Test.fail = ''
       window.v2Test.failMessage = ''
@@ -9884,7 +9884,7 @@ test('settings reopens the onboarding guide, and the interface tour replays unti
   } finally { await page.close() }
 })
 
-// #1104 第 12 条：引导里点「去聊天」，导览原来开在聊天页上，第二步只能指着侧栏的「首页」念
+// #1104 第 12 条：引导里点「前往对话」，导览原来开在聊天页上，第二步只能指着侧栏的「首页」念
 // 「每个工具一张卡片。点左下角的账号标签…」，左下角正好是侧栏的账号卡。现在导览只在首页放。
 test('the interface tour waits for the home page instead of pointing its tool card step at the sidebar', async () => {
   const page = await open()
@@ -9924,7 +9924,7 @@ test('the interface tour waits for the home page instead of pointing its tool ca
   } finally { await page.close() }
 })
 
-// 引导里选了「先在星芒里聊天」，「进入首页」以前跟旁边的「去聊天」一样进了聊天页。
+// 引导里选了「先在星芒里聊天」，「进入首页」以前跟旁边的「前往对话」一样进了聊天页。
 test('the guide home button lands on the home page even when chat was chosen', async () => {
   const page = await open()
   try {
@@ -10000,7 +10000,7 @@ test('tutorial searches step contents regardless of case and surrounding spaces 
     await expect(explanation.getByText(/刚改过配置，需要重新读取时/)).toBeVisible()
     // 只展开含这个词的那一条补充说明，其余照旧收着；页面翻到命中的那几个字。
     const notes = article.locator('details.v2-tutorial-extra')
-    await expect.poll(() => notes.evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle))).toEqual(['提示 Codex 桌面端还开着？'])
+    await expect.poll(() => notes.evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle))).toEqual(['提示 Codex 桌面端正在运行？'])
     const explanationHit = explanation.locator('mark.v2-tutorial-hit')
     await expect(explanationHit).toHaveText('重新读取时')
     await expect.poll(() => insidePageViewport(explanationHit)).toBe(true)
@@ -10249,7 +10249,7 @@ test('tutorial actions land on the account tab or settings group the step descri
   } finally { await page.close() }
 })
 
-// 检查页网络项以前的「去处理」跳到「设置 → 网络」，那里没有能处理它的东西、「去检查」又跳回来，
+// 检查页网络项以前的「去处理」跳到「设置 → 网络」，那里没有能处理它的东西、「前往检查」又跳回来，
 // 等于绕一圈（新手引导梳理 9-25 第 2 条）。说不出换线路救不救得回来的（这里不带原因），
 // 这一行照旧只给结论，不带人去设置页兜圈。
 test('the health network row no longer sends the user around through settings', async () => {
@@ -10606,7 +10606,7 @@ test('the check page checks again when it is shown again, but not while a check 
   } finally { await page.close() }
 })
 
-// 去过检查页、换走，再从设置「网络检查」点「去检查页」：这时正在重查，等新结果出来再翻到网络那一项、
+// 去过检查页、换走，再从设置「网络检查」点「前往检查页」：这时正在重查，等新结果出来再翻到网络那一项、
 // 亮一下，不先在上回那份结果上亮。
 test('pointing at an item of a check page visited before waits for the new results', async () => {
   const page = await open()
@@ -11318,7 +11318,7 @@ test('a record opens in a modal dialog that closes with Esc and hands focus back
     await dialog.getByRole('heading', { name: '会话 2', exact: true }).waitFor()
     assert.equal(await page.evaluate(() => document.querySelector(':modal')?.getAttribute('data-testid')), 'session-detail-drawer')
     assert.equal(await dialog.evaluate((element) => element.classList.contains('xm-dialog-640')), true)
-    // 文件夹没了的那条：弹窗里说清楚接不上，「接着聊」按不动。
+    // 文件夹没了的那条：弹窗里说清楚接不上，「继续对话」按不动。
     assert.equal(await dialog.locator('.v2-session-detail-gone').innerText(), '项目文件夹 C:\\work\\older-app 已经不在了，接不上上次的对话。')
     assert.equal(await dialog.getByTestId('session-detail-resume').isDisabled(), true)
     await page.keyboard.press('Escape')
@@ -11501,8 +11501,8 @@ test('a chat page opened while an import is still saving waits for it and keeps 
     assert.deepEqual(await page.getByTestId('chat-phrases-dialog').locator('.chat-phrase-text').allTextContents(), ['旧电脑上存的一句'])
     await page.getByTestId('chat-phrases-close').click()
     await page.getByTestId('chat-phrases-dialog').waitFor({ state: 'detached' })
-    await page.getByTestId('chat-composer-input').fill('接着聊')
-    await expect.poll(() => page.evaluate(() => window.v2Test.chatHistory().index)).toContain('接着聊')
+    await page.getByTestId('chat-composer-input').fill('继续对话')
+    await expect.poll(() => page.evaluate(() => window.v2Test.chatHistory().index)).toContain('继续对话')
     assert.deepEqual(await page.evaluate(() => window.v2Test.chatHistory().ids), ['from-old-computer'])
     await clean(page)
   } finally { await page.close() }

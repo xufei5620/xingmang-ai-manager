@@ -89,7 +89,7 @@ describe('requiredUpdateGate', () => {
   })
 
   it('explains a disk shortfall instead of offering a button that silently does nothing', () => {
-    // 主进程量盘不够时不抛错，阶段停在 available：门要带上缺口，按钮换成「再试一次」。
+    // 主进程量盘不够时不抛错，阶段停在 available：门要带上缺口，按钮换成「重试」。
     const diskShortfall = { neededBytes: 1800 * 1024 ** 2, freeBytes: 1200 * 1024 ** 2 }
     expect(requiredUpdateGate(snapshot({ diskShortfall })))
       .toMatchObject({ action: 'download', label: '重新检查空间', diskShortfall, failure: null })

@@ -47,7 +47,7 @@ interface ToolLaunchOptions {
 }
 
 /**
- * 首页、托盘、快捷键、记录页「接着聊」打开工具的那一整条：打开前的几道关、要不要换默认模型、
+ * 首页、托盘、快捷键、记录页「继续对话」打开工具的那一整条：打开前的几道关、要不要换默认模型、
  * Codex 桌面端开着要不要重开、要不要中文。每一步都认点「打开」时的那个账号，中途换了账号就停下。
  */
 export function useToolLaunch(options: ToolLaunchOptions) {
@@ -112,7 +112,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
   }
   /**
    * 真打开之前那几道关：检测出没出错、装没装、Codex 老配置先修、没连好账号先去连、核对默认模型。
-   * 首页「打开」「接着聊」走 openTool()，记录页「接着聊」自己叫主进程打开，两边都先过这里
+   * 首页「打开」「继续对话」走 openTool()，记录页「继续对话」自己叫主进程打开，两边都先过这里
    * （第四十批 B：记录页以前一道都没过）。返回打开前读到的快照、配置和工具；null = 不往下走
    * （问话框里关掉了，或者中途换了账号），什么都不打开，也不报错。
    */
@@ -138,17 +138,17 @@ export function useToolLaunch(options: ToolLaunchOptions) {
         tool = presentTools({ ...current, config }).find((entry) => entry.id === id) ?? tool
       }
       // Codex 老配置写在它不认的名字下，照原样打开必然报 Key 无效。修完就能用的，
-      // 先替用户修（和「修好它」同一条路：备份、写入、自检，失败会恢复原样）再打开。
+      // 先替用户修（和「立即修复」同一条路：备份、写入、自检，失败会恢复原样）再打开。
       if (!tool.configured && readyOnceRepaired(config.providers[tool.provider], tool.provider)) {
         const repaired = await switchToolAccount(id, 'account')
         if (!repaired || !launchIsCurrent(epoch)) return null
         const fresh = await toolsApi.readConfig()
         if (!launchIsCurrent(epoch)) return null
         tool = presentTools({ ...current, config: fresh }).find((entry) => entry.id === id) ?? tool
-        if (codexNeedsRepair(fresh.providers[tool.provider], tool.provider)) throw new Error('Codex 的连接设置没修好，已保持原样。请在首页点「修好它」再试一次。')
+        if (codexNeedsRepair(fresh.providers[tool.provider], tool.provider)) throw new Error('Codex 的连接设置没修好，已保持原样。请在首页点「立即修复」再试一次。')
       }
       // 工具自己都读不了的配置文件，在配置窗口里怎么选都修不好（只更新会被拒、密钥也读不准），不再弹它、
-      // 也不说「确认账号连接」：错误框直接给「修好它」，修完接着打开（broken-config-launch.ts）。
+      // 也不说「确认账号连接」：错误框直接给「立即修复」，修完接着打开（broken-config-launch.ts）。
       const broken = tool.configured ? null : brokenConfigOf(config.providers[tool.provider], tool.provider)
       if (broken) throw new Error(brokenConfigLaunchMessages[broken])
       if (!tool.configured) { openToolConfig(id); throw new Error('请先确认账号连接，再打开工具。') }
@@ -160,7 +160,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
         let answerCurrent: (choice: ModelSwapChoice) => void = () => undefined
         const choice = await new Promise<ModelSwapChoice>((answer) => {
           answerCurrent = answer
-          // 首页、托盘的「打开」一次只放一个（launchRequest），记录页「接着聊」不走那里：记录页这一问
+          // 首页、托盘的「打开」一次只放一个（launchRequest），记录页「继续对话」不走那里：记录页这一问
           // 还开着时从托盘打开工具，新的一问会顶掉它。旧的那一问替用户关掉（等于这次先不打开），
           // 不然它永远等不到回答，记录页一直转圈。
           pendingModelSwap.current?.('cancel')
@@ -311,7 +311,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
     const inFlight = launchRequest.current
     if (inFlight?.epoch() && (inFlight.id === id || !launchParkedOnAccount(inFlight.id))) return
     launchRequest.current = request
-    // 记着是哪个工具：错误框里的「修好它」「复制路径」都要靠它找到修哪个、哪个目录。
+    // 记着是哪个工具：错误框里的「立即修复」「复制路径」都要靠它找到修哪个、哪个目录。
     void perform('打开工具', async () => {
       try {
         // Codex 桌面端先查在不在运行、问不问中文，也算在「正在打开工具」里；要弹框问的，

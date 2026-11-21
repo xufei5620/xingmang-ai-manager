@@ -27,7 +27,7 @@ interface FailureActionsOptions {
   setNodeReplace: Dispatch<SetStateAction<{ retry?: () => void } | null>>
   setAuth: Dispatch<SetStateAction<AuthMode | null>>
   setHelp: Dispatch<SetStateAction<boolean>>
-  /** 首页「配置文件坏了」那颗「修好它」；修好了再跑 retry（错误框里那次没打开的打开）。 */
+  /** 首页「配置文件坏了」那颗「立即修复」；修好了再跑 retry（错误框里那次没打开的打开）。 */
   repairBrokenConfig(tool: ToolId, retry?: () => void): void
 }
 
@@ -72,7 +72,7 @@ export function useFailureActions({ app, toolsApi, toast, perform, navigate, ope
     else if (action === 'backups') navigate('backups')
     else if (action === 'relogin') setAuth('login')
     // 目录里 keyInvalid 的「一键修复」就是这件事：对当前账号把已配置的工具重新
-    // 写一次 Key。一次点击只重写一次，连续失败的出口仍旧是「找客服」。
+    // 写一次 Key。一次点击只重写一次，连续失败的出口仍旧是「联系客服」。
     else if (action === 'repair') void perform(rewriteKeyAction, () => rewriteAccountKeys())
     else if (action === 'repairConfig' && failure?.tool) repairBrokenConfig(failure.tool, failure.retry)
     else if (action === 'replaceNode') setNodeReplace(failure?.retry ? { retry: failure.retry } : {})
@@ -85,7 +85,7 @@ export function useFailureActions({ app, toolsApi, toast, perform, navigate, ope
     else if (action === 'claudeDesktopDownload') void perform('打开下载页', () => app.openExternal(claudeDesktopDownloadPageUrl))
     else setHelp(true)
   }, [app, navigate, openCodexDesktopStore, operationError, perform, repairBrokenConfig, requestCodexDesktopReset, rewriteAccountKeys, setAuth, setHelp, setNodeReplace, setOperationError])
-  // 引导里「改用」或安装失败时的出口：和错误框同一张表，只是没有「再试一次」
+  // 引导里「改用」或安装失败时的出口：和错误框同一张表，只是没有「重试」
   //（引导自己有）。去充值、去设置 › 备份迁移会离开引导，进度照旧留着；换 Node.js 不离开，
   // 换完接着重跑引导里失败的那一步。
   const runGuideFailureAction = useCallback((action: OperationActionId, retry?: () => void) => {
