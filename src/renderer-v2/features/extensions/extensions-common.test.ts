@@ -41,7 +41,7 @@ describe('parseHttpHeaders', () => {
 
   it('explains the format when a line has no name, an empty value or a bad name', () => {
     for (const text of ['Bearer abc', 'Authorization:', 'Bad Name: x', '-H: x', '{"X": 1}', '{oops']) {
-      expect(() => parseHttpHeaders(text)).toThrow('请求头每行写一个，格式是「名称: 值」')
+      expect(() => parseHttpHeaders(text)).toThrow('请求头每行一个，格式为「名称: 值」')
     }
   })
 })

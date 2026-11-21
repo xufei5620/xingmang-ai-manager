@@ -2226,7 +2226,7 @@ test('with only the Codex desktop app, the plugins page manages Codex connection
     const hub = page.getByTestId('page-extensions')
     await hub.getByTestId('hub-installed').getByRole('button', { name: /docs/ }).waitFor()
     // 插件要命令行工具：两家官方那块都只说先去装，不替他下插件目录。
-    await expect(hub.getByTestId('hub-codex-missing')).toContainText('装好 Codex CLI 才能看 GPT 官方插件。')
+    await expect(hub.getByTestId('hub-codex-missing')).toContainText('安装 Codex CLI 后可查看 GPT 官方插件。')
     await expect(hub.getByTestId('hub-codex-open-home')).toBeVisible()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'ensureProviderMarketplace')), false)
 
@@ -10557,7 +10557,7 @@ test('the skills chapter explains importing for every tool and the card list com
     await page.getByTestId('nav-extensions').click()
     const hub = page.getByTestId('page-extensions')
     await hub.getByTestId('hub-nav-skills').click()
-    await expect(hub.getByTestId('hub-skills-empty')).toHaveText('还没装技能。拿到别人给的技能文件夹时，点右上角「添加」导入。')
+    await expect(hub.getByTestId('hub-skills-empty')).toHaveText('暂未安装技能。获取技能文件夹后，请点击右上角「添加」导入。')
     await expect(hub.getByTestId('hub-add')).toBeEnabled()
     await hub.getByTestId('hub-add').click()
     await expect(page.getByTestId('hub-add-skill')).toBeEnabled()
