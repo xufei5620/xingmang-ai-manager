@@ -31,6 +31,7 @@
 - 排队时连同客户在确认框里点头时的设置一起排，轮到哪一段都照那份出（#1489 R28-4）：页面刚打开、模型表还没读完就点了生成，读完以后记着的模型换成了默认的，排在后面的几段也不会悄悄换模型和时长。那个模型真的用不了了，主进程在扣费之前就拒掉。
 - 视频模型从账号所有分组里找（`kind` 是 `video` 的，现在是 Grok 和 MiniMax 两家），默认 `grok-imagine-video-1.5`；每段时长只列这个模型能出的长度。文字模型的菜单和聊天一样按厂商分节。
 - 对话里出好的一段视频能「添加到视频」（融合第 2 步）：`project.ts` 的 `appendVideoStudioClip` 把它接成这条视频的最后一个镜头（描述进画面描述，片段直接挂上，不用再生成；上一次拼好的成片不再算数），`createVideoStudioProjectFromClip` 是「新建视频」那一项（想法填那句描述，画面比例、出片的模型跟着这一段走，别的设置照最近那一条）。这是从工作台外面改一条视频，走 `useVideoStudioLibrary` 的 `replace`：它给这条视频的版本号加一，开着的工作台按新的版本号重新挂（`CreatePage` 里 `key` 带着 `library.revision(id)`），旧工作台手上那份 `source` 认的是发给它时的版本号，之后再写一律不收，不会把新加的镜头盖回去。那条视频正开着、手上有事（写分镜、生成、拼片）时不加（出好的东西要挂回它身上），镜头放满了也不加，各说一句。
+- 作品库里现成的东西能直接用在镜头上（融合第 3 步，按钮只在「创作」页把 `library`（`VideoStudioLibraryPicker`）交下来时出现）：「从作品库选图」选一张当这一镜的开头图（跟「用一张图开头」落在同一格，只存编号）；「使用已有片段」把一段现成的视频挂到这一镜上，镜头记 `borrowed: true`（`project.ts` 的 `assignVideoStudioShotClip`），不用生成、不花钱。用着现成片段的镜头状态牌写「已有片段」，那一排是「更换片段」「不使用此片段」（`removeVideoStudioShotClip`，回到「还没生成」），没有「生成」和「时长」；算总时长、算几镜一样长时按片段自己的长度（`videoStudioShotLength`）。第 2 步「添加到视频」接进来的那一段、起始页第三张卡「用已有片段合成视频」新开的每一镜（`createVideoStudioProjectFromClips`）也都记 `borrowed`。这个记号还有一个用处：作品库认一段视频「出自」哪条视频时，只认生成它的那一条，接进去用的那些条算「用于」（`features/create/library.ts`）。选择框由「创作」页开（`features/create/CreateLibrary.tsx` 的 `LibraryPicker`），工作台只等它交回编号；等的时候换成了别的视频，选好的不挂到换上来的那一条上。
 - 换账号时整页重新挂载（`key={scope}`），上一个账号的请求和进度都作废。
 
 文件：
@@ -56,7 +57,7 @@
 - `storeVideoStudioExport`：拼好的成片存进作品库；`openAiVideo` 用电脑默认的播放器打开，`saveAiVideo` 另存（页面把片名带过去当系统对话框里默认的文件名，主进程 `parseVideoSaveName` 洗成干净的文件名：路径分隔符和 Windows 不认的字换成空格、去掉改写显示方向的字、最长 80 个字、接 .mp4，保留名或洗空了就用作品库原来的名字；存到哪儿照旧由用户在对话框里点）。读片段和存成片在主进程按窗口排成一队、一次只搬一段（最多 512 MB），排着的超过 12 个直接拒，连发也撑不爆主进程内存。
 - `openDiagnosticFolder('ai-output')`：检查页那条通道，打开 AI 作品文件夹（路径由主进程算，过了 I8 检查才打开）。成片那一行和说到「AI 作品文件夹」的提示旁边都有「打开文件夹」，打不开时按失败说一句。
 
-主窗口的 CSP 只有一条 `media-src xingmang-asset:`（融合第 2 步加的，产品负责人 2026-11-09「看片放开」：只放作品库里当前账号的音视频，不许再扩大），对话里出好的一段视频点了能在页面里放（`clip.ts` 的 `videoClipPlayUrl`）；这一页自己还是缩略图加「用播放器打开」。打包版里 `xingmang://` 回的每个文件都带上和 `index.html` 一样的 CSP 响应头（`electron/app-protocol.ts`）：拼片的后台线程只认自己脚本的响应头、不继承页面的 `<meta>`，这样它也连不了外站。
+主窗口的 CSP 只有一条 `media-src xingmang-asset:`（融合第 2 步加的，产品负责人 2026-11-09「看片放开」：只放作品库里当前账号的音视频，不许再扩大），对话里出好的一段视频、作品库里点开的一段视频（融合第 3 步，同一条、没有再放宽）点了能在页面里放（`clip.ts` 的 `videoClipPlayUrl`）；这一页自己还是缩略图加「用播放器打开」。打包版里 `xingmang://` 回的每个文件都带上和 `index.html` 一样的 CSP 响应头（`electron/app-protocol.ts`）：拼片的后台线程只认自己脚本的响应头、不继承页面的 `<meta>`，这样它也连不了外站。
 
 凭据门禁（`scripts/verify-canvas-renderer-boundary.test.cjs`）同样扫本目录和对话页，页面或线程里长出带 Key 的请求会当场红。
 

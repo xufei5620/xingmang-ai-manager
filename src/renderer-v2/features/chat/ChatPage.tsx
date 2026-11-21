@@ -43,8 +43,6 @@ export interface ChatPageProps {
   /** 顶部搜索的「聊天参数设置」：为 true 时打开参数对话框，打开后调 onParametersOpened 把它放下。 */
   openParameters?: boolean
   onParametersOpened?: () => void
-  /** 右上角「看做过的图」（Fable 第二轮 Q4）：在画布窗口的项目中心打开素材库。不给就不出那颗按钮。 */
-  onOpenAssets?: () => void
   /** 「创作」页（features/create）加进这一页的东西：左边那一列里的视频和画布项目、右边换上去的那一块、起始页上的卡。 */
   create?: ChatPageCreate
 }
@@ -73,6 +71,31 @@ export interface ChatPageCreate {
   notes?: readonly string[]
   /** 输入框的第三档「生成视频」（融合第 2 步）。不给就没有这一档。 */
   video?: ChatPageVideo
+  /** 左下角的「作品库」和右边换上去的那一块（融合第 3 步）。不给就没有。 */
+  library?: ChatPageLibrary
+}
+/** 主窗口的作品库：这一页只管左下角那一行和把右边让出来，里面的东西由「创作」页给。 */
+export interface ChatPageLibrary {
+  /** 右边现在摆的是不是作品库。 */
+  open: boolean
+  /** 一共多少件；还没读到是 null。没读到、一件都没有时不写数。 */
+  count: number | null
+  onOpen: () => void
+  /** 对话里刚出完东西：再数一遍。 */
+  refresh: () => void
+  /** 右边那一块，和从别处叫出来的选择框。要用对话这边的东西（有哪些对话、怎么把一张图放进输入框），所以由这一页来摆。 */
+  render: (context: ChatLibraryContext) => ReactNode
+}
+export interface ChatLibraryContext {
+  conversations: readonly Conversation[]
+  /** 回到这段对话。 */
+  openConversation: (id: string) => void
+  /** 把这张图放进输入框接着改；回到对话这边。当前对话正在生成就放进一段新的。 */
+  reuseImage: (asset: AiChatAsset) => void
+  /** 把这张图当开头图、换到「生成视频」；prompt 是当初那句描述。 */
+  animateImage: (asset: AiChatAsset, prompt: string) => void
+  /** 这个账号现在能不能出视频。 */
+  canAnimate: boolean
 }
 /** 「生成视频」那一档要「创作」页给的东西：这个账号用不用得了、价目和余额、做过的视频。 */
 export interface ChatPageVideo {
@@ -102,12 +125,12 @@ export interface ChatPageCreateActions {
 // video：发一段视频之前先问的那一句（每次都问：一段单独计费）。
 type Confirmation = { kind: 'retry' | 'delete-message' | 'delete-conversation' | 'clear' | 'clear-all' | 'stop' | 'video'; id?: string; mayStillComplete?: boolean } | null
 
-export function ChatPage({ bridge, accountScope, active = true, onOpenAccount, openParameters, onParametersOpened, onOpenAssets, create }: ChatPageProps) {
+export function ChatPage({ bridge, accountScope, active = true, onOpenAccount, openParameters, onParametersOpened, create }: ChatPageProps) {
   const api = useMemo(() => createChatApi(bridge), [bridge])
-  return <ChatScope key={accountScope} api={api} scope={accountScope} active={active} onOpenAccount={onOpenAccount} openParameters={openParameters} onParametersOpened={onParametersOpened} onOpenAssets={onOpenAssets} create={create} />
+  return <ChatScope key={accountScope} api={api} scope={accountScope} active={active} onOpenAccount={onOpenAccount} openParameters={openParameters} onParametersOpened={onParametersOpened} create={create} />
 }
 
-interface ChatScopeProps { api: ChatApi; scope: string; active: boolean; onOpenAccount?: ChatPageProps['onOpenAccount']; openParameters?: boolean; onParametersOpened?: () => void; onOpenAssets?: () => void; create?: ChatPageCreate }
+interface ChatScopeProps { api: ChatApi; scope: string; active: boolean; onOpenAccount?: ChatPageProps['onOpenAccount']; openParameters?: boolean; onParametersOpened?: () => void; create?: ChatPageCreate }
 
 // History lives in files read through the main process, so it arrives
 // asynchronously. The page waits for it instead of starting empty: an early
@@ -133,7 +156,7 @@ function ChatScope(props: ChatScopeProps) {
   return <ChatView key={history.generation} {...props} history={history.loaded} onReloadHistory={reload} />
 }
 
-function ChatView({ api, scope, active, onOpenAccount, openParameters, onParametersOpened, onOpenAssets, create, history, onReloadHistory }: ChatScopeProps & { history: LoadedChatHistory; onReloadHistory: (session: () => ChatWorkspace) => Promise<string | undefined> }) {
+function ChatView({ api, scope, active, onOpenAccount, openParameters, onParametersOpened, create, history, onReloadHistory }: ChatScopeProps & { history: LoadedChatHistory; onReloadHistory: (session: () => ChatWorkspace) => Promise<string | undefined> }) {
   const chat = useChatController(api, scope, history, active)
   const toast = useToast()
   const { offline } = useOnlineStatus()
@@ -231,6 +254,9 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const extraCandidates = useMemo(() => active ? filterCreateExtras(extraItems, search) : [], [active, extraItems, search])
   const listGroups = useMemo(() => groupCreateList(candidates, extraCandidates, filter), [candidates, extraCandidates, filter])
   const extraSelected = create?.selected ?? null
+  // 右边摆着作品库（融合第 3 步）：同点了一条视频，对话那一块只藏不卸。
+  const library = create?.library
+  const paneCovered = Boolean(extraSelected) || Boolean(library?.open)
   // 列表最下面的小字：哪一类这一次没读出来。对话读不出来、列表里又有视频或画布项目时也说在这里（一行都没有时照旧说在空状态里）。
   const listNotes = [...(chat.historyUnreadable && listGroups.length > 0 && filter !== 'video' && filter !== 'canvas' ? [unreadableHistoryNote] : []), ...(create?.notes ?? [])]
   const task = async (work: () => Promise<unknown>, done: string) => {
@@ -370,6 +396,17 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const latestExtraActions = useRef<ChatPageCreateActions | undefined>(undefined)
   latestExtraActions.current = create?.actions
   const extraActions = useMemo<ExtraActions>(() => ({ open: (item) => latestExtraActions.current?.open(item), renameVideo: (id) => latestExtraActions.current?.renameVideo(id), removeVideo: (id) => latestExtraActions.current?.removeVideo(id), openCanvas: (id) => latestExtraActions.current?.openCanvas(id) }), [])
+  // 作品库里「基于此图继续编辑」「用此图生成视频」：回到对话这边，图放进输入框。当前对话正在生成就放进一段新的（生成着的那一段输入框是锁着的）。
+  const latestLibraryActions = useRef<Pick<ChatLibraryContext, 'openConversation' | 'reuseImage' | 'animateImage'> | null>(null)
+  latestLibraryActions.current = {
+    openConversation: switchConversation,
+    reuseImage: (asset) => { if (pending) chat.newConversation(); create?.actions.leave(); void chat.reuseImage(asset); focusComposer() },
+    animateImage: (asset, prompt) => { if (pending) chat.newConversation(); create?.actions.leave(); chat.animateImage(asset, prompt); focusComposer() },
+  }
+  const libraryContext = useMemo<ChatLibraryContext>(() => ({
+    conversations: chat.state.conversations, canAnimate: videoReady,
+    openConversation: (id) => latestLibraryActions.current?.openConversation(id), reuseImage: (asset) => latestLibraryActions.current?.reuseImage(asset), animateImage: (asset, prompt) => latestLibraryActions.current?.animateImage(asset, prompt),
+  }), [chat.state.conversations, videoReady])
   const renamingFrom = renaming ? chat.state.conversations.find((item) => item.id === renaming.id)?.title : undefined
   const renameReady = Boolean(renaming && renaming.text.trim() && renaming.text.trim() !== renamingFrom)
   const saveRename = () => { if (!renaming || !renameReady) return; chat.renameConversation(renaming.id, renaming.text); setRenaming(null) }
@@ -417,6 +454,13 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const confirmTitle = confirmation?.kind === 'video' ? '生成 1 段视频？' : confirmation?.kind === 'retry' ? '重新生成这条回复？' : confirmation?.kind === 'stop' ? '停止等待图片生成？' : confirmation?.kind === 'clear' ? '清空当前对话？' : confirmation?.kind === 'clear-all' ? '清空全部对话？' : confirmation?.kind === 'delete-conversation' ? `删除「${chat.state.conversations.find((item) => item.id === confirmation.id)?.title ?? '新对话'}」？` : '删除这条及之后的消息？'
   const running = chat.state.conversations.some(isGenerating) || Object.values(preparations).some((item) => item.phase === 'loading')
   const anyGenerating = chat.state.conversations.some(isGenerating)
+  // 对话里刚出完一张图、一段视频：左下角「作品库」的数再数一遍（只在从「正在生成」变回来的那一下）。
+  const refreshLibrary = library?.refresh
+  const wasGenerating = useRef(anyGenerating)
+  useEffect(() => {
+    if (wasGenerating.current && !anyGenerating) refreshLibrary?.()
+    wasGenerating.current = anyGenerating
+  }, [anyGenerating, refreshLibrary])
   // 回复是界面一段段接着收、收完写进聊天记录的：在回复的时候窗口缩到托盘也不关界面（electron/renderer-release.ts）。
   // 等视频的不算在这里面：它关了界面也不断（请求号存着，回来接），重启装更新、导入聊天记录都不用为它等几分钟。
   useBackgroundWork('chat', chat.state.conversations.some(isGeneratingReply) || isGeneratingReply(chat.state.draftConversation), 'chat')
@@ -431,15 +475,17 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
       <div className="chat-conversation-search"><SearchInput value={search} onChange={setSearch} placeholder="搜索做过的东西" testId="chat-conversation-search" /></div>
       {filterOptions.length > 2 && <div className="chat-conversation-kinds"><Chips label="只看哪一类" value={filter} onChange={(value) => setKind(filterOptions.find((option) => option.value === value)?.value ?? 'all')} options={filterOptions} testId="create-filter" /></div>}
       <nav className="chat-conversation-list" aria-label="做过的东西列表">{listGroups.map(({ label, rows }) => <Fragment key={label}><div className="chat-conversation-day">{label}</div>{rows.map((row) => row.kind === 'chat'
-        ? <ConversationListItem key={`chat:${row.conversation.id}`} item={row.conversation} current={!extraSelected && row.conversation.id === chat.state.activeId} pageActive={active} actions={conversationActions} />
+        ? <ConversationListItem key={`chat:${row.conversation.id}`} item={row.conversation} current={!paneCovered && row.conversation.id === chat.state.activeId} pageActive={active} actions={conversationActions} />
         : <ExtraListItem key={`${row.kind}:${row.item.id}`} item={row.item} current={extraSelected?.kind === row.kind && extraSelected.id === row.item.id} locked={row.kind === 'video' && create?.lockedVideoId === row.item.id} pageActive={active} actions={extraActions} />)}</Fragment>)}{listGroups.length === 0 && (searchText
         ? <p className="chat-conversation-empty" data-testid="chat-conversation-search-empty">没有找到「{searchText}」相关的内容</p>
         : <p className="chat-conversation-empty" data-testid="chat-conversation-empty">{chat.historyUnreadable && (filter === 'all' || filter === 'chat') ? unreadableHistoryNote : filter !== 'all' ? '这一类还没做过。' : '还没做过东西。在右边的框里说一句试试。'}</p>)}{listNotes.map((note) => <p key={note} className="chat-conversation-empty" data-testid="create-list-note">{note}</p>)}</nav>
+      {library && <div className="chat-library-foot"><button type="button" className="chat-library-entry" data-active={library.open} aria-current={library.open ? 'page' : undefined} onClick={library.onOpen} data-testid="create-library-open"><span className="chat-conversation-kind" data-kind="library"><Images size={15} aria-hidden="true" /></span><strong>作品库</strong>{library.count ? <b data-testid="create-library-count">{library.count}</b> : null}</button></div>}
       {chat.state.conversations.length > 1 && <div className="chat-conversations-foot"><Button variant="ghost" size="xs" icon={Trash2} disabled={anyGenerating} onClick={() => setConfirmation({ kind: 'clear-all' })} testId="chat-conversations-clear">清空全部对话</Button></div>}
     </aside>
     {create?.pane}
-    <div className="chat-conversation" hidden={Boolean(extraSelected)}>
-      <header className="chat-bar"><strong title={startPage ? undefined : conversation.title}>{startPage ? '新建' : conversation.title}</strong><div className="chat-bar-actions">{onOpenAssets && <Button icon={Images} variant="ghost" size="sm" aria-label="看做过的图" title="看做过的图：在画布窗口的项目中心打开素材库，聊天里做的图和发过的图都在里面" onClick={onOpenAssets} testId="chat-assets-open" />}<Button icon={SlidersHorizontal} variant="ghost" size="sm" aria-label="参数设置" title="参数设置" onClick={() => setParametersOpen(true)} testId="chat-parameters-open" /><Button icon={Trash2} variant="ghost" size="sm" aria-label="清空对话" title="清空对话" disabled={pending || !conversation.messages.length} onClick={() => setConfirmation({ kind: 'clear' })} testId="chat-conversation-clear" /><Button icon={FileText} variant="ghost" size="sm" aria-label="导出这段对话" title="导出这段对话" disabled={pending || !conversation.messages.length} onClick={() => void exportConversation(conversation.id)} testId="chat-conversation-export" /></div></header>
+    {library?.render(libraryContext)}
+    <div className="chat-conversation" hidden={paneCovered}>
+      <header className="chat-bar"><strong title={startPage ? undefined : conversation.title}>{startPage ? '新建' : conversation.title}</strong><div className="chat-bar-actions"><Button icon={SlidersHorizontal} variant="ghost" size="sm" aria-label="参数设置" title="参数设置" onClick={() => setParametersOpen(true)} testId="chat-parameters-open" /><Button icon={Trash2} variant="ghost" size="sm" aria-label="清空对话" title="清空对话" disabled={pending || !conversation.messages.length} onClick={() => setConfirmation({ kind: 'clear' })} testId="chat-conversation-clear" /><Button icon={FileText} variant="ghost" size="sm" aria-label="导出这段对话" title="导出这段对话" disabled={pending || !conversation.messages.length} onClick={() => void exportConversation(conversation.id)} testId="chat-conversation-export" /></div></header>
       {(chat.groupError || chat.error || chat.notice || chat.storageError || preparationWarning) && <div className="chat-banner" data-tone={chat.groupError || chat.error || chat.storageError ? 'bad' : 'neutral'} role={chat.groupError || chat.error || chat.storageError ? 'alert' : 'status'}><span>{chat.storageError || chat.groupError || chat.error || chat.notice || preparationWarning}</span>{chat.historyUnreadable && chat.storageError && <Button size="xs" icon={RefreshCw} loading={reloading} disabled={running} onClick={() => void reloadHistory()} testId="chat-history-reload">重新读取</Button>}{chat.groupError && <Button size="xs" icon={RefreshCw} onClick={() => void chat.refreshGroups()} testId="chat-groups-retry">重试</Button>}{!chat.groupError && !chat.storageError && chat.error === offlineSendMessage && <Button size="xs" icon={RefreshCw} disabled={pending} onClick={() => void chat.retryOfflineSend()} testId="chat-send-retry">重试</Button>}{!chat.groupError && !chat.storageError && isConversationTooLongMessage(chat.error) && <Button size="xs" variant="primary" icon={Plus} onClick={chat.continueInNew} testId="chat-continue-new">带着这句话开新对话</Button>}{!chat.groupError && !chat.storageError && !preparationWarning && <Button variant="ghost" size="xs" icon={X} aria-label="关闭提示" title="关闭提示" onClick={() => { chat.setError(''); chat.setNotice('') }} />}</div>}
       <div className="chat-messages" ref={list} aria-label="消息记录" onScroll={(event) => { if (!active) return; const element = event.currentTarget; stickToBottom.current = !conversation.messages.length || element.scrollHeight - element.scrollTop - element.clientHeight < 80; scrolls.current.set(conversation.id, element.scrollTop) }}>
         {!conversation.messages.length && create?.intro?.(chat.state.conversations.length)}

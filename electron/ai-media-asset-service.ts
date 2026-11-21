@@ -46,6 +46,55 @@ export interface AiMediaAssetListPage {
   facets: AiMediaAssetFacets
 }
 
+/**
+ * What the main window's library (「创作 › 作品库」) asks for. Pictures and videos
+ * only, newest first; audio (the video editor's background music) is never listed.
+ */
+export interface AiMediaLibraryQuery {
+  offset?: number
+  limit?: number
+  /** `film` lists only the videos named in `filmAssetIds`, `clip` every other video, `video` both. */
+  kind?: 'all' | 'image' | 'video' | 'clip' | 'film'
+  search?: string
+  /**
+   * The videos the caller knows to be finished films (the video editor's last
+   * export of each project). The stores keep no such mark, so the caller, which
+   * holds the projects, names them; ids this account does not own match nothing.
+   */
+  filmAssetIds?: readonly string[]
+  /**
+   * Assets the caller already knows match `search`. Prompts typed in the chat
+   * and the video editor live in their own records, not in asset metadata, so
+   * the page that holds those records finds the matches and hands the ids in.
+   * They widen the search and never bypass ownership: an id is only ever
+   * compared with this account's own index.
+   */
+  matchedAssetIds?: readonly string[]
+}
+
+export interface AiMediaLibraryEntry {
+  assetId: string
+  mediaType: 'image' | 'video'
+  createdAt: string
+  /** Pictures only, from the stored file's extension (the store names files by sniffed content). */
+  mimeType?: 'image/png' | 'image/jpeg' | 'image/webp'
+  fileName: string
+  /** The name the user gave it; absent while it still carries the stored file name. */
+  name?: string
+  prompt?: string
+}
+
+export interface AiMediaLibraryPage {
+  items: AiMediaLibraryEntry[]
+  offset: number
+  limit: number
+  /** Assets matching the kind and the search. */
+  total: number
+  hasMore: boolean
+  /** The whole library regardless of the search: what the filter chips show. */
+  counts: { image: number; video: number; film: number }
+}
+
 export interface AiMediaAssetFacets {
   /** Ordered by descending count, then by name. Counts cover the whole library. */
   tags: Array<{ tag: string; count: number }>
@@ -68,6 +117,19 @@ const MAXIMUM_TAG_FACETS = 64
 // Above one account's full index (MAXIMUM_INDEXED_ASSETS) so a library page
 // never evicts its own hints.
 const MAXIMUM_KIND_HINTS = 50_000
+
+// The video editor keeps at most 200 projects, each with one finished film.
+export const MAXIMUM_LIBRARY_FILM_IDS = 200
+// One search can match every picture in a long chat history; past this the
+// caller sends its newest matches and the rest are found by name or prompt.
+export const MAXIMUM_LIBRARY_MATCHED_IDS = 2_000
+export const MAXIMUM_LIBRARY_PAGE_SIZE = 60
+
+const LIBRARY_IMAGE_MIME_TYPES: Readonly<Record<string, NonNullable<AiMediaLibraryEntry['mimeType']>>> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  webp: 'image/webp',
+}
 
 type AiMediaAssetKind = 'image' | 'video' | 'audio'
 const SEARCH_ORDER: readonly AiMediaAssetKind[] = ['image', 'video', 'audio']
@@ -265,6 +327,74 @@ export function createAiMediaAssetService(options: {
     }
   }
 
+  /** The name the user gave an asset; undefined while it still shows the stored file name. */
+  function givenName(row: AiMediaAssetRow): string | undefined {
+    return row.displayName !== row.entry.fileName ? row.displayName : undefined
+  }
+
+  /**
+   * The main window's library page. Unlike listOwnedPage it reads no media at
+   * all: the grid shows the derived thumbnail, and width, height and duration
+   * are read by the page from the picture or video it opens. Hydrating a page
+   * of videos here would pull every file, up to 512 MB each, through memory
+   * just to print a duration. The index is a fresh directory listing, so a
+   * file removed outside the app is simply not listed.
+   */
+  async function listOwnedLibrary(userId: number, query: AiMediaLibraryQuery = {}): Promise<AiMediaLibraryPage> {
+    const offset = query.offset ?? 0
+    const limit = query.limit ?? 24
+    const kind = query.kind ?? 'all'
+    const search = query.search?.trim() ?? ''
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > MAXIMUM_INDEXED_ASSETS) throw new Error('AI 素材分页位置无效')
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAXIMUM_LIBRARY_PAGE_SIZE) throw new Error('AI 素材分页数量无效')
+    if (!['all', 'image', 'video', 'clip', 'film'].includes(kind)) throw new Error('AI 素材媒体类型无效')
+    if (search.length > 128 || /[\x00-\x1F\x7F]/.test(search)) throw new Error('AI 素材搜索内容无效')
+    if ((query.filmAssetIds?.length ?? 0) > MAXIMUM_LIBRARY_FILM_IDS) throw new Error('AI 素材筛选集合过大')
+    if ((query.matchedAssetIds?.length ?? 0) > MAXIMUM_LIBRARY_MATCHED_IDS) throw new Error('AI 素材筛选集合过大')
+    const films = new Set(query.filmAssetIds ?? [])
+    const matched = new Set(query.matchedAssetIds ?? [])
+    const [images, videos] = await Promise.all([options.images.listOwnedIndex(userId), options.videos.listOwnedIndex(userId)])
+    for (const entry of [...images, ...videos]) rememberKind(userId, entry.assetId, entry.mediaType)
+    const metadata = await options.metadata.getAll(userId)
+    // The bin belongs to the canvas library; what sits in it is not shown here.
+    const rows = [...images, ...videos].map((entry) => libraryRow(entry, metadata[entry.assetId])).filter((row) => !row.deletedAt)
+    const isFilm = (row: AiMediaAssetRow) => row.entry.mediaType === 'video' && films.has(row.entry.assetId)
+    const counts = {
+      image: rows.filter((row) => row.entry.mediaType === 'image').length,
+      video: rows.filter((row) => row.entry.mediaType === 'video').length,
+      film: rows.filter(isFilm).length,
+    }
+    const normalizedSearch = search.toLocaleLowerCase('zh-CN')
+    const listed = rows
+      // clip is every video the page did not name as a film, so image + clip + film add up to the whole library.
+      .filter((row) => kind === 'all' || (kind === 'film' ? isFilm(row) : kind === 'clip' ? row.entry.mediaType === 'video' && !isFilm(row) : row.entry.mediaType === kind))
+      // The stored file name is not searched: every asset's begins with the
+      // same prefix, so a word from it would match the whole library.
+      .filter((row) => !normalizedSearch || matched.has(row.entry.assetId) || [givenName(row) ?? '', row.prompt ?? '', ...row.tags]
+        .some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedSearch)))
+      .sort((left, right) => right.entry.createdAt.localeCompare(left.entry.createdAt) || right.entry.assetId.localeCompare(left.entry.assetId))
+    const page = listed.slice(offset, offset + limit)
+    return {
+      items: page.map((row) => {
+        const mimeType = row.entry.mediaType === 'image' ? LIBRARY_IMAGE_MIME_TYPES[row.entry.extension] : undefined
+        return {
+          assetId: row.entry.assetId,
+          mediaType: row.entry.mediaType === 'video' ? 'video' as const : 'image' as const,
+          createdAt: row.entry.createdAt,
+          ...(mimeType ? { mimeType } : {}),
+          fileName: row.entry.fileName,
+          ...(givenName(row) ? { name: givenName(row) } : {}),
+          ...(row.prompt ? { prompt: row.prompt } : {}),
+        }
+      }),
+      offset,
+      limit,
+      total: listed.length,
+      hasMore: offset + page.length < listed.length,
+      counts,
+    }
+  }
+
   /**
    * Reads media for one page only. Hydration stays serial because each read
    * pulls a whole file into memory under the owning store's size ceiling, and
@@ -418,7 +548,7 @@ export function createAiMediaAssetService(options: {
     throw new Error(message)
   }
 
-  return { readOwned, readOwnedDetail, listOwnedPage, copy, saveAs, contextMenu, rename, updateMetadata, markUsed, setSource, softDelete, restore, purge }
+  return { readOwned, readOwnedDetail, listOwnedPage, listOwnedLibrary, copy, saveAs, contextMenu, rename, updateMetadata, markUsed, setSource, softDelete, restore, purge }
 }
 
 export type AiMediaAssetService = ReturnType<typeof createAiMediaAssetService>

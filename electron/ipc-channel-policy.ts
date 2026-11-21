@@ -273,6 +273,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // 「创作」左边那一列（融合第 1 步）：只回当前账号画布项目的编号、名字和时间；打开时编号先在这个账号的项目里认过。
   'canvas:list-projects': { label: '画布项目列表读取', log: 'quiet-success', account: 'scoped' },
   'canvas:open-project': { label: '画布项目打开', log: 'normal', account: 'scoped' },
+  // 「创作 › 作品库」（融合第 3 步）：只回当前账号作品的编号、时间、名字和描述。翻页、搜索时一次次调，成功不记。
+  'library:list': { label: '作品库读取', log: 'quiet-success', account: 'scoped' },
   // get-remembered-login's result and set-remembered-login's input both carry
   // a plaintext password (the 「记住密码」 credential) -- the same dedicated
   // reveal-channel pattern as config:reveal-api-key, and the same I3/I13
