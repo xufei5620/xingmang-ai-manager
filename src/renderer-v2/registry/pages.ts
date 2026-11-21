@@ -61,7 +61,7 @@ export function extensionPageAlias(page: PageId): ExtensionsView | null {
  */
 export const pageSearchKeywords: Record<Exclude<PageId, SettingsPageAlias | RetiredPageAlias | Exclude<ExtensionPageAlias, 'skills'>>, readonly string[]> = {
   // v4 起工具的安装、更新、回到推荐版本、重新安装、卸载都在首页卡片上；余额卡上有还能用几天。
-  home: ['主页', '我的工具', '打开工具', '配置', '换模型', '工具卡片', '接着上次', '还能用几天', '更新工具', '回到推荐版本', '退回版本', '重新安装', '卸载工具', '装', '安装', '删', '卸载', '重装', '下载'],
+  home: ['主页', '我的工具', '打开工具', '配置', '换模型', '工具卡片', '接着上次', '最近对话', '还能用几天', '更新工具', '回到推荐版本', '退回版本', '重新安装', '卸载工具', '装', '安装', '删', '卸载', '重装', '下载'],
   chat: ['对话', '问答', '提问', '生图', '画图', '分组', '模型'],
   sessions: ['历史', '会话', '聊天记录', '接着聊'],
   canvas: ['画图', '生图', '工作流'],

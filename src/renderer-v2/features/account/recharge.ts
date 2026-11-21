@@ -87,21 +87,21 @@ export function paymentTerminalPresentation(
     return {
       tone: 'warn',
       title: '支付已超时',
-      body: '这笔订单没有付成功，也不会再扣钱。要充值的话重新下一单；如果手机上显示已经扣款，点「查看我的订单」核对。',
+      body: '该订单未支付成功，不会产生扣费。如需充值，请重新下单；如已显示扣款，请点击「查看我的订单」核对。',
     }
   }
   if (status === 'failed') {
     return {
       tone: 'bad',
-      title: '支付没有完成',
-      body: '支付渠道返回没有付成功。可以重新充值；如果手机上显示已经扣款，点「查看我的订单」核对。',
+      title: '支付未完成',
+      body: '支付渠道返回支付失败。请重新充值；如已显示扣款，请点击「查看我的订单」核对。',
     }
   }
   if (status === 'unconfirmed') {
     return {
       tone: 'warn',
-      title: '还没查到这笔订单到账',
-      body: '如果手机上已经显示付款成功，可能是支付渠道慢了，稍后在「我的订单」里看。超过 30 分钟还没到账，请联系客服，并告诉客服订单号。',
+      title: '暂未确认到账',
+      body: '如已显示付款成功，可能是支付渠道处理延迟，请稍后在「我的订单」中查看。超过 30 分钟仍未到账，请提供订单号联系客服。',
     }
   }
   // 订阅不进余额：关窗后那两句换成「订阅会自动开通」，别的照充值那套。
@@ -109,23 +109,23 @@ export function paymentTerminalPresentation(
     ? {
       tone: 'neutral',
       title: '支付窗口已关闭',
-      body: '如果已经付过款，不用做什么：星芒还在确认，付款成功后订阅会自动开通。还没付的话，这笔订单放着就行，不会扣钱。',
+      body: '如已付款，无需其他操作，确认后订阅将自动开通。未付款的订单不会产生扣费。',
     }
     : {
       tone: 'neutral',
       title: '支付窗口已关闭',
-      body: '关闭支付窗口不会取消订单。付过款的话，付款成功后订阅会自动开通，也可以点「查看我的订单」核对。',
+      body: '关闭支付窗口不会取消订单。如已付款，订阅将在确认后自动开通，也可点击「查看我的订单」核对。',
     }
   return confirming
     ? {
       tone: 'neutral',
       title: '支付窗口已关闭',
-      body: '如果已经付过款，不用做什么：星芒还在确认到账，到了会自动更新余额。还没付的话，这笔订单放着就行，不会扣钱。',
+      body: '如已付款，无需其他操作，到账后余额将自动更新。未付款的订单不会产生扣费。',
     }
     : {
       tone: 'neutral',
       title: '支付窗口已关闭',
-      body: '关闭支付窗口不会取消订单。付过款的话，到账后余额会自动更新，也可以点「查看我的订单」核对。',
+      body: '关闭支付窗口不会取消订单。如已付款，到账后余额将自动更新，也可点击「查看我的订单」核对。',
     }
 }
 
@@ -151,22 +151,22 @@ export function subscriptionToolsNotice(
   input: { followsPreference: true } | { followsPreference: false; switched: readonly string[] } | { followsPreference: false; error: string },
 ): { tone: 'ok' | 'warn'; title: string; body: string; action?: 'health' } {
   if (input.followsPreference) return {
-    tone: 'ok', title: '工具不用重新设置', body: '工具发出的请求会按「扣费顺序」先用订阅额度。',
+    tone: 'ok', title: '工具无需重新设置', body: '工具请求将按「扣费顺序」优先使用订阅额度。',
   }
   if ('error' in input) return {
-    tone: 'warn', title: '订阅已开通，工具还没换过去', body: `${input.error} 可以到「检查」页点「重新写入密钥」再试一次。`, action: 'health',
+    tone: 'warn', title: '订阅已开通，工具尚未切换', body: `${input.error} 请前往「检查」页点击「重新写入密钥」。`, action: 'health',
   }
   if (input.switched.length) return {
-    tone: 'ok', title: '工具已改用订阅额度', body: `${input.switched.join('、')} 已换成用这份订阅，不用重新打开设置。`,
+    tone: 'ok', title: '工具已改用订阅额度', body: `${input.switched.join('、')} 已切换为该订阅，无需重新设置。`,
   }
   return {
-    tone: 'ok', title: '工具不用重新设置', body: '这份订阅对应的工具装好、登录后会自动用订阅额度。',
+    tone: 'ok', title: '工具无需重新设置', body: '对应工具安装并登录后，将自动使用订阅额度。',
   }
 }
 
 /** 充值数量的报错：不是整数、不够最低额，都说同一句（字表批07把两句合成了一句）。 */
 export function topupAmountError(minimum: number): string {
-  return `充值数量不能低于 ${minimum}，请填整数`
+  return `充值金额不能低于 ${minimum}，请输入整数`
 }
 
 export function validateTopupAmount(value: number, minimum: number): number {
@@ -302,10 +302,10 @@ export function subscriptionResetSuffix(
 /** 扣费顺序四个选项各自下面那句（字表批07；「只用订阅」按注里的建议句）。 */
 export function billingPreferenceNote(preference: AccountSubscriptionBillingPreference): string {
   switch (preference) {
-    case 'subscription_first': return '订阅额度用完后自动改扣余额，不会中断。'
-    case 'wallet_first': return '余额用完后再扣订阅额度。'
-    case 'subscription_only': return '订阅额度用完后就停下，要再买订阅或换一种扣费顺序。'
-    case 'wallet_only': return '订阅额度留着不用，所有用量都从余额里扣。'
+    case 'subscription_first': return '订阅额度用尽后自动改扣余额，使用不中断。'
+    case 'wallet_first': return '余额用尽后扣除订阅额度。'
+    case 'subscription_only': return '订阅额度用尽后停止使用，需续购订阅或更改扣费顺序。'
+    case 'wallet_only': return '不使用订阅额度，全部用量从余额扣除。'
   }
 }
 
@@ -362,19 +362,19 @@ export function orderTitle(order: Pick<Order, 'amount' | 'tradeNo'>, multiplierA
   return `充值 ${multiplierAccount ? '¥' : '$'}${formatAmount(order.amount)}`
 }
 export function orderTail(order: Pick<Order, 'status' | 'tradeNo'>, openTradeNo: string | null | undefined): string {
-  if (order.status === 'pending') return openTradeNo && order.tradeNo === openTradeNo ? '，支付窗口开着' : '，没付的话放着就行，不会扣钱'
-  if (order.status === 'failed') return '，支付没有完成，没有扣款'
-  if (order.status === 'expired') return '，没有付成功，不会扣钱'
+  if (order.status === 'pending') return openTradeNo && order.tradeNo === openTradeNo ? '，支付窗口已打开' : '，未付款不会产生扣费'
+  if (order.status === 'failed') return '，支付未完成，未扣款'
+  if (order.status === 'expired') return '，支付失败，未扣款'
   return ''
 }
 
 /** 按订单号搜没搜到时的那两行。星芒账号的订阅单没付成之前查不到，不叫客户去核对单号。 */
 export function ordersSearchEmpty(keyword: string, multiplierAccount: boolean): { title: string; description: string } {
   if (!multiplierAccount && isSubscriptionTradeNo(keyword)) return {
-    title: '这笔订阅还没开通',
-    description: '订阅订单付款成功后才会出现在这里。没付的话放着就行，不会扣钱；手机上已经显示付款成功的话，稍后再查，超过 30 分钟还没开通请联系客服。',
+    title: '该订阅尚未开通',
+    description: '订阅订单付款成功后显示在此处，未付款不会产生扣费。如已显示付款成功，请稍后查询；超过 30 分钟仍未开通，请联系客服。',
   }
-  return { title: '没有找到这个订单', description: '核对一下订单号，或者清空搜索看全部订单。' }
+  return { title: '未找到该订单', description: '请核对订单号，或清空搜索查看全部订单。' }
 }
 
 /**
@@ -382,13 +382,13 @@ export function ordersSearchEmpty(keyword: string, multiplierAccount: boolean): 
  * 开票中心另要登录一次，同一个账号登过就记着：星芒账号填用户名，历史账号填邮箱，和它自己登录页上写的一致。
  */
 export function invoicePortalOpenedText(multiplierAccount: boolean): string {
-  return `开票中心已在新窗口打开；要登录的话，用这个账号的${multiplierAccount ? '邮箱' : '用户名'}和密码。`
+  return `开票中心已在新窗口打开。如需登录，请使用当前账号的${multiplierAccount ? '邮箱' : '用户名'}和密码。`
 }
 
 /** 开票窗口没打开时那句（2026-11-02 批的原字，「窗口改」时照旧）。 */
-export const invoicePortalOpenFailed = '没能打开开票中心，请稍后再试；还不行请找客服。'
+export const invoicePortalOpenFailed = '开票中心打开失败，请稍后重试；如仍无法打开，请联系客服。'
 
 /** 「本次充值」里「按最近用量」后面那句：跟账号概览同一套说法（runwayDaysText），左边已经写了「按最近用量」，这里去掉打头那几个字。 */
 export function rechargeRunwayText(days: number): string {
-  return runwayDaysText(days).replace(/^按最近用量/, '')
+  return runwayDaysText(days).replace(/^按近期用量/, '')
 }

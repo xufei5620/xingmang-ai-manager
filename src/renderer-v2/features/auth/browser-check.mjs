@@ -838,7 +838,7 @@ test('an empty wallet puts top-up in view on the last step without scrolling', a
     await page.setViewportSize({ width: 1280, height: 620 })
     await page.getByTestId('guide-route-claude').check()
     while (await page.getByTestId('start-guide').getAttribute('data-guide-step') !== 'ready') await page.getByTestId('guide-next').click()
-    assert.equal(await page.getByTestId('guide-wallet-empty').innerText(), '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。')
+    assert.equal(await page.getByTestId('guide-wallet-empty').innerText(), '当前账号余额为 $0，充值后方可使用 AI 工具。充值即时生效，无需重新设置。')
     const body = page.locator('.xm-dialog-body')
     assert.equal(await body.evaluate((element) => element.scrollTop), 0)
     const box = await page.getByTestId('guide-recharge-button').boundingBox()
