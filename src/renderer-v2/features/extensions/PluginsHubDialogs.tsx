@@ -43,8 +43,8 @@ export function familyNames(ids: readonly string[]): string {
 
 /** 灰着不能勾的那一行为什么灰；能勾的回 null。 */
 export function hubChoiceNote(state: HubTargetState, provider: Provider): string | null {
-  if (state.state === 'installed') return '已经装好了'
-  if (state.state === 'tool-missing') return `这台电脑还没装 ${extensionToolName(provider)}`
+  if (state.state === 'installed') return '已安装'
+  if (state.state === 'tool-missing') return `本机尚未安装 ${extensionToolName(provider)}`
   if (state.state === 'vendor-only') return `插件各家格式不通用，这一条只有 ${extensionFamilies[state.vendor].name} 版`
   if (state.state === 'unsupported') return '不支持'
   return null
@@ -57,7 +57,7 @@ export function hubInstallLabel(count: number): string {
 
 /**
  * 「装到哪里」三行：Claude、GPT、Grok，每行底下小字写清是哪几个工具。能装的是勾选框；装好了的打勾灰着；
- * 这台电脑没装那个工具的灰着，旁边给「去首页安装」；插件只有别家版的灰着说明为什么。
+ * 这台电脑没装那个工具的灰着，旁边给「前往首页安装」；插件只有别家版的灰着说明为什么。
  */
 export function HubToolPicker({
   entry,
@@ -108,7 +108,7 @@ export function HubToolPicker({
               </button>
               {state.state === 'tool-missing' && onOpenHome && (
                 <Button size="sm" icon={Download} onClick={onOpenHome} testId={`${testId}-${id}-home`}>
-                  去首页安装
+                  前往首页安装
                 </Button>
               )}
             </div>
@@ -133,7 +133,7 @@ function skillCopySource(entry: HubEntry) {
 }
 
 /**
- * 点「+」、详情页「装上」「装到 {家}」弹的安装框。一家一家装，中途哪家没装上就停在那里：装上了的从勾选里拿掉，
+ * 点「+」、详情页「安装」「装到 {家}」弹的安装框。一家一家装，中途哪家没装上就停在那里：装上了的从勾选里拿掉，
  * 再点一次只补剩下的（同精选页的规矩）。装的路子按这一条是什么分：精选照清单（submitMcpInstall / 装插件），
  * 市场里的插件照列表那一份装，自己加的连接用「也装到别的工具」那条（copyMcpToTool），技能把同一个文件夹再导一次。
  */
@@ -154,7 +154,7 @@ export function HubInstallDialog({
 }: {
   api: V2Bridge
   entry: HubEntry
-  /** 打开时勾上哪几家（详情页每一行的「装上」只勾那一家）。 */
+  /** 打开时勾上哪几家（详情页每一行的「安装」只勾那一家）。 */
   initial: readonly Provider[]
   context: HubTargetContext
   runtimes: ExtensionSnapshot['runtimes']
@@ -187,7 +187,7 @@ export function HubInstallDialog({
         onSystemChanged?.()
         await onChanged()
       },
-      'Python 已经装好了，可以继续添加这条连接',
+      'Python 已安装，可继续添加此连接',
     )
   const installInto = async (target: Provider) => {
     if (curated) {
@@ -202,18 +202,18 @@ export function HubInstallDialog({
     }
     if (entry.kind === 'plugin') {
       const item = entry.available[target]
-      if (!item) throw new Error('这一条在市场里找不到了，请重新加载后再试。')
+      if (!item) throw new Error('该项已不在市场中，请重新加载后重试。')
       await runExtensionAction(api, item, 'install')
       return
     }
     if (entry.kind === 'mcp') {
       const source = mcpCopySource(entry)
-      if (!source) throw new Error('这条连接找不到了，请重新加载后再试。')
+      if (!source) throw new Error('未找到该连接，请重新加载后重试。')
       await api.copyMcpToTool({ from: source.provider, to: target, name: source.item.id })
       return
     }
     const directory = skillCopySource(entry)
-    if (!directory) throw new Error('这个技能的文件位置已经变化，请刷新列表后再操作。')
+    if (!directory) throw new Error('该技能的文件位置已变更，请刷新列表后再操作。')
     if (target === 'codex') await api.importSkill({ sourcePath: directory, scope: 'user' })
     else await api.mutateProviderExtension({ provider: target, kind: 'skill', action: 'install', source: directory, scope: 'user' })
   }
@@ -224,7 +224,7 @@ export function HubInstallDialog({
         if (curated?.install.type === 'stdio') {
           const filled = fillCuratedPlaceholders(curated.install.args, curated.install.env, values)
           const pending = unresolvedInstallPlaceholders(filled.args, filled.env)
-          if (pending.length) throw new Error(`${pending.join('、')} 还没换成真实内容，请先填好再添加。`)
+          if (pending.length) throw new Error(`${pending.join('、')} 尚未替换为实际内容，请填写后再添加。`)
         }
         // 自己加的连接复制过去之前先问一遍那边有没有同名的：Codex、Grok 加同名的会把原来那条整条换掉。
         if (!curated && entry.kind === 'mcp') {
@@ -232,7 +232,7 @@ export function HubInstallDialog({
           const taken = await mcpNameTakenIn(api, targets, name, 'user')
           if (taken.length) {
             const names = familyNames(taken)
-            throw new Error(`${names} 里已经有叫「${name}」的连接了，为了不动原来那条，这次没有装。不勾 ${names} 再试。`)
+            throw new Error(`${names} 中已存在名为「${name}」的连接，为保留原连接，本次未安装。请取消勾选 ${names} 后重试。`)
           }
         }
         const done: Provider[] = []
@@ -313,8 +313,8 @@ export function HubInstallDialog({
           <Notice
             key={input.key}
             tone={values[input.key]?.trim() ? 'ok' : 'warn'}
-            title={values[input.key]?.trim() ? `${input.label}：${values[input.key]}` : `还缺一样：${input.label}`}
-            body={`点「选择文件夹」挑一个，软件会替你填好，不用手改。${input.hint}`}
+            title={values[input.key]?.trim() ? `${input.label}：${values[input.key]}` : `待填写：${input.label}`}
+            body={`点击「选择文件夹」选择后将自动填写，无需手动修改。${input.hint}`}
             testId={`curated-input-${input.key}`}
             actions={
               <Button
@@ -382,7 +382,7 @@ export function HubSkillImportDialog({
   from?: 'folder' | 'archive'
   /** 能导进去的几家（工具装好了、主进程没说不行），次序同导航；打开时都勾上。 */
   tools: readonly Provider[]
-  /** 三家各自能不能导（不能的灰着写「不支持」，没装的写「这台电脑还没装 …」）。 */
+  /** 三家各自能不能导（不能的灰着写「不支持」，没装的写「本机尚未安装 …」）。 */
   importable: Record<Provider, 'ready' | 'tool-missing' | 'unsupported'>
   operation: Operation
   onClose: () => void
@@ -525,7 +525,7 @@ export function HubSkillImportDialog({
                   <span className="v2-hub-picker-text">
                     <strong>{family.name}</strong>
                     <small>{family.skillHint}</small>
-                    {state === 'tool-missing' && <small className="v2-hub-picker-note">{`这台电脑还没装 ${extensionToolName(id)}`}</small>}
+                    {state === 'tool-missing' && <small className="v2-hub-picker-note">{`本机尚未安装 ${extensionToolName(id)}`}</small>}
                     {state === 'unsupported' && <small className="v2-hub-picker-note">不支持</small>}
                   </span>
                 </button>
@@ -568,7 +568,7 @@ export function HubToolChooser({
                 <span className="v2-hub-picker-text">
                   <strong>{family.name}</strong>
                   <small>{family.hint}</small>
-                  {!ready && <small className="v2-hub-picker-note">{`这台电脑还没装 ${extensionToolName(id)}`}</small>}
+                  {!ready && <small className="v2-hub-picker-note">{`本机尚未安装 ${extensionToolName(id)}`}</small>}
                 </span>
               </button>
             </div>
