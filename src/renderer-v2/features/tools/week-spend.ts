@@ -47,6 +47,16 @@ export interface WeekSpend {
   days: Array<WeekSpendDay & { quota: number }>
 }
 
+/**
+ * 两次查回来的柱子画出来一样：同一个账号、同样几天、每天花的一样。今天那一根的 end 每次查都是「现在」，
+ * 不算在内。一样就留着手上那一份，首页不用跟着余额刷新重画（R8）。
+ */
+export function sameWeekSpend(a: WeekSpend | null, b: WeekSpend | null): boolean {
+  if (a === b) return true
+  if (!a || !b || a.scope !== b.scope || a.days.length !== b.days.length) return false
+  return a.days.every((day, index) => day.start === b.days[index].start && day.quota === b.days[index].quota)
+}
+
 /** 和余额卡上的用量同一个有效期：一分钟内回首页不再问后台。 */
 export const weekSpendTtlMs = 60_000
 

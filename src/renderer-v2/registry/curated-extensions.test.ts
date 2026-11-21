@@ -7,7 +7,6 @@ import {
   curatedExtensions,
   curatedInstallTarget,
   curatedMarketplaceSources,
-  curatedItemsFor,
   curatedNeedsInput,
   curatedNetworkLabels,
   curatedRiskLabels,
@@ -134,22 +133,17 @@ describe('curated extension catalog', () => {
     }
   });
 
-  it('filters by page and by the tool the user is looking at', () => {
-    for (const kind of ['mcp', 'plugin'] as const)
-      for (const provider of activeProviderIds)
-        for (const item of curatedItemsFor(kind, provider)) {
-          expect(item.kind).toBe(kind);
-          expect(item.providers).toContain(provider);
-        }
-    expect(curatedItemsFor('mcp', 'claude').map(item => item.id)).toContain('files');
-    expect(curatedItemsFor('plugin', 'claude').map(item => item.id)).toContain('code-review');
-    // 技能的分发形态各家都不一样，那一页还没有精选，整块不渲染。
-    expect(curatedItemsFor('skill', 'claude')).toEqual([]);
+  // 「插件」页按每一条的 kind 和 providers 分组、决定能装进哪几家（plugins-hub-model.ts），这几条清单上的事实它都靠着。
+  it('lists connections for every tool and plugins for Claude Code only', () => {
+    for (const item of curatedExtensions) expect(item.providers.every(provider => activeProviderIds.includes(provider))).toBe(true);
+    expect(curatedExtensions.filter(item => item.kind === 'mcp').map(item => item.id)).toContain('files');
+    expect(curatedExtensions.filter(item => item.kind === 'plugin').map(item => item.id)).toContain('code-review');
+    // 技能的分发形态各家都不一样，还没有精选。
+    expect(curatedExtensions.filter(item => item.kind === 'skill')).toEqual([]);
     // 插件精选只给 Claude Code：另外几家没有这个市场，列出来就是列了装不上的东西。
-    for (const provider of ['codex', 'grok'] as const)
-      expect(curatedItemsFor('plugin', provider)).toEqual([]);
+    for (const item of curatedExtensions.filter(entry => entry.kind === 'plugin')) expect(item.providers).toEqual(['claude']);
     // 已下线的 Gemini CLI 一条精选都没有。
-    for (const kind of ['mcp', 'plugin', 'skill'] as const) expect(curatedItemsFor(kind, 'gemini')).toEqual([]);
+    expect(curatedExtensions.some(item => (item.providers as readonly string[]).includes('gemini'))).toBe(false);
   });
 
   // 官方市场的 `plugin install` 没有钉版本的开关，装到的就是市场当下那一份。改不了，

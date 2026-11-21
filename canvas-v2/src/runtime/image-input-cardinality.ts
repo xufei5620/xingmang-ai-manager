@@ -103,7 +103,7 @@ export function canvasGenerationImageInputCardinality(sources: readonly ImageSou
 }
 
 export function canvasGenerationImageInputError(kind: string, count: CanvasImageInputCardinality): string | null {
-  if (kind === 'image-edit' && count.connections === 0) return '图片编辑节点需要至少一条有效参考图片连接，请先连接本账户图片或上游生图节点'
+  if (kind === 'image-edit' && count.connections === 0) return '图片编辑节点还没连原图，请先连一张图片或一个生图节点进来'
   return count.minimum > 4 ? `参考图片${count.hasBatch ? '整组展开后' : '去重后'}${count.exact ? '有' : '至少有'} ${count.minimum} 张，最多支持 4 张；请减少来源或改用单图输出` : null
 }
 

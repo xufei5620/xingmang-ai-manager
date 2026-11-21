@@ -541,7 +541,7 @@ describe('renderer-v2 operation error classification', () => {
   // 以前认不出，一长串原话配「操作没有完成」，没有下一步（#1096）。下一步在原话后半截（按账号类型写好的），
   // 所以标题、正文只说「没装、什么都没改，照下面这句话做」，原话照旧在下面。
   it('gives a declined or missing administrator approval its own title and keeps the sentence underneath', () => {
-    const standardAdvice = '这个 Windows 账号不在管理员组，需要在授权窗口里输入一个管理员账号的密码才能继续；公司或学校的电脑请联系 IT 协助。'
+    const standardAdvice = '这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。公司或学校的电脑请找管理电脑的人帮忙。'
     for (const message of [
       'Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。重新点击安装即可再次授权。',
       `Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`,
