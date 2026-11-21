@@ -7,7 +7,7 @@ import { chatHistoryLogger, exportableConversations, exportablePhrases, flushCha
  * D41：导入要先把聊天页卸下，卸下就把正在回复、出图的那条掐断（出图那条可能照样扣了费）。
  * 聊天在回复时先不动，说这一句。
  */
-export const chatReplyingImportMessage = '聊天正在回复，等它说完再导入。'
+export const chatReplyingImportMessage = '聊天正在回复，请待回复完成后再导入。'
 
 /**
  * 设置页「搬到新电脑」里聊天记录那一半，只在登录后才有（聊天记录按账号分开存）。
@@ -48,7 +48,7 @@ export function createChatTransfer(bridge: ChatTransferBridge, storage: ChatStor
       await flushChatHistory()
       await settleHistoryWrites()
       const loaded = await loadChatHistory(api, storage, scope)
-      if (loaded.warning) throw new Error(`${loaded.warning}，这次没有导出`)
+      if (loaded.warning) throw new Error(`${loaded.warning}，本次未导出`)
       return { conversations: exportableConversations(loaded.state), phrases: exportablePhrases(loaded.state) }
     },
     assertChatIdle,

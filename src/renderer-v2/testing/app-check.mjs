@@ -11996,7 +11996,7 @@ test('importing while the chat is still replying waits for the reply instead of 
     let settings = await openSettingsGroup(page, '备份迁移')
     await settings.getByTestId('settings-transfer-import').click()
     const notice = settings.locator('.v2-business-notice.is-error')
-    await expect(notice).toContainText('聊天正在回复，等它说完再导入。')
+    await expect(notice).toContainText('聊天正在回复，请待回复完成后再导入。')
     // 原话上屏，不被目录认成别的类别换掉。
     assert.equal(await notice.locator('strong').count(), 0)
     assert.equal(await chatHistoryCalls(page, 'importAppData'), 0)
