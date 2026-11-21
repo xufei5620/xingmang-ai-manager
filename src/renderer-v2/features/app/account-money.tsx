@@ -40,7 +40,7 @@ export function AccountMoneyProvider({ store, toolsApi, session, scope, subscrip
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
   const balanceState: AccountBalanceSnapshot = snapshot.scope === balanceScope
     ? snapshot
-    : { scope: balanceScope, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 }
+    : { scope: balanceScope, balance: null, loading: false, updatedAt: null, error: null, reads: 0, networkFailures: 0 }
   const { balanceAmount, runway, accountSummary } = useBalanceWatch({ toolsApi, session, scope, balanceState, subscription, subscriptionUnknown })
   return <AccountMoneyContext.Provider value={{ balanceState, balanceAmount, runway, accountSummary }}>
     <BalanceTierProvider value={balanceTier(balanceAmount, subscription, subscriptionUnknown)}>{children}</BalanceTierProvider>
