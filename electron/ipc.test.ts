@@ -1624,6 +1624,34 @@ describe('registerIpcHandlers', () => {
       dispose()
     })
 
+    it('lists the library for the signed-in account only, and only from a well-formed request', async () => {
+      const page = { items: [{ assetId: clipId, mediaType: 'video' as const, createdAt: '2026-11-20T04:00:00.000Z', fileName: 'xingmang-clip.mp4' }], offset: 0, limit: 24, total: 1, hasMore: false, counts: { image: 0, video: 1, film: 1 } }
+      const mediaAssets = { listOwnedLibrary: vi.fn(async () => page) }
+      const accountService = signedIn()
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { mediaAssets })
+      const list = electronMocks.handlers.get('library:list')!
+
+      expect(() => list(trustedEvent('https://attacker.example/'), {})).toThrow('已拒绝来自非应用页面的操作请求')
+      // The renderer names no account and no path: anything beyond the known fields is refused before the store is asked.
+      for (const input of [undefined, { userId: 8 }, { kind: 'trash' }, { filmAssetIds: ['../../secret'] }, { limit: 500 }]) {
+        expect(() => list(trustedEvent(), input)).toThrow('作品库请求格式错误')
+      }
+      expect(mediaAssets.listOwnedLibrary).not.toHaveBeenCalled()
+
+      await expect(list(trustedEvent(), { kind: 'film', search: '橘猫', filmAssetIds: [clipId], matchedAssetIds: [clipId] })).resolves.toEqual(page)
+      expect(mediaAssets.listOwnedLibrary).toHaveBeenCalledWith(7, { kind: 'film', search: '橘猫', filmAssetIds: [clipId], matchedAssetIds: [clipId] })
+
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false } as never)
+      expect(() => list(trustedEvent(), {})).toThrow('请先登录星芒账号')
+      expect(mediaAssets.listOwnedLibrary).toHaveBeenCalledOnce()
+      dispose()
+
+      // A registration without the library says so instead of failing somewhere deeper.
+      const bare = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn())
+      expect(() => electronMocks.handlers.get('library:list')!(trustedEvent(), {})).toThrow('作品库未就绪')
+      bare.dispose()
+    })
+
     it('stores a song picked in the system dialog for the signed-in account and hands back only its id, name and length', async () => {
       const songId = 'S'.repeat(43)
       const songPath = '/home/someone/Music/夏天的风\u0007 (live).mp3'
@@ -10232,6 +10260,8 @@ describe('IPC channel log and account policies', () => {
       'external-clients:launch',
       'external-clients:scan',
       'external-clients:switch-source',
+      // 「创作 › 作品库」：列的是当前账号做过的图片和视频。
+      'library:list',
       'tools:check-models',
       // 出视频、分镜和作品库：凭据和作品都按当前账号找。
       'video-studio:pick-music',
@@ -10306,6 +10336,7 @@ describe('IPC channel log and account policies', () => {
         'desktop:codex-locale-status',
         'desktop:codex-permissions-status',
         'desktop:codex-status',
+        'library:list',
         'repository:get-context',
         'runtime-logs:list',
         'runtime-logs:renderer-error',

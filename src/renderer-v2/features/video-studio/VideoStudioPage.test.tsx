@@ -6,7 +6,7 @@ import { applyVideoStudioPlan, createVideoStudioProject, defaultVideoStudioSetti
 import type { VideoStudioPriceBridge } from './prices'
 import type { VideoStudioBridge } from './useVideoStudio'
 import type { VideoStudioSource } from './useVideoStudioLibrary'
-import { VideoStudioPage, type VideoStudioAccess } from './VideoStudioPage'
+import { VideoStudioPage, type VideoStudioAccess, type VideoStudioLibraryPicker } from './VideoStudioPage'
 
 // 只渲染首屏：effect 不跑，所以这里不会读模型、不会发任何请求。
 function unused(): never { throw new Error('not expected during a static render') }
@@ -40,9 +40,12 @@ function sourceOf(project: VideoStudioProject | null, warning = ''): VideoStudio
   return { read: () => project ?? createVideoStudioProject(), write: () => { throw new Error('a static render must not save the project') }, warning }
 }
 
-function render(access: VideoStudioAccess, project: VideoStudioProject | null = null, warning = '') {
-  return renderToStaticMarkup(<VideoStudioPage bridge={bridge} accountScope="solov:7" site="solov" access={access} onLogin={() => undefined} source={sourceOf(project, warning)} />)
+function render(access: VideoStudioAccess, project: VideoStudioProject | null = null, warning = '', library?: VideoStudioLibraryPicker) {
+  return renderToStaticMarkup(<VideoStudioPage bridge={bridge} accountScope="solov:7" site="solov" access={access} onLogin={() => undefined} source={sourceOf(project, warning)} library={library} />)
 }
+
+// 「创作」页给的作品库：首屏渲染不会真去挑。
+const libraryPicker: VideoStudioLibraryPicker = { pickImage: unused, pickClip: unused }
 
 function plannedProject(): VideoStudioProject {
   let next = 0
@@ -131,20 +134,66 @@ describe('VideoStudioPage', () => {
     expect(markup).not.toContain('data-testid="video-shot-image-0"')
   })
 
-  it('offers to have AI draw each shot picture once there is a picture model, and to draw again over one already there', () => {
+  it('offers a picture or a ready-made clip from the library on each shot only when the page was given the library', () => {
+    const project = plannedProject()
+    const plain = render('ready', project)
+    expect(plain).not.toContain('从作品库选图')
+    expect(plain).not.toContain('使用已有片段')
+    const markup = render('ready', project, '', libraryPicker)
+    for (const index of [0, 1]) {
+      expect(markup).toMatch(new RegExp(`title="从作品库选择一张图片作为开头图"[^>]*data-testid="video-shot-library-image-${index}"[^>]*>[^]*?从作品库选图`))
+      expect(markup).toMatch(new RegExp(`title="使用作品库中已有的视频片段，无需生成"[^>]*data-testid="video-shot-library-clip-${index}"[^>]*>[^]*?使用已有片段`))
+    }
+    // 已经选了开头图的镜头上也有这两个。
+    const image = videoStudioShotImage('p'.repeat(43))!
+    const withImage = render('ready', { ...project, shots: [project.shots[0], { ...project.shots[1], image }] }, '', libraryPicker)
+    expect(withImage).toContain('data-testid="video-shot-library-image-1"')
+    expect(withImage).toContain('data-testid="video-shot-library-clip-1"')
+  })
+
+  it('marks a shot that uses a ready-made clip and offers to change or drop the clip in place of generating', () => {
+    const project = plannedProject()
+    const borrowed: VideoStudioProject = { ...project, shots: [project.shots[0], { ...project.shots[1], clip: clip('b'), borrowed: true, status: 'done' }] }
+    const markup = render('ready', borrowed, '', libraryPicker)
+    const [first, second] = markup.split('data-testid="video-shot-1"')
+    // 第一镜是自己生成的：照旧「已生成」「重新生成」，能定时长。
+    expect(first).toContain('已生成')
+    expect(first).toContain('data-testid="video-shot-generate-0"')
+    expect(first).toContain('data-testid="video-shot-seconds-0"')
+    expect(first).toContain('>已生成</span>')
+    expect(first).not.toContain('>已有片段</span>')
+    // 第二镜用的是现成的片段：牌子、两个按钮；不生成，也就没有「重新生成」和「时长」，剪头剪尾还在。
+    expect(second).toContain('>已有片段</span>')
+    expect(second).toMatch(/data-testid="video-shot-clip-change-1"[^>]*>[^]*?更换片段/)
+    expect(second).toMatch(/data-testid="video-shot-clip-remove-1"[^>]*>[^]*?不使用此片段/)
+    expect(second).not.toContain('data-testid="video-shot-generate-1"')
+    expect(second).not.toContain('data-testid="video-shot-seconds-1"')
+    expect(second).not.toContain('data-testid="video-shot-library-image-1"')
+    expect(second).toContain('data-testid="video-shot-trim-start-1"')
+    // 两段都有了：没有「生成剩下的」那个按钮，可以直接拼。
+    expect(markup).not.toContain('data-testid="video-generate-all"')
+    // 没给作品库的地方也能拿掉这一段，只是没处换。
+    const alone = render('ready', borrowed)
+    expect(alone).toContain('data-testid="video-shot-clip-remove-1"')
+    expect(alone).not.toContain('data-testid="video-shot-clip-change-1"')
+  })
+
+  it('offers to have AI draw each shot picture, and to draw again over one already there, with the picture model picked in the dialog', () => {
     const project = plannedProject()
     const image = videoStudioShotImage('p'.repeat(43))!
     const withImage: VideoStudioProject = { ...project, shots: [project.shots[0], { ...project.shots[1], image }] }
-    const noModel = render('ready', withImage)
-    expect(noModel).toMatch(/<span>画镜头图<\/span>[^]*?data-testid="video-image-model"/)
-    // 还没读到画图模型：按钮在，但是灰的。
-    expect(noModel).toMatch(/<button title="按这一镜的画面描述先画一张图，满意了再拿它生成视频；画图单独计费"[^>]*data-testid="video-shot-draw-0" disabled=""[^>]*>[^]*?让 AI 画一张/)
-    const ready = render('ready', { ...withImage, settings: { ...withImage.settings, imageModel: 'gpt-image-2', imageGroup: '图片模型' } })
-    expect(ready).toMatch(/data-model="gpt-image-2" data-group="图片模型"[^>]*data-testid="video-image-model"/)
-    expect(ready).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="video-shot-draw-0"[^>]*>[^]*?让 AI 画一张/)
-    expect(ready).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="video-shot-draw-1"[^>]*>[^]*?再画一张/)
-    expect(ready).not.toContain('正在画图')
-    expect(ready).not.toContain('data-testid="video-shot-draw-stop-1"')
+    const markup = render('ready', withImage)
+    // 画镜头图的型号不在「想法」卡里选了：点了按钮在出图框里选（融合第 4 步），所以按钮不用等读到画图模型。
+    expect(markup).not.toContain('画镜头图')
+    expect(markup).not.toContain('data-testid="video-image-model"')
+    expect(markup).toContain('data-testid="video-text-model"')
+    expect(markup).toContain('data-testid="video-video-model"')
+    expect(markup).toMatch(/<button title="按这一镜的画面描述先画一张图，满意了再拿它生成视频；画图单独计费"(?![^>]*disabled)[^>]*data-testid="video-shot-draw-0"[^>]*>[^]*?让 AI 画一张/)
+    expect(markup).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="video-shot-draw-1"[^>]*>[^]*?再画一张/)
+    expect(markup).not.toContain('正在画图')
+    expect(markup).not.toContain('data-testid="video-shot-draw-stop-1"')
+    // 出图框点了才出来。
+    expect(markup).not.toContain('data-testid="video-draw-dialog"')
   })
 
   it('offers to trim the start and end of a shot only once it has a clip, and counts the trimmed seconds off the total', () => {

@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import QRCode from 'qrcode'
-import { ipcEventChannels, type AppSettingsV2, type AppConfigSummary, type AccountSessionState, type ExternalClientStatus, type ExternalToolId, type MultiProviderSessionPage, type ProviderId, type RelayRouteLine, type RelayRouteLines, type RelayRoutePreferences, type SystemSnapshot, type XingmangApi, type AiChatHistorySnapshot, type CanvasProjectListEntry } from '../../../electron/ipc-contract'
+import { ipcEventChannels, type AiLibraryEntry, type AppSettingsV2, type AppConfigSummary, type AccountSessionState, type ExternalClientStatus, type ExternalToolId, type MultiProviderSessionPage, type ProviderId, type RelayRouteLine, type RelayRouteLines, type RelayRoutePreferences, type SystemSnapshot, type XingmangApi, type AiChatHistorySnapshot, type CanvasProjectListEntry } from '../../../electron/ipc-contract'
 import RendererV2App from '../App'
 import { createPreviewAccelerationApi } from './acceleration-fixture'
 import { accelerationTrialSeconds } from '../../../electron/acceleration-contract'
@@ -365,6 +365,37 @@ const fixtureFilms: VideoStudioItem[] = [
   { id: 'fixture-film-cat', updatedAt: Date.now() - 20 * 60_000, project: fixtureFilm('一只橘猫在下雨的街头找回家的路', '橘猫回家', [{ prompt: '雨夜街头的橘猫', caption: '下雨了' }, { prompt: '橘猫跳上台阶', caption: '到家了' }]) },
   { id: 'fixture-film-sea', name: '海边那条', updatedAt: Date.now() - 3 * 86_400_000, project: fixtureFilm('海边日落，镜头慢慢拉远', '', []) },
 ]
+// 主窗口的作品库（融合第 3 步）。编号照主进程那种 43 个字符；时间跟着页面上的钟算，「30 分钟前」「昨天」不随跑的时刻变。
+// ?library：作品库里已经有三张图（最新那张在画布里起过名字、记着当时那句话）和两段视频。?library=many 再加 30 张图，够翻一页。
+// ?videoFilms=library：「橘猫回家」第一镜用的就是作品库里那段视频，上一次拼好的成片也在里面，作品库说得出它们哪来的。
+// 对话里出的图、出的视频（?chatImage、?chatVideo）交出来时排进最前面，同主进程把新作品存进作品库。
+function fixtureLibraryId(label: string): string {
+  return label.padEnd(43, '0')
+}
+function fixtureLibraryTime(minutesAgo: number): string {
+  return new Date(Date.now() - minutesAgo * 60_000).toISOString()
+}
+const fixtureLibraryClipId = fixtureLibraryId('libvid-cat-')
+const fixtureLibraryFilmId = fixtureLibraryId('libvid-film-')
+const fixtureLibrary: AiLibraryEntry[] = query.has('library') ? [
+  { assetId: fixtureLibraryId('libimg-poster-'), mediaType: 'image', createdAt: fixtureLibraryTime(30), mimeType: 'image/png', fileName: 'xingmang-image-poster.png', name: '双 11 主图', prompt: '双 11 促销海报，红金配色' },
+  { assetId: fixtureLibraryFilmId, mediaType: 'video', createdAt: fixtureLibraryTime(45), fileName: 'xingmang-video-film.mp4' },
+  { assetId: fixtureLibraryClipId, mediaType: 'video', createdAt: fixtureLibraryTime(120), fileName: 'xingmang-video-cat.mp4' },
+  { assetId: fixtureLibraryId('libimg-cat-'), mediaType: 'image', createdAt: fixtureLibraryTime(26 * 60), mimeType: 'image/png', fileName: 'xingmang-image-cat.png' },
+  { assetId: fixtureLibraryId('libimg-sea-'), mediaType: 'image', createdAt: fixtureLibraryTime(3 * 24 * 60), mimeType: 'image/jpeg', fileName: 'xingmang-image-sea.jpg' },
+  ...(query.get('library') === 'many' ? Array.from({ length: 30 }, (_, index): AiLibraryEntry => ({ assetId: fixtureLibraryId(`libimg-more-${index}-`), mediaType: 'image', createdAt: fixtureLibraryTime(5 * 24 * 60 + index), mimeType: 'image/png', fileName: `xingmang-image-more-${index}.png` })) : []),
+] : []
+function addFixtureLibraryEntry(entry: AiLibraryEntry) {
+  if (!fixtureLibrary.some((item) => item.assetId === entry.assetId)) fixtureLibrary.unshift(entry)
+}
+if (query.get('videoFilms') === 'library') {
+  const cat = fixtureFilms[0].project
+  fixtureFilms[0] = { ...fixtureFilms[0], project: {
+    ...cat,
+    shots: cat.shots.map((shot, index) => index === 0 ? { ...shot, status: 'done' as const, clip: { assetId: fixtureLibraryClipId, thumbnailUrl: assetThumbnailUrl(fixtureLibraryClipId, 'video'), width: 1280, height: 720, durationSeconds: 5 } } : shot),
+    exported: { assetId: fixtureLibraryFilmId, thumbnailUrl: assetThumbnailUrl(fixtureLibraryFilmId, 'video'), width: 1280, height: 720, durationSeconds: 10 },
+  } }
+}
 if (query.has('videoFilms')) videoProjectFiles.set(fixtureVideoScope, { index: null, projects: new Map(fixtureFilms.map((film) => { const file = serializeVideoStudioItem(film); return [file.key, file.content] })) })
 if (query.has('legacyVideoDrafts')) {
   // 照 0.2.24 的两格写：手头那一条没有时间，草稿箱里的带 savedAt。刷新页面时已经有了就不重写，同真机上「老版本留下的」。
@@ -1025,6 +1056,29 @@ const methods = {
   listAiChatGroups: async () => [{ name: 'fixture-group', description: '本地测试分组', ratio: 1 }],
   openCanvasWindow: async () => undefined,
   openCanvasAssetLibrary: async () => undefined,
+  // 照主进程那份的规矩列：垃圾桶和音频不在这里；film 只认点名的那几段视频；搜索对名字、那句描述，或者页面先搜到的编号。
+  listAiLibrary: async (input) => {
+    const films = new Set(input.filmAssetIds ?? [])
+    const matched = new Set(input.matchedAssetIds ?? [])
+    const search = (input.search ?? '').trim().toLocaleLowerCase('zh-CN')
+    const kind = input.kind ?? 'all'
+    const isFilm = (entry: AiLibraryEntry) => entry.mediaType === 'video' && films.has(entry.assetId)
+    const listed = fixtureLibrary
+      .filter((entry) => kind === 'all' || (kind === 'film' ? isFilm(entry) : kind === 'clip' ? entry.mediaType === 'video' && !isFilm(entry) : entry.mediaType === kind))
+      .filter((entry) => !search || matched.has(entry.assetId) || [entry.name ?? '', entry.prompt ?? ''].some((value) => value.toLocaleLowerCase('zh-CN').includes(search)))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.assetId.localeCompare(left.assetId))
+    const offset = input.offset ?? 0
+    const limit = input.limit ?? 24
+    const items = listed.slice(offset, offset + limit)
+    return {
+      items: structuredClone(items), offset, limit, total: listed.length, hasMore: offset + items.length < listed.length,
+      counts: { image: fixtureLibrary.filter((entry) => entry.mediaType === 'image').length, video: fixtureLibrary.filter((entry) => entry.mediaType === 'video').length, film: fixtureLibrary.filter(isFilm).length },
+    }
+  },
+  saveAiChatAsset: async () => ({ saved: true }),
+  saveAiVideo: async () => ({ saved: true }),
+  openAiVideo: async () => undefined,
+  openDiagnosticFolder: async () => true,
   // 视频工作台一打开就读一次价格表（确认框里那句「预计约」）；这里一行都没有，确认框照旧只报余额。?chatVideo 时有那个视频模型按次的价。
   getAccountPriceList: async () => ({ rows: query.has('chatVideo') ? [{ model: 'grok-imagine-video-1.5', group: 'fixture-group', kind: 'call' as const, perCall: 0.25 }] : [] }),
   listCanvasProjects: async () => structuredClone(canvasProjects),
@@ -1047,12 +1101,14 @@ const methods = {
     await new Promise<void>((resolve) => { releaseChatVideo = resolve })
     // 一单一段：编号跟着请求号走，两段不会撞成同一个。缩略图地址是主进程给的那种：视频工作台读回一条视频时只认这种，别的当这一段没有。
     const assetId = input.requestId.replace(/[^A-Za-z0-9_-]/g, '').padEnd(43, 'c').slice(0, 43)
+    addFixtureLibraryEntry({ assetId, mediaType: 'video', createdAt: new Date().toISOString(), fileName: `${assetId}.mp4` })
     return { assetId, thumbnailUrl: assetThumbnailUrl(assetId, 'video'), width: 1280, height: 720, durationSeconds: 5 }
   },
   generateAiImage: async (input) => {
     // 没开 ?chatImage 的用例不该出图：照旧记成没 mock 的调用，clean() 会报出来。
     if (!query.has('chatImage')) { window.v2Test.unexpected.push('generateAiImage'); throw new Error('Missing mock: generateAiImage') }
     await new Promise<void>((resolve) => { releaseChatImage = resolve })
+    addFixtureLibraryEntry({ assetId: 'b'.repeat(43), mediaType: 'image', createdAt: new Date().toISOString(), mimeType: 'image/png', fileName: `${input.requestId}.png` })
     return [{ assetId: 'b'.repeat(43), localUrl: '/assets/brand/v3/symbol-standard.svg', mimeType: 'image/png' as const, fileName: `${input.requestId}.png`, width: 288, height: 256 }]
   },
   startAiChat: async (input) => ({ requestId: input.requestId, accepted: true }),

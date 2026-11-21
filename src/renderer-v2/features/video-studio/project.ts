@@ -2,7 +2,8 @@ import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-vid
 import type { ImageSizePolicy } from '../../../../electron/ai-chat-protocol'
 import type { AiChatGroupSummary, AiChatImageInput, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioMusic, VideoStudioPlan } from '../../../../electron/ipc-contract'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
-import { buildChatCatalog, DEFAULT_VIDEO_MODELS, pickChatGroup, resolveDefaultChatModel, type ChatCatalogEntry, type ChatGroupPreparation, type ChatSite } from '../chat/state'
+import { buildChatCatalog, DEFAULT_VIDEO_MODELS, pickChatGroup, resolveDefaultChatModel, type ChatCatalogEntry, type ChatGroupContext, type ChatGroupPreparation, type ChatSite } from '../chat/state'
+import { defaultImageOptions, fitImageOptions, type ImageOptionValues, type SharedImageSettings } from '../chat/image-settings'
 import { inspectModel } from '../chat/api'
 import { readVideoClip, readVideoRequestId } from './clip'
 import { isVideoStudioCaptionPosition, isVideoStudioCaptionSize, type VideoStudioCaptionPosition, type VideoStudioCaptionSize } from './captions'
@@ -43,6 +44,8 @@ export interface VideoStudioShot {
   seconds?: number
   /** 生成好的片段；重新生成成功前一直留着上一段。 */
   clip?: AiVideoClip
+  /** 这一段不是这一镜自己生成的，是从作品库里拿来的现成片段（「使用已有片段」，融合第 3 步）。换成新生成的片段就去掉。 */
+  borrowed?: boolean
   /** 拼片时这一段开头、结尾各剪掉几秒（videoStudioTrimChoices 里的一档，0 不存）。跟着片段走，换了新片段就清掉。 */
   trimStart?: number
   trimEnd?: number
@@ -302,16 +305,21 @@ export function addVideoStudioShot(project: VideoStudioProject, createId: () => 
 /** 对话里出好的一段视频（「拿去拼成片」）：当初的那句描述、片段，从图开始出的还带着那张图。 */
 export interface VideoStudioClipSource { prompt: string, clip: AiVideoClip, imageAssetId?: string }
 
+/** 带着一段现成片段的新镜头：描述放进画面描述，片段直接挂上，记成「现成的片段」（不是这一镜自己生成的）。 */
+function borrowedShot(source: VideoStudioClipSource, createId: () => string): VideoStudioShot {
+  const image = source.imageAssetId ? videoStudioShotImage(source.imageAssetId) : null
+  return { id: createId(), prompt: videoStudioPlainText(source.prompt).slice(0, videoStudioPlanLimits.maximumPromptLength), caption: '', ...(image ? { image } : {}), clip: source.clip, borrowed: true, status: 'done' }
+}
+
 /**
- * 把对话里出好的一段视频接成这条视频的最后一个镜头：描述放进画面描述，片段直接挂上，不用再生成。
+ * 把一段出好的视频（对话里的、作品库里的）接成这条视频的最后一个镜头：描述放进画面描述，片段直接挂上，不用再生成。
+ * 这一镜记成用的是现成的片段（融合第 3 步）：它不是照这条视频的设置出的，页面上不给「重新生成」，作品库也不把它算成这条视频做的。
  * 镜头满了（canAddVideoStudioShot）原样交回。上一次拼好的成片不再算数：多了一段，要重新拼。
  */
 export function appendVideoStudioClip(project: VideoStudioProject, source: VideoStudioClipSource, createId: () => string = createVideoStudioId): VideoStudioProject {
   if (!canAddVideoStudioShot(project)) return project
-  const image = source.imageAssetId ? videoStudioShotImage(source.imageAssetId) : null
-  const shot: VideoStudioShot = { id: createId(), prompt: videoStudioPlainText(source.prompt).slice(0, videoStudioPlanLimits.maximumPromptLength), caption: '', ...(image ? { image } : {}), clip: source.clip, status: 'done' }
   const { exported: _exported, ...rest } = project
-  return { ...rest, shots: [...project.shots, shot] }
+  return { ...rest, shots: [...project.shots, borrowedShot(source, createId)] }
 }
 
 /**
@@ -327,6 +335,55 @@ export function createVideoStudioProjectFromClip(source: VideoStudioClipSource, 
     secondsPerShot: made.model ? clampVideoStudioSeconds(made.seconds, made.model) : base.secondsPerShot,
   }
   return appendVideoStudioClip(createVideoStudioProject(settings), source, createId)
+}
+
+/**
+ * 起始页第三张卡「用已有片段合成视频」：新的一条里一个镜头一段现成的片段，照挑的先后排，多出上限的不要。
+ * 画面比例、出片的模型照 made（第一段是照什么出的），别的设置照 base，同 createVideoStudioProjectFromClip。
+ */
+export function createVideoStudioProjectFromClips(sources: readonly VideoStudioClipSource[], made: { aspect: VideoStudioAspect, model: string, group: string, seconds: number }, base: VideoStudioSettings = defaultVideoStudioSettings(), createId: () => string = createVideoStudioId): VideoStudioProject {
+  const first = sources.find((source) => videoStudioPlainText(source.prompt).trim())
+  const settings: VideoStudioSettings = {
+    ...base,
+    idea: first ? videoStudioPlainText(first.prompt).slice(0, videoStudioPlanLimits.maximumIdeaLength) : '',
+    aspect: made.aspect, videoModel: made.model || base.videoModel, videoGroup: made.model ? made.group : base.videoGroup,
+    secondsPerShot: made.model ? clampVideoStudioSeconds(made.seconds, made.model) : base.secondsPerShot,
+  }
+  return { ...createVideoStudioProject(settings), shots: sources.slice(0, videoStudioPlanLimits.maximumShots).map((source) => borrowedShot(source, createId)) }
+}
+
+/**
+ * 「使用已有片段」：这一镜直接用作品库里现成的一段，不用生成。画面描述空着就填上那一段当初的描述（知道的话）。
+ * 原来的片段换掉，剪头剪尾跟着清，上一次拼好的成片不再算数。正在生成、画图的这一镜不动。
+ * 上一次没等到结果的那一单（请求号、提交结果不明的标记、报错）原样留着：不用这一段以后回到原来的样子，
+ * 再生成时该提醒可能多扣一次的照样提醒。
+ */
+export function assignVideoStudioShotClip(project: VideoStudioProject, id: string, source: VideoStudioClipSource): VideoStudioProject {
+  const shot = project.shots.find((item) => item.id === id)
+  if (!shot || isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot)) return project
+  const { exported: _exported, ...rest } = project
+  return updateVideoStudioShot(rest, id, (item) => ({
+    ...withoutVideoStudioTrim(item),
+    prompt: item.prompt.trim() ? item.prompt : videoStudioPlainText(source.prompt).slice(0, videoStudioPlanLimits.maximumPromptLength),
+    clip: source.clip, borrowed: true, status: 'done',
+  }))
+}
+
+/** 「不使用此片段」：拿掉这一镜上那段现成的片段，回到用它之前的样子（没生成，或者上一次没生成出来）。自己生成的片段不归它管。 */
+export function removeVideoStudioShotClip(project: VideoStudioProject, id: string): VideoStudioProject {
+  const shot = project.shots.find((item) => item.id === id)
+  if (!shot?.clip || !shot.borrowed || isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot)) return project
+  const { exported: _exported, ...rest } = project
+  return updateVideoStudioShot(rest, id, (item) => {
+    const { clip: _clip, ...kept } = withoutVideoStudioBorrowed(withoutVideoStudioTrim(item))
+    return { ...kept, status: kept.requestId || kept.error ? 'failed' : 'idle', ...(kept.unconfirmed && !kept.error ? { error: aiVideoUnconfirmedSubmissionMessage } : {}) }
+  })
+}
+
+/** 新生成的片段换上来时用：这一段不再是「现成的片段」。 */
+export function withoutVideoStudioBorrowed<T extends Pick<VideoStudioShot, 'borrowed'>>(shot: T): Omit<T, 'borrowed'> {
+  const { borrowed: _borrowed, ...rest } = shot
+  return rest
 }
 
 export function isVideoStudioShotBusy(shot: VideoStudioShot): boolean {
@@ -374,14 +431,22 @@ export function withoutVideoStudioTrim<T extends Pick<VideoStudioShot, 'trimStar
   return rest
 }
 
+/**
+ * 这一镜在成片里占多长。用着作品库里现成片段、又知道那一段多长的，按片段本身算：它不是照「时长」那一格出的，
+ * 可能长也可能短。别的照定的时长。
+ */
+function videoStudioShotLength(shot: VideoStudioShot, settings: VideoStudioSettings): number {
+  return shot.borrowed && shot.clip?.durationSeconds ? shot.clip.durationSeconds : videoStudioShotSeconds(shot, settings)
+}
+
 /** 分镜卡上「共约 T 秒」：每段按它的时长算，减掉剪掉的。只算 shots 里列的那几镜（确认框只算要生成的那几段）。 */
 export function videoStudioTotalSeconds(project: VideoStudioProject, shots: readonly VideoStudioShot[] = project.shots): number {
-  return Math.round(shots.reduce((total, shot) => total + videoStudioShotSeconds(shot, project.settings) - (shot.trimStart ?? 0) - (shot.trimEnd ?? 0), 0))
+  return Math.round(shots.reduce((total, shot) => total + videoStudioShotLength(shot, project.settings) - (shot.trimStart ?? 0) - (shot.trimEnd ?? 0), 0))
 }
 
 /** 这几镜要是一样长就是这个秒数，长短不一是 null（分镜卡、确认框就不说「每段 S 秒」）。 */
 export function videoStudioCommonSeconds(project: VideoStudioProject, shots: readonly VideoStudioShot[] = project.shots): number | null {
-  const lengths = new Set(shots.map((shot) => videoStudioShotSeconds(shot, project.settings)))
+  const lengths = new Set(shots.map((shot) => Math.round(videoStudioShotLength(shot, project.settings))))
   return lengths.size === 1 ? [...lengths][0] : null
 }
 
@@ -488,16 +553,72 @@ export function videoStudioImageSize(policy: ImageSizePolicy, aspect: VideoStudi
   return `${fit(width)}x${fit(height)}`
 }
 
-/** 让 AI 按这一镜的画面描述画一张图的请求；画质用模型自己的缺省（最便宜的那一档），先出图就是为了省钱。 */
-export function buildVideoStudioImageRequest(settings: VideoStudioSettings, shot: VideoStudioShot, requestId: string): AiChatImageInput {
-  let size: string | undefined
+/** 出图框里填好的那一份（融合第 4 步）：画面描述、型号和计费分组、尺寸、画质、分辨率；带了参考图就照图改。 */
+export interface VideoStudioImageDraft extends ImageOptionValues {
+  prompt: string
+  model: string
+  group: string
+  sourceAssetIds?: readonly string[]
+}
+
+/** 出图框交出去的请求，写法同对话里「生成图片」那一档（useChatController 的 imageInput）：型号没有画质档位就不带画质。 */
+export function buildVideoStudioImageRequest(draft: VideoStudioImageDraft, requestId: string): AiChatImageInput {
+  let quality: AiChatImageInput['quality']
   try {
-    const capability = inspectModel(settings.imageModel)
-    if (capability.kind === 'image') size = videoStudioImageSize(capability.sizePolicy, settings.aspect)
+    const capability = inspectModel(draft.model)
+    if (capability.kind === 'image' && capability.qualities.length) quality = draft.quality
   } catch {
     // 认不出的模型交给主进程去拒。
   }
-  return { requestId, group: settings.imageGroup, model: settings.imageModel, prompt: videoStudioPlainText(shot.prompt), ...(size ? { size } : {}) }
+  return {
+    requestId, group: draft.group, model: draft.model, prompt: videoStudioPlainText(draft.prompt), size: draft.size,
+    ...(quality ? { quality } : {}), imageResolution: draft.imageResolution,
+    ...(draft.sourceAssetIds?.length ? { sourceAssetIds: [...draft.sourceAssetIds] } : {}),
+  }
+}
+
+/**
+ * 出图框一打开选哪个型号：记的那一份（对话里「生成图片」用的也是它）→ 这条视频以前在「画镜头图」里选的 →
+ * 默认的出图型号。计费分组跟着记的走，记的那个分组里没有这个型号了就按 pickChatGroup 的次序另挑。表是空的就都是空串。
+ */
+export function videoStudioImageModelChoice(shared: Pick<SharedImageSettings, 'model' | 'group'> | null, settings: Pick<VideoStudioSettings, 'imageModel' | 'imageGroup'>, catalog: readonly ChatCatalogEntry[], context: ChatGroupContext): { model: string, group: string } {
+  const pick = (model: string, group: string) => {
+    const entry = model ? catalog.find((item) => item.model === model) : undefined
+    return entry ? { model: entry.model, group: entry.groups.includes(group) ? group : pickChatGroup(entry.groups, { ...context, current: '', mode: 'image' }) } : null
+  }
+  return (shared && pick(shared.model, shared.group)) ?? pick(settings.imageModel, settings.imageGroup) ?? pick(resolveDefaultChatModel('image', catalog.map((item) => item.model)), '') ?? { model: '', group: '' }
+}
+
+function imageSizeShape(size: string): 'wide' | 'tall' | 'square' | null {
+  const match = /^(\d+)x(\d+)$/.exec(size)
+  if (!match) return null
+  const ratio = Number(match[1]) / Number(match[2])
+  return ratio > 1.05 ? 'wide' : ratio < 0.95 ? 'tall' : 'square'
+}
+
+/**
+ * 出图框里这个型号用什么尺寸、画质、分辨率。客户在框里改过的（touched）优先，其次是记的那一份，一次都没记过就是
+ * 对话里的默认；型号不收的换成它自己的默认。尺寸客户没改过时，记的那个横竖跟这条视频的画面对不上，就按画面另挑
+ * （videoStudioImageSize）：这张图是拿来当第一帧的，横竖不对出来的视频就不对。手填到一半的尺寸原样留着，点「生成图片」前再核。
+ */
+export function videoStudioImageOptions(model: string, aspect: VideoStudioAspect, shared: ImageOptionValues | null, touched: Partial<ImageOptionValues>): ImageOptionValues {
+  const base = shared ?? defaultImageOptions()
+  const fitted = fitImageOptions(model, { size: base.size, quality: touched.quality ?? base.quality, imageResolution: touched.imageResolution ?? base.imageResolution })
+  if (touched.size !== undefined) return { ...fitted, size: touched.size }
+  let capability: ReturnType<typeof inspectModel>
+  try { capability = inspectModel(model) } catch { return fitted }
+  if (capability.kind !== 'image') return fitted
+  const wanted = aspect === '16:9' ? 'wide' : aspect === '9:16' ? 'tall' : 'square'
+  return imageSizeShape(fitted.size) === wanted ? fitted : { ...fitted, size: videoStudioImageSize(capability.sizePolicy, aspect) }
+}
+
+/**
+ * 点了「生成图片」以后记下的那一份：型号、画质、分辨率照框里的。尺寸只有客户在框里改过才记；按这条视频的画面
+ * 自动挑的那个不记，不然对话里的尺寸会跟着某条视频的横竖变。
+ */
+export function videoStudioImageSettingsToShare(draft: VideoStudioImageDraft, shared: ImageOptionValues | null, sizeTouched: boolean): SharedImageSettings {
+  const size = sizeTouched ? draft.size : fitImageOptions(draft.model, { size: (shared ?? defaultImageOptions()).size, quality: draft.quality, imageResolution: draft.imageResolution }).size
+  return { model: draft.model, group: draft.group, size, quality: draft.quality, imageResolution: draft.imageResolution }
 }
 
 /**
@@ -635,7 +756,7 @@ export function serializeVideoStudioProject(project: VideoStudioProject): unknow
     settings: project.settings,
     title: project.title,
     shots: project.shots.map((shot) => ({
-      id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.image ? { image: { assetId: shot.image.assetId } } : {}), ...(shot.seconds ? { seconds: shot.seconds } : {}), ...(shot.clip ? { clip: shot.clip } : {}),
+      id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.image ? { image: { assetId: shot.image.assetId } } : {}), ...(shot.seconds ? { seconds: shot.seconds } : {}), ...(shot.clip ? { clip: shot.clip } : {}), ...(shot.clip && shot.borrowed ? { borrowed: true } : {}),
       ...(shot.clip && shot.trimStart ? { trimStart: shot.trimStart } : {}), ...(shot.clip && shot.trimEnd ? { trimEnd: shot.trimEnd } : {}),
       // 沿用请求号重新出着的那一单不记 unconfirmed：重开以后照样去接，主进程那边记着上一次结果不明，接回时会照实回答。
       // 可上一次也可能是主进程没记下的那种（写不进去），所以记成 unrecorded：接不回来时照样提醒，同这一单交出去前没记下。
@@ -705,6 +826,7 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
       ...(image ? { image } : {}),
       ...(seconds ? { seconds } : {}),
       ...(clip ? { clip } : {}),
+      ...(clip && entry.borrowed === true ? { borrowed: true } : {}),
       ...(trimmed && trimStart ? { trimStart } : {}),
       ...(trimmed && trimEnd ? { trimEnd } : {}),
       ...(requestId ? { requestId } : {}),

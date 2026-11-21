@@ -29,6 +29,17 @@ describe('the pieces of the create page that are its own', () => {
     expect(html.match(/<button type="button" class="create-card"/g)).toHaveLength(2)
   })
 
+  // 融合第 3 步：作品库里有视频、这个账号又能做视频时多第三张卡。
+  it('adds a third card that joins clips already in the library, only when asked to', () => {
+    const html = renderToStaticMarkup(<CreateStartCards video clips onVideo={nothing} onCanvas={nothing} onClips={nothing} />)
+    expect(html.match(/<button type="button" class="create-card"/g)).toHaveLength(3)
+    expect(html.indexOf('data-testid="create-card-canvas"')).toBeLessThan(html.indexOf('data-testid="create-card-clips"'))
+    expect(text(html)).toContain('用已有片段合成视频从作品库选择片段，添加字幕和配乐，在本机合成，不产生费用')
+    // 没人接这张卡的地方不出它，免得点了没反应。
+    expect(renderToStaticMarkup(<CreateStartCards video clips onVideo={nothing} onCanvas={nothing} />)).not.toContain('create-card-clips')
+    expect(renderToStaticMarkup(<CreateStartCards video clips={false} onVideo={nothing} onCanvas={nothing} onClips={nothing} />)).not.toContain('create-card-clips')
+  })
+
   it('leaves the film card out for an account that cannot start a film right now, and keeps the canvas', () => {
     const html = renderToStaticMarkup(<CreateStartCards video={false} onVideo={nothing} onCanvas={nothing} />)
     expect(html).not.toContain('create-card-video')
@@ -67,7 +78,7 @@ describe('the pieces of the create page that are its own', () => {
   it('says once that the three pages were merged, and nothing before that is decided or after it is closed', () => {
     const shown = renderToStaticMarkup(<CreateIntro state="shown" ready hasEarlierWork onDecide={nothing} onDismiss={nothing} />)
     expect(shown).toContain('data-testid="create-intro"')
-    expect(text(shown)).toBe('聊天、画布、视频剪辑合到这一页了以前的对话、画布项目、视频草稿都在左边这一列，一个没少。')
+    expect(text(shown)).toBe('聊天、画布、视频剪辑合到这一页了以前的对话、画布项目、视频草稿都在左边这一列，一个没少。生成的图片和视频可在左下角「作品库」中查看。')
     expect(shown).toContain('<button')
     expect(renderToStaticMarkup(<CreateIntro state="undecided" ready hasEarlierWork onDecide={nothing} onDismiss={nothing} />)).toBe('')
     expect(renderToStaticMarkup(<CreateIntro state="gone" ready hasEarlierWork onDecide={nothing} onDismiss={nothing} />)).toBe('')

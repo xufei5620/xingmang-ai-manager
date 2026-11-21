@@ -38,8 +38,8 @@ describe('plugins hub', () => {
   })
 
   it('says why a family cannot be ticked in the approved words', () => {
-    expect(hubChoiceNote({ state: 'installed', installs: [] }, 'claude')).toBe('已经装好了')
-    expect(hubChoiceNote({ state: 'tool-missing' }, 'grok')).toBe('这台电脑还没装 Grok CLI')
+    expect(hubChoiceNote({ state: 'installed', installs: [] }, 'claude')).toBe('已安装')
+    expect(hubChoiceNote({ state: 'tool-missing' }, 'grok')).toBe('本机尚未安装 Grok CLI')
     expect(hubChoiceNote({ state: 'vendor-only', vendor: 'claude' }, 'codex')).toBe('插件各家格式不通用，这一条只有 Claude 版')
     expect(hubChoiceNote({ state: 'addable' }, 'codex')).toBeNull()
   })
@@ -59,8 +59,8 @@ describe('plugins hub', () => {
     expect(html).toMatch(/aria-pressed="false" disabled="" data-testid="picker-grok"/)
     expect(html).toContain('Claude Code，以及 Claude 桌面端里的 Claude Code')
     expect(html).toContain('Codex CLI 和 Codex 桌面端，两边都能用')
-    expect(html).toContain('已经装好了')
-    expect(html).toContain('这台电脑还没装 Grok CLI')
+    expect(html).toContain('已安装')
+    expect(html).toContain('本机尚未安装 Grok CLI')
     expect(html).toContain('data-testid="picker-grok-home"')
   })
 })

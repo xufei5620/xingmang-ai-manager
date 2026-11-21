@@ -65,7 +65,7 @@ const priceList: AccountPriceList = query.get('prices') === '1'
   ] }
   : { rows: [] }
 const groups = [{ name: 'GPT', description: '聊天', ratio: 1, recommended: true }, { name: '图片模型', description: '图片和视频', ratio: 1 }]
-const groupModels: Record<string, string[]> = { GPT: ['gpt-5.6-sol', 'claude-test'], 图片模型: ['gpt-image-2', 'grok-imagine-video-1.5', 'minimax-h3-base'] }
+const groupModels: Record<string, string[]> = { GPT: ['gpt-5.6-sol', 'claude-test'], 图片模型: ['gpt-image-2', 'gemini-3.1-flash-image', 'grok-imagine-video-1.5', 'minimax-h3-base'] }
 function record(method: string, input?: unknown) { calls.push({ method, input }) }
 function nextAssetId(): string {
   assetCounter += 1

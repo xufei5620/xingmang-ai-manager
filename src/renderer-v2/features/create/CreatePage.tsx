@@ -1,20 +1,26 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { ArrowUpRight, Clapperboard, Infinity as InfinityIcon, Pencil, Trash2, type LucideIcon } from 'lucide-react'
+import { ArrowUpRight, Clapperboard, Film, Infinity as InfinityIcon, Pencil, Trash2, type LucideIcon } from 'lucide-react'
 import type { CanvasProjectListEntry, XingmangApi } from '../../../../electron/ipc-contract'
+import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { Button, Confirm, Dialog, Input, Notice, useToast } from '../../ui'
 import { dollars } from '../../business-common'
 import { useLatestRequest } from '../../latest-request'
 import { useSharedBalanceSelector } from '../app/balance-context'
+import { diagnosticFolderUnavailableMessage } from '../app/diagnostic-folder'
 import { PageLoading } from '../app/PageLoading'
 import { ChatPage, type ChatPageCreate, type ChatPageProps, type ChatPageVideo } from '../chat/ChatPage'
 import type { ChatVideoFilm } from '../chat/ChatVideo'
-import type { ChatSite } from '../chat/state'
+import { chatAssetSaveErrorMessage, type ChatSite } from '../chat/state'
 import { cleanVideoStudioItemName, maxVideoStudioItemNameLength, maxVideoStudioProjects, videoStudioItemName, type VideoStudioItem } from '../video-studio/library'
 import { useVideoStudioPriceList, videoStudioPerCallUsd, videoStudioQuoteText } from '../video-studio/prices'
-import { appendVideoStudioClip, canAddVideoStudioShot, createVideoStudioProjectFromClip, videoStudioDraftProgress } from '../video-studio/project'
+import { appendVideoStudioClip, canAddVideoStudioShot, createVideoStudioProjectFromClip, createVideoStudioProjectFromClips, videoStudioDraftProgress, type VideoStudioClipSource } from '../video-studio/project'
+import { videoStudioErrorMessage } from '../video-studio/useVideoStudio'
 import { useVideoStudioLibrary, useVideoStudioSession } from '../video-studio/useVideoStudioLibrary'
-import type { VideoStudioAccess } from '../video-studio/VideoStudioPage'
+import type { VideoStudioAccess, VideoStudioLibraryPicker } from '../video-studio/VideoStudioPage'
+import { CreateLibraryPane, LibraryPicker, measureLibraryVideo, type CreateLibraryActions, type LibraryPicked } from './CreateLibrary'
+import { libraryClipMade, libraryClipSource, libraryFilmAssetIds, libraryKindCount, type LibraryOrigin } from './library'
 import { createTimeText, type CreateExtraItem, type CreateExtraKind, type CreateSelection } from './list'
+import { useCreateLibrary } from './useCreateLibrary'
 import './create.css'
 
 // 视频工作台连着拼片那一套（WebCodecs、后台线程）比较重，打开第一条视频时才读。
@@ -27,6 +33,9 @@ export interface CreatePageProps extends Omit<ChatPageProps, 'create'> {
   /** 从教程、引导点「打开视频剪辑」过来：接着最近那一条视频，一条都没有就新开一条。接住以后调 onVideoOpened 放下。 */
   openVideo?: boolean
   onVideoOpened?: () => void
+  /** 顶部搜索的「作品库」：为 true 时右边换成作品库，接住以后调 onLibraryOpened 放下。 */
+  openLibrary?: boolean
+  onLibraryOpened?: () => void
   /** 打开画布窗口（落在它的项目中心）。 */
   onOpenCanvas: () => void
   /** 把画布窗口开在这个项目上；开没开成都交回，这边好重读一遍项目。 */
@@ -35,7 +44,7 @@ export interface CreatePageProps extends Omit<ChatPageProps, 'create'> {
 
 /**
  * 「创作」：聊天、画布、视频剪辑合成的一页（融合第 1 步，方案见 0.2.25 三块融合）。左边一列是做过的东西，
- * 对话、视频、画布项目排在一起；右边是点开的那一样。对话那一半还是 ChatPage，这里管视频和画布项目。
+ * 对话、视频、画布项目排在一起；右边是点开的那一样。对话那一半还是 ChatPage，这里管视频、画布项目和作品库（第 3 步）。
  */
 export function CreatePage(props: CreatePageProps) {
   return <CreateScope key={props.accountScope} {...props} />
@@ -53,6 +62,18 @@ function introSeen(): boolean {
 
 function rememberIntroSeen() {
   try { window.localStorage.setItem(introSeenKey, '1') } catch { /* 记不下就算了，最多下次再说一遍。 */ }
+}
+
+/**
+ * 从作品库里选东西的那个框开着是为了什么：给一个镜头选图、选一段现成的片段（选完交回视频工作台），
+ * 或者起始页第三张卡挑几段新建一条视频。
+ */
+type Picking = { kind: 'image', done: (assetId: string | null) => void } | { kind: 'clip', done: (source: VideoStudioClipSource | null) => void } | { kind: 'film' }
+
+// 关掉没选：等着的那一头拿到 null。
+function settlePicking(picking: Picking | null) {
+  if (picking?.kind === 'image') picking.done(null)
+  else if (picking?.kind === 'clip') picking.done(null)
 }
 
 interface CanvasProjects {
@@ -87,7 +108,7 @@ function useCanvasProjects(bridge: Pick<XingmangApi, 'listCanvasProjects'>, acti
   return { ...state, refresh }
 }
 
-function CreateScope({ bridge, accountScope, active = true, site, videoAccess, openVideo, onVideoOpened, onOpenCanvas, onOpenCanvasProject, ...chat }: CreatePageProps) {
+function CreateScope({ bridge, accountScope, active = true, site, videoAccess, openVideo, onVideoOpened, openLibrary, onLibraryOpened, onOpenCanvas, onOpenCanvasProject, ...chat }: CreatePageProps) {
   const toast = useToast()
   const library = useVideoStudioLibrary(bridge, accountScope)
   const session = useVideoStudioSession(library)
@@ -99,7 +120,13 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const [opening, setOpening] = useState<string | null>(null)
   const [intro, setIntro] = useState<'undecided' | 'shown' | 'gone'>(() => introSeen() ? 'gone' : 'undecided')
   const videosListed = videoAccess !== 'unsupported'
-  const videos = videosListed ? library.items : noVideos
+  const videos = useStableList(videosListed ? library.items : noVideos)
+  // 主窗口的作品库（融合第 3 步）：右边换成它时对话、视频那一块只藏不卸，跟点一条视频一样。
+  const assets = useCreateLibrary(bridge, active, useStableList(libraryFilmAssetIds(videos)))
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  const [picking, setPicking] = useState<Picking | null>(null)
+  const pickingRef = useRef(picking)
+  pickingRef.current = picking
   // 输入框「生成视频」那一档发送前问价用的价目和余额，同视频工作台的确认框。价目不随这一页露面就读：
   // 切到那一档、打开确认框时对话页来要（refresh），不做视频的客户不用白读一次。
   const balance = useSharedBalanceSelector((state) => state.scope === accountScope ? state.balance : null)
@@ -123,14 +150,17 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const showVideo = (id: string) => {
     const result = session.open(id)
     if (result === 'busy') sayBusy()
-    if (result === 'opened') setSelected({ kind: 'video', id })
+    if (result === 'opened') { setLibraryOpen(false); setSelected({ kind: 'video', id }) }
   }
   const startVideo = () => {
     const started = session.start()
     if (started === 'busy') sayBusy()
     else if (started === 'full') toast.show(`视频最多存 ${maxVideoStudioProjects} 条，先删掉几条不要的再新建。`, 'warn')
-    else setSelected({ kind: 'video', id: started.id })
+    else { setLibraryOpen(false); setSelected({ kind: 'video', id: started.id }) }
   }
+  // 每次点开都再读一遍：视频工作台里刚出的片段、刚拼好的成片要在里面。
+  const showLibrary = () => { setSelected(null); setLibraryOpen(true); assets.refresh() }
+  const leave = () => { setSelected(null); setLibraryOpen(false) }
   // 对话里的一段视频「添加到视频」：接到选的那一条最后（null 是新建一条）。开着的正是那一条时，写完它按新的重新读
   // （library.replace 换版本号，下面工作台的 key 跟着换）；它手上有事（写分镜、生成、拼片）就先不加，等它停下。
   const addClip: ChatPageVideo['addClip'] = (filmId, source, made) => {
@@ -142,6 +172,63 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
     library.replace(id, filmId === null ? createVideoStudioProjectFromClip(source, made, item.project.settings) : appendVideoStudioClip(item.project, source))
     return { id, title: videoStudioItemName(library.get(id) ?? item) }
   }
+  // 作品库里要这一页办的几件事。另存、打开的结果用右下角那条提示说：对话那一块这时藏着，它顶上的横条看不到。
+  const saveImage = (assetId: string) => {
+    const ticket = owner.capture()
+    bridge.saveAiChatAsset(assetId).then((result) => { if (ticket() && result.saved) toast.show('图片已保存', 'ok') }, (reason) => { if (ticket()) toast.show(chatAssetSaveErrorMessage(reason), 'bad') })
+  }
+  const saveVideo = (assetId: string, suggestedName: string) => {
+    const ticket = owner.capture()
+    bridge.saveAiVideo(assetId, suggestedName || undefined).then((result) => { if (ticket() && result.saved) toast.show('视频已保存', 'ok') }, (reason) => { if (ticket()) toast.show(videoStudioErrorMessage(reason, '保存失败，请更换位置后重试'), 'bad') })
+  }
+  const openVideoFile = (assetId: string) => {
+    const ticket = owner.capture()
+    bridge.openAiVideo(assetId).catch((reason) => { if (ticket()) toast.show(videoStudioErrorMessage(reason, '视频打开失败，请稍后重试'), 'bad') })
+  }
+  const openFolder = () => {
+    const ticket = owner.capture()
+    bridge.openDiagnosticFolder('ai-output').then((opened) => { if (ticket() && !opened) toast.show(diagnosticFolderUnavailableMessage, 'warn') }, (reason) => { if (ticket()) toast.show(videoStudioErrorMessage(reason, diagnosticFolderUnavailableMessage), 'warn') })
+  }
+  const addLibraryClip: CreateLibraryActions['addClip'] = (filmId, source, made) => {
+    const result = addClip(filmId, source, made)
+    if ('error' in result) { toast.show(result.error, 'warn'); return }
+    toast.show(`已添加为「${result.title}」的最后一个镜头`, 'ok', { label: '查看', onSelect: (dismiss) => { dismiss(); showVideo(result.id) } })
+  }
+  // 选择框一次只开一个：前一个还等着就先按「没选」交回。
+  const startPicking = (next: Picking) => { settlePicking(pickingRef.current); setPicking(next) }
+  const closePicking = () => { settlePicking(pickingRef.current); setPicking(null) }
+  const startPickingRef = useRef(startPicking)
+  startPickingRef.current = startPicking
+  // 交给视频工作台的那一个对象不变：它拿去等结果，这一页重画不会让它以为换了一个。
+  const [studioLibrary] = useState<VideoStudioLibraryPicker>(() => ({
+    pickImage: () => new Promise((resolve) => startPickingRef.current({ kind: 'image', done: resolve })),
+    pickClip: () => new Promise((resolve) => startPickingRef.current({ kind: 'clip', done: resolve })),
+  }))
+  // 起始页第三张卡挑好了：新建一条视频，一个镜头一段，照挑的先后排。
+  const startFilmFromClips = (sources: VideoStudioClipSource[], origin: LibraryOrigin | undefined) => {
+    const started = session.start()
+    if (started === 'busy') { sayBusy(); return }
+    if (started === 'full') { toast.show(`视频最多存 ${maxVideoStudioProjects} 条，先删掉几条不要的再新建。`, 'warn'); return }
+    const item = library.get(started.id)
+    if (!item) return
+    library.replace(started.id, createVideoStudioProjectFromClips(sources, libraryClipMade(sources[0].clip, origin), item.project.settings))
+    setLibraryOpen(false)
+    setSelected({ kind: 'video', id: started.id })
+  }
+  const finishPicking = async (picked: LibraryPicked[]) => {
+    const current = pickingRef.current
+    if (!current || !picked.length) return
+    if (current.kind === 'image') { setPicking(null); current.done(picked[0].entry.assetId); return }
+    const ticket = owner.capture()
+    // 对话和视频里没记着尺寸、时长的片段，交出去之前在页面上量一下（量不出来就不写，拼片时照文件本身来）。
+    const sources = await Promise.all(picked.map(async ({ entry, origin }) => libraryClipSource(entry, origin, origin?.clip ? null : await measureLibraryVideo(entry.assetId))))
+    if (!ticket() || pickingRef.current !== current) return
+    setPicking(null)
+    if (current.kind === 'clip') current.done(sources[0])
+    else startFilmFromClips(sources, picked[0].origin)
+  }
+  // 开着的那一条视频手上有事时不新开别的：先说一句，不白让人挑一遍。
+  const startClipFilm = () => { if (session.busy && session.openId) sayBusy(); else startPicking({ kind: 'film' }) }
   const openCanvasProject = (projectId: string) => {
     if (opening) return
     const ticket = owner.capture()
@@ -174,6 +261,21 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
     else if (library.items[0]) showVideo(library.items[0].id)
     else if (videoAccess === 'ready') startVideo()
   }, [active, openVideo, library.status])
+  // 顶部搜索的「作品库」。
+  useEffect(() => {
+    if (!active || !openLibrary) return
+    onLibraryOpened?.()
+    showLibrary()
+  }, [active, openLibrary])
+  // 视频工作台忙完一轮（出好了片段、拼好了成片）：作品库里多了东西，左下角那个数跟着变。
+  const wasBusy = useRef(session.busy)
+  useEffect(() => {
+    if (wasBusy.current && !session.busy && active) assets.refresh()
+    wasBusy.current = session.busy
+  }, [session.busy])
+  // 切到别的页面，开着的选择框关掉（等着的那一头按没选算）；这一页卸掉时也一样。
+  useEffect(() => { if (!active && pickingRef.current) closePicking() }, [active])
+  useEffect(() => () => settlePicking(pickingRef.current), [])
 
   const pane = <>
     {openItem && <div className="chat-conversation create-pane" hidden={!videoShown} data-testid="create-video-pane">
@@ -183,7 +285,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
       </div></header>
       <div className="create-studio"><Suspense fallback={<PageLoading />}>
         <VideoStudioPage key={`${openItem.id}:${library.revision(openItem.id)}`} bridge={bridge} accountScope={accountScope} site={site} access={videoAccess} active={active && videoShown}
-          source={library.source(openItem.id)} onBusyChange={session.setBusy} onOpenAccount={chat.onOpenAccount} />
+          source={library.source(openItem.id)} onBusyChange={session.setBusy} onOpenAccount={chat.onOpenAccount} library={studioLibrary} />
       </Suspense></div>
     </div>}
     {project && <CanvasProjectPane project={project} opening={opening === project.id} onOpen={() => openCanvasProject(project.id)} />}
@@ -195,14 +297,15 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
     selected: videoShown || project ? selected : null,
     lockedVideoId: session.busy ? session.openId : null,
     actions: {
-      open: (item) => { if (item.kind === 'video') showVideo(item.id); else setSelected({ kind: 'canvas', id: item.id }) },
-      leave: () => setSelected(null),
+      open: (item) => { if (item.kind === 'video') showVideo(item.id); else { setLibraryOpen(false); setSelected({ kind: 'canvas', id: item.id }) } },
+      leave,
       renameVideo: startRename,
       removeVideo: setRemoving,
       openCanvas: openCanvasProject,
     },
     pane,
-    cards: <CreateStartCards video={videoAccess === 'ready'} onVideo={startVideo} onCanvas={onOpenCanvas} />,
+    // 第三张卡要作品库里有视频才出：一段都没有时点进去是个空框。
+    cards: <CreateStartCards video={videoAccess === 'ready'} clips={videoAccess === 'ready' && (assets.counts?.video ?? 0) > 0} onVideo={startVideo} onCanvas={onOpenCanvas} onClips={startClipFilm} />,
     intro: (conversationCount) => <CreateIntro state={intro} ready={active && library.status !== 'loading' && canvas.status !== 'loading'}
       hasEarlierWork={conversationCount > 0 || library.items.length > 0 || canvas.projects.length > 0}
       onDecide={(show) => { rememberIntroSeen(); setIntro(show ? 'shown' : 'gone') }} onDismiss={() => setIntro('gone')} />,
@@ -215,6 +318,18 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
       films,
       addClip,
       openFilm: showVideo,
+    },
+    library: {
+      open: libraryOpen,
+      count: assets.counts ? libraryKindCount(assets.counts, 'all') : null,
+      onOpen: showLibrary,
+      refresh: assets.refresh,
+      render: (context) => <>
+        {libraryOpen && <CreateLibraryPane library={assets} conversations={context.conversations} films={videos} videoReady={context.canAnimate} videoFilms={films}
+          actions={{ openFolder, openConversation: context.openConversation, openFilm: showVideo, reuseImage: context.reuseImage, animateImage: context.animateImage, saveImage, saveVideo, openVideo: openVideoFile, addClip: addLibraryClip }} />}
+        {active && picking && <LibraryPicker key={picking.kind} bridge={bridge} kind={picking.kind === 'image' ? 'image' : 'video'} limit={picking.kind === 'film' ? videoStudioPlanLimits.maximumShots : 1}
+          conversations={context.conversations} films={videos} onPick={finishPicking} onClose={closePicking} />}
+      </>,
     },
   }
 
@@ -260,7 +375,7 @@ function cached<Key extends object, Value>(cache: WeakMap<Key, Value>, key: Key,
 }
 
 /** 每一项都没变就交回上一次那个数组：对话页拿它做 useMemo 的依赖，回复一段段到的时候不用重排这一列。 */
-function useStableList<Item>(next: Item[]): Item[] {
+function useStableList<Item>(next: readonly Item[]): readonly Item[] {
   const previous = useRef(next)
   if (previous.current.length !== next.length || previous.current.some((item, index) => item !== next[index])) previous.current = next
   return previous.current
@@ -274,15 +389,17 @@ function StartCard({ icon: Icon, title, body, note, onClick, testId }: { icon: L
 }
 
 /**
- * 起始页六句示例下面的卡：一句话说不清的两样从这里进。第三张「把现成的片段拼成一条」等主窗口有了作品库（融合第 3 步）再加。
- * video：这个账号现在能不能新做视频（历史账号、临时停用时不出第一张）。
+ * 起始页六句示例下面的卡：一句话说不清的几样从这里进。
+ * video：这个账号现在能不能新做视频（历史账号、临时停用时不出第一张）。clips：出不出第三张「用已有片段合成视频」
+ * （能做视频、作品库里又有视频时才出，融合第 3 步）。
  */
-export function CreateStartCards({ video, onVideo, onCanvas }: { video: boolean, onVideo: () => void, onCanvas: () => void }) {
+export function CreateStartCards({ video, clips = false, onVideo, onCanvas, onClips }: { video: boolean, clips?: boolean, onVideo: () => void, onCanvas: () => void, onClips?: () => void }) {
   return <div className="create-start" data-testid="create-start">
     <div className="create-start-label">一句话说不清的，从这里开始</div>
     <div className="create-cards">
       {video && <StartCard icon={Clapperboard} title="做一条带字幕的短视频" body="写一句想法，AI 写分镜、一段一段出，再拼成一条" onClick={onVideo} testId="create-card-video" />}
       <StartCard icon={InfinityIcon} title="在画布上一步步做" body="多张图、精修、套模板，人物每一镜都长得一样也在这里" note="开在大窗口里" onClick={onCanvas} testId="create-card-canvas" />
+      {clips && onClips && <StartCard icon={Film} title="用已有片段合成视频" body="从作品库选择片段，添加字幕和配乐，在本机合成，不产生费用" onClick={onClips} testId="create-card-clips" />}
     </div>
   </div>
 }
@@ -311,10 +428,10 @@ export function CanvasProjectPane({ project, opening, onOpen, now }: { project: 
 
 /**
  * 只出现一次的提示。头一次看到起始页时定：以前做过东西的（升级上来的）说这一句；什么都没有的是新客户，
- * 不用知道以前是三页。两种都只定一次。「做过的图和视频在左下角作品库」那半句等有了作品库（融合第 3 步）再加。
+ * 不用知道以前是三页。两种都只定一次。后半句说做过的图和视频去哪看（融合第 3 步有了作品库以后加的）。
  */
 export function CreateIntro({ state, ready, hasEarlierWork, onDecide, onDismiss }: { state: 'undecided' | 'shown' | 'gone', ready: boolean, hasEarlierWork: boolean, onDecide: (show: boolean) => void, onDismiss: () => void }) {
   useEffect(() => { if (state === 'undecided' && ready) onDecide(hasEarlierWork) }, [state, ready, hasEarlierWork])
   if (state !== 'shown') return null
-  return <Notice tone="accent" title="聊天、画布、视频剪辑合到这一页了" body="以前的对话、画布项目、视频草稿都在左边这一列，一个没少。" onDismiss={onDismiss} testId="create-intro" />
+  return <Notice tone="accent" title="聊天、画布、视频剪辑合到这一页了" body="以前的对话、画布项目、视频草稿都在左边这一列，一个没少。生成的图片和视频可在左下角「作品库」中查看。" onDismiss={onDismiss} testId="create-intro" />
 }

@@ -206,7 +206,7 @@ export function ExtensionAddDialog({
       const pending = unresolvedInstallPlaceholders(mcp.args, mcp.env)
       if (pending.length)
         throw new Error(
-          `${pending.join('、')} 还没换成真实内容，请先填好再添加。`,
+          `${pending.join('、')} 尚未替换为实际内容，请填写后再添加。`,
         )
     }
     const advanced = {
@@ -218,7 +218,7 @@ export function ExtensionAddDialog({
     const taken = await mcpNameTakenIn(api, formTargets.filter((target) => target !== provider), name, shownScope)
     if (taken.length) {
       const names = extensionToolNames(taken, codexViaDesktop)
-      throw new Error(`${names} 里已经有叫「${name}」的连接了，为了不动原来那条，这次没有添加。换个名字，或者不勾 ${names}。`)
+      throw new Error(`${names} 中已存在名为「${name}」的连接，为保留原连接，本次未添加。请更换名称，或取消勾选 ${names}。`)
     }
     const done: Provider[] = []
     try {
@@ -324,8 +324,8 @@ export function ExtensionAddDialog({
           <Notice
             key={input.key}
             tone={curatedValues[input.key]?.trim() ? 'ok' : 'warn'}
-            title={curatedValues[input.key]?.trim() ? `${input.label}：${curatedValues[input.key]}` : `还缺一样：${input.label}`}
-            body={`点「选择文件夹」挑一个，软件会替你填好，不用手改。${input.hint}`}
+            title={curatedValues[input.key]?.trim() ? `${input.label}：${curatedValues[input.key]}` : `待填写：${input.label}`}
+            body={`点击「选择文件夹」选择后将自动填写，无需手动修改。${input.hint}`}
             testId={`curated-input-${input.key}`}
             actions={
               <Button
@@ -358,7 +358,7 @@ export function ExtensionAddDialog({
               label="粘贴整段配置"
               value={pasteText}
               onChange={(event) => pasteConfig(event.target.value)}
-              placeholder="把提供方给的一整段配置粘贴到这里，下面几项会自动填好。没有的话直接往下填。"
+              placeholder="将提供方给出的完整配置粘贴到此处，下方各项将自动填写。如无完整配置，请直接填写下方各项。"
               rows={4}
               mono
               testId="mcp-paste"
@@ -373,7 +373,7 @@ export function ExtensionAddDialog({
             )}
             {pasted.status === 'ok' && pasted.servers.length > 1 && (
               <Select
-                label={`这段里有 ${pasted.servers.length} 个连接，先加哪一个`}
+                label={`内容中包含 ${pasted.servers.length} 个连接，请选择要添加的一个`}
                 options={pasted.servers.map((server, index) => ({
                   value: String(index),
                   label: mcpPasteChoiceLabel(server, index),
@@ -433,7 +433,7 @@ export function ExtensionAddDialog({
           }
           hint={
             kind === 'mcp' && form === 'add' && transport === 'stdio' && launchCommandSplitsArguments(source)
-              ? '已经帮你把后面的参数分出去了'
+              ? '已自动拆分后续参数'
               : undefined
           }
           mono
@@ -465,7 +465,7 @@ export function ExtensionAddDialog({
               label="请求头"
               value={headers}
               onChange={(event) => setHeaders(event.target.value)}
-              placeholder="Authorization: Bearer 你的密钥"
+              placeholder="Authorization: Bearer 您的密钥"
               mono
               hint="一行一个，写成「名称: 值」。按提供方说明原样粘贴"
               testId="mcp-headers"
@@ -531,7 +531,7 @@ export function ExtensionAddDialog({
       {/* 叠在「添加插件」表单上面：点「先不装」回到表单，填过的来源还在。 */}
       <Dialog
         open={trusting}
-        title={`给 ${toolName} 装这个插件？`}
+        title={`是否为 ${toolName} 安装此插件？`}
         testId="plugins-trust-confirm"
         busy={operation.busy === 'add'}
         onClose={() => setTrusting(false)}
@@ -556,13 +556,13 @@ export function ExtensionAddDialog({
         }
       >
         <p>
-          插件里带的技能、命令和连接，装好后每次打开 {toolName} 都会自动运行，能像你本人一样读写这台电脑上的文件。
+          插件中的技能、命令和连接在安装后，每次打开 {toolName} 时都会自动运行，并可像您本人一样读写本机文件。
         </p>
         <dl className="v2-business-kv">
           <dt>来源</dt>
           <dd>{source.trim()}</dd>
         </dl>
-        <p>只装你认识、信得过的来源；拿不准就先别装。</p>
+        <p>请仅安装来源可信的插件；如不确定，请暂不安装。</p>
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
     </>

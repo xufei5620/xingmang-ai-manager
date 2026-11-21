@@ -500,3 +500,106 @@ describe('createAiMediaAssetService', () => {
     await expect(service.saveAs(7, unknownId)).rejects.toThrow('AI 素材不存在或无权访问')
   })
 })
+
+describe('listOwnedLibrary', () => {
+  const pictureA = 'a'.repeat(43)
+  const pictureB = 'b'.repeat(43)
+  const clip = 'c'.repeat(43)
+  const film = 'd'.repeat(43)
+  const song = 'e'.repeat(43)
+  const binned = 'f'.repeat(43)
+
+  function library(logical: Record<string, unknown> = {}) {
+    const images = {
+      listOwnedIndex: vi.fn(async () => [
+        indexEntry(pictureA, `xingmang-${pictureA}.png`, '2026-11-20T01:00:00.000Z', 'image' as const),
+        indexEntry(pictureB, `xingmang-${pictureB}.jpg`, '2026-11-20T03:00:00.000Z', 'image' as const),
+        indexEntry(binned, `xingmang-${binned}.webp`, '2026-11-20T05:00:00.000Z', 'image' as const),
+      ]),
+      readOwned: vi.fn(async () => { throw new Error('the library must not read media') }),
+      copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(),
+    }
+    const videos = {
+      listOwnedIndex: vi.fn(async () => [
+        indexEntry(clip, `xingmang-${clip}.mp4`, '2026-11-20T02:00:00.000Z', 'video' as const),
+        indexEntry(film, `xingmang-${film}.mp4`, '2026-11-20T04:00:00.000Z', 'video' as const),
+      ]),
+      readOwned: vi.fn(async () => { throw new Error('the library must not read media') }),
+      saveAs: vi.fn(), contextMenu: vi.fn(),
+    }
+    const audios = {
+      listOwnedIndex: vi.fn(async () => [indexEntry(song, `xingmang-${song}.mp3`, '2026-11-20T06:00:00.000Z', 'audio' as const)]),
+      readOwned: vi.fn(async () => { throw new Error('the library must not read media') }),
+      saveAs: vi.fn(), contextMenu: vi.fn(),
+    }
+    const metadata = metadataStore({
+      getAll: vi.fn(async () => ({ [binned]: { deletedAt: '2026-11-20T07:00:00.000Z', updatedAt: '2026-11-20T07:00:00.000Z' }, ...logical })),
+    })
+    const service = createAiMediaAssetService({ images: images as never, videos: videos as never, audios: audios as never, metadata, trashItem })
+    return { service, images, videos, audios }
+  }
+
+  it('lists pictures and videos newest first without reading any media, and leaves out audio and the bin', async () => {
+    const { service, images, videos, audios } = library()
+    const page = await service.listOwnedLibrary(7, { filmAssetIds: [film] })
+    expect(page.items.map((item) => item.assetId)).toEqual([film, pictureB, clip, pictureA])
+    expect(page.items[0]).toEqual({ assetId: film, mediaType: 'video', createdAt: '2026-11-20T04:00:00.000Z', fileName: `xingmang-${film}.mp4` })
+    expect(page.items[1]).toEqual({ assetId: pictureB, mediaType: 'image', createdAt: '2026-11-20T03:00:00.000Z', mimeType: 'image/jpeg', fileName: `xingmang-${pictureB}.jpg` })
+    expect(page).toMatchObject({ offset: 0, limit: 24, total: 4, hasMore: false, counts: { image: 2, video: 2, film: 1 } })
+    expect(images.readOwned).not.toHaveBeenCalled()
+    expect(videos.readOwned).not.toHaveBeenCalled()
+    expect(audios.listOwnedIndex).not.toHaveBeenCalled()
+  })
+
+  it('filters by kind, and counts a film only when it names one of this account\'s videos', async () => {
+    const { service } = library()
+    expect((await service.listOwnedLibrary(7, { kind: 'image' })).items.map((item) => item.assetId)).toEqual([pictureB, pictureA])
+    expect((await service.listOwnedLibrary(7, { kind: 'video' })).items.map((item) => item.assetId)).toEqual([film, clip])
+    // A picture's id, an id in the bin and an id nobody owns are not films.
+    const films = await service.listOwnedLibrary(7, { kind: 'film', filmAssetIds: [film, pictureA, binned, 'z'.repeat(43)] })
+    expect(films.items.map((item) => item.assetId)).toEqual([film])
+    expect(films.counts.film).toBe(1)
+    expect((await service.listOwnedLibrary(7, { kind: 'film' })).total).toBe(0)
+    // A clip is a video nobody named as a film, so the three kinds never overlap.
+    expect((await service.listOwnedLibrary(7, { kind: 'clip', filmAssetIds: [film] })).items.map((item) => item.assetId)).toEqual([clip])
+    expect((await service.listOwnedLibrary(7, { kind: 'clip' })).items.map((item) => item.assetId)).toEqual([film, clip])
+  })
+
+  it('searches the given name, the prompt and the tags, and widens the search with ids the caller matched', async () => {
+    const { service } = library({
+      [pictureA]: { displayName: '橘猫回家', updatedAt: '2026-11-20T01:00:00.000Z' },
+      [clip]: { source: 'generated', prompt: '海边日落，镜头慢慢拉远', updatedAt: '2026-11-20T02:00:00.000Z' },
+    })
+    const named = await service.listOwnedLibrary(7, { search: '橘猫' })
+    expect(named.items).toEqual([expect.objectContaining({ assetId: pictureA, name: '橘猫回家' })])
+    expect((await service.listOwnedLibrary(7, { search: '日落' })).items).toEqual([expect.objectContaining({ assetId: clip, prompt: '海边日落，镜头慢慢拉远' })])
+    // Every stored file starts with the same prefix: it must not match the whole library.
+    expect((await service.listOwnedLibrary(7, { search: 'xingmang' })).total).toBe(0)
+    const widened = await service.listOwnedLibrary(7, { search: '橘猫', matchedAssetIds: [pictureB, binned, 'z'.repeat(43)] })
+    expect(widened.items.map((item) => item.assetId)).toEqual([pictureB, pictureA])
+    // The counts describe the whole library, not the search.
+    expect(widened.counts).toEqual({ image: 2, video: 2, film: 0 })
+    // Without a search the matched ids select nothing on their own.
+    expect((await service.listOwnedLibrary(7, { matchedAssetIds: [pictureB] })).total).toBe(4)
+  })
+
+  it('pages through the listing', async () => {
+    const { service } = library()
+    const first = await service.listOwnedLibrary(7, { limit: 3 })
+    expect(first.items.map((item) => item.assetId)).toEqual([film, pictureB, clip])
+    expect(first).toMatchObject({ total: 4, hasMore: true })
+    const second = await service.listOwnedLibrary(7, { offset: 3, limit: 3 })
+    expect(second.items.map((item) => item.assetId)).toEqual([pictureA])
+    expect(second.hasMore).toBe(false)
+  })
+
+  it('rejects malformed queries', async () => {
+    const { service } = library()
+    await expect(service.listOwnedLibrary(7, { offset: -1 })).rejects.toThrow('AI 素材分页位置无效')
+    await expect(service.listOwnedLibrary(7, { limit: 61 })).rejects.toThrow('AI 素材分页数量无效')
+    await expect(service.listOwnedLibrary(7, { kind: 'audio' as never })).rejects.toThrow('AI 素材媒体类型无效')
+    await expect(service.listOwnedLibrary(7, { search: 'a\u0000b' })).rejects.toThrow('AI 素材搜索内容无效')
+    await expect(service.listOwnedLibrary(7, { filmAssetIds: Array.from({ length: 201 }, () => film) })).rejects.toThrow('AI 素材筛选集合过大')
+    await expect(service.listOwnedLibrary(7, { matchedAssetIds: Array.from({ length: 2001 }, () => film) })).rejects.toThrow('AI 素材筛选集合过大')
+  })
+})
