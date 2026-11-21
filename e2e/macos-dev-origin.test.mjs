@@ -57,15 +57,20 @@ function recordProcessOutput(child) {
   return lines
 }
 
-// Notes, on the page's own clock, when the root, the splash screen and the
-// welcome page first show up, so a failure can tell "late" from "there but
-// not visible". Installed once the first window exists; a reload would drop it.
+// Notes when the root, the splash screen and the welcome page first show up,
+// and every long task, so a failure can tell "late" from "there but not
+// visible". Installed once the first window exists; a reload would drop it.
+// Times are wall-clock milliseconds, the same clock the test and the main
+// process read.
 function installRendererTimeline() {
   if (window.__devOriginTimeline) return
-  const timeline = {}
+  const timeline = { longTasks: [] }
   window.__devOriginTimeline = timeline
+  function wallClock(pageTime) {
+    return Math.round(performance.timeOrigin + pageTime)
+  }
   function note() {
-    const now = Math.round(performance.now())
+    const now = wallClock(performance.now())
     if (timeline.rootFilled === undefined && document.getElementById('root')?.firstElementChild) timeline.rootFilled = now
     if (timeline.splash === undefined && document.querySelector('.auth-splash')) timeline.splash = now
     const welcome = document.querySelector('[data-testid="welcome-page"]')
@@ -76,37 +81,85 @@ function installRendererTimeline() {
       observer.disconnect()
     }
   }
+  // Playwright's "visible" is a non-empty box that checkVisibility() accepts,
+  // which a style change can grant long after the node is in the DOM.
+  function noteShown() {
+    const welcome = document.querySelector('[data-testid="welcome-page"]')
+    const rect = welcome?.getBoundingClientRect()
+    if (!rect || rect.width === 0 || rect.height === 0 || !welcome.checkVisibility()) return
+    timeline.welcomeShown = wallClock(performance.now())
+    clearInterval(shownTimer)
+  }
   const observer = new MutationObserver(note)
   observer.observe(document, { childList: true, subtree: true })
   note()
+  const shownTimer = setInterval(noteShown, 20)
+  setTimeout(() => clearInterval(shownTimer), 15_000)
+  try {
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (timeline.longTasks.length < 24) timeline.longTasks.push([wallClock(entry.startTime), Math.round(entry.duration)])
+      }
+    }).observe({ type: 'longtask', buffered: true })
+  } catch {}
 }
 
-function readRendererTimeline() {
+function readRendererTimeline(origin) {
+  const timeline = window.__devOriginTimeline ?? {}
   const navigation = performance.getEntriesByType('navigation')[0]
-  return {
-    ...window.__devOriginTimeline,
-    now: Math.round(performance.now()),
-    domContentLoaded: navigation ? Math.round(navigation.domContentLoadedEventEnd) : null,
-    firstContentfulPaint: Math.round(performance.getEntriesByName('first-contentful-paint')[0]?.startTime ?? -1),
+  const paint = performance.getEntriesByName('first-contentful-paint')[0]
+  function since(wallClock) {
+    return wallClock === undefined ? undefined : wallClock - origin
   }
+  return {
+    domContentLoaded: navigation ? Math.round(performance.timeOrigin + navigation.domContentLoadedEventEnd) - origin : undefined,
+    firstContentfulPaint: paint ? Math.round(performance.timeOrigin + paint.startTime) - origin : undefined,
+    rootFilled: since(timeline.rootFilled),
+    splash: since(timeline.splash),
+    welcome: since(timeline.welcome),
+    welcomeSize: timeline.welcomeSize,
+    welcomeShown: since(timeline.welcomeShown),
+    longTasks: (timeline.longTasks ?? []).map(([at, ms]) => [at - origin, ms]),
+    now: Math.round(performance.timeOrigin + performance.now()) - origin,
+  }
+}
+
+// Playwright reaches the page through the main process, so a busy main
+// process delays every wait even while the page itself is fine.
+function installMainProcessStallLog() {
+  if (globalThis.__devOriginStalls) return
+  const stalls = []
+  globalThis.__devOriginStalls = stalls
+  let last = Date.now()
+  setInterval(() => {
+    const now = Date.now()
+    if (now - last > 150 && stalls.length < 24) stalls.push([last, now - last])
+    last = now
+  }, 50).unref()
+}
+
+// ElectronApplication.evaluate hands the electron module in first.
+function readMainProcessStalls(_electron, origin) {
+  return (globalThis.__devOriginStalls ?? []).map(([at, ms]) => [at - origin, ms])
 }
 
 // What the window showed and who had stopped answering when the welcome page
 // did not appear. Every probe is bounded so the report itself cannot hang.
-async function welcomeTimeoutEvidence({ application, page, bootstrap, steps, failedRequests, mainOutput }) {
+async function welcomeTimeoutEvidence({ application, page, bootstrap, origin, steps, failedRequests, mainOutput }) {
   // A page that is merely slow shows up here; one that is stuck does not.
   const lateWaitStarted = Date.now()
   const visibleAfterMore = await page.getByTestId('welcome-page').waitFor({ state: 'visible', timeout: 3_000 })
     .then(() => `${Date.now() - lateWaitStarted} ms later`, () => 'not within 3 s more')
   const mainProcessAsked = Date.now()
-  const [screen, renderer, mainProcess, reads, fixture] = await Promise.all([
+  const [screen, renderer, mainProcessStalls, mainProcess, reads, fixture] = await Promise.all([
     settleWithin(page.evaluate(() => ({
       path: location.pathname,
       readyState: document.readyState,
       testIds: [...new Set([...document.querySelectorAll('[data-testid]')].map((element) => element.dataset.testid))].slice(0, 24),
       text: (document.body?.innerText ?? '').replace(/\s+/g, ' ').slice(0, 200),
     })).catch((error) => ({ error: error.message })), 2_000, { unanswered: true }),
-    settleWithin(page.evaluate(readRendererTimeline).catch((error) => ({ error: error.message })), 2_000, { unanswered: true }),
+    settleWithin(page.evaluate(readRendererTimeline, origin).catch((error) => ({ error: error.message })), 2_000, { unanswered: true }),
+    settleWithin(application.evaluate(readMainProcessStalls, origin).catch((error) => ({ error: error.message })), 2_000, { unanswered: true }),
     settleWithin(application.evaluate(() => 'answered').catch((error) => `failed: ${error.message}`), 2_000, 'unanswered')
       .then((answer) => ({ answer, ms: Date.now() - mainProcessAsked })),
     settleWithin(page.evaluate((names) => Promise.all(names.map(async (name) => {
@@ -119,7 +172,7 @@ async function welcomeTimeoutEvidence({ application, page, bootstrap, steps, fai
     })).then(Object.fromEntries), bootstrapReads).catch((error) => ({ error: error.message })), 2_500, { unanswered: true }),
     bootstrap.snapshot(),
   ])
-  return { steps, visibleAfterMore, screen, renderer, mainProcess, bootstrapReads: reads, fixture, failedRequests: failedRequests.slice(0, 8), mainOutput }
+  return { steps, visibleAfterMore, screen, renderer, mainProcessStalls, mainProcess, bootstrapReads: reads, fixture, failedRequests: failedRequests.slice(0, 8), mainOutput }
 }
 
 async function configuredDevelopmentOrigin() {
@@ -196,6 +249,8 @@ test('the configured macOS development origin renders the real Electron app', {
     }, launcherRoot, { rendererOrigins: [devUrl.origin] }))
     const mainOutput = recordProcessOutput(application.process())
     step('electron launched')
+    // Evidence only, so neither of these is awaited.
+    void settleWithin(application.evaluate(installMainProcessStallLog).catch(() => undefined), 2_000, undefined)
     const page = await application.firstWindow({ timeout: 10_000 })
     step('first window')
     // Not awaited: the timeline is evidence only and must not hold up the run.
@@ -213,12 +268,15 @@ test('the configured macOS development origin renders the real Electron app', {
     try {
       await page.getByTestId('welcome-page').waitFor({ state: 'visible', timeout: 5_000 })
     } catch {
-      const evidence = await welcomeTimeoutEvidence({ application, page, bootstrap, steps, failedRequests, mainOutput })
+      const evidence = await welcomeTimeoutEvidence({ application, page, bootstrap, origin: started, steps, failedRequests, mainOutput })
       assert.fail(`welcome page not visible within 5 s of the document loading: ${JSON.stringify(evidence)}`)
     }
     step('welcome visible')
-    const renderer = await settleWithin(page.evaluate(readRendererTimeline).catch(() => null), 2_000, null)
-    if (renderer) t.diagnostic(`renderer clock: document loaded ${renderer.domContentLoaded} ms, welcome in the page ${renderer.welcome ?? 'unnoted'} ms`)
+    const [renderer, mainProcessStalls] = await Promise.all([
+      settleWithin(page.evaluate(readRendererTimeline, started).catch(() => null), 2_000, null),
+      settleWithin(application.evaluate(readMainProcessStalls, started).catch(() => null), 2_000, null),
+    ])
+    t.diagnostic(`timeline: ${JSON.stringify({ renderer, mainProcessStalls })}`)
     bootstrap.dispose()
     assert.equal(new URL(page.url()).origin, devUrl.origin)
     // ToastProvider renders a sibling live region; raw root child count is
