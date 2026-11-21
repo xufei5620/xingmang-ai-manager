@@ -71,7 +71,7 @@ export const linuxPythonInstallCommand = 'sudo apt install python3'
 function whyNeeded(runtime: ManagedRuntimeId): string {
   return runtime === 'node'
     ? '命令行工具都靠它来安装和启动'
-    : '命令行工具都用不到它，外接工具里个别要用它的才需要'
+    : '命令行工具都用不到它，插件里个别要用它的才需要'
 }
 
 function ifWanted(runtime: ManagedRuntimeId): string {

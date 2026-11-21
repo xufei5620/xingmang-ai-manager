@@ -205,6 +205,8 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 - 等的东西前面排着几次原子写的，也别用 `vi.waitFor`：它默认只等 1 秒，每次写一两百毫秒，凑上五六次就过了。手机遥控每处理一句话都先把消息编号记进设置、每张图都存一次，「keeps at most five images waiting for the next prompt」等第二句回话前要写 7 次，11-18 #1929、11-20 main 和 #1940 在 Windows `vitest-2` 上各红一次（指纹：只等到「收到图片……」，「一次最多带 5 张图片，这张没收。」没到；慢的时候一句都没等到，`expected [] to deeply equal`）。手机上收到的话用假渠道的 `sentUntil(done)` 等发送本身，再照常断言全部内容。
 - 被测代码自己不等落盘的（返回之后才写），等那次原子写本身。`scanExternalClients` 返回时上次检测结果还没写，`external-client-service.test.ts`「shows the next start the last whole detection…」原来用 `vi.waitFor` 读文件等，#2000 在 Windows `vitest-2` 上跑道慢一阵时就红了（指纹：1 秒出头 `ENOENT … external-client-snapshot.json`，#2006）。现在那个文件 `vi.mock('./safe-local-data')` 原样转给真的 `writeAtomicSafeUtf8File`，写完告诉一声：注册在触发之前，`const saved = atomicWrites.next(path.resolve(file), '要写进去的内容')`，触发后 `await saved`。本地复现：在 `external-client-snapshot-cache.ts` 的 `write` 里写盘前临时等 1.1 秒，旧写法当场红。
 - 本地复现：在 `writeAtomicSafeFile` 的 `handle.writeFile` 后面临时加一句 `await new Promise((resolve) => setTimeout(resolve, 150))`，旧写法当场红。别提交这句。
+- 手机遥控整个用例文件按这条清过一遍（2026-11-20）。起因是帮手 `prompted()` 用 `vi.waitFor` 等 `turn/start`，每句话交给 Codex 前要先原子写一次消息编号，#1949（「drops waiting images on a new conversation…」，`vitest-3`）、#2038（「reports how long the turn has run…」，`vitest-4`）在 Windows 上各红一次（指纹：`expected 0 to be greater than 0`，指着 `prompted()` 那行）。找法：临时给 `writeAtomicSafeFile` 计数，把用例里的 `vi.waitFor` 包一层，等到时看这段里写完过几次盘，有写盘的记下行号（不提交）；当时 74 处，全换成等事件本身：`prompted()` / `turnStarted(s, count)`（起 Codex、交出第 count 个 `turn/start`）、`s.codexSpawned`、`s.spawnAsked`、`codex.requestedUntil`、`channel.sentUntil`、`channel.fetchedUntil`、`s.stateUntil`（推给电脑窗口的状态）、`s.imagesRemoved`、`approvalCardsSent`。剩下的 `vi.waitFor` 等的那段里不写盘。每次写盘拖慢 1.1 秒对比：旧写法 85 条红，新写法 0 条。拖慢用的是 `setTimeout`，用了假时钟的那 31 条两边都会卡到 30 秒超时，那是拖慢办法的毛病，不算。往这个文件加用例时，手机发了话以后要等的，一律用这些。
+- 换成等事件以后少了轮询白送的那几十毫秒，用例要是悄悄靠过它，本地当场就红，把它真正依赖的那件事也等上，别加 `setTimeout`。这次碰到三种：等到第二个 `thread/start` 就 notify 第三轮做完，那时第三个 `turn/start` 还没交出去，对不上编号（先 `requestedUntil('turn/start', 3)`）；等到「收到」就去点卸载，那时还没开始起 Codex（先 `s.spawnAsked(1)`）；假时钟下 `vi.waitFor` 每轮会把假时钟拨前 50 毫秒，三条十分钟自动拒绝的用例原来靠它让审批晚于这一轮开始，等事件后两者落在同一刻，第二次五分钟进度跟十分钟期限撞在同一下、排到「已自动拒绝」后面（用例里显式 `advanceTimersByTimeAsync(1_000)`，写明 Codex 过一会儿才问）。
 
 ## 刚过零点那几分钟才红的时间写法（2026-11-12，#1809）
 
@@ -231,6 +233,14 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 - 写法：上限前那些条按 store 写的格式和顺序直接写进文件，只让要测的那几次保存经过 store；store 对每个没重写的文件做的检查（多一个硬链接、文件没了）照样走得到。「一次存满 N 条能不能收下」用解析函数单独断言，不用真写 N 次。
 - 复现：在 `writeAtomicSafeFile` 的 `handle.writeFile` 后面临时加 `await new Promise((resolve) => setTimeout(resolve, 150))`，旧写法当场撞 30 秒。11-18 验：聊天记录那条旧写法 30091ms 超时，改完 399ms。别提交这句。
 - 不是产品慢：客户用的时候一次保存只重写改过的那一两个对话加索引，一次写上百个只在「搬到新电脑」导入、头一回从旧的存法搬过来时各有一回。
+
+## 一键检测的用例报「检查超时」：时限管的是同一个主线程（2026-11-21）
+
+`diagnostics.test.ts` 的夹具给每一项 `timeoutMs: 100`，从这一项开始跑算起。可所有检查挤在同一个主线程上，一项的时间里也算着别的项的同步读盘：Windows runner 上单跑一次整份检查就要 70~90 毫秒（日志里只跑一次 `runDiagnostics` 的用例都是这个数，Mac 上 6~20、云端容器 4 左右），哪一项最后跑完，哪一项就贴着线。「电脑里另外设过的工具地址或密钥」（`PROVIDER_ENVIRONMENT_OVERRIDE`）以前把八到十一个终端设置文件一个接一个交给 `readSafeUtf8File`，不在的也要先在主线程上把主目录整条逐级同步核一遍（每一级 `lstatSync` 加 `realpathSync`，后者又逐级 lstat），runner 的临时目录有六七级深。它于是总是最后一个，「passes %s because the written configuration still wins」那几条一次跑三个平台，11-11 在 macos-test、11-20 在 windows-test (vitest-2) 各红一次（指纹：`summary: 检查超时`、`reason: 单项检查超过 100ms`，红在哪个平台不固定）。
+
+- 修法（不调时限）：先用 `fs.promises.lstat` 排除不在的文件，在的（是个链接也算在）照旧整套核过再读；候选按 `async-map.ts` 的 `mapWithConcurrency` 同时读，结果照原来的次序。`diagnostics-override-checks.test.ts` 钉住只有在的文件才走 `readSafeUtf8File`。
+- 给检查页加新项时：别一个接一个地把一串候选文件交给 `readSafeUtf8File`。多半不在的先异步排除，读盘按 `mapWithConcurrency` 限流。
+- 复现（别提交）：写一个 `.mjs`，把 `fs.lstatSync` / `statSync` / `existsSync` 包一层、每次空转 250 微秒，`realpathSync` 按路径级数空转，用 `NODE_OPTIONS="--import <它>"` 加载；再把 `TMPDIR` 指到一个六级深的目录（照 runner 的 `C:\Users\RUNNER~1\AppData\Local\Temp`），单跑 `diagnostics.test.ts`。11-21 验：250 微秒时旧写法红 3 条（含这一条），400 微秒红 30 条、几乎全是这一项；改完 250 微秒全过，400 微秒只剩一条整条 5 秒的测试级超时（直接跑 vitest 用的默认时限，`npm test` 是 30 秒）。
 
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 

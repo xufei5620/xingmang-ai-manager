@@ -214,11 +214,13 @@ function tutorialText(id: string): string {
 
 describe('tutorial topics', () => {
   it('covers the three extension pages with a chapter each', () => {
+    // #1993 起侧栏只剩一页「插件」，三章的标题不再跟旧页名一一对应，照 yoyo 回「插件教程改」那份逐字稿：
+    // 外接工具那章改叫「连上浏览器和文件夹」，免得跟页面名「插件」撞；插件那章改叫「官方插件和插件市场」。
+    const titles: Record<string, string> = { mcp: '连上浏览器和文件夹', skills: '技能', plugins: '官方插件和插件市场' }
     for (const id of ['mcp', 'skills', 'plugins']) {
       const topic = tutorialTopics.find((entry) => entry.id === id)
       expect(topic, `缺少 ${id} 教程章节`).toBeDefined()
-      // 章节标题与侧边导航上的页面名保持一致，用户搜哪个词都找得到。
-      expect(topic?.title).toBe(pageLabels.get(id))
+      expect(topic?.title).toBe(titles[id])
       expect(topic?.lead.length).toBeGreaterThan(0)
       // 是什么 / 怎么加 / 怎么验证 / 报错怎么办，四步缺一不可。
       expect(topic?.steps.length).toBe(4)
@@ -296,12 +298,16 @@ describe('tutorial topics', () => {
   })
 
   it('names every tool that actually has a plugin marketplace', () => {
-    // 教程一度写着市场仅 Codex，Claude Code 的官方市场接上之后这句就错了。
+    // 教程一度写着市场仅 Codex，Claude Code 的官方市场接上之后这句就错了。#1993 起「插件」页按「Claude 官方」
+    // 「GPT 官方」分组，教程跟着页面叫法写，各自只能装进哪一家、Grok 没有市场也要说到。
     const plugins = tutorialTopics.find((entry) => entry.id === 'plugins')
-    const text = plugins?.steps.map((step) => step.detail).join('\n') ?? ''
-    expect(text).toContain('Claude Code')
+    const text = plugins?.steps.flatMap((step) => [step.detail, ...(step.extra ?? []).map((item) => item.detail)]).join('\n') ?? ''
+    expect(text).toContain('「Claude 官方」')
+    expect(text).toContain('只能装进 Claude')
     expect(text).toContain('添加官方市场')
-    expect(text).toContain('Codex CLI')
+    expect(text).toContain('「GPT 官方」')
+    expect(text).toContain('只能装进 GPT')
+    expect(text).toContain('Grok 没有插件市场')
   })
 
   it('keeps the two safety notes the skipped Claude Code welcome page used to carry', () => {

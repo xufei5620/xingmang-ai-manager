@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { ChevronDown, ChevronRight, FolderOpen, FolderPlus, Headset, Home, RefreshCw, Zap } from 'lucide-react'
+import { ChevronDown, ChevronRight, FolderOpen, FolderPlus, Headset, Home, RefreshCw, TriangleAlert, Zap } from 'lucide-react'
 import { Button, Card, Confirm, Notice, Pill, Segment, SettingRow, Switch, useBalanceTier } from '../../../ui'
 import { dollars, ResultNotice, useOperation, useResource } from '../../../business-common'
-import { useSharedAccountBalance } from '../../app/balance-context'
+import { useSharedBalanceSelector } from '../../app/balance-context'
 import { isRemoteIdleCloseHours, remoteChannelIds, remoteIdleCloseHours } from '../../../../../electron/codex-remote-channel'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot, RemoteChannelId } from '../../../../../electron/ipc-contract'
 import type { V2Bridge, V2Page } from '../../../types'
@@ -29,6 +29,13 @@ import {
  * 末尾那句提醒：同意也是在同一个聊天里点的，绑定的飞书或微信账号落到谁手里，谁就能指挥这台电脑（#1407）。
  */
 export const codexRemoteIntro = '在手机上私聊你自己的机器人，就能让这台电脑上的 Codex 干活，用的是星芒的线路和额度。只认配对过的那一个人；Codex 要改文件、跑会改东西的命令，都先在聊天里问你，你回「同意」才动手；只是看文件不问。谁能用你绑定的飞书或微信发消息，谁就能指挥这台电脑，账号别借给别人。'
+
+/**
+ * 登录的 Windows 账号本身就带管理员权限（自带 Administrator、关了授权弹窗）时说明下面那句（yoyo 2026-11-20 亲手打字同意放宽，
+ * 这句是同意的一部分）。这种电脑上怎么打开星芒都是管理员身份，遥控照常能开，但 Codex 改文件、跑命令也都带着管理员权限，
+ * 手机上点头前要多看一眼。只在主进程判定是这种账号（快照 alwaysElevated）时摆出来。
+ */
+export const codexRemoteAdminAccountNotice = '这台电脑登录的 Windows 账号本身就带管理员权限，Codex 在这里改文件、跑命令也都带着管理员权限，手机上回「同意」前看清楚它要做什么。'
 
 /** 凭据存不到下次打开时卡上那条（Linux 没有系统钥匙串时只记在内存里，见 codex-remote-store.ts）。 */
 export const codexRemotePersistenceNotices = {
@@ -379,6 +386,12 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
   return (
     <Card title="手机遥控 Codex" meta={remoteCardMeta(snapshot)} padding="none" testId="settings-remote-card">
       <p className="v2-remote-intro">{codexRemoteIntro}</p>
+      {snapshot.alwaysElevated && (
+        <p className="v2-remote-admin-account" data-testid="settings-remote-admin-account">
+          <TriangleAlert size={15} aria-hidden="true" />
+          <span>{codexRemoteAdminAccountNotice}</span>
+        </p>
+      )}
       <div className="v2-remote-notices">
         {!snapshot.available && snapshot.unavailableReason && (
           <Notice tone="warn" title="这台电脑现在不能打开手机遥控" body={snapshot.unavailableReason} testId="settings-remote-unavailable" />
@@ -580,6 +593,7 @@ export function remoteLowBalanceAmount(tier: ReturnType<typeof useBalanceTier>, 
 
 function useRemoteLowBalance(): number | null {
   const tier = useBalanceTier()
-  const { snapshot } = useSharedAccountBalance()
-  return remoteLowBalanceAmount(tier, snapshot.balance)
+  // 只挑余额本身，设置页藏着时不跟着每次刷新重画（R8）。
+  const balance = useSharedBalanceSelector((state) => state.balance)
+  return remoteLowBalanceAmount(tier, balance)
 }

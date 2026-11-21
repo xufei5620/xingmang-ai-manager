@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { providerIds, type ProviderId } from './catalog'
+import { trackToolConfigWrite } from './config-read-cache'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 
 /**
@@ -113,7 +114,8 @@ export function createToolRouteFollowStore(directory: string): ToolRouteFollowSt
     },
     async write(state) {
       ensureSafeDataDirectory(directory, '工具线路跟随记录目录')
-      await writeAtomicSafeUtf8File(file, `${JSON.stringify(parseToolRouteFollowState(state))}\n`, '工具线路跟随记录')
+      // config:get 几秒内接着用的那份里有这份记录，写之前、写完都让它作废（config-read-cache.ts）。
+      await trackToolConfigWrite(() => writeAtomicSafeUtf8File(file, `${JSON.stringify(parseToolRouteFollowState(state))}\n`, '工具线路跟随记录'))
     },
   }
 }

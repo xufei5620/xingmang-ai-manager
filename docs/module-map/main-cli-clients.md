@@ -104,7 +104,7 @@
 - `codex-remote-feishu.ts` / `codex-remote-feishu-frame.ts` — 飞书渠道：长连接（开放平台的 WebSocket，帧格式照官方 SDK 逐字节对过）收私聊和卡片点击，开放接口发文字、带「同意 / 拒绝」按钮的卡片和进度卡（`PATCH` 消息接口原地更新，YF-15；审批卡处理过以后也原地改成结果、去掉按钮，YK-8）；图片消息和富文本里的图交给底座一个取图句柄，`fetchImage` 从「获取消息中的资源文件」接口取（只去 `open.feishu.cn`，没开权限、太大、别的失败分开报，YF-14）；App ID / App Secret 填错报「要重新登录」，不无限重试
 - `codex-remote-weixin.ts` / `codex-remote-weixin-api.ts` — 微信渠道（实验功能）：腾讯 iLink 长轮询收消息、发文字，写法照 `@tencent-weixin/openclaw-weixin` 2.4.10 核对；只认 https 的 `*.weixin.qq.com`（跳转主机和登录给的地址都过这道），64 位消息编号保精度解析，只交回扫码人的消息、也只往他那里发；收到的图从腾讯图片服务器 `novac2c.cdn.weixin.qq.com` 取、AES-128-ECB 解开（只认这一个 origin，YF-14，yoyo 2026-11-11 亲手打字「微信图片网址加」）；登录过期（-14、401/403）报「要重新登录」不再重试
 - `codex-remote-weixin-login.ts` / `codex-remote-weixin-credential.ts` / `codex-remote-weixin-login-state.ts` — 微信扫码登录：二维码在主进程画成图（登录链接不出主进程），5 分钟一张、最多换 3 张、整体 8 分钟；手机上要输数字时停下来等；取二维码时请微信每次都要这串数字（`bot_spam_business_data` 的 verify_pin），这张二维码微信要过数字并且输对了、也说了是谁扫的，扫码人直接记成绑定的人、不用配对码（YF-5），没要过的照旧配对；拿到的令牌直接进底座的加密凭据存储，不过 IPC；服务端认出是本机原来那份令牌（「已经连着这台电脑了」）时不存，只让停在「需要重新登录」的渠道重连一次（YKS-6）。`-login-state.ts` 只有类型，界面 `import type` 它
-- `bootstrap/codex-remote.ts` — 主进程接线：存储放 `<userData>/codex-remote`、渠道走主进程会话 fetch、用客户装好的 Codex 命令行工具；Windows 上星芒以管理员身份或高完整性运行时不许开（手机上点一下就是管理员级操作）
+- `bootstrap/codex-remote.ts` — 主进程接线：存储放 `<userData>/codex-remote`、渠道走主进程会话 fetch、用客户装好的 Codex 命令行工具；Windows 上右键「以管理员身份运行」或认不出是不是时不许开（手机上点一下就是管理员级操作）；账号本身就带管理员权限的（自带 Administrator、关了 UAC，2026-11-20 yoyo 打字同意）许开，卡上多一句提醒（`isAlwaysElevatedWindowsAccount`）
 - 通道在 `ipc/handlers/codex-remote.ts` + `ipc/parsers/codex-remote.ts`（`codex-remote:*`，存飞书凭据那条记为密钥入参；「用这个」「移除」文件夹的 `use-workspace` / `remove-workspace` 只收界面上显示的那串字，主进程只在加过的单子里找，YF-19），状态变化经 `codex-remote:state-changed` 推给界面；微信扫码的三条（`codex-remote:weixin-login-start` / `-poll` / `-cancel`）在 `ipc/handlers/codex-remote-weixin.ts` + `ipc/parsers/codex-remote-weixin.ts`，成功不记日志
 
 ## 外部桌面客户端：WorkBuddy / Claude Desktop / OpenCode
@@ -128,6 +128,11 @@
 - `claude-desktop-msix-installer.ts` — Windows 上 Claude Desktop 的离线 MSIX 一路（存储桶或 Claude 官网，官网只认 `claude.ai` 入口与 `downloads.claude.ai/releases/` 的逐跳重定向），PowerShell 只读核对包身份与 Anthropic 签名，再交给 `codex-desktop-appx.ts` 的共用安装（带服务的包走 UAC）
 - `claude-desktop-acceleration.ts` — 从星芒打开 Claude Desktop 前悄悄替用户连上加速，好让它从 `downloads.claude.ai` 下得到 Claude Code 程序和 Cowork 工作区（#1373）：约束同 `codex-desktop-acceleration.ts`，Claude 退出或连满一小时就断，和 Codex 桌面端共用同一次会话时先用完的那边交给另一边（`heldElsewhere`）。不含 Electron 依赖
 - `claude-desktop-install-failure.ts` — Claude Desktop 没装上时那句话（按原因分类，原话只进日志）和官网下载页地址（外链白名单全等收录，I12）；主进程与渲染层共用，不许引 Node
+- `claude-desktop-code-seed.ts` — Windows 上从星芒打开 Claude Desktop 前，从国内 npm 镜像替它放好 Claude Code 程序（按官方源 SHA-512 对账，只在同用户模式）；读 `app.asar` 的几个只读工具也在这里
+- `claude-desktop-component-manifest.ts` / `claude-desktop-component-keys.ts` — 从 Claude 自己的 `app.asar` 读出它要的工作区和 Claude Code 版本、校验值；算这些文件在星芒存储桶里的位置（同步作业和客户端共用）
+- `claude-desktop-workspace-seed.ts` — 从星芒存储桶替 Claude Desktop 放好 Cowork 工作区（官网原样 `.zst` + `.origin`，它自己解开再核）；装好、开机、点「打开」时在后台做
+- `claude-desktop-vm-code-seed.ts` — Cowork 虚拟机里那份 Linux 版 Claude Code，从国内 npm 镜像放进 `claude-code-vm/<版本>/`
+- `claude-desktop-mac-code-seed.ts` — Mac 上打开 Claude Desktop 前从星芒存储桶放好带签名的 `claude.app` 程序包（核 SHA-256、自写 tar 解析、核 Mach-O 芯片）
 
 ## 托管密钥的分组与换新
 - `managed-cli-groups.ts` — 给每个工具和画图挑账号里用哪个分组：xm 站分组只按名字认（没有编号），服务状态文件里的分组对照让站上改名时不用等发版；订阅分组、历史账号那套后端的平台字段也在这里判。签 Key、对话凭据、账号页都用它

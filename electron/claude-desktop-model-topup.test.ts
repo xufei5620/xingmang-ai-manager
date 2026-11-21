@@ -96,6 +96,32 @@ describe('Claude Desktop model menu top-up', () => {
     expect(await f.run()).toEqual({ added: ['claude-sonnet-5'], rejected: [], overflow: [] })
   })
 
+  // 总单 #67（11-18 A03）：试到一半换了账号、退出了，剩下的不再拿这把密钥试，一个都没试通也不记，下次开机按当时的账号重来。
+  it('stops trying and records nothing once the account is no longer the one it started with', async () => {
+    const f = fixture()
+    let current = true
+    const assertCurrent = () => {
+      if (!current) throw new Error('账号已变化，这次不补型号')
+    }
+    f.probe.mockImplementation(async () => {
+      current = false
+      return false
+    })
+    const offered = ['claude-opus-5', 'claude-sonnet-5', 'claude-sonnet-5-5', 'claude-haiku-5', 'claude-opus-5-5', 'claude-haiku-4-5']
+    await expect(f.run({ offered, assertCurrent })).rejects.toThrow('账号已变化')
+    expect(f.probe.mock.calls.length).toBeLessThanOrEqual(3)
+    expect(f.add).not.toHaveBeenCalled()
+    expect(fs.existsSync(f.recordPath)).toBe(false)
+
+    // 账号还是同一个的照常试完、照常记。
+    current = true
+    f.probe.mockReset()
+    f.probe.mockImplementation(async () => true)
+    expect((await f.run({ offered, assertCurrent })).added).toHaveLength(5)
+    expect(f.probe).toHaveBeenCalledTimes(5)
+    expect(fs.existsSync(f.recordPath)).toBe(true)
+  })
+
   it('keeps the record per key and only as a digest', async () => {
     const f = fixture()
     await f.run()

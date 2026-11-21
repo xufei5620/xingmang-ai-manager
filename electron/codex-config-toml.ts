@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
 import { staleConfigBackups, uniqueConfigBackupPath } from './config-file-backups'
+import { noteToolConfigWrite } from './config-read-cache'
 import { isRecord } from './input-guards'
 import { resolveRelocatedPath } from './relocated-folders'
 import {
@@ -95,6 +96,8 @@ export function renderTomlEdit(
 
 /** 先写临时文件，再备份原来那份，最后换上去；只留最近 5 份备份。 */
 function replaceTomlFile(target: string, content: string, label: string): string | null {
+  // 同 executeFilePlans：同步写，开头记一笔，config:get 先前读下的那份就不再接着用（config-read-cache.ts）。
+  noteToolConfigWrite()
   const directory = path.dirname(target)
   ensureSafeDataDirectory(directory, label)
   const temporaryPath = path.join(directory, `.${path.basename(target)}.${randomUUID()}.tmp`)

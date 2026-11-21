@@ -1650,6 +1650,40 @@ test('the records table puts each record on one row with tool chips that count',
   } finally { await page.close() }
 })
 
+// 记录页的搜索框停手 300 毫秒才搜（R-3）：一个字一个字打完只搜一次，而且让主进程拿几秒内扫过的那份重新筛；
+// 点重新加载照旧现扫，清空马上搜。时钟停着，等多久由测试这边拨。
+test('the records search waits for typing to pause and reuses the recent scan, while a reload rescans (R-3)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1', true)
+  function listReads() {
+    return page.evaluate(() => window.v2Test.calls
+      .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === 20).map((entry) => entry.args[0]))
+  }
+  try {
+    await page.getByTestId('nav-sessions').click()
+    // 记录页是懒加载的，占位要摆满 300 毫秒才换下，往前拨一秒。
+    await page.clock.runFor(1_000)
+    const sessions = page.getByTestId('page-sessions')
+    await sessions.getByTestId('sessions-row-claude:1').waitFor()
+    // 进页那一次是现扫。
+    assert.deepEqual((await listReads())[0], { provider: 'all', search: '', page: 1, pageSize: 20 })
+    const before = (await listReads()).length
+    const search = sessions.getByTestId('sessions-search')
+    await search.pressSequentially('登录页')
+    await page.clock.runFor(299)
+    assert.equal((await listReads()).length, before)
+    await page.clock.runFor(1)
+    await expect.poll(async () => (await listReads()).slice(before))
+      .toEqual([{ provider: 'all', search: '登录页', page: 1, pageSize: 20, reuseRecentScan: true }])
+    await sessions.getByTestId('sessions-reload').click()
+    await expect.poll(async () => (await listReads()).at(-1)).toEqual({ provider: 'all', search: '登录页', page: 1, pageSize: 20 })
+    await search.fill('')
+    await page.clock.runFor(1)
+    await expect.poll(async () => (await listReads()).at(-1))
+      .toEqual({ provider: 'all', search: '', page: 1, pageSize: 20, reuseRecentScan: true })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an exported report can be revealed in its folder and says so when it moved (第八批 5)', async () => {
   const page = await open('allInstalled=1')
   try {
@@ -2466,6 +2500,60 @@ test('the balance card re-reads usage and the last 7 days along with the balance
     await expect(days).toHaveText('按最近用量不到 1 天就会用完')
     assert.equal(await page.evaluate(() => window.__usageBlank), false)
     await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 数每次提交里哪些组件重画了：先于 React 装上 DevTools 那个钩子，React 每提交一次就交来一棵树，
+// 这一次真画过的组件带 PerformedWork（flags 第 1 位）。只数函数、类、forwardRef、memo 这几种组件。
+function countRendersBeforeReact() {
+  const renders = {}
+  window.__renders = renders
+  function isComponent(fiber) { return [0, 1, 11, 14, 15].includes(fiber.tag) }
+  function nameOf(fiber) {
+    let type = fiber.type
+    if (type && type.type) type = type.type
+    if (type && type.render) type = type.render
+    return (type && (type.displayName || type.name)) || 'anonymous'
+  }
+  function walk(next) {
+    if (isComponent(next) && next.alternate && (next.flags & 1)) renders[nameOf(next)] = (renders[nameOf(next)] ?? 0) + 1
+    if (next.child === next.alternate?.child) return
+    for (let child = next.child; child; child = child.sibling) if (child.alternate) walk(child)
+  }
+  let id = 0
+  window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+    supportsFiber: true, isDisabled: false, renderers: new Map(),
+    inject(renderer) { this.renderers.set(++id, renderer); return id },
+    onCommitFiberRoot(_id, root) { walk(root.current) },
+    onCommitFiberUnmount() {}, onPostCommitFiberRoot() {}, onScheduleFiberRoot() {}, checkDCE() {},
+  }
+}
+
+// R8：以前根组件订阅整份余额，每分钟一次的刷新要把整个界面一百多个组件重画三遍，停在首页时工具卡片也跟着画。
+// 现在读回来的余额没变时，只有摆余额的那几块（首页余额卡、侧栏账号卡、状态栏）跟着转圈、停转，根组件和首页本身不动。
+// 时钟停着；用量变了以后两秒那次重读，跟每分钟那次走的是同一条读余额的路。
+test('a balance re-read that changes nothing redraws the balance spots, not the whole window or the home tool cards', async () => {
+  const page = await open('allInstalled=1', true, countRendersBeforeReact)
+  const balanceReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountBalance').length)
+  try {
+    await expect(page.getByTestId('home-balance-days')).toHaveText('按最近用量约还能用 43 天')
+    await expect(page.getByTestId('home-balance-refresh')).toBeEnabled()
+    const reads = await balanceReads()
+    await page.evaluate(() => { for (const name of Object.keys(window.__renders)) delete window.__renders[name] })
+    await page.evaluate(() => window.v2Test.emit('onAccountUsageChanged', { scope: 'xm-account:17' }))
+    await page.clock.runFor(2_000)
+    await expect.poll(balanceReads).toBe(reads + 1)
+    await expect(page.getByTestId('home-balance-refresh')).toBeEnabled()
+    // 读余额落地那一下是微任务，早就落地了；再等一下，让读回来以后的重读（用量、订阅）也都回来。
+    await page.waitForTimeout(200)
+    const renders = await page.evaluate(() => ({ ...window.__renders }))
+    const seen = JSON.stringify(renders)
+    // 余额卡转了圈又停下：钩子确实在数，余额那一块也确实重画了。
+    assert.ok((renders.HomeBalanceCard ?? 0) >= 1, seen)
+    assert.ok((renders.Shell ?? 0) >= 1, seen)
+    for (const name of ['RuntimeApp', 'Home', 'ToolCard', 'StartGuide']) assert.equal(renders[name] ?? 0, 0, `${name} redrew: ${seen}`)
+    await expect(page.getByTestId('home-balance-days')).toHaveText('按最近用量约还能用 43 天')
     await clean(page)
   } finally { await page.close() }
 })
@@ -4149,6 +4237,28 @@ test('partial Key configuration keeps successful tools and retries recoverably',
   } finally { await page.close() }
 })
 
+// 总单 17：写密钥那一轮没写成的工具，客户自己点「确认连接」→「保存并检测」→「完成」连好以后，首页那条黄条
+// 跟着收起。以前要重开软件才消失，标题下面却已经写着「都配好了」。
+test('connecting a tool by hand after the key round failed takes its line off the home banner', async () => {
+  const page = await open('claudeUnconfigured=1&bootstrapPartial=1')
+  try {
+    const banner = page.getByTestId('home-bootstrap-result')
+    await expect(banner).toContainText('Claude 分组暂时不可用')
+    await page.getByTestId('tool-claude-primary').click()
+    const dialog = page.getByTestId('config-dialog')
+    await dialog.waitFor()
+    const primary = dialog.getByTestId('tool-save-config')
+    await expect(primary).toHaveText('保存并检测')
+    await primary.click()
+    await expect(primary).toHaveText('完成')
+    await primary.click()
+    await expect(dialog).toHaveCount(0)
+    await connectedBadge(page, 'claude').waitFor()
+    await expect(banner).toHaveCount(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 决定单 D7：登录那一轮账号密钥写完，再把装着、从没配置过的客户端替他连一次；界面上不另说。
 test('logging in connects an installed never-configured client once after the account keys are written', async () => {
   const page = await open('guest=1&externalInstalled=1&externalPristine=opencode')
@@ -4811,7 +4921,7 @@ test('the crash reporting notice appears once after login and records the choice
     await page.getByTestId('page-home').waitFor()
     const notice = page.getByTestId('startup-notice-crash-reporting')
     await notice.waitFor()
-    await notice.getByText('软件出错时会发送错误报告', { exact: true }).waitFor()
+    await notice.getByText('软件出错或卡住时会发送错误报告', { exact: true }).waitFor()
     assert.match(await notice.textContent(), /海外的错误收集服务/)
     assert.equal(await notice.getByRole('button', { name: '关闭', exact: true }).count(), 0)
     await page.getByTestId('startup-notice-crash-reporting-secondary').click()
@@ -5401,28 +5511,33 @@ test('coming back to the window asks again for settings left unfilled, two minut
   } finally { await page.close() }
 })
 
-// 升级后第一次开机几张卡一起来：角落最多摊开两张，要选的排最前，其余折成「还有 N 条提示」，
-// 点开能看全、能收起；关掉一张后放得下了，那一行自己消失。
-test('the startup corner shows two cards at most and folds the rest into one line', async () => {
+// 升级后第一次开机几张卡一起来：角落一次只摊开一张（yoyo 11-18：两张叠着盖住了首页），要选的排最前，
+// 其余折成「还有 N 条提示」，点开能看全、能收起；点掉一张下一张顶上来，最后一张时那一行自己消失。
+test('the startup corner shows one card at a time and folds the rest into one line', async () => {
   const page = await open('justUpdated=1&templateFilled=1&displayCompat=1')
   try {
     await page.getByTestId('page-home').waitFor()
     await page.getByTestId('startup-notice-display-compat').waitFor()
     const toggle = page.getByTestId('startup-notices-toggle')
-    await expect.poll(() => toggle.textContent()).toBe('还有 1 条提示')
-    // 「已更新」和「设置已补齐」同一档，谁先到谁摊开；只认定其中正好一张被折起来。
-    const hiddenId = await page.getByTestId('startup-notice-updated').count() ? 'template-filled' : 'updated'
-    assert.equal(await page.getByTestId(`startup-notice-${hiddenId}`).count(), 0)
-    assert.equal(await page.getByTestId('startup-notices').locator('.xm-notice').count(), 2)
+    await expect.poll(() => toggle.textContent()).toBe('还有 2 条提示')
+    assert.equal(await page.getByTestId('startup-notice-updated').count(), 0)
+    assert.equal(await page.getByTestId('startup-notice-template-filled').count(), 0)
+    assert.equal(await page.getByTestId('startup-notices').locator('.xm-notice').count(), 1)
     await toggle.click()
-    await page.getByTestId(`startup-notice-${hiddenId}`).waitFor()
-    assert.equal(await toggle.textContent(), '收起')
-    await toggle.click()
-    await expect.poll(() => page.getByTestId(`startup-notice-${hiddenId}`).count()).toBe(0)
-    await page.getByTestId('startup-notice-display-compat-primary').click()
-    await expect.poll(() => page.getByTestId('startup-notice-display-compat').count()).toBe(0)
     await page.getByTestId('startup-notice-updated').waitFor()
     await page.getByTestId('startup-notice-template-filled').waitFor()
+    assert.equal(await toggle.textContent(), '收起')
+    await toggle.click()
+    await expect.poll(() => page.getByTestId('startup-notices').locator('.xm-notice').count()).toBe(1)
+    await page.getByTestId('startup-notice-display-compat-primary').click()
+    await expect.poll(() => page.getByTestId('startup-notice-display-compat').count()).toBe(0)
+    // 「已更新」和「设置已补齐」同一档，谁先到谁先摊开；只认定正好摊开其中一张。
+    await expect.poll(() => toggle.textContent()).toBe('还有 1 条提示')
+    assert.equal(await page.getByTestId('startup-notices').locator('.xm-notice').count(), 1)
+    const shownId = await page.getByTestId('startup-notice-updated').count() ? 'updated' : 'template-filled'
+    const nextId = shownId === 'updated' ? 'template-filled' : 'updated'
+    await page.getByTestId(`startup-notice-${shownId}`).getByRole('button', { name: '知道了', exact: true }).click()
+    await page.getByTestId(`startup-notice-${nextId}`).waitFor()
     assert.equal(await toggle.count(), 0)
     await clean(page)
   } finally { await page.close() }
@@ -9597,7 +9712,7 @@ test('the skills chapter explains importing for every tool and the card list com
     await entry.click()
     const article = tutorial.getByTestId('tutorial-article')
     await expect(article.getByRole('heading', { level: 2 })).toHaveText('技能')
-    await expect(article).toContainText('选好工具，再选一个本机的技能文件夹导入。')
+    await expect(article).toContainText('选一个本机的技能文件夹，勾上要给哪几家用。')
     await expect(article.locator('details[data-extra-title="Claude Code、Grok CLI 没有导入按钮？"]')).toHaveCount(0)
     await tutorial.getByTestId('tutorial-back').click()
     await expect(entry).toBeFocused()
@@ -9624,8 +9739,8 @@ test('tutorial actions navigate to their tool and retain the selected chapter an
     await tutorial.getByTestId('tutorial-topic-mcp').click()
     const article = tutorial.getByTestId('tutorial-article')
     const heading = await article.getByRole('heading', { level: 2 }).innerText()
-    await article.getByRole('button', { name: '打开外接工具', exact: true }).first().click()
-    // 外接工具 0.2.25 起合进「插件」页，按钮落到那一页。
+    await article.getByRole('button', { name: '打开插件', exact: true }).first().click()
+    // 外接工具 0.2.25 起合进「插件」页，这一章的按钮也改叫「打开插件」，落到那一页。
     await expect(page.getByTestId('page-extensions')).toBeVisible()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'listProviderExtensions'))
     await page.getByTestId('nav-tutorial').click()

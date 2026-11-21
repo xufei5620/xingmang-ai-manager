@@ -26,11 +26,20 @@ export function registerSessionHandlers(ctx: IpcHandlerContext): void {
     rememberExportedFile(exported.outputPath)
     return exported
   })
+  // 归档、恢复改的是 Codex 自己的记录，记录页那份几秒内复用的列表（R-3）等它改完就作废，
+  // 免得刚归档完就搜一下，搜出来的还标着没归档。会话 ID 不对照旧当场报错，不走到这里。
+  async function thenForgetListedSessions<T>(change: Promise<T>): Promise<T> {
+    try {
+      return await change
+    } finally {
+      options.providerSessionsService.invalidateListCache()
+    }
+  }
   registerTrustedHandler('sessions:archive', (_event, sessionId: unknown) => (
-    options.sessionsService.archive(parseSessionId(sessionId))
+    thenForgetListedSessions(options.sessionsService.archive(parseSessionId(sessionId)))
   ))
   registerTrustedHandler('sessions:restore', (_event, sessionId: unknown) => (
-    options.sessionsService.restore(parseSessionId(sessionId))
+    thenForgetListedSessions(options.sessionsService.restore(parseSessionId(sessionId)))
   ))
   registerTrustedHandler('provider-sessions:list', (_event, query: unknown) => (
     options.providerSessionsService.list(parseProviderSessionListQuery(query))
