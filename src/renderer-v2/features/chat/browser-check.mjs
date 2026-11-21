@@ -306,6 +306,23 @@ test('web links in model output copy their address instead of opening, and other
   } finally { await page.close() }
 })
 
+test('an answer cut off at the output cap keeps its text and says so under it', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'Write a long essay')
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'HALF-WRITTEN-ANSWER' })
+    await emit(page, { type: 'complete', requestId: request.requestId, cutOff: 'length' })
+    const note = page.locator('[data-testid^=chat-message-cut-off-]')
+    await note.waitFor()
+    assert.equal((await note.textContent())?.trim(), '回答已达到单次输出长度上限，内容不完整。如需查看后续内容，请发送「继续」。')
+    assert.equal(await page.getByText('HALF-WRITTEN-ANSWER').count(), 1)
+    const reply = page.locator('.chat-message[data-role=assistant]').last()
+    assert.equal(await reply.getAttribute('data-status'), 'complete')
+    assert.equal(await reply.getByRole('button', { name: '复制回答' }).count(), 1)
+    assert.equal(await reply.getByRole('button', { name: '重新生成' }).isEnabled(), true)
+  } finally { await page.close() }
+})
+
 test('link copy falls back to manual copy when the clipboard is unavailable', async () => {
   const page = await open('copyFail=1')
   try {
@@ -620,6 +637,41 @@ test('new conversations preserve unsent drafts and local history can be restored
     await page.getByTestId('chat-conversation-clear').click()
     await page.getByTestId('chat-confirm').getByRole('button', { name: '确认删除' }).click()
     assert.equal(await page.locator('.chat-message').count(), 0)
+  } finally { await page.close() }
+})
+
+// 融合第 1 步：「新建」也是做视频、开画布的入口，点得多。以前每点一次左边就多一条空的「新对话」。
+test('the new button returns to the blank page without listing an empty conversation, and the first message is what lists it', async () => {
+  const page = await open()
+  try {
+    const first = await send(page, 'first topic')
+    await emit(page, { type: 'content', requestId: first.requestId, content: 'first answer' })
+    await emit(page, { type: 'complete', requestId: first.requestId })
+    const rows = page.locator('.chat-conversation-select')
+    const title = page.locator('.chat-bar strong')
+    assert.equal(await rows.count(), 1)
+    assert.equal(await title.textContent(), 'first topic')
+    const model = await page.getByTestId('chat-model').getAttribute('data-model')
+    for (let click = 0; click < 3; click += 1) await page.getByTestId('chat-conversation-new').click()
+    await page.getByTestId('chat-empty').waitFor()
+    assert.equal(await rows.count(), 1)
+    assert.equal(await page.locator('.chat-conversation-select[aria-current=page]').count(), 0)
+    assert.equal(await title.textContent(), '新建')
+    // 空白页跟着刚才那段对话的模型走。
+    assert.equal(await page.getByTestId('chat-model').getAttribute('data-model'), model)
+    // 回到那段对话再点「新建」，还是同一页空白，不多一条。
+    await rows.first().click()
+    await page.locator('.chat-message').first().waitFor()
+    await page.getByTestId('chat-conversation-new').click()
+    await page.getByTestId('chat-empty').waitFor()
+    assert.equal(await rows.count(), 1)
+    // 发了第一句才算一段对话。
+    await page.getByTestId('chat-composer-input').fill('second topic')
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.chatHarness.calls.filter((item) => item.method === 'start').length === 2)
+    assert.equal(await rows.count(), 2)
+    assert.equal(await title.textContent(), 'second topic')
+    assert.equal(await page.locator('.chat-conversation-select[aria-current=page]').textContent().then((text) => text.startsWith('second topic')), true)
   } finally { await page.close() }
 })
 
@@ -1224,11 +1276,11 @@ test('an empty chat says where conversations go, and its examples only fill the 
   const page = await open()
   try {
     await ready(page)
-    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '聊过的对话会存在这里')
+    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '还没做过东西。在右边的框里说一句试试。')
     assert.equal(await page.getByText('还没有对话', { exact: true }).count(), 0)
     const empty = page.getByTestId('chat-empty')
-    await empty.getByRole('heading', { name: '有什么想问的？', exact: true }).waitFor()
-    await empty.getByText('不开终端，直接和模型对话。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    await empty.getByRole('heading', { name: '想做点什么？', exact: true }).waitFor()
+    await empty.getByText('问问题、写东西、画图，都在下面这一个框里说。额度与工具共用同一个账号。', { exact: true }).waitFor()
     assert.deepEqual(await empty.getByRole('button').allTextContents(), ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
     await page.getByTestId('chat-example-3').click()
     const input = page.getByTestId('chat-composer-input')
@@ -1241,7 +1293,7 @@ test('an empty chat says where conversations go, and its examples only fill the 
     assert.equal(await empty.getByRole('button').count(), 0)
     await input.fill('')
     await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
-    await empty.getByText('不开终端，直接和模型对话。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    await empty.getByText('问问题、写东西、画图，都在下面这一个框里说。额度与工具共用同一个账号。', { exact: true }).waitFor()
     assert.equal(await empty.getByRole('button').count(), 0, 'the examples are questions, not pictures')
   } finally { await page.close() }
 })
@@ -1427,7 +1479,7 @@ test('the conversation list groups by day, finds by title and clears everything 
   state.draftConversation.draft = '还没发出去的话'
   const page = await open('', { [storedChatKey]: JSON.stringify(state) })
   try {
-    const list = page.getByRole('navigation', { name: '已保存的对话' })
+    const list = page.getByRole('navigation', { name: '做过的东西列表' })
     await list.getByTestId('chat-conversation-older').waitFor()
     assert.deepEqual(await list.locator('.chat-conversation-day').allTextContents(), ['今天', '昨天', '更早'])
     assert.equal(await page.getByTestId('chat-conversation-today').textContent(), '今天聊的2 条消息')
@@ -1436,7 +1488,7 @@ test('the conversation list groups by day, finds by title and clears everything 
     await page.getByTestId('chat-conversation-search').fill('昨天')
     assert.deepEqual(await list.locator('.chat-conversation-select strong').allTextContents(), ['昨天聊的'])
     await page.getByTestId('chat-conversation-search').fill('没有这个')
-    assert.equal(await page.getByTestId('chat-conversation-search-empty').textContent(), '没有找到「没有这个」相关的对话')
+    assert.equal(await page.getByTestId('chat-conversation-search-empty').textContent(), '没有找到「没有这个」相关的内容')
     await page.getByTestId('chat-conversation-search').fill('')
     await page.getByRole('button', { name: '「今天聊的」更多操作', exact: true }).click()
     const menu = page.getByRole('menu', { name: '对话操作', exact: true })
@@ -1478,7 +1530,7 @@ test('a conversation can be renamed and pinned to the top, and both survive a re
   state.activeId = 'today'
   const page = await open('', { [storedChatKey]: JSON.stringify(state) })
   try {
-    const list = page.getByRole('navigation', { name: '已保存的对话' })
+    const list = page.getByRole('navigation', { name: '做过的东西列表' })
     await list.getByTestId('chat-conversation-older').waitFor()
     const menu = page.getByRole('menu', { name: '对话操作', exact: true })
     await page.getByRole('button', { name: '「很久以前聊的」更多操作', exact: true }).click()

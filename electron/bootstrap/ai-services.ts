@@ -491,6 +491,11 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
           code: event.code,
           message: event.message,
         })
+        else if (event.type === 'complete') sender.send(ipcEventChannels.onAiChatStream, {
+          requestId: event.requestId,
+          type: 'complete',
+          ...(event.cutOff ? { cutOff: event.cutOff } : {}),
+        })
         else sender.send(ipcEventChannels.onAiChatStream, {
           requestId: event.requestId,
           type: event.type,

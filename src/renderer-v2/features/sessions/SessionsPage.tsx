@@ -1,8 +1,9 @@
 // 记录页（#1070 第 11 步，从 pages-management.tsx 原样搬来）：各工具的会话列表、按工具筛、搜索、详情和对话开头、
 // 接着聊、归档与恢复、导出。pages-management.tsx 照旧转出这里的导出名；工具选单在 features/tools/provider-options.ts。
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Archive,
+  ChevronDown,
   Copy,
   Download,
   FolderOpen,
@@ -41,6 +42,7 @@ import { launchDeclined, resumeSessionNotice } from '../tools/launch-notice'
 import type { V2Bridge } from '../../types'
 import type { ActiveProviderId } from '../../../../electron/catalog'
 import { isProvider, providerName, providerOptions } from '../tools/provider-options'
+import { turnActivityFiles, turnActivityHasNames, turnActivitySummary, type TurnActivity } from './turn-activity'
 
 // 已下线的 CLI（Gemini，yoyo 2026-10-14）不在这里：管理页不再列它的扩展、会话和备份。
 type Provider = ActiveProviderId
@@ -82,6 +84,37 @@ export function sessionRowMeta(session: Pick<Session, 'model' | 'messageCount' |
 }
 function sessionTitle(session: Pick<Session, 'title'>) {
   return session.title || '未命名对话'
+}
+/**
+ * 一轮最后那条 AI 回复下面的灰字：这一轮跑了什么命令、改了哪些文件。点开只列程序名和文件名，
+ * 命令全文和文件内容主进程就没交过来（里面可能有密钥）。
+ */
+export function SessionTurnActivity({ activity }: { activity: TurnActivity }) {
+  const summary = turnActivitySummary(activity)
+  if (!turnActivityHasNames(activity))
+    return <p className="v2-transcript-activity" data-testid="session-detail-turn-activity">{summary}</p>
+  return (
+    <details className="v2-transcript-activity" data-testid="session-detail-turn-activity">
+      <summary>
+        {summary}
+        <ChevronDown size={12} aria-hidden="true" />
+      </summary>
+      <dl>
+        {activity.files.length > 0 && (
+          <div>
+            <dt>改过的文件</dt>
+            <dd>{turnActivityFiles(activity)}</dd>
+          </div>
+        )}
+        {activity.commandNames.length > 0 && (
+          <div>
+            <dt>跑过的命令（只列名字）</dt>
+            <dd>{activity.commandNames.join('、')}</dd>
+          </div>
+        )}
+      </dl>
+    </details>
+  )
 }
 export function SessionsPage({
   api,
@@ -696,15 +729,18 @@ export function SessionsPage({
               <h3>对话开头</h3>
               <div className="v2-transcript">
                 {shownMessages.map((message, i) => (
-                  <div className={message.role === 'user' ? 'v2-transcript-me' : 'v2-transcript-ai'} key={i}>
-                    {message.role !== 'user' && <BrandIcon tool={selected?.provider} size={14} />}
-                    <p>
-                      <span className="xm-visually-hidden">
-                        {message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : message.role}：
-                      </span>
-                      {message.text}
-                    </p>
-                  </div>
+                  <Fragment key={i}>
+                    <div className={message.role === 'user' ? 'v2-transcript-me' : 'v2-transcript-ai'}>
+                      {message.role !== 'user' && <BrandIcon tool={selected?.provider} size={14} />}
+                      <p>
+                        <span className="xm-visually-hidden">
+                          {message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : message.role}：
+                        </span>
+                        {message.text}
+                      </p>
+                    </div>
+                    {message.role !== 'user' && message.activity && <SessionTurnActivity activity={message.activity} />}
+                  </Fragment>
                 ))}
                 {hiddenMessages > 0 && (
                   <p className="v2-transcript-more">

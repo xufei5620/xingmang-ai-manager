@@ -15,6 +15,9 @@ import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayE
 import { unsentRequestFailure } from './relay-line-fetch'
 import { reportRelayAnswer, reportRelayDispatch } from './relay-request-id'
 import type { AiRelayBillingObserver } from './ai-operation-progress'
+import { AiAnswerCutOffError, resolveAnswerCutOff, type AiAnswerCutOff } from './ai-answer-cut-off'
+
+export type { AiAnswerCutOff } from './ai-answer-cut-off'
 
 export const AI_CHAT_STREAM_LIMITS = {
   requestIdLength: 160,
@@ -74,6 +77,8 @@ export type AiChatStreamEvent =
       durationMs: number
       receivedBytes: number
       outputBytes: number
+      /** Set when the answer was cut short (output cap or content filter); absent = finished normally. */
+      cutOff?: AiAnswerCutOff
     }
   | {
       type: 'error'
@@ -94,6 +99,7 @@ export type AiChatStreamLogEntry = {
   phase: 'credential' | 'response-headers' | 'response-stream'
   errorCode?: AiChatStreamErrorCode
   httpStatus?: number
+  cutOff?: AiAnswerCutOff
   durationMs: number
   receivedBytes: number
   outputBytes: number
@@ -185,6 +191,7 @@ type ActiveRequest = {
   pendingReasoning: string
   received: ReceivedOutput
   completed: boolean
+  cutOff: AiAnswerCutOff | null
   phase: AiChatStreamLogEntry['phase']
   responseStatus: number | null
   connectionTimer: unknown | null
@@ -573,8 +580,15 @@ function streamClosedFailure(parser: BoundedSseParser, backend: AiChatServiceOpt
     : new StreamFailure('stream-closed', SAFE_ERROR_MESSAGES['stream-closed'])
 }
 
-function parsedDelta(data: string, backend: AiChatServiceOptions['backend']): { content: string; reasoning: string; finished: boolean } {
-  if (byteLength(data) === 0) return { content: '', reasoning: '', finished: false }
+interface ParsedDelta {
+  content: string
+  reasoning: string
+  finished: boolean
+  cutOff: AiAnswerCutOff | null
+}
+
+function parsedDelta(data: string, backend: AiChatServiceOptions['backend']): ParsedDelta {
+  if (byteLength(data) === 0) return { content: '', reasoning: '', finished: false, cutOff: null }
   let payload: unknown
   try {
     payload = JSON.parse(data) as unknown
@@ -590,12 +604,14 @@ function parsedDelta(data: string, backend: AiChatServiceOptions['backend']): { 
     throw new StreamFailure('upstream-http-error', quota ? relayQuotaFailureMessages[quota] : SAFE_ERROR_MESSAGES['upstream-http-error'])
   }
   const choices = record.choices
-  if (!Array.isArray(choices) || choices.length === 0) return { content: '', reasoning: '', finished: false }
+  if (!Array.isArray(choices) || choices.length === 0) return { content: '', reasoning: '', finished: false, cutOff: null }
   const first = choices[0]
-  if (!first || typeof first !== 'object' || Array.isArray(first)) return { content: '', reasoning: '', finished: false }
+  if (!first || typeof first !== 'object' || Array.isArray(first)) return { content: '', reasoning: '', finished: false, cutOff: null }
   const choice = first as Record<string, unknown>
   const finishReason = choice.finish_reason
   const finished = typeof finishReason === 'string' && Boolean(finishReason.trim())
+  // 到了长度上限、被内容审核拦下，流照样正常收尾；不看原因，半截回答就跟说完了一样（D10）。
+  const cutOff = finished ? resolveAnswerCutOff(finishReason) : null
   const delta = choice.delta
   const hasDelta = Boolean(delta && typeof delta === 'object' && !Array.isArray(delta))
   const fields = hasDelta
@@ -621,6 +637,7 @@ function parsedDelta(data: string, backend: AiChatServiceOptions['backend']): { 
           ? completedFields.reasoning_content
           : (!hasDelta && typeof completedFields.reasoning === 'string' ? completedFields.reasoning : ''),
     finished,
+    cutOff,
   }
 }
 
@@ -710,6 +727,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         phase: request.phase,
         ...(errorCode ? { errorCode } : {}),
         ...(request.responseStatus === null ? {} : { httpStatus: request.responseStatus }),
+        ...(request.cutOff ? { cutOff: request.cutOff } : {}),
         durationMs: Math.max(0, clock.now() - request.startedAt),
         receivedBytes: request.receivedBytes,
         outputBytes: request.outputBytes,
@@ -772,9 +790,10 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     }, limits.batchIntervalMs)
   }
 
-  function complete(request: ActiveRequest): void {
+  function complete(request: ActiveRequest, cutOff: AiAnswerCutOff | null = null): void {
     if (request.completed || !flush(request)) return
     request.sequence += 1
+    request.cutOff = cutOff
     const event: AiChatStreamEvent = {
       type: 'complete',
       requestId: request.requestId,
@@ -782,6 +801,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       durationMs: Math.max(0, clock.now() - request.startedAt),
       receivedBytes: request.receivedBytes,
       outputBytes: request.outputBytes,
+      ...(cutOff ? { cutOff } : {}),
     }
     if (!tryEmit(request, event)) {
       terminateForMissingSender(request)
@@ -850,7 +870,8 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     const delta = parsedDelta(data, options.backend)
     appendDelta(request, delta.content, delta.reasoning)
     if (!delta.finished) return false
-    complete(request)
+    // 聊天页把已经出来的字留着，只在下面说一句没写完；要不要接着写由客户决定，这里不自动再发付费请求。
+    complete(request, delta.cutOff)
     return true
   }
 
@@ -1105,6 +1126,8 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
             }
             outputBytes += added
             text += delta.content
+            // 这条路径的调用方拿到什么都当成整段（画布节点的结果、要解析的表格），半截不能交回去。
+            if (delta.cutOff) throw new AiAnswerCutOffError(delta.cutOff)
             if (delta.finished) return text
           }
           if (chunk.done) break
@@ -1119,6 +1142,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       // 时限先认：超时后取消读取会让读取以「连接提前结束」收尾，那不是真正的原因。
       // 这条路径从不交回半截结果，所以只用「什么都没拿到」那一句。
       if (timedOut) throw new Error(SAFE_ERROR_MESSAGES[timedOut])
+      if (error instanceof AiAnswerCutOffError) throw error
       if (error instanceof StreamFailure) throw new Error(error.message)
       if (input.signal?.aborted || controller.signal.aborted) throw new Error('已取消')
       throw new Error(connectionFailure(error).message)
@@ -1164,6 +1188,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       pendingReasoning: '',
       received: 'none',
       completed: false,
+      cutOff: null,
       phase: 'credential',
       responseStatus: null,
       connectionTimer: null,

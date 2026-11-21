@@ -102,11 +102,11 @@ describe('renderer-v2 sidebar account card', () => {
     expect(plenty).toContain('data-testid="sidebar-account-plan"')
     expect(plenty).toContain('<span>按量付费</span>')
     expect(plenty).toContain('style="width:67%"')
-    expect(plenty).toContain('data-testid="sidebar-account-days">按最近用量，约还能用 20 天</span>')
+    expect(plenty).toContain('data-testid="sidebar-account-days">按近期用量，预计可用 20 天</span>')
     expect(plenty).not.toContain('is-low')
     const low = renderShell({ account: { signedIn: true, displayName: '星芒用户', balance: '$3.00', runway: { usableUsd: 3, days: 2, low: true } } })
     expect(low).toContain('v2-account-entry is-low')
-    expect(low).toContain('余额不多了，约还能用 2 天')
+    expect(low).toContain('余额不足，预计可用 2 天')
     // 算不出天数（订阅不限额、最近没用量）就不画进度条和那行小字。
     const unknown = renderAccount({ signedIn: true, displayName: '星芒用户', balance: '$3.00', runway: { usableUsd: 3, days: null, low: true } })
     expect(unknown).not.toContain('v2-account-meter')
@@ -176,12 +176,14 @@ describe('renderer-v2 v4 sidebar', () => {
     const markup = renderShell()
     const scroll = markup.slice(markup.indexOf('data-testid="sidebar-scroll"'), markup.indexOf('data-testid="sidebar-pinned"'))
     const order = [...scroll.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])
-    expect(order).toEqual(['home', 'chat', 'sessions', 'canvas', 'video', 'extensions', 'tutorial', 'health', 'feedback'])
+    expect(order).toEqual(['home', 'chat', 'sessions', 'extensions', 'tutorial', 'health', 'feedback'])
     expect(scroll).toContain('<span>插件</span>')
     expect(scroll).not.toContain('v2-nav-group-label')
     expect(scroll).toContain('<hr class="v2-nav-separator" aria-hidden="true"/>')
     expect(scroll).toContain('<span>反馈与客服</span>')
-    expect(scroll).toContain('<span>画布</span><svg')
+    // 聊天、画布、视频剪辑并成一项（融合第 1 步，yoyo 回「融合改」）：侧栏上没有往外开窗口的那一行了。
+    expect(scroll).toContain('<span>创作</span>')
+    expect(scroll).not.toContain('v2-nav-external')
     expect(scroll).not.toContain('↗')
   })
 
@@ -197,7 +199,7 @@ describe('renderer-v2 v4 sidebar', () => {
     const empty = renderShell({ account: { signedIn: true, displayName: '星芒用户', runway: { usableUsd: 0, days: 0, low: true, empty: true } } })
     expect(empty).toContain('aria-label="充值，余额为零"')
     expect(empty).toContain('data-testid="nav-recharge-low">余额为零</small>')
-    expect(empty).toContain('余额已经用完，充值后才能用')
+    expect(empty).toContain('余额已用尽，请充值后使用')
     const recharge = renderShell({ activePage: 'account', accountTab: 'recharge' })
     expect(recharge).toMatch(/class="v2-nav-item is-active"[^>]*data-testid="nav-recharge"/)
     expect(recharge).not.toContain('v2-account-entry is-active')
@@ -305,15 +307,17 @@ describe('renderer-v2 sidebar pages per computer', () => {
 
   it('keeps every page when nothing says otherwise', () => {
     const markup = renderShell()
-    for (const id of ['home', 'chat', 'sessions', 'canvas', 'video', 'extensions', 'recharge', 'tutorial', 'health', 'feedback', 'settings']) expect(markup).toContain(`data-testid="nav-${id}"`)
+    for (const id of ['home', 'chat', 'sessions', 'extensions', 'recharge', 'tutorial', 'health', 'feedback', 'settings']) expect(markup).toContain(`data-testid="nav-${id}"`)
     for (const id of ['featured', 'mcp', 'skills', 'plugins']) expect(markup).not.toContain(`data-testid="nav-${id}"`)
   })
 
-  // 视频剪辑只有星芒账号的视频模型能出，历史账号登着时侧栏不列它（App 的 pageVisible）。
-  it('drops the video studio when the adapter says this account cannot use it', () => {
-    const markup = renderShell({ adapter: { pageVisible: (id) => id !== 'video' } })
+  // 融合第 1 步：「聊天」「画布 ↗」「视频剪辑」三项换成「创作」一项，画布项目和视频都在那一页左边那一列里。
+  it('has one 创作 entry where chat, the canvas and the video studio used to be', () => {
+    const markup = renderShell()
+    expect(markup).toMatch(/data-testid="nav-chat"[^>]*>[^]*?<span>创作<\/span>/)
+    expect(markup).not.toContain('data-testid="nav-canvas"')
     expect(markup).not.toContain('data-testid="nav-video"')
-    expect(markup).toContain('data-testid="nav-canvas"')
+    for (const gone of ['<span>聊天</span>', '<span>画布</span>', '<span>视频剪辑</span>']) expect(markup).not.toContain(gone)
   })
 
   // 游戏加速、备份、更新并进了设置（v4 批09），安装卸载拆到首页和检查页（第 10 批）。

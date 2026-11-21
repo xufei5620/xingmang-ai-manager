@@ -11,7 +11,7 @@ import type {
   PlatformSystemState,
   XingmangPlatformApi,
 } from '../electron/platform/contract'
-import type { AccountPaymentWindowTerminalEvent, FeedbackMessageCopyRequest, ProviderId } from '../electron/ipc-contract'
+import type { AccountPaymentWindowTerminalEvent, AccountSubscriptionPlan, FeedbackMessageCopyRequest, ProviderId } from '../electron/ipc-contract'
 import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
 import { KeyRewriteSkippedError } from '../src/renderer-v2/features/tools/account-bootstrap'
@@ -36,6 +36,13 @@ declare global {
       holdNext(): void
       release(): void
       fail(message: string): void
+    }
+    // 后台改了 subscriptionExternal 那个套餐（patch）、下架了它（remove）或者又上架了（restore）：
+    // 只改夹具里存着的，页面下一次读套餐列表才看得到（N3）。
+    subscriptionPlanHarness: {
+      set(patch: Partial<AccountSubscriptionPlan>): void
+      remove(): void
+      restore(): void
     }
     // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
     // toolKeyLimits：下一次按 100 一页读密钥（「每个工具的额度上限」那张卡）没读到。
@@ -116,6 +123,16 @@ const record = (name: string, args?: unknown) => {
 }
 const failOnce = new Set<string>()
 window.failNextRead = (read) => { failOnce.add(read) }
+// planBalancePay：那个套餐按美元标价、能用余额买（$5，余额 $10 够付）。
+let externalPlanPatch: Partial<AccountSubscriptionPlan> = query.has('planBalancePay')
+  ? { currency: 'USD', priceAmount: 5, allowBalancePay: true }
+  : {}
+let externalPlanRemoved = false
+window.subscriptionPlanHarness = {
+  set(patch) { externalPlanPatch = { ...externalPlanPatch, ...patch } },
+  remove() { externalPlanRemoved = true },
+  restore() { externalPlanRemoved = false },
+}
 let releaseHeldExtension: (() => void) | undefined
 window.releaseExtension = () => { releaseHeldExtension?.(); releaseHeldExtension = undefined }
 function failingOnce(read: string) {
@@ -1190,7 +1207,7 @@ const apiMethods = {
     if (type === 'subscription' || type === 'concurrency') return { type, quotaAdded: 0 }
     return { quotaAdded: 5 }
   },
-  getAccountSubscriptionPlans: async () => query.has('subscriptionExternal') ? [{
+  getAccountSubscriptionPlans: async () => query.has('subscriptionExternal') && !externalPlanRemoved ? [{
     id: 1,
     title: '外部订阅',
     subtitle: '测试外部支付状态',
@@ -1210,6 +1227,7 @@ const apiMethods = {
     stripePriceId: 'stripe-price',
     creemProductId: null,
     waffoPancakeProductId: null,
+    ...externalPlanPatch,
   }] : [],
   createAccountSubscriptionPayment: async (
     input: Parameters<V2Bridge['createAccountSubscriptionPayment']>[0],
@@ -1314,6 +1332,23 @@ const apiMethods = {
     detailReads += 1
     if (query.has('detailFailure') && detailReads === 1)
       throw new Error('会话详情暂时不可读')
+    if (query.has('turnActivity')) {
+      return {
+        session,
+        messages: [
+          { role: 'user', text: '帮我把测试修好', timestamp: time },
+          {
+            role: 'assistant',
+            text: '测试已经修好了',
+            timestamp: time,
+            activity: { commands: 3, commandNames: ['npm', 'git'], fileCount: 2, files: ['sum.ts', 'sum.test.ts'], failedSteps: 1 },
+          },
+        ],
+        messageStats: { total: 2, user: 1, assistant: 1, system: 0, other: 0, invalidLines: 0 },
+        messagesTruncated: false,
+        sourceTruncated: false,
+      }
+    }
     return {
       session,
       messages: [{ role: 'user', text: '这是一条测试消息', timestamp: time }],
@@ -1411,6 +1446,17 @@ const apiMethods = {
   copyMcpToTool: async (input: Parameters<V2Bridge['copyMcpToTool']>[0]) => {
     record('copy-mcp', input)
     if (query.get('copyMcpFail') === input.to) throw new Error('扩展操作失败，已有配置保留')
+  },
+  // 技能「从压缩包导入」：选文件窗口和解压都在主进程，夹具直接交回一个解好的技能文件夹；
+  // skillArchive=empty 时照主进程原话报没找到技能。
+  chooseSkillArchive: async () => {
+    record('choose-skill-archive')
+    if (query.get('skillArchive') === 'empty') throw new Error('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。')
+    return { archiveName: 'pdf-helper.zip', directory: 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper' }
+  },
+  importSkill: async (input: Parameters<V2Bridge['importSkill']>[0]) => {
+    record('import-skill', input)
+    return []
   },
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   ...(query.has('customMarket') ? customMarketMethods : {}),

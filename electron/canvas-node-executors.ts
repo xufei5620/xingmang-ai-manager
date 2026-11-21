@@ -29,6 +29,7 @@ import type {
   CanvasNodeInputs,
 } from './canvas-run-engine'
 import type { AiOperationProgressObserver, AiOperationProgressUpdate, AiRelayBillingObserver } from './ai-operation-progress'
+import { AiAnswerCutOffError } from './ai-answer-cut-off'
 import { parseDramaTablesJson } from './drama-parse'
 import { dramaParseSystemPrompt } from './drama-parse-prompt'
 
@@ -226,6 +227,9 @@ function throwIfCancelled(signal: AbortSignal): void {
 
 /** What a canvas project can hold as a node's text result (canvas-project-package.ts). */
 export const maximumCanvasTextOutputLength = 32_000
+
+/** 剧本解析的表格到了单次输出上限、没写完（D10）。带「剧本」二字，failure() 不再加前缀。 */
+export const dramaParseTooLongMessage = '剧本内容超出单次解析上限。请将剧本分段后分别解析。'
 
 export function createCanvasNodeExecutors(options: {
   imageService: CanvasImageOperationService
@@ -572,6 +576,8 @@ export function createCanvasNodeExecutors(options: {
         })
       } catch (error) {
         if (signal.aborted) throw error
+        // 表格写到一半被截断，再问一次多半照样截断，还多扣一次钱；直接说清是剧本太长（D10）。
+        if (error instanceof AiAnswerCutOffError && error.cutOff === 'length') throw new Error(dramaParseTooLongMessage)
         throw failure(error)
       }
     }

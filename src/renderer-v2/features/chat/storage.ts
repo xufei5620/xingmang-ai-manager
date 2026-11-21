@@ -21,7 +21,7 @@ export class ChatStorageError extends Error {}
 // 超过上限是唯一一种原文就是说给客户听的：读的时候、存的时候都照这句上屏（W24）。
 class ChatHistoryLimitError extends ChatStorageError {}
 const limitMessage = `聊天记录超过 ${MAX_CONVERSATIONS} 个，这台电脑存不下，原来的记录没动`
-// 存满以后点「新对话」、在草稿里发第一句时说的。
+// 存满以后点「新建」、在草稿里发第一句时说的。
 export const conversationLimitMessage = `最多保存 ${MAX_CONVERSATIONS} 个对话，请先删除不再需要的对话`
 
 export function historyKey(scope: string): string { return `xingmang-ui-v2:chat:${encodeURIComponent(scope)}` }
@@ -104,7 +104,7 @@ function readMessage(value: unknown): ChatMessage {
   const assets = images.map(readAsset)
   const files = readTextFiles(message.files)
   const status = message.status === 'complete' || message.status === 'error' || message.status === 'canceled' ? message.status : 'canceled'
-  return { id: id(message.id), role: message.role, content: text(message.content), reasoning: text(message.reasoning), status, createdAt: timestamp(message.createdAt), ...(assets.length ? { assets } : {}), ...(files.length ? { files } : {}), ...(message.settings ? { settings: readSettings(message.settings) } : {}), ...(status === 'error' ? { error: text(message.error) || '上次请求未完成，可以重新生成' } : {}), ...(message.mayStillComplete === true ? { mayStillComplete: true } : {}) }
+  return { id: id(message.id), role: message.role, content: text(message.content), reasoning: text(message.reasoning), status, createdAt: timestamp(message.createdAt), ...(assets.length ? { assets } : {}), ...(files.length ? { files } : {}), ...(message.settings ? { settings: readSettings(message.settings) } : {}), ...(status === 'error' ? { error: text(message.error) || '上次请求未完成，可以重新生成' } : {}), ...(message.mayStillComplete === true ? { mayStillComplete: true } : {}), ...(status === 'complete' && (message.cutOff === 'length' || message.cutOff === 'filtered') ? { cutOff: message.cutOff } : {}) }
 }
 function assertUniqueIds(items: { id: string }[]): void {
   if (new Set(items.map((item) => item.id)).size !== items.length) throw new ChatStorageError('聊天记录包含重复标识，原始记录已保留')

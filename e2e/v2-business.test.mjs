@@ -317,7 +317,7 @@ test('account views distinguish summary-only, failed reads and valid empty resul
     ['sub2apiReliability=1', '用量账单', '只有累计数', '这个时间段还没有用量'],
     ['fail=dashboard', '用量账单', '花费趋势暂时没有读到', '这个时间段还没有用量'],
     ['fail=usage', '用量账单', '调用明细暂时没有读到', '这段时间没有调用'],
-    ['sub2apiReliability=1&fail=subscriptions', '充值订阅', '订阅信息暂时没有读到', '还没有订阅'],
+    ['sub2apiReliability=1&fail=subscriptions', '充值订阅', '订阅信息暂时没有读到', '暂无订阅'],
   ]) {
     const page = await fixture(`page=account&${query}`)
     try {
@@ -473,7 +473,7 @@ test('the orders head asks the main process to open the invoice window without n
       await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
       const orders = page.getByTestId('account-orders-section')
       await orders.getByRole('button', { name: '开发票', exact: true }).click()
-      await waitForToast(page, `开票中心已在新窗口打开；要登录的话，用这个账号的${loginName}和密码。`)
+      await waitForToast(page, `开票中心已在新窗口打开。如需登录，请使用当前账号的${loginName}和密码。`)
       assert.deepEqual(
         (await calls(page)).filter((call) => call.name === 'open-invoice-portal').map((call) => call.args),
         [[]],
@@ -491,7 +491,7 @@ test('the invoice button says the approved line when the invoice window does not
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const orders = page.getByTestId('account-orders-section')
     await orders.getByRole('button', { name: '开发票', exact: true }).click()
-    await orders.getByRole('alert').filter({ hasText: '没能打开开票中心，请稍后再试；还不行请找客服。' }).waitFor()
+    await orders.getByRole('alert').filter({ hasText: '开票中心打开失败，请稍后重试；如仍无法打开，请联系客服。' }).waitFor()
     // 订单照常列着：打不开开票中心不影响看订单。
     await orders.getByText('TEST-ORDER').waitFor()
   } finally {
@@ -616,7 +616,7 @@ test('an unread profile keeps the account pages and only blocks the ones that ne
 
 test('account lists that could not be read say so with the reason and read again on request', async () => {
   for (const [query, tab, title, reason, absent] of [
-    ['fail=orders', '充值订阅', '订单暂时没有读到', '订单服务暂时不可用', '还没有订单'],
+    ['fail=orders', '充值订阅', '订单暂时没有读到', '订单服务暂时不可用', '暂无订单'],
     ['fail=tasks', '用量账单', '生成任务暂时没有读到', '任务服务暂时不可用', '暂无生成任务'],
     ['fail=usage', '用量账单', '调用明细暂时没有读到', '调用记录服务暂时不可用', '这段时间没有调用'],
     ['fail=devices', '账号安全', '登录设备暂时没有读到', '设备服务暂时不可用', '正在读取登录设备…'],
@@ -752,11 +752,11 @@ test('recharge stays open when subscriptions fail and says when the top-up detai
     await failed.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const card = failed.getByTestId('account-recharge-error')
     await card.waitFor()
-    assert.match(await card.innerText(), /充值信息暂时没有读到[\s\S]*充值服务暂时不可用/)
+    assert.match(await card.innerText(), /充值信息加载失败[\s\S]*充值服务暂时不可用/)
     await card.getByRole('button', { name: '联系客服', exact: true }).waitFor()
     assert.equal(await failed.getByRole('button', { name: /^到账/ }).count(), 0)
     // 订阅那边读得到，照样摆着。
-    await failed.getByText('还没有订阅', { exact: true }).waitFor()
+    await failed.getByText('暂无订阅', { exact: true }).waitFor()
     const reads = (await calls(failed)).filter((call) => call.name === 'get-topup-info').length
     await card.getByTestId('account-recharge-retry').click()
     await failed.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-topup-info').length > count, reads)
@@ -771,7 +771,7 @@ test('without a payment channel the recharge card says so first, greys the form 
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const notice = page.getByTestId('account-recharge-no-methods')
     await notice.waitFor()
-    assert.match(await notice.innerText(), /暂时没有可用的支付渠道[\s\S]*请稍后重试或联系客服。有充值码的话，点「有充值码？」兑换。/)
+    assert.match(await notice.innerText(), /暂时没有可用的支付渠道[\s\S]*请稍后重试或联系客服。如有充值码，可点击「有充值码？」兑换。/)
     await notice.getByRole('button', { name: '联系客服', exact: true }).waitFor()
     // 提示在卡片最上面，档位在它下面。
     const noticeBox = await notice.boundingBox()
@@ -1207,17 +1207,17 @@ test('a subscription re-read that fails says so instead of still showing no subs
   try {
     const panel = page.getByRole('tabpanel').filter({ visible: true })
     const choose = panel.getByTestId('account-recharge-plans')
-    await panel.getByText('还没有订阅', { exact: true }).waitFor()
+    await panel.getByText('暂无订阅', { exact: true }).waitFor()
     assert.equal(await choose.count(), 1)
     await page.evaluate(() => window.failNextRead('subscriptions'))
     await page.getByTestId('account-refresh').click()
     await panel.getByTestId('account-subscriptions-error').getByText('订阅信息暂时没有读到').waitFor()
-    assert.equal(await panel.getByText('还没有订阅', { exact: true }).count(), 0)
+    assert.equal(await panel.getByText('暂无订阅', { exact: true }).count(), 0)
     assert.equal(await choose.count(), 0)
     // 充值那张卡不受影响。
     assert.equal(await panel.getByTestId('account-recharge-submit').count(), 1)
     await panel.getByTestId('account-subscriptions-retry').click()
-    await panel.getByText('还没有订阅', { exact: true }).waitFor()
+    await panel.getByText('暂无订阅', { exact: true }).waitFor()
     assert.equal(await choose.count(), 1)
   } finally {
     await page.close()
@@ -1741,6 +1741,22 @@ test('session detail exposes a retry action after a temporary read failure', asy
     await drawer.getByRole('button', { name: '重试读取', exact: true }).click()
     // 气泡前面有一句只给读屏的「你：」，按包含来找。
     await drawer.getByText('这是一条测试消息').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('session detail shows what each AI turn ran and changed, folded to names only', async () => {
+  const page = await fixture('page=sessions&turnActivity=1')
+  try {
+    await page.getByTestId('sessions-view-codex:session-1').click()
+    const drawer = page.getByTestId('session-detail-drawer')
+    const line = drawer.getByTestId('session-detail-turn-activity')
+    await line.getByText('这一轮：跑了 3 条命令，改了 2 个文件，有 1 步没成功', { exact: true }).waitFor()
+    assert.equal(await line.getByText('sum.ts、sum.test.ts', { exact: true }).isVisible(), false)
+    await line.getByText('这一轮：跑了 3 条命令，改了 2 个文件，有 1 步没成功', { exact: true }).click()
+    await line.getByText('sum.ts、sum.test.ts', { exact: true }).waitFor()
+    await line.getByText('npm、git', { exact: true }).waitFor()
   } finally {
     await page.close()
   }
@@ -2454,6 +2470,19 @@ test('a tool that is not installed is not read and each entry leads to the home 
     await detail.getByTestId('hub-where-home-claude').click()
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
     assert.deepEqual([...new Set((await callsNamed(page, 'list-extensions')).map((call) => call.args))], ['codex'])
+  } finally {
+    await page.close()
+  }
+})
+
+// Mac 验收 R10：风险标签那句说明原来哪儿都没上屏。现在详情页标签下面写出来，鼠标停在标签上也能看到。
+test('a curated entry spells out what its risk tag means under the tags in its details', async () => {
+  const page = await fixture(hubClaudeOnly)
+  try {
+    await page.getByTestId('hub-open-mcp-files').click()
+    const detail = page.getByTestId('hub-detail')
+    await expect(detail.getByTestId('curated-risk-details-files')).toHaveText('能在你指定的位置新建、修改和删除文件。')
+    await expect(detail.getByTitle('能在你指定的位置新建、修改和删除文件。')).toHaveText('会修改本地文件')
   } finally {
     await page.close()
   }
@@ -3196,6 +3225,91 @@ test('subscription payment terminal events clear the pending state and explain t
   }
 })
 
+// N3：买套餐的框开着时后台改了价。服务端下单只认套餐编号、照那一刻的价扣，所以点付款前要再核一遍。
+const subscriptionCalls = async (page) =>
+  (await calls(page)).filter((call) => /create-subscription-payment|purchase-subscription-balance/.test(call.name))
+
+test('a plan repriced while its purchase dialog is open is shown at the new price before any order is placed', async () => {
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1')
+  try {
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
+    await purchase.getByText('¥29', { exact: true }).waitFor()
+    await page.evaluate(() => window.subscriptionPlanHarness.set({ priceAmount: 39 }))
+
+    await purchase.getByRole('button', { name: '打开支付窗口', exact: true }).click()
+    const notice = purchase.getByTestId('account-subscription-plan-changed')
+    await notice.getByText('价格已更新', { exact: true }).waitFor()
+    assert.equal(await notice.getByText('价格由 ¥29 调整为 ¥39，请确认后重新支付。', { exact: true }).count(), 1)
+    await purchase.getByText('¥39', { exact: true }).waitFor()
+    assert.equal(await purchase.getByText('¥29', { exact: true }).count(), 0)
+    // 没下单，卡片上的价也换了。
+    assert.deepEqual(await subscriptionCalls(page), [])
+    await page.getByTestId('account-recharge-plans').getByText('¥39', { exact: true }).waitFor()
+
+    // 看过新价再点一次才下单，等结果那块写的也是新价。
+    await purchase.getByRole('button', { name: '打开支付窗口', exact: true }).click()
+    await page.getByTestId('account-payment-notice').getByText('XM-VISUAL-SUBSCRIPTION', { exact: true }).waitFor()
+    assert.deepEqual((await subscriptionCalls(page)).map((call) => call.name), ['create-subscription-payment'])
+    await page.locator('.v2-recharge-big', { hasText: '¥39' }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('a purchase dialog left open follows a reread plan list instead of charging the balance at the old price', async () => {
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1&planBalancePay=1', (next) => next.clock.install())
+  try {
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
+    await purchase.getByRole('button', { name: '用余额支付 $5', exact: true }).waitFor()
+
+    // 框一直开着，客户切走一阵再回来：窗口回到前台时列表重读，框里跟着换成新价。
+    await page.evaluate(() => window.subscriptionPlanHarness.set({ priceAmount: 8 }))
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await purchase.getByTestId('account-subscription-plan-changed')
+      .getByText('价格由 $5 调整为 $8，请确认后重新支付。', { exact: true }).waitFor()
+    await purchase.getByText('余额 $10.00，扣完剩 $2.00', { exact: true }).waitFor()
+    assert.deepEqual(await subscriptionCalls(page), [])
+
+    await purchase.getByRole('button', { name: '用余额支付 $8', exact: true }).click()
+    await waitForToast(page, '外部订阅已开通')
+    assert.deepEqual(await subscriptionCalls(page), [{ name: 'purchase-subscription-balance', args: 1 }])
+  } finally {
+    await page.close()
+  }
+})
+
+test('a plan taken down while its purchase dialog is open cannot be bought from the stale dialog', async () => {
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1&planBalancePay=1', (next) => next.clock.install())
+  try {
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
+    const pay = purchase.getByRole('button', { name: '用余额支付 $5', exact: true })
+    await pay.waitFor()
+    await page.evaluate(() => window.subscriptionPlanHarness.remove())
+
+    await pay.click()
+    const notice = purchase.getByTestId('account-subscription-plan-changed')
+    await notice.getByText('该套餐已下架', { exact: true }).waitFor()
+    assert.equal(await notice.getByText('请关闭此窗口，选择其他套餐。', { exact: true }).count(), 1)
+    assert.equal(await pay.isDisabled(), true)
+    assert.deepEqual(await subscriptionCalls(page), [])
+    await assertNoToast(page, '外部订阅已开通')
+    await page.getByTestId('account-recharge-plans').waitFor({ state: 'detached' })
+
+    // 框还开着，后台又把它上架了：窗口回到前台重读以后，那条收起、付款按钮能点。
+    await page.evaluate(() => window.subscriptionPlanHarness.restore())
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await notice.waitFor({ state: 'detached' })
+    assert.equal(await pay.isDisabled(), false)
+  } finally {
+    await page.close()
+  }
+})
+
 test('the payment terminal listener survives re-renders and still resolves a pending order', async () => {
   const page = await fixture('page=account&subscriptionExternal=1')
   try {
@@ -3368,10 +3482,10 @@ test('an amount outside the quick tiers is still quoted on the summary', async (
 test('a default amount below the minimum says why recharging is unavailable', async () => {
   const page = await fixture('page=account&accountTab=recharge&highMinimum=1')
   try {
-    await page.getByText('充值数量不能低于 20，请填整数', { exact: true }).waitFor()
+    await page.getByText('充值金额不能低于 20，请输入整数', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('account-recharge-submit').isDisabled(), true)
     await page.getByRole('button', { name: /^到账 \$20，实付 20\.00/ }).click()
-    assert.equal(await page.getByText('充值数量不能低于 20，请填整数', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('充值金额不能低于 20，请输入整数', { exact: true }).count(), 0)
     assert.equal(await page.getByTestId('account-recharge-submit').isDisabled(), false)
   } finally {
     await page.close()
@@ -3546,7 +3660,7 @@ test('a payment window closed before settlement keeps confirming and points to t
     await page.getByText('等待支付结果', { exact: true }).waitFor()
     await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-TOPUP', confirming: true }))
     const notice = page.getByTestId('account-payment-notice')
-    await notice.getByText('星芒还在确认到账', { exact: false }).waitFor()
+    await notice.getByText('到账后余额将自动更新', { exact: false }).waitFor()
     await notice.getByText('正在确认订单 XM-VISUAL-TOPUP 是否到账…', { exact: true }).waitFor()
     assert.equal(await notice.getByRole('button', { name: '查看我的订单', exact: true }).count(), 1)
 
@@ -3590,7 +3704,7 @@ test('an unconfirmed payment opens my orders with its order number', async () =>
       window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-TOPUP', confirming: true })
       window.emitPaymentWindowTerminal({ status: 'unconfirmed', tradeNo: 'XM-VISUAL-TOPUP' })
     })
-    await page.getByText('还没查到这笔订单到账', { exact: true }).waitFor()
+    await page.getByText('暂未确认到账', { exact: true }).waitFor()
     await page.getByTestId('account-payment-orders').click()
     await page.getByRole('tab', { name: '充值订阅', exact: true, selected: true }).waitFor()
     await page.getByTestId('account-orders-section').waitFor()
@@ -3621,7 +3735,7 @@ test('settings that wait on the system state say they were not read and read aga
     await page.getByText('系统状态暂时读不到', { exact: true }).waitFor()
     const contrast = page.locator('[data-anchor="high-contrast"]')
     await contrast.getByText('暂未读到', { exact: true }).waitFor()
-    assert.equal(await page.getByText('这台电脑上用不了', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('本机不支持', { exact: true }).count(), 0)
     await page.getByRole('button', { name: '重新读取', exact: true }).click()
     await page.getByRole('switch', { name: '高对比度', exact: true }).waitFor()
     assert.equal(await page.getByText('系统状态暂时读不到', { exact: true }).count(), 0)
@@ -4758,6 +4872,47 @@ test('without the Codex CLI the GPT official group asks for it and offers the ho
     await expect(page.getByTestId('hub-codex-missing')).toHaveText('装好 Codex CLI 才能看 GPT 官方插件。去首页安装')
     await page.getByTestId('hub-codex-open-home').waitFor()
     assert.equal(await page.getByTestId('hub-row-plugin-sentry-openai-api-curated').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('a skill can come from a zip picked in the system window, then goes into each ticked tool', async () => {
+  const page = await fixture(`${hub}&extensionOk=1`)
+  const directory = 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper'
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill-archive').click()
+    await expect(page.getByTestId('hub-skill-import')).toContainText('从压缩包导入')
+    // 还没选压缩包时不能点「添加」，也没有能手填路径的框。
+    assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), true)
+    assert.equal(await page.getByTestId('hub-skill-import-source').count(), 0)
+    await page.getByTestId('hub-skill-archive-choose').click()
+    await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('pdf-helper.zip')
+    await page.getByTestId('hub-skill-import-submit').click()
+    await page.getByText(/^已添加「pdf-helper」，给 .+ 使用，下次打开工具时生效$/).waitFor()
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.find((call) => call.name === 'import-skill').args, { sourcePath: directory, scope: 'user' })
+    assert.deepEqual(
+      recorded.filter((call) => call.name === 'extension').map((call) => call.args),
+      [{ provider: 'claude', kind: 'skill', action: 'install', source: directory, scope: 'user' }],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('a zip with no skill in it says so inside the import form', async () => {
+  const page = await fixture(`${hub}&skillArchive=empty`)
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill-archive').click()
+    await page.getByTestId('hub-skill-archive-choose').click()
+    await page.getByTestId('hub-skill-import').getByText('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。').waitFor()
+    await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('')
+    assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), true)
   } finally {
     await page.close()
   }
