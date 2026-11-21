@@ -32,15 +32,17 @@
 - `features/feedback/FeedbackPage.tsx` — 反馈与客服（`FeedbackPage`：留言反馈、运行日志、复制/导出反馈报告，右边的「找客服」卡）。
 - `features/settings/SettingsPage.tsx` — 设置页（`SettingsPage`：外观显示、启动关闭、工具管理、网络加速、消息通知、备份迁移、隐私数据、版本更新八组，左栏搜索设置和快捷键弹窗）。
 - `business-actions.ts` — 各业务页共用的 `BusinessActions` 参数类型，连同装工具的结果、「找客服」卡、点名要落的反馈页签几个类型（只有类型）。
-- `features/tools/install-result.ts` — 装工具那几句结果、首页那份任务算不算这一行在装、「安装指南」落教程哪一章；检查页和扩展三页都用（扩展页经 `pages-maintenance` 拿，拆之前就这样）。
-- `pages-management.tsx` — 只做转出（#1070 第 11 步拆开）：记录页、扩展三页和它们共用的两个文件都搬了出去（下面四条），原来从这里 import 的地方（`pages-business.tsx`、`pages-featured.tsx`、测试）不用改。
+- `features/tools/install-result.ts` — 装工具那几句结果、首页那份任务算不算这一行在装、「安装指南」落教程哪一章；检查页用（`pages-maintenance` 照旧转出）。
+- `pages-management.tsx` — 只做转出（#1070 第 11 步拆开）：现在只转出记录页。原来还转出扩展三页和它们共用的那一份，0.2.25 合成「插件」页以后旧页删了，共用的直接从 `features/extensions/extensions-common.tsx` 拿。
 - `features/sessions/SessionsPage.tsx` — 记录页（`SessionsPage`：各工具会话、接着聊、归档）。
-- `features/extensions/ExtensionsPage.tsx` — 扩展三页（`ExtensionsPage`：外接工具 MCP、技能、插件）：分得清「没有可装的」和「官方市场还没加进来」，Codex 插件目录由星芒代下；安装一律走主进程既有通道。下线的 Gemini 不列。
-- `features/extensions/extensions-common.tsx` — 扩展三页和「星芒精选」页共用的判断、解析和卡片：列表怎么分组、每一行能点什么、添加连接时的检查与解析、要 Python 或 uv 时那句提示、精选条目的卡片和详情。
+- `features/extensions/PluginsHub.tsx` — 「插件」页（0.2.25 精选、外接工具、技能、插件合成一页，侧栏「插件」）：左边「插件」「技能」和「已安装」清单，右边「推荐」「自己加的」，点开一条看每家装没装、开关、移除；Codex 插件目录由星芒代下。装、卸、启停全走主进程既有通道，没有新通道。老页面名（featured / mcp / skills / plugins）是它的别名，落哪一栏经 `features/app/extension-tool-intent.ts` 带过来。
+- `features/extensions/PluginsHubDialogs.tsx` — 「插件」页的安装框（一次装进勾上的几家）、技能「从文件夹导入」、「添加插件」先问装进哪一家。
+- `features/extensions/plugins-hub-model.ts` — 「插件」页的纯函数：三家列表按「种类 + 名字」合成一条、分组（常用、写代码、Claude 官方、GPT 官方、自己加的）、每家是装了 / 能装 / 没装工具 / 只有别家版。
+- `features/extensions/ExtensionAddDialog.tsx` — 自定义连接、添加插件、添加插件市场那张表（名称检查、粘贴整段配置、Grok 插件先问信任）。
+- `features/extensions/extensions-common.tsx` — 「插件」页和它几个对话框共用的判断与解析：官方市场要不要提醒、每一行能点什么、添加连接时的检查与解析、要 Python 或 uv 时那句提示、精选条目的详情。
 - `features/extensions/mcp-paste.ts` — 「自定义连接」里粘贴框的识别：提供方给的整段配置（各家 JSON、Codex / Grok 的 TOML 片段、一行命令、地址、`claude mcp add …`）认成本地程序 / 网络服务，替他填表、点名还是示例文字的几项。只认不写，提交照旧走 `submitMcpInstall`。
-- `features/tools/provider-options.ts` — 记录页和扩展三页共用的工具选单：认不认这个工具（下线的 Gemini 不认）、按导航次序的选项、编号换名字。
+- `features/tools/provider-options.ts` — 记录页和「插件」页共用的工具选单：认不认这个工具（下线的 Gemini 不认）、按导航次序的选项、编号换名字。
 - `pages-account.tsx` — 个人中心（`AccountPage`）：账号概览、充值订阅、用量账单、密钥管理（含「配置到工具」写 Key）、账号安全、邀请返利六个页签的装配；下线的 Gemini 不替它写 Key、不列它的额度。
-- `pages-featured.tsx` — 「星芒精选」页：把随包精选清单摆成卡片，一次装进几个工具；装法和扩展页底下的精选是同一条路（不另开通道，主进程校验照样过一遍）。
 
 ## features/tools/ 首页、工具卡片与写 Key 链
 
@@ -156,7 +158,7 @@
 - `features/app/ui-scale-shortcut.ts` — Ctrl/⌘ 加减号与 0 缩放界面的按键识别与下一档倍率（输入法打字中不算）。
 
 跨页跳转的「先放这儿、到了再取」：
-- `features/app/settings-group-intent.ts` / `features/app/row-focus.ts` / `features/app/extension-tool-intent.ts` — 切页只传页面名，要落的设置分组、要翻到的那一行、扩展页要先选的工具先放在模块里，目标页挂上（或已挂着时经订阅收到）再取走，取走即清空。
+- `features/app/settings-group-intent.ts` / `features/app/row-focus.ts` / `features/app/extension-tool-intent.ts` — 切页只传页面名，要落的设置分组、要翻到的那一行、「插件」页要落的那一栏先放在模块里，目标页挂上（或已挂着时经订阅收到）再取走，取走即清空。
 
 杂项：
 - `features/app/api.ts` — App 启动与账号、设置、公告这一组 IPC 的封装（启动时并发读齐设置、平台能力、会话、更新状态、窗口能力）。

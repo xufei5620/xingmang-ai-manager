@@ -1442,10 +1442,8 @@ export function createCanvasWindowController(
     const workflowContent = requiredCanvasText(contentInput, '画布项目工作流', maximumSavedFileBytes)
     const parsed = parseCanvasProjectWorkflow(workflowContent)
     const context = await activeAssetContext(event.sender.id, userId)
-    const imageStore = context?.images ?? options.aiAssets
-    const sources = await readCanvasProjectAssetSources(parsed.assetIds, (assetId) => imageStore.readOwned(userId, assetId))
-    assertCanvasUserUnchanged(userId)
-    const projectContent = buildCanvasProjectPackage(workflowContent, sources)
+    // #1368 第 14 条：先问存到哪里再读图。原来先把项目里的图全读进内存、打成包才弹保存框，
+    // 图多的项目点了「导出」要干等一会儿才有反应，点了取消也白读一遍。
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: SaveDialogOptions = {
       title: '画布：导出项目', defaultPath: withCanvasProjectExtension(suggestedName),
@@ -1454,6 +1452,10 @@ export function createCanvasWindowController(
     const result = parentWindow ? await dialog.showSaveDialog(parentWindow, dialogOptions) : await dialog.showSaveDialog(dialogOptions)
     if (result.canceled || !result.filePath) return null
     assertCanvasUserUnchanged(userId)
+    const imageStore = context?.images ?? options.aiAssets
+    const sources = await readCanvasProjectAssetSources(parsed.assetIds, (assetId) => imageStore.readOwned(userId, assetId))
+    assertCanvasUserUnchanged(userId)
+    const projectContent = buildCanvasProjectPackage(workflowContent, sources)
     await writeAtomicSafeUtf8File(result.filePath, projectContent, '画布项目导出文件')
     return { savedPath: result.filePath }
   })

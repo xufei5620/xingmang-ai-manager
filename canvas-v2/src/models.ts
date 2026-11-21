@@ -112,15 +112,14 @@ const grokImagePreset: ImageModelPreset = {
   supportsEdits: true,
 }
 
-// 次序就是下拉的次序，排第一的是分组里有它时的默认型号。跟桌面对话页、星芒AI生图（#999）一样：
-// 有 2.5 Flare 默认用它，没有照旧 GPT Image 2；2.5 Sunburst 慢、偏精修，不当默认。
-// 2.6 两个排在后面：分组里有 2.5 Flare 或 GPT Image 2 时新项目的默认型号不变（默认换不换 2.6 Flare 等 yoyo 定）。
+// 次序就是下拉的次序，排第一的是分组里有它时的默认型号。跟桌面对话页、星芒AI生图（#1803）一样：
+// 有 2.6 Flare 默认用它，没有依次 2.5 Flare、GPT Image 2；Sunburst 慢、偏精修，不当默认。
 export const imageModelPresets: readonly ImageModelPreset[] = [
-  laterGptImagePreset('gpt-image-2.5-flare', 'GPT Image 2.5 Flare(推荐)'),
+  laterGptImagePreset('gpt-image-2.6-flare', 'GPT Image 2.6 Flare(推荐)'),
+  laterGptImagePreset('gpt-image-2.5-flare', 'GPT Image 2.5 Flare'),
   gptImage2Preset,
-  laterGptImagePreset('gpt-image-2.5-sunburst', 'GPT Image 2.5 Sunburst'),
-  laterGptImagePreset('gpt-image-2.6-flare', 'GPT Image 2.6 Flare'),
   laterGptImagePreset('gpt-image-2.6-sunburst', 'GPT Image 2.6 Sunburst'),
+  laterGptImagePreset('gpt-image-2.5-sunburst', 'GPT Image 2.5 Sunburst'),
   geminiImagePreset,
   {
     id: 'gpt-image-1',
@@ -157,7 +156,7 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
 ]
 
 // 还不知道账号有哪些型号时（没连上、型号表还没读到）先按 GPT Image 2 摆：历史账号的图片分组未必有 2.5、2.6。
-// 读到型号表以后按上面预设的次序挑（library/media-groups.ts 的 withResolvedMediaModels），有 2.5 Flare 就是它。
+// 读到型号表以后按上面预设的次序挑（library/media-groups.ts 的 withResolvedMediaModels），有 2.6 Flare 就是它。
 export const defaultImageModel: string = gptImage2Preset.id
 export const defaultImageSize = '1024x1024'
 export const defaultImageQuality = 'low'

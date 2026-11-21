@@ -2497,6 +2497,11 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => accountSessionReady).then(() => new Promise<void>((resolve) => {
       setTimeout(resolve, claudeDesktopModelTopUpStartupDelayMs).unref()
     })).then(() => systemService.topUpClaudeDesktopModels?.()).catch(() => undefined)
+    // Claude Desktop 的 Cowork 工作区（约 1.3 GB）国内从它官网下不动：开机检测跑完再等一会儿，替已经装着的从星芒
+    // 下载站放好（external-client-route-service.ts 的 seedClaudeDesktopWorkspace）。不看登录，放过的、盘不够的不下。
+    void startupQuiet.whenOver().then(() => new Promise<void>((resolve) => {
+      setTimeout(resolve, claudeDesktopModelTopUpStartupDelayMs).unref()
+    })).then(() => systemService.seedClaudeDesktopWorkspace?.()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,
