@@ -14,6 +14,7 @@ import type {
 import type { AccountPaymentWindowTerminalEvent, AccountSubscriptionPlan, FeedbackMessageCopyRequest, ProviderId } from '../electron/ipc-contract'
 import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
+import { accountKeyEnableExpiredMessage } from '../electron/account-key-quota'
 import { KeyRewriteSkippedError } from '../src/renderer-v2/features/tools/account-bootstrap'
 import { settingsPageAlias } from '../src/renderer-v2/registry/pages'
 import { settingsItems } from '../src/renderer-v2/registry/business'
@@ -550,7 +551,7 @@ const balance = {
 // remoteLowBalance：外壳那份共享余额只剩 $0.80（手机遥控卡上的余额提醒，YF-12）。别的页不读它，照旧读 getAccountBalance。
 const lowBalanceStore: AccountBalanceStore | null = query.has('remoteLowBalance')
   ? (() => {
-      const snapshot = { scope: 'fixture', balance: { ...balance, quota: 80 }, loading: false, updatedAt: 1, error: null, networkFailures: 0 }
+      const snapshot = { scope: 'fixture', balance: { ...balance, quota: 80 }, loading: false, updatedAt: 1, error: null, reads: 0, networkFailures: 0 }
       return {
         getSnapshot: () => snapshot,
         subscribe: () => () => undefined,
@@ -681,6 +682,15 @@ const managedKeys = query.has('managedKeys')
   ? [
       { ...key, id: 11, name: 'xingmang-desktop-claude', group: 'Claude-MAX', unlimitedQuota: false, remainQuota: 1200, usedQuota: 600 },
       { ...key, id: 12, name: 'xingmang-desktop-codex', group: 'GPT', unlimitedQuota: true, remainQuota: 0, usedQuota: 200 },
+    ]
+  : null
+// stoppedKeys：一把网页上停用的、一把过了到期时间的、一把正常的，看「启用」摆在哪几行、点了怎样（总单 Q2）。
+// 到期那把照主进程 enableKey 的规矩不给开，回同一句话。
+const stoppedKeys = query.has('stoppedKeys')
+  ? [
+      { ...key, id: 21, name: 'disabled-key', status: 2, unlimitedQuota: true, remainQuota: 0 },
+      { ...key, id: 22, name: 'expired-key', status: 3, expiredAt: '2026-01-01T00:00:00.000Z' },
+      { ...key },
     ]
   : null
 window.changeKeyElsewhere = (id, patch) => {
@@ -991,9 +1001,9 @@ const apiMethods = {
     return {
       page: 1,
       pageSize: 20,
-      total: empty ? 0 : managedKeys ? managedKeys.length : 1,
+      total: empty ? 0 : (stoppedKeys ?? managedKeys)?.length ?? 1,
       // 每次读都给一份新的，跟真的跨进程一样：页面手里那份不会跟着夹具里存的悄悄变。
-      keys: empty ? [] : managedKeys?.map((entry) => ({ ...entry })) ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
+      keys: empty ? [] : (stoppedKeys ?? managedKeys)?.map((entry) => ({ ...entry })) ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
     }
   },
   updateAccountKey: async (input: Parameters<V2Bridge['updateAccountKey']>[0]) => {
@@ -1007,6 +1017,12 @@ const apiMethods = {
       remainQuota: input.unlimitedQuota ? stored.remainQuota : input.remainQuota,
       expiredAt: input.expiredTime === -1 ? null : new Date(input.expiredTime * 1000).toISOString(),
     })
+  },
+  enableAccountKey: async (id: number) => {
+    record('enableAccountKey', id)
+    const stored = stoppedKeys?.find((entry) => entry.id === id)
+    if (stored?.expiredAt) throw new Error(accountKeyEnableExpiredMessage)
+    if (stored) stored.status = 1
   },
   revokeAccountKey: async (id: number) => {
     record('revokeAccountKey', id)

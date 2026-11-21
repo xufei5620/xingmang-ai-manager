@@ -55,12 +55,13 @@ export function SessionRow({ tool, title, path, model, count, when, archived, on
   return <ListRow testId={testId} icon={Archive} title={title} badge={archived && <Pill>{t('archived')}</Pill>} desc={path} descMono meta={<span>{definition?.name ?? tool} · {model} · {count} · {when}</span>} actions={<Button size="sm" icon={FolderOpen} onClick={onOpen}>{t('open')}</Button>} />;
 }
 /** leading 画在字前面（工具标志），meta 画在字后面（数量、「未安装」）；缺省 = 只有字。 */
-type Choice = { value: string; label: string; icon?: Icon; disabled?: boolean; panelId?: string; leading?: ReactNode; meta?: ReactNode };
+// title: a hover line for one choice, used to say why it is greyed out (「当前账号用不了生成视频」).
+type Choice = { value: string; label: string; icon?: Icon; disabled?: boolean; title?: string; panelId?: string; leading?: ReactNode; meta?: ReactNode };
 function Choices({ options, value, onChange, testId, kind, label, activation = kind === 'tabs' ? 'manual' : 'automatic' }: BaseProps & { options: Choice[]; value: string; onChange: (value: string) => void; kind: 'segment' | 'tabs'; label?: string; activation?: 'manual' | 'automatic' }) {
   const refs = useRef<Array<HTMLButtonElement | null>>([]); const baseId = useId();
   const selected = options.findIndex(item => item.value === value && !item.disabled);
   const entry = selected >= 0 ? selected : options.findIndex(item => !item.disabled);
-  return <div className={'xm-' + kind} role={kind === 'tabs' ? 'tablist' : 'group'} aria-label={label} data-testid={testId}>{options.map(({ value: itemValue, label: itemLabel, icon: Icon, disabled, panelId, leading, meta }, index) => <button id={baseId + '-' + index} className={itemValue === value ? 'is-active' : ''} ref={node => { refs.current[index] = node; }} disabled={disabled} key={itemValue} tabIndex={index === entry ? 0 : -1} aria-selected={kind === 'tabs' ? itemValue === value : undefined} aria-pressed={kind === 'segment' ? itemValue === value : undefined} aria-controls={panelId} onClick={() => onChange(itemValue)} onKeyDown={event => {
+  return <div className={'xm-' + kind} role={kind === 'tabs' ? 'tablist' : 'group'} aria-label={label} data-testid={testId}>{options.map(({ value: itemValue, label: itemLabel, icon: Icon, disabled, title, panelId, leading, meta }, index) => <button id={baseId + '-' + index} className={itemValue === value ? 'is-active' : ''} ref={node => { refs.current[index] = node; }} disabled={disabled} title={title} key={itemValue} tabIndex={index === entry ? 0 : -1} aria-selected={kind === 'tabs' ? itemValue === value : undefined} aria-pressed={kind === 'segment' ? itemValue === value : undefined} aria-controls={panelId} onClick={() => onChange(itemValue)} onKeyDown={event => {
     if (event.nativeEvent.isComposing || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault(); const enabled = options.map((item, i) => item.disabled ? -1 : i).filter(i => i >= 0); const current = enabled.indexOf(index);
     const next = event.key === 'Home' ? enabled[0] : event.key === 'End' ? enabled[enabled.length - 1] : enabled[(current + (event.key === 'ArrowRight' ? 1 : -1) + enabled.length) % enabled.length];

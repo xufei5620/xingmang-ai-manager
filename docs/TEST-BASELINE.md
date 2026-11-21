@@ -242,6 +242,13 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 - 给检查页加新项时：别一个接一个地把一串候选文件交给 `readSafeUtf8File`。多半不在的先异步排除，读盘按 `mapWithConcurrency` 限流。
 - 复现（别提交）：写一个 `.mjs`，把 `fs.lstatSync` / `statSync` / `existsSync` 包一层、每次空转 250 微秒，`realpathSync` 按路径级数空转，用 `NODE_OPTIONS="--import <它>"` 加载；再把 `TMPDIR` 指到一个六级深的目录（照 runner 的 `C:\Users\RUNNER~1\AppData\Local\Temp`），单跑 `diagnostics.test.ts`。11-21 验：250 微秒时旧写法红 3 条（含这一条），400 微秒红 30 条、几乎全是这一项；改完 250 微秒全过，400 微秒只剩一条整条 5 秒的测试级超时（直接跑 vitest 用的默认时限，`npm test` 是 30 秒）。
 
+## 按时间戳认「又来了一次」：快机器上同一毫秒落两次（2026-11-21）
+
+`balance-store.ts` 的 `subscribeBalanceReads` 以前看 `snapshot.updatedAt`（`Date.now()` 毫秒）变没变来认「余额又读到一次」。`balance-store.test.ts`「tells read listeners once per landed read…」用真时钟、假 `read` 立刻回，前后两次读在快 runner 上落进同一毫秒，第二次就漏了（指纹：`expected "vi.fn()" to be called 2 times, but got 1 times`，指着「失败一次后再读一次」那行；11-21 在 linux-test 上 #1994、#2062 各红一次）。客户电脑上每次读余额都要过网络，两次落在同一毫秒几乎不会，但「每次都告诉一声」的约定确实没守住。
+
+- 修法：store 在快照里记 `reads`（读到过几次，只增不减，换账号也不归零），`subscribeBalanceReads` 认它不认时间戳。`updatedAt` 照旧只管「多久以前读的」。
+- 写法：要认「又发生了一次」的，数次数或给每次一个编号，别拿时间戳当编号；用例里的 store 能注入 `now` 的，钉成一个常数，同一毫秒就成了唯一情况，按时间戳认的写法每次都红。那个用例所在的分组现在就是这样钉的。
+
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 
 `fast-check` 写的随机输入测试（各测试文件末尾 `… with random inputs` 那几节：打码、外链白名单、会话编号、换线路改配置、粘贴密钥整理、PowerShell 单引号和通配符转义）每次跑用不同的随机种子，同一条这次绿、下次红是可能的。红的那次是库碰巧造出了一个打破规矩的输入，**代码真有这个缺口**：不按「重跑就过」放过，也不许把生成器改窄躲过去。

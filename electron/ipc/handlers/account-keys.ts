@@ -1,4 +1,4 @@
-// 主窗口业务通道的处理器：账号密钥的列出、新建、修改、撤销、复制，签发并写进工具，写配置时可选的密钥。
+// 主窗口业务通道的处理器：账号密钥的列出、新建、修改、撤销、启用、复制，签发并写进工具，写配置时可选的密钥。
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
 import { isActiveProviderId, isRetiredProviderId, type ProviderId } from '../../catalog'
 import { accountKeyListTooLongMessage, findAccountKeyById, searchAccountKeys } from '../../account-key-quota'
@@ -180,6 +180,13 @@ export function registerAccountKeyHandlers(ctx: IpcHandlerContext): void {
       throw error
     }
     if (userId) await invalidateAccountKeyCaches(userId, keyId)
+  })
+  // 「启用」不动这把密钥的明文、名字和分组，本机记着的工具密钥照旧对得上，所以不清缓存
+  // （update-key 清，是因为改了分组或名字以后缓存里那条就不准了）。
+  registerTrustedHandler('account:enable-key', async (_event, id: unknown) => {
+    const keyId = parseAccountRevokeKeyId(id)
+    if (!accountService.enableKey) throw new Error('当前账号暂时不能在这里启用密钥')
+    await accountService.enableKey(keyId)
   })
   registerTrustedHandler('account:copy-key', async (_event, id: unknown) => {
     const key = await revealAccountKeySecret(id)

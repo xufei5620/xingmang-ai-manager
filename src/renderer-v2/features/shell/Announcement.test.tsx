@@ -1,4 +1,6 @@
+import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { prerender } from 'react-dom/static'
 import { describe, expect, it } from 'vitest'
 import {
   AnnouncementContent,
@@ -14,6 +16,14 @@ import {
   safeAnnouncementImage,
 } from './Announcement'
 import { AnnouncementCollectionError } from './newapi-announcements'
+
+// 公告正文的 Markdown 排版是打开公告时才读进来的（总单 77，R9），同步渲染只拿得到读进来之前的空框；
+// 这里等它读完，拿到的就是客户看到的那份。prerender 会在相邻文字间、Suspense 两头插注释标记，
+// 去掉以后跟 renderToStaticMarkup 的输出一样。
+async function renderSettled(node: ReactNode) {
+  const { prelude } = await prerender(node)
+  return (await new Response(prelude).text()).replace(/<!--(?: |\$|\/\$)-->/g, '')
+}
 
 describe('renderer-v2 announcement error mapping', () => {
   it('turns the bounded-response failure into an actionable, non-raw message', () => {
@@ -79,8 +89,8 @@ describe('renderer-v2 announcement error mapping', () => {
     expect(safeAnnouncementImage('data:image/png;base64,AAAA', 'https://xm.solov.cc')).toBe('data:image/png;base64,AAAA')
   })
 
-  it('renders Markdown headings, GFM lists, emphasis and safe links in a styled content region', () => {
-    const html = renderToStaticMarkup(
+  it('renders Markdown headings, GFM lists, emphasis and safe links in a styled content region', async () => {
+    const html = await renderSettled(
       <AnnouncementContent
         text={'# 服务公告\n\n- 第一项\n- 第二项\n\n**重点提醒**：请查看 [官方说明](https://xm.solov.cc/help)。'}
         noticeUrl="https://xm.solov.cc"
@@ -97,9 +107,9 @@ describe('renderer-v2 announcement error mapping', () => {
     expect(html).toContain('rel="noreferrer"')
   })
 
-  it('keeps unsafe Markdown links and remote images inert, and never points an image at the network', () => {
+  it('keeps unsafe Markdown links and remote images inert, and never points an image at the network', async () => {
     const text = '[危险链接](javascript:alert(1))\n\n![官方二维码](https://xm.solov.cc/qr.png)\n\n![外部图片](https://attacker.invalid/qr.png)'
-    const html = renderToStaticMarkup(
+    const html = await renderSettled(
       <AnnouncementContent
         text={text}
         noticeUrl="https://xm.solov.cc"
@@ -116,7 +126,7 @@ describe('renderer-v2 announcement error mapping', () => {
     expect(html).not.toContain('attacker.invalid/qr.png')
 
     // 有代下时官网的图先空着，等主进程交回 data: 地址；外站的图照旧只显示说明。
-    const withDownloads = renderToStaticMarkup(
+    const withDownloads = await renderSettled(
       <AnnouncementContent
         text={text}
         noticeUrl="https://xm.solov.cc"

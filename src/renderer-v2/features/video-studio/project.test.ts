@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
 import type { AiVideoClip } from '../../../../electron/ipc-contract'
+import { appendVideoStudioClip, buildVideoClipRequest, canAddVideoStudioShot, createVideoStudioProjectFromClip, videoStudioUnconfirmedWarning } from './project'
+import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import {
   addVideoStudioShot,
   applyVideoStudioPlan,
@@ -635,5 +637,70 @@ describe('video studio project', () => {
     const waiting = { ...film, shots: film.shots.map((shot, index) => index === 1 ? { ...shot, requestId: 'req-1', status: 'failed' as const, error: '暂时查不到视频进度' } : shot) }
     const [draft] = restoreVideoStudioDrafts(legacyDraftBox([{ id: 'a', savedAt: 1, project: waiting }]))
     expect(draft.project.shots[1]).toMatchObject({ requestId: 'req-1', status: 'generating' })
+  })
+})
+
+describe('a clip handed over from a conversation', () => {
+  const assetId = 'c'.repeat(43)
+  const handed: AiVideoClip = { assetId, thumbnailUrl: assetThumbnailUrl(assetId, 'video'), width: 1280, height: 720, durationSeconds: 5 }
+  const imageAssetId = 'i'.repeat(43)
+  const ids = () => { let next = 0; return () => `shot-${++next}` }
+
+  it('goes in as a finished last shot with its prompt and start image, and nothing is generated again', () => {
+    const project = { ...addVideoStudioShot(createVideoStudioProject(), () => 'first'), title: '橘猫回家' }
+    const next = appendVideoStudioClip(project, { prompt: '  一只橘猫\u000c在雨里走  ', clip: handed, imageAssetId }, ids())
+    expect(next.shots).toHaveLength(2)
+    expect(next.shots[0]).toBe(project.shots[0])
+    expect(next.shots[1]).toMatchObject({ id: 'shot-1', prompt: '一只橘猫在雨里走', caption: '', clip: handed, status: 'done', image: { assetId: imageAssetId } })
+    expect(next.shots[1]).not.toHaveProperty('requestId')
+    expect(next.title).toBe('橘猫回家')
+    expect(appendVideoStudioClip(project, { prompt: '没有开头图', clip: handed }, ids()).shots[1]).not.toHaveProperty('image')
+  })
+
+  it('cuts an overlong prompt to what a shot holds', () => {
+    const next = appendVideoStudioClip(createVideoStudioProject(), { prompt: 'x'.repeat(videoStudioPlanLimits.maximumPromptLength + 20), clip: handed }, ids())
+    expect(next.shots[0].prompt).toHaveLength(videoStudioPlanLimits.maximumPromptLength)
+  })
+
+  it('drops the finished film, because it no longer has every shot in it', () => {
+    const exported = { ...createVideoStudioProject(), exported: { assetId: 'e'.repeat(43), durationSeconds: 12 } }
+    expect(appendVideoStudioClip(exported as ReturnType<typeof createVideoStudioProject>, { prompt: '多一段', clip: handed }, ids())).not.toHaveProperty('exported')
+  })
+
+  it('leaves a full film untouched', () => {
+    let full = createVideoStudioProject()
+    for (let index = 0; index < videoStudioPlanLimits.maximumShots; index += 1) full = addVideoStudioShot(full, () => `s${index}`)
+    expect(canAddVideoStudioShot(full)).toBe(false)
+    expect(appendVideoStudioClip(full, { prompt: '放不下', clip: handed }, ids())).toBe(full)
+  })
+
+  it('starts a new film around the clip: its prompt as the idea, its shape and model, the rest from the base settings', () => {
+    const base = { ...defaultVideoStudioSettings(), textModel: 'gpt-5.6-sol', textGroup: 'GPT', imageModel: 'gpt-image-2', imageGroup: '图片模型', captions: false, idea: '上一条的想法', aspect: '9:16' as const }
+    const film = createVideoStudioProjectFromClip({ prompt: '一只橘猫在雨里走', clip: handed, imageAssetId }, { aspect: '16:9', model: 'minimax-h3-base', group: '图片模型', seconds: 3 }, base, ids())
+    expect(film.settings).toMatchObject({ idea: '一只橘猫在雨里走', aspect: '16:9', videoModel: 'minimax-h3-base', videoGroup: '图片模型', textModel: 'gpt-5.6-sol', imageModel: 'gpt-image-2', captions: false })
+    // MiniMax 最短 5 秒：接着加的镜头不会按一个它出不了的时长去要。
+    expect(film.settings.secondsPerShot).toBe(clampVideoStudioSeconds(3, 'minimax-h3-base'))
+    expect(film.shots).toHaveLength(1)
+    expect(film.shots[0]).toMatchObject({ clip: handed, status: 'done', prompt: '一只橘猫在雨里走' })
+    expect(isVideoStudioProjectEmpty(film)).toBe(false)
+  })
+
+  it('keeps the base length when the clip came without a video model', () => {
+    const film = createVideoStudioProjectFromClip({ prompt: '一只橘猫', clip: handed }, { aspect: '1:1', model: '', group: '', seconds: 9 }, undefined, ids())
+    expect(film.settings).toMatchObject({ aspect: '1:1', videoModel: '', videoGroup: '', secondsPerShot: defaultVideoStudioSettings().secondsPerShot })
+  })
+
+  it('builds the same request for one chat message as for one storyboard shot', () => {
+    const settings = { ...defaultVideoStudioSettings(), videoModel: 'grok-imagine-video-1.5', videoGroup: '图片模型', aspect: '16:9' as const, secondsPerShot: 6 }
+    const shot = { id: 'a', prompt: '橘猫', caption: '', status: 'idle' as const }
+    expect(buildVideoClipRequest({ requestId: 'r1', group: '图片模型', model: 'grok-imagine-video-1.5', prompt: '橘猫', seconds: 6, aspect: '16:9' })).toEqual(buildVideoStudioClipRequest(settings, shot, 'r1'))
+    expect(buildVideoClipRequest({ requestId: 'r2', group: '图片模型', model: 'minimax-h3-base', prompt: '橘猫', seconds: 6, aspect: '9:16', imageAssetId })).toMatchObject({ mode: 'i2va', aspectRatio: '9:16', imageAssetIds: [imageAssetId] })
+  })
+
+  it('words the pay-twice warning for one clip, for all of them and for some of them', () => {
+    expect(videoStudioUnconfirmedWarning([0], 1)).toMatch(/^这一段上次提交时没收到/)
+    expect(videoStudioUnconfirmedWarning([0, 1], 2)).toMatch(/^这几段上次提交时没收到/)
+    expect(videoStudioUnconfirmedWarning([1, 3], 4)).toMatch(/^其中第 2、4 段上次提交时没收到/)
+    expect(videoStudioUnconfirmedWarning([0], 1)).toContain('再生成会重新计费，可能多扣一次。')
   })
 })
