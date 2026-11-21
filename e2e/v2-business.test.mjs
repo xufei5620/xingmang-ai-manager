@@ -1762,6 +1762,33 @@ test('session detail shows what each AI turn ran and changed, folded to names on
   }
 })
 
+test('sessions search can also look through what was said, after the typing settles', async () => {
+  const page = await fixture('page=sessions')
+  try {
+    await page.getByTestId('sessions-row-codex:session-1').waitFor()
+    await page.getByTestId('sessions-search').fill('没说过')
+    assert.equal((await calls(page)).some((call) => call.name === 'list-sessions-content'), false)
+    await page.getByText('同时搜索对话内容', { exact: true }).click()
+    assert.equal(await page.getByTestId('sessions-search-content').isChecked(), true)
+    await page.getByText('最近的对话中未找到「没说过」', { exact: true }).waitFor()
+    assert.deepEqual(
+      (await calls(page)).filter((call) => call.name === 'list-sessions-content').map((call) => call.args),
+      [{ search: '没说过', searchContent: true }],
+    )
+    // 打字时先不翻：一口气敲完只发停手后的那个词。
+    await page.getByTestId('sessions-search').fill('测试')
+    await page.getByTestId('sessions-search-content-status').getByText('正在搜索对话内容…', { exact: true }).waitFor()
+    await page.getByTestId('sessions-row-codex:session-1').waitFor()
+    await page.getByTestId('sessions-search-content-status').waitFor({ state: 'detached' })
+    assert.deepEqual(
+      (await calls(page)).filter((call) => call.name === 'list-sessions-content').map((call) => call.args.search),
+      ['没说过', '测试'],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
 const callsNamed = async (page, name) =>
   (await calls(page)).filter((call) => call.name === name)
 
