@@ -51,6 +51,7 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 - **在新开的 worktree 里把主目录的 `node_modules` 软链过来省安装，有两个坑。**（沿用 11-09；`.gitignore` 那一行 11-11 验）
   1. 根 `.gitignore` 写的是 `node_modules/`（带斜杠），只挡目录、不挡软链，`git add -A` 会把这个链接提交进去。先往 `.git/info/exclude` 加一行 `/node_modules`，提交前 `git show --stat` 扫一眼。已经提交进去的那个提交别再挑回（`cherry-pick`、`merge`）主目录：git 会把主目录里真的 `node_modules` 删掉，换成一个指向它自己的坏链接，整个依赖就没了（11-11 踩过）。要挑，先在 worktree 里 `git rm --cached node_modules` 补一个提交，再连它一起挑；挑的时候加 `-n`、事后再 `git reset -- node_modules` 来不及，目录在挑的那一下就删了。真删了：从另一个装好的 worktree 把 `node_modules` 搬回来（锁文件一样才行），不然重新 `npm ci`。
   2. `tooling/legacy-renderer/node_modules` 也要链（它是 npm workspace，装着 React 18 的类型）。漏了 `npm run typecheck` 会在 legacy 的 `src/components/ui/*` 报一串类型错，不是代码问题。
+  3. 链过来的依赖在 `npm test` 里会让 `scripts/renderer-single-copy.test.cjs` 红两条（`the root dev server resolves the shared packages…`、`every browser fixture server resolves the shared packages…`），报 `react resolved to <主目录>/node_modules/react/index.js`：这两条要求 React 从本目录那份解析，链接解析到了主目录，也不是代码问题。要四道全绿的结论，回主目录（或真装过依赖的目录）重跑 `npm test`。（11-21）
 - **别用 `pkill -f <脚本名>` 收拾卡住的命令。** 命令行里带这串字的 shell 自己也会被杀掉。用进程号杀。（沿用 10-03）
 - **`npm test` 和 `npm run test:v2` 可以在同一个目录里同时后台跑**，没冒过假红。（沿用 11-09）
 - **容器里没有 zsh**（11-11 验），`electron/macos-platform.test.ts` 里真跑 zsh 的那批用例会自动跳过，不算失败。想让它们在容器里真跑，`apt-get install -y zsh`。（沿用 11-10）
