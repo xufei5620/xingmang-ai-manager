@@ -410,10 +410,10 @@ async function probeSandboxedRendererStatus(): Promise<string | null> {
   }
 }
 
-// The canvas's own background before it paints: the main window's light
-// background, and the obsidian one the canvas falls back to in dark.
-export const canvasWindowBackgroundColor = '#0b0c10'
-export const canvasWindowLightBackgroundColor = '#fbfaf6'
+// The canvas's own background before it paints: the --bg of its palette in
+// src/renderer-v2/styles/tokens.css (the data-host="desktop" pair, #1103).
+export const canvasWindowBackgroundColor = '#1f2023'
+export const canvasWindowLightBackgroundColor = '#e7e8eb'
 
 export function canvasWindowBackgroundForTheme(theme: AppTheme): string {
   return theme === 'light' ? canvasWindowLightBackgroundColor : canvasWindowBackgroundColor
