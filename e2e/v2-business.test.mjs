@@ -317,7 +317,7 @@ test('account views distinguish summary-only, failed reads and valid empty resul
     ['sub2apiReliability=1', '用量账单', '只有累计数', '这个时间段还没有用量'],
     ['fail=dashboard', '用量账单', '花费趋势暂时没有读到', '这个时间段还没有用量'],
     ['fail=usage', '用量账单', '调用明细暂时没有读到', '这段时间没有调用'],
-    ['sub2apiReliability=1&fail=subscriptions', '充值订阅', '订阅信息暂时没有读到', '还没有订阅'],
+    ['sub2apiReliability=1&fail=subscriptions', '充值订阅', '订阅信息暂时没有读到', '暂无订阅'],
   ]) {
     const page = await fixture(`page=account&${query}`)
     try {
@@ -473,7 +473,7 @@ test('the orders head asks the main process to open the invoice window without n
       await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
       const orders = page.getByTestId('account-orders-section')
       await orders.getByRole('button', { name: '开发票', exact: true }).click()
-      await waitForToast(page, `开票中心已在新窗口打开；要登录的话，用这个账号的${loginName}和密码。`)
+      await waitForToast(page, `开票中心已在新窗口打开。如需登录，请使用当前账号的${loginName}和密码。`)
       assert.deepEqual(
         (await calls(page)).filter((call) => call.name === 'open-invoice-portal').map((call) => call.args),
         [[]],
@@ -491,7 +491,7 @@ test('the invoice button says the approved line when the invoice window does not
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const orders = page.getByTestId('account-orders-section')
     await orders.getByRole('button', { name: '开发票', exact: true }).click()
-    await orders.getByRole('alert').filter({ hasText: '没能打开开票中心，请稍后再试；还不行请找客服。' }).waitFor()
+    await orders.getByRole('alert').filter({ hasText: '开票中心打开失败，请稍后重试；如仍无法打开，请联系客服。' }).waitFor()
     // 订单照常列着：打不开开票中心不影响看订单。
     await orders.getByText('TEST-ORDER').waitFor()
   } finally {
@@ -616,7 +616,7 @@ test('an unread profile keeps the account pages and only blocks the ones that ne
 
 test('account lists that could not be read say so with the reason and read again on request', async () => {
   for (const [query, tab, title, reason, absent] of [
-    ['fail=orders', '充值订阅', '订单暂时没有读到', '订单服务暂时不可用', '还没有订单'],
+    ['fail=orders', '充值订阅', '订单暂时没有读到', '订单服务暂时不可用', '暂无订单'],
     ['fail=tasks', '用量账单', '生成任务暂时没有读到', '任务服务暂时不可用', '暂无生成任务'],
     ['fail=usage', '用量账单', '调用明细暂时没有读到', '调用记录服务暂时不可用', '这段时间没有调用'],
     ['fail=devices', '账号安全', '登录设备暂时没有读到', '设备服务暂时不可用', '正在读取登录设备…'],
@@ -752,11 +752,11 @@ test('recharge stays open when subscriptions fail and says when the top-up detai
     await failed.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const card = failed.getByTestId('account-recharge-error')
     await card.waitFor()
-    assert.match(await card.innerText(), /充值信息暂时没有读到[\s\S]*充值服务暂时不可用/)
+    assert.match(await card.innerText(), /充值信息加载失败[\s\S]*充值服务暂时不可用/)
     await card.getByRole('button', { name: '联系客服', exact: true }).waitFor()
     assert.equal(await failed.getByRole('button', { name: /^到账/ }).count(), 0)
     // 订阅那边读得到，照样摆着。
-    await failed.getByText('还没有订阅', { exact: true }).waitFor()
+    await failed.getByText('暂无订阅', { exact: true }).waitFor()
     const reads = (await calls(failed)).filter((call) => call.name === 'get-topup-info').length
     await card.getByTestId('account-recharge-retry').click()
     await failed.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-topup-info').length > count, reads)
@@ -771,7 +771,7 @@ test('without a payment channel the recharge card says so first, greys the form 
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const notice = page.getByTestId('account-recharge-no-methods')
     await notice.waitFor()
-    assert.match(await notice.innerText(), /暂时没有可用的支付渠道[\s\S]*请稍后重试或联系客服。有充值码的话，点「有充值码？」兑换。/)
+    assert.match(await notice.innerText(), /暂时没有可用的支付渠道[\s\S]*请稍后重试或联系客服。如有充值码，可点击「有充值码？」兑换。/)
     await notice.getByRole('button', { name: '联系客服', exact: true }).waitFor()
     // 提示在卡片最上面，档位在它下面。
     const noticeBox = await notice.boundingBox()
@@ -1207,17 +1207,17 @@ test('a subscription re-read that fails says so instead of still showing no subs
   try {
     const panel = page.getByRole('tabpanel').filter({ visible: true })
     const choose = panel.getByTestId('account-recharge-plans')
-    await panel.getByText('还没有订阅', { exact: true }).waitFor()
+    await panel.getByText('暂无订阅', { exact: true }).waitFor()
     assert.equal(await choose.count(), 1)
     await page.evaluate(() => window.failNextRead('subscriptions'))
     await page.getByTestId('account-refresh').click()
     await panel.getByTestId('account-subscriptions-error').getByText('订阅信息暂时没有读到').waitFor()
-    assert.equal(await panel.getByText('还没有订阅', { exact: true }).count(), 0)
+    assert.equal(await panel.getByText('暂无订阅', { exact: true }).count(), 0)
     assert.equal(await choose.count(), 0)
     // 充值那张卡不受影响。
     assert.equal(await panel.getByTestId('account-recharge-submit').count(), 1)
     await panel.getByTestId('account-subscriptions-retry').click()
-    await panel.getByText('还没有订阅', { exact: true }).waitFor()
+    await panel.getByText('暂无订阅', { exact: true }).waitFor()
     assert.equal(await choose.count(), 1)
   } finally {
     await page.close()
@@ -3520,10 +3520,10 @@ test('an amount outside the quick tiers is still quoted on the summary', async (
 test('a default amount below the minimum says why recharging is unavailable', async () => {
   const page = await fixture('page=account&accountTab=recharge&highMinimum=1')
   try {
-    await page.getByText('充值数量不能低于 20，请填整数', { exact: true }).waitFor()
+    await page.getByText('充值金额不能低于 20，请输入整数', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('account-recharge-submit').isDisabled(), true)
     await page.getByRole('button', { name: /^到账 \$20，实付 20\.00/ }).click()
-    assert.equal(await page.getByText('充值数量不能低于 20，请填整数', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('充值金额不能低于 20，请输入整数', { exact: true }).count(), 0)
     assert.equal(await page.getByTestId('account-recharge-submit').isDisabled(), false)
   } finally {
     await page.close()
@@ -3698,7 +3698,7 @@ test('a payment window closed before settlement keeps confirming and points to t
     await page.getByText('等待支付结果', { exact: true }).waitFor()
     await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-TOPUP', confirming: true }))
     const notice = page.getByTestId('account-payment-notice')
-    await notice.getByText('星芒还在确认到账', { exact: false }).waitFor()
+    await notice.getByText('到账后余额将自动更新', { exact: false }).waitFor()
     await notice.getByText('正在确认订单 XM-VISUAL-TOPUP 是否到账…', { exact: true }).waitFor()
     assert.equal(await notice.getByRole('button', { name: '查看我的订单', exact: true }).count(), 1)
 
@@ -3742,7 +3742,7 @@ test('an unconfirmed payment opens my orders with its order number', async () =>
       window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-TOPUP', confirming: true })
       window.emitPaymentWindowTerminal({ status: 'unconfirmed', tradeNo: 'XM-VISUAL-TOPUP' })
     })
-    await page.getByText('还没查到这笔订单到账', { exact: true }).waitFor()
+    await page.getByText('暂未确认到账', { exact: true }).waitFor()
     await page.getByTestId('account-payment-orders').click()
     await page.getByRole('tab', { name: '充值订阅', exact: true, selected: true }).waitFor()
     await page.getByTestId('account-orders-section').waitFor()
@@ -3773,7 +3773,7 @@ test('settings that wait on the system state say they were not read and read aga
     await page.getByText('系统状态暂时读不到', { exact: true }).waitFor()
     const contrast = page.locator('[data-anchor="high-contrast"]')
     await contrast.getByText('暂未读到', { exact: true }).waitFor()
-    assert.equal(await page.getByText('这台电脑上用不了', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('本机不支持', { exact: true }).count(), 0)
     await page.getByRole('button', { name: '重新读取', exact: true }).click()
     await page.getByRole('switch', { name: '高对比度', exact: true }).waitFor()
     assert.equal(await page.getByText('系统状态暂时读不到', { exact: true }).count(), 0)

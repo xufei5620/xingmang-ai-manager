@@ -59,9 +59,9 @@ describe('account center spend bars', () => {
 
 describe('account center wording', () => {
   it('says how long the balance lasts the way the home page does', () => {
-    expect(runwayDaysText(12)).toBe('按最近用量约还能用 12 天')
-    expect(runwayDaysText(0)).toBe('按最近用量不到 1 天就会用完')
-    expect(runwayDaysText(400)).toBe('按最近用量够用一年以上')
+    expect(runwayDaysText(12)).toBe('按近期用量预计可用 12 天')
+    expect(runwayDaysText(0)).toBe('按近期用量预计不足 1 天')
+    expect(runwayDaysText(400)).toBe('按近期用量可用一年以上')
   })
 
   it('adds the year only to dates outside this year', () => {

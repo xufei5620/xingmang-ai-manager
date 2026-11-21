@@ -307,7 +307,7 @@ test('v2 home places clients in installed ToolRows and saves and opens through t
         assert.deepEqual(opened.args, [tool])
       }
       await page.locator('.v2-statusbar').getByText('已装 6 个工具', { exact: true }).waitFor()
-      await page.getByTestId('home-your-tools').getByText('已装 6 个', { exact: true }).waitFor()
+      await page.getByTestId('home-your-tools').getByText('已安装 6 个', { exact: true }).waitFor()
       // 「N 个已连接」那句 v4 没有了：连上当前账号的每张卡片左下角写「当前账号」。
       for (const tool of ['workbuddy', 'claudeDesktop', 'opencode']) assert.equal(await page.getByTestId(`tool-${tool}-source`).innerText(), '当前账号')
       assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'revealApiKey' || entry.method === 'revealAccountKey')), false)
@@ -630,7 +630,7 @@ test('a background recheck that fails after opening a desktop client keeps the l
   try {
     const row = page.getByTestId('tool-row-workbuddy')
     const opener = page.getByTestId('tool-workbuddy-primary')
-    const unread = page.getByRole('alert').filter({ hasText: '客户端状态暂未读到' })
+    const unread = page.getByRole('alert').filter({ hasText: '无法获取客户端状态' })
     await row.getByTestId('tool-workbuddy-source').waitFor()
     await expect(opener).toBeEnabled()
     const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
@@ -830,7 +830,7 @@ test('a failed first desktop client scan takes the last saved rows down instead 
     const row = page.getByTestId('tool-row-workbuddy')
     await row.getByText('v0.9.0 · cached-model', { exact: true }).waitFor()
     await page.evaluate(() => { window.v2Test.fail = 'scanExternalClients'; window.v2Test.releaseScan() })
-    await page.getByRole('alert').filter({ hasText: '客户端状态暂未读到' }).waitFor()
+    await page.getByRole('alert').filter({ hasText: '无法获取客户端状态' }).waitFor()
     assert.equal(await row.count(), 0)
     assert.equal(await page.getByTestId('home-external-detecting').count(), 0)
     await clean(page)
@@ -1092,7 +1092,7 @@ test('Codex non-GPT menu requires a detected non-GPT model before saving', async
   try {
     const row = page.getByTestId('tool-row-codex')
     await row.waitFor()
-    assert.equal(await row.getByRole('button', { name: '换用别家模型', exact: true }).count(), 0)
+    assert.equal(await row.getByRole('button', { name: '切换模型服务', exact: true }).count(), 0)
     await row.getByRole('button', { name: 'Codex CLI 更多操作', exact: true }).click()
     await page.getByTestId('home-codex-models').click()
     // UI v4: its own small dialog, not the whole configuration with a filter.
@@ -1116,7 +1116,7 @@ test('Codex non-GPT menu requires a detected non-GPT model before saving', async
   } finally { await page.close() }
 })
 
-// #1154 附录：服务状态文件改了 Codex 默认，「换用别家模型」里那条「Codex 默认」也跟着换，不再只认程序自带的。
+// #1154 附录：服务状态文件改了 Codex 默认，「切换模型服务」里那条「Codex 默认」也跟着换，不再只认程序自带的。
 test('Codex non-GPT menu offers the published Codex default as the way back', async () => {
   const page = await open('clientModels=1&cliModelHints=1')
   try {
@@ -1519,7 +1519,7 @@ test('the home recent card offers no resume for a tool that is not installed (�
     assert.equal(await codex.locator('.v2-home-recent-dir').innerText(), 'Codex CLI · desk-app')
     assert.equal(await page.getByTestId('home-recent-open-directory-codex:9').count(), 1)
     assert.equal(await page.getByTestId('home-recent-install-codex:9').innerText(), '先安装')
-    assert.equal(await page.getByTestId('home-recent-install-codex:9').getAttribute('title'), '要先装好 Codex CLI')
+    assert.equal(await page.getByTestId('home-recent-install-codex:9').getAttribute('title'), '请先安装 Codex CLI')
 
     // 装上 Claude Code（星芒先替客户准备好 Node.js）：它那条的按钮回来，Codex 那条照旧没有。
     await page.getByTestId('tool-claude-primary').click()
@@ -1590,7 +1590,7 @@ test('a summary-only record still opens, says only the summary is left and offer
   } finally { await page.close() }
 })
 
-// 「可以试试」整行可点：右边的小箭头不接点击，点在它上面落到整行那颗按钮上。
+// 「推荐功能」整行可点：右边的小箭头不接点击，点在它上面落到整行那颗按钮上。
 test('the arrow of a home suggestion still opens the row', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {
@@ -1606,7 +1606,7 @@ test('the arrow of a home suggestion still opens the row', async () => {
     // 「最近」里已经有 Codex 的记录：不再出「第一次用 Codex？」。
     await page.getByTestId('home-recent-row-claude:1').waitFor()
     assert.equal(await page.getByTestId('home-suggestion-codex').count(), 0)
-    // 小箭头本身不接点击，鼠标点在它的位置上，落到的是整行那颗按钮。v4 首页「可以试试」在页面下半截，先滚过去。
+    // 小箭头本身不接点击，鼠标点在它的位置上，落到的是整行那颗按钮。v4 首页「推荐功能」在页面下半截，先滚过去。
     await page.getByTestId('home-suggestion-mcp').scrollIntoViewIfNeeded()
     const arrow = await page.getByTestId('home-suggestion-mcp').locator('.xm-row-actions svg').boundingBox()
     assert.ok(arrow, 'the arrow is on the row')
@@ -1744,10 +1744,10 @@ test('the home recent card opens a record folder and says so when it cannot', as
   try {
     const button = page.getByTestId('home-recent-open-directory-claude:1')
     await button.waitFor()
-    assert.equal(await button.getAttribute('title'), '在文件管理器里打开 C:\\work\\my-app')
+    assert.equal(await button.getAttribute('title'), '在文件管理器中打开 C:\\work\\my-app')
     assert.equal(await page.getByTestId('home-recent-open-directory-claude:2').isDisabled(), true)
 
-    // 打不开时只提示一句,不把整张卡打回「记录暂时没有读到」。
+    // 打不开时只提示一句,不把整张卡打回「记录加载失败」。
     await page.evaluate(() => { window.v2Test.fail = 'openProviderSessionDirectory'; window.v2Test.failMessage = '这条记录的文件夹已经不在了。' })
     await button.click()
     await page.getByText('这条记录的文件夹已经不在了。').waitFor()
@@ -2169,11 +2169,11 @@ test('an extension action that fails after leaving its entry still says so on th
 test('a reminder setting fixed on startup is announced once and leaves the card line alone', async () => {
   const page = await open('desktopOnly=1&hooksAutoRepaired=codex')
   try {
-    const text = 'Codex 里「做完弹通知」的设置之前记着旧地址，已经自动改好了，不用管。原来的那份备份在「设置 › 备份迁移」里。'
+    const text = '已自动修复 Codex 的「完成通知」设置，原设置已备份至「设置 › 备份迁移」。'
     await waitForToast(page, text)
     const card = page.getByTestId('tool-row-codexDesktop')
     await expect(card).toContainText('v1.2.3')
-    await expect(card).not.toContainText('自动改好')
+    await expect(card).not.toContainText('自动修复')
     await page.getByTestId('nav-settings').click()
     await page.getByTestId('nav-home').click()
     await expect(page.getByTestId('tool-row-codexDesktop')).toContainText('v1.2.3')
@@ -2432,7 +2432,7 @@ test('home shows the last usage right away instead of asking the account backend
   const usageReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountUsage').length)
   const usageLine = page.getByTestId('home-balance-days')
   try {
-    await expect(usageLine).toContainText('约还能用')
+    await expect(usageLine).toContainText('按近期用量预计可用')
     // 本月、最近 7 天各一次；开发模式的 StrictMode 挂载两遍也只落到这一次。
     assert.equal(await usageReads(), 2)
 
@@ -2445,14 +2445,14 @@ test('home shows the last usage right away instead of asking the account backend
     })
     await page.getByTestId('nav-sessions').click()
     await page.getByTestId('nav-home').click()
-    await expect(usageLine).toContainText('约还能用')
+    await expect(usageLine).toContainText('按近期用量预计可用')
     assert.equal(await page.evaluate(() => window.__usageBlank), false)
     assert.equal(await usageReads(), 2)
     await clean(page)
   } finally { await page.close() }
 })
 
-// F3：一直停在首页时，「近 7 天花费」和靠它算的「约还能用 N 天」以前一直是进首页那一刻的数，点余额旁边的刷新也只刷余额。
+// F3：一直停在首页时，「近 7 天花费」和靠它算的「预计可用 N 天」以前一直是进首页那一刻的数，点余额旁边的刷新也只刷余额。
 // 现在点刷新马上跟着重读；余额每读到一次也再要一次，一分钟的缓存照旧挡着。重读时手上的数不先清空，卡片不闪。时钟停着。
 test('the balance card re-reads usage and the last 7 days along with the balance while home stays open', async () => {
   const page = await open('allInstalled=1', true)
@@ -2460,7 +2460,7 @@ test('the balance card re-reads usage and the last 7 days along with the balance
   const days = page.getByTestId('home-balance-days')
   const weekTotal = page.locator('[data-testid="home-week-spend"] .v2-home-week-head > b')
   try {
-    await expect(days).toHaveText('按最近用量约还能用 43 天')
+    await expect(days).toHaveText('按近期用量预计可用 43 天')
     const before = await weekTotal.innerText()
     assert.equal(await usageReads(), 2)
     await page.evaluate(() => {
@@ -2474,7 +2474,7 @@ test('the balance card re-reads usage and the last 7 days along with the balance
     // 一个下午花掉 $70：点余额旁边的刷新，用量、近 7 天跟着余额一起重读，不认一分钟的缓存。
     await page.evaluate(() => window.v2Test.addSpend(35_000_000))
     await page.getByTestId('home-balance-refresh').click()
-    await expect(days).toHaveText('按最近用量约还能用 1 天')
+    await expect(days).toHaveText('按近期用量预计可用 1 天')
     await expect(weekTotal).not.toHaveText(before)
     assert.equal(await usageReads(), 4)
     // 刷新带回来的那次余额不再多问：一分钟内的用量直接用。
@@ -2486,18 +2486,18 @@ test('the balance card re-reads usage and the last 7 days along with the balance
     await page.evaluate(() => window.v2Test.addSpend(35_000_000))
     await page.clock.fastForward(61_000)
     await page.evaluate(() => window.dispatchEvent(new Event('focus')))
-    await expect(days).toHaveText('按最近用量不到 1 天就会用完')
+    await expect(days).toHaveText('按近期用量预计不足 1 天')
     await expect(weekTotal).not.toHaveText(afterClick)
     assert.equal(await usageReads(), 6)
 
-    // 点了刷新、用量这回没读到：卡片上已经有的数照旧留着，不换成「用量暂未读到」。
+    // 点了刷新、用量这回没读到：卡片上已经有的数照旧留着，不换成「用量暂未获取」。
     await page.evaluate(() => { window.v2Test.fail = 'getAccountUsage' })
     await page.getByTestId('home-balance-refresh').click()
     await expect.poll(usageReads).toBeGreaterThan(6)
     await expect(page.getByTestId('home-balance-refresh')).toBeEnabled()
     // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
     await page.waitForTimeout(100)
-    await expect(days).toHaveText('按最近用量不到 1 天就会用完')
+    await expect(days).toHaveText('按近期用量预计不足 1 天')
     assert.equal(await page.evaluate(() => window.__usageBlank), false)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await clean(page)
@@ -2537,7 +2537,7 @@ test('a balance re-read that changes nothing redraws the balance spots, not the 
   const page = await open('allInstalled=1', true, countRendersBeforeReact)
   const balanceReads = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getAccountBalance').length)
   try {
-    await expect(page.getByTestId('home-balance-days')).toHaveText('按最近用量约还能用 43 天')
+    await expect(page.getByTestId('home-balance-days')).toHaveText('按近期用量预计可用 43 天')
     await expect(page.getByTestId('home-balance-refresh')).toBeEnabled()
     const reads = await balanceReads()
     await page.evaluate(() => { for (const name of Object.keys(window.__renders)) delete window.__renders[name] })
@@ -2553,7 +2553,7 @@ test('a balance re-read that changes nothing redraws the balance spots, not the 
     assert.ok((renders.HomeBalanceCard ?? 0) >= 1, seen)
     assert.ok((renders.Shell ?? 0) >= 1, seen)
     for (const name of ['RuntimeApp', 'Home', 'ToolCard', 'StartGuide']) assert.equal(renders[name] ?? 0, 0, `${name} redrew: ${seen}`)
-    await expect(page.getByTestId('home-balance-days')).toHaveText('按最近用量约还能用 43 天')
+    await expect(page.getByTestId('home-balance-days')).toHaveText('按近期用量预计可用 43 天')
     await clean(page)
   } finally { await page.close() }
 })
@@ -2840,7 +2840,7 @@ test('a folder picked for one CLI opens the others there without asking again', 
 })
 
 // D45（新手流程 N4）：新建的项目文件夹是空的，问「介绍一下这个项目」只会换来「这里什么都没有」。
-// 「打开」会替他新建、或者记着的正是那个还空着的文件夹时，「试试第一条命令」那句换成让它动手做点东西。
+// 「打开」会替他新建、或者记着的正是那个还空着的文件夹时，「运行第一条命令」那句换成让它动手做点东西。
 test('the first-run card asks for a small web page while the folder is the empty one the app made (D45)', async () => {
   const page = await open('launchRemembers=1')
   try {
@@ -3943,7 +3943,7 @@ test('an edited configuration says so on the row and can be written back on requ
   try {
     const row = page.getByTestId('tool-row-claude')
     await row.getByText('配置被改过').waitFor()
-    await row.getByText('配置被别的程序改过，没在用当前账号的密钥', { exact: true }).waitFor()
+    await row.getByText('配置已被其他程序修改，未使用当前账号的密钥', { exact: true }).waitFor()
     // 开机那轮自动同步不许碰它：提示归提示，改写要等用户点。
     const before = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'configureManagedCliKeys').map(entry => entry.args[0]))
     assert.ok(before.every(input => !input.providers.includes('claude')))
@@ -4694,7 +4694,7 @@ test('the all-done key line on home goes away by itself after the toast reading 
   try {
     await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
     await page.getByTestId('tool-grok-primary').click()
-    const done = page.getByTestId('home-bootstrap-done').filter({ hasText: '已给 Grok CLI 配好密钥，可以直接用了' })
+    const done = page.getByTestId('home-bootstrap-done').filter({ hasText: '已为 Grok CLI 配置密钥，可直接使用' })
     await done.waitFor()
     // 19 个字：2400 + 7 × 200 毫秒。
     await done.waitFor({ state: 'detached', timeout: 10_000 })
@@ -4905,7 +4905,7 @@ test('read-only account matches switch only explicitly selected CLI providers on
     ])
     await page.getByTestId('nav-home').click()
     for (const tool of ['claude', 'codex', 'codexDesktop']) await connectedBadge(page, tool).waitFor()
-    // 没勾的那个还是上一个账号的 Key：能用，但要提醒用量可能算到别的账号上（方案盘查第 10 条）。
+    // 没勾的那个还是上一个账号的 Key：能用，但要提醒用量可能计入其他账号（方案盘查第 10 条）。
     for (const tool of ['grok']) await page.getByTestId(`tool-row-${tool}`).getByText('密钥待确认', { exact: true }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some(entry => ['saveConfig', 'saveConfigWithAccountKey', 'revealApiKey', 'revealAccountKey'].includes(entry.method))), false)
     await clean(page)
@@ -7015,7 +7015,7 @@ test('a Codex config Codex cannot read is reset from either Codex row on the cur
       const row = page.getByTestId(`tool-row-${tool}`)
       await row.getByText('配置坏了', { exact: true }).waitFor()
       await row.getByText('Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留', { exact: true }).waitFor()
-      assert.equal(await page.getByTestId(`tool-${tool}-repair-config`).getAttribute('title'), '改之前会先备份原来的设置')
+      assert.equal(await page.getByTestId(`tool-${tool}-repair-config`).getAttribute('title'), '修改前将自动备份原设置')
     }
     assert.equal(await page.getByText('待连接', { exact: true }).count(), 0)
     await page.getByTestId('tool-codexDesktop-repair-config').click()
@@ -8184,7 +8184,7 @@ test('the last home tool card lands on the addresses for other apps, each copied
         })
       })
       const tile = page.getByTestId('home-tools-request')
-      await expect(tile).toContainText('看看怎么用在别的软件里')
+      await expect(tile).toContainText('查看如何在其他软件中使用')
       await tile.click()
       const card = page.getByTestId('account-other-apps')
       await expect(card).toBeInViewport()
@@ -10801,7 +10801,7 @@ test('startup configuration failure opens the signed-in toolbox without issuing 
     await page.getByTestId('page-home').waitFor()
     const failure = page.getByTestId('home-config-failure')
     await failure.waitFor()
-    assert.match(await failure.innerText(), /^工具配置暂未读到（本地测试操作失败）。工具列表、安装和卸载照常可用；点工具卡片上的「重新配置」可以重新写入。/)
+    assert.match(await failure.innerText(), /^无法读取工具配置（本地测试操作失败）。工具列表、安装和卸载不受影响，可点击工具卡片上的「重新配置」重新写入。/)
     assert.equal(await page.getByTestId('tool-row-codex').getByText('未安装', { exact: true }).count(), 0)
     const written = await page.evaluate(() => window.v2Test.calls.filter((entry) => ['syncManagedCliKeys', 'configureManagedCliKeys', 'saveConfig', 'saveConfigWithAccountKey', 'createAccountKey', 'switchAccountSource'].includes(entry.method)))
     assert.deepEqual(written, [])

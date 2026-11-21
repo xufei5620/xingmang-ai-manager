@@ -76,11 +76,11 @@ export function balanceRunwayEmpty(runway: BalanceRunway | null): runway is Bala
 /** 账号卡上那行小字；天数算不出来时为 null，那一行留给别的说明。 */
 export function balanceRunwayText(runway: BalanceRunway | null): string | null {
   if (!runway || runway.days === null) return null
-  if (balanceRunwayEmpty(runway)) return '余额已经用完，充值后才能用'
-  const lead = runway.low ? '余额不多了，' : '按最近用量，'
-  if (runway.days > 365) return `${lead}够用一年以上`
-  if (runway.days < 1) return `${lead}不到 1 天就会用完`
-  return `${lead}约还能用 ${runway.days} 天`
+  if (balanceRunwayEmpty(runway)) return '余额已用尽，请充值后使用'
+  const lead = runway.low ? '余额不足，' : '按近期用量，'
+  if (runway.days > 365) return `${lead}可用一年以上`
+  if (runway.days < 1) return `${lead}预计不足 1 天`
+  return `${lead}预计可用 ${runway.days} 天`
 }
 
 /** 进度条宽度（百分比）：30 天算满，再少也留一点，看得出是条进度条。 */

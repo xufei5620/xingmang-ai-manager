@@ -61,7 +61,7 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 
 ## 4. Electron 二进制装不上时
 
-11-11 `node scripts/ci-ensure-electron-binary.cjs` 一次成功。它以前在容器里经代理失败过（报 undici 的 `AssertionError: assert(!this.paused)`，重试也一样）。再碰到时，用 curl 把压缩包下到 Electron 的缓存里，再让安装脚本接着装（沿用 10-03，11-11 没重演）：
+11-11 `node scripts/ci-ensure-electron-binary.cjs` 一次成功。它以前在容器里经代理失败过（报 undici 的 `AssertionError: assert(!this.paused)`，重试也一样）。再碰到时，用 curl 把压缩包下到 Electron 的缓存里，再让安装脚本接着装（沿用 10-03，11-11 没重演；11-21 又报了两次，脚本自己的第 3 次重试成功，先等它重试完再走下面这条）：
 
 ```bash
 V=$(node -p "require('./node_modules/electron/package.json').version")
