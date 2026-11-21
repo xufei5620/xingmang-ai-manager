@@ -12,7 +12,7 @@ const electronMocks = vi.hoisted(() => ({
   onHandlers: new Map<string, (...args: unknown[]) => unknown>(),
   removeHandler: vi.fn(),
   removeAllListeners: vi.fn(),
-  showSaveDialog: vi.fn(async () => ({ canceled: true, filePath: undefined })),
+  showSaveDialog: vi.fn<(...args: unknown[]) => Promise<{ canceled: boolean; filePath: string | undefined }>>(async () => ({ canceled: true, filePath: undefined })),
   showOpenDialog: vi.fn<() => Promise<{ canceled: boolean; filePaths: string[] }>>(async () => ({ canceled: true, filePaths: [] })),
   showMessageBox: vi.fn<(...args: unknown[]) => Promise<{ response: number; checkboxChecked: boolean }>>(async () => ({ response: 1, checkboxChecked: false })),
   browserWindowFromWebContents: vi.fn(() => undefined),
@@ -112,7 +112,7 @@ vi.mock('electron', () => ({
   webContents: { getAllWebContents: () => electronMocks.allWebContents ?? [electronMocks.latestWebContents] },
 }))
 
-import { buildCanvasProjectPackage } from './canvas-project-package'
+import { buildCanvasProjectPackage, parseCanvasProjectPackage } from './canvas-project-package'
 import { canvasHostChannels } from './canvas-contract'
 import {
   canvasHostCancelRequestChannel,
@@ -1798,6 +1798,40 @@ describe('createCanvasWindowController', () => {
     expect(lastSaveDialogPath()).toBe('xingmang-project.xingcanvas')
     await handler(trustedEvent(), '..', '{}')
     expect(lastSaveDialogPath()).toBe('xingmang-project.xingcanvas')
+  })
+
+  // #1368 第 14 条：原来先把项目里的图全读进内存才弹保存框，图多的项目点了「导出」半天没反应。
+  it('asks where to save a project export before reading any picture', async () => {
+    const assetId = 'E'.repeat(43)
+    const order: string[] = []
+    const readOwned = vi.fn(async () => {
+      order.push('read')
+      return { asset: { assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png', fileName: `xingmang-${assetId}.png` }, bytes: projectPng }
+    })
+    electronMocks.showSaveDialog.mockImplementation(async () => {
+      order.push('dialog')
+      return { canceled: true, filePath: undefined }
+    })
+    const controller = createCanvasWindowController(controllerOptions({
+      aiAssets: { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwned: vi.fn(async () => []), readOwned, storeBase64: vi.fn(), removeOwned: vi.fn() } as never,
+    }))
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostExportProjectChannel)!
+
+    // Cancelling reads nothing at all.
+    await expect(handler(trustedEvent(), 'xingmang-project.xingcanvas', projectWorkflow([assetId]))).resolves.toBeNull()
+    expect(order).toEqual(['dialog'])
+    expect(readOwned).not.toHaveBeenCalled()
+
+    const target = path.join(temporaryDirectory(), '导出.xingcanvas')
+    electronMocks.showSaveDialog.mockImplementation(async () => {
+      order.push('dialog')
+      return { canceled: false, filePath: target }
+    })
+    await expect(handler(trustedEvent(), 'xingmang-project.xingcanvas', projectWorkflow([assetId]))).resolves.toEqual({ savedPath: target })
+    expect(order).toEqual(['dialog', 'dialog', 'read'])
+    expect(readOwned).toHaveBeenCalledWith(7, assetId)
+    expect(parseCanvasProjectPackage(fs.readFileSync(target, 'utf8')).assets).toHaveLength(1)
   })
 
   it('never lets the canvas aim a project export at a startup directory', async () => {

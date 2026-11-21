@@ -173,7 +173,7 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   { key: 'folderRelocated', match: (message) => /不能经过符号链接或目录联接/.test(message) },
   // Windows 授权窗口点了「否」、或者这个账号拿不到管理员权限（windows-elevation.ts 那两句，装 Node.js、
   // Codex 桌面端、Claude Desktop 都会说）。以前认不出，一长串原话配「操作没有完成」。那句话后半截已经按
-  // 账号类型写好下一步（普通账号要输管理员账号的密码、公司电脑找 IT），这里只给标题和按钮（#1096）。
+  // 账号类型写好下一步（普通账号换个管理员账号去装、公司电脑找管理电脑的人），这里只给标题和按钮（#1096）。
   // 标题不能是原话里的一段，否则 presentOperationError 当它已经说过、不出提示。
   { key: 'elevationDeclined', match: (message) => /已取消管理员授权|未获得管理员权限/.test(message) },
   { key: 'permission', match: (message) => /EPERM|EACCES|operation not permitted|permission denied|UnauthorizedAccess|access to the path\b.*\bis denied|拒绝访问|访问被拒绝|权限不足|需要管理员/i.test(message) },

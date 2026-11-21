@@ -122,7 +122,7 @@ import { buildOutputImageNodes, nodeOutputImageIds, type OutputImageSelection } 
 import { createOutputImagePlacementCoordinator, type OutputImagePlacementToken } from './runtime/output-image-placement'
 import { verifyOutputImageReadable } from './library/output-image-readiness'
 import { canvasAriaLabelConfig } from './aria-labels'
-import { canvasEdgeClassName, canvasEdgeIsFlowing, canvasEdgeTouchesSelection } from './edges/workflow-edge-model'
+import { canvasRenderedEdges } from './edges/workflow-edge-model'
 import { CanvasEdgeHandlersProvider, defaultEdgeOptions, edgeTypes } from './edges/WorkflowEdge'
 import { CanvasContextMenu, type CanvasContextMenuState } from './components/CanvasContextMenu'
 import { CanvasShortcutHelp } from './components/CanvasShortcutHelp'
@@ -234,7 +234,7 @@ import { createBlankProjectForHost } from './persistence/host-project-create'
 import { closeProjectForHost } from './persistence/host-project-close'
 import { canvasCapabilities, canvasNodeKindAvailable } from './host-capabilities'
 import { canvasHostEntryPoints, withoutUnavailableNodeEntries } from './host-entry-points'
-import { workflowExportedNotice, workflowSavedNotice } from './editor/workflow-file-notices'
+import { workflowExportedNotice, workflowHasVideoOrAudio, workflowSavedNotice } from './editor/workflow-file-notices'
 import { useCanvasAgentMediaCatalog } from './components/use-canvas-agent-media-catalog'
 import { agentPlanFocusViewport, buildCanvasAgentContextNode } from './components/canvas-agent-context'
 import type { CanvasAgentContextRequest } from './components/canvas-agent-panel-state'
@@ -2950,10 +2950,15 @@ function CanvasWorkspace({
     } catch (cause) { if (current()) setBanner(cause instanceof Error ? cause.message : '产物保存失败，请稍后重试') }
   }, [getGraphSnapshot])
 
-  const showNodeAssetMenu = useCallback(async (nodeId: string) => {
+  // 素材已删、账号换了这类情况宿主会说明打不开的原因（桌面 #1368 第 14 条），原来没接住，点了没反应。
+  const showAssetMenu = useCallback((assetId: string) => {
+    void hostBridge().showAssetMenu(assetId).catch((cause) => setBanner(cause instanceof Error && cause.message ? cause.message : '素材菜单没打开，请稍后再试'))
+  }, [])
+
+  const showNodeAssetMenu = useCallback((nodeId: string) => {
     const assetId = nodes.find((entry) => entry.id === nodeId)?.data.result?.assetId
-    if (assetId) await hostBridge().showAssetMenu(assetId)
-  }, [nodes])
+    if (assetId) showAssetMenu(assetId)
+  }, [nodes, showAssetMenu])
 
   const currentAssetLibraryScope = useCallback(() => JSON.stringify([layerEditorOwnerRef.current.ownerId, layerEditorOwnerRef.current.accountId, activeProjectIdRef.current, projectEpochRef.current]), [])
 
@@ -4650,10 +4655,10 @@ function CanvasWorkspace({
       onRunFromNode: runFromNode,
       onDeleteNode: (nodeId) => deleteNodesBridging([nodeId]),
       onDownloadAsset: (nodeId) => void downloadNodeAsset(nodeId),
-      onShowAssetMenu: (nodeId) => void showNodeAssetMenu(nodeId),
+      onShowAssetMenu: showNodeAssetMenu,
       onResumeTask: (nodeId) => void resumeTask(nodeId),
       onSelectCandidate: useCandidate,
-      onShowCandidateMenu: (assetId) => void hostBridge().showAssetMenu(assetId),
+      onShowCandidateMenu: showAssetMenu,
       onBindAsset: (nodeId, assetId) => {
         const asset = assetPage.items.find((entry) => entry.assetId === assetId)
         if (asset) bindAssetToNode(nodeId, asset)
@@ -4705,7 +4710,7 @@ function CanvasWorkspace({
         edges,
       }),
     }, hostEntryPoints))
-  }, [nodes, edges, execute, getGraphSnapshot, running, refreshAssets, assetQuery, applyPromptDraft, markDirtyFrom, savePromptPreset, textNodeAction, rerunNode, runFromNode, deleteNodesBridging, downloadNodeAsset, showNodeAssetMenu, resumeTask, useCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode, changeTileSettings, downloadTileSource, placeNodeOutput, placeVideoCandidate, requestNodeScopeRun, openFrameSelection, changeNodeModelSource, changeVideoParameters, changeVideoCandidateCount, changeVideoReferenceOrder, removeVideoReference, openCommerceEdit, openInteriorEdit, openExteriorEdit, openStoryboardEdit, compareCommerceCandidates, hostEntryPoints.imageAnnotation, hostEntryPoints.videoFrames])
+  }, [nodes, edges, execute, getGraphSnapshot, running, refreshAssets, assetQuery, applyPromptDraft, markDirtyFrom, savePromptPreset, textNodeAction, rerunNode, runFromNode, deleteNodesBridging, downloadNodeAsset, showNodeAssetMenu, showAssetMenu, resumeTask, useCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode, changeTileSettings, downloadTileSource, placeNodeOutput, placeVideoCandidate, requestNodeScopeRun, openFrameSelection, changeNodeModelSource, changeVideoParameters, changeVideoCandidateCount, changeVideoReferenceOrder, removeVideoReference, openCommerceEdit, openInteriorEdit, openExteriorEdit, openStoryboardEdit, compareCommerceCandidates, hostEntryPoints.imageAnnotation, hostEntryPoints.videoFrames])
 
   const createNode = (type: string, position?: XYPosition, config: Record<string, unknown> = {}): CanvasNode | null => {
     const kind = type as NodeKind
@@ -6466,25 +6471,13 @@ function CanvasWorkspace({
 
   const selectedNodes = nodes.filter((node) => node.selected)
   const selectedNodeIds = selectedNodes.map((node) => node.id)
-  const renderedEdges = useMemo(() => {
-    const selected = new Set(selectedNodeIds)
-    return edges.map((edge) => {
-      const flowing = canvasEdgeTouchesSelection(edge, selected)
-      const className = canvasEdgeClassName({
-        dropTarget: edge.id === edgeDropTargetId,
-        flowing,
-      })
-      const currentFlowing = canvasEdgeIsFlowing(edge.data)
-      const hidden = uiPreferences.connectionsHidden === true
-      if (className === edge.className && currentFlowing === flowing && edge.hidden === hidden) return edge
-      return {
-        ...edge,
-        hidden,
-        className,
-        data: { ...(edge.data && typeof edge.data === 'object' ? edge.data : {}), flowing },
-      }
-    })
-  }, [edgeDropTargetId, edges, selectedNodeIds, uiPreferences.connectionsHidden])
+  // A new id array every render; the key keeps the memo from re-running per drag frame.
+  const selectedNodeKey = JSON.stringify(selectedNodeIds)
+  const renderedEdges = useMemo(() => canvasRenderedEdges(edges, {
+    selectedNodeIds: new Set(JSON.parse(selectedNodeKey) as string[]),
+    dropTargetId: edgeDropTargetId,
+    hidden: uiPreferences.connectionsHidden === true,
+  }), [edgeDropTargetId, edges, selectedNodeKey, uiPreferences.connectionsHidden])
   const allSelectedLocked = selectedNodes.length > 0 && selectedNodes.every((node) => node.draggable === false)
   const selectedDisableEligibleNodes = selectedNodes.filter(isCanvasGraphNode)
   const selectedDisableEligibleIds = selectedDisableEligibleNodes.map((node) => node.id)
@@ -8013,7 +8006,7 @@ function CanvasWorkspace({
     try {
       const workflow = workflowSnapshot()
       const result = await hostBridge().exportProject('xingmang-project.xingcanvas', serializeWorkflow(workflow), activeProject ? { projectId: activeProject.id } : undefined)
-      if (result) setBanner(workflowSavedNotice(canvasCapabilities().host))
+      if (result) setBanner(workflowSavedNotice(canvasCapabilities().host, workflowHasVideoOrAudio(workflow)))
     } catch (error) {
       setBanner(`工作流保存失败：${error instanceof Error ? error.message : String(error)}`)
     }
@@ -8045,7 +8038,7 @@ function CanvasWorkspace({
       const result = window.xingmangCanvasHost
         ? await hostBridge().exportProject('xingmang-project.xingcanvas', serializeWorkflow(workflow), activeProject ? { projectId: activeProject.id } : undefined)
         : await hostBridge().saveFile('xingmang-project.xingcanvas', serializeWorkflow(workflow))
-      if (result) setBanner(workflowExportedNotice(canvasCapabilities().host))
+      if (result) setBanner(workflowExportedNotice(canvasCapabilities().host, workflowHasVideoOrAudio(workflow)))
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     }
@@ -8399,7 +8392,10 @@ function CanvasWorkspace({
   const serverBacked = Boolean(window.xingmangCanvasHost)
   const visiblePendingMediaKinds = [...new Set([...pendingMediaKinds, ...currentPendingMediaKinds()])]
   let activeRunHasPendingMedia = false
-  if (serverBacked && !activeRunOption.disabled) {
+  // Only a source still being read can make this true, and the preflight walks
+  // the whole graph on every render, drag frames included (#1368 item 5).
+  const runPendingMediaKinds = currentPendingMediaKinds()
+  if (serverBacked && !activeRunOption.disabled && runPendingMediaKinds.length > 0) {
     try {
       const scope = currentRunScope()
       const preflight = buildCanvasRunPreflight({ capabilities: canvasCapabilities(), sourceCatalog: nodeSourceCatalogRef.current,
@@ -8409,7 +8405,7 @@ function CanvasWorkspace({
         imageModels: mediaModelsRef.current.image, videoModels: mediaModelsRef.current.video, textModels: mediaModelsRef.current.text,
         nodeBlockReasons: dramaPreflightBlockReasons(nodes, edges),
       })
-      activeRunHasPendingMedia = pendingCanvasMediaRunKinds(preflight, currentPendingMediaKinds(), mediaGroupsRef.current).length > 0
+      activeRunHasPendingMedia = pendingCanvasMediaRunKinds(preflight, runPendingMediaKinds, mediaGroupsRef.current).length > 0
     } catch { /* The normal run preflight presents graph validation errors. */ }
   }
   const mediaConnectionLabel = projectAccessState?.denied ? '项目权限已撤销；已停止来源读取' : projectAccessState?.access?.canRun === false
@@ -9111,7 +9107,7 @@ function CanvasWorkspace({
         onRefreshPromptPresets={async () => { await promptCatalog.load(true); const error = promptCatalog.snapshot().error; if (error) throw new Error(error) }}
         onLoadTemplate={(templateId) => openTemplateCatalog(templateId)}
         onOpenAssets={showAssetTray}
-        onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
+        onAssetMenu={showAssetMenu}
         assets={assetPage}
         userPromptPresets={userPromptPresets}
         capabilities={canvasCapabilities()}
@@ -9496,7 +9492,7 @@ function CanvasWorkspace({
               batchScope={layerEditorScope}
               officialAccess={officialAssetAccess}
               readOnly={!projectCanEdit}
-              onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
+              onAssetMenu={showAssetMenu}
               onReadAssetOrigin={hostEntryPoints.assetOrigin ? readCanvasAssetOrigin : undefined}
               onReadDetail={readCanvasAssetDetail}
               onRename={directAssetMutations ? renameCanvasAssetDirectly : renameCanvasAsset}
@@ -9542,7 +9538,7 @@ function CanvasWorkspace({
               onDownloadMany={hostEntryPoints.batchDownload ? downloadAssetNodes : undefined}
               batchScope={layerEditorScope}
               onPreviewAsset={(asset) => setPreviewAsset({ ...asset })}
-              onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
+              onAssetMenu={showAssetMenu}
               onLocateNode={locateNode}
               nodeTitles={Object.fromEntries(nodes.map((node) => [node.id, typeof node.data.settings?.title === 'string' ? node.data.settings.title : builtinNodeRegistry.resolve(node.type ?? 'unknown')?.title ?? '']))}
               onRetryNode={(nodeId, scope) => { requestNodeScopeRun(nodeId, scope) }}
@@ -9584,7 +9580,7 @@ function CanvasWorkspace({
       <MediaLightbox
         asset={previewAsset}
         onClose={() => setPreviewAsset(null)}
-        onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
+        onAssetMenu={showAssetMenu}
       />
       {dramaParseConfirm && (
         <DramaParseConfirm
