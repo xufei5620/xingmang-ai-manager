@@ -10,10 +10,10 @@ describe('account read error presentation', () => {
   })
 
   it('keeps current-account failures actionable without transport internals', () => {
-    expect(formatAccountReadError(new Error("Error invoking remote method 'account:get-balance': RealmAccountError: 账号服务暂时无法连接"), 'balance')).toBe('余额暂时没有读到，请检查网络后重试。')
-    expect(formatAccountReadError(new Error('Failed to fetch'), 'session')).toBe('账号信息暂时没有读到，请检查网络后重试。')
-    expect(formatAccountReadError(new Error("Error invoking remote method 'account:get-session': Error: unexpected response"), 'session')).toBe('账号信息暂时没有读到，请稍后重试。')
-    expect(formatAccountReadError(null, 'balance')).toBe('余额暂时没有读到，请稍后重试。')
+    expect(formatAccountReadError(new Error("Error invoking remote method 'account:get-balance': RealmAccountError: 账号服务暂时无法连接"), 'balance')).toBe('余额获取失败，请检查网络后重试。')
+    expect(formatAccountReadError(new Error('Failed to fetch'), 'session')).toBe('账号信息获取失败，请检查网络后重试。')
+    expect(formatAccountReadError(new Error("Error invoking remote method 'account:get-session': Error: unexpected response"), 'session')).toBe('账号信息获取失败，请稍后重试。')
+    expect(formatAccountReadError(null, 'balance')).toBe('余额获取失败，请稍后重试。')
   })
 
   it('says the service is down rather than asking to check the network or log in again', () => {
@@ -39,25 +39,25 @@ describe('account read error presentation', () => {
     const balance = (text: string) => formatAccountReadError(new Error(`Error invoking remote method 'account:get-balance': ${text}`), 'balance')
     for (const reason of Object.keys(networkFailureMessages) as (keyof typeof networkFailureMessages)[]) {
       const message = balance(`NewApiNetworkError: ${networkFailureMessages[reason]}（余额请求失败）`)
-      expect(message).toBe(reason === 'serviceUnavailable' ? `余额暂时没有读到：${networkFailureMessages.serviceUnavailable}` : '余额暂时没有读到，请检查网络后重试。')
+      expect(message).toBe(reason === 'serviceUnavailable' ? `余额获取失败：${networkFailureMessages.serviceUnavailable}` : '余额获取失败，请检查网络后重试。')
     }
-    expect(balance('NewApiSessionChangedError: 账号已切换，本次请求结果已丢弃，请重试')).toBe('余额暂时没有读到，请稍后重试。')
-    expect(balance('NewApiCredentialPersistenceError: 登录凭据已更新，但安全存储保存失败，请重试')).toBe('余额暂时没有读到，请稍后重试。')
-    expect(balance('AccountSourceServiceUnavailableError: ' + networkFailureMessages.serviceUnavailable)).toBe(`余额暂时没有读到：${networkFailureMessages.serviceUnavailable}`)
-    expect(balance('RealmAccountError: 账号服务请求超时')).toBe('余额暂时没有读到，请检查网络后重试。')
-    expect(balance('RealmAccountError: 账号服务请求失败，请重试')).toBe('余额暂时没有读到，请稍后重试。')
+    expect(balance('NewApiSessionChangedError: 账号已切换，本次请求结果已丢弃，请重试')).toBe('余额获取失败，请稍后重试。')
+    expect(balance('NewApiCredentialPersistenceError: 登录凭据已更新，但安全存储保存失败，请重试')).toBe('余额获取失败，请稍后重试。')
+    expect(balance('AccountSourceServiceUnavailableError: ' + networkFailureMessages.serviceUnavailable)).toBe(`余额获取失败：${networkFailureMessages.serviceUnavailable}`)
+    expect(balance('RealmAccountError: 账号服务请求超时')).toBe('余额获取失败，请检查网络后重试。')
+    expect(balance('RealmAccountError: 账号服务请求失败，请重试')).toBe('余额获取失败，请稍后重试。')
     expect(balance('RealmAccountError: 登录已失效，请重新登录')).toBe('当前登录已失效，请重新登录。')
     expect(balance('RealmAccountError: 请先登录账号')).toBe('当前登录已失效，请重新登录。')
     expect(balance('RealmAccountError: 账号刚切换过，请再试一次')).toBeNull()
-    expect(balance('TypeError: fetch failed')).toBe('余额暂时没有读到，请检查网络后重试。')
-    expect(balance('AbortError: This operation was aborted')).toBe('余额暂时没有读到，请稍后重试。')
+    expect(balance('TypeError: fetch failed')).toBe('余额获取失败，请检查网络后重试。')
+    expect(balance('AbortError: This operation was aborted')).toBe('余额获取失败，请稍后重试。')
   })
 
   it('asks to check the network for every failure the main process already called a network one', () => {
     // 历史账号走 RealmAccountError，星芒账号走 NewApiNetworkError，「代理连不上」那句以前前者说「稍后重试」、
     // 后者说「检查网络」，差别只在类名里有没有 Network。剥掉类名以后两边都按句子认。
     for (const cls of ['RealmAccountError', 'NewApiNetworkError', 'Error']) {
-      expect(formatAccountReadError(new Error(`Error invoking remote method 'account:get-balance': ${cls}: ${networkFailureMessages.proxy}`), 'balance')).toBe('余额暂时没有读到，请检查网络后重试。')
+      expect(formatAccountReadError(new Error(`Error invoking remote method 'account:get-balance': ${cls}: ${networkFailureMessages.proxy}`), 'balance')).toBe('余额获取失败，请检查网络后重试。')
     }
   })
 

@@ -129,14 +129,14 @@ describe('logoutJobsNote', () => {
   })
 
   it('names what keeps installing, runtimes included, joined with the Chinese list comma', () => {
-    expect(logoutJobsNote({ claude: {} }, nameOf)).toBe('正在安装的 Claude Code 会继续装完。')
-    expect(logoutJobsNote({ claude: {}, node: {} }, nameOf)).toBe('正在安装的 Claude Code、Node.js 会继续装完。')
-    expect(logoutJobsNote({ codexDesktop: {} }, (key) => key === 'codexDesktop' ? 'Codex 桌面端' : undefined)).toBe('正在安装的 Codex 桌面端会继续装完。')
+    expect(logoutJobsNote({ claude: {} }, nameOf)).toBe('正在安装的 Claude Code 将继续完成安装。')
+    expect(logoutJobsNote({ claude: {}, node: {} }, nameOf)).toBe('正在安装的 Claude Code、Node.js 将继续完成安装。')
+    expect(logoutJobsNote({ codexDesktop: {} }, (key) => key === 'codexDesktop' ? 'Codex 桌面端' : undefined)).toBe('正在安装的 Codex 桌面端将继续完成安装。')
   })
 
   it('says uninstalls finish separately and skips keys it cannot name', () => {
     expect(logoutJobsNote({ claude: {}, workbuddy: { kind: 'uninstall' }, mystery: {} }, nameOf))
-      .toBe('正在安装的 Claude Code 会继续装完。正在卸载的 WorkBuddy 会继续卸完。')
+      .toBe('正在安装的 Claude Code 将继续完成安装。正在卸载的 WorkBuddy 将继续完成卸载。')
   })
 })
 

@@ -11,7 +11,7 @@ export function launchInstallSecondsLeft(installAt: number, now: number): number
 }
 
 export function launchInstallCountdownText(secondsLeft: number): string {
-  return secondsLeft > 0 ? `还有 ${secondsLeft} 秒开始安装。` : '正在开始安装，软件马上关掉。'
+  return secondsLeft > 0 ? `${secondsLeft} 秒后开始安装。` : '正在开始安装，软件即将关闭。'
 }
 
 /**

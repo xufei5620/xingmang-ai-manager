@@ -13,7 +13,7 @@ function shellProps() {
   return {
     activePage: 'home' as const,
     platform: 'win' as const,
-    account: { signedIn: true, displayName: '星芒用户', balance: '$3.00', balanceError: '余额暂时没有读到，请检查网络后重试。' },
+    account: { signedIn: true, displayName: '星芒用户', balance: '$3.00', balanceError: '余额获取失败，请检查网络后重试。' },
     adapter: {},
     children: null,
   }
@@ -29,7 +29,7 @@ describe('renderer-v2 offline banner', () => {
     const markup = withStatus({ offline: true }, createElement(OfflineBanner))
     expect(markup).toContain('data-testid="offline-banner"')
     // 中转和账号是同一个站点：本机连不上网时 Claude Code、Codex 一样连不上，不能叫客户照常去用。
-    expect(markup).toContain('现在连不上网。AI 工具、聊天、充值、安装和更新都要等网络恢复；装好的工具和设置都还在，不用重装。')
+    expect(markup).toContain('网络未连接。AI 工具、对话、充值、安装和更新需在网络恢复后使用；已安装的工具和设置均已保留，无需重新安装。')
     expect(markup).not.toContain('照常能用')
     expect(markup).toContain('data-testid="offline-banner-recheck"')
     expect(markup).toContain('>重试<')
@@ -40,7 +40,7 @@ describe('renderer-v2 offline banner', () => {
     const openNetworkSettings = vi.fn()
     const markup = withStatus({ offline: true, cause: 'proxy', openNetworkSettings }, createElement(OfflineBanner))
     expect(markup).toContain('data-cause="proxy"')
-    expect(markup).toContain('电脑里设置的代理连不上，所以现在上不了网。请重新打开你的代理软件，或者把系统代理关掉。')
+    expect(markup).toContain('系统代理无法连接，导致无法上网。请重新打开代理软件，或关闭系统代理。')
     // 「加速」是星芒已经下线的功能名，客户会以为是让他打开星芒自己的加速。
     expect(markup).not.toContain('加速')
     expect(markup).toContain('data-testid="offline-banner-proxy-settings"')
@@ -62,7 +62,7 @@ describe('renderer-v2 offline banner', () => {
 
   it('offers the sign-in page when the network wants a portal login first', () => {
     const markup = withStatus({ offline: true, cause: 'portal', openNetworkSettings() {} }, createElement(OfflineBanner))
-    expect(markup).toContain('这个网络要先登录认证（校园网、酒店、公共 Wi-Fi 常见）。')
+    expect(markup).toContain('当前网络需要登录认证（常见于校园网、酒店、公共 Wi-Fi）。')
     expect(markup).toContain('data-testid="offline-banner-portal"')
     expect(markup).toContain('打开认证页')
     expect(markup).not.toContain('打开系统代理设置')
@@ -71,7 +71,7 @@ describe('renderer-v2 offline banner', () => {
   it('explains the automatic direct connection once the broken proxy was bypassed', () => {
     const markup = withStatus({ offline: false, proxyBypassNotice: true, openNetworkSettings() {}, dismissProxyBypassNotice() {} }, createElement(OfflineBanner))
     expect(markup).toContain('data-testid="proxy-bypass-banner"')
-    expect(markup).toContain('电脑里设置的代理连不上，星芒已经改为直接联网，可以照常使用。浏览器等其他软件可能还上不了网，可以点右边去关掉代理。')
+    expect(markup).toContain('系统代理无法连接，星芒已改为直连，可正常使用。浏览器等其他软件可能仍无法上网，可点击右侧按钮关闭代理。')
     expect(markup).toContain('打开系统代理设置')
     expect(markup).toContain('data-testid="proxy-bypass-banner-dismiss"')
     expect(markup).toContain('知道了')
@@ -82,7 +82,7 @@ describe('renderer-v2 offline banner', () => {
     const offline = withStatus({ offline: true }, createElement(Shell, shellProps()))
     expect(offline).toContain('data-testid="offline-banner"')
     expect(offline.indexOf('offline-banner')).toBeLessThan(offline.indexOf('page-viewport'))
-    expect(offline).toContain('没网，稍后自动刷新')
+    expect(offline).toContain('网络未连接，恢复后将自动刷新')
     expect(offline).not.toContain('>更新失败<')
     const online = withStatus({ offline: false }, createElement(Shell, shellProps()))
     expect(online).not.toContain('offline-banner')

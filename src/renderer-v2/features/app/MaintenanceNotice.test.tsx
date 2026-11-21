@@ -6,9 +6,9 @@ import { StartupNotices } from './StartupNotices'
 describe('MaintenanceNotice', () => {
   it('always tells the user there is nothing to fix on their side', () => {
     expect(maintenanceNoticeBody({ message: '服务升级中，预计 22:00 恢复。' }))
-      .toBe('服务升级中，预计 22:00 恢复。 这不是你这边的问题，不用重新登录，也不用改任何设置，维护结束后会自动恢复。')
+      .toBe('服务升级中，预计 22:00 恢复。 此问题与本机无关，无需重新登录或修改设置，维护结束后将自动恢复。')
     expect(maintenanceNoticeBody({ message: null })).toContain('维护期间登录、余额和工具连接可能会失败。')
-    expect(maintenanceNoticeBody({ message: null })).toContain('不用重新登录')
+    expect(maintenanceNoticeBody({ message: null })).toContain('无需重新登录')
   })
 
   it('keys a dismissal to the wording, so a new message shows again', () => {

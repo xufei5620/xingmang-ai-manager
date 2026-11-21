@@ -121,20 +121,20 @@ describe('renderer-v2 sidebar account card', () => {
 
   it('writes a dash with a hint when the balance could not be read, and a placeholder while it is first read', () => {
     const unread = renderAccount({ signedIn: true, displayName: '星芒用户' })
-    expect(unread).toContain('title="余额暂时没有读到，点刷新再试"')
+    expect(unread).toContain('title="余额获取失败，请点击刷新重试"')
     expect(unread).toContain('>—</strong>')
     expect(unread).not.toContain('暂未读到</strong>')
     expect(renderAccount({ signedIn: true, displayName: '星芒用户', balanceLoading: true })).toContain('sidebar-balance-placeholder')
   })
 
   it('shows a blank spinning avatar and a placeholder amount while the saved login is restored', () => {
-    const restoring = renderAccount({ signedIn: false, displayName: '正在恢复登录', email: '网络慢时要多等一会儿', restoring: 'pending' })
+    const restoring = renderAccount({ signedIn: false, displayName: '正在恢复登录', email: '网络较慢时需稍候', restoring: 'pending' })
     expect(restoring).toContain('data-testid="sidebar-account-placeholder"')
     expect(restoring).toContain('xm-spin')
     expect(restoring).not.toContain('v2-local-avatar')
-    expect(restoring).toContain('网络慢时要多等一会儿')
+    expect(restoring).toContain('网络较慢时需稍候')
     expect(restoring).toContain('sidebar-balance-placeholder')
-    const retrying = renderAccount({ signedIn: false, displayName: '暂时连不上，登录还在', email: '稍后自动重试，不用重新登录', restoring: 'retrying' })
+    const retrying = renderAccount({ signedIn: false, displayName: '暂时无法连接，登录状态已保留', email: '将自动重试，无需重新登录', restoring: 'retrying' })
     expect(retrying).toContain('data-testid="sidebar-account-placeholder"')
     expect(retrying).not.toContain('xm-spin')
   })
@@ -256,7 +256,7 @@ describe('renderer-v2 v4 status bar', () => {
     expect(markup).toContain('data-testid="statusbar-tools">已装 3 个工具</button>')
     expect(markup).toContain('data-testid="statusbar-version">v0.2.19 · 有新版本</button>')
     // 下好了不说「重启后更新」：缩在托盘的人关窗口不算重启（「侧栏改」第 3 条）。
-    expect(bar({ version: '0.2.19', update: 'ready' })).toContain('v0.2.19 · 新版已下好，点这里安装')
+    expect(bar({ version: '0.2.19', update: 'ready' })).toContain('v0.2.19 · 新版本已下载，点击安装')
     expect(bar({ version: '0.2.19' })).toContain('>v0.2.19</button>')
   })
 
@@ -278,9 +278,9 @@ describe('renderer-v2 status bar account label', () => {
   }
 
   it('says the same thing as the sidebar card while a saved login waits for a retry', () => {
-    // 开机恢复联不上时左下角写「暂时连不上，登录还在」，状态栏不能同时写「未登录」。
-    const markup = statusbar({ signedIn: false, displayName: '暂时连不上，登录还在', email: '稍后自动重试，不用重新登录' })
-    expect(markup).toContain('暂时连不上，登录还在')
+    // 开机恢复联不上时左下角写「暂时无法连接，登录状态已保留」，状态栏不能同时写「未登录」。
+    const markup = statusbar({ signedIn: false, displayName: '暂时无法连接，登录状态已保留', email: '将自动重试，无需重新登录' })
+    expect(markup).toContain('暂时无法连接，登录状态已保留')
     expect(markup).not.toContain('未登录')
   })
 

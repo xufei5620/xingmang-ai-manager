@@ -77,7 +77,7 @@ export function OperationErrorDialog({ failure, installDirectory, canReplaceNode
       .then(() => setSupportCopy({ state: 'ok', text }), () => setSupportCopy({ state: 'failed', text }))
   }}>复制给客服</Button>
   const hasSupport = actions.some((action) => action.id === 'support')
-  return <Dialog open title={hint?.title ?? '操作没有完成'} onClose={onClose} testId="operation-error" footer={<>
+  return <Dialog open title={hint?.title ?? '操作未完成'} onClose={onClose} testId="operation-error" footer={<>
     <Button onClick={onClose}>返回</Button>
     {actions.map((action) => action.id === 'copyPath'
       // 复制不关对话框：用户复制完路径还要回来看原文、或者再点一次重试。
@@ -93,10 +93,10 @@ export function OperationErrorDialog({ failure, installDirectory, canReplaceNode
     {!hasSupport && copySupport}
   </>}>
     {hint && hint.body && <p data-testid="operation-error-body">{hint.body}</p>}
-    {!hint && failure.detail && <p data-testid="operation-error-reason">原因：没认出是哪一类问题，原话在下面。点「复制给客服」发给客服就行。</p>}
+    {!hint && failure.detail && <p data-testid="operation-error-reason">原因：未能识别问题类型，原始信息如下。请点击「复制给客服」并发送给客服。</p>}
     {/* 路径只上屏、只进剪贴板：剪贴板写不进去时用户还能自己选中它（I13 管的是日志与导出，不是这里）。 */}
     {showPath && <pre className="v2-business-code" data-testid="operation-error-path">{installDirectory}</pre>}
-    {copied && <p role="status" data-testid="operation-error-copied">{copied === 'ok' ? '路径已复制' : '没能写进剪贴板，手动选中上面的路径复制就行'}</p>}
+    {copied && <p role="status" data-testid="operation-error-copied">{copied === 'ok' ? '路径已复制' : '复制失败，请手动选中上方路径复制'}</p>}
     {/* 后端原话始终留着：客服排查时要的是它，不是被归类后的标题。 */}
     <p role="alert" className={hint ? 'v2-operation-detail' : undefined} data-testid="operation-error-detail">{failure.message}</p>
     {/* 认出了原因时原话默认收起；认不出时它就是唯一线索，直接摊开。 */}
@@ -104,7 +104,7 @@ export function OperationErrorDialog({ failure, installDirectory, canReplaceNode
       <summary>给客服看的原话</summary>
       <pre className="v2-business-code">{failure.detail}</pre>
     </details>}
-    {supportCopy && <p role="status" data-testid="operation-error-support-copied">{supportCopy.state === 'ok' ? '已复制，发给客服就行' : '没能写进剪贴板，手动选中下面这几行复制就行'}</p>}
+    {supportCopy && <p role="status" data-testid="operation-error-support-copied">{supportCopy.state === 'ok' ? '已复制，请发送给客服' : '复制失败，请手动选中以下内容复制'}</p>}
     {supportCopy?.state === 'failed' && <pre className="v2-business-code" data-testid="operation-error-support-text">{supportCopy.text}</pre>}
   </Dialog>
 }

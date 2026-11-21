@@ -17,9 +17,9 @@ export function diagnosticFixKind(item: { code: string; state: string; details?:
 }
 
 export const diagnosticFixLabels: Readonly<Record<DiagnosticFixKind, string>> = {
-  'set-aside-codex-dotenv': '挪开这份设置',
-  'clear-user-overrides': '删掉这几项设置',
-  'set-aside-home-agents-md': '挪开这份说明',
+  'set-aside-codex-dotenv': '停用此设置',
+  'clear-user-overrides': '删除这些设置',
+  'set-aside-home-agents-md': '停用此说明',
 }
 
 export function diagnosticFixLabel(item: Parameters<typeof diagnosticFixKind>[0]): string | null {
@@ -29,32 +29,32 @@ export function diagnosticFixLabel(item: Parameters<typeof diagnosticFixKind>[0]
 
 export const diagnosticFixConfirm: Readonly<Record<DiagnosticFixKind, { title: string; body: string; ok: string }>> = {
   'set-aside-codex-dotenv': {
-    title: '挪开 Codex 的额外设置？',
-    body: '这份文件会改个名字留在原来的文件夹里，不会删掉。挪开之后 Codex 就按当前账号连接。以后想用回原来的，把名字改回去就行。',
-    ok: '挪开',
+    title: '是否停用 Codex 的额外设置？',
+    body: '该文件将重命名并保留在原文件夹中，不会删除。停用后 Codex 将使用当前账号连接。如需恢复，将文件名改回即可。',
+    ok: '停用',
   },
   'clear-user-overrides': {
-    title: '删掉这几项设置？',
-    body: '会删掉你这个 Windows 账号下另外设的工具地址和密钥，整台电脑的设置不会动。删掉之后，以前靠它们连别家服务的用法就不再生效；从星芒打开的工具会用当前账号。已经开着的命令行窗口要关掉重开。',
-    ok: '删掉',
+    title: '是否删除这些设置？',
+    body: '将删除当前 Windows 用户下单独设置的工具地址和密钥，系统级设置不受影响。删除后，依赖这些设置连接其他服务的方式将失效，从星芒打开的工具将使用当前账号。已打开的命令行窗口需关闭后重新打开。',
+    ok: '删除',
   },
   'set-aside-home-agents-md': {
-    title: '挪开这份项目说明？',
-    body: '这份文件会改个名字留在个人文件夹里，不会删掉。挪开之后，工具只看各个项目自己的说明。以后想用回来，把名字改回 AGENTS.md 就行。',
-    ok: '挪开',
+    title: '是否停用此项目说明？',
+    body: '该文件将重命名并保留在个人文件夹中，不会删除。停用后，工具仅读取各项目自身的说明。如需恢复，将文件名改回 AGENTS.md 即可。',
+    ok: '停用',
   },
 }
 
 export function diagnosticFixMessage(result: DiagnosticFixResult): string {
   if (result.kind === 'set-aside-codex-dotenv')
-    return result.fixed ? '已经挪开。Codex 现在按当前账号连接。' : '没有要挪的了：这份设置已经不在了。'
+    return result.fixed ? '已停用，Codex 将使用当前账号连接。' : '无需处理：该设置已不存在。'
   if (result.kind === 'set-aside-home-agents-md')
-    return result.fixed ? '已经挪开。' : '没有要挪的了：这份说明已经不在了。'
+    return result.fixed ? '已停用。' : '无需处理：该说明已不存在。'
   if (result.fixed)
     return result.machineRemaining
-      ? '已经删掉你这个账号下的那几项。整台电脑还有同样的设置，要管理员才能改，请在「反馈与客服」页导出报告发给客服。'
-      : '已经删掉。关掉开着的命令行窗口再打开工具就好。'
+      ? '已删除当前用户下的相关设置。系统级仍存在相同设置，需管理员权限修改，请在「反馈与客服」页导出报告并发送给客服。'
+      : '已删除。请关闭已打开的命令行窗口后重新打开工具。'
   return result.machineRemaining
-    ? '这几项是给整台电脑设的，要管理员才能改，请在「反馈与客服」页导出报告发给客服。'
-    : '没有要删的了：这几项设置已经不在了。'
+    ? '这些为系统级设置，需管理员权限修改，请在「反馈与客服」页导出报告并发送给客服。'
+    : '无需处理：这些设置已不存在。'
 }

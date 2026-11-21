@@ -3,9 +3,9 @@ import { isUsernameTakenError, matchAccountErrorMessage } from './account-errors
 
 describe('renderer-v2 new-api account error table', () => {
   it('names the register-time collision that happened instead of merging both', () => {
-    expect(matchAccountErrorMessage('Username already exists')).toBe('这个用户名已经有人用了，换一个；如果是你自己的，点下面「去登录」')
-    expect(matchAccountErrorMessage('Username already exists or has been deleted')).toBe('这个用户名已经有人用了，换一个；如果是你自己的，点下面「去登录」')
-    expect(matchAccountErrorMessage('用户名已存在，或已注销')).toBe('这个用户名已经有人用了，换一个；如果是你自己的，点下面「去登录」')
+    expect(matchAccountErrorMessage('Username already exists')).toBe('该用户名已被占用，请更换；如为您本人的账号，请点击下方「前往登录」')
+    expect(matchAccountErrorMessage('Username already exists or has been deleted')).toBe('该用户名已被占用，请更换；如为您本人的账号，请点击下方「前往登录」')
+    expect(matchAccountErrorMessage('用户名已存在，或已注销')).toBe('该用户名已被占用，请更换；如为您本人的账号，请点击下方「前往登录」')
     expect(matchAccountErrorMessage('Email address is already in use')).toBe('该邮箱已被注册，请直接登录，或更换邮箱后重试')
     expect(matchAccountErrorMessage('邮箱地址已被占用')).toBe('该邮箱已被注册，请直接登录，或更换邮箱后重试')
   })
@@ -16,7 +16,7 @@ describe('renderer-v2 new-api account error table', () => {
     expect(isUsernameTakenError(undefined)).toBe(false)
   })
   it('asks for another mailbox when the server only accepts some email domains', () => {
-    const expected = '这个邮箱暂时不能用来注册，请换一个常用邮箱（如 QQ 邮箱）再试'
+    const expected = '该邮箱暂不支持注册，请更换常用邮箱（如 QQ 邮箱）后重试'
     expect(matchAccountErrorMessage('The administrator has enabled the email domain name whitelist, and your email address is not allowed')).toBe(expected)
     expect(matchAccountErrorMessage('管理员启用了邮箱域名白名单，您的邮箱地址的域名不在白名单中')).toBe(expected)
     expect(matchAccountErrorMessage('管理员已启用邮箱地址别名限制，您的邮箱地址由于包含特殊符号而被拒绝。')).toBe(expected)
@@ -32,7 +32,7 @@ describe('renderer-v2 new-api account error table', () => {
     expect(matchAccountErrorMessage('原密码错误')).toBe('原密码错误，请重新输入')
   })
   it('sends an account without a password to password recovery, not back to the password field', () => {
-    const expected = '这个账号还没设过密码，先点「找回密码」设一个'
+    const expected = '该账号尚未设置密码，请点击「找回密码」进行设置'
     expect(matchAccountErrorMessage('This account has no password set. Please use password reset or contact an administrator to reset it.')).toBe(expected)
     expect(matchAccountErrorMessage('当前账号未设置密码，请使用密码重置或联系管理员重置密码')).toBe(expected)
   })
@@ -60,7 +60,7 @@ describe('renderer-v2 new-api account error table', () => {
   })
   it('still matches once the message crosses IPC or changes case', () => {
     expect(matchAccountErrorMessage("Error invoking remote method 'account:change-password': Error: Original password is incorrect")).toBe('原密码错误，请重新输入')
-    expect(matchAccountErrorMessage('USERNAME ALREADY EXISTS')).toBe('这个用户名已经有人用了，换一个；如果是你自己的，点下面「去登录」')
+    expect(matchAccountErrorMessage('USERNAME ALREADY EXISTS')).toBe('该用户名已被占用，请更换；如为您本人的账号，请点击下方「前往登录」')
     expect(matchAccountErrorMessage(new Error('  User has been banned  '))).toBe('该账号已被封禁，请联系客服')
   })
   it('reports no opinion on anything it does not know, leaving the caller its own fallback', () => {

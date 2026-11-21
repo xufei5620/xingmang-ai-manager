@@ -31,7 +31,7 @@ interface FailureActionsOptions {
   repairBrokenConfig(tool: ToolId, retry?: () => void): void
 }
 
-export const codexDesktopStoreUnavailableMessage = '没能打开微软商店，这台电脑可能没有它。回星芒再点一次安装，星芒会改用 OpenAI 官网的离线安装包或国内线路装；还不行就找客服。'
+export const codexDesktopStoreUnavailableMessage = '无法打开微软商店，本机可能未安装。请返回星芒再次点击安装，将改用 OpenAI 官网离线安装包或国内线路安装；如仍失败，请联系客服。'
 
 /**
  * 错误框里的「打开微软商店」。商店链接在主进程外链白名单里（全等匹配）。系统没接住时说清楚
@@ -56,10 +56,10 @@ export function useFailureActions({ app, toolsApi, toast, perform, navigate, ope
   // 错误框里的「重置 Codex」：清掉的是 Codex 桌面端自己的登录和缓存，先问一句再动手；
   // 重置完接着把刚才没打开的那一次再跑一遍，客户不用再回首页点「打开」。
   const requestCodexDesktopReset = useCallback((retry?: () => void) => {
-    setConfirmation({ title: '重置 Codex 桌面端？', body: 'Codex 桌面端里的登录状态和缓存会被清掉，星芒写好的连接设置不受影响。重置完会自动再打开一次。', label: '重置', danger: true, tool: 'codexDesktop', work: async () => {
+    setConfirmation({ title: '重置 Codex 桌面端？', body: '将清除 Codex 桌面端的登录状态和缓存，星芒写入的连接设置不受影响。重置完成后将自动重新打开。', label: '重置', danger: true, tool: 'codexDesktop', work: async () => {
       await toolsApi.resetCodexDesktop()
       if (retry) retry()
-      else toast.show('Codex 桌面端已经重置，回首页点「打开」试试。', 'ok')
+      else toast.show('Codex 桌面端已重置，请返回首页点击「打开」。', 'ok')
     } })
   }, [toast, toolsApi, setConfirmation])
   const runOperationAction = useCallback((action: OperationActionId) => {
@@ -108,7 +108,7 @@ export function useFailureActions({ app, toolsApi, toast, perform, navigate, ope
   // 还没装就直接开始装，装好了由客户自己点「打开」（第十九批 7）。
   function switchToCodexCli() {
     navigate('home')
-    if (snapshot?.system.clis.codex.installed) toast.show('Codex 命令行版在首页，点它那一行的「打开」就能用。', 'neutral')
+    if (snapshot?.system.clis.codex.installed) toast.show('Codex 命令行版位于首页，点击对应的「打开」即可使用。', 'neutral')
     else void perform('安装工具', () => install('codex'), 'codex')
   }
   return { openCodexDesktopStore, runOperationAction, runGuideFailureAction }

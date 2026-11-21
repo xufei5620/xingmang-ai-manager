@@ -327,7 +327,7 @@ describe('v2 business boundaries', () => {
       'CLAUDE_BYPASS_PERMISSIONS',
       // D35：Claude Code 自己设置里的代理是客户自己设的值，只提示、不给按钮。
       'CLAUDE_SETTINGS_PROXY',
-      // 能挪的那份说明在行里直接给「挪开这份说明」；信任只说一声，没有能处理它的页。
+      // 能挪的那份说明在行里直接给「停用此说明」；信任只说一声，没有能处理它的页。
       'HOME_FOLDER_LEFTOVERS',
       'DISK_SPACE',
       'ADMINISTRATOR',
@@ -422,7 +422,7 @@ describe('v2 business boundaries', () => {
           "Error invoking remote method 'account:change-password': Error: This account has no password set.",
         ),
       ),
-    ).toBe('这个账号还没设过密码，先点「找回密码」设一个')
+    ).toBe('该账号尚未设置密码，请点击「找回密码」进行设置')
     expect(errorMessage(new Error('User has been banned'))).toBe(
       '该账号已被封禁，请联系客服',
     )

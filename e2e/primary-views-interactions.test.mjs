@@ -33,7 +33,7 @@ test('welcome keeps authentication, guide, support and legal routes, and stops e
   try {
     await page.getByRole('button', { name: '已有账号，登录' }).click()
     await page.getByRole('button', { name: '免费注册' }).click()
-    await page.getByRole('button', { name: '先看看使用步骤' }).click()
+    await page.getByRole('button', { name: '查看使用步骤' }).click()
     await page.getByRole('button', { name: '帮助与客服' }).click()
     assert.deepEqual(await page.evaluate(() => window.primaryViewActions), ['login', 'register', 'guide', 'support'])
     const decorativeMotion = () => page.evaluate(() => Array.from(document.querySelectorAll('.welcome-v3 *'))
