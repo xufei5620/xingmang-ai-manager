@@ -467,24 +467,6 @@ const codexCatalogPlugin = {
   update: { state: 'unsupported' as const, reason: '扩展尚未安装', checkedAt: null },
   operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
 }
-// scopedExtensions：Claude 只在这个项目里用的插件（local），验证「范围」筛选把它放在详情写的那一档里。
-function scopedExtension(kind: 'plugin', id: string, name: string, scope: 'local') {
-  return {
-    provider: 'claude' as const,
-    kind,
-    id,
-    name,
-    description: '只在这一档里出现',
-    installed: true,
-    enabled: true,
-    scope,
-    currentVersion: '1.0.0',
-    latestVersion: '1.0.0',
-    source: { kind: 'native' as const, locator: null, reference: null },
-    update: { state: 'unsupported' as const, reason: '不支持检查更新', checkedAt: null },
-    operations: { install: true, uninstall: true, enable: true, disable: true, update: false },
-  }
-}
 let nextKeyGroupsRequest: 'ready' | 'deferred' | 'failed' = 'ready'
 // 主进程按原因抛不同的错误（NewApiAuthenticationError 的中文、限流的英文原文……），
 // 夹具让用例自己指定原文，才能验证 R-G5 之后这些原因不再被抹成同一句。
@@ -796,27 +778,47 @@ function hubItems(provider: Parameters<V2Bridge['listProviderExtensions']>[0]) {
     ['twilio-developer-kit', 'Twilio Developer Kit', 'Build, debug and ship on Twilio'],
     ['temporal', 'Temporal', 'Develop with Temporal'],
   ] as const
+  // 下面几个开关各给某一家多放一条，用例拿它看某一种情况：
+  // claudeMcp=名字 / codexMcp=名字 / grokMcp=名字：那一家「我的（全局）」里自己加的一条连接（看「装到别的工具」、同名不换掉）；
+  // mcpAuth：Codex 里也有「测试连接」，要登录授权；scopedExtensions：Claude 只在这个项目里用的插件（local）；
+  // pluginUpdate：Claude 的 code-review 有新版本。
+  const extra = (target: 'claude' | 'codex' | 'grok', key: string) => {
+    const name = query.get(key)
+    return name ? [hubItem(target, 'mcp', name, name, '', true)] : []
+  }
+  const codeReview = hubItem('claude', 'plugin', 'code-review@claude-plugins-official', 'code-review', '', true)
   const items =
     provider === 'claude'
       ? [
           hubItem('claude', 'mcp', 'browser', 'browser', '', true),
           hubItem('claude', 'mcp', 'files', 'files', '', true),
           hubItem('claude', 'mcp', 'test-extension', '测试连接', '本机测试连接', true),
-          hubItem('claude', 'plugin', 'code-review@claude-plugins-official', 'code-review', '', true),
+          ...extra('claude', 'claudeMcp'),
+          query.has('pluginUpdate')
+            ? {
+                ...codeReview,
+                latestVersion: '1.1.0',
+                update: { state: 'update-available' as const, reason: '发现新版本', checkedAt: time },
+                operations: { ...codeReview.operations, update: true },
+              }
+            : codeReview,
+          ...(query.has('scopedExtensions') ? [{ ...hubItem('claude', 'plugin', 'local-plugin', '本项目插件', '只在这一档里出现', true), scope: 'local' as const }] : []),
           hubItem('claude', 'skill', 'test-skill', '测试技能', '本机测试技能', true),
           ...claudeMarket.map(([id, name, line]) => hubItem('claude', 'plugin', `${id}@claude-plugins-official`, name, line, false)),
         ]
       : provider === 'codex'
         ? [
             hubItem('codex', 'mcp', 'browser', 'browser', '', true),
+            ...(query.has('mcpAuth') ? [hubItem('codex', 'mcp', 'test-extension', '测试连接', '本机测试连接', true)] : []),
+            ...extra('codex', 'codexMcp'),
             hubItem('codex', 'plugin', 'sentry@openai-api-curated', 'Sentry', 'Inspect recent Sentry issues and events', true),
             ...codexMarket.map(([id, name, line]) => hubItem('codex', 'plugin', `${id}@openai-api-curated`, name, line, false)),
             ...(codexCatalogReady ? [codexCatalogPlugin] : []),
           ]
-        : []
+        : extra('grok', 'grokMcp')
   return items.filter((item) => !hubRemoved.has(`${provider}:${item.kind}:${item.id}`))
 }
-// 扩展三页共用的列表；listProviderExtensions 先记一笔再交给它，用例数得出读了几次。
+// 「插件」页读的列表；listProviderExtensions 先记一笔再交给它，用例数得出读了几次。
 function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[0]) {
   return {
     provider,
@@ -832,57 +834,7 @@ function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[
     ...(provider === 'codex'
       ? { marketplace: { name: 'openai-api-curated', registered: codexCatalogReady, reason: null } }
       : {}),
-    items: page === 'extensions' ? hubItems(provider) : [
-      ...(provider === 'codex' && page === 'plugins' && codexCatalogReady ? [codexCatalogPlugin] : []),
-      ...(query.has('scopedExtensions') && provider === 'claude' && page === 'plugins'
-        ? [scopedExtension('plugin', 'local-plugin', '本项目插件', 'local')]
-        : []),
-      // codexMcp=名字：Codex 那边已经有这条连接，用来看「别的工具里已有同名的，不去换掉它」。
-      ...(query.has('codexMcp') && provider === 'codex' && page === 'mcp'
-        ? [{ ...scopedExtension('plugin', query.get('codexMcp') ?? '', 'Codex 自己的连接', 'local'), provider, kind: 'mcp' as const, scope: 'user' as const }]
-        : []),
-      // claudeMcp=名字：只有 Claude Code「我的（全局）」里有的连接，用来看「也装到别的工具」。
-      ...(query.has('claudeMcp') && provider === 'claude' && page === 'mcp'
-        ? [{ ...scopedExtension('plugin', query.get('claudeMcp') ?? '', query.get('claudeMcp') ?? '', 'local'), kind: 'mcp' as const, scope: 'user' as const }]
-        : []),
-      ...(empty
-      ? []
-      : [
-          {
-            provider,
-            kind: (page === 'skills'
-              ? 'skill'
-              : page === 'plugins'
-                ? 'plugin'
-                : 'mcp') as 'mcp' | 'skill' | 'plugin',
-            id: 'test-extension',
-            name: '测试扩展',
-            description: '本机测试连接',
-            installed: true,
-            enabled: true,
-            scope: 'user' as const,
-            currentVersion: '1.0.0',
-            latestVersion: '1.0.1',
-            source: {
-              kind: 'npm' as const,
-              locator: 'test-package',
-              reference: null,
-            },
-            update: {
-              state: 'update-available' as const,
-              reason: '发现新版本',
-              checkedAt: time,
-            },
-            operations: {
-              install: true,
-              uninstall: true,
-              enable: true,
-              disable: true,
-              update: true,
-            },
-          },
-        ]),
-    ],
+    items: hubItems(provider),
   }
 }
 const apiMethods = {
@@ -1437,7 +1389,7 @@ const apiMethods = {
     if (query.has('extensionHold') && input.action !== 'uninstall') await new Promise<void>((resolve) => { releaseHeldExtension = resolve })
     // extensionOk：改动照常成功，用来看成功以后那句提示。
     if (query.has('extensionOk')) {
-      if (page === 'extensions' && input.action === 'uninstall') hubRemoved.add(`${input.provider}:${input.kind}:${input.id}`)
+      if (input.action === 'uninstall') hubRemoved.add(`${input.provider}:${input.kind}:${input.id}`)
       return extensionList(input.provider)
     }
     throw new Error('扩展操作失败，已有配置保留')

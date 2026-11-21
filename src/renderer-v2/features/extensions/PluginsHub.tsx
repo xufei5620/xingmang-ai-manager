@@ -843,7 +843,9 @@ export function PluginsHub({
         </section>
         <section className="v2-hub-card" data-testid="hub-detail-about">
           <h3>它会做什么</h3>
-          <div className="v2-hub-about">
+          {/* resource-detail-drawer 是旧外接工具页详情框留下的 testid（再往前是旧界面的 ResourceDetails），旧页删了以后挂在
+              新页详情的这一块上：同样是说明加提供方、来源那几行，check:v2 要求旧 testid 不丢。 */}
+          <div className="v2-hub-about" data-testid="resource-detail-drawer">
             {entry.summary && <p>{entry.summary}</p>}
             <dl className="v2-business-kv">
               {publisher && (
@@ -1128,6 +1130,8 @@ export function PluginsHub({
         }
       >
         <p>{`会从 ${removing ? extensionToolNames(removable(removing).map((install) => install.provider), codexViaDesktop && removing.kind !== 'plugin') : ''} 里一起移除。以后想用再装回来就行。`}</p>
+        {/* 别的改动（开关、更新）还没回来时「移除」灰着：说一句为什么，不让按钮干转（同原来外接工具页）。 */}
+        {operation.busy && operation.busy !== 'hub-remove' && <p role="status" data-testid="hub-remove-busy">上一个操作还没完成，完成后才能移除。</p>}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
       <Dialog
@@ -1176,6 +1180,11 @@ export function PluginsHub({
                 ? '其他工具里的不受影响。自己加的要重新填一遍。'
                 : '其他工具里的不受影响。以后想用再装回来就行。'}
         </p>
+        {operation.busy && operation.busy !== 'delete' && (
+          <p role="status" data-testid="hub-delete-busy">
+            {deletion?.install.item.kind === 'plugin' ? '上一个操作还没完成，完成后才能卸载。' : '上一个操作还没完成，完成后才能移除。'}
+          </p>
+        )}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
       <Dialog
@@ -1207,6 +1216,9 @@ export function PluginsHub({
         }
       >
         <p>移除后，这个市场就不在列表里了，要用时得重新添加。</p>
+        {operation.busy && operation.busy !== 'market-delete' && (
+          <p role="status" data-testid="plugins-market-delete-busy">上一个操作还没完成，完成后才能移除。</p>
+        )}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
     </section>

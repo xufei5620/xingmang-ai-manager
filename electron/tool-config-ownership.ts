@@ -67,6 +67,9 @@ export class ToolConfigOwnershipStore {
 
   read(provider: ProviderId, config: NativeConfigInspection, owner: string | null = null): ToolConfigOwnership {
     if (!config.exists && !config.hasApiKey) return 'missing'
+    // Grok 自己的安装包写下的那份（只有安装方式那一两行、没登录过 Grok 账号）里没有任何客户的设置，跟没有文件
+    // 一样（总单 17）。别的没密钥的配置照旧看不出来历，挡着自动写入。
+    if (provider === 'grok' && !config.hasApiKey && config.grokInstallerOnly === true) return 'missing'
     if (!config.hasApiKey) return 'unknown'
     try {
       const value = this.record(provider, config)

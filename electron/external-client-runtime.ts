@@ -176,9 +176,10 @@ export interface ExternalClientRuntimeOptions {
    */
   onLaunched?: (tool: ExternalToolId, clientPath: string) => void
   /**
-   * Windows 上打开 Claude Desktop、交给资源管理器之前那一步：替它把 Claude Code 程序放好
-   * （claude-desktop-code-seed.ts）。在这一家的打开里跑（等它自己正在装的那次装完、打开前那次检测之后），
-   * 所以同一家的安装照旧等它；抛错也照常打开。缺省 = 不做。
+   * 打开 Claude Desktop、交出去之前那一步：替它把 Claude Code 程序放好（Windows 从 npm 镜像，
+   * claude-desktop-code-seed.ts；Mac 从星芒的下载站，claude-desktop-mac-code-seed.ts）。在这一家的打开里跑
+   * （等它自己正在装的那次装完、打开前那次检测之后），所以同一家的安装照旧等它；抛错也照常打开。
+   * 只有 Windows 那一半的结果会变成界面提醒（buildExternalClientLaunchResult），Mac 那一半回 void。缺省 = 不做。
    */
   prepareClaudeDesktopLaunch?: (client: ClaudeDesktopSeedClient) => Promise<ClaudeDesktopCodeSeedOutcome | void>
   /**
@@ -244,7 +245,7 @@ export interface ExternalClientLaunchTiming extends ExternalClientInventoryTimin
   inventoryMs: number
   /** 交给资源管理器（Mac 上是 open）用了多久，含下面的 prepareMs。 */
   launchMs: number
-  /** 交出去之前替 Claude Desktop 放程序用了多久（只有 Windows 上的 Claude Desktop 有）。 */
+  /** 交出去之前替 Claude Desktop 放程序用了多久（只有 Windows 和 Mac 上的 Claude Desktop 有）。 */
   prepareMs?: number
 }
 
@@ -1326,8 +1327,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       if (!client) throw new Error(inspection.errors[tool] || '尚未检测到客户端，请先安装并重新检测')
       let prepareMs: number | undefined
       let result: ExternalClientLaunchResult = {}
-      if (platform === 'win32' && tool === 'claudeDesktop' && options.prepareClaudeDesktopLaunch) {
-        // 它要的 Claude Code 程序国内从官网下不动：先替它从 npm 镜像放好。放不成照常打开。
+      if ((platform === 'win32' || platform === 'darwin') && tool === 'claudeDesktop' && options.prepareClaudeDesktopLaunch) {
+        // 它要的 Claude Code 程序国内从官网下不动：先替它放好（Windows 从 npm 镜像，Mac 从星芒的下载站）。放不成照常打开。
         const preparing = now()
         const outcome = await options.prepareClaudeDesktopLaunch({
           path: client.path, running: client.running, isRunning: () => stillRunning(tool, client.path),

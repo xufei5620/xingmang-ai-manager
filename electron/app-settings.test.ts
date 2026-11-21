@@ -7,6 +7,7 @@ import {
   mergeAppSettings,
   normalizeAppSettings,
   offeredModelUpgradeKey,
+  onAppSettingsWritten,
   readAppSettings,
   setOfficialProvider,
   updateAppSettings,
@@ -973,6 +974,41 @@ describe('unchanged settings updates (0.2.24 性能深查 R4)', () => {
     const merged = await updateAppSettings(filePath, { version: 2, theme: 'dark' })
     expect(merged.theme).toBe('dark')
     expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toMatchObject({ theme: 'dark' })
+  })
+})
+
+describe('settings write notifications (0.2.24 性能深查 R5)', () => {
+  it('notifies after the file is replaced, skips unchanged and failed writes, and stops after unsubscribing', async () => {
+    const filePath = temporarySettingsPath()
+    const seen: string[] = []
+    const stop = onAppSettingsWritten(filePath, () => { seen.push(readAppSettings(filePath).theme) })
+
+    await writeAppSettings(filePath, settings({ theme: 'dark' }))
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    await expect(updateAppSettings(filePath, { version: 2, theme: 'light' }, {
+      beforeReplace: () => { throw new Error('disk full') },
+    })).rejects.toThrow('disk full')
+    await setOfficialProvider(filePath, 'codex', true)
+    expect(seen).toEqual(['dark', 'dark'])
+
+    stop()
+    await updateAppSettings(filePath, { version: 2, theme: 'light' })
+    expect(seen).toEqual(['dark', 'dark'])
+  })
+
+  it('keeps a completed write successful when a listener throws, and still tells the other listeners', async () => {
+    const filePath = temporarySettingsPath()
+    const other = vi.fn()
+    const stopBroken = onAppSettingsWritten(filePath, () => { throw new Error('listener broke') })
+    const stopOther = onAppSettingsWritten(path.join(path.dirname(filePath), '.', 'settings.json'), other)
+    try {
+      await expect(updateAppSettings(filePath, { version: 2, theme: 'dark' })).resolves.toMatchObject({ theme: 'dark' })
+      expect(other).toHaveBeenCalledTimes(1)
+      expect(readAppSettings(filePath).theme).toBe('dark')
+    } finally {
+      stopBroken()
+      stopOther()
+    }
   })
 })
 
