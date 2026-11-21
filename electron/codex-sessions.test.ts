@@ -413,6 +413,31 @@ describe('CodexSessionsService', () => {
     expect(fs.readFileSync(notesPath, 'utf8')).toBe('用户原有内容')
   })
 
+  it('hangs the commands a Codex turn ran and the files it patched on its last reply', async () => {
+    const data = fixture('session-1')
+    const lines = [
+      { type: 'response_item', payload: { type: 'function_call', name: 'shell', call_id: 'c1', arguments: JSON.stringify({ command: ['bash', '-lc', 'npm test'] }) } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'c1', output: JSON.stringify({ output: 'ok', metadata: { exit_code: 0 } }) } },
+      { type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', call_id: 'c2', input: '*** Begin Patch\n*** Update File: src/app.ts\n*** End Patch' } },
+      { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'apply_patch verification failed: no match' } },
+      { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '测试过了' }] } },
+    ].map((line) => JSON.stringify(line))
+    fs.appendFileSync(data.rolloutPath, `${lines.join('\n')}\n`, 'utf8')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+
+    const detail = await service(data).detail('session-1')
+
+    expect(detail.messages.map((message) => message.text)).toEqual(['请检查项目', '检查完成', '测试过了'])
+    expect(detail.messages.map((message) => message.activity)).toEqual([
+      undefined,
+      undefined,
+      { commands: 1, commandNames: ['npm'], fileCount: 0, files: [], failedSteps: 1 },
+    ])
+    expect(detail.messageStats.total).toBe(3)
+  })
+
   it('drops an oversized JSONL record while preserving later valid messages', async () => {
     const data = fixture('session-1')
     const laterMessage = JSON.stringify({

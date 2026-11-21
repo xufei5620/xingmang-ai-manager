@@ -4,7 +4,7 @@ import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
 import { buildChatCompletionsRequest, IMAGE_GROUP_MODEL_ORDER } from '../../../../electron/ai-chat-protocol'
-import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, chatAssetSaveErrorMessage, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH, customImageSizeRule, imageSizeFits } from './state'
+import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, chatAssetSaveErrorMessage, chatCutOffNotice, chatCutOffNotices, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH, customImageSizeRule, imageSizeFits } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -247,6 +247,24 @@ describe('v2 chat request transitions', () => {
     state = applyStreamEvent(state, { type: 'content', requestId: 'request-1', content: ' late' })
     expect(activeConversation(state).messages.at(-1)).toMatchObject({ content: 'partial', reasoning: 'thinking', status: 'canceled', mayStillComplete: true })
     expect(activeConversation(applyStreamEvent(state, { type: 'complete', requestId: 'another-request' })).messages).toEqual(activeConversation(state).messages)
+  })
+  it('keeps an answer that was cut off, says why under it, and lets the next turn continue from it (D10)', () => {
+    const plan = turn(); let state = saveConversation(createWorkspace('owner:7'), plan.conversation)
+    state = applyStreamEvent(state, { type: 'content', requestId: 'request-1', content: '写到一半' })
+    state = applyStreamEvent(state, { type: 'complete', requestId: 'request-1', cutOff: 'length' })
+    const reply = activeConversation(state).messages.at(-1)!
+    expect(reply).toMatchObject({ content: '写到一半', status: 'complete', cutOff: 'length' })
+    expect(chatCutOffNotice(reply)).toBe(chatCutOffNotices.length)
+    expect(chatCutOffNotice({ ...reply, settings: { ...reply.settings!, parameters: { maxTokens: 512 } } })).toBe(chatCutOffNotices.lengthCap)
+    expect(chatCutOffNotice({ ...reply, cutOff: 'filtered' })).toBe(chatCutOffNotices.filtered)
+    // Sending 「继续」 carries the half answer along, so the model picks up where it stopped.
+    const next = planTurn(activeConversation(state), { prompt: '继续', requestId: 'request-2', assistantId: 'assistant-2', userMessageId: 'user-2' })
+    expect(next.messages.slice(-2)).toEqual([{ role: 'assistant', content: '写到一半' }, { role: 'user', content: '继续' }])
+
+    const finished = applyStreamEvent(saveConversation(createWorkspace('owner:7'), plan.conversation), { type: 'complete', requestId: 'request-1' })
+    const whole = activeConversation(finished).messages.at(-1)!
+    expect(whole).not.toHaveProperty('cutOff')
+    expect(chatCutOffNotice(whole)).toBeNull()
   })
   it('keeps safe stream failure reasons distinct instead of labeling every disconnect as local network trouble', () => {
     expect(chatErrorMessage(new Error("Error invoking remote method 'ai:image-generate': Error: 保存位置写不进去，这次没有扣费。请联系客服帮你处理。")))

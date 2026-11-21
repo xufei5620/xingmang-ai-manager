@@ -306,6 +306,23 @@ test('web links in model output copy their address instead of opening, and other
   } finally { await page.close() }
 })
 
+test('an answer cut off at the output cap keeps its text and says so under it', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'Write a long essay')
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'HALF-WRITTEN-ANSWER' })
+    await emit(page, { type: 'complete', requestId: request.requestId, cutOff: 'length' })
+    const note = page.locator('[data-testid^=chat-message-cut-off-]')
+    await note.waitFor()
+    assert.equal((await note.textContent())?.trim(), '回答已达到单次输出长度上限，内容不完整。如需查看后续内容，请发送「继续」。')
+    assert.equal(await page.getByText('HALF-WRITTEN-ANSWER').count(), 1)
+    const reply = page.locator('.chat-message[data-role=assistant]').last()
+    assert.equal(await reply.getAttribute('data-status'), 'complete')
+    assert.equal(await reply.getByRole('button', { name: '复制回答' }).count(), 1)
+    assert.equal(await reply.getByRole('button', { name: '重新生成' }).isEnabled(), true)
+  } finally { await page.close() }
+})
+
 test('link copy falls back to manual copy when the clipboard is unavailable', async () => {
   const page = await open('copyFail=1')
   try {

@@ -2,7 +2,7 @@ import { AI_CHAT_PHRASE_LIMITS, AI_CHAT_TEXT_FILE_LIMITS, IMAGE_SKILL_GROUP_NAME
 import { resolveMissingAiAssetMessage } from '../../../../electron/ai-asset-missing'
 import { resolveNewestModelOfFamily } from '../../../../electron/cli-model-defaults'
 import { matchNetworkFailureMessage, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
-import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent, AiChatTextFile, AiVideoClip } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatCutOff, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent, AiChatTextFile, AiVideoClip } from '../../../../electron/ipc-contract'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
@@ -53,6 +53,8 @@ export interface ChatMessage {
   requestId?: string
   error?: string
   mayStillComplete?: boolean
+  /** 回答没写完就停了：到了长度上限（length）或被内容审核拦下（filtered）。只在 complete 上有。 */
+  cutOff?: AiChatCutOff
   assets?: AiChatAsset[]
   /** Text files sent with a user message: their text goes to the AI together with the message (messageWithFiles). */
   files?: AiChatTextFile[]
@@ -233,6 +235,18 @@ export function isGeneratingReply(conversation: Conversation): boolean { return 
 // 回复途中网断了，主进程要连着 3 分钟收不到字才停（给长思考模型留的，时限不改），这期间界面只转圈，
 // 客户以为卡死了。在那条下面说一句，让客户知道可以先停（D43）。出图的不说：停下也可能照样计费，停之前另有一问。
 export const offlineReplyNotice = '网络断了，这条回复可能接不上，可以先停止。'
+// 回答到了长度上限或被内容审核拦下，流照样正常收尾，以前就当成说完了，客户不知道后面还有（D10）。
+// 已经出来的字照留，只在下面说一句；接着写要客户自己发「继续」，不替他再发一次付费请求。
+export const chatCutOffNotices = {
+  length: '回答已达到单次输出长度上限，内容不完整。如需查看后续内容，请发送「继续」。',
+  lengthCap: '回答已达到「一次最多回多长」设置的上限，内容不完整。如需查看后续内容，请发送「继续」，或调大该设置后重新生成。',
+  filtered: '回答因触发内容安全审核而中止，内容不完整。请调整提问方式后重试。',
+} as const
+export function chatCutOffNotice(message: ChatMessage): string | null {
+  if (message.status !== 'complete' || !message.cutOff) return null
+  if (message.cutOff === 'filtered') return chatCutOffNotices.filtered
+  return message.settings?.parameters.maxTokens === undefined ? chatCutOffNotices.length : chatCutOffNotices.lengthCap
+}
 export function shouldShowOfflineReplyNotice(message: ChatMessage, offline: boolean): boolean { return offline && message.role === 'assistant' && (message.status === 'pending' || message.status === 'streaming') && (message.settings?.mode ?? 'text') === 'text' }
 
 // A stream chunk replaces only the conversation it belongs to, so every other
@@ -636,7 +650,7 @@ export function applyStreamEvent(state: ChatWorkspace, event: AiChatStreamEvent)
     if (message.status !== 'pending' && message.status !== 'streaming') return message
     if (event.type === 'content') return { ...message, status: 'streaming', content: message.content + event.content }
     if (event.type === 'reasoning') return { ...message, status: 'streaming', reasoning: message.reasoning + event.content }
-    if (event.type === 'complete') return { ...message, status: 'complete' }
+    if (event.type === 'complete') return { ...message, status: 'complete', ...(event.cutOff ? { cutOff: event.cutOff } : {}) }
     if (event.type === 'canceled') return { ...message, status: 'canceled', mayStillComplete: event.mayStillComplete }
     return { ...message, status: 'error', error: chatErrorMessage(event.message, event.code) }
   })

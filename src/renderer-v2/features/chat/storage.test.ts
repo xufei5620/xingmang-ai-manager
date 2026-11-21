@@ -946,6 +946,19 @@ describe('moving history to another computer', () => {
     expect(exported).toContain('[图片没有一起搬过来]')
   })
 
+  it('keeps the note that an answer was cut off, only on a finished answer and only with a known reason', () => {
+    const state = workspace(scope, 1)
+    state.conversations[0].messages = [
+      message(0),
+      message(1, { cutOff: 'length' }),
+      message(3, { cutOff: 'filtered' }),
+      message(5, { status: 'canceled', cutOff: 'length' }),
+      message(7, { cutOff: 'whatever' } as unknown as Partial<ChatMessage>),
+    ]
+    const [imported] = parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(state))))
+    expect(imported.messages.map((item) => item.cutOff)).toEqual([undefined, 'length', 'filtered', undefined, undefined])
+  })
+
   it('leaves unsent draft images behind but keeps the typed draft and attached text files', () => {
     const state = workspace(scope, 1)
     const file = { name: 'notes.txt', size: 5, text: 'hello', truncated: false }

@@ -14,7 +14,7 @@ import { failureWithDetail } from '../../business-common'
 import { exportFailureSentence } from '../../operation-error'
 import { PageLoading } from '../app/PageLoading'
 import { canEditImages, canReadImages, canStartVideoFromImage, chatLimits, createChatApi, inspectModel, noImageEditModelMessage, type ChatApi } from './api'
-import { buildChatCatalog, chatAssetSaveErrorMessage, chatErrorAction, chatExampleDraft, chatExamples, chatErrorMessage, chatModelVendor, chatModelVendors, draftLengthError, filterConversations, groupConversationList, isConversationTooLongMessage, MAX_CONVERSATION_TITLE_LENGTH, isGenerating, isGeneratingImage, isGeneratingReply, isGeneratingVideo, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatVideoAspect, type ChatWorkspace, type Conversation, chatVideoAspect, modeFilesMessage, noVideoStartImageMessage, offlineReplyNotice, shouldShowOfflineReplyNotice, draftWithPhrase, videoPromptLengthError, videoStartImageLimitMessage } from './state'
+import { buildChatCatalog, chatAssetSaveErrorMessage, chatCutOffNotice, chatErrorAction, chatExampleDraft, chatExamples, chatErrorMessage, chatModelVendor, chatModelVendors, draftLengthError, filterConversations, groupConversationList, isConversationTooLongMessage, MAX_CONVERSATION_TITLE_LENGTH, isGenerating, isGeneratingImage, isGeneratingReply, isGeneratingVideo, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatVideoAspect, type ChatWorkspace, type Conversation, chatVideoAspect, modeFilesMessage, noVideoStartImageMessage, offlineReplyNotice, shouldShowOfflineReplyNotice, draftWithPhrase, videoPromptLengthError, videoStartImageLimitMessage } from './state'
 import { ChatImage } from './ChatImage'
 import { ChatVideoClip, ChatVideoPending, type ChatVideoFilm } from './ChatVideo'
 import { chatVideoMade, chatVideoSecondsChoices, chatVideoSecondsFor, chatVideoSource, type ChatVideoMade, type ChatVideoProgress } from './video'
@@ -543,6 +543,7 @@ function ChatFileCard({ file, children }: { file: AiChatTextFile; children?: Rea
 const ChatMessageItem = memo(function ChatMessageItem({ message, model, pending, offlineNotice, canAnimate, videoProgress, videoStopping, videoFilms, canRetry, canOpenAccount, markdownComponents, replyComponents, actions }: ChatMessageItemProps) {
   const waiting = message.status === 'pending' || message.status === 'streaming'
   const clip = message.video?.clip
+  const cutOffNotice = chatCutOffNotice(message)
   return <div className="chat-message" data-role={message.role} data-status={message.status} data-testid={`chat-message-${message.id}`}>
     {message.role === 'assistant' && <span className="chat-avatar"><BrandIcon model={model} size={18} /></span>}
     <div className="chat-message-main">
@@ -552,7 +553,7 @@ const ChatMessageItem = memo(function ChatMessageItem({ message, model, pending,
         {clip && <ChatVideoClip clip={clip} films={videoFilms} onCompose={(filmId) => actions.composeVideo(message.id, filmId)} onSave={() => actions.saveVideo(message.id)} onOpen={() => actions.openVideo(clip.assetId)} />}
       </div>}
       {offlineNotice && <p className="chat-message-note" role="status" data-testid="chat-message-offline">{offlineReplyNotice}</p>}
-      {message.status === 'error' && <ErrorLine message={message.error} onOpenAccount={canOpenAccount ? actions.openAccount : undefined} />}{message.status === 'canceled' && <p className="chat-message-note">{message.mayStillComplete ? '已停止等待，服务端仍可能处理并计费' : '已停止生成，保留已返回的内容'}</p>}
+      {message.status === 'error' && <ErrorLine message={message.error} onOpenAccount={canOpenAccount ? actions.openAccount : undefined} />}{message.status === 'canceled' && <p className="chat-message-note">{message.mayStillComplete ? '已停止等待，服务端仍可能处理并计费' : '已停止生成，保留已返回的内容'}</p>}{cutOffNotice && <p className="chat-message-note" data-testid={`chat-message-cut-off-${message.id}`}>{cutOffNotice}</p>}
       <div className="chat-message-tools">{message.role === 'assistant'
         ? <>{message.content && <Button size="xs" icon={Copy} variant="ghost" aria-label="复制回答" title="复制回答" onClick={() => actions.copyText(message.content, '回答已复制')} testId={`chat-message-copy-${message.id}`} />}<Button size="xs" icon={RefreshCw} variant="ghost" aria-label="重新生成" title="重新生成" disabled={pending || !canRetry} onClick={() => actions.confirm({ kind: 'retry', id: message.id, mayStillComplete: message.mayStillComplete })} testId={`chat-message-retry-${message.id}`} /></>
         : <>{message.content && <Button size="xs" icon={Copy} variant="ghost" aria-label="复制" title="复制" onClick={() => actions.copyText(message.content)} testId={`chat-message-copy-${message.id}`} />}<Button size="xs" icon={Pencil} variant="ghost" aria-label="编辑后重新发送" title="编辑后重新发送" disabled={pending} onClick={() => actions.edit({ id: message.id, text: message.content })} testId={`chat-message-edit-${message.id}`} /></>}

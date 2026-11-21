@@ -17,6 +17,11 @@ import type {
   ProviderSessionProbeState,
 } from './provider-session-probe-cache'
 import { ProviderSessionProbeCache } from './provider-session-probe-cache'
+import {
+  createSessionActivityTracker,
+  observeClaudeActivity,
+  type SessionTurnActivity,
+} from './session-activity'
 import { exportSessionMarkdown, sessionMarkdownFileName } from './session-markdown-export'
 
 export const providerSessionProviders = ['codex', 'claude', 'gemini', 'grok'] as const
@@ -72,6 +77,11 @@ export interface ProviderSessionMessage {
   role: string
   text: string
   timestamp: string | null
+  /**
+   * 只挂在一轮里最后一条 AI 回复上：这一轮跑了哪些命令（只有程序名）、改了哪些文件（只有文件名）。
+   * 只有详情会填，目前读得出的是 Claude Code 和 Codex。缺省 = 这一轮没有，或这家工具读不出（旧行为）。
+   */
+  activity?: SessionTurnActivity
 }
 
 export interface ProviderSessionMessageStats {
@@ -1473,6 +1483,8 @@ export class ProviderSessionsService {
     const messages: ProviderSessionMessage[] = []
     const stats = emptyMessageStats()
     let retainedTextTruncated = false
+    // 每一轮做了什么只给详情看；导出（retainLimit 为 0）不读。
+    const activity = retainLimit > 0 ? createSessionActivityTracker() : null
     const accept = async (message: ProviderSessionMessage | null): Promise<void> => {
       if (!message) return
       recordMessage(stats, message)
@@ -1480,7 +1492,9 @@ export class ProviderSessionsService {
       if (retainLimit > 0) {
         const retainedText = truncateMessageText(message.text)
         if (retainedText !== message.text) retainedTextTruncated = true
-        messages.push({ ...message, text: retainedText })
+        const retained = { ...message, text: retainedText }
+        messages.push(retained)
+        activity?.message(message.role, retained)
         if (messages.length > retainLimit) messages.shift()
       }
     }
@@ -1488,6 +1502,7 @@ export class ProviderSessionsService {
     if (session.provider === 'claude') {
       const scan = await scanJsonLines(session.sourcePath, this.maxTranscriptBytes, this.maxJsonLineBytes, async (value) => {
         const entry = asRecord(value)
+        if (entry && activity) observeClaudeActivity(activity, entry)
         await accept(entry ? parseClaudeMessage(entry) : null)
       })
       stats.invalidLines += scan.invalidLines
@@ -1517,6 +1532,7 @@ export class ProviderSessionsService {
       stats.invalidLines += scan.invalidLines
       sourceTruncated = scan.sourceTruncated
     }
+    activity?.finish()
     return { messages, stats, sourceTruncated, retainedTextTruncated }
   }
 }

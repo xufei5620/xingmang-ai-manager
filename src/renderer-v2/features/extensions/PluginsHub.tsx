@@ -39,6 +39,7 @@ import { activeProviderIds, type ActiveProviderId } from '../../../../electron/c
 import {
   curatedIcon,
   curatedTags,
+  CuratedRiskDetails,
   curatedVersionText,
   extensionFailureTarget,
   extensionRowState,
@@ -830,6 +831,7 @@ export function PluginsHub({
             <h2>{entry.name}</h2>
             {publisher && <small>{publisher}</small>}
             {curated && curatedTags(curated) && <div className="v2-curated-tags">{curatedTags(curated)}</div>}
+            {curated && <CuratedRiskDetails item={curated} />}
           </div>
           {addable.length > 0 && (
             <Button variant="primary" icon={Plus} disabled={Boolean(operation.busy)} onClick={() => openInstall(entry)} testId="hub-detail-add">
