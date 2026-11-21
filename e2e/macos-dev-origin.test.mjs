@@ -57,17 +57,56 @@ function recordProcessOutput(child) {
   return lines
 }
 
+// Notes, on the page's own clock, when the root, the splash screen and the
+// welcome page first show up, so a failure can tell "late" from "there but
+// not visible". Installed once the first window exists; a reload would drop it.
+function installRendererTimeline() {
+  if (window.__devOriginTimeline) return
+  const timeline = {}
+  window.__devOriginTimeline = timeline
+  function note() {
+    const now = Math.round(performance.now())
+    if (timeline.rootFilled === undefined && document.getElementById('root')?.firstElementChild) timeline.rootFilled = now
+    if (timeline.splash === undefined && document.querySelector('.auth-splash')) timeline.splash = now
+    const welcome = document.querySelector('[data-testid="welcome-page"]')
+    if (welcome && timeline.welcome === undefined) {
+      const rect = welcome.getBoundingClientRect()
+      timeline.welcome = now
+      timeline.welcomeSize = `${Math.round(rect.width)}x${Math.round(rect.height)}`
+      observer.disconnect()
+    }
+  }
+  const observer = new MutationObserver(note)
+  observer.observe(document, { childList: true, subtree: true })
+  note()
+}
+
+function readRendererTimeline() {
+  const navigation = performance.getEntriesByType('navigation')[0]
+  return {
+    ...window.__devOriginTimeline,
+    now: Math.round(performance.now()),
+    domContentLoaded: navigation ? Math.round(navigation.domContentLoadedEventEnd) : null,
+    firstContentfulPaint: Math.round(performance.getEntriesByName('first-contentful-paint')[0]?.startTime ?? -1),
+  }
+}
+
 // What the window showed and who had stopped answering when the welcome page
 // did not appear. Every probe is bounded so the report itself cannot hang.
 async function welcomeTimeoutEvidence({ application, page, bootstrap, steps, failedRequests, mainOutput }) {
+  // A page that is merely slow shows up here; one that is stuck does not.
+  const lateWaitStarted = Date.now()
+  const visibleAfterMore = await page.getByTestId('welcome-page').waitFor({ state: 'visible', timeout: 3_000 })
+    .then(() => `${Date.now() - lateWaitStarted} ms later`, () => 'not within 3 s more')
   const mainProcessAsked = Date.now()
-  const [screen, mainProcess, reads, fixture] = await Promise.all([
+  const [screen, renderer, mainProcess, reads, fixture] = await Promise.all([
     settleWithin(page.evaluate(() => ({
       path: location.pathname,
       readyState: document.readyState,
       testIds: [...new Set([...document.querySelectorAll('[data-testid]')].map((element) => element.dataset.testid))].slice(0, 24),
       text: (document.body?.innerText ?? '').replace(/\s+/g, ' ').slice(0, 200),
     })).catch((error) => ({ error: error.message })), 2_000, { unanswered: true }),
+    settleWithin(page.evaluate(readRendererTimeline).catch((error) => ({ error: error.message })), 2_000, { unanswered: true }),
     settleWithin(application.evaluate(() => 'answered').catch((error) => `failed: ${error.message}`), 2_000, 'unanswered')
       .then((answer) => ({ answer, ms: Date.now() - mainProcessAsked })),
     settleWithin(page.evaluate((names) => Promise.all(names.map(async (name) => {
@@ -80,17 +119,7 @@ async function welcomeTimeoutEvidence({ application, page, bootstrap, steps, fai
     })).then(Object.fromEntries), bootstrapReads).catch((error) => ({ error: error.message })), 2_500, { unanswered: true }),
     bootstrap.snapshot(),
   ])
-  return { steps, screen, mainProcess, bootstrapReads: reads, fixture, failedRequests: failedRequests.slice(0, 8), mainOutput }
-}
-
-// A hung quit used to run the test into its 30 s limit, which replaced the
-// real failure with a bare "test timed out".
-async function closeElectron(application) {
-  if (!application) return null
-  const outcome = await settleWithin(application.close().then(() => null, (error) => `close() failed: ${error.message}`), 10_000, 'hung')
-  if (outcome !== 'hung') return outcome
-  application.process()?.kill('SIGKILL')
-  return 'Electron did not quit within 10 s of close()'
+  return { steps, visibleAfterMore, screen, renderer, mainProcess, bootstrapReads: reads, fixture, failedRequests: failedRequests.slice(0, 8), mainOutput }
 }
 
 async function configuredDevelopmentOrigin() {
@@ -143,7 +172,6 @@ test('the configured macOS development origin renders the real Electron app', {
 
   let application
   let server
-  let failure
   try {
     let port
     ;({ server, port } = await createFixtureServer({ root: projectRoot, logLevel: 'silent' }))
@@ -170,6 +198,8 @@ test('the configured macOS development origin renders the real Electron app', {
     step('electron launched')
     const page = await application.firstWindow({ timeout: 10_000 })
     step('first window')
+    // Not awaited: the timeline is evidence only and must not hold up the run.
+    void settleWithin(page.evaluate(installRendererTimeline).catch(() => undefined), 2_000, undefined)
     const bootstrap = observeFixtureBootstrap(page, server)
     const pageErrors = createPageErrorCollector()
     pageErrors.watch(page)
@@ -187,6 +217,8 @@ test('the configured macOS development origin renders the real Electron app', {
       assert.fail(`welcome page not visible within 5 s of the document loading: ${JSON.stringify(evidence)}`)
     }
     step('welcome visible')
+    const renderer = await settleWithin(page.evaluate(readRendererTimeline).catch(() => null), 2_000, null)
+    if (renderer) t.diagnostic(`renderer clock: document loaded ${renderer.domContentLoaded} ms, welcome in the page ${renderer.welcome ?? 'unnoted'} ms`)
     bootstrap.dispose()
     assert.equal(new URL(page.url()).origin, devUrl.origin)
     // ToastProvider renders a sibling live region; raw root child count is
@@ -196,18 +228,20 @@ test('the configured macOS development origin renders the real Electron app', {
     assert.equal(await page.evaluate(() => typeof window.xingmang?.getAccountSession), 'function')
     pageErrors.assertNone()
     await verifySignedOutSmokeIsolation(application, { requirePublicStatus: false })
-  } catch (error) {
-    failure = error
-    throw error
   } finally {
-    const closeProblem = await closeElectron(application)
     try {
-      await server?.close()
+      if (application) {
+        await application.close()
+        step('electron closed')
+      }
     } finally {
-      await fs.rm(stateRoot, { recursive: true, force: true })
-      await fs.rm(launcherRoot, { recursive: true, force: true })
+      try {
+        await server?.close()
+      } finally {
+        await fs.rm(stateRoot, { recursive: true, force: true })
+        await fs.rm(launcherRoot, { recursive: true, force: true })
+      }
     }
-    if (closeProblem && !failure) assert.fail(closeProblem)
   }
 })
 

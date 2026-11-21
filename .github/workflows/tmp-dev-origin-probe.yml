@@ -1,4 +1,4 @@
-# 临时：在 Mac 上把改好的 e2e/macos-dev-origin.test.mjs 连跑几轮（main 一份、带 #2025 一份，各含 CPU 打满的几轮），核完就删
+# 临时：在 Mac 上比 main、#2025、#2025 去掉二维码按需加载三份代码的开发版首屏（e2e/macos-dev-origin.test.mjs），核完就删
 name: tmp-dev-origin-probe
 on:
   push:
@@ -10,22 +10,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        code: [this-branch, with-2025]
+        code: [this-branch, with-2025, with-2025-static-qrcode]
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
       - name: Put #2025's merge commit under this branch's two test files
-        if: matrix.code == 'with-2025'
+        if: matrix.code != 'this-branch'
         run: |
           git fetch --no-tags origin refs/pull/2025/merge
           git checkout --detach FETCH_HEAD
           git checkout "$GITHUB_SHA" -- e2e/macos-dev-origin.test.mjs e2e/signed-out-smoke-isolation.mjs
-          git log --oneline -1
-          git status --short
+      - name: Take back only the support QR code's static import
+        if: matrix.code == 'with-2025-static-qrcode'
+        run: git checkout "$GITHUB_SHA" -- src/renderer-v2/features/app/useSupportContact.ts
+      - run: git log --oneline -1 && git status --short
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -45,27 +47,16 @@ jobs:
           npm run test:browser > /dev/null 2>&1 || echo "test:browser failed"
           npm run test:mac:release-keychain > /dev/null 2>&1 || echo "release-keychain failed"
           npm run test:mac:proxy > /dev/null 2>&1 || echo "mac:proxy failed"
-      - name: Compile then test, as test:mac:dev-origin does, two rounds
+      - name: Compile then test, as test:mac:dev-origin does, three rounds
         run: |
-          for i in 1 2; do
+          for i in 1 2 3; do
             echo "=== compile round $i"
             npm run compile > /dev/null 2>&1 || echo "compile failed"
-            node --test e2e/macos-dev-origin.test.mjs 2>&1 | grep -E '^(not )?ok 2|^# (dev server|electron|first window|document|welcome)|error:' || true
+            node --test e2e/macos-dev-origin.test.mjs 2>&1 | grep -E '^(not )?ok 2|^# (dev server|electron|first window|document|welcome|renderer)|error:' || true
           done
       - name: Test only, six rounds
         run: |
           for i in 1 2 3 4 5 6; do
             echo "=== plain round $i"
-            node --test e2e/macos-dev-origin.test.mjs 2>&1 | grep -E '^(not )?ok 2|^# (dev server|electron|first window|document|welcome)|error:' || true
-          done
-      - name: Every core kept busy, four rounds
-        run: |
-          cores=$(sysctl -n hw.ncpu)
-          echo "cores=$cores"
-          for i in 1 2 3 4; do
-            echo "=== busy round $i"
-            pids=""
-            for c in $(seq 1 "$cores"); do (while :; do :; done) & pids="$pids $!"; done
-            node --test e2e/macos-dev-origin.test.mjs 2>&1 | grep -E '^(not )?ok 2|^# (dev server|electron|first window|document|welcome)|error:' || true
-            kill $pids
+            node --test e2e/macos-dev-origin.test.mjs 2>&1 | grep -E '^(not )?ok 2|^# (dev server|electron|first window|document|welcome|renderer)|error:' || true
           done
