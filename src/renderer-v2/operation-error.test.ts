@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyOperationError, exportFailureSentence, operationFallbackActions, operationLogSection, operationTargetOf, presentOperationError, presentOperationFailure, type OperationErrorKey, type OperationTarget } from './operation-error'
 import { networkFailureMessages, officialRegistryUnreachableMarker, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
-import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
+import { codexDesktopActivationBrokenSentence, codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalMessage } from '../../electron/config-link-refusal'
 import { brokenConfigLaunchMessages } from './features/tools/broken-config-launch'
 import { configWriteBlockerMessage } from '../../electron/config-write-blocker'
@@ -33,6 +33,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   nameTaken: { sample: '命令执行失败（退出码 1）：claude（命令输出：MCP server demo already exists in local config）', target: 'config' },
   // 主进程 codex-desktop-service.ts 的 describeCodexDesktopLaunchFailure。
   codexDesktopNotStarted: { sample: 'Codex 桌面端没有打开：等了将近一分钟，没有等到它的窗口。先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。' },
+  // 同一个函数在 Windows 激活接口说没装、包却装着时（codex-desktop-known-issues.ts）。
+  codexDesktopActivationBroken: { sample: `Codex 桌面端没有打开：${codexDesktopActivationBrokenSentence(38)}` },
   // 同一个函数在装着已知打不开的那一版时（codex-desktop-known-issues.ts）。
   codexDesktopKnownIssue: { sample: `Codex 桌面端没有打开：等了 51 秒，Codex 没有启动起来。${codexDesktopKnownIssueLaunchSentence('26.924.2738.0')}` },
   // 主进程 codex-desktop-install-failure.ts 的 buildCodexDesktopInstallFailureMessage。
@@ -437,15 +439,34 @@ describe('renderer-v2 operation error classification', () => {
       .some((action) => action.label.includes('管理员'))).toBe(false)
   })
 
-  it('offers 重置 Codex between retry and support when the Codex window simply never appeared', () => {
+  it('offers 重置 Codex and then a restart between retry and support when the Codex window simply never appeared', () => {
     const hint = presentOperationError('Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。先关掉所有 Codex 窗口，再点「重试」。')
     expect(hint?.key).toBe('codexDesktopNotStarted')
     expect(hint?.actions).toEqual([
       { id: 'retry', label: '重试' },
       { id: 'resetCodexDesktop', label: '重置 Codex' },
+      { id: 'restartComputer', label: '立即重启' },
       { id: 'support', label: '联系客服' },
     ])
     expect(hint?.body).toContain('重置 Codex')
+    expect(hint?.body).toContain('「立即重启」')
+  })
+
+  it('puts the restart first and drops 重置 Codex when Windows itself could not start an installed Codex', () => {
+    const message = `Codex 桌面端没有打开：${codexDesktopActivationBrokenSentence(38)}`
+    expect(message).toBe('Codex 桌面端没有打开：Codex 已安装，但 Windows 未能启动它，等待 38 秒仍未检测到 Codex 运行。重启电脑后通常可以恢复。')
+    const hint = presentOperationError(message)
+    expect(hint?.key).toBe('codexDesktopActivationBroken')
+    expect(hint?.title).toBe('Codex 未能启动')
+    expect(hint?.actions).toEqual([
+      { id: 'restartComputer', label: '立即重启' },
+      { id: 'retry', label: '重试' },
+      { id: 'support', label: '联系客服' },
+    ])
+    // 该说的那半句在，不在的是重置：重装都救不了它，重置只会白白清掉 Codex 的登录。
+    expect(hint?.actions.some((action) => action.id === 'resetCodexDesktop')).toBe(false)
+    // 认这一类靠的是 Windows 那半句，不是秒数；没计时的那一版照样认得出。
+    expect(presentOperationError(`Codex 桌面端没有打开：${codexDesktopActivationBrokenSentence()}`)?.key).toBe('codexDesktopActivationBroken')
   })
 
   it('offers the command-line Codex when the installed desktop version is known not to start', () => {

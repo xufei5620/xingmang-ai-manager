@@ -4,6 +4,7 @@ import { configWriteBlockerMessage } from '../../../../electron/config-write-blo
 import { toolCertificateMessages } from '../../../../electron/network-failure'
 import { OperationErrorDialog, operationErrorActions, supportFailureOf } from './OperationErrorDialog'
 import { brokenConfigLaunchMessages } from '../tools/broken-config-launch'
+import { codexDesktopActivationBrokenSentence } from '../../../../electron/codex-desktop-known-issues'
 
 describe('renderer-v2 operation error dialog', () => {
   it('leads with the catalog heading and keeps the backend sentence underneath', () => {
@@ -26,6 +27,22 @@ describe('renderer-v2 operation error dialog', () => {
     expect(markup).toContain('operation-error-retry')
     expect(markup).toContain('operation-error-resetCodexDesktop')
     expect(markup).toContain('重置 Codex')
+    // 重启排在重置后面，这一类主按钮仍是重试。
+    expect(markup).toContain('operation-error-restartComputer')
+    expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="operation-error-retry"/)
+    expect(markup).toMatch(/xm-btn-secondary[^>]*data-testid="operation-error-restartComputer"/)
+  })
+
+  it('makes 立即重启 the primary button when Windows could not start an installed Codex', () => {
+    const raw = `Codex 桌面端没有打开：${codexDesktopActivationBrokenSentence(38)}`
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message: raw, retry: () => undefined }} onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('Codex 未能启动')
+    expect(markup).toContain(raw)
+    expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="operation-error-restartComputer"/)
+    expect(markup).toMatch(/xm-btn-secondary[^>]*data-testid="operation-error-retry"/)
+    expect(markup).not.toContain('operation-error-resetCodexDesktop')
   })
 
   it('gives an unrecognised failure the fallback buttons instead of only 返回', () => {

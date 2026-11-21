@@ -4756,7 +4756,7 @@ describe('Windows restart handoff', () => {
     expect(runCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         executable: expect.stringMatching(/System32[\\/]shutdown\.exe$/i),
-        argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', 'XingMang AI requires a restart to finish Windows updates'],
+        argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', '星芒AI管理工具将重启电脑，请保存未保存的文件。'],
       }),
       expect.objectContaining({ trustedOnly: true, timeoutMs: 10_000 }),
     )

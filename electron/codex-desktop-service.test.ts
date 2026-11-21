@@ -40,6 +40,7 @@ import {
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
   initialCodexDesktopChineseLocale,
+  buildCodexDesktopActivationFailureSummary,
   describeCodexDesktopLaunchFailure,
   describeCodexDesktopLaunchWait,
   buildCodexDesktopResetScript,
@@ -101,7 +102,7 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { codexDesktopInstallFailureReasons } from './codex-desktop-install-failure'
-import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
+import { codexDesktopActivationBrokenMarker, codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
 import {
   desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketIndexStaleError, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
 } from './desktop-package-bucket'
@@ -237,6 +238,32 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(noOutcome).toContain(codexDesktopKnownIssueMarker)
 
     expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }, null)).not.toContain(codexDesktopKnownIssueMarker)
+  })
+
+  it('asks for a restart, and nothing else, when Windows refused to start an installed Codex', () => {
+    const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 38, processSeen: false }, null, true)
+    expect(message).toBe('Codex 桌面端没有打开：Codex 已安装，但 Windows 未能启动它，等待 38 秒仍未检测到 Codex 运行。重启电脑后通常可以恢复。')
+    expect(message).toContain(codexDesktopActivationBrokenMarker)
+    // The code stays in the runtime log; the customer sees no hex and no start-menu detour.
+    expect(message).not.toMatch(/0x[0-9A-F]{8}|AppModel|AppX|Appx|开始菜单/i)
+    // A known-broken version is a different problem (it times out after starting); the Windows refusal wins.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 38, processSeen: false }, '26.924.2738.0', true))
+      .not.toContain(codexDesktopKnownIssueMarker)
+    expect(describeCodexDesktopLaunchFailure(undefined, null, true)).toBe('Codex 桌面端没有打开：Codex 已安装，但 Windows 未能启动它，未检测到 Codex 运行。重启电脑后通常可以恢复。')
+    // Without the flag nothing changes.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false })).not.toContain(codexDesktopActivationBrokenMarker)
+  })
+
+  it('calls it a Windows refusal only when the activation said not installed and never handed back a process', () => {
+    const refused = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80270254)')
+    const timedOut = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x8027025A)')
+
+    expect(buildCodexDesktopActivationFailureSummary([timedOut, refused], null)).toEqual({ windowsActivationBroken: true, cause: refused })
+    // A process id means Windows did start it: that is the 「启动后随即退出」 case, not this one.
+    expect(buildCodexDesktopActivationFailureSummary([refused], 18420)).toEqual({ windowsActivationBroken: false, cause: refused })
+    expect(buildCodexDesktopActivationFailureSummary([timedOut], null)).toEqual({ windowsActivationBroken: false, cause: timedOut })
+    // Nothing failed (plain Explorer launch, nothing came up): no cause to attach.
+    expect(buildCodexDesktopActivationFailureSummary([], null)).toEqual({ windowsActivationBroken: false })
   })
 
   it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {

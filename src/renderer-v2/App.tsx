@@ -182,6 +182,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [unread, setUnread] = useState(false)
   const [paymentReturn, setPaymentReturn] = useState<{ sequence: number; order: string | null }>()
   const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(null)
+  // Codex 桌面端打不开时错误框里那颗「立即重启」弹的确认框；Node.js 装完要重启的那个框另有一份状态。
+  const [codexRestart, setCodexRestart] = useState(false)
+  const requestComputerRestart = useCallback(() => setCodexRestart(true), [])
   const [confirmBusy, setConfirmBusy] = useState(false)
   const confirmationLock = useRef(false)
   // 首页一键切换账号来源之后 Codex 桌面端还开着：问一次要不要替用户重开，记下切到了哪边。
@@ -323,7 +326,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   const { openCodexDesktopStore, runOperationAction, runGuideFailureAction } = useFailureActions({
     app, toolsApi, toast, perform, navigate, operationError, setOperationError, rewriteAccountKeys, install, snapshot: toolbox.snapshot,
-    setConfirmation, setNodeReplace, setAuth, setHelp, repairBrokenConfig,
+    setConfirmation, setNodeReplace, setAuth, setHelp, repairBrokenConfig, requestComputerRestart,
   })
   // 确认过的事没做成时，错误框里的「重试」直接再做一遍，不再问一次。卸载时工具还开着，
   // 错误框说「先关掉……再重试」，以前框里却没有「重试」可点。确认框一直开在错误框后面，
@@ -711,6 +714,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button variant="primary" testId="model-swap-confirm" onClick={() => modelSwap.answer('swap')}>{modelSwapConfirmLabel(modelSwap.offer)}</Button>
     </>}><p data-testid="model-swap-question">{modelSwapQuestion(modelSwap.offer)}</p></Dialog>}
     {runtimeRestart && <RuntimeRestartDialog onClose={() => setRuntimeRestart(false)} restart={toolsApi.restartWindows} />}
+    {codexRestart && <RuntimeRestartDialog reason="codexDesktop" onClose={() => setCodexRestart(false)} restart={toolsApi.restartWindows} />}
     {/* 气泡、状态栏、侧栏的「重启并安装」在原地弹确认框，不先跳到版本更新页（11-10）。 */}
     {installConfirmOpen && <UpdateInstallConfirm api={native} update={update} open onClose={closeInstallConfirm} />}
     {/* 点「取消」或关掉框都是不换：install 收到 false，什么都不动。 */}

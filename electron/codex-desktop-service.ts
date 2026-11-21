@@ -95,6 +95,7 @@ import {
   activateCodexDesktopWithCdp as activateCodexDesktopWithCdpDefault,
   getAvailableLoopbackPort as getAvailableLoopbackPortDefault,
   injectCodexDesktopChineseLocale as injectCodexDesktopChineseLocaleDefault,
+  isCodexDesktopActivationNotRegistered,
 } from './codex-desktop-cdp'
 import type {
   CodexDesktopLaunchMode,
@@ -124,7 +125,7 @@ import {
   isPlainCodexDesktopInstallMessage,
   type CodexDesktopInstallFailureReason,
 } from './codex-desktop-install-failure'
-import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
+import { codexDesktopActivationBrokenSentence, codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
 import { codexDesktopChineseOffMessage } from './remote-features'
 import { inspectWindowsStoreAvailability } from './windows-store-availability'
 import { assertWorkspaceDirectory } from './workspace-access'
@@ -237,7 +238,14 @@ export interface CodexDesktopLaunchWaitOutcome {
 export function describeCodexDesktopLaunchFailure(
   outcome?: CodexDesktopLaunchWaitOutcome,
   knownIssueVersion?: string | null,
+  windowsActivationBroken = false,
 ): string {
+  // Windows 的激活接口说「没装」、包却明明装着：重启以外的办法都试过没用（见
+  // codexDesktopActivationBrokenMarker），先说这一条。排在已知坏版本前面，是因为那一版
+  // 的毛病是起来以后超时，回的不是这个码，这里只看到 Windows 自己没把它起来。
+  if (windowsActivationBroken) {
+    return `${codexDesktopNotStartedPrefix}：${codexDesktopActivationBrokenSentence(outcome?.waitedSeconds)}`
+  }
   // 这里不再按账户类型下结论（自带 Administrator、关了用户账户控制），原因见
   // windows-store-availability.ts 开头：Codex 桌面端不归 Windows 那条规矩管。
   // 装着的正是已知打不开的那一版：不用再叫客户去开始菜单自己分辨是谁的问题，
@@ -261,6 +269,26 @@ export function describeCodexDesktopLaunchFailure(
     + '先关掉所有 Codex 窗口，再点「重试」。想知道是不是 Codex 自己的问题：在开始菜单里搜「Codex」直接点开，'
     + '也起不来的话就是 Codex 这一版自己的问题，不是星芒，可以等微软商店更新它，或先用 Codex CLI；'
     + '开始菜单里能打开、从星芒打不开，请联系客服。'
+}
+
+export interface CodexDesktopActivationFailureSummary {
+  /** Windows 的激活接口说「没装」，而且一次进程号都没给过：失败框换成先重启的那一版。 */
+  windowsActivationBroken: boolean
+  /** 挂在打开失败那条报错上的原因（最后一次激活报的错），只进运行日志；一次都没报错时没有这一项。 */
+  cause?: unknown
+}
+
+/**
+ * 打开没成功时，把这一路上激活接口报过的错归一下。调用前包已经查过是当前用户装着的
+ * （没装会在更早一步报「未检测到 Codex 桌面端」），所以这里只看 Windows 说了什么：
+ * 给过进程号就是起来过，不算 Windows 不肯起。
+ */
+export function buildCodexDesktopActivationFailureSummary(
+  failures: readonly unknown[],
+  activationProcessId: number | null,
+): CodexDesktopActivationFailureSummary {
+  const windowsActivationBroken = activationProcessId === null && failures.some(isCodexDesktopActivationNotRegistered)
+  return failures.length ? { windowsActivationBroken, cause: failures[failures.length - 1] } : { windowsActivationBroken }
 }
 
 // 一键重置做不成时，客户自己在系统设置里点的是同一个按钮。
@@ -4264,6 +4292,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (mode !== 'restart') await repairPermissionState()
 
     let activationProcessId: number | null = null
+    // 每一次激活接口自己报的错。打开不成功时靠它分清是不是 Windows 那边激活坏了
+    // （isCodexDesktopActivationNotRegistered），最后一条挂在报错的 cause 上进运行日志：
+    // 普通那一路以前只打到控制台，打包版不留。
+    const activationFailures: unknown[] = []
     const launchWithExplorer = async (): Promise<void> => {
       const launchPlan = buildCodexDesktopLaunchPlan(desktopAppPath)
       await spawnDetached(launchPlan.executable, launchPlan.args, {
@@ -4292,6 +4324,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         await launchWithWorkspace()
       } catch (error) {
         if (!workspaceUrl) throw error
+        activationFailures.push(error)
         const message = error instanceof Error ? error.message : String(error)
         // Damaged or older Store registrations may reject arguments through
         // the AppModel activation manager even though plain AppsFolder
@@ -4330,6 +4363,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         }
         activatedViaAppModel = shouldInjectChinese || Boolean(startupArguments)
       } catch (error) {
+        activationFailures.push(error)
         const message = error instanceof Error ? error.message : String(error)
         // CDP activation may be unavailable on a damaged Store registration
         // or an older Windows build. The ordinary AppModel/AppsFolder route
@@ -4402,10 +4436,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         // 先停心跳：失败框弹出之前工具行不该再冒一句「还在等」。
         const waitedSeconds = heartbeat?.elapsedSeconds()
         heartbeat?.stop()
+        const activation = buildCodexDesktopActivationFailureSummary(activationFailures, activationProcessId)
         throw new Error(describeCodexDesktopLaunchFailure(
           waitedSeconds === undefined ? undefined : { waitedSeconds, processSeen: activationProcessId !== null },
           resolveCodexDesktopKnownIssue([desktopApp.version, desktopApp.appVersion]),
-        ))
+          activation.windowsActivationBroken,
+        ), 'cause' in activation ? { cause: activation.cause } : undefined)
       }
       if (cdpPort !== null) {
         // Codex 已经起来了：下面等的是给它换中文（等调试端口、核对端口归属），不是等窗口。

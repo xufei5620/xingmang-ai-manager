@@ -57,3 +57,22 @@ export function codexDesktopKnownIssueLaunchSentence(version: string): string {
   return `你装的这一版（${version}）${codexDesktopKnownIssueMarker}，是 Codex 自己的问题，不是星芒。`
     + '等微软商店出新版会自动好；急用先点「改用 Codex 命令行版」。'
 }
+
+/**
+ * 另一种已知打不开：不是哪一版的毛病，是 Windows 那边激活坏了。Codex 装得好好的，Windows 的
+ * 应用激活接口却回「这个应用没装」（0x80270254），一直没起来。2026-11-21 一台 Win10 家庭版
+ * 19045.6456 的排查记录里，重新注册、覆盖安装、完整重装都回「成功」，照样打不开，重启 Windows
+ * 才好；openai/codex #57691（Win10 专业版，同一个系统版本号）也是重启才好。所以这一类的失败框
+ * 第一颗按钮是「立即重启」，不给「重置 Codex」：清掉登录也救不了它。
+ *
+ * 渲染层按这半句归到 codexDesktopActivationBroken，所以字面量只在这里写一次。
+ */
+export const codexDesktopActivationBrokenMarker = 'Codex 已安装，但 Windows 未能启动它'
+
+/** 跟在「Codex 桌面端没有打开：」后面的那句（yoyo 2026-11-21 批的字，「重启框改」）。 */
+export function codexDesktopActivationBrokenSentence(waitedSeconds?: number): string {
+  const waited = waitedSeconds === undefined
+    ? '未检测到 Codex 运行'
+    : `等待 ${waitedSeconds} 秒仍未检测到 Codex 运行`
+  return `${codexDesktopActivationBrokenMarker}，${waited}。重启电脑后通常可以恢复。`
+}

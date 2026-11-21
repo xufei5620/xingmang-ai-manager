@@ -14,6 +14,14 @@ describe('renderer-v2 runtime restart dialog', () => {
     // 只有一颗按钮：不让小白在「稍后 / 现在」之间做选择。
     expect(markup).not.toContain('稍后重启')
   })
+
+  it('tells a Codex Desktop customer to come back and open Codex again, without the Node.js wording', () => {
+    const markup = renderToStaticMarkup(<RuntimeRestartDialog reason="codexDesktop" onClose={() => undefined} restart={async () => undefined} />)
+    expect(markup).toContain('>重启电脑<')
+    expect(markup).toContain('点击「立即重启」后，电脑将在约 15 秒后重启，请先保存未保存的文件。重启后请打开星芒，再次点击 Codex 桌面端的「打开」。')
+    expect(markup).toContain('runtime-restart-now')
+    expect(markup).not.toContain('Node.js')
+  })
 })
 
 describe('renderer-v2 restart reminder', () => {
