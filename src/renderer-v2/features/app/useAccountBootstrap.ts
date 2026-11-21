@@ -5,7 +5,7 @@ import { useLatestRequest, type LatestRequest } from '../../latest-request'
 import { errorMessage } from '../../business-common'
 import { accountScope, type AccountSiteId } from '../../account-context'
 import type { AuthMode } from '../auth'
-import { KeyRewriteSkippedError, bootstrapAccountTools, describeAccountBootstrapFailure, describeAccountBootstrapResult, sessionChangeKeepsBootstrap, skippedNamedProviders, subscriptionSwitchResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from '../tools/account-bootstrap'
+import { KeyRewriteSkippedError, bootstrapAccountTools, describeAccountBootstrapFailure, describeAccountBootstrapResult, sessionChangeKeepsBootstrap, settleBootstrapToolFailure, skippedNamedProviders, subscriptionSwitchResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from '../tools/account-bootstrap'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from '../tools/online-resync'
 import { markDiagnosticsStale } from './environment-status'
 import { toolTemplateFilledNotice, type StartupNotice } from './startup-notice'
@@ -249,7 +249,18 @@ export function useAccountBootstrap(options: AccountBootstrapOptions) {
   const suppressRestore = useCallback((restoredScope: string) => {
     suppressedRestores.current.add(restoredScope)
   }, [])
-  return { accountBootstrap, accountBootstrapRef, runAccountBootstrap, rewriteAccountKeys, applySubscriptionToTools, followSessionChange, abandonAccountBootstrap, suppressRestore }
+  /**
+   * 客户自己把这个工具连好了：上一轮替它写密钥没写成的那一条从首页横幅、引导里收起（settleBootstrapToolFailure）。
+   * 还在跑、没有结论的那一轮不动。
+   */
+  const settleToolKeyFailure = useCallback((provider: ProviderId) => {
+    setAccountBootstrap((current) => {
+      if (!current?.result) return current
+      const result = settleBootstrapToolFailure(current.result, provider)
+      return result === current.result ? current : { ...current, result }
+    })
+  }, [])
+  return { accountBootstrap, accountBootstrapRef, runAccountBootstrap, rewriteAccountKeys, applySubscriptionToTools, followSessionChange, abandonAccountBootstrap, suppressRestore, settleToolKeyFailure }
 }
 
 export type AccountBootstrap = ReturnType<typeof useAccountBootstrap>

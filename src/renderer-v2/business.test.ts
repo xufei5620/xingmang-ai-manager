@@ -16,13 +16,11 @@ import {
   subscriptionPaymentMethods,
 } from './pages-account'
 import {
-  extensionItemsForView,
   extensionScopeLabel,
-  filterExtensionMarkets,
   parseCommandArguments,
   parseEnvironmentVariables,
   readCodexExtensionMetadata,
-} from './pages-management'
+} from './features/extensions/extensions-common'
 import { accountTimeRange, hiddenFilterCount, rollFilterDefaults } from './AccountFilters'
 import {
   beginBusinessOperation,
@@ -225,27 +223,6 @@ describe('v2 business boundaries', () => {
     })
   })
 
-  it('keeps available plugin catalog entries out of the installed view', () => {
-    type Item = Parameters<typeof extensionItemsForView>[0][number]
-    const item = (id: string, kind: Item['kind'], installed: boolean) =>
-      ({ id, kind, installed } as Item)
-
-    const items = [
-      item('installed', 'plugin', true),
-      item('available', 'plugin', false),
-      item('mcp', 'mcp', true),
-    ]
-
-    expect(
-      extensionItemsForView(items, 'plugin', 'installed').map((entry) => entry.id),
-    ).toEqual(['installed'])
-    expect(
-      extensionItemsForView(items, 'plugin', 'market').map((entry) => entry.id),
-    ).toEqual(['installed', 'available'])
-    expect(extensionItemsForView(items, 'mcp', 'installed').map((entry) => entry.id))
-      .toEqual(['mcp'])
-  })
-
   it('names the detail scope in Chinese instead of the CLI scope keyword', () => {
     expect(extensionScopeLabel('user')).toBe('我的（全局）')
     expect(extensionScopeLabel('project')).toBe('当前项目')
@@ -256,18 +233,6 @@ describe('v2 business boundaries', () => {
     expect(extensionScopeLabel('extension')).toBe('我的（全局）')
     expect(extensionScopeLabel(null)).toBe('未提供')
     expect(extensionScopeLabel(undefined)).toBe('未提供')
-  })
-
-  it('filters plugin markets by both display name and root path', () => {
-    const markets = [
-      { name: 'Official', root: 'C:\\markets\\official' },
-      { name: 'Team Tools', root: 'D:\\shared\\plugins' },
-    ]
-    expect(filterExtensionMarkets(markets, 'official').map((entry) => entry.name))
-      .toEqual(['Official'])
-    expect(filterExtensionMarkets(markets, 'shared').map((entry) => entry.name))
-      .toEqual(['Team Tools'])
-    expect(filterExtensionMarkets(markets, 'missing')).toEqual([])
   })
 
   it('keeps the provider snapshot usable when a legacy Codex detail read fails', async () => {
