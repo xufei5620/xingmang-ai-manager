@@ -42,6 +42,7 @@ import {
   initialCodexDesktopChineseLocale,
   buildCodexDesktopActivationFailureSummary,
   describeCodexDesktopLaunchFailure,
+  resolveCodexDesktopStartMenuName,
   describeCodexDesktopLaunchWait,
   buildCodexDesktopResetScript,
   buildCodexDesktopStartAppProbeScript,
@@ -197,17 +198,30 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
   })
 
   it('says how long it waited and gives a start-menu check the customer can do alone', () => {
-    const noWindow = describeCodexDesktopLaunchFailure({ waitedSeconds: 47, processSeen: true })
-    expect(noWindow.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
-    expect(noWindow).toContain('等了 47 秒')
-    expect(noWindow).toContain('Codex 已经启动，但它的窗口一直没出来')
-    expect(noWindow).toContain('开始菜单里搜「Codex」直接点开')
-    expect(noWindow).toContain('Codex 这一版自己的问题，不是星芒')
-    expect(noWindow).toContain('联系客服')
+    // The approved wording (「开始菜单改」), word for word, with the name Windows shows in the Start menu.
+    const notStarted = describeCodexDesktopLaunchFailure({ waitedSeconds: 38, processSeen: false }, null, false, 'ChatGPT')
+    expect(notStarted).toBe('Codex 桌面端没有打开：等待 38 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。'
+      + '如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，'
+      + '可等待微软商店更新，或先使用 Codex 命令行版；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
 
-    const notStarted = describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false })
-    expect(notStarted).toContain('等了 45 秒，Codex 没有启动起来')
-    expect(notStarted).not.toContain('窗口一直没出来')
+    // Windows handed back a process id and it was gone by the end: it started and quit on its own.
+    const exited = describeCodexDesktopLaunchFailure({ waitedSeconds: 38, processSeen: true }, null, false, 'ChatGPT')
+    expect(exited.startsWith('Codex 桌面端没有打开：等待 38 秒，Codex 启动后随即退出，未出现窗口。请关闭所有 Codex 窗口后点击「重试」。')).toBe(true)
+    expect(exited.slice(exited.indexOf('请关闭'))).toBe(notStarted.slice(notStarted.indexOf('请关闭')))
+    expect(exited).not.toContain('Codex 未能启动')
+  })
+
+  it('names the Start menu entry the way Windows shows it, and falls back to Codex when that name is unusable', () => {
+    function searched(name?: string | null): string {
+      const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }, null, false, name)
+      return /开始菜单中搜索「([^」]*)」/.exec(message)?.[1] ?? ''
+    }
+    expect(searched('ChatGPT')).toBe('ChatGPT')
+    expect(searched('  Codex Beta ')).toBe('Codex Beta')
+    for (const unusable of [undefined, null, '', '   ', 'a\nb', 'ab\u0007', '「ChatGPT」', 'x'.repeat(41)]) {
+      expect(searched(unusable)).toBe('Codex')
+    }
+    expect(resolveCodexDesktopStartMenuName('x'.repeat(40))).toBe('x'.repeat(40))
   })
 
   // Windows only refuses sandboxed store apps on these accounts; Codex Desktop
@@ -230,7 +244,7 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(message).toContain('你装的这一版（26.924.2738.0）')
     expect(message).toContain(codexDesktopKnownIssueMarker)
     expect(message).toContain('「改用 Codex 命令行版」')
-    expect(message).not.toContain('开始菜单里搜「Codex」')
+    expect(message).not.toContain('开始菜单')
     expect(message).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store/i)
 
     const noOutcome = describeCodexDesktopLaunchFailure(undefined, '26.924.2738.0')

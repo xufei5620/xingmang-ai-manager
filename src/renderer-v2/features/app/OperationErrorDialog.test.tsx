@@ -20,7 +20,7 @@ describe('renderer-v2 operation error dialog', () => {
   })
 
   it('draws 重置 Codex beside retry when the Codex window never appeared', () => {
-    const raw = 'Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。先关掉所有 Codex 窗口，再点「重试」。'
+    const raw = 'Codex 桌面端没有打开：等待 45 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex 命令行版；如开始菜单中可以打开而星芒中无法打开，请联系客服。'
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={{ message: raw, retry: () => undefined }} onClose={() => undefined} onAction={() => undefined} />,
     )

@@ -13,3 +13,7 @@
   那条「需要重启电脑」的页顶提醒），没加 IPC 通道。
 - Windows 重启倒计时里那句 `shutdown /c` 从英文「to finish Windows updates」改成通用的
   「星芒AI管理工具将重启电脑，请保存未保存的文件。」（`windowsRestartNotice`，Node.js 装完那次也用它）。
+- 普通「Codex 打开失败」框下方那句主进程原话改成正式口吻，开始菜单里要搜的名字改用 `Get-StartApps` 查到的
+  那一项的 Name（新版是「ChatGPT」，以前写死「Codex」，客户搜不到会以为没装上），名字看着不对或查不到时仍写「Codex」
+  （`resolveCodexDesktopStartMenuName`）；Windows 交回过进程号、到头却没有进程的那种改说「启动后随即退出，未出现窗口」。
+  名字随这次打开查出来的状态走（闭包里的 WeakMap），没加进 `DesktopAppStatus`，渲染层拿不到也用不上。（yoyo「开始菜单改」）

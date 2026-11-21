@@ -440,8 +440,10 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('offers 重置 Codex and then a restart between retry and support when the Codex window simply never appeared', () => {
-    const hint = presentOperationError('Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。先关掉所有 Codex 窗口，再点「重试」。')
+    const hint = presentOperationError('Codex 桌面端没有打开：等待 45 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex 命令行版；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
     expect(hint?.key).toBe('codexDesktopNotStarted')
+    // 这句里有「Codex 未能启动」，正是 Windows 起不来那一类的标题；只比自己那一类的标题，不能被它整个省掉。
+    expect(hint?.title).toBe('Codex 打开失败')
     expect(hint?.actions).toEqual([
       { id: 'retry', label: '重试' },
       { id: 'resetCodexDesktop', label: '重置 Codex' },

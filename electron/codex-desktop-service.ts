@@ -235,10 +235,22 @@ export interface CodexDesktopLaunchWaitOutcome {
   processSeen: boolean
 }
 
+/**
+ * 开始菜单里 Codex 那一项叫什么（Get-StartApps 的 Name）。新版在开始菜单里叫「ChatGPT」，
+ * 客户照「搜 Codex」去找会以为没装上（2026-11-21 那份排查记录）。名字是 Windows 给的原样，
+ * 只在看着像一个应用名时才上屏，查不到或看着不对时写「Codex」。
+ */
+export function resolveCodexDesktopStartMenuName(name?: string | null): string {
+  const trimmed = name?.trim() ?? ''
+  if (!trimmed || trimmed.length > 40 || /[\p{Cc}「」]/u.test(trimmed)) return 'Codex'
+  return trimmed
+}
+
 export function describeCodexDesktopLaunchFailure(
   outcome?: CodexDesktopLaunchWaitOutcome,
   knownIssueVersion?: string | null,
   windowsActivationBroken = false,
+  startMenuName?: string | null,
 ): string {
   // Windows 的激活接口说「没装」、包却明明装着：重启以外的办法都试过没用（见
   // codexDesktopActivationBrokenMarker），先说这一条。排在已知坏版本前面，是因为那一版
@@ -262,13 +274,15 @@ export function describeCodexDesktopLaunchFailure(
   }
   // 客户自己分不清是 Codex 起不来还是星芒没叫动它，只会一直点重试或找客服。
   // 从开始菜单直接开一次就能分清：那边也起不来，就是 Codex 这一版自己的问题。
+  // Windows 交回过进程号、到头却一个进程都没有，是它起来以后自己退了（yoyo 2026-11-21 批的字，「开始菜单改」）。
   const what = outcome.processSeen
-    ? 'Codex 已经启动，但它的窗口一直没出来'
-    : 'Codex 没有启动起来'
-  return `${codexDesktopNotStartedPrefix}：等了 ${outcome.waitedSeconds} 秒，${what}。`
-    + '先关掉所有 Codex 窗口，再点「重试」。想知道是不是 Codex 自己的问题：在开始菜单里搜「Codex」直接点开，'
-    + '也起不来的话就是 Codex 这一版自己的问题，不是星芒，可以等微软商店更新它，或先用 Codex CLI；'
-    + '开始菜单里能打开、从星芒打不开，请联系客服。'
+    ? 'Codex 启动后随即退出，未出现窗口'
+    : 'Codex 未能启动'
+  return `${codexDesktopNotStartedPrefix}：等待 ${outcome.waitedSeconds} 秒，${what}。`
+    + '请关闭所有 Codex 窗口后点击「重试」。'
+    + `如需确认是否为 Codex 自身问题，可在开始菜单中搜索「${resolveCodexDesktopStartMenuName(startMenuName)}」并直接打开：`
+    + '如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex 命令行版；'
+    + '如开始菜单中可以打开而星芒中无法打开，请联系客服。'
 }
 
 export interface CodexDesktopActivationFailureSummary {
@@ -3064,6 +3078,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     return (await inspectCodexDesktopManifestBundle()).mirror
   }
 
+  // 这次查出来的开始菜单名字，只给打不开时那句「在开始菜单中搜索…」用，跟着查出来的那份状态走，
+  // 每次打开都是新查的。不放进 DesktopAppStatus：那份要跨进程交给渲染层，渲染层用不上它。
+  const codexDesktopStartMenuNames = new WeakMap<DesktopAppStatus, string>()
+
   async function inspectCodexDesktop(): Promise<DesktopAppStatus> {
     if (platform === 'darwin') {
       // A local application inspection failure must not block the system
@@ -3171,7 +3189,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         : '检测到开始菜单入口，但无法读取 Codex Desktop 的 Appx 已安装版本',
           'windows-appx',
         )
-    return {
+    const status: DesktopAppStatus = {
       installed: true,
       version: installedPackage?.version ?? null,
       appVersion,
@@ -3188,6 +3206,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       detectionError,
       ...update,
     }
+    if (match) codexDesktopStartMenuNames.set(status, match.name)
+    return status
   }
 
   function sendCodexDesktopInstallProgress(
@@ -4441,6 +4461,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           waitedSeconds === undefined ? undefined : { waitedSeconds, processSeen: activationProcessId !== null },
           resolveCodexDesktopKnownIssue([desktopApp.version, desktopApp.appVersion]),
           activation.windowsActivationBroken,
+          codexDesktopStartMenuNames.get(desktopApp),
         ), 'cause' in activation ? { cause: activation.cause } : undefined)
       }
       if (cdpPort !== null) {
