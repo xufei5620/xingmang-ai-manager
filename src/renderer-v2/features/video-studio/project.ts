@@ -90,7 +90,7 @@ export interface VideoStudioSettings {
   textGroup: string
   videoModel: string
   videoGroup: string
-  /** 「让 AI 画一张」用的画图模型和它的分组。 */
+  /** 「AI 生成图片」用的画图模型和它的分组。 */
   imageModel: string
   imageGroup: string
   resolution: VideoStudioResolution

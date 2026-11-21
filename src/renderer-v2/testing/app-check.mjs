@@ -5097,7 +5097,7 @@ test('an edited configuration can be kept as it is and stops asking', async () =
     const row = page.getByTestId('tool-row-claude')
     await row.getByText('配置已变更').waitFor()
     await row.getByRole('button', { name: '更多操作' }).click()
-    await page.getByRole('menuitem', { name: '就用现在这份配置', exact: true }).click()
+    await page.getByRole('menuitem', { name: '保留当前配置', exact: true }).click()
     await connectedBadge(page, 'claude').waitFor()
     assert.equal(await page.getByTestId('tool-claude-rewrite-key').count(), 0)
     const requests = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'configureManagedCliKeys').map(entry => entry.args[0]))
@@ -7374,7 +7374,7 @@ test('a blocked announcement link is copied for the browser instead of failing',
     const link = dialog.getByRole('link', { name: '官方说明' })
     await link.click()
     const hint = dialog.getByTestId('announcement-blocked-link')
-    await expect(hint).toContainText('已经帮你复制好了')
+    await expect(hint).toContainText('已自动复制')
     await expect(hint.locator('code')).toHaveText('https://xm.solov.cc/help')
     assert.deepEqual(await page.evaluate(() => window.__blockedLinkClipboard.values), ['https://xm.solov.cc/help'])
     await expect(dialog.getByRole('alert')).toHaveCount(0)
@@ -7382,7 +7382,7 @@ test('a blocked announcement link is copied for the browser instead of failing',
 
     await page.evaluate(() => { window.__blockedLinkClipboard.reject = true })
     await link.click()
-    await expect(hint).toContainText('请选中下面的地址复制')
+    await expect(hint).toContainText('请选中下方地址复制')
     await expect(hint.locator('code')).toHaveText('https://xm.solov.cc/help')
     await clean(page)
   } finally { await page.close() }
@@ -10478,17 +10478,17 @@ test('tutorial searches step contents regardless of case and surrounding spaces 
     await expect(search).toHaveValue('')
     await expect(cards).toHaveCount(total)
 
-    await search.fill('重新读取时')
+    await search.fill('需重新读取')
     await tutorial.getByTestId('tutorial-topic-start').click()
-    const explanation = article.locator('details').filter({ hasText: '重新读取时' })
+    const explanation = article.locator('details').filter({ hasText: '需重新读取' })
     await expect(explanation).toHaveCount(1)
     await expect(explanation).toHaveJSProperty('open', true)
-    await expect(explanation.getByText(/刚改过配置，需要重新读取时/)).toBeVisible()
+    await expect(explanation.getByText(/如刚修改配置需重新读取/)).toBeVisible()
     // 只展开含这个词的那一条补充说明，其余照旧收着；页面翻到命中的那几个字。
     const notes = article.locator('details.v2-tutorial-extra')
     await expect.poll(() => notes.evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle))).toEqual(['提示 Codex 桌面端正在运行？'])
     const explanationHit = explanation.locator('mark.v2-tutorial-hit')
-    await expect(explanationHit).toHaveText('重新读取时')
+    await expect(explanationHit).toHaveText('需重新读取')
     await expect.poll(() => insidePageViewport(explanationHit)).toBe(true)
     await tutorial.getByTestId('tutorial-back').click()
     await search.fill('安装报错怎么办')
@@ -10503,7 +10503,7 @@ test('tutorial searches step contents regardless of case and surrounding spaces 
     await search.fill('Windows 安装报错')
     await tutorial.getByTestId('tutorial-topic-start').click()
     await expect(installationNote).toHaveJSProperty('open', true)
-    await expect(installationNote.getByText(/Windows 安装报错时按提示处理/)).toBeVisible()
+    await expect(installationNote.getByText(/Windows 安装报错时请按提示处理/)).toBeVisible()
     await clean(page)
   } finally { await page.close() }
 })
@@ -10550,7 +10550,7 @@ test('tutorial pins the step being read on top and puts help at the end of the a
     await expect(progress.getByRole('button', { name: '第 4 步：打开 Codex，发出第一条消息', exact: true })).toHaveAttribute('aria-current', 'step')
     // 自己滚回去，读到哪一步就写哪一步。
     await article.locator('#tutorial-start-step-1').evaluate((element) => element.scrollIntoView({ block: 'start' }))
-    await expect(progress).toContainText('第 2 步，共 4 步 · 装好 Codex 桌面端')
+    await expect(progress).toContainText('第 2 步，共 4 步 · 安装 Codex 桌面端')
     await expect(progress.locator('[aria-current="step"]')).toHaveText('2')
     // 回到文章开头，那条收起来。
     await page.getByTestId('page-viewport').evaluate((element) => { element.scrollTop = 0 })

@@ -42,7 +42,7 @@ function imageCapabilityOf(model: string): ImageModelCapability | null {
 }
 
 /**
- * 「让 AI 画一张」点了以后的出图框（融合第 4 步）。跟对话里「生成图片」那一档是同一个：型号、尺寸、画质、分辨率
+ * 「AI 生成图片」点了以后的出图框（融合第 4 步）。跟对话里「生成图片」那一档是同一个：型号、尺寸、画质、分辨率
  * 用的是同一排（ImageOptionMenus），记的也是同一份（image-settings.ts）；交出去走的是同一条 chat:generate-image，
  * 画好的图进作品库。以前这里是一个只问「画不画」的确认框，型号在「想法」卡的「画镜头图」里选。
  */

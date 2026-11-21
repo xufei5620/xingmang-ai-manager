@@ -209,7 +209,7 @@
 ## features/video-studio/ 视频剪辑（「创作」里一条视频的工作台和它的拼片引擎）
 - `features/video-studio/README.md` — 页面的流程和工程怎么存；拼片引擎的约定：输入输出、编码先后、字节转移给后台线程、上限。
 - `features/video-studio/VideoStudioPage.tsx` / `video-studio.css` — 一条视频的工作台（由 `features/create/CreatePage.tsx` 懒加载、挂在「创作」右边）：想法、分镜、拼成一条视频三张卡，自己没有页面标题和草稿箱；没登录、历史账号、临时停用各一个空状态；要花钱的先弹确认（让 AI 画镜头图弹的是 `ShotImageDialog.tsx`）。片段用缩略图代表，点了交给系统播放器（页面里直接放的只有对话里出好的那一段，见 `features/chat/ChatVideo.tsx`）。
-- `features/video-studio/ShotImageDialog.tsx` — 「让 AI 画一张」点了以后的出图框（融合第 4 步）：跟对话里「生成图片」那一档共用同一排选项（`features/chat/ImageOptions.tsx`）和同一份设置（`features/chat/image-settings.ts`），画面描述、参考图、报价和余额；点「生成图片」才把框里选的交给 `useVideoStudio` 的 `drawShotImage`。
+- `features/video-studio/ShotImageDialog.tsx` — 「AI 生成图片」点了以后的出图框（融合第 4 步）：跟对话里「生成图片」那一档共用同一排选项（`features/chat/ImageOptions.tsx`）和同一份设置（`features/chat/image-settings.ts`），画面描述、参考图、报价和余额；点「生成图片」才把框里选的交给 `useVideoStudio` 的 `drawShotImage`。
 - `features/video-studio/useVideoStudio.ts` — 页面的状态：读各分组的模型、写分镜、同时最多 3 段的出片队列和进度、让 AI 画镜头图（走对话页出图那条 `chat:generate-image`，停下走 `chat:cancel`）、拼片；工程从外面交来的 `source` 读、往它写（开哪一条归 `useVideoStudioLibrary.ts`），点开的那一条里没等到的片段照重开页面那样接回；停下时说清哪几段已经交给服务端、照样扣费。
 - `features/video-studio/library.ts` / `useVideoStudioLibrary.ts` — 这个账号做过的视频，一条一个文件（主进程 `video-studio-project-store.ts`）：前者是纯函数（文件内容、名字、排序、0.2.24 留在 localStorage 里的草稿怎么抄成文件、抄完怎么核对），后者是读、攒 400 毫秒一批写、紧急时立刻写、改名、删、从工作台外面整份换掉（`replace`：对话里的一段视频「添加到视频」时用，换版本号让开着的工作台重新读、旧的那份不再能写），和「现在开着哪一条、它手上有事时不换」。
 - `features/video-studio/clip.ts` — 纯函数：存着的一段视频怎么读回来（镜头和对话里出的视频共用，缩略图按编号换成现在的版本）、页面里直接放用的地址。

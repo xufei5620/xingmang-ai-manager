@@ -87,7 +87,7 @@ describe('VideoStudioPage', () => {
     const markup = render('ready')
     expect(markup).toContain('data-testid="video-idea-input"')
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*data-testid="video-plan"|<button[^>]*data-testid="video-plan"[^>]*disabled=""/)
-    expect(markup).toContain('写分镜按文字模型的用量计费；之后每生成一段视频单独计费。')
+    expect(markup).toContain('编写分镜按文字模型的用量计费；此后每生成一段视频单独计费。')
     expect(markup).not.toContain('data-testid="video-shots"')
     expect(markup).not.toContain('data-testid="video-export"')
   })
@@ -128,9 +128,9 @@ describe('VideoStudioPage', () => {
     // 第二镜还没生成：选的图就在左边那格。
     expect(markup).toMatch(/data-testid="video-shot-image-thumb-1"[^]*?src="xingmang-asset:\/\/image\/p{43}"/)
     expect(markup).not.toContain('data-testid="video-shot-image-preview-1"')
-    expect(markup).toMatch(/data-testid="video-shot-image-change-1"[^>]*>[^]*?换一张/)
+    expect(markup).toMatch(/data-testid="video-shot-image-change-1"[^>]*>[^]*?更换图片/)
     expect(markup).toMatch(/data-testid="video-shot-image-remove-1"[^>]*>[^]*?不使用此图/)
-    expect(markup).toMatch(/title="生成时从这张图动起来，适合商品图、人物照片"[^>]*data-testid="video-shot-image-2"[^>]*>[^]*?用一张图开头/)
+    expect(markup).toMatch(/title="生成时以此图作为首帧，适合商品图、人物照片"[^>]*data-testid="video-shot-image-2"[^>]*>[^]*?用一张图开头/)
     expect(markup).not.toContain('data-testid="video-shot-image-0"')
   })
 
@@ -188,9 +188,9 @@ describe('VideoStudioPage', () => {
     expect(markup).not.toContain('data-testid="video-image-model"')
     expect(markup).toContain('data-testid="video-text-model"')
     expect(markup).toContain('data-testid="video-video-model"')
-    expect(markup).toMatch(/<button title="根据此镜头的画面描述先生成一张图片，确认后再用于生成视频；生成图片单独计费"(?![^>]*disabled)[^>]*data-testid="video-shot-draw-0"[^>]*>[^]*?让 AI 画一张/)
-    expect(markup).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="video-shot-draw-1"[^>]*>[^]*?再画一张/)
-    expect(markup).not.toContain('正在画图')
+    expect(markup).toMatch(/<button title="根据此镜头的画面描述先生成一张图片，确认后再用于生成视频；生成图片单独计费"(?![^>]*disabled)[^>]*data-testid="video-shot-draw-0"[^>]*>[^]*?AI 生成图片/)
+    expect(markup).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="video-shot-draw-1"[^>]*>[^]*?重新生成图片/)
+    expect(markup).not.toContain('正在生成图片')
     expect(markup).not.toContain('data-testid="video-shot-draw-stop-1"')
     // 出图框点了才出来。
     expect(markup).not.toContain('data-testid="video-draw-dialog"')
@@ -242,11 +242,11 @@ describe('VideoStudioPage', () => {
 
   it('offers a song under the film, and once one is picked shows its name, change, drop and how loud the clips play', () => {
     const project = plannedProject()
-    expect(render('ready', project)).toMatch(/title="从电脑里选一首歌当背景音乐，支持 MP3、M4A、WAV、OGG"[^>]*data-testid="video-music-add"[^>]*>[^]*?加配乐/)
+    expect(render('ready', project)).toMatch(/title="从本机选择一首歌曲作为背景音乐，支持 MP3、M4A、WAV、OGG"[^>]*data-testid="video-music-add"[^>]*>[^]*?加配乐/)
     const markup = render('ready', { ...project, music: { assetId: 'm'.repeat(43), name: '晴天 <live>', clipSound: 'quiet' } })
     expect(markup).not.toContain('data-testid="video-music-add"')
     expect(markup).toMatch(/data-testid="video-music-name"[^>]*>[^]*?晴天 &lt;live&gt;/)
-    expect(markup).toMatch(/data-testid="video-music-change"[^>]*>[^]*?换一首/)
+    expect(markup).toMatch(/data-testid="video-music-change"[^>]*>[^]*?更换配乐/)
     expect(markup).toMatch(/data-testid="video-music-remove"[^>]*>[^]*?不使用配乐/)
     expect(markup).toMatch(/<label[^>]*>片段原声<\/label><select[^>]*data-testid="video-clip-sound"/)
     expect(markup).toMatch(/<option value="normal">照常<\/option><option value="quiet" selected="">调小<\/option><option value="off">关掉<\/option>/)

@@ -23,7 +23,7 @@ export function imageSizeLabel(size: string): string {
 
 /**
  * 出图的那一排：尺寸、画质、分辨率，按倍数算尺寸的型号多一个「自定义尺寸」和宽高两格。对话里「生成图片」那一档和
- * 视频工作台「让 AI 画一张」的出图框用的是这同一排（融合第 4 步），两边选项一样、字一样。testIdPrefix 分开两边的
+ * 视频工作台「AI 生成图片」的出图框用的是这同一排（融合第 4 步），两边选项一样、字一样。testIdPrefix 分开两边的
  * 测试标记：对话里是 chat-image（老标记照留）。
  */
 export function ImageOptionMenus({ capability, values, customSize, onCustomSize, onChange, onLeaveCustomSize, sizeRuleId, testIdPrefix }: {
