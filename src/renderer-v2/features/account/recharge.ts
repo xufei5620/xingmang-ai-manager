@@ -321,6 +321,68 @@ export function balancePurchaseLine(balanceUsd: number | null, plan: Pick<Accoun
     : { text: `余额 ${dollars(balanceUsd)}，扣完剩 ${dollars(left)}`, short: false }
 }
 
+/**
+ * 买套餐的框里摆的套餐，跟后台这一刻的比出来的结果：price = 价格或币种变了；terms = 价格没变，
+ * 时长、额度或额度重置的规矩变了；gone = 列表里已经没有这个套餐（下架了）。
+ */
+export type PurchasePlanChange = 'none' | 'price' | 'terms' | 'gone'
+
+/**
+ * 买套餐的框里是打开那一刻的套餐，框开着时后台可能改了价、改了内容或者下架了。下单只带套餐编号，
+ * 服务端照它那一刻的价扣（余额买是直接扣，后面没有支付页再给客户看一眼），所以列表重读回来、
+ * 点付款之前都按编号对一遍：拿到后台现在那份换进框里，客户看得到、付得着的那几样变了就报出来。
+ */
+export function followPurchasePlan(
+  seen: AccountSubscriptionPlan,
+  fresh: readonly AccountSubscriptionPlan[],
+): { change: Exclude<PurchasePlanChange, 'gone'>; plan: AccountSubscriptionPlan } | { change: 'gone'; plan: null } {
+  const plan = fresh.find((item) => item.id === seen.id)
+  if (!plan) return { change: 'gone', plan: null }
+  if (plan.priceAmount !== seen.priceAmount || planCurrency(plan) !== planCurrency(seen)) return { change: 'price', plan }
+  if (
+    planDurationText(plan) !== planDurationText(seen)
+    || plan.totalAmount !== seen.totalAmount
+    || plan.quotaResetPeriod !== seen.quotaResetPeriod
+  ) return { change: 'terms', plan }
+  return { change: 'none', plan }
+}
+
+function planCurrency(plan: Pick<AccountSubscriptionPlan, 'currency'>): string {
+  return (plan.currency || 'USD').toUpperCase()
+}
+
+/** 框里那份套餐变了时框顶那条（N3，yoyo 11-21 要书面口吻）；没变为 null。price 那句把调整前后的价都写出来。 */
+export function purchasePlanNotice(
+  change: PurchasePlanChange,
+  before: Pick<AccountSubscriptionPlan, 'priceAmount' | 'currency'>,
+  after: Pick<AccountSubscriptionPlan, 'priceAmount' | 'currency'> | null,
+): { title: string; body: string } | null {
+  if (change === 'price' && after) return {
+    title: '价格已更新',
+    body: `价格由 ${planPriceText(before)} 调整为 ${planPriceText(after)}，请确认后重新支付。`,
+  }
+  if (change === 'terms') return { title: '套餐内容已更新', body: '套餐的时长或额度已调整，价格不变，请确认后重新支付。' }
+  if (change === 'gone') return { title: '该套餐已下架', body: '请关闭此窗口，选择其他套餐。' }
+  return null
+}
+
+/**
+ * 买套餐的框里选哪种支付：能用余额、余额也够（或者没有别的渠道）就选余额，不然选第一个在线渠道。
+ * 框开着时套餐换成了后台现在那份，客户已经选的那种还能用就不动它。
+ */
+export function purchaseMethodFor(
+  plan: Pick<AccountSubscriptionPlan, 'allowBalancePay'>,
+  channels: readonly Pick<PaymentMethod, 'type'>[],
+  balanceShort: boolean,
+  current?: string,
+): string {
+  const usable = current === 'balance'
+    ? plan.allowBalancePay && !balanceShort
+    : channels.some((channel) => channel.type === current)
+  if (current && usable) return current
+  return plan.allowBalancePay && (!balanceShort || channels.length === 0) ? 'balance' : channels[0]?.type ?? ''
+}
+
 /** 兑换成功的那句：余额写到账多少，结果里没有金额就只说余额已更新；订阅、并发额度两种照旧。 */
 export function redeemSuccessText(result: AccountRedemptionResult, quotaPerUnit: number | null | undefined): string {
   if (result.type === 'subscription') return '订阅兑换成功'
