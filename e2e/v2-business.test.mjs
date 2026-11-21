@@ -2459,6 +2459,19 @@ test('a tool that is not installed is not read and each entry leads to the home 
   }
 })
 
+// Mac 验收 R10：风险标签那句说明原来哪儿都没上屏。现在详情页标签下面写出来，鼠标停在标签上也能看到。
+test('a curated entry spells out what its risk tag means under the tags in its details', async () => {
+  const page = await fixture(hubClaudeOnly)
+  try {
+    await page.getByTestId('hub-open-mcp-files').click()
+    const detail = page.getByTestId('hub-detail')
+    await expect(detail.getByTestId('curated-risk-details-files')).toHaveText('能在你指定的位置新建、修改和删除文件。')
+    await expect(detail.getByTitle('能在你指定的位置新建、修改和删除文件。')).toHaveText('会修改本地文件')
+  } finally {
+    await page.close()
+  }
+})
+
 // 「扩展改」第 3 条（10-24）：能用它的工具一个都没装时直说，给「去首页安装」，不给「+」。
 test('an entry says on each family that the tool is not installed when none is, and leads to the home page', async () => {
   const page = await fixture('page=extensions&installedProviders=')
