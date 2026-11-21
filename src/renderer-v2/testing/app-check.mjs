@@ -1544,7 +1544,7 @@ test('the records page opens the folder a record was made in (第七批 8)', asy
     // v4：「打开文件夹」挪进了行上的「…」。目录已经没了的那一行这一项按不动，文件夹那一格挂着警告图标。
     const goneMenu = page.getByTestId('sessions-menu-claude:2')
     await goneMenu.waitFor()
-    assert.equal(await page.getByTestId('sessions-missing-claude:2').getAttribute('title'), '这个文件夹已经不在了')
+    assert.equal(await page.getByTestId('sessions-missing-claude:2').getAttribute('title'), '该文件夹已不存在')
     await goneMenu.locator('button').first().click()
     const gone = page.getByTestId('sessions-open-directory-claude:2')
     await gone.waitFor()
@@ -1582,7 +1582,7 @@ test('a summary-only record still opens, says only the summary is left and offer
     assert.equal(await summaryOnly.isDisabled(), false)
     await summaryOnly.click()
     const drawer = page.getByTestId('session-detail-drawer')
-    assert.equal(await drawer.getByTestId('session-detail-summary-only').innerText(), '这条记录只有摘要，对话原文已经不在这台电脑上了')
+    assert.equal(await drawer.getByTestId('session-detail-summary-only').innerText(), '该记录仅有摘要，对话原文已不在本机')
     assert.equal(await drawer.getByTestId('session-detail-export').isDisabled(), true)
     // 原文已经不在了，不去读。
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'getProviderSessionDetail' && entry.args[0] === 'codex:4')), false)
@@ -1644,8 +1644,8 @@ test('the records table puts each record on one row with tool chips that count',
     // 搜不到时说这一页自己的话，提醒切回「全部」。
     await page.evaluate(() => { window.xingmang.listProviderSessions = async () => ({ items: [], page: 1, pageSize: 20, total: 0, pages: 1, stats: { total: 0, byProvider: {} }, capabilities: {} }) })
     await sessions.getByTestId('sessions-search').fill('没有这条')
-    await sessions.getByText('没有找到相关记录').waitFor()
-    await sessions.getByText('换个关键词，或者切换到「全部」再看看。').waitFor()
+    await sessions.getByText('未找到相关记录').waitFor()
+    await sessions.getByText('请更换关键词，或切换到「全部」查看。').waitFor()
     await clean(page)
   } finally { await page.close() }
 })
@@ -2630,11 +2630,11 @@ test('deleting a session asks first, then removes it from the list and the home 
     await page.getByTestId('session-detail-delete').click()
     const confirm = page.getByTestId('session-delete-confirm')
     await confirm.waitFor()
-    assert.match(await confirm.textContent(), /删了就找不回来/)
+    assert.match(await confirm.textContent(), /且无法恢复/)
     // 指的是「…」和详情里那颗「导出对话」，按钮改名后这句跟着改。
-    assert.match(await confirm.textContent(), /先点「导出对话」/)
-    // 「先不删」什么都不动。
-    await confirm.getByRole('button', { name: '先不删' }).click()
+    assert.match(await confirm.textContent(), /请先点击「导出对话」/)
+    // 「暂不删除」什么都不动。
+    await confirm.getByRole('button', { name: '暂不删除' }).click()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'deleteProviderSession')), false)
 
     await page.getByTestId('session-detail-delete').click()
@@ -2680,7 +2680,7 @@ test('dialogs left open on a page the tray or a notification navigates away from
     await confirm.waitFor()
     assert.deepEqual(await modal(), ['session-detail-drawer', 'session-delete-confirm'])
     assert.equal(await page.evaluate(() => document.querySelector('[data-testid="session-delete-confirm"]')?.contains(document.activeElement)), true)
-    await confirm.getByRole('button', { name: '先不删' }).click()
+    await confirm.getByRole('button', { name: '暂不删除' }).click()
     await confirm.waitFor({ state: 'hidden' })
     assert.deepEqual(await modal(), ['session-detail-drawer'])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'deleteProviderSession')), false)
@@ -10155,7 +10155,7 @@ test('the paid Codex tool-call check requires fresh consent and drops an old-acc
 
     await consent.click()
     await run.click()
-    await page.getByTestId('health-codex-responses-result').getByText('Codex 能正常干活', { exact: true }).waitFor()
+    await page.getByTestId('health-codex-responses-result').getByText('Codex 运行正常', { exact: true }).waitFor()
     const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses'))
     assert.equal(calls.length, 2)
     assert.deepEqual(calls.map((entry) => entry.args), [[true, 'xm-account:17'], [true, 'xm-account:18']])
@@ -10195,7 +10195,7 @@ test('the paid Codex check waits for startup account restore instead of reportin
     await page.getByTestId('nav-health').click()
     await page.getByTestId('health-codex-responses-consent').getByRole('checkbox').click()
     await page.getByTestId('health-codex-responses-run').click()
-    await page.getByTestId('health-codex-responses-error').getByText('Codex 没测成：账号还在登录中，请等几秒再检查', { exact: true }).waitFor()
+    await page.getByTestId('health-codex-responses-error').getByText('Codex 检测未完成：账号还在登录中，请等几秒再检查', { exact: true }).waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'probeCodexResponses').length), 0)
     await clean(page)
   } finally { await page.close() }
@@ -10224,9 +10224,9 @@ test('a self-check failure is attributed per tool and never takes the other tool
     await page.getByTestId('health-connection-details-claude').click()
     await claude.getByTestId('health-connection-details').waitFor()
     await page.getByTestId('health-connection-details-claude').click()
-    // 测不成的那一条是「没测成」，排在「有问题」后面、「未配置」前面。
+    // 测不成的那一条是「检测未完成」，排在「有问题」后面、「未配置」前面。
     const codex = page.getByTestId('health-connection-error-codex')
-    await expect(codex.getByRole('img', { name: '没测成', exact: true })).toHaveClass(/is-bad/)
+    await expect(codex.getByRole('img', { name: '检测未完成', exact: true })).toHaveClass(/is-bad/)
     await expect(codex.locator('.v2-health-line-text')).toHaveText('Codex CLI：自检没能完成')
     const order = await page.getByTestId('health-connection').locator('[data-testid^="health-connection-"]:is([data-testid*="-result-"], [data-testid*="-error-"])')
       .evaluateAll((rows) => rows.map((row) => row.dataset.testid.replace(/^health-connection-(result|error)-/, '')))
@@ -10471,8 +10471,8 @@ test('tutorial searches step contents regardless of case and surrounding spaces 
     await expect(tutorial.getByTestId('tutorial-topic-runtime-mac')).toBeFocused()
 
     await search.fill('no-such-tutorial-8472')
-    await expect(tutorial.getByRole('heading', { name: '没有找到相关教程', exact: true })).toBeVisible()
-    await expect(tutorial.getByText('换个说法试试，或者直接问客服。', { exact: true })).toBeVisible()
+    await expect(tutorial.getByRole('heading', { name: '未找到相关教程', exact: true })).toBeVisible()
+    await expect(tutorial.getByText('请尝试其他关键词，或直接咨询客服。', { exact: true })).toBeVisible()
     await expect(cards).toHaveCount(0)
     await tutorial.getByRole('button', { name: '清除搜索', exact: true }).click()
     await expect(search).toHaveValue('')
@@ -11346,7 +11346,7 @@ test('tutorial copies the first Codex message and offers manual copying when cli
 
     await page.evaluate(() => { window.__tutorialClipboard.reject = true })
     await copy.click()
-    await expect(step.getByRole('status')).toHaveText('没能自动复制，请选中上面的文字，右键复制。')
+    await expect(step.getByRole('status')).toHaveText('自动复制失败，请选中上方文字后右键复制。')
     await expect(step.getByText('已复制，粘贴到 Codex 的输入框里即可。', { exact: true })).toHaveCount(0)
     await expect(step.locator('pre')).toHaveText(example)
     assert.deepEqual(await page.evaluate(() => window.__tutorialClipboard.values), [example])
@@ -11805,7 +11805,7 @@ test('a record opens in a modal dialog that closes with Esc and hands focus back
     assert.equal(await page.evaluate(() => document.querySelector(':modal')?.getAttribute('data-testid')), 'session-detail-drawer')
     assert.equal(await dialog.evaluate((element) => element.classList.contains('xm-dialog-640')), true)
     // 文件夹没了的那条：弹窗里说清楚接不上，「继续对话」按不动。
-    assert.equal(await dialog.locator('.v2-session-detail-gone').innerText(), '项目文件夹 C:\\work\\older-app 已经不在了，接不上上次的对话。')
+    assert.equal(await dialog.locator('.v2-session-detail-gone').innerText(), '项目文件夹 C:\\work\\older-app 已不存在，无法继续上次的对话。')
     assert.equal(await dialog.getByTestId('session-detail-resume').isDisabled(), true)
     await page.keyboard.press('Escape')
     await dialog.waitFor({ state: 'detached' })
