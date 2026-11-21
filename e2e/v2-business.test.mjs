@@ -1768,16 +1768,16 @@ test('sessions search can also look through what was said, after the typing sett
     await page.getByTestId('sessions-row-codex:session-1').waitFor()
     await page.getByTestId('sessions-search').fill('没说过')
     assert.equal((await calls(page)).some((call) => call.name === 'list-sessions-content'), false)
-    await page.getByText('也搜对话里说过的话', { exact: true }).click()
+    await page.getByText('同时搜索对话内容', { exact: true }).click()
     assert.equal(await page.getByTestId('sessions-search-content').isChecked(), true)
-    await page.getByText('最近的对话里没有找到「没说过」', { exact: true }).waitFor()
+    await page.getByText('最近的对话中未找到「没说过」', { exact: true }).waitFor()
     assert.deepEqual(
       (await calls(page)).filter((call) => call.name === 'list-sessions-content').map((call) => call.args),
       [{ search: '没说过', searchContent: true }],
     )
     // 打字时先不翻：一口气敲完只发停手后的那个词。
     await page.getByTestId('sessions-search').fill('测试')
-    await page.getByTestId('sessions-search-content-status').getByText('正在翻对话内容…', { exact: true }).waitFor()
+    await page.getByTestId('sessions-search-content-status').getByText('正在搜索对话内容…', { exact: true }).waitFor()
     await page.getByTestId('sessions-row-codex:session-1').waitFor()
     await page.getByTestId('sessions-search-content-status').waitFor({ state: 'detached' })
     assert.deepEqual(

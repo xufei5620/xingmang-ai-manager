@@ -118,7 +118,7 @@
 .v2-filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
 .v2-filter-bar > .xm-chips { flex: 1 1 auto; min-width: 0; }
 .v2-filter-bar > .xm-search { width: 250px; height: var(--control-sm); }
-/* 记录页搜索框旁的「也搜对话里说过的话」（总单 Q4 C3）。 */
+/* 记录页搜索框旁的「同时搜索对话内容」（总单 Q4 C3）。 */
 .v2-sessions-search-content { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: var(--font-small); cursor: pointer; white-space: nowrap; }
 .v2-sessions-search-content input { margin: 0; accent-color: var(--accent); }
 .v2-sessions-searching { margin: -6px 0 12px; color: var(--text-3); font-size: var(--font-small-compact); }

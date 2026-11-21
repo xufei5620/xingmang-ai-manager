@@ -1293,7 +1293,7 @@ const apiMethods = {
     throw new Error('配置写入失败，原配置已保留')
   },
   listProviderSessions: async (input?: Parameters<V2Bridge['listProviderSessions']>[0]) => {
-    // 「也搜对话里说过的话」：只在勾上时记一笔，别的用例看到的调用照旧；搜「没说过」时一条都不给。
+    // 「同时搜索对话内容」：只在勾上时记一笔，别的用例看到的调用照旧；搜「没说过」时一条都不给。
     if (input?.searchContent) record('list-sessions-content', { search: input.search, searchContent: input.searchContent })
     const none = empty || Boolean(input?.searchContent && input.search === '没说过')
     return {

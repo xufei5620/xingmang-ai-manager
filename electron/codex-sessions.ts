@@ -1005,7 +1005,7 @@ export class CodexSessionsService {
   }
 
   /**
-   * 这段对话里有没有说过 `needle`（记录页「也搜对话里说过的话」）。`needle` 由调用方统一转成
+   * 这段对话里有没有说过 `needle`（记录页「同时搜索对话内容」）。`needle` 由调用方统一转成
    * 小写；只读文件开头 `maxBytes` 字节，读到第一处就停。
    */
   async contentMatches(sessionId: string, needle: string, maxBytes: number): Promise<boolean> {

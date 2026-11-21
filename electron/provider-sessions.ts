@@ -106,7 +106,7 @@ export interface ProviderSessionListQuery {
   provider?: ProviderSessionProvider | 'all'
   search?: string
   /**
-   * 记录页「也搜对话里说过的话」：标题、文件夹、模型都对不上的，再翻最近一批对话的内容。
+   * 记录页「同时搜索对话内容」：标题、文件夹、模型都对不上的，再翻最近一批对话的内容。
    * 缺省 = 只比对标题、文件夹、模型（旧行为）。
    */
   searchContent?: boolean
@@ -235,7 +235,7 @@ const MAX_DISCOVERY_ENTRIES = 500_000
 const DETAIL_MESSAGE_LIMIT = 250
 const MESSAGE_TEXT_LIMIT = 24_000
 const MAX_PROBE_CACHE_ENTRIES = 10_000
-// 「也搜对话里说过的话」只翻最近这么多条，每条只读开头这么多：不建索引、不常驻，客户点一下
+// 「同时搜索对话内容」只翻最近这么多条，每条只读开头这么多：不建索引、不常驻，客户点一下
 // 勾就要等的事，得在几秒内翻完。更早的、更长的照旧只按标题找得到。
 const CONTENT_SEARCH_SESSION_LIMIT = 100
 const CONTENT_SEARCH_BYTE_LIMIT = 16 * 1024 * 1024

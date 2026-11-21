@@ -156,7 +156,7 @@ export function SessionsPage({
   // 框里的字和拿去搜的词分开（R-3）：停手 300 毫秒才搜，打一个词不再每个字都让主进程把各工具的
   // 会话文件夹翻一遍；清空马上搜。跟密钥页、订单页的搜索一个做法，换了词从第一页看起。
   const [keyword, setKeyword] = useState('')
-  // 「也搜对话里说过的话」（总单 Q4 C3）用的也是停手后的这个词：勾上以后每次搜要去翻最近一批对话，更不能每敲一个字翻一遍。
+  // 「同时搜索对话内容」（总单 Q4 C3）用的也是停手后的这个词：勾上以后每次搜要去翻最近一批对话，更不能每敲一个字翻一遍。
   const [searchContent, setSearchContent] = useState(false)
   useEffect(() => {
     const next = query.trim()
@@ -497,12 +497,12 @@ export function SessionsPage({
             }}
             data-testid="sessions-search-content"
           />
-          <span>也搜对话里说过的话</span>
+          <span>同时搜索对话内容</span>
         </label>
       </div>
       {searchContent && query.trim() !== '' && (resource.loading || query.trim() !== keyword) && (
         <p className="v2-sessions-searching" role="status" data-testid="sessions-search-content-status">
-          正在翻对话内容…
+          正在搜索对话内容…
         </p>
       )}
       <ResultNotice
@@ -523,7 +523,7 @@ export function SessionsPage({
           retry={() => void reloadList()}
           clear={() => setQuery('')}
           emptyDescription="在首页打开工具，聊过的对话会出现在这里。"
-          searchTitle={searchContent ? `最近的对话里没有找到「${keyword}」` : '没有找到相关记录'}
+          searchTitle={searchContent ? `最近的对话中未找到「${keyword}」` : '没有找到相关记录'}
           searchDescription="换个关键词，或者切换到「全部」再看看。"
           action={
             onOpenTools && (
