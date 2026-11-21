@@ -383,6 +383,9 @@
 .v2-backup-preview-note { margin: 8px 0 0; color: var(--text-3); font-size: var(--font-small-compact); line-height: 1.6; }
 /* 设置 › 工具管理「手机遥控 Codex」：说明、提示条、干活的文件夹，再一个渠道一块。 */
 .v2-remote-intro { margin: 0; padding: 12px 16px; color: var(--text-2); font-size: var(--font-small); line-height: var(--line-body); }
+/* 账号本身就是管理员时那句提醒：跟说明同一段宽度，黄底，紧贴在说明下面。 */
+.v2-remote-admin-account { display: flex; align-items: flex-start; gap: 8px; margin: 0 16px 12px; padding: 10px 12px; border-radius: var(--radius-input); background: var(--warn-soft); color: var(--warn-tx); font-size: var(--font-small); line-height: 1.6; }
+.v2-remote-admin-account > svg { flex: none; margin-top: 3px; }
 .v2-remote-notices { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 12px; }
 .v2-remote-notices:empty { display: none; }
 .v2-remote-channel { border-top: 1px solid var(--line); }
