@@ -6,6 +6,7 @@
 // 各类检查共用的那份在 diagnostics-context.ts；这里只 import diagnostics.ts 的类型，免得两个文件互相 require。
 import fs from 'node:fs'
 import path from 'node:path'
+import { mapWithConcurrency } from './async-map'
 import { readBoundedFile, readBoundedUtf8FileSync } from './bounded-file'
 import { activeProviderIds, cliCatalog, isRetiredProviderId, providerConfigDirectoryNames, type ProviderId } from './catalog'
 import type { IgnoredCodexHome, ProviderConfigRoots } from './codex-home'
@@ -247,6 +248,10 @@ const maximumFishConfFiles = 32
 // 手写的启动文件不会有几百 KB（同 macos-shell-profile.ts）；再大就不是该去读的文件了。
 const maximumShellSettingsBytes = 512 * 1024
 
+// 同时最多读几个终端设置文件（读盘用 async-map.ts 限流）。Mac、Linux 上候选有十来个，一个等一个的话，
+// 这一项总是整份检查里最后跑完的。
+const shellSettingsReadConcurrency = 4
+
 interface ShellSettingsSource {
   filePath: string
   format: ShellSettingsFormat
@@ -327,9 +332,27 @@ export function decodeShellSettingsBytes(bytes: Buffer): string {
   return bytes.toString('utf8')
 }
 
+/**
+ * 这个位置上有没有东西，只问一次、不在主线程上等：最后一级是链接也算有（不跟随它），没把握的（没权限之类）
+ * 一律当有，交给 readSafeUtf8File 去拒绝、去报。
+ */
+async function shellSettingsFilePresent(filePath: string): Promise<boolean> {
+  try {
+    await fs.promises.lstat(filePath)
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code !== 'ENOENT' && code !== 'ENOTDIR'
+  }
+}
+
 /** 没有这个文件返回 null；读不了（链接、多个硬链接、太大）照抛，由调用方记一笔跳过。 */
 async function readShellSettingsText(source: ShellSettingsSource): Promise<string | null> {
   if (source.format !== 'powershell') {
+    // 这些文件一台电脑上多半只有一两个，而 readSafeUtf8File 每读一个都先在主线程上把整条路径逐级同步核一遍
+    // （I8），同一个主目录要核十来遍；Windows 上每一级都慢，检查页的这一项就压着超时线跑完。不在的先排除掉，
+    // 在的（包括是个链接的）照旧整套核过再读，一道检查不少。
+    if (!await shellSettingsFilePresent(source.filePath)) return null
     return readSafeUtf8File(source.filePath, '终端设置文件', maximumShellSettingsBytes)
   }
   try {
@@ -354,8 +377,8 @@ async function readShellSettings(
   names: readonly string[],
   skipped: (file: string, error: unknown) => void,
 ): Promise<ShellSettingsExports[]> {
-  const found: ShellSettingsExports[] = []
-  for (const source of sources) {
+  // 结果照 sources 的次序排（同一个名字在几个文件里都有时，报告里按这个次序列）。
+  const found = await mapWithConcurrency(sources, shellSettingsReadConcurrency, async (source) => {
     const file = pathForDisplay(source.filePath, displayRoots) ?? path.basename(source.filePath)
     let text: string | null
     try {
@@ -363,13 +386,13 @@ async function readShellSettings(
     } catch (error) {
       // dotfiles 仓库常把 ~/.zshrc 做成指向别处的链接。I8 只放行单链接普通文件，这一项只是提醒，不为它放宽。
       skipped(file, error)
-      continue
+      return null
     }
-    if (text === null) continue
+    if (text === null) return null
     const exports = parseShellSettings(text, source.format, names, userHome)
-    if (exports.length) found.push({ file, exports })
-  }
-  return found
+    return exports.length ? { file, exports } : null
+  })
+  return found.filter((settings): settings is ShellSettingsExports => settings !== null)
 }
 
 /**

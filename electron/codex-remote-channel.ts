@@ -329,6 +329,11 @@ export interface CodexRemoteSnapshot {
   /** 这台电脑现在能不能开遥控；不能时 unavailableReason 是上屏的原因（比如星芒以管理员身份运行）。 */
   available: boolean
   unavailableReason?: string
+  /**
+   * 能开遥控，而且这台 Windows 电脑登录的账号本身就带管理员权限（自带 Administrator、关了授权弹窗）：
+   * Codex 在这里做的事也带管理员权限，卡片上提醒一句。不能开、不是这种账号时不带。
+   */
+  alwaysElevated?: boolean
   /** 凭据能不能存到下次打开（Linux 没有密钥环时只到这次关掉）。 */
   credentialPersistence: 'durable' | 'session-only' | 'unavailable'
   /** 主目录已换成 ~ 的工作文件夹（正在用的那个）；没选是 null。 */
