@@ -4189,6 +4189,103 @@ test('a film opens from the column into its workbench on the right, and is renam
   } finally { await page.close() }
 })
 
+// —— 融合第 2 步：对话里出好的一段视频「添加到视频」，接到左边那一列里的视频上 ——
+async function makeChatVideo(page, prompt) {
+  const made = (await fixtureCalls(page, 'generateAiVideo')).length
+  await page.getByTestId('chat-composer-input').fill(prompt)
+  await page.getByTestId('chat-send').click()
+  const confirm = page.getByTestId('chat-confirm')
+  await confirm.waitFor()
+  const said = await confirm.locator('p').first().textContent()
+  await confirm.getByRole('button', { name: '开始生成', exact: true }).click()
+  await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'generateAiVideo').length > count, made)
+  await page.getByTestId('chat-video-pending').waitFor()
+  await page.evaluate(() => window.v2Test.releaseChatVideo())
+  await page.getByTestId('chat-video-pending').waitFor({ state: 'detached' })
+  return said
+}
+function filmShots(page, id) {
+  return page.evaluate((key) => {
+    const write = window.v2Test.calls.filter((entry) => entry.method === 'writeVideoStudioProjects').flatMap((entry) => entry.args[0].put).filter((file) => file.key === key).at(-1)
+    return write ? JSON.parse(write.content).project.shots.map((shot) => ({ prompt: shot.prompt, clip: shot.clip?.assetId ?? null })) : null
+  }, id)
+}
+
+test('a video made in a conversation is priced from the account price list, joins a film in the column and shows there when the film opens', async () => {
+  const page = await openCreate('videoFilms=1&chatVideo=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.preparing === 'false')
+    // 起始页那句带上了「做视频」。价目先不读：不做视频的客户不用白读一次。
+    await page.getByTestId('chat-empty').getByText('问问题、写东西、画图、做视频，都在下面这一个框里说。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    assert.equal((await fixtureCalls(page, 'getAccountPriceList')).length, 0)
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成视频', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'grok-imagine-video-1.5')
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'getAccountPriceList'))
+
+    // 确认框里的价钱是这个账号价目里的，余额是首页那一个数。
+    assert.equal(await makeChatVideo(page, '橘猫推开家门'), '用「grok-imagine-video-1.5」生成 1 段、5 秒，单独计费，预计约 $0.25（估算）。当前余额 $12.40。')
+    const firstClip = (await fixtureCalls(page, 'generateAiVideo'))[0][0].requestId.replace(/[^A-Za-z0-9_-]/g, '').padEnd(43, 'c').slice(0, 43)
+
+    // 菜单里就是左边那一列的视频：名字、几个镜头。
+    await page.getByTestId('chat-video-compose').click()
+    const menu = page.getByRole('menu', { name: '选择要添加到的视频', exact: true })
+    assert.deepEqual((await menu.getByRole('menuitem').allTextContents()).map((text) => text.trim()), ['新建视频', '橘猫回家2 个镜头', '海边那条还没写分镜'])
+    await page.getByTestId('chat-video-compose-fixture-film-cat').click()
+    const added = page.locator('.xm-toasts').getByRole('status')
+    await added.getByText('已添加为「橘猫回家」的最后一个镜头', { exact: true }).waitFor()
+    // 接在最后：原来两个镜头没动，第三个带着这一段，不用再生成。
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'writeVideoStudioProjects' && entry.args[0].put.some((file) => file.key === 'fixture-film-cat' && JSON.parse(file.content).project.shots.length === 3)))
+    assert.deepEqual(await filmShots(page, 'fixture-film-cat'), [
+      { prompt: '雨夜街头的橘猫', clip: null },
+      { prompt: '橘猫跳上台阶', clip: null },
+      { prompt: '橘猫推开家门', clip: firstClip },
+    ])
+    assert.equal(await page.getByTestId('create-item-video-fixture-film-cat').textContent(), '橘猫回家3 个镜头 · 已生成 1 段')
+
+    // 「查看」：右边换成那条视频的工作台，新加的镜头在最后。
+    await added.getByRole('button', { name: '查看', exact: true }).click()
+    await page.getByTestId('create-video-pane').waitFor()
+    assert.equal(await page.getByTestId('create-video-name').textContent(), '橘猫回家')
+    await page.waitForFunction(() => document.querySelector('[data-testid="video-shot-prompt-2"]')?.value === '橘猫推开家门')
+
+    // 那条视频的工作台开着（只是藏起来）时再往里加一段：工作台按新的重新读，不拿手上那份旧的盖回去。
+    await page.locator('[data-testid^="chat-conversation-"].chat-conversation-select').first().click()
+    await page.getByTestId('create-video-pane').waitFor({ state: 'hidden' })
+    await makeChatVideo(page, '橘猫趴在窗台上')
+    await page.getByTestId('chat-video-compose').last().click()
+    await page.getByTestId('chat-video-compose-fixture-film-cat').click()
+    await added.getByText('已添加为「橘猫回家」的最后一个镜头', { exact: true }).waitFor()
+    await added.getByRole('button', { name: '查看', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="video-shot-prompt-3"]')?.value === '橘猫趴在窗台上')
+    assert.equal(await page.getByTestId('video-shot-prompt-2').inputValue(), '橘猫推开家门')
+    // 在工作台里接着改一个字：存下去的是四个镜头的那一份。
+    await page.getByTestId('video-shot-prompt-3').fill('橘猫趴在窗台上打盹')
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'writeVideoStudioProjects' && entry.args[0].put.some((file) => file.key === 'fixture-film-cat' && JSON.parse(file.content).project.shots[3]?.prompt === '橘猫趴在窗台上打盹')))
+    const afterEdit = await filmShots(page, 'fixture-film-cat')
+    assert.deepEqual(afterEdit.map((shot) => shot.prompt), ['雨夜街头的橘猫', '橘猫跳上台阶', '橘猫推开家门', '橘猫趴在窗台上打盹'])
+    // 两段片段都还挂着：工作台读回这条视频、再存下去，没有把它们当成「还没生成」。
+    assert.equal(afterEdit[2].clip, firstClip)
+    assert.match(afterEdit[3].clip, /^[A-Za-z0-9_-]{43}$/)
+    assert.notEqual(afterEdit[3].clip, firstClip)
+    assert.equal(await page.getByTestId('create-item-video-fixture-film-cat').textContent(), '橘猫回家4 个镜头 · 已生成 2 段')
+
+    // 「新建视频」：左边多一条，名字是那句描述，里面只有这一个镜头，画面和型号跟着这一段走。
+    await page.locator('[data-testid^="chat-conversation-"].chat-conversation-select').first().click()
+    await page.getByTestId('chat-video-compose').first().click()
+    await page.getByTestId('chat-video-compose-new').click()
+    await added.getByText('已添加为「橘猫推开家门」的最后一个镜头', { exact: true }).waitFor()
+    await page.waitForFunction(() => window.v2Test.videoFilms().ids.length === 3)
+    const created = (await page.evaluate(() => window.v2Test.videoFilms())).ids.find((id) => !id.startsWith('fixture-film-'))
+    assert.deepEqual(await filmShots(page, created), [{ prompt: '橘猫推开家门', clip: firstClip }])
+    const settings = await page.evaluate((key) => JSON.parse(window.v2Test.calls.filter((entry) => entry.method === 'writeVideoStudioProjects').flatMap((entry) => entry.args[0].put).filter((file) => file.key === key).at(-1).content).project.settings, created)
+    assert.deepEqual({ idea: settings.idea, aspect: settings.aspect, videoModel: settings.videoModel, videoGroup: settings.videoGroup, secondsPerShot: settings.secondsPerShot }, { idea: '橘猫推开家门', aspect: '16:9', videoModel: 'grok-imagine-video-1.5', videoGroup: 'fixture-group', secondsPerShot: 5 })
+    assert.equal(await page.getByTestId(`create-item-video-${created}`).textContent(), '橘猫推开家门1 个镜头 · 已生成 1 段')
+    assert.equal((await fixtureCalls(page, 'generateAiVideo')).length, 2, 'handing a clip to a film generates nothing')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a canvas project shows its name and when it was changed, opens in the canvas window, and leaves the column once it is gone', async () => {
   const page = await openCreate('canvasProjects=1')
   try {
@@ -4242,7 +4339,7 @@ test('the start page offers a film and the canvas under the examples, and says o
     await intro.getByText('以前的对话、画布项目、视频草稿都在左边这一列，一个没少。', { exact: true }).waitFor()
     const empty = page.getByTestId('chat-empty')
     await empty.getByRole('heading', { name: '想做点什么？', exact: true }).waitFor()
-    await empty.getByText('问问题、写东西、画图，都在下面这一个框里说。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    await empty.getByText('问问题、写东西、画图、做视频，都在下面这一个框里说。额度与工具共用同一个账号。', { exact: true }).waitFor()
     await page.getByTestId('create-start').getByText('一句话说不清的，从这里开始', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('create-card-video').textContent(), '做一条带字幕的短视频写一句想法，AI 写分镜、一段一段出，再拼成一条')
     assert.equal(await page.getByTestId('create-card-canvas').textContent(), '在画布上一步步做多张图、精修、套模板，人物每一镜都长得一样也在这里开在大窗口里')
@@ -4338,6 +4435,11 @@ test('a historical account gets conversations and canvas projects on the create 
     await page.getByTestId('create-item-canvas-fixture-canvas-poster').waitFor()
     assert.deepEqual(await page.getByRole('group', { name: '只看哪一类', exact: true }).getByRole('button').allTextContents(), ['全部', '对话', '画布'])
     await page.getByTestId('create-start').waitFor()
+    // No video models on this account: the start page keeps the sentence without 「做视频」 and the third mode is greyed out.
+    await page.getByTestId('chat-empty').getByText('问问题、写东西、画图，都在下面这一个框里说。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    const videoMode = page.getByTestId('chat-mode').getByRole('button', { name: '生成视频', exact: true })
+    assert.equal(await videoMode.isDisabled(), true)
+    assert.equal(await videoMode.getAttribute('title'), '当前账号不支持生成视频')
     assert.equal(await page.getByTestId('create-card-video').count(), 0)
     assert.equal(await page.getByTestId('create-card-canvas').count(), 1)
     await clean(page)

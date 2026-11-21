@@ -1,10 +1,10 @@
-import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
 import type { ImageSizePolicy } from '../../../../electron/ai-chat-protocol'
 import type { AiChatGroupSummary, AiChatImageInput, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioMusic, VideoStudioPlan } from '../../../../electron/ipc-contract'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
-import { buildChatCatalog, pickChatGroup, resolveDefaultChatModel, type ChatCatalogEntry, type ChatGroupPreparation, type ChatSite } from '../chat/state'
+import { buildChatCatalog, DEFAULT_VIDEO_MODELS, pickChatGroup, resolveDefaultChatModel, type ChatCatalogEntry, type ChatGroupPreparation, type ChatSite } from '../chat/state'
 import { inspectModel } from '../chat/api'
+import { readVideoClip, readVideoRequestId } from './clip'
 import { isVideoStudioCaptionPosition, isVideoStudioCaptionSize, type VideoStudioCaptionPosition, type VideoStudioCaptionSize } from './captions'
 import { isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, isVideoStudioTransition, normalizeVideoStudioCaption, type VideoStudioAspect, type VideoStudioFit, type VideoStudioResolution, type VideoStudioTransition } from './timeline'
 
@@ -114,8 +114,6 @@ export interface VideoStudioProject {
 
 export const videoStudioShotCounts = [1, 2, 3, 4, 5, 6, 8, 10, 12] as const
 const secondsChoices = [3, 4, 5, 6, 8, 10, 12, 15] as const
-// 优先 Grok：1 到 15 秒都能出、只要一句描述；MiniMax 最短 5 秒。账号里都没有就取模型表里第一个。
-const preferredVideoModels = ['grok-imagine-video-1.5', 'grok-imagine-video', 'minimax-h3-base', 'minimax-h3-fast', 'minimax-h3-mini'] as const
 // Grok 视频只认这几种宽高（ai-chat-protocol.ts 的 allowedVideoDimensions）。
 const grokDimensions: Readonly<Record<VideoStudioAspect, { width: number, height: number }>> = {
   '16:9': { width: 1280, height: 720 },
@@ -240,7 +238,7 @@ export interface VideoStudioModelContext { groups: readonly (Pick<AiChatGroupSum
  */
 export function settleVideoStudioModels(settings: VideoStudioSettings, catalogs: VideoStudioCatalogs, context: VideoStudioModelContext): Pick<VideoStudioSettings, 'textModel' | 'textGroup' | 'videoModel' | 'videoGroup' | 'imageModel' | 'imageGroup' | 'secondsPerShot'> {
   const text = settleOne(settings.textModel, settings.textGroup, catalogs.text, context, 'text', (models) => resolveDefaultChatModel('text', models))
-  const video = settleOne(settings.videoModel, settings.videoGroup, catalogs.video, context, 'image', (models) => preferredVideoModels.find((model) => models.includes(model)) ?? models[0] ?? '')
+  const video = settleOne(settings.videoModel, settings.videoGroup, catalogs.video, context, 'image', (models) => DEFAULT_VIDEO_MODELS.find((model) => models.includes(model)) ?? models[0] ?? '')
   // 画图模型的默认同聊天页出图那一档（chat/state.ts 的 DEFAULT_IMAGE_MODELS），没有就取表里第一个。
   const image = settleOne(settings.imageModel, settings.imageGroup, catalogs.image, context, 'image', (models) => resolveDefaultChatModel('image', models))
   return {
@@ -301,13 +299,43 @@ export function addVideoStudioShot(project: VideoStudioProject, createId: () => 
   return { ...project, shots: [...project.shots, { id: createId(), prompt: '', caption: '', status: 'idle' }] }
 }
 
+/** 对话里出好的一段视频（「拿去拼成片」）：当初的那句描述、片段，从图开始出的还带着那张图。 */
+export interface VideoStudioClipSource { prompt: string, clip: AiVideoClip, imageAssetId?: string }
+
+/**
+ * 把对话里出好的一段视频接成这条视频的最后一个镜头：描述放进画面描述，片段直接挂上，不用再生成。
+ * 镜头满了（canAddVideoStudioShot）原样交回。上一次拼好的成片不再算数：多了一段，要重新拼。
+ */
+export function appendVideoStudioClip(project: VideoStudioProject, source: VideoStudioClipSource, createId: () => string = createVideoStudioId): VideoStudioProject {
+  if (!canAddVideoStudioShot(project)) return project
+  const image = source.imageAssetId ? videoStudioShotImage(source.imageAssetId) : null
+  const shot: VideoStudioShot = { id: createId(), prompt: videoStudioPlainText(source.prompt).slice(0, videoStudioPlanLimits.maximumPromptLength), caption: '', ...(image ? { image } : {}), clip: source.clip, status: 'done' }
+  const { exported: _exported, ...rest } = project
+  return { ...rest, shots: [...project.shots, shot] }
+}
+
+/**
+ * 「拿去拼成片 › 新建一条视频」：新的一条里只有这一个镜头。想法先填上那句描述（列表里拿它当名字），画面比例、
+ * 出片的模型跟着这一段走，接着在视频工作台里加镜头时不用再选一遍。别的设置（写分镜、画图的模型，字幕这些）照 base，
+ * 外面给的是最近那一条视频的，同点「新建」。
+ */
+export function createVideoStudioProjectFromClip(source: VideoStudioClipSource, made: { aspect: VideoStudioAspect, model: string, group: string, seconds: number }, base: VideoStudioSettings = defaultVideoStudioSettings(), createId: () => string = createVideoStudioId): VideoStudioProject {
+  const settings: VideoStudioSettings = {
+    ...base,
+    idea: videoStudioPlainText(source.prompt).slice(0, videoStudioPlanLimits.maximumIdeaLength),
+    aspect: made.aspect, videoModel: made.model, videoGroup: made.group,
+    secondsPerShot: made.model ? clampVideoStudioSeconds(made.seconds, made.model) : base.secondsPerShot,
+  }
+  return appendVideoStudioClip(createVideoStudioProject(settings), source, createId)
+}
+
 export function isVideoStudioShotBusy(shot: VideoStudioShot): boolean {
   return shot.status === 'queued' || shot.status === 'generating'
 }
 
 /**
  * 每段开头、结尾能剪掉的几档秒数（0 是不剪）。AI 片段常见开头一秒发呆、结尾一秒走样，这几档够用；
- * 页面里放不了视频（主窗口不开 media-src），拖动条找不准位置，按档选反而好用。
+ * 这一页不在页面里放片段，拖动条找不准位置，按档选反而好用。
  */
 export const videoStudioTrimChoices: readonly number[] = [0, 0.5, 1, 1.5, 2, 3]
 export type VideoStudioTrimSide = 'start' | 'end'
@@ -477,24 +505,40 @@ export function buildVideoStudioImageRequest(settings: VideoStudioSettings, shot
  * MiniMax 换成「图生视频」（i2va，只收一张图）。
  */
 export function buildVideoStudioClipRequest(settings: VideoStudioSettings, shot: VideoStudioShot, requestId: string): AiVideoGenerateInput {
+  return buildVideoClipRequest({ requestId, group: settings.videoGroup, model: settings.videoModel, prompt: shot.prompt, seconds: videoStudioShotSeconds(shot, settings), aspect: settings.aspect, ...(shot.image ? { imageAssetId: shot.image.assetId } : {}) })
+}
+
+export interface VideoClipRequestInput { requestId: string, group: string, model: string, prompt: string, seconds: number, aspect: VideoStudioAspect, imageAssetId?: string }
+
+/** 出一段视频的请求本身：视频工作台的一个镜头和对话里「生成视频」的一句话（chat/video.ts）都从这里出，两边交给主进程的写法一样。 */
+export function buildVideoClipRequest(input: VideoClipRequestInput): AiVideoGenerateInput {
   const base = {
-    requestId, group: settings.videoGroup, model: settings.videoModel, prompt: videoStudioPlainText(shot.prompt), seconds: String(videoStudioShotSeconds(shot, settings)),
-    ...(shot.image ? { imageAssetIds: [shot.image.assetId] } : {}),
+    requestId: input.requestId, group: input.group, model: input.model, prompt: videoStudioPlainText(input.prompt), seconds: String(input.seconds),
+    ...(input.imageAssetId ? { imageAssetIds: [input.imageAssetId] } : {}),
   }
   let provider = ''
   try {
-    const capability = inspectModel(settings.videoModel)
+    const capability = inspectModel(input.model)
     if (capability.kind === 'video') provider = capability.provider
   } catch {
     // 认不出的模型交给主进程报错。
   }
-  if (provider === 'minimax-h3') return { ...base, mode: shot.image ? 'i2va' : 't2va', resolution: '720p', aspectRatio: settings.aspect, promptOptimization: false }
-  return { ...base, ...grokDimensions[settings.aspect] }
+  if (provider === 'minimax-h3') return { ...base, mode: input.imageAssetId ? 'i2va' : 't2va', resolution: '720p', aspectRatio: input.aspect, promptOptimization: false }
+  return { ...base, ...grokDimensions[input.aspect] }
 }
 
 /** 这几个镜头里上次提交结果不明、再生成可能多扣一次的，按在分镜里的位置给出第几个（从 0 数）。 */
 export function videoStudioUnconfirmedIndexes(project: VideoStudioProject, ids: readonly string[]): number[] {
   return project.shots.flatMap((shot, index) => ids.includes(shot.id) && shot.unconfirmed ? [index] : [])
+}
+
+/**
+ * 确认框里那句「可能多扣一次」。indexes 是这几段在分镜里的位置（从 0 数），total 是这次要生成几段。
+ * 对话里重新生成一段视频时说的也是这一句（total 是 1）。
+ */
+export function videoStudioUnconfirmedWarning(indexes: readonly number[], total: number): string {
+  const subject = total === 1 ? '这一段' : indexes.length === total ? '这几段' : `其中第 ${indexes.map((index) => index + 1).join('、')} 段`
+  return `${subject}上次提交时没收到星芒的答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。`
 }
 
 /** 能拼了：至少一个镜头，每个镜头都有片段、没有正在生成的。 */
@@ -585,18 +629,6 @@ function readMusic(value: unknown): VideoStudioMusicChoice | undefined {
   return { assetId: value.assetId, name, ...(durationSeconds ? { durationSeconds } : {}), clipSound }
 }
 
-function readClip(value: unknown): AiVideoClip | undefined {
-  if (!isRecord(value) || typeof value.assetId !== 'string' || !assetIdPattern.test(value.assetId)) return undefined
-  // 缩略图地址只收主进程给的那种（electron/asset-thumbnail.ts），而且要是同一段视频的。存着的地址带着当时的版本号，
-  // 缩略图一升版主进程就不认旧的了（回 404，镜头上全是裂图），所以按编号换成现在的版本再用。
-  if (typeof value.thumbnailUrl !== 'string' || !/^xingmang-asset:\/\/thumb\/v[0-9]{1,4}\/video\/[A-Za-z0-9_-]{43}$/.test(value.thumbnailUrl) || !value.thumbnailUrl.endsWith(`/${value.assetId}`)) return undefined
-  const width = readPositive(value.width), height = readPositive(value.height), durationSeconds = readPositive(value.durationSeconds)
-  return {
-    assetId: value.assetId, thumbnailUrl: assetThumbnailUrl(value.assetId, 'video'),
-    ...(width ? { width } : {}), ...(height ? { height } : {}), ...(durationSeconds ? { durationSeconds } : {}),
-  }
-}
-
 export function serializeVideoStudioProject(project: VideoStudioProject): unknown {
   return {
     version: 1,
@@ -655,9 +687,9 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
     let id = typeof entry.id === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(entry.id) ? entry.id : createId()
     if (ids.has(id)) id = createId()
     ids.add(id)
-    const clip = readClip(entry.clip)
+    const clip = readVideoClip(entry.clip)
     const image = isRecord(entry.image) ? videoStudioShotImage(entry.image.assetId) : null
-    const requestId = typeof entry.requestId === 'string' && requestIdPattern.test(entry.requestId) ? entry.requestId : undefined
+    const requestId = readVideoRequestId(entry.requestId)
     const unconfirmed = Boolean(requestId) && entry.unconfirmed === true
     // 主进程没记下的那一单照样去接（status 是 generating）：接不回来时页面按这一笔提醒，不变回「还没生成」。
     const unrecorded = Boolean(requestId) && !unconfirmed && entry.unrecorded === true
@@ -682,7 +714,7 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
     })
   }
   const music = readMusic(value.music)
-  const exported = readClip(value.exported)
+  const exported = readVideoClip(value.exported)
   return { version: 1, settings, title: readText(value.title, videoStudioPlanLimits.maximumTitleLength), shots, ...(music ? { music } : {}), ...(exported ? { exported } : {}) }
 }
 
