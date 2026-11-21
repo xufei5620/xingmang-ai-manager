@@ -141,8 +141,9 @@ test('on a short screen 充值 and Settings stay pinned in view and the list abo
     for (const id of ['nav-more', 'nav-maintenance', 'nav-acceleration', 'nav-backups', 'nav-updates'])
       assert.equal(await page.getByTestId(id).count(), 0, `${id} is gone from the sidebar`)
     // 上面那段放不下了自己滚，下沿渐隐，看得出还有。0.2.25 精选、外接工具、技能、插件合成一行「插件」以后，
-    // 这一列在 672 高里整列放得下、不用滚；再矮一截（大约 540 以下）才滚，滚动这一半在 520 高里核。
-    await page.setViewportSize({ width: 1280, height: 520 })
+    // 这一列在 672 高里整列放得下、不用滚。同一版里「聊天」「画布」「视频剪辑」又并成一行「创作」，再少两行：
+    // 量过是 500 以下才滚（Mac 顶上让三个点，520 就滚），滚动这一半在 440 高里核。
+    await page.setViewportSize({ width: 1280, height: 440 })
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'bottom')
     await page.getByTestId('sidebar-scroll').evaluate((element) => { element.scrollTop = element.scrollHeight })
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'top')
@@ -278,7 +279,7 @@ test('switch account found from the command palette lands on the current-login b
   } finally { await page.close() }
 })
 
-// KB-5：聊天页去过一次就藏着挂在正文最前面，它的「搜索对话」永远排第一；原来按「/」取的是它，
+// KB-5：「创作」页去过一次就藏着挂在正文最前面，它的「搜索做过的东西」永远排第一；原来按「/」取的是它，
 // 聚焦不上又把「/」吞了，别的页按「/」都没反应。
 async function pressSlashFromPage(page) {
   await page.getByTestId('page-viewport').focus()
@@ -301,7 +302,7 @@ test('pressing / focuses the search box of the page in front, also after the cha
   try {
     await page.getByTestId('nav-chat').click()
     await page.getByTestId('chat-conversation-search').waitFor()
-    assert.deepEqual(await pressSlashFromPage(page), { testId: 'chat-conversation-search', label: '搜索对话', id: '', value: '', prevented: true })
+    assert.deepEqual(await pressSlashFromPage(page), { testId: 'chat-conversation-search', label: '搜索做过的东西', id: '', value: '', prevented: true })
 
     await page.getByTestId('nav-tutorial').click()
     await page.getByTestId('page-tutorial').waitFor()

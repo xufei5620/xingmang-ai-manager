@@ -17,24 +17,19 @@ import {
   isVideoStudioProjectEmpty,
   maxVideoStudioDrafts,
   moveVideoStudioShot,
-  openVideoStudioDraft,
-  removeVideoStudioDraft,
   removeVideoStudioMusic,
   removeVideoStudioShot,
   removeVideoStudioShotImage,
   restoreVideoStudioDrafts,
   restoreVideoStudioProject,
   selectVideoStudioVideoModel,
-  serializeVideoStudioDrafts,
   serializeVideoStudioProject,
   setVideoStudioClipSound,
   setVideoStudioMusic,
   setVideoStudioShotSeconds,
   setVideoStudioShotTrim,
-  canStartVideoStudioProject,
   changeVideoStudioSettings,
   settleVideoStudioModels,
-  startVideoStudioProject,
   startVideoStudioShotDrawing,
   videoStudioCommonSeconds,
   videoStudioComposeCaptions,
@@ -594,48 +589,27 @@ describe('video studio project', () => {
       .toEqual({ assetId: 'm'.repeat(43), name: `晴 天${'长'.repeat(77)}`, clipSound: 'quiet' })
   })
 
-  it('puts the film in hand into the draft box on a new one, keeping the settings, and refuses when there is nothing to keep or no room', () => {
-    const film = { ...planned(), settings: { ...planned().settings, idea: '回家的猫', aspect: '16:9' as const, videoModel: 'grok-imagine-video-1.5' } }
-    const started = startVideoStudioProject([], film, 1_000, () => 'draft-1')
-    expect(started?.drafts).toEqual([{ id: 'draft-1', savedAt: 1_000, project: film }])
-    expect(started?.project.shots).toEqual([])
-    expect(started?.project.settings).toEqual({ ...film.settings, idea: '' })
-    expect(isVideoStudioProjectEmpty(started?.project ?? film)).toBe(true)
-    // 手上什么都没写，新建也没东西可放。
-    expect(startVideoStudioProject([], createVideoStudioProject(), 1_000)).toBeNull()
-    expect(canStartVideoStudioProject([], { ...createVideoStudioProject(), settings: { ...defaultVideoStudioSettings(), idea: '  ' } })).toBe(false)
-    const full: VideoStudioDraft[] = Array.from({ length: maxVideoStudioDrafts }, (_, index) => ({ id: `draft-${index}`, savedAt: index, project: film }))
-    expect(canStartVideoStudioProject(full, film)).toBe(false)
-    expect(startVideoStudioProject(full, film, 1_000)).toBeNull()
-  })
-
-  it('swaps a draft for the film in hand, drops an empty one and never grows the box by opening', () => {
-    const film = planned()
-    const other = { ...createVideoStudioProject(), settings: { ...defaultVideoStudioSettings(), idea: '海边日落' } }
-    const drafts: VideoStudioDraft[] = [{ id: 'a', savedAt: 1, project: other }]
-    expect(openVideoStudioDraft(drafts, 'a', film, 5, () => 'b')).toEqual({ project: other, drafts: [{ id: 'b', savedAt: 5, project: film }] })
-    expect(openVideoStudioDraft(drafts, 'a', createVideoStudioProject(), 5)).toEqual({ project: other, drafts: [] })
-    expect(openVideoStudioDraft(drafts, 'missing', film, 5)).toBeNull()
-    expect(removeVideoStudioDraft(drafts, 'a')).toEqual([])
-    expect(removeVideoStudioDraft(drafts, 'missing')).toEqual(drafts)
-  })
-
-  it('names a draft by its title or the start of its idea and tells how far it got', () => {
+  it('names a film by its title or the start of its idea and tells how far it got', () => {
     const film = planned()
     expect(videoStudioDraftName(film)).toBe('回家的猫')
     expect(videoStudioDraftName({ ...film, title: '', settings: { ...film.settings, idea: '一只橘猫\n在下雨的东京街头找回家的路，温暖治愈，最后它在家门口被主人抱起来' } })).toBe('一只橘猫 在下雨的东京街头找回家的路，温暖治愈，…')
-    expect(videoStudioDraftName({ ...film, title: '', settings: { ...film.settings, idea: '' } })).toBe('没起名的草稿')
+    expect(videoStudioDraftName({ ...film, title: '', settings: { ...film.settings, idea: '' } })).toBe('没起名的视频')
     expect(videoStudioDraftProgress(createVideoStudioProject())).toBe('还没写分镜')
     const made = { ...film, shots: film.shots.map((shot, index) => index ? shot : { ...shot, clip: clip('a'), status: 'done' as const }) }
     expect(videoStudioDraftProgress(made)).toBe('3 个镜头 · 已生成 1 段')
     expect(videoStudioDraftProgress({ ...made, exported: clip('z') })).toBe('3 个镜头 · 已生成 1 段 · 已拼成片')
   })
 
-  it('stores the draft box next to the film in hand and reads back only drafts it can trust', () => {
+  // 0.2.24 及以前草稿箱在 localStorage 里的写法（当时的 serializeVideoStudioDrafts）。新版不再写它，只在头一次打开时读一遍。
+  function legacyDraftBox(drafts: readonly VideoStudioDraft[]): unknown {
+    return { version: 1, drafts: drafts.map((draft) => ({ id: draft.id, savedAt: draft.savedAt, project: serializeVideoStudioProject(draft.project) })) }
+  }
+
+  it('still reads the draft box older versions kept next to the film in hand, and only drafts it can trust', () => {
     expect(videoStudioDraftsStorageKey('xm:7')).toBe(`${videoStudioStorageKey('xm:7')}:drafts`)
     const film = { ...planned(), shots: planned().shots.map((shot, index) => index ? shot : { ...shot, clip: clip('a'), status: 'done' as const }) }
     const drafts: VideoStudioDraft[] = [{ id: 'draft-1', savedAt: 1_700_000_000_000, project: film }]
-    const stored = JSON.parse(JSON.stringify(serializeVideoStudioDrafts(drafts)))
+    const stored = JSON.parse(JSON.stringify(legacyDraftBox(drafts)))
     expect(restoreVideoStudioDrafts(stored, ids())).toEqual([{ id: 'draft-1', savedAt: 1_700_000_000_000, project: restoreVideoStudioProject(serializeVideoStudioProject(film), ids()) }])
     const project = serializeVideoStudioProject(film)
     expect(restoreVideoStudioDrafts({ version: 2, drafts: [{ id: 'a', savedAt: 1, project }] })).toEqual([])
@@ -655,11 +629,11 @@ describe('video studio project', () => {
     expect(restoreVideoStudioDrafts({ version: 1, drafts: many })).toHaveLength(maxVideoStudioDrafts)
   })
 
-  // 草稿里没等到结果的那段，读回来是「生成中」：换回来时页面拿请求号去接（useVideoStudio 的 switchProject）。
+  // 草稿里没等到结果的那段，读回来是「生成中」：打开这一条时工作台拿请求号去接（useVideoStudio 的 resumeOpenClips）。
   it('reads a draft clip still out as generating, like the film in hand after the page reopens', () => {
     const film = planned()
     const waiting = { ...film, shots: film.shots.map((shot, index) => index === 1 ? { ...shot, requestId: 'req-1', status: 'failed' as const, error: '暂时查不到视频进度' } : shot) }
-    const [draft] = restoreVideoStudioDrafts(serializeVideoStudioDrafts([{ id: 'a', savedAt: 1, project: waiting }]))
+    const [draft] = restoreVideoStudioDrafts(legacyDraftBox([{ id: 'a', savedAt: 1, project: waiting }]))
     expect(draft.project.shots[1]).toMatchObject({ requestId: 'req-1', status: 'generating' })
   })
 })
