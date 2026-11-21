@@ -16,6 +16,8 @@ export interface CommandTool {
 
 /** 聊天页的「参数设置」对话框；App 收到这个 section 时让聊天页把它打开。 */
 export const chatParametersSection = 'parameters'
+/** 「创作」页的作品库（融合第 3 步）；App 收到这个 section 时让「创作」页右边换成它。 */
+export const createLibrarySection = 'library'
 
 export interface CommandResult {
   key: string
@@ -114,6 +116,8 @@ function actionEntries(options: CommandSearchOptions): Entry[] {
     // 侧栏的「画布 ↗」并进「创作」以后，从这里还是一步就开画布窗口（落在它的项目中心）。
     ...((options.pageVisible?.('canvas') ?? true) ? [actionEntry('open-canvas', '打开画布窗口', { page: 'canvas' }, ['画布', '无限画布', '工作流', '节点', '项目中心'])] : []),
     // 参数按对话保存：落到聊天页当前那段对话，打开它的参数对话框。
+    // 聊天顶上的「看做过的图」挪成了「创作」左下角的「作品库」（融合第 3 步），从这里也找得到。
+    ...((options.pageVisible?.('chat') ?? true) ? [actionEntry('create-library', '作品库', { page: 'chat', section: createLibrarySection }, ['作品', '素材', '素材库', '做过的图', '图片', '视频', '成片', '片段'])] : []),
     ...((options.pageVisible?.('chat') ?? true) ? [actionEntry('chat-parameters', '聊天参数设置', { page: 'chat', section: chatParametersSection }, ['参数', '系统提示词', '提示词', '随机度', '温度', '最大输出', 'token', '随机种子'])] : []),
   ]
 }

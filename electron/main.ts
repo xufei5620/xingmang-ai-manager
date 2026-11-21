@@ -2723,6 +2723,7 @@ if (!hasSingleInstanceLock) {
       videoService: chatVideoService,
       videoAssets,
       audioAssets,
+      mediaAssets,
       chatHistory: chatHistoryStore,
       videoStudioProjects: videoStudioProjectStore,
       chatHistoryFlush,

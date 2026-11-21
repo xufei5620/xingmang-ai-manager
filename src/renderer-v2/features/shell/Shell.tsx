@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type MouseEvent, type ReactNode } from 'react'
-import { ArrowRight, ArrowUpRight, Bell, CircleHelp, CreditCard, Download, Gauge, LogOut, Moon, PanelLeft, Play, RefreshCw, Search, SlidersHorizontal, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, Bell, CircleHelp, CreditCard, Download, Gauge, Images, LogOut, Moon, PanelLeft, Play, RefreshCw, Search, SlidersHorizontal, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
 import { Button, Coachmark, Dialog, Input, Logo, Tooltip, focusable } from '../../ui'
 import { shellNavigation, shellTour, type ShellNavigationEntry } from '../../registry/shell'
 import { pageRegistry, type PageId } from '../../registry/pages'
@@ -121,7 +121,7 @@ const navEdge = 16
 const commandTitle = '搜索或跳转'
 const commandPlaceholder = '输入页面、工具或操作，比如「充值」'
 const actionIcons: Partial<Record<string, LucideIcon>> = {
-  'action:recharge': CreditCard, 'action:usage': Gauge, 'action:check': Zap, 'action:help': CircleHelp, 'action:chat-parameters': SlidersHorizontal, 'account:logout': LogOut,
+  'action:recharge': CreditCard, 'action:usage': Gauge, 'action:check': Zap, 'action:help': CircleHelp, 'action:chat-parameters': SlidersHorizontal, 'action:create-library': Images, 'account:logout': LogOut,
 }
 const toolActionIcons: Partial<Record<CommandAction, LucideIcon>> = { openTool: Play, installTool: Download, configureTool: SlidersHorizontal }
 
