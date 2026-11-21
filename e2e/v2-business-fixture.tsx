@@ -229,6 +229,8 @@ function remoteSnapshot(): RemoteSnapshot {
     revision: remoteRevision,
     available: !elevated,
     ...(elevated ? { unavailableReason: '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。' } : {}),
+    // 登录的 Windows 账号本身就带管理员权限（自带 Administrator、关了授权弹窗）：能开，卡上多一句提醒。
+    ...(!elevated && query.has('remoteAdminAccount') ? { alwaysElevated: true } : {}),
     credentialPersistence: query.has('remoteSessionOnly') ? 'session-only' : 'durable',
     workspaceDirectory: remoteState.workspaceDirectory,
     ...(remoteState.workspaces.length > 1 ? { workspaces: [...remoteState.workspaces] } : {}),
@@ -1409,6 +1411,17 @@ const apiMethods = {
   copyMcpToTool: async (input: Parameters<V2Bridge['copyMcpToTool']>[0]) => {
     record('copy-mcp', input)
     if (query.get('copyMcpFail') === input.to) throw new Error('扩展操作失败，已有配置保留')
+  },
+  // 技能「从压缩包导入」：选文件窗口和解压都在主进程，夹具直接交回一个解好的技能文件夹；
+  // skillArchive=empty 时照主进程原话报没找到技能。
+  chooseSkillArchive: async () => {
+    record('choose-skill-archive')
+    if (query.get('skillArchive') === 'empty') throw new Error('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。')
+    return { archiveName: 'pdf-helper.zip', directory: 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper' }
+  },
+  importSkill: async (input: Parameters<V2Bridge['importSkill']>[0]) => {
+    record('import-skill', input)
+    return []
   },
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   ...(query.has('customMarket') ? customMarketMethods : {}),

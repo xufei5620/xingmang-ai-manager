@@ -4102,6 +4102,20 @@ test('the phone remote card says why it cannot be turned on while the manager ru
   }
 })
 
+test('the phone remote card opens on a Windows account that is an administrator by itself, with a reminder under the intro', async () => {
+  const page = await fixture('page=settings&remoteAdminAccount=1&remoteReady=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByTestId('settings-remote-admin-account').getByText('这台电脑登录的 Windows 账号本身就带管理员权限，Codex 在这里改文件、跑命令也都带着管理员权限，手机上回「同意」前看清楚它要做什么。').waitFor()
+    assert.equal(await card.getByTestId('settings-remote-unavailable').count(), 0)
+    assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).isDisabled(), false)
+    assert.equal(await card.getByTestId('settings-remote-workspace').isDisabled(), false)
+  } finally {
+    await page.close()
+  }
+})
+
 test('searching the settings for Feishu finds the phone remote card', async () => {
   const page = await fixture('page=settings')
   try {
@@ -4744,6 +4758,47 @@ test('without the Codex CLI the GPT official group asks for it and offers the ho
     await expect(page.getByTestId('hub-codex-missing')).toHaveText('装好 Codex CLI 才能看 GPT 官方插件。去首页安装')
     await page.getByTestId('hub-codex-open-home').waitFor()
     assert.equal(await page.getByTestId('hub-row-plugin-sentry-openai-api-curated').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('a skill can come from a zip picked in the system window, then goes into each ticked tool', async () => {
+  const page = await fixture(`${hub}&extensionOk=1`)
+  const directory = 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper'
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill-archive').click()
+    await expect(page.getByTestId('hub-skill-import')).toContainText('从压缩包导入')
+    // 还没选压缩包时不能点「添加」，也没有能手填路径的框。
+    assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), true)
+    assert.equal(await page.getByTestId('hub-skill-import-source').count(), 0)
+    await page.getByTestId('hub-skill-archive-choose').click()
+    await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('pdf-helper.zip')
+    await page.getByTestId('hub-skill-import-submit').click()
+    await page.getByText(/^已添加「pdf-helper」，给 .+ 使用，下次打开工具时生效$/).waitFor()
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.find((call) => call.name === 'import-skill').args, { sourcePath: directory, scope: 'user' })
+    assert.deepEqual(
+      recorded.filter((call) => call.name === 'extension').map((call) => call.args),
+      [{ provider: 'claude', kind: 'skill', action: 'install', source: directory, scope: 'user' }],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('a zip with no skill in it says so inside the import form', async () => {
+  const page = await fixture(`${hub}&skillArchive=empty`)
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill-archive').click()
+    await page.getByTestId('hub-skill-archive-choose').click()
+    await page.getByTestId('hub-skill-import').getByText('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。').waitFor()
+    await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('')
+    assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), true)
   } finally {
     await page.close()
   }
