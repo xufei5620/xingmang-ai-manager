@@ -101,6 +101,14 @@ function installRendererTimeline() {
         if (timeline.longTasks.length < 24) timeline.longTasks.push([wallClock(entry.startTime), Math.round(entry.duration)])
       }
     }).observe({ type: 'longtask', buffered: true })
+    // An observer, not getEntriesByType: a dev page asks for more modules than
+    // the 250-entry resource buffer holds, so the late ones never reach it.
+    timeline.requests = []
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (timeline.requests.length < 600) timeline.requests.push([new URL(entry.name).pathname.slice(-48), entry.startTime, entry.duration])
+      }
+    }).observe({ type: 'resource', buffered: true })
   } catch {}
 }
 
@@ -119,6 +127,14 @@ function readRendererTimeline(origin) {
     welcome: since(timeline.welcome),
     welcomeSize: timeline.welcomeSize,
     welcomeShown: since(timeline.welcomeShown),
+    // Modules the page asked for after the document loaded, with how long
+    // each took to arrive: lazy imports land in the middle of the wait.
+    lateRequests: navigation && timeline.requests
+      ? timeline.requests
+        .filter(([, startTime]) => startTime > navigation.domContentLoadedEventEnd)
+        .slice(0, 24)
+        .map(([name, startTime, duration]) => [name, Math.round(performance.timeOrigin + startTime) - origin, Math.round(duration)])
+      : undefined,
     longTasks: (timeline.longTasks ?? []).map(([at, ms]) => [at - origin, ms]),
     now: Math.round(performance.timeOrigin + performance.now()) - origin,
   }
@@ -143,9 +159,23 @@ function readMainProcessStalls(_electron, origin) {
   return (globalThis.__devOriginStalls ?? []).map(([at, ms]) => [at - origin, ms])
 }
 
+// The fixture Vite server and Playwright's own polling share this process,
+// so a long transform here holds up every wait as surely as a busy app does.
+function watchTestProcessStalls(origin) {
+  const stalls = []
+  let last = Date.now()
+  const timer = setInterval(() => {
+    const now = Date.now()
+    if (now - last > 150 && stalls.length < 24) stalls.push([last - origin, now - last])
+    last = now
+  }, 50)
+  timer.unref()
+  return { stalls, stop: () => clearInterval(timer) }
+}
+
 // What the window showed and who had stopped answering when the welcome page
 // did not appear. Every probe is bounded so the report itself cannot hang.
-async function welcomeTimeoutEvidence({ application, page, bootstrap, origin, steps, failedRequests, mainOutput }) {
+async function welcomeTimeoutEvidence({ application, page, bootstrap, origin, steps, testProcessStalls, failedRequests, mainOutput }) {
   // A page that is merely slow shows up here; one that is stuck does not.
   const lateWaitStarted = Date.now()
   const visibleAfterMore = await page.getByTestId('welcome-page').waitFor({ state: 'visible', timeout: 3_000 })
@@ -172,7 +202,7 @@ async function welcomeTimeoutEvidence({ application, page, bootstrap, origin, st
     })).then(Object.fromEntries), bootstrapReads).catch((error) => ({ error: error.message })), 2_500, { unanswered: true }),
     bootstrap.snapshot(),
   ])
-  return { steps, visibleAfterMore, screen, renderer, mainProcessStalls, mainProcess, bootstrapReads: reads, fixture, failedRequests: failedRequests.slice(0, 8), mainOutput }
+  return { steps, visibleAfterMore, screen, renderer, mainProcessStalls, testProcessStalls, mainProcess, bootstrapReads: reads, fixture, failedRequests: failedRequests.slice(0, 8), mainOutput }
 }
 
 async function configuredDevelopmentOrigin() {
@@ -206,6 +236,7 @@ test('the configured macOS development origin renders the real Electron app', {
 }, async (t) => {
   const started = Date.now()
   const steps = {}
+  const testProcess = watchTestProcessStalls(started)
   // Each step is reported as it completes, so even a run that reaches the
   // test's own time limit shows how far it got.
   function step(name) {
@@ -268,7 +299,7 @@ test('the configured macOS development origin renders the real Electron app', {
     try {
       await page.getByTestId('welcome-page').waitFor({ state: 'visible', timeout: 5_000 })
     } catch {
-      const evidence = await welcomeTimeoutEvidence({ application, page, bootstrap, origin: started, steps, failedRequests, mainOutput })
+      const evidence = await welcomeTimeoutEvidence({ application, page, bootstrap, origin: started, steps, testProcessStalls: testProcess.stalls, failedRequests, mainOutput })
       assert.fail(`welcome page not visible within 5 s of the document loading: ${JSON.stringify(evidence)}`)
     }
     step('welcome visible')
@@ -276,7 +307,7 @@ test('the configured macOS development origin renders the real Electron app', {
       settleWithin(page.evaluate(readRendererTimeline, started).catch(() => null), 2_000, null),
       settleWithin(application.evaluate(readMainProcessStalls, started).catch(() => null), 2_000, null),
     ])
-    t.diagnostic(`timeline: ${JSON.stringify({ renderer, mainProcessStalls })}`)
+    t.diagnostic(`timeline: ${JSON.stringify({ renderer, mainProcessStalls, testProcessStalls: testProcess.stalls })}`)
     bootstrap.dispose()
     assert.equal(new URL(page.url()).origin, devUrl.origin)
     // ToastProvider renders a sibling live region; raw root child count is
@@ -287,6 +318,7 @@ test('the configured macOS development origin renders the real Electron app', {
     pageErrors.assertNone()
     await verifySignedOutSmokeIsolation(application, { requirePublicStatus: false })
   } finally {
+    testProcess.stop()
     try {
       if (application) {
         await application.close()
