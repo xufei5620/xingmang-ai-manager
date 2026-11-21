@@ -1,5 +1,4 @@
 const assert = require('node:assert/strict')
-const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
@@ -11,20 +10,17 @@ const {
   collectUpdateFeedStats,
   collectUsageSince,
   networkOf,
-  parseArguments,
   parseDays,
   parseInstallerPath,
   parseUsagePath,
   planCountWindow,
   planWindow,
-  readSealer,
   renderUsageCounts,
   summarizeDailyCounts,
   summarizeInstallerDownloads,
   summarizeStaleMachines,
   summarizeVersionCoverage,
 } = require('./update-feed-stats.cjs')
-const { openSealedTexts, sealText } = require('./update-feed-counts.cjs')
 
 const root = path.resolve(__dirname, '..')
 const ZONE_ID = 'a'.repeat(32)
@@ -779,7 +775,7 @@ test('a check-in path with anything outside the vocabulary is not counted at all
   for (const variant of variants) assert.equal(parseUsagePath(variant), null, String(variant))
 })
 
-test('the check-in section reads one whole day for shares and every day for rates, without counts', async () => {
+test('the check-in section reads one whole day for shares and every day for rates, which hold no counts', async () => {
   const cloudflare = createCloudflare({
     usage: (filter) => (filter.datetime_geq !== '2026-10-06T12:00:00Z' ? [] : [
       // Three Windows 11 machines seen once under one-in-three sampling.
@@ -826,8 +822,9 @@ test('the check-in section reads one whole day for shares and every day for rate
   assert.match(section, /最多每 3 次记 1 次/)
   assert.match(section, /另有 14\.3% 的打卡地址认不出/)
   assert.match(section, /nginx 原样转发到这里的（服务端 10-17 核过），所以也记在这里/)
-  // Public run pages: shares and rates only, never a count of machines or check-ins.
-  assert.doesNotMatch(section, /\| (?:1|2|3|4|5|6|7) \|/)
+  // The day's shares and the rates stay shares and rates; the counts have a section of their own above them.
+  assert.doesNotMatch(section.slice(section.indexOf('### 2026-10-07 这一天的电脑')), /\| (?:1|2|3|4|5|6|7) \|/)
+  assert.ok(section.indexOf('### 每天多少台') < section.indexOf('### 2026-10-07 这一天的电脑'))
 })
 
 test('G06: the newest versions each get their own crash, freeze and update-error rates', async () => {
@@ -916,12 +913,7 @@ test('the stats workflow only reads, on demand or once a day, with the read-only
   assert.match(run.run, /GITHUB_STEP_SUMMARY/)
 })
 
-// The daily counts are the one place the report holds machine counts, so they only ever leave sealed.
-const sealKeys = crypto.generateKeyPairSync('rsa', {
-  modulusLength: 3072,
-  publicKeyEncoding: { type: 'spki', format: 'pem' },
-  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-})
+// The daily counts are the one place the report holds machine counts (yoyo, 2026-11-21: on the run page, unsealed).
 
 function usagePiece(...rows) {
   return { rows: rows.map(([pathName, count = 1, sampleInterval = 1]) => ({ count, sampleInterval, path: pathName })) }
@@ -995,7 +987,7 @@ function formatIso(milliseconds) {
   return new Date(milliseconds).toISOString().replace(/\.\d{3}Z$/, 'Z')
 }
 
-test('the counts say how many machines a day, per platform and version, how sure that is, and what it covers', () => {
+test('the counts say how many machines a day, per platform and version, and how sure that is', () => {
   const daily = summarizeDailyCounts([
     usagePiece(
       ...Array.from({ length: 30 }, (_, index) => [usagePath({ app: '0.2.24', tools: `cc~2.1.${index}_cx~0_gk~x_gm~0_cdx~0_cd~0_wb~0_oc~0` })]),
@@ -1004,15 +996,9 @@ test('the counts say how many machines a day, per platform and version, how sure
       [usagePath({ day: '20261008', app: '0.2.24' }), 5],
     ),
   ], countWindow)
-  const stats = {
-    withIp: true,
-    machines: new Map([
-      ['0.2.24', { windows: 30, mac: 10, linux: 2, other: 0 }],
-      ['0.2.22', { windows: 30, mac: 10, linux: 0, other: 0 }],
-    ]),
-  }
-  const text = renderUsageCounts(daily, stats, summarizeVersionCoverage(stats)).join('\n')
-  assert.match(text, /统计时段北京时间 2026-10-07 08:00 至 2026-10-08 20:00/)
+  const text = renderUsageCounts(daily).join('\n')
+  assert.match(text, /### 每天多少台/)
+  assert.match(text, /不是在用的总台数/)
   assert.match(text, /\| 日期 \| Windows \| Mac \| Linux \| 合计 \| 误差 \| 这一天数全了没有 \|/)
   assert.match(text, /\| 2026-10-07 \| 32 \| 12 \| 0 \| \*\*44\*\* \| 没抽样，是数出来的；重发最多多算 1 台 \| 整天 \|/)
   assert.match(text, /\| 2026-10-08 \| 5 \| 0 \| 0 \| \*\*5\*\* \| 没抽样，是数出来的；重发最多多算 4 台 \| 只数到北京时间 2026-10-08 20:00，这天还没过完，偏少 \|/)
@@ -1020,13 +1006,12 @@ test('the counts say how many machines a day, per platform and version, how sure
   assert.match(text, /2026-10-07（最后一个整天）各版本按系统/)
   assert.match(text, /\| 0\.2\.24 \| 32 \| 0 \| 0 \| \*\*32\*\* \|/)
   assert.match(text, /\| \*\*合计\*\* \| \*\*32\*\* \| \*\*12\*\* \| \*\*0\*\* \| \*\*44\*\* \|/)
-  // Half of each platform's machines in the status file table are on a version that checks in.
-  assert.match(text, /- Mac：12 台 ÷ 50\.0% ≈ \*\*24 台\*\*。还没算关了统计的/)
-  assert.match(text, /- Windows：32 台 ÷ 50\.0% ≈ \*\*64 台\*\*。走线路2 的新版本/)
-  assert.match(text, /Windows 60、Mac 20、Linux 2，合计 82。.*这个数不是台数/)
+
+  const sampled = renderUsageCounts(summarizeDailyCounts([usagePiece([usagePath(), 4, 10])], countWindow)).join('\n')
+  assert.match(sampled, /\| 2026-10-07 \| 40 \| 0 \| 0 \| \*\*40\*\* \| 抽样折算（最多每 10 次记 1 次），±37（95%）；重发最多多算 30 台 \| 整天 \|/)
 })
 
-test('the public report seals the counts and keeps only shares and coverage in the open', async () => {
+test('the report counts each day in the open, says what the count leaves out, and scales it up to the machines in use', async () => {
   const cloudflare = createCloudflare({
     groups: (filter) => (filter.datetime_geq === '2026-10-07T12:00:00Z'
       ? [row(windows15, '203.0.113.7'), row(mac15.replace('/0.2.15 ', '/0.2.23 '), '203.0.113.8'), row(mac15, '203.0.113.9'), row(mac15, '203.0.113.10')]
@@ -1037,34 +1022,34 @@ test('the public report seals the counts and keeps only shares and coverage in t
       return [usageRow(usagePath({ app: '0.2.23', os: 'm15' }), 6), usageRow(usagePath({ day: '20261008', app: '0.2.23' }), 9)]
     },
   })
-  const report = await collectUpdateFeedStats({
-    token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl, sealCounts: (text) => sealText(text, sealKeys.publicKey),
-  })
+  const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
   const section = report.slice(report.indexOf('## 每天打卡（匿名使用统计）'))
-  assert.match(section, /### 每天多少台（加密）/)
-  assert.match(section, /node scripts\/update-feed-counts\.cjs <存下来的文件> <钥匙文件>/)
+  assert.match(section, /### 每天多少台\n/)
+  assert.match(section, /\| 2026-10-07 \| 0 \| 13 \| 0 \| \*\*13\*\* \| 没抽样，是数出来的；重发最多多算 12 台 \| 整天 \|/)
+  assert.match(section, /\| 2026-10-08 \| 9 \| 0 \| 0 \| \*\*9\*\* \|/)
   assert.match(section, /### 台数覆盖了多少在用的电脑/)
   assert.match(section, /- \*\*Mac 33\.3%\*\*：Mac 各个版本都读这里的状态文件/)
   assert.match(section, /- \*\*Windows 0\.0%\*\*：0\.2\.18 起走线路2 的/)
   assert.match(section, /0\.2\.22 及更早/)
   assert.match(section, /关掉了「匿名使用统计」的/)
-  // The run page is public: the sealed line opens to the counts, and nothing else on the page gives them away.
-  const [opened] = openSealedTexts(report, sealKeys.privateKey)
-  assert.match(opened, /\| 2026-10-07 \| 0 \| 13 \| 0 \| \*\*13\*\* \| 没抽样，是数出来的；重发最多多算 12 台 \| 整天 \|/)
-  assert.match(opened, /\| 2026-10-08 \| 9 \| 0 \| 0 \| \*\*9\*\* \|/)
-  assert.match(opened, /- Mac：13 台 ÷ 33\.3% ≈ \*\*39 台\*\*/)
-  assert.match(opened, /Windows 1、Mac 3、Linux 0，合计 4。/)
-  const open = report.replace(/XMC1\.\S+/, '')
-  assert.doesNotMatch(open, /\b(?:13|9|39) 台|\| (?:1|3|4|6|7|9|13) \|/)
-  assert.doesNotMatch(open, /203\.0\.113/)
+  assert.match(section, /按这个比例折算，2026-10-07 这天在用的电脑大约/)
+  assert.match(section, /- Mac：13 台 ÷ 33\.3% ≈ \*\*39 台\*\*。还没算关了统计的/)
+  assert.match(section, /- Windows：状态文件那张表里没有 0\.2\.23 及以上的Windows，折算不了。/)
+  assert.match(section, /「电脑」是 Windows 1、Mac 3、Linux 0，合计 4。.*这个数不是台数/)
+  assert.ok(section.indexOf('### 台数覆盖了多少在用的电脑') < section.indexOf('这一天的电脑'))
+  // Still no address anywhere.
+  assert.doesNotMatch(report, /203\.0\.113/)
 })
 
-test('without a key to seal with, the report holds no counts at all', async () => {
-  const cloudflare = createCloudflare({ usage: () => [usageRow(usagePath({ app: '0.2.23' }), 6)] })
+test('without client addresses the coverage cannot be worked out, but the counts still are', async () => {
+  const cloudflare = createCloudflare({
+    limits: settings({ availableFields: ['avg_sampleInterval', 'count', 'dimensions_clientRequestPath', 'dimensions_userAgent'] }),
+    groups: () => [row(windows15, '')],
+    usage: () => [usageRow(usagePath({ app: '0.2.23' }), 6)],
+  })
   const report = await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: cloudflare.fetchImpl })
-  assert.match(report, /台数只写在加了密的那一份里，这次运行没给加密用的公钥，不写。/)
-  assert.doesNotMatch(report, /XMC1\./)
-  assert.doesNotMatch(report, /\| (?:6|12) \|/)
+  assert.match(report, /### 每天多少台/)
+  assert.match(report, /老版本占几成算不出来，也折算不了在用台数/)
 })
 
 test('the IP-counted sections say their machines overcount and point to the check-ins for numbers', async () => {
@@ -1073,28 +1058,4 @@ test('the IP-counted sections say their machines overcount and point to the chec
   assert.match(report, /这里的「电脑」不是真的台数，会多算/)
   assert.match(report, /要台数看下面「每天打卡」那一节/)
   assert.match(report, /Linux 一栏只有测试用的电脑，不是客户/)
-})
-
-test('the command line takes the days and the key to seal with, each once, and checks the key before querying', () => {
-  assert.deepEqual(parseArguments([]), {})
-  assert.deepEqual(parseArguments(['--days', '3', '--seal-counts', 'k.pem']), { days: '3', sealCounts: 'k.pem' })
-  assert.deepEqual(parseArguments(['--seal-counts', 'k.pem']), { sealCounts: 'k.pem' })
-  for (const argv of [['--days'], ['--days', '1', '--days', '2'], ['--key', 'k.pem'], ['3']]) {
-    assert.throws(() => parseArguments(argv), StatsError)
-  }
-  assert.equal(readSealer(undefined), null)
-  const sealer = readSealer(path.join(root, 'scripts', 'update-feed-counts.pub.pem'))
-  assert.match(sealer('台数'), /^XMC1\./)
-  assert.throws(() => readSealer(path.join(root, 'scripts', 'no-such-key.pem')), /读不到台数加密用的公钥/)
-  assert.throws(() => readSealer(path.join(root, 'package.json')), /公钥读不出来/)
-})
-
-test('the workflow seals the counts with the public key kept in the repository', () => {
-  const workflow = YAML.parse(fs.readFileSync(path.join(root, '.github', 'workflows', 'update-feed-stats.yml'), 'utf8'))
-  const [job] = Object.values(workflow.jobs)
-  const run = job.steps.find((step) => String(step.run || '').includes('scripts/update-feed-stats.cjs'))
-  assert.match(run.run, /--seal-counts scripts\/update-feed-counts\.pub\.pem/)
-  const key = crypto.createPublicKey(fs.readFileSync(path.join(root, 'scripts', 'update-feed-counts.pub.pem'), 'utf8'))
-  assert.equal(key.asymmetricKeyType, 'rsa')
-  assert.ok(key.asymmetricKeyDetails.modulusLength >= 3072)
 })

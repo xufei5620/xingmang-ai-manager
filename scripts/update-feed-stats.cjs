@@ -10,8 +10,8 @@
 // 上，这里拿只读的 Analytics 令牌查 GraphQL Analytics API，按 UA 和来源 IP 分组。
 //
 // 来源 IP 只在内存里拿来去重；仓库公开，任何输出（日志、Job Summary）里都只有按版本
-// 和系统汇总后的占比，没有 IP。台数只有一处：每天打卡数出来的「每天多少台」，加密后才写出来
-// （scripts/update-feed-counts.cjs），运行页上只是一串密文。
+// 和系统汇总后的占比，没有 IP。台数只有一处：每天打卡数出来的「每天多少台」（2026-11-21 yoyo 定的，
+// 直接写在运行页上）；按 IP 数的「电脑」会多算、不是台数，那几节只写比例。
 //
 // 下过新版安装包的电脑后来怎样：自动更新从同一个目录下安装包，按来源 IP 和系统把
 // 「哪个小时下的」和「之后读状态文件时是哪个版本」对上，分成装上了、还在旧版、没再出现。
@@ -22,8 +22,6 @@
 // 下面的地址里（electron/usage-stats.ts），一天一条就是一台电脑。这一项不查 IP，只按地址分；
 // Windows 走洛杉矶线路的也先发到这里，补上面数不到的那一块。按 IP 数的「电脑」会把一台算成好几台
 // （服务端 11-21 拿日志核过：走代理换出口、换网络都算新的一台），要台数只看打卡。
-const fs = require('node:fs')
-const { readPublicKey, sealText } = require('./update-feed-counts.cjs')
 const { compareReleaseVersions } = require('./update-release-utils.cjs')
 
 const API_ORIGIN = 'https://api.cloudflare.com'
@@ -65,7 +63,6 @@ const USAGE_FIRST_VERSION = '0.2.23'
 const REQUEST_TIMEOUT_MS = 30 * 1000
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 const MAX_DAYS = 31
-const MAX_PUBLIC_KEY_BYTES = 16 * 1024
 const DEFAULT_MAX_DURATION_SECONDS = 24 * 60 * 60
 const DEFAULT_PAGE_SIZE = 10000
 // 一段时间里的分组条数顶到上限就对半拆开重查；拆到这么短还顶满，说明不是星芒的流量。
@@ -958,8 +955,7 @@ function sortVersionsDescending(versions) {
   return [...versions].sort((left, right) => compareReleaseVersions(right, left))
 }
 
-// 仓库是公开的，运行页和摘要页谁都能看，所以只写占比，不写台数和请求次数：
-// 台数等于告诉别人星芒有多少客户。
+// 只写占比，不写台数和请求次数：按 IP 数的「电脑」会多算，不是台数（台数看每天打卡那一节）。
 function renderMachineTable(machines) {
   const columns = PLATFORMS.filter(([id]) => id !== 'other' || [...machines.values()].some((counts) => counts.other > 0))
   const totals = { windows: 0, mac: 0, linux: 0, other: 0 }
@@ -1242,7 +1238,7 @@ function formatRate(count, machineDays) {
   return machineDays > 0 ? (count * 100 / machineDays).toFixed(1) : '-'
 }
 
-// 一天一条就是一台电脑，所以这一节和上面按状态文件数的一样只写占比。
+// 这一节只写占比，台数在「每天多少台」那一节。
 function renderUsageDay(usage) {
   const records = usage.records.filter((record) => record.day === usage.day.day)
   const total = sumWeights(records)
@@ -1400,19 +1396,19 @@ function ipMachineTotals(stats) {
 }
 
 /**
- * 每天多少台（台数本身）。这一段只交给加密（renderCountSection），不直接写进运行页：仓库公开，台数等于
- * 告诉别人星芒有多少客户。解开以后要自己读得懂，所以统计时段、口径、误差都写在里面。
+ * 每天多少台：报表里唯一的台数（2026-11-21 服务端核装机量时要的，yoyo 选了直接写在运行页上、不加密）。
+ * 按 IP 数的「电脑」会多算、不是台数，那几节照旧只写比例。
  */
-function renderUsageCounts(daily, stats, coverage) {
+function renderUsageCounts(daily) {
   const lines = [
-    `## 星芒每天多少台（update-feed-stats，统计时段北京时间 ${formatBeijingTime(daily.window.start)} 至 ${formatBeijingTime(daily.window.end)}）`,
+    '',
+    '### 每天多少台',
     '',
     '一天一条打卡就是一台电脑（客户端自己保证一天只发成一条），下面是数出来的台数，不是比例。'
-      + '按 UTC 分天，也就是北京时间这天早上 8 点到第二天早上 8 点。这些台数只是打卡的电脑，不是在用的总台数，'
-      + '哪些电脑不打卡、大约覆盖几成见运行页上「台数覆盖了多少在用的电脑」。',
+      + '按 UTC 分天，也就是北京时间这天早上 8 点到第二天早上 8 点；从统计时段开头那天的零点数起，第一天也是整天。'
+      + '**这些只是打卡的电脑，不是在用的总台数**，哪些电脑不打卡、大约覆盖几成见下面「台数覆盖了多少在用的电脑」。',
     '',
   ]
-  if (!daily.days.length) return [...lines, '这段时间没有认得出的打卡记录。']
   const columns = countPlatformColumns(daily.days.map((day) => day.platforms))
   lines.push(
     `| 日期 | ${columns.map(([, label]) => label).join(' | ')} | 合计 | 误差 | 这一天数全了没有 |`,
@@ -1466,62 +1462,11 @@ function renderUsageCounts(daily, stats, coverage) {
     '- 「还没过完」「不在统计时段里」的那天偏少，看整天的那几天。',
   )
   if (daily.offDays > 0) lines.push(`- 另有 ${formatCount(daily.offDays)} 条打卡的日期不在统计时段里（多半是电脑时钟不准），没算进哪一天。`)
-
-  lines.push('', `### 按覆盖率折算，${formatUsageDay(focus.day)} 在用的电脑大约多少台`, '')
-  if (!coverage) {
-    lines.push('这个套餐的 Cloudflare 统计查不到来源 IP，状态文件那张表没有按电脑的比例，折算不了。')
-  } else {
-    for (const [id, label, note] of [
-      ['mac', 'Mac', '还没算关了统计的，实际只会更多。'],
-      ['windows', 'Windows', '走线路2 的新版本在状态文件那张表里看不到，比例偏低、这个数偏高；又没算关了统计的，会偏低。两头都不准，只能粗看。'],
-    ]) {
-      const { all, covered } = coverage[id]
-      if (!covered) {
-        lines.push(`- ${label}：状态文件那张表里没有 ${USAGE_FIRST_VERSION} 及以上的${label}，折算不了。`)
-        continue
-      }
-      lines.push(`- ${label}：${formatCount(focus.platforms[id])} 台 ÷ ${formatShare(covered, all)} ≈ **${formatCount(focus.platforms[id] * all / covered)} 台**。${note}`)
-    }
-    lines.push(
-      '',
-      `比例用的是状态文件那张表（这次的统计时段）里 ${USAGE_FIRST_VERSION} 及以上的占几成，那张表按来源 IP 数，也有偏差，这个数只当大概。Linux 还没对外发，不算。`,
-    )
-  }
-
-  if (stats.withIp) {
-    const totals = ipMachineTotals(stats)
-    lines.push(
-      '',
-      '### 状态文件那张表按来源 IP 数出来的「电脑」',
-      '',
-      `统计时段里读过状态文件的，按「来源 IP + 系统」去重：Windows ${totals.windows}、Mac ${totals.mac}、Linux ${totals.linux}`
-        + `${totals.other ? `、其他 ${totals.other}` : ''}，合计 ${totals.windows + totals.mac + totals.linux + totals.other}。`
-        + '走代理换出口、换网络都会把一台算成好几台，同一个出口后面的几台又只算一台，这个数不是台数，只拿来和服务端日志对口径。'
-        + '0.2.18 起 Windows 走线路2 的读 xm-direct.solov.cc，不在这里。Linux 还没对外发，这一栏只有测试用的电脑。',
-    )
-  }
   return lines
 }
 
-// 台数只走加密：seal 是 update-feed-counts.cjs 的 sealText 绑上公钥；没给（直接调用时）就不写台数。
-function renderCountSection(daily, stats, coverage, seal) {
-  const lines = ['', '### 每天多少台（加密）', '']
-  if (!seal) return [...lines, '台数只写在加了密的那一份里，这次运行没给加密用的公钥，不写。']
-  lines.push(
-    '一天一条打卡就是一台电脑，这一段是数出来的台数：每天多少台（按系统、按版本拆开）、误差、按下面的覆盖率折算的在用台数，'
-      + '以及上面按来源 IP 数出来的「电脑」有多少（给服务端对口径）。仓库公开、运行页谁都能看，台数等于告诉别人星芒有多少客户，'
-      + '所以加了密，只有拿着钥匙（私钥）的人解得开：把这一页或这一步的日志存成文件，在仓库里跑 '
-      + '`node scripts/update-feed-counts.cjs <存下来的文件> <钥匙文件>`。下面这一长串要复制全。',
-    '',
-    '```text',
-    seal(renderUsageCounts(daily, stats, coverage).join('\n')),
-    '```',
-  )
-  return lines
-}
-
-// 覆盖率只写比例，可以公开：台数在加密的那一段里。
-function renderUsageCoverage(coverage) {
+// 打卡台数只是在用电脑的一部分：写明哪些不打卡，按状态文件那张表估覆盖率，再折算成在用台数。
+function renderUsageCoverage(daily, coverage, stats) {
   const lines = [
     '',
     '### 台数覆盖了多少在用的电脑',
@@ -1535,7 +1480,8 @@ function renderUsageCoverage(coverage) {
     '- 开发版、自己编的版本、GitHub Actions 里真装真开的打包版，本来就不该算。测试包是正式版号，装了的测试机会打卡。',
     '',
   ]
-  if (!coverage) return [...lines, '这个套餐的 Cloudflare 统计查不到来源 IP，状态文件那张表没有按电脑的比例，老版本占几成算不出来。']
+  if (!coverage) return [...lines, '这个套餐的 Cloudflare 统计查不到来源 IP，状态文件那张表没有按电脑的比例，老版本占几成算不出来，也折算不了在用台数。']
+  const focus = pickCountDay(daily)
   lines.push(`头一类能估：最上面状态文件那张表（按来源 IP 数的比例）里，各系统的电脑 ${USAGE_FIRST_VERSION} 及以上的占几成，打卡大约就覆盖几成。`, '')
   const mac = coverage.mac
   const windows = coverage.windows
@@ -1548,7 +1494,25 @@ function renderUsageCoverage(coverage) {
     '- 关了统计的那一块：0.2.25 起，登录着的星芒每天另给控制台报一次版本（不看这个开关）。铺开以后，拿控制台某天收到的 0.2.25 台数，'
       + '比这边同一天「0.2.25、登录着」的打卡台数，差的就是关了统计的（加上这天没开够 3 分钟的）。要服务端那边数。',
     '',
-    '按这个比例折算的在用台数，在上面加密的那一段里。',
+    `按这个比例折算，${formatUsageDay(focus.day)} 这天${focus.complete ? '' : '（还没过完）'}在用的电脑大约：`,
+    '',
+  )
+  for (const [id, label, note] of [
+    ['mac', 'Mac', '还没算关了统计的，实际只会更多。'],
+    ['windows', 'Windows', '比例偏低会估多，没算关了统计的又会估少，两头都不准，只能粗看。'],
+  ]) {
+    const { all, covered } = coverage[id]
+    lines.push(covered
+      ? `- ${label}：${formatCount(focus.platforms[id])} 台 ÷ ${formatShare(covered, all)} ≈ **${formatCount(focus.platforms[id] * all / covered)} 台**。${note}`
+      : `- ${label}：状态文件那张表里没有 ${USAGE_FIRST_VERSION} 及以上的${label}，折算不了。`)
+  }
+  const totals = ipMachineTotals(stats)
+  lines.push(
+    '',
+    '比例出自按来源 IP 数的表，也有偏差，折算出来的只当大概。对照用：那张表这段时间按「来源 IP + 系统」去重的「电脑」是'
+      + ` Windows ${totals.windows}、Mac ${totals.mac}、Linux ${totals.linux}${totals.other ? `、其他 ${totals.other}` : ''}，`
+      + `合计 ${totals.windows + totals.mac + totals.linux + totals.other}。走代理换出口、换网络会把一台算成好几台，`
+      + '同一个出口后面的几台又只算一台，这个数不是台数，只拿来和服务端日志对口径；0.2.18 起 Windows 走线路2 的不在里面，Linux 一栏只有测试用的电脑。',
   )
   return lines
 }
@@ -1571,7 +1535,7 @@ function renderUsageScope(usage) {
   return lines
 }
 
-// counts 是 { daily, coverage, seal }：daily 来自 summarizeDailyCounts，seal 没给时不写台数（见 renderCountSection）。
+// counts 是 { daily, coverage }：daily 来自 summarizeDailyCounts，coverage 来自 summarizeVersionCoverage。
 function renderUsageSection(usage, stats = null, counts = null) {
   const lines = ['', '## 每天打卡（匿名使用统计）', '']
   if (!usage) return [...lines, '这个套餐的 Cloudflare 统计不能按请求路径分，打卡记录没法数。']
@@ -1581,7 +1545,7 @@ function renderUsageSection(usage, stats = null, counts = null) {
       + 'Windows 走线路2 的也先发到这里，和上面那几节不一样，数得到。要台数只看这一节，上面按来源 IP 数的会多算。',
   )
   if (counts && stats && counts.daily.days.length) {
-    lines.push(...renderCountSection(counts.daily, stats, counts.coverage, counts.seal), ...renderUsageCoverage(counts.coverage))
+    lines.push(...renderUsageCounts(counts.daily), ...renderUsageCoverage(counts.daily, counts.coverage, stats))
   }
   if (usage.records.length) lines.push(...renderUsageDay(usage), ...renderUsageRates(usage), ...renderUsageVersions(usage))
   else lines.push('', '这段时间没有认得出的打卡记录：0.2.23 还没发出去，或者装了的都关了这一项。')
@@ -1628,8 +1592,7 @@ async function queryWindow(client, zoneTag, limits, window, spec) {
   return pieces
 }
 
-/** sealCounts 把台数那一段加密成一行（见 renderCountSection）；不给就不写台数。 */
-async function collectUpdateFeedStats({ token, days, now = new Date(), fetchImpl = fetch, sealCounts = null }) {
+async function collectUpdateFeedStats({ token, days, now = new Date(), fetchImpl = fetch }) {
   const client = createApiClient(validateToken(token), fetchImpl)
   const zoneTag = await resolveZoneId(client)
   const limits = await readDatasetLimits(client, zoneTag)
@@ -1652,7 +1615,7 @@ async function collectUpdateFeedStats({ token, days, now = new Date(), fetchImpl
   if (usagePieces) {
     const countWindow = planCountWindow(now, window, limits)
     const gapPieces = await queryWindow(client, zoneTag, limits, { pieces: countWindow.gap }, usageSpec)
-    counts = { daily: summarizeDailyCounts([...gapPieces, ...usagePieces], countWindow), coverage: summarizeVersionCoverage(stats), seal: sealCounts }
+    counts = { daily: summarizeDailyCounts([...gapPieces, ...usagePieces], countWindow), coverage: summarizeVersionCoverage(stats) }
   }
   return renderReport(stats, window, limits, days, downloads, usage, counts)
 }
@@ -1670,45 +1633,17 @@ async function collectUsageSince({ token, from, now = new Date(), fetchImpl = fe
   return { window, usage: spec ? summarizeUsage(await queryWindow(client, zoneTag, limits, window, spec), window) : null }
 }
 
-const ARGUMENT_FLAGS = { '--days': 'days', '--seal-counts': 'sealCounts' }
-
 function parseArguments(argv) {
-  const options = {}
-  for (let index = 0; index < argv.length; index += 2) {
-    const name = Object.hasOwn(ARGUMENT_FLAGS, argv[index]) ? ARGUMENT_FLAGS[argv[index]] : null
-    if (!name || argv[index + 1] === undefined || Object.hasOwn(options, name)) {
-      throw new StatsError('用法：update-feed-stats.cjs [--days 1~31] [--seal-counts 公钥文件]（令牌从环境变量 CLOUDFLARE_ANALYTICS_TOKEN 读）')
-    }
-    options[name] = argv[index + 1]
-  }
-  return options
-}
-
-// 公钥在仓库里（scripts/update-feed-counts.pub.pem），先读出来认一遍，免得查完 Cloudflare 才发现加不了密。
-function readSealer(file) {
-  if (file === undefined) return null
-  let pem
-  try {
-    if (fs.statSync(file).size > MAX_PUBLIC_KEY_BYTES) throw new StatsError(`台数加密用的公钥文件太大：${file}`)
-    pem = fs.readFileSync(file, 'utf8')
-  } catch (error) {
-    if (error instanceof StatsError) throw error
-    throw new StatsError(`读不到台数加密用的公钥：${file}`)
-  }
-  try {
-    readPublicKey(pem)
-  } catch (error) {
-    throw new StatsError(error instanceof Error ? error.message : '台数加密用的公钥读不出来')
-  }
-  return (text) => sealText(text, pem)
+  if (argv.length === 0) return {}
+  if (argv.length === 2 && argv[0] === '--days') return { days: argv[1] }
+  throw new StatsError('用法：update-feed-stats.cjs [--days 1~31]（令牌从环境变量 CLOUDFLARE_ANALYTICS_TOKEN 读）')
 }
 
 if (require.main === module) {
   Promise.resolve()
     .then(() => {
       const options = parseArguments(process.argv.slice(2))
-      const days = parseDays(options.days ?? '7')
-      return collectUpdateFeedStats({ token: process.env.CLOUDFLARE_ANALYTICS_TOKEN, days, sealCounts: readSealer(options.sealCounts) })
+      return collectUpdateFeedStats({ token: process.env.CLOUDFLARE_ANALYTICS_TOKEN, days: parseDays(options.days ?? '7') })
     })
     .then((report) => process.stdout.write(report))
     .catch((error) => {
@@ -1726,12 +1661,10 @@ module.exports = {
   collectUsageSince,
   parseDays,
   networkOf,
-  parseArguments,
   parseInstallerPath,
   parseUsagePath,
   planCountWindow,
   planWindow,
-  readSealer,
   renderReport,
   renderUsageCounts,
   summarizeInstallerDownloads,
