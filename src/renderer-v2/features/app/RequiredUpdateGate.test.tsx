@@ -36,7 +36,7 @@ describe('RequiredUpdateGate', () => {
   it('offers only updating and support, with no way to close it', () => {
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot()} windows actions={actions} />)
     expect(html).toContain('data-testid="required-update-gate"')
-    expect(html).toContain('这个版本需要更新后才能继续用')
+    expect(html).toContain('当前版本需更新后才能继续使用')
     expect(html).toContain('现在是 0.2.12，将更新到 0.2.13')
     expect(html).toContain('是否允许更改')
     expect(html).toContain('data-testid="required-update-start"')
@@ -57,7 +57,7 @@ describe('RequiredUpdateGate', () => {
   it('asks for an administrator instead of a click on yes when the Windows account is not one', () => {
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ installNeedsAdminPassword: true })} windows actions={actions} />)
     // yoyo 2026-10-06 批的原话（句末补了句号）。
-    expect(html).toContain('data-testid="required-update-admin-password">要输入管理员密码；让有管理员账号的人来点，或联系客服。</p>')
+    expect(html).toContain('data-testid="required-update-admin-password">需要管理员密码，请由管理员操作或联系客服。</p>')
     expect(html).not.toContain('是否允许更改')
     expect(html).toContain('data-testid="required-update-start"')
     expect(html).toContain('data-testid="required-update-support"')
@@ -116,12 +116,12 @@ describe('RequiredUpdateGate', () => {
   it('tells the user the disk is full, how much to free, and offers a retry and a download-anyway', () => {
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ diskShortfall: { neededBytes: 1800 * 1024 ** 2, freeBytes: 1200 * 1024 ** 2 } })} windows actions={actions} />)
     expect(html).toContain('data-testid="required-update-disk"')
-    expect(html).toContain('磁盘空间不够，新版本还没开始下载。')
+    expect(html).toContain('磁盘空间不足，新版本未开始下载。')
     expect(html).toContain('电脑磁盘只剩 1.2 GB，装更新大约要 1.8 GB，还要再清出 600 MB')
     expect(html).toContain('data-testid="required-update-disk-help"')
     expect(html).toContain('怎么清理')
     expect(html).toContain('data-testid="required-update-download-anyway"')
-    expect(html).toContain('空间够了，再试一次')
+    expect(html).toContain('重新检查空间')
     // 门里进不了更新页，不许叫他「回到更新页」，也不许说「会自动下载」让他干等。
     expect(html).not.toContain('回到更新页')
     expect(html).not.toContain('会自动下载')

@@ -13,7 +13,7 @@ const entryIdPattern = /^newapi-[a-f0-9]{64}$/
  * 等一会儿再读多半还是这样，得给客户「重新读取」和官网两条路。
  */
 export class AnnouncementCollectionError extends Error {
-  constructor() { super('公告没读出来，可以点「重新读取」，或到官网查看。') }
+  constructor() { super('公告加载失败，请点击「重新读取」，或前往官网查看。') }
 }
 
 function unreadable(): never { throw new AnnouncementCollectionError() }

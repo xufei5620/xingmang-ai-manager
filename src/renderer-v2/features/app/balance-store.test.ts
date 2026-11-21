@@ -119,7 +119,7 @@ describe('shared account balance refresh', () => {
     const lastUpdate = store.getSnapshot().updatedAt
     read.mockRejectedValueOnce(new Error('Failed to fetch'))
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(store.getSnapshot()).toMatchObject({ balance: balance(100), updatedAt: lastUpdate, loading: false, error: '余额暂时没有读到，请检查网络后重试。' })
+    expect(store.getSnapshot()).toMatchObject({ balance: balance(100), updatedAt: lastUpdate, loading: false, error: '余额获取失败，请检查网络后重试。' })
     read.mockResolvedValue(balance(90))
     await store.refresh()
     expect(store.getSnapshot()).toMatchObject({ balance: balance(90), updatedAt: Date.now(), error: null })

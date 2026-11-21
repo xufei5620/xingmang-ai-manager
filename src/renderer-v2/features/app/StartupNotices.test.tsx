@@ -35,14 +35,14 @@ describe('StartupNotices', () => {
   })
 
   it('omits the action button for a check with no useful destination', () => {
-    expect(render([startupCheckFailure('appearance', '系统外观没有同步')])).not.toContain('xm-notice-actions')
+    expect(render([startupCheckFailure('appearance', '系统外观同步失败')])).not.toContain('xm-notice-actions')
   })
 
   it('offers a way straight back to signing in when the account store was rebuilt', () => {
     const markup = render([vaultRecoveredNotice()])
     expect(markup).toContain('startup-notice-vault-recovered')
     expect(markup).toContain('本机保存的登录信息已重置，请重新登录')
-    expect(markup).toContain('去登录')
+    expect(markup).toContain('前往登录')
     expect(markup).toContain('aria-label="关闭"')
     expect(markup).not.toContain('aria-modal')
   })
@@ -73,7 +73,7 @@ describe('StartupNotices', () => {
     expect(markup).not.toContain('四')
     expect(markup).toContain('startup-notice-updated-primary')
     expect(markup).toContain('startup-notice-updated-secondary')
-    expect(markup).toContain('看全部改动')
+    expect(markup).toContain('查看全部改动')
     expect(markup).not.toContain('aria-label="关闭"')
   })
 

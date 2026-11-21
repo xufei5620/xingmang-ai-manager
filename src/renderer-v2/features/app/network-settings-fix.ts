@@ -23,6 +23,6 @@ export function diagnosticNetworkSettings(item: { code: string; state: string; d
 
 /** 系统没让打开时页头那句；代理那句同首页断网横条（useAppOnlineStatus.ts）。 */
 export const networkSettingsUnavailableMessages: Readonly<Record<DiagnosticNetworkSettings['kind'], string>> = {
-  dns: '没能打开网络设置，请在系统设置里找「网络」。',
-  proxy: '没能打开系统代理设置，请在系统设置里找「代理」。',
+  dns: '无法打开网络设置，请在系统设置中查找「网络」。',
+  proxy: '无法打开系统代理设置，请在系统设置中查找「代理」。',
 }

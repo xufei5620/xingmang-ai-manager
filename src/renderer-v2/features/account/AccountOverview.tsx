@@ -116,7 +116,7 @@ export function AccountOverview({
   onSwitchAccount?: () => void
   /** 「退出登录」那颗按钮真正去退的那一下；缺省 = 直接调 api.logoutAccount。 */
   onLogout?: () => Promise<void>
-  /** 确认框里在「已配好的工具会保留。」后面另起一段说的话（有工具正在装、卸时，#1097）；缺省 = 不加。 */
+  /** 确认框里在「已配置的工具将保留。」后面另起一段说的话（有工具正在装、卸时，#1097）；缺省 = 不加。 */
   logoutNote?: string
   /** 概览是不是现在那个页签；从别的页签切回来时重读密钥把数。缺省 = 一直算在前台、不重读。 */
   active?: boolean
@@ -281,7 +281,7 @@ export function AccountOverview({
           </>
         }
       >
-        <p>已配好的工具会保留。</p>
+        <p>已配置的工具将保留。</p>
         {logoutNote && <p data-testid="account-overview-logout-jobs">{logoutNote}</p>}
         {logoutImageNote && <p data-testid="account-overview-logout-chat-image">{logoutImageNote}</p>}
         <ResultNotice error={operation.error} detail={operation.detail} />

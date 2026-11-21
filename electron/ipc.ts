@@ -137,7 +137,7 @@ export interface IpcRegistrationOptions {
     exportLatest(): string
     /** 检查页「清掉这条旧设置」；缺省 = stale-proxy-environment.ts 的真实现。 */
     clearStaleProxy?(): Promise<StaleProxyClearResult>
-    /** 检查页「挪开这份设置」「删掉这几项设置」；缺省 = 不支持，点了报一句中文（旧行为无此按钮）。 */
+    /** 检查页「停用此设置」「删除这些设置」；缺省 = 不支持，点了报一句中文（旧行为无此按钮）。 */
     fix?(kind: DiagnosticFixKind): Promise<DiagnosticFixResult>
     /** 反馈报告「最近一次自检」那段有没有结果；缺省 = 不知道，预览报告时不提醒先去检查。 */
     hasSelfCheckResult?(): boolean

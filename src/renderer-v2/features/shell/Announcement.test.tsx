@@ -30,23 +30,23 @@ describe('renderer-v2 announcement error mapping', () => {
     const result = formatAnnouncementError(new Error("Error invoking remote method 'account:get-notice': Error: 公告读取响应超过 512 KB 安全上限"))
     expect(result).toEqual({
       responseTooLarge: true,
-      message: '这条公告里的图片或视频太大，这里显示不了，可以到官网看完整公告。',
+      message: '公告中的图片或视频过大，无法在此显示，请前往官网查看完整公告。',
     })
   })
 
   it('shows one plain sentence when a notice read fails and leaves the raw reason to the log', () => {
-    const plain = { responseTooLarge: false, message: '公告暂时没读到，过一会儿点铃铛再看。' }
+    const plain = { responseTooLarge: false, message: '公告加载失败，请稍后点击铃铛图标重试。' }
     expect(formatAnnouncementLoadError(new Error("Error invoking remote method 'account:get-notice': Error: 公告读取失败，服务返回 HTTP 502"))).toEqual(plain)
     expect(formatAnnouncementLoadError(new Error("Error invoking remote method 'account:get-notice': Error: upstream connect error or disconnect/reset before headers"))).toEqual(plain)
     expect(formatAnnouncementLoadError(null)).toEqual(plain)
     expect(formatAnnouncementLoadError(new Error("Error invoking remote method 'account:get-notice': Error: 公告读取响应超过 512 KB 安全上限"))).toEqual({
       responseTooLarge: true,
-      message: '这条公告里的图片或视频太大，这里显示不了，可以到官网看完整公告。',
+      message: '公告中的图片或视频过大，无法在此显示，请前往官网查看完整公告。',
     })
     expect(formatAnnouncementLoadError(new AnnouncementCollectionError())).toEqual({
       responseTooLarge: false,
       collectionUnreadable: true,
-      message: '公告没读出来，可以点「重新读取」，或到官网查看。',
+      message: '公告加载失败，请点击「重新读取」，或前往官网查看。',
     })
   })
 
@@ -176,9 +176,9 @@ describe('renderer-v2 recharge promo card', () => {
     expect(html).toContain('充 2,000')
     expect(html).toContain('送 100%')
     expect(html).toContain('到账 <strong>4,000</strong>')
-    expect(html.match(/送得最多/g)).toHaveLength(1)
-    expect(html).toContain('点一档直接去付款。')
-    for (const label of ['去充值', '活动详情', '这个活动不再提醒', '今天不再提醒']) expect(html).toContain(label)
+    expect(html.match(/赠送最多/g)).toHaveLength(1)
+    expect(html).toContain('选择档位即可前往支付。')
+    for (const label of ['去充值', '活动详情', '不再提醒此活动', '今天不再提醒']) expect(html).toContain(label)
     expect(html).not.toContain('>知道了<')
     expect(html).not.toContain('announcement-promo-lines')
   })
@@ -217,7 +217,7 @@ describe('renderer-v2 activity bar', () => {
     expect(html).toContain('充值满赠<small>10月8日截止，还剩 8 天</small>')
     expect(html).toContain('邀请有礼</button>')
     expect(html).toContain('去充值')
-    expect(html).toContain('aria-label="今天先收起活动提醒"')
+    expect(html).toContain('aria-label="今日不再显示活动提醒"')
   })
 
   it('leaves out top-up when the account cannot recharge in the app', () => {

@@ -27,7 +27,7 @@ describe('chat image work registry', () => {
     expect(chatImageWorkActive()).toBe(false)
   })
   it('asks with the approved sentence word for word (D44)', () => {
-    expect(chatImageSwitchWarning).toBe('对话还在出图，换账号会停掉这张图，可能已经扣费。')
+    expect(chatImageSwitchWarning).toBe('对话正在生成图片，切换账号将中止生成，可能已产生扣费。')
   })
   it('adds the same sentence to the logout prompt only while an image is in flight', () => {
     expect(logoutChatImageNote()).toBe('')

@@ -313,6 +313,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 这个作业要真开星芒（装好的包或 electron .）。正式环境的域名先在这台 runner 上指回本机、逐个核过，
+      # 冒烟和测试一个请求也到不了账号站和更新目录，服务端不再把 CI 数成客户的电脑
+      # （2026-11-21，scripts/ci-block-production-hosts.cjs）。
+      - name: Keep the launched client off the production servers
+        run: node scripts/ci-block-production-hosts.cjs
       # The same three Electron steps as windows-test, for the smokes below.
       - name: Restore the Electron download for this version
         id: electron-cache
@@ -533,6 +538,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 这个作业要真开星芒（装好的包或 electron .）。正式环境的域名先在这台 runner 上指回本机、逐个核过，
+      # 冒烟和测试一个请求也到不了账号站和更新目录，服务端不再把 CI 数成客户的电脑
+      # （2026-11-21，scripts/ci-block-production-hosts.cjs）。
+      - name: Keep the launched client off the production servers
+        run: node scripts/ci-block-production-hosts.cjs
       # The same three Electron steps as windows-test, plus one: the cache here
       # holds both architectures' zips. This job packages both, and
       # macos-release-rehearsal and macos-intel read the same entry, so none of
@@ -662,6 +672,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 这个作业要真开星芒（装好的包或 electron .）。正式环境的域名先在这台 runner 上指回本机、逐个核过，
+      # 冒烟和测试一个请求也到不了账号站和更新目录，服务端不再把 CI 数成客户的电脑
+      # （2026-11-21，scripts/ci-block-production-hosts.cjs）。
+      - name: Keep the launched client off the production servers
+        run: node scripts/ci-block-production-hosts.cjs
       # 读 macos-test 在 main 上存下的那份 Electron 压缩包（M 芯片版和 Intel 版都在，见
       # CI-1）。只读不写：这个作业不装测试用的二进制，electron-builder 用缓存里的包之前
       # 照样按锁文件钉住的 checksums.json 核对；没命中（main 还没存过的新 Electron）时
@@ -729,6 +744,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 这个作业要真开星芒（装好的包或 electron .）。正式环境的域名先在这台 runner 上指回本机、逐个核过，
+      # 冒烟和测试一个请求也到不了账号站和更新目录，服务端不再把 CI 数成客户的电脑
+      # （2026-11-21，scripts/ci-block-production-hosts.cjs）。
+      - name: Keep the launched client off the production servers
+        run: node scripts/ci-block-production-hosts.cjs
       # 同 macos-release-rehearsal：读 macos-test 存下的两个架构的 Electron 压缩包，只读。
       # #1600 上这个作业没有缓存，GitHub 对 darwin-arm64 压缩包连着回了四分多钟 504，
       # 打包器重试六次全被挡（CI-1）。键里写的是架构名，不是 runner.arch，所以 Intel
@@ -999,6 +1019,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 这个作业要真开星芒（装好的包或 electron .）。正式环境的域名先在这台 runner 上指回本机、逐个核过，
+      # 冒烟和测试一个请求也到不了账号站和更新目录，服务端不再把 CI 数成客户的电脑
+      # （2026-11-21，scripts/ci-block-production-hosts.cjs）。
+      - name: Keep the launched client off the production servers
+        run: node scripts/ci-block-production-hosts.cjs
       # The Electron zips linux-test keeps for this version, both
       # architectures (CI-1). Read only: this job never installs the binary the
       # tests load, so it has nothing of its own to write back, and

@@ -20,8 +20,8 @@ describe('LaunchInstallNotice', () => {
   })
 
   it('says the install is starting once the countdown runs out', () => {
-    expect(launchInstallCountdownText(3)).toBe('还有 3 秒开始安装。')
-    expect(launchInstallCountdownText(0)).toBe('正在开始安装，软件马上关掉。')
+    expect(launchInstallCountdownText(3)).toBe('3 秒后开始安装。')
+    expect(launchInstallCountdownText(0)).toBe('正在开始安装，软件即将关闭。')
   })
 
   it('renders the same wording as the system notification in the startup corner, without a dismiss button', () => {
@@ -31,7 +31,7 @@ describe('LaunchInstallNotice', () => {
     expect(markup).toContain('data-testid="launch-install-notice"')
     expect(markup).toContain('星芒AI马上更新')
     expect(markup).toContain('请点「是」')
-    expect(markup).toContain('还有 5 秒开始安装。')
+    expect(markup).toContain('5 秒后开始安装。')
     expect(markup).toContain('role="status"')
     expect(markup).not.toContain('aria-label="关闭"')
   })

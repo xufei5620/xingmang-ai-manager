@@ -33,7 +33,7 @@ describe('renderer-v2 operation error dialog', () => {
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={{ message: raw }} onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('操作没有完成')
+    expect(markup).toContain('操作未完成')
     expect(markup).toContain(raw)
     expect(markup).toContain('查看日志')
     expect(markup).toContain('找客服')
@@ -154,7 +154,7 @@ describe('renderer-v2 operation error dialog', () => {
       <OperationErrorDialog failure={{ message: '打开 Codex 桌面端没有完成', detail: 'spawn ENOSYS' }}
         onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('操作没有完成')
+    expect(markup).toContain('操作未完成')
     expect(markup).toContain('operation-error-reason')
     expect(markup).toContain('原因：')
     expect(markup).toMatch(/<details open=""[^>]*data-testid="operation-error-raw"/)
