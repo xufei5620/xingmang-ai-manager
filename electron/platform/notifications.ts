@@ -93,11 +93,13 @@ const messages = {
   },
 } as const satisfies Record<PlatformActivityKind | 'test', NotificationMessage>
 
-// 聊天和出图也借 task 这一类的偏好开关，但人不是去「异步任务」里看结果，
-// 所以按编号前缀换成自己的说法。前缀由星芒自己的聊天页写死（chat: / image:）。
+// 「创作」里的文字回复、出图和视频也借 task 这一类的偏好开关，但人不是去「异步任务」里看结果，
+// 所以按编号前缀换成自己的说法，点开也回「创作」。前缀由星芒自己的「创作」页写死（chat: / image: / video:，
+// 见 useChatController.ts）；漏认一种就会落回「生成任务已完成」那句并被送去「异步任务」。
 const chatMessages = {
-  chat: { title: 'AI 回复好了', body: '回到星芒的「聊天」查看。' },
-  image: { title: '图片生成好了', body: '回到星芒的「聊天」查看。' },
+  chat: { title: 'AI 已回复', body: '请回到星芒的「创作」查看。' },
+  image: { title: '图片已生成', body: '请回到星芒的「创作」查看。' },
+  video: { title: '视频已生成', body: '请回到星芒的「创作」查看。' },
 } as const satisfies Record<string, NotificationMessage>
 
 // 充值活动也借「公告」这一类的偏好开关，说法换成活动自己的。编号前缀由首页的活动卡片写死
@@ -123,6 +125,7 @@ function promoNoticeKind(eventKey: string): keyof typeof promoMessages | null {
 function chatNoticeKind(eventKey: string): keyof typeof chatMessages | null {
   if (eventKey.startsWith('chat:')) return 'chat'
   if (eventKey.startsWith('image:')) return 'image'
+  if (eventKey.startsWith('video:')) return 'video'
   return null
 }
 
