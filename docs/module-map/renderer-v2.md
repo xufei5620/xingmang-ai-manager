@@ -18,7 +18,7 @@
 - `account-switch-sync.ts` — 切换账号时「顺手把工具也换过去」：只挑原本连着旧账号、磁盘上地址仍是旧站某条已登记线路且凭据没被改过的工具，切完回报哪些工具还开着要重开。App 与 `SavedAccounts.tsx` 共用。
 - `SavedAccounts.tsx` — 「切换账号」框：保存过的账号、切换时默认一起换走在用账号密钥的工具（自己填的密钥默认不动）、切过去才发现登录失效的给「重新登录这个账号」。文件里的 `card` 样式按它自己的注释眼下没有页面用。
 - `external-link-fallback.tsx` — 公告、协议里的链接被主进程外链白名单拦下时的出路（I12，白名单不放宽）：只认 http(s) 且不带账号密码段的地址，复制给用户自己去浏览器打开；只看主进程给的错误码，不比对文案。
-- `markdown-view.tsx` / `markdown-renderer.tsx` — 公告、用户协议和隐私政策的 Markdown 排版（总单 77，R9）：react-markdown 连带 remark / micromark 约 150KB 不进首屏包，`MarkdownView` 打开那个框时才用 `import()` 读 `markdown-renderer.tsx`（框一开就 `preloadMarkdown()`，跟读内容并着走）；读不进来时退成原文照排，不让整个界面掉进出错页。`markdown-renderer.tsx` 别处不许静态引，`first-screen-imports.test.ts` 钉住 react-markdown、remark-gfm、qrcode 只能由按需加载的那几块静态引。聊天页自己用 react-markdown，它整页本来就懒加载，不走这里。
+- `markdown-view.tsx` / `markdown-renderer.tsx` — 公告、用户协议和隐私政策的 Markdown 排版（总单 77，R9）：react-markdown 连带 remark / micromark 约 150KB 不进首屏包，`MarkdownView` 打开那个框时才用 `import()` 读 `markdown-renderer.tsx`（框一开就 `preloadMarkdown()`，跟读内容并着走）；读不进来时退成原文照排，不让整个界面掉进出错页。`markdown-renderer.tsx` 别处不许静态引，`first-screen-imports.test.ts` 钉住 react-markdown、remark-gfm 只能由按需加载的那几块静态引；客服二维码库 qrcode 留在首屏（欢迎页首屏就要那张图，改成按需加载拖慢过 Mac 开发版开机，见 `features/app/useSupportContact.ts`）。聊天页自己用 react-markdown，它整页本来就懒加载，不走这里。
 - `LocalAvatar.tsx` / `local-avatar.ts` — 本机头像：选图、裁剪、压成 256 见方的 PNG 按账号存进 localStorage；保存前比对的是最后一次真正上屏的账号，并发渲染被丢弃时也不会存到别的账号上。
 - `AccountFilters.tsx` — 用量账单、异步任务那种「常驻几个框 + 展开筛选」的筛选条，以及展开按钮上「已生效几个」的计数。
 - `background-work.ts` — 「手上有事」登记处：聊天在生成、视频在做、工具在装、登录后同步密钥这几处用 `useBackgroundWork` 登记，窗口缩托盘久了主进程要关界面省内存前看它（`electron/renderer-release.ts`）。

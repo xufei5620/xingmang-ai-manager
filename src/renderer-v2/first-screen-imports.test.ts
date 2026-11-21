@@ -4,18 +4,15 @@ import { describe, expect, it } from 'vitest'
 
 const root = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
 
-// 这几个库只有点开公告、用户协议、客服二维码时才用，合起来约 180KB（总单 77，R9）。静态引它们的文件
+// Markdown 排版这一套只有点开公告、用户协议、隐私政策时才用，约 150KB（总单 77，R9）。静态引它的文件
 // 只能是本身就按需加载的那几块，否则这一整套又回到首屏包里，每次开机都要多解析一遍。
-const onDemandLibraries = ['react-markdown', 'remark-gfm', 'qrcode']
+// 客服二维码库 qrcode 不在这里：欢迎页首屏就要那张图，改成按需加载会拖慢 Mac 开发版开机（见 useSupportContact.ts）。
+const onDemandLibraries = ['react-markdown', 'remark-gfm']
 const allowedStaticImporters = new Map([
   // markdown-view.tsx 用 import() 读它，公告和用户协议都经那里。
   ['markdown-renderer.tsx', 'loaded by markdown-view.tsx through import()'],
   // 聊天页整页由 App.tsx 按需加载。
   ['features/chat/ChatPage.tsx', 'the chat page is a lazy chunk'],
-  // 设置页在 pages-business 里，整块由 App.tsx 按需加载。
-  ['features/settings/codex-remote/FeishuRemoteSection.tsx', 'the settings page lives in the lazy business chunk'],
-  // 浏览器回归的夹具，不进产品包。
-  ['testing/app-fixture.tsx', 'test fixture, never bundled into the app'],
 ])
 // 静态的 import … from '…'（不含 import type，它编译后就没了；不含 import()，那正是按需加载）。
 const staticImportPattern = new RegExp(String.raw`^\s*import\s+(?!type\b)[^;]*?\bfrom\s+'(${onDemandLibraries.join('|')})'`, 'm')
@@ -29,7 +26,7 @@ function sourceFiles(directory: string): string[] {
 }
 
 describe('renderer-v2 first-screen imports', () => {
-  it('imports Markdown and QR code libraries statically only from modules that are loaded on demand', () => {
+  it('imports the Markdown libraries statically only from modules that are loaded on demand', () => {
     const offenders: string[] = []
     for (const file of sourceFiles(root)) {
       const relative = path.relative(root, file).replaceAll('\\', '/')
