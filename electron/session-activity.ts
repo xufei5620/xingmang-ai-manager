@@ -84,10 +84,13 @@ function looksSecret(value: string): boolean {
   return redactSecretShapes(value) !== value
 }
 
-/** 路径最后一段。记录可能是另一种系统上写的，两种分隔符都认。 */
+/**
+ * 路径最后一段。记录可能是另一种系统上写的，两种分隔符都认。最后一段只有空格时
+ * 回空串：先整串去空格再切，会把 `src/ ` 认成 `src`，把文件夹名当文件名报出去。
+ */
 export function sessionFileName(filePath: string): string {
-  const parts = filePath.trim().split(/[\\/]+/).filter(Boolean)
-  return parts.length > 0 ? parts[parts.length - 1] : ''
+  const parts = filePath.split(/[\\/]+/).filter(Boolean)
+  return parts.length > 0 ? parts[parts.length - 1].trim() : ''
 }
 
 function presentableFileName(filePath: string): string | null {
