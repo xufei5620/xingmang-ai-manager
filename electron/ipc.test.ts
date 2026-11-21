@@ -318,7 +318,6 @@ function register(
   const providerExtensionService = {
     setRepositoryRoot: vi.fn(),
     list: vi.fn(),
-    listAll: vi.fn(),
     mutate: vi.fn(),
     readUserMcpConnection: vi.fn(),
   }
@@ -6534,15 +6533,15 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
-  describe('parseSessionId (sessions:detail/export/archive/restore)', () => {
+  describe('parseSessionId (sessions:archive/restore)', () => {
     const validId = 'a1b2c3d4-e5f6-47a8-89ab-cdef01234567'
 
     it('accepts a well-formed 36-character UUID', () => {
       const { sessionsService } = register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       expect(() => handler(trustedEvent(), validId)).not.toThrow()
-      expect(sessionsService.detail).toHaveBeenCalledWith(validId)
+      expect(sessionsService.archive).toHaveBeenCalledWith(validId)
     })
 
     it('accepts uppercase hex characters', () => {
@@ -6556,7 +6555,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
     it('rejects non-string values', () => {
       register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       for (const bad of [42, null, undefined, {}, []]) {
         expect(() => handler(trustedEvent(), bad)).toThrow('会话 ID 格式错误')
@@ -6565,7 +6564,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
     it('rejects values with the wrong length', () => {
       register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       expect(() => handler(trustedEvent(), validId.slice(0, 35))).toThrow('会话 ID 格式错误')
       expect(() => handler(trustedEvent(), `${validId}0`)).toThrow('会话 ID 格式错误')
@@ -6573,7 +6572,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
     it('rejects relative path traversal payloads', () => {
       register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       expect(() => handler(trustedEvent(), '../../../../../../etc/passwd')).toThrow('会话 ID 格式错误')
       expect(() => handler(trustedEvent(), '..%2f..%2f..%2fetc%2fpasswd')).toThrow('会话 ID 格式错误')
@@ -6581,14 +6580,14 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
     it('rejects backslash-based traversal payloads', () => {
       register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       expect(() => handler(trustedEvent(), '..\\..\\..\\windows\\system32')).toThrow('会话 ID 格式错误')
     })
 
     it('rejects absolute path payloads', () => {
       register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       expect(() => handler(trustedEvent(), '/etc/passwd')).toThrow('会话 ID 格式错误')
       expect(() => handler(trustedEvent(), 'C:\\Windows\\System32\\config')).toThrow('会话 ID 格式错误')
@@ -6596,7 +6595,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
     it('rejects a payload containing a null byte', () => {
       register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       expect(() => handler(trustedEvent(), `${'a'.repeat(35)}\0`)).toThrow('会话 ID 格式错误')
     })
@@ -6613,11 +6612,10 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(sessionsService.restore).toHaveBeenCalledWith(allHyphens)
     })
 
-    it('applies the same rejection to sessions:export, sessions:archive and sessions:restore', async () => {
+    it('applies the same rejection to sessions:archive and sessions:restore', () => {
       register()
       const badId = 'not-a-valid-session-id'
 
-      await expect(electronMocks.handlers.get('sessions:export')!(trustedEvent(), badId)).rejects.toThrow('会话 ID 格式错误')
       expect(() => electronMocks.handlers.get('sessions:archive')!(trustedEvent(), badId)).toThrow('会话 ID 格式错误')
       expect(() => electronMocks.handlers.get('sessions:restore')!(trustedEvent(), badId)).toThrow('会话 ID 格式错误')
     })
@@ -6653,87 +6651,6 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => electronMocks.handlers.get('sessions:archive')!(trustedEvent(), '../x')).toThrow('会话 ID 格式错误')
       expect(providerSessionsService.invalidateListCache).not.toHaveBeenCalled()
-    })
-  })
-
-  describe('parseSessionListQuery (sessions:list)', () => {
-    it('defaults to an empty query when the argument is undefined', () => {
-      const { sessionsService } = register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      expect(() => handler(trustedEvent(), undefined)).not.toThrow()
-      expect(sessionsService.list).toHaveBeenCalledWith({})
-    })
-
-    it('rejects a null, array, or non-object query', () => {
-      register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      expect(() => handler(trustedEvent(), null)).toThrow('会话查询格式错误')
-      expect(() => handler(trustedEvent(), [])).toThrow('会话查询格式错误')
-      expect(() => handler(trustedEvent(), 'active')).toThrow('会话查询格式错误')
-    })
-
-    it('rejects an invalid archive filter', () => {
-      register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      expect(() => handler(trustedEvent(), { archive: 'deleted' })).toThrow('会话归档筛选格式错误')
-    })
-
-    it('accepts every valid archive filter value', () => {
-      const { sessionsService } = register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      for (const archive of ['all', 'active', 'archived'] as const) {
-        expect(() => handler(trustedEvent(), { archive })).not.toThrow()
-        expect(sessionsService.list).toHaveBeenCalledWith(expect.objectContaining({ archive }))
-      }
-    })
-
-    it('rejects a search string exceeding the maximum length', () => {
-      register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      expect(() => handler(trustedEvent(), { search: 'x'.repeat(257) })).toThrow('会话搜索内容过长')
-    })
-
-    it('rejects a non-string search value with a distinct type error', () => {
-      register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      for (const bad of [42, true, null, {}, []]) {
-        expect(() => handler(trustedEvent(), { search: bad })).toThrow('会话搜索内容格式错误')
-      }
-    })
-
-    it('rejects a non-integer or sub-1 page number', () => {
-      register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      for (const bad of [0, -1, 1.5, '2', Number.NaN]) {
-        expect(() => handler(trustedEvent(), { page: bad })).toThrow('页码格式错误')
-      }
-    })
-
-    it('rejects a non-integer or sub-1 pageSize', () => {
-      register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      expect(() => handler(trustedEvent(), { pageSize: 0 })).toThrow('分页大小格式错误')
-      expect(() => handler(trustedEvent(), { pageSize: '20' })).toThrow('分页大小格式错误')
-    })
-
-    it('accepts valid search, page and pageSize values together', () => {
-      const { sessionsService } = register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      expect(() => handler(trustedEvent(), {
-        search: 'refactor', archive: 'active', page: 2, pageSize: 20,
-      })).not.toThrow()
-      expect(sessionsService.list).toHaveBeenCalledWith({
-        search: 'refactor', archive: 'active', page: 2, pageSize: 20,
-      })
     })
   })
 
