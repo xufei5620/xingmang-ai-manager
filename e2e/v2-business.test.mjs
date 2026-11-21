@@ -2459,6 +2459,19 @@ test('a tool that is not installed is not read and each entry leads to the home 
   }
 })
 
+// Mac 验收 R10：风险标签那句说明原来哪儿都没上屏。现在详情页标签下面写出来，鼠标停在标签上也能看到。
+test('a curated entry spells out what its risk tag means under the tags in its details', async () => {
+  const page = await fixture(hubClaudeOnly)
+  try {
+    await page.getByTestId('hub-open-mcp-files').click()
+    const detail = page.getByTestId('hub-detail')
+    await expect(detail.getByTestId('curated-risk-details-files')).toHaveText('能在你指定的位置新建、修改和删除文件。')
+    await expect(detail.getByTitle('能在你指定的位置新建、修改和删除文件。')).toHaveText('会修改本地文件')
+  } finally {
+    await page.close()
+  }
+})
+
 // 「扩展改」第 3 条（10-24）：能用它的工具一个都没装时直说，给「去首页安装」，不给「+」。
 test('an entry says on each family that the tool is not installed when none is, and leads to the home page', async () => {
   const page = await fixture('page=extensions&installedProviders=')
@@ -4758,6 +4771,47 @@ test('without the Codex CLI the GPT official group asks for it and offers the ho
     await expect(page.getByTestId('hub-codex-missing')).toHaveText('装好 Codex CLI 才能看 GPT 官方插件。去首页安装')
     await page.getByTestId('hub-codex-open-home').waitFor()
     assert.equal(await page.getByTestId('hub-row-plugin-sentry-openai-api-curated').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('a skill can come from a zip picked in the system window, then goes into each ticked tool', async () => {
+  const page = await fixture(`${hub}&extensionOk=1`)
+  const directory = 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper'
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill-archive').click()
+    await expect(page.getByTestId('hub-skill-import')).toContainText('从压缩包导入')
+    // 还没选压缩包时不能点「添加」，也没有能手填路径的框。
+    assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), true)
+    assert.equal(await page.getByTestId('hub-skill-import-source').count(), 0)
+    await page.getByTestId('hub-skill-archive-choose').click()
+    await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('pdf-helper.zip')
+    await page.getByTestId('hub-skill-import-submit').click()
+    await page.getByText(/^已添加「pdf-helper」，给 .+ 使用，下次打开工具时生效$/).waitFor()
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.find((call) => call.name === 'import-skill').args, { sourcePath: directory, scope: 'user' })
+    assert.deepEqual(
+      recorded.filter((call) => call.name === 'extension').map((call) => call.args),
+      [{ provider: 'claude', kind: 'skill', action: 'install', source: directory, scope: 'user' }],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('a zip with no skill in it says so inside the import form', async () => {
+  const page = await fixture(`${hub}&skillArchive=empty`)
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill-archive').click()
+    await page.getByTestId('hub-skill-archive-choose').click()
+    await page.getByTestId('hub-skill-import').getByText('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。').waitFor()
+    await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('')
+    assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), true)
   } finally {
     await page.close()
   }

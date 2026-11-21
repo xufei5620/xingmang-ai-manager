@@ -6,19 +6,27 @@
 .chat-conversations { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 12px 10px; background: var(--win); box-shadow: inset -1px 0 0 var(--line); }
 .chat-conversations-top > .xm-btn { width: 100%; }
 .chat-conversation-search { margin: 8px 0 2px; }.chat-conversation-search .xm-search { width: 100%; }
+/* 搜索框下面那一排「全部 / 对话 / 视频 / 画布」（融合第 1 步）：只看某一类。 */
+.chat-conversation-kinds { margin: 6px 0 0; }.chat-conversation-kinds .xm-chips { flex-wrap: nowrap; gap: 4px; }.chat-conversation-kinds .xm-chip { height: 24px; padding: 0 9px; font-size: 12px; }
 .chat-conversation-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; scrollbar-width: thin; }
 .chat-conversation-day { padding: 12px 10px 4px; color: var(--text-3); font-size: var(--font-micro); }
 .chat-conversation-item { position: relative; display: flex; align-items: center; min-width: 0; border-radius: 8px; corner-shape: squircle; transition: background var(--duration-fast) var(--ease-standard); }
 .chat-conversation-item:hover { background: var(--panel-hover); }.chat-conversation-item[data-active='true'] { background: var(--nav-on); box-shadow: var(--nav-on-sh); }
 .chat-conversation-item[data-active='true']::before { content: ''; position: absolute; left: 0; top: 11px; bottom: 11px; width: 3px; border-radius: 2px; background: var(--gold); }
-.chat-conversation-select { display: grid; flex: 1; gap: 2px; min-width: 0; padding: 8px 4px 8px 10px; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
-.chat-conversation-select strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }.chat-conversation-select > span { color: var(--text-3); font-size: var(--font-micro); }
+.chat-conversation-select { display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: center; column-gap: 8px; flex: 1; min-width: 0; padding: 7px 4px 7px 8px; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+/* 每一行前面的小图标：对话、视频、画布项目排在同一列里，靠它一眼分开。 */
+.chat-conversation-kind { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; corner-shape: squircle; background: var(--soft); box-shadow: inset 0 0 0 1px var(--soft-line); color: var(--text-2); }
+.chat-conversation-kind[data-kind='video'] { color: var(--gold); }.chat-conversation-kind[data-kind='canvas'] { color: var(--accent); }
+.chat-conversation-text { display: grid; gap: 2px; min-width: 0; }
+.chat-conversation-select strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }.chat-conversation-text > span { overflow: hidden; color: var(--text-3); font-size: var(--font-micro); text-overflow: ellipsis; white-space: nowrap; }
 /* 更多操作按钮平时藏着，悬停、当前对话、键盘移过去或菜单开着时才露出来（原型的 conv-more）。 */
 .chat-conversation-item > .xm-menu { margin-right: 4px; opacity: 0; transition: opacity var(--duration-fast) var(--ease-standard); }
 .chat-conversation-item:hover > .xm-menu, .chat-conversation-item[data-active='true'] > .xm-menu, .chat-conversation-item > .xm-menu:focus-within, .chat-conversation-item > .xm-menu:has([aria-expanded='true']) { opacity: 1; }
 .chat-conversation-empty { margin: 0; padding: 14px 10px; color: var(--text-3); font-size: 12px; line-height: 1.5; }
 .chat-conversations-foot { padding-top: 8px; }.chat-conversations-foot > .xm-btn { color: var(--text-3); }.chat-conversations-foot > .xm-btn:hover:not(:disabled) { color: var(--bad-tx); }
 .chat-conversation { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+/* 右边换成一条视频或一个画布项目时，对话这一块只藏不卸（回复照收）。 */
+.chat-conversation[hidden] { display: none; }
 .chat-bar { display: flex; flex: none; align-items: center; gap: 8px; height: 46px; padding: 0 16px 0 24px; box-shadow: inset 0 -1px 0 var(--line); }.chat-bar > strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }.chat-bar-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 .chat-parameters { display: grid; gap: 16px; }.chat-parameter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; }.chat-parameter-gap { margin-right: auto; }
 .chat-banner { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-bottom: 1px solid var(--line); background: var(--accent-soft); color: var(--text-2); font-size: 12px; line-height: 1.5; }.chat-banner > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }.chat-banner[data-tone='bad'] { color: var(--bad-tx); background: var(--bad-soft); }
@@ -51,6 +59,8 @@
 .chat-draft-images { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }.chat-draft-image { position: relative; width: 64px; height: 64px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-solid); }.chat-draft-image img { display: block; width: 100%; height: 100%; object-fit: cover; }.chat-draft-image img[data-failed='true'] { visibility: hidden; }.chat-draft-image > .xm-btn { position: absolute; top: 2px; right: 2px; background: var(--panel-solid); }
 .chat-compose-foot { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 18px; color: var(--text-3); font-size: var(--font-micro); text-align: center; }
 .chat-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 90px 24px 48px; text-align: center; }.chat-empty h2 { margin: 4px 0 0; font-size: 16px; font-weight: 600; text-wrap: balance; }.chat-empty p { max-width: 380px; margin: 0; color: var(--text-3); font-size: 13px; line-height: 1.6; }.chat-empty-examples { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
+/* 起始页下面还有「从这里开始」的卡时，上面少留点空。 */
+.chat-empty[data-start='true'] { padding: 28px 24px 4px; }.chat-empty[data-start='true'] p { max-width: 460px; }
 .chat-page button:focus-visible, .chat-page summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 @keyframes chat-spin { to { transform: rotate(360deg); } }
 [data-reduce-motion='1'] .chat-generating > svg, [data-reduced-motion='true'] .chat-generating > svg, [data-system-reduced-motion='true'] .chat-generating > svg { animation: none; }
