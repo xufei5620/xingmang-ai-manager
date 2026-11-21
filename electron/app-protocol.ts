@@ -9,6 +9,9 @@ export const applicationContentSecurityPolicy = [
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: xingmang-asset:",
+  // 页内看片（yoyo 2026-11-09 亲手回「看片放开」）：只放 xingmang-asset:，那个协议只回作品库里当前账号的音视频
+  // （ai-asset-protocol.ts）。不带 'self'、blob:、data: 和任何外站，范围不许再扩大。
+  "media-src xingmang-asset:",
   "font-src 'self'",
   "connect-src 'self'",
   "object-src 'none'",

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
+import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
+import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import { createConversation, createWorkspace, type ChatMessage, type ChatWorkspace } from './state'
 import { answerHistoryFlushRequests, autosaveDelay, autosaveMaxWaitMs, autosaveQuietMs, ChatStorageError, conversationLimitMessage, conversationExport, conversationPlainText, createHistoryWriter, flushChatHistory, registerHistoryFlusher, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, MAX_CONVERSATIONS, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText, runHistoryImport } from './storage'
 
@@ -1397,5 +1399,128 @@ describe('saved phrases in chat history', () => {
     const loaded = { ...workspace(scope, 1), phrases: ['原来的一句', '两边都有'] }
     const session = { ...createWorkspace(scope), phrases: ['新存的一句', '两边都有'] }
     expect(mergeSessionIntoHistory(loaded, session).phrases).toEqual(['新存的一句', '两边都有', '原来的一句'])
+  })
+})
+
+describe('videos made in a conversation', () => {
+  const assetId = 'v'.repeat(43)
+  const clip = { assetId, thumbnailUrl: assetThumbnailUrl(assetId, 'video'), width: 1280, height: 720, durationSeconds: 5 }
+  function withReply(patch: Partial<ChatMessage>): ChatWorkspace {
+    const state = workspace()
+    state.conversations[0].messages = [message(0), message(1, { content: '', reasoning: '', ...patch })]
+    return state
+  }
+  async function reopenedReply(state: ChatWorkspace) { return (await saveAndReopen(state)).state.conversations[0].messages[1] }
+
+  it('keeps a finished clip across a reload and points its thumbnail at the current thumbnail version', async () => {
+    const reply = await reopenedReply(withReply({ video: { clip: { ...clip, thumbnailUrl: `xingmang-asset://thumb/v1/video/${assetId}` } } }))
+    expect(reply.video).toEqual({ clip })
+    expect(reply.status).toBe('complete')
+    expect(reply.requestId).toBeUndefined()
+  })
+
+  it('reopens a video that was still being made as pending with its request id, so the paid job can be picked back up', async () => {
+    const files = memoryFiles()
+    const state = withReply({ status: 'pending', requestId: 'runtime-request', video: { requestId: 'request-video-1', unrecorded: true } })
+    await createHistoryWriter(files.api, null).save(state)
+    // The runtime id is never stored; the one inside video is what survives.
+    expect(files.raw()).toContain('request-video-1')
+    expect(files.raw()).not.toContain('runtime-request')
+    const reply = (await loadChatHistory(files.api, memoryStorage(), scope)).state.conversations[0].messages[1]
+    expect(reply.status).toBe('pending')
+    expect(reply.requestId).toBe('request-video-1')
+    expect(reply.video).toEqual({ requestId: 'request-video-1', unrecorded: true })
+  })
+
+  it('keeps the request id of a failed video so regenerating can ask the main process for it first', async () => {
+    const reply = await reopenedReply(withReply({ status: 'error', error: '暂时查不到进度', video: { requestId: 'request-video-2' } }))
+    // The id is still there, so the page treats it as waiting and resumes it on open instead of leaving a paid clip behind.
+    expect(reply.status).toBe('pending')
+    expect(reply.requestId).toBe('request-video-2')
+  })
+
+  it('does not treat an unconfirmed submission as still running and keeps its warning', async () => {
+    const settled = await reopenedReply(withReply({ status: 'error', error: '没出成', video: { requestId: 'request-video-3', unconfirmed: true } }))
+    expect(settled.status).toBe('error')
+    expect(settled.error).toBe('没出成')
+    expect(settled.requestId).toBeUndefined()
+    expect(settled.video).toEqual({ requestId: 'request-video-3', unconfirmed: true })
+    // The app closed before the reply was settled: say why instead of the generic unfinished-request line.
+    const interrupted = await reopenedReply(withReply({ status: 'pending', video: { requestId: 'request-video-3', unconfirmed: true } }))
+    expect(interrupted.status).toBe('error')
+    expect(interrupted.error).toBe(aiVideoUnconfirmedSubmissionMessage)
+  })
+
+  it('drops a video it cannot read without losing the conversation', () => {
+    const cases: Array<[unknown, unknown, string]> = [
+      [{ clip: { assetId: 'short', thumbnailUrl: clip.thumbnailUrl } }, {}, 'complete'],
+      [{ clip: { ...clip, thumbnailUrl: 'https://example.invalid/poster.png' } }, {}, 'complete'],
+      [{ clip: { ...clip, thumbnailUrl: assetThumbnailUrl('w'.repeat(43), 'video') } }, {}, 'complete'],
+      [{ requestId: '../../other-account' }, {}, 'complete'],
+      [{ requestId: 'r'.repeat(65) }, {}, 'complete'],
+      ['not-an-object', undefined, 'complete'],
+    ]
+    for (const [stored, expected, status] of cases) {
+      const state = withReply({})
+      Object.assign(state.conversations[0].messages[1], { video: stored })
+      const parsed = parseHistorySnapshot(snapshotOf(state), scope)
+      expect(parsed.unreadable).toHaveLength(0)
+      const reply = parsed.state.conversations[0].messages[1]
+      expect(reply.video).toEqual(expected)
+      expect(reply.status).toBe(status)
+      expect(reply.requestId).toBeUndefined()
+    }
+  })
+
+  it('ignores a video on a message the user sent', () => {
+    const state = workspace()
+    Object.assign(state.conversations[0].messages[0], { video: { requestId: 'request-video-4' } })
+    const sent = parseHistorySnapshot(snapshotOf(state), scope).state.conversations[0].messages[0]
+    expect(sent.video).toBeUndefined()
+    expect(sent.status).toBe('complete')
+  })
+
+  it('remembers the video mode with its shape and length, and drops values the composer cannot offer', async () => {
+    const state = workspace()
+    state.conversations[0].settings = { ...state.conversations[0].settings, mode: 'video', model: 'grok-imagine-video-1.5', videoAspect: '9:16', videoSeconds: 8 }
+    expect((await saveAndReopen(state)).state.conversations[0].settings).toMatchObject({ mode: 'video', model: 'grok-imagine-video-1.5', videoAspect: '9:16', videoSeconds: 8 })
+    for (const bad of [{ videoAspect: '4:3' }, { videoSeconds: 99 }, { videoSeconds: 2.5 }, { videoSeconds: '5' }, { videoSeconds: 0 }]) {
+      const odd = workspace()
+      Object.assign(odd.conversations[0].settings, { mode: 'video' }, bad)
+      const settings = parseHistorySnapshot(snapshotOf(odd), scope).state.conversations[0].settings
+      expect(settings.mode).toBe('video')
+      expect(settings.videoAspect).toBeUndefined()
+      expect(settings.videoSeconds).toBeUndefined()
+    }
+  })
+
+  it('leaves videos and their request ids behind when moving to another computer, and says a clip stayed', () => {
+    const state = withReply({ video: { clip } })
+    state.conversations[0].messages.push(message(2), message(3, { content: '', status: 'pending', requestId: 'request-video-5', video: { requestId: 'request-video-5' } }))
+    const exported = JSON.parse(JSON.stringify(exportableConversations(state)))
+    const text = JSON.stringify(exported)
+    expect(text).not.toContain(assetId)
+    expect(text).not.toContain('request-video-5')
+    expect(text).not.toContain('"video"')
+    expect(exported[0].messages[1].content).toBe('[视频未随记录迁移]')
+    // A job that was still running has nothing to show on the other computer: no note, and it arrives as stopped.
+    expect(exported[0].messages[3].content).toBe('')
+    const [imported] = parseImportedConversations(exported)
+    expect(imported.messages.map((item) => item.status)).toEqual(['complete', 'complete', 'complete', 'canceled'])
+    expect(imported.messages.some((item) => item.video || item.requestId)).toBe(false)
+  })
+
+  it('does not accept a video or a request id from an imported file', () => {
+    const exported = JSON.parse(JSON.stringify(exportableConversations(withReply({}))))
+    exported[0].messages[1].video = { requestId: 'someone-elses-request' }
+    const [imported] = parseImportedConversations(exported)
+    expect(imported.messages[1].video).toBeUndefined()
+    expect(imported.messages[1].requestId).toBeUndefined()
+    expect(imported.messages[1].status).toBe('canceled')
+  })
+
+  it('mentions the video in the exported text file', () => {
+    const conversation = { ...createConversation(), title: '橘猫', messages: [message(0, { content: '一只橘猫在雨里走' }), message(1, { content: '', video: { clip } })] }
+    expect(conversationPlainText(conversation)).toContain('[1 段视频，未包含在此文件中]')
   })
 })

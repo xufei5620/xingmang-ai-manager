@@ -13,9 +13,11 @@ import { useLatestRequest } from '../../latest-request'
 import { failureWithDetail } from '../../business-common'
 import { exportFailureSentence } from '../../operation-error'
 import { PageLoading } from '../app/PageLoading'
-import { canEditImages, canReadImages, chatLimits, createChatApi, inspectModel, noImageEditModelMessage, type ChatApi } from './api'
-import { buildChatCatalog, chatAssetSaveErrorMessage, chatCutOffNotice, chatErrorAction, chatExampleDraft, chatExamples, chatErrorMessage, chatModelVendor, chatModelVendors, draftLengthError, filterConversations, groupConversationList, isConversationTooLongMessage, MAX_CONVERSATION_TITLE_LENGTH, isGenerating, isGeneratingImage, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation, imageModeFilesMessage, offlineReplyNotice, shouldShowOfflineReplyNotice, draftWithPhrase } from './state'
+import { canEditImages, canReadImages, canStartVideoFromImage, chatLimits, createChatApi, inspectModel, noImageEditModelMessage, type ChatApi } from './api'
+import { buildChatCatalog, chatAssetSaveErrorMessage, chatCutOffNotice, chatErrorAction, chatExampleDraft, chatExamples, chatErrorMessage, chatModelVendor, chatModelVendors, draftLengthError, filterConversations, groupConversationList, isConversationTooLongMessage, MAX_CONVERSATION_TITLE_LENGTH, isGenerating, isGeneratingImage, isGeneratingReply, isGeneratingVideo, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatVideoAspect, type ChatWorkspace, type Conversation, chatVideoAspect, modeFilesMessage, noVideoStartImageMessage, offlineReplyNotice, shouldShowOfflineReplyNotice, draftWithPhrase, videoPromptLengthError, videoStartImageLimitMessage } from './state'
 import { ChatImage } from './ChatImage'
+import { ChatVideoClip, ChatVideoPending, type ChatVideoFilm } from './ChatVideo'
+import { chatVideoMade, chatVideoSecondsChoices, chatVideoSecondsFor, chatVideoSource, type ChatVideoMade, type ChatVideoProgress } from './video'
 import { ParametersDialog } from './ParametersDialog'
 import { PhrasesDialog } from './PhrasesDialog'
 import { useChatController } from './useChatController'
@@ -23,6 +25,9 @@ import { useOnlineStatus } from '../shell/useOnlineStatus'
 import { inspectChatLink, plainText } from './links'
 import { prepareChatMath, readChatMath, renderChatMath, type ChatMath } from './math'
 import { conversationExport, loadChatHistory, mergeSessionIntoHistory, type LoadedChatHistory } from './storage'
+import { videoStudioAspectNames, videoStudioUnconfirmedWarning, type VideoStudioClipSource } from '../video-studio/project'
+import { videoStudioAspects } from '../video-studio/timeline'
+import { videoStudioErrorMessage } from '../video-studio/useVideoStudio'
 import { createFilterOptions, filterCreateExtras, groupCreateList, resolveCreateFilter, type CreateExtraItem, type CreateExtraKind, type CreateFilter, type CreateKind, type CreateSelection } from '../create/list'
 import './chat.css'
 
@@ -66,7 +71,26 @@ export interface ChatPageCreate {
   intro?: (conversationCount: number) => ReactNode
   /** 列表最下面的小字：哪一类这一次没读出来。 */
   notes?: readonly string[]
+  /** 输入框的第三档「生成视频」（融合第 2 步）。不给就没有这一档。 */
+  video?: ChatPageVideo
 }
+/** 「生成视频」那一档要「创作」页给的东西：这个账号用不用得了、价目和余额、做过的视频。 */
+export interface ChatPageVideo {
+  /** ready 能用；unsupported 这个账号没有出视频这一项；suspended 远程暂时停用。后两种那一档灰着，悬停说原因。 */
+  access: 'ready' | 'unsupported' | 'suspended'
+  /** 确认框里那句「预计约 $x（估算）」；没有按次的价是 null，不编一个数。 */
+  quote: (model: string, group: string) => string | null
+  /** 打开确认框时再读一次价目（放久了的换新）。 */
+  refreshPrices: () => void
+  /** 确认框里「当前余额」后面的数（带 $）；读不到是 null，不写那一句。 */
+  balance: string | null
+  /** 「添加到视频」菜单里列的视频，新的在前。 */
+  films: readonly ChatVideoFilm[]
+  /** 把这一段接到这条视频的最后（null 是新建一条）。成了交回那条视频；没成交回一句能上屏的原因。 */
+  addClip: (filmId: string | null, source: VideoStudioClipSource, made: ChatVideoMade) => { id: string; title: string } | { error: string }
+  openFilm: (id: string) => void
+}
+export type { ChatVideoMade }
 export interface ChatPageCreateActions {
   open: (item: CreateExtraItem) => void
   /** 回到对话这边：点了一段对话，或点了「新建」。 */
@@ -75,7 +99,8 @@ export interface ChatPageCreateActions {
   removeVideo: (id: string) => void
   openCanvas: (id: string) => void
 }
-type Confirmation = { kind: 'retry' | 'delete-message' | 'delete-conversation' | 'clear' | 'clear-all' | 'stop'; id?: string; mayStillComplete?: boolean } | null
+// video：发一段视频之前先问的那一句（每次都问：一段单独计费）。
+type Confirmation = { kind: 'retry' | 'delete-message' | 'delete-conversation' | 'clear' | 'clear-all' | 'stop' | 'video'; id?: string; mayStillComplete?: boolean } | null
 
 export function ChatPage({ bridge, accountScope, active = true, onOpenAccount, openParameters, onParametersOpened, onOpenAssets, create }: ChatPageProps) {
   const api = useMemo(() => createChatApi(bridge), [bridge])
@@ -171,14 +196,24 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const draftImages = conversation.draftImages ?? []
   const draftFiles = conversation.draftFiles ?? []
   const textMode = conversation.settings.mode === 'text'
-  // 文件只在聊天时带；换到「生成图片」时卡片还留着，说清要先去掉，发送按钮灰着。
+  const videoMode = conversation.settings.mode === 'video'
+  // 「生成视频」那一档（融合第 2 步）：「创作」页给了、这个账号用得了才能发。
+  const videoFeature = create?.video
+  const videoReady = videoFeature?.access === 'ready' && Boolean(api.video)
+  const videoAspect = chatVideoAspect(conversation.settings)
+  const videoSeconds = chatVideoSecondsFor(conversation.settings)
+  // 切到「生成视频」那一档就把价目读好，确认框打开时已经在手上（放久了的，打开确认框时再读一次）。
+  const refreshVideoPrices = videoFeature?.refreshPrices
+  useEffect(() => { if (active && videoMode && videoReady) refreshVideoPrices?.() }, [active, videoMode, videoReady, refreshVideoPrices])
+  // 文件只在聊天时带；换到「生成图片」「生成视频」时卡片还留着，说清要先去掉，发送按钮灰着。
   const filesBlocked = draftFiles.length > 0 && !textMode
   const filesFull = draftFiles.length >= AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage
-  // 聊天时带的图给模型看；生成图片时带的是参考图，照着它改（要模型能改图）。
-  const seesImages = Boolean(conversation.settings.model) && (textMode ? canReadImages(conversation.settings.model) : canEditImages(conversation.settings.model))
-  const imagesBlocked = draftImages.length > 0 && !seesImages
-  const imagesBlockedMessage = textMode ? noImageModelMessage : noImageEditModelMessage
-  const attachTitle = !seesImages ? textMode ? '当前模型看不了图片，换一个能看图的模型才能发图' : '这个模型不能照着图片改，换一个能改图的模型才能加图片' : draftImages.length >= chatLimits.imagesPerMessage ? `一条消息最多带 ${chatLimits.imagesPerMessage} 张图片` : textMode ? '加图片（也可以直接粘贴截图）' : '加参考图（也可以直接粘贴截图）'
+  // 聊天时带的图给模型看；生成图片时带的是参考图，照着它改（要模型能改图）；生成视频时带的是开头图，只收一张。
+  const seesImages = Boolean(conversation.settings.model) && (textMode ? canReadImages(conversation.settings.model) : videoMode ? canStartVideoFromImage(conversation.settings.model) : canEditImages(conversation.settings.model))
+  const imageLimit = videoMode ? 1 : chatLimits.imagesPerMessage
+  const imagesBlocked = draftImages.length > 0 && (!seesImages || draftImages.length > imageLimit)
+  const imagesBlockedMessage = textMode ? noImageModelMessage : videoMode ? seesImages ? videoStartImageLimitMessage : noVideoStartImageMessage : noImageEditModelMessage
+  const attachTitle = videoMode ? '添加开头图' : !seesImages ? textMode ? '当前模型看不了图片，换一个能看图的模型才能发图' : '这个模型不能照着图片改，换一个能改图的模型才能加图片' : draftImages.length >= chatLimits.imagesPerMessage ? `一条消息最多带 ${chatLimits.imagesPerMessage} 张图片` : textMode ? '加图片（也可以直接粘贴截图）' : '加参考图（也可以直接粘贴截图）'
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     if (!shouldPasteScreenshot(event.clipboardData)) return
     // 截图只在主进程从剪贴板里读，这里只负责拦下默认粘贴。
@@ -235,8 +270,42 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   // Rows are memoized, so they get one stable object that always calls the
   // latest handlers instead of fresh closures that would re-render all of them.
   const latestMessageActions = useRef<MessageActions | null>(null)
-  latestMessageActions.current = { copyText: (text, done) => void copyText(text, done), preview: (asset, mine) => setPreview({ asset, mine }), reuseImage: (asset) => void chat.reuseImage(asset), copyAsset: (assetId) => void task(() => api.copyAsset(assetId), '图片已复制'), saveAsset: (assetId) => void saveAsset(assetId), assetMenu: (assetId) => void task(() => api.assetMenu(assetId), ''), confirm: setConfirmation, edit: setEditing, openAccount: (tab) => onOpenAccount?.(tab) }
-  const messageActions = useMemo<MessageActions>(() => ({ copyText: (text, done) => latestMessageActions.current?.copyText(text, done), preview: (asset, mine) => latestMessageActions.current?.preview(asset, mine), reuseImage: (asset) => latestMessageActions.current?.reuseImage(asset), copyAsset: (assetId) => latestMessageActions.current?.copyAsset(assetId), saveAsset: (assetId) => latestMessageActions.current?.saveAsset(assetId), assetMenu: (assetId) => latestMessageActions.current?.assetMenu(assetId), confirm: (value) => latestMessageActions.current?.confirm(value), edit: (value) => latestMessageActions.current?.edit(value), openAccount: (tab) => latestMessageActions.current?.openAccount(tab) }), [])
+  const focusComposer = () => requestAnimationFrame(() => surface.current?.querySelector<HTMLTextAreaElement>('#chatIn')?.focus())
+  // 「用此图生成视频」：这张图当开头图，当初让它画这张图的那句话填回输入框（方案 2.5）。
+  const animateImage = (messageId: string, asset: AiChatAsset) => {
+    const index = conversation.messages.findIndex((message) => message.id === messageId)
+    const asked = conversation.messages.slice(0, Math.max(index, 0)).reverse().find((message) => message.role === 'user')
+    chat.animateImage(asset, asked?.content ?? '')
+    focusComposer()
+  }
+  // 另存时保存框里默认用那句描述开头的几个字当文件名（主进程洗成干净的文件名），没有描述就用作品库原来的名字。
+  const saveVideo = async (messageId: string) => {
+    const source = chatVideoSource(conversation, messageId)
+    if (!source || !api.video) return
+    const ticket = owner.capture()
+    try { const result = await api.video.save(source.clip.assetId, source.prompt.trim().slice(0, 40) || undefined); if (ticket() && result.saved) chat.setNotice('视频已保存') }
+    catch (reason) { if (ticket()) chat.setError(videoStudioErrorMessage(reason, '保存失败，请更换位置后重试')) }
+  }
+  const openVideo = async (assetId: string) => {
+    const ticket = owner.capture()
+    try { await api.video?.open(assetId) } catch (reason) { if (ticket()) chat.setError(videoStudioErrorMessage(reason, '视频打开失败，请稍后重试')) }
+  }
+  // 「添加到视频」：接到选的那条视频最后一个镜头（或新建一条），不用再生成。
+  const composeVideo = (messageId: string, filmId: string | null) => {
+    const source = chatVideoSource(conversation, messageId)
+    if (!videoFeature || !source) return
+    const settings = conversation.messages.find((message) => message.id === messageId)?.settings ?? conversation.settings
+    const result = videoFeature.addClip(filmId, source, chatVideoMade(settings, source.clip))
+    if ('error' in result) { toast.show(result.error, 'warn'); return }
+    toast.show(`已添加为「${result.title}」的最后一个镜头`, 'ok', { label: '查看', onSelect: (dismiss) => { dismiss(); videoFeature.openFilm(result.id) } })
+  }
+  // 重新生成一条视频回复也要报价：打开确认框时把价目读新。
+  const confirmFromMessage = (value: NonNullable<Confirmation>) => {
+    if (value.kind === 'retry' && conversation.messages.find((message) => message.id === value.id)?.video) videoFeature?.refreshPrices()
+    setConfirmation(value)
+  }
+  latestMessageActions.current = { copyText: (text, done) => void copyText(text, done), preview: (asset, mine) => setPreview({ asset, mine }), reuseImage: (asset) => void chat.reuseImage(asset), animateImage, copyAsset: (assetId) => void task(() => api.copyAsset(assetId), '图片已复制'), saveAsset: (assetId) => void saveAsset(assetId), assetMenu: (assetId) => void task(() => api.assetMenu(assetId), ''), stopVideo: () => void stop(), saveVideo: (messageId) => void saveVideo(messageId), openVideo: (assetId) => void openVideo(assetId), composeVideo, confirm: confirmFromMessage, edit: setEditing, openAccount: (tab) => onOpenAccount?.(tab) }
+  const messageActions = useMemo<MessageActions>(() => ({ copyText: (text, done) => latestMessageActions.current?.copyText(text, done), preview: (asset, mine) => latestMessageActions.current?.preview(asset, mine), reuseImage: (asset) => latestMessageActions.current?.reuseImage(asset), animateImage: (messageId, asset) => latestMessageActions.current?.animateImage(messageId, asset), copyAsset: (assetId) => latestMessageActions.current?.copyAsset(assetId), saveAsset: (assetId) => latestMessageActions.current?.saveAsset(assetId), assetMenu: (assetId) => latestMessageActions.current?.assetMenu(assetId), stopVideo: () => latestMessageActions.current?.stopVideo(), saveVideo: (messageId) => latestMessageActions.current?.saveVideo(messageId), openVideo: (assetId) => latestMessageActions.current?.openVideo(assetId), composeVideo: (messageId, filmId) => latestMessageActions.current?.composeVideo(messageId, filmId), confirm: (value) => latestMessageActions.current?.confirm(value), edit: (value) => latestMessageActions.current?.edit(value), openAccount: (tab) => latestMessageActions.current?.openAccount(tab) }), [])
   const exportConversation = async (id: string) => {
     const item = chat.state.conversations.find((candidate) => candidate.id === id)
     if (!item) return
@@ -282,6 +351,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     setConfirmation(null)
     if (!action) return
     if (action.kind === 'retry' && action.id) void chat.send({ retryId: action.id })
+    if (action.kind === 'video') void chat.send()
     if (action.kind === 'delete-message' && action.id) chat.deleteFrom(action.id)
     if (action.kind === 'delete-conversation' && action.id) chat.removeConversation(action.id)
     if (action.kind === 'clear') chat.clearConversation()
@@ -314,11 +384,13 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   // 尺寸框收起来了（换过对话再回来）就直接说，不然客户看不到哪里填错了。
   const showSizeRule = Boolean(chat.sizeRule) && (chat.sizeRuleRevealed || !customSize)
   // Enter 跟发送按钮同一个条件：按钮灰着时按 Enter 什么都不做，不再弹一句说错原因的红条（#1101 第 3 条）。
-  const draftTooLong = draftLengthError(conversation.draft, textMode ? draftFiles : undefined)
+  const draftTooLong = videoMode ? videoPromptLengthError(conversation.draft) : draftLengthError(conversation.draft, textMode ? draftFiles : undefined)
   const editTooLong = editing ? draftLengthError(editing.text, conversation.messages.find((message) => message.id === editing.id)?.files) : ''
-  const sendDisabled = !selectedGroup || (!conversation.draft.trim() && (!(draftImages.length || draftFiles.length) || !textMode)) || Boolean(draftTooLong) || imagesBlocked || filesBlocked || chat.attaching || preparation?.phase !== 'ready' || !conversation.settings.model
+  const sendDisabled = !selectedGroup || (!conversation.draft.trim() && (!(draftImages.length || draftFiles.length) || !textMode)) || Boolean(draftTooLong) || imagesBlocked || filesBlocked || chat.attaching || preparation?.phase !== 'ready' || !conversation.settings.model || (videoMode && !videoReady)
+  // 发一段视频之前先问一句、报个价（方案 2.6）：点发送和按 Enter 都先到这里，点了「开始生成」才真的发。
+  const submit = () => { if (videoMode) { videoFeature?.refreshPrices(); setConfirmation({ kind: 'video' }) } else void chat.send() }
   const selectedGroupMissing = chat.groupsLoaded && Boolean(conversation.settings.group) && !selectedGroup
-  const modelKind = textMode ? '聊天' : '图片'
+  const modelKind = textMode ? '聊天' : videoMode ? '视频' : '图片'
   // 按钮上写模型；还没得选的时候写卡在哪一步。
   // 原来的分组没了时照旧写着那个模型：下面那句「当前模型已不可用」说的就是它。
   const modelLabel = !chat.groupsLoaded && chat.groupLoading ? '正在读取模型' : conversation.settings.model && (!selectedModelMissing || selectedGroupMissing) ? conversation.settings.model : pendingGroups.size ? '正在准备模型' : !models.length ? '暂无可用模型' : '请选择模型'
@@ -334,12 +406,22 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     toast.show(`已刷新：有 ${prepared.length} 个模型可用`, 'ok')
   }
   const confirmation = active ? confirmationState : null
-  const retrySettings = confirmation?.kind === 'retry' ? conversation.messages.find((message) => message.id === confirmation.id)?.settings : undefined
-  const confirmTitle = confirmation?.kind === 'retry' ? '重新生成这条回复？' : confirmation?.kind === 'stop' ? '停止等待图片生成？' : confirmation?.kind === 'clear' ? '清空当前对话？' : confirmation?.kind === 'clear-all' ? '清空全部对话？' : confirmation?.kind === 'delete-conversation' ? `删除「${chat.state.conversations.find((item) => item.id === confirmation.id)?.title ?? '新对话'}」？` : '删除这条及之后的消息？'
+  const retryMessage = confirmation?.kind === 'retry' ? conversation.messages.find((message) => message.id === confirmation.id) : undefined
+  const retrySettings = retryMessage?.settings
+  // 要出视频的那一问（新发的，或者重新生成一条视频回复）：照哪份设置出、多少钱、还剩多少钱。
+  const videoAsk = confirmation?.kind === 'video' ? conversation.settings : retryMessage?.video ? retrySettings : undefined
+  const videoQuote = videoAsk ? videoFeature?.quote(videoAsk.model, videoAsk.group) : null
+  const videoAskLine = videoAsk ? `用「${videoAsk.model}」生成 1 段、${chatVideoSecondsFor(videoAsk)} 秒，单独计费${videoQuote ? `，${videoQuote}` : ''}。${videoFeature?.balance ? `当前余额 ${videoFeature.balance}。` : ''}` : ''
+  // 上一次提交结果不明的那一段：再生成可能多扣一次，要先勾「我已了解影响」（同视频工作台）。
+  const videoUnconfirmed = Boolean(retryMessage?.video?.unconfirmed)
+  const confirmTitle = confirmation?.kind === 'video' ? '生成 1 段视频？' : confirmation?.kind === 'retry' ? '重新生成这条回复？' : confirmation?.kind === 'stop' ? '停止等待图片生成？' : confirmation?.kind === 'clear' ? '清空当前对话？' : confirmation?.kind === 'clear-all' ? '清空全部对话？' : confirmation?.kind === 'delete-conversation' ? `删除「${chat.state.conversations.find((item) => item.id === confirmation.id)?.title ?? '新对话'}」？` : '删除这条及之后的消息？'
   const running = chat.state.conversations.some(isGenerating) || Object.values(preparations).some((item) => item.phase === 'loading')
   const anyGenerating = chat.state.conversations.some(isGenerating)
   // 回复是界面一段段接着收、收完写进聊天记录的：在回复的时候窗口缩到托盘也不关界面（electron/renderer-release.ts）。
-  useBackgroundWork('chat', anyGenerating || isGenerating(chat.state.draftConversation), 'chat')
+  // 等视频的不算在这里面：它关了界面也不断（请求号存着，回来接），重启装更新、导入聊天记录都不用为它等几分钟。
+  useBackgroundWork('chat', chat.state.conversations.some(isGeneratingReply) || isGeneratingReply(chat.state.draftConversation), 'chat')
+  // 等视频时界面也先别关（同视频工作台出片）：片段一回来就挂回对话、弹一下任务栏，不用等客户再打开窗口。
+  useBackgroundWork('chat-video', chat.state.conversations.some(isGeneratingVideo))
   // 换账号会停掉对话页正在出的图：「切换账号」框按这个先问一句（D44）。
   useChatImageWork(chat.state.conversations.some(isGeneratingImage) || isGeneratingImage(chat.state.draftConversation))
   const searchText = search.trim()
@@ -361,10 +443,9 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
       {(chat.groupError || chat.error || chat.notice || chat.storageError || preparationWarning) && <div className="chat-banner" data-tone={chat.groupError || chat.error || chat.storageError ? 'bad' : 'neutral'} role={chat.groupError || chat.error || chat.storageError ? 'alert' : 'status'}><span>{chat.storageError || chat.groupError || chat.error || chat.notice || preparationWarning}</span>{chat.historyUnreadable && chat.storageError && <Button size="xs" icon={RefreshCw} loading={reloading} disabled={running} onClick={() => void reloadHistory()} testId="chat-history-reload">重新读取</Button>}{chat.groupError && <Button size="xs" icon={RefreshCw} onClick={() => void chat.refreshGroups()} testId="chat-groups-retry">重试</Button>}{!chat.groupError && !chat.storageError && chat.error === offlineSendMessage && <Button size="xs" icon={RefreshCw} disabled={pending} onClick={() => void chat.retryOfflineSend()} testId="chat-send-retry">重试</Button>}{!chat.groupError && !chat.storageError && isConversationTooLongMessage(chat.error) && <Button size="xs" variant="primary" icon={Plus} onClick={chat.continueInNew} testId="chat-continue-new">带着这句话开新对话</Button>}{!chat.groupError && !chat.storageError && !preparationWarning && <Button variant="ghost" size="xs" icon={X} aria-label="关闭提示" title="关闭提示" onClick={() => { chat.setError(''); chat.setNotice('') }} />}</div>}
       <div className="chat-messages" ref={list} aria-label="消息记录" onScroll={(event) => { if (!active) return; const element = event.currentTarget; stickToBottom.current = !conversation.messages.length || element.scrollHeight - element.scrollTop - element.clientHeight < 80; scrolls.current.set(conversation.id, element.scrollTop) }}>
         {!conversation.messages.length && create?.intro?.(chat.state.conversations.length)}
-        {/* 「做视频」那三个字等出视频进了这个框（融合第 2 步）再加。 */}
-        {!conversation.messages.length && <div className="chat-empty" data-start={create?.cards ? 'true' : undefined} data-testid="chat-empty"><Logo kind="symbol" height={create?.cards ? 44 : 56} /><h2>想做点什么？</h2><p>问问题、写东西、画图，都在下面这一个框里说。额度与工具共用同一个账号。</p>{textMode && !conversation.draft.trim() && <div className="chat-empty-examples">{chatExamples.map((text, index) => <Button key={text} size="sm" onClick={() => fillExample(text)} testId={`chat-example-${index + 1}`}>{text}</Button>)}</div>}</div>}
+        {!conversation.messages.length && <div className="chat-empty" data-start={create?.cards ? 'true' : undefined} data-testid="chat-empty"><Logo kind="symbol" height={create?.cards ? 44 : 56} /><h2>想做点什么？</h2><p>{videoFeature?.access === 'ready' ? '问问题、写东西、画图、做视频，都在下面这一个框里说。额度与工具共用同一个账号。' : '问问题、写东西、画图，都在下面这一个框里说。额度与工具共用同一个账号。'}</p>{textMode && !conversation.draft.trim() && <div className="chat-empty-examples">{chatExamples.map((text, index) => <Button key={text} size="sm" onClick={() => fillExample(text)} testId={`chat-example-${index + 1}`}>{text}</Button>)}</div>}</div>}
         {!conversation.messages.length && create?.cards}
-        {conversation.messages.map((message) => <ChatMessageItem key={message.id} message={message} model={message.settings?.model ?? conversation.settings.model} pending={pending} offlineNotice={shouldShowOfflineReplyNotice(message, offline)} canRetry={chat.groups.some((group) => group.name === (message.settings?.group ?? conversation.settings.group))} canOpenAccount={Boolean(onOpenAccount)} markdownComponents={markdownComponents} replyComponents={replyComponents} actions={messageActions} />)}
+        {conversation.messages.map((message) => <ChatMessageItem key={message.id} message={message} model={message.settings?.model ?? conversation.settings.model} pending={pending} offlineNotice={shouldShowOfflineReplyNotice(message, offline)} canAnimate={videoReady} videoProgress={message.video && message.requestId ? chat.videoProgress[message.requestId] : undefined} videoStopping={stopping && Boolean(message.video) && message.status === 'pending'} videoFilms={message.video?.clip && videoReady ? videoFeature?.films : undefined} canRetry={chat.groups.some((group) => group.name === (message.settings?.group ?? conversation.settings.group))} canOpenAccount={Boolean(onOpenAccount)} markdownComponents={markdownComponents} replyComponents={replyComponents} actions={messageActions} />)}
       </div>
       <div className="chat-composer">
         {shouldShowLengthNotice(conversation) && !isConversationTooLongMessage(chat.error) && <div className="chat-length-notice" role="status" data-testid="chat-length-notice"><span>这段对话已经很长了。每发一句，前面的内容都会一起发给 AI，对话越长，每次回复一般花得越多、也越慢。要换个话题，点「新对话」接着聊，刚写的话会一起带过去。</span><Button size="xs" icon={Plus} disabled={pending} onClick={chat.continueInNew} testId="chat-length-new">新对话</Button><Button size="xs" variant="ghost" onClick={chat.dismissLengthNotice} testId="chat-length-dismiss">知道了</Button></div>}
@@ -372,12 +453,12 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
         {draftImages.length > 0 && <div className="chat-draft-images" data-testid="chat-draft-images">{draftImages.map((image) => <div className="chat-draft-image" key={image.assetId}><ChatImage asset={image} alt="要发的图片" /><Button size="xs" variant="ghost" icon={X} aria-label="去掉这张图片" title="去掉这张图片" disabled={pending} onClick={() => chat.removeImage(image.assetId)} testId="chat-draft-image-remove" /></div>)}</div>}
         {draftFiles.length > 0 && <div className="chat-files" data-testid="chat-draft-files">{draftFiles.map((file, index) => <ChatFileCard key={`${index}:${file.name}`} file={file}><Button size="xs" variant="ghost" icon={X} aria-label="去掉这个文件" title="去掉这个文件" disabled={pending} onClick={() => chat.removeFile(index)} testId="chat-draft-file-remove" /></ChatFileCard>)}</div>}
         {imagesBlocked && <p className="chat-message-error" role="alert" data-testid="chat-images-unsupported">{imagesBlockedMessage}</p>}
-        {filesBlocked && <p className="chat-message-error" role="alert" data-testid="chat-files-image-mode">{imageModeFilesMessage}</p>}
+        {filesBlocked && <p className="chat-message-error" role="alert" data-testid="chat-files-image-mode">{modeFilesMessage(conversation.settings.mode)}</p>}
         <div className="chat-compose-box">
-          <Textarea id="chatIn" aria-label={conversation.settings.mode === 'image' ? '图片描述' : '消息内容'} value={conversation.draft} onChange={(event) => chat.setDraft(event.target.value)} onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }} onKeyDown={(event) => { if (shouldSendOnEnter(event.nativeEvent, composing.current)) { event.preventDefault(); if (!pending && !sendDisabled) void chat.send() } }} onPaste={onPaste} rows={1} aria-describedby={draftTooLong ? 'chatInTooLong' : undefined} placeholder={conversation.settings.mode === 'image' ? '描述你想要的画面，比如：星空下的山野，一轮金色落日' : seesImages ? '输入消息，Enter 发送，也可以粘贴截图' : '输入消息，Enter 发送'} testId="chat-composer-input" />
+          <Textarea id="chatIn" aria-label={conversation.settings.mode === 'image' ? '图片描述' : videoMode ? '视频描述' : '消息内容'} value={conversation.draft} onChange={(event) => chat.setDraft(event.target.value)} onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }} onKeyDown={(event) => { if (shouldSendOnEnter(event.nativeEvent, composing.current)) { event.preventDefault(); if (!pending && !sendDisabled) submit() } }} onPaste={onPaste} rows={1} aria-describedby={draftTooLong ? 'chatInTooLong' : undefined} placeholder={conversation.settings.mode === 'image' ? '描述你想要的画面，比如：星空下的山野，一轮金色落日' : videoMode ? '描述您想要的视频，例如：海边日落，镜头慢慢拉远' : seesImages ? '输入消息，Enter 发送，也可以粘贴截图' : '输入消息，Enter 发送'} testId="chat-composer-input" />
           {/* 切走时菜单跟着关：重新挂一遍，开着的弹出层随之收起，回来时不会还悬在那里。 */}
           <div className="chat-compose-bar" key={active ? 'active' : 'hidden'}>
-            <Segment options={[{ value: 'text', label: '文本对话' }, { value: 'image', label: '生成图片' }]} value={conversation.settings.mode} onChange={onModeChange} testId="chat-mode" />
+            <Segment options={[{ value: 'text', label: '文本对话' }, { value: 'image', label: '生成图片' }, ...(videoFeature ? [{ value: 'video', label: '生成视频', disabled: !videoReady, title: videoFeature.access === 'unsupported' ? '当前账号不支持生成视频' : videoFeature.access === 'suspended' ? '生成视频暂时停用' : undefined }] : [])]} value={conversation.settings.mode} onChange={onModeChange} testId="chat-mode" />
             <span className="chat-model-picker"><ChoiceMenu label="模型" align="start" onOpen={chat.refreshOnInteraction} anchor={<Button variant="ghost" size="sm" iconRight={ChevronDown} title={[conversation.settings.group, conversation.settings.model].filter(Boolean).join(' · ') || undefined} disabled={!chat.groupsLoaded && chat.groupLoading} data-group={conversation.settings.group} data-model={conversation.settings.model} data-preparing={preparing} testId="chat-model"><span aria-hidden="true"><BrandIcon model={conversation.settings.model} size={16} /></span><span className="chat-model-name">{modelLabel}</span></Button>} sections={modelSections} actions={[{ label: '刷新模型', icon: RefreshCw, loading: preparing, keepOpen: true, onSelect: () => void refreshModels(), testId: 'chat-group-prepare' }]} /></span>
             {conversation.settings.mode === 'image' && imageCapability && <>
               <ChoiceMenu label="尺寸" align="start" anchor={<Button variant="ghost" size="sm" iconRight={ChevronDown} title="尺寸" data-value={customSize ? 'custom' : conversation.settings.size} testId="chat-image-size">{customSize ? '自定义尺寸' : conversation.settings.size === 'auto' ? '自动尺寸' : conversation.settings.size.replace('x', ' × ')}</Button>} sections={[{ label: '尺寸', value: customSize ? 'custom' : conversation.settings.size, options: [...imageSizes.map((size) => ({ value: size, label: size === 'auto' ? '自动尺寸' : size.replace('x', ' × ') })), ...(imageCapability.sizePolicy.kind === 'divisible' ? [{ value: 'custom', label: '自定义尺寸' }] : [])], onChange: (value) => { setCustomSize(value === 'custom'); if (value !== 'custom') chat.changeSettings({ size: value }) } }]} />
@@ -385,19 +466,27 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
               {imageCapability.resolutions.length > 1 && <ChoiceMenu label="分辨率" align="start" anchor={<Button variant="ghost" size="sm" iconRight={ChevronDown} title="分辨率" data-value={conversation.settings.imageResolution} testId="chat-image-resolution">分辨率：{conversation.settings.imageResolution}</Button>} sections={[{ label: '分辨率', value: conversation.settings.imageResolution, options: imageCapability.resolutions.map((resolution) => ({ value: resolution, label: resolution })), onChange: (value) => chat.changeSettings({ imageResolution: value as ChatSettings['imageResolution'] }) }]} />}
               {customSize && imageCapability.sizePolicy.kind === 'divisible' && <span className="chat-image-custom" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) chat.revealSizeRule() }}><Input type="number" aria-label="图片宽度" min={imageCapability.sizePolicy.min} max={imageCapability.sizePolicy.max} step={imageCapability.sizePolicy.divisor} value={conversation.settings.size.split('x')[0]} onChange={(event) => chat.changeSettings({ size: `${event.target.value}x${conversation.settings.size.split('x')[1]}` })} aria-describedby={showSizeRule ? 'chatImageSizeRule' : undefined} testId="chat-image-width" /><span>×</span><Input type="number" aria-label="图片高度" min={imageCapability.sizePolicy.min} max={imageCapability.sizePolicy.max} step={imageCapability.sizePolicy.divisor} value={conversation.settings.size.split('x')[1]} onChange={(event) => chat.changeSettings({ size: `${conversation.settings.size.split('x')[0]}x${event.target.value}` })} aria-describedby={showSizeRule ? 'chatImageSizeRule' : undefined} testId="chat-image-height" /></span>}
             </>}
-            <span className="chat-compose-spacer" />
+            {videoMode && <>
+              <ChoiceMenu label="画面" align="start" anchor={<Button variant="ghost" size="sm" iconRight={ChevronDown} title="画面" data-value={videoAspect} testId="chat-video-aspect">{videoStudioAspectNames[videoAspect]}</Button>} sections={[{ label: '画面', value: videoAspect, options: videoStudioAspects.map((aspect) => ({ value: aspect, label: videoStudioAspectNames[aspect] })), onChange: (value) => { const aspect = videoStudioAspects.find((item) => item === value); if (aspect) chat.changeSettings({ videoAspect: aspect }) } }]} />
+              <ChoiceMenu label="时长" align="start" anchor={<Button variant="ghost" size="sm" iconRight={ChevronDown} title="时长" data-value={videoSeconds} testId="chat-video-seconds">{videoSeconds} 秒</Button>} sections={[{ label: '时长', value: String(videoSeconds), options: chatVideoSecondsChoices(conversation.settings.model).map((seconds) => ({ value: String(seconds), label: `${seconds} 秒` })), onChange: (value) => chat.changeSettings({ videoSeconds: Number(value) }) }]} />
+            </>}
+            {/* 右边这几个按钮是一组：一行放不下时整组换到下一行、还靠右，不会只剩发送按钮掉到左下角。 */}
+            <span className="chat-compose-actions">
             <Button variant="ghost" size="sm" icon={Bookmark} title="经常要说的话存在这里，点一下填进输入框" onClick={() => setPhrasesOpen(true)} testId="chat-phrases-open">常用</Button>
             {textMode && <Button variant="ghost" size="sm" icon={Paperclip} aria-label="加文件" title={filesFull ? `一条消息最多带 ${AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage} 个文件` : '加文字类的文件（txt、md、csv、json、代码、日志）'} loading={chat.attaching} disabled={pending || filesFull} onClick={() => void chat.pickFiles()} testId="chat-attach-file" />}
-            <Button variant="ghost" size="sm" icon={ImagePlus} aria-label="加图片" title={attachTitle} loading={chat.attaching} disabled={pending || !seesImages || draftImages.length >= chatLimits.imagesPerMessage} onClick={() => void chat.pickImages()} testId="chat-attach-image" />
-            {pending ? <Button size="sm" icon={Square} aria-label="停止生成" title="停止生成" loading={stopping} onClick={() => { if (activeRequest?.settings?.mode === 'image') setConfirmation({ kind: 'stop' }); else void stop() }} testId="chat-stop" /> : <Button variant="primary" size="sm" icon={conversation.settings.mode === 'image' ? ImageIcon : ArrowUp} aria-label={conversation.settings.mode === 'image' ? '生成图片' : '发送消息'} title={conversation.settings.mode === 'image' ? '生成图片' : '发送消息'} disabled={sendDisabled} onClick={() => void chat.send()} testId="chat-send" />}
+            <Button variant="ghost" size="sm" icon={ImagePlus} aria-label="加图片" title={attachTitle} loading={chat.attaching} disabled={pending || !seesImages || draftImages.length >= imageLimit} onClick={() => void chat.pickImages()} testId="chat-attach-image" />
+            {pending ? <Button size="sm" icon={Square} aria-label="停止生成" title="停止生成" loading={stopping} onClick={() => { if (activeRequest?.settings?.mode === 'image') setConfirmation({ kind: 'stop' }); else void stop() }} testId="chat-stop" /> : <Button variant="primary" size="sm" icon={conversation.settings.mode === 'image' ? ImageIcon : videoMode ? Clapperboard : ArrowUp} aria-label={conversation.settings.mode === 'image' ? '生成图片' : videoMode ? '生成视频' : '发送消息'} title={conversation.settings.mode === 'image' ? '生成图片' : videoMode ? '生成视频' : '发送消息'} disabled={sendDisabled} onClick={submit} testId="chat-send" />}
+            </span>
           </div>
         </div>
         {draftTooLong && <p className="chat-message-error" id="chatInTooLong" role="status" data-testid="chat-draft-too-long">{draftTooLong}</p>}
         {showSizeRule && <p className="chat-message-error" id="chatImageSizeRule" role="status" data-testid="chat-image-size-rule">{chat.sizeRule}</p>}
-        <div className="chat-compose-foot"><span>回答由模型生成，可能有误，重要内容请核对。<span data-testid="chat-cost-note">{draftImages.length ? textMode ? '按实际用量计费，带图片的提问会更贵一些。' : '按实际用量计费，带参考图的会更贵一些。' : textMode ? '按实际用量计费，回复越长花得越多。' : '按实际用量计费。'}</span></span>{pending && <Pill tone="accent">正在生成</Pill>}</div>
+        <div className="chat-compose-foot">{videoMode ? <span data-testid="chat-cost-note">生成一段视频需要几分钟，按段计费，发送前将显示预计费用。</span> : <span>回答由模型生成，可能有误，重要内容请核对。<span data-testid="chat-cost-note">{draftImages.length ? textMode ? '按实际用量计费，带图片的提问会更贵一些。' : '按实际用量计费，带参考图的会更贵一些。' : textMode ? '按实际用量计费，回复越长花得越多。' : '按实际用量计费。'}</span></span>}{pending && <Pill tone="accent">正在生成</Pill>}</div>
       </div>
     </div>
-    {confirmation && <Confirm title={confirmTitle} body={confirmation.kind === 'retry' ? <><p>{confirmation.mayStillComplete ? '上次请求可能仍在服务端处理。' : ''}重新生成会发起新的付费请求，并替换这条及之后的回复。</p>{retrySettings && <p>{retrySettings.group} · {retrySettings.model}</p>}</> : confirmation.kind === 'stop' ? <p>停止等待后服务端仍可能继续生成图片并计费。已产生的费用不会自动退回。</p> : confirmation.kind === 'clear-all' ? <p>聊天记录会从这台电脑上全部删掉，找不回来。用量账单不受影响。</p> : confirmation.kind === 'delete-conversation' ? <p>这段对话会从这台电脑上删掉，找不回来。已产生的用量不会改变。</p> : <p>将移除对应的本地消息记录，无法撤销。已产生的用量不会改变。</p>} okLabel={confirmation.kind === 'retry' ? '重新生成' : confirmation.kind === 'stop' ? '停止等待' : confirmation.kind === 'clear-all' ? '全部清空' : confirmation.kind === 'delete-conversation' ? '删除' : '确认删除'} danger={confirmation.kind !== 'retry'} requireAck={confirmation.mayStillComplete || confirmation.kind === 'stop'} onOk={confirmAction} onClose={() => setConfirmation(null)} testId="chat-confirm" />}
+    {confirmation && <Confirm title={confirmTitle} body={confirmation.kind === 'video' ? <><p>{videoAskLine}</p><p>{videoWaitNote}</p></>
+      : confirmation.kind === 'retry' && videoAsk ? <><p>重新生成会发起新的付费请求，并替换这条及之后的回复。</p><p>{videoAskLine}</p>{videoUnconfirmed && <p data-testid="chat-confirm-unconfirmed">{videoStudioUnconfirmedWarning([0], 1)}</p>}<p>{videoWaitNote}</p></>
+      : confirmation.kind === 'retry' ? <><p>{confirmation.mayStillComplete ? '上次请求可能仍在服务端处理。' : ''}重新生成会发起新的付费请求，并替换这条及之后的回复。</p>{retrySettings && <p>{retrySettings.group} · {retrySettings.model}</p>}</> : confirmation.kind === 'stop' ? <p>停止等待后服务端仍可能继续生成图片并计费。已产生的费用不会自动退回。</p> : confirmation.kind === 'clear-all' ? <p>聊天记录会从这台电脑上全部删掉，找不回来。用量账单不受影响。</p> : confirmation.kind === 'delete-conversation' ? <p>这段对话会从这台电脑上删掉，找不回来。已产生的用量不会改变。</p> : <p>将移除对应的本地消息记录，无法撤销。已产生的用量不会改变。</p>} okLabel={confirmation.kind === 'video' ? '开始生成' : confirmation.kind === 'retry' ? '重新生成' : confirmation.kind === 'stop' ? '停止等待' : confirmation.kind === 'clear-all' ? '全部清空' : confirmation.kind === 'delete-conversation' ? '删除' : '确认删除'} danger={(confirmation.kind !== 'retry' && confirmation.kind !== 'video') || videoUnconfirmed} requireAck={confirmation.mayStillComplete || confirmation.kind === 'stop' || videoUnconfirmed} onOk={confirmAction} onClose={() => setConfirmation(null)} testId="chat-confirm" />}
     {active && parametersOpen && <ParametersDialog key={conversation.id} settings={conversation.settings} onApply={(patch) => { chat.changeSettings(patch); setParametersOpen(false); toast.show('参数已应用到当前对话', 'ok') }} onClose={() => setParametersOpen(false)} />}
     {active && phrasesOpen && <PhrasesDialog phrases={chat.state.phrases ?? []} draft={conversation.draft} onUse={fillPhrase} onSave={chat.savePhrase} onRemove={chat.removePhrase} onClose={() => setPhrasesOpen(false)} />}
     {active && editing && <Dialog open title="编辑消息" subtitle="修改后重新发送，将移除这条消息之后的回复，并产生新的请求用量。" width={480} onClose={() => setEditing(null)} dirty={editing.text !== conversation.messages.find((message) => message.id === editing.id)?.content} footer={<><Button onClick={() => setEditing(null)}>取消</Button><Button variant="primary" icon={ArrowUp} disabled={!editing.text.trim() || Boolean(editTooLong)} onClick={() => { const value = editing; setEditing(null); void chat.send({ editId: value.id, prompt: value.text }) }} testId="chat-edit-send">修改并重发</Button></>} testId="chat-edit-dialog"><Textarea label="消息内容" value={editing.text} onChange={(event) => setEditing({ ...editing, text: event.target.value })} rows={8} error={editTooLong || undefined} testId="chat-edit-input" /></Dialog>}
@@ -407,12 +496,14 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   </section>
 }
 
-interface MessageActions { copyText: (text: string, done?: string) => void; preview: (asset: AiChatAsset, mine: boolean) => void; reuseImage: (asset: AiChatAsset) => void; copyAsset: (assetId: string) => void; saveAsset: (assetId: string) => void; assetMenu: (assetId: string) => void; confirm: (confirmation: NonNullable<Confirmation>) => void; edit: (editing: { id: string; text: string }) => void; openAccount: NonNullable<ChatPageProps['onOpenAccount']> }
+interface MessageActions { copyText: (text: string, done?: string) => void; preview: (asset: AiChatAsset, mine: boolean) => void; reuseImage: (asset: AiChatAsset) => void; animateImage: (messageId: string, asset: AiChatAsset) => void; stopVideo: () => void; saveVideo: (messageId: string) => void; openVideo: (assetId: string) => void; composeVideo: (messageId: string, filmId: string | null) => void; copyAsset: (assetId: string) => void; saveAsset: (assetId: string) => void; assetMenu: (assetId: string) => void; confirm: (confirmation: NonNullable<Confirmation>) => void; edit: (editing: { id: string; text: string }) => void; openAccount: NonNullable<ChatPageProps['onOpenAccount']> }
 interface ConversationActions { open: (id: string) => void; exportText: (id: string) => void; remove: (id: string) => void; rename: (id: string) => void; pin: (id: string, pinned: boolean) => void }
 interface ConversationListItemProps { item: Conversation; current: boolean; pageActive: boolean; actions: ConversationActions }
 type ExtraActions = Omit<ChatPageCreateActions, 'leave'>
 interface ExtraListItemProps { item: CreateExtraItem; current: boolean; locked: boolean; pageActive: boolean; actions: ExtraActions }
 const unreadableHistoryNote = '以前的对话暂时读不出来'
+// 出视频的两处确认框（新发的、重新生成的）都带这一句，同视频工作台的确认框（那边说「那几段」）。
+const videoWaitNote = '生成一段需要几分钟。中途停止时，已提交至服务端的片段仍会继续生成并扣费。'
 const noExtraKinds: readonly CreateExtraKind[] = []
 const noExtraItems: readonly CreateExtraItem[] = []
 // 每一行前面的小图标：一眼分得出是对话、视频还是画布。
@@ -427,7 +518,7 @@ function KindIcon({ kind }: { kind: CreateKind }) {
 // skips the render. The list holds up to MAX_CONVERSATIONS (200) rows, each with its own
 // menu; re-rendering all of them for every chunk made a reply stutter.
 const ConversationListItem = memo(function ConversationListItem({ item, current, pageActive, actions }: ConversationListItemProps) {
-  return <div className="chat-conversation-item" data-active={current}><button type="button" className="chat-conversation-select" onClick={() => actions.open(item.id)} aria-current={current ? 'page' : undefined} title={item.title} data-testid={`chat-conversation-${item.id}`}><KindIcon kind="chat" /><span className="chat-conversation-text"><strong>{item.title}</strong><span>{isGenerating(item) ? '正在回答…' : `${item.messages.length} 条消息`}</span></span></button><Menu key={pageActive ? 'active' : 'hidden'} label="对话操作" anchor={<Button variant="ghost" size="xs" icon={MoreHorizontal} aria-label={`「${item.title}」更多操作`} title="对话操作" />} items={[{ label: '改名', icon: Pencil, testId: `chat-conversation-rename-${item.id}`, onSelect: () => actions.rename(item.id) }, { label: item.pinned ? '取消置顶' : '置顶', icon: item.pinned ? PinOff : Pin, testId: `chat-conversation-pin-${item.id}`, onSelect: () => actions.pin(item.id, !item.pinned) }, { label: '导出这段对话', icon: FileText, disabled: isGenerating(item) || !item.messages.length, onSelect: () => actions.exportText(item.id) }, 'divider', { label: '删除这段对话…', icon: Trash2, danger: true, disabled: isGenerating(item), onSelect: () => actions.remove(item.id) }]} /></div>
+  return <div className="chat-conversation-item" data-active={current}><button type="button" className="chat-conversation-select" onClick={() => actions.open(item.id)} aria-current={current ? 'page' : undefined} title={item.title} data-testid={`chat-conversation-${item.id}`}><KindIcon kind="chat" /><span className="chat-conversation-text"><strong>{item.title}</strong><span>{isGeneratingVideo(item) ? '正在生成视频…' : isGenerating(item) ? '正在回答…' : `${item.messages.length} 条消息`}</span></span></button><Menu key={pageActive ? 'active' : 'hidden'} label="对话操作" anchor={<Button variant="ghost" size="xs" icon={MoreHorizontal} aria-label={`「${item.title}」更多操作`} title="对话操作" />} items={[{ label: '改名', icon: Pencil, testId: `chat-conversation-rename-${item.id}`, onSelect: () => actions.rename(item.id) }, { label: item.pinned ? '取消置顶' : '置顶', icon: item.pinned ? PinOff : Pin, testId: `chat-conversation-pin-${item.id}`, onSelect: () => actions.pin(item.id, !item.pinned) }, { label: '导出这段对话', icon: FileText, disabled: isGenerating(item) || !item.messages.length, onSelect: () => actions.exportText(item.id) }, 'divider', { label: '删除这段对话…', icon: Trash2, danger: true, disabled: isGenerating(item), onSelect: () => actions.remove(item.id) }]} /></div>
 })
 
 // 一条视频或一个画布项目。视频的「改名」「删掉这一条…」在这里；画布项目的改名、复制、归档、删除还在画布窗口的项目中心，这里只有「打开画布」。
@@ -438,7 +529,7 @@ const ExtraListItem = memo(function ExtraListItem({ item, current, locked, pageA
     : [{ label: '打开画布', icon: ArrowUpRight, testId: `create-canvas-open-${item.id}`, onSelect: () => actions.openCanvas(item.id) }]} /></div>
 })
 
-interface ChatMessageItemProps { message: ChatMessage; model: string; pending: boolean; offlineNotice: boolean; canRetry: boolean; canOpenAccount: boolean; markdownComponents: Components; replyComponents: Components; actions: MessageActions }
+interface ChatMessageItemProps { message: ChatMessage; model: string; pending: boolean; offlineNotice: boolean; canAnimate: boolean; videoProgress?: ChatVideoProgress; videoStopping: boolean; videoFilms?: readonly ChatVideoFilm[]; canRetry: boolean; canOpenAccount: boolean; markdownComponents: Components; replyComponents: Components; actions: MessageActions }
 
 // Every keystroke in the composer rewrites the conversation's draft. Messages
 // keep their object identity through that, so a memoized row skips parsing its
@@ -449,14 +540,17 @@ function ChatFileCard({ file, children }: { file: AiChatTextFile; children?: Rea
   return <div className="chat-file" title={`${file.name} · ${detail}`} data-truncated={file.truncated || undefined}><FileText size={14} aria-hidden="true" /><span className="chat-file-name">{file.name}</span><small>· {detail}</small>{children}</div>
 }
 
-const ChatMessageItem = memo(function ChatMessageItem({ message, model, pending, offlineNotice, canRetry, canOpenAccount, markdownComponents, replyComponents, actions }: ChatMessageItemProps) {
+const ChatMessageItem = memo(function ChatMessageItem({ message, model, pending, offlineNotice, canAnimate, videoProgress, videoStopping, videoFilms, canRetry, canOpenAccount, markdownComponents, replyComponents, actions }: ChatMessageItemProps) {
+  const waiting = message.status === 'pending' || message.status === 'streaming'
+  const clip = message.video?.clip
   const cutOffNotice = chatCutOffNotice(message)
   return <div className="chat-message" data-role={message.role} data-status={message.status} data-testid={`chat-message-${message.id}`}>
     {message.role === 'assistant' && <span className="chat-avatar"><BrandIcon model={model} size={18} /></span>}
     <div className="chat-message-main">
       {message.reasoning && <details className="chat-reasoning"><summary>思考过程 <ChevronDown size={13} aria-hidden="true" /></summary><div>{message.reasoning}</div><Button icon={Copy} size="xs" variant="ghost" aria-label="复制思考过程" title="复制思考过程" onClick={() => actions.copyText(message.reasoning)} /></details>}
-      {(message.content || message.assets?.length || message.files?.length || message.status === 'pending' || message.status === 'streaming') && <div className="chat-bubble">{message.files?.length ? <div className="chat-files" data-testid="chat-message-files">{message.files.map((file, index) => <ChatFileCard key={`${index}:${file.name}`} file={file} />)}</div> : null}{message.content ? message.role === 'assistant' ? <ReactMarkdown remarkPlugins={remarkPlugins} components={replyComponents}>{prepareChatMath(message.content)}</ReactMarkdown> : <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>{message.content}</ReactMarkdown> : (message.status === 'pending' || message.status === 'streaming') && <span className="chat-generating" role="status"><RefreshCw size={15} aria-hidden="true" />{message.settings?.mode === 'image' ? '正在生成图片' : message.reasoning ? '正在思考' : '正在生成'}</span>}
-        {message.assets?.map((asset) => <div className="chat-asset" key={asset.assetId}><button type="button" className="chat-asset-preview" aria-label={message.role === 'user' ? '查看图片' : '查看生成图片'} onClick={() => actions.preview(asset, message.role === 'user')} onContextMenu={(event) => { event.preventDefault(); actions.assetMenu(asset.assetId) }}><ChatImage asset={asset} alt={message.role === 'user' ? '你发的图片' : asset.revisedPrompt || '生成的图片'} missingAlt={missingAiAssetMessages.image} /></button><div className="chat-asset-actions">{message.role === 'assistant' && <Button size="xs" icon={Brush} variant="ghost" aria-label="拿这张接着改" title="拿这张接着改" disabled={pending} onClick={() => actions.reuseImage(asset)} testId="chat-asset-reuse" />}<Button size="xs" icon={Copy} variant="ghost" aria-label="复制图片" title="复制图片" onClick={() => actions.copyAsset(asset.assetId)} testId="chat-asset-copy" /><Button size="xs" icon={Download} variant="ghost" aria-label="另存图片" title="另存图片" onClick={() => actions.saveAsset(asset.assetId)} testId="chat-asset-save" /><Button size="xs" icon={MoreHorizontal} variant="ghost" aria-label="图片更多操作" title="图片更多操作" onClick={() => actions.assetMenu(asset.assetId)} testId="chat-asset-menu" />{asset.width && asset.height && <small>{asset.width} × {asset.height}</small>}</div></div>)}
+      {(message.content || message.assets?.length || message.files?.length || clip || waiting) && <div className="chat-bubble">{message.files?.length ? <div className="chat-files" data-testid="chat-message-files">{message.files.map((file, index) => <ChatFileCard key={`${index}:${file.name}`} file={file} />)}</div> : null}{message.content ? message.role === 'assistant' ? <ReactMarkdown remarkPlugins={remarkPlugins} components={replyComponents}>{prepareChatMath(message.content)}</ReactMarkdown> : <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>{message.content}</ReactMarkdown> : waiting && (message.video ? <ChatVideoPending progress={videoProgress} stopping={videoStopping} onStop={actions.stopVideo} /> : <span className="chat-generating" role="status"><RefreshCw size={15} aria-hidden="true" />{message.settings?.mode === 'image' ? '正在生成图片' : message.reasoning ? '正在思考' : '正在生成'}</span>)}
+        {message.assets?.map((asset) => <div className="chat-asset" key={asset.assetId}><button type="button" className="chat-asset-preview" aria-label={message.role === 'user' ? '查看图片' : '查看生成图片'} onClick={() => actions.preview(asset, message.role === 'user')} onContextMenu={(event) => { event.preventDefault(); actions.assetMenu(asset.assetId) }}><ChatImage asset={asset} alt={message.role === 'user' ? '你发的图片' : asset.revisedPrompt || '生成的图片'} missingAlt={missingAiAssetMessages.image} /></button><div className="chat-asset-actions">{message.role === 'assistant' && <Button size="xs" icon={Brush} variant="ghost" aria-label="拿这张接着改" title="拿这张接着改" disabled={pending} onClick={() => actions.reuseImage(asset)} testId="chat-asset-reuse" />}{message.role === 'assistant' && canAnimate && <Button size="xs" icon={Clapperboard} variant="ghost" title="以此图为开头生成视频，将切换至「生成视频」" disabled={pending} onClick={() => actions.animateImage(message.id, asset)} testId="chat-asset-animate">用此图生成视频</Button>}<Button size="xs" icon={Copy} variant="ghost" aria-label="复制图片" title="复制图片" onClick={() => actions.copyAsset(asset.assetId)} testId="chat-asset-copy" /><Button size="xs" icon={Download} variant="ghost" aria-label="另存图片" title="另存图片" onClick={() => actions.saveAsset(asset.assetId)} testId="chat-asset-save" /><Button size="xs" icon={MoreHorizontal} variant="ghost" aria-label="图片更多操作" title="图片更多操作" onClick={() => actions.assetMenu(asset.assetId)} testId="chat-asset-menu" />{asset.width && asset.height && <small>{asset.width} × {asset.height}</small>}</div></div>)}
+        {clip && <ChatVideoClip clip={clip} films={videoFilms} onCompose={(filmId) => actions.composeVideo(message.id, filmId)} onSave={() => actions.saveVideo(message.id)} onOpen={() => actions.openVideo(clip.assetId)} />}
       </div>}
       {offlineNotice && <p className="chat-message-note" role="status" data-testid="chat-message-offline">{offlineReplyNotice}</p>}
       {message.status === 'error' && <ErrorLine message={message.error} onOpenAccount={canOpenAccount ? actions.openAccount : undefined} />}{message.status === 'canceled' && <p className="chat-message-note">{message.mayStillComplete ? '已停止等待，服务端仍可能处理并计费' : '已停止生成，保留已返回的内容'}</p>}{cutOffNotice && <p className="chat-message-note" data-testid={`chat-message-cut-off-${message.id}`}>{cutOffNotice}</p>}
