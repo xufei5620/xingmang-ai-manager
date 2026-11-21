@@ -5,6 +5,7 @@ import {
   type AiChatStreamEvent,
   type AiChatStreamLogEntry,
 } from './ai-chat-service'
+import { AiAnswerCutOffError, aiAnswerCutOffMessages } from './ai-answer-cut-off'
 import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './chat-credential-coordinator'
 import { networkFailureMessages } from './network-failure'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
@@ -129,6 +130,71 @@ describe('AI chat streaming service', () => {
       expect.objectContaining({ type: 'delta', content: '这个请求无法处理' }),
       expect.objectContaining({ type: 'complete' }),
     ])
+  })
+
+  it('keeps the text of an answer cut off at the output cap and says it was cut off', async () => {
+    const events: AiChatStreamEvent[] = []
+    const logs: AiChatStreamLogEntry[] = []
+    const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+      encoder.encode('data: {"choices":[{"delta":{"content":"第一段，写到一半"}}]}\n\n'),
+      encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'),
+      encoder.encode('data: [DONE]\n\n'),
+    ]))
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      emit: (_senderId, event) => events.push(event),
+      log: (entry) => logs.push(entry),
+    })
+
+    service.start(startInput())
+    await service.whenIdle()
+
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'delta', content: '第一段，写到一半' }),
+      expect.objectContaining({ type: 'complete', cutOff: 'length' }),
+    ])
+    expect(logs).toEqual([expect.objectContaining({ status: 'complete', cutOff: 'length' })])
+    // Continuing is the customer's call: nothing is sent again on their behalf.
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  it('says a filtered answer was stopped even when no text came back', async () => {
+    const events: AiChatStreamEvent[] = []
+    const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+      encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n'),
+    ]))
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      emit: (_senderId, event) => events.push(event),
+    })
+
+    service.start(startInput())
+    await service.whenIdle()
+
+    expect(events).toEqual([expect.objectContaining({ type: 'complete', cutOff: 'filtered' })])
+  })
+
+  it('marks nothing on a normal finish', async () => {
+    const events: AiChatStreamEvent[] = []
+    const logs: AiChatStreamLogEntry[] = []
+    const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+      encoder.encode('data: {"choices":[{"delta":{"content":"说完了"},"finish_reason":"stop"}]}\n\n'),
+    ]))
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      emit: (_senderId, event) => events.push(event),
+      log: (entry) => logs.push(entry),
+    })
+
+    service.start(startInput())
+    await service.whenIdle()
+
+    expect(events.at(-1)).toMatchObject({ type: 'complete' })
+    expect(events.at(-1)).not.toHaveProperty('cutOff')
+    expect(logs[0]).not.toHaveProperty('cutOff')
   })
 
   it('rejects a model outside the resolved group before sending a paid request', async () => {
@@ -859,6 +925,22 @@ describe('AI chat streaming service', () => {
       .resolves.toBe('完整')
     service.dispose()
     finishing.dispose()
+  })
+
+  it('does not hand back a completeOnce answer cut off at the output cap or by the content check', async () => {
+    for (const [reason, cutOff] of [['length', 'length'], ['content_filter', 'filtered']] as const) {
+      const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+        encoder.encode('data: {"choices":[{"delta":{"content":"{\\"shots\\":["}}]}\n\n'),
+        encoder.encode(`data: {"choices":[{"delta":{},"finish_reason":"${reason}"}]}\n\n`),
+        encoder.encode('data: [DONE]\n\n'),
+      ]))
+      const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: vi.fn() })
+      const outcome = service.completeOnce({ group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }] })
+      await expect(outcome).rejects.toBeInstanceOf(AiAnswerCutOffError)
+      await expect(outcome).rejects.toMatchObject({ cutOff, message: aiAnswerCutOffMessages[cutOff] })
+      expect(fetchImpl).toHaveBeenCalledOnce()
+      service.dispose()
+    }
   })
 
   it('rejects an unavailable completeOnce model before sending a request', async () => {
