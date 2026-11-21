@@ -30,24 +30,32 @@ jobs:
         timeout-minutes: 20
         run: node scripts/ci-ensure-electron-binary.cjs
       - run: npm run compile
-      - name: Cold Vite cache, one round
+      - name: Launched with '.' like the test, no profiler, four rounds
+        env:
+          PROBE_LAUNCH: dot
+          PROBE_PROFILE: '0'
         run: |
-          rm -rf node_modules/.vite
-          node tmp-probe/probe.mjs || echo "cold round failed"
-      - name: Warm Vite cache, three rounds
-        run: |
-          for i in 1 2 3; do
-            echo "=== warm round $i"
+          for i in 1 2 3 4; do
+            echo "=== dot round $i"
             node tmp-probe/probe.mjs || echo "round $i failed"
           done
       - run: npx --no-install playwright install chromium
       - name: Same predecessors as macos-test, then compile and probe like test:mac:dev-origin, four rounds
+        env:
+          PROBE_LAUNCH: dot
+          PROBE_PROFILE: '0'
         run: |
           npm run test:browser > /dev/null 2>&1 || echo "test:browser failed"
           npm run test:mac:release-keychain > /dev/null 2>&1 || echo "release-keychain failed"
           npm run test:mac:proxy > /dev/null 2>&1 || echo "mac:proxy failed"
           for i in 1 2 3 4; do
-            echo "=== ci-like round $i"
+            echo "=== ci-like dot round $i"
             npm run compile > /dev/null 2>&1 || echo "compile failed"
+            node tmp-probe/probe.mjs || echo "round $i failed"
+          done
+      - name: Script entry like the previous probe, two rounds for comparison
+        run: |
+          for i in 1 2; do
+            echo "=== script round $i"
             node tmp-probe/probe.mjs || echo "round $i failed"
           done

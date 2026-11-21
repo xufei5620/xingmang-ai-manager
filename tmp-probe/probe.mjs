@@ -16,7 +16,9 @@ const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'probe-dev-origin-'))
 const home = path.join(stateRoot, 'home'); await fs.mkdir(home, { recursive: true })
 const { server, port } = await createFixtureServer({ root: projectRoot, logLevel: process.env.PROBE_VITE_LOG || 'silent' })
 mark('vite.listening')
-const args = [path.join(here, 'entry.cjs'), `--user-data-dir=${path.join(stateRoot, 'user-data')}`]
+const args = process.env.PROBE_LAUNCH === 'dot'
+  ? ['-r', path.join(here, 'entry.cjs'), '.', `--user-data-dir=${path.join(stateRoot, 'user-data')}`]
+  : [path.join(here, 'entry.cjs'), `--user-data-dir=${path.join(stateRoot, 'user-data')}`]
 if (process.getuid?.() === 0) args.push('--no-sandbox')
 const mainLog = path.join(stateRoot, 'main.log')
 const app = await electron.launch({ args, cwd: projectRoot, timeout: 60_000, env: { ...process.env, PROBE_LOG_FILE: mainLog, PROBE_APP_PATH: projectRoot, PROBE_T0: String(t0), PROBE_REAL_ENTRY: path.join(projectRoot, 'dist-electron/platform/entry.js'), HOME: home, USERPROFILE: home, VITE_DEV_SERVER_URL: `http://127.0.0.1:${port}`, XINGMANG_DISABLE_SINGLE_INSTANCE: '1' } })

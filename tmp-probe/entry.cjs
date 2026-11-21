@@ -7,11 +7,15 @@ const t0 = Number(process.env.PROBE_T0) || Date.now()
 const fs = require('node:fs')
 function log(event, extra) { const l = `[probe-main] ${Date.now() - t0}ms ${event}${extra ? ' ' + JSON.stringify(extra) : ''}`; try { if (process.env.PROBE_LOG_FILE) fs.appendFileSync(process.env.PROBE_LOG_FILE, l + '\n') } catch {} }
 if (process.platform === 'linux' && typeof process.geteuid === 'function' && process.geteuid() === 0) process.geteuid = () => 1000
+// PROBE_LAUNCH=dot preloads this file with -r in front of the real '.' launch,
+// so the app keeps its own name and keychain item exactly as the test has them.
+const preloaded = process.env.PROBE_LAUNCH === 'dot'
+const profiling = process.env.PROBE_PROFILE !== '0'
 const inspector = require('node:inspector')
 const profiler = new inspector.Session()
 profiler.connect()
 const profileStartedAt = Date.now()
-profiler.post('Profiler.enable', () => profiler.post('Profiler.setSamplingInterval', { interval: 500 }, () => profiler.post('Profiler.start')))
+if (profiling) profiler.post('Profiler.enable', () => profiler.post('Profiler.setSamplingInterval', { interval: 500 }, () => profiler.post('Profiler.start')))
 const stalls = []
 let last = Date.now()
 const lag = setInterval(() => {
@@ -21,7 +25,18 @@ const lag = setInterval(() => {
 }, 20)
 lag.unref?.()
 const { app, ipcMain, session, net: electronNet } = require('electron')
-if (process.env.PROBE_APP_PATH) app.setAppPath(process.env.PROBE_APP_PATH)
+// Keychain reads on macOS are synchronous on this thread; time every call.
+const { safeStorage } = require('electron')
+for (const name of ['isEncryptionAvailable', 'encryptString', 'decryptString']) {
+  const original = safeStorage[name]
+  if (typeof original !== 'function') continue
+  safeStorage[name] = function (...args) {
+    const started = Date.now()
+    try { return original.apply(this, args) } finally { log('safeStorage', { name, at: started - t0, ms: Date.now() - started }) }
+  }
+}
+if (!preloaded && process.env.PROBE_APP_PATH) app.setAppPath(process.env.PROBE_APP_PATH)
+log('app.identity', { name: app.getName(), preloaded })
 const blockedHosts = /(^|\.)solov\.cc$/
 const handle = ipcMain.handle.bind(ipcMain)
 const interesting = new Set(['settings:get', 'platform:get-capabilities', 'account:get-session', 'update:get-state', 'window:get-capabilities'])
@@ -41,8 +56,64 @@ function guard(ses) {
     cb({})
   })
 }
+// PROBE_FAKE_SITES answers the account sites locally, the way
+// e2e/verify-app-fixture.cjs does, so the success path runs without production.
+const fakeDelay = () => Number(process.env.PROBE_NET_DELAY_MS || 0)
+function fakeAnswer(url) {
+  const ok = (data) => ({ status: 200, payload: { success: true, message: '', data } })
+  if (url.pathname === '/api/status') return ok({ system_name: 'Probe', version: 'probe', setup: true, quota_per_unit: 500000, quota_display_type: 'USD', usd_exchange_rate: 1, register_enabled: true, password_register_enabled: true, email_verification: false, turnstile_check: false })
+  if (url.pathname === '/api/notice') return ok('')
+  return { status: 404, payload: { success: false, message: 'Not Found', data: null } }
+}
+function fakeFetch(original) {
+  return async function (input, init) {
+    const raw = typeof input === 'string' ? input : input?.url ?? String(input)
+    let url = null
+    try { url = new URL(raw) } catch {}
+    if (!url || !blockedHosts.test(url.hostname)) return original.call(this, input, init)
+    log('fake.fetch', { host: url.hostname, path: url.pathname })
+    await new Promise((r) => setTimeout(r, fakeDelay()))
+    const answer = fakeAnswer(url)
+    const response = Response.json(answer.payload, { status: answer.status })
+    Object.defineProperty(response, 'url', { value: raw })
+    return response
+  }
+}
+if (process.env.PROBE_FAKE_SITES === '1') {
+  electronNet.fetch = fakeFetch(electronNet.fetch)
+  globalThis.fetch = fakeFetch(globalThis.fetch)
+  const fakeSession = (ses) => { ses.fetch = fakeFetch(ses.fetch.bind(ses)) }
+  app.on('session-created', fakeSession)
+  app.whenReady().then(() => fakeSession(session.defaultSession))
+  const originalRequest = electronNet.request.bind(electronNet)
+  const { EventEmitter } = require('node:events')
+  const { PassThrough } = require('node:stream')
+  electronNet.request = (options) => {
+    const target = typeof options === 'string' ? options : options.url
+    const url = new URL(target)
+    if (!blockedHosts.test(url.hostname)) return originalRequest(options)
+    log('fake.request', { host: url.hostname, path: url.pathname })
+    const request = new EventEmitter()
+    let aborted = false
+    request.setHeader = () => undefined
+    request.write = () => undefined
+    request.abort = () => { aborted = true }
+    request.end = () => {
+      setTimeout(() => {
+        if (aborted) return
+        const answer = fakeAnswer(url)
+        const bytes = Buffer.from(JSON.stringify(answer.payload))
+        const message = Object.assign(new PassThrough(), { statusCode: answer.status, statusMessage: answer.status === 200 ? 'OK' : 'Not Found', headers: { 'content-type': 'application/json', 'content-length': String(bytes.length) } })
+        request.emit('response', message)
+        message.end(bytes)
+        log('fake.request.answered', { host: url.hostname, path: url.pathname, status: answer.status })
+      }, fakeDelay())
+    }
+    return request
+  }
+}
 app.on('session-created', guard)
-app.on('ready', () => { log('app.ready'); guard(session.defaultSession) })
+app.on('ready', () => { log('app.ready', { name: app.getName(), appPath: require('node:path').basename(app.getAppPath()) }); guard(session.defaultSession) })
 for (const mod of ['node:https', 'node:http']) {
   const m = require(mod); const orig = m.request
   m.request = function (...a) {
@@ -98,5 +169,5 @@ function summarize() {
     for (const [name, c] of top(inStallApp, 20)) log('profile.stall.app', { ms: ms(c), name })
   })
 }
-setTimeout(summarize, Number(process.env.PROBE_PROFILE_MS || 15000)).unref?.()
-require(process.env.PROBE_REAL_ENTRY)
+if (profiling) setTimeout(summarize, Number(process.env.PROBE_PROFILE_MS || 15000)).unref?.()
+if (!preloaded) require(process.env.PROBE_REAL_ENTRY)
