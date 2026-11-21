@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type runCommand as productionRunCommand } from './command-runner'
 import { codexPluginCatalogNetworkMessage } from './codex-plugin-catalog'
 import { codexPluginCatalogBucketIndexUrl } from './codex-plugin-catalog-bucket'
-import { providerIds } from './catalog'
+import { activeProviderIds, providerIds } from './catalog'
 import { gitLinuxInstallCommand } from './git-runtime'
 import type { ProviderId } from './catalog'
 import {
@@ -545,7 +545,7 @@ describe('ProviderExtensionService list facade', () => {
       }),
     })
 
-    const snapshots = await service.listAll()
+    const snapshots = await Promise.all(activeProviderIds.map((provider) => service.list(provider)))
 
     for (const calls of [resolveCalls, runCalls]) {
       expect(calls.find((call) => call.provider === 'codex')?.env).toMatchObject({

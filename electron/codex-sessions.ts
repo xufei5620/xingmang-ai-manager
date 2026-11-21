@@ -14,6 +14,11 @@ import {
   assertSafeDataFile,
   ensureSafeDataDirectory,
 } from './safe-local-data'
+import {
+  createSessionActivityTracker,
+  observeCodexActivity,
+  type SessionTurnActivity,
+} from './session-activity'
 import { exportSessionMarkdown, sessionMarkdownFileName } from './session-markdown-export'
 
 const MAX_OPERATION_JOURNAL_BYTES = 64 * 1024 * 1024
@@ -74,6 +79,8 @@ export interface CodexSessionMessage {
   role: string
   text: string
   timestamp: string | null
+  /** 只挂在一轮里最后一条 AI 回复上：这一轮跑了哪些命令、改了哪些文件。缺省 = 这一轮没有（旧行为）。 */
+  activity?: SessionTurnActivity
 }
 
 export interface CodexSessionMessageStats {
@@ -614,6 +621,7 @@ async function streamMessages(
   rolloutPath: string,
   maximumLineBytes: number,
   onMessage: (message: CodexSessionMessage) => void | Promise<void>,
+  onEntry?: (value: unknown) => void,
 ): Promise<CodexSessionMessageStats> {
   const stats: CodexSessionMessageStats = {
     total: 0,
@@ -633,6 +641,7 @@ async function streamMessages(
       stats.invalidLines += 1
       return
     }
+    onEntry?.(parsed)
     const message = extractMessage(parsed)
     if (!message) return
     stats.total += 1
@@ -959,16 +968,19 @@ export class CodexSessionsService {
     const rolloutPath = await validateRollout(this.codexHome, row.rolloutPath, row.id)
     const messages: CodexSessionMessage[] = []
     let textTruncated = false
+    const activity = createSessionActivityTracker()
     const messageStats = await streamMessages(rolloutPath, this.maxJsonLineBytes, (message) => {
       // 预览上限只约束 IPC 返回内容；导出复用解析器，不能在解析阶段丢掉正文（#600）。
+      let retained = message
       if (message.text.length > DETAIL_TEXT_LIMIT) {
         textTruncated = true
-        messages.push({ ...message, text: `${message.text.slice(0, DETAIL_TEXT_LIMIT)}\n…` })
-      } else {
-        messages.push(message)
+        retained = { ...message, text: `${message.text.slice(0, DETAIL_TEXT_LIMIT)}\n…` }
       }
+      messages.push(retained)
+      activity.message(message.role, retained)
       if (messages.length > DETAIL_MESSAGE_LIMIT) messages.shift()
-    })
+    }, (value) => observeCodexActivity(activity, value))
+    activity.finish()
     return {
       session: await toSummary(row, this.codexHome),
       messages,
