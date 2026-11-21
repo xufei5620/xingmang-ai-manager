@@ -5,7 +5,7 @@ import { createAccountSubscriptionCache } from './subscription-cache'
 import { resolveUsableSubscription, type UsableSubscription } from '../../../../electron/subscription-summary'
 
 export const AccountBalanceContext = createContext<AccountBalanceStore | null>(null)
-const emptySnapshot: AccountBalanceSnapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 }
+const emptySnapshot: AccountBalanceSnapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, reads: 0, networkFailures: 0 }
 function emptySubscribe() { return () => undefined }
 function getEmptySnapshot() { return emptySnapshot }
 

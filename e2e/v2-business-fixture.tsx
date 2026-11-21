@@ -550,7 +550,7 @@ const balance = {
 // remoteLowBalance：外壳那份共享余额只剩 $0.80（手机遥控卡上的余额提醒，YF-12）。别的页不读它，照旧读 getAccountBalance。
 const lowBalanceStore: AccountBalanceStore | null = query.has('remoteLowBalance')
   ? (() => {
-      const snapshot = { scope: 'fixture', balance: { ...balance, quota: 80 }, loading: false, updatedAt: 1, error: null, networkFailures: 0 }
+      const snapshot = { scope: 'fixture', balance: { ...balance, quota: 80 }, loading: false, updatedAt: 1, error: null, reads: 0, networkFailures: 0 }
       return {
         getSnapshot: () => snapshot,
         subscribe: () => () => undefined,
