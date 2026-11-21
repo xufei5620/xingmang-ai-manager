@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createCanvasNodeExecutors, selectCanvasRouterInputs } from './canvas-node-executors'
+import { createCanvasNodeExecutors, dramaParseTooLongMessage, selectCanvasRouterInputs } from './canvas-node-executors'
+import { AiAnswerCutOffError, aiAnswerCutOffMessages } from './ai-answer-cut-off'
 import { executeCanvasRun } from './canvas-run-engine'
 import type { CanvasImageTransformRecipe, CanvasRunAsset, CanvasRunGraph } from './canvas-run-contract'
 import type { AiRelayBillingObserver } from './ai-operation-progress'
@@ -839,6 +840,51 @@ describe('createCanvasNodeExecutors', () => {
       inputs: { text: '虞晚斜倚锦榻' },
       signal: new AbortController().signal,
     })).rejects.toThrow('剧本解析失败：无法连接 AI 服务，请检查网络后重试')
+    expect(completeOnce).toHaveBeenCalledOnce()
+  })
+
+  it('does not pay for a second drama parse when the first answer was cut off at the output cap', async () => {
+    const completeOnce = vi.fn().mockRejectedValue(new AiAnswerCutOffError('length'))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['drama-parse']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'parse', kind: 'drama-parse', definitionVersion: 1, data: { prompt: '', model: 'gemini-3.7-flash', group: 'Gemini' } },
+      inputs: { text: '虞晚斜倚锦榻' },
+      signal: new AbortController().signal,
+    })).rejects.toThrow(dramaParseTooLongMessage)
+    expect(completeOnce).toHaveBeenCalledOnce()
+  })
+
+  it('says a filtered drama parse answer was stopped by the content check, without retrying', async () => {
+    const completeOnce = vi.fn().mockRejectedValue(new AiAnswerCutOffError('filtered'))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['drama-parse']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'parse', kind: 'drama-parse', definitionVersion: 1, data: { prompt: '', model: 'gemini-3.7-flash', group: 'Gemini' } },
+      inputs: { text: '虞晚斜倚锦榻' },
+      signal: new AbortController().signal,
+    })).rejects.toThrow(`剧本解析失败：${aiAnswerCutOffMessages.filtered}`)
+    expect(completeOnce).toHaveBeenCalledOnce()
+  })
+
+  it('fails a text node whose answer was cut off instead of keeping half of it as the result', async () => {
+    const completeOnce = vi.fn().mockRejectedValue(new AiAnswerCutOffError('length'))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['text-generate']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'write', kind: 'text-generate', definitionVersion: 1, data: { prompt: '写长文', model: 'gpt-5.5', group: 'GPT' } },
+      inputs: {},
+      signal: new AbortController().signal,
+    })).rejects.toThrow(aiAnswerCutOffMessages.length)
     expect(completeOnce).toHaveBeenCalledOnce()
   })
 
