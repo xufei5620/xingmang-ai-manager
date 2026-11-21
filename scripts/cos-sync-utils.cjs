@@ -158,6 +158,15 @@ function readAccelerateOption(env = process.env) {
   return value === 'true'
 }
 
+// Files from this size up go through multipart when it is enabled. A caller can
+// only lower it: a single PUT keeps the whole file on one connection, so on a
+// slow route to COS even a file well under 16 MiB can outlast what COS accepts.
+function readMultipartMinBytes(value) {
+  if (value === undefined) return THRESHOLD_BYTES
+  if (!Number.isSafeInteger(value) || value < 1 || value > THRESHOLD_BYTES) throw new Error('COS 分块上传起点配置不合法')
+  return value
+}
+
 function validateObjectKey(key) {
   if (typeof key !== 'string' || Buffer.byteLength(key) > 1024 ||
       !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(key) || key.endsWith('/') ||
@@ -637,6 +646,7 @@ function validatePublicationOptions(key, input) {
 function createCosStore(configuration, options = {}) {
   const config = readCosConfiguration({ COS_BUCKET: configuration.bucket, COS_REGION: configuration.region, COS_SECRET_ID: configuration.secretId, COS_SECRET_KEY: configuration.secretKey })
   const multipart = readMultipartOptions({ XINGMANG_COS_MULTIPART_ENABLED: configuration.multipart?.enabled === true ? 'true' : 'false', XINGMANG_COS_MULTIPART_CONCURRENCY: configuration.multipart?.concurrency })
+  const multipartMinBytes = readMultipartMinBytes(options.multipartMinBytes)
   const host = new URL(config.publicBaseUrl).hostname
   // Global acceleration only changes where bytes are written. Every readback
   // keeps using the regional address that customers download from.
@@ -734,7 +744,7 @@ function createCosStore(configuration, options = {}) {
     const hash = await hashFile(filePath)
     if (input.expectedBytes !== undefined && hash.bytes !== input.expectedBytes) throw new Error('上传文件大小与预校验结果不一致')
     if (input.expectedSha256 !== undefined && hash.sha256 !== input.expectedSha256) throw new Error('上传文件 SHA256 与预校验结果不一致')
-    if (multipart.enabled && !input.overwrite && hash.bytes >= THRESHOLD_BYTES) return publishMultipartFile(key, filePath, hash, input)
+    if (multipart.enabled && !input.overwrite && hash.bytes >= multipartMinBytes) return publishMultipartFile(key, filePath, hash, input)
     return publish(key, hash, async () => {
       const opened = await openRegularFile(filePath, MAX_FILE_BYTES)
       if (opened.stat.size !== hash.bytes) {
