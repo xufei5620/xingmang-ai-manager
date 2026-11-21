@@ -1,8 +1,10 @@
 import { currentAccountGroupName } from '../../../../electron/catalog'
 import { redactSecretShapes } from '../../../../electron/redaction-patterns'
 import { AI_CHAT_LIMITS, AI_CHAT_TEXT_FILE_LIMITS } from '../../../../electron/ai-chat-protocol'
+import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
 import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatTextFile, ChatConversationExportInput, XingmangApi } from '../../../../electron/ipc-contract'
-import { addChatPhrase, createConversation, createId, createWorkspace, defaultChatSettings, MAX_CHAT_PHRASE_LENGTH, MAX_CHAT_PHRASES, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
+import { readVideoClip, readVideoRequestId } from '../video-studio/clip'
+import { addChatPhrase, createConversation, createId, createWorkspace, defaultChatSettings, MAX_CHAT_PHRASE_LENGTH, MAX_CHAT_PHRASES, type ChatMessage, type ChatSettings, type ChatVideo, type ChatWorkspace, type Conversation } from './state'
 
 // 读不出来时那条红条的前半句；后半句「现在聊的内容不会保存……」在 useChatController 里接上。
 // 下面各处 ChatStorageError 的原文是给排查看的，只写进日志，上屏一律说这一句（W24）。
@@ -68,12 +70,15 @@ function readSettings(value: unknown): ChatSettings {
     return defaultChatSettings()
   }
   // xm 站删了的老分组名换成现在的名字（catalog.ts 的 retiredAccountGroups），老对话打开就能接着聊，不用重选分组。
-  const result = { ...defaultChatSettings(), mode: settings.mode === 'image' ? 'image' as const : 'text' as const, group: currentAccountGroupName(text(settings.group)), model: text(settings.model), systemPrompt: text(settings.systemPrompt) }
+  const result: ChatSettings = { ...defaultChatSettings(), mode: settings.mode === 'image' || settings.mode === 'video' ? settings.mode : 'text', group: currentAccountGroupName(text(settings.group)), model: text(settings.model), systemPrompt: text(settings.systemPrompt) }
   const parameters = object(settings.parameters)
   for (const key of ['temperature', 'topP', 'maxTokens', 'frequencyPenalty', 'presencePenalty', 'seed'] as const) if (parameters && typeof parameters[key] === 'number' && Number.isFinite(parameters[key])) result.parameters[key] = parameters[key]
   if (typeof settings.size === 'string' && /^(auto|\d{3,4}x\d{3,4})$/.test(settings.size)) result.size = settings.size
   if (settings.quality === 'low' || settings.quality === 'medium' || settings.quality === 'high' || settings.quality === 'auto') result.quality = settings.quality
   if (settings.imageResolution === '1K' || settings.imageResolution === '2K' || settings.imageResolution === '4K') result.imageResolution = settings.imageResolution
+  // 「生成视频」的画面和时长：只收页面给得出的那几种；时长跟不跟得上型号，用的时候再按型号挪。
+  if (settings.videoAspect === '16:9' || settings.videoAspect === '9:16' || settings.videoAspect === '1:1') result.videoAspect = settings.videoAspect
+  if (typeof settings.videoSeconds === 'number' && Number.isInteger(settings.videoSeconds) && settings.videoSeconds >= 1 && settings.videoSeconds <= 15) result.videoSeconds = settings.videoSeconds
   return result
 }
 function readAsset(value: unknown): AiChatAsset {
@@ -96,6 +101,17 @@ function readTextFiles(value: unknown): AiChatTextFile[] {
   if (!Array.isArray(value) || value.length > AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage) throw new ChatStorageError('聊天消息格式无效，原始记录已保留')
   return value.map(readTextFile)
 }
+// 对话里出的视频。读不懂的那一半当没有（同视频工作台读镜头）：这一条只是少了片段，整段对话照样读得出来。
+// 片段出来了就不再带请求号；没出来的，请求号留着，结果不明的那句提醒跟着请求号走。
+function readVideo(value: unknown): ChatVideo | undefined {
+  const video = object(value)
+  if (!video) return undefined
+  const clip = readVideoClip(video.clip)
+  if (clip) return { clip }
+  const requestId = readVideoRequestId(video.requestId)
+  if (!requestId) return {}
+  return { requestId, ...(video.unconfirmed === true ? { unconfirmed: true } : {}), ...(video.unrecorded === true ? { unrecorded: true } : {}) }
+}
 function readMessage(value: unknown): ChatMessage {
   const message = object(value)
   if (!message || (message.role !== 'user' && message.role !== 'assistant')) throw new ChatStorageError('聊天消息格式无效，原始记录已保留')
@@ -103,8 +119,12 @@ function readMessage(value: unknown): ChatMessage {
   if ((message.assets !== undefined && !Array.isArray(message.assets)) || (message.images !== undefined && !Array.isArray(message.images))) throw new ChatStorageError('聊天图片列表无效，原始记录已保留')
   const assets = images.map(readAsset)
   const files = readTextFiles(message.files)
-  const status = message.status === 'complete' || message.status === 'error' || message.status === 'canceled' ? message.status : 'canceled'
-  return { id: id(message.id), role: message.role, content: text(message.content), reasoning: text(message.reasoning), status, createdAt: timestamp(message.createdAt), ...(assets.length ? { assets } : {}), ...(files.length ? { files } : {}), ...(message.settings ? { settings: readSettings(message.settings) } : {}), ...(status === 'error' ? { error: text(message.error) || '上次请求未完成，可以重新生成' } : {}), ...(message.mayStillComplete === true ? { mayStillComplete: true } : {}) }
+  const video = message.role === 'assistant' ? readVideo(message.video) : undefined
+  // 没等到结果的那一段视频：请求号还记着，就当它还在出，页面打开时拿请求号回主进程接回来（只查不交，不会再扣一次，
+  // 同视频工作台）。上一次提交结果不明的接不回来，照「没成功」留着那句提醒，等客户自己点重新生成。
+  const waiting = Boolean(video?.requestId) && !video?.unconfirmed
+  const status = waiting ? 'pending' : video?.clip ? 'complete' : message.status === 'complete' || message.status === 'error' || message.status === 'canceled' ? message.status : video?.unconfirmed ? 'error' : 'canceled'
+  return { id: id(message.id), role: message.role, content: text(message.content), reasoning: text(message.reasoning), status, createdAt: timestamp(message.createdAt), ...(waiting ? { requestId: video?.requestId } : {}), ...(assets.length ? { assets } : {}), ...(files.length ? { files } : {}), ...(video ? { video } : {}), ...(message.settings ? { settings: readSettings(message.settings) } : {}), ...(status === 'error' ? { error: text(message.error) || (video?.unconfirmed ? aiVideoUnconfirmedSubmissionMessage : '上次请求未完成，可以重新生成') } : {}), ...(message.mayStillComplete === true ? { mayStillComplete: true } : {}) }
 }
 function assertUniqueIds(items: { id: string }[]): void {
   if (new Set(items.map((item) => item.id)).size !== items.length) throw new ChatStorageError('聊天记录包含重复标识，原始记录已保留')
@@ -322,6 +342,8 @@ function persistedTextFile(file: AiChatTextFile): AiChatTextFile {
 function persistedMessage(message: ChatMessage) {
   return {
     ...message,
+    // 运行时的请求号不存。视频那条回复的请求号另在 video 里，那一份要存：没等到结果时靠它接回已经付了钱的
+    // 那一段（见 state.ts 的 ChatVideo）。
     requestId: undefined,
     content: redactPersistentChatText(message.content),
     reasoning: redactPersistentChatText(message.reasoning),
@@ -597,13 +619,16 @@ export function importLegacyHistory(storage: ChatStorage, scope: string, userId:
 // ---- 搬到新电脑 ----
 const transferInvalidMessage = '这个文件不是星芒导出的，或者已经损坏，没有导入任何内容。'
 const imageLeftBehind = '[图片没有一起搬过来]'
+const videoLeftBehind = '[视频未随记录迁移]'
 
 function portableMessage(message: ReturnType<typeof persistedMessage>) {
   // 图片文件只在这台电脑上，带过去也打不开；留一句说明代替。还在等的请求到了新电脑上
   // 也不会再回来，不带「可能还会完成」。
-  const { assets, requestId: _requestId, mayStillComplete: _pending, ...rest } = message
-  if (!assets?.length) return rest
-  return { ...rest, content: rest.content ? `${rest.content}\n\n${imageLeftBehind}` : imageLeftBehind }
+  // 视频同理：片段只在这台电脑的作品库里；还在等的那一单按请求号只在这台电脑上查得到。
+  const { assets, video, requestId: _requestId, mayStillComplete: _pending, ...rest } = message
+  const notes = [...(assets?.length ? [imageLeftBehind] : []), ...(video?.clip ? [videoLeftBehind] : [])]
+  if (!notes.length) return rest
+  return { ...rest, content: [...(rest.content ? [rest.content] : []), ...notes].join('\n\n') }
 }
 
 /** 导出给新电脑的对话：和存盘时一样去掉密钥样的文字，再去掉图片和运行时字段。 */
@@ -642,7 +667,8 @@ export function parseImportedConversations(values: unknown[]): Conversation[] {
     // 0.2.24 以前导出的文件里还带着输入框里没发的图片，到这台电脑上打不开，导入时也去掉（设置 X-6）。
     const conversations = values.map(readConversation).map(({ draftImages: _localOnly, ...conversation }) => ({
       ...conversation,
-      messages: conversation.messages.map(({ mayStillComplete: _pending, ...message }) => message),
+      // 文件里不该有视频（导出时已经换成一句说明）；真有也不认：别的电脑、别的账号的请求号在这里接不回来。
+      messages: conversation.messages.map(({ mayStillComplete: _pending, video: _video, requestId: _requestId, ...message }) => message.status === 'pending' ? { ...message, status: 'canceled' as const } : message),
     }))
     assertUniqueIds(conversations)
     return conversations
@@ -822,6 +848,7 @@ export function conversationPlainText(conversation: Conversation): string {
     if (content) lines.push(content)
     for (const file of message.files ?? []) lines.push(`附件：${redactPersistentChatText(file.name)}`)
     if (message.assets?.length) lines.push(`[${message.assets.length} 张图片，没有放进这个文件]`)
+    if (message.video?.clip) lines.push('[1 段视频，未包含在此文件中]')
     if (message.status === 'error' && message.error) lines.push(`[没有回复成功：${redactPersistentChatText(message.error)}]`)
     lines.push('')
   }
