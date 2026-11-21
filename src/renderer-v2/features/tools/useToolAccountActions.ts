@@ -1,5 +1,5 @@
 import { useCallback, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
-import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, ClaudeCommandConfirmationChoice } from '../../../../electron/ipc-contract'
+import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, ClaudeCommandConfirmationChoice, ProviderId } from '../../../../electron/ipc-contract'
 import { offersCodexDesktopRestart } from '../../../../electron/running-tools'
 import type { LatestRequest } from '../../latest-request'
 import type { ToolConfigConfirmation } from '../../pages-account'
@@ -25,10 +25,12 @@ interface ToolAccountActionsOptions {
   setAuth: Dispatch<SetStateAction<AuthMode | null>>
   setCcSwitchReminder: Dispatch<SetStateAction<boolean>>
   setSwitchRestartOffer: Dispatch<SetStateAction<AccountSourceTarget | null>>
+  /** 客户自己把这个工具连好了：首页横幅、引导里上一轮替它写密钥没写成的那一条收起（useAccountBootstrap）。 */
+  settleToolKeyFailure(provider: ProviderId): void
 }
 
 /** 首页工具卡上改配置的那几件：切到当前账号 / 切回官方、就用现在这份、修提醒设置、重置坏掉的配置，以及配置弹窗保存之后。 */
-export function useToolAccountActions({ toolsApi, toolbox, toast, session, mounted, accountEpoch, configTool, setConfigTool, setAuth, setCcSwitchReminder, setSwitchRestartOffer }: ToolAccountActionsOptions) {
+export function useToolAccountActions({ toolsApi, toolbox, toast, session, mounted, accountEpoch, configTool, setConfigTool, setAuth, setCcSwitchReminder, setSwitchRestartOffer, settleToolKeyFailure }: ToolAccountActionsOptions) {
   const [toolConfigConfirmed, setToolConfigConfirmed] = useState<ToolConfigConfirmation | null>(null)
   // 切回官方账号以后那一问「要不要让官方 Claude Code 先问再执行？」（CommandConfirmationDialog）：主进程说要问才弹，
   // answering = 回答正在交给主进程，框不让关。
@@ -67,6 +69,8 @@ export function useToolAccountActions({ toolsApi, toolbox, toast, session, mount
       try {
         const result = await toolsApi.switchSource(tool, target)
         outcome.result = result
+        // 切过去了（改用当前账号或切回官方）：上一轮自动写密钥没写成的那一条不再挂着（总单 17）。
+        settleToolKeyFailure(provider)
         // 与配置对话框保存时一样：换了来源就清掉「自己填写密钥」的本机标记。
         const baseUrl = toolbox.snapshot?.config.providers[provider].baseUrl
         const markerWarning = baseUrl ? applyManualSourceMarker(getSourceMarkerStorage(), baseUrl, provider, false) : ''
@@ -82,7 +86,7 @@ export function useToolAccountActions({ toolsApi, toolbox, toast, session, mount
       }
     })
     return outcome.result ?? null
-  }, [session.account, session.authenticated, toast, toolbox.refresh, toolbox.run, toolbox.snapshot, toolsApi, setAuth, setCcSwitchReminder, setSwitchRestartOffer])
+  }, [session.account, session.authenticated, toast, toolbox.refresh, toolbox.run, toolbox.snapshot, toolsApi, setAuth, setCcSwitchReminder, setSwitchRestartOffer, settleToolKeyFailure])
   /**
    * 首页「提醒设置要修」的「修好它」。主进程先备份、只改钩子与状态行、再查一遍；
    * 没修好会抛中文原因，走统一的错误条（perform）。
@@ -125,6 +129,7 @@ export function useToolAccountActions({ toolsApi, toolbox, toast, session, mount
           if (!result.configured.includes(provider)) throw new Error('工具没有返回配置写入结果，请重新检测后再试。')
         }
         written = true
+        settleToolKeyFailure(provider)
         // 与配置对话框重置时一样：密钥换成了这次选的账号那边的，「自己填写密钥」的本机标记跟着清掉。
         const markerWarning = config.baseUrl ? applyManualSourceMarker(getSourceMarkerStorage(), config.baseUrl, provider, false) : ''
         toast.show(`已重置 ${spacedName(jobToolName(tool) ?? tool)}的配置，原来的配置已备份`, 'ok')
@@ -134,15 +139,17 @@ export function useToolAccountActions({ toolsApi, toolbox, toast, session, mount
       }
     })
     return written
-  }, [session.account, session.authenticated, toast, toolbox.refresh, toolbox.run, toolbox.snapshot, toolsApi, setAuth])
-  // 设置窗口写进了新 Key：读回配置成功才告诉密钥页，好收起那条「还在用刚撤销的密钥」（#546）。
-  // 读回失败就不收，警告宁可多留一会儿。
+  }, [session.account, session.authenticated, toast, toolbox.refresh, toolbox.run, toolbox.snapshot, toolsApi, setAuth, settleToolKeyFailure])
+  // 设置窗口写进了新 Key：读回配置成功才告诉密钥页，好收起那条「还在用刚撤销的密钥」（#546），首页横幅里上一轮
+  // 替它写密钥没写成的那一条也一起收起（总单 17：点「确认连接」连好了，黄条还挂到重开软件）。只留着原来那把 Key
+  // 的保存不走这里，没写成的那一条照旧挂着。读回失败就不收，警告宁可多留一会儿。
   function confirmToolKeyWritten(tool: ToolId) {
     const sameAccount = accountEpoch.capture()
     const provider = providerFor(tool)
     void toolsApi.readConfig().then((config) => {
       if (!mounted.current || !sameAccount() || config.providers[provider].configurationOwnership === 'missing') return
       setToolConfigConfirmed((current) => ({ provider, sequence: (current?.sequence ?? 0) + 1 }))
+      settleToolKeyFailure(provider)
     }, () => undefined)
   }
   /**

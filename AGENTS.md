@@ -199,7 +199,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 `tsconfig.electron.json` 与 `tsconfig.electron.test.json`（include 覆盖全部 electron 源码）必查；被 `ipc-contract.ts` 通过 `import type` 引用的还会进渲染 tsconfig 的程序图。四段都串在 `npm run typecheck` 里，跑这一条即可。
 
 **T10. 改配置位置或配置格式 → 同时影响读写、备份、恢复、诊断。**
-配置根目录由 `codex-home.ts` 的 `providerConfigRoot` 给出，消费者：`config-files-context.ts`（`providerConfigPaths`，`config-files.ts` 照旧导出）、`backups.ts`、`diagnostics.ts`（各类检查拆在 `diagnostics-*.ts`）、`ipc/handlers/config.ts`（打开配置文件夹）、`workspace-guard.ts`，以及渲染层的 `src/renderer-v2/registry/tools.ts`（展示给用户看的配置位置）。目录名这一层已收口到 `catalog.ts` 的 `providerConfigDirectoryNames`，主进程的 `providerConfigRoot` 与渲染层注册表都读它，改目录名只改这一处（R-S11）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
+配置根目录由 `codex-home.ts` 的 `providerConfigRoot` 给出，消费者：`config-files-context.ts`（`providerConfigPaths`，`config-files.ts` 照旧导出）、`backups.ts`、`diagnostics.ts`（各类检查拆在 `diagnostics-*.ts`）、`ipc/handlers/config.ts`（打开配置文件夹）、`workspace-guard.ts`，以及渲染层的 `src/renderer-v2/registry/tools.ts`（展示给用户看的配置位置）。目录名这一层已收口到 `catalog.ts` 的 `providerConfigDirectoryNames`，主进程的 `providerConfigRoot` 与渲染层注册表都读它，改目录名只改这一处（R-S11）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。`config:get` 读下的那份会留 3 秒（`config-read-cache.ts`）：新加写工具配置、来源记录、线路跟随记录的地方要调 `noteToolConfigWrite` / `trackToolConfigWrite`，不然首页最多晚 3 秒才看见。
 
 **T11. 看到根目录出现 `\tmp\xingmang-managed-cli-*` 目录 → 删掉，不要提交，当回归排查。**
 泄漏源 `managed-cli.test.ts` 已改用 `os.tmpdir()` 并在 `afterEach` 清理，正常不会再出现。
@@ -210,7 +210,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 **T13. 画布相关改动 → 分清源码与产物，且认清"执行发生在主进程"。**
 画布**源码**在 `canvas-v2/`；`dist-canvas/` 是 `npm run canvas:prepare` 生成的**构建产物**，不入 git，**不要**改产物文件。
 
-`canvas-v2/src/` 和 `canvas-v2/shared/` 是 xingmang-canvas 内核的同步副本：`scripts/sync-canvas-kernel.mjs <xingmang-canvas 克隆> <tag>` 写入，`canvas-v2/KERNEL_SOURCE.json` 记下 tag、提交号和每个文件的哈希，`scripts/verify-canvas-kernel-source.test.cjs` 逐个文件核对。**要改画布行为，先在 xingmang-canvas 改、打 tag，再同步进来。** 桌面自有的只有 `canvas-v2/index.html`（CSP）、`vite.config.ts`（配色接回 UI v4、宿主类型）、`tsconfig.json`、`package.json` 和锁文件、`README.md`，同步脚本不碰它们。紧急修复才许本地打补丁：登记进 `KERNEL_SOURCE.json` 的 `localPatches`（理由、xingmang-canvas 那边的 issue 或 PR、14 天内到期），当天在 xingmang-canvas 开对应 PR，两周内回到那边，再同步一次把补丁清掉；不这样做就会重演 xingmang-canvas 漏掉 #1004 的那种分叉。xingmang-canvas 的 CI 每天反过来拉本仓核对 `canvas-v2/` 是不是某个 tag 的原样，过期的补丁在那边变红。
+`canvas-v2/src/` 和 `canvas-v2/shared/` 是 xingmang-canvas 内核的同步副本：`scripts/sync-canvas-kernel.mjs <xingmang-canvas 克隆> <tag>` 写入，`canvas-v2/KERNEL_SOURCE.json` 记下 tag、提交号和每个文件的哈希，`scripts/verify-canvas-kernel-source.test.cjs` 逐个文件核对。**要改画布行为，先在 xingmang-canvas 改、打 tag，再同步进来。** tag 不用人建：那边的「Kernel tag」工作流在内核改动合进 main 后自动打 `kernel-vX.Y.Z`（补丁位加一），只有契约或工程格式版本变了才要人手动触发并填版本号。 桌面自有的只有 `canvas-v2/index.html`（CSP）、`vite.config.ts`（配色接回 UI v4、宿主类型）、`tsconfig.json`、`package.json` 和锁文件、`README.md`，同步脚本不碰它们。紧急修复才许本地打补丁：登记进 `KERNEL_SOURCE.json` 的 `localPatches`（理由、xingmang-canvas 那边的 issue 或 PR、14 天内到期），当天在 xingmang-canvas 开对应 PR，两周内回到那边，再同步一次把补丁清掉；不这样做就会重演 xingmang-canvas 漏掉 #1004 的那种分叉。xingmang-canvas 的 CI 每天反过来拉本仓核对 `canvas-v2/` 是不是某个 tag 的原样，过期的补丁在那边变红。
 
 另一半同样容易踩错：**`canvas-v2/` 里除了登记过的 OpenCV 抠图运行时，没有任何出网代码**（那份是 Emscripten 的通用加载代码，不读外部文件，CSP 也不放行它连网，见 `docs/CANVAS-THIRD-PARTY.md`）。渲染层的执行器（`canvas-v2/src/engine/executors.ts`）只是把请求交给宿主桥，真正的 HTTP、凭据解析、产物落盘全在主进程（`ai-image-service.ts` / `ai-chat-service.ts` / `chat-credential-coordinator.ts`）。想加一种新的生成能力，**主进程那侧才是要动的地方**；在渲染层直接 `fetch` relay 会绕开 I15 的全部边界，PR #85 已经把那条老路径删掉了，不要重新长出来。
 
