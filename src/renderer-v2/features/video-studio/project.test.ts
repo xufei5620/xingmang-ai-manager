@@ -99,14 +99,14 @@ describe('video studio project', () => {
   })
 
   it('says which shot still needs a description before anything is sent', () => {
-    expect(videoStudioShotProblem({ id: 'a', prompt: '  ', caption: '', status: 'idle' }, 1)).toBe('第 2 个镜头还没写画面描述')
-    expect(videoStudioShotProblem({ id: 'a', prompt: '画'.repeat(1_501), caption: '', status: 'idle' }, 0)).toBe('第 1 个镜头的画面描述太长了，删到 1500 个字以内')
+    expect(videoStudioShotProblem({ id: 'a', prompt: '  ', caption: '', status: 'idle' }, 1)).toBe('第 2 个镜头尚未填写画面描述')
+    expect(videoStudioShotProblem({ id: 'a', prompt: '画'.repeat(1_501), caption: '', status: 'idle' }, 0)).toBe('第 1 个镜头的画面描述过长，请删减至 1500 个字以内')
     expect(videoStudioShotProblem({ id: 'a', prompt: '橘猫', caption: '', status: 'idle' }, 0)).toBeNull()
   })
 
   it('drops invisible control characters pasted into the text before it is sent, keeping line breaks and tabs', () => {
     expect(videoStudioPlainText(' 橘猫\u000b在雨里\u0000\n回家\t了\u007f ')).toBe('橘猫在雨里\n回家\t了')
-    expect(videoStudioShotProblem({ id: 'a', prompt: '\u0001\u0002', caption: '', status: 'idle' }, 0)).toBe('第 1 个镜头还没写画面描述')
+    expect(videoStudioShotProblem({ id: 'a', prompt: '\u0001\u0002', caption: '', status: 'idle' }, 0)).toBe('第 1 个镜头尚未填写画面描述')
     const settings = { ...defaultVideoStudioSettings(), videoModel: 'grok-imagine-video-1.5', videoGroup: '图片模型' }
     expect(buildVideoStudioClipRequest(settings, { id: 'a', prompt: '橘猫\u000c回家', caption: '', status: 'idle' }, 'r1').prompt).toBe('橘猫回家')
   })
@@ -274,8 +274,8 @@ describe('video studio project', () => {
     expect(drawn.shots[0]).not.toHaveProperty('drawing')
     expect(isVideoStudioShotDrawing(drawn.shots[0])).toBe(false)
 
-    const failed = finishVideoStudioShotDrawing(startVideoStudioShotDrawing(drawn, 'shot-1', 'd5'), 'shot-1', 'd5', { error: '没有收到生成的图片' })
-    expect(failed.shots[0]).toMatchObject({ image: drawn.shots[0].image, drawError: '没有收到生成的图片' })
+    const failed = finishVideoStudioShotDrawing(startVideoStudioShotDrawing(drawn, 'shot-1', 'd5'), 'shot-1', 'd5', { error: '未收到生成的图片' })
+    expect(failed.shots[0]).toMatchObject({ image: drawn.shots[0].image, drawError: '未收到生成的图片' })
     expect(failed.shots[0]).not.toHaveProperty('drawing')
     const stopped = finishVideoStudioShotDrawing(startVideoStudioShotDrawing(failed, 'shot-1', 'd6'), 'shot-1', 'd6', 'stopped')
     expect(stopped.shots[0].image).toEqual(drawn.shots[0].image)
@@ -284,7 +284,7 @@ describe('video studio project', () => {
 
     // Drawing state lives only while the page is open.
     const stored = serializeVideoStudioProject(startVideoStudioShotDrawing(failed, 'shot-1', 'd7'))
-    expect(JSON.stringify(stored)).not.toMatch(/d7|drawError|没有收到生成的图片/)
+    expect(JSON.stringify(stored)).not.toMatch(/d7|drawError|未收到生成的图片/)
   })
 
   it('gives a shot its own length, lets the rest follow the shot length and moves both to what a new video model can make', () => {
@@ -646,11 +646,11 @@ describe('video studio project', () => {
     const film = planned()
     expect(videoStudioDraftName(film)).toBe('回家的猫')
     expect(videoStudioDraftName({ ...film, title: '', settings: { ...film.settings, idea: '一只橘猫\n在下雨的东京街头找回家的路，温暖治愈，最后它在家门口被主人抱起来' } })).toBe('一只橘猫 在下雨的东京街头找回家的路，温暖治愈，…')
-    expect(videoStudioDraftName({ ...film, title: '', settings: { ...film.settings, idea: '' } })).toBe('没起名的视频')
-    expect(videoStudioDraftProgress(createVideoStudioProject())).toBe('还没写分镜')
+    expect(videoStudioDraftName({ ...film, title: '', settings: { ...film.settings, idea: '' } })).toBe('未命名视频')
+    expect(videoStudioDraftProgress(createVideoStudioProject())).toBe('尚未编写分镜')
     const made = { ...film, shots: film.shots.map((shot, index) => index ? shot : { ...shot, clip: clip('a'), status: 'done' as const }) }
     expect(videoStudioDraftProgress(made)).toBe('3 个镜头 · 已生成 1 段')
-    expect(videoStudioDraftProgress({ ...made, exported: clip('z') })).toBe('3 个镜头 · 已生成 1 段 · 已拼成片')
+    expect(videoStudioDraftProgress({ ...made, exported: clip('z') })).toBe('3 个镜头 · 已生成 1 段 · 已合成成片')
   })
 
   // 0.2.24 及以前草稿箱在 localStorage 里的写法（当时的 serializeVideoStudioDrafts）。新版不再写它，只在头一次打开时读一遍。
@@ -750,10 +750,10 @@ describe('a clip handed over from a conversation', () => {
   })
 
   it('words the pay-twice warning for one clip, for all of them and for some of them', () => {
-    expect(videoStudioUnconfirmedWarning([0], 1)).toMatch(/^这一段上次提交时没收到/)
-    expect(videoStudioUnconfirmedWarning([0, 1], 2)).toMatch(/^这几段上次提交时没收到/)
-    expect(videoStudioUnconfirmedWarning([1, 3], 4)).toMatch(/^其中第 2、4 段上次提交时没收到/)
-    expect(videoStudioUnconfirmedWarning([0], 1)).toContain('再生成会重新计费，可能多扣一次。')
+    expect(videoStudioUnconfirmedWarning([0], 1)).toMatch(/^这一段上次提交时未收到/)
+    expect(videoStudioUnconfirmedWarning([0, 1], 2)).toMatch(/^这几段上次提交时未收到/)
+    expect(videoStudioUnconfirmedWarning([1, 3], 4)).toMatch(/^其中第 2、4 段上次提交时未收到/)
+    expect(videoStudioUnconfirmedWarning([0], 1)).toContain('重新生成将再次计费，可能产生重复扣费。')
   })
 })
 

@@ -389,7 +389,7 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('gives the chat page the same two export sentences and nothing for other failures', () => {
-    // 聊天页红条只有一行字，拿整句；认不出的交回 null，那边留「这段对话没有导出成功，可以重试」。
+    // 聊天页红条只有一行字，拿整句；认不出的交回 null，那边留「对话导出失败，请重试」。
     expect(exportFailureSentence({ message: '操作没有成功', detail: "EPERM: operation not permitted, open '本机路径'" })).toBe('该位置不允许保存文件，请选择其他文件夹（如「下载」）后重新导出。')
     expect(exportFailureSentence({ message: '操作没有成功', detail: 'ENOSPC: no space left on device, write' })).toBe('该磁盘空间已满，请清理部分空间或选择其他磁盘后重新导出。')
     expect(exportFailureSentence({ message: '聊天对话导出文件写入被系统占用，请稍后重试' })).toBeNull()

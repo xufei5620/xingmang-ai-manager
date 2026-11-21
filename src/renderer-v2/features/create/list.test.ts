@@ -11,7 +11,7 @@ function conversation(id: string, updatedAt: number, pinned = false): Conversati
 }
 
 function extra(kind: CreateExtraItem['kind'], id: string, updatedAt: number, title = id): CreateExtraItem {
-  return { kind, id, title, detail: kind === 'canvas' ? '画布项目' : '还没写分镜', updatedAt }
+  return { kind, id, title, detail: kind === 'canvas' ? '画布项目' : '尚未编写分镜', updatedAt }
 }
 
 function names(rows: readonly CreateRow[]): string[] {

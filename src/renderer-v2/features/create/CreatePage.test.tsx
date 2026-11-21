@@ -21,9 +21,9 @@ describe('the pieces of the create page that are its own', () => {
   it('offers a film and the canvas under the examples, in words a first-time customer can act on', () => {
     const html = renderToStaticMarkup(<CreateStartCards video onVideo={nothing} onCanvas={nothing} />)
     expect(html).toContain('data-testid="create-start"')
-    expect(text(html)).toBe('一句话说不清的，从这里开始'
-      + '做一条带字幕的短视频写一句想法，AI 写分镜、一段一段出，再拼成一条'
-      + '在画布上一步步做多张图、精修、套模板，人物每一镜都长得一样也在这里开在大窗口里')
+    expect(text(html)).toBe('复杂创作从这里开始'
+      + '做一条带字幕的短视频输入创意，AI 将编写分镜、分段生成并合成为完整视频'
+      + '在画布中分步创作支持多图、精修、模板，以及保持人物在各镜头中一致开在大窗口里')
     expect(html.indexOf('data-testid="create-card-video"')).toBeLessThan(html.indexOf('data-testid="create-card-canvas"'))
     // 两张卡都是按钮：键盘走得到、读屏念得出。
     expect(html.match(/<button type="button" class="create-card"/g)).toHaveLength(2)
@@ -52,11 +52,11 @@ describe('the pieces of the create page that are its own', () => {
     const html = renderToStaticMarkup(<CanvasProjectPane project={{ id: 'p1', name: '双 11 主图', updatedAt: new Date(2026, 10, 19, 21, 14).getTime() }} opening={false} onOpen={nothing} now={now} />)
     expect(html).toContain('data-testid="create-canvas-pane"')
     expect(html).toContain('<strong data-testid="create-canvas-name">双 11 主图</strong>')
-    expect(html).toContain('<span data-testid="create-canvas-time">画布项目 · 昨天 21:14 改过</span>')
+    expect(html).toContain('<span data-testid="create-canvas-time">画布项目 · 昨天 21:14 修改</span>')
     expect(html).toContain('data-testid="create-canvas-open"')
     expect(text(html)).toContain('打开画布')
-    expect(text(html)).toContain('画布开在一个大窗口里，可以一边让它跑，一边回这里做别的。')
-    expect(text(html)).toContain('改名、复制、归档、删除在画布窗口的「项目中心」里做。')
+    expect(text(html)).toContain('画布在独立窗口中打开，运行期间可返回此处继续其他操作。')
+    expect(text(html)).toContain('重命名、复制、归档和删除请在画布窗口的「项目中心」中操作。')
     // 这一步没有「放进画布」，也不在这里改名、删除画布项目。
     expect(html.match(/<button/g)).toHaveLength(1)
     expect(html).not.toContain('放进画布')
@@ -78,7 +78,7 @@ describe('the pieces of the create page that are its own', () => {
   it('says once that the three pages were merged, and nothing before that is decided or after it is closed', () => {
     const shown = renderToStaticMarkup(<CreateIntro state="shown" ready hasEarlierWork onDecide={nothing} onDismiss={nothing} />)
     expect(shown).toContain('data-testid="create-intro"')
-    expect(text(shown)).toBe('聊天、画布、视频剪辑合到这一页了以前的对话、画布项目、视频草稿都在左边这一列，一个没少。生成的图片和视频可在左下角「作品库」中查看。')
+    expect(text(shown)).toBe('聊天、画布和视频剪辑已合并至此页历史对话、画布项目和视频草稿均已保留在左侧列表中。生成的图片和视频可在左下角「作品库」中查看。')
     expect(shown).toContain('<button')
     expect(renderToStaticMarkup(<CreateIntro state="undecided" ready hasEarlierWork onDecide={nothing} onDismiss={nothing} />)).toBe('')
     expect(renderToStaticMarkup(<CreateIntro state="gone" ready hasEarlierWork onDecide={nothing} onDismiss={nothing} />)).toBe('')
@@ -91,8 +91,8 @@ describe('the pieces of the create page that are its own', () => {
     expect(words).toContain('做一条带字幕的短视频')
     expect(html).toContain('<strong>做一条带字幕的短视频</strong>')
     expect(words).not.toContain('左侧视频剪辑')
-    expect(tutorialWords('canvas')).toContain('在画布上一步步做')
-    expect(html).toContain('<strong>在画布上一步步做</strong>')
+    expect(tutorialWords('canvas')).toContain('在画布中分步创作')
+    expect(html).toContain('<strong>在画布中分步创作</strong>')
   })
 })
 
@@ -105,7 +105,7 @@ describe('a film in the 添加到视频 menu', () => {
 
   it('reads as the name and how many shots it has', () => {
     expect(createVideoFilm(film(4, '橘猫回家'))).toEqual({ id: 'film-1', title: '橘猫回家', detail: '4 个镜头' })
-    expect(createVideoFilm(film(0))).toEqual({ id: 'film-1', title: '新视频', detail: '还没写分镜' })
+    expect(createVideoFilm(film(0))).toEqual({ id: 'film-1', title: '新视频', detail: '尚未编写分镜' })
   })
 
   it('is greyed out with the reason once every shot slot is taken', () => {
