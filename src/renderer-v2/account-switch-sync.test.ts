@@ -471,7 +471,7 @@ describe('saved account switch restart hint', () => {
     const result = await switchAccountWithOptionalSync({ ...h.api, inspectRunningTools }, h.target, ['claude', 'grok'], h.context, h.context.origin, memoryStorage())
     expect(inspectRunningTools).toHaveBeenCalledWith(['claude', 'grok'])
     expect(h.calls.at(-1)).toBe('inspect')
-    expect(accountSwitchRestartHint(result)).toBe('Claude Code 还开着，要关掉重开才会用上当前账号。')
+    expect(accountSwitchRestartHint(result)).toBe('Claude Code 仍在运行，需关闭后重新打开才会使用当前账号。')
     expect(accountSwitchNeedsAttention(result)).toBe(true)
   })
 
@@ -510,7 +510,7 @@ describe('saved account switch restart hint', () => {
     const result = await switchAccountWithOptionalSync({ ...h.api, inspectRunningTools: async () => { throw new Error('denied') } }, h.target, ['codex'], h.context, h.context.origin, memoryStorage())
     expect(result.configured).toEqual(['codex'])
     expect(result.runningTools).toEqual(running({ unknown: ['codex'], codexDesktopRunning: null, canRestartCodexDesktop: false }))
-    expect(accountSwitchRestartHint(result)).toBe('如果 Codex CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+    expect(accountSwitchRestartHint(result)).toBe('如 Codex CLI、Codex 桌面端 仍在运行，需关闭后重新打开才会使用当前账号。')
   })
 })
 

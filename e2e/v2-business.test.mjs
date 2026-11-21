@@ -3129,7 +3129,7 @@ test('the version card names the current and the new version and shows what to k
       .getByTestId('updates-install-note')
     await note.waitFor()
     assert.equal(await note.isVisible(), true)
-    assert.match(await note.innerText(), /^装之前先保存工具里没做完的东西。/)
+    assert.match(await note.innerText(), /^安装前请保存工具中未完成的工作。/)
     assert.equal(await downloaded.locator('details').count(), 0)
   } finally {
     await downloaded.close()

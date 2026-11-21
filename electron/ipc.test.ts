@@ -2336,7 +2336,7 @@ describe('registerIpcHandlers', () => {
     }))
   })
 
-  it('reopens the picker when the warning is answered with 换一个文件夹', async () => {
+  it('reopens the picker when the warning is answered with 更换文件夹', async () => {
     const home = os.homedir()
     electronMocks.showOpenDialog
       .mockResolvedValueOnce({ canceled: false, filePaths: [home] })
@@ -2363,7 +2363,7 @@ describe('registerIpcHandlers', () => {
 
       await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(expected)
       expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
-        buttons: ['新建一个项目文件夹', '换一个文件夹', '仍然打开'],
+        buttons: ['新建项目文件夹', '更换文件夹', '仍然打开'],
         defaultId: 0,
         cancelId: 1,
       }))
@@ -2566,7 +2566,7 @@ describe('registerIpcHandlers', () => {
     await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(configFolder)
     expect(service.updateStoredConfig).not.toHaveBeenCalled()
     expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
-      title: '不建议在这个文件夹里打开',
+      title: '不建议在此文件夹中打开',
       detail: expect.stringContaining('密钥'),
     }))
   })
@@ -2639,7 +2639,7 @@ describe('registerIpcHandlers', () => {
     expect(service.launchProvider).not.toHaveBeenCalled()
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
     expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
-      buttons: ['先不打开', '仍然打开'],
+      buttons: ['暂不打开', '仍然打开'],
     }))
   })
 
@@ -2653,8 +2653,8 @@ describe('registerIpcHandlers', () => {
     await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', home)
     expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
     expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
-      title: '这个文件夹范围太大',
-      buttons: ['新建一个项目文件夹', '换一个文件夹', '仍然打开'],
+      title: '该文件夹范围过大',
+      buttons: ['新建项目文件夹', '更换文件夹', '仍然打开'],
       defaultId: 0,
       cancelId: 1,
     }))
@@ -2797,8 +2797,8 @@ describe('registerIpcHandlers', () => {
 
       await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'))
       expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
-        title: '这个文件夹不让写入',
-        buttons: ['换到能写的位置', '照常打开', '先不打开'],
+        title: '该文件夹禁止写入',
+        buttons: ['更换为可写入的位置', '照常打开', '暂不打开'],
         defaultId: 0,
         cancelId: 2,
       }))
@@ -2847,7 +2847,7 @@ describe('registerIpcHandlers', () => {
 
       await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'), 'resumeLast')
       expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
-        buttons: ['先不打开', '照常打开'],
+        buttons: ['暂不打开', '照常打开'],
         defaultId: 1,
         cancelId: 0,
       }))
@@ -4305,7 +4305,7 @@ describe('registerIpcHandlers', () => {
 
       await expect(launch(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'))).resolves.toEqual({})
       expect(launched).toEqual(['claude'])
-      // 主目录那一问点了「换一个文件夹」，选择器里又取消：没打开。
+      // 主目录那一问点了「更换文件夹」，选择器里又取消：没打开。
       electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
       electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
       await expect(launch(trustedEvent(), 'codex', os.homedir())).resolves.toEqual({ declined: true })

@@ -200,14 +200,14 @@ describe('switchAccountSource restart hint', () => {
     const { deps } = dependencies({ inspectRunning })
     const result = await switchAccountSource(deps, 'codex', 'account')
     expect(inspectRunning).toHaveBeenCalledWith('codex')
-    expect(result.message).toBe('已改用当前账号，连接自检通过。Codex CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+    expect(result.message).toBe('已改用当前账号，连接自检通过。Codex CLI、Codex 桌面端 仍在运行，需关闭后重新打开才会使用当前账号。')
     expect(result.runningTools?.codexDesktopRunning).toBe(true)
   })
 
   it('says the switch goes back to the official account when that is the target', async () => {
     const { deps } = dependencies({ inspectRunning: async () => running({ running: ['claude'] }) })
     const result = await switchAccountSource(deps, 'claude', 'official')
-    expect(result.message).toBe('已切回官方账号，原来的配置已备份。Claude Code 还开着，要关掉重开才会换回官方账号。')
+    expect(result.message).toBe('已切回官方账号，原来的配置已备份。Claude Code 仍在运行，需关闭后重新打开才会切换回官方账号。')
   })
 
   it('checks only after the config is written, and never before a rollback', async () => {

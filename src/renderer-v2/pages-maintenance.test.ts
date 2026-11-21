@@ -285,7 +285,7 @@ describe('tutorial topics', () => {
     expect(text).toContain(statuses.tool.configChanged[0])
     expect(text).toContain(statuses.tool.detectionFailed[0])
     // 敏感目录提示的标题在 electron/workspace-guard.ts，那侧是主进程模块，这里只钉字面。
-    expect(text).toContain('这个文件夹范围太大')
+    expect(text).toContain('该文件夹范围过大')
   })
 
   it('quotes what the command-line tools really print when the balance or key quota runs out', () => {
