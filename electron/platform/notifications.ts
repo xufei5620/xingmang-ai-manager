@@ -63,15 +63,15 @@ const messages = {
   test: { title: '星芒测试通知', body: '这是一条测试通知，可在设置中关闭。' },
   install: {
     title: '工具已准备好',
-    body: '安装或更新已经完成，可以回到星芒查看。',
+    body: '安装或更新已完成，请返回星芒查看。',
   },
   balance: {
-    title: '余额需要留意',
-    body: '星芒余额不足 $5，可以在个人中心查看和充值。',
+    title: '余额不足提醒',
+    body: '星芒余额不足 $5，请前往个人中心查看并充值。',
   },
   task: {
     title: '生成任务已完成',
-    body: '任务结果已经更新，可以回到星芒查看。',
+    body: '任务结果已更新，请返回星芒查看。',
   },
   // 具体是哪几个工具、更到哪个版本，首页的工具卡片上已经各自写着；
   // 通知只负责把人叫回来，不重复那份清单，也不带版本号。
@@ -79,39 +79,39 @@ const messages = {
   // 一个命令行工具都没有，看到「命令行工具有新版本」会以为发错了人。
   cliUpdate: {
     title: '工具有新版本',
-    body: '你装的工具出了新版本，回到星芒首页就能逐个更新。',
+    body: '您安装的工具有新版本，请返回星芒首页逐个更新。',
   },
   // 公告正文可能很长、也可能带图，通知里只说有新公告，点开回到星芒看全文。
   announcement: {
     title: '有新公告',
-    body: '当前账号有一条新公告，回到星芒就能看到。',
+    body: '当前账号有一条新公告，请返回星芒查看。',
   },
   // 正常总会带着金额（ipc.ts 不放行空的）；这句只是类型上的兜底。
   spend: {
-    title: '这一小时花得比平时多',
-    body: '如果不是你在用，回星芒看看是哪个工具。',
+    title: '近一小时消费高于平时',
+    body: '如非本人使用，请返回星芒查看具体工具。',
   },
 } as const satisfies Record<PlatformActivityKind | 'test', NotificationMessage>
 
 // 聊天和出图也借 task 这一类的偏好开关，但人不是去「异步任务」里看结果，
 // 所以按编号前缀换成自己的说法。前缀由星芒自己的聊天页写死（chat: / image:）。
 const chatMessages = {
-  chat: { title: 'AI 回复好了', body: '回到星芒的「聊天」查看。' },
-  image: { title: '图片生成好了', body: '回到星芒的「聊天」查看。' },
+  chat: { title: 'AI 回复已完成', body: '请返回星芒的「创作」页查看。' },
+  image: { title: '图片已生成', body: '请返回星芒的「创作」页查看。' },
 } as const satisfies Record<string, NotificationMessage>
 
 // 充值活动也借「公告」这一类的偏好开关，说法换成活动自己的。编号前缀由首页的活动卡片写死
 // （promo: 活动开始，promo-daily: 每天第一次提醒）。活动的标题和正文不进通知：点开回到首页看卡片。
 const promoMessages = {
-  arrival: { title: '有新的充值活动', body: '当前账号有一个充值活动，回到星芒首页看看，点「去充值」就能参加。' },
-  daily: { title: '充值活动还在进行', body: '当前账号的充值活动还没结束，回到星芒首页看看。' },
+  arrival: { title: '有新的充值活动', body: '当前账号有一项充值活动，请返回星芒首页，点击「前往充值」参与。' },
+  daily: { title: '充值活动进行中', body: '当前账号的充值活动尚未结束，请返回星芒首页查看。' },
 } as const satisfies Record<string, NotificationMessage>
 
 // 钱包到了 $0、又没有能扣的订阅（主进程 empty-balance-alert.ts 判断，编号前缀 balance-empty:），借「余额」
 // 这一类的偏好开关。Codex 这时只会在终端里转圈重连、像是网断了，这条是它唯一的提醒，所以把那个样子说出来。
 const emptyBalanceMessage = {
-  title: '当前账号余额是 $0',
-  body: 'AI 工具现在用不了，有的会一直转圈重连，像是网断了。点这里去充值，付完马上生效，回到工具里再发一次就行。',
+  title: '当前账号余额为 $0',
+  body: 'AI 工具当前无法使用，部分工具会持续重连，看似网络已断开。请点击此处充值，付款后立即生效，返回工具重新发送即可。',
 } as const satisfies NotificationMessage
 
 function promoNoticeKind(eventKey: string): keyof typeof promoMessages | null {
@@ -166,10 +166,10 @@ export function buildSpendNotificationMessage(
   notice: PlatformSpendNotice,
 ): NotificationMessage {
   const amount = `$${Math.floor(notice.cents / 100)}.${String(notice.cents % 100).padStart(2, '0')}`
-  const compared = notice.multiple === null ? '比平时多很多' : `大约是平时的 ${notice.multiple} 倍`
+  const compared = notice.multiple === null ? '远高于平时' : `约为平时的 ${notice.multiple} 倍`
   return {
     title: messages.spend.title,
-    body: `过去一小时用掉了 ${amount}，${compared}。${messages.spend.body}`,
+    body: `过去一小时消费 ${amount}，${compared}。${messages.spend.body}`,
   }
 }
 
@@ -199,18 +199,18 @@ export function buildInstallNotificationMessage(
   const subject = /[A-Za-z]$/.test(name) ? `${name} ` : name
   switch (notice.outcome) {
     case 'installed':
-      return { title: `${subject}装好了`, body: '回到星芒就能打开使用。' }
+      return { title: `${subject}已安装`, body: '请返回星芒打开使用。' }
     case 'updated':
-      return { title: `${subject}已经更新好了`, body: '回到星芒就能接着用。' }
+      return { title: `${subject}已更新`, body: '请返回星芒继续使用。' }
     case 'installFailed':
       return {
-        title: `${subject}没装上`,
-        body: '回到星芒看看原因，照提示点一下就能重试。',
+        title: `${subject}安装失败`,
+        body: '请返回星芒查看原因，并按提示重试。',
       }
     case 'updateFailed':
       return {
-        title: `${subject}没更新好`,
-        body: '回到星芒看看原因，照提示点一下就能重试。',
+        title: `${subject}更新失败`,
+        body: '请返回星芒查看原因，并按提示重试。',
       }
   }
 }
@@ -227,7 +227,7 @@ const hostMessages: Record<
   accelerationExpiring: {
     kind: 'acceleration',
     title: `加速还剩 ${accelerationExpiryWarningSeconds / 60} 分钟`,
-    body: '当前账号的免费加速时长快用完了，用完会自动断开。',
+    body: '当前账号的免费加速时长即将用完，用完后将自动断开。',
   },
   accelerationExhausted: {
     kind: 'acceleration',
@@ -238,61 +238,61 @@ const hostMessages: Record<
   // 能不能用。「已恢复正常」只在确实读到会话停了之后才说。
   accelerationInterrupted: {
     kind: 'acceleration',
-    title: '加速意外断开了',
-    body: '网络已恢复正常，可以到「设置 › 网络加速」重新连接。',
+    title: '加速意外断开',
+    body: '网络已恢复，请前往「设置 › 网络加速」重新连接。',
   },
   accelerationInterruptedUnrestored: {
     kind: 'acceleration',
-    title: '加速意外断开了',
-    body: '网络可能暂时连不上，点这里打开网络加速，星芒会再试着恢复。',
+    title: '加速意外断开',
+    body: '网络可能暂时无法连接，请点击此处打开网络加速，星芒将尝试恢复。',
   },
   // Windows 11 默认把新托盘图标收进任务栏右边的 ^ 里，小白找不到窗口会以为软件没了。
   hiddenToTray: {
     kind: null,
-    title: '星芒AI管理工具还在运行',
-    body: '窗口缩到了右下角的托盘里，点星芒图标就能打开。看不到图标的话，点任务栏右边的小箭头 ^。',
+    title: '星芒AI管理工具仍在运行',
+    body: '窗口已缩到右下角的托盘，点击星芒图标即可打开。如未看到图标，请点击任务栏右侧的小箭头 ^。',
   },
   // 带刘海的 MacBook 上菜单栏图标一多，星芒的就被刘海挡住；程序坞那条路一直在（深查 TR-5、决定单 D30）。
   hiddenToMenuBar: {
     kind: null,
-    title: '星芒AI管理工具还在运行',
-    body: '窗口已收起，点屏幕顶部菜单栏里的星芒图标，或者程序坞里的星芒图标，就能打开。',
+    title: '星芒AI管理工具仍在运行',
+    body: '窗口已收起，点击屏幕顶部菜单栏或程序坞中的星芒图标即可打开。',
   },
   // Linux 各家桌面放托盘图标的地方不一样：Ubuntu 在屏幕右上角，KDE、deepin、UKUI 在
   // 任务栏右边，所以两处都说。没有托盘的桌面根本不会缩进去（linux-tray-host.ts）。
   hiddenToPanel: {
     kind: null,
-    title: '星芒AI管理工具还在运行',
-    body: '窗口已收起，点屏幕顶部或任务栏右边的星芒图标就能打开。',
+    title: '星芒AI管理工具仍在运行',
+    body: '窗口已收起，点击屏幕顶部或任务栏右侧的星芒图标即可打开。',
   },
   // 客户关了支付窗口以后才确认到账。钱是他自己刚付的，不归「余额不足」那类提醒管，
   // 只看总开关。订单号不写进通知：通知中心谁都看得见，点进来「充值与订阅」页写着。
   paymentSettled: {
     kind: null,
     title: '付款已到账',
-    body: '刚才那笔订单已到账，余额和订阅已更新。',
+    body: '该订单已到账，余额和订阅已更新。',
   },
   // Codex 有个对话太大、发不出去（codex-payload-limit.ts）。客户这会儿多半正对着 Codex 一遍遍重试，星芒角落那张
   // 卡看不见，所以另发一条；归「终端里没回上」那个开关管。点开回到星芒，那张卡上写着怎么办。
   codexPayloadSwitched: {
     kind: 'cliTrouble',
-    title: 'Codex 的对话已换到线路2',
-    body: '这个对话超过了线路1 的 100MB 上限，已为你切到线路2。完全退出 Codex 再打开，就能接着聊。',
+    title: 'Codex 对话已切换至线路2',
+    body: '该对话已超过线路1 的 100MB 上限，已为您切换至线路2。请完全退出 Codex 后重新打开，即可继续对话。',
   },
   codexPayloadTooLarge: {
     kind: 'cliTrouble',
-    title: 'Codex 里这个对话太大，发不出去了',
-    body: '这个对话已经超过 100MB，线路1 发不出去。请新开一个对话继续，点这里看原因。',
+    title: 'Codex 对话体积过大，无法发送',
+    body: '该对话已超过 100MB，无法通过线路1 发送。请新建对话继续，点击此处查看原因。',
   },
   codexPayloadLineTwoTooLarge: {
     kind: 'cliTrouble',
-    title: 'Codex 里这个对话太大，发不出去了',
-    body: '请新开一个对话继续，点这里看原因。',
+    title: 'Codex 对话体积过大，无法发送',
+    body: '请新建对话继续，点击此处查看原因。',
   },
   codexPayloadNearing: {
     kind: 'cliTrouble',
-    title: 'Codex 里有个对话快到线路1 的上限了',
-    body: '超过 100MB 后线路1 就发不出去了，建议做完手上这件事就新开一个对话。',
+    title: 'Codex 中有对话即将达到线路1 的上限',
+    body: '超过 100MB 后将无法通过线路1 发送，建议完成当前任务后新建对话。',
   },
 }
 
@@ -316,14 +316,14 @@ const terminalToolNames: Record<TerminalNotice['tool'], string> = {
 
 // 主语是「当前账号」；订阅客户也会碰到额度用完，所以不说「余额」，只说「额度」。
 const terminalFailureBodies: Record<TerminalFailureReason, string> = {
-  billing: '当前账号的额度不够了，点这里去充值或续订，弄好后回终端再发一次。',
-  auth: '当前账号的 Key 用不了了，点这里回星芒检查，照提示点一下就能重新连上。',
-  busy: '现在用的人太多，服务一时忙不过来。等一两分钟再在终端里发一次就行。',
-  model: '现在选的型号用不了，点这里回星芒检查，换一个能用的型号。',
-  service: '服务暂时出了问题，可能在维护。稍等几分钟再试，一直不好就点这里检查一下。',
+  billing: '当前账号额度不足，请点击此处充值或续订，完成后返回终端重新发送。',
+  auth: '当前账号的密钥不可用，请点击此处返回星芒检查，按提示操作即可重新连接。',
+  busy: '当前使用人数较多，服务繁忙。请稍候一两分钟后在终端中重新发送。',
+  model: '当前所选模型不可用，请点击此处返回星芒检查，并更换可用的模型。',
+  service: '服务暂时异常，可能正在维护。请稍候几分钟后重试，如持续异常请点击此处检查。',
   // 工具自己也说不清原因，就不猜，请用户回来查一下。中转说余额用完时 Claude Code 报的是
   // authentication_failed，钩子脚本看过原文改报 billing（xingmang-hook.cjs 的 balanceExhausted）。
-  unknown: '点这里回星芒检查一下，看看是额度、Key 还是服务的问题，照提示点一下就好。',
+  unknown: '请点击此处返回星芒检查，确认是额度、密钥还是服务的问题，并按提示处理。',
 }
 
 export function buildTerminalNotificationMessage(
@@ -333,18 +333,18 @@ export function buildTerminalNotificationMessage(
   switch (notice.event) {
     case 'failed':
       return {
-        title: `${name} 刚才没回上`,
+        title: `${name} 未能回复`,
         body: terminalFailureBodies[notice.reason],
       }
     case 'waiting':
       return {
-        title: `${name} 在等你`,
-        body: '它停下来等你确认，回到终端窗口看一眼就能接着干。',
+        title: `${name} 等待您确认`,
+        body: '工具已暂停并等待您确认，请返回终端窗口查看后继续。',
       }
     case 'finished':
       return {
-        title: `${name} 做完了`,
-        body: '这一轮跑了一分多钟，已经做完了，回到终端窗口看看结果。',
+        title: `${name} 已完成`,
+        body: '本轮任务运行超过一分钟，现已完成，请返回终端窗口查看结果。',
       }
   }
 }
@@ -436,7 +436,7 @@ export function createPlatformNotifications(
         new Error(
           typeof reason === 'string'
             ? reason.slice(0, 200)
-            : '系统通知没有显示。',
+            : '系统通知未能显示。',
         ),
       )
     })

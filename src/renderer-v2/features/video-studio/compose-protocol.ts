@@ -107,7 +107,7 @@ export function videoStudioTotalBytesLimit(deviceMemoryGigabytes: unknown = read
 // 还是原来那句话，只是数跟着上限走：1 GB、512 MB、256 MB。
 function videoStudioTotalTooLargeMessage(limit: number): string {
   const size = limit % gigabyte === 0 ? `${limit / gigabyte} GB` : `${Math.floor(limit / megabyte)} MB`
-  return `片段加起来超过 ${size} 了，少放几段再拼`
+  return `片段总大小超过 ${size}，请减少片段后再合成`
 }
 
 function isComposeStage(value: unknown): value is VideoStudioComposeStage {
@@ -120,7 +120,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function optionalSeconds(value: unknown, label: string): number | undefined {
   if (value === undefined) return undefined
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new VideoStudioError(`${label}的剪切时间不对`)
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new VideoStudioError(`${label}的裁剪时间无效`)
   return value
 }
 
@@ -151,9 +151,9 @@ export function parseVideoStudioComposeRequest(value: unknown, totalBytesLimit =
   if (!isVideoStudioAspect(aspect) || !isVideoStudioResolution(resolution) || !isVideoStudioFit(fit) || !isVideoStudioFrameRate(frameRate)
     || (transition !== undefined && !isVideoStudioTransition(transition)) || (fadeOut !== undefined && typeof fadeOut !== 'boolean')
     || (captionSize !== undefined && !isVideoStudioCaptionSize(captionSize)) || (captionPosition !== undefined && !isVideoStudioCaptionPosition(captionPosition))) {
-    throw new VideoStudioError('成片的画面设置不对')
+    throw new VideoStudioError('成片的画面设置无效')
   }
-  if (value.clips.length === 0) throw new VideoStudioError('至少要放一段片段才能拼成片')
+  if (value.clips.length === 0) throw new VideoStudioError('至少需要一段片段才能合成成片')
   if (value.clips.length > maxVideoStudioClips) throw new VideoStudioError(`一次最多拼 ${maxVideoStudioClips} 段片段`)
   let totalBytes = 0
   const clips = value.clips.map((clip: unknown, index): VideoStudioComposeClip => {
@@ -161,10 +161,10 @@ export function parseVideoStudioComposeRequest(value: unknown, totalBytesLimit =
     if (!isRecord(clip) || !(clip.data instanceof ArrayBuffer) || clip.data.byteLength === 0) {
       throw new VideoStudioError(`${label}片段是空的`)
     }
-    if (clip.data.byteLength > maxVideoStudioClipBytes) throw new VideoStudioError(`${label}片段太大了，一段最多 512 MB`)
+    if (clip.data.byteLength > maxVideoStudioClipBytes) throw new VideoStudioError(`${label}片段过大，单段最大 512 MB`)
     totalBytes += clip.data.byteLength
     if (clip.caption !== undefined && (typeof clip.caption !== 'string' || clip.caption.length > maxRawCaptionLength)) {
-      throw new VideoStudioError(`${label}的字幕太长了，最多 ${maxVideoStudioCaptionLength} 个字`)
+      throw new VideoStudioError(`${label}的字幕过长，最多 ${maxVideoStudioCaptionLength} 个字`)
     }
     return {
       data: clip.data,
@@ -200,7 +200,7 @@ export function addVideoStudioClipBytes(totalBytes: number, clipBytes: number, t
 }
 
 export function parseVideoStudioWorkerMessage(value: unknown): VideoStudioWorkerMessage {
-  if (!isRecord(value) || value.kind !== 'compose') throw new VideoStudioError('拼片线程收到了看不懂的消息')
+  if (!isRecord(value) || value.kind !== 'compose') throw new VideoStudioError('合成任务收到无法识别的消息')
   return { kind: 'compose', request: parseVideoStudioComposeRequest(value.request) }
 }
 

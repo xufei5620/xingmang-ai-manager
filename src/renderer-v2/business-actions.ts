@@ -1,5 +1,5 @@
 // 各业务页共用的参数类型 BusinessActions，连同它带着的几样：装工具的结果（ToolInstallOutcome）、反馈与客服页右边
-// 那张「找客服」卡（FeedbackSupport）和外面点名要落的页签（FeedbackRequest）。#1070 第 11 步从 pages-maintenance.tsx
+// 那张「联系客服」卡（FeedbackSupport）和外面点名要落的页签（FeedbackRequest）。#1070 第 11 步从 pages-maintenance.tsx
 // 原样搬来；只有类型，pages-maintenance.tsx 照旧转出，原来从那里 import 的地方不用改。
 import type { ReactNode } from 'react'
 import type { SettingsGroupId, FeedbackTabValue } from './registry/business'
@@ -15,10 +15,10 @@ type AppSettings = Awaited<ReturnType<V2Bridge['getSettings']>>
 type Provider = ActiveProviderId
 /**
  * installed：装好了；restart：运行环境要重启电脑才算装完；skipped：没有开始（取消、已在装或要自己下载）；
- * declined：客户在「换成星芒装的」确认框里点了取消，什么都没动，也不用说什么。
+ * declined：客户在「改用星芒安装」确认框里点了取消，什么都没动，也不用说什么。
  */
 export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped' | 'declined'
-/** 「找客服」卡上的几样：二维码按当前账号换，身份行和最近一次出错由 App 算好（同帮助与客服弹窗）。 */
+/** 「联系客服」卡上的几样：二维码按当前账号换，身份行和最近一次出错由 App 算好（同帮助与客服弹窗）。 */
 export interface FeedbackSupport {
   qr?: string
   /** 二维码没生成出来时那一句；缺省 = 没出错。 */
@@ -81,9 +81,9 @@ export type BusinessActions = {
    * 装完要重启电脑时弹重启框、检测跟着重跑。缺省 = 那几行不给「安装」，「安装指南」照旧。
    */
   onInstallRuntime?: (runtime: 'node' | 'python' | 'git') => void
-  /** 检查页「换成新版」「换成新版 Node.js」：先弹确认框再换（同错误框里那一颗）。缺省 = 不给这颗按钮。 */
+  /** 检查页「换成新版」「更新 Node.js」：先弹确认框再换（同错误框里那一颗）。缺省 = 不给这颗按钮。 */
   onReplaceNode?: () => void
-  /** 反馈与客服页右边那张「找客服」卡，跟帮助与客服弹窗是同一份。缺省 = 没有这张卡。 */
+  /** 反馈与客服页右边那张「联系客服」卡，跟帮助与客服弹窗是同一份。缺省 = 没有这张卡。 */
   support?: FeedbackSupport
   /** 外面点名要落的反馈与客服页签（「查看日志」「运行日志」）。缺省 = 留言反馈。 */
   feedbackRequest?: FeedbackRequest

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createPageAlias, extensionPageAlias, pageRegistry, retiredPageAlias, settingsPageAlias } from '../../registry/pages'
 import { tutorialTopics, tutorialTopicsFor } from '../../registry/tutorials'
-import { chatParametersSection, maximumTutorialResults, searchCommands } from './command-search'
+import { chatParametersSection, createLibrarySection, maximumTutorialResults, searchCommands } from './command-search'
 
 // 游戏加速、备份、更新并进了设置（v4 批09），「安装卸载」拆掉了（批10），画布、视频剪辑并进了「创作」（融合第 1 步）：
 // 它们还在页面表里（老入口靠它换到新去处），但不再单独出页面结果。精选、外接工具、插件 0.2.25 合进「插件」页，同理；
@@ -15,7 +15,7 @@ describe('searchCommands', () => {
     expect(empty.filter((item) => item.group === 'page').map((item) => item.page)).toEqual(searchablePages.map((page) => page.id))
     expect(empty.map((item) => item.group)).toEqual([...empty.filter((item) => item.group === 'action').map(() => 'action'), ...searchablePages.map(() => 'page')])
     expect(searchCommands('').filter((item) => item.group === 'page').every((item) => item.section === undefined)).toBe(true)
-    expect(searchCommands('').filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['充值', '查看用量账单', '开始检查', '帮助与客服', '运行日志', '打开画布窗口', '聊天参数设置'])
+    expect(searchCommands('').filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['充值', '查看用量账单', '开始检查', '帮助与客服', '运行日志', '打开画布窗口', '作品库', '聊天参数设置'])
   })
 
   it('offers switching to the other theme only, and sign-out only while signed in', () => {
@@ -52,7 +52,7 @@ describe('searchCommands', () => {
 
   it('leaves out the top-up and usage actions when the account cannot open those tabs', () => {
     const labels = searchCommands('', { accountTabVisible: (tab) => tab !== 'recharge' && tab !== 'usage' }).filter((item) => item.group === 'action').map((item) => item.label)
-    expect(labels).toEqual(['开始检查', '帮助与客服', '运行日志', '打开画布窗口', '聊天参数设置'])
+    expect(labels).toEqual(['开始检查', '帮助与客服', '运行日志', '打开画布窗口', '作品库', '聊天参数设置'])
   })
 
   it('opens the chat parameters dialog from the action group, and leaves it out when chat is not on this computer', () => {
@@ -73,6 +73,14 @@ describe('searchCommands', () => {
     }
     // 两个老页面不再单独出结果。
     for (const word of ['画布', '视频剪辑', '']) expect(searchCommands(word).some((item) => item.group === 'page' && (item.page === 'canvas' || item.page === 'video')), word).toBe(false)
+  })
+
+  // 融合第 3 步：聊天顶上的「看做过的图」挪成了「创作」左下角的「作品库」，搜它、搜老说法都落在那里。
+  it('finds the library on the create page by its name and by what the old button was called', () => {
+    for (const word of ['作品库', '作品', '素材库', '做过的图', '成片']) {
+      expect(searchCommands(word).find((item) => item.key === 'action:create-library'), word).toEqual({ key: 'action:create-library', group: 'action', label: '作品库', page: 'chat', section: createLibrarySection })
+    }
+    expect(searchCommands('作品库', { pageVisible: (page) => page !== 'chat' }).some((item) => item.key === 'action:create-library')).toBe(false)
   })
 
   // 侧栏原来点一下就开画布窗口；并进「创作」以后，搜「画布」多一条「打开画布窗口」，选它还是一步。
@@ -208,7 +216,7 @@ describe('searchCommands', () => {
 
   it('finds the addresses for other apps by the words those apps use', () => {
     const landing = (query: string) => searchCommands(query).find((item) => item.group === 'account')
-    expect(landing('接口地址')).toEqual({ key: 'account:other-apps', group: 'account', label: '用在别的软件里', page: 'account', section: 'other-apps' })
+    expect(landing('接口地址')).toEqual({ key: 'account:other-apps', group: 'account', label: '在其他软件中使用', page: 'account', section: 'other-apps' })
     expect(landing('Cherry Studio')).toMatchObject({ section: 'other-apps' })
     expect(landing('沉浸式翻译')).toMatchObject({ section: 'other-apps' })
     expect(landing('base url')).toMatchObject({ section: 'other-apps' })

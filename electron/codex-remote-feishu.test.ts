@@ -634,7 +634,7 @@ describe('codex-remote-feishu channel', () => {
     }
     const channel = createFeishuRemoteChannel(deps)
     await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
-    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other', halted: true })
+    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '没连上，点「重新连接」再试；还不行点「联系客服」。', problem: 'other', halted: true })
     expect(h.logs).toContain('feishu.credential-read-failed')
     expect(h.fetch).not.toHaveBeenCalled()
   })

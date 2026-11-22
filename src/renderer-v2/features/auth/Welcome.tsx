@@ -82,11 +82,11 @@ export function Welcome({ onLogin, onRegister, onSteps, onHistoryLogin, onHelp, 
       <div className="auth-welcome-copy">
         {/* 标志加侧栏那份「星芒 AI」字样，横版标志下面那行英文名不放。 */}
         <div className="auth-welcome-brand"><Logo kind="symbol" height={64} /><Logo kind="wordmark" height={40} /></div>
-        <h1>装好就能用的<br />AI 编程工具</h1>
-        <p className="auth-welcome-lead">一个账号，用上多款 AI 编程工具。环境、安装、密钥都由这里帮你配好，不用敲命令，也不用改配置文件。</p>
+        <h1>安装即用的<br />AI 编程工具</h1>
+        <p className="auth-welcome-lead">一个账号，畅用多款 AI 编程工具。运行环境、安装与密钥均自动配置，无需输入命令或修改配置文件。</p>
         <div className="auth-welcome-cta"><Button variant="primary" onClick={onLogin} testId="welcome-login">登录</Button><Button onClick={onRegister} testId="welcome-register">注册新账号</Button></div>
         <div className="auth-welcome-links">
-          <button type="button" onClick={onSteps} data-testid="welcome-steps">先看看使用步骤</button>
+          <button type="button" onClick={onSteps} data-testid="welcome-steps">查看使用步骤</button>
           {onHistoryLogin && <button type="button" onClick={onHistoryLogin} data-testid="welcome-history-login">用历史账号登录</button>}
           <button type="button" onClick={() => onLegal('user-agreement')} data-testid="welcome-terms">用户协议</button>
           <button type="button" onClick={() => onLegal('privacy-policy')} data-testid="welcome-privacy">隐私政策</button>
@@ -105,10 +105,10 @@ export function Welcome({ onLogin, onRegister, onSteps, onHistoryLogin, onHelp, 
       </div>
     </div>
     <div className="auth-welcome-foot">
-      <div className="auth-welcome-feature"><Zap size={16} aria-hidden="true" /><div><strong>不用敲命令</strong><p>点几下就装好，装失败会自动撤回。</p></div></div>
+      <div className="auth-welcome-feature"><Zap size={16} aria-hidden="true" /><div><strong>无需输入命令</strong><p>一键完成安装，失败时自动还原。</p></div></div>
       <div className="auth-welcome-feature"><KeyRound size={16} aria-hidden="true" /><div><strong>一个账号就够</strong><p>每个工具的密钥自动配好，额度共用。</p></div></div>
       <div className="auth-welcome-feature"><Clapperboard size={16} aria-hidden="true" /><div><strong>不止写代码</strong><p>聊天、出图、画布、视频剪辑，用的是同一个账号。</p></div></div>
-      <div className="auth-welcome-support" data-testid="welcome-support">{supportQrUrl ? <img src={supportQrUrl} alt="微信客服二维码" /> : <MessageCircle size={28} aria-hidden="true" />}<div><strong>装不上？找客服</strong><p>微信扫码，装不上、付了没到账都可以问。</p><Button variant="ghost" size="xs" iconRight={ArrowUpRight} onClick={onHelp} testId="welcome-help">打开客服</Button></div></div>
+      <div className="auth-welcome-support" data-testid="welcome-support">{supportQrUrl ? <img src={supportQrUrl} alt="微信客服二维码" /> : <MessageCircle size={28} aria-hidden="true" />}<div><strong>安装遇到问题？联系客服</strong><p>微信扫码咨询，安装、充值到账等问题均可联系。</p><Button variant="ghost" size="xs" iconRight={ArrowUpRight} onClick={onHelp} testId="welcome-help">打开客服</Button></div></div>
     </div>
   </main></AuthWindow>
 }

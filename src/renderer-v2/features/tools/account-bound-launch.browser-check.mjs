@@ -174,7 +174,7 @@ test('a failed post-save config read warns that the model saved but the summary 
     await page.getByTestId('model-swap-question').waitFor()
     await page.evaluate(() => { window.v2Test.fail = 'getConfig' })
     await page.getByTestId('model-swap-confirm').click()
-    await page.getByText(/模型已保存，但最新配置没有读到/).waitFor()
+    await page.getByText(/模型已保存，但最新配置尚未获取/).waitFor()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     assert.match(await page.getByTestId('tool-row-codex').innerText(), /fixture-model/)
     assert.equal(await page.getByText(/模型没换成，先照旧打开/).count(), 0)
@@ -245,7 +245,7 @@ test('a desktop status response from the previous account cannot show a restart 
     await switchAccount(page)
     await page.evaluate(() => window.releaseDesktopStatus())
     await settle(page)
-    assert.equal(await page.getByRole('dialog', { name: 'Codex 桌面端还开着' }).count(), 0)
+    assert.equal(await page.getByRole('dialog', { name: 'Codex 桌面端正在运行' }).count(), 0)
     assert.deepEqual(await launchCalls(page), [])
   } finally { await page.close() }
 })
@@ -257,7 +257,7 @@ test('a Codex Desktop already running on Windows still offers the restart prompt
       window.xingmang.getCodexDesktopStatus = async () => ({ running: true })
     })
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByRole('dialog', { name: 'Codex 桌面端还开着' }).waitFor()
+    await page.getByRole('dialog', { name: 'Codex 桌面端正在运行' }).waitFor()
     await settle(page)
     assert.deepEqual(await launchCalls(page), [])
   } finally { await page.close() }
@@ -272,7 +272,7 @@ test('a Codex Desktop already running on a Mac comes to the front without the re
     await page.getByTestId('tool-codexDesktop-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
     await settle(page)
-    assert.equal(await page.getByRole('dialog', { name: 'Codex 桌面端还开着' }).count(), 0)
+    assert.equal(await page.getByRole('dialog', { name: 'Codex 桌面端正在运行' }).count(), 0)
     assert.deepEqual((await launchCalls(page)).map((entry) => entry.args), [['open']])
   } finally { await page.close() }
 })

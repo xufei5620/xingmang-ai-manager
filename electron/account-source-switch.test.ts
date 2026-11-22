@@ -40,27 +40,27 @@ describe('switchAccountSource', () => {
     expect(steps).toEqual(['backup:claude', 'write:account', 'check'])
     expect(result).toMatchObject({ provider: 'claude', target: 'account', backupId: 'backup-1', verified: true, loginRequired: false })
     expect(result.message).toContain('已改用当前账号，连接自检通过')
-    expect(result.message).toContain('关掉重开')
+    expect(result.message).toContain('需关闭后重新打开')
   })
 
   it('rolls everything back when the check says the written config cannot work', async () => {
     const { deps, steps } = dependencies({ checkConnection: async () => check(false, 'credential') })
-    await expect(switchAccountSource(deps, 'claude', 'account')).rejects.toThrow(/没有连通：密钥被拒绝.*已恢复到切换前的配置/)
+    await expect(switchAccountSource(deps, 'claude', 'account')).rejects.toThrow(/未能连通：密钥被拒绝.*已恢复到切换前的配置/)
     expect(steps).toEqual(['backup:claude', 'write:account', 'restore:backup-1', 'credentials:restore', 'preference:true'])
   })
 
   it('restores the preference the tool had before, not a guessed one', async () => {
     const { deps, steps } = dependencies({ wasOfficial: () => false, writeAccountConfig: async () => { throw new Error('对应分组密钥未就绪') } })
-    await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow('改用当前账号没有完成：对应分组密钥未就绪。已恢复到切换前的配置。')
+    await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow('改用当前账号未完成：对应分组密钥未就绪。已恢复到切换前的配置。')
     expect(steps).toContain('preference:false')
   })
 
   it('does not stack a second full stop after a reason that already ends a sentence', async () => {
     const reason = 'config.toml 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。'
     const { deps } = dependencies({ writeAccountConfig: async () => { throw new Error(reason) } })
-    await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow(`改用当前账号没有完成：${reason}已恢复到切换前的配置。`)
+    await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow(`改用当前账号未完成：${reason}已恢复到切换前的配置。`)
     const official = dependencies({ writeOfficialConfig: async () => { throw new Error(reason) } })
-    await expect(switchAccountSource(official.deps, 'codex', 'official')).rejects.toThrow(`切回官方账号没有完成：${reason}已恢复到切换前的配置。`)
+    await expect(switchAccountSource(official.deps, 'codex', 'official')).rejects.toThrow(`切回官方账号未完成：${reason}已恢复到切换前的配置。`)
   })
 
   it.each(['network', 'unknown'] as const)('keeps the switch when the %s layer fails, but says it is unverified', async (layer) => {
@@ -68,7 +68,7 @@ describe('switchAccountSource', () => {
     const result = await switchAccountSource(deps, 'codex', 'account')
     expect(steps).not.toContain('restore:backup-1')
     expect(result.verified).toBe(false)
-    expect(result.message).toContain('这次没能确认能用：网络暂时连不上')
+    expect(result.message).toContain('本次未能确认可用：网络暂时连不上')
   })
 
   it('does not blame the key or roll back when the check says the service is unavailable', async () => {
@@ -83,7 +83,7 @@ describe('switchAccountSource', () => {
   it('leaves the config alone when the service is unavailable while the key is being issued', async () => {
     const { deps, steps } = dependencies({ writeAccountConfig: async () => { throw new AccountSourceServiceUnavailableError() } })
     await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow(
-      '改用当前账号没有完成：服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。原来的配置没有改动。',
+      '改用当前账号未完成：服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。原配置未改动。',
     )
     expect(steps).toEqual(['backup:codex'])
   })
@@ -101,27 +101,27 @@ describe('switchAccountSource', () => {
     }) })
     const result = await switchAccountSource(deps, 'codex', 'account')
     expect(steps).not.toContain('restore:backup-1')
-    expect(result.message).toContain('不过Codex 的额度用完了（HTTP 401），这是给这个工具设的上限。到「个人中心 › 密钥管理」的「每个工具的额度上限」里调高这个工具的额度')
+    expect(result.message).toContain('但Codex 的额度用完了（HTTP 401），这是给这个工具设的上限。到「个人中心 › 密钥管理」的「每个工具的额度上限」里调高这个工具的额度')
     expect(result.message).not.toContain('密钥被拒绝')
   })
 
   it('does not call a rate limit an exhausted quota', async () => {
     const { deps } = dependencies({ checkConnection: async () => check(false, 'quota', '请求过于频繁或已达用量上限（HTTP 429）', { status: 429 }) })
     const result = await switchAccountSource(deps, 'codex', 'account')
-    expect(result.message).toContain('这次没能确认能用：请求过于频繁')
+    expect(result.message).toContain('本次未能确认可用：请求过于频繁')
   })
 
   it('keeps the switch when the check itself could not run', async () => {
     const { deps } = dependencies({ checkConnection: async () => { throw new Error('boom') } })
     const result = await switchAccountSource(deps, 'gemini', 'account')
     expect(result.verified).toBe(false)
-    expect(result.message).toContain('连接自检没有完成')
+    expect(result.message).toContain('连接自检未完成')
   })
 
   it('does not touch any config when the backup fails', async () => {
     const write = vi.fn(async () => undefined)
     const { deps } = dependencies({ createBackup: () => { throw new Error('磁盘已满') }, writeAccountConfig: write, writeOfficialConfig: write })
-    await expect(switchAccountSource(deps, 'claude', 'official')).rejects.toThrow('切换前的备份没有完成，已取消切换，配置没有改动：磁盘已满')
+    await expect(switchAccountSource(deps, 'claude', 'official')).rejects.toThrow('切换前的备份未完成，已取消切换，配置未改动：磁盘已满')
     expect(write).not.toHaveBeenCalled()
   })
 
@@ -130,7 +130,7 @@ describe('switchAccountSource', () => {
       checkConnection: async () => check(false, 'model'),
       restoreBackup: () => { throw new Error('文件被占用') },
     })
-    await expect(switchAccountSource(deps, 'claude', 'account')).rejects.toThrow(/自动恢复也没有完成（文件被占用），请到「设置 › 备份迁移」里恢复切换前那一份/)
+    await expect(switchAccountSource(deps, 'claude', 'account')).rejects.toThrow(/自动恢复也未完成（文件被占用），请在「设置 › 备份迁移」中恢复切换前的备份/)
   })
 
   it('switches back to the official account without sending any request', async () => {
@@ -138,7 +138,7 @@ describe('switchAccountSource', () => {
     const result = await switchAccountSource(deps, 'codex', 'official')
     expect(steps).toEqual(['backup:codex', 'write:official'])
     expect(result).toMatchObject({ target: 'official', verified: false, loginRequired: false })
-    expect(result.message).toContain('Codex（包括桌面端）要关掉重开')
+    expect(result.message).toContain('Codex（包括桌面端）需关闭后重新打开')
   })
 
   it('tells the user how to log in when no official login exists on this computer', async () => {
@@ -155,7 +155,7 @@ describe('switchAccountSource', () => {
 
   it('restores the backup when switching back to official fails midway', async () => {
     const { deps, steps } = dependencies({ writeOfficialConfig: async () => { throw new Error('当前配置不是星芒中转') }, wasOfficial: () => false })
-    await expect(switchAccountSource(deps, 'claude', 'official')).rejects.toThrow('切回官方账号没有完成')
+    await expect(switchAccountSource(deps, 'claude', 'official')).rejects.toThrow('切回官方账号未完成')
     expect(steps).toEqual(['backup:claude', 'restore:backup-1', 'preference:false'])
   })
 })
@@ -200,14 +200,14 @@ describe('switchAccountSource restart hint', () => {
     const { deps } = dependencies({ inspectRunning })
     const result = await switchAccountSource(deps, 'codex', 'account')
     expect(inspectRunning).toHaveBeenCalledWith('codex')
-    expect(result.message).toBe('已改用当前账号，连接自检通过。Codex CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+    expect(result.message).toBe('已改用当前账号，连接自检通过。Codex CLI、Codex 桌面端 仍在运行，需关闭后重新打开才会使用当前账号。')
     expect(result.runningTools?.codexDesktopRunning).toBe(true)
   })
 
   it('says the switch goes back to the official account when that is the target', async () => {
     const { deps } = dependencies({ inspectRunning: async () => running({ running: ['claude'] }) })
     const result = await switchAccountSource(deps, 'claude', 'official')
-    expect(result.message).toBe('已切回官方账号，原来的配置已备份。Claude Code 还开着，要关掉重开才会换回官方账号。')
+    expect(result.message).toBe('已切回官方账号，原来的配置已备份。Claude Code 仍在运行，需关闭后重新打开才会切换回官方账号。')
   })
 
   it('checks only after the config is written, and never before a rollback', async () => {
@@ -220,7 +220,7 @@ describe('switchAccountSource restart hint', () => {
   it('falls back to the unconditional reminder when the check itself fails', async () => {
     const { deps } = dependencies({ inspectRunning: async () => { throw new Error('denied') } })
     const result = await switchAccountSource(deps, 'gemini', 'account')
-    expect(result.message).toContain('已经开着的 Gemini CLI 要关掉重开才会换过来。')
+    expect(result.message).toContain('已打开的 Gemini CLI 需关闭后重新打开才会生效。')
     expect(result.runningTools).toBeUndefined()
   })
 })

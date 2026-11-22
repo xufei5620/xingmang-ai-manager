@@ -755,6 +755,51 @@ export interface CanvasProjectListEntry {
 }
 
 /**
+ * 主窗口「创作 › 作品库」要的一页（融合第 3 步）：当前账号做过的图片和视频，新的在前。视频剪辑的配乐、
+ * 画布回收站里的不列。主进程只列目录和名字，不读图片和视频本身。
+ */
+export interface AiLibraryListInput {
+  offset?: number
+  limit?: number
+  /** film：只看 filmAssetIds 里点名的那几段视频；clip：视频里除了它们以外的；video：两样都算。 */
+  kind?: 'all' | 'image' | 'video' | 'clip' | 'film'
+  /** 按客户给作品起的名字、记着的那句描述和标签找。 */
+  search?: string
+  /** 哪几段视频是成片。作品库的文件上没有这个记号，由记着每条视频的页面点名；不是这个账号的编号对不上任何东西。 */
+  filmAssetIds?: string[]
+  /**
+   * 页面自己先搜到的那几个编号：对话和视频里写的那句话记在它们各自的记录里，不在作品库里。只在带了 search 时有用，
+   * 只拿来跟这个账号自己的目录比，多列不出别人的东西。
+   */
+  matchedAssetIds?: string[]
+}
+
+export interface AiLibraryEntry {
+  assetId: string
+  mediaType: 'image' | 'video'
+  /** 存进作品库的时间（ISO 8601）。 */
+  createdAt: string
+  /** 只有图片有。 */
+  mimeType?: 'image/png' | 'image/jpeg' | 'image/webp'
+  fileName: string
+  /** 客户在画布素材库里给它起的名字；没起过就没有。 */
+  name?: string
+  /** 画布里生成时记下的那句描述；对话和视频里做的没有这一项，页面按自己的记录补。 */
+  prompt?: string
+}
+
+export interface AiLibraryPage {
+  items: AiLibraryEntry[]
+  offset: number
+  limit: number
+  /** 这一类、这次搜索一共多少个。 */
+  total: number
+  hasMore: boolean
+  /** 整个作品库各有多少个（不管搜的是什么），筛选那一排用。 */
+  counts: { image: number; video: number; film: number }
+}
+
+/**
  * 「搬到新电脑」导出：聊天对话由渲染层按它自己的格式整理好交过来（已去掉图片和
  * 运行时字段），设置由主进程自己从 settings.json 里挑能带走的几项，渲染层塞不进别的。
  */
@@ -1458,6 +1503,8 @@ export interface XingmangInvokeContract {
   /** 用量账单的价格表；没有按型号价目的账号（历史账号）回 null。 */
   getAccountPriceList: IpcInvokeDefinition<'account:get-price-list', [], AccountPriceList | null>
   revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
+  /** 密钥管理的「启用」：把停用、到期、额度用完的那把重新打开。只有星芒账号有，历史账号不显示这颗按钮。 */
+  enableAccountKey: IpcInvokeDefinition<'account:enable-key', [id: number], void>
   copyAccountKey: IpcInvokeDefinition<'account:copy-key', [id: number], void>
   /** 找回密码后复制新密码：走主进程写剪贴板，60 秒后自动清掉。 */
   copyResetPassword: IpcInvokeDefinition<'account:copy-reset-password', [password: string], void>
@@ -1492,6 +1539,8 @@ export interface XingmangInvokeContract {
   openCanvasAssetLibrary: IpcInvokeDefinition<'canvas:open-asset-library', [], void>
   /** 「创作」左边那一列要的画布项目：当前账号没归档的那些，只回编号、名字和最后改动的时间。 */
   listCanvasProjects: IpcInvokeDefinition<'canvas:list-projects', [], CanvasProjectListEntry[]>
+  /** 「创作 › 作品库」的一页：当前账号做过的图片和视频（融合第 3 步）。只回编号、时间、名字和描述，不回文件内容和路径。 */
+  listAiLibrary: IpcInvokeDefinition<'library:list', [input: AiLibraryListInput], AiLibraryPage>
   /**
    * 把画布窗口开在这个项目上。编号先在当前账号的项目里认过才用；画布开着别的项目时先走它自己的关闭确认，
    * 客户在那里选了留下就回 false。
@@ -1878,6 +1927,7 @@ export const ipcInvokeChannels = {
   getAccountUsableGroups: 'account:list-groups',
   getAccountPriceList: 'account:get-price-list',
   revokeAccountKey: 'account:revoke-key',
+  enableAccountKey: 'account:enable-key',
   copyAccountKey: 'account:copy-key',
   copyResetPassword: 'account:copy-reset-password',
   revealAccountKey: 'account:reveal-key',
@@ -1890,6 +1940,7 @@ export const ipcInvokeChannels = {
   openCanvasWindow: 'canvas:open',
   openCanvasAssetLibrary: 'canvas:open-asset-library',
   listCanvasProjects: 'canvas:list-projects',
+  listAiLibrary: 'library:list',
   openCanvasProject: 'canvas:open-project',
   getRememberedAccountLogin: 'account:get-remembered-login',
   setRememberedAccountLogin: 'account:set-remembered-login',

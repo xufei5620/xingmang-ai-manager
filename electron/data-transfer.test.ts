@@ -67,7 +67,7 @@ describe('data transfer file', () => {
 
   it('asks for an update when the file comes from a newer format', () => {
     const valid = JSON.parse(buildDataTransferFile(settings(), { conversations: [] }, new Date()))
-    expect(() => parseDataTransferFile(JSON.stringify({ ...valid, version: 2 }))).toThrow('更新到最新版')
+    expect(() => parseDataTransferFile(JSON.stringify({ ...valid, version: 2 }))).toThrow('更新至最新版本')
   })
 
   it('reads a file that Notepad saved with a byte order mark', () => {
@@ -81,7 +81,7 @@ describe('data transfer file', () => {
   })
 
   it('tells a file another program holds apart from one that cannot be imported', () => {
-    // X-7：被杀毒软件扫着、没权限读，以前也说「不是星芒导出的，或者已经损坏」。
+    // X-7：被杀毒软件扫着、没权限读，以前也说「并非由星芒导出，或者已经损坏」。
     for (const code of ['EBUSY', 'EPERM', 'EACCES']) {
       expect(dataTransferReadFailureMessage(Object.assign(new Error(`${code}: open`), { code }))).toBe(dataTransferBusyMessage)
     }

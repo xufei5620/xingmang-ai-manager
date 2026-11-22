@@ -90,12 +90,12 @@ export interface ResolveCliCommandOptions {
 /**
  * Mac 上命令行里找到的 Codex / Grok 不是 npm 装的，又核不出是官方安装器那一份：目录对不上、签名不是
  * OpenAI / xAI 的、或者报的版本和目录写的对不上（Mac 验收 R1：测试机上是第三方打的 Codex 包）。
- * 星芒不跑来路不明的程序，打开时说这一句；首页同一个判断给「用星芒装一份」（ToolStatus.unrecognizedInstall）。
+ * 星芒不跑来路不明的程序，打开时说这一句；首页同一个判断给「使用星芒安装」（ToolStatus.unrecognizedInstall）。
  * 抄盘、起进程这类说明不了来路的失败不算这一种，照旧按原样报。
  */
 export class UnrecognizedDarwinCliError extends Error {
   constructor(cause: unknown) {
-    super('这一份不是星芒装的，星芒核对不了它是不是官方原版，为了安全没有打开。到首页点「用星芒装一份」，装好就能打开。', { cause })
+    super('这一份不是星芒装的，星芒核对不了它是不是官方原版，为了安全没有打开。到首页点「使用星芒安装」，装好就能打开。', { cause })
   }
 }
 

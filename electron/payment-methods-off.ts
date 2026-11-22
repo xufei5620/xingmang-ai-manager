@@ -5,7 +5,7 @@
  * 藏在主进程：充值页、买套餐弹窗拿到的付款方式列表里就没有它，渲染层不用知道有这个开关。页面开着时
  * 开关才打开的，列表里还摆着它，客户点下去时在这里拦住，不让他再走进那条坏掉的路。
  */
-export const paymentMethodOffMessage = '这种付款方式暂时停用了，请换一种付款方式。'
+export const paymentMethodOffMessage = '该付款方式已暂停使用，请更换其他付款方式。'
 
 function isHidden(type: string, hidden: readonly string[]): boolean {
   return hidden.includes(type.trim().toLowerCase())

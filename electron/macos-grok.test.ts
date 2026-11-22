@@ -763,7 +763,7 @@ describe.runIf(process.platform === 'darwin')('assertDarwinGrokCanonicalLinkRepl
     setup(fixture)
 
     expect(() => assertDarwinGrokCanonicalLinkReplaceable(fixture.home)).toThrow(
-      '这台电脑上已经有一份 Grok CLI，不是用星芒装的。为了不弄坏它，已停止安装。请先用你原来装它的方式卸载，再回来点「用星芒装一份」。',
+      '这台电脑上已经有一份 Grok CLI，不是用星芒装的。为了不弄坏它，已停止安装。请先用你原来装它的方式卸载，再回来点「使用星芒安装」。',
     )
   })
 })

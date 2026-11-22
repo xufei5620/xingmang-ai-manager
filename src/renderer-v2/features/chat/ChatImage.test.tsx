@@ -60,7 +60,7 @@ describe('ChatImage', () => {
   })
 
   it('leaves the size out when it was never recorded', () => {
-    const markup = renderToStaticMarkup(<ChatImage asset={asset({ width: undefined, height: undefined })} alt="你发的图片" />)
+    const markup = renderToStaticMarkup(<ChatImage asset={asset({ width: undefined, height: undefined })} alt="您发送的图片" />)
     expect(markup).not.toContain('width=')
     expect(markup).not.toContain('height=')
   })

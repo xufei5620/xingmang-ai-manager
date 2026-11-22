@@ -132,16 +132,16 @@ export function useAccountBootstrap(options: AccountBootstrapOptions) {
         await toolbox.refreshConfig().catch(() => undefined)
         // 开机那一轮替客户修好了 Codex 认不出的老配置：没人点过按钮，轻轻说一句改了什么、
         // 原样在哪找回。点名重写的那一档由调用方自己报结果，这里不重复。
-        if (mode !== 'rewrite' && result.repairedShadowed?.length) toast.show('已修好 Codex 的配置文件，坏掉的那份已备份', 'ok')
+        if (mode !== 'rewrite' && result.repairedShadowed?.length) toast.show('已修复 Codex 配置文件，损坏的文件已备份', 'ok')
       } catch (cause) {
-        outcome.error = errorMessage(cause, '账号密钥没有配好')
+        outcome.error = errorMessage(cause, '账号密钥配置失败')
         logAccountBootstrap(describeAccountBootstrapFailure(mode, outcome.error))
         if (!mounted.current || !thisRound()) return
         setWorkspaceEntered(true)
         setAccountBootstrap((current) => ({
-          ...(current ?? { phase: 'verifying', label: '密钥没有配好', percent: 100, scope: bootstrapScope }),
+          ...(current ?? { phase: 'verifying', label: '密钥配置失败', percent: 100, scope: bootstrapScope }),
           scope: bootstrapScope,
-          error: errorMessage(cause, '账号密钥没有配好'),
+          error: errorMessage(cause, '账号密钥配置失败'),
         }))
       }
     })()

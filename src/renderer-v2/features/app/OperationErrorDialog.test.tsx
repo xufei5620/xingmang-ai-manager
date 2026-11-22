@@ -4,6 +4,7 @@ import { configWriteBlockerMessage } from '../../../../electron/config-write-blo
 import { toolCertificateMessages } from '../../../../electron/network-failure'
 import { OperationErrorDialog, operationErrorActions, supportFailureOf } from './OperationErrorDialog'
 import { brokenConfigLaunchMessages } from '../tools/broken-config-launch'
+import { codexDesktopActivationBrokenSentence } from '../../../../electron/codex-desktop-known-issues'
 
 describe('renderer-v2 operation error dialog', () => {
   it('leads with the catalog heading and keeps the backend sentence underneath', () => {
@@ -11,7 +12,7 @@ describe('renderer-v2 operation error dialog', () => {
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={{ message: raw, retry: () => undefined }} onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('更新没有装上')
+    expect(markup).toContain('更新安装失败')
     expect(markup).toContain('当前版本不受影响。')
     expect(markup).toContain(raw)
     expect(markup).toContain('operation-error-retry')
@@ -19,13 +20,29 @@ describe('renderer-v2 operation error dialog', () => {
   })
 
   it('draws 重置 Codex beside retry when the Codex window never appeared', () => {
-    const raw = 'Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。先关掉所有 Codex 窗口，再点「重试」。'
+    const raw = 'Codex 桌面端没有打开：等待 45 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex 命令行版；如开始菜单中可以打开而星芒中无法打开，请联系客服。'
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={{ message: raw, retry: () => undefined }} onClose={() => undefined} onAction={() => undefined} />,
     )
     expect(markup).toContain('operation-error-retry')
     expect(markup).toContain('operation-error-resetCodexDesktop')
     expect(markup).toContain('重置 Codex')
+    // 重启排在重置后面，这一类主按钮仍是重试。
+    expect(markup).toContain('operation-error-restartComputer')
+    expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="operation-error-retry"/)
+    expect(markup).toMatch(/xm-btn-secondary[^>]*data-testid="operation-error-restartComputer"/)
+  })
+
+  it('makes 立即重启 the primary button when Windows could not start an installed Codex', () => {
+    const raw = `Codex 桌面端没有打开：${codexDesktopActivationBrokenSentence(38)}`
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={{ message: raw, retry: () => undefined }} onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('Codex 未能启动')
+    expect(markup).toContain(raw)
+    expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="operation-error-restartComputer"/)
+    expect(markup).toMatch(/xm-btn-secondary[^>]*data-testid="operation-error-retry"/)
+    expect(markup).not.toContain('operation-error-resetCodexDesktop')
   })
 
   it('gives an unrecognised failure the fallback buttons instead of only 返回', () => {
@@ -33,10 +50,10 @@ describe('renderer-v2 operation error dialog', () => {
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={{ message: raw }} onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('操作没有完成')
+    expect(markup).toContain('操作未完成')
     expect(markup).toContain(raw)
     expect(markup).toContain('查看日志')
-    expect(markup).toContain('找客服')
+    expect(markup).toContain('联系客服')
     // 这次失败没有可重试的入口，按钮就不该画出来。
     expect(markup).not.toContain('operation-error-retry')
   })
@@ -54,8 +71,8 @@ describe('renderer-v2 operation error dialog', () => {
     )
     expect(markup).toContain(raw)
     expect(markup).not.toContain('当前版本不受影响')
-    expect(markup).not.toContain('写不进安装目录')
-    expect(markup).toContain('找客服')
+    expect(markup).not.toContain('无法写入安装目录')
+    expect(markup).toContain('联系客服')
   })
 
   it('shows the directory and offers 复制路径 once the caller knows one', () => {
@@ -65,7 +82,7 @@ describe('renderer-v2 operation error dialog', () => {
       <OperationErrorDialog failure={{ message: raw, tool: 'claude' }} installDirectory={directory}
         onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('写不进安装目录')
+    expect(markup).toContain('无法写入安装目录')
     expect(markup).toContain('operation-error-copyPath')
     // 剪贴板写不进去时用户还要能自己选中它，所以路径必须上屏，不只是躺在按钮后面。
     expect(markup).toContain('operation-error-path')
@@ -74,19 +91,19 @@ describe('renderer-v2 operation error dialog', () => {
 
   it('names the config file and offers retry and support instead of the install directory when a config write is refused', () => {
     // 已知29：改用当前账号、重新写入密钥 写的是配置文件，安装目录跟它没关系，不出「复制路径」。
-    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本机路径'"
+    const raw = "Claude Code 改用当前账号未完成：EPERM: operation not permitted, open '本机路径'"
     const directory = 'C:\\Users\\peaker\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code'
     const failure = { message: raw, tool: 'claude' as const, target: 'config' as const, retry: () => undefined }
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={failure} installDirectory={directory} onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('写不进配置文件')
-    expect(markup).toContain('常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。')
-    expect(markup).not.toContain('写不进安装目录')
+    expect(markup).toContain('无法写入配置文件')
+    expect(markup).toContain('通常是被安全软件拦截，或该文件正被其他程序占用。请关闭正在使用该工具的窗口后点击「重试」；如仍失败，请点击「联系客服」。')
+    expect(markup).not.toContain('无法写入安装目录')
     expect(markup).not.toContain('operation-error-copyPath')
     expect(markup).not.toContain(directory)
-    expect(operationErrorActions(failure, directory).map((action) => action.label)).toEqual(['重试', '查看日志', '找客服'])
-    expect(supportFailureOf(failure, new Date(0)).reason).toBe('写不进配置文件')
+    expect(operationErrorActions(failure, directory).map((action) => action.label)).toEqual(['重试', '查看日志', '联系客服'])
+    expect(supportFailureOf(failure, new Date(0)).reason).toBe('无法写入配置文件')
   })
 
   it('hides 复制路径 when no directory is known, rather than copying an empty string', () => {
@@ -116,8 +133,8 @@ describe('renderer-v2 operation error dialog', () => {
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={{ message, tool: 'codexDesktop', retry: () => undefined }} onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('配置文件坏了')
-    expect(markup).toContain('点「修好它」，会先备份原来的文件，修好后接着打开。')
+    expect(markup).toContain('配置文件已损坏')
+    expect(markup).toContain('点击「立即修复」将先备份原文件，修复后自动打开。')
     expect(markup).toContain(message)
     expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="operation-error-repairConfig"/)
   })
@@ -131,7 +148,7 @@ describe('renderer-v2 operation error dialog', () => {
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={failure} canReplaceNode onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('换成新版 Node.js')
+    expect(markup).toContain('更新 Node.js')
     expect(markup).not.toContain('安装卸载')
     // 换 Node.js 才是出路，它当主按钮，重试退到次要。
     expect(markup).toMatch(/xm-btn-primary[^>]*data-testid="operation-error-replaceNode"/)
@@ -154,7 +171,7 @@ describe('renderer-v2 operation error dialog', () => {
       <OperationErrorDialog failure={{ message: '打开 Codex 桌面端没有完成', detail: 'spawn ENOSYS' }}
         onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('操作没有完成')
+    expect(markup).toContain('操作未完成')
     expect(markup).toContain('operation-error-reason')
     expect(markup).toContain('原因：')
     expect(markup).toMatch(/<details open=""[^>]*data-testid="operation-error-raw"/)
@@ -176,20 +193,20 @@ describe('renderer-v2 operation error dialog', () => {
 
   it('offers the 复制给客服 button that the root-owned settings folder sentence points at (D15)', () => {
     const support = { signedIn: true, account: { userId: 7, username: 'peaker' }, version: '0.2.24', os: 'mac' as const }
-    const failure = { message: `Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`, action: '改用当前账号', target: 'config' as const, tool: 'claude' as const, retry: () => undefined }
+    const failure = { message: `Claude Code 改用当前账号未完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`, action: '改用当前账号', target: 'config' as const, tool: 'claude' as const, retry: () => undefined }
     const markup = renderToStaticMarkup(
       <OperationErrorDialog failure={failure} support={support} onClose={() => undefined} onAction={() => undefined} />,
     )
-    expect(markup).toContain('写不进配置文件')
-    expect(markup).toContain('这个工具的设置文件夹归电脑管理员所有，多半是以前用管理员身份运行过它，星芒改不了。点「复制给客服」，客服会教你一步改回来。')
+    expect(markup).toContain('无法写入配置文件')
+    expect(markup).toContain('该工具的设置文件夹归管理员所有，通常是之前以管理员身份运行过该工具，星芒无法修改。请点击「复制给客服」，客服将指导您恢复。')
     expect(markup).not.toContain('常见是安全软件拦了')
     expect(markup).toContain('operation-error-copySupport')
-    expect(operationErrorActions(failure).map((action) => action.label)).toEqual(['重试', '查看日志', '找客服'])
+    expect(operationErrorActions(failure).map((action) => action.label)).toEqual(['重试', '查看日志', '联系客服'])
   })
 
   it('builds the support failure from the recognised heading', () => {
     const at = new Date(2026, 8, 29, 14, 37)
     expect(supportFailureOf({ message: '打开 Codex 桌面端没有完成', action: '打开 Codex 桌面端', detail: 'ENOSPC' }, at))
-      .toEqual({ at, action: '打开 Codex 桌面端', message: '打开 Codex 桌面端没有完成', reason: '磁盘空间不够', detail: 'ENOSPC' })
+      .toEqual({ at, action: '打开 Codex 桌面端', message: '打开 Codex 桌面端没有完成', reason: '磁盘可用空间不足', detail: 'ENOSPC' })
   })
 })

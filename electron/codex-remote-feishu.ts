@@ -84,12 +84,12 @@ const sendRetryDelaysMs = [1_000, 4_000] as const
 
 /**
  * 渠道停下来时电脑卡片上的三句（0.2.24 D23）。原来把飞书的原话、HTTP 状态码和「长连接」这类词照搬上屏，
- * 客户不知道该重填、该关别处还是找客服；现在只说这三种，卡片按 problem 配「重新填写」「重新连接」「找客服」。
+ * 客户不知道该重填、该关别处还是找客服；现在只说这三种，卡片按 problem 配「重新填写」「重新连接」「联系客服」。
  */
 export const feishuProblemMessages = {
   credential: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。',
   'connection-limit': '这个飞书应用在别处也连着，先关掉别处再试。',
-  other: '没连上，点「重新连接」再试；还不行点「找客服」。',
+  other: '没连上，点「重新连接」再试；还不行点「联系客服」。',
 } as const satisfies Record<RemoteChannelProblem, string>
 
 const needsLoginMessage = feishuProblemMessages.credential

@@ -164,6 +164,12 @@ jobs:
 
       - run: npm ci --registry=https://registry.npmjs.org/
 
+      # 下面要真开打好的包。正式环境的域名先在这台 runner 上指回本机、逐个核过，冒烟一个请求也到不了
+      # 账号站和更新目录（同 quality.yml，scripts/ci-block-production-hosts.cjs）。这个作业没有要读线上
+      # 更新目录的步骤，所以在最前面断。
+      - name: Keep the launched client off the production servers
+        run: node scripts/ci-block-production-hosts.cjs
+
       # 同 Windows：下面的 npm test 要 Electron 二进制，先装好。
       - name: Install the Electron binary before the release gate loads it
         timeout-minutes: 20
@@ -361,6 +367,11 @@ jobs:
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
           fi
+
+      # 上面的发布门禁要读线上这个架构的更新清单，所以断网放在它之后、真开之前：正式环境的域名在这台
+      # runner 上指回本机、逐个核过（同 quality.yml，scripts/ci-block-production-hosts.cjs）。
+      - name: Keep the launched client off the production servers
+        run: node scripts/ci-block-production-hosts.cjs
 
       - name: Launch the installed app as an ordinary user and require its sandbox
         timeout-minutes: 5

@@ -98,7 +98,7 @@ async function main() {
       welcomeVisible: await page.getByTestId('welcome-page').isVisible(),
       dashboardBlocked: await page.getByTestId('shell-topbar').count() === 0,
       onboardingHidden: await page.getByTestId('start-guide').count() === 0,
-      welcomeHeading: await page.getByRole('heading', { name: /装好就能用的\s*AI 编程工具/ }).innerText(),
+      welcomeHeading: await page.getByRole('heading', { name: /安装即用的\s*AI 编程工具/ }).innerText(),
       constellationLabels: (await page.locator('.auth-orbit-satellite').allInnerTexts()).map((text) => text.trim()),
       registerVisible: await page.getByTestId('welcome-register').isVisible(),
       loginVisible: await page.getByTestId('welcome-login').isVisible(),
@@ -136,7 +136,7 @@ async function main() {
       || !result.welcomeVisible
       || !result.dashboardBlocked
       || !result.onboardingHidden
-      || result.welcomeHeading.replace(/\s+/g, '') !== '装好就能用的AI编程工具'
+      || result.welcomeHeading.replace(/\s+/g, '') !== '安装即用的AI编程工具'
       || JSON.stringify(result.constellationLabels) !== JSON.stringify(expectedConstellationLabels)
       || !result.registerVisible
       || !result.loginVisible

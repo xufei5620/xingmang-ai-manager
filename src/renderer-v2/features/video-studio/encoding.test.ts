@@ -55,7 +55,7 @@ describe('video studio encoding', () => {
   })
 
   it('explains what is missing when nothing can encode', async () => {
-    await expect(chooseVideoStudioEncoding(output, false, probe([], []))).rejects.toThrow('这台电脑的系统没有能用的视频编码器，导不出视频')
-    await expect(chooseVideoStudioEncoding(output, true, probe(['avc'], []))).rejects.toThrow('这台电脑的系统没有能用的声音编码器，导不出带声音的视频')
+    await expect(chooseVideoStudioEncoding(output, false, probe([], []))).rejects.toThrow('本机系统没有可用的视频编码器，无法导出视频')
+    await expect(chooseVideoStudioEncoding(output, true, probe(['avc'], []))).rejects.toThrow('本机系统没有可用的音频编码器，无法导出带声音的视频')
   })
 })

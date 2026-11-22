@@ -41,7 +41,7 @@ const scenarios = [
 // UI v4: only Codex keeps a subtitle (its CLI and desktop app share one
 // configuration); the tool tabs are gone, each dialog configures one tool.
 const toolCases = {
-  codex: { name: 'Codex CLI', subtitle: 'Codex CLI 和 Codex 桌面端共用这一份配置，在哪边改都一样' },
+  codex: { name: 'Codex CLI', subtitle: 'Codex CLI 与 Codex 桌面端共用此配置，在任一端修改效果相同' },
   grok: { name: 'Grok CLI', subtitle: null },
 }
 const results = []

@@ -1065,7 +1065,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
       const npmPath = await findInstalledExecutable('npm')
       const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmPath)
       const { status } = await inspectCliTool(provider, npmPath, npmGlobalRoot)
-      // Mac 上认不出来路、星芒也不替它跑的那份（R1）：客户点的就是「用星芒装一份」，不拿「不会另装一份」拦。
+      // Mac 上认不出来路、星芒也不替它跑的那份（R1）：客户点的就是「使用星芒安装」，不拿「不会另装一份」拦。
       // 装好以后星芒先找到自己那份（darwinCommandPathCandidates 里星芒的目录排在前面），打开的也是它。
       if (status.unrecognizedInstall) return
       installSource = status.installSource
@@ -1607,7 +1607,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
           // 慢但一直在下的最多等 30 分钟（第三十七批 A）。
           const stallWatch = createNpmDownloadStallWatch(() => measureDirectoryBytes(attemptRoot))
           const downloadStartedAt = performance.now()
-          // 同解析那一步：带上已用时，界面进度那一行就换成现成的「还在下载，已经等了……」，
+          // 同解析那一步：带上已用时，界面进度那一行就换成现成的「仍在下载，已等待……」，
           // 这句原话进安装日志；运行日志不记这种每隔几秒一条的（第三十七批 D）。
           const downloadTicker = setInterval(() => {
             const elapsedMs = Math.round(performance.now() - downloadStartedAt)

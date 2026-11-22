@@ -3,7 +3,7 @@ import type { AccountChangePasswordInput, AccountLoginInput, AccountRegisterInpu
 
 export type AuthBridge = Pick<XingmangApi, 'getAccountStatus' | 'getAccountSession' | 'getRememberedAccountLogin' | 'setRememberedAccountLogin' | 'loginAccount' | 'submitTwoFactorCode' | 'registerAccount' | 'sendVerificationCode' | 'sendPasswordResetCode' | 'resetPassword' | 'changeAccountPassword' | 'getLegalDocument' | 'openExternal' | 'copyResetPassword'>
 export type AccountSiteId = 'solov' | 'solov-api'
-/** 打开登录框时预先选好的来源和账号，给「重新登录这个账号」用（#480）。 */
+/** 打开登录框时预先选好的来源和账号，给「重新登录该账号」用（#480）。 */
 export interface LoginTarget {
   siteId: AccountSiteId
   identifier: string

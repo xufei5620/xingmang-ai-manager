@@ -1,6 +1,6 @@
 import { isClaudeDesktopInstallFailureMessage } from '../../electron/claude-desktop-install-failure'
 import { isCodexDesktopFirewallOffInstallFailure, isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
-import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
+import { codexDesktopActivationBrokenMarker, codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalIn } from '../../electron/config-link-refusal'
 import { configWriteBlockerIn } from '../../electron/config-write-blocker'
 import { extensionCommandFailureInMessage } from '../../electron/extension-command-failure'
@@ -14,7 +14,7 @@ import { isBrokenConfigLaunchMessage } from './features/tools/broken-config-laun
 import { feedbackInstallLogSection } from './registry/business'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopOfflinePackages' | 'claudeDesktopDownload' | 'repairConfig'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopOfflinePackages' | 'claudeDesktopDownload' | 'repairConfig' | 'restartComputer'
 export interface OperationAction { id: OperationActionId; label: string }
 /**
  * 这次失败要写的是什么；缺省 = 只按原话认（旧行为）。
@@ -43,15 +43,15 @@ export interface OperationErrorHint {
  */
 const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean }> = [
   // 状态文件关掉了这一样（remote-features.ts，G04）：主进程那句已经说了是哪一样、会自动恢复。这一下什么都没做，
-  // 被下面哪条认成没装上、连不上、要重试都不对，所以排在最前，出口只有「找客服」。
+  // 被下面哪条认成没装上、连不上、要重试都不对，所以排在最前，出口只有「联系客服」。
   { key: 'featureSuspended', match: (message) => isRemoteFeatureOffMessage(message) },
   // 一键改用当前账号失败后连恢复也没做成（account-source-switch.ts）。这句里常带着
   // 网络、权限之类的原因，被下面哪条抢走都会配上一句「不会留下半成品」式的安抚，
-  // 所以排在最前，出口直接是「去备份迁移」。只认「自动恢复也没有完成」这半句，不认
+  // 所以排在最前，出口直接是「前往备份迁移」。只认「自动恢复也未完成」（旧版是「没有完成」）这半句，不认
   // 后面叫人去哪儿：新版说「设置 › 备份迁移」，旧版和旧日志里还是「备份」，两种都要接住。
-  { key: 'switchUndoFailed', match: (message) => /自动恢复也没有完成/.test(message) },
+  { key: 'switchUndoFailed', match: (message) => /自动恢复也(?:没有|未)完成/.test(message) },
   // 打开工具时发现工具自己都读不了它的配置文件（broken-config-launch.ts 那几句，整句全等）。出口是首页那颗
-  // 「修好它」，修完接着打开；别的规则认不出这几句，放前面只是省得以后有人加了更泛的规则把它抢走。
+  // 「立即修复」，修完接着打开；别的规则认不出这几句，放前面只是省得以后有人加了更泛的规则把它抢走。
   { key: 'configBroken', match: (message) => isBrokenConfigLaunchMessage(message) },
   // Codex 桌面端叫了、等了将近一分钟也没起来（主进程 codex-desktop-service.ts 的
   // codexDesktopNotStartedPrefix，两边字面量要一致）。那句话后半截已经写好下一步，
@@ -59,13 +59,16 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // permission）抢走、把客户送去看安装目录。
   // 同一句里带着「这一版已知打不开」（codex-desktop-known-issues.ts 的 marker）时，
   // 重试和找客服都救不了它，要多给一条「改用 Codex 命令行版」的路，所以排在它前面。
+  // 同一句里带着「Codex 已安装，但 Windows 未能启动它」时（Windows 激活接口说没装、包却装着），
+  // 重试、重置都救不了，出口是「立即重启」，所以排在这一类最前面。
+  { key: 'codexDesktopActivationBroken', match: (message) => /Codex 桌面端没有打开/.test(message) && message.includes(codexDesktopActivationBrokenMarker) },
   { key: 'codexDesktopKnownIssue', match: (message) => /Codex 桌面端没有打开/.test(message) && message.includes(codexDesktopKnownIssueMarker) },
   { key: 'codexDesktopNotStarted', match: (message) => /Codex 桌面端没有打开/.test(message) },
   // Codex 桌面端装不上 / 更新不了（主进程 codex-desktop-install-failure.ts 写好的整句，
   // 开头直接取那边的常量）。那句话后半截已经说了是哪一种原因，这里只配按钮，其中
-  //「去微软商店装」是这一类才有的出口。排在前面是因为它会说到「连不上」「Windows
+  //「前往微软商店安装」是这一类才有的出口。排在前面是因为它会说到「连不上」「Windows
   // 拒绝了这次安装」，不能被下面的 timeout、permission 抢走。
-  // 同一类里三种不给「去微软商店装」的：Windows 太旧（商店里的那一版同样装不上，
+  // 同一类里三种不给「前往微软商店安装」的：Windows 太旧（商店里的那一版同样装不上，
   // 重试也没用），Windows 防火墙服务停着（哪一路装都卡在登记防火墙规则那一步，重试也没用，
   // 2026-11-06 客户日志），和这台电脑压根没有微软商店（按钮按了打不开，第二十一批 2）。
   { key: 'codexDesktopTooOld', match: (message) => isCodexDesktopUnsupportedInstallFailure(message) },
@@ -74,10 +77,10 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   { key: 'codexDesktopInstallFailed', match: (message) => isCodexDesktopInstallFailureMessage(message) },
   // Windows 上 Claude Desktop 一键安装没装上（系统自带的安装组件、Claude 官网的离线安装包，
   // 主进程 claude-desktop-install-failure.ts 写好的整句）。同 Codex 那一类，那句话会说
-  //「连不上」「Windows 拒绝了这次安装」，所以排在 timeout、permission 前面；出口是「下载离线安装包」和「去 Claude 官网」。
+  //「连不上」「Windows 拒绝了这次安装」，所以排在 timeout、permission 前面；出口是「下载离线安装包」和「前往 Claude 官网」。
   { key: 'claudeDesktopInstallFailed', match: (message) => isClaudeDesktopInstallFailureMessage(message) },
   // Mac 上一键装桌面端没装成（主进程 macos-desktop-install-failure.ts 写好的整句，认法也
-  // 取那边的）。那句话已经说了下一步，这里配「看安装指南」：照教程自己从官网下载安装
+  // 取那边的）。那句话已经说了下一步，这里配「查看安装指南」：照教程自己从官网下载安装
   // 这条老路一直走得通。排在前面是因为它会说「检查网络」，不能被下面的 timeout 抢走。
   // 系统太旧那一句重试救不了，自己下载也一样装不上，单独一类。
   { key: 'macDesktopTooOld', match: (message) => isMacosDesktopSystemTooOld(message) },
@@ -123,9 +126,9 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // previous version to fall back to, so an integrity mismatch there keeps the
   // raw wording rather than borrowing a reassurance that would be false.
   { key: 'updateIntegrity', match: (message) => /更新|升级/.test(message) && /(SHA-512|完整性|校验)[^。；]{0,12}(失败|不一致|无效)/.test(message) },
-  // safe-storage-backend.ts 的「这台电脑没法安全保存密码，已拒绝写入……」（旧版本说「密钥环」「明文」）。
+  // safe-storage-backend.ts 的「本机不支持安全保存密码，已拒绝写入……」（0.2.24 及以前说「这台电脑没法安全保存密码」，再早说「密钥环」「明文」）。
   // 这不是权限问题：目录写得进去，是这台机器没有可用的系统密码保管。
-  { key: 'unsafeStorage', match: (message) => /没法安全保存密码|密钥环|安全存储[^。；]{0,12}明文|只能以明文保存/.test(message) },
+  { key: 'unsafeStorage', match: (message) => /(?:没法|不支持)安全保存密码|密钥环|安全存储[^。；]{0,12}明文|只能以明文保存/.test(message) },
   // 更新和回滚要替换整个托管目录。Windows 上正在跑的 CLI 把自己的文件锁住，那是
   // 文件占用，不是杀毒拦截也不是权限不够——归到 installBlocked 会把用户送去关杀毒，
   // 方向全错。主进程在那一步会把话说成「文件被占用，……正在运行」
@@ -268,36 +271,38 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   重试: 'retry',
   重新下载: 'retry',
   查看日志: 'log',
-  看日志: 'log',
-  找客服: 'support',
+  联系客服: 'support',
   重新登录: 'relogin',
-  马上充值: 'recharge',
+  立即充值: 'recharge',
   检查网络: 'network',
   // 与「检查网络」落到同一页（App 里 network → health），只是这里说的不是网络。
   打开检查页: 'network',
   一键修复: 'repair',
-  // 跟首页「配置文件坏了」那颗「修好它」是同一件事（先备份、再按现在用的账号修），只有 configBroken 那一类会出。
+  // 跟首页「配置文件坏了」那颗「立即修复」是同一件事（先备份、再按现在用的账号修），只有 configBroken 那一类会出。
   // 要知道是哪个工具，错误框里没记着工具时这颗按钮不出（operationErrorActions）。
-  修好它: 'repairConfig',
+  立即修复: 'repairConfig',
   复制路径: 'copyPath',
-  去备份迁移: 'backups',
+  前往备份迁移: 'backups',
   // 公司电脑的证书要新版 Node.js 才认（system-certificate-trust.ts）。以前这里只有「重试」，
   // 提示叫人去「安装卸载」页（v4 第 10 批拆掉了）点「安装」，那边一看 Node.js 够装工具就回「无需重复安装」，
   // 客户来回转圈（第十八批 4）。只有 Windows 换得了：调用方按平台决定留不留它。
-  '换成新版 Node.js': 'replaceNode',
+  '更新 Node.js': 'replaceNode',
   // 只有 Codex 桌面端装不上那一类会出这颗，而那句话只有 Windows 的安装路径写得出来，
   // Mac 上自然不会出现。
-  去微软商店装: 'openStore',
+  前往微软商店安装: 'openStore',
   // Codex 桌面端打不开时的出口，和 Windows 设置里「高级选项 → 重置」是同一件事。
   '重置 Codex': 'resetCodexDesktop',
+  // 只有 Codex 桌面端打不开那两类会出这颗，那条路只在 Windows 上走得到；走的是 Node.js 装完要重启的同一次重启
+  //（runtime:restart-windows），先弹确认框。
+  立即重启: 'restartComputer',
   // 只有 Codex 桌面端装着已知打不开的那一版时才出这颗（第十九批 7）。
   '改用 Codex 命令行版': 'useCodexCli',
   // 只有 Mac 上一键装桌面端没装成那一类会出这颗：打开教程里「Mac 上装桌面端」那一章。
-  看安装指南: 'installGuide',
+  查看安装指南: 'installGuide',
   // 只有 Windows 上 Claude Desktop 没装上那一类会出这两颗（D64）：Claude 官网在国内多半打不开，
   // 先给教程站「备用安装包」那一节（包来自国内存储桶），官网退到第二个。
   下载离线安装包: 'claudeDesktopOfflinePackages',
-  '去 Claude 官网': 'claudeDesktopDownload',
+  '前往 Claude 官网': 'claudeDesktopDownload',
 }
 
 /**
@@ -370,9 +375,9 @@ export function presentOperationError(message: string, target?: OperationTarget)
     title: entry.title,
     body: entry.body,
     // Every catalog action for this entry may be one this app cannot perform
-    // （「看状态」「换一份」这些还没有对应页面）。Falling back to 找客服 keeps
+    // （「查看状态」「选择其他备份」这些还没有对应页面）。Falling back to 找客服 keeps
     // the dialog from ending on a dead end.
-    actions: actions.length ? actions : [{ id: 'support', label: '找客服' }],
+    actions: actions.length ? actions : [{ id: 'support', label: '联系客服' }],
   }
 }
 

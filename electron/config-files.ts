@@ -153,7 +153,7 @@ export interface NativeConfigInspection {
    * 工具自己也读不了它的主配置（Codex 的 config.toml、Claude Code 与 Gemini CLI 的 settings.json；
    * 判定见 codex-config-syntax.ts、cli-config-health.ts）：Codex 桌面端停在「无法加载组织设置」、
    * 命令行报错，Claude Code 弹「Settings Error」整份不用，Gemini CLI 报错退出。这时读出来的 Key、
-   * 地址都不作数，首页据此说「配置文件坏了」并给「修好它」。Grok 不判；缺省 = 没发现。
+   * 地址都不作数，首页据此说「配置文件坏了」并给「立即修复」。Grok 不判；缺省 = 没发现。
    */
   configBroken?: boolean
   /**
@@ -209,7 +209,7 @@ export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKe
   ccSwitchLeftover?: 'proxy' | 'provider'
   /**
    * 本软件写进这份配置的钩子或状态行指向了不存在的程序、脚本，或不是这次安装带的那份
-   * （卸载后换目录重装、挪了 app、换装了 Node.js）。首页据此给「修好它」。缺省 = 没发现。
+   * （卸载后换目录重装、挪了 app、换装了 Node.js）。首页据此给「立即修复」。缺省 = 没发现。
    */
   cliHooksStale?: boolean
   /**
@@ -219,7 +219,7 @@ export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKe
   cliHooksShellChanged?: boolean
   /**
    * 只给 Windows 上的 Grok：配置是本软件写的，但做完提醒、防睡那几条钩子一条都没有——只装 Grok
-   * 时电脑上还没有运行环境，钩子写不出来。首页据此说一句缺什么、给「补上」。缺省 = 不缺。
+   * 时电脑上还没有运行环境，钩子写不出来。首页据此说一句缺什么、给「启用」。缺省 = 不缺。
    */
   cliHooksMissing?: boolean
   /**
@@ -270,7 +270,7 @@ export interface CodexWorkspacePermissionWriteResult extends NativeConfigSaveRes
 export type NativeConfigSaveMode = 'merge' | 'reset'
 
 /**
- * 首页「配置文件坏了」的「修好它」和碰上坏文件的「改用当前账号」多一种：repair。工具读不了的那份照重置重建，
+ * 首页「配置文件坏了」的「立即修复」和碰上坏文件的「改用当前账号」多一种：repair。工具读不了的那份照重置重建，
  * 读得懂的那份照合并，只改账号、地址、型号那几处（0.2.24 深查 X-1）。只有 Codex 有两份文件（config.toml、
  * auth.json），别的工具坏的就是唯一那份，跟重置一样。配置窗口的「保存」「重置为初始状态」不走这里。
  */
@@ -811,7 +811,7 @@ function pinGrokModelsToRelay(parsed: Record<string, unknown>, relayModelName: s
 }
 
 // Claude Code 与 Gemini CLI 都会自己删本机会话记录，默认都是 30 天，而记录页、首页
-// 「最近」卡、「接着聊」、导出记录全都建立在那些文件还在的前提上——用户只会看到
+// 「最近」卡、「继续对话」、导出记录全都建立在那些文件还在的前提上——用户只会看到
 // 「上个月那条对话不见了」。本软件替用户把保留期放长到一年。
 //
 // 沙箱实测（Claude Code 2.1.277 的 settings schema）：cleanupPeriodDays 是正整数、
@@ -1477,7 +1477,7 @@ function createCodexRelayConfigPlans(
   // 本软件管的型号名单（codex-model-catalog.ts）：字符串 = 写这份文件并指向它；null = 收回
   // 本软件写的那一行；缺省 = 那一行和文件都原样不动，与从前一致。
   modelCatalog?: string | null,
-  // 「修好它」从读不了的 config.toml 里救回来的那份（salvagedCodexConfigForRepair），当作现在的配置来合并；
+  // 「立即修复」从读不了的 config.toml 里救回来的那份（salvagedCodexConfigForRepair），当作现在的配置来合并；
   // 缺省 = 读文件本身。
   salvaged?: string,
 ): FilePlan[] {
@@ -1557,7 +1557,7 @@ function createCodexOfficialConfigPlans(
   const currentText = salvaged ?? (fs.existsSync(paths.active)
     ? requireConfigText(paths.active, '现有 Codex config.toml')
     : null)
-  // 重置是读不懂的配置唯一的出路（首页「配置文件坏了」的「修好它」也走这里），登录 ChatGPT 的
+  // 重置是读不懂的配置唯一的出路（首页「配置文件坏了」的「立即修复」也走这里），登录 ChatGPT 的
   // 客户也一样：坏文件照旧先备份再整份换掉。只更新（merge）仍然拒绝，不悄悄重置客户的设置。
   const currentParsed = !currentText ? null
     : mode === 'reset' ? parseTomlOrNull(currentText)
@@ -1597,7 +1597,7 @@ function createCodexOfficialConfigPlans(
 }
 
 /**
- * 「修好它」时 Codex 的 config.toml 怎么写（X-1）。Codex 和星芒都读得懂（或者还没有这份文件）就照合并：客户自己
+ * 「立即修复」时 Codex 的 config.toml 怎么写（X-1）。Codex 和星芒都读得懂（或者还没有这份文件）就照合并：客户自己
  * 加的连接、信任过的文件夹、推理强度都留着。只坏了 auth.json 也整份重建 config.toml，客户的设置就全没了；从修之前
  * 的备份里找回又会把坏的 auth.json 一起放回去。任何一边读不懂才整份重建，跟重置一样。
  */
@@ -1609,10 +1609,10 @@ function codexConfigRepairMode(roots: ProviderConfigRoots): NativeConfigSaveMode
 }
 
 /**
- * 「修好它」碰上读不了的 config.toml（codexConfigRepairMode 说要整份重建）时，先看能不能只去掉坏的那几行
+ * 「立即修复」碰上读不了的 config.toml（codexConfigRepairMode 说要整份重建）时，先看能不能只去掉坏的那几行
  * （salvageCodexConfigText）：能就返回救回来的那份，照合并修，客户自己的设置照留；救不了返回 null，照旧整份重建。
  * 不是合法 UTF-8 的不救：解码会把中文换成「�」，救回来的路径也是坏的。原文件照旧由 executeFilePlans 先备份。
- * 只用在「修好它」上，配置窗口里的「重置为初始状态」照旧整份重建。
+ * 只用在「立即修复」上，配置窗口里的「重置为初始状态」照旧整份重建。
  */
 function salvagedCodexConfigForRepair(roots: ProviderConfigRoots): string | null {
   if (codexConfigRepairMode(roots) !== 'reset') return null
@@ -1622,7 +1622,7 @@ function salvagedCodexConfigForRepair(roots: ProviderConfigRoots): string | null
 }
 
 /**
- * 「修好它」按当前账号修、config.toml 又读得懂（codexConfigRepairMode），或者读不了但救得回来（salvaged）：
+ * 「立即修复」按当前账号修、config.toml 又读得懂（codexConfigRepairMode），或者读不了但救得回来（salvaged）：
  * config.toml 照合并，只有 auth.json 照重置重建。
  */
 function createCodexRelayRepairPlans(
@@ -1641,7 +1641,7 @@ function createCodexRelayRepairPlans(
 }
 
 /**
- * 「修好它」按官方账号修、config.toml 读不了但救得回来：同 createCodexOfficialRepairPlans，只是救回来的那份一定要写回去
+ * 「立即修复」按官方账号修、config.toml 读不了但救得回来：同 createCodexOfficialRepairPlans，只是救回来的那份一定要写回去
  * （原文件 Codex 读不了）。还接着当前账号的照「切回官方账号」拿掉当前账号那几处，不接着的原样写回。
  */
 function createCodexOfficialSalvagePlans(roots: ProviderConfigRoots, siteBaseUrls: Record<ProviderId, string>, salvaged: string): FilePlan[] {
@@ -1655,7 +1655,7 @@ function createCodexOfficialSalvagePlans(roots: ProviderConfigRoots, siteBaseUrl
 }
 
 /**
- * 「修好它」按官方账号修、config.toml 又读得懂：不再整份换成三行初始值。还接着当前账号的照「切回官方账号」只拿掉
+ * 「立即修复」按官方账号修、config.toml 又读得懂：不再整份换成三行初始值。还接着当前账号的照「切回官方账号」只拿掉
  * 当前账号那几处（不接着当前账号的，合并会拿存着的官方那份盖掉现在这份，所以一个字不动），auth.json 照重置重建。
  */
 function createCodexOfficialRepairPlans(roots: ProviderConfigRoots, siteBaseUrls: Record<ProviderId, string>): FilePlan[] {
@@ -3126,7 +3126,7 @@ export function saveProviderConfig(
 
   const statusLineCommand = claudeStatusLineCommand?.trim() || undefined
   if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
-  // 「修好它」只在 Codex 的 config.toml 读得懂、坏的只有 auth.json 时跟重置不一样（X-1）；config.toml 读不了但
+  // 「立即修复」只在 Codex 的 config.toml 读得懂、坏的只有 auth.json 时跟重置不一样（X-1）；config.toml 读不了但
   // 只坏了几行的，去掉那几行照合并修（salvagedCodexConfigForRepair）。
   const codexAuthOnlyRepair = mode === 'repair' && provider === 'codex' && codexConfigRepairMode(roots) === 'merge'
   const codexSalvaged = mode === 'repair' && provider === 'codex' && !codexAuthOnlyRepair ? salvagedCodexConfigForRepair(roots) : null
@@ -3951,7 +3951,7 @@ export interface ManagedCliHookRestore {
 
 /**
  * 卸载时收回、重装后补回：只补现在没有的那几样。已经有的（哪怕指向旧位置）一个字不动，那归
- * 「修好它」那条路；客户自己设过的状态行、Codex notify 也不顶掉。Gemini CLI 已下线，不补。
+ * 「立即修复」那条路；客户自己设过的状态行、Codex notify 也不顶掉。Gemini CLI 已下线，不补。
  */
 function managedCliHookRestorePlan(
   provider: ProviderId,
@@ -4013,7 +4013,7 @@ function executeManagedCliHookPlan(
   return executeFilePlans([plan], {}, providerRoot)
 }
 
-/** 首页「修好它」：把本软件那几条改成这次的路径（写不出来就收回），其余原样。 */
+/** 首页「立即修复」：把本软件那几条改成这次的路径（写不出来就收回），其余原样。 */
 export function rewriteManagedCliHooks(
   provider: ProviderId,
   rootsInput: ProviderConfigRoots,
@@ -4216,7 +4216,7 @@ export function switchProviderToOfficialAccount(
   const configuredPaths = providerConfigPaths(provider, roots)
   for (const filePath of configuredPaths) assertSafeConfigPath(filePath, providerRoot, 'file')
 
-  // 「修好它」照重置的口子过（它本来就是给坏文件用的），只在 Codex 的 config.toml 读得懂、坏的只有 auth.json 时
+  // 「立即修复」照重置的口子过（它本来就是给坏文件用的），只在 Codex 的 config.toml 读得懂、坏的只有 auth.json 时
   // 换一份计划（X-1）。
   const saveMode: NativeConfigSaveMode = writeMode === 'merge' ? 'merge' : 'reset'
   const codexAuthOnlyRepair = writeMode === 'repair' && provider === 'codex' && codexConfigRepairMode(roots) === 'merge'
@@ -4229,7 +4229,7 @@ export function switchProviderToOfficialAccount(
     && isKnownCodexRelayBaseUrl(inspection.actualBaseUrl, siteBaseUrlsInput.codex)
   // 登录 ChatGPT 换来的那把 Key 常和令牌一起留在 auth.json 里（auth_mode 说了算，Codex 不用它），
   // config.toml 又坏到 Codex 读不了：看着像「有 Key、地址不是星芒」的第三方，其实用的就是官方
-  // 账号。首页「配置文件坏了」的「修好它」走的是这条重置，先备份，坏文件里没有能用的设置可护。
+  // 账号。首页「配置文件坏了」的「立即修复」走的是这条重置，先备份，坏文件里没有能用的设置可护。
   const brokenChatgptLogin = provider === 'codex' && saveMode === 'reset'
     && inspection.configBroken === true && inspection.codexAuthMode === 'chatgpt'
   const mode = knownCodexRelay ? 'relay' : brokenChatgptLogin ? 'official' : providerAccountMode(inspection)

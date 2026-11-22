@@ -32,7 +32,7 @@ export type IpcLogPolicy = 'normal' | 'quiet-success' | 'secret-input' | 'silent
  *
  * - none：跟账号无关；或者是登录、注册、退出、读登录态、切换已存账号这类本身就在管登录的通道，
  *   不进账号工作，要不要等开机恢复由处理函数自己定。
- * - scoped：在账号工作里跑，换账号要等它跑完才动手；跑完时账号已经换了，结果作废，报「账号刚切换过，请再试一次」。
+ * - scoped：在账号工作里跑，换账号要等它跑完才动手；跑完时账号已经换了，结果作废，报「账号刚刚切换，请重试」。
  * - scoped-may-end-session：同上，但这一下自己就可能结束或换掉登录（改密码、踢掉当前这台设备），
  *   跑完不核对账号换没换。
  * - scoped-queued：要在安装队列里排在别的安装后面（I11）。排着队那段不算账号工作：处理函数一进来就拿
@@ -252,6 +252,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:list-groups': { label: '星芒账号可用分组读取', log: 'quiet-success', account: 'scoped' },
   'account:get-price-list': { label: '星芒账号价格表读取', log: 'quiet-success', account: 'scoped' },
   'account:revoke-key': { label: '星芒账号 Key 撤销', log: 'normal', account: 'scoped' },
+  'account:enable-key': { label: '星芒账号 Key 启用', log: 'normal', account: 'scoped' },
   'account:copy-key': { label: '星芒账号 Key 复制', log: 'quiet-success', account: 'scoped' },
   // The input is the plaintext password the reset just produced.
   'account:copy-reset-password': { label: '找回密码后的新密码复制', log: 'quiet-success', account: 'none' },
@@ -273,6 +274,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // 「创作」左边那一列（融合第 1 步）：只回当前账号画布项目的编号、名字和时间；打开时编号先在这个账号的项目里认过。
   'canvas:list-projects': { label: '画布项目列表读取', log: 'quiet-success', account: 'scoped' },
   'canvas:open-project': { label: '画布项目打开', log: 'normal', account: 'scoped' },
+  // 「创作 › 作品库」（融合第 3 步）：只回当前账号作品的编号、时间、名字和描述。翻页、搜索时一次次调，成功不记。
+  'library:list': { label: '作品库读取', log: 'quiet-success', account: 'scoped' },
   // get-remembered-login's result and set-remembered-login's input both carry
   // a plaintext password (the 「记住密码」 credential) -- the same dedicated
   // reveal-channel pattern as config:reveal-api-key, and the same I3/I13

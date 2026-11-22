@@ -23,4 +23,4 @@ export const rememberedLoginForgottenMessage = '已清掉记住的密码'
  * Linux 上没有可用的系统密码保管时（会话里带 sessionOnly）：照常能登录，但登录和密码都
  * 不会留在本机。「记住密码」勾了也存不下，所以不给勾，改成这句话说清楚。
  */
-export const sessionOnlyLoginNotice = '这台电脑没法安全地记住登录：这次照常用，关掉软件后要重新登录。'
+export const sessionOnlyLoginNotice = '本机无法安全保存登录信息：本次可正常使用，关闭软件后需重新登录。'

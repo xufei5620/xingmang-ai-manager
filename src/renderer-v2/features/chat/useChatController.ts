@@ -1,18 +1,31 @@
 import { useEffect, useRef, useState } from 'react'
 import { platformApi } from '../../platform-api'
 import { chatTextFileFullMessage } from '../../../../electron/ai-chat-protocol'
-import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatGroupSummary, AiVideoClip, AiVideoGenerateInput } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase, pastedNothingMessage, customImageSizeRule, imageSizeFits } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMessage, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase, pastedNothingMessage, customImageSizeRule, videoStartImageLimitMessage } from './state'
 import { autosaveDelay, ChatStorageError, conversationLimitMessage, createHistoryWriter, MAX_CONVERSATIONS, registerHistoryFlusher, unreadableConversationsNotice, type LoadedChatHistory } from './storage'
 import { useLatestRequest } from '../../latest-request'
+import { videoStudioErrorMessage } from '../video-studio/useVideoStudio'
+import { buildChatVideoRequest, chatVideoBilledNotice, chatVideoBusyMessage, chatVideoFailedMessage, chatVideoRetry, chatVideoSecondsFor, completeChatVideo, maxParallelChatVideos, pendingChatVideos, settleChatVideo, type ChatVideoProgress } from './video'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
+import { applySharedImageSettings, fitImageOptions, readSharedImageSettings, sharedImageSettingsOf, subscribeSharedImageSettings, writeSharedImageSettings } from './image-settings'
 import { isWindowInFront } from '../tools/install-notice'
 
 export interface GroupPreparation { phase: 'loading' | 'ready' | 'error'; models: string[]; error?: string; warning?: string }
 interface CarriedDraft { conversationId: string; text: string; fromDraft: boolean }
 interface SendOptions { prompt?: string; retryId?: string; editId?: string }
 interface PendingRequest { conversationId: string; assistantId: string; mode: ChatMode; epoch: () => boolean; cancelRequested?: boolean; failureDuringCancel?: unknown }
+/**
+ * 点了停止以后主进程那边这一单是什么情况（同视频工作台）：billed 是已经交给服务端（钱扣了、停不下来，cancel 报错时也按这个算，
+ * 宁可多等一会儿也不让客户再付一次）；stopped 是还没交出去就停住了；finished 是停下时它已经自己结束了，按它自己的结果收尾。
+ */
+type VideoStopOutcome = 'billed' | 'stopped' | 'finished'
+/**
+ * 一段在出、或者在接回的视频。saving：请求号正在存盘，还没交出去；submitted：交给主进程了；
+ * resuming：只查不交（那一单的钱已经付过了，停了也省不下钱，「停止」不碰它）。
+ */
+interface VideoRun { phase: 'saving' | 'submitted' | 'resuming'; stop?: Promise<VideoStopOutcome>; stopRequested?: boolean }
 
 export function useChatController(api: ChatApi, scope: string, initial: LoadedChatHistory, active = true) {
   const [writer] = useState(() => createHistoryWriter(api, initial.saved, initial.afterFirstSave))
@@ -28,7 +41,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const [error, setError] = useState('')
   // 只有几段对话读不出来时其余照常读写，说一句就行（D40）；整份读不出来的走下面那条红条。
   const [notice, setNotice] = useState(initial.unreadable ? unreadableConversationsNotice(initial.unreadable) : '')
-  const [storageError, setStorageError] = useState(initial.warning ? `${initial.warning}。现在聊的内容不会保存，关掉软件就没了。` : '')
+  const [storageError, setStorageError] = useState(initial.warning ? `${initial.warning}。当前对话内容不会保存，关闭软件后将丢失。` : '')
   const [attaching, setAttaching] = useState(false)
   // 尺寸框下那句规矩等客户离开尺寸框、或者点了发送才露出来，免得一边打字它一边跳；填对了就收起（表单 F5）。
   const [sizeRuleRevealed, setSizeRuleRevealed] = useState(false)
@@ -39,6 +52,10 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const alive = useRef(false)
   const epoch = useLatestRequest()
   const requests = useRef(new Map<string, PendingRequest>())
+  // 在出的视频按请求号记，跟上面那一张分开：视频一段要几分钟、关了页面也不停（回来拿请求号接），不占聊天那四个位置。
+  const videoRuns = useRef(new Map<string, VideoRun>())
+  // 进度只在这一次打开时有，不进对话记录：一秒一跳的数字不该每跳都去存一次盘。
+  const [videoProgress, setVideoProgress] = useState<Record<string, ChatVideoProgress>>({})
   const prepareAttempts = useRef(new Map<string, number>())
   const groupAttempt = useLatestRequest()
   const groupsRef = useRef<AiChatGroupSummary[]>([])
@@ -68,7 +85,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const settleConversations = (keepMissing = false) => {
     const groups = groupsRef.current, prepared = preparationsRef.current
     const context = { pending: pendingChatGroups(groups, prepared), groups, site, keepMissing }
-    const catalogs = { text: buildChatCatalog(groups, prepared, 'text'), image: buildChatCatalog(groups, prepared, 'image') }
+    const catalogs = { text: buildChatCatalog(groups, prepared, 'text'), image: buildChatCatalog(groups, prepared, 'image'), video: buildChatCatalog(groups, prepared, 'video') }
     const activeId = activeConversation(stateRef.current).id
     const moved: { from?: string; to?: string } = {}
     const settle = (conversation: Conversation) => {
@@ -79,7 +96,23 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       return { ...conversation, settings: normalizeModel({ ...conversation.settings, ...next }) }
     }
     commit((current) => ({ ...current, conversations: current.conversations.map(settle), draftConversation: settle(current.draftConversation) }))
-    if (moved.from && moved.to) setNotice(`原来的分组「${moved.from}」已不可用，已换成「${moved.to}」，之后按「${moved.to}」分组计费。`)
+    if (moved.from && moved.to) setNotice(`原分组「${moved.from}」已不可用，已切换为「${moved.to}」，此后按「${moved.to}」分组计费。`)
+    syncImageSettings()
+  }
+  // 出图设置对话里和视频工作台的出图框记的是同一份（image-settings.ts，融合第 4 步）。当前这段对话在「生成图片」
+  // 那一档时跟着那一份走：切到这一档、打开这段对话、那边改了、模型表读完时各对一次。正在回答的不动；只换设置，
+  // 不算客户动过这段对话（不改它的时间，左边那一列不重排）。
+  const syncImageSettings = () => {
+    const current = activeConversation(stateRef.current)
+    if (current.settings.mode !== 'image' || isGenerating(current)) return
+    const groups = groupsRef.current
+    const settings = applySharedImageSettings(current.settings, readSharedImageSettings(scope), buildChatCatalog(groups, preparationsRef.current, 'image'), { groups, site })
+    if (settings !== current.settings) commit((workspace) => changeConversation(workspace, current.id, (item) => ({ ...item, settings })))
+  }
+  // 客户在「生成图片」那一档改了型号、尺寸、画质、分辨率：记成那一份。
+  const rememberImageSettings = (settings: ChatSettings) => {
+    const shared = sharedImageSettingsOf(settings)
+    if (shared) writeSharedImageSettings(scope, shared)
   }
   // 交回准备好的模型；分组不可用、准备失败或被更新的准备盖掉时是 null。
   const prepareGroup = async (group: string, keepMissing = false): Promise<string[] | null> => {
@@ -100,7 +133,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       const prepared = await api.prepareGroup(group)
       if (!alive.current || !owner() || prepareAttempts.current.get(group) !== attempt) return null
       if (prepared.group !== group) throw new Error('所选分组与返回分组不一致')
-      const models = [...new Set(prepared.models)].filter((model) => { try { const cap = inspectModel(model); return cap.available && !cap.hidden && cap.kind !== 'video' } catch { return false } })
+      const models = [...new Set(prepared.models)].filter((model) => { try { const cap = inspectModel(model); return cap.available && !cap.hidden } catch { return false } })
       setPreparation(group, { phase: 'ready', models, warning: prepared.storageWarning ? '分组已准备，但本机密钥缓存未能保存，下次可能需要重新准备' : undefined })
       settleConversations(keepMissing)
       return models
@@ -169,6 +202,88 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       if (alive.current) void refreshActions.current.refreshGroups()
     }, 0)
   }
+  // 付了钱的片段、等着的请求号都马上存，不等自动保存攒那一会儿。存失败了窗口里的内容还在，红条由自动保存那一路报。
+  const saveNow = (): Promise<void> => persist.current ? writer.save(stateRef.current).then(() => undefined, () => undefined) : Promise.resolve()
+  const endVideoRun = (requestId: string, run: VideoRun) => {
+    if (videoRuns.current.get(requestId) !== run) return
+    videoRuns.current.delete(requestId)
+    setVideoProgress((current) => { if (!(requestId in current)) return current; const { [requestId]: _done, ...rest } = current; return rest })
+  }
+  const settleVideo = (requestId: string, change: (message: ChatMessage) => ChatMessage) => {
+    commit((workspace) => updateRequest(workspace, requestId, change))
+    void saveNow()
+  }
+  /**
+   * 等一段视频回来：新发的（generate）和接回来的（resume）走同一套收尾。接回来是 null 就是主进程没有这一单，给了 onMissing
+   * 就交给它，没给按「没生成出来」收尾。停下时已经交给服务端的那一单不收尾，接着拿请求号去接回。
+   */
+  async function awaitVideo(requestId: string, run: VideoRun, request: () => Promise<AiVideoClip | null>, onMissing?: () => void) {
+    const owner = epoch.capture()
+    let next: (() => void) | undefined
+    try {
+      const clip = await request()
+      if (!alive.current || !owner() || videoRuns.current.get(requestId) !== run) return
+      if (!clip && onMissing) { next = onMissing; return }
+      settleVideo(requestId, (message) => clip ? completeChatVideo(message, clip) : settleChatVideo(message, chatVideoFailedMessage, true))
+      if (clip && !isWindowInFront(typeof document === 'undefined' ? undefined : document)) void platformApi()?.notifyActivity('task', `video:${requestId}`).catch(() => undefined)
+    } catch (reason) {
+      if (!alive.current || !owner() || videoRuns.current.get(requestId) !== run) return
+      const message = videoStudioErrorMessage(reason, chatVideoFailedMessage)
+      const outcome = run.stop ? await run.stop : 'finished'
+      if (!alive.current || !owner() || videoRuns.current.get(requestId) !== run) return
+      if (outcome === 'billed') {
+        // 主进程说这一单可能照样出、照样扣费：钱已经花了，接着等它回来。主进程那边没有这一单（提交到一半就停了）时，
+        // 按刚才那句报错算没成功，不让它悄悄变回「已停止」。
+        next = () => resumeVideo(requestId, () => settleVideo(requestId, (item) => settleChatVideo(item, message)))
+        return
+      }
+      settleVideo(requestId, (item) => settleChatVideo(item, outcome === 'stopped' ? undefined : message))
+    } finally {
+      endVideoRun(requestId, run)
+      next?.()
+    }
+  }
+  /** 接回已经交给服务端的那一单：只查不交。onMissing 拿得到这一趟（期间点没点过停止）。 */
+  function resumeVideo(requestId: string, onMissing?: (run: VideoRun) => void) {
+    const video = api.video
+    if (!video) return
+    const run: VideoRun = { phase: 'resuming' }
+    videoRuns.current.set(requestId, run)
+    void awaitVideo(requestId, run, () => video.resume(requestId), onMissing ? () => onMissing(run) : undefined)
+  }
+  /**
+   * 新交一单：这一步开始花钱。请求号已经在那条回复上，先等它存进本机再交给主进程：交完就崩了、断电了，
+   * 重开以后也拿得回这一段（同视频工作台）。存的这一小会儿里点了停止，就不交了。
+   */
+  async function submitVideo(input: AiVideoGenerateInput) {
+    const video = api.video
+    if (!video) return
+    const owner = epoch.capture()
+    const run: VideoRun = { phase: 'saving' }
+    videoRuns.current.set(input.requestId, run)
+    await saveNow()
+    if (!alive.current || !owner() || videoRuns.current.get(input.requestId) !== run) return
+    if (run.stopRequested) {
+      settleVideo(input.requestId, (message) => settleChatVideo(message))
+      endVideoRun(input.requestId, run)
+      return
+    }
+    run.phase = 'submitted'
+    void awaitVideo(input.requestId, run, () => video.generate(input))
+  }
+  const stopVideo = async (requestId: string) => {
+    const video = api.video, run = videoRuns.current.get(requestId), owner = epoch.capture()
+    if (!video || !run || run.stop) return
+    if (run.phase === 'saving') { run.stopRequested = true; return }
+    // 在接回的那一单停不了（钱已经付过）。记下点过停止：主进程要是说没有这一单，就不再替客户重新交一单。
+    if (run.phase === 'resuming') { run.stopRequested = true; setNotice(chatVideoBilledNotice); return }
+    const stop: Promise<VideoStopOutcome> = video.cancel(requestId).then((result) => !result.canceled ? 'finished' : result.mayStillComplete ? 'billed' : 'stopped', () => 'billed')
+    run.stop = stop
+    const outcome = await stop
+    if (!alive.current || !owner()) return
+    if (outcome === 'billed') setNotice(chatVideoBilledNotice)
+    else if (outcome === 'finished') { run.stop = undefined; setNotice('任务已结束或正在返回结果，请稍候确认最后状态') }
+  }
   useEffect(() => {
     alive.current = true
     const owner = epoch.begin()
@@ -178,12 +293,31 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       if (event.type === 'complete' && !isWindowInFront(typeof document === 'undefined' ? undefined : document)) void platformApi()?.notifyActivity('task', `chat:${event.requestId}`).catch(() => undefined)
       if (event.type === 'complete' || event.type === 'error' || event.type === 'canceled') requests.current.delete(event.requestId)
     })
+    const unsubscribeVideo = api.video?.subscribeProgress((event) => {
+      if (!alive.current || !owner() || !videoRuns.current.has(event.requestId)) return
+      setVideoProgress((current) => {
+        // 这一下没带数字就留着同一步里上一次的；换了一步（生成完去下载）从头算。
+        const previous = current[event.requestId]
+        const value = event.value ?? (previous?.stage === event.stage ? previous.value : undefined)
+        return { ...current, [event.requestId]: { stage: event.stage, ...(value === undefined ? {} : { value }), ...(event.delayed ? { delayed: true } : {}) } }
+      })
+      // 主进程没能记下这一单时由页面替它记着，这一笔马上存：重开以后才提醒得了「可能已扣费」。
+      if (event.unrecorded) {
+        commit((workspace) => updateRequest(workspace, event.requestId, (message) => message.video && !message.video.unrecorded ? { ...message, video: { ...message.video, unrecorded: true } } : message))
+        void saveNow()
+      }
+    })
     void refreshGroups()
+    // 上次关掉软件、换了账号时还没等到结果的那几段视频：拿记着的请求号回主进程接回来。主进程只查不交，
+    // 同一个请求号问两遍（开发版 StrictMode 会把这里跑两遍）接的也是同一份。
+    for (const pending of pendingChatVideos(stateRef.current)) resumeVideo(pending.requestId)
     return () => {
-      alive.current = false; epoch.invalidate(); groupAttempt.invalidate(); unsubscribe()
+      alive.current = false; epoch.invalidate(); groupAttempt.invalidate(); unsubscribe(); unsubscribeVideo?.()
       window.clearTimeout(interactionTimer.current); interactionTimer.current = undefined
       for (const requestId of requests.current.keys()) void api.cancel(requestId).catch(() => undefined)
       requests.current.clear()
+      // 在出的视频不停：钱已经花了，主进程接着出，下次打开拿请求号接回来。
+      videoRuns.current.clear()
     }
   }, [api, scope])
   useEffect(() => {
@@ -210,7 +344,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     const timer = window.setTimeout(() => {
       unsavedSince.current = null
       writer.save(stateRef.current).then(() => { if (alive.current) setStorageError('') }, (reason: unknown) => {
-        if (alive.current) setStorageError(`${reason instanceof ChatStorageError ? reason.message : '聊天记录没有保存到本机'}。当前内容仍保留在窗口中，请勿关闭窗口。`)
+        if (alive.current) setStorageError(`${reason instanceof ChatStorageError ? reason.message : '聊天记录未能保存到本机'}。当前内容仍保留在窗口中，请勿关闭窗口。`)
       })
     }, autosaveDelay(since, now))
     return () => window.clearTimeout(timer)
@@ -226,23 +360,33 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const sizeRule = customImageSizeRule(conversation.settings)
   useEffect(() => { if (!sizeRule) setSizeRuleRevealed(false) }, [sizeRule])
   const updateActive = (change: (conversation: Conversation) => Conversation) => { const id = activeConversation(stateRef.current).id; commit((current) => changeConversation(current, id, change)) }
-  const changeSettings = (patch: Partial<ChatSettings>) => updateActive((item) => ({ ...item, settings: { ...item.settings, ...patch } }))
+  const changeSettings = (patch: Partial<ChatSettings>) => {
+    const next = { ...activeConversation(stateRef.current).settings, ...patch }
+    updateActive((item) => ({ ...item, settings: { ...item.settings, ...patch } }))
+    if (patch.size !== undefined || patch.quality !== undefined || patch.imageResolution !== undefined) rememberImageSettings(next)
+  }
   // 选了哪个模型，就用有它的那个分组计费（同一个模型几个分组都有时按 pickChatGroup 的次序挑）。
   const selectModel = (model: string) => {
     const current = activeConversation(stateRef.current).settings
     const entry = buildChatCatalog(groupsRef.current, preparationsRef.current, current.mode).find((item) => item.model === model)
     if (!entry) return
     const group = pickChatGroup(entry.groups, { current: current.group, mode: current.mode, groups: groupsRef.current, site })
+    const next = normalizeModel({ ...current, model, group })
     updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, model, group }) }))
+    rememberImageSettings(next)
   }
+  // 视频工作台的出图框那边改了（或者这边自己刚记下）：当前对话在「生成图片」那一档就跟上。
+  useEffect(() => subscribeSharedImageSettings((changed) => { if (changed === scope) syncImageSettings() }), [scope])
   const selectMode = (mode: ChatMode) => {
     const current = activeConversation(stateRef.current).settings
     const groups = groupsRef.current, prepared = preparationsRef.current
     const next = settleChatModel({ ...current, mode, model: '' }, buildChatCatalog(groups, prepared, mode), { pending: pendingChatGroups(groups, prepared), groups, site })
     updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, mode, ...next }) }))
+    syncImageSettings()
   }
   const openConversation = (id: string | null) => {
     commit((current) => ({ ...current, activeId: id }))
+    syncImageSettings()
     setError('')
     const group = activeConversation(stateRef.current).settings.group
     if (group && !preparations[group]) void prepareGroup(group)
@@ -264,6 +408,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       const untouched = !blank.draft.trim() && !blank.draftImages?.length && !blank.draftFiles?.length
       return { ...workspace, activeId: null, draftConversation: untouched ? createConversation(current.settings) : blank }
     })
+    syncImageSettings()
     setError('')
     const group = activeConversation(stateRef.current).settings.group
     if (group && !preparations[group]) void prepareGroup(group)
@@ -277,16 +422,37 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     // 断网时当场说，草稿原样留在输入框里，不先挂一条等超时的消息。
     if (offlineRef.current) { offlineRetry.current = { conversationId: current.id, options }; setError(offlineSendMessage); return }
     if (!stateRef.current.conversations.some((item) => item.id === current.id) && stateRef.current.conversations.length >= MAX_CONVERSATIONS) { setError(conversationLimitMessage); return }
-    if (requests.current.size >= 4) { setError('已有 4 个对话正在处理，请等待一个完成后再试'); return }
+    // 重新生成一条视频回复：上一单还记着请求号的，先看拿它怎么办（chatVideoRetry）。看的是那条回复当时的模式。
+    const retried = options.retryId ? current.messages.find((message) => message.id === options.retryId) : undefined
+    const videoTurn = options.retryId ? retried?.settings?.mode === 'video' : current.settings.mode === 'video'
+    const videoRetry = chatVideoRetry(videoTurn ? retried : undefined)
+    if (videoTurn && !api.video) { setError('该模型当前不可用，请更换模型后发送'); return }
+    if (videoTurn ? videoRuns.current.size >= maxParallelChatVideos : requests.current.size >= 4) { setError(videoTurn ? chatVideoBusyMessage : '已有 4 个对话正在处理，请等待其中一个完成后再发送'); return }
     try {
-      const plan = planTurn(current, { prompt: options.prompt ?? current.draft, images: current.draftImages, files: current.draftFiles, requestId: createId(), assistantId: createId(), userMessageId: createId(), ...options })
+      const plan = planTurn(current, { prompt: options.prompt ?? current.draft, images: current.draftImages, files: current.draftFiles, requestId: videoRetry.kind === 'fresh' ? createId() : videoRetry.requestId, assistantId: createId(), userMessageId: createId(), ...(videoRetry.kind === 'reuse' ? { videoUnconfirmed: true } : {}), ...options })
       // 发送按钮灰着时 Enter 也不发，走到这里的是「编辑后重新发送」「重新生成」和断网横幅上的「重试」：按卡在哪一步说。
-      if (!groupsRef.current.some((group) => group.name === plan.settings.group)) { setError(!groupsLoaded && groupLoading ? '正在读取模型，读完再发送' : '这个模型现在用不了，请换一个模型再发送'); return }
+      if (!groupsRef.current.some((group) => group.name === plan.settings.group)) { setError(!groupsLoaded && groupLoading ? '正在获取模型，请稍后发送' : '该模型当前不可用，请更换模型后发送'); return }
       const prepared = preparations[plan.settings.group]
-      if (prepared?.phase !== 'ready' || !prepared.models.includes(plan.settings.model)) { setError(!prepared || prepared.phase === 'loading' ? '正在准备模型，准备好再发送' : prepared.phase === 'error' ? '模型没准备好，请先点模型菜单里的「刷新模型」再发送' : '请先选择模型'); return }
+      if (prepared?.phase !== 'ready' || !prepared.models.includes(plan.settings.model)) { setError(!prepared || prepared.phase === 'loading' ? '模型准备中，请稍后发送' : prepared.phase === 'error' ? '模型尚未就绪，请先点击模型菜单中的「刷新模型」再发送' : '请先选择模型'); return }
       const textInput = { requestId: plan.requestId, group: plan.settings.group, model: plan.settings.model, messages: plan.messages, parameters: plan.settings.parameters }
       const capability = inspectModel(plan.settings.model)
       const imageInput = { requestId: plan.requestId, group: plan.settings.group, model: plan.settings.model, prompt: plan.prompt, size: plan.settings.size, quality: capability.kind === 'image' && capability.qualities.length ? plan.settings.quality : undefined, imageResolution: plan.settings.imageResolution, ...(plan.images.length ? { sourceAssetIds: plan.images.map((image) => image.assetId) } : {}) }
+      if (plan.settings.mode === 'video') {
+        const videoInput = (requestId: string) => buildChatVideoRequest(plan.settings, plan.prompt, plan.images[0]?.assetId, requestId)
+        commit((workspace) => saveConversation(workspace, plan.conversation))
+        setError(''); setNotice('')
+        if (videoRetry.kind !== 'resume') { void submitVideo(videoInput(plan.requestId)); return }
+        // 上一单没等到结果就失败了：先拿它的请求号接回，接得回来就不用再付一次钱。主进程确实没有这一单，
+        // 才换一个新的请求号重新交（客户已经在确认框里点过头）。
+        resumeVideo(plan.requestId, (run) => {
+          // 接回期间点了停止：停下以后不再花钱，这一条回到「已停止」。
+          if (run.stopRequested) { settleVideo(plan.requestId, (message) => settleChatVideo(message, undefined, true)); return }
+          const requestId = createId()
+          commit((workspace) => updateRequest(workspace, plan.requestId, (message) => message.video ? { ...message, requestId, video: { requestId } } : message))
+          void submitVideo(videoInput(requestId))
+        })
+        return
+      }
       if (plan.settings.mode === 'text') validateChatRequest(textInput)
       else validateImageRequest(imageInput)
       requests.current.set(plan.requestId, { conversationId: current.id, assistantId: plan.assistantId, mode: plan.settings.mode, epoch: owner })
@@ -296,7 +462,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
         if (plan.settings.mode === 'image') {
           const assets = await api.generateImage(imageInput)
           if (alive.current && owner() && requests.current.has(plan.requestId)) {
-            if (!assets.length) throw new Error('没有收到生成的图片')
+            if (!assets.length) throw new Error('未收到生成的图片')
             commit((workspace) => completeImages(workspace, plan.requestId, assets))
             if (!isWindowInFront(typeof document === 'undefined' ? undefined : document)) void platformApi()?.notifyActivity('task', `image:${plan.requestId}`).catch(() => undefined)
             requests.current.delete(plan.requestId)
@@ -332,6 +498,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     const current = activeConversation(stateRef.current)
     const message = current.messages.find((item) => item.requestId && (item.status === 'pending' || item.status === 'streaming'))
     if (!message?.requestId) return
+    if (message.video) { await stopVideo(message.requestId); return }
     const requestId = message.requestId, owner = epoch.capture()
     const request = requests.current.get(requestId)
     if (!request || request.cancelRequested) return
@@ -358,7 +525,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
           commit((workspace) => applyStreamEvent(workspace, { requestId, type: 'error', message: chatErrorMessage(request.failureDuringCancel) }))
           requests.current.delete(requestId)
         }
-        setError('停止请求没有成功，请检查任务的最后状态后再试')
+        setError('停止请求失败，请检查任务最终状态后重试')
       }
     }
   }
@@ -368,8 +535,10 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const attachImages = async (work: (remaining: number) => Promise<AiChatAsset[]>, emptyMessage = '') => {
     const current = activeConversation(stateRef.current)
     const owner = epoch.capture()
-    const remaining = chatLimits.imagesPerMessage - (current.draftImages?.length ?? 0)
-    if (remaining <= 0) { setError(`一条消息最多带 ${chatLimits.imagesPerMessage} 张图片`); return }
+    // 「生成视频」带的是开头图，只收一张。
+    const video = current.settings.mode === 'video'
+    const remaining = (video ? 1 : chatLimits.imagesPerMessage) - (current.draftImages?.length ?? 0)
+    if (remaining <= 0) { setError(video ? videoStartImageLimitMessage : `一条消息最多带 ${chatLimits.imagesPerMessage} 张图片`); return }
     if (attachingRef.current) return
     attachingRef.current = true; setAttaching(true)
     try {
@@ -391,6 +560,13 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const reuseImage = (asset: AiChatAsset) => {
     if (activeConversation(stateRef.current).settings.mode !== 'image') selectMode('image')
     return attachImages(async () => [asset])
+  }
+  // 「用此图生成视频」：换到「生成视频」，这张图当开头图放进输入框（只收一张，原来放着的换掉），当初那句描述填回去
+  // （输入框里已经打了字就不动它）。只填不发：发一段视频要花钱，得让人看一眼再发。
+  const animateImage = (asset: AiChatAsset, prompt: string) => {
+    if (activeConversation(stateRef.current).settings.mode !== 'video') selectMode('video')
+    updateActive((item) => ({ ...item, draftImages: [asset], draft: item.draft.trim() ? item.draft : prompt }))
+    setError('')
   }
   const removeImage = (assetId: string) => updateActive((item) => removeDraftImage(item, assetId))
   // 文字类文件也是主进程开选文件框、在那里读，回来的只是字；放回发起时的那个对话。跟加图片共用「正在加」，
@@ -421,7 +597,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const removePhrase = (index: number) => commit((workspace) => ({ ...workspace, phrases: removeChatPhrase(workspace.phrases, index) }))
   const removeConversation = (id: string) => {
     const item = stateRef.current.conversations.find((candidate) => candidate.id === id)
-    if (item && isGenerating(item)) { setError('请先停止这个对话的请求，再删除记录'); return }
+    if (item && isGenerating(item)) { setError('请先停止该对话的请求，再删除记录'); return }
     commit((workspace) => ({ ...workspace, conversations: workspace.conversations.filter((candidate) => candidate.id !== id), activeId: workspace.activeId === id ? null : workspace.activeId }))
   }
   const renameSavedConversation = (id: string, title: string) => commit((workspace) => changeConversation(workspace, id, (item) => renameConversation(item, title)))
@@ -441,12 +617,14 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const deleteFrom = (id: string) => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => { const index = item.messages.findIndex((message) => message.id === id); return index < 0 ? item : { ...item, messages: item.messages.slice(0, index) } }) }
   // 以前的记录没读出来：这一回不往本机写，免得空记录盖掉原文件；页面上给「重新读取」。
   const historyUnreadable = Boolean(initial.warning)
-  return { site, attaching, sizeRule, sizeRuleRevealed, revealSizeRule: () => setSizeRuleRevealed(true), pickImages, pasteImage, reuseImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectModel, selectMode, refreshGroups, refreshModels, refreshOnInteraction, newConversation, continueInNew, retryOfflineSend, clearAllConversations, dismissLengthNotice, openConversation, removeConversation, renameConversation: renameSavedConversation, pinConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive, pickFiles, removeFile, savePhrase, removePhrase }
+  return { site, attaching, sizeRule, sizeRuleRevealed, revealSizeRule: () => setSizeRuleRevealed(true), pickImages, pasteImage, reuseImage, animateImage, removeImage, videoProgress, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectModel, selectMode, refreshGroups, refreshModels, refreshOnInteraction, newConversation, continueInNew, retryOfflineSend, clearAllConversations, dismissLengthNotice, openConversation, removeConversation, renameConversation: renameSavedConversation, pinConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive, pickFiles, removeFile, savePhrase, removePhrase }
 }
 
 function normalizeModel(settings: ChatSettings): ChatSettings {
   if (!settings.model) return settings
   const capability = inspectModel(settings.model)
+  // 换了视频模型：记着的时长挪到这个模型能出的、离原来最近的那一档（没设过的不写，用的时候再按型号算）。
+  if (capability.kind === 'video') return settings.videoSeconds === undefined ? settings : { ...settings, videoSeconds: chatVideoSecondsFor(settings) }
   if (capability.kind !== 'image') return settings
-  return { ...settings, size: imageSizeFits(settings.size, capability.sizePolicy) ? settings.size : capability.sizePolicy.default, quality: capability.qualities.includes(settings.quality) ? settings.quality : capability.defaultQuality ?? 'auto', imageResolution: capability.resolutions.includes(settings.imageResolution) ? settings.imageResolution : capability.defaultResolution }
+  return fitImageOptions(settings.model, settings)
 }

@@ -119,7 +119,7 @@ export function VersionCard({ api, navigate, autoUpdate }: {
         <span className="v2-version-card-logo" aria-hidden="true"><Logo kind="micro" height={40} /></span>
         <div>
           <h2 id="v2-version-card-title">星芒AI管理工具</h2>
-          <p data-testid="updates-current-version">{update?.currentVersion ? `当前版本 v${update.currentVersion}` : resource.error ? '版本暂未读到' : '正在读取更新状态…'}</p>
+          <p data-testid="updates-current-version">{update?.currentVersion ? `当前版本 v${update.currentVersion}` : resource.error ? '版本暂未获取' : '正在读取更新状态…'}</p>
         </div>
         {update && (
           <span data-testid={newVersion && update.phase === 'available' ? 'updates-new-version' : undefined}>
@@ -152,19 +152,19 @@ export function VersionCard({ api, navigate, autoUpdate }: {
         </div>
       )}
       {update?.currentVersionWithdrawn && (
-        <Notice tone="warn" title="这个版本有已知问题" body={withdrawnVersionAdvice(update)} testId="updates-current-withdrawn" />
+        <Notice tone="warn" title="该版本存在已知问题" body={withdrawnVersionAdvice(update)} testId="updates-current-withdrawn" />
       )}
       {/* 账号不是管理员的 Windows 电脑：下好的新版本不自动装，就在「重启并安装」旁边说清要谁来点。 */}
       {update?.phase === 'downloaded' && update.installNeedsAdminPassword && (
         <Notice tone="warn" title={standardAccountUpdateNotice.title} body={standardAccountUpdateNotice.body} testId="updates-admin-password" />
       )}
       {update?.unsignedChannel && !update.autoUpdateSupported && (
-        <p className="v2-version-card-line" data-testid="updates-channel-unsigned"><span>更新方式</span>每次下载和安装新版本前都会先问你</p>
+        <p className="v2-version-card-line" data-testid="updates-channel-unsigned"><span>更新方式</span>每次下载和安装新版本前将先征求您的确认</p>
       )}
       {diskShortfallText && (
         <Notice
           tone="warn"
-          title="磁盘空间不够，新版本先不下载"
+          title="磁盘空间不足，新版本暂不下载"
           body={<><p>{diskShortfallText}</p>{diskCleanupOpen && <p data-testid="updates-disk-cleanup">{updateDiskCleanupDetail}</p>}</>}
           testId="updates-disk-shortfall"
           actions={
@@ -197,8 +197,8 @@ export function VersionCard({ api, navigate, autoUpdate }: {
       {update?.installMethod === 'manual' && (
         <Notice
           tone="warn"
-          title="这台电脑上没法自动更新"
-          body="星芒在这台电脑上不是用安装包装的，没法自己更新。到下载页下载新版本的安装包，装好后打开就行。"
+          title="本机无法自动更新"
+          body="本机的星芒并非通过安装包安装，无法自动更新。请前往下载页下载新版本安装包，安装后打开即可。"
           testId="updates-manual-install"
           actions={<Button size="sm" icon={ExternalLink} onClick={openDownloadPage}>打开下载页</Button>}
         />

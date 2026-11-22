@@ -358,7 +358,7 @@ export function buildConnectionProbe(
     return blocked({
       layer: 'config',
       summary: `${name} 的配置里有一处它认不出，打开会连不上`,
-      nextStep: '回首页点这一行的「修好它」，改之前会先备份',
+      nextStep: '回首页点这一行的「立即修复」，改之前会先备份',
     })
   }
   const model = wireModel(provider, inspection.model || defaultCliModels[provider])

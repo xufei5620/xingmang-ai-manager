@@ -974,7 +974,7 @@ describe('ProviderSessionsService', () => {
     expect(byNativeId.get('gone')).toBe(false)
 
     // 目录随时会被删掉或恢复，所以这个判断不进探测缓存：缓存住就会一直显示
-    // 上一次的状态，用户删了文件夹还看见一颗亮着的「接着聊」。
+    // 上一次的状态，用户删了文件夹还看见一颗亮着的「继续对话」。
     await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('还在'), probeCacheWrite)
     expect(fs.readFileSync(cacheFile, 'utf8')).not.toContain('cwdExists')
 

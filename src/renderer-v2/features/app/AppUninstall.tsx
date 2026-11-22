@@ -6,7 +6,7 @@ import type { V2Bridge } from '../../types'
 import { settingsItemLabel } from '../../registry/business'
 import { Button, Dialog, Input, Notice, SettingRow } from '../../ui'
 
-export const appUninstallRowDescription = '工具和它们的配置默认会保留'
+export const appUninstallRowDescription = '默认保留工具及其配置'
 
 /**
  * Windows 和 Linux 那一行：软件里卸不了星芒，只说去哪儿卸（v4 字表批09）；工具的卸载在首页卡片的「…」里，
@@ -14,22 +14,22 @@ export const appUninstallRowDescription = '工具和它们的配置默认会保�
  */
 export function toolUninstallRowDescription(isLinux: boolean): string {
   return isLinux
-    ? '用系统的软件管理器卸载星芒；工具和它们的配置会保留'
-    : '打开 Windows「设置 → 应用」，找到「星芒AI管理工具」卸载；工具和它们的配置会保留'
+    ? '请使用系统软件管理器卸载星芒，工具及其配置将保留'
+    : '请打开 Windows「设置 → 应用」，找到「星芒AI管理工具」并卸载，工具及其配置将保留'
 }
 
 /**
- * 勾了「连同星芒替你装的命令行工具一起删」之后那条提醒。删之前确实会先备份配置（macos-uninstall.ts 的 backupCliConfigs）。
+ * 勾了「同时删除星芒安装的命令行工具」之后那条提醒。删之前确实会先备份配置（macos-uninstall.ts 的 backupCliConfigs）。
  * Grok 单说：Mac 上它在 ~/.grok（macos-grok.ts），客户自己用官方脚本装的也在那儿、分不出是谁装的，
  * removeMacManagedTools 只删星芒自己的目录，所以这里不删它，指去首页卡片上的卸载（0.2.24 深查 Mac M2，决定单 D8 选 a）。
  */
-export const appUninstallRemoveToolsWarning = '会删掉星芒替你装的 Claude Code、Codex CLI，你自己装的不动。Grok CLI 装在你自己的个人文件夹里，这里不删；要删的话，先在主页 Grok 那张卡片上点「卸载工具」。删之前会先备份它们的配置。'
+export const appUninstallRemoveToolsWarning = '将删除由星芒安装的 Claude Code、Codex CLI，自行安装的不受影响。Grok CLI 位于个人文件夹，此处不删除；如需删除，请先在首页 Grok 卡片上点击「卸载工具」。删除前将自动备份配置。'
 
 const leftoverLabels: Record<AppUninstallLeftover, string> = {
-  'cli-hooks': '有工具里的提醒设置没收回来',
-  'login-item': '开机自动打开没关掉',
-  tools: '星芒装的命令行工具没删干净',
-  records: '登录记录和聊天记录没有清除',
+  'cli-hooks': '部分工具的通知设置未能移除',
+  'login-item': '开机自启动未能关闭',
+  tools: '星芒安装的命令行工具未完全删除',
+  records: '登录记录和聊天记录未清除',
 }
 
 /** 没移到废纸篓时界面要说的话；移走了就不用说，程序马上退出。 */
@@ -37,8 +37,8 @@ export function appUninstallNotice(result: AppUninstallResult): string {
   if (result.trashed) return ''
   const leftovers = result.leftovers.map((item) => leftoverLabels[item])
   return [
-    '没能把星芒移到废纸篓。请退出星芒，在访达的「应用程序」里把它拖进废纸篓。',
-    leftovers.length ? `另外，${leftovers.join('、')}。` : '提醒设置已经收回了。',
+    '无法将星芒移至废纸篓。请退出星芒，在访达「应用程序」中将其拖入废纸篓。',
+    leftovers.length ? `另外，${leftovers.join('、')}。` : '通知设置已移除。',
   ].join('')
 }
 
@@ -90,11 +90,11 @@ export function AppUninstallDialog({
         </>
       }
     >
-      <p>会先收回星芒写进各个工具里的提醒设置，再删除星芒本身。工具的配置会保留，Claude Code、Codex 这些工具也会留着，照样能用。卸完星芒会退出。</p>
+      <p>将先移除星芒写入各工具的通知设置，再删除星芒。工具配置及 Claude Code、Codex 等工具均保留，可继续使用。卸载完成后星芒将退出。</p>
       <Input
         type="checkbox"
         label="同时清除登录记录和聊天记录"
-        hint="下次装回来要重新登录"
+        hint="重新安装后需重新登录"
         checked={clearRecords}
         disabled={busy}
         testId="app-uninstall-clear-records"
@@ -102,7 +102,7 @@ export function AppUninstallDialog({
       />
       <Input
         type="checkbox"
-        label="连同星芒替你装的命令行工具一起删"
+        label="同时删除星芒安装的命令行工具"
         checked={removeTools}
         disabled={busy}
         testId="app-uninstall-remove-tools"

@@ -94,11 +94,11 @@ export function windowIconFileName(platform: NodeJS.Platform): string {
 // 得先从托盘菜单退出，否则重新打开拿到的还是那个空白窗口。
 export function rendererCrashRecoveryDetail(platform: NodeJS.Platform): string {
   const restart = platform === 'darwin'
-    ? '从屏幕顶部菜单栏的星芒图标退出软件后重新打开'
+    ? '通过屏幕顶部菜单栏的星芒图标退出软件后重新打开'
     : platform === 'win32'
-      ? '从任务栏右下角的星芒图标退出软件后重新打开'
-      : '关掉窗口再从应用菜单重新打开（屏幕顶部或任务栏上有星芒图标的话，先从它的菜单里点「退出」）'
-  return `可以再试一次重新加载。如果还是空白，请${restart}，并在「反馈与客服」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。`
+      ? '通过任务栏右下角的星芒图标退出软件后重新打开'
+      : '关闭窗口后从应用菜单重新打开（如屏幕顶部或任务栏上有星芒图标，请先在其菜单中点击「退出」）'
+  return `可再次尝试重新加载。如仍为空白，请${restart}，并在「反馈与客服」页提交问题。正在进行的安装、下载和已保存的设置均不受影响。`
 }
 
 export interface CloseDecisionDialogText {

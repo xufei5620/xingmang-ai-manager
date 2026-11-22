@@ -370,7 +370,7 @@ async function existingDirectory(root: string): Promise<boolean> {
 }
 
 /**
- * 「接着聊」要用的那个工作目录还在不在。判断条件和主进程真正打开工具时的
+ * 「继续对话」要用的那个工作目录还在不在。判断条件和主进程真正打开工具时的
  * 那一处（provider-launch-service.ts 的 launchProviderOperation）逐字对齐：跟随符号
  * 链接、只认目录。对不齐的话界面要么把一颗其实按得动的按钮置灰，要么反过来
  * 留一颗按下去必报错的按钮。
@@ -398,7 +398,7 @@ export async function annotateWorkspaceExistence(
   const checked = new Map<string, Promise<boolean>>()
   return Promise.all(items.map(async (item) => {
     const target = item.cwd.trim()
-    // 没记录过文件夹的老记录本来就没有「接着聊」，不值得为它做一次 stat。
+    // 没记录过文件夹的老记录本来就没有「继续对话」，不值得为它做一次 stat。
     if (target === '') return item
     let pending = checked.get(target)
     if (!pending) {

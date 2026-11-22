@@ -1,12 +1,12 @@
 export const statuses = {
-  tool: { missing: ['未安装', 'neutral'], installing: ['安装中', 'accent'], configuring: ['正在配密钥', 'accent'], updating: ['更新中', 'accent'], ready: ['已配好', 'ok'], official: ['官方账号', 'ok'], unconfigured: ['待连接', 'warn'], notEnabled: ['账号未开通', 'neutral'], update: ['可更新', 'warn'], keyRevoked: ['密钥失效', 'bad'], zeroBalance: ['余额为零', 'bad'], unknownSource: ['别处的配置', 'neutral'], otherSiteKey: ['打不开', 'warn'], otherAccountKey: ['密钥待确认', 'warn'], configChanged: ['配置被改过', 'warn'], codexShadowed: ['连接设置要修', 'warn'], cliHooksStale: ['提醒设置要修', 'warn'], ccSwitch: ['被接管', 'warn'], detectionFailed: ['检测失败', 'bad'], configUnavailable: ['配置未读到', 'warn'], configBroken: ['配置坏了', 'bad'] },
+  tool: { missing: ['未安装', 'neutral'], installing: ['安装中', 'accent'], configuring: ['正在配置密钥', 'accent'], updating: ['更新中', 'accent'], ready: ['已配置', 'ok'], official: ['官方账号', 'ok'], unconfigured: ['待连接', 'warn'], notEnabled: ['账号未开通', 'neutral'], update: ['可更新', 'warn'], keyRevoked: ['密钥失效', 'bad'], zeroBalance: ['余额为零', 'bad'], unknownSource: ['其他来源配置', 'neutral'], otherSiteKey: ['无法打开', 'warn'], otherAccountKey: ['密钥待确认', 'warn'], configChanged: ['配置已变更', 'warn'], codexShadowed: ['连接设置待修复', 'warn'], cliHooksStale: ['通知设置待修复', 'warn'], ccSwitch: ['已被接管', 'warn'], detectionFailed: ['检测失败', 'bad'], configUnavailable: ['配置未获取', 'warn'], configBroken: ['配置已损坏', 'bad'] },
   environment: { ok: ['已找到', 'ok'], missing: ['未安装', 'warn'], optional: ['可选 · 未安装', 'neutral'] },
-  key: { active: ['有效', 'ok'], disabled: ['已停用', 'neutral'], expired: ['已过期', 'warn'], exhausted: ['额度用完', 'warn'], revoked: ['已撤销', 'neutral'] },
+  key: { active: ['有效', 'ok'], disabled: ['已停用', 'neutral'], expired: ['已过期', 'warn'], exhausted: ['额度已用尽', 'warn'], revoked: ['已撤销', 'neutral'] },
   order: { pending: ['等待支付', 'warn'], paid: ['已到账', 'ok'], failed: ['支付失败', 'bad'], timeout: ['已超时', 'neutral'], unknown: ['待确认', 'neutral'] },
   task: { queued: ['排队中', 'neutral'], running: ['处理中', 'accent'], done: ['已完成', 'ok'], failed: ['失败', 'bad'] },
   balance: { ok: ['', 'ok'], warn: ['', 'warn'], bad: ['', 'bad'], zero: ['余额为零', 'bad'] },
-  subscription: { active: ['生效中', 'ok'], exhausted: ['额度已用完', 'warn'], expired: ['已到期', 'neutral'] },
-  update: { idle: ['尚未检查', 'neutral'], checking: ['正在检查', 'accent'], latest: ['已是最新版本', 'ok'], available: ['发现新版本', 'warn'], downloading: ['正在下载', 'accent'], downloaded: ['已下载', 'ok'], failed: ['更新没有装上', 'bad'] },
+  subscription: { active: ['生效中', 'ok'], exhausted: ['额度已用尽', 'warn'], expired: ['已到期', 'neutral'] },
+  update: { idle: ['尚未检查', 'neutral'], checking: ['正在检查', 'accent'], latest: ['已是最新版本', 'ok'], available: ['发现新版本', 'warn'], downloading: ['正在下载', 'accent'], downloaded: ['已下载', 'ok'], failed: ['更新安装失败', 'bad'] },
   extension: { enabled: ['已启用', 'ok'], disabled: ['已停用', 'neutral'], update: ['可更新', 'warn'], authExpired: ['授权过期', 'bad'] },
   announcement: { promo: ['优惠', 'accent'], warn: ['维护', 'warn'], info: ['公告', 'neutral'] },
 } as const;

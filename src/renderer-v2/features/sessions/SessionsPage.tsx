@@ -58,7 +58,7 @@ const transcriptPreviewCount = 2
 type SessionToolFilter = Provider | 'all'
 /**
  * 工具按钮上的数。列表那一份已经按工具筛过、按搜索词滤过，数不出别的工具有几条，
- * 所以用不带筛选的那份（定「接着聊」用的最新 100 条）的统计。已下线的工具不算进「全部」。
+ * 所以用不带筛选的那份（定「继续对话」用的最新 100 条）的统计。已下线的工具不算进「全部」。
  * 还没读到（或读不到）时返回 null，按钮上就不写数，免得像是真的一条没有。
  */
 export function sessionToolCounts(
@@ -133,13 +133,13 @@ export function SessionsPage({
   /** 一条记录都没有时「去打开工具」：回首页「你的工具」。省略 = 不放这颗按钮。 */
   onOpenTools?: () => void
   /**
-   * 「接着聊」真打开之前，先过首页「打开」那几道关：核对默认模型、没连好账号先去连、
+   * 「继续对话」真打开之前，先过首页「打开」那几道关：核对默认模型、没连好账号先去连、
    * Codex 老配置先修。过不了的原因照常抛出来，挂在页顶；返回 false = 不往下走（问话框里
    * 关掉了，或者中途换了账号）。省略 = 不检查（旧行为）。
    */
   beforeResume?: (provider: Provider) => Promise<boolean>
   /**
-   * 装好的命令行工具：没装的那家「接着聊」按不动，说一句要先装好。
+   * 装好的命令行工具：没装的那家「继续对话」按不动，说一句要先装好。
    * 缺省 = 还没检测完，不因此置灰（旧行为）。
    */
   installedProviders?: readonly string[]
@@ -187,7 +187,7 @@ export function SessionsPage({
     listScanned.current = false
     return resource.reload()
   }
-  // 「接着聊」只能出现在每个(工具 × 目录)组合最近的那一条上,而当前这一页是
+  // 「继续对话」只能出现在每个(工具 × 目录)组合最近的那一条上,而当前这一页是
   // 过滤加分页之后的切片,判断不出全局最近。所以另取一份不带过滤的最新记录来
   // 定这件事,上限就是主进程允许的一页最大条数;更老的组合不给按钮(宁可少给)。
   const latestLoad = useCallback(
@@ -215,10 +215,10 @@ export function SessionsPage({
   )
   const detailResource = useResource(detailLoad)
   const detail = detailResource.data
-  // 去过的页面只藏不卸：在终端里聊完回来，这一页还是第一次进来时那份，刚聊的那条不在，「接着聊」还挂在
+  // 去过的页面只藏不卸：在终端里聊完回来，这一页还是第一次进来时那份，刚聊的那条不在，「继续对话」还挂在
   // 同一文件夹更早那条上；Claude Code、Grok CLI 按文件夹接最近一条（#292），点下去接上的是刚聊的
   // 那条。所以再显示时、显示着窗口又回到前面时，两份列表连同开着的详情一起重读，先摆着旧的、读回来再换。
-  // 窗口那一下离上次读不到 30 秒就不读；本页「接着聊」打开了终端就清零，回来头一次切回窗口一定重读。
+  // 窗口那一下离上次读不到 30 秒就不读；本页「继续对话」打开了终端就清零，回来头一次切回窗口一定重读。
   const lastRead = useRef(Number.NEGATIVE_INFINITY)
   const reloadRecords = () => {
     lastRead.current = performance.now()
@@ -313,7 +313,7 @@ export function SessionsPage({
     )
   }
   /**
-   * 「接着聊」点下去先读一份最新的对一次（已知4，同首页 resumeRecent）：窗口回到前面时的那次重读是
+   * 「继续对话」点下去先读一份最新的对一次（已知4，同首页 resumeRecent）：窗口回到前面时的那次重读是
    * 异步的，从终端直接点回来，这一下用的还是旧列表。点的这条已经不是它那个文件夹最近的了，就换上新列表、
    * 这次不打开，按钮自己挪到该挂的那条上。返回 false = 不打开；读不到就照旧打开。
    */
@@ -338,9 +338,9 @@ export function SessionsPage({
     // 列表里本来就不收已下线工具的记录；万一漏进来一条，也不替它打开。
     if (!resumable.has(session.id) || session.archived || session.cwdExists === false || !isProvider(provider))
       return
-    // 「…」里的「接着聊」不置灰，点了说清楚为什么接不上；行上和详情里的按钮是灰的，悬停有同一句。
+    // 「…」里的「继续对话」不置灰，点了说清楚为什么接不上；行上和详情里的按钮是灰的，悬停有同一句。
     if (notInstalled(session)) {
-      toast.show(`要先装好 ${providerName(provider)} 才能接着聊`, 'warn')
+      toast.show(`需先安装 ${providerName(provider)} 才能继续对话`, 'warn')
       return
     }
     void operation.execute(
@@ -348,7 +348,7 @@ export function SessionsPage({
       async () => {
         // 先对一次再过下面那几道关：问完话再说「这次不打开」，客户等于白答了一遍。
         if (resumeNeedsRecheck(session) && !(await recheckResume(session))) return null
-        // 首页「接着聊」打开前要过的那几道关，这里以前一道都没过（第四十批 B）。不往下走就和
+        // 首页「继续对话」打开前要过的那几道关，这里以前一道都没过（第四十批 B）。不往下走就和
         // 问话框里点了关掉一样：什么都不打开，不报错，也不说「已打开」。
         if (beforeResume && !(await beforeResume(provider))) return null
         try {
@@ -356,7 +356,7 @@ export function SessionsPage({
           const result = await (typeof choice === 'object'
             ? api.launchCli(provider, session.cwd, 'resumeLast', choice.resumeSessionId)
             : api.launchCli(provider, session.cwd, 'resumeLast'))
-          // 选了「先不打开」就什么都没开，首页那份「最近」也没变。
+          // 选了「暂不打开」就什么都没开，首页那份「最近」也没变。
           if (!launchDeclined(result)) {
             onSessionsChanged?.()
             // 终端里这就要多出新的对话，从终端回来头一次切回窗口不管隔了多久都重读。
@@ -370,7 +370,7 @@ export function SessionsPage({
           // 列表重读一遍让这一行跟着置灰。
           if (!isMissingWorkspace(cause)) throw cause
           void Promise.all([reloadList(), latestResource.reload()])
-          throw new Error('这条记录的文件夹已经不在了，接不上上次的对话。')
+          throw new Error('该记录的文件夹已不存在，无法继续上次的对话。')
         }
       },
       // 项目文件夹里的设置会盖过当前账号时，那句提醒跟在成功提示后面，不另弹一条。
@@ -380,13 +380,13 @@ export function SessionsPage({
           : resumeSessionNotice(result, providerName(session.provider), session.cwd),
     )
   }
-  /** 行上和详情里「接着聊」那颗按钮的悬停说明：按不动时说为什么。 */
+  /** 行上和详情里「继续对话」那颗按钮的悬停说明：按不动时说为什么。 */
   const resumeTitle = (session: Session) =>
     session.cwdExists === false
-      ? '这条记录的文件夹已经不在了，接不上上次的对话'
+      ? '该记录的文件夹已不存在，无法继续上次的对话'
       : notInstalled(session)
-        ? `要先装好 ${providerName(session.provider)}`
-        : '接着这个文件夹里最近一次对话'
+        ? `需先安装 ${providerName(session.provider)}`
+        : '继续此文件夹中最近一次对话'
   /**
    * 只传会话 id,不传路径:工作目录由主进程从记录里取并校验(必须是真实存在的
    * 文件夹),界面没有办法让资源管理器去打开别的位置。目录已经不在的那一行按钮
@@ -412,7 +412,7 @@ export function SessionsPage({
   const copySessionId = (session: Session) => {
     void navigator.clipboard.writeText(session.nativeId).then(
       () => toast.show('会话 ID 已复制', 'ok'),
-      () => toast.show('没复制上，请手动选中这行文字复制。', 'warn'),
+      () => toast.show('复制失败，请手动选中此行文字复制。', 'warn'),
     )
   }
   const busy = Boolean(operation.busy)
@@ -422,7 +422,7 @@ export function SessionsPage({
     const operations = capabilityOf(session)?.operations
     const items: Array<MenuItem | 'divider'> = []
     if (canResume)
-      items.push({ label: '接着聊', icon: Play, disabled: busy || missingWorkspace, onSelect: () => resume(session), testId: `sessions-menu-resume-${session.id}` })
+      items.push({ label: '继续对话', icon: Play, disabled: busy || missingWorkspace, onSelect: () => resume(session), testId: `sessions-menu-resume-${session.id}` })
     if (session.cwd)
       items.push({ label: '打开文件夹', icon: FolderOpen, disabled: busy || missingWorkspace, onSelect: () => openDirectory(session), testId: `sessions-open-directory-${session.id}` })
     items.push({ label: '导出对话', icon: Download, disabled: busy || !canExport(session), onSelect: () => exportSession(session), testId: `sessions-menu-export-${session.id}` })
@@ -444,7 +444,7 @@ export function SessionsPage({
     >
       <PageHead
         title="记录"
-        lead="在首页打开工具聊过的对话都在这里"
+        lead="通过首页打开工具产生的对话均在此处"
         actions={
           <Button
             variant="ghost"
@@ -522,9 +522,9 @@ export function SessionsPage({
           filtered={Boolean(keyword)}
           retry={() => void reloadList()}
           clear={() => setQuery('')}
-          emptyDescription="在首页打开工具，聊过的对话会出现在这里。"
-          searchTitle={searchContent ? `最近的对话中未找到「${keyword}」` : '没有找到相关记录'}
-          searchDescription="换个关键词，或者切换到「全部」再看看。"
+          emptyDescription="通过首页打开工具后，对话记录将显示在此处。"
+          searchTitle={searchContent ? `最近的对话中未找到「${keyword}」` : '未找到相关记录'}
+          searchDescription="请更换关键词，或切换到「全部」查看。"
           action={
             onOpenTools && (
               <Button size="sm" onClick={onOpenTools} testId="sessions-empty-open-tools">
@@ -565,9 +565,9 @@ export function SessionsPage({
                     </td>
                     <td className="v2-sessions-dir">
                       {missingWorkspace ? (
-                        <span className="v2-sessions-dir-gone" title="这个文件夹已经不在了" data-testid={`sessions-missing-${session.id}`}>
+                        <span className="v2-sessions-dir-gone" title="该文件夹已不存在" data-testid={`sessions-missing-${session.id}`}>
                           <TriangleAlert size={13} aria-hidden="true" />
-                          <span className="xm-visually-hidden">这个文件夹已经不在了：</span>
+                          <span className="xm-visually-hidden">该文件夹已不存在：</span>
                           <span>{session.cwd || '未记录文件夹'}</span>
                         </span>
                       ) : (
@@ -589,7 +589,7 @@ export function SessionsPage({
                           title={resumeTitle(session)}
                           testId={`sessions-resume-${session.id}`}
                         >
-                          接着聊
+                          继续对话
                         </Button>
                       ) : null}
                       <Menu
@@ -667,7 +667,7 @@ export function SessionsPage({
                       title={resumeTitle(selected)}
                       testId="session-detail-resume"
                     >
-                      接着聊
+                      继续对话
                     </Button>
                   )}
             </>
@@ -684,7 +684,7 @@ export function SessionsPage({
             {selected.cwdExists === false && (
               <p className="v2-session-detail-gone" role="note">
                 <TriangleAlert size={15} aria-hidden="true" />
-                <span>项目文件夹 {selected.cwd} 已经不在了，接不上上次的对话。</span>
+                <span>项目文件夹 {selected.cwd} 已不存在，无法继续上次的对话。</span>
               </p>
             )}
             <ResultNotice
@@ -728,7 +728,7 @@ export function SessionsPage({
         )}
         {selected && !selected.detailAvailable && (
           <p className="v2-transcript-missing" data-testid="session-detail-summary-only">
-            这条记录只有摘要，对话原文已经不在这台电脑上了
+            该记录仅有摘要，对话原文已不在本机
           </p>
         )}
         <ResultNotice error={detailResource.error} detail={detailResource.detail} />
@@ -756,7 +756,7 @@ export function SessionsPage({
                       {message.role !== 'user' && <BrandIcon tool={selected?.provider} size={14} />}
                       <p>
                         <span className="xm-visually-hidden">
-                          {message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : message.role}：
+                          {message.role === 'user' ? '您' : message.role === 'assistant' ? 'AI' : message.role}：
                         </span>
                         {message.text}
                       </p>
@@ -790,13 +790,13 @@ export function SessionsPage({
         body={
           <>
             <p>
-              会把这条对话从这台电脑上删掉，里面粘贴过的代码、密码和聊天内容会一起消失，删了就找不回来。
+              将从本机删除该对话，其中粘贴过的代码、密码和聊天内容将一并删除，且无法恢复。
             </p>
-            <p>只删这一条，不影响别的记录和你的项目文件。想留一份的话，先点「导出对话」。</p>
+            <p>仅删除此条，不影响其他记录及项目文件。如需保留，请先点击「导出对话」。</p>
           </>
         }
         okLabel="彻底删除"
-        cancelLabel="先不删"
+        cancelLabel="暂不删除"
         danger
         loading={operation.busy === 'delete-session'}
         onClose={() => setDeleting(null)}

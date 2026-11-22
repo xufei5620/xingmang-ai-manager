@@ -30,16 +30,16 @@ export interface McpPasteNotice {
   body: string
 }
 
-const unrecognized = '请把提供方说明里的那一整段原样复制过来：以 { 开头、以 } 结尾的那段，或者一行启动命令、一个 https:// 开头的地址都可以。'
-const noServer = '这段里没找到启动命令或服务地址，可能少复制了一部分，对照提供方说明再看看。'
-const missing = '这一段里没找到启动命令或服务地址。'
+const unrecognized = '请将提供方说明中的配置原样复制到此处：以 { 开头、以 } 结尾的整段内容，或一行启动命令、一个以 https:// 开头的地址均可。'
+const noServer = '未在内容中找到启动命令或服务地址，可能复制不完整，请对照提供方说明检查。'
+const missing = '未在内容中找到启动命令或服务地址。'
 // 三家都认的是 streamable HTTP；Codex 根本不认 SSE，所以这里不替他悄悄换成 http，免得装上了却连不上。
-const sseProblem = '它用的是老式的网络连接方式（SSE），这里加不了。提供方一般还会给一个以 /mcp 结尾的地址，换那一段粘贴就行。'
-const transportProblem = '它用的连接方式这里加不了，换提供方给的其他写法试试。'
-const urlProblem = '服务地址要以 http:// 或 https:// 开头'
+const sseProblem = '该配置使用旧版网络连接方式（SSE），无法在此添加。提供方通常还会提供以 /mcp 结尾的地址，请改为粘贴该配置。'
+const transportProblem = '该连接方式无法在此添加，请尝试提供方给出的其他配置。'
+const urlProblem = '服务地址需以 http:// 或 https:// 开头'
 
 function formatProblem(field: string): string {
-  return `这一段里的${field}格式不对，没法自动填，照提供方说明手动填下面几项吧。`
+  return `内容中的${field}格式不正确，无法自动填写，请按提供方说明手动填写下方各项。`
 }
 
 const envNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -484,21 +484,21 @@ function decodeURIComponentSafe(value: string): string {
 /** 粘贴框下面那一条提示。没粘贴时不出。 */
 export function mcpPasteNotice(result: McpPasteResult, choice: number): McpPasteNotice | null {
   if (result.status === 'empty') return null
-  if (result.status === 'failed') return { tone: 'warn', title: '没认出这段配置', body: result.problem }
+  if (result.status === 'failed') return { tone: 'warn', title: '无法识别此配置', body: result.problem }
   const server = result.servers[choice] ?? result.servers[0]
   if (!server) return null
   const named = server.name ? `「${server.name}」` : ''
-  if (!server.config) return { tone: 'warn', title: `${named || '这一段'}加不了`, body: server.problem ?? missing }
+  if (!server.config) return { tone: 'warn', title: `${named || '此配置'}无法添加`, body: server.problem ?? missing }
   const placeholders = mcpPastePlaceholders(server.config)
   const sentences = [
     placeholders.length
-      ? `下面几项已经替你填好。${placeholders.join('、')} 看起来还是说明里的示例文字，换成你自己的再点「添加」。`
-      : '下面几项已经替你填好，看一眼再点「添加」。',
+      ? `已自动填写下方各项。${placeholders.join('、')} 仍为说明中的示例文字，请替换为实际内容后点击「添加」。`
+      : '已自动填写下方各项，请确认后点击「添加」。',
   ]
-  if (result.servers.length > 1) sentences.push('一次加一个，加好以后再粘贴同一段，选下一个。')
+  if (result.servers.length > 1) sentences.push('每次添加一个，添加后可再次粘贴同一段内容并选择下一个。')
   return {
     tone: placeholders.length ? 'warn' : 'ok',
-    title: `认出来了：${server.config.type === 'stdio' ? '本地程序' : '网络服务'}${named}`,
+    title: `已识别：${server.config.type === 'stdio' ? '本地程序' : '网络服务'}${named}`,
     body: sentences.join(''),
   }
 }

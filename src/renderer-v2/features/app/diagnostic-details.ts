@@ -22,7 +22,7 @@ type DetailValue = boolean | number | string | null
  */
 const fixedLabels: Readonly<Record<string, string>> = {
   elevated: '以管理员身份运行',
-  canElevate: '这个账号能临时获得管理员权限',
+  canElevate: '该系统账号可临时获取管理员权限',
   installed: '已安装',
   running: '正在运行',
   path: '位置',

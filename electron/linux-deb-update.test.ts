@@ -179,9 +179,9 @@ describe('opening the package with the system installer', () => {
   })
 
   it('points at the opened folder only when it was actually opened', () => {
-    expect(systemInstallerFailureMessage('UPDATE_SYSTEM_INSTALLER_FAILED', true)).toContain('双击里面的安装包')
-    expect(systemInstallerFailureMessage('UPDATE_SYSTEM_INSTALLER_FAILED', false)).toContain('点「重新安装」')
-    expect(systemInstallerFailureMessage('UPDATE_SYSTEM_INSTALLER_MISSING', true)).toContain('没找到能装 .deb')
+    expect(systemInstallerFailureMessage('UPDATE_SYSTEM_INSTALLER_FAILED', true)).toContain('双击其中的安装包')
+    expect(systemInstallerFailureMessage('UPDATE_SYSTEM_INSTALLER_FAILED', false)).toContain('点击「重新安装」')
+    expect(systemInstallerFailureMessage('UPDATE_SYSTEM_INSTALLER_MISSING', true)).toContain('未找到可安装 .deb')
     expect(systemInstallerFailureMessage('UPDATE_PACKAGE_PATH_MISSING', true)).toContain('重新下载')
   })
 

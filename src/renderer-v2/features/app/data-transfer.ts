@@ -8,8 +8,8 @@ function fileNameOf(filePath: string): string {
 }
 
 export function dataTransferExportMessage(result: DataTransferExportResult): string {
-  const content = result.conversations ? `${result.conversations} 个对话和你的设置` : '你的设置'
-  return `已存好「${fileNameOf(result.outputPath)}」，里面有${content}。拷到新电脑后，在这里点「导入」。`
+  const content = result.conversations ? `${result.conversations} 个对话及设置` : '设置'
+  return `已保存「${fileNameOf(result.outputPath)}」，包含${content}。复制到新电脑后，请在此点击「导入」。`
 }
 
 /** 主进程给的设置更新去掉 version，交给设置页的保存队列；没有要改的返回 null。 */
@@ -20,8 +20,8 @@ export function settingsPatchFrom(...updates: AppSettingsV2Update[]): Omit<AppSe
 }
 
 /**
- * 这次要写的「匿名使用统计」（X-3），没有要改的返回 undefined。overwrite = 询问框里点了「换成文件里的」；
- * 点「保留这台电脑的」时这台关过的照旧关着。
+ * 这次要写的「匿名使用统计」（X-3），没有要改的返回 undefined。overwrite = 询问框里点了「使用文件中的设置」；
+ * 点「保留本机设置」时这台关过的照旧关着。
  */
 export function anonymousUsageFrom(
   preview: Pick<DataTransferImportPreview, 'anonymousUsage' | 'conflictingAnonymousUsage'>,
@@ -44,23 +44,23 @@ export interface DataTransferImportOutcome {
   settingsChanged: boolean
 }
 
-const deleteThenRetry = '在「创作」里删掉一些不要的，再点一次「导入」就能补上。'
+const deleteThenRetry = '请在「创作」中删除部分不需要的记录，再次点击「导入」。'
 
 export function dataTransferImportMessage(outcome: DataTransferImportOutcome): string {
   const { fileConversations, added, updated, skipped, signedIn, settingsChanged } = outcome
   if (fileConversations && !signedIn) {
-    return `${settingsChanged ? '设置已导入。' : ''}文件里的 ${fileConversations} 个对话要先登录，再点一次「导入」。`
+    return `${settingsChanged ? '设置已导入。' : ''}文件中的 ${fileConversations} 个对话需登录后再次点击「导入」。`
   }
-  if (!fileConversations) return settingsChanged ? '导入了你的设置。' : '文件里的设置和这台电脑上的一样，没有要改的。'
-  const alsoUpdated = updated ? `，另有 ${updated} 个对话更新成了文件里的内容` : ''
+  if (!fileConversations) return settingsChanged ? '已导入设置。' : '文件中的设置与本机一致，无需修改。'
+  const alsoUpdated = updated ? `，另有 ${updated} 个对话已更新为文件中的内容` : ''
   if (skipped && added) {
-    return `导入了 ${added} 个对话${settingsChanged ? '和你的设置' : ''}${alsoUpdated}。还有 ${skipped} 个没导进来：这台电脑最多存 ${MAX_CONVERSATIONS} 个对话，${deleteThenRetry}`
+    return `已导入 ${added} 个对话${settingsChanged ? '及设置' : ''}${alsoUpdated}。另有 ${skipped} 个未导入：本机最多保存 ${MAX_CONVERSATIONS} 个对话，${deleteThenRetry}`
   }
   if (skipped) {
-    return `${settingsChanged ? '设置已导入。' : ''}${updated ? `有 ${updated} 个对话更新成了文件里的内容。` : ''}这台电脑已经存满 ${MAX_CONVERSATIONS} 个对话，文件里的 ${skipped} 个对话没导进来。${deleteThenRetry}`
+    return `${settingsChanged ? '设置已导入。' : ''}${updated ? `${updated} 个对话已更新为文件中的内容。` : ''}本机已保存 ${MAX_CONVERSATIONS} 个对话（已达上限），文件中的 ${skipped} 个对话未导入。${deleteThenRetry}`
   }
   // 文件里的对话全都更新了，就没有「其余」可说。
-  if (!added && updated) return `有 ${updated} 个对话更新成了文件里的内容${updated < fileConversations ? '，其余这台电脑上都有了' : ''}${settingsChanged ? '，设置已导入' : ''}。`
-  if (!added) return `文件里的对话这台电脑上都有了${settingsChanged ? '，设置已导入' : ''}。`
-  return `导入了 ${added} 个对话${settingsChanged ? '和你的设置' : ''}${alsoUpdated}。`
+  if (!added && updated) return `${updated} 个对话已更新为文件中的内容${updated < fileConversations ? '，其余已存在于本机' : ''}${settingsChanged ? '，设置已导入' : ''}。`
+  if (!added) return `文件中的对话均已存在于本机${settingsChanged ? '，设置已导入' : ''}。`
+  return `已导入 ${added} 个对话${settingsChanged ? '及设置' : ''}${alsoUpdated}。`
 }

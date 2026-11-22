@@ -169,9 +169,9 @@ export function PluginsHub({
   onOpenHelp?: () => void
   /** 「自动安装 Python」装好以后叫一声，首页「运行环境」跟着变。 */
   onSystemChanged?: () => void
-  /** 「去首页安装」；缺省 = 不给这颗按钮。 */
+  /** 「前往首页安装」；缺省 = 不给这颗按钮。 */
   onOpenHome?: () => void
-  /** 「没找到想要的？告诉我们」：去「反馈与客服」；缺省 = 不放。 */
+  /** 「未找到所需插件？欢迎反馈」：去「反馈与客服」；缺省 = 不放。 */
   onRecommend?: () => void
   /** 同 BusinessActions.active：再显示时重读一遍。 */
   active?: boolean
@@ -276,9 +276,9 @@ export function PluginsHub({
     const native = nativeMcp(install)
     return Boolean(native && mcpNeedsLogin(native.authStatus))
   }
-  /** 已安装清单上那颗橙点：连不上、要登录授权的，鼠标停上去说是哪种。 */
+  /** 已安装清单上那颗橙点：无法连接、要登录授权的，鼠标停上去说是哪种。 */
   const entryWarning = (entry: HubEntry) => {
-    if (entry.installs.some((install) => installHealth(install)?.label === '连不上')) return '连不上'
+    if (entry.installs.some((install) => installHealth(install)?.label === '无法连接')) return '无法连接'
     if (entry.installs.some(installNeedsAuth)) return '需要登录授权'
     return null
   }
@@ -350,7 +350,7 @@ export function PluginsHub({
         if (authCancel.current !== authKey) return `${install.item.name} 已授权`
         const server = servers.find((entry) => entry.name === native.name)
         if (server && mcpAuthorized(server.authStatus)) return `${install.item.name} 已授权`
-        toast.show(`已取消，${install.item.name} 还没有授权`, 'neutral')
+        toast.show(`已取消，${install.item.name} 尚未授权`, 'neutral')
         return null
       },
     )
@@ -390,7 +390,7 @@ export function PluginsHub({
         await api.ensureProviderMarketplace(provider)
         await reload()
       },
-      automatic ? () => null : provider === 'codex' ? '插件目录已下载，下面就是可以安装的插件。' : '官方插件市场已添加，下面就是可以安装的插件。',
+      automatic ? () => null : provider === 'codex' ? '插件目录已下载，下方为可安装的插件。' : '官方插件市场已添加，下方为可安装的插件。',
     )
   const codexCatalogAutoTried = useRef(false)
   const codexCatalogMissing = (!pluginTools || pluginTools.includes('codex')) && snapshots.codex?.marketplace?.registered === false
@@ -407,7 +407,7 @@ export function PluginsHub({
         onSystemChanged?.()
         await reload()
       },
-      'Python 已经装好了，可以继续添加这条连接',
+      'Python 已安装，可继续添加此连接',
     )
   function runtimeNoticeActions(notice: McpRuntimeNotice) {
     const help = notice.support ? onOpenHelp : undefined
@@ -421,7 +421,7 @@ export function PluginsHub({
         )}
         {help && (
           <Button size="sm" onClick={help} testId="mcp-runtime-support">
-            找客服
+            联系客服
           </Button>
         )}
       </>
@@ -534,10 +534,10 @@ export function PluginsHub({
     if (pluginTools && !pluginTools.includes(vendor))
       return (
         <div className="v2-hub-missing" data-testid={`hub-${vendor}-missing`}>
-          <span>{vendor === 'codex' ? '装好 Codex CLI 才能看 GPT 官方插件。' : '装好 Claude Code 才能看 Claude 官方插件。'}</span>
+          <span>{vendor === 'codex' ? '安装 Codex CLI 后可查看 GPT 官方插件。' : '安装 Claude Code 后可查看 Claude 官方插件。'}</span>
           {onOpenHome && (
             <Button size="sm" icon={Download} onClick={onOpenHome} testId={`hub-${vendor}-open-home`}>
-              去首页安装
+              前往首页安装
             </Button>
           )}
         </div>
@@ -577,9 +577,9 @@ export function PluginsHub({
           {items.length ? (
             <div className="v2-hub-grid v2-hub-grid-top">{items.map(renderRow)}</div>
           ) : searching ? (
-            <Empty icon={Puzzle} title={`没有找到「${query.trim()}」`} description="换个词试试。" action={<Button size="sm" onClick={() => setQuery('')} testId="hub-clear">清除搜索</Button>} testId="hub-search-empty" />
+            <Empty icon={Puzzle} title={`未找到「${query.trim()}」`} description="请尝试其他关键词。" action={<Button size="sm" onClick={() => setQuery('')} testId="hub-clear">清除搜索</Button>} testId="hub-search-empty" />
           ) : (
-            <p className="v2-hub-empty" data-testid="hub-custom-empty">还没自己加过。服务方给了连接配置时，点右上角「添加」。</p>
+            <p className="v2-hub-empty" data-testid="hub-custom-empty">暂无自定义连接。获取服务方提供的连接配置后，请点击右上角「添加」。</p>
           )}
           {markets.length > 0 && (!pluginTools || pluginTools.includes('codex')) && (filter === 'all' || filter === 'codex') && (
             <section className="v2-hub-section" data-testid="plugins-custom-markets">
@@ -627,13 +627,13 @@ export function PluginsHub({
     return (
       <>
         {sections.length ? sections : searching ? (
-          <Empty icon={Puzzle} title={`没有找到「${query.trim()}」`} description="换个词试试。" action={<Button size="sm" onClick={() => setQuery('')} testId="hub-clear">清除搜索</Button>} testId="hub-search-empty" />
+          <Empty icon={Puzzle} title={`未找到「${query.trim()}」`} description="请尝试其他关键词。" action={<Button size="sm" onClick={() => setQuery('')} testId="hub-clear">清除搜索</Button>} testId="hub-search-empty" />
         ) : null}
         <p className="v2-hub-note">{curatedDisclaimer}</p>
         {onRecommend && (
           <button type="button" className="v2-hub-link" onClick={onRecommend} data-testid="featured-recommend">
             <MessageSquare size={14} aria-hidden="true" />
-            没找到想要的？告诉我们
+            未找到所需插件？欢迎反馈
           </button>
         )}
       </>
@@ -648,14 +648,14 @@ export function PluginsHub({
       <>
         {!local.length && !builtin.length ? (
           searching ? (
-            <Empty icon={Sparkles} title={`没有找到「${query.trim()}」`} description="换个词试试。" action={<Button size="sm" onClick={() => setQuery('')} testId="hub-clear">清除搜索</Button>} testId="hub-search-empty" />
+            <Empty icon={Sparkles} title={`未找到「${query.trim()}」`} description="请尝试其他关键词。" action={<Button size="sm" onClick={() => setQuery('')} testId="hub-clear">清除搜索</Button>} testId="hub-search-empty" />
           ) : data ? (
-            <p className="v2-hub-empty" data-testid="hub-skills-empty">还没装技能。拿到别人给的技能文件夹时，点右上角「添加」导入。</p>
+            <p className="v2-hub-empty" data-testid="hub-skills-empty">暂未安装技能。获取技能文件夹后，请点击右上角「添加」导入。</p>
           ) : null
         ) : null}
         {local.length > 0 && (
           <section className="v2-hub-section" data-testid="hub-section-skill">
-            <h2><span>装在这台电脑上</span></h2>
+            <h2><span>已安装在本机</span></h2>
             <div className="v2-hub-grid">{local.map(renderRow)}</div>
           </section>
         )}
@@ -704,7 +704,7 @@ export function PluginsHub({
         const canAuth = Boolean(native?.editable && native.transportType === 'http')
         const authKey = `auth:${install.item.id}`
         const parts = [
-          '已装好',
+          '已安装',
           installScopeSentence(install, entry.group === 'builtin'),
           ...(needsAuth ? ['需要登录授权'] : healthView ? [healthView.label] : []),
           ...(!status.enabled ? ['已停用'] : []),
@@ -727,7 +727,7 @@ export function PluginsHub({
             {native && needsAuth && canAuth && (
               <>
                 <Button size="sm" loading={operation.busy === authKey} disabled={Boolean(operation.busy)} onClick={() => login(install)} testId={`hub-auth-${provider}`}>
-                  {operation.busy === authKey ? '等你在浏览器里授权' : '登录授权'}
+                  {operation.busy === authKey ? '等待在浏览器中授权' : '登录授权'}
                 </Button>
                 {operation.busy === authKey && (
                   <Button
@@ -787,10 +787,10 @@ export function PluginsHub({
       })
     const text =
       state.state === 'tool-missing'
-        ? `这台电脑还没装 ${extensionToolName(provider)}`
+        ? `本机尚未安装 ${extensionToolName(provider)}`
         : state.state === 'vendor-only'
           ? `插件各家格式不通用，这一条只有 ${extensionFamilies[state.vendor].name} 版`
-          : '还没装'
+          : '未安装'
     return (
       <div key={provider} className={`v2-hub-where${state.state === 'tool-missing' || state.state === 'vendor-only' ? ' is-off' : ''}`} data-testid={`hub-where-${provider}`}>
         {brand}
@@ -800,12 +800,12 @@ export function PluginsHub({
         </div>
         {state.state === 'addable' && (
           <Button size="sm" disabled={Boolean(operation.busy)} onClick={() => openInstall(entry, [provider])} testId={`hub-where-add-${provider}`}>
-            装上
+            安装
           </Button>
         )}
         {state.state === 'tool-missing' && onOpenHome && (
           <Button size="sm" icon={Download} onClick={onOpenHome} testId={`hub-where-home-${provider}`}>
-            去首页安装
+            前往首页安装
           </Button>
         )}
       </div>
@@ -978,7 +978,7 @@ export function PluginsHub({
             })}
           </ul>
         ) : (
-          data && <p className="v2-hub-side-empty">{view === 'skills' ? '还没装技能' : '还没装插件'}</p>
+          data && <p className="v2-hub-side-empty">{view === 'skills' ? '暂未安装技能' : '暂未安装插件'}</p>
         )}
       </aside>
       <div className="v2-hub-main" ref={main}>
@@ -997,7 +997,7 @@ export function PluginsHub({
               <header className="v2-hub-head">
                 <div className="v2-hub-head-copy">
                   <h1>{view === 'skills' ? '技能' : '插件'}</h1>
-                  <p>{view === 'skills' ? '教 AI 做好某类事的说明书，几家 AI 通用。' : '装上插件，Claude 和 GPT 就能帮你做更多事。'}</p>
+                  <p>{view === 'skills' ? '教 AI 做好某类事的说明书，几家 AI 通用。' : '安装插件，扩展 Claude 和 GPT 的能力。'}</p>
                 </div>
                 <div className="v2-hub-tools">
                   <SearchInput value={query} onChange={setQuery} placeholder={view === 'skills' ? '搜索技能' : '搜索插件'} testId="hub-search" />
@@ -1008,7 +1008,7 @@ export function PluginsHub({
                     items={(['all', ...activeProviderIds] as const).map((value) => ({
                       label: value === 'all' ? '全部' : extensionFamilies[value].name,
                       checked: filter === value,
-                      hint: value !== 'all' && !toolsReady(value) ? '还没装' : undefined,
+                      hint: value !== 'all' && !toolsReady(value) ? '未安装' : undefined,
                       testId: `hub-filter-${value}`,
                       onSelect: () => setFilter(value),
                     }))}
@@ -1131,9 +1131,9 @@ export function PluginsHub({
           </>
         }
       >
-        <p>{`会从 ${removing ? extensionToolNames(removable(removing).map((install) => install.provider), codexViaDesktop && removing.kind !== 'plugin') : ''} 里一起移除。以后想用再装回来就行。`}</p>
+        <p>{`将同时从 ${removing ? extensionToolNames(removable(removing).map((install) => install.provider), codexViaDesktop && removing.kind !== 'plugin') : ''} 中移除。如需使用，可重新安装。`}</p>
         {/* 别的改动（开关、更新）还没回来时「移除」灰着：说一句为什么，不让按钮干转（同原来外接工具页）。 */}
-        {operation.busy && operation.busy !== 'hub-remove' && <p role="status" data-testid="hub-remove-busy">上一个操作还没完成，完成后才能移除。</p>}
+        {operation.busy && operation.busy !== 'hub-remove' && <p role="status" data-testid="hub-remove-busy">上一操作尚未完成，请完成后再移除。</p>}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>
       <Dialog
@@ -1175,16 +1175,16 @@ export function PluginsHub({
       >
         <p>
           {deletion?.install.item.kind === 'plugin'
-            ? '插件里带的技能、命令和连接会一起移除。'
+            ? '插件中的技能、命令和连接将一并移除。'
             : deletion?.install.item.kind === 'skill'
               ? '其他工具里的不受影响。以后要用，再「从文件夹导入」一次。'
               : deletion?.entry.group === 'custom'
                 ? '其他工具里的不受影响。自己加的要重新填一遍。'
-                : '其他工具里的不受影响。以后想用再装回来就行。'}
+                : '其他工具中的不受影响。如需使用，可重新安装。'}
         </p>
         {operation.busy && operation.busy !== 'delete' && (
           <p role="status" data-testid="hub-delete-busy">
-            {deletion?.install.item.kind === 'plugin' ? '上一个操作还没完成，完成后才能卸载。' : '上一个操作还没完成，完成后才能移除。'}
+            {deletion?.install.item.kind === 'plugin' ? '上一操作尚未完成，请完成后再卸载。' : '上一操作尚未完成，请完成后再移除。'}
           </p>
         )}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
@@ -1217,9 +1217,9 @@ export function PluginsHub({
           </>
         }
       >
-        <p>移除后，这个市场就不在列表里了，要用时得重新添加。</p>
+        <p>移除后，该市场将不再显示在列表中，如需使用需重新添加。</p>
         {operation.busy && operation.busy !== 'market-delete' && (
-          <p role="status" data-testid="plugins-market-delete-busy">上一个操作还没完成，完成后才能移除。</p>
+          <p role="status" data-testid="plugins-market-delete-busy">上一操作尚未完成，请完成后再移除。</p>
         )}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>

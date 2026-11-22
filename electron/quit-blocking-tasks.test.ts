@@ -130,17 +130,17 @@ describe('unfinished work before restarting to install an update', () => {
   it('uses the approved sentence word for word when all three are running', () => {
     expect(buildUnfinishedRestartWorkPrompt(['canvas', 'chat', 'video-compose'])).toEqual({
       kinds: ['chat', 'video-compose', 'canvas'],
-      message: '还有任务没做完',
-      detail: '对话还在回复或出图，视频剪辑还在拼接，或者画布还在生成。现在重启会把它们停下，出到一半的图可能已经扣费。',
-      buttons: ['等它做完', '仍然重启'],
+      message: '仍有任务未完成',
+      detail: '对话仍在回复或生成图片，视频剪辑仍在合成，或画布仍在生成。现在重启将停止这些任务，生成中的图片可能已产生扣费。',
+      buttons: ['等待完成', '仍然重启'],
     })
   })
 
   it('lists only the work that is actually running', () => {
-    expect(buildUnfinishedRestartWorkPrompt(['chat'])?.detail).toBe('对话还在回复或出图。现在重启会把它们停下，出到一半的图可能已经扣费。')
-    expect(buildUnfinishedRestartWorkPrompt(['video-compose'])?.detail).toBe('视频剪辑还在拼接。现在重启会把它们停下，出到一半的图可能已经扣费。')
-    expect(buildUnfinishedRestartWorkPrompt(['canvas'])?.detail).toBe('画布还在生成。现在重启会把它们停下，出到一半的图可能已经扣费。')
-    expect(buildUnfinishedRestartWorkPrompt(['canvas', 'chat'])?.detail).toBe('对话还在回复或出图，或者画布还在生成。现在重启会把它们停下，出到一半的图可能已经扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['chat'])?.detail).toBe('对话仍在回复或生成图片。现在重启将停止这些任务，生成中的图片可能已产生扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['video-compose'])?.detail).toBe('视频剪辑仍在合成。现在重启将停止这些任务，生成中的图片可能已产生扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['canvas'])?.detail).toBe('画布仍在生成。现在重启将停止这些任务，生成中的图片可能已产生扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['canvas', 'chat'])?.detail).toBe('对话仍在回复或生成图片，或画布仍在生成。现在重启将停止这些任务，生成中的图片可能已产生扣费。')
   })
 
   it('names each kind once however often it is reported', () => {

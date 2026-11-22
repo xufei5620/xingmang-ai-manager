@@ -110,9 +110,11 @@ export async function clearLoginRecords(dataDirectory: string, report?: (line: s
 
 // 聊天那一半：新版存在 chat-history，旧版本存在界面的本地存储（Local Storage）
 // 里——新版只在迁移成功后才删那份，没打开过新版聊天的老用户那份一直都在。本地
-// 存储里另有几样界面偏好一起没了，卸载时无所谓。名字与 main.ts 里的写法、
+// 存储里另有几样界面偏好一起没了，卸载时无所谓。做过的视频（「创作」里和对话排在
+// 一起的那几条）0.2.24 及以前也在本地存储里、随它一起清；0.2.25 起一条一个文件放在
+// video-projects，跟着列进来，勾了这一项清掉的东西不比以前少。名字与 main.ts 里的写法、
 // Chromium 的目录名对应，uninstall-cleanup.test.ts 钉住。
-export const chatHistoryDirectoryNames = ['chat-history', 'Local Storage']
+export const chatHistoryDirectoryNames = ['chat-history', 'Local Storage', 'video-projects']
 
 // 卸载时整个删掉的一个目录：report 是报告行的前缀（只给排查的人看），label 进错误里的
 // 中文，maxDepth 以内才往下删——再深就不是我们写的东西。
@@ -122,7 +124,7 @@ interface OwnedTree {
   maxDepth: number
 }
 
-// chat-history 是两层，Local Storage 是 leveldb 下一层。
+// chat-history 和 video-projects 是两层，Local Storage 是 leveldb 下一层。
 const chatHistoryTree: OwnedTree = { report: 'chat history', label: '聊天记录', maxDepth: 6 }
 
 function reportTreeFailure(tree: OwnedTree, report: ((line: string) => void) | undefined, error: unknown): void {
@@ -331,7 +333,7 @@ export async function inspectUninstallAccount(
 //
 // Codex 的位置刻意不读 CODEX_HOME：这一支带着管理员身份，而那个环境变量是普通权限
 // 就能改的，不该由它决定这里去改哪个目录下的文件。设了 CODEX_HOME 的人很少，他们的
-// Codex 提醒设置留着，首页下次会提示「修好它」（如果重装回来）。
+// Codex 提醒设置留着，首页下次会提示「立即修复」（如果重装回来）。
 export function uninstallProviderConfigRoots(userHome = os.homedir()): ProviderConfigRoots {
   return defaultProviderConfigRoots(userHome, {})
 }

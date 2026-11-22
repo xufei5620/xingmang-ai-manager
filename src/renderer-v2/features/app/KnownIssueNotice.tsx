@@ -38,10 +38,10 @@ export function knownIssueFor(issues: readonly KnownIssue[] | undefined, place: 
  * 固定补一句「不是你这边的问题」。
  */
 export function knownIssueBody(issue: KnownIssue): string {
-  return `${issue.message} 这不是你这边的问题，修好以后这条提示会自己消失。`
+  return `${issue.message} 此问题与本机无关，修复后提示将自动消失。`
 }
 
-const knownIssueActionLabels: Record<KnownIssueAction, string> = { update: '查看更新', support: '找客服' }
+const knownIssueActionLabels: Record<KnownIssueAction, string> = { update: '查看更新', support: '联系客服' }
 
 // 一份状态文件最多八条（service-status.ts），记再多也只是这次打开软件关过的那些。
 const maxDismissedKnownIssues = 16
@@ -74,6 +74,6 @@ export function KnownIssueNotice({ issue, onDismiss, onAction }: {
   onAction: (action: KnownIssueAction) => void
 }) {
   const action = issue.action
-  return <Notice tone="warn" title="我们已经知道这个问题" body={knownIssueBody(issue)} onDismiss={onDismiss} testId="known-issue-notice"
+  return <Notice tone="warn" title="已知问题，正在修复" body={knownIssueBody(issue)} onDismiss={onDismiss} testId="known-issue-notice"
     actions={action ? <Button size="sm" testId={`known-issue-notice-${action}`} onClick={() => onAction(action)}>{knownIssueActionLabels[action]}</Button> : undefined} />
 }

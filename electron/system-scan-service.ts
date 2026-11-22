@@ -184,7 +184,7 @@ export interface DarwinGrokVersionProbe {
 /**
  * Mac 上 Grok 的版本只认 ~/.grok/bin/grok 那条链接选中的、xAI 签过名的程序。读不出来分两种：
  * 认不出它（不是这几种布局、签名或版本不对）和一时没核成（抄盘、起进程失败），只有前一种让首页
- * 改给「用星芒装一份」。
+ * 改给「使用星芒安装」。
  */
 export async function probeDarwinGrokVersion(
   homeDirectory: string,
@@ -1000,7 +1000,7 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
         installation: null,
       }
     }
-    // Mac 上认不出来路的 Codex / Grok（R1）：首页改给「用星芒装一份」，见 ToolStatus.unrecognizedInstall。
+    // Mac 上认不出来路的 Codex / Grok（R1）：首页改给「使用星芒安装」，见 ToolStatus.unrecognizedInstall。
     let unrecognized = false
     const safeNativeCommand = installation.source === 'native' && provider !== 'grok'
       ? await resolveVerifiedCliCommand(provider, cliEnvironment, windowsExecutionMode, {
