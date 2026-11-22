@@ -479,9 +479,9 @@ describe('tool model check', () => {
       expect(order).toEqual(['checked', 'write'])
 
       const open = retiredGrok()
-      await expect(open.checker.replaceRetired('grok', { beforeReplace: async () => { throw new Error('工具可能正开着，这次先不换') } })).resolves.toBe(false)
+      await expect(open.checker.replaceRetired('grok', { beforeReplace: async () => { throw new Error('工具可能正在运行，本次暂不更换') } })).resolves.toBe(false)
       expect(open.deps.replaceModel).not.toHaveBeenCalled()
-      expect(open.deps.log).toHaveBeenCalledWith('warn', 'tool-models.retired-replace-failed', expect.any(String), expect.objectContaining({ provider: 'grok', reason: '工具可能正开着，这次先不换' }))
+      expect(open.deps.log).toHaveBeenCalledWith('warn', 'tool-models.retired-replace-failed', expect.any(String), expect.objectContaining({ provider: 'grok', reason: '工具可能正在运行，本次暂不更换' }))
     })
 
     it('leaves a model alone at startup unless it is retired and the account no longer lists it', async () => {
@@ -558,9 +558,9 @@ describe('tool model check', () => {
       expect(order).toEqual(['checked', 'write'])
 
       const open = outdatedCodex()
-      await expect(open.checker.syncPicker('codex', { beforeRefresh: async () => { throw new Error('Codex 可能正开着，这次先不写') } })).resolves.toBe(false)
+      await expect(open.checker.syncPicker('codex', { beforeRefresh: async () => { throw new Error('Codex 可能正在运行，本次暂不写入') } })).resolves.toBe(false)
       expect(open.deps.refreshPicker).not.toHaveBeenCalled()
-      expect(open.deps.log).toHaveBeenCalledWith('warn', 'tool-models.picker-refresh-failed', expect.any(String), { provider: 'codex', reason: 'Codex 可能正开着，这次先不写' })
+      expect(open.deps.log).toHaveBeenCalledWith('warn', 'tool-models.picker-refresh-failed', expect.any(String), { provider: 'codex', reason: 'Codex 可能正在运行，本次暂不写入' })
     })
 
     it('does not swap at startup for an account that took over while the list was loading', async () => {

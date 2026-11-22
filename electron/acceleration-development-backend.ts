@@ -94,7 +94,7 @@ export interface AccelerationDevelopmentBackend extends AccelerationApi {
    * 只是这次会话不扣免费时长、免费时长用完也照样连，也就没有到点断开这回事；
    * 什么时候断由宿主决定（codex-desktop-acceleration.ts）。状态里带 `autoStartedBy`，
    * 加速页与托盘上看不见它（acceleration-service 的 userAccelerationState），所以它
-   * 连不上、意外断开、撞上别的代理软件都不在加速页上留话。
+   * 连不上、意外断开、撞上其他代理软件都不在加速页上留话。
    * 刻意不进 AccelerationApi：渲染层没有通道能要到一次不计时的连接。
    */
   startAutomaticAcceleration(scope: string, mode: AccelerationState['mode'], lineId?: string): Promise<AccelerationState>

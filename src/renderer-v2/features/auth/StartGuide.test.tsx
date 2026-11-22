@@ -457,10 +457,10 @@ describe('guide install failure wording', () => {
   })
 
   it('keeps the next step the main process wrote when the official registry check could not connect', () => {
-    const network = guideInstallFailure(new Error('Claude Code 安装失败：安装前需先在 npm 官方源核对安装清单，这一步没连上（错误码 ENOTFOUND）。请更换网络（如手机热点）后重试。'), 'Claude Code')
+    const network = guideInstallFailure(new Error('Claude Code 安装失败：安装前需先在 npm 官方源核对安装清单，此步骤连接失败（错误码 ENOTFOUND）。请更换网络（如手机热点）后重试。'), 'Claude Code')
     expect(network.message).toBe('Claude Code 安装失败（无法连接工具的官方下载站）。请更换网络（如手机热点）后重试。请点击「重试」；如仍失败，请点击「需要帮助」。')
     expect(network.reason).toBe('无法连接工具的官方下载站')
-    expect(guideInstallFailure(new Error('Claude Code 安装失败：安装前需先在 npm 官方源核对安装清单，这一步没连上（错误码 ECONNRESET）。请在「设置 › 网络加速」中开启加速后重试。'), 'Claude Code').message)
+    expect(guideInstallFailure(new Error('Claude Code 安装失败：安装前需先在 npm 官方源核对安装清单，此步骤连接失败（错误码 ECONNRESET）。请在「设置 › 网络加速」中开启加速后重试。'), 'Claude Code').message)
       .toBe('Claude Code 安装失败（无法连接工具的官方下载站）。请在「设置 › 网络加速」中开启加速后重试。请点击「重试」；如仍失败，请点击「需要帮助」。')
   })
 })

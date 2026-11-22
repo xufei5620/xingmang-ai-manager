@@ -313,22 +313,22 @@ export function buildConnectionProbe(
   if (!inspection.exists) {
     return blocked({
       layer: 'unconfigured',
-      summary: `还没有给 ${name} 写入星芒配置`,
-      nextStep: '在首页给这个工具写入星芒密钥，写完再回来自检',
+      summary: `尚未为 ${name} 写入星芒配置`,
+      nextStep: '请在首页为该工具写入星芒密钥，完成后再进行自检',
     })
   }
   if (!inspection.hasApiKey) {
     return blocked({
       layer: 'unconfigured',
-      summary: `${name} 的配置里还没有密钥`,
-      nextStep: '先在首页登录星芒账号并写入密钥，再回来自检',
+      summary: `${name} 的配置中尚无密钥`,
+      nextStep: '请先在首页登录星芒账号并写入密钥，再进行自检',
     })
   }
   if (!inspection.actualBaseUrl) {
     return blocked({
       layer: 'unconfigured',
-      summary: `${name} 的配置里还没有服务地址`,
-      nextStep: '在首页重新写入一次配置，让工具重新指向星芒服务',
+      summary: `${name} 的配置中尚无服务地址`,
+      nextStep: '请在首页重新写入配置，使工具重新指向星芒服务',
     })
   }
   // matchesRelay 是拿 inspection.baseUrl 对账出来的，而 baseUrl 来自调用方
@@ -339,8 +339,8 @@ export function buildConnectionProbe(
   if (inspection.baseUrl !== site.providerBaseUrls[provider]) {
     return blocked({
       layer: 'config',
-      summary: `${name} 的配置与当前账号不是同一套，已取消自检`,
-      nextStep: '在首页重新写入一次星芒密钥，再回来自检',
+      summary: `${name} 的配置与当前账号不一致，已取消自检`,
+      nextStep: '请在首页重新写入星芒密钥，再进行自检',
     })
   }
   if (!inspection.matchesRelay) {
@@ -348,8 +348,8 @@ export function buildConnectionProbe(
     // 用户是无感的，说出来只会制造困惑。
     return blocked({
       layer: 'config',
-      summary: `${name} 当前的配置没有指向星芒服务`,
-      nextStep: '自检只会向星芒服务发请求。请先在首页把这个工具重新写入一次星芒密钥',
+      summary: `${name} 当前的配置未指向星芒服务`,
+      nextStep: '自检仅向星芒服务发送请求。请先在首页为该工具重新写入星芒密钥',
     })
   }
   // 星芒自己发的请求用的是这张表的地址和 Key，当然通；可 Codex 本体不认写在
@@ -357,8 +357,8 @@ export function buildConnectionProbe(
   if (inspection.codexProviderShadowed === true) {
     return blocked({
       layer: 'config',
-      summary: `${name} 的配置里有一处它认不出，打开会连不上`,
-      nextStep: '回首页点这一行的「立即修复」，改之前会先备份',
+      summary: `${name} 的配置中有一处无法识别，打开后将无法连接`,
+      nextStep: '请返回首页点击该行的「立即修复」，修改前将自动备份',
     })
   }
   const model = wireModel(provider, inspection.model || defaultCliModels[provider])
@@ -383,7 +383,7 @@ function planProbe(
     return blocked({
       layer: 'config',
       summary: error instanceof Error ? error.message : '配置里的服务地址无法使用',
-      nextStep: '在首页重新写入一次配置，让工具重新指向星芒服务',
+      nextStep: '请在首页重新写入配置，使工具重新指向星芒服务',
     }, model)
   }
   return {
@@ -491,8 +491,8 @@ export function classifyConnectionResponse(
     return {
       ok: false,
       layer: 'credential',
-      summary: '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号',
-      nextStep: '先重新登录，再在首页重新写入一次密钥',
+      summary: '密钥被拒绝（HTTP 401），可能已被吊销或属于其他账号',
+      nextStep: '请先重新登录，再在首页重新写入密钥',
     }
   }
   // new-api answers a group with no usable channel as a JSON 503 naming the
@@ -509,7 +509,7 @@ export function classifyConnectionResponse(
       ok: false,
       layer: 'credential',
       summary: `密钥被拒绝（HTTP ${status}），可能已被禁用`,
-      nextStep: '到「个人中心 › 密钥管理」看这个工具的密钥是否还有效，必要时重新写入',
+      nextStep: '请在「个人中心 › 密钥管理」中确认该工具的密钥是否仍然有效，必要时重新写入',
     }
   }
   if (status === 402) return outOfQuota(status)
@@ -518,7 +518,7 @@ export function classifyConnectionResponse(
       ok: false,
       layer: 'quota',
       summary: `请求过于频繁或已达用量上限（HTTP ${status}）`,
-      nextStep: '稍等片刻再试；若一直如此，请到「个人中心」查看余额和用量',
+      nextStep: '请稍候片刻后重试；如持续出现，请在「个人中心」查看余额和用量',
     }
   }
   if (groupAnswer || (hasGroupHint && !hasModelHint)) {
@@ -528,8 +528,8 @@ export function classifyConnectionResponse(
     return {
       ok: false,
       layer: 'model',
-      summary: `星芒服务不认识模型 ${model}（HTTP ${status}）`,
-      nextStep: '在首页把这个工具的模型改成列表里仍然可用的一个，再自检一次',
+      summary: `星芒服务无法识别模型 ${model}（HTTP ${status}）`,
+      nextStep: '请在首页将该工具的模型更换为列表中仍可用的模型，再重新自检',
     }
   }
   if (hasQuotaHint) return outOfQuota(status)
@@ -538,15 +538,15 @@ export function classifyConnectionResponse(
       ok: false,
       layer: 'credential',
       summary: `密钥被拒绝（HTTP ${status}）`,
-      nextStep: '先重新登录，再在首页重新写入一次密钥',
+      nextStep: '请先重新登录，再在首页重新写入密钥',
     }
   }
   if (status === 404 || status === 405) {
     return {
       ok: false,
       layer: 'protocol',
-      summary: `星芒服务上没有这个接口（HTTP ${status}）`,
-      nextStep: '在首页重新写入一次配置，让服务地址回到星芒服务的标准地址',
+      summary: `星芒服务上不存在该接口（HTTP ${status}）`,
+      nextStep: '请在首页重新写入配置，使服务地址恢复为星芒服务的标准地址',
     }
   }
   if (status >= 500) {
@@ -554,14 +554,14 @@ export function classifyConnectionResponse(
       ok: false,
       layer: 'unknown',
       summary: `星芒服务暂时异常（HTTP ${status}）`,
-      nextStep: '稍后再试一次；若持续出现请把这条结果发给客服',
+      nextStep: '请稍后重试；如持续出现，请将此结果发送给客服',
     }
   }
   return {
     ok: false,
     layer: 'protocol',
-    summary: `星芒服务拒绝了这次最小请求（HTTP ${status}）`,
-    nextStep: '把下面的原文发给客服，可以直接定位问题',
+    summary: `星芒服务拒绝了本次最小请求（HTTP ${status}）`,
+    nextStep: '请将下方原文发送给客服，以便直接定位问题',
   }
 }
 
@@ -576,7 +576,7 @@ function classifyGenerationSuccess(
       ok: false,
       layer: 'protocol',
       summary: `服务返回了 HTTP ${status}，但内容不是 ${name} 能识别的 API 响应`,
-      nextStep: '多半是服务地址指到了网页而不是 API。在首页重新写入一次配置后再试',
+      nextStep: '通常是服务地址指向了网页而非 API。请在首页重新写入配置后重试',
     }
   }
   return {
@@ -584,7 +584,7 @@ function classifyGenerationSuccess(
     layer: 'network',
     summary: `连接正常，${model} 可以直接使用`,
     nextStep: '无需处理',
-    evidence: `已用 ${model} 发过一次最小请求`,
+    evidence: `已使用 ${model} 发送一次最小请求`,
   }
 }
 
@@ -603,7 +603,7 @@ function classifyModelCatalogSuccess(
       ok: false,
       layer: 'protocol',
       summary: `服务返回了 HTTP ${status}，但内容不是 ${name} 能识别的模型清单`,
-      nextStep: '多半是服务地址指到了网页而不是 API。在首页重新写入一次配置后再试',
+      nextStep: '通常是服务地址指向了网页而非 API。请在首页重新写入配置后重试',
     }
   }
   const models = parseModelIds(payload)
@@ -612,8 +612,8 @@ function classifyModelCatalogSuccess(
     return {
       ok: false,
       layer: 'model',
-      summary: `当前账号可用的 ${models.length} 个模型里没有 ${model}`,
-      nextStep: '在首页把这个工具的模型改成列表里仍然可用的一个，再自检一次',
+      summary: `当前账号可用的 ${models.length} 个模型中没有 ${model}`,
+      nextStep: '请在首页将该工具的模型更换为列表中仍可用的模型，再重新自检',
     }
   }
   return {
@@ -633,8 +633,8 @@ function serviceUnavailable(status: number): LayerOutcome & { ok: boolean } {
   return {
     ok: false,
     layer: 'service',
-    summary: `服务暂时不可用（HTTP ${status}），多半在维护或线路繁忙`,
-    nextStep: '你这边不用做任何改动，密钥和配置都不用动，稍后再自检一次就行',
+    summary: `服务暂时不可用（HTTP ${status}），可能正在维护或线路繁忙`,
+    nextStep: '您无需做任何改动，密钥和配置均无需调整，请稍后重新自检',
   }
 }
 
@@ -653,7 +653,7 @@ function webPageInsteadOfApi(): LayerOutcome & { ok: boolean } {
     ok: false,
     layer: 'network',
     summary: networkFailureMessages.intercepted,
-    nextStep: '在浏览器里完成上网认证，或改用手机热点后再自检一次；密钥和配置都不用动',
+    nextStep: '请在浏览器中完成上网认证，或改用手机热点后重新自检；密钥和配置均无需调整',
   }
 }
 
@@ -675,8 +675,8 @@ function keyQuotaExhausted(name: string, status: number): LayerOutcome & { ok: b
   return {
     ok: false,
     layer: 'quota',
-    summary: `${name} 的额度用完了（HTTP ${status}），这是给这个工具设的上限`,
-    nextStep: '到「个人中心 › 密钥管理」的「每个工具的额度上限」里调高这个工具的额度，调好后再自检一次',
+    summary: `${name} 的额度已用完（HTTP ${status}），这是为该工具设置的上限`,
+    nextStep: '请在「个人中心 › 密钥管理」的「每个工具的额度上限」中调高该工具的额度，再重新自检',
   }
 }
 
@@ -685,7 +685,7 @@ function outOfQuota(status: number): LayerOutcome & { ok: boolean } {
     ok: false,
     layer: 'quota',
     summary: `账号额度不足（HTTP ${status}）`,
-    nextStep: '到「个人中心」查看余额，充值后即可继续使用',
+    nextStep: '请在「个人中心」查看余额，充值后即可继续使用',
   }
 }
 
@@ -694,7 +694,7 @@ function noAvailableChannel(status: number): LayerOutcome & { ok: boolean } {
     ok: false,
     layer: 'group',
     summary: `当前账号分组下没有可用渠道（HTTP ${status}）`,
-    nextStep: '到「个人中心」确认这个工具对应的套餐仍在有效期内，再点一次「重新写入密钥」重新签发',
+    nextStep: '请在「个人中心」确认该工具对应的套餐仍在有效期内，再点击「重新写入密钥」重新签发',
   }
 }
 
@@ -725,15 +725,15 @@ export function classifyConnectionFailure(error: unknown): LayerOutcome & { ok: 
     return {
       ok: false,
       layer: 'network',
-      summary: '请求超时，没有收到星芒服务的回应',
-      nextStep: '检查网络或代理；若开着 Clash 的 TUN 模式，先关掉再试',
+      summary: '请求超时，未收到星芒服务的响应',
+      nextStep: '请检查网络或代理；如已开启 Clash 的 TUN 模式，请先关闭后重试',
     }
   }
   return {
     ok: false,
     layer: 'network',
-    summary: '连不上星芒服务',
-    nextStep: '检查网络或代理设置；公司网络和部分校园网会拦截这个域名',
+    summary: '无法连接星芒服务',
+    nextStep: '请检查网络或代理设置；公司网络和部分校园网可能拦截该域名',
   }
 }
 
@@ -816,8 +816,8 @@ export async function runConnectionProbe(
         return finish({
           ok: false,
           layer: 'protocol',
-          summary: '请求被重定向到了别的地址，已拒绝',
-          nextStep: '在首页重新写入一次配置；若仍然如此，请把这条结果发给客服',
+          summary: '请求被重定向至其他地址，已拒绝',
+          nextStep: '请在首页重新写入配置；如仍出现，请将此结果发送给客服',
         }, { endpoint: plan.url, model: plan.model, status: response.status })
       }
     }
@@ -825,8 +825,8 @@ export async function runConnectionProbe(
       return finish({
         ok: false,
         layer: 'protocol',
-        summary: `星芒服务要求跳转到别的地址（HTTP ${response.status}），已拒绝`,
-        nextStep: '在首页重新写入一次配置；若仍然如此，请把这条结果发给客服',
+        summary: `星芒服务要求跳转至其他地址（HTTP ${response.status}），已拒绝`,
+        nextStep: '请在首页重新写入配置；如仍出现，请将此结果发送给客服',
       }, { endpoint: plan.url, model: plan.model, status: response.status })
     }
     let bodyText: string
@@ -844,7 +844,7 @@ export async function runConnectionProbe(
         ok: false,
         layer: 'protocol',
         summary: `星芒服务返回的内容无法读取（HTTP ${response.status}）`,
-        nextStep: '在首页重新写入一次配置；若仍然如此，请把这条结果发给客服',
+        nextStep: '请在首页重新写入配置；如仍出现，请将此结果发送给客服',
       }, {
         endpoint: plan.url,
         model: plan.model,

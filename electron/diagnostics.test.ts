@@ -146,7 +146,7 @@ describe('diagnostics', () => {
     })
     expect(report.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
       state: 'pass',
-      summary: 'Mac 不需要这一项',
+      summary: 'Mac 无需此项',
       details: { required: false, installed: null, path: null },
     })
     expect(inspectPowerShell).not.toHaveBeenCalled()
@@ -184,7 +184,7 @@ describe('diagnostics', () => {
 
     expect(found.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
       state: 'pass',
-      summary: '可用，会用「深度终端」打开工具',
+      summary: '可用，将使用「深度终端」打开工具',
       details: { required: true, installed: true, terminal: 'deepin-terminal', path: expect.stringContaining('deepin-terminal') },
     })
     const failed = missing.items.find((item) => item.code === 'SYSTEM_POWERSHELL')
@@ -207,7 +207,7 @@ describe('diagnostics', () => {
     const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'WINDOWS_ARM')
     expect(item).toMatchObject({ title: '电脑芯片', state: 'pass', details: { nodeMachine: 'arm64', appArch: 'x64' } })
     expect(item?.summary).toContain('Node.js 已是 ARM 版')
-    expect(item?.summary).toContain('星芒本身暂时只有普通电脑版')
+    expect(item?.summary).toContain('星芒目前仅提供普通电脑版')
     expect(item?.summary).not.toMatch(/arm64|x64|x86|模拟/i)
     expect(inspectExecutableMachine).toHaveBeenCalledWith(path.join(home, 'bin', 'node.exe'))
 
@@ -217,10 +217,10 @@ describe('diagnostics', () => {
 
   it('words the ARM notice for a missing, an emulated and an unknown Node.js', () => {
     expect(buildWindowsArmSummary({ nodeInstalled: false, nodeMachine: null, appArch: 'arm64' }))
-      .toBe('这台电脑是 ARM 芯片，装 Node.js 时会自动装 ARM 版，之后装的工具跑起来更快、更省电')
+      .toBe('本机为 ARM 芯片，安装 Node.js 时将自动安装 ARM 版，此后安装的工具运行更快、更省电')
     expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine: 'x64', appArch: 'arm64' }))
-      .toContain('现有的 Node.js 是给普通电脑用的版本，工具能正常用')
-    expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine: null, appArch: 'arm64' })).toBe('这台电脑是 ARM 芯片')
+      .toContain('现有的 Node.js 为普通电脑版本，工具可正常使用')
+    expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine: null, appArch: 'arm64' })).toBe('本机为 ARM 芯片')
     for (const nodeMachine of [null, 'x64', 'arm64', 'x86'] as const) {
       expect(buildWindowsArmSummary({ nodeInstalled: true, nodeMachine, appArch: 'x64' })).not.toMatch(/arm64|x64|x86/i)
     }
@@ -322,7 +322,7 @@ describe('diagnostics', () => {
       ['OPERATING_SYSTEM', '操作系统'],
       ['WINDOWS_ARM', '电脑芯片'],
       ['ADMINISTRATOR', '运行权限'],
-      ['SYSTEM_POWERSHELL', '打开工具用的命令窗口'],
+      ['SYSTEM_POWERSHELL', '打开工具使用的命令窗口'],
       ['RUNTIME_NODE', 'Node.js'],
       ['RUNTIME_NPM', 'Node.js 自带的安装组件'],
       ['RUNTIME_PYTHON', 'Python'],
@@ -332,20 +332,20 @@ describe('diagnostics', () => {
       ...tools('PROVIDER', ' 连接设置'),
       ['XINGMANG_NETWORK', '星芒 AI 网络'],
       ['CERTIFICATE_TRUST', '安全证书'],
-      ['RELAY_DNS', '查网址的服务（DNS）'],
+      ['RELAY_DNS', '域名解析服务（DNS）'],
       ['DISK_SPACE', '磁盘空间'],
-      ['DOCUMENTS_WRITABLE', '「文档」文件夹能不能写'],
+      ['DOCUMENTS_WRITABLE', '「文档」文件夹是否可写入'],
       ['AI_OUTPUT', 'AI 作品保存位置'],
       ['ACCELERATION_BUNDLE', '加速功能'],
       ['FOLDER_RELOCATED', '文件夹位置'],
       ['CLASH_VERGE_TUN', '代理软件的全局接管模式'],
-      ['PROXY_ENVIRONMENT', '电脑里的代理设置'],
-      ['SYSTEM_PROXY_SOFTWARE', '别的代理软件'],
-      ['PROVIDER_ENVIRONMENT_OVERRIDE', '电脑里另外设过的工具地址或密钥'],
-      ['WORKSPACE_CONFIG_OVERRIDE', '项目文件夹里的设置'],
-      ['CODEX_DOTENV', 'Codex 文件夹里的额外设置'],
-      ['CLAUDE_BYPASS_PERMISSIONS', 'Claude Code 跑命令前要不要先问你'],
-      ['HOME_FOLDER_LEFTOVERS', '个人文件夹里早先留下的设置'],
+      ['PROXY_ENVIRONMENT', '电脑中的代理设置'],
+      ['SYSTEM_PROXY_SOFTWARE', '其他代理软件'],
+      ['PROVIDER_ENVIRONMENT_OVERRIDE', '电脑中另行设置的工具地址或密钥'],
+      ['WORKSPACE_CONFIG_OVERRIDE', '项目文件夹中的设置'],
+      ['CODEX_DOTENV', 'Codex 文件夹中的额外设置'],
+      ['CLAUDE_BYPASS_PERMISSIONS', 'Claude Code 执行命令前是否征求确认'],
+      ['HOME_FOLDER_LEFTOVERS', '个人文件夹中早期遗留的设置'],
     ])
     // Mac 上没有「电脑芯片」和「文档」那两项，其余次序不变。
     const mac = (await runDiagnostics({ ...everything, platform: 'darwin' })).items.map((item) => item.code)
@@ -399,7 +399,7 @@ describe('diagnostics', () => {
     const report = await runDiagnostics(input)
 
     expect(report.items.find((item) => item.code === 'PROVIDER_CLAUDE'))
-      .toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { file1NotUtf8: true } })
+      .toMatchObject({ state: 'pass', summary: '已连接当前账号', details: { file1NotUtf8: true } })
     expect(report.items.find((item) => item.code === 'PROVIDER_CODEX')?.details).not.toHaveProperty('file1NotUtf8')
     expect(createDiagnosticsExport(report, { userHome: home })).toContain('"file1NotUtf8": true')
   })
@@ -432,7 +432,7 @@ describe('diagnostics', () => {
 
       expect(item).toMatchObject({
         state: 'pass',
-        summary: '已连到当前账号',
+        summary: '已连接当前账号',
         details: { matchesRelay: true, routeLine: '线路1', currentRouteLine: '线路2' },
       })
       // 两条线路的名字里都不带地址，导出的报告照常可以发给客服。
@@ -444,7 +444,7 @@ describe('diagnostics', () => {
         const site = line === 'direct' ? directSite : primarySite
         const item = codexItem(await runDiagnostics(onLine(line, true, `${site.providerBaseUrls.codex}/`)))
 
-        expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { routeLine: line === 'direct' ? '线路2' : '线路1' } })
+        expect(item).toMatchObject({ state: 'pass', summary: '已连接当前账号', details: { routeLine: line === 'direct' ? '线路2' : '线路1' } })
         expect(item?.details).not.toHaveProperty('currentRouteLine')
       }
     })
@@ -466,7 +466,7 @@ describe('diagnostics', () => {
     it('does not compare while auto has not settled on a line yet', async () => {
       const item = codexItem(await runDiagnostics(onLine('direct', false, primarySite.providerBaseUrls.codex)))
 
-      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号' })
+      expect(item).toMatchObject({ state: 'pass', summary: '已连接当前账号' })
       expect(item?.details).not.toHaveProperty('routeLine')
     })
 
@@ -477,7 +477,7 @@ describe('diagnostics', () => {
 
       const item = codexItem(await runDiagnostics(input))
 
-      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { routeLine: '线路1' } })
+      expect(item).toMatchObject({ state: 'pass', summary: '已连接当前账号', details: { routeLine: '线路1' } })
       expect(item?.details).not.toHaveProperty('currentRouteLine')
     })
 
@@ -487,7 +487,7 @@ describe('diagnostics', () => {
 
       const item = codexItem(await runDiagnostics(input))
 
-      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号' })
+      expect(item).toMatchObject({ state: 'pass', summary: '已连接当前账号' })
       expect(item?.details).not.toHaveProperty('routeLine')
     })
 
@@ -498,7 +498,7 @@ describe('diagnostics', () => {
 
       const item = codexItem(await runDiagnostics(onLine('direct', true, retired.baseUrl)))
 
-      expect(item).toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { currentRouteLine: '线路2' } })
+      expect(item).toMatchObject({ state: 'pass', summary: '已连接当前账号', details: { currentRouteLine: '线路2' } })
       expect(item?.details).not.toHaveProperty('routeLine')
     })
   })
@@ -519,7 +519,7 @@ describe('diagnostics', () => {
     const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'WORKSPACE_CONFIG_OVERRIDE')
 
     expect(item).toMatchObject({
-      title: '项目文件夹里的设置',
+      title: '项目文件夹中的设置',
       state: 'fail',
       details: {
         workspace: '~/work/app',
@@ -527,7 +527,7 @@ describe('diagnostics', () => {
         file1: 'Claude Code · .claude/settings.local.json：ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN',
       },
     })
-    expect(item?.summary).toContain('会让 Claude Code 不用当前账号')
+    expect(item?.summary).toContain('将导致 Claude Code 不使用当前账号')
     expect(JSON.stringify(item)).not.toContain('elsewhere.example')
     expect(JSON.stringify(item)).not.toContain('sk-project-secret')
   })
@@ -544,7 +544,7 @@ describe('diagnostics', () => {
     const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'WORKSPACE_CONFIG_OVERRIDE')
 
     expect(item?.state).toBe('warn')
-    expect(item?.summary).toBe('这台电脑上有统一下发的设置，可能会让 Claude Code 不用当前账号，需要找电脑管理员处理')
+    expect(item?.summary).toBe('本机存在统一下发的设置，可能导致 Claude Code 不使用当前账号，请联系电脑管理员处理')
     expect(item?.details?.workspace).toBeUndefined()
   })
 
@@ -565,7 +565,7 @@ describe('diagnostics', () => {
 
     expect(item).toMatchObject({
       state: 'pass',
-      summary: '项目文件夹里没有会盖过当前账号的设置',
+      summary: '项目文件夹中没有会覆盖当前账号的设置',
       details: { workspace: '~/work/app', count: 0 },
     })
     expect(JSON.stringify(item)).not.toContain('Gemini')
@@ -585,7 +585,7 @@ describe('diagnostics', () => {
     fs.writeFileSync(path.join(home, '.codex', 'config.toml'), '[features]\ndaemon_auto_start = false\n')
     expect((await codexItem())?.details?.daemonAutoStart).toBe('关')
     fs.writeFileSync(path.join(home, '.codex', 'config.toml'), 'model = "gpt-5.6-sol"\n')
-    expect((await codexItem())?.details?.daemonAutoStart).toBe('没写（0.157 起缺省开）')
+    expect((await codexItem())?.details?.daemonAutoStart).toBe('未设置（0.157 起默认开启）')
 
     input.inspectProvider = (provider) => ({ ...inspection(provider, home, 'sk-test'), matchesRelay: provider !== 'codex' })
     expect((await codexItem())?.details).not.toHaveProperty('daemonAutoStart')
@@ -608,7 +608,7 @@ describe('diagnostics', () => {
     expect(network).toMatchObject({ state: 'fail', details: { status: 503 } })
     expect(network?.summary).toContain('HTTP 503')
     // 网络本身通了，所以这一条不该建议用户换网络。
-    expect(network?.summary).not.toContain('换一个网络')
+    expect(network?.summary).not.toMatch(/换一个网络|更换网络/)
   })
 
   describe('XINGMANG_NETWORK failure reasons', () => {
@@ -745,7 +745,7 @@ describe('diagnostics', () => {
 
       expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
         state: 'pass',
-        summary: '能连上星芒服务',
+        summary: '可连接星芒服务',
       })
       expect(fetchImpl).toHaveBeenCalledTimes(1)
       expect(fetchImpl.mock.calls[0][0]).toBe('https://xm.solov.cc/api/status')
@@ -760,7 +760,7 @@ describe('diagnostics', () => {
 
       expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')).toMatchObject({
         state: 'pass',
-        summary: '能连上星芒服务（开着加速时也直接连，不绕加速线路）',
+        summary: '可连接星芒服务（开启加速时也直接连接，不经过加速线路）',
         details: { route: 'direct' },
       })
     })
@@ -773,7 +773,7 @@ describe('diagnostics', () => {
       const report = await runDiagnostics(input)
 
       const network = report.items.find((item) => item.code === 'XINGMANG_NETWORK')
-      expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务' })
+      expect(network).toMatchObject({ state: 'pass', summary: '可连接星芒服务' })
       expect(network?.details).not.toHaveProperty('route')
     })
 
@@ -924,7 +924,7 @@ describe('diagnostics', () => {
 
         expect(networkItem(await runDiagnostics(input))).toMatchObject({
           state: 'pass',
-          details: { lastRouteChange: '10月7日 21:14，线路2连着 3 次没连上，改走线路1', lastRouteChangeTrigger: 'ECONNRESET' },
+          details: { lastRouteChange: '10月7日 21:14，线路2连续 3 次无法连接，已切换至线路1', lastRouteChangeTrigger: 'ECONNRESET' },
         })
       })
 
@@ -938,7 +938,7 @@ describe('diagnostics', () => {
 
         const network = networkItem(await runDiagnostics(input))
 
-        expect(network).toMatchObject({ state: 'fail', details: { lastRouteChange: '10月7日 09:05，线路2连着 10 分钟都能连上，换回线路2' } })
+        expect(network).toMatchObject({ state: 'fail', details: { lastRouteChange: '10月7日 09:05，线路2连续 10 分钟可正常连接，已切换回线路2' } })
         expect(network?.details).not.toHaveProperty('lastRouteChangeTrigger')
       })
 
@@ -959,7 +959,7 @@ describe('diagnostics', () => {
 
         input.toolRoute = { site: requireRelaySite('solov'), report: () => { throw new Error('boom') } }
         const network = networkItem(await runDiagnostics(input))
-        expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务，用的是线路2' })
+        expect(network).toMatchObject({ state: 'pass', summary: '可连接星芒服务，使用线路2' })
         expect(network?.details).not.toHaveProperty('toolLine')
       })
 
@@ -972,7 +972,7 @@ describe('diagnostics', () => {
 
         expect(network).toMatchObject({
           state: 'pass',
-          summary: '能连上星芒服务，用的是线路2',
+          summary: '可连接星芒服务，使用线路2',
           details: { endpoint: 'https://xm-direct.solov.cc/api/status', line: 'direct' },
         })
         expect(network?.details).not.toHaveProperty('fellBack')
@@ -994,7 +994,7 @@ describe('diagnostics', () => {
 
         expect(network).toMatchObject({
           state: 'pass',
-          summary: '能连上星芒服务。线路2这会儿连不上，已自动改走线路1',
+          summary: '可连接星芒服务。线路2暂时无法连接，已自动切换至线路1',
           details: { endpoint: 'https://xm.solov.cc/api/status', line: 'primary', fellBack: true },
         })
         expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
@@ -1119,7 +1119,7 @@ describe('diagnostics', () => {
 
         expect(network).toMatchObject({
           state: 'pass',
-          summary: '能连上星芒服务。线路2这会儿连不上，已自动改走线路1（开着加速也不绕加速线路）',
+          summary: '可连接星芒服务。线路2暂时无法连接，已自动切换至线路1（开启加速时也不经过加速线路）',
           details: { endpoint: 'https://xm.solov.cc/api/status', line: 'primary', route: 'direct' },
         })
         expect(network?.details).not.toHaveProperty('fellBack')
@@ -1152,25 +1152,25 @@ describe('diagnostics', () => {
 
           expect(networkItem(await runDiagnostics(input))).toMatchObject({
             state: 'pass',
-            summary: '能连上星芒服务，用的是线路1',
+            summary: '可连接星芒服务，使用线路1',
             details: { line: 'primary' },
           })
         }
       })
 
       it('words each verdict exactly as approved, with the acceleration note last', () => {
-        expect(relayNetworkPassSummary(null, false)).toBe('能连上星芒服务')
-        expect(relayNetworkPassSummary(null, true)).toBe('能连上星芒服务（开着加速时也直接连，不绕加速线路）')
+        expect(relayNetworkPassSummary(null, false)).toBe('可连接星芒服务')
+        expect(relayNetworkPassSummary(null, true)).toBe('可连接星芒服务（开启加速时也直接连接，不经过加速线路）')
         // 星芒账号：xm 三线路附录 A。
-        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'direct', fellBack: false }, false)).toBe('能连上星芒服务，用的是线路2')
-        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'primary', fellBack: false }, false)).toBe('能连上星芒服务，用的是线路1')
-        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'primary', fellBack: true }, false)).toBe('能连上星芒服务。线路2这会儿连不上，已自动改走线路1')
-        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'direct', fellBack: false }, true)).toBe('能连上星芒服务，用的是线路2（开着加速也不绕加速线路）')
+        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'direct', fellBack: false }, false)).toBe('可连接星芒服务，使用线路2')
+        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'primary', fellBack: false }, false)).toBe('可连接星芒服务，使用线路1')
+        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'primary', fellBack: true }, false)).toBe('可连接星芒服务。线路2暂时无法连接，已自动切换至线路1')
+        expect(relayNetworkPassSummary({ siteId: 'solov', line: 'direct', fellBack: false }, true)).toBe('可连接星芒服务，使用线路2（开启加速时也不经过加速线路）')
         // 历史账号：用的是哪条照旧是直连适配方案第六节第 3 条；10-14 起先走默认线路、直连备用，退回那句跟着对调。
-        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'direct', fellBack: false }, false)).toBe('能连上星芒服务，用的是线路2')
-        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'primary', fellBack: false }, false)).toBe('能连上星芒服务，用的是线路1')
-        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'direct', fellBack: true }, false)).toBe('能连上星芒服务。线路1这会儿连不上，已自动改走线路2')
-        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'direct', fellBack: false }, true)).toBe('能连上星芒服务，用的是线路2（开着加速也不绕加速线路）')
+        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'direct', fellBack: false }, false)).toBe('可连接星芒服务，使用线路2')
+        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'primary', fellBack: false }, false)).toBe('可连接星芒服务，使用线路1')
+        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'direct', fellBack: true }, false)).toBe('可连接星芒服务。线路1暂时无法连接，已自动切换至线路2')
+        expect(relayNetworkPassSummary({ siteId: 'solov-api', line: 'direct', fellBack: false }, true)).toBe('可连接星芒服务，使用线路2（开启加速时也不经过加速线路）')
       })
     })
 
@@ -1205,7 +1205,7 @@ describe('diagnostics', () => {
 
         expect(networkItem(await runDiagnostics(input))).toMatchObject({
           state: 'pass',
-          summary: '能连上星芒服务。线路1这会儿连不上，已自动改走线路2',
+          summary: '可连接星芒服务。线路1暂时无法连接，已自动切换至线路2',
           details: { endpoint: 'https://api-direct.solov.cc/api/v1/settings/public', line: 'direct', fellBack: true },
         })
         expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
@@ -1219,7 +1219,7 @@ describe('diagnostics', () => {
         const first = onHistoricalRoute({ line: 'primary', automatic: true, settled: true })
         const firstFetch = vi.fn(async (_url: string | URL | Request) => statusJson())
         first.input.fetch = firstFetch
-        expect(networkItem(await runDiagnostics(first.input))).toMatchObject({ state: 'pass', summary: '能连上星芒服务，用的是线路1', details: { line: 'primary' } })
+        expect(networkItem(await runDiagnostics(first.input))).toMatchObject({ state: 'pass', summary: '可连接星芒服务，使用线路1', details: { line: 'primary' } })
         expect(firstFetch.mock.calls.map(([url]) => String(url))).toEqual(['https://api.solov.cc/api/v1/settings/public'])
         expect(first.reportLineFailure).not.toHaveBeenCalled()
 
@@ -1233,14 +1233,14 @@ describe('diagnostics', () => {
         expect(moved.reportLineFailure).toHaveBeenCalledWith('ECONNREFUSED')
         moved.input.fetch = vi.fn(async () => statusJson())
         const network = networkItem(await runDiagnostics(moved.input))
-        expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务。线路1这会儿连不上，已自动改走线路2', details: { line: 'direct' } })
+        expect(network).toMatchObject({ state: 'pass', summary: '可连接星芒服务。线路1暂时无法连接，已自动切换至线路2', details: { line: 'direct' } })
         expect(network?.details).not.toHaveProperty('fellBack')
       })
 
       it('names direct when the customer pinned it', async () => {
         const { input } = onHistoricalRoute({ line: 'direct', automatic: false, settled: true })
         input.fetch = vi.fn(async () => statusJson())
-        expect(networkItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', summary: '能连上星芒服务，用的是线路2', details: { line: 'direct' } })
+        expect(networkItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', summary: '可连接星芒服务，使用线路2', details: { line: 'direct' } })
       })
     })
   })
@@ -1248,42 +1248,42 @@ describe('diagnostics', () => {
   describe('describeRelayRouteChange', () => {
     it('says when the line changed, in local time, and why, without any address', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()
-      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'startup', at })).toBe('1月3日 08:00，查到线路2能连上，走线路2')
+      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'startup', at })).toBe('1月3日 08:00，检测到线路2可以连接，使用线路2')
       expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'ETIMEDOUT', at }))
-        .toBe('1月3日 08:00，线路2连着 3 次没连上，改走线路1')
-      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'recovered', at })).toBe('1月3日 08:00，线路2连着 10 分钟都能连上，换回线路2')
+        .toBe('1月3日 08:00，线路2连续 3 次无法连接，已切换至线路1')
+      expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'recovered', at })).toBe('1月3日 08:00，线路2连续 10 分钟可正常连接，已切换回线路2')
     })
 
     // 0.2.19 起历史账号先走线路1（CF）、线路2 备用（yoyo 10-14）：按记下的 from、to 说，新旧两种记录都对。
     it('describes the historical account moving off and back to line 1, which it now uses first', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()
-      expect(describeRelayRouteChange({ from: 'primary', to: 'primary', reason: 'startup', at })).toBe('1月3日 08:00，查到线路1能连上，走线路1')
+      expect(describeRelayRouteChange({ from: 'primary', to: 'primary', reason: 'startup', at })).toBe('1月3日 08:00，检测到线路1可以连接，使用线路1')
       expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'health-failed', trigger: 'scheduled', at }))
-        .toBe('1月3日 08:00，线路1连着 3 次没连上，改走线路2')
-      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'recovered', at })).toBe('1月3日 08:00，线路1连着 10 分钟都能连上，换回线路1')
+        .toBe('1月3日 08:00，线路1连续 3 次无法连接，已切换至线路2')
+      expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'recovered', at })).toBe('1月3日 08:00，线路1连续 10 分钟可正常连接，已切换回线路1')
     })
 
     // 全新安装开机那一轮只查一次就改了，不能说成「连着 3 次」（#963）。
     it('says a first-launch change came from one check', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()
       expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'first-launch', at }))
-        .toBe('1月3日 08:00，第一次开机查到线路2没连上，改走线路1')
+        .toBe('1月3日 08:00，首次启动时检测到线路2无法连接，已切换至线路1')
     })
 
     // 先走的那条健康检查查得通、上面的请求却接连没走通才换的，也不能说成「连着 3 次没连上」（#1157 第 1 条）。
     it('says a change came from requests that kept failing on the line', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()
       expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'health-failed', trigger: 'request-failures', at }))
-        .toBe('1月3日 08:00，线路2上的请求接连断在半路、等不来回话，改走线路1')
+        .toBe('1月3日 08:00，线路2上的请求连续中途中断、未收到响应，已切换至线路1')
     })
 
     // 两条一起查的那一轮（开机、唤醒、换网、重新检测）当场换的，也不能说成「连着 3 次」（#1053）。
     it('says a change from a check of both lines happened on the spot, in either direction', () => {
       const at = new Date(2026, 0, 3, 8, 0).getTime()
       expect(describeRelayRouteChange({ from: 'direct', to: 'primary', reason: 'line-down', trigger: 'network', at }))
-        .toBe('1月3日 08:00，查到线路2没连上、线路1能连上，当场改走线路1')
+        .toBe('1月3日 08:00，检测到线路2无法连接、线路1可以连接，已立即切换至线路1')
       expect(describeRelayRouteChange({ from: 'primary', to: 'direct', reason: 'line-down', trigger: 'startup', at }))
-        .toBe('1月3日 08:00，查到线路1没连上、线路2能连上，当场改走线路2')
+        .toBe('1月3日 08:00，检测到线路1无法连接、线路2可以连接，已立即切换至线路2')
     })
   })
 
@@ -1348,27 +1348,27 @@ describe('diagnostics', () => {
 
     // D56（时间数字格式.md N-6）：差一天以前写「约 1442 分钟」，看不出是一天还是一年，也看不出快了还是慢了。
     it.each([
-      ['twenty minutes fast', 20 * 60_000, '快了约 20 分钟'],
-      ['forty-nine minutes slow', -49 * 60_000, '慢了约 49 分钟'],
-      ['an hour and a half fast', 90 * 60_000, '快了约 2 小时'],
-      ['three and a half hours slow', -3.5 * 3_600_000, '慢了约 4 小时'],
-      ['a day and two minutes fast', 1_442 * 60_000, '快了约 24 小时'],
-      ['two days slow', -2 * 86_400_000, '慢了约 2 天'],
-      ['a year fast', 525_600 * 60_000, '快了约 365 天'],
+      ['twenty minutes fast', 20 * 60_000, '快约 20 分钟'],
+      ['forty-nine minutes slow', -49 * 60_000, '慢约 49 分钟'],
+      ['an hour and a half fast', 90 * 60_000, '快约 2 小时'],
+      ['three and a half hours slow', -3.5 * 3_600_000, '慢约 4 小时'],
+      ['a day and two minutes fast', 1_442 * 60_000, '快约 24 小时'],
+      ['two days slow', -2 * 86_400_000, '慢约 2 天'],
+      ['a year fast', 525_600 * 60_000, '快约 365 天'],
     ])('says a clock that is %s in the unit that fits', (_label, skewMs, amount) => {
       expect(clockSkewSummary(skewMs, 'win32')).toBe(
-        `能连上星芒服务，但这台电脑的系统时间比实际${amount}，可能让登录、安装、更新卡在证书校验这一步。${clockSyncGuidance('win32')}`,
+        `可连接星芒服务，但本机系统时间比实际时间${amount}，可能导致登录、安装、更新时证书校验不通过。${clockSyncGuidance('win32')}`,
       )
     })
 
     it.each([
-      ['eight hours fast', 8 * 3_600_000 + 90_000, '快了约 8 小时'],
-      ['sixteen hours slow', -(16 * 3_600_000 - 2 * 60_000), '慢了约 16 小时'],
-      ['an hour slow', -(3_600_000 + 4 * 60_000), '慢了约 1 小时'],
-      ['just under an hour fast', 59 * 60_000 + 40_000, '快了约 1 小时'],
+      ['eight hours fast', 8 * 3_600_000 + 90_000, '快约 8 小时'],
+      ['sixteen hours slow', -(16 * 3_600_000 - 2 * 60_000), '慢约 16 小时'],
+      ['an hour slow', -(3_600_000 + 4 * 60_000), '慢约 1 小时'],
+      ['just under an hour fast', 59 * 60_000 + 40_000, '快约 1 小时'],
     ])('points a whole number of hours (%s) at the time zone', (_label, skewMs, amount) => {
       expect(clockSkewSummary(skewMs, 'darwin')).toBe(
-        `能连上星芒服务，但这台电脑的系统时间比实际${amount}，多半是时区设错了，可能让登录、安装、更新卡在证书校验这一步。${clockSyncGuidance('darwin')}`,
+        `可连接星芒服务，但本机系统时间比实际时间${amount}，可能是时区设置有误，可能导致登录、安装、更新时证书校验不通过。${clockSyncGuidance('darwin')}`,
       )
     })
 
@@ -1398,7 +1398,7 @@ describe('diagnostics', () => {
 
       const report = await runDiagnostics(input)
 
-      expect(networkItem(report)).toMatchObject({ state: 'pass', summary: '能连上星芒服务' })
+      expect(networkItem(report)).toMatchObject({ state: 'pass', summary: '可连接星芒服务' })
       // 不新增请求：这一项本来就要发的那一次请求就是全部。
       expect(fetchImpl).toHaveBeenCalledTimes(1)
     })
@@ -1418,7 +1418,7 @@ describe('diagnostics', () => {
         state: 'warn',
         details: { status: 200, clockSkewMinutes: minutes },
       })
-      expect(network?.summary).toContain(`${minutes > 0 ? '快' : '慢'}了约 ${Math.abs(minutes)} 分钟，可能让登录`)
+      expect(network?.summary).toContain(`${minutes > 0 ? '快' : '慢'}约 ${Math.abs(minutes)} 分钟，可能导致登录`)
       expect(network?.summary).toContain('自动设置时间')
       expect(fetchImpl).toHaveBeenCalledTimes(1)
     })
@@ -1445,7 +1445,7 @@ describe('diagnostics', () => {
       const report = await runDiagnostics(input)
 
       const network = networkItem(report)
-      expect(network).toMatchObject({ state: 'pass', summary: '能连上星芒服务' })
+      expect(network).toMatchObject({ state: 'pass', summary: '可连接星芒服务' })
       expect(network?.details).not.toHaveProperty('clockSkewMinutes')
     })
   })
@@ -1465,7 +1465,7 @@ describe('diagnostics', () => {
 
       expect(overrideItem(report)).toMatchObject({
         state: 'pass',
-        summary: '没有另外设过工具地址或密钥',
+        summary: '未另行设置工具地址或密钥',
         details: { count: 0 },
       })
     })
@@ -1498,9 +1498,9 @@ describe('diagnostics', () => {
       // 这四个都盖不过写入的配置，是「正常」；名字只进导出报告，检查页不上屏（yoyo 11-06「体检改」）。
       expect(item).toEqual({
         code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
-        title: '电脑里另外设过的工具地址或密钥',
+        title: '电脑中另行设置的工具地址或密钥',
         state: 'pass',
-        summary: '电脑里另外设的工具地址或密钥盖不过当前账号的设置，不影响使用',
+        summary: '电脑中另行设置的工具地址或密钥不会覆盖当前账号的设置，不影响使用',
         // 大小写不敏感：Windows 上 `openai_api_key` 与大写是同一个变量。
         details: { reportOnlyVariables: 'ANTHROPIC_BASE_URL（Claude Code）、ANTHROPIC_AUTH_TOKEN（Claude Code）、OPENAI_BASE_URL（Codex CLI）、OPENAI_API_KEY（Codex CLI）' },
         durationMs: expect.any(Number),
@@ -1525,7 +1525,7 @@ describe('diagnostics', () => {
         count: 4,
         variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
         variable2: 'ANTHROPIC_AUTH_TOKEN（Claude Code）',
-        variable3: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+        variable3: 'ANTHROPIC_API_KEY（Claude Code，将绕开当前账号）',
         variable4: 'OPENAI_BASE_URL（Codex CLI）',
       })
       expect(item?.details).not.toHaveProperty('reportOnlyVariables')
@@ -1546,8 +1546,8 @@ describe('diagnostics', () => {
 
       expect(item).toMatchObject({
         state: 'fail',
-        summary: `电脑里另外设了 ${name}，会让 ${tool} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服`,
-        details: { count: 1, variable1: `${name}（${tool}，会绕开当前账号）` },
+        summary: `电脑中另行设置了 ${name}，将导致 ${tool} 不使用当前账号的设置。请删除这些设置后重新打开工具；如不清楚如何删除，请在「反馈与客服」页导出报告并发送给客服`,
+        details: { count: 1, variable1: `${name}（${tool}，将绕开当前账号）` },
       })
       expect(JSON.stringify(item)).not.toContain('must-not-leak')
     })
@@ -1560,14 +1560,14 @@ describe('diagnostics', () => {
 
       expect(overrideItem(await runDiagnostics(input))).toMatchObject({
         state: 'fail',
-        summary: '电脑里另外设了 CLAUDE_CODE_USE_BEDROCK，会让 Claude Code 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服',
-        details: { count: 1, variable1: 'CLAUDE_CODE_USE_BEDROCK（Claude Code，会绕开当前账号）' },
+        summary: '电脑中另行设置了 CLAUDE_CODE_USE_BEDROCK，将导致 Claude Code 不使用当前账号的设置。请删除这些设置后重新打开工具；如不清楚如何删除，请在「反馈与客服」页导出报告并发送给客服',
+        details: { count: 1, variable1: 'CLAUDE_CODE_USE_BEDROCK（Claude Code，将绕开当前账号）' },
       })
 
       input.env = { CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false', CLAUDE_CODE_USE_FOUNDRY: '' }
       expect(overrideItem(await runDiagnostics(input))).toMatchObject({
         state: 'pass',
-        summary: '没有另外设过工具地址或密钥',
+        summary: '未另行设置工具地址或密钥',
         details: { count: 0 },
       })
     })
@@ -1655,7 +1655,7 @@ describe('diagnostics', () => {
 
         expect(item).toMatchObject({
           state: 'warn',
-          summary: '终端设置里另外设了 ANTHROPIC_API_KEY：从星芒打开的工具不受影响，自己开终端直接用 Claude Code 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉',
+          summary: '终端设置中另行设置了 ANTHROPIC_API_KEY：从星芒打开的工具不受影响，自行在终端中直接使用 Claude Code 时将不使用当前账号的设置。如无需使用，请将这几项从终端设置中删除',
           details: { count: 1, variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.zshrc）' },
         })
         expect(item?.details?.fix).toBeUndefined()
@@ -1672,7 +1672,7 @@ describe('diagnostics', () => {
 
         expect(item).toMatchObject({
           state: 'warn',
-          summary: '终端设置里另外设了 ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR：从星芒打开的工具不受影响，自己开终端直接用 Claude Code 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉',
+          summary: '终端设置中另行设置了 ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR：从星芒打开的工具不受影响，自行在终端中直接使用 Claude Code 时将不使用当前账号的设置。如无需使用，请将这几项从终端设置中删除',
           details: {
             count: 4,
             variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.zshrc）',
@@ -1784,7 +1784,7 @@ describe('diagnostics', () => {
 
         expect(overrideItem(await runDiagnostics(macosInput(home)))).toMatchObject({
           state: 'pass',
-          summary: '没有另外设过工具地址或密钥',
+          summary: '未另行设置工具地址或密钥',
           details: { count: 0 },
         })
       })
@@ -1827,7 +1827,7 @@ describe('diagnostics', () => {
           details: {
             count: 2,
             variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.zshrc）',
-            variable2: 'CLAUDE_CONFIG_DIR（Claude Code，会绕开当前账号）',
+            variable2: 'CLAUDE_CONFIG_DIR（Claude Code，将绕开当前账号）',
           },
         })
       })
@@ -1842,11 +1842,11 @@ describe('diagnostics', () => {
 
         expect(item).toMatchObject({
           state: 'warn',
-          summary: '终端设置里另外设了 ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR：从星芒打开的工具不受影响，自己开终端直接用 Claude Code 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉',
+          summary: '终端设置中另行设置了 ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR：从星芒打开的工具不受影响，自行在终端中直接使用 Claude Code 时将不使用当前账号的设置。如无需使用，请将这几项从终端设置中删除',
           details: {
             count: 2,
-            variable1: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
-            variable2: 'CLAUDE_CONFIG_DIR（Claude Code，会绕开当前账号）',
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，将绕开当前账号）',
+            variable2: 'CLAUDE_CONFIG_DIR（Claude Code，将绕开当前账号）',
           },
         })
         expect(JSON.stringify(item)).not.toContain('must-not-leak')
@@ -1859,10 +1859,10 @@ describe('diagnostics', () => {
 
         expect(overrideItem(await runDiagnostics(input))).toMatchObject({
           state: 'fail',
-          summary: '电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服',
+          summary: '电脑中另行设置了 ANTHROPIC_API_KEY，将导致 Claude Code 不使用当前账号的设置。请删除这些设置后重新打开工具；如不清楚如何删除，请在「反馈与客服」页导出报告并发送给客服',
           details: {
             count: 2,
-            variable1: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，将绕开当前账号）',
             variable2: 'OPENAI_BASE_URL（Codex CLI）',
           },
         })
@@ -1920,7 +1920,7 @@ describe('diagnostics', () => {
         expect(decodeShellSettingsBytes(Buffer.from(text))).toBe(text)
       })
 
-      const shellOnlySummary = '终端设置里另外设了 ANTHROPIC_API_KEY：从星芒打开的工具不受影响，自己开终端直接用 Claude Code 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉'
+      const shellOnlySummary = '终端设置中另行设置了 ANTHROPIC_API_KEY：从星芒打开的工具不受影响，自行在终端中直接使用 Claude Code 时将不使用当前账号的设置。如无需使用，请将这几项从终端设置中删除'
 
       it.runIf(posixHost)('names a key in the Linux ~/.bashrc, with the file but never the value', async () => {
         const home = realHome()
@@ -1989,12 +1989,12 @@ describe('diagnostics', () => {
           state: 'fail',
           details: {
             count: 2,
-            variable1: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，将绕开当前账号）',
             variable2: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.bashrc）',
             fix: 'clear-user-overrides',
           },
         })
-        expect(item?.summary).toContain('电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置')
+        expect(item?.summary).toContain('电脑中另行设置了 ANTHROPIC_API_KEY，将导致 Claude Code 不使用当前账号的设置')
       })
 
       it.runIf(posixHost)('leaves a file alone that only sets a value pointing back at the current account', async () => {
@@ -2024,7 +2024,7 @@ describe('diagnostics', () => {
         const item = overrideItem(await runDiagnostics({ ...input, platform }))
         expect(item, platform).toMatchObject({
           state: 'pass',
-          summary: '电脑里另外设的工具地址或密钥盖不过当前账号的设置，不影响使用',
+          summary: '电脑中另行设置的工具地址或密钥不会覆盖当前账号的设置，不影响使用',
           details: { reportOnlyVariables: `${name}（${tool}）` },
         })
         expect(item?.details?.fix, platform).toBeUndefined()
@@ -2041,7 +2041,7 @@ describe('diagnostics', () => {
         const item = overrideItem(await runDiagnostics({ ...input, platform }))
         expect(item, platform).toMatchObject({
           state: 'pass',
-          summary: '没有另外设过工具地址或密钥',
+          summary: '未另行设置工具地址或密钥',
           details: { count: 0 },
         })
         expect(item?.details?.fix, platform).toBeUndefined()
@@ -2069,7 +2069,7 @@ describe('diagnostics', () => {
 
           expect(item).toMatchObject({
             state: 'pass',
-            summary: '电脑里另外设的工具地址也指向当前账号，不影响使用',
+            summary: '电脑中另行设置的工具地址同样指向当前账号，不影响使用',
             details: { reportOnlyVariables: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）、OPENAI_BASE_URL（Codex CLI，已指向当前账号）' },
           })
           expect(item?.details?.fix).toBeUndefined()
@@ -2091,7 +2091,7 @@ describe('diagnostics', () => {
 
         expect(item).toMatchObject({
           state: 'pass',
-          summary: '电脑里另外设的工具地址或密钥盖不过当前账号的设置，不影响使用',
+          summary: '电脑中另行设置的工具地址或密钥不会覆盖当前账号的设置，不影响使用',
           details: { reportOnlyVariables: 'ANTHROPIC_BASE_URL（Claude Code）' },
         })
         expect(item?.details?.fix).toBeUndefined()
@@ -2121,11 +2121,11 @@ describe('diagnostics', () => {
 
       expect(overrideItem(await runDiagnostics(input))).toMatchObject({
         state: 'fail',
-        summary: '电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服',
+        summary: '电脑中另行设置了 ANTHROPIC_API_KEY，将导致 Claude Code 不使用当前账号的设置。请删除这些设置后重新打开工具；如不清楚如何删除，请在「反馈与客服」页导出报告并发送给客服',
         details: {
           count: 3,
           variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
-          variable2: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+          variable2: 'ANTHROPIC_API_KEY（Claude Code，将绕开当前账号）',
           variable3: 'OPENAI_API_KEY（Codex CLI）',
         },
       })
@@ -2140,7 +2140,7 @@ describe('diagnostics', () => {
 
       expect(overrideItem(report)).toMatchObject({
         state: 'pass',
-        summary: '电脑里另外设的工具地址也指向当前账号，不影响使用',
+        summary: '电脑中另行设置的工具地址同样指向当前账号，不影响使用',
         details: { reportOnlyVariables: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）、OPENAI_BASE_URL（Codex CLI，已指向当前账号）' },
       })
     })
@@ -2162,7 +2162,7 @@ describe('diagnostics', () => {
       // 星芒的配置就写在它指的地方（codex-home.ts），盖不过当前账号。
       expect(overrideItem(await runDiagnostics(redirected))).toMatchObject({
         state: 'pass',
-        summary: '电脑里另外设的工具地址或密钥盖不过当前账号的设置，不影响使用',
+        summary: '电脑中另行设置的工具地址或密钥不会覆盖当前账号的设置，不影响使用',
         details: { reportOnlyVariables: 'CODEX_HOME（Codex CLI）' },
       })
     })
@@ -2184,8 +2184,8 @@ describe('diagnostics', () => {
 
       expect(item).toMatchObject({
         state: 'fail',
-        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它，但在软件外面打开 Codex 会连不上当前账号',
-        details: { count: 1, variable1: 'CODEX_HOME（Codex CLI，写得不对，已忽略）' },
+        summary: '电脑中有一项 Codex 设置有误，软件已忽略该设置，但在软件外打开 Codex 将无法连接当前账号',
+        details: { count: 1, variable1: 'CODEX_HOME（Codex CLI，设置有误，已忽略）' },
       })
       expect(JSON.stringify(item)).not.toMatch(/must-not-leak|USERPROFILE/)
     })
@@ -2202,7 +2202,7 @@ describe('diagnostics', () => {
 
       expect(overrideItem(await runDiagnostics(ignoredCodexHomeInput(home, '.codex')))).toMatchObject({
         state: 'warn',
-        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它',
+        summary: '电脑中有一项 Codex 设置有误，软件已忽略该设置',
       })
     })
 
@@ -2226,11 +2226,11 @@ describe('diagnostics', () => {
 
       expect(item).toMatchObject({
         state: 'fail',
-        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它；电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服',
+        summary: '电脑中有一项 Codex 设置有误，软件已忽略该设置；电脑中另行设置了 ANTHROPIC_API_KEY，将导致 Claude Code 不使用当前账号的设置。请删除这些设置后重新打开工具；如不清楚如何删除，请在「反馈与客服」页导出报告并发送给客服',
         details: {
           count: 2,
-          variable1: 'CODEX_HOME（Codex CLI，写得不对，已忽略）',
-          variable2: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+          variable1: 'CODEX_HOME（Codex CLI，设置有误，已忽略）',
+          variable2: 'ANTHROPIC_API_KEY（Claude Code，将绕开当前账号）',
         },
       })
       expect(JSON.stringify(item)).not.toContain('must-not-leak')
@@ -2245,10 +2245,10 @@ describe('diagnostics', () => {
 
       expect(item).toMatchObject({
         state: 'warn',
-        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它',
+        summary: '电脑中有一项 Codex 设置有误，软件已忽略该设置',
         details: {
           count: 1,
-          variable1: 'CODEX_HOME（Codex CLI，写得不对，已忽略）',
+          variable1: 'CODEX_HOME（Codex CLI，设置有误，已忽略）',
           reportOnlyVariables: 'OPENAI_API_KEY（Codex CLI）',
         },
       })
@@ -2422,7 +2422,7 @@ describe('diagnostics', () => {
 
     expect(report.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
       state: 'fail',
-      summary: expect.stringContaining('找不到打开工具要用的系统命令窗口'),
+      summary: expect.stringContaining('未找到打开工具所需的系统命令窗口'),
       details: { installed: false, path: null },
     })
   })
@@ -2575,7 +2575,7 @@ describe('diagnostics', () => {
       state: 'pass',
       details: { elevated: true, required: false, alwaysElevated: true },
     })
-    expect(item?.summary).toContain('不用处理')
+    expect(item?.summary).toContain('无需处理')
     expect(item?.summary).not.toMatch(/普通启动|双击|UAC|用户账户控制|提权|Administrator|商店|Codex/)
   })
 
@@ -2640,9 +2640,9 @@ describe('diagnostics', () => {
     ]))
     expect(item?.state).toBe('fail')
     expect(item?.summary).toContain('用户文件夹、软件数据文件夹、Claude Code 配置文件夹')
-    expect(item?.summary).toContain('被搬到了 D 盘')
+    expect(item?.summary).toContain('已被移至 D 盘')
     expect(item?.summary).toContain('C 盘搬家')
-    expect(item?.summary).toContain('写入密钥、保存设置、记录日志都可能失败')
+    expect(item?.summary).toContain('写入密钥、保存设置、记录日志均可能失败')
     expect(item?.summary).not.toMatch(/AppData|junction|联接|符号链接/)
     expect(item?.details).toMatchObject({ relocated: 1, to1: 'D 盘' })
     // 搬过去的路径带着用户名，报告的脱敏认不出它，所以压根不写进去。
@@ -2664,7 +2664,7 @@ describe('diagnostics', () => {
 
     expect(item?.state).toBe('pass')
     expect(item?.summary).toContain('在 D 盘')
-    expect(item?.summary).toContain('能正常使用')
+    expect(item?.summary).toContain('可正常使用')
     expect(item?.details).toMatchObject({ relocated: 1, followed: true })
     expect(JSON.stringify(item)).not.toContain('peaker')
   })
@@ -2688,9 +2688,9 @@ describe('diagnostics', () => {
     expect(describeRelocationTarget('D:\\Users\\alice', 'win32')).toBe(' D 盘')
     expect(describeRelocationTarget('\\\\?\\e:\\Users\\alice\\.codex', 'win32')).toBe(' E 盘')
     expect(describeRelocationTarget('\\\\nas\\home\\alice', 'win32')).toBe('另一台电脑的共享文件夹')
-    expect(describeRelocationTarget('Users\\alice', 'win32')).toBe('别的位置')
+    expect(describeRelocationTarget('Users\\alice', 'win32')).toBe('其他位置')
     expect(describeRelocationTarget('/Volumes/Backup/alice/.codex', 'darwin')).toBe('外接磁盘「Backup」')
-    expect(describeRelocationTarget('/Users/alice/Dropbox/.codex', 'darwin')).toBe('别的位置')
+    expect(describeRelocationTarget('/Users/alice/Dropbox/.codex', 'darwin')).toBe('其他位置')
   })
 
   it('leaves the Windows-only hint out on macOS', async () => {
@@ -2704,7 +2704,7 @@ describe('diagnostics', () => {
     const item = (await runDiagnostics(input)).items.find((entry) => entry.code === 'FOLDER_RELOCATED')
 
     expect(item?.state).toBe('fail')
-    expect(item?.summary).toContain('Codex CLI 配置文件夹被搬走了，但读不出它现在在哪里')
+    expect(item?.summary).toContain('Codex CLI 配置文件夹已被移走，但无法读取其当前位置')
     expect(item?.summary).not.toContain('C 盘搬家')
   })
 
@@ -3027,7 +3027,7 @@ describe('the home folder leftovers check', () => {
   it('passes when nothing was left behind', () => {
     expect(homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: [] })).toEqual({
       state: 'pass',
-      summary: '没有早先留下的项目说明和信任设置',
+      summary: '没有早期遗留的项目说明和信任设置',
       details: { untouchedInstructions: false, trustedBy: null },
     })
   })
@@ -3039,16 +3039,16 @@ describe('the home folder leftovers check', () => {
       details: { untouchedInstructions: true, trustedBy: null, fix: 'set-aside-home-agents-md' },
     })
     const trust = homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: ['claude'] })
-    expect(trust.summary).toBe('Claude Code 记着“信任整个个人文件夹”：个人文件夹下的项目，它打开时可能不会先问一句信不信得过。')
+    expect(trust.summary).toBe('Claude Code 记录了“信任整个个人文件夹”：打开个人文件夹下的项目时，它可能不会先确认是否信任。')
     expect(trust.details).not.toHaveProperty('fix')
     expect(homeFolderLeftoversOutcome({ untouchedInstructions: false, trustedBy: ['claude', 'codex'] }).summary)
-      .toBe('Claude Code、Codex 记着“信任整个个人文件夹”：个人文件夹下的项目，它们打开时可能不会先问一句信不信得过。')
+      .toBe('Claude Code、Codex 记录了“信任整个个人文件夹”：打开个人文件夹下的项目时，它们可能不会先确认是否信任。')
   })
 
   it('runs both paragraphs together when both were left behind', () => {
     expect(homeFolderLeftoversOutcome({ untouchedInstructions: true, trustedBy: ['claude', 'codex'] })).toMatchObject({
       state: 'warn',
-      summary: `${instructions}Claude Code、Codex 记着“信任整个个人文件夹”：个人文件夹下的项目，它们打开时可能不会先问一句信不信得过。`,
+      summary: `${instructions}Claude Code、Codex 记录了“信任整个个人文件夹”：打开个人文件夹下的项目时，它们可能不会先确认是否信任。`,
       details: { trustedBy: 'claude,codex', fix: 'set-aside-home-agents-md' },
     })
   })
@@ -3065,7 +3065,7 @@ describe('the home folder leftovers check', () => {
 
     const found = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
     expect(found).toMatchObject({
-      title: '个人文件夹里早先留下的设置',
+      title: '个人文件夹中早期遗留的设置',
       state: 'warn',
       details: { untouchedInstructions: true, trustedBy: 'claude', fix: 'set-aside-home-agents-md' },
     })
@@ -3073,7 +3073,7 @@ describe('the home folder leftovers check', () => {
     fs.writeFileSync(path.join(home, 'AGENTS.md'), `${template}- 我自己的规矩\n`, 'utf8')
     fs.rmSync(path.join(home, '.claude.json'))
     const edited = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
-    expect(edited).toMatchObject({ state: 'pass', summary: '没有早先留下的项目说明和信任设置' })
+    expect(edited).toMatchObject({ state: 'pass', summary: '没有早期遗留的项目说明和信任设置' })
   })
 
   // Gemini CLI 下线（2026-10-14）：它记着的信任是客户自己的工具设置，星芒也不再从这里打开它。
@@ -3086,13 +3086,13 @@ describe('the home folder leftovers check', () => {
     expect(inspectHomeFolderTrust({ userHome: home, codexHome: path.join(home, '.codex') })).toEqual(['gemini'])
 
     const alone = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
-    expect(alone).toMatchObject({ state: 'pass', summary: '没有早先留下的项目说明和信任设置', details: { trustedBy: null } })
+    expect(alone).toMatchObject({ state: 'pass', summary: '没有早期遗留的项目说明和信任设置', details: { trustedBy: null } })
 
     fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ projects: { [home]: { hasTrustDialogAccepted: true } } }), 'utf8')
     const withClaude = (await runDiagnostics(input)).items.find((item) => item.code === 'HOME_FOLDER_LEFTOVERS')
     expect(withClaude).toMatchObject({
       state: 'warn',
-      summary: 'Claude Code 记着“信任整个个人文件夹”：个人文件夹下的项目，它打开时可能不会先问一句信不信得过。',
+      summary: 'Claude Code 记录了“信任整个个人文件夹”：打开个人文件夹下的项目时，它可能不会先确认是否信任。',
       details: { trustedBy: 'claude' },
     })
   })
@@ -3149,7 +3149,7 @@ describe('the disk space check', () => {
     const blocked = full.items.find((entry) => entry.code === 'DISK_SPACE')
     expect(blocked?.state).toBe('fail')
     expect(blocked?.summary).toContain('300 MB')
-    expect(blocked?.summary).toContain('装不下')
+    expect(blocked?.summary).toContain('已无法安装新工具')
   })
 
   it('reports two disks separately and judges by the tighter one', async () => {
@@ -3208,7 +3208,7 @@ describe('runDiagnostics AI output location', () => {
     // warn, not fail: the paid request is already stopped before charging, and
     // a fail would put a startup notice in front of people who never generate.
     expect(item?.state).toBe('warn')
-    expect(item?.summary).toContain('扣费前先拦下来')
+    expect(item?.summary).toContain('扣费前拦截')
     expect(item?.summary).not.toMatch(/权限|Program Files|EACCES|output/)
     expect(log).toHaveBeenCalledWith('warn', 'diagnostics.ai-output.unwritable', expect.any(String), expect.objectContaining({
       raw: expect.stringContaining('EACCES'),
@@ -3227,8 +3227,8 @@ describe('runDiagnostics documents folder', () => {
 
     const item = report.items.find((entry) => entry.code === 'AI_OUTPUT')
     expect(item).toMatchObject({ state: 'pass', details: { openFolder: 'ai-output' } })
-    expect(item?.summary).toContain('个人文件夹里的 XingmangAI')
-    expect(item?.summary).toContain('以前的作品还在')
+    expect(item?.summary).toContain('个人文件夹中的 XingmangAI')
+    expect(item?.summary).toContain('此前的作品仍在')
   })
 
   it('says earlier works are still in a documents folder that cloud sync took over, in each platform\'s own words', async () => {
@@ -3243,8 +3243,8 @@ describe('runDiagnostics documents folder', () => {
       expect(item).toMatchObject({ state: 'pass', details: { openFolder: 'ai-output' } })
       summaries[cloud] = item?.summary
     }
-    expect(summaries.onedrive).toBe('AI 生成的图片和视频能正常保存。「文档」开了 OneDrive 同步，新作品改存在个人文件夹里的 XingmangAI；以前的作品还在「文档」里的 XingmangAI，没有丢，也没有搬动')
-    expect(summaries.icloud).toBe('AI 生成的图片和视频能正常保存。「文稿」开了 iCloud 同步，新作品改存在个人文件夹里的 XingmangAI；以前的作品还在「文稿」里的 XingmangAI，没有丢，也没有搬动')
+    expect(summaries.onedrive).toBe('AI 生成的图片和视频可正常保存。「文档」已开启 OneDrive 同步，新作品改为保存在个人文件夹中的 XingmangAI；此前的作品仍在「文档」中的 XingmangAI，未丢失，也未移动')
+    expect(summaries.icloud).toBe('AI 生成的图片和视频可正常保存。「文稿」已开启 iCloud 同步，新作品改为保存在个人文件夹中的 XingmangAI；此前的作品仍在「文稿」中的 XingmangAI，未丢失，也未移动')
   })
 
   it('checks the documents folder only on Windows and only when the host passes it', async () => {
@@ -3270,7 +3270,7 @@ describe('runDiagnostics documents folder', () => {
     })
 
     const item = report.items.find((entry) => entry.code === 'DOCUMENTS_WRITABLE')
-    expect(item).toMatchObject({ state: 'warn', title: '「文档」文件夹能不能写', details: { openFolder: 'projects' } })
+    expect(item).toMatchObject({ state: 'warn', title: '「文档」文件夹是否可写入', details: { openFolder: 'projects' } })
     expect(item?.summary).toContain('受控文件夹访问')
     expect(item?.summary).not.toMatch(/EPERM|权限位|%USERPROFILE%/)
     expect(log).toHaveBeenCalledWith('warn', 'diagnostics.documents.unwritable', expect.any(String), expect.objectContaining({
@@ -3289,7 +3289,7 @@ describe('runDiagnostics documents folder', () => {
 
     const item = report.items.find((entry) => entry.code === 'DOCUMENTS_WRITABLE')
     expect(item?.state).toBe('warn')
-    expect(item?.summary).toContain('磁盘满')
+    expect(item?.summary).toContain('磁盘无可用空间')
     expect(item?.details?.openFolder).toBeUndefined()
   })
 
@@ -3321,7 +3321,7 @@ describe('runDiagnostics acceleration bundle', () => {
     const item = report.items.find((entry) => entry.code === 'ACCELERATION_BUNDLE')
     // warn, not fail: only people who use acceleration are affected, same as AI_OUTPUT.
     expect(item?.state).toBe('warn')
-    expect(item?.summary).toContain('多半是杀毒软件拦的')
+    expect(item?.summary).toContain('通常是被杀毒软件拦截')
     expect(item?.summary).not.toMatch(/mihomo|内核|manifest|profile|聊天记录/)
   })
 })
@@ -3426,7 +3426,7 @@ describe('CERTIFICATE_TRUST', () => {
     expect(item).toMatchObject({
       title: '安全证书',
       state: 'pass',
-      summary: '工具用自带的证书就能连上星芒服务，这台电脑没有换过网页证书。',
+      summary: '工具使用自带的证书即可连接星芒服务，本机未更换网页证书。',
       details: { verdict: 'direct', defaultRoots: 'ok', systemRoots: 'ok', elevated: false, nodeVersion: 'v22.19.0' },
     })
     const host = new URL(relayStatusProbeUrl(relaySites[0])).hostname
@@ -3440,7 +3440,7 @@ describe('CERTIFICATE_TRUST', () => {
     const { input } = withProbe({ plain: 'cert', system: 'ok' })
     expect(await certificateItem(input)).toMatchObject({
       state: 'pass',
-      summary: expect.stringContaining('星芒已经让装工具和从星芒打开的工具信任它'),
+      summary: expect.stringContaining('星芒已让安装工具的过程和从星芒打开的工具信任该证书'),
       details: { verdict: 'systemTrusted' },
     })
   })
@@ -3449,7 +3449,7 @@ describe('CERTIFICATE_TRUST', () => {
     const { input } = withProbe({ plain: 'cert', system: 'cert', version: 'v22.12.0' })
     expect(await certificateItem(input)).toMatchObject({
       state: 'fail',
-      summary: '这台电脑装了公司或安全软件的证书，电脑上的 Node.js 太旧，认不了它。点「去处理」换成新版。',
+      summary: '本机安装了公司或安全软件的证书，但电脑上的 Node.js 版本过旧，无法识别该证书。请点击「去处理」更新至新版本。',
       details: { verdict: 'outdatedNode', nodeVersion: 'v22.12.0' },
     })
   })
@@ -3458,7 +3458,7 @@ describe('CERTIFICATE_TRUST', () => {
     const { input } = withProbe({ plain: 'cert', system: 'cert', version: 'v24.6.0' })
     expect(await certificateItem(input)).toMatchObject({
       state: 'fail',
-      summary: expect.stringContaining('公司或学校的网络请找网络管理员'),
+      summary: expect.stringContaining('如使用公司或学校网络，请联系网络管理员'),
       details: { verdict: 'untrusted' },
     })
   })
@@ -3470,7 +3470,7 @@ describe('CERTIFICATE_TRUST', () => {
     expect(report.items.find((item) => item.code === 'XINGMANG_NETWORK')?.state).toBe('fail')
     expect(report.items.find((item) => item.code === 'CERTIFICATE_TRUST')).toMatchObject({
       state: 'fail',
-      summary: '工具连星芒服务时证书对不上，先看上面「星芒 AI 网络」那一项。',
+      summary: '工具连接星芒服务时证书不匹配，请先查看上方「星芒 AI 网络」一项。',
     })
   })
 
@@ -3484,7 +3484,7 @@ describe('CERTIFICATE_TRUST', () => {
     input.windowsExecution = { mode: 'trusted-only', elapsedMs: 5 }
     expect(await certificateItem(input)).toMatchObject({
       state: 'warn',
-      summary: '星芒现在是以管理员身份打开的，这时不让工具信任电脑上另外装的证书。请关掉星芒，直接双击正常打开。',
+      summary: '星芒当前以管理员身份运行，此时不允许工具信任电脑上另行安装的证书。请关闭星芒后直接双击正常打开。',
       details: { verdict: 'elevated', elevated: true },
     })
     expect(probeNodeTls).not.toHaveBeenCalled()
@@ -3514,7 +3514,7 @@ describe('CERTIFICATE_TRUST', () => {
     const item = await certificateItem(input)
     expect(item).toMatchObject({
       state: 'pass',
-      summary: '这台电脑装了公司或安全软件的证书。星芒已经让装工具和从星芒打开的工具信任它，可以正常用。',
+      summary: '本机安装了公司或安全软件的证书。星芒已让安装工具的过程和从星芒打开的工具信任该证书，可正常使用。',
       details: { verdict: 'systemTrusted' },
     })
     expect(item?.details).not.toHaveProperty('userWide')
@@ -3547,11 +3547,11 @@ describe('proxySettingsOutcome', () => {
   const closedOnly = async () => false
   const openOnly = async () => true
   const noScopes = async () => null
-  const macNoProxySummary = '星芒这里没看到另外设的代理。你在终端设置里写的代理星芒看不到，从星芒打开的工具会用它。'
+  const macNoProxySummary = '星芒未检测到另行设置的代理。您在终端设置中填写的代理星芒无法检测，从星芒打开的工具将使用该代理。'
 
   it('passes when no proxy is set', async () => {
     expect(await proxySettingsOutcome({ PATH: 'C:\\Windows' }, closedOnly, noScopes))
-      .toEqual({ state: 'pass', summary: '没有另外设过代理' })
+      .toEqual({ state: 'pass', summary: '未另行设置代理' })
   })
 
   it('offers to clear a current-user proxy that points at a closed local port', async () => {
@@ -3562,7 +3562,7 @@ describe('proxySettingsOutcome', () => {
     )
     expect(outcome).toEqual({
       state: 'warn',
-      summary: '电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它；你自己开的命令行窗口可能还是连不上。',
+      summary: '电脑中设置了一个代理（本机 7890 端口），但该代理当前未运行。从星芒打开的工具会自动绕开该代理；您自行打开的命令行窗口可能仍无法连接。',
       details: { HTTPS_PROXY: '本机 7890 端口（没开）', fix: 'clear-user-proxy', port: 7890 },
     })
     // The value may carry proxy credentials and is never copied into the report.
@@ -3576,7 +3576,7 @@ describe('proxySettingsOutcome', () => {
       async () => ({ user: {}, machine: { HTTPS_PROXY: 'http://127.0.0.1:7890' } }),
     )
     expect(outcome.state).toBe('warn')
-    expect(outcome.summary).toContain('这条设置是给整台电脑设的，要管理员才能改')
+    expect(outcome.summary).toContain('该设置作用于整台电脑，需管理员才能修改')
     expect(outcome.details).not.toHaveProperty('fix')
   })
 
@@ -3586,14 +3586,14 @@ describe('proxySettingsOutcome', () => {
       closedOnly,
       async () => { throw new Error('powershell missing') },
     )
-    expect(outcome.summary).toBe('电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。')
+    expect(outcome.summary).toBe('电脑中设置了一个代理（本机 7890 端口），但该代理当前未运行。从星芒打开的工具会自动绕开该代理。')
     expect(outcome.details).not.toHaveProperty('fix')
   })
 
   it('passes when the local proxy is running', async () => {
     expect(await proxySettingsOutcome({ HTTP_PROXY: 'http://127.0.0.1:7890' }, openOnly, noScopes)).toEqual({
       state: 'pass',
-      summary: '电脑里设了代理（本机 7890 端口），工具会通过它联网。',
+      summary: '电脑中设置了代理（本机 7890 端口），工具将通过该代理联网。',
       details: { HTTP_PROXY: '本机 7890 端口（开着）' },
     })
   })
@@ -3602,7 +3602,7 @@ describe('proxySettingsOutcome', () => {
     const outcome = await proxySettingsOutcome({ HTTPS_PROXY: 'http://proxy.corp.example:8080' }, closedOnly, noScopes)
     expect(outcome).toEqual({
       state: 'warn',
-      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      summary: '电脑中设置了代理，工具将通过该代理联网。如工具无法连接，请先确认该代理可用。',
       details: { HTTPS_PROXY: '别的机器' },
     })
   })
@@ -3611,7 +3611,7 @@ describe('proxySettingsOutcome', () => {
     const outcome = await proxySettingsOutcome({ http_proxy: 'http://127.0.0.1:7890' }, closedOnly)
     expect(outcome).toEqual({
       state: 'warn',
-      summary: '电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。',
+      summary: '电脑中设置了一个代理（本机 7890 端口），但该代理当前未运行。从星芒打开的工具会自动绕开该代理。',
       details: { HTTP_PROXY: '本机 7890 端口（没开）' },
     })
   })
@@ -3633,7 +3633,7 @@ describe('proxySettingsOutcome', () => {
       const item = proxyItem(await runDiagnostics(running))
       expect(item).toMatchObject({
         state: 'pass',
-        summary: '电脑里设了代理（本机 7890 端口），工具会通过它联网。',
+        summary: '电脑中设置了代理（本机 7890 端口），工具将通过该代理联网。',
         details: { HTTP_PROXY: '本机 7890 端口（开着）', HTTPS_PROXY: '本机 7890 端口（开着）' },
       })
       // 同一个端口只试一次；Windows 那份读设置的办法这里不用。
@@ -3648,28 +3648,28 @@ describe('proxySettingsOutcome', () => {
       const item = proxyItem(await runDiagnostics(closed))
       expect(item).toMatchObject({
         state: 'warn',
-        summary: '电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。',
+        summary: '电脑中设置了一个代理（本机 7890 端口），但该代理当前未运行。从星芒打开的工具会自动绕开该代理。',
       })
       expect(item?.details).not.toHaveProperty('fix')
     })
 
     it('does not count a setting that only keeps requests off the proxy', async () => {
       const item = proxyItem(await runDiagnostics(input({ NO_PROXY: 'localhost', FTP_PROXY: 'http://127.0.0.1:21' }, false).input))
-      expect(item).toMatchObject({ state: 'pass', summary: platform === 'darwin' ? macNoProxySummary : '没有另外设过代理' })
+      expect(item).toMatchObject({ state: 'pass', summary: platform === 'darwin' ? macNoProxySummary : '未另行设置代理' })
     })
   })
 
   // D34（代理.md PX-9）：Mac 上工具经登录 shell 用 ~/.zshrc 里的代理，星芒自己的环境里看不到，不能说「没有」。
   it('does not claim there is no proxy on a Mac, where terminal settings are out of sight', async () => {
     expect(await proxySettingsOutcome({}, closedOnly, noScopes, 'darwin')).toEqual({ state: 'pass', summary: macNoProxySummary })
-    expect(await proxySettingsOutcome({}, closedOnly, noScopes, 'win32')).toEqual({ state: 'pass', summary: '没有另外设过代理' })
-    expect(await proxySettingsOutcome({}, closedOnly, noScopes, 'linux')).toEqual({ state: 'pass', summary: '没有另外设过代理' })
+    expect(await proxySettingsOutcome({}, closedOnly, noScopes, 'win32')).toEqual({ state: 'pass', summary: '未另行设置代理' })
+    expect(await proxySettingsOutcome({}, closedOnly, noScopes, 'linux')).toEqual({ state: 'pass', summary: '未另行设置代理' })
   })
 
   // D33（代理.md PX-10）：命令行工具是星芒去掉了没开的代理再打开的，Codex 桌面端拿的是登录时那份环境，绕不开。
   describe('with the Codex desktop app installed', () => {
-    const desktopSummary = '电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的命令行工具会自动绕开它；'
-      + 'Codex 桌面端这类桌面软件绕不开，会连不上，要把这条旧设置清掉。'
+    const desktopSummary = '电脑中设置了一个代理（本机 7890 端口），但该代理当前未运行。从星芒打开的命令行工具会自动绕开该代理；'
+      + 'Codex 桌面端等桌面软件无法绕开，将无法连接，请清除这条旧设置。'
     function proxyItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
       return report.items.find((item) => item.code === 'PROXY_ENVIRONMENT')
     }
@@ -3709,22 +3709,22 @@ describe('proxySettingsOutcome', () => {
     it('keeps the old sentence when only this launch of Xingmang carried the setting', async () => {
       // Windows 上两边都读到了、都没有：是从命令行窗口带进来的，资源管理器打开的桌面端看不见它。
       const item = proxyItem(await runDiagnostics(windowsInput({ user: {}, machine: {} })))
-      expect(item?.summary).toBe('电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。')
+      expect(item?.summary).toBe('电脑中设置了一个代理（本机 7890 端口），但该代理当前未运行。从星芒打开的工具会自动绕开该代理。')
     })
 
     it('keeps the administrator sentence for a machine-wide setting', async () => {
       const item = proxyItem(await runDiagnostics(windowsInput({ user: {}, machine: { HTTPS_PROXY: 'http://127.0.0.1:7890' } })))
-      expect(item?.summary).toContain('这条设置是给整台电脑设的，要管理员才能改')
+      expect(item?.summary).toContain('该设置作用于整台电脑，需管理员才能修改')
     })
 
     it('keeps the old sentences when the desktop app is not installed', async () => {
       const item = proxyItem(await runDiagnostics(windowsInput({ user: { HTTPS_PROXY: 'http://127.0.0.1:7890' }, machine: {} }, false)))
-      expect(item?.summary).toBe('电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它；你自己开的命令行窗口可能还是连不上。')
+      expect(item?.summary).toBe('电脑中设置了一个代理（本机 7890 端口），但该代理当前未运行。从星芒打开的工具会自动绕开该代理；您自行打开的命令行窗口可能仍无法连接。')
     })
 
     it('leaves Linux alone, which has no Codex desktop app', async () => {
       const input = { ...windowsInput(null), platform: 'linux' as const }
-      expect(proxyItem(await runDiagnostics(input))?.summary).toBe('电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。')
+      expect(proxyItem(await runDiagnostics(input))?.summary).toBe('电脑中设置了一个代理（本机 7890 端口），但该代理当前未运行。从星芒打开的工具会自动绕开该代理。')
     })
   })
 })
@@ -3732,7 +3732,7 @@ describe('proxySettingsOutcome', () => {
 // D35（代理.md PX-4）：照教程写在 ~/.claude/settings.json env 段里的代理，Claude Code 启动时盖过进程环境，
 // 星芒打开工具前去掉没开的代理那一步管不到它。只提示、不给按钮。
 describe('the Claude Code settings proxy check', () => {
-  const summary = 'Claude Code 自己的设置里写了一个代理，它现在没开，Claude Code 会连不上。'
+  const summary = 'Claude Code 自身的设置中填写了一个代理，该代理当前未运行，Claude Code 将无法连接。'
   const closedOnly = async () => false
   const openOnly = async () => true
 
@@ -3811,7 +3811,7 @@ describe('the Claude Code settings proxy check', () => {
       const report = await runDiagnostics(input(home, platform).input)
       const item = report.items.find((entry) => entry.code === 'CLAUDE_SETTINGS_PROXY')
       expect(item).toMatchObject({
-        title: 'Claude Code 自己设置里的代理',
+        title: 'Claude Code 自身设置中的代理',
         state: 'warn',
         summary,
         details: { HTTPS_PROXY: '本机 7890 端口（没开）' },
@@ -3820,7 +3820,7 @@ describe('the Claude Code settings proxy check', () => {
       expect(JSON.stringify(item)).not.toContain('secret')
       const order = codes(report)
       expect(order.indexOf('CLAUDE_SETTINGS_PROXY')).toBe(order.indexOf('PROXY_ENVIRONMENT') + 1)
-      // 跟「电脑里的代理设置」是两行：电脑里没设代理时那一行照旧是绿的。
+      // 跟「电脑中的代理设置」是两行：电脑里没设代理时那一行照旧是绿的。
       expect(report.items.find((entry) => entry.code === 'PROXY_ENVIRONMENT')?.state).toBe('pass')
     })
 
@@ -3867,14 +3867,14 @@ describe('diagnostics system proxy', () => {
     const report = await runDiagnostics(input)
     expect(item(report, 'PROXY_ENVIRONMENT')).toMatchObject({
       state: 'pass',
-      summary: '星芒这里没看到另外设的代理。你在终端设置里写的代理星芒看不到，从星芒打开的工具会用它。',
+      summary: '星芒未检测到另行设置的代理。您在终端设置中填写的代理星芒无法检测，从星芒打开的工具将使用该代理。',
     })
     expect(item(report, 'SYSTEM_PROXY_SOFTWARE')).toMatchObject({
-      title: '别的代理软件',
+      title: '其他代理软件',
       state: 'warn',
       details: { systemProxy: 'blocking', proxyPort: 7897, fix: 'open-proxy-settings' },
     })
-    expect(item(report, 'SYSTEM_PROXY_SOFTWARE')?.summary).toContain('开着别的代理软件（本机 7897 端口），可是经它连不上星芒。')
+    expect(item(report, 'SYSTEM_PROXY_SOFTWARE')?.summary).toContain('已开启其他代理软件（本机 7897 端口），但通过该代理无法连接星芒。')
   })
 
   it('checks the system proxy on Windows too', async () => {
@@ -3882,7 +3882,7 @@ describe('diagnostics system proxy', () => {
     input.readProxyScopes = async () => null
     input.probeLoopbackProxy = async () => false
     const report = await runDiagnostics(input)
-    expect(item(report, 'PROXY_ENVIRONMENT')).toMatchObject({ state: 'pass', summary: '没有另外设过代理' })
+    expect(item(report, 'PROXY_ENVIRONMENT')).toMatchObject({ state: 'pass', summary: '未另行设置代理' })
     expect(item(report, 'SYSTEM_PROXY_SOFTWARE')).toMatchObject({ state: 'warn', details: { systemProxy: 'dead', proxyPort: 10809 } })
   })
 
@@ -3891,7 +3891,7 @@ describe('diagnostics system proxy', () => {
     const input = { ...wired(dependencies(temporaryHome()), 'DIRECT'), resolveSystemProxy, inspectAccelerationActive: async () => true }
     expect(item(await runDiagnostics(input), 'SYSTEM_PROXY_SOFTWARE')).toMatchObject({
       state: 'pass',
-      summary: '系统设置里的代理是星芒自己的加速设的，不是别的软件',
+      summary: '系统设置中的代理由星芒自身的加速功能设置，并非其他软件',
     })
     expect(resolveSystemProxy).not.toHaveBeenCalled()
   })
@@ -3910,7 +3910,7 @@ describe('diagnostics system proxy', () => {
       return statusJson()
     }
     input.toolRoute = { site: requireRelaySite('solov', 'direct') }
-    expect(item(await runDiagnostics(input), 'SYSTEM_PROXY_SOFTWARE')).toMatchObject({ state: 'pass', summary: '开着别的代理软件（本机 7897 端口），星芒经它能连上' })
+    expect(item(await runDiagnostics(input), 'SYSTEM_PROXY_SOFTWARE')).toMatchObject({ state: 'pass', summary: '已开启其他代理软件（本机 7897 端口），星芒可通过该代理连接' })
     expect(seen).toEqual(['https://xm-direct.solov.cc/api/status'])
   })
 })
@@ -3935,8 +3935,8 @@ describe('diagnostics DNS', () => {
     }
     input.lookupHostWithPublicDns = async (host) => host === 'xm.solov.cc' ? ['104.16.1.1'] : ['198.51.100.7']
     const item = dnsItem(await runDiagnostics(input))
-    expect(item).toMatchObject({ title: '查网址的服务（DNS）', state: 'fail', details: { line1: 'wrong', line2: 'wrong', fix: 'open-dns-settings' } })
-    expect(item?.summary).toContain('你这台电脑用的 DNS 把星芒的地址查错了')
+    expect(item).toMatchObject({ title: '域名解析服务（DNS）', state: 'fail', details: { line1: 'wrong', line2: 'wrong', fix: 'open-dns-settings' } })
+    expect(item?.summary).toContain('本机使用的 DNS 将星芒地址解析错误')
     expect(asked.sort()).toEqual(['xm-direct.solov.cc', 'xm.solov.cc'])
     // 解析出来的地址不进结论和报告（xm 三线路需求 5.1.9）。
     expect(JSON.stringify(item)).not.toContain('203.0.113.9')
@@ -3953,7 +3953,7 @@ describe('diagnostics DNS', () => {
       hkEnabled: false,
       hkRecommended: false,
     })
-    expect(dnsItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', summary: '电脑的 DNS 查星芒的地址是对的' })
+    expect(dnsItem(await runDiagnostics(input))).toMatchObject({ state: 'pass', summary: '电脑的 DNS 解析星芒地址正确' })
   })
 
   it('judges by the tool route and sends a fixed wrong line to the route setting', async () => {

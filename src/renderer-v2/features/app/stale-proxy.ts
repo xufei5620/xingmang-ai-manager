@@ -3,7 +3,7 @@ import type { StaleProxyClearResult } from '../../../../electron/ipc-contract'
 type DetailValue = boolean | number | string | null
 
 /**
- * 检查页「电脑里的代理设置」一项：主进程确认当前 Windows 账号下有一条指向没开的
+ * 检查页「电脑中的代理设置」一项：主进程确认当前 Windows 账号下有一条指向没开的
  * 本机代理的设置时，才给「清掉这条旧设置」按钮（第十六批 5）。整台电脑那一份、
  * 开着的代理、指向别的机器的都不给。
  */

@@ -373,7 +373,7 @@ export function SessionsPage({
           throw new Error('该记录的文件夹已不存在，无法继续上次的对话。')
         }
       },
-      // 项目文件夹里的设置会盖过当前账号时，那句提醒跟在成功提示后面，不另弹一条。
+      // 项目文件夹中的设置会盖过当前账号时，那句提醒跟在成功提示后面，不另弹一条。
       (result) =>
         result === null
           ? null

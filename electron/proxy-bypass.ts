@@ -697,7 +697,7 @@ export async function probeDirectConnection(
   return parsesAsJsonObject(await readBoundedResponseText(response, probeMaxBytes, '连通检查'))
 }
 
-/** dns：检查页「查网址的服务（DNS）」那颗「打开网络设置」，改 DNS 的地方在系统的网络设置里。 */
+/** dns：检查页「域名解析服务（DNS）」那颗「打开网络设置」，改 DNS 的地方在系统的网络设置里。 */
 export type NetworkSettingsKind = 'proxy' | 'captive-portal' | 'dns'
 
 export function isNetworkSettingsKind(value: unknown): value is NetworkSettingsKind {

@@ -279,9 +279,9 @@ function parseScope(value: unknown): Partial<Record<StaleProxyVariableName, stri
 
 export function parseProxyScopesOutput(stdout: string): ProxyVariableScopes {
   const last = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1)
-  if (!last) throw new Error('没能读到电脑里的代理设置')
+  if (!last) throw new Error('无法读取电脑中的代理设置')
   const parsed: unknown = JSON.parse(last)
-  if (!parsed || typeof parsed !== 'object') throw new Error('没能读到电脑里的代理设置')
+  if (!parsed || typeof parsed !== 'object') throw new Error('无法读取电脑中的代理设置')
   const record = parsed as Record<string, unknown>
   return { user: parseScope(record.user), machine: parseScope(record.machine) }
 }
