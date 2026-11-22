@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import {
   buildCanvasProjectPackage,
@@ -266,6 +267,32 @@ describe('canvas project package', () => {
     expect(() => parseCanvasProjectWorkflow(withNode('note', { text: '便签', apiKey: 'sk-secret' }))).toThrow('设置不安全')
   })
 
+  it('keeps node names, group names and the drama bible style as typed and the location rule everywhere else (#1368 item 4)', () => {
+    function withNode(kind: string, settings: Record<string, unknown>): string {
+      const document = JSON.parse(workflow())
+      document.nodes[0] = { id: 'named-1', kind, definitionVersion: 1, position: { x: 0, y: 0 }, data: { prompt: '', model: '', settings } }
+      return JSON.stringify(document)
+    }
+    // What people type as a name or a style: a link, a slash command, a drive, a share.
+    const labels = ['https://www.xiaohongshu.com/explore/1 的配色', '/imagine 赛博朋克', 'D:\\素材\\猫', '\\\\server\\share', 'data:先放这里', 'file:草稿', 'x'.repeat(10_000)]
+    for (const label of labels) {
+      for (const kind of ['image-generate', 'group', 'note', 'drama-bible']) {
+        expect(() => parseCanvasProjectWorkflow(withNode(kind, { title: label })), `${kind} ${label.slice(0, 30)}`).not.toThrow()
+      }
+      expect(() => parseCanvasProjectWorkflow(withNode('drama-bible', { stylePrompt: label, aspectRatio: '16:9' })), label.slice(0, 30)).not.toThrow()
+      expect(() => parseCanvasProjectWorkflow(withNode('note', { text: label, title: label })), label.slice(0, 30)).not.toThrow()
+    }
+    expect(() => parseCanvasProjectWorkflow(withNode('group', { title: 'x'.repeat(10_001) }))).toThrow('设置不安全')
+    expect(() => parseCanvasProjectWorkflow(withNode('drama-bible', { stylePrompt: 'x'.repeat(10_001) }))).toThrow('设置不安全')
+    // Every other key, nested names and the style key on other kinds are still locations.
+    expect(() => parseCanvasProjectWorkflow(withNode('drama-bible', { stylePrompt: '厚涂', worldTone: 'https://example.com' }))).toThrow('设置不安全')
+    expect(() => parseCanvasProjectWorkflow(withNode('drama-shot', { stylePrompt: 'https://example.com' }))).toThrow('设置不安全')
+    expect(() => parseCanvasProjectWorkflow(withNode('group', { title: '分组', source: 'D:\\素材' }))).toThrow('设置不安全')
+    expect(() => parseCanvasProjectWorkflow(withNode('group', { title: '分组', nested: { title: 'https://example.com' } }))).toThrow('设置不安全')
+    expect(() => parseCanvasProjectWorkflow(withNode('group', { title: { url: 'https://example.com' } }))).toThrow('设置不安全')
+    expect(() => parseCanvasProjectWorkflow(withNode('group', { title: '分组', apiKey: 'sk-secret' }))).toThrow('设置不安全')
+  })
+
   it('accepts a mask-sized settings array and still bounds it', () => {
     function withMask(pointCount: number): string {
       const document = JSON.parse(workflow())
@@ -275,5 +302,38 @@ describe('canvas project package', () => {
     }
     expect(() => parseCanvasProjectWorkflow(withMask(4_096))).not.toThrow()
     expect(() => parseCanvasProjectWorkflow(withMask(4_097))).toThrow('设置不安全')
+  })
+
+  describe('node settings location rule with random inputs', () => {
+    function withNode(kind: string, settings: Record<string, unknown>): string {
+      const document = JSON.parse(workflow())
+      document.nodes[0] = { id: 'named-1', kind, definitionVersion: 1, position: { x: 0, y: 0 }, data: { prompt: '', model: '', settings } }
+      return JSON.stringify(document)
+    }
+    const kinds = fc.constantFrom('image-generate', 'group', 'note', 'drama-bible', 'drama-shot', 'prompt', 'future-node')
+    const location = fc.tuple(fc.constantFrom('https://', 'http://', 'data:', 'file:', '/', 'D:\\', 'c:/', '\\\\'), fc.string({ maxLength: 40 })).map(([start, rest]) => start + rest)
+    const key = fc.string({ minLength: 1, maxLength: 24 }).filter((name) => !/(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|secret|password)/i.test(name))
+
+    it('accepts any name of up to 10 000 characters as a title on any kind', () => {
+      fc.assert(fc.property(kinds, fc.oneof(location, fc.string({ maxLength: 200 })), (kind, title) => {
+        expect(() => parseCanvasProjectWorkflow(withNode(kind, { title }))).not.toThrow()
+      }))
+    })
+
+    it('still refuses a location under any other root key, unless it is a note\'s text or the drama bible\'s style', () => {
+      fc.assert(fc.property(kinds, key, location, (kind, name, value) => {
+        const exempt = name === 'title' || (kind === 'note' && name === 'text') || (kind === 'drama-bible' && name === 'stylePrompt')
+        const parse = () => parseCanvasProjectWorkflow(withNode(kind, { [name]: value }))
+        if (exempt) expect(parse).not.toThrow()
+        else expect(parse).toThrow('设置不安全')
+      }))
+    })
+
+    it('still refuses a location nested under a name key', () => {
+      fc.assert(fc.property(kinds, fc.constantFrom('title', 'stylePrompt', 'text'), location, (kind, name, value) => {
+        expect(() => parseCanvasProjectWorkflow(withNode(kind, { [name]: { [name]: value } }))).toThrow('设置不安全')
+        expect(() => parseCanvasProjectWorkflow(withNode(kind, { [name]: [value] }))).toThrow('设置不安全')
+      }))
+    })
   })
 })
