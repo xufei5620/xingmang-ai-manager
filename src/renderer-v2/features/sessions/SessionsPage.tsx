@@ -353,7 +353,7 @@ export function SessionsPage({
           const result = await (typeof choice === 'object'
             ? api.launchCli(provider, session.cwd, 'resumeLast', choice.resumeSessionId)
             : api.launchCli(provider, session.cwd, 'resumeLast'))
-          // 选了「先不打开」就什么都没开，首页那份「最近」也没变。
+          // 选了「暂不打开」就什么都没开，首页那份「最近」也没变。
           if (!launchDeclined(result)) {
             onSessionsChanged?.()
             // 终端里这就要多出新的对话，从终端回来头一次切回窗口不管隔了多久都重读。

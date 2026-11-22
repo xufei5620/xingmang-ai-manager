@@ -1768,7 +1768,7 @@ export function createCanvasWindowController(
     })
     canvasCrashRecovery = crashRecovery
     // 画布卡死（页面死循环、长任务）不会崩，render-process-gone 不来，窗口只是不动，点 × 也只是白等关闭确认。
-    // 跟主窗口一样弹「界面没有响应」，字是 yoyo 2026-11-11 照决定单第六节批的（崩溃恢复.md KR-2）。
+    // 跟主窗口一样弹「界面无响应」，字是 yoyo 2026-11-11 照决定单第六节批的（崩溃恢复.md KR-2）。
     // 选「重新加载」先结束卡住的进程：只换地址的话，新页面还得那个卡住的进程来接（Electron 文档
     // forcefullyCrashRenderer 一节）。进程没了走下面的 render-process-gone，在那里重新加载，
     // 不记成画布崩了一次，也不占自动重载的次数。
@@ -1776,8 +1776,8 @@ export function createCanvasWindowController(
     const responsiveness = createWindowResponsivenessGuard({
       prompt: async (signal) => {
         const result = await dialog.showMessageBox(window, {
-          type: 'warning', title: '界面没有响应', message: '无限画布暂时没有响应。',
-          detail: '可以再等一会儿，画布通常会自己恢复。重新加载只会重启画布，正在进行的安装、下载和已保存的设置都不受影响，但画布上还没保存的改动会丢失。',
+          type: 'warning', title: '界面无响应', message: '无限画布暂时无响应。',
+          detail: '可稍候片刻，画布通常会自动恢复。重新加载仅会重启画布，正在进行的安装、下载和已保存的设置均不受影响，但画布上尚未保存的改动将丢失。',
           buttons: ['继续等待', '重新加载'], defaultId: 0, cancelId: 0, signal,
         })
         return result.response === 1 ? 'reload' : 'wait'
@@ -1927,7 +1927,7 @@ export function createCanvasWindowController(
       rendererUnavailable = true
       if (pendingClose?.window === window) finishPendingClose(false, '画布渲染进程已退出，无法确认项目保存')
       if (endedForHangReload) {
-        // 用户在「界面没有响应」里点了重新加载，进程是这边结束的，不是崩溃。
+        // 用户在「界面无响应」里点了重新加载，进程是这边结束的，不是崩溃。
         endedForHangReload = false
         options.runtimeLog.log('warn', 'canvas', 'process.ended-for-reload', '已结束卡住的画布界面进程，重新加载', {
           reason: details.reason,

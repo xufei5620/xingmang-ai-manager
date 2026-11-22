@@ -20,7 +20,7 @@ export function launchWarning(result: CodexDesktopLaunchResult | CliLaunchResult
 }
 
 /**
- * 主进程在「这个文件夹不建议打开」那一问里被用户拒了，工具没有启动（全面检测
+ * 主进程在「不建议在此文件夹中打开」那一问里被用户拒了，工具没有启动（全面检测
  * Q39）。只认明说的 declined：测试夹具和旧版主进程什么都不回时仍按「打开了」算。
  */
 export function launchDeclined(result: CodexDesktopLaunchResult | CliLaunchResult | void | undefined): boolean {
@@ -28,7 +28,7 @@ export function launchDeclined(result: CodexDesktopLaunchResult | CliLaunchResul
 }
 
 /**
- * 记录页「继续对话」成功后那句话。用户选了「先不打开」就什么都不说，
+ * 记录页「继续对话」成功后那句话。用户选了「暂不打开」就什么都不说，
  * 不能再说「已打开」。
  */
 export function resumeSessionNotice(result: CliLaunchResult | void | undefined, toolName: string, cwd: string): string | null {

@@ -251,7 +251,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
     // 从这里起是主进程在打开，换了账号也要等它做完，「打开中」不再提前放掉。
     preparingLaunches.current.delete(id)
     const result = await toolsApi.launch(id, workspace, mode)
-    // 「这个文件夹不建议打开」「文件夹不让写入」那两问里点了「先不打开」，工具没起来：不能报打开了。
+    // 「不建议在此文件夹中打开」「该文件夹禁止写入」那两问里点了「暂不打开」，工具没起来：不能报打开了。
     // 新手引导以前照样当这一步做完、把引导关掉（11-18 复核 N11）。
     if (launchDeclined(result)) return false
     const warning = launchWarning(result)

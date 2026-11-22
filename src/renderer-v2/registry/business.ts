@@ -136,14 +136,14 @@ export const scopeOptions = [
 ]
 export const updateLabels = {
   disabled: '当前环境暂不提供自动更新',
-  idle: '检查有没有新版本',
+  idle: '检查是否有新版本',
   checking: '正在检查新版本…',
   available: '发现新版本',
   'not-available': '已是最新版本',
   downloading: '正在下载更新…',
   downloaded: '更新已下载',
   cancelled: '下载已取消',
-  error: '更新没有完成',
+  error: '更新未完成',
 } as const
 /**
  * 更新失败分三步说。只报一句「更新没有完成」时，断网点一次「检查更新」也会被
@@ -156,7 +156,7 @@ export const updateFailureLabels = {
   install: { title: '安装更新失败', retry: '重新安装' },
 } as const
 // 旧版本的快照没有 failedStep。说不清是哪一步，就别编一个步骤名出来。
-export const updateFailureFallback = { title: '更新没有完成', retry: '重新下载' } as const
+export const updateFailureFallback = { title: '更新未完成', retry: '重新下载' } as const
 export function updateFailureLabel(step: UpdateFailedStep | null | undefined) {
   return step ? updateFailureLabels[step] : updateFailureFallback
 }
@@ -167,8 +167,8 @@ export function updateFailureLabel(step: UpdateFailedStep | null | undefined) {
  */
 type UpdateOfferState = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'rollback' | 'currentVersionWithdrawn' | 'diskShortfall' | 'installMethod'>
 export function updateCardTitle(update: UpdateOfferState): string {
-  if (update.rollback && update.phase === 'available') return '建议退回稳定版本'
-  if (update.currentVersionWithdrawn && (update.phase === 'not-available' || update.phase === 'idle')) return '这个版本有已知问题'
+  if (update.rollback && update.phase === 'available') return '建议回退至稳定版本'
+  if (update.currentVersionWithdrawn && (update.phase === 'not-available' || update.phase === 'idle')) return '当前版本存在已知问题'
   return updateLabels[update.phase]
 }
 /** 「有新版本 v{y}」写哪一版。退回旧版本不是新版本，那时不这么写。 */
@@ -177,7 +177,7 @@ export function updateNewVersion(update: Pick<UpdateSnapshot, 'currentVersion' |
   return update.availableVersion
 }
 /**
- * 人就在「设置 › 版本更新」时，「正在下载更新」「下载更新失败」「新版本 X 可以安装」这三种气泡说的是
+ * 人就在「设置 › 版本更新」时，「正在下载更新」「下载更新失败」「新版本 X 可安装」这三种气泡说的是
  * 版本卡上写着的同一件事，不弹；离开那一组照旧弹。别的几种（「这个版本有已知问题」等）照旧。
  */
 export function updateBubbleRepeatsUpdatesPage(update: UpdateOfferState & Pick<UpdateSnapshot, 'error' | 'failedStep'>): boolean {
@@ -188,9 +188,9 @@ export function updateBubbleRepeatsUpdatesPage(update: UpdateOfferState & Pick<U
 export function updateBubbleTitle(update: UpdateOfferState): string {
   if (update.phase === 'downloaded') return '更新已下载'
   if (update.phase === 'downloading') return '正在下载更新'
-  if (update.phase === 'available' && update.diskShortfall) return '新版本先不下载'
-  if (update.phase === 'available') return update.rollback ? `建议退回 ${update.availableVersion}` : `新版本 ${update.availableVersion} 可以安装`
-  return '这个版本有已知问题'
+  if (update.phase === 'available' && update.diskShortfall) return '新版本暂不下载'
+  if (update.phase === 'available') return update.rollback ? `建议回退至 ${update.availableVersion}` : `新版本 ${update.availableVersion} 可安装`
+  return '当前版本存在已知问题'
 }
 /**
  * Windows 上账号不在管理员组（update.installNeedsAdminPassword）：下好的新版本不自动装，首页气泡
@@ -198,25 +198,25 @@ export function updateBubbleTitle(update: UpdateOfferState): string {
  * 要一致。
  */
 export const standardAccountUpdateNotice = {
-  title: '这台电脑的账号不是管理员，装更新时要输入管理员密码',
-  body: '让有管理员账号的人点一次「重启并安装」，或者找客服。',
+  title: '当前系统账号不是管理员，安装更新时需要输入管理员密码',
+  body: '请由管理员账号点击「重启并安装」，或联系客服。',
 } as const;
 export const standardAccountUpdateText = `${standardAccountUpdateNotice.title}。${standardAccountUpdateNotice.body}`;
 // Mac 上能趁电脑闲着自己装的（update.idleInstall）：「下好了」那个气泡多说这一句。主进程 desktop-notifications.ts 的
 // idleInstallNoticeTail 是同一句，两边字面量要一致。
-export const idleInstallBubbleTail = '你不用电脑时星芒也会自己装好。';
+export const idleInstallBubbleTail = '电脑空闲时星芒也会自动安装。';
 // 提示气泡的正文。自动更新开着时直接告诉用户接下来会怎样，不用他再点进「版本更新」。
 // 交给系统安装器的版本（Linux）从不自己装，下好了就请他点一下。
 export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean, idleInstall?: boolean): string {
   if (installMethod === 'system-installer') {
-    if (phase === 'downloaded') return '已经下好了，到「设置 › 版本更新」点「安装新版本」就能装上。';
-    return autoUpdate ? '正在后台下载，下好后到「设置 › 版本更新」点「安装新版本」。' : '查看更新内容和安装状态。';
+    if (phase === 'downloaded') return '已下载完成，请前往「设置 › 版本更新」点击「安装新版本」。';
+    return autoUpdate ? '正在后台下载，下载完成后请前往「设置 › 版本更新」点击「安装新版本」。' : '查看更新内容和安装状态。';
   }
   if (phase === 'downloaded' && installNeedsAdminPassword) return standardAccountUpdateText;
   if (!autoUpdate) return '查看更新内容和安装状态。';
-  if (phase === 'downloaded') return `已经下好了，可以现在装，也可以关掉软件或下次打开时自动装上。${idleInstall ? idleInstallBubbleTail : ''}`;
-  if (installNeedsAdminPassword) return '正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。';
-  return '正在后台下载，下好后关掉软件或下次打开时自动装上。';
+  if (phase === 'downloaded') return `已下载完成，可立即安装，也可在关闭软件或下次启动时自动安装。${idleInstall ? idleInstallBubbleTail : ''}`;
+  if (installNeedsAdminPassword) return '正在后台下载；本机安装更新需要输入管理员密码，下载完成后不会自动安装。';
+  return '正在后台下载，下载完成后将在关闭软件或下次启动时自动安装。';
 }
 /**
  * 磁盘空间不够、这一轮没下更新时的那句。和系统通知读同一份说法（disk-space-copy.ts）；
@@ -244,13 +244,13 @@ function oneDecimal(value: number): string {
  * 每秒都在变；几秒就好的直接说「马上就好」。
  */
 export function formatDownloadRemaining(seconds: number): string {
-  if (seconds <= 10) return '马上就好';
-  if (seconds < 60) return `大约还要 ${Math.min(50, Math.ceil(seconds / 10) * 10)} 秒`;
+  if (seconds <= 10) return '即将完成';
+  if (seconds < 60) return `预计还需 ${Math.min(50, Math.ceil(seconds / 10) * 10)} 秒`;
   const minutes = Math.ceil(seconds / 60);
-  if (minutes < 60) return `大约还要 ${minutes} 分钟`;
+  if (minutes < 60) return `预计还需 ${minutes} 分钟`;
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
-  return rest ? `大约还要 ${hours} 小时 ${rest} 分钟` : `大约还要 ${hours} 小时`;
+  return rest ? `预计还需 ${hours} 小时 ${rest} 分钟` : `预计还需 ${hours} 小时`;
 }
 /**
  * 进度条下面那行：「已下载 38 MB / 共 112 MB · 每秒 1.8 MB · 大约还要 1 分钟」。
@@ -276,8 +276,8 @@ export function updateDownloadDetail(progress: UpdateSnapshot['progress'] | null
  * 账号不是管理员的 Windows 电脑要输管理员密码，都不能说会自己装上。
  */
 export function autoUpdateSettingDescription(installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
-  if (installMethod === 'system-installer') return '下好后提醒你点安装';
-  return installNeedsAdminPassword ? '下好后要输入管理员密码才能装' : '下好后在你关掉星芒时装上';
+  if (installMethod === 'system-installer') return '下载完成后提醒您安装';
+  return installNeedsAdminPassword ? '下载完成后需输入管理员密码安装' : '下载完成后在关闭星芒时安装';
 }
 /**
  * 版本卡右上角的小标签：「有新版本 v{y}」「已下载，重启后生效」，其余照旧用 updateCardTitle。
@@ -314,7 +314,7 @@ export function updateSidebarEntry(update: (UpdateOfferState & Pick<UpdateSnapsh
     const systemInstaller = update.installMethod === 'system-installer';
     return {
       label: systemInstaller ? '安装新版本' : '重启并安装新版',
-      title: `${named}已经下好，点一下装上${systemInstaller ? '' : '，装好自动打开'}`,
+      title: `${named}已下载，点击即可安装${systemInstaller ? '' : '，安装完成后自动打开'}`,
       install: true,
     };
   }
@@ -329,12 +329,12 @@ export function updateSidebarEntry(update: (UpdateOfferState & Pick<UpdateSnapsh
   }
   return null;
 }
-export const updateInstallNote = '装之前先保存工具里没做完的东西。有工具正在安装时，不会打断它，会先问你或者等下次再装。';
+export const updateInstallNote = '安装前请保存工具中未完成的工作。如有工具正在安装，不会中断该安装，将先询问您或推迟到下次安装。';
 export function withdrawnVersionAdvice(update: UpdateOfferState): string {
   const next = update.availableVersion
-  if (next && update.rollback) return `发布者撤回了 ${update.currentVersion}。建议装回 ${next}：先下载，再点「${updateInstallActionLabel(update.installMethod)}」。`
-  if (next) return `发布者撤回了 ${update.currentVersion}，修好的 ${next} 已经可以装了，建议尽快更新。`
-  return `发布者撤回了 ${update.currentVersion}。修好的版本准备好后，这里会提示你更新。`
+  if (next && update.rollback) return `发布者已撤回 ${update.currentVersion}。建议回退至 ${next}：请先下载，再点击「${updateInstallActionLabel(update.installMethod)}」。`
+  if (next) return `发布者已撤回 ${update.currentVersion}，修复后的 ${next} 已可安装，建议尽快更新。`
+  return `发布者已撤回 ${update.currentVersion}。修复版本就绪后，此处将提示您更新。`
 }
 export const keyStates = {
   1: { label: '有效', tone: 'ok' },

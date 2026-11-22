@@ -2964,7 +2964,7 @@ test('the guide opens a used CLI in the folder its home card shows, and can stil
   } finally { await page.close() }
 })
 
-// 11-18 复核 N11：「这个文件夹不建议打开」那一问里点「先不打开」，工具没起来，引导以前照样当做完、整个关掉。
+// 11-18 复核 N11：「不建议在此文件夹中打开」那一问里点「暂不打开」，工具没起来，引导以前照样当做完、整个关掉。
 test('the guide stays on its last step when the user declines to open the folder (N11)', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1&launchDeclined=1')
   const launches = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length)
@@ -5484,7 +5484,7 @@ test('saved-account switching names the rewritten tools that are still open and 
     await saved.getByRole('button', { name: '切换', exact: true }).click()
     // 有工具还开着时切换框不自己关掉，提示和按钮要让用户看得到。
     await switcher.getByTestId('account-sync-restart-hint')
-      .getByText('Claude Code、Codex CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。', { exact: true }).waitFor()
+      .getByText('Claude Code、Codex CLI、Codex 桌面端 仍在运行，需关闭后重新打开才会使用当前账号。', { exact: true }).waitFor()
     const asked = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'inspectRunningTools').map((entry) => entry.args[0]))
     assert.deepEqual(asked, [['claude', 'codex']])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop')), false, '不点就不许重开桌面端')
@@ -5493,7 +5493,7 @@ test('saved-account switching names the rewritten tools that are still open and 
     const launches = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args[0]))
     assert.deepEqual(launches, ['restart'])
     await switcher.getByTestId('account-sync-restart-hint')
-      .getByText('Claude Code、Codex CLI 还开着，要关掉重开才会用上当前账号。', { exact: true }).waitFor()
+      .getByText('Claude Code、Codex CLI 仍在运行，需关闭后重新打开才会使用当前账号。', { exact: true }).waitFor()
     assert.equal(await switcher.getByTestId('account-sync-restart-codex-desktop').count(), 0)
     await clean(page)
   } finally { await page.close() }
@@ -6508,11 +6508,11 @@ test('the update failure bubble retries the failed step without a detour', async
     assert.equal(await calls('checkForUpdates'), 1)
 
     // 开机检查超时不算真的失败：用提醒色，说的是大白话，按钮是重新查。
-    await emit('check', 'error', 'STARTUP_UPDATE_TIMEOUT', '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。')
-    const slow = page.locator('.xm-notice').filter({ hasText: '网络有点慢' })
+    await emit('check', 'error', 'STARTUP_UPDATE_TIMEOUT', '网络较慢，本次未能完成新版本检查。星芒将在后台继续检查，不影响当前使用。')
+    const slow = page.locator('.xm-notice').filter({ hasText: '网络较慢' })
     await slow.waitFor()
     assert.match(await slow.getAttribute('class'), /xm-tone-warn/)
-    assert.equal(await page.getByRole('alert').filter({ hasText: '网络有点慢' }).count(), 0)
+    assert.equal(await page.getByRole('alert').filter({ hasText: '网络较慢' }).count(), 0)
     await slow.getByRole('button', { name: '重试', exact: true }).click()
     await expect.poll(() => calls('checkForUpdates')).toBe(2)
     assert.equal(await calls('downloadUpdate'), 1)
@@ -6529,7 +6529,7 @@ test('the update failure bubble retries the failed step without a detour', async
 })
 
 // 已知31：版本更新卡确认框里的「重启并安装」让主进程先看有没有工具在装（askIfInstalling），有就先问退出时那一句。
-// 客户在那一句里点了「继续安装」（或者 D10 那一句里点了「等它做完」）：确认框关掉，不说「安装请求已提交」，新版本留着。
+// 客户在那一句里点了「继续安装」（或者 D10 那一句里点了「等待完成」）：确认框关掉，不说「安装请求已提交」，新版本留着。
 test('the version card asks about running installs before restarting and stays quiet when the user keeps installing (known 31)', async () => {
   const page = await open('installPostponed=1')
   try {
@@ -6614,7 +6614,7 @@ test('a Mac signature rejection offers the download page instead of reinstalling
   const page = await open('updateCheckFail=1')
   try {
     const updates = await openVersionCard(page)
-    const reason = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
+    const reason = '新版本已下载，但未通过本机系统校验，无法自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'
     await page.evaluate((message) => window.v2Test.emit('onUpdateState', {
       phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
       checkedAt: new Date().toISOString(), progress: null, failedStep: 'install',
@@ -6729,8 +6729,8 @@ test('the version card explains a full disk and still lets the user download', a
     }))
     const notice = updates.getByTestId('updates-disk-shortfall')
     await notice.waitFor()
-    await notice.getByText('还要再清出 220 MB', { exact: false }).waitFor()
-    await page.getByRole('status').getByText('新版本先不下载', { exact: true }).waitFor()
+    await notice.getByText('还需清理出 220 MB', { exact: false }).waitFor()
+    await page.getByRole('status').getByText('新版本暂不下载', { exact: true }).waitFor()
     await notice.getByRole('button', { name: '怎么清理', exact: true }).click()
     await notice.getByTestId('updates-disk-cleanup').waitFor()
     await notice.getByRole('button', { name: '仍要下载', exact: true }).click()
@@ -6755,7 +6755,7 @@ test('the required-update gate explains a full disk and lets the user retry', as
     const gate = page.getByTestId('required-update-gate')
     const notice = gate.getByTestId('required-update-disk')
     await notice.waitFor()
-    await notice.getByText('还要再清出 220 MB', { exact: false }).waitFor()
+    await notice.getByText('还需清理出 220 MB', { exact: false }).waitFor()
     await notice.getByRole('button', { name: '怎么清理', exact: true }).click()
     await notice.getByTestId('required-update-disk-cleanup').waitFor()
     await gate.getByRole('button', { name: '重新检查空间', exact: true }).click()
@@ -6904,10 +6904,10 @@ test('a Windows account outside the administrators group is told an administrato
       window.v2Test.emit('onUpdateState', value)
     }, { ...state, ...patch })
     await emit({})
-    await page.locator('.xm-notice').getByText('正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。', { exact: true }).waitFor()
+    await page.locator('.xm-notice').getByText('正在后台下载；本机安装更新需要输入管理员密码，下载完成后不会自动安装。', { exact: true }).waitFor()
 
     await emit({ phase: 'downloaded', progress: null })
-    const bubble = page.locator('.xm-notice').filter({ hasText: '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启并安装」，或者找客服。' })
+    const bubble = page.locator('.xm-notice').filter({ hasText: '当前系统账号不是管理员，安装更新时需要输入管理员密码。请由管理员账号点击「重启并安装」，或联系客服。' })
     await bubble.getByText('更新已下载', { exact: true }).waitFor()
     await bubble.getByRole('button', { name: '查看更新', exact: true }).click()
     const settings = page.getByTestId('page-settings')
@@ -6915,12 +6915,12 @@ test('a Windows account outside the administrators group is told an administrato
     await updates.waitFor()
     await expect(settings.getByRole('tab', { name: '版本更新', exact: true })).toHaveAttribute('aria-selected', 'true')
     // 原来更新页页头那句「不会自动装上」挪进了卡下面「自动下载更新」那一行的说明（v4 批09）。
-    await expect(settings.getByTestId('updates-auto-update')).toContainText('下好后要输入管理员密码才能装')
+    await expect(settings.getByTestId('updates-auto-update')).toContainText('下载完成后需输入管理员密码安装')
     // 要输管理员密码的不是「重启后生效」，小标签照旧写「更新已下载」。
     await updates.getByText('更新已下载', { exact: true }).waitFor()
     const notice = updates.getByTestId('updates-admin-password')
-    await notice.getByText('这台电脑的账号不是管理员，装更新时要输入管理员密码', { exact: true }).waitFor()
-    await notice.getByText('让有管理员账号的人点一次「重启并安装」，或者找客服。', { exact: true }).waitFor()
+    await notice.getByText('当前系统账号不是管理员，安装更新时需要输入管理员密码', { exact: true }).waitFor()
+    await notice.getByText('请由管理员账号点击「重启并安装」，或联系客服。', { exact: true }).waitFor()
     // 原话叫他点的就是卡底这颗按钮：自己点照样能装，确认框说清要输管理员密码。
     await updates.getByRole('button', { name: '重启并安装', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
@@ -6933,7 +6933,7 @@ test('a Windows account outside the administrators group is told an administrato
     // 管理员账号照旧会在关掉星芒时装上：从首页气泡再进一次「设置 › 版本更新」，那一行说的是这句。
     await page.getByTestId('nav-home').click()
     await page.locator('.xm-notice').filter({ hasText: '更新已下载' }).getByRole('button', { name: '查看更新', exact: true }).click()
-    await expect(settings.getByTestId('updates-auto-update')).toContainText('下好后在你关掉星芒时装上')
+    await expect(settings.getByTestId('updates-auto-update')).toContainText('下载完成后在关闭星芒时安装')
 
     // 强制更新那道门在开发环境不拦，这里按正式环境发。
     await emit({ phase: 'available', progress: null, development: false, requiredVersion: '0.1.32' })
@@ -6981,7 +6981,7 @@ test('a downloaded update is one click from the install confirmation in the side
     await emit({})
     const entry = page.getByTestId('nav-update')
     await expect(entry).toHaveText('重启并安装新版')
-    await expect(entry).toHaveAttribute('title', '新版 v0.1.32 已经下好，点一下装上，装好自动打开')
+    await expect(entry).toHaveAttribute('title', '新版 v0.1.32 已下载，点击即可安装，安装完成后自动打开')
     await expect(page.getByTestId('nav-settings')).toHaveAttribute('aria-label', '设置，有新版本')
     await page.getByTestId('nav-settings-update').waitFor()
     // 侧栏那一项紧挨在「设置」上面；「充值」钉在它们上面（「充值改」）。
@@ -7089,7 +7089,7 @@ test('on Linux the version card hands installing to the system installer and exp
     const dialog = page.getByRole('dialog', { name: '安装新版本？' })
     await dialog.waitFor()
     await dialog.getByTestId('updates-system-installer-hint').getByText('输入开机密码', { exact: false }).waitFor()
-    assert.equal(await dialog.getByRole('button', { name: '关掉并安装', exact: true }).count(), 1)
+    assert.equal(await dialog.getByRole('button', { name: '关闭并安装', exact: true }).count(), 1)
     await dialog.getByRole('button', { name: '稍后安装', exact: true }).click()
 
     await page.evaluate(() => window.v2Test.emit('onUpdateState', {
@@ -7169,7 +7169,7 @@ test('a known issue from the update feed shows on its page with its button, and 
 })
 
 // 第 55 条：人就在「设置 › 版本更新」时，「新版本 X 可以安装」「正在下载更新」「下载更新失败」三种气泡说的是
-// 版本卡上写着的同一件事，不弹；离开那一组照旧弹。「这个版本有已知问题」那种照旧。
+// 版本卡上写着的同一件事，不弹；离开那一组照旧弹。「当前版本存在已知问题」那种照旧。
 test('settings › version update does not pop the bubbles that repeat what the version card already says', async () => {
   const page = await open()
   try {
@@ -7193,7 +7193,7 @@ test('settings › version update does not pop the bubbles that repeat what the 
     await page.getByTestId('nav-home').click()
     await bubble.getByText('下载更新失败', { exact: true }).waitFor()
     await emit({ phase: 'available' })
-    await bubble.getByText('新版本 0.1.32 可以安装', { exact: true }).waitFor()
+    await bubble.getByText('新版本 0.1.32 可安装', { exact: true }).waitFor()
     // 回到设置，还停在「版本更新」那组，那条又收起来；换到别的组，版本卡不在眼前了，照旧弹。
     await page.getByTestId('nav-settings').click()
     await expect(page.getByTestId('nav-settings')).toHaveAttribute('aria-current', 'page')
@@ -7202,12 +7202,12 @@ test('settings › version update does not pop the bubbles that repeat what the 
     await expect(versionTab).toHaveAttribute('aria-selected', 'true')
     await expect.poll(() => bubble.count()).toBe(0)
     await settings.getByRole('tab', { name: '外观显示', exact: true }).click()
-    await bubble.getByText('新版本 0.1.32 可以安装', { exact: true }).waitFor()
+    await bubble.getByText('新版本 0.1.32 可安装', { exact: true }).waitFor()
     await versionTab.click()
     await expect.poll(() => bubble.count()).toBe(0)
-    // 「这个版本有已知问题」人在「设置 › 版本更新」也照旧弹。
+    // 「当前版本存在已知问题」人在「设置 › 版本更新」也照旧弹。
     await emit({ phase: 'not-available', availableVersion: null, currentVersionWithdrawn: true })
-    await bubble.getByText('这个版本有已知问题', { exact: true }).waitFor()
+    await bubble.getByText('当前版本存在已知问题', { exact: true }).waitFor()
     assert.equal(await versionTab.getAttribute('aria-selected'), 'true')
     assert.equal(await page.getByTestId('nav-settings').getAttribute('aria-current'), 'page')
     await clean(page)
@@ -7226,12 +7226,12 @@ test('a withdrawn running version is called out and the older release is offered
       serviceMaintenance: null, currentVersionWithdrawn: true, rollback: true,
     }))
     await emitWithdrawn()
-    await page.getByText('建议退回 0.2.9', { exact: true }).waitFor()
+    await page.getByText('建议回退至 0.2.9', { exact: true }).waitFor()
     const updates = await openVersionCard(page)
     await emitWithdrawn()
-    await updates.getByText('建议退回稳定版本', { exact: true }).waitFor()
-    await updates.getByTestId('updates-current-withdrawn').getByText(/建议装回 0\.2\.9/).waitFor()
-    assert.equal(await page.getByText('新版本 0.2.9 可以安装', { exact: true }).count(), 0)
+    await updates.getByText('建议回退至稳定版本', { exact: true }).waitFor()
+    await updates.getByTestId('updates-current-withdrawn').getByText(/建议回退至 0\.2\.9/).waitFor()
+    assert.equal(await page.getByText('新版本 0.2.9 可安装', { exact: true }).count(), 0)
     assert.equal(await updates.getByTestId('updates-new-version').count(), 0)
     await clean(page)
   } finally { await page.close() }
