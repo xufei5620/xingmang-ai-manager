@@ -48,6 +48,19 @@ export function weixinLoginFinished(phase: WeixinLoginPhase): boolean {
 }
 
 /**
+ * 主进程这一轮没连上微信、叫界面过一会儿再问（带 retryAfterMs）。输完数字、交上去那一下断网时阶段还是「要输数字」，
+ * 原来只看阶段就停了，「连不上微信，正在重试」那句挂着却再也不问（M11）。主进程留着交上去的数字，再问一次就接着验。
+ */
+export function weixinLoginRetrying(view: WeixinLoginSnapshot): boolean {
+  return !weixinLoginFinished(view.phase) && view.retryAfterMs > 0
+}
+
+/** 这一轮问完要不要接着问：等手机那边的两种状态，或者主进程说过一会儿再问。 */
+export function weixinLoginPollsAgain(view: WeixinLoginSnapshot): boolean {
+  return weixinLoginKeepsPolling(view.phase) || weixinLoginRetrying(view)
+}
+
+/**
  * 登录好了以后那句按有没有绑着人分两种（0.2.24 D65）：「开始配对」要先打开遥控才点得动；扫的还是原来那个
  * 机器人时主进程留着绑定的人（saveChannelCredential 的 sameAccount），这时按钮是「换人」，也不用再配对。
  * 这次扫码微信要过手机上那串数字、输对了的（boundByScan，YF-5），主进程已经把扫码人记成绑定的人，说第三句。
@@ -137,7 +150,7 @@ export function WeixinRemoteSection({ snapshot, api, disabled, busy, run }: Remo
       pendingCode = undefined
       if (!current()) return
       setView((previous) => mergeWeixinLoginView(previous, next))
-      if (!weixinLoginKeepsPolling(next.phase)) return
+      if (!weixinLoginPollsAgain(next)) return
       if (next.retryAfterMs > 0) await wait(next.retryAfterMs)
     }
   }
@@ -199,7 +212,7 @@ export function WeixinRemoteSection({ snapshot, api, disabled, busy, run }: Remo
       testId="settings-remote-weixin-login-row"
     />
     <Dialog open={view !== null} title={weixinRemoteText.dialogTitle} onClose={close} footer={footer} testId="settings-remote-weixin-dialog">
-      {view ? <WeixinLoginDialogBody view={view} hasBoundPeer={snapshot.boundPeer !== null} code={code} onCodeChange={setCode} onSubmitCode={submitCode} busy={false} /> : null}
+      {view ? <WeixinLoginDialogBody view={view} hasBoundPeer={snapshot.boundPeer !== null} code={code} onCodeChange={setCode} onSubmitCode={submitCode} busy={weixinLoginRetrying(view)} /> : null}
     </Dialog>
   </>
 }

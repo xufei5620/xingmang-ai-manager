@@ -9,6 +9,8 @@ import {
   weixinLoginFinished,
   weixinLoginHeadline,
   weixinLoginKeepsPolling,
+  weixinLoginPollsAgain,
+  weixinLoginRetrying,
 } from './WeixinRemoteSection'
 
 function channel(overrides: Partial<CodexRemoteChannelSnapshot> = {}): CodexRemoteChannelSnapshot {
@@ -47,6 +49,18 @@ describe('weixin login view helpers', () => {
     expect(weixinLoginKeepsPolling('verify-code-wrong')).toBe(false)
     expect(weixinLoginFinished('confirmed')).toBe(true)
     expect(weixinLoginFinished('scanned')).toBe(false)
+  })
+
+  // M11：交上数字那一下断网，主进程回「正在重试」、阶段还是要输数字；界面得照它说的过一会儿再问，不能停在那儿。
+  it('keeps polling when the main process asks to retry, even while it waits for typed digits', () => {
+    const retrying = { loginId: 'a', phase: 'need-verify-code' as const, message: '连不上微信，正在重试', retryAfterMs: 2_000 }
+    expect(weixinLoginRetrying(retrying)).toBe(true)
+    expect(weixinLoginPollsAgain(retrying)).toBe(true)
+    expect(weixinLoginPollsAgain({ loginId: 'a', phase: 'need-verify-code', retryAfterMs: 0 })).toBe(false)
+    expect(weixinLoginPollsAgain({ loginId: 'a', phase: 'verify-code-wrong', retryAfterMs: 0 })).toBe(false)
+    expect(weixinLoginPollsAgain({ loginId: 'a', phase: 'scanned', retryAfterMs: 0 })).toBe(true)
+    expect(weixinLoginRetrying({ loginId: 'a', phase: 'failed', retryAfterMs: 2_000 })).toBe(false)
+    expect(weixinLoginPollsAgain({ loginId: 'a', phase: 'cancelled', retryAfterMs: 2_000 })).toBe(false)
   })
 
   it('says what to do next in each phase', () => {
