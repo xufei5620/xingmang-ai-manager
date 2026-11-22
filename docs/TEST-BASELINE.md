@@ -233,6 +233,8 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 - 写法：上限前那些条按 store 写的格式和顺序直接写进文件，只让要测的那几次保存经过 store；store 对每个没重写的文件做的检查（多一个硬链接、文件没了）照样走得到。「一次存满 N 条能不能收下」用解析函数单独断言，不用真写 N 次。
 - 复现：在 `writeAtomicSafeFile` 的 `handle.writeFile` 后面临时加 `await new Promise((resolve) => setTimeout(resolve, 150))`，旧写法当场撞 30 秒。11-18 验：聊天记录那条旧写法 30091ms 超时，改完 399ms。别提交这句。
 - 不是产品慢：客户用的时候一次保存只重写改过的那一两个对话加索引，一次写上百个只在「搬到新电脑」导入、头一回从旧的存法搬过来时各有一回。
+- 上限只数名字的，占位别整份复制（11-22）：`backups.test.ts`「restores the oldest backup even when pruning runs at the retention limit」要先占满 200 份备份的配额。以前绕开了 store，但每份都 `cpSync` 整个备份文件夹再改清单，连同收尾删掉要多一万多次文件系统调用（容器里 strace 数的，是现在的五倍）。11-20 晚到 11-22 的 202 次 Windows 运行里它中位 1.6 秒，11 次 3~16 秒，一次 34 秒撞了 30 秒（main 运行 44965062250，#2084）；同一次运行里同一文件另外三条恢复用例都没超过 3.4 秒，慢的只是这一段复制。prune 只按文件夹名数配额、不读里面，所以只整份复制要恢复的那一份，其余 199 份建空文件夹，再断言第二旧的那份被清掉：证明占位确实算进了配额，不然清理没跑到上限它也照样过。
+- 复现这一类（别提交）：`strace -f -qq -o /dev/null -e trace=<文件类系统调用> -e inject=<同一串>:delay_enter=3000 npx vitest run <文件> -t <用例名> --testTimeout=30000`，把每次文件系统调用拖慢 3 毫秒。11-22 验：备份那条旧写法 35 秒红（收尾删 200 份还撞了 10 秒的钩子时限），新写法 9 秒过。文件类系统调用用的是 `openat,mkdir,newfstatat,statx,rename,unlink,unlinkat,rmdir,sendfile,copy_file_range,getdents64,fsync,fdatasync,readlink`。
 
 ## 一键检测的用例报「检查超时」：时限管的是同一个主线程（2026-11-21）
 
