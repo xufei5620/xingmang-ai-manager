@@ -11,7 +11,7 @@ import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import { buildClaudeDesktopInstallFailureMessage } from '../../../electron/claude-desktop-install-failure'
 import { codexDesktopActivationBrokenSentence } from '../../../electron/codex-desktop-known-issues'
 import { accountScope } from '../account-context'
-import { createConversation, createWorkspace } from '../features/chat/state'
+import { createConversation, createWorkspace, type ChatMessage } from '../features/chat/state'
 import { exportableConversations } from '../features/chat/storage'
 import { assetThumbnailUrl } from '../../../electron/asset-thumbnail'
 import { serializeVideoStudioItem, type VideoStudioItem } from '../features/video-studio/library'
@@ -1172,10 +1172,14 @@ const methods = {
     importAppDataCount += 1
     const messages = [{ id: 'old-message', role: 'user' as const, content: '旧电脑上问过的话', reasoning: '', status: 'complete' as const, createdAt: 1 }]
     if (query.has('chatImportContinued') && importAppDataCount > 1) messages.push({ id: 'old-message-later', role: 'user' as const, content: '旧电脑上后来又问的', reasoning: '', status: 'complete' as const, createdAt: 2 })
-    const conversation = { ...createConversation(undefined, 'from-old-computer'), title: '旧电脑上的对话', messages }
+    // ?transferPicture：旧电脑上那个对话里有一张出好的图，文件是带着作品导出的，图原样在文件里。
+    const picture: ChatMessage[] = query.has('transferPicture') ? [{ id: 'old-picture', role: 'assistant', content: '画好了', reasoning: '', status: 'complete', createdAt: 2, assets: [{ assetId: 'p'.repeat(43), localUrl: `xingmang-asset://image/${'p'.repeat(43)}`, mimeType: 'image/png', fileName: '星芒图片.png' }] }] : []
+    const conversation = { ...createConversation(undefined, 'from-old-computer'), title: '旧电脑上的对话', messages: [...messages, ...picture] }
+    // ?transferWorksMissing：文件里说带了作品，旁边却没有「作品」文件夹（只拷了那一份文件）。
+    const works = query.has('transferWorksMissing') ? { ...fixtureWorks, state: 'missing' as const } : { ...fixtureWorks, state: 'ready' as const, token: 'fixture-works-token' }
     return {
-      conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }), phrases: ['旧电脑上存的一句'], settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [],
-      ...(query.has('transferWorks') ? { works: { ...fixtureWorks, state: 'ready' as const, token: 'fixture-works-token' } } : {}),
+      conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }, { withWorks: query.has('transferWorks') }), phrases: ['旧电脑上存的一句'], settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [],
+      ...(query.has('transferWorks') ? { works } : {}),
     }
   },
   // 「搬作品改」：?transferWorks 时当前账号作品库里有 128 件作品，导出前先问带不带。

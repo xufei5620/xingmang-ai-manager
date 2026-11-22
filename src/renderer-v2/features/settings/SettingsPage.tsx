@@ -550,7 +550,8 @@ export function SettingsPage({
         chatTransfer?.assertChatIdle()
         const preview = await api.importAppData()
         if (!preview) return null
-        const conversations = parseImportedConversations(preview.conversations)
+        // 作品这次能一起导进来，对话里的图片、视频才原样留着；否则换成一句说明，不留打不开的空格。
+        const conversations = parseImportedConversations(preview.conversations, { withWorks: preview.works?.state === 'ready' })
         if (preview.conflictLabels.length) {
           setImportAsk({ preview, conversations })
           return null
@@ -573,7 +574,7 @@ export function SettingsPage({
   // 当前账号作品库里有作品时先问一句带不带（「搬作品改」）；量不出来就照旧只导聊天记录和设置，不拦导出。
   const [exportAsk, setExportAsk] = useState<DataTransferWorksSummary | null>(null)
   const exportData = async (includeWorks: boolean) => {
-    const chat = chatTransfer ? await chatTransfer.exportChat() : { conversations: [] }
+    const chat = chatTransfer ? await chatTransfer.exportChat({ withWorks: includeWorks }) : { conversations: [] }
     if (!includeWorks) return api.exportAppData(chat)
     setWorksBusy('export')
     try {
