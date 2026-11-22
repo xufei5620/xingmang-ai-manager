@@ -135,6 +135,27 @@ function assertNoDefaultAppFallback(resourcesDirectory) {
   }
 }
 
+// Windows 自己的更新由这份脚本以管理员身份复制、核对、安装（S01，electron/windows-update-handoff.ts）。
+// 它走 win.extraResources，少了或者跟仓库里那份不一样，electron-builder 都不报错，更新却装不上或装错。
+const UPDATE_HANDOFF_SCRIPT = path.join('update-handoff', 'verified-install.ps1')
+const UPDATE_HANDOFF_SOURCE = path.resolve(__dirname, '..', 'build', UPDATE_HANDOFF_SCRIPT)
+
+function assertWindowsUpdateHandoffScript(resourcesDirectory, sourcePath = UPDATE_HANDOFF_SOURCE) {
+  const packaged = path.join(resourcesDirectory, UPDATE_HANDOFF_SCRIPT)
+  let stats = null
+  try {
+    stats = fs.lstatSync(packaged)
+  } catch {
+    stats = null
+  }
+  if (!stats || !stats.isFile()) {
+    throw new Error(`打包产物缺少更新安装脚本 ${packaged}，请检查 electron-builder.config.cjs 的 win.extraResources`)
+  }
+  if (!fs.readFileSync(packaged).equals(fs.readFileSync(sourcePath))) {
+    throw new Error(`打包产物里的更新安装脚本与仓库里的 ${sourcePath} 不一致`)
+  }
+}
+
 // One unpacked directory holds exactly one platform's main executable: the
 // Windows one keeps the Chinese product name, the Linux one is the ASCII
 // linux.executableName (electron-builder.config.cjs). Both carry the same fuse
@@ -171,6 +192,7 @@ async function main() {
   }
 
   assertNoDefaultAppFallback(resourcesDirectory)
+  if (path.extname(executable).toLowerCase() === '.exe') assertWindowsUpdateHandoffScript(resourcesDirectory)
   inspectPackagedLaunchBoundary(asar)
   const releaseNotes = inspectPackagedReleaseNotes(asar)
   // Windows、Linux 的 Electron 与 Chromium 许可文件由 electron-builder 留在安装目录根上，
@@ -194,4 +216,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { EXPECTED_FUSES, SYSTEM_SERVICE_FILES, assertNoDefaultAppFallback, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, main, resolvePackagedExecutable }
+module.exports = { EXPECTED_FUSES, SYSTEM_SERVICE_FILES, assertNoDefaultAppFallback, assertWindowsUpdateHandoffScript, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, main, resolvePackagedExecutable }

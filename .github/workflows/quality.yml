@@ -455,6 +455,17 @@ jobs:
         # PowerShell starts, each a few seconds cold on this runner.
         timeout-minutes: 12
         run: node e2e/windows-powershell-probes-smoke.mjs
+      # S01: the update handoff script (build/update-handoff), run for real once
+      # per CI run: the app's unelevated relaunch, then the elevated copy. The
+      # runner's account is an administrator with an elevated token, so Windows
+      # starts that copy without a prompt, as it does once a customer clicks Yes.
+      # A stand-in setup.exe compiled on the spot records what it was started
+      # with; a wrong digest or size must never start it.
+      - name: Run the update install handoff script against this runner
+        # Six PowerShell starts and two small compiles; each run carries its
+        # own bound, this is the backstop for a hang that outlives them.
+        timeout-minutes: 8
+        run: node e2e/windows-update-handoff-smoke.mjs
       # npm run verify:app with no steps: the compiled client signed in against
       # the local account-site fixture, every sidebar page opened and kept as a
       # screenshot plus its text. It is the same walk a thread runs in its Linux

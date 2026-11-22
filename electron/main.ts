@@ -57,7 +57,7 @@ import { createCanvasProjectImageIntake } from './canvas-project-image-intake'
 import { createStorageUsageService } from './storage-usage-service'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, confirmWindowsRestartWork, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
+import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, confirmWindowsRestartWork, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, waitForWindowsUpdateHandoff, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoLaunchInstallAttempt, undoQuitInstallAttempt, type LaunchInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
@@ -3361,7 +3361,10 @@ if (!hasSingleInstanceLock) {
         // 安装器装完会自己打开新版本，再拉起一次旧进程会和安装器抢同一个目录。
         relaunchRequested = false
         updaterService.install()
-        if (process.platform !== 'darwin') return
+        // Windows 正式版交给提权脚本（S01，bootstrap/updates.ts 同一个判断）：授权、核对都在退出之前，
+        // 核对完由更新器自己发起退出，安装程序等星芒退出了才开始装。
+        const windowsHandoff = process.platform === 'win32' && app.isPackaged
+        if (process.platform !== 'darwin' && !windowsHandoff) return
         // Mac 的安装器在本进程里取包、校验，准备好了才自己退出重开；马上退出等于
         // 把它一起关掉，什么也装不上。等它给结果，期间窗口都收起来。和更新页那条
         // 一样先放掉画布、支付窗口，不然安装器发起的退出会被它们拦住。
@@ -3370,6 +3373,10 @@ if (!hasSingleInstanceLock) {
         try { invoicePortalWindow.destroy() } catch (cause) { runtimeLog.exception('invoice', 'shutdown.failed', cause) }
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
+        }
+        if (windowsHandoff) {
+          runtimeLog.log('info', 'updater', 'install.quit-wait', '退出前等安装程序授权和核对，最多 20 秒')
+          return waitForWindowsUpdateHandoff(updaterService)
         }
         app.hide()
         runtimeLog.log('info', 'updater', 'install.quit-wait', '退出前等 Mac 安装器准备好新版本，最多 20 秒')

@@ -239,6 +239,35 @@ export function isRollbackInstall(snapshot: UpdateSnapshot | null, version: stri
 }
 
 /**
+ * 退出时把下好的更新交给 Windows 的提权脚本以后（S01），等到不会再装的那一刻：授权窗口里点了「否」、
+ * 交接失败、安装前发现安装包变了。这时落定，让退出照常走完。核对通过时由更新器自己发起退出，这里等不到
+ * 结果也无妨，退出流程有自己的上限。install() 一开始会清掉旧的出错，所以调用时已经挂着的出错就是这一次的。
+ */
+export function waitForWindowsUpdateHandoff(updates: {
+  getState(): UpdateSnapshot
+  subscribe(listener: (snapshot: UpdateSnapshot) => void): () => void
+}): Promise<void> {
+  function settledBy(snapshot: UpdateSnapshot): boolean {
+    return Boolean(snapshot.error) && (snapshot.failedStep === 'install' || snapshot.phase === 'error')
+  }
+  return new Promise((resolve) => {
+    if (settledBy(updates.getState())) {
+      resolve()
+      return
+    }
+    let settled = false
+    let unsubscribe: (() => void) | null = null
+    unsubscribe = updates.subscribe((snapshot) => {
+      if (settled || !settledBy(snapshot)) return
+      settled = true
+      unsubscribe?.()
+      resolve()
+    })
+    if (settled) unsubscribe()
+  })
+}
+
+/**
  * 退出时把下好的更新交给 Mac 的安装器以后，等它给结果：装得上它会自己退出重开，
  * 这里永远等不到；装不上（比如校验没通过）时更新器会把失败记在安装那一步，这时
  * 落定，让退出照常走完。安装看门狗 10 秒报的「没起来」不算：慢一点的 Mac 还在

@@ -123,6 +123,8 @@ const upgradeSmokeFiles = new Set([
   'electron/auto-update-install.ts',
   'electron/installed-release.ts',
   'electron/bootstrap/updates.ts',
+  'electron/windows-update-handoff.ts',
+  'build/update-handoff/verified-install.ps1',
   'electron/app-settings.ts',
   'electron-builder.config.cjs',
   'build/installer.nsh',

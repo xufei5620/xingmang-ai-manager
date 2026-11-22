@@ -4,7 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const { createSettledPackage } = require('./asar-fixture.test-support.cjs')
-const { SYSTEM_SERVICE_FILES, assertNoDefaultAppFallback, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, resolvePackagedExecutable } = require('./verify-packaged-hardening.cjs')
+const { SYSTEM_SERVICE_FILES, assertNoDefaultAppFallback, assertWindowsUpdateHandoffScript, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, resolvePackagedExecutable } = require('./verify-packaged-hardening.cjs')
 
 const currentLaunchBoundary = [
   'WindowsPowerShell',
@@ -153,6 +153,20 @@ test('rejects a packaged resources directory that still ships the Electron welco
   assert.doesNotThrow(() => assertNoDefaultAppFallback(root))
   await fs.writeFile(path.join(root, 'default_app.asar'), 'not a real archive', 'utf8')
   assert.throws(() => assertNoDefaultAppFallback(root), /默认应用/)
+})
+
+test('requires the Windows update handoff script to be packaged exactly as it is in the repository', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-update-handoff-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const source = path.join(root, 'source.ps1')
+  await fs.writeFile(source, 'exit 0\n', 'utf8')
+  const resources = path.join(root, 'resources')
+  await fs.mkdir(path.join(resources, 'update-handoff'), { recursive: true })
+  assert.throws(() => assertWindowsUpdateHandoffScript(resources, source), /缺少更新安装脚本/)
+  await fs.writeFile(path.join(resources, 'update-handoff', 'verified-install.ps1'), 'exit 1\n', 'utf8')
+  assert.throws(() => assertWindowsUpdateHandoffScript(resources, source), /不一致/)
+  await fs.writeFile(path.join(resources, 'update-handoff', 'verified-install.ps1'), 'exit 0\n', 'utf8')
+  assert.doesNotThrow(() => assertWindowsUpdateHandoffScript(resources, source))
 })
 
 test('accepts bundled release notes that match the packaged version, including a build without notes', async (t) => {
