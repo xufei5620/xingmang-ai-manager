@@ -62,6 +62,28 @@ describe('the pieces of the create page that are its own', () => {
     expect(html).not.toContain('放进画布')
   })
 
+  // 融合第 5 步：项目卡上有封面，下面摆这个项目里做出来的。
+  it('shows the cover the main process named by id, and the canvas icon when there is none', () => {
+    const assetId = 'a'.repeat(43)
+    const project = { id: 'p1', name: '双 11 主图', updatedAt: 1 }
+    const covered = renderToStaticMarkup(<CanvasProjectPane project={{ ...project, cover: { assetId, mediaType: 'image' } }} opening={false} onOpen={nothing} />)
+    expect(covered).toMatch(new RegExp(`data-cover="true"[^>]*data-testid="create-canvas-cover"><img src="xingmang-asset://thumb/v2/image/${assetId}" alt=""`))
+    const film = renderToStaticMarkup(<CanvasProjectPane project={{ ...project, cover: { assetId, mediaType: 'video' } }} opening={false} onOpen={nothing} />)
+    expect(film).toContain(`src="xingmang-asset://thumb/v2/video/${assetId}"`)
+    // 只走缩略图那个地址，不读原图、不读整段视频。
+    expect(covered + film).not.toMatch(/xingmang-asset:\/\/(image|video)\//)
+    const bare = renderToStaticMarkup(<CanvasProjectPane project={project} opening={false} onOpen={nothing} />)
+    expect(bare).toContain('data-testid="create-canvas-cover"')
+    expect(bare).not.toContain('data-cover')
+    expect(bare).not.toContain('<img')
+  })
+
+  it('puts what the project made between the card and the note about the project centre', () => {
+    const html = renderToStaticMarkup(<CanvasProjectPane project={{ id: 'p1', name: '海报', updatedAt: 1 }} opening={false} onOpen={nothing}><section data-testid="works">此项目中的作品</section></CanvasProjectPane>)
+    expect(html.indexOf('data-testid="create-canvas-open"')).toBeLessThan(html.indexOf('data-testid="works"'))
+    expect(html.indexOf('data-testid="works"')).toBeLessThan(html.indexOf('重命名、复制、归档和删除'))
+  })
+
   it('writes a canvas project name as plain text, whatever the canvas stored', () => {
     const html = renderToStaticMarkup(<CanvasProjectPane project={{ id: 'p1', name: '<img src=x onerror=alert(1)>', updatedAt: 0 }} opening={false} onOpen={nothing} />)
     expect(html).not.toContain('<img')

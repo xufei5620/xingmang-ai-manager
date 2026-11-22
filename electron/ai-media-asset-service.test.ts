@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createAiMediaAssetService } from './ai-media-asset-service'
+import { createAiMediaAssetService, pageAiMediaLibraryRows, type AiMediaLibraryRow } from './ai-media-asset-service'
 import { missingAiAssetMessages } from './ai-asset-missing'
 
 function metadataStore(overrides: Record<string, unknown> = {}) {
@@ -601,5 +601,60 @@ describe('listOwnedLibrary', () => {
     await expect(service.listOwnedLibrary(7, { search: 'a\u0000b' })).rejects.toThrow('AI 素材搜索内容无效')
     await expect(service.listOwnedLibrary(7, { filmAssetIds: Array.from({ length: 201 }, () => film) })).rejects.toThrow('AI 素材筛选集合过大')
     await expect(service.listOwnedLibrary(7, { matchedAssetIds: Array.from({ length: 2001 }, () => film) })).rejects.toThrow('AI 素材筛选集合过大')
+  })
+
+  it('hands out its rows before paging, with the tags and the source the account-wide library filters on', async () => {
+    const { service, images, videos } = library({
+      [pictureA]: { displayName: '橘猫回家', tags: ['猫'], source: 'imported', updatedAt: '2026-11-20T01:00:00.000Z' },
+      [clip]: { source: 'generated', prompt: '海边日落', updatedAt: '2026-11-20T02:00:00.000Z' },
+    })
+    const rows = await service.listOwnedLibraryRows(7)
+    expect(rows.map((row) => row.assetId).sort()).toEqual([pictureA, pictureB, clip, film].sort())
+    expect(rows.find((row) => row.assetId === pictureA)).toEqual({
+      assetId: pictureA, mediaType: 'image', createdAt: '2026-11-20T01:00:00.000Z', extension: 'png', fileName: `xingmang-${pictureA}.png`,
+      name: '橘猫回家', tags: ['猫'], source: 'imported',
+    })
+    expect(rows.find((row) => row.assetId === clip)).toMatchObject({ mediaType: 'video', prompt: '海边日落', source: 'generated', tags: [] })
+    expect(rows.find((row) => row.assetId === pictureB)).toMatchObject({ source: 'legacy' })
+    expect(images.readOwned).not.toHaveBeenCalled()
+    expect(videos.readOwned).not.toHaveBeenCalled()
+  })
+})
+
+describe('pageAiMediaLibraryRows', () => {
+  const id = (letter: string) => letter.repeat(43)
+  function row(letter: string, hour: number, extra: Partial<AiMediaLibraryRow> = {}): AiMediaLibraryRow {
+    return {
+      assetId: id(letter), mediaType: 'image', createdAt: `2026-11-20T0${hour}:00:00.000Z`, extension: 'png', fileName: `xingmang-${id(letter)}.png`,
+      tags: [], source: 'generated', ...extra,
+    }
+  }
+
+  it('pages rows merged from several folders newest first and passes the canvas project through', () => {
+    const page = pageAiMediaLibraryRows([
+      row('a', 1),
+      row('b', 3, { canvas: { projectId: '11111111-1111-4111-8111-111111111111', projectName: '双十一主图' } }),
+      row('c', 2, { mediaType: 'video', extension: 'mp4', canvas: { projectId: '11111111-1111-4111-8111-111111111111', projectName: '双十一主图', used: true } }),
+    ])
+    expect(page.items).toEqual([
+      { assetId: id('b'), mediaType: 'image', createdAt: '2026-11-20T03:00:00.000Z', mimeType: 'image/png', fileName: `xingmang-${id('b')}.png`, canvas: { projectId: '11111111-1111-4111-8111-111111111111', projectName: '双十一主图' } },
+      { assetId: id('c'), mediaType: 'video', createdAt: '2026-11-20T02:00:00.000Z', fileName: `xingmang-${id('c')}.png`, canvas: { projectId: '11111111-1111-4111-8111-111111111111', projectName: '双十一主图', used: true } },
+      { assetId: id('a'), mediaType: 'image', createdAt: '2026-11-20T01:00:00.000Z', mimeType: 'image/png', fileName: `xingmang-${id('a')}.png` },
+    ])
+    expect(page).toMatchObject({ offset: 0, limit: 24, total: 3, hasMore: false, counts: { image: 2, video: 1, film: 0 } })
+    // Neither the tags nor the source are part of what the page gets.
+    expect(JSON.stringify(page)).not.toContain('generated')
+  })
+
+  it('finds the works of a canvas project by the project name', () => {
+    const rows = [row('a', 1), row('b', 2, { canvas: { projectId: '11111111-1111-4111-8111-111111111111', projectName: '双十一主图' } })]
+    expect(pageAiMediaLibraryRows(rows, { search: '双十一' }).items.map((item) => item.assetId)).toEqual([id('b')])
+    expect(pageAiMediaLibraryRows(rows, { search: '主图 ' }).total).toBe(1)
+    expect(pageAiMediaLibraryRows(rows, { search: '11111111' }).total).toBe(0)
+  })
+
+  it('refuses a malformed query before looking at the rows', () => {
+    expect(() => pageAiMediaLibraryRows([], { limit: 61 })).toThrow('AI 素材分页数量无效')
+    expect(() => pageAiMediaLibraryRows([], { search: 'a\u0000b' })).toThrow('AI 素材搜索内容无效')
   })
 })

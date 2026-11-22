@@ -2245,6 +2245,28 @@ describe('createCanvasWindowController', () => {
     })))).toHaveLength(100)
   })
 
+  it('hands the main window a cover only for a picture or video whose id has the asset id shape', () => {
+    const base = { updatedAt: '2026-11-19T13:14:00.000Z' }
+    const assetId = 'a'.repeat(43)
+    const listed = toCanvasProjectList([
+      { ...base, id: '11111111-1111-4111-8111-111111111111', name: '有图', previewAsset: { kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}` } },
+      { ...base, id: '22222222-2222-4222-8222-222222222222', name: '有视频', previewAsset: { kind: 'video', assetId, localUrl: 'https://attacker.example/cover.mp4' } },
+      { ...base, id: '33333333-3333-4333-8333-333333333333', name: '只有声音', previewAsset: { kind: 'audio', assetId, localUrl: `xingmang-asset://audio/${assetId}` } },
+      { ...base, id: '44444444-4444-4444-8444-444444444444', name: '坏编号', previewAsset: { kind: 'image', assetId: '../../etc/passwd', localUrl: 'file:///etc/passwd' } },
+      { ...base, id: '55555555-5555-4555-8555-555555555555', name: '空的' },
+    ])
+    expect(Object.fromEntries(listed.map((project) => [project.name, project.cover]))).toEqual({
+      有图: { assetId, mediaType: 'image' },
+      有视频: { assetId, mediaType: 'video' },
+      只有声音: undefined,
+      坏编号: undefined,
+      空的: undefined,
+    })
+    // Only the id and the kind leave: no address the project file wrote reaches the main window.
+    expect(JSON.stringify(listed)).not.toMatch(/localUrl|attacker|file:|xingmang-asset/)
+    expect(listed.filter((project) => 'cover' in project)).toHaveLength(2)
+  })
+
   it('takes a project id from the main window only in the shape the project store hands out', () => {
     expect(parseCanvasProjectListId('11111111-1111-4111-8111-111111111111')).toBe('11111111-1111-4111-8111-111111111111')
     for (const value of [undefined, null, 7, '', '../../etc/passwd', '11111111-1111-4111-8111-11111111111', '11111111-1111-4111-8111-111111111111/', 'G1111111-1111-4111-8111-111111111111', ['11111111-1111-4111-8111-111111111111']]) {

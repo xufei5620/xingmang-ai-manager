@@ -4498,7 +4498,7 @@ test('the library sits at the bottom of the create list and shows everything the
     assert.equal(await pane.getByTestId(`create-library-item-${libraryFilm}`).textContent(), '成片 0:10视频 · 今天 11:15')
     assert.equal(await pane.getByTestId(`create-library-item-${libraryClip}`).textContent(), '0:05视频 · 今天 10:00')
     assert.equal(await pane.getByTestId(`create-library-item-${libraryCat}`).textContent(), '昨天 10:00')
-    assert.equal(await pane.locator('.create-quiet').textContent(), '对话与视频中生成的图片、片段和成片均保存在此处，文件位于本机的 AI 作品文件夹。')
+    assert.equal(await pane.locator('.create-quiet').textContent(), '对话、视频和画布中生成的图片、片段和成片均显示在此处。对话和视频的文件位于本机的 AI 作品文件夹，画布的文件位于各项目的工作文件夹。')
     // 哪几段是成片由页面点名：主进程的文件上没有这个记号。
     const first = (await fixtureCalls(page, 'listAiLibrary')).at(-1)[0]
     assert.deepEqual(first, { offset: 0, limit: 24, kind: 'all', filmAssetIds: [libraryFilm] })
@@ -4856,6 +4856,153 @@ test('the library pages through a long list and keeps what was loaded when it is
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'listAiLibrary').length > count, before)
     await page.waitForTimeout(100)
     assert.equal((await libraryTiles(pane)).length, 35)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// —— 融合第 5 步：画布项目里生成的图和视频也在作品库里；点开一个画布项目，项目卡上有封面，下面是它做出来的 ——
+// 夹具（?canvasWorks）：「双 11 主图」这个项目生成过两张图、一段视频，对话里那张起过名字的海报放在它的节点上（只是用过）。
+const canvasBanner = libraryId('canvas-img-banner-')
+const canvasSpin = libraryId('canvas-vid-spin-')
+const canvasDetail = libraryId('canvas-img-detail-')
+
+test('what a canvas project made is listed in the library, leads to the project, and shows under the project with its cover', async () => {
+  const page = await openCreate('library=1&videoFilms=library&canvasProjects=1&canvasWorks=1')
+  try {
+    await serveLibraryPictures(page)
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-library-count').waitFor()
+    assert.equal(await page.getByTestId('create-library-open').textContent(), '作品库8')
+    await page.getByTestId('create-library-open').click()
+    const pane = page.getByTestId('create-library-pane')
+    await pane.getByTestId('create-library-grid').waitFor()
+    // 画布里生成的跟对话、视频里的排在一起，新的在前，各类的数连它们一起数。
+    assert.deepEqual(await pane.getByTestId('create-library-kinds').getByRole('button').allTextContents(), ['全部8', '图片5', '视频片段2', '成片1'])
+    assert.deepEqual(await libraryTiles(pane), [canvasBanner, libraryPoster, libraryFilm, canvasSpin, libraryClip, libraryCat, canvasDetail, librarySea])
+    assert.equal(await pane.getByTestId(`create-library-item-${canvasBanner}`).textContent(), '画布 · 今天 11:45')
+    assert.equal(await pane.getByTestId(`create-library-item-${canvasSpin}`).textContent(), '画布 · 今天 11:00')
+    assert.equal(await pane.getByTestId(`create-library-item-${canvasDetail}`).textContent(), '画布 · 昨天 09:00')
+    await pane.getByText('对话、视频和画布中生成的图片、片段和成片均显示在此处。对话和视频的文件位于本机的 AI 作品文件夹，画布的文件位于各项目的工作文件夹。', { exact: true }).waitFor()
+    // 作品库整个列的时候不点名哪个项目。
+    assert.equal((await fixtureCalls(page, 'listAiLibrary')).some((args) => 'canvasProjectId' in args[0]), false)
+
+    // 按项目的名字搜：这个项目做的三件，加上名字就叫这个的那张海报。
+    await pane.getByTestId('create-library-search').fill('双 11 主图')
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid^="create-library-item-"]').length === 4)
+    assert.deepEqual(await libraryTiles(pane), [canvasBanner, libraryPoster, canvasSpin, canvasDetail])
+    await pane.getByTestId('create-library-search').fill('')
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid^="create-library-item-"]').length === 8)
+
+    // 那张海报只是放在这个项目的节点上：写「用于」。
+    await pane.getByTestId(`create-library-item-${libraryPoster}`).click()
+    const detail = page.getByTestId('create-library-detail')
+    await detail.getByText('用于画布项目「双 11 主图」 · 今天 11:30 · 40 × 30', { exact: true }).waitFor()
+    await page.keyboard.press('Escape')
+    await detail.waitFor({ state: 'detached' })
+
+    // 点开画布里生成的一张：说得出是哪个项目做的，能做的事跟别的图一样，没有「放进画布」。
+    await pane.getByTestId(`create-library-item-${canvasBanner}`).click()
+    await detail.getByRole('heading', { name: '主图横幅，红金配色，留出标题位置', exact: true }).waitFor()
+    await detail.getByText('出自画布项目「双 11 主图」 · 今天 11:45 · 40 × 30', { exact: true }).waitFor()
+    assert.equal(await detail.getByTestId('create-library-image').getAttribute('src'), `xingmang-asset://image/${canvasBanner}`)
+    assert.equal(await detail.getByText('放进画布').count(), 0)
+    await detail.getByTestId('create-library-save-image').click()
+    await waitForToast(page, '图片已保存')
+    assert.deepEqual((await fixtureCalls(page, 'saveAiChatAsset')).at(-1), [canvasBanner])
+    assert.equal((await detail.getByTestId('create-library-origin').textContent()).trim(), '查看画布项目')
+
+    // 「查看画布项目」：右边换成那个项目，左边那一行选中；不开画布窗口。
+    await detail.getByTestId('create-library-origin').click()
+    await detail.waitFor({ state: 'detached' })
+    const project = page.getByTestId('create-canvas-pane')
+    await project.waitFor()
+    assert.equal(await page.getByTestId('create-library-pane').count(), 0)
+    assert.equal(await page.getByTestId('create-canvas-name').textContent(), '双 11 主图')
+    assert.equal(await page.getByTestId('create-item-canvas-fixture-canvas-poster').getAttribute('aria-current'), 'page')
+    assert.deepEqual(await fixtureCalls(page, 'openCanvasProject'), [])
+    // 封面是主进程点名的那一件的小图。
+    const cover = project.getByTestId('create-canvas-cover')
+    assert.equal(await cover.getAttribute('data-cover'), 'true')
+    assert.equal(await cover.locator('img').getAttribute('src'), `xingmang-asset://thumb/v2/image/${canvasBanner}`)
+    // 下面是这个项目里做出来的：只问这一个项目的，放在它节点上的那张海报不算它做的。
+    const works = project.getByTestId('create-canvas-works')
+    await works.getByTestId('create-canvas-works-grid').waitFor()
+    assert.equal(await works.locator('header').textContent(), '此项目中的作品3 个')
+    assert.deepEqual(await libraryTiles(works), [canvasBanner, canvasSpin, canvasDetail])
+    const asked = (await fixtureCalls(page, 'listAiLibrary')).at(-1)[0]
+    assert.deepEqual({ offset: asked.offset, limit: asked.limit, kind: asked.kind, canvasProjectId: asked.canvasProjectId }, { offset: 0, limit: 24, kind: 'all', canvasProjectId: 'fixture-canvas-poster' })
+    assert.equal('search' in asked, false)
+    await project.getByText('重命名、复制、归档和删除请在画布窗口的「项目中心」中操作。', { exact: true }).waitFor()
+
+    // 在这里点开一件：跟作品库里一样看、一样另存，不再出「查看画布项目」。
+    await works.getByTestId(`create-library-item-${canvasSpin}`).click()
+    await detail.getByRole('heading', { name: '产品缓慢旋转展示', exact: true }).waitFor()
+    await detail.getByText('出自画布项目「双 11 主图」 · 今天 11:00', { exact: true }).waitFor()
+    assert.equal(await detail.getByTestId('create-library-origin').count(), 0)
+    await detail.getByTestId('create-library-save-video').click()
+    await waitForToast(page, '视频已保存')
+    assert.deepEqual((await fixtureCalls(page, 'saveAiVideo')).at(-1), [canvasSpin, '产品缓慢旋转展示'])
+    await detail.getByTestId('create-library-open-video').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openAiVideo'))
+    assert.deepEqual((await fixtureCalls(page, 'openAiVideo')).at(-1), [canvasSpin])
+    await page.keyboard.press('Escape')
+    await detail.waitFor({ state: 'detached' })
+
+    // 一个什么都没做过的项目：没有封面，说一句还没有作品。
+    await page.getByTestId('create-item-canvas-fixture-canvas-old').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="create-canvas-name"]')?.textContent === '门店海报')
+    await project.getByTestId('create-canvas-works-empty').waitFor()
+    assert.equal(await project.getByTestId('create-canvas-works').textContent(), '此项目中的作品此项目暂无作品。在画布中生成的图片和视频将显示在此处。')
+    assert.equal(await project.getByTestId('create-canvas-cover').getAttribute('data-cover'), null)
+    assert.equal(await project.getByTestId('create-canvas-cover').locator('img').count(), 0)
+    assert.equal((await fixtureCalls(page, 'listAiLibrary')).at(-1)[0].canvasProjectId, 'fixture-canvas-old')
+
+    // 这一次没读出来：说一句，给「重试」；重试读得出来就照常列。
+    await page.evaluate(() => { window.v2Test.fail = 'listAiLibrary' })
+    await page.getByTestId('create-item-canvas-fixture-canvas-poster').click()
+    const unreadable = project.getByTestId('create-canvas-works-unreadable')
+    await unreadable.waitFor()
+    assert.equal(await unreadable.locator('p').textContent(), '作品读取失败，请稍后重试')
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await project.getByTestId('create-canvas-works-retry').click()
+    await works.getByTestId('create-canvas-works-grid').waitFor()
+    assert.deepEqual(await libraryTiles(works), [canvasBanner, canvasSpin, canvasDetail])
+
+    // 项目在画布窗口里归档了，作品库里那一件还列着（它过几秒才跟上）：点「查看画布项目」说一句，留在作品库。
+    await page.evaluate(() => {
+      window.v2Test.setCanvasProjects([{ id: 'fixture-canvas-old', name: '门店海报', updatedAt: Date.now() }])
+      window.dispatchEvent(new Event('focus'))
+    })
+    await page.getByTestId('create-item-canvas-fixture-canvas-poster').waitFor({ state: 'detached' })
+    await page.getByTestId('create-library-open').click()
+    await pane.getByTestId(`create-library-item-${canvasBanner}`).click()
+    await detail.getByTestId('create-library-origin').click()
+    await waitForToast(page, '未找到该画布项目，可能已归档或删除。')
+    assert.equal(await page.getByTestId('create-canvas-pane').count(), 0)
+    assert.equal(await pane.isVisible(), true)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the works under a canvas project page through a long list', async () => {
+  const page = await openCreate('library=1&canvasProjects=1&canvasWorks=many')
+  try {
+    await serveLibraryPictures(page)
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-item-canvas-fixture-canvas-poster').click()
+    const works = page.getByTestId('create-canvas-works')
+    await works.getByTestId('create-canvas-works-grid').waitFor()
+    assert.equal(await works.getByTestId('create-canvas-works-count').textContent(), '33 个')
+    assert.equal((await libraryTiles(works)).length, 24)
+    await works.getByTestId('create-canvas-works-more').click()
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid="create-canvas-works"] [data-testid^="create-library-item-"]').length === 33)
+    assert.equal(await works.getByTestId('create-canvas-works-more').count(), 0)
+    const more = (await fixtureCalls(page, 'listAiLibrary')).at(-1)[0]
+    assert.deepEqual({ offset: more.offset, canvasProjectId: more.canvasProjectId }, { offset: 24, canvasProjectId: 'fixture-canvas-poster' })
+    // 换一个项目是换一份新的：不带着上一个项目翻过的那几页。
+    await page.getByTestId('create-item-canvas-fixture-canvas-old').click()
+    await works.getByTestId('create-canvas-works-empty').waitFor()
+    assert.equal(await works.locator('[data-testid^="create-library-item-"]').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

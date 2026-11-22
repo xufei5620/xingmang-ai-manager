@@ -1652,6 +1652,118 @@ describe('registerIpcHandlers', () => {
       bare.dispose()
     })
 
+    it('lists the library across canvas projects through the same channel when the project folders are wired in', async () => {
+      const projectId = '11111111-1111-4111-8111-111111111111'
+      const page = { items: [{ assetId: imageId, mediaType: 'image' as const, createdAt: '2026-11-20T04:00:00.000Z', fileName: 'xingmang-picture.png', canvas: { projectId, projectName: '双十一主图' } }], offset: 0, limit: 24, total: 1, hasMore: false, counts: { image: 1, video: 0, film: 0 } }
+      const mediaAssets = { listOwnedLibrary: vi.fn(async () => { throw new Error('the account library alone must not answer') }) }
+      const accountAssets = { listLibrary: vi.fn(async () => page), holderOf: vi.fn() }
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { mediaAssets, accountAssets })
+      const list = electronMocks.handlers.get('library:list')!
+
+      await expect(list(trustedEvent(), {})).resolves.toEqual(page)
+      expect(accountAssets.listLibrary).toHaveBeenLastCalledWith(7, {})
+      await expect(list(trustedEvent(), { canvasProjectId: projectId, kind: 'image', limit: 60 })).resolves.toEqual(page)
+      expect(accountAssets.listLibrary).toHaveBeenLastCalledWith(7, { canvasProjectId: projectId, kind: 'image', limit: 60 })
+      // The project is named by id only; a folder, a path or an account never comes from the page.
+      for (const input of [{ canvasProjectId: '../../etc/passwd' }, { canvasProjectId: projectId, userId: 8 }, { workspace: 'C:\\Users' }]) {
+        expect(() => list(trustedEvent(), input)).toThrow('作品库请求格式错误')
+      }
+      expect(() => list(trustedEvent('https://attacker.example/'), { canvasProjectId: projectId })).toThrow('已拒绝来自非应用页面的操作请求')
+      expect(accountAssets.listLibrary).toHaveBeenCalledTimes(2)
+      expect(mediaAssets.listOwnedLibrary).not.toHaveBeenCalled()
+      dispose()
+
+      // Without the project folders one project cannot be listed, and the account library still can.
+      const alone = { listOwnedLibrary: vi.fn(async () => page) }
+      const plain = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { mediaAssets: alone })
+      expect(() => electronMocks.handlers.get('library:list')!(trustedEvent(), { canvasProjectId: projectId })).toThrow('作品库未就绪')
+      await expect(electronMocks.handlers.get('library:list')!(trustedEvent(), {})).resolves.toEqual(page)
+      plain.dispose()
+    })
+
+    it('opens, saves and reads a canvas project\'s video from the folder that holds it, and still stores films in the account library', async () => {
+      const projectPath = '/home/someone/projects/poster/assets/user-7/2026-11-20/xingmang-clip.mp4'
+      const refused = async () => { throw new Error('the account library must not be asked for a project file') }
+      const videoAssets = { readOwned: vi.fn(refused), resolveOwnedFilePath: vi.fn(refused), saveAs: vi.fn(refused), storeComposed: vi.fn(async () => ({ ...storedClip, taskId: undefined })) }
+      const folder = {
+        images: { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn() },
+        videos: {
+          readOwned: vi.fn(async () => ({ asset: storedClip, bytes: Buffer.from('project-bytes') })),
+          resolveOwnedFilePath: vi.fn(async () => projectPath),
+          saveAs: vi.fn(async (_userId: number, _assetId: string, authorize?: () => void | Promise<void>) => {
+            await authorize?.()
+            return true
+          }),
+        },
+      }
+      const accountAssets = { listLibrary: vi.fn(), holderOf: vi.fn(async () => folder) }
+      electronMocks.openPath.mockResolvedValue('')
+      const accountService = signedIn()
+      const { runtimeLog, dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { videoAssets, accountAssets })
+
+      await expect(electronMocks.handlers.get('video:read-clip')!(trustedEvent(), clipId)).resolves.toEqual(Buffer.from('project-bytes'))
+      expect(accountAssets.holderOf).toHaveBeenLastCalledWith(7, 'video', clipId)
+      expect(folder.videos.readOwned).toHaveBeenCalledWith(7, clipId)
+      await expect(electronMocks.handlers.get('video:open')!(trustedEvent(), clipId)).resolves.toBeUndefined()
+      expect(folder.videos.resolveOwnedFilePath).toHaveBeenCalledWith(7, clipId)
+      expect(electronMocks.openPath).toHaveBeenLastCalledWith(projectPath)
+      await expect(electronMocks.handlers.get('video:save-as')!(trustedEvent(), clipId, '回家的猫')).resolves.toEqual({ saved: true })
+      expect(folder.videos.saveAs).toHaveBeenLastCalledWith(7, clipId, expect.any(Function), '回家的猫.mp4')
+      // The id is checked before any folder is looked at, and the path stays out of the log.
+      await expect(electronMocks.handlers.get('video:read-clip')!(trustedEvent(), '../../secret')).rejects.toThrow('视频编号格式错误')
+      await expect(electronMocks.handlers.get('video:open')!(trustedEvent(), '../../secret')).rejects.toThrow('视频编号格式错误')
+      expect(accountAssets.holderOf).toHaveBeenCalledTimes(3)
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('projects/poster')
+
+      // A film the editor makes is written to the account library, never into a project folder.
+      const film = new Uint8Array([0, 0, 0, 16, 102, 116, 121, 112])
+      await expect(electronMocks.handlers.get('video-studio:store-export')!(trustedEvent(), film)).resolves.toEqual(clip)
+      expect(videoAssets.storeComposed).toHaveBeenCalledWith(7, Buffer.from(film))
+      expect(accountAssets.holderOf).toHaveBeenCalledTimes(3)
+
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false } as never)
+      await expect(electronMocks.handlers.get('video:open')!(trustedEvent(), clipId)).rejects.toThrow('请先登录星芒账号')
+      expect(accountAssets.holderOf).toHaveBeenCalledTimes(3)
+      dispose()
+    })
+
+    it('copies, saves and offers the menu of a canvas project\'s picture from the folder that holds it', async () => {
+      const refused = async () => { throw new Error('the account library must not be asked for a project file') }
+      const aiAssets = { copy: vi.fn(refused), saveAs: vi.fn(refused), contextMenu: vi.fn(refused) }
+      const folder = {
+        images: { copy: vi.fn(async () => undefined), saveAs: vi.fn(async () => true), contextMenu: vi.fn(async (_userId: number, _assetId: string, _authorize: () => void) => undefined) },
+        videos: { readOwned: vi.fn(), resolveOwnedFilePath: vi.fn(), saveAs: vi.fn() },
+      }
+      const accountAssets = { listLibrary: vi.fn(), holderOf: vi.fn(async () => folder) }
+      const accountService = signedIn()
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { aiAssets: aiAssets as never }, { accountAssets })
+
+      await expect(electronMocks.handlers.get('chat:copy-asset')!(trustedEvent(), imageId)).resolves.toBeUndefined()
+      expect(accountAssets.holderOf).toHaveBeenLastCalledWith(7, 'image', imageId)
+      expect(folder.images.copy).toHaveBeenCalledWith(7, imageId)
+      await expect(electronMocks.handlers.get('chat:save-asset')!(trustedEvent(), imageId)).resolves.toEqual({ saved: true })
+      expect(folder.images.saveAs).toHaveBeenCalledWith(7, imageId)
+      await expect(electronMocks.handlers.get('chat:asset-menu')!(trustedEvent(), imageId)).resolves.toBeUndefined()
+      expect(folder.images.contextMenu).toHaveBeenCalledWith(7, imageId, expect.any(Function))
+      // The menu the user opened is void once the account changed underneath it.
+      const stillSameAccount = folder.images.contextMenu.mock.calls[0]![2]
+      expect(() => stillSameAccount()).not.toThrow()
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 8 } } as never)
+      expect(() => stillSameAccount()).toThrow('账号已切换，请重新打开图片菜单')
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false } as never)
+      await expect(electronMocks.handlers.get('chat:save-asset')!(trustedEvent(), imageId)).rejects.toThrow('请先登录星芒账号')
+      expect(accountAssets.holderOf).toHaveBeenCalledTimes(3)
+      expect(aiAssets.saveAs).not.toHaveBeenCalled()
+      dispose()
+
+      // Without the project folders the account library answers, as before.
+      const own = { copy: vi.fn(async () => undefined), saveAs: vi.fn(async () => true), contextMenu: vi.fn(async () => undefined) }
+      const plain = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, { aiAssets: own as never })
+      await expect(electronMocks.handlers.get('chat:save-asset')!(trustedEvent(), imageId)).resolves.toEqual({ saved: true })
+      expect(own.saveAs).toHaveBeenCalledWith(7, imageId)
+      plain.dispose()
+    })
+
     it('stores a song picked in the system dialog for the signed-in account and hands back only its id, name and length', async () => {
       const songId = 'S'.repeat(43)
       const songPath = '/home/someone/Music/夏天的风\u0007 (live).mp3'

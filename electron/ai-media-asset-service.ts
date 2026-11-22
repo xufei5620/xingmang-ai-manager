@@ -72,6 +72,17 @@ export interface AiMediaLibraryQuery {
   matchedAssetIds?: readonly string[]
 }
 
+/**
+ * Which canvas project a library entry belongs to (fusion step 5). `used` marks
+ * something the project only holds on a node, such as a file the user imported
+ * there; without it the project made the asset.
+ */
+export interface AiMediaLibraryCanvasOrigin {
+  projectId: string
+  projectName: string
+  used?: true
+}
+
 export interface AiMediaLibraryEntry {
   assetId: string
   mediaType: 'image' | 'video'
@@ -82,6 +93,26 @@ export interface AiMediaLibraryEntry {
   /** The name the user gave it; absent while it still carries the stored file name. */
   name?: string
   prompt?: string
+  canvas?: AiMediaLibraryCanvasOrigin
+}
+
+/**
+ * One picture or video of a library before filtering and paging. No media is
+ * read to build it. The account-wide library (canvas-project-asset-manager.ts)
+ * merges the rows of several folders and pages them with pageAiMediaLibraryRows.
+ */
+export interface AiMediaLibraryRow {
+  assetId: string
+  mediaType: 'image' | 'video'
+  createdAt: string
+  extension: string
+  fileName: string
+  /** The name the user gave it; absent while it still carries the stored file name. */
+  name?: string
+  prompt?: string
+  tags: readonly string[]
+  source: AiAssetSource
+  canvas?: AiMediaLibraryCanvasOrigin
 }
 
 export interface AiMediaLibraryPage {
@@ -129,6 +160,69 @@ const LIBRARY_IMAGE_MIME_TYPES: Readonly<Record<string, NonNullable<AiMediaLibra
   png: 'image/png',
   jpg: 'image/jpeg',
   webp: 'image/webp',
+}
+
+/** Refuses a malformed library query before any directory is listed. */
+export function assertAiMediaLibraryQuery(query: AiMediaLibraryQuery): void {
+  const offset = query.offset ?? 0
+  const limit = query.limit ?? 24
+  const search = query.search?.trim() ?? ''
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > MAXIMUM_INDEXED_ASSETS) throw new Error('AI 素材分页位置无效')
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAXIMUM_LIBRARY_PAGE_SIZE) throw new Error('AI 素材分页数量无效')
+  if (!['all', 'image', 'video', 'clip', 'film'].includes(query.kind ?? 'all')) throw new Error('AI 素材媒体类型无效')
+  if (search.length > 128 || /[\x00-\x1F\x7F]/.test(search)) throw new Error('AI 素材搜索内容无效')
+  if ((query.filmAssetIds?.length ?? 0) > MAXIMUM_LIBRARY_FILM_IDS) throw new Error('AI 素材筛选集合过大')
+  if ((query.matchedAssetIds?.length ?? 0) > MAXIMUM_LIBRARY_MATCHED_IDS) throw new Error('AI 素材筛选集合过大')
+}
+
+/**
+ * Filters, sorts and pages library rows, newest first. Pure: the rows may come
+ * from one folder or from several merged ones. A canvas project's name is
+ * searched like a prompt, so the works of 「双十一主图」 are found by that name.
+ */
+export function pageAiMediaLibraryRows(rows: readonly AiMediaLibraryRow[], query: AiMediaLibraryQuery = {}): AiMediaLibraryPage {
+  assertAiMediaLibraryQuery(query)
+  const offset = query.offset ?? 0
+  const limit = query.limit ?? 24
+  const kind = query.kind ?? 'all'
+  const films = new Set(query.filmAssetIds ?? [])
+  const matched = new Set(query.matchedAssetIds ?? [])
+  const isFilm = (row: AiMediaLibraryRow) => row.mediaType === 'video' && films.has(row.assetId)
+  const counts = {
+    image: rows.filter((row) => row.mediaType === 'image').length,
+    video: rows.filter((row) => row.mediaType === 'video').length,
+    film: rows.filter(isFilm).length,
+  }
+  const normalizedSearch = (query.search?.trim() ?? '').toLocaleLowerCase('zh-CN')
+  const listed = rows
+    // clip is every video the page did not name as a film, so image + clip + film add up to the whole library.
+    .filter((row) => kind === 'all' || (kind === 'film' ? isFilm(row) : kind === 'clip' ? row.mediaType === 'video' && !isFilm(row) : row.mediaType === kind))
+    // The stored file name is not searched: every asset's begins with the
+    // same prefix, so a word from it would match the whole library.
+    .filter((row) => !normalizedSearch || matched.has(row.assetId) || [row.name ?? '', row.prompt ?? '', row.canvas?.projectName ?? '', ...row.tags]
+      .some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedSearch)))
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.assetId.localeCompare(left.assetId))
+  const page = listed.slice(offset, offset + limit)
+  return {
+    items: page.map((row) => {
+      const mimeType = row.mediaType === 'image' ? LIBRARY_IMAGE_MIME_TYPES[row.extension] : undefined
+      return {
+        assetId: row.assetId,
+        mediaType: row.mediaType,
+        createdAt: row.createdAt,
+        ...(mimeType ? { mimeType } : {}),
+        fileName: row.fileName,
+        ...(row.name ? { name: row.name } : {}),
+        ...(row.prompt ? { prompt: row.prompt } : {}),
+        ...(row.canvas ? { canvas: row.canvas } : {}),
+      }
+    }),
+    offset,
+    limit,
+    total: listed.length,
+    hasMore: offset + page.length < listed.length,
+    counts,
+  }
 }
 
 type AiMediaAssetKind = 'image' | 'video' | 'audio'
@@ -333,66 +427,38 @@ export function createAiMediaAssetService(options: {
   }
 
   /**
-   * The main window's library page. Unlike listOwnedPage it reads no media at
-   * all: the grid shows the derived thumbnail, and width, height and duration
-   * are read by the page from the picture or video it opens. Hydrating a page
-   * of videos here would pull every file, up to 512 MB each, through memory
-   * just to print a duration. The index is a fresh directory listing, so a
-   * file removed outside the app is simply not listed.
+   * The rows of the main window's library page. Unlike listOwnedPage this reads
+   * no media at all: the grid shows the derived thumbnail, and width, height
+   * and duration are read by the page from the picture or video it opens.
+   * Hydrating a page of videos here would pull every file, up to 512 MB each,
+   * through memory just to print a duration. The index is a fresh directory
+   * listing, so a file removed outside the app is simply not listed.
    */
-  async function listOwnedLibrary(userId: number, query: AiMediaLibraryQuery = {}): Promise<AiMediaLibraryPage> {
-    const offset = query.offset ?? 0
-    const limit = query.limit ?? 24
-    const kind = query.kind ?? 'all'
-    const search = query.search?.trim() ?? ''
-    if (!Number.isSafeInteger(offset) || offset < 0 || offset > MAXIMUM_INDEXED_ASSETS) throw new Error('AI 素材分页位置无效')
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAXIMUM_LIBRARY_PAGE_SIZE) throw new Error('AI 素材分页数量无效')
-    if (!['all', 'image', 'video', 'clip', 'film'].includes(kind)) throw new Error('AI 素材媒体类型无效')
-    if (search.length > 128 || /[\x00-\x1F\x7F]/.test(search)) throw new Error('AI 素材搜索内容无效')
-    if ((query.filmAssetIds?.length ?? 0) > MAXIMUM_LIBRARY_FILM_IDS) throw new Error('AI 素材筛选集合过大')
-    if ((query.matchedAssetIds?.length ?? 0) > MAXIMUM_LIBRARY_MATCHED_IDS) throw new Error('AI 素材筛选集合过大')
-    const films = new Set(query.filmAssetIds ?? [])
-    const matched = new Set(query.matchedAssetIds ?? [])
+  async function listOwnedLibraryRows(userId: number): Promise<AiMediaLibraryRow[]> {
     const [images, videos] = await Promise.all([options.images.listOwnedIndex(userId), options.videos.listOwnedIndex(userId)])
     for (const entry of [...images, ...videos]) rememberKind(userId, entry.assetId, entry.mediaType)
     const metadata = await options.metadata.getAll(userId)
-    // The bin belongs to the canvas library; what sits in it is not shown here.
-    const rows = [...images, ...videos].map((entry) => libraryRow(entry, metadata[entry.assetId])).filter((row) => !row.deletedAt)
-    const isFilm = (row: AiMediaAssetRow) => row.entry.mediaType === 'video' && films.has(row.entry.assetId)
-    const counts = {
-      image: rows.filter((row) => row.entry.mediaType === 'image').length,
-      video: rows.filter((row) => row.entry.mediaType === 'video').length,
-      film: rows.filter(isFilm).length,
-    }
-    const normalizedSearch = search.toLocaleLowerCase('zh-CN')
-    const listed = rows
-      // clip is every video the page did not name as a film, so image + clip + film add up to the whole library.
-      .filter((row) => kind === 'all' || (kind === 'film' ? isFilm(row) : kind === 'clip' ? row.entry.mediaType === 'video' && !isFilm(row) : row.entry.mediaType === kind))
-      // The stored file name is not searched: every asset's begins with the
-      // same prefix, so a word from it would match the whole library.
-      .filter((row) => !normalizedSearch || matched.has(row.entry.assetId) || [givenName(row) ?? '', row.prompt ?? '', ...row.tags]
-        .some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedSearch)))
-      .sort((left, right) => right.entry.createdAt.localeCompare(left.entry.createdAt) || right.entry.assetId.localeCompare(left.entry.assetId))
-    const page = listed.slice(offset, offset + limit)
-    return {
-      items: page.map((row) => {
-        const mimeType = row.entry.mediaType === 'image' ? LIBRARY_IMAGE_MIME_TYPES[row.entry.extension] : undefined
-        return {
-          assetId: row.entry.assetId,
-          mediaType: row.entry.mediaType === 'video' ? 'video' as const : 'image' as const,
-          createdAt: row.entry.createdAt,
-          ...(mimeType ? { mimeType } : {}),
-          fileName: row.entry.fileName,
-          ...(givenName(row) ? { name: givenName(row) } : {}),
-          ...(row.prompt ? { prompt: row.prompt } : {}),
-        }
-      }),
-      offset,
-      limit,
-      total: listed.length,
-      hasMore: offset + page.length < listed.length,
-      counts,
-    }
+    return [...images, ...videos]
+      .map((entry) => libraryRow(entry, metadata[entry.assetId]))
+      // The bin belongs to the canvas library; what sits in it is not shown here.
+      .filter((row) => !row.deletedAt)
+      .map((row) => ({
+        assetId: row.entry.assetId,
+        mediaType: row.entry.mediaType === 'video' ? 'video' as const : 'image' as const,
+        createdAt: row.entry.createdAt,
+        extension: row.entry.extension,
+        fileName: row.entry.fileName,
+        ...(givenName(row) ? { name: givenName(row) } : {}),
+        ...(row.prompt ? { prompt: row.prompt } : {}),
+        tags: row.tags,
+        source: row.source,
+      }))
+  }
+
+  /** One folder's library page: the rows above, filtered and paged. */
+  async function listOwnedLibrary(userId: number, query: AiMediaLibraryQuery = {}): Promise<AiMediaLibraryPage> {
+    assertAiMediaLibraryQuery(query)
+    return pageAiMediaLibraryRows(await listOwnedLibraryRows(userId), query)
   }
 
   /**
@@ -548,7 +614,7 @@ export function createAiMediaAssetService(options: {
     throw new Error(message)
   }
 
-  return { readOwned, readOwnedDetail, listOwnedPage, listOwnedLibrary, copy, saveAs, contextMenu, rename, updateMetadata, markUsed, setSource, softDelete, restore, purge }
+  return { readOwned, readOwnedDetail, listOwnedPage, listOwnedLibrary, listOwnedLibraryRows, copy, saveAs, contextMenu, rename, updateMetadata, markUsed, setSource, softDelete, restore, purge }
 }
 
 export type AiMediaAssetService = ReturnType<typeof createAiMediaAssetService>

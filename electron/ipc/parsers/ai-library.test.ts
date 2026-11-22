@@ -26,6 +26,18 @@ describe('parseAiLibraryListInput', () => {
     ]) expect(() => parseAiLibraryListInput(value)).toThrow('作品库请求格式错误')
   })
 
+  it('takes a canvas project only as an id in the shape the project store hands out', () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    expect(parseAiLibraryListInput({ canvasProjectId: projectId, kind: 'image' })).toEqual({ canvasProjectId: projectId, kind: 'image' })
+    for (const canvasProjectId of [7, '', null, '../../etc/passwd', projectId.slice(1), `${projectId}/`, projectId.toUpperCase().replace('1', 'G'), [projectId], { id: projectId }]) {
+      expect(() => parseAiLibraryListInput({ canvasProjectId })).toThrow('作品库请求格式错误')
+    }
+    // A folder, a path or a project name is not a field of the request.
+    for (const value of [{ workspace: 'C:\\Users' }, { projectName: '双十一主图' }, { canvasProjectIds: [projectId] }]) {
+      expect(() => parseAiLibraryListInput(value)).toThrow('作品库请求格式错误')
+    }
+  })
+
   it('rejects malformed or oversized id lists', () => {
     for (const value of [
       { filmAssetIds: id('a') }, { filmAssetIds: [id('a').slice(1)] }, { filmAssetIds: ['../../etc/passwd'] }, { filmAssetIds: [7] },

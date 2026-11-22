@@ -746,17 +746,20 @@ export interface VideoStudioProjectsWrite {
   remove: string[]
 }
 
-/** 主窗口「创作」左边那一列里的一个画布项目：只有编号、名字和时间，项目里的东西不出主进程。 */
+/** 主窗口「创作」左边那一列里的一个画布项目：编号、名字、时间和封面的编号，项目文件本身不出主进程。 */
 export interface CanvasProjectListEntry {
   id: string
   name: string
   /** 最后改动的时间（毫秒）。 */
   updatedAt: number
+  /** 项目中心里那张封面（画布上头一个出了结果的节点，融合第 5 步）。没有结果、或者头一个是音频时没有这一项。 */
+  cover?: { assetId: string; mediaType: 'image' | 'video' }
 }
 
 /**
  * 主窗口「创作 › 作品库」要的一页（融合第 3 步）：当前账号做过的图片和视频，新的在前。视频剪辑的配乐、
- * 画布回收站里的不列。主进程只列目录和名字，不读图片和视频本身。
+ * 画布回收站里的不列。主进程只列目录和名字，不读图片和视频本身。第 5 步起画布项目里生成的也列进来
+ * （项目有自己文件夹的列那个文件夹里的，导入的素材不列；已归档的项目、文件夹暂时够不着的项目不列）。
  */
 export interface AiLibraryListInput {
   offset?: number
@@ -772,6 +775,8 @@ export interface AiLibraryListInput {
    * 只拿来跟这个账号自己的目录比，多列不出别人的东西。
    */
   matchedAssetIds?: string[]
+  /** 只看这一个画布项目里的作品（「创作」里点开一个画布项目时用，融合第 5 步）。不是这个账号没归档的项目就什么都列不出。 */
+  canvasProjectId?: string
 }
 
 export interface AiLibraryEntry {
@@ -786,6 +791,8 @@ export interface AiLibraryEntry {
   name?: string
   /** 画布里生成时记下的那句描述；对话和视频里做的没有这一项，页面按自己的记录补。 */
   prompt?: string
+  /** 是哪个画布项目里的（融合第 5 步）。used：只是在那个项目的节点上用着（比如客户导进去的图），不是它生成的。项目名只当文字显示。 */
+  canvas?: { projectId: string; projectName: string; used?: true }
 }
 
 export interface AiLibraryPage {
