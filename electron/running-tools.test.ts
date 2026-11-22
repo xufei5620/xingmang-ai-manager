@@ -148,19 +148,19 @@ describe('describeRunningTools', () => {
 
   it('names every running tool, Codex desktop included', () => {
     expect(describeRunningTools(report({ running: ['claude', 'codex'], codexDesktopRunning: true }), 'account'))
-      .toBe('Claude Code、Codex CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+      .toBe('Claude Code、Codex CLI、Codex 桌面端 仍在运行，需关闭后重新打开才会使用当前账号。')
   })
 
   it('says where the switch goes when going back to the official account', () => {
     expect(describeRunningTools(report({ running: ['gemini'] }), 'official'))
-      .toBe('Gemini CLI 还开着，要关掉重开才会换回官方账号。')
+      .toBe('Gemini CLI 仍在运行，需关闭后重新打开才会切换回官方账号。')
   })
 
   it('hedges for tools it could not check rather than claiming they are open', () => {
     expect(describeRunningTools(report({ unknown: ['grok'], codexDesktopRunning: null }), 'account'))
-      .toBe('如果 Grok CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+      .toBe('如 Grok CLI、Codex 桌面端 仍在运行，需关闭后重新打开才会使用当前账号。')
     expect(describeRunningTools(report({ running: ['claude'], unknown: ['grok'] }), 'account'))
-      .toBe('Claude Code 还开着，要关掉重开才会用上当前账号。如果 Grok CLI 还开着，也要关掉重开才会用上当前账号。')
+      .toBe('Claude Code 仍在运行，需关闭后重新打开才会使用当前账号。如 Grok CLI 仍在运行，也需关闭后重新打开才会使用当前账号。')
   })
 
   it('never names a site or a technical term', () => {
@@ -170,14 +170,14 @@ describe('describeRunningTools', () => {
 
   it('tells a Mac user that closing the desktop window is not enough when the app cannot reopen it', () => {
     expect(describeRunningTools(report({ running: ['codex'], unknown: ['grok'], codexDesktopRunning: true, canRestartCodexDesktop: false }), 'official'))
-      .toBe('Codex CLI、Codex 桌面端 还开着，要关掉重开才会换回官方账号。Codex 桌面端只关窗口不算，要在它的窗口里按 ⌘Q 完全退出再打开。如果 Grok CLI 还开着，也要关掉重开才会换回官方账号。')
+      .toBe('Codex CLI、Codex 桌面端 仍在运行，需关闭后重新打开才会切换回官方账号。Codex 桌面端关闭窗口不等于退出，请在其窗口中按 ⌘Q 完全退出后重新打开。如 Grok CLI 仍在运行，也需关闭后重新打开才会切换回官方账号。')
   })
 
   it('keeps the quit hint to a desktop app confirmed open, so an unchecked Windows desktop never hears about ⌘Q', () => {
     expect(describeRunningTools(report({ codexDesktopRunning: true }), 'account'))
-      .toBe('Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+      .toBe('Codex 桌面端 仍在运行，需关闭后重新打开才会使用当前账号。')
     expect(describeRunningTools(report({ codexDesktopRunning: null, canRestartCodexDesktop: false }), 'account'))
-      .toBe('如果 Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+      .toBe('如 Codex 桌面端 仍在运行，需关闭后重新打开才会使用当前账号。')
   })
 })
 
@@ -204,22 +204,22 @@ describe('tool route restart hint', () => {
 
   it('always mentions editor plugins once Codex moved, even when nothing is known to be open', () => {
     expect(describeToolRouteRestartHint({ id: 1, codex: { cli: false, desktop: null, canRestartDesktop: false } }))
-      .toEqual(['如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。'])
+      .toEqual(['如在 VS Code 等编辑器中使用 Codex，新建的对话将使用新线路，已打开的对话需重新加载窗口。'])
   })
 
   it('uses the approved sentence for each case', () => {
     expect(describeToolRouteRestartHint({ id: 1, codex: { cli: true, desktop: 'darwin', canRestartDesktop: false }, gemini: 'unknown', grok: 'unknown' })).toEqual([
-      'Codex 还开着：新建对话就走新线路，已经打开的对话要退出 Codex 再打开。',
-      'Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要按 ⌘Q 完全退出再打开。',
-      '如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。',
-      '如果 Gemini 还开着，要关掉再打开才会走新线路。',
-      '如果 Grok 还开着，要退出再打开才会走新线路。',
+      'Codex 仍在运行：新建的对话将使用新线路，已打开的对话需退出 Codex 后重新打开。',
+      'Codex 桌面端仍在运行：新建的对话将使用新线路，已打开的对话需按 ⌘Q 完全退出后重新打开。',
+      '如在 VS Code 等编辑器中使用 Codex，新建的对话将使用新线路，已打开的对话需重新加载窗口。',
+      '如 Gemini 仍在运行，需关闭后重新打开才会使用新线路。',
+      '如 Grok 仍在运行，需退出后重新打开才会使用新线路。',
     ])
     expect(describeToolRouteRestartHint({ id: 1, codex: { cli: false, desktop: 'win32', canRestartDesktop: true }, gemini: 'launched', grok: 'running' })).toEqual([
-      'Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要完全退出再打开。',
-      '如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。',
-      '从星芒打开的 Gemini 窗口要关掉再打开，才会走新线路。',
-      'Grok 还开着，要退出再打开才会走新线路。',
+      'Codex 桌面端仍在运行：新建的对话将使用新线路，已打开的对话需完全退出后重新打开。',
+      '如在 VS Code 等编辑器中使用 Codex，新建的对话将使用新线路，已打开的对话需重新加载窗口。',
+      '从星芒打开的 Gemini 窗口需关闭后重新打开，才会使用新线路。',
+      'Grok 仍在运行，需退出后重新打开才会使用新线路。',
     ])
   })
 

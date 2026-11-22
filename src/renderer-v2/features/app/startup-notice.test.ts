@@ -344,11 +344,11 @@ describe('toolRouteRestartNotice', () => {
       id: 'route-restart',
       failure: false,
       tone: 'neutral',
-      title: '刚才那条连接线路连不上，已经换到另一条。',
+      title: '当前线路无法连接，已切换至另一条线路。',
       body: '',
       items: [
-        'Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要完全退出再打开。',
-        '如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。',
+        'Codex 桌面端仍在运行：新建的对话将使用新线路，已打开的对话需完全退出后重新打开。',
+        '如在 VS Code 等编辑器中使用 Codex，新建的对话将使用新线路，已打开的对话需重新加载窗口。',
       ],
       action: { label: '帮我重开', restartCodexDesktop: true },
     })
@@ -361,10 +361,10 @@ describe('toolRouteRestartNotice', () => {
 
   it('says why Codex moved when a conversation was too large for line 1, with the same steps below', () => {
     const notice = toolRouteRestartNotice({ id: 1, cause: 'payload-too-large', codex: { cli: true, desktop: null, canRestartDesktop: false } })
-    expect(notice?.title).toBe('Codex 里这个对话超过了线路1 的 100MB 上限，已为你切到线路2，请重开 Codex 后继续。')
+    expect(notice?.title).toBe('Codex 中该对话已超过线路1 的 100MB 上限，已为您切换至线路2，请重新打开 Codex 后继续。')
     expect(notice?.items).toEqual([
-      'Codex 还开着：新建对话就走新线路，已经打开的对话要退出 Codex 再打开。',
-      '如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。',
+      'Codex 仍在运行：新建的对话将使用新线路，已打开的对话需退出 Codex 后重新打开。',
+      '如在 VS Code 等编辑器中使用 Codex，新建的对话将使用新线路，已打开的对话需重新加载窗口。',
     ])
   })
 })

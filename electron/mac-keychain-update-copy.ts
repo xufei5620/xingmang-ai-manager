@@ -6,4 +6,4 @@
 // 设置页的确认框、跳框、必须更新那层、自动装的通知、退出时那一问都说这一句（yoyo 10-28「钥匙串提示改」）。
 // 没有 Node 依赖，主进程和渲染层读同一份，两边各写一遍早晚会说岔。
 
-export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
+export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，请输入本机开机密码并点击「始终允许」。'

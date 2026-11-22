@@ -27,7 +27,7 @@ describe('paid Codex check in HealthPage', () => {
   it('stays hidden until the page knows Codex is installed and leaves the self-check wording alone', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     expect(markup).not.toContain('health-codex-responses')
-    expect(markup).toContain('确认每个工具都能连上、账号有效；装好的桌面端也一起测')
+    expect(markup).toContain('确认各工具连接正常、账号有效；已安装的桌面端一并检测')
   })
 })
 
@@ -89,7 +89,7 @@ describe('health page order', () => {
     expect(items.map((item) => item.code)).toEqual(['A', 'B', 'C', 'D', 'E', 'F'])
   })
 
-  it('labels each self-check row 正常, 有问题 or 没测成 and keeps an unconfigured tool grey', () => {
+  it('labels each self-check row 正常, 有问题 or 检测未完成 and keeps an unconfigured tool grey', () => {
     const base = { siteId: 'solov', endpoint: null, model: null, detail: null, status: null, durationMs: 1, checkedAt: '2026-10-04T00:00:00Z', nextStep: '照着做' }
     const ok = { ...base, provider: 'claude' as const, ok: true, layer: 'network' as const, summary: '连接正常' }
     const broken = { ...base, provider: 'codex' as const, ok: false, layer: 'credential' as const, summary: '密钥不对' }
@@ -99,7 +99,7 @@ describe('health page order', () => {
     expect(connectionRowStatus({ result: broken })).toEqual({ label: '有问题', tone: 'bad' })
     expect(connectionRowStatus({ result: service })).toEqual({ label: '有问题', tone: 'warn' })
     expect(connectionRowStatus({ result: unconfigured })).toEqual({ label: '未配置', tone: 'neutral' })
-    expect(connectionRowStatus({ result: null })).toEqual({ label: '没测成', tone: 'bad' })
+    expect(connectionRowStatus({ result: null })).toEqual({ label: '检测未完成', tone: 'bad' })
     const rows = [
       { id: 'claude', result: ok }, { id: 'opencode', result: unconfigured }, { id: 'codex', result: broken },
       { id: 'workbuddy', result: null }, { id: 'grok', result: service },
@@ -117,7 +117,7 @@ describe('feedback report notices', () => {
   })
 
   it('tells the user the report was refreshed after the preview expired', () => {
-    expect(feedbackCopyNotice({ entries: 3, regenerated: fresh })).toBe('报告已更新到最新日志并复制，发给客服就行')
+    expect(feedbackCopyNotice({ entries: 3, regenerated: fresh })).toBe('报告已更新至最新日志并复制，请发送给客服')
     expect(feedbackExportNotice({ outputPath: 'C:/r.txt', regenerated: fresh })).toEqual({
       text: '报告已更新到最新日志并导出：C:/r.txt',
       revealPath: 'C:/r.txt',
@@ -138,9 +138,9 @@ describe('feedback and support page', () => {
     expect(markup).toContain('role="tablist"')
     expect(markup).toContain('留言反馈')
     expect(markup).toContain('运行日志')
-    expect(markup).toContain('描述一下发生了什么')
-    expect(markup).toContain('比如：点「打开」后终端闪一下就关了')
-    expect(markup).toContain('微信号或邮箱（会一起复制，发给客服时方便他回你）')
+    expect(markup).toContain('问题描述')
+    expect(markup).toContain('例如：点击「打开」后终端窗口闪退')
+    expect(markup).toContain('微信号或邮箱（将一并复制，便于客服联系您）')
     expect(markup).toContain('已自动隐去密钥和个人路径')
     expect(markup).toContain('复制给客服')
     expect(markup).toContain('data-testid="feedback-support-card"')
@@ -167,7 +167,7 @@ describe('feedback and support page', () => {
     expect(markup).toContain('data-testid="feedback-search"')
     expect(markup).toContain('打开日志文件夹')
     expect(markup).toContain('aria-label="刷新"')
-    expect(markup).toContain('日志只保存在这台电脑上。')
+    expect(markup).toContain('日志仅保存在本机。')
     // 留言那一块还挂着（写到一半的字不丢），只是藏起来。
     expect(markup).toContain('id="feedback-panel-form" role="tabpanel" aria-label="留言反馈" hidden=""')
     expect(markup).toContain('id="feedback-panel-log" role="tabpanel" aria-label="运行日志" data-testid')
@@ -252,11 +252,11 @@ describe('tutorial topics', () => {
     // 这三条都是命令行工具本身的限制（只能按文件夹找回最近一条），用户看不出来，
     // 写错了会让人以为按钮坏了。
     const text = tutorialText('sessions')
-    expect(text).toContain('最近的一次对话')
+    expect(text).toContain('最近一次对话')
     expect(text).toContain('已归档')
     expect(text).toContain('文件夹已不存在')
     // 记录只在本机、保留期放长到一年，与记录页页头同一口径。
-    expect(text).toContain('只存在这台电脑上')
+    expect(text).toContain('仅保存在本机')
     expect(text).toContain('一年')
   })
 
@@ -285,14 +285,14 @@ describe('tutorial topics', () => {
     expect(text).toContain(statuses.tool.configChanged[0])
     expect(text).toContain(statuses.tool.detectionFailed[0])
     // 敏感目录提示的标题在 electron/workspace-guard.ts，那侧是主进程模块，这里只钉字面。
-    expect(text).toContain('这个文件夹范围太大')
+    expect(text).toContain('该文件夹范围过大')
   })
 
   it('quotes what the command-line tools really print when the balance or key quota runs out', () => {
     // 原文取自四家推荐版本对本地假接口的实测（服务端返回按 new-api rc.24 源码构造）。
     // 小白最容易踩的是 Claude Code 在余额不足时也说「Please run /login」，照做会走官方登录。
     const text = tutorialText('messages')
-    for (const phrase of ['Please run /login', '用户额度不足', 'token quota is not enough', 'API key 额度已用完', 'Quota exceeded', '无效的令牌', '不要照做'])
+    for (const phrase of ['Please run /login', '用户额度不足', 'token quota is not enough', 'API key 额度已用完', 'Quota exceeded', '无效的令牌', '请勿照做'])
       expect(text, `对照表缺少「${phrase}」`).toContain(phrase)
     expect(text).not.toMatch(/星芒余额|solov|Sub2API/)
   })
@@ -316,8 +316,8 @@ describe('tutorial topics', () => {
     const text = [...(start?.steps.map((step) => step.detail) ?? []), ...(start?.reminders ?? [])].join('\n')
     expect(text).toContain('都可能出错')
     expect(text).toContain('合并或执行之前自己再过一遍')
-    expect(text).toContain('来路不明')
-    expect(text).toContain('藏着让 AI 去做别的事的指令')
+    expect(text).toContain('来源不明')
+    expect(text).toContain('诱导 AI 执行其他操作的指令')
   })
 
   it('tells a Mac customer to let the app prepare Node.js and how to install both by hand', () => {
@@ -331,10 +331,10 @@ describe('tutorial topics', () => {
     expect(text).toContain(runtimeHomebrewCommand('python'))
     expect(text).toContain(runtimeButtonLabel('node', 'managed'))
     expect(text).toContain(runtimeButtonLabel('python', 'external'))
-    expect(text).toContain('不用输开机密码')
+    expect(text).toContain('无需输入开机密码')
     expect(text).toContain('.pkg')
     // 不代装、不提权这条口径要写在教程里，和运行环境卡一致。
-    expect(text).toContain('星芒不会替你跑这条命令')
+    expect(text).toContain('星芒不会代为执行此命令')
     expect(text).toContain('重新检测')
   })
 

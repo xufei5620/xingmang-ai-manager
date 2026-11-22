@@ -270,11 +270,11 @@ function relativeSegments(
 // 新增几类各自一句「为什么不建议」，给小白看：不出现 AppData、配置目录这类词。
 // 没列的五类（#321）共用「范围太大」那一句。
 const sensitiveWorkspaceReasons: Partial<Record<SensitiveWorkspaceKind, string>> = {
-  'users-root': '这里装着这台电脑上每个人的个人资料，工具第一次打开要扫很久，也可能读到别人或你自己不想给它看的资料。建议改选一个具体的项目文件夹。',
-  'onedrive-root': '这里的文件会自动同步到云端，工具干活时装的依赖和生成的临时文件也会被一起上传，占满网盘还拖慢电脑。建议改选一个具体的项目文件夹。',
-  'app-data': '这里放着各个软件自己的数据和登录信息，与这次工作无关，也可能被工具读到你不想给它看的内容。建议改选一个具体的项目文件夹。',
-  system: '这里放着电脑和其他软件正常运行需要的文件，AI 工具在里面改动或删掉东西，可能让电脑或别的软件出问题。建议换一个你自己建的文件夹。',
-  'provider-config': '这里存着 AI 工具的登录信息和密钥。在这里打开，等于把密钥摊开给 AI 看，它可能被写进对话记录甚至发出去。建议换一个你自己建的文件夹。',
+  'users-root': '此处存放本机所有用户的个人资料，工具首次打开需要长时间扫描，也可能读取到其他用户或您不希望其访问的资料。建议改选具体的项目文件夹。',
+  'onedrive-root': '此处的文件会自动同步到云端，工具运行时安装的依赖和生成的临时文件也会一并上传，占满网盘空间并拖慢电脑。建议改选具体的项目文件夹。',
+  'app-data': '此处存放各软件的数据和登录信息，与本次工作无关，工具也可能读取到您不希望其访问的内容。建议改选具体的项目文件夹。',
+  system: '此处存放系统和其他软件正常运行所需的文件，AI 工具在此修改或删除内容可能导致系统或其他软件异常。建议改选您自行创建的文件夹。',
+  'provider-config': '此处存放 AI 工具的登录信息和密钥。在此打开相当于将密钥暴露给 AI，密钥可能被写入对话记录甚至被发送出去。建议改选您自行创建的文件夹。',
 }
 
 export interface SensitiveWorkspacePrompt {
@@ -285,17 +285,17 @@ export interface SensitiveWorkspacePrompt {
   /** 「仍然打开」在 buttons 里的下标。 */
   continueIndex: number
   /**
-   * 「新建一个项目文件夹」在 buttons 里的下标，也是默认按钮（starter-workspace.ts）。
+   * 「新建项目文件夹」在 buttons 里的下标，也是默认按钮（starter-workspace.ts）。
    * 续接对话时没有这一项（新建的空目录接不上那条对话），为 null。
    */
   createIndex: number | null
-  /** 「换一个文件夹」（或「先不打开」）在 buttons 里的下标，同时是对话框被直接关掉时的取值。 */
+  /** 「更换文件夹」（或「暂不打开」）在 buttons 里的下标，同时是对话框被直接关掉时的取值。 */
   cancelIndex: number
 }
 
 export interface SensitiveWorkspacePromptOptions {
   /**
-   * 缺省 true。续接上一条对话时换目录就接不上了，那时取消键只能是「先不打开」。
+   * 缺省 true。续接上一条对话时换目录就接不上了，那时取消键只能是「暂不打开」。
    */
   allowChooseAnother?: boolean
 }
@@ -310,32 +310,32 @@ export function buildSensitiveWorkspacePrompt(
 ): SensitiveWorkspacePrompt {
   const label = sensitiveWorkspaceLabel(kind)
   const reason = sensitiveWorkspaceReasons[kind]
-    ?? `${label}里通常放着与这次工作无关的大量文件，工具第一次打开要扫很久，也可能读到你不想给它看的资料。建议改选一个具体的项目文件夹。`
+    ?? `${label}中通常存放大量与本次工作无关的文件，工具首次打开需要长时间扫描，也可能读取到您不希望其访问的资料。建议改选具体的项目文件夹。`
   const everyTime = sensitiveWorkspacePolicy(kind) === 'every-time'
   const allowChooseAnother = options.allowChooseAnother !== false
   return {
-    title: everyTime ? '不建议在这个文件夹里打开' : '这个文件夹范围太大',
-    message: `你选的是${label}，AI 工具会把它整个当成一个项目。`,
+    title: everyTime ? '不建议在此文件夹中打开' : '该文件夹范围过大',
+    message: `您选择的是${label}，AI 工具会将其整体视为一个项目。`,
     detail: [
       reason,
       ...(allowChooseAnother
-        ? ['还没有项目文件夹的话，点「新建一个项目文件夹」，会替你建一个空的项目文件夹并直接打开，不用再选、不用起名。']
+        ? ['如尚无项目文件夹，请点击「新建项目文件夹」，系统将为您创建一个空的项目文件夹并直接打开，无需选择或命名。']
         : []),
       everyTime
-        ? '仍然打开也可以，但不会记住这个文件夹，下次打开还会再提醒你；也不会替你把它标成「可信」或在里面生成项目说明文件。'
-        : '仍然打开也可以，只是这一次不会替你把它标成「可信」，也不会在里面生成项目说明文件（AGENTS.md）——那份说明会对它下面的所有项目生效。',
+        ? '也可选择仍然打开，但不会记住该文件夹，下次打开时仍会提醒；也不会将其标记为「可信」或在其中生成项目说明文件。'
+        : '也可选择仍然打开，但本次不会将其标记为「可信」，也不会在其中生成项目说明文件（AGENTS.md），因为该说明会对其下所有项目生效。',
     ].join('\n\n'),
     ...(allowChooseAnother
       ? {
         // 客户多是新手，少让他做决定：「新建」放第一个并作为默认按钮（回车即选，
         // macOS 上是高亮的那个），另外两个退成次要。
-        buttons: ['新建一个项目文件夹', '换一个文件夹', '仍然打开'],
+        buttons: ['新建项目文件夹', '更换文件夹', '仍然打开'],
         createIndex: 0,
         cancelIndex: 1,
         continueIndex: 2,
       }
       : {
-        buttons: ['先不打开', '仍然打开'],
+        buttons: ['暂不打开', '仍然打开'],
         createIndex: null,
         cancelIndex: 0,
         continueIndex: 1,

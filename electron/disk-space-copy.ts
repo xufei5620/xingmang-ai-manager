@@ -23,6 +23,6 @@ export function describeUpdateDiskShortfall(shortfall: UpdateDiskShortfall, auto
   const needed = formatFreeSpace(shortfall.neededBytes)
   const gap = formatFreeSpace(Math.max(0, shortfall.neededBytes - shortfall.freeBytes))
   return autoUpdate
-    ? `新版本先不下载：电脑磁盘只剩 ${free}，装更新大约要 ${needed}，还要再清出 ${gap}。清出来以后会自动下载，不用你再点。`
-    : `电脑磁盘只剩 ${free}，装更新大约要 ${needed}，还要再清出 ${gap}，现在下载多半会失败。`
+    ? `新版本暂不下载：磁盘仅剩 ${free}，安装更新约需 ${needed}，还需清理出 ${gap}。空间充足后将自动下载，无需再次操作。`
+    : `磁盘仅剩 ${free}，安装更新约需 ${needed}，还需清理出 ${gap}，现在下载很可能失败。`
 }

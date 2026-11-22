@@ -51,6 +51,13 @@ export function shouldReplaceNodeForCertificates(input: {
 export const nodeStillOutdatedAfterReplaceMessage = '新版 Node.js 已经装上了，但电脑上另外还有一份旧的 Node.js 排在前面，工具仍会先用到它，还是认不了这台电脑的证书。请联系客服帮你处理。'
 
 /**
+ * Windows 在重启倒计时里弹的那句（shutdown /c）。Node.js 装完要重启、Codex 桌面端起不来要重启
+ * 都走这一次，所以不说是为了什么；以前写的是英文「为了完成 Windows 更新」，用在 Codex 那里不对题
+ * （yoyo 2026-11-21 批的字，「重启框改」）。
+ */
+export const windowsRestartNotice = '星芒AI管理工具将重启电脑，请保存未保存的文件。'
+
+/**
  * 代装的 Node.js 现在钉的是哪一版（macos-node-runtime.ts、linux-node-runtime.ts，两边同一版）。
  * Windows 装的是官方安装包、不钉版本（D88 交 Claude·win），返回 null：那边不做 D86 的顺手换新。
  */
@@ -313,7 +320,7 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
     const machinePaths = resolveWindowsMachinePathsForService()
     await executeCommand({
       executable: windowsSystemExecutable('shutdown.exe', process.env, 'win32', machinePaths),
-      argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', 'XingMang AI requires a restart to finish Windows updates'],
+      argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', windowsRestartNotice],
     }, {
       env: trustedCommandEnvironment(process.env, machinePaths, 'win32'),
       trustedOnly: true,

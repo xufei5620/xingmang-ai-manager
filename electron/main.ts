@@ -498,9 +498,9 @@ function createWindow(
     reload: reloadPage,
     prompt: async () => {
       const result = await dialog.showMessageBox(window, {
-        type: 'warning', title: '界面出了问题', message: '星芒AI管理工具的界面接连出错，自动重新加载也没能恢复。',
+        type: 'warning', title: '界面异常', message: '星芒AI管理工具的界面多次出错，自动重新加载未能恢复。',
         detail: rendererCrashRecoveryDetail(process.platform),
-        buttons: ['重新加载', '先不管'], defaultId: 0, cancelId: 1,
+        buttons: ['重新加载', '暂不处理'], defaultId: 0, cancelId: 1,
       })
       return result.response === 0 ? 'reload' : 'dismiss'
     },
@@ -551,8 +551,8 @@ function createWindow(
   const responsiveness = createWindowResponsivenessGuard({
     prompt: async (signal) => {
       const result = await dialog.showMessageBox(window, {
-        type: 'warning', title: '界面没有响应', message: '星芒AI管理工具的界面暂时没有响应。',
-        detail: '可以再等一会儿，界面通常会自己恢复。重新加载只会重启界面，正在进行的安装、下载和已保存的设置都不受影响，但界面上还没保存的输入会丢失。',
+        type: 'warning', title: '界面无响应', message: '星芒AI管理工具的界面暂时无响应。',
+        detail: '可稍候片刻，界面通常会自动恢复。重新加载仅会重启界面，正在进行的安装、下载和已保存的设置均不受影响，但界面上尚未保存的输入将丢失。',
         buttons: ['继续等待', '重新加载'], defaultId: 0, cancelId: 0, signal,
       })
       return result.response === 1 ? 'reload' : 'wait'
@@ -2727,6 +2727,7 @@ if (!hasSingleInstanceLock) {
       videoService: chatVideoService,
       videoAssets,
       audioAssets,
+      mediaAssets,
       chatHistory: chatHistoryStore,
       videoStudioProjects: videoStudioProjectStore,
       chatHistoryFlush,
@@ -3030,10 +3031,10 @@ if (!hasSingleInstanceLock) {
       // 托盘「退出」「重启并安装」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
       if (!mainWindow.isVisible()) showMainWindow()
       const result = await dialog.showMessageBox(mainWindow, {
-        type: 'question', title: '关闭星芒AI管理工具', message: '还在安装，现在退出会中断，确定退出？',
+        type: 'question', title: '关闭星芒AI管理工具', message: '安装仍在进行，现在退出将中断安装，确定退出？',
         detail: task.count > 1
-          ? `${task.description}，另外还有 ${task.count - 1} 项安装排在后面。现在退出会中断它们，已经下载的部分下次要重新来过。`
-          : `${task.description}。现在退出会中断它，已经下载的部分下次要重新来过。`,
+          ? `${task.description}，另有 ${task.count - 1} 项安装正在排队。现在退出将中断这些任务，已下载的部分下次需重新下载。`
+          : `${task.description}。现在退出将中断该任务，已下载的部分下次需重新下载。`,
         buttons: ['继续安装', '仍然退出'],
         defaultId: 0, cancelId: 0,
       })
@@ -3054,7 +3055,7 @@ if (!hasSingleInstanceLock) {
       const result = await dialog.showMessageBox(mainWindow, {
         type: 'question', title: '星芒AI管理工具', message: prompt.message, detail: prompt.detail,
         buttons: prompt.buttons,
-        // 回车、Esc 都落在「等它做完」上：手滑不会把正在出的图停掉。
+        // 回车、Esc 都落在「等待完成」上：手滑不会把正在出的图停掉。
         defaultId: 0, cancelId: 0, noLink: true,
       })
       return result.response === 1
@@ -3072,7 +3073,7 @@ if (!hasSingleInstanceLock) {
       return result.response === 1
     }
     // 更新页「确认重启安装」、托盘「重启并安装」：重启会打断正在装、排着队的工具，先问退出时那一句；
-    // 聊天、视频剪辑、画布还在做的再问一句（D10）。点「继续安装」「等它做完」这次就不装，新版本留着，
+    // 聊天、视频剪辑、画布还在做的再问一句（D10）。点「继续安装」「等待完成」这次就不装，新版本留着，
     // 以后再点或下次退出时照常装（已知31）。
     confirmUpdateInstall = async () => {
       if (mainWindow.isDestroyed()) return true
@@ -3211,7 +3212,7 @@ if (!hasSingleInstanceLock) {
           detail, buttons,
           defaultId: trayReady ? 0 : 1, cancelId: trayReady ? 2 : 1,
           // 默认不勾：不勾就和以前一样每次都问。选「返回」时勾了也不记。
-          checkboxLabel: '记住我的选择，以后不再询问（可以在「设置 › 启动关闭」里改）',
+          checkboxLabel: '记住我的选择，以后不再询问（可在「设置 › 启动关闭」中修改）',
           checkboxChecked: false,
         })
         const decision = trayReady ? result.response === 0 ? 'hide' : result.response === 1 ? 'quit' : 'cancel' : result.response === 0 ? 'quit' : 'cancel'

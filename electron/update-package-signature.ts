@@ -117,7 +117,7 @@ export function verifyUpdateEntrySignature(
   }
   const signature = entry[UPDATE_SIGNATURE_FIELD]
   if (signature === undefined || signature === null || signature === '') {
-    return { ok: false, code: 'UPDATE_SIGNATURE_MISSING', message: '更新清单里没有发布者签名，已阻止安装。请稍后再试，若一直这样请联系客服。' }
+    return { ok: false, code: 'UPDATE_SIGNATURE_MISSING', message: '更新清单中缺少发布者签名，已阻止安装。请稍后重试，如持续出现请联系客服。' }
   }
   const signatureBytes = decodeSignature(signature)
   const payload = typeof entry.url === 'string' && typeof entry.sha512 === 'string'

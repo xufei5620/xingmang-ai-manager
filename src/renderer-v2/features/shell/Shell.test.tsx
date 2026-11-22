@@ -38,12 +38,12 @@ describe('renderer-v2 sidebar update entry and settings dot', () => {
   }
 
   it('puts the gold entry right above 设置 and dots 设置 while a new version is around', () => {
-    const markup = sidebar({ update: 'ready', updateEntry: { label: '重启并安装新版', title: '新版 v0.2.23 已经下好，点一下装上，装好自动打开', install: true } })
+    const markup = sidebar({ update: 'ready', updateEntry: { label: '重启并安装新版', title: '新版 v0.2.23 已下载，点击即可安装，安装完成后自动打开', install: true } })
     expect(markup).toMatch(/data-testid="nav-update"[^>]*>.*<span>重启并安装新版<\/span><\/button>.*data-testid="nav-settings"/)
     // 钉住的那段从上到下：充值、更新、设置；更新仍紧挨「设置」上面。
     expect([...markup.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])).toEqual(['recharge', 'update', 'settings'])
     expect(markup).toContain('class="v2-nav-item v2-nav-update"')
-    expect(markup).toContain('title="新版 v0.2.23 已经下好，点一下装上，装好自动打开"')
+    expect(markup).toContain('title="新版 v0.2.23 已下载，点击即可安装，安装完成后自动打开"')
     expect(markup).toContain('aria-label="设置，有新版本"')
     expect(markup).toContain('<i class="v2-nav-dot" title="有新版本" aria-hidden="true" data-testid="nav-settings-update"></i>')
   })

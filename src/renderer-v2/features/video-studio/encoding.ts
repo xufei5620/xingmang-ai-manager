@@ -50,10 +50,10 @@ export async function chooseVideoStudioEncoding(
 ): Promise<VideoStudioEncoding> {
   const size = { width: output.width, height: output.height, frameRate: output.frameRate }
   const video = await firstSupported(preference.video ?? videoStudioVideoCodecs, (codec) => probe.video(codec, size))
-  if (!video) throw new VideoStudioError('这台电脑的系统没有能用的视频编码器，导不出视频')
+  if (!video) throw new VideoStudioError('本机系统没有可用的视频编码器，无法导出视频')
   if (!needsAudio) return { video, audio: null }
   const format = { sampleRate: output.sampleRate, numberOfChannels: output.numberOfChannels }
   const audio = await firstSupported(preference.audio ?? videoStudioAudioCodecs, (codec) => probe.audio(codec, format))
-  if (!audio) throw new VideoStudioError('这台电脑的系统没有能用的声音编码器，导不出带声音的视频')
+  if (!audio) throw new VideoStudioError('本机系统没有可用的音频编码器，无法导出带声音的视频')
   return { video, audio }
 }

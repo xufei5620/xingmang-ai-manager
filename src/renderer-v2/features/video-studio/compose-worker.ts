@@ -11,7 +11,7 @@ function reply(message: VideoStudioWorkerReply, transfer: Transferable[] = []): 
 
 async function run(value: unknown): Promise<void> {
   try {
-    if (started) throw new VideoStudioError('这个拼片线程已经在忙了')
+    if (started) throw new VideoStudioError('合成任务正在进行中')
     started = true
     const { request } = parseVideoStudioWorkerMessage(value)
     const result = await composeVideoStudio(request, {

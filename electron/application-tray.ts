@@ -33,7 +33,7 @@ export interface ApplicationTraySnapshot {
 }
 
 /** 托盘里点「打开手机遥控」一个都没打开时那条系统通知的标题；正文是打不开的原因原句（YF-8）。 */
-export const trayRemoteControlOpenFailedTitle = '手机遥控没打开'
+export const trayRemoteControlOpenFailedTitle = '手机遥控开启失败'
 
 export interface TrayKeepAwakeState {
   /** 终端里正在干活的工具名（Claude Code、Gemini CLI、Grok CLI）。 */
@@ -51,11 +51,11 @@ export interface TrayKeepAwakeState {
  * 挡睡眠，不归星芒管，不在这里说。
  */
 export function trayKeepAwakeLabel(state: TrayKeepAwakeState): string | null {
-  if (state.tools.length === 1) return `${state.tools[0]} 正在干活，暂不让电脑自动睡眠`
-  if (state.tools.length > 1) return 'AI 工具正在干活，暂不让电脑自动睡眠'
-  if (state.remoteControl) return '手机遥控开着，暂不让电脑自动睡眠'
-  if (state.installing) return '正在安装，暂不让电脑自动睡眠'
-  if (state.downloadingUpdate) return '正在下载星芒新版本，暂不让电脑自动睡眠'
+  if (state.tools.length === 1) return `${state.tools[0]} 正在运行，已暂停系统自动睡眠`
+  if (state.tools.length > 1) return 'AI 工具正在运行，已暂停系统自动睡眠'
+  if (state.remoteControl) return '手机遥控已开启，已暂停系统自动睡眠'
+  if (state.installing) return '正在安装，已暂停系统自动睡眠'
+  if (state.downloadingUpdate) return '正在下载星芒新版本，已暂停系统自动睡眠'
   return null
 }
 
@@ -111,17 +111,17 @@ function updateItem(
   switch (entry.kind) {
     case 'available':
       return entry.waitingForDisk
-        ? { label: rollback ? `版本更新：建议退回的 ${rollback} 版等电脑腾出空间再下载` : `版本更新：${named}等电脑腾出空间再下载`, click: openPage }
-        : { label: rollback ? `版本更新：建议退回 ${rollback} 版` : `版本更新：有${named}`.trimEnd(), click: openPage }
+        ? { label: rollback ? `版本更新：建议回退的 ${rollback} 版待磁盘空间充足后下载` : `版本更新：${named}待磁盘空间充足后下载`, click: openPage }
+        : { label: rollback ? `版本更新：建议回退至 ${rollback} 版` : `版本更新：发现${named}`.trimEnd(), click: openPage }
     case 'downloading':
-      return { label: rollback ? `版本更新：正在下载建议退回的 ${rollback} 版` : `版本更新：正在下载${named}`.trimEnd(), click: openPage }
+      return { label: rollback ? `版本更新：正在下载建议回退的 ${rollback} 版` : `版本更新：正在下载${named}`.trimEnd(), click: openPage }
     case 'downloaded':
       // 和更新页「确认重启安装」走同一条 install()，不另开安装路径；没接安装动作时退回更新页。
       return install
-        ? { label: rollback ? `${entry.systemInstaller ? '' : '重启并'}退回 ${rollback} 版` : `${entry.systemInstaller ? '安装' : '重启并安装'}${named}`.trimEnd(), click: () => run(install) }
-        : { label: rollback ? `版本更新：建议退回的 ${rollback} 版已下载好` : `版本更新：${named}已下载好`, click: openPage }
+        ? { label: rollback ? `${entry.systemInstaller ? '' : '重启并'}回退至 ${rollback} 版` : `${entry.systemInstaller ? '安装' : '重启并安装'}${named}`.trimEnd(), click: () => run(install) }
+        : { label: rollback ? `版本更新：建议回退的 ${rollback} 版已下载` : `版本更新：${named}已下载`, click: openPage }
     case 'failed':
-      return { label: rollback ? `版本更新：退回 ${rollback} 版没成功，点开看看` : `版本更新：${named}没更新成功，点开看看`, click: openPage }
+      return { label: rollback ? `版本更新：回退至 ${rollback} 版失败，点击查看` : `版本更新：${named}更新失败，点击查看`, click: openPage }
   }
 }
 
@@ -242,14 +242,14 @@ function balanceAge(snapshot: TrayBalanceState, now: number): number | null {
 
 /** 托盘菜单和图标提示里「余额：」后面那一段。 */
 export function trayBalanceText(snapshot: TrayBalanceState, now: number): string {
-  if (!hasBalance(snapshot)) return snapshot.signedIn ? '暂未读到' : trayBalanceLabel(null)
+  if (!hasBalance(snapshot)) return snapshot.signedIn ? '暂未获取' : trayBalanceLabel(null)
   const amount = trayBalanceLabel(snapshot.balanceUsd)
   const age = balanceAge(snapshot, now)
   if (age === null || age < trayBalanceStaleAfterMs) return amount
   // 跟画布余额条一样分三档，免得写出「（135 分钟前）」。
   const ago = age < hourMs ? `${Math.floor(age / minuteMs)} 分钟前`
     : age < dayMs ? `${Math.floor(age / hourMs)} 小时前`
-      : '一天多以前'
+      : '1 天前'
   return `${amount}（${ago}）`
 }
 
@@ -320,8 +320,8 @@ export function buildApplicationTrayMenu(
   return [
     { label: `打开${appName}`, click: () => run(actions.onOpen) },
     ...(keepAwake ? [{ label: keepAwake, enabled: false }] : []),
-    ...(remoteOff ? [{ label: '关掉手机遥控', click: () => run(remoteOff) }] : []),
-    ...(remoteOn ? [{ label: '打开手机遥控', click: () => run(remoteOn) }] : []),
+    ...(remoteOff ? [{ label: '关闭手机遥控', click: () => run(remoteOff) }] : []),
+    ...(remoteOn ? [{ label: '开启手机遥控', click: () => run(remoteOn) }] : []),
     { type: 'separator' },
     { label: menuLabel(snapshot.accountLabel, '未登录'), enabled: false },
     { label: `余额：${trayBalanceText(snapshot, now)}`, enabled: false },

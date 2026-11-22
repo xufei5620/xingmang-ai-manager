@@ -72,12 +72,12 @@ export function UpdateInstallDialog({ api, update, open, onClose, operation }: U
                   onClose()
                   return result
                 },
-                // 还有工具在装、或者聊天视频剪辑画布还在做，客户在问的那一句里点了「继续安装」「等它做完」：这次不装，回到原来的样子（已知31、D10）。
+                // 还有工具在装、或者聊天视频剪辑画布还在做，客户在问的那一句里点了「继续安装」「等待完成」：这次不装，回到原来的样子（已知31、D10）。
                 (result) => (result.postponed ? null : '安装请求已提交'),
               )
             }
           >
-            {systemInstaller ? '关掉并安装' : operation.busy === 'install' ? '正在重启' : '重启并安装'}
+            {systemInstaller ? '关闭并安装' : operation.busy === 'install' ? '正在重启' : '重启并安装'}
           </Button>
         </>
       }

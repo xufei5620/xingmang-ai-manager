@@ -161,8 +161,8 @@ describe('importing conversations while the chat is replying', () => {
     expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, updated: 0, skipped: 0 })
   })
 
-  it('says it in the exact words the decision sheet gave', () => {
-    expect(chatReplyingImportMessage).toBe('聊天正在回复，等它说完再导入。')
+  it('says it in the exact words the formal wording list gave', () => {
+    expect(chatReplyingImportMessage).toBe('聊天正在回复，请待回复完成后再导入。')
   })
 })
 

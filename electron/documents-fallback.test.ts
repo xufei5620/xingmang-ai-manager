@@ -174,19 +174,19 @@ describe('buildWorkspaceNotWritablePrompt', () => {
   it('offers a writable place by default and keeps a way to open anyway', () => {
     const prompt = buildWorkspaceNotWritablePrompt({ allowCreate: true })
 
-    expect(prompt.buttons).toEqual(['换到能写的位置', '照常打开', '先不打开'])
+    expect(prompt.buttons).toEqual(['更换为可写入的位置', '照常打开', '暂不打开'])
     expect(prompt.createIndex).toBe(0)
     expect(prompt.defaultIndex).toBe(0)
     expect(prompt.buttons[prompt.continueIndex]).toBe('照常打开')
-    expect(prompt.buttons[prompt.cancelIndex]).toBe('先不打开')
+    expect(prompt.buttons[prompt.cancelIndex]).toBe('暂不打开')
     expect(prompt.detail).toContain('受控文件夹访问')
-    expect(prompt.detail).toContain('原来的文件还在原来的位置')
+    expect(prompt.detail).toContain('原有文件保留在原位置')
   })
 
   it('does not offer another folder when resuming a conversation', () => {
     const prompt = buildWorkspaceNotWritablePrompt({ allowCreate: false })
 
-    expect(prompt.buttons).toEqual(['先不打开', '照常打开'])
+    expect(prompt.buttons).toEqual(['暂不打开', '照常打开'])
     expect(prompt.createIndex).toBeNull()
     expect(prompt.buttons[prompt.defaultIndex]).toBe('照常打开')
   })

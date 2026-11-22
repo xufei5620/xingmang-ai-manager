@@ -337,7 +337,7 @@ export function SessionsPage({
       return
     // 「…」里的「继续对话」不置灰，点了说清楚为什么接不上；行上和详情里的按钮是灰的，悬停有同一句。
     if (notInstalled(session)) {
-      toast.show(`要先装好 ${providerName(provider)} 才能接着聊`, 'warn')
+      toast.show(`需先安装 ${providerName(provider)} 才能继续对话`, 'warn')
       return
     }
     void operation.execute(
@@ -353,7 +353,7 @@ export function SessionsPage({
           const result = await (typeof choice === 'object'
             ? api.launchCli(provider, session.cwd, 'resumeLast', choice.resumeSessionId)
             : api.launchCli(provider, session.cwd, 'resumeLast'))
-          // 选了「先不打开」就什么都没开，首页那份「最近」也没变。
+          // 选了「暂不打开」就什么都没开，首页那份「最近」也没变。
           if (!launchDeclined(result)) {
             onSessionsChanged?.()
             // 终端里这就要多出新的对话，从终端回来头一次切回窗口不管隔了多久都重读。
@@ -367,7 +367,7 @@ export function SessionsPage({
           // 列表重读一遍让这一行跟着置灰。
           if (!isMissingWorkspace(cause)) throw cause
           void Promise.all([reloadList(), latestResource.reload()])
-          throw new Error('这条记录的文件夹已经不在了，接不上上次的对话。')
+          throw new Error('该记录的文件夹已不存在，无法继续上次的对话。')
         }
       },
       // 项目文件夹里的设置会盖过当前账号时，那句提醒跟在成功提示后面，不另弹一条。
@@ -380,10 +380,10 @@ export function SessionsPage({
   /** 行上和详情里「继续对话」那颗按钮的悬停说明：按不动时说为什么。 */
   const resumeTitle = (session: Session) =>
     session.cwdExists === false
-      ? '这条记录的文件夹已经不在了，接不上上次的对话'
+      ? '该记录的文件夹已不存在，无法继续上次的对话'
       : notInstalled(session)
-        ? `要先装好 ${providerName(session.provider)}`
-        : '接着这个文件夹里最近一次对话'
+        ? `需先安装 ${providerName(session.provider)}`
+        : '继续此文件夹中最近一次对话'
   /**
    * 只传会话 id,不传路径:工作目录由主进程从记录里取并校验(必须是真实存在的
    * 文件夹),界面没有办法让资源管理器去打开别的位置。目录已经不在的那一行按钮
@@ -409,7 +409,7 @@ export function SessionsPage({
   const copySessionId = (session: Session) => {
     void navigator.clipboard.writeText(session.nativeId).then(
       () => toast.show('会话 ID 已复制', 'ok'),
-      () => toast.show('没复制上，请手动选中这行文字复制。', 'warn'),
+      () => toast.show('复制失败，请手动选中此行文字复制。', 'warn'),
     )
   }
   const busy = Boolean(operation.busy)
@@ -441,7 +441,7 @@ export function SessionsPage({
     >
       <PageHead
         title="记录"
-        lead="在首页打开工具聊过的对话都在这里"
+        lead="通过首页打开工具产生的对话均在此处"
         actions={
           <Button
             variant="ghost"
@@ -500,9 +500,9 @@ export function SessionsPage({
           filtered={Boolean(keyword)}
           retry={() => void reloadList()}
           clear={() => setQuery('')}
-          emptyDescription="在首页打开工具，聊过的对话会出现在这里。"
-          searchTitle="没有找到相关记录"
-          searchDescription="换个关键词，或者切换到「全部」再看看。"
+          emptyDescription="通过首页打开工具后，对话记录将显示在此处。"
+          searchTitle="未找到相关记录"
+          searchDescription="请更换关键词，或切换到「全部」查看。"
           action={
             onOpenTools && (
               <Button size="sm" onClick={onOpenTools} testId="sessions-empty-open-tools">
@@ -543,9 +543,9 @@ export function SessionsPage({
                     </td>
                     <td className="v2-sessions-dir">
                       {missingWorkspace ? (
-                        <span className="v2-sessions-dir-gone" title="这个文件夹已经不在了" data-testid={`sessions-missing-${session.id}`}>
+                        <span className="v2-sessions-dir-gone" title="该文件夹已不存在" data-testid={`sessions-missing-${session.id}`}>
                           <TriangleAlert size={13} aria-hidden="true" />
-                          <span className="xm-visually-hidden">这个文件夹已经不在了：</span>
+                          <span className="xm-visually-hidden">该文件夹已不存在：</span>
                           <span>{session.cwd || '未记录文件夹'}</span>
                         </span>
                       ) : (
@@ -662,7 +662,7 @@ export function SessionsPage({
             {selected.cwdExists === false && (
               <p className="v2-session-detail-gone" role="note">
                 <TriangleAlert size={15} aria-hidden="true" />
-                <span>项目文件夹 {selected.cwd} 已经不在了，接不上上次的对话。</span>
+                <span>项目文件夹 {selected.cwd} 已不存在，无法继续上次的对话。</span>
               </p>
             )}
             <ResultNotice
@@ -706,7 +706,7 @@ export function SessionsPage({
         )}
         {selected && !selected.detailAvailable && (
           <p className="v2-transcript-missing" data-testid="session-detail-summary-only">
-            这条记录只有摘要，对话原文已经不在这台电脑上了
+            该记录仅有摘要，对话原文已不在本机
           </p>
         )}
         <ResultNotice error={detailResource.error} detail={detailResource.detail} />
@@ -734,7 +734,7 @@ export function SessionsPage({
                       {message.role !== 'user' && <BrandIcon tool={selected?.provider} size={14} />}
                       <p>
                         <span className="xm-visually-hidden">
-                          {message.role === 'user' ? '你' : message.role === 'assistant' ? 'AI' : message.role}：
+                          {message.role === 'user' ? '您' : message.role === 'assistant' ? 'AI' : message.role}：
                         </span>
                         {message.text}
                       </p>
@@ -768,13 +768,13 @@ export function SessionsPage({
         body={
           <>
             <p>
-              会把这条对话从这台电脑上删掉，里面粘贴过的代码、密码和聊天内容会一起消失，删了就找不回来。
+              将从本机删除该对话，其中粘贴过的代码、密码和聊天内容将一并删除，且无法恢复。
             </p>
-            <p>只删这一条，不影响别的记录和你的项目文件。想留一份的话，先点「导出对话」。</p>
+            <p>仅删除此条，不影响其他记录及项目文件。如需保留，请先点击「导出对话」。</p>
           </>
         }
         okLabel="彻底删除"
-        cancelLabel="先不删"
+        cancelLabel="暂不删除"
         danger
         loading={operation.busy === 'delete-session'}
         onClose={() => setDeleting(null)}

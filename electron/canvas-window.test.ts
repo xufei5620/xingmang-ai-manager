@@ -2813,9 +2813,9 @@ describe('a canvas that stops responding', () => {
     expect(electronMocks.showMessageBox).toHaveBeenCalledOnce()
     expect(electronMocks.showMessageBox).toHaveBeenCalledWith(window, {
       type: 'warning',
-      title: '界面没有响应',
-      message: '无限画布暂时没有响应。',
-      detail: '可以再等一会儿，画布通常会自己恢复。重新加载只会重启画布，正在进行的安装、下载和已保存的设置都不受影响，但画布上还没保存的改动会丢失。',
+      title: '界面无响应',
+      message: '无限画布暂时无响应。',
+      detail: '可稍候片刻，画布通常会自动恢复。重新加载仅会重启画布，正在进行的安装、下载和已保存的设置均不受影响，但画布上尚未保存的改动将丢失。',
       buttons: ['继续等待', '重新加载'],
       defaultId: 0,
       cancelId: 0,

@@ -551,6 +551,33 @@ public static class XingMangCodexAppActivation {
 '@
 [XingMangCodexAppActivation]::Activate($env:XINGMANG_CODEX_APP_ID, $env:XINGMANG_CODEX_ARGS)`
 
+/**
+ * 0x80270254 (E_APPLICATION_NOT_REGISTERED, "This app does not support the
+ * contract specified or is not installed") from ActivateApplication. .NET
+ * appends the code to the COMException text in every UI language
+ * ("(Exception from HRESULT: 0x80270254)" / "(异常来自 HRESULT:0x80270254)"),
+ * so the hex form is what survives localisation.
+ */
+const codexDesktopActivationNotRegisteredPattern = /0x80270254(?![0-9a-f])/i
+
+/**
+ * Did any layer of this activation failure carry 0x80270254? The wrappers
+ * above cut their own message to 500 characters, and PowerShell may put a
+ * CLIXML preamble in front of the error, so the code can sit only on the
+ * execFile error's stderr further down the cause chain.
+ */
+export function isCodexDesktopActivationNotRegistered(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 6 && current && typeof current === 'object'; depth += 1) {
+    const record = current as { message?: unknown; stderr?: unknown; cause?: unknown }
+    for (const text of [record.message, record.stderr]) {
+      if (typeof text === 'string' && codexDesktopActivationNotRegisteredPattern.test(text)) return true
+    }
+    current = record.cause
+  }
+  return false
+}
+
 export function parseCodexDesktopActivationProcessId(output: string): number | null {
   const normalized = output.trim()
   if (!/^\d+$/.test(normalized)) return null

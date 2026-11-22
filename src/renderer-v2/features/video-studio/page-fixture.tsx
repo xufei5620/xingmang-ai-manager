@@ -35,7 +35,7 @@ const resumes = new Map<string, Array<{ resolve: (clip: AiVideoClip | null) => v
 // 还没交给服务端的请求：停下时主进程回「不会照样出」。没列在这里的，停下时都当已经交出去、钱扣了。
 const unsent = new Set<string>()
 const library = new Map<string, ArrayBuffer>()
-// 「让 AI 画一张」发出去、还没回的画图请求。
+// 「AI 生成图片」发出去、还没回的画图请求。
 const drawings = new Map<string, { input: AiChatImageInput, resolve: (assets: AiChatAsset[]) => void, reject: (reason: Error) => void }>()
 let exported: ArrayBuffer | null = null
 let assetCounter = 0
@@ -65,7 +65,7 @@ const priceList: AccountPriceList = query.get('prices') === '1'
   ] }
   : { rows: [] }
 const groups = [{ name: 'GPT', description: '聊天', ratio: 1, recommended: true }, { name: '图片模型', description: '图片和视频', ratio: 1 }]
-const groupModels: Record<string, string[]> = { GPT: ['gpt-5.6-sol', 'claude-test'], 图片模型: ['gpt-image-2', 'grok-imagine-video-1.5', 'minimax-h3-base'] }
+const groupModels: Record<string, string[]> = { GPT: ['gpt-5.6-sol', 'claude-test'], 图片模型: ['gpt-image-2', 'gemini-3.1-flash-image', 'grok-imagine-video-1.5', 'minimax-h3-base'] }
 function record(method: string, input?: unknown) { calls.push({ method, input }) }
 function nextAssetId(): string {
   assetCounter += 1

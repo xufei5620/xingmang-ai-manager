@@ -20,6 +20,8 @@ export function parseSettingsUpdate(value: unknown, platform: NodeJS.Platform = 
   const workspace = value.workspace === undefined
     ? undefined
     : requiredWorkspacePath(value.workspace, platform)
+  // 只说「是设置页那一行换的」，记哪一刻由 settings:save 处理器定（Q1）；没带 workspace 的不算数。
+  const workspaceChosen = optionalBoolean(value.workspaceChosen, '项目文件夹设置')
   const checkUpdatesOnStartup = optionalBoolean(value.checkUpdatesOnStartup, '设置')
   const runDiagnosticsOnStartup = optionalBoolean(value.runDiagnosticsOnStartup, '设置')
   const sidebarMoreExpanded = optionalBoolean(value.sidebarMoreExpanded, '侧边栏展开状态')
@@ -79,6 +81,7 @@ export function parseSettingsUpdate(value: unknown, platform: NodeJS.Platform = 
   return {
     version: 2,
     ...(workspace !== undefined ? { workspace } : {}),
+    ...(workspace !== undefined && workspaceChosen === true ? { workspaceChosen: true } : {}),
     ...(value.theme !== undefined ? { theme: value.theme } : {}),
     ...(checkUpdatesOnStartup !== undefined ? { checkUpdatesOnStartup } : {}),
     ...(runDiagnosticsOnStartup !== undefined ? { runDiagnosticsOnStartup } : {}),

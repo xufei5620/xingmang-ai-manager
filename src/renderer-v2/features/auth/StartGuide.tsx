@@ -112,7 +112,7 @@ export interface StartGuideProps {
   onRegister?: () => void
   /**
    * chooseFolder：「选择其他文件夹…」那一下，弹选择窗口（只对命令行工具有意义）。缺省 = 跟首页那颗「打开」
-   * 一样落在 opensIn 说的地方。回 false = 没打开（选文件夹时关了窗口、「先不打开」），引导停在这一步。
+   * 一样落在 opensIn 说的地方。回 false = 没打开（选文件夹时关了窗口、「暂不打开」），引导停在这一步。
    */
   onLaunch: (route: GuideRoute, chooseFolder?: boolean) => Promise<boolean | void>
   /** landing：走完以后进哪一页。「前往对话」进聊天页，「做图、做视频」进视频剪辑页，「进入首页」「打开 X」「前往充值」都先回首页。 */
