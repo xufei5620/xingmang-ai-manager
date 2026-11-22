@@ -216,6 +216,8 @@ export function remoteWorkspaceList(settings: Pick<CodexRemoteSettings, 'workspa
 export class CodexRemoteStore {
   private writeQueue: Promise<void> = Promise.resolve()
   private settings: CodexRemoteSettings | null = null
+  /** 第一次读盘还没回来时，后来的读和改都等这一次，不各读各的（M15）。 */
+  private loading: Promise<CodexRemoteSettings> | null = null
   /** Linux 没有密钥环时凭据只留在这次运行的内存里。 */
   private readonly memoryCredentials = new Map<RemoteChannelId, string>()
 
@@ -254,8 +256,18 @@ export class CodexRemoteStore {
    * 后者抛 settingsUnreadableMessage、什么都不记，免得把读失败当成空设置存着，下一次改开关整份写回去。
    * 文件读出来了但内容坏了，照旧当没设过（parseCodexRemoteSettings 的口径），不然这份设置永远改不了。
    */
-  private async loadSettings(): Promise<CodexRemoteSettings> {
-    if (this.settings) return this.settings
+  private loadSettings(): Promise<CodexRemoteSettings> {
+    if (this.settings) return Promise.resolve(this.settings)
+    // 各读各的时，先开始、后读完的那次会把中间刚写好的设置盖回盘上的旧样子（M15）：同一时间只读一次盘。
+    if (!this.loading) {
+      this.loading = this.readSettingsFile().finally(() => {
+        this.loading = null
+      })
+    }
+    return this.loading
+  }
+
+  private async readSettingsFile(): Promise<CodexRemoteSettings> {
     let content: string | null
     try {
       content = await readSafeUtf8File(this.settingsPath(), settingsLabel, maxSettingsBytes)
