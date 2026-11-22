@@ -353,13 +353,13 @@ function renameIfPresentSync(source: string, destination: string): void {
 export function describeRuntimeLogWriteFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined
-  if (/不能经过符号链接或目录联接/.test(message)) return '日志所在的文件夹被搬到了别的位置'
-  if (code === 'ENOSPC' || /ENOSPC|no space left/i.test(message)) return '磁盘满了'
+  if (/不能经过符号链接或目录联接/.test(message)) return '日志所在的文件夹已被移动到其他位置'
+  if (code === 'ENOSPC' || /ENOSPC|no space left/i.test(message)) return '磁盘已满'
   if (code === 'EACCES' || code === 'EPERM' || /EACCES|EPERM|permission denied|operation not permitted/i.test(message)) {
-    return '没有权限写入日志文件夹'
+    return '无权写入日志文件夹'
   }
-  if (code === 'EBUSY' || /EBUSY|resource busy or locked/i.test(message)) return '日志文件被别的程序占用了'
-  return '写入日志文件时出错了'
+  if (code === 'EBUSY' || /EBUSY|resource busy or locked/i.test(message)) return '日志文件已被其他程序占用'
+  return '写入日志文件时出错'
 }
 
 export class RuntimeLogStore {

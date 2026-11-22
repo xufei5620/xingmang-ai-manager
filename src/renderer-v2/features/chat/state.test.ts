@@ -824,7 +824,7 @@ describe('v2 chat attached text files', () => {
 
   it('shows the main process words for a failed pick and a fallback for English ones', () => {
     expect(fileAttachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-text-files': Error: 该文件无法读取，可能已被其他软件打开，请关闭相关软件后重试。"))).toBe('该文件无法读取，可能已被其他软件打开，请关闭相关软件后重试。')
-    expect(fileAttachmentErrorMessage(new Error('请先登录星芒账号'))).toBe('请先登录，再加文件')
+    expect(fileAttachmentErrorMessage(new Error('请先登录星芒账号'))).toBe('请先登录后再添加文件')
     expect(fileAttachmentErrorMessage(new Error('EPERM: operation not permitted'))).toBe('文件添加失败，请重试')
   })
 

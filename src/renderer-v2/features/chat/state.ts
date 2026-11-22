@@ -472,7 +472,7 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   let files: AiChatTextFile[] = []
   if (input.retryId) {
     const index = history.findIndex((message) => message.id === input.retryId && message.role === 'assistant')
-    if (index < 1) throw new Error('找不到要重新生成的回复')
+    if (index < 1) throw new Error('未找到要重新生成的回复')
     settings = history[index].settings ?? settings
     assistantId = input.retryId
     history = history.slice(0, index)
@@ -482,7 +482,7 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
     files = lastUser?.files ?? []
   } else if (input.editId) {
     const index = history.findIndex((message) => message.id === input.editId && message.role === 'user')
-    if (index < 0) throw new Error('找不到要编辑的消息')
+    if (index < 0) throw new Error('未找到要编辑的消息')
     images = history[index].assets ?? []
     files = history[index].files ?? []
     history = [...history.slice(0, index), { ...history[index], content: prompt }]
@@ -606,7 +606,7 @@ export function attachmentErrorMessage(error: unknown): string {
 /** 选文件失败时同选图：主进程的中文原话上屏，英文的换成兜底句。 */
 export function fileAttachmentErrorMessage(error: unknown): string {
   const message = userFacingErrorMessage(error)
-  if (/请先登录/.test(message)) return '请先登录，再加文件'
+  if (/请先登录/.test(message)) return '请先登录后再添加文件'
   return speaksChinese(message) ? redactSecretPatterns(message) : '文件添加失败，请重试'
 }
 

@@ -236,7 +236,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const imageLimit = videoMode ? 1 : chatLimits.imagesPerMessage
   const imagesBlocked = draftImages.length > 0 && (!seesImages || draftImages.length > imageLimit)
   const imagesBlockedMessage = textMode ? noImageModelMessage : videoMode ? seesImages ? videoStartImageLimitMessage : noVideoStartImageMessage : noImageEditModelMessage
-  const attachTitle = videoMode ? '添加开头图' : !seesImages ? textMode ? '当前模型不支持识别图片，请更换支持图片的模型后发送' : '当前模型不支持图片编辑，请更换支持图片编辑的模型后再添加图片' : draftImages.length >= chatLimits.imagesPerMessage ? `每条消息最多附带 ${chatLimits.imagesPerMessage} 张图片` : textMode ? '加图片（也可以直接粘贴截图）' : '加参考图（也可以直接粘贴截图）'
+  const attachTitle = videoMode ? '添加开头图' : !seesImages ? textMode ? '当前模型不支持识别图片，请更换支持图片的模型后发送' : '当前模型不支持图片编辑，请更换支持图片编辑的模型后再添加图片' : draftImages.length >= chatLimits.imagesPerMessage ? `每条消息最多附带 ${chatLimits.imagesPerMessage} 张图片` : textMode ? '添加图片（也可直接粘贴截图）' : '添加参考图（也可直接粘贴截图）'
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     if (!shouldPasteScreenshot(event.clipboardData)) return
     // 截图只在主进程从剪贴板里读，这里只负责拦下默认粘贴。
@@ -511,7 +511,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
             {/* 右边这几个按钮是一组：一行放不下时整组换到下一行、还靠右，不会只剩发送按钮掉到左下角。 */}
             <span className="chat-compose-actions">
             <Button variant="ghost" size="sm" icon={Bookmark} title="保存常用语，点击即可填入输入框" onClick={() => setPhrasesOpen(true)} testId="chat-phrases-open">常用</Button>
-            {textMode && <Button variant="ghost" size="sm" icon={Paperclip} aria-label="加文件" title={filesFull ? `每条消息最多附带 ${AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage} 个文件` : '加文字类的文件（txt、md、csv、json、代码、日志）'} loading={chat.attaching} disabled={pending || filesFull} onClick={() => void chat.pickFiles()} testId="chat-attach-file" />}
+            {textMode && <Button variant="ghost" size="sm" icon={Paperclip} aria-label="添加文件" title={filesFull ? `每条消息最多附带 ${AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage} 个文件` : '添加文本类文件（txt、md、csv、json、代码、日志）'} loading={chat.attaching} disabled={pending || filesFull} onClick={() => void chat.pickFiles()} testId="chat-attach-file" />}
             <Button variant="ghost" size="sm" icon={ImagePlus} aria-label="加图片" title={attachTitle} loading={chat.attaching} disabled={pending || !seesImages || draftImages.length >= imageLimit} onClick={() => void chat.pickImages()} testId="chat-attach-image" />
             {pending ? <Button size="sm" icon={Square} aria-label="停止生成" title="停止生成" loading={stopping} onClick={() => { if (activeRequest?.settings?.mode === 'image') setConfirmation({ kind: 'stop' }); else void stop() }} testId="chat-stop" /> : <Button variant="primary" size="sm" icon={conversation.settings.mode === 'image' ? ImageIcon : videoMode ? Clapperboard : ArrowUp} aria-label={conversation.settings.mode === 'image' ? '生成图片' : videoMode ? '生成视频' : '发送消息'} title={conversation.settings.mode === 'image' ? '生成图片' : videoMode ? '生成视频' : '发送消息'} disabled={sendDisabled} onClick={submit} testId="chat-send" />}
             </span>
