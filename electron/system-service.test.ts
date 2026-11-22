@@ -4251,7 +4251,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
       fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm', 'lib', 'node_modules', '@openai', 'codex',
     )
 
-    await expect(service.installCli('codex', target)).rejects.toThrow('Codex CLI 的主程序没有下载完整')
+    await expect(service.installCli('codex', target)).rejects.toThrow('Codex CLI 的主程序未能完整下载')
     expect(target.send).not.toHaveBeenCalledWith(
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
@@ -5033,7 +5033,7 @@ describe('npm install progress reporting', () => {
     if (process.arch !== 'arm64') {
       expect(target.send).toHaveBeenCalledWith(
         'runtime:node-install-progress',
-        expect.objectContaining({ message: expect.stringContaining('这台电脑是 ARM 芯片') }),
+        expect.objectContaining({ message: expect.stringContaining('本机为 ARM 芯片') }),
       )
     }
     await service.inspectWindowsProcessor()

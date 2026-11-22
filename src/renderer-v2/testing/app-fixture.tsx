@@ -904,7 +904,7 @@ const methods = {
     if (query.has('uninstallHandOff')) return { outcome: 'delegated' as const, previousVersion }
     // 程序已经卸掉，只剩几个旧版本文件删不掉（Claude Code 还开着）。
     if (query.has('uninstallLeftovers')) {
-      const reason = 'Claude Code 已卸载，但有 1 个旧版本文件没能删除，可能还有 Claude Code 在运行。'
+      const reason = 'Claude Code 已卸载，但有 1 个旧版本文件未能删除，可能仍有 Claude Code 在运行。'
       return { outcome: 'manual-required' as const, previousVersion, error: reason,
         manualHelp: { reason, manualCommand: 'Remove-Item -LiteralPath "C:\\Users\\Fixture\\.local\\share\\claude\\versions\\1.2.3"', cleanUpAvailable: true } }
     }

@@ -3450,7 +3450,7 @@ test('a switch goes on to install when the uninstall leaves old version files be
   try {
     const { row, switched } = await startManagedSwitch(page)
     // 程序已经卸掉，只剩被占用的旧版本文件：照常装上，清理说明照旧弹出来。
-    await page.getByTestId('manual-uninstall-reason').getByText('可能还有 Claude Code 在运行', { exact: false }).waitFor()
+    await page.getByTestId('manual-uninstall-reason').getByText('可能仍有 Claude Code 在运行', { exact: false }).waitFor()
     await row.getByText('v2.0.0', { exact: false }).waitFor()
     assert.deepEqual(await switched(), [
       { method: 'uninstallCli', args: ['claude', { reinstall: true }] },

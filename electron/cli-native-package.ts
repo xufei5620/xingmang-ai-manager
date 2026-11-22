@@ -71,7 +71,7 @@ export async function findMissingCliNativePackage(
 
 /** 面向客户的那句话：不出现包名，只说怎么办。 */
 export function cliNativePackageMissingMessage(toolName: string): string {
-  return `${toolName} 的主程序没有下载完整，多半是网络不稳定。请关掉代理或换个网络后再装一次`
+  return `${toolName} 的主程序未能完整下载，通常是网络不稳定所致。请关闭代理或更换网络后重新安装`
 }
 
 // 读已装 npm 包 package.json 里的版本号：更新前记下旧版本、换进去之前核对暂存那份、查 npm 自己的版本都用它。

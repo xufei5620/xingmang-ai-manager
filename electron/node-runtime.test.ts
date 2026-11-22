@@ -1330,6 +1330,9 @@ describe('the sentence a failed Node.js install leaves on screen', () => {
       .toBe('Node.js 自动安装失败：安装完成后未找到可用的 Node.js。请重启电脑后再次检查；如仍无法使用，请联系客服。')
     expect(describeNodeInstallFailure([new Error('fetch failed'), new Error('命令执行失败（退出码 1603）：powershell.exe')]))
       .toMatch(/^Node\.js 自动安装失败：Windows Installer 安装失败（错误 1603）。请先重启 Windows/)
+    // 1618 那句排在网络不通前面；改过开头的字以后排序那道正则没跟上，就落到最后一档「原因已经记进运行日志」。
+    expect(describeNodeInstallFailure([new Error('fetch failed'), new Error('命令执行失败（退出码 1618）：powershell.exe')]))
+      .toBe('Node.js 自动安装失败：Windows 正在安装其他程序（错误 1618），Node.js 尚未安装。请待其安装完成后再点击一键安装；如持续出现，请先重启电脑后重试。')
     expect(describeNodeInstallFailure([new Error('something odd')]))
       .toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
     expect(describeNodeInstallFailure([])).toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')

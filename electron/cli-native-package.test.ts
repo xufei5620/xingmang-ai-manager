@@ -129,7 +129,7 @@ describe('findMissingCliNativePackage', () => {
 describe('cliNativePackageMissingMessage', () => {
   it('tells the customer what to do without naming packages', () => {
     const message = cliNativePackageMissingMessage('Claude Code')
-    expect(message).toContain('换个网络')
+    expect(message).toContain('更换网络')
     expect(message).not.toMatch(/npm|optional|native|@/i)
   })
 })

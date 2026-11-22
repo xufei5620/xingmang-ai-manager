@@ -471,7 +471,8 @@ function withFullStop(sentence: string): string {
   return /[。！？]$/.test(sentence) ? sentence : `${sentence}。`
 }
 
-const windowsInstallerSentences = /^(?:已取消管理员授权|未获得管理员权限|Windows Installer|Windows 正在安装别的程序)/
+// 1618 那句开头 11-22 由「Windows 正在安装别的程序」改成「Windows 正在安装其他程序」（界面文案正式化第 13 批），两种都认。
+const windowsInstallerSentences = /^(?:已取消管理员授权|未获得管理员权限|Windows Installer|Windows 正在安装(?:别的|其他)程序)/
 
 /**
  * 只认 runUacProcess 抛出来的那两整句，不认 errorText 按「取消」「cancelled」猜出来的那句：

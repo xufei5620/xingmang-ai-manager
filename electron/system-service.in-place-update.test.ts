@@ -335,7 +335,7 @@ describe('isMachineBoundNpmFailure', () => {
       '命令执行失败（退出码 1）：node（ECONNRESET；network aborted）',
       '命令执行失败（退出码 1）：node（E500；500 Internal Server Error）',
       '下载长时间未完成，已超时中止',
-      'Codex CLI 的主程序没有下载完整，多半是网络不稳定。请关掉代理或换个网络后再装一次',
+      'Codex CLI 的主程序未能完整下载，通常是网络不稳定所致。请关闭代理或更换网络后重新安装',
     ]) {
       expect(isMachineBoundNpmFailure(detail, true)).toBe(false)
     }
@@ -378,7 +378,7 @@ describe.runIf(process.platform !== 'win32')('updating a CLI in place on Windows
       downloadHasPlatformBuild: () => false,
     })
 
-    await expect(fixture.service.installCli('codex', fixture.target)).rejects.toThrow('Codex CLI 的主程序没有下载完整')
+    await expect(fixture.service.installCli('codex', fixture.target)).rejects.toThrow('Codex CLI 的主程序未能完整下载')
 
     expect(fixture.commands).toEqual([`download ${officialRegistry}`, `download ${mirrorRegistry}`])
     expect(fixture.installedVersion()).toBe(previousVersion)

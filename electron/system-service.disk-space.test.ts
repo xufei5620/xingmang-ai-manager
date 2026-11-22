@@ -182,7 +182,7 @@ describe('installing over a Mac CLI that cannot be recognised', () => {
     const error = await fixture.service.installCli('codex', fixture.target).catch((reason: unknown) => reason)
 
     expect(String(error)).toContain('磁盘空间不足')
-    expect(String(error)).not.toContain('不会再另装一份')
+    expect(String(error)).not.toContain('不会重复安装')
     expect(fixture.readDiskSpace).toHaveBeenCalled()
   })
 
