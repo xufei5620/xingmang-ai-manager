@@ -2844,7 +2844,6 @@ if (!hasSingleInstanceLock) {
         canvasController.setAppearance({ theme, reducedMotion: appearance.reducedMotion })
       },
       openCanvasWindow: () => canvasController.open(),
-      openCanvasAssetLibrary: () => canvasController.openAssetLibrary(),
       listCanvasProjects: () => canvasController.listProjects(),
       openCanvasProject: (projectId) => canvasController.openProject(projectId),
       xingmangAiSkill: {

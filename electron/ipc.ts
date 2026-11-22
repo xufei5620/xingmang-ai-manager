@@ -251,8 +251,6 @@ export interface IpcRegistrationOptions {
   // has to depend on canvas-window.ts's full surface just to delegate one
   // button click.
   openCanvasWindow(): Promise<void>
-  // Same delegation for the canvas home page's read-only library (「看全部作品」).
-  openCanvasAssetLibrary(): Promise<void>
   // 「创作」左边那一列里的画布项目（融合第 1 步）：列出当前账号的项目、把画布开在其中一个上。同样只是转交，
   // 认账号、认编号、换项目前的关闭确认都在 canvas-window.ts。缺省（早于它的测试）= 报「未就绪」。
   listCanvasProjects?(): Promise<CanvasProjectListEntry[]>
