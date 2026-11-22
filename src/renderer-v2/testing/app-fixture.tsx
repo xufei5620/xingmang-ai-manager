@@ -1120,6 +1120,17 @@ const methods = {
   getAccountPriceList: async () => ({ rows: query.has('chatVideo') ? [{ model: 'grok-imagine-video-1.5', group: 'fixture-group', kind: 'call' as const, perCall: 0.25 }] : [] }),
   listCanvasProjects: async () => structuredClone(canvasProjects),
   openCanvasProject: async () => true,
+  // 「添加到画布」：选了现成的项目就回它的名字；新建的加进清单（左边那一列跟着多一行）。清单里没有的编号照主进程那句话拒绝。
+  addImageToCanvasProject: async (input) => {
+    if ('projectId' in input) {
+      const project = canvasProjects.find((entry) => entry.id === input.projectId)
+      if (!project) throw new Error('未找到该画布项目，可能已归档或删除。')
+      return { projectId: project.id, projectName: project.name, created: false }
+    }
+    const created = { id: `fixture-canvas-new-${canvasProjects.length + 1}`, name: input.newProjectName, updatedAt: Date.now() }
+    canvasProjects = [created, ...canvasProjects]
+    return { projectId: created.id, projectName: created.name, created: true }
+  },
   readVideoStudioProjects: async (scope) => {
     const stored = videoProjectFiles.get(scope)
     return { index: stored?.index ?? null, projects: [...(stored?.projects ?? [])].map(([key, content]) => ({ key, content })) }

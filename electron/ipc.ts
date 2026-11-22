@@ -96,6 +96,7 @@ import { registerAiLibraryHandlers } from './ipc/handlers/ai-library'
 import { registerAiVideoHandlers } from './ipc/handlers/ai-video'
 import { registerDataTransferHandlers } from './ipc/handlers/data-transfer'
 import type { AccountWorksTransfer } from './data-transfer-works'
+import type { CanvasProjectImageIntake } from './canvas-project-image-intake'
 import { registerCodexRemoteHandlers } from './ipc/handlers/codex-remote'
 import { registerCodexRemoteWeixinHandlers } from './ipc/handlers/codex-remote-weixin'
 
@@ -274,6 +275,9 @@ export interface IpcRegistrationOptions {
   // 认账号、认编号、换项目前的关闭确认都在 canvas-window.ts。缺省（早于它的测试）= 报「未就绪」。
   listCanvasProjects?(): Promise<CanvasProjectListEntry[]>
   openCanvasProject?(projectId: unknown): Promise<boolean>
+  // 「添加到画布」（融合第 5 步的「放进画布」）：把当前账号的一张图抄一份进他选的画布项目的素材库。认图、认项目、
+  // 怎么抄都在 canvas-project-image-intake.ts；入参先由处理器按字段白名单认过。缺省 = 报「暂时无法添加」。
+  addImageToCanvasProject?: CanvasProjectImageIntake
   // Backing store for the "记住密码" credential (account-credential-store.ts,
   // safeStorage-encrypted). Optional the same way accountService is: main.ts
   // always passes the real store; when absent (tests that predate it), the

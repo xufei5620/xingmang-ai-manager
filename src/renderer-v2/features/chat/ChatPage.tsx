@@ -30,6 +30,7 @@ import { videoStudioAspectNames, videoStudioUnconfirmedWarning, type VideoStudio
 import { videoStudioAspects } from '../video-studio/timeline'
 import { videoStudioErrorMessage } from '../video-studio/useVideoStudio'
 import { createFilterOptions, filterCreateExtras, groupCreateList, resolveCreateFilter, type CreateExtraItem, type CreateExtraKind, type CreateFilter, type CreateKind, type CreateSelection } from '../create/list'
+import { AddToCanvasMenu, type CanvasIntakeProject } from '../create/canvas-intake'
 import './chat.css'
 
 const remarkPlugins = [remarkGfm]
@@ -71,6 +72,8 @@ export interface ChatPageCreate {
   notes?: readonly string[]
   /** 输入框的第三档「生成视频」（融合第 2 步）。不给就没有这一档。 */
   video?: ChatPageVideo
+  /** 生成的图下面的「添加到画布」（融合第 5 步）。不给就没有这个按钮。 */
+  canvas?: ChatPageCanvas
   /** 左下角的「作品库」和右边换上去的那一块（融合第 3 步）。不给就没有。 */
   library?: ChatPageLibrary
 }
@@ -114,6 +117,13 @@ export interface ChatPageVideo {
   openFilm: (id: string) => void
 }
 export type { ChatVideoMade }
+/** 「添加到画布」要「创作」页给的东西：有哪些画布项目，和把一张图抄进去的那一下（结果由它用右下角的提示说）。 */
+export interface ChatPageCanvas {
+  /** 菜单里列的画布项目，最近改过的在前。 */
+  projects: readonly CanvasIntakeProject[]
+  /** 把这张图抄一份进这个画布项目的素材库；projectId 是 null 就新建一个，名字取 description 开头的几个字。 */
+  addImage: (projectId: string | null, assetId: string, description: string) => void
+}
 export interface ChatPageCreateActions {
   open: (item: CreateExtraItem) => void
   /** 回到对话这边：点了一段对话，或点了「新建」。 */
@@ -304,6 +314,12 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     chat.animateImage(asset, asked?.content ?? '')
     focusComposer()
   }
+  // 「添加到画布」：新建项目时拿当初让它画这张图的那句话起名。
+  const addToCanvas = (messageId: string, assetId: string, projectId: string | null) => {
+    const index = conversation.messages.findIndex((message) => message.id === messageId)
+    const asked = conversation.messages.slice(0, Math.max(index, 0)).reverse().find((message) => message.role === 'user')
+    create?.canvas?.addImage(projectId, assetId, asked?.content ?? '')
+  }
   // 另存时保存框里默认用那句描述开头的几个字当文件名（主进程洗成干净的文件名），没有描述就用作品库原来的名字。
   const saveVideo = async (messageId: string) => {
     const source = chatVideoSource(conversation, messageId)
@@ -330,8 +346,8 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     if (value.kind === 'retry' && conversation.messages.find((message) => message.id === value.id)?.video) videoFeature?.refreshPrices()
     setConfirmation(value)
   }
-  latestMessageActions.current = { copyText: (text, done) => void copyText(text, done), preview: (asset, mine) => setPreview({ asset, mine }), reuseImage: (asset) => void chat.reuseImage(asset), animateImage, copyAsset: (assetId) => void task(() => api.copyAsset(assetId), '图片已复制'), saveAsset: (assetId) => void saveAsset(assetId), assetMenu: (assetId) => void task(() => api.assetMenu(assetId), ''), stopVideo: () => void stop(), saveVideo: (messageId) => void saveVideo(messageId), openVideo: (assetId) => void openVideo(assetId), composeVideo, confirm: confirmFromMessage, edit: setEditing, openAccount: (tab) => onOpenAccount?.(tab) }
-  const messageActions = useMemo<MessageActions>(() => ({ copyText: (text, done) => latestMessageActions.current?.copyText(text, done), preview: (asset, mine) => latestMessageActions.current?.preview(asset, mine), reuseImage: (asset) => latestMessageActions.current?.reuseImage(asset), animateImage: (messageId, asset) => latestMessageActions.current?.animateImage(messageId, asset), copyAsset: (assetId) => latestMessageActions.current?.copyAsset(assetId), saveAsset: (assetId) => latestMessageActions.current?.saveAsset(assetId), assetMenu: (assetId) => latestMessageActions.current?.assetMenu(assetId), stopVideo: () => latestMessageActions.current?.stopVideo(), saveVideo: (messageId) => latestMessageActions.current?.saveVideo(messageId), openVideo: (assetId) => latestMessageActions.current?.openVideo(assetId), composeVideo: (messageId, filmId) => latestMessageActions.current?.composeVideo(messageId, filmId), confirm: (value) => latestMessageActions.current?.confirm(value), edit: (value) => latestMessageActions.current?.edit(value), openAccount: (tab) => latestMessageActions.current?.openAccount(tab) }), [])
+  latestMessageActions.current = { copyText: (text, done) => void copyText(text, done), preview: (asset, mine) => setPreview({ asset, mine }), reuseImage: (asset) => void chat.reuseImage(asset), animateImage, addToCanvas, copyAsset: (assetId) => void task(() => api.copyAsset(assetId), '图片已复制'), saveAsset: (assetId) => void saveAsset(assetId), assetMenu: (assetId) => void task(() => api.assetMenu(assetId), ''), stopVideo: () => void stop(), saveVideo: (messageId) => void saveVideo(messageId), openVideo: (assetId) => void openVideo(assetId), composeVideo, confirm: confirmFromMessage, edit: setEditing, openAccount: (tab) => onOpenAccount?.(tab) }
+  const messageActions = useMemo<MessageActions>(() => ({ copyText: (text, done) => latestMessageActions.current?.copyText(text, done), preview: (asset, mine) => latestMessageActions.current?.preview(asset, mine), reuseImage: (asset) => latestMessageActions.current?.reuseImage(asset), animateImage: (messageId, asset) => latestMessageActions.current?.animateImage(messageId, asset), addToCanvas: (messageId, assetId, projectId) => latestMessageActions.current?.addToCanvas(messageId, assetId, projectId), copyAsset: (assetId) => latestMessageActions.current?.copyAsset(assetId), saveAsset: (assetId) => latestMessageActions.current?.saveAsset(assetId), assetMenu: (assetId) => latestMessageActions.current?.assetMenu(assetId), stopVideo: () => latestMessageActions.current?.stopVideo(), saveVideo: (messageId) => latestMessageActions.current?.saveVideo(messageId), openVideo: (assetId) => latestMessageActions.current?.openVideo(assetId), composeVideo: (messageId, filmId) => latestMessageActions.current?.composeVideo(messageId, filmId), confirm: (value) => latestMessageActions.current?.confirm(value), edit: (value) => latestMessageActions.current?.edit(value), openAccount: (tab) => latestMessageActions.current?.openAccount(tab) }), [])
   const exportConversation = async (id: string) => {
     const item = chat.state.conversations.find((candidate) => candidate.id === id)
     if (!item) return
@@ -486,7 +502,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
         {!conversation.messages.length && create?.intro?.(chat.state.conversations.length)}
         {!conversation.messages.length && <div className="chat-empty" data-start={create?.cards ? 'true' : undefined} data-testid="chat-empty"><Logo kind="symbol" height={create?.cards ? 44 : 56} /><h2>今天想创作什么？</h2><p>{videoFeature?.access === 'ready' ? '提问、写作、绘图、制作视频均可在下方输入框中完成，额度与工具共用同一账号。' : '提问、写作、绘图均可在下方输入框中完成，额度与工具共用同一账号。'}</p>{textMode && !conversation.draft.trim() && <div className="chat-empty-examples">{chatExamples.map((text, index) => <Button key={text} size="sm" onClick={() => fillExample(text)} testId={`chat-example-${index + 1}`}>{text}</Button>)}</div>}</div>}
         {!conversation.messages.length && create?.cards}
-        {conversation.messages.map((message) => <ChatMessageItem key={message.id} message={message} model={message.settings?.model ?? conversation.settings.model} pending={pending} offlineNotice={shouldShowOfflineReplyNotice(message, offline)} canAnimate={videoReady} videoProgress={message.video && message.requestId ? chat.videoProgress[message.requestId] : undefined} videoStopping={stopping && Boolean(message.video) && message.status === 'pending'} videoFilms={message.video?.clip && videoReady ? videoFeature?.films : undefined} canRetry={chat.groups.some((group) => group.name === (message.settings?.group ?? conversation.settings.group))} canOpenAccount={Boolean(onOpenAccount)} markdownComponents={markdownComponents} replyComponents={replyComponents} actions={messageActions} />)}
+        {conversation.messages.map((message) => <ChatMessageItem key={message.id} message={message} model={message.settings?.model ?? conversation.settings.model} pending={pending} offlineNotice={shouldShowOfflineReplyNotice(message, offline)} canAnimate={videoReady} videoProgress={message.video && message.requestId ? chat.videoProgress[message.requestId] : undefined} videoStopping={stopping && Boolean(message.video) && message.status === 'pending'} videoFilms={message.video?.clip && videoReady ? videoFeature?.films : undefined} canvasProjects={message.role === 'assistant' && message.assets?.length ? create?.canvas?.projects : undefined} canRetry={chat.groups.some((group) => group.name === (message.settings?.group ?? conversation.settings.group))} canOpenAccount={Boolean(onOpenAccount)} markdownComponents={markdownComponents} replyComponents={replyComponents} actions={messageActions} />)}
       </div>
       <div className="chat-composer">
         {shouldShowLengthNotice(conversation) && !isConversationTooLongMessage(chat.error) && <div className="chat-length-notice" role="status" data-testid="chat-length-notice"><span>当前对话已较长。每次发送时，之前的内容会一并发送给 AI，对话越长，每次回复的费用通常越高、速度越慢。如需切换话题，请点击「新对话」，已输入的内容将一并带入。</span><Button size="xs" icon={Plus} disabled={pending} onClick={chat.continueInNew} testId="chat-length-new">新对话</Button><Button size="xs" variant="ghost" onClick={chat.dismissLengthNotice} testId="chat-length-dismiss">知道了</Button></div>}
@@ -534,7 +550,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   </section>
 }
 
-interface MessageActions { copyText: (text: string, done?: string) => void; preview: (asset: AiChatAsset, mine: boolean) => void; reuseImage: (asset: AiChatAsset) => void; animateImage: (messageId: string, asset: AiChatAsset) => void; stopVideo: () => void; saveVideo: (messageId: string) => void; openVideo: (assetId: string) => void; composeVideo: (messageId: string, filmId: string | null) => void; copyAsset: (assetId: string) => void; saveAsset: (assetId: string) => void; assetMenu: (assetId: string) => void; confirm: (confirmation: NonNullable<Confirmation>) => void; edit: (editing: { id: string; text: string }) => void; openAccount: NonNullable<ChatPageProps['onOpenAccount']> }
+interface MessageActions { copyText: (text: string, done?: string) => void; preview: (asset: AiChatAsset, mine: boolean) => void; reuseImage: (asset: AiChatAsset) => void; animateImage: (messageId: string, asset: AiChatAsset) => void; addToCanvas: (messageId: string, assetId: string, projectId: string | null) => void; stopVideo: () => void; saveVideo: (messageId: string) => void; openVideo: (assetId: string) => void; composeVideo: (messageId: string, filmId: string | null) => void; copyAsset: (assetId: string) => void; saveAsset: (assetId: string) => void; assetMenu: (assetId: string) => void; confirm: (confirmation: NonNullable<Confirmation>) => void; edit: (editing: { id: string; text: string }) => void; openAccount: NonNullable<ChatPageProps['onOpenAccount']> }
 interface ConversationActions { open: (id: string) => void; exportText: (id: string) => void; remove: (id: string) => void; rename: (id: string) => void; pin: (id: string, pinned: boolean) => void }
 interface ConversationListItemProps { item: Conversation; current: boolean; pageActive: boolean; actions: ConversationActions }
 type ExtraActions = Omit<ChatPageCreateActions, 'leave'>
@@ -567,7 +583,7 @@ const ExtraListItem = memo(function ExtraListItem({ item, current, locked, pageA
     : [{ label: '打开画布', icon: ArrowUpRight, testId: `create-canvas-open-${item.id}`, onSelect: () => actions.openCanvas(item.id) }]} /></div>
 })
 
-interface ChatMessageItemProps { message: ChatMessage; model: string; pending: boolean; offlineNotice: boolean; canAnimate: boolean; videoProgress?: ChatVideoProgress; videoStopping: boolean; videoFilms?: readonly ChatVideoFilm[]; canRetry: boolean; canOpenAccount: boolean; markdownComponents: Components; replyComponents: Components; actions: MessageActions }
+interface ChatMessageItemProps { message: ChatMessage; model: string; pending: boolean; offlineNotice: boolean; canAnimate: boolean; videoProgress?: ChatVideoProgress; videoStopping: boolean; videoFilms?: readonly ChatVideoFilm[]; canvasProjects?: readonly CanvasIntakeProject[]; canRetry: boolean; canOpenAccount: boolean; markdownComponents: Components; replyComponents: Components; actions: MessageActions }
 
 // Every keystroke in the composer rewrites the conversation's draft. Messages
 // keep their object identity through that, so a memoized row skips parsing its
@@ -578,7 +594,7 @@ function ChatFileCard({ file, children }: { file: AiChatTextFile; children?: Rea
   return <div className="chat-file" title={`${file.name} · ${detail}`} data-truncated={file.truncated || undefined}><FileText size={14} aria-hidden="true" /><span className="chat-file-name">{file.name}</span><small>· {detail}</small>{children}</div>
 }
 
-const ChatMessageItem = memo(function ChatMessageItem({ message, model, pending, offlineNotice, canAnimate, videoProgress, videoStopping, videoFilms, canRetry, canOpenAccount, markdownComponents, replyComponents, actions }: ChatMessageItemProps) {
+const ChatMessageItem = memo(function ChatMessageItem({ message, model, pending, offlineNotice, canAnimate, videoProgress, videoStopping, videoFilms, canvasProjects, canRetry, canOpenAccount, markdownComponents, replyComponents, actions }: ChatMessageItemProps) {
   const waiting = message.status === 'pending' || message.status === 'streaming'
   const clip = message.video?.clip
   const cutOffNotice = chatCutOffNotice(message)
@@ -587,7 +603,7 @@ const ChatMessageItem = memo(function ChatMessageItem({ message, model, pending,
     <div className="chat-message-main">
       {message.reasoning && <details className="chat-reasoning"><summary>思考过程 <ChevronDown size={13} aria-hidden="true" /></summary><div>{message.reasoning}</div><Button icon={Copy} size="xs" variant="ghost" aria-label="复制思考过程" title="复制思考过程" onClick={() => actions.copyText(message.reasoning)} /></details>}
       {(message.content || message.assets?.length || message.files?.length || clip || waiting) && <div className="chat-bubble">{message.files?.length ? <div className="chat-files" data-testid="chat-message-files">{message.files.map((file, index) => <ChatFileCard key={`${index}:${file.name}`} file={file} />)}</div> : null}{message.content ? message.role === 'assistant' ? <ReactMarkdown remarkPlugins={remarkPlugins} components={replyComponents}>{prepareChatMath(message.content)}</ReactMarkdown> : <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>{message.content}</ReactMarkdown> : waiting && (message.video ? <ChatVideoPending progress={videoProgress} stopping={videoStopping} onStop={actions.stopVideo} /> : <span className="chat-generating" role="status"><RefreshCw size={15} aria-hidden="true" />{message.settings?.mode === 'image' ? '正在生成图片' : message.reasoning ? '正在思考' : '正在生成'}</span>)}
-        {message.assets?.map((asset) => <div className="chat-asset" key={asset.assetId}><button type="button" className="chat-asset-preview" aria-label={message.role === 'user' ? '查看图片' : '查看生成图片'} onClick={() => actions.preview(asset, message.role === 'user')} onContextMenu={(event) => { event.preventDefault(); actions.assetMenu(asset.assetId) }}><ChatImage asset={asset} alt={message.role === 'user' ? '您发送的图片' : asset.revisedPrompt || '生成的图片'} missingAlt={missingAiAssetMessages.image} /></button><div className="chat-asset-actions">{message.role === 'assistant' && <Button size="xs" icon={Brush} variant="ghost" aria-label="基于此图继续编辑" title="基于此图继续编辑" disabled={pending} onClick={() => actions.reuseImage(asset)} testId="chat-asset-reuse" />}{message.role === 'assistant' && canAnimate && <Button size="xs" icon={Clapperboard} variant="ghost" title="以此图为开头生成视频，将切换至「生成视频」" disabled={pending} onClick={() => actions.animateImage(message.id, asset)} testId="chat-asset-animate">用此图生成视频</Button>}<Button size="xs" icon={Copy} variant="ghost" aria-label="复制图片" title="复制图片" onClick={() => actions.copyAsset(asset.assetId)} testId="chat-asset-copy" /><Button size="xs" icon={Download} variant="ghost" aria-label="另存图片" title="另存图片" onClick={() => actions.saveAsset(asset.assetId)} testId="chat-asset-save" /><Button size="xs" icon={MoreHorizontal} variant="ghost" aria-label="图片更多操作" title="图片更多操作" onClick={() => actions.assetMenu(asset.assetId)} testId="chat-asset-menu" />{asset.width && asset.height && <small>{asset.width} × {asset.height}</small>}</div></div>)}
+        {message.assets?.map((asset) => <div className="chat-asset" key={asset.assetId}><button type="button" className="chat-asset-preview" aria-label={message.role === 'user' ? '查看图片' : '查看生成图片'} onClick={() => actions.preview(asset, message.role === 'user')} onContextMenu={(event) => { event.preventDefault(); actions.assetMenu(asset.assetId) }}><ChatImage asset={asset} alt={message.role === 'user' ? '您发送的图片' : asset.revisedPrompt || '生成的图片'} missingAlt={missingAiAssetMessages.image} /></button><div className="chat-asset-actions">{message.role === 'assistant' && <Button size="xs" icon={Brush} variant="ghost" aria-label="基于此图继续编辑" title="基于此图继续编辑" disabled={pending} onClick={() => actions.reuseImage(asset)} testId="chat-asset-reuse" />}{message.role === 'assistant' && canAnimate && <Button size="xs" icon={Clapperboard} variant="ghost" title="以此图为开头生成视频，将切换至「生成视频」" disabled={pending} onClick={() => actions.animateImage(message.id, asset)} testId="chat-asset-animate">用此图生成视频</Button>}{message.role === 'assistant' && canvasProjects && <AddToCanvasMenu compact projects={canvasProjects} onPick={(projectId) => actions.addToCanvas(message.id, asset.assetId, projectId)} testId="chat-asset-canvas" />}<Button size="xs" icon={Copy} variant="ghost" aria-label="复制图片" title="复制图片" onClick={() => actions.copyAsset(asset.assetId)} testId="chat-asset-copy" /><Button size="xs" icon={Download} variant="ghost" aria-label="另存图片" title="另存图片" onClick={() => actions.saveAsset(asset.assetId)} testId="chat-asset-save" /><Button size="xs" icon={MoreHorizontal} variant="ghost" aria-label="图片更多操作" title="图片更多操作" onClick={() => actions.assetMenu(asset.assetId)} testId="chat-asset-menu" />{asset.width && asset.height && <small>{asset.width} × {asset.height}</small>}</div></div>)}
         {clip && <ChatVideoClip clip={clip} films={videoFilms} onCompose={(filmId) => actions.composeVideo(message.id, filmId)} onSave={() => actions.saveVideo(message.id)} onOpen={() => actions.openVideo(clip.assetId)} />}
       </div>}
       {offlineNotice && <p className="chat-message-note" role="status" data-testid="chat-message-offline">{offlineReplyNotice}</p>}

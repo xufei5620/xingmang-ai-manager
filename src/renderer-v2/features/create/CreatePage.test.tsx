@@ -57,7 +57,7 @@ describe('the pieces of the create page that are its own', () => {
     expect(text(html)).toContain('打开画布')
     expect(text(html)).toContain('画布在独立窗口中打开，运行期间可返回此处继续其他操作。')
     expect(text(html)).toContain('重命名、复制、归档和删除请在画布窗口的「项目中心」中操作。')
-    // 这一步没有「放进画布」，也不在这里改名、删除画布项目。
+    // 项目卡上只有「打开画布」一颗：往项目里放图的「添加到画布」在图下面，改名、删除画布项目也不在这里。
     expect(html.match(/<button/g)).toHaveLength(1)
     expect(html).not.toContain('放进画布')
   })

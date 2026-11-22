@@ -22,6 +22,7 @@ import { CanvasProjectWorks, CreateLibraryPane, LibraryPicker, measureLibraryVid
 import { libraryClipMade, libraryClipSource, libraryFilmAssetIds, libraryKindCount, type LibraryOrigin } from './library'
 import { createTimeText, type CreateExtraItem, type CreateExtraKind, type CreateSelection } from './list'
 import { useCreateLibrary } from './useCreateLibrary'
+import { canvasIntakeDoneMessage, canvasIntakeErrorMessage, canvasIntakeProjects, canvasIntakeRequest, sameCanvasIntakeProjects, type CanvasIntakeProject } from './canvas-intake'
 import './create.css'
 
 // 视频工作台连着拼片那一套（WebCodecs、后台线程）比较重，打开第一条视频时才读。
@@ -124,6 +125,9 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const canvas = useCanvasProjects(bridge, active)
   const canvasProjectsRef = useRef(canvas.projects)
   canvasProjectsRef.current = canvas.projects
+  const addingToCanvas = useRef(false)
+  // 提示上的「打开画布」可能过一会儿才点：点的时候用当时最新的那个 openCanvasProject。
+  const openCanvasProjectRef = useRef<(projectId: string) => void>(() => undefined)
   const owner = useLatestRequest()
   const [selected, setSelected] = useState<CreateSelection | null>(null)
   const [renaming, setRenaming] = useState<{ id: string, text: string } | null>(null)
@@ -151,6 +155,9 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const stableItems = useStableList(items)
   // 「添加到视频」菜单里列的视频：一行一条，「橘猫回家　4 个镜头」；镜头放满了的灰着。
   const films = useStableList(videos.map((item) => cached<VideoStudioItem, ChatVideoFilm>(rows.current.films, item, () => createVideoFilm(item))))
+  // 「添加到画布」菜单里列的画布项目。项目清单每次重读都是新的一份，内容没变就交出去原来那一份：
+  // 对话里每张图下面都拿着它，换一份新的会让那些行白画一遍。
+  const canvasTargets = useSameCanvasTargets(canvasIntakeProjects(canvas.projects))
 
   const openItem = session.openId ? library.get(session.openId) : null
   const openName = openItem ? videoStudioItemName(openItem) : ''
@@ -258,6 +265,22 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
     setOpening(projectId)
     void onOpenCanvasProject(projectId).finally(() => { if (ticket()) { setOpening(null); canvas.refresh() } })
   }
+  // 「添加到画布」（融合第 5 步）：把这一张图抄一份进选的画布项目的素材库，null 是先新建一个项目。抄在主进程，
+  // 这里只交图片编号和选的项目。前一次还没回来就不接第二次：连点两下「新建画布项目」不该建出两个。
+  // 成了、没成都重读一遍项目清单：新建的要出现在左边，刚被归档、删掉的要从菜单里拿掉。
+  const addImageToCanvas = (projectId: string | null, assetId: string, description: string) => {
+    if (addingToCanvas.current) return
+    addingToCanvas.current = true
+    const ticket = owner.capture()
+    bridge.addImageToCanvasProject(canvasIntakeRequest(projectId, assetId, description)).then((result) => {
+      if (!ticket()) return
+      toast.show(canvasIntakeDoneMessage(result), 'ok', { label: '打开画布', onSelect: (dismiss) => { dismiss(); openCanvasProjectRef.current(result.projectId) } })
+    }, (reason) => { if (ticket()) toast.show(canvasIntakeErrorMessage(reason), 'bad') }).finally(() => {
+      addingToCanvas.current = false
+      if (ticket()) void canvas.refresh()
+    })
+  }
+  openCanvasProjectRef.current = openCanvasProject
   const removeVideo = () => {
     const id = removing
     setRemoving(null)
@@ -341,19 +364,20 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
       addClip,
       openFilm: showVideo,
     },
+    canvas: { projects: canvasTargets, addImage: addImageToCanvas },
     library: {
       open: libraryOpen,
       count: assets.counts ? libraryKindCount(assets.counts, 'all') : null,
       onOpen: showLibrary,
       refresh: assets.refresh,
       render: (context) => {
-        const actions: CreateLibraryActions = { openFolder, openConversation: context.openConversation, openFilm: showVideo, openCanvasProject: showCanvasProject, reuseImage: context.reuseImage, animateImage: context.animateImage, saveImage, saveVideo, openVideo: openVideoFile, addClip: addLibraryClip }
+        const actions: CreateLibraryActions = { openFolder, openConversation: context.openConversation, openFilm: showVideo, openCanvasProject: showCanvasProject, reuseImage: context.reuseImage, animateImage: context.animateImage, saveImage, saveVideo, openVideo: openVideoFile, addClip: addLibraryClip, addToCanvas: addImageToCanvas }
         return <>
         {/* 画布项目那一块也由这里摆：它下面「此项目中的作品」点开以后要用对话这边的东西（把图放进输入框）。 */}
         {project && <CanvasProjectPane project={project} opening={opening === project.id} onOpen={() => openCanvasProject(project.id)}>
-          <CanvasProjectWorks key={project.id} bridge={bridge} active={active} projectId={project.id} conversations={context.conversations} films={videos} videoReady={context.canAnimate} videoFilms={films} actions={actions} />
+          <CanvasProjectWorks key={project.id} bridge={bridge} active={active} projectId={project.id} conversations={context.conversations} films={videos} videoReady={context.canAnimate} videoFilms={films} canvasProjects={canvasTargets} actions={actions} />
         </CanvasProjectPane>}
-        {libraryOpen && <CreateLibraryPane library={assets} conversations={context.conversations} films={videos} videoReady={context.canAnimate} videoFilms={films} actions={actions} />}
+        {libraryOpen && <CreateLibraryPane library={assets} conversations={context.conversations} films={videos} videoReady={context.canAnimate} videoFilms={films} canvasProjects={canvasTargets} actions={actions} />}
         {active && picking && <LibraryPicker key={picking.kind} bridge={bridge} kind={picking.kind === 'image' ? 'image' : 'video'} limit={picking.kind === 'film' ? videoStudioPlanLimits.maximumShots : 1}
           conversations={context.conversations} films={videos} onPick={finishPicking} onClose={closePicking} />}
         </>
@@ -400,6 +424,13 @@ function cached<Key extends object, Value>(cache: WeakMap<Key, Value>, key: Key,
   const value = build()
   cache.set(key, value)
   return value
+}
+
+/** 菜单里的画布项目每次都是新造的对象，按内容比：编号、名字、那行小字都没变就交回上一次那一份。 */
+function useSameCanvasTargets(next: readonly CanvasIntakeProject[]): readonly CanvasIntakeProject[] {
+  const previous = useRef(next)
+  if (!sameCanvasIntakeProjects(previous.current, next)) previous.current = next
+  return previous.current
 }
 
 /** 每一项都没变就交回上一次那个数组：对话页拿它做 useMemo 的依赖，回复一段段到的时候不用重排这一列。 */

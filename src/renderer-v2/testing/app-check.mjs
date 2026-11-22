@@ -4646,7 +4646,7 @@ test('a picture opened from the library is shown at full size and goes back into
     await detail.getByRole('heading', { name: '双 11 主图', exact: true }).waitFor()
     await detail.getByText('今天 11:30 · 40 × 30', { exact: true }).waitFor()
     assert.equal(await detail.getByTestId('create-library-image').getAttribute('src'), `xingmang-asset://image/${libraryPoster}`)
-    assert.deepEqual(await detail.locator('footer').getByRole('button').allTextContents(), ['基于此图继续编辑', '用此图生成视频', '另存图片'])
+    assert.deepEqual(await detail.locator('footer').getByRole('button').allTextContents(), ['基于此图继续编辑', '用此图生成视频', '添加到画布', '另存图片'])
     // 哪段对话、哪条视频都没记着它：不出「查看对话」。
     assert.equal(await detail.getByTestId('create-library-origin').count(), 0)
     assert.equal(await detail.getByText('放进画布').count(), 0)
@@ -5012,7 +5012,7 @@ test('what a canvas project made is listed in the library, leads to the project,
     await page.keyboard.press('Escape')
     await detail.waitFor({ state: 'detached' })
 
-    // 点开画布里生成的一张：说得出是哪个项目做的，能做的事跟别的图一样，没有「放进画布」。
+    // 点开画布里生成的一张：说得出是哪个项目做的，能做的事跟别的图一样（方案里的旧叫法「放进画布」不出现）。
     await pane.getByTestId(`create-library-item-${canvasBanner}`).click()
     await detail.getByRole('heading', { name: '主图横幅，红金配色，留出标题位置', exact: true }).waitFor()
     await detail.getByText('出自画布项目「双 11 主图」 · 今天 11:45 · 40 × 30', { exact: true }).waitFor()
@@ -5092,6 +5092,116 @@ test('what a canvas project made is listed in the library, leads to the project,
     assert.equal(await page.getByTestId('create-canvas-pane').count(), 0)
     assert.equal(await pane.isVisible(), true)
     await page.getByTestId('create-item-canvas-fixture-canvas-poster').waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// —— 融合第 5 步的「放进画布」（按钮叫「添加到画布」）：对话里生成的图、作品库里的图，抄一份进选的画布项目的素材库 ——
+// 夹具假装抄成了：这里核的是按钮在哪、菜单里有什么、交给主进程的只有图片编号和选的项目、说的是哪一句。
+test('a picture is added to a canvas project the user picks, or to a new one, from the chat and from the library', async () => {
+  const page = await openCreate('library=1&videoFilms=library&chatVideo=1&chatImage=1&canvasProjects=1')
+  try {
+    await serveLibraryPictures(page)
+    await page.getByTestId('nav-chat').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.preparing === 'false')
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'gpt-image-2')
+    await page.getByTestId('chat-composer-input').fill('一只橘猫坐在窗台上，午后阳光，水彩风格，暖色调的光')
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'generateAiImage'))
+    await page.evaluate(() => window.v2Test.releaseChatImage())
+    const generated = 'b'.repeat(43)
+
+    // 对话里生成的图下面：「用此图生成视频」后面多一个「添加到画布」。
+    const add = page.getByTestId('chat-asset-canvas')
+    await add.waitFor()
+    assert.equal((await add.textContent()).trim(), '添加到画布')
+    assert.equal(await add.getAttribute('title'), '将此图添加到画布项目的素材库')
+    assert.deepEqual(await page.locator('.chat-asset-actions').first().locator('button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('data-testid'))),
+      ['chat-asset-reuse', 'chat-asset-animate', 'chat-asset-canvas', 'chat-asset-copy', 'chat-asset-save', 'chat-asset-menu'])
+    assert.deepEqual(await fixtureCalls(page, 'addImageToCanvasProject'), [])
+
+    // 菜单：标题、「新建画布项目」、左边那一列里的画布项目和各自什么时候改的。
+    await add.click()
+    const menu = page.getByRole('menu', { name: '选择要添加到的画布项目', exact: true })
+    await menu.waitFor()
+    await menu.getByText('选择要添加到的画布项目', { exact: true }).waitFor()
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['新建画布项目', '双 11 主图今天 10:00 修改', '门店海报11 月 11 日 12:00 修改'])
+
+    // 选了现成的项目：只交图片编号和项目编号；提示上带「打开画布」，点了把画布开在那个项目上。
+    await page.getByTestId('chat-asset-canvas-fixture-canvas-poster').click()
+    const toasts = page.locator('.xm-toasts').getByRole('status')
+    await toasts.getByText('已添加到画布项目「双 11 主图」的素材库', { exact: true }).waitFor()
+    assert.deepEqual(await fixtureCalls(page, 'addImageToCanvasProject'), [[{ assetId: generated, projectId: 'fixture-canvas-poster' }]])
+    assert.deepEqual(await fixtureCalls(page, 'openCanvasProject'), [])
+    await toasts.getByRole('button', { name: '打开画布', exact: true }).click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openCanvasProject'))
+    assert.deepEqual(await fixtureCalls(page, 'openCanvasProject'), [['fixture-canvas-poster']])
+    await toasts.getByText('已添加到画布项目「双 11 主图」的素材库', { exact: true }).waitFor({ state: 'detached' })
+
+    // 「新建画布项目」：名字取当初那句话开头的 20 个字（切在标点上就去掉标点）；左边那一列多出这个项目。
+    await add.click()
+    await page.getByTestId('chat-asset-canvas-new').click()
+    await toasts.getByText('已新建画布项目「一只橘猫坐在窗台上，午后阳光，水彩风格」，并将此图添加到其素材库', { exact: true }).waitFor()
+    assert.deepEqual((await fixtureCalls(page, 'addImageToCanvasProject')).at(-1), [{ assetId: generated, newProjectName: '一只橘猫坐在窗台上，午后阳光，水彩风格' }])
+    await page.getByTestId('create-item-canvas-fixture-canvas-new-3').waitFor()
+    assert.equal(await page.getByTestId('create-item-canvas-fixture-canvas-new-3').textContent(), '一只橘猫坐在窗台上，午后阳光，水彩风格画布项目')
+    // 菜单里也跟着多一项。
+    await add.click()
+    assert.equal((await menu.getByRole('menuitem').allTextContents()).length, 4)
+    await page.keyboard.press('Escape')
+
+    // 没添加成：主进程说的中文原话上屏；说的是英文（系统的报错）就换成兜底句。
+    await page.evaluate(() => { window.v2Test.fail = 'addImageToCanvasProject'; window.v2Test.failMessage = '该画布项目的工作文件夹当前无法访问，图片未添加。' })
+    await add.click()
+    await page.getByTestId('chat-asset-canvas-fixture-canvas-old').click()
+    await toasts.getByText('该画布项目的工作文件夹当前无法访问，图片未添加。', { exact: true }).waitFor()
+    await page.evaluate(() => { window.v2Test.failMessage = "EPERM: operation not permitted, open 'C:\\\\Users\\\\yoyo\\\\a.png'" })
+    await add.click()
+    await page.getByTestId('chat-asset-canvas-fixture-canvas-old').click()
+    await toasts.getByText('添加失败，请稍后重试。', { exact: true }).waitFor()
+    assert.equal(await page.locator('.xm-toasts').getByText('EPERM').count(), 0)
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+
+    // 作品库里点开一张图：同一个按钮、同一个菜单；框不关，客户可以接着做别的。
+    await page.getByTestId('create-library-open').click()
+    const pane = page.getByTestId('create-library-pane')
+    await pane.getByTestId(`create-library-item-${libraryPoster}`).click()
+    const detail = page.getByTestId('create-library-detail')
+    await detail.waitFor()
+    const addFromLibrary = detail.getByTestId('create-library-canvas')
+    assert.equal(await addFromLibrary.getAttribute('title'), '将此图添加到画布项目的素材库')
+    await addFromLibrary.click()
+    await menu.waitFor()
+    await page.getByTestId('create-library-canvas-fixture-canvas-old').click()
+    await toasts.getByText('已添加到画布项目「门店海报」的素材库', { exact: true }).waitFor()
+    assert.deepEqual((await fixtureCalls(page, 'addImageToCanvasProject')).at(-1), [{ assetId: libraryPoster, projectId: 'fixture-canvas-old' }])
+    assert.equal(await detail.count(), 1)
+    // 新建时的名字取这张图记着的那句描述。
+    await addFromLibrary.click()
+    await page.getByTestId('create-library-canvas-new').click()
+    await toasts.getByText('已新建画布项目「双 11 促销海报，红金配色」，并将此图添加到其素材库', { exact: true }).waitFor()
+    assert.deepEqual((await fixtureCalls(page, 'addImageToCanvasProject')).at(-1), [{ assetId: libraryPoster, newProjectName: '双 11 促销海报，红金配色' }])
+    await page.keyboard.press('Escape')
+    await detail.waitFor({ state: 'detached' })
+    // 小框开着时右下角的提示在弹窗后面、点不到（「添加到视频」的「查看」也一样）；提示带按钮不会自己消失，
+    // 关掉小框以后「打开画布」照常能点，开的是刚新建的那个项目。
+    const openedBefore = (await fixtureCalls(page, 'openCanvasProject')).length
+    await toasts.filter({ hasText: '已新建画布项目「双 11 促销海报，红金配色」，并将此图添加到其素材库' }).getByRole('button', { name: '打开画布', exact: true }).click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'openCanvasProject').length > count, openedBefore)
+    assert.match((await fixtureCalls(page, 'openCanvasProject')).at(-1)[0], /^fixture-canvas-new-\d+$/)
+
+    // 没记着描述的图：新项目叫「未命名项目」。视频下面没有这个按钮。
+    await pane.getByTestId(`create-library-item-${libraryCat}`).click()
+    await detail.getByTestId('create-library-canvas').click()
+    await page.getByTestId('create-library-canvas-new').click()
+    await toasts.getByText('已新建画布项目「未命名项目」，并将此图添加到其素材库', { exact: true }).waitFor()
+    assert.deepEqual((await fixtureCalls(page, 'addImageToCanvasProject')).at(-1), [{ assetId: libraryCat, newProjectName: '未命名项目' }])
+    await page.keyboard.press('Escape')
+    await detail.waitFor({ state: 'detached' })
+    await pane.getByTestId(`create-library-item-${libraryClip}`).click()
+    await detail.getByTestId('create-library-save-video').waitFor()
+    assert.equal(await detail.getByTestId('create-library-canvas').count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
