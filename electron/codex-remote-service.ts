@@ -1216,6 +1216,8 @@ export class CodexRemoteService {
   private listedVersion: string | null = null
   private revision = 0
   private emittedRevision = 0
+  /** 正在换文件夹、换对话的那几次（M07）：手机上这时发来的话等它们换完再开这一轮。 */
+  private readonly folderSwitches = new Set<Promise<void>>()
   private codex: CodexAppServerClient | null = null
   private codexStarting: Promise<CodexAppServerClient> | null = null
   /**
@@ -1442,9 +1444,11 @@ export class CodexRemoteService {
     const settings = await this.options.store.readSettings()
     const target = this.findWorkspace(settings, folder)
     if (target === settings.workspaceDirectory) return this.emit()
-    this.assertNoTurnForWorkspace()
-    validateRemoteWorkspace(target, this.options.homeDirectory, this.platform)
-    await this.switchWorkspace(target)
+    await this.switchingFolder(async () => {
+      this.assertNoTurnForWorkspace()
+      validateRemoteWorkspace(target, this.options.homeDirectory, this.platform)
+      await this.switchWorkspace(target)
+    })
     return this.emit()
   }
 
@@ -1462,6 +1466,23 @@ export class CodexRemoteService {
     const target = remoteWorkspaceList(settings).find((entry) => remoteDisplayPath(entry, this.options.homeDirectory, this.platform) === folder)
     if (!target) throw new Error('该文件夹已不在列表中。')
     return target
+  }
+
+  /**
+   * 换文件夹、换对话（M07）：先查过没有正在做的，再写设置、丢掉旧对话。写设置要一会儿，这当中手机上发来的话原来照旧
+   * 在旧文件夹开了对话，写完这边把对话编号清掉，那一轮结束的消息按编号找不到人，卡在「正在处理」直到 1 小时的卡死计时。
+   * 现在这一段登记在 folderSwitches 里，runPrompt 等它换完、按换好的设置开这一轮。work 里查有没有正在做的那一句
+   * 要写在第一个 await 之前：登记和查是同一步，中间插不进手机上的话。
+   */
+  private async switchingFolder<T>(work: () => Promise<T>): Promise<T> {
+    const running = work()
+    const settled = running.then(() => undefined, () => undefined)
+    this.folderSwitches.add(settled)
+    try {
+      return await running
+    } finally {
+      this.folderSwitches.delete(settled)
+    }
   }
 
   private assertNoTurnForWorkspace(): void {
@@ -1673,18 +1694,24 @@ export class CodexRemoteService {
    * Codex 正在处理手机上的消息时不换，换好了给开着的手机说一声（第 28、29 句）。
    */
   async chooseConversation(threadId: string | null): Promise<CodexRemoteSnapshot> {
+    const told = await this.switchingFolder(() => this.switchConversation(threadId))
+    if (told !== null) await this.tellPhones(told)
+    return this.emit()
+  }
+
+  /** 电脑页「选择对话」写设置、丢掉旧对话的那一段（M07 里登记着）；返回要跟手机说的那句，没换就是 null。 */
+  private async switchConversation(threadId: string | null): Promise<string | null> {
     if (remoteChannelIds.some((id) => this.runtimes[id].turn)) throw new Error(remoteConversationErrors.busy)
     const before = await this.options.store.readSettings()
     const current = resolveChosenConversation(before)
     if (threadId === null) {
-      if (!current) return this.emit()
+      if (!current) return null
       await this.forgetChosenConversation()
       for (const id of remoteChannelIds) this.startOverThread(this.runtimes[id])
       this.options.log('info', 'remote.conversation-chosen', { from: 'computer', conversation: 'new' })
-      await this.tellPhones(remoteMessages.conversationNewFromComputer)
-      return this.emit()
+      return remoteMessages.conversationNewFromComputer
     }
-    if (current?.threadId === threadId) return this.emit()
+    if (current?.threadId === threadId) return null
     const entry = this.listedConversations.get(threadId)
     if (!entry) throw new Error(remoteConversationErrors.unreadable)
     if (!codexSupportsResume(this.codexVersion ?? this.listedVersion)) throw new Error(remoteConversationErrors.unsupported)
@@ -1708,8 +1735,7 @@ export class CodexRemoteService {
     // 不算「丢了」：下一句接着选的这段，不用再说「这是新对话」。
     for (const id of remoteChannelIds) this.startOverThread(this.runtimes[id])
     this.options.log('info', 'remote.conversation-chosen', { from: 'computer', conversation: 'existing' })
-    await this.tellPhones(conversationSwitchedFromComputerMessage(entry.title))
-    return this.emit()
+    return conversationSwitchedFromComputerMessage(entry.title)
   }
 
   /** 「手机端的对话」回到新对话（手机上发「新对话」、换了文件夹）。 */
@@ -3102,14 +3128,21 @@ export class CodexRemoteService {
       await this.sendText(runtime, workspaceAlreadyInUseMessage(shown))
       return
     }
-    if (remoteChannelIds.some((id) => this.runtimes[id].turn)) {
+    const switched = await this.switchingFolder(async () => {
+      if (remoteChannelIds.some((id) => this.runtimes[id].turn)) return 'busy'
+      try {
+        validateRemoteWorkspace(target, this.options.homeDirectory, this.platform)
+        await this.switchWorkspace(target)
+      } catch {
+        return 'unusable'
+      }
+      return 'switched'
+    })
+    if (switched === 'busy') {
       await this.sendText(runtime, remoteMessages.workspaceBusy)
       return
     }
-    try {
-      validateRemoteWorkspace(target, this.options.homeDirectory, this.platform)
-      await this.switchWorkspace(target)
-    } catch {
+    if (switched === 'unusable') {
       this.options.log('warn', 'remote.workspace-unusable', { channel: runtime.id })
       await this.sendText(runtime, workspaceUnusableMessage(shown))
       return
@@ -3423,7 +3456,13 @@ export class CodexRemoteService {
       await this.sendText(runtime, remoteMessages.busy)
       return
     }
-    const settings = await this.options.store.readSettings()
+    let settings = await this.options.store.readSettings()
+    // 电脑上或别的渠道正在换文件夹、换对话（M07）：等换完、按换好的来。查和开这一轮之间没有 await，换的那边
+    // 也是查过没有正在做的才登记，两边不会都以为对方不在。
+    while (this.folderSwitches.size > 0) {
+      await Promise.all(this.folderSwitches)
+      settings = await this.options.store.readSettings()
+    }
     const workspace = settings.workspaceDirectory
     if (!workspace) {
       this.returnIncomingImages(runtime, incoming)
