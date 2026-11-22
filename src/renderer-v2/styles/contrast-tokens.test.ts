@@ -165,8 +165,23 @@ describe.each(['dark', 'light'])('high contrast tokens (%s)', (theme) => {
   })
 })
 
-describe.each(['dark', 'light'])('default theme tokens (%s)', (theme) => {
-  const values = defaultTheme(theme)
+// What the canvas window paints (#1103): the theme, the skin the kernel marks
+// its document with (obsidian in dark; light has no dawn rule here), then the
+// data-host="desktop" pair that only the canvas window carries. It is held to
+// the same pairs as the main window's themes.
+function canvasTheme(theme: string) {
+  const skin = theme === 'dark' ? block('[data-theme="dark"][data-skin="obsidian"]') : new Map<string, string>()
+  return new Map([...defaultTheme(theme), ...skin, ...block(`:root[data-host="desktop"][data-theme="${theme}"]`)])
+}
+
+const paintedThemes: Array<[string, Map<string, string>]> = [
+  ['default theme tokens (dark)', defaultTheme('dark')],
+  ['default theme tokens (light)', defaultTheme('light')],
+  ['canvas palette (dark)', canvasTheme('dark')],
+  ['canvas palette (light)', canvasTheme('light')],
+]
+
+describe.each(paintedThemes)('%s', (_, values) => {
 
   function colors(name: string) {
     const value = values.get(name)
