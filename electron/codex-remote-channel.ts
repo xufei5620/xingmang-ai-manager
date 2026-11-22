@@ -48,6 +48,19 @@ export function isRemoteModel(value: unknown): value is string {
   return typeof value === 'string' && value.length <= remoteModelMaxLength && /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/.test(value)
 }
 
+/**
+ * 手机遥控的权限两档（yoyo 2026-11-22 亲手打字同意：「默认在干活的文件夹里看、改、跑命令都不问我，连网和改文件夹外面的才问」）。
+ * 照 Codex 自己的两档：default = on-request + 工作区可写（跟电脑上的 Codex 一样），readOnly = on-request + 只读。
+ * 没有「完全访问」：yoyo 同意的范围就到 default。设置里只在选了 readOnly 时才存，缺省是 default。
+ */
+export const remotePermissions = ['default', 'readOnly'] as const
+
+export type RemotePermission = typeof remotePermissions[number]
+
+export function isRemotePermission(value: unknown): value is RemotePermission {
+  return typeof value === 'string' && (remotePermissions as readonly string[]).includes(value)
+}
+
 /** 平台给的发送人。userId 是平台里稳定的那个编号（飞书 open_id、微信 iLink 的用户编号）。 */
 export interface RemotePeer {
   channel: RemoteChannelId
@@ -373,5 +386,7 @@ export interface CodexRemoteSnapshot {
   lastRequest?: CodexRemoteLastRequestSnapshot
   /** 「手机端使用的模型」单独选的型号；缺省 = 跟电脑上的 Codex 一样。 */
   model?: string
+  /** 「权限」选了「只读」才带；缺省 = 「默认」。 */
+  permission?: 'readOnly'
   channels: Record<RemoteChannelId, CodexRemoteChannelSnapshot>
 }

@@ -21,7 +21,7 @@ import type {
 import type { ProviderId as CatalogProviderId } from './catalog'
 import type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
 export type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
-import type { CodexRemoteSnapshot, RemoteChannelId, RemoteIdleCloseHours } from './codex-remote-channel'
+import type { CodexRemoteSnapshot, RemoteChannelId, RemoteIdleCloseHours, RemotePermission } from './codex-remote-channel'
 export type {
   CodexRemoteBoundPeerSnapshot,
   CodexRemoteChannelSnapshot,
@@ -33,6 +33,7 @@ export type {
   RemoteChannelState,
   RemoteChannelStatus,
   RemoteIdleCloseHours,
+  RemotePermission,
 } from './codex-remote-channel'
 import type { CliLaunchMode as MainCliLaunchMode } from './tool-installation'
 import type {
@@ -1735,6 +1736,8 @@ export interface XingmangInvokeContract {
   setCodexRemoteIdleClose: IpcInvokeDefinition<'codex-remote:set-idle-close', [hours: RemoteIdleCloseHours | null], CodexRemoteSnapshot>
   /** 「手机端使用的模型」：null = 跟电脑上的 Codex 一样。 */
   setCodexRemoteModel: IpcInvokeDefinition<'codex-remote:set-model', [model: string | null], CodexRemoteSnapshot>
+  /** 「权限」两档：default（缺省，跟电脑上的 Codex 一样）或 readOnly。只记下来，手机上下一句交给 Codex 时用上。 */
+  setCodexRemotePermission: IpcInvokeDefinition<'codex-remote:set-permission', [permission: RemotePermission], CodexRemoteSnapshot>
   /** 卡片「最近一次」的「停下这一轮」（YF-13）：跟手机上发「停止」一样，手机上也收到「已停止。」。 */
   stopCodexRemoteTurn: IpcInvokeDefinition<'codex-remote:stop-turn', [], CodexRemoteSnapshot>
   /** 卡片「最近一次」的「都拒绝」（YF-13）：等着同意的一条条拒绝，跟手机上点「拒绝」一样；这一轮不停。 */
@@ -2068,6 +2071,7 @@ export const ipcInvokeChannels = {
   setCodexRemoteAutoStart: 'codex-remote:set-auto-start',
   setCodexRemoteIdleClose: 'codex-remote:set-idle-close',
   setCodexRemoteModel: 'codex-remote:set-model',
+  setCodexRemotePermission: 'codex-remote:set-permission',
   stopCodexRemoteTurn: 'codex-remote:stop-turn',
   declineCodexRemoteApprovals: 'codex-remote:decline-approvals',
   chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',

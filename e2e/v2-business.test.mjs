@@ -4239,6 +4239,28 @@ test('the phone remote page picks the model for the phone from the Codex list an
   }
 })
 
+// 权限两档（yoyo 2026-11-22 亲手打字同意）：缺省「默认」，点「只读」说明跟着换、交给主进程记下，再点回「默认」。
+test('the phone remote page picks the default or read-only permission level', async () => {
+  const page = await fixture('page=remote&remoteReady=1')
+  try {
+    const row = page.getByTestId('settings-remote-permission')
+    const defaultHint = '与电脑端 Codex 一致：在所选文件夹内查看、修改文件和执行命令无需确认；联网或修改该文件夹以外的内容前，将先在手机上征求您的同意。'
+    const readOnlyHint = '仅查看：查看文件、获取本机信息无需确认；修改文件、执行会产生改动的命令或联网前，均将先在手机上征求您的同意。'
+    await row.getByText(defaultHint, { exact: true }).waitFor()
+    const choice = row.getByRole('group', { name: '权限', exact: true })
+    assert.equal(await choice.getByRole('button', { name: '默认', exact: true }).getAttribute('aria-pressed'), 'true')
+    await choice.getByRole('button', { name: '只读', exact: true }).click()
+    await row.getByText(readOnlyHint, { exact: true }).waitFor()
+    assert.equal(await choice.getByRole('button', { name: '只读', exact: true }).getAttribute('aria-pressed'), 'true')
+    await choice.getByRole('button', { name: '默认', exact: true }).click()
+    await row.getByText(defaultHint, { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'remote-permission')).map((call) => call.args), ['readOnly', 'default'])
+    assert.equal(await page.getByRole('alert').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
 // YF-13：「最近一次」只说几点发来的、做到哪儿了，不摆手机上的原话；「都拒绝」「停下这一轮」交给主进程，「在记录里看」去记录页。
 test('the phone remote card shows the last phone request and can stop it, decline what waits and open the records', async () => {
   const page = await fixture('page=remote&remoteReady=1')

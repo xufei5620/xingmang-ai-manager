@@ -94,6 +94,11 @@ export interface CodexRemoteSettings {
    * 别的才存，读回来也只认长得像型号名的（isRemoteModel）。
    */
   model?: string
+  /**
+   * 「权限」选了「只读」才存（yoyo 2026-11-22 同意两档）。缺省 = 「默认」：跟电脑上的 Codex 一样，文件夹里改东西、
+   * 跑命令不问，连网和改文件夹外面的才问。读回来只认 readOnly，别的一律当缺省。
+   */
+  permission?: 'readOnly'
 }
 
 export function emptyCodexRemoteSettings(): CodexRemoteSettings {
@@ -158,6 +163,7 @@ export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
   if (value.autoStart === true) settings.autoStart = true
   if (isRemoteIdleCloseHours(value.idleCloseHours)) settings.idleCloseHours = value.idleCloseHours
   if (isRemoteModel(value.model)) settings.model = value.model
+  if (value.permission === 'readOnly') settings.permission = 'readOnly'
   if (isRecord(value.channels)) {
     for (const [id, raw] of Object.entries(value.channels)) {
       if (!isRemoteChannelId(id) || !isRecord(raw)) continue

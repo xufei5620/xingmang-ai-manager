@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../../../electron/ipc-contract'
 import type { V2Bridge } from '../../../types'
-import { CodexRemotePage, CodexRemotePageView, codexRemoteAdminAccountNotice, codexRemoteAutoStartText, codexRemoteConfirmText, codexRemoteIdleCloseText, codexRemoteModelText, codexRemotePageText, initialRemoteMethod, remoteLowBalanceAmount, type RemoteModelChoices } from './CodexRemotePage'
+import { CodexRemotePage, CodexRemotePageView, codexRemoteAdminAccountNotice, codexRemoteAutoStartText, codexRemoteConfirmText, codexRemoteIdleCloseText, codexRemoteModelText, codexRemotePageText, codexRemotePermissionText, initialRemoteMethod, remoteLowBalanceAmount, type RemoteModelChoices } from './CodexRemotePage'
 import { remoteChannelSections } from './channel-sections'
 import { feishuBotChatLink, feishuBotQrText, feishuGuideActions, feishuSetupSteps } from './FeishuRemoteSection'
 
@@ -111,15 +111,36 @@ describe('codex remote page', () => {
     expect(render(snapshot({}, {}, { hasCredential: true, accountLabel: 'ClawBot decb' }))).toContain('<h3>微信设置</h3>')
   })
 
-  // 两种方式共用的设置另起一块（「通用设置」）：干活的文件夹、手机端使用的模型、自动打开、自动关，摆在连接方式下面。
+  // 两种方式共用的设置另起一块（「通用设置」）：干活的文件夹、权限、手机端使用的模型、自动打开、自动关，摆在连接方式下面。
   it('puts the shared settings in their own card after the ways to connect', () => {
     const markup = render(snapshot())
-    const order = ['remote-methods', 'remote-shared', 'settings-remote-workspace-row', 'settings-remote-model"', 'settings-remote-auto-start"', 'settings-remote-idle-close"'].map((id) => markup.indexOf(`data-testid="${id}`))
+    const order = ['remote-methods', 'remote-shared', 'settings-remote-workspace-row', 'settings-remote-permission"', 'settings-remote-model"', 'settings-remote-auto-start"', 'settings-remote-idle-close"'].map((id) => markup.indexOf(`data-testid="${id}`))
     expect(order.every((at) => at >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
     expect(markup).toContain('<h2>通用设置</h2>')
-    // 权限那一行等 yoyo 亲手打的那句同意以后再加（放宽安全设计）。
-    expect(markup).not.toContain('settings-remote-approval')
+  })
+
+  // 权限两档（yoyo 2026-11-22 亲手打字同意、北京 09:56 贴的字）：缺省「默认」，说明跟着选中的那一档换；没有完全访问。
+  it('offers the default and read-only permission levels, explaining the chosen one', () => {
+    expect(codexRemotePermissionText).toEqual({
+      title: '权限',
+      options: { default: '默认', readOnly: '只读' },
+      hints: {
+        default: '与电脑端 Codex 一致：在所选文件夹内查看、修改文件和执行命令无需确认；联网或修改该文件夹以外的内容前，将先在手机上征求您的同意。',
+        readOnly: '仅查看：查看文件、获取本机信息无需确认；修改文件、执行会产生改动的命令或联网前，均将先在手机上征求您的同意。',
+      },
+    })
+    function permissionRow(markup: string): string {
+      return markup.slice(markup.indexOf('data-testid="settings-remote-permission"'), markup.indexOf('data-testid="settings-remote-model"'))
+    }
+    const byDefault = permissionRow(render(snapshot()))
+    expect(byDefault).toContain(`<strong>权限</strong><p>${codexRemotePermissionText.hints.default}</p>`)
+    expect([...byDefault.matchAll(/<button[^>]*aria-(?:pressed|checked|selected)="(true|false)"[^>]*>([^<]*)<\/button>/g)].map((match) => [match[2], match[1]])).toEqual([['默认', 'true'], ['只读', 'false']])
+    const readOnly = permissionRow(render(snapshot({ permission: 'readOnly' })))
+    expect(readOnly).toContain(`<strong>权限</strong><p>${codexRemotePermissionText.hints.readOnly}</p>`)
+    expect([...readOnly.matchAll(/<button[^>]*aria-(?:pressed|checked|selected)="(true|false)"[^>]*>([^<]*)<\/button>/g)].map((match) => [match[2], match[1]])).toEqual([['默认', 'false'], ['只读', 'true']])
+    expect(byDefault).not.toContain('完全访问')
+    expect(permissionRow(render(snapshot({ available: false, unavailableReason: '星芒正以管理员身份运行。' })))).toMatch(/disabled=""/)
   })
 
   // 「手机端使用的模型」：选项跟首页 Codex「配置」里「默认模型」是同一张单，第一项「与电脑端相同（…）」是缺省。
