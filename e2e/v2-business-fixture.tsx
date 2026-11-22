@@ -207,19 +207,21 @@ const remoteState: {
   idleCloseHours: 4 | 12 | null
   lastRequest: RemoteSnapshot['lastRequest'] | null
   pendingApprovals: number
+  model: string | null
 } = {
   workspaceDirectory: remoteReady ? '~/projects/demo' : null,
   workspaces: query.has('remoteFolders') ? ['~/projects/demo', '~/projects/blog', '~/projects/shop'] : remoteReady ? ['~/projects/demo'] : [],
   accountLabel: remoteReady ? 'cli_a1b2c3d4e5' : null,
-  enabled: false,
+  enabled: query.has('remotePaired'),
   pairing: null,
-  boundPeer: null,
+  boundPeer: query.has('remotePaired') ? { displayName: '小王', userIdTail: '9f3c', boundAt: Date.parse('2026-10-25T06:05:00Z') } : null,
   problem: null,
   codexStartFailed: false,
   autoStart: false,
   idleCloseHours: null,
   lastRequest: null,
   pendingApprovals: 0,
+  model: query.get('remoteModel'),
 }
 // 和主进程 codex-remote-feishu.ts 的 feishuProblemMessages 同三句。
 const feishuProblemStatuses = {
@@ -258,6 +260,7 @@ function remoteSnapshot(): RemoteSnapshot {
     ...(remoteState.autoStart ? { autoStart: true } : {}),
     ...(remoteState.idleCloseHours ? { idleCloseHours: remoteState.idleCloseHours } : {}),
     ...(remoteState.codexStartFailed ? { codexStartFailed: true } : {}),
+    ...(remoteState.model ? { model: remoteState.model } : {}),
     channels: {
       feishu: {
         channel: 'feishu',
@@ -342,6 +345,13 @@ const codexRemoteMethods = {
     remoteState.idleCloseHours = hours
     return remoteSnapshot()
   },
+  setCodexRemoteModel: async (model: string | null) => {
+    record('remote-model', model)
+    remoteState.model = model
+    return remoteSnapshot()
+  },
+  // 「手机端使用的模型」那张单，跟首页 Codex「配置」读的是同一个接口。
+  listConfiguredModels: async () => ['fixture-model', 'gpt-6.3-sol', 'gpt-6.1-mini'],
   chooseCodexRemoteWorkspace: async () => {
     record('remote-workspace')
     // 头一个选的就用它；之后每次加一个新的（YF-19），跟主进程一样不换正在用的。

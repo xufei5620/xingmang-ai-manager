@@ -932,8 +932,8 @@ export function Home(props: HomeProps) {
         ...(switchTarget && props.onSwitchAccount ? [{ label: switchTarget === 'account' ? useAccountLabel : '切回官方账号', testId: `tool-${tool.id}-switch-${switchTarget}`, onSelect: () => props.onSwitchAccount?.(tool.id, switchTarget) }] : []),
         ...(tool.provider === 'codex' ? [{ label: '切换模型服务…', testId: tool.id === 'codex' ? 'home-codex-models' : 'home-codexDesktop-models', onSelect: props.onCodexModels }] : []),
         ...(tool.provider === 'codex' && tool.source === 'official' ? [{ label: 'ChatGPT 账号额度…', testId: `tool-${tool.id}-official-quota`, onSelect: () => { setOfficial(snapshot?.system.officialChatGpt ?? null); setOfficialOpen(true) } }] : []),
-        // 手机遥控的入口原来只有设置 › 工具管理最下面那张卡（YF-6）。遥控用的是 Codex CLI，桌面端不给。
-        ...(tool.id === 'codex' ? [{ label: remoteMenuLabel, testId: 'tool-codex-remote', onSelect: () => props.onNavigate('settings', 'codex-remote') }] : []),
+        // 手机遥控的入口（YF-6），0.2.25 起是左侧栏单独一页。遥控用的是 Codex CLI，桌面端不给。
+        ...(tool.id === 'codex' ? [{ label: remoteMenuLabel, testId: 'tool-codex-remote', onSelect: () => props.onNavigate('remote') }] : []),
       ],
       [
         ...(!externalManaged && update?.newer && !blocked && update.target ? [{ label: `更新到 ${versionText(update.target)}`, testId: `tool-${tool.id}-update-menu`, onSelect: () => props.onInstall(tool.id, update.version ?? update.target ?? undefined, 'update') }] : []),

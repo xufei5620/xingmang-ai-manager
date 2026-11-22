@@ -46,7 +46,7 @@ describe('codex-remote-text', () => {
 
   // YF-17：「帮助」里列出手机上能关遥控；只有整条就是「关闭遥控」才算，句子里带着的照常交给 Codex。
   it('lists closing the remote among the commands and does not read it out of a sentence', () => {
-    expect(remoteMessages.help.split('\n')[1]).toBe('能用的指令：新对话、停止、状态、文件夹、关闭遥控、重试、帮助。')
+    expect(remoteMessages.help.split('\n')[1]).toBe('可用指令：新对话、停止、状态、文件夹、关闭遥控、重试、帮助。')
     expect(remoteMessages.closedFromPhone).toBe('手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。')
     expect(parseRemoteCommand('先别关闭遥控', false)).toEqual({ kind: 'prompt', text: '先别关闭遥控' })
   })
@@ -180,6 +180,18 @@ describe('codex-remote-text', () => {
     expect(text).toContain('npm test')
     expect(text).toContain('在：~/project')
     expect(text).toContain('回「同意 2」或「拒绝 2」')
+  })
+
+  // yoyo 2026-11-19「改」：Codex 自己说的那句排在命令前头、标「Codex 说明：」，命令原文单起一行「命令原文：」放最后。
+  it('puts what Codex says before the raw command and labels the raw command', () => {
+    expect(formatApprovalText({ approvalId: '4', nonce: 'nonce-of-four', kind: 'command', summary: 'mkdir 测试', cwd: 'D:\\hi', reason: '在 hi 文件夹里新建「测试」文件夹。' }))
+      .toBe('Codex 想运行命令（第 4 条）：\nCodex 说明：在 hi 文件夹里新建「测试」文件夹。\n在：D:\\hi\n命令原文：\nmkdir 测试\n回「同意 4」或「拒绝 4」。')
+    expect(formatApprovalBody({ approvalId: '5', nonce: 'nonce-of-five', kind: 'file-change', summary: '新建 a.txt +1 -0 行', reason: '加一个说明文件' }))
+      .toBe('Codex 想改文件（第 5 条）：\nCodex 说明：加一个说明文件\n新建 a.txt +1 -0 行')
+    expect(formatApprovalBody({ approvalId: '6', nonce: 'nonce-of-six', kind: 'network', summary: 'registry.npmjs.org', reason: '装依赖' }))
+      .toBe('Codex 想连网站（第 6 条）：\nCodex 说明：装依赖\nregistry.npmjs.org')
+    expect(formatApprovalBody({ approvalId: '7', nonce: 'nonce-of-seven', kind: 'command', summary: '', reason: '要跑一条命令' }))
+      .toBe('Codex 想运行命令（第 7 条）：\nCodex 说明：要跑一条命令')
   })
 
   it('titles each kind of approval for what Codex wants to do', () => {

@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../../../electron/ipc-contract'
 import type { V2Bridge } from '../../../types'
-import { CodexRemoteCard, CodexRemotePanel, codexRemoteAdminAccountNotice, codexRemoteAutoStartText, codexRemoteConfirmText, codexRemoteIdleCloseText, remoteLowBalanceAmount } from './CodexRemoteCard'
+import { CodexRemotePage, CodexRemotePageView, codexRemoteAdminAccountNotice, codexRemoteAutoStartText, codexRemoteConfirmText, codexRemoteIdleCloseText, codexRemoteModelText, codexRemotePageText, initialRemoteMethod, remoteLowBalanceAmount, type RemoteModelChoices } from './CodexRemotePage'
 import { remoteChannelSections } from './channel-sections'
 import { feishuBotChatLink, feishuBotQrText, feishuGuideActions, feishuSetupSteps } from './FeishuRemoteSection'
 
@@ -23,8 +23,14 @@ function snapshot(patch: Partial<CodexRemoteSnapshot> = {}, feishu: Partial<Code
   }
 }
 
+type ViewProps = Partial<Omit<Parameters<typeof CodexRemotePageView>[0], 'snapshot'>>
+
+function view(state: CodexRemoteSnapshot, props: ViewProps = {}) {
+  return renderToStaticMarkup(<CodexRemotePageView snapshot={state} api={{} as V2Bridge} busy="" run={async () => true} error={null} {...props} />)
+}
+
 function render(state: CodexRemoteSnapshot, busy = '', onOpenHelp?: () => void) {
-  return renderToStaticMarkup(<CodexRemotePanel snapshot={state} api={{} as V2Bridge} busy={busy} run={async () => true} error={null} onOpenHelp={onOpenHelp} />)
+  return view(state, { busy, onOpenHelp })
 }
 
 function buttonMarkup(markup: string, testId: string) {
@@ -35,17 +41,106 @@ function switchMarkup(markup: string) {
   return markup.match(/<button[^>]*role="switch"[^>]*>/)?.[0] ?? ''
 }
 
-describe('codex remote card', () => {
+describe('codex remote page', () => {
   it('reads the state before drawing anything else', () => {
-    const markup = renderToStaticMarkup(<CodexRemoteCard api={{} as V2Bridge} />)
-    expect(markup).toContain('<h2>手机遥控 Codex</h2>')
+    const markup = renderToStaticMarkup(<CodexRemotePage api={{} as V2Bridge} />)
+    expect(markup).toContain('data-testid="page-remote"')
+    expect(markup).toContain('<h1>手机遥控</h1>')
     expect(markup).toContain('正在读取…')
   })
 
-  it('ends the intro by warning that whoever holds the bound chat account controls this computer', () => {
+  // 0.2.25（yoyo 2026-11-19「改」）：字逐字钉住。
+  it('says the approved words for the page head, the two ways to connect and the closing warning', () => {
+    expect(codexRemotePageText).toEqual({
+      title: '手机遥控',
+      lead: '不在电脑前时，在手机上私聊您的机器人，即可远程操作本机的 Codex，使用当前账号的额度。',
+      methodsTitle: '连接方式',
+      methodsMeta: '开启一种即可，也可同时开启两种',
+      methods: {
+        feishu: { tag: '推荐长期使用', body: '需先在飞书开放平台创建您的机器人，步骤稍多；使用飞书官方接口，连接稳定。' },
+        weixin: { tag: '实验功能', body: '使用手机微信扫码登录即可，设置最简便；该通道为借用通道，可能随时中断。' },
+      },
+      channelSettings: codexRemotePageText.channelSettings,
+      sharedTitle: '通用设置',
+      safety: '仅响应已配对的用户。任何能使用您绑定的飞书或微信发送消息的人，均可操作本机，请勿将账号借予他人。',
+    })
+    expect(codexRemotePageText.channelSettings('飞书')).toBe('飞书设置')
+    expect(codexRemoteModelText.follow('gpt-6.2')).toBe('与电脑端相同（gpt-6.2）')
+    expect(codexRemoteModelText.follow()).toBe('与电脑端相同')
+    expect(codexRemoteModelText).toMatchObject({ title: '手机端使用的模型', followHint: '如需更换，请前往首页 Codex 的「配置」修改，电脑端与手机端同时生效。', ownHint: '仅手机端使用此模型，电脑端的 Codex 不受影响。' })
     const markup = render(snapshot())
-    expect(markup).toContain('<p class="v2-remote-intro">在手机上私聊您的机器人，')
-    expect(markup).toContain('仅查看文件时不询问。任何能使用您绑定的飞书或微信发送消息的人，均可操作本机，请勿将账号借予他人。</p>')
+    expect(markup).toContain('<h1>手机遥控</h1><p>不在电脑前时，在手机上私聊您的机器人，即可远程操作本机的 Codex，使用当前账号的额度。</p>')
+    expect(markup).toMatch(/<p class="v2-remote-safety" data-testid="settings-remote-safety">仅响应已配对的用户。任何能使用您绑定的飞书或微信发送消息的人，均可操作本机，请勿将账号借予他人。<\/p><\/div><\/section>$/)
+    // 旧卡片开头那段不再出现，也不说「星芒的线路」。
+    expect(markup).not.toContain('v2-remote-intro')
+    expect(markup).not.toContain('星芒的线路')
+    // 都没开时页头右边不摆状态；开着时说 Codex 在干什么。
+    expect(markup).not.toContain('settings-remote-meta')
+    expect(render(snapshot({ task: 'running' }, { hasCredential: true, enabled: true, status: { state: 'connected' } }))).toMatch(/data-testid="settings-remote-meta"><i aria-hidden="true"><\/i>Codex 正在处理</)
+  })
+
+  // 两种连接方式并排两张卡，是一组页签；点哪张下面摆哪张的设置，另一张的设置不摆。
+  it('shows the two ways to connect side by side and only the chosen one\'s settings below', () => {
+    const markup = render(snapshot())
+    expect(markup).toContain('role="tablist" aria-label="连接方式"')
+    expect(markup.indexOf('data-testid="remote-method-feishu"')).toBeLessThan(markup.indexOf('data-testid="remote-method-weixin"'))
+    expect(markup).toMatch(/<button type="button" role="tab" id="remote-method-feishu" aria-selected="true" aria-controls="remote-method-panel" tabindex="0" class="v2-remote-method is-selected"/)
+    expect(markup).toMatch(/<button type="button" role="tab" id="remote-method-weixin" aria-selected="false" aria-controls="remote-method-panel" tabindex="-1" class="v2-remote-method"/)
+    expect(markup).toContain('<strong>飞书</strong><span class="xm-pill xm-tone-accent">推荐长期使用</span>')
+    expect(markup).toContain('<strong>微信</strong><span class="xm-pill xm-tone-warn">实验功能</span>')
+    expect(markup).toContain('需先在飞书开放平台创建您的机器人，步骤稍多；使用飞书官方接口，连接稳定。')
+    expect(markup).toContain('使用手机微信扫码登录即可，设置最简便；该通道为借用通道，可能随时中断。')
+    // 两张卡上各有自己的状态。
+    expect(markup).toContain('data-testid="settings-remote-feishu-state"')
+    expect(markup).toContain('data-testid="settings-remote-weixin-state"')
+    expect(markup).toContain('role="tabpanel" id="remote-method-panel" aria-labelledby="remote-method-feishu"')
+    expect(markup).toContain('<h3>飞书设置</h3>')
+    expect(markup).toContain('data-testid="settings-remote-feishu"')
+    expect(markup).not.toContain('data-testid="settings-remote-weixin"')
+    const weixin = view(snapshot(), { initialMethod: 'weixin' })
+    expect(weixin).toContain('<h3>微信设置</h3>')
+    expect(weixin).toContain('data-testid="settings-remote-weixin"')
+    expect(weixin).not.toContain('data-testid="settings-remote-feishu"')
+  })
+
+  it('opens on the way that is switched on, else the one with a login, else Feishu', () => {
+    expect(initialRemoteMethod(snapshot())).toBe('feishu')
+    expect(initialRemoteMethod(snapshot({}, {}, { hasCredential: true }))).toBe('weixin')
+    expect(initialRemoteMethod(snapshot({}, { hasCredential: true }, { hasCredential: true, enabled: true }))).toBe('weixin')
+    expect(initialRemoteMethod(snapshot({}, { hasCredential: true, enabled: true }, { hasCredential: true, enabled: true }))).toBe('feishu')
+    expect(render(snapshot({}, {}, { hasCredential: true, accountLabel: 'ClawBot decb' }))).toContain('<h3>微信设置</h3>')
+  })
+
+  // 两种方式共用的设置另起一块（「通用设置」）：干活的文件夹、手机端使用的模型、自动打开、自动关，摆在连接方式下面。
+  it('puts the shared settings in their own card after the ways to connect', () => {
+    const markup = render(snapshot())
+    const order = ['remote-methods', 'remote-shared', 'settings-remote-workspace-row', 'settings-remote-model"', 'settings-remote-auto-start"', 'settings-remote-idle-close"'].map((id) => markup.indexOf(`data-testid="${id}`))
+    expect(order.every((at) => at >= 0)).toBe(true)
+    expect([...order].sort((a, b) => a - b)).toEqual(order)
+    expect(markup).toContain('<h2>通用设置</h2>')
+    // 权限那一行等 yoyo 亲手打的那句同意以后再加（放宽安全设计）。
+    expect(markup).not.toContain('settings-remote-approval')
+  })
+
+  // 「手机端使用的模型」：选项跟首页 Codex「配置」里「默认模型」是同一张单，第一项「与电脑端相同（…）」是缺省。
+  it('offers following the computer first and then the same models as the Codex config', () => {
+    const choices: RemoteModelChoices = { computerModel: 'gpt-6.2', models: ['gpt-6.2', 'gpt-6.3-sol', 'gpt-6.1-mini'] }
+    const follow = view(snapshot(), { modelChoices: choices })
+    const row = follow.slice(follow.indexOf('data-testid="settings-remote-model"'), follow.indexOf('data-testid="settings-remote-auto-start"'))
+    expect(row).toContain('<strong>手机端使用的模型</strong><p>如需更换，请前往首页 Codex 的「配置」修改，电脑端与手机端同时生效。</p>')
+    expect([...row.matchAll(/<option value="([^"]*)"[^>]*>([^<]*)<\/option>/g)].map((match) => [match[1], match[2]])).toEqual([
+      ['', '与电脑端相同（gpt-6.2）'],
+      ['gpt-6.2', 'gpt-6.2'],
+      ['gpt-6.3-sol', 'gpt-6.3-sol'],
+      ['gpt-6.1-mini', 'gpt-6.1-mini'],
+    ])
+    expect(row).toMatch(/<select aria-label="手机端使用的模型"[^>]*data-testid="settings-remote-model-choice"/)
+    const own = view(snapshot({ model: 'gpt-6.3-sol' }), { modelChoices: choices })
+    expect(own).toContain('<strong>手机端使用的模型</strong><p>仅手机端使用此模型，电脑端的 Codex 不受影响。</p>')
+    // 单独选过、这次没读到的型号也列着，下拉框跟实际用的对得上；电脑上的读不到就不写括号。
+    const unlisted = view(snapshot({ model: 'gpt-6.0' }), { modelChoices: { computerModel: '', models: [] } })
+    expect([...unlisted.matchAll(/<option value="([^"]*)"[^>]*>([^<]*)<\/option>/g)].map((match) => match[2])).toEqual(['与电脑端相同', 'gpt-6.0'])
+    expect(render(snapshot({ available: false, unavailableReason: '星芒正以管理员身份运行。' }))).toMatch(/<select aria-label="手机端使用的模型" disabled=""/)
   })
 
   it('starts with the folder and the Feishu app form, and keeps the switch off until both are there', () => {
@@ -62,7 +157,7 @@ describe('codex remote card', () => {
   // YF-4：六步下面两颗，飞书开发者后台交给浏览器，教程是星芒自己的那一章；不给跳页的就只摆前一颗。
   it('puts the Feishu console and the tutorial under the setup steps, and drops the tutorial without a way to navigate', () => {
     const state = snapshot()
-    const withNavigate = renderToStaticMarkup(<CodexRemotePanel snapshot={state} api={{} as V2Bridge} busy="" run={async () => true} error={null} navigate={() => undefined} />)
+    const withNavigate = view(state, { navigate: () => undefined })
     expect(feishuGuideActions).toEqual({ console: '打开飞书开放平台', tutorial: '看教程' })
     expect(withNavigate).toContain('data-testid="settings-remote-feishu-console"')
     expect(withNavigate).toContain('data-testid="settings-remote-feishu-tutorial"')
@@ -148,7 +243,7 @@ describe('codex remote card', () => {
     const connected = { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' as const } }
     const feishu = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { ...connected, pairing: { code: '482915', expiresAt: 1, quiet: 'nothing' } }))
     expect(feishu).toMatch(/data-testid="settings-remote-feishu-pairing-note"[^>]*>机器人尚未收到任何消息，通常是飞书后台还有两步未完成：在「事件与回调」中选择长连接并添加「接收消息」，再在「版本管理与发布」中发布一个版本。完成后重新私聊机器人发送这 6 位数字。</)
-    const weixin = render(snapshot({ workspaceDirectory: '~/projects/demo' }, {}, { ...connected, channel: 'weixin', pairing: { code: '482915', expiresAt: 1, quiet: 'nothing' } }))
+    const weixin = view(snapshot({ workspaceDirectory: '~/projects/demo' }, {}, { ...connected, channel: 'weixin', pairing: { code: '482915', expiresAt: 1, quiet: 'nothing' } }), { initialMethod: 'weixin' })
     expect(weixin).toMatch(/data-testid="settings-remote-weixin-pairing-note"[^>]*>尚未收到消息。请在手机微信中找到 ClawBot 对话，发送这 6 位数字。</)
     const group = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { ...connected, pairing: { code: '482915', expiresAt: 1, quiet: 'group-only' } }))
     expect(group).toMatch(/data-testid="settings-remote-feishu-pairing-note"[^>]*>收到的是群里的消息，不算。要点开机器人单独私聊它。</)
@@ -213,20 +308,20 @@ describe('codex remote card', () => {
   })
 
   // yoyo typed his consent on 2026-11-20, this sentence included.
-  it('warns right under the intro when the Windows account is an administrator by itself', () => {
+  it('warns right under the page head when the Windows account is an administrator by itself', () => {
     expect(codexRemoteAdminAccountNotice).toBe('本机登录的 Windows 账号自带管理员权限，Codex 在此修改文件、执行命令时同样具有管理员权限。在手机上回复「同意」前，请确认其将执行的操作。')
     const markup = render(snapshot({ alwaysElevated: true, workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }))
     expect(markup).toContain(`<span>${codexRemoteAdminAccountNotice}</span>`)
-    expect(markup.indexOf('v2-remote-intro')).toBeLessThan(markup.indexOf('data-testid="settings-remote-admin-account"'))
+    expect(markup.indexOf('</h1>')).toBeLessThan(markup.indexOf('data-testid="settings-remote-admin-account"'))
+    expect(markup.indexOf('data-testid="settings-remote-admin-account"')).toBeLessThan(markup.indexOf('data-testid="remote-methods"'))
     expect(markup).not.toContain('本机当前无法开启手机遥控')
     expect(switchMarkup(markup)).not.toContain('disabled=""')
     expect(render(snapshot())).not.toContain('settings-remote-admin-account')
   })
 
-  it('puts the WeChat block after Feishu, marked experimental, with its own scan and logout', () => {
-    const before = render(snapshot())
-    expect(before.indexOf('data-testid="settings-remote-weixin"')).toBeGreaterThan(before.indexOf('data-testid="settings-remote-feishu"'))
-    expect(before).toMatch(/<h3>微信<\/h3><span[^>]*>实验功能<\/span>/)
+  it('gives WeChat its own block, marked experimental, with its own scan and logout', () => {
+    const before = view(snapshot(), { initialMethod: 'weixin' })
+    expect(before).toMatch(/<strong>微信<\/strong><span[^>]*>实验功能<\/span>/)
     expect(before).toContain('先在上面用微信扫码登录。')
     expect(before).not.toContain('退出微信登录')
     const after = render(snapshot({ workspaceDirectory: '~/projects/demo' }, {}, { hasCredential: true, accountLabel: 'ClawBot decb', enabled: true, status: { state: 'connected' }, pairing: { code: '482915', expiresAt: 1 } }))
@@ -253,12 +348,10 @@ describe('codex remote card', () => {
     expect(codexRemoteConfirmText.logout.ok).toBe('退出登录')
   })
 
-  // YK-5：手机上收到「Codex 启动失败」时，电脑卡片上也看得见、点一下去首页。
-  it('says on top of the card that Codex could not start, with a way to the home page', () => {
+  // YK-5：手机上收到「Codex 启动失败」时，电脑上这一页也看得见、点一下去首页。
+  it('says on top of the page that Codex could not start, with a way to the home page', () => {
     const connected = { hasCredential: true, enabled: true, status: { state: 'connected' } } as const
-    const failed = renderToStaticMarkup(
-      <CodexRemotePanel snapshot={snapshot({ workspaceDirectory: '~/projects/demo', codexStartFailed: true }, connected)} api={{} as V2Bridge} busy="" run={async () => true} error={null} navigate={() => undefined} />,
-    )
+    const failed = view(snapshot({ workspaceDirectory: '~/projects/demo', codexStartFailed: true }, connected), { navigate: () => undefined })
     expect(failed).toContain('data-testid="settings-remote-codex-failed"')
     expect(failed).toContain('xm-tone-warn')
     expect(failed).toContain('<strong>Codex 启动失败</strong>')
@@ -268,15 +361,15 @@ describe('codex remote card', () => {
     expect(render(snapshot({ workspaceDirectory: '~/projects/demo' }, connected))).not.toContain('settings-remote-codex-failed')
   })
 
-  // YF-9：「打开星芒时自动打开遥控」在卡片最后一行，默认关，说明把没人在电脑前也会连上说在前头。
-  it('ends the card with the launch switch, off unless turned on, warning that it connects with nobody around', () => {
+  // YF-9：「打开星芒时自动打开遥控」在共用设置里，默认关，说明把没人在电脑前也会连上说在前头。
+  it('keeps the launch switch among the shared settings, off unless turned on, warning that it connects with nobody around', () => {
     expect(codexRemoteAutoStartText).toMatchObject({
       title: '打开星芒时自动打开遥控',
       description: '开启后，每次打开星芒将自动连接，无需在此手动开启。如星芒设为开机自启，即使无人在电脑前，也可通过手机操作。如有顾虑，请勿开启。',
     })
     const off = render(snapshot())
     const row = off.slice(off.indexOf('data-testid="settings-remote-auto-start"'))
-    expect(off.indexOf('data-testid="settings-remote-auto-start"')).toBeGreaterThan(off.indexOf('data-testid="settings-remote-weixin"'))
+    expect(off.indexOf('data-testid="settings-remote-auto-start"')).toBeGreaterThan(off.indexOf('data-testid="settings-remote-feishu"'))
     expect(row).toContain(codexRemoteAutoStartText.title)
     expect(row).toContain(codexRemoteAutoStartText.description)
     expect(row).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*aria-checked="false"[^>]*aria-label="打开星芒时自动打开遥控"/)
@@ -317,7 +410,7 @@ describe('codex remote card', () => {
   // 「菜单栏改」：Mac 上两句说菜单栏，别的平台（缺省）照旧说托盘。
   it('says the menu bar instead of the tray on a Mac', () => {
     const state = snapshot({ workspaceDirectory: '/Users/yoyo/work' }, { hasCredential: true })
-    const mac = renderToStaticMarkup(<CodexRemotePanel snapshot={state} api={{} as V2Bridge} busy="" run={async () => true} error={null} isMac />)
+    const mac = view(state, { isMac: true })
     expect(mac).toContain('窗口收到菜单栏也照样开着，退出星芒才断开')
     expect(mac).toContain('仅在电脑端、菜单栏中关闭，或在手机上发送「关闭遥控」时才会关闭。')
     expect(mac).not.toContain('托盘')
@@ -338,9 +431,9 @@ describe('codex remote card', () => {
     const now = new Date(2026, 10, 11, 14, 8, 30).getTime()
     const lastRequest = { receivedAt: new Date(2026, 10, 11, 14, 5).getTime(), state: 'running' as const }
     const on = { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' as const } }
-    const off = renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({ lastRequest })} api={{} as V2Bridge} busy="" run={async () => true} error={null} now={now} />)
+    const off = view(snapshot({ lastRequest }), { now })
     expect(off).not.toContain('settings-remote-last-request')
-    const running = renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({ lastRequest, task: 'waiting-approval', pendingApprovals: 2 }, on)} api={{} as V2Bridge} busy="" run={async () => true} error={null} now={now} navigate={() => undefined} />)
+    const running = view(snapshot({ lastRequest, task: 'waiting-approval', pendingApprovals: 2 }, on), { now, navigate: () => undefined })
     expect(running).toContain('最近一次')
     expect(running).toContain('14:05 发来一条，正在处理，已经 3 分钟')
     expect(running).toContain('待确认 2 条，请在手机上回复。')
@@ -349,25 +442,25 @@ describe('codex remote card', () => {
     expect(running).toContain('<span>在记录里看</span></button>')
     // 在文件夹那行上面。
     expect(running.indexOf('settings-remote-last-request')).toBeLessThan(running.indexOf('settings-remote-workspace-row'))
-    const done = renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({ lastRequest: { ...lastRequest, state: 'done' } }, on)} api={{} as V2Bridge} busy="" run={async () => true} error={null} now={now} />)
+    const done = view(snapshot({ lastRequest: { ...lastRequest, state: 'done' } }, on), { now })
     expect(done).toContain('14:05 已完成')
     expect(done).not.toContain('停下这一轮')
     expect(done).not.toContain('都拒绝')
     expect(done).not.toContain('在记录里看')
-    expect(renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({}, on)} api={{} as V2Bridge} busy="" run={async () => true} error={null} now={now} />)).not.toContain('settings-remote-last-request')
+    expect(view(snapshot({}, on), { now })).not.toContain('settings-remote-last-request')
   })
 
   // YF-12：开着遥控、余额不到 $1 又没订阅时提醒先充值，照样让开。
   it('warns about a low balance only while a channel is on, with a way to top up', () => {
     const on = { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' as const } }
-    const warned = renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({}, on)} api={{} as V2Bridge} busy="" run={async () => true} error={null} lowBalance={0.8} navigate={() => undefined} />)
+    const warned = view(snapshot({}, on), { lowBalance: 0.8, navigate: () => undefined })
     expect(warned).toContain('data-testid="settings-remote-low-balance"')
     expect(warned).toContain('xm-tone-warn')
     expect(warned).toContain('<strong>余额只剩 $0.80</strong>')
     expect(warned).toContain('人不在电脑前时充不了值，建议先充一点再出门。')
     expect(warned).toContain('<span>前往充值</span></button>')
-    expect(renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({}, { ...on, enabled: false })} api={{} as V2Bridge} busy="" run={async () => true} error={null} lowBalance={0.8} />)).not.toContain('settings-remote-low-balance')
-    expect(renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({}, on)} api={{} as V2Bridge} busy="" run={async () => true} error={null} lowBalance={null} />)).not.toContain('settings-remote-low-balance')
+    expect(view(snapshot({}, { ...on, enabled: false }), { lowBalance: 0.8 })).not.toContain('settings-remote-low-balance')
+    expect(view(snapshot({}, on), { lowBalance: null })).not.toContain('settings-remote-low-balance')
   })
 
   it('counts a balance as low only under a dollar with no usable subscription and a balance read', () => {
@@ -380,16 +473,12 @@ describe('codex remote card', () => {
     expect(remoteLowBalanceAmount('bad', { quota: 0, quotaPerUnit: 0 })).toBeNull()
   })
 
-  // YF-7：只用飞书的人，下面不再摊着微信那一大块和橙色警告。
-  it('folds the WeChat block into one line while only Feishu is logged in', () => {
-    const folded = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }))
-    expect(folded).toContain('aria-expanded="false"')
-    expect(folded).toContain('data-testid="settings-remote-weixin-toggle"')
-    expect(folded).not.toContain('data-testid="settings-remote-weixin-warning"')
-    expect(folded).not.toContain('data-testid="settings-remote-feishu-toggle"')
-    const fresh = render(snapshot())
-    expect(fresh).not.toContain('aria-expanded')
-    expect(fresh).toContain('data-testid="settings-remote-weixin-warning"')
+  // YF-7 的用意（只用飞书的人不再摊着微信那一大块和橙色警告）现在由连接方式那组页签做到：没选微信就不摆。
+  it('keeps the WeChat warning out of sight until WeChat is picked', () => {
+    const feishuOnly = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }))
+    expect(feishuOnly).not.toContain('data-testid="settings-remote-weixin-warning"')
+    expect(feishuOnly).not.toContain('aria-expanded')
+    expect(view(snapshot(), { initialMethod: 'weixin' })).toContain('data-testid="settings-remote-weixin-warning"')
   })
 
   // YF-3：保存好飞书应用、还没配对时，「还差这几步」下面给一个二维码，手机飞书扫了直接到机器人对话。
