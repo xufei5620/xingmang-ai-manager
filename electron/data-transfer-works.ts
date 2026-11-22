@@ -25,6 +25,12 @@ import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local
 // exportableConversations）；不带作品时才换成一句说明。
 //
 // 文件一个一个复制，一次 1 MB，不整个读进内存；导出、导入之前先看空间够不够。
+//
+// 画布项目里生成的作品也一起带（「画布也搬」，yoyo 2026-11-22）：作品库页（#2091）同时列出各画布项目文件夹里生成的
+// 图片和视频，导出时照作品库页列的那些一件不差地带上（canvas-project-asset-manager.ts 的 listLibraryFolders），
+// 询问框里的件数、大小就跟作品库页对得上。项目文件夹在旧电脑上是客户自己选的位置，新电脑上没有这个项目，所以这些
+// 作品跟别的作品放在一起，照同样的布局进新电脑当前账号的 AI 作品文件夹，作品库里照常列出、名字标签提示词都在，
+// 对话、分镜里按编号也找得到。画布项目本身（节点和连线）不在这里搬。
 
 export const WORKS_FOLDER_NAME = '作品'
 export const WORKS_MANIFEST_FILE = 'xingmang-works.json'
@@ -112,7 +118,7 @@ function isMissing(error: unknown): boolean {
 export async function listAccountWorks(
   outputRoot: string,
   userId: number,
-  options: { excluded?: ReadonlySet<string> } = {},
+  options: { excluded?: ReadonlySet<string>; included?: ReadonlySet<string> } = {},
 ): Promise<LocatedAccountWork[]> {
   if (!Number.isSafeInteger(userId) || userId <= 0) throw new Error('AI 作品账号标识无效')
   const accountRoot = resolveRelocatedPath(path.join(outputRoot, `user-${userId}`))
@@ -136,7 +142,7 @@ export async function listAccountWorks(
     }
     for (const entry of entries) {
       const match = entry.isFile() ? WORK_FILE_PATTERN.exec(entry.name) : null
-      if (!match || options.excluded?.has(match[1])) continue
+      if (!match || options.excluded?.has(match[1]) || (options.included && !options.included.has(match[1]))) continue
       candidates.push({ date, name: entry.name, assetId: match[1], mediaType: mediaTypeOfExtension[match[2]] })
     }
   }
@@ -172,12 +178,17 @@ export const worksExportIncompleteMessage = '作品导出未完成，本次已�
 
 export function buildWorksManifest(works: readonly AccountWork[], metadata: readonly AiAssetMetadataItem[]): string {
   const exported = new Set(works.map((work) => work.assetId))
+  const described = new Set<string>()
   const content = JSON.stringify({
     format: WORKS_MANIFEST_FORMAT,
     version: WORKS_MANIFEST_VERSION,
     files: works.map((work) => ({ path: work.relativePath, bytes: work.bytes })),
-    // 回收站里的不导出，名字、标签、收藏、提示词只带导出了的那几件。
-    metadata: metadata.filter((item) => exported.has(item.assetId) && !item.deletedAt),
+    // 回收站里的不导出，名字、标签、收藏、提示词只带导出了的那几件。一件只带一条：导入时同一编号有两条，整个清单都不认。
+    metadata: metadata.filter((item) => {
+      if (!exported.has(item.assetId) || item.deletedAt || described.has(item.assetId)) return false
+      described.add(item.assetId)
+      return true
+    }),
   })
   if (Buffer.byteLength(content, 'utf8') > MAX_WORKS_MANIFEST_BYTES) throw new Error(`${LABEL}清单超过 64 MB，无法导出`)
   return content
@@ -466,6 +477,11 @@ export interface WorksImportOptions {
   outputRoot: string
   userId: number
   metadata: WorksMetadataTarget
+  /**
+   * Works this account already keeps outside its library folder (a canvas project's own folder): counted
+   * as already here and not copied, so importing onto the computer that made them adds no second copy.
+   */
+  heldElsewhere?: ReadonlySet<string>
   readDiskSpace?: (target: string) => Promise<DiskSpaceReading | null>
   randomBytes?: (size: number) => Buffer
 }
@@ -491,7 +507,7 @@ export async function importAccountWorks(options: WorksImportOptions): Promise<W
   const { manifest, userId } = options
   const accountRoot = resolveRelocatedPath(path.join(options.outputRoot, `user-${userId}`))
   const local = new Set((await listAccountWorks(options.outputRoot, userId)).map((work) => work.assetId))
-  const pending = manifest.files.filter((entry) => !local.has(entry.assetId))
+  const pending = manifest.files.filter((entry) => !local.has(entry.assetId) && !options.heldElsewhere?.has(entry.assetId))
   let existing = manifest.files.length - pending.length
   const neededBytes = pending.reduce((total, entry) => total + entry.bytes, 0)
   if (pending.length) {
@@ -584,18 +600,71 @@ export interface AccountWorksTransfer {
   importFrom(userId: number, folder: string, manifest: ParsedWorksManifest): Promise<WorksImportResult>
 }
 
+interface WorksMetadataSource {
+  getAll(userId: number): Promise<Record<string, Omit<AiAssetMetadataItem, 'assetId'>>>
+}
+
+/** 作品库页同时列出的一个画布项目文件夹（canvas-project-asset-manager.ts 的 CanvasLibraryFolder）。 */
+export interface WorksTransferFolder {
+  /** 这个文件夹里作品的根：下面同样是 user-<编号>/<日期>/… */
+  outputRoot: string
+  metadata: WorksMetadataSource
+  /** 作品库页从这个文件夹列出的那几件。 */
+  assetIds: readonly string[]
+}
+
 export interface AccountWorksTransferOptions {
   /** 这个站点的作品根（AI 作品文件夹）：下面是 user-<编号>/<日期>/… */
   outputRoot: string
-  metadata: { getAll(userId: number): Promise<Record<string, Omit<AiAssetMetadataItem, 'assetId'>>> } & WorksMetadataTarget
+  metadata: WorksMetadataSource & WorksMetadataTarget
+  /** 作品库页同时列出的画布项目文件夹（「画布也搬」）。没接上时只搬 AI 作品文件夹里的。 */
+  canvasFolders?: (userId: number) => Promise<readonly WorksTransferFolder[]>
   readDiskSpace?: (target: string) => Promise<DiskSpaceReading | null>
 }
 
 export function createAccountWorksTransfer(options: AccountWorksTransferOptions): AccountWorksTransfer {
+  // 画布项目列表、项目文件夹读不出来，作品库页上也列不出那几件：照旧只搬 AI 作品文件夹里的，不拦导出导入。
+  async function canvasFolders(userId: number): Promise<readonly WorksTransferFolder[]> {
+    try {
+      return await options.canvasFolders?.(userId) ?? []
+    } catch {
+      return []
+    }
+  }
   async function exportable(userId: number): Promise<{ works: LocatedAccountWork[]; metadata: AiAssetMetadataItem[] }> {
     const records = Object.entries(await options.metadata.getAll(userId)).map(([assetId, record]) => ({ assetId, ...record }))
     const trashed = new Set(records.filter((record) => record.deletedAt).map((record) => record.assetId))
-    return { works: await listAccountWorks(options.outputRoot, userId, { excluded: trashed }), metadata: records }
+    const works = await listAccountWorks(options.outputRoot, userId, { excluded: trashed })
+    const listed = new Set(works.map((work) => work.assetId))
+    // 每件作品只带它自己那个位置的名字和标签：同一编号在别处还有一条旧记录，不能跟着进清单。
+    const metadata = records.filter((record) => listed.has(record.assetId))
+    for (const folder of await canvasFolders(userId)) {
+      if (works.length >= MAX_TRANSFERRED_WORKS) break
+      const wanted = new Set(folder.assetIds.filter((assetId) => !listed.has(assetId)))
+      if (!wanted.size) continue
+      let found: LocatedAccountWork[]
+      try {
+        found = await listAccountWorks(folder.outputRoot, userId, { included: wanted })
+      } catch {
+        // 这个项目文件夹现在读不了（U 盘拔了、被别的程序占着）：这几件不带，别的照常。
+        continue
+      }
+      let folderRecords: Record<string, Omit<AiAssetMetadataItem, 'assetId'>> = {}
+      try {
+        folderRecords = await folder.metadata.getAll(userId)
+      } catch {
+        // 作品照样带过去，只是没有名字和标签。
+      }
+      for (const work of found) {
+        if (works.length >= MAX_TRANSFERRED_WORKS) break
+        if (listed.has(work.assetId)) continue
+        listed.add(work.assetId)
+        works.push(work)
+        const record = folderRecords[work.assetId]
+        if (record) metadata.push({ ...record, assetId: work.assetId })
+      }
+    }
+    return { works, metadata }
   }
   return {
     async summarize(userId) {
@@ -605,8 +674,9 @@ export function createAccountWorksTransfer(options: AccountWorksTransferOptions)
       const { works, metadata } = await exportable(userId)
       return writeWorksExport({ readDiskSpace: options.readDiskSpace, ...exportOptions, works, metadata })
     },
-    importFrom(userId, folder, manifest) {
-      return importAccountWorks({ folder, manifest, outputRoot: options.outputRoot, userId, metadata: options.metadata, readDiskSpace: options.readDiskSpace })
+    async importFrom(userId, folder, manifest) {
+      const heldElsewhere = new Set((await canvasFolders(userId)).flatMap((held) => held.assetIds))
+      return importAccountWorks({ folder, manifest, outputRoot: options.outputRoot, userId, metadata: options.metadata, heldElsewhere, readDiskSpace: options.readDiskSpace })
     },
   }
 }
