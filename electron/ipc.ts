@@ -32,7 +32,8 @@ import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
 import type { AiAudioAssetStore } from './ai-audio-asset-store'
 import type { AiVideoAssetStore } from './ai-video-asset-store'
-import type { AiMediaAssetService } from './ai-media-asset-service'
+import type { AiMediaAssetService, AiMediaLibraryPage } from './ai-media-asset-service'
+import type { CanvasAccountLibraryQuery } from './canvas-project-asset-manager'
 import type { AiVideoService } from './ai-video-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type {
@@ -98,6 +99,18 @@ import { registerCodexRemoteHandlers } from './ipc/handlers/codex-remote'
 import { registerCodexRemoteWeixinHandlers } from './ipc/handlers/codex-remote-weixin'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
+
+/**
+ * 当前账号的作品按编号在哪一处（融合第 5 步）：AI 作品文件夹，或者某个画布项目自己的文件夹。主窗口只拿它来列、来读，
+ * 实现是 canvas-project-asset-manager.ts 的 listLibrary / holderOf。
+ */
+export interface AccountAssetLookup {
+  listLibrary(userId: number, query: CanvasAccountLibraryQuery): Promise<AiMediaLibraryPage>
+  holderOf(userId: number, kind: 'image' | 'video', assetId: string): Promise<{
+    images: Pick<AiAssetStore, 'copy' | 'saveAs' | 'contextMenu'>
+    videos: Pick<AiVideoAssetStore, 'readOwned' | 'resolveOwnedFilePath' | 'saveAs'>
+  }>
+}
 
 export interface IpcRegistrationOptions {
   realmAccounts?: import('./realm-account-service').RealmAccountService
@@ -309,6 +322,10 @@ export interface IpcRegistrationOptions {
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
   // 「创作 › 作品库」列当前账号做过的图片和视频（融合第 3 步）。只用它不读文件的那一个列法；改名、删除这些主窗口不碰。
   mediaAssets?: Pick<AiMediaAssetService, 'listOwnedLibrary'>
+  // 融合第 5 步：画布项目自己文件夹里生成的图和视频也算当前账号的作品。作品库把它们一起列出来；另存、复制、
+  // 用播放器打开、读片段时按编号先找 AI 作品文件夹、再找各个项目文件夹，哪一处都照那一处的库自己的检查。
+  // 只有读，没有往项目文件夹里写的。缺省 = 只认 AI 作品文件夹（第 3 步的样子）。
+  accountAssets?: AccountAssetLookup
   // 视频剪辑的配乐：客户选的歌存进这个作品库的音频那一格，拼片时再按编号读回来。
   audioAssets?: Pick<AiAudioAssetStore, 'storeLocalFile' | 'readOwned'>
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot

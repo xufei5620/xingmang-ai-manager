@@ -69,7 +69,7 @@ import type { AiMediaAssetService } from './ai-media-asset-service'
 import type { CanvasRunService } from './canvas-run-service'
 import { parseCanvasRunPreparationCompletion } from './canvas-run-preparations'
 import type { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
-import { findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore, type CanvasStoredProjectSummary } from './canvas-project-store'
+import { displayCanvasProjectName, findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore, type CanvasStoredProjectSummary } from './canvas-project-store'
 import type { CanvasProjectListEntry } from './ipc-contract'
 import { claimCanvasDefaultProjectFolder, describeCanvasDefaultProjectFolderFailure, releaseCanvasDefaultProjectFolder, releaseCanvasDefaultProjectFolderTree } from './canvas-default-project-folder'
 import { findCanvasRunAssetReferences } from './canvas-asset-references'
@@ -210,19 +210,23 @@ export function importedCanvasProjectName(workflowName: unknown, filePath: strin
 const maximumListedCanvasProjects = 100
 
 /**
- * What the main window's 「创作」 list gets for the canvas projects: id, name
- * and last-changed time, newest first, archived ones left out. Project files
- * are written on the canvas page's behalf, so the name is cut down to one
- * line of plain text again here and a time that does not parse sorts last
- * instead of failing the whole list.
+ * What the main window's 「创作」 list gets for the canvas projects: id, name,
+ * last-changed time and the cover's asset id, newest first, archived ones
+ * left out. Project files are written on the canvas page's behalf, so the
+ * name is cut down to one line of plain text again here, the cover id is
+ * checked against the asset id shape, and a time that does not parse sorts
+ * last instead of failing the whole list.
  */
-export function toCanvasProjectList(projects: readonly Pick<CanvasStoredProjectSummary, 'id' | 'name' | 'updatedAt' | 'archivedAt'>[]): CanvasProjectListEntry[] {
+export function toCanvasProjectList(projects: readonly Pick<CanvasStoredProjectSummary, 'id' | 'name' | 'updatedAt' | 'archivedAt' | 'previewAsset'>[]): CanvasProjectListEntry[] {
   const listed: CanvasProjectListEntry[] = []
   for (const project of projects) {
     if (project.archivedAt || !/^[a-f0-9-]{36}$/.test(project.id)) continue
-    const name = project.name.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 128).trim()
     const updatedAt = Date.parse(project.updatedAt)
-    listed.push({ id: project.id, name: name || '未命名项目', updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : 0 })
+    // 封面（融合第 5 步）：项目中心里那一张，只交出编号和是图片还是视频；音频没有画面，不当封面。
+    const preview = project.previewAsset
+    const cover = preview && (preview.kind === 'image' || preview.kind === 'video') && /^[A-Za-z0-9_-]{43}$/.test(preview.assetId)
+      ? { assetId: preview.assetId, mediaType: preview.kind } : undefined
+    listed.push({ id: project.id, name: displayCanvasProjectName(project.name), updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : 0, ...(cover ? { cover } : {}) })
   }
   return listed.sort((left, right) => right.updatedAt - left.updatedAt).slice(0, maximumListedCanvasProjects)
 }

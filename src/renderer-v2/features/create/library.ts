@@ -25,16 +25,16 @@ export const maxLibrarySearchLength = 128
 
 /** 一件作品是哪来的。 */
 export interface LibraryOrigin {
-  /** chat：对话里出的、或者发过的；video：一条视频里的镜头图、片段、成片。 */
-  from: 'chat' | 'video'
+  /** chat：对话里出的、或者发过的；video：一条视频里的镜头图、片段、成片；canvas：一个画布项目里生成的，或者它的节点上放着的（融合第 5 步）。 */
+  from: 'chat' | 'video' | 'canvas'
   /**
-   * 不是在那里做出来的，只是在那里用过：对话里客户自己发的图，镜头的开头图，镜头上拿来的现成片段。
+   * 不是在那里做出来的，只是在那里用过：对话里客户自己发的图，镜头的开头图，镜头上拿来的现成片段，画布节点上放着的别处的图。
    * 页面上说「用于」不说「出自」；同一件作品别处记着是在哪做的，就认做的那一处。
    */
   used?: boolean
-  /** 那段对话、那条视频的编号。 */
+  /** 那段对话、那条视频、那个画布项目的编号。 */
   id: string
-  /** 那段对话、那条视频的名字。 */
+  /** 那段对话、那条视频、那个画布项目的名字。 */
   title: string
   /** 当时写的那句话；成片没有（它是几个镜头拼的），对话里客户自己发的图也没有（那句话说的是拿它做什么，不是它是什么）。 */
   prompt: string
@@ -119,6 +119,29 @@ export function buildLibraryOrigins(conversations: readonly Conversation[], film
   return origins
 }
 
+// 同一件作品、对话和视频里记着的那一份没变，交出去的还是同一个对象（格子是 memo 的）。
+const canvasOriginCache = new WeakMap<AiLibraryEntry, { recorded: LibraryOrigin | undefined, origin: LibraryOrigin }>()
+
+/**
+ * 一件作品是哪来的，连画布一起算（融合第 5 步）。对话和视频里记着的由 origins 按编号给；是哪个画布项目的，
+ * 主进程列的时候带在这一件上（项目名是画布那边写的，主进程洗成一行字才交过来，这里只当字显示）。
+ * 先认做出来的地方：对话、视频里做的，再是画布项目里生成的；都没有才认用过它的地方，对话和视频排在画布前面。
+ */
+export function libraryEntryOrigin(entry: AiLibraryEntry, origins: LibraryOrigins): LibraryOrigin | undefined {
+  const recorded = origins.get(entry.assetId)
+  const canvas = entry.canvas
+  if (!canvas || (recorded && (!recorded.used || canvas.used))) return recorded
+  const known = canvasOriginCache.get(entry)
+  if (known && known.recorded === recorded) return known.origin
+  const origin: LibraryOrigin = {
+    from: 'canvas', ...(canvas.used ? { used: true } : {}), id: canvas.projectId, title: canvas.projectName, prompt: canvas.used ? '' : entry.prompt ?? '',
+    // 尺寸、时长是这件作品自己的：别处用它时记下的照样拿来用。
+    ...(recorded?.clip ? { clip: recorded.clip } : {}), ...imageSize(recorded ?? {}),
+  }
+  canvasOriginCache.set(entry, { recorded, origin })
+  return origin
+}
+
 function imageSize(asset: Pick<AiChatAsset, 'width' | 'height'>): { width?: number, height?: number } {
   return asset.width && asset.height ? { width: asset.width, height: asset.height } : {}
 }
@@ -151,14 +174,16 @@ export function libraryKindCount(counts: AiLibraryPage['counts'], kind: LibraryK
   return kind === 'clip' ? Math.max(0, counts.video - counts.film) : counts[kind]
 }
 
-export const libraryOriginNames: Readonly<Record<LibraryOrigin['from'], string>> = { chat: '对话', video: '视频' }
+export const libraryOriginNames: Readonly<Record<LibraryOrigin['from'], string>> = { chat: '对话', video: '视频', canvas: '画布' }
+/** 点开以后那一行里怎么叫：「出自画布项目「…」」。 */
+const libraryOriginPlaces: Readonly<Record<LibraryOrigin['from'], string>> = { chat: '对话', video: '视频', canvas: '画布项目' }
 
 function madeAt(entry: Pick<AiLibraryEntry, 'createdAt'>, now?: number): string {
   const time = Date.parse(entry.createdAt)
   return Number.isFinite(time) ? createTimeText(time, now) : ''
 }
 
-/** 每一格下面那行小字：「对话 · 今天 14:02」。对不上是哪来的就只写时间。 */
+/** 每一格下面那行小字：「对话 · 今天 14:02」「画布 · 昨天 21:14」。对不上是哪来的就只写时间。 */
 export function libraryCaption(entry: Pick<AiLibraryEntry, 'createdAt'>, origin: LibraryOrigin | undefined, now?: number): string {
   return [origin ? libraryOriginNames[origin.from] : '', madeAt(entry, now)].filter(Boolean).join(' · ')
 }
@@ -169,12 +194,12 @@ function shortTitle(title: string): string {
 }
 
 /**
- * 点开以后标题下面那一行：「出自对话「…」 · 今天 14:02 · 1024 × 1024」；只是在那里用过的写「用于对话「…」」。
+ * 点开以后标题下面那一行：「出自对话「…」 · 今天 14:02 · 1024 × 1024」「出自画布项目「…」 · …」；只是在那里用过的写「用于对话「…」」。
  * 量不出来的那一项不写。
  */
 export function libraryDetailLine(entry: Pick<AiLibraryEntry, 'createdAt'>, origin: LibraryOrigin | undefined, size: { width?: number, height?: number } | null, now?: number): string {
   return [
-    origin ? `${origin.used ? '用于' : '出自'}${libraryOriginNames[origin.from]}「${shortTitle(origin.title)}」` : '',
+    origin ? `${origin.used ? '用于' : '出自'}${libraryOriginPlaces[origin.from]}「${shortTitle(origin.title)}」` : '',
     madeAt(entry, now),
     size?.width && size.height ? `${Math.round(size.width)} × ${Math.round(size.height)}` : '',
   ].filter(Boolean).join(' · ')
