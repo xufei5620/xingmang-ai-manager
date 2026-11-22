@@ -341,7 +341,7 @@ let releaseInstall: (error?: string) => void = () => undefined
 let nodeInstallInFlight: ReturnType<XingmangApi['installNodeRuntime']> | null = null
 let nextNodeInstallHeld = false
 let releaseNodeInstall: () => void = () => undefined
-// ?chatImport：聊天记录存在内存里（读写同主进程那份的规矩），「搬到新电脑」导入的文件里有一个旧电脑上的对话（R28-2）。
+// ?chatImport：聊天记录存在内存里（读写同主进程那份的规矩），「迁移到新电脑」导入的文件里有一个旧电脑上的对话（R28-2）。
 let nextImportHeld = false
 let releaseImport: () => void = () => undefined
 let nextChatHistoryReadHeld = false
@@ -815,7 +815,7 @@ const methods = {
     return { id, provider: item.provider, deletedFiles: 1 }
   },
   listBackups: async () => [],
-  // 「备份迁移」最下面的「星芒占用的空间」（D100）一点开这一组就六行各问一次；这里只给个小数，业务回归在 e2e/v2-business。
+  // 「备份迁移」最下面的「星芒占用空间」（D100）一点开这一组就六行各问一次；这里只给个小数，业务回归在 e2e/v2-business。
   inspectStorageUsage: async (part) => (part === 'backups' ? { bytes: 4096, backupCount: 0 } : part === 'downloads' ? { bytes: 0, installing: false } : { bytes: 4096 }),
   cleanStorage: async () => ({ freedBytes: 0, kept: 0 }),
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),

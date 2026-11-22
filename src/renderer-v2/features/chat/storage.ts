@@ -368,7 +368,7 @@ export interface SavedHistory { index: string; keys: ReadonlyMap<string, string>
 // before any migration): the writer runs it once the first save has succeeded.
 // warning = 整份读不出来，这一回不往本机写；unreadable = 只有这几段读不出来、已经挪开，其余照常读写（D40）。
 export interface LoadedChatHistory { state: ChatWorkspace; exists: boolean; warning?: string; unreadable?: number; saved: SavedHistory | null; afterFirstSave?: () => void }
-// 读的时候只要能读；日志是可选的（设置页「搬到新电脑」、测试里不一定接）。
+// 读的时候只要能读；日志是可选的（设置页「迁移到新电脑」、测试里不一定接）。
 export interface ChatHistoryReader { readHistory: (scope: string) => Promise<AiChatHistorySnapshot>; logHistoryProblem?: (detail: string) => void }
 
 export function planHistoryWrite(state: ChatWorkspace, previous: SavedHistory | null): { write: AiChatHistoryWrite; saved: SavedHistory } | null {
@@ -438,7 +438,7 @@ export function parseHistorySnapshot(snapshot: AiChatHistorySnapshot, scope: str
 }
 
 // 常用的话坏了不连累聊天记录：不是一串字的那几条丢掉，超过上限的截掉，整份索引照常读。
-// 「搬到新电脑」导进来的也按这一套筛（主进程已经挡过不成样的文件）。
+// 「迁移到新电脑」导进来的也按这一套筛（主进程已经挡过不成样的文件）。
 export function readChatPhrases(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '' && item.length <= MAX_CHAT_PHRASE_LENGTH).slice(0, MAX_CHAT_PHRASES)
@@ -616,7 +616,7 @@ export function importLegacyHistory(storage: ChatStorage, scope: string, userId:
   } catch (error) { throw error instanceof ChatStorageError ? error : new ChatStorageError('之前的聊天记录暂时无法读取，原始数据已保留') }
 }
 
-// ---- 搬到新电脑 ----
+// ---- 迁移到新电脑 ----
 const transferInvalidMessage = '该文件并非由星芒导出或已损坏，未导入任何内容。'
 const imageLeftBehind = '[图片未随记录迁移]'
 const videoLeftBehind = '[视频未随记录迁移]'
@@ -632,7 +632,7 @@ function portableMessage(message: ReturnType<typeof persistedMessage>) {
 }
 
 /** 导出给新电脑的对话：和存盘时一样去掉密钥样的文字，再去掉图片和运行时字段。 */
-/** 「搬到新电脑」带走的常用的话：本机记录里存的就是脱敏过的，原样带上。 */
+/** 「迁移到新电脑」带走的常用的话：本机记录里存的就是脱敏过的，原样带上。 */
 export function exportablePhrases(state: ChatWorkspace): string[] {
   return [...(state.phrases ?? [])]
 }

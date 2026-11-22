@@ -266,7 +266,7 @@ export function entryAddableTargets(entry: HubEntry, context: HubTargetContext):
 export const collapsedOfficialCount = 4
 
 /**
- * 详情页每一份装在哪一层那句：用已装列表分组的那句说明（「你的所有项目都能用」「随项目共享给协作者」……），
+ * 详情页每一份装在哪一层那句：用已装列表分组的那句说明（「适用于您的所有项目」「随项目共享给协作者」……），
  * 这家只有一层的用那一层的说明；表里没有的层用详情里那套范围叫法。
  */
 export function installScopeSentence(install: HubInstall, builtin = false): string {

@@ -192,7 +192,7 @@ describe('plugins hub model', () => {
 
   it('describes where each copy lives with the sentence the installed list already uses', () => {
     expect(installScopeSentence({ provider: 'codex', item: item('codex', 'mcp', 'docs', { scope: 'user' }) })).toBe('所有项目共用')
-    expect(installScopeSentence({ provider: 'codex', item: item('codex', 'plugin', 'sentry@openai-api-curated', { scope: null }) })).toBe('所有项目都能用')
+    expect(installScopeSentence({ provider: 'codex', item: item('codex', 'plugin', 'sentry@openai-api-curated', { scope: null }) })).toBe('适用于所有项目')
     expect(installScopeSentence({ provider: 'codex', item: item('codex', 'skill', 'x', { scope: null }) }, true)).toBe('Codex 自带，随版本更新')
   })
 })

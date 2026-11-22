@@ -196,7 +196,7 @@ describe('tutorial wording that follows the current app', () => {
     const undo = tutorialTopics.find((topic) => topic.id === 'undo');
     expect(undo?.category).toBe('trouble');
     const text = JSON.stringify(undo);
-    for (const words of ['连按两下 Esc', '/rewind', 'Restore code and conversation', '退不回来', '复制到其他位置']) expect(text).toContain(words);
+    for (const words of ['连按两下 Esc', '/rewind', 'Restore code and conversation', '无法恢复', '复制到其他位置']) expect(text).toContain(words);
   });
 
   it('offers the editor, phone remote and undo chapters on every system', () => {
@@ -220,11 +220,11 @@ describe('tutorial wording that follows the current app', () => {
 
   // Codex 的中文开关每次启动时才拿，只有从星芒打开的那一下拿得到；先问从哪打开，再教「启用中文界面」。
   it('asks where Codex was opened from before sending an English desktop app to the locale check', () => {
-    const entry = step('trouble', '回首页检查 Codex 打开结果').extra?.find((item) => item.title === '能打开，但还是英文？');
-    expect(entry?.detail).toMatch(/^中文界面只在从星芒打开 Codex 时生效。/);
-    expect(entry?.detail).toContain('（Mac 上叫 ChatGPT）');
+    const entry = step('trouble', '回首页检查 Codex 打开结果').extra?.find((item) => item.title === '可以打开，但仍为英文界面？');
+    expect(entry?.detail).toMatch(/^中文界面仅在从星芒打开 Codex 时生效。/);
+    expect(entry?.detail).toContain('（Mac 上名为 ChatGPT）');
     expect(entry?.detail).toContain('的星芒图标 ›「已安装的工具」›「Codex 桌面端」');
-    expect(entry?.detail.indexOf('从星芒首页点「打开」')).toBeLessThan(entry?.detail.indexOf('「启用中文界面」') ?? -1);
+    expect(entry?.detail.indexOf('从星芒首页点击「打开」')).toBeLessThan(entry?.detail.indexOf('「启用中文界面」') ?? -1);
   });
 
   // 桌面端的「聊天」「工作」要 ChatGPT 账号，用密钥发会报这句英文；客户拿原话搜得到，并被引到「Codex」那一栏。
@@ -262,7 +262,7 @@ describe('linux tutorials', () => {
     const original = tutorialTopics.find((topic) => topic.id === 'switch-account');
     expect(switching?.steps.map((entry) => entry.where)).toEqual(['星芒首页 › 工具卡片左下角', '星芒首页 › 卡片左下角的小标签，或右下角 … › 改用当前账号 / 切回官方账号', 'Claude Code / Codex 窗口', 'Claude Code / Codex 窗口']);
     expect(switching?.steps.map((entry) => entry.bullets?.length)).toEqual(original?.steps.map((entry) => (entry.bullets?.length ?? 0) - (entry.bullets?.filter((bullet) => bullet.startsWith('Claude Desktop')).length ?? 0)));
-    expect(switching?.steps[2].detail).toBe('已经打开的工具还记着旧账号，要关掉重开才会换过来。');
+    expect(switching?.steps[2].detail).toBe('已打开的工具仍使用旧账号，需关闭后重新打开才会切换。');
   });
 
   it('drops the Codex desktop and Mac-only chapters and keeps everything else in order', () => {
@@ -281,7 +281,7 @@ describe('linux tutorials', () => {
   it('walks a Linux beginner through Codex CLI in the same four steps', () => {
     const start = linux[0];
     expect(start.title).toBe(tutorialTopics[0].title);
-    expect(start.steps.map((entry) => entry.title)).toEqual(['登录星芒账号', '安装 Codex CLI', '看到「当前账号」就继续', '打开 Codex，发出第一条消息']);
+    expect(start.steps.map((entry) => entry.title)).toEqual(['登录星芒账号', '安装 Codex CLI', '看到「当前账号」就继续', '打开 Codex 并发送第一条消息']);
     expect(start.steps[0]).toBe(tutorialTopics[0].steps[0]);
     expect(start.reminders).toEqual(tutorialTopics[0].reminders);
     expect(JSON.stringify(start)).toContain('无需输入开机密码');

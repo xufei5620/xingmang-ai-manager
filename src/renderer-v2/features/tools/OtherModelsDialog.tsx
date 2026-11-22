@@ -77,24 +77,24 @@ export function OtherModelsDialog({ api, tool, config, signedIn, onClose, onSave
       // place with its current ownership, only the model changes.
       await api.saveManual({ provider: 'codex', apiKey: '', model: pick, mode: 'merge' })
       if (active.current) onSaved(undefined, 'saved')
-    } catch (cause) { if (active.current) setError(failureWithDetail(cause, '保存没有成功')) }
+    } catch (cause) { if (active.current) setError(failureWithDetail(cause, '保存失败')) }
     finally { locked.current = false; if (active.current) setBusy('') }
   }
   const errorText = typeof error === 'string' ? error : <FailureReason error={error.message} detail={error.detail} target="config" />
   // 「没有别家模型」这句挂在列表下面一直显示；其余的没过（还没读到、还没选）只让「保存」先灰着。
   const listIssue = detected && issue && !choices.some((model) => model !== codexDefault) ? issue : ''
-  return <Dialog open title="Codex 切换模型服务" subtitle="用量从当前账号余额里扣。" width={480} onClose={onClose} busy={Boolean(busy)} dirty={picked} testId="codex-other-models-dialog"
+  return <Dialog open title="Codex 切换模型服务" subtitle="用量从当前账号余额中扣除。" width={480} onClose={onClose} busy={Boolean(busy)} dirty={picked} testId="codex-other-models-dialog"
     footer={<><DialogExitButton disabled={Boolean(busy)}>取消</DialogExitButton>{reusable
       ? <Button variant="primary" icon={Save} loading={busy === '保存'} disabled={Boolean(busy) || loading || Boolean(issue)} aria-describedby={listIssue ? statusId : undefined} onClick={() => void save()} testId="tool-save-config">保存</Button>
       : <Button variant="primary" icon={KeyRound} loading={busy === '改用当前账号'} disabled={Boolean(busy) || !onSwitchAccount} onClick={() => void switchAccount()} testId="tool-switch-account">改用当前账号并保存</Button>}</>}>
     <fieldset className="v2-config-controls" disabled={Boolean(busy)}>
-      {official && <p className="v2-callout is-warn" data-testid="tool-model-filter-official">Codex 现在用的是 ChatGPT 账号。换别家模型要先改用当前账号，原来的配置会先备份。</p>}
+      {official && <p className="v2-callout is-warn" data-testid="tool-model-filter-official">Codex 当前使用 ChatGPT 账号。如需使用其他模型，请先改用当前账号，原有配置将先行备份。</p>}
       {reusable && <>
         {choices.length > 0 && <RadioCards label="模型" layout="stack" testId="tool-codex-model-filter" value={pick} onChange={(value) => { setPick(value); setPicked(true); setError('') }}
           options={choices.map((model) => ({ value: model, label: <span className="v2-model-name">{model}</span>, description: model === codexDefault ? 'Codex 默认' : undefined }))} />}
         {listIssue && <p id={statusId} role="status" data-testid="tool-model-filter-status">{listIssue}</p>}
         {(!detected || loading) && <div><Button size="sm" icon={RefreshCw} loading={loading} onClick={() => setRevision((value) => value + 1)} testId="tool-detect-models">{loading ? '检测中' : '检测模型'}</Button></div>}
-        <p className="v2-field-note">列表里的模型来自当前账号，不是每个都能在 Codex 里用，拿不准就选默认的。</p>
+        <p className="v2-field-note">列表中的模型来自当前账号，并非都适用于 Codex，如不确定请选择默认模型。</p>
       </>}
     </fieldset>
     {error && <p className="v2-callout is-bad" role="alert">{errorText}</p>}

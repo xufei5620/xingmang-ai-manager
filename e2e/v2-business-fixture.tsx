@@ -819,7 +819,7 @@ function hubItems(provider: Parameters<V2Bridge['listProviderExtensions']>[0]) {
   ] as const
   // 下面几个开关各给某一家多放一条，用例拿它看某一种情况：
   // claudeMcp=名字 / codexMcp=名字 / grokMcp=名字：那一家「我的（全局）」里自己加的一条连接（看「装到别的工具」、同名不换掉）；
-  // mcpAuth：Codex 里也有「测试连接」，要登录授权；scopedExtensions：Claude 只在这个项目里用的插件（local）；
+  // mcpAuth：Codex 里也有「测试连接」，要登录授权；scopedExtensions：Claude 仅在当前项目中使用的插件（local）；
   // pluginUpdate：Claude 的 code-review 有新版本。
   const extra = (target: 'claude' | 'codex' | 'grok', key: string) => {
     const name = query.get(key)
@@ -1527,7 +1527,7 @@ const apiMethods = {
       removedFiles: [],
     }
   },
-  // 「星芒占用的空间」（D100）：六行各回各的；storageInstalling 时下载那一行说正在装工具。
+  // 「星芒占用空间」（D100）：六行各回各的；storageInstalling 时下载那一行说正在装工具。
   inspectStorageUsage: async (part: Parameters<V2Bridge['inspectStorageUsage']>[0]) => {
     record('inspect-storage', part)
     const megabyte = 1024 * 1024
@@ -1559,7 +1559,7 @@ const apiMethods = {
   },
   // largeTextByDefault：Windows 文本大小调大了的电脑，新装时「大字」开着（D81、X-2）。
   getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('largeTextByDefault') ? { largeTextByDefault: true as const } : {}) }),
-  // transfer=usage-off：「搬到新电脑」的文件里「匿名使用统计」是关，这台还是新装的开，主进程交来「直接关」；
+  // transfer=usage-off：「迁移到新电脑」的文件里「匿名使用统计」是关，这台还是新装的开，主进程交来「直接关」；
   // transfer=usage-on：文件里是开，这台关过（配 usageOff），只进询问框（X-3）。没有对话，不用登录。
   // transfer=theme-dark：文件里是深色，这台还是新装的浅色，主进程交来「直接换」（D24）。
   importAppData: async () => {

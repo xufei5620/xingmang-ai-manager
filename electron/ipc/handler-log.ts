@@ -103,7 +103,7 @@ export function ipcLogDetail(channel: string, args: unknown[], result: unknown, 
     detail.action = first.action
     detail.id = first.id
   }
-  // 「星芒占用的空间」：清的是哪一样、腾出多少、几份没删掉，客服看得出清理有没有用。只有数，没有路径（I13）。
+  // 「星芒占用空间」：清的是哪一样、腾出多少、几份没删掉，客服看得出清理有没有用。只有数，没有路径（I13）。
   if (channel === 'storage:clean' && typeof first === 'string') {
     detail.target = first
     if (isRecord(result)) {

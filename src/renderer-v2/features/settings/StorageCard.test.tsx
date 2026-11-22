@@ -84,7 +84,7 @@ describe('storage card wording (D100, 空间页改)', () => {
 describe('storage card', () => {
   it('shows the approved title, lead and six rows in order with their sizes', () => {
     const markup = render()
-    expect(markup).toContain('<h2>星芒占用的空间</h2>')
+    expect(markup).toContain('<h2>星芒占用空间</h2>')
     expect(markup).toContain('星芒在本机保存的内容及占用空间。清理仅删除可重新生成或重新下载的内容，作品和聊天记录不受影响。')
     expect(markup).toContain('data-testid="settings-storage-total">一共约 3.1 GB</div>')
     const titles = ['AI 作品', '作品缩略图', '聊天记录', '运行日志', '工具配置备份', '装工具时下载的文件']

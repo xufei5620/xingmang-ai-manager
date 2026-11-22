@@ -99,7 +99,7 @@ export function useStartupChecks({ native, app, boot, settings, setSettings, aut
   const chooseDisplayCompat = useCallback((choice: 'keep' | 'restore') => perform('保存显示方式', async () => {
     setSettings(await app.savePreferences({ version: 2, hardwareAcceleration: choice === 'restore' }))
     if (choice === 'restore') noteStartupCheck(displayRelaunchNotice())
-    else toast.show('以后都用兼容方式显示。想改回来，到「设置」的「外观显示」里打开「用显卡加速显示」。', 'ok')
+    else toast.show('已设为始终使用兼容方式显示。如需恢复，请在「设置 › 外观显示」中开启「使用显卡加速显示」。', 'ok')
   }), [app, noteStartupCheck, perform, setSettings, toast])
   // 错误报告告知：登录进来后说一次，这次运行里只出一回。两颗按钮都记下「已告知」，
   // 「不想发送」同时把上报关掉，和设置页那个开关是同一个设置。

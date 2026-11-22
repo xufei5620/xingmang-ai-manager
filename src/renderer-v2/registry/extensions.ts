@@ -26,9 +26,9 @@ export interface ExtensionScopeGroup {
 }
 
 const claudeLayers: readonly ExtensionScopeGroup[] = [
-  { scope: 'user', title: '用户', description: '你的所有项目都能用' },
+  { scope: 'user', title: '用户', description: '适用于您的所有项目' },
   { scope: 'project', title: '项目', description: '随项目共享给协作者' },
-  { scope: 'local', title: '本地', description: '只在当前项目、只给你自己' },
+  { scope: 'local', title: '本地', description: '仅限当前项目、仅本人可用' },
 ];
 
 export const extensionScopeGroups: Record<ExtensionKindId, Record<ActiveProviderId, readonly ExtensionScopeGroup[]>> = {
@@ -37,31 +37,31 @@ export const extensionScopeGroups: Record<ExtensionKindId, Record<ActiveProvider
     // Codex 只往全局加连接，但受信任项目里 .codex/config.toml 写的它也认；主进程对照配置文件标出层（#1092）。
     codex: [
       { scope: 'user', title: '全局', description: '所有项目共用' },
-      { scope: 'project', title: '项目', description: '只在这个项目里用' },
+      { scope: 'project', title: '项目', description: '仅在当前项目中使用' },
     ],
     // Grok 的连接分 ~/.grok/config.toml 和项目里的 .grok/config.toml 两层，列表带回各自的 scope（#1092）。
     grok: [
-      { scope: 'user', title: '用户', description: '所有项目都能用' },
-      { scope: 'project', title: '项目', description: '只在这个项目里用' },
+      { scope: 'user', title: '用户', description: '适用于所有项目' },
+      { scope: 'project', title: '项目', description: '仅在当前项目中使用' },
     ],
   },
   skill: {
     claude: [
-      { scope: 'user', title: '个人', description: '所有项目都能用' },
+      { scope: 'user', title: '个人', description: '适用于所有项目' },
       { scope: 'project', title: '项目', description: '随项目共享给协作者' },
     ],
     codex: [
-      { scope: 'user', title: '用户', description: '所有项目都能用' },
-      { scope: 'project', title: '项目', description: '只在这个项目里用' },
+      { scope: 'user', title: '用户', description: '适用于所有项目' },
+      { scope: 'project', title: '项目', description: '仅在当前项目中使用' },
       { scope: 'builtin', title: '系统内置', description: 'Codex 自带，随版本更新' },
     ],
-    grok: [{ scope: 'user', title: '用户', description: '所有项目都能用' }],
+    grok: [{ scope: 'user', title: '用户', description: '适用于所有项目' }],
   },
   plugin: {
     claude: claudeLayers,
-    codex: [{ scope: 'all', title: '已安装', description: '所有项目都能用' }],
+    codex: [{ scope: 'all', title: '已安装', description: '适用于所有项目' }],
     // Grok 的插件命令没有范围参数，装、卸、启停都在 ~/.grok 里，只有这一层（1.0.52、1.0.62 实测，#1092）。
-    grok: [{ scope: 'all', title: '用户', description: '所有项目都能用' }],
+    grok: [{ scope: 'all', title: '用户', description: '适用于所有项目' }],
   },
 };
 
@@ -78,7 +78,7 @@ export const pluginCatalogTitles: Partial<Record<ActiveProviderId, string>> = {
  */
 export const extensionFamilies: Record<ActiveProviderId, { name: string; hint: string; skillHint: string }> = {
   claude: { name: 'Claude', hint: 'Claude Code，以及 Claude 桌面端里的 Claude Code', skillHint: 'Claude Code' },
-  codex: { name: 'GPT', hint: 'Codex CLI 和 Codex 桌面端，两边都能用', skillHint: 'Codex CLI 和 Codex 桌面端，两边都能用' },
+  codex: { name: 'GPT', hint: 'Codex CLI 和 Codex 桌面端均可使用', skillHint: 'Codex CLI 和 Codex 桌面端均可使用' },
   grok: { name: 'Grok', hint: 'Grok CLI', skillHint: 'Grok CLI' },
 };
 
