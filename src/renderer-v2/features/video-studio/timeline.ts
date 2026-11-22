@@ -157,7 +157,7 @@ export function buildVideoStudioRenderPlan(clips: readonly VideoStudioClipSpec[]
     // (compose.ts). A positive start is a real offset and is kept.
     const origin = Math.max(0, clip.start)
     if (![clip.start, clip.end, trimStart, trimEnd].every(Number.isFinite) || clip.end <= origin) {
-      throw new VideoStudioError(`${label}片段的时长读不出来`)
+      throw new VideoStudioError(`${label}片段的时长无法读取`)
     }
     if (trimStart < 0 || trimEnd < 0) throw new VideoStudioError(`${label}的剪切时间不能是负数`)
     const sourceStart = origin + trimStart

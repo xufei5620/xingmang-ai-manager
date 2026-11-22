@@ -776,12 +776,12 @@ describe('RuntimeLogStore', () => {
     expect(snapshot.entries.map((entry) => entry.message)).toEqual(['第二条', '第一条'])
     expect(snapshot.total).toBe(2)
     expect(snapshot.counts).toMatchObject({ info: 1, error: 1 })
-    expect(snapshot.writeFailure).toMatchObject({ reason: '日志所在的文件夹被搬到了别的位置', lostEntries: 2 })
+    expect(snapshot.writeFailure).toMatchObject({ reason: '日志所在的文件夹已被移动到其他位置', lostEntries: 2 })
     // 链接背后的真实目录里一个字节都没写。
     expect(fs.readdirSync(moved)).toEqual([])
 
     const report = await store.feedbackReport()
-    expect(report).toContain('日志写入失败: 本次启动有 2 条没写进日志文件（日志所在的文件夹被搬到了别的位置')
+    expect(report).toContain('日志写入失败: 本次启动有 2 条没写进日志文件（日志所在的文件夹已被移动到其他位置')
     expect(report).toContain('第一条')
     expect(report).toContain('第二条')
 
@@ -817,14 +817,14 @@ describe('RuntimeLogStore', () => {
 
   it('names the common write failures in plain words', () => {
     expect(describeRuntimeLogWriteFailure(new Error('运行日志目录不能经过符号链接或目录联接')))
-      .toBe('日志所在的文件夹被搬到了别的位置')
+      .toBe('日志所在的文件夹已被移动到其他位置')
     expect(describeRuntimeLogWriteFailure(Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })))
-      .toBe('磁盘满了')
+      .toBe('磁盘已满')
     expect(describeRuntimeLogWriteFailure(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })))
-      .toBe('没有权限写入日志文件夹')
+      .toBe('无权写入日志文件夹')
     expect(describeRuntimeLogWriteFailure(Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })))
-      .toBe('日志文件被别的程序占用了')
-    expect(describeRuntimeLogWriteFailure(new Error('something else'))).toBe('写入日志文件时出错了')
+      .toBe('日志文件已被其他程序占用')
+    expect(describeRuntimeLogWriteFailure(new Error('something else'))).toBe('写入日志文件时出错')
   })
 })
 

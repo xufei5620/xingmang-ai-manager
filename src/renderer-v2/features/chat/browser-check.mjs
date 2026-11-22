@@ -1075,7 +1075,7 @@ test('generating an image takes reference pictures and a generated one to keep e
     await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
     assert.equal((await picked(page)).model, 'gpt-image-2')
     const attach = page.getByTestId('chat-attach-image')
-    assert.equal(await attach.getAttribute('title'), '加参考图（也可以直接粘贴截图）')
+    assert.equal(await attach.getAttribute('title'), '添加参考图（也可直接粘贴截图）')
     await attach.click()
     await page.locator('.chat-draft-image').first().waitFor()
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，带参考图的会更贵一些。')

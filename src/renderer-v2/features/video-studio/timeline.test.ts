@@ -95,7 +95,7 @@ describe('video studio timeline', () => {
       { sourceStart: 0.5, frameCount: 45 },
       { sourceStart: 0.5, frameCount: 45 },
     ])
-    expect(() => buildVideoStudioRenderPlan([{ start: -1, end: 0 }], options)).toThrow('第 1 段片段的时长读不出来')
+    expect(() => buildVideoStudioRenderPlan([{ start: -1, end: 0 }], options)).toThrow('第 1 段片段的时长无法读取')
   })
 
   it('normalizes captions without touching their words', () => {
@@ -117,7 +117,7 @@ describe('video studio timeline', () => {
     expect(failure(() => buildVideoStudioRenderPlan([], options))).toBe('至少需要一段片段才能合成成片')
     expect(failure(() => buildVideoStudioRenderPlan(Array.from({ length: maxVideoStudioClips + 1 }, () => ({ start: 0, end: 1 })), options)))
       .toBe(`一次最多拼 ${maxVideoStudioClips} 段片段`)
-    expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1 }, { start: 0, end: Number.NaN }], options))).toBe('第 2 段片段的时长读不出来')
+    expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1 }, { start: 0, end: Number.NaN }], options))).toBe('第 2 段片段的时长无法读取')
     expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1, trimStart: -1 }], options))).toBe('第 1 段的剪切时间不能是负数')
     expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1, trimStart: 0.5, trimEnd: 0.4 }], options))).toBe('第 1 段裁剪首尾后不足 0.2 秒，无法使用')
     expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1, caption: '字'.repeat(201) }], options))).toBe('第 1 段的字幕过长，最多 200 个字')
