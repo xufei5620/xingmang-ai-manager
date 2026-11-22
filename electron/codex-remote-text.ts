@@ -3,7 +3,7 @@ import { redactHomeDirectory } from './startup-log'
 import { isRecord } from './input-guards'
 import { isServiceUnavailableResponse } from './network-failure'
 import { classifyRelayQuotaFailure, relayQuotaFailureMessages } from './relay-quota-failure'
-import type { RemoteApprovalKind, RemoteApprovalOutcome, RemoteApprovalRequest } from './codex-remote-channel'
+import { remoteConversationTime, type RemoteApprovalKind, type RemoteApprovalOutcome, type RemoteApprovalRequest } from './codex-remote-channel'
 
 // 手机遥控发到聊天里的字、从聊天里认的指令，飞书、微信共用。字都在这一张表里，改字只改这里。
 
@@ -20,7 +20,7 @@ export const remoteMessages = {
   newThread: '已开始新对话。',
   // 语音、文件这些（YF-14，yoyo 2026-11-11「图片改」）：图片能发了，这句跟着改。
   unsupported: '目前仅支持文字和图片，暂不支持语音和文件，请改用文字发送。',
-  help: '直接发送消息即可让 Codex 执行任务。\n可用指令：新对话、停止、状态、文件夹、关闭遥控、重试、帮助。\nCodex 执行需要您确认的操作前会先询问，请回复「同意」或「拒绝」。',
+  help: '直接发送消息即可让 Codex 执行任务。\n可用指令：新对话、对话、停止、状态、文件夹、关闭遥控、重试、帮助。\nCodex 执行需要您确认的操作前会先询问，请回复「同意」或「拒绝」。',
   closedOnComputer: '手机遥控已在电脑上关闭。',
   // 手机上发「关闭遥控」（Fable 手机遥控 YF-17，yoyo 2026-11-11「第三批改」）：开着的渠道都收到这一句。
   closedFromPhone: '手机遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。',
@@ -57,7 +57,61 @@ export const remoteMessages = {
   answerResent: '此前有一条回复未能送达，现补发如下：',
   // 发「重试」时碰上补发：上一条其实做完了，这次不让 Codex 再做一遍。
   retryAfterAnswerResent: '上一条消息已处理完成，回复即为上方内容，因此本次未重新执行。如确需重新执行，请再次发送「重试」。',
+  // 以下几句是手机上接着电脑上已有的 Codex 对话（yoyo 2026-11-22 北京 13:15「接对话字改」，原文第 19、22、24~27、29 句）。
+  conversationsEmpty: '电脑端已添加的文件夹中暂无 Codex 对话，发送消息即可开始新对话。',
+  conversationKeepApart: '请勿在电脑端和手机端同时向该对话发送消息。',
+  conversationBusy: 'Codex 正在处理上一条消息，请待其完成后再切换对话。',
+  conversationAlreadyCurrent: '当前已在该对话中。',
+  conversationResumeFailed: '无法继续该对话，请稍后重试，或发送「新对话」开始新对话。',
+  conversationUnsupported: '当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。',
+  conversationNewFromComputer: '电脑端已切换为新对话。',
 } as const
+
+export interface RemoteConversationLine {
+  title: string
+  /** 文件夹的名字（最后一段），不是整条路径。 */
+  folderName: string
+  updatedAt: number
+  current: boolean
+}
+
+/**
+ * 手机上发「对话」的回复（接对话第 18 句）：一段一行，正在用的标「当前对话」；举的例子是第一段不是当前的。
+ * 一段都没有时是第 19 句。
+ */
+export function conversationListMessage(conversations: readonly RemoteConversationLine[]): string {
+  if (conversations.length === 0) return remoteMessages.conversationsEmpty
+  const lines = conversations.map((entry, index) => `${index + 1}. ${entry.title}（${entry.folderName}，${remoteConversationTime(entry.updatedAt)}${entry.current ? '，当前对话' : ''}）`)
+  const other = conversations.findIndex((entry) => !entry.current)
+  return [
+    '本机最近的 Codex 对话（仅限电脑端已添加的文件夹）：',
+    ...lines,
+    `请发送「对话 ${other >= 0 ? other + 1 : 1}」继续该对话。`,
+  ].join('\n')
+}
+
+/**
+ * 手机上换好了对话（第 20 句），后面接权限被降下来的那句（第 21 句，没降就不带）和第 22 句。
+ * lowered 是降到的那一档。
+ */
+export function conversationSwitchedMessage(title: string, lowered: 'default' | 'readOnly' | null): string {
+  const level = lowered === 'readOnly' ? '只读' : '默认'
+  return [
+    `已切换到对话「${title}」，请发送消息继续。手机遥控的规则（不发送密钥和密码、回复简洁等）将保留在该对话中，在电脑端继续时同样生效。`,
+    ...(lowered ? [`该对话原有权限超出手机遥控允许的范围，已调整为「${level}」，在电脑端继续时也将保持「${level}」。`] : []),
+    remoteMessages.conversationKeepApart,
+  ].join('\n')
+}
+
+/** 「对话 N」没有第 N 段（第 23 句）。 */
+export function conversationMissingMessage(index: number): string {
+  return `不存在第 ${index} 个对话，请发送「对话」查看列表。`
+}
+
+/** 电脑页上换了已有对话，手机上收到的（第 28 句）。 */
+export function conversationSwitchedFromComputerMessage(title: string): string {
+  return `电脑端已切换到对话「${title}」。`
+}
 
 /** 「收到」那句（YF-14）：带着图的说几张，没带图的照旧。 */
 export function receivedMessage(imageCount: number): string {
@@ -407,6 +461,9 @@ export type RemoteCommand =
   /** 「文件夹」列出电脑上加过的，「文件夹 2」切到第 2 个（YF-19）；index 从 1 数。 */
   | { kind: 'folders' }
   | { kind: 'use-folder'; index: number }
+  /** 「对话」列出电脑上已加文件夹里最近的 Codex 对话，「对话 2」接着第 2 段聊；index 从 1 数。 */
+  | { kind: 'conversations' }
+  | { kind: 'use-conversation'; index: number }
   | { kind: 'approval'; decision: 'accept' | 'decline'; approvalId?: string }
 
 const plainCommands: Record<string, RemoteCommand['kind']> = {
@@ -417,6 +474,7 @@ const plainCommands: Record<string, RemoteCommand['kind']> = {
   关闭遥控: 'close',
   重试: 'retry',
   文件夹: 'folders',
+  对话: 'conversations',
 }
 
 /**
@@ -427,9 +485,11 @@ export function parseRemoteCommand(text: string, hasPendingApprovals: boolean): 
   const trimmed = text.trim()
   const bare = trimmed.replace(/^[/／]\s*/, '')
   const plain = plainCommands[bare]
-  if (plain === 'new-thread' || plain === 'stop' || plain === 'status' || plain === 'help' || plain === 'close' || plain === 'retry' || plain === 'folders') return { kind: plain }
+  if (plain === 'new-thread' || plain === 'stop' || plain === 'status' || plain === 'help' || plain === 'close' || plain === 'retry' || plain === 'folders' || plain === 'conversations') return { kind: plain }
   const folder = /^文件夹\s*(\d{1,2})$/.exec(bare)
   if (folder) return { kind: 'use-folder', index: Number(folder[1]) }
+  const conversation = /^对话\s*(\d{1,2})$/.exec(bare)
+  if (conversation) return { kind: 'use-conversation', index: Number(conversation[1]) }
   if (hasPendingApprovals) {
     const match = /^(同意|拒绝)(?:\s*(?:第\s*)?(\d{1,4})\s*条?)?$/.exec(bare)
     if (match) {

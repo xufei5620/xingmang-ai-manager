@@ -139,7 +139,10 @@ export class CodexAppServerClient {
     const result = await this.request('initialize', {
       clientInfo: { name: 'xingmang_remote', title: '星芒手机遥控', version: this.options.clientVersion },
       capabilities: {
-        experimentalApi: false,
+        // 接着电脑上已有的对话时，遥控的规矩只能靠 turn/start 的试验字段 collaborationMode 补进去（Codex 0.169 实测，
+        // resume 带 developerInstructions 不生效）。开了只是让 Codex 认试验字段、多发几样字段，遥控只在核过的版本上
+        // 用那一个（codexSupportsResume），别的照旧。
+        experimentalApi: true,
         requestAttestation: false,
         optOutNotificationMethods: [...appServerOptOutNotifications],
       },

@@ -50,10 +50,11 @@ async function started(fake: FakeProcess, events: AppServerHandlers = handlers()
 }
 
 describe('codex-remote-app-server', () => {
-  it('initializes, opts out of delta notifications and sends initialized', async () => {
+  it('initializes with the experimental API on, opts out of delta notifications and sends initialized', async () => {
     const fake = new FakeProcess()
     await started(fake)
-    expect(fake.written[0]).toMatchObject({ method: 'initialize', params: { capabilities: { experimentalApi: false } } })
+    // collaborationMode (the remote rules on a resumed conversation) is an experimental turn/start field.
+    expect(fake.written[0]).toMatchObject({ method: 'initialize', params: { capabilities: { experimentalApi: true } } })
     const capabilities = (fake.written[0].params as { capabilities: { optOutNotificationMethods: string[] } }).capabilities
     expect(capabilities.optOutNotificationMethods).toContain('item/agentMessage/delta')
     expect(fake.written[0]).not.toHaveProperty('jsonrpc')

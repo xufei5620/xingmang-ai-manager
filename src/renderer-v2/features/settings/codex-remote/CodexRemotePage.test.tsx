@@ -114,7 +114,7 @@ describe('codex remote page', () => {
   // 两种方式共用的设置另起一块（「通用设置」）：工作文件夹、权限、手机端使用的模型、自动打开、自动关，摆在连接方式下面。
   it('puts the shared settings in their own card after the ways to connect', () => {
     const markup = render(snapshot())
-    const order = ['remote-methods', 'remote-shared', 'settings-remote-workspace-row', 'settings-remote-permission"', 'settings-remote-model"', 'settings-remote-auto-start"', 'settings-remote-idle-close"'].map((id) => markup.indexOf(`data-testid="${id}`))
+    const order = ['remote-methods', 'remote-shared', 'settings-remote-workspace-row', 'settings-remote-conversation-row', 'settings-remote-permission"', 'settings-remote-model"', 'settings-remote-auto-start"', 'settings-remote-idle-close"'].map((id) => markup.indexOf(`data-testid="${id}`))
     expect(order.every((at) => at >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
     expect(markup).toContain('<h2>通用设置</h2>')

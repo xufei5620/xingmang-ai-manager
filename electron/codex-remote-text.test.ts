@@ -3,6 +3,10 @@ import {
   approvalOutcomeTitle,
   approvalTitle,
   classifyRemoteTurnFailure,
+  conversationListMessage,
+  conversationMissingMessage,
+  conversationSwitchedFromComputerMessage,
+  conversationSwitchedMessage,
   formatApprovalBody,
   formatApprovalText,
   formatFileChangeLine,
@@ -46,7 +50,7 @@ describe('codex-remote-text', () => {
 
   // YF-17：「帮助」里列出手机上能关遥控；只有整条就是「关闭遥控」才算，句子里带着的照常交给 Codex。
   it('lists closing the remote among the commands and does not read it out of a sentence', () => {
-    expect(remoteMessages.help.split('\n')[1]).toBe('可用指令：新对话、停止、状态、文件夹、关闭遥控、重试、帮助。')
+    expect(remoteMessages.help.split('\n')[1]).toBe('可用指令：新对话、对话、停止、状态、文件夹、关闭遥控、重试、帮助。')
     expect(remoteMessages.closedFromPhone).toBe('手机遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。')
     expect(parseRemoteCommand('先别关闭遥控', false)).toEqual({ kind: 'prompt', text: '先别关闭遥控' })
   })
@@ -360,5 +364,43 @@ describe('codex-remote-text', () => {
     // Without the change contents there is nothing to count; without a kind only the path is known.
     expect(formatFileChangeLine({ kind: 'update', path: '~/p/a.ts' })).toBe('修改 ~/p/a.ts')
     expect(formatFileChangeLine({ kind: null, path: '~/p/a.ts' })).toBe('~/p/a.ts')
+  })
+
+  // 接对话（yoyo 2026-11-22「接对话字改」）：「对话」「对话 N」只认整条，句子里带着的照常交给 Codex。
+  it('reads the conversation commands only as whole messages', () => {
+    expect(parseRemoteCommand('对话', false)).toEqual({ kind: 'conversations' })
+    expect(parseRemoteCommand('/对话', true)).toEqual({ kind: 'conversations' })
+    expect(parseRemoteCommand('对话 2', false)).toEqual({ kind: 'use-conversation', index: 2 })
+    expect(parseRemoteCommand('对话12', false)).toEqual({ kind: 'use-conversation', index: 12 })
+    expect(parseRemoteCommand('对话 123', false)).toEqual({ kind: 'prompt', text: '对话 123' })
+    expect(parseRemoteCommand('看看上次的对话', false)).toEqual({ kind: 'prompt', text: '看看上次的对话' })
+  })
+
+  it('writes the conversation replies word for word', () => {
+    const at = new Date(2026, 10, 21, 18, 30).getTime()
+    const earlier = new Date(2026, 10, 20, 9, 12).getTime()
+    expect(conversationListMessage([
+      { title: '修复登录页报错', folderName: 'demo', updatedAt: at, current: true },
+      { title: '整理接口文档', folderName: 'demo', updatedAt: earlier, current: false },
+    ])).toBe([
+      '本机最近的 Codex 对话（仅限电脑端已添加的文件夹）：',
+      '1. 修复登录页报错（demo，11-21 18:30，当前对话）',
+      '2. 整理接口文档（demo，11-20 09:12）',
+      '请发送「对话 2」继续该对话。',
+    ].join('\n'))
+    expect(conversationListMessage([])).toBe('电脑端已添加的文件夹中暂无 Codex 对话，发送消息即可开始新对话。')
+    expect(conversationSwitchedMessage('修复登录页报错', null)).toBe([
+      '已切换到对话「修复登录页报错」，请发送消息继续。手机遥控的规则（不发送密钥和密码、回复简洁等）将保留在该对话中，在电脑端继续时同样生效。',
+      '请勿在电脑端和手机端同时向该对话发送消息。',
+    ].join('\n'))
+    expect(conversationSwitchedMessage('修复登录页报错', 'default').split('\n')[1]).toBe('该对话原有权限超出手机遥控允许的范围，已调整为「默认」，在电脑端继续时也将保持「默认」。')
+    expect(conversationSwitchedMessage('修复登录页报错', 'readOnly').split('\n')[1]).toBe('该对话原有权限超出手机遥控允许的范围，已调整为「只读」，在电脑端继续时也将保持「只读」。')
+    expect(conversationMissingMessage(3)).toBe('不存在第 3 个对话，请发送「对话」查看列表。')
+    expect(conversationSwitchedFromComputerMessage('修复登录页报错')).toBe('电脑端已切换到对话「修复登录页报错」。')
+    expect(remoteMessages.conversationBusy).toBe('Codex 正在处理上一条消息，请待其完成后再切换对话。')
+    expect(remoteMessages.conversationAlreadyCurrent).toBe('当前已在该对话中。')
+    expect(remoteMessages.conversationResumeFailed).toBe('无法继续该对话，请稍后重试，或发送「新对话」开始新对话。')
+    expect(remoteMessages.conversationUnsupported).toBe('当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。')
+    expect(remoteMessages.conversationNewFromComputer).toBe('电脑端已切换为新对话。')
   })
 })

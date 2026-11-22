@@ -98,6 +98,23 @@ describe('codex-remote-store', () => {
   })
 
   // 权限两档：盘上只认「只读」，别的（含有人手改成的完全访问）一律当缺省「默认」，不会读出比默认更宽的。
+  it('reads back the chosen conversation only when every field looks right', () => {
+    const folder = path.resolve('/w/demo')
+    const conversation = { threadId: '01a20102-19e8-7b23-968d-694964b4899f', title: '修复登录页报错', folder, updatedAt: 1_795_313_244_000 }
+    expect(parseCodexRemoteSettings({ version: 1, conversation }).conversation).toEqual(conversation)
+    for (const broken of [
+      { ...conversation, threadId: '../../etc/passwd' },
+      { ...conversation, title: '' },
+      { ...conversation, title: 'x'.repeat(41) },
+      { ...conversation, folder: 'relative/demo' },
+      { ...conversation, updatedAt: -1 },
+      { ...conversation, updatedAt: 1.5 },
+      'conversation',
+    ]) {
+      expect(parseCodexRemoteSettings({ version: 1, conversation: broken })).not.toHaveProperty('conversation')
+    }
+  })
+
   it('reads back read-only permission and treats anything else as the default level', () => {
     expect(parseCodexRemoteSettings({ version: 1, permission: 'readOnly' }).permission).toBe('readOnly')
     for (const value of ['default', 'fullAccess', 'danger-full-access', 'never', '', null, 1, ['readOnly']]) {
