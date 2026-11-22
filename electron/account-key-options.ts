@@ -81,7 +81,7 @@ export async function resolveAccountKeyOptions(options: AccountKeyOptionsDepende
       // Cache/backend exceptions must never reflect an API Key supplied to
       // a provider's identification endpoint into an ordinary IPC error.
       if (error instanceof RealmAccountError) throw error
-      throw new Error('无法读取当前 API Key 的所属分组，请重试')
+      throw new Error('无法读取当前密钥的所属分组，请重试')
     }
   }
   secret = options.systemService.revealApiKey(options.provider, options.previewOnboarding)

@@ -2207,7 +2207,7 @@ describe('Codex Desktop launch queueing', () => {
     await accountWork.whenIdle()
     revision++
     accountWork.abortQueued()
-    await expect(started).rejects.toThrow('账号刚切换过')
+    await expect(started).rejects.toThrow('账号刚刚切换')
     expect(queue.snapshot().pendingKeys).toEqual([])
 
     const next = fixture.service.launchCodexDesktop('open', fixture.target, { accountWork: accountWork.queue() })
@@ -2259,7 +2259,7 @@ describe('Codex Desktop launch queueing', () => {
     await new Promise<void>((resolve) => setImmediate(resolve))
     expect(settled).toBe(false)
     showWindow()
-    await expect(launch).rejects.toThrow('账号刚切换过')
+    await expect(launch).rejects.toThrow('账号刚刚切换')
     expect(waited).toBe(true)
   })
 

@@ -173,6 +173,6 @@ describe('current and automatic account key options', () => {
   it('does not echo key-bearing backend errors across IPC', async () => {
     const f = fixture()
     f.identifyKey.mockRejectedValue(new Error(`request failed for ${f.state.secret}`))
-    await expect(resolveAccountKeyOptions(f.options)).rejects.toThrow('无法读取当前 API Key 的所属分组，请重试')
+    await expect(resolveAccountKeyOptions(f.options)).rejects.toThrow('无法读取当前密钥的所属分组，请重试')
   })
 })

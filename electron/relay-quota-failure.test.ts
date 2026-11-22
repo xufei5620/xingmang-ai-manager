@@ -73,7 +73,7 @@ describe('relay quota failure classification', () => {
     ['模型查询失败，服务返回 429：API key 额度已用完', 'keyLimit'],
     ['模型查询失败，服务返回 403：用户额度不足, 剩余额度: ＄0.000000', 'balance'],
     // 一键改用和写 Key 失败会把这句包在自己的话里。
-    ['Claude Code 改用当前账号没有完成：模型查询失败，服务返回 401：无效的令牌。已恢复到切换前的配置。', 'keyInvalid'],
+    ['Claude Code 改用当前账号未完成：模型查询失败，服务返回 401：无效的令牌。已恢复到切换前的配置。', 'keyInvalid'],
     ['Claude Code 的 Key 没配上：模型查询失败，服务返回 403：Insufficient account balance', 'balance'],
   ] as const)('reads the model probe sentence "%s" as %s', (message, expected) => {
     expect(relayQuotaFailureInMessage(message)).toBe(expected)

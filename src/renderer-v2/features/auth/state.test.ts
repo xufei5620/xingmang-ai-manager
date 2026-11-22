@@ -9,7 +9,7 @@ describe('v2 two-step verification', () => {
     const challenge = new Error("Error invoking remote method 'account:login': Error: 此账号需要双重验证，请先完成验证")
     expect(isTwoFactorChallenge(challenge)).toBe(true)
     expect(isTwoFactorChallenge(new Error('此账号需要双重验证，请先在官方网站完成验证'))).toBe(false)
-    expect(isTwoFactorExpired(new Error('Error: 等太久了，请重新输入密码登录'))).toBe(true)
+    expect(isTwoFactorExpired(new Error('Error: 验证已超时，请重新输入密码登录'))).toBe(true)
     // A challenge the client cannot finish still points to the website.
     expect(requiresBrowserAuthentication(new Error('此账号需要双重验证，客户端暂不支持这种验证方式'))).toBe(true)
   })
@@ -22,7 +22,7 @@ describe('v2 two-step verification', () => {
     expect(parseTwoFactorCode('  ', true).ok).toBe(false)
   })
   it('shows the second-step failures as written instead of the broad code and rate-limit wording', () => {
-    for (const text of ['验证码不对或已过期，请看验证器里最新的数字再试', '试得太频繁了，请过一会儿再试', '等太久了，请重新输入密码登录']) {
+    for (const text of ['验证码错误或已过期，请输入验证器中的最新验证码后重试', '尝试过于频繁，请稍后重试', '验证已超时，请重新输入密码登录']) {
       expect(authErrorMessage(new Error(`Error: ${text}`), '两步验证')).toBe(text)
     }
   })
@@ -159,7 +159,7 @@ describe('v2 auth recovery boundaries', () => {
     expect(authFailure(new Error('Email address is already in use'), '创建账号').kind).toBe('taken')
     expect(authFailure(new Error('User has been banned'), '登录').kind).toBe('support')
     expect(authFailure(new Error('New user registration has been disabled by administrator'), '创建账号').kind).toBe('support')
-    expect(authFailure(new Error('登录太频繁了，请过一会儿再试。'), '登录').kind).toBe('wait')
+    expect(authFailure(new Error('登录过于频繁，请稍后重试。'), '登录').kind).toBe('wait')
     expect(authFailure(new Error('Database error, please contact the administrator'), '登录').kind).toBe('unknown')
   })
   it('keeps a plain Chinese reason in the fallback instead of throwing it away', () => {
@@ -204,8 +204,8 @@ describe('v2 auth recovery boundaries', () => {
     expect(authErrorMessage(new Error('账号安全存储不可用，原记录未修改'), '登录')).toBe(expected)
     expect(authErrorMessage('本地账号存储恢复失败：password credential diagnostic detail', '登录')).toBe(expected)
     expect(authErrorMessage(new Error('账号或密码不正确'), '登录')).toBe('账号或密码不正确，请检查后重试')
-    const full = authErrorMessage(new Error("Error invoking remote method 'account:login': RealmAccountError: 这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。"), '登录')
-    expect(full).toContain('移除一个不用的')
+    const full = authErrorMessage(new Error("Error invoking remote method 'account:login': RealmAccountError: 本机保存的账号已满（最多 16 个）。请先在「切换账号」中移除一个不再使用的账号，再登录。"), '登录')
+    expect(full).toContain('移除一个不再使用的')
     expect(full).not.toMatch(/安全存储|退出软件/)
   })
   it('tells a Mac customer how to answer the keychain prompt only when the keychain refused', () => {
@@ -276,13 +276,13 @@ describe('v2 auth recovery boundaries', () => {
   // 以前 409 落到「请稍后重试」：服务端的设备数满了，重试一万次也登不上。
   it('explains login device and frequency limits instead of asking to try again later', () => {
     const sessionLimit = authErrorMessage(new Error("Error invoking remote method 'account:login': Error: 这个账号同时登录的设备太多了，暂时登不上。"), '登录')
-    expect(sessionLimit).toContain('「账号安全」里让几台不用的设备下线')
+    expect(sessionLimit).toContain('「账号安全」中将不再使用的设备下线')
     expect(sessionLimit).toContain('联系客服')
     expect(sessionLimit).not.toMatch(/稍后重试|https?:|solov|\.cc/)
     expect(authErrorMessage(new Error('AUTH_SESSION_LIMIT'), '登录')).toBe(sessionLimit)
-    expect(authErrorMessage(new Error('这个账号最近一天里登录的次数太多了，请过几个小时再试。'), '登录')).toBe('这个账号最近一天里登录的次数太多了，请过几个小时再试。')
-    expect(authErrorMessage(new Error('AUTH_SESSION_ISSUANCE_LIMIT'), '登录')).toContain('过几个小时')
-    expect(authErrorMessage(new Error("Error invoking remote method 'account:login': Error: 登录太频繁了，请过一会儿再试。"), '登录')).toBe('登录太频繁了，请过一会儿再试。')
+    expect(authErrorMessage(new Error('该账号近 24 小时内登录次数过多，请数小时后重试。'), '登录')).toBe('该账号近 24 小时内登录次数过多，请数小时后重试。')
+    expect(authErrorMessage(new Error('AUTH_SESSION_ISSUANCE_LIMIT'), '登录')).toContain('数小时后')
+    expect(authErrorMessage(new Error("Error invoking remote method 'account:login': Error: 登录过于频繁，请稍后重试。"), '登录')).toBe('登录过于频繁，请稍后重试。')
   })
   it('does not send an account that never had a password back to the password field', () => {
     expect(authErrorMessage(new Error('This account has no password set. Please use password reset or contact an administrator to reset it.'), '修改密码')).toBe('该账号尚未设置密码，请点击「找回密码」进行设置')
@@ -405,7 +405,7 @@ describe('recovery password change outcome', () => {
     expect(sessionMatchesLogin({ authenticated: true, account: login.account, siteId: 'solov-api' }, login, 'solov')).toBe(false)
   })
   it('does not take a change that lost its login halfway or got no answer as proof the new password was not set', () => {
-    const lost = new Error("Error invoking remote method 'account:change-password': Error: 账号刚切换过，请再试一次")
+    const lost = new Error("Error invoking remote method 'account:change-password': Error: 账号刚刚切换，请重试")
     const unanswered = new Error(`Error invoking remote method 'account:change-password': Error: ${networkFailureMessages.timeout}（修改密码请求失败）`)
     expect(passwordChangeOutcomeUnknown(authFailure(lost, '设新密码').kind)).toBe(true)
     expect(passwordChangeOutcomeUnknown(authFailure(unanswered, '设新密码').kind)).toBe(true)
