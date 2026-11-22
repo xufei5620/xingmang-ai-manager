@@ -641,7 +641,7 @@ describe('createCanvasWindowController', () => {
   })
 
   it('defines the dark canvas color used before the renderer becomes visible', () => {
-    expect(canvasWindowBackgroundColor).toBe('#0b0c10')
+    expect(canvasWindowBackgroundColor).toBe('#1f2023')
   })
 
   it('opens with the stored dark theme in both the native background and renderer URL', async () => {
