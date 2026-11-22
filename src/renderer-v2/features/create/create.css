@@ -52,8 +52,13 @@
 .create-library-empty { display: grid; justify-items: center; gap: 10px; padding: 48px 16px; color: var(--text-3); font-size: 13px; text-align: center; }
 .create-library-empty > p { margin: 0; }
 /* 点开一件：大图或能直接放的视频。 */
-.create-library-media { display: grid; place-items: center; min-height: 160px; border-radius: 10px; background: var(--panel-hover); overflow: hidden; }
-.create-library-media > img, .create-library-media > video { display: block; max-width: 100%; max-height: min(56vh, 480px); }
+/* 大图和视频最高多少：窗口矮的时候要让出弹窗的顶边（--dialog-top，弹窗自己定的）和标题、出处、按钮那几行（合起来约 240），
+   不然这一块被弹窗压矮，画面上下被裁掉，视频的进度条就看不到了。估得不够时这一块不压矮（flex: none），弹窗里自己滚。 */
+.create-library-media { --create-library-media-max: min(56vh, 480px, max(120px, calc(100vh - var(--dialog-top, 110px) - 240px))); display: grid; place-items: center; flex: none; min-height: 160px; border-radius: 10px; background: var(--panel-hover); overflow: hidden; }
+.create-library-media > img, .create-library-media > video { display: block; max-width: 100%; max-height: var(--create-library-media-max); }
+/* 视频的大小按它自己的宽高比定（LibraryDetail 写的 --create-library-player-ratio，没写时 16:9），不跟着缩略图走：
+   只限最宽最高时，按播放之前它照缩略图的大小排，画面只有一小块。 */
+.create-library-media > video { width: min(100%, calc(var(--create-library-media-max) * var(--create-library-player-ratio, 16 / 9))); aspect-ratio: var(--create-library-player-ratio, 16 / 9); }
 .create-library-media > p { margin: 0; padding: 24px; color: var(--text-3); font-size: 13px; text-align: center; }
 .create-library-origin { display: flex; margin-top: 10px; }
 /* 选择框里的那一份：框自己滚。 */

@@ -4754,6 +4754,54 @@ test('a video opened from the library plays in the page, leads back to its film 
   } finally { await page.close() }
 })
 
+// 一段 64 × 36、1 秒的 VP8 视频（655 字节，ffmpeg 生成的纯色画面）：夹具里的浏览器读得出它的宽高。
+const libraryTinyVideo = Buffer.from('GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAJfEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggEeTbuMU6uEHFO7a1OsggJJ7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjAuMTYuMTAwV0GNTGF2ZjYwLjE2LjEwMESJiECPQAAAAAAAFlSua8GuAQAAAAAAADjXgQFzxYhACfuV3IxqzZyBACK1nIN1bmSIgQCGhVZfVlA4g4EBI+ODhAvrwgDgibCBQLqBJJqBAhJUw2f8c3OgY8CAZ8iaRaOHRU5DT0RFUkSHjUxhdmY2MC4xNi4xMDBzc9ZjwItjxYhACfuV3IxqzWfIoUWjh0VOQ09ERVJEh5RMYXZjNjAuMzEuMTAyIGxpYnZweGfIoUWjiERVUkFUSU9ORIeTMDA6MDA6MDEuMDAwMDAwMDAwAB9DtnVApOeBAKO/gQAAgJADAJ0BKkAAJAAARwiFhYiFhIgCAgJ1qgP4A/gCBzt54s8zHl4A/vkqb/93mwBhL/i9/+0shCuv+c4Ao5aBAMgA0QEAARAQABgAGFgv9AAIjAAAo5aBAZAA0QEAARAQABgAGFgv9AAIjAAAo5aBAlgA0QEAARAQABgAGFgv9AAIjAAAo5aBAyAA0QEAARAQABgAGFgv9AAIjAAAHFO7a5G7j7OBALeK94EB8YIBn/CBAw==', 'base64')
+
+test('a video opened from the library is laid out at its own shape before it plays, not at the size of its thumbnail', async () => {
+  const page = await openCreate('library=1&videoFilms=library&chatVideo=1')
+  try {
+    // 缩略图是 40 × 30 的那一张：播放前照它排的话，画面只有那么一小块。
+    await serveLibraryPictures(page)
+    await page.route(/^xingmang-asset:\/\/video\//, (route) => route.fulfill({ contentType: 'video/webm', body: libraryTinyVideo }))
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-library-open').click()
+    await page.getByTestId('create-library-pane').getByTestId(`create-library-item-${libraryFilm}`).click()
+    const detail = page.getByTestId('create-library-detail')
+    const player = detail.getByTestId('create-library-player')
+    await player.waitFor()
+    const shape = async () => {
+      const box = await player.boundingBox()
+      return { width: Math.round(box.width), ratio: Math.round(box.width / box.height * 100) / 100 }
+    }
+    // 宽高读出来了，还没有按播放。
+    await page.waitForFunction(() => document.querySelector('[data-testid="create-library-player"]')?.readyState >= 1)
+    assert.equal(await player.evaluate((video) => video.paused), true)
+    const before = await shape()
+    assert.ok(before.width >= 480, `player is ${before.width} wide before it plays`)
+    assert.equal(before.ratio, 1.78)
+    // 放起来以后还是那么大，不跳。
+    await player.evaluate((video) => { video.muted = true; return video.play() })
+    await page.waitForFunction(() => document.querySelector('[data-testid="create-library-player"]')?.currentTime > 0)
+    assert.deepEqual(await shape(), before)
+    assert.equal(await detail.getByRole('alert').count(), 0)
+
+    // 窗口矮的时候画面跟着变矮，不被弹窗压着裁掉：进度条在最下面，裁掉就看不到了。
+    await page.setViewportSize({ width: 1100, height: 620 })
+    await page.waitForFunction(() => {
+      const video = document.querySelector('[data-testid="create-library-player"]')
+      return video && Math.abs(video.getBoundingClientRect().width / video.getBoundingClientRect().height - 16 / 9) < 0.02 && video.getBoundingClientRect().height < 320
+    })
+    const holder = await detail.locator('.create-library-media').boundingBox()
+    const short = await player.boundingBox()
+    assert.ok(short.y >= holder.y - 0.5 && short.y + short.height <= holder.y + holder.height + 0.5, `player ${Math.round(short.height)} high in a holder ${Math.round(holder.height)} high`)
+    // 弹窗里不用滚，下面那一排按钮也还在窗口里。
+    assert.deepEqual(await detail.locator('.xm-dialog-body').evaluate((body) => body.scrollHeight - body.clientHeight), 0)
+    const footer = await detail.getByTestId('create-library-open-video').boundingBox()
+    assert.ok(footer.y + footer.height <= 620)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the third start card joins clips picked from the library into a new film without generating anything', async () => {
   const page = await openCreate('library=1&videoFilms=library&chatVideo=1')
   try {
