@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -10,11 +11,11 @@ import {
   createWindowsUpdateHandoff,
   createWindowsUpdateHandoffRecordStore,
   isUpdatePackageDigest,
-  launchDetachedWindowsProcess,
   parseWindowsUpdateHandoffRecord,
   parseWindowsUpdateHandoffStatus,
   resolvePreviousWindowsHandoffFailure,
   resolveWindowsUpdateHandoffStatusPath,
+  runHiddenWindowsProcess,
   windowsUpdateHandoffParentWaitMs,
   type WindowsUpdateHandoffDependencies,
 } from './windows-update-handoff'
@@ -222,27 +223,39 @@ describe('windows update handoff', () => {
 
 describe('launching the relaunch', () => {
   function fakeChild() {
-    return Object.assign(new EventEmitter(), { unref: vi.fn() }) as unknown as ChildProcess
+    return Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() }) as unknown as ChildProcess
   }
 
-  it('starts it detached, without a shell, with the environment it is given', async () => {
+  it('starts it hidden and attached, without a shell, with the environment it is given', async () => {
     const child = fakeChild()
     const spawn = vi.fn((_command: string, _args: readonly string[], _options: SpawnOptions) => child)
     const env = { SystemRoot: 'C:\\Windows' }
-    const exited = launchDetachedWindowsProcess(paths.powershell, ['a b', '中文'], env, spawn)
+    const exited = runHiddenWindowsProcess(paths.powershell, ['a b', '中文'], env, spawn)
     child.emit('exit', 1223)
     await expect(exited).resolves.toBe(1223)
     expect(spawn).toHaveBeenCalledWith(paths.powershell, ['a b', '中文'], expect.objectContaining({
-      detached: true, shell: false, stdio: 'ignore', windowsHide: true, env,
+      shell: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env,
     }))
+    // A detached PowerShell has no console; on the CI runner it exited 0 at once
+    // without running the script.
+    expect(spawn.mock.calls[0]?.[2].detached).not.toBe(true)
+  })
+
+  it('drains what it prints so a chatty PowerShell cannot block on a full pipe', async () => {
+    const child = fakeChild()
+    const exited = runHiddenWindowsProcess(paths.powershell, [], {}, () => child)
+    expect(child.stdout?.readableFlowing).toBe(true)
+    expect(child.stderr?.readableFlowing).toBe(true)
+    child.emit('exit', 0)
+    await expect(exited).resolves.toBe(0)
   })
 
   it('rejects when it cannot be started', async () => {
     const child = fakeChild()
-    const exited = launchDetachedWindowsProcess(paths.powershell, [], {}, () => child)
+    const exited = runHiddenWindowsProcess(paths.powershell, [], {}, () => child)
     child.emit('error', new Error('ENOENT'))
     await expect(exited).rejects.toThrow('ENOENT')
-    const thrown = launchDetachedWindowsProcess(paths.powershell, [], {}, () => { throw new Error('EINVAL') })
+    const thrown = runHiddenWindowsProcess(paths.powershell, [], {}, () => { throw new Error('EINVAL') })
     await expect(thrown).rejects.toThrow('EINVAL')
   })
 })

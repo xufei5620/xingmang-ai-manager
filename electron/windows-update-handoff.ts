@@ -267,11 +267,15 @@ export function createWindowsUpdateHandoff(dependencies: WindowsUpdateHandoffDep
 }
 
 /**
- * 起发起交接的那个 PowerShell。detached：它请出来的提权那一份要在星芒退出之后接着装，这一头不跟着本进程的
- * 作业对象一起被结束。
+ * 起发起交接的那个 PowerShell，等它退出、拿退出码。它只活到授权窗口有了回答为止；提权的那一份由 Windows
+ * 另起，不在本进程的作业对象里，星芒退出以后照样接着装。
+ * 不用 detached：CI 上实测 detached 起的系统 PowerShell 114 毫秒就以 0 退出，脚本根本没跑（没写状态，
+ * PowerShell 日志里也没有它的启动记录），推测是 detached 的子进程没有控制台。照 execFile 起 PowerShell
+ * 那条一直能跑的路子来：不 detached、隐藏窗口、输出接管道并丢掉。看 exit 不看 close，提权那一份就算
+ * 拿着这几个管道也不等它。
  * 环境由调用方给（trustedCommandEnvironment，I2），不经 shell（I1）。
  */
-export function launchDetachedWindowsProcess(
+export function runHiddenWindowsProcess(
   file: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv,
@@ -281,8 +285,7 @@ export function launchDetachedWindowsProcess(
     let child: ChildProcess
     try {
       child = spawn(file, args, {
-        detached: true,
-        stdio: 'ignore',
+        stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         shell: false,
         env,
@@ -292,6 +295,8 @@ export function launchDetachedWindowsProcess(
       reject(error)
       return
     }
+    child.stdout?.resume()
+    child.stderr?.resume()
     let settled = false
     child.once('error', (error) => {
       if (settled) return

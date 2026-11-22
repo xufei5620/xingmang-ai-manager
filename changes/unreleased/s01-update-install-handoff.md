@@ -7,6 +7,7 @@
   `bootstrap/updates.ts` 接线，`main.ts` 退出时安装在 Windows 上等交接结果（`quit-blocking-tasks.ts` 的 `waitForWindowsUpdateHandoff`）。macOS 与 Linux 的安装路径不变。
   提权不经 electron-builder 带的 `resources\elevate.exe`（CI 实测它把参数重新用空格拼起来、引号全丢，参数一长就退出 1 不启动）：
   系统 PowerShell 以普通权限跑脚本的 `-Relaunch`，脚本逐个加引号后请 Windows 以管理员身份再起一份自己，授权窗口点「否」时退出 1223。
+  发起的那个 PowerShell 不 detached 起（`runHiddenWindowsProcess`，隐藏窗口、等它退出）：CI 上 detached 起的系统 PowerShell 不跑脚本就以 0 退出。
 - 新字（确认词「更新交接字改」）：取消授权、安装包有变化、准备好却没能自动关闭、上次安装程序报了失败，共四句，见 `updater.ts` 开头那几个常量。
 - 用例：`updater.test.ts` 新增「Windows install handoff (S01)」一组（旧代码上红）；新增 `windows-update-handoff.test.ts`；
   `quit-blocking-tasks.test.ts` 补退出时等交接的四条；`verify-packaged-hardening.test.cjs`、`ci-workflow-config.test.cjs` 各补一条；

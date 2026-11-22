@@ -24,6 +24,10 @@ import { fileURLToPath } from 'node:url'
 // With --packaged <resources directory of a built package> only the digest
 // mismatch and the whole chain run, with that package's own copy of the script.
 //
+// The relaunch is started the way the app starts it (runHiddenWindowsProcess):
+// started detached, the system PowerShell exited 0 here within 114 ms without
+// running the script at all.
+//
 // The relaunch replaced resources\elevate.exe, the helper electron-builder ships,
 // after this smoke ran it on the runner: it rejoined its arguments with plain
 // spaces (a quoted "two words" reached the program as two arguments), returned
@@ -41,7 +45,7 @@ function compiled(name) {
   return require(path.join(repo, 'dist-electron', `${name}.js`))
 }
 const {
-  buildWindowsUpdateHandoffCommand, classifyWindowsHandoffLaunchExit, launchDetachedWindowsProcess, parseWindowsUpdateHandoffStatus,
+  buildWindowsUpdateHandoffCommand, classifyWindowsHandoffLaunchExit, runHiddenWindowsProcess, parseWindowsUpdateHandoffStatus,
   readWindowsUpdateHandoffStatusFile, resolveWindowsUpdateHandoffStatusPath,
 } = compiled('windows-update-handoff')
 const { resolveWindowsPowerShellExecutable } = compiled('windows-elevation')
@@ -160,7 +164,7 @@ async function runAsTheApp(input) {
   const command = handoffCommand(input)
   const before = stagingDirectories()
   const started = Date.now()
-  const exit = await launchDetachedWindowsProcess(command.file, command.args, trustedCommandEnvironment())
+  const exit = await runHiddenWindowsProcess(command.file, command.args, trustedCommandEnvironment())
   const relaunchMs = Date.now() - started
   const statusPath = resolveWindowsUpdateHandoffStatusPath(machinePaths.systemRoot, input.nonce)
   const timeline = []

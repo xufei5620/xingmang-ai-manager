@@ -27,7 +27,7 @@ import { installStrictUpdateCodeSignatureVerifier } from '../update-signature'
 import { createSharedDirectRetry, createUpdaterService, updatePreviousInstallFailedMessage, type UpdaterRuntime } from '../updater'
 import { resolveWindowsPowerShellExecutable } from '../windows-elevation'
 import { resolveWindowsMachinePaths } from '../windows-machine-paths'
-import { createWindowsUpdateHandoff, createWindowsUpdateHandoffRecordStore, launchDetachedWindowsProcess, readWindowsUpdateHandoffStatusFile, readWindowsUpdateHandoffStatusFileSync, resolvePreviousWindowsHandoffFailure, resolveWindowsUpdateHandoffStatusPath, windowsUpdateHandoffParentWaitMs, windowsUpdateHandoffScriptRelativePath, type WindowsUpdateHandoffRecordStore } from '../windows-update-handoff'
+import { createWindowsUpdateHandoff, createWindowsUpdateHandoffRecordStore, readWindowsUpdateHandoffStatusFile, readWindowsUpdateHandoffStatusFileSync, resolvePreviousWindowsHandoffFailure, resolveWindowsUpdateHandoffStatusPath, runHiddenWindowsProcess, windowsUpdateHandoffParentWaitMs, windowsUpdateHandoffScriptRelativePath, type WindowsUpdateHandoffRecordStore } from '../windows-update-handoff'
 import type { NetworkRoutes } from './network-routes'
 
 export interface UpdateFeedOptions {
@@ -68,7 +68,7 @@ function createWindowsInstallHandoff(
         windowsDirectory: machinePaths.systemRoot,
       }
     },
-    launch: (file, args) => launchDetachedWindowsProcess(file, args, trustedCommandEnvironment()),
+    launch: (file, args) => runHiddenWindowsProcess(file, args, trustedCommandEnvironment()),
     readStatus: readWindowsUpdateHandoffStatusFile,
     rememberAttempt: (attempt) => records.write(attempt).catch((cause: unknown) => {
       runtimeLog.exception('updater', 'install.handoff.record-failed', cause)
