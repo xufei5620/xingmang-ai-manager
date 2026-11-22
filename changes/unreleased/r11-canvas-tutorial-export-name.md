@@ -1,9 +1,6 @@
-## 用户
-
-- 「使用教程」里画布那一章，转移项目的按钮名改成跟画布菜单一致的「导出工作流」。
-
 ## 开发
 
+- 给客户看的那句并进了 `home-corner-notices.md`（0.2.25 更新说明统一改为正式书面口吻、同类并条，复查第三轮第 8 条）。
 - `src/renderer-v2/registry/tutorials.ts` 画布章最后一步原来叫客户在「更多操作」里选「导出项目（含素材）」，
   但这个入口只在宿主接了网页便携包导出（`host-entry-points.ts` 的 `projectPackageExport`）时才出现，桌面画布没接，
   菜单里只有「导出工作流」；它走 `canvas-host:export-project`，导出的文件内嵌图片，视频和音频不带（`canvas-project-package.ts`）。

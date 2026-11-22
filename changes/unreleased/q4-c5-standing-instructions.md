@@ -1,3 +1,7 @@
+## 用户
+
+- 设置的「工具管理」新增「给 AI 的长期嘱咐」，Claude Code、Codex 和 Grok 将在所有文件夹中遵循。
+
 ## 开发
 
 - 总单 Q4 C5：新模块 `electron/standing-instructions.ts` 把一段话写进三家的全局说明（Claude Code 的
@@ -10,4 +14,3 @@
   只经这条通道改，`settings:save` 不收。
 - 「用中文回复」那份（`globalResponseLanguagePlans`）把只有星芒这一段的 `AGENTS.md` 当成没有说明，
   照样放在前面；认自己那一版时先去掉这一段再比摘要。
-- 给客户看的那句并进了 `q4-c4-skill-zip-import.md`（同是总单 Q4 给 AI 工具加的本事），这一版「## 用户」合起来不超 60 条。
