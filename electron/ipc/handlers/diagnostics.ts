@@ -57,7 +57,7 @@ export function registerDiagnosticsHandlers(ctx: IpcHandlerContext): void {
   })
 
   registerTrustedHandler('diagnostics:probe-codex-responses', (_event, acknowledgeBilling: unknown, expectedAccountScope: unknown) => {
-    if (acknowledgeBilling !== true) throw new Error('请先勾选确认：这次检查会用当前账号的一点额度')
+    if (acknowledgeBilling !== true) throw new Error('请先勾选确认：本次检测将消耗当前账号少量额度')
     if (typeof expectedAccountScope !== 'string'
       || !/^(?:xm-account|api-account):(?:guest|[1-9]\d{0,14})$/.test(expectedAccountScope)) {
       throw new Error('账号信息不对，请重新勾选确认后再检查')
@@ -90,7 +90,7 @@ export function registerDiagnosticsHandlers(ctx: IpcHandlerContext): void {
     const { isDiagnosticFixKind } = await import('../../diagnostic-fixes')
     if (!isDiagnosticFixKind(rawKind)) throw new Error('不认识要处理的是哪一项')
     const fix = options.diagnosticsService.fix
-    if (!fix) throw new Error('这一项暂时不能在这里处理，请在「反馈与客服」页导出报告发给客服')
+    if (!fix) throw new Error('此项暂无法在此处理，请在「反馈与客服」页导出报告并发送给客服')
     return fix(rawKind)
   })
   function resolveDiagnosticFolder(target: DiagnosticFolderTarget): string | null {

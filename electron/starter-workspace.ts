@@ -111,7 +111,7 @@ export function createStarterWorkspace(parentDirectory: string, context: Workspa
   // 新建出来的目录要走完整的信任写入与 AGENTS.md 生成，它自己绝不能又落进
   // 敏感名单（比如「文档」读成了盘根）。每个序号深度相同，判第一个就够。
   if (classifyWorkspace(path.join(container, buildStarterWorkspaceName(1)), context) !== null) {
-    throw new Error('这个位置不适合放项目')
+    throw new Error('该位置不适合存放项目')
   }
   // 上层目录本身不替用户建：它不存在说明系统报的位置不对，建出来的东西用户也找不到。
   if (!isExistingDirectory(parentDirectory)) throw new Error('找不到可以放项目的文件夹')
@@ -137,7 +137,7 @@ export function createStarterWorkspace(parentDirectory: string, context: Workspa
     if (isSystemError(error)) throw new Error('可能是没有写入权限，或者磁盘已满', { cause: error })
     throw error
   }
-  throw new Error(`「${starterWorkspaceContainerName}」里的同名文件夹太多了`)
+  throw new Error(`「${starterWorkspaceContainerName}」中同名文件夹过多`)
 }
 
 // 空着的新项目里除了星芒放的说明文件，还会有系统和工具自己留下的东西：访达一打开就落下

@@ -64,7 +64,7 @@ describe('diagnostics wiring', () => {
 
   it('refuses a paid Codex probe confirmed for another account', () => {
     const { diagnostics } = create()
-    expect(() => diagnostics.diagnosticsService.probeCodexResponses('xm-account:2')).toThrow('当前账号变了，请重新勾选确认后再检查')
+    expect(() => diagnostics.diagnosticsService.probeCodexResponses('xm-account:2')).toThrow('当前账号已变更，请重新勾选确认后再检测')
   })
 
   it('attaches the three feedback sections without reading the scan snapshot until a report is built', async () => {

@@ -35,7 +35,7 @@ describe('mcpCopyConfig', () => {
   })
 
   it('says a connection is gone or malformed rather than carrying something half-read', () => {
-    expect(() => mcpCopyConfig('claude', undefined)).toThrow('没有找到这个连接，请刷新列表后再试。')
+    expect(() => mcpCopyConfig('claude', undefined)).toThrow('未找到该连接，请刷新列表后重试。')
     for (const entry of ['npx', { command: '' }, { command: 'acme', args: 'x' }, { command: 'acme', env: { 'BAD NAME': 'x' } }, { type: 'http', url: 'https://a', headers: { 'Bad Header': 'x' } }, { type: 'http', command: 'acme', url: 'https://a' }]) {
       expect(() => mcpCopyConfig('claude', entry), JSON.stringify(entry)).toThrow('这条连接的设置格式不对，星芒搬不过去，请在要装的工具里手动添加。')
     }

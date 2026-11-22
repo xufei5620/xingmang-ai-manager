@@ -2791,7 +2791,7 @@ if (!hasSingleInstanceLock) {
       ...(process.platform === 'darwin'
         ? {
             uninstallApp: (request: AppUninstallRequest, backupCliConfigs: () => Promise<void>) => (
-              requestMacUninstall?.(request, backupCliConfigs) ?? Promise.reject(new Error('星芒还没准备好，稍后再试'))
+              requestMacUninstall?.(request, backupCliConfigs) ?? Promise.reject(new Error('星芒尚未准备就绪，请稍后重试'))
             ),
           }
         : {}),

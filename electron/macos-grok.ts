@@ -459,14 +459,14 @@ export function captureDarwinGrokCanonicalLink(homeDirectory: string): DarwinGro
  * ~/.grok/bin/grok 已经被别的东西占着、又不是能原样放回去的那几种（手做的链接、普通文件）时，npm 的
  * 安装脚本一跑就盖掉它，装坏了也放不回去，所以一个字节都还没下就停，说一句客户照着能做的（同
  * linux-grok.ts 的 runLinuxGrokPostInstallTransaction）。以前这一下在下载完才报，英文原话被说成两遍
- * 「npm 没有装成」。首页对这种认不出的给的是「使用星芒安装」（Mac 验收 R1），所以句尾指回那颗按钮。
+ * 「npm 安装失败」。首页对这种认不出的给的是「使用星芒安装」（Mac 验收 R1），所以句尾指回那颗按钮。
  */
 export function assertDarwinGrokCanonicalLinkReplaceable(homeDirectory: string): void {
   try {
     captureDarwinGrokCanonicalLink(homeDirectory)
   } catch (error) {
     throw new Error(
-      '这台电脑上已经有一份 Grok CLI，不是用星芒装的。为了不弄坏它，已停止安装。请先用你原来装它的方式卸载，再回来点「使用星芒安装」。',
+      '本机已存在一份并非由星芒安装的 Grok CLI。为避免损坏该程序，已停止安装。请先按原安装方式将其卸载，再返回点击「使用星芒安装」。',
       { cause: error },
     )
   }

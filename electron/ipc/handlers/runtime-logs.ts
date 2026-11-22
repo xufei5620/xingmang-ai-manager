@@ -28,7 +28,7 @@ export function registerRuntimeLogHandlers(ctx: IpcHandlerContext): () => void {
     const report = await options.runtimeLog.captureFeedbackReport(600, FEEDBACK_REPORT_MAX_LENGTH)
     // captureFeedbackReport already trims the oldest log lines to fit; this
     // only guards a runtime log implementation that ignored the budget.
-    if (report.text.length > FEEDBACK_REPORT_MAX_LENGTH) throw new Error('反馈报告太大了，请在「反馈与客服」页的「运行日志」里点「打开日志文件夹」，把日志文件直接发给客服')
+    if (report.text.length > FEEDBACK_REPORT_MAX_LENGTH) throw new Error('反馈报告过大，请在「反馈与客服」页的「运行日志」中点击「打开日志文件夹」，将日志文件直接发送给客服')
     const selfChecked = options.diagnosticsService.hasSelfCheckResult?.()
     const preview = {
       id: randomUUID(),

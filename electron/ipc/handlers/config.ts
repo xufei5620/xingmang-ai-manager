@@ -135,7 +135,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
   }
   registerTrustedHandler('config:answer-claude-command-confirmation', async (_event, choice: unknown) => {
     if (choice !== 'ask' && choice !== 'keep') throw new Error('回答格式错误')
-    if (!service.answerClaudeCommandConfirmation) throw new Error('这个版本还不能改这一项')
+    if (!service.answerClaudeCommandConfirmation) throw new Error('当前版本暂不支持修改此项')
     // 跟设置里两个 Claude Code 开关同一份备份：真要改 settings.json 才做，「设置 › 备份迁移」里能找回改之前的样子。
     return service.answerClaudeCommandConfirmation(choice, await claudeToggleBackup())
   })
@@ -149,7 +149,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
     const running = accountSourceSwitches.get(provider)
     if (running) {
       if (running.target === target) return running.promise
-      throw new Error('这个工具正在切换账号，等这次切完再试')
+      throw new Error('该工具正在切换账号，请待切换完成后重试')
     }
     const promise = switchAccountSourceOnce(provider, target)
     accountSourceSwitches.set(provider, { target, promise })
@@ -161,7 +161,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
   })
   registerTrustedHandler('config:repair-cli-hooks', async (_event, provider: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
-    if (!service.repairCliHooks) throw new Error('这个版本还不能修提醒设置')
+    if (!service.repairCliHooks) throw new Error('当前版本暂不支持修复提醒设置')
     // 和保存配置同一份备份：「设置 › 备份迁移」里能找回改之前的样子。
     options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
     return service.repairCliHooks(provider)
@@ -174,18 +174,18 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
       try {
         options.backupStore.create('claude', 'pre-save', undefined, context)
       } catch {
-        throw new Error('没能先备份 Claude Code 的配置，这次没有改')
+        throw new Error('未能先备份 Claude Code 的配置，本次未修改')
       }
     }
   }
   registerTrustedHandler('config:set-claude-write-boundary', async (_event, enabled: unknown) => {
     if (typeof enabled !== 'boolean') throw new Error('开关格式错误')
-    if (!service.setClaudeWriteBoundary) throw new Error('这个版本还不能改这个开关')
+    if (!service.setClaudeWriteBoundary) throw new Error('当前版本暂不支持修改此开关')
     return service.setClaudeWriteBoundary(enabled, await claudeToggleBackup())
   })
   registerTrustedHandler('config:set-claude-commit-attribution', async (_event, hidden: unknown) => {
     if (typeof hidden !== 'boolean') throw new Error('开关格式错误')
-    if (!service.setClaudeCommitAttribution) throw new Error('这个版本还不能改这个开关')
+    if (!service.setClaudeCommitAttribution) throw new Error('当前版本暂不支持修改此开关')
     return service.setClaudeCommitAttribution(hidden, await claudeToggleBackup())
   })
   registerTrustedHandler('config:save-standing-instructions', async (_event, text: unknown) => {

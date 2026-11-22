@@ -1187,7 +1187,7 @@ checks.push(['the CLI launch broker opens a folder whose name has brackets, and 
     if (isChineseSentence(parseWindowsCliLaunchCause(unescaped.stderr) ?? '')) {
       assert.ok(dialog.startsWith('Windows 无法启动 PowerShell：') && dialog.includes('作业'), `${name}: ${dialog}`)
     } else {
-      assert.equal(dialog, 'Windows 没能启动 PowerShell，原因已经记进运行日志。', `${name}: ${dialog}`)
+      assert.equal(dialog, 'Windows 未能启动 PowerShell，原因已记录到运行日志。', `${name}: ${dialog}`)
     }
     assert.doesNotMatch(dialog, /Command failed|EncodedCommand|CLIXML|<S /, `${name}: ${dialog}`)
     assert.ok(buildWindowsCliLaunchOutput(failure).stderr?.includes('作'), `${name}: the log lost the folder's name: ${unescaped.stderr}`)

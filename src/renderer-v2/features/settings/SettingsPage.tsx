@@ -135,8 +135,8 @@ export function closeToTrayNote(isMac: boolean, accelerationAvailable: boolean):
  */
 export function launchAtLoginFallbackNote(isMac: boolean): string {
   return isMac
-    ? '开机后在菜单栏里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点屏幕顶部的星芒图标。'
-    : '开机后在托盘里待命，不弹窗口'
+    ? '开机后在菜单栏中待命，不弹出窗口；开机后数分钟内不进行检测和更新，以免占用系统资源。需要时请点击屏幕顶部的星芒图标。'
+    : '开机后在托盘中待命，不弹出窗口'
 }
 /**
  * 「发测试通知」交给系统以后那句（决定单 D68、深查 NT-6）。系统里把星芒的通知关了，大多不会报错

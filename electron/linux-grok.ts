@@ -116,7 +116,7 @@ export function runLinuxGrokPostInstallTransaction<T>(options: DarwinGrokPostIns
     captureDarwinGrokCanonicalLink(options.homeDirectory)
   } catch (error) {
     return Promise.reject(new Error(
-      '这台电脑上已经有一份 Grok CLI，不是用星芒装的。为了不弄坏它，已停止安装。请先用你原来装它的方式卸载，再回来点「安装」。',
+      '本机已存在一份并非由星芒安装的 Grok CLI。为避免损坏该程序，已停止安装。请先按原安装方式将其卸载，再返回点击「安装」。',
       { cause: error },
     ))
   }
@@ -155,7 +155,7 @@ async function resolveVerifiedVendorBinary(
   for (const candidate of candidates) {
     const version = await readPlatformPackageVersion(candidate, packageName)
     if (version === null) continue
-    if (version !== expectedVersion) throw new Error('Grok CLI 的主程序包和这次要装的版本不一致')
+    if (version !== expectedVersion) throw new Error('Grok CLI 的主程序包与本次安装的版本不一致')
     const realResolution = await fs.promises.realpath(resolutionDirectory)
     let vendor: string
     try {
@@ -165,7 +165,7 @@ async function resolveVerifiedVendorBinary(
     }
     const relative = path.relative(realResolution, vendor)
     if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
-      throw new Error('Grok CLI 的主程序包不在这次安装的目录里')
+      throw new Error('Grok CLI 的主程序包不在本次安装的目录中')
     }
     return vendor
   }
@@ -235,11 +235,11 @@ export async function verifyLinuxGrokPostInstall(
   options: VerifyLinuxGrokPostInstallOptions,
 ): Promise<DarwinGrokCanonicalSelection> {
   const packageName = linuxGrokPlatformPackageName(options.architecture)
-  if (!packageName) throw new Error('这台电脑的芯片类型 Grok CLI 不支持')
+  if (!packageName) throw new Error('Grok CLI 不支持本机的芯片类型')
   const vendorPath = await resolveVerifiedVendorBinary(options.resolutionDirectory, packageName, options.expectedVersion)
   const selection = resolveDarwinGrokCanonicalSelection(options.homeDirectory)
   if (selection.linkTarget !== `grok-${options.expectedVersion}`) {
-    throw new Error('Grok CLI 装完后命令没有指向这次装的版本')
+    throw new Error('Grok CLI 安装后，命令未指向本次安装的版本')
   }
   assertOwnedSingleLinkFile(selection)
   // Same gap as on macOS (internal #16): postinstall only (re)creates `grok`.
@@ -254,7 +254,7 @@ export async function verifyLinuxGrokPostInstall(
   const versionResult = await options.runCommand({ executable: selection.executablePath, argv: ['--version'] })
   const firstLine = versionResult.stdout.trim().split(/\r?\n/, 1)[0] ?? ''
   if (grokVersionOutputPattern.exec(firstLine)?.[1] !== options.expectedVersion) {
-    throw new Error('Grok CLI 装好后报告的版本和这次装的不一致')
+    throw new Error('Grok CLI 安装后报告的版本与本次安装的版本不一致')
   }
   assertDarwinGrokSelectionUnchanged(options.homeDirectory, selection)
   return selection
@@ -407,7 +407,7 @@ export function buildLinuxGrokRetainedFilesReason(retainedFiles: readonly string
   if (retainedFiles.length === 0) return null
   const names = retainedFiles.slice(0, 5).map((filePath) => path.basename(filePath))
   const listed = retainedFiles.length > 5 ? `${names.join('、')} 等` : names.join('、')
-  return `Grok CLI 已卸载，但 ~/.grok/bin 里有 ${retainedFiles.length} 个程序文件没能自动删除（${listed}）。关闭所有 Grok CLI 窗口后，可以用下方命令删除它们；你的 Grok 设置和会话记录不受影响。`
+  return `Grok CLI 已卸载，但 ~/.grok/bin 中有 ${retainedFiles.length} 个程序文件未能自动删除（${listed}）。关闭所有 Grok CLI 窗口后，可使用下方命令将其删除；您的 Grok 设置和会话记录不受影响。`
 }
 
 export function buildLinuxGrokRetainedFilesCommand(retainedFiles: readonly string[]): string | null {

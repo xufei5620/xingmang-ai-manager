@@ -53,7 +53,7 @@ describe('Linux Grok retained files', () => {
   it('names the leftovers and gives one copyable command that survives odd characters', () => {
     const files = ['/home/a/.grok/bin/grok-1.0.44', "/home/o'brien/.grok/bin/grok-1.0.46"]
     expect(buildLinuxGrokRetainedFilesReason(files)).toBe(
-      'Grok CLI 已卸载，但 ~/.grok/bin 里有 2 个程序文件没能自动删除（grok-1.0.44、grok-1.0.46）。关闭所有 Grok CLI 窗口后，可以用下方命令删除它们；你的 Grok 设置和会话记录不受影响。',
+      'Grok CLI 已卸载，但 ~/.grok/bin 中有 2 个程序文件未能自动删除（grok-1.0.44、grok-1.0.46）。关闭所有 Grok CLI 窗口后，可使用下方命令将其删除；您的 Grok 设置和会话记录不受影响。',
     )
     expect(buildLinuxGrokRetainedFilesCommand(files)).toBe(
       `rm -f '/home/a/.grok/bin/grok-1.0.44' '/home/o'"'"'brien/.grok/bin/grok-1.0.46'`,
@@ -164,7 +164,7 @@ describe.runIf(process.platform === 'linux')('Linux Grok install verification an
     writePlatformPackage(fixture)
     writeInstalledLayout(fixture, '1.0.43')
 
-    await expect(verify(fixture, versionRunner())).rejects.toThrow('Grok CLI 装完后命令没有指向这次装的版本')
+    await expect(verify(fixture, versionRunner())).rejects.toThrow('Grok CLI 安装后，命令未指向本次安装的版本')
   })
 
   it('reports a dropped optional download the same way the other CLIs do', async () => {
@@ -183,7 +183,7 @@ describe.runIf(process.platform === 'linux')('Linux Grok install verification an
     writePlatformPackage(fixture, { version: '1.0.46' })
     writeInstalledLayout(fixture)
 
-    await expect(verify(fixture, versionRunner())).rejects.toThrow('Grok CLI 的主程序包和这次要装的版本不一致')
+    await expect(verify(fixture, versionRunner())).rejects.toThrow('Grok CLI 的主程序包与本次安装的版本不一致')
   })
 
   it('rejects a program that reports another version', async () => {
@@ -191,8 +191,8 @@ describe.runIf(process.platform === 'linux')('Linux Grok install verification an
     writePlatformPackage(fixture)
     writeInstalledLayout(fixture)
 
-    await expect(verify(fixture, versionRunner('grok 1.0.46\n'))).rejects.toThrow('Grok CLI 装好后报告的版本和这次装的不一致')
-    await expect(verify(fixture, versionRunner('something else\n'))).rejects.toThrow('Grok CLI 装好后报告的版本和这次装的不一致')
+    await expect(verify(fixture, versionRunner('grok 1.0.46\n'))).rejects.toThrow('Grok CLI 安装后报告的版本与本次安装的版本不一致')
+    await expect(verify(fixture, versionRunner('something else\n'))).rejects.toThrow('Grok CLI 安装后报告的版本与本次安装的版本不一致')
   })
 
   it('rejects a hard-linked program file', async () => {
@@ -212,7 +212,7 @@ describe.runIf(process.platform === 'linux')('Linux Grok install verification an
       resolutionDirectory: fixture.resolution,
       architecture: 'riscv64',
       runCommand: versionRunner(),
-    })).rejects.toThrow('这台电脑的芯片类型 Grok CLI 不支持')
+    })).rejects.toThrow('Grok CLI 不支持本机的芯片类型')
   })
 
   // 11-18 复核 D19：更新或装回旧版时 postinstall 只改 grok，agent 以前一直留在第一次装的那一版。
@@ -243,7 +243,7 @@ describe.runIf(process.platform === 'linux')('Linux Grok install verification an
       homeDirectory: fixture.home,
       lifecycle: async () => writeInstalledLayout(fixture),
       verify: () => verify(fixture, versionRunner('grok 1.0.46\n')),
-    })).rejects.toThrow('Grok CLI 装好后报告的版本和这次装的不一致')
+    })).rejects.toThrow('Grok CLI 安装后报告的版本与本次安装的版本不一致')
 
     expect(fs.readlinkSync(path.join(fixture.bin, 'grok'))).toBe('grok-1.0.40')
     expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe('grok-1.0.40')
@@ -288,7 +288,7 @@ describe.runIf(process.platform === 'linux')('Linux Grok install verification an
       homeDirectory: fixture.home,
       lifecycle,
       verify: async () => undefined,
-    })).rejects.toThrow('这台电脑上已经有一份 Grok CLI，不是用星芒装的')
+    })).rejects.toThrow('本机已存在一份并非由星芒安装的 Grok CLI')
     expect(lifecycle).not.toHaveBeenCalled()
     expect(fs.readlinkSync(path.join(fixture.bin, 'grok'))).toBe(path.join('..', 'downloads', 'grok-1.0.40-linux-x86_64'))
   })

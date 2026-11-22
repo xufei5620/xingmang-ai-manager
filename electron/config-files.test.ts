@@ -310,7 +310,7 @@ describe('native CLI configuration files', () => {
     // Merge promises to preserve existing settings. It cannot honour that on a
     // file it cannot read, so it must fail rather than quietly reset the user.
     expect(() => saveProviderConfig('codex', 'sk-merge', 'gpt-5.6-sol', 'merge', roots, {}, providerBaseUrls))
-      .toThrow(/^Codex 的配置文件里有写错的地方（第 \d+ 行附近），星芒没有改动它。/)
+      .toThrow(/^Codex 的配置文件内容有误（第 \d+ 行附近），星芒未改动该文件。/)
     expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
   })
 
@@ -414,7 +414,7 @@ describe('native CLI configuration files', () => {
 
     // 只更新照旧不碰，指去重置：分不清来源时宁可不动。
     expect(() => switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'merge'))
-      .toThrow(/^Codex 的配置文件里有写错的地方，星芒没有改动它。/)
+      .toThrow(/^Codex 的配置文件内容有误，星芒未改动该文件。/)
     switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
 
     expect(fs.readFileSync(configPath, 'utf8')).toBe('approval_policy = "on-request"\nsandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n')
@@ -512,7 +512,7 @@ describe('native CLI configuration files', () => {
 
     // Merge still refuses to rewrite what it cannot read, and says where the reset is.
     expect(() => saveProviderConfig('codex', 'sk-new', testModels.codex, 'merge', roots, {}, providerBaseUrls))
-      .toThrow(/^Codex 的配置文件里有写错的地方，星芒没有改动它。.*「重置为初始状态」/)
+      .toThrow(/^Codex 的配置文件内容有误，星芒未改动该文件。.*「重置为初始状态」/)
     expect(fs.readFileSync(auth.active, 'utf8')).toBe(broken)
 
     const saved = saveProviderConfig('codex', 'sk-new', testModels.codex, 'reset', roots, {}, providerBaseUrls)
@@ -534,7 +534,7 @@ describe('native CLI configuration files', () => {
     fs.writeFileSync(auth.active, Buffer.alloc(64))
 
     expect(() => switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'merge'))
-      .toThrow(/^Codex 的配置文件里有写错的地方，星芒没有改动它。/)
+      .toThrow(/^Codex 的配置文件内容有误，星芒未改动该文件。/)
     const saved = switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
 
     // No ChatGPT login to put back: no auth.json at all is how Codex itself says
@@ -822,9 +822,9 @@ describe('native CLI configuration files', () => {
 
     // 以前这里说「当前已在使用您自己的官方订阅账号，无需切换」，方向全错（已知44 ①）。
     expect(() => switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls, 'merge'))
-      .toThrow(/^Claude Code 的配置文件里有写错的地方，星芒没有改动它。/)
+      .toThrow(/^Claude Code 的配置文件内容有误，星芒未改动该文件。/)
     expect(() => switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls, 'merge'))
-      .toThrow(/^Gemini CLI 的配置文件里有写错的地方，星芒没有改动它。/)
+      .toThrow(/^Gemini CLI 的配置文件内容有误，星芒未改动该文件。/)
 
     switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls, 'reset')
     expect(JSON.parse(fs.readFileSync(claudePath, 'utf8'))).toMatchObject({ env: { DISABLE_AUTOUPDATER: '1' } })
@@ -835,15 +835,15 @@ describe('native CLI configuration files', () => {
     // 以前只说「现有 … 无法解析，未执行修改」，客户不知道「重置为初始状态」能救，只能反复重试（第三十批 C）。
     const userHome = temporaryHome()
     const roots = providerRoots(userHome)
-    const reset = '星芒没有改动它。在首页 {tool} 的卡片上点「…」里的「配置…」，选「当前账号」，再展开最下面的「高级」点「重置为初始状态」：会先备份原来的文件（在「设置 › 备份迁移」里能找回），再重新生成。'
+    const reset = '星芒未改动该文件。请在首页 {tool} 卡片的「…」中点击「配置…」，选择「当前账号」，展开最下方的「高级」并点击「重置为初始状态」：将先备份原文件（可在「设置 › 备份迁移」中找回），再重新生成。'
     const advice = (tool: string, problem: string) => `${problem}，${reset.replace('{tool}', tool)}`
     const cases: Array<{ provider: ProviderId, content: string, expected: string }> = [
-      { provider: 'codex', content: 'model = “gpt-5.5”\n', expected: advice('Codex', 'Codex 的配置文件里有写错的地方（第 1 行附近）') },
-      { provider: 'claude', content: '{ "env": { "ANTHROPIC_MODEL": "claude-opus-4-6" }, }\n', expected: advice('Claude Code', 'Claude Code 的配置文件里有写错的地方') },
-      { provider: 'claude', content: '["not", "settings"]\n', expected: advice('Claude Code', 'Claude Code 的配置文件里有写错的地方') },
-      { provider: 'gemini', content: '{ "ui": { "theme": "GitHub", }, }\n', expected: advice('Gemini CLI', 'Gemini CLI 的配置文件里有写错的地方') },
-      { provider: 'gemini', content: '[]\n', expected: advice('Gemini CLI', 'Gemini CLI 的配置文件里有写错的地方') },
-      { provider: 'grok', content: '# 我的设置\ndefault = “grok-4.5”\n', expected: advice('Grok CLI', 'Grok CLI 的配置文件里有写错的地方（第 2 行附近）') },
+      { provider: 'codex', content: 'model = “gpt-5.5”\n', expected: advice('Codex', 'Codex 的配置文件内容有误（第 1 行附近）') },
+      { provider: 'claude', content: '{ "env": { "ANTHROPIC_MODEL": "claude-opus-4-6" }, }\n', expected: advice('Claude Code', 'Claude Code 的配置文件内容有误') },
+      { provider: 'claude', content: '["not", "settings"]\n', expected: advice('Claude Code', 'Claude Code 的配置文件内容有误') },
+      { provider: 'gemini', content: '{ "ui": { "theme": "GitHub", }, }\n', expected: advice('Gemini CLI', 'Gemini CLI 的配置文件内容有误') },
+      { provider: 'gemini', content: '[]\n', expected: advice('Gemini CLI', 'Gemini CLI 的配置文件内容有误') },
+      { provider: 'grok', content: '# 我的设置\ndefault = “grok-4.5”\n', expected: advice('Grok CLI', 'Grok CLI 的配置文件内容有误（第 2 行附近）') },
       { provider: 'grok', content: '[models]\ndefault = "missing"\n', expected: advice('Grok CLI', 'Grok CLI 配置文件中的默认模型部分有误') },
     ]
     for (const { provider, content, expected } of cases) {
@@ -878,7 +878,7 @@ describe('native CLI configuration files', () => {
         message = error instanceof Error ? error.message : String(error)
       }
       // 全面检测 Q17：TOML 解析器的原文自带前后几行，截图发客服就带出 Key。
-      expect(message).toMatch(/的配置文件里有写错的地方（第 3 行附近），星芒没有改动它。/)
+      expect(message).toMatch(/的配置文件内容有误（第 3 行附近），星芒未改动该文件。/)
       expect(message).not.toMatch(/xai-secret|ghp_secret|api_key/)
       expect(fs.readFileSync(configPath, 'utf8')).toBe(broken)
     }
@@ -2046,7 +2046,7 @@ describe('native CLI configuration files', () => {
     fs.writeFileSync(configs.relay, brokenRelay, 'utf8')
 
     expect(() => saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls))
-      .toThrow('星芒为 Codex 保存的配置无法读取，星芒没有改动它。')
+      .toThrow('星芒为 Codex 保存的配置无法读取，星芒未改动该文件。')
     expect(fs.readFileSync(configs.active, 'utf8')).toBe(official)
     const result = saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
 
@@ -2704,7 +2704,7 @@ describe('native CLI configuration files', () => {
       refusal = error
     }
     expect(refusal).toBeInstanceOf(Error)
-    expect((refusal as Error).message).toBe(`用户文件夹里的 ${path.join('.claude', 'settings.json')} 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。`)
+    expect((refusal as Error).message).toBe(`用户文件夹里的 ${path.join('.claude', 'settings.json')} 是一个链接。为保障安全，星芒不会写入链接，原有设置未改动。请将其替换为普通文件后重试。`)
     expect(((refusal as Error).cause as Error).message).toMatch(/单链接普通文件|符号链接/)
     expect(fs.readFileSync(source, 'utf8')).toBe('{}')
   })
@@ -3955,8 +3955,8 @@ describe('switching a provider back to the official subscription account', () =>
       writeSettings(configPath, { permissions: { defaultMode: 'bypassPermissions' } })
       const before = fs.readFileSync(configPath, 'utf8')
 
-      expect(() => restoreClaudeOfficialCommandConfirmation(roots, () => { throw new Error('没能先备份 Claude Code 的配置，这次没有改') }))
-        .toThrow('没能先备份 Claude Code 的配置，这次没有改')
+      expect(() => restoreClaudeOfficialCommandConfirmation(roots, () => { throw new Error('未能先备份 Claude Code 的配置，本次未修改') }))
+        .toThrow('未能先备份 Claude Code 的配置，本次未修改')
 
       expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
     })
@@ -4385,7 +4385,7 @@ describe('switching a provider back to the official subscription account', () =>
     for (const content of damaged) {
       fs.writeFileSync(settingsPath, content, 'utf8')
       expect(() => saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'merge', roots, {}, providerBaseUrls))
-        .toThrow('Gemini CLI 的配置文件里有写错的地方，星芒没有改动它。')
+        .toThrow('Gemini CLI 的配置文件内容有误，星芒未改动该文件。')
       expect(fs.readFileSync(settingsPath, 'utf8')).toBe(content)
     }
   })
@@ -5979,12 +5979,12 @@ describe('the Codex model catalog Xingmang writes', () => {
   }
 
   it('saves the key without the catalog when the catalog was swapped for a hard link', () => {
-    expectLinkRefused((target, linkPath) => fs.linkSync(target, linkPath), /xingmang-models\.json 是个链接。为了安全，星芒不往链接里写/)
+    expectLinkRefused((target, linkPath) => fs.linkSync(target, linkPath), /xingmang-models\.json 是一个链接。为保障安全，星芒不会写入链接/)
   })
 
   // Creating a file symlink needs Developer Mode or administrator rights on Windows.
   it.skipIf(process.platform === 'win32')('saves the key without the catalog when the catalog was swapped for a symbolic link', () => {
-    expectLinkRefused((target, linkPath) => fs.symlinkSync(target, linkPath), /xingmang-models\.json 是个链接。为了安全，星芒不往链接里写/)
+    expectLinkRefused((target, linkPath) => fs.symlinkSync(target, linkPath), /xingmang-models\.json 是一个链接。为保障安全，星芒不会写入链接/)
   })
 
   it('reports whether config.toml carries its own catalog line and what that file holds', () => {
@@ -6089,7 +6089,7 @@ describe('the Codex model catalog Xingmang writes', () => {
     fs.renameSync(configPath, elsewhere)
     fs.linkSync(elsewhere, configPath)
 
-    expect(() => takeBackCodexModelCatalog(roots)).toThrow(/config\.toml 是个链接。为了安全，星芒不往链接里写/)
+    expect(() => takeBackCodexModelCatalog(roots)).toThrow(/config\.toml 是一个链接。为保障安全，星芒不会写入链接/)
     expect(asRecord(TOML.parse(fs.readFileSync(elsewhere, 'utf8')))?.model_catalog_json).toBe('xingmang-models.json')
   })
 })

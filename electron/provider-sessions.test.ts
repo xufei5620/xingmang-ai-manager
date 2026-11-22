@@ -1233,7 +1233,7 @@ describe('ProviderSessionsService.delete', () => {
     const data = fixture()
     seedExternalSessions(data)
     const sessions = service(data)
-    await expect(sessions.delete('claude:../../etc/passwd')).rejects.toThrow('没找到这条记录')
+    await expect(sessions.delete('claude:../../etc/passwd')).rejects.toThrow('未找到该记录')
     await expect(sessions.delete('unknown:abc')).rejects.toThrow()
     await expect(sessions.delete('codex:../../x')).rejects.toThrow('会话 ID 格式错误')
     expect((await sessions.list({ pageSize: 100 })).stats.byProvider).toMatchObject({ claude: 1, grok: 1 })

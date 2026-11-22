@@ -32,7 +32,7 @@ export function assertOpenableConfigDirectory(
     info = (probe.lstat ?? fs.lstatSync)(resolved)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error('这个工具的配置文件夹还没有生成。连接当前账号或保存一次配置之后就会出现。')
+      throw new Error('该工具的配置文件夹尚未生成，连接当前账号或保存一次配置后将自动生成。')
     }
     throw new Error('工具配置文件夹无法读取')
   }

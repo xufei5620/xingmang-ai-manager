@@ -1767,9 +1767,9 @@ test('an exported report can be revealed in its folder and says so when it moved
     )
 
     // 文件被挪走了：按钮旁边说一句，上面那句「已导出」和路径留着，用户还能照着找。
-    await page.evaluate(() => { window.v2Test.fail = 'revealExportedFile'; window.v2Test.failMessage = '导出的文件已经不在原来的位置了，可能被移动或删除。' })
+    await page.evaluate(() => { window.v2Test.fail = 'revealExportedFile'; window.v2Test.failMessage = '导出的文件已不在原位置，可能已被移动或删除。' })
     await reveal.click()
-    await health.getByText('导出的文件已经不在原来的位置了，可能被移动或删除。').waitFor()
+    await health.getByText('导出的文件已不在原位置，可能已被移动或删除。').waitFor()
     await health.getByText('检查报告已导出：C:\\Fixture\\xingmang-diagnostics.txt', { exact: true }).waitFor()
     await page.evaluate(() => { window.v2Test.fail = '' })
     await clean(page)
@@ -10311,7 +10311,7 @@ test('installing Node.js from the check page updates the home runtime card', asy
 test('an uninstall that hits a running tool offers 重试, which uninstalls again without asking twice', async () => {
   const page = await open('allInstalled=1')
   try {
-    await page.evaluate(() => { window.v2Test.fail = 'uninstallCli'; window.v2Test.failMessage = 'Grok CLI 卸载失败：文件被占用，检测到 Grok CLI 正在运行（1 个进程），请关掉它的窗口再试。' })
+    await page.evaluate(() => { window.v2Test.fail = 'uninstallCli'; window.v2Test.failMessage = 'Grok CLI 卸载失败：文件被占用，检测到 Grok CLI 正在运行（1 个进程），请关闭其窗口后重试。' })
     await page.getByTestId('tool-row-grok').getByRole('button', { name: '更多操作' }).click()
     await page.getByRole('menuitem', { name: '卸载…', exact: true }).click()
     await page.getByRole('dialog', { name: '卸载 Grok CLI？', exact: true }).getByRole('button', { name: '卸载 Grok CLI', exact: true }).click()

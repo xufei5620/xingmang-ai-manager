@@ -265,7 +265,7 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
     },
     probeCodexResponses: (expectedAccountScope: string) => {
       if (expectedAccountScope !== readBillingAccountScope()) {
-        throw new Error('当前账号变了，请重新勾选确认后再检查')
+        throw new Error('当前账号已变更，请重新勾选确认后再检测')
       }
       return codexResponsesProbe.run()
     },

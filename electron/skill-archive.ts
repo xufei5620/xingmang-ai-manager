@@ -22,11 +22,11 @@ const MAX_SKILL_ARCHIVE_ENTRIES = 10_000
 const MAX_SKILL_ARCHIVE_DEPTH = 32
 const MAX_SEGMENT_BYTES = 255
 
-export const SKILL_ARCHIVE_UNREADABLE = '这个压缩包打不开：可能坏了、设了密码，或者不是 zip 格式。'
-export const SKILL_ARCHIVE_TOO_LARGE = '这个压缩包太大了，最多 50 MB、2000 个文件。'
-export const SKILL_ARCHIVE_UNSAFE = '这个压缩包里有不安全的内容（跳出文件夹的路径或链接文件），没有导入。'
-export const SKILL_ARCHIVE_NO_SKILL = '这个压缩包里没找到技能（要有一个 SKILL.md 文件）。'
-export const SKILL_ARCHIVE_MANY_SKILLS = '这个压缩包里有好几个技能，一次只能导入一个。'
+export const SKILL_ARCHIVE_UNREADABLE = '无法打开该压缩包：文件可能已损坏、设有密码，或不是 zip 格式。'
+export const SKILL_ARCHIVE_TOO_LARGE = '该压缩包过大，最多支持 50 MB、2000 个文件。'
+export const SKILL_ARCHIVE_UNSAFE = '该压缩包包含不安全的内容（超出文件夹范围的路径或链接文件），未导入。'
+export const SKILL_ARCHIVE_NO_SKILL = '该压缩包中未找到技能（需包含一个 SKILL.md 文件）。'
+export const SKILL_ARCHIVE_MANY_SKILLS = '该压缩包包含多个技能，每次只能导入一个。'
 
 const END_OF_CENTRAL_DIRECTORY = 0x06054b50
 const CENTRAL_DIRECTORY_ENTRY = 0x02014b50

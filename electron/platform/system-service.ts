@@ -50,14 +50,14 @@ export interface PlatformSystemDependencies {
 }
 
 const startupTrayEnabledNote =
-  '开机后在托盘里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点托盘图标。'
+  '开机后在托盘中待命，不弹出窗口；开机后数分钟内不进行检测和更新，以免占用系统资源。需要时请点击托盘图标。'
 const startupTrayDisabledNote =
-  '打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'
+  '开启后，开机时将在托盘中待命，不弹出窗口，开机后数分钟内也不会占用系统资源。'
 // Mac 上没有「托盘」这个说法，星芒的图标在屏幕顶部的菜单栏里（深查 TR-5、决定单 D30）。
 const startupMenuBarEnabledNote =
-  '开机后在菜单栏里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点屏幕顶部的星芒图标。'
+  '开机后在菜单栏中待命，不弹出窗口；开机后数分钟内不进行检测和更新，以免占用系统资源。需要时请点击屏幕顶部的星芒图标。'
 const startupMenuBarDisabledNote =
-  '打开后，开机时会在菜单栏里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'
+  '开启后，开机时将在菜单栏中待命，不弹出窗口，开机后数分钟内也不会占用系统资源。'
 
 /**
  * 设置页「发测试通知」那颗「打开系统通知设置」要打开的系统页（决定单 D68、深查 NT-6）。地址写死在
@@ -97,9 +97,9 @@ export function describeSessionProxy(
 ): Pick<PlatformProxyStatus, 'route' | 'summary'> {
   const status = summarizeSessionProxy(value)
   if (bypassed && status.route === 'direct')
-    return { route: 'direct', summary: '应用窗口当前直接连接（电脑里的代理连不上，本次已自动绕开）' }
+    return { route: 'direct', summary: '应用窗口当前直接连接（本机代理无法连接，本次已自动绕过）' }
   if (siteDirect && status.route === 'proxy')
-    return { route: 'proxy', summary: '应用窗口当前通过转发连接（账号和 AI 对话已自动改成直接连接）' }
+    return { route: 'proxy', summary: '应用窗口当前通过转发连接（账号和 AI 对话已自动切换为直接连接）' }
   return status
 }
 
@@ -245,10 +245,10 @@ export class PlatformSystemService {
       enabled: state.enabled,
       approvalRequired: false,
       note: state.requested && !state.enabled
-        ? '开机启动项还在，但现在不会生效，可能在系统设置里被关掉了。把开关关掉再打开就好。'
+        ? '开机启动项仍存在，但当前不会生效，可能已在系统设置中被关闭。请将此开关关闭后重新开启。'
         : state.enabled
-          ? tray ? startupTrayEnabledNote : '开机后自动打开星芒窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。'
-          : tray ? startupTrayDisabledNote : '打开后，开机时会自动打开星芒窗口，开机头几分钟也不跟电脑抢资源。',
+          ? tray ? startupTrayEnabledNote : '开机后自动打开星芒窗口；开机后数分钟内不进行检测和更新，以免占用系统资源。'
+          : tray ? startupTrayDisabledNote : '开启后，开机时将自动打开星芒窗口，开机后数分钟内也不会占用系统资源。',
     }
   }
 
@@ -331,8 +331,8 @@ export class PlatformSystemService {
       // （深查 AV-09 第 1 条、决定单 D26）。
       if (state.startup.requested !== enabled)
         throw new Error(platform === 'win32'
-          ? '系统没有保存开机启动设置。装了 360、火绒这类安全软件的话，在它弹出的提示里点「允许」，再打开一次这个开关。'
-          : '系统没有保存开机启动设置，请在系统设置中检查。')
+          ? '系统未保存开机启动设置。如已安装 360、火绒等安全软件，请在其弹出的提示中点击「允许」，然后重新开启此开关。'
+          : '系统未保存开机启动设置，请在系统设置中检查。')
       this.emit()
       return state
     })

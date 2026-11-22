@@ -1277,11 +1277,11 @@ function delay(milliseconds: number): Promise<void> {
 export function describeImageMcpWarnings(warnings: readonly string[]): string | undefined {
   if (!warnings.length) return undefined
   if (warnings.includes(XINGMANG_IMAGE_MCP_NO_NODE_WARNING)) {
-    return 'images 还没装进 AI 工具：这台电脑还缺运行环境。到首页「运行环境」装好后，点「重新同步」就能用。'
+    return 'images 尚未安装到 AI 工具：本机缺少运行环境。请在首页「运行环境」中完成安装后，点击「重新同步」。'
   }
   const tools = providerIds.filter((provider) => warnings.some((warning) => warning.startsWith(`${provider}：`)))
   const where = tools.length ? tools.map((provider) => cliCatalog[provider].name).join('、') : 'AI 工具'
-  return `images 还没装进 ${where}：它的设置这会儿写不进去。先关掉正在用的 AI 工具，再点「重新同步」。`
+  return `images 尚未安装到 ${where}：其设置暂时无法写入。请先关闭正在使用的 AI 工具，再点击「重新同步」。`
 }
 
 /**
