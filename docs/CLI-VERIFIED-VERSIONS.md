@@ -30,7 +30,7 @@ Codex 那时 `recommended` 是 `null`，也就是那两天点过「更新」的�
 - **已装版本落在 `blocked` 区间时**，首页那一行显示「已知问题，建议更新到 x.y.z」并给出「更新到推荐版本」按钮。
   推荐版本比已装版本旧时，这两处都改说「回到」——方向由主进程比过版本号后随 `CliVersionAdvice.recommendedIsNewer` 给出，渲染层不自己比。
   Codex 0.155.0 就是往前走一个补丁版的例子：一律写「回到」会把用户指反方向，而按钮装的是更新的那一版。
-- 用户可以在「设置 → 更新」里打开**「命令行工具总是装最新版」**跟随官方最新版；默认关闭。打开后不再显示「推荐 x.y.z」，但**已知问题的提示与切到推荐版本的入口仍然保留**——那是安全网，不是建议。
+- 用户可以在「设置 → 更新」里打开**「命令行工具始终安装最新版本」**跟随官方最新版；默认关闭。打开后不再显示「推荐 x.y.z」，但**已知问题的提示与切到推荐版本的入口仍然保留**——那是安全网，不是建议。
 - 名单把安装钉在已装的那个版本上时，工具行不会再显示「有更新」：点了也只是把同一个版本重装一遍。`latestVersion` 仍照实记录 npm 上的最新版，不瞒着上游进度。
 
 `blocked` 区间是左闭右开的 `[introduced, fixed)`；`fixed: null` 表示上游还没修，区间一直开着。
@@ -175,7 +175,7 @@ Claude Code 的 `fallbackModel`（settings.json，型号数组，最多认三个
 | Claude 的选模型菜单 | `modelPicker` 与 `env.ANTHROPIC_DEFAULT_MODEL` | 官方阵容（Default = Opus 5 · 1M）并标官方美元价 | 当前 Key 可用的 Claude 型号，Default 指向选定的型号（用户自己写过菜单就不动；切回官方收回） | 选到分组里没有的型号只会报「无可用渠道」，价格也不是当前账号的计费 |
 | Claude 的 DesignSync 工具 | 同上 | 不禁 | 禁掉（只在星芒来源下写，切回官方删掉） | 要 claude.ai 登录才能用，2.1.277 在中转上却每次都把它发给模型 |
 | Claude 的命令确认 | `permissions.defaultMode` 与 `skipDangerousModePermissionPrompt` | `default`（逐条问）；2.1.283 起接第三方中转又没写时进自动模式 | `bypassPermissions`（新客户模板写；已有设置的老客户只在没写时补，写过任何模式都不动） | 本产品的卖点就是不用自己配、也不用自己按确认 |
-| Claude 不许写到项目文件夹外面 | `~/.claude/settings.json` 的 `permissions.blockWritesOutsideWorkingDirectories`（2.1.314 起有） | 不开 | **默认不写**；客户在「设置 › 工具管理」打开「只让 Claude Code 改项目文件夹里的文件」才写 `true`（客户自己写过任何值都不动）。跟命令确认那两项一样记成星芒填的：关掉开关、开关关着时接当前账号、切回官方账号都只撤记下的而且值还是 `true` 的 | `bypassPermissions` 下 AI 改哪儿都不问，这一项只拦写文件、改文件，不拦终端命令和读（Fable 第二轮 Q6，2.1.319 沙箱试过） |
+| Claude 不许写到项目文件夹外面 | `~/.claude/settings.json` 的 `permissions.blockWritesOutsideWorkingDirectories`（2.1.314 起有） | 不开 | **默认不写**；客户在「设置 › 工具管理」打开「仅允许 Claude Code 修改项目文件夹内的文件」才写 `true`（客户自己写过任何值都不动）。跟命令确认那两项一样记成星芒填的：关掉开关、开关关着时接当前账号、切回官方账号都只撤记下的而且值还是 `true` 的 | `bypassPermissions` 下 AI 改哪儿都不问，这一项只拦写文件、改文件，不拦终端命令和读（Fable 第二轮 Q6，2.1.319 沙箱试过） |
 | Claude 提交代码时的署名 | `~/.claude/settings.json` 的 `attribution` | 提交和 PR 末尾加 Claude 的署名（`Co-Authored-By`、`Generated with`） | **默认不写**；客户在「设置 › 工具管理」打开「Claude Code 提交代码时不署名」才写 `{ "commit": "", "pr": "" }`（不写 `false`：旧版本见到会报错，整份设置不读；客户自己写过任何 `attribution` 都不动）。同上记成星芒填的，只撤原样没改过的那一份 | 往公司仓库提交的客户不想带 AI 署名（同类对比 备选 6，2.1.319 沙箱看过请求里不再有那两段） |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Codex、Grok 的回复语言 | `~/.codex/AGENTS.md`、`~/.grok/AGENTS.md`（两家的全局说明，拼在项目说明前面交给模型） | 没有（跟着项目说明和对话语言走） | 一份写着「始终用简体中文回复」的 `AGENTS.md`（配置目录里已有任何一份全局说明就不放：Codex 的 `AGENTS.override.md` / `AGENTS.md`，Grok 认的 `AGENTS.md` / `AGENT.md` / `CLAUDE.md` / `CLAUDE.local.md`，大小写不论、链接也算；切回官方不收回） | 同上，两家又没有 `language` 这样的设置 |

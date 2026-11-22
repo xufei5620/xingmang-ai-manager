@@ -171,11 +171,11 @@ describe('renderer-v2 settings rows registry', () => {
       ['连接线路', ['relay-route-solov', 'relay-route-solov-api', 'tool-route-restart-hints']],
       ['下载与连接', ['mirror', 'proxy', 'network-check', 'certificate']],
     ]);
-    expect(shape('notifications').map(([label]) => label)).toEqual([null, '提醒哪些事']);
+    expect(shape('notifications').map(([label]) => label)).toEqual([null, '提醒事项']);
     expect(shape('tools')).toEqual([[null, ['workspace', 'claude-write-boundary', 'claude-commit-attribution', 'standing-instructions', 'latest-cli', 'install-location', 'terminal']], [null, ['codex-remote']]]);
     expect(shape('backup')).toEqual([
       [null, ['backups']],
-      ['搬到新电脑', ['transfer', 'transfer-import']],
+      ['迁移到新电脑', ['transfer', 'transfer-import']],
       [null, ['storage']],
     ]);
     expect(shape('about')).toEqual([
@@ -193,7 +193,7 @@ describe('renderer-v2 settings rows registry', () => {
   // Fable 第二轮 Q6：开关在「工具管理」里、紧跟工作文件夹；搜「Claude Code」或怕它改到外面的说法都找得到。
   it('lists the Claude Code write boundary switch under tools and finds it by the words a customer would use', () => {
     expect(settingsItems.find(item => item.id === 'claude-write-boundary')?.group).toBe('tools');
-    expect(settingsItemLabel('claude-write-boundary')).toBe('只让 Claude Code 改项目文件夹里的文件');
+    expect(settingsItemLabel('claude-write-boundary')).toBe('仅允许 Claude Code 修改项目文件夹内的文件');
     const ids = (query: string) => searchSettingsItems(query).map(item => item.id);
     expect(ids('claude code')).toContain('claude-write-boundary');
     expect(ids('乱改文件')).toEqual(['claude-write-boundary']);
@@ -218,7 +218,7 @@ describe('renderer-v2 settings rows registry', () => {
     expect(ids('立即备份')).toEqual(['backups']);
     expect(ids('当前版本')).toEqual(['version']);
     expect(ids('自动更新')).toEqual(['auto-update']);
-    expect(ids('搬到新电脑')).toEqual(['transfer', 'transfer-import']);
+    expect(ids('迁移到新电脑')).toEqual(['transfer', 'transfer-import']);
   });
 
   // 设置页左栏的「搜索设置」：行名、常用说法、组名、小标题都算，空格隔开的词都要对上。

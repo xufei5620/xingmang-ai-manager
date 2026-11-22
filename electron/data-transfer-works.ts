@@ -14,7 +14,7 @@ import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
 import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local-data'
 
-// 「搬到新电脑」里的作品（「搬作品改」，yoyo 2026-11-22）：当前账号作品库里的图片、视频片段和成片、配乐。
+// 「迁移到新电脑」里的作品（「搬作品改」，yoyo 2026-11-22）：当前账号作品库里的图片、视频片段和成片、配乐。
 // 作品可能有几个 GB，放不进那一份 JSON：选了带作品时，在客户选的位置新建一个文件夹，聊天记录那份文件放在
 // 里面，作品照作品库的样子（<日期>/xingmang-<编号>.<扩展名>）放进旁边的「作品」文件夹，一件一个文件。
 // 这样客户只要复制一个文件夹；单个文件最大 512 MB，FAT32 的 U 盘也装得下。

@@ -59,8 +59,8 @@ function mcpInstall(id: string) {
 describe('curated entry details', () => {
   // 要不要联网放在这里说：列表上每一行都写一遍会把说明挤长。
   it('says in the details whether the entry needs the network', () => {
-    expect(renderToStaticMarkup(<CuratedDetails item={item('files')} />)).toContain('第一次使用时需要联网下载')
-    expect(renderToStaticMarkup(<CuratedDetails item={item('code-review')} />)).toContain('安装时需要联网下载一次')
+    expect(renderToStaticMarkup(<CuratedDetails item={item('files')} />)).toContain('首次使用时需联网下载')
+    expect(renderToStaticMarkup(<CuratedDetails item={item('code-review')} />)).toContain('安装时需联网下载一次')
   })
 
   // 用户点「安装」之后看到的就是这一段，所以「将要执行的确切命令」必须原样出现在里面，
@@ -70,9 +70,9 @@ describe('curated entry details', () => {
     expect(markup).toContain('npx -y @modelcontextprotocol/server-filesystem@2026.8.31 {{directory}}')
     expect(markup).toContain('<dt>提供方</dt><dd>MCP 官方</dd>')
     expect(markup).toContain('会修改本地文件')
-    expect(markup).toContain('改动不进回收站')
+    expect(markup).toContain('改动不进入回收站')
     expect(markup).toContain('装到哪里')
-    expect(markup).toContain('用的是星芒装好的运行环境')
+    expect(markup).toContain('使用星芒已安装的运行环境')
     expect(markup).not.toContain('Node.js')
     expect(markup).toContain(curatedDisclaimer)
   })
@@ -81,30 +81,30 @@ describe('curated entry details', () => {
   it('leaves out the fixed scope line when the dialog picks the tools itself', () => {
     const markup = renderToStaticMarkup(<CuratedDetails item={item('files')} hideScope />)
     expect(markup).not.toContain('装到哪里')
-    expect(markup).toContain('将写进配置、由工具启动时执行的命令')
+    expect(markup).toContain('将写入配置、由工具启动时执行的命令')
   })
 
   it('shows the remote address and the login requirement for an online service', () => {
     const markup = renderToStaticMarkup(<CuratedDetails item={item('github')} />)
-    expect(markup).toContain('将写进配置的服务地址')
+    expect(markup).toContain('将写入配置的服务地址')
     expect(markup).toContain('https://api.githubcopilot.com/mcp/')
-    expect(markup).toContain('需要先登录')
+    expect(markup).toContain('需先登录')
     expect(markup).toContain('每次使用都需要联网')
   })
 
   it('says so plainly when an entry carries no particular risk', () => {
     const markup = renderToStaticMarkup(<CuratedDetails item={item('sequential-thinking')} />)
     expect(markup).toContain('无特殊风险')
-    expect(markup).toContain('用掉的额度比平时多')
+    expect(markup).toContain('消耗的额度高于平时')
   })
 
   // Mac 验收 R10：每个风险标签在 registry 里都配了一句说明（11-10 已批），原来哪儿都没上屏。现在鼠标停在标签上能看到，
   // 标签下面也按标签先后原样写出来。随包清单里眼下没有带「第三方维护」的条目，这里拿 github 换上两个标签来测。
   it('spells out what each risk tag means on hover and right under the tags', () => {
     const markup = renderToStaticMarkup(<CuratedDetails item={{ ...item('github'), risks: ['remote-exec', 'third-party'] }} hideScope />)
-    expect(markup).toContain('<span title="由该软件的作者维护，不随星芒一起更新。">第三方维护</span>')
-    expect(markup).toContain('<span title="请求由提供方在他们的服务器上处理，不在你电脑上。">内容会发到对方服务器</span>')
-    expect(markup).toContain('data-testid="curated-risk-details-github">请求由提供方在他们的服务器上处理，不在你电脑上。由该软件的作者维护，不随星芒一起更新。</p>')
+    expect(markup).toContain('<span title="由该软件的作者维护，不随星芒更新。">第三方维护</span>')
+    expect(markup).toContain('<span title="请求由提供方在其服务器上处理，不在本机运行。">内容将发送至对方服务器</span>')
+    expect(markup).toContain('data-testid="curated-risk-details-github">请求由提供方在其服务器上处理，不在本机运行。由该软件的作者维护，不随星芒更新。</p>')
     // 说明紧跟在标签那一行后面，排在提供方、命令那几行前面。
     expect(markup.indexOf('curated-risk-details-github')).toBeLessThan(markup.indexOf('<dt>提供方</dt>'))
   })
@@ -119,14 +119,14 @@ describe('curated entry details', () => {
     expect(markup).toContain('将要执行的命令')
     expect(markup).toContain('claude plugin marketplace add anthropics/claude-plugins-official')
     expect(markup).toContain('claude plugin install code-review@claude-plugins-official')
-    expect(markup).toContain('安装的是官方市场当前的版本')
+    expect(markup).toContain('将安装官方市场的当前版本')
     expect(markup).toContain('c447c3207a42')
-    expect(markup).toContain('只给工具本身加命令和技能')
+    expect(markup).toContain('仅为工具添加命令和技能')
     expect(markup).toContain(curatedDisclaimer)
   })
 
   it('says which version a plugin declares for itself when it declares one', () => {
-    expect(curatedVersionText(item('claude-md-management'))).toContain('插件自己声明的版本是 1.0.0')
+    expect(curatedVersionText(item('claude-md-management'))).toContain('插件声明的版本为 1.0.0')
     expect(curatedVersionText(item('browser'))).toBe('固定在 0.0.82')
     expect(curatedVersionText(item('github'))).toBe('由服务方在线提供，无本地版本')
   })

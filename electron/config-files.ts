@@ -587,7 +587,7 @@ export type ClaudeFilledDefault = 'permissions.defaultMode' | 'skipDangerousMode
  * 设置里两个默认关的开关，开着时星芒才写进 Claude Code settings.json 的那一项，默认不写。跟「不逐条确认」一样
  * 记进快照，关掉、开关关着时接当前账号、切回官方账号，都只撤记下的而且值还是星芒写的那个的；客户自己写过的
  * （快照里没记）一律不动。
- * - 「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）：permissions.blockWritesOutsideWorkingDirectories = true（2.1.314 起）。
+ * - 「仅允许 Claude Code 修改项目文件夹内的文件」（Fable 第二轮 Q6）：permissions.blockWritesOutsideWorkingDirectories = true（2.1.314 起）。
  * - 「Claude Code 提交代码时不署名」（同类对比 备选 6）：attribution = { commit: '', pr: '' }。2.1.319 也认 false，
  *   但它自己的说明讲旧版本见到 true / false 会报错，而 Claude Code 遇到设置文件有错是整份不读（连星芒写的
  *   地址和密钥一起），所以写对象形式。
@@ -886,7 +886,7 @@ export interface SeededToolDefaults {
   /** Codex、Grok 配置目录里星芒放的那份「用中文回复」。 */
   responseLanguage?: boolean
   /**
-   * 设置里「只让 Claude Code 改项目文件夹里的文件」开着（Fable 第二轮 Q6）。这一项不是「出现过」的记号，
+   * 设置里「仅允许 Claude Code 修改项目文件夹内的文件」开着（Fable 第二轮 Q6）。这一项不是「出现过」的记号，
    * 是客户现在的选择，放在这里只是跟着写配置的各条路一起传。缺省 = 关。
    */
   claudeWritesInsideProject?: boolean
@@ -4571,12 +4571,12 @@ function claudeForeignSettingsAsidePlans(
   return [{ path: claudeForeignSnapshotPath(roots), content: snapshot }]
 }
 
-/** 设置里切「只让 Claude Code 改项目文件夹里的文件」时，当场改 settings.json 的结果。 */
+/** 设置里切「仅允许 Claude Code 修改项目文件夹内的文件」时，当场改 settings.json 的结果。 */
 /** 设置里切这两个开关时，当场改 settings.json 的结果。 */
 export type ClaudeToggleOutcome = 'written' | 'unchanged' | 'kept'
 
 /**
- * 设置里切「只让 Claude Code 改项目文件夹里的文件」「Claude Code 提交代码时不署名」时当场对齐：只动那一项和
+ * 设置里切「仅允许 Claude Code 修改项目文件夹内的文件」「Claude Code 提交代码时不署名」时当场对齐：只动那一项和
  * 快照里的记号，其余一个字不动，写之前照旧备份、两阶段提交（I9）。调用方先确认 Claude Code 现在接的是当前账号。
  * - 打开：没有那一项就写上、记进快照；已经是星芒写的那个不动；客户写成了别的值，不动，返回 kept。
  * - 关掉：快照记着是星芒写的、值还是星芒写的那个就撤掉并划掉记号；客户自己写的同样的值不动，返回 kept。

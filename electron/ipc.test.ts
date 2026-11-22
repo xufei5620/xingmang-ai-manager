@@ -1978,7 +1978,7 @@ describe('registerIpcHandlers', () => {
   })
 
   it('carries the usage-stats switch across computers without ever turning it on unasked', async () => {
-    // X-3：「匿名使用统计」在系统界面设置那份文件里，以前「搬到新电脑」不带它。
+    // X-3：「匿名使用统计」在系统界面设置那份文件里，以前「迁移到新电脑」不带它。
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
     try {
       let here: boolean | null = false
@@ -7898,7 +7898,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   })
 
   describe('storage:inspect and storage:clean', () => {
-    // 「星芒占用的空间」那张卡只能说是哪一行、清哪一样，给不了路径（I5）。
+    // 「星芒占用空间」那张卡只能说是哪一行、清哪一样，给不了路径（I5）。
     it('turns away anything but a known row or target before measuring or deleting', async () => {
       const storageUsage = {
         inspect: vi.fn(async () => ({ bytes: 1024 })),
@@ -10528,7 +10528,7 @@ describe('IPC channel log and account policies', () => {
       'canvas:open',
       'canvas:open-project',
       'cli:launch',
-      // 「搬到新电脑」带作品：量的、导入的都是当前账号作品库里的作品。
+      // 「迁移到新电脑」带作品：量的、导入的都是当前账号作品库里的作品。
       'data-transfer:import-works',
       'data-transfer:inspect-works',
       'desktop:launch-codex',

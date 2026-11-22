@@ -348,7 +348,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     // should not depend on this program being right.
     const trashItem = (filePath: string) => shell.trashItem(filePath)
     const mediaAssets = createAiMediaAssetService({ images: assetStore, videos: videoAssets, audios: audioAssets, metadata: assetMetadata, trashItem })
-    // 「搬到新电脑」带上这个账号作品库里的作品（「搬作品改」）。元数据跟作品库共用这一个 store，导入时补记录和收藏、
+    // 「迁移到新电脑」带上这个账号作品库里的作品（「搬作品改」）。元数据跟作品库共用这一个 store，导入时补记录和收藏、
     // 改名排在同一个队里。
     const worksTransfer = createAccountWorksTransfer({ outputRoot: aiOutputRoot, metadata: assetMetadata })
     const canvasProjects = new CanvasProjectStore(roots.canvasProjectsDirectory)

@@ -8,11 +8,11 @@ export type TurnActivity = NonNullable<SessionDetail['messages'][number]['activi
 /** 灰字那一行。三样里只说有的那几样；一样都没有时主进程根本不会挂上来。 */
 export function turnActivitySummary(activity: TurnActivity): string {
   const parts = [
-    activity.commands > 0 ? `跑了 ${activity.commands} 条命令` : '',
-    activity.fileCount > 0 ? `改了 ${activity.fileCount} 个文件` : '',
-    activity.failedSteps > 0 ? `有 ${activity.failedSteps} 步没成功` : '',
+    activity.commands > 0 ? `运行了 ${activity.commands} 条命令` : '',
+    activity.fileCount > 0 ? `修改了 ${activity.fileCount} 个文件` : '',
+    activity.failedSteps > 0 ? `有 ${activity.failedSteps} 步未成功` : '',
   ].filter(Boolean)
-  return `这一轮：${parts.join('，')}`
+  return `本轮：${parts.join('，')}`
 }
 
 /** 点开后「改过的文件」那一行。主进程最多交 50 个名字，多出来的说一句一共几个。 */

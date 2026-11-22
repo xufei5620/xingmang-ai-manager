@@ -806,13 +806,13 @@ export class ConfigBackupStore {
     fs.rmSync(directory, { recursive: true, force: false })
   }
 
-  /** 所有备份放在哪个文件夹里；「星芒占用的空间」量这一行的大小用，只读。 */
+  /** 所有备份放在哪个文件夹里；「星芒占用空间」量这一行的大小用，只读。 */
   rootDirectory(): string {
     return backupRoot(this.userDataDirectory)
   }
 
   /**
-   * 「星芒占用的空间」里的「清理旧备份」：`include` 认得的那些（界面上看得到的）按时间留最新的 `keep` 份，
+   * 「星芒占用空间」里的「清理旧备份」：`include` 认得的那些（界面上看得到的）按时间留最新的 `keep` 份，
    * 更早的删掉。和单条删除一样逐份校验目录（不跟链接、不越界）再删；一份接一份异步删，几百份也不卡窗口。
    * 删的时候别处（改配置前、恢复前自动存的那一份顺手清超过 200 份的）刚好删掉了同一份，算已经没了，不算没删掉。
    */

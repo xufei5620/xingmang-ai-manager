@@ -6094,7 +6094,7 @@ describe('the Codex model catalog Xingmang writes', () => {
   })
 })
 
-// Fable 第二轮 Q6：设置里「只让 Claude Code 改项目文件夹里的文件」。星芒只写、只撤自己写的那一项。
+// Fable 第二轮 Q6：设置里「仅允许 Claude Code 修改项目文件夹内的文件」。星芒只写、只撤自己写的那一项。
 describe('Claude write boundary toggle', () => {
   function relayClaude(seeded: Parameters<typeof saveProviderConfig>[11] = {}) {
     const home = temporaryHome()

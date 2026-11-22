@@ -5,7 +5,7 @@ import { assertNoReparseComponents } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
 
 /**
- * 「设置 › 备份迁移」最下面那张「星芒占用的空间」卡（决定单 D100）：六行，按页面上的顺序。
+ * 「设置 › 备份迁移」最下面那张「星芒占用空间」卡（决定单 D100）：六行，按页面上的顺序。
  * 作品、聊天记录、日志只列大小；能清的只有删了能重新生成、重新下载的三样（StorageCleanTarget）。
  */
 export type StorageUsagePart = 'works' | 'thumbnails' | 'chat-history' | 'logs' | 'backups' | 'downloads'

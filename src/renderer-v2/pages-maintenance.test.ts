@@ -315,7 +315,7 @@ describe('tutorial topics', () => {
     const start = tutorialTopics.find((entry) => entry.id === 'start')
     const text = [...(start?.steps.map((step) => step.detail) ?? []), ...(start?.reminders ?? [])].join('\n')
     expect(text).toContain('都可能出错')
-    expect(text).toContain('合并或执行之前自己再过一遍')
+    expect(text).toContain('合并或执行前请自行复核')
     expect(text).toContain('来源不明')
     expect(text).toContain('诱导 AI 执行其他操作的指令')
   })

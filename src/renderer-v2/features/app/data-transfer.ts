@@ -3,7 +3,7 @@ import { formatDownloadBytes } from '../../registry/business'
 import { MAX_CONVERSATIONS } from '../chat/storage'
 import { maxVideoStudioProjects } from '../video-studio/library'
 
-// 设置页「搬到新电脑」的说法。放在这里是为了能单测，页面只管调用。
+// 设置页「迁移到新电脑」的说法。放在这里是为了能单测，页面只管调用。
 
 function fileNameOf(filePath: string): string {
   return filePath.split(/[\\/]/).pop() || filePath

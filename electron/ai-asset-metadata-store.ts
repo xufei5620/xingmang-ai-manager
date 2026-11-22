@@ -197,7 +197,7 @@ function parseItems(value: unknown[], version: ItemVersion): AiAssetMetadataItem
 }
 
 /**
- * Records brought over from another computer with its works (「搬到新电脑」).
+ * Records brought over from another computer with its works (「迁移到新电脑」).
  * They pass the same field checks as this store's own files; the recycle-bin
  * mark is dropped because only works outside the bin are exported, and a
  * record must never put an imported work straight into the bin.

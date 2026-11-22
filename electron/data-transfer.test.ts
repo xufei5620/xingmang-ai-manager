@@ -207,7 +207,7 @@ describe('planPortableSettingsImport', () => {
     })
     expect(plan.settings).toEqual({ version: 2, desktopNotifications: false, uiSkin: 'aurora' })
     expect(plan.conflictingSettings).toEqual({ version: 2, theme: 'light', closeBehavior: 'tray' })
-    expect(plan.conflictLabels).toEqual(['主题', '点关闭按钮时'])
+    expect(plan.conflictLabels).toEqual(['主题', '点击关闭按钮时'])
   })
 
   it('never asks about the skin, which the settings page no longer shows, and keeps one chosen here', () => {

@@ -434,7 +434,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // old-scope equality guard hides the entire page until the user navigates
   // away and back.
   const renderedChatScope = page === 'chat' ? scope : chatScope
-  // 「搬到新电脑」：导入前把聊天页同步卸下，免得它下一次自动保存把刚导入的对话又删掉。
+  // 「迁移到新电脑」：导入前把聊天页同步卸下，免得它下一次自动保存把刚导入的对话又删掉。
   // 人正停在聊天页时清掉 chatScope 卸不下它（renderedChatScope 这时看的是 page），就换个 key 让它重新挂上；
   // 重新挂上的和导入中途点开的，都等导入写完才读（R28-2）。
   const [chatMount, setChatMount] = useState(0)

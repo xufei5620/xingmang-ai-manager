@@ -84,7 +84,7 @@ describe('importing conversations while the chat page is around', () => {
   })
 })
 
-// 0.2.24 深查聊天页 C2：一段对话的文件坏了，以前整份读不出来，「搬到新电脑」也一个都导不出去。
+// 0.2.24 深查聊天页 C2：一段对话的文件坏了，以前整份读不出来，「迁移到新电脑」也一个都导不出去。
 describe('moving to a new computer with one broken conversation file', () => {
   it('exports the conversations that still read and logs the broken one without showing its reason', async () => {
     const files = memoryFiles()
@@ -178,7 +178,7 @@ describe('importing conversations while the chat is replying', () => {
   })
 })
 
-// Fable 第二轮 Q7：「常用的话」跟聊天记录存在一起，搬到新电脑时一起带走。
+// Fable 第二轮 Q7：「常用的话」跟聊天记录存在一起，迁移到新电脑时一起带走。
 describe('moving saved phrases to a new computer', () => {
   it('exports the saved phrases with the conversations', async () => {
     const files = memoryFiles()

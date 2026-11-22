@@ -28,8 +28,8 @@ describe('RelayRouteSettings', () => {
     // 两个账号都只叫线路1、线路2：默认那条（CF）是线路1，直连是线路2，线路1 排前面。
     expect(html).toMatch(/aria-label="星芒账号线路".*只用线路1.*只用线路2.*aria-label="历史账号线路".*只用线路1.*只用线路2/s)
     expect(html).not.toMatch(/洛杉矶|CF|直连|默认线路/)
-    expect(html).toContain('自动会先走线路2，连不上时改走线路1。重开星芒后生效，不会切换账号。')
-    expect(html).toContain('自动会先走线路1，线路1连不上时改走线路2。重开星芒后生效，不会切换账号。')
+    expect(html).toContain('选择「自动」时优先使用线路2，无法连接时改用线路1。重新打开星芒后生效，不会切换账号。')
+    expect(html).toContain('选择「自动」时优先使用线路1，线路1无法连接时改用线路2。重新打开星芒后生效，不会切换账号。')
     expect(html).not.toContain('settings-relay-relaunch')
   })
 

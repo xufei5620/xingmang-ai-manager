@@ -146,7 +146,7 @@ export function verifyVideoStudioMigration(legacy: readonly VideoStudioItem[], s
 
 export type VideoStudioLibraryBridge = Pick<XingmangApi, 'readVideoStudioProjects' | 'writeVideoStudioProjects' | 'reportRendererError'>
 
-// 设置页「搬到新电脑」往这个账号写视频的那一会儿（transfer.ts）：「创作」这时重新挂上、读文件，要等它写完，
+// 设置页「迁移到新电脑」往这个账号写视频的那一会儿（transfer.ts）：「创作」这时重新挂上、读文件，要等它写完，
 // 不然刚导进来的视频这一回列不出来（同聊天记录的 runHistoryImport）。
 const importsInFlight = new Map<string, Promise<unknown>>()
 

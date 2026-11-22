@@ -154,7 +154,7 @@
 - `features/app/settings-queue.ts` — 设置保存排成一队串行提交，前一次失败不挡后一次。
 - `features/app/ThemeCards.tsx` — 外观主题的三张预览卡（颜色写死，不跟当前主题变）。
 - `features/app/AppUninstall.tsx` — 设置 › 版本更新里「卸载星芒」：Mac 给真卸载按钮（可连同星芒装的命令行工具一起删，删前备份配置），Windows/Linux 只说去哪儿卸。
-- `features/app/data-transfer.ts` — 「搬到新电脑」导入导出的说法，以及把导入的设置交给保存队列的补丁。
+- `features/app/data-transfer.ts` — 「迁移到新电脑」导入导出的说法，以及把导入的设置交给保存队列的补丁。
 - `features/app/remembered-login.ts` — 设置里「记住密码」那行该做什么：已登录只剩「清掉它」，没登录去登录框；Linux 没有系统密码保管时不给勾、说清这次关掉就要重登。
 - `features/app/ui-scale-shortcut.ts` — Ctrl/⌘ 加减号与 0 缩放界面的按键识别与下一档倍率（输入法打字中不算）。
 
@@ -190,7 +190,7 @@
 - `features/chat/useChatController.ts` — 聊天控制器：打开时准备账号的全部分组（一次三个）、按模型落定计费分组、发送/停止/重试、编辑重发、图片生成与取消、「生成视频」那一档的交单、接回、停止（请求号先存再交，同时最多 3 段）、断网后重发；后台刷新只重读分组列表、只准备新冒出来的分组，不换用户的模型和草稿，模型哪儿都没有了也不悄悄换。
 - `features/chat/state.ts` — 会话与消息的数据结构和纯操作：全部分组的模型表与厂商分节（`buildChatCatalog` / `chatModelVendor`）、同一模型几个分组都有时挑哪个计费（`pickChatGroup`）、记着的模型怎么落定（`settleChatModel`）、推荐分组 `GPT`、默认对话与生图模型、每轮请求快照、失败话术（过打码表，I13）。
 - `features/chat/storage.ts` — 聊天记录读写：经主进程按对话分文件写盘、每次只重写改过的；写盘前剥掉 `sk-`、`Bearer`、`api_key=` 与 `blob:`、内联 base64（I13）；旧 localStorage 记录只读迁移，文件里有了才删旧副本。
-- `features/chat/transfer.ts` — 「搬到新电脑」里聊天记录那一半（「常用的话」跟着走）：导入前先同步卸下聊天页，免得它下一次自动保存把导入的对话又冲掉。
+- `features/chat/transfer.ts` — 「迁移到新电脑」里聊天记录那一半（「常用的话」跟着走）：导入前先同步卸下聊天页，免得它下一次自动保存把导入的对话又冲掉。
 - `features/chat/api.ts` — 聊天 IPC 的封装；只复用 `electron/ai-chat-protocol` 里无 Node 依赖的模型能力与请求校验函数，不改协议。
 - `features/chat/image-settings.ts` / `features/chat/ImageOptions.tsx` — 出图用的那一份设置和那一排选项（融合第 4 步）：前者按账号把型号、分组、尺寸、画质、分辨率记在这台电脑上（`xingmang-ui-v2:image-settings:〈账号〉`，读进来当外来的东西逐字段核），改了告诉正开着的另一边，另有「挪到这个型号收的范围里」「放到一段生成图片的对话上」两个纯函数；后者是尺寸、画质、分辨率三个菜单和自定义宽高两格。对话里「生成图片」那一档和视频工作台的出图框用的是这同一份、同一排。
 - `features/chat/video.ts` / `features/chat/ChatVideo.tsx` — 输入框第三档「生成视频」（融合第 2 步，只在「创作」页把 `create.video` 交下来时有）：前者是纯函数（交给主进程的那一单、一条视频回复收尾成什么样、重新生成时拿上一单的请求号怎么办、页面上那几行字），后者是对话里等着的那一块和出好的那一段（点了在页面里放 `xingmang-asset://video/<编号>`、「添加到视频」「另存视频」「用播放器打开」）。没加 IPC 通道，用视频工作台那几条。
@@ -212,7 +212,7 @@
 - `features/video-studio/ShotImageDialog.tsx` — 「AI 生成图片」点了以后的出图框（融合第 4 步）：跟对话里「生成图片」那一档共用同一排选项（`features/chat/ImageOptions.tsx`）和同一份设置（`features/chat/image-settings.ts`），画面描述、参考图、报价和余额；点「生成图片」才把框里选的交给 `useVideoStudio` 的 `drawShotImage`。
 - `features/video-studio/useVideoStudio.ts` — 页面的状态：读各分组的模型、写分镜、同时最多 3 段的出片队列和进度、让 AI 画镜头图（走对话页出图那条 `chat:generate-image`，停下走 `chat:cancel`）、拼片；工程从外面交来的 `source` 读、往它写（开哪一条归 `useVideoStudioLibrary.ts`），点开的那一条里没等到的片段照重开页面那样接回；停下时说清哪几段已经交给服务端、照样扣费。
 - `features/video-studio/library.ts` / `useVideoStudioLibrary.ts` — 这个账号做过的视频，一条一个文件（主进程 `video-studio-project-store.ts`）：前者是纯函数（文件内容、名字、排序、0.2.24 留在 localStorage 里的草稿怎么抄成文件、抄完怎么核对），后者是读、攒 400 毫秒一批写、紧急时立刻写、改名、删、从工作台外面整份换掉（`replace`：对话里的一段视频「添加到视频」时用，换版本号让开着的工作台重新读、旧的那份不再能写），和「现在开着哪一条、它手上有事时不换」。
-- `features/video-studio/transfer.ts` — 设置页「搬到新电脑」里的视频那一半：导出带哪几条（读得出来的，文件原样），导入时编号相同、内容一样的跳过，内容不同的另存一份、名称加「（导入）」，本机的不改；最多 200 条，放不下的报数。`library.ts` 的 `runVideoStudioImport` 让导入期间重新挂上的「创作」等它写完再读。
+- `features/video-studio/transfer.ts` — 设置页「迁移到新电脑」里的视频那一半：导出带哪几条（读得出来的，文件原样），导入时编号相同、内容一样的跳过，内容不同的另存一份、名称加「（导入）」，本机的不改；最多 200 条，放不下的报数。`library.ts` 的 `runVideoStudioImport` 让导入期间重新挂上的「创作」等它写完再读。
 - `features/video-studio/clip.ts` — 纯函数：存着的一段视频怎么读回来（镜头和对话里出的视频共用，缩略图按编号换成现在的版本）、页面里直接放用的地址。
 - `features/video-studio/project.ts` — 纯函数：工程的形状与默认值、分镜落成镜头、排序增删、出片段的请求（Grok 给宽高、MiniMax 给画面比例；镜头选了图就带上，Grok 当第一帧、MiniMax 换成图生视频）、镜头图的多选分配、AI 画镜头图的请求（写法同对话里出图；出图框打开时用哪个型号、尺寸怎么跟画面比例走、哪些往共用的那一份里记）和迟到结果的认领、每段剪头剪尾的可选几档（剪完至少留 1 秒）、每镜单独定的时长（换视频模型时一起挪到能出的一档）、配乐和片段原声的两路音量、序列化与逐字段校验（缩略图只认作品库的地址）、0.2.24 那两格 `localStorage`（手头一条、草稿箱最多 20 份）的只读读法；镜头上挂一段作品库里现成的片段（`borrowed`：不用生成、总时长按片段自己的长度算，`assignVideoStudioShotClip` / `removeVideoStudioShotClip`），拿几段现成片段新开一条视频（`createVideoStudioProjectFromClips`）。
 - `features/video-studio/compose-client.ts` — 页面这一头：`composeInVideoStudioWorker` 每次新开一个后台线程拼片，取消就直接关掉线程；回包按白名单读。
