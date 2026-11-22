@@ -47,11 +47,11 @@ export function parseConfigSavePayload(payload: unknown): ConfigSavePayload {
 
 export function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOptions {
   if (value === undefined) return {}
-  if (!isRecord(value)) throw new Error('选择工作目录的参数无效')
+  if (!isRecord(value)) throw new Error('选择项目文件夹的参数无效')
   const keys = Object.keys(value)
-  if (keys.some((key) => key !== 'createStarter' && key !== 'firstOpen')) throw new Error('选择工作目录的参数无效')
-  if (value.createStarter !== undefined && typeof value.createStarter !== 'boolean') throw new Error('选择工作目录的参数无效')
-  if (value.firstOpen !== undefined && typeof value.firstOpen !== 'boolean') throw new Error('选择工作目录的参数无效')
+  if (keys.some((key) => key !== 'createStarter' && key !== 'firstOpen')) throw new Error('选择项目文件夹的参数无效')
+  if (value.createStarter !== undefined && typeof value.createStarter !== 'boolean') throw new Error('选择项目文件夹的参数无效')
+  if (value.firstOpen !== undefined && typeof value.firstOpen !== 'boolean') throw new Error('选择项目文件夹的参数无效')
   return {
     ...(value.createStarter === undefined ? {} : { createStarter: value.createStarter }),
     ...(value.firstOpen === undefined ? {} : { firstOpen: value.firstOpen }),
@@ -62,7 +62,7 @@ export function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOpti
 // 存进去一个相对路径，同样会让「这个文件夹不建议打开」那一问认不出来。带了但不是字符串的直接报错，
 // 不悄悄换成记住的目录——那只会是界面出了 bug 或被人动过。
 export function parseWorkspace(workspace: unknown, fallback: string, platform: NodeJS.Platform): string {
-  if (workspace !== undefined && typeof workspace !== 'string') throw new Error('工作目录格式错误')
+  if (workspace !== undefined && typeof workspace !== 'string') throw new Error('项目文件夹路径格式错误')
   return requiredWorkspacePath(workspace?.trim() ? workspace : fallback, platform)
 }
 

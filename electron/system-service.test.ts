@@ -6170,7 +6170,7 @@ describe('Darwin Codex Desktop integration', () => {
 
     await expect(service.installCodexDesktop(target))
       .resolves.toEqual({ action: 'unchanged', previousVersion: '26.727.51351', installedVersion: '26.727.51351' })
-    expect(target.send).toHaveBeenCalledWith('desktop:codex-install-progress', { phase: 'completed', percent: 100, message: 'Codex 桌面端已经装好了，不用重复安装' })
+    expect(target.send).toHaveBeenCalledWith('desktop:codex-install-progress', { phase: 'completed', percent: 100, message: 'Codex 桌面端已安装，无需重复安装' })
     expect(execute).not.toHaveBeenCalled()
   })
 
@@ -6203,7 +6203,7 @@ describe('Darwin Codex Desktop integration', () => {
     await expect(service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('工作目录不存在，请重新选择')
+    })).rejects.toThrow('项目文件夹不存在，请重新选择')
     expect(resolveCli).not.toHaveBeenCalled()
     expect(execute).not.toHaveBeenCalled()
   })
@@ -6217,7 +6217,7 @@ describe('Darwin Codex Desktop integration', () => {
     await expect(service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('工作目录不存在，请重新选择')
+    })).rejects.toThrow('项目文件夹不存在，请重新选择')
     expect(execute).not.toHaveBeenCalled()
     expect(release).not.toHaveBeenCalled()
   })
@@ -6233,7 +6233,7 @@ describe('Darwin Codex Desktop integration', () => {
     await expect(service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('Mac 没允许星芒打开这个文件夹。打开「系统设置 › 隐私与安全性 › 文件和文件夹」，把「星芒AI管理工具」和「终端」两项都打开，再点一次「打开」。')
+    })).rejects.toThrow('Mac 未允许星芒访问该文件夹。请打开「系统设置 › 隐私与安全性 › 文件和文件夹」，开启「星芒AI管理工具」和「终端」两项，然后再次点击「打开」。')
     expect(execute).not.toHaveBeenCalled()
     expect(release).not.toHaveBeenCalled()
   })

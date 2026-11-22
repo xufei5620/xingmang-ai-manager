@@ -180,7 +180,7 @@ export function buildMacosCodexAppLaunchPlan(
     || workspace.includes('\0')
     || workspace.length > 32_767
   ) {
-    throw new Error('Codex Desktop 工作目录无效')
+    throw new Error('Codex 桌面端的项目文件夹无效')
   }
   if (
     codexHome !== undefined

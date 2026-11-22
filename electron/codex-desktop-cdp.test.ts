@@ -1055,7 +1055,7 @@ describe('Codex Desktop CDP debugging port ownership', () => {
       },
       fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
       delay: async () => undefined,
-    })).rejects.toThrow(/^这次没能确认 Codex 已经准备好$/)
+    })).rejects.toThrow(/^本次未能确认 Codex 已就绪$/)
     expect(lookups).toBe(3)
     expect(discoveries).toBe(0)
   })
@@ -1127,7 +1127,7 @@ describe('Codex Desktop CDP debugging port ownership', () => {
       }),
       fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
       delay: async () => undefined,
-    })).rejects.toThrow(/^这次没能确认 Codex 已经准备好$/)
+    })).rejects.toThrow(/^本次未能确认 Codex 已就绪$/)
     expect(lookups).toBe(3)
     expect(discoveries).toBe(0)
   })

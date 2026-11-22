@@ -66,7 +66,7 @@ describe('provider launch service', () => {
   it('refuses a workspace that is gone before touching anything', async () => {
     const { context, service, root, inspectCliTool } = createService()
 
-    await expect(service.launchProvider('claude', path.join(root, 'missing'))).rejects.toThrow('工作目录不存在，请重新选择')
+    await expect(service.launchProvider('claude', path.join(root, 'missing'))).rejects.toThrow('项目文件夹不存在，请重新选择')
     expect(context.toolLaunchedAt.has('claude')).toBe(false)
     expect(inspectCliTool).not.toHaveBeenCalled()
   })
@@ -79,7 +79,7 @@ describe('provider launch service', () => {
       return statSync(target, options)
     }) as typeof fs.statSync)
 
-    await expect(service.launchProvider('claude', workspace)).rejects.toThrow('Mac 没允许星芒打开这个文件夹。打开「系统设置 › 隐私与安全性 › 文件和文件夹」，把「星芒AI管理工具」和「终端」两项都打开，再点一次「打开」。')
+    await expect(service.launchProvider('claude', workspace)).rejects.toThrow('Mac 未允许星芒访问该文件夹。请打开「系统设置 › 隐私与安全性 › 文件和文件夹」，开启「星芒AI管理工具」和「终端」两项，然后再次点击「打开」。')
     expect(context.toolLaunchedAt.has('claude')).toBe(false)
     expect(inspectCliTool).not.toHaveBeenCalled()
   })

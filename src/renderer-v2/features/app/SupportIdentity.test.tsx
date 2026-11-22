@@ -16,7 +16,7 @@ describe('SupportIdentity', () => {
     expect(buildSupportIdentityLine({ signedIn: true, account: { userId: 7, username: 'peaker' }, version: '0.2.14', os: 'linux', systemDetail }))
       .toBe('账号 peaker（ID 7） · 星芒AI管理工具 0.2.14 · Linux（Ubuntu 24.04.1 LTS · ARM 芯片）')
     expect(buildSupportBundle({ signedIn: false, account: null, version: '0.2.14', os: 'linux', systemDetail: linuxSystemDetail(undefined, 'x64') },
-      { at: new Date(2026, 9, 2, 9, 5), message: '安装没有完成' }).split('\n')[2]).toBe('版本 0.2.14 · Linux（64 位）')
+      { at: new Date(2026, 9, 2, 9, 5), message: '安装未完成' }).split('\n')[2]).toBe('版本 0.2.14 · Linux（64 位）')
     expect(buildSupportIdentityLine({ signedIn: false, account: null, version: '0.2.14', os: 'linux' })).toBe('未登录 · 星芒AI管理工具 0.2.14 · Linux')
     expect(linuxSystemDetail(undefined, undefined)).toBeUndefined()
   })

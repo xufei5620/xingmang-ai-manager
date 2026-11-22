@@ -90,11 +90,11 @@ function probeFor(tool: ExternalToolId, name: string, baseUrl: string, model: st
 function verifiedWording(tool: ExternalToolId, name: string, model: string): string {
   switch (tool) {
     case 'claudeDesktop':
-      return `已照 ${name} 启动时的检查，用它配置里的密钥向 ${model} 发过一条一个字的测试消息，服务正常回复`
+      return `已按 ${name} 启动时的检查方式，使用其配置中的密钥向 ${model} 发送一条单字测试消息，服务回复正常`
     case 'workbuddy':
-      return `已用 ${name} 配置里的密钥核对当前账号的可用模型清单，${model} 在其中`
+      return `已使用 ${name} 配置中的密钥核对当前账号的可用模型列表，${model} 在列表中`
     case 'opencode':
-      return `已用 ${name} 配置里的密钥核对当前账号的可用模型清单，${model} 在其中`
+      return `已使用 ${name} 配置中的密钥核对当前账号的可用模型列表，${model} 在列表中`
   }
 }
 
@@ -118,34 +118,34 @@ export function buildExternalClientProbe(input: ExternalClientProbeInput): Conne
   const name = externalClientNames[input.tool]
   const model = input.model
   if (!input.installed) {
-    return blocked('unconfigured', `还没有检测到 ${name}`,
-      '先在首页安装这个客户端或点一次「重新检测」，装好之后再回来自检', model)
+    return blocked('unconfigured', `尚未检测到 ${name}`,
+      '请先在首页安装该客户端或点击「重新检测」，安装完成后再返回自检', model)
   }
   // 官方登录不是故障，也不该拿留着的那把星芒密钥替它测：和命令行工具切官方后一样，显示成未配置。
   if (input.officialAccount) {
-    return blocked('unconfigured', `${name} 现在用的是你自己的 Claude 账号`,
-      '额度走你自己的官方订阅，不扣当前账号的余额。想改用当前账号，在首页的工具卡片上切换', model)
+    return blocked('unconfigured', `${name} 当前使用的是您自己的 Claude 账号`,
+      '额度使用您自己的官方订阅，不扣除当前账号的余额。如需改用当前账号，请在首页的工具卡片上切换', model)
   }
   if (input.configurationSource === 'unknown') {
     return blocked('config', input.configurationError?.trim() || `${name} 的本地配置无法确认`,
-      '检查配置文件的权限与格式，然后在首页给这个客户端重新配置一次', model)
+      '请检查配置文件的权限与格式，然后在首页为该客户端重新配置', model)
   }
   if (input.configurationSource === 'missing') {
-    return blocked('unconfigured', `还没有给 ${name} 写入星芒配置`,
-      '在首页点这个客户端的「配置」，选好密钥和模型保存一次，再回来自检', model)
+    return blocked('unconfigured', `尚未为 ${name} 写入星芒配置`,
+      '请在首页点击该客户端的「配置」，选择密钥和模型并保存，再返回自检', model)
   }
   if (input.configurationSource === 'other') {
     // 不回显它现在指向哪：那可能是用户自己的另一家服务，本软件没有理由替他
     // 把那个地址念出来，更不会拿那把密钥去发请求。
-    const nextStep = '自检只会用当前账号的密钥向星芒服务发请求。请先在首页给这个客户端重新配置一次'
+    const nextStep = '自检仅使用当前账号的密钥向星芒服务发送请求。请先在首页为该客户端重新配置'
     // WorkBuddy、OpenCode 本来就能接别家：客户自己配的不算问题，跟没配一样是灰的、不是黄的
     // （0.2.24 深查决定单 D63）。Claude Desktop 不在那条决定里，照旧。
-    if (input.tool !== 'claudeDesktop') return blocked('unconfigured', '用的是你自己的配置', nextStep, model)
+    if (input.tool !== 'claudeDesktop') return blocked('unconfigured', '当前使用的是您自己的配置', nextStep, model)
     return blocked('config', `${name} 当前的配置不是由当前账号写入的`, nextStep, model)
   }
   if (!input.apiKey || !model) {
-    return blocked('config', `${name} 的配置里读不到可用的密钥或模型`,
-      '在首页给这个客户端重新配置一次，保存后会自动再测一遍', model)
+    return blocked('config', `${name} 的配置中未读取到可用的密钥或模型`,
+      '请在首页为该客户端重新配置，保存后将自动重新检测', model)
   }
   return probeFor(input.tool, name, input.baseUrl, model, input.apiKey)
 }
@@ -159,7 +159,7 @@ function describeSuccess(tool: ExternalToolId, model: string | null): { summary:
   const label = model ?? '所选模型'
   return {
     summary: `当前账号的密钥和模型 ${label} 都可用`,
-    evidence: `${verifiedWording(tool, externalClientNames[tool], label)}；客户端里实际发起的对话由客户端自己发出，本机测不到`,
+    evidence: `${verifiedWording(tool, externalClientNames[tool], label)}；客户端中实际发起的对话由客户端自行发送，本机无法检测`,
   }
 }
 

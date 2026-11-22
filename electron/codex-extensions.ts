@@ -1322,12 +1322,12 @@ export class CodexExtensionService {
     if (headersRequested) {
       // `codex mcp add` 没有请求头的开关（0.164.0 的 --help 只有 --url、--bearer-token-env-var 和 OAuth 那几项），
       // 装没装 CLI 都照它自己的格式直接写 config.toml。OAuth 那两项只有命令当场登录时才用得上，这里写不进去。
-      if (oauthRequested) throw new Error('带请求头的连接不用填 OAuth Client ID 和 OAuth Resource，清空这两项再添加。')
+      if (oauthRequested) throw new Error('带请求头的连接无需填写 OAuth Client ID 和 OAuth Resource，请清空这两项后再添加。')
       return this.addConfiguredMcpServer(name, entry)
     }
     if (!await this.cliInstalled()) {
       // 这两项是 `codex mcp add` 当场去做 OAuth 登录时用的，config.toml 里没有对应的写法；界面上没装 CLI 时不给填。
-      if (oauthRequested) throw new Error('没装 Codex CLI 时，OAuth Client ID 和 OAuth Resource 填不了，要先装好 Codex CLI。')
+      if (oauthRequested) throw new Error('未安装 Codex CLI 时无法填写 OAuth Client ID 和 OAuth Resource，请先安装 Codex CLI。')
       return this.addConfiguredMcpServer(name, entry)
     }
     try {
@@ -1610,7 +1610,7 @@ export class CodexExtensionService {
     const root = scope === 'user'
       ? path.join(this.userHome, '.agents', 'skills')
       : this.repositoryRoot && path.join(this.repositoryRoot, '.agents', 'skills')
-    if (!root) throw new Error('未设置仓库工作目录，不能导入 repo Skill')
+    if (!root) throw new Error('尚未选择项目文件夹，无法导入仓库范围的技能')
     const target = skillImportTarget(sourceDirectory, root)
     // 这里还没有这个技能，config.toml 里它的启停记录只会是以前卸载（旧版本卸载不删）或手删目录
     // 留下的，不清掉的话新导入的一进来就是「已停用」（#1093 第 9 条）。
