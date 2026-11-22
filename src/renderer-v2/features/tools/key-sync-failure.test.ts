@@ -35,12 +35,12 @@ describe('key sync failure wording', () => {
   // 0.2.24 深查 D3：工具那把密钥在网页上停用或到期，主进程停下说的那句要原样上屏，不被归成别的错。
   it('shows the stop sentence for a key disabled or expired on the web as it is', () => {
     expect(keySyncFailureText('codex', managedKeyStoppedMessage))
-      .toBe('Codex CLI：这个工具的密钥已经停用或到期，软件不会自动换一把新的。到「个人中心 › 密钥管理」找到它点「启用」，或者把它撤销后再试')
+      .toBe('Codex CLI：该工具的密钥已停用或到期，软件不会自动更换新密钥。请在「个人中心 › 密钥管理」中找到该密钥并点击「启用」，或将其撤销后重试')
   })
 
   it('shows the history account stop sentence as it is', () => {
     expect(keySyncFailureText('claude', sub2ApiManagedKeyStoppedMessage))
-      .toBe('Claude Code：这个工具的密钥已经停用或到期，软件不会自动换一把新的。到历史账号官网的「API 密钥」里点「启用」（到期的要点「编辑」把过期时间往后改），或者在「个人中心 › 密钥管理」把它撤销后再试')
+      .toBe('Claude Code：该工具的密钥已停用或到期，软件不会自动更换新密钥。请在历史账号官网的「API 密钥」中点击「启用」（如已到期，请点击「编辑」延后过期时间），或在「个人中心 › 密钥管理」中将其撤销后重试')
   })
 
   it('does not repeat the tool name the reason already starts with', () => {

@@ -22,7 +22,7 @@ export function configLinkRefusalMessage(location: string, kind: 'file' | 'folde
 }
 
 /**
- * 从包了几层的报错里（「改用当前账号没有完成：……已恢复到切换前的配置。」）取回上面那一整句；没有就是 null。
+ * 从包了几层的报错里（「改用当前账号未完成：……已恢复到切换前的配置。」）取回上面那一整句；没有就是 null。
  * 位置里不会有全角冒号，所以从标志前最近的一个「：」后面算起。
  */
 export function configLinkRefusalIn(message: string): string | null {

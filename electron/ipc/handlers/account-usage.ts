@@ -22,7 +22,7 @@ export function registerAccountUsageHandlers(ctx: IpcHandlerContext): void {
     // 首页近 7 天的柱子按账号记在本机，渲染层先读会话、再一天一天查看板，是两次调用：中间换了
     // 账号，查回来的就是新账号的数，却记到上一个账号名下，换回去、重开都改不回来（11-18 D11）。
     // 这里跟下面发请求在同一拍里核对：对上了才查，查的过程中再换账号，外层的账号工作照旧报
-    // 「账号刚切换过」，所以带着它查回来的一定是它的数。
+    // 「账号刚刚切换」，所以带着它查回来的一定是它的数。
     if (expected !== undefined && expected !== currentAccountScope()) throw new Error(staleAccountMessage)
     return accountService.getDashboard(query)
   })

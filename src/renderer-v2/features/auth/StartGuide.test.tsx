@@ -499,31 +499,31 @@ describe('guide step failure wording', () => {
   it('tells a switch that could not write the config file what to close and which buttons to press (known 29)', () => {
     // 以前叫人去查安装目录的写入权限，可「改用当前账号」写的是工具的配置文件；
     // 目录里那句说的「重试」「联系客服」在引导里叫「重试」「复制给客服」。
-    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。"
+    const raw = "Claude Code 改用当前账号未完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。"
     const failure = guideStepFailure(new Error(raw), '改用当前账号', true)
     expect(failure.message).toBe('改用当前账号失败：无法写入配置文件。通常是安全软件拦截或文件被其他程序占用。请关闭正在使用该工具的窗口后点击「重试」，如仍失败，请点击「复制给客服」并发送给客服。')
     expect(failure.reason).toBe('无法写入配置文件')
     expect(failure.detail).toContain('EPERM')
     expect(failure.detail).not.toContain('alice')
     expect(guideStepFailure(new Error(raw), '改用当前账号').message).toMatch(/请关闭正在使用该工具的窗口后点击「重试」，如仍失败，请点击「需要帮助」。$/)
-    expect(guideStepFailure(new Error('切换前的备份没有完成，已取消切换，配置没有改动：EACCES: permission denied'), '改用当前账号', true).reason).toBe('无法写入配置文件')
+    expect(guideStepFailure(new Error('切换前的备份未完成，已取消切换，配置未改动：EACCES: permission denied'), '改用当前账号', true).reason).toBe('无法写入配置文件')
     // 装东西的几步照旧是安装目录。
     expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备环境', true).reason).toBe('无法写入安装目录')
   })
 
   it('tells a switch refused by a root-owned settings folder or a read-only file what it really is (D15)', () => {
     // 主进程查出是哪一种时（config-files-context.ts 的 explainConfigWriteFailure）那半句，经 account-source-switch 包一层。
-    const adminOwned = guideStepFailure(new Error(`Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`), '改用当前账号', true)
+    const adminOwned = guideStepFailure(new Error(`Claude Code 改用当前账号未完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`), '改用当前账号', true)
     expect(adminOwned.message).toBe('改用当前账号失败：无法写入配置文件。该工具的设置文件夹归管理员所有，通常是之前以管理员身份运行过该工具，星芒无法修改。请点击「复制给客服」，客服将指导您恢复。')
     expect(adminOwned.reason).toBe('无法写入配置文件')
-    const readOnly = guideStepFailure(new Error(`Codex CLI 改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`), '改用当前账号', true)
+    const readOnly = guideStepFailure(new Error(`Codex CLI 改用当前账号未完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`), '改用当前账号', true)
     expect(readOnly.message).toBe('改用当前账号失败：无法写入配置文件。该文件已设为只读，星芒未作修改。如需写入，请先取消只读属性。')
     expect(readOnly.reason).toBe('无法写入配置文件')
   })
 
   it('puts the linked config file and what to do about it on the red line instead of the folded raw text', () => {
     // 主进程那句（electron/config-link-refusal.ts）经 account-source-switch 包一层后的样子（#1100 第2条）。
-    const raw = '改用当前账号没有完成：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。已恢复到切换前的配置。'
+    const raw = '改用当前账号未完成：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。已恢复到切换前的配置。'
     const failure = guideStepFailure(new Error(raw), '改用当前账号', true)
     expect(failure.message).toBe('改用当前账号失败：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。如需协助，请点击「复制给客服」并发送给客服。')
     expect(failure.reason).toBe('配置文件为链接')
@@ -747,9 +747,9 @@ describe('guide connect step with a key the current account did not write', () =
 
 describe('guide switch failure exits', () => {
   it('sends a tool the account has not opened to support and a failed undo to the backups page', () => {
-    expect(guideFailureExits(new Error('改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。')).map((action) => action.id)).toEqual(['support'])
-    expect(guideFailureExits(new Error('改用当前账号没有完成：EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。')).map((action) => action.id)).toEqual(['backups', 'support'])
-    expect(guideFailureExits(new Error('改用当前账号没有完成：EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。')).map((action) => action.id)).toEqual(['backups', 'support'])
+    expect(guideFailureExits(new Error('改用当前账号未完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。')).map((action) => action.id)).toEqual(['support'])
+    expect(guideFailureExits(new Error('改用当前账号未完成：EPERM。自动恢复也未完成（EPERM），请在「设置 › 备份迁移」中恢复切换前的备份。')).map((action) => action.id)).toEqual(['backups', 'support'])
+    expect(guideFailureExits(new Error('改用当前账号未完成：EPERM。自动恢复也未完成（EPERM），请到「备份」里恢复切换前那一份。')).map((action) => action.id)).toEqual(['backups', 'support'])
     expect(guideFailureExits('不过账号余额不足，充值后再试。').map((action) => action.id)).toEqual(['recharge'])
     expect(guideFailureExits(new Error('something odd'))).toEqual([])
   })
@@ -757,7 +757,7 @@ describe('guide switch failure exits', () => {
   it('offers 找客服 when the switch could not write the config file (known 29, D14)', () => {
     // 已知29 改的只是那句话。出口按「写不进」那一类的按钮走：D14 把它换成「重试、复制路径、找客服」，
     // 引导里「重试」是「重试」、「复制路径」不出，剩下「联系客服」。
-    expect(guideFailureExits(new Error("Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。")))
+    expect(guideFailureExits(new Error("Claude Code 改用当前账号未完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。")))
       .toEqual([{ id: 'support', label: '联系客服' }])
   })
 })

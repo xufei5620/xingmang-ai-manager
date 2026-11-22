@@ -20,7 +20,7 @@ const MAX_CACHED_KEYS = 128
 const MAX_GROUP_LENGTH = 128
 const MAX_KEY_NAME_LENGTH = 50
 const MAX_KEY_LENGTH = 512
-const FILE_LABEL = 'AI 聊天分组 API Key'
+const FILE_LABEL = 'AI 聊天分组密钥'
 const MAX_QUARANTINED_RECORDS = 3
 
 export interface StoredChatKey {
@@ -88,7 +88,7 @@ export function encodePersistedChatKeys(
   data: PersistedChatKeys,
   storage: Pick<SafeStorageLike, 'encryptString'>,
 ): string {
-  if (!isPersistedChatKeys(data)) throw new Error('AI 聊天分组 API Key 格式错误')
+  if (!isPersistedChatKeys(data)) throw new Error('AI 聊天分组密钥格式错误')
   return storage.encryptString(JSON.stringify(data)).toString('base64')
 }
 
@@ -194,7 +194,7 @@ export class ChatKeyStore {
   }
 
   upsert(entry: StoredChatKey, expectedRevision = this.captureRevision()): Promise<boolean> {
-    if (!isStoredChatKey(entry)) throw new Error('AI 聊天分组 API Key 格式错误')
+    if (!isStoredChatKey(entry)) throw new Error('AI 聊天分组密钥格式错误')
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
       throw new Error('AI 聊天缓存版本格式错误')
     }
@@ -287,7 +287,7 @@ export class ChatKeyStore {
     const content = await readSafeUtf8File(this.filePath, FILE_LABEL, MAX_FILE_BYTES)
     if (content === null) return null
     const record = decodePersistedChatKeys(content, this.storage)
-    if (!record) throw new ChatKeyCacheCorruptError('本地 AI 聊天分组 API Key 配置已损坏或无法解密')
+    if (!record) throw new ChatKeyCacheCorruptError('本地 AI 聊天分组密钥配置已损坏或无法解密')
     // 只有星芒账号（xm 站）改过名；文件里的老名字等下次写入时跟着换掉。
     return this.siteId === 'solov' ? { ...record, keys: renameRetiredChatKeyGroups(record.keys) } : record
   }
@@ -318,7 +318,7 @@ export class ChatKeyStore {
       const probe = `xingmang-chat-key-probe:${randomUUID()}`
       if (this.storage.decryptString(this.storage.encryptString(probe)) !== probe) throw new Error()
     } catch {
-      throw new ChatKeyCacheCorruptError('本地 AI 聊天分组 API Key 配置已损坏或无法解密')
+      throw new ChatKeyCacheCorruptError('本地 AI 聊天分组密钥配置已损坏或无法解密')
     }
     try {
       await fs.promises.rename(this.filePath, `${this.filePath}.corrupt-${Date.now()}`)
@@ -360,9 +360,9 @@ export class ChatKeyStore {
     if (this.persistence === 'session-only') return
     const backend = inspectSafeStorageBackend(this.storage)
     if (backend === 'unavailable') {
-      throw new Error('系统安全存储不可用，无法持久化 AI 聊天分组 API Key')
+      throw new Error('系统安全存储不可用，无法保存 AI 聊天分组密钥')
     }
-    if (backend === 'plaintext') throw new Error(safeStoragePlaintextMessage('AI 聊天分组 API Key'))
+    if (backend === 'plaintext') throw new Error(safeStoragePlaintextMessage('AI 聊天分组密钥'))
   }
 
   /**
@@ -399,7 +399,7 @@ export class ChatKeyStore {
 
   private async writeRecord(record: PersistedChatKeys): Promise<void> {
     if (this.persistence === 'session-only') {
-      if (!isPersistedChatKeys(record)) throw new Error('AI 聊天分组 API Key 格式错误')
+      if (!isPersistedChatKeys(record)) throw new Error('AI 聊天分组密钥格式错误')
       this.sessionRecord = structuredClone(record)
       return
     }

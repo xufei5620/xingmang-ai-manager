@@ -990,8 +990,8 @@ describe('moving history to another computer', () => {
   it('rejects the whole import when one conversation is malformed', () => {
     const exported = JSON.parse(JSON.stringify(exportableConversations(workspace(scope, 2))))
     exported[1].messages[0].role = 'system'
-    expect(() => parseImportedConversations(exported)).toThrow('没有导入任何内容')
-    expect(() => parseImportedConversations([exported[0], exported[0]])).toThrow('没有导入任何内容')
+    expect(() => parseImportedConversations(exported)).toThrow('未导入任何内容')
+    expect(() => parseImportedConversations([exported[0], exported[0]])).toThrow('未导入任何内容')
     expect(() => parseImportedConversations(Array.from({ length: 201 }, () => exported[0]))).toThrow(ChatStorageError)
   })
 
