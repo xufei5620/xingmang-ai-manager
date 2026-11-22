@@ -348,9 +348,6 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     // should not depend on this program being right.
     const trashItem = (filePath: string) => shell.trashItem(filePath)
     const mediaAssets = createAiMediaAssetService({ images: assetStore, videos: videoAssets, audios: audioAssets, metadata: assetMetadata, trashItem })
-    // 「迁移到新电脑」带上这个账号作品库里的作品（「搬作品改」）。元数据跟作品库共用这一个 store，导入时补记录和收藏、
-    // 改名排在同一个队里。
-    const worksTransfer = createAccountWorksTransfer({ outputRoot: aiOutputRoot, metadata: assetMetadata })
     const canvasProjects = new CanvasProjectStore(roots.canvasProjectsDirectory)
     const createProjectAssetContext = (outputRoot: string) => {
       const images = new AiAssetStore({
@@ -416,6 +413,13 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         '生成素材已保存，但来源信息保存失败',
         { ...context, reason: error instanceof Error ? error.message : String(error) },
       ),
+    })
+    // 「迁移到新电脑」带上这个账号作品库里的作品（「搬作品改」），连同作品库页列出的画布项目里生成的那些（「画布也搬」）。
+    // 元数据跟作品库共用这一个 store，导入时补记录和收藏、改名排在同一个队里。
+    const worksTransfer = createAccountWorksTransfer({
+      outputRoot: aiOutputRoot,
+      metadata: assetMetadata,
+      canvasFolders: (userId) => canvasProjectAssets.listLibraryFolders(userId),
     })
     const assetThumbnails = createAssetThumbnailService({
       store: new AssetThumbnailStore({ cacheRoot: roots.assetThumbnailsDirectory }),

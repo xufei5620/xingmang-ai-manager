@@ -43,6 +43,21 @@ export interface CanvasAccountLibraryQuery extends AiMediaLibraryQuery {
   canvasProjectId?: string
 }
 
+/**
+ * One canvas project folder as the account-wide library lists it, for 「迁移到新电脑」 (画布也搬, yoyo
+ * 2026-11-22): the works the library shows from there go along with the account library's own.
+ */
+export interface CanvasLibraryFolder {
+  /** The root of the folder's asset stores: user-<id>/<date>/xingmang-<id>.<ext> below it, the account library's layout. */
+  outputRoot: string
+  metadata: Pick<AiAssetMetadataStore, 'getAll'>
+  /**
+   * The works the library lists from this folder. A work the account library holds too, or the copy a
+   * project listed earlier also holds, is listed from there and is not among them.
+   */
+  assetIds: string[]
+}
+
 export interface CanvasProjectImageMetadata extends AiAssetMetadata {
   projectId?: string
   /** The prompt the user submitted, kept in logical metadata rather than beside the bytes. */
@@ -72,6 +87,8 @@ export class CanvasProjectAssetManager {
   private readonly now: () => number
   private readonly librarySourceSnapshots = new Map<number, { at: number; listed: CanvasProjectLibrarySource[] }>()
   private readonly libraryFolderSnapshots = new Map<string, { at: number; rows: AiMediaLibraryRow[] }>()
+  // The asset root each project folder's stores were made for: the migration copies their files by path.
+  private readonly contextRoots = new WeakMap<CanvasProjectAssetContext, string>()
 
   constructor(options: CanvasProjectAssetManagerOptions) {
     this.realmId = options.realmId ?? 'xm-account'
@@ -111,9 +128,11 @@ export class CanvasProjectAssetManager {
   }
 
   private forWorkspace(workspaceDirectory: string): CanvasProjectAssetContext {
-    const context = this.createContext(this.realmId === 'api-account'
+    const outputRoot = this.realmId === 'api-account'
       ? path.join(workspaceDirectory, 'assets', 'realms', 'api-account')
-      : path.join(workspaceDirectory, 'assets'))
+      : path.join(workspaceDirectory, 'assets')
+    const context = this.createContext(outputRoot)
+    this.contextRoots.set(context, outputRoot)
     context.images.ensureOutputDirectory()
     return context
   }
@@ -265,6 +284,49 @@ export class CanvasProjectAssetManager {
       const project = sources.find((source) => source.id === canvasProjectId)
       return pageAiMediaLibraryRows(project ? await this.projectWorks(userId, project) : [], paging)
     }
+    const { merged, fromFolders } = await this.accountLibraryRows(userId, sources)
+    return pageAiMediaLibraryRows([...merged.values(), ...fromFolders.values()], paging)
+  }
+
+  /**
+   * The project folders whose works the account-wide library lists, each with the ids it lists from
+   * there, for 「迁移到新电脑」 (画布也搬): the export takes exactly what the library page shows, so the
+   * numbers in the question match the page. Same rules as listLibrary: unarchived projects with a folder
+   * that can be reached, what they made rather than what was imported into them, nothing from the bin.
+   * A folder whose stores cannot be opened right now is left out, as it is from the page.
+   */
+  async listLibraryFolders(userId: number): Promise<CanvasLibraryFolder[]> {
+    assertUserId(userId)
+    const { fromFolders } = await this.accountLibraryRows(userId, await this.librarySources(userId))
+    const byProject = new Map<string, string[]>()
+    for (const row of fromFolders.values()) {
+      const projectId = row.canvas?.projectId
+      if (!projectId) continue
+      const held = byProject.get(projectId)
+      if (held) held.push(row.assetId)
+      else byProject.set(projectId, [row.assetId])
+    }
+    const folders: CanvasLibraryFolder[] = []
+    for (const [projectId, assetIds] of byProject) {
+      try {
+        const context = await this.forProject(userId, projectId)
+        const outputRoot = this.contextRoots.get(context)
+        if (outputRoot) folders.push({ outputRoot, metadata: context.metadata, assetIds })
+      } catch {
+        // Its folder went away since the library read it: it adds nothing, as on the page.
+      }
+    }
+    return folders
+  }
+
+  /**
+   * The account library's rows and the rows only a project folder holds, keyed by asset id. A work in
+   * both is listed from the account library; a work in two folders, from the earliest file.
+   */
+  private async accountLibraryRows(userId: number, sources: readonly CanvasProjectLibrarySource[]): Promise<{
+    merged: Map<string, AiMediaLibraryRow>
+    fromFolders: Map<string, AiMediaLibraryRow>
+  }> {
     const folderless = new Map<string, CanvasProjectLibrarySource>()
     for (const source of sources) {
       if (source.workspaceStatus !== 'legacy') continue
@@ -289,7 +351,7 @@ export class CanvasProjectAssetManager {
         if (!known || row.createdAt < known.createdAt) fromFolders.set(row.assetId, row)
       }
     }
-    return pageAiMediaLibraryRows([...merged.values(), ...fromFolders.values()], paging)
+    return { merged, fromFolders }
   }
 
   private async librarySources(userId: number): Promise<CanvasProjectLibrarySource[]> {

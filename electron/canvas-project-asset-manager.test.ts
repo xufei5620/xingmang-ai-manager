@@ -578,6 +578,65 @@ describe('the account-wide library the main window lists (融合第 5 步)', () 
     await manager.listLibrary(7)
     expect(listLibrarySources).toHaveBeenCalledTimes(3)
   })
+
+  it('names, for the migration, the folders and the works the library lists from each and nothing else', async () => {
+    const firstId = '11111111-1111-4111-8111-111111111111'
+    const copyId = '22222222-2222-4222-8222-222222222222'
+    const goneId = '33333333-3333-4333-8333-333333333333'
+    const legacyId = '44444444-4444-4444-8444-444444444444'
+    const firstWorkspace = temporaryRoot('xingmang-folders-first-')
+    const copyWorkspace = temporaryRoot('xingmang-folders-copy-')
+    const globalContext = distinct(temporaryRoot('xingmang-folders-global-'))
+    const sources = [
+      { id: copyId, name: '副本', workspaceStatus: 'ready' as const, assetIds: [] as string[] },
+      { id: firstId, name: '原项目', workspaceStatus: 'ready' as const, assetIds: [] as string[] },
+      { id: goneId, name: '文件夹不在了', workspaceStatus: 'missing' as const, assetIds: [] as string[] },
+      { id: legacyId, name: '旧项目', workspaceStatus: 'legacy' as const, assetIds: [] as string[] },
+    ]
+    const workspaces: Record<string, string> = { [firstId]: firstWorkspace, [copyId]: copyWorkspace }
+    const manager = new CanvasProjectAssetManager({
+      realmId: 'api-account',
+      projects: {
+        list: vi.fn(async () => []),
+        getUsableWorkspaceDirectory: vi.fn(async (_userId: number, projectId: string) => {
+          if (workspaces[projectId]) return workspaces[projectId]
+          if (projectId === legacyId) return null
+          throw new Error('画布项目工作文件夹不存在')
+        }),
+        listLibrarySources: vi.fn(async () => sources),
+      },
+      global: globalContext,
+      create: distinct,
+    })
+    const chatImage = await globalContext.images.storeBase64(7, png)
+    const inLegacy = await manager.storeBase64(7, png, { projectId: legacyId })
+    sources[3]!.assetIds = [inLegacy.assetId]
+    const original = await manager.storeBase64(7, png, { projectId: firstId, prompt: '一只橘猫' })
+    // A copied project keeps the ids of what it copied; the copy also made one of its own.
+    fs.cpSync(path.join(firstWorkspace, 'assets'), path.join(copyWorkspace, 'assets'), { recursive: true })
+    const ownCopyWork = await manager.storeMp4(7, mp4(), { taskId: 'video_folders', projectId: copyId })
+    const material = await (await manager.forProject(7, copyId)).images.storeLocalBytes(7, localPng(3))
+    await (await manager.forProject(7, copyId)).media.setSource(7, material.assetId, 'imported')
+
+    const folders = await manager.listLibraryFolders(7)
+    const page = await manager.listLibrary(7)
+    // The account library's own works, the folderless project's among them, plus what each folder lists: the page, exactly.
+    expect([chatImage.assetId, inLegacy.assetId, ...folders.flatMap((folder) => folder.assetIds)].sort()).toEqual(page.items.map((item) => item.assetId).sort())
+    expect(folders.map((folder) => folder.outputRoot).sort()).toEqual([
+      path.join(copyWorkspace, 'assets', 'realms', 'api-account'),
+      path.join(firstWorkspace, 'assets', 'realms', 'api-account'),
+    ].sort())
+    // The same work in two folders is named once; the copy's own work, from the copy.
+    expect(folders.flatMap((folder) => folder.assetIds).sort()).toEqual([original.assetId, ownCopyWork.assetId].sort())
+    const copyFolder = folders.find((folder) => folder.outputRoot.startsWith(copyWorkspace))!
+    expect(copyFolder.assetIds).toContain(ownCopyWork.assetId)
+    expect(copyFolder.assetIds).not.toContain(material.assetId)
+    const holder = folders.find((folder) => folder.assetIds.includes(original.assetId))!
+    expect((await holder.metadata.getAll(7))[original.assetId]).toMatchObject({ source: 'generated', prompt: '一只橘猫' })
+
+    await expect(manager.listLibraryFolders(8)).resolves.toEqual([])
+    await expect(manager.listLibraryFolders(0)).rejects.toThrow('画布项目账号标识无效')
+  })
 })
 
 describe('holderOf', () => {
