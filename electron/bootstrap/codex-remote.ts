@@ -46,8 +46,8 @@ export interface CodexRemoteBootstrapOptions {
   readBalanceUsd?(): Promise<number | null>
 }
 
-const elevatedMessage = '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。'
-const unconfirmedMessage = '没能确认星芒是不是以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒再试。'
+const elevatedMessage = '星芒正以管理员身份运行，为保障安全，此时无法开启手机遥控。请以普通方式重新打开星芒。'
+const unconfirmedMessage = '无法确认星芒是否以管理员身份运行，为保障安全，此时无法开启手机遥控。请以普通方式重新打开星芒后重试。'
 
 /**
  * Whether this Windows account runs every program at High integrity by itself: the
@@ -118,7 +118,7 @@ export function createCodexRemote(options: CodexRemoteBootstrapOptions): CodexRe
     alwaysElevatedAccount: isAlwaysElevatedWindowsAccount(process.platform, options.windowsExecution),
     checkCodexReady: async () => (await isCodexCliInstalled(options.codexEnv)
       ? null
-      : '这台电脑还没装 Codex 命令行工具，先在首页把它装好。'),
+      : '本机尚未安装 Codex CLI，请先在首页完成安装。'),
     onStateChanged: options.onStateChanged,
     ...(options.readBalanceUsd ? { readBalanceUsd: options.readBalanceUsd } : {}),
   })

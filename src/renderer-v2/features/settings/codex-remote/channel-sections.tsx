@@ -42,19 +42,19 @@ export interface RemoteChannelSectionDefinition {
 export const remoteChannelSections: Record<RemoteChannelId, RemoteChannelSectionDefinition> = {
   feishu: {
     title: '飞书',
-    credentialHint: '先在上面填好飞书应用。',
+    credentialHint: '请先在上方填写飞书应用信息。',
     pairingHint: '在飞书中打开您创建的机器人，私聊发送这 6 位数字。',
     pairingQuietHint: '机器人尚未收到任何消息，通常是飞书后台还有两步未完成：在「事件与回调」中选择长连接并添加「接收消息」，再在「版本管理与发布」中发布一个版本。完成后重新私聊机器人发送这 6 位数字。',
-    logoutHint: '退出后要重新填机器人的凭据，才能再用手机遥控。',
+    logoutHint: '退出后需重新填写机器人凭据，方可继续使用手机遥控。',
     Section: FeishuRemoteSection,
   },
   weixin: {
     title: '微信',
     experimental: true,
-    credentialHint: '先在上面用微信扫码登录。',
-    pairingHint: '在微信的 ClawBot 对话里发送这 6 位数字。',
+    credentialHint: '请先在上方使用微信扫码登录。',
+    pairingHint: '在微信的 ClawBot 对话中发送这 6 位数字。',
     pairingQuietHint: '尚未收到消息。请在手机微信中找到 ClawBot 对话，发送这 6 位数字。',
-    logoutHint: '退出后要重新用微信扫码登录，才能再用手机遥控。',
+    logoutHint: '退出后需重新使用微信扫码登录，方可继续使用手机遥控。',
     Section: WeixinRemoteSection,
   },
 }

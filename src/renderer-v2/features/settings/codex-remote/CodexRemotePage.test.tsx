@@ -111,7 +111,7 @@ describe('codex remote page', () => {
     expect(render(snapshot({}, {}, { hasCredential: true, accountLabel: 'ClawBot decb' }))).toContain('<h3>微信设置</h3>')
   })
 
-  // 两种方式共用的设置另起一块（「通用设置」）：干活的文件夹、权限、手机端使用的模型、自动打开、自动关，摆在连接方式下面。
+  // 两种方式共用的设置另起一块（「通用设置」）：工作文件夹、权限、手机端使用的模型、自动打开、自动关，摆在连接方式下面。
   it('puts the shared settings in their own card after the ways to connect', () => {
     const markup = render(snapshot())
     const order = ['remote-methods', 'remote-shared', 'settings-remote-workspace-row', 'settings-remote-permission"', 'settings-remote-model"', 'settings-remote-auto-start"', 'settings-remote-idle-close"'].map((id) => markup.indexOf(`data-testid="${id}`))
@@ -168,8 +168,8 @@ describe('codex remote page', () => {
     const markup = render(snapshot())
     expect(markup).toContain('选择文件夹')
     expect(markup).toContain('data-testid="settings-remote-feishu-form"')
-    expect(markup).toContain('怎么建飞书机器人')
-    expect(markup).toContain('先在上面填好飞书应用。')
+    expect(markup).toContain('如何创建飞书机器人')
+    expect(markup).toContain('请先在上方填写飞书应用信息。')
     expect(switchMarkup(markup)).toContain('disabled=""')
     // 还没填应用时不摆配对那一行。
     expect(markup).not.toContain('data-testid="settings-remote-feishu-peer"')
@@ -179,10 +179,10 @@ describe('codex remote page', () => {
   it('puts the Feishu console and the tutorial under the setup steps, and drops the tutorial without a way to navigate', () => {
     const state = snapshot()
     const withNavigate = view(state, { navigate: () => undefined })
-    expect(feishuGuideActions).toEqual({ console: '打开飞书开放平台', tutorial: '看教程' })
+    expect(feishuGuideActions).toEqual({ console: '打开飞书开放平台', tutorial: '查看教程' })
     expect(withNavigate).toContain('data-testid="settings-remote-feishu-console"')
     expect(withNavigate).toContain('data-testid="settings-remote-feishu-tutorial"')
-    expect(withNavigate.indexOf('在「版本管理与发布」里发布一个版本')).toBeLessThan(withNavigate.indexOf('settings-remote-feishu-console'))
+    expect(withNavigate.indexOf('在「版本管理与发布」中发布一个版本')).toBeLessThan(withNavigate.indexOf('settings-remote-feishu-console'))
     const withoutNavigate = render(state)
     expect(withoutNavigate).toContain('data-testid="settings-remote-feishu-console"')
     expect(withoutNavigate).not.toContain('data-testid="settings-remote-feishu-tutorial"')
@@ -193,7 +193,7 @@ describe('codex remote page', () => {
     expect(markup).toContain('App ID：cli_a1b2c3d4')
     expect(markup).not.toContain('data-testid="settings-remote-feishu-form"')
     expect(buttonMarkup(markup, 'settings-remote-workspace')).toBeTruthy()
-    expect(markup).toContain('<span>添加一个</span></button>')
+    expect(markup).toContain('<span>添加文件夹</span></button>')
     // Only one folder: no list, no 「正在用」 tag, just the path as before.
     expect(markup).not.toContain('data-testid="settings-remote-workspace-list"')
     expect(switchMarkup(markup)).not.toContain('disabled=""')
@@ -205,14 +205,14 @@ describe('codex remote page', () => {
     const three = render(snapshot({ workspaceDirectory: '~/projects/blog', workspaces: ['~/projects/demo', '~/projects/blog', '~/projects/shop'] }))
     expect(three).toContain('data-testid="settings-remote-workspace-list"')
     expect(three.match(/data-testid="settings-remote-workspace-in-use"/g)).toHaveLength(1)
-    expect(three).toContain('~/projects/blog</span><span class="xm-pill xm-tone-accent" data-testid="settings-remote-workspace-in-use">正在用</span>')
+    expect(three).toContain('~/projects/blog</span><span class="xm-pill xm-tone-accent" data-testid="settings-remote-workspace-in-use">使用中</span>')
     expect(three.match(/>使用此文件夹</g)).toHaveLength(2)
     expect(three.match(/>移除</g)).toHaveLength(2)
-    expect(three).toContain('手机上发「文件夹」也能换。')
+    expect(three).toContain('也可在手机上发送「文件夹」切换。')
     expect(buttonMarkup(three, 'settings-remote-workspace')).not.toContain('disabled=""')
     const five = render(snapshot({ workspaceDirectory: '~/a', workspaces: ['~/a', '~/b', '~/c', '~/d', '~/e'] }))
-    expect(five).toContain('最多 5 个，先移除一个再添加。')
-    expect(five).not.toContain('手机上发「文件夹」也能换。')
+    expect(five).toContain('最多 5 个，请先移除一个再添加。')
+    expect(five).not.toContain('也可在手机上发送「文件夹」切换。')
     expect(buttonMarkup(five, 'settings-remote-workspace')).toContain('disabled=""')
   })
 
@@ -221,8 +221,8 @@ describe('codex remote page', () => {
     const saved = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' } }))
     expect(saved).toContain('data-testid="settings-remote-feishu-next"')
     expect(saved).toContain('已保存。请完成以下步骤，手机端方可接收消息')
-    expect(saved).toContain('<li>先打开下面的「打开遥控」，等它显示「已连上」。</li>')
-    expect(saved).toContain('<li>在「版本管理与发布」里发布一个版本。</li>')
+    expect(saved).toContain('<li>开启下方的「打开遥控」，待其显示「已连接」。</li>')
+    expect(saved).toContain('<li>在「版本管理与发布」中发布一个版本。</li>')
     expect(saved).toContain('<li>在飞书中搜索该机器人名称并发起私聊，然后返回此处点击「开始配对」，将 6 位数字发送给机器人。</li>')
     expect(saved).toContain('第 2 步需先开启遥控，飞书后台才能保存。')
     expect(saved).not.toContain('data-testid="settings-remote-feishu-guide"')
@@ -234,7 +234,7 @@ describe('codex remote page', () => {
       { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' }, boundPeer: { userIdTail: 'a1b2', boundAt: 0 } },
     ))
     expect(paired).not.toContain('settings-remote-feishu-next')
-    expect(paired).toMatch(/data-testid="settings-remote-feishu-guide"><details class="v2-remote-guide"><summary>怎么建飞书机器人<\/summary>/)
+    expect(paired).toMatch(/data-testid="settings-remote-feishu-guide"><details class="v2-remote-guide"><summary>如何创建飞书机器人<\/summary>/)
   })
 
   it('shows the pairing code with where to send it', () => {
@@ -244,7 +244,7 @@ describe('codex remote page', () => {
     ))
     expect(markup).toMatch(/data-testid="settings-remote-feishu-code"[^>]*>482915</)
     expect(markup).toContain('在飞书中打开您创建的机器人，私聊发送这 6 位数字。10 分钟内有效。')
-    expect(markup).toContain('已连上')
+    expect(markup).toContain('已连接')
   })
 
   // D66 / YKS-21：配对码发错了只在电脑卡片上说。
@@ -253,7 +253,7 @@ describe('codex remote page', () => {
     const clean = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { ...connected, pairing: { code: '482915', expiresAt: 1 } }))
     expect(clean).not.toContain('settings-remote-feishu-pairing-note')
     const wrong = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { ...connected, pairing: { code: '482915', expiresAt: 1, failures: 3 } }))
-    expect(wrong).toMatch(/data-testid="settings-remote-feishu-pairing-note"[^>]*>配对码错了 3 次</)
+    expect(wrong).toMatch(/data-testid="settings-remote-feishu-pairing-note"[^>]*>配对码已输错 3 次</)
     const voided = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { ...connected, pairing: null, pairingLocked: true }))
     expect(voided).toMatch(/data-testid="settings-remote-feishu-pairing-note"[^>]*>此配对码已失效，请重新开始配对。</)
     expect(voided).toContain('开始配对')
@@ -267,12 +267,12 @@ describe('codex remote page', () => {
     const weixin = view(snapshot({ workspaceDirectory: '~/projects/demo' }, {}, { ...connected, channel: 'weixin', pairing: { code: '482915', expiresAt: 1, quiet: 'nothing' } }), { initialMethod: 'weixin' })
     expect(weixin).toMatch(/data-testid="settings-remote-weixin-pairing-note"[^>]*>尚未收到消息。请在手机微信中找到 ClawBot 对话，发送这 6 位数字。</)
     const group = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { ...connected, pairing: { code: '482915', expiresAt: 1, quiet: 'group-only' } }))
-    expect(group).toMatch(/data-testid="settings-remote-feishu-pairing-note"[^>]*>收到的是群里的消息，不算。要点开机器人单独私聊它。</)
+    expect(group).toMatch(/data-testid="settings-remote-feishu-pairing-note"[^>]*>收到的是群聊消息，无法用于配对。请打开机器人，单独私聊发送。</)
   })
 
   it('says why the channel stopped and does not repeat it once connected', () => {
-    const stopped = render(snapshot({}, { hasCredential: true, status: { state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。' } }))
-    expect(stopped).toContain('要重新登录')
+    const stopped = render(snapshot({}, { hasCredential: true, status: { state: 'needs-login', message: '飞书应用的 App ID 或 App Secret 不正确，请在飞书开放平台核对后重新填写。' } }))
+    expect(stopped).toContain('需重新登录')
     expect(stopped).toContain('data-testid="settings-remote-feishu-status"')
     const connected = render(snapshot({}, { hasCredential: true, enabled: true, status: { state: 'connected', message: '旧原因' } }))
     expect(connected).not.toContain('旧原因')
@@ -284,20 +284,20 @@ describe('codex remote page', () => {
     const saved = { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true }
     const openHelp = () => undefined
 
-    const credential = render(snapshot(ready, { ...saved, status: { state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' } }), '', openHelp)
-    expect(credential).toMatch(/data-testid="settings-remote-feishu-status"[^>]*>飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。</)
+    const credential = render(snapshot(ready, { ...saved, status: { state: 'needs-login', message: '飞书应用的 App ID 或 App Secret 不正确，请在飞书开放平台核对后重新填写。', problem: 'credential' } }), '', openHelp)
+    expect(credential).toMatch(/data-testid="settings-remote-feishu-status"[^>]*>飞书应用的 App ID 或 App Secret 不正确，请在飞书开放平台核对后重新填写。</)
     expect(buttonMarkup(credential, 'settings-remote-feishu-edit')).toContain('xm-btn-primary')
     expect(credential).not.toContain('settings-remote-feishu-reconnect')
     expect(credential).not.toContain('settings-remote-feishu-support')
 
-    const limit = render(snapshot(ready, { ...saved, status: { state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' } }), '', openHelp)
+    const limit = render(snapshot(ready, { ...saved, status: { state: 'error', message: '该飞书应用已在其他位置连接，请先断开其他连接后重试。', problem: 'connection-limit' } }), '', openHelp)
     expect(limit).toMatch(/data-testid="settings-remote-feishu-reconnect"[^>]*>.*<span>重新连接<\/span><\/button>/)
     expect(limit).not.toContain('settings-remote-feishu-support')
     expect(buttonMarkup(limit, 'settings-remote-feishu-edit')).not.toContain('xm-btn-primary')
     // 按钮紧跟在那句话下面。
     expect(limit.indexOf('settings-remote-feishu-status-actions')).toBeGreaterThan(limit.indexOf('settings-remote-feishu-status'))
 
-    const other = render(snapshot(ready, { ...saved, status: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「联系客服」。', problem: 'other' } }), '', openHelp)
+    const other = render(snapshot(ready, { ...saved, status: { state: 'error', message: '未能建立连接，请点击「重新连接」重试；如问题仍存在，请点击「联系客服」。', problem: 'other' } }), '', openHelp)
     expect(other).toContain('data-testid="settings-remote-feishu-reconnect"')
     expect(other).toMatch(/data-testid="settings-remote-feishu-support"[^>]*>.*<span>联系客服<\/span><\/button>/)
     // 没有帮助框可开时不摆「联系客服」。
@@ -312,8 +312,8 @@ describe('codex remote page', () => {
     const ready = { workspaceDirectory: '~/projects/demo' }
     const saved = { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }
     expect(render(snapshot(ready, { ...saved, enabled: false, status: { state: 'error', problem: 'other' } }))).not.toContain('settings-remote-feishu-reconnect')
-    expect(render(snapshot(ready, { ...saved, enabled: true, status: { state: 'connecting', message: '连不上飞书，正在重试。' } }))).not.toContain('settings-remote-feishu-reconnect')
-    expect(render(snapshot(ready, { ...saved, enabled: true, status: { state: 'error', message: '渠道没能连上。' } }))).not.toContain('settings-remote-feishu-status-actions')
+    expect(render(snapshot(ready, { ...saved, enabled: true, status: { state: 'connecting', message: '无法连接飞书，正在重试。' } }))).not.toContain('settings-remote-feishu-reconnect')
+    expect(render(snapshot(ready, { ...saved, enabled: true, status: { state: 'error', message: '渠道未能建立连接。' } }))).not.toContain('settings-remote-feishu-status-actions')
     expect(render(snapshot(ready, { ...saved, enabled: true, status: { state: 'connected', problem: 'other' } }))).not.toContain('settings-remote-feishu-reconnect')
   })
 
@@ -343,12 +343,12 @@ describe('codex remote page', () => {
   it('gives WeChat its own block, marked experimental, with its own scan and logout', () => {
     const before = view(snapshot(), { initialMethod: 'weixin' })
     expect(before).toMatch(/<strong>微信<\/strong><span[^>]*>实验功能<\/span>/)
-    expect(before).toContain('先在上面用微信扫码登录。')
+    expect(before).toContain('请先在上方使用微信扫码登录。')
     expect(before).not.toContain('退出微信登录')
     const after = render(snapshot({ workspaceDirectory: '~/projects/demo' }, {}, { hasCredential: true, accountLabel: 'ClawBot decb', enabled: true, status: { state: 'connected' }, pairing: { code: '482915', expiresAt: 1 } }))
     expect(after).toContain('已登录：ClawBot decb')
     expect(after).toContain('aria-label="退出微信登录"')
-    expect(after).toContain('在微信的 ClawBot 对话里发送这 6 位数字。10 分钟内有效。')
+    expect(after).toContain('在微信的 ClawBot 对话中发送这 6 位数字。10 分钟内有效。')
   })
 
   it('asks before unbinding the person or logging out, and says what has to be redone afterwards', () => {
@@ -364,8 +364,8 @@ describe('codex remote page', () => {
     expect(codexRemoteConfirmText.logout.title('飞书')).toBe('退出飞书登录？')
     expect(codexRemoteConfirmText.logout.title('微信')).toBe('退出微信登录？')
     // 退出以后怎么登回来，飞书和微信不一样：飞书重新填凭据，微信重新扫码。
-    expect(remoteChannelSections.feishu.logoutHint).toBe('退出后要重新填机器人的凭据，才能再用手机遥控。')
-    expect(remoteChannelSections.weixin.logoutHint).toBe('退出后要重新用微信扫码登录，才能再用手机遥控。')
+    expect(remoteChannelSections.feishu.logoutHint).toBe('退出后需重新填写机器人凭据，方可继续使用手机遥控。')
+    expect(remoteChannelSections.weixin.logoutHint).toBe('退出后需重新使用微信扫码登录，方可继续使用手机遥控。')
     expect(codexRemoteConfirmText.logout.ok).toBe('退出登录')
   })
 
@@ -377,7 +377,7 @@ describe('codex remote page', () => {
     expect(failed).toContain('xm-tone-warn')
     expect(failed).toContain('<strong>Codex 启动失败</strong>')
     expect(failed).toContain('手机刚发送的指令未执行。请前往首页检查 Codex，恢复后在手机上重新发送。')
-    expect(failed).toMatch(/data-testid="settings-remote-codex-failed-home"[^>]*>.*去首页看 Codex/)
+    expect(failed).toMatch(/data-testid="settings-remote-codex-failed-home"[^>]*>.*前往首页查看 Codex/)
     expect(failed.indexOf('settings-remote-codex-failed')).toBeLessThan(failed.indexOf('settings-remote-workspace-row'))
     expect(render(snapshot({ workspaceDirectory: '~/projects/demo' }, connected))).not.toContain('settings-remote-codex-failed')
   })
@@ -401,12 +401,12 @@ describe('codex remote page', () => {
 
   // YR-7：这次打开星芒没能自动打开时，自动打开那行说明下面一句黄字说原因，原因照抄在这里点开打不开时那句。
   it('says under the launch switch why it could not open by itself this time', () => {
-    const reason = '这个文件夹不存在了，请重新选。'
-    expect(codexRemoteAutoStartText.failed(reason)).toBe('上次打开星芒时未能自动开启：这个文件夹不存在了，请重新选。')
+    const reason = '该文件夹已不存在，请重新选择。'
+    expect(codexRemoteAutoStartText.failed(reason)).toBe('上次打开星芒时未能自动开启：该文件夹已不存在，请重新选择。')
     const failed = render(snapshot({ autoStart: true, autoStartFailure: reason }))
     const row = failed.slice(failed.indexOf('data-testid="settings-remote-auto-start"'), failed.indexOf('data-testid="settings-remote-idle-close"'))
     expect(row).toContain(codexRemoteAutoStartText.description)
-    expect(row).toMatch(/<span class="v2-remote-auto-start-failed" data-testid="settings-remote-auto-start-failed">上次打开星芒时未能自动开启：这个文件夹不存在了，请重新选。<\/span>/)
+    expect(row).toMatch(/<span class="v2-remote-auto-start-failed" data-testid="settings-remote-auto-start-failed">上次打开星芒时未能自动开启：该文件夹已不存在，请重新选择。<\/span>/)
     expect(row.indexOf(codexRemoteAutoStartText.description)).toBeLessThan(row.indexOf('settings-remote-auto-start-failed'))
     // 开关关着就不说：主进程关掉开关时也会清掉，这里再守一道。
     expect(render(snapshot({ autoStartFailure: reason }))).not.toContain('settings-remote-auto-start-failed')
@@ -414,29 +414,29 @@ describe('codex remote page', () => {
 
   // YF-10：「多久没消息就自动关」三选一，缺省「不自动关」并写明还有哪几种办法关；选了时长不写小字。
   it('offers four hours, twelve hours or never for the idle close, never by default with how else it closes', () => {
-    expect(codexRemoteIdleCloseText).toEqual({ title: '无消息自动关闭时间', never: '不自动关', neverHint: '仅在电脑端、托盘中关闭，或在手机上发送「关闭遥控」时才会关闭。', neverHintMac: '仅在电脑端、菜单栏中关闭，或在手机上发送「关闭遥控」时才会关闭。' })
+    expect(codexRemoteIdleCloseText).toEqual({ title: '无消息自动关闭时间', never: '不自动关闭', neverHint: '仅在电脑端、托盘中关闭，或在手机上发送「关闭遥控」时才会关闭。', neverHintMac: '仅在电脑端、菜单栏中关闭，或在手机上发送「关闭遥控」时才会关闭。' })
     const never = render(snapshot())
     const row = never.slice(never.indexOf('data-testid="settings-remote-idle-close"'))
     expect(never.indexOf('data-testid="settings-remote-idle-close"')).toBeGreaterThan(never.indexOf('data-testid="settings-remote-auto-start"'))
     expect(row).toContain('<strong>无消息自动关闭时间</strong>')
     expect(row).toContain('仅在电脑端、托盘中关闭，或在手机上发送「关闭遥控」时才会关闭。')
     expect(row).toMatch(/role="group" aria-label="无消息自动关闭时间" data-testid="settings-remote-idle-close-choice">/)
-    expect([...row.matchAll(/aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map((match) => [match[2], match[1]])).toEqual([['4 小时', 'false'], ['12 小时', 'false'], ['不自动关', 'true']])
+    expect([...row.matchAll(/aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map((match) => [match[2], match[1]])).toEqual([['4 小时', 'false'], ['12 小时', 'false'], ['不自动关闭', 'true']])
     const twelve = render(snapshot({ idleCloseHours: 12 }))
     expect(twelve).not.toContain('仅在电脑端、托盘中关闭')
     expect(twelve).toMatch(/aria-pressed="true"[^>]*>12 小时<\/button>/)
-    expect(render(snapshot({ available: false, unavailableReason: '星芒正以管理员身份运行。' }))).toMatch(/<button[^>]*disabled=""[^>]*aria-pressed="true"[^>]*>不自动关<\/button>/)
+    expect(render(snapshot({ available: false, unavailableReason: '星芒正以管理员身份运行。' }))).toMatch(/<button[^>]*disabled=""[^>]*aria-pressed="true"[^>]*>不自动关闭<\/button>/)
   })
 
   // 「菜单栏改」：Mac 上两句说菜单栏，别的平台（缺省）照旧说托盘。
   it('says the menu bar instead of the tray on a Mac', () => {
     const state = snapshot({ workspaceDirectory: '/Users/yoyo/work' }, { hasCredential: true })
     const mac = view(state, { isMac: true })
-    expect(mac).toContain('窗口收到菜单栏也照样开着，退出星芒才断开')
+    expect(mac).toContain('窗口收到菜单栏后仍保持开启，退出星芒后才会断开')
     expect(mac).toContain('仅在电脑端、菜单栏中关闭，或在手机上发送「关闭遥控」时才会关闭。')
     expect(mac).not.toContain('托盘')
     const other = render(state)
-    expect(other).toContain('窗口缩到托盘也照样开着，退出星芒才断开')
+    expect(other).toContain('窗口缩到托盘后仍保持开启，退出星芒后才会断开')
     expect(other).toContain('仅在电脑端、托盘中关闭，或在手机上发送「关闭遥控」时才会关闭。')
     expect(other).not.toContain('菜单栏')
   })
@@ -456,18 +456,18 @@ describe('codex remote page', () => {
     expect(off).not.toContain('settings-remote-last-request')
     const running = view(snapshot({ lastRequest, task: 'waiting-approval', pendingApprovals: 2 }, on), { now, navigate: () => undefined })
     expect(running).toContain('最近一次')
-    expect(running).toContain('14:05 发来一条，正在处理，已经 3 分钟')
+    expect(running).toContain('14:05 收到指令，正在处理，已用时 3 分钟')
     expect(running).toContain('待确认 2 条，请在手机上回复。')
-    expect(running).toContain('<span>停下这一轮</span></button>')
-    expect(running).toContain('<span>都拒绝</span></button>')
-    expect(running).toContain('<span>在记录里看</span></button>')
+    expect(running).toContain('<span>停止本轮</span></button>')
+    expect(running).toContain('<span>全部拒绝</span></button>')
+    expect(running).toContain('<span>查看记录</span></button>')
     // 在文件夹那行上面。
     expect(running.indexOf('settings-remote-last-request')).toBeLessThan(running.indexOf('settings-remote-workspace-row'))
     const done = view(snapshot({ lastRequest: { ...lastRequest, state: 'done' } }, on), { now })
     expect(done).toContain('14:05 已完成')
-    expect(done).not.toContain('停下这一轮')
+    expect(done).not.toContain('停止本轮')
     expect(done).not.toContain('都拒绝')
-    expect(done).not.toContain('在记录里看')
+    expect(done).not.toContain('查看记录')
     expect(view(snapshot({}, on), { now })).not.toContain('settings-remote-last-request')
   })
 
@@ -477,8 +477,8 @@ describe('codex remote page', () => {
     const warned = view(snapshot({}, on), { lowBalance: 0.8, navigate: () => undefined })
     expect(warned).toContain('data-testid="settings-remote-low-balance"')
     expect(warned).toContain('xm-tone-warn')
-    expect(warned).toContain('<strong>余额只剩 $0.80</strong>')
-    expect(warned).toContain('人不在电脑前时充不了值，建议先充一点再出门。')
+    expect(warned).toContain('<strong>余额仅剩 $0.80</strong>')
+    expect(warned).toContain('离开电脑后无法充值，建议外出前预先充值。')
     expect(warned).toContain('<span>前往充值</span></button>')
     expect(view(snapshot({}, { ...on, enabled: false }), { lowBalance: 0.8 })).not.toContain('settings-remote-low-balance')
     expect(view(snapshot({}, on), { lowBalance: null })).not.toContain('settings-remote-low-balance')
@@ -507,14 +507,14 @@ describe('codex remote page', () => {
     const saved = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }))
     expect(saved).toContain('data-testid="settings-remote-feishu-bot-qr"')
     expect(saved).toContain(feishuBotQrText)
-    expect(feishuBotQrText).toBe('用手机飞书扫一扫，直接打开和机器人的对话')
+    expect(feishuBotQrText).toBe('使用手机飞书扫码，直接打开与机器人的对话')
     const paired = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4', boundPeer: { userIdTail: 'a1b2', boundAt: 1 } }))
     expect(paired).not.toContain('settings-remote-feishu-bot-qr')
   })
 
   // YF-14：手机上能发图片了，取图要多开「获取单聊、群组消息」（yoyo 2026-11-11「图片改」）。
   it('asks for the permission that lets the bot fetch pictures in the Feishu setup steps', () => {
-    expect(feishuSetupSteps[2]).toBe('在「权限管理」里开通「读取用户发给机器人的单聊消息」「获取单聊、群组消息」和「以应用的身份发消息」。')
+    expect(feishuSetupSteps[2]).toBe('在「权限管理」中开通「读取用户发给机器人的单聊消息」「获取单聊、群组消息」和「以应用的身份发消息」。')
     const fresh = render(snapshot())
     expect(fresh).toContain('「获取单聊、群组消息」')
   })

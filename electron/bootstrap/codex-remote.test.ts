@@ -15,7 +15,7 @@ describe('codex-remote bootstrap availability', () => {
 
   it('keeps remote control off when the customer chose "run as administrator"', () => {
     expect(resolveCodexRemoteAvailability('win32', { mode: 'trusted-only', highIntegrity: true })).toBe(
-      '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。',
+      '星芒正以管理员身份运行，为保障安全，此时无法开启手机遥控。请以普通方式重新打开星芒。',
     )
     expect(resolveCodexRemoteAvailability('win32', { mode: 'trusted-only', highIntegrity: false })).toContain('正以管理员身份运行')
     expect(resolveCodexRemoteAvailability('win32', { mode: 'trusted-only' })).toContain('正以管理员身份运行')
@@ -31,7 +31,7 @@ describe('codex-remote bootstrap availability', () => {
 
   it('does not treat a failed elevation probe as an account that is an administrator by itself', () => {
     expect(resolveCodexRemoteAvailability('win32', { mode: 'same-user', highIntegrity: true, probeFailure: { reason: 'timeout', detail: '' } })).toBe(
-      '没能确认星芒是不是以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒再试。',
+      '无法确认星芒是否以管理员身份运行，为保障安全，此时无法开启手机遥控。请以普通方式重新打开星芒后重试。',
     )
   })
 
@@ -39,7 +39,7 @@ describe('codex-remote bootstrap availability', () => {
   // then a fallback that keeps CLI installs working, not a verdict on elevation.
   it('stays off on Windows when it cannot tell whether this is an administrator', () => {
     expect(resolveCodexRemoteAvailability('win32', { mode: 'same-user' })).toBe(
-      '没能确认星芒是不是以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒再试。',
+      '无法确认星芒是否以管理员身份运行，为保障安全，此时无法开启手机遥控。请以普通方式重新打开星芒后重试。',
     )
   })
 })

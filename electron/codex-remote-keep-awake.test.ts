@@ -55,9 +55,9 @@ describe('resolveCodexRemoteKeepAwakeChannels', () => {
   // YKS-12：飞书在别处连着（连接数超限）时长连接已经停了、不会自己再连，渠道却还开着；
   // YF-10 默认不自动关以后，原来算它在听就让电脑几天都不睡。
   it('leaves out channels that stopped on an error and will not retry by themselves', () => {
-    const limit = { message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit', halted: true } as const
+    const limit = { message: '该飞书应用已在其他位置连接，请先断开其他连接后重试。', problem: 'connection-limit', halted: true } as const
     expect(resolveCodexRemoteKeepAwakeChannels(snapshot(1, { feishu: [true, 'error', limit] }))).toEqual([])
-    expect(resolveCodexRemoteKeepAwakeChannels(snapshot(1, { feishu: [true, 'error', limit], weixin: [true, 'error', { message: '连不上微信，正在重试' }] }))).toEqual(['weixin'])
+    expect(resolveCodexRemoteKeepAwakeChannels(snapshot(1, { feishu: [true, 'error', limit], weixin: [true, 'error', { message: '无法连接微信，正在重试' }] }))).toEqual(['weixin'])
   })
 })
 

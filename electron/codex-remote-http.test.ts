@@ -87,7 +87,7 @@ describe('codex-remote-http', () => {
       const broken = new Response(brokenBody([0x89, 0x50], 'net::ERR_CONNECTION_RESET'), { status: 200 })
       const error = await send({ ...request, method: 'GET', fetch: fetchAnswering(broken) }).catch((caught: unknown) => caught)
       expect(error).toBeInstanceOf(RemoteHttpError)
-      expect(error).toMatchObject({ reason: 'network', message: '连不上飞书，请检查网络' })
+      expect(error).toMatchObject({ reason: 'network', message: '无法连接飞书，请检查网络' })
     }
   })
 })

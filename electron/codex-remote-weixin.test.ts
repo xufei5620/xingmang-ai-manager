@@ -135,7 +135,7 @@ describe('createWeixinRemoteChannel', () => {
     const statuses: RemoteChannelStatus[] = []
     const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test' })
     await channel.start({ onInbound: () => undefined, onStatus: (status) => statuses.push(status) })
-    expect(statuses).toEqual([{ state: 'needs-login', message: '还没用微信扫码登录' }])
+    expect(statuses).toEqual([{ state: 'needs-login', message: '尚未使用微信扫码登录' }])
     expect(requests).toHaveLength(0)
     expect(channel.capabilities).toEqual({ approvalButtons: false, maxTextLength: 4000 })
   })
@@ -265,7 +265,7 @@ describe('createWeixinRemoteChannel', () => {
     await vi.waitFor(() => expect(pollCount).toBe(3))
     expect(sleeps).toEqual([2_000])
     expect(statuses.map((status) => status.state)).toEqual(['connecting', 'error', 'connected'])
-    expect(statuses[1].message).toBe('连不上微信，正在重试')
+    expect(statuses[1].message).toBe('无法连接微信，正在重试')
     // 还在自己重试，不算停下（YKS-12）：防睡照样挡着，网络回来了才连得回去。
     expect(statuses[1].halted).toBeUndefined()
     await channel.stop()
@@ -290,7 +290,7 @@ describe('createWeixinRemoteChannel', () => {
     expect(statuses.map((status) => status.state)).toEqual(['connecting'])
     await vi.advanceTimersByTimeAsync(45_000)
     await vi.waitFor(() => expect(pollCount).toBe(4))
-    expect(statuses).toEqual([{ state: 'connecting' }, { state: 'error', message: '连不上微信，正在重试' }, { state: 'connected' }])
+    expect(statuses).toEqual([{ state: 'connecting' }, { state: 'error', message: '无法连接微信，正在重试' }, { state: 'connected' }])
     expect(logs.filter((event) => event === 'weixin-poll-timeout')).toHaveLength(2)
     await channel.stop()
   })
@@ -329,16 +329,16 @@ describe('createWeixinRemoteChannel', () => {
     await channel.send({ channel: 'weixin', userId: owner }, {
       kind: 'approval',
       request: { approvalId: '1', nonce: 'nonce-of-one', kind: 'command', summary: 'npm test' },
-      text: 'Codex 想运行：npm test\n回「同意 1」或「拒绝 1」',
+      text: 'Codex 想运行：npm test\n请回复「同意 1」或「拒绝 1」',
     }, 'ctx')
     const msg = requests[0].body.msg as { item_list: Array<{ text_item: { text: string } }> }
-    expect(msg.item_list[0].text_item.text).toBe('Codex 想运行：npm test\n回「同意 1」或「拒绝 1」')
+    expect(msg.item_list[0].text_item.text).toBe('Codex 想运行：npm test\n请回复「同意 1」或「拒绝 1」')
   })
 
   it('never sends to anyone but the scanning user', async () => {
     const { dependencies, requests } = harness(credentialText(), () => jsonResponse({ ret: 0 }))
     const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test' })
-    await expect(channel.send({ channel: 'weixin', userId: 'stranger@im.wechat' }, { kind: 'text', text: 'x' })).rejects.toThrow('扫码登录的那个微信')
+    await expect(channel.send({ channel: 'weixin', userId: 'stranger@im.wechat' }, { kind: 'text', text: 'x' })).rejects.toThrow('扫码登录的微信账号')
     expect(requests).toHaveLength(0)
   })
 

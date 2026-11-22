@@ -174,7 +174,7 @@ const progressTextEveryMs = 5 * 60_000
 const maxProgressSteps = 15
 const maxProgressStepLength = 80
 /** 单子满了还要加（YF-19）：界面上满了「添加一个」就灰着，这句只在别的路子绕过来时出现。 */
-const workspaceListFullMessage = `最多加 ${maxRemoteWorkspaces} 个文件夹，先移除一个再添加。`
+const workspaceListFullMessage = `最多添加 ${maxRemoteWorkspaces} 个文件夹，请先移除一个再添加。`
 /** 每个渠道记住最近结束的这么多轮的编号，它们迟到的审批和通知都不认（belongsToOtherTurn）。 */
 const maxRetiredTurns = 16
 /** Codex 起不来、半路退出时，stderr 最后这么多字进日志。 */
@@ -196,8 +196,8 @@ export type CodexRemoteReleaseAction = 'update' | 'uninstall'
 
 /** 遥控里的 Codex 正在干活，不替客户停它（#1407 P3-3，yoyo 10-29「按推荐」）。 */
 export const codexRemoteBusyMessages: Readonly<Record<CodexRemoteReleaseAction, string>> = {
-  update: '手机遥控里的 Codex 正在干活，等它做完再更新，或者先在设置里关掉手机遥控。',
-  uninstall: '手机遥控里的 Codex 正在干活，等它做完再卸载，或者先在设置里关掉手机遥控。',
+  update: '手机遥控中的 Codex 正在处理任务，请待其完成后再更新，或先在设置中关闭手机遥控。',
+  uninstall: '手机遥控中的 Codex 正在处理任务，请待其完成后再卸载，或先在设置中关闭手机遥控。',
 }
 
 const developerInstructions = [
@@ -257,7 +257,7 @@ export function nextApprovalNumber(last: number): number {
 }
 
 /** Codex 半路退出时手机上收到的「这一轮没做完：…」里的原因，卡片「最近一次」照抄。 */
-const codexExitedReason = '电脑上的 Codex 意外退出了，再发一次试试。'
+const codexExitedReason = '电脑端的 Codex 意外退出，请重新发送。'
 
 /** 只对这一条审批有效的随机串，放进有按钮渠道的按钮里（16 个字符，飞书按钮值里放得下）。 */
 export function generateApprovalNonce(): string {
@@ -437,17 +437,17 @@ export function collectCredentialSecrets(credential: string | null): string[] {
 /** 选给遥控用的文件夹：要是存在的目录，不能是主目录、盘根、桌面这类「一份配置管全电脑」的地方。 */
 export function validateRemoteWorkspace(directory: unknown, homeDirectory: string, platform: NodeJS.Platform): string {
   if (typeof directory !== 'string' || !path.isAbsolute(directory) || directory.length > 4096) {
-    throw new Error('请选一个文件夹。')
+    throw new Error('请选择一个文件夹。')
   }
   const kind = classifyWorkspace(directory, { platform, home: homeDirectory })
-  if (kind) throw new Error(`这个文件夹是${sensitiveWorkspaceLabel(kind)}，手机遥控不能在这里用，请选一个具体的项目文件夹。`)
+  if (kind) throw new Error(`该文件夹是${sensitiveWorkspaceLabel(kind)}，无法用于手机遥控，请选择具体的项目文件夹。`)
   let info: fs.Stats
   try {
     info = fs.statSync(directory)
   } catch {
-    throw new Error('这个文件夹不存在了，请重新选。')
+    throw new Error('该文件夹已不存在，请重新选择。')
   }
-  if (!info.isDirectory()) throw new Error('请选一个文件夹。')
+  if (!info.isDirectory()) throw new Error('请选择一个文件夹。')
   return path.resolve(directory)
 }
 
@@ -672,7 +672,7 @@ export function buildFileChangeSummary(params: Record<string, unknown>, changedF
       path: displayPath(change.path, options),
       ...(change.movePath ? { movePath: displayPath(change.movePath, options) } : {}),
     }))
-    if (changedFiles.length > shown) lines.push(`另外还有 ${changedFiles.length - shown} 个文件`)
+    if (changedFiles.length > shown) lines.push(`另有 ${changedFiles.length - shown} 个文件`)
     const summary = [...lines, ...tail].join('\n')
     // 量的是脱敏以后的长度：手机上显示的就是那个。
     if (redactRemoteText(summary, options).length <= maxSummaryLength) return summary
@@ -1241,7 +1241,7 @@ export class CodexRemoteService {
   async removeWorkspace(folder: string): Promise<CodexRemoteSnapshot> {
     await this.options.store.updateSettings((settings) => {
       const target = this.findWorkspace(settings, folder)
-      if (target === settings.workspaceDirectory) throw new Error('正在用的文件夹不能移除，先换到别的再移除。')
+      if (target === settings.workspaceDirectory) throw new Error('使用中的文件夹无法移除，请先切换至其他文件夹。')
       settings.workspaceDirectories = remoteWorkspaceList(settings).filter((entry) => entry !== target)
     })
     return this.emit()
@@ -1249,19 +1249,19 @@ export class CodexRemoteService {
 
   private findWorkspace(settings: Parameters<typeof remoteWorkspaceList>[0], folder: string): string {
     const target = remoteWorkspaceList(settings).find((entry) => remoteDisplayPath(entry, this.options.homeDirectory, this.platform) === folder)
-    if (!target) throw new Error('这个文件夹已经不在单子上了。')
+    if (!target) throw new Error('该文件夹已不在列表中。')
     return target
   }
 
   private assertNoTurnForWorkspace(): void {
     if (remoteChannelIds.some((id) => this.runtimes[id].turn)) {
-      throw new Error('Codex 正在处理手机上发来的任务，等它做完再换文件夹。')
+      throw new Error('Codex 正在处理手机发来的任务，请待其完成后再切换文件夹。')
     }
   }
 
   private async switchWorkspace(target: string): Promise<void> {
     await this.options.store.updateSettings((settings) => {
-      if (!remoteWorkspaceList(settings).includes(target)) throw new Error('这个文件夹已经不在单子上了。')
+      if (!remoteWorkspaceList(settings).includes(target)) throw new Error('该文件夹已不在列表中。')
       settings.workspaceDirectories = remoteWorkspaceList(settings)
       settings.workspaceDirectory = target
     })
@@ -1284,9 +1284,9 @@ export class CodexRemoteService {
     const reason = this.options.inspectAvailability()
     if (reason) throw new Error(reason)
     const settings = await this.options.store.readSettings()
-    if (!settings.workspaceDirectory) throw new Error('先选好 Codex 在哪个文件夹里干活。')
+    if (!settings.workspaceDirectory) throw new Error('请先选择 Codex 的工作文件夹。')
     validateRemoteWorkspace(settings.workspaceDirectory, this.options.homeDirectory, this.platform)
-    if ((await this.options.store.readCredential(channel)) === null) throw new Error('先完成这个渠道的登录。')
+    if ((await this.options.store.readCredential(channel)) === null) throw new Error('请先完成该渠道的登录。')
     const codexProblem = await this.options.checkCodexReady?.()
     if (codexProblem) throw new Error(codexProblem)
     const blocked = await this.startChannel(runtime)
@@ -1357,7 +1357,7 @@ export class CodexRemoteService {
         await this.setChannelEnabled(id, true)
         opened.push(id)
       } catch (error) {
-        failure ??= errorMessage(error, '手机遥控没能打开。')
+        failure ??= errorMessage(error, '手机遥控未能开启。')
         this.options.log('warn', 'remote.tray-enable-failed', { channel: id })
       }
     }
@@ -1476,7 +1476,7 @@ export class CodexRemoteService {
 
   async startPairing(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
     const runtime = this.runtimes[channel]
-    if (!runtime.enabled) throw new Error('先打开这个渠道，再开始配对。')
+    if (!runtime.enabled) throw new Error('请先开启该渠道，再开始配对。')
     this.clearPairing(runtime)
     runtime.pairingLocked = false
     // 到点自己收掉，界面上的配对码跟着消失，不用界面自己掐表。
@@ -1521,7 +1521,7 @@ export class CodexRemoteService {
       if (outcome === 'stopped') await this.sendText(runtime, remoteMessages.interrupted)
     }
     const snapshot = await this.emit()
-    if (stillRunning) throw new Error('还没停下来，Codex 还在处理。可以过一会儿再点一次「停下这一轮」。')
+    if (stillRunning) throw new Error('Codex 仍在处理，尚未停止。请稍后再次点击「停止本轮」。')
     return snapshot
   }
 
@@ -1798,7 +1798,7 @@ export class CodexRemoteService {
       })
     } catch (error) {
       if (runtime.adapter === adapter) {
-        runtime.status = { state: 'error', message: errorMessage(error, '渠道没能连上。'), halted: true }
+        runtime.status = { state: 'error', message: errorMessage(error, '渠道未能建立连接。'), halted: true }
       }
       this.options.log('warn', 'remote.channel-start-failed', { channel: runtime.id })
     }
@@ -2937,7 +2937,7 @@ export class CodexRemoteService {
         if (!this.turnStillWanted(runtime, turn)) return
         const started = await client.request('thread/start', buildThreadStartParams(workspace, buildRemoteMcpServerOverrides(configRead), wantedModel, wantedPermission))
         const thread = isRecord(started) && isRecord(started.thread) ? stringField(started.thread.id) : null
-        if (!thread) throw new Error('Codex 没有开出新对话')
+        if (!thread) throw new Error('Codex 未能开启新对话')
         if (!this.turnStillWanted(runtime, turn)) return
         runtime.threadId = thread
         runtime.threadModel = wantedModel
@@ -3034,7 +3034,7 @@ export class CodexRemoteService {
         if (this.disposed || !this.hasEnabledChannel()) {
           this.options.log('info', 'remote.codex-start-abandoned')
           await this.retireClient(client)
-          throw new Error('手机遥控已经关了')
+          throw new Error('手机遥控已关闭')
         }
         this.codex = client
         if (this.codexStartFailed) {

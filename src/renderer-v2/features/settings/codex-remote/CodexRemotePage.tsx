@@ -64,7 +64,7 @@ export const codexRemotePersistenceNotices = {
 export const codexStartFailedNotice = {
   title: 'Codex 启动失败',
   body: '手机刚发送的指令未执行。请前往首页检查 Codex，恢复后在手机上重新发送。',
-  action: '去首页看 Codex',
+  action: '前往首页查看 Codex',
 } as const
 
 /**
@@ -72,15 +72,15 @@ export const codexStartFailedNotice = {
  * 只写路径；不止一个时一个一行，正在用的标出来，别的能「使用此文件夹」「移除」。
  */
 export const codexRemoteWorkspaceText = {
-  title: '干活的文件夹',
+  title: '工作文件夹',
   empty: '尚未选择。Codex 仅在此文件夹中运行，请选择具体的项目文件夹。',
   choose: '选择文件夹',
-  add: '添加一个',
-  inUse: '正在用',
+  add: '添加文件夹',
+  inUse: '使用中',
   use: '使用此文件夹',
   remove: '移除',
-  phoneHint: '手机上发「文件夹」也能换。',
-  full: (max: number) => `最多 ${max} 个，先移除一个再添加。`,
+  phoneHint: '也可在手机上发送「文件夹」切换。',
+  full: (max: number) => `最多 ${max} 个，请先移除一个再添加。`,
 } as const
 
 /**
@@ -100,7 +100,7 @@ export const codexRemoteAutoStartText = {
  */
 export const codexRemoteIdleCloseText = {
   title: '无消息自动关闭时间',
-  never: '不自动关',
+  never: '不自动关闭',
   neverHint: '仅在电脑端、托盘中关闭，或在手机上发送「关闭遥控」时才会关闭。',
   // Mac 上没有托盘，星芒的图标在屏幕顶部的菜单栏里（#1745，yoyo 2026-11-11「菜单栏改」）。
   neverHintMac: '仅在电脑端、菜单栏中关闭，或在手机上发送「关闭遥控」时才会关闭。',
@@ -112,9 +112,9 @@ export const codexRemoteIdleCloseText = {
  */
 export const codexRemoteLastRequestText = {
   title: '最近一次',
-  stop: '停下这一轮',
-  declineAll: '都拒绝',
-  sessions: '在记录里看',
+  stop: '停止本轮',
+  declineAll: '全部拒绝',
+  sessions: '查看记录',
 } as const
 
 /**
@@ -122,8 +122,8 @@ export const codexRemoteLastRequestText = {
  * 照样让开，只是提醒。
  */
 export const codexRemoteLowBalanceNotice = {
-  title: (amount: string) => `余额只剩 ${amount}`,
-  body: '人不在电脑前时充不了值，建议先充一点再出门。',
+  title: (amount: string) => `余额仅剩 ${amount}`,
+  body: '离开电脑后无法充值，建议外出前预先充值。',
   action: '前往充值',
 } as const
 
@@ -212,7 +212,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navig
     const peer = channel.boundPeer
     binding = (
       <SettingRow
-        title="绑定的人"
+        title="绑定用户"
         description={peer ? boundPeerText(peer) : channel.enabled ? '尚未配对。请点击「开始配对」，将配对码私聊发送给机器人。' : '尚未配对。开启遥控后方可配对。'}
         control={
           <>
@@ -223,7 +223,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navig
               onClick={() => void run(`${id}-pair`, () => api.startCodexRemotePairing(id))}
               testId={`settings-remote-${id}-pair`}
             >
-              {peer ? '换人' : '开始配对'}
+              {peer ? '重新配对' : '开始配对'}
             </Button>
             {peer && (
               <Button

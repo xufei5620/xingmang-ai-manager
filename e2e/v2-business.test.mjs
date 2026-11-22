@@ -3887,9 +3887,9 @@ test('the Feishu setup steps open the developer console in the browser and the p
   const page = await fixture('page=remote')
   try {
     const form = page.getByTestId('settings-remote-card').getByTestId('settings-remote-feishu-form')
-    await form.getByText('怎么建飞书机器人', { exact: true }).click()
+    await form.getByText('如何创建飞书机器人', { exact: true }).click()
     await form.getByRole('button', { name: '打开飞书开放平台', exact: true }).click()
-    await form.getByRole('button', { name: '看教程', exact: true }).click()
+    await form.getByRole('button', { name: '查看教程', exact: true }).click()
     const recorded = await calls(page)
     assert.deepEqual(
       recorded.filter((call) => call.name === 'openExternal' || call.name === 'navigate').map((call) => [call.name, call.args ?? null]),
@@ -3904,7 +3904,7 @@ test('the Feishu setup steps open the developer console in the browser and the p
   }
 })
 
-// YF-19：电脑上加几个干活的文件夹，正在用的标出来，别的能换过去、能移除；满 5 个「添加一个」灰掉。
+// YF-19：电脑上加几个工作文件夹，使用中的标出来，别的能换过去、能移除；满 5 个「添加文件夹」灰掉。
 test('the phone remote card lists several working folders, switches between them and stops adding at five', async () => {
   const page = await fixture('page=remote&remoteReady&remoteFolders')
   try {
@@ -3913,20 +3913,20 @@ test('the phone remote card lists several working folders, switches between them
     await list.waitFor()
     assert.deepEqual(await list.locator('.v2-remote-folder > .xm-mono').allInnerTexts(), ['~/projects/demo', '~/projects/blog', '~/projects/shop'])
     const rowOf = (folder) => list.locator('.v2-remote-folder').filter({ hasText: folder })
-    await rowOf('~/projects/demo').getByTestId('settings-remote-workspace-in-use').getByText('正在用', { exact: true }).waitFor()
-    await list.getByText('手机上发「文件夹」也能换。', { exact: true }).waitFor()
+    await rowOf('~/projects/demo').getByTestId('settings-remote-workspace-in-use').getByText('使用中', { exact: true }).waitFor()
+    await list.getByText('也可在手机上发送「文件夹」切换。', { exact: true }).waitFor()
     await rowOf('~/projects/blog').getByRole('button', { name: '使用此文件夹', exact: true }).click()
     await rowOf('~/projects/blog').getByTestId('settings-remote-workspace-in-use').waitFor()
     assert.equal(await rowOf('~/projects/demo').getByRole('button', { name: '移除', exact: true }).count(), 1)
     await rowOf('~/projects/shop').getByRole('button', { name: '移除', exact: true }).click()
     await rowOf('~/projects/shop').waitFor({ state: 'detached' })
     const add = card.getByTestId('settings-remote-workspace')
-    assert.equal(await add.innerText(), '添加一个')
+    assert.equal(await add.innerText(), '添加文件夹')
     for (let count = 2; count < 5; count += 1) {
       await add.click()
       await list.locator('.v2-remote-folder').nth(count).waitFor()
     }
-    await list.getByText('最多 5 个，先移除一个再添加。', { exact: true }).waitFor()
+    await list.getByText('最多 5 个，请先移除一个再添加。', { exact: true }).waitFor()
     assert.equal(await add.isDisabled(), true)
     assert.deepEqual((await calls(page)).filter((call) => call.name.startsWith('remote-workspace')).map((call) => [call.name, call.args ?? null]), [
       ['remote-workspace-use', '~/projects/blog'],
@@ -3948,14 +3948,14 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await card.getByTestId('settings-remote-feishu-state').getByText('未开启', { exact: true }).waitFor()
     const toggle = card.getByRole('switch', { name: '打开飞书遥控', exact: true })
     assert.equal(await toggle.isDisabled(), true)
-    await card.getByText('先在上面填好飞书应用。', { exact: true }).waitFor()
+    await card.getByText('请先在上方填写飞书应用信息。', { exact: true }).waitFor()
     await card.getByTestId('settings-remote-workspace').click()
     await card.getByText('~/projects/demo', { exact: true }).waitFor()
-    assert.equal(await card.getByTestId('settings-remote-workspace').innerText(), '添加一个')
+    assert.equal(await card.getByTestId('settings-remote-workspace').innerText(), '添加文件夹')
     await card.getByTestId('settings-remote-feishu-app-id').fill('cli_a1b2c3d4e5')
     await card.getByTestId('settings-remote-feishu-app-secret').fill('wrong-secret')
     await card.getByTestId('settings-remote-feishu-save').click()
-    await card.getByRole('alert').getByText('飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。').waitFor()
+    await card.getByRole('alert').getByText('飞书应用的 App ID 或 App Secret 不正确，请在飞书开放平台核对后重新填写。').waitFor()
     // 填错了框里的字留着，改一下再存就行。
     assert.equal(await card.getByTestId('settings-remote-feishu-app-secret').inputValue(), 'wrong-secret')
     await card.getByTestId('settings-remote-feishu-app-secret').fill('rightSecret123')
@@ -3968,18 +3968,18 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await card.getByText('尚未配对。开启遥控后方可配对。', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-pair').isDisabled(), true)
     await toggle.click()
-    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连接', { exact: true }).waitFor()
     // 说 Codex 在干什么的那句挪到了页头右边。
     await page.getByTestId('settings-remote-meta').getByText('Codex 空闲', { exact: true }).waitFor()
     await card.getByTestId('settings-remote-feishu-pair').click()
     await card.getByTestId('settings-remote-feishu-code').getByText('482915', { exact: true }).waitFor()
     await card.getByText('在飞书中打开您创建的机器人，私聊发送这 6 位数字。10 分钟内有效。', { exact: true }).waitFor()
-    // 手机那头发对了配对码：主进程推一份新快照，卡上换成绑定的人。
+    // 手机那头发对了配对码：主进程推一份新快照，卡上换成绑定用户。
     await page.evaluate(() => window.remoteHarness.pair('小明'))
     await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对$/).waitFor()
-    assert.equal(await card.getByTestId('settings-remote-feishu-pair').innerText(), '换人')
+    assert.equal(await card.getByTestId('settings-remote-feishu-pair').innerText(), '重新配对')
     assert.equal(await card.getByTestId('settings-remote-feishu-next').count(), 0)
-    await card.getByTestId('settings-remote-feishu-guide').getByText('怎么建飞书机器人', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-guide').getByText('如何创建飞书机器人', { exact: true }).waitFor()
     // 解绑先问一句：点「取消」什么都不做，点「解绑」才解。
     const confirm = card.getByTestId('settings-remote-feishu-confirm')
     await card.getByTestId('settings-remote-feishu-unbind').click()
@@ -3996,7 +3996,7 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     // 退出登录也先问：确认后凭据清掉、遥控关掉，回到填应用的框。
     await card.getByRole('button', { name: '退出飞书登录', exact: true }).click()
     await confirm.getByRole('heading', { name: '退出飞书登录？', exact: true }).waitFor()
-    await confirm.getByText('退出后要重新填机器人的凭据，才能再用手机遥控。', { exact: true }).waitFor()
+    await confirm.getByText('退出后需重新填写机器人凭据，方可继续使用手机遥控。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '退出登录', exact: true }).click()
     await confirm.waitFor({ state: 'detached' })
     await card.getByTestId('settings-remote-feishu-form').waitFor()
@@ -4026,27 +4026,27 @@ test('the Feishu block says one of three fixed sentences when it stops and gives
   try {
     const card = page.getByTestId('settings-remote-card')
     await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).click()
-    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连接', { exact: true }).waitFor()
     const status = card.getByTestId('settings-remote-feishu-status')
 
     await page.evaluate(() => window.remoteHarness.feishuProblem('other'))
-    await status.getByText('没连上，点「重新连接」再试；还不行点「联系客服」。', { exact: true }).waitFor()
+    await status.getByText('未能建立连接，请点击「重新连接」重试；如问题仍存在，请点击「联系客服」。', { exact: true }).waitFor()
     await card.getByTestId('settings-remote-feishu-support').click()
     assert.equal((await callsNamed(page, 'open-help')).length, 1)
     await card.getByTestId('settings-remote-feishu-reconnect').click()
-    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连接', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-status-actions').count(), 0)
 
     await page.evaluate(() => window.remoteHarness.feishuProblem('connection-limit'))
-    await status.getByText('这个飞书应用在别处也连着，先关掉别处再试。', { exact: true }).waitFor()
+    await status.getByText('该飞书应用已在其他位置连接，请先断开其他连接后重试。', { exact: true }).waitFor()
     await card.getByTestId('settings-remote-feishu-reconnect').waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-support').count(), 0)
     await card.getByTestId('settings-remote-feishu-reconnect').click()
-    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连接', { exact: true }).waitFor()
 
     // 凭据不对：不另摆按钮，下面那颗「重新填写」就是它的，点了打开填写框。
     await page.evaluate(() => window.remoteHarness.feishuProblem('credential'))
-    await status.getByText('飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', { exact: true }).waitFor()
+    await status.getByText('飞书应用的 App ID 或 App Secret 不正确，请在飞书开放平台核对后重新填写。', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-reconnect').count(), 0)
     await card.getByTestId('settings-remote-feishu-edit').click()
     await card.getByTestId('settings-remote-feishu-form').waitFor()
@@ -4069,8 +4069,8 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
     assert.equal(await tab.getAttribute('aria-selected'), 'true')
     await tab.getByText('实验功能', { exact: true }).waitFor()
     const block = card.getByTestId('settings-remote-weixin')
-    await block.getByTestId('settings-remote-weixin-warning').getByText('实验功能，随时可能断', { exact: true }).waitFor()
-    await block.getByText('先在上面用微信扫码登录。', { exact: true }).waitFor()
+    await block.getByTestId('settings-remote-weixin-warning').getByText('实验功能，可能随时中断', { exact: true }).waitFor()
+    await block.getByText('请先在上方使用微信扫码登录。', { exact: true }).waitFor()
     assert.equal(await card.getByRole('switch', { name: '打开微信遥控', exact: true }).isDisabled(), true)
     assert.equal(await card.getByRole('button', { name: '退出微信登录', exact: true }).count(), 0)
     await block.getByTestId('settings-remote-weixin-login-start').click()
@@ -4078,14 +4078,14 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
     const qr = dialog.getByRole('img', { name: '微信登录二维码', exact: true })
     await qr.waitFor()
     assert.match(await qr.getAttribute('src'), /^data:image\/png;base64,/)
-    await dialog.getByText('打开手机微信「扫一扫」，扫完在手机上点确认。二维码 5 分钟内有效。', { exact: true }).waitFor()
+    await dialog.getByText('请使用手机微信「扫一扫」扫码，并在手机上确认。二维码 5 分钟内有效。', { exact: true }).waitFor()
     await page.evaluate(() => window.remoteHarness.weixinScanned())
-    await dialog.getByText('手机微信上显示了一串数字，请输在下面', { exact: true }).waitFor()
+    await dialog.getByText('手机微信上显示了一组数字，请在下方输入', { exact: true }).waitFor()
     assert.equal(await qr.count(), 0)
     const code = dialog.getByTestId('settings-remote-weixin-code')
     await code.fill('1111')
     await dialog.getByTestId('settings-remote-weixin-code-submit').click()
-    await dialog.getByText('数字不对，请对照手机上的数字重新输入', { exact: true }).waitFor()
+    await dialog.getByText('数字不正确，请对照手机上显示的数字重新输入', { exact: true }).waitFor()
     await code.fill('2580')
     await dialog.getByTestId('settings-remote-weixin-code-submit').click()
     // 过了手机上那串数字：扫码的人直接绑上，不用配对码（YF-5）。
@@ -4099,7 +4099,7 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
     await card.getByRole('button', { name: '退出微信登录', exact: true }).click()
     const logoutConfirm = card.getByTestId('settings-remote-weixin-confirm')
     await logoutConfirm.getByRole('heading', { name: '退出微信登录？', exact: true }).waitFor()
-    await logoutConfirm.getByText('退出后要重新用微信扫码登录，才能再用手机遥控。', { exact: true }).waitFor()
+    await logoutConfirm.getByText('退出后需重新使用微信扫码登录，方可继续使用手机遥控。', { exact: true }).waitFor()
     await logoutConfirm.getByRole('button', { name: '取消', exact: true }).click()
     await logoutConfirm.waitFor({ state: 'detached' })
     assert.equal((await calls(page)).some((call) => call.name === 'remote-clear'), false)
@@ -4138,7 +4138,7 @@ test('the phone remote card says Codex could not start and leads to the home pag
     const notice = card.getByTestId('settings-remote-codex-failed')
     await notice.getByText('Codex 启动失败', { exact: true }).waitFor()
     await notice.getByText('手机刚发送的指令未执行。请前往首页检查 Codex，恢复后在手机上重新发送。', { exact: true }).waitFor()
-    await notice.getByRole('button', { name: '去首页看 Codex', exact: true }).click()
+    await notice.getByRole('button', { name: '前往首页查看 Codex', exact: true }).click()
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
     await page.evaluate(() => window.remoteHarness.codexStartFailed(false))
     await notice.waitFor({ state: 'detached' })
@@ -4168,7 +4168,7 @@ test('the phone remote card lets the customer turn on opening the remote wheneve
   }
 })
 
-// YF-10：「多久没消息就自动关」缺省「不自动关」带小字；选 12 小时小字收起、「打开遥控」那行说明带上 12 小时，再选回不自动关又出来。
+// YF-10：「多久没消息就自动关」缺省「不自动关闭」带小字；选 12 小时小字收起、「打开遥控」那行说明带上 12 小时，再选回不自动关闭又出来。
 test('the phone remote card picks how long it may idle before closing, never by default', async () => {
   const page = await fixture('page=remote&remoteReady=1')
   try {
@@ -4177,13 +4177,13 @@ test('the phone remote card picks how long it may idle before closing, never by 
     const neverHint = '仅在电脑端、托盘中关闭，或在手机上发送「关闭遥控」时才会关闭。'
     await row.getByText(neverHint, { exact: true }).waitFor()
     const choice = row.getByRole('group', { name: '无消息自动关闭时间', exact: true })
-    assert.equal(await choice.getByRole('button', { name: '不自动关', exact: true }).getAttribute('aria-pressed'), 'true')
-    await card.getByText('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次。', { exact: true }).waitFor()
+    assert.equal(await choice.getByRole('button', { name: '不自动关闭', exact: true }).getAttribute('aria-pressed'), 'true')
+    await card.getByText('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开，下次打开星芒需重新开启。', { exact: true }).waitFor()
     await choice.getByRole('button', { name: '12 小时', exact: true }).click()
     await row.getByText(neverHint, { exact: true }).waitFor({ state: 'detached' })
     assert.equal(await choice.getByRole('button', { name: '12 小时', exact: true }).getAttribute('aria-pressed'), 'true')
-    await card.getByText('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次；闲着 12 小时也会自动断开。', { exact: true }).waitFor()
-    await choice.getByRole('button', { name: '不自动关', exact: true }).click()
+    await card.getByText('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开，下次打开星芒需重新开启；无消息 12 小时后也会自动断开。', { exact: true }).waitFor()
+    await choice.getByRole('button', { name: '不自动关闭', exact: true }).click()
     await row.getByText(neverHint, { exact: true }).waitFor()
     assert.deepEqual((await callsNamed(page, 'remote-idle-close')).map((call) => call.args), [12, null])
   } finally {
@@ -4261,7 +4261,7 @@ test('the phone remote page picks the default or read-only permission level', as
   }
 })
 
-// YF-13：「最近一次」只说几点发来的、做到哪儿了，不摆手机上的原话；「都拒绝」「停下这一轮」交给主进程，「在记录里看」去记录页。
+// YF-13：「最近一次」只说几点发来的、做到哪儿了，不摆手机上的原话；「全部拒绝」「停止本轮」交给主进程，「查看记录」去记录页。
 test('the phone remote card shows the last phone request and can stop it, decline what waits and open the records', async () => {
   const page = await fixture('page=remote&remoteReady=1')
   try {
@@ -4273,17 +4273,17 @@ test('the phone remote card shows the last phone request and can stop it, declin
     const row = card.getByTestId('settings-remote-last-request')
     await row.getByText('最近一次', { exact: true }).waitFor()
     // 刚过零点那几分钟，几分钟前发来的算昨天，前面带上日期（「11 月 11 日 23:57」）。
-    assert.match(await row.getByTestId('settings-remote-last-request-text').innerText(), /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 发来一条，正在处理，已经 3 分钟$/)
+    assert.match(await row.getByTestId('settings-remote-last-request-text').innerText(), /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 收到指令，正在处理，已用时 3 分钟$/)
     await row.getByText('待确认 2 条，请在手机上回复。', { exact: true }).waitFor()
-    await row.getByRole('button', { name: '都拒绝', exact: true }).click()
+    await row.getByRole('button', { name: '全部拒绝', exact: true }).click()
     await row.getByTestId('settings-remote-last-request-waiting').waitFor({ state: 'detached' })
-    assert.equal(await row.getByRole('button', { name: '都拒绝', exact: true }).count(), 0)
-    await row.getByRole('button', { name: '停下这一轮', exact: true }).click()
+    assert.equal(await row.getByRole('button', { name: '全部拒绝', exact: true }).count(), 0)
+    await row.getByRole('button', { name: '停止本轮', exact: true }).click()
     await page.waitForFunction(() => /已停止$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
-    assert.equal(await row.getByRole('button', { name: '停下这一轮', exact: true }).count(), 0)
-    await page.evaluate(() => window.remoteHarness.phoneRequest({ minutesAgo: 20, state: 'failed', reason: '余额不够了，充值后再发一次。' }))
-    await page.waitForFunction(() => /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 未完成：余额不够了，充值后再发一次。$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
-    await row.getByRole('button', { name: '在记录里看', exact: true }).click()
+    assert.equal(await row.getByRole('button', { name: '停止本轮', exact: true }).count(), 0)
+    await page.evaluate(() => window.remoteHarness.phoneRequest({ minutesAgo: 20, state: 'failed', reason: '余额不足，请充值后重新发送。' }))
+    await page.waitForFunction(() => /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 未完成：余额不足，请充值后重新发送。$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
+    await row.getByRole('button', { name: '查看记录', exact: true }).click()
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'sessions')
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'remote-decline-approvals' || call.name === 'remote-stop-turn').map((call) => call.name), ['remote-decline-approvals', 'remote-stop-turn'])
   } finally {
@@ -4300,8 +4300,8 @@ test('the phone remote card warns about a low balance once the remote is on and 
     assert.equal(await card.getByTestId('settings-remote-low-balance').count(), 0)
     await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).click()
     const notice = card.getByTestId('settings-remote-low-balance')
-    await notice.getByText('余额只剩 $0.80', { exact: true }).waitFor()
-    await notice.getByText('人不在电脑前时充不了值，建议先充一点再出门。', { exact: true }).waitFor()
+    await notice.getByText('余额仅剩 $0.80', { exact: true }).waitFor()
+    await notice.getByText('离开电脑后无法充值，建议外出前预先充值。', { exact: true }).waitFor()
     await notice.getByRole('button', { name: '前往充值', exact: true }).click()
     assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['account', 'recharge'])
   } finally {
@@ -4313,7 +4313,7 @@ test('the phone remote card says why it cannot be turned on while the manager ru
   const page = await fixture('page=remote&remoteElevated=1&remoteReady=1')
   try {
     const card = page.getByTestId('settings-remote-card')
-    await card.getByTestId('settings-remote-unavailable').getByText('星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。').waitFor()
+    await card.getByTestId('settings-remote-unavailable').getByText('星芒正以管理员身份运行，为保障安全，此时无法开启手机遥控。请以普通方式重新打开星芒。').waitFor()
     assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).isDisabled(), true)
     assert.equal(await card.getByTestId('settings-remote-workspace').isDisabled(), true)
     assert.equal(await card.getByTestId('settings-remote-feishu-edit').isDisabled(), true)
