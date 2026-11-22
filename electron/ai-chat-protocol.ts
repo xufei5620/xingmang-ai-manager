@@ -9,7 +9,7 @@ export const AI_CHAT_TEXT_FILE_LIMITS = {
   charsPerMessage: 30_000,
 } as const
 // 选文件前聊天页先按同一笔账算过，满了就当场说这句、不开选择框；主进程收到的字数不对时也说这句。
-export const chatTextFileFullMessage = '这条消息的字已经满了，加不了文件。先删掉一些字或文件再加。'
+export const chatTextFileFullMessage = '该消息的字数已达上限，无法添加文件。请先删除部分文字或文件后再添加。'
 
 export const AI_CHAT_ENDPOINTS = {
   chatCompletions: '/v1/chat/completions',
@@ -839,8 +839,8 @@ function parseImageDimensions(size: string): { width: number; height: number } |
 
 // 尺寸不合规时说给客户听的规矩：画布派生尺寸出不来时接在原因后面，聊天页自定义尺寸框下面也是这一句（表单 F5）。
 export function describeImageSizePolicy(policy: ImageSizePolicy): string {
-  if (policy.kind === 'divisible') return `这个型号的宽和高都要是 ${policy.divisor} 的倍数，并在 ${policy.min} 到 ${policy.max} 之间`
-  return policy.values.length === 1 && policy.values[0] === 'auto' ? '这个型号由服务决定尺寸，不能指定' : `这个型号只支持这几种尺寸：${policy.values.join('、')}`
+  if (policy.kind === 'divisible') return `该型号的宽和高均须为 ${policy.divisor} 的倍数，且在 ${policy.min} 到 ${policy.max} 之间`
+  return policy.values.length === 1 && policy.values[0] === 'auto' ? '该型号的尺寸由服务决定，无法指定' : `该型号仅支持以下尺寸：${policy.values.join('、')}`
 }
 
 export function validateImageSize(size: string, capability: ImageModelCapability): string {

@@ -36,7 +36,7 @@ const unrecordedFlushDelayMs = 500
 
 // 写进作品库失败（磁盘满、没权限）时音频库那句原话照说；别的（格式不认、太大、读的时候文件变了）对客户来说
 // 都是「这首歌用不了」，换成页面上同一句。
-const musicStorageFailure = '作品没能存进保存位置'
+const musicStorageFailure = '作品未能存入保存位置'
 
 /** 页面上显示的歌名：文件名去掉扩展名，控制字符和连着的空白并成一个空格，太长截断。 */
 export function videoStudioMusicName(filePath: string): string {
@@ -164,7 +164,7 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     await options.remoteFeatures?.assertOn('video-studio', videoStudioOffMessage)
     observeSender(event.sender)
     const key = `${event.sender.id}:${parsed.requestId}`
-    if (plans.has(key)) throw new Error('这份分镜正在写，请等它写完')
+    if (plans.has(key)) throw new Error('该分镜正在生成，请等待完成')
     const controller = new AbortController()
     plans.set(key, controller)
     const { system, user } = buildVideoStudioPlanMessages(parsed)
@@ -186,7 +186,7 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
       }
       return parseVideoStudioPlanJson(await ask(), parsed)
     } catch (error) {
-      if (controller.signal.aborted) throw new Error('已停止写分镜')
+      if (controller.signal.aborted) throw new Error('已停止生成分镜')
       // 分镜写到一半被截断，再问一次多半照样截断，还多扣一次钱；不重发，直接说清怎么改（D10）。
       if (error instanceof AiAnswerCutOffError && error.cutOff === 'length') throw new Error(videoStudioPlanTooLongMessage)
       throw error

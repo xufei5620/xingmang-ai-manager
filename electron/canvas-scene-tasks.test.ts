@@ -299,14 +299,14 @@ describe('canvas scene tasks', () => {
     expect(() => assertCanvasCommerceTargetSizeSupported('gpt-image-2', { width: 1536, height: 1152, size: '1536x1152' })).not.toThrow()
     // 1000 is not a multiple of 16: the relay would be asked for another size.
     expect(() => assertCanvasCommerceTargetSizeSupported('gpt-image-2', { width: 1000, height: 1000, size: '1000x1000' }))
-      .toThrow('当前模型无法精确输出派生尺寸 1000x1000；请更换原图、请求倍率或模型。这个型号的宽和高都要是 16 的倍数，并在 256 到 4096 之间')
+      .toThrow('当前模型无法精确输出派生尺寸 1000x1000；请更换原图、请求倍率或模型。该型号的宽和高均须为 16 的倍数，且在 256 到 4096 之间')
     expect(() => assertCanvasCommerceTargetSizeSupported('gpt-image-2', { width: 5120, height: 2880, size: '5120x2880' })).toThrow('当前模型无法精确输出派生尺寸 5120x2880')
     // gpt-image-1 only knows three sizes; Grok picks its own.
     expect(() => assertCanvasCommerceTargetSizeSupported('gpt-image-1', { width: 1024, height: 1536, size: '1024x1536' })).not.toThrow()
     expect(() => assertCanvasCommerceTargetSizeSupported('gpt-image-1', { width: 1280, height: 1280, size: '1280x1280' }))
-      .toThrow('当前模型无法精确输出派生尺寸 1280x1280；请更换原图、请求倍率或模型。这个型号只支持这几种尺寸：1024x1024、1024x1536、1536x1024、auto')
+      .toThrow('当前模型无法精确输出派生尺寸 1280x1280；请更换原图、请求倍率或模型。该型号仅支持以下尺寸：1024x1024、1024x1536、1536x1024、auto')
     expect(() => assertCanvasCommerceTargetSizeSupported('grok-imagine-image', { width: 1024, height: 1024, size: '1024x1024' }))
-      .toThrow('当前模型无法精确输出派生尺寸 1024x1024；请更换原图、请求倍率或模型。这个型号由服务决定尺寸，不能指定')
+      .toThrow('当前模型无法精确输出派生尺寸 1024x1024；请更换原图、请求倍率或模型。该型号的尺寸由服务决定，无法指定')
   })
 
   it('checks that a node carries one task with the picture roles it needs exactly as the kernel does', () => {

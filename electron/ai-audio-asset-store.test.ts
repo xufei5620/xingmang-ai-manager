@@ -132,7 +132,7 @@ describe('AiAudioAssetStore', () => {
     const owned = await store.readOwned(36, asset.assetId)
     expect(owned.bytes).toEqual(before)
     expect(fs.readFileSync(sourcePath)).toEqual(before)
-    await expect(store.readOwned(37, asset.assetId)).rejects.toThrow('这段音频已经不在电脑上了')
+    await expect(store.readOwned(37, asset.assetId)).rejects.toThrow('该音频已不在本机')
     await expect(store.listOwned(36)).resolves.toEqual([expect.objectContaining({ assetId: asset.assetId, mediaType: 'audio' })])
   })
 
@@ -209,7 +209,7 @@ describe('AiAudioAssetStore', () => {
     failTemporaryFileWrites()
     const error = await store.storeLocalFile(36, sourcePath).then(() => null, (reason: unknown) => reason)
 
-    expect((error as Error).message).toBe('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+    expect((error as Error).message).toBe('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服')
     expect(classifyStorageFailure(error)).toBe('disk-full')
   })
 })
@@ -242,8 +242,8 @@ describe('AiAudioAssetStore lookup by identifier', () => {
     const lstatSync = vi.spyOn(fs, 'lstatSync')
     try {
       const store = new AiAudioAssetStore({ outputRoot })
-      await expect(store.readOwned(7, 'M'.repeat(43))).rejects.toThrow(/^这段音频已经不在电脑上了，可能被移走或删掉了。$/)
-      await expect(store.resolveOwnedFilePath(7, 'M'.repeat(43))).rejects.toThrow(/^这段音频已经不在电脑上了，可能被移走或删掉了。$/)
+      await expect(store.readOwned(7, 'M'.repeat(43))).rejects.toThrow(/^该音频已不在本机，可能已被移动或删除。$/)
+      await expect(store.resolveOwnedFilePath(7, 'M'.repeat(43))).rejects.toThrow(/^该音频已不在本机，可能已被移动或删除。$/)
       return lstatSync.mock.calls.length
     } finally {
       lstatSync.mockRestore()
@@ -261,8 +261,8 @@ describe('AiAudioAssetStore lookup by identifier', () => {
     await expect(store.readOwned(7, asset.assetId)).resolves.toMatchObject({ asset: { mimeType: 'audio/wav' } })
     fs.rmSync(await store.resolveOwnedFilePath(7, asset.assetId))
 
-    await expect(store.readOwned(7, asset.assetId)).rejects.toThrow(/^这段音频已经不在电脑上了，可能被移走或删掉了。$/)
-    await expect(store.resolveOwnedFilePath(7, asset.assetId)).rejects.toThrow(/^这段音频已经不在电脑上了，可能被移走或删掉了。$/)
+    await expect(store.readOwned(7, asset.assetId)).rejects.toThrow(/^该音频已不在本机，可能已被移动或删除。$/)
+    await expect(store.resolveOwnedFilePath(7, asset.assetId)).rejects.toThrow(/^该音频已不在本机，可能已被移动或删除。$/)
   })
 })
 

@@ -316,7 +316,7 @@ export function awakeVideoPollSpan(previousAt: number, at: number, expectedMs: n
 
 /** 等满了也停下时上屏的那句：和查不到进度那条同一句，这单已经扣了钱、服务端多半还在出，不能叫人重来。 */
 function videoPollStoppedError(taskId: string, cause?: unknown): Error {
-  return new Error(`暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 ${taskId}）。`, cause === undefined ? undefined : { cause })
+  return new Error(`暂时无法查询视频进度，服务端可能仍在生成，请勿重复提交；下次启动时将继续查询（任务 ${taskId}）。`, cause === undefined ? undefined : { cause })
 }
 
 export function delayVideoPoll(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -898,7 +898,7 @@ export function createAiVideoService(options: {
       }), operation.controller.signal)
     } catch (error) {
       if (operation.controller.signal.aborted) {
-        if (operation.taskId) throw new Error('已停止等待；服务端可能仍在生成视频，下次启动会继续查询')
+        if (operation.taskId) throw new Error('已停止等待；服务端可能仍在生成视频，下次启动时将继续查询')
         if (operation.dispatched) throw await unclearSubmission()
         throw new Error('已取消视频请求')
       }
@@ -986,7 +986,7 @@ export function createAiVideoService(options: {
       await progress?.onStage('processing')
       return await raceAbort(finishOnce(task, () => finishExisting(task, operation.controller.signal, progress)), operation.controller.signal)
     } catch (error) {
-      if (operation.controller.signal.aborted) throw new Error('已停止等待；服务端可能仍在生成视频，下次启动会继续查询')
+      if (operation.controller.signal.aborted) throw new Error('已停止等待；服务端可能仍在生成视频，下次启动时将继续查询')
       throw error
     } finally {
       if (active.get(key) === operation) active.delete(key)

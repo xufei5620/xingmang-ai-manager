@@ -75,7 +75,7 @@ describe('video studio compose protocol', () => {
     expect(parseVideoStudioComposeRequest({ clips: [clip()], options, clipGain: 0 }).clipGain).toBe(0)
     expect(parseVideoStudioComposeRequest({ clips: [clip()], options })).not.toHaveProperty('music')
 
-    const unreadable = '这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）'
+    const unreadable = '该歌曲无法读取，请更换配乐后重试（支持 MP3、M4A、WAV、OGG）'
     expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, music: { data: new ArrayBuffer(0), gain: 1 } })).toThrow(unreadable)
     expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, music: { data: new Uint8Array(4), gain: 1 } })).toThrow(unreadable)
     const big = { byteLength: maxVideoStudioMusicBytes + 1 }

@@ -529,7 +529,7 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (code === 'connection-timeout') return 'AI 服务响应较慢，本次等待已超时，请重试'
   // 主进程知道停下前已经发来了什么，会说清上面是不是半截、可能已经计费，原话上屏。
   if (code === 'idle-timeout') return message || 'AI 服务长时间未返回内容，已停止，请重试'
-  if (code === 'total-timeout') return message || '本次对话超过最长处理时间，已经停下，请重试'
+  if (code === 'total-timeout') return message || '本次对话超过最长处理时间，已停止，请重试'
   // 准备分组时断网，主进程带来的是账号服务那一层说清了原因的那句话，原样上屏。
   if (code === 'network-error') return matchNetworkFailureMessage(message) ?? '无法连接 AI 服务，请检查网络后重试'
   if (code === 'stream-closed') return 'AI 服务提前结束了本次响应，请重试'
@@ -541,9 +541,9 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   // 图片文件在外面被删掉、挪走了：复制、拿去改、带着它发都不会再成，原话上屏，别叫客户重试（D37）。
   const missing = resolveMissingAiAssetMessage(message)
   if (missing) return missing
-  // 主进程在发付费请求之前试写保存位置，写不进就停下。原话里有「这次没有扣费」和
-  // 下一步怎么办，归进下面任何一类都会把这两句丢掉。
-  const unwritable = message.indexOf('保存位置写不进去')
+  // 主进程在发付费请求之前试写保存位置，写不进就停下。原话里有「本次未扣费」和
+  // 下一步怎么办，归进下面任何一类都会把这两句丢掉。开头 11-22 由「保存位置写不进去」改成「保存位置无法写入」，两种都认。
+  const unwritable = message.search(/保存位置(?:无法写入|写不进去)/)
   if (unwritable >= 0) return message.slice(unwritable)
   // 发付费请求之前还量了保存位置那块盘：剩得太少也停下，原话是装工具前查盘那句，说清哪块盘、还剩多少（D38，
   // electron/disk-space.ts 的 describeInsufficientDiskSpace）。落到下面会变成「请稍后重试」，盘没清怎么试都一样。
@@ -555,14 +555,14 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (/重复提交/.test(message)) return message
   // 付过钱的图存不进作品库、已经先暂存着（深查 S-1）：主进程那句说清了别重新生成、腾出空间后会自动存进去。
   // 落到最后那句「请稍后重试」，客户照做就再扣一次钱。
-  if (/先别重新生成/.test(message)) return message
+  if (/请勿重新生成|先别重新生成/.test(message)) return message
   // 出图请求根本没发出去（断网、解析不出地址、代理连不上）时，主进程按 network-failure.ts 说清了原因和下一步，
   // 原样上屏；落到下面按字面猜的几条，「先上网认证」「换个网络」这些出路就丢了（深查 W-1）。
   const network = matchNetworkFailureMessage(message)
   if (network) return network
   // 生图被服务端拦下的两句（#1101 第4条）主进程已经说清原因和下一步，原样上屏；不然会落到最后那句
   // 「请稍后重试」，被审核拦下的描述怎么重试都一样。
-  if (/参考图太大了|这次的描述或参考图没通过安全审核/.test(message)) return message
+  if (/参考图过大|本次描述或参考图未通过安全审核|参考图太大了|这次的描述或参考图没通过安全审核/.test(message)) return message
   // 主进程已经把余额不足、Key 额度上限、Key 失效分开说好了，这里原样放行；否则下面那条
   // 宽泛的「余额」正则会把「额度上限用完」又改回「请充值」。
   const quota = matchRelayQuotaFailureMessage(message)

@@ -405,7 +405,7 @@ describe('AiAssetStore with an unsaved-image stash', () => {
 
     expect(keepUnsaved).toHaveBeenCalledWith(42, png(640, 480))
     // Marked as set aside, so the image service can say so instead of "try again".
-    expect(error).toMatchObject({ message: '作品没能存进保存位置，请稍后重试；一直不行请联系客服', code: AI_IMAGE_KEPT_UNSAVED_ERROR_CODE })
+    expect(error).toMatchObject({ message: '作品未能存入保存位置，请稍后重试；如持续失败，请联系客服', code: AI_IMAGE_KEPT_UNSAVED_ERROR_CODE })
     expect((error as Error).cause).toMatchObject({ code: 'ENOSPC' })
   })
 
@@ -456,7 +456,7 @@ describe('AiAssetStore with an unsaved-image stash', () => {
 
     failTemporaryFileWrites()
     const error = await store.storeBase64(42, png().toString('base64')).then(() => null, (reason: unknown) => reason)
-    expect((error as Error).message).toBe('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+    expect((error as Error).message).toBe('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服')
     expect((error as { code?: unknown }).code).not.toBe(AI_IMAGE_KEPT_UNSAVED_ERROR_CODE)
   })
 
@@ -465,7 +465,7 @@ describe('AiAssetStore with an unsaved-image stash', () => {
 
     await expect(store.storeBase64(42, Buffer.from('not a picture').toString('base64'))).rejects.toThrow()
     failTemporaryFileWrites()
-    await expect(store.storeLocalBytes(42, png())).rejects.toThrow('作品没能存进保存位置')
+    await expect(store.storeLocalBytes(42, png())).rejects.toThrow('作品未能存入保存位置')
 
     expect(keepUnsaved).not.toHaveBeenCalled()
   })

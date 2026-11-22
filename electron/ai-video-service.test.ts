@@ -190,7 +190,7 @@ describe('createAiVideoService', () => {
         requestId: 'limit-stuck', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
       }).catch((error: unknown) => error)
       await vi.advanceTimersByTimeAsync(2_100)
-      expect(await stuck).toMatchObject({ message: '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 video_limit）。' })
+      expect(await stuck).toMatchObject({ message: '暂时无法查询视频进度，服务端可能仍在生成，请勿重复提交；下次启动时将继续查询（任务 video_limit）。' })
       await service.whenIdle()
       expect(tasks.remove).toHaveBeenCalledTimes(1)
     } finally {
@@ -908,12 +908,12 @@ describe('createAiVideoService', () => {
   it('stops before paid dispatch when the save location cannot be written', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ id: 'must-not-run' })) as unknown as typeof fetch
     const { service, assets, tasks } = setup(fetchImpl)
-    assets.assertWritable.mockRejectedValueOnce(new Error('保存位置写不进去，这次没有扣费。请新建一个项目、换个文件夹再试。'))
+    assets.assertWritable.mockRejectedValueOnce(new Error('保存位置无法写入，本次未扣费。请新建一个项目、换个文件夹再试。'))
 
     await expect(service.generate(41, {
       requestId: 'video-unwritable', group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
       projectId: '11111111-1111-4111-8111-111111111111',
-    })).rejects.toThrow('保存位置写不进去，这次没有扣费')
+    })).rejects.toThrow('保存位置无法写入，本次未扣费')
     expect(assets.assertWritable).toHaveBeenCalledWith(7, '11111111-1111-4111-8111-111111111111')
     expect(fetchImpl).not.toHaveBeenCalled()
     expect(tasks.upsert).not.toHaveBeenCalled()
@@ -927,14 +927,14 @@ describe('createAiVideoService', () => {
     }) as unknown as typeof fetch
     const { service, tasks, assets } = setup(fetchImpl)
     const diskFull = Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
-    assets.storeMp4.mockRejectedValueOnce(new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: diskFull }))
+    assets.storeMp4.mockRejectedValueOnce(new Error('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服', { cause: diskFull }))
 
     const error = await service.generate(41, {
       requestId: 'video-disk-full', group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
     }).then(() => null, (reason: unknown) => reason)
 
     expect((error as Error).message).toBe(aiVideoDiskFullMessage)
-    expect((error as Error).message).toBe('视频已经生成、也已经扣费了，但电脑的磁盘满了存不进去。先别重新生成，清出一些空间后重开星芒，会自动取回。')
+    expect((error as Error).message).toBe('视频已生成并已扣费，但本机磁盘剩余空间不足，无法保存。请勿重新生成，释放部分空间后重新打开星芒，将自动取回。')
     // The task stays on record, so the next launch fetches the clip again instead of anyone paying twice.
     expect(tasks.finish).not.toHaveBeenCalled()
     expect(tasks.remove).not.toHaveBeenCalled()
@@ -954,11 +954,11 @@ describe('createAiVideoService', () => {
     }) as unknown as typeof fetch
     const { service, assets } = setup(fetchImpl)
     const denied = Object.assign(new Error('EPERM: operation not permitted, open'), { code: 'EPERM' })
-    assets.storeMp4.mockRejectedValueOnce(new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: denied }))
+    assets.storeMp4.mockRejectedValueOnce(new Error('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服', { cause: denied }))
 
     await expect(service.generate(41, {
       requestId: 'video-locked', group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
-    })).rejects.toThrow(/^作品没能存进保存位置，请稍后重试；一直不行请联系客服$/)
+    })).rejects.toThrow(/^作品未能存入保存位置，请稍后重试；如持续失败，请联系客服$/)
   })
 
   it('reserves recovery capacity before dispatching a paid video request', async () => {
@@ -1385,7 +1385,7 @@ describe('createAiVideoService', () => {
       // 这单已经提交：不叫客户「重试」再付一次钱，原话留在 cause 上进日志（#1076 第2条）。
       const failure = await pending
       expect(failure).toMatchObject({
-        message: '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 video_poll_stall）。',
+        message: '暂时无法查询视频进度，服务端可能仍在生成，请勿重复提交；下次启动时将继续查询（任务 video_poll_stall）。',
         cause: { message: '视频接口请求超时' },
       })
       await service.whenIdle()
@@ -1443,7 +1443,7 @@ describe('createAiVideoService', () => {
       requestId: 'poll-outage', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
     }).catch((error: unknown) => error)
     expect(failure).toMatchObject({
-      message: '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 video_outage）。',
+      message: '暂时无法查询视频进度，服务端可能仍在生成，请勿重复提交；下次启动时将继续查询（任务 video_outage）。',
       cause: { message: '视频服务暂时不可用，请稍后重试' },
     })
     expect(vi.mocked(fetchImpl).mock.calls.filter(([, init]) => init?.method !== 'POST').length).toBeGreaterThan(1)

@@ -267,8 +267,8 @@ describe('v2 chat request transitions', () => {
     expect(chatCutOffNotice(whole)).toBeNull()
   })
   it('keeps safe stream failure reasons distinct instead of labeling every disconnect as local network trouble', () => {
-    expect(chatErrorMessage(new Error("Error invoking remote method 'ai:image-generate': Error: 保存位置写不进去，这次没有扣费。请联系客服帮你处理。")))
-      .toBe('保存位置写不进去，这次没有扣费。请联系客服帮你处理。')
+    expect(chatErrorMessage(new Error("Error invoking remote method 'ai:image-generate': Error: 保存位置无法写入，本次未扣费。请联系客服协助处理。")))
+      .toBe('保存位置无法写入，本次未扣费。请联系客服协助处理。')
     expect(chatErrorMessage('连接 AI 服务超时，请检查网络后重试', 'connection-timeout')).toBe('AI 服务响应较慢，本次等待已超时，请重试')
     expect(chatErrorMessage('AI 服务连接提前关闭，请重试', 'stream-closed')).toBe('AI 服务提前结束了本次响应，请重试')
     expect(chatErrorMessage('当前模型不可用', 'model-unavailable')).toBe('当前模型暂不可用，请刷新模型后重新选择')
@@ -281,14 +281,14 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage(new Error(mac))).toBe(mac)
   })
   it('shows an image refusal the main process already worded instead of asking for a retry', () => {
-    const blocked = '这次的描述或参考图没通过安全审核，没有生成图片。改一改描述或换一张图再试。'
+    const blocked = '本次描述或参考图未通过安全审核，未生成图片。请调整描述或更换图片后重试。'
     expect(chatErrorMessage(new Error(`Error invoking remote method 'ai:image-generate': Error: ${blocked}`))).toBe(blocked)
-    const tooLarge = '参考图太大了，服务端收不下。换一张小一点的图，或者压缩一下再试。'
+    const tooLarge = '参考图过大，服务端无法接收。请更换较小的图片或压缩后重试。'
     expect(chatErrorMessage(new Error(tooLarge))).toBe(tooLarge)
   })
   it('says a picture removed outside the app is gone instead of asking for a retry that cannot work (D37)', () => {
     const gone = missingAiAssetMessages.image
-    expect(gone).toBe('这张图已经不在电脑上了，可能被移走或删掉了。')
+    expect(gone).toBe('该图片已不在本机，可能已被移动或删除。')
     expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:copy-asset': Error: ${gone}`))).toBe(gone)
     expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:asset-menu': Error: ${gone}`))).toBe(gone)
     expect(chatAssetSaveErrorMessage(new Error(`Error invoking remote method 'chat:save-asset': Error: ${gone}`))).toBe(gone)
@@ -300,28 +300,28 @@ describe('v2 chat request transitions', () => {
     const plan = turn(); let state = saveConversation(createWorkspace('owner:7'), plan.conversation)
     state = applyStreamEvent(state, { type: 'reasoning', requestId: 'request-1', content: '先想一下' })
     state = applyStreamEvent(state, { type: 'content', requestId: 'request-1', content: '前半段' })
-    const note = '回复太久没有新内容，已经停下；上面是已经收到的部分，这部分可能已经计费'
+    const note = '回复长时间无新内容，已停止；上方为已收到的部分，该部分可能已计费'
     state = applyStreamEvent(state, { type: 'error', requestId: 'request-1', code: 'idle-timeout', message: note })
     expect(activeConversation(state).messages.at(-1)).toMatchObject({ content: '前半段', reasoning: '先想一下', status: 'error', error: note })
     expect(chatErrorMessage('', 'idle-timeout')).toBe('AI 服务长时间未返回内容，已停止，请重试')
-    expect(chatErrorMessage('', 'total-timeout')).toBe('本次对话超过最长处理时间，已经停下，请重试')
+    expect(chatErrorMessage('', 'total-timeout')).toBe('本次对话超过最长处理时间，已停止，请重试')
   })
   it('keeps the do-not-resubmit warning when a paid image request times out or cannot be saved', () => {
     const timeout = '生图请求超时；服务端可能仍在生成图片，请勿立即重复提交'
     expect(chatErrorMessage(new Error(`Error invoking remote method 'ai:image-generate': Error: ${timeout}`))).toBe(timeout)
-    const downloaded = '图片已生成但下载失败，这次可能已经扣费，请勿立即重复提交；先检查网络，稍后再重新生成'
+    const downloaded = '图片已生成但下载失败，本次可能已扣费，请勿立即重复提交；请先检查网络，稍后再重新生成'
     expect(chatErrorMessage(new Error(downloaded))).toBe(downloaded)
     const video = '视频任务已创建但本地恢复记录保存失败（任务 video_1），请勿重复提交'
     expect(chatErrorMessage(video)).toBe(video)
     expect(chatErrorMessage('生图请求超时')).toBe('请求未完成，请检查网络后重试')
   })
   it('keeps the do-not-regenerate sentence when a paid image was set aside instead of saved', () => {
-    const kept = '图片已经生成、也已经扣费了，但没能存进作品库，已经先替你收着。先别重新生成，清出一些空间后会自动存进作品库。'
+    const kept = '图片已生成并已扣费，但未能存入作品库，已为您临时保存。请勿重新生成，释放部分空间后将自动存入作品库。'
     expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:generate-image': Error: ${kept}`))).toBe(kept)
     // Shown text goes through here again when the reply is marked failed.
     expect(chatErrorMessage(kept)).toBe(kept)
     // Held only in memory: the do-not-quit half must reach the page too (A02).
-    const inMemory = '图片已经生成、也已经扣费了，但电脑上暂时存不下，先替你收在星芒里，一退出就没了。先别重新生成，也先别退出星芒，清出一些空间后会自动存进作品库。'
+    const inMemory = '图片已生成并已扣费，但本机暂时无法保存，已临时保存在星芒中，退出后将丢失。请勿重新生成，也请暂勿退出星芒，释放部分空间后将自动存入作品库。'
     expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:generate-image': Error: ${inMemory}`))).toBe(inMemory)
     expect(chatErrorMessage(inMemory)).toBe(inMemory)
   })
@@ -459,11 +459,11 @@ describe('v2 chat request transitions', () => {
   // 表单 F5：数字框的 min/max/step 只管上下箭头，手打的 1000、删空的宽度都能交出去，发之前按型号说清规矩。
   it('names the size rule of the model when a custom size breaks it, in the same words as the canvas', () => {
     const image = (model: string, size: string): Pick<ChatSettings, 'mode' | 'model' | 'size'> => ({ mode: 'image', model, size })
-    const gptRule = '这个型号的宽和高都要是 16 的倍数，并在 256 到 4096 之间'
+    const gptRule = '该型号的宽和高均须为 16 的倍数，且在 256 到 4096 之间'
     for (const size of ['1000x1000', 'x1024', '1024x', '240x1024', '4112x1024', '1e3x1024', '1024.5x1024', 'auto']) expect(customImageSizeRule(image('gpt-image-2', size))).toBe(gptRule)
     for (const size of ['1024x1024', '1008x1024', '256x4096']) expect(customImageSizeRule(image('gpt-image-2', size))).toBe('')
     // 即梦上限是 1024，句子一样、数字跟着型号表走。
-    expect(customImageSizeRule(image('jimeng_high_aes_general_v21_L', '2048x1024'))).toBe('这个型号的宽和高都要是 16 的倍数，并在 256 到 1024 之间')
+    expect(customImageSizeRule(image('jimeng_high_aes_general_v21_L', '2048x1024'))).toBe('该型号的宽和高均须为 16 的倍数，且在 256 到 1024 之间')
     // 只能从菜单里挑尺寸的型号、文字对话、还没选模型的，都不说。
     expect(customImageSizeRule(image('gemini-3.1-flash-image', '1000x1000'))).toBe('')
     expect(customImageSizeRule({ mode: 'text', model: 'gpt-image-2', size: '1000x1000' })).toBe('')
@@ -823,7 +823,7 @@ describe('v2 chat attached text files', () => {
   })
 
   it('shows the main process words for a failed pick and a fallback for English ones', () => {
-    expect(fileAttachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-text-files': Error: 这个文件读不出来，可能正被别的软件占着，关掉它再试。"))).toBe('这个文件读不出来，可能正被别的软件占着，关掉它再试。')
+    expect(fileAttachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-text-files': Error: 该文件无法读取，可能已被其他软件打开，请关闭相关软件后重试。"))).toBe('该文件无法读取，可能已被其他软件打开，请关闭相关软件后重试。')
     expect(fileAttachmentErrorMessage(new Error('请先登录星芒账号'))).toBe('请先登录，再加文件')
     expect(fileAttachmentErrorMessage(new Error('EPERM: operation not permitted'))).toBe('文件添加失败，请重试')
   })

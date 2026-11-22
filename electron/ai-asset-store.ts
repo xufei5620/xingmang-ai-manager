@@ -47,7 +47,7 @@ export const AI_IMAGE_KEPT_UNSAVED_ERROR_CODE = 'AI_IMAGE_KEPT_UNSAVED'
  * （11-18 复核 A02，总单 #61）。
  */
 export const AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE = 'AI_IMAGE_KEPT_IN_MEMORY'
-const DEFAULT_UNWRITABLE_GUIDANCE = '请联系客服帮你处理。'
+const DEFAULT_UNWRITABLE_GUIDANCE = '请联系客服协助处理。'
 
 const blockedIpv4Addresses = new BlockList()
 for (const [address, prefix] of [
@@ -610,7 +610,7 @@ export class AiAssetStore {
     try {
       ensureSafeDataDirectory(this.outputRoot, FILE_LABEL)
     } catch {
-      throw new Error('AI 作品保存位置建不起来，请稍后重试；一直不行请联系客服')
+      throw new Error('AI 作品保存位置创建失败，请稍后重试；如持续失败，请联系客服')
     }
   }
 
@@ -640,7 +640,7 @@ export class AiAssetStore {
       ensureSafeDataDirectory(this.outputRoot, FILE_LABEL)
       await probeDirectoryWritable(directory, FILE_LABEL, this.randomBytes)
     } catch (cause) {
-      const error = new Error(`保存位置写不进去，这次没有扣费。${this.unwritableGuidance}`, { cause })
+      const error = new Error(`保存位置无法写入，本次未扣费。${this.unwritableGuidance}`, { cause })
       Object.assign(error, { code: AI_OUTPUT_UNWRITABLE_ERROR_CODE })
       throw error
     }
@@ -990,7 +990,7 @@ export class AiAssetStore {
         throw new Error('AI 图片资产标识冲突，请重试')
       }
       // 原因挂在 cause 上，日志里才看得到 ENOSPC、EPERM 这些（深查 S-1）；界面照旧只说这一句。
-      const failure = new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: error })
+      const failure = new Error('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服', { cause: error })
       throw Object.assign(failure, { code: AI_ASSET_WRITE_FAILED_ERROR_CODE })
     }
     this.cacheRecord(assetId, { userId, filePath, asset })

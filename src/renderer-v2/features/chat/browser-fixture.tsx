@@ -57,7 +57,7 @@ const videoBridge: ChatVideoBridge = {
     videoJobs.delete(requestId)
     // 主进程的原话（electron/ai-video-service.ts）：还没交出去是「已取消视频请求」，交出去了是「已停止等待…」。
     const sent = !unsentVideos.has(requestId)
-    job.reject(videoError('video:generate', sent ? '已停止等待；服务端可能仍在生成视频，下次启动会继续查询' : '已取消视频请求'))
+    job.reject(videoError('video:generate', sent ? '已停止等待；服务端可能仍在生成视频，下次启动时将继续查询' : '已取消视频请求'))
     return { canceled: true, mayStillComplete: sent }
   },
   onAiVideoProgress: (listener) => { videoListeners.add(listener); return () => { videoListeners.delete(listener) } },

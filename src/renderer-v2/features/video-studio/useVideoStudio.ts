@@ -276,11 +276,12 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
       })
       if (!alive()) return
       commit((current) => applyVideoStudioPlan(current, plan))
-      if (plan.shots.length < settings.shotCount) setNotice(`AI 只写了 ${plan.shots.length} 个镜头，可以自己再加几个。`)
+      if (plan.shots.length < settings.shotCount) setNotice(`AI 仅生成了 ${plan.shots.length} 个镜头，您可自行添加。`)
     } catch (reason) {
       if (!alive()) return
       const message = videoStudioErrorMessage(reason, '分镜生成失败，请稍后重试')
-      if (message !== '已停止写分镜') setError(message)
+      // 客户自己点了停：主进程那句不上屏。11-22 由「已停止写分镜」改成「已停止生成分镜」（界面文案正式化第 17 批），两种都认。
+      if (message !== '已停止生成分镜' && message !== '已停止写分镜') setError(message)
     } finally {
       if (alive()) setPlanning(null)
     }
@@ -486,9 +487,9 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
       setComposeState({ phase: 'storing' })
       const stored = await bridge.storeVideoStudioExport(new Uint8Array(result.data))
       if (!alive()) return
-      if (videoStudioComposeKey(projectRef.current) !== inputs) { setNotice('成片已保存至 AI 作品文件夹。合成期间分镜已修改，此处未更新，如需使用新分镜请重新合成。'); return }
+      if (videoStudioComposeKey(projectRef.current) !== inputs) { setNotice('成片已保存至作品库。合成期间分镜已修改，此处未更新，如需使用新分镜请重新合成。'); return }
       commit((latest) => ({ ...latest, exported: stored }), { urgent: true })
-      setNotice(result.audioCodec === null && current.shots.length ? '合成完成。所选片段均无声音，成片同样无声音。' : '合成完成，成片已保存至 AI 作品文件夹。')
+      setNotice(result.audioCodec === null && current.shots.length ? '合成完成。所选片段均无声音，成片同样无声音。' : '合成完成，成片已保存至作品库。')
     } catch (reason) {
       if (!alive() || controller.signal.aborted || isVideoStudioAbort(reason)) return
       // 拼片引擎的报错已经是中文；读片段、存成片走主进程，原话隔着一层 IPC 前缀。
@@ -591,7 +592,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
   const saveClip = async (assetId: string, name?: string): Promise<boolean> => {
     try { return (await bridge.saveAiVideo(assetId, name?.trim() || undefined)).saved } catch (reason) { setError(videoStudioErrorMessage(reason, '保存失败，请更换位置后重试')); return false }
   }
-  // 页面上好几处说「存进 AI 作品文件夹」，这里直接打开它。用的是检查页那条：路径由主进程算、过了 I8 检查才打开，这里只说要哪一个。
+  // 页面上好几处说「存入作品库」，这里直接打开它（磁盘上那个 AI 作品文件夹）。用的是检查页那条：路径由主进程算、过了 I8 检查才打开，这里只说要哪一个。
   const openFolder = async () => {
     try {
       if (!(await bridge.openDiagnosticFolder('ai-output'))) setError(diagnosticFolderUnavailableMessage)

@@ -685,7 +685,7 @@ describe('video studio project', () => {
   // 草稿里没等到结果的那段，读回来是「生成中」：打开这一条时工作台拿请求号去接（useVideoStudio 的 resumeOpenClips）。
   it('reads a draft clip still out as generating, like the film in hand after the page reopens', () => {
     const film = planned()
-    const waiting = { ...film, shots: film.shots.map((shot, index) => index === 1 ? { ...shot, requestId: 'req-1', status: 'failed' as const, error: '暂时查不到视频进度' } : shot) }
+    const waiting = { ...film, shots: film.shots.map((shot, index) => index === 1 ? { ...shot, requestId: 'req-1', status: 'failed' as const, error: '暂时无法查询视频进度' } : shot) }
     const [draft] = restoreVideoStudioDrafts(legacyDraftBox([{ id: 'a', savedAt: 1, project: waiting }]))
     expect(draft.project.shots[1]).toMatchObject({ requestId: 'req-1', status: 'generating' })
   })

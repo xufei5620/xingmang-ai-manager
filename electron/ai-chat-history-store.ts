@@ -153,7 +153,7 @@ export function createAiChatHistoryStore(options: { root: string; maxTotalBytes?
     const directory = directoryOf(input.scope)
     if (!fs.existsSync(directory) && fs.existsSync(options.root)) {
       const scopes = await readDirectoryEntries(options.root, MAX_DIRECTORY_ENTRIES, label)
-      if (scopes.length >= MAX_CHAT_HISTORY_SCOPES) throw new Error('这台电脑上保存聊天记录的账号过多，本次没有保存')
+      if (scopes.length >= MAX_CHAT_HISTORY_SCOPES) throw new Error('本机保存聊天记录的账号过多，本次未保存')
     }
     ensureSafeDataDirectory(directory, label)
     // Refuse up front anything the next read would refuse: a record that
@@ -162,10 +162,10 @@ export function createAiChatHistoryStore(options: { root: string; maxTotalBytes?
     let total = utf8Bytes(input.index) + input.put.reduce((sum, entry) => sum + utf8Bytes(entry.content), 0)
     const unchanged = input.keys.filter((key) => !written.has(key)).map(conversationFile)
     for (const size of assertSafeDataFiles(directory, unchanged, label)) {
-      if (size === null) throw new Error('聊天记录缺少已保存的对话，本次没有保存')
+      if (size === null) throw new Error('聊天记录缺少已保存的对话，本次未保存')
       total += size
     }
-    if (total > maxTotalBytes) throw new Error(`${totalLimitMessage}，本次没有保存`)
+    if (total > maxTotalBytes) throw new Error(`${totalLimitMessage}，本次未保存`)
     const setAside = new Set(input.setAside)
     if (setAside.size) await assertRoomToSetAside(directory, setAside)
     // Conversations first, index last: until the index lands, the previous
@@ -200,7 +200,7 @@ export function createAiChatHistoryStore(options: { root: string; maxTotalBytes?
       count += entries.length
       for (const entry of entries) bytes += fs.lstatSync(path.join(aside, entry.name)).size
     }
-    if (count > MAX_UNREADABLE_CHAT_FILES || bytes > maxTotalBytes) throw new Error('读不出来的聊天对话留得太多，本次没有保存')
+    if (count > MAX_UNREADABLE_CHAT_FILES || bytes > maxTotalBytes) throw new Error('无法读取的聊天对话过多，本次未保存')
   }
 
   // A rename keeps the bytes exactly as they were. The folder is checked to be a
@@ -216,12 +216,12 @@ export function createAiChatHistoryStore(options: { root: string; maxTotalBytes?
     let attempt = 0
     while (pathTaken(path.join(aside, unreadableFile(key, stamp, attempt)))) {
       attempt += 1
-      if (attempt > MAX_UNREADABLE_CHAT_FILES) throw new Error('读不出来的聊天对话没能挪走')
+      if (attempt > MAX_UNREADABLE_CHAT_FILES) throw new Error('无法读取的聊天对话未能移出')
     }
     const target = path.join(aside, unreadableFile(key, stamp, attempt))
     await renameWithTransientRetry(source, target, () => {
       ensureSafeDataDirectory(aside, label)
-      if (!assertSafeDataFile(source, label) || pathTaken(target)) throw new Error('读不出来的聊天对话没能挪走')
+      if (!assertSafeDataFile(source, label) || pathTaken(target)) throw new Error('无法读取的聊天对话未能移出')
     })
   }
 

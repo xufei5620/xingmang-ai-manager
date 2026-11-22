@@ -122,7 +122,7 @@ const bridge: VideoStudioBridge & VideoStudioPriceBridge & VideoStudioLibraryBri
   cancelAiVideo: async (requestId) => {
     record('cancel', requestId)
     const plan = plans.get(requestId)
-    if (plan) { plans.delete(requestId); plan.reject(new Error("Error invoking remote method 'video-studio:plan': Error: 已停止写分镜")); return { canceled: true, mayStillComplete: false } }
+    if (plan) { plans.delete(requestId); plan.reject(new Error("Error invoking remote method 'video-studio:plan': Error: 已停止生成分镜")); return { canceled: true, mayStillComplete: false } }
     const clip = clips.get(requestId)
     if (clip && unsent.has(requestId)) { clips.delete(requestId); clip.reject(new Error("Error invoking remote method 'video:generate': Error: 已取消视频请求")); return { canceled: true, mayStillComplete: false } }
     // 主进程的原话（electron/ai-video-service.ts）：交出去了、还没拿到任务号时是「提交结果不明确」，拿到了是「已停止等待」。
@@ -164,7 +164,7 @@ const bridge: VideoStudioBridge & VideoStudioPriceBridge & VideoStudioLibraryBri
     record('pick-music')
     const song = nextSong
     nextSong = null
-    if (song === 'unreadable') throw new Error("Error invoking remote method 'video-studio:pick-music': Error: 这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）")
+    if (song === 'unreadable') throw new Error("Error invoking remote method 'video-studio:pick-music': Error: 该歌曲无法读取，请更换配乐后重试（支持 MP3、M4A、WAV、OGG）")
     if (!song) return null
     const assetId = nextAssetId()
     library.set(assetId, await window.videoStudioHarness!.makeSong(song.seconds, song.frequency))

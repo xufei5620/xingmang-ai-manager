@@ -117,7 +117,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     const remoteGenerations = canvasRunRemoteGenerationUpperBound(input.graph, input.scope)
     if (remoteGenerations > maxRemoteGenerationsPerRun) {
       // Counted per paid request: a node set to four images is four.
-      throw new Error(`这次运行最多要生成 ${remoteGenerations} 次，一次运行最多 ${maxRemoteGenerationsPerRun} 次（一次出几张的按张数算），请分几次运行`)
+      throw new Error(`本次运行最多需生成 ${remoteGenerations} 次，单次运行上限为 ${maxRemoteGenerationsPerRun} 次（单次生成多张时按张数计算），请分多次运行`)
     }
     const lockKey = activeRunLockKey(input)
     const exclusiveNodeIds = canvasRunExclusiveNodeIds(input.graph, input.scope)
@@ -282,7 +282,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     completePreparation: async (userId: number, ownerId: number, completion: CanvasRunPreparationCompletion) => {
       const run = active.get(completion.runId)
       if (!run || run.userId !== userId || run.ownerId !== ownerId || !options.preparations) {
-        throw new Error(completion.kind === 'image' ? '这次图片处理不在等待中，可能已经超时或运行已停止' : '这一帧不在等待中，可能已经超时或运行已停止')
+        throw new Error(completion.kind === 'image' ? '本次图片处理不在等待中，可能已超时或运行已停止' : '该帧不在等待中，可能已超时或运行已停止')
       }
       await options.preparations.complete(userId, completion)
     },
