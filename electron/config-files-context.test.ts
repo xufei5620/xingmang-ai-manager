@@ -130,11 +130,11 @@ describe('config-files-context', () => {
     const original = errnoError('EACCES')
     const explained = explainConfigWriteFailure(original, [toolConfig], toolRoot, 'write', adminProbe)
     expect(explained).toBeInstanceOf(Error)
-    expect((explained as Error).message).toBe('这个工具的设置文件夹归电脑管理员所有（错误码 EACCES）')
+    expect((explained as Error).message).toBe('该工具的设置文件夹归电脑管理员所有（错误码 EACCES）')
     expect((explained as NodeJS.ErrnoException).code).toBe('EACCES')
     expect((explained as Error).cause).toBe(original)
     const readOnly = explainConfigWriteFailure(errnoError('EPERM'), [toolConfig], toolRoot, 'write', fakeProbe('win32', undefined, { [toolConfig]: { mode: 0o444, file: true } }))
-    expect((readOnly as Error).message).toBe('这个文件被设成了只读（错误码 EPERM）')
+    expect((readOnly as Error).message).toBe('该文件已被设为只读（错误码 EPERM）')
     expect(configWriteBlockerIn((readOnly as Error).message)).toBe('readOnly')
     // 别的错、查不出是哪一种的没权限，都原样交回。
     for (const other of [errnoError('EBUSY'), errnoError('ENOSPC'), new Error('配置写入计划包含重复路径')]) {
@@ -197,7 +197,7 @@ describe('config-files-context', () => {
     fs.writeFileSync(config, 'model = "old"\n')
     // 右键属性里勾上「只读」：Node 在 Windows 上把它设成 FILE_ATTRIBUTE_READONLY。
     fs.chmodSync(config, 0o444)
-    expect(() => executeFilePlans([{ path: config, content: 'model = "new"\n' }], {}, root)).toThrow(/^这个文件被设成了只读（错误码 E(PERM|ACCES)）$/)
+    expect(() => executeFilePlans([{ path: config, content: 'model = "new"\n' }], {}, root)).toThrow(/^该文件已被设为只读（错误码 E(PERM|ACCES)）$/)
     expect(fs.readFileSync(config, 'utf8')).toBe('model = "old"\n')
   })
 

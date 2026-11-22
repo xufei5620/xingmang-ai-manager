@@ -30,7 +30,7 @@ describe('diagnostic detail rows', () => {
     expect(rows).toEqual([])
   })
 
-  // 「电脑里另外设过的工具地址或密钥」正常时，那几个英文名只进导出报告（yoyo 11-06「体检改」）；
+  // 「电脑中另行设置的工具地址或密钥」正常时，那几个英文名只进导出报告（yoyo 11-06「体检改」）；
   // 代理那一行按变量名记的端口同样不上屏。
   it('keeps the environment variable names off the screen when there is nothing to do about them', () => {
     expect(diagnosticDetailRows({ reportOnlyVariables: 'OPENAI_API_KEY（Codex CLI）' })).toEqual([])

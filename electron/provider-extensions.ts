@@ -1396,16 +1396,16 @@ export function claudeMarketplaceGitMissingMessage(
   // 开发者工具其实装了，只是 Xcode 的协议还没点「同意」：说「先装命令行开发者工具」
   // 会让客户去装一份已经有的东西，装完照样失败。
   if (options.xcodeLicensePending) {
-    return `第一次安装 Claude Code 插件要先把官方插件市场下载到本机，这一步需要 Git。${xcodeLicensePendingNotice('git')}，弄好后重新打开本软件再试。`
+    return `首次安装 Claude Code 插件需先将官方插件市场下载到本机，此步骤需要 Git。${xcodeLicensePendingNotice('git')}，完成后请重新打开本软件重试。`
   }
   // 找到的只是 macOS 自带的空壳：让 CLI 去跑它只会招来苹果的安装弹窗、再失败一次，
   // 不如在这里先把原因说清楚（#346 的后续）。
   if (options.commandLineToolsShim) {
-    return `第一次安装 Claude Code 插件要先把官方插件市场下载到本机，这一步需要 Git。${commandLineToolsShimNotice('git')}，装好后重新打开本软件再试。`
+    return `首次安装 Claude Code 插件需先将官方插件市场下载到本机，此步骤需要 Git。${commandLineToolsShimNotice('git')}，安装完成后请重新打开本软件重试。`
   }
   // 分平台的安装指引在 git-runtime.ts 只写一份：首页运行环境行和检查页要说的是
   // 同一句话，两处各抄一遍早晚会说岔（#294）。
-  return `第一次安装 Claude Code 插件要先把官方插件市场下载到本机，这一步需要 Git，但这台电脑上没有找到它。${gitInstallGuidance(platform)}，装好后重新打开本软件再试。`
+  return `首次安装 Claude Code 插件需先将官方插件市场下载到本机，此步骤需要 Git，但本机未找到 Git。${gitInstallGuidance(platform)}，安装完成后请重新打开本软件重试。`
 }
 
 /** 只有真要出网的操作才需要代理：MCP 增删改的都是本地配置文件。 */
@@ -1440,15 +1440,15 @@ interface McpHealthLabel {
  * `Connected · tools fetch failed` 会被先当成 `Connected`。
  */
 const CLAUDE_MCP_HEALTH_LABELS: readonly McpHealthLabel[] = [
-  { label: 'Connected · tools fetch failed', state: 'failed', reason: '连上了，但读不到它提供的工具' },
+  { label: 'Connected · tools fetch failed', state: 'failed', reason: '已连接，但无法读取其提供的工具' },
   { label: 'Connected', state: 'connected', reason: null },
-  { label: 'Needs authentication', state: 'failed', reason: '还没登录这个服务' },
-  { label: 'Not configured', state: 'failed', reason: '这条连接没有填地址' },
+  { label: 'Needs authentication', state: 'failed', reason: '尚未登录该服务' },
+  { label: 'Not configured', state: 'failed', reason: '该连接未填写地址' },
   { label: 'Failed to connect', state: 'failed', reason: '启动失败' },
-  { label: 'Connection error', state: 'failed', reason: '连接时出错' },
-  { label: 'Pending approval', state: 'unknown', reason: '这条连接还没在工具里确认过，本次没有检测' },
-  { label: 'Rejected', state: 'failed', reason: '这条连接已被拒绝' },
-  { label: 'Disabled for this project', state: 'unknown', reason: '这条连接在当前目录下已停用，本次没有检测' },
+  { label: 'Connection error', state: 'failed', reason: '连接出错' },
+  { label: 'Pending approval', state: 'unknown', reason: '该连接尚未在工具中确认，本次未检测' },
+  { label: 'Rejected', state: 'failed', reason: '该连接已被拒绝' },
+  { label: 'Disabled for this project', state: 'unknown', reason: '该连接在当前目录下已停用，本次未检测' },
 ]
 
 /** Gemini CLI 0.60.0 把这五个词原样打在行尾。 */
@@ -1935,7 +1935,7 @@ export function createProviderSourceUpdateInspector(
         throw new UnsupportedSourceInspectionError(`未检测到可用的 Git：${xcodeLicensePendingNotice('git')}`)
       }
       if (shimState !== 'usable') {
-        throw new UnsupportedSourceInspectionError('未检测到可用的 Git：需要先装 macOS 的命令行开发者工具')
+        throw new UnsupportedSourceInspectionError('未检测到可用的 Git：需先安装 macOS 的命令行开发者工具')
       }
     }
     const runGit = async (argv: string[]) => (await runCommandImplementation(
@@ -2324,7 +2324,7 @@ export class ProviderExtensionService {
         provider,
         checkedAt,
         supported: false,
-        reason: `${cliCatalog[provider].name} 没有提供连接状态，这里只显示配置里有哪些连接。`,
+        reason: `${cliCatalog[provider].name} 未提供连接状态，此处仅显示配置中的连接。`,
         entries: [],
       }
     }
@@ -2348,7 +2348,7 @@ export class ProviderExtensionService {
         provider,
         checkedAt,
         supported: true,
-        reason: `连接状态检测没有完成：${errorDetail(error)}`,
+        reason: `连接状态检测未完成：${errorDetail(error)}`,
         entries: [],
       }
     }
@@ -2533,7 +2533,7 @@ export class ProviderExtensionService {
     // 认不出技能在哪一层时，缺省的 --scope user 会删到同名的用户级技能（#488）。
     // 停用不删文件，内置和扩展自带的技能本来就只能在用户层停用，照旧放行。
     if (!scope && input.action === 'uninstall') {
-      throw new Error('没法确定这个技能装在哪里，请刷新列表后再试。')
+      throw new Error('无法确定该技能的安装位置，请刷新列表后重试。')
     }
     return { name: safeIdentifier(item.name, 'Skill 名称'), scope }
   }
@@ -2571,7 +2571,7 @@ export class ProviderExtensionService {
       }
       const sourceDirectory = resolveSkillImportSource(input.source ?? '')
       const root = ownSkillRoot(provider, this.homeDirectory, repositoryRoot, input.scope ?? 'user')
-      if (!root) throw new Error('这一项属于某个项目，请先在工作目录里选好这个项目再操作。')
+      if (!root) throw new Error('该项属于某个项目，请先选择该项目的文件夹后再操作。')
       copySkillImport(sourceDirectory, root, skillImportTarget(sourceDirectory, root))
     } else if (input.action === 'uninstall') {
       if (!input.id || !path.isAbsolute(input.id)) throw new Error('Skill 路径必须是绝对路径')
@@ -2601,7 +2601,7 @@ export class ProviderExtensionService {
       return mcpCopyConfig('claude', Object.hasOwn(servers, id) ? servers[id] : undefined)
     }
     if (provider === 'codex') return mcpCopyConfig('codex', readCodexMcpServerEntries(path.join(this.codexHome, 'config.toml')).get(id))
-    throw new Error('这个工具的连接星芒读不全，请在要装的工具里手动添加。')
+    throw new Error('星芒无法完整读取该工具的连接，请在目标工具中手动添加。')
   }
 
   async mutate(input: ProviderExtensionMutation): Promise<ProviderExtensionsSnapshot> {
@@ -2625,7 +2625,7 @@ export class ProviderExtensionService {
     // 不在项目目录里跑，CLI 会改错地方或者直接报找不到（#488）。Grok 的连接写的是
     // 命令所在目录的 .grok/config.toml，以前不带目录，就写进了星芒自己的启动目录（#1092）。
     if (projectBound && scope && scope !== 'user' && !repositoryRoot) {
-      throw new Error('这一项属于某个项目，请先在工作目录里选好这个项目再操作。')
+      throw new Error('该项属于某个项目，请先选择该项目的文件夹后再操作。')
     }
     try {
       if (input.provider === 'claude' && input.kind === 'plugin' && input.action === 'install') {

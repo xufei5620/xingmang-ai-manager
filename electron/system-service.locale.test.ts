@@ -309,8 +309,8 @@ describe('system-service Codex Desktop locale workflow', () => {
   })
 
   it.each([
-    { resources: false, installed: true, error: '没有本地简体中文资源' },
-    { resources: true, installed: false, error: '未检测到 Codex Desktop' },
+    { resources: false, installed: true, error: '缺少简体中文资源' },
+    { resources: true, installed: false, error: '未检测到 Codex 桌面端' },
   ])('does not save a preference when the local installation cannot support it: %j', async ({ error, ...options }) => {
     const fixture = createFixture(options)
 

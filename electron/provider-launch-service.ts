@@ -435,7 +435,7 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     if (!canLaunchManagedProvider(nativeConfig)) {
       throw new Error(managedProviderLaunchBlockedMessage(provider))
     }
-    assertWorkspaceDirectory(workspace, platform, '工作目录不存在，请重新选择')
+    assertWorkspaceDirectory(workspace, platform, '项目文件夹不存在，请重新选择')
     // 从星芒打开的窗口读的是现在的配置：之前标的「需重开生效」说的不是它了（C19 另按「开着」算 Gemini）。
     toolLaunchedAt.set(provider, Date.now())
     toolRouteRestartPending.delete(provider)
@@ -804,11 +804,11 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     target: RendererMessageTarget,
   ): Promise<CodexWorkspacePermissionWriteResult & { restarted: boolean }> {
     const workspace = store.read().workspace
-    if (!path.isAbsolute(workspace)) throw new Error('Codex 工作目录不是绝对路径')
+    if (!path.isAbsolute(workspace)) throw new Error('Codex 的项目文件夹路径无效')
     try {
-      if (!fs.statSync(workspace).isDirectory()) throw new Error('工作目录不是文件夹')
+      if (!fs.statSync(workspace).isDirectory()) throw new Error('所选项目文件夹不是文件夹')
     } catch {
-      throw new Error('Codex 工作目录不存在，请重新选择')
+      throw new Error('Codex 的项目文件夹不存在，请重新选择')
     }
     // 客户点的按钮，等保存做完再写，不像打开前那几样排不上就算了；重开桌面端放在队外（它自己还要排队）。
     const result = await serializeConfigWrite(async () => trustCodexWorkspace(providerRoots, workspace))
@@ -836,9 +836,9 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     if (locale !== 'zh-CN' && locale !== 'system') throw new Error('Codex Desktop 语言选项无效')
     const before = await inspectCodexDesktopLocale()
     if (before.error) throw new Error(before.error)
-    if (!before.installed) throw new Error('未检测到 Codex Desktop，请先安装后重新检测')
+    if (!before.installed) throw new Error('未检测到 Codex 桌面端，请先安装后重新检测')
     if (locale === 'zh-CN' && !before.chineseResources.available) {
-      throw new Error('当前 Codex Desktop 安装包没有本地简体中文资源，请先通过镜像更新 Codex Desktop')
+      throw new Error('当前安装的 Codex 桌面端缺少简体中文资源，请先在首页更新 Codex 桌面端')
     }
     const changed = codexDesktopLocaleNeedsChange(before.configuredLocale, locale)
     if (changed) await serializeConfigWrite(() => writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, locale))
@@ -855,7 +855,7 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     }
     const after = await inspectCodexDesktopLocale()
     if (codexDesktopLocaleNeedsChange(after.configuredLocale, locale)) {
-      throw new Error('语言设置保存后未通过回读检查，请重新尝试')
+      throw new Error('语言设置保存后校验未通过，请重试')
     }
     const runtimeVerified = locale === 'zh-CN' && launchResult?.chineseLocale?.status === 'verified'
     const warning = locale === 'zh-CN' && launchResult && !runtimeVerified

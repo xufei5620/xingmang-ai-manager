@@ -7,11 +7,11 @@ import type { RunningToolsReport } from './running-tools'
 function check(
   ok: boolean,
   layer: ConnectionCheckLayer,
-  summary = '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号',
+  summary = '密钥被拒绝（HTTP 401），可能已被吊销或属于其他账号',
   extras: { status?: number, detail?: string } = {},
 ): ConnectionCheckResult {
   return {
-    provider: 'claude', siteId: 'solov', ok, layer, summary, nextStep: '先重新登录，再在首页重新写入一次密钥',
+    provider: 'claude', siteId: 'solov', ok, layer, summary, nextStep: '请先重新登录，再在首页重新写入密钥',
     endpoint: null, model: null, detail: extras.detail ?? null, status: extras.status ?? (ok ? 200 : 401), durationMs: 1, checkedAt: '2026-09-22T00:00:00.000Z',
   }
 }
@@ -72,18 +72,18 @@ describe('switchAccountSource', () => {
   })
 
   it('does not blame the key or roll back when the check says the service is unavailable', async () => {
-    const { deps, steps } = dependencies({ checkConnection: async () => check(false, 'service', '服务暂时不可用（HTTP 522），多半在维护或线路繁忙', { status: 522 }) })
+    const { deps, steps } = dependencies({ checkConnection: async () => check(false, 'service', '服务暂时不可用（HTTP 522），可能正在维护或线路繁忙', { status: 522 }) })
     const result = await switchAccountSource(deps, 'claude', 'account')
     expect(steps).toEqual(['backup:claude', 'write:account'])
     expect(result.verified).toBe(false)
-    expect(result.message).toContain('服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。')
+    expect(result.message).toContain('服务暂时不可用（维护或线路繁忙），您无需做任何改动，请稍后重试。')
     expect(result.message).not.toContain('密钥')
   })
 
   it('leaves the config alone when the service is unavailable while the key is being issued', async () => {
     const { deps, steps } = dependencies({ writeAccountConfig: async () => { throw new AccountSourceServiceUnavailableError() } })
     await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow(
-      '改用当前账号未完成：服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。原配置未改动。',
+      '改用当前账号未完成：服务暂时不可用（维护或线路繁忙），您无需做任何改动，请稍后重试。原配置未改动。',
     )
     expect(steps).toEqual(['backup:codex'])
   })
@@ -96,12 +96,12 @@ describe('switchAccountSource', () => {
 
   it('keeps the switch and passes on the quota advice when the quota ran out', async () => {
     const { deps, steps } = dependencies({ checkConnection: async () => ({
-      ...check(false, 'quota', 'Codex 的额度用完了（HTTP 401），这是给这个工具设的上限', { status: 401, detail: '该令牌额度已用尽' }),
-      nextStep: '到「个人中心 › 密钥管理」的「每个工具的额度上限」里调高这个工具的额度，调好后再自检一次',
+      ...check(false, 'quota', 'Codex 的额度已用完（HTTP 401），这是为该工具设置的上限', { status: 401, detail: '该令牌额度已用尽' }),
+      nextStep: '请在「个人中心 › 密钥管理」的「每个工具的额度上限」中调高该工具的额度，再重新自检',
     }) })
     const result = await switchAccountSource(deps, 'codex', 'account')
     expect(steps).not.toContain('restore:backup-1')
-    expect(result.message).toContain('但Codex 的额度用完了（HTTP 401），这是给这个工具设的上限。到「个人中心 › 密钥管理」的「每个工具的额度上限」里调高这个工具的额度')
+    expect(result.message).toContain('但Codex 的额度已用完（HTTP 401），这是为该工具设置的上限。请在「个人中心 › 密钥管理」的「每个工具的额度上限」中调高该工具的额度')
     expect(result.message).not.toContain('密钥被拒绝')
   })
 

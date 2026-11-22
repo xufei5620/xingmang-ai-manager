@@ -321,7 +321,7 @@ describe('a proxy that asks for a user name and password', () => {
   })
 
   it('does not send the user to a proxy app that is already running', () => {
-    expect(proxyAuthRequiredMessage).toBe('电脑设置的代理要账号密码，星芒现在用不了它，请联系管理员或换个网络。')
+    expect(proxyAuthRequiredMessage).toBe('电脑设置的代理需要账号密码，星芒暂时无法使用该代理，请联系管理员或更换网络。')
     expect(proxyAuthRequiredMessage).not.toMatch(/代理软件|加速|solov|sub2api|new-api|http|ERR_/i)
   })
 })

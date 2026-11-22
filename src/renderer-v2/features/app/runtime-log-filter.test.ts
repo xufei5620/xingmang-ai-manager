@@ -182,8 +182,8 @@ describe('runtimeLogArea', () => {
 
 describe('runtimeLogDisplayMessage', () => {
   it('drops the bracketed repeat after a plain network message', () => {
-    expect(runtimeLogDisplayMessage('星芒账号余额查询失败：连接账号服务超时，请检查网络后再试。（账号余额查询请求超时）'))
-      .toBe('星芒账号余额查询失败：连接账号服务超时，请检查网络后再试。')
+    expect(runtimeLogDisplayMessage('星芒账号余额查询失败：连接账号服务超时，请检查网络后重试。（账号余额查询请求超时）'))
+      .toBe('星芒账号余额查询失败：连接账号服务超时，请检查网络后重试。')
   })
 
   it('leaves other messages untouched', () => {

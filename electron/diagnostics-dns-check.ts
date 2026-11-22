@@ -1,4 +1,4 @@
-// 一键检测里「查网址的服务（DNS）」这一项：用电脑自己的 DNS 查一遍当前账号两条线路的地址，再拿国内两家公共 DNS
+// 一键检测里「域名解析服务（DNS）」这一项：用电脑自己的 DNS 查一遍当前账号两条线路的地址，再拿国内两家公共 DNS
 // 查的结果对一下，看电脑的 DNS 有没有把星芒的地址查错、查不到。首页那句「把 DNS 改成 223.5.5.5 和 119.29.29.29」
 // 只在两条线路都连不上时才出（tool-route-controller.ts 的 hijack），检查页里一直查不出来；10-25 客户 Mac 只用
 // 114.114.114.114，它时好时坏地把两条线路都指到一台发自签证书的机器上，客户点「检查」看到的全是绿的。
@@ -72,25 +72,25 @@ export function dnsLineLegitimateAddresses(siteId: string, line: RelayEndpointId
   return siteId === 'solov' ? toolRouteLegitimateAddresses(line, status) : null
 }
 
-const dnsSettingsAdvice = '把电脑的 DNS 改成 223.5.5.5 和 119.29.29.29'
+const dnsSettingsAdvice = '将电脑的 DNS 改为 223.5.5.5 和 119.29.29.29'
 
 export const dnsCheckSummaries = {
-  ok: '电脑的 DNS 查星芒的地址是对的',
-  proxy: '查网址这一步交给了代理软件，这一项不用管',
-  unknown: '这次没查出 DNS 对不对，稍后点「重新检查」再看一次',
-  wrong: `你这台电脑用的 DNS 把星芒的地址查错了，AI 工具会连不上。${dnsSettingsAdvice}，或者换个网络（比如手机热点）再试。`,
-  missing: `你这台电脑用的 DNS 查不到星芒的地址，AI 工具会连不上。${dnsSettingsAdvice}，或者换个网络（比如手机热点）再试。`,
+  ok: '电脑的 DNS 解析星芒地址正确',
+  proxy: '域名解析已交由代理软件处理，此项无需处理',
+  unknown: '本次未能确认 DNS 是否正确，请稍后点击「重新检查」',
+  wrong: `本机使用的 DNS 将星芒地址解析错误，AI 工具将无法连接。请${dnsSettingsAdvice}，或更换网络（如手机热点）后重试。`,
+  missing: `本机使用的 DNS 无法解析星芒地址，AI 工具将无法连接。请${dnsSettingsAdvice}，或更换网络（如手机热点）后重试。`,
 } as const
 
 /** 改 DNS 的入口每个系统都不一样；Windows、Mac 配着「打开网络设置」那颗按钮说。 */
 export function dnsSettingsGuidance(platform: NodeJS.Platform): string {
   if (platform === 'win32') {
-    return '改法：点「打开网络设置」，点正在用的 WLAN 或以太网，找到「DNS 服务器分配」（Windows 10 在「IP 设置」里），点「编辑」，选「手动」，打开 IPv4，首选 DNS 填 223.5.5.5，备用 DNS 填 119.29.29.29，保存。'
+    return '修改方法：点击「打开网络设置」，选择正在使用的 WLAN 或以太网，找到「DNS 服务器分配」（Windows 10 位于「IP 设置」中），点击「编辑」，选择「手动」，开启 IPv4，首选 DNS 填写 223.5.5.5，备用 DNS 填写 119.29.29.29，然后保存。'
   }
   if (platform === 'darwin') {
-    return '改法：点「打开网络设置」，点正在用的 Wi-Fi 或以太网，再点「详细信息」里的「DNS」，用左下角的「+」加上 223.5.5.5 和 119.29.29.29，点「好」。'
+    return '修改方法：点击「打开网络设置」，选择正在使用的 Wi-Fi 或以太网，点击「详细信息」中的「DNS」，使用左下角的「+」添加 223.5.5.5 和 119.29.29.29，然后点击「好」。'
   }
-  return '改法：打开系统设置里的「网络」，在正在用的连接里把 DNS 改成 223.5.5.5 和 119.29.29.29。'
+  return '修改方法：打开系统设置中的「网络」，在正在使用的连接中将 DNS 改为 223.5.5.5 和 119.29.29.29。'
 }
 
 /** 「打开网络设置」只有 Windows、Mac 有（proxy-bypass.ts 的 networkSettingsTarget）。 */
@@ -132,17 +132,17 @@ export function dnsCheckOutcome(input: {
     const goodLine = good.includes(otherLine(badLine)) ? otherLine(badLine) : good[0]
     const badName = relayLineNames[badLine]
     const goodName = relayLineNames[goodLine]
-    const phrase = verdicts[badLine] === 'wrong' ? `把星芒${badName}的地址查错了` : `查不到星芒${badName}的地址`
-    const lead = `你这台电脑用的 DNS ${phrase}，${goodName}是对的`
+    const phrase = verdicts[badLine] === 'wrong' ? `将星芒${badName}的地址解析错误` : `无法解析星芒${badName}的地址`
+    const lead = `本机使用的 DNS ${phrase}，${goodName}解析正确`
     if (!route || route.automatic) {
-      return { state: 'pass', summary: `${lead}，星芒会自动用${goodName}，不影响使用。想彻底解决，${dnsSettingsAdvice}。`, details }
+      return { state: 'pass', summary: `${lead}，星芒将自动使用${goodName}，不影响使用。如需彻底解决，请${dnsSettingsAdvice}。`, details }
     }
     if (route.line !== badLine) {
-      return { state: 'pass', summary: `${lead}。你选的是「只用${goodName}」，不影响使用。`, details }
+      return { state: 'pass', summary: `${lead}。您选择了「只用${goodName}」，不影响使用。`, details }
     }
     return {
       state: 'warn',
-      summary: `${lead}。你选的是「只用${badName}」，AI 工具会连不上：点「去处理」改成「自动」，或者${dnsSettingsAdvice}。${dnsSettingsGuidance(platform)}`,
+      summary: `${lead}。您选择了「只用${badName}」，AI 工具将无法连接：请点击「去处理」改为「自动」，或${dnsSettingsAdvice}。${dnsSettingsGuidance(platform)}`,
       details: { ...details, ...dnsSettingsFix(platform), reroute: 'auto' },
     }
   }
@@ -193,7 +193,7 @@ export async function lookupWithPublicDns(host: string): Promise<string[]> {
 }
 
 export function buildDnsChecks(context: DiagnosticsContext): CheckDefinition[] {
-  // 查的是工具配置那个站的两条线路、按工具那条线路的设置下结论：AI 工具连的就是它（同「别的代理软件」）。
+  // 查的是工具配置那个站的两条线路、按工具那条线路的设置下结论：AI 工具连的就是它（同「其他代理软件」）。
   const { dependencies, toolSite, toolRoute, platform, log } = context
   const lookupSystem = dependencies.lookupHost
   const lookupPublic = dependencies.lookupHostWithPublicDns
@@ -201,7 +201,7 @@ export function buildDnsChecks(context: DiagnosticsContext): CheckDefinition[] {
   if (!lookupSystem || !lookupPublic) return []
   return [{
     code: 'RELAY_DNS',
-    title: '查网址的服务（DNS）',
+    title: '域名解析服务（DNS）',
     timeoutOutcome: { state: 'pass', summary: dnsCheckSummaries.unknown, details: { timedOut: true } },
     run: async (): Promise<CheckOutcome> => {
       const endpoints = relaySiteEndpointChoices(toolSite.id)

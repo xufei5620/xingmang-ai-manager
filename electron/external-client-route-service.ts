@@ -61,7 +61,7 @@ import type { ServiceContext } from './system-service-context'
  * OpenCode 的配置位置跟着 XDG_CONFIG_HOME 走，这个设置不是完整路径时找不到它（0.2.24 深查决定单 D62 第 4 条的原字）。
  * WorkBuddy 的配置在主目录下的 .workbuddy 里，不看这个设置，所以只拦 OpenCode。
  */
-const relativeXdgConfigHomeMessage = '你电脑上的 XDG_CONFIG_HOME 设置不是完整路径，OpenCode 的配置位置找不到。把它改成以 / 开头的完整路径，或者删掉这个设置再试。'
+const relativeXdgConfigHomeMessage = '本机的 XDG_CONFIG_HOME 设置不是完整路径，无法确定 OpenCode 的配置位置。请将其改为以 / 开头的完整路径，或删除该设置后重试。'
 
 /** 读不出来的安装记录进运行日志时的那几项：原因里万一带着主目录，按主目录脱敏。 */
 export function buildExternalClientRegistryLogDetail(failures: ExternalClientRegistryFailure[], userHome: string) {
@@ -520,7 +520,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   async function assertAutomaticTarget(tool: ExternalToolId, status: ExternalClientRuntimeStatus | undefined): Promise<void> {
     // WorkBuddy 开着也写：它盯着 models.json，改了自己就同步（2026-11-18 拆安装包核实）。另两家开着时不碰。
     const described = status?.installed && (!status.running || tool === 'workbuddy') && !status.detectionError ? await describeExternalClient(status) : null
-    if (!described?.pristine) throw new Error(`${externalClientNames[tool]} 已经有配置了或者正开着，这次没有自动连接`)
+    if (!described?.pristine) throw new Error(`${externalClientNames[tool]} 已有配置或正在运行，本次未自动连接`)
   }
   function configureExternalTool(
     tool: ExternalToolId,
@@ -594,8 +594,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.codex, apiKey, keySource)
       const connection = await verifySavedExternalClient(tool, latestExternalClients?.find((entry) => entry.tool === tool))
       return { tool, model, path: result.path, files: result.files, backups: result.backups, outcome: 'configured',
-        message: tool === 'workbuddy' ? '配置已写入 WorkBuddy 桌面端。重新进入“设置 → 模型”选择此模型；列表未刷新时请重启 WorkBuddy。'
-          : '已经连好了。关掉 OpenCode 再打开就能用；要是你在某个项目里单独给 OpenCode 配过模型，那个项目里以你自己配的为准。',
+        message: tool === 'workbuddy' ? '配置已写入 WorkBuddy 桌面端。请重新进入「设置 → 模型」选择该模型；如列表未刷新，请重启 WorkBuddy。'
+          : '已连接完成。请关闭 OpenCode 后重新打开即可使用；如您在某个项目中单独为 OpenCode 配置过模型，该项目以您自己的配置为准。',
         restartRequired: tool === 'opencode',
         connectionVerified: connection?.ok === true, connection }
     }
@@ -704,13 +704,13 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       const { activeSite, owner, baseUrl, belongsToCurrentAccount, ownedOnRoute } = externalClientContext(tool)
       const status = (await externalClientRuntime.scan()).find((entry) => entry.tool === tool)
       assertBeforeWrite?.()
-      if (!status?.installed) throw new Error(`还没有检测到 ${externalClientNames[tool]}`)
+      if (!status?.installed) throw new Error(`尚未检测到 ${externalClientNames[tool]}`)
       const gateway = await claudeDesktopConfig(status, assertBeforeWrite)
       if (target === 'official') {
         const result = await gateway.useOfficialLogin(belongsToCurrentAccount)
         runtimeLog?.log('info', 'config', 'external-client.source-switched', 'Claude Desktop 已切回官方登录', { target, running: status.running })
         return { tool, target, outcome: 'switched', backups: result.backups,
-          message: '已切回官方账号，原来的配置已备份。下次打开 Claude Desktop 时用你自己的 Claude 账号登录；现在开着的话，要完全退出再打开。用星芒时的聊天记录不会删，切回当前账号还能看到。' }
+          message: '已切回官方账号，原配置已备份。下次打开 Claude Desktop 时请使用您自己的 Claude 账号登录；如 Claude Desktop 正在运行，请完全退出后重新打开。使用星芒期间的聊天记录不会删除，切回当前账号后仍可查看。' }
       }
       const routes = relaySiteProviderBaseUrlVariants(activeSite.id, 'claude')
       const result = await gateway.useGatewayLogin(baseUrl, ownedOnRoute, routes.map((route) => route.baseUrl))
@@ -733,7 +733,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
         }
       }
       return { tool, target, outcome: 'switched', backups: result.backups,
-        message: '已改用当前账号，原来的配置已备份。Claude Desktop 现在开着的话，要完全退出再打开才会换过来。' }
+        message: '已改用当前账号，原配置已备份。如 Claude Desktop 正在运行，请完全退出后重新打开以生效。' }
     }
     return queueExternalConfigWork(work)
   }

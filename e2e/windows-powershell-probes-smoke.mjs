@@ -193,7 +193,7 @@ const checks = [
       const probe = combined ? parseCodexDesktopCombinedProbeJson(output).packageProbe : parseCodexDesktopPackageProbeJson(output)
       if (expect === 'error') {
         assert.equal(probe.confirmedAbsent, false, label)
-        assert.match(String(probe.error), /^读不到这台电脑上 Codex 桌面端的安装信息/, label)
+        assert.match(String(probe.error), /^无法读取本机 Codex 桌面端的安装信息/, label)
       } else if (expect === 'installed') {
         assert.equal(probe.value?.version, '26.1103.4239.0', `${label}: ${output}`)
         assert.equal(probe.value?.packageFamilyName, 'OpenAI.Codex_2p2nqsd0c76g0', label)

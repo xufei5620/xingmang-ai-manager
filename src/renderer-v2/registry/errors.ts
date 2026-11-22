@@ -53,7 +53,7 @@ export const errors = {
   claudeDesktopInstallFailed: { title: 'Claude Desktop 安装未成功', body: '请先点击「重试」；如仍失败，请点击「下载离线安装包」，安装完成后回到星芒点击「重新检测」。', actions: ['重试', '下载离线安装包', '前往 Claude 官网', '查看日志', '联系客服'] },
   macDesktopTooOld: { title: '此 Mac 无法安装该桌面端', body: '请将 macOS 更新至下方提示中的版本后，再回到星芒点击「安装」。', actions: ['查看日志', '联系客服'] },
   macDesktopInstallFailed: { title: '桌面端安装未成功', body: '请先按下方提示操作；如仍失败，请点击「查看安装指南」，按教程从官网下载安装。', actions: ['重试', '查看安装指南', '查看日志', '联系客服'] },
-  codexDesktopKnownIssue: { title: 'Codex 当前版本无法打开', body: '这是 Codex 当前版本自身的问题，与星芒无关，微软商店发布新版后将自动恢复。如需立即使用，请点击「改用 Codex 命令行版」。', actions: ['重试', '改用 Codex 命令行版', '联系客服'] },
+  codexDesktopKnownIssue: { title: 'Codex 当前版本无法打开', body: '这是 Codex 当前版本自身的问题，与星芒无关，微软商店发布新版后将自动恢复。如需立即使用，请点击「改用 Codex CLI」。', actions: ['重试', '改用 Codex CLI', '联系客服'] },
   // 主进程 codex-desktop-known-issues.ts 的 codexDesktopActivationBrokenMarker：Windows 激活接口说没装、包却装着。
   // 重装、重置都救不了，重启才好，所以「立即重启」排第一、不给「重置 Codex」。yoyo 2026-11-21 批的字（「重启框改」）。
   codexDesktopActivationBroken: { title: 'Codex 未能启动', body: 'Codex 桌面端已安装，但 Windows 未能启动它。请保存当前工作后点击「立即重启」，重启后返回星芒重新打开；重新安装或重置通常无法解决此问题。如重启后仍无法打开，请点击「联系客服」并将下方提示发送给客服。', actions: ['立即重启', '重试', '联系客服'] },

@@ -147,7 +147,7 @@ describe('external client system-service integration', () => {
 
   it('stops only OpenCode on a relative XDG_CONFIG_HOME and tells the customer how to fix it', async () => {
     // 决定单 D62 第 4 条的原字。WorkBuddy 的配置在主目录下的 .workbuddy 里，不看这个设置，照常能连。
-    const message = '你电脑上的 XDG_CONFIG_HOME 设置不是完整路径，OpenCode 的配置位置找不到。把它改成以 / 开头的完整路径，或者删掉这个设置再试。'
+    const message = '本机的 XDG_CONFIG_HOME 设置不是完整路径，无法确定 OpenCode 的配置位置。请将其改为以 / 开头的完整路径，或删除该设置后重试。'
     const f = fixture()
     vi.spyOn(os, 'homedir').mockReturnValue(f.userHome)
     vi.stubEnv('XDG_CONFIG_HOME', 'relative-config')
@@ -168,9 +168,9 @@ describe('external client system-service integration', () => {
     // 决定单 D62 第 1、2 条的原字：Claude Desktop 那句下面紧跟着「连接自检」，不再说「尚未验证」。
     const f = fixture()
     const opencode = await f.service.configureExternalTool('opencode', { apiKey: selectedKey, model: selectedModel })
-    expect(opencode.message).toBe('已经连好了。关掉 OpenCode 再打开就能用；要是你在某个项目里单独给 OpenCode 配过模型，那个项目里以你自己配的为准。')
+    expect(opencode.message).toBe('已连接完成。请关闭 OpenCode 后重新打开即可使用；如您在某个项目中单独为 OpenCode 配置过模型，该项目以您自己的配置为准。')
     const desktop = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
-    expect(desktop.message).toBe('已经写进 Claude Desktop。把它完全退出，再从这里点「打开」就生效。')
+    expect(desktop.message).toBe('已写入 Claude Desktop。请完全退出 Claude Desktop，再从此处点击「打开」即可生效。')
   })
 
   it('self-checks an installed client with the key read back off its own config file', async () => {
@@ -244,7 +244,7 @@ describe('external client system-service integration', () => {
       await expect(automatic()).resolves.toMatchObject({ tool, model: selectedModel, outcome: 'configured' })
     } else {
       // 开着：等它退出再说，这次一个字不写（D7）。
-      await expect(automatic()).rejects.toThrow('这次没有自动连接')
+      await expect(automatic()).rejects.toThrow('本次未自动连接')
       expect(targetFiles(f.userHome)).toEqual([])
       runtimeStatus.running = false
       await expect(automatic()).resolves.toMatchObject({ tool, model: selectedModel, outcome: 'configured' })
@@ -253,7 +253,7 @@ describe('external client system-service integration', () => {
     expect(written.length).toBeGreaterThan(0)
     const before = new Map(written.map((file) => [file, fs.readFileSync(file, 'utf8')]))
     // 已经有配置了：自动那一次不再写，哪怕又排到了一次。
-    await expect(automatic()).rejects.toThrow('这次没有自动连接')
+    await expect(automatic()).rejects.toThrow('本次未自动连接')
     for (const [file, content] of before) expect(fs.readFileSync(file, 'utf8'), file).toBe(content)
     // 客户自己在配置窗口里点的保存照旧能写。
     await expect(f.service.configureExternalTool(tool, { apiKey: selectedKey, model: selectedModel })).resolves.toMatchObject({ tool, outcome: 'configured' })
@@ -270,7 +270,7 @@ describe('external client system-service integration', () => {
     fs.writeFileSync(file, '[]\n', 'utf8')
     expect(await read()).toMatchObject({ configured: false, configurationSource: 'missing' })
     expect(await read()).not.toHaveProperty('pristine')
-    await expect(automatic()).rejects.toThrow('这次没有自动连接')
+    await expect(automatic()).rejects.toThrow('本次未自动连接')
     expect(fs.readFileSync(file, 'utf8')).toBe('[]\n')
     // 换一个账号登录：这个账号还没替它写过。
     f.setUser(18)
@@ -591,7 +591,7 @@ describe('external client system-service integration', () => {
 
     const official = await f.service.switchExternalClientSource('claudeDesktop', 'official')
     expect(official).toMatchObject({ tool: 'claudeDesktop', target: 'official', outcome: 'switched' })
-    expect(official.outcome === 'switched' && official.message).toContain('用你自己的 Claude 账号登录')
+    expect(official.outcome === 'switched' && official.message).toContain('请使用您自己的 Claude 账号登录')
     expect(JSON.parse(fs.readFileSync(desktopPath, 'utf8'))).toEqual({ deploymentMode: '1p' })
     expect(fs.readFileSync(saved.path, 'utf8')).toBe(profile)
     const status = (await f.service.scanExternalClients()).find((entry) => entry.tool === 'claudeDesktop')

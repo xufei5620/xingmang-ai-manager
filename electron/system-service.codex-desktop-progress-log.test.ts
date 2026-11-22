@@ -27,7 +27,7 @@ describe('codexDesktopProgressLogKey', () => {
 
   it('keeps different steps and phases apart', () => {
     const download = codexDesktopProgressLogKey({ phase: 'downloading', percent: 0, message: '正在从国内镜像下载 Codex 桌面端 1.0（0%）' })
-    expect(codexDesktopProgressLogKey({ phase: 'validating', percent: null, message: '正在检查下载下来的安装包是不是完整的官方版' })).not.toBe(download)
+    expect(codexDesktopProgressLogKey({ phase: 'validating', percent: null, message: '正在校验下载的安装包是否为完整的官方版本' })).not.toBe(download)
     expect(codexDesktopProgressLogKey({ phase: 'installing', percent: 0, message: '正在从国内镜像下载 Codex 桌面端 1.0（0%）' })).not.toBe(download)
   })
 })
@@ -40,7 +40,7 @@ describe('withCodexDesktopProgressLog', () => {
     const steps: CodexDesktopInstallProgress[] = [
       { phase: 'downloading', percent: 0, message: '正在下载 Codex 桌面端 1.0（0%）' },
       { phase: 'downloading', percent: 40, message: '正在下载 Codex 桌面端 1.0（40%）' },
-      { phase: 'validating', percent: null, message: '正在检查下载下来的安装包是不是完整的官方版' },
+      { phase: 'validating', percent: null, message: '正在校验下载的安装包是否为完整的官方版本' },
       { phase: 'completed', percent: 100, message: 'Codex 桌面端 1.0 装好了' },
     ]
     for (const step of steps) target.send('desktop:codex-install-progress', step)
@@ -49,7 +49,7 @@ describe('withCodexDesktopProgressLog', () => {
     expect(recording.sent.map((entry) => entry.payload)).toEqual([...steps, { provider: 'codex', state: 'output', message: 'other channel' }])
     expect(logged.map((entry) => entry.message)).toEqual([
       '正在下载 Codex 桌面端 1.0（0%）',
-      '正在检查下载下来的安装包是不是完整的官方版',
+      '正在校验下载的安装包是否为完整的官方版本',
       'Codex 桌面端 1.0 装好了',
     ])
   })

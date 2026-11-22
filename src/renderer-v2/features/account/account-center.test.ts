@@ -413,7 +413,7 @@ describe('passwordChangeFailure', () => {
 
   it('hands every other failure on untouched', () => {
     const wrong = new Error("Error invoking remote method 'account:change-password': Error: 原密码错误")
-    const timeout = new Error('连接账号服务超时，请检查网络后再试。')
+    const timeout = new Error('连接账号服务超时，请检查网络后重试。')
     expect(passwordChangeFailure(wrong)).toBe(wrong)
     expect(passwordChangeFailure(timeout)).toBe(timeout)
     const longer = new Error(`前面还有话${passwordChangeUnconfirmedMessage}`)

@@ -200,7 +200,7 @@ describe('official credential service', () => {
       const logged: string[] = []
       const { store, userHome, roots, service } = createService({ runtimeLog: { log: (_level, _source, event) => { logged.push(event) } } })
       saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'merge', roots, {}, providerBaseUrls)
-      await expect(service.answerClaudeCommandConfirmation('ask')).rejects.toThrow('Claude Code 现在没在用官方账号，这次没有改。')
+      await expect(service.answerClaudeCommandConfirmation('ask')).rejects.toThrow('Claude Code 当前未使用官方账号，本次未修改。')
       expect(store.read()).not.toHaveProperty('claudeCommandConfirmationAnswered')
 
       legacyOfficialClaude(userHome)

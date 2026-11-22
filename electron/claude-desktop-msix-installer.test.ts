@@ -191,8 +191,8 @@ describe('Claude Desktop official MSIX identity', () => {
 describe('Claude Desktop official MSIX progress', () => {
   it('words the download the way the approved interface text does, without jargon', () => {
     expect(describeClaudeDesktopMsixDownload(false, { percent: 3 })).toBe('正在从 Claude 官网下载离线安装包（3%）')
-    expect(describeClaudeDesktopMsixDownload(true, { percent: 3 })).toBe('系统自带的安装组件这次没装上，正在从 Claude 官网下载离线安装包（3%）')
-    expect(describeClaudeDesktopMsixDownload(true, { percent: 40, resuming: true })).toBe('网络断了一下，正在接着从 Claude 官网下载离线安装包（已下 40%）')
+    expect(describeClaudeDesktopMsixDownload(true, { percent: 3 })).toBe('系统自带的安装组件安装失败，正在从 Claude 官网下载离线安装包（3%）')
+    expect(describeClaudeDesktopMsixDownload(true, { percent: 40, resuming: true })).toBe('网络曾短暂中断，正在继续从 Claude 官网下载离线安装包（已下载 40%）')
     for (const wingetTried of [false, true]) {
       expect(describeClaudeDesktopMsixDownload(wingetTried, { percent: 1 })).not.toMatch(/MSIX|winget|SHA|HTTP|Appx/i)
     }
@@ -226,7 +226,7 @@ describe('Claude Desktop official MSIX installation', () => {
     const messages = f.progress.map((event) => event.message)
     expect(messages[0]).toBe('正在从 Claude 官网下载离线安装包（0%）')
     expect(messages).toContain('正在从 Claude 官网下载离线安装包（100%）')
-    expect(messages.slice(-2)).toEqual(['正在检查下载下来的安装包是不是完整的官方版', '正在安装 Claude Desktop 1.1.2345.0'])
+    expect(messages.slice(-2)).toEqual(['正在校验下载的安装包是否为完整的官方版本', '正在安装 Claude Desktop 1.1.2345.0'])
     expect(f.progress.at(-1)).toMatchObject({ phase: 'installing', percent: null })
   })
 
@@ -234,8 +234,8 @@ describe('Claude Desktop official MSIX installation', () => {
     const f = await fixture({ wingetTried: true })
     f.installPackage.mockImplementation(async (_file, options) => { options.onElevationRequired?.() })
     await installClaudeDesktopFromOfficial(f.options)
-    expect(f.progress[0].message).toBe('系统自带的安装组件这次没装上，正在从 Claude 官网下载离线安装包（0%）')
-    expect(f.progress.at(-1)?.message).toBe('接下来 Windows 会弹出授权窗口，上面写的是「Windows PowerShell」，这是星芒在调用系统自带的安装工具，点「是」继续。')
+    expect(f.progress[0].message).toBe('系统自带的安装组件安装失败，正在从 Claude 官网下载离线安装包（0%）')
+    expect(f.progress.at(-1)?.message).toBe('接下来 Windows 将弹出授权窗口，显示「Windows PowerShell」，这是星芒在调用系统自带的安装工具，请点击「是」继续。')
   })
 
   it('checks the package from protected staging with path verification when running trusted-only', async () => {
@@ -394,7 +394,7 @@ describe('Claude Desktop official MSIX installation', () => {
     })
     await expect(installClaudeDesktopFromOfficial(f.options)).resolves.toEqual({ version: '1.1.2345.0' })
     expect(f.fetch.mock.calls.map(([input]) => requestUrl(input))).toEqual([claudeDesktopMsixEntryUrl('x64'), releaseUrl, releaseUrl])
-    expect(f.progress.map((event) => event.message)).toContain('网络断了一下，正在接着从 Claude 官网下载离线安装包（已下 50%）')
+    expect(f.progress.map((event) => event.message)).toContain('网络曾短暂中断，正在继续从 Claude 官网下载离线安装包（已下载 50%）')
     expect(f.installed[0].equals(payload)).toBe(true)
   })
 
@@ -538,7 +538,7 @@ describe('Claude Desktop from the Xingmang bucket', () => {
     expect(f.installed[0].equals(payload)).toBe(true)
     // The customer sees the same wording as the system installer route: no new interface text.
     const messages = [...new Set(f.progress.map((event) => event.message))]
-    expect(messages).toEqual(['正在下载并安装 Claude Desktop', '正在检查下载下来的安装包是不是完整的官方版', '正在安装 Claude Desktop 1.1.2345.0'])
+    expect(messages).toEqual(['正在下载并安装 Claude Desktop', '正在校验下载的安装包是否为完整的官方版本', '正在安装 Claude Desktop 1.1.2345.0'])
     expect(f.progress.some((event) => event.phase === 'downloading' && event.percent === 100)).toBe(true)
   })
 

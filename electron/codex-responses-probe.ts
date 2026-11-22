@@ -189,7 +189,7 @@ export async function runCodexResponsesProbe(
       nextStep,
       ...(ok ? { verificationLevel: 'responses-tool-json' as const } : {}),
       evidence: ok
-        ? `${plan.model} 调用了一次什么都不改的测试工具，并把结果正确读了回来；在 Codex 里实际干活时仍以实际使用为准`
+        ? `${plan.model} 已调用一次不做任何修改的测试工具，并正确读取了结果；Codex 中的实际工作情况仍以实际使用为准`
         : undefined,
       endpoint: url?.href ?? null,
       model: plan.model,
@@ -201,13 +201,13 @@ export async function runCodexResponsesProbe(
   }
 
   if (!url || url.origin !== plan.origin) {
-    return finish('config', '没找到 Codex 该连的服务地址', '在首页重新准备一次 Codex 后再试')
+    return finish('config', '未找到 Codex 应连接的服务地址', '请在首页重新准备 Codex 后重试')
   }
   if (dependencies.isCurrent?.() === false) {
-    return finish('config', '当前账号或 Codex 设置变了，检查已停下', '确认一下当前账号，再重新勾选检查')
+    return finish('config', '当前账号或 Codex 设置已变化，检查已停止', '请确认当前账号后重新勾选检查')
   }
   const fetchImpl = dependencies.fetch ?? globalThis.fetch
-  if (!fetchImpl) return finish('unknown', '这次没法检查', '重新打开本软件再试')
+  if (!fetchImpl) return finish('unknown', '本次无法检查', '请重新打开本软件后重试')
   const endpoint = url.href
 
   const controller = new AbortController()
@@ -227,11 +227,11 @@ export async function runCodexResponsesProbe(
       let responseOrigin: string | null = null
       try { responseOrigin = new URL(response.url).origin } catch { /* Invalid URL is rejected below. */ }
       if (responseOrigin !== plan.origin) {
-        return finish('protocol', '服务把请求转到了别的地址，已拒绝', '在首页重新准备一次 Codex 后再试', response.status)
+        return finish('protocol', '服务将请求转至其他地址，已拒绝', '请在首页重新准备 Codex 后重试', response.status)
       }
     }
     if (redirectStatuses.has(response.status)) {
-      return finish('protocol', '服务要求转到别的地址，检查已停下', '稍后再试，一直这样请联系客服', response.status)
+      return finish('protocol', '服务要求转至其他地址，检查已停止', '请稍后重试；如持续出现，请联系客服', response.status)
     }
     let bodyText: string
     try {
@@ -241,7 +241,7 @@ export async function runCodexResponsesProbe(
         'Codex 干活检查',
       )
     } catch {
-      return finish('protocol', '服务返回的内容太大或读不出来', '稍后再试，一直这样请联系客服', response.status)
+      return finish('protocol', '服务返回的内容过大或无法读取', '请稍后重试；如持续出现，请联系客服', response.status)
     }
     let payload: unknown = null
     try { payload = JSON.parse(bodyText) } catch { /* Malformed JSON fails below. */ }
@@ -269,26 +269,26 @@ export async function runCodexResponsesProbe(
     const first = await request(buildCodexResponsesRequest(plan.model))
     if ('ok' in first) return first
     if (asRecord(first.payload)?.status === 'incomplete') {
-      return finish('protocol', '模型没答完就停了', '这不代表账号有问题，换个模型或稍后再试', first.status)
+      return finish('protocol', '模型未完成回答即已停止', '这并不表示账号有问题，请更换模型或稍后重试', first.status)
     }
     const call = inspectCodexResponsesFunctionCall(first.payload)
     if (!call) {
-      return finish('protocol', '模型没有按要求调用测试工具', '这个模型可能用不了工具，Codex 干活时也可能出错；换个模型再试，或联系客服', first.status)
+      return finish('protocol', '模型未按要求调用测试工具', '该模型可能无法使用工具，Codex 工作时也可能出错；请更换模型后重试，或联系客服', first.status)
     }
     if (dependencies.isCurrent?.() === false) {
-      return finish('config', '当前账号或 Codex 设置变了，第二次请求没有发', '确认一下当前账号，再重新勾选检查', first.status)
+      return finish('config', '当前账号或 Codex 设置已变化，未发送第二次请求', '请确认当前账号后重新勾选检查', first.status)
     }
     const resultMarker = dependencies.markerFactory?.() ?? `XINGMANG_${randomBytes(12).toString('hex')}`
     const second = await request(buildCodexResponsesRequest(plan.model, call, resultMarker))
     if ('ok' in second) return second
     if (asRecord(second.payload)?.status === 'incomplete') {
-      return finish('protocol', '模型没答完就停了', '这不代表账号有问题，换个模型或稍后再试', second.status)
+      return finish('protocol', '模型未完成回答即已停止', '这并不表示账号有问题，请更换模型或稍后重试', second.status)
     }
     if (!inspectCodexResponsesFinalAnswer(second.payload, resultMarker)) {
-      return finish('protocol', '模型没把测试工具的结果读回来', '稍后再试，一直这样请联系客服', second.status)
+      return finish('protocol', '模型未能读取测试工具的结果', '请稍后重试；如持续出现，请联系客服', second.status)
     }
     if (dependencies.isCurrent?.() === false) {
-      return finish('config', '当前账号或 Codex 设置变了，这次结果不算', '确认一下当前账号，再重新勾选检查', second.status)
+      return finish('config', '当前账号或 Codex 设置已变化，本次结果无效', '请确认当前账号后重新勾选检查', second.status)
     }
     return finish(
       'network',
@@ -320,7 +320,7 @@ export function createCodexResponsesProbeService(
     if (inFlight) {
       return inFlightScope === scope
         ? inFlight
-        : Promise.reject(new Error('当前账号或 Codex 设置变了，请等上一次检查结束后再试'))
+        : Promise.reject(new Error('当前账号或 Codex 设置已变化，请待上一次检查结束后重试'))
     }
     const current = runCodexResponsesProbe(build(), {
       ...dependencies,

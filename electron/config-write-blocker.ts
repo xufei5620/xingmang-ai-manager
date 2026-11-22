@@ -15,8 +15,8 @@
 export type ConfigWriteBlocker = 'adminOwned' | 'readOnly'
 
 export const configWriteBlockerReasons: Readonly<Record<ConfigWriteBlocker, string>> = {
-  adminOwned: '这个工具的设置文件夹归电脑管理员所有',
-  readOnly: '这个文件被设成了只读',
+  adminOwned: '该工具的设置文件夹归电脑管理员所有',
+  readOnly: '该文件已被设为只读',
 }
 
 const blockers: readonly ConfigWriteBlocker[] = ['adminOwned', 'readOnly']

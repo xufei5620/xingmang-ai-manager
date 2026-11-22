@@ -367,15 +367,15 @@ describe('launchOverrideNotice', () => {
 
   it('explains a project override in plain words without file names', () => {
     const notice = launchOverrideNotice('Claude Code', [projectBlocking])
-    expect(notice).toBe('这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。')
+    expect(notice).toBe('该项目文件夹中有独立的设置，将导致 Claude Code 不使用当前账号，余额与用量将无法对应。如非有意设置，请更换文件夹打开。')
     expect(notice).not.toMatch(/settings|\.env|json|ANTHROPIC/i)
   })
 
   it('points managed settings at the administrator and softens a possible override', () => {
     expect(launchOverrideNotice('Claude Code', [managedPossible, projectBlocking]))
-      .toBe('这台电脑上有统一下发的设置（一般是公司的电脑管理员配的），可能会让 Claude Code 不用当前账号，本软件改不了它，需要找管理员处理。')
+      .toBe('本机存在统一下发的设置（通常由公司的电脑管理员配置），可能导致 Claude Code 不使用当前账号，本软件无法修改，请联系管理员处理。')
     expect(launchOverrideNotice('Claude Code', [{ ...projectBlocking, severity: 'possible' }]))
-      .toContain('可能会让 Claude Code 不用当前账号')
+      .toContain('可能导致 Claude Code 不使用当前账号')
   })
 })
 
@@ -389,30 +389,30 @@ describe('summarizeWorkspaceOverrides', () => {
   it('passes when nothing overrides the account', () => {
     expect(summarizeWorkspaceOverrides([], options)).toEqual({
       state: 'pass',
-      summary: '项目文件夹里没有会盖过当前账号的设置',
+      summary: '项目文件夹中没有会覆盖当前账号的设置',
       details: { count: 0 },
     })
-    expect(summarizeWorkspaceOverrides([], { ...options, workspaceChecked: false }).summary).toContain('还没从本软件打开过项目文件夹')
+    expect(summarizeWorkspaceOverrides([], { ...options, workspaceChecked: false }).summary).toContain('尚未通过本软件打开项目文件夹')
   })
 
   it('fails when a launch from this app would not use the current account', () => {
     const result = summarizeWorkspaceOverrides([projectBlocking], options)
     expect(result.state).toBe('fail')
-    expect(result.summary).toContain('会让 Claude Code 不用当前账号')
+    expect(result.summary).toContain('将导致 Claude Code 不使用当前账号')
     expect(result.details).toEqual({ count: 1, file1: 'Claude Code · .claude/settings.local.json：ANTHROPIC_BASE_URL' })
   })
 
   it('only warns for possible overrides and for settings a self-opened terminal would pick up', () => {
     const result = summarizeWorkspaceOverrides([managedPossible, geminiEnv], options)
     expect(result.state).toBe('warn')
-    expect(result.summary).toBe('这台电脑上有统一下发的设置，可能会让 Claude Code 不用当前账号，需要找电脑管理员处理；'
-      + '在最近打开的项目文件夹里自己开终端运行 Gemini CLI 时不会用当前账号，从本软件打开不受影响')
+    expect(result.summary).toBe('本机存在统一下发的设置，可能导致 Claude Code 不使用当前账号，请联系电脑管理员处理；'
+      + '在最近打开的项目文件夹中自行通过终端运行 Gemini CLI 时不会使用当前账号，通过本软件打开不受影响')
     expect(result.details.file2).toBe('Gemini CLI · C:\\work\\.env')
   })
 
   it('marks unreadable files so support knows they were not checked', () => {
     const unreadable = { ...projectBlocking, keys: [], severity: 'possible' as const, unreadable: true }
     expect(summarizeWorkspaceOverrides([unreadable], options).details.file1)
-      .toBe('Claude Code · .claude/settings.local.json（读不了，没法确认）')
+      .toBe('Claude Code · .claude/settings.local.json（无法读取，无法确认）')
   })
 })

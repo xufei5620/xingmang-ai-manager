@@ -44,8 +44,8 @@ describe('parseSettingsUpdate', () => {
   })
 
   it('rejects a workspace path with a NUL byte', () => {
-    expect(() => parseSettingsUpdate({ version: 2, workspace: '/home/user\0/etc' }, 'linux')).toThrow('工作目录格式错误')
-    expect(() => parseSettingsUpdate({ version: 2, workspace: 'C:\\Users\0\\peaker' }, 'win32')).toThrow('工作目录格式错误')
+    expect(() => parseSettingsUpdate({ version: 2, workspace: '/home/user\0/etc' }, 'linux')).toThrow('项目文件夹路径格式错误')
+    expect(() => parseSettingsUpdate({ version: 2, workspace: 'C:\\Users\0\\peaker' }, 'win32')).toThrow('项目文件夹路径格式错误')
   })
 
   // 跟 cli:launch 收的目录同一道检查（tools.test.ts 的 parseWorkspace 那组列全了各种写法）。
@@ -53,10 +53,10 @@ describe('parseSettingsUpdate', () => {
     expect(parseSettingsUpdate({ version: 2, workspace: '  D:\\code\\shop  ' }, 'win32')).toEqual({ version: 2, workspace: 'D:\\code\\shop' })
     expect(parseSettingsUpdate({ version: 2, workspace: '/Users/alex/shop' }, 'darwin')).toEqual({ version: 2, workspace: '/Users/alex/shop' })
     for (const workspace of ['.', 'shop', '\\code\\shop', 'D:shop', '/code/shop']) {
-      expect(() => parseSettingsUpdate({ version: 2, workspace }, 'win32')).toThrow('工作目录格式错误')
+      expect(() => parseSettingsUpdate({ version: 2, workspace }, 'win32')).toThrow('项目文件夹路径格式错误')
     }
     for (const workspace of ['.', 'shop', '~/shop', 'D:\\code\\shop']) {
-      expect(() => parseSettingsUpdate({ version: 2, workspace }, 'linux')).toThrow('工作目录格式错误')
+      expect(() => parseSettingsUpdate({ version: 2, workspace }, 'linux')).toThrow('项目文件夹路径格式错误')
     }
   })
 })

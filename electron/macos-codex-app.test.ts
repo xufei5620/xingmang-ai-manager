@@ -183,7 +183,7 @@ describe('buildMacosCodexAppLaunchPlan', () => {
     'rejects invalid workspace path %#',
     (workspace) => {
       expect(() => buildMacosCodexAppLaunchPlan('/Applications/Codex.app', workspace))
-        .toThrow('工作目录无效')
+        .toThrow('项目文件夹无效')
     },
   )
 

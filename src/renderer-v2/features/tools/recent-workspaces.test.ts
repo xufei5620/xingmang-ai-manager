@@ -286,8 +286,8 @@ describe('workspaceButtonLabel', () => {
 
 describe('isMissingWorkspace', () => {
   it('recognises the main process message for a directory that is gone', () => {
-    expect(isMissingWorkspace(new Error('工作目录不存在，请重新选择'))).toBe(true)
-    expect(isMissingWorkspace(new Error('Codex 工作目录不存在，请重新选择'))).toBe(true)
+    expect(isMissingWorkspace(new Error('项目文件夹不存在，请重新选择'))).toBe(true)
+    expect(isMissingWorkspace(new Error('Codex 的项目文件夹不存在，请重新选择'))).toBe(true)
   })
 
   it('leaves every other failure to the normal error path', () => {
