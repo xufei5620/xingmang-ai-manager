@@ -288,6 +288,9 @@ class FakeChannel implements RemoteChannelAdapter {
 /** 能原地更新进度卡的渠道（像飞书，YF-15）：发卡、更新都记下来。 */
 class FakeCardChannel extends FakeChannel {
   readonly progress: Array<{ op: 'send' | 'update'; handle: string; card: RemoteProgressCard }> = []
+  /** 接下来这么多次更新失败（M17）；updateAttempts 连失败的一起数。 */
+  failUpdates = 0
+  updateAttempts = 0
   private cards = 0
 
   async sendProgress(_peer: RemotePeer, card: RemoteProgressCard): Promise<string> {
@@ -298,6 +301,11 @@ class FakeCardChannel extends FakeChannel {
   }
 
   async updateProgress(handle: string, card: RemoteProgressCard): Promise<void> {
+    this.updateAttempts += 1
+    if (this.failUpdates > 0) {
+      this.failUpdates -= 1
+      throw new Error('feishu said no')
+    }
     this.progress.push({ op: 'update', handle, card })
   }
 }
@@ -3242,6 +3250,55 @@ describe('codex-remote-service progress', () => {
     clock += 10 * 60_000
     await vi.advanceTimersByTimeAsync(10 * 60_000)
     expect(channel.progress).toHaveLength(count)
+  })
+
+  // M17：最后那次把卡改成「已完成」没成，原来只记日志，卡一直停在「正在处理」、还带着「停止」。
+  it('tries the last card update again a little later instead of leaving the card running', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup({ now: () => Date.UTC(2026, 10, 11, 12), progressCards: true })
+    const channel = await enabledAndPaired(s) as FakeCardChannel
+    const codex = await prompted(s, channel)
+    codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-1', plan: twoSteps })
+    await vi.waitFor(() => expect(channel.progress).toHaveLength(1))
+    channel.failUpdates = 1
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(() => expect(s.logs).toContain('remote.progress-final-retry'))
+    expect(channel.progress.at(-1)?.card.state).toBe('running')
+    await vi.advanceTimersByTimeAsync(5_000)
+    await vi.waitFor(() => expect(channel.progress.at(-1)).toMatchObject({ op: 'update', handle: 'om_card_1', card: { state: 'done' } }))
+    expect(channel.progress.at(-1)?.card).not.toHaveProperty('stopNonce')
+    expect(s.logs).not.toContain('remote.progress-failed')
+  })
+
+  it('gives the last card update up after three tries, and stops trying once the channel is turned off', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup({ now: () => Date.UTC(2026, 10, 11, 12), progressCards: true })
+    const channel = await enabledAndPaired(s) as FakeCardChannel
+    const codex = await prompted(s, channel)
+    codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-1', plan: twoSteps })
+    await vi.waitFor(() => expect(channel.progress).toHaveLength(1))
+    channel.failUpdates = Number.POSITIVE_INFINITY
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(() => expect(channel.updateAttempts).toBe(1))
+    await vi.advanceTimersByTimeAsync(5_000)
+    await vi.waitFor(() => expect(channel.updateAttempts).toBe(2))
+    await vi.advanceTimersByTimeAsync(30_000)
+    await vi.waitFor(() => expect(s.logs).toContain('remote.progress-failed'))
+    expect(channel.updateAttempts).toBe(3)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(channel.updateAttempts).toBe(3)
+
+    // Next turn: the channel is switched off while the last update waits to be tried again.
+    channel.handlers?.onInbound(text(alice, '再做一件'))
+    await turnStarted(s, 2)
+    codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-2', plan: twoSteps })
+    await vi.waitFor(() => expect(channel.progress.filter((entry) => entry.op === 'send')).toHaveLength(2))
+    const attempts = channel.updateAttempts
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-2', status: 'completed' } })
+    await vi.waitFor(() => expect(channel.updateAttempts).toBe(attempts + 1))
+    await s.service.setChannelEnabled('feishu', false)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(channel.updateAttempts).toBe(attempts + 1)
   })
 
   it('posts the card after two minutes without a plan and refreshes the time every five minutes', async () => {
