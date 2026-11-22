@@ -8,21 +8,21 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 // S01: the update handoff script (build/update-handoff/verified-install.ps1) run
-// for real, once per CI run. The first case is the whole chain the app starts:
+// for real, once per CI run. Most cases run the elevated half directly, where its
+// exit code says what it decided. The last one is the whole chain the app starts:
 // the system PowerShell runs the script unelevated with -Relaunch, the script asks
 // Windows to start an elevated copy of itself, and that copy installs. The hosted
 // runner's account is an administrator with an elevated token, so the consent
 // prompt never shows and Windows starts the elevated copy straight away, as it
-// does on a customer's machine once they click Yes. The other cases run the
-// elevated half directly, where its exit code says what it decided. A small
+// does on a customer's machine once they click Yes. A small
 // setup.exe compiled here stands in for the installer: it records the arguments
 // it got, where it ran from and that directory's security descriptor. The unit
 // tests cover the command and the status parser without starting PowerShell;
 // this proves the script still does what they assume. It runs after
 // `npm run compile` and drives the compiled modules the app ships.
 //
-// With --packaged <resources directory of a built package> only the first case
-// runs, with that package's own copy of the script.
+// With --packaged <resources directory of a built package> only the digest
+// mismatch and the whole chain run, with that package's own copy of the script.
 //
 // The relaunch replaced resources\elevate.exe, the helper electron-builder ships,
 // after this smoke ran it on the runner: it rejoined its arguments with plain
@@ -152,29 +152,75 @@ async function readStatus(statusPath, nonce) {
 }
 
 // What the app does: start the unelevated relaunch, then follow the status the
-// elevated copy writes until it stops at a state of its own. A copy that never
-// writes one is given up on after 30 s.
+// elevated copy writes until it stops at a state of its own. The app itself never
+// waits for that status (it quits once the relaunch has exited), so there is no
+// deadline here short of the whole budget: two cold PowerShell starts on a runner
+// that has just built the package can take a while, and the timeline says how long.
 async function runAsTheApp(input) {
   const command = handoffCommand(input)
   const before = stagingDirectories()
   const started = Date.now()
   const exit = await launchDetachedWindowsProcess(command.file, command.args, trustedCommandEnvironment())
+  const relaunchMs = Date.now() - started
   const statusPath = resolveWindowsUpdateHandoffStatusPath(machinePaths.systemRoot, input.nonce)
-  const states = []
+  const timeline = []
   let status = null
   for (;;) {
     status = parseWindowsUpdateHandoffStatus(await readWindowsUpdateHandoffStatusFile(statusPath), input.nonce)
-    if (status && states.at(-1) !== status.state) states.push(status.state)
+    if (status && timeline.at(-1)?.state !== status.state) timeline.push({ state: status.state, ms: Date.now() - started })
     if (status && status.state !== 'started' && status.state !== 'verified') break
-    const elapsed = Date.now() - started
-    if ((!status && elapsed >= 30_000) || elapsed >= budgetMs) break
+    if (Date.now() - started >= budgetMs) break
     await delay(250)
   }
-  console.log(`  relaunch exit ${exit}; status ${states.length ? states.join(' -> ') : 'never written'} in ${Date.now() - started}ms`)
+  const states = timeline.length ? timeline.map((entry) => `${entry.state} at ${entry.ms}ms`).join(' -> ') : 'never written'
+  console.log(`  relaunch exit ${exit} after ${relaunchMs}ms; status ${states}; gave up or stopped at ${Date.now() - started}ms`)
+  if (!status) await describeMissingElevatedCopy(input.nonce, started)
   assert.equal(classifyWindowsHandoffLaunchExit(exit), 'launched', `the app reads relaunch exit ${exit} as not started`)
   assert.deepEqual(await readStatus(statusPath, input.nonce), status)
   assert.deepEqual([...stagingDirectories()].filter((name) => !before.has(name)), [], 'the script must remove the staging directory it created')
   return { exit, status, statusPath }
+}
+
+// Runs only when the elevated copy wrote nothing at all, to say why: whether a
+// PowerShell started for this nonce is still running, what the Windows PowerShell
+// log recorded for the hosts started with it (event 400 carries the command line a
+// host was started with, 403 marks its end), errors the Application log took in the
+// meantime, and the exit code of that elevated command line when it is started
+// again the way the relaunch started it.
+async function describeMissingElevatedCopy(nonce, startedAt) {
+  const lookback = Date.now() - startedAt + 5_000
+  const result = await powershellCommand(`
+$nonce = ${literal(nonce)}
+$since = [DateTime]::Now.AddMilliseconds(-${lookback})
+$running = $false
+foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'")) {
+  if ($process.ProcessId -ne $PID -and [string]$process.CommandLine -like "*-Nonce $nonce*") { $running = $true; 'running: ' + $process.ProcessId + ' ' + $process.CommandLine }
+}
+$elevated = $null
+foreach ($entry in @(Get-WinEvent -FilterHashtable @{ LogName = 'Windows PowerShell'; StartTime = $since } -ErrorAction SilentlyContinue)) {
+  # Matched on "-Nonce <value>", which this diagnostic's own command line never holds.
+  if ([string]$entry.Message -notlike "*-Nonce $nonce*") { continue }
+  $lines = [string]$entry.Message -split '\\r?\\n'
+  $application = [string]($lines | Where-Object { $_ -match '^\\s*HostApplication=' } | Select-Object -First 1)
+  $state = [string]($lines | Where-Object { $_ -match '^\\s*NewEngineState=' } | Select-Object -First 1)
+  'event ' + $entry.Id + ' at ' + $entry.TimeCreated.ToString('HH:mm:ss.fff') + ' ' + $state.Trim() + ' ' + $application.Trim()
+  if ($entry.Id -eq 400 -and $application -notmatch '-Relaunch') { $elevated = $application.Trim().Substring('HostApplication='.Length) }
+}
+foreach ($entry in @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 1, 2; StartTime = $since } -ErrorAction SilentlyContinue)) {
+  'application error ' + $entry.ProviderName + ' ' + $entry.Id + ': ' + ([string]$entry.Message -split '\\r?\\n' | Select-Object -First 3) -join ' '
+}
+if ($null -eq $elevated) {
+  'no elevated PowerShell host was logged for this nonce'
+} elseif ($running) {
+  'not run again: a PowerShell for this nonce is still running'
+} else {
+  if ($elevated.StartsWith('"')) { $end = $elevated.IndexOf('"', 1); $file = $elevated.Substring(1, $end - 1); $rest = $elevated.Substring($end + 1).Trim() }
+  else { $space = $elevated.IndexOf(' '); $file = $elevated.Substring(0, $space); $rest = $elevated.Substring($space + 1) }
+  $again = Start-Process -FilePath $file -ArgumentList $rest -Verb RunAs -WindowStyle Hidden -Wait -PassThru
+  'the elevated command line started again exits ' + $again.ExitCode
+}
+`)
+  console.log(`  why no status (exit ${result.code}):\n${`${result.stdout}\n${result.stderr}`.trim().split(/\r?\n/).map((line) => `    ${line}`).join('\n')}`)
 }
 
 // The elevated half on its own: the runner is already elevated, so leaving out
@@ -209,6 +255,72 @@ async function main() {
   assert.ok(fs.existsSync(script), `${script} does not exist`)
   const passing = await compileFakeSetup('fake-setup-ok.exe', 0)
 
+  // The elevated half on its own comes first: its exit code says what it decided,
+  // which a relaunched copy that never writes a status cannot.
+  console.log('a package whose digest does not match is never run')
+  {
+    const updatePackage = packageFrom(passing.output, 'XingMang-AI-Manager-9.9.9-Setup-wrong-digest.exe')
+    const other = createHash('sha512').update('something else').digest('base64')
+    const result = await runElevatedHalf({ ...updatePackage, sha512: other, parentPid: process.pid, nonce: nextNonce() })
+    assert.equal(result.code, 3, result.stderr)
+    assert.deepEqual(result.status, { state: 'mismatch', exitCode: 0 })
+    assert.equal(fs.existsSync(passing.report), false, 'the installer must not run')
+  }
+
+  if (!packagedResources) {
+    const failing = await compileFakeSetup('fake-setup-fails.exe', 7)
+
+    console.log('a relaunch with an argument the script refuses stops before it asks for elevation')
+    {
+      const updatePackage = packageFrom(passing.output, 'XingMang-AI-Manager-9.9.9-Setup-refused.exe')
+      const args = handoffCommand({ ...updatePackage, parentPid: process.pid, nonce: nextNonce() }).args
+      args[args.indexOf('-Nonce') + 1] = 'not-a-nonce'
+      const before = stagingDirectories()
+      const result = await run(powershell, args)
+      console.log(`  exit ${result.code} in ${result.ms}ms`)
+      // 2 comes from the argument checks, which run before the relaunch; a relaunch
+      // that went ahead would have exited 0.
+      assert.equal(result.code, 2, result.stderr)
+      await delay(3_000)
+      assert.deepEqual([...stagingDirectories()].filter((name) => !before.has(name)), [], 'no elevated copy may have started')
+    }
+
+    console.log('a package whose size does not match is never run')
+    {
+      const updatePackage = packageFrom(passing.output, 'XingMang-AI-Manager-9.9.9-Setup-wrong-size.exe')
+      const result = await runElevatedHalf({ ...updatePackage, size: updatePackage.size + 1, parentPid: process.pid, nonce: nextNonce() })
+      assert.equal(result.code, 3, result.stderr)
+      assert.deepEqual(result.status, { state: 'mismatch', exitCode: 0 })
+      assert.equal(fs.existsSync(passing.report), false, 'the installer must not run')
+    }
+
+    console.log('an installer that fails is reported for the next start')
+    {
+      const updatePackage = packageFrom(failing.output, 'XingMang-AI-Manager-9.9.9-Setup-fails.exe')
+      const parent = startParent(500)
+      await parent.exited
+      const result = await runElevatedHalf({ ...updatePackage, parentPid: parent.pid, nonce: nextNonce() })
+      assert.equal(result.code, 6, result.stderr)
+      assert.deepEqual(result.status, { state: 'install-failed', exitCode: 7 })
+      assert.equal(fs.existsSync(failing.report), true)
+    }
+
+    console.log('a status file name that already exists stops the handoff before anything is copied')
+    {
+      const updatePackage = packageFrom(passing.output, 'XingMang-AI-Manager-9.9.9-Setup-claimed.exe')
+      const nonce = nextNonce()
+      const statusPath = resolveWindowsUpdateHandoffStatusPath(machinePaths.systemRoot, nonce)
+      fs.writeFileSync(statusPath, JSON.stringify({ nonce, state: 'verified', exitCode: 0 }), 'utf8')
+      try {
+        const result = await runElevatedHalf({ ...updatePackage, parentPid: process.pid, nonce })
+        assert.equal(result.code, 5, result.stderr)
+        assert.equal(fs.existsSync(passing.report), false, 'the installer must not run')
+      } finally {
+        fs.rmSync(statusPath, { force: true })
+      }
+    }
+  }
+
   console.log(`the app's handoff relaunches the script elevated, which installs the verified package from the protected copy once the app has quit (${script})`)
   {
     const updatePackage = packageFrom(passing.output, 'XingMang-AI-Manager-9.9.9-Setup.exe')
@@ -242,74 +354,9 @@ async function main() {
     }
     fs.rmSync(passing.report, { force: true })
   }
-  if (packagedResources) {
-    console.log('PASS: the packaged script relaunches itself elevated and installs only the package it was given the digest of')
-    return
-  }
-
-  const failing = await compileFakeSetup('fake-setup-fails.exe', 7)
-
-  console.log('a relaunch with an argument the script refuses stops before it asks for elevation')
-  {
-    const updatePackage = packageFrom(passing.output, 'XingMang-AI-Manager-9.9.9-Setup-refused.exe')
-    const args = handoffCommand({ ...updatePackage, parentPid: process.pid, nonce: nextNonce() }).args
-    args[args.indexOf('-Nonce') + 1] = 'not-a-nonce'
-    const before = stagingDirectories()
-    const result = await run(powershell, args)
-    console.log(`  exit ${result.code} in ${result.ms}ms`)
-    // 2 comes from the argument checks, which run before the relaunch; a relaunch
-    // that went ahead would have exited 0.
-    assert.equal(result.code, 2, result.stderr)
-    await delay(3_000)
-    assert.deepEqual([...stagingDirectories()].filter((name) => !before.has(name)), [], 'no elevated copy may have started')
-  }
-
-  console.log('a package whose digest does not match is never run')
-  {
-    const updatePackage = packageFrom(passing.output, 'XingMang-AI-Manager-9.9.9-Setup-wrong-digest.exe')
-    const other = createHash('sha512').update('something else').digest('base64')
-    const result = await runElevatedHalf({ ...updatePackage, sha512: other, parentPid: process.pid, nonce: nextNonce() })
-    assert.equal(result.code, 3, result.stderr)
-    assert.deepEqual(result.status, { state: 'mismatch', exitCode: 0 })
-    assert.equal(fs.existsSync(passing.report), false, 'the installer must not run')
-  }
-
-  console.log('a package whose size does not match is never run')
-  {
-    const updatePackage = packageFrom(passing.output, 'XingMang-AI-Manager-9.9.9-Setup-wrong-size.exe')
-    const result = await runElevatedHalf({ ...updatePackage, size: updatePackage.size + 1, parentPid: process.pid, nonce: nextNonce() })
-    assert.equal(result.code, 3, result.stderr)
-    assert.deepEqual(result.status, { state: 'mismatch', exitCode: 0 })
-    assert.equal(fs.existsSync(passing.report), false, 'the installer must not run')
-  }
-
-  console.log('an installer that fails is reported for the next start')
-  {
-    const updatePackage = packageFrom(failing.output, 'XingMang-AI-Manager-9.9.9-Setup-fails.exe')
-    const parent = startParent(500)
-    await parent.exited
-    const result = await runElevatedHalf({ ...updatePackage, parentPid: parent.pid, nonce: nextNonce() })
-    assert.equal(result.code, 6, result.stderr)
-    assert.deepEqual(result.status, { state: 'install-failed', exitCode: 7 })
-    assert.equal(fs.existsSync(failing.report), true)
-  }
-
-  console.log('a status file name that already exists stops the handoff before anything is copied')
-  {
-    const updatePackage = packageFrom(passing.output, 'XingMang-AI-Manager-9.9.9-Setup-claimed.exe')
-    const nonce = nextNonce()
-    const statusPath = resolveWindowsUpdateHandoffStatusPath(machinePaths.systemRoot, nonce)
-    fs.writeFileSync(statusPath, JSON.stringify({ nonce, state: 'verified', exitCode: 0 }), 'utf8')
-    try {
-      const result = await runElevatedHalf({ ...updatePackage, parentPid: process.pid, nonce })
-      assert.equal(result.code, 5, result.stderr)
-      assert.equal(fs.existsSync(passing.report), false, 'the installer must not run')
-    } finally {
-      fs.rmSync(statusPath, { force: true })
-    }
-  }
-
-  console.log('PASS: the update handoff script copies, checks and installs only the package it was given the digest of')
+  console.log(packagedResources
+    ? 'PASS: the packaged script relaunches itself elevated and installs only the package it was given the digest of'
+    : 'PASS: the update handoff script copies, checks and installs only the package it was given the digest of')
 }
 
 try {
