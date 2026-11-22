@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUpRight, Brush, Clapperboard, Download, Film, FolderOpen, Image as ImageIcon, MessageSquare, Play, Plus, RefreshCw } from 'lucide-react'
+import { ArrowUpRight, Brush, Clapperboard, Download, Film, FolderOpen, Image as ImageIcon, Infinity as InfinityIcon, MessageSquare, Play, Plus, RefreshCw } from 'lucide-react'
 import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
 import type { AiChatAsset, AiLibraryEntry } from '../../../../electron/ipc-contract'
 import { Button, Chips, Dialog, Menu, SearchInput, Skeleton } from '../../ui'
@@ -10,13 +10,14 @@ import { videoClipPlayUrl } from '../video-studio/clip'
 import type { VideoStudioItem } from '../video-studio/library'
 import type { VideoStudioClipSource } from '../video-studio/project'
 import {
-  buildLibraryOrigins, libraryBadge, libraryCaption, libraryChatAsset, libraryClipMade, libraryClipSource, libraryDetailLine, libraryFilmAssetIds, libraryImageUrl,
+  buildLibraryOrigins, libraryBadge, libraryCaption, libraryChatAsset, libraryClipMade, libraryClipSource, libraryDetailLine, libraryEntryOrigin, libraryFilmAssetIds, libraryImageUrl,
   libraryKindCount, libraryKindNames, libraryKinds, libraryMatchedAssetIds, libraryThumbnailUrl, libraryTitle, type LibraryMeasured, type LibraryOrigin, type LibraryOrigins,
 } from './library'
 import { useCreateLibrary, type CreateLibrary, type CreateLibraryBridge } from './useCreateLibrary'
 
 // 主窗口的作品库（融合第 3 步）：右边那一块、点开一件、从别处叫出来的选择框。字照方案第 2.9 节，
 // 按 2026-11-21 定的正式口吻写。数据在 useCreateLibrary，「哪来的」那一层纯计算在 library.ts。
+// 第 5 步起画布项目里生成的也列在里面，点开一个画布项目时那一块（CanvasProjectWorks）也在这里。
 
 const searchDelayMs = 250
 
@@ -57,7 +58,7 @@ function LibraryBrowser({ library, origins, films, kinds, selected, onSelect, te
       : library.items.length === 0 ? <div className="create-library-empty" data-testid={`${testId}-empty`}><p>{library.search ? `未找到与「${library.search}」相关的作品` : library.kind !== 'all' ? '该分类下暂无作品。' : '暂无作品。生成的图片和视频将显示在此处。'}</p></div>
       : <>
         <div className="create-library-grid" data-testid={`${testId}-grid`}>
-          {library.items.map((entry) => <LibraryTile key={entry.assetId} entry={entry} origin={origins.get(entry.assetId)} film={films.has(entry.assetId)} order={selected ? selected.indexOf(entry.assetId) + 1 : undefined} onSelect={select} />)}
+          {library.items.map((entry) => <LibraryTile key={entry.assetId} entry={entry} origin={libraryEntryOrigin(entry, origins)} film={films.has(entry.assetId)} order={selected ? selected.indexOf(entry.assetId) + 1 : undefined} onSelect={select} />)}
         </div>
         {library.hasMore && <div className="create-library-more"><Button size="sm" loading={library.loadingMore} onClick={library.loadMore} testId={`${testId}-more`}>加载更多</Button></div>}
       </>}
@@ -94,6 +95,8 @@ export interface CreateLibraryActions {
   openFolder: () => void
   openConversation: (id: string) => void
   openFilm: (id: string) => void
+  /** 右边换成这个画布项目的那一块（融合第 5 步）。 */
+  openCanvasProject: (id: string) => void
   reuseImage: (asset: AiChatAsset) => void
   animateImage: (asset: AiChatAsset, prompt: string) => void
   saveImage: (assetId: string) => void
@@ -114,7 +117,7 @@ export interface CreateLibraryPaneProps {
   actions: CreateLibraryActions
 }
 
-/** 右边的作品库：对话里出的图和视频、视频里的片段和成片，按时间新的在前。 */
+/** 右边的作品库：对话里出的图和视频、视频里的片段和成片、画布项目里生成的图和视频，按时间新的在前。 */
 export function CreateLibraryPane({ library, conversations, films, videoReady, videoFilms, actions }: CreateLibraryPaneProps) {
   const origins = useMemo(() => buildLibraryOrigins(conversations, films), [conversations, films])
   const filmIds = useMemo(() => new Set(libraryFilmAssetIds(films)), [films])
@@ -123,9 +126,9 @@ export function CreateLibraryPane({ library, conversations, films, videoReady, v
     <header className="chat-bar"><strong>作品库</strong><div className="chat-bar-actions"><Button icon={FolderOpen} variant="ghost" size="sm" onClick={actions.openFolder} testId="create-library-folder">打开文件夹</Button></div></header>
     <div className="create-library">
       <LibraryBrowser library={library} origins={origins} films={filmIds} kinds onSelect={setOpened} testId="create-library" />
-      <p className="create-quiet">对话与视频中生成的图片、片段和成片均保存在此处，文件位于本机的 AI 作品文件夹。</p>
+      <p className="create-quiet">对话、视频和画布中生成的图片、片段和成片均显示在此处。对话和视频的文件位于本机的 AI 作品文件夹，画布的文件位于各项目的工作文件夹。</p>
     </div>
-    {opened && <LibraryDetail entry={opened} origin={origins.get(opened.assetId)} film={filmIds.has(opened.assetId)} videoReady={videoReady} videoFilms={videoFilms} actions={actions} onClose={() => setOpened(null)} />}
+    {opened && <LibraryDetail entry={opened} origin={libraryEntryOrigin(opened, origins)} film={filmIds.has(opened.assetId)} videoReady={videoReady} videoFilms={videoFilms} actions={actions} onClose={() => setOpened(null)} />}
   </div>
 }
 
@@ -133,11 +136,19 @@ interface LibraryDetailProps extends Pick<CreateLibraryPaneProps, 'videoReady' |
   entry: AiLibraryEntry
   origin: LibraryOrigin | undefined
   film: boolean
+  /** 出不出「查看对话」「查看视频」「查看画布项目」那个按钮；已经在那个画布项目里点开的不用再出。 */
+  originLink?: boolean
   onClose: () => void
 }
 
+const originLinks: Readonly<Record<LibraryOrigin['from'], { label: string, icon: typeof MessageSquare }>> = {
+  chat: { label: '查看对话', icon: MessageSquare },
+  video: { label: '查看视频', icon: Clapperboard },
+  canvas: { label: '查看画布项目', icon: InfinityIcon },
+}
+
 /** 点开一件：大图或者能直接放的视频，下面是哪来的、能拿它做什么。 */
-export function LibraryDetail({ entry, origin, film, videoReady, videoFilms, actions, onClose }: LibraryDetailProps) {
+export function LibraryDetail({ entry, origin, film, originLink = true, videoReady, videoFilms, actions, onClose }: LibraryDetailProps) {
   // 页面上量出来的宽高、时长：对话和视频里没记着的那些作品，标题下面那一行和「添加到视频」靠它。
   const [measured, setMeasured] = useState<LibraryMeasured | null>(null)
   const [missing, setMissing] = useState(false)
@@ -173,10 +184,47 @@ export function LibraryDetail({ entry, origin, film, videoReady, videoFilms, act
           onError={() => setMissing(true)} data-testid="create-library-player" />
           : <img src={libraryImageUrl(entry.assetId)} alt={title} onLoad={(event) => setMeasured({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} onError={() => setMissing(true)} data-testid="create-library-image" />}
     </div>
-    {origin && <div className="create-library-origin">
-      <Button size="sm" variant="ghost" icon={origin.from === 'chat' ? MessageSquare : Clapperboard} onClick={() => { onClose(); if (origin.from === 'chat') actions.openConversation(origin.id); else actions.openFilm(origin.id) }} testId="create-library-origin">{origin.from === 'chat' ? '查看对话' : '查看视频'}</Button>
+    {origin && originLink && <div className="create-library-origin">
+      <Button size="sm" variant="ghost" icon={originLinks[origin.from].icon} onClick={() => { onClose(); if (origin.from === 'chat') actions.openConversation(origin.id); else if (origin.from === 'video') actions.openFilm(origin.id); else actions.openCanvasProject(origin.id) }} testId="create-library-origin">{originLinks[origin.from].label}</Button>
     </div>}
   </Dialog>
+}
+
+export interface CanvasProjectWorksProps extends Pick<CreateLibraryPaneProps, 'conversations' | 'films' | 'videoReady' | 'videoFilms' | 'actions'> {
+  bridge: CreateLibraryBridge
+  active: boolean
+  projectId: string
+}
+
+/**
+ * 点开一个画布项目时下面那一块（融合第 5 步）：这个项目里生成的图片和视频，新的在前，点一格跟作品库里一样点开。
+ * 用的地方按项目编号做 key：换一个项目是换一份新的，不会先闪一下上一个项目的东西。
+ */
+export function CanvasProjectWorks({ bridge, active, projectId, conversations, films, videoReady, videoFilms, actions }: CanvasProjectWorksProps) {
+  const filmList = useMemo(() => libraryFilmAssetIds(films), [films])
+  const library = useCreateLibrary(bridge, active, filmList, 'all', projectId)
+  return <CanvasProjectWorksView library={library} conversations={conversations} films={films} videoReady={videoReady} videoFilms={videoFilms} actions={actions} />
+}
+
+/** 上面那一块怎么摆；数据由外面给，好单独看每一种样子。 */
+export function CanvasProjectWorksView({ library, conversations, films, videoReady, videoFilms, actions }: Omit<CanvasProjectWorksProps, 'bridge' | 'active' | 'projectId'> & { library: CreateLibrary }) {
+  const origins = useMemo(() => buildLibraryOrigins(conversations, films), [conversations, films])
+  const filmIds = useMemo(() => new Set(libraryFilmAssetIds(films)), [films])
+  const [opened, setOpened] = useState<AiLibraryEntry | null>(null)
+  const select = useMemo(() => (entry: AiLibraryEntry) => setOpened(entry), [])
+  return <section className="create-canvas-works" aria-label="此项目中的作品" data-testid="create-canvas-works">
+    <header><strong>此项目中的作品</strong>{library.status === 'ready' && library.total > 0 && <span data-testid="create-canvas-works-count">{library.total} 个</span>}</header>
+    {library.status === 'loading' ? <Skeleton rows={2} testId="create-canvas-works-loading" />
+      : library.status === 'unreadable' ? <div className="create-library-empty" role="alert" data-testid="create-canvas-works-unreadable"><p>作品读取失败，请稍后重试</p><Button size="sm" icon={RefreshCw} onClick={library.refresh} testId="create-canvas-works-retry">重试</Button></div>
+      : library.items.length === 0 ? <p className="create-quiet" data-testid="create-canvas-works-empty">此项目暂无作品。在画布中生成的图片和视频将显示在此处。</p>
+      : <>
+        <div className="create-library-grid" data-testid="create-canvas-works-grid">
+          {library.items.map((entry) => <LibraryTile key={entry.assetId} entry={entry} origin={libraryEntryOrigin(entry, origins)} film={filmIds.has(entry.assetId)} onSelect={select} />)}
+        </div>
+        {library.hasMore && <div className="create-library-more"><Button size="sm" loading={library.loadingMore} onClick={library.loadMore} testId="create-canvas-works-more">加载更多</Button></div>}
+      </>}
+    {opened && <LibraryDetail entry={opened} origin={libraryEntryOrigin(opened, origins)} film={filmIds.has(opened.assetId)} originLink={false} videoReady={videoReady} videoFilms={videoFilms} actions={actions} onClose={() => setOpened(null)} />}
+  </section>
 }
 
 /** 选择框里选好的一件，带着它是哪来的。 */
@@ -213,7 +261,7 @@ export function LibraryPicker({ bridge, kind, limit, conversations, films, onPic
   const confirm = async () => {
     if (!selected.length || confirming) return
     setConfirming(true)
-    try { await onPick(selected.map((entry) => ({ entry, ...(origins.get(entry.assetId) ? { origin: origins.get(entry.assetId) } : {}) }))) }
+    try { await onPick(selected.map((entry) => { const origin = libraryEntryOrigin(entry, origins); return { entry, ...(origin ? { origin } : {}) } })) }
     finally { if (mounted.current) setConfirming(false) }
   }
   return <Dialog open title={kind === 'image' ? '选择图片' : '选择片段'} subtitle={limit > 1 ? `最多选择 ${limit} 段，按选择顺序排列。` : undefined} width={640} onClose={onClose} busy={confirming} testId="create-library-picker"
