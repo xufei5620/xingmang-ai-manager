@@ -11,6 +11,7 @@ import { remoteChannelSections, type RemoteChannelSectionDefinition, type Remote
 import { ConversationRow } from './ConversationRow'
 import {
   boundPeerText,
+  createRemoteSnapshotKeeper,
   lastRequestText,
   newerRemoteSnapshot,
   pairingAttemptText,
@@ -714,8 +715,8 @@ function useIsMac(api: V2Bridge): boolean {
 }
 
 /**
- * 左侧栏「手机遥控」（0.2.25）。操作的返回值和 state-changed 事件都是整份快照，按 revision 只收新的那份
- * （newerRemoteSnapshot）。
+ * 左侧栏「手机遥控」（0.2.25）。操作的返回值、state-changed 事件和第一次读取的结果都是整份快照，按 revision
+ * 只收新的那份（newerRemoteSnapshot；第一次读取经 createRemoteSnapshotKeeper，M16）。
  */
 export function CodexRemotePage({ api, navigate, onOpenHelp }: {
   api: V2Bridge
@@ -725,10 +726,14 @@ export function CodexRemotePage({ api, navigate, onOpenHelp }: {
   const lowBalance = useRemoteLowBalance()
   const isMac = useIsMac(api)
   const modelChoices = useRemoteModelChoices(api)
-  const load = useCallback(() => api.getCodexRemoteState(), [api])
+  const [keeper] = useState(createRemoteSnapshotKeeper)
+  const load = useCallback(async () => keeper.keep(await api.getCodexRemoteState()), [api, keeper])
   const resource = useResource(load)
   const { setData } = resource
-  const accept = useCallback((next: CodexRemoteSnapshot) => setData((current) => newerRemoteSnapshot(current, next)), [setData])
+  const accept = useCallback((next: CodexRemoteSnapshot) => {
+    const newest = keeper.keep(next)
+    setData((current) => newerRemoteSnapshot(current, newest))
+  }, [keeper, setData])
   useEffect(() => api.onCodexRemoteStateChanged(accept), [api, accept])
   const operation = useOperation()
   // 成功不弹提示：页上的状态自己会变。

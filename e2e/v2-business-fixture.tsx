@@ -77,6 +77,8 @@ declare global {
       codexStartFailed(failed: boolean): void
       // 手机上最近一条（YF-13）：几点发来的、做到哪儿了、等你同意几条；null = 还没发来过。
       phoneRequest(request: { minutesAgo: number; state: 'running' | 'done' | 'failed' | 'stopped'; reason?: string; pendingApprovals?: number } | null): void
+      // 带 remoteHoldReads 打开时，读状态的调用拿到当时那份就停着，到这时才回（M16）。
+      releaseReads(): void
     }
   }
 }
@@ -250,6 +252,9 @@ const weixinRemote: {
 const weixinLoginId = '0f8fad5b-d9cb-469f-a165-70867728950e'
 const weixinQrImage = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
 let releaseWeixinScan: (() => void) | null = null
+// remoteHoldReads：读状态的调用先拿到当时那份，等 releaseReads 才交回去，像主进程读盘慢、事件先到（M16）。
+let remoteReadsHeld = query.has('remoteHoldReads')
+const heldRemoteReads: (() => void)[] = []
 let remoteRevision = 0
 const remoteListeners = new Set<(snapshot: RemoteSnapshot) => void>()
 function remoteSnapshot(): RemoteSnapshot {
@@ -318,6 +323,10 @@ window.remoteHarness = {
     remoteState.problem = problem ? feishuProblemStatuses[problem] : null
     pushRemoteSnapshot()
   },
+  releaseReads() {
+    remoteReadsHeld = false
+    for (const release of heldRemoteReads.splice(0)) release()
+  },
   phoneRequest(request) {
     remoteState.lastRequest = request
       ? { receivedAt: Date.now() - request.minutesAgo * 60_000, state: request.state, ...(request.reason ? { reason: request.reason } : {}) }
@@ -327,7 +336,11 @@ window.remoteHarness = {
   },
 }
 const codexRemoteMethods = {
-  getCodexRemoteState: async () => remoteSnapshot(),
+  getCodexRemoteState: async () => {
+    const snapshot = remoteSnapshot()
+    if (remoteReadsHeld) await new Promise<void>((resolve) => { heldRemoteReads.push(resolve) })
+    return snapshot
+  },
   onCodexRemoteStateChanged: (listener: (snapshot: RemoteSnapshot) => void) => {
     remoteListeners.add(listener)
     return () => { remoteListeners.delete(listener) }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../../../electron/ipc-contract'
 import {
   boundPeerText,
+  createRemoteSnapshotKeeper,
   lastRequestText,
   newerRemoteSnapshot,
   pairingAttemptText,
@@ -41,6 +42,17 @@ describe('codex remote view', () => {
     expect(newerRemoteSnapshot(null, older)).toBe(older)
     expect(newerRemoteSnapshot(older, newer)).toBe(newer)
     expect(newerRemoteSnapshot(newer, older)).toBe(newer)
+  })
+
+  // M16：首读回来之前先到了一份更新的事件，首读交给页面的是那份事件，不是读回来的旧的。
+  it('hands the first read the newest snapshot seen so far, so a late read cannot roll the page back', () => {
+    const keeper = createRemoteSnapshotKeeper()
+    const event = snapshot({ revision: 7, task: 'running' })
+    const lateRead = snapshot({ revision: 6 })
+    expect(keeper.keep(event)).toBe(event)
+    expect(keeper.keep(lateRead)).toBe(event)
+    const later = snapshot({ revision: 8 })
+    expect(keeper.keep(later)).toBe(later)
   })
 
   it('says what Codex is doing only while a channel is on', () => {
