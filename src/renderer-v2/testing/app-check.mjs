@@ -12302,6 +12302,56 @@ test('moving to a new computer asks whether to bring the works, and brings them 
   } finally { await page.close() }
 })
 
+// 作品跟着搬过来了，对话里的图也照常显示：以前导出时一律换成「[图片未随记录迁移]」，作品库里有图、对话里却没有。
+// 再从这台电脑导出时，选「导出全部」图原样带着，只导聊天记录和设置时照旧换成那句说明。
+test('pictures in a moved conversation show again when the works came along, and travel on with them', async () => {
+  const page = await open('chatImport&transferWorks&transferPicture')
+  try {
+    await serveLibraryPictures(page)
+    await page.getByTestId('tool-row-claude').waitFor()
+    let settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '已导入 1 个对话。已导入 120 件作品，另有 8 件已存在于本机。')
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('chat-conversation-from-old-computer').click()
+    const reply = page.getByTestId('chat-message-old-picture')
+    await expect.poll(() => reply.locator('.chat-asset img').evaluate((image) => image.naturalWidth)).toBe(40)
+    await expect(reply).not.toContainText('未随记录迁移')
+
+    settings = await openSettingsGroup(page, '备份迁移')
+    const ask = page.getByRole('dialog', { name: '是否同时导出作品？', exact: true })
+    const exportedPicture = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'exportAppData')
+      .map((entry) => entry.args[0].conversations[0].messages.find((item) => item.id === 'old-picture'))
+      .map((item) => [item.assets?.map((asset) => asset.assetId) ?? [], item.content]))
+    await settings.getByTestId('settings-transfer-export').click()
+    await ask.getByTestId('settings-transfer-works-include').click()
+    await settings.getByText('已保存至「星芒数据导出-2026-11-22」文件夹，包含 1 个对话、128 件作品及设置。请将整个文件夹复制到新电脑，在此点击「导入」并选择其中的「星芒聊天记录与设置」文件。', { exact: true }).waitFor()
+    await settings.getByTestId('settings-transfer-export').click()
+    await ask.getByTestId('settings-transfer-works-skip').click()
+    await settings.getByText('已保存「星芒聊天记录与设置-2026-11-22.json」，包含 1 个对话及设置。复制到新电脑后，请在此点击「导入」。', { exact: true }).waitFor()
+    assert.deepEqual(await exportedPicture(), [[['p'.repeat(43)], '画好了'], [[], '画好了\n\n[图片未随记录迁移]']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a moved conversation says its picture stayed behind when the works folder did not come along', async () => {
+  const page = await open('chatImport&transferWorks&transferPicture&transferWorksMissing')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '已导入 1 个对话。未在文件所在位置找到「作品」文件夹，作品未导入。请将导出的整个文件夹复制到本机后再次导入。')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'importAppWorks').length), 0)
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('chat-conversation-from-old-computer').click()
+    const reply = page.getByTestId('chat-message-old-picture')
+    await expect(reply).toContainText('画好了')
+    await expect(reply).toContainText('[图片未随记录迁移]')
+    await expect(reply.locator('.chat-asset')).toHaveCount(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // D41：聊天页藏在设置页后面照样收回复。以前「导入」一点就把聊天页卸下，正在回复的那条被掐断，页面上什么也不说。
 test('importing while the chat is still replying waits for the reply instead of cutting it off', async () => {
   const page = await open('chatImport')

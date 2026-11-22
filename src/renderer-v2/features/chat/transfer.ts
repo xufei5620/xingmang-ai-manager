@@ -3,7 +3,7 @@ import { activeRestartWork } from '../../background-work'
 import { runVideoStudioImport } from '../video-studio/library'
 import { exportableVideoStudioProjects, importVideoStudioProjects } from '../video-studio/transfer'
 import type { Conversation } from './state'
-import { chatHistoryLogger, exportableConversations, exportablePhrases, flushChatHistory, importConversationsIntoHistory, loadChatHistory, runHistoryImport, settleHistoryWrites, type ChatImportResult, type ChatStorage } from './storage'
+import { chatHistoryLogger, exportableConversations, exportablePhrases, flushChatHistory, importConversationsIntoHistory, loadChatHistory, runHistoryImport, settleHistoryWrites, type ChatImportResult, type ChatStorage, type ChatTransferOptions } from './storage'
 
 /**
  * D41：导入要先把聊天页卸下，卸下就把正在回复、出图的那条掐断（出图那条可能照样扣了费）。
@@ -23,7 +23,8 @@ export interface ChatTransferImportResult extends ChatImportResult {
  * 一起卸下、一起导（「搬作品改」）。
  */
 export interface ChatTransfer {
-  exportChat: () => Promise<{ conversations: unknown[]; phrases: string[]; videoProjects: VideoStudioProjectFile[] }>
+  /** withWorks：作品库一起导出，对话里的图片、视频原样带上（chat/storage.ts 的 ChatTransferOptions）。 */
+  exportChat: (options?: ChatTransferOptions) => Promise<{ conversations: unknown[]; phrases: string[]; videoProjects: VideoStudioProjectFile[] }>
   /** 聊天在回复或出图时抛错（D41）。设置页选文件之前先问一次，什么都还没动。 */
   assertChatIdle: () => void
   importConversations: (conversations: Conversation[], phrases?: readonly string[], videoProjects?: readonly VideoStudioProjectFile[]) => Promise<ChatTransferImportResult>
@@ -55,7 +56,7 @@ export function createChatTransfer(bridge: ChatTransferBridge, storage: ChatStor
     ...(bridge.reportRendererError ? { logHistoryProblem: chatHistoryLogger({ reportRendererError: bridge.reportRendererError }) } : {}),
   }
   return {
-    async exportChat() {
+    async exportChat(options = {}) {
       // 导出读的是存到本机的那份。聊天页自动保存最多晚 2 秒（autosaveMaxWaitMs），回复刚说完就来导出，
       // 以前只等正在写的那次，最后一问一答还在聊天页手上没存，导出的文件里就没有（0.2.24 Mac 验收 R6）。
       // 所以先跟退出前一样让开着的聊天页马上存一次；存失败了原来的文件没动，照旧导出存着的那份。
@@ -65,7 +66,7 @@ export function createChatTransfer(bridge: ChatTransferBridge, storage: ChatStor
       if (loaded.warning) throw new Error(`${loaded.warning}，本次未导出`)
       // 视频那一页也登记在 flushChatHistory 里（useVideoStudioLibrary），上面那一下已经把手上攒着的存下了。
       const videos = await bridge.readVideoStudioProjects(scope)
-      return { conversations: exportableConversations(loaded.state), phrases: exportablePhrases(loaded.state), videoProjects: exportableVideoStudioProjects(videos.projects) }
+      return { conversations: exportableConversations(loaded.state, options), phrases: exportablePhrases(loaded.state), videoProjects: exportableVideoStudioProjects(videos.projects) }
     },
     assertChatIdle,
     async importConversations(conversations, phrases = [], videoProjects = []) {

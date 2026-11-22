@@ -257,3 +257,23 @@ describe('moving creation videos to a new computer', () => {
     expect((await reopened!).items.map((item) => item.id)).toEqual(['film-2'])
   })
 })
+
+// 对话里的图跟着作品一起搬：设置页选「导出全部」时，对话里的图片原样带着；只导聊天记录和设置时照旧换成一句说明。
+describe('moving the pictures of a conversation along with the works', () => {
+  const asset = { assetId: 'e'.repeat(43), localUrl: `xingmang-asset://image/${'e'.repeat(43)}`, mimeType: 'image/png' as const, fileName: '图.png' }
+  function pictured(id: string) {
+    const asked = conversation(id)
+    return { ...asked, messages: [...asked.messages, { id: `${id}-answer`, role: 'assistant' as const, content: '画好了', reasoning: '', status: 'complete' as const, createdAt: 2, assets: [asset] }] }
+  }
+
+  it('keeps the pictures only when asked to export the works too', async () => {
+    const files = memoryFiles()
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [pictured('drawn')] })
+    const transfer = createChatTransfer(files.bridge, memoryStorage(), scope, () => undefined)
+    const withWorks = await transfer.exportChat({ withWorks: true })
+    expect(withWorks.conversations[0]).toMatchObject({ messages: [{ id: 'drawn-message' }, { id: 'drawn-answer', content: '画好了', assets: [{ assetId: asset.assetId }] }] })
+    const alone = await transfer.exportChat()
+    expect(alone.conversations[0]).toMatchObject({ messages: [{ id: 'drawn-message' }, { id: 'drawn-answer', content: '画好了\n\n[图片未随记录迁移]' }] })
+    expect(JSON.stringify(alone.conversations)).not.toContain(asset.assetId)
+  })
+})
