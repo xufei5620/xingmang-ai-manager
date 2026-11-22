@@ -113,20 +113,20 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
     // in Chinese; the bare code is matched too in case another path forwards it.
     // Not a "try again later": retries never help, and the website login hits
     // the same limit, so the way out is a device that is still signed in.
-    test: /AUTH_SESSION_LIMIT\b|同时登录的设备太多/,
-    friendly: '这个账号同时登录的设备太多了，暂时登不上。如果别的电脑或浏览器上还登着这个账号，请在那里的个人中心「账号安全」里让几台不用的设备下线，再回来登录；都登不上的话请联系客服。',
+    test: /AUTH_SESSION_LIMIT\b|同时登录的设备(?:太多|过多)/,
+    friendly: '该账号同时登录的设备过多，暂时无法登录。如其他电脑或浏览器上仍登录着该账号，请在其个人中心「账号安全」中将不再使用的设备下线后重新登录；如均无法登录，请联系客服。',
     kind: 'support',
   },
   {
     // rc.24 login: 429 AUTH_SESSION_ISSUANCE_LIMIT, 100 new sessions per 24 hours.
-    test: /AUTH_SESSION_ISSUANCE_LIMIT|登录的次数太多/,
-    friendly: '这个账号最近一天里登录的次数太多了，请过几个小时再试。',
+    test: /AUTH_SESSION_ISSUANCE_LIMIT|登录的次数太多|登录次数过多/,
+    friendly: '该账号近 24 小时内登录次数过多，请数小时后重试。',
     kind: 'wait',
   },
   {
     // rc.24 login: bare 429 from the route's CriticalRateLimit (keyed by IP).
-    test: /登录太频繁/,
-    friendly: '登录太频繁了，请过一会儿再试。',
+    test: /登录(?:太|过于)频繁/,
+    friendly: '登录过于频繁，请稍后重试。',
     kind: 'wait',
   },
   {

@@ -47,9 +47,9 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   { key: 'featureSuspended', match: (message) => isRemoteFeatureOffMessage(message) },
   // 一键改用当前账号失败后连恢复也没做成（account-source-switch.ts）。这句里常带着
   // 网络、权限之类的原因，被下面哪条抢走都会配上一句「不会留下半成品」式的安抚，
-  // 所以排在最前，出口直接是「前往备份迁移」。只认「自动恢复也没有完成」这半句，不认
+  // 所以排在最前，出口直接是「前往备份迁移」。只认「自动恢复也未完成」（旧版是「没有完成」）这半句，不认
   // 后面叫人去哪儿：新版说「设置 › 备份迁移」，旧版和旧日志里还是「备份」，两种都要接住。
-  { key: 'switchUndoFailed', match: (message) => /自动恢复也没有完成/.test(message) },
+  { key: 'switchUndoFailed', match: (message) => /自动恢复也(?:没有|未)完成/.test(message) },
   // 打开工具时发现工具自己都读不了它的配置文件（broken-config-launch.ts 那几句，整句全等）。出口是首页那颗
   // 「立即修复」，修完接着打开；别的规则认不出这几句，放前面只是省得以后有人加了更泛的规则把它抢走。
   { key: 'configBroken', match: (message) => isBrokenConfigLaunchMessage(message) },
@@ -126,9 +126,9 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // previous version to fall back to, so an integrity mismatch there keeps the
   // raw wording rather than borrowing a reassurance that would be false.
   { key: 'updateIntegrity', match: (message) => /更新|升级/.test(message) && /(SHA-512|完整性|校验)[^。；]{0,12}(失败|不一致|无效)/.test(message) },
-  // safe-storage-backend.ts 的「这台电脑没法安全保存密码，已拒绝写入……」（旧版本说「密钥环」「明文」）。
+  // safe-storage-backend.ts 的「本机不支持安全保存密码，已拒绝写入……」（0.2.24 及以前说「这台电脑没法安全保存密码」，再早说「密钥环」「明文」）。
   // 这不是权限问题：目录写得进去，是这台机器没有可用的系统密码保管。
-  { key: 'unsafeStorage', match: (message) => /没法安全保存密码|密钥环|安全存储[^。；]{0,12}明文|只能以明文保存/.test(message) },
+  { key: 'unsafeStorage', match: (message) => /(?:没法|不支持)安全保存密码|密钥环|安全存储[^。；]{0,12}明文|只能以明文保存/.test(message) },
   // 更新和回滚要替换整个托管目录。Windows 上正在跑的 CLI 把自己的文件锁住，那是
   // 文件占用，不是杀毒拦截也不是权限不够——归到 installBlocked 会把用户送去关杀毒，
   // 方向全错。主进程在那一步会把话说成「文件被占用，……正在运行」

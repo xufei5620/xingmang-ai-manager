@@ -8523,7 +8523,7 @@ test('an obsolete balance rejection stays silent before the session-change event
   try {
     await page.getByTestId('tool-row-codex').waitFor()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'getAccountBalance'))
-    await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': Error: 账号刚切换过，请再试一次"))
+    await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': Error: 账号刚刚切换，请重试"))
     // 时钟停着，等的那一下在测试这边等：读失败那一下是微任务，早就落地了。
     await page.waitForTimeout(100)
     assert.equal(await page.getByRole('dialog', { name: '操作未完成' }).count(), 0)

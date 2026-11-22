@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events'
+import fs from 'node:fs'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   buildActivityNotificationMessage,
@@ -383,7 +385,7 @@ describe('spend spike reminders', () => {
 })
 
 describe('chat notifications and click destinations', () => {
-  it('uses chat-specific copy for chat and image completions instead of the async task sentence', () => {
+  it('uses create-page copy for chat, image and video completions instead of the async task sentence', () => {
     expect(buildActivityNotificationMessage('task', 'chat:req-1')).toEqual({
       title: 'AI 回复已完成',
       body: '请返回星芒的「创作」页查看。',
@@ -392,14 +394,30 @@ describe('chat notifications and click destinations', () => {
       title: '图片已生成',
       body: '请返回星芒的「创作」页查看。',
     })
+    // 「创作」输入框里生成的视频（useChatController.ts 发的 video: 编号），以前落回通用那句。
+    expect(buildActivityNotificationMessage('task', 'video:req-1')).toEqual({
+      title: '视频已生成',
+      body: '请返回星芒的「创作」页查看。',
+    })
     expect(buildActivityNotificationMessage('task', 'xm-account:7:12:0').title).toBe('生成任务已完成')
     // 前缀只对 task 这一类生效，别的种类照旧用自己的说法。
     expect(buildActivityNotificationMessage('balance', 'chat:1').title).toBe('余额不足提醒')
+  })
+  it('recognizes every task prefix the create page sends so none falls back to the async task page', () => {
+    // 「创作」页按前缀发 task 通知；新加一种前缀却没在这里认，客户就会收到「生成任务已完成」并被送去「异步任务」。
+    const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'renderer-v2', 'features', 'chat', 'useChatController.ts'), 'utf8')
+    const prefixes = [...source.matchAll(/notifyActivity\('task', `([a-z-]+):/g)].map((match) => match[1])
+    expect(prefixes.sort()).toEqual(['chat', 'image', 'video'])
+    for (const prefix of prefixes) {
+      expect(resolveNotificationTarget('task', `${prefix}:req-1`)).toBe('chat')
+      expect(buildActivityNotificationMessage('task', `${prefix}:req-1`).body).toBe('请返回星芒的「创作」页查看。')
+    }
   })
   it('maps every notification kind to a fixed page decided in the main process', () => {
     expect(resolveNotificationTarget('balance', 'balance:7:1')).toBe('topup')
     expect(resolveNotificationTarget('task', 'chat:req-1')).toBe('chat')
     expect(resolveNotificationTarget('task', 'image:req-1')).toBe('chat')
+    expect(resolveNotificationTarget('task', 'video:req-1')).toBe('chat')
     expect(resolveNotificationTarget('task', 'xm-account:7:12:0')).toBe('tasks')
     expect(resolveNotificationTarget('install', 'install:claude:installed:1')).toBe('home')
     expect(resolveNotificationTarget('cliUpdate', 'claude@2')).toBe('home')

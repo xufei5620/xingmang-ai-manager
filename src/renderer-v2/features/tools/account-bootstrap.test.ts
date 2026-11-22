@@ -1386,7 +1386,7 @@ describe('account keys left unwritten by an earlier round', () => {
     current.providers.claude = owned(false, true)
     // 同步整轮没成、缓存没存上、缓存里压根没有这家：读到的缓存说明不了配置旧了。
     expect(staleAccountKeys(current, null)).toEqual([])
-    expect(staleAccountKeys(current, { ready: ready('claude'), storageWarning: '本地 API Key 保存失败' })).toEqual([])
+    expect(staleAccountKeys(current, { ready: ready('claude'), storageWarning: '本地密钥保存失败' })).toEqual([])
     expect(staleAccountKeys(current, { ready: ready('codex') })).toEqual([])
     expect(staleAccountKeys({ ...current, ownershipPending: true }, { ready: ready('claude') })).toEqual([])
   })

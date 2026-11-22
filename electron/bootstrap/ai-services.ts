@@ -191,7 +191,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     const definition = requireSiteRuntimeDefinition(siteId)
     const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
     const accountService = createRealmServiceDispatch(() => {
-      if (accounts.getSiteId() !== siteId) throw new Error('账号刚切换过，请再试一次')
+      if (accounts.getSiteId() !== siteId) throw new Error('账号刚刚切换，请重试')
       return accounts.client
     })
     const onAiRequestStarted = createAccountUsageTracker({
