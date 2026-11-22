@@ -14,6 +14,7 @@ import {
   type CodexInvoker,
 } from './codex-extensions'
 import { setRelocatedFolderPolicy } from './relocated-folders'
+import { createSkillImportStaging, discardSkillImportStaging, isSkillImportStagingName } from './skill-import-snapshot'
 
 const temporaryDirectories: string[] = []
 
@@ -1367,6 +1368,96 @@ describe('Skill discovery and managed mutations', () => {
     await expect(service.importSkill({ sourcePath: source })).rejects.toThrow('Skill 已存在：my-skill')
     expect(fs.readFileSync(existing, 'utf8')).toContain('mine')
     expect(fs.readdirSync(path.join(home, '.agents', 'skills'))).toEqual(['my-skill'])
+  })
+
+  // 0.2.25 复查第三轮第 3 条：临时文件夹删不掉（安全软件正扫着）时，客户该看到的还是原来那个原因；
+  // 留下的那份不当技能列出来，开机清理时删掉。
+  it('keeps the real reason when the staging folder cannot be removed, and does not list what was left', async () => {
+    const home = temporaryDirectory()
+    const source = path.join(temporaryDirectory(), 'my-skill')
+    const skillsRoot = path.join(home, '.agents', 'skills')
+    write(path.join(source, 'SKILL.md'), '---\nname: my-skill\ndescription: downloaded again\n---\n')
+    write(path.join(skillsRoot, 'my-skill', 'SKILL.md'), '---\nname: my-skill\ndescription: mine\n---\n')
+    const originalRm = fs.rmSync.bind(fs)
+    let refused = 0
+    const spy = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+      if (isSkillImportStagingName(path.basename(String(target)))) {
+        refused += 1
+        throw Object.assign(new Error('EBUSY: resource busy or locked, rmdir'), { code: 'EBUSY' })
+      }
+      originalRm(target, options)
+    })
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+
+    await expect(service.importSkill({ sourcePath: source })).rejects.toThrow('Skill 已存在：my-skill')
+    spy.mockRestore()
+
+    expect(refused).toBe(1)
+    const leftovers = fs.readdirSync(skillsRoot).filter(isSkillImportStagingName)
+    expect(leftovers).toHaveLength(1)
+    expect(fs.existsSync(path.join(skillsRoot, leftovers[0], 'SKILL.md'))).toBe(true)
+    expect((await service.listSkills()).map((skill) => skill.path)).toEqual([path.resolve(skillsRoot, 'my-skill', 'SKILL.md')])
+
+    expect(await service.discardSkillImportLeftovers()).toEqual({ removed: 1, remaining: 0 })
+    expect(fs.readdirSync(skillsRoot)).toEqual(['my-skill'])
+    expect(fs.readFileSync(path.join(skillsRoot, 'my-skill', 'SKILL.md'), 'utf8')).toContain('mine')
+  })
+
+  it('sweeps only the import folders it names itself, never through a link', async () => {
+    const home = temporaryDirectory()
+    const repository = temporaryDirectory()
+    const outside = temporaryDirectory()
+    const skillsRoot = path.join(home, '.agents', 'skills')
+    const projectRoot = path.join(repository, '.agents', 'skills')
+    const leftover = path.join(skillsRoot, '.xingmang-import-0b6f3c2e-4a1d-4c8e-9f00-123456789abc')
+    const projectLeftover = path.join(projectRoot, '.xingmang-import-1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b')
+    const linked = path.join(skillsRoot, '.xingmang-import-11111111-2222-4333-8444-555555555555')
+    write(path.join(leftover, 'SKILL.md'), '---\nname: Copy\n---\n')
+    write(path.join(projectLeftover, 'SKILL.md'), '---\nname: Copy\n---\n')
+    write(path.join(skillsRoot, '.xingmang-import-notes', 'SKILL.md'), '---\nname: Notes\n---\n')
+    write(path.join(skillsRoot, 'kept', 'SKILL.md'), '---\nname: Kept\n---\n')
+    write(path.join(outside, 'keep.txt'), 'OUTSIDE')
+    fs.symlinkSync(outside, linked, process.platform === 'win32' ? 'junction' : 'dir')
+    // An import of this process still owns this one.
+    const live = createSkillImportStaging(skillsRoot)
+    write(path.join(live.directory, 'SKILL.md'), '---\nname: Live\n---\n')
+    const service = new CodexExtensionService({ homeDirectory: home, repositoryRoot: repository, invoke: async () => '' })
+
+    expect(await service.discardSkillImportLeftovers()).toEqual({ removed: 2, remaining: 0 })
+
+    expect(fs.existsSync(leftover)).toBe(false)
+    expect(fs.existsSync(projectLeftover)).toBe(false)
+    expect(fs.existsSync(path.join(skillsRoot, '.xingmang-import-notes', 'SKILL.md'))).toBe(true)
+    expect(fs.existsSync(path.join(skillsRoot, 'kept', 'SKILL.md'))).toBe(true)
+    expect(fs.lstatSync(linked).isSymbolicLink()).toBe(true)
+    expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8')).toBe('OUTSIDE')
+    expect(fs.existsSync(path.join(live.directory, 'SKILL.md'))).toBe(true)
+    discardSkillImportStaging(live)
+  })
+
+  it('leaves alone the staging folder of an import still waiting on its config write', async () => {
+    const home = temporaryDirectory()
+    const source = path.join(temporaryDirectory(), 'slow-skill')
+    const skillsRoot = path.join(home, '.agents', 'skills')
+    write(path.join(source, 'SKILL.md'), '---\nname: Slow\n---\n')
+    let openGate: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => { openGate = resolve })
+    const service = new CodexExtensionService({
+      homeDirectory: home,
+      invoke: async () => '',
+      serializeConfigWrite: async (operation) => {
+        await gate
+        return operation()
+      },
+    })
+
+    const importing = service.importSkill({ sourcePath: source })
+    expect(fs.readdirSync(skillsRoot).filter(isSkillImportStagingName)).toHaveLength(1)
+    expect(await service.discardSkillImportLeftovers()).toEqual({ removed: 0, remaining: 0 })
+    openGate()
+
+    expect((await importing).map((skill) => skill.name)).toEqual(['Slow'])
+    expect(fs.readdirSync(skillsRoot)).toEqual(['slow-skill'])
   })
 
   it('imports user skills and moves uninstall targets into application trash', async () => {

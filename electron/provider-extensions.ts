@@ -8,13 +8,17 @@ import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
 import { DirectoryEntryLimitError, readDirectoryEntries } from './bounded-directory'
 import { readBoundedResponseText } from './bounded-response'
+import { isSkillImportStagingName } from './skill-import-snapshot'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
   copySkillImport,
+  discardSkillImportLeftovers,
   moveSkillToTrash,
   readCodexMcpServerEntries,
   readCodexSkillEnablement,
   resolveSkillImportSource,
+  sumSkillImportLeftoverSweeps,
+  type SkillImportLeftoverSweep,
 } from './codex-extensions'
 import {
   CODEX_API_CURATED_MARKETPLACE_NAME,
@@ -978,7 +982,9 @@ async function scanSkills(
       if (error instanceof DirectoryEntryLimitError) throw error
       continue
     }
-    const items = await mapWithConcurrency(directories, SKILL_SCAN_CONCURRENCY, (directory) => (
+    // 导入用的临时文件夹（skill-import-snapshot.ts）里那份 SKILL.md 不是装好的技能。
+    const skillDirectories = directories.filter((directory) => !isSkillImportStagingName(directory.name))
+    const items = await mapWithConcurrency(skillDirectories, SKILL_SCAN_CONCURRENCY, (directory) => (
       scanSkillDirectory(provider, root, realRoot, directory.name, isEnabled)
     ))
     for (const item of items) {
@@ -2126,6 +2132,19 @@ export class ProviderExtensionService {
 
   setRepositoryRoot(repositoryRoot: string | null): void {
     this.repositoryRoot = repositoryRoot ? path.resolve(repositoryRoot) : null
+  }
+
+  /** Claude Code、Grok CLI 的技能导入到的几处（自己的、当前项目的），清掉以前导入留下的临时文件夹。 */
+  async discardSkillImportLeftovers(): Promise<SkillImportLeftoverSweep> {
+    // 项目文件夹选的就是用户目录时，项目那一处跟自己那一处是同一个文件夹，只清一遍。
+    const roots = new Map<string, string>()
+    for (const provider of ['claude', 'grok'] as const) {
+      for (const scope of ['user', 'project'] as const) {
+        const root = ownSkillRoot(provider, this.homeDirectory, this.repositoryRoot, scope)
+        if (root) roots.set(pathKey(root), root)
+      }
+    }
+    return sumSkillImportLeftoverSweeps(await Promise.all([...roots.values()].map((root) => discardSkillImportLeftovers(root))))
   }
 
   private async enrichUpdates(items: MutableExtensionItem[], checkedAt: string): Promise<void> {
