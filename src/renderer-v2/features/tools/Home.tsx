@@ -1094,7 +1094,7 @@ export function Home(props: HomeProps) {
     // Windows 上缺系统安装组件时一键安装不了，与其留一颗点不动的「暂不支持」，
     // 不如直接把人送到官网下载页（网址由主进程给，白名单逐条收录）。
     const downloadUrl = tool.action === 'install' && tool.disabled && !manualInstall && props.onOpenExternalDownload ? tool.status.officialDownloadUrl ?? null : null
-    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : tool.action === 'scan' ? '重新检测' : tool.action === 'install' ? manualInstall ? '安装指南' : downloadUrl ? '去官网下载' : tool.disabled ? '暂不支持' : '安装' : tool.action === 'launch' ? '打开' : '确认连接'
+    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : tool.action === 'scan' ? '重新检测' : tool.action === 'install' ? manualInstall ? '安装指南' : downloadUrl ? '前往官网下载' : tool.disabled ? '暂不支持' : '安装' : tool.action === 'launch' ? '打开' : '确认连接'
     const primary = () => manualInstall ? props.onNavigate('tutorial', macDesktopTutorialTopic) : downloadUrl ? props.onOpenExternalDownload?.(downloadUrl) : tool.action === 'scan' ? props.onScan() : tool.action === 'install' ? props.onInstallExternal(tool.id) : tool.action === 'launch' ? props.onLaunchExternal(tool.id) : props.onConfigureExternal(tool.id)
     const unsupported = tool.disabled && !manualInstall && !downloadUrl
     // Mac 上星芒换得了、存储桶里有更新的那一版：同命令行工具，卡片下面一行「可更新到 v…」。
@@ -1266,7 +1266,7 @@ export function Home(props: HomeProps) {
   }
   if (moneyNotice) {
     statusNotices.push(<HomeNotice key="money" tone="warn" testId={moneyNotice.renew && subscription ? 'home-subscription-warning' : 'home-low-balance'} icon={<TriangleAlert size={15} aria-hidden="true" />}
-      action={<Button size="xs" variant="secondary" onClick={() => props.onNavigate('account', 'recharge')}>{moneyNotice.renew ? '去续费' : '前往充值'}</Button>}>{moneyNotice.text}</HomeNotice>)
+      action={<Button size="xs" variant="secondary" onClick={() => props.onNavigate('account', 'recharge')}>{moneyNotice.renew ? '前往续费' : '前往充值'}</Button>}>{moneyNotice.text}</HomeNotice>)
   }
   if (routeTexts.quiet) statusNotices.push(<HomeNotice key="route-quiet" testId="home-route-server-switching" icon={<Info size={15} aria-hidden="true" />}>{routeTexts.quiet}</HomeNotice>)
   if (routeTexts.hijack) statusNotices.push(<HomeNotice key="route-hijack" testId="home-route-hijack" icon={<Info size={15} aria-hidden="true" />}>{routeTexts.hijack}</HomeNotice>)

@@ -727,7 +727,7 @@ describe('ProviderSessionsService', () => {
       '',
       '- Provider：`claude`',
       '- 会话 ID：`abcdef12-3456`',
-      '- 工作目录：`C:/my \\`project\\``',
+      '- 项目文件夹：`C:/my \\`project\\``',
       '- 模型：`claude-\\`sonnet\\``',
       '',
       '---',

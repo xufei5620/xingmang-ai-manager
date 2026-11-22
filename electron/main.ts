@@ -3093,7 +3093,7 @@ if (!hasSingleInstanceLock) {
       const result = await dialog.showMessageBox(mainWindow, {
         type: 'question', title: '关闭星芒AI管理工具', message: prompt.message,
         buttons: prompt.buttons,
-        // 回车、Esc 都落在「等它说完」上：手滑不会把已经扣了费的回复停在半截。
+        // 回车、Esc 都落在「等待完成」上：手滑不会把已经扣了费的回复停在半截。
         defaultId: 0, cancelId: 0, noLink: true,
       })
       return result.response === 1

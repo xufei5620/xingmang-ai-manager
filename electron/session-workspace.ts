@@ -37,7 +37,7 @@ export async function resolveOpenableSessionWorkspace(
     info = await (probe.stat ?? fs.stat)(resolved)
   } catch {
     // 目录被删、被搬走、盘符掉了、权限不足——用户的处境都是「这个文件夹打不开」。
-    throw new Error('这条记录的文件夹已经不在了。')
+    throw new Error('该记录的文件夹已不存在。')
   }
   if (!info.isDirectory()) throw new Error('该记录的位置不是文件夹，未打开。')
   return resolved

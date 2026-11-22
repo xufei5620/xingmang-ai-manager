@@ -281,7 +281,7 @@ describe('linux tutorials', () => {
   it('walks a Linux beginner through Codex CLI in the same four steps', () => {
     const start = linux[0];
     expect(start.title).toBe(tutorialTopics[0].title);
-    expect(start.steps.map((entry) => entry.title)).toEqual(['登录星芒账号', '安装 Codex CLI', '看到「当前账号」就继续', '打开 Codex 并发送第一条消息']);
+    expect(start.steps.map((entry) => entry.title)).toEqual(['登录星芒账号', '安装 Codex CLI', '确认显示「当前账号」', '打开 Codex 并发送第一条消息']);
     expect(start.steps[0]).toBe(tutorialTopics[0].steps[0]);
     expect(start.reminders).toEqual(tutorialTopics[0].reminders);
     expect(JSON.stringify(start)).toContain('无需输入开机密码');

@@ -95,7 +95,7 @@ describe('standing-instructions', () => {
     expect(() => validateStandingInstructions(42)).toThrow('长期嘱咐格式错误')
     expect(() => validateStandingInstructions('字'.repeat(2001))).toThrow('最多 2000 个字')
     expect(validateStandingInstructions('字'.repeat(2000))).toHaveLength(2000)
-    expect(() => validateStandingInstructions('a\u0000b')).toThrow('不能用的字符')
+    expect(() => validateStandingInstructions('a\u0000b')).toThrow('不支持的字符')
     expect(() => validateStandingInstructions(`x ${STANDING_INSTRUCTIONS_MARKER}（开始）`)).toThrow('标记')
   })
 

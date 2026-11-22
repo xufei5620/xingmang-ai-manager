@@ -49,7 +49,7 @@
 
 ## 写进 CLI 配置的附加项：钩子、状态行、型号
 - `cli-hooks.ts` — 往四家 CLI 配置里写「开始 / 做完 / 出错 / 等你」钩子的那几行：Claude Code 用不经 shell 的 exec 形式，Gemini、Grok 只收整条 shell 命令、要按平台加引号，Codex 用 notify 数组；路径里有引号、`$`、反引号、`%` 或换行就干脆不写，绝不把安装路径交给 shell 展开（I1 的同类）。认得出、收得回本软件写的那几行
-- `cli-hook-events.ts` — 读钩子脚本丢进数据目录的小文件，决定弹不弹「终端里没回上 / 做完了 / 在等你」的系统通知；那个目录用户可写，文件一律当敌意输入：固定文件名格式、单链接有界读取（I8）、字段白名单重建（I5），文件里的字一个都不进通知
+- `cli-hook-events.ts` — 读钩子脚本丢进数据目录的小文件，决定弹不弹「未能回复 / 已完成 / 等待确认」的系统通知；那个目录用户可写，文件一律当敌意输入：固定文件名格式、单链接有界读取（I8）、字段白名单重建（I5），文件里的字一个都不进通知
 - `cli-keep-awake.ts` — 终端里 Claude Code / Gemini / Grok 正在跑一轮时挡住系统自动睡眠，做完、出错、退出就放开，最多挡两小时；信号就是上面那套钩子记录。Codex 用它自己的防睡开关，不走这里
 - `claude-status-line.ts` — Claude Code 状态行：随包脚本的定位、命令拼装（两段路径都加引号，带 shell 元字符就不写）、「用户自己设过就不动」的判定
 - `editor-claude-login-prompt.ts` — VS Code、Cursor 用户设置里的 `claudeCode.disableLoginPrompt`：写 Claude Code 配置时、开机补设置那一轮顺手补上，编辑器里的 Claude Code 插件就不再先要登录 Anthropic 账号；编辑器没打开过不建，客户写过的不动，设置文件按 JSONC 原样只插这一行，经 `config-files.ts` 同一套两阶段提交写入（I8、I9）
@@ -111,7 +111,7 @@
 ## 外部桌面客户端：WorkBuddy / Claude Desktop / OpenCode
 - `external-client-runtime.ts` — **三家客户端的探测、安装与打开**：Windows 用一段 PowerShell 盘点并核签名，Claude Desktop 装法是存储桶 → winget → 官网 MSIX，OpenCode 走 winget，WorkBuddy 一律让客户去官网自己下；Mac 交给 `macos-desktop-app-installer.ts` 并核 Developer ID。「打开」不排安装队列，是 I11 的登记例外（只等同一家正在装的那一次）
 - `external-client-route-service.ts` — **三家客户端在系统服务里的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `scanExternalClients`、`configureExternalTool`、`switchExternalClientSource` 这些）：盘点（合并、落盘先画首页）、安装、打开、测试连接，写配置前绕过缓存现查型号、核账号没换，Claude Desktop 切回官方账号或改用当前账号；换线路、换 Key 以后替当前账号写的那份跟着换，客户端开着就每 5 分钟看一眼进程、等它退出再换（星芒退出时撤掉这个定时）。写配置、切账号、跟线路改的是同一批文件，排同一个队（`queueExternalConfigWork`，原来手抄三份）；开机后台替 Claude Desktop 补账号新上的型号（`topUpClaudeDesktopModels`，查型号、试型号在队外，只有最后那一笔写排队）
-- `external-client-contract.ts` — 三家的共用类型、名字表、「去官网下载」网址（主进程外链白名单逐条全等收录，I12）和配置请求的入参校验（I5）；`ipc-contract.ts` 引它的类型
+- `external-client-contract.ts` — 三家的共用类型、名字表、「前往官网下载」网址（主进程外链白名单逐条全等收录，I12）和配置请求的入参校验（I5）；`ipc-contract.ts` 引它的类型
 - `external-tool-config.ts` — WorkBuddy 与 OpenCode 的配置文件：找位置、合并，经 `config-files.ts` 同一套两阶段提交写入（I9）；换线路时只改星芒写的那几处地址，客户刚改过就一个字不写。Claude Desktop 不在这里，见 `claude-desktop-config.ts`
 - `external-client-connection.ts` — 三家的连接自检：回读客户端自己的配置，用里面那把密钥问一次星芒（WorkBuddy、OpenCode 查模型清单不花额度，Claude Desktop 照它自己的样子发一个字）；客户端里真正发的对话本机测不到，结论照实说，不假绿
 - `external-client-ownership.ts` — 记「这份客户端配置是替哪个账号写的」：只存地址加密钥的 sha256，是本机证据不是凭据库（I3）

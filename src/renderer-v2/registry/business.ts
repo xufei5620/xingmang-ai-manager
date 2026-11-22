@@ -428,11 +428,11 @@ export interface NotificationOption {
 export const notificationOptions: readonly NotificationOption[] = [
   { value: 'balance', label: '余额不足', description: '余额低于 $5 时提醒' },
   { value: 'spend', label: '花费突然变多', description: '一小时内花费超过平时 5 倍且至少 $5 时提醒' },
-  { value: 'cliTurn', label: '终端里的 AI 做完或在等你' },
-  { value: 'cliTrouble', label: '终端里没回上' },
+  { value: 'cliTurn', label: '终端中的 AI 已完成或等待确认' },
+  { value: 'cliTrouble', label: '终端中的 AI 未能回复' },
   { value: 'install', label: '安装和更新结果' },
   { value: 'cliUpdate', label: '工具有新版本' },
-  { value: 'task', label: '后台任务做完' },
+  { value: 'task', label: '后台任务已完成' },
   { value: 'announcement', label: '公告与优惠' },
   { value: 'acceleration', label: '加速提醒' },
 ]

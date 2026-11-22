@@ -631,7 +631,7 @@ export function removeDraftImage(conversation: Conversation, assetId: string): C
   return withoutImages
 }
 
-/** 余额不足给「前往充值」，Key 额度上限给「去调额度」；Key 失效时点「重新生成」就会换新 Key。 */
+/** 余额不足给「前往充值」，Key 额度上限给「前往调整额度」；Key 失效时点「重新生成」就会换新 Key。 */
 export function chatErrorAction(message: string | undefined): 'recharge' | 'keys' | null {
   const quota = matchRelayQuotaFailureMessage(message ?? '')
   if (quota === 'balance') return 'recharge'

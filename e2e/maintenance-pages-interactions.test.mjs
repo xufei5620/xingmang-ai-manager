@@ -37,7 +37,7 @@ test('health guards duplicate runs, preserves its own results and passes exact r
     const row = page.getByRole('listitem').filter({ hasText: 'Node.js' })
     await row.locator('summary').click()
     assert.match(await row.innerText(), /16.0.0/)
-    await row.getByRole('button', { name: '去处理' }).click()
+    await row.getByRole('button', { name: '前往处理' }).click()
     assert.deepEqual(await page.evaluate(() => window.maintenanceHarness.resolved), ['RUNTIME_NODE'])
     await page.getByRole('button', { name: '返回检查' }).click()
     await page.getByRole('heading', { name: '逐项结果' }).waitFor()

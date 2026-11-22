@@ -260,8 +260,8 @@ describe('confirming a computer restart from the restart dialog', () => {
 describe('chat reply still streaming on quit', () => {
   it('uses the approved sentence and buttons word for word', () => {
     expect(buildChatReplyQuitPrompt(['chat'])).toEqual({
-      message: '正在回复，退出会停下这条回复。',
-      buttons: ['等它说完', '仍然退出'],
+      message: '对话仍在回复，现在退出将中断本次回复。',
+      buttons: ['等待完成', '仍然退出'],
     })
   })
 
@@ -272,7 +272,7 @@ describe('chat reply still streaming on quit', () => {
   })
 
   it('asks once however the work is reported', () => {
-    expect(buildChatReplyQuitPrompt(['video-compose', 'chat', 'chat'])?.message).toBe('正在回复，退出会停下这条回复。')
+    expect(buildChatReplyQuitPrompt(['video-compose', 'chat', 'chat'])?.message).toBe('对话仍在回复，现在退出将中断本次回复。')
   })
 })
 

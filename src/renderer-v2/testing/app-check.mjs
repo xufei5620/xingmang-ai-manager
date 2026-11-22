@@ -1812,9 +1812,9 @@ test('the home recent card opens a record folder and says so when it cannot', as
     assert.equal(await page.getByTestId('home-recent-open-directory-claude:2').isDisabled(), true)
 
     // 打不开时只提示一句,不把整张卡打回「记录加载失败」。
-    await page.evaluate(() => { window.v2Test.fail = 'openProviderSessionDirectory'; window.v2Test.failMessage = '这条记录的文件夹已经不在了。' })
+    await page.evaluate(() => { window.v2Test.fail = 'openProviderSessionDirectory'; window.v2Test.failMessage = '该记录的文件夹已不存在。' })
     await button.click()
-    await page.getByText('这条记录的文件夹已经不在了。').waitFor()
+    await page.getByText('该记录的文件夹已不存在。').waitFor()
     assert.equal(await page.getByTestId('home-recent-card').count(), 1)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await clean(page)
@@ -10507,7 +10507,7 @@ test('the connection self-check reports every CLI on its own, and an unconfigure
       const row = page.getByTestId(`health-connection-result-${provider}`)
       // 未配置不是失败：图标是灰的「未配置」，不是红的「有问题」，只给一条「去处理」。
       await expect(row.getByRole('img', { name: '未配置', exact: true })).toHaveClass(/is-neutral/)
-      await row.getByRole('button', { name: '去处理', exact: true }).waitFor()
+      await row.getByRole('button', { name: '前往处理', exact: true }).waitFor()
     }
     // 有问题的排前：没配的那条排在正常的两条前面，同一档里照注册表的次序。
     const order = await page.getByTestId('health-connection').locator('[data-testid^="health-connection-result-"]')
@@ -10625,7 +10625,7 @@ test('a self-check failure is attributed per tool and never takes the other tool
     // 分组层的下一步是重签一把 Key，所以这一条给的是「重新写入密钥」（同首页工具卡片那一颗）；仍旧跳页的
     // 那几层（这里是未配置的 Grok）继续给「去处理」。
     await claude.getByRole('button', { name: '重新写入密钥', exact: true }).waitFor()
-    await page.getByTestId('health-connection-result-grok').getByRole('button', { name: '去处理', exact: true }).click()
+    await page.getByTestId('health-connection-result-grok').getByRole('button', { name: '前往处理', exact: true }).click()
     await page.getByTestId('page-home').waitFor()
     await page.getByTestId('nav-health').click()
     // 一个工具的 IPC 抛错只影响它自己那一条。
@@ -10926,8 +10926,8 @@ test('tutorial pins the step being read on top and puts help at the end of the a
     // 点开头的第 3 步：开头滚出去，顶上那条出来，写着第 3 步，第三颗圆点亮着，也不压住第 3 步的标题。
     await article.locator('.v2-tutorial-step-links a').nth(2).click()
     await expect(progress).toBeVisible()
-    await expect(progress).toContainText('第 3 步，共 4 步 · 看到「当前账号」就继续')
-    await expect(progress.getByRole('button', { name: '第 3 步：看到「当前账号」就继续', exact: true })).toHaveAttribute('aria-current', 'step')
+    await expect(progress).toContainText('第 3 步，共 4 步 · 确认显示「当前账号」')
+    await expect(progress.getByRole('button', { name: '第 3 步：确认显示「当前账号」', exact: true })).toHaveAttribute('aria-current', 'step')
     const bar = await progress.evaluate((element) => element.getBoundingClientRect().toJSON())
     const pane = await page.getByTestId('page-viewport').evaluate((element) => element.getBoundingClientRect().toJSON())
     assert.ok(Math.abs(bar.height - 36) <= 1, `吸顶条约 36 高，实际 ${bar.height}`)
@@ -11568,7 +11568,7 @@ test('the backup card in settings lists a backup made while it was hidden once i
 })
 
 // 第五部分第 39 条：结论是「网络」时，「去处理」打开设置的「网络」那一组，不再落在第一组「外观」。
-test('a network self-check result sends 去处理 to the network group of settings', async () => {
+test('a network self-check result sends 前往处理 to the network group of settings', async () => {
   const page = await open()
   try {
     await page.evaluate(() => {
@@ -11585,7 +11585,7 @@ test('a network self-check result sends 去处理 to the network group of settin
     await expect(claude.locator('.v2-health-line-text')).toHaveText('Claude Code：无法连接星芒服务（连接被重置）')
     await page.getByTestId('health-connection-details-claude').click()
     await claude.getByTestId('health-connection-details').getByText('换个网络或打开加速后再测一次', { exact: true }).waitFor()
-    await claude.getByRole('button', { name: '去处理', exact: true }).click()
+    await claude.getByRole('button', { name: '前往处理', exact: true }).click()
     const settings = page.getByTestId('page-settings')
     await settings.waitFor()
     await expect(settings.getByRole('tab', { name: '网络连接', exact: true })).toHaveAttribute('aria-selected', 'true')

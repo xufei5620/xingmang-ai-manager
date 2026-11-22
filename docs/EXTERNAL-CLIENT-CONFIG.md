@@ -4,7 +4,7 @@
 
 ## 入口与操作
 
-首页「工具」区按厂商把 **WorkBuddy、Claude Desktop、OpenCode** 和命令行工具、Codex 桌面端排在同一组卡片里（`src/renderer-v2/features/tools/Home.tsx`）。卡片主按钮按实际状态显示「安装 → 确认连接 → 打开」（WorkBuddy 没装时说明写「装好 WorkBuddy 后，星芒会自动连上当前账号」、按钮是「重新检测」，星芒不给下载也不给安装指南；Windows 上 OpenCode 一键装不了的是「去官网下载」），安装期间显示进度，检测失败显示「重新检测」。已安装的卡片在「…」菜单里留着「配置…」（主按钮已是「确认连接」时换成「打开」）。Codex 卡片「…」菜单里的「换用别家模型…」是原来的非 GPT 模型入口。
+首页「工具」区按厂商把 **WorkBuddy、Claude Desktop、OpenCode** 和命令行工具、Codex 桌面端排在同一组卡片里（`src/renderer-v2/features/tools/Home.tsx`）。卡片主按钮按实际状态显示「安装 → 确认连接 → 打开」（WorkBuddy 没装时说明写「装好 WorkBuddy 后，星芒会自动连上当前账号」、按钮是「重新检测」，星芒不给下载也不给安装指南；Windows 上 OpenCode 一键装不了的是「前往官网下载」），安装期间显示进度，检测失败显示「重新检测」。已安装的卡片在「…」菜单里留着「配置…」（主按钮已是「确认连接」时换成「打开」）。Codex 卡片「…」菜单里的「换用别家模型…」是原来的非 GPT 模型入口。
 
 首次使用未安装的客户端时，先点击「安装」；安装完成并重新检测后，再从同一张卡片点击「确认连接」打开配置弹窗。保存配置会刷新工具状态；完成后回到卡片点击「打开」。已有其他来源配置的客户端保留可打开状态，要连接星芒就用「…」菜单里的「配置…」。
 
@@ -51,7 +51,7 @@ Claude Desktop 为什么不查清单：它每次启动、每次点「Check again
 
 | 平台 | 一键安装 | 检测与打开 |
 | --- | --- | --- |
-| Windows x64 | 系统 winget 精确安装 `Anthropic.Claude`、`SST.OpenCodeDesktop`，用户级、静默执行。Claude Desktop 先从星芒存储桶下同一个官方离线安装包（MSIX），没装上再走 winget，winget 没有或没装上时从 Claude 官网下离线 MSIX（`claude-desktop-msix-installer.ts`）；几路都没装上时错误框给「下载离线安装包」和「去 Claude 官网」（D64，`claude-desktop-install-failure.ts`）。OpenCode 没有 winget 时按钮是「去官网下载」。WorkBuddy 不一键安装也不给下载（2026-11-18 起），没装时按钮是「重新检测」 | 读取安装记录和版本，验证可信文件与官方签名；Claude 商店版识别 AppX 身份，通过已注册 AUMID 打开 |
+| Windows x64 | 系统 winget 精确安装 `Anthropic.Claude`、`SST.OpenCodeDesktop`，用户级、静默执行。Claude Desktop 先从星芒存储桶下同一个官方离线安装包（MSIX），没装上再走 winget，winget 没有或没装上时从 Claude 官网下离线 MSIX（`claude-desktop-msix-installer.ts`）；几路都没装上时错误框给「下载离线安装包」和「去 Claude 官网」（D64，`claude-desktop-install-failure.ts`）。OpenCode 没有 winget 时按钮是「前往官网下载」。WorkBuddy 不一键安装也不给下载（2026-11-18 起），没装时按钮是「重新检测」 | 读取安装记录和版本，验证可信文件与官方签名；Claude 商店版识别 AppX 身份，通过已注册 AUMID 打开 |
 | Windows arm64 | Claude Desktop 与 OpenCode；WorkBuddy 同 x64，客户自己装好后照样识别 | 与 Windows x64 相同，按实际安装状态显示能力 |
 | macOS | Claude Desktop、OpenCode 一键安装：先从星芒存储桶、再从官方发布地址下官方包，只装核过 Team ID、Developer ID 签名与公证（Gatekeeper）的原版，放进 `/Applications`（不是管理员时放 `~/Applications`），见 `macos-desktop-app-installer.ts`。WorkBuddy 不一键安装，客户自己装好后点「重新检测」或回到星芒窗口时识别（2026-11-18 起没有「安装指南」） | 检测 `/Applications` 与用户 Applications 内的官方应用、bundle ID 和系统签名评估，通过 LaunchServices 打开 |
 

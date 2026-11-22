@@ -104,7 +104,7 @@ describe('renderer-v2 notification settings registry', () => {
   // v4 的次序和叫法（字表批08）：钱的事在前；只有余额和花费两项要说清楚什么时候提醒，而且按代码的判断写。
   it('lists the reminders in the v4 order, explaining only the two money thresholds', () => {
     expect(notificationOptions.map(option => option.label)).toEqual([
-      '余额不足', '花费突然变多', '终端里的 AI 做完或在等你', '终端里没回上', '安装和更新结果', '工具有新版本', '后台任务做完', '公告与优惠', '加速提醒',
+      '余额不足', '花费突然变多', '终端中的 AI 已完成或等待确认', '终端中的 AI 未能回复', '安装和更新结果', '工具有新版本', '后台任务已完成', '公告与优惠', '加速提醒',
     ]);
     expect(notificationOptions.filter(option => option.description).map(option => [option.value, option.description])).toEqual([
       ['balance', '余额低于 $5 时提醒'],

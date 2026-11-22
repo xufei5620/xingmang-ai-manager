@@ -41,9 +41,9 @@ describe('remote features', () => {
   })
 
   it('spaces the possessive only after a latin name', () => {
-    expect(toolInstallOffMessage('Codex CLI')).toBe('Codex CLI 的安装和更新暂时停用了，修好以后会自动恢复。')
-    expect(toolInstallOffMessage('Codex 桌面端')).toBe('Codex 桌面端的安装和更新暂时停用了，修好以后会自动恢复。')
-    expect(toolLaunchOffMessage('WorkBuddy')).toBe('暂时不能从星芒打开 WorkBuddy，修好以后会自动恢复。')
+    expect(toolInstallOffMessage('Codex CLI')).toBe('Codex CLI 的安装和更新已暂时停用，修复后将自动恢复。')
+    expect(toolInstallOffMessage('Codex 桌面端')).toBe('Codex 桌面端的安装和更新已暂时停用，修复后将自动恢复。')
+    expect(toolLaunchOffMessage('WorkBuddy')).toBe('暂时无法从星芒打开 WorkBuddy，修复后将自动恢复。')
   })
 
   it('names its error so the sentence crosses IPC intact', () => {

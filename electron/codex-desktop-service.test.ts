@@ -2285,7 +2285,7 @@ describe('Codex Desktop launch queueing', () => {
 
 describe('initialCodexDesktopChineseLocale', () => {
   it('says the Chinese patch is off only for a Codex it starts fresh', () => {
-    const off = { status: 'failed', message: 'Codex 已经打开，中文界面暂时停用了，这次先用英文界面，修好以后会自动恢复。' }
+    const off = { status: 'failed', message: 'Codex 已打开，中文界面已暂时停用，本次使用英文界面，修复后将自动恢复。' }
     expect(initialCodexDesktopChineseLocale({ chineseSuspended: true }, true)).toEqual(off)
     expect(initialCodexDesktopChineseLocale({ chineseSuspended: true }, false)).toBeUndefined()
     expect(initialCodexDesktopChineseLocale({}, true)).toBeUndefined()

@@ -502,11 +502,11 @@ export function classifyWindowsExecutionProbeFailure(error: unknown): WindowsExe
 }
 
 const probeFailureDescriptions: Readonly<Record<WindowsExecutionProbeFailureReason, string>> = {
-  timeout: '确认权限这一步超过 15 秒没做完，常见于电脑较慢或刚开机',
+  timeout: '权限确认超过 15 秒未完成，常见于电脑运行较慢或刚开机',
   'powershell-unavailable': '系统自带的命令行组件缺失或无法打开',
-  blocked: '确认权限这一步被安全软件或电脑的管控策略拦下了',
-  'unexpected-output': '确认权限时系统给出的结果看不懂',
-  failed: '确认权限这一步出错了',
+  blocked: '权限确认被安全软件或电脑的管控策略拦截',
+  'unexpected-output': '无法识别权限确认时系统返回的结果',
+  failed: '权限确认出错',
 }
 
 /** 检查页与反馈报告共用的那半句原因，面向用户，不带任何上游原文。 */

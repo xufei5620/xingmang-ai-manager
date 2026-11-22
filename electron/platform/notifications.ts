@@ -276,7 +276,7 @@ const hostMessages: Record<
     body: '该订单已到账，余额和订阅已更新。',
   },
   // Codex 有个对话太大、发不出去（codex-payload-limit.ts）。客户这会儿多半正对着 Codex 一遍遍重试，星芒角落那张
-  // 卡看不见，所以另发一条；归「终端里没回上」那个开关管。点开回到星芒，那张卡上写着怎么办。
+  // 卡看不见，所以另发一条；归「终端中的 AI 未能回复」那个开关管。点开回到星芒，那张卡上写着怎么办。
   codexPayloadSwitched: {
     kind: 'cliTrouble',
     title: 'Codex 对话已切换至线路2',

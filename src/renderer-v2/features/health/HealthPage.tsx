@@ -283,7 +283,7 @@ function ConnectionRowItem({
               onClick={() => navigate?.(target, section)}
               testId={`health-connection-fix-${row.id}`}
             >
-              去处理
+              前往处理
             </Button>
           )
         )}
@@ -707,7 +707,7 @@ export function HealthPage({
                 onClick={() => fix(item)}
                 testId={`health-fix-${item.code}`}
               >
-                去处理
+                前往处理
               </Button>
             )
           )}

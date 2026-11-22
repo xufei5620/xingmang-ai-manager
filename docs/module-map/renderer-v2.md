@@ -72,7 +72,7 @@
 - `features/tools/key-sync-failure.ts` — Key 同步失败的那半句原因：先脱敏（I13），认得出的说目录里的标题，「这个账号没开通对应工具」换成能照做的话，认不出的英文不上屏。
 - `features/tools/online-resync.ts` — 没网时打开软件、签 Key 必然失败，网络回来自动补跑一次；只回答「这次失败是不是网络或证书造成的」「要不要补跑」，不碰 React、不发请求。
 - `features/tools/backup-key.ts` — 恢复备份时标出备份里那把 Key 属于谁；主进程只给归属结论和账号名，从不给 Key 或摘要（I3）。
-- `features/tools/connection-check.ts` — 可连接检查各层的中文名、「去处理」跳哪一页、哪些工具能一键重写 Key；层名表与 `electron/connection-check.ts` 是有意重复的字面量（主进程那份依赖 node:*，I6），用 `Record` 让漏键变编译错。
+- `features/tools/connection-check.ts` — 可连接检查各层的中文名、「前往处理」跳哪一页、哪些工具能一键重写 Key；层名表与 `electron/connection-check.ts` 是有意重复的字面量（主进程那份依赖 node:*，I6），用 `Record` 让漏键变编译错。
 
 打开、模型与线路：
 - `features/tools/recent-workspaces.ts` — 首页「打开」记住的文件夹、「接着聊」该接哪条会话、新建项目文件夹的文案；读回的会话页先去掉下线的 Gemini。
