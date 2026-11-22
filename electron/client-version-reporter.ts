@@ -49,7 +49,7 @@ export interface ClientVersionReporter {
   accountChanged(): void
   /** 跑一次「这一份今天报了没有，没报就报」。定时器调它，测试也直接调。 */
   runOnce(): Promise<ClientVersionReportResult>
-  /** 已排队的读写都做完时兑现；测试用。 */
+  /** 正在跑的那一次和已排队的读写都做完时兑现；测试用。 */
   idle(): Promise<void>
 }
 
@@ -215,8 +215,10 @@ export function createClientVersionReporter(options: ClientVersionReporterOption
       if (timer && dueAt <= now().getTime() + delayMs) return
       schedule(delayMs)
     },
-    idle() {
-      return queue.then(() => undefined, () => undefined)
+    async idle() {
+      // 发成功后记「已报」那一笔，要等请求回来才排进队：只等调用那一刻的队列，会在它还在写盘时就兑现。
+      await inFlight?.catch(() => undefined)
+      await queue.catch(() => undefined)
     },
   }
 }
