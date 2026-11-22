@@ -86,6 +86,112 @@ function parseFragment(name, source) {
   return entries
 }
 
+// ui-spec/CHANGELOG.md logs interface changes, one line each, newest first.
+// Every UI pull request used to add its line at the top of that file, so with a
+// dozen in flight each merge left the others conflicting on that spot, and a
+// conflicting pull request gets no CI and its auto-merge stalls without a word
+// (#2091 hit it once, #2097 three times, 2026-11-22). The line now goes in a
+// file of its own here, and collect moves them into the log by date.
+const uiSpecFragmentDirectory = 'ui-spec/changes'
+const uiSpecChangelogFile = 'ui-spec/CHANGELOG.md'
+const reservedUiSpecFragmentNames = new Set(['README.md'])
+// The log's own format line: 日期 · 版本 · 层级 · 改了什么 · 为什么 · 影响的页面.
+// Only the date is machine-read, to order the collected lines.
+const uiSpecEntryPattern = /^- (\d{4})-(\d{2})-(\d{2}) · \S/
+
+function isValidCalendarDate(year, month, day) {
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)))
+  return date.getUTCFullYear() === Number(year)
+    && date.getUTCMonth() === Number(month) - 1
+    && date.getUTCDate() === Number(day)
+}
+
+function parseUiSpecFragment(name, source) {
+  const entries = []
+  for (const [index, rawLine] of splitLines(source).entries()) {
+    const line = rawLine.trimEnd()
+    const position = `${uiSpecFragmentDirectory}/${name}:${index + 1}`
+    if (line === '') continue
+
+    if (line.startsWith('- ')) {
+      const match = uiSpecEntryPattern.exec(line)
+      if (!match) {
+        throw new Error(`${position} 每条要以「- 日期 · 」开头，跟 ${uiSpecChangelogFile} 里的格式一样，例如「- 2026-11-22 · v4.0 · 受控 · 改了什么 · 为什么 · 影响的页面」`)
+      }
+      if (!isValidCalendarDate(match[1], match[2], match[3])) {
+        throw new Error(`${position} 日期「${match[1]}-${match[2]}-${match[3]}」不存在`)
+      }
+      entries.push({ date: `${match[1]}-${match[2]}-${match[3]}`, lines: [line] })
+      continue
+    }
+    if (/^ {2}\S/.test(line) && entries.length > 0) {
+      entries[entries.length - 1].lines.push(line)
+      continue
+    }
+    throw new Error(`${position} 每个非空行都要以「- 日期 · 」开头（不写小节标题），一条写不下时续行缩进两个空格`)
+  }
+
+  if (entries.length === 0) {
+    throw new Error(`${uiSpecFragmentDirectory}/${name} 是空的，至少写一条「- 日期 · …」`)
+  }
+  return entries
+}
+
+function pendingUiSpecFragmentNames(root) {
+  const directory = path.join(root, uiSpecFragmentDirectory)
+  if (!fs.existsSync(directory)) return []
+  return fs.readdirSync(directory)
+    .filter((name) => name.endsWith('.md') && !reservedUiSpecFragmentNames.has(name))
+    .sort()
+}
+
+function readUiSpecFragments(root) {
+  return pendingUiSpecFragmentNames(root).map((name) => ({
+    name,
+    entries: parseUiSpecFragment(name, fs.readFileSync(path.join(root, uiSpecFragmentDirectory, name), 'utf8')),
+  }))
+}
+
+// Newest date first, as the log reads. Lines that share a date keep the order
+// of their file names and, inside one file, the order they were written in:
+// the sort is stable.
+function orderUiSpecEntries(fragments) {
+  return fragments
+    .flatMap((fragment) => fragment.entries)
+    .sort((left, right) => (left.date === right.date ? 0 : left.date < right.date ? 1 : -1))
+}
+
+// Every collected line is newer than the ones already in the log, so they go
+// above its first entry and below the title and format lines.
+function insertUiSpecEntries(source, entries) {
+  if (entries.length === 0) return source
+  const added = entries.flatMap((entry) => entry.lines)
+  const lines = splitLines(source)
+  const first = lines.findIndex((line) => line.startsWith('- '))
+  if (first !== -1) {
+    lines.splice(first, 0, ...added)
+    return lines.join('\n')
+  }
+  let end = lines.length
+  while (end > 0 && lines[end - 1].trim() === '') end -= 1
+  return [...lines.slice(0, end), '', ...added, ''].join('\n')
+}
+
+function countUiSpecEntries(source) {
+  return splitLines(source).filter((line) => line.startsWith('- ')).length
+}
+
+function collectUiSpecChanges(root, fragments = readUiSpecFragments(root)) {
+  if (fragments.length === 0) return { fragments: [], count: 0 }
+  const entries = orderUiSpecEntries(fragments)
+  const file = path.join(root, uiSpecChangelogFile)
+  fs.writeFileSync(file, insertUiSpecEntries(fs.readFileSync(file, 'utf8'), entries), 'utf8')
+  for (const fragment of fragments) {
+    fs.rmSync(path.join(root, uiSpecFragmentDirectory, fragment.name))
+  }
+  return { fragments: fragments.map((fragment) => fragment.name), count: entries.length }
+}
+
 // When the product owner signs off a version's customer notes as a whole
 // (0.2.24: six lines, word for word, 2026-11-18), the notes live in this one
 // fragment and every other fragment may carry only a developer half. Without
@@ -247,6 +353,61 @@ function assertNoDirectUnreleasedEdit(root, event, eventName, git = execFileSync
   }
 }
 
+const commitPattern = /^[0-9a-f]{40}$/i
+
+function uiSpecFragmentsAtRevision(root, revision, git) {
+  const output = git('git', ['ls-tree', '--name-only', '-z', revision, `${uiSpecFragmentDirectory}/`], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  })
+  return output.split('\0')
+    .filter(Boolean)
+    .map((file) => path.posix.basename(file))
+    .filter((name) => name.endsWith('.md') && !reservedUiSpecFragmentNames.has(name))
+}
+
+// Compares the pull request's head with the commit it forked from, the same
+// two-sided view as its "Files changed" tab. The event's base SHA is the tip of
+// main when the event fired, which can be well past the fork, so diffing
+// against it would count every line main gained since (a collect, above all)
+// as one this pull request added.
+//
+// Only a pull request is stopped. Ones whose CI passed before this check
+// existed can still merge with a line in the old place; failing main's run over
+// that would leave main red with nothing its authors could still change.
+function assertNoDirectUiSpecChangelogEdit(root, event, eventName, git = execFileSync) {
+  if (eventName !== 'pull_request') return
+  const base = event.pull_request?.base?.sha
+  const head = event.pull_request?.head?.sha
+  if (![base, head].every((value) => typeof value === 'string' && commitPattern.test(value))) return
+  let forkPoint
+  let collected
+  try {
+    forkPoint = git('git', ['merge-base', base, head], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    if (!commitPattern.test(forkPoint)) return
+    const kept = new Set(uiSpecFragmentsAtRevision(root, head, git))
+    // A collect deletes the fragments in the same commit that writes their
+    // lines into the log, which is the one legitimate way the log grows.
+    collected = uiSpecFragmentsAtRevision(root, forkPoint, git).some((name) => !kept.has(name))
+  } catch {
+    // Same as changedFileStatuses: an unreachable commit skips the comparison
+    // rather than failing a job over a fetch depth this check does not own.
+    return
+  }
+  if (collected) return
+
+  const added = countUiSpecEntries(fileAtRevision(root, head, uiSpecChangelogFile, git))
+    - countUiSpecEntries(fileAtRevision(root, forkPoint, uiSpecChangelogFile, git))
+  if (added <= 0) return
+  throw new Error(
+    `${uiSpecChangelogFile} 里直接加了 ${added} 条记录。并行的界面 PR 都往这个文件最上面加行，合进去一个其余的就全冲突，`
+    + '带冲突的 PR 不跑 CI、自动合并也会卡住。'
+    + `请把这几行原样挪到 ${uiSpecFragmentDirectory}/ 下一个新文件里（文件名用这次改动的短名，写法见该目录的 README.md），`
+    + `发版时 npm run changelog:collect 会按日期把它们汇总回 ${uiSpecChangelogFile}。`,
+  )
+}
+
 // What release-notes.md's unreleased section will hold once collect runs: the
 // entries already there plus every fragment's user half.
 function countUserItems(root, fragments) {
@@ -273,12 +434,15 @@ function assertUserItemsFit(root, fragments) {
 
 function checkChanges(root) {
   const fragments = readFragments(root)
+  const uiSpecFragments = readUiSpecFragments(root)
   const eventPath = process.env.GITHUB_EVENT_PATH
   if (eventPath && fs.existsSync(eventPath)) {
-    assertNoDirectUnreleasedEdit(root, JSON.parse(fs.readFileSync(eventPath, 'utf8')), process.env.GITHUB_EVENT_NAME)
+    const event = JSON.parse(fs.readFileSync(eventPath, 'utf8'))
+    assertNoDirectUnreleasedEdit(root, event, process.env.GITHUB_EVENT_NAME)
+    assertNoDirectUiSpecChangelogEdit(root, event, process.env.GITHUB_EVENT_NAME)
   }
   assertUserNotesNotFinalized(fragments)
-  return { fragments, userItems: assertUserItemsFit(root, fragments) }
+  return { fragments, uiSpecFragments, userItems: assertUserItemsFit(root, fragments) }
 }
 
 if (require.main === module) {
@@ -291,18 +455,29 @@ if (require.main === module) {
       assertAllCollected(root)
       console.log(`${fragmentDirectory} 下的分片都已汇总`)
     } else if (argv.includes('--check')) {
-      const { fragments, userItems } = checkChanges(root)
+      const { fragments, uiSpecFragments, userItems } = checkChanges(root)
       const userSummary = `「## 用户」合计 ${userItems} 条（一版最多 ${maxUserItems} 条）`
       console.log(fragments.length === 0
         ? `变更分片校验通过：本次没有分片，${userSummary}`
         : `变更分片校验通过：${fragments.length} 个分片，${userSummary}（${fragments.map((fragment) => fragment.name).join('、')}）`)
+      console.log(`界面改动分片校验通过：${uiSpecFragmentDirectory} 下 ${uiSpecFragments.length} 个`)
     } else {
+      // Parsed before anything is written, so a malformed interface fragment
+      // stops the collect while release-notes.md and CHANGELOG.md are untouched.
+      const uiSpecFragments = readUiSpecFragments(root)
       const result = collectChanges(root)
       if (result.fragments.length === 0) {
         console.log(`${fragmentDirectory} 下没有待汇总的分片`)
       } else {
         for (const { file, count } of result.written) console.log(`已汇入 ${file}：${count} 条`)
         console.log(`已删除 ${result.fragments.length} 个分片：${result.fragments.join('、')}`)
+      }
+      const uiSpec = collectUiSpecChanges(root, uiSpecFragments)
+      if (uiSpec.fragments.length === 0) {
+        console.log(`${uiSpecFragmentDirectory} 下没有待汇总的界面改动分片`)
+      } else {
+        console.log(`已汇入 ${uiSpecChangelogFile}：${uiSpec.count} 条`)
+        console.log(`已删除 ${uiSpec.fragments.length} 个界面改动分片：${uiSpec.fragments.join('、')}`)
       }
     }
   } catch (error) {
@@ -314,16 +489,24 @@ if (require.main === module) {
 module.exports = {
   appendToUnreleasedSection,
   assertAllCollected,
+  assertNoDirectUiSpecChangelogEdit,
   assertNoDirectUnreleasedEdit,
   assertUserItemsFit,
   assertUserNotesNotFinalized,
   changedFileStatuses,
   checkChanges,
   collectChanges,
+  collectUiSpecChanges,
   countUserItems,
   finalUserNotesFragment,
+  insertUiSpecEntries,
+  orderUiSpecEntries,
   parseFragment,
+  parseUiSpecFragment,
   readFragments,
+  readUiSpecFragments,
   readUnreleasedSection,
   sections,
+  uiSpecChangelogFile,
+  uiSpecFragmentDirectory,
 }

@@ -23,7 +23,7 @@ paths:
 - **组件目录是集中式的，不是一个组件一个文件夹**（`R-B3`，2026-09-19）：新组件加进 `ui/core.tsx`、`fields.tsx`、`modal.tsx`、`floating.tsx`、`feedback.tsx`、`brand.tsx`、`guidance.tsx` 里对应的那个，再由 `components.tsx` / `index.ts` 导出，不要新建 `ui/<Name>/` 目录。`ui-spec/reference/` 里那条「一个组件一个文件夹」的目录要求属于设计包原稿，未被采用。
 - **行尾分号只在 `ui/`、`registry/` 与 `gallery*.tsx` 里写**（`R-B5`，2026-09-19）：那几处是照原型抄下来的既成事实，`features/`、`pages-*.tsx` 等一律不加。`scripts/verify-renderer-style.test.cjs` 会红。模块顶层用 `function` 声明，测试夹具除外。
 - 自动化测试只用本地 mock/隔离临时数据，不请求生产服务、不执行真实付费生成。Windows 无签名发布设置保持不变。
-- 每改完一块：暗、亮两套截图对照 v4 原型，改对应的 md，在 `ui-spec/CHANGELOG.md` 记一行。
+- 每改完一块：暗、亮两套截图对照 v4 原型，改对应的 md，记一行界面改动记录：**写在 `ui-spec/changes/` 下这个 PR 自己的文件里**（格式和 `ui-spec/CHANGELOG.md` 的行一样，写法见该目录 `README.md`），不要直接往 `ui-spec/CHANGELOG.md` 最上面加——并行的界面 PR 都加在那一处，合进去一个其余的就全冲突、自动合并卡住（2026-11-22 起）。`npm run changelog:check` 会拦，发版时 `npm run changelog:collect` 按日期汇总回去。
 - **等 yoyo 点头的界面改动，动了版面的要配图**（yoyo 2026-11-11 定）：加按钮、挪位置、新页面这类，帖子里除了逐字贴出的字，再配一张改完的样子的截图；纯改字的照旧只贴字。图用 `node scripts/audit/v2-page-screenshot.mjs` 在本地夹具上截，放仓库外面，口径见 `docs/COLLABORATION.md` §7.5。
 
 v3.1.1 阶段的实施状态与真实验证范围见 `docs/UI-V3.1.1-V2-REBUILD.md`。截图对照由仓库脚本生成并留在本地，不纳入源码 PR；不能把截图生成或 mock 通过写成原生平台、后台能力或产品验收通过。

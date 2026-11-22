@@ -31,6 +31,7 @@ Fixes #
 - [ ] `npm run check:v2`
 - [ ] `npm run test:v2`
 - [ ] 带了 `changes/unreleased/` 分片（纯 CI、脚本、文档改动可以不带；目录里有 `final-user-notes.md` 时只写「## 开发」）
+- [ ] 改了界面的：界面改动记录写在 `ui-spec/changes/` 下这个 PR 自己的文件里，没有直接往 `ui-spec/CHANGELOG.md` 加行
 
 ## 可靠性清单
 

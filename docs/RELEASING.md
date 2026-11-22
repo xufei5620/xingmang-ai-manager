@@ -176,7 +176,7 @@ npm view electron time --json --registry=https://registry.npmjs.org/ | Select-St
 大版本另算：Electron 只给最新的三个大版本出安全补丁，大约八周出一个新的（[时间表](https://www.electronjs.org/docs/latest/tutorial/electron-timelines)）。0.2.23 起用 45（G20，原来的 43 在 2027-01-05 停补丁），45 在 2027-04-27 停补丁，在那之前要换到更新的大版本。升 46 前先把加密存储（`safeStorage`）换成异步写法：45 里同步的那几个已经报弃用，46 删掉。升大版本照官方的破坏性改动清单逐条对代码，Mac、Windows 真机各过一遍。
 
 - 在 `package.json` 提升版本号，版本必须高于已发布版本。
-- 执行 `npm run changelog:collect`：把 `changes/unreleased/` 下的分片按 `## 用户` / `## 开发` 分别汇入 `release-notes.md` 的「未发布」段与 `CHANGELOG.md` 的 `## Unreleased` 段，并删除已汇总的分片文件。
+- 执行 `npm run changelog:collect`：把 `changes/unreleased/` 下的分片按 `## 用户` / `## 开发` 分别汇入 `release-notes.md` 的「未发布」段与 `CHANGELOG.md` 的 `## Unreleased` 段，并删除已汇总的分片文件。同一条命令也把 `ui-spec/changes/` 下的界面改动记录按日期（新的在上）汇入 `ui-spec/CHANGELOG.md` 最上面并删掉那些分片；它们只是给开发看的界面记录，漏收不影响发版，`publish-release` 不核对这个目录。
 - 定版之后、发完之前合进 main 的改动如果带了分片，要在这一版里补收：再跑一次 `changelog:collect`，把汇出来的「未发布」「## Unreleased」两段并进这一版那一节。`publish-release` 一开始就核对 `changes/unreleased/` 已经清空，还有分片就停下、什么都不动（#1086）：那些改动照样会进这次的包，不补收的话客户的更新说明里一句不提，CHANGELOG 还会把它们记到下一版。
 - 汇总后把这两个标题改成本次版本号（`未发布` → `0.2.7`，`## Unreleased` → `## 0.2.7 - <日期>`），按需润色文案。`release-notes.md` 的内容会在打包时写入更新清单并显示在客户端更新页面。
 - **更新页最多放 60 条。** 装完后第一次打开时那一页（和「设置 › 版本更新」里的清单）读的是包里的说明，这一版超过 60 条时，发布前置检查和 `npm run compile` 都会直接报错，不再悄悄截掉后面的（#1334：0.2.20 汇出来 84 条，后 24 条正好是几位客户报过的修复）。超了就在 `release-notes.md` 里把相近的几条合并成一条，不要把上限调大：一页太长客户也看不完。
