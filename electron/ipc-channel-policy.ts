@@ -272,7 +272,6 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:revoke-login-session': { log: 'normal', account: 'scoped-may-end-session' },
   'account:revoke-other-login-sessions': { log: 'normal', account: 'scoped' },
   'canvas:open': { label: '无限画布窗口打开', log: 'normal', account: 'scoped' },
-  'canvas:open-asset-library': { label: '无限画布素材库打开', log: 'normal', account: 'scoped' },
   // 「创作」左边那一列（融合第 1 步）：只回当前账号画布项目的编号、名字和时间；打开时编号先在这个账号的项目里认过。
   'canvas:list-projects': { label: '画布项目列表读取', log: 'quiet-success', account: 'scoped' },
   'canvas:open-project': { label: '画布项目打开', log: 'normal', account: 'scoped' },

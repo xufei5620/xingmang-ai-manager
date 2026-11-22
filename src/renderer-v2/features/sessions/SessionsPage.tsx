@@ -156,6 +156,8 @@ export function SessionsPage({
   // 框里的字和拿去搜的词分开（R-3）：停手 300 毫秒才搜，打一个词不再每个字都让主进程把各工具的
   // 会话文件夹翻一遍；清空马上搜。跟密钥页、订单页的搜索一个做法，换了词从第一页看起。
   const [keyword, setKeyword] = useState('')
+  // 「同时搜索对话内容」（总单 Q4 C3）用的也是停手后的这个词：勾上以后每次搜要去翻最近一批对话，更不能每敲一个字翻一遍。
+  const [searchContent, setSearchContent] = useState(false)
   useEffect(() => {
     const next = query.trim()
     if (next === keyword) return
@@ -174,11 +176,12 @@ export function SessionsPage({
     return api.listProviderSessions({
       provider,
       search: keyword,
+      ...(searchContent ? { searchContent: true } : {}),
       page,
       pageSize: 20,
       ...(reuseRecentScan ? { reuseRecentScan } : {}),
     }).then(withoutRetiredSessions)
-  }, [api, provider, keyword, page])
+  }, [api, provider, keyword, searchContent, page])
   const resource = useResource(load)
   function reloadList() {
     listScanned.current = false
@@ -482,7 +485,26 @@ export function SessionsPage({
           placeholder="搜索标题、文件夹或模型"
           testId="sessions-search"
         />
+        <label className="v2-sessions-search-content">
+          <input
+            type="checkbox"
+            checked={searchContent}
+            onChange={(event) => {
+              setSearchContent(event.target.checked)
+              // 刚勾上时手里的词立刻去翻，不再等停手那一下。
+              setKeyword(query.trim())
+              setPage(1)
+            }}
+            data-testid="sessions-search-content"
+          />
+          <span>同时搜索对话内容</span>
+        </label>
       </div>
+      {searchContent && query.trim() !== '' && (resource.loading || query.trim() !== keyword) && (
+        <p className="v2-sessions-searching" role="status" data-testid="sessions-search-content-status">
+          正在搜索对话内容…
+        </p>
+      )}
       <ResultNotice
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
@@ -501,7 +523,7 @@ export function SessionsPage({
           retry={() => void reloadList()}
           clear={() => setQuery('')}
           emptyDescription="通过首页打开工具后，对话记录将显示在此处。"
-          searchTitle="未找到相关记录"
+          searchTitle={searchContent ? `最近的对话中未找到「${keyword}」` : '未找到相关记录'}
           searchDescription="请更换关键词，或切换到「全部」查看。"
           action={
             onOpenTools && (

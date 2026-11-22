@@ -1543,7 +1543,6 @@ export interface XingmangInvokeContract {
     AccountRevokeOtherLoginSessionsResult
   >
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
-  openCanvasAssetLibrary: IpcInvokeDefinition<'canvas:open-asset-library', [], void>
   /** 「创作」左边那一列要的画布项目：当前账号没归档的那些，只回编号、名字和最后改动的时间。 */
   listCanvasProjects: IpcInvokeDefinition<'canvas:list-projects', [], CanvasProjectListEntry[]>
   /** 「创作 › 作品库」的一页：当前账号做过的图片和视频（融合第 3 步）。只回编号、时间、名字和描述，不回文件内容和路径。 */
@@ -1946,7 +1945,6 @@ export const ipcInvokeChannels = {
   revokeAccountLoginSession: 'account:revoke-login-session',
   revokeOtherAccountLoginSessions: 'account:revoke-other-login-sessions',
   openCanvasWindow: 'canvas:open',
-  openCanvasAssetLibrary: 'canvas:open-asset-library',
   listCanvasProjects: 'canvas:list-projects',
   listAiLibrary: 'library:list',
   openCanvasProject: 'canvas:open-project',
