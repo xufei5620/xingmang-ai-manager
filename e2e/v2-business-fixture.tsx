@@ -1336,10 +1336,14 @@ const apiMethods = {
     record('configure-key', input)
     throw new Error('配置写入失败，原配置已保留')
   },
-  listProviderSessions: async () => ({
-    items: empty ? [] : query.has('sameFolder') ? [session, olderSameFolderSession]
+  listProviderSessions: async (input?: Parameters<V2Bridge['listProviderSessions']>[0]) => {
+    // 「同时搜索对话内容」：只在勾上时记一笔，别的用例看到的调用照旧；搜「没说过」时一条都不给。
+    if (input?.searchContent) record('list-sessions-content', { search: input.search, searchContent: input.searchContent })
+    const none = empty || Boolean(input?.searchContent && input.search === '没说过')
+    return {
+    items: none ? [] : query.has('sameFolder') ? [session, olderSameFolderSession]
       : query.has('missingFolder') ? [missingFolderSession] : [session],
-    total: empty ? 0 : query.has('sameFolder') ? 2 : 1,
+    total: none ? 0 : query.has('sameFolder') ? 2 : 1,
     page: 1,
     pageSize: 20,
     pages: 1,
@@ -1353,7 +1357,8 @@ const apiMethods = {
       gemini: { ...capabilities, provider: 'gemini' as const },
       grok: { ...capabilities, provider: 'grok' as const },
     },
-  }),
+    }
+  },
   getProviderSessionDetail: async () => {
     detailReads += 1
     if (query.has('detailFailure') && detailReads === 1)
@@ -1479,6 +1484,10 @@ const apiMethods = {
     record('choose-skill-archive')
     if (query.get('skillArchive') === 'empty') throw new Error('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。')
     return { archiveName: 'pdf-helper.zip', directory: 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper' }
+  },
+  // 导入框关掉时让主进程删解开的那份；夹具只记下来。
+  discardSkillArchives: async () => {
+    record('discard-skill-archives')
   },
   importSkill: async (input: Parameters<V2Bridge['importSkill']>[0]) => {
     record('import-skill', input)

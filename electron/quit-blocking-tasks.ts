@@ -60,6 +60,7 @@ export function resolveInterruptibleInstallTask(
 /**
  * 重启装更新会停下、重开以后又不会自己接着做的事（D10）。聊天、视频剪辑的拼片在界面里跑，由界面报上来；
  * 画布出图在主进程里，宿主自己看。交给服务端在生成的视频不算：重开以后会接着取回来。
+ * 「立即重启」电脑停下的也是这几样，用同一句问（confirmWindowsRestartWork）。
  */
 export type UnfinishedRestartWork = RendererRestartWork | 'canvas'
 
@@ -124,6 +125,32 @@ export async function confirmUpdateRestart(steps: UpdateRestartConfirmation): Pr
   steps.log('install.work-in-progress', `重启安装更新前确认：${work.kinds.join(',')}`)
   if (!await steps.confirmWork(work)) {
     steps.log('install.postponed', '还有任务没做完，这次不装新版本，新版本留着')
+    return false
+  }
+  return true
+}
+
+export interface WindowsRestartConfirmation {
+  /** 安装队列里还有事（装、卸、打开工具都算）：重启这次本来就发不出去（runtime-install-service.ts 的 restartWindows）。 */
+  queueBusy(): boolean
+  unfinishedWork(): UnfinishedRestartWorkPrompt | null
+  /** 「还有任务没做完」那一问；true = 仍然重启。 */
+  confirmWork(prompt: UnfinishedRestartWorkPrompt): Promise<boolean>
+  log(event: string, message: string): void
+}
+
+/**
+ * Node.js 装完、Codex 桌面端打不开那两个重启框点「立即重启」时先过这里：true = 照常发重启。
+ * 重启电脑停下的跟重启装更新是同一批事，所以用 D10 那一问、看同一份忙闲。队列里还有事时重启会被拦下、
+ * 框里说明原因，这时先问「等不等对话说完」是白问，等那道闸放行了再问。
+ */
+export async function confirmWindowsRestartWork(steps: WindowsRestartConfirmation): Promise<boolean> {
+  if (steps.queueBusy()) return true
+  const work = steps.unfinishedWork()
+  if (!work) return true
+  steps.log('restart.work-in-progress', `重启电脑前确认：${work.kinds.join(',')}`)
+  if (!await steps.confirmWork(work)) {
+    steps.log('restart.postponed', '还有任务没做完，这次不重启电脑')
     return false
   }
   return true
