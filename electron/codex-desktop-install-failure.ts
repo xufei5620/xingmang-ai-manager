@@ -17,7 +17,7 @@
 export const codexDesktopStoreUrl = 'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS'
 
 /** 安装 / 更新失败那句话的开头；渲染层 operation-error.ts 按它归到 codexDesktopInstallFailed。 */
-export const codexDesktopInstallFailedPrefix = 'Codex 桌面端没装上'
+export const codexDesktopInstallFailedPrefix = 'Codex 桌面端未能安装'
 
 /**
  * 客户看不懂、也用不上的那些词。安装失败那句话和安装途中的进度提示里都不许出现，
@@ -29,30 +29,30 @@ export type CodexDesktopInstallFailureReason = 'unsupported' | 'firewallOff' | '
 
 /**
  * 这台电脑根本没有微软商店（LTSC、精简版、公司策略关掉了）时，失败句里代替
- *「微软商店这次没装上」的那半句。渲染层按它认出这一类、不再给「前往微软商店安装」。
+ *「微软商店安装失败」的那半句。渲染层按它认出这一类、不再给「前往微软商店安装」。
  */
-export const codexDesktopNoStoreNotice = '这台电脑没有微软商店'
+export const codexDesktopNoStoreNotice = '本机没有微软商店'
 
 /**
  * 第二路（OpenAI 官网的离线安装包）也没下成、换到国内镜像时，接在商店那半句后面的话。
  * 进度提示和失败句共用这一句，免得两处说法对不上。
  */
-export const codexDesktopOfficialPackageFailedNotice = 'OpenAI 官网的离线安装包也没下成'
+export const codexDesktopOfficialPackageFailedNotice = 'OpenAI 官网的离线安装包也未能下载'
 
 /**
  * winget 的 APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE：商店那边还没有比本机更新的版本。
- * 商店没出错，只是没新版，失败句里不能说成「微软商店这次没装上」。
+ * 商店没出错，只是没新版，失败句里不能说成「微软商店安装失败」。
  */
 export const codexDesktopStoreNoUpdateExitCode = 0x8a15002b
 
 export const codexDesktopInstallFailureReasons: Readonly<Record<CodexDesktopInstallFailureReason, string>> = {
-  unsupported: '这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。',
-  firewallOff: '这台电脑的 Windows 防火墙服务被停掉了。新版 Codex 桌面端安装时要在防火墙里登记一下，服务停着 Windows 就不让装，重试和去微软商店装都绕不过去。',
-  blocked: '这台电脑不让装（Windows 拒绝了这次安装）。可能留下了装到一半的程序，点「重试」会重新装一遍。',
-  damaged: '下载下来的安装包不完整或被改过，已经删掉了。',
-  unreachable: '国内下载线路这会儿连不上。',
-  unavailable: '国内下载线路这会儿没有能装的版本。',
-  unknown: '没查出是哪一步出了问题，经过已经记进日志。',
+  unsupported: '本机的 Windows 版本过旧，无法安装 Codex 桌面端。可先使用 Codex CLI，或将 Windows 更新至最新版本。',
+  firewallOff: '本机的 Windows 防火墙服务已停用。新版 Codex 桌面端安装时需在防火墙中注册，该服务停用时 Windows 将拒绝安装，重试或通过微软商店安装均无法解决。',
+  blocked: 'Windows 拒绝了本次安装，可能留有未安装完成的程序，点击「重试」将重新安装。',
+  damaged: '下载的安装包不完整或已被篡改，已删除。',
+  unreachable: '国内下载线路暂时无法连接。',
+  unavailable: '国内下载线路暂无可安装的版本。',
+  unknown: '未能确定出错的步骤，详细过程已记录到日志。',
 }
 
 /**
@@ -87,7 +87,7 @@ export function classifyCodexDesktopInstallFailure(detail: string): CodexDesktop
  * 换回当初装它的 Windows 账户），套上「没装上」反而把那一步盖掉，所以原样放行。
  */
 export function isPlainCodexDesktopInstallMessage(message: string): boolean {
-  return /磁盘|[A-Z] 盘空间不足|请勿重复操作|已取消管理员授权|未获得管理员权限|macOS|仅支持 Windows|读不到/.test(message)
+  return /磁盘|[A-Z] 盘空间不足|请勿重复操作|已取消管理员授权|未获得管理员权限|macOS|仅支持 Windows|读不到|无法读取已安装的版本|无法读取本机 Codex 桌面端的安装信息/.test(message)
 }
 
 export interface CodexDesktopInstallFailureContext {
@@ -111,10 +111,10 @@ export function buildCodexDesktopInstallFailureMessage(
   const routes = reason !== 'firewallOff'
   const store = !routes ? ''
     : context.storeUnavailable ? `${codexDesktopNoStoreNotice}，`
-      : context.storeTried ? (context.storeNoUpdate ? '微软商店里还没有新版，' : '微软商店这次没装上，') : ''
+      : context.storeTried ? (context.storeNoUpdate ? '微软商店暂无新版本，' : '微软商店安装失败，') : ''
   const official = routes && context.officialTried ? `${codexDesktopOfficialPackageFailedNotice}，` : ''
   // Windows 拒绝安装时旧版本可能已经被动过，不能说「照常能用」。
-  const unaffected = context.updating && reason !== 'blocked' && reason !== 'firewallOff' ? '原来那一版照常能用。' : ''
+  const unaffected = context.updating && reason !== 'blocked' && reason !== 'firewallOff' ? '原版本仍可正常使用。' : ''
   return `${codexDesktopInstallFailedPrefix}：${store}${official}${codexDesktopInstallFailureReasons[reason]}${unaffected}`
 }
 

@@ -158,7 +158,7 @@ describe('Windows proxy scopes', () => {
     expect(script).toContain('"Machine"')
     expect(parseProxyScopesOutput('noise\n{"user":{"HTTPS_PROXY":"http://127.0.0.1:7890","PATH":"x"},"machine":{}}\n'))
       .toEqual({ user: { HTTPS_PROXY: 'http://127.0.0.1:7890' }, machine: {} })
-    expect(() => parseProxyScopesOutput('')).toThrow('没能读到电脑里的代理设置')
+    expect(() => parseProxyScopesOutput('')).toThrow('无法读取电脑中的代理设置')
   })
 
   it('passes the names to clear through the environment, never into the script', () => {

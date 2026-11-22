@@ -582,7 +582,7 @@ describe('Codex MCP without the Codex CLI', () => {
       .rejects.toThrow('MCP 请求头格式错误')
     await expect(service.addMcpServer({
       type: 'http', name: 'oauth', url: 'https://docs.example.test/mcp', headers: { Authorization: 'Bearer x' }, oauthClientId: 'client',
-    })).rejects.toThrow('带请求头的连接不用填 OAuth Client ID 和 OAuth Resource')
+    })).rejects.toThrow('带请求头的连接无需填写 OAuth Client ID 和 OAuth Resource')
     expect(Object.keys(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).mcp_servers) ?? {})).toEqual(['docs'])
   })
 
@@ -607,7 +607,7 @@ describe('Codex MCP without the Codex CLI', () => {
     write(configPath, 'model = "m"\n')
 
     await expect(service.addMcpServer({ type: 'http', name: 'docs', url: 'https://docs.example.test/mcp', oauthClientId: 'client' }))
-      .rejects.toThrow('没装 Codex CLI 时，OAuth Client ID 和 OAuth Resource 填不了')
+      .rejects.toThrow('未安装 Codex CLI 时无法填写 OAuth Client ID 和 OAuth Resource')
     await expect(service.addMcpServer({ type: 'stdio', name: 'bad name', command: 'node' })).rejects.toThrow()
     expect(fs.readFileSync(configPath, 'utf8')).toBe('model = "m"\n')
   })

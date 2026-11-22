@@ -21,8 +21,8 @@ import { managedCliRoot } from './managed-cli-paths'
 import { resolveRelocatedPath } from './relocated-folders'
 import { findReparseComponent, type ReparseComponent } from './safe-local-data'
 
-const accelerationBundleDamagedSummary = '加速用的文件被删掉或改动了，多半是杀毒软件拦的。'
-  + '打开杀毒软件的「隔离区」或「恢复区」把星芒的文件恢复，并把星芒加入信任；也可以重新安装一次星芒，装在原来的位置就行。'
+const accelerationBundleDamagedSummary = '加速所需的文件已被删除或修改，通常是被杀毒软件拦截。'
+  + '请打开杀毒软件的「隔离区」或「恢复区」恢复星芒的文件，并将星芒加入信任列表；也可重新安装星芒，安装到原位置即可。'
 
 /**
  * 「磁盘空间」这一项只看两处：CLI 落点（托管目录）和软件数据目录。托管目录在
@@ -66,10 +66,10 @@ export function describeRelocationTarget(target: string, platform: NodeJS.Platfo
   if (platform === 'win32') {
     const drive = /^(?:\\\\[?.]\\)?([A-Za-z]):/.exec(target)?.[1]
     if (drive) return ` ${drive.toUpperCase()} 盘`
-    return target.startsWith('\\\\') ? '另一台电脑的共享文件夹' : '别的位置'
+    return target.startsWith('\\\\') ? '另一台电脑的共享文件夹' : '其他位置'
   }
   const volume = /^\/Volumes\/([^/]+)/.exec(target)?.[1]
-  return volume ? `外接磁盘「${volume}」` : '别的位置'
+  return volume ? `外接磁盘「${volume}」` : '其他位置'
 }
 
 /**
@@ -121,14 +121,14 @@ export function documentsWritabilityOutcome(
   sanitizeText: (value: string) => string,
 ): CheckOutcome {
   if (result.state === 'writable') {
-    return { state: 'pass', summary: '能正常写入，新项目和 AI 作品放在「文档」里' }
+    return { state: 'pass', summary: '可正常写入，新项目和 AI 作品保存在「文档」中' }
   }
   if (result.state === 'not-used') {
     return {
       state: 'pass',
       summary: result.why === 'cloud'
-        ? '「文档」在 OneDrive 同步里，新项目和 AI 作品放在个人文件夹里，免得拖慢电脑'
-        : '没找到「文档」文件夹，新项目和 AI 作品放在个人文件夹里',
+        ? '「文档」处于 OneDrive 同步中，新项目和 AI 作品保存在个人文件夹中，以免拖慢电脑'
+        : '未找到「文档」文件夹，新项目和 AI 作品保存在个人文件夹中',
     }
   }
   // 原因原文（EPERM 之类，带着路径）只进日志，报告里只有中文结论。
@@ -139,15 +139,15 @@ export function documentsWritabilityOutcome(
   if (result.state === 'denied') {
     return {
       state: 'warn',
-      summary: '「文档」文件夹不让本软件写入，常见原因是 Windows 安全中心开了「受控文件夹访问」，'
-        + '或者安全软件开了文档保护。新建的项目和 AI 作品已经改放在个人文件夹里，照常能用。',
+      summary: '「文档」文件夹禁止本软件写入，常见原因是 Windows 安全中心开启了「受控文件夹访问」，'
+        + '或安全软件开启了文档保护。新建的项目和 AI 作品已改为保存在个人文件夹中，可正常使用。',
       details: { openFolder: 'projects' },
     }
   }
   return {
     state: 'warn',
-    summary: '「文档」文件夹这次没写进去，可能是磁盘满了或者文件夹是只读的。'
-      + '新建项目和保存 AI 作品可能会失败，清理一些空间后再点「重新检测」。',
+    summary: '「文档」文件夹本次写入失败，可能是磁盘无可用空间或文件夹为只读。'
+      + '新建项目和保存 AI 作品可能失败，请清理部分空间后点击「重新检测」。',
   }
 }
 
@@ -178,7 +178,7 @@ export function buildStorageChecks(context: DiagnosticsContext): CheckDefinition
         if (!readings.length) {
           return {
             state: 'warn',
-            summary: '未能读取磁盘剩余空间，这一项这次跳过',
+            summary: '未能读取磁盘剩余空间，本次跳过此项',
             details: { measured: 0 },
           }
         }
@@ -200,9 +200,9 @@ export function buildStorageChecks(context: DiagnosticsContext): CheckDefinition
         return {
           state,
           summary: state === 'fail'
-            ? `${summary}，已经装不下新工具了，请清理后再安装或更新`
+            ? `${summary}，已无法安装新工具，请清理后再安装或更新`
             : state === 'warn'
-              ? `${summary}，空间偏紧，安装或更新工具前建议先清理一些`
+              ? `${summary}，空间较为紧张，建议在安装或更新工具前先清理部分空间`
               : summary,
           details,
         }
@@ -213,7 +213,7 @@ export function buildStorageChecks(context: DiagnosticsContext): CheckDefinition
     // 试写还会平白弹一次系统的访问询问。
     ...(platform === 'win32' && dependencies.documentsDirectory !== undefined ? [{
       code: 'DOCUMENTS_WRITABLE',
-      title: '「文档」文件夹能不能写',
+      title: '「文档」文件夹是否可写入',
       run: (): CheckOutcome => {
         const inspect = dependencies.inspectDocuments ?? inspectDocumentsWritability
         const result = inspect(dependencies.documentsDirectory ?? null, { platform, home: userHome, env })
@@ -234,16 +234,16 @@ export function buildStorageChecks(context: DiagnosticsContext): CheckDefinition
           })
           return {
             state: 'warn',
-            summary: '保存位置写不进去。用 AI 生成图片或视频时，软件会在扣费前先拦下来；'
-              + '可以在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来。',
+            summary: '保存位置无法写入。使用 AI 生成图片或视频时，软件将在扣费前拦截；'
+              + '可在画布中新建项目并为其选择自己的文件夹，在该项目中生成即可正常保存。',
           }
         }
         const placement = dependencies.aiOutputPlacement?.() ?? null
         if (placement?.movedFromDocuments) {
           return {
             state: 'pass',
-            summary: '「文档」文件夹不让写，AI 生成的图片和视频改存在个人文件夹里的 XingmangAI'
-              + (placement.earlierWorksLeftInDocuments ? '。以前的作品还在「文档」里的 XingmangAI，没有搬动' : ''),
+            summary: '「文档」文件夹禁止写入，AI 生成的图片和视频改为保存在个人文件夹中的 XingmangAI'
+              + (placement.earlierWorksLeftInDocuments ? '。此前的作品仍在「文档」中的 XingmangAI，未移动' : ''),
             details: { openFolder: 'ai-output' },
           }
         }
@@ -252,12 +252,12 @@ export function buildStorageChecks(context: DiagnosticsContext): CheckDefinition
           const [folder, cloud] = placement.earlierWorksLeftInSyncedDocuments === 'icloud' ? ['文稿', 'iCloud'] : ['文档', 'OneDrive']
           return {
             state: 'pass',
-            summary: `AI 生成的图片和视频能正常保存。「${folder}」开了 ${cloud} 同步，新作品改存在个人文件夹里的 XingmangAI；`
-              + `以前的作品还在「${folder}」里的 XingmangAI，没有丢，也没有搬动`,
+            summary: `AI 生成的图片和视频可正常保存。「${folder}」已开启 ${cloud} 同步，新作品改为保存在个人文件夹中的 XingmangAI；`
+              + `此前的作品仍在「${folder}」中的 XingmangAI，未丢失，也未移动`,
             details: { openFolder: 'ai-output' },
           }
         }
-        return { state: 'pass', summary: 'AI 生成的图片和视频能正常保存' }
+        return { state: 'pass', summary: 'AI 生成的图片和视频可正常保存' }
       },
     }] : []),
     // 杀毒软件隔离了加速内核时，加速页以前只写「线路准备中」，客户会一直等下去。
@@ -268,7 +268,7 @@ export function buildStorageChecks(context: DiagnosticsContext): CheckDefinition
       title: '加速功能',
       run: (): CheckOutcome => dependencies.accelerationBundle === 'damaged'
         ? { state: 'warn', summary: accelerationBundleDamagedSummary }
-        : { state: 'pass', summary: '加速用的文件完好' },
+        : { state: 'pass', summary: '加速所需的文件完好' },
     }] : []),
     {
       // 「C 盘搬家」工具或 mklink /J 把用户文件夹、软件数据文件夹挪到别的盘之后，
@@ -285,7 +285,7 @@ export function buildStorageChecks(context: DiagnosticsContext): CheckDefinition
         if (!relocated.length) {
           return {
             state: 'pass',
-            summary: '软件要用到的文件夹都在原来的位置',
+            summary: '软件所需的文件夹均在原位置',
             details: { relocated: 0 },
           }
         }
@@ -293,18 +293,18 @@ export function buildStorageChecks(context: DiagnosticsContext): CheckDefinition
         if (!findings.length) {
           const moved = relocated.map((finding) => `${finding.labels.join('、')}${finding.target
             ? `在${describeRelocationTarget(finding.target, platform)}`
-            : '在别的位置'}`)
+            : '在其他位置'}`)
           return {
             state: 'pass',
-            summary: `${moved.join('；')}，软件会跟过去读写，能正常使用`,
+            summary: `${moved.join('；')}，软件将在新位置读写，可正常使用`,
             details: { relocated: relocated.length, followed: true },
           }
         }
         const elevated = platform === 'win32' && dependencies.windowsExecution?.mode === 'trusted-only'
         const described = findings.map((finding) => `${finding.labels.join('、')}${finding.target
-          ? `被搬到了${describeRelocationTarget(finding.target, platform)}`
-          : '被搬走了，但读不出它现在在哪里'}`)
-        const hint = platform === 'win32' ? '（常见于用过「C 盘搬家」一类的工具）' : ''
+          ? `已被移至${describeRelocationTarget(finding.target, platform)}`
+          : '已被移走，但无法读取其当前位置'}`)
+        const hint = platform === 'win32' ? '（常见于使用过「C 盘搬家」类工具的电脑）' : ''
         const details: Record<string, boolean | number | string | null> = { relocated: findings.length }
         for (const [index, finding] of findings.entries()) {
           details[`folder${index + 1}`] = finding.labels.join('、')
@@ -315,11 +315,11 @@ export function buildStorageChecks(context: DiagnosticsContext): CheckDefinition
         return {
           state: 'fail',
           summary: elevated
-            ? `${described.join('；')}${hint}。软件现在是用管理员身份运行的，为了安全不往被搬过的文件夹里写东西，`
-              + '所以写入密钥、保存设置、记录日志都可能失败。关掉软件，直接双击打开（不要选「以管理员身份运行」）就能恢复'
-            : `${described.join('；')}${hint}。为了安全，软件不往被搬过的文件夹里写东西，`
-              + '所以写入密钥、保存设置、记录日志都可能失败。把文件夹搬回原来的位置就能恢复；'
-              + '搬不回来请在「反馈与客服」页导出报告发给客服',
+            ? `${described.join('；')}${hint}。软件当前以管理员身份运行，为安全起见，不会向已移动的文件夹写入内容，`
+              + '因此写入密钥、保存设置、记录日志均可能失败。请关闭软件后直接双击打开（不要选择「以管理员身份运行」）即可恢复'
+            : `${described.join('；')}${hint}。为安全起见，软件不会向已移动的文件夹写入内容，`
+              + '因此写入密钥、保存设置、记录日志均可能失败。将文件夹移回原位置即可恢复；'
+              + '如无法移回，请在「反馈与客服」页导出报告并发送给客服',
           details,
         }
       },

@@ -440,7 +440,7 @@ test('a refused external client cancel says why and lets the install finish', as
     await row.getByRole('button', { name: '安装', exact: true }).click()
     await row.getByText('正在下载安装包', { exact: true }).waitFor()
     await row.getByTestId('tool-opencode-cancel').click()
-    await page.getByText('正在安装 OpenCode，这一步中断会留下装了一半的程序，请等它结束。', { exact: true }).waitFor()
+    await page.getByText('正在安装 OpenCode，此步骤中断将留下未安装完成的程序，请等待安装结束。', { exact: true }).waitFor()
     assert.equal(await row.getByTestId('tool-opencode-cancel').textContent(), '取消')
     await page.evaluate(() => window.v2Test.releaseLaunch())
     await row.getByRole('button', { name: '确认连接', exact: true }).waitFor()
@@ -4754,6 +4754,54 @@ test('a video opened from the library plays in the page, leads back to its film 
   } finally { await page.close() }
 })
 
+// 一段 64 × 36、1 秒的 VP8 视频（655 字节，ffmpeg 生成的纯色画面）：夹具里的浏览器读得出它的宽高。
+const libraryTinyVideo = Buffer.from('GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAJfEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggEeTbuMU6uEHFO7a1OsggJJ7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjAuMTYuMTAwV0GNTGF2ZjYwLjE2LjEwMESJiECPQAAAAAAAFlSua8GuAQAAAAAAADjXgQFzxYhACfuV3IxqzZyBACK1nIN1bmSIgQCGhVZfVlA4g4EBI+ODhAvrwgDgibCBQLqBJJqBAhJUw2f8c3OgY8CAZ8iaRaOHRU5DT0RFUkSHjUxhdmY2MC4xNi4xMDBzc9ZjwItjxYhACfuV3IxqzWfIoUWjh0VOQ09ERVJEh5RMYXZjNjAuMzEuMTAyIGxpYnZweGfIoUWjiERVUkFUSU9ORIeTMDA6MDA6MDEuMDAwMDAwMDAwAB9DtnVApOeBAKO/gQAAgJADAJ0BKkAAJAAARwiFhYiFhIgCAgJ1qgP4A/gCBzt54s8zHl4A/vkqb/93mwBhL/i9/+0shCuv+c4Ao5aBAMgA0QEAARAQABgAGFgv9AAIjAAAo5aBAZAA0QEAARAQABgAGFgv9AAIjAAAo5aBAlgA0QEAARAQABgAGFgv9AAIjAAAo5aBAyAA0QEAARAQABgAGFgv9AAIjAAAHFO7a5G7j7OBALeK94EB8YIBn/CBAw==', 'base64')
+
+test('a video opened from the library is laid out at its own shape before it plays, not at the size of its thumbnail', async () => {
+  const page = await openCreate('library=1&videoFilms=library&chatVideo=1')
+  try {
+    // 缩略图是 40 × 30 的那一张：播放前照它排的话，画面只有那么一小块。
+    await serveLibraryPictures(page)
+    await page.route(/^xingmang-asset:\/\/video\//, (route) => route.fulfill({ contentType: 'video/webm', body: libraryTinyVideo }))
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-library-open').click()
+    await page.getByTestId('create-library-pane').getByTestId(`create-library-item-${libraryFilm}`).click()
+    const detail = page.getByTestId('create-library-detail')
+    const player = detail.getByTestId('create-library-player')
+    await player.waitFor()
+    const shape = async () => {
+      const box = await player.boundingBox()
+      return { width: Math.round(box.width), ratio: Math.round(box.width / box.height * 100) / 100 }
+    }
+    // 宽高读出来了，还没有按播放。
+    await page.waitForFunction(() => document.querySelector('[data-testid="create-library-player"]')?.readyState >= 1)
+    assert.equal(await player.evaluate((video) => video.paused), true)
+    const before = await shape()
+    assert.ok(before.width >= 480, `player is ${before.width} wide before it plays`)
+    assert.equal(before.ratio, 1.78)
+    // 放起来以后还是那么大，不跳。
+    await player.evaluate((video) => { video.muted = true; return video.play() })
+    await page.waitForFunction(() => document.querySelector('[data-testid="create-library-player"]')?.currentTime > 0)
+    assert.deepEqual(await shape(), before)
+    assert.equal(await detail.getByRole('alert').count(), 0)
+
+    // 窗口矮的时候画面跟着变矮，不被弹窗压着裁掉：进度条在最下面，裁掉就看不到了。
+    await page.setViewportSize({ width: 1100, height: 620 })
+    await page.waitForFunction(() => {
+      const video = document.querySelector('[data-testid="create-library-player"]')
+      return video && Math.abs(video.getBoundingClientRect().width / video.getBoundingClientRect().height - 16 / 9) < 0.02 && video.getBoundingClientRect().height < 320
+    })
+    const holder = await detail.locator('.create-library-media').boundingBox()
+    const short = await player.boundingBox()
+    assert.ok(short.y >= holder.y - 0.5 && short.y + short.height <= holder.y + holder.height + 0.5, `player ${Math.round(short.height)} high in a holder ${Math.round(holder.height)} high`)
+    // 弹窗里不用滚，下面那一排按钮也还在窗口里。
+    assert.deepEqual(await detail.locator('.xm-dialog-body').evaluate((body) => body.scrollHeight - body.clientHeight), 0)
+    const footer = await detail.getByTestId('create-library-open-video').boundingBox()
+    assert.ok(footer.y + footer.height <= 620)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the third start card joins clips picked from the library into a new film without generating anything', async () => {
   const page = await openCreate('library=1&videoFilms=library&chatVideo=1')
   try {
@@ -5775,9 +5823,9 @@ test('a failed answer to the asked-first question leaves it open to try again', 
     await page.getByTestId('tool-claude-switch-official').click()
     const question = page.getByTestId('command-confirmation-question')
     await question.waitFor()
-    await page.evaluate(() => { window.v2Test.fail = 'answerClaudeCommandConfirmation'; window.v2Test.failMessage = 'Claude Code 现在没在用官方账号，这次没有改。' })
+    await page.evaluate(() => { window.v2Test.fail = 'answerClaudeCommandConfirmation'; window.v2Test.failMessage = 'Claude Code 当前未使用官方账号，本次未修改。' })
     await page.getByTestId('command-confirmation-ask').click()
-    await page.getByText('Claude Code 现在没在用官方账号，这次没有改。', { exact: true }).waitFor()
+    await page.getByText('Claude Code 当前未使用官方账号，本次未修改。', { exact: true }).waitFor()
     assert.equal(await question.count(), 1)
     await clean(page)
   } finally { await page.close() }
@@ -6670,8 +6718,8 @@ test('the version card names the step that failed and offers that step again', a
   try {
     const updates = await openVersionCard(page)
     const stages = [
-      { step: 'check', phase: 'error', title: '检查更新失败', retry: '重试', reason: '设备当前没有连上网络，请先连接网络再试。' },
-      { step: 'download', phase: 'error', title: '下载更新失败', retry: '重新下载', reason: '连接更新服务器超时，请检查网络后再试。' },
+      { step: 'check', phase: 'error', title: '检查更新失败', retry: '重试', reason: '设备当前未连接网络，请先连接网络后重试。' },
+      { step: 'download', phase: 'error', title: '下载更新失败', retry: '重新下载', reason: '连接更新服务器超时，请检查网络后重试。' },
       { step: 'install', phase: 'downloaded', title: '安装更新失败', retry: '重新安装', reason: '更新程序未能启动，已继续打开主程序；可在“检查更新”页重试安装' },
     ]
     for (const stage of stages) {
@@ -6711,7 +6759,7 @@ test('the update failure bubble retries the failed step without a detour', async
     }), { step, phase, code, message })
     const calls = (method) => page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).length, method)
 
-    await emit('download', 'error', 'ETIMEDOUT', '连接更新服务器超时，请检查网络后再试。')
+    await emit('download', 'error', 'ETIMEDOUT', '连接更新服务器超时，请检查网络后重试。')
     const bubble = page.getByRole('alert').filter({ hasText: '下载更新失败' })
     await bubble.waitFor()
     await bubble.getByRole('button', { name: '重新下载', exact: true }).click()
@@ -6804,7 +6852,7 @@ test('an automatic update check that fails stays off the home bubble but shows o
     const emit = (automatic) => page.evaluate((flag) => window.v2Test.emit('onUpdateState', {
       phase: 'error', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null,
       checkedAt: new Date().toISOString(), progress: null, failedStep: 'check',
-      error: { code: 'ERR_INTERNET_DISCONNECTED', message: '设备当前没有连上网络，请先连接网络再试。', ...(flag ? { automatic: true } : {}) }, development: true,
+      error: { code: 'ERR_INTERNET_DISCONNECTED', message: '设备当前未连接网络，请先连接网络后重试。', ...(flag ? { automatic: true } : {}) }, development: true,
     }), automatic)
 
     await emit(true)
@@ -6860,7 +6908,7 @@ test('a stalled update download offers the download page next to downloading aga
   const page = await open('updateCheckFail=1')
   try {
     const updates = await openVersionCard(page)
-    const reason = '连接更新服务器超时，请检查网络后再试。'
+    const reason = '连接更新服务器超时，请检查网络后重试。'
     const emit = (code) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
       phase: 'error', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
       checkedAt: new Date().toISOString(), progress: null, failedStep: 'download',
@@ -6906,7 +6954,7 @@ test('a stalled update check offers the download page next to retrying', async (
   const page = await open('updateCheckFail=1')
   try {
     const updates = await openVersionCard(page)
-    const reason = '连接更新服务器超时，请检查网络后再试。'
+    const reason = '连接更新服务器超时，请检查网络后重试。'
     const emit = (code) => page.evaluate((value) => window.v2Test.emit('onUpdateState', {
       phase: 'error', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null,
       checkedAt: new Date().toISOString(), progress: null, failedStep: 'check',
@@ -7238,7 +7286,7 @@ test('a downloaded update is one click from the install confirmation in the side
     assert.equal(await dialog.count(), 0)
 
     // 失败交给气泡和版本卡说，侧栏那一项和小点都收起来。
-    await emit({ phase: 'error', failedStep: 'download', error: { code: 'ETIMEDOUT', message: '连接更新服务器超时，请检查网络后再试。' } })
+    await emit({ phase: 'error', failedStep: 'download', error: { code: 'ETIMEDOUT', message: '连接更新服务器超时，请检查网络后重试。' } })
     await expect.poll(() => entry.count()).toBe(0)
     assert.equal(await page.getByTestId('nav-settings-update').count(), 0)
     await clean(page)
@@ -7397,7 +7445,7 @@ test('settings › version update does not pop the bubbles that repeat what the 
     await emit({ phase: 'downloading', progress: { percent: 38, bytesPerSecond: 1, transferred: 38, total: 100 } })
     await updates.getByTestId('updates-progress-detail').waitFor()
     assert.equal(await bubble.count(), 0)
-    await emit({ phase: 'error', failedStep: 'download', error: { code: 'ETIMEDOUT', message: '连接更新服务器超时，请检查网络后再试。' } })
+    await emit({ phase: 'error', failedStep: 'download', error: { code: 'ETIMEDOUT', message: '连接更新服务器超时，请检查网络后重试。' } })
     await updates.getByTestId('updates-failure-download').waitFor()
     assert.equal(await bubble.count(), 0)
     // 离开设置页照旧弹。
@@ -9596,7 +9644,7 @@ test('a CLI launch still opens but warns when the project folder overrides the c
   const page = await open('allInstalled=1&recentWorkspaces=1&launchOverride=1')
   try {
     await page.getByTestId('tool-claude-primary').click()
-    await page.getByText('这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。', { exact: true }).waitFor()
+    await page.getByText('该项目文件夹中有独立的设置，将导致 Claude Code 不使用当前账号，余额与用量将无法对应。如非有意设置，请更换文件夹打开。', { exact: true }).waitFor()
     assert.equal(await page.getByRole('dialog', { name: '操作未完成' }).count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCli').map((call) => call.args)), [['claude', 'C:\\work\\my-app']])
     await clean(page)
@@ -9779,7 +9827,7 @@ test('ordinary desktop launch preserves the opened app and exposes a Chinese-loc
   const page = await open('localeLaunchWarning=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByText('Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。', { exact: true }).waitFor()
+    await page.getByText('Codex 已打开，但本次未能切换为中文界面。请先保存当前工作，再在首页点击「打开」，选择「重开 Codex」重试。', { exact: true }).waitFor()
     assert.equal(await page.getByRole('dialog', { name: '操作未完成' }).count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').map((call) => call.args)), [['open']])
     await clean(page)
@@ -10331,12 +10379,12 @@ test('the connection self-check reports every CLI on its own, and an unconfigure
     await claude.waitFor()
     await expect(claude.locator('.v2-health-line-text')).toHaveText('Claude Code：连接正常，claude-opus-5 可以直接使用')
     await expect(claude.getByRole('img', { name: '正常', exact: true })).toHaveClass(/is-ok/)
-    assert.equal(await claude.getByText('已用 claude-opus-5 发过一次最小请求').count(), 0)
+    assert.equal(await claude.getByText('已用 claude-opus-5 发送一次最小请求').count(), 0)
     const claudeToggle = page.getByTestId('health-connection-details-claude')
     await claudeToggle.click()
     await expect(claudeToggle).toHaveText('收起')
     await expect(claudeToggle).toHaveAttribute('aria-expanded', 'true')
-    await claude.getByTestId('health-connection-details').getByText('已用 claude-opus-5 发过一次最小请求', { exact: true }).waitFor()
+    await claude.getByTestId('health-connection-details').getByText('已用 claude-opus-5 发送一次最小请求', { exact: true }).waitFor()
     // 一次只展开一行。只读探测的结论要如实说出来，不能照 Claude 那句「发过一次最小请求」套。
     await page.getByTestId('health-connection-details-codex').click()
     await expect(claude.getByTestId('health-connection-details')).toHaveCount(0)
@@ -10977,10 +11025,10 @@ test('the health network row no longer sends the user around through settings', 
     await page.evaluate(() => {
       window.xingmang.runDiagnostics = async () => ({ version: 1, generatedAt: new Date().toISOString(), durationMs: 1,
         counts: { pass: 0, warn: 0, fail: 1, error: 0 },
-        items: [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'fail', summary: '连不上星芒服务', durationMs: 1 }] })
+        items: [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'fail', summary: '无法连接星芒服务', durationMs: 1 }] })
     })
     await page.getByTestId('nav-health').click()
-    await expect(page.getByTestId('page-health').getByText('连不上星芒服务')).toBeVisible()
+    await expect(page.getByTestId('page-health').getByText('无法连接星芒服务')).toBeVisible()
     await expect(page.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   } finally { await page.close() }
@@ -10990,7 +11038,7 @@ test('the health network row no longer sends the user around through settings', 
 // 在这一行拿到「去处理」，一点就到「设置 → 网络」里「星芒账号线路」那一行、亮一下，选「备用直连」再重开。
 async function stubCutOffNetwork(page, siteId) {
   await stubHealthReport(page, [{ code: 'XINGMANG_NETWORK', title: '星芒 AI 网络', state: 'fail',
-    summary: '与账号服务的连接被当前网络切断了，校园网、公司网常见。换一个网络（例如手机热点）再试一次。',
+    summary: '与账号服务的连接被当前网络中断，常见于校园网、公司网。请更换网络（例如手机热点）后重试。',
     details: { endpoint: 'https://xm.solov.cc/api/status', reason: 'refused', siteId } }])
 }
 
@@ -11043,7 +11091,7 @@ test('a guest or a check of another site gets no route fix on the cut-off networ
   try {
     await stubCutOffNetwork(restoring, 'solov')
     await restoring.getByTestId('nav-health').click()
-    await expect(restoring.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络切断了')
+    await expect(restoring.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络中断')
     await expect(restoring.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
     assert.deepEqual(await restoring.evaluate(() => window.v2Test.errors), [])
   } finally { await restoring.close() }
@@ -11052,21 +11100,21 @@ test('a guest or a check of another site gets no route fix on the cut-off networ
     await enterWorkspaceWithoutAccount(guest)
     await stubCutOffNetwork(guest, 'solov')
     await guest.getByTestId('nav-health').click()
-    await expect(guest.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络切断了')
+    await expect(guest.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连接被当前网络中断')
     await expect(guest.getByTestId('health-fix-XINGMANG_NETWORK')).toHaveCount(0)
     assert.deepEqual(await guest.evaluate(() => window.v2Test.errors), [])
   } finally { await guest.close() }
 })
 
-// 检查页「查网址的服务（DNS）」「别的代理软件」：改 DNS、关代理都在系统设置里，行里直接给按钮，打开哪一页由主进程
+// 检查页「域名解析服务（DNS）」「其他代理软件」：改 DNS、关代理都在系统设置里，行里直接给按钮，打开哪一页由主进程
 // 按 kind 定；系统没让打开时页头说去哪里找。DNS 只错一条、又固定用着错的那条时，另给「去处理」翻到线路那一行。
 test('the DNS and proxy rows open the system settings and the wrong fixed line goes to the route setting', async () => {
   const page = await open()
   try {
     await stubHealthReport(page, [
-      { code: 'RELAY_DNS', title: '查网址的服务（DNS）', state: 'warn', summary: '你这台电脑用的 DNS 把星芒线路2的地址查错了，线路1是对的。',
+      { code: 'RELAY_DNS', title: '域名解析服务（DNS）', state: 'warn', summary: '本机使用的 DNS 把星芒线路2的地址解析错误，线路1是对的。',
         details: { siteId: 'solov', line1: 'ok', line2: 'wrong', fix: 'open-dns-settings', reroute: 'auto' } },
-      { code: 'SYSTEM_PROXY_SOFTWARE', title: '别的代理软件', state: 'warn', summary: '系统设置里还开着代理（本机 7890 端口），可是那个代理软件没在运行。',
+      { code: 'SYSTEM_PROXY_SOFTWARE', title: '其他代理软件', state: 'warn', summary: '系统设置中仍开启着代理（本机 7890 端口），但该代理软件未在运行。',
         details: { systemProxy: 'dead', proxyPort: 7890, fix: 'open-proxy-settings' } },
     ])
     await page.getByTestId('nav-health').click()
@@ -11296,7 +11344,7 @@ test('the check page checks again when it is shown again, but not while a check 
     await page.getByTestId('nav-health').click()
     await expect(health.getByTestId('health-summary').locator('strong')).toHaveText('检查完成：全部正常')
     const first = await healthChecks(page)
-    await page.evaluate(() => { window.__health.items = [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'fail', summary: '连不上星芒服务' }] })
+    await page.evaluate(() => { window.__health.items = [{ code: 'XINGMANG_NETWORK', title: '星芒服务连接', state: 'fail', summary: '无法连接星芒服务' }] })
     // 藏着的检查页不查。
     await page.getByTestId('nav-home').click()
     await page.getByTestId('page-home').waitFor()
@@ -11304,7 +11352,7 @@ test('the check page checks again when it is shown again, but not while a check 
     assert.equal(await healthChecks(page), first)
     // 回来不用点「重新检查」就是新结果，结论那一行照旧写什么时候查的。
     await page.getByTestId('nav-health').click()
-    await expect(health.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('连不上星芒服务')
+    await expect(health.getByTestId('health-row-XINGMANG_NETWORK')).toContainText('无法连接星芒服务')
     assert.equal(await healthChecks(page), first + 1)
     await expect(health.getByTestId('health-summary')).toContainText('检查，共 1 项')
     // 查着的时候换走再回来：那一轮还没查完，不再起一轮；查完照样换上新结果。
@@ -11416,7 +11464,7 @@ test('a network self-check result sends 去处理 to the network group of settin
     await page.evaluate(() => {
       const original = window.xingmang.checkProviderConnection
       window.xingmang.checkProviderConnection = async (provider) => provider === 'claude'
-        ? { provider, siteId: 'solov', ok: false, layer: 'network', summary: '连不上星芒服务（连接被重置）', nextStep: '换个网络或打开加速后再测一次',
+        ? { provider, siteId: 'solov', ok: false, layer: 'network', summary: '无法连接星芒服务（连接被重置）', nextStep: '换个网络或打开加速后再测一次',
           endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: 'ECONNRESET', status: null, durationMs: 12, checkedAt: new Date().toISOString() }
         : original(provider)
     })
@@ -11424,7 +11472,7 @@ test('a network self-check result sends 去处理 to the network group of settin
     await page.getByTestId('health-connection-run').click()
     const claude = page.getByTestId('health-connection-result-claude')
     await expect(claude.getByRole('img', { name: '有问题', exact: true })).toHaveClass(/is-bad/)
-    await expect(claude.locator('.v2-health-line-text')).toHaveText('Claude Code：连不上星芒服务（连接被重置）')
+    await expect(claude.locator('.v2-health-line-text')).toHaveText('Claude Code：无法连接星芒服务（连接被重置）')
     await page.getByTestId('health-connection-details-claude').click()
     await claude.getByTestId('health-connection-details').getByText('换个网络或打开加速后再测一次', { exact: true }).waitFor()
     await claude.getByRole('button', { name: '去处理', exact: true }).click()
@@ -12083,7 +12131,7 @@ test('the note that the app went direct closes by itself once the app is back on
     // 电脑里的代理软件关了：读余额连着被拒两次，星芒自己改成直连，余额又读得到了。
     await page.evaluate(() => {
       window.v2Test.fail = 'getAccountBalance'
-      window.v2Test.failMessage = "Error invoking remote method 'account:get-balance': Error: 系统里设置的代理连不上，请检查代理或加速设置后再试。"
+      window.v2Test.failMessage = "Error invoking remote method 'account:get-balance': Error: 系统中设置的代理无法连接，请检查代理或加速设置后重试。"
     })
     // 账号卡平时没有刷新键，第一次从首页刷新；读失败了卡片上才出「更新失败」和刷新键。
     await page.getByTestId('home-balance-refresh').click()

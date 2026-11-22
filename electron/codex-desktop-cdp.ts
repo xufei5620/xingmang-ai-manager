@@ -22,7 +22,7 @@ const cdpStartupScreenAttempts = 90
 const cdpPortOwnershipRevalidateMs = 5_000
 const cdpPortOwnerLookupFailureLimit = 3
 // 进了用户看到的「未确认中文界面生效」提示，不带命令原文，也不说技术词。
-const cdpPortOwnerUnconfirmedMessage = '这次没能确认 Codex 已经准备好'
+const cdpPortOwnerUnconfirmedMessage = '本次未能确认 Codex 已就绪'
 
 /**
  * This is deliberately a small, mechanism-level patch. It does not replace

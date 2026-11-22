@@ -16,7 +16,7 @@ describe('rawErrorMessage', () => {
 
   it('strips a class name that does not end in Error', () => {
     // 主进程的 CodexDesktopInstallFailure 以前带着这串英文进了 Windows 的错误框。
-    const reason = 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。'
+    const reason = 'Codex 桌面端未能安装：微软商店安装失败，国内下载线路暂时无法连接。'
     expect(rawErrorMessage(new Error(`Error invoking remote method 'desktop:install-codex': CodexDesktopInstallFailure: ${reason}`)))
       .toBe(reason)
     expect(rawErrorMessage(new Error("Error invoking remote method 'a:one': Error: Error invoking remote method 'b:two': StreamFailure: 真正的原因")))
@@ -315,8 +315,8 @@ describe('detectionFailureMessage', () => {
     expect(detectionFailureMessage('Codex desktop status probe: package step failed: 拒绝访问。')).toBe(other)
     expect(detectionFailureMessage('Codex desktop status probe: PowerShell gave no answer within 24 s and was stopped')).toBe(other)
     // 写给客户、带着下一步的那句照旧原样显示。
-    expect(detectionFailureMessage('读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。'))
-      .toBe('读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。')
+    expect(detectionFailureMessage('无法读取本机 Codex 桌面端的安装信息，请使用安装它时所用的 Windows 账户登录，再重新打开星芒重试。'))
+      .toBe('无法读取本机 Codex 桌面端的安装信息，请使用安装它时所用的 Windows 账户登录，再重新打开星芒重试。')
   })
 
   it('keeps a reason that was written in Chinese, with its path redacted', () => {

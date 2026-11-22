@@ -107,7 +107,7 @@ function networkRouteSetting(details: Diagnostic['details'], accountSiteId: stri
 }
 
 /**
- * 「查网址的服务（DNS）」的「去处理」：电脑的 DNS 只把一条线路查错、客户又固定用着查错的那条时（主进程给 reroute），
+ * 「域名解析服务（DNS）」的「去处理」：电脑的 DNS 只把一条线路查错、客户又固定用着查错的那条时（主进程给 reroute），
  * 翻到「设置 → 网络」里这个站的线路那一行改成「自动」。同上面那样只认登着的这个账号的站、这个站能选线路。
  */
 function dnsRouteSetting(details: Diagnostic['details'], accountSiteId: string | null): string | null {
@@ -118,7 +118,7 @@ function dnsRouteSetting(details: Diagnostic['details'], accountSiteId: string |
 
 /**
  * 「去处理」要落在真能处理这件事的地方。落不到的（磁盘满、系统版本、运行权限、
- * 系统里的代理和环境变量、项目文件夹里的设置……）就不给按钮：结论里已经说了怎么办，
+ * 系统里的代理和环境变量、项目文件夹中的设置……）就不给按钮：结论里已经说了怎么办，
  * 以前统一兜底到「安装卸载」，用户点过去什么也找不到。
  * accountSiteId 是登着的那个账号所在的站（signedInSiteId），只有「星芒 AI 网络」用得上；缺省 = 访客。
  */
@@ -140,7 +140,7 @@ export function diagnosticTarget(code: string, details?: Diagnostic['details'], 
   if (code === 'RELAY_DNS') return dnsRouteSetting(details, accountSiteId) ? 'settings' : null
   if (code === 'SYSTEM_PROXY_SOFTWARE') return null
   if (code === 'CLASH_VERGE_TUN') return null
-  // 电脑里的代理设置在设置页没有能处理它的东西；能清的那种在行里直接给「清掉这条旧设置」。
+  // 电脑中的代理设置在设置页没有能处理它的东西；能清的那种在行里直接给「清掉这条旧设置」。
   if (code === 'PROXY_ENVIRONMENT') return null
   // 能删的（Windows 上当前账号那一份）在行里直接给「删掉这几项设置」。
   if (code === 'PROVIDER_ENVIRONMENT_OVERRIDE') return null

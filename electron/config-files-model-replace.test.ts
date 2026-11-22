@@ -177,7 +177,7 @@ describe('replacing a retired model in a tool config', () => {
     const plan = rewrite(planProviderModelReplace('codex', 'gpt-5.5', 'gpt-6-astra', r, '{"models":["new"]}\n'))
     const edited = `${fs.readFileSync(config, 'utf8')}# 客户刚改的\n`
     fs.writeFileSync(config, edited)
-    expect(() => applyProviderModelReplace('codex', plan, r)).toThrow('工具配置在换型号时被别的程序改了')
+    expect(() => applyProviderModelReplace('codex', plan, r)).toThrow('工具配置在更换型号时被其他程序修改')
     expect(fs.readFileSync(config, 'utf8')).toBe(edited)
     expect(fs.readFileSync(catalogPath, 'utf8')).toBe('{"models":[]}\n')
   })

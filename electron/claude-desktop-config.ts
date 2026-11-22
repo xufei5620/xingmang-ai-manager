@@ -14,7 +14,7 @@ const label = 'Claude Desktop 第三方推理配置'
  * 上，随这次失败进运行日志（ipc.ts 记失败时连同 cause 一起写），客服才分得清是哪一种。
  */
 function switchRefused(reason: string): Error {
-  return new Error('Claude Desktop 的设置刚被改过，这次没有切换，原来的设置没动。请再点一次。', { cause: new Error(`${label}：${reason}`) })
+  return new Error('Claude Desktop 的设置刚被修改，本次未切换，原设置保持不变。请再次点击。', { cause: new Error(`${label}：${reason}`) })
 }
 const maximumBytes = 512 * 1024
 // Claude Desktop 在登录页选「用 Claude 账号登录」时，第三方目录的 claude_desktop_config.json 里记成这个值，
@@ -684,7 +684,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       return {
         path: gatewayPath, ...saved, mode: 'local', supportsRelay: true, restartRequired: true, connectionVerified: false,
         // 同一个框下面紧跟着「连接自检」那一行，这里不再说「尚未验证」（0.2.24 深查决定单 D62 第 2 条的原字）。
-        warnings: ['已经写进 Claude Desktop。把它完全退出，再从这里点「打开」就生效。'],
+        warnings: ['已写入 Claude Desktop。请完全退出 Claude Desktop，再从此处点击「打开」即可生效。'],
       }
     }),
   }

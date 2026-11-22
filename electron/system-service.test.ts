@@ -1788,7 +1788,7 @@ describe('createSystemService', () => {
     fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
     await f.store.setOfficialProvider('claude', true)
 
-    await expect(f.service.saveConfig(f.payload, false)).rejects.toThrow(/^Claude Code 原来登录留下的官方密钥没能挪开，配置没有改动。关掉 Claude Code 后再试；还不行请找客服/)
+    await expect(f.service.saveConfig(f.payload, false)).rejects.toThrow(/^Claude Code 原登录留下的官方密钥未能移开，配置未改动。请关闭 Claude Code 后重试；如仍失败，请联系客服/)
 
     expect(fs.existsSync(f.settingsPath)).toBe(false)
     expect(fs.readFileSync(f.rootConfigPath, 'utf8')).toBe('{ not json')
@@ -1815,8 +1815,8 @@ describe('createSystemService', () => {
     await f.service.saveConfig(f.payload, false)
     fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
 
-    await expect(f.service.restoreOfficialCredentials?.('claude')).rejects.toThrow(/^Claude Code 原来的官方密钥没能放回原处。关掉 Claude Code 后再点一次「切回官方账号」/)
-    await expect(f.service.switchToOfficialAccount('claude')).rejects.toThrow(/官方密钥没能放回原处/)
+    await expect(f.service.restoreOfficialCredentials?.('claude')).rejects.toThrow(/^Claude Code 原有的官方密钥未能放回原处。请关闭 Claude Code 后再次点击「切回官方账号」/)
+    await expect(f.service.switchToOfficialAccount('claude')).rejects.toThrow(/官方密钥未能放回原处/)
 
     expect(inspectProviderConfig('claude', f.roots, providerBaseUrls).apiKey).toBe('sk-relay')
     expect(f.store.read().officialProviders ?? []).not.toContain('claude')
@@ -1884,7 +1884,7 @@ describe('createSystemService', () => {
     await f.store.setOfficialProvider('claude', true)
     saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'merge', f.roots, {}, providerBaseUrls)
 
-    await expect(f.service.alignRestoredAccountSource('claude')).rejects.toThrow(/^Claude Code 原来登录留下的官方密钥没能挪开，现在打开会报无效令牌。关掉 Claude Code 后再点一次「改用当前账号」/)
+    await expect(f.service.alignRestoredAccountSource('claude')).rejects.toThrow(/^Claude Code 原登录留下的官方密钥未能移开，现在打开将提示无效令牌。请关闭 Claude Code 后再次点击「改用当前账号」/)
 
     expect(f.store.read().officialProviders ?? []).not.toContain('claude')
     expect(fs.readFileSync(f.rootConfigPath, 'utf8')).toBe('{ not json')
@@ -6170,7 +6170,7 @@ describe('Darwin Codex Desktop integration', () => {
 
     await expect(service.installCodexDesktop(target))
       .resolves.toEqual({ action: 'unchanged', previousVersion: '26.727.51351', installedVersion: '26.727.51351' })
-    expect(target.send).toHaveBeenCalledWith('desktop:codex-install-progress', { phase: 'completed', percent: 100, message: 'Codex 桌面端已经装好了，不用重复安装' })
+    expect(target.send).toHaveBeenCalledWith('desktop:codex-install-progress', { phase: 'completed', percent: 100, message: 'Codex 桌面端已安装，无需重复安装' })
     expect(execute).not.toHaveBeenCalled()
   })
 
@@ -6203,7 +6203,7 @@ describe('Darwin Codex Desktop integration', () => {
     await expect(service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('工作目录不存在，请重新选择')
+    })).rejects.toThrow('项目文件夹不存在，请重新选择')
     expect(resolveCli).not.toHaveBeenCalled()
     expect(execute).not.toHaveBeenCalled()
   })
@@ -6217,7 +6217,7 @@ describe('Darwin Codex Desktop integration', () => {
     await expect(service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('工作目录不存在，请重新选择')
+    })).rejects.toThrow('项目文件夹不存在，请重新选择')
     expect(execute).not.toHaveBeenCalled()
     expect(release).not.toHaveBeenCalled()
   })
@@ -6233,7 +6233,7 @@ describe('Darwin Codex Desktop integration', () => {
     await expect(service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('Mac 没允许星芒打开这个文件夹。打开「系统设置 › 隐私与安全性 › 文件和文件夹」，把「星芒AI管理工具」和「终端」两项都打开，再点一次「打开」。')
+    })).rejects.toThrow('Mac 未允许星芒访问该文件夹。请打开「系统设置 › 隐私与安全性 › 文件和文件夹」，开启「星芒AI管理工具」和「终端」两项，然后再次点击「打开」。')
     expect(execute).not.toHaveBeenCalled()
     expect(release).not.toHaveBeenCalled()
   })

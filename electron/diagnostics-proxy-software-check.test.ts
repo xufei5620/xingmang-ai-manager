@@ -100,16 +100,16 @@ describe('proxySoftwareOutcome', () => {
   it('passes when the proxy forwards the service', () => {
     expect(proxySoftwareOutcome({ kind: 'forwarding', port: 7890 }, 'win32')).toEqual({
       state: 'pass',
-      summary: '开着别的代理软件（本机 7890 端口），星芒经它能连上',
+      summary: '已开启其他代理软件（本机 7890 端口），星芒可通过该代理连接',
       details: { systemProxy: 'forwarding', proxyPort: 7890 },
     })
-    expect(proxySoftwareOutcome({ kind: 'forwarding', port: null }, 'win32').summary).toBe('开着代理（用的是别的机器上的代理），星芒经它能连上')
+    expect(proxySoftwareOutcome({ kind: 'forwarding', port: null }, 'win32').summary).toBe('已开启代理（使用其他机器上的代理），星芒可通过该代理连接')
   })
 
   it('does not blame the proxy when nothing reaches the service', () => {
     expect(proxySoftwareOutcome({ kind: 'unreachable', port: 7890 }, 'win32')).toMatchObject({
       state: 'pass',
-      summary: '开着别的代理软件（本机 7890 端口）。这会儿经它和直接连都连不上星芒，先看上面「星芒 AI 网络」那一行。',
+      summary: '已开启其他代理软件（本机 7890 端口）。当前通过该代理或直接连接均无法连接星芒，请先查看上方「星芒 AI 网络」一项。',
     })
   })
 
@@ -117,8 +117,8 @@ describe('proxySoftwareOutcome', () => {
     const result = proxySoftwareOutcome({ kind: 'blocking', port: 7890 }, 'win32')
     expect(result).toEqual({
       state: 'warn',
-      summary: '开着别的代理软件（本机 7890 端口），可是经它连不上星芒。星芒自己会自动改成直接连，不用管；'
-        + 'Codex（命令行和桌面端）、Claude 桌面端跟着它走，会连不上。用这几个工具时，在代理软件里把星芒设成直连，或者先退出代理软件。',
+      summary: '已开启其他代理软件（本机 7890 端口），但通过该代理无法连接星芒。星芒将自动改为直接连接，无需处理；'
+        + 'Codex（命令行和桌面端）、Claude 桌面端会使用该代理，将无法连接。使用这几个工具时，请在代理软件中将星芒设为直连，或先退出代理软件。',
       details: { systemProxy: 'blocking', proxyPort: 7890, fix: 'open-proxy-settings' },
     })
     expect(proxySoftwareOutcome({ kind: 'blocking', port: null }, 'darwin').details).toEqual({ systemProxy: 'blocking', proxyHost: 'remote', fix: 'open-proxy-settings' })
@@ -127,16 +127,16 @@ describe('proxySoftwareOutcome', () => {
   it('warns about a proxy that is set but not running and offers the settings page', () => {
     expect(proxySoftwareOutcome({ kind: 'dead', port: 7890 }, 'darwin')).toEqual({
       state: 'warn',
-      summary: '系统设置里还开着代理（本机 7890 端口），可是那个代理软件没在运行。星芒自己会自动改成直接连；'
-        + 'Codex（命令行和桌面端）、Claude 桌面端还会去连它，会连不上。打开那个代理软件，或者点「打开系统代理设置」把代理关掉。',
+      summary: '系统设置中仍开启着代理（本机 7890 端口），但该代理软件未在运行。星芒将自动改为直接连接；'
+        + 'Codex（命令行和桌面端）、Claude 桌面端仍会尝试使用该代理，将无法连接。请打开该代理软件，或点击「打开系统代理设置」关闭代理。',
       details: { systemProxy: 'dead', proxyPort: 7890, fix: 'open-proxy-settings' },
     })
-    expect(proxySoftwareOutcome({ kind: 'dead', port: null }, 'win32').summary).toMatch(/^系统设置里还开着代理（用的是别的机器上的代理），可是它连不上。/)
+    expect(proxySoftwareOutcome({ kind: 'dead', port: null }, 'win32').summary).toMatch(/^系统设置中仍开启着代理（使用其他机器上的代理），但该代理无法连接。/)
   })
 
   it('offers no settings button where there is no settings page to open', () => {
     const result = proxySoftwareOutcome({ kind: 'dead', port: 7890 }, 'linux')
-    expect(result.summary).toContain('或者在系统设置里把代理关掉。')
+    expect(result.summary).toContain('或在系统设置中关闭代理。')
     expect(result.details?.fix).toBeUndefined()
   })
 })

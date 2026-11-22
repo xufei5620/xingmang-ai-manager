@@ -160,7 +160,7 @@ describe('resetCodexDesktop', () => {
     const activeKeys: Array<string | null> = []
     service.onInstallationQueueChange((snapshot) => { activeKeys.push(snapshot.activeKey) })
 
-    await expect(service.resetCodexDesktop()).rejects.toThrow('只有 Windows 上的 Codex 桌面端可以一键重置')
+    await expect(service.resetCodexDesktop()).rejects.toThrow('仅 Windows 上的 Codex 桌面端支持一键重置')
     // 重置会动桌面端的安装，和安装、卸载排同一条队（I11）。
     expect(activeKeys).toEqual(['desktop:codex:reset', null])
   })

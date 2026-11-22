@@ -88,7 +88,7 @@
 - `codex-desktop-acceleration.ts` — 打开桌面端前悄悄替用户连上加速（桌面端只认系统代理）：不扣免费时长、用完就断、用户自己连的线路一律不碰、不在加速页和托盘上露面，连不上照常打开。不含 Electron 依赖
 - `codex-desktop-state.ts` — 修 `.codex-global-state.json` 里权限选择器那一项：旧版写的是布尔值，新版界面拿到它就把权限选择禁掉；只改这一项，别的状态不动
 - `codex-desktop-install-failure.ts` — 桌面端装不上 / 更新不了时客户看到的那句话（按原因分几类，原话只进日志），外加微软商店链接（外链白名单全等收录，I12）；主进程与渲染层共用，不许引 Node（I6）
-- `codex-desktop-known-issues.ts` — 已知打不开的桌面端版本表：只提示并引到 Codex 命令行版，不给「退回上一版」（商店几小时就换回去）；上游修好、真机核过后删掉那一行。主进程与渲染层共用
+- `codex-desktop-known-issues.ts` — 已知打不开的桌面端版本表：只提示并引到 Codex CLI，不给「退回上一版」（商店几小时就换回去）；上游修好、真机核过后删掉那一行。主进程与渲染层共用
 
 ## 手机遥控 Codex（侧栏「手机遥控」，0.2.25 前在设置 › 工具管理；只认配对过的一个人的私聊，命令要在聊天里点同意）
 - `codex-remote-channel.ts` — 渠道（飞书、微信）和底座之间的接口：入站消息、出站文字与审批、渠道状态、`RemoteChannelDependencies`（主进程 fetch、凭据读写、日志、版本号），以及给界面的快照类型（带 `revision`，界面只收新的那份）。零依赖，在 `valueImportable` 名单上（I6），渲染层用它的 `remoteChannelIds`

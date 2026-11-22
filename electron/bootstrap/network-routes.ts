@@ -263,7 +263,7 @@ export function createNetworkRoutes(options: NetworkRoutesOptions) {
     relayRouting,
     sessionFetch,
     resolveSystemProxy,
-    // 检查页「别的代理软件」经系统代理、直接连各连一次星芒，比出是不是代理软件挡的路。
+    // 检查页「其他代理软件」经系统代理、直接连各连一次星芒，比出是不是代理软件挡的路。
     systemProxyFetch,
     siteDirectFetch,
     proxyBypass,

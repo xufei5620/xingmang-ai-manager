@@ -31,7 +31,7 @@ describe('PowerShell probe lines that survive ConstrainedLanguage', () => {
   })
 
   it('keeps what the main process parses identical once escaped', () => {
-    const raw = JSON.stringify({ error: '读不到这台电脑上 Codex 桌面端的安装信息', emoji: '😀', path: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex' })
+    const raw = JSON.stringify({ error: '无法读取本机 Codex 桌面端的安装信息', emoji: '😀', path: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex' })
     const escaped = escapeLikeTheProbe(raw)
     expect(escaped).toMatch(/^[\x00-\x7F]*$/)
     expect(JSON.parse(escaped)).toEqual(JSON.parse(raw))

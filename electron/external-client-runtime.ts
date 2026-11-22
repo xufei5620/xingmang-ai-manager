@@ -59,12 +59,12 @@ const claudeApplicationId = `${claudeFamily}!Claude`
 const maximumProbeBytes = 256 * 1024
 // 找不到可信的系统 winget 时，原因是 ENOENT、包身份校验失败之类的内部细节，客户看不懂
 // 也做不了什么；首页行里只说装不了、怎么办，原因写进运行日志给客服查。
-export const externalClientWingetUnavailableHint = '这台电脑缺少系统自带的应用安装组件，不能一键安装；点「去官网下载」装好后回来重新检测'
+export const externalClientWingetUnavailableHint = '本机缺少系统自带的应用安装组件，无法一键安装；请点击「去官网下载」，安装完成后返回重新检测'
 // Windows 上签名不对、Mac 上苹果的签名核对没过，首页那一行说的都是这一句。
 const signatureMismatchMessage = '客户端数字签名无效或签名发布者与官方发布者不一致'
 const appxPathIdentityMessage = '客户端 AppX 路径身份无法验证'
 // 这一句已经说清装在哪、该怎么办；安装时不再套「无法确认当前安装状态」。
-const claudeDesktopOtherVolumePattern = /^Claude Desktop 装在了 [A-Z] 盘，/
+const claudeDesktopOtherVolumePattern = /^Claude Desktop (?:装在了|安装在) [A-Z] 盘，/
 // 检测脚本最多交回几条读不出来的安装记录（只进运行日志）。
 const maximumRegistryFailures = 10
 // 安装记录对上了、程序却没认的（路径里有联接、程序不在了），检测脚本最多交回几条（只进运行日志）。
@@ -287,9 +287,9 @@ function errorText(error: unknown): string {
   return cleanCommandOutput(error instanceof Error ? error.message : String(error)).slice(0, 1500)
 }
 
-/** Windows 把 Claude Desktop 放到了别的盘时首页和出错框说的话（yoyo 2026-10-24 定稿，盘符按这台电脑填）。 */
+/** Windows 把 Claude Desktop 放到了别的盘时首页和出错框说的话（yoyo 2026-10-24 定稿，11-22 界面文案正式化改成书面口吻，盘符按这台电脑填）。 */
 export function buildClaudeDesktopOtherVolumeMessage(drive: string, systemDrive: string): string {
-  return `Claude Desktop 装在了 ${drive} 盘，星芒认不了，要移回 ${systemDrive} 盘才能用：先完全退出 Claude，在 Windows 设置的「已安装的应用」里找到 Claude，点「…」→「移动」选 ${systemDrive} 盘，再回来点「重新检测」。没有「移动」的话，在 Windows 设置里搜「新内容的保存位置」，把「新的应用将保存到」改回 ${systemDrive} 盘，再卸载 Claude，回星芒重新安装。`
+  return `Claude Desktop 安装在 ${drive} 盘，星芒无法识别，需移回 ${systemDrive} 盘才能使用：请先完全退出 Claude，在 Windows 设置的「已安装的应用」中找到 Claude，点击「…」→「移动」并选择 ${systemDrive} 盘，再返回点击「重新检测」。如没有「移动」选项，请在 Windows 设置中搜索「新内容的保存位置」，将「新的应用将保存到」改回 ${systemDrive} 盘，再卸载 Claude，返回星芒重新安装。`
 }
 
 function installStateMessage(detectionError: string): string {
@@ -326,10 +326,10 @@ function wingetCancelled(error: unknown): boolean {
 function wingetFailureMessage(error: unknown): string {
   if (!(error instanceof CommandRunnerError)) return errorText(error)
   const exitCode = error.exitCode === null ? '' : `（错误码 0x${(error.exitCode >>> 0).toString(16)}）`
-  if (wingetNetworkFailure(error)) return `连不上微软的软件下载源${exitCode}，请检查网络连接后重试。`
+  if (wingetNetworkFailure(error)) return `无法连接微软的软件下载源${exitCode}，请检查网络连接后重试。`
   if (wingetCancelled(error)) return '安装已取消。'
   if (error.code === 'TIMED_OUT') return '安装超时，请重新检测客户端状态后再尝试安装。'
-  return `安装没有完成${exitCode}，请查看运行日志中的安装器输出。`
+  return `安装未完成${exitCode}，请查看运行日志中的安装器输出。`
 }
 
 function installationError(message: string, originalError: unknown): Error {
@@ -348,7 +348,7 @@ function installKey(tool: ExternalToolId): string {
 }
 /** Windows 上交给系统去装的那一步不接受取消时，按「取消」弹出的那句话。 */
 function installSealReason(tool: ExternalToolId): string {
-  return `正在安装 ${definitions[tool].name}，这一步中断会留下装了一半的程序，请等它结束。`
+  return `正在安装 ${definitions[tool].name}，此步骤中断将留下未安装完成的程序，请等待安装结束。`
 }
 function textValue(value: unknown): string | null {
   return typeof value === 'string' && value.trim() && value.length < 32_768 && !/[\x00-\x1f]/.test(value) ? value.trim() : null
@@ -1102,7 +1102,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
    */
   async function updateOnMac(tool: ExternalToolId, current: ExternalClientRuntimeStatus, request: DesktopAppUpdateRequest, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void, cancellation: InstallCancellationHandle): Promise<{ unchanged: boolean }> {
     const signal = cancellation.signal
-    if (!current.path || !current.version) throw new Error(`${definitions[tool].name} 的版本号读不出来，没法比新旧`)
+    if (!current.path || !current.version) throw new Error(`无法读取 ${definitions[tool].name} 的版本号，无法比较新旧版本`)
     const clientPath = current.path
     await options.assertDiskSpace?.(`${definitions[tool].name} 更新失败`)
     const runProcess = (plan: { executable: string, argv: readonly string[], timeoutMs: number }) => execute({ executable: plan.executable, argv: [...plan.argv] }, { env: environment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 8 * 1024 * 1024, signal })
@@ -1235,7 +1235,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
           report('checking', '正在验证安装结果')
           const after = (await withUpdateOffers([status(tool, await inspect(), winget)]))[0]
           if (!after.installed) throw new Error(after.detectionError || '安装命令已结束，但未检测到客户端，请检查安装器结果后重试检测')
-          report('completed', unchanged ? `${definitions[tool].name} 已经是最新版，不用更新`
+          report('completed', unchanged ? `${definitions[tool].name} 已是最新版本，无需更新`
             : after.version ? `${definitions[tool].name} 已更新到 v${after.version}` : `${definitions[tool].name} 安装完成`, 100)
           return after
         }

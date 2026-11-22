@@ -155,12 +155,12 @@ describe('Codex Responses tool roundtrip', () => {
     const first = mockReplies(reply(incomplete))
     const firstResult = await runCodexResponsesProbe(build(), { fetch: first.fetch })
     expect(firstResult).toMatchObject({ ok: false, layer: 'protocol' })
-    expect(firstResult.summary).toBe('模型没答完就停了')
+    expect(firstResult.summary).toBe('模型未完成回答即已停止')
     expect(first.calls).toHaveLength(1)
 
     const second = mockReplies(reply(functionCall()), reply({ ...finalAnswer(), status: 'incomplete' }))
     const secondResult = await runCodexResponsesProbe(build(), { fetch: second.fetch, markerFactory: () => marker })
-    expect(secondResult.summary).toBe('模型没答完就停了')
+    expect(secondResult.summary).toBe('模型未完成回答即已停止')
     expect(second.calls).toHaveLength(2)
   })
 
@@ -223,11 +223,11 @@ describe('Codex Responses tool roundtrip', () => {
     })
     const pending = service.run()
     scope = 'solov:user-2:key-b'
-    await expect(service.run()).rejects.toThrow('设置变了')
+    await expect(service.run()).rejects.toThrow('设置已变化')
     releaseFirst(reply(functionCall()))
     const result = await pending
     expect(result).toMatchObject({ ok: false, layer: 'config' })
-    expect(result.summary).toContain('第二次请求没有发')
+    expect(result.summary).toContain('未发送第二次请求')
     expect(calls).toHaveLength(1)
   })
 

@@ -168,7 +168,7 @@ export function workspaceButtonLabel(name: string, limit = NAME_LIMIT): string {
  * 得到的应该是一个能继续往下走的界面。
  */
 export function isMissingWorkspace(cause: unknown): boolean {
-  return rawErrorMessage(cause).includes('工作目录不存在')
+  return /工作目录不存在|项目文件夹不存在/.test(rawErrorMessage(cause))
 }
 
 /**

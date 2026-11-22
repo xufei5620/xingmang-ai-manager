@@ -207,8 +207,8 @@ export function describeClaudeDesktopMsixDownload(
   wingetTried: boolean,
   progress: { percent: number; resuming?: boolean },
 ): string {
-  if (progress.resuming) return `网络断了一下，正在接着从 Claude 官网下载离线安装包（已下 ${progress.percent}%）`
-  return `${wingetTried ? '系统自带的安装组件这次没装上，' : ''}正在从 Claude 官网下载离线安装包（${progress.percent}%）`
+  if (progress.resuming) return `网络曾短暂中断，正在继续从 Claude 官网下载离线安装包（已下载 ${progress.percent}%）`
+  return `${wingetTried ? '系统自带的安装组件安装失败，' : ''}正在从 Claude 官网下载离线安装包（${progress.percent}%）`
 }
 
 export interface ClaudeDesktopMsixInstallOptions {
@@ -428,7 +428,7 @@ async function installVerifiedClaudeDesktopPackage(
     onElevationRequired: () => reportProgress(options, {
       phase: 'installing',
       percent: null,
-      message: '接下来 Windows 会弹出授权窗口，上面写的是「Windows PowerShell」，这是星芒在调用系统自带的安装工具，点「是」继续。',
+      message: '接下来 Windows 将弹出授权窗口，显示「Windows PowerShell」，这是星芒在调用系统自带的安装工具，请点击「是」继续。',
     }),
   })
 }
@@ -453,7 +453,7 @@ export async function installClaudeDesktopFromOfficial(options: ClaudeDesktopMsi
   const packagePath = path.join(directory, `Claude-${architecture}.msix`)
   try {
     const download = await downloadClaudeDesktopPackage(architecture, packagePath, options)
-    reportProgress(options, { phase: 'checking', percent: null, message: '正在检查下载下来的安装包是不是完整的官方版' })
+    reportProgress(options, { phase: 'checking', percent: null, message: '正在校验下载的安装包是否为完整的官方版本' })
     let inspected: { version: string }
     try {
       inspected = await inspectClaudeDesktopPackage(packagePath, architecture, mode, machinePaths, options)
@@ -505,7 +505,7 @@ export async function installClaudeDesktopFromBucket(options: ClaudeDesktopBucke
         // 桶太慢时先比一比官网那一路，确实更快才换（#1061 第 6 条）。
         probeAlternative: (probeSignal) => measureClaudeDesktopOfficialSpeed(architecture, options.fetch, probeSignal),
       })
-      reportProgress(options, { phase: 'checking', percent: null, message: '正在检查下载下来的安装包是不是完整的官方版' })
+      reportProgress(options, { phase: 'checking', percent: null, message: '正在校验下载的安装包是否为完整的官方版本' })
       inspected = await inspectClaudeDesktopPackage(packagePath, architecture, mode, machinePaths, options)
       if (inspected.version !== release.version) {
         throw new Error(`安装包版本 ${inspected.version} 和存储桶清单写的 ${release.version} 不一致`)

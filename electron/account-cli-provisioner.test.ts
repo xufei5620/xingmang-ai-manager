@@ -186,8 +186,8 @@ describe('syncManagedCliKeySummary', () => {
       ['codex', 'grok', 'claude'], {}, false, store,
     )
     expect(outcome.failed).toEqual([
-      { provider: 'codex', message: '服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。（HTTP 522）', serviceUnavailable: true },
-      { provider: 'grok', message: '服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。', serviceUnavailable: true },
+      { provider: 'codex', message: '服务暂时不可用（维护或线路繁忙），您无需做任何改动，请稍后重试。（HTTP 522）', serviceUnavailable: true },
+      { provider: 'grok', message: '服务暂时不可用（维护或线路繁忙），您无需做任何改动，请稍后重试。', serviceUnavailable: true },
       { provider: 'claude', message: 'claude 分组暂不可用' },
     ])
     expect(saveConfig).not.toHaveBeenCalled()

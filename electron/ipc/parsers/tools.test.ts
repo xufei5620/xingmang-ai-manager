@@ -73,7 +73,7 @@ describe('parseWorkspace', () => {
   })
 
   it('rejects a path longer than Windows allows', () => {
-    expect(() => parseWorkspace('/' + 'a'.repeat(32_767), '/fallback', 'linux')).toThrow('工作目录格式错误')
+    expect(() => parseWorkspace('/' + 'a'.repeat(32_767), '/fallback', 'linux')).toThrow('项目文件夹路径格式错误')
   })
 
   it('accepts only full paths this computer understands', () => {
@@ -81,30 +81,30 @@ describe('parseWorkspace', () => {
       expect(parseWorkspace(workspace, 'C:\\Users\\peaker', 'win32')).toBe(workspace)
     }
     for (const workspace of ['.', '..', 'demo', 'projects\\demo', 'C:demo', 'C:', '\\projects\\demo', '/projects/demo', '~\\demo']) {
-      expect(() => parseWorkspace(workspace, 'C:\\Users\\peaker', 'win32')).toThrow('工作目录格式错误')
+      expect(() => parseWorkspace(workspace, 'C:\\Users\\peaker', 'win32')).toThrow('项目文件夹路径格式错误')
     }
     for (const platform of ['darwin', 'linux'] as const) {
       expect(parseWorkspace('/Users/alex/demo', '/Users/alex', platform)).toBe('/Users/alex/demo')
       for (const workspace of ['.', '..', 'demo', './demo', '~/demo', 'C:\\projects\\demo']) {
-        expect(() => parseWorkspace(workspace, '/Users/alex', platform)).toThrow('工作目录格式错误')
+        expect(() => parseWorkspace(workspace, '/Users/alex', platform)).toThrow('项目文件夹路径格式错误')
       }
     }
   })
 
   it('rejects a NUL byte', () => {
-    expect(() => parseWorkspace('C:\\projects\0\\demo', 'C:\\Users\\peaker', 'win32')).toThrow('工作目录格式错误')
-    expect(() => parseWorkspace('/Users/alex\0/demo', '/Users/alex', 'darwin')).toThrow('工作目录格式错误')
+    expect(() => parseWorkspace('C:\\projects\0\\demo', 'C:\\Users\\peaker', 'win32')).toThrow('项目文件夹路径格式错误')
+    expect(() => parseWorkspace('/Users/alex\0/demo', '/Users/alex', 'darwin')).toThrow('项目文件夹路径格式错误')
   })
 
   it('checks the stored folder it falls back to as well', () => {
-    expect(() => parseWorkspace(undefined, '.', 'linux')).toThrow('工作目录格式错误')
-    expect(() => parseWorkspace('  ', 'workspace', 'win32')).toThrow('工作目录格式错误')
-    expect(() => parseWorkspace(undefined, '', 'win32')).toThrow('工作目录格式错误')
+    expect(() => parseWorkspace(undefined, '.', 'linux')).toThrow('项目文件夹路径格式错误')
+    expect(() => parseWorkspace('  ', 'workspace', 'win32')).toThrow('项目文件夹路径格式错误')
+    expect(() => parseWorkspace(undefined, '', 'win32')).toThrow('项目文件夹路径格式错误')
   })
 
   it('rejects a value that is neither a string nor missing instead of using the stored folder', () => {
     for (const bad of [null, 12345, ['/Users/alex/demo'], { path: '/Users/alex/demo' }]) {
-      expect(() => parseWorkspace(bad, '/Users/alex', 'darwin')).toThrow('工作目录格式错误')
+      expect(() => parseWorkspace(bad, '/Users/alex', 'darwin')).toThrow('项目文件夹路径格式错误')
     }
   })
 })

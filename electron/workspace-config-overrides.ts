@@ -476,10 +476,10 @@ export function launchOverrideNotice(toolName: string, overrides: readonly Works
   const managed = effective.filter((entry) => entry.scope === 'managed')
   if (managed.length) {
     const certain = managed.some((entry) => entry.severity === 'blocking')
-    return `这台电脑上有统一下发的设置（一般是公司的电脑管理员配的），${certain ? '会' : '可能会'}让 ${toolName} 不用当前账号，本软件改不了它，需要找管理员处理。`
+    return `本机存在统一下发的设置（通常由公司的电脑管理员配置），${certain ? '将' : '可能'}导致 ${toolName} 不使用当前账号，本软件无法修改，请联系管理员处理。`
   }
   const certain = effective.some((entry) => entry.severity === 'blocking')
-  return `这个项目文件夹里有自己的设置，${certain ? '会' : '可能会'}让 ${toolName} 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。`
+  return `该项目文件夹中有独立的设置，${certain ? '将' : '可能'}导致 ${toolName} 不使用当前账号，余额与用量将无法对应。如非有意设置，请更换文件夹打开。`
 }
 
 /** 日志与检查页详情里的一行：脱敏后的文件位置加键名，从来不带值。 */
@@ -490,7 +490,7 @@ export function describeOverride(
   platform: NodeJS.Platform,
 ): string {
   const where = displayOverrideFile(override.file, workspace, home, platform)
-  if (override.unreadable) return `${where}（读不了，没法确认）`
+  if (override.unreadable) return `${where}（无法读取，无法确认）`
   return override.keys.length ? `${where}：${override.keys.join('、')}` : where
 }
 
@@ -521,8 +521,8 @@ export function summarizeWorkspaceOverrides(
     return {
       state: 'pass',
       summary: options.workspaceChecked
-        ? '项目文件夹里没有会盖过当前账号的设置'
-        : '这台电脑上没有会盖过当前账号的统一设置；还没从本软件打开过项目文件夹',
+        ? '项目文件夹中没有会覆盖当前账号的设置'
+        : '本机没有会覆盖当前账号的统一设置；尚未通过本软件打开项目文件夹',
       details,
     }
   }
@@ -531,16 +531,16 @@ export function summarizeWorkspaceOverrides(
   const managed = overrides.filter((entry) => entry.scope === 'managed')
   if (managed.length) {
     const certain = managed.some((entry) => entry.severity === 'blocking')
-    parts.push(`这台电脑上有统一下发的设置，${certain ? '会' : '可能会'}让 ${names(managed)} 不用当前账号，需要找电脑管理员处理`)
+    parts.push(`本机存在统一下发的设置，${certain ? '将' : '可能'}导致 ${names(managed)} 不使用当前账号，请联系电脑管理员处理`)
   }
   const project = overrides.filter((entry) => entry.scope === 'project' && !entry.launchUnaffected)
   if (project.length) {
     const certain = project.some((entry) => entry.severity === 'blocking')
-    parts.push(`最近打开的项目文件夹里有自己的设置，${certain ? '会' : '可能会'}让 ${names(project)} 不用当前账号；不是有意这样设的话，换一个文件夹打开就好`)
+    parts.push(`最近打开的项目文件夹中有独立的设置，${certain ? '将' : '可能'}导致 ${names(project)} 不使用当前账号；如非有意设置，请更换文件夹打开`)
   }
   const terminalOnly = overrides.filter((entry) => entry.launchUnaffected)
   if (terminalOnly.length) {
-    parts.push(`在最近打开的项目文件夹里自己开终端运行 ${names(terminalOnly)} 时不会用当前账号，从本软件打开不受影响`)
+    parts.push(`在最近打开的项目文件夹中自行通过终端运行 ${names(terminalOnly)} 时不会使用当前账号，通过本软件打开不受影响`)
   }
   const blocking = overrides.some((entry) => entry.severity === 'blocking' && !entry.launchUnaffected)
   return { state: blocking ? 'fail' : 'warn', summary: parts.join('；'), details }

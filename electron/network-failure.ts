@@ -23,7 +23,7 @@ export type NetworkFailureReason = 'offline' | 'dns' | 'tls' | 'certDate' | 'pro
  *
  * 两张表共用这一句：这句话说的是这台电脑，跟连的是账号服务还是更新目录无关。
  */
-const certificateDateMessage = '这次连接的安全证书日期对不上，多半是这台电脑的系统时间不准。请先把系统时间设为自动同步并确认时区，再重试；确认时间没问题，再换一个网络试试。'
+const certificateDateMessage = '本次连接的安全证书日期不符，通常是本机系统时间不准确。请先将系统时间设为自动同步并确认时区，再重试；如确认时间无误，请更换网络后重试。'
 
 /**
  * 服务在维护、网关挂了、前面的防护层弹了人机验证：这些都是服务那一侧的事，用户
@@ -33,7 +33,7 @@ const certificateDateMessage = '这次连接的安全证书日期对不上，多
  * （聊天、账号读取、操作失败）按这些字把错误归成「登录失效」「检查网络」，
  * 一旦撞上，安抚就会被翻译回它要否认的那件事。
  */
-const serviceUnavailableText = '服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。'
+const serviceUnavailableText = '服务暂时不可用（维护或线路繁忙），您无需做任何改动，请稍后重试。'
 
 /**
  * 文案约定：主语是「当前网络」或「账号服务」，不出现站点名、域名和内部代号
@@ -41,14 +41,14 @@ const serviceUnavailableText = '服务暂时不可用（维护或线路繁忙）
  * 否则用户只会反复重输密码。
  */
 export const networkFailureMessages: Readonly<Record<NetworkFailureReason, string>> = {
-  offline: '设备当前没有连上网络，请先连接网络再试。',
-  dns: '当前网络解析不出账号服务的地址，校园网、公司网常见。换一个网络（例如手机热点）通常就能用。',
-  tls: '当前网络替换了这次连接的安全证书，这台电脑也不认它，为保护账号信息已经中止本次请求。公司电脑请找网络管理员处理；自己的电脑请换一个网络再试，不要在这个网络上继续输入密码。',
+  offline: '设备当前未连接网络，请先连接网络后重试。',
+  dns: '当前网络无法解析账号服务的地址，常见于校园网、公司网。更换网络（例如手机热点）通常即可解决。',
+  tls: '当前网络替换了本次连接的安全证书，且本机不信任该证书，为保护账号信息已中止本次请求。公司电脑请联系网络管理员处理；个人电脑请更换网络后重试，请勿在该网络上继续输入密码。',
   certDate: certificateDateMessage,
-  proxy: '系统里设置的代理连不上，请检查代理或加速设置后再试。',
-  refused: '与账号服务的连接被当前网络切断了，校园网、公司网常见。换一个网络（例如手机热点）再试一次。',
-  timeout: '连接账号服务超时，请检查网络后再试。',
-  intercepted: '当前网络把这次请求拦到了别的页面，多半是校园网或公共 Wi-Fi 要求先在浏览器完成上网认证。认证之后再试，或者改用手机热点。',
+  proxy: '系统中设置的代理无法连接，请检查代理或加速设置后重试。',
+  refused: '与账号服务的连接被当前网络中断，常见于校园网、公司网。请更换网络（例如手机热点）后重试。',
+  timeout: '连接账号服务超时，请检查网络后重试。',
+  intercepted: '当前网络将本次请求拦截到了其他页面，通常是校园网或公共 Wi-Fi 要求先在浏览器中完成上网认证。请完成认证后重试，或改用手机热点。',
   serviceUnavailable: serviceUnavailableText,
 }
 
@@ -59,15 +59,15 @@ export const networkFailureMessages: Readonly<Record<NetworkFailureReason, strin
  * 仍然只有一份。
  */
 export const updateNetworkFailureMessages: Readonly<Record<NetworkFailureReason, string>> = {
-  offline: '设备当前没有连上网络，请先连接网络再试。',
-  dns: '当前网络解析不出更新服务器的地址，校园网、公司网常见。换一个网络（例如手机热点）通常就能用。',
-  tls: '当前网络替换了这次连接的安全证书，这台电脑也不认它，为保证安装包来源可信已经中止本次更新。公司电脑请找网络管理员处理；自己的电脑请换一个网络再试。',
+  offline: '设备当前未连接网络，请先连接网络后重试。',
+  dns: '当前网络无法解析更新服务器的地址，常见于校园网、公司网。更换网络（例如手机热点）通常即可解决。',
+  tls: '当前网络替换了本次连接的安全证书，且本机不信任该证书，为确保安装包来源可信已中止本次更新。公司电脑请联系网络管理员处理；个人电脑请更换网络后重试。',
   certDate: certificateDateMessage,
-  proxy: '系统里设置的代理连不上，请检查代理或加速设置后再试。',
-  refused: '与更新服务器的连接被当前网络切断了，校园网、公司网常见。换一个网络（例如手机热点）再试一次。',
-  timeout: '连接更新服务器超时，请检查网络后再试。',
-  intercepted: '当前网络把这次请求拦到了别的页面，多半是校园网或公共 Wi-Fi 要求先在浏览器完成上网认证。认证之后再试，或者改用手机热点。',
-  serviceUnavailable: '更新服务器暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。',
+  proxy: '系统中设置的代理无法连接，请检查代理或加速设置后重试。',
+  refused: '与更新服务器的连接被当前网络中断，常见于校园网、公司网。请更换网络（例如手机热点）后重试。',
+  timeout: '连接更新服务器超时，请检查网络后重试。',
+  intercepted: '当前网络将本次请求拦截到了其他页面，通常是校园网或公共 Wi-Fi 要求先在浏览器中完成上网认证。请完成认证后重试，或改用手机热点。',
+  serviceUnavailable: '更新服务器暂时不可用（维护或线路繁忙），您无需做任何改动，请稍后重试。',
 }
 
 /**
@@ -79,7 +79,7 @@ export const updateNetworkFailureMessages: Readonly<Record<NetworkFailureReason,
  * 不进上面两张表：那两张按归类一一对应，这句是 proxy 里的一种。主进程认出来就用它，渲染层按
  * isProxyAuthFailure 认回来。
  */
-export const proxyAuthRequiredMessage = '电脑设置的代理要账号密码，星芒现在用不了它，请联系管理员或换个网络。'
+export const proxyAuthRequiredMessage = '电脑设置的代理需要账号密码，星芒暂时无法使用该代理，请联系管理员或更换网络。'
 
 /**
  * HTTP 407：代理要账号密码。星芒的服务自己从不回它。Electron 45 实测（沙箱里起一个回 407 的代理）：
@@ -100,7 +100,7 @@ const proxyAuthCodePattern = /ERR_PROXY_AUTH_(?:UNSUPPORTED|REQUESTED)|ERR_UNEXP
  * 装工具前到 npm 官方源核对安装清单那一步没连上时，主进程那句里的固定一段（#1057 第5b条）。这一步
  * 只能走官方源，换国内镜像绕不过去；渲染层认这一段出「连不上 npm 官方源」，两边用这一个常量。
  */
-export const officialRegistryUnreachableMarker = '这一步没连上'
+export const officialRegistryUnreachableMarker = '此步骤连接失败'
 
 /**
  * 工具那一侧（npm、Claude Code、Gemini CLI 这些 Node 程序）报「证书被换掉」，而星芒
@@ -114,8 +114,8 @@ export const officialRegistryUnreachableMarker = '这一步没连上'
 export type ToolCertificateFailureKind = 'outdatedNode' | 'elevated'
 
 export const toolCertificateMessages: Readonly<Record<ToolCertificateFailureKind, string>> = {
-  outdatedNode: '工具下载时这次连接的安全证书被换掉了，公司电脑和安全软件常见。电脑上的 Node.js 版本较旧，认不了装在这台电脑上的证书，换成新版就能装上。',
-  elevated: '工具下载时这次连接的安全证书被换掉了，公司电脑和安全软件常见。星芒现在是以管理员身份打开的，为了安全，这时不让工具信任电脑上另外装的证书。请关掉星芒，直接双击正常打开，再重试。',
+  outdatedNode: '工具下载时本次连接的安全证书被替换，常见于公司电脑和安全软件。本机的 Node.js 版本较旧，无法识别本机安装的证书，更换为新版本后即可安装。',
+  elevated: '工具下载时本次连接的安全证书被替换，常见于公司电脑和安全软件。星芒当前以管理员身份运行，为安全起见，此时不允许工具信任本机另行安装的证书。请关闭星芒后直接双击正常打开，再重试。',
 }
 
 const toolCertificateKinds = Object.keys(toolCertificateMessages) as ToolCertificateFailureKind[]

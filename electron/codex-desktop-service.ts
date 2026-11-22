@@ -198,12 +198,12 @@ const maximumCodexDesktopAppManifestBytes = 512 * 1024
 const codexDesktopManifestRefreshParameter = 'xm_refresh'
 const codexDesktopInstallKey = 'desktop:codex:install'
 /** Mac 上工具箱以 root 身份运行时不装：装出来的应用归 root，客户自己的账号更新不了它。 */
-const codexDesktopMacRootMessage = '请用你平时登录 Mac 的账号重新打开星芒，再安装 Codex 桌面端。'
+const codexDesktopMacRootMessage = '请使用您日常登录 Mac 的账号重新打开星芒，再安装 Codex 桌面端。'
 /** Mac 上检测没做完，说不准装没装：点「打开」和点「安装」时都照这句说。 */
 const codexDesktopDetectionUnfinishedMessage = 'Codex 桌面端检测未完成，请重新检测后再试'
 // 下载可以随时丢掉，Add-AppxPackage 不行：它中途被杀会留下一个装了一半的包，
 // 之后既打不开也更新不了。这是拒绝取消时给用户看的原因。
-const codexDesktopInstallSealReason = '正在安装 Codex 桌面端，这一步中断会留下装了一半的程序，请等它结束。'
+const codexDesktopInstallSealReason = '正在安装 Codex 桌面端，此步骤中断将留下未安装完成的程序，请等待安装结束。'
 // First-run AppX startup can spend several seconds registering WebView and
 // scanning the package. Keep the fast path responsive, but give the fallback
 // enough time to observe a healthy process on a cold machine.
@@ -223,7 +223,7 @@ export interface CodexDesktopLaunchPlan {
 // 什么，照着跑 wsreset 也几乎从来没用——它只清应用商店的缓存，不管已经装好的
 // 程序为什么没起来。渲染层按开头那半句归类（operation-error.ts 的
 // codexDesktopNotStarted），改开头要两边一起改。
-export const codexDesktopNotStartedPrefix = 'Codex 桌面端没有打开'
+export const codexDesktopNotStartedPrefix = 'Codex 桌面端未能打开'
 
 /**
  * 失败时这一次到底等了多久、Codex 有没有被 Windows 拉起来过。缺省 = 旧的那句
@@ -264,13 +264,13 @@ export function describeCodexDesktopLaunchFailure(
   // 直接说清楚，并给命令行版这条路（第十九批 7）。
   if (knownIssueVersion) {
     const waited = outcome
-      ? `等了 ${outcome.waitedSeconds} 秒，${outcome.processSeen ? 'Codex 已经启动，但它的窗口一直没出来' : 'Codex 没有启动起来'}。`
-      : '等了将近一分钟，没有等到它的窗口。'
+      ? `等待 ${outcome.waitedSeconds} 秒，${outcome.processSeen ? 'Codex 已启动，但窗口始终未出现' : 'Codex 未成功启动'}。`
+      : '等待近一分钟，窗口仍未出现。'
     return `${codexDesktopNotStartedPrefix}：${waited}${codexDesktopKnownIssueLaunchSentence(knownIssueVersion)}`
   }
   if (!outcome) {
-    return `${codexDesktopNotStartedPrefix}：等了将近一分钟，没有等到它的窗口。`
-      + '先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。'
+    return `${codexDesktopNotStartedPrefix}：等待近一分钟，窗口仍未出现。`
+      + '请关闭所有 Codex 窗口后点击「重试」；如仍无法打开，请在开始菜单中搜索「Codex」直接打开，如同样无法打开，请联系客服。'
   }
   // 客户自己分不清是 Codex 起不来还是星芒没叫动它，只会一直点重试或找客服。
   // 从开始菜单直接开一次就能分清：那边也起不来，就是 Codex 这一版自己的问题。
@@ -281,7 +281,7 @@ export function describeCodexDesktopLaunchFailure(
   return `${codexDesktopNotStartedPrefix}：等待 ${outcome.waitedSeconds} 秒，${what}。`
     + '请关闭所有 Codex 窗口后点击「重试」。'
     + `如需确认是否为 Codex 自身问题，可在开始菜单中搜索「${resolveCodexDesktopStartMenuName(startMenuName)}」并直接打开：`
-    + '如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex 命令行版；'
+    + '如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex CLI；'
     + '如开始菜单中可以打开而星芒中无法打开，请联系客服。'
 }
 
@@ -329,8 +329,8 @@ export const codexDesktopPackageInspectionModules = ['Microsoft.PowerShell.Utili
  */
 export const codexDesktopSingleProbeTimeoutMs = 8_000
 
-const codexDesktopResetManualHint = '没能自动重置 Codex 桌面端。可以自己重置：打开 Windows「设置 → 应用 → 已安装的应用」，'
-  + '找到 Codex，点右边的「…」→「高级选项」→「重置」，再回星芒打开。'
+const codexDesktopResetManualHint = '未能自动重置 Codex 桌面端。您可以手动重置：打开 Windows「设置 → 应用 → 已安装的应用」，'
+  + '找到 Codex，点击右侧的「…」→「高级选项」→「重置」，再返回星芒打开。'
 
 /**
  * Reset-AppxPackage is the cmdlet behind Settings' "Reset" button: it deletes
@@ -363,7 +363,7 @@ export function buildCodexDesktopUninstallScript(packageFullName: string): strin
  */
 export function describeCodexDesktopResetFailure(error: unknown): string {
   const record = error && typeof error === 'object' ? error as { killed?: unknown } : {}
-  if (record.killed === true) return `重置 Codex 桌面端等了两分钟还没做完。${codexDesktopResetManualHint}`
+  if (record.killed === true) return `重置 Codex 桌面端已等待两分钟仍未完成。${codexDesktopResetManualHint}`
   return codexDesktopResetManualHint
 }
 
@@ -378,13 +378,13 @@ export function describeCodexDesktopLaunchWait(
   stage: CodexDesktopLaunchWaitStage,
   elapsedSeconds: number,
 ): string {
-  if (stage === 'preparing') return `正在准备打开 Codex 桌面端，已经等了 ${elapsedSeconds} 秒。`
+  if (stage === 'preparing') return `正在准备打开 Codex 桌面端，已等待 ${elapsedSeconds} 秒。`
   // 窗口已经在客户眼前，星芒还在给它换中文。以前这段照旧说「正在等窗口出现」，
   // 满 20 秒还叫人去开始菜单找它（第二十七批 D），所以这一段不带开始菜单那句。
-  if (stage === 'switching-language') return `Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 ${elapsedSeconds} 秒。`
-  const head = `正在等 Codex 桌面端的窗口出现，已经等了 ${elapsedSeconds} 秒。Codex 第一次打开有时要一分钟`
+  if (stage === 'switching-language') return `Codex 桌面端已打开，正在切换为中文界面，已等待 ${elapsedSeconds} 秒。`
+  const head = `正在等待 Codex 桌面端的窗口出现，已等待 ${elapsedSeconds} 秒。Codex 首次打开有时需要一分钟`
   return elapsedSeconds >= codexDesktopLaunchStartMenuHintSeconds
-    ? `${head}，可以先去开始菜单看看它有没有弹出来。`
+    ? `${head}，可先在开始菜单中查看其是否已打开。`
     : `${head}。`
 }
 
@@ -486,7 +486,7 @@ export function buildCodexDesktopWorkspaceUrl(workspace: string): string {
     || normalized.length > 32_767
     || !path.win32.isAbsolute(normalized)
   ) {
-    throw new Error('Codex Desktop 工作目录无效')
+    throw new Error('Codex 桌面端的项目文件夹无效')
   }
   const url = new URL('codex://threads/new')
   url.searchParams.set('path', normalized)
@@ -718,20 +718,20 @@ export function buildCodexDesktopStoreInstallCommand(executable: string): Comman
   }
 }
 
-/** 把商店这一路失败的原因说成客户看得懂的半句话，放进「微软商店这次没装上（…）」。 */
+/** 把商店这一路失败的原因说成客户看得懂的半句话，放进「微软商店安装失败（…）」。 */
 export function describeCodexDesktopStoreFailure(error: unknown): string {
-  if (!(error instanceof CommandRunnerError)) return '安装没有完成'
-  if (error.code === 'TIMED_OUT') return '等了很久还没装完'
+  if (!(error instanceof CommandRunnerError)) return '安装未完成'
+  if (error.code === 'TIMED_OUT') return '等待时间过长，仍未安装完成'
   const exitCode = error.exitCode === null ? null : error.exitCode >>> 0
-  if (exitCode === null) return '安装没有完成'
+  if (exitCode === null) return '安装未完成'
   // WinINet timeout, name resolution, connection and connection-reset failures.
-  if ([0x80072ee2, 0x80072ee7, 0x80072efd, 0x80072efe, 0x80072eff].includes(exitCode)) return '连不上微软商店'
+  if ([0x80072ee2, 0x80072ee7, 0x80072efd, 0x80072efe, 0x80072eff].includes(exitCode)) return '无法连接微软商店'
   // APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE：商店那边还没有比本机更新的版本。
-  if (exitCode === codexDesktopStoreNoUpdateExitCode) return '商店里暂时还没有更新的版本'
+  if (exitCode === codexDesktopStoreNoUpdateExitCode) return '商店暂无更新的版本'
   // APPINSTALLER_CLI_ERROR_NO_APPLICATIONS_FOUND：这台电脑所在地区的商店查不到它。
-  if (exitCode === 0x8a150014) return '商店里没找到 Codex 桌面端'
+  if (exitCode === 0x8a150014) return '商店中未找到 Codex 桌面端'
   // 认不出的退出码不上屏（客户看了也不知道做什么），原样进日志：见 codexDesktopStoreExitCode。
-  return '商店那边没说原因'
+  return '商店未说明原因'
 }
 
 /** 商店那一路的原始退出码，只写进日志，客服查的时候用。 */
@@ -771,15 +771,15 @@ export function buildCodexDesktopStoreWaitMessage(
 ): string {
   const progress = percent === null ? '' : `（${percent}%）`
   if (elapsedMs < codexDesktopStoreHeartbeatMs) {
-    return `正在从微软商店下载安装 Codex 桌面端${progress}，要等几分钟，请别关窗口`
+    return `正在从微软商店下载并安装 Codex 桌面端${progress}，需要几分钟，请勿关闭窗口`
   }
   const remainingMs = timeoutMs - elapsedMs
   if (remainingMs <= codexDesktopStoreDeadlineNoticeMs) {
     const minutes = Math.max(1, Math.ceil(remainingMs / 60_000))
-    return `还在等微软商店${progress}，最多再等 ${minutes} 分钟；还不行星芒会自动换 OpenAI 官网的离线安装包接着装，请别关窗口`
+    return `仍在等待微软商店${progress}，最多再等待 ${minutes} 分钟；如仍未完成，星芒将自动改用 OpenAI 官网的离线安装包继续安装，请勿关闭窗口`
   }
-  return `正在从微软商店下载安装 Codex 桌面端${progress}，已经等了 ${formatCodexDesktopStoreElapsed(elapsedMs)}。`
-    + '商店有时要十来分钟，不用管它，请别关窗口'
+  return `正在从微软商店下载并安装 Codex 桌面端${progress}，已等待 ${formatCodexDesktopStoreElapsed(elapsedMs)}。`
+    + '商店有时需要十余分钟，请耐心等待，勿关闭窗口'
 }
 
 /** 商店输出的进度条里带百分比时取最后一个，取不到就返回 null。 */
@@ -848,7 +848,7 @@ export function describeCodexDesktopDownloadAttempt(
   store: string | null | Pick<CodexDesktopInstallAttempt, 'storeFailure' | 'storeUnavailable' | 'storeInstallerMissing' | 'officialFailure'> = null,
 ): string {
   const storeNotice = describeCodexDesktopStoreNotice(typeof store === 'string' || store === null ? { storeFailure: store } : store)
-  if (attemptIndex > 0 && previousFailure) return `${storeNotice}前一路镜像未通过校验，已改从${packageSource.label}下载`
+  if (attemptIndex > 0 && previousFailure) return `${storeNotice}上一个镜像未通过校验，已改为从${packageSource.label}下载`
   const primaryMirrorSkip = attemptIndex === 0
     ? describeCodexDesktopPrimaryMirrorSkip(packageSource, probeErrors)
     : null
@@ -1740,7 +1740,7 @@ function codexDesktopProcessQuery(scope: CodexDesktopProcessScope, processIds?: 
   }`
 }
 
-export const codexDesktopProcessCheckFailedMessage = '没能确认哪些 Codex 桌面端窗口需要先关掉，请稍等片刻再试'
+export const codexDesktopProcessCheckFailedMessage = '未能确认需要先关闭哪些 Codex 桌面端窗口，请稍候重试'
 
 export function buildCodexDesktopProcessProbeScript(
   scope: CodexDesktopProcessScope = 'roots',
@@ -2274,7 +2274,7 @@ export function assertCodexDesktopUninstalled(
   if (remaining.value?.packageFullName === previousPackageFullName) {
     throw new Error('Windows 仍报告 Codex 桌面端 Appx 包存在，卸载未完成')
   }
-  throw new Error('卸载命令已执行，但未能确认 Codex 桌面端已经移除。请重新检测安装状态后再试')
+  throw new Error('卸载命令已执行，但未能确认 Codex 桌面端已移除。请重新检测安装状态后重试')
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -2442,9 +2442,9 @@ type CodexDesktopStoreOutcome = Pick<CodexDesktopInstallAttempt, 'storeFailure' 
 // 商店那一路怎么了，不带结尾标点。没有商店就别说「这次没装上」，那听起来像是还能再试。
 function describeCodexDesktopStoreOutcome(attempt: CodexDesktopStoreOutcome, withReason: boolean): string {
   if (attempt.storeUnavailable) return codexDesktopNoStoreNotice
-  if (attempt.storeInstallerMissing) return '微软商店少一个安装组件'
+  if (attempt.storeInstallerMissing) return '微软商店缺少安装组件'
   if (!attempt.storeFailure) return ''
-  return withReason ? `微软商店这次没装上（${attempt.storeFailure}）` : '微软商店这次没装上'
+  return withReason ? `微软商店安装失败（${attempt.storeFailure}）` : '微软商店安装失败'
 }
 
 /**
@@ -2458,9 +2458,9 @@ export function describeCodexDesktopStoreNotice(
     const store = describeCodexDesktopStoreOutcome(attempt, false)
     return `${store ? `${store}，` : ''}${codexDesktopOfficialPackageFailedNotice}，`
   }
-  if (attempt.storeUnavailable) return `${codexDesktopNoStoreNotice}，直接用国内线路装：`
-  if (attempt.storeInstallerMissing) return '微软商店少一个安装组件，先用国内线路装：'
-  return attempt.storeFailure ? `微软商店这次没装上（${attempt.storeFailure}），` : ''
+  if (attempt.storeUnavailable) return `${codexDesktopNoStoreNotice}，直接通过国内线路安装：`
+  if (attempt.storeInstallerMissing) return '微软商店缺少安装组件，先通过国内线路安装：'
+  return attempt.storeFailure ? `微软商店安装失败（${attempt.storeFailure}），` : ''
 }
 
 /**
@@ -2473,7 +2473,7 @@ export function describeCodexDesktopOfficialDownload(
   progress: Pick<CodexDesktopDownloadProgress, 'percent' | 'resuming'> | null = null,
 ): string {
   if (version && progress?.resuming) {
-    return `网络断了一下，正在接着从 OpenAI 官网下载 Codex 桌面端 ${version} 的离线安装包（已下 ${progress.percent}%）`
+    return `网络曾短暂中断，正在继续从 OpenAI 官网下载 Codex 桌面端 ${version} 的离线安装包（已下载 ${progress.percent}%）`
   }
   const store = describeCodexDesktopStoreOutcome(attempt, true)
   const head = store ? `${store}，` : ''
@@ -2561,7 +2561,7 @@ export function shouldRetryCodexDesktopBucketWhenStale(error: unknown): boolean 
 /**
  * Mac 上装不成时的那句话。macos-desktop-app-installer.ts 抛的已经是大白话，磁盘不够、
  * 别重复点这类本来就是写给客户看的也原样交出；其余一律说「没装好」，原话进 detail。
- * 不能走上面那个：「Codex 桌面端没装上：…」在渲染层配的是「前往微软商店安装」。
+ * 不能走上面那个：「Codex 桌面端未能安装：…」在渲染层配的是「前往微软商店安装」。
  */
 export function toCodexDesktopMacInstallFailure(error: unknown): Error {
   if (error instanceof MacosDesktopInstallError) return error
@@ -2762,7 +2762,7 @@ export function withCodexDesktopDarwinUpdate(status: DesktopAppStatus, latestVer
  * 看不懂；原话现在只进运行日志（system-service 接的 withCodexDesktopCdpFailureReport 和
  * withCodexDesktopLocaleFailureReport）。这条路只在 Windows 上走，首页「打开」在 Codex 开着时会问要不要重启。
  */
-export const codexDesktopChineseUnverifiedMessage = 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。'
+export const codexDesktopChineseUnverifiedMessage = 'Codex 已打开，但本次未能切换为中文界面。请先保存当前工作，再在首页点击「打开」，选择「重开 Codex」重试。'
 
 export interface CodexDesktopServiceOptions {
   platform: NodeJS.Platform
@@ -3235,12 +3235,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     })
     const resolution = await resolveStoreInstaller(cancellation?.signal)
     cancellation?.throwIfCancelled()
-    if (!resolution.executable) return { failure: '这台电脑上的微软商店安装组件用不了', installerMissing: true }
+    if (!resolution.executable) return { failure: '本机的微软商店安装组件不可用', installerMissing: true }
     let command: CommandSpec
     try {
       command = buildCodexDesktopStoreInstallCommand(resolution.executable)
     } catch {
-      return { failure: '这台电脑上的微软商店安装组件用不了', installerMissing: true }
+      return { failure: '本机的微软商店安装组件不可用', installerMissing: true }
     }
     if (previousVersion && packageFamilyName) {
       // 商店更新一个正开着的桌面端会失败或卡住；镜像那一路也是装之前先关。
@@ -3302,7 +3302,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         : -1
       if (comparison !== null && comparison < 0) return { installed }
     }
-    return { failure: commandFailure ?? '装完后没检测到新版本', exitCode: commandExitCode }
+    return { failure: commandFailure ?? '安装完成后未检测到新版本', exitCode: commandExitCode }
   }
 
   /**
@@ -3345,7 +3345,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       contentLength: downloaded.contentLength,
       onElevationRequired: () => sendCodexDesktopInstallProgress(target, {
         phase: 'installing', percent: null,
-        message: '接下来 Windows 会弹出授权窗口，上面写的是「Windows PowerShell」，这是星芒在调用系统自带的安装工具，点「是」继续。',
+        message: '接下来 Windows 将弹出授权窗口，显示「Windows PowerShell」，这是星芒在调用系统自带的安装工具，请点击「是」继续。',
       }),
     })
     const installedPackage = await verifyInstalledCodexDesktop(downloaded.version)
@@ -3356,7 +3356,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       percent: 100,
       message: previousVersion
         ? `Codex 桌面端已从 ${previousVersion} 更新到 ${installedPackage.version}`
-        : `Codex 桌面端 ${installedPackage.version} 装好了`,
+        : `Codex 桌面端 ${installedPackage.version} 已安装完成`,
     })
     return { action, previousVersion, installedVersion: installedPackage.version }
   }
@@ -3405,13 +3405,13 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
             phase: 'downloading',
             percent,
             message: resuming
-              ? `网络断了一下，正在从国内镜像接着下载 Codex 桌面端 ${version}（已下 ${percent}%）`
+              ? `网络曾短暂中断，正在从国内镜像继续下载 Codex 桌面端 ${version}（已下载 ${percent}%）`
               : `${notice}正在从国内镜像下载 Codex 桌面端 ${version}（${percent}%）`,
           }),
           onValidating: () => sendCodexDesktopInstallProgress(target, {
             phase: 'validating',
             percent: null,
-            message: '正在检查下载下来的安装包是不是完整的官方版',
+            message: '正在校验下载的安装包是否为完整的官方版本',
           }),
         })
       } catch (error) {
@@ -3501,7 +3501,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           onValidating: () => sendCodexDesktopInstallProgress(target, {
             phase: 'validating',
             percent: null,
-            message: '正在检查下载下来的安装包是不是完整的官方版',
+            message: '正在校验下载的安装包是否为完整的官方版本',
           }),
         }))
       } catch (error) {
@@ -3589,7 +3589,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     }
     if (current?.app && request?.update) return updateCodexDesktopOnMac(target, current.app, request, cancellation)
     if (current?.app) {
-      sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: 'Codex 桌面端已经装好了，不用重复安装' })
+      sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: 'Codex 桌面端已安装，无需重复安装' })
       return { action: 'unchanged', previousVersion: current.app.version, installedVersion: current.app.version }
     }
     // root 身份下装出来的应用归 root，客户自己的账号更新不了它（同 external-client-runtime）。
@@ -3631,7 +3631,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     sendCodexDesktopInstallProgress(target, {
       phase: 'completed',
       percent: 100,
-      message: `Codex 桌面端 ${installed.version} 装好了，在「应用程序」里叫 ChatGPT`,
+      message: `Codex 桌面端 ${installed.version} 已安装完成，在「应用程序」中名为 ChatGPT`,
     })
     return { action: 'installed', previousVersion: null, installedVersion: installed.version }
   }
@@ -3695,7 +3695,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       throw new MacosDesktopInstallError(macosDesktopUpdateFailedMessage, error instanceof Error ? error.message : String(error), error)
     })
     if (updated.unchanged) {
-      sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: 'Codex 桌面端已经是最新版，不用更新' })
+      sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: 'Codex 桌面端已是最新版本，无需更新' })
       return { action: 'unchanged', previousVersion: installedVersion, installedVersion }
     }
     sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: `Codex 桌面端已更新到 v${updated.version}` })
@@ -3735,7 +3735,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       currentProbe.confirmedAbsent === true,
     )
     if (!firstInstall && !currentPackage) {
-      throw new Error('星芒看到了 Codex 桌面端，但读不到它装的是哪一版，请点「重新检测」后再试')
+      throw new Error('已检测到 Codex 桌面端，但无法读取已安装的版本，请点击「重新检测」后重试')
     }
     const previousVersion = currentPackage?.version ?? null
     attempt.updating = previousVersion !== null
@@ -3756,7 +3756,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       sendCodexDesktopInstallProgress(target, {
         phase: 'downloading',
         percent: null,
-        message: `${codexDesktopNoStoreNotice}，先用 OpenAI 官网的离线安装包${previousVersion ? '更新' : '装'} Codex 桌面端。`,
+        message: `${codexDesktopNoStoreNotice}，先使用 OpenAI 官网的离线安装包${previousVersion ? '更新' : '安装'} Codex 桌面端。`,
       })
     } else if (!previousVersion || shouldTryCodexDesktopStoreUpdate(previousVersion, manifestBundle.latest.version)) {
       const storeResult = await installCodexDesktopFromStore(
@@ -3770,7 +3770,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           percent: 100,
           message: previousVersion
             ? `Codex 桌面端已从 ${previousVersion} 更新到 ${installedVersion}`
-            : `Codex 桌面端 ${installedVersion} 装好了`,
+            : `Codex 桌面端 ${installedVersion} 已安装完成`,
         })
         return {
           action: previousVersion ? 'updated' : 'installed',
@@ -3818,7 +3818,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       sendCodexDesktopInstallProgress(target, {
         phase: 'downloading',
         percent: 0,
-        message: '这一版暂时下载不到，正在改装上一版 Codex 桌面端（0%）',
+        message: '当前版本暂时无法下载，正在改为安装上一版本的 Codex 桌面端（0%）',
       })
     } else {
       if (firstInstall) {
@@ -3848,7 +3848,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         const storeNewerVersion = !attempt.storeUnavailable && latestComparison === -1 && latest.version ? latest.version : null
         // 渲染层看到 storeNewerVersion 会给一颗「前往微软商店安装」按钮，这里只说清楚现状。
         const mirrorLagNotice = storeNewerVersion
-          ? `；微软商店里已经有 ${storeNewerVersion}，国内下载线路还没跟上，可以去微软商店更新`
+          ? `；微软商店已提供 ${storeNewerVersion}，国内下载线路尚未同步，可前往微软商店更新`
           : ''
         const result: CodexDesktopInstallResult = {
           action: 'unchanged',
@@ -3860,8 +3860,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           phase: 'completed',
           percent: 100,
           message: comparison === 0
-            ? `Codex 桌面端 ${previousVersion} 已是国内下载线路上最新的一版${mirrorLagNotice}`
-            : `这台电脑上的 Codex 桌面端 ${previousVersion} 比国内下载线路上的还新，不用更新${mirrorLagNotice}`,
+            ? `Codex 桌面端 ${previousVersion} 已是国内下载线路上的最新版本${mirrorLagNotice}`
+            : `本机的 Codex 桌面端 ${previousVersion} 比国内下载线路上的版本更新，无需更新${mirrorLagNotice}`,
         })
         return result
       }
@@ -3904,7 +3904,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
             phase: 'downloading',
             percent,
             message: resuming
-              ? `网络断了一下，正在从${source.label}接着下载 Codex 桌面端 ${release.version}（已下 ${percent}%）`
+              ? `网络曾短暂中断，正在从${source.label}继续下载 Codex 桌面端 ${release.version}（已下载 ${percent}%）`
               : `${attemptNotice ?? `正在从${source.label}下载`} Codex 桌面端 ${release.version}（${percent}%）`,
           })
         },
@@ -3915,7 +3915,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           sendCodexDesktopInstallProgress(target, {
             phase: 'validating',
             percent: null,
-            message: '正在检查下载下来的安装包是不是完整的官方版',
+            message: '正在校验下载的安装包是否为完整的官方版本',
           })
           const metadata = await inspectCodexDesktopPackageFile(packagePath)
           const validationError = codexDesktopPackageValidationError(
@@ -3946,7 +3946,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         sendCodexDesktopInstallProgress(target, {
           phase: 'downloading',
           percent: 0,
-          message: '这一版没下载成功，正在改装上一版 Codex 桌面端（0%）',
+          message: '当前版本下载失败，正在改为安装上一版本的 Codex 桌面端（0%）',
         })
         const previousProbe = await fetchCodexDesktopPreviousManifestCandidates(architecture, downloadFetch)
         if (!previousProbe.candidates.length) {
@@ -4097,7 +4097,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   }
 
   async function resetCodexDesktopOperation(): Promise<void> {
-    if (platform !== 'win32') throw new Error('只有 Windows 上的 Codex 桌面端可以一键重置')
+    if (platform !== 'win32') throw new Error('仅 Windows 上的 Codex 桌面端支持一键重置')
     if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装、更新或卸载中')
     codexDesktopInstalling = true
     try {
@@ -4105,7 +4105,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       const installedPackage = probe.value
       if (!installedPackage) {
         throw new Error(probe.confirmedAbsent === true
-          ? '这台电脑上没找到 Codex 桌面端，先在首页点「安装」装好它。'
+          ? '本机未找到 Codex 桌面端，请先在首页点击「安装」完成安装。'
           : codexDesktopResetManualHint)
       }
       // Reset-AppxPackage stops the app itself, but a window that is still
@@ -4212,7 +4212,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         throw new Error('未检测到 Codex 桌面端，请先安装 Codex App 后重新检测')
       }
       const workspace = store.read().workspace
-      assertWorkspaceDirectory(workspace, platform, '工作目录不存在，请重新选择')
+      assertWorkspaceDirectory(workspace, platform, '项目文件夹不存在，请重新选择')
       // 已经开着的 Codex 收不到启动参数（LaunchServices 只把链接交过去），那时只照旧连加速。
       const startupRoute = await prepareStartupBeforeLaunch(!desktopApp.running)
       const appArguments = startupRoute.kind === 'none' ? [] : [formatCodexStartupMacArgument(startupRoute.hostResolverRules)]
@@ -4246,7 +4246,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     // Opening never closes anything, so an unknown family only widens which
     // of the user's own Codex windows count as "already running".
     if (!packageFamilyName && mode === 'restart') {
-      throw new Error('没能确认要重启的是哪一个 Codex 桌面端，请重新检测后再试')
+      throw new Error('未能确认需要重启的 Codex 桌面端，请重新检测后重试')
     }
     const workspace = store.read().workspace
     let workspaceUrl: string | null = null

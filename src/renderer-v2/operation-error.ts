@@ -58,12 +58,12 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // 这里只给按钮；排在前面，是为了主进程写好的这整句不被下面更泛的规则（比如
   // permission）抢走、把客户送去看安装目录。
   // 同一句里带着「这一版已知打不开」（codex-desktop-known-issues.ts 的 marker）时，
-  // 重试和找客服都救不了它，要多给一条「改用 Codex 命令行版」的路，所以排在它前面。
+  // 重试和找客服都救不了它，要多给一条「改用 Codex CLI」的路，所以排在它前面。
   // 同一句里带着「Codex 已安装，但 Windows 未能启动它」时（Windows 激活接口说没装、包却装着），
   // 重试、重置都救不了，出口是「立即重启」，所以排在这一类最前面。
-  { key: 'codexDesktopActivationBroken', match: (message) => /Codex 桌面端没有打开/.test(message) && message.includes(codexDesktopActivationBrokenMarker) },
-  { key: 'codexDesktopKnownIssue', match: (message) => /Codex 桌面端没有打开/.test(message) && message.includes(codexDesktopKnownIssueMarker) },
-  { key: 'codexDesktopNotStarted', match: (message) => /Codex 桌面端没有打开/.test(message) },
+  { key: 'codexDesktopActivationBroken', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) && message.includes(codexDesktopActivationBrokenMarker) },
+  { key: 'codexDesktopKnownIssue', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) && message.includes(codexDesktopKnownIssueMarker) },
+  { key: 'codexDesktopNotStarted', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) },
   // Codex 桌面端装不上 / 更新不了（主进程 codex-desktop-install-failure.ts 写好的整句，
   // 开头直接取那边的常量）。那句话后半截已经说了是哪一种原因，这里只配按钮，其中
   //「前往微软商店安装」是这一类才有的出口。排在前面是因为它会说到「连不上」「Windows
@@ -296,7 +296,7 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   //（runtime:restart-windows），先弹确认框。
   立即重启: 'restartComputer',
   // 只有 Codex 桌面端装着已知打不开的那一版时才出这颗（第十九批 7）。
-  '改用 Codex 命令行版': 'useCodexCli',
+  '改用 Codex CLI': 'useCodexCli',
   // 只有 Mac 上一键装桌面端没装成那一类会出这颗：打开教程里「Mac 上装桌面端」那一章。
   查看安装指南: 'installGuide',
   // 只有 Windows 上 Claude Desktop 没装上那一类会出这两颗（D64）：Claude 官网在国内多半打不开，

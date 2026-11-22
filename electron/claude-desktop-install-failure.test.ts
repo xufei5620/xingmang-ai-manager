@@ -18,9 +18,9 @@ describe('Claude Desktop install failure wording', () => {
 
   it('names both routes only when the system installer was actually tried', () => {
     expect(buildClaudeDesktopInstallFailureMessage('unreachable', { wingetTried: true }))
-      .toBe('Claude Desktop 没装上：系统自带的安装组件和 Claude 官网的离线安装包这次都没装上，Claude 官网这会儿连不上。')
+      .toBe('Claude Desktop 未能安装：系统自带的安装组件和 Claude 官网的离线安装包均安装失败，Claude 官网暂时无法连接。')
     expect(buildClaudeDesktopInstallFailureMessage('unreachable', { wingetTried: false }))
-      .toBe('Claude Desktop 没装上：Claude 官网这会儿连不上。')
+      .toBe('Claude Desktop 未能安装：Claude 官网暂时无法连接。')
   })
 
   it('keeps every sentence free of words customers cannot act on', () => {

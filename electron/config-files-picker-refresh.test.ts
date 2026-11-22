@@ -140,7 +140,7 @@ describe('refreshing the Codex model menu', () => {
     const edited = `${codexConfig}# 客户刚改的\n`
     fs.writeFileSync(config, edited)
 
-    expect(() => applyProviderPickerRefresh('codex', plan, r)).toThrow('工具配置在刷新型号菜单时被别的程序改了')
+    expect(() => applyProviderPickerRefresh('codex', plan, r)).toThrow('工具配置在刷新型号菜单时被其他程序修改')
     expect(fs.readFileSync(config, 'utf8')).toBe(edited)
     expect(fs.readFileSync(catalogPath, 'utf8')).toBe('{"models":["old"]}\n')
   })

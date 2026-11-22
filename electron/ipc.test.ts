@@ -145,7 +145,7 @@ function serviceStub(): SystemService {
     measureInstallLeftoversNow: vi.fn(async () => 0),
     cleanInstallLeftoversNow: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
-    cancelExternalClientInstall: vi.fn(() => ({ cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' })),
+    cancelExternalClientInstall: vi.fn(() => ({ cancelled: false, reason: '正在安装 Claude Desktop，此步骤中断将留下未安装完成的程序，请等待安装结束。' })),
     launchExternalClient: vi.fn(async () => ({})),
     switchExternalClientSource: vi.fn(async (tool, target) => ({ tool, target, outcome: 'switched' as const, backups: [], message: '已切回官方账号' })),
   }
@@ -2756,10 +2756,10 @@ describe('registerIpcHandlers', () => {
     register()
     const handler = electronMocks.handlers.get('workspace:choose')!
 
-    await expect(handler(trustedEvent(), { createStarter: 'yes' })).rejects.toThrow('选择工作目录的参数无效')
-    await expect(handler(trustedEvent(), { createStarter: true, path: 'C:\\Windows' })).rejects.toThrow('选择工作目录的参数无效')
-    await expect(handler(trustedEvent(), { createStarter: true, firstOpen: 'yes' })).rejects.toThrow('选择工作目录的参数无效')
-    await expect(handler(trustedEvent(), 'create')).rejects.toThrow('选择工作目录的参数无效')
+    await expect(handler(trustedEvent(), { createStarter: 'yes' })).rejects.toThrow('选择项目文件夹的参数无效')
+    await expect(handler(trustedEvent(), { createStarter: true, path: 'C:\\Windows' })).rejects.toThrow('选择项目文件夹的参数无效')
+    await expect(handler(trustedEvent(), { createStarter: true, firstOpen: 'yes' })).rejects.toThrow('选择项目文件夹的参数无效')
+    await expect(handler(trustedEvent(), 'create')).rejects.toThrow('选择项目文件夹的参数无效')
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
   })
 
@@ -4331,7 +4331,7 @@ describe('registerIpcHandlers', () => {
       expect(service.launchExternalClient).toHaveBeenLastCalledWith(tool, event.sender)
       // 拒绝取消时那句原因要原样交给界面，按钮才不会像是坏了。
       expect(electronMocks.handlers.get('external-clients:cancel-install')!(event, tool)).toEqual({
-        cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。',
+        cancelled: false, reason: '正在安装 Claude Desktop，此步骤中断将留下未安装完成的程序，请等待安装结束。',
       })
       expect(service.cancelExternalClientInstall).toHaveBeenLastCalledWith(tool)
     }
@@ -5646,7 +5646,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('settings:save')!
 
       for (const workspace of ['.', 'projects', '~/projects']) {
-        await expect(handler(trustedEvent(), { version: 2, workspace, theme: 'light' })).rejects.toThrow('工作目录格式错误')
+        await expect(handler(trustedEvent(), { version: 2, workspace, theme: 'light' })).rejects.toThrow('项目文件夹路径格式错误')
       }
       expect(service.updateStoredConfig).not.toHaveBeenCalled()
     })
@@ -5905,9 +5905,9 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('settings:save')!
       const base = { version: 2, theme: 'dark' as const, checkUpdatesOnStartup: true, runDiagnosticsOnStartup: false }
 
-      await expect(handler(trustedEvent(), { ...base, workspace: '' })).rejects.toThrow('工作目录格式错误')
-      await expect(handler(trustedEvent(), { ...base, workspace: 'x'.repeat(32_768) })).rejects.toThrow('工作目录格式错误')
-      await expect(handler(trustedEvent(), { ...base, workspace: 42 })).rejects.toThrow('工作目录格式错误')
+      await expect(handler(trustedEvent(), { ...base, workspace: '' })).rejects.toThrow('项目文件夹路径格式错误')
+      await expect(handler(trustedEvent(), { ...base, workspace: 'x'.repeat(32_768) })).rejects.toThrow('项目文件夹路径格式错误')
+      await expect(handler(trustedEvent(), { ...base, workspace: 42 })).rejects.toThrow('项目文件夹路径格式错误')
     })
 
     it('ignores unknown extra fields without forwarding them', async () => {
@@ -6680,7 +6680,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('cli:launch')!
 
       for (const bad of [12345, null, ['C:\\workspace'], { path: 'C:\\workspace' }]) {
-        expect(() => handler(trustedEvent(), 'claude', bad)).toThrow('工作目录格式错误')
+        expect(() => handler(trustedEvent(), 'claude', bad)).toThrow('项目文件夹路径格式错误')
       }
       expect(service.launchProvider).not.toHaveBeenCalled()
     })
@@ -6691,7 +6691,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('cli:launch')!
 
       for (const bad of ['.', '..', 'foo', `${nativeFolder('C:\\projects')}\0demo`]) {
-        expect(() => handler(trustedEvent(), 'claude', bad)).toThrow('工作目录格式错误')
+        expect(() => handler(trustedEvent(), 'claude', bad)).toThrow('项目文件夹路径格式错误')
       }
       expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
       expect(service.launchProvider).not.toHaveBeenCalled()
@@ -6703,8 +6703,8 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register(service)
       const handler = electronMocks.handlers.get('cli:launch')!
 
-      expect(() => handler(trustedEvent(), 'claude', undefined)).toThrow('工作目录格式错误')
-      expect(() => handler(trustedEvent(), 'claude', '   ')).toThrow('工作目录格式错误')
+      expect(() => handler(trustedEvent(), 'claude', undefined)).toThrow('项目文件夹路径格式错误')
+      expect(() => handler(trustedEvent(), 'claude', '   ')).toThrow('项目文件夹路径格式错误')
       expect(service.launchProvider).not.toHaveBeenCalled()
     })
 
@@ -6712,7 +6712,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register()
       const handler = electronMocks.handlers.get('cli:launch')!
 
-      expect(() => handler(trustedEvent(), 'claude', 'x'.repeat(32_768))).toThrow('工作目录格式错误')
+      expect(() => handler(trustedEvent(), 'claude', 'x'.repeat(32_768))).toThrow('项目文件夹路径格式错误')
     })
   })
 
@@ -7931,7 +7931,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   describe('diagnostics:check-connection on a rejected managed key', () => {
     const rejected = {
       ok: false, layer: 'credential' as const, provider: 'claude' as const, siteId: 'solov',
-      summary: '密钥被拒绝（HTTP 401），可能已被吊销或属于别的账号', nextStep: '先重新登录，再在首页重新写入一次密钥',
+      summary: '密钥被拒绝（HTTP 401），可能已被吊销或属于其他账号', nextStep: '请先重新登录，再在首页重新写入密钥',
       endpoint: 'https://example.test/v1/messages', model: 'm', detail: '无效的令牌',
       status: 401, durationMs: 12, checkedAt: '2026-09-22T00:00:00.000Z',
     }
@@ -7959,7 +7959,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       for (const key of [{ status: 4, remainQuota: 0 }, { status: 1, remainQuota: 0 }]) {
         const result = await setup(key)(trustedEvent(), 'claude') as typeof rejected
         expect(result.layer).toBe('quota')
-        expect(result.summary).toContain('Claude Code 的额度用完了')
+        expect(result.summary).toContain('Claude Code 的额度已用完')
         expect(result.nextStep).not.toContain('重新写入')
         expect(result.endpoint).toBe(rejected.endpoint)
       }
@@ -9407,7 +9407,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     it('drops this account\'s remembered password when the change went out and no answer came back', async () => {
       const accountService = accountServiceStub()
       signedInAs(accountService, 'Alice')
-      const lost = new Error('连接账号服务超时，请检查网络后再试。')
+      const lost = new Error('连接账号服务超时，请检查网络后重试。')
       noteRequestDiagnostics(lost, { line: 'direct', status: 504, cfRay: 'test-ray' })
       failingAfter(accountService, ['unconfirmed'], lost)
       const store = rememberedStore('Alice')
@@ -9457,7 +9457,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     it('leaves another account\'s remembered login alone when the change is unconfirmed', async () => {
       const accountService = accountServiceStub()
       signedInAs(accountService, 'alice', 7)
-      failingAfter(accountService, ['unconfirmed'], new Error('连接账号服务超时，请检查网络后再试。'))
+      failingAfter(accountService, ['unconfirmed'], new Error('连接账号服务超时，请检查网络后重试。'))
       const other = rememberedStore('bob@example.test')
       register(undefined, undefined, undefined, accountService, undefined, undefined, {
         realmAccounts: {
@@ -10810,11 +10810,11 @@ describe('backup handlers and account key ownership', () => {
   it('still reports a completed restore when the official marker cannot follow it', async () => {
     const backupStore = backupStoreStub()
     const service = serviceStub()
-    vi.mocked(service.alignRestoredAccountSource).mockRejectedValue(new Error('Claude Code 原来登录留下的官方密钥没能挪开，现在打开会报无效令牌。关掉 Claude Code 后再点一次「改用当前账号」；还不行请找客服（错误码 EPERM）。'))
+    vi.mocked(service.alignRestoredAccountSource).mockRejectedValue(new Error('Claude Code 原登录留下的官方密钥未能移开，现在打开将提示无效令牌。请关闭 Claude Code 后再次点击「改用当前账号」；如仍失败，请联系客服（错误码 EPERM）。'))
     const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, { backupStore: backupStore as never })
     await expect(electronMocks.handlers.get('backups:restore')!(trustedEvent(), 'b1')).resolves.toMatchObject({ restoredBackupId: 'b1' })
     expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'ipc', 'backups:restore', expect.stringContaining('没能跟着对齐'), expect.objectContaining({
-      provider: 'codex', reason: expect.stringContaining('官方密钥没能挪开'),
+      provider: 'codex', reason: expect.stringContaining('官方密钥未能移开'),
     }))
   })
 

@@ -25,19 +25,19 @@ export const claudeDesktopDownloadPageUrl = 'https://claude.com/download'
 export const claudeDesktopOfflinePackagesUrl = 'https://docs-new.solov.cc/guide/manager#offline-packages'
 
 /** 安装失败那句话的开头；渲染层 operation-error.ts 按它归到 claudeDesktopInstallFailed。 */
-export const claudeDesktopInstallFailedPrefix = 'Claude Desktop 没装上'
+export const claudeDesktopInstallFailedPrefix = 'Claude Desktop 未能安装'
 
 /** 两路都试过时，原因前面那半句。电脑上本来就没有系统安装组件时不说它。 */
-export const claudeDesktopBothRoutesFailedNotice = '系统自带的安装组件和 Claude 官网的离线安装包这次都没装上'
+export const claudeDesktopBothRoutesFailedNotice = '系统自带的安装组件和 Claude 官网的离线安装包均安装失败'
 
 export type ClaudeDesktopInstallFailureReason = 'unsupported' | 'blocked' | 'damaged' | 'unreachable' | 'unknown'
 
 export const claudeDesktopInstallFailureReasons: Readonly<Record<ClaudeDesktopInstallFailureReason, string>> = {
-  unsupported: '这台电脑的 Windows 版本太旧，装不了 Claude Desktop。',
-  blocked: '这台电脑不让装（Windows 拒绝了这次安装）。',
-  damaged: '下载下来的安装包不完整或不是官方原版，已经删掉了。',
-  unreachable: 'Claude 官网这会儿连不上。',
-  unknown: '没查出是哪一步出了问题，经过已经记进日志。',
+  unsupported: '本机的 Windows 版本过旧，无法安装 Claude Desktop。',
+  blocked: 'Windows 拒绝了本次安装。',
+  damaged: '下载的安装包不完整或并非官方原版，已删除。',
+  unreachable: 'Claude 官网暂时无法连接。',
+  unknown: '未能确定出错的步骤，详细过程已记录到日志。',
 }
 
 /**

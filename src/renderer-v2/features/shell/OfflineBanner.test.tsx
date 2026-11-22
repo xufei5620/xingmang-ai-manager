@@ -52,7 +52,7 @@ describe('renderer-v2 offline banner', () => {
   it('says the proxy wants a password instead of sending the user to reopen it', () => {
     const markup = withStatus({ offline: true, cause: 'proxyAuth', openNetworkSettings() {} }, createElement(OfflineBanner))
     expect(markup).toContain('data-cause="proxyAuth"')
-    expect(markup).toContain('电脑设置的代理要账号密码，星芒现在用不了它，请联系管理员或换个网络。')
+    expect(markup).toContain('电脑设置的代理需要账号密码，星芒暂时无法使用该代理，请联系管理员或更换网络。')
     expect(markup).not.toContain('代理软件')
     // 按钮照旧：没做输入框（D32），能做的还是打开系统代理设置看一眼。
     expect(markup).toContain('data-testid="offline-banner-proxy-settings"')
