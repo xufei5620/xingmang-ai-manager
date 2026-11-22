@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { decodeWeixinCredential, encodeWeixinCredential } from './codex-remote-weixin-credential'
 import { createWeixinLoginController, normalizeWeixinVerifyCode, type WeixinLoginDependencies } from './codex-remote-weixin-login'
 
@@ -355,6 +355,76 @@ describe('createWeixinLoginController save failures', () => {
     const login = createWeixinLoginController(dependencies)
     const started = await login.start()
     await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'failed', message: '这台电脑没法安全保存密码，已拒绝写入微信登录信息。' })
+  })
+})
+
+// M12：微信那边确认了、正在存登录信息时，取消和重新扫码都不能让结果乱掉。
+describe('createWeixinLoginController while saving', () => {
+  function confirmedHarness() {
+    const h = harness([
+      qr('q1'),
+      jsonResponse({ status: 'confirmed', bot_token: 'tok1', ilink_bot_id: 'b1@im.bot', ilink_user_id: 'owner@im.wechat' }),
+      qr('q2'),
+    ])
+    let release: () => void = () => undefined
+    const order: string[] = []
+    h.dependencies.saveCredential = async (value, label, verifiedOwner) => {
+      order.push('save-start')
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+      h.saved.push({ value, label, verifiedOwner })
+      order.push('save-done')
+    }
+    h.dependencies.readCredential = async () => {
+      order.push('read')
+      return h.saved.at(-1)?.value ?? null
+    }
+    return { ...h, order, release: () => release() }
+  }
+
+  it('lets a save that already started finish as a login instead of pretending the cancel stopped it', async () => {
+    const { dependencies, saved, logs, order, release } = confirmedHarness()
+    const login = createWeixinLoginController(dependencies)
+    const started = await login.start()
+    const result = login.poll(started.loginId)
+    await vi.waitFor(() => expect(order).toContain('save-start'))
+    login.cancel(started.loginId)
+    expect(logs).toContain('weixin-login-cancel-while-saving')
+    release()
+    await expect(result).resolves.toMatchObject({ phase: 'confirmed' })
+    expect(saved).toHaveLength(1)
+  })
+
+  it('waits for a save under way before starting the next login, so the next one sees the saved login', async () => {
+    const { dependencies, saved, order, release, requests } = confirmedHarness()
+    const login = createWeixinLoginController(dependencies)
+    const first = await login.start()
+    const firstResult = login.poll(first.loginId)
+    await vi.waitFor(() => expect(order).toContain('save-start'))
+    const second = login.start()
+    await Promise.resolve()
+    expect(requests).toHaveLength(2)
+    release()
+    await expect(firstResult).resolves.toMatchObject({ phase: 'confirmed' })
+    await expect(second).resolves.toMatchObject({ phase: 'waiting-scan' })
+    expect(order).toEqual(['read', 'save-start', 'save-done', 'read'])
+    expect(requests).toHaveLength(3)
+    expect(saved).toHaveLength(1)
+  })
+
+  it('answers a second poll during the save with the saved result instead of saving twice', async () => {
+    const { dependencies, saved, order, release, requests } = confirmedHarness()
+    const login = createWeixinLoginController(dependencies)
+    const started = await login.start()
+    const first = login.poll(started.loginId)
+    await vi.waitFor(() => expect(order).toContain('save-start'))
+    const again = login.poll(started.loginId)
+    release()
+    await expect(first).resolves.toMatchObject({ phase: 'confirmed' })
+    await expect(again).resolves.toMatchObject({ phase: 'confirmed' })
+    expect(saved).toHaveLength(1)
+    expect(requests).toHaveLength(2)
   })
 })
 
