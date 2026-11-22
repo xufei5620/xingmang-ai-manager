@@ -13,6 +13,20 @@ export function newerRemoteSnapshot(current: CodexRemoteSnapshot | null, next: C
   return current && current.revision > next.revision ? current : next
 }
 
+/**
+ * 页面第一次读取的结果是整份直接放上去的，不经比较（M16）：读的时候来过一份更新的事件，读回来就把页面退回旧的。
+ * 页面把收到的每一份（事件、操作返回、读取结果）都先过一遍 keep，读取结果交出去的是至今最新的那份。
+ */
+export function createRemoteSnapshotKeeper(): { keep: (next: CodexRemoteSnapshot) => CodexRemoteSnapshot } {
+  let newest: CodexRemoteSnapshot | null = null
+  return {
+    keep(next) {
+      newest = newerRemoteSnapshot(newest, next)
+      return newest
+    },
+  }
+}
+
 export function remoteTaskLabel(snapshot: Pick<CodexRemoteSnapshot, 'task' | 'pendingApprovals'>): string {
   if (snapshot.task === 'waiting-approval') return `待确认 ${snapshot.pendingApprovals} 条`
   if (snapshot.task === 'idle') return '空闲'

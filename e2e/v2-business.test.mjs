@@ -4147,6 +4147,27 @@ test('the phone remote card says Codex could not start and leads to the home pag
   }
 })
 
+// M16：页面第一次读状态还没回来时，主进程先推了一份更新的；读回来的那份旧的不能把页面退回去。
+test('the phone remote page keeps a newer state that arrived while its first read was still out', async () => {
+  const page = await fixture('page=remote&remoteReady=1&remoteHoldReads')
+  try {
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByText('正在读取…', { exact: true }).waitFor()
+    await page.evaluate(() => window.remoteHarness.codexStartFailed(true))
+    const notice = card.getByTestId('settings-remote-codex-failed')
+    await notice.getByText('Codex 启动失败', { exact: true }).waitFor()
+    await page.evaluate(async () => {
+      window.remoteHarness.releaseReads()
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+    })
+    assert.equal(await notice.count(), 1)
+    assert.equal(await card.getByTestId('settings-remote-workspace-row').count(), 1)
+  } finally {
+    await page.close()
+  }
+})
+
 // YF-9：卡片最后一行「打开星芒时自动打开遥控」默认关，点开、点关都记给主进程，开着时飞书那个开关不跟着动。
 test('the phone remote card lets the customer turn on opening the remote whenever the manager starts, off by default', async () => {
   const page = await fixture('page=remote&remoteReady=1')
