@@ -177,6 +177,11 @@ const progressCardFirstMs = 2 * 60_000
 const progressStepGapMs = 30_000
 const progressRefreshMs = 5 * 60_000
 const progressTextEveryMs = 5 * 60_000
+/**
+ * 最后那次把卡改成做完了、停了、没做完的更新没成（M17）：隔这么久再改一次，都不成才算了。不补的话卡片一直停在
+ * 「正在处理」，还带着「停止」按钮。改的是同一张卡的整份内容，多改一次不会多出东西。
+ */
+const progressFinalRetryMs: readonly number[] = [5_000, 30_000]
 /** 进度卡最多列这么多步、每步最多这么多个字：卡片有大小上限，手机上也看不过来。 */
 const maxProgressSteps = 15
 const maxProgressStepLength = 80
@@ -3364,7 +3369,10 @@ export class CodexRemoteService {
     })
   }
 
-  /** 这一轮有了结果（YF-15）：不再发「正在处理」；发过卡的，最后更新成做完了、停了或没做完，按钮去掉。 */
+  /**
+   * 这一轮有了结果（YF-15）：不再发「正在处理」；发过卡的，最后更新成做完了、停了或没做完，按钮去掉。这次没改成
+   * 隔一会儿再改（M17，progressFinalRetryMs）；最后的回答是另发的一条，不等这张卡。
+   */
   private endProgress(runtime: ChannelRuntime, turn: TurnState, state: RemoteProgressCard['state']): void {
     const progress = turn.progress
     if (progress.ended) return
@@ -3374,9 +3382,22 @@ export class CodexRemoteService {
     const adapter = runtime.adapter
     if (!progressCards(adapter)) return
     void this.queueProgress(runtime, turn, async () => {
-      if (!progress.handle) return
-      await this.refreshSecrets()
-      await adapter.updateProgress(progress.handle, this.progressCard(turn, state))
+      const handle = progress.handle
+      if (!handle) return
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await this.refreshSecrets()
+          await adapter.updateProgress(handle, this.progressCard(turn, state))
+          return
+        } catch (error) {
+          const wait = progressFinalRetryMs[attempt]
+          // 渠道关了或换了连接：这张卡改不了了，也不用再试。
+          if (wait === undefined || runtime.adapter !== adapter) throw error
+          this.options.log('warn', 'remote.progress-final-retry', { channel: runtime.id, attempt: attempt + 1 })
+          await new Promise((resolve) => setTimeout(resolve, wait).unref?.())
+          if (runtime.adapter !== adapter) return
+        }
+      }
     })
   }
 
