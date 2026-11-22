@@ -727,7 +727,7 @@ function App() {
       }
       return window.xingmang.installNodeRuntime()
     },
-    restartWindows: async () => window.xingmang.restartWindows(),
+    restartWindows: async () => { await window.xingmang.restartWindows() },
     maintainCli: async (provider: ProviderId) => {
       const result = await performCliInstallAction(provider, platformCapabilities, window.xingmang)
       if (result.kind === 'external') throw new Error(result.guidance)

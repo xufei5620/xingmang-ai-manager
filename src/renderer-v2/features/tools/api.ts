@@ -247,7 +247,8 @@ export function createToolsApi(bridge: XingmangApi) {
     // 客户确认过要换：电脑上的 Node.js 够装工具、却认不了公司证书时照样装新版（第十八批 4）。
     replaceNode: () => bridge.installNodeRuntime({ reason: 'certificate' }),
     installGit: () => bridge.installGitRuntime(),
-    restartWindows: () => bridge.restartWindows(),
+    // 带上 askIfWorking：「创作」里还有对话在回复、视频在合成、画布在出图时，主进程先问一句再重启（D10 那一问）。
+    restartWindows: () => bridge.restartWindows({ askIfWorking: true }),
     chooseWorkspace: (options?: ChooseWorkspaceOptions) => options === undefined ? bridge.chooseWorkspace() : bridge.chooseWorkspace(options),
     // 首页「最近」卡只显示 3 条,但同一份记录还要推出每个工具最近用过的目录(N7),
     // 一页 3 条不够铺开几个工具。主进程本来就把全部会话读出来再切片,页大一点不多花钱。

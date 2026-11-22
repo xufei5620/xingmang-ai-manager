@@ -337,6 +337,16 @@ export interface UpdateInstallOptions {
    */
   askIfInstalling?: boolean
 }
+/** `runtime:restart-windows` 的可选参数。缺省 = 旧行为：不问，直接发重启。 */
+export interface WindowsRestartOptions {
+  /**
+   * 「创作」里还有对话在回复、视频在合成，或画布在生成时，先问重启装更新前那一句（D10）。
+   * 新界面的重启框都带它；旧回滚界面不带，照旧直接重启。
+   */
+  askIfWorking?: boolean
+}
+/** postponed = 客户在那一问里点了「等待完成」，这次没发重启。 */
+export interface WindowsRestartResult { postponed?: true }
 export type InstalledRelease = MainInstalledRelease
 export type UpdateSnapshot = MainUpdateSnapshot
 export type SessionArchiveFilter = CodexSessionArchiveFilter
@@ -1153,7 +1163,7 @@ export interface XingmangInvokeContract {
   chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [options?: ChooseWorkspaceOptions], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>
   installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [request?: NodeRuntimeInstallRequest], NodeRuntimeInstallResult>
-  restartWindows: IpcInvokeDefinition<'runtime:restart-windows', [], void>
+  restartWindows: IpcInvokeDefinition<'runtime:restart-windows', [options?: WindowsRestartOptions], WindowsRestartResult>
   installPythonRuntime: IpcInvokeDefinition<'runtime:install-python', [], PythonRuntimeInstallResult>
   /** Windows 上按当前用户静默安装钉死版本的 Git for Windows；其余平台直接报错。 */
   installGitRuntime: IpcInvokeDefinition<'runtime:install-git', [], GitRuntimeInstallResult>

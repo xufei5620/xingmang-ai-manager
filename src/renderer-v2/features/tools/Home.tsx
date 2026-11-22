@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowRight, BookOpen, Check, ChevronRight, Download, FolderOpen, Info, MessageSquare, Play, Plug, Plus, RefreshCw, RotateCcw, TriangleAlert, X, Zap } from 'lucide-react'
-import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId } from '../../../../electron/ipc-contract'
+import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId, WindowsRestartResult } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
 import { desktopUpdateFailedLine, externalUpdateTarget, type DesktopUpdateTool } from './desktop-update'
 import { useSharedBalanceSelector, useSharedBalanceStore } from '../app/balance-context'
@@ -168,7 +168,7 @@ export interface HomeProps {
   desktopUpdateFailures?: Partial<Record<DesktopUpdateTool, unknown>>
   onShowDesktopUpdateFailure?(tool: DesktopUpdateTool): void
   /** 「还差重启一次电脑」那条提醒的「现在重启」；缺省 = 首页不摆这条（旧行为：挂在页顶）。 */
-  restart?: () => Promise<void>
+  restart?: () => Promise<WindowsRestartResult>
   /**
    * 公告、活动挪进首页的提示区（一页最多两条）：首页把放它们的那个位置交出去，
    * 再告诉外层自己的提示占掉几条后还剩几条位置。缺省 = 不交（旧行为：公告挂在页顶）。
@@ -490,7 +490,7 @@ function Spinner({ label }: { label?: string }) {
 }
 
 /** 首页「还差重启一次电脑」：Windows 装运行环境回 3010 后挂着，点「现在重启」再弹同一个框（只换了地方）。 */
-function RestartNotice({ restart }: { restart: () => Promise<void> }) {
+function RestartNotice({ restart }: { restart: () => Promise<WindowsRestartResult> }) {
   const [open, setOpen] = useState(false)
   return <>
     <HomeNotice tone="warn" icon={<RotateCcw size={15} aria-hidden="true" />} testId="restart-reminder"
