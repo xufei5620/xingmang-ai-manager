@@ -270,6 +270,23 @@ describe('createWeixinLoginController', () => {
     await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'failed', message: '二维码过期太多次，请重新开始' })
   })
 
+  // M11：输完数字交上去那一下断网，界面按 retryAfterMs 再问时不带数字；主进程得留着那串数字接着验，不然客户要重输。
+  it('keeps the submitted number through a network blip and sends it again on the next poll', async () => {
+    const { dependencies, requests } = harness([
+      qr('q1'),
+      jsonResponse({ status: 'need_verifycode' }),
+      new TypeError('fetch failed'),
+      jsonResponse({ status: 'scaned' }),
+    ])
+    const login = createWeixinLoginController(dependencies)
+    const started = await login.start()
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'need-verify-code' })
+    await expect(login.poll(started.loginId, '2222')).resolves.toMatchObject({ phase: 'need-verify-code', message: '连不上微信，正在重试', retryAfterMs: 2_000 })
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'scanned', retryAfterMs: 0 })
+    expect(requests[2]).toContain('verify_code=2222')
+    expect(requests[3]).toContain('verify_code=2222')
+  })
+
   it('keeps waiting through a network blip and gives up after the deadline', async () => {
     const { dependencies, clock } = harness([qr('q1'), new TypeError('fetch failed')])
     const login = createWeixinLoginController(dependencies)
