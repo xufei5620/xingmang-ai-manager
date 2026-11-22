@@ -284,6 +284,13 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: node node_modules/electron-builder/cli.js --config electron-builder.config.cjs --publish never
 
+      # 交接靠的是包里那个 elevate.exe（electron-builder 带的程序）：它怎么转交参数、退出码代表什么，
+      # 是那个程序自己的事实。先拿刚出的这份包单独走一遍，看到的都打出来再判对错，下面整条升级路子
+      # 红了也知道是不是卡在它这里。
+      - name: Run the handoff through this package's own elevate.exe
+        timeout-minutes: 6
+        run: node e2e/windows-update-handoff-smoke.mjs --elevate release/win-unpacked/resources/elevate.exe
+
       - name: Let the package under test install the next version through its own updater
         timeout-minutes: 30
         shell: pwsh

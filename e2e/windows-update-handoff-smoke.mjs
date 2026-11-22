@@ -17,6 +17,13 @@ import { fileURLToPath } from 'node:url'
 // status parser without starting PowerShell; this proves the script still does
 // what they assume. It runs after `npm run compile` and drives the compiled
 // modules the app ships.
+//
+// With --elevate <resources\elevate.exe of a built package> it runs the other
+// half once the package exists: the same handoff started the way the app starts
+// it, through that package's own elevate.exe and script. What elevate.exe does
+// with its arguments and what its exit code means are facts about a binary
+// electron-builder ships, not something the code here decides, so every check
+// prints what it saw before it asserts anything.
 if (process.platform !== 'win32') {
   console.log('SKIP: the update handoff smoke needs Windows PowerShell and an elevated runner')
   process.exit(0)
@@ -28,12 +35,15 @@ function compiled(name) {
   return require(path.join(repo, 'dist-electron', `${name}.js`))
 }
 const {
-  buildWindowsUpdateHandoffCommand, parseWindowsUpdateHandoffStatus, readWindowsUpdateHandoffStatusFile, resolveWindowsUpdateHandoffStatusPath,
+  buildWindowsUpdateHandoffCommand, classifyWindowsElevateExit, launchDetachedWindowsProcess, parseWindowsUpdateHandoffStatus,
+  readWindowsUpdateHandoffStatusFile, resolveWindowsUpdateHandoffStatusPath,
 } = compiled('windows-update-handoff')
 const { resolveWindowsPowerShellExecutable } = compiled('windows-elevation')
 const { resolveWindowsMachinePaths } = compiled('windows-machine-paths')
 const { trustedCommandEnvironment } = compiled('command-runner')
 
+const elevateArgument = process.argv.indexOf('--elevate')
+const packagedElevate = elevateArgument === -1 ? null : path.resolve(process.argv[elevateArgument + 1] ?? '')
 const budgetMs = 120_000
 const machinePaths = resolveWindowsMachinePaths()
 const powershell = resolveWindowsPowerShellExecutable({ machinePaths })
@@ -234,8 +244,80 @@ async function main() {
   console.log('PASS: the update handoff script copies, checks and installs only the package it was given the digest of')
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForFile(file, ms) {
+  const deadline = Date.now() + ms
+  while (!fs.existsSync(file) && Date.now() < deadline) await delay(250)
+  return fs.existsSync(file)
+}
+
+// Every state the script wrote, in order, until it reaches one it stops at. A
+// script that never writes one is given up on after startedMs.
+async function followStatus(statusPath, nonce, startedMs, finalMs) {
+  const started = Date.now()
+  const states = []
+  let status = null
+  for (;;) {
+    status = parseWindowsUpdateHandoffStatus(await readWindowsUpdateHandoffStatusFile(statusPath), nonce)
+    if (status && states.at(-1) !== status.state) states.push(status.state)
+    if (status && status.state !== 'started' && status.state !== 'verified') break
+    const elapsed = Date.now() - started
+    if ((!status && elapsed >= startedMs) || elapsed >= finalMs) break
+    await delay(250)
+  }
+  return { status, states }
+}
+
+async function elevateMain(elevate) {
+  assert.ok(fs.existsSync(elevate), `${elevate} does not exist`)
+  const packagedScript = path.join(path.dirname(elevate), 'update-handoff', 'verified-install.ps1')
+  assert.ok(fs.existsSync(packagedScript), `${packagedScript} does not exist`)
+  const env = trustedCommandEnvironment()
+
+  console.log('elevate.exe starts the program it is given, with every argument as it was passed')
+  {
+    // The stand-in lives under the work directory, so its own path carries a
+    // space and Chinese as well.
+    const probe = await compileFakeSetup('fake-elevate-args.exe', 0)
+    const probeArgs = ['two words', '星芒 中文', '--flag', '/S']
+    const exit = await launchDetachedWindowsProcess(elevate, [probe.output, ...probeArgs], env)
+    const started = await waitForFile(probe.report, 30_000)
+    const report = started ? readReport(probe.report) : null
+    console.log(`  elevate.exe exit ${exit}; program ${started ? `started with ${JSON.stringify(report.ARGS)}` : 'did not start within 30 s'}`)
+    assert.ok(started, 'elevate.exe did not start the program')
+    assert.equal(report.ARGS, probeArgs.join('|'), 'elevate.exe changed the arguments on the way')
+    assert.equal(classifyWindowsElevateExit(exit), 'launched', `the app reads elevate.exe exit ${exit} as not started`)
+  }
+
+  console.log('the handoff the app starts through the packaged elevate.exe and script installs the verified package')
+  {
+    const passing = await compileFakeSetup('fake-setup-elevated.exe', 0)
+    const updatePackage = packageFrom(passing.output, 'XingMang-AI-Manager-9.9.9-Setup.exe')
+    const parent = startParent(6_000)
+    const nonce = nextNonce()
+    const command = buildWindowsUpdateHandoffCommand({
+      elevate, powershell, script: packagedScript, ...updatePackage, parentPid: parent.pid, nonce,
+    })
+    const before = stagingDirectories()
+    const exit = await launchDetachedWindowsProcess(command.file, command.args, env)
+    const statusPath = resolveWindowsUpdateHandoffStatusPath(machinePaths.systemRoot, nonce)
+    const { status, states } = await followStatus(statusPath, nonce, 30_000, budgetMs)
+    console.log(`  elevate.exe exit ${exit}; status ${states.length ? states.join(' -> ') : 'never written'}, last ${JSON.stringify(status)}`)
+    assert.equal(classifyWindowsElevateExit(exit), 'launched', `the app reads elevate.exe exit ${exit} as not started`)
+    assert.deepEqual(status, { state: 'installed', exitCode: 0 })
+    assert.equal(readReport(passing.report).ARGS, '--updated|/S|--force-run')
+    assert.deepEqual([...stagingDirectories()].filter((name) => !before.has(name)), [], 'the script must remove the staging directory it created')
+  }
+
+  console.log('PASS: the packaged elevate.exe and script carry the handoff through to the installer')
+}
+
 try {
-  await main()
+  if (packagedElevate) await elevateMain(packagedElevate)
+  else await main()
 } finally {
   fs.rmSync(work, { recursive: true, force: true })
 }
