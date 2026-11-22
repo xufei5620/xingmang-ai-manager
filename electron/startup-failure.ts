@@ -75,19 +75,19 @@ export function buildStartupFailureDialog(error: unknown, options: StartupFailur
   const kind = classifyStartupFailure(error)
   const drive = dataDriveLabel(options.dataDirectory, options.platform)
   const message = kind === 'disk-full'
-    ? `${drive}空间不够了，软件没法保存设置。请先清理一下${drive}（比如清空回收站、删掉不用的大文件），再重新打开。`
+    ? `${drive}空间不足，软件无法保存设置。请先清理${drive}（例如清空回收站、删除不再使用的大文件），然后重新打开。`
     : kind === 'blocked'
-      ? '软件的文件被别的程序（常见是杀毒软件）拦住了。请把星芒AI管理工具加进杀毒软件的信任名单，再重新打开。'
+      ? '软件文件被其他程序（通常为杀毒软件）拦截。请将星芒AI管理工具加入杀毒软件的信任名单，然后重新打开。'
       : kind === 'incomplete'
-        ? '软件文件不完整，请重新下载安装包安装一遍。你的登录和设置不会丢。'
-        : '软件启动时出了点问题，可以先重新打开试一次。'
+        ? '软件文件不完整，请重新下载安装包并安装。您的登录信息和设置不会丢失。'
+        : '软件启动时出现异常，请尝试重新打开。'
   const original = redactStartupSecrets(redactHomeDirectory(startupFailureMessage(error, options.platform), options.homeDirectory))
   const version = options.appVersion ? `星芒AI管理工具 ${options.appVersion}\n` : ''
   return {
     kind,
-    title: '星芒AI管理工具打不开',
+    title: '星芒AI管理工具无法打开',
     message,
-    detail: '还是打不开的话，点「复制错误信息」发给客服，我们帮你看。',
+    detail: '如仍无法打开，请点击「复制错误信息」并发送给客服，我们将协助您处理。',
     copyText: `${version}启动失败：${original}`,
   }
 }

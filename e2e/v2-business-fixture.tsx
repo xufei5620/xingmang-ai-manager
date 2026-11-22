@@ -1460,7 +1460,7 @@ const apiMethods = {
     record('ensure-marketplace', provider)
     codexCatalogAttempts += 1
     if (query.has('codexCatalogOffline') && codexCatalogAttempts === 1)
-      throw new Error('插件目录没有下载下来，当前网络连不上或太慢。请稍后再点一次「下载插件目录」，或者换个网络再试。')
+      throw new Error('插件目录下载失败，当前网络无法连接或速度过慢。请稍后再次点击「下载插件目录」，或更换网络后重试。')
     codexCatalogReady = true
     return api.listProviderExtensions(provider)
   },
@@ -1518,7 +1518,7 @@ const apiMethods = {
   // skillArchive=empty 时照主进程原话报没找到技能。
   chooseSkillArchive: async () => {
     record('choose-skill-archive')
-    if (query.get('skillArchive') === 'empty') throw new Error('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。')
+    if (query.get('skillArchive') === 'empty') throw new Error('该压缩包中未找到技能（需包含一个 SKILL.md 文件）。')
     return { archiveName: 'pdf-helper.zip', directory: 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper' }
   },
   // 导入框关掉时让主进程删解开的那份；夹具只记下来。

@@ -172,7 +172,7 @@ describe('canvas sandbox preload', () => {
     const video = { name: 'clip.mp4', type: 'video/mp4', size: 4, arrayBuffer: vi.fn() }
     const huge = { name: 'huge.png', type: 'image/png', size: 20 * 1024 * 1024 + 1, arrayBuffer: vi.fn() }
     expect((await rejection(bridge.importAssetFile(video))).message).toBe('无法读取拖入的本地文件')
-    expect((await rejection(bridge.importAssetFile(huge))).message).toBe('画布图片超过 20 MB，没有保存')
+    expect((await rejection(bridge.importAssetFile(huge))).message).toBe('画布图片超过 20 MB，未保存')
     expect(video.arrayBuffer).not.toHaveBeenCalled()
     expect(huge.arrayBuffer).not.toHaveBeenCalled()
     expect(invoke).not.toHaveBeenCalled()
@@ -196,11 +196,11 @@ describe('canvas sandbox preload', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
 
     fetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
-    expect((await rejection(bridge.readVideoForFramePreview(assetId))).message).toBe('视频读不出来，请确认素材还在')
+    expect((await rejection(bridge.readVideoForFramePreview(assetId))).message).toBe('无法读取视频，请确认素材仍然存在')
     fetch.mockResolvedValueOnce(new Response('x', { headers: { 'content-length': String(32 * 1024 * 1024 + 1) } }))
-    expect((await rejection(bridge.readVideoForFramePreview(assetId))).message).toBe('视频超过 32 MB，画布抽不了这一帧')
+    expect((await rejection(bridge.readVideoForFramePreview(assetId))).message).toBe('视频超过 32 MB，画布无法提取该帧')
     fetch.mockResolvedValueOnce(new Response(new Uint8Array(32 * 1024 * 1024 + 1)))
-    expect((await rejection(bridge.readVideoForFramePreview(assetId))).message).toBe('视频超过 32 MB，画布抽不了这一帧')
+    expect((await rejection(bridge.readVideoForFramePreview(assetId))).message).toBe('视频超过 32 MB，画布无法提取该帧')
   })
 
   it('hands a decoded frame back as bytes with the ids, and a failure with nothing else', async () => {
@@ -219,7 +219,7 @@ describe('canvas sandbox preload', () => {
 
     expect((await rejection(bridge.completeRunPreparation(null))).message).toBe('画布运行准备回执格式错误')
     expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', png: 'C:\\frame.png' }))).message).toBe('视频帧图片内容格式错误')
-    expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', png: new Blob([new Uint8Array(20 * 1024 * 1024 + 1)]) }))).message).toBe('视频帧图片超过 20 MB，没有保存')
+    expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', png: new Blob([new Uint8Array(20 * 1024 * 1024 + 1)]) }))).message).toBe('视频帧图片超过 20 MB，未保存')
     expect(invoke).toHaveBeenCalledTimes(2)
   })
 
@@ -239,11 +239,11 @@ describe('canvas sandbox preload', () => {
     }
     expect(fetch).toHaveBeenCalledTimes(1)
     fetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
-    expect((await rejection(bridge.readImageForRunPreparation(assetId))).message).toBe('图片读不出来，请确认素材还在')
+    expect((await rejection(bridge.readImageForRunPreparation(assetId))).message).toBe('无法读取图片，请确认素材仍然存在')
     fetch.mockResolvedValueOnce(new Response('x', { headers: { 'content-length': String(20 * 1024 * 1024 + 1) } }))
-    expect((await rejection(bridge.readImageForRunPreparation(assetId))).message).toBe('图片超过 20 MB，画布处理不了')
+    expect((await rejection(bridge.readImageForRunPreparation(assetId))).message).toBe('图片超过 20 MB，画布无法处理')
     fetch.mockResolvedValueOnce(new Response(new Uint8Array(20 * 1024 * 1024 + 1)))
-    expect((await rejection(bridge.readImageForRunPreparation(assetId))).message).toBe('图片超过 20 MB，画布处理不了')
+    expect((await rejection(bridge.readImageForRunPreparation(assetId))).message).toBe('图片超过 20 MB，画布无法处理')
   })
 
   it('hands image-tool pictures back as bytes with the ids, and a failure with nothing else', async () => {
@@ -261,9 +261,9 @@ describe('canvas sandbox preload', () => {
     for (const wrong of [undefined, [], [new Uint8Array([1])], ['C:\\a.png'], Array.from({ length: 17 }, () => new Blob([new Uint8Array([1])]))]) {
       expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', pngs: wrong }))).message).toBe('图片处理结果内容格式错误')
     }
-    expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', pngs: [new Blob([new Uint8Array(20 * 1024 * 1024 + 1)])] }))).message).toBe('图片处理结果超过 20 MB，没有保存')
+    expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', pngs: [new Blob([new Uint8Array(20 * 1024 * 1024 + 1)])] }))).message).toBe('图片处理结果超过 20 MB，未保存')
     const large = new Blob([new Uint8Array(20 * 1024 * 1024)])
-    expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', pngs: [large, large, large, large] }))).message).toBe('图片处理结果合计超过 64 MB，没有保存')
+    expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', pngs: [large, large, large, large] }))).message).toBe('图片处理结果合计超过 64 MB，未保存')
     expect(invoke).toHaveBeenCalledTimes(2)
   })
 })

@@ -341,8 +341,8 @@ export function describeOccupiedUpdateFailure(input: OccupiedUpdateFailureInput)
   const running = input.probe.processes.length
   if (!isDefiniteFileLockError(input.error) && running === 0) return null
   const cause = running > 0
-    ? `检测到 ${input.toolName} 正在运行（${running} 个进程），请关掉它的窗口再试`
-    : `${input.toolName} 可能正在运行，请关掉正在使用它的窗口再试`
+    ? `检测到 ${input.toolName} 正在运行（${running} 个进程），请关闭其窗口后重试`
+    : `${input.toolName} 可能正在运行，请关闭正在使用它的窗口后重试`
   const detail = input.detail?.trim()
   return `${input.toolName} ${input.action}失败：文件被占用，${cause}。${detail ? `原始报错：${detail}` : ''}`
 }
@@ -355,5 +355,5 @@ export function describeOccupiedUpdateFailure(input: OccupiedUpdateFailureInput)
  */
 export function describeRunningCliProcessWarning(toolName: string, probe: CliProcessProbe): string | null {
   if (probe.status !== 'checked' || probe.processes.length === 0) return null
-  return `检测到 ${toolName} 正在运行（${probe.processes.length} 个进程）。建议先关掉它的窗口，否则更新可能因文件被占用而失败。`
+  return `检测到 ${toolName} 正在运行（${probe.processes.length} 个进程）。建议先关闭其窗口，否则更新可能因文件被占用而失败。`
 }

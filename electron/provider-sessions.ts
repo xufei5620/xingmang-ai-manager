@@ -1247,7 +1247,7 @@ export class ProviderSessionsService {
     // single-link regular file reached without links from inside the root.
     const candidates = await this.sourceCandidates(provider)
     const candidate = candidates.find((entry) => stableSessionId(provider, this.roots[provider], entry.keyPath) === id)
-    if (!candidate) throw new Error('没找到这条记录，可能已经被删掉了')
+    if (!candidate) throw new Error('未找到该记录，可能已被删除')
     const targets = await deletionTargets(candidate, this.roots[provider], candidates)
     let deletedFiles = 0
     for (const target of targets) {
@@ -1263,7 +1263,7 @@ export class ProviderSessionsService {
         const code = (error as NodeJS.ErrnoException).code
         if (code === 'ENOENT') continue
         throw new Error(code === 'EBUSY' || code === 'EPERM' || code === 'EACCES'
-          ? `这条记录正被别的程序占用，请先关掉 ${providerLabel(provider)} 再删`
+          ? `该记录正被其他程序占用，请先关闭 ${providerLabel(provider)} 后再删除`
           : `删除记录失败：${error instanceof Error ? error.message : String(error)}`)
       }
     }

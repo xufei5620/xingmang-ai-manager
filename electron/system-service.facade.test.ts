@@ -257,7 +257,7 @@ describe('inspectCodexWorkspacePermissions', () => {
     expect(status).toMatchObject({
       configPath, workspace: root, configExists: false, trustLevel: 'unknown', approvalPolicy: null, control: 'unknown',
     })
-    expect(status.error).toContain('是个链接')
+    expect(status.error).toContain('是一个链接')
   })
 })
 

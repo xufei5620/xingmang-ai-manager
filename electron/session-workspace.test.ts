@@ -24,7 +24,7 @@ describe('resolveOpenableSessionWorkspace', () => {
 
   it('refuses a record with no folder at all', async () => {
     for (const value of ['', '   ']) {
-      await expect(resolveOpenableSessionWorkspace(value)).rejects.toThrow('没有记下文件夹')
+      await expect(resolveOpenableSessionWorkspace(value)).rejects.toThrow('未保存文件夹位置')
     }
   })
 

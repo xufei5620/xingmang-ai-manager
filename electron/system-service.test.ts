@@ -4165,7 +4165,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
 
     const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
 
-    const message = 'Codex CLI 卸载失败：文件被占用，检测到 Codex CLI 正在运行（1 个进程），请关掉它的窗口再试。'
+    const message = 'Codex CLI 卸载失败：文件被占用，检测到 Codex CLI 正在运行（1 个进程），请关闭其窗口后重试。'
       + `原始报错：${npmRenameDeniedDetail}`
     expect(failure).toMatchObject({ message })
     expect(probeRunningCliProcesses).toHaveBeenCalledTimes(1)
@@ -4188,7 +4188,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
 
     const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
 
-    const message = 'Codex CLI 卸载失败：文件被占用，Codex CLI 可能正在运行，请关掉正在使用它的窗口再试。'
+    const message = 'Codex CLI 卸载失败：文件被占用，Codex CLI 可能正在运行，请关闭正在使用它的窗口后重试。'
       + "原始报错：命令执行失败（退出码 1）：npm（EBUSY；Error: EBUSY: resource busy or locked, rename '/npm/@openai/codex' -> '/npm/@openai/.codex-x'）"
     expect(failure).toMatchObject({ message })
     expect(classifyOperationError(message)).toBe('toolRunning')
@@ -7995,8 +7995,8 @@ describe('opening a CLI on macOS', () => {
 
     const failure: unknown = await launch().catch((error: unknown) => error)
     expect(failure instanceof Error && failure.message).toBe(
-      '未能打开 Claude Code：终端窗口打开了，但工具没有跟着起来。先看一眼终端窗口里是不是在问什么（比如要不要更新），'
-      + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「联系客服」，把这句话发给客服。',
+      '未能打开 Claude Code：终端窗口已打开，但工具未随之启动。请先查看终端窗口中是否有待确认的提示（例如是否更新），'
+      + '处理完成后关闭该窗口，再次点击「打开」；如仍失败，请点击「联系客服」并将此提示发送给客服。',
     )
     expect(failure instanceof Error && failure.cause).toBeInstanceOf(MacosTerminalNotStartedError)
     const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
@@ -8056,7 +8056,7 @@ describe('opening a CLI on Windows', () => {
     fs.mkdirSync(workspace)
     const cause = `Cannot perform operation because the wildcard path ${path.join(workspace, '作业[1]')} did not resolve to a file.`
     const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => {
-      throw new WindowsCliLaunchError('Windows 没能启动 PowerShell，原因已经记进运行日志。', {
+      throw new WindowsCliLaunchError('Windows 未能启动 PowerShell，原因已记录到运行日志。', {
         stderr: cause,
         message: `Command failed: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand [REDACTED]\n${cause}`,
         code: 1,
@@ -8068,7 +8068,7 @@ describe('opening a CLI on Windows', () => {
 
     const failure = windowsLaunchService(userHome, launchCliPowerShell, { log }).launchProvider('claude', workspace)
     // PowerShell 的英文原话只进下面那条日志，错误框里只说原因已经记下（#1100 第1条）。
-    await expect(failure).rejects.toThrow(/^未能打开 Claude Code：Windows 没能启动 PowerShell，原因已经记进运行日志。$/)
+    await expect(failure).rejects.toThrow(/^未能打开 Claude Code：Windows 未能启动 PowerShell，原因已记录到运行日志。$/)
 
     expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
     expect(launchCliPowerShell.mock.calls[0]?.[0]).toMatchObject({ workspace, title: 'Claude Code · 星芒AI' })

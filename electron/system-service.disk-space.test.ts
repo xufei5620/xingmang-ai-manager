@@ -208,7 +208,7 @@ describe('installing over a Mac CLI that cannot be recognised', () => {
 
     const error = await fixture.service.installCli('grok', fixture.target).catch((reason: unknown) => reason)
 
-    expect(String(error)).toContain('这台电脑上已经有一份 Grok CLI，不是用星芒装的。为了不弄坏它，已停止安装。')
+    expect(String(error)).toContain('本机已存在一份并非由星芒安装的 Grok CLI。为避免损坏该程序，已停止安装。')
     expect(String(error)).toContain('使用星芒安装')
     expect(fixture.readDiskSpace).not.toHaveBeenCalled()
     expect(fixture.target.send).not.toHaveBeenCalled()

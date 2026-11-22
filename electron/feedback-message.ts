@@ -46,7 +46,7 @@ export function buildFeedbackMessage(input: {
   if (contact) lines.push(`联系方式：${contact}`)
   if (input.identity) lines.push(input.identity)
   if (input.lastFailure) lines.push(input.lastFailure)
-  if (input.reportMissing) lines.push('反馈报告：这次没生成出来')
+  if (input.reportMissing) lines.push('反馈报告：本次未能生成')
   const head = redactSecretPatterns(lines.join('\n'))
   return input.report ? `${head}\n\n${input.report}` : head
 }

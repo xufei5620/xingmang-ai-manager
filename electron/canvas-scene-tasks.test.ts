@@ -424,17 +424,17 @@ describe('canvas scene tasks', () => {
     }
     expect(await asyncOutcome(() => assertCanvasSceneSourceImages([], ['a', 'a'], undefined))).toEqual({ value: undefined })
     expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['exterior'], ['a', 'b'], read))).toEqual({ value: undefined })
-    expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['exterior'], ['a', 'copy'], read))).toEqual({ error: '原图与参考图内容相同，请选择内容不同的两张图片；当前没有提交生成请求' })
+    expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['exterior'], ['a', 'copy'], read))).toEqual({ error: '原图与参考图内容相同，请选择内容不同的两张图片；当前未提交生成请求' })
     expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['exterior'], ['a'], read))).toEqual({ error: '室外双图任务需要两张内容不同的原图和参考图' })
     expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['exterior'], ['a', 'a'], read))).toEqual({ error: '室外双图任务需要两张内容不同的原图和参考图' })
-    expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['exterior'], ['big', 'big2'], read))).toEqual({ error: '室外参考图片总容量不能超过 24 MB，当前没有提交生成请求' })
-    expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['exterior'], ['a', 'b'], undefined))).toEqual({ error: '室外参考图内容核对服务暂时不可用，当前没有提交生成请求' })
+    expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['exterior'], ['big', 'big2'], read))).toEqual({ error: '室外参考图片总容量不能超过 24 MB，当前未提交生成请求' })
+    expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['exterior'], ['a', 'b'], undefined))).toEqual({ error: '室外参考图内容核对服务暂时不可用，当前未提交生成请求' })
     expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['storyboard'], ['a'], read))).toEqual({ value: undefined })
-    expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['storyboard'], ['b', 'a', 'copy'], read))).toEqual({ error: '故事板输入图片内容相同，请选择内容不同的图片；当前没有提交生成请求' })
+    expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['storyboard'], ['b', 'a', 'copy'], read))).toEqual({ error: '故事板输入图片内容相同，请选择内容不同的图片；当前未提交生成请求' })
     expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['storyboard'], [], read))).toEqual({ error: '故事板需要 1–4 张内容不同的有序图片' })
     expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['storyboard'], ['a', 'b', 'copy', 'big', 'big2'], read))).toEqual({ error: '故事板需要 1–4 张内容不同的有序图片' })
-    expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['storyboard'], ['big', 'big2'], read))).toEqual({ error: '故事板输入图片总容量不能超过 24 MB，当前没有提交生成请求' })
-    expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['storyboard'], ['a'], undefined))).toEqual({ error: '故事板输入图片内容核对服务暂时不可用，当前没有提交生成请求' })
+    expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['storyboard'], ['big', 'big2'], read))).toEqual({ error: '故事板输入图片总容量不能超过 24 MB，当前未提交生成请求' })
+    expect(await asyncOutcome(() => assertCanvasSceneSourceImages(['storyboard'], ['a'], undefined))).toEqual({ error: '故事板输入图片内容核对服务暂时不可用，当前未提交生成请求' })
     // A refusal by count reads nothing.
     reads.length = 0
     await asyncOutcome(() => assertCanvasSceneSourceImages(['exterior'], ['a', 'b', 'copy'], read))

@@ -353,7 +353,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
       const images = new AiAssetStore({
         outputRoot,
         keepUnsaved: keepUnsavedImage,
-        unwritableGuidance: '这个项目的文件夹可能被移走了，或者放不进新文件。请新建一个项目、换个文件夹再试。',
+        unwritableGuidance: '该项目的文件夹可能已被移动，或无法写入新文件。请新建项目或更换文件夹后重试。',
         trustedProxyFetchImpl: sessionFetch,
         nativeOperations: {
           copyImage: copyImageToClipboard,

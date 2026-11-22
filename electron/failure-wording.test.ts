@@ -9,7 +9,7 @@ describe('toolLaunchFailureMessage', () => {
 
   it('leaves an English reason to the log and says what to do next', () => {
     expect(toolLaunchFailureMessage('Claude Code', new Error('spawn EPERM')))
-      .toBe('未能打开 Claude Code，原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
+      .toBe('未能打开 Claude Code，原因已记录到运行日志。请点击「重试」；如仍失败，请在「反馈与客服」中将报告发送给客服。')
     // 中文用户名只在路径里，句子本身还是英文。
     expect(toolLaunchFailureMessage('Codex CLI', new Error("EACCES: permission denied, mkdtemp '/Users/张三/Library/Caches/x'")))
       .toBe(`未能打开 Codex CLI，${loggedFailureNextStep}`)
@@ -35,15 +35,15 @@ describe('npm failure sentences', () => {
       .toBe('Codex CLI 安装失败：国内 npm 镜像：国内 npm 镜像的包名、版本或 SHA-512 完整性元数据与 npm 官方源不一致。')
     const exit = npmSourceFailure('命令执行失败（退出码 1）：npm-cli.js（ELIFECYCLE；command failed）', { commandFailed: true })
     expect(npmFailureSentence('Codex CLI 安装失败：', [{ label: 'npm 官方源', reason: exit }]))
-      .toBe(`Codex CLI 安装失败：npm 官方源：npm 没有装成（错误码 ELIFECYCLE）。${loggedFailureNextStep}`)
-    expect(npmSourceFailure('stopped', { commandFailed: false }).reason).toBe('npm 没有装成')
+      .toBe(`Codex CLI 安装失败：npm 官方源：npm 安装失败（错误码 ELIFECYCLE）。${loggedFailureNextStep}`)
+    expect(npmSourceFailure('stopped', { commandFailed: false }).reason).toBe('npm 安装失败')
   })
 
   it('says an uninstall in its own words', () => {
     const denied = npmSourceFailure('命令执行失败（退出码 1）：npm（EPERM；Error: EPERM: operation not permitted）', { commandFailed: true, uninstall: true })
     expect(npmFailureSentence('Codex CLI 卸载失败：', [{ reason: denied }])).toBe('Codex CLI 卸载失败：工具文件无法删除（拒绝访问）（错误码 EPERM）。')
     const unknown = npmSourceFailure('命令执行失败（退出码 1）：npm', { commandFailed: true, uninstall: true })
-    expect(npmFailureSentence('Codex CLI 卸载失败：', [{ reason: unknown }])).toBe(`Codex CLI 卸载失败：卸载命令没有成功。${loggedFailureNextStep}`)
+    expect(npmFailureSentence('Codex CLI 卸载失败：', [{ reason: unknown }])).toBe(`Codex CLI 卸载失败：卸载命令执行失败。${loggedFailureNextStep}`)
   })
 })
 

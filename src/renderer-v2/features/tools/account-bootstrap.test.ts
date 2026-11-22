@@ -279,7 +279,7 @@ describe('account managed Key bootstrap', () => {
 
   it('puts an unregistered image tool on the home banner without treating it as a network failure', async () => {
     const current = config()
-    const notice = 'images 还没装进 Claude Code：它的设置这会儿写不进去。先关掉正在用的 AI 工具，再点「重新同步」。'
+    const notice = 'images 尚未安装到 Claude Code：其设置暂时无法写入。请先关闭正在使用的 AI 工具，再点击「重新同步」。'
     const api: AccountBootstrapBridge = {
       getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
       syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [], imageMcpWarning: notice })),
@@ -298,7 +298,7 @@ describe('account managed Key bootstrap', () => {
 
   it('keeps the missing-Node.js drawing notice apart so the home page can follow the runtime card', async () => {
     const current = config()
-    const notice = 'images 还没装进 AI 工具：这台电脑还缺运行环境。到首页「运行环境」装好后，点「重新同步」就能用。'
+    const notice = 'images 尚未安装到 AI 工具：本机缺少运行环境。请在首页「运行环境」中完成安装后，点击「重新同步」。'
     const api: AccountBootstrapBridge = {
       getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
       syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [], imageMcpWarning: notice, imageMcpNeedsNode: true })),

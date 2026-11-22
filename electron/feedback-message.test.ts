@@ -27,7 +27,7 @@ describe('buildFeedbackMessage', () => {
   })
 
   it('says at the end that the report could not be made, so support does not take it for an unticked box', () => {
-    expect(buildFeedbackMessage({ type: 'bug', description: '打不开', contact: '', reportMissing: true })).toBe('留言反馈 · 遇到问题\n打不开\n反馈报告：这次没生成出来')
+    expect(buildFeedbackMessage({ type: 'bug', description: '打不开', contact: '', reportMissing: true })).toBe('留言反馈 · 遇到问题\n打不开\n反馈报告：本次未能生成')
   })
 
   it('masks a key the customer pasted into the description', () => {

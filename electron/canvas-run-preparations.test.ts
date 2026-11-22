@@ -70,7 +70,7 @@ describe('canvas run preparations', () => {
   it('accepts a PNG frame within the web host limits and nothing else', () => {
     expect(assertCanvasFramePng(png(4096, 4096))).toEqual({ width: 4096, height: 4096 })
     expect(() => assertCanvasFramePng(png(4097, 10))).toThrow('视频帧尺寸超过 4096')
-    expect(() => assertCanvasFramePng(jpeg(64, 64))).toThrow('视频帧必须是 PNG 图片')
+    expect(() => assertCanvasFramePng(jpeg(64, 64))).toThrow('视频帧须为 PNG 图片')
     expect(() => assertCanvasFramePng(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'))).toThrow('仅支持 PNG、JPEG 或 WebP')
   })
 
@@ -98,8 +98,8 @@ describe('canvas run preparations', () => {
     const signal = new AbortController().signal
 
     const badPicture = broker.expect({ runId: 'run-1', userId: 7, preparation, signal, store })
-    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: jpeg(8, 8) })).rejects.toThrow('视频帧必须是 PNG 图片')
-    await expect(badPicture).rejects.toThrow('视频帧必须是 PNG 图片')
+    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: jpeg(8, 8) })).rejects.toThrow('视频帧须为 PNG 图片')
+    await expect(badPicture).rejects.toThrow('视频帧须为 PNG 图片')
     // The operation is spent: a second try with a good picture is refused.
     await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(8, 8) })).rejects.toThrow('该帧不在等待中')
 
@@ -180,9 +180,9 @@ describe('canvas run preparations', () => {
   it('takes only as many PNGs as the node makes, at the size it set unless the page decides it', () => {
     expect(() => assertCanvasImageToolPngs([png(640, 480)], { count: 1, size: { width: 640, height: 480 } })).not.toThrow()
     expect(() => assertCanvasImageToolPngs([png(900, 300)], { count: 1 })).not.toThrow()
-    expect(() => assertCanvasImageToolPngs([png(640, 480), png(640, 480)], { count: 1, size: { width: 640, height: 480 } })).toThrow('图片处理结果的张数跟节点设置不一致')
-    expect(() => assertCanvasImageToolPngs([png(641, 480)], { count: 1, size: { width: 640, height: 480 } })).toThrow('图片处理结果的尺寸跟节点设置不一致')
-    expect(() => assertCanvasImageToolPngs([jpeg(640, 480)], { count: 1 })).toThrow('图片处理结果必须是 PNG 图片')
+    expect(() => assertCanvasImageToolPngs([png(640, 480), png(640, 480)], { count: 1, size: { width: 640, height: 480 } })).toThrow('图片处理结果的张数与节点设置不一致')
+    expect(() => assertCanvasImageToolPngs([png(641, 480)], { count: 1, size: { width: 640, height: 480 } })).toThrow('图片处理结果的尺寸与节点设置不一致')
+    expect(() => assertCanvasImageToolPngs([jpeg(640, 480)], { count: 1 })).toThrow('图片处理结果须为 PNG 图片')
     expect(() => assertCanvasImageToolPngs([png(4097, 8)], { count: 1 })).toThrow('图片处理结果尺寸超过 4096')
     expect(() => assertCanvasImageToolPngs([png(4096, 4096), png(4096, 4096), png(1, 1)], { count: 3 })).toThrow('图片处理结果合计像素超过上限')
   })
@@ -199,8 +199,8 @@ describe('canvas run preparations', () => {
     const waiting = broker.expectImages({ runId: 'run-1', userId: 7, preparation: imagePreparation, expectation: { count: 1, size: { width: 64, height: 32 } }, signal, store })
     await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-2', kind: 'frame', outcome: 'completed', png: png(64, 32) })).rejects.toThrow('该帧不在等待中')
     await expect(broker.complete(8, { runId: 'run-1', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 32)] })).rejects.toThrow('本次图片处理不在等待中')
-    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 33)] })).rejects.toThrow('尺寸跟节点设置不一致')
-    await expect(waiting).rejects.toThrow('尺寸跟节点设置不一致')
+    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 33)] })).rejects.toThrow('尺寸与节点设置不一致')
+    await expect(waiting).rejects.toThrow('尺寸与节点设置不一致')
     await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 32)] })).rejects.toThrow('本次图片处理不在等待中')
     expect(store).not.toHaveBeenCalled()
 

@@ -2863,8 +2863,8 @@ describe('ProviderExtensionService.readUserMcpConnection', () => {
     await expect(service.readUserMcpConnection('claude', 'acme')).resolves.toEqual({ type: 'stdio', command: 'npx', args: ['-y', '@acme/mcp'], env: { ACME_TOKEN: 'secret' } })
     await expect(service.readUserMcpConnection('codex', 'remote')).resolves.toEqual({ type: 'http', url: 'https://mcp.example.com', headers: { Authorization: 'Bearer secret' } })
     // 项目里那份（local）不是全局那份，不给搬。
-    await expect(service.readUserMcpConnection('claude', 'local')).rejects.toThrow('没有找到这个连接')
-    await expect(service.readUserMcpConnection('claude', 'constructor')).rejects.toThrow('没有找到这个连接')
+    await expect(service.readUserMcpConnection('claude', 'local')).rejects.toThrow('未找到该连接')
+    await expect(service.readUserMcpConnection('claude', 'constructor')).rejects.toThrow('未找到该连接')
   })
 
   it('does not read Grok connections, whose list carries no environment or headers', async () => {

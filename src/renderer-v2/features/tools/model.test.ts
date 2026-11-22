@@ -517,7 +517,7 @@ describe('renderer update offer for the start guide', () => {
 
   it('offers the official-installer Claude Code the same update button, since the app can switch it over', () => {
     const native = { installed: true, version: '2.1.276', path: null, installDirectory: null, installSource: 'native' as const, uninstall: { available: true, reason: null, manualCommand: null } }
-    const blocked = { ...pinnedOld, blockedReason: '这个版本每次提问都会失败，换到推荐版本就好' }
+    const blocked = { ...pinnedOld, blockedReason: '该版本每次提问均会失败，请更换为推荐版本' }
     expect(toolUpdateOffer(row({ status: native, versionAdvice: blocked })))
       .toEqual({ version: '2.1.277', target: '2.1.277', newer: true, knownIssue: true, manualHint: null })
   })

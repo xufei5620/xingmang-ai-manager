@@ -32,8 +32,8 @@ describe('Linux launch guard', () => {
     for (const refusal of ['root', 'other-account'] as const) {
       const notice = linuxLaunchRefusalNotice(refusal)
       expect(notice.title).toBe('请用平时登录电脑的账号打开')
-      expect(notice.message).toContain('从应用菜单里直接打开')
-      expect(notice.message).toContain('这次什么都没有改动')
+      expect(notice.message).toContain('从应用菜单中直接打开')
+      expect(notice.message).toContain('本次未作任何改动')
       expect(`${notice.title}${notice.message}`).not.toMatch(/root|sudo|uid|sandbox|沙箱/i)
     }
   })

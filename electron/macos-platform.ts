@@ -54,8 +54,8 @@ const terminalLauncherPollIntervalMs = 100
  * shell 去执行的，前面卡住（oh-my-zsh 问要不要更新，会吃掉这行的第一个字）、或者 ~/.zshrc 里 `exec tmux`，
  * 这行就没了。字是 yoyo 2026-11-11 回「SH-3 改」定的；外面由 toolLaunchFailureMessage 接上「未能打开 X：」。
  */
-export const macosTerminalNotStartedMessage = '终端窗口打开了，但工具没有跟着起来。先看一眼终端窗口里是不是在问什么（比如要不要更新），'
-  + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「联系客服」，把这句话发给客服。'
+export const macosTerminalNotStartedMessage = '终端窗口已打开，但工具未随之启动。请先查看终端窗口中是否有待确认的提示（例如是否更新），'
+  + '处理完成后关闭该窗口，再次点击「打开」；如仍失败，请点击「联系客服」并将此提示发送给客服。'
 
 export class MacosTerminalNotStartedError extends Error {
   /** How long the launcher was waited for, for the log. */

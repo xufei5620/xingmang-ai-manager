@@ -88,7 +88,7 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // Codex 插件目录的旧备份自动清不掉（主进程 codex-plugin-catalog.ts 的
   // codexPluginCatalogBackupStuckMessage）。以前这句带着文件夹路径叫客户自己去挪，
   // 现在只剩「重启再试、不行找客服」。
-  { key: 'pluginCatalogStuck', match: (message) => /插件目录里的旧备份清不掉/.test(message) },
+  { key: 'pluginCatalogStuck', match: (message) => /插件目录(?:里|中)的旧备份(?:清不掉|无法清除)/.test(message) },
   // 装插件、加外接工具时命令行自己说的原因（主进程把那几行接在「（命令输出：」后面，extension-command-output.ts）。
   // 只认带着这个记号的话，别处的英文不认。排在网络、权限那几条前面：连不上 GitHub 时原话里有 Connection reset
   // 这类字样，被下面认成「网络连不上」也说得过去，但「插件要从 GitHub 下载」才说到点子上。

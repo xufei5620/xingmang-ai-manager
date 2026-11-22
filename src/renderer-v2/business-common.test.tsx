@@ -55,7 +55,7 @@ describe('renderer-v2 result notice', () => {
   })
 
   it('offers support in plain words when the plugin catalog backups cannot be cleared', () => {
-    const raw = 'Codex 插件目录里的旧备份清不掉，这次没有改动'
+    const raw = 'Codex 插件目录中的旧备份无法清除，本次未作改动'
     const markup = renderToStaticMarkup(<ResultNotice error={raw} onSupport={() => undefined} />)
     expect(markup).toContain('插件目录暂时无法修改')
     expect(markup).toContain('请重启电脑后重试')

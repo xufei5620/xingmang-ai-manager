@@ -1600,7 +1600,7 @@ describe('describeImageMcpWarnings', () => {
   })
 
   it('falls back to a generic sentence when no tool is named', () => {
-    expect(describeImageMcpWarnings(['写入失败'])).toContain('images 还没装进 AI 工具')
+    expect(describeImageMcpWarnings(['写入失败'])).toContain('images 尚未安装到 AI 工具')
   })
 })
 

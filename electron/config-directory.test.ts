@@ -28,7 +28,7 @@ describe('config directory opening', () => {
   it('tells the user the folder has not been written yet instead of creating one', () => {
     const home = temporaryHome()
     const directory = providerConfigRoot('gemini', { userHome: home, codexHome: path.join(home, '.codex') })
-    expect(() => assertOpenableConfigDirectory(directory)).toThrow('还没有生成')
+    expect(() => assertOpenableConfigDirectory(directory)).toThrow('尚未生成')
     expect(fs.existsSync(directory)).toBe(false)
   })
 

@@ -28,13 +28,13 @@ describe('resolveRevealableExportedFile', () => {
   })
 
   it('says the file is gone when it was moved or deleted', async () => {
-    await expect(resolveRevealableExportedFile(path.join(directory(), 'moved.txt'))).rejects.toThrow('已经不在原来的位置了')
+    await expect(resolveRevealableExportedFile(path.join(directory(), 'moved.txt'))).rejects.toThrow('已不在原位置')
   })
 
   it('refuses a folder that took the file name', async () => {
     const folder = path.join(directory(), 'report.txt')
     fs.mkdirSync(folder)
-    await expect(resolveRevealableExportedFile(folder)).rejects.toThrow('不是导出的那个文件')
+    await expect(resolveRevealableExportedFile(folder)).rejects.toThrow('已不是导出的文件')
   })
 
   it('judges the entry itself, not what a link points at', async () => {
@@ -44,7 +44,7 @@ describe('resolveRevealableExportedFile', () => {
         lstatted.push(target)
         return { isFile: () => false }
       },
-    })).rejects.toThrow('不是导出的那个文件')
+    })).rejects.toThrow('已不是导出的文件')
     expect(lstatted).toHaveLength(1)
   })
 
@@ -54,6 +54,6 @@ describe('resolveRevealableExportedFile', () => {
     fs.writeFileSync(target, 'other')
     const link = path.join(root, 'report.txt')
     fs.symlinkSync(target, link)
-    await expect(resolveRevealableExportedFile(link)).rejects.toThrow('不是导出的那个文件')
+    await expect(resolveRevealableExportedFile(link)).rejects.toThrow('已不是导出的文件')
   })
 })

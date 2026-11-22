@@ -636,8 +636,8 @@ const methods = {
       : { ...base, ok: true, layer: 'network' as const, summary: '连接正常，claude-opus-5 可以直接使用', nextStep: '无需处理', evidence: '已用 claude-opus-5 发送一次最小请求', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5' }
   },
   probeCodexResponses: async (acknowledgeBilling, expectedAccountScope) => {
-    if (!acknowledgeBilling) throw new Error('请先勾选确认：这次检查会用当前账号的一点额度')
-    if (expectedAccountScope !== accountScope(session)) throw new Error('当前账号变了，请重新勾选确认后再检查')
+    if (!acknowledgeBilling) throw new Error('请先勾选确认：本次检测将消耗当前账号少量额度')
+    if (expectedAccountScope !== accountScope(session)) throw new Error('当前账号已变更，请重新勾选确认后再检测')
     if (nextResponsesHeld) {
       nextResponsesHeld = false
       await new Promise<void>((resolve) => { releaseResponses = resolve })
@@ -1060,7 +1060,7 @@ const methods = {
       }
       // 真机上只更新要照着原文件改，读不了的 config.toml 会被拒（config-files.ts 的 describeBrokenConfig）。
       if (query.has('codexUnreadable') && provider === 'codex' && config.providers.codex.configBroken && input.mode !== 'reset' && input.mode !== 'repair') {
-        failed.push({ provider, message: 'Codex 的配置文件里有写错的地方（第 2 行附近），星芒没有改动它。' })
+        failed.push({ provider, message: 'Codex 的配置文件内容有误（第 2 行附近），星芒未改动该文件。' })
         continue
       }
       keyRewritten.add(provider)

@@ -6,7 +6,7 @@ import type { IpcHandlerContext } from './context'
 export function registerStorageHandlers(ctx: IpcHandlerContext): void {
   const { options, registerTrustedHandler } = ctx
   function service() {
-    if (!options.storageUsage) throw new Error('这个版本还不能算占用的空间')
+    if (!options.storageUsage) throw new Error('当前版本暂不支持计算占用空间')
     return options.storageUsage
   }
   registerTrustedHandler('storage:inspect', async (_event, part: unknown) => {

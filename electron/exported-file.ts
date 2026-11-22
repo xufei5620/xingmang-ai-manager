@@ -21,14 +21,14 @@ export async function resolveRevealableExportedFile(
   filePath: string,
   probe: ExportedFileProbe = {},
 ): Promise<string> {
-  if (!path.isAbsolute(filePath)) throw new Error('导出文件的位置不完整，没法定位。')
+  if (!path.isAbsolute(filePath)) throw new Error('导出文件的位置不完整，无法定位。')
   const resolved = path.resolve(filePath)
   let info: ExportedFileInfo
   try {
     info = await (probe.lstat ?? fs.lstat)(resolved)
   } catch {
-    throw new Error('导出的文件已经不在原来的位置了，可能被移动或删除。')
+    throw new Error('导出的文件已不在原位置，可能已被移动或删除。')
   }
-  if (!info.isFile()) throw new Error('原来的位置现在不是导出的那个文件了，没有打开。')
+  if (!info.isFile()) throw new Error('原位置的文件已不是导出的文件，未打开。')
   return resolved
 }

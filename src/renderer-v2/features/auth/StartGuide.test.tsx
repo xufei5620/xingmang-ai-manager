@@ -523,9 +523,9 @@ describe('guide step failure wording', () => {
 
   it('puts the linked config file and what to do about it on the red line instead of the folded raw text', () => {
     // 主进程那句（electron/config-link-refusal.ts）经 account-source-switch 包一层后的样子（#1100 第2条）。
-    const raw = '改用当前账号未完成：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。已恢复到切换前的配置。'
+    const raw = '改用当前账号未完成：用户文件夹里的 .claude/settings.json 是一个链接。为保障安全，星芒不会写入链接，原有设置未改动。请将其替换为普通文件后重试。已恢复到切换前的配置。'
     const failure = guideStepFailure(new Error(raw), '改用当前账号', true)
-    expect(failure.message).toBe('改用当前账号失败：用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。如需协助，请点击「复制给客服」并发送给客服。')
+    expect(failure.message).toBe('改用当前账号失败：用户文件夹里的 .claude/settings.json 是一个链接。为保障安全，星芒不会写入链接，原有设置未改动。请将其替换为普通文件后重试。如需协助，请点击「复制给客服」并发送给客服。')
     expect(failure.reason).toBe('配置文件为链接')
     // 包在外面的那层（已恢复到切换前的配置）还在原始信息（供客服查看）里。
     expect(failure.detail).toBe(raw)

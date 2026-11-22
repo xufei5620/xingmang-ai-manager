@@ -1096,7 +1096,7 @@ describe('registerIpcHandlers', () => {
       await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent(), message)).resolves.toEqual({ entries: 0, reportMissing: true })
       const copied = electronMocks.writeText.mock.calls.at(-1)?.[0]
       expect(copied).toMatch(/^留言反馈 · 功能建议\n点「打开」后终端闪一下就关了\n/)
-      expect(copied).toMatch(/\n反馈报告：这次没生成出来$/)
+      expect(copied).toMatch(/\n反馈报告：本次未能生成$/)
       expect(runtimeLog.log).toHaveBeenCalledWith('error', 'ipc', 'runtime-logs:preview-feedback', 'runtime-logs:preview-feedback失败：日志读取失败', expect.anything())
     })
 
@@ -2615,7 +2615,7 @@ describe('registerIpcHandlers', () => {
       await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(project)
       expect(electronMocks.showMessageBox).toHaveBeenNthCalledWith(2, expect.objectContaining({
         type: 'error',
-        title: '没能新建项目文件夹',
+        title: '无法新建项目文件夹',
         detail: expect.stringContaining('符号链接或目录联接'),
       }))
       expect(fs.readdirSync(elsewhere)).toEqual([])
@@ -2689,7 +2689,7 @@ describe('registerIpcHandlers', () => {
         .resolves.toBe(project)
       expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
         type: 'error',
-        message: '没能替你新建项目文件夹。',
+        message: '未能为您新建项目文件夹。',
         detail: expect.stringContaining('接下来会重新打开文件夹选择窗口'),
       }))
       expect(electronMocks.showOpenDialog).toHaveBeenCalledTimes(1)
@@ -3678,7 +3678,7 @@ describe('registerIpcHandlers', () => {
     expect(service.setClaudeWriteBoundary).toHaveBeenCalledTimes(1)
 
     create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
-    await expect(handler(trustedEvent(), false)).rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
+    await expect(handler(trustedEvent(), false)).rejects.toThrow('未能先备份 Claude Code 的配置，本次未修改')
   })
 
   it('switches Claude Code commit attribution through its own channel with the same backup rule', async () => {
@@ -3698,7 +3698,7 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), 1)).rejects.toThrow('开关格式错误')
     expect(service.setClaudeCommitAttribution).toHaveBeenCalledTimes(1)
     create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
-    await expect(handler(trustedEvent(), false)).rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
+    await expect(handler(trustedEvent(), false)).rejects.toThrow('未能先备份 Claude Code 的配置，本次未修改')
   })
 
   it('saves the standing instructions for the AI only after checking what the renderer sent', async () => {
@@ -3732,7 +3732,7 @@ describe('registerIpcHandlers', () => {
 
     vi.mocked(service.saveConfig).mockClear()
     create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
-    await expect(handler(trustedEvent(), { ...base, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
+    await expect(handler(trustedEvent(), { ...base, mode: 'reset' })).rejects.toThrow('未能先备份当前配置，本次未重置')
     expect(service.saveConfig).not.toHaveBeenCalled()
   })
 
@@ -3757,7 +3757,7 @@ describe('registerIpcHandlers', () => {
 
     vi.mocked(service.switchToOfficialAccount).mockClear()
     create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
-    await expect(handler(trustedEvent(), 'codex', 'reset')).rejects.toThrow('没能先备份当前配置，这次没有重置')
+    await expect(handler(trustedEvent(), 'codex', 'reset')).rejects.toThrow('未能先备份当前配置，本次未重置')
     expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
 
     // 「立即修复」（repair）同样先备份，备份不成就不动手。
@@ -3768,7 +3768,7 @@ describe('registerIpcHandlers', () => {
     expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.switchToOfficialAccount).mock.invocationCallOrder[0])
     vi.mocked(service.switchToOfficialAccount).mockClear()
     create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
-    await expect(handler(trustedEvent(), 'codex', 'repair')).rejects.toThrow('没能先备份当前配置，这次没有重置')
+    await expect(handler(trustedEvent(), 'codex', 'repair')).rejects.toThrow('未能先备份当前配置，本次未重置')
     expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
   })
 
@@ -3842,7 +3842,7 @@ describe('registerIpcHandlers', () => {
     expect(service.answerClaudeCommandConfirmation).toHaveBeenCalledTimes(2)
 
     create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
-    await expect(handler(trustedEvent(), 'ask')).rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
+    await expect(handler(trustedEvent(), 'ask')).rejects.toThrow('未能先备份 Claude Code 的配置，本次未修改')
   })
 
   it('validates the one-click account switch before touching any config', async () => {
@@ -3879,7 +3879,7 @@ describe('registerIpcHandlers', () => {
     const handler = electronMocks.handlers.get('config:switch-account-source')!
     const first = handler(trustedEvent(), 'codex', 'official')
     const repeated = handler(trustedEvent(), 'codex', 'official')
-    await expect(handler(trustedEvent(), 'codex', 'account')).rejects.toThrow('这个工具正在切换账号')
+    await expect(handler(trustedEvent(), 'codex', 'account')).rejects.toThrow('该工具正在切换账号')
     await vi.waitFor(() => expect(service.switchToOfficialAccount).toHaveBeenCalledTimes(1))
     finish()
     const [a, b] = await Promise.all([first, repeated])
@@ -7924,7 +7924,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
     it('says this version cannot do it yet when the host gave no service', async () => {
       register(serviceStub())
-      await expect(electronMocks.handlers.get('storage:inspect')!(trustedEvent(), 'logs')).rejects.toThrow('这个版本还不能算占用的空间')
+      await expect(electronMocks.handlers.get('storage:inspect')!(trustedEvent(), 'logs')).rejects.toThrow('当前版本暂不支持计算占用空间')
     })
   })
 
@@ -8392,7 +8392,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
           fs.writeFileSync(filePath, '{ invalid limits')
           const { accountService, service } = setup(accountKey({}), createManagedKeyReplacementStore({ filePath }), false, sourceSwitchOptions())
 
-          await expect(switchCodexToAccount()).rejects.toThrow('没读到这个工具原来的额度设置')
+          await expect(switchCodexToAccount()).rejects.toThrow('未能读取该工具原有的额度设置')
 
           expect(accountService.provisionCliKey).not.toHaveBeenCalled()
           expect(service.saveConfig).not.toHaveBeenCalled()
@@ -8467,7 +8467,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
           )
 
           const automatic = await configure('automatic') as { failed: Array<{ provider: string; message: string }> }
-          expect(automatic.failed).toContainEqual({ provider: 'codex', message: expect.stringContaining('没读到这个工具原来的额度设置') })
+          expect(automatic.failed).toContainEqual({ provider: 'codex', message: expect.stringContaining('未能读取该工具原有的额度设置') })
           expect(accountService.provisionCliKey).not.toHaveBeenCalled()
 
           await expect(configure('explicit')).resolves.toEqual({ configured: ['codex'], failed: [] })
@@ -9885,7 +9885,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       vi.mocked(service.saveConfig).mockClear()
       create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
-      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
+      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).rejects.toThrow('未能先备份当前配置，本次未重置')
       expect(service.saveConfig).not.toHaveBeenCalled()
     })
 
@@ -10015,7 +10015,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       vi.mocked(service.saveConfig).mockClear()
       vi.mocked(accountService.provisionCliKey).mockClear()
       create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
-      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
+      await expect(handler(trustedEvent(), { ...input, mode: 'reset' })).rejects.toThrow('未能先备份当前配置，本次未重置')
       expect(accountService.provisionCliKey).not.toHaveBeenCalled()
       expect(service.saveConfig).not.toHaveBeenCalled()
 
@@ -10027,7 +10027,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(create.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(service.saveConfig).mock.invocationCallOrder[0])
       vi.mocked(service.saveConfig).mockClear()
       create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
-      await expect(handler(trustedEvent(), { ...input, mode: 'repair' })).rejects.toThrow('没能先备份当前配置，这次没有重置')
+      await expect(handler(trustedEvent(), { ...input, mode: 'repair' })).rejects.toThrow('未能先备份当前配置，本次未重置')
       expect(service.saveConfig).not.toHaveBeenCalled()
     })
 
@@ -10294,11 +10294,11 @@ describe('exports:reveal-file', () => {
     fs.rmSync(file)
 
     await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), file))
-      .rejects.toThrow('已经不在原来的位置了')
+      .rejects.toThrow('已不在原位置')
     // Replaced by a folder of the same name: not the file we wrote.
     fs.mkdirSync(file)
     await expect(electronMocks.handlers.get('exports:reveal-file')!(trustedEvent(), file))
-      .rejects.toThrow('不是导出的那个文件')
+      .rejects.toThrow('已不是导出的文件')
     expect(revealInFolder).not.toHaveBeenCalled()
   })
 
@@ -10709,7 +10709,7 @@ describe('config:open-directory', () => {
     const providerRoots = roots()
     register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { providerRoots })
 
-    await expect(electronMocks.handlers.get('config:open-directory')!(trustedEvent(), 'grok')).rejects.toThrow('还没有生成')
+    await expect(electronMocks.handlers.get('config:open-directory')!(trustedEvent(), 'grok')).rejects.toThrow('尚未生成')
 
     expect(electronMocks.openPath).not.toHaveBeenCalled()
     expect(fs.existsSync(path.join(providerRoots.userHome, '.grok'))).toBe(false)

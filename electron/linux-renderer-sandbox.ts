@@ -101,8 +101,8 @@ export function createLinuxRendererSandboxGate(
 
 export function linuxRendererSandboxRefusalMessage(verdict: Exclude<LinuxRendererSandboxVerdict, { kind: 'sandboxed' }>): string {
   return verdict.kind === 'disabled'
-    ? '画布要在电脑的安全保护下运行，这次星芒AI管理工具打开时这层保护被关掉了，所以画布没有打开。请关掉星芒AI管理工具，从应用菜单里直接打开，再打开画布。'
-    : '没能确认画布的安全保护是否开着，为了安全，画布没有打开。请关掉星芒AI管理工具再重新打开，然后再试一次。'
+    ? '画布需在系统安全保护下运行，本次打开星芒AI管理工具时该保护已被关闭，因此画布未打开。请关闭星芒AI管理工具，从应用菜单中直接打开后，再打开画布。'
+    : '无法确认画布的安全保护是否已开启，为保障安全，画布未打开。请关闭星芒AI管理工具后重新打开，再重试。'
 }
 
 /** /proc reports size 0, so bounded-file.ts (which trusts fstat's size) cannot read it. */

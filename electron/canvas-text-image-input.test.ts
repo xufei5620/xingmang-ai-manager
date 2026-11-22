@@ -61,10 +61,10 @@ describe('canvas text image input', () => {
     async function failure(read: (userId: number, assetId: string) => Promise<AiOwnedAssetRead>, ids: string[] = [first]): Promise<string> {
       return readCanvasTextImages(read, 7, ids).then(() => 'resolved', (error: Error) => error.message)
     }
-    expect(await failure(async () => { throw new Error('ENOENT: C:\\Users\\someone\\secret.png') })).toBe('连接的视觉图片没有可读取结果，当前没有提交文字生成')
-    expect(await failure(async () => owned(pngHeader(64, 48, 4 * 1024 * 1024 + 1)))).toBe('视觉图片单张不能超过 4 MB，当前没有提交文字生成；请换小一点的图再试')
-    expect(await failure(async () => owned(pngHeader(8193, 10)))).toBe('视觉图片尺寸超过范围，当前没有提交文字生成；请换小一点的图再试')
-    expect(await failure(async () => owned(pngHeader(4097, 4097)))).toBe('视觉图片尺寸超过范围，当前没有提交文字生成；请换小一点的图再试')
+    expect(await failure(async () => { throw new Error('ENOENT: C:\\Users\\someone\\secret.png') })).toBe('无法读取所连接的视觉图片，当前未提交文字生成')
+    expect(await failure(async () => owned(pngHeader(64, 48, 4 * 1024 * 1024 + 1)))).toBe('视觉图片单张不能超过 4 MB，当前未提交文字生成；请更换较小的图片后重试')
+    expect(await failure(async () => owned(pngHeader(8193, 10)))).toBe('视觉图片尺寸超出范围，当前未提交文字生成；请更换较小的图片后重试')
+    expect(await failure(async () => owned(pngHeader(4097, 4097)))).toBe('视觉图片尺寸超出范围，当前未提交文字生成；请更换较小的图片后重试')
     expect(await failure(async () => owned(Buffer.from('not a picture')))).toBe('图片内容无效，仅支持 PNG、JPEG 或 WebP')
     expect(await failure(async () => owned(pngHeader(64, 48)), [first, first, first, first, first])).toBe('文字视觉输入最多支持 4 张图片，请减少图片或改用单图输出')
   })
@@ -73,11 +73,11 @@ describe('canvas text image input', () => {
     // 3 MB each: two different pictures fit, the same one in three slots does not.
     const read = vi.fn(async () => owned(pngHeader(64, 48, 3 * 1024 * 1024)))
     await expect(readCanvasTextImages(read, 7, [first, second])).resolves.toHaveLength(2)
-    await expect(readCanvasTextImages(read, 7, [first, first, first])).rejects.toThrow('文字视觉图片总容量不能超过 8 MB，当前没有提交生成请求')
+    await expect(readCanvasTextImages(read, 7, [first, first, first])).rejects.toThrow('文字视觉图片总容量不能超过 8 MB，当前未提交生成请求')
     // 4096 x 4096 is 16 777 216 pixels each; three slots exceed the 33 554 432 total.
     const large = vi.fn(async () => owned(pngHeader(4096, 4096)))
     await expect(readCanvasTextImages(large, 7, [first, first])).resolves.toHaveLength(1)
-    await expect(readCanvasTextImages(large, 7, [first, first, first])).rejects.toThrow('视觉图片尺寸超过范围，当前没有提交文字生成；请换小一点的图再试')
+    await expect(readCanvasTextImages(large, 7, [first, first, first])).rejects.toThrow('视觉图片尺寸超出范围，当前未提交文字生成；请更换较小的图片后重试')
   })
 
   it('stops reading once the run is stopped', async () => {

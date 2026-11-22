@@ -33,8 +33,8 @@ export const canvasByteUploadLimits = {
  */
 export function parseCanvasUploadedImageBytes(value: unknown): Buffer {
   if (!(value instanceof Uint8Array)) throw new Error('画布图片内容格式错误')
-  if (value.byteLength === 0) throw new Error('画布图片内容为空，没有保存')
-  if (value.byteLength > maximumCanvasUploadedImageBytes) throw new Error('画布图片超过 20 MB，没有保存')
+  if (value.byteLength === 0) throw new Error('画布图片内容为空，未保存')
+  if (value.byteLength > maximumCanvasUploadedImageBytes) throw new Error('画布图片超过 20 MB，未保存')
   return Buffer.from(value)
 }
 
@@ -46,8 +46,8 @@ export function parseCanvasUploadedImageBytes(value: unknown): Buffer {
 export function assertCanvasUploadedImage(bytes: Buffer): { mimeType: string; width: number; height: number } {
   const inspection = inspectAiImage(bytes)
   const { width, height } = inspection
-  if (!width || !height) throw new Error('画布图片尺寸读不出来，没有保存')
-  if (width > maximumCanvasUploadedImageEdge || height > maximumCanvasUploadedImageEdge) throw new Error('画布图片边长超过 8192，没有保存')
+  if (!width || !height) throw new Error('无法读取画布图片的尺寸，未保存')
+  if (width > maximumCanvasUploadedImageEdge || height > maximumCanvasUploadedImageEdge) throw new Error('画布图片边长超过 8192，未保存')
   return { mimeType: inspection.mimeType, width, height }
 }
 
@@ -82,14 +82,14 @@ export class CanvasByteUploadAdmission {
 
   async run<T>(ownerId: number, byteLength: number, operation: () => Promise<T>): Promise<T> {
     if (!Number.isSafeInteger(ownerId) || ownerId <= 0) throw new Error('画布窗口标识格式错误')
-    if (!Number.isSafeInteger(byteLength) || byteLength <= 0) throw new Error('画布图片内容为空，没有保存')
-    if ((this.active.get(ownerId) ?? 0) >= this.maxActive) throw new Error('上一张图片还在保存，请等它存好再试')
+    if (!Number.isSafeInteger(byteLength) || byteLength <= 0) throw new Error('画布图片内容为空，未保存')
+    if ((this.active.get(ownerId) ?? 0) >= this.maxActive) throw new Error('上一张图片仍在保存，请待其保存完成后重试')
     const now = this.now()
     const recent = (this.uploads.get(ownerId) ?? []).filter((entry) => now - entry.at < this.windowMs)
     const recentBytes = recent.reduce((total, entry) => total + entry.bytes, 0)
     if (recent.length >= this.maxUploadsPerWindow || recentBytes + byteLength > this.maxBytesPerWindow) {
       this.uploads.set(ownerId, recent)
-      throw new Error('保存图片太频繁，请过一分钟再试')
+      throw new Error('保存图片过于频繁，请一分钟后重试')
     }
     recent.push({ at: now, bytes: byteLength })
     this.uploads.set(ownerId, recent)
