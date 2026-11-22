@@ -90,11 +90,19 @@ interface CanvasProjects {
 function useCanvasProjects(bridge: Pick<XingmangApi, 'listCanvasProjects'>, active: boolean) {
   const latest = useLatestRequest()
   const [state, setState] = useState<CanvasProjects>({ status: 'loading', projects: [] })
-  const refresh = () => {
+  // 回的是这一次读到、已经记下的清单；被更新的一次读顶掉了、或者没读出来，回 null。
+  const refresh = (): Promise<CanvasProjectListEntry[] | null> => {
     const current = latest.begin()
-    bridge.listCanvasProjects().then(
-      (projects) => { if (current()) setState({ status: 'ready', projects }) },
-      () => { if (current()) setState((previous) => previous.status === 'ready' ? previous : { status: 'unreadable', projects: [] }) },
+    return bridge.listCanvasProjects().then(
+      (projects) => {
+        if (!current()) return null
+        setState({ status: 'ready', projects })
+        return projects
+      },
+      () => {
+        if (current()) setState((previous) => previous.status === 'ready' ? previous : { status: 'unreadable', projects: [] })
+        return null
+      },
     )
   }
   const refreshRef = useRef(refresh)
@@ -114,6 +122,8 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const library = useVideoStudioLibrary(bridge, accountScope)
   const session = useVideoStudioSession(library)
   const canvas = useCanvasProjects(bridge, active)
+  const canvasProjectsRef = useRef(canvas.projects)
+  canvasProjectsRef.current = canvas.projects
   const owner = useLatestRequest()
   const [selected, setSelected] = useState<CreateSelection | null>(null)
   const [renaming, setRenaming] = useState<{ id: string, text: string } | null>(null)
@@ -161,11 +171,17 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   }
   // 每次点开都再读一遍：视频工作台里刚出的片段、刚拼好的成片要在里面。
   const showLibrary = () => { setSelected(null); setLibraryOpen(true); assets.refresh() }
-  // 作品库里点「查看画布项目」：右边换成那个项目。项目刚在画布窗口里归档、删掉了（这边的列表还没跟上）就说一句。
+  // 作品库里点「查看画布项目」：右边换成那个项目。先重读一遍项目清单再看它还在不在：项目可能刚在画布窗口里归档、
+  // 删掉了，而把主窗口点回前台的往往正是这一下，手上的清单还是旧的，照它换过去会先闪出那个项目、接着又被收回起始页。
+  // 新的没读到（没读出来，或被更新的一次读顶掉）就照手上的。
   const showCanvasProject = (id: string) => {
-    if (!canvas.projects.some((entry) => entry.id === id)) { canvas.refresh(); toast.show('未找到该画布项目，可能已归档或删除。', 'warn'); return }
-    setLibraryOpen(false)
-    setSelected({ kind: 'canvas', id })
+    const ticket = owner.capture()
+    void canvas.refresh().then((fresh) => {
+      if (!ticket()) return
+      if (!(fresh ?? canvasProjectsRef.current).some((entry) => entry.id === id)) { toast.show('未找到该画布项目，可能已归档或删除。', 'warn'); return }
+      setLibraryOpen(false)
+      setSelected({ kind: 'canvas', id })
+    })
   }
   const leave = () => { setSelected(null); setLibraryOpen(false) }
   // 对话里的一段视频「添加到视频」：接到选的那一条最后（null 是新建一条）。开着的正是那一条时，写完它按新的重新读

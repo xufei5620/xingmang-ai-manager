@@ -4968,18 +4968,18 @@ test('what a canvas project made is listed in the library, leads to the project,
     await works.getByTestId('create-canvas-works-grid').waitFor()
     assert.deepEqual(await libraryTiles(works), [canvasBanner, canvasSpin, canvasDetail])
 
-    // 项目在画布窗口里归档了，作品库里那一件还列着（它过几秒才跟上）：点「查看画布项目」说一句，留在作品库。
-    await page.evaluate(() => {
-      window.v2Test.setCanvasProjects([{ id: 'fixture-canvas-old', name: '门店海报', updatedAt: Date.now() }])
-      window.dispatchEvent(new Event('focus'))
-    })
-    await page.getByTestId('create-item-canvas-fixture-canvas-poster').waitFor({ state: 'detached' })
+    // 项目在画布窗口里归档了，作品库里那一件还列着（它过几秒才跟上），主窗口手上的项目清单也还是旧的（把它点回
+    // 前台的往往正是这一下）：点「查看画布项目」先重读清单，说一句，留在作品库，左边那一行跟着没了。
+    // 照旧清单直接换过去的话，会先闪出那个项目、接着被收回起始页，一句话都不说。
     await page.getByTestId('create-library-open').click()
     await pane.getByTestId(`create-library-item-${canvasBanner}`).click()
+    await page.evaluate(() => { window.v2Test.setCanvasProjects([{ id: 'fixture-canvas-old', name: '门店海报', updatedAt: Date.now() }]) })
+    assert.equal(await page.getByTestId('create-item-canvas-fixture-canvas-poster').count(), 1)
     await detail.getByTestId('create-library-origin').click()
     await waitForToast(page, '未找到该画布项目，可能已归档或删除。')
     assert.equal(await page.getByTestId('create-canvas-pane').count(), 0)
     assert.equal(await pane.isVisible(), true)
+    await page.getByTestId('create-item-canvas-fixture-canvas-poster').waitFor({ state: 'detached' })
     await clean(page)
   } finally { await page.close() }
 })
