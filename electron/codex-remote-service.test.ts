@@ -1052,6 +1052,47 @@ describe('codex-remote-service enabling', () => {
     expect(revisions).toEqual([...revisions].sort((left, right) => left - right))
   })
 
+  // M15：先开始的那份读的是改之前的设置，读得慢、后回来，号也不能比改完以后那份大，不然界面收下旧的。
+  it('numbers a snapshot by when it started, so a slow one that read old settings never passes for the newest', async () => {
+    const s = await setup()
+    await s.service.snapshot()
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    const readCredential = s.store.readCredential.bind(s.store)
+    vi.spyOn(s.store, 'readCredential').mockImplementationOnce(async (channel) => {
+      await held
+      return readCredential(channel)
+    })
+    const slow = s.service.snapshot()
+    const changed = await s.service.setPermission('readOnly')
+    release()
+    const stale = await slow
+    expect(stale.permission).toBeUndefined()
+    expect(changed.permission).toBe('readOnly')
+    expect(stale.revision).toBeLessThan(changed.revision)
+  })
+
+  it('never pushes a slow snapshot after a newer one, so the tray and keep-awake follow the latest', async () => {
+    const s = await setup()
+    await s.service.snapshot()
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    const readCredential = s.store.readCredential.bind(s.store)
+    vi.spyOn(s.store, 'readCredential').mockImplementationOnce(async (channel) => {
+      await held
+      return readCredential(channel)
+    })
+    const pushed = s.snapshots.length
+    const slow = s.service.setAutoStart(true)
+    await vi.waitFor(() => expect(s.store.readCredential).toHaveBeenCalled())
+    await s.service.setPermission('readOnly')
+    release()
+    await slow
+    const after = s.snapshots.slice(pushed)
+    expect(after.map((snapshot) => snapshot.revision)).toEqual([...after.map((snapshot) => snapshot.revision)].sort((left, right) => left - right))
+    expect(s.snapshots.at(-1)).toMatchObject({ permission: 'readOnly', autoStart: true })
+  })
+
   it('does not remember the switch across restarts', async () => {
     const s = await setup()
     await s.service.setChannelEnabled('feishu', true)

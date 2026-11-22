@@ -1210,6 +1210,7 @@ export class CodexRemoteService {
   /** 遥控关着时临时起的那份 Codex 是哪个版本（withListingCodex）。 */
   private listedVersion: string | null = null
   private revision = 0
+  private emittedRevision = 0
   private codex: CodexAppServerClient | null = null
   private codexStarting: Promise<CodexAppServerClient> | null = null
   /**
@@ -1338,6 +1339,10 @@ export class CodexRemoteService {
   }
 
   async snapshot(): Promise<CodexRemoteSnapshot> {
+    // 版本号在读设置、读凭据之前就定下（M15）：先开始、后读完的那份读到的是旧设置，要是读完才加一，它反倒
+    // 拿到更大的号，界面按号收下的就是旧的。
+    this.revision += 1
+    const revision = this.revision
     const settings = await this.options.store.readSettings()
     const chosen = resolveChosenConversation(settings)
     const unavailableReason = this.options.inspectAvailability()
@@ -1379,9 +1384,8 @@ export class CodexRemoteService {
       if (waiting > 0) task = 'waiting-approval'
       else if (runtime.turn && task !== 'waiting-approval') task = runtime.turn.id ? 'running' : 'starting'
     }
-    this.revision += 1
     return {
-      revision: this.revision,
+      revision,
       available: unavailableReason === null,
       ...(unavailableReason ? { unavailableReason } : {}),
       ...(this.options.alwaysElevatedAccount && unavailableReason === null ? { alwaysElevated: true } : {}),
@@ -2089,6 +2093,10 @@ export class CodexRemoteService {
 
   private async emit(): Promise<CodexRemoteSnapshot> {
     const snapshot = await this.snapshot()
+    // 版本号按开始的先后定（M15），先开始的可能后读完：比已经推出去的旧，就不再推。托盘、防睡眠拿到哪份信哪份，
+    // 不像页面会比版本号。
+    if (snapshot.revision < this.emittedRevision) return snapshot
+    this.emittedRevision = snapshot.revision
     try {
       this.options.onStateChanged?.(snapshot)
     } catch {

@@ -16,6 +16,8 @@ import type { SafeStorageLike } from './account-session-store'
 
 // The next `remaining` reads fail with `code`, like a settings file that antivirus holds for a moment.
 const readFailures = vi.hoisted(() => ({ remaining: 0, code: 'EBUSY' }))
+// Holds the next read after it has taken the file's content, like a disk that answers late.
+const readHold = vi.hoisted(() => ({ next: null as null | { taken: () => void; release: Promise<void> }, reads: 0 }))
 vi.mock('./safe-local-data', async (importOriginal) => {
   const original = await importOriginal<typeof import('./safe-local-data')>()
   return {
@@ -25,7 +27,15 @@ vi.mock('./safe-local-data', async (importOriginal) => {
         readFailures.remaining -= 1
         throw Object.assign(new Error(`${readFailures.code}: simulated read failure`), { code: readFailures.code })
       }
-      return original.readSafeUtf8File(...args)
+      readHold.reads += 1
+      const content = await original.readSafeUtf8File(...args)
+      const hold = readHold.next
+      if (hold) {
+        readHold.next = null
+        hold.taken()
+        await hold.release
+      }
+      return content
     },
   }
 })
@@ -52,6 +62,8 @@ function fakeStorage(backend = 'gnome_libsecret', available = true): SafeStorage
 }
 
 afterEach(() => {
+  readHold.next = null
+  readHold.reads = 0
   readFailures.remaining = 0
   readFailures.code = 'EBUSY'
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
@@ -217,6 +229,34 @@ describe('codex-remote-store', () => {
     const reread = await new CodexRemoteStore(directory, fakeStorage(), 'darwin').readSettings()
     expect(reread).toMatchObject({ workspaceDirectory: workspace, idleCloseHours: 12, autoStart: true })
     expect(reread.channels.feishu).toEqual({ accountLabel: 'cli_x', boundPeer: { userId: 'ou_1', boundAt: 5 } })
+  })
+
+  // M15：第一次读盘还没回来时改了设置，那次读回来不能把刚写好的盖回旧样子。
+  it('does not let a slow first read put back settings changed in the meantime', async () => {
+    const directory = tempDirectory()
+    await new CodexRemoteStore(directory, fakeStorage(), 'darwin').updateSettings((settings) => {
+      settings.idleCloseHours = 12
+    })
+    const store = new CodexRemoteStore(directory, fakeStorage(), 'darwin')
+    let taken!: () => void
+    const contentTaken = new Promise<void>((resolve) => { taken = resolve })
+    let release!: () => void
+    readHold.next = { taken, release: new Promise<void>((resolve) => { release = resolve }) }
+    readHold.reads = 0
+    const slowRead = store.readSettings()
+    await contentTaken
+    const change = store.updateSettings((settings) => {
+      settings.autoStart = true
+    })
+    // Let the change get as far as it can without the held read: one that reads the disk on its own has
+    // started that read by now and is written before the slow read comes back; one that waits for the read
+    // in flight is still waiting. Either way the slow read is let go only after that.
+    await new Promise((resolve) => setImmediate(resolve))
+    if (readHold.reads > 1) await change
+    release()
+    await Promise.all([slowRead, change])
+    expect(await store.readSettings()).toMatchObject({ idleCloseHours: 12, autoStart: true })
+    expect(await new CodexRemoteStore(directory, fakeStorage(), 'darwin').readSettings()).toMatchObject({ idleCloseHours: 12, autoStart: true })
   })
 
   it('treats a settings file that vanished between the check and the read as never saved', async () => {
