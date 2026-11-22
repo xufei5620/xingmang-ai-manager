@@ -51,10 +51,11 @@ function assertAllowedKeys(value: Record<string, unknown>, allowed: readonly str
 // image-edit-mask.ts). The workflow's 20 MB ceiling still bounds the total.
 const maximumSettingsArrayLength = 4_096
 const maximumNoteTextLength = 100_000
+const maximumSettingStringLength = 10_000
 
 function validateSettings(value: unknown, depth = 0): boolean {
   if (depth > 8) return false
-  if (typeof value === 'string') return value.length <= 10_000 && !unsafeLocation.test(value)
+  if (typeof value === 'string') return value.length <= maximumSettingStringLength && !unsafeLocation.test(value)
   if (typeof value === 'number') return Number.isFinite(value)
   if (typeof value === 'boolean' || value === null) return true
   if (Array.isArray(value)) return value.length <= maximumSettingsArrayLength && value.every((entry) => validateSettings(entry, depth + 1))
@@ -69,18 +70,33 @@ function validateSettings(value: unknown, depth = 0): boolean {
  * note. Nothing reads it as a path or a link (the canvas renders it as text,
  * and opening a link still goes through the exact-href allowlist, I12), so a
  * note that starts with a URL, "/imagine" or a drive letter is ordinary
- * content. Only that one key is display text, exactly as the canvas kernel's
- * own serializer treats it; every other settings string, including nested
- * ones and the same key on any other node kind, keeps the location rule.
+ * content, exactly as the canvas kernel's own serializer treats it.
+ *
+ * Two more root settings only name something: any node's own name (`title`,
+ * which also names a group) and the drama bible's style line (`stylePrompt`).
+ * yoyo typed his consent on 2026-11-22 (#1368 item 4) for these to be kept as
+ * typed even when they start with a link or a path; nothing in the main
+ * process reads them, and the kernel lifts the same rule for exactly these
+ * keys (xingmang-canvas `isLabelSetting`). Only the location rule is lifted:
+ * the length cap and the key rules still apply. Every other settings string
+ * keeps it, including nested ones, `text` off a note and `stylePrompt` off the
+ * drama bible.
  */
+function validateRootSetting(kind: string, key: string, value: unknown): boolean {
+  if (kind === 'note' && key === 'text') {
+    return typeof value === 'string' && value.length <= maximumNoteTextLength && !value.includes('\0')
+  }
+  const label = key === 'title' || (kind === 'drama-bible' && key === 'stylePrompt')
+  if (label && typeof value === 'string') return value.length <= maximumSettingStringLength
+  return validateSettings(value, 1)
+}
+
 function validateNodeSettings(kind: string, value: unknown): boolean {
-  if (kind !== 'note' || !isRecord(value) || !Object.prototype.hasOwnProperty.call(value, 'text')) return validateSettings(value)
-  const { text, ...rest } = value
-  return typeof text === 'string'
-    && text.length <= maximumNoteTextLength
-    && !text.includes('\0')
-    && Object.keys(value).length <= 256
-    && validateSettings(rest)
+  if (!isRecord(value)) return validateSettings(value)
+  if (Object.keys(value).length > 256) return false
+  return Object.entries(value).every(([key, child]) => (
+    key.length > 0 && key.length <= 128 && !forbiddenKey.test(key) && validateRootSetting(kind, key, child)
+  ))
 }
 
 function validatePromptReferences(value: unknown): void {

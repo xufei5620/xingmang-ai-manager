@@ -125,6 +125,22 @@ export function safeNoteText(value: unknown): string | undefined {
   return typeof value === 'string' && value.length <= maximumPromptLength && !value.includes('\0') ? value : undefined
 }
 
+/**
+ * Root settings that only label something for the user: any known node's own
+ * name (`title`, which is also a group's name) and the drama bible's style
+ * line. yoyo agreed on 2026-11-22 (xingmang-ai-manager#1368 item 4) that these
+ * keep exactly what was typed even when it starts with or contains a link or a
+ * path. Nothing reads them as a location: they are shown as text, a download
+ * name built from a title goes through textOutputDownload's character filter,
+ * and the style line joins a prompt like any prompt text. Only the location
+ * rule is lifted; length, NUL and key rules still apply, and nested settings,
+ * placeholder nodes and every other key keep it.
+ */
+export function isLabelSetting(nodeKind: string | undefined, key: string): boolean {
+  if (nodeKind === undefined || nodeKind === 'unknown') return false
+  return key === 'title' || (nodeKind === 'drama-bible' && key === 'stylePrompt')
+}
+
 export function hasInvalidNoteText(settings: unknown): boolean {
   return isRecord(settings) && Object.prototype.hasOwnProperty.call(settings, 'text') && safeNoteText(settings.text) === undefined
 }
@@ -239,9 +255,9 @@ function persistedMediaGroups(mediaGroups: WorkflowFile['mediaGroups']): Workflo
 const forbiddenSettingKey = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|secret|password)/i
 const unsafeSettingString = /^(?:[a-zA-Z]:[\\/]|\\\\|\/|[a-z][a-z0-9+.-]*:|data:)/i
 
-function persistedSettingValue(value: unknown, depth: number, allowNoteText = false): unknown {
+function persistedSettingValue(value: unknown, depth: number, nodeKind?: string, label = false): unknown {
   if (depth > 8) return undefined
-  if (typeof value === 'string') return value.length <= 10_000 && !unsafeSettingString.test(value) ? value : undefined
+  if (typeof value === 'string') return value.length <= 10_000 && (label || !unsafeSettingString.test(value)) ? value : undefined
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined
   if (typeof value === 'boolean' || value === null) return value
   if (Array.isArray(value)) return value.slice(0, 256).map((entry) => persistedSettingValue(entry, depth + 1)).filter((entry) => entry !== undefined)
@@ -249,18 +265,18 @@ function persistedSettingValue(value: unknown, depth: number, allowNoteText = fa
   const entries = Object.entries(value).slice(0, 256).flatMap(([key, child]) => {
     if (!key || key.length > 128 || forbiddenSettingKey.test(key)) return []
     // Only root-level note prose is display-only; nested settings remain capability-filtered.
-    if (allowNoteText && depth === 0 && key === 'text') {
+    if (nodeKind === 'note' && depth === 0 && key === 'text') {
       const text = safeNoteText(child)
       return text === undefined ? [] : [[key, text] as const]
     }
-    const safe = persistedSettingValue(child, depth + 1)
+    const safe = persistedSettingValue(child, depth + 1, undefined, depth === 0 && typeof child === 'string' && isLabelSetting(nodeKind, key))
     return safe === undefined ? [] : [[key, safe] as const]
   })
   return Object.fromEntries(entries)
 }
 
 export function persistedSettings(value: unknown, nodeKind?: WorkflowNode['kind']): Record<string, unknown> | undefined {
-  const safe = persistedSettingValue(value, 0, nodeKind === 'note')
+  const safe = persistedSettingValue(value, 0, nodeKind)
   if (isRecord(value) && Object.hasOwn(value, 'interiorTask')) { if (!isRecord(safe)) throw new Error('室内创作配置无法保存'); safe.interiorTask = parseNodeInteriorTask(nodeKind ?? '', value.interiorTask) }
   if (isRecord(value) && Object.hasOwn(value, 'exteriorTask')) { if (!isRecord(safe)) throw new Error('室外创作配置无法保存'); safe.exteriorTask = parseNodeExteriorTask(nodeKind ?? '', value.exteriorTask) }
   if (isRecord(value) && Object.hasOwn(value, 'storyboardTask')) { if (!isRecord(safe)) throw new Error('故事板配置无法保存'); safe.storyboardTask = parseNodeStoryboardTask(nodeKind ?? '', value.storyboardTask) }
