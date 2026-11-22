@@ -12,18 +12,18 @@ type ToolResult = SaveResult['tools'][number]
 /** 跟主进程 STANDING_INSTRUCTIONS_MAX_LENGTH 一样；主进程那边照样再查一遍（I5）。 */
 export const standingInstructionsMaxLength = 2000
 
-export const standingInstructionsSavedText = '已经写好，下次打开工具时生效。'
-export const standingInstructionsClearedText = '已经清空，下次打开工具时生效。'
+export const standingInstructionsSavedText = '已保存，下次打开工具时生效。'
+export const standingInstructionsClearedText = '已清空，下次打开工具时生效。'
 
 function toolName(provider: ToolResult['provider']): string {
   return tools.find((tool) => tool.id === provider)?.name ?? provider
 }
 
-/** 没写上的那几家，一家一句：「Grok CLI 没写上：……」。 */
+/** 没写上的那几家，一家一句：「Grok CLI 未能写入：……」。 */
 export function standingInstructionsMissedLines(result: SaveResult): string[] {
   return result.tools
     .filter((tool) => tool.outcome === 'skipped' || tool.outcome === 'failed')
-    .map((tool) => `${toolName(tool.provider)} 没写上：${tool.reason ?? '没有写进去，请再试一次。'}`)
+    .map((tool) => `${toolName(tool.provider)} 未能写入：${tool.reason ?? '写入失败，请重试。'}`)
 }
 
 /** 框里的字跟上次存下的比：首尾空白、换行写法不算改动，跟主进程收到以后的整理一样。 */
@@ -68,7 +68,7 @@ export function StandingInstructionsField({
           setDraft(event.target.value)
           setMissed([])
         }}
-        error={tooLong ? `最多 ${standingInstructionsMaxLength} 个字` : undefined}
+        error={tooLong ? `最多 ${standingInstructionsMaxLength} 字` : undefined}
       />
       <div className="v2-standing-instructions-foot">
         <span className="v2-standing-instructions-count" aria-live="polite">{`${length}/${standingInstructionsMaxLength}`}</span>
@@ -97,7 +97,7 @@ export function StandingInstructionsField({
       {missed.length ? (
         <Notice
           tone="warn"
-          title="有工具没写上"
+          title="部分工具未能写入"
           body={missed.map((line) => <div key={line}>{line}</div>)}
           testId="settings-standing-instructions-missed"
         />

@@ -21,12 +21,12 @@ export const STANDING_INSTRUCTIONS_MAX_LENGTH = 2000
 export const STANDING_INSTRUCTIONS_MARKER = '星芒AI管理工具：给 AI 的长期嘱咐'
 const START_TAG = `${STANDING_INSTRUCTIONS_MARKER}（开始）`
 const END_TAG = `${STANDING_INSTRUCTIONS_MARKER}（结束）`
-const START_LINE = `<!-- ${START_TAG}。这一段在星芒「设置 › 工具管理」里改，直接改这里下次保存会被换掉；这一段外面的字星芒不碰。 -->`
+const START_LINE = `<!-- ${START_TAG}。此段内容请在星芒「设置 › 工具管理」中修改，在此直接修改将在下次保存时被覆盖；此段以外的内容星芒不会改动。 -->`
 const END_LINE = `<!-- ${END_TAG} -->`
 const BYTE_ORDER_MARK = '﻿'
 
-export const STANDING_INSTRUCTIONS_MARKER_BROKEN = '文件里星芒那一段的标记被改过，为了不动你自己写的字，这次没有改。'
-export const STANDING_INSTRUCTIONS_NOT_UTF8 = '文件不是 UTF-8 编码，为了不把里面的字弄乱，这次没有改。'
+export const STANDING_INSTRUCTIONS_MARKER_BROKEN = '文件中由星芒维护的段落标记已被修改，为避免改动您自行编写的内容，本次未写入。'
+export const STANDING_INSTRUCTIONS_NOT_UTF8 = '文件编码无法识别，为避免内容出现乱码，本次未写入。'
 
 export type StandingInstructionsOutcome = 'written' | 'removed' | 'unchanged' | 'skipped' | 'failed'
 

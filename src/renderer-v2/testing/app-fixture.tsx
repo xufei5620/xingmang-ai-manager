@@ -494,7 +494,7 @@ const methods = {
     const missed = query.get('standingMissed')
     const instructions = text.replace(/\r\n?/g, '\n').trim()
     const tools = (['claude', 'codex', 'grok'] as const).map((provider) => missed === 'all' || missed === provider
-      ? { provider, outcome: 'skipped' as const, reason: '文件里星芒那一段的标记被改过，为了不动你自己写的字，这次没有改。' }
+      ? { provider, outcome: 'skipped' as const, reason: '文件中由星芒维护的段落标记已被修改，为避免改动您自行编写的内容，本次未写入。' }
       : { provider, outcome: instructions ? 'written' as const : 'removed' as const })
     if (missed !== 'all') settings = { ...settings, standingInstructions: instructions || undefined }
     return { text: settings.standingInstructions ?? '', tools }

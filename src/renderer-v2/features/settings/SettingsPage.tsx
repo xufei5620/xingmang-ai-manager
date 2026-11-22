@@ -951,7 +951,7 @@ export function SettingsPage({
       ),
       'standing-instructions': row(
         'standing-instructions',
-        '写在这里的话，Claude Code、Codex、Grok 在每个文件夹里都会照着做。比如：回答简短一点；我是做外贸的。',
+        '此处填写的要求将对 Claude Code、Codex、Grok 在所有文件夹中生效，例如：回答请尽量简洁；我从事外贸行业。',
         <StandingInstructionsField
           api={api}
           saved={settings.standingInstructions ?? ''}
