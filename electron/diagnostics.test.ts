@@ -2442,18 +2442,22 @@ describe('diagnostics', () => {
     })
   })
 
-  it('tells a standard Windows account that installing Node.js will ask for a password', async () => {
+  // #1321: typing another administrator's password at the prompt ends in 2225, so the
+  // line must not suggest it; it points at installing from an administrator account.
+  it('tells a standard Windows account to install Node.js from an administrator account', async () => {
     const home = temporaryHome()
     const input = dependencies(home)
     input.inspectElevationCapability = async () => 'standard'
 
     const report = await runDiagnostics(input)
+    const item = report.items.find((entry) => entry.code === 'ADMINISTRATOR')
 
-    expect(report.items.find((item) => item.code === 'ADMINISTRATOR')).toMatchObject({
+    expect(item).toMatchObject({
       state: 'warn',
-      summary: expect.stringContaining('不在管理员组'),
+      summary: '当前以普通用户权限运行。该 Windows 账号不在管理员组，无法完成安装 Node.js、Codex 桌面端时所需的管理员授权。Node.js 可先使用管理员账号登录 Windows 完成安装，安装后本机所有 Windows 账号均可使用；公司或学校的电脑请联系 IT 协助，也可请 IT 预先安装 Node.js LTS 版',
       details: { elevated: false, canElevate: false },
     })
+    expect(item?.summary).not.toContain('密码')
   })
 
   it('stays a plain pass when the account can elevate, and when the probe cannot answer', async () => {

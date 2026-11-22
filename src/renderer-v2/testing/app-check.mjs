@@ -7314,7 +7314,7 @@ test('an app already running with administrator rights does not promise a consen
       if (elevated) {
         assert.equal(await page.getByTestId('health-runtime-node-elevation').count(), 0, query)
         assert.doesNotMatch(await row.innerText(), /管理员授权|授权窗口/, query)
-      } else await expect(page.getByTestId('health-runtime-node-elevation')).toHaveText('此步骤需要管理员授权：准备 Node.js 时 Windows 将弹出授权窗口，请选择「是」以完成 Node.js 的安装；如本机登录的是普通账号，还需输入管理员账号密码。')
+      } else await expect(page.getByTestId('health-runtime-node-elevation')).toHaveText('此步骤需要管理员授权：准备 Node.js 时 Windows 将弹出授权窗口，请选择「是」以完成 Node.js 的安装。如本机登录的是普通账号，请先使用管理员账号登录 Windows 完成 Node.js 的安装，安装后本机所有 Windows 账号均可使用。')
 
       const updates = await openVersionCard(page)
       await page.evaluate(() => window.v2Test.emit('onUpdateState', {

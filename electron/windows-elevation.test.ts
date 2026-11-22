@@ -847,7 +847,7 @@ describe('windows elevation capability', () => {
     const cancelled = windowsElevationCancelledMessage('Node.js', 'administrator')
     expect(cancelled).toContain('已取消管理员授权')
     expect(cancelled).toContain('重新点击安装')
-    expect(cancelled).not.toContain('本身没有管理员权限')
+    expect(cancelled).not.toContain('没有管理员权限')
 
     const blocked = windowsElevationCancelledMessage('Node.js', 'standard')
     expect(blocked).toContain('已取消管理员授权')
@@ -864,18 +864,36 @@ describe('windows elevation capability', () => {
   // standard user who types an administrator's password still gets nothing. The advice
   // used to say exactly that, which sent people in a circle.
   it('sends a standard account to an administrator account instead of the password prompt', () => {
-    expect(windowsStandardAccountAdvice()).toBe('这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。公司或学校的电脑请找管理电脑的人帮忙。')
+    expect(windowsStandardAccountAdvice()).toBe('此 Windows 账号没有管理员权限，无法完成安装。请先使用管理员账号登录 Windows，并在星芒中完成 Node.js 的安装，安装后本机所有 Windows 账号均可使用；随后切换回此账号并点击「重试」。公司或学校的电脑请联系 IT 协助。')
     expect(windowsStandardAccountAdvice({ kind: 'account', product: 'Codex 桌面端' })).toBe(
-      '这个 Windows 账号本身没有管理员权限，在这里装不了 Codex 桌面端。要用的话，换一个有管理员权限的账号登录这台电脑，在那个账号里装和用。公司或学校的电脑请找管理电脑的人帮忙。',
+      '此 Windows 账号没有管理员权限，无法安装 Codex 桌面端。如需使用，请使用管理员账号登录 Windows，并在该账号中安装和使用。公司或学校的电脑请联系 IT 协助。',
     )
     for (const advice of [windowsStandardAccountAdvice(), windowsStandardAccountAdvice({ kind: 'account', product: 'Claude Desktop' })]) {
       expect(advice).not.toContain('密码')
       expect(advice).not.toContain('管理员组')
     }
     // 桌面端只注册给装它的那个账号，不能说装一次大家都能用。
-    expect(windowsStandardAccountAdvice({ kind: 'account', product: 'Claude Desktop' })).not.toContain('每个账号都能用')
+    expect(windowsStandardAccountAdvice({ kind: 'account', product: 'Claude Desktop' })).not.toContain('所有 Windows 账号均可使用')
     expect(windowsElevationDeniedMessage('Claude Desktop ', 'standard', { kind: 'account', product: 'Claude Desktop' }))
-      .toBe('未获得管理员权限，Claude Desktop 安装已停止。这个 Windows 账号本身没有管理员权限，在这里装不了 Claude Desktop。要用的话，换一个有管理员权限的账号登录这台电脑，在那个账号里装和用。公司或学校的电脑请找管理电脑的人帮忙。')
+      .toBe('未获得管理员权限，Claude Desktop 安装已停止。此 Windows 账号没有管理员权限，无法安装 Claude Desktop。如需使用，请使用管理员账号登录 Windows，并在该账号中安装和使用。公司或学校的电脑请联系 IT 协助。')
+  })
+
+  // #1321: when the probe cannot tell the account type, the denied sentence used to
+  // tell a standard user to type an administrator's password, which ends in 2225 too.
+  it('points an unconfirmed standard account at an administrator account, never at the password prompt', () => {
+    expect(windowsElevationDeniedMessage('Node.js '))
+      .toBe('未获得管理员权限，Node.js 安装已停止。请在弹出的授权窗口中点击「是」；如本机登录的是普通账号，请先使用管理员账号登录 Windows 完成安装，安装后本机所有 Windows 账号均可使用。')
+    expect(windowsElevationDeniedMessage('Codex 桌面端', 'unknown', { kind: 'account', product: 'Codex 桌面端' }))
+      .toBe('未获得管理员权限，Codex 桌面端安装已停止。请在弹出的授权窗口中点击「是」；如本机登录的是普通账号，请使用管理员账号登录 Windows，并在该账号中安装和使用。')
+    for (const capability of ['administrator', 'standard', 'unknown'] as const) {
+      for (const target of [{ kind: 'machine' }, { kind: 'account', product: 'Claude Desktop' }] as const) {
+        expect(windowsElevationDeniedMessage('Node.js ', capability, target)).not.toContain('密码')
+        expect(windowsElevationCancelledMessage('Node.js ', capability, target)).not.toContain('密码')
+      }
+    }
+    // 桌面端只注册给装它的那个账号。
+    expect(windowsElevationDeniedMessage('Claude Desktop ', 'unknown', { kind: 'account', product: 'Claude Desktop' }))
+      .not.toContain('所有 Windows 账号均可使用')
   })
 
   it('never proposes running this app elevated as the fix', () => {

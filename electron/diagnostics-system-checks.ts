@@ -266,9 +266,12 @@ export function buildSystemChecks(context: DiagnosticsContext): CheckDefinition[
         }
         const capability = platform === 'win32' ? await inspectElevation(signal) : 'unknown'
         if (capability === 'standard') {
+          // 不叫人「输入管理员账号的密码」：授权窗口里输了别人的密码，两个安装程序都只认本人，
+          // 照样装不成（2225，#1321）。说法跟 windows-elevation.ts 的 windowsStandardAccountAdvice 对齐。
+          // 句末不接「重新检测」：这一页的按钮叫「重新检查」，装好 Node.js 以后这一行也不会变。
           return {
             state: 'warn',
-            summary: '当前以普通用户权限运行。该 Windows 账号不在管理员组，自动安装 Node.js、Codex 桌面端时将要求输入管理员账号的密码；公司或学校的电脑请联系 IT 协助，也可请 IT 先安装 Node.js LTS 后再点击「重新检测」',
+            summary: '当前以普通用户权限运行。该 Windows 账号不在管理员组，无法完成安装 Node.js、Codex 桌面端时所需的管理员授权。Node.js 可先使用管理员账号登录 Windows 完成安装，安装后本机所有 Windows 账号均可使用；公司或学校的电脑请联系 IT 协助，也可请 IT 预先安装 Node.js LTS 版',
             details: { elevated, required: false, canElevate: false },
           }
         }

@@ -202,6 +202,10 @@ export type WindowsElevatedInstallTarget =
   | { kind: 'machine' }
   | { kind: 'account'; product: string }
 
+// 「Windows 账号」而不是「当前账号」：界面上「当前账号」指的是登录星芒的那个账号。
+const standardAccountAccountStep = '请使用管理员账号登录 Windows，并在该账号中安装和使用'
+const standardAccountMachineReach = '安装后本机所有 Windows 账号均可使用'
+
 /**
  * The sentence appended when the account provably cannot elevate on its own.
  * Deliberately not an instruction to re-run the app as administrator: running
@@ -215,12 +219,12 @@ export type WindowsElevatedInstallTarget =
  * that is itself an administrator.
  */
 export function windowsStandardAccountAdvice(target: WindowsElevatedInstallTarget = { kind: 'machine' }): string {
-  const tail = '公司或学校的电脑请找管理电脑的人帮忙。'
+  const tail = '公司或学校的电脑请联系 IT 协助。'
   if (target.kind === 'account') {
     const product = /^[A-Za-z0-9]/.test(target.product) ? ` ${target.product}` : target.product
-    return `这个 Windows 账号本身没有管理员权限，在这里装不了${product}。要用的话，换一个有管理员权限的账号登录这台电脑，在那个账号里装和用。${tail}`
+    return `此 Windows 账号没有管理员权限，无法安装${product}。如需使用，${standardAccountAccountStep}。${tail}`
   }
-  return `这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。${tail}`
+  return `此 Windows 账号没有管理员权限，无法完成安装。请先使用管理员账号登录 Windows，并在星芒中完成 Node.js 的安装，${standardAccountMachineReach}；随后切换回此账号并点击「重试」。${tail}`
 }
 
 /** 用户在授权窗口点了「否」或直接关掉。 */
@@ -242,9 +246,13 @@ export function windowsElevationDeniedMessage(
   target: WindowsElevatedInstallTarget = { kind: 'machine' },
 ): string {
   const head = `未获得管理员权限，${subject}安装已停止。`
-  return capability === 'standard'
-    ? `${head}${windowsStandardAccountAdvice(target)}`
-    : `${head}请在弹出的授权窗口中点击「是」；如本机使用的是普通账号，需输入管理员账号的密码。`
+  if (capability === 'standard') return `${head}${windowsStandardAccountAdvice(target)}`
+  // 没问出账号类型（或问出是管理员）：先叫他点「是」，再把普通账号能走通的那条路说上。
+  // 不说「输入管理员账号的密码」，理由见 windowsStandardAccountAdvice（#1321）。
+  const standard = target.kind === 'account'
+    ? standardAccountAccountStep
+    : `请先使用管理员账号登录 Windows 完成安装，${standardAccountMachineReach}`
+  return `${head}请在弹出的授权窗口中点击「是」；如本机登录的是普通账号，${standard}。`
 }
 
 export function parseWindowsTokenElevationType(value: string): WindowsTokenElevationType | null {

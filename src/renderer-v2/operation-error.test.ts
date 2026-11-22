@@ -69,7 +69,7 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   // config-files 写 Key 前的校验（safe-local-data）原话。
   folderRelocated: { sample: 'Provider 配置根目录不能经过符号链接或目录联接' },
   // 授权窗口点了「否」（node-runtime.ts 的 describeNodeInstallFailure 接上 windows-elevation.ts 那句，#1096）。
-  elevationDeclined: { sample: 'Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。重新点击安装即可再次授权。' },
+  elevationDeclined: { sample: 'Node.js 自动安装失败：已取消管理员授权，Node.js 安装未开始。重新点击安装即可再次授权。' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
   // 同一句 EPERM，调用方说明写的是工具的配置文件时（已知29）。
   configPermission: { sample: "重新写入密钥 没有完成：EPERM: operation not permitted, rename '本机路径'", target: 'config' },
@@ -564,14 +564,14 @@ describe('renderer-v2 operation error classification', () => {
   // 以前认不出，一长串原话配「操作未完成」，没有下一步（#1096）。下一步在原话后半截（按账号类型写好的），
   // 所以标题、正文只说「没装、什么都没改，照下面这句话做」，原话照旧在下面。
   it('gives a declined or missing administrator approval its own title and keeps the sentence underneath', () => {
-    const standardAdvice = '这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。公司或学校的电脑请找管理电脑的人帮忙。'
+    const standardAdvice = '此 Windows 账号没有管理员权限，无法完成安装。请先使用管理员账号登录 Windows，并在星芒中完成 Node.js 的安装，安装后本机所有 Windows 账号均可使用；随后切换回此账号并点击「重试」。公司或学校的电脑请联系 IT 协助。'
     for (const message of [
-      'Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。重新点击安装即可再次授权。',
-      `Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`,
-      `Node.js 自动安装失败：未获得管理员权限，Node.js安装已停止。${standardAdvice}`,
-      'Node.js 自动安装失败：未获得管理员权限，Node.js安装已停止。请在弹出的授权窗口中点击「是」；如本机使用的是普通账号，需输入管理员账号的密码。',
+      'Node.js 自动安装失败：已取消管理员授权，Node.js 安装未开始。重新点击安装即可再次授权。',
+      `Node.js 自动安装失败：已取消管理员授权，Node.js 安装未开始。${standardAdvice}`,
+      `Node.js 自动安装失败：未获得管理员权限，Node.js 安装已停止。${standardAdvice}`,
+      'Node.js 自动安装失败：未获得管理员权限，Node.js 安装已停止。请在弹出的授权窗口中点击「是」；如本机登录的是普通账号，请先使用管理员账号登录 Windows 完成安装，安装后本机所有 Windows 账号均可使用。',
       // 装工具时先装 Node.js（runtime-readiness.ts 的 runtimeInstallFailureMessage）。
-      `Node.js 运行环境安装失败，Claude Code 尚未开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`,
+      `Node.js 运行环境安装失败，Claude Code 尚未开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js 安装未开始。${standardAdvice}`,
       // 主进程以前那句短的（msiexec 自己报 1602）。
       'Node.js 自动安装失败：已取消管理员授权，Node.js 尚未安装。',
       // 桌面端装不上时主进程原样放行的那两句（codex-desktop-install-failure.ts、claude-desktop-install-failure.ts）。
