@@ -1239,6 +1239,72 @@ describe('Skill discovery and managed mutations', () => {
     expect(fs.statSync(path.join(target, 'empty')).isDirectory()).toBe(true)
   })
 
+  // O17: the copy must stay inside the tree the user approved. A folder that is
+  // swapped for a link to somewhere else after the check is refused instead of
+  // being followed, and nothing from outside reaches the skills folder.
+  it('refuses a subfolder swapped for a link to an outside folder during the copy', async () => {
+    const home = temporaryDirectory()
+    const sourceRoot = temporaryDirectory()
+    const outside = temporaryDirectory()
+    const source = path.join(sourceRoot, 'swapped-skill')
+    write(path.join(source, 'SKILL.md'), '---\nname: Swapped\n---\n')
+    write(path.join(source, 'sub', 'notes.txt'), 'inside')
+    write(path.join(outside, 'notes.txt'), 'OUTSIDE-MARKER')
+    write(path.join(outside, 'secret.txt'), 'OUTSIDE-SECRET')
+    const skillsRoot = path.join(home, '.agents', 'skills')
+    const originalMkdir = fs.mkdirSync.bind(fs)
+    let swapped = false
+    vi.spyOn(fs, 'mkdirSync').mockImplementation(((target: fs.PathLike, options?: fs.MakeDirectoryOptions | fs.Mode | null) => {
+      const created = originalMkdir(target, options as fs.MakeDirectoryOptions)
+      if (!swapped && path.basename(String(target)) === 'sub' && String(target).startsWith(skillsRoot)) {
+        swapped = true
+        fs.renameSync(path.join(source, 'sub'), path.join(sourceRoot, 'sub-away'))
+        fs.symlinkSync(outside, path.join(source, 'sub'), process.platform === 'win32' ? 'junction' : 'dir')
+      }
+      return created
+    }) as typeof fs.mkdirSync)
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+
+    await expect(service.importSkill({ sourcePath: source })).rejects.toThrow('导入过程中文件夹内容发生变化')
+
+    expect(swapped).toBe(true)
+    expect(fs.existsSync(path.join(skillsRoot, 'swapped-skill'))).toBe(false)
+    // Nothing half-copied is left in the skills folder, staging included.
+    expect(fs.existsSync(skillsRoot) ? fs.readdirSync(skillsRoot) : []).toEqual([])
+    expect(fs.readFileSync(path.join(outside, 'secret.txt'), 'utf8')).toBe('OUTSIDE-SECRET')
+    expect(fs.readFileSync(path.join(sourceRoot, 'sub-away', 'notes.txt'), 'utf8')).toBe('inside')
+  })
+
+  it('refuses a skill folder swapped for a link to an outside folder during the copy', async () => {
+    const home = temporaryDirectory()
+    const sourceRoot = temporaryDirectory()
+    const outside = temporaryDirectory()
+    const source = path.join(sourceRoot, 'root-skill')
+    write(path.join(source, 'SKILL.md'), '---\nname: Root\n---\n')
+    write(path.join(outside, 'SKILL.md'), '---\nname: Root\n---\n')
+    write(path.join(outside, 'secret.txt'), 'OUTSIDE-SECRET')
+    const skillsRoot = path.join(home, '.agents', 'skills')
+    const originalMkdir = fs.mkdirSync.bind(fs)
+    let swapped = false
+    vi.spyOn(fs, 'mkdirSync').mockImplementation(((target: fs.PathLike, options?: fs.MakeDirectoryOptions | fs.Mode | null) => {
+      const created = originalMkdir(target, options as fs.MakeDirectoryOptions)
+      const name = path.basename(String(target))
+      if (!swapped && path.dirname(String(target)) === skillsRoot && name !== 'skills') {
+        swapped = true
+        fs.renameSync(source, path.join(sourceRoot, 'root-away'))
+        fs.symlinkSync(outside, source, process.platform === 'win32' ? 'junction' : 'dir')
+      }
+      return created
+    }) as typeof fs.mkdirSync)
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+
+    await expect(service.importSkill({ sourcePath: source })).rejects.toThrow('导入过程中文件夹内容发生变化')
+
+    expect(swapped).toBe(true)
+    expect(fs.existsSync(skillsRoot) ? fs.readdirSync(skillsRoot) : []).toEqual([])
+    expect(fs.readFileSync(path.join(sourceRoot, 'root-away', 'SKILL.md'), 'utf8')).toContain('name: Root')
+  })
+
   it('renames a folder name the skills folder cannot hold to letters, digits and hyphens', () => {
     expect(buildRenamedSkillDirectoryName('写作助手', 'writing-helper')).toBe('writing-helper')
     expect(buildRenamedSkillDirectoryName('my-skill (1)', undefined)).toBe('my-skill-1')
