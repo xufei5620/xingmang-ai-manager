@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
 import { parseServiceStatus, type ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
-import { buildIntelMacUpdateInfo, createSharedDirectRetry, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
+import { buildIntelMacUpdateInfo, createSharedDirectRetry, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateHandoffQuitTimeoutCode, updateInstallCancelledMessage, updateInstallNotQuitMessage, updatePackageChangedMessage, updatePreviousInstallFailedMessage, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
 // What electron-updater's Provider.resolveFiles hands MacUpdater.filterFilesForArch.
 interface ResolvedUpdateFile {
@@ -5460,5 +5460,176 @@ describe('a newer version that would not fit on the disk while one is downloaded
     }))
     expect(client.downloadUpdate).toHaveBeenCalledOnce()
     service.dispose()
+  })
+})
+
+describe('Windows install handoff (S01)', () => {
+  const setupFile = 'C:\\Users\\测试 用户\\下载 目录\\XingMang-AI-Manager-1.1.0-Setup.exe'
+  const digest = Buffer.alloc(64, 7).toString('base64')
+  const setupInfo = (version = '1.1.0') => ({
+    ...updateInfo(version),
+    files: [{ url: `XingMang-AI-Manager-${version}-Setup.exe`, sha512: digest, size: 4242 }],
+    downloadedFile: setupFile,
+  })
+  type Handoff = NonNullable<UpdaterRuntime['windowsInstallHandoff']>
+  const windowsRuntime = (overrides: Partial<UpdaterRuntime> = {}) => ({
+    currentVersion: '1.0.0',
+    isPackaged: true,
+    platform: 'win32' as NodeJS.Platform,
+    windowsInstallHandoff: vi.fn<Handoff>(async () => ({ kind: 'verified' })),
+    quitForInstall: vi.fn(),
+    prepareInstallQuit: vi.fn(() => undefined),
+    installQuitAborted: vi.fn(),
+    ...overrides,
+    verifyPackageDigest: vi.fn(async (_filePath: string, _expected: string) => true),
+  })
+
+  async function downloaded(runtime: ReturnType<typeof windowsRuntime>) {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, runtime)
+    client.emit('update-downloaded', setupInfo())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+    return { client, service }
+  }
+
+  it('hands the package and the digest it was verified with to the handoff, then quits once, never through electron-updater', async () => {
+    const runtime = windowsRuntime()
+    const { client, service } = await downloaded(runtime)
+    expect(service.install()).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(runtime.quitForInstall).toHaveBeenCalledOnce())
+    expect(runtime.verifyPackageDigest).toHaveBeenNthCalledWith(2, setupFile, digest)
+    expect(runtime.windowsInstallHandoff).toHaveBeenCalledWith({ path: setupFile, sha512: digest, size: 4242, version: '1.1.0' })
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+    expect(runtime.installQuitAborted).not.toHaveBeenCalled()
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', error: null })
+    service.dispose()
+  })
+
+  it('stops before any elevation prompt when the package no longer matches what was verified, and goes back to downloading', async () => {
+    const runtime = windowsRuntime()
+    const { client, service } = await downloaded(runtime)
+    runtime.verifyPackageDigest.mockResolvedValueOnce(false)
+    clickInstall(service)
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState()).toMatchObject({ failedStep: 'download', error: { code: 'UPDATE_PACKAGE_CHANGED', message: updatePackageChangedMessage } })
+    expect(runtime.windowsInstallHandoff).not.toHaveBeenCalled()
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+    expect(runtime.quitForInstall).not.toHaveBeenCalled()
+    expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+    // The package is gone for good: installing again is refused until it is downloaded again.
+    expect(() => service.install()).toThrow('更新尚未下载并校验完成')
+    service.dispose()
+  })
+
+  it('treats a package that could not be re-read as changed, and a deleted one as missing', async () => {
+    for (const [failure, code] of [
+      [new Error('更新安装包存在多个硬链接'), 'UPDATE_PACKAGE_CHANGED'],
+      [Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' }), 'UPDATE_PACKAGE_PATH_MISSING'],
+    ] as const) {
+      const runtime = windowsRuntime()
+      const { service } = await downloaded(runtime)
+      runtime.verifyPackageDigest.mockRejectedValueOnce(failure)
+      clickInstall(service)
+      await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+      expect(service.getState()).toMatchObject({ failedStep: 'download', error: { code } })
+      expect(runtime.windowsInstallHandoff).not.toHaveBeenCalled()
+      expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+      service.dispose()
+    }
+  })
+
+  it('goes back to downloading without quitting when the elevated check finds a different package', async () => {
+    const runtime = windowsRuntime({ windowsInstallHandoff: vi.fn<Handoff>(async () => ({ kind: 'mismatch' })) })
+    const { service } = await downloaded(runtime)
+    clickInstall(service)
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState()).toMatchObject({ failedStep: 'download', error: { code: 'UPDATE_PACKAGE_CHANGED', message: updatePackageChangedMessage } })
+    expect(runtime.quitForInstall).not.toHaveBeenCalled()
+    expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('keeps the verified package after a cancelled prompt and runs the whole handoff again on the next click', async () => {
+    const handoff = vi.fn<Handoff>()
+      .mockResolvedValueOnce({ kind: 'cancelled' })
+      .mockResolvedValueOnce({ kind: 'verified' })
+    const runtime = windowsRuntime({ windowsInstallHandoff: handoff })
+    const { service } = await downloaded(runtime)
+    clickInstall(service)
+    await vi.waitFor(() => expect(service.getState().error?.code).toBe('UPDATE_INSTALL_CANCELLED'))
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { message: updateInstallCancelledMessage } })
+    expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+    expect(runtime.quitForInstall).not.toHaveBeenCalled()
+
+    expect(service.install()).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(runtime.quitForInstall).toHaveBeenCalledOnce())
+    expect(handoff).toHaveBeenCalledTimes(2)
+    // Checked once when downloaded and once again before each handoff.
+    expect(runtime.verifyPackageDigest).toHaveBeenCalledTimes(3)
+    expect(runtime.prepareInstallQuit).toHaveBeenCalledTimes(2)
+    service.dispose()
+  })
+
+  it('reports a handoff that did not get through with the message customers already know, and stays installable', async () => {
+    const runtime = windowsRuntime({ windowsInstallHandoff: vi.fn<Handoff>(async () => ({ kind: 'failed', reason: '安装脚本没有启动' })) })
+    const { service } = await downloaded(runtime)
+    clickInstall(service)
+    await vi.waitFor(() => expect(service.getState().error?.code).toBe('UPDATE_HANDOFF_FAILED'))
+    expect(service.getState()).toMatchObject({
+      phase: 'downloaded',
+      failedStep: 'install',
+      error: { message: expect.stringContaining('可能是 Windows 授权窗口被关闭'), detail: '安装脚本没有启动' },
+    })
+    expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+    expect(service.install()).toEqual({ accepted: true })
+    service.dispose()
+  })
+
+  it('says the app did not close once the script has stopped waiting for it', async () => {
+    const runtime = windowsRuntime({ windowsHandoffQuitTimeoutMs: 20 })
+    const { service } = await downloaded(runtime)
+    clickInstall(service)
+    // A real 20 ms timer: a loaded Windows runner can hold it well past waitFor's default second.
+    await vi.waitFor(() => expect(service.getState().error?.code).toBe(updateHandoffQuitTimeoutCode), { timeout: 10_000 })
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { message: updateInstallNotQuitMessage } })
+    expect(runtime.quitForInstall).toHaveBeenCalledOnce()
+    expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('hands nothing over once the app is shutting down while the package is being checked', async () => {
+    let finishCheck: (value: boolean) => void = () => undefined
+    const runtime = windowsRuntime()
+    const { service } = await downloaded(runtime)
+    runtime.verifyPackageDigest.mockImplementationOnce(() => new Promise<boolean>((resolve) => { finishCheck = resolve }))
+    clickInstall(service)
+    service.dispose()
+    finishCheck(true)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(runtime.windowsInstallHandoff).not.toHaveBeenCalled()
+    expect(runtime.quitForInstall).not.toHaveBeenCalled()
+  })
+
+  it('shows last run\'s installer failure for that version and still installs it on request', async () => {
+    const runtime = windowsRuntime({ previousAutoInstallFailure: () => updatePreviousInstallFailedMessage })
+    const { service } = await downloaded(runtime)
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { message: updatePreviousInstallFailedMessage } })
+    expect(service.install()).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(runtime.quitForInstall).toHaveBeenCalledOnce())
+    service.dispose()
+  })
+
+  it('leaves the macOS and the no-handoff Windows install on electron-updater', async () => {
+    const runtime = windowsRuntime({ windowsInstallHandoff: undefined })
+    const { client, service } = await downloaded(runtime)
+    clickInstall(service)
+    expect(client.quitAndInstall).toHaveBeenCalledWith(true, true)
+    service.dispose()
+    const macRuntime = windowsRuntime({ platform: 'darwin' })
+    const mac = await downloaded(macRuntime)
+    clickInstall(mac.service)
+    expect(mac.client.quitAndInstall).toHaveBeenCalledWith(true, true)
+    expect(macRuntime.windowsInstallHandoff).not.toHaveBeenCalled()
+    mac.service.dispose()
   })
 })

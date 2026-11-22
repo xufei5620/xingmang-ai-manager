@@ -13,6 +13,7 @@ import {
   resolveInstallableUpdateOnQuit,
   resolveInterruptibleInstallTask,
   waitForUpdateInstallFailure,
+  waitForWindowsUpdateHandoff,
   type ChatReplyQuitPrompt,
   type InterruptibleInstallTask,
   type QuitInterruptionConfirmation,
@@ -456,5 +457,60 @@ describe('waiting on the Mac installer at quit', () => {
     }
     await waitForUpdateInstallFailure(source)
     expect(listeners.size).toBe(0)
+  })
+})
+
+describe('waiting on the Windows install handoff at quit', () => {
+  function updates(initial: UpdateSnapshot = updateSnapshot()) {
+    const listeners = new Set<(snapshot: UpdateSnapshot) => void>()
+    return {
+      listeners,
+      getState: () => initial,
+      subscribe(listener: (snapshot: UpdateSnapshot) => void) {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      },
+      emit(snapshot: UpdateSnapshot) {
+        for (const listener of [...listeners]) listener(snapshot)
+      },
+    }
+  }
+
+  it('settles on a cancelled prompt or a handoff that failed, and stops listening', async () => {
+    for (const code of ['UPDATE_INSTALL_CANCELLED', 'UPDATE_HANDOFF_FAILED']) {
+      const source = updates()
+      let settled = false
+      const waiting = waitForWindowsUpdateHandoff(source).then(() => { settled = true })
+      source.emit(updateSnapshot())
+      await Promise.resolve()
+      expect(settled).toBe(false)
+      source.emit(updateSnapshot({ error: { code, message: '没装上' }, failedStep: 'install' }))
+      await waiting
+      expect(source.listeners.size).toBe(0)
+    }
+  })
+
+  it('settles when the package turned out to have changed, which sends it back to downloading', async () => {
+    const source = updates()
+    const waiting = waitForWindowsUpdateHandoff(source)
+    source.emit(updateSnapshot({ phase: 'error', error: { code: 'UPDATE_PACKAGE_CHANGED', message: '安装包变了' }, failedStep: 'download' }))
+    await waiting
+    expect(source.listeners.size).toBe(0)
+  })
+
+  it('settles at once when install() already failed before anyone listened', async () => {
+    const source = updates(updateSnapshot({ phase: 'error', error: { code: 'UPDATE_PACKAGE_PATH_MISSING', message: '找不到安装包' }, failedStep: 'download' }))
+    await waitForWindowsUpdateHandoff(source)
+    expect(source.listeners.size).toBe(0)
+  })
+
+  it('keeps waiting while the check is still running or has passed', async () => {
+    const source = updates()
+    let settled = false
+    void waitForWindowsUpdateHandoff(source).then(() => { settled = true })
+    source.emit(updateSnapshot({ phase: 'downloaded', error: null }))
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(source.listeners.size).toBe(1)
   })
 })

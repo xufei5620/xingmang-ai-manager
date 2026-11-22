@@ -5,6 +5,7 @@ import { redactSecretQueryParameters, redactSecretShapes } from './redaction-pat
 import type { RemoteFeatureId } from './remote-features'
 import { isOlderReleaseGuard, resolveFeaturesOffFor, resolveKnownIssuesFor, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type KnownIssue, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus, type ServiceSwitches } from './service-status'
 import type { UpdateSignatureVerdict } from './update-package-signature'
+import type { WindowsUpdateHandoffOutcome, WindowsUpdateHandoffPackage } from './windows-update-handoff'
 import { compareVersionsBy, parseUpdateVersion } from './versions'
 
 export type UpdatePhase =
@@ -373,6 +374,19 @@ export interface UpdaterRuntime {
   prepareInstallQuit?: () => Promise<void> | void
   /** The installer did not start after prepareInstallQuit: the app keeps running. */
   installQuitAborted?: () => void
+  /**
+   * Windows：把下载时核对过的那一份交给提权脚本（windows-update-handoff.ts，S01），不再走
+   * electron-updater 的 quitAndInstall。返回脚本核对的结果；verified 之后由 quitForInstall 退出，
+   * 安装程序等星芒退出了才开始装。不传＝旧行为。
+   */
+  windowsInstallHandoff?: (updatePackage: WindowsUpdateHandoffPackage) => Promise<WindowsUpdateHandoffOutcome>
+  /** 交接核对完以后把软件关掉。 */
+  quitForInstall?: () => void
+  /**
+   * 交接核对完以后等多久还没退出，就报「未能自动关闭」。要比脚本等星芒退出的上限长：报出来的那一刻
+   * 脚本已经放弃了这一次，客户再点「重新安装」不会有两份在装。不传＝95 秒。
+   */
+  windowsHandoffQuitTimeoutMs?: number
   macInstallHandoff?: MacInstallHandoff
   /**
    * Set for builds produced with XINGMANG_UNSIGNED_RELEASE=1. electron-updater
@@ -984,6 +998,15 @@ export const updateSignatureRejectedCode = 'UPDATE_SIGNATURE_REJECTED'
 /** 安装看门狗等不到安装器退出时报的错误代码：说的是「还没退」，不是「装不上」。 */
 export const updateInstallLaunchTimeoutCode = 'UPDATE_INSTALL_LAUNCH_TIMEOUT'
 
+// Windows 更新安装交接（S01）给客户看的几句，2026-11-22 逐字贴给 yoyo 确认（确认词「更新交接字改」）。
+export const updateHandoffQuitTimeoutCode = 'UPDATE_HANDOFF_QUIT_TIMEOUT'
+export const updateInstallCancelledMessage = '已取消安装。新版本已下载完成，可随时点击「重新安装」。'
+export const updatePackageChangedMessage = '安装包在安装前发生变化，为确保安全已停止安装。请点击「重新下载」。'
+export const updateInstallNotQuitMessage = '安装程序已准备就绪，但星芒未能自动关闭。请稍后点击「重新安装」重试。'
+export const updatePreviousInstallFailedMessage = '新版本上次未能安装完成。请点击「重新安装」重试；如仍失败，请联系客服。'
+const windowsInstallLaunchFailedMessage = '新版本安装失败：安装程序未能启动，可能是 Windows 授权窗口被关闭。请点击「重新安装」重试，授权窗口弹出时请点击「是」。'
+const updatePackageMissingMessage = '未找到已下载的安装包，可能已被清理软件删除。请点击「重新下载」重试。'
+
 const updateSignatureRejectedMessage = '新版本已下载，但未通过本机系统校验，无法自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'
 
 /** Squirrel.Mac 的原话是「Code signature at URL … did not pass validation: <系统给的原因>」，原因按系统语言走。 */
@@ -1101,6 +1124,8 @@ export function createUpdaterService(
   const retryWithoutProxy = runtime.retryWithoutProxy
   const restoreProxy = runtime.restoreProxy
   const installEnvironmentGuard = runtime.installEnvironmentGuard ?? ((launch) => launch())
+  const windowsInstallHandoff = platform === 'win32' ? runtime.windowsInstallHandoff : undefined
+  const windowsHandoffQuitTimeoutMs = runtime.windowsHandoffQuitTimeoutMs ?? 95_000
   const macInstallHandoff = platform === 'darwin' ? runtime.macInstallHandoff : undefined
   const unsignedChannel = runtime.unsignedChannel === true
   // An unsigned installer is never fetched behind the user's back unless the
@@ -1145,9 +1170,9 @@ export function createUpdaterService(
   // 状态文件定的最低版本、而本机低于它时的那个版本。快照里的 requiredVersion 由它和
   // 当前提议一起算（resolveGatedRequiredVersion），分批放量的豁免则只看它。
   let minimumRequired: string | null = null
-  // 下载后 SHA-512 核对通过的那个安装包。只有 'system-installer' 通道用它：安装包要原样
-  // 交给系统安装程序，而不是像 electron-updater 那样由它自己去找缓存里的文件。
-  let verifiedPackagePath: string | null = null
+  // 下载后 SHA-512（和发布者签名）核对通过的那个安装包，连同核对用的校验值。'system-installer' 通道
+  // 把它原样交给系统安装程序；Windows 的交接（S01）按这个校验值在安装前再核一次，并交给提权脚本去核。
+  let verifiedPackage: WindowsUpdateHandoffPackage | null = null
   // 正在下载的那一次的看门狗（见 downloadWatched）；没在下载时为 null。
   let downloadWatch: { observe(percent: number): void; stop(): void } | null = null
   // 正在等的那一次检查和盯着它的看门狗（见 checkWatched）；没在检查时为 null。
@@ -1276,7 +1301,7 @@ export function createUpdaterService(
 
   // 已经找到或下载好的版本刚被撤回：收回这个提议，界面回到「没有可装的更新」。
   const withdrawOffer = () => {
-    verifiedPackagePath = null
+    verifiedPackage = null
     emit({
       phase: 'idle',
       availableVersion: null,
@@ -1445,7 +1470,8 @@ export function createUpdaterService(
     void scheduledCheck().catch((error: unknown) => runtime.reportBackgroundError?.(error))
   }
 
-  const reportInstallFailure = (error: unknown) => {
+  // 已经是给客户看的那句（中文、带 code），原样上屏，detail 只进日志。
+  const failInstall = (error: { code: string; message: string; detail?: string }) => {
     clearInstallWatchdog()
     installRequested = false
     try { runtime.installQuitAborted?.() } catch { /* The failure below is what the user needs to see. */ }
@@ -1454,10 +1480,12 @@ export function createUpdaterService(
       // downloaded also makes the recovery action visible in the UI.
       phase: 'downloaded',
       progress: null,
-      error: safeError(error, platform),
+      error,
       failedStep: 'install',
     })
   }
+
+  const reportInstallFailure = (error: unknown) => failInstall(safeError(error, platform))
 
   const requestInstall = (): boolean => {
     if (development || disposed || installRequested) return false
@@ -1479,12 +1507,12 @@ export function createUpdaterService(
     return true
   }
 
-  const startInstallWatchdog = (message: string) => {
+  const startInstallWatchdog = (message: string, timeoutMs = installLaunchTimeoutMs, code = updateInstallLaunchTimeoutCode) => {
     installWatchdogTimer = setTimeout(() => {
       installWatchdogTimer = null
       if (!installRequested || disposed) return
-      reportInstallFailure({ code: updateInstallLaunchTimeoutCode, message })
-    }, installLaunchTimeoutMs)
+      failInstall({ code, message })
+    }, timeoutMs)
     installWatchdogTimer.unref?.()
   }
 
@@ -1494,14 +1522,11 @@ export function createUpdaterService(
   // handed to the desktop's own package installer instead, which owns the
   // password prompt and the privilege boundary; this process stays unprivileged.
   const launchSystemInstaller = (): boolean => {
-    const packagePath = verifiedPackagePath
+    const packagePath = verifiedPackage?.path ?? null
     // 安装包没了要重来的是下载：停在「已下载」只会让「重新安装」一遍遍撞同一堵墙。
     const packageMissing = () => {
       try { runtime.installQuitAborted?.() } catch { /* The rejection below is what the user needs to see. */ }
-      rejectDownloadedUpdate(
-        'UPDATE_PACKAGE_PATH_MISSING',
-        '未找到已下载的安装包，可能已被清理软件删除。请点击「重新下载」重试。',
-      )
+      rejectDownloadedUpdate('UPDATE_PACKAGE_PATH_MISSING', updatePackageMissingMessage)
     }
     if (!packagePath) {
       packageMissing()
@@ -1533,8 +1558,85 @@ export function createUpdaterService(
     return true
   }
 
+  // 交接没走下去、软件照常开着：放回退出前收起的东西。安装包要重下的由 rejectDownloadedUpdate 报。
+  const abortInstallQuit = () => {
+    installRequested = false
+    try { runtime.installQuitAborted?.() } catch { /* The rejection that follows is what the user needs to see. */ }
+  }
+
+  // Windows（S01）：先按下载时核对用的校验值在本进程里再核一次，对不上就回到重新下载、不弹授权窗口；
+  // 对得上再交给提权脚本，由它在只有管理员能改的位置复制、核对、执行。本进程这一次复核只是提前拦下，
+  // 把核对和执行绑在一起的是脚本。
+  const launchWindowsHandoff = (handoff: NonNullable<UpdaterRuntime['windowsInstallHandoff']>): boolean => {
+    const updatePackage = verifiedPackage
+    if (!updatePackage || !verifyPackageDigest) {
+      abortInstallQuit()
+      rejectDownloadedUpdate('UPDATE_PACKAGE_PATH_MISSING', updatePackageMissingMessage)
+      return false
+    }
+    // 等的这段时间里这一版被撤回、被顶掉，或者安装请求已经被别处收尾：不再往下交。
+    const superseded = () => disposed || !installRequested || verifiedPackage !== updatePackage
+    void (async () => {
+      let unchanged: boolean
+      try {
+        unchanged = await verifyPackageDigest(updatePackage.path, updatePackage.sha512)
+      } catch (error) {
+        if (superseded()) {
+          if (!disposed && installRequested) abortInstallQuit()
+          return
+        }
+        abortInstallQuit()
+        if ((error as { code?: unknown } | null)?.code === 'ENOENT') {
+          rejectDownloadedUpdate('UPDATE_PACKAGE_PATH_MISSING', updatePackageMissingMessage)
+        } else {
+          rejectDownloadedUpdate('UPDATE_PACKAGE_CHANGED', updatePackageChangedMessage, `安装前复核没有完成：${digestFailureDetail(error)}`)
+        }
+        return
+      }
+      if (superseded()) {
+        if (!disposed && installRequested) abortInstallQuit()
+        return
+      }
+      if (!unchanged) {
+        abortInstallQuit()
+        rejectDownloadedUpdate('UPDATE_PACKAGE_CHANGED', updatePackageChangedMessage, '安装前复核时安装包与下载时核对的 SHA-512 不一致')
+        return
+      }
+      let outcome: WindowsUpdateHandoffOutcome
+      try {
+        outcome = await handoff({ ...updatePackage })
+      } catch (error) {
+        outcome = { kind: 'failed', reason: digestFailureDetail(error) }
+      }
+      if (disposed || !installRequested) return
+      if (outcome.kind === 'verified') {
+        // 跟「安装器迟迟没接手」的超时不是一个码：报出这句时脚本已经放弃了这一次，之后不会再装。
+        startInstallWatchdog(updateInstallNotQuitMessage, windowsHandoffQuitTimeoutMs, updateHandoffQuitTimeoutCode)
+        try {
+          runtime.quitForInstall?.()
+        } catch (error) {
+          reportInstallFailure(error)
+        }
+        return
+      }
+      if (outcome.kind === 'mismatch') {
+        abortInstallQuit()
+        rejectDownloadedUpdate('UPDATE_PACKAGE_CHANGED', updatePackageChangedMessage, '提权后核对时安装包与下载时核对的 SHA-512 不一致')
+        return
+      }
+      // 取消和失败都留着这一份：再点「重新安装」从头再核、再交一次。
+      if (outcome.kind === 'cancelled') {
+        failInstall({ code: 'UPDATE_INSTALL_CANCELLED', message: updateInstallCancelledMessage })
+        return
+      }
+      failInstall({ code: 'UPDATE_HANDOFF_FAILED', message: windowsInstallLaunchFailedMessage, detail: outcome.reason.slice(0, 500) })
+    })()
+    return true
+  }
+
   const launchInstaller = (): boolean => {
     if (systemInstaller) return launchSystemInstaller()
+    if (windowsInstallHandoff) return launchWindowsHandoff(windowsInstallHandoff)
     try {
       installEnvironmentGuard(() => {
         if (macInstallHandoffRegistered && macInstallHandoff) {
@@ -1558,7 +1660,7 @@ export function createUpdaterService(
       return false
     }
     startInstallWatchdog(platform === 'win32'
-      ? '新版本安装失败：安装程序未能启动，可能是 Windows 授权窗口被关闭。请点击「重新安装」重试，授权窗口弹出时请点击「是」。'
+      ? windowsInstallLaunchFailedMessage
       : '新版本安装失败：安装程序未能启动。请点击「重新安装」重试。')
     return true
   }
@@ -1585,7 +1687,7 @@ export function createUpdaterService(
   const rejectDownloadedUpdate = (code: string, message: string, detail?: string) => {
     clearInstallWatchdog()
     installRequested = false
-    verifiedPackagePath = null
+    verifiedPackage = null
     // 核对不过不是网络的事，排着的补试也不再跑：同一次运行里再下多半拿回的还是这一份。
     clearDownloadRetry()
     emit({
@@ -1658,7 +1760,12 @@ export function createUpdaterService(
         return
       }
     }
-    verifiedPackagePath = downloadedFile
+    verifiedPackage = {
+      path: downloadedFile,
+      sha512: expected,
+      size: resolveDownloadedPackageBytes(manifest, downloadedFile),
+      version: String(event.version ?? ''),
+    }
     acceptDownloadedUpdate(event)
   }
 
@@ -1686,7 +1793,7 @@ export function createUpdaterService(
           return
         }
         const replaced = snapshot.availableVersion
-        verifiedPackagePath = null
+        verifiedPackage = null
         try {
           runtime.downloadedSuperseded?.(replaced, info.version)
         } catch {
@@ -2217,7 +2324,7 @@ export function createUpdaterService(
       }
     }
     progressSamples = []
-    verifiedPackagePath = null
+    verifiedPackage = null
     downloadedPackageBytes = null
     const startedAt = Date.now()
     const receivedAtStart = readReceivedBytes()

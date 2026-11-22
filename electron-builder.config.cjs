@@ -456,6 +456,10 @@ module.exports = {
     // only reached while electron-updater performs its own signature check.
     verifyUpdateCodeSignature: true,
     target: [{ target: 'nsis', arch: ['x64'] }],
+    // 星芒自己的更新由这份脚本以管理员身份复制、核对、安装（S01，electron/windows-update-handoff.ts）。
+    // 放在安装目录的 resources 里，跟 elevate.exe 一样只有管理员能改；少了它更新装不上，
+    // electron-builder 不报错，靠出包后的 verify-packaged-hardening.cjs 拦。
+    extraResources: [{ from: 'build/update-handoff', to: 'update-handoff', filter: ['verified-install.ps1'] }],
     icon: 'assets/brand/v3/favicon.ico',
     legalTrademarks: '星芒AI',
     artifactName: 'XingMang-AI-Manager-${version}-Setup.${ext}',

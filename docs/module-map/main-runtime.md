@@ -105,6 +105,7 @@
 
 ## 更新与发布
 - `updater.ts` — **星芒自身更新的服务层**（包 electron-updater）：更新快照状态机（按检查/下载/安装哪一步失败说话）、强制最低版本与放量/撤回闸门、回退下限版本、下载前磁盘预检与停滞看门狗、改直连重试、失败原因中文化、Linux deb 交系统安装器；`UpdateSnapshot` 经 `ipc-contract.ts` 进渲染层，所以这里不许依赖 node:fs（T9）
+- `windows-update-handoff.ts` — Windows 正式版安装更新时的交接（审查总表 S01）：不再走 electron-updater 的 `quitAndInstall`，由 `resources\\elevate.exe` 以管理员身份起系统 PowerShell 跑 `resources\\update-handoff\\verified-install.ps1`（源文件 `build/update-handoff/`，`win.extraResources` 打包，`verify-packaged-hardening.cjs` 核对与仓库一致），把下载时核对用的 SHA-512 交过去，由脚本自己复制、核对、执行；本模块只拼命令（每个值单独一个参数，I1）、按交接编号读脚本写在 Windows Temp 下的状态（只当提示）、记下这次交接供下次打开时认出「安装程序报了失败」。脚本真跑一遍在 Windows 打包作业的 `e2e/windows-update-handoff-smoke.mjs`
 - `update-package-signature.ts` — Windows 安装包没有 Authenticode，`latest.yml` 又和安装包同桶，拿到桶上传凭据就能连 SHA-512 一起换；所以每个清单条目再带发布者 Ed25519 签名（版本号也进签名，防旧包冒充新版），公钥钉在本文件、私钥只在 GitHub `release` 环境；发布脚本按两个标记读这张公钥表。只在未签名通道的 Windows 上启用（Linux deb 清单还没签）
 - `update-signature.ts` — Windows 上替换 electron-updater 的签名校验：用固定路径的 PowerShell（I14）和 `trustedCommandEnvironment`（I2）严格比对 Authenticode 发布者 DN，只靠 CN 对上时记警告；`main.ts` 只在 win32 安装
 - `update-package-digest.ts` — 下载完的更新包重算 SHA-512 与清单比对（base64 / hex 都认），同一个文件描述符读完、限大小；任何没法比对的情况都抛错，绝不把没验过的当成验过
