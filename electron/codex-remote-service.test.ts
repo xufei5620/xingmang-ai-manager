@@ -3119,6 +3119,47 @@ describe('codex-remote-service folders', () => {
     expect(channel.texts()[0]).toBe('已收到，Codex 开始处理。')
   })
 
+  // M07：电脑上「用这个」写设置的那一会儿手机上发来一句。原来这一轮在旧文件夹开了对话，写完对话编号被清掉，
+  // 这一轮结束的消息找不到人，卡在「正在处理」。
+  it('starts a phone message that arrives while the computer is switching folders in the new folder, and finishes it', async () => {
+    const s = await setup()
+    const blog = folder(s, 'blog')
+    await s.service.addWorkspace(blog)
+    const channel = await enabledAndPaired(s)
+    const update = s.store.updateSettings.bind(s.store)
+    let reached!: () => void
+    const atSwitchWrite = new Promise<void>((resolve) => { reached = resolve })
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    let messageSaved!: () => void
+    const messageIdWritten = new Promise<void>((resolve) => { messageSaved = resolve })
+    let calls = 0
+    vi.spyOn(s.store, 'updateSettings').mockImplementation(async (mutate) => {
+      calls += 1
+      if (calls === 1) {
+        reached()
+        await held
+        return update(mutate)
+      }
+      const saved = await update(mutate)
+      messageSaved()
+      return saved
+    })
+    const switching = s.service.useWorkspace(shown('blog'))
+    await atSwitchWrite
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await messageIdWritten
+    // Let the message go as far as it gets while the folder is still being switched.
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+    release()
+    await switching
+    const codex = await turnStarted(s, 1)
+    expect(codex.requests('thread/start')[0]).toMatchObject({ params: { cwd: blog } })
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+  })
+
   it('does not switch folders while a turn is still going, and says so when the folder is gone', async () => {
     const s = await setup()
     const blog = folder(s, 'blog')
