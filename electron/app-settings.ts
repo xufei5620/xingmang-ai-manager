@@ -153,6 +153,12 @@ export interface AppSettings {
    */
   claudeHidesCommitAttribution?: boolean
   /**
+   * 设置里「给 AI 的长期嘱咐」（总单 Q4 C5）：上次保存的那段话，写进三家工具全局说明里星芒那一段
+   * （standing-instructions.ts）。缺省 = 没写过。只经 config:save-standing-instructions 改（它同时写那三份文件），
+   * settings:save 不收这一项。
+   */
+  standingInstructions?: string
+  /**
    * 切回官方账号时问过客户「要不要让官方 Claude Code 先问再执行？」（Fable 复查第一轮 3）。只问一次，点哪个都算问过，
    * 只落 true。只经 config:answer-claude-command-confirmation 记，settings:save 不收这一项。
    */
@@ -280,6 +286,8 @@ export interface AppSettingsUpdate {
   alwaysInstallLatestCli?: boolean
   claudeWritesInsideProject?: boolean
   claudeHidesCommitAttribution?: boolean
+  /** '' 清空。只由 config:save-standing-instructions 带，settings:save 的解析不收。 */
+  standingInstructions?: string
   /** true is sticky and false is ignored, like trayHintShown. */
   claudeCommandConfirmationAnswered?: boolean
   crashReporting?: boolean
@@ -476,6 +484,15 @@ function parseRelayModelsBeforeOfficial(value: unknown): Partial<Record<Provider
   return models
 }
 
+// 手改坏了的（不是字符串、太长）当没写过：设置页那一格空着，三家文件里那一段原样留着，下次保存再换。
+// 上限跟 standing-instructions.ts 的 STANDING_INSTRUCTIONS_MAX_LENGTH 一样；这里不 import 它，免得设置文件
+// 的读写拖上配置写入那一串模块。
+function parseStandingInstructions(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  return text && [...text].length <= 2000 ? text : undefined
+}
+
 function parseSeededToolDefaults(value: unknown): SeededToolDefault[] {
   if (!Array.isArray(value)) return []
   return seededToolDefaultIds.filter((entry) => value.includes(entry))
@@ -529,6 +546,7 @@ function parseSettingsValue(value: unknown): AppSettings {
   const offeredModelUpgrades = parseOfferedModelUpgrades(value.offeredModelUpgrades)
   const seededToolDefaults = parseSeededToolDefaults(value.seededToolDefaults)
   const relayModelsBeforeOfficial = parseRelayModelsBeforeOfficial(value.relayModelsBeforeOfficial)
+  const standingInstructions = parseStandingInstructions(value.standingInstructions)
   const workspaceChosenAt = parseWorkspaceChosenAt(value.workspaceChosenAt)
   return {
     version: 2,
@@ -551,6 +569,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(optionalBoolean(value.alwaysInstallLatestCli, false) ? { alwaysInstallLatestCli: true as const } : {}),
     ...(optionalBoolean(value.claudeWritesInsideProject, false) ? { claudeWritesInsideProject: true as const } : {}),
     ...(optionalBoolean(value.claudeHidesCommitAttribution, false) ? { claudeHidesCommitAttribution: true as const } : {}),
+    ...(standingInstructions ? { standingInstructions } : {}),
     ...(value.claudeCommandConfirmationAnswered === true ? { claudeCommandConfirmationAnswered: true as const } : {}),
     // Only the explicit opt-out survives a round trip; anything else (absent,
     // true, a hand-edited string) reads back as "reporting on".
@@ -752,6 +771,9 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     : update.alwaysInstallLatestCli
   const claudeWritesInsideProject = update.claudeWritesInsideProject ?? base.claudeWritesInsideProject
   const claudeHidesCommitAttribution = update.claudeHidesCommitAttribution ?? base.claudeHidesCommitAttribution
+  const standingInstructions = update.standingInstructions === undefined
+    ? base.standingInstructions
+    : parseStandingInstructions(update.standingInstructions)
   const crashReporting = update.crashReporting ?? base.crashReporting
   // Both sides are re-parsed, unlike the fields above which trust the base:
   // this one decides whether Codex starts with a local debugging port, so an
@@ -796,6 +818,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
     ...(claudeWritesInsideProject === true ? { claudeWritesInsideProject: true as const } : {}),
     ...(claudeHidesCommitAttribution === true ? { claudeHidesCommitAttribution: true as const } : {}),
+    ...(standingInstructions ? { standingInstructions } : {}),
     ...(update.claudeCommandConfirmationAnswered === true || base.claudeCommandConfirmationAnswered === true ? { claudeCommandConfirmationAnswered: true as const } : {}),
     ...(crashReporting === false ? { crashReporting: false as const } : {}),
     ...(update.crashReportingNoticeShown === true || base.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),

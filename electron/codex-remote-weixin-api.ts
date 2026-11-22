@@ -142,6 +142,11 @@ export interface WeixinUpdates {
   nextLongPollMs: number
   /** 这次回应里 Date 头的时间（毫秒），拿来估电脑上的时间准不准；没有或等超时了不填。 */
   serverTime?: number
+  /**
+   * 本机等到超时也没等来回音，这一批是空的不是因为微信说没消息（M10）。网断成请求一直不回的样子时就是这样，
+   * 不能拿它当连上了的证据。
+   */
+  timedOut?: true
 }
 
 /**
@@ -511,7 +516,7 @@ export async function fetchWeixinUpdates(
     })
   } catch (error) {
     if (error instanceof RemoteHttpError && error.reason === 'timeout') {
-      return { messages: [], cursor, nextLongPollMs: longPollMs }
+      return { messages: [], cursor, nextLongPollMs: longPollMs, timedOut: true }
     }
     throw error
   }

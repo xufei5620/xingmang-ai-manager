@@ -1,10 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RemoteChannelDependencies, RemoteChannelStatus, RemoteInbound } from './codex-remote-channel'
 import { createWeixinRemoteChannel, nextWeixinBackoffMs, toWeixinRemoteInbound } from './codex-remote-weixin'
 import type { WeixinInboundMessage } from './codex-remote-weixin-api'
 import { encodeWeixinCredential } from './codex-remote-weixin-credential'
 
 const owner = 'owner@im.wechat'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 function credentialText(ownerUserId: string | null = owner): string {
   return encodeWeixinCredential({ version: 1, token: 'tok', botId: 'b1@im.bot', origin: 'https://ilinkai.weixin.qq.com', ownerUserId })
@@ -264,6 +268,49 @@ describe('createWeixinRemoteChannel', () => {
     expect(statuses[1].message).toBe('连不上微信，正在重试')
     // 还在自己重试，不算停下（YKS-12）：防睡照样挡着，网络回来了才连得回去。
     expect(statuses[1].halted).toBeUndefined()
+    await channel.stop()
+  })
+
+  // M10：网断成请求一直不回的样子时，长轮询只是在本机等到超时，从没收到过微信的回应，卡片也不能变绿。
+  it('does not show connected while every long poll only times out locally, and recovers on a real answer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let pollCount = 0
+    const { dependencies, logs } = harness(credentialText(), (url) => {
+      if (url.includes('/msg/notify')) return jsonResponse({ ret: 0 })
+      pollCount += 1
+      return pollCount === 3 ? jsonResponse({ ret: 0, msgs: [] }) : blockUntilAborted()
+    })
+    const statuses: RemoteChannelStatus[] = []
+    const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test' })
+    await channel.start({ onInbound: () => undefined, onStatus: (status) => statuses.push(status) })
+    await vi.waitFor(() => expect(pollCount).toBe(1))
+    // The first poll waits 35 s plus 10 s of grace before giving up locally.
+    await vi.advanceTimersByTimeAsync(45_000)
+    await vi.waitFor(() => expect(pollCount).toBe(2))
+    expect(statuses.map((status) => status.state)).toEqual(['connecting'])
+    await vi.advanceTimersByTimeAsync(45_000)
+    await vi.waitFor(() => expect(pollCount).toBe(4))
+    expect(statuses).toEqual([{ state: 'connecting' }, { state: 'error', message: '连不上微信，正在重试' }, { state: 'connected' }])
+    expect(logs.filter((event) => event === 'weixin-poll-timeout')).toHaveLength(2)
+    await channel.stop()
+  })
+
+  it('keeps the error it reported when the next long poll only times out locally', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let pollCount = 0
+    const { dependencies } = harness(credentialText(), (url) => {
+      if (url.includes('/msg/notify')) return jsonResponse({ ret: 0 })
+      pollCount += 1
+      if (pollCount === 1) throw new TypeError('fetch failed')
+      return blockUntilAborted()
+    })
+    const statuses: RemoteChannelStatus[] = []
+    const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test', sleep: async () => undefined })
+    await channel.start({ onInbound: () => undefined, onStatus: (status) => statuses.push(status) })
+    await vi.waitFor(() => expect(pollCount).toBe(2))
+    await vi.advanceTimersByTimeAsync(45_000)
+    await vi.waitFor(() => expect(pollCount).toBe(3))
+    expect(statuses.map((status) => status.state)).toEqual(['connecting', 'error'])
     await channel.stop()
   })
 

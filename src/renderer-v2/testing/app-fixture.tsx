@@ -489,6 +489,16 @@ const methods = {
     settings = { ...settings, claudeHidesCommitAttribution: hidden }
     return { enabled: hidden, applied: 'written' as const }
   },
+  // ?standingMissed=grok：那一家的说明文件里星芒那一段的标记被改坏了，这次没写；?standingMissed=all 三家都没写上。
+  saveStandingInstructions: async (text: string) => {
+    const missed = query.get('standingMissed')
+    const instructions = text.replace(/\r\n?/g, '\n').trim()
+    const tools = (['claude', 'codex', 'grok'] as const).map((provider) => missed === 'all' || missed === provider
+      ? { provider, outcome: 'skipped' as const, reason: '文件中由星芒维护的段落标记已被修改，为避免改动您自行编写的内容，本次未写入。' }
+      : { provider, outcome: instructions ? 'written' as const : 'removed' as const })
+    if (missed !== 'all') settings = { ...settings, standingInstructions: instructions || undefined }
+    return { text: settings.standingInstructions ?? '', tools }
+  },
   getPlatformCapabilities: async () => capabilities,
   // 「插件」页（0.2.25）一进来就三家一起读，装了 Codex 就另读它的登录状态和市场；默认什么都没有，要内容的用例自己换。
   listMcpServers: async () => [],
