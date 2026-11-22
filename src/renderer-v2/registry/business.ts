@@ -504,7 +504,7 @@ export const settingsItems: readonly SettingsItem[] = [
   })),
   { id: 'backups', group: 'backup', label: '工具配置备份', keywords: ['备份', '恢复', '还原', '找回配置', '立即备份'], card: true },
   // 没登录时只能导设置，那一行写「导出设置」（页面上换）；这里的标题给顶部搜索用。
-  { id: 'transfer', group: 'backup', section: 'transfer', label: '导出设置和聊天记录', keywords: ['导出', '换电脑', '新电脑', '迁移', '聊天记录', '搬到新电脑'] },
+  { id: 'transfer', group: 'backup', section: 'transfer', label: '导出设置和聊天记录', keywords: ['导出', '换电脑', '新电脑', '迁移', '聊天记录', '搬到新电脑', '作品', '视频'] },
   { id: 'transfer-import', group: 'backup', section: 'transfer', label: '从文件导入', keywords: ['导入', '换电脑', '新电脑', '迁移', '搬到新电脑'] },
   // 星芒自己占了多少地方、能清哪些（决定单 D100，「空间页改」）。「C盘满了」是批过的「C 盘满了」不带空格的写法：
   // 搜索按空格拆词，客户多半不打那个空格。

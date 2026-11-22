@@ -94,6 +94,7 @@ import { registerAiChatHandlers } from './ipc/handlers/ai-chat'
 import { registerAiLibraryHandlers } from './ipc/handlers/ai-library'
 import { registerAiVideoHandlers } from './ipc/handlers/ai-video'
 import { registerDataTransferHandlers } from './ipc/handlers/data-transfer'
+import type { AccountWorksTransfer } from './data-transfer-works'
 import { registerCodexRemoteHandlers } from './ipc/handlers/codex-remote'
 import { registerCodexRemoteWeixinHandlers } from './ipc/handlers/codex-remote-weixin'
 
@@ -308,6 +309,8 @@ export interface IpcRegistrationOptions {
   mediaAssets?: Pick<AiMediaAssetService, 'listOwnedLibrary'>
   // 视频剪辑的配乐：客户选的歌存进这个作品库的音频那一格，拼片时再按编号读回来。
   audioAssets?: Pick<AiAudioAssetStore, 'storeLocalFile' | 'readOwned'>
+  // 「搬到新电脑」带上当前账号作品库里的作品（「搬作品改」）：量多大、导出、导入都在它里面，路径不出主进程。
+  worksTransfer?: AccountWorksTransfer
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
   // Bundled 星芒AI skill: login copies the template into user skill roots and
   // writes the image-group key into config.json. Optional so existing IPC

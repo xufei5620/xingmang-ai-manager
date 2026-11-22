@@ -12034,6 +12034,41 @@ test('a second import brings over what the old computer said after the first one
   } finally { await page.close() }
 })
 
+// 「搬作品改」（yoyo 2026-11-22）：作品库里有作品时，导出前先问带不带；导入时作品跟着对话一起进来。
+test('moving to a new computer asks whether to bring the works, and brings them in on import', async () => {
+  const page = await open('chatImport&transferWorks')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    const exportCalls = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'exportAppData').map((entry) => entry.args[0].includeWorks ?? false))
+    const ask = page.getByRole('dialog', { name: '是否同时导出作品？', exact: true })
+
+    await settings.getByTestId('settings-transfer-export').click()
+    await ask.waitFor()
+    await expect(ask.getByTestId('settings-transfer-works-summary')).toHaveText('当前账号的作品库中共有 128 件作品（图片 96 张、视频片段与成片 30 个、配乐 2 首），约 3.2 GB。')
+    await expect(ask).toContainText('选择「导出全部」时，将在所选位置新建一个文件夹，存放聊天记录、设置和作品。作品较多时需要几分钟，导出期间请勿关闭星芒。')
+    assert.deepEqual(await ask.locator('button[data-testid^="settings-transfer-works-"]').allInnerTexts(), ['取消', '仅导出聊天记录和设置', '导出全部'])
+    await ask.getByTestId('settings-transfer-works-cancel').click()
+    await ask.waitFor({ state: 'detached' })
+    assert.deepEqual(await exportCalls(), [])
+
+    await settings.getByTestId('settings-transfer-export').click()
+    await ask.getByTestId('settings-transfer-works-skip').click()
+    await settings.getByText('已保存「星芒聊天记录与设置-2026-11-22.json」，包含设置。复制到新电脑后，请在此点击「导入」。', { exact: true }).waitFor()
+    assert.deepEqual(await exportCalls(), [false])
+
+    await settings.getByTestId('settings-transfer-export').click()
+    await ask.getByTestId('settings-transfer-works-include').click()
+    await settings.getByText('已保存至「星芒数据导出-2026-11-22」文件夹，包含 128 件作品及设置。请将整个文件夹复制到新电脑，在此点击「导入」并选择其中的「星芒聊天记录与设置」文件。', { exact: true }).waitFor()
+    assert.deepEqual(await exportCalls(), [false, true])
+
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '已导入 1 个对话。已导入 120 件作品，另有 8 件已存在于本机。')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'importAppWorks').map((entry) => entry.args)), [['fixture-works-token']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // D41：聊天页藏在设置页后面照样收回复。以前「导入」一点就把聊天页卸下，正在回复的那条被掐断，页面上什么也不说。
 test('importing while the chat is still replying waits for the reply instead of cutting it off', async () => {
   const page = await open('chatImport')

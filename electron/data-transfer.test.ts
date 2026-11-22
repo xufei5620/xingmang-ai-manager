@@ -6,6 +6,7 @@ import {
   conversationFileName,
   dataTransferBusyMessage,
   dataTransferFileName,
+  dataTransferFolderName,
   dataTransferInvalidMessage,
   dataTransferReadFailureMessage,
   MAX_DATA_TRANSFER_BYTES,
@@ -105,7 +106,7 @@ describe('data transfer file', () => {
   })
 
   it('validates the export request from the renderer', () => {
-    expect(parseDataTransferExportInput({ conversations: [{ id: 'a' }] })).toEqual({ conversations: [{ id: 'a' }], phrases: [] })
+    expect(parseDataTransferExportInput({ conversations: [{ id: 'a' }] })).toEqual({ conversations: [{ id: 'a' }], phrases: [], videoProjects: [] })
     expect(() => parseDataTransferExportInput(null)).toThrow()
     expect(() => parseDataTransferExportInput({ conversations: [1] })).toThrow()
     expect(parseDataTransferExportInput({ conversations: Array.from({ length: 200 }, () => ({})) }).conversations).toHaveLength(200)
@@ -158,6 +159,39 @@ describe('data transfer file', () => {
     expect(() => parseDataTransferExportInput({ conversations: [], phrases: 'x' })).toThrow('导出的常用的话格式无效')
     expect(() => parseDataTransferExportInput({ conversations: [], phrases: [1] })).toThrow('导出的常用的话格式无效')
     expect(() => parseDataTransferExportInput({ conversations: [], phrases: Array.from({ length: 31 }, () => 'x') })).toThrow('导出的常用的话格式无效')
+  })
+})
+
+describe('creation in the data transfer file', () => {
+  const video = { key: 'film-1', content: '{"version":1}' }
+  const works = { images: 96, videos: 30, audios: 2, bytes: 3_400_000_000 }
+
+  it('carries the videos and the works count, and leaves both out when there are none', () => {
+    const raw = buildDataTransferFile(settings(), { conversations: [], videoProjects: [video] }, new Date(), undefined, works)
+    expect(JSON.parse(raw).works).toEqual({ folder: '作品', ...works })
+    expect(parseDataTransferFile(raw)).toMatchObject({ videoProjects: [video], works })
+    const plain = buildDataTransferFile(settings(), { conversations: [], videoProjects: [] }, new Date())
+    expect(JSON.parse(plain)).not.toHaveProperty('videoProjects')
+    expect(JSON.parse(plain)).not.toHaveProperty('works')
+    expect(parseDataTransferFile(plain)).toMatchObject({ videoProjects: [] })
+    expect(parseDataTransferFile(plain)).not.toHaveProperty('works')
+  })
+
+  it('rejects the whole file when a video or the works count is off', () => {
+    const valid = JSON.parse(buildDataTransferFile(settings(), { conversations: [] }, new Date()))
+    for (const videoProjects of [{}, [1], [{ key: '../escape', content: '' }], [{ key: 'a', content: 1 }], [video, video], Array.from({ length: 201 }, (_, index) => ({ key: `v${index}`, content: '' }))]) {
+      expect(() => parseDataTransferFile(JSON.stringify({ ...valid, videoProjects }))).toThrow(dataTransferInvalidMessage)
+    }
+    for (const bad of [null, { ...works }, { folder: '../作品', ...works }, { folder: '作品', ...works, images: -1 }, { folder: '作品', ...works, bytes: 1.5 }, { folder: '作品', ...works, videos: '30' }]) {
+      expect(() => parseDataTransferFile(JSON.stringify({ ...valid, works: bad }))).toThrow(dataTransferInvalidMessage)
+    }
+  })
+
+  it('validates the videos and the works choice in the export request from the renderer', () => {
+    expect(parseDataTransferExportInput({ conversations: [], videoProjects: [video], includeWorks: true })).toEqual({ conversations: [], phrases: [], videoProjects: [video], includeWorks: true })
+    expect(parseDataTransferExportInput({ conversations: [], includeWorks: false })).not.toHaveProperty('includeWorks')
+    expect(() => parseDataTransferExportInput({ conversations: [], includeWorks: 'yes' })).toThrow('导出请求格式无效')
+    expect(() => parseDataTransferExportInput({ conversations: [], videoProjects: [{ key: 'a/b', content: '' }] })).toThrow('导出的视频格式无效')
   })
 })
 
@@ -234,6 +268,10 @@ describe('planPortableSettingsImport', () => {
 describe('export file names', () => {
   it('dates the transfer file', () => {
     expect(dataTransferFileName(new Date(2026, 8, 5))).toBe('星芒聊天记录与设置-2026-09-05.json')
+  })
+
+  it('dates the folder an export with works goes into', () => {
+    expect(dataTransferFolderName(new Date(2026, 10, 22))).toBe('星芒数据导出-2026-11-22')
   })
 
   it('keeps conversation titles from naming another directory', () => {

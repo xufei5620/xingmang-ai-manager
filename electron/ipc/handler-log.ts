@@ -40,6 +40,8 @@ export function ipcSuccessMessage(channel: IpcInvokeChannel, args: unknown[], re
   }
   if ((channel === 'chat-history:export-text' || channel === 'data-transfer:export') && result === null) return '已取消导出'
   if (channel === 'data-transfer:import' && result === null) return '已取消导入'
+  if (channel === 'data-transfer:inspect-works' && result === null) return '未登录，未统计作品'
+  if (channel === 'data-transfer:import-works' && isRecord(result) && result.status === 'no-space') return '本机空间不足，作品未导入'
   if (channel === 'video:save-as' && isRecord(result) && result.saved === false) return '已取消另存视频'
   // 写「接回完成」会让客服以为片段挂回去了；null 是主进程那边没有这一单（没交出去、服务端说失败了）。
   if (channel === 'video:resume' && result === null) return '没有要接回的视频片段'
@@ -108,6 +110,23 @@ export function ipcLogDetail(channel: string, args: unknown[], result: unknown, 
     if (isRecord(result)) {
       detail.freedBytes = result.freedBytes
       detail.kept = result.kept
+    }
+  }
+  // 「搬到新电脑」带作品：几件、多大，导入时新增、已有、失败各几件。只有数，没有路径和作品名（I13）。
+  if (channel === 'data-transfer:inspect-works' && isRecord(result)) {
+    detail.images = result.images
+    detail.videos = result.videos
+    detail.audios = result.audios
+    detail.bytes = result.bytes
+  }
+  if (channel === 'data-transfer:export' && isRecord(result)) {
+    detail.conversations = result.conversations
+    detail.videoProjects = result.videoProjects
+    if (isRecord(result.works)) detail.works = result.works.count
+  }
+  if (channel === 'data-transfer:import-works' && isRecord(result)) {
+    for (const key of ['status', 'added', 'existing', 'failed', 'neededBytes', 'availableBytes']) {
+      if (result[key] !== undefined) detail[key] = result[key]
     }
   }
   // 「装上了但连不上」是这一页最常见的工单。日志里只留条数，原因文本来自 CLI

@@ -197,6 +197,17 @@ function parseItems(value: unknown[], version: ItemVersion): AiAssetMetadataItem
 }
 
 /**
+ * Records brought over from another computer with its works (「搬到新电脑」).
+ * They pass the same field checks as this store's own files; the recycle-bin
+ * mark is dropped because only works outside the bin are exported, and a
+ * record must never put an imported work straight into the bin.
+ */
+export function parseTransferredAiAssetMetadataItems(value: unknown): AiAssetMetadataItem[] {
+  if (!Array.isArray(value)) throw new Error('AI 素材元数据格式错误')
+  return parseItems(value, STORE_VERSION).map(({ deletedAt: _deletedAt, ...item }) => item)
+}
+
+/**
  * Reads either layout: a single-file state from before 0.2.24 (versions 1 to
  * 4) or one shard. When `shard` is given only that shard is accepted. A record
  * filed under the wrong shard is refused rather than moved, so it can never sit
@@ -496,6 +507,35 @@ export class AiAssetMetadataStore {
       if (incoming.length === 0) return
       const failure = await this.mergeIntoShards(userId, incoming)
       if (failure !== null) throw failure
+    })
+  }
+
+  /**
+   * Adds the records of works brought over from another computer, but only for
+   * works this account has no record of yet: a name, tag or favorite already
+   * set here is never replaced by the other computer's (「搬作品改」：同名不覆盖).
+   * Every shard is tried; the first failure is thrown after. Returns how many
+   * records were added.
+   */
+  importMissing(userId: number, incoming: readonly AiAssetMetadataItem[]): Promise<number> {
+    return this.run(userId, async (pending) => {
+      let added = 0
+      let failure: unknown = null
+      const known = new Set(pending.map((item) => item.assetId))
+      for (const [shard, records] of groupByShard(incoming)) {
+        try {
+          const items = await this.readShard(userId, shard)
+          const here = new Set(items.map((item) => item.assetId))
+          const missing = records.filter((item) => !here.has(item.assetId) && !known.has(item.assetId))
+          if (!missing.length) continue
+          await this.writeShard(userId, shard, [...items, ...missing.map((item) => structuredClone(item))], 'grow')
+          added += missing.length
+        } catch (error) {
+          failure ??= error
+        }
+      }
+      if (failure !== null) throw failure
+      return added
     })
   }
 
