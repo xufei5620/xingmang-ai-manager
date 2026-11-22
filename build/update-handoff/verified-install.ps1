@@ -1,8 +1,16 @@
-# Update install handoff for the Windows client (audit item S01). Started elevated by
-# electron/windows-update-handoff.ts through elevate.exe, and shipped in the install
+# Update install handoff for the Windows client (audit item S01). Shipped in the install
 # directory's resources\update-handoff, which only administrators can change
 # (build/installer.nsh). Keep this file ASCII: Windows PowerShell 5.1 reads a script
 # without a byte order mark in the system code page.
+#
+# electron/windows-update-handoff.ts starts it twice over. First unelevated with
+# -Relaunch, from the system PowerShell and the trimmed environment: it checks its
+# arguments and asks Windows to run this same file elevated with the same values, then
+# exits 0 once that process exists, 1223 when the consent prompt was declined. Then that
+# elevated copy does the work. The app does not go through resources\elevate.exe, the
+# helper electron-builder ships: on the CI runner it rejoined its arguments with plain
+# spaces, so every path with a space (the install directory has one) fell apart, and it
+# exited 1 without starting anything once they ran to a few hundred characters.
 #
 # Everything the unelevated side passes in is a claim, not a fact. -Package only says
 # where to read from. The bytes that run are the bytes this script copied into a
@@ -13,14 +21,17 @@
 # with CreateNew and an explicit DACL: an elevated write never lands in a location the
 # unelevated user controls. The app reads it as a hint only.
 #
-# Exit codes: 0 installed, 2 invalid arguments, 3 package mismatch, 4 the app did not
-# quit, 5 any other failure, 6 the installer itself failed, 740 not elevated.
+# Exit codes: 0 installed (with -Relaunch: the elevated copy started), 2 invalid
+# arguments, 3 package mismatch, 4 the app did not quit, 5 any other failure, 6 the
+# installer itself failed, 740 not elevated, 1223 (-Relaunch only) the consent prompt
+# was declined.
 param(
   [string]$Package = '',
   [string]$Sha512 = '',
   [long]$Size = -1,
   [int]$ParentPid = 0,
-  [string]$Nonce = ''
+  [string]$Nonce = '',
+  [switch]$Relaunch
 )
 
 Set-StrictMode -Version Latest
@@ -35,6 +46,7 @@ $exitAborted = 4
 $exitFailed = 5
 $exitInstallerFailed = 6
 $exitNotAdministrator = 740
+$exitCancelled = 1223
 $maximumBytes = [long]2147483648
 $parentWaitMs = 90000
 
@@ -69,6 +81,46 @@ if ($Size -lt 0 -or $Size -gt $maximumBytes) { exit $exitInvalid }
 if ($Package.IndexOf([char]0) -ge 0 -or $Package -cnotmatch '^(?:[A-Za-z]:\\|\\\\[^\\.?])' -or -not $Package.EndsWith('.exe', [StringComparison]::OrdinalIgnoreCase)) { exit $exitInvalid }
 $expected = ConvertFrom-ExpectedDigest $Sha512
 if ($null -eq $expected) { exit $exitInvalid }
+
+if ($Relaunch) {
+  # Windows rebuilds the elevated process's arguments from one string, so each value
+  # goes in quoted. None of them can hold a quote, and none ends in a backslash that
+  # would escape the closing one; anything else is refused rather than escaped.
+  function ConvertTo-QuotedArgument([string]$Value) {
+    if ($Value.IndexOf('"') -ge 0 -or $Value.EndsWith('\')) { throw 'argument cannot be quoted' }
+    return '"' + $Value + '"'
+  }
+  $self = $PSCommandPath
+  if ([string]::IsNullOrEmpty($self) -or -not [IO.Path]::IsPathRooted($self)) { exit $exitFailed }
+  $elevatedPowerShell = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\powershell.exe')
+  try {
+    $arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + (ConvertTo-QuotedArgument $self) +
+      ' -Package ' + (ConvertTo-QuotedArgument $Package) +
+      ' -Sha512 ' + (ConvertTo-QuotedArgument $Sha512.Trim()) +
+      ' -Size ' + $Size.ToString([Globalization.CultureInfo]::InvariantCulture) +
+      ' -ParentPid ' + $ParentPid.ToString([Globalization.CultureInfo]::InvariantCulture) +
+      ' -Nonce ' + $Nonce
+  } catch {
+    exit $exitInvalid
+  }
+  $request = [Diagnostics.ProcessStartInfo]::new($elevatedPowerShell, $arguments)
+  $request.UseShellExecute = $true
+  $request.Verb = 'runas'
+  $request.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+  $request.WorkingDirectory = [Environment]::SystemDirectory
+  try {
+    $elevated = [Diagnostics.Process]::Start($request)
+  } catch {
+    # PowerShell wraps what the method threw; the Win32 error underneath says whether
+    # the prompt was declined (ERROR_CANCELLED) or something else went wrong.
+    $failure = $_.Exception
+    while ($null -ne $failure -and -not ($failure -is [ComponentModel.Win32Exception])) { $failure = $failure.InnerException }
+    if ($null -ne $failure -and $failure.NativeErrorCode -eq $exitCancelled) { exit $exitCancelled }
+    exit $exitFailed
+  }
+  if ($null -eq $elevated) { exit $exitFailed }
+  exit 0
+}
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)

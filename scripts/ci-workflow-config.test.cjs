@@ -1721,13 +1721,13 @@ test('the upgrade smoke lets the Windows package under test install the next ver
   const build = commands.findIndex((command) => command.includes('electron-builder/cli.js') && command.includes('--publish never'))
   const run = commands.findIndex((command) => command.includes('scripts/upgrade-smoke.cjs --old-installer'))
   assert.ok(stamp >= 0 && stamp < compile && compile < build && build < run, 'stamp, compile, build, then upgrade')
-  // The handoff rests on elevate.exe, a binary electron-builder ships: the build's
-  // own copy is run by itself first, so a red upgrade shows whether it stopped there.
-  const elevate = commands.indexOf('node e2e/windows-update-handoff-smoke.mjs --elevate release/win-unpacked/resources/elevate.exe')
-  assert.ok(elevate > build && elevate < run, 'the packaged elevate.exe runs once the package exists, before the upgrade')
-  const elevateStep = steps.find((step) => step.run === commands[elevate])
-  assert.ok(elevateStep['timeout-minutes'] > 0, 'the packaged elevate.exe check must carry its own step bound')
-  assert.equal(elevateStep['continue-on-error'], undefined, 'the packaged elevate.exe check must be able to fail the job')
+  // The handoff with the build's own copy of the script runs by itself first, so a
+  // red upgrade shows whether it stopped at the handoff.
+  const handoff = commands.indexOf('node e2e/windows-update-handoff-smoke.mjs --packaged release/win-unpacked/resources')
+  assert.ok(handoff > build && handoff < run, 'the packaged handoff runs once the package exists, before the upgrade')
+  const handoffStep = steps.find((step) => step.run === commands[handoff])
+  assert.ok(handoffStep['timeout-minutes'] > 0, 'the packaged handoff check must carry its own step bound')
+  assert.equal(handoffStep['continue-on-error'], undefined, 'the packaged handoff check must be able to fail the job')
   assert.match(commands[stamp], /under-test\/latest\.yml/)
   assert.match(commands[stamp], /test-version --package "\$current" --released "\$from"/)
   assert.match(commands[run], /--old-version \$env:FROM_VERSION --new-release release\b/)

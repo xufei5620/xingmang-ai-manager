@@ -1,6 +1,11 @@
 // 星芒自己的更新在 Windows 上怎么交给安装程序（审查总表 S01）。不再经 electron-updater 的 quitAndInstall，
 // 由提权后的脚本（build/update-handoff/verified-install.ps1）自己复制、自己核对、自己执行，
 // 主程序只负责发起和看结果。
+//
+// 提权这一步不经 electron-builder 带的 resources\elevate.exe：CI 上实测它把收到的参数用空格重新拼起来、
+// 引号全丢（安装目录带空格，脚本路径一到它手里就断成两截），参数一长（实测四百多字符）就直接退出 1、
+// 什么也不启动。改由系统 PowerShell 以普通权限跑同一个脚本（-Relaunch），脚本自己请 Windows 以管理员
+// 身份再起一份自己：参数由它逐个加引号拼好，授权窗口点「否」时它退出 1223。
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
@@ -45,7 +50,6 @@ export type WindowsUpdateHandoffOutcome =
   | { kind: 'failed'; reason: string }
 
 export interface WindowsUpdateHandoffCommandInput {
-  elevate: string
   powershell: string
   script: string
   packagePath: string
@@ -82,12 +86,11 @@ export function isUpdatePackageDigest(value: string): boolean {
 }
 
 /**
- * 提权那一步的命令：elevate.exe 以管理员身份启动系统 PowerShell 跑安装目录里的脚本。每个值都是
- * 单独一个参数（I1），引号由 Node 按 Windows 的规则加，路径里有空格、中文都照原样到脚本手里。
+ * 发起交接的命令：系统 PowerShell 以普通权限跑安装目录里的脚本，带 -Relaunch，由脚本请 Windows 以管理员
+ * 身份再起一份自己。每个值都是单独一个参数（I1），引号由 Node 按 Windows 的规则加，路径里有空格、中文都
+ * 照原样到脚本手里；再往提权那一份转交时由脚本自己加引号。
  */
 export function buildWindowsUpdateHandoffCommand(input: WindowsUpdateHandoffCommandInput): WindowsUpdateHandoffCommand {
-  assertWindowsAbsolutePath(input.elevate, '提权程序')
-  if (path.win32.basename(input.elevate).toLowerCase() !== 'elevate.exe') throw new Error('提权程序不是 elevate.exe')
   assertWindowsAbsolutePath(input.powershell, 'PowerShell')
   if (path.win32.basename(input.powershell).toLowerCase() !== 'powershell.exe') throw new Error('PowerShell 路径无效')
   assertWindowsAbsolutePath(input.script, '安装脚本')
@@ -101,11 +104,11 @@ export function buildWindowsUpdateHandoffCommand(input: WindowsUpdateHandoffComm
   if (!Number.isSafeInteger(input.parentPid) || input.parentPid <= 0) throw new Error('进程号无效')
   if (!/^[0-9a-f]{32}$/.test(input.nonce)) throw new Error('交接编号无效')
   return {
-    file: input.elevate,
+    file: input.powershell,
     args: [
-      input.powershell,
       '-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
       '-File', input.script,
+      '-Relaunch',
       '-Package', input.packagePath,
       '-Sha512', sha512,
       '-Size', String(size),
@@ -142,15 +145,14 @@ export function parseWindowsUpdateHandoffStatus(content: string | null, nonce: s
   return { state, exitCode }
 }
 
-/** elevate.exe 自己的退出码：0 是提权进程起来了，1223 是授权窗口里点了「否」。 */
-export function classifyWindowsElevateExit(code: number | null): 'launched' | 'cancelled' | 'failed' {
+/** 以普通权限跑的那一份脚本（-Relaunch）的退出码：0 是提权那一份起来了，1223 是授权窗口里点了「否」。 */
+export function classifyWindowsHandoffLaunchExit(code: number | null): 'launched' | 'cancelled' | 'failed' {
   if (code === 0) return 'launched'
   if (code === 1223) return 'cancelled'
   return 'failed'
 }
 
 export interface WindowsUpdateHandoffPaths {
-  elevate: string
   powershell: string
   script: string
   windowsDirectory: string
@@ -164,7 +166,7 @@ export interface WindowsUpdateHandoffAttempt {
 export interface WindowsUpdateHandoffDependencies {
   resolvePaths(): WindowsUpdateHandoffPaths
   parentPid: number
-  /** 起 elevate.exe（不随本进程退出），返回它的退出码；起不来时 reject。 */
+  /** 起以普通权限跑的那一份脚本（不随本进程退出），返回它的退出码；起不来时 reject。 */
   launch(file: string, args: readonly string[]): Promise<number | null>
   /** 读状态文件；还没有或读不了时为 null。 */
   readStatus(filePath: string): Promise<string | null>
@@ -173,9 +175,9 @@ export interface WindowsUpdateHandoffDependencies {
   createNonce?(): string
   sleep?(ms: number): Promise<void>
   now?(): number
-  /** elevate.exe 返回以后多久内要看到 started。 */
+  /** 那一份脚本返回以后多久内要看到 started。 */
   startedTimeoutMs?: number
-  /** elevate.exe 返回以后多久内要看到 verified 或 mismatch。 */
+  /** 那一份脚本返回以后多久内要看到 verified 或 mismatch。 */
   verifiedTimeoutMs?: number
   pollIntervalMs?: number
 }
@@ -233,11 +235,11 @@ export function createWindowsUpdateHandoff(dependencies: WindowsUpdateHandoffDep
       try {
         exitCode = await dependencies.launch(command.file, command.args)
       } catch (error) {
-        return { kind: 'failed', reason: `提权程序未能启动：${failureReason(error)}` }
+        return { kind: 'failed', reason: `提权请求未能启动：${failureReason(error)}` }
       }
-      const exit = classifyWindowsElevateExit(exitCode)
+      const exit = classifyWindowsHandoffLaunchExit(exitCode)
       if (exit === 'cancelled') return { kind: 'cancelled' }
-      if (exit === 'failed') return { kind: 'failed', reason: `提权程序退出码 ${exitCode ?? '未知'}` }
+      if (exit === 'failed') return { kind: 'failed', reason: `提权请求退出码 ${exitCode ?? '未知'}` }
       const startedAt = now()
       let started = false
       for (;;) {
@@ -265,7 +267,8 @@ export function createWindowsUpdateHandoff(dependencies: WindowsUpdateHandoffDep
 }
 
 /**
- * 起 elevate.exe。detached：安装要在星芒退出之后接着进行，不能跟着本进程的作业对象一起被结束。
+ * 起发起交接的那个 PowerShell。detached：它请出来的提权那一份要在星芒退出之后接着装，这一头不跟着本进程的
+ * 作业对象一起被结束。
  * 环境由调用方给（trustedCommandEnvironment，I2），不经 shell（I1）。
  */
 export function launchDetachedWindowsProcess(

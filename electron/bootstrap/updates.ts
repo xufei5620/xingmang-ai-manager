@@ -52,8 +52,8 @@ export interface UpdaterWiringOptions {
   setToolRouteRewriteMode: (mode: 'targeted' | 'merge') => void
 }
 
-// Windows 正式版的更新安装交接（S01）：elevate.exe、提权脚本都在安装目录的 resources 里（只有管理员能改），
-// PowerShell 和 Windows 目录由固定解析器给出（I14），elevate.exe 带着收紧过的环境起（I2）。
+// Windows 正式版的更新安装交接（S01）：脚本在安装目录的 resources 里（只有管理员能改），PowerShell 和
+// Windows 目录由固定解析器给出（I14），发起交接的那个 PowerShell 带着收紧过的环境起（I2）。
 function createWindowsInstallHandoff(
   records: WindowsUpdateHandoffRecordStore,
   runtimeLog: RuntimeLogStore,
@@ -63,7 +63,6 @@ function createWindowsInstallHandoff(
     resolvePaths: () => {
       const machinePaths = resolveWindowsMachinePaths()
       return {
-        elevate: path.win32.join(process.resourcesPath, 'elevate.exe'),
         powershell: resolveWindowsPowerShellExecutable({ machinePaths }),
         script: path.win32.join(process.resourcesPath, windowsUpdateHandoffScriptRelativePath),
         windowsDirectory: machinePaths.systemRoot,

@@ -6,7 +6,7 @@ import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildWindowsUpdateHandoffCommand,
-  classifyWindowsElevateExit,
+  classifyWindowsHandoffLaunchExit,
   createWindowsUpdateHandoff,
   createWindowsUpdateHandoffRecordStore,
   isUpdatePackageDigest,
@@ -22,7 +22,6 @@ import {
 const digest = Buffer.alloc(64, 9).toString('base64')
 const nonce = '0123456789abcdef0123456789abcdef'
 const paths = {
-  elevate: 'C:\\Program Files\\星芒AI管理工具\\resources\\elevate.exe',
   powershell: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
   script: 'C:\\Program Files\\星芒AI管理工具\\resources\\update-handoff\\verified-install.ps1',
   windowsDirectory: 'C:\\Windows',
@@ -39,13 +38,13 @@ function status(state: string, extra: Record<string, unknown> = {}) {
 }
 
 describe('windows update handoff command', () => {
-  it('starts the system PowerShell through elevate.exe with every value as its own argument', () => {
+  it('starts the script unelevated in the system PowerShell to relaunch itself, every value its own argument', () => {
     const command = buildWindowsUpdateHandoffCommand(commandInput())
-    expect(command.file).toBe(paths.elevate)
+    expect(command.file).toBe(paths.powershell)
     expect(command.args).toEqual([
-      paths.powershell,
       '-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
       '-File', paths.script,
+      '-Relaunch',
       '-Package', setupFile,
       '-Sha512', digest,
       '-Size', '4242',
@@ -66,9 +65,8 @@ describe('windows update handoff command', () => {
 
   it('refuses relative, drive-relative and device paths, and anything that is not the expected program', () => {
     for (const overrides of [
-      { elevate: 'elevate.exe' },
-      { elevate: 'C:\\Program Files\\星芒AI管理工具\\resources\\other.exe' },
       { powershell: 'powershell.exe' },
+      { powershell: 'C:\\Program Files\\星芒AI管理工具\\resources\\elevate.exe' },
       { powershell: 'C:\\Users\\测试 用户\\powershell.exe.lnk' },
       { script: 'C:verified-install.ps1' },
       { script: 'C:\\Program Files\\星芒AI管理工具\\resources\\update-handoff\\verified-install.txt' },
@@ -132,11 +130,12 @@ describe('windows update handoff status', () => {
     }
   })
 
-  it('maps the elevate.exe exit code', () => {
-    expect(classifyWindowsElevateExit(0)).toBe('launched')
-    expect(classifyWindowsElevateExit(1223)).toBe('cancelled')
-    expect(classifyWindowsElevateExit(1)).toBe('failed')
-    expect(classifyWindowsElevateExit(null)).toBe('failed')
+  it('maps the exit code of the unelevated relaunch', () => {
+    expect(classifyWindowsHandoffLaunchExit(0)).toBe('launched')
+    expect(classifyWindowsHandoffLaunchExit(1223)).toBe('cancelled')
+    expect(classifyWindowsHandoffLaunchExit(1)).toBe('failed')
+    expect(classifyWindowsHandoffLaunchExit(2)).toBe('failed')
+    expect(classifyWindowsHandoffLaunchExit(null)).toBe('failed')
   })
 })
 
@@ -164,11 +163,11 @@ describe('windows update handoff', () => {
     return { dependencies, reads, handoff: createWindowsUpdateHandoff(dependencies) }
   }
 
-  it('remembers the attempt, starts elevate.exe and reports verified once the script says so', async () => {
+  it('remembers the attempt, starts the relaunch and reports verified once the script says so', async () => {
     const { dependencies, reads, handoff } = harness([null, status('started'), '{"nonce":', status('verified')])
     await expect(handoff.start(updatePackage)).resolves.toEqual({ kind: 'verified' })
     expect(dependencies.rememberAttempt).toHaveBeenCalledWith({ nonce, version: '1.1.0' })
-    expect(dependencies.launch).toHaveBeenCalledWith(paths.elevate, expect.arrayContaining(['-Package', setupFile, '-Nonce', nonce]))
+    expect(dependencies.launch).toHaveBeenCalledWith(paths.powershell, expect.arrayContaining(['-Relaunch', '-Package', setupFile, '-Nonce', nonce]))
     expect(new Set(reads)).toEqual(new Set([`C:\\Windows\\Temp\\xingmang-update-status-${nonce}.json`]))
   })
 
@@ -185,13 +184,13 @@ describe('windows update handoff', () => {
 
   it('reports every other way the handoff can stop as a failure', async () => {
     const cases: Array<[Array<string | null>, Partial<WindowsUpdateHandoffDependencies>, string]> = [
-      [[null], { launch: vi.fn(async () => 1) }, '提权程序退出码 1'],
-      [[null], { launch: vi.fn(async () => { throw new Error('spawn UNKNOWN') }) }, '提权程序未能启动'],
+      [[null], { launch: vi.fn(async () => 5) }, '提权请求退出码 5'],
+      [[null], { launch: vi.fn(async () => { throw new Error('spawn UNKNOWN') }) }, '提权请求未能启动'],
       [[null], {}, '安装脚本没有启动'],
       [[status('started')], {}, '安装脚本没有核对完'],
       [[status('started'), status('failed')], {}, '安装脚本停在 failed'],
       [[status('verified', { nonce: 'ffffffffffffffffffffffffffffffff' })], {}, '安装脚本没有启动'],
-      [[null], { resolvePaths: () => ({ ...paths, elevate: 'elevate.exe' }) }, '提权程序不是绝对路径'],
+      [[null], { resolvePaths: () => ({ ...paths, powershell: 'powershell.exe' }) }, 'PowerShell不是绝对路径'],
     ]
     for (const [statuses, overrides, reason] of cases) {
       const { handoff } = harness(statuses, overrides)
@@ -221,7 +220,7 @@ describe('windows update handoff', () => {
   })
 })
 
-describe('launching elevate.exe', () => {
+describe('launching the relaunch', () => {
   function fakeChild() {
     return Object.assign(new EventEmitter(), { unref: vi.fn() }) as unknown as ChildProcess
   }
@@ -230,20 +229,20 @@ describe('launching elevate.exe', () => {
     const child = fakeChild()
     const spawn = vi.fn((_command: string, _args: readonly string[], _options: SpawnOptions) => child)
     const env = { SystemRoot: 'C:\\Windows' }
-    const exited = launchDetachedWindowsProcess(paths.elevate, ['a b', '中文'], env, spawn)
+    const exited = launchDetachedWindowsProcess(paths.powershell, ['a b', '中文'], env, spawn)
     child.emit('exit', 1223)
     await expect(exited).resolves.toBe(1223)
-    expect(spawn).toHaveBeenCalledWith(paths.elevate, ['a b', '中文'], expect.objectContaining({
+    expect(spawn).toHaveBeenCalledWith(paths.powershell, ['a b', '中文'], expect.objectContaining({
       detached: true, shell: false, stdio: 'ignore', windowsHide: true, env,
     }))
   })
 
   it('rejects when it cannot be started', async () => {
     const child = fakeChild()
-    const exited = launchDetachedWindowsProcess(paths.elevate, [], {}, () => child)
+    const exited = launchDetachedWindowsProcess(paths.powershell, [], {}, () => child)
     child.emit('error', new Error('ENOENT'))
     await expect(exited).rejects.toThrow('ENOENT')
-    const thrown = launchDetachedWindowsProcess(paths.elevate, [], {}, () => { throw new Error('EINVAL') })
+    const thrown = launchDetachedWindowsProcess(paths.powershell, [], {}, () => { throw new Error('EINVAL') })
     await expect(thrown).rejects.toThrow('EINVAL')
   })
 })
@@ -293,11 +292,29 @@ describe('verified-install.ps1', () => {
   })
 
   it('takes the parameters the command passes and nothing else', () => {
-    const declared = [...script.matchAll(/^\s+\[(?:string|long|int)\]\$(\w+)/gm)].map((match) => match[1])
+    const declared = [...script.matchAll(/^\s+\[(?:string|long|int|switch)\]\$(\w+)/gm)].map((match) => match[1])
     const passed = buildWindowsUpdateHandoffCommand(commandInput()).args
       .filter((arg, index, all) => arg.startsWith('-') && all[index - 1] !== '-WindowStyle' && index > all.indexOf('-File') + 1)
       .map((arg) => arg.slice(1))
-    expect(declared).toEqual(passed)
+    expect([...declared].sort()).toEqual([...passed].sort())
+  })
+
+  it('relaunches itself elevated through the shell before it checks for administrator rights', () => {
+    const relaunch = script.indexOf('if ($Relaunch) {')
+    expect(relaunch).toBeGreaterThan(script.indexOf('$expected = ConvertFrom-ExpectedDigest $Sha512'))
+    expect(relaunch).toBeLessThan(script.indexOf('WindowsBuiltInRole]::Administrator'))
+    const block = script.slice(relaunch, script.indexOf('\n}\n', relaunch))
+    // The system PowerShell from the fixed system directory (I14), the consent
+    // prompt through the shell, and a declined prompt told apart from a failure.
+    expect(block).toContain("[IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\\v1.0\\powershell.exe')")
+    expect(block).toContain('$request.UseShellExecute = $true')
+    expect(block).toContain("$request.Verb = 'runas'")
+    expect(block).toContain('$failure.NativeErrorCode -eq $exitCancelled')
+    expect(script).toContain('$exitCancelled = 1223')
+    // Every value goes on to the elevated copy, which is not told to relaunch again.
+    for (const name of ['Package', 'Sha512', 'Size', 'ParentPid', 'Nonce']) expect(block).toContain(`' -${name} ' +`)
+    expect(block).not.toMatch(/-Relaunch/)
+    expect(block).toContain('-File \' + (ConvertTo-QuotedArgument $self)')
   })
 
   it('writes its status under the Windows directory it resolves itself, never a path the app passes in', () => {
