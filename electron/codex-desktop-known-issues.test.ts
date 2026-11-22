@@ -36,13 +36,14 @@ describe('codex desktop known issues', () => {
     const notice = codexDesktopKnownIssueNotice('26.924.2738.0')
     const sentence = codexDesktopKnownIssueLaunchSentence('26.924.2738.0')
     expect(notice).toContain('26.924.2738.0')
-    expect(notice).toContain('Codex 命令行版')
+    expect(notice).toContain('Codex CLI')
     expect(sentence).toContain(codexDesktopKnownIssueMarker)
-    expect(sentence).toContain('不是星芒')
-    expect(sentence).toContain('「改用 Codex 命令行版」')
+    expect(sentence).toContain('并非星芒')
+    expect(sentence).toContain('「改用 Codex CLI」')
     for (const text of [notice, sentence]) {
       expect(text).not.toMatch(codexDesktopTechnicalWords)
-      expect(text).not.toMatch(/CLI|npm|PATH|Appx|商店包/i)
+      // 「Codex CLI」是首页上那一行的名字（yoyo 11-22「命令行版改」），别的 CLI 字样照旧不许出现。
+      expect(text).not.toMatch(/(?<!Codex )CLI|npm|PATH|Appx|商店包/i)
     }
   })
 })

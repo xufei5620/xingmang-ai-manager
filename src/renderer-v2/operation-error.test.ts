@@ -32,18 +32,18 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   githubUnreachable: { sample: "命令执行失败（退出码 1）：claude（命令输出：fatal: unable to access 'https://github.com/anthropics/claude-code.git/': Failed to connect to github.com port 443 after 21045 ms: Couldn't connect to server）", target: 'config' },
   nameTaken: { sample: '命令执行失败（退出码 1）：claude（命令输出：MCP server demo already exists in local config）', target: 'config' },
   // 主进程 codex-desktop-service.ts 的 describeCodexDesktopLaunchFailure。
-  codexDesktopNotStarted: { sample: 'Codex 桌面端没有打开：等了将近一分钟，没有等到它的窗口。先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。' },
+  codexDesktopNotStarted: { sample: 'Codex 桌面端未能打开：等待近一分钟，窗口仍未出现。请关闭所有 Codex 窗口后点击「重试」；如仍无法打开，请在开始菜单中搜索「Codex」直接打开，如同样无法打开，请联系客服。' },
   // 同一个函数在 Windows 激活接口说没装、包却装着时（codex-desktop-known-issues.ts）。
-  codexDesktopActivationBroken: { sample: `Codex 桌面端没有打开：${codexDesktopActivationBrokenSentence(38)}` },
+  codexDesktopActivationBroken: { sample: `Codex 桌面端未能打开：${codexDesktopActivationBrokenSentence(38)}` },
   // 同一个函数在装着已知打不开的那一版时（codex-desktop-known-issues.ts）。
-  codexDesktopKnownIssue: { sample: `Codex 桌面端没有打开：等了 51 秒，Codex 没有启动起来。${codexDesktopKnownIssueLaunchSentence('26.924.2738.0')}` },
+  codexDesktopKnownIssue: { sample: `Codex 桌面端未能打开：等待 51 秒，Codex 未成功启动。${codexDesktopKnownIssueLaunchSentence('26.924.2738.0')}` },
   // 主进程 codex-desktop-install-failure.ts 的 buildCodexDesktopInstallFailureMessage。
-  codexDesktopInstallFailed: { sample: 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。' },
-  codexDesktopInstallNoStore: { sample: 'Codex 桌面端没装上：这台电脑没有微软商店，国内下载线路这会儿连不上。' },
-  codexDesktopTooOld: { sample: 'Codex 桌面端没装上：微软商店这次没装上，这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。' },
-  codexDesktopFirewallOff: { sample: 'Codex 桌面端没装上：这台电脑的 Windows 防火墙服务被停掉了。新版 Codex 桌面端安装时要在防火墙里登记一下，服务停着 Windows 就不让装，重试和去微软商店装都绕不过去。' },
+  codexDesktopInstallFailed: { sample: 'Codex 桌面端未能安装：微软商店安装失败，国内下载线路暂时无法连接。' },
+  codexDesktopInstallNoStore: { sample: 'Codex 桌面端未能安装：本机没有微软商店，国内下载线路暂时无法连接。' },
+  codexDesktopTooOld: { sample: 'Codex 桌面端未能安装：微软商店安装失败，本机的 Windows 版本过旧，无法安装 Codex 桌面端。可先使用 Codex CLI，或将 Windows 更新至最新版本。' },
+  codexDesktopFirewallOff: { sample: 'Codex 桌面端未能安装：本机的 Windows 防火墙服务已停用。新版 Codex 桌面端安装时需在防火墙中注册，该服务停用时 Windows 将拒绝安装，重试或通过微软商店安装均无法解决。' },
   // 主进程 claude-desktop-install-failure.ts 的 buildClaudeDesktopInstallFailureMessage。
-  claudeDesktopInstallFailed: { sample: 'Claude Desktop 没装上：系统自带的安装组件和 Claude 官网的离线安装包这次都没装上，Claude 官网这会儿连不上。' },
+  claudeDesktopInstallFailed: { sample: 'Claude Desktop 未能安装：系统自带的安装组件和 Claude 官网的离线安装包均安装失败，Claude 官网暂时无法连接。' },
   // 主进程 macos-desktop-app-installer.ts 照 macos-desktop-install-failure.ts 拼的那几句。
   macDesktopInstallFailed: { sample: macosDesktopDownloadFailedMessage('OpenCode') },
   macDesktopTooOld: { sample: macosDesktopSystemTooOldMessage('OpenCode', '13.0') },
@@ -440,7 +440,7 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('offers 重置 Codex and then a restart between retry and support when the Codex window simply never appeared', () => {
-    const hint = presentOperationError('Codex 桌面端没有打开：等待 45 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex 命令行版；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
+    const hint = presentOperationError('Codex 桌面端未能打开：等待 45 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex CLI；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
     expect(hint?.key).toBe('codexDesktopNotStarted')
     // 这句里有「Codex 未能启动」，正是 Windows 起不来那一类的标题；只比自己那一类的标题，不能被它整个省掉。
     expect(hint?.title).toBe('Codex 打开失败')
@@ -455,8 +455,8 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('puts the restart first and drops 重置 Codex when Windows itself could not start an installed Codex', () => {
-    const message = `Codex 桌面端没有打开：${codexDesktopActivationBrokenSentence(38)}`
-    expect(message).toBe('Codex 桌面端没有打开：Codex 已安装，但 Windows 未能启动它，等待 38 秒仍未检测到 Codex 运行。重启电脑后通常可以恢复。')
+    const message = `Codex 桌面端未能打开：${codexDesktopActivationBrokenSentence(38)}`
+    expect(message).toBe('Codex 桌面端未能打开：Codex 已安装，但 Windows 未能启动它，等待 38 秒仍未检测到 Codex 运行。重启电脑后通常可以恢复。')
     const hint = presentOperationError(message)
     expect(hint?.key).toBe('codexDesktopActivationBroken')
     expect(hint?.title).toBe('Codex 未能启动')
@@ -468,20 +468,20 @@ describe('renderer-v2 operation error classification', () => {
     // 该说的那半句在，不在的是重置：重装都救不了它，重置只会白白清掉 Codex 的登录。
     expect(hint?.actions.some((action) => action.id === 'resetCodexDesktop')).toBe(false)
     // 认这一类靠的是 Windows 那半句，不是秒数；没计时的那一版照样认得出。
-    expect(presentOperationError(`Codex 桌面端没有打开：${codexDesktopActivationBrokenSentence()}`)?.key).toBe('codexDesktopActivationBroken')
+    expect(presentOperationError(`Codex 桌面端未能打开：${codexDesktopActivationBrokenSentence()}`)?.key).toBe('codexDesktopActivationBroken')
   })
 
   it('offers the command-line Codex when the installed desktop version is known not to start', () => {
-    const message = `Codex 桌面端没有打开：等了 51 秒，Codex 没有启动起来。${codexDesktopKnownIssueLaunchSentence('26.924.2738.0')}`
+    const message = `Codex 桌面端未能打开：等待 51 秒，Codex 未成功启动。${codexDesktopKnownIssueLaunchSentence('26.924.2738.0')}`
     const hint = presentOperationError(message)
     expect(hint?.key).toBe('codexDesktopKnownIssue')
     expect(hint?.actions).toEqual([
       { id: 'retry', label: '重试' },
-      { id: 'useCodexCli', label: '改用 Codex 命令行版' },
+      { id: 'useCodexCli', label: '改用 Codex CLI' },
       { id: 'support', label: '联系客服' },
     ])
     // 没带那半句的照旧按普通「没能打开」处理。
-    expect(presentOperationError('Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。')?.key).toBe('codexDesktopNotStarted')
+    expect(presentOperationError('Codex 桌面端未能打开：等待 45 秒，Codex 未成功启动。')?.key).toBe('codexDesktopNotStarted')
   })
 
   it('gives every Codex Desktop install failure a retry, the Microsoft Store, the log and support', () => {
@@ -900,7 +900,7 @@ describe('presentOperationFailure', () => {
   })
 
   it('lets the log page follow the original too', () => {
-    expect(operationLogSection({ message: '安装没有完成', detail: 'Defender 已被隔离', tool: 'claude' })).toBe('install-log')
-    expect(operationLogSection({ message: '安装没有完成', detail: 'ENOSPC', tool: 'claude' })).toBe('log')
+    expect(operationLogSection({ message: '安装未完成', detail: 'Defender 已被隔离', tool: 'claude' })).toBe('install-log')
+    expect(operationLogSection({ message: '安装未完成', detail: 'ENOSPC', tool: 'claude' })).toBe('log')
   })
 })

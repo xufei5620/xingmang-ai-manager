@@ -656,7 +656,7 @@ export function buildCliLaunchPlan(
 ): WindowsPowerShellLaunchPlan {
   const cliExecutable = requireWindowsLaunchValue(request.executable, 'CLI 路径')
   const cliArguments = (request.argv ?? []).map((argument) => requireWindowsLaunchValue(argument, 'CLI 参数'))
-  const workspace = requireWindowsLaunchValue(request.workspace, '工作目录')
+  const workspace = requireWindowsLaunchValue(request.workspace, '项目文件夹')
   const title = requireWindowsLaunchValue(request.title, '窗口标题')
   const powershellExecutable = requireWindowsLaunchValue(resolvedPowerShellExecutable, '系统 PowerShell 路径')
   if (!path.win32.isAbsolute(powershellExecutable)) {
@@ -812,10 +812,10 @@ export function describeWindowsCliLaunchError(error: unknown): string {
     || code === 'EPERM'
     || /access (?:is )?denied|permission denied|拒绝访问|无权访问/i.test(detail)
   ) {
-    return 'Windows 拒绝访问 PowerShell 或工作目录，请检查目录权限后重试'
+    return 'Windows 拒绝访问 PowerShell 或项目文件夹，请检查文件夹权限后重试'
   }
   if (/directory (?:name )?is invalid|cannot find.*path|找不到.*路径|目录.*(?:无效|不存在)/i.test(detail)) {
-    return '工作目录已失效或无法访问，请重新选择工作目录'
+    return '项目文件夹已失效或无法访问，请重新选择项目文件夹'
   }
   // 中文 Windows 上 PowerShell 的原话本来就是中文，照旧接上；英文的（spawn … EMFILE、英文系统的报错）和
   // 什么都没说的，只说原因已经记进运行日志：原话在 system-service.ts 的 terminal.failed 那条里（#1100 第1、4条）。
@@ -866,9 +866,9 @@ function assertAccessibleWorkspace(workspace: string): void {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'EACCES' || code === 'EPERM') {
-      throw new Error('工作目录无法访问，请检查目录权限后重试')
+      throw new Error('项目文件夹无法访问，请检查文件夹权限后重试')
     }
-    throw new Error('工作目录不存在或已失效，请重新选择')
+    throw new Error('项目文件夹不存在或已失效，请重新选择')
   }
 }
 

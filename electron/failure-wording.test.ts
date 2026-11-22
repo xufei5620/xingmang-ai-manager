@@ -3,8 +3,8 @@ import { errorCodeClause, errorCodeOf, loggedFailureNextStep, npmFailureSentence
 
 describe('toolLaunchFailureMessage', () => {
   it('keeps a reason that is already Chinese', () => {
-    expect(toolLaunchFailureMessage('Claude Code', new Error('工作目录已失效或无法访问，请重新选择工作目录')))
-      .toBe('未能打开 Claude Code：工作目录已失效或无法访问，请重新选择工作目录')
+    expect(toolLaunchFailureMessage('Claude Code', new Error('项目文件夹已失效或无法访问，请重新选择项目文件夹')))
+      .toBe('未能打开 Claude Code：项目文件夹已失效或无法访问，请重新选择项目文件夹')
   })
 
   it('leaves an English reason to the log and says what to do next', () => {

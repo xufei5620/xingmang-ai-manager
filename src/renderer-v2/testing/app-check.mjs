@@ -440,7 +440,7 @@ test('a refused external client cancel says why and lets the install finish', as
     await row.getByRole('button', { name: '安装', exact: true }).click()
     await row.getByText('正在下载安装包', { exact: true }).waitFor()
     await row.getByTestId('tool-opencode-cancel').click()
-    await page.getByText('正在安装 OpenCode，这一步中断会留下装了一半的程序，请等它结束。', { exact: true }).waitFor()
+    await page.getByText('正在安装 OpenCode，此步骤中断将留下未安装完成的程序，请等待安装结束。', { exact: true }).waitFor()
     assert.equal(await row.getByTestId('tool-opencode-cancel').textContent(), '取消')
     await page.evaluate(() => window.v2Test.releaseLaunch())
     await row.getByRole('button', { name: '确认连接', exact: true }).waitFor()
@@ -9827,7 +9827,7 @@ test('ordinary desktop launch preserves the opened app and exposes a Chinese-loc
   const page = await open('localeLaunchWarning=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByText('Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。', { exact: true }).waitFor()
+    await page.getByText('Codex 已打开，但本次未能切换为中文界面。请先保存当前工作，再在首页点击「打开」，选择「重开 Codex」重试。', { exact: true }).waitFor()
     assert.equal(await page.getByRole('dialog', { name: '操作未完成' }).count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').map((call) => call.args)), [['open']])
     await clean(page)

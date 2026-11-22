@@ -108,11 +108,11 @@ export function useFailureActions({ app, toolsApi, toast, perform, navigate, ope
     else if (action === 'claudeDesktopDownload') void perform('打开下载页', () => app.openExternal(claudeDesktopDownloadPageUrl))
     else setHelp(true)
   }, [app, navigate, openCodexDesktopStore, perform, requestCodexDesktopReset, requestComputerRestart, rewriteAccountKeys, setAuth, setHelp, setNodeReplace])
-  // Codex 桌面端这一版已知打不开时的「改用 Codex 命令行版」：回到首页 Codex 那一行；
+  // Codex 桌面端这一版已知打不开时的「改用 Codex CLI」：回到首页 Codex 那一行；
   // 还没装就直接开始装，装好了由客户自己点「打开」（第十九批 7）。
   function switchToCodexCli() {
     navigate('home')
-    if (snapshot?.system.clis.codex.installed) toast.show('Codex 命令行版位于首页，点击对应的「打开」即可使用。', 'neutral')
+    if (snapshot?.system.clis.codex.installed) toast.show('Codex CLI 位于首页，点击对应的「打开」即可使用。', 'neutral')
     else void perform('安装工具', () => install('codex'), 'codex')
   }
   return { openCodexDesktopStore, runOperationAction, runGuideFailureAction }

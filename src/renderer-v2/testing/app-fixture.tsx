@@ -606,16 +606,16 @@ const methods = {
     const base = { tool, siteId: 'solov', installed, endpoint: null as string | null, model: null as string | null,
       detail: null as string | null, status: null as number | null, durationMs: 11, checkedAt: new Date().toISOString() }
     if (!installed) {
-      return { ...base, ok: false, layer: 'unconfigured' as const, summary: `还没有检测到 ${tool}`,
-        nextStep: '先在首页安装这个客户端或点一次「重新检测」，装好之后再回来自检' }
+      return { ...base, ok: false, layer: 'unconfigured' as const, summary: `尚未检测到 ${tool}`,
+        nextStep: '请先在首页安装该客户端或点击「重新检测」，安装完成后再返回自检' }
     }
     if (externalStatuses.find((entry) => entry.tool === tool)?.configurationSource !== 'xingmang') {
-      return { ...base, ok: false, layer: 'unconfigured' as const, summary: `还没有给 ${tool} 写入星芒配置`,
-        nextStep: '在首页点这个客户端的「配置」，选好密钥和模型保存一次，再回来自检' }
+      return { ...base, ok: false, layer: 'unconfigured' as const, summary: `尚未为 ${tool} 写入星芒配置`,
+        nextStep: '请在首页点击该客户端的「配置」，选择密钥和模型并保存，再返回自检' }
     }
     return { ...base, ok: true, layer: 'network' as const, status: 200, endpoint: 'https://fixture.invalid/v1/models',
       model: 'fixture-model', summary: '当前账号的密钥和模型 fixture-model 都可用', nextStep: '无需处理',
-      evidence: '已用配置里的密钥核对当前账号的可用模型清单，fixture-model 在其中；客户端里实际发起的对话由客户端自己发出，本机测不到' }
+      evidence: '已用配置里的密钥核对当前账号的可用模型清单，fixture-model 在其中；客户端中实际发起的对话由客户端自行发送，本机无法检测' }
   },
   checkProviderConnection: async (provider) => {
     const base = { provider, siteId: 'solov', detail: null as string | null, status: 200 as number | null, durationMs: 12, checkedAt: new Date().toISOString() }
@@ -721,7 +721,7 @@ const methods = {
   },
   // 同主进程：下载那一段点了就停，安装那一步拒绝并给原因（externalCancelRefused）。
   cancelExternalClientInstall: async (tool) => {
-    if (query.has('externalCancelRefused')) return { cancelled: false, reason: '正在安装 OpenCode，这一步中断会留下装了一半的程序，请等它结束。' }
+    if (query.has('externalCancelRefused')) return { cancelled: false, reason: '正在安装 OpenCode，此步骤中断将留下未安装完成的程序，请等待安装结束。' }
     cancelExternalInstall?.(new Error(`${tool} 安装已取消`))
     return { cancelled: true, reason: null }
   },
@@ -738,7 +738,7 @@ const methods = {
     if (target === 'official') Object.assign(current, { configured: false, configurationReady: false, configurationSource: 'other', officialAccount: true })
     else Object.assign(current, { configured: true, configurationReady: true, configurationSource: 'xingmang', officialAccount: undefined })
     return { tool, target, outcome: 'switched' as const, backups: ['C:\\Fixture\\Claude-3p\\claude_desktop_config.json.bak'],
-      message: target === 'official' ? '已切回官方账号，原来的配置已备份。' : '已改用当前账号，原来的配置已备份。' }
+      message: target === 'official' ? '已切回官方账号，原配置已备份。' : '已改用当前账号，原配置已备份。' }
   },
   chooseWorkspace: async (options) => {
     if (query.has('workspaceCancel')) return null
@@ -824,7 +824,7 @@ const methods = {
   revealExportedFile: async () => true,
   launchCli: async (_provider, workspace) => {
     // ?workspaceGone：记录里的 my-app 已经被删了，同主进程打开时报这一句（provider-launch-service.ts 的 launchProviderOperation）。
-    if (query.has('workspaceGone') && workspace === 'C:\\work\\my-app') throw new Error('工作目录不存在，请重新选择')
+    if (query.has('workspaceGone') && workspace === 'C:\\work\\my-app') throw new Error('项目文件夹不存在，请重新选择')
     // ?launchDeclined：头一次打开时在「不建议在此文件夹中打开」那一问里点了「暂不打开」，主进程回 declined（N11）。
     if (query.has('launchDeclined') && window.v2Test.calls.filter((call) => call.method === 'launchCli').length === 1) return { declined: true }
     if (query.has('launchRemembers')) {
@@ -839,9 +839,9 @@ const methods = {
     // ?codexLaunchFailure=activation：Windows 不肯起已装好的 Codex（0x80270254）；=generic：等了 38 秒没起来。
     // 两句都是主进程 describeCodexDesktopLaunchFailure 写出来的原样。
     const failure = query.get('codexLaunchFailure')
-    if (failure === 'activation') throw new Error(`Codex 桌面端没有打开：${codexDesktopActivationBrokenSentence(38)}`)
-    if (failure === 'generic') throw new Error('Codex 桌面端没有打开：等待 38 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex 命令行版；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
-    return { restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。' } } : {}) }
+    if (failure === 'activation') throw new Error(`Codex 桌面端未能打开：${codexDesktopActivationBrokenSentence(38)}`)
+    if (failure === 'generic') throw new Error('Codex 桌面端未能打开：等待 38 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex CLI；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
+    return { restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但本次未能切换为中文界面。请先保存当前工作，再在首页点击「打开」，选择「重开 Codex」重试。' } } : {}) }
   },
   // ?restartPostponed：「创作」里还有事在做，客户在主进程那一问（D10）里点了「等待完成」，这次没发重启。
   restartWindows: async () => query.has('restartPostponed') ? { postponed: true as const } : {},
@@ -1023,7 +1023,7 @@ const methods = {
     if (query.has('clientSaveFailure')) throw new Error('配置保存失败，原配置已保留')
     const saving = externalStatuses.find((entry) => entry.tool === tool)!
     // 同主进程：自动连的那一次只写从没配置过的。
-    if (input.automatic && !saving.pristine) throw new Error(`${tool} 已经有配置了或者正开着，这次没有自动连接`)
+    if (input.automatic && !saving.pristine) throw new Error(`${tool} 已有配置或正在运行，本次未自动连接`)
     delete saving.pristine
     Object.assign(saving, { configured: true, ...(tool === 'claudeDesktop' ? { configurationReady: true } : {}), model: input.model, configurationSource: 'xingmang', configurationError: null })
     return { tool, model: input.model, path: tool === 'claudeDesktop' ? 'C:\\Fixture\\Claude-3p\\configLibrary\\fixture.json' : `C:\\Fixture\\${tool}\\config.json`,
@@ -1032,7 +1032,7 @@ const methods = {
       connectionVerified: true,
       connection: { tool, siteId: 'solov', installed: true, ok: true, layer: 'network' as const,
         summary: `当前账号的密钥和模型 ${input.model} 都可用`, nextStep: '无需处理',
-        evidence: `已用配置里的密钥核对当前账号的可用模型清单，${input.model} 在其中；客户端里实际发起的对话由客户端自己发出，本机测不到`,
+        evidence: `已用配置里的密钥核对当前账号的可用模型清单，${input.model} 在其中；客户端中实际发起的对话由客户端自行发送，本机无法检测`,
         endpoint: 'https://fixture.invalid/v1/models', model: input.model, detail: null, status: 200, durationMs: 9,
         checkedAt: new Date().toISOString() } }
   },

@@ -1088,8 +1088,8 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       },
     } as unknown as ToolboxSnapshot
     const markup = render({}, undefined, { snapshot: brokenDesktop })
-    expect(markup).toContain('这一版（26.924.2738.0）在一些电脑上打不开')
-    expect(markup).toContain('急用先用 Codex 命令行版')
+    expect(markup).toContain('该版本（26.924.2738.0）在部分电脑上无法打开')
+    expect(markup).toContain('如急需使用，可先使用 Codex CLI')
   })
 
   it('keeps the elevation notice off macOS, where nothing here elevates', () => {
@@ -1665,7 +1665,7 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
       },
     } as unknown as ToolboxSnapshot
     const opencode = {
-      ...macClient, tool: 'opencode', installHint: '这台电脑缺少系统自带的应用安装组件，不能一键安装；点「去官网下载」装好后回来重新检测',
+      ...macClient, tool: 'opencode', installHint: '本机缺少系统自带的应用安装组件，无法一键安装；请点击「去官网下载」，安装完成后返回重新检测',
       officialDownloadUrl: 'https://opencode.ai/desktop',
     } as typeof macClient
     const withDownload = render({}, undefined, { snapshot: windows, externalClients: [opencode], onOpenExternalDownload: () => undefined })

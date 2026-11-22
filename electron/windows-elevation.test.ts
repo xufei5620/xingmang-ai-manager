@@ -627,8 +627,8 @@ describe('Windows CLI launch', () => {
 
   it.each([
     [{ code: 'ENOENT', message: 'spawn failed' }, '系统 PowerShell 启动文件不存在'],
-    [{ code: 'EACCES', message: 'spawn failed' }, 'Windows 拒绝访问 PowerShell 或工作目录'],
-    [{ message: 'The directory name is invalid' }, '工作目录已失效或无法访问'],
+    [{ code: 'EACCES', message: 'spawn failed' }, 'Windows 拒绝访问 PowerShell 或项目文件夹'],
+    [{ message: 'The directory name is invalid' }, '项目文件夹已失效或无法访问'],
   ])('classifies Windows CLI launch failures', (error, expected) => {
     expect(describeWindowsCliLaunchError(error)).toContain(expected)
   })
@@ -666,9 +666,9 @@ describe('Windows CLI launch', () => {
 
   it('still recognizes the cause once it is read from stderr alone', () => {
     expect(describeWindowsCliLaunchError(brokerFailure('此命令由于以下错误而无法运行: 目录名称无效。\r\n')))
-      .toBe('工作目录已失效或无法访问，请重新选择工作目录')
+      .toBe('项目文件夹已失效或无法访问，请重新选择项目文件夹')
     expect(describeWindowsCliLaunchError(brokerFailure('This command cannot be run due to the error: Access is denied.\r\n')))
-      .toBe('Windows 拒绝访问 PowerShell 或工作目录，请检查目录权限后重试')
+      .toBe('Windows 拒绝访问 PowerShell 或项目文件夹，请检查文件夹权限后重试')
   })
 
   it('still says why PowerShell could not be started, though execFile attaches an empty stderr', () => {
@@ -791,7 +791,7 @@ describe('Windows CLI launch', () => {
 
   it.each([
     [{ executable: '', workspace: 'C:\\Work', title: 'Codex' }, 'CLI 路径不能为空'],
-    [{ executable: 'codex.cmd', workspace: '  ', title: 'Codex' }, '工作目录不能为空'],
+    [{ executable: 'codex.cmd', workspace: '  ', title: 'Codex' }, '项目文件夹不能为空'],
     [{ executable: 'codex.cmd', workspace: 'C:\\Work', title: '\0' }, '窗口标题包含无效字符'],
   ])('rejects invalid launch values', (request, message) => {
     expect(() => buildCliLaunchPlan(request, testPowerShell)).toThrow(message)

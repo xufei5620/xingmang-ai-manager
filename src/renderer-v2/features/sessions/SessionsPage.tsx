@@ -365,7 +365,7 @@ export function SessionsPage({
           return result
         } catch (cause) {
           // 列表出来之后目录才被删掉的那一瞬间:按钮还亮着,但已经接不上了。
-          // 主进程那句「工作目录不存在,请重新选择」是给目录选择器写的,这里
+          // 主进程那句「项目文件夹不存在，请重新选择」是给目录选择器写的,这里
           // 没有选择器可退(换个目录就接不上这条对话),所以换一句实话,并把
           // 列表重读一遍让这一行跟着置灰。
           if (!isMissingWorkspace(cause)) throw cause

@@ -115,7 +115,7 @@ describe('buildExternalClientProbe', () => {
     const build = buildExternalClientProbe(official)
     expect(build).toMatchObject({ kind: 'blocked', outcome: { layer: 'unconfigured' } })
     if (build.kind !== 'blocked') return
-    expect(build.outcome.summary).toBe('Claude Desktop 现在用的是你自己的 Claude 账号')
+    expect(build.outcome.summary).toBe('Claude Desktop 当前使用的是您自己的 Claude 账号')
     expect(build.outcome.nextStep).toContain('首页的工具卡片上切换')
     const result = await check((async () => { throw new Error('must not send') }) as typeof globalThis.fetch, official)
     expect(result).toMatchObject({ ok: false, layer: 'unconfigured', endpoint: null })
@@ -134,10 +134,10 @@ describe('buildExternalClientProbe', () => {
     for (const tool of ['workbuddy', 'opencode'] as const) {
       const own = input({ tool, configurationSource: 'other', apiKey: null })
       expect(buildExternalClientProbe(own)).toMatchObject({
-        kind: 'blocked', outcome: { layer: 'unconfigured', summary: '用的是你自己的配置' },
+        kind: 'blocked', outcome: { layer: 'unconfigured', summary: '当前使用的是您自己的配置' },
       })
       const result = await check((async () => { throw new Error('must not send') }) as typeof globalThis.fetch, own)
-      expect(result).toMatchObject({ ok: false, layer: 'unconfigured', summary: '用的是你自己的配置', endpoint: null })
+      expect(result).toMatchObject({ ok: false, layer: 'unconfigured', summary: '当前使用的是您自己的配置', endpoint: null })
     }
   })
 
@@ -161,7 +161,7 @@ describe('runExternalClientCheck', () => {
 
     expect(result).toMatchObject({ tool: 'workbuddy', siteId: 'solov', installed: true, ok: true, status: 200 })
     expect(result.summary).toContain('gpt-5.4')
-    expect(result.evidence).toContain('本机测不到')
+    expect(result.evidence).toContain('本机无法检测')
     expect(JSON.stringify(result)).not.toContain(apiKey)
   })
 
@@ -195,7 +195,7 @@ describe('runExternalClientCheck', () => {
     expect(JSON.parse(String(sent[0].init?.body))).toEqual({ model: 'claude-opus-5-5', max_tokens: 1, messages: [{ role: 'user', content: '.' }] })
     expect(result).toMatchObject({ tool: 'claudeDesktop', ok: true, status: 200, endpoint: 'https://xm.solov.cc/v1/messages' })
     expect(result.summary).toBe('当前账号的密钥和模型 claude-opus-5-5 都可用')
-    expect(result.evidence).toBe('已照 Claude Desktop 启动时的检查，用它配置里的密钥向 claude-opus-5-5 发过一条一个字的测试消息，服务正常回复；客户端里实际发起的对话由客户端自己发出，本机测不到')
+    expect(result.evidence).toBe('已按 Claude Desktop 启动时的检查方式，使用其配置中的密钥向 claude-opus-5-5 发送一条单字测试消息，服务回复正常；客户端中实际发起的对话由客户端自行发送，本机无法检测')
     expect(JSON.stringify(result)).not.toContain(apiKey)
   })
 

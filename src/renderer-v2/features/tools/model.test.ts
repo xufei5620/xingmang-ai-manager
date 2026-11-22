@@ -387,7 +387,7 @@ describe('renderer tool source', () => {
       },
     } as unknown as ToolboxSnapshot
     const desktop = presentTools(snapshot, memoryStorage()).find((row) => row.id === 'codexDesktop')
-    expect(desktop?.versionAdvice?.blockedReason).toContain('这一版（26.924.2738.0）在一些电脑上打不开')
+    expect(desktop?.versionAdvice?.blockedReason).toContain('该版本（26.924.2738.0）在部分电脑上无法打开')
     expect(desktop?.versionAdvice?.recommendedVersion).toBeNull()
     expect(desktop && rollbackVersion(desktop)).toBeNull()
     expect(desktop && versionSubtitle(desktop)).toBe('26.924.2738')

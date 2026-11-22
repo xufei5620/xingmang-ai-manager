@@ -350,7 +350,7 @@ describe('external desktop client lifecycle', () => {
     const install = f.runtime.install('opencode')
     await wingetRunning.promise
     expect(f.runtime.cancelInstall('opencode')).toEqual({
-      cancelled: false, reason: '正在安装 OpenCode，这一步中断会留下装了一半的程序，请等它结束。',
+      cancelled: false, reason: '正在安装 OpenCode，此步骤中断将留下未安装完成的程序，请等待安装结束。',
     })
     finishWinget.resolve()
     await expect(install).resolves.toMatchObject({ installed: true })
@@ -695,9 +695,9 @@ describe('external desktop client lifecycle', () => {
     f.setInventory([appx()])
     const claude = (await f.runtime.scan())[1]
     expect(claude).toMatchObject({ installed: false, detectionError: buildClaudeDesktopOtherVolumeMessage('D', 'C') })
-    expect(claude.detectionError).toBe('Claude Desktop 装在了 D 盘，星芒认不了，要移回 C 盘才能用：先完全退出 Claude，在 Windows 设置的「已安装的应用」里找到 Claude，点「…」→「移动」选 C 盘，再回来点「重新检测」。没有「移动」的话，在 Windows 设置里搜「新内容的保存位置」，把「新的应用将保存到」改回 C 盘，再卸载 Claude，回星芒重新安装。')
+    expect(claude.detectionError).toBe('Claude Desktop 安装在 D 盘，星芒无法识别，需移回 C 盘才能使用：请先完全退出 Claude，在 Windows 设置的「已安装的应用」中找到 Claude，点击「…」→「移动」并选择 C 盘，再返回点击「重新检测」。如没有「移动」选项，请在 Windows 设置中搜索「新内容的保存位置」，将「新的应用将保存到」改回 C 盘，再卸载 Claude，返回星芒重新安装。')
     expect(inspectAppxVolumeLink).toHaveBeenCalledExactlyOnceWith('C:\\Program Files\\WindowsApps\\Claude_2.110.1.0_x64__pzs8sxrjxfjjc', 'C')
-    await expect(f.runtime.launch('claudeDesktop')).rejects.toThrow('装在了 D 盘')
+    await expect(f.runtime.launch('claudeDesktop')).rejects.toThrow('安装在 D 盘')
     expect(f.launchProcess).not.toHaveBeenCalled()
   })
 
@@ -745,7 +745,7 @@ describe('external desktop client lifecycle', () => {
       if (spec.executable === winget) throw wingetError({ exitCode: 0x8a15000f })
       return commandResult(spec, '{"clients":[],"errors":{}}')
     })
-    await expect(f.runtime.install('opencode')).rejects.toThrow('安装没有完成（错误码 0x8a15000f），请查看运行日志中的安装器输出。')
+    await expect(f.runtime.install('opencode')).rejects.toThrow('安装未完成（错误码 0x8a15000f），请查看运行日志中的安装器输出。')
   })
 
   it('reports the installer start even when winget splits it across output chunks', async () => {
@@ -759,7 +759,7 @@ describe('external desktop client lifecycle', () => {
       }
       return commandResult(spec, '{"clients":[],"errors":{}}')
     })
-    await expect(f.runtime.install('opencode', (event) => progress.push(event))).rejects.toThrow('连不上微软的软件下载源')
+    await expect(f.runtime.install('opencode', (event) => progress.push(event))).rejects.toThrow('无法连接微软的软件下载源')
     expect(progress.map((event) => event.phase)).toContain('installing')
   })
 
@@ -773,7 +773,7 @@ describe('external desktop client lifecycle', () => {
       }
       return commandResult(spec, '{"clients":[],"errors":{}}')
     })
-    await expect(f.runtime.install('opencode', (event) => progress.push(event))).rejects.toThrow('连不上微软的软件下载源')
+    await expect(f.runtime.install('opencode', (event) => progress.push(event))).rejects.toThrow('无法连接微软的软件下载源')
     expect(progress.map((event) => event.phase)).toContain('installing')
   })
 
@@ -783,7 +783,7 @@ describe('external desktop client lifecycle', () => {
       if (spec.executable === winget) throw wingetError()
       return commandResult(spec, '{"clients":[],"errors":{}}')
     })
-    await expect(f.runtime.install('opencode')).rejects.toThrow('连不上微软的软件下载源（错误码 0x80072efd）')
+    await expect(f.runtime.install('opencode')).rejects.toThrow('无法连接微软的软件下载源（错误码 0x80072efd）')
   })
 
   // yoyo 2026-11-18「下线」：星芒不装 WorkBuddy、也不给下载，客户自己装好以后认出来、自动连上。
@@ -1274,7 +1274,7 @@ describe('Windows Claude Desktop official package route', () => {
     const install = f.runtime.install('claudeDesktop')
     await installing.promise
     expect(f.runtime.cancelInstall('claudeDesktop')).toEqual({
-      cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。',
+      cancelled: false, reason: '正在安装 Claude Desktop，此步骤中断将留下未安装完成的程序，请等待安装结束。',
     })
     finish.resolve()
     await expect(install).resolves.toMatchObject({ installed: true, version: '2.110.1.0' })
@@ -1298,7 +1298,7 @@ describe('Windows Claude Desktop official package route', () => {
     const progress: string[] = []
     await expect(f.runtime.install('claudeDesktop', (event) => progress.push(event.message))).resolves.toMatchObject({ installed: true })
     expect(f.claudeOfficial).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ wingetTried: true }))
-    expect(progress).toContain('系统自带的安装组件这次没装上，正在从 Claude 官网下载离线安装包（0%）')
+    expect(progress).toContain('系统自带的安装组件安装失败，正在从 Claude 官网下载离线安装包（0%）')
     expect(progress.at(-1)).toBe('Claude Desktop 安装完成')
   })
 
@@ -1358,7 +1358,7 @@ describe('Windows Claude Desktop official package route', () => {
     f.claudeOfficial.mockRejectedValue(official)
     for (let attempt = 0; attempt < 2; attempt++) {
       await expect(f.runtime.install('claudeDesktop')).rejects.toMatchObject({
-        message: 'Claude Desktop 没装上：系统自带的安装组件和 Claude 官网的离线安装包这次都没装上，Claude 官网这会儿连不上。',
+        message: 'Claude Desktop 未能安装：系统自带的安装组件和 Claude 官网的离线安装包均安装失败，Claude 官网暂时无法连接。',
         originalError: { winget: network, official },
       })
     }
@@ -1371,10 +1371,10 @@ describe('Windows Claude Desktop official package route', () => {
     f.claudeOfficial.mockRejectedValue(official)
     const progress: ExternalClientInstallProgress[] = []
     await expect(f.runtime.install('claudeDesktop', (event) => progress.push(event))).rejects.toMatchObject({
-      message: 'Claude Desktop 没装上：下载下来的安装包不完整或不是官方原版，已经删掉了。',
+      message: 'Claude Desktop 未能安装：下载的安装包不完整或并非官方原版，已删除。',
       originalError: official,
     })
-    expect(progress.at(-1)).toMatchObject({ phase: 'error', message: 'Claude Desktop 没装上：下载下来的安装包不完整或不是官方原版，已经删掉了。' })
+    expect(progress.at(-1)).toMatchObject({ phase: 'error', message: 'Claude Desktop 未能安装：下载的安装包不完整或并非官方原版，已删除。' })
   })
 
   it.each([
@@ -1773,7 +1773,7 @@ describe('macOS external desktop lifecycle', () => {
       return { version: '1.18.34', path: '/Applications/OpenCode.app' }
     } })
     await expect(f.runtime.install('opencode', undefined, { update: true, closeRunning: false })).resolves.toMatchObject({ installed: true })
-    expect(refusal).toEqual({ cancelled: false, reason: '正在安装 OpenCode，这一步中断会留下装了一半的程序，请等它结束。' })
+    expect(refusal).toEqual({ cancelled: false, reason: '正在安装 OpenCode，此步骤中断将留下未安装完成的程序，请等待安装结束。' })
   })
   it('does not close a running client for a cancel accepted before the swap began (F03)', async () => {
     const kill = vi.fn()
@@ -1793,7 +1793,7 @@ describe('macOS external desktop lifecycle', () => {
     const progress: string[] = []
     const f = macUpdateFixture({ installMacosDesktopApp: async () => ({ version: '1.18.30', path: '/Applications/OpenCode.app', unchanged: true }) })
     await f.runtime.install('opencode', (event) => progress.push(event.message), { update: true, closeRunning: false })
-    expect(progress.at(-1)).toBe('OpenCode 已经是最新版，不用更新')
+    expect(progress.at(-1)).toBe('OpenCode 已是最新版本，无需更新')
   })
   it('validates installed bundles with Gatekeeper and the verified WorkBuddy team, then launches through open', async () => {
     const f = macFixture()

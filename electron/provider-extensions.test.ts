@@ -1819,11 +1819,11 @@ describe('MCP connection health', () => {
         state: 'failed',
         detail: '启动失败：MCP server "broken" connection timed out after 30000ms',
       },
-      { id: 'remote', state: 'failed', detail: '还没登录这个服务' },
-      { id: 'partial', state: 'failed', detail: '连上了，但读不到它提供的工具：listTools failed' },
-      { id: 'waiting', state: 'unknown', detail: '这条连接还没在工具里确认过，本次没有检测' },
-      { id: 'paused', state: 'unknown', detail: '这条连接在当前目录下已停用，本次没有检测' },
-      { id: 'empty', state: 'failed', detail: '这条连接没有填地址' },
+      { id: 'remote', state: 'failed', detail: '尚未登录该服务' },
+      { id: 'partial', state: 'failed', detail: '已连接，但无法读取其提供的工具：listTools failed' },
+      { id: 'waiting', state: 'unknown', detail: '该连接尚未在工具中确认，本次未检测' },
+      { id: 'paused', state: 'unknown', detail: '该连接在当前目录下已停用，本次未检测' },
+      { id: 'empty', state: 'failed', detail: '该连接未填写地址' },
     ])
   })
 
@@ -1870,7 +1870,7 @@ describe('MCP connection health', () => {
     for (const provider of ['codex', 'grok'] as const) {
       const report = await service.checkMcpHealth(provider)
       expect(report).toMatchObject({ provider, supported: false, entries: [] })
-      expect(report.reason).toContain('没有提供连接状态')
+      expect(report.reason).toContain('未提供连接状态')
     }
   })
 
@@ -2092,7 +2092,7 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
     const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
 
     await expect(service.mutate({ provider: 'gemini', kind: 'skill', action: 'uninstall', id: path.resolve(stray) }))
-      .rejects.toThrow('没法确定这个技能装在哪里')
+      .rejects.toThrow('无法确定该技能的安装位置')
     expect(calls.some((call) => call.argv[1] === 'uninstall')).toBe(false)
   })
 
@@ -2237,7 +2237,7 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
       action: 'disable',
       id: 'demo@market',
       scope: 'project',
-    })).rejects.toThrow('请先在工作目录里选好这个项目')
+    })).rejects.toThrow('请先选择该项目的文件夹')
     expect(calls).toHaveLength(0)
   })
 
@@ -2305,7 +2305,7 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
     calls.length = 0
     service.setRepositoryRoot(null)
     await expect(service.mutate({ provider: 'grok', kind: 'mcp', action: 'disable', id: 'shared', scope: 'project' }))
-      .rejects.toThrow('请先在工作目录里选好这个项目')
+      .rejects.toThrow('请先选择该项目的文件夹')
     expect(calls).toHaveLength(0)
   })
 
@@ -2335,7 +2335,7 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
       id: 'project-db',
       scope: 'project',
       mcp: { type: 'http', url: 'https://example.com/mcp' },
-    })).rejects.toThrow('请先在工作目录里选好这个项目')
+    })).rejects.toThrow('请先选择该项目的文件夹')
     expect(calls).toHaveLength(0)
   })
 
@@ -2695,7 +2695,7 @@ describe('Claude Code and Grok CLI skills managed in the app', () => {
 
     await expect(managedService(home).service.mutate({
       provider: 'grok', kind: 'skill', action: 'install', source, scope: 'project',
-    })).rejects.toThrow('请先在工作目录里选好这个项目')
+    })).rejects.toThrow('请先选择该项目的文件夹')
   })
 
   it('refuses a relative source, a name already taken and an unknown scope', async () => {
@@ -2869,6 +2869,6 @@ describe('ProviderExtensionService.readUserMcpConnection', () => {
 
   it('does not read Grok connections, whose list carries no environment or headers', async () => {
     const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke: async () => '[]' })
-    await expect(service.readUserMcpConnection('grok', 'acme')).rejects.toThrow('这个工具的连接星芒读不全，请在要装的工具里手动添加。')
+    await expect(service.readUserMcpConnection('grok', 'acme')).rejects.toThrow('星芒无法完整读取该工具的连接，请在目标工具中手动添加。')
   })
 })
