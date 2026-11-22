@@ -23,18 +23,18 @@ function subject(name: string): string {
 }
 
 export function macosDesktopDownloadFailedMessage(name: string): string {
-  return `${subject(name)}没下载下来，请检查网络后再点一次「安装」。`
+  return `${subject(name)}下载失败，请检查网络后再次点击「安装」。`
 }
 
-export const macosDesktopNotOfficialMessage = '下载下来的安装包不是官方原版，已经删掉，没有安装。请稍后再点一次「安装」。'
+export const macosDesktopNotOfficialMessage = '下载的安装包不是官方原版，已删除，未安装。请稍后再次点击「安装」。'
 
 export function macosDesktopSystemTooOldMessage(name: string, minimumVersion: string): string {
-  return `${subject(name)}需要 macOS ${minimumVersion} 或更新的系统，这台 Mac 装不了。`
+  return `${subject(name)}需要 macOS ${minimumVersion} 或更高版本，本机无法安装。`
 }
 
 /** applicationName 是「应用程序」里那个应用的名字（不带 .app），客户在访达里看到的就是它。 */
 export function macosDesktopNameTakenMessage(applicationName: string): string {
-  return `「应用程序」里已经有一个 ${applicationName}，但它不是官方原版。请先把它移到废纸篓，再点「安装」。`
+  return `「应用程序」中已有一个 ${applicationName}，但并非官方原版。请先将其移到废纸篓，再点击「安装」。`
 }
 
 /**
@@ -42,10 +42,10 @@ export function macosDesktopNameTakenMessage(applicationName: string): string {
  * 新版 ChatGPT 就是 Codex 桌面端，用的是同一个名字；照「不是官方原版」那句说会吓到人，
  * 它其实是官方的，只是旧了。照样不替客户删，请他自己挪走。
  */
-export const macosLegacyChatgptMessage = '「应用程序」里的 ChatGPT 是旧版聊天程序。新版 ChatGPT 就是 Codex 桌面端，名字相同，请先把旧版移到废纸篓，再点「安装」。'
+export const macosLegacyChatgptMessage = '「应用程序」中的 ChatGPT 是旧版聊天程序。新版 ChatGPT 即 Codex 桌面端，二者同名，请先将旧版移到废纸篓，再点击「安装」。'
 
 export function macosDesktopInstallFailedMessage(name: string): string {
-  return `${subject(name)}没装好，请再点一次「安装」。`
+  return `${subject(name)}安装失败，请再次点击「安装」。`
 }
 
 /**
@@ -54,33 +54,33 @@ export function macosDesktopInstallFailedMessage(name: string): string {
  * 渲染层按「磁盘空间不足」归到「磁盘空间不够」，不配「查看安装指南」：自己下载也一样放不下。
  */
 export function macosDesktopDiskFullMessage(name: string): string {
-  return `${subject(name)}安装失败：安装目录所在磁盘空间不足，请先清理磁盘再试`
+  return `${subject(name)}安装失败：安装目录所在磁盘空间不足，请先清理磁盘后重试`
 }
 
 export function isMacosDesktopSystemTooOld(message: string): boolean {
-  return /需要 macOS [\d.]+ 或更新的系统，这台 Mac 装不了/.test(message)
+  return /需要 macOS [\d.]+ 或更高版本，本机无法安装/.test(message)
 }
 
 /** 系统太旧那一句另归一类（重试救不了），不算在这里。 */
 export function isMacosDesktopInstallFailure(message: string): boolean {
-  return message.includes('没下载下来，请检查网络后再点一次「安装」')
+  return message.includes('下载失败，请检查网络后再次点击「安装」')
     || message.includes(macosDesktopNotOfficialMessage)
-    || message.includes('但它不是官方原版。请先把它移到废纸篓')
+    || message.includes('但并非官方原版。请先将其移到废纸篓')
     || message.includes(macosLegacyChatgptMessage)
-    || message.includes('没装好，请再点一次「安装」')
+    || message.includes('安装失败，请再次点击「安装」')
 }
 
 /**
  * 更新没成时的那句话（yoyo 2026-10-27「桌面端更新改」）。只在旧版确实原样留在「应用程序」里时说：
  * 下载、核对、关掉它、换上去哪一步没过，旧版都没动或者已经挪回原处。原因原话挂在 detail 上。
  */
-export const macosDesktopUpdateFailedMessage = '没更新成，旧版还在，照常能用。'
+export const macosDesktopUpdateFailedMessage = '更新失败，旧版本仍保留，可正常使用。'
 
 /**
  * macOS 13 起的「App 管理」权限拦住了星芒去换别家的应用（挪不动旧版，系统回 EPERM）。界面认出这一句，
  * 换成那个带「去打开」的框（同上，yoyo 2026-10-27 批的字）。
  */
-export const macosDesktopAppManagementBlockedMessage = 'Mac 的安全设置拦住了这次更新，旧版还在，照常能用。'
+export const macosDesktopAppManagementBlockedMessage = 'Mac 的安全设置阻止了本次更新，旧版本仍保留，可正常使用。'
 
 export function isMacosDesktopAppManagementBlocked(message: string): boolean {
   return message.includes(macosDesktopAppManagementBlockedMessage)

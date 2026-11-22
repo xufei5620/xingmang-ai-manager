@@ -36,7 +36,7 @@ export function registerWindowHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('window:relaunch', () => options.relaunchApp?.() ?? false)
   registerTrustedHandler('window:uninstall-app', async (_event, raw: unknown) => {
     const request = parseAppUninstallRequest(raw)
-    if (!options.uninstallApp) throw new Error('这台电脑上请用系统自带的方式卸载星芒')
+    if (!options.uninstallApp) throw new Error('请在本机使用系统自带的方式卸载星芒')
     options.runtimeLog.log('info', 'maintenance', 'app.uninstall.started', '开始卸载星芒', { ...request })
     const result = await options.uninstallApp(request, async () => {
       const context = await readBackupAccountContext()

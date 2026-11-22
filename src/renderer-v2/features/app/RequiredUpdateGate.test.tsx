@@ -122,9 +122,9 @@ describe('RequiredUpdateGate', () => {
     expect(html).toContain('怎么清理')
     expect(html).toContain('data-testid="required-update-download-anyway"')
     expect(html).toContain('重新检查空间')
-    // 门里进不了更新页，不许叫他「回到更新页」，也不许说「会自动下载」让他干等。
+    // 门里进不了更新页，不许叫他「回到更新页」，也不许说「空间充足后将自动下载」让他干等（门自己那句「点击「立即更新」后将自动下载并安装」不算）。
     expect(html).not.toContain('回到更新页')
-    expect(html).not.toContain('会自动下载')
+    expect(html).not.toContain('空间充足后将自动下载')
     expect(html).not.toContain('required-update-download-page')
   })
 

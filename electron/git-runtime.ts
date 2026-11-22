@@ -44,10 +44,10 @@ export const gitLinuxInstallCommand = 'sudo apt install -y git'
 /** 「怎么装上」这一句，句末不带标点，便于拼进更长的提示里。 */
 export function gitInstallGuidance(platform: string = process.platform): string {
   const host = gitHostPlatform(platform)
-  if (host === 'windows') return '点首页「运行环境」里的「安装 Git」，星芒会自动下载装好，不用管理员权限'
-  if (host === 'macos') return '点首页「运行环境」里的「安装 Git」，Mac 会弹出苹果自己的安装窗口，点里面的“安装”就好'
+  if (host === 'windows') return '请点击首页「运行环境」中的「安装 Git」，星芒将自动下载并安装，无需管理员权限'
+  if (host === 'macos') return '请点击首页「运行环境」中的「安装 Git」，Mac 将弹出系统安装窗口，点击其中的“安装”即可'
   // Linux 只出 deb，装得上星芒的系统（Ubuntu、Debian、deepin、统信、麒麟）都用 apt。
-  return `打开「终端」，输入 ${gitLinuxInstallCommand} 回车，提示输密码时输开机密码（屏幕上不显示，输完回车）`
+  return `请打开「终端」，输入 ${gitLinuxInstallCommand} 并回车，提示输入密码时请输入开机密码（输入时屏幕不显示，输完后回车）`
 }
 
 /**
@@ -58,13 +58,13 @@ export function gitInstallGuidance(platform: string = process.platform): string 
  */
 export function gitMissingImpact(platform: string = process.platform): string {
   return gitHostPlatform(platform) === 'windows'
-    ? 'Claude Code 的一部分功能、技能和插件里的一些命令会用不了，第一次装官方插件市场也需要它'
-    : '第一次装官方插件市场需要它，部分技能和插件里写的命令也会用到它'
+    ? 'Claude Code 的部分功能以及技能和插件中的部分命令将无法使用，首次安装官方插件市场也需要 Git'
+    : '首次安装官方插件市场需要 Git，部分技能和插件中的命令也会用到 Git'
 }
 
 /** 运行环境行与检查页共用的整句提示。 */
 export function gitMissingNotice(platform: string = process.platform): string {
-  return `这台电脑上没有找到 Git。${gitMissingImpact(platform)}。${gitInstallGuidance(platform)}。`
+  return `本机未找到 Git。${gitMissingImpact(platform)}。${gitInstallGuidance(platform)}。`
 }
 
 /**
@@ -75,21 +75,21 @@ export function gitMissingNotice(platform: string = process.platform): string {
 export function gitMissingHomeNotice(platform: string = process.platform): string {
   const host = gitHostPlatform(platform)
   if (host === 'windows') {
-    return '没有 Git 的话，Claude Code 的部分功能和一些技能、插件会用不了。点「安装 Git」自动装好，不用管理员权限。'
+    return '缺少 Git 时，Claude Code 的部分功能及部分技能、插件将无法使用。请点击「安装 Git」自动安装，无需管理员权限。'
   }
   if (host === 'macos') {
-    return '没有 Git 的话，装官方插件市场和部分技能、插件会用不了。点「安装 Git」，在苹果弹出的窗口里点“安装”。'
+    return '缺少 Git 时，将无法安装官方插件市场，部分技能、插件也将无法使用。请点击「安装 Git」，并在系统弹出的窗口中点击“安装”。'
   }
   return gitMissingNotice(platform)
 }
 
 /** 装完 Claude Code 之后那张卡下面的一行小字，短到能跟命令挤在一屏里。 */
 export function gitMissingFirstRunHint(platform: string = process.platform): string {
-  return `这台电脑没有 Git，建议先装上：${gitInstallGuidance(platform)}。`
+  return `本机未安装 Git，建议先安装：${gitInstallGuidance(platform)}。`
 }
 
 /**
  * macOS 上点了「安装 Git」之后，按钮下面那一行（macos-git-install.ts 也拿它当进度文字）。
  * 苹果的窗口不回报结果，所以要说清楚：点「安装」的是客户，之后的检查由星芒来做。
  */
-export const gitMacInstallWaitingHint = '在苹果的窗口里点“安装”。装完后星芒会自己再检查一次。'
+export const gitMacInstallWaitingHint = '请在系统弹出的窗口中点击“安装”。安装完成后，星芒将自动重新检查。'

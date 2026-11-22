@@ -1240,9 +1240,9 @@ describe('PowerShell quoting with random inputs', () => {
 describe('unelevated uninstall command window', () => {
   const text = {
     title: '星芒：卸载 Claude Code',
-    running: '正在卸载 Claude Code，请稍等，别关这个窗口。',
-    succeeded: '卸载完成。现在可以关掉这个窗口，回星芒点「重新检测」。',
-    failed: '卸载没有完成（错误代码 {code}）。关掉这个窗口，回星芒点「重新检测」看看；还不行请找客服。',
+    running: '正在卸载 Claude Code，请稍候，请勿关闭此窗口。',
+    succeeded: '卸载完成。现在可以关闭此窗口，返回星芒点击「重新检测」。',
+    failed: '卸载未完成（错误代码 {code}）。请关闭此窗口，返回星芒点击「重新检测」；如仍未卸载，请联系客服。',
   }
   const chcp = 'C:\\Windows\\System32\\chcp.com'
 
@@ -1256,11 +1256,11 @@ describe('unelevated uninstall command window', () => {
       '@echo off',
       '"C:\\Windows\\System32\\chcp.com" 65001 >nul',
       'title 星芒：卸载 Claude Code',
-      'echo 正在卸载 Claude Code，请稍等，别关这个窗口。',
+      'echo 正在卸载 Claude Code，请稍候，请勿关闭此窗口。',
       'echo.',
       'call npm.cmd uninstall -g @anthropic-ai/claude-code',
       'echo.',
-      'if errorlevel 1 (echo 卸载没有完成（错误代码 %errorlevel%）。关掉这个窗口，回星芒点「重新检测」看看；还不行请找客服。) else (echo 卸载完成。现在可以关掉这个窗口，回星芒点「重新检测」。)',
+      'if errorlevel 1 (echo 卸载未完成（错误代码 %errorlevel%）。请关闭此窗口，返回星芒点击「重新检测」；如仍未卸载，请联系客服。) else (echo 卸载完成。现在可以关闭此窗口，返回星芒点击「重新检测」。)',
       'echo.',
       'pause',
       'del "%~f0"',

@@ -95,7 +95,7 @@ describe('Linux managed Node.js runtime', () => {
   it('explains in plain words that only Intel/AMD and ARM machines are supported', () => {
     expect(linuxNodeRuntimeArchitecture('x64')).toBe('x64')
     expect(linuxNodeRuntimeArchitecture('arm64')).toBe('arm64')
-    expect(() => linuxNodeRuntimeArchitecture('loong64')).toThrow(/芯片（loong64）用不了/)
+    expect(() => linuxNodeRuntimeArchitecture('loong64')).toThrow(/芯片（loong64）无法使用/)
     expect(() => linuxNodeRuntimeArchitecture('loong64')).not.toThrow(/Windows/)
   })
 
@@ -130,11 +130,11 @@ describe('Linux managed Node.js runtime', () => {
 
   it('says the network is the likely cause only when every source failed before verification', () => {
     expect(linuxNodeRuntimeFailureMessage([{ stage: 'network', detail: '国内镜像：fetch failed' }]))
-      .toMatch(/^Node\.js 没有下载成功，可能是网络不稳/)
+      .toMatch(/^Node\.js 下载失败，可能是网络不稳定/)
     expect(linuxNodeRuntimeFailureMessage([
       { stage: 'network', detail: '国内镜像：fetch failed' },
       { stage: 'verify', detail: 'Node.js 官方源：校验值对不上' },
-    ])).toMatch(/^Node\.js 没有准备好/)
+    ])).toMatch(/^Node\.js 准备失败/)
   })
 
   it.skipIf(process.platform === 'win32')('downloads the pinned archive, verifies it and extracts into the product folder', async () => {
@@ -245,7 +245,7 @@ describe('Linux managed Node.js runtime', () => {
       environment: { HOME: home },
       dependencies: { fetch: fakeNetwork({}, Buffer.alloc(2 * 1024 * 1024, 8)).fetch },
       linux: { runProcess: processes.runProcess, resolveTar: () => '/usr/bin/tar', pinnedRelease: () => pinned },
-    })).rejects.toThrow(/^Node\.js 没有准备好.*和官方校验值对不上/)
+    })).rejects.toThrow(/^Node\.js 准备失败.*与官方校验值不一致/)
     // Nothing is extracted from an archive that failed its digest.
     expect(processes.plans).toEqual([])
     expect(fs.readFileSync(path.join(target, 'bin', 'node'), 'utf8')).toBe('old')
@@ -263,7 +263,7 @@ describe('Linux managed Node.js runtime', () => {
         resolveTar: () => '/usr/bin/tar',
         pinnedRelease: () => pinned,
       },
-    })).rejects.toThrow('版本和下载的不一致')
+    })).rejects.toThrow('版本与下载版本不一致')
     expect(fs.existsSync(managedNodeRuntimeRoot({ HOME: home }, 'linux'))).toBe(false)
   })
 
@@ -276,7 +276,7 @@ describe('Linux managed Node.js runtime', () => {
       environment: { HOME: home },
       dependencies: { fetch: network.fetch },
       linux: { runProcess: fakeProcesses().runProcess, resolveTar: () => null, pinnedRelease: () => pinned },
-    })).rejects.toThrow('找不到系统自带的解压工具')
+    })).rejects.toThrow('未找到系统自带的解压工具')
     expect(network.requested).toEqual([])
   })
 

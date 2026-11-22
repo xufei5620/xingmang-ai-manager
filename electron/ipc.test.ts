@@ -4089,7 +4089,7 @@ describe('registerIpcHandlers', () => {
   it('refuses the in-app uninstall where the host does not offer one', async () => {
     register()
     const handler = electronMocks.handlers.get('window:uninstall-app')!
-    await expect(handler(trustedEvent(), { clearLoginRecords: false, removeManagedTools: false })).rejects.toThrow('这台电脑上请用系统自带的方式卸载星芒')
+    await expect(handler(trustedEvent(), { clearLoginRecords: false, removeManagedTools: false })).rejects.toThrow('请在本机使用系统自带的方式卸载星芒')
   })
 
   it('passes the startup check\'s scan-reuse request through to diagnostics and rejects anything else', async () => {

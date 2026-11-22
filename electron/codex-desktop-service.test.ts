@@ -2697,7 +2697,7 @@ describe('Codex Desktop install on macOS', () => {
     const unexpected = macInstallFixture({ withDownloadRoute: async () => { throw new Error('连接超时') } })
     const error = await unexpected.service.installCodexDesktop(unexpected.target).then(() => null, (reason: unknown) => reason)
     expect(error).toBeInstanceOf(MacosDesktopInstallError)
-    expect((error as MacosDesktopInstallError).message).toBe('Codex 桌面端没装好，请再点一次「安装」。')
+    expect((error as MacosDesktopInstallError).message).toBe('Codex 桌面端安装失败，请再次点击「安装」。')
     expect((error as MacosDesktopInstallError).detail).toBe('连接超时')
   })
 
@@ -2705,7 +2705,7 @@ describe('Codex Desktop install on macOS', () => {
     const disk = new Error('Codex 桌面端安装失败：磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试')
     expect(toCodexDesktopMacInstallFailure(disk)).toBe(disk)
     const failure = toCodexDesktopMacInstallFailure(new Error('HTTP 503'))
-    expect(failure.message).toBe('Codex 桌面端没装好，请再点一次「安装」。')
+    expect(failure.message).toBe('Codex 桌面端安装失败，请再次点击「安装」。')
     expect(isMacosDesktopInstallFailure(failure.message)).toBe(true)
     expect(failure.message).not.toContain('Codex 桌面端没装上')
   })

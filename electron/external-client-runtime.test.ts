@@ -328,7 +328,7 @@ describe('external desktop client lifecycle', () => {
     expect(progress.at(-1)).toMatchObject({ phase: 'error', message: 'OpenCode 安装已取消' })
     expect(queue.snapshot()).toEqual({ activeKey: 'existing-runtime-install', pendingKeys: [] })
     expect(f.execute).not.toHaveBeenCalled()
-    expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })
+    expect(f.runtime.cancelInstall('opencode')).toEqual({ cancelled: false, reason: '该工具当前没有正在进行的安装。' })
     blocker.resolve()
     await ahead
     f.setInventory([candidate('opencode')])
@@ -1597,7 +1597,7 @@ describe('macOS external desktop lifecycle', () => {
         options.onProgress?.({ phase: 'downloading', message: '正在下载 OpenCode 1.18.34', percent: 40 })
       })
       await options.runProcess({ executable: '/usr/bin/codesign', argv: ['--verify'], timeoutMs: 1_000 })
-      options.onProgress?.({ phase: 'installing', message: '正在放进「应用程序」', percent: null })
+      options.onProgress?.({ phase: 'installing', message: '正在放入「应用程序」', percent: null })
       placed = true
       return { version: '1.18.34', path: '/Applications/OpenCode.app' }
     })
@@ -1657,7 +1657,7 @@ describe('macOS external desktop lifecycle', () => {
     expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ tool: 'opencode', architecture: 'arm64', userHome: '/Users/tester', withVendorDownloadRoute: expect.any(Function) }))
     expect(f.installMacosDesktopApp.mock.calls[0][0].bucket).toBeUndefined()
     expect(progress).toEqual([
-      'OpenCode 已加入安装队列', '正在检测 OpenCode', '正在下载 OpenCode 1.18.34', '正在放进「应用程序」',
+      'OpenCode 已加入安装队列', '正在检测 OpenCode', '正在下载 OpenCode 1.18.34', '正在放入「应用程序」',
       '正在验证安装结果', 'OpenCode 安装完成',
     ])
     // The installer's own checks run through the same runner, never claiming trustedOnly on darwin.
@@ -1676,7 +1676,7 @@ describe('macOS external desktop lifecycle', () => {
     const f = macInstallFixture({ installMacosDesktopApp: async (options) => {
       await options.runProcess({ executable: '/usr/bin/sw_vers', argv: ['-productVersion'], timeoutMs: 1_000 })
       // 放进「应用程序」是整个改名，停在哪一步都不会留下半个应用，所以这一步也接受取消。
-      options.onProgress?.({ phase: 'installing', message: '正在放进「应用程序」', percent: null })
+      options.onProgress?.({ phase: 'installing', message: '正在放入「应用程序」', percent: null })
       placing.resolve()
       return untilAborted(options.signal)
     } })
@@ -1691,7 +1691,7 @@ describe('macOS external desktop lifecycle', () => {
     const short = macInstallFixture({ assertDiskSpace: async (subject) => { throw new Error(`${subject}：磁盘空间不足`) } })
     await expect(short.runtime.install('opencode')).rejects.toThrow('OpenCode 安装失败：磁盘空间不足')
     expect(short.installMacosDesktopApp).not.toHaveBeenCalled()
-    const failure = Object.assign(new Error('OpenCode 没下载下来，请检查网络后再点一次「安装」。'), { detail: 'fetch failed' })
+    const failure = Object.assign(new Error('OpenCode 下载失败，请检查网络后再次点击「安装」。'), { detail: 'fetch failed' })
     const failing = macInstallFixture({ installMacosDesktopApp: async () => { throw failure } })
     await expect(failing.runtime.install('opencode')).rejects.toBe(failure)
   })

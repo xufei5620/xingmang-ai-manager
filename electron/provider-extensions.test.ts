@@ -211,7 +211,7 @@ describe('provider source update network policy', () => {
     })
 
     const failure = inspect({ kind: 'git', locator: repository, localPath: repository, currentVersion: null })
-    await expect(failure).rejects.toThrow('点「同意」')
+    await expect(failure).rejects.toThrow('点击「同意」')
     await expect(failure).rejects.not.toThrow('命令行开发者工具')
     expect(runCommandImplementation).not.toHaveBeenCalled()
   })
@@ -1642,7 +1642,7 @@ describe('official marketplace as a standalone action', () => {
     })
 
     const message = claudeMarketplaceGitMissingMessage('darwin', { commandLineToolsShim: true })
-    expect(message).toContain('空壳')
+    expect(message).toContain('需先安装苹果的「命令行开发者工具」')
     expect(message).toContain('「安装 Git」')
     await expect(service.ensureMarketplace('claude')).rejects.toThrow(message)
     expect(calls.some((argv) => argv.includes('add'))).toBe(false)
@@ -1663,7 +1663,7 @@ describe('official marketplace as a standalone action', () => {
     })
 
     const message = claudeMarketplaceGitMissingMessage('darwin', { commandLineToolsShim: true, xcodeLicensePending: true })
-    expect(message).toContain('点「同意」')
+    expect(message).toContain('点击「同意」')
     expect(message).not.toMatch(/空壳|xcode-select|xcodebuild|sudo|许可协议/)
     await expect(service.ensureMarketplace('claude')).rejects.toThrow(message)
     expect(calls.some((argv) => argv.includes('add'))).toBe(false)

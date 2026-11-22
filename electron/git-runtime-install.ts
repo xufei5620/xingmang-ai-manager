@@ -105,7 +105,7 @@ export interface InstallGitRuntimeOptions {
  * 规定把安装拦了一半（#549），换下载地址重下也是同样结果，所以不再换源，直接说原因。
  */
 export const gitRuntimeMissingAfterInstallMessage =
-  'Git 没装上：安装程序已经跑完，但这台电脑上还是找不到 Git，可能被安全软件或公司电脑的管理规定拦下了。可以重启电脑后再点一次「安装 Git」；还不行请联系客服'
+  'Git 安装失败：安装程序已运行完毕，但本机仍未找到 Git，可能已被安全软件或公司电脑的管理策略拦截。请重启电脑后再次点击「安装 Git」；如仍失败，请联系客服'
 
 const installerTimeoutMs = 15 * 60_000
 const minimumInstallerBytes = 20 * 1024 * 1024
@@ -128,7 +128,7 @@ function errorText(reason: unknown): string {
 
 export function normalizeGitRuntimeArchitecture(architecture: NodeJS.Architecture): GitRuntimeArchitecture {
   if (architecture === 'x64' || architecture === 'arm64') return architecture
-  throw new Error(`这台电脑的处理器（${architecture}）暂时不能自动安装 Git`)
+  throw new Error(`本机处理器（${architecture}）暂不支持自动安装 Git`)
 }
 
 export function gitForWindowsInstallerFileName(architecture: GitRuntimeArchitecture): string {
@@ -262,7 +262,7 @@ async function downloadInstaller(
       onResume: (size, total) => report(options, {
         phase: 'downloading',
         source: source.id,
-        message: `网络断了一下，正在从${source.label}接着下载 Git`,
+        message: `网络曾短暂中断，正在从${source.label}继续下载 Git`,
         percent: percentOf(size, total),
         transferredBytes: size,
         totalBytes: total,
@@ -312,7 +312,7 @@ export function buildGitRuntimeInstallPlan(
   const argv = ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCANCEL', '/SP-']
   if (!trustedOnly) {
     const directory = gitForWindowsUserInstallDirectory(env)
-    if (!directory) throw new Error('找不到当前用户的程序目录，没法安装 Git')
+    if (!directory) throw new Error('未找到当前用户的程序目录，无法安装 Git')
     argv.push(`/DIR=${directory}`)
   }
   const roots = machinePaths ?? (process.platform === 'win32' ? resolveWindowsMachinePaths() : undefined)
@@ -368,13 +368,13 @@ async function installFromSource(
     percent: 0,
   })
   const download = await downloadInstaller(source, installerPath, options, dependencies)
-  report(options, { phase: 'verifying', source: source.id, message: '正在检查安装包是否完好', percent: null })
-  if (download.sha256 !== expectedSha256) throw new Error('安装包和官方发布的不一致')
+  report(options, { phase: 'verifying', source: source.id, message: '正在校验安装包完整性', percent: null })
+  if (download.sha256 !== expectedSha256) throw new Error('安装包与官方发布版本不一致')
   const trustedOnly = options.temporaryDirectoryMode !== 'same-user'
   const plan = buildGitRuntimeInstallPlan(installerPath, trustedOnly, options.environment ?? process.env)
   const stat = await fs.promises.stat(installerPath)
   if (!stat.isFile() || stat.size !== download.size || await hashFileSha256(installerPath) !== expectedSha256) {
-    throw new Error('安装包在检查后被改动过')
+    throw new Error('安装包在校验后被修改')
   }
   report(options, { phase: 'installing', source: source.id, message: '正在安装 Git', percent: null })
   await dependencies.runProcess(plan, options.signal)
@@ -404,7 +404,7 @@ async function verifyInstalledGit(
 ): Promise<GitRuntimeInstallResult> {
   let version: string | null = gitForWindowsVersion
   if (options.verifyInstalled) {
-    report(options, { phase: 'verifying', source, message: '正在确认 Git 能不能用', percent: null })
+    report(options, { phase: 'verifying', source, message: '正在确认 Git 是否可用', percent: null })
     let found: { version: string | null } | null
     try {
       found = await options.verifyInstalled()
@@ -417,7 +417,7 @@ async function verifyInstalledGit(
     }
     version = found.version ?? gitForWindowsVersion
   }
-  report(options, { phase: 'complete', source, message: 'Git 装好了', percent: 100 })
+  report(options, { phase: 'complete', source, message: 'Git 安装完成', percent: 100 })
   return {
     installed: true,
     action: 'installed',
@@ -440,7 +440,7 @@ export async function installGitRuntimeWith(
   try {
     temporaryDirectory = await dependencies.createTemporaryDirectory()
   } catch (error) {
-    const message = `Git 没装上：临时目录建不起来（${errorText(error)}）`
+    const message = `Git 安装失败：无法创建临时目录（${errorText(error)}）`
     report(options, { phase: 'error', source: null, message, percent: null })
     throw new Error(message)
   }
@@ -455,7 +455,7 @@ export async function installGitRuntimeWith(
         report(options, {
           phase: 'checking',
           source: source.id,
-          message: `${source.label}没下好，正在换一个下载地址`,
+          message: `${source.label}下载失败，正在更换下载地址`,
           percent: null,
         })
         continue
@@ -465,7 +465,7 @@ export async function installGitRuntimeWith(
   } finally {
     await dependencies.removeTemporaryDirectory(temporaryDirectory).catch(() => undefined)
   }
-  const message = `Git 没装上。${failures.join('；')}`
+  const message = `Git 安装失败。${failures.join('；')}`
   report(options, { phase: 'error', source: null, message, percent: null })
   throw new Error(message)
 }

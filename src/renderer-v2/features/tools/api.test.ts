@@ -168,7 +168,7 @@ describe('CLI install cancellation routing', () => {
   })
 
   it('passes the main process refusal through untouched', async () => {
-    const refusal = { cancelled: false, reason: '正在把新版本写入工具目录，这一步中断会让工具用不了，请等它结束。' }
+    const refusal = { cancelled: false, reason: '正在将新版本写入工具目录，中断此步骤将导致工具无法使用，请等待完成。' }
     const cancelCliInstall = vi.fn(async () => refusal)
     const api = createToolsApi({ cancelCliInstall } as unknown as XingmangApi)
 

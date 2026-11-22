@@ -994,7 +994,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     const markup = render({}, undefined, { snapshot: gitMissingOn('macos') })
     expect(markup).toContain('data-testid="home-runtime-git"')
     const hint = markup.slice(markup.indexOf('data-testid="home-runtime-git-hint"'))
-    expect(hint.slice(0, hint.indexOf('</p>'))).toContain('在苹果弹出的窗口里点“安装”')
+    expect(hint.slice(0, hint.indexOf('</p>'))).toContain('并在系统弹出的窗口中点击“安装”')
     expect(markup).not.toMatch(/xcode-select|brew install git/)
   })
 
@@ -1002,7 +1002,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     const job = { label: '正在准备安装 Git', log: [] } as unknown as ToolJob
     const markup = render({ git: job }, undefined, { snapshot: gitMissingOn('macos') })
     expect(markup).toContain('data-testid="home-runtime-git-waiting"')
-    expect(markup).toContain('在苹果的窗口里点“安装”')
+    expect(markup).toContain('请在系统弹出的窗口中点击“安装”')
     expect(markup).not.toContain('data-testid="home-runtime-git-hint"')
     // Windows 代装全程在软件里完成，没有这一句。
     const windows = render({ git: job }, undefined, { snapshot: gitMissingOn('windows') })

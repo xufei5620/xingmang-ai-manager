@@ -343,7 +343,7 @@ describe('macOS desktop app installer', () => {
     expect(spctl.argv).toEqual(['--assess', '--type', 'execute', codesign.argv.at(-1)])
     expect(stagingLeftovers(f.home)).toEqual([])
     expect(f.progress[0]).toBe('正在下载 OpenCode 1.18.34')
-    expect(f.progress.slice(-2)).toEqual(['正在检查下载下来的安装包是不是完整的官方版', '正在放进「应用程序」'])
+    expect(f.progress.slice(-2)).toEqual(['正在校验下载的安装包是否为完整的官方版本', '正在放入「应用程序」'])
   })
 
   it.skipIf(process.platform === 'win32')('installs a release that ships latest-mac.yml but no latest.json, like OpenCode 1.19.5', async () => {
@@ -373,7 +373,7 @@ describe('macOS desktop app installer', () => {
     const f = setup()
     fs.mkdirSync(path.join(f.applications, 'OpenCode.app'))
     const error = await failure(installMacosDesktopApp(f.options))
-    expect(error.message).toBe('「应用程序」里已经有一个 OpenCode，但它不是官方原版。请先把它移到废纸篓，再点「安装」。')
+    expect(error.message).toBe('「应用程序」中已有一个 OpenCode，但并非官方原版。请先将其移到废纸篓，再点击「安装」。')
     expect(isMacosDesktopInstallFailure(error.message)).toBe(true)
     expect(f.requested).toEqual([])
     expect(f.plans).toEqual([])
@@ -383,7 +383,7 @@ describe('macOS desktop app installer', () => {
   it.skipIf(process.platform === 'win32')('refuses a feed that points the package anywhere but its fixed release address', async () => {
     const f = setup({ feedBody: feed({ files: ['opencode-desktop-mac-x64.zip', 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/other.zip'] }) })
     const error = await failure(installMacosDesktopApp(f.options))
-    expect(error.message).toBe('OpenCode 没装好，请再点一次「安装」。')
+    expect(error.message).toBe('OpenCode 安装失败，请再次点击「安装」。')
     expect(error.detail).toContain('没有这台 Mac 能用的安装包')
     expect(f.requested.some((url) => url.includes('.tar.gz'))).toBe(false)
     expect(stagingLeftovers(f.home)).toEqual([])
@@ -392,7 +392,7 @@ describe('macOS desktop app installer', () => {
   it.skipIf(process.platform === 'win32')('reports a broken download as a network problem and keeps the reason for the log', async () => {
     const f = setup({ failPackage: true })
     const error = await failure(installMacosDesktopApp(f.options))
-    expect(error.message).toBe('OpenCode 没下载下来，请检查网络后再点一次「安装」。')
+    expect(error.message).toBe('OpenCode 下载失败，请检查网络后再次点击「安装」。')
     expect(error.detail).toBe('fetch failed')
     expect(isMacosDesktopInstallFailure(error.message)).toBe(true)
     expect(fs.readdirSync(f.applications)).toEqual([])
@@ -412,7 +412,7 @@ describe('macOS desktop app installer', () => {
   it.skipIf(process.platform === 'win32')('reports an archive that will not unpack as a failed install, not as a fake package', async () => {
     const f = setup({}, { rejectExecutable: '/usr/bin/tar', rejectStderr: 'tar: Error opening archive: Unrecognized archive format' })
     const error = await failure(installMacosDesktopApp(f.options))
-    expect(error.message).toBe('OpenCode 没装好，请再点一次「安装」。')
+    expect(error.message).toBe('OpenCode 安装失败，请再次点击「安装」。')
     expect(error.detail).toContain('/usr/bin/tar')
     expect(f.plans.some((plan) => plan.executable === '/usr/bin/codesign')).toBe(false)
     expect(fs.readdirSync(f.applications)).toEqual([])
@@ -422,7 +422,7 @@ describe('macOS desktop app installer', () => {
   it.skipIf(process.platform === 'win32')('says the disk is full instead of blaming the network or the package', async () => {
     const unpacking = setup({}, { rejectExecutable: '/usr/bin/tar', rejectStderr: 'tar: OpenCode.app/Contents/Frameworks/a: Write failed: No space left on device' })
     const unpacked = await failure(installMacosDesktopApp(unpacking.options))
-    expect(unpacked.message).toBe('OpenCode 安装失败：安装目录所在磁盘空间不足，请先清理磁盘再试')
+    expect(unpacked.message).toBe('OpenCode 安装失败：安装目录所在磁盘空间不足，请先清理磁盘后重试')
     expect(isMacosDesktopInstallFailure(unpacked.message)).toBe(false)
     expect(stagingLeftovers(unpacking.home)).toEqual([])
 
@@ -495,7 +495,7 @@ describe('macOS desktop app installer', () => {
   it.skipIf(process.platform === 'win32')('says plainly when this Mac is too old for the app', async () => {
     const f = setup({}, { systemVersion: '12.7.6', minimumSystemVersion: '13.0' })
     const error = await failure(installMacosDesktopApp(f.options))
-    expect(error.message).toBe('OpenCode 需要 macOS 13.0 或更新的系统，这台 Mac 装不了。')
+    expect(error.message).toBe('OpenCode 需要 macOS 13.0 或更高版本，本机无法安装。')
     expect(isMacosDesktopSystemTooOld(error.message)).toBe(true)
     expect(isMacosDesktopInstallFailure(error.message)).toBe(false)
     expect(fs.readdirSync(f.applications)).toEqual([])
@@ -571,7 +571,7 @@ describe('macOS desktop app updates in place', () => {
     expect(installedCheck.argv.at(-1)).toBe(f.installedPath)
     expect(installedCheck.argv).toContain('--deep')
     expect(installedCheck.argv.find((argument) => argument.startsWith('-R='))).toContain('certificate leaf[subject.OU] = "5NZ4Q7NXJ4"')
-    expect(f.progress.at(-1)).toBe('正在放进「应用程序」')
+    expect(f.progress.at(-1)).toBe('正在放入「应用程序」')
   })
 
   it.skipIf(process.platform === 'win32')('leaves the installed copy alone when the download is not newer', async () => {
@@ -644,7 +644,7 @@ describe('macOS desktop app updates in place', () => {
     renameRefusing((from, to) => to === f.installedPath ? errno('EIO') : null)
     const error = await failure(installMacosDesktopApp(f.options))
     // The old copy is not where it was, so "the old version is still there" would be untrue.
-    expect(error.message).toBe('OpenCode 没装好，请再点一次「安装」。')
+    expect(error.message).toBe('OpenCode 安装失败，请再次点击「安装」。')
     const parked = fs.readdirSync(f.applications)
     expect(parked).toHaveLength(1)
     expect(parked[0]).toMatch(/^\.OpenCode\.app\.xingmang-old-[0-9a-f]{12}$/)
@@ -989,7 +989,7 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
   it.skipIf(process.platform === 'win32')('never asks a feed with a system version it could not read', async () => {
     const f = vendorSetup('claudeDesktop', {}, {}, { systemVersion: 'ProductVersion: 15.1' })
     const error = await failure(installMacosDesktopApp(f.options))
-    expect(error.message).toBe('Claude Desktop 没装好，请再点一次「安装」。')
+    expect(error.message).toBe('Claude Desktop 安装失败，请再次点击「安装」。')
     expect(error.detail).toContain('读不出这台 Mac 的系统版本')
     expect(f.requested).toEqual([])
   })
@@ -1007,7 +1007,7 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
     for (const packageBody of [archiveBytes.subarray(0, 1024), Buffer.concat([archiveBytes, Buffer.from('x')])]) {
       const f = vendorSetup('claudeDesktop', { packageBody })
       const error = await failure(installMacosDesktopApp(f.options))
-      expect(error.message).toBe('Claude Desktop 没下载下来，请检查网络后再点一次「安装」。')
+      expect(error.message).toBe('Claude Desktop 下载失败，请检查网络后再次点击「安装」。')
       expect(f.plans.some((plan) => plan.executable === '/usr/bin/tar')).toBe(false)
       expect(fs.readdirSync(f.applications)).toEqual([])
       expect(stagingLeftovers(f.home)).toEqual([])
@@ -1034,7 +1034,7 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
     for (const claudeFeedBody of bodies) {
       const f = vendorSetup('claudeDesktop', { claudeFeedBody })
       const error = await failure(installMacosDesktopApp(f.options))
-      expect(error.message).toBe('Claude Desktop 没装好，请再点一次「安装」。')
+      expect(error.message).toBe('Claude Desktop 安装失败，请再次点击「安装」。')
       expect(error.detail).toContain('没有这台 Mac 能用的安装包')
       expect(f.requested).toHaveLength(1)
     }
@@ -1076,7 +1076,7 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
 
     const tooOld = vendorSetup('codexDesktop', { appcastBody: body }, {}, { systemVersion: '12.7.6' })
     const error = await failure(installMacosDesktopApp(tooOld.options))
-    expect(error.message).toBe('Codex 桌面端需要 macOS 14.0 或更新的系统，这台 Mac 装不了。')
+    expect(error.message).toBe('Codex 桌面端需要 macOS 14.0 或更高版本，本机无法安装。')
     expect(isMacosDesktopSystemTooOld(error.message)).toBe(true)
     expect(tooOld.requested).toEqual([`${chatgptRoot}appcast.xml`])
   })
@@ -1098,7 +1098,7 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
     for (const appcastBody of bodies) {
       const f = vendorSetup('codexDesktop', { appcastBody })
       const error = await failure(installMacosDesktopApp(f.options))
-      expect(error.message).toBe('Codex 桌面端没装好，请再点一次「安装」。')
+      expect(error.message).toBe('Codex 桌面端安装失败，请再次点击「安装」。')
       expect(error.detail).toContain('没有这台 Mac 能用的安装包')
       expect(f.requested).toEqual([`${chatgptRoot}appcast.xml`])
     }
@@ -1342,7 +1342,7 @@ describe('macOS installer from the Xingmang bucket', () => {
     expect(f.plans[1].argv[1]).toMatch(/\/bucket\/package\.zip$/)
     expect(signingRequirement(f.plans)).toContain('certificate leaf[subject.OU] = "2DC432GLL2"')
     expect(f.progress[0]).toBe(`正在下载 Codex 桌面端 ${bucketCodexVersion}`)
-    expect(f.progress).toContain('正在检查下载下来的安装包是不是完整的官方版')
+    expect(f.progress).toContain('正在校验下载的安装包是否为完整的官方版本')
     expect(stagingLeftovers(f.home)).toEqual([])
   })
 

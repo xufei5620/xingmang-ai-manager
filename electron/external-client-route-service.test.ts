@@ -26,7 +26,7 @@ function createService(fetchAvailableModels: (apiKey: string) => Promise<string[
     scan: vi.fn(async () => []),
     scanOne: vi.fn(),
     install: vi.fn(),
-    cancelInstall: vi.fn(() => ({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })),
+    cancelInstall: vi.fn(() => ({ cancelled: false, reason: '该工具当前没有正在进行的安装。' })),
     launch: vi.fn(async () => ({})),
     stillRunning: vi.fn(async () => null),
   }
@@ -66,7 +66,7 @@ describe('external client route service', () => {
     vi.mocked(runtime.launch).mockResolvedValueOnce({ preparationSkipped: 'elevated' })
 
     await expect(service.launchExternalClient('claudeDesktop')).resolves.toEqual({ preparationSkipped: 'elevated' })
-    expect(service.cancelExternalClientInstall('opencode')).toEqual({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })
+    expect(service.cancelExternalClientInstall('opencode')).toEqual({ cancelled: false, reason: '该工具当前没有正在进行的安装。' })
 
     expect(runtime.launch).toHaveBeenCalledWith('claudeDesktop')
     expect(runtime.cancelInstall).toHaveBeenCalledWith('opencode')

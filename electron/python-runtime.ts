@@ -462,7 +462,7 @@ async function downloadInstaller(
       },
       onResume: (transferredBytes) => progress(
         transferredBytes,
-        `网络断了一下，正在接着下载 Python ${asset.version} 官方安装包`,
+        `网络曾短暂中断，正在继续下载 Python ${asset.version} 官方安装包`,
       ),
     })
     if (download.size !== asset.fileSize) throw new Error('Python 安装包下载不完整')
@@ -632,7 +632,7 @@ export async function installPythonRuntime(
         report(options, {
           phase: 'resolving',
           source: 'python-org',
-          message: '系统自带的应用安装组件没装成，改用 Python 官方安装包',
+          message: '系统自带的应用安装组件安装失败，改用 Python 官方安装包',
           percent: null,
         })
       }

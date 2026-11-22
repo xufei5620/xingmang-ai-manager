@@ -48,7 +48,7 @@ export function shouldReplaceNodeForCertificates(input: {
     && nodeReadsSystemCertificates(input.node.version) === false
 }
 
-export const nodeStillOutdatedAfterReplaceMessage = '新版 Node.js 已经装上了，但电脑上另外还有一份旧的 Node.js 排在前面，工具仍会先用到它，还是认不了这台电脑的证书。请联系客服帮你处理。'
+export const nodeStillOutdatedAfterReplaceMessage = '新版 Node.js 已安装，但本机另有一份旧版 Node.js 优先级更高，工具仍会先使用旧版，因此仍无法识别本机的证书。请联系客服协助处理。'
 
 /**
  * Windows 在重启倒计时里弹的那句（shutdown /c）。Node.js 装完要重启、Codex 桌面端起不来要重启
@@ -192,7 +192,7 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
         target.send('runtime:node-install-progress', {
           phase: 'checking',
           source: null,
-          message: '这台电脑是 ARM 芯片，会装 ARM 版 Node.js，工具跑起来更快、更省电',
+          message: '本机为 ARM 芯片，将安装 ARM 版 Node.js，工具运行更快、更省电',
           percent: null,
         })
       }
@@ -316,7 +316,7 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
     if (platform !== 'win32') throw new Error('系统重启仅支持 Windows')
     // shutdown /r 会在倒计时结束后强行结束本程序，队列里的安装会停在原子替换的
     // 半截（I11 保护的正是这种中间态），所以有任务在跑就不发重启。
-    if (installationQueue.busy) throw new Error('还有安装、卸载或打开工具的任务在进行，等它做完再重启电脑')
+    if (installationQueue.busy) throw new Error('仍有安装、卸载或打开工具的任务正在进行，请待其完成后再重启电脑')
     const machinePaths = resolveWindowsMachinePathsForService()
     await executeCommand({
       executable: windowsSystemExecutable('shutdown.exe', process.env, 'win32', machinePaths),
@@ -393,7 +393,7 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
         target.send('runtime:git-install-progress', {
           phase: 'complete',
           source: null,
-          message: 'Git 本来就装好了，不用重复安装',
+          message: 'Git 已安装，无需重复安装',
           percent: 100,
         })
       }

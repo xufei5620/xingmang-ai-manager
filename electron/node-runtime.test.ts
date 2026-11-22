@@ -332,7 +332,7 @@ describe('Node.js installer routing and process plans', () => {
 
     expect(runProcess).not.toHaveBeenCalled()
     expect(progress).toContain(
-      '这台电脑缺少系统自带的应用安装组件，改用经过校验的 Node.js 安装包',
+      '本机缺少系统自带的应用安装组件，改用经过校验的 Node.js 安装包',
     )
   })
 
@@ -607,7 +607,7 @@ describe('Node.js response URL validation', () => {
 describe('Node.js MSI installing progress', () => {
   it('tells the customer a Windows authorization window is coming and where to look for it', () => {
     expect(nodeRuntimeMsiInstallingMessage('v24.19.0')).toBe(
-      '正在安装 Node.js v24.19.0 LTS，Windows 会弹一次授权窗口，请选「是」；没看到窗口，看看任务栏上有没有闪的盾牌图标。',
+      '正在安装 Node.js v24.19.0 LTS，Windows 将弹出授权窗口，请选择「是」；如未看到窗口，请查看任务栏上是否有闪烁的盾牌图标。',
     )
     expect(nodeRuntimeMsiInstallingMessage('v24.19.0', false)).toBe(nodeRuntimeMsiInstallingMessage('v24.19.0'))
   })
@@ -668,7 +668,7 @@ describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
         },
         removeTemporaryDirectory: async () => undefined,
       },
-    })).rejects.toThrow('Node.js 自动安装失败：安装包没地方放，临时文件夹写不进去。清理一下磁盘或重启电脑后再点「重试」。')
+    })).rejects.toThrow('Node.js 自动安装失败：临时文件夹无法写入，安装包无处存放。请清理磁盘或重启电脑后点击「重试」。')
     expect(progress.some((entry) => entry.startsWith('error:'))).toBe(true)
   })
 
@@ -747,7 +747,7 @@ describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
     expect(nodeRuntimeElevationFailureMessage(1223)).not.toContain('本身没有管理员权限')
     // 普通账号在授权窗口输了别的管理员账号的密码，提权那一步只认本人（2225），「用当前账号的管理员身份重试」做不到。
     expect(nodeRuntimeElevationFailureMessage(2225, 'standard'))
-      .toBe('管理员授权用的是另一个 Windows 账号，已停止安装以免装到别的账号名下。这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。公司或学校的电脑请找管理电脑的人帮忙。')
+      .toBe('管理员授权使用了另一个 Windows 账号，为避免安装到其他账号名下，已停止安装。这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。公司或学校的电脑请找管理电脑的人帮忙。')
     expect(nodeRuntimeElevationFailureMessage(2225, 'administrator')).toContain('请用当前 Windows 账号的管理员身份重试')
     expect(nodeRuntimeElevationFailureMessage(2225)).toContain('请用当前 Windows 账号的管理员身份重试')
     expect(nodeRuntimeElevationFailureMessage(13, 'standard')).toContain('签名校验失败')
@@ -805,7 +805,7 @@ describe('Node.js package download after a dropped connection', () => {
       expect(ranges).toEqual([null, `bytes=${cut}-`])
       expect(result).toEqual({ sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.byteLength })
       expect(fs.readFileSync(target).equals(bytes)).toBe(true)
-      expect(messages.some((message) => message.startsWith('网络断了一下，正在从') && message.includes('接着下载'))).toBe(true)
+      expect(messages.some((message) => message.startsWith('网络曾短暂中断，正在从') && message.includes('继续下载'))).toBe(true)
       expect(percents.every((value, index) => index === 0 || value >= percents[index - 1])).toBe(true)
       expect(messages.every((message) => !/Range|HTTP/.test(message))).toBe(true)
     } finally {
@@ -1145,7 +1145,7 @@ describe('Node.js installer skips winget unless the network is outside mainland 
       ])
       // 没试 winget 的原因进运行日志，客服看得出这一步是跳过的、不是坏了。
       expect(failure instanceof Error ? (failure.cause as Error).message : null)
-        .toContain(`winget：网络在国内或测不出位置（${region}），没试，直接下安装包`)
+        .toContain(`winget：网络位于国内或无法识别位置（${region}），已跳过，直接下载安装包`)
     })
   }
 
@@ -1206,7 +1206,7 @@ describe('Node.js installer skips winget unless the network is outside mainland 
 // Windows 同一时间只让装一个安装包：别的程序正在装时 msiexec 以 1618 退出，跟从哪儿下载无关（第三十五批 D）。
 // 客户在授权窗口点了「否」、或者这个账号拿不到管理员权限，同样跟从哪儿下载无关（#1096）。
 describe('whether a failed Node.js MSI install moves on to the next download source', () => {
-  const installerBusy = 'Windows 正在安装别的程序（错误 1618），Node.js 还没装上。等它装完再点一键安装；一直这样就先重启电脑再试'
+  const installerBusy = 'Windows 正在安装其他程序（错误 1618），Node.js 尚未安装。请待其安装完成后再点击一键安装；如持续出现，请先重启电脑后重试'
   const msiBytes = Buffer.alloc(2 * 1024 * 1024, 7)
   const msiSha256 = createHash('sha256').update(msiBytes).digest('hex')
 
@@ -1321,15 +1321,18 @@ describe('the sentence a failed Node.js install leaves on screen', () => {
   it('says one reason with the next step and leaves the raw steps to the log', () => {
     const refused = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED 1.2.3.4:443'), { code: 'ECONNREFUSED' }) })
     expect(describeNodeInstallFailure([refused, new Error('fetch failed')]))
-      .toBe('Node.js 自动安装失败：下载安装包时网络不通（错误码 ECONNREFUSED）。检查网络后再点「重试」。')
-    expect(describeNodeInstallFailure([new Error('fetch failed')])).toBe('Node.js 自动安装失败：下载安装包时网络不通。检查网络后再点「重试」。')
-    expect(describeNodeInstallFailure([new Error('HTTP 503')])).toBe('Node.js 自动安装失败：下载安装包时下载源那边出错（错误码 HTTP 503）。过几分钟再点「重试」。')
+      .toBe('Node.js 自动安装失败：下载安装包时网络不通（错误码 ECONNREFUSED）。请检查网络后点击「重试」。')
+    expect(describeNodeInstallFailure([new Error('fetch failed')])).toBe('Node.js 自动安装失败：下载安装包时网络不通。请检查网络后点击「重试」。')
+    expect(describeNodeInstallFailure([new Error('HTTP 503')])).toBe('Node.js 自动安装失败：下载安装包时下载源出错（错误码 HTTP 503）。请几分钟后点击「重试」。')
     expect(describeNodeInstallFailure([new Error('fetch failed'), new Error('Node.js 安装包 SHA-256 校验失败')]))
-      .toBe('Node.js 自动安装失败：下载的安装包没通过校验，已经删掉。再点「重试」；一直这样换个网络。')
+      .toBe('Node.js 自动安装失败：下载的安装包未通过校验，已删除。请点击「重试」；如持续出现，请更换网络。')
     expect(describeNodeInstallFailure([new Error('无法解析安装后的 Node.js 可执行文件：ENOENT')]))
-      .toBe('Node.js 自动安装失败：装完没找到能用的 Node.js。重启电脑后再看一次；还不行请找客服。')
+      .toBe('Node.js 自动安装失败：安装完成后未找到可用的 Node.js。请重启电脑后再次检查；如仍无法使用，请联系客服。')
     expect(describeNodeInstallFailure([new Error('fetch failed'), new Error('命令执行失败（退出码 1603）：powershell.exe')]))
       .toMatch(/^Node\.js 自动安装失败：Windows Installer 安装失败（错误 1603）。请先重启 Windows/)
+    // 1618 那句排在网络不通前面；改过开头的字以后排序那道正则没跟上，就落到最后一档「原因已经记进运行日志」。
+    expect(describeNodeInstallFailure([new Error('fetch failed'), new Error('命令执行失败（退出码 1618）：powershell.exe')]))
+      .toBe('Node.js 自动安装失败：Windows 正在安装其他程序（错误 1618），Node.js 尚未安装。请待其安装完成后再点击一键安装；如持续出现，请先重启电脑后重试。')
     expect(describeNodeInstallFailure([new Error('something odd')]))
       .toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
     expect(describeNodeInstallFailure([])).toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
@@ -1353,6 +1356,6 @@ describe('the sentence a failed Node.js install leaves on screen', () => {
 
   it('names the code when the staging folder could not be made', () => {
     expect(describeNodeStagingFailure(Object.assign(new Error("EPERM: operation not permitted, mkdir 'C:\\x'"), { code: 'EPERM' })))
-      .toBe('Node.js 自动安装失败：安装包没地方放，临时文件夹写不进去（错误码 EPERM）。清理一下磁盘或重启电脑后再点「重试」。')
+      .toBe('Node.js 自动安装失败：临时文件夹无法写入，安装包无处存放（错误码 EPERM）。请清理磁盘或重启电脑后点击「重试」。')
   })
 })

@@ -49,7 +49,7 @@ export function fixture(options: { site?: 'solov' | 'solov-api'; platform?: Node
       onProgress?.({ tool, phase: 'installing', message: '正在安装', percent: null })
       return { ...runtimeStatuses.find((status) => status.tool === tool)!, installed: true, launchSupported: true, version: '1.2.3' }
     }),
-    cancelInstall: vi.fn(() => ({ cancelled: false, reason: '这个工具当前没有正在进行的安装。' })),
+    cancelInstall: vi.fn(() => ({ cancelled: false, reason: '该工具当前没有正在进行的安装。' })),
     launch: vi.fn(async () => ({})),
     stillRunning: vi.fn(async (tool: ExternalToolId) => runtimeStatuses.find((status) => status.tool === tool)?.running ?? null),
   }

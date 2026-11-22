@@ -443,13 +443,13 @@ describe('guide install failure wording', () => {
 
   // 主进程那句只说原因、下一步留给错误目录；引导以前只放标题，「换个网络（比如手机热点）」客户看不到（主路卡点 F12）。
   it('tells a network failure to try another network with the catalog wording and the guide button name', () => {
-    const intercepted = guideInstallFailure(new Error('Claude Code 安装失败：npm 官方源：安全证书没通过校验（错误码 SELF_SIGNED_CERT_IN_CHAIN）。'), 'Claude Code', false, true)
+    const intercepted = guideInstallFailure(new Error('Claude Code 安装失败：npm 官方源：安全证书未通过校验（错误码 SELF_SIGNED_CERT_IN_CHAIN）。'), 'Claude Code', false, true)
     expect(intercepted.message).toBe('Claude Code 安装失败（连接被网络拦截）。连接途中有网络设备替换了证书（运营商、公司或学校网络较常见）。请稍候一两分钟后重试；如仍失败，请切换网络（如手机热点），公司或学校网络请联系网络管理员。')
     expect(intercepted.reason).toBe('连接被网络拦截')
     expect(intercepted.detail).toContain('SELF_SIGNED_CERT_IN_CHAIN')
-    expect(guideInstallFailure(new Error('Codex CLI 安装失败：npm 官方源：解析不出下载源的地址（错误码 ENOTFOUND）。'), 'Codex').message)
+    expect(guideInstallFailure(new Error('Codex CLI 安装失败：npm 官方源：无法解析下载源地址（错误码 ENOTFOUND）。'), 'Codex').message)
       .toBe('Codex 安装失败（无法连接下载源）。本机暂时无法连接下载服务器，已安装的工具不受影响。请检查网络或切换网络（如手机热点）后点击「重试」。')
-    expect(guideInstallFailure(new Error('Claude Code 安装失败：npm 官方源：安全证书没通过校验（错误码 CERT_HAS_EXPIRED）。'), 'Claude Code').message)
+    expect(guideInstallFailure(new Error('Claude Code 安装失败：npm 官方源：安全证书未通过校验（错误码 CERT_HAS_EXPIRED）。'), 'Claude Code').message)
       .toBe('Claude Code 安装失败（证书日期校验失败）。通常是本机系统时间不准确，证书是否过期以本机时钟为准。请将系统时间设为自动同步并确认时区后重试；如时间无误，请切换网络。')
     // 运行环境那一段没装上也是同一句下一步。
     expect(guideInstallFailure(new Error('Node.js 运行环境安装失败，Claude Code 尚未开始安装。下载 Node.js 时 ECONNRESET'), 'Claude Code').message)
@@ -457,11 +457,11 @@ describe('guide install failure wording', () => {
   })
 
   it('keeps the next step the main process wrote when the official registry check could not connect', () => {
-    const network = guideInstallFailure(new Error('Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ENOTFOUND）。换个网络（比如手机热点）后再试。'), 'Claude Code')
-    expect(network.message).toBe('Claude Code 安装失败（无法连接工具的官方下载站）。换个网络（比如手机热点）后再试。请点击「重试」；如仍失败，请点击「需要帮助」。')
+    const network = guideInstallFailure(new Error('Claude Code 安装失败：安装前需先在 npm 官方源核对安装清单，这一步没连上（错误码 ENOTFOUND）。请更换网络（如手机热点）后重试。'), 'Claude Code')
+    expect(network.message).toBe('Claude Code 安装失败（无法连接工具的官方下载站）。请更换网络（如手机热点）后重试。请点击「重试」；如仍失败，请点击「需要帮助」。')
     expect(network.reason).toBe('无法连接工具的官方下载站')
-    expect(guideInstallFailure(new Error('Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ECONNRESET）。到「设置 › 网络加速」开启加速后再试。'), 'Claude Code').message)
-      .toBe('Claude Code 安装失败（无法连接工具的官方下载站）。到「设置 › 网络加速」开启加速后再试。请点击「重试」；如仍失败，请点击「需要帮助」。')
+    expect(guideInstallFailure(new Error('Claude Code 安装失败：安装前需先在 npm 官方源核对安装清单，这一步没连上（错误码 ECONNRESET）。请在「设置 › 网络加速」中开启加速后重试。'), 'Claude Code').message)
+      .toBe('Claude Code 安装失败（无法连接工具的官方下载站）。请在「设置 › 网络加速」中开启加速后重试。请点击「重试」；如仍失败，请点击「需要帮助」。')
   })
 })
 
