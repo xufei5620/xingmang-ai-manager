@@ -201,14 +201,15 @@ class FakeCodex extends EventEmitter {
     if (typeof id !== 'string') return
     let reply: Record<string, unknown> | null = null
     if (message.method === 'initialize') reply = { id, result: { userAgent: this.userAgent } }
-    const custom = typeof message.method === 'string' ? this.replies2.get(message.method) : undefined
-    if (custom) reply = { id, ...custom(isRecordParams(message.params)) }
     if (message.method === 'config/read') reply = { id, ...this.configRead }
     if (message.method === 'thread/start') reply = { id, result: { thread: { id: 'th-1' } } }
     if (message.method === 'turn/start') {
       this.turns += 1
       reply = { id, result: { turn: { id: `tu-${this.turns}`, status: 'inProgress' } } }
     }
+    // 用例给了怎么回的，照用例的回（M02 要 turn/start 明着报错）。
+    const custom = typeof message.method === 'string' ? this.replies2.get(message.method) : undefined
+    if (custom) reply = { id, ...custom(isRecordParams(message.params)) }
     if (message.method === 'turn/interrupt') reply = this.interruptError ? { id, error: this.interruptError } : { id, result: {} }
     if (!reply) return
     const gate = typeof message.method === 'string' ? this.replyGates.get(message.method) : undefined
@@ -2501,6 +2502,40 @@ describe('codex-remote-service turns', () => {
     expect(s.codex[0].requests('thread/start')).toHaveLength(0)
     expect(s.codex[0].requests('turn/start')).toHaveLength(0)
     expect((await s.service.snapshot()).task).toBe('idle')
+  })
+
+  // M02：turn/start 等满 60 秒没回执就当没做成收掉了，Codex 那边却可能已经开始做：那一轮冒出动静时补一次打断，
+  // 不让它在手机看不见的地方接着跑、接着扣钱。
+  it('interrupts a turn Codex started after its turn/start receipt was given up on, and only once', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let release!: () => void
+    const s = await setup({ replyGates: new Map([['turn/start', new Promise<void>((resolve) => { release = resolve })]]) })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    const codex = await turnStarted(s, 1)
+    await vi.advanceTimersByTimeAsync(60_000)
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    expect(s.logs).toContain('remote.turn-start-timeout')
+    expect(codex.requests('turn/interrupt')).toHaveLength(0)
+    // The receipt turns up late and nobody is waiting for it; then the turn shows itself.
+    release()
+    codex.notify('turn/started', { threadId: 'th-1', turn: { id: 'tu-1', status: 'inProgress' } })
+    await vi.waitFor(() => expect(codex.requests('turn/interrupt')).toHaveLength(1))
+    expect(codex.requests('turn/interrupt')[0].params).toEqual({ threadId: 'th-1', turnId: 'tu-1' })
+    expect(s.logs).toContain('remote.late-turn-interrupted')
+    codex.notify('item/started', { threadId: 'th-1', turnId: 'tu-1', item: { id: 'item-1', type: 'agentMessage' } })
+    expect(codex.requests('turn/interrupt')).toHaveLength(1)
+  })
+
+  it('does not interrupt anything when turn/start is refused outright', async () => {
+    const s = await setup({ codexReplies: { 'turn/start': () => ({ error: { code: -32600, message: 'bad request' } }) } })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    const codex = await turnStarted(s, 1)
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    codex.notify('turn/started', { threadId: 'th-1', turn: { id: 'tu-9', status: 'inProgress' } })
+    expect(codex.requests('turn/interrupt')).toHaveLength(0)
+    expect(s.logs).not.toContain('remote.turn-start-timeout')
   })
 
   it('hands the next turn to Codex only after the one stopped on its way has been interrupted', async () => {

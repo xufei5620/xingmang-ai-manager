@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
-import { AppServerMethodError, CodexAppServerClient, type AppServerHandlers, type AppServerProcess } from './codex-remote-app-server'
+import { AppServerMethodError, AppServerRequestError, AppServerTimeoutError, CodexAppServerClient, type AppServerHandlers, type AppServerProcess } from './codex-remote-app-server'
 
 class FakeProcess extends EventEmitter {
   readonly stdout = new EventEmitter()
@@ -70,6 +70,20 @@ describe('codex-remote-app-server', () => {
     fake.send({ id: fake.written[2].id, result: { thread: { id: 't1' } } })
     await expect(ok).resolves.toEqual({ thread: { id: 't1' } })
     await expect(bad).rejects.toThrow('bad turn')
+  })
+
+  // M02：到点没等到回执跟 Codex 明着拒绝分开报，遥控那边只有前一种要防着 Codex 其实已经照做。
+  it('tells a request that got no answer in time apart from one Codex refused', async () => {
+    const fake = new FakeProcess()
+    const client = await started(fake)
+    const silent = client.request('turn/start', {}, 20)
+    await expect(silent).rejects.toBeInstanceOf(AppServerTimeoutError)
+    await expect(silent).rejects.toThrow('Codex 未响应（turn/start）')
+    const refused = client.request('turn/start', {})
+    fake.send({ id: fake.written.at(-1)?.id, error: { code: -32600, message: 'bad turn' } })
+    const error = await refused.catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(AppServerRequestError)
+    expect(error).not.toBeInstanceOf(AppServerTimeoutError)
   })
 
   it('answers server requests through the handler, including failures', async () => {
