@@ -1,6 +1,6 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled, parseRemoteIdleClose, parseRemoteModel, parseRemotePermission, parseRemoteWorkspaceChoice } from './codex-remote'
+import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteConversationChoice, parseRemoteEnabled, parseRemoteIdleClose, parseRemoteModel, parseRemotePermission, parseRemoteWorkspaceChoice } from './codex-remote'
 
 describe('codex-remote parsers', () => {
   it('accepts only known channels and real booleans', () => {
@@ -72,5 +72,25 @@ describe('codex-remote parsers', () => {
     expect(() => parseFeishuCredentialRequest({ appId: 'a'.repeat(257), appSecret: 's' })).toThrow()
     expect(() => parseFeishuCredentialRequest({ appId: 'cli\0', appSecret: 's' })).toThrow()
     expect(() => parseFeishuCredentialRequest(null)).toThrow()
+  })
+
+  it('takes the phone conversation only as a Codex conversation id, or null for a new one', () => {
+    expect(parseRemoteConversationChoice('01a20102-19e8-7b23-968d-694964b4899f')).toBe('01a20102-19e8-7b23-968d-694964b4899f')
+    expect(parseRemoteConversationChoice(null)).toBeNull()
+    for (const value of ['', 'th-1', '../01a20102-19e8-7b23-968d-694964b4899f', '/Users/a/projects/demo', '01a20102-19e8-7b23-968d-694964b4899f\n', undefined, 1, { id: 'x' }]) {
+      expect(() => parseRemoteConversationChoice(value)).toThrow('手机端对话参数无效')
+    }
+  })
+
+  it('never passes on anything but a conversation id or null, with random inputs', () => {
+    fc.assert(fc.property(fc.anything(), (value) => {
+      let parsed: string | null | undefined
+      try {
+        parsed = parseRemoteConversationChoice(value)
+      } catch {
+        return true
+      }
+      return parsed === null || (typeof parsed === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parsed))
+    }))
   })
 })

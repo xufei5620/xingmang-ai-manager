@@ -21,12 +21,14 @@ import type {
 import type { ProviderId as CatalogProviderId } from './catalog'
 import type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
 export type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
-import type { CodexRemoteSnapshot, RemoteChannelId, RemoteIdleCloseHours, RemotePermission } from './codex-remote-channel'
+import type { CodexRemoteConversationList, CodexRemoteSnapshot, RemoteChannelId, RemoteIdleCloseHours, RemotePermission } from './codex-remote-channel'
 export type {
   CodexRemoteBoundPeerSnapshot,
   CodexRemoteChannelSnapshot,
   CodexRemoteLastRequestSnapshot,
   CodexRemotePairingSnapshot,
+  CodexRemoteConversationItem,
+  CodexRemoteConversationList,
   CodexRemoteSnapshot,
   CodexRemoteTaskState,
   RemoteChannelId,
@@ -1738,6 +1740,10 @@ export interface XingmangInvokeContract {
   setCodexRemoteModel: IpcInvokeDefinition<'codex-remote:set-model', [model: string | null], CodexRemoteSnapshot>
   /** 「权限」两档：default（缺省，跟电脑上的 Codex 一样）或 readOnly。只记下来，手机上下一句交给 Codex 时用上。 */
   setCodexRemotePermission: IpcInvokeDefinition<'codex-remote:set-permission', [permission: RemotePermission], CodexRemoteSnapshot>
+  /** 「选择对话」：本机 Codex 最近的对话。读不出来时报错（「无法读取对话列表，请稍后重试。」）。 */
+  listCodexRemoteConversations: IpcInvokeDefinition<'codex-remote:list-conversations', [], CodexRemoteConversationList>
+  /** 选好「手机端的对话」：null = 新对话；别的只收上一次列出来的那段的编号。 */
+  chooseCodexRemoteConversation: IpcInvokeDefinition<'codex-remote:choose-conversation', [conversationId: string | null], CodexRemoteSnapshot>
   /** 卡片「最近一次」的「停下这一轮」（YF-13）：跟手机上发「停止」一样，手机上也收到「已停止。」。 */
   stopCodexRemoteTurn: IpcInvokeDefinition<'codex-remote:stop-turn', [], CodexRemoteSnapshot>
   /** 卡片「最近一次」的「都拒绝」（YF-13）：等着同意的一条条拒绝，跟手机上点「拒绝」一样；这一轮不停。 */
@@ -2072,6 +2078,8 @@ export const ipcInvokeChannels = {
   setCodexRemoteIdleClose: 'codex-remote:set-idle-close',
   setCodexRemoteModel: 'codex-remote:set-model',
   setCodexRemotePermission: 'codex-remote:set-permission',
+  listCodexRemoteConversations: 'codex-remote:list-conversations',
+  chooseCodexRemoteConversation: 'codex-remote:choose-conversation',
   stopCodexRemoteTurn: 'codex-remote:stop-turn',
   declineCodexRemoteApprovals: 'codex-remote:decline-approvals',
   chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',

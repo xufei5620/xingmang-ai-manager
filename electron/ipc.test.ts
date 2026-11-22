@@ -10603,6 +10603,7 @@ describe('IPC channel log and account policies', () => {
         'chat:pick-text-files',
         'chat:save-asset',
         'codex-remote:get-state',
+        'codex-remote:list-conversations',
         'codex-remote:start-pairing',
         'codex-remote:weixin-login-poll',
         'codex-remote:weixin-login-start',

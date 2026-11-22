@@ -49,6 +49,13 @@ import {
   readRequestedPermissions,
   remoteChannelsReadyToEnable,
   remoteIdleInstallQuietMs,
+  codexSupportsResume,
+  readCodexVersion,
+  readListedConversations,
+  readResumedThread,
+  resolveChosenConversation,
+  resumedPermissionFits,
+  sameRemoteFolder,
   sentWhileOpen,
   validateRemoteWorkspace,
 } from './codex-remote-service'
@@ -99,6 +106,10 @@ function createWaiters(): Waiters {
   }
 }
 
+function isRecordParams(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
 class FakeCodex extends EventEmitter {
   readonly stdout = new EventEmitter()
   readonly stderr = new EventEmitter()
@@ -110,6 +121,10 @@ class FakeCodex extends EventEmitter {
   configRead: Record<string, unknown> = { result: { config: {}, origins: {}, layers: [] } }
   /** 设了就拿它当 turn/interrupt 的报错回去：模拟 Codex 不答应停（M01）。 */
   interruptError: Record<string, unknown> | null = null
+  /** initialize 回的 userAgent：缺省读不出版本（接已有对话不开放）。 */
+  userAgent = 'codex'
+  /** 别的方法按名字回什么（result 或 error），比如 thread/list、thread/resume。 */
+  readonly replies2 = new Map<string, (params: Record<string, unknown>) => Record<string, unknown>>()
   private turns = 0
   private readonly replies = new Map<string, (message: Record<string, unknown>) => void>()
   private readonly requestWaiters: Array<{ done: () => boolean; resolve: () => void }> = []
@@ -185,7 +200,9 @@ class FakeCodex extends EventEmitter {
     }
     if (typeof id !== 'string') return
     let reply: Record<string, unknown> | null = null
-    if (message.method === 'initialize') reply = { id, result: { userAgent: 'codex' } }
+    if (message.method === 'initialize') reply = { id, result: { userAgent: this.userAgent } }
+    const custom = typeof message.method === 'string' ? this.replies2.get(message.method) : undefined
+    if (custom) reply = { id, ...custom(isRecordParams(message.params)) }
     if (message.method === 'config/read') reply = { id, ...this.configRead }
     if (message.method === 'thread/start') reply = { id, result: { thread: { id: 'th-1' } } }
     if (message.method === 'turn/start') {
@@ -397,6 +414,10 @@ async function setup(options: {
   startFails?: boolean
   /** 这台 Windows 电脑登录的账号本身就带管理员权限（CodexRemoteServiceOptions.alwaysElevatedAccount）。 */
   alwaysElevatedAccount?: boolean
+  /** 起出来的 Codex 报的版本（initialize 的 userAgent）；缺省读不出版本。 */
+  codexVersion?: string
+  /** 起出来的每份 Codex 对这些方法怎么回（FakeCodex.replies2）。 */
+  codexReplies?: Record<string, (params: Record<string, unknown>) => Record<string, unknown>>
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -498,6 +519,8 @@ async function setup(options: {
       const fake = new FakeCodex()
       for (const [method, gate] of options.replyGates ?? []) fake.replyGates.set(method, gate)
       if (options.configRead) fake.configRead = options.configRead
+      if (options.codexVersion) fake.userAgent = `xingmang_remote/${options.codexVersion} (Mac OS 15.1.0; arm64) (xingmang_remote; 0.2.25)`
+      for (const [method, reply] of Object.entries(options.codexReplies ?? {})) fake.replies2.set(method, reply)
       codex.push(fake)
       codexSpawnWaiters.wake()
       return fake as unknown as AppServerProcess
@@ -4332,5 +4355,376 @@ describe('codex-remote-service releasing Codex for an update or uninstall', () =
     await vi.advanceTimersByTimeAsync(1_000)
     await releasing
     expect(s.logs).toContain('remote.codex-release-timeout')
+  })
+})
+
+const threadA = '01a20102-19e8-7b23-968d-694964b4899f'
+const threadB = '01a20101-8c39-7c23-a0e8-2036f142d454'
+const threadC = '01a20100-f4da-7522-b3c0-d0abd6ea5b07'
+const fitsDefault = {
+  approvalPolicy: 'on-request',
+  approvalsReviewer: 'user',
+  sandbox: { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+}
+const fullAccess = { approvalPolicy: 'never', approvalsReviewer: 'user', sandbox: { type: 'dangerFullAccess' } }
+
+/** 本机时间 11 月 day 日 hour:minute，Codex 记的是秒。 */
+function codexSeconds(day: number, hour: number, minute: number): number {
+  return new Date(2026, 10, day, hour, minute).getTime() / 1000
+}
+
+function codexThread(id: string, cwd: string, preview: string, updatedAt: number, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { id, cwd, preview, name: null, updatedAt, ephemeral: false, parentThreadId: null, source: 'vscode', ...extra }
+}
+
+function resumeReply(threadId: string, cwd: string, permission: Record<string, unknown> = fitsDefault): Record<string, unknown> {
+  return { result: { thread: { id: threadId, cwd }, cwd, model: 'gpt-5.5', reasoningEffort: 'medium', ...permission } }
+}
+
+interface ConversationSetup {
+  s: Setup
+  workspace: string
+  other: string
+}
+
+async function conversationSetup(options: {
+  list?: (folders: { workspace: string; other: string }) => Array<Record<string, unknown>>
+  resume?: (params: Record<string, unknown>, folders: { workspace: string; other: string }) => Record<string, unknown>
+  codexVersion?: string | null
+} = {}): Promise<ConversationSetup> {
+  const root = tempRoot()
+  const workspace = path.join(root, 'home', 'projects', 'demo')
+  const other = path.join(root, 'home', 'projects', 'other')
+  fs.mkdirSync(other, { recursive: true })
+  const folders = { workspace, other }
+  const list = options.list ?? (() => [
+    codexThread(threadA, workspace, '修复登录页报错', codexSeconds(21, 18, 30)),
+    codexThread(threadC, path.join(root, 'home', 'elsewhere'), '别处的对话', codexSeconds(21, 12, 0)),
+    codexThread(threadB, `${other}/`, '整理接口文档', codexSeconds(20, 9, 12)),
+  ])
+  const s = await setup({
+    root,
+    ...(options.codexVersion === null ? {} : { codexVersion: options.codexVersion ?? '0.169.0' }),
+    codexReplies: {
+      'thread/list': () => ({ result: { data: list(folders), nextCursor: null, backwardsCursor: null } }),
+      'thread/resume': (params) => (options.resume ? options.resume(params, folders) : resumeReply(String(params.threadId), params.threadId === threadB ? other : workspace)),
+    },
+  })
+  await s.store.updateSettings((settings) => { settings.workspaceDirectories = [workspace, other] })
+  return { s, workspace, other }
+}
+
+async function phoneReply(channel: FakeChannel, body: string): Promise<string> {
+  const before = channel.sent.length
+  channel.handlers?.onInbound(text(alice, body))
+  await channel.sentUntil(() => channel.sent.length > before)
+  return channel.texts()[before]
+}
+
+const switchedToB = [
+  '已切换到对话「整理接口文档」，请发送消息继续。手机遥控的规则（不发送密钥和密码、回复简洁等）将保留在该对话中，在电脑端继续时同样生效。',
+  '请勿在电脑端和手机端同时向该对话发送消息。',
+].join('\n')
+
+describe('codex-remote-service continuing a Codex conversation from the phone', () => {
+  it('lists the recent conversations in the added folders only, newest first, with an example to send', async () => {
+    const { s } = await conversationSetup()
+    const channel = await enabledAndPaired(s)
+    expect(await phoneReply(channel, '对话')).toBe([
+      '本机最近的 Codex 对话（仅限电脑端已添加的文件夹）：',
+      '1. 修复登录页报错（demo，11-21 18:30）',
+      '2. 整理接口文档（other，11-20 09:12）',
+      '请发送「对话 1」继续该对话。',
+    ].join('\n'))
+    expect(s.codex[0].requests('thread/list')[0].params).toMatchObject({ sortKey: 'updated_at', sortDirection: 'desc', sourceKinds: ['cli', 'vscode', 'appServer'] })
+  })
+
+  it('says there is nothing to continue when no conversation is in an added folder', async () => {
+    const { s } = await conversationSetup({ list: () => [] })
+    const channel = await enabledAndPaired(s)
+    expect(await phoneReply(channel, '对话')).toBe('电脑端已添加的文件夹中暂无 Codex 对话，发送消息即可开始新对话。')
+  })
+
+  it('does not offer existing conversations on a Codex version that was not checked', async () => {
+    const { s } = await conversationSetup({ codexVersion: '0.170.0' })
+    const channel = await enabledAndPaired(s)
+    expect(await phoneReply(channel, '对话')).toBe('当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。')
+    expect(await phoneReply(channel, '对话 1')).toBe('当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。')
+    expect(s.codex[0].requests('thread/resume')).toHaveLength(0)
+  })
+
+  it('continues the chosen conversation where it is, switching to its folder, and adds the remote rules on the next message only', async () => {
+    const { s, other } = await conversationSetup()
+    const channel = await enabledAndPaired(s)
+    await phoneReply(channel, '对话')
+    expect(await phoneReply(channel, '对话 2')).toBe(switchedToB)
+    const codex = s.codex[0]
+    expect(codex.requests('thread/resume')[0].params).toEqual({
+      threadId: threadB,
+      excludeTurns: true,
+      config: { 'features.apps': false, 'features.plugins': false },
+    })
+    const settings = await s.store.readSettings()
+    expect(settings.workspaceDirectory).toBe(other)
+    expect(settings.conversation).toMatchObject({ threadId: threadB, title: '整理接口文档', folder: other })
+    expect((await s.service.snapshot()).conversation).toMatchObject({ id: threadB, title: '整理接口文档', folder: '~/projects/other' })
+    channel.handlers?.onInbound(text(alice, '再改一下'))
+    await codex.requestedUntil('turn/start', 1)
+    expect(codex.requests('thread/start')).toHaveLength(0)
+    const first = codex.requests('turn/start')[0].params as Record<string, unknown>
+    expect(first.threadId).toBe(threadB)
+    expect(first).not.toHaveProperty('approvalPolicy')
+    expect(first).not.toHaveProperty('sandboxPolicy')
+    expect(first.collaborationMode).toMatchObject({ mode: 'default', settings: { model: 'gpt-5.5', reasoning_effort: 'medium' } })
+    expect(String((first.collaborationMode as { settings: { developer_instructions: string } }).settings.developer_instructions)).toContain('Never print, copy or summarise API keys')
+    codex.notify('turn/completed', { threadId: threadB, turn: { id: 'tu-1', status: 'completed', error: null } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    channel.handlers?.onInbound(text(alice, '再看一下'))
+    await codex.requestedUntil('turn/start', 2)
+    expect(codex.requests('turn/start')[1].params).not.toHaveProperty('collaborationMode')
+    expect(channel.texts().filter((line) => line.includes('当前为新对话'))).toHaveLength(0)
+  })
+
+  it('lowers a conversation that had more access than the phone level and says so', async () => {
+    const { s } = await conversationSetup({ resume: (params, folders) => resumeReply(String(params.threadId), folders.other, fullAccess) })
+    const channel = await enabledAndPaired(s)
+    await phoneReply(channel, '对话')
+    expect(await phoneReply(channel, '对话 2')).toBe([
+      '已切换到对话「整理接口文档」，请发送消息继续。手机遥控的规则（不发送密钥和密码、回复简洁等）将保留在该对话中，在电脑端继续时同样生效。',
+      '该对话原有权限超出手机遥控允许的范围，已调整为「默认」，在电脑端继续时也将保持「默认」。',
+      '请勿在电脑端和手机端同时向该对话发送消息。',
+    ].join('\n'))
+    channel.handlers?.onInbound(text(alice, '再改一下'))
+    const codex = s.codex[0]
+    await codex.requestedUntil('turn/start', 1)
+    expect(codex.requests('turn/start')[0].params).toMatchObject({
+      threadId: threadB,
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
+      sandboxPolicy: { type: 'workspaceWrite', networkAccess: false },
+    })
+  })
+
+  it('names the read-only level when the phone is set to read-only', async () => {
+    const { s } = await conversationSetup({ resume: (params, folders) => resumeReply(String(params.threadId), folders.other) })
+    await s.service.setPermission('readOnly')
+    const channel = await enabledAndPaired(s)
+    await phoneReply(channel, '对话')
+    expect(await phoneReply(channel, '对话 2')).toContain('已调整为「只读」，在电脑端继续时也将保持「只读」。')
+  })
+
+  it('refuses a number that is not on the list, the conversation already in use and a switch while Codex is busy', async () => {
+    const { s } = await conversationSetup()
+    const channel = await enabledAndPaired(s)
+    await phoneReply(channel, '对话')
+    expect(await phoneReply(channel, '对话 3')).toBe('不存在第 3 个对话，请发送「对话」查看列表。')
+    await phoneReply(channel, '对话 2')
+    expect(await phoneReply(channel, '对话 2')).toBe('当前已在该对话中。')
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await s.codex[0].requestedUntil('turn/start', 1)
+    expect(await phoneReply(channel, '对话 1')).toBe('Codex 正在处理上一条消息，请待其完成后再切换对话。')
+  })
+
+  it('keeps the current conversation and folder when Codex cannot continue the chosen one', async () => {
+    const { s, workspace } = await conversationSetup({ resume: () => ({ error: { code: -32600, message: 'thread not found' } }) })
+    const channel = await enabledAndPaired(s)
+    await phoneReply(channel, '对话')
+    expect(await phoneReply(channel, '对话 2')).toBe('无法继续该对话，请稍后重试，或发送「新对话」开始新对话。')
+    const settings = await s.store.readSettings()
+    expect(settings.workspaceDirectory).toBe(workspace)
+    expect(settings.conversation).toBeUndefined()
+  })
+
+  it('goes back to a new conversation when the phone sends 新对话', async () => {
+    const { s } = await conversationSetup()
+    const channel = await enabledAndPaired(s)
+    await phoneReply(channel, '对话')
+    await phoneReply(channel, '对话 2')
+    expect(await phoneReply(channel, '新对话')).toBe('已开始新对话。')
+    expect((await s.store.readSettings()).conversation).toBeUndefined()
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await s.codex[0].requestedUntil('turn/start', 1)
+    expect(s.codex[0].requests('thread/start')).toHaveLength(1)
+  })
+})
+
+describe('codex-remote-service choosing the phone conversation on the computer', () => {
+  it('lists every recent conversation, even with the remote switched off, and stops the Codex it started for that', async () => {
+    const { s } = await conversationSetup()
+    const list = await s.service.listConversations()
+    expect(list).toEqual({
+      supported: true,
+      items: [
+        { id: threadA, title: '修复登录页报错', folder: '~/projects/demo', updatedAt: codexSeconds(21, 18, 30) * 1000 },
+        { id: threadC, title: '别处的对话', folder: '~/elsewhere', updatedAt: codexSeconds(21, 12, 0) * 1000 },
+        { id: threadB, title: '整理接口文档', folder: '~/projects/other/', updatedAt: codexSeconds(20, 9, 12) * 1000 },
+      ],
+    })
+    expect(s.codex).toHaveLength(1)
+    expect(s.codex[0].kills.length).toBeGreaterThan(0)
+  })
+
+  it('reports an unchecked Codex version instead of listing', async () => {
+    const { s } = await conversationSetup({ codexVersion: null })
+    expect(await s.service.listConversations()).toEqual({ supported: false })
+  })
+
+  it('turns a failed read into the sentence shown in the dialog', async () => {
+    const s = await setup({ codexVersion: '0.169.0', codexReplies: { 'thread/list': () => ({ error: { code: -32603, message: 'state db locked' } }) } })
+    await expect(s.service.listConversations()).rejects.toThrow('无法读取对话列表，请稍后重试。')
+  })
+
+  it('switches to the chosen conversation and its folder, tells the phone and continues it on the next message', async () => {
+    const { s, other } = await conversationSetup()
+    const channel = await enabledAndPaired(s)
+    await s.service.listConversations()
+    const snapshot = await s.service.chooseConversation(threadB)
+    expect(snapshot.conversation).toMatchObject({ id: threadB, title: '整理接口文档' })
+    expect(snapshot.workspaceDirectory).toBe('~/projects/other')
+    await channel.sentUntil(() => channel.texts().includes('电脑端已切换到对话「整理接口文档」。'))
+    channel.handlers?.onInbound(text(alice, '接着做'))
+    const codex = s.codex[0]
+    await codex.requestedUntil('turn/start', 1)
+    expect(codex.requests('thread/start')).toHaveLength(0)
+    expect(codex.requests('thread/resume')[0].params).toMatchObject({ threadId: threadB })
+    expect(codex.requests('config/read').at(-1)?.params).toEqual({ cwd: other, includeLayers: true })
+    expect(codex.requests('turn/start')[0].params).toMatchObject({ threadId: threadB, collaborationMode: { mode: 'default' } })
+    expect(channel.texts()).toContain('已收到，Codex 开始处理。')
+  })
+
+  it('adds the folder of a conversation chosen outside the added folders, and refuses one whose folder is gone', async () => {
+    const third = path.join(tempRoot(), 'projects', 'third')
+    fs.mkdirSync(third, { recursive: true })
+    const { s, workspace, other } = await conversationSetup({
+      list: () => [
+        codexThread(threadC, third, '别处的对话', codexSeconds(21, 12, 0)),
+        codexThread(threadA, path.join(os.tmpdir(), 'xm-remote-folder-that-is-gone'), '已删掉的文件夹', codexSeconds(21, 11, 0)),
+      ],
+    })
+    await s.service.listConversations()
+    await s.service.chooseConversation(threadC)
+    const settings = await s.store.readSettings()
+    expect(settings.workspaceDirectories).toEqual([workspace, other, third])
+    expect(settings.workspaceDirectory).toBe(third)
+    await expect(s.service.chooseConversation(threadA)).rejects.toThrow('该对话所在的文件夹不允许用于手机遥控，请选择其他对话。')
+  })
+
+  it('refuses a conversation in a folder the remote may not use, and an id it did not list', async () => {
+    const { s } = await conversationSetup({
+      list: (folders) => [codexThread(threadC, path.dirname(path.dirname(folders.workspace)), '整个主目录', codexSeconds(21, 12, 0))],
+    })
+    await s.service.listConversations()
+    await expect(s.service.chooseConversation(threadC)).rejects.toThrow('该对话所在的文件夹不允许用于手机遥控，请选择其他对话。')
+    await expect(s.service.chooseConversation(threadA)).rejects.toThrow('无法读取对话列表，请稍后重试。')
+  })
+
+  it('does not switch while Codex is working on a phone message', async () => {
+    const { s } = await conversationSetup()
+    const channel = await enabledAndPaired(s)
+    await prompted(s, channel)
+    await s.service.listConversations()
+    await expect(s.service.chooseConversation(threadB)).rejects.toThrow('Codex 正在处理消息，请待其完成后再切换对话。')
+  })
+
+  it('goes back to a new conversation, tells the phone and starts one on the next message', async () => {
+    const { s } = await conversationSetup()
+    const channel = await enabledAndPaired(s)
+    await s.service.listConversations()
+    await s.service.chooseConversation(threadB)
+    expect((await s.service.chooseConversation(null)).conversation).toBeUndefined()
+    await channel.sentUntil(() => channel.texts().includes('电脑端已切换为新对话。'))
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await s.codex[0].requestedUntil('turn/start', 1)
+    expect(s.codex[0].requests('thread/start')).toHaveLength(1)
+    expect(s.codex[0].requests('thread/resume')).toHaveLength(0)
+  })
+
+  it('forgets the chosen conversation once another folder is put in use', async () => {
+    const { s } = await conversationSetup()
+    await s.service.listConversations()
+    await s.service.chooseConversation(threadB)
+    const snapshot = await s.service.useWorkspace('~/projects/demo')
+    expect(snapshot.conversation).toBeUndefined()
+    expect((await s.store.readSettings()).conversation).toBeUndefined()
+  })
+
+  it('tells the phone it cannot continue when the chosen conversation is gone, without starting a new one', async () => {
+    const { s } = await conversationSetup({ resume: () => ({ error: { code: -32600, message: 'thread not found' } }) })
+    const channel = await enabledAndPaired(s)
+    await s.service.listConversations()
+    await s.service.chooseConversation(threadB)
+    channel.handlers?.onInbound(text(alice, '接着做'))
+    await channel.sentUntil(() => channel.texts().includes('无法继续该对话，请稍后重试，或发送「新对话」开始新对话。'))
+    expect(s.codex[0].requests('thread/start')).toHaveLength(0)
+    expect(s.codex[0].requests('turn/start')).toHaveLength(0)
+    await vi.waitFor(async () => expect((await s.service.snapshot()).lastRequest).toMatchObject({ state: 'failed', reason: '无法继续该对话，请稍后重试，或发送「新对话」开始新对话。' }))
+  })
+})
+
+describe('codex-remote-service conversation helpers', () => {
+  const workspace = '/Users/a/projects/demo'
+
+  it('keeps an existing conversation that stays within the phone level and lowers anything wider', () => {
+    const readOnly = { type: 'readOnly', networkAccess: false }
+    expect(resumedPermissionFits(fitsDefault, 'default', workspace, 'darwin')).toBe(true)
+    expect(resumedPermissionFits({ ...fitsDefault, approvalPolicy: 'untrusted', sandbox: readOnly }, 'readOnly', workspace, 'darwin')).toBe(true)
+    expect(resumedPermissionFits({ ...fitsDefault, sandbox: { ...fitsDefault.sandbox, writableRoots: [`${workspace}/`] } }, 'default', workspace, 'darwin')).toBe(true)
+    expect(resumedPermissionFits(fitsDefault, 'readOnly', workspace, 'darwin')).toBe(false)
+    expect(resumedPermissionFits(fullAccess, 'default', workspace, 'darwin')).toBe(false)
+    expect(resumedPermissionFits({ ...fitsDefault, approvalPolicy: 'never' }, 'default', workspace, 'darwin')).toBe(false)
+    expect(resumedPermissionFits({ ...fitsDefault, approvalPolicy: { granular: {} } }, 'default', workspace, 'darwin')).toBe(false)
+    expect(resumedPermissionFits({ ...fitsDefault, approvalsReviewer: 'auto_review' }, 'default', workspace, 'darwin')).toBe(false)
+    expect(resumedPermissionFits({ ...fitsDefault, sandbox: { ...fitsDefault.sandbox, networkAccess: true } }, 'default', workspace, 'darwin')).toBe(false)
+    expect(resumedPermissionFits({ ...fitsDefault, sandbox: { ...fitsDefault.sandbox, writableRoots: ['/Users/a'] } }, 'default', workspace, 'darwin')).toBe(false)
+    expect(resumedPermissionFits({ ...fitsDefault, sandbox: { type: 'externalSandbox', networkAccess: 'restricted' } }, 'default', workspace, 'darwin')).toBe(false)
+    expect(resumedPermissionFits({ ...fitsDefault, sandbox: undefined }, 'default', workspace, 'darwin')).toBe(false)
+  })
+
+  it('treats folders as the same only up to a trailing slash, ignoring case on Windows alone', () => {
+    expect(sameRemoteFolder('/Users/a/demo/', '/Users/a/demo', 'darwin')).toBe(true)
+    expect(sameRemoteFolder('/Users/a/Demo', '/Users/a/demo', 'darwin')).toBe(false)
+    expect(sameRemoteFolder('c:\\Users\\a\\demo\\', 'C:\\Users\\a\\Demo', 'win32')).toBe(true)
+  })
+
+  it('only offers the conversation helpers on the Codex version they were checked on', () => {
+    expect(readCodexVersion({ userAgent: 'xingmang_remote/0.169.0 (Ubuntu 24.4.0; x86_64) linux (xingmang_remote; 0.2.25)' })).toBe('0.169.0')
+    expect(readCodexVersion({ userAgent: 'codex' })).toBeNull()
+    expect(readCodexVersion(null)).toBeNull()
+    expect(codexSupportsResume('0.169.0')).toBe(true)
+    expect(codexSupportsResume('0.169.3')).toBe(true)
+    expect(codexSupportsResume('0.170.0')).toBe(false)
+    expect(codexSupportsResume('0.16.9')).toBe(false)
+    expect(codexSupportsResume(null)).toBe(false)
+  })
+
+  it('lists conversations people had, with one short title line, and leaves out sub-agents, throwaway ones and empty ones', () => {
+    const listed = readListedConversations({
+      data: [
+        codexThread(threadA, workspace, '  修复\n登录页   报错  ', 1_795_313_244, { name: null }),
+        codexThread(threadB, workspace, '第一句', 1_795_313_000, { name: '整理接口文档' }),
+        codexThread(threadC, workspace, '子任务', 1_795_313_000, { parentThreadId: threadA }),
+        codexThread('01a20100-0000-7000-8000-000000000001', workspace, '一次性', 1_795_313_000, { ephemeral: true }),
+        codexThread('01a20100-0000-7000-8000-000000000002', workspace, '', 1_795_313_000),
+        codexThread('../../etc', workspace, '编号不对', 1_795_313_000),
+        codexThread('01a20100-0000-7000-8000-000000000003', 'relative/folder', '路径不对', 1_795_313_000),
+        codexThread('01a20100-0000-7000-8000-000000000004', workspace, '很长'.repeat(40), 1_795_313_000),
+      ],
+    })
+    expect(listed.map((entry) => entry.title)).toEqual(['修复 登录页 报错', '整理接口文档', `${'很长'.repeat(19)}很…`])
+    expect(listed[0]).toEqual({ threadId: threadA, title: '修复 登录页 报错', cwd: workspace, updatedAt: 1_795_313_244_000 })
+    expect(readListedConversations({ data: 'nope' })).toEqual([])
+  })
+
+  it('reads what thread/resume answered and refuses an answer without a thread, folder or model', () => {
+    expect(readResumedThread(resumeReply(threadA, workspace).result)).toMatchObject({ threadId: threadA, cwd: workspace, model: 'gpt-5.5', reasoningEffort: 'medium', approvalPolicy: 'on-request' })
+    expect(readResumedThread({ thread: { id: threadA }, model: 'gpt-5.5' })).toBeNull()
+    expect(readResumedThread({ thread: { id: threadA }, cwd: workspace })).toBeNull()
+  })
+
+  it('only counts the chosen conversation while its folder is the one in use', () => {
+    const conversation = { threadId: threadA, title: '修复登录页报错', folder: workspace, updatedAt: 1 }
+    expect(resolveChosenConversation({ conversation, workspaceDirectory: workspace })).toEqual(conversation)
+    expect(resolveChosenConversation({ conversation, workspaceDirectory: '/Users/a/projects/other' })).toBeNull()
+    expect(resolveChosenConversation({ workspaceDirectory: workspace })).toBeNull()
   })
 })

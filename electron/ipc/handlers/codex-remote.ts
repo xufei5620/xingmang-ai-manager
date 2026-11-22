@@ -9,6 +9,7 @@ import {
 import {
   parseFeishuCredentialRequest,
   parseRemoteChannel,
+  parseRemoteConversationChoice,
   parseRemoteEnabled,
   parseRemoteIdleClose,
   parseRemoteModel,
@@ -28,6 +29,10 @@ export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('codex-remote:set-idle-close', (_event, hours: unknown) => codexRemote().setIdleClose(parseRemoteIdleClose(hours)))
   registerTrustedHandler('codex-remote:set-model', (_event, model: unknown) => codexRemote().setModel(parseRemoteModel(model)))
   registerTrustedHandler('codex-remote:set-permission', (_event, permission: unknown) => codexRemote().setPermission(parseRemotePermission(permission)))
+  registerTrustedHandler('codex-remote:list-conversations', () => codexRemote().listConversations())
+  registerTrustedHandler('codex-remote:choose-conversation', (_event, conversationId: unknown) => (
+    codexRemote().chooseConversation(parseRemoteConversationChoice(conversationId))
+  ))
   registerTrustedHandler('codex-remote:stop-turn', () => codexRemote().stopTurnFromComputer())
   registerTrustedHandler('codex-remote:decline-approvals', () => codexRemote().declineApprovalsFromComputer())
   registerTrustedHandler('codex-remote:choose-workspace', async (event) => {

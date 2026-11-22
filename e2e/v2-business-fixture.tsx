@@ -209,6 +209,7 @@ const remoteState: {
   pendingApprovals: number
   model: string | null
   permission: 'default' | 'readOnly'
+  conversation: RemoteConversation | null
 } = {
   workspaceDirectory: remoteReady ? '~/projects/demo' : null,
   workspaces: query.has('remoteFolders') ? ['~/projects/demo', '~/projects/blog', '~/projects/shop'] : remoteReady ? ['~/projects/demo'] : [],
@@ -224,7 +225,14 @@ const remoteState: {
   pendingApprovals: 0,
   model: query.get('remoteModel'),
   permission: query.has('remoteReadOnly') ? 'readOnly' : 'default',
+  conversation: null,
 }
+// 「选择对话」列出来的本机 Codex 对话（接对话）：remoteConversations=none 一段都没有，=old 是没核过的 Codex 版本，=broken 读不出来。
+type RemoteConversation = { id: string; title: string; folder: string; updatedAt: number }
+const remoteConversations: RemoteConversation[] = [
+  { id: '01a20102-19e8-7b23-968d-694964b4899f', title: '修复登录页报错', folder: '~/projects/demo', updatedAt: new Date(2026, 10, 21, 18, 30).getTime() },
+  { id: '01a20101-8c39-7c23-a0e8-2036f142d454', title: '整理接口文档', folder: '~/projects/api', updatedAt: new Date(2026, 10, 20, 9, 12).getTime() },
+]
 // 和主进程 codex-remote-feishu.ts 的 feishuProblemMessages 同三句。
 const feishuProblemStatuses = {
   credential: { state: 'needs-login', message: '飞书应用的 App ID 或 App Secret 不正确，请在飞书开放平台核对后重新填写。', problem: 'credential' },
@@ -264,6 +272,7 @@ function remoteSnapshot(): RemoteSnapshot {
     ...(remoteState.codexStartFailed ? { codexStartFailed: true } : {}),
     ...(remoteState.model ? { model: remoteState.model } : {}),
     ...(remoteState.permission === 'readOnly' ? { permission: 'readOnly' as const } : {}),
+    ...(remoteState.conversation ? { conversation: remoteState.conversation } : {}),
     channels: {
       feishu: {
         channel: 'feishu',
@@ -356,6 +365,25 @@ const codexRemoteMethods = {
   setCodexRemotePermission: async (permission: 'default' | 'readOnly') => {
     record('remote-permission', permission)
     remoteState.permission = permission
+    return remoteSnapshot()
+  },
+  listCodexRemoteConversations: async () => {
+    record('remote-conversations')
+    const mode = query.get('remoteConversations')
+    if (mode === 'broken') throw new Error('无法读取对话列表，请稍后重试。')
+    if (mode === 'old') return { supported: false as const }
+    return { supported: true as const, items: mode === 'none' ? [] : [...remoteConversations] }
+  },
+  chooseCodexRemoteConversation: async (id: string | null) => {
+    record('remote-conversation', id)
+    const target = id === null ? null : remoteConversations.find((entry) => entry.id === id) ?? null
+    if (id !== null && !target) throw new Error('无法读取对话列表，请稍后重试。')
+    if (target?.id === remoteConversations[1].id && query.has('remoteConversationFolderRefused')) throw new Error('该对话所在的文件夹不允许用于手机遥控，请选择其他对话。')
+    remoteState.conversation = target
+    if (target) {
+      if (!remoteState.workspaces.includes(target.folder)) remoteState.workspaces.push(target.folder)
+      remoteState.workspaceDirectory = target.folder
+    }
     return remoteSnapshot()
   },
   // 「手机端使用的模型」那张单，跟首页 Codex「配置」读的是同一个接口。

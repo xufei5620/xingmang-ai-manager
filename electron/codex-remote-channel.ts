@@ -388,5 +388,52 @@ export interface CodexRemoteSnapshot {
   model?: string
   /** 「权限」选了「只读」才带；缺省 = 「默认」。 */
   permission?: 'readOnly'
+  /** 「手机端的对话」接着电脑上已有的哪一段；缺省 = 新对话，在正在用的文件夹里开。 */
+  conversation?: CodexRemoteConversationItem
   channels: Record<RemoteChannelId, CodexRemoteChannelSnapshot>
+}
+
+/**
+ * 本机 Codex 的一段对话（「选择对话」列表里的一项）。folder 的主目录已换成 ~；updatedAt 是毫秒。
+ * id 只是 Codex 的对话编号，选哪段由主进程按上一次列出来的那份认，渲染层给不了文件夹路径（I5）。
+ */
+export interface CodexRemoteConversationItem {
+  id: string
+  title: string
+  folder: string
+  updatedAt: number
+}
+
+/**
+ * 「选择对话」读出来的列表。supported = false：本机的 Codex 不是核过的版本，接不了已有对话，只能选新对话。
+ * 读不出来时通道直接报错，不在这里。
+ */
+export type CodexRemoteConversationList =
+  | { supported: true; items: CodexRemoteConversationItem[] }
+  | { supported: false }
+
+/**
+ * 电脑页「选择对话」碰到的几种情况，主进程拒绝时原样上屏，页面上那几处也用同一句（yoyo 2026-11-22 北京 13:15
+ * 「接对话字改」，原文第 5、13、15、16 句）。
+ */
+export const remoteConversationErrors = {
+  busy: 'Codex 正在处理消息，请待其完成后再切换对话。',
+  unreadable: '无法读取对话列表，请稍后重试。',
+  folderNotAllowed: '该对话所在的文件夹不允许用于手机遥控，请选择其他对话。',
+  unsupported: '当前 Codex 版本暂不支持继续已有对话，请选择新对话。',
+} as const
+
+/** 对话列表、电脑页那行小字、手机上「对话」回复里的时间：本机时间的「11-21 18:30」。 */
+export function remoteConversationTime(ms: number): string {
+  const date = new Date(ms)
+  return `${twoDigits(date.getMonth() + 1)}-${twoDigits(date.getDate())} ${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`
+}
+
+function twoDigits(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+/** Codex 的对话编号（UUID，Codex 0.169 起是 UUIDv7）。 */
+export function isCodexThreadId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
 }

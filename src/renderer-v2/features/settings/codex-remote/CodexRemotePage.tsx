@@ -8,6 +8,7 @@ import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot, RemoteChannelId, 
 import type { V2Bridge, V2Page } from '../../../types'
 import { codexModelChoices, isHiddenCodexModel } from '../../tools/model-filter'
 import { remoteChannelSections, type RemoteChannelSectionDefinition, type RemoteChannelSectionProps } from './channel-sections'
+import { ConversationRow } from './ConversationRow'
 import {
   boundPeerText,
   lastRequestText,
@@ -581,6 +582,7 @@ export function CodexRemotePageView({ snapshot, api, busy, run, error, navigate,
         </Card>
         <Card title={text.sharedTitle} padding="none" testId="remote-shared">
           <WorkspaceRow snapshot={snapshot} api={api} busy={busy} run={run} />
+          <ConversationRow snapshot={snapshot} api={api} busy={busy} run={run} />
           <PermissionRow snapshot={snapshot} api={api} busy={busy} run={run} />
           <ModelRow snapshot={snapshot} choices={modelChoices} api={api} busy={busy} run={run} />
           <SettingRow

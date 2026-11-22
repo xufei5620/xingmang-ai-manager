@@ -424,6 +424,14 @@
 .v2-remote-folder > .xm-mono { min-width: 0; overflow-wrap: anywhere; }
 .v2-remote-folder-actions { display: inline-flex; gap: 4px; }
 .v2-remote-folders-note { color: var(--text-3); font-size: var(--font-small-compact); }
+/* 「选择手机端的对话」：对话多了在框里滚，说明、提醒照弹窗正文的小字。 */
+.v2-remote-conversation-lead,
+.v2-remote-conversation-note { margin: 0; color: var(--text-2); font-size: var(--font-small-compact); line-height: var(--line-body); }
+.v2-remote-conversation-lead { margin-bottom: 12px; }
+.v2-remote-conversation-note { margin-top: 12px; }
+.v2-remote-conversation-list { max-height: 320px; overflow-y: auto; }
+.v2-remote-conversation-status { margin: 8px 0 0; color: var(--text-3); font-size: var(--font-small-compact); }
+.v2-remote-conversation-error { margin: 8px 0 0; color: var(--bad-tx); font-size: var(--font-small-compact); }
 /* 飞书「还差这几步」里扫码直接打开机器人对话（YF-3）。二维码保持白底：暗色主题下手机也要扫得出来。 */
 .v2-remote-bot-qr { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
 .v2-remote-bot-qr img, .v2-remote-bot-qr-pending { width: 96px; height: 96px; flex: none; border-radius: var(--radius-input); background: #fff; }

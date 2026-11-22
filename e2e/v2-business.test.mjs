@@ -5072,3 +5072,68 @@ test('the skills view lists skills on this computer and sends OpenAI skills to t
     await page.close()
   }
 })
+
+// 接对话（yoyo 2026-11-22 北京 13:15「接对话字改」）：「通用设置」里「手机端的对话」，点「选择对话」弹出本机 Codex 最近的对话，
+// 第一项是新对话；选好点「确定」交给主进程，那一行跟着换成「继续「…」（文件夹，时间）」，干活的文件夹也换过去。
+test('the phone remote page continues an existing Codex conversation or goes back to a new one', async () => {
+  const page = await fixture('page=remote&remoteReady=1')
+  try {
+    const row = page.getByTestId('settings-remote-conversation-row')
+    await row.getByText('新对话，将在上方文件夹中开始。', { exact: true }).waitFor()
+    await page.getByTestId('settings-remote-conversation').click()
+    const dialog = page.getByTestId('settings-remote-conversation-dialog')
+    await dialog.getByText('选择手机端的对话', { exact: true }).waitFor()
+    await dialog.getByText('以下为本机 Codex 最近的对话，包括 Codex 桌面端和 Codex CLI 中的对话。选定后，手机端发送的消息将进入该对话，工作文件夹也将切换为该对话所在的文件夹。', { exact: true }).waitFor()
+    const list = dialog.getByRole('radiogroup', { name: '选择手机端的对话' })
+    await list.getByRole('radio', { name: /整理接口文档/ }).waitFor()
+    assert.deepEqual(await list.getByRole('radio').allTextContents(), [
+      '新对话在上方选择的文件夹中开始新对话。',
+      '修复登录页报错~/projects/demo · 11-21 18:30',
+      '整理接口文档~/projects/api · 11-20 09:12',
+    ])
+    assert.equal(await list.getByRole('radio', { name: /^新对话/ }).getAttribute('aria-checked'), 'true')
+    await dialog.getByText('继续已有对话时，如对话原有权限超出手机遥控允许的范围，将调整为「默认」，在电脑端继续时也将保持。手机遥控的规则（不发送密钥和密码、回复简洁等）也将保留在该对话中。请勿在电脑端和手机端同时向同一对话发送消息。', { exact: true }).waitFor()
+    await list.getByRole('radio', { name: /整理接口文档/ }).click()
+    await dialog.getByRole('button', { name: '确定', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    await row.getByText('继续「整理接口文档」（~/projects/api，11-20 09:12）', { exact: true }).waitFor()
+    await page.getByTestId('settings-remote-workspace-row').getByText('~/projects/api', { exact: true }).waitFor()
+    await page.getByTestId('settings-remote-conversation').click()
+    await list.getByRole('radio', { name: /^新对话/ }).click()
+    await dialog.getByRole('button', { name: '确定', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    await row.getByText('新对话，将在上方文件夹中开始。', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'remote-conversation')).map((call) => call.args), ['01a20101-8c39-7c23-a0e8-2036f142d454', null])
+  } finally {
+    await page.close()
+  }
+})
+
+test('the phone remote conversation list explains an empty list, an unchecked Codex, a failed read and a refused folder', async () => {
+  for (const [query, status] of [
+    ['remoteConversations=none', '本机暂无 Codex 对话。'],
+    ['remoteConversations=old', '当前 Codex 版本暂不支持继续已有对话，请选择新对话。'],
+    ['remoteConversations=broken', '无法读取对话列表，请稍后重试。'],
+  ]) {
+    const page = await fixture(`page=remote&remoteReady=1&${query}`)
+    try {
+      await page.getByTestId('settings-remote-conversation').click()
+      const dialog = page.getByTestId('settings-remote-conversation-dialog')
+      await dialog.getByTestId('settings-remote-conversation-status').getByText(status, { exact: true }).waitFor()
+      assert.equal(await dialog.getByRole('radio').count(), 1)
+    } finally {
+      await page.close()
+    }
+  }
+  const page = await fixture('page=remote&remoteReady=1&remoteConversationFolderRefused=1')
+  try {
+    await page.getByTestId('settings-remote-conversation').click()
+    const dialog = page.getByTestId('settings-remote-conversation-dialog')
+    await dialog.getByRole('radio', { name: /整理接口文档/ }).click()
+    await dialog.getByRole('button', { name: '确定', exact: true }).click()
+    await dialog.getByRole('alert').getByText('该对话所在的文件夹不允许用于手机遥控，请选择其他对话。', { exact: true }).waitFor()
+    await page.getByTestId('settings-remote-conversation-row').getByText('新对话，将在上方文件夹中开始。', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})

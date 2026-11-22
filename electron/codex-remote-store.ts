@@ -8,7 +8,7 @@ import {
 import type { SafeStorageLike } from './account-session-store'
 import { inspectSafeStorageBackend, resolveCredentialPersistence } from './safe-storage-backend'
 import { isRecord } from './input-guards'
-import { isRemoteChannelId, isRemoteIdleCloseHours, isRemoteModel, type RemoteChannelId, type RemoteIdleCloseHours } from './codex-remote-channel'
+import { isCodexThreadId, isRemoteChannelId, isRemoteIdleCloseHours, isRemoteModel, type RemoteChannelId, type RemoteIdleCloseHours } from './codex-remote-channel'
 
 // 手机遥控的两份本地数据：设置（开没开、绑定了谁、工作文件夹，不含密钥）和每个渠道的凭据
 // （飞书 App Secret、微信机器人令牌，safeStorage 加密）。凭据是本程序自己连平台用的登录凭据，
@@ -99,7 +99,24 @@ export interface CodexRemoteSettings {
    * 跑命令不问，连网和改文件夹外面的才问。读回来只认 readOnly，别的一律当缺省。
    */
   permission?: 'readOnly'
+  /**
+   * 「手机端的对话」选的电脑上已有的那段（yoyo 2026-11-22「接对话接原的」）；缺省 = 新对话。folder 是那段对话所在的
+   * 文件夹，选的时候已经核过能给遥控用、并换成了正在用的文件夹；换了文件夹就不再算数（见 resolveChosenConversation）。
+   * title、updatedAt 只为电脑页上那行小字，跟着 Codex 那边变了也不要紧。
+   */
+  conversation?: CodexRemoteChosenConversation
 }
+
+export interface CodexRemoteChosenConversation {
+  threadId: string
+  title: string
+  folder: string
+  /** 毫秒。 */
+  updatedAt: number
+}
+
+/** 对话标题最多这么长（截短后带「…」），手机上一行放得下。 */
+export const maxConversationTitleLength = 40
 
 export function emptyCodexRemoteSettings(): CodexRemoteSettings {
   return { version: 1, workspaceDirectory: null, channels: {}, lastApprovalNumber: 0 }
@@ -138,6 +155,16 @@ function parseRecentMessageIds(value: unknown): string[] {
   return list
 }
 
+function parseChosenConversation(value: unknown): CodexRemoteChosenConversation | null {
+  if (!isRecord(value) || !isCodexThreadId(value.threadId)) return null
+  const title = boundedString(value.title, maxConversationTitleLength)
+  const folder = boundedString(value.folder, 4096)
+  const updatedAt = value.updatedAt
+  if (!title || !folder || !path.isAbsolute(folder)) return null
+  if (typeof updatedAt !== 'number' || !Number.isSafeInteger(updatedAt) || updatedAt < 0) return null
+  return { threadId: value.threadId, title, folder, updatedAt }
+}
+
 /** 读回来的设置当外来输入：认不出的字段丢掉，坏了就当没设过（同 I5 的口径）。 */
 export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
   const settings = emptyCodexRemoteSettings()
@@ -164,6 +191,8 @@ export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
   if (isRemoteIdleCloseHours(value.idleCloseHours)) settings.idleCloseHours = value.idleCloseHours
   if (isRemoteModel(value.model)) settings.model = value.model
   if (value.permission === 'readOnly') settings.permission = 'readOnly'
+  const conversation = parseChosenConversation(value.conversation)
+  if (conversation) settings.conversation = conversation
   if (isRecord(value.channels)) {
     for (const [id, raw] of Object.entries(value.channels)) {
       if (!isRemoteChannelId(id) || !isRecord(raw)) continue
