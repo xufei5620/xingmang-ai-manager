@@ -1038,6 +1038,8 @@ interface ChannelRuntime {
   threadRules: { model: string; reasoningEffort: string | null } | null
   /** 手机上最近一次发「对话」列出来的那几段，「对话 N」照这个次序认；还没列过是 null。 */
   conversationChoices: ListedConversation[] | null
+  /** 手机上最近一次发「文件夹」列出来的那几个（M18），「文件夹 N」照这份认；还没列过是 null，照电脑上现在的单子认。 */
+  folderChoices: string[] | null
   /** 原来的对话不是手机上发「新对话」丢的（dropThread）：下次开新对话时先说一声（D66 / YKS-16）。 */
   threadLost: boolean
   /** 上一次回「这条是 N 分钟前发的」的时间（noticeStale），0 = 还没回过；收到一条照常处理的消息就清零。 */
@@ -1050,6 +1052,8 @@ interface ChannelRuntime {
    * 下次打开时发「重试」，不该把上次开着时的话翻出来执行。
    */
   lastPrompt: string | null
+  /** 上一句是换文件夹前说的、换的时候扔掉了（M06）：「重试」回「文件夹已切换」，不回「没有可以重发的」。 */
+  lastPromptLeftBehind: boolean
   /** 上一句带着交给 Codex 的图（YF-14），「重试」时一起重发；下一句交出去、关遥控、换人时删掉。 */
   lastPromptImages: string[]
   /**
@@ -1125,11 +1129,13 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     threadPermission: 'default',
     threadRules: null,
     conversationChoices: null,
+    folderChoices: null,
     threadLost: false,
     staleNoticeAt: 0,
     turn: null,
     retiredTurnIds: [],
     lastPrompt: null,
+    lastPromptLeftBehind: false,
     lastPromptImages: [],
     pendingImages: [],
     undeliveredAnswer: null,
@@ -1512,7 +1518,23 @@ export class CodexRemoteService {
 
   /** 新文件夹从新对话开始：旧对话的工作目录还是原来那个。 */
   private workspaceChanged(): void {
-    for (const id of remoteChannelIds) this.dropThread(this.runtimes[id])
+    for (const id of remoteChannelIds) {
+      this.dropThread(this.runtimes[id])
+      this.leaveFolderWork(this.runtimes[id])
+    }
+  }
+
+  /**
+   * 换了干活的文件夹（M06）：跟「新对话」一样扔掉攒着还没用的图，上一句和它带的图也不留给「重试」，
+   * 不然下一句把旧图带到新文件夹、「重试」在新文件夹里把旧任务再做一遍。换的时候不会有正在做的一轮
+   * （电脑上、手机上换之前都查过），上一句带的图 Codex 已经用完了。返回扔掉的图有几张。
+   */
+  private leaveFolderWork(runtime: ChannelRuntime): number {
+    const dropped = runtime.pendingImages.length
+    if (runtime.lastPrompt !== null) runtime.lastPromptLeftBehind = true
+    runtime.lastPrompt = null
+    this.dropImages(runtime)
+    return dropped
   }
 
   async setChannelEnabled(channel: RemoteChannelId, enabled: boolean): Promise<CodexRemoteSnapshot> {
@@ -1741,7 +1763,11 @@ export class CodexRemoteService {
       settings.conversation = { threadId: entry.threadId, title: entry.title, folder, updatedAt: entry.updatedAt }
     })
     // 不算「丢了」：下一句接着选的这段，不用再说「这是新对话」。
-    for (const id of remoteChannelIds) this.startOverThread(this.runtimes[id])
+    for (const id of remoteChannelIds) {
+      this.startOverThread(this.runtimes[id])
+      // 这段对话在别的文件夹里，就是换了文件夹（M06）。
+      if (folder !== before.workspaceDirectory) this.leaveFolderWork(this.runtimes[id])
+    }
     this.options.log('info', 'remote.conversation-chosen', { from: 'computer', conversation: 'existing' })
     return conversationSwitchedFromComputerMessage(entry.title)
   }
@@ -2174,7 +2200,9 @@ export class CodexRemoteService {
     runtime.startedAt = this.now()
     runtime.staleNoticeAt = 0
     runtime.lastPrompt = null
+    runtime.lastPromptLeftBehind = false
     runtime.conversationChoices = null
+    runtime.folderChoices = null
     this.dropImages(runtime)
     await this.sweepImagesOnce()
     runtime.inboundSeen = 'none'
@@ -2303,7 +2331,9 @@ export class CodexRemoteService {
     runtime.replyContext = undefined
     runtime.threadId = null
     runtime.lastPrompt = null
+    runtime.lastPromptLeftBehind = false
     runtime.conversationChoices = null
+    runtime.folderChoices = null
     runtime.undeliveredAnswer = null
     runtime.answerResend = null
     this.dropImages(runtime)
@@ -2790,12 +2820,16 @@ export class CodexRemoteService {
     let text: string
     // 跟这句话一起发来、刚攒上的图（M05）：这句话没被收下时连它们一起退回。
     let incoming: readonly string[] = []
+    // 这条带的图一张都没收下（M04）：是要做的事就先不交给 Codex。收不了图的（没配存图的地方）照旧只回不支持那句。
+    let imagesMissed = false
     if (message.kind === 'image') {
+      const canReceive = Boolean(runtime.adapter?.fetchImage && this.options.imageStore)
       const received = await this.receiveImages(runtime, message)
       if (!received) return
       // 图和字一起发来的（飞书富文本、微信图文）：图已经攒上，字照常当一句话处理，是要做的事就带着图交出去。
       if (!message.text?.trim()) return
       incoming = received
+      imagesMissed = canReceive && message.images.length > 0 && received.length === 0
       text = message.text
     } else {
       text = message.text
@@ -2809,7 +2843,7 @@ export class CodexRemoteService {
         await this.sendText(runtime, await this.statusReply(runtime))
         return
       case 'folders':
-        await this.sendText(runtime, await this.workspaceListReply())
+        await this.sendText(runtime, await this.workspaceListReply(runtime))
         return
       case 'use-folder':
         await this.useWorkspaceFromPhone(runtime, command.index)
@@ -2828,7 +2862,7 @@ export class CodexRemoteService {
           return
         }
         if (!runtime.lastPrompt) {
-          await this.sendText(runtime, remoteMessages.nothingToRetry)
+          await this.sendText(runtime, runtime.lastPromptLeftBehind ? remoteMessages.retryAfterFolderSwitch : remoteMessages.nothingToRetry)
           return
         }
         await this.runPrompt(runtime, runtime.lastPrompt, true, incoming)
@@ -2867,6 +2901,10 @@ export class CodexRemoteService {
         await this.answerApproval(runtime, command.decision, command.approvalId)
         return
       case 'prompt':
+        if (imagesMissed) {
+          await this.sendText(runtime, remoteMessages.imagesMissedPromptHeld)
+          return
+        }
         await this.runPrompt(runtime, command.text, false, incoming)
     }
   }
@@ -3137,11 +3175,13 @@ export class CodexRemoteService {
     this.emitSoon()
   }
 
-  /** 手机上发「文件夹」（YF-19）。 */
-  private async workspaceListReply(): Promise<string> {
+  /** 手机上发「文件夹」（YF-19）。列出来的记在 folderChoices 上，「文件夹 N」照这份认（M18）。 */
+  private async workspaceListReply(runtime: ChannelRuntime): Promise<string> {
     const settings = await this.options.store.readSettings()
+    const list = remoteWorkspaceList(settings)
+    runtime.folderChoices = list
     const shown = (folder: string) => remoteDisplayPath(folder, this.options.homeDirectory, this.platform)
-    return workspaceListMessage(remoteWorkspaceList(settings).map(shown), settings.workspaceDirectory ? shown(settings.workspaceDirectory) : null)
+    return workspaceListMessage(list.map(shown), settings.workspaceDirectory ? shown(settings.workspaceDirectory) : null)
   }
 
   /**
@@ -3151,9 +3191,14 @@ export class CodexRemoteService {
   private async useWorkspaceFromPhone(runtime: ChannelRuntime, index: number): Promise<void> {
     const settings = await this.options.store.readSettings()
     const list = remoteWorkspaceList(settings)
-    const target = list[index - 1]
+    // 按手机上看到的那份单子取第 N 个（M18）：列过以后电脑上增删了，第 N 个就不是他看到的那个了。
+    const target = (runtime.folderChoices ?? list)[index - 1]
     if (index < 1 || !target) {
       await this.sendText(runtime, workspaceMissingMessage(index))
+      return
+    }
+    if (!list.includes(target)) {
+      await this.sendText(runtime, remoteMessages.folderListChanged)
       return
     }
     const shown = remoteDisplayPath(target, this.options.homeDirectory, this.platform)
@@ -3161,6 +3206,8 @@ export class CodexRemoteService {
       await this.sendText(runtime, workspaceAlreadyInUseMessage(shown))
       return
     }
+    // 换文件夹会丢掉攒着的图（M06），先记下有没有，换完好告诉他。
+    const hadImages = runtime.pendingImages.length > 0
     const switched = await this.switchingFolder(async () => {
       if (remoteChannelIds.some((id) => this.runtimes[id].turn)) return 'busy'
       try {
@@ -3183,7 +3230,8 @@ export class CodexRemoteService {
     // 手机上已经说了「从新对话开始」，下一句不用再提醒「前面的记不得了」。
     runtime.threadLost = false
     this.options.log('info', 'remote.workspace-switched', { channel: runtime.id, from: 'phone' })
-    await this.sendText(runtime, workspaceSwitchedMessage(shown))
+    const reply = workspaceSwitchedMessage(shown)
+    await this.sendText(runtime, hadImages ? `${reply}\n${remoteMessages.pendingImagesDroppedOnFolderSwitch}` : reply)
     this.emitSoon()
   }
 
@@ -3291,9 +3339,17 @@ export class CodexRemoteService {
       next.workspaceDirectory = folder
       next.conversation = { threadId: target.threadId, title: target.title, folder, updatedAt: target.updatedAt }
     })
-    for (const id of remoteChannelIds) if (id !== runtime.id) this.startOverThread(this.runtimes[id])
+    // 这段对话在别的文件夹里，就是换了文件夹（M06）：跟手机上「文件夹 N」一样清掉没用上的图，说一声。
+    const folderChanged = folder !== settings.workspaceDirectory
+    const droppedImages = folderChanged ? this.leaveFolderWork(runtime) : 0
+    for (const id of remoteChannelIds) {
+      if (id === runtime.id) continue
+      this.startOverThread(this.runtimes[id])
+      if (folderChanged) this.leaveFolderWork(this.runtimes[id])
+    }
     this.options.log('info', 'remote.conversation-chosen', { channel: runtime.id, from: 'phone', lowered: lowered ?? 'no' })
-    await this.sendText(runtime, conversationSwitchedMessage(target.title, lowered))
+    const switched = conversationSwitchedMessage(target.title, lowered)
+    await this.sendText(runtime, droppedImages > 0 ? `${switched}\n${remoteMessages.pendingImagesDroppedOnFolderSwitch}` : switched)
     this.emitSoon()
   }
 
@@ -3519,6 +3575,7 @@ export class CodexRemoteService {
     }
     runtime.turn = turn
     runtime.lastPrompt = text
+    runtime.lastPromptLeftBehind = false
     // 又交给 Codex 一句了（M03）：还没补发成的那条回答不再是「上一条」的，「重试」照常重做这一句。
     if (runtime.undeliveredAnswer) runtime.undeliveredAnswer.latest = false
     const images = retry ? [...runtime.lastPromptImages] : [...runtime.pendingImages]

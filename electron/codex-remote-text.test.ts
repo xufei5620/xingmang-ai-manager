@@ -403,4 +403,11 @@ describe('codex-remote-text', () => {
     expect(remoteMessages.conversationUnsupported).toBe('当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。')
     expect(remoteMessages.conversationNewFromComputer).toBe('电脑端已切换为新对话。')
   })
+
+  it('writes the held-back prompt, folder switch and stale folder list replies word for word', () => {
+    expect(remoteMessages.imagesMissedPromptHeld).toBe('图片均未接收成功，本条消息中的文字未发送给 Codex，请重新发送图片和文字。')
+    expect(remoteMessages.pendingImagesDroppedOnFolderSwitch).toBe('此前发送、尚未使用的图片已清除，如需使用请重新发送。')
+    expect(remoteMessages.retryAfterFolderSwitch).toBe('文件夹已切换，上一条消息不会在新文件夹中重新执行，如需执行请重新发送。')
+    expect(remoteMessages.folderListChanged).toBe('电脑端的文件夹列表已变更，请发送「文件夹」重新查看。')
+  })
 })

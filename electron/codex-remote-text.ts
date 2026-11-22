@@ -65,6 +65,14 @@ export const remoteMessages = {
   conversationResumeFailed: '无法继续该对话，请稍后重试，或发送「新对话」开始新对话。',
   conversationUnsupported: '当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。',
   conversationNewFromComputer: '电脑端已切换为新对话。',
+  // 一条消息里带的图一张都没收下（M04）：字不交给 Codex，免得它没看到图就开始做。
+  imagesMissedPromptHeld: '图片均未接收成功，本条消息中的文字未发送给 Codex，请重新发送图片和文字。',
+  // 换了干活的文件夹（M06）：攒着还没用的图跟「新对话」一样清掉，手机上换的接在「已切到…」后面说一声。
+  pendingImagesDroppedOnFolderSwitch: '此前发送、尚未使用的图片已清除，如需使用请重新发送。',
+  // 换过文件夹以后发「重试」（M06）：上一句是在原来的文件夹里说的，不搬到新文件夹里再做一遍。
+  retryAfterFolderSwitch: '文件夹已切换，上一条消息不会在新文件夹中重新执行，如需执行请重新发送。',
+  // 「文件夹 N」按手机上看到的那份单子取（M18），取到的那个已在电脑上移除时。
+  folderListChanged: '电脑端的文件夹列表已变更，请发送「文件夹」重新查看。',
 } as const
 
 export interface RemoteConversationLine {
