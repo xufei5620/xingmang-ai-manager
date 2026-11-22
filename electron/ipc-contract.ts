@@ -821,6 +821,24 @@ export interface AiLibraryPage {
 }
 
 /**
+ * 主窗口「添加到画布」（融合第 5 步的「放进画布」，yoyo 2026-11-22 亲手打字同意）：把客户点的那一张图抄一份进他选的
+ * 画布项目的素材库。只交图片的编号，外加项目的编号，或者新建项目用的名字；图由主进程按当前账号认过、读出来、
+ * 照图片的老规矩查过再抄。只限图片，一次一张。画布窗口那一套通道里没有对应的入口，画布自己拿不到别的图。
+ */
+export type CanvasProjectImageInput =
+  | { assetId: string; projectId: string }
+  /** 新建一个项目再放进去。文件夹由主进程建在「文档 › 星芒画布」里，跟画布里点「新建项目」一样。 */
+  | { assetId: string; newProjectName: string }
+
+export interface CanvasProjectImageResult {
+  projectId: string
+  /** 只当文字显示。 */
+  projectName: string
+  /** 这个项目是不是这一次新建的。 */
+  created: boolean
+}
+
+/**
  * 「搬到新电脑」导出：聊天对话由渲染层按它自己的格式整理好交过来（已去掉图片和
  * 运行时字段），设置由主进程自己从 settings.json 里挑能带走的几项，渲染层塞不进别的。
  */
@@ -1616,6 +1634,11 @@ export interface XingmangInvokeContract {
    * 客户在那里选了留下就回 false。
    */
   openCanvasProject: IpcInvokeDefinition<'canvas:open-project', [projectId: string], boolean>
+  /**
+   * 「添加到画布」：把当前账号的一张图抄一份进他选的画布项目的素材库（或先新建一个项目）。图片编号和项目编号都在主进程
+   * 按当前账号认过才用；回项目的编号和名字，不回路径。
+   */
+  addImageToCanvasProject: IpcInvokeDefinition<'canvas:add-project-image', [input: CanvasProjectImageInput], CanvasProjectImageResult>
   getRememberedAccountLogin: IpcInvokeDefinition<'account:get-remembered-login', [siteId?: AccountSiteId], RememberedAccountLogin | null>
   setRememberedAccountLogin: IpcInvokeDefinition<'account:set-remembered-login', [input: RememberedAccountLogin | null, siteId?: AccountSiteId], void>
   createAccountKey: IpcInvokeDefinition<'account:create-key', [input: AccountKeyCreateInput], void>
@@ -2028,6 +2051,7 @@ export const ipcInvokeChannels = {
   listCanvasProjects: 'canvas:list-projects',
   listAiLibrary: 'library:list',
   openCanvasProject: 'canvas:open-project',
+  addImageToCanvasProject: 'canvas:add-project-image',
   getRememberedAccountLogin: 'account:get-remembered-login',
   setRememberedAccountLogin: 'account:set-remembered-login',
   createAccountKey: 'account:create-key',

@@ -2715,6 +2715,38 @@ describe('Claude Code and Grok CLI skills managed in the app', () => {
       .rejects.toThrow('当前 Provider 不支持该原生操作')
   })
 
+  // O17: Claude Code and Grok share Codex's import, so a folder swapped during
+  // the copy is refused the same way and nothing lands in their skills folders.
+  it('refuses a subfolder swapped for an outside link during the copy, as Codex does', async () => {
+    for (const provider of ['claude', 'grok'] as const) {
+      const home = temporaryDirectory()
+      const { service } = managedService(home)
+      const source = skillSource('swapped')
+      write(path.join(source, 'sub', 'notes.txt'), 'inside')
+      const outside = temporaryDirectory()
+      write(path.join(outside, 'notes.txt'), 'OUTSIDE-MARKER')
+      const skillsRoot = path.resolve(home, `.${provider}`, 'skills')
+      const originalMkdir = fs.mkdirSync.bind(fs)
+      let swapped = false
+      const spy = vi.spyOn(fs, 'mkdirSync').mockImplementation(((target: fs.PathLike, options?: fs.MakeDirectoryOptions | fs.Mode | null) => {
+        const created = originalMkdir(target, options as fs.MakeDirectoryOptions)
+        if (!swapped && path.basename(String(target)) === 'sub' && path.resolve(String(target)).startsWith(skillsRoot)) {
+          swapped = true
+          fs.renameSync(path.join(source, 'sub'), path.join(path.dirname(source), 'sub-away'))
+          fs.symlinkSync(outside, path.join(source, 'sub'), process.platform === 'win32' ? 'junction' : 'dir')
+        }
+        return created
+      }) as typeof fs.mkdirSync)
+
+      await expect(service.mutate({ provider, kind: 'skill', action: 'install', source, scope: 'user' }))
+        .rejects.toThrow('导入过程中文件夹内容发生变化')
+      spy.mockRestore()
+
+      expect(swapped).toBe(true)
+      expect(fs.existsSync(skillsRoot) ? fs.readdirSync(skillsRoot) : []).toEqual([])
+    }
+  })
+
   it.runIf(process.platform !== 'win32')('refuses a source reached through a symbolic link', async () => {
     const home = temporaryDirectory()
     const { service } = managedService(home)

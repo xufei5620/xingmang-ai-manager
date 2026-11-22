@@ -15,7 +15,6 @@ import {
   readCodexMcpServerEntries,
   readCodexSkillEnablement,
   resolveSkillImportSource,
-  skillImportTarget,
 } from './codex-extensions'
 import {
   CODEX_API_CURATED_MARKETPLACE_NAME,
@@ -2569,10 +2568,10 @@ export class ProviderExtensionService {
       if (input.scope !== undefined && input.scope !== 'user' && input.scope !== 'project') {
         throw new Error('当前 Provider 不支持该原生操作')
       }
-      const sourceDirectory = resolveSkillImportSource(input.source ?? '')
+      const source = resolveSkillImportSource(input.source ?? '')
       const root = ownSkillRoot(provider, this.homeDirectory, repositoryRoot, input.scope ?? 'user')
       if (!root) throw new Error('该项属于某个项目，请先选择该项目的文件夹后再操作。')
-      copySkillImport(sourceDirectory, root, skillImportTarget(sourceDirectory, root))
+      copySkillImport(source, root)
     } else if (input.action === 'uninstall') {
       if (!input.id || !path.isAbsolute(input.id)) throw new Error('Skill 路径必须是绝对路径')
       const requested = pathKey(path.resolve(input.id))

@@ -6,7 +6,7 @@
 
 - 实现：`electron/config-files.ts` 的 `trustManagedWorkspace`
 - 调用点：`electron/system-service.ts` 的 `launchProviderOperation`（在解析 CLI 命令之前）
-- 单测：`electron/config-files.test.ts`、`electron/system-service.test.ts`
+- 单测：`electron/config-files.trust-hooks.test.ts`（三家怎么写信任）、`electron/config-files.test.ts`（Codex 的信任与权限默认值）、`electron/system-service.test.ts`
 
 ## 实测到的字段
 

@@ -4,6 +4,7 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import fc from 'fast-check'
 import { afterEach, describe, expect, it } from 'vitest'
+import { CodexExtensionService } from './codex-extensions'
 import {
   SKILL_ARCHIVE_MANY_SKILLS,
   SKILL_ARCHIVE_NO_SKILL,
@@ -118,6 +119,27 @@ describe('skill-archive', () => {
     expect(fs.readFileSync(path.join(extraction.directory, 'scripts', 'run.py'), 'utf8')).toBe('print(1)\n')
     expect(fs.readdirSync(extraction.directory).sort()).toEqual(['SKILL.md', 'scripts'])
     expect(fs.existsSync(path.join(path.dirname(extraction.directory), 'README.md'))).toBe(false)
+  })
+
+  // O17: what was unpacked goes through the same snapshot-and-stage import as a
+  // folder the customer picked, renamed folder included, byte for byte.
+  it('imports an unpacked archive through the folder import, under a renamed folder', async () => {
+    const root = temporaryRoot()
+    const home = path.join(root, 'home')
+    const archivePath = writeArchive(root, '写作助手.zip', buildZip([
+      { name: 'SKILL.md', data: skillText },
+      { name: 'notes/写法.md', data: '短一点' },
+    ]))
+    const extraction = await extractSkillArchive(archivePath, path.join(root, 'extracted'))
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+
+    const skills = await service.importSkill({ sourcePath: extraction.directory })
+
+    const skillsRoot = path.join(home, '.agents', 'skills')
+    expect(fs.readdirSync(skillsRoot)).toEqual(['pdf-helper'])
+    expect(fs.readFileSync(path.join(skillsRoot, 'pdf-helper', 'SKILL.md'), 'utf8')).toBe(skillText)
+    expect(fs.readFileSync(path.join(skillsRoot, 'pdf-helper', 'notes', '写法.md'), 'utf8')).toBe('短一点')
+    expect(skills.map((skill) => skill.name)).toEqual(['pdf-helper'])
   })
 
   it('names a skill packed at the top of the archive after the archive file', async () => {
