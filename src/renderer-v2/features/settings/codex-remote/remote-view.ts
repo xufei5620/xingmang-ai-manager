@@ -23,7 +23,7 @@ export function remoteAnyEnabled(snapshot: Pick<CodexRemoteSnapshot, 'channels'>
   return Object.values(snapshot.channels).some((channel) => channel.enabled)
 }
 
-/** 卡片标题右边那句：有渠道开着才说 Codex 在干什么；都没开时不写，各渠道的小标签已经说了「未开启」。 */
+/** 页头右边那句：有渠道开着才说 Codex 在干什么；都没开时不写，两张连接方式卡上的小标签已经说了「未开启」。 */
 export function remoteCardMeta(snapshot: Pick<CodexRemoteSnapshot, 'task' | 'pendingApprovals' | 'channels'>): string | null {
   return remoteAnyEnabled(snapshot) ? `Codex ${remoteTaskLabel(snapshot)}` : null
 }
@@ -143,15 +143,6 @@ export function pendingApprovalsText(count: number): string | null {
 
 /** 余额低于这个数（美元）、又没有能用的订阅时，开着遥控的卡片上提醒先充值（YF-12）。 */
 export const remoteLowBalanceDollars = 1
-
-/**
- * 没登录的渠道收成一行（YF-7）：没凭据、没开着，而且另一个渠道登录过了。两个都没登录时都摊开，
- * 刚来的人得看得见每个渠道怎么开。
- */
-export function remoteChannelCollapsed(snapshot: Pick<CodexRemoteSnapshot, 'channels'>, channel: Pick<CodexRemoteChannelSnapshot, 'channel' | 'hasCredential' | 'enabled'>): boolean {
-  if (channel.hasCredential || channel.enabled) return false
-  return Object.values(snapshot.channels).some((other) => other.channel !== channel.channel && other.hasCredential)
-}
 
 /** 电脑上最多加几个干活的文件夹（YF-19）；跟主进程 codex-remote-store.ts 的 maxRemoteWorkspaces 一样，那边不进渲染层。 */
 export const remoteWorkspaceMax = 5

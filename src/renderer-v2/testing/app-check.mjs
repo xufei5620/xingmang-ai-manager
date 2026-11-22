@@ -1137,16 +1137,16 @@ test('a replaced manual client key cannot save the previous key first detected m
   } finally { await page.close() }
 })
 
-// YF-6：手机遥控的入口原来只有设置 › 工具管理最下面那张卡；首页 Codex CLI 的「…」里多一项直接过去，桌面端不给。
-test('the home Codex CLI menu leads to the phone remote card in the settings', async () => {
+// YF-6：首页 Codex CLI 的「…」里有一项直接去手机遥控，桌面端不给；0.2.25 起去的是左侧栏「手机遥控」那一页。
+test('the home Codex CLI menu leads to the phone remote page', async () => {
   const page = await open()
   try {
     await page.getByRole('button', { name: 'Codex CLI 更多操作', exact: true }).click()
     await page.getByRole('menuitem', { name: '手机遥控', exact: true }).click()
-    const settings = page.getByTestId('page-settings')
-    await settings.waitFor()
-    await settings.getByTestId('settings-remote-card').waitFor()
-    assert.equal(await settings.getByRole('tab', { name: '工具管理', exact: true }).getAttribute('aria-selected'), 'true')
+    const remote = page.getByTestId('page-remote')
+    await remote.waitFor()
+    await remote.getByTestId('settings-remote-card').waitFor()
+    assert.equal(await page.getByTestId('nav-remote').getAttribute('aria-current'), 'page')
     await clean(page)
   } finally { await page.close() }
 })
@@ -11109,8 +11109,8 @@ test('every settings row the search can name is on the settings page, in the reg
   } finally { await page.close() }
 })
 
-// 手机遥控开着时坐在电脑前的人要看得到：状态栏亮「手机遥控中」，点了落到设置里那张卡。
-test('the status bar says the phone remote is on and leads to its settings card', async () => {
+// 手机遥控开着时坐在电脑前的人要看得到：状态栏亮「手机遥控中」，点了落到左侧栏那一页（0.2.25）。
+test('the status bar says the phone remote is on and leads to its page', async () => {
   const page = await open()
   try {
     await expect(page.getByTestId('statusbar-remote')).toHaveCount(0)
@@ -11118,7 +11118,8 @@ test('the status bar says the phone remote is on and leads to its settings card'
     const weixin = { channel: 'weixin', hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' }, boundPeer: null, pairing: null }
     await page.evaluate(([channel, idle]) => window.v2Test.emit('onCodexRemoteStateChanged', { revision: 50, available: true, credentialPersistence: 'durable', workspaceDirectory: '~/projects/demo', task: 'idle', pendingApprovals: 0, channels: { feishu: channel, weixin: idle } }), [feishu, weixin])
     await page.getByTestId('statusbar-remote').click()
-    await expect(page.getByTestId('page-settings').getByTestId('settings-remote-card')).toBeVisible()
+    await expect(page.getByTestId('page-remote').getByTestId('settings-remote-card')).toBeVisible()
+    await expect(page.getByTestId('nav-remote')).toHaveAttribute('aria-current', 'page')
     // 推来的旧快照（revision 小）不把它关掉。
     await page.evaluate(([channel, idle]) => window.v2Test.emit('onCodexRemoteStateChanged', { revision: 2, available: true, credentialPersistence: 'durable', workspaceDirectory: null, task: 'idle', pendingApprovals: 0, channels: { feishu: { ...channel, enabled: false }, weixin: idle } }), [feishu, weixin])
     await expect(page.getByTestId('statusbar-remote')).toBeVisible()
@@ -12263,6 +12264,91 @@ test('a second import brings over what the old computer said after the first one
     await page.getByTestId('nav-chat').click()
     await expect(page.getByTestId('chat-conversation-from-old-computer')).toContainText('2 条消息')
     assert.deepEqual(await page.evaluate(() => window.v2Test.chatHistory().ids), ['from-old-computer'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 「搬作品改」（yoyo 2026-11-22）：作品库里有作品时，导出前先问带不带；导入时作品跟着对话一起进来。
+test('moving to a new computer asks whether to bring the works, and brings them in on import', async () => {
+  const page = await open('chatImport&transferWorks')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    const exportCalls = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'exportAppData').map((entry) => entry.args[0].includeWorks ?? false))
+    const ask = page.getByRole('dialog', { name: '是否同时导出作品？', exact: true })
+
+    await settings.getByTestId('settings-transfer-export').click()
+    await ask.waitFor()
+    await expect(ask.getByTestId('settings-transfer-works-summary')).toHaveText('当前账号的作品库中共有 128 件作品（图片 96 张、视频片段与成片 30 个、配乐 2 首），约 3.2 GB。')
+    await expect(ask).toContainText('选择「导出全部」时，将在所选位置新建一个文件夹，存放聊天记录、设置和作品。作品较多时需要几分钟，导出期间请勿关闭星芒。')
+    assert.deepEqual(await ask.locator('button[data-testid^="settings-transfer-works-"]').allInnerTexts(), ['取消', '仅导出聊天记录和设置', '导出全部'])
+    await ask.getByTestId('settings-transfer-works-cancel').click()
+    await ask.waitFor({ state: 'detached' })
+    assert.deepEqual(await exportCalls(), [])
+
+    await settings.getByTestId('settings-transfer-export').click()
+    await ask.getByTestId('settings-transfer-works-skip').click()
+    await settings.getByText('已保存「星芒聊天记录与设置-2026-11-22.json」，包含设置。复制到新电脑后，请在此点击「导入」。', { exact: true }).waitFor()
+    assert.deepEqual(await exportCalls(), [false])
+
+    await settings.getByTestId('settings-transfer-export').click()
+    await ask.getByTestId('settings-transfer-works-include').click()
+    await settings.getByText('已保存至「星芒数据导出-2026-11-22」文件夹，包含 128 件作品及设置。请将整个文件夹复制到新电脑，在此点击「导入」并选择其中的「星芒聊天记录与设置」文件。', { exact: true }).waitFor()
+    assert.deepEqual(await exportCalls(), [false, true])
+
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '已导入 1 个对话。已导入 120 件作品，另有 8 件已存在于本机。')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'importAppWorks').map((entry) => entry.args)), [['fixture-works-token']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 作品跟着搬过来了，对话里的图也照常显示：以前导出时一律换成「[图片未随记录迁移]」，作品库里有图、对话里却没有。
+// 再从这台电脑导出时，选「导出全部」图原样带着，只导聊天记录和设置时照旧换成那句说明。
+test('pictures in a moved conversation show again when the works came along, and travel on with them', async () => {
+  const page = await open('chatImport&transferWorks&transferPicture')
+  try {
+    await serveLibraryPictures(page)
+    await page.getByTestId('tool-row-claude').waitFor()
+    let settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '已导入 1 个对话。已导入 120 件作品，另有 8 件已存在于本机。')
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('chat-conversation-from-old-computer').click()
+    const reply = page.getByTestId('chat-message-old-picture')
+    await expect.poll(() => reply.locator('.chat-asset img').evaluate((image) => image.naturalWidth)).toBe(40)
+    await expect(reply).not.toContainText('未随记录迁移')
+
+    settings = await openSettingsGroup(page, '备份迁移')
+    const ask = page.getByRole('dialog', { name: '是否同时导出作品？', exact: true })
+    const exportedPicture = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'exportAppData')
+      .map((entry) => entry.args[0].conversations[0].messages.find((item) => item.id === 'old-picture'))
+      .map((item) => [item.assets?.map((asset) => asset.assetId) ?? [], item.content]))
+    await settings.getByTestId('settings-transfer-export').click()
+    await ask.getByTestId('settings-transfer-works-include').click()
+    await settings.getByText('已保存至「星芒数据导出-2026-11-22」文件夹，包含 1 个对话、128 件作品及设置。请将整个文件夹复制到新电脑，在此点击「导入」并选择其中的「星芒聊天记录与设置」文件。', { exact: true }).waitFor()
+    await settings.getByTestId('settings-transfer-export').click()
+    await ask.getByTestId('settings-transfer-works-skip').click()
+    await settings.getByText('已保存「星芒聊天记录与设置-2026-11-22.json」，包含 1 个对话及设置。复制到新电脑后，请在此点击「导入」。', { exact: true }).waitFor()
+    assert.deepEqual(await exportedPicture(), [[['p'.repeat(43)], '画好了'], [[], '画好了\n\n[图片未随记录迁移]']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a moved conversation says its picture stayed behind when the works folder did not come along', async () => {
+  const page = await open('chatImport&transferWorks&transferPicture&transferWorksMissing')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '已导入 1 个对话。未在文件所在位置找到「作品」文件夹，作品未导入。请将导出的整个文件夹复制到本机后再次导入。')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'importAppWorks').length), 0)
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('chat-conversation-from-old-computer').click()
+    const reply = page.getByTestId('chat-message-old-picture')
+    await expect(reply).toContainText('画好了')
+    await expect(reply).toContainText('[图片未随记录迁移]')
+    await expect(reply.locator('.chat-asset')).toHaveCount(0)
     await clean(page)
   } finally { await page.close() }
 })

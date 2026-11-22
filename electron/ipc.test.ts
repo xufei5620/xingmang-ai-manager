@@ -1908,7 +1908,7 @@ describe('registerIpcHandlers', () => {
 
       const outputPath = path.join(directory, 'moving.json')
       electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: outputPath })
-      await expect(exportData(trustedEvent(), { conversations: [{ id: 'c1', title: 'chat body' }] })).resolves.toEqual({ outputPath, conversations: 1 })
+      await expect(exportData(trustedEvent(), { conversations: [{ id: 'c1', title: 'chat body' }] })).resolves.toEqual({ outputPath, conversations: 1, videoProjects: 0 })
       expect(electronMocks.showSaveDialog.mock.calls[1][0].defaultPath.startsWith(directory)).toBe(true)
       const written = fs.readFileSync(outputPath, 'utf8')
       expect(JSON.parse(written)).toMatchObject({ format: 'xingmang-data-transfer', version: 1, settings: { theme: 'dark' }, conversations: [{ id: 'c1' }] })
@@ -2023,6 +2023,112 @@ describe('registerIpcHandlers', () => {
       expect(untouched).not.toHaveProperty('conflictingAnonymousUsage')
       dispose()
     } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  })
+
+  describe('works in the data transfer', () => {
+    const summary = { images: 96, videos: 30, audios: 2, bytes: 3_400_000_000 }
+    function signedInAccount(userId = 7) {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId, username: 'alice', group: null, role: null, quota: null, usedQuota: null },
+      })
+      return accountService
+    }
+    function worksTransferStub() {
+      return {
+        summarize: vi.fn(async () => summary),
+        exportTo: vi.fn(async (_userId: number, options: { parentDirectory: string; folderName: string; dataContent: (works: typeof summary) => string }) => {
+          const folderPath = path.join(options.parentDirectory, options.folderName)
+          fs.mkdirSync(folderPath)
+          const dataFilePath = path.join(folderPath, '星芒聊天记录与设置.json')
+          fs.writeFileSync(dataFilePath, options.dataContent(summary))
+          return { folderPath, dataFilePath, works: 128, skipped: 2 }
+        }),
+        importFrom: vi.fn(async () => ({ status: 'done' as const, added: 1, existing: 0, failed: 0, metadataFailed: true })),
+      }
+    }
+
+    it('counts the works of the signed-in account only', async () => {
+      const worksTransfer = worksTransferStub()
+      const { dispose } = register(serviceStub(), undefined, undefined, signedInAccount(), undefined, undefined, {}, { worksTransfer })
+      await expect(electronMocks.handlers.get('data-transfer:inspect-works')!(trustedEvent())).resolves.toEqual(summary)
+      expect(worksTransfer.summarize).toHaveBeenCalledExactlyOnceWith(7)
+      dispose()
+      register(serviceStub(), undefined, undefined, accountServiceStub(), undefined, undefined, {}, { worksTransfer })
+      await expect(electronMocks.handlers.get('data-transfer:inspect-works')!(trustedEvent())).resolves.toBeNull()
+      expect(worksTransfer.summarize).toHaveBeenCalledTimes(1)
+    })
+
+    it('exports with works into a folder the user picks, under a name it chooses itself', async () => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-works-ipc-'))
+      try {
+        const worksTransfer = worksTransferStub()
+        const { runtimeLog, dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedInAccount(), undefined, undefined, {}, { downloadsDirectory: () => directory, worksTransfer })
+        const exportData = electronMocks.handlers.get('data-transfer:export')!
+        await expect(exportData(trustedEvent(), { conversations: [], includeWorks: 'yes' })).rejects.toThrow('导出请求格式无效')
+
+        electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+        await expect(exportData(trustedEvent(), { conversations: [], includeWorks: true })).resolves.toBeNull()
+        expect(worksTransfer.exportTo).not.toHaveBeenCalled()
+
+        electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [directory] })
+        const video = { key: 'film-1', content: '{"version":1}' }
+        const result = await exportData(trustedEvent(), { conversations: [{ id: 'c1' }], videoProjects: [video], includeWorks: true }) as { outputPath: string; works: { folderName: string } }
+        expect(result).toEqual({
+          outputPath: expect.stringMatching(/星芒聊天记录与设置\.json$/),
+          conversations: 1,
+          videoProjects: 1,
+          works: { folderName: expect.stringMatching(/^星芒数据导出-\d{4}-\d{2}-\d{2}$/), count: 128 },
+        })
+        expect(electronMocks.showOpenDialog.mock.calls.at(-1)?.[0]).toMatchObject({ title: '选择导出位置', buttonLabel: '保存到此处', defaultPath: directory, properties: ['openDirectory', 'createDirectory'] })
+        expect(electronMocks.showSaveDialog).not.toHaveBeenCalled()
+        expect(worksTransfer.exportTo).toHaveBeenCalledExactlyOnceWith(7, expect.objectContaining({ parentDirectory: directory, folderName: result.works.folderName }))
+        expect(JSON.parse(fs.readFileSync(result.outputPath, 'utf8'))).toMatchObject({ conversations: [{ id: 'c1' }], videoProjects: [video], works: { folder: '作品', ...summary } })
+        expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'data-transfer', 'works.export.skipped', expect.any(String), { skipped: 2 })
+        dispose()
+      } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+    })
+
+    it('asks to sign in before exporting works and picks no folder', async () => {
+      register(serviceStub(), undefined, undefined, accountServiceStub(), undefined, undefined, {}, { worksTransfer: worksTransferStub() })
+      await expect(electronMocks.handlers.get('data-transfer:export')!(trustedEvent(), { conversations: [], includeWorks: true })).rejects.toThrow('请先登录星芒账号')
+      expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+    })
+
+    it('imports the works beside the chosen file only with the token of that import, once', async () => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-works-ipc-'))
+      try {
+        const id = 'a'.repeat(43)
+        const file = path.join(directory, '星芒聊天记录与设置.json')
+        fs.writeFileSync(file, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: {}, conversations: [], works: { folder: '作品', ...summary } }))
+        const worksTransfer = worksTransferStub()
+        const { runtimeLog, dispose } = register(serviceStub(), undefined, undefined, signedInAccount(), undefined, undefined, {}, { worksTransfer })
+        const importData = electronMocks.handlers.get('data-transfer:import')!
+        const importWorks = electronMocks.handlers.get('data-transfer:import-works')!
+
+        // 文件里说带了作品，旁边却没有「作品」文件夹：报给渲染层，不去别处找。
+        electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+        await expect(importData(trustedEvent())).resolves.toMatchObject({ works: { ...summary, state: 'missing' } })
+        await expect(importWorks(trustedEvent(), 'any-token')).rejects.toThrow('请再次点击「导入」。')
+
+        fs.mkdirSync(path.join(directory, '作品'))
+        fs.writeFileSync(path.join(directory, '作品', 'xingmang-works.json'), JSON.stringify({ format: 'xingmang-works', version: 1, files: [{ path: `2026-11-20/xingmang-${id}.png`, bytes: 10 }], metadata: [] }))
+        electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+        const preview = await importData(trustedEvent()) as { works: { state: string; token: string } }
+        expect(preview.works).toEqual({ images: 1, videos: 0, audios: 0, bytes: 10, state: 'ready', token: expect.any(String) })
+        expect(JSON.stringify(preview)).not.toContain(directory)
+
+        await expect(importWorks(trustedEvent(), 'not-the-token')).rejects.toThrow('请再次点击「导入」。')
+        await expect(importWorks(trustedEvent(), { path: directory })).rejects.toThrow('请再次点击「导入」。')
+        await expect(importWorks(trustedEvent(), preview.works.token)).resolves.toEqual({ status: 'done', added: 1, existing: 0, failed: 0 })
+        expect(worksTransfer.importFrom).toHaveBeenCalledExactlyOnceWith(7, path.join(directory, '作品'), expect.objectContaining({ files: [expect.objectContaining({ assetId: id })] }))
+        expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'data-transfer', 'works.import.metadata-failed', expect.any(String))
+        await expect(importWorks(trustedEvent(), preview.works.token)).rejects.toThrow('请再次点击「导入」。')
+        expect(worksTransfer.importFrom).toHaveBeenCalledTimes(1)
+        dispose()
+      } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+    })
   })
 
   it('saves one conversation as text where the user picks', async () => {
@@ -10422,6 +10528,9 @@ describe('IPC channel log and account policies', () => {
       'canvas:open',
       'canvas:open-project',
       'cli:launch',
+      // 「迁移到新电脑」带作品：量的、导入的都是当前账号作品库里的作品。
+      'data-transfer:import-works',
+      'data-transfer:inspect-works',
       'desktop:launch-codex',
       'external-clients:launch',
       'external-clients:scan',

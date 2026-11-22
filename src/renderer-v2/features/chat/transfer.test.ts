@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
+import type { AiChatHistorySnapshot, AiChatHistoryWrite, VideoStudioProjectsSnapshot, VideoStudioProjectsWrite } from '../../../../electron/ipc-contract'
 import { markBackgroundWork } from '../../background-work'
 import { createConversation, createWorkspace, type ChatWorkspace } from './state'
 import { createHistoryWriter, loadChatHistory, registerHistoryFlusher, type LoadedChatHistory } from './storage'
 import { chatReplyingImportMessage, createChatTransfer } from './transfer'
+import { loadVideoStudioLibrary, serializeVideoStudioItem } from '../video-studio/library'
+import { createVideoStudioProject, defaultVideoStudioSettings } from '../video-studio/project'
 
 const scope = 'xm-account:7'
 function memoryStorage() {
@@ -14,7 +16,17 @@ function memoryStorage() {
 // conversations, then the index, then drop files the index no longer names.
 function memoryFiles() {
   const stores = new Map<string, AiChatHistorySnapshot>()
+  // Same contract as electron/video-studio-project-store.ts: one file per video, put and remove by key.
+  const videos = new Map<string, VideoStudioProjectsSnapshot>()
   const bridge = {
+    readVideoStudioProjects: vi.fn(async (owner: string): Promise<VideoStudioProjectsSnapshot> => structuredClone(videos.get(owner) ?? { index: null, projects: [] })),
+    writeVideoStudioProjects: vi.fn(async (input: VideoStudioProjectsWrite) => {
+      const current = videos.get(input.scope) ?? { index: null, projects: [] }
+      const files = new Map(current.projects.map((file) => [file.key, file.content]))
+      for (const file of input.put) files.set(file.key, file.content)
+      for (const key of input.remove) files.delete(key)
+      videos.set(input.scope, { index: input.index ?? current.index, projects: [...files].map(([key, content]) => ({ key, content })) })
+    }),
     readAiChatHistory: vi.fn(async (owner: string): Promise<AiChatHistorySnapshot> => structuredClone(stores.get(owner) ?? { index: null, conversations: [] })),
     writeAiChatHistory: vi.fn(async (input: AiChatHistoryWrite) => {
       const files = new Map((stores.get(input.scope)?.conversations ?? []).map((file) => [file.key, file.content]))
@@ -46,7 +58,7 @@ describe('importing conversations while the chat page is around', () => {
       void writer.save({ ...shown, draftConversation: { ...shown.draftConversation, draft: '还没发出去的话' } })
       remounted = loadChatHistory(files.api, storage, scope)
     })
-    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, updated: 0, skipped: 0 })
+    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, updated: 0, skipped: 0, videosAdded: 0, videosSkipped: 0 })
     const reloaded = await remounted!
     expect(ids(reloaded)).toEqual(new Set(['on-this-computer', 'from-old-computer']))
     expect(reloaded.state.draftConversation.draft).toBe('还没发出去的话')
@@ -148,7 +160,7 @@ describe('importing conversations while the chat is replying', () => {
     expect(files.bridge.writeAiChatHistory).not.toHaveBeenCalled()
     markBackgroundWork(reply, false)
     expect(() => transfer.assertChatIdle()).not.toThrow()
-    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, updated: 0, skipped: 0 })
+    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, updated: 0, skipped: 0, videosAdded: 0, videosSkipped: 0 })
     expect(unmountChat).toHaveBeenCalledOnce()
   })
 
@@ -158,7 +170,7 @@ describe('importing conversations while the chat is replying', () => {
     busy('tool-jobs')
     busy('video-compose', 'video-compose')
     expect(() => transfer.assertChatIdle()).not.toThrow()
-    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, updated: 0, skipped: 0 })
+    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, updated: 0, skipped: 0, videosAdded: 0, videosSkipped: 0 })
   })
 
   it('says it in the exact words the formal wording list gave', () => {
@@ -182,7 +194,7 @@ describe('moving saved phrases to a new computer', () => {
     const storage = memoryStorage()
     await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [conversation('here')], phrases: ['本机的一句', '两边都有'] })
     const transfer = createChatTransfer(files.bridge, storage, scope, () => undefined)
-    expect(await transfer.importConversations([conversation('here')], ['两边都有', '旧电脑的一句'])).toEqual({ added: 0, updated: 0, skipped: 0 })
+    expect(await transfer.importConversations([conversation('here')], ['两边都有', '旧电脑的一句'])).toEqual({ added: 0, updated: 0, skipped: 0, videosAdded: 0, videosSkipped: 0 })
     expect((await loadChatHistory(files.api, storage, scope)).state.phrases).toEqual(['本机的一句', '两边都有', '旧电脑的一句'])
   })
 
@@ -202,5 +214,66 @@ describe('moving saved phrases to a new computer', () => {
     await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), phrases: present })
     await createChatTransfer(files.bridge, storage, scope, () => undefined).importConversations([], ['旧电脑甲', '旧电脑乙'])
     expect((await loadChatHistory(files.api, storage, scope)).state.phrases).toEqual([...present, '旧电脑甲'])
+  })
+})
+
+// 「搬作品改」：「创作」里的视频分镜跟聊天记录放在同一份文件里。
+describe('moving creation videos to a new computer', () => {
+  function video(id: string, idea: string) {
+    const project = { ...createVideoStudioProject({ ...defaultVideoStudioSettings(), idea }), shots: [{ id: 'shot-0', prompt: '镜头', caption: '', status: 'idle' as const }] }
+    return serializeVideoStudioItem({ id, updatedAt: 5, project })
+  }
+
+  it('exports the videos this account has with the conversations', async () => {
+    const files = memoryFiles()
+    await files.bridge.writeVideoStudioProjects({ scope, put: [video('film-1', '海边'), { key: 'broken', content: '[]' }], remove: [] })
+    const exported = await createChatTransfer(files.bridge, memoryStorage(), scope, () => undefined).exportChat()
+    expect(exported.videoProjects).toEqual([video('film-1', '海边')])
+  })
+
+  it('imports videos even when the file brings no conversation, and keeps the one already here', async () => {
+    const files = memoryFiles()
+    await files.bridge.writeVideoStudioProjects({ scope, put: [video('film-1', '海边')], remove: [] })
+    const transfer = createChatTransfer(files.bridge, memoryStorage(), scope, () => undefined)
+    expect(await transfer.importConversations([], [], [video('film-1', '山里'), video('film-2', '城市')])).toEqual({ added: 0, updated: 0, skipped: 0, videosAdded: 2, videosSkipped: 0 })
+    const stored = await files.bridge.readVideoStudioProjects(scope)
+    expect(stored.projects.map((file) => file.key).sort()).toEqual(['film-1', 'film-1-imported', 'film-2'])
+    expect(stored.projects.find((file) => file.key === 'film-1')).toEqual(video('film-1', '海边'))
+  })
+
+  it('makes the creation page put back mid-import wait until the videos are written', async () => {
+    const files = memoryFiles()
+    const write = files.bridge.writeVideoStudioProjects.getMockImplementation()!
+    let release: () => void = () => undefined
+    files.bridge.writeVideoStudioProjects.mockImplementationOnce((input) => new Promise<void>((resolve) => { release = () => { void write(input).then(resolve) } }))
+    let reopened: ReturnType<typeof loadVideoStudioLibrary> | undefined
+    const reportRendererError = vi.fn(async () => undefined)
+    const importing = createChatTransfer(files.bridge, memoryStorage(), scope, () => {
+      reopened = loadVideoStudioLibrary({ ...files.bridge, reportRendererError }, scope, null)
+    }).importConversations([], [], [video('film-2', '城市')])
+    await vi.waitFor(() => expect(files.bridge.writeVideoStudioProjects).toHaveBeenCalledOnce())
+    release()
+    await importing
+    expect((await reopened!).items.map((item) => item.id)).toEqual(['film-2'])
+  })
+})
+
+// 对话里的图跟着作品一起搬：设置页选「导出全部」时，对话里的图片原样带着；只导聊天记录和设置时照旧换成一句说明。
+describe('moving the pictures of a conversation along with the works', () => {
+  const asset = { assetId: 'e'.repeat(43), localUrl: `xingmang-asset://image/${'e'.repeat(43)}`, mimeType: 'image/png' as const, fileName: '图.png' }
+  function pictured(id: string) {
+    const asked = conversation(id)
+    return { ...asked, messages: [...asked.messages, { id: `${id}-answer`, role: 'assistant' as const, content: '画好了', reasoning: '', status: 'complete' as const, createdAt: 2, assets: [asset] }] }
+  }
+
+  it('keeps the pictures only when asked to export the works too', async () => {
+    const files = memoryFiles()
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [pictured('drawn')] })
+    const transfer = createChatTransfer(files.bridge, memoryStorage(), scope, () => undefined)
+    const withWorks = await transfer.exportChat({ withWorks: true })
+    expect(withWorks.conversations[0]).toMatchObject({ messages: [{ id: 'drawn-message' }, { id: 'drawn-answer', content: '画好了', assets: [{ assetId: asset.assetId }] }] })
+    const alone = await transfer.exportChat()
+    expect(alone.conversations[0]).toMatchObject({ messages: [{ id: 'drawn-message' }, { id: 'drawn-answer', content: '画好了\n\n[图片未随记录迁移]' }] })
+    expect(JSON.stringify(alone.conversations)).not.toContain(asset.assetId)
   })
 })

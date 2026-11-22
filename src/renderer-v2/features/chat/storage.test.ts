@@ -3,7 +3,7 @@ import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../elec
 import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
 import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import { createConversation, createWorkspace, type ChatMessage, type ChatWorkspace } from './state'
-import { answerHistoryFlushRequests, autosaveDelay, autosaveMaxWaitMs, autosaveQuietMs, ChatStorageError, conversationLimitMessage, conversationExport, conversationPlainText, createHistoryWriter, flushChatHistory, registerHistoryFlusher, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, MAX_CONVERSATIONS, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText, runHistoryImport } from './storage'
+import { answerHistoryFlushRequests, autosaveDelay, autosaveMaxWaitMs, autosaveQuietMs, ChatStorageError, conversationLimitMessage, conversationExport, conversationPlainText, createHistoryWriter, flushChatHistory, registerHistoryFlusher, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, MAX_CONVERSATIONS, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText, runHistoryImport, type LoadedChatHistory } from './storage'
 
 const scope = 'xm-account:7'
 const legacyKey = 'xingmang-ai-chat:v1:7'
@@ -981,6 +981,34 @@ describe('moving history to another computer', () => {
     expect(imported.draft).toBe('half typed')
   })
 
+  it('keeps the pictures of a conversation when the works travel with it', () => {
+    const state = workspace(scope, 1)
+    state.conversations[0].messages = [message(0, { assets: [asset] }), message(1, { content: '', assets: [asset], mayStillComplete: true, requestId: 'r1' } as Partial<ChatMessage>)]
+    state.conversations[0].draftImages = [asset]
+    const exported = JSON.parse(JSON.stringify(exportableConversations(state, { withWorks: true })))
+    const text = JSON.stringify(exported)
+    expect(text).not.toContain('未随记录迁移')
+    expect(text).not.toContain('mayStillComplete')
+    expect(text).not.toContain('requestId')
+    expect(text).not.toContain('localUrl')
+    expect(exported[0].messages.map((item: { assets: unknown[] }) => item.assets)).toEqual([[{ assetId: asset.assetId, mimeType: 'image/png', fileName: 'x.png' }], [{ assetId: asset.assetId, mimeType: 'image/png', fileName: 'x.png' }]])
+    // Draft pictures stay behind either way: the importer cannot tell this file from one of 0.2.24.
+    expect(exported[0]).not.toHaveProperty('draftImages')
+    const [imported] = parseImportedConversations(exported, { withWorks: true })
+    expect(imported.messages.map((item) => [item.content, item.assets])).toEqual([['content-0', [asset]], ['', [asset]]])
+  })
+
+  it('says a picture stayed behind when the works did not come along with the file', () => {
+    const state = workspace(scope, 1)
+    state.conversations[0].messages = [message(0, { content: 'content-0', assets: [asset] }), message(1, { content: '', assets: [asset] })]
+    const exported = JSON.parse(JSON.stringify(exportableConversations(state, { withWorks: true })))
+    const [imported] = parseImportedConversations(exported)
+    expect(imported.messages.map((item) => [item.content, item.assets])).toEqual([['content-0\n\n[图片未随记录迁移]', undefined], ['[图片未随记录迁移]', undefined]])
+    // A file exported without the works reads the same whichever way it is imported.
+    const plain = JSON.parse(JSON.stringify(exportableConversations(state)))
+    expect(parseImportedConversations(plain, { withWorks: true })).toEqual(parseImportedConversations(plain))
+  })
+
   it('round-trips exported conversations through the strict import parser', () => {
     const state = workspace(scope, 3)
     const parsed = parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(state))))
@@ -1145,6 +1173,63 @@ describe('moving history to another computer', () => {
     expect(reopened.state.conversations).toHaveLength(1)
     expect(reopened.state.conversations[0].messages.map((item) => item.content)).toEqual(['我的密钥 [密钥未保存] 用不了', 'content-1\n\n[图片未随记录迁移]', '后来聊的', 'content-3'])
     expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, exported(oldComputer))).toEqual({ added: 0, updated: 0, skipped: 0 })
+  })
+
+  describe('when a conversation already came over once without its works', () => {
+    const picture = { assetId: 'c'.repeat(43), mimeType: 'image/png' as const, localUrl: `xingmang-asset://image/${'c'.repeat(43)}`, fileName: '图.png' }
+    const video = { clip: { assetId: 'v'.repeat(43), thumbnailUrl: assetThumbnailUrl('v'.repeat(43), 'video') } }
+    function oldComputer(extra: ChatMessage[] = []): ChatWorkspace {
+      const state = workspace('xm-account:9', 1)
+      state.conversations[0] = { ...state.conversations[0], title: '搬家', updatedAt: 1000, messages: [message(0, { assets: [picture] }), message(1, { content: '', assets: [picture] }), message(2), message(3, { content: '', video }), ...extra] }
+      return state
+    }
+    function moved(state: ChatWorkspace, withWorks: boolean) {
+      return parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(state, { withWorks }))), { withWorks })
+    }
+    function shown(loaded: LoadedChatHistory) {
+      return loaded.state.conversations[0].messages.map((item) => [item.content, item.assets?.length ?? 0, Boolean(item.video?.clip)])
+    }
+    const withPictures = [['content-0', 1, false], ['', 1, false], ['content-2', 0, false], ['', 0, true]]
+
+    it('brings the pictures back instead of saving a second copy, and a third import changes nothing', async () => {
+      const files = memoryFiles()
+      expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, moved(oldComputer(), false))).toEqual({ added: 1, updated: 0, skipped: 0 })
+      expect(shown(await loadChatHistory(files.api, memoryStorage(), scope))).toEqual([['content-0\n\n[图片未随记录迁移]', 0, false], ['[图片未随记录迁移]', 0, false], ['content-2', 0, false], ['[视频未随记录迁移]', 0, false]])
+      expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, moved(oldComputer(), true))).toEqual({ added: 0, updated: 1, skipped: 0 })
+      const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
+      expect(reopened.state.conversations).toHaveLength(1)
+      expect(shown(reopened)).toEqual(withPictures)
+      expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, moved(oldComputer(), true))).toEqual({ added: 0, updated: 0, skipped: 0 })
+      // And the file without the works, once more, does not take them away again.
+      expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, moved(oldComputer(), false))).toEqual({ added: 0, updated: 0, skipped: 0 })
+      expect(shown(await loadChatHistory(files.api, memoryStorage(), scope))).toEqual(withPictures)
+    })
+
+    it('brings the pictures back into a conversation that went on here', async () => {
+      const here = workspace(scope, 0)
+      const [first] = moved(oldComputer(), false)
+      here.conversations = [{ ...first, messages: [...first.messages, message(4, { content: '在新电脑上接着问的' })] }]
+      const result = mergeImportedConversations(here, moved(oldComputer(), true))
+      expect(result).toMatchObject({ added: 0, updated: 1, skipped: 0 })
+      expect(result.state.conversations[0].messages.map((item) => [item.content, item.assets?.length ?? 0, Boolean(item.video?.clip)])).toEqual([...withPictures, ['在新电脑上接着问的', 0, false]])
+    })
+
+    it('keeps the pictures here when the old computer went on and exported without its works', () => {
+      const here = workspace(scope, 0)
+      here.conversations = moved(oldComputer(), true)
+      const result = mergeImportedConversations(here, moved(oldComputer([message(4, { content: '旧电脑上后来问的' })]), false))
+      expect(result).toMatchObject({ added: 0, updated: 1, skipped: 0 })
+      expect(result.state.conversations[0].messages.map((item) => [item.content, item.assets?.length ?? 0, Boolean(item.video?.clip)])).toEqual([...withPictures, ['旧电脑上后来问的', 0, false]])
+    })
+
+    it('still keeps both sides when the words themselves differ', () => {
+      const here = workspace(scope, 0)
+      const [first] = moved(oldComputer(), false)
+      here.conversations = [{ ...first, messages: first.messages.map((item, index) => index === 2 ? { ...item, content: '这台电脑上改过的' } : item) }]
+      const result = mergeImportedConversations(here, moved(oldComputer(), true))
+      expect(result).toMatchObject({ added: 1, updated: 0 })
+      expect(result.state.conversations.map((item) => item.title).sort()).toEqual(['搬家', '搬家（导入）'])
+    })
   })
 
   it('merges into the saved files and survives a reopen', async () => {
@@ -1517,6 +1602,32 @@ describe('videos made in a conversation', () => {
     expect(imported.messages[1].video).toBeUndefined()
     expect(imported.messages[1].requestId).toBeUndefined()
     expect(imported.messages[1].status).toBe('canceled')
+  })
+
+  it('carries finished clips along with the works, but never a job that was still running', () => {
+    const state = withReply({ video: { clip } })
+    state.conversations[0].messages.push(message(2), message(3, { content: '', status: 'pending', requestId: 'request-video-6', video: { requestId: 'request-video-6' } }))
+    const exported = JSON.parse(JSON.stringify(exportableConversations(state, { withWorks: true })))
+    expect(exported[0].messages[1].video).toEqual({ clip })
+    expect(exported[0].messages[1].content).toBe('')
+    expect(JSON.stringify(exported)).not.toContain('request-video-6')
+    expect(exported[0].messages[3]).not.toHaveProperty('video')
+    const [imported] = parseImportedConversations(exported, { withWorks: true })
+    expect(imported.messages[1]).toMatchObject({ status: 'complete', video: { clip } })
+    expect(imported.messages.map((item) => item.status)).toEqual(['complete', 'complete', 'complete', 'canceled'])
+    expect(imported.messages[3].video).toBeUndefined()
+  })
+
+  it('takes only the finished clip from a file that came with its works', () => {
+    const exported = JSON.parse(JSON.stringify(exportableConversations(withReply({ video: { clip } }), { withWorks: true })))
+    exported[0].messages[1].video = { clip, requestId: 'someone-elses-request', unconfirmed: true, unrecorded: true }
+    const [imported] = parseImportedConversations(exported, { withWorks: true })
+    expect(imported.messages[1].video).toEqual({ clip })
+    expect(imported.messages[1].requestId).toBeUndefined()
+    // Without the works the clip is not on this computer: the note it always had.
+    const [alone] = parseImportedConversations(exported)
+    expect(alone.messages[1].video).toBeUndefined()
+    expect(alone.messages[1].content).toBe('[视频未随记录迁移]')
   })
 
   it('mentions the video in the exported text file', () => {

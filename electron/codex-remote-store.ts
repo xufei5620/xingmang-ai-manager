@@ -8,7 +8,7 @@ import {
 import type { SafeStorageLike } from './account-session-store'
 import { inspectSafeStorageBackend, resolveCredentialPersistence } from './safe-storage-backend'
 import { isRecord } from './input-guards'
-import { isRemoteChannelId, isRemoteIdleCloseHours, type RemoteChannelId, type RemoteIdleCloseHours } from './codex-remote-channel'
+import { isRemoteChannelId, isRemoteIdleCloseHours, isRemoteModel, type RemoteChannelId, type RemoteIdleCloseHours } from './codex-remote-channel'
 
 // 手机遥控的两份本地数据：设置（开没开、绑定了谁、工作文件夹，不含密钥）和每个渠道的凭据
 // （飞书 App Secret、微信机器人令牌，safeStorage 加密）。凭据是本程序自己连平台用的登录凭据，
@@ -89,6 +89,11 @@ export interface CodexRemoteSettings {
    * （yoyo 同日亲手回「老客户也不关」，知道遥控开着电脑不自动睡）。
    */
   idleCloseHours?: RemoteIdleCloseHours
+  /**
+   * 「手机端使用的模型」单独选的型号（yoyo 2026-11-19「改」）。缺省 = 跟电脑上的 Codex 一样：只有客户在电脑上选了
+   * 别的才存，读回来也只认长得像型号名的（isRemoteModel）。
+   */
+  model?: string
 }
 
 export function emptyCodexRemoteSettings(): CodexRemoteSettings {
@@ -152,6 +157,7 @@ export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
   }
   if (value.autoStart === true) settings.autoStart = true
   if (isRemoteIdleCloseHours(value.idleCloseHours)) settings.idleCloseHours = value.idleCloseHours
+  if (isRemoteModel(value.model)) settings.model = value.model
   if (isRecord(value.channels)) {
     for (const [id, raw] of Object.entries(value.channels)) {
       if (!isRemoteChannelId(id) || !isRecord(raw)) continue

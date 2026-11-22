@@ -212,6 +212,7 @@
 - `features/video-studio/ShotImageDialog.tsx` — 「AI 生成图片」点了以后的出图框（融合第 4 步）：跟对话里「生成图片」那一档共用同一排选项（`features/chat/ImageOptions.tsx`）和同一份设置（`features/chat/image-settings.ts`），画面描述、参考图、报价和余额；点「生成图片」才把框里选的交给 `useVideoStudio` 的 `drawShotImage`。
 - `features/video-studio/useVideoStudio.ts` — 页面的状态：读各分组的模型、写分镜、同时最多 3 段的出片队列和进度、让 AI 画镜头图（走对话页出图那条 `chat:generate-image`，停下走 `chat:cancel`）、拼片；工程从外面交来的 `source` 读、往它写（开哪一条归 `useVideoStudioLibrary.ts`），点开的那一条里没等到的片段照重开页面那样接回；停下时说清哪几段已经交给服务端、照样扣费。
 - `features/video-studio/library.ts` / `useVideoStudioLibrary.ts` — 这个账号做过的视频，一条一个文件（主进程 `video-studio-project-store.ts`）：前者是纯函数（文件内容、名字、排序、0.2.24 留在 localStorage 里的草稿怎么抄成文件、抄完怎么核对），后者是读、攒 400 毫秒一批写、紧急时立刻写、改名、删、从工作台外面整份换掉（`replace`：对话里的一段视频「添加到视频」时用，换版本号让开着的工作台重新读、旧的那份不再能写），和「现在开着哪一条、它手上有事时不换」。
+- `features/video-studio/transfer.ts` — 设置页「迁移到新电脑」里的视频那一半：导出带哪几条（读得出来的，文件原样），导入时编号相同、内容一样的跳过，内容不同的另存一份、名称加「（导入）」，本机的不改；最多 200 条，放不下的报数。`library.ts` 的 `runVideoStudioImport` 让导入期间重新挂上的「创作」等它写完再读。
 - `features/video-studio/clip.ts` — 纯函数：存着的一段视频怎么读回来（镜头和对话里出的视频共用，缩略图按编号换成现在的版本）、页面里直接放用的地址。
 - `features/video-studio/project.ts` — 纯函数：工程的形状与默认值、分镜落成镜头、排序增删、出片段的请求（Grok 给宽高、MiniMax 给画面比例；镜头选了图就带上，Grok 当第一帧、MiniMax 换成图生视频）、镜头图的多选分配、AI 画镜头图的请求（写法同对话里出图；出图框打开时用哪个型号、尺寸怎么跟画面比例走、哪些往共用的那一份里记）和迟到结果的认领、每段剪头剪尾的可选几档（剪完至少留 1 秒）、每镜单独定的时长（换视频模型时一起挪到能出的一档）、配乐和片段原声的两路音量、序列化与逐字段校验（缩略图只认作品库的地址）、0.2.24 那两格 `localStorage`（手头一条、草稿箱最多 20 份）的只读读法；镜头上挂一段作品库里现成的片段（`borrowed`：不用生成、总时长按片段自己的长度算，`assignVideoStudioShotClip` / `removeVideoStudioShotClip`），拿几段现成片段新开一条视频（`createVideoStudioProjectFromClips`）。
 - `features/video-studio/compose-client.ts` — 页面这一头：`composeInVideoStudioWorker` 每次新开一个后台线程拼片，取消就直接关掉线程；回包按白名单读。
@@ -248,12 +249,12 @@
 ## features/settings/ 与 features/tutorial/
 - `features/settings/VersionCard.tsx` — 设置 › 版本更新最上面的版本卡：当前版本、更新内容、下载进度与主按钮，撤回、要管理员密码、磁盘不够、失败几种提示；Windows 授权窗、Mac 钥匙串、Linux 系统安装窗口各有提前说明。
 - `features/settings/BackupCard.tsx` — 设置 › 备份迁移的备份列表、预览与恢复，恢复后提醒回首页看或重开工具；下线的 Gemini 不列。
-- `features/settings/codex-remote/CodexRemoteCard.tsx` — 设置 › 工具管理的「手机遥控 Codex」整卡：干活的文件夹（YF-19 起能加几个，`WorkspaceRow` 一个一行、正在用的标出来、别的能「用这个」「移除」）、每个渠道一块（凭据、打开遥控、配对码与绑定的人）；`CodexRemotePanel` 只管按快照摆，取数和操作在外层。「干活的文件夹」上面的「最近一次」（YF-13，停下这一轮 / 都拒绝）、余额不到 $1 的黄条（YF-12，余额在外层 `useRemoteLowBalance` 读）、另一个渠道登录过时没登录的那块收成一行（YF-7，`remoteChannelCollapsed`）；飞书还差几步那块的打开机器人对话二维码在 `FeishuRemoteSection.tsx`（YF-3），「怎么建飞书机器人」六步下面的「打开飞书开放平台」「看教程」也在那里（YF-4）。
+- `features/settings/codex-remote/CodexRemotePage.tsx` — 侧栏「手机遥控」一页（0.2.25 起；以前是设置 › 工具管理的整卡，目录名没改）：页头写 Codex 在干什么；「连接方式」两张可选的小卡（页签，`MethodPicker`，先选哪种按 `initialRemoteMethod`），下面只摆选中那一种的那一块（凭据、打开遥控、配对码与绑定的人）；「通用设置」卡里是干活的文件夹（YF-19 起能加几个，`WorkspaceRow`）、手机端使用的模型（`ModelRow`，列表跟首页 Codex「默认模型」同一份 `codexModelChoices`，第一项「与电脑端相同」）、自动打开、无消息自动关闭时间。登录的 Windows 账号本身是管理员时页头下面一条黄底提醒（`codexRemoteAdminAccountNotice`）。`CodexRemotePageView` 只管按快照摆，取数和操作在外层 `CodexRemotePage`。连接方式上面的「最近一次」（YF-13，停下这一轮 / 都拒绝）、余额不到 $1 的黄条（YF-12，余额在外层 `useRemoteLowBalance` 读）；飞书还差几步那块的打开机器人对话二维码在 `FeishuRemoteSection.tsx`（YF-3），「怎么建飞书机器人」六步下面的「打开飞书开放平台」「看教程」也在那里（YF-4）。
 - `features/settings/codex-remote/channel-sections.tsx` — 各渠道那一块的登记表（`Record<RemoteChannelId, …>`，主进程加渠道这里漏了是编译错）：标题、提示句和填凭据的组件。
 - `features/settings/codex-remote/FeishuRemoteSection.tsx` — 飞书那一块：填 App ID / App Secret（附怎么建机器人的六步，只写字不放链接），填过了只显示 App ID。
 - `features/settings/codex-remote/WeixinRemoteSection.tsx` — 微信那一块（实验功能）：黄色提醒、扫码登录 / 重新扫码，扫码弹窗（二维码图由主进程给、手机上要输数字时换成输入框）；拿二维码走卡片的 `run`，弹窗里的轮询自己管（`useLatestRequest`），登录好了靠主进程推的快照变成「已登录」。
-- `features/settings/codex-remote/remote-view.ts` — 卡上几处说法的纯函数（状态小标签、绑定的人、开关说明）和按 `revision` 取新快照。
-- `features/settings/codex-remote/useCodexRemoteActive.ts` — 外壳状态栏「手机遥控中」用的：有渠道开着就亮，点了到设置里那张卡。
+- `features/settings/codex-remote/remote-view.ts` — 页上几处说法的纯函数（状态小标签、绑定的人、开关说明）和按 `revision` 取新快照。
+- `features/settings/codex-remote/useCodexRemoteActive.ts` — 外壳状态栏「手机遥控中」用的：有渠道开着就亮，点了到「手机遥控」那一页。
 - `features/tutorial/TutorialPage.tsx` — 教程页：分类按钮与搜索、两列卡片、文章与吸顶条、「读到第几步」；顶部搜索没结果时带字进来接着搜。
 - `features/tutorial/TutorialIllustration.tsx` — 教程每一步的示意插图（用界面同款图标拼出来，不是截图），每种插图配标题与说明。
 - `features/tutorial/tutorial-progress.ts` / `features/tutorial/tutorial-search.ts` — 教程卡上的「已完成 k / n 步」（只存本机 localStorage、只进不退，不为它开主进程通道）和教程页与顶部搜索共用的分词匹配、高亮。

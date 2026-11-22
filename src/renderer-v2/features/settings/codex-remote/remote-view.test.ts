@@ -7,7 +7,6 @@ import {
   pairingAttemptText,
   pendingApprovalsText,
   remoteCardMeta,
-  remoteChannelCollapsed,
   remoteClockText,
   remoteElapsedText,
   remoteChannelStateLabel,
@@ -131,18 +130,5 @@ describe('last phone request (YF-13)', () => {
   it('mentions waiting approvals only when there are some', () => {
     expect(pendingApprovalsText(0)).toBeNull()
     expect(pendingApprovalsText(2)).toBe('待确认 2 条，请在手机上回复。')
-  })
-})
-
-describe('folding a channel that is not logged in (YF-7)', () => {
-  it('folds it only while the other channel is logged in, and never once it is logged in or on', () => {
-    const feishuIn = snapshot({ channels: { feishu: channel(), weixin: channel({ channel: 'weixin', hasCredential: false, accountLabel: null }) } })
-    expect(remoteChannelCollapsed(feishuIn, feishuIn.channels.weixin)).toBe(true)
-    expect(remoteChannelCollapsed(feishuIn, feishuIn.channels.feishu)).toBe(false)
-    const neither = snapshot({ channels: { feishu: channel({ hasCredential: false, accountLabel: null }), weixin: channel({ channel: 'weixin', hasCredential: false, accountLabel: null }) } })
-    expect(remoteChannelCollapsed(neither, neither.channels.weixin)).toBe(false)
-    expect(remoteChannelCollapsed(neither, neither.channels.feishu)).toBe(false)
-    const weixinOn = snapshot({ channels: { feishu: channel(), weixin: channel({ channel: 'weixin', hasCredential: false, accountLabel: null, enabled: true }) } })
-    expect(remoteChannelCollapsed(weixinOn, weixinOn.channels.weixin)).toBe(false)
   })
 })

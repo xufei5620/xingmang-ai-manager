@@ -1,4 +1,5 @@
 import { AccountPage } from './pages-account'
+import { CodexRemotePage } from './features/settings/codex-remote/CodexRemotePage'
 import { SessionsPage } from './pages-management'
 // pages-maintenance 要排在 PluginsHub 前面：业务页那份样式表里教程页那几份样式排在 extensions.css 前面，先后由 import
 // 的先后定（#1335 第 6 条）。原来是旧外接工具页先 import pages-maintenance 再带进 extensions.css，旧页删了以后由这里接着保住。
@@ -118,6 +119,7 @@ export function BusinessPage({
     return <PluginsHub api={api} installedProviders={installedProviders} codexDesktopInstalled={codexDesktopInstalled} onRecommend={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined} onOpenHelp={actions.openHelp} onSystemChanged={actions.onSystemChanged} onOpenHome={actions.navigate ? () => actions.navigate?.('home') : undefined} active={actions.active} />
   if (page === 'health') return <HealthPage api={api} accountSession={accountSession} {...actions} />
   if (page === 'feedback') return <FeedbackPage api={api} {...actions} />
+  if (page === 'remote') return <CodexRemotePage api={api} navigate={actions.navigate} onOpenHelp={actions.openHelp} />
   if (page === 'settings') return <SettingsPage api={api} {...actions} onBackupRestored={onBackupRestored} installedProviders={installedProviders} />
   if (page === 'tutorial') return <TutorialPage {...actions} topic={tutorialTopic} />
   // 聊天、画布、视频剪辑合成了「创作」（融合第 1 步）：视频工作台在 features/create 里，跟对话同一页，不在这里画。

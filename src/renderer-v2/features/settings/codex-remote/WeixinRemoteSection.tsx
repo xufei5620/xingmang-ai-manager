@@ -6,7 +6,7 @@ import type { WeixinLoginPhase, WeixinLoginSnapshot } from '../../../../../elect
 import type { RemoteChannelSectionProps } from './channel-sections'
 
 // 「设置 › 手机遥控 Codex」里微信那一块：只管扫码登录。开关、配对码、绑定的人、退出登录是卡片
-// 公共部分（CodexRemoteCard.tsx）。二维码图由主进程画好给过来，这里不碰登录链接，也拿不到令牌。
+// 公共部分（CodexRemotePage.tsx）。二维码图由主进程画好给过来，这里不碰登录链接，也拿不到令牌。
 
 export const weixinRemoteText = {
   warningTitle: '实验功能，随时可能断',

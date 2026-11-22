@@ -485,8 +485,6 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'latest-cli', group: 'tools', label: '命令行工具始终安装最新版本', keywords: ['总是装最新版', '最新版', '推荐版本'] },
   { id: 'install-location', group: 'tools', label: '安装位置', keywords: ['装在哪'] },
   { id: 'terminal', group: 'tools', label: '终端', keywords: ['命令行'] },
-  // 在飞书或微信里私聊机器人让电脑上的 Codex 干活（features/settings/codex-remote）。
-  { id: 'codex-remote', group: 'tools', label: '手机遥控 Codex', keywords: ['遥控', '手机', '飞书', '微信', 'ClawBot', '机器人', '远程', '配对'], card: true },
   { id: 'acceleration', group: 'network', label: '网络加速', keywords: ['加速', '游戏', '延迟', '卡顿', '免费时长', '加速线路'], when: 'acceleration', card: true },
   ...connectionRouteSettings.map((route): SettingsItem => ({ id: route.id, group: 'network', section: 'routes', label: route.label, keywords: ['线路', '线路1', '线路2', '直连', '洛杉矶', 'CF', '备用', '重启', '连不上'] })),
   { id: 'tool-route-restart-hints', group: 'network', section: 'routes', label: '切换线路后提醒重新打开工具', keywords: ['换线路后提醒我重开工具', '线路', '重开', '需重开生效'] },
@@ -506,7 +504,7 @@ export const settingsItems: readonly SettingsItem[] = [
   })),
   { id: 'backups', group: 'backup', label: '工具配置备份', keywords: ['备份', '恢复', '还原', '找回配置', '立即备份'], card: true },
   // 没登录时只能导设置，那一行写「导出设置」（页面上换）；这里的标题给顶部搜索用。
-  { id: 'transfer', group: 'backup', section: 'transfer', label: '导出设置和聊天记录', keywords: ['导出', '换电脑', '新电脑', '迁移', '聊天记录', '搬到新电脑'] },
+  { id: 'transfer', group: 'backup', section: 'transfer', label: '导出设置和聊天记录', keywords: ['导出', '换电脑', '新电脑', '迁移', '聊天记录', '搬到新电脑', '作品', '视频'] },
   { id: 'transfer-import', group: 'backup', section: 'transfer', label: '从文件导入', keywords: ['导入', '换电脑', '新电脑', '迁移', '搬到新电脑'] },
   // 星芒自己占了多少地方、能清哪些（决定单 D100，「空间页改」）。「C盘满了」是批过的「C 盘满了」不带空格的写法：
   // 搜索按空格拆词，客户多半不打那个空格。
