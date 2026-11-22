@@ -1064,7 +1064,6 @@ const methods = {
   refreshOfficialChatGptUsage: async () => ({ planLabel: 'Plus', renewsAt: null, resetCredits: null, windows: [{ id: 'weekly', label: '周限额', remainingPercent: 72, resetAt: null }], checkedAt: new Date().toISOString() }),
   listAiChatGroups: async () => [{ name: 'fixture-group', description: '本地测试分组', ratio: 1 }],
   openCanvasWindow: async () => undefined,
-  openCanvasAssetLibrary: async () => undefined,
   // 照主进程那份的规矩列：垃圾桶和音频不在这里；film 只认点名的那几段视频；搜索对名字、那句描述，或者页面先搜到的编号。
   listAiLibrary: async (input) => {
     const films = new Set(input.filmAssetIds ?? [])

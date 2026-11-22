@@ -405,7 +405,6 @@ function register(
     setWindowMode: vi.fn(),
     setWindowTheme: vi.fn(),
     openCanvasWindow: vi.fn(async () => undefined),
-    openCanvasAssetLibrary: vi.fn(async () => undefined),
     // 打开前试写只在 Windows 上跑，有自己的一组用例（write check before launching）；
     // 其余用例不碰真磁盘，cli:launch 在各平台上都照旧同步交给 launchProvider。
     workspaceWriteCheck: { platform: 'darwin', probe: async () => undefined },
@@ -4828,7 +4827,6 @@ describe('registerIpcHandlers', () => {
 
   it('delegates canvas:open to the injected openCanvasWindow callback, and rejects untrusted senders the same as every other channel', async () => {
     const openCanvasWindow = vi.fn(async () => undefined)
-    const openCanvasAssetLibrary = vi.fn(async () => undefined)
     const dispose = registerIpcHandlers({
       systemService: serviceStub(),
       accountService: accountServiceStub(),
@@ -4848,7 +4846,6 @@ describe('registerIpcHandlers', () => {
       setWindowMode: vi.fn(),
       setWindowTheme: vi.fn(),
       openCanvasWindow,
-      openCanvasAssetLibrary,
     })
     try {
       const handler = electronMocks.handlers.get('canvas:open')!
@@ -4856,13 +4853,6 @@ describe('registerIpcHandlers', () => {
       await expect(handler(trustedEvent())).resolves.toBeUndefined()
       expect(openCanvasWindow).toHaveBeenCalledTimes(1)
       expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
-
-      // The home page library takes nothing from the page either: which library and which pictures stay in the main process.
-      const library = electronMocks.handlers.get('canvas:open-asset-library')!
-      await expect(library(trustedEvent())).resolves.toBeUndefined()
-      expect(openCanvasAssetLibrary).toHaveBeenCalledTimes(1)
-      expect(openCanvasWindow).toHaveBeenCalledTimes(1)
-      expect(() => library(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
 
       // Registrations that predate the project list say so instead of failing somewhere deeper.
       expect(() => electronMocks.handlers.get('canvas:list-projects')!(trustedEvent())).toThrow('画布项目暂时读不出来')
@@ -4972,7 +4962,6 @@ describe('registerIpcHandlers', () => {
       setWindowMode: vi.fn(),
       setWindowTheme: vi.fn(),
       openCanvasWindow: vi.fn(async () => undefined),
-      openCanvasAssetLibrary: vi.fn(async () => undefined),
     })
     try {
       const handler = electronMocks.handlers.get('account:get-session')!
@@ -5010,7 +4999,6 @@ describe('registerIpcHandlers', () => {
       setWindowMode: vi.fn(),
       setWindowTheme: vi.fn(),
       openCanvasWindow: vi.fn(async () => undefined),
-      openCanvasAssetLibrary: vi.fn(async () => undefined),
     })
     try {
       const handler = electronMocks.handlers.get('account:get-session')!
@@ -10253,7 +10241,6 @@ describe('IPC channel log and account policies', () => {
       // 「创作」左边那一列里的画布项目：列的是当前账号的，打开时编号也在当前账号的项目里认。
       'canvas:list-projects',
       'canvas:open',
-      'canvas:open-asset-library',
       'canvas:open-project',
       'cli:launch',
       'desktop:launch-codex',
