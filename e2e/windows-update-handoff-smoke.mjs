@@ -107,7 +107,7 @@ function packageFrom(source, name) {
   const target = path.join(work, name)
   fs.copyFileSync(source, target)
   const bytes = fs.readFileSync(target)
-  return { path: target, sha512: createHash('sha512').update(bytes).digest('base64'), size: bytes.length }
+  return { packagePath: target, sha512: createHash('sha512').update(bytes).digest('base64'), size: bytes.length }
 }
 
 function startParent(lifetimeMs) {
