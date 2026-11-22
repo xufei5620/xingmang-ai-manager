@@ -2122,10 +2122,56 @@ describe('registerIpcHandlers', () => {
         await expect(importWorks(trustedEvent(), 'not-the-token')).rejects.toThrow('请再次点击「导入」。')
         await expect(importWorks(trustedEvent(), { path: directory })).rejects.toThrow('请再次点击「导入」。')
         await expect(importWorks(trustedEvent(), preview.works.token)).resolves.toEqual({ status: 'done', added: 1, existing: 0, failed: 0 })
-        expect(worksTransfer.importFrom).toHaveBeenCalledExactlyOnceWith(7, path.join(directory, '作品'), expect.objectContaining({ files: [expect.objectContaining({ assetId: id })] }))
+        expect(worksTransfer.importFrom).toHaveBeenCalledExactlyOnceWith(7, path.join(directory, '作品'), expect.objectContaining({ files: [expect.objectContaining({ assetId: id })] }), undefined)
         expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'data-transfer', 'works.import.metadata-failed', expect.any(String))
         await expect(importWorks(trustedEvent(), preview.works.token)).rejects.toThrow('请再次点击「导入」。')
         expect(worksTransfer.importFrom).toHaveBeenCalledTimes(1)
+        dispose()
+      } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+    })
+
+    it('brings the canvas projects beside the chosen file under the same token, and says how many came', async () => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-canvas-ipc-'))
+      try {
+        const projectId = '33333333-3333-4333-8333-333333333333'
+        const times = { createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-02T00:00:00.000Z', lastOpenedAt: '2026-11-03T00:00:00.000Z' }
+        const file = path.join(directory, '星芒聊天记录与设置.json')
+        fs.writeFileSync(file, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: {}, conversations: [], works: { folder: '作品', ...summary, canvasProjects: 2 } }))
+        fs.mkdirSync(path.join(directory, '作品'))
+        fs.writeFileSync(path.join(directory, '作品', 'xingmang-works.json'), JSON.stringify({ format: 'xingmang-works', version: 1, files: [], metadata: [] }))
+        const worksTransfer = worksTransferStub()
+        const { runtimeLog, dispose } = register(serviceStub(), undefined, undefined, signedInAccount(), undefined, undefined, {}, { worksTransfer })
+        const importData = electronMocks.handlers.get('data-transfer:import')!
+        const importWorks = electronMocks.handlers.get('data-transfer:import-works')!
+
+        // 「画布项目」文件夹没跟着复制过来：作品照常导，项目报没找到。
+        electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+        const withoutProjects = await importData(trustedEvent()) as { works: { token: string }; canvasProjects: unknown }
+        expect(withoutProjects.canvasProjects).toEqual({ count: 2, state: 'missing' })
+        await importWorks(trustedEvent(), withoutProjects.works.token)
+        expect(worksTransfer.importFrom).toHaveBeenLastCalledWith(7, path.join(directory, '作品'), expect.anything(), undefined)
+
+        fs.mkdirSync(path.join(directory, '画布项目'))
+        fs.writeFileSync(path.join(directory, '画布项目', 'xingmang-canvas-projects.json'), JSON.stringify({
+          format: 'xingmang-canvas-projects', version: 1, projects: [{ id: projectId, ...times, files: [], fromWorks: [], metadata: [] }],
+        }))
+        electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+        const preview = await importData(trustedEvent()) as { works: { token: string }; canvasProjects: unknown }
+        expect(preview.canvasProjects).toEqual({ count: 1, state: 'ready' })
+        expect(JSON.stringify(preview)).not.toContain(directory)
+        const counts = { added: 0, existing: 0, full: 1, failed: 0 }
+        worksTransfer.importFrom.mockResolvedValueOnce({ status: 'done', added: 0, existing: 0, failed: 0, canvasProjects: counts } as never)
+        await expect(importWorks(trustedEvent(), preview.works.token)).resolves.toEqual({ status: 'done', added: 0, existing: 0, failed: 0, canvasProjects: counts })
+        expect(worksTransfer.importFrom).toHaveBeenLastCalledWith(7, path.join(directory, '作品'), expect.anything(), {
+          folder: path.join(directory, '画布项目'),
+          manifest: { projects: [expect.objectContaining({ id: projectId })] },
+        })
+        expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'data-transfer', 'works.import.canvas-projects', expect.any(String), counts)
+
+        // The works folder is the one the projects take their works back from: without it neither can come.
+        fs.rmSync(path.join(directory, '作品'), { recursive: true, force: true })
+        electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+        await expect(importData(trustedEvent())).resolves.toMatchObject({ works: { state: 'missing' }, canvasProjects: { count: 2, state: 'missing' } })
         dispose()
       } finally { fs.rmSync(directory, { recursive: true, force: true }) }
     })

@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { anonymousUsageFrom, dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom, worksCount, worksExportQuestion } from './data-transfer'
+import {
+  anonymousUsageFrom,
+  dataTransferExportMessage,
+  dataTransferImportMessage,
+  settingsPatchFrom,
+  worksCount,
+  worksExportNote,
+  worksExportNoteFor,
+  worksExportQuestion,
+  worksExportTitle,
+  worksExportWorthAsking,
+} from './data-transfer'
 
 describe('data transfer wording', () => {
   it('names the saved file and what is in it', () => {
@@ -89,6 +100,69 @@ describe('data transfer wording', () => {
       .toBe('文件中的 3 个对话、2 条视频和 128 件作品需登录后再次点击「导入」。')
     expect(dataTransferImportMessage({ fileConversations: 0, fileVideos: 0, fileWorks: 128, added: 0, updated: 0, skipped: 0, signedIn: false, settingsChanged: true }))
       .toBe('设置已导入。文件中的 128 件作品需登录后再次点击「导入」。')
+  })
+
+  // 第三轮复查第 6 条：画布项目跟作品一起搬，贴给 yoyo 的字。
+  it('asks about the canvas projects together with the works, and only when there is something to carry', () => {
+    const works = { images: 120, videos: 8, audios: 0, bytes: Math.round(2.3 * 1024 ** 3) }
+    expect(worksExportWorthAsking(works)).toBe(true)
+    expect(worksExportTitle(works)).toBe('是否同时导出作品？')
+    expect(worksExportNoteFor(works)).toBe(worksExportNote)
+    const withProjects = { ...works, canvasProjects: 4 }
+    expect(worksExportTitle(withProjects)).toBe('是否同时导出作品和画布项目？')
+    expect(worksExportQuestion(withProjects)).toBe('当前账号的作品库中共有 128 件作品（图片 120 张、视频片段与成片 8 个），另有画布项目 4 个，共约 2.3 GB。')
+    expect(worksExportNoteFor(withProjects))
+      .toBe('选择「导出全部」时，将在所选位置新建一个文件夹，存放聊天记录、设置、作品和画布项目。作品较多时需要几分钟，导出期间请勿关闭星芒。')
+    const onlyProjects = { images: 0, videos: 0, audios: 0, bytes: 35 * 1024 ** 2, canvasProjects: 4 }
+    expect(worksExportWorthAsking(onlyProjects)).toBe(true)
+    expect(worksExportQuestion(onlyProjects)).toBe('当前账号共有画布项目 4 个，约 35 MB。')
+    // 找不到文件夹的那个也报进总数，再另说一句不会导出。
+    expect(worksExportQuestion({ ...onlyProjects, canvasProjects: 3, canvasProjectsUnreachable: 1 }))
+      .toBe('当前账号共有画布项目 4 个，约 35 MB。其中 1 个画布项目的文件夹当前无法访问，将不会导出；如需一并导出，请先连接其所在的磁盘。')
+    // 没有作品、项目又都导不了：不问，照旧只导聊天记录和设置。
+    expect(worksExportWorthAsking({ images: 0, videos: 0, audios: 0, bytes: 0, canvasProjectsUnreachable: 2 })).toBe(false)
+    expect(worksExportWorthAsking({ images: 0, videos: 0, audios: 0, bytes: 0 })).toBe(false)
+  })
+
+  it('names the canvas projects an export carried', () => {
+    expect(dataTransferExportMessage({ outputPath: 'D:\\星芒数据导出-2026-11-23\\星芒聊天记录与设置.json', conversations: 3, works: { folderName: '星芒数据导出-2026-11-23', count: 128, canvasProjects: 4 } }))
+      .toBe('已保存至「星芒数据导出-2026-11-23」文件夹，包含 3 个对话、128 件作品、4 个画布项目及设置。请将整个文件夹复制到新电脑，在此点击「导入」并选择其中的「星芒聊天记录与设置」文件。')
+  })
+
+  it('says what became of the canvas projects after the works', () => {
+    const base = { fileConversations: 3, added: 3, updated: 0, skipped: 0, signedIn: true, settingsChanged: true }
+    const works = { kind: 'done' as const, added: 120, existing: 8, failed: 0 }
+    expect(dataTransferImportMessage({ ...base, works, canvasProjects: { kind: 'done', added: 4, existing: 0, full: 0, failed: 0 } }))
+      .toBe('已导入 3 个对话及设置。已导入 120 件作品，另有 8 件已存在于本机。已导入 4 个画布项目。')
+    expect(dataTransferImportMessage({ ...base, works, canvasProjects: { kind: 'done', added: 3, existing: 1, full: 0, failed: 0 } }))
+      .toBe('已导入 3 个对话及设置。已导入 120 件作品，另有 8 件已存在于本机。已导入 3 个画布项目，另有 1 个已存在于本机。')
+    expect(dataTransferImportMessage({ ...base, works, canvasProjects: { kind: 'done', added: 0, existing: 4, full: 0, failed: 0 } }))
+      .toBe('已导入 3 个对话及设置。已导入 120 件作品，另有 8 件已存在于本机。文件中的画布项目均已存在于本机。')
+    expect(dataTransferImportMessage({ ...base, works, canvasProjects: { kind: 'done', added: 2, existing: 0, full: 2, failed: 1 } }))
+      .toBe('已导入 3 个对话及设置。已导入 120 件作品，另有 8 件已存在于本机。已导入 2 个画布项目。另有 2 个画布项目未导入：本机画布项目数量已达上限，请先在画布中归档或删除部分项目，再次点击「导入」。另有 1 个画布项目未能导入，请再次点击「导入」。')
+    expect(dataTransferImportMessage({ ...base, works, canvasProjects: { kind: 'done', added: 0, existing: 1, full: 2, failed: 0 } }))
+      .toBe('已导入 3 个对话及设置。已导入 120 件作品，另有 8 件已存在于本机。另有 2 个画布项目未导入：本机画布项目数量已达上限，请先在画布中归档或删除部分项目，再次点击「导入」。')
+    expect(dataTransferImportMessage({ ...base, works, canvasProjects: { kind: 'missing' } }))
+      .toBe('已导入 3 个对话及设置。已导入 120 件作品，另有 8 件已存在于本机。未在文件所在位置找到「画布项目」文件夹，画布项目未导入。请将导出的整个文件夹复制到本机后再次导入。')
+    expect(dataTransferImportMessage({ ...base, works: { kind: 'missing' }, canvasProjects: { kind: 'missing' } }))
+      .toBe('已导入 3 个对话及设置。未在文件所在位置找到「作品」和「画布项目」文件夹，作品和画布项目未导入。请将导出的整个文件夹复制到本机后再次导入。')
+    expect(dataTransferImportMessage({ ...base, works, canvasProjects: { kind: 'unreadable', count: 2 } }))
+      .toBe('已导入 3 个对话及设置。已导入 120 件作品，另有 8 件已存在于本机。另有 2 个画布项目无法读取，未导入。')
+    const noSpace = { kind: 'no-space' as const, neededBytes: Math.round(3.2 * 1024 ** 3), availableBytes: Math.round(1.1 * 1024 ** 3) }
+    expect(dataTransferImportMessage({ ...base, works: noSpace, canvasProjects: { kind: 'no-space' } }))
+      .toBe('已导入 3 个对话及设置。作品和画布项目未导入：需要约 3.2 GB，本机仅剩 1.1 GB。请清理磁盘后再次点击「导入」，已导入的内容不会重复。')
+    // 项目导完以后盘才满的：项目照报，空间那句只说作品。
+    expect(dataTransferImportMessage({ ...base, works: noSpace, canvasProjects: { kind: 'done', added: 4, existing: 0, full: 0, failed: 0 } }))
+      .toBe('已导入 3 个对话及设置。作品未导入：需要约 3.2 GB，本机仅剩 1.1 GB。请清理磁盘后再次点击「导入」，已导入的内容不会重复。已导入 4 个画布项目。')
+  })
+
+  it('does not call a file with only canvas projects one with nothing to change, and names them while signed out', () => {
+    expect(dataTransferImportMessage({ fileConversations: 0, added: 0, updated: 0, skipped: 0, signedIn: true, settingsChanged: false, works: { kind: 'done', added: 0, existing: 0, failed: 0 }, canvasProjects: { kind: 'done', added: 4, existing: 0, full: 0, failed: 0 } }))
+      .toBe('已导入 4 个画布项目。')
+    expect(dataTransferImportMessage({ fileConversations: 3, fileWorks: 128, fileCanvasProjects: 4, added: 0, updated: 0, skipped: 0, signedIn: false, settingsChanged: false }))
+      .toBe('文件中的 3 个对话、128 件作品和 4 个画布项目需登录后再次点击「导入」。')
+    expect(dataTransferImportMessage({ fileConversations: 0, fileCanvasProjects: 4, added: 0, updated: 0, skipped: 0, signedIn: false, settingsChanged: true }))
+      .toBe('设置已导入。文件中的 4 个画布项目需登录后再次点击「导入」。')
   })
 
   it('merges settings updates and drops the version marker', () => {

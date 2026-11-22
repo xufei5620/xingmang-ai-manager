@@ -177,6 +177,17 @@ describe('creation in the data transfer file', () => {
     expect(parseDataTransferFile(plain)).not.toHaveProperty('works')
   })
 
+  it('carries how many canvas projects went along with the works, and leaves it out when none did', () => {
+    const raw = buildDataTransferFile(settings(), { conversations: [] }, new Date(), undefined, { ...works, canvasProjects: 4 })
+    expect(JSON.parse(raw).works).toEqual({ folder: '作品', ...works, canvasProjects: 4 })
+    expect(parseDataTransferFile(raw).works).toEqual({ ...works, canvasProjects: 4 })
+    expect(parseDataTransferFile(buildDataTransferFile(settings(), { conversations: [] }, new Date(), undefined, works)).works).not.toHaveProperty('canvasProjects')
+    const valid = JSON.parse(raw)
+    for (const canvasProjects of [-1, 1.5, '4', 501]) {
+      expect(() => parseDataTransferFile(JSON.stringify({ ...valid, works: { ...valid.works, canvasProjects } }))).toThrow(dataTransferInvalidMessage)
+    }
+  })
+
   it('rejects the whole file when a video or the works count is off', () => {
     const valid = JSON.parse(buildDataTransferFile(settings(), { conversations: [] }, new Date()))
     for (const videoProjects of [{}, [1], [{ key: '../escape', content: '' }], [{ key: 'a', content: 1 }], [video, video], Array.from({ length: 201 }, (_, index) => ({ key: `v${index}`, content: '' }))]) {

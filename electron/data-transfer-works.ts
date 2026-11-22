@@ -13,6 +13,7 @@ import { isRecord } from './input-guards'
 import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
 import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local-data'
+import type { CanvasProjectsExportPlan, CanvasProjectsImportCounts, CanvasProjectsImportSource, CanvasProjectsMigration } from './data-transfer-canvas'
 
 // 「迁移到新电脑」里的作品（「搬作品改」，yoyo 2026-11-22）：当前账号作品库里的图片、视频片段和成片、配乐。
 // 作品可能有几个 GB，放不进那一份 JSON：选了带作品时，在客户选的位置新建一个文件夹，聊天记录那份文件放在
@@ -30,7 +31,8 @@ import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local
 // 图片和视频，导出时照作品库页列的那些一件不差地带上（canvas-project-asset-manager.ts 的 listLibraryFolders），
 // 询问框里的件数、大小就跟作品库页对得上。项目文件夹在旧电脑上是客户自己选的位置，新电脑上没有这个项目，所以这些
 // 作品跟别的作品放在一起，照同样的布局进新电脑当前账号的 AI 作品文件夹，作品库里照常列出、名字标签提示词都在，
-// 对话、分镜里按编号也找得到。画布项目本身（节点和连线）不在这里搬。
+// 对话、分镜里按编号也找得到。画布项目本身（节点和连线）也跟着搬时，它们跟着项目放回新项目的文件夹
+// （data-transfer-canvas.ts）。
 
 export const WORKS_FOLDER_NAME = '作品'
 export const WORKS_MANIFEST_FILE = 'xingmang-works.json'
@@ -88,7 +90,12 @@ export interface AccountWorksSummary {
   images: number
   videos: number
   audios: number
+  /** 要导出的一共多大：作品，带画布项目时连同项目里的文件。 */
   bytes: number
+  /** 跟着导出的画布项目几个（data-transfer-canvas.ts）；没有就不写。 */
+  canvasProjects?: number
+  /** 文件夹现在找不到、导不出去的画布项目几个，只在导出前报数时有。 */
+  canvasProjectsUnreachable?: number
 }
 
 export function summarizeAccountWorks(works: readonly AccountWork[]): AccountWorksSummary {
@@ -208,7 +215,8 @@ async function createExportFolder(parent: string, name: string): Promise<string>
   throw new Error('所选位置已有过多同名文件夹，请选择其他位置')
 }
 
-class WorkSourceRejected extends Error {}
+/** 这一件读不了或读的时候变了：不导这一件，别的照常。画布项目那边（data-transfer-canvas.ts）照同一套抄文件。 */
+export class WorkSourceRejected extends Error {}
 
 /**
  * Opens a work for copying and proves the handle is the plain file that was
@@ -217,7 +225,7 @@ class WorkSourceRejected extends Error {}
  * reads from this handle only, so a file swapped for a link after the check
  * cannot redirect what is read.
  */
-async function openVerifiedWork(filePath: string, maximumBytes: number, expectedBytes?: number): Promise<{ handle: fs.promises.FileHandle; before: fs.BigIntStats }> {
+export async function openVerifiedWork(filePath: string, maximumBytes: number, expectedBytes?: number): Promise<{ handle: fs.promises.FileHandle; before: fs.BigIntStats }> {
   let handle: fs.promises.FileHandle
   try {
     handle = await fs.promises.open(filePath, 'r')
@@ -251,7 +259,7 @@ async function openVerifiedWork(filePath: string, maximumBytes: number, expected
  * on a FileHandle keeps a reference that makes close() wait until the stream
  * itself closes, which would tie the handle's lifetime to the stream's.
  */
-async function copyWork(source: { handle: fs.promises.FileHandle; before: fs.BigIntStats }, destination: string, mode: number, sync: boolean): Promise<void> {
+export async function copyWork(source: { handle: fs.promises.FileHandle; before: fs.BigIntStats }, destination: string, mode: number, sync: boolean): Promise<void> {
   const output = await fs.promises.open(destination, 'wx', mode)
   try {
     const buffer = Buffer.allocUnsafe(COPY_CHUNK_BYTES)
@@ -276,6 +284,25 @@ async function copyWork(source: { handle: fs.promises.FileHandle; before: fs.Big
   if (after.size !== source.before.size || after.mtimeNs !== source.before.mtimeNs) throw new WorkSourceRejected('changed while reading')
 }
 
+/**
+ * 作品之外，跟着写进同一个导出文件夹的东西（画布项目，data-transfer-canvas.ts）。写进去的文件和新建的文件夹
+ * 都记在这里，导出没做完时跟作品一起删掉。
+ */
+export interface ExportFolderWriter {
+  folderPath: string
+  /** 「作品」文件夹里实际导出了的作品编号。 */
+  exported: ReadonlySet<string>
+  directory(directoryPath: string): void
+  file(filePath: string): void
+}
+
+export interface WorksExportAlongside {
+  /** 估空间时另加的字节数。 */
+  bytes: number
+  /** 作品和清单写完以后、聊天记录那份文件之前写；回实际导出了几个画布项目、写了多大。 */
+  write(target: ExportFolderWriter): Promise<{ canvasProjects: number; bytes: number }>
+}
+
 export interface WorksExportOptions {
   /** 客户在系统窗口里选的位置。 */
   parentDirectory: string
@@ -285,6 +312,8 @@ export interface WorksExportOptions {
   metadata: readonly AiAssetMetadataItem[]
   /** 聊天记录与设置那份文件的内容（按实际导出了的那几件记数），最后才写：写出来了才算导出完。 */
   dataContent: (exported: AccountWorksSummary) => string
+  /** 画布项目（data-transfer-canvas.ts）。 */
+  alongside?: WorksExportAlongside
   readDiskSpace?: (target: string) => Promise<DiskSpaceReading | null>
 }
 
@@ -295,6 +324,8 @@ export interface WorksExportResult {
   works: number
   /** 读不了、没导出的几件（被别的程序占着、导出途中被改过），只记日志。 */
   skipped: number
+  /** 带了画布项目时，实际导出了几个。 */
+  canvasProjects?: number
 }
 
 /**
@@ -308,7 +339,7 @@ export interface WorksExportResult {
  */
 export async function writeWorksExport(options: WorksExportOptions): Promise<WorksExportResult> {
   const parent = resolveRelocatedPath(options.parentDirectory)
-  const worksBytes = options.works.reduce((total, work) => total + work.bytes, 0)
+  const worksBytes = options.works.reduce((total, work) => total + work.bytes, 0) + (options.alongside?.bytes ?? 0)
   const reading = await (options.readDiskSpace ?? defaultReadDiskSpace)(parent)
   const needed = worksBytes + Buffer.byteLength(options.dataContent(summarizeAccountWorks(options.works)), 'utf8') + EXPORT_SPARE_BYTES
   if (reading && reading.availableBytes < needed) throw new Error(worksExportNoSpaceMessage(worksBytes, reading.availableBytes))
@@ -357,16 +388,28 @@ export async function writeWorksExport(options: WorksExportOptions): Promise<Wor
     const manifestPath = path.join(worksFolder, WORKS_MANIFEST_FILE)
     writtenFiles.push(manifestPath)
     await fs.promises.writeFile(manifestPath, buildWorksManifest(exported, options.metadata), { flag: 'wx', mode: EXPORTED_FILE_MODE })
+    const alongside = options.alongside
+      ? await options.alongside.write({
+        folderPath,
+        exported: new Set(exported.map((work) => work.assetId)),
+        directory: (directory) => { createdDirectories.push(directory) },
+        file: (file) => { writtenFiles.push(file) },
+      })
+      : undefined
+    const summary = summarizeAccountWorks(exported)
+    const written: AccountWorksSummary = alongside
+      ? { ...summary, bytes: summary.bytes + alongside.bytes, canvasProjects: alongside.canvasProjects }
+      : summary
     const dataFilePath = path.join(folderPath, WORKS_DATA_FILE_NAME)
     writtenFiles.push(dataFilePath)
     const data = await fs.promises.open(dataFilePath, 'wx', EXPORTED_FILE_MODE)
     try {
-      await data.writeFile(options.dataContent(summarizeAccountWorks(exported)), 'utf8')
+      await data.writeFile(options.dataContent(written), 'utf8')
       await data.sync()
     } finally {
       await data.close()
     }
-    return { folderPath, dataFilePath, works: exported.length, skipped }
+    return { folderPath, dataFilePath, works: exported.length, skipped, ...(alongside ? { canvasProjects: alongside.canvasProjects } : {}) }
   } catch (error) {
     for (const file of writtenFiles.reverse()) await fs.promises.rm(file, { force: true }).catch(() => undefined)
     // rmdir only removes an empty folder, so anything that did not come from this run stays.
@@ -388,6 +431,21 @@ export interface ParsedWorksManifest {
 }
 
 /**
+ * One file of a manifest: exactly `<date>/xingmang-<id>.<extension>` and a
+ * size within that kind's ceiling, or null. Shared with the canvas projects'
+ * manifest (data-transfer-canvas.ts), whose files are laid out the same way.
+ */
+export function parseWorksManifestEntry(entry: unknown): WorksManifestEntry | null {
+  if (!isRecord(entry) || typeof entry.path !== 'string' || typeof entry.bytes !== 'number') return null
+  const match = WORK_RELATIVE_PATH_PATTERN.exec(entry.path)
+  if (!match) return null
+  const [, date, fileName, assetId, extension] = match
+  const mediaType = mediaTypeOfExtension[extension]
+  if (!Number.isSafeInteger(entry.bytes) || entry.bytes <= 0 || entry.bytes > maximumBytesOf[mediaType]) return null
+  return { assetId, mediaType, relativePath: entry.path, bytes: entry.bytes, date, fileName }
+}
+
+/**
  * The manifest comes from a folder the user picked, so it is hostile input
  * (I5): every path must be exactly `<date>/xingmang-<id>.<extension>` (no
  * separators, no `..`, nothing the stores would not name themselves), every
@@ -402,14 +460,10 @@ export function parseWorksManifest(raw: string): ParsedWorksManifest {
   if (!Array.isArray(value.files) || value.files.length > MAX_TRANSFERRED_WORKS) throw invalid
   const seen = new Set<string>()
   const files = value.files.map((entry): WorksManifestEntry => {
-    if (!isRecord(entry) || typeof entry.path !== 'string' || typeof entry.bytes !== 'number') throw invalid
-    const match = WORK_RELATIVE_PATH_PATTERN.exec(entry.path)
-    if (!match) throw invalid
-    const [, date, fileName, assetId, extension] = match
-    const mediaType = mediaTypeOfExtension[extension]
-    if (!Number.isSafeInteger(entry.bytes) || entry.bytes <= 0 || entry.bytes > maximumBytesOf[mediaType] || seen.has(assetId)) throw invalid
-    seen.add(assetId)
-    return { assetId, mediaType, relativePath: entry.path, bytes: entry.bytes, date, fileName }
+    const parsed = parseWorksManifestEntry(entry)
+    if (!parsed || seen.has(parsed.assetId)) throw invalid
+    seen.add(parsed.assetId)
+    return parsed
   })
   let metadata: AiAssetMetadataItem[]
   try {
@@ -482,6 +536,8 @@ export interface WorksImportOptions {
    * as already here and not copied, so importing onto the computer that made them adds no second copy.
    */
   heldElsewhere?: ReadonlySet<string>
+  /** 每放进去一件调一次（画布项目导入没做完时按它删掉放进新文件夹的那几件）。 */
+  onAdded?: (entry: WorksManifestEntry, filePath: string) => void
   readDiskSpace?: (target: string) => Promise<DiskSpaceReading | null>
   randomBytes?: (size: number) => Buffer
 }
@@ -558,9 +614,11 @@ export async function importAccountWorks(options: WorksImportOptions): Promise<W
         }
         await copyWork(source, temporary, 0o600, true)
         try {
-          await fs.promises.link(temporary, path.join(directory, entry.fileName))
+          const placed = path.join(directory, entry.fileName)
+          await fs.promises.link(temporary, placed)
           added += 1
           room.set(entry.date, left - 1)
+          options.onAdded?.(entry, placed)
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
           existing += 1
@@ -592,12 +650,18 @@ export async function importAccountWorks(options: WorksImportOptions): Promise<W
 
 // ---- 当前账号 ----
 
+/** 导入作品的结果，带画布项目时连同它们怎么样了（data-transfer-canvas.ts）。 */
+export type AccountWorksImportResult =
+  | (Extract<WorksImportResult, { status: 'done' }> & { canvasProjects?: CanvasProjectsImportCounts })
+  | (Extract<WorksImportResult, { status: 'no-space' }> & { canvasProjects?: CanvasProjectsImportCounts })
+
 export interface AccountWorksTransfer {
   /** 导出前报的数：回收站里的不算。 */
   summarize(userId: number): Promise<AccountWorksSummary>
   /** dataContent 拿实际导出的那几件的数，写聊天记录与设置那份文件。 */
-  exportTo(userId: number, options: Omit<WorksExportOptions, 'works' | 'metadata'>): Promise<WorksExportResult>
-  importFrom(userId: number, folder: string, manifest: ParsedWorksManifest): Promise<WorksImportResult>
+  exportTo(userId: number, options: Omit<WorksExportOptions, 'works' | 'metadata' | 'alongside'>): Promise<WorksExportResult>
+  /** canvas：导出文件夹里的「画布项目」，读出来了才有。 */
+  importFrom(userId: number, folder: string, manifest: ParsedWorksManifest, canvas?: CanvasProjectsImportSource): Promise<AccountWorksImportResult>
 }
 
 interface WorksMetadataSource {
@@ -606,6 +670,8 @@ interface WorksMetadataSource {
 
 /** 作品库页同时列出的一个画布项目文件夹（canvas-project-asset-manager.ts 的 CanvasLibraryFolder）。 */
 export interface WorksTransferFolder {
+  /** 哪个项目的文件夹：这个项目也跟着搬时，这几件跟项目走（data-transfer-canvas.ts）。 */
+  projectId?: string
   /** 这个文件夹里作品的根：下面同样是 user-<编号>/<日期>/… */
   outputRoot: string
   metadata: WorksMetadataSource
@@ -619,6 +685,8 @@ export interface AccountWorksTransferOptions {
   metadata: WorksMetadataSource & WorksMetadataTarget
   /** 作品库页同时列出的画布项目文件夹（「画布也搬」）。没接上时只搬 AI 作品文件夹里的。 */
   canvasFolders?: (userId: number) => Promise<readonly WorksTransferFolder[]>
+  /** 画布项目本身（第三轮复查第 6 条）。没接上时不带项目。 */
+  canvasProjects?: CanvasProjectsMigration
   readDiskSpace?: (target: string) => Promise<DiskSpaceReading | null>
 }
 
@@ -631,13 +699,22 @@ export function createAccountWorksTransfer(options: AccountWorksTransferOptions)
       return []
     }
   }
-  async function exportable(userId: number): Promise<{ works: LocatedAccountWork[]; metadata: AiAssetMetadataItem[] }> {
+  /**
+   * viaWorks：作品里从哪个项目文件夹带上了哪几件（作品库里本来就有的不算）。项目跟着搬时这几件不在项目那边
+   * 再抄一份，导入时从「作品」放回新项目的文件夹。
+   */
+  async function exportable(userId: number): Promise<{
+    works: LocatedAccountWork[]
+    metadata: AiAssetMetadataItem[]
+    viaWorks: Map<string, Set<string>>
+  }> {
     const records = Object.entries(await options.metadata.getAll(userId)).map(([assetId, record]) => ({ assetId, ...record }))
     const trashed = new Set(records.filter((record) => record.deletedAt).map((record) => record.assetId))
     const works = await listAccountWorks(options.outputRoot, userId, { excluded: trashed })
     const listed = new Set(works.map((work) => work.assetId))
     // 每件作品只带它自己那个位置的名字和标签：同一编号在别处还有一条旧记录，不能跟着进清单。
     const metadata = records.filter((record) => listed.has(record.assetId))
+    const viaWorks = new Map<string, Set<string>>()
     for (const folder of await canvasFolders(userId)) {
       if (works.length >= MAX_TRANSFERRED_WORKS) break
       const wanted = new Set(folder.assetIds.filter((assetId) => !listed.has(assetId)))
@@ -660,23 +737,85 @@ export function createAccountWorksTransfer(options: AccountWorksTransferOptions)
         if (listed.has(work.assetId)) continue
         listed.add(work.assetId)
         works.push(work)
+        if (folder.projectId) {
+          const via = viaWorks.get(folder.projectId)
+          if (via) via.add(work.assetId)
+          else viaWorks.set(folder.projectId, new Set([work.assetId]))
+        }
         const record = folderRecords[work.assetId]
         if (record) metadata.push({ ...record, assetId: work.assetId })
       }
     }
-    return { works, metadata }
+    return { works, metadata, viaWorks }
+  }
+  // 项目列表读不出来时照旧只搬作品，不拦导出。
+  async function canvasPlan(userId: number, viaWorks: ReadonlyMap<string, ReadonlySet<string>>): Promise<CanvasProjectsExportPlan | null> {
+    if (!options.canvasProjects) return null
+    try {
+      return await options.canvasProjects.plan(userId, viaWorks)
+    } catch {
+      return null
+    }
   }
   return {
     async summarize(userId) {
-      return summarizeAccountWorks((await exportable(userId)).works)
+      const { works, viaWorks } = await exportable(userId)
+      const summary = summarizeAccountWorks(works)
+      const plan = await canvasPlan(userId, viaWorks)
+      if (!plan || (!plan.projects.length && !plan.unreachable)) return summary
+      return {
+        ...summary,
+        bytes: summary.bytes + plan.bytes,
+        canvasProjects: plan.projects.length,
+        ...(plan.unreachable ? { canvasProjectsUnreachable: plan.unreachable } : {}),
+      }
     },
     async exportTo(userId, exportOptions) {
-      const { works, metadata } = await exportable(userId)
-      return writeWorksExport({ readDiskSpace: options.readDiskSpace, ...exportOptions, works, metadata })
+      const { works, metadata, viaWorks } = await exportable(userId)
+      const plan = await canvasPlan(userId, viaWorks)
+      const migration = options.canvasProjects
+      const alongside: WorksExportAlongside | undefined = plan && plan.projects.length && migration
+        ? { bytes: plan.bytes, write: (target) => migration.write(plan, target) }
+        : undefined
+      return writeWorksExport({ readDiskSpace: options.readDiskSpace, ...exportOptions, works, metadata, ...(alongside ? { alongside } : {}) })
     },
-    async importFrom(userId, folder, manifest) {
+    async importFrom(userId, folder, manifest, canvas) {
       const heldElsewhere = new Set((await canvasFolders(userId)).flatMap((held) => held.assetIds))
-      return importAccountWorks({ folder, manifest, outputRoot: options.outputRoot, userId, metadata: options.metadata, heldElsewhere, readDiskSpace: options.readDiskSpace })
+      const migration = options.canvasProjects
+      if (!migration || !canvas || !canvas.manifest.projects.length) {
+        return importAccountWorks({ folder, manifest, outputRoot: options.outputRoot, userId, metadata: options.metadata, heldElsewhere, readDiskSpace: options.readDiskSpace })
+      }
+      // 项目先导：项目文件夹里的作品放回新项目的文件夹，作品库里不再另放一份。空间按两样加起来先看一次，
+      // 不够就一样都不导，免得项目导了一半、作品一件没进。
+      const prepared = await migration.prepareImport(userId, canvas, manifest)
+      const local = new Set((await listAccountWorks(options.outputRoot, userId)).map((work) => work.assetId))
+      const worksBytes = manifest.files
+        .filter((entry) => !local.has(entry.assetId) && !heldElsewhere.has(entry.assetId) && !prepared.takes.has(entry.assetId))
+        .reduce((total, entry) => total + entry.bytes, 0)
+      const neededBytes = worksBytes + prepared.bytes
+      if (neededBytes > 0) {
+        const reading = await (options.readDiskSpace ?? defaultReadDiskSpace)(resolveRelocatedPath(path.join(options.outputRoot, `user-${userId}`)))
+        if (reading && reading.availableBytes < neededBytes + IMPORT_SPARE_BYTES) {
+          return { status: 'no-space', neededBytes, availableBytes: reading.availableBytes }
+        }
+      }
+      const projects = await migration.runImport(userId, prepared, { folder, manifest })
+      const rest: ParsedWorksManifest = {
+        files: manifest.files.filter((entry) => !projects.placed.has(entry.assetId)),
+        metadata: manifest.metadata.filter((item) => !projects.placed.has(item.assetId)),
+      }
+      const works = await importAccountWorks({ folder, manifest: rest, outputRoot: options.outputRoot, userId, metadata: options.metadata, heldElsewhere, readDiskSpace: options.readDiskSpace })
+      const counts = projects.counts
+      if (works.status === 'no-space') return { ...works, canvasProjects: counts }
+      const metadataFailed = works.metadataFailed || projects.metadataFailed
+      return {
+        status: 'done',
+        added: works.added + projects.placed.size,
+        existing: works.existing,
+        failed: works.failed + projects.failedFiles,
+        ...(metadataFailed ? { metadataFailed: true } : {}),
+        canvasProjects: counts,
+      }
     },
   }
 }

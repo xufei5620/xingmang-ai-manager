@@ -1188,19 +1188,25 @@ const methods = {
     const conversation = { ...createConversation(undefined, 'from-old-computer'), title: '旧电脑上的对话', messages: [...messages, ...picture] }
     // ?transferWorksMissing：文件里说带了作品，旁边却没有「作品」文件夹（只拷了那一份文件）。
     const works = query.has('transferWorksMissing') ? { ...fixtureWorks, state: 'missing' as const } : { ...fixtureWorks, state: 'ready' as const, token: 'fixture-works-token' }
+    // ?transferCanvasProjects：文件里还带了 4 个画布项目，跟作品同一处（「作品」不在时它也不在）。
+    const canvasProjects = { count: 4, state: query.has('transferWorksMissing') ? 'missing' as const : 'ready' as const }
     return {
       conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }, { withWorks: query.has('transferWorks') }), phrases: ['旧电脑上存的一句'], settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [],
       ...(query.has('transferWorks') ? { works } : {}),
+      ...(query.has('transferWorks') && query.has('transferCanvasProjects') ? { canvasProjects } : {}),
     }
   },
   // 「搬作品改」：?transferWorks 时当前账号作品库里有 128 件作品，导出前先问带不带。
-  inspectAppWorks: async () => query.has('transferWorks') ? { ...fixtureWorks } : { images: 0, videos: 0, audios: 0, bytes: 0 },
+  // ?transferCanvasProjects：另有 4 个画布项目（连同它们的文件约 35 MB），其中 1 个的文件夹在拔掉的移动硬盘上。
+  inspectAppWorks: async () => query.has('transferWorks')
+    ? { ...fixtureWorks, ...(query.has('transferCanvasProjects') ? { bytes: fixtureWorks.bytes + 35 * 1024 ** 2, canvasProjects: 3, canvasProjectsUnreachable: 1 } : {}) }
+    : { images: 0, videos: 0, audios: 0, bytes: 0 },
   exportAppData: async (input) => input.includeWorks
-    ? { outputPath: 'C:\\Users\\fixture\\Downloads\\星芒数据导出-2026-11-22\\星芒聊天记录与设置.json', conversations: input.conversations.length, videoProjects: input.videoProjects?.length ?? 0, works: { folderName: '星芒数据导出-2026-11-22', count: 128 } }
+    ? { outputPath: 'C:\\Users\\fixture\\Downloads\\星芒数据导出-2026-11-22\\星芒聊天记录与设置.json', conversations: input.conversations.length, videoProjects: input.videoProjects?.length ?? 0, works: { folderName: '星芒数据导出-2026-11-22', count: 128, ...(query.has('transferCanvasProjects') ? { canvasProjects: 3 } : {}) } }
     : { outputPath: 'C:\\Users\\fixture\\Downloads\\星芒聊天记录与设置-2026-11-22.json', conversations: input.conversations.length, videoProjects: input.videoProjects?.length ?? 0 },
   importAppWorks: async (token) => {
     if (token !== 'fixture-works-token') throw new Error('请再次点击「导入」。')
-    return { status: 'done' as const, added: 120, existing: 8, failed: 0 }
+    return { status: 'done' as const, added: 120, existing: 8, failed: 0, ...(query.has('transferCanvasProjects') ? { canvasProjects: { added: 3, existing: 1, full: 0, failed: 0 } } : {}) }
   },
   getLegalDocument: async (kind) => ({ kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }),
   getAccountProfile: async () => ({ ...account, displayName: account.username, email: 'fixture@example.com', requestCount: 0, affCode: 'test', affCount: 0, affQuota: 0, affHistoryQuota: 0 }),
