@@ -4402,8 +4402,10 @@ async function conversationSetup(options: {
     codexThread(threadC, path.join(root, 'home', 'elsewhere'), '别处的对话', codexSeconds(21, 12, 0)),
     codexThread(threadB, `${other}/`, '整理接口文档', codexSeconds(20, 9, 12)),
   ])
+  // 按本机的路径规矩起服务：文件夹是真建出来的，Windows 上是 C:\…，按 darwin 的规矩会认不出主目录、取不对文件夹名。
   const s = await setup({
     root,
+    platform: process.platform,
     ...(options.codexVersion === null ? {} : { codexVersion: options.codexVersion ?? '0.169.0' }),
     codexReplies: {
       'thread/list': () => ({ result: { data: list(folders), nextCursor: null, backwardsCursor: null } }),
@@ -4467,7 +4469,7 @@ describe('codex-remote-service continuing a Codex conversation from the phone', 
     const settings = await s.store.readSettings()
     expect(settings.workspaceDirectory).toBe(other)
     expect(settings.conversation).toMatchObject({ threadId: threadB, title: '整理接口文档', folder: other })
-    expect((await s.service.snapshot()).conversation).toMatchObject({ id: threadB, title: '整理接口文档', folder: '~/projects/other' })
+    expect((await s.service.snapshot()).conversation).toMatchObject({ id: threadB, title: '整理接口文档', folder: path.join('~', 'projects', 'other') })
     channel.handlers?.onInbound(text(alice, '再改一下'))
     await codex.requestedUntil('turn/start', 1)
     expect(codex.requests('thread/start')).toHaveLength(0)
@@ -4555,9 +4557,9 @@ describe('codex-remote-service choosing the phone conversation on the computer',
     expect(list).toEqual({
       supported: true,
       items: [
-        { id: threadA, title: '修复登录页报错', folder: '~/projects/demo', updatedAt: codexSeconds(21, 18, 30) * 1000 },
-        { id: threadC, title: '别处的对话', folder: '~/elsewhere', updatedAt: codexSeconds(21, 12, 0) * 1000 },
-        { id: threadB, title: '整理接口文档', folder: '~/projects/other/', updatedAt: codexSeconds(20, 9, 12) * 1000 },
+        { id: threadA, title: '修复登录页报错', folder: path.join('~', 'projects', 'demo'), updatedAt: codexSeconds(21, 18, 30) * 1000 },
+        { id: threadC, title: '别处的对话', folder: path.join('~', 'elsewhere'), updatedAt: codexSeconds(21, 12, 0) * 1000 },
+        { id: threadB, title: '整理接口文档', folder: `${path.join('~', 'projects', 'other')}/`, updatedAt: codexSeconds(20, 9, 12) * 1000 },
       ],
     })
     expect(s.codex).toHaveLength(1)
@@ -4580,7 +4582,7 @@ describe('codex-remote-service choosing the phone conversation on the computer',
     await s.service.listConversations()
     const snapshot = await s.service.chooseConversation(threadB)
     expect(snapshot.conversation).toMatchObject({ id: threadB, title: '整理接口文档' })
-    expect(snapshot.workspaceDirectory).toBe('~/projects/other')
+    expect(snapshot.workspaceDirectory).toBe(path.join('~', 'projects', 'other'))
     await channel.sentUntil(() => channel.texts().includes('电脑端已切换到对话「整理接口文档」。'))
     channel.handlers?.onInbound(text(alice, '接着做'))
     const codex = s.codex[0]
@@ -4643,7 +4645,7 @@ describe('codex-remote-service choosing the phone conversation on the computer',
     const { s } = await conversationSetup()
     await s.service.listConversations()
     await s.service.chooseConversation(threadB)
-    const snapshot = await s.service.useWorkspace('~/projects/demo')
+    const snapshot = await s.service.useWorkspace(path.join('~', 'projects', 'demo'))
     expect(snapshot.conversation).toBeUndefined()
     expect((await s.store.readSettings()).conversation).toBeUndefined()
   })
