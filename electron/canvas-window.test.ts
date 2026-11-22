@@ -1046,7 +1046,7 @@ describe('createCanvasWindowController', () => {
     const controller = createCanvasWindowController(controllerOptions({ projects: projects as never, defaultProjectsDirectory: () => path.join(blocked, '星芒画布') }))
     await controller.open()
     await expect(electronMocks.handlers.get(canvasHostCreateProjectInDefaultFolderChannel)!(trustedEvent(), '海报'))
-      .rejects.toThrow(/^没能在「星芒画布」文件夹里建项目（.+），可以点「换个位置创建…」自己选文件夹$/)
+      .rejects.toThrow(/^无法在「星芒画布」文件夹中创建项目（.+），您可点击「换个位置创建…」自行选择文件夹$/)
     expect(projects.create).not.toHaveBeenCalled()
     controller.dispose()
 
@@ -1090,7 +1090,7 @@ describe('createCanvasWindowController', () => {
     // A project whose folder is still there, or one this account does not have, never gets the dialog.
     electronMocks.showOpenDialog.mockClear()
     list.mockResolvedValueOnce([{ ...summary, workspaceStatus: 'ready' as const }])
-    await expect(handler(trustedEvent(), projectId)).rejects.toThrow('项目的工作文件夹还在')
+    await expect(handler(trustedEvent(), projectId)).rejects.toThrow('项目的工作文件夹仍然存在')
     await expect(handler(trustedEvent(), '22222222-2222-4222-8222-222222222222')).rejects.toThrow('画布项目不存在')
     await expect(handler(trustedEvent(), 42)).rejects.toThrow('画布项目标识')
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
@@ -1207,7 +1207,7 @@ describe('createCanvasWindowController', () => {
       const { handler, remove } = await deleteController(path.join(root, '旧海报'), root, false)
       electronMocks.showMessageBox.mockResolvedValue({ response: 0, checkboxChecked: false })
 
-      await expect(handler(trustedEvent(), projectId)).rejects.toThrow('请先归档这个项目再删除')
+      await expect(handler(trustedEvent(), projectId)).rejects.toThrow('请先归档此项目，再进行删除')
       await expect(handler(trustedEvent(), '22222222-2222-4222-8222-222222222222')).rejects.toThrow('画布项目不存在')
       await expect(handler(trustedEvent(), 42)).rejects.toThrow('画布项目标识')
       expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
@@ -1673,7 +1673,7 @@ describe('createCanvasWindowController', () => {
 
     // The two refused pictures above already used two of the twenty saves.
     for (let index = 0; index < 18; index += 1) await importBytes(trustedEvent(), new Uint8Array(projectPng))
-    await expect(importBytes(trustedEvent(), new Uint8Array(projectPng))).rejects.toThrow('保存图片太频繁')
+    await expect(importBytes(trustedEvent(), new Uint8Array(projectPng))).rejects.toThrow('保存图片过于频繁')
     expect(aiAssets.storeLocalBytes).toHaveBeenCalledTimes(18)
   })
 
@@ -2094,7 +2094,7 @@ describe('createCanvasWindowController', () => {
       const preview = await electronMocks.handlers.get(canvasHostPreviewProjectChannel)!(trustedEvent()) as { previewId: string }
 
       await expect(electronMocks.handlers.get(canvasHostImportProjectChannel)!(trustedEvent(), preview.previewId))
-        .rejects.toThrow(/^没能在「星芒画布」文件夹里建项目（.+），这次没有导入$/)
+        .rejects.toThrow(/^无法在「星芒画布」文件夹中创建项目（.+），本次未导入$/)
       expect(forNewWorkspace).not.toHaveBeenCalled()
       expect(projects.createImported).not.toHaveBeenCalled()
     })
@@ -2373,8 +2373,8 @@ describe('createCanvasWindowController', () => {
 
       await expect(controller.openProject('../../etc/passwd')).rejects.toThrow('画布项目标识格式错误')
       expect(projects.list).not.toHaveBeenCalled()
-      await expect(controller.openProject(unknownId)).rejects.toThrow('这个画布项目找不到了，可能已经在画布里删掉或归档')
-      await expect(controller.openProject(archivedId)).rejects.toThrow('这个画布项目找不到了，可能已经在画布里删掉或归档')
+      await expect(controller.openProject(unknownId)).rejects.toThrow('未找到该画布项目，可能已在画布中删除或归档')
+      await expect(controller.openProject(archivedId)).rejects.toThrow('未找到该画布项目，可能已在画布中删除或归档')
       expect(electronMocks.browserWindowOptions).toHaveLength(0)
     })
 

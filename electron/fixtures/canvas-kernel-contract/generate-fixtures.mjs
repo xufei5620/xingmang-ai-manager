@@ -80,7 +80,7 @@ function graphWith(extra) {
     edges: [{ id: 'edge-1', source: 'prompt-1', sourceHandle: 'out:text', target: 'target', targetHandle: 'in:text' }],
   }
 }
-const refused = '桌面版暂不支持，本次没有提交任何付费请求'
+const refused = '桌面版暂不支持，本次未提交任何付费请求'
 // 画布完善第 8 条: one picture into an edit node over in:images, with or without its role.
 // A scene task rides on the same node (第 8 条 PR B).
 function pictureGraph(imageReferenceOrder, task = {}) {

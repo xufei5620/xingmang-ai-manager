@@ -751,13 +751,13 @@ describe('createCanvasNodeExecutors', () => {
     expect(edit).toHaveBeenCalledTimes(1)
     // The same picture under another id is refused before anything is paid.
     await expect(executors['image-edit']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('c')] }, node: exterior }))
-      .rejects.toThrow('原图与参考图内容相同，请选择内容不同的两张图片；当前没有提交生成请求')
+      .rejects.toThrow('原图与参考图内容相同，请选择内容不同的两张图片；当前未提交生成请求')
     const storyboard = { ...exterior, data: { ...exterior.data, exteriorTask: undefined, storyboardTask: { version: 1 as const, kind: 'storyboard' as const, automaticPlot: true, style: 'cinematic' as const, panels: 4 as const } } }
     await expect(executors['image-edit']!({ ...base, sceneSourceChecks: ['storyboard'], inputs: { images: [picture('c'), picture('a')] }, node: storyboard }))
-      .rejects.toThrow('故事板输入图片内容相同，请选择内容不同的图片；当前没有提交生成请求')
+      .rejects.toThrow('故事板输入图片内容相同，请选择内容不同的图片；当前未提交生成请求')
     const analysis = { id: 't', kind: 'text-generate' as const, definitionVersion: 1, data: { prompt: '分析', model: 'gpt-5.5', group: 'GPT', imageReferenceOrder: two } }
     await expect(executors['text-generate']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('c')] }, node: analysis }))
-      .rejects.toThrow('原图与参考图内容相同，请选择内容不同的两张图片；当前没有提交生成请求')
+      .rejects.toThrow('原图与参考图内容相同，请选择内容不同的两张图片；当前未提交生成请求')
     expect(edit).toHaveBeenCalledTimes(1)
     expect(completeOnce).not.toHaveBeenCalled()
     await executors['text-generate']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('b')] }, node: analysis })
@@ -765,7 +765,7 @@ describe('createCanvasNodeExecutors', () => {
     // Without a reader those nodes are refused, never run unchecked.
     const unchecked = createCanvasNodeExecutors({ imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) } })
     await expect(unchecked['image-edit']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('b')] }, node: exterior }))
-      .rejects.toThrow('室外参考图内容核对服务暂时不可用，当前没有提交生成请求')
+      .rejects.toThrow('室外参考图内容核对服务暂时不可用，当前未提交生成请求')
     expect(edit).toHaveBeenCalledTimes(1)
   })
 
@@ -983,7 +983,7 @@ describe('canvas frame-extract executor', () => {
       .rejects.toThrow('当前不会提交付费请求')
 
     const frames: CanvasFrameExtraction = {
-      assertDecodableVideo: vi.fn(async () => { throw new Error('视频超过 32 MB，画布抽不了这一帧') }),
+      assertDecodableVideo: vi.fn(async () => { throw new Error('视频超过 32 MB，画布无法提取该帧') }),
       waitForFrame: vi.fn(async () => frameAsset),
     }
     const executor = createCanvasNodeExecutors({ imageService, frames })['frame-extract']!
@@ -992,7 +992,7 @@ describe('canvas frame-extract executor', () => {
     await expect(executor({ ...base, node: frameNode, inputs: {}, signal: new AbortController().signal, reportFramePreparation: report }))
       .rejects.toThrow('请先给视频抽帧节点连接一段视频')
     await expect(executor({ ...base, node: frameNode, inputs: { video: videoAsset }, signal: new AbortController().signal, reportFramePreparation: report }))
-      .rejects.toThrow('视频超过 32 MB，画布抽不了这一帧')
+      .rejects.toThrow('视频超过 32 MB，画布无法提取该帧')
     expect(frames.assertDecodableVideo).toHaveBeenCalledWith(7, videoAsset.assetId)
     expect(frames.waitForFrame).not.toHaveBeenCalled()
     expect(report).not.toHaveBeenCalled()
@@ -1183,7 +1183,7 @@ describe('canvas image-tool executors', () => {
     await vi.waitFor(() => expect(tools.waitForImages).toHaveBeenCalledTimes(3))
     expect(vi.mocked(tools.waitForImages).mock.calls[2][0].preparation).toMatchObject({ sourceAssetIds: [], layerGroupsVersion: 1 })
 
-    vi.mocked(tools.assertSources).mockRejectedValueOnce(new Error('图片处理的来源图片超过 20 MB，请换一张小一点的图'))
+    vi.mocked(tools.assertSources).mockRejectedValueOnce(new Error('图片处理的来源图片超过 20 MB，请更换较小的图片'))
     await expect(executors['image-crop']!({ ...base, node: toolNode('image-crop', { kind: 'crop' }), inputs: inputs('A'), signal: new AbortController().signal, reportImagePreparation: report }))
       .rejects.toThrow('图片处理的来源图片超过 20 MB')
     expect(tools.waitForImages).toHaveBeenCalledTimes(3)

@@ -874,7 +874,7 @@ export function createCanvasWindowController(
   // 文件夹名由主进程从名字里去掉不能进文件名的字符，每次新建一个，已经在的文件夹不用（canvas-default-project-folder.ts）。
   registerCanvasHandler(canvasHostCreateProjectInDefaultFolderChannel, async (event, nameInput) => {
     if (!options.projects) throw new Error('项目自动保存能力不可用')
-    if (!options.defaultProjectsDirectory) throw new Error('默认项目文件夹不可用，请点「换个位置创建…」自己选文件夹')
+    if (!options.defaultProjectsDirectory) throw new Error('默认项目文件夹不可用，请点击「换个位置创建…」自行选择文件夹')
     const userId = authenticatedCanvasUserId()
     const pageLoad = canvasPageLoads
     const name = requiredCanvasString(nameInput, '画布项目名称', 128)
@@ -882,7 +882,7 @@ export function createCanvasWindowController(
     try {
       directory = claimCanvasDefaultProjectFolder(options.defaultProjectsDirectory(), name)
     } catch (error) {
-      throw new Error(`没能在「星芒画布」文件夹里建项目（${describeCanvasDefaultProjectFolderFailure(error)}），可以点「换个位置创建…」自己选文件夹`)
+      throw new Error(`无法在「星芒画布」文件夹中创建项目（${describeCanvasDefaultProjectFolderFailure(error)}），您可点击「换个位置创建…」自行选择文件夹`)
     }
     let created: Awaited<ReturnType<CanvasProjectStore['create']>>
     try {
@@ -904,7 +904,7 @@ export function createCanvasWindowController(
     const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
     const project = (await options.projects.list(userId)).find((entry) => entry.id === projectId)
     if (!project) throw new Error('画布项目不存在')
-    if (project.workspaceStatus !== 'missing') throw new Error('项目的工作文件夹还在，不用重新选择')
+    if (project.workspaceStatus !== 'missing') throw new Error('项目的工作文件夹仍然存在，无需重新选择')
     assertCanvasUserUnchanged(userId)
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: OpenDialogOptions = {
@@ -944,7 +944,7 @@ export function createCanvasWindowController(
     const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
     const project = (await options.projects.list(userId)).find((entry) => entry.id === projectId)
     if (!project) throw new Error('画布项目不存在')
-    if (!project.archivedAt) throw new Error('请先归档这个项目再删除')
+    if (!project.archivedAt) throw new Error('请先归档此项目，再进行删除')
     const folderToTrash = options.trashProjectFolder
       ? canvasProjectFolderToTrash(await options.projects.getWorkspaceDirectory(userId, projectId), options.defaultProjectsDirectory?.())
       : null
@@ -1541,7 +1541,7 @@ export function createCanvasWindowController(
     try {
       directory = claimCanvasDefaultProjectFolder(projectsDirectory(), pending.projectName)
     } catch (error) {
-      throw new Error(`没能在「星芒画布」文件夹里建项目（${describeCanvasDefaultProjectFolderFailure(error)}），这次没有导入`)
+      throw new Error(`无法在「星芒画布」文件夹中创建项目（${describeCanvasDefaultProjectFolderFailure(error)}），本次未导入`)
     }
     const imported: string[] = []
     const mappings = new Map<string, string>()
@@ -1653,7 +1653,7 @@ export function createCanvasWindowController(
     const userId = authenticatedCanvasUserId()
     const known = (await options.projects.list(userId)).some((project) => project.id === projectId && !project.archivedAt)
     assertCanvasUserUnchanged(userId)
-    if (!known) throw new Error('这个画布项目找不到了，可能已经在画布里删掉或归档')
+    if (!known) throw new Error('未找到该画布项目，可能已在画布中删除或归档')
     if (pendingOpen) await pendingOpen.catch(() => undefined)
     if (canvasWindow && !canvasWindow.isDestroyed()) {
       const active = activeProjects.get(canvasWindow.webContents.id)

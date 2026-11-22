@@ -96,8 +96,8 @@ describe('canvas project file inbox', () => {
 describe('canvas project file open failure prompt', () => {
   it('passes on the plain Chinese reason the checks give', () => {
     expect(buildCanvasProjectFileOpenFailurePrompt(new Error('画布项目版本不受支持'))).toEqual({
-      title: '没能打开画布项目',
-      message: '没能打开这个画布项目文件。',
+      title: '无法打开画布项目',
+      message: '无法打开该画布项目文件。',
       detail: '画布项目版本不受支持',
       buttons: ['知道了'],
     })
@@ -106,7 +106,7 @@ describe('canvas project file open failure prompt', () => {
   it('keeps a raw system error, with its English code and full path, out of the box', () => {
     const missing = Object.assign(new Error("ENOENT: no such file or directory, lstat 'C:\\Users\\客户\\a.xingcanvas'"), { code: 'ENOENT' })
     const prompt = buildCanvasProjectFileOpenFailurePrompt(missing)
-    expect(prompt.detail).toBe('读不到这个文件，可能已经移走、删掉了，或者星芒没有权限读它。')
+    expect(prompt.detail).toBe('无法读取该文件，文件可能已被移动或删除，或星芒没有读取权限。')
     expect(JSON.stringify(prompt)).not.toContain('ENOENT')
     expect(buildCanvasProjectFileOpenFailurePrompt('boom').detail).toBe(prompt.detail)
   })

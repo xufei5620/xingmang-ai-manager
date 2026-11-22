@@ -59,22 +59,22 @@ export async function readCanvasTextImages(
       try {
         owned = await read(userId, assetId, projectId)
       } catch {
-        throw new Error('连接的视觉图片没有可读取结果，当前没有提交文字生成')
+        throw new Error('无法读取所连接的视觉图片，当前未提交文字生成')
       }
-      if (owned.bytes.byteLength > canvasTextImageInputLimits.bytesPerImage) throw new Error('视觉图片单张不能超过 4 MB，当前没有提交文字生成；请换小一点的图再试')
+      if (owned.bytes.byteLength > canvasTextImageInputLimits.bytesPerImage) throw new Error('视觉图片单张不能超过 4 MB，当前未提交文字生成；请更换较小的图片后重试')
       const inspected = inspectAiImage(owned.bytes)
       const width = inspected.width ?? 0
       const height = inspected.height ?? 0
       if (!width || !height || width > canvasTextImageInputLimits.dimension || height > canvasTextImageInputLimits.dimension || width * height > canvasTextImageInputLimits.pixelsPerImage) {
-        throw new Error('视觉图片尺寸超过范围，当前没有提交文字生成；请换小一点的图再试')
+        throw new Error('视觉图片尺寸超出范围，当前未提交文字生成；请更换较小的图片后重试')
       }
       image = { uri: `data:${inspected.mimeType};base64,${owned.bytes.toString('base64')}`, bytes: owned.bytes.byteLength, pixels: width * height }
       images.set(assetId, image)
     }
     totalBytes += image.bytes
     totalPixels += image.pixels
-    if (totalBytes > canvasTextImageInputLimits.totalBytes) throw new Error('文字视觉图片总容量不能超过 8 MB，当前没有提交生成请求')
-    if (totalPixels > canvasTextImageInputLimits.totalPixels) throw new Error('视觉图片尺寸超过范围，当前没有提交文字生成；请换小一点的图再试')
+    if (totalBytes > canvasTextImageInputLimits.totalBytes) throw new Error('文字视觉图片总容量不能超过 8 MB，当前未提交生成请求')
+    if (totalPixels > canvasTextImageInputLimits.totalPixels) throw new Error('视觉图片尺寸超出范围，当前未提交文字生成；请更换较小的图片后重试')
   }
   return new Map([...images].map(([assetId, image]) => [assetId, image.uri]))
 }

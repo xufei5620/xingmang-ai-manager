@@ -106,10 +106,10 @@ export function buildCanvasProjectFileOpenFailurePrompt(error: unknown): CanvasP
   const systemError = typeof error === 'object' && error !== null && typeof (error as { code?: unknown }).code === 'string'
   const reason = !systemError && error instanceof Error && error.message.trim()
     ? error.message.trim()
-    : '读不到这个文件，可能已经移走、删掉了，或者星芒没有权限读它。'
+    : '无法读取该文件，文件可能已被移动或删除，或星芒没有读取权限。'
   return {
-    title: '没能打开画布项目',
-    message: '没能打开这个画布项目文件。',
+    title: '无法打开画布项目',
+    message: '无法打开该画布项目文件。',
     detail: reason,
     buttons: ['知道了'],
   }
