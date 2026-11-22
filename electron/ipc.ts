@@ -230,6 +230,11 @@ export interface IpcRegistrationOptions {
    */
   confirmUpdateInstall?(): Promise<boolean>
   /**
+   * 「立即重启」电脑（带 askIfWorking）前问一句「创作」里还有没有会被停下的事（D10 那一问）：false = 客户点了
+   * 「等待完成」，这次不重启。不传 = 不问（测试与旧调用方）。
+   */
+  confirmWindowsRestart?(): Promise<boolean>
+  /**
    * Mac 上「卸载星芒」。backupCliConfigs 由这里给：备份要用本模块里的账号上下文，和
    * 「立即修复」同一份。不传 = 这台电脑不支持在星芒里卸载。
    */
@@ -264,8 +269,6 @@ export interface IpcRegistrationOptions {
   // has to depend on canvas-window.ts's full surface just to delegate one
   // button click.
   openCanvasWindow(): Promise<void>
-  // Same delegation for the canvas home page's read-only library (「看全部作品」).
-  openCanvasAssetLibrary(): Promise<void>
   // 「创作」左边那一列里的画布项目（融合第 1 步）：列出当前账号的项目、把画布开在其中一个上。同样只是转交，
   // 认账号、认编号、换项目前的关闭确认都在 canvas-window.ts。缺省（早于它的测试）= 报「未就绪」。
   listCanvasProjects?(): Promise<CanvasProjectListEntry[]>

@@ -8,6 +8,7 @@ import {
   buildUnfinishedRestartWorkPrompt,
   confirmQuitInterruptions,
   confirmUpdateRestart,
+  confirmWindowsRestartWork,
   isRollbackInstall,
   resolveInstallableUpdateOnQuit,
   resolveInterruptibleInstallTask,
@@ -17,6 +18,7 @@ import {
   type QuitInterruptionConfirmation,
   type UnfinishedRestartWorkPrompt,
   type UpdateRestartConfirmation,
+  type WindowsRestartConfirmation,
 } from './quit-blocking-tasks'
 import type { UpdateSnapshot } from './updater'
 
@@ -209,6 +211,48 @@ describe('confirming a restart to install an update', () => {
     })
     await expect(confirmUpdateRestart(host)).resolves.toBe(true)
     expect(order).toEqual(['install-asked', 'work-read'])
+  })
+})
+
+describe('confirming a computer restart from the restart dialog', () => {
+  const work = buildUnfinishedRestartWorkPrompt(['chat', 'canvas']) as UnfinishedRestartWorkPrompt
+
+  function steps(overrides: Partial<WindowsRestartConfirmation> = {}) {
+    return {
+      queueBusy: vi.fn(() => false),
+      unfinishedWork: vi.fn(() => null),
+      confirmWork: vi.fn(async () => true),
+      log: vi.fn(),
+      ...overrides,
+    } satisfies WindowsRestartConfirmation
+  }
+
+  it('restarts without asking when nothing in the creative workspace is running', async () => {
+    const host = steps()
+    await expect(confirmWindowsRestartWork(host)).resolves.toBe(true)
+    expect(host.confirmWork).not.toHaveBeenCalled()
+    expect(host.log).not.toHaveBeenCalled()
+  })
+
+  it('asks the same question as restarting to install an update, naming what is running', async () => {
+    const host = steps({ unfinishedWork: () => work })
+    await expect(confirmWindowsRestartWork(host)).resolves.toBe(true)
+    expect(host.confirmWork).toHaveBeenCalledWith(work)
+    expect(host.log).toHaveBeenCalledWith('restart.work-in-progress', '重启电脑前确认：chat,canvas')
+  })
+
+  it('does not restart when the user waits for the work to finish', async () => {
+    const host = steps({ unfinishedWork: () => work, confirmWork: vi.fn(async () => false) })
+    await expect(confirmWindowsRestartWork(host)).resolves.toBe(false)
+    expect(host.log).toHaveBeenLastCalledWith('restart.postponed', '还有任务没做完，这次不重启电脑')
+  })
+
+  it('leaves a busy install queue to the restart guard instead of asking a question that cannot lead to a restart', async () => {
+    const unfinishedWork = vi.fn(() => work)
+    const host = steps({ queueBusy: () => true, unfinishedWork })
+    await expect(confirmWindowsRestartWork(host)).resolves.toBe(true)
+    expect(unfinishedWork).not.toHaveBeenCalled()
+    expect(host.confirmWork).not.toHaveBeenCalled()
   })
 })
 

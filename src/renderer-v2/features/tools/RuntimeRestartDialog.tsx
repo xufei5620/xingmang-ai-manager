@@ -3,6 +3,7 @@ import { RotateCcw } from 'lucide-react'
 import { Button, Dialog, Notice, useToast } from '../../ui'
 import { markRestartPending, useRestartPending } from './restart-reminder'
 import { errorMessage, pendingBusinessOperations } from '../../business-common'
+import type { WindowsRestartResult } from '../../../../electron/ipc-contract'
 
 /**
  * Node.js 装完 Windows 要求重启（MSI 退出码 3010）时弹的框，首页与检查页
@@ -14,11 +15,13 @@ import { errorMessage, pendingBusinessOperations } from '../../business-common'
  *
  * 重启走主进程已有的 runtime:restart-windows（shutdown /r /t 15）。发出去之前两道
  * 闸：这里查渲染层还有没有没做完的业务操作（保存配置之类），主进程那侧查安装队列；
- * 任一处拦下都留在框里说明原因，不关框。
+ * 任一处拦下都留在框里说明原因，不关框。闸都过了，「创作」里还有对话在回复、视频在合成、
+ * 画布在出图时，主进程再照重启装更新那样点名问一句（D10）；点了「等待完成」就回 postponed，
+ * 这个框原样留着，做完再点。
  */
 export function RuntimeRestartDialog({ onClose, restart, reason = 'runtime' }: {
   onClose: () => void
-  restart: () => Promise<void>
+  restart: () => Promise<WindowsRestartResult>
   /**
    * 为什么要重启；缺省 = Node.js 装完（旧行为）。'codexDesktop' 是 Codex 桌面端打不开时错误框里那颗
    * 「立即重启」：同一次重启、同样两道闸，只是换了字，也不挂页顶那条「运行环境需重启」的提醒。
@@ -39,7 +42,12 @@ export function RuntimeRestartDialog({ onClose, restart, reason = 'runtime' }: {
     }
     setBusy(true)
     setError('')
-    void restart().then(() => {
+    void restart().then((result) => {
+      // 客户刚在那一问里自己选了等它做完：框留着，不另说什么。
+      if (result.postponed) {
+        setBusy(false)
+        return
+      }
       onClose()
       toast.show('电脑将在约 15 秒后重启。', 'warn')
     }, (cause) => {
@@ -72,7 +80,7 @@ export function RuntimeRestartDialog({ onClose, restart, reason = 'runtime' }: {
  * 关掉重启框之后挂在页顶的那一条：软件开着就一直在，点「现在重启」再弹一次同一个框，
  * 走同样的两道闸。没记下「还差重启」时什么都不画。
  */
-export function RestartReminder({ restart }: { restart: () => Promise<void> }) {
+export function RestartReminder({ restart }: { restart: () => Promise<WindowsRestartResult> }) {
   const pending = useRestartPending()
   const [open, setOpen] = useState(false)
   if (!pending) return null

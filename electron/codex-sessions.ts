@@ -21,6 +21,9 @@ import {
 } from './session-activity'
 import { exportSessionMarkdown, sessionMarkdownFileName } from './session-markdown-export'
 
+// Thrown out of the message callback to stop reading at the first match; the
+// stream is torn down by the for-await loop that is unwound by it.
+const contentFound = new Error('content found')
 const MAX_OPERATION_JOURNAL_BYTES = 64 * 1024 * 1024
 const OPERATION_JOURNAL_LABEL = 'Codex 会话操作日志'
 const MAX_RECOVERY_WARNING_DETAILS = 32
@@ -617,11 +620,18 @@ function validateRolloutIdentitySync(rolloutPath: string, sessionId: string): vo
   }
 }
 
+interface StreamMessagesOptions {
+  /** 每一行解析出来的原样 JSON（记录详情里那一轮跑了什么，session-activity.ts）。 */
+  onEntry?: (value: unknown) => void
+  /** 只读文件开头这么多字节。缺省 = 读完整个文件（旧行为）。 */
+  maxBytes?: number
+}
+
 async function streamMessages(
   rolloutPath: string,
   maximumLineBytes: number,
   onMessage: (message: CodexSessionMessage) => void | Promise<void>,
-  onEntry?: (value: unknown) => void,
+  options: StreamMessagesOptions = {},
 ): Promise<CodexSessionMessageStats> {
   const stats: CodexSessionMessageStats = {
     total: 0,
@@ -641,7 +651,7 @@ async function streamMessages(
       stats.invalidLines += 1
       return
     }
-    onEntry?.(parsed)
+    options.onEntry?.(parsed)
     const message = extractMessage(parsed)
     if (!message) return
     stats.total += 1
@@ -652,7 +662,11 @@ async function streamMessages(
     await onMessage(message)
   }
 
-  const input = fs.createReadStream(rolloutPath, { encoding: 'utf8', highWaterMark: 64 * 1024 })
+  const input = fs.createReadStream(rolloutPath, {
+    encoding: 'utf8',
+    highWaterMark: 64 * 1024,
+    ...(options.maxBytes !== undefined ? { end: Math.max(0, options.maxBytes - 1) } : {}),
+  })
   let pending = ''
   let droppingOversizedLine = false
   for await (const rawChunk of input) {
@@ -979,7 +993,7 @@ export class CodexSessionsService {
       messages.push(retained)
       activity.message(message.role, retained)
       if (messages.length > DETAIL_MESSAGE_LIMIT) messages.shift()
-    }, (value) => observeCodexActivity(activity, value))
+    }, { onEntry: (value) => observeCodexActivity(activity, value) })
     activity.finish()
     return {
       session: await toSummary(row, this.codexHome),
@@ -988,6 +1002,25 @@ export class CodexSessionsService {
       // 跳过的坏行也是看不到的内容（#491），和只留最近若干条一样算「不完整」。
       messagesTruncated: textTruncated || messageStats.total > messages.length || messageStats.invalidLines > 0,
     }
+  }
+
+  /**
+   * 这段对话里有没有说过 `needle`（记录页「同时搜索对话内容」）。`needle` 由调用方统一转成
+   * 小写；只读文件开头 `maxBytes` 字节，读到第一处就停。
+   */
+  async contentMatches(sessionId: string, needle: string, maxBytes: number): Promise<boolean> {
+    const { row, schema } = this.readThread(sessionId)
+    if (!schema.status.readable) return false
+    const rolloutPath = await validateRollout(this.codexHome, row.rolloutPath, row.id)
+    try {
+      await streamMessages(rolloutPath, this.maxJsonLineBytes, (message) => {
+        if (message.text.toLocaleLowerCase().includes(needle)) throw contentFound
+      }, { maxBytes })
+    } catch (error) {
+      if (error === contentFound) return true
+      throw error
+    }
+    return false
   }
 
   async exportMarkdown(sessionId: string, destinationPath: string): Promise<CodexSessionExportResult> {
