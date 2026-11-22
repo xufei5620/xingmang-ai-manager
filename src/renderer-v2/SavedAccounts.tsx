@@ -418,5 +418,5 @@ export function savedAccountLoginTarget(account: { origin: string; username: str
 /** 主进程 SAVED_EXPIRED 那句（electron/realm-account.ts）；只认它，不认当前账号过期。 */
 export function savedAccountExpired(error: unknown) {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
-  return /保存的账号登录已失效/.test(message)
+  return /保存的账号登录已失效|已保存账号的登录已失效/.test(message)
 }

@@ -140,11 +140,11 @@ export const paymentQrLimits = Object.freeze({
  */
 export class PaymentCheckoutRejected extends Error {}
 
-export const paymentCheckoutRejectedMessage = '支付通道暂时异常，没有扣款，请联系客服。'
+export const paymentCheckoutRejectedMessage = '支付通道暂时异常，未产生扣款，请联系客服。'
 
 // 走到这句时订单已经下了、付款页没打开，客户付不了钱。账号服务没有给用户取消充值单的接口，
 // 「我的订单」里会多出一笔待支付，所以顺口告诉客户没扣钱、那笔放着就行（#1458）。
-export const paymentPageOpenFailedMessage = '支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。'
+export const paymentPageOpenFailedMessage = '支付页面打开失败，请稍后重试。本次未产生扣款，「我的订单」中新增的订单无需处理。'
 
 export function toCustomerPaymentError(error: unknown): unknown {
   return error instanceof PaymentCheckoutRejected ? new Error(paymentCheckoutRejectedMessage, { cause: error }) : error

@@ -261,7 +261,7 @@ export function authFailure(error: unknown, action: string, online = true, os?: 
   const message = stripIpcErrorPrefix(errorText(error))
   // 本机账号库存满（全面检测 Q40）。放在「安全存储」之前：以前满了也报存储不可用，
   // 用户被叫去重启软件。文案与主进程 realm-account.ts 那句一致（electron 不 import src，有意重复）。
-  if (/保存的账号已满/.test(message)) return { message: '这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。', kind: 'final' }
+  if (/保存的账号已满/.test(message)) return { message: '本机保存的账号已满（最多 16 个）。请先在「切换账号」中移除一个不再使用的账号，再登录。', kind: 'final' }
   // 主进程分得出是系统钥匙串没放行（realm-account-vault.ts 的 realmVaultKeyStoreRefusedMessage，那边带
   // node:crypto 值导入不了，有意重复）。Windows 上同一句、文件读不出来那些，照旧走下面那句。
   if (os === 'mac' && /系统加密服务没有放行/.test(message)) return { message: macKeychainRefusedMessage, kind: 'keychain' }
@@ -365,8 +365,8 @@ export function registrationStatusFailure(error: unknown, online: boolean): Regi
 // 与 electron/new-api-client.ts 的原文一致（electron 不 import src，有意重复一份）。
 // 这句是主进程已经收下密码、等第二步的信号；旧界面照旧把它当报错显示。
 const twoFactorChallengeMessage = '此账号需要双重验证，请先完成验证'
-const twoFactorExpiredMessage = '等太久了，请重新输入密码登录'
-const twoFactorMessages = [twoFactorExpiredMessage, '验证码不对或已过期，请看验证器里最新的数字再试', '试得太频繁了，请过一会儿再试']
+const twoFactorExpiredMessage = '验证已超时，请重新输入密码登录'
+const twoFactorMessages = [twoFactorExpiredMessage, '验证码错误或已过期，请输入验证器中的最新验证码后重试', '尝试过于频繁，请稍后重试']
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : typeof error === 'string' ? error : ''

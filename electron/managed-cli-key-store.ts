@@ -16,7 +16,7 @@ import { isRecord } from './input-guards'
 const CURRENT_VERSION = 2
 const MAX_FILE_BYTES = 64 * 1024
 const MAX_CACHED_ACCOUNTS = 16
-const FILE_LABEL = '托管 CLI API Key'
+const FILE_LABEL = '托管工具密钥'
 const MAX_QUARANTINED_RECORDS = 3
 // 换掉的那几把记几条：连着换两次组、中间都没写进配置，也还认得出最早那把。
 const MAX_REPLACED_KEYS = 3
@@ -479,7 +479,7 @@ export class ManagedCliKeyStore {
     const content = await readSafeUtf8File(this.filePath, FILE_LABEL, MAX_FILE_BYTES)
     if (content === null) return null
     const record = decodePersistedManagedCliKeys(content, this.storage, this.siteId)
-    if (!record) throw new ManagedCliKeyCacheCorruptError('本地托管 API Key 配置已损坏或无法解密')
+    if (!record) throw new ManagedCliKeyCacheCorruptError('本地托管密钥配置已损坏或无法解密')
     this.revision = Math.max(this.revision, record.revision ?? 0)
     return record
   }
@@ -522,13 +522,13 @@ export class ManagedCliKeyStore {
     if (this.persistence === 'session-only') return
     const backend = inspectSafeStorageBackend(this.storage)
     if (backend === 'unavailable') {
-      throw new Error('系统安全存储不可用，无法持久化托管 API Key')
+      throw new Error('系统安全存储不可用，无法保存托管密钥')
     }
-    if (backend === 'plaintext') throw new Error(safeStoragePlaintextMessage('托管 API Key'))
+    if (backend === 'plaintext') throw new Error(safeStoragePlaintextMessage('托管密钥'))
   }
 
   private async writeRecord(record: PersistedManagedCliKeys): Promise<void> {
-    if (!isPersistedManagedCliKeys(record, this.siteId)) throw new Error('托管 CLI API Key 格式错误')
+    if (!isPersistedManagedCliKeys(record, this.siteId)) throw new Error('托管工具密钥格式错误')
     if (this.persistence === 'session-only') {
       this.sessionRecord = structuredClone(record)
       return

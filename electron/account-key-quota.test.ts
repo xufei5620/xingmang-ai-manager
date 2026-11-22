@@ -65,7 +65,7 @@ describe('account key quota conversion', () => {
 
   it('refuses a half-typed number that the field hands over as blank instead of lifting the limit', () => {
     // 数字框里打成「-」「1e」时值是空的，只有 validity.badInput 说明框里其实有字（表单 F10-b）。
-    expect(() => parseManagedCliKeyLimitAmount('', true)).toThrow('请填写大于 0 的上限金额，留空表示不限额。')
+    expect(() => parseManagedCliKeyLimitAmount('', true)).toThrow('请填写大于 0 的上限金额，留空表示不限额度。')
     expect(() => parseManagedCliKeyLimitAmount('  ', true)).toThrow('大于 0')
     expect(parseManagedCliKeyLimitAmount('', false)).toBeNull()
   })
@@ -152,7 +152,7 @@ describe('managed CLI key limits', () => {
 
   it('refuses to build an update for a tool whose key does not exist yet', () => {
     const [claude] = resolveManagedCliKeyLimits([], 500_000, 'solov')
-    expect(() => buildManagedCliKeyLimitUpdate(claude, 5, 500_000, 'solov')).toThrow('还没有对应的密钥')
+    expect(() => buildManagedCliKeyLimitUpdate(claude, 5, 500_000, 'solov')).toThrow('尚无对应的密钥')
   })
 
   it('recognizes the username-group keys this program issues on the xm site', () => {

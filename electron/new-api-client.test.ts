@@ -1560,7 +1560,7 @@ describe('login limits (rc.24 session caps and rate limiting)', () => {
     expect(error).toBeInstanceOf(Error)
     expect(error).not.toBeInstanceOf(NewApiLoginRejectedError)
     expect((error as Error).message).toBe(loginSessionLimitMessage)
-    expect(loginSessionLimitMessage).toContain('「账号安全」里让几台不用的设备下线')
+    expect(loginSessionLimitMessage).toContain('「账号安全」中将不再使用的设备下线')
     expect(loginSessionLimitMessage).not.toMatch(/https?:|solov|\.cc|稍后重试/)
     expect(client.isAuthenticated()).toBe(false)
   })
@@ -3144,7 +3144,7 @@ describe('updateKey', () => {
       remainQuota: 100,
       unlimitedQuota: false,
       expiredTime: -1,
-    })).rejects.toThrow('Key 详情数据不完整，已取消更新')
+    })).rejects.toThrow('密钥详情数据不完整，已取消更新')
 
     expect(fetchImpl).toHaveBeenCalledTimes(2)
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
@@ -3290,7 +3290,7 @@ describe('enableKey', () => {
       await expect(client.enableKey(42)).rejects.toThrow(accountKeyEnableExpiredMessage)
       expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
     }
-    expect(accountKeyEnableExpiredMessage).toBe('这把密钥已经过了到期时间，先点这一行右边的「⋯」，选「编辑」把到期时间往后改，再点「启用」。')
+    expect(accountKeyEnableExpiredMessage).toBe('该密钥已过到期时间。请先点击该行右侧的「⋯」，选择「编辑」延后到期时间，再点击「启用」。')
   })
 
   it('stops with what to change first when a capped key has no quota left, whatever its status says', async () => {
@@ -3303,7 +3303,7 @@ describe('enableKey', () => {
       await expect(client.enableKey(42)).rejects.toThrow(accountKeyEnableUsedUpMessage)
       expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
     }
-    expect(accountKeyEnableUsedUpMessage).toBe('这把密钥的额度已经用完，先点这一行右边的「⋯」，选「编辑」把额度调高或改成「不限额度」，再点「启用」。')
+    expect(accountKeyEnableUsedUpMessage).toBe('该密钥的额度已用完。请先点击该行右侧的「⋯」，选择「编辑」调高额度或改为「不限额度」，再点击「启用」。')
   })
 
   it('leaves an already enabled key alone', async () => {
@@ -3323,7 +3323,7 @@ describe('enableKey', () => {
       fetchImpl.mockClear()
       fetchImpl.mockResolvedValueOnce(tokenDetail({ [missing]: null }))
 
-      await expect(client.enableKey(42)).rejects.toThrow('没读到这把密钥现在的状态，先没启用。请稍后再试。')
+      await expect(client.enableKey(42)).rejects.toThrow('未能获取该密钥的当前状态，暂未启用。请稍后重试。')
       expect(fetchImpl).toHaveBeenCalledTimes(1)
     }
   })
@@ -3753,7 +3753,7 @@ describe('provisionCliKey with a used-up per-key cap', () => {
       .mockResolvedValueOnce(usableGroupsResponse())
       .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [olderUnlimited, capped] } }))
 
-    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('这个工具的额度用完了')
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('该工具的额度已用完')
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 
@@ -3765,7 +3765,7 @@ describe('provisionCliKey with a used-up per-key cap', () => {
       .mockResolvedValueOnce(usableGroupsResponse())
       .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [capped, other] } }))
 
-    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('这个工具的额度用完了')
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('该工具的额度已用完')
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 
@@ -3808,7 +3808,7 @@ describe('provisionCliKey with a used-up per-key cap', () => {
       .mockResolvedValueOnce(usableGroupsResponse())
       .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 1, items: [{ ...capped, name: 'tester-codex-pro' }] } }))
 
-    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('这个工具的额度用完了')
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('该工具的额度已用完')
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 
@@ -3821,7 +3821,7 @@ describe('provisionCliKey with a used-up per-key cap', () => {
       .mockResolvedValueOnce(usableGroupsResponse())
       .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { total: 2, items: [capped, newer] } }))
 
-    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('这个工具的额度用完了')
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('该工具的额度已用完')
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 })
@@ -3871,7 +3871,7 @@ describe('provisionCliKey with a tool key stopped on the web', () => {
       .mockResolvedValueOnce(listing([{ ...enabled, ...change }]))
 
     await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow(managedKeyStoppedMessage)
-    expect(managedKeyStoppedMessage).toBe('这个工具的密钥已经停用或到期，软件不会自动换一把新的。到「个人中心 › 密钥管理」找到它点「启用」，或者把它撤销后再试。')
+    expect(managedKeyStoppedMessage).toBe('该工具的密钥已停用或到期，软件不会自动更换新密钥。请在「个人中心 › 密钥管理」中找到该密钥并点击「启用」，或将其撤销后重试。')
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 
@@ -4012,7 +4012,7 @@ describe('provisionCliKey naming', () => {
         { id: 9, name: 'tester-codex-pro-对话', group: 'codex-pro', status: 1, remain_quota: 0, unlimited_quota: true, expired_time: -1 },
       ] } }))
 
-    await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro' })).rejects.toThrow('这个工具的额度用完了')
+    await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro' })).rejects.toThrow('该工具的额度已用完')
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 
@@ -4256,7 +4256,7 @@ describe('provisionCliKey with plaintexts this machine already holds', () => {
       name: managedCliKeyProfiles.codex.keyName,
       group: 'codex-pro',
       knownKeys: [{ id: 3, key: secret }],
-    })).rejects.toThrow('这个工具的额度用完了')
+    })).rejects.toThrow('该工具的额度已用完')
 
     const fresh = vi.fn<NewApiFetch>()
     const freshClient = await authenticatedClient(fresh)

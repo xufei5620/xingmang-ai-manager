@@ -1100,13 +1100,13 @@ export class NewApiLoginRejectedError extends NewApiAuthenticationError {
 // 第一句与改造前抛的原文一字不差：旧界面（已冻结）照旧只看到这句报错。
 export const twoFactorRequiredMessage = '此账号需要双重验证，请先完成验证'
 export const twoFactorUnsupportedMessage = '此账号需要双重验证，客户端暂不支持这种验证方式'
-export const twoFactorExpiredMessage = '等太久了，请重新输入密码登录'
-export const twoFactorInvalidCodeMessage = '验证码不对或已过期，请看验证器里最新的数字再试'
-export const twoFactorRateLimitedMessage = '试得太频繁了，请过一会儿再试'
+export const twoFactorExpiredMessage = '验证已超时，请重新输入密码登录'
+export const twoFactorInvalidCodeMessage = '验证码错误或已过期，请输入验证器中的最新验证码后重试'
+export const twoFactorRateLimitedMessage = '尝试过于频繁，请稍后重试'
 
 // 只读数据的那几样（用量看板、调用明细、异步任务、密钥列表）续期成功后还被回 401 时上屏的话。
 // 不能带「401」「请重新登录」「登录已过期」：渲染层按这些字把它认成登录失效，又叫人去重新登录。
-export const readRefusedAfterRefreshMessage = '服务器拒绝了这一项查询，但登录没有失效，不用重新登录。请稍后重试；还不行，到「反馈与客服」页把报告发给客服。'
+export const readRefusedAfterRefreshMessage = '服务器拒绝了该项查询，但登录仍然有效，无需重新登录。请稍后重试；如仍无法查询，请在「反馈与客服」页将报告发送给客服。'
 
 /**
  * Password accepted, second factor still owed. The flow token is the only
@@ -1471,9 +1471,9 @@ const loginRejectionMessages = new Set([
 // 落到「请稍后重试」——可一直重试也不会好，用户还登不进去，没法自己去清理。
 // 渲染层 renderer-v2 的 account-errors.ts 按同样的字认它们（electron 不 import
 // src，同 T12 的有意重复）。文案里不出现网址或站点名。
-export const loginSessionLimitMessage = '这个账号同时登录的设备太多了，暂时登不上。如果别的电脑或浏览器上还登着这个账号，请在那里的个人中心「账号安全」里让几台不用的设备下线，再回来登录；都登不上的话请联系客服。'
-export const loginIssuanceLimitMessage = '这个账号最近一天里登录的次数太多了，请过几个小时再试。'
-export const loginRateLimitedMessage = '登录太频繁了，请过一会儿再试。'
+export const loginSessionLimitMessage = '该账号同时登录的设备过多，暂时无法登录。如其他电脑或浏览器上仍登录着该账号，请在其个人中心「账号安全」中将不再使用的设备下线后重新登录；如均无法登录，请联系客服。'
+export const loginIssuanceLimitMessage = '该账号近 24 小时内登录次数过多，请数小时后重试。'
+export const loginRateLimitedMessage = '登录过于频繁，请稍后重试。'
 
 // Verified against QuantumNous/new-api v1.0.0-rc.24 service/auth_session.go
 // (authSessionErrorCode, createLoginSession) and middleware/rate-limit.go:
@@ -4026,9 +4026,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         ctx,
         query ? `${tokenCollectionPath}?${query}` : tokenCollectionPath,
         { method: 'GET', headers: authHeaders(current) },
-        'Key 列表查询',
+        '密钥列表查询',
       )
-      return parseAccountKeysPage(unwrapEnvelope(raw, 'Key 列表查询', [current.accessToken]))
+      return parseAccountKeysPage(unwrapEnvelope(raw, '密钥列表查询', [current.accessToken]))
     })
   )
 
@@ -4081,10 +4081,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       ctx,
       tokenKeyPath(id),
       { method: 'POST', headers: authHeaders(current) },
-      'Key 明文读取',
+      '密钥明文读取',
     )
-    const key = parseCliKeySecret(unwrapEnvelope(raw, 'Key 明文读取', [current.accessToken]))
-    if (!key) throw new Error('Key 明文读取失败，请重试')
+    const key = parseCliKeySecret(unwrapEnvelope(raw, '密钥明文读取', [current.accessToken]))
+    if (!key) throw new Error('密钥明文读取失败，请重试')
     return key
   })
 
@@ -4100,9 +4100,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         ctx,
         tokenIdPath(id),
         { method: 'DELETE', headers: authHeaders(current) },
-        'Key 撤销',
+        '密钥撤销',
       )
-      unwrapEnvelope(raw, 'Key 撤销', [current.accessToken])
+      unwrapEnvelope(raw, '密钥撤销', [current.accessToken])
     })
   )
 
@@ -4146,9 +4146,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         ctx,
         tokenCollectionPath,
         { method: 'POST', body, headers: authHeaders(current) },
-        'Key 创建',
+        '密钥创建',
       )
-      unwrapEnvelope(raw, 'Key 创建', [current.accessToken])
+      unwrapEnvelope(raw, '密钥创建', [current.accessToken])
     })
   )
 
@@ -4164,10 +4164,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         ctx,
         tokenIdPath(input.id),
         { method: 'GET', headers: authHeaders(current) },
-        'Key 读取',
+        '密钥读取',
       )
-      const existing = unwrapEnvelope(currentRaw, 'Key 读取', [current.accessToken])
-      if (!isRecord(existing)) throw new Error('Key 详情数据不完整，已取消更新')
+      const existing = unwrapEnvelope(currentRaw, '密钥读取', [current.accessToken])
+      if (!isRecord(existing)) throw new Error('密钥详情数据不完整，已取消更新')
       const preservationFieldsValid = (
         typeof existing.remain_quota === 'number'
         && Number.isFinite(existing.remain_quota)
@@ -4176,7 +4176,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         && (typeof existing.allow_ips === 'string' || existing.allow_ips === null)
         && typeof existing.cross_group_retry === 'boolean'
       )
-      if (!preservationFieldsValid) throw new Error('Key 详情数据不完整，已取消更新')
+      if (!preservationFieldsValid) throw new Error('密钥详情数据不完整，已取消更新')
       const body = {
         id: input.id,
         name,
@@ -4195,9 +4195,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         ctx,
         tokenCollectionPath,
         { method: 'PUT', body, headers: authHeaders(current) },
-        'Key 更新',
+        '密钥更新',
       )
-      unwrapEnvelope(raw, 'Key 更新', [current.accessToken])
+      unwrapEnvelope(raw, '密钥更新', [current.accessToken])
     })
   )
 
@@ -4228,7 +4228,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         || typeof existing.remain_quota !== 'number'
         || typeof existing.unlimited_quota !== 'boolean'
       ) {
-        throw new Error('没读到这把密钥现在的状态，先没启用。请稍后再试。')
+        throw new Error('未能获取该密钥的当前状态，暂未启用。请稍后重试。')
       }
       if (existing.status === 1) return
       if (existing.expired_time !== -1 && existing.expired_time <= Math.floor(Date.now() / 1_000)) {
@@ -4370,15 +4370,15 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         ctx,
         `${tokenCollectionPath}?p=${page}&page_size=100`,
         { method: 'GET', headers: authHeaders(current) },
-        'CLI Key 查询',
+        '工具密钥查询',
       )
-      const data = unwrapEnvelope(raw, 'CLI Key 查询', [current.accessToken])
+      const data = unwrapEnvelope(raw, '工具密钥查询', [current.accessToken])
       const pageEntries = collectionEntries(data)
       entries.push(...pageEntries)
       const total = isRecord(data) ? asFiniteNumber(data.total, entries.length) : entries.length
       if (pageEntries.length === 0 || entries.length >= total) return entries
     }
-    throw new Error('CLI Key 数量超过安全分页上限')
+    throw new Error('工具密钥数量超过安全分页上限')
   }
 
   const revealCliKeyForSession = async (
@@ -4389,11 +4389,11 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       ctx,
       tokenKeyPath(match.id),
       { method: 'POST', headers: authHeaders(current) },
-      'CLI Key 明文读取',
+      '工具密钥明文读取',
     )
-    const keyData = unwrapEnvelope(keyRaw, 'CLI Key 明文读取', [current.accessToken])
+    const keyData = unwrapEnvelope(keyRaw, '工具密钥明文读取', [current.accessToken])
     const key = parseCliKeySecret(keyData)
-    if (!key) throw new Error('CLI Key 明文读取失败，请重试')
+    if (!key) throw new Error('工具密钥明文读取失败，请重试')
     return { id: match.id, name: match.name, key }
   }
 
@@ -4452,12 +4452,12 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         ctx,
         tokenCollectionPath,
         { method: 'POST', body: createBody, headers: authHeaders(current) },
-        'CLI Key 创建',
+        '工具密钥创建',
       )
-      unwrapEnvelope(createRaw, 'CLI Key 创建', [current.accessToken])
+      unwrapEnvelope(createRaw, '工具密钥创建', [current.accessToken])
 
       const id = findCliKeyIdByName(await listAllTokenRecords(current), name)
-      if (id === null) throw new Error('CLI Key 创建成功但未能定位新记录，请重试')
+      if (id === null) throw new Error('工具密钥已创建，但未能定位新记录，请重试')
 
       return revealCliKeyForSession(current, { id, name })
     })

@@ -308,7 +308,7 @@ export function createToolsApi(bridge: XingmangApi) {
       if (scope === undefined || owned.scope === scope) return owned.usage
       usageCache.invalidate()
       const reread = await usageCache.read()
-      if (reread.scope !== scope) throw new Error('账号刚切换过，请再试一次')
+      if (reread.scope !== scope) throw new Error('账号刚刚切换，请重试')
       return reread.usage
     },
     /** 上一次查到的用量，过期了也给；不是 scope 这个账号的就当没有。 */

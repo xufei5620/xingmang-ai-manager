@@ -36,7 +36,7 @@ export function accountKeyAmount(quota: number | null | undefined, quotaPerUnit:
 export function accountKeyExpiredTime(expiredAt: string | null): number {
   if (!expiredAt) return -1
   const milliseconds = Date.parse(expiredAt)
-  if (!Number.isFinite(milliseconds) || milliseconds <= 0) throw new Error('这把密钥的到期时间无法识别，请在下方密钥列表里编辑它。')
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) throw new Error('无法识别该密钥的到期时间，请在下方密钥列表中编辑。')
   return Math.floor(milliseconds / 1000)
 }
 
@@ -57,21 +57,21 @@ export function isKeyQuotaExhaustedMessage(message: string): boolean {
  * 上限到了就停：签一把新 Key 会悄悄绕过这个上限，所以重签、自动换新都在这里止步，
  * 把话说给用户听。
  */
-export const managedKeyQuotaExhaustedMessage = '这个工具的额度用完了，软件不会自动放开。到「个人中心 › 密钥管理」的「每个工具的额度上限」里调高后再试。'
+export const managedKeyQuotaExhaustedMessage = '该工具的额度已用完，软件不会自动解除限制。请在「个人中心 › 密钥管理」的「每个工具的额度上限」中调高后重试。'
 
 /**
  * 工具那把 Key 在网页上停用了或到期了（0.2.24 深查 D3）：跟上限用完一样是有人特意让它停，
  * 签一把不限额、永不过期的新 Key 等于没停，所以也在这里止步。Key 被删掉、分组改名的照旧换新。
  */
-export const managedKeyStoppedMessage = '这个工具的密钥已经停用或到期，软件不会自动换一把新的。到「个人中心 › 密钥管理」找到它点「启用」，或者把它撤销后再试。'
+export const managedKeyStoppedMessage = '该工具的密钥已停用或到期，软件不会自动更换新密钥。请在「个人中心 › 密钥管理」中找到该密钥并点击「启用」，或将其撤销后重试。'
 
 /**
  * 密钥管理的「启用」（总单 Q2）停在这两处时说的话。服务端只在密钥还标着「已过期」「额度用完」时才拒绝启用；
  * 网页上停用过、到期时间或额度其实也已经没了的，它照样打开，可一用又被标回去（见 new-api-client.ts 的 enableKey）。
  * 所以这两种先说清要先改什么。「编辑」在这一行右边那颗「⋯」里。
  */
-export const accountKeyEnableExpiredMessage = '这把密钥已经过了到期时间，先点这一行右边的「⋯」，选「编辑」把到期时间往后改，再点「启用」。'
-export const accountKeyEnableUsedUpMessage = '这把密钥的额度已经用完，先点这一行右边的「⋯」，选「编辑」把额度调高或改成「不限额度」，再点「启用」。'
+export const accountKeyEnableExpiredMessage = '该密钥已过到期时间。请先点击该行右侧的「⋯」，选择「编辑」延后到期时间，再点击「启用」。'
+export const accountKeyEnableUsedUpMessage = '该密钥的额度已用完。请先点击该行右侧的「⋯」，选择「编辑」调高额度或改为「不限额度」，再点击「启用」。'
 
 /**
  * 同一件事的历史账号版（0.2.24 Fable 复查第 2 条，yoyo 11-11 回「历史账号也停」）。网页上的叫法照
@@ -79,7 +79,7 @@ export const accountKeyEnableUsedUpMessage = '这把密钥的额度已经用完�
  * 「启用」「编辑」，编辑框里叫「过期时间」。到期的光点「启用」没用：后端每次用的时候还按过期时间拦
  * （APIKey.IsExpired），按时间到期的那把状态也还是「活跃」、那一行只有「禁用」，得在「编辑」里把时间往后改。
  */
-export const sub2ApiManagedKeyStoppedMessage = '这个工具的密钥已经停用或到期，软件不会自动换一把新的。到历史账号官网的「API 密钥」里点「启用」（到期的要点「编辑」把过期时间往后改），或者在「个人中心 › 密钥管理」把它撤销后再试。'
+export const sub2ApiManagedKeyStoppedMessage = '该工具的密钥已停用或到期，软件不会自动更换新密钥。请在历史账号官网的「API 密钥」中点击「启用」（如已到期，请点击「编辑」延后过期时间），或在「个人中心 › 密钥管理」中将其撤销后重试。'
 
 /**
  * AI 工作台聊天自己那把 Key 的上限用完了：同样停下，不去换一把不限额的。用的是
@@ -92,7 +92,7 @@ export const chatKeyQuotaExhaustedMessage = relayQuotaFailureMessages.keyLimit
 const findKeyPageSize = 100
 const findKeyPageLimit = 100
 
-export const accountKeyListTooLongMessage = '这个账号的密钥太多，没能在列表里查完，先没动它。请到网页上删掉一些不用的密钥后再试。'
+export const accountKeyListTooLongMessage = '该账号的密钥过多，未能查完整个列表，暂未处理。请在网页上删除部分不再使用的密钥后重试。'
 
 /**
  * 按 id 在账号的密钥列表里找一把 Key，一直翻到列表见底。返回 null 只表示整张
@@ -117,7 +117,7 @@ export async function findAccountKeyById<T extends { id: number }>(
   throw new Error(accountKeyListTooLongMessage)
 }
 
-export const accountKeySearchTooLongMessage = '这个账号的密钥太多，没能全部搜一遍。请换个更准确的名称再搜，或到网页上删掉一些不用的密钥。'
+export const accountKeySearchTooLongMessage = '该账号的密钥过多，未能完整搜索。请输入更准确的名称后重新搜索，或在网页上删除部分不再使用的密钥。'
 
 /**
  * 密钥页的搜索（#495）。两个后端的 Key 列表接口都只能按页取、不带搜索条件，
@@ -179,7 +179,7 @@ export function isUsedUpKeyLimit(key: { remainQuota: number; unlimitedQuota: boo
   return !key.unlimitedQuota && !(key.remainQuota > 0)
 }
 
-export const inheritedKeyExpiredMessage = '原来那把密钥已经到期了，这次没有自动换新的。确认还要继续用，再点一次就会换上一把新的。'
+export const inheritedKeyExpiredMessage = '原密钥已到期，本次未自动更换。如需继续使用，请再次点击，将更换为新密钥。'
 
 export interface ManagedCliKeyLimit {
   provider: ProviderId
@@ -248,7 +248,7 @@ export function parseManagedCliKeyLimitAmount(value: string, badInput = false): 
   const text = value.trim()
   if (!text && !badInput) return null
   const amount = Number(text)
-  if (badInput || !Number.isFinite(amount) || amount <= 0) throw new Error('请填写大于 0 的上限金额，留空表示不限额。')
+  if (badInput || !Number.isFinite(amount) || amount <= 0) throw new Error('请填写大于 0 的上限金额，留空表示不限额度。')
   return amount
 }
 
@@ -264,7 +264,7 @@ export function buildManagedCliKeyLimitUpdate(
   siteId: AccountKeyQuotaSite,
 ): AccountKeyUpdateInput {
   const key = limit.key
-  if (!key) throw new Error('这个工具还没有对应的密钥，先在首页配置一次这个工具就会自动签发。')
+  if (!key) throw new Error('该工具尚无对应的密钥，请先在首页配置该工具，密钥将自动签发。')
   const unlimited = amount === null
   return {
     id: key.id,

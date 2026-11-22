@@ -270,7 +270,7 @@ export function guideStepFailure(error: unknown, action: string, copyable = fals
     return { message: `${action}失败：${title}。通常是安全软件拦截或文件被其他程序占用。请关闭正在使用该工具的窗口后点击「重试」，${tail}`, reason: title, detail: guideDetail(error, '') }
   }
   // 配置文件是个链接（#1100 第2条）：是哪个文件、换成什么，只有主进程那句里有。目录正文叫人看「下面这句话」，
-  // 引导里原话折在「原始信息（供客服查看）」里，所以把那一句取出来放上红字，外面包的「改用当前账号没有完成：」不重复。
+  // 引导里原话折在「原始信息（供客服查看）」里，所以把那一句取出来放上红字，外面包的「改用当前账号未完成：」不重复。
   const linked = key === 'configLink' ? configLinkRefusalIn(message) : null
   if (linked) {
     const tail = copyable ? '如需协助，请点击「复制给客服」并发送给客服。' : '如需协助，请点击「需要帮助」。'

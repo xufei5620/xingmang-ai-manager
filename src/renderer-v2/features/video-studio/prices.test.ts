@@ -77,7 +77,7 @@ describe('video studio prices', () => {
     let fail = false
     let reads = 0
     const cache = createVideoStudioPriceCache({ now: () => now, onChange: () => undefined })
-    const read = async () => { reads += 1; if (fail) throw new Error('账号刚切换过，请再试一次'); return list }
+    const read = async () => { reads += 1; if (fail) throw new Error('账号刚刚切换，请重试'); return list }
     cache.refresh('xm:7', read)
     await settle()
     fail = true
