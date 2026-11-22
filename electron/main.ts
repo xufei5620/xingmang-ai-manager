@@ -3640,7 +3640,9 @@ if (!hasSingleInstanceLock) {
         })
       },
       abort: () => {
-        lifecycle.abortUpdateQuit()
+        // 关窗时选了「安装更新并退出」的，退出是客户自己选的：安装器没起来也照样退完，退出前跟手机说的「星芒关了」
+        // 是对的，这里不放回什么，也不补「未退出」。只有更新页「重启并安装」这类由安装发起的退出才真撤回。
+        if (!lifecycle.abortUpdateQuit()) return
         canvasController.resumeAfterAbortedQuit()
         // 安装器没启动起来（Windows 提权框点了「否」、包不在了）：星芒还开着，退出前跟手机说的「星芒关了」要补一句（打磨 B8）。
         void codexRemote.quitAborted().catch(() => undefined)

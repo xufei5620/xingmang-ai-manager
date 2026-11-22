@@ -110,8 +110,13 @@ export interface WindowLifecycle {
    * 退出确认里选了「安装并退出」）时什么都不做，返回 undefined，调用方同步拉起。
    */
   prepareUpdateQuit(): Promise<void> | undefined
-  /** 安装器没起来，程序照常开着：撤掉 prepareUpdateQuit 的放行。 */
-  abortUpdateQuit(): void
+  /**
+   * 安装器没起来，程序照常开着：撤掉 prepareUpdateQuit 的放行。返回这次是不是真撤回了：
+   * 用户自己选的退出（关窗时选了「安装更新并退出」）不撤，安装器没起来也照常退完，返回 false；
+   * 同一次失败报第二遍时已经没什么可撤，也返回 false。宿主据此决定要不要放回退出前收起的东西、
+   * 跟手机补一句「星芒未退出」。
+   */
+  abortUpdateQuit(): boolean
   /**
    * 系统要关机 / 重启 / 注销（Mac 的 powerMonitor 'shutdown'：只在系统发出关机通知时才有，
    * ⌘Q 不发）。之后一分钟内开始的退出和 Windows 关机一样不问、不装；系统来让程序
@@ -321,9 +326,10 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
       })
     },
     abortUpdateQuit() {
-      if (!updateQuit || disposed) return
+      if (!updateQuit || disposed) return false
       updateQuit = false
       quitting = false
+      return true
     },
     noteSystemPowerOff() {
       powerOff = true
