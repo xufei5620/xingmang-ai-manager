@@ -12,8 +12,13 @@ type InstallManagement = PlatformCapabilities['nodeRuntimeInstall']
  * （`InstallAllUsers=0`），命令行工具走 npm，都不提权，所以都没有这句。
  *
  * 这句必须在点之前就看得见：一个突然跳出来的系统授权窗口，很多人第一反应是点
- * 「否」，然后才看到「已取消管理员授权」。公司和学校的电脑还会直接要另一个账号的
- * 密码——事先说一句，用户至少知道该去找谁。
+ * 「否」，然后才看到「已取消管理员授权」。
+ *
+ * 普通账号（不在管理员组）那半句不能叫人「输入管理员账号密码」：授权窗口里输了别人的
+ * 管理员密码，提权起来的是那个人的账号，两个安装程序都只认本人，会以 2225 停下（#1321）。
+ * 能走通的只有先用管理员账号登录 Windows 装：Node.js 是机器级 MSI，装一次本机所有账号都能用；
+ * Codex 桌面端只注册给装它的那个账号。说法跟装失败时那句（windows-elevation.ts 的
+ * windowsStandardAccountAdvice）对齐。
  *
  * 注意这里说的不是「请用管理员身份运行本软件」：本软件自己始终以普通权限运行，
  * 提权只发生在这两个安装程序上。
@@ -24,6 +29,8 @@ type InstallManagement = PlatformCapabilities['nodeRuntimeInstall']
  */
 export type ElevatedInstallSubject = 'node' | 'codexDesktop'
 
+const standardAccountNodeStep = '请先使用管理员账号登录 Windows 完成 Node.js 的安装'
+
 export function elevatedInstallNotice(
   subject: ElevatedInstallSubject,
   platform: PlatformFamily | undefined,
@@ -31,9 +38,16 @@ export function elevatedInstallNotice(
   elevated?: boolean,
 ): string | null {
   if (platform !== 'windows' || management !== 'managed' || elevated) return null
-  const name = subject === 'node' ? 'Node.js' : 'Codex 桌面端'
-  return `此步骤需要管理员授权：点击「安装」后 Windows 将弹出授权窗口，请选择「是」以完成 ${name} 的安装；如本机登录的是普通账号，还需输入管理员账号密码。`
+  const name = subject === 'node' ? 'Node.js ' : 'Codex 桌面端'
+  return `此步骤需要管理员授权：点击「安装」后 Windows 将弹出授权窗口，请选择「是」以完成 ${name}的安装。${standardAccountClause(subject)}`
 }
+
+function standardAccountClause(subject: ElevatedInstallSubject): string {
+  return subject === 'node'
+    ? `如本机登录的是普通账号，${standardAccountNodeStep}，安装后本机所有 Windows 账号均可使用。`
+    : '如本机登录的是普通账号，请使用管理员账号登录 Windows，并在该账号中安装和使用 Codex 桌面端。'
+}
+
 
 /**
  * 首页工具行只有一行小字的位置，塞不下上面那整句。短版只说「会弹授权窗口」，
@@ -71,6 +85,6 @@ export function homeNodeElevationNotice(
   const purpose = 'Node.js 是命令行工具所需的运行环境，安装工具时将自动准备，通常无需单独操作。'
   if (elevated) return optional ? purpose : null
   return optional
-    ? `${purpose}准备时 Windows 将弹出授权窗口，请选择「是」；如本机登录的是普通账号，还需输入管理员账号密码。`
-    : '此步骤需要管理员授权：准备 Node.js 时 Windows 将弹出授权窗口，请选择「是」以完成 Node.js 的安装；如本机登录的是普通账号，还需输入管理员账号密码。'
+    ? `${purpose}准备时 Windows 将弹出授权窗口，请选择「是」；如本机登录的是普通账号，${standardAccountNodeStep}。`
+    : `此步骤需要管理员授权：准备 Node.js 时 Windows 将弹出授权窗口，请选择「是」以完成 Node.js 的安装。${standardAccountClause('node')}`
 }

@@ -165,7 +165,7 @@ export function guideOfficialLoginRequired(provider: ProviderId, source: GuideTo
 const installFailureKeys = new Set<string>(['toolRunning', 'installBlocked', 'downloadTimeout', 'downloadUnreachable', 'downloadSourceError', 'officialRegistryUnreachable', 'diskFull', 'certDate', 'tlsIntercepted', 'toolCertOutdatedNode', 'toolCertElevated', 'elevationDeclined', 'permission'])
 
 /**
- * 授权窗口那句（windows-elevation.ts）后半截按账号类型写好了下一步：普通账号换个管理员账号去装、公司电脑找管理电脑的人。
+ * 授权窗口那句（windows-elevation.ts）后半截按账号类型写好了下一步：普通账号换管理员账号去装、公司电脑联系 IT。
  * 认出原因以后原话折在「原始信息（供客服查看）」里，客户不会点开，所以把这半截接在红字里（#1096）。
  * 主进程那句说的是错误框的「重试」，引导里这颗按钮同样叫「重试」（第 3 批按钮名统一前叫「再试一次」，那时要换字），原样接上。
  */

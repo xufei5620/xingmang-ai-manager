@@ -1379,7 +1379,7 @@ describe('Windows Claude Desktop official package route', () => {
 
   it.each([
     '已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。',
-    '未获得管理员权限，Claude Desktop 安装已停止。请在弹出的授权窗口中点击「是」；如本机使用的是普通账号，需输入管理员账号的密码。',
+    '未获得管理员权限，Claude Desktop 安装已停止。请在弹出的授权窗口中点击「是」；如本机登录的是普通账号，请使用管理员账号登录 Windows，并在该账号中安装和使用。',
   ])('passes a sentence that already says what to do through unchanged: %s', async (message) => {
     const f = claudeFixture(noWinget)
     f.claudeOfficial.mockRejectedValue(new Error(message))

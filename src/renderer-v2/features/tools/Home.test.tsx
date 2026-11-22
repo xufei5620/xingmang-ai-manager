@@ -1914,8 +1914,8 @@ describe('renderer-v2 home runtime card', () => {
 describe('renderer-v2 home runtime card when only the Codex desktop app is in use', () => {
   const missing = { installed: false, version: null, detectionFailed: false }
   const notInstalled = { ...cliStatus, installed: false, version: null, path: null, installDirectory: null }
-  const optionalElevation = 'Node.js 是命令行工具所需的运行环境，安装工具时将自动准备，通常无需单独操作。准备时 Windows 将弹出授权窗口，请选择「是」；如本机登录的是普通账号，还需输入管理员账号密码。'
-  const requiredElevation = '此步骤需要管理员授权：准备 Node.js 时 Windows 将弹出授权窗口，请选择「是」以完成 Node.js 的安装；如本机登录的是普通账号，还需输入管理员账号密码。'
+  const optionalElevation = 'Node.js 是命令行工具所需的运行环境，安装工具时将自动准备，通常无需单独操作。准备时 Windows 将弹出授权窗口，请选择「是」；如本机登录的是普通账号，请先使用管理员账号登录 Windows 完成 Node.js 的安装。'
+  const requiredElevation = '此步骤需要管理员授权：准备 Node.js 时 Windows 将弹出授权窗口，请选择「是」以完成 Node.js 的安装。如本机登录的是普通账号，请先使用管理员账号登录 Windows 完成 Node.js 的安装，安装后本机所有 Windows 账号均可使用。'
 
   function machine(platform: 'windows' | 'macos', clis: Record<string, unknown> = {}): ToolboxSnapshot {
     const base = snapshot({ claude: notInstalled, codex: notInstalled, grok: notInstalled, gemini: notInstalled, ...clis })

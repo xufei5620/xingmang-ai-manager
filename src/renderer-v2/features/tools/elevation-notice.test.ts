@@ -13,6 +13,19 @@ describe('elevatedInstallNotice', () => {
     expect(elevatedInstallNotice('codexDesktop', 'windows', 'managed')).toContain('Codex 桌面端')
   })
 
+  // #1321: a standard account that types another administrator's password gets a token
+  // the installers refuse (2225), so no notice may suggest it before the click.
+  it('sends a standard account to an administrator account instead of asking for a password', () => {
+    expect(elevatedInstallNotice('node', 'windows', 'managed')).toBe('此步骤需要管理员授权：点击「安装」后 Windows 将弹出授权窗口，请选择「是」以完成 Node.js 的安装。如本机登录的是普通账号，请先使用管理员账号登录 Windows 完成 Node.js 的安装，安装后本机所有 Windows 账号均可使用。')
+    expect(elevatedInstallNotice('codexDesktop', 'windows', 'managed')).toBe('此步骤需要管理员授权：点击「安装」后 Windows 将弹出授权窗口，请选择「是」以完成 Codex 桌面端的安装。如本机登录的是普通账号，请使用管理员账号登录 Windows，并在该账号中安装和使用 Codex 桌面端。')
+    for (const subject of ['node', 'codexDesktop'] as const) {
+      expect(elevatedInstallNotice(subject, 'windows', 'managed')).not.toContain('密码')
+    }
+    for (const optional of [true, false]) {
+      expect(homeNodeElevationNotice('windows', 'managed', optional)).not.toContain('密码')
+    }
+  })
+
   it('never tells the user to run this app as administrator', () => {
     for (const subject of ['node', 'codexDesktop'] as const) {
       expect(elevatedInstallNotice(subject, 'windows', 'managed')).not.toContain('以管理员身份运行')
@@ -54,13 +67,13 @@ describe('elevatedInstallShortNotice', () => {
 describe('homeNodeElevationNotice', () => {
   it('names the step the way the home card button reads, without pointing at a button called install', () => {
     const notice = homeNodeElevationNotice('windows', 'managed', false)
-    expect(notice).toBe('此步骤需要管理员授权：准备 Node.js 时 Windows 将弹出授权窗口，请选择「是」以完成 Node.js 的安装；如本机登录的是普通账号，还需输入管理员账号密码。')
+    expect(notice).toBe('此步骤需要管理员授权：准备 Node.js 时 Windows 将弹出授权窗口，请选择「是」以完成 Node.js 的安装。如本机登录的是普通账号，请先使用管理员账号登录 Windows 完成 Node.js 的安装，安装后本机所有 Windows 账号均可使用。')
     expect(notice).not.toContain('点「安装」')
   })
 
   it('explains Node.js is prepared on demand when no command-line tool needs it yet', () => {
     const notice = homeNodeElevationNotice('windows', 'managed', true)
-    expect(notice).toBe('Node.js 是命令行工具所需的运行环境，安装工具时将自动准备，通常无需单独操作。准备时 Windows 将弹出授权窗口，请选择「是」；如本机登录的是普通账号，还需输入管理员账号密码。')
+    expect(notice).toBe('Node.js 是命令行工具所需的运行环境，安装工具时将自动准备，通常无需单独操作。准备时 Windows 将弹出授权窗口，请选择「是」；如本机登录的是普通账号，请先使用管理员账号登录 Windows 完成 Node.js 的安装。')
     expect(notice).not.toContain('这一步需要')
   })
 

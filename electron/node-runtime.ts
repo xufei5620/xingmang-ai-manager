@@ -1010,13 +1010,13 @@ export function nodeRuntimeElevationFailureMessage(
 ): string | null {
   switch (exitCode) {
     case 1223:
-      return windowsElevationCancelledMessage('Node.js', capability)
+      return windowsElevationCancelledMessage('Node.js ', capability)
     case 2225:
       return `管理员授权使用了另一个 Windows 账号，为避免安装到其他账号名下，已停止安装。${capability === 'standard'
         ? windowsStandardAccountAdvice()
         : '请用当前 Windows 账号的管理员身份重试。'}`
     case 740:
-      return windowsElevationDeniedMessage('Node.js', capability)
+      return windowsElevationDeniedMessage('Node.js ', capability)
     case 13:
       return 'Node.js 安装包在授权期间发生变化或签名校验失败，已停止安装。请重新点击安装，程序会重新下载并校验。'
     default:

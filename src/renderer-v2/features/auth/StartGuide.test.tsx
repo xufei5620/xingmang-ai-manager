@@ -425,11 +425,11 @@ describe('guide install failure wording', () => {
     expect(guideInstallFailure(new Error('HTTP 401 unauthorized'), 'Codex').message).toBe('Codex 安装失败（未能识别问题类型，原始信息如下）。请点击「重试」；如仍失败，请点击「需要帮助」。')
   })
 
-  // 认出原因以后原话折起来，普通账号那句「换个管理员账号去装 / 找管理电脑的人」得接在红字里才看得见（#1096）。
+  // 认出原因以后原话折起来，普通账号那句「换管理员账号去装 / 联系 IT」得接在红字里才看得见（#1096）。
   // 主进程那句说的是错误框的「重试」，引导里那颗按钮也叫「重试」，原样接上、不再换字。
   it('keeps the account-specific next step in view when the administrator prompt was declined', () => {
-    const standardAdvice = '这个 Windows 账号本身没有管理员权限，在这里装不了。先换一个有管理员权限的账号登录这台电脑，打开星芒装一次这个工具，运行环境装好以后这台电脑上的每个账号都能用，再切回这个账号点「重试」。公司或学校的电脑请找管理电脑的人帮忙。'
-    const standard = guideInstallFailure(new Error(`Node.js 运行环境安装失败，Claude Code 尚未开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`), 'Claude Code')
+    const standardAdvice = '此 Windows 账号没有管理员权限，无法完成安装。请先使用管理员账号登录 Windows，并在星芒中完成 Node.js 的安装，安装后本机所有 Windows 账号均可使用；随后切换回此账号并点击「重试」。公司或学校的电脑请联系 IT 协助。'
+    const standard = guideInstallFailure(new Error(`Node.js 运行环境安装失败，Claude Code 尚未开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js 安装未开始。${standardAdvice}`), 'Claude Code')
     expect(standard.message).toBe(`运行环境安装失败（未获得管理员授权），Claude Code 尚未开始安装。${standardAdvice}请点击「重试」；如仍失败，请点击「需要帮助」。`)
     expect(standard.message).not.toContain('「再试一次」')
     expect(standard.reason).toBe('未获得管理员授权')
@@ -438,7 +438,7 @@ describe('guide install failure wording', () => {
     // 以前那句短的后面没有下一步，红字照常。
     expect(guideInstallFailure(new Error('Node.js 运行环境安装失败，Claude Code 尚未开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js 尚未安装。'), 'Claude Code').message)
       .toBe('运行环境安装失败（未获得管理员授权），Claude Code 尚未开始安装。请点击「重试」；如仍失败，请点击「需要帮助」。')
-    expect(guideInstallExits(new Error(`未获得管理员权限，Node.js安装已停止。${standardAdvice}`)).map((action) => action.id)).toEqual(['support'])
+    expect(guideInstallExits(new Error(`未获得管理员权限，Node.js 安装已停止。${standardAdvice}`)).map((action) => action.id)).toEqual(['support'])
   })
 
   // 主进程那句只说原因、下一步留给错误目录；引导以前只放标题，「换个网络（比如手机热点）」客户看不到（主路卡点 F12）。
