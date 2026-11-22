@@ -716,7 +716,7 @@ describe('Sub2API RelayBackend adapter', () => {
     const pending = f.client.login(loginInput)
     f.client.logout()
     release(json(auth()))
-    await expect(pending).rejects.toThrow('账号刚切换过')
+    await expect(pending).rejects.toThrow('账号刚刚切换')
     expect(f.getSavedAccount()).toBeNull()
     expect(f.calls).toHaveLength(1)
   })
@@ -846,7 +846,7 @@ describe('Sub2API RelayBackend adapter', () => {
       release = resolve; started()
     }) : undefined
     const pending = f.client.getProfile()
-    const rejected = expect(pending).rejects.toThrow('账号刚切换过')
+    const rejected = expect(pending).rejects.toThrow('账号刚刚切换')
     await gate
     f.state.expired = false
     f.state.loginId = newUserId
@@ -867,7 +867,7 @@ describe('Sub2API RelayBackend adapter', () => {
     f.state.override = ({ url }) => url.pathname.endsWith('/auth/refresh') ? new Promise<Response>((resolve) => {
       release = resolve; started()
     }) : undefined
-    const pending = expect(f.restore(saved())).rejects.toThrow('账号刚切换过')
+    const pending = expect(f.restore(saved())).rejects.toThrow('账号刚刚切换')
     await gate
     f.client.logout()
     f.state.expired = false
@@ -913,7 +913,7 @@ describe('Sub2API RelayBackend adapter', () => {
       const f = fixture()
       await f.client.login(loginInput)
       f.state.keys = [keyRecord(31, { name: profile.keyName, ...capped })]
-      await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).rejects.toThrow('这个工具的额度用完了')
+      await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).rejects.toThrow('该工具的额度已用完')
       expect(f.calls.some((call) => call.init.method === 'POST' && call.url.pathname.endsWith('/keys'))).toBe(false)
       expect(f.state.keys).toHaveLength(1)
     }
@@ -924,7 +924,7 @@ describe('Sub2API RelayBackend adapter', () => {
     const f = fixture()
     await f.client.login(loginInput)
     f.state.keys = [keyRecord(31, { name: profile.keyName }), keyRecord(32, { name: profile.keyName, status: 'quota_exhausted', quota: 5, quota_used: 5 })]
-    await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).rejects.toThrow('这个工具的额度用完了')
+    await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).rejects.toThrow('该工具的额度已用完')
     expect(f.calls.some((call) => call.url.pathname.endsWith('/keys/31') || (call.init.method === 'POST' && call.url.pathname.endsWith('/keys')))).toBe(false)
   })
 
@@ -940,7 +940,7 @@ describe('Sub2API RelayBackend adapter', () => {
   // （new-api-client.ts 的 hasStoppedCliKey）一样停下来，不签一把不限额、永不过期的新 Key 顶上。
   it('stops instead of issuing a new key when the same-named key was disabled or expired on the web', async () => {
     const profile = sub2ApiManagedCliKeyProfiles.codex
-    expect(sub2ApiManagedKeyStoppedMessage).toBe('这个工具的密钥已经停用或到期，软件不会自动换一把新的。到历史账号官网的「API 密钥」里点「启用」（到期的要点「编辑」把过期时间往后改），或者在「个人中心 › 密钥管理」把它撤销后再试。')
+    expect(sub2ApiManagedKeyStoppedMessage).toBe('该工具的密钥已停用或到期，软件不会自动更换新密钥。请在历史账号官网的「API 密钥」中点击「启用」（如已到期，请点击「编辑」延后过期时间），或在「个人中心 › 密钥管理」中将其撤销后重试。')
     // Upstream leaves an expired key 'active'; the date alone stops it, from the very second usable() drops it.
     for (const stopped of [{ status: 'inactive' }, { status: 'expired' }, { expires_at: '2026-09-08T00:00:00Z' }, { expires_at: new Date(now).toISOString() }]) {
       const f = fixture()

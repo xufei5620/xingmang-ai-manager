@@ -170,7 +170,7 @@ describe('home week spend', () => {
       getAccountSession: async () => ({ siteId: 'solov', authenticated: true, account: { userId: current } }),
       getAccountDashboard: (range: Range, expected?: string) => {
         if (asked.length >= switchAfterDashboardCalls) current = 8
-        if (expected !== undefined && expected !== `xm-account:${current}`) return Promise.reject(new Error('账号刚切换过，请再试一次'))
+        if (expected !== undefined && expected !== `xm-account:${current}`) return Promise.reject(new Error('账号刚刚切换，请重试'))
         asked.push({ day: new Date(range.startTimestamp * 1000).getDate(), userId: current })
         // A（7）每天花 100，B（8）每天花 900，一眼看得出是谁的。
         return Promise.resolve({ quota: current === 7 ? 100 : 900, coverage: 'range' })
@@ -195,7 +195,7 @@ describe('home week spend', () => {
       switchTo(8)
       return session
     }
-    await expect(createWeekSpendLoader(bridge, clock, storage).read()).rejects.toThrow('账号刚切换过')
+    await expect(createWeekSpendLoader(bridge, clock, storage).read()).rejects.toThrow('账号刚刚切换')
     expect(readSettledWeekSpend(storage, 'xm-account:7').size).toBe(0)
     // 换回 A、重开软件：A 的柱子是 A 自己的数。
     bridge.getAccountSession = original
@@ -212,7 +212,7 @@ describe('home week spend', () => {
     const loader = createWeekSpendLoader(bridge, () => clock, storage)
     // 问到第三天时换成 B：前三天是 A 的、照记；后面四次带着 A 去问，全被拒。
     switchAfter(3)
-    await expect(loader.read()).rejects.toThrow('账号刚切换过')
+    await expect(loader.read()).rejects.toThrow('账号刚刚切换')
     expect([...readSettledWeekSpend(storage, 'xm-account:7').values()]).toEqual([100, 100, 100])
     expect(readSettledWeekSpend(storage, 'xm-account:8').size).toBe(0)
 
@@ -238,7 +238,7 @@ describe('home week spend', () => {
 
   it('refuses an account whose backend only reports an all-time total', async () => {
     const { bridge } = fixture([{ userId: 7 }], 'all-time-summary')
-    await expect(createWeekSpendLoader(bridge, () => new Date(2026, 9, 15)).read()).rejects.toThrow('这个账号读不出每天的花费')
+    await expect(createWeekSpendLoader(bridge, () => new Date(2026, 9, 15)).read()).rejects.toThrow('该账号无法获取每日花费')
   })
 })
 

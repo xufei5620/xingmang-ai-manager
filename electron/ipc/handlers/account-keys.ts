@@ -1,4 +1,4 @@
-// 主窗口业务通道的处理器：账号密钥的列出、新建、修改、撤销、复制，签发并写进工具，写配置时可选的密钥。
+// 主窗口业务通道的处理器：账号密钥的列出、新建、修改、撤销、启用、复制，签发并写进工具，写配置时可选的密钥。
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
 import { isActiveProviderId, isRetiredProviderId, type ProviderId } from '../../catalog'
 import { accountKeyListTooLongMessage, findAccountKeyById, searchAccountKeys } from '../../account-key-quota'
@@ -37,17 +37,17 @@ export function registerAccountKeyHandlers(ctx: IpcHandlerContext): void {
       key = await findAccountKeyById((query) => accountService.listKeys(query), keyId)
     } catch (error) {
       if (error instanceof Error && error.message === accountKeyListTooLongMessage) throw error
-      throw new Error('没读到这把密钥的额度设置，先没撤销。请稍后再试。')
+      throw new Error('未能获取该密钥的额度设置，暂未撤销。请稍后重试。')
     }
     // 记录读坏时，只有不限额、不到期的 Key 撤了也没有限制可丢，照常撤；设了限制的
     // 不知道该记到哪个工具名下，撤了换新就会变成不限额，先停下。
     if (!cached) {
       if (key && key.unlimitedQuota && !key.expiredAt) return null
-      throw new Error('没读到本机记着的工具密钥，分不清这把密钥是不是某个工具在用的，先没撤销。请重新打开软件后再试。')
+      throw new Error('未能读取本机记录的工具密钥，无法确认该密钥是否正被工具使用，暂未撤销。请重新打开软件后重试。')
     }
     // 本机记着这是某个工具在用的 Key，列表里却找不到：分不清它有没有上限，按不限额
     // 撤了再换新，就等于悄悄放开了上限。停下，不撤。
-    if (!key) throw new Error('没在账号的密钥列表里找到这把密钥，先没撤销。刷新一下密钥列表再试。')
+    if (!key) throw new Error('账号的密钥列表中未找到该密钥，暂未撤销。请刷新密钥列表后重试。')
     if (key.unlimitedQuota && !key.expiredAt) return null
     return { provider: cached.provider, key }
   }
@@ -106,7 +106,7 @@ export function registerAccountKeyHandlers(ctx: IpcHandlerContext): void {
       logManagedCliFailures(outcome)
       return outcome
     })
-    // 「修好它」（repair）也是先备份再动手，跟重置一样。
+    // 「立即修复」（repair）也是先备份再动手，跟重置一样。
     if (parsed.mode !== 'reset' && parsed.mode !== 'repair') return configure()
     return (async () => {
       for (const provider of parsed.providers) await backupBeforeReset(provider)
@@ -163,7 +163,7 @@ export function registerAccountKeyHandlers(ctx: IpcHandlerContext): void {
         // 记录读坏了，稍后再试也没用：要先让用户亲手「重新写入密钥」清掉它（见
         // provisioningAccountService 的 explicit 分支）。
         if (error instanceof ManagedKeyReplacementUnreadableError) throw new Error(managedKeyReplacementUnreadableRevokeMessage)
-        throw new Error('没能记下这把密钥的额度设置，先没撤销。请稍后再试。')
+        throw new Error('未能保存该密钥的额度设置，暂未撤销。请稍后重试。')
       }
     }
     try {
@@ -180,6 +180,13 @@ export function registerAccountKeyHandlers(ctx: IpcHandlerContext): void {
       throw error
     }
     if (userId) await invalidateAccountKeyCaches(userId, keyId)
+  })
+  // 「启用」不动这把密钥的明文、名字和分组，本机记着的工具密钥照旧对得上，所以不清缓存
+  // （update-key 清，是因为改了分组或名字以后缓存里那条就不准了）。
+  registerTrustedHandler('account:enable-key', async (_event, id: unknown) => {
+    const keyId = parseAccountRevokeKeyId(id)
+    if (!accountService.enableKey) throw new Error('当前账号暂不支持在此启用密钥')
+    await accountService.enableKey(keyId)
   })
   registerTrustedHandler('account:copy-key', async (_event, id: unknown) => {
     const key = await revealAccountKeySecret(id)

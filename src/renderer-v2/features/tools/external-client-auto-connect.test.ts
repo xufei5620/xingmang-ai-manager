@@ -173,9 +173,9 @@ describe('external client automatic connection', () => {
   })
 
   it('logs who was connected and why not without keys, addresses or models', () => {
-    expect(describeExternalAutoConnect('workbuddy', 'install', { kind: 'connected', model: 'gpt-6.1-sol', verified: true })).toEqual({ level: 'info', message: 'WorkBuddy 自动连接（装好后）：已写好' })
-    expect(describeExternalAutoConnect('claudeDesktop', 'login', { kind: 'connected', model: 'claude-opus-5-5', verified: false })).toEqual({ level: 'warn', message: 'Claude Desktop 自动连接（登录后）：已写好，连接自检没通过' })
-    expect(describeExternalAutoConnect('opencode', 'login', { kind: 'skipped', reason: 'no-key' })).toEqual({ level: 'info', message: 'OpenCode 自动连接（登录后）：没连，挑不出能自动用的密钥' })
-    expect(describeExternalAutoConnect('opencode', 'install', { kind: 'failed', message: '当前密钥不支持所选模型，请重新检测。' })).toEqual({ level: 'warn', message: 'OpenCode 自动连接（装好后）：没连成，当前密钥不支持所选模型，请重新检测' })
+    expect(describeExternalAutoConnect('workbuddy', 'install', { kind: 'connected', model: 'gpt-6.1-sol', verified: true })).toEqual({ level: 'info', message: 'WorkBuddy 自动连接（安装完成后）：已写好' })
+    expect(describeExternalAutoConnect('claudeDesktop', 'login', { kind: 'connected', model: 'claude-opus-5-5', verified: false })).toEqual({ level: 'warn', message: 'Claude Desktop 自动连接（登录后）：已写好，连接自检未通过' })
+    expect(describeExternalAutoConnect('opencode', 'login', { kind: 'skipped', reason: 'no-key' })).toEqual({ level: 'info', message: 'OpenCode 自动连接（登录后）：未连接，无可自动使用的密钥' })
+    expect(describeExternalAutoConnect('opencode', 'install', { kind: 'failed', message: '当前密钥不支持所选模型，请重新检测。' })).toEqual({ level: 'warn', message: 'OpenCode 自动连接（安装完成后）：连接失败，当前密钥不支持所选模型，请重新检测' })
   })
 })

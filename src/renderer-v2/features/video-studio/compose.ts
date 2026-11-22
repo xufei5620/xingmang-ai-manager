@@ -106,10 +106,10 @@ async function readClip(data: ArrayBuffer, index: number): Promise<ReadClip> {
   try {
     if (!await input.canRead()) throw new VideoStudioError(`${label}不是能读的视频文件（支持 MP4、MOV、WebM）`)
     const video = await input.getPrimaryVideoTrack()
-    if (!video) throw new VideoStudioError(`${label}片段里没有画面`)
-    if (!await video.canDecode()) throw new VideoStudioError(`${label}片段的画面格式这台电脑解不开`)
+    if (!video) throw new VideoStudioError(`${label}片段中无画面`)
+    if (!await video.canDecode()) throw new VideoStudioError(`${label}片段的画面格式本机无法解码`)
     let audio = await input.getPrimaryAudioTrack()
-    if (audio && !await audio.canDecode()) throw new VideoStudioError(`${label}片段的声音格式这台电脑解不开`)
+    if (audio && !await audio.canDecode()) throw new VideoStudioError(`${label}片段的音频格式本机无法解码`)
     if (audio && await audio.computeDuration() <= await audio.getFirstTimestamp()) audio = null
     return { input, video, audio, start: await video.getFirstTimestamp(), end: await video.computeDuration() }
   } catch (error) {
@@ -291,7 +291,7 @@ export async function composeVideoStudio(request: VideoStudioComposeRequest, hoo
 
     const canvas = new OffscreenCanvas(plan.width, plan.height)
     const context = canvas.getContext('2d', { alpha: false })
-    if (!context) throw new VideoStudioError('这台电脑没法在后台画画面，导不出视频')
+    if (!context) throw new VideoStudioError('本机不支持后台渲染画面，无法导出视频')
     const target = new BufferTarget()
     output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target })
     const videoSource = new CanvasSource(canvas, { codec: encoding.video, quality: QUALITY_HIGH, keyFrameInterval: 2 })
@@ -357,7 +357,7 @@ export async function composeVideoStudio(request: VideoStudioComposeRequest, hoo
     throwIfVideoStudioAborted(signal)
     await output.finalize()
     const data = target.buffer
-    if (!data) throw new VideoStudioError('成片没有写出来，请再试一次')
+    if (!data) throw new VideoStudioError('成片写入失败，请重试')
     const mimeType = await output.getMimeType()
     report('finishing', 1)
     return { data, mimeType, videoCodec: encoding.video, audioCodec: encoding.audio, width: plan.width, height: plan.height, duration: plan.duration }

@@ -453,7 +453,7 @@
 
 位置：`App.tsx:672-684`（或定点改写完成事件的处理处）；`electron/running-tools.ts:60-118`（`inspectRunningTools` / `describeRunningTools`）；修正 `system-service.ts:7195-7196` 的注释。
 
-`describeRunningTools` 现在给换账号用（`src/renderer-v2/account-switch-sync.ts:294`、`electron/account-source-switch.ts:160`），文案写死了「用上当前账号 / 换回官方账号」（`running-tools.ts:95-108`）。换线提示要给 `RunningToolsGoal` 加一种，或者照它的结构另写一个函数。「如果 X 还开着」的写法可以沿用。
+`describeRunningTools` 现在给换账号用（`src/renderer-v2/account-switch-sync.ts:294`、`electron/account-source-switch.ts:160`），文案写死了「使用当前账号 / 切换回官方账号」（`running-tools.ts:95-108`）。换线提示要给 `RunningToolsGoal` 加一种，或者照它的结构另写一个函数。「如果 X 还开着」的写法可以沿用。
 
 **三个条件同时成立才提示：**
 

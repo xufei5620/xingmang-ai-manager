@@ -7,7 +7,7 @@ import { errorMessage } from '../../business-common'
  */
 export function supportQrFallbackText(state: { url: string; data: string | null } | undefined, url: string): string | null {
   if (!state || state.url !== url) return null
-  return state.data === null ? '二维码这次没有生成出来，请点下面的「在浏览器打开」联系客服。' : null
+  return state.data === null ? '二维码生成失败，请点击下方「在浏览器打开」联系客服。' : null
 }
 
 /**
@@ -15,7 +15,7 @@ export function supportQrFallbackText(state: { url: string; data: string | null 
  * 订单不会因此丢，以及去哪里核对（R-B7）。
  */
 export function deepLinkReadErrorText(cause: unknown): string {
-  const reason = errorMessage(cause, '外部跳转没有读取到')
+  const reason = errorMessage(cause, '外部链接读取失败')
   const lead = /[。！？.!?]$/.test(reason) ? reason : `${reason}。`
-  return `${lead}如果刚完成支付，款项不会因此丢失，请到「账号」的「订单」页核对订单状态。`
+  return `${lead}如刚完成支付，款项不会因此丢失，请前往「账号 › 订单」核对订单状态。`
 }

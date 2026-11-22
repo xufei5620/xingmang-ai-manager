@@ -18,6 +18,7 @@
 - `account-switch-sync.ts` — 切换账号时「顺手把工具也换过去」：只挑原本连着旧账号、磁盘上地址仍是旧站某条已登记线路且凭据没被改过的工具，切完回报哪些工具还开着要重开。App 与 `SavedAccounts.tsx` 共用。
 - `SavedAccounts.tsx` — 「切换账号」框：保存过的账号、切换时默认一起换走在用账号密钥的工具（自己填的密钥默认不动）、切过去才发现登录失效的给「重新登录这个账号」。文件里的 `card` 样式按它自己的注释眼下没有页面用。
 - `external-link-fallback.tsx` — 公告、协议里的链接被主进程外链白名单拦下时的出路（I12，白名单不放宽）：只认 http(s) 且不带账号密码段的地址，复制给用户自己去浏览器打开；只看主进程给的错误码，不比对文案。
+- `markdown-view.tsx` / `markdown-renderer.tsx` — 公告、用户协议和隐私政策的 Markdown 排版（总单 77，R9）：react-markdown 连带 remark / micromark 约 150KB 不进首屏包，`MarkdownView` 打开那个框时才用 `import()` 读 `markdown-renderer.tsx`（框一开就 `preloadMarkdown()`，跟读内容并着走）；读不进来时退成原文照排，不让整个界面掉进出错页。`markdown-renderer.tsx` 别处不许静态引，`first-screen-imports.test.ts` 钉住 react-markdown、remark-gfm 只能由按需加载的那几块静态引；客服二维码库 qrcode 留在首屏（欢迎页首屏就要那张图，改成按需加载拖慢过 Mac 开发版开机，见 `features/app/useSupportContact.ts`）。聊天页自己用 react-markdown，它整页本来就懒加载，不走这里。
 - `LocalAvatar.tsx` / `local-avatar.ts` — 本机头像：选图、裁剪、压成 256 见方的 PNG 按账号存进 localStorage；保存前比对的是最后一次真正上屏的账号，并发渲染被丢弃时也不会存到别的账号上。
 - `AccountFilters.tsx` — 用量账单、异步任务那种「常驻几个框 + 展开筛选」的筛选条，以及展开按钮上「已生效几个」的计数。
 - `background-work.ts` — 「手上有事」登记处：聊天在生成、视频在做、工具在装、登录后同步密钥这几处用 `useBackgroundWork` 登记，窗口缩托盘久了主进程要关界面省内存前看它（`electron/renderer-release.ts`）。
@@ -186,11 +187,13 @@
 ## features/chat/ 桌面聊天（App 懒加载）
 - `features/chat/README.md` — 聊天页约定：同账号内只藏不卸、换账号按 scope 重建并取消旧请求；记录存主进程文件，localStorage 只作旧版迁移来源；写盘前剥掉凭据与运行时负载。
 - `features/chat/ChatPage.tsx` — 「创作」里对话那一半（原聊天页，根节点还是 `page-chat`）：左边一列（带了 `create` 时对话、视频、画布项目混排，上面一排按类筛选）、消息区、输入框（模式、按厂商列全部分组模型的模型菜单、画图选项、加图片）；等主进程把记录读回来才显示，避免空状态抢先自动保存覆盖记录。
-- `features/chat/useChatController.ts` — 聊天控制器：打开时准备账号的全部分组（一次三个）、按模型落定计费分组、发送/停止/重试、编辑重发、图片生成与取消、断网后重发；后台刷新只重读分组列表、只准备新冒出来的分组，不换用户的模型和草稿，模型哪儿都没有了也不悄悄换。
+- `features/chat/useChatController.ts` — 聊天控制器：打开时准备账号的全部分组（一次三个）、按模型落定计费分组、发送/停止/重试、编辑重发、图片生成与取消、「生成视频」那一档的交单、接回、停止（请求号先存再交，同时最多 3 段）、断网后重发；后台刷新只重读分组列表、只准备新冒出来的分组，不换用户的模型和草稿，模型哪儿都没有了也不悄悄换。
 - `features/chat/state.ts` — 会话与消息的数据结构和纯操作：全部分组的模型表与厂商分节（`buildChatCatalog` / `chatModelVendor`）、同一模型几个分组都有时挑哪个计费（`pickChatGroup`）、记着的模型怎么落定（`settleChatModel`）、推荐分组 `GPT`、默认对话与生图模型、每轮请求快照、失败话术（过打码表，I13）。
 - `features/chat/storage.ts` — 聊天记录读写：经主进程按对话分文件写盘、每次只重写改过的；写盘前剥掉 `sk-`、`Bearer`、`api_key=` 与 `blob:`、内联 base64（I13）；旧 localStorage 记录只读迁移，文件里有了才删旧副本。
 - `features/chat/transfer.ts` — 「搬到新电脑」里聊天记录那一半（「常用的话」跟着走）：导入前先同步卸下聊天页，免得它下一次自动保存把导入的对话又冲掉。
 - `features/chat/api.ts` — 聊天 IPC 的封装；只复用 `electron/ai-chat-protocol` 里无 Node 依赖的模型能力与请求校验函数，不改协议。
+- `features/chat/image-settings.ts` / `features/chat/ImageOptions.tsx` — 出图用的那一份设置和那一排选项（融合第 4 步）：前者按账号把型号、分组、尺寸、画质、分辨率记在这台电脑上（`xingmang-ui-v2:image-settings:〈账号〉`，读进来当外来的东西逐字段核），改了告诉正开着的另一边，另有「挪到这个型号收的范围里」「放到一段生成图片的对话上」两个纯函数；后者是尺寸、画质、分辨率三个菜单和自定义宽高两格。对话里「生成图片」那一档和视频工作台的出图框用的是这同一份、同一排。
+- `features/chat/video.ts` / `features/chat/ChatVideo.tsx` — 输入框第三档「生成视频」（融合第 2 步，只在「创作」页把 `create.video` 交下来时有）：前者是纯函数（交给主进程的那一单、一条视频回复收尾成什么样、重新生成时拿上一单的请求号怎么办、页面上那几行字），后者是对话里等着的那一块和出好的那一段（点了在页面里放 `xingmang-asset://video/<编号>`、「添加到视频」「另存视频」「用播放器打开」）。没加 IPC 通道，用视频工作台那几条。
 - `features/chat/ParametersDialog.tsx` / `features/chat/parameters.ts` — 每个对话自己的参数对话框：点「应用」才写回，滑块没动过就是「默认」、请求里不带这一项。
 - `features/chat/PhrasesDialog.tsx` — 输入框旁「常用」点开的「常用的话」：客户自己存的话（最多 30 条，存在这个账号的聊天记录索引里），点「填进输入框」只填不发。
 - `features/chat/links.ts` / `features/chat/math.ts` — 模型输出里的链接从不打开、只给复制，host 按 URL 解析认（`xm.solov.cc@evil.example` 显示真去处，I12 同理）；公式渲染成 MathML，不带字体文件、关掉 `\href` 等命令，CSP 不用放宽。
@@ -198,16 +201,19 @@
 - `features/chat/chat.css` — 聊天页样式（消息最宽 684、输入框最宽 740，悬停才露出的按钮）。
 
 ## features/create/ 「创作」（聊天、画布、视频剪辑合成的一页，App 懒加载）
-- `features/create/CreatePage.tsx` / `create.css` — 「创作」页（侧栏 `chat` 那一项，融合第 1 步）：对话那一半仍是 `ChatPage`，这里管视频和画布项目那一半，经 `ChatPage` 的可选属性 `create` 把多出来的行、右边的面板、起始页的两张卡和只出现一次的提示交给它。右边点开视频是 `VideoStudioPage`（懒加载，按视频编号 `key`，看别的东西时只藏不卸），点开画布项目是一张卡（名字、时间、「打开画布」）；视频的改名框和删除确认也在这里。画布项目的名字和时间经 `canvas:list-projects` 读，页面每次露面、窗口每次回到前台重读一遍。
+- `features/create/CreatePage.tsx` / `create.css` — 「创作」页（侧栏 `chat` 那一项，融合第 1 步）：对话那一半仍是 `ChatPage`，这里管视频和画布项目那一半，经 `ChatPage` 的可选属性 `create` 把多出来的行、右边的面板、起始页的几张卡、只出现一次的提示和左下角的作品库（第 3 步）交给它。右边点开视频是 `VideoStudioPage`（懒加载，按视频编号 `key`，看别的东西时只藏不卸），点开画布项目是一张卡（名字、时间、「打开画布」）；视频的改名框和删除确认也在这里。画布项目的名字和时间经 `canvas:list-projects` 读，页面每次露面、窗口每次回到前台重读一遍。
 - `features/create/list.ts` — 纯函数：左边那一列怎么排（置顶的对话单独一段，其余按今天 / 昨天 / 更早，对话保持聊天页的先后、视频和画布项目按最后动过的时间插进去）、筛选那一排列哪几类、视频和画布项目按名字搜、时间怎么写。
+- `features/create/CreateLibrary.tsx` / `useCreateLibrary.ts` / `library.ts` — 主窗口的作品库（融合第 3 步）。`CreateLibrary.tsx` 是右边那一块（筛选、搜索、一格一格、「加载更多」）、点开一件的小框（大图或页面里直接放的视频）、和从别处叫出来的选择框 `LibraryPicker`（镜头上的「从作品库选图」「使用已有片段」、起始页第三张卡）；`useCreateLibrary.ts` 经 `library:list` 分页读当前账号的作品（主进程只列编号和时间、不读文件），页面露面、窗口回到前台、刚出完东西时再读第一页；`library.ts` 是纯函数：每件作品是哪段对话、哪条视频做出来的（做出来的优先于只是用过的，对话优先于视频）、哪些算成片、搜索时页面这边对得上的编号、标题和那行小字怎么写、作品怎么换成对话和视频工作台各自用的样子。
 - `features/create/index.ts` — 本目录出口，App 懒加载时从这里取 `CreatePage`。
 
 ## features/video-studio/ 视频剪辑（「创作」里一条视频的工作台和它的拼片引擎）
 - `features/video-studio/README.md` — 页面的流程和工程怎么存；拼片引擎的约定：输入输出、编码先后、字节转移给后台线程、上限。
-- `features/video-studio/VideoStudioPage.tsx` / `video-studio.css` — 一条视频的工作台（由 `features/create/CreatePage.tsx` 懒加载、挂在「创作」右边）：想法、分镜、拼成一条视频三张卡，自己没有页面标题和草稿箱；没登录、历史账号、临时停用各一个空状态；要花钱的先弹确认。片段用缩略图代表，点了交给系统播放器（主窗口 CSP 不放 `media-src`）。
+- `features/video-studio/VideoStudioPage.tsx` / `video-studio.css` — 一条视频的工作台（由 `features/create/CreatePage.tsx` 懒加载、挂在「创作」右边）：想法、分镜、拼成一条视频三张卡，自己没有页面标题和草稿箱；没登录、历史账号、临时停用各一个空状态；要花钱的先弹确认（让 AI 画镜头图弹的是 `ShotImageDialog.tsx`）。片段用缩略图代表，点了交给系统播放器（页面里直接放的只有对话里出好的那一段，见 `features/chat/ChatVideo.tsx`）。
+- `features/video-studio/ShotImageDialog.tsx` — 「AI 生成图片」点了以后的出图框（融合第 4 步）：跟对话里「生成图片」那一档共用同一排选项（`features/chat/ImageOptions.tsx`）和同一份设置（`features/chat/image-settings.ts`），画面描述、参考图、报价和余额；点「生成图片」才把框里选的交给 `useVideoStudio` 的 `drawShotImage`。
 - `features/video-studio/useVideoStudio.ts` — 页面的状态：读各分组的模型、写分镜、同时最多 3 段的出片队列和进度、让 AI 画镜头图（走对话页出图那条 `chat:generate-image`，停下走 `chat:cancel`）、拼片；工程从外面交来的 `source` 读、往它写（开哪一条归 `useVideoStudioLibrary.ts`），点开的那一条里没等到的片段照重开页面那样接回；停下时说清哪几段已经交给服务端、照样扣费。
-- `features/video-studio/library.ts` / `useVideoStudioLibrary.ts` — 这个账号做过的视频，一条一个文件（主进程 `video-studio-project-store.ts`）：前者是纯函数（文件内容、名字、排序、0.2.24 留在 localStorage 里的草稿怎么抄成文件、抄完怎么核对），后者是读、攒 400 毫秒一批写、紧急时立刻写、改名、删，和「现在开着哪一条、它手上有事时不换」。
-- `features/video-studio/project.ts` — 纯函数：工程的形状与默认值、分镜落成镜头、排序增删、出片段的请求（Grok 给宽高、MiniMax 给画面比例；镜头选了图就带上，Grok 当第一帧、MiniMax 换成图生视频）、镜头图的多选分配、AI 画镜头图的请求（尺寸跟画面比例走，按 720p 算）和迟到结果的认领、每段剪头剪尾的可选几档（剪完至少留 1 秒）、每镜单独定的时长（换视频模型时一起挪到能出的一档）、配乐和片段原声的两路音量、序列化与逐字段校验（缩略图只认作品库的地址）、0.2.24 那两格 `localStorage`（手头一条、草稿箱最多 20 份）的只读读法。
+- `features/video-studio/library.ts` / `useVideoStudioLibrary.ts` — 这个账号做过的视频，一条一个文件（主进程 `video-studio-project-store.ts`）：前者是纯函数（文件内容、名字、排序、0.2.24 留在 localStorage 里的草稿怎么抄成文件、抄完怎么核对），后者是读、攒 400 毫秒一批写、紧急时立刻写、改名、删、从工作台外面整份换掉（`replace`：对话里的一段视频「添加到视频」时用，换版本号让开着的工作台重新读、旧的那份不再能写），和「现在开着哪一条、它手上有事时不换」。
+- `features/video-studio/clip.ts` — 纯函数：存着的一段视频怎么读回来（镜头和对话里出的视频共用，缩略图按编号换成现在的版本）、页面里直接放用的地址。
+- `features/video-studio/project.ts` — 纯函数：工程的形状与默认值、分镜落成镜头、排序增删、出片段的请求（Grok 给宽高、MiniMax 给画面比例；镜头选了图就带上，Grok 当第一帧、MiniMax 换成图生视频）、镜头图的多选分配、AI 画镜头图的请求（写法同对话里出图；出图框打开时用哪个型号、尺寸怎么跟画面比例走、哪些往共用的那一份里记）和迟到结果的认领、每段剪头剪尾的可选几档（剪完至少留 1 秒）、每镜单独定的时长（换视频模型时一起挪到能出的一档）、配乐和片段原声的两路音量、序列化与逐字段校验（缩略图只认作品库的地址）、0.2.24 那两格 `localStorage`（手头一条、草稿箱最多 20 份）的只读读法；镜头上挂一段作品库里现成的片段（`borrowed`：不用生成、总时长按片段自己的长度算，`assignVideoStudioShotClip` / `removeVideoStudioShotClip`），拿几段现成片段新开一条视频（`createVideoStudioProjectFromClips`）。
 - `features/video-studio/compose-client.ts` — 页面这一头：`composeInVideoStudioWorker` 每次新开一个后台线程拼片，取消就直接关掉线程；回包按白名单读。
 - `features/video-studio/compose-worker.ts` — 后台线程本身，一个线程只拼一次。
 - `features/video-studio/compose.ts` — 用 mediabunny（MPL-2.0）读片段、逐帧画到 OffscreenCanvas 上烧字幕、WebCodecs 编码、写 MP4；画面一段接一段、每段画完接这一段的声音。

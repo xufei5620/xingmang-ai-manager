@@ -11,11 +11,11 @@ import type { V2Bridge } from '../../types'
 // macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」；那句和跳框、必须更新那层、
 // 自动装的通知共用一份（electron/mac-keychain-update-copy.ts）。
 // 安装包装在「所有用户」的程序目录下，Windows 会弹一次授权窗口；点了「否」就装不上。
-export const windowsConsentUpdateHint = 'Windows 会弹出一个授权窗口问要不要允许更改，点「是」就好；点了「否」这次就装不上。'
+export const windowsConsentUpdateHint = 'Windows 将弹出授权窗口，请点击「是」；如点击「否」，本次将无法安装。'
 // 账号不在管理员组时那个窗口要的是管理员密码，只点「是」过不去。
-export const windowsAdminPasswordUpdateHint = 'Windows 会弹出一个授权窗口，要在里面输入管理员密码；点了「否」这次就装不上。'
+export const windowsAdminPasswordUpdateHint = 'Windows 将弹出授权窗口，请在其中输入管理员密码；如点击「否」，本次将无法安装。'
 // Linux 上星芒不提权，装这一步交给系统的安装窗口；它要开机密码，装完也不会替他重开星芒。
-export const systemInstallerUpdateHint = '星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后从应用菜单重新打开星芒。'
+export const systemInstallerUpdateHint = '星芒将关闭并打开安装窗口，请点击「安装」并输入开机密码。安装完成后从应用菜单重新打开星芒。'
 
 type Operation = ReturnType<typeof useOperation>
 
@@ -72,19 +72,19 @@ export function UpdateInstallDialog({ api, update, open, onClose, operation }: U
                   onClose()
                   return result
                 },
-                // 还有工具在装、或者聊天视频剪辑画布还在做，客户在问的那一句里点了「继续安装」「等它做完」：这次不装，回到原来的样子（已知31、D10）。
+                // 还有工具在装、或者聊天视频剪辑画布还在做，客户在问的那一句里点了「继续安装」「等待完成」：这次不装，回到原来的样子（已知31、D10）。
                 (result) => (result.postponed ? null : '安装请求已提交'),
               )
             }
           >
-            {systemInstaller ? '关掉并安装' : operation.busy === 'install' ? '正在重启' : '重启并安装'}
+            {systemInstaller ? '关闭并安装' : operation.busy === 'install' ? '正在重启' : '重启并安装'}
           </Button>
         </>
       }
     >
       {systemInstaller
         ? <p data-testid="updates-system-installer-hint">请先保存当前工作。{systemInstallerUpdateHint}</p>
-        : <p>请先保存当前工作。星芒会先关掉，装好自动重新打开。</p>}
+        : <p>请先保存当前工作。星芒将关闭，安装完成后自动重新打开。</p>}
       <p data-testid="updates-install-note">{updateInstallNote}</p>
       {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
       {isWindows && !processElevated && <p data-testid="updates-windows-consent-hint">{update?.installNeedsAdminPassword ? windowsAdminPasswordUpdateHint : windowsConsentUpdateHint}</p>}

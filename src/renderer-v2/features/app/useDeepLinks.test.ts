@@ -17,7 +17,7 @@ describe('showSignedInInvite', () => {
     const { shown, toast } = recorder()
     showSignedInInvite(toast, 'XM-7K2Q', () => ({ writeText: async () => undefined }))
     expect(shown).toHaveLength(1)
-    expect(shown[0].text).toBe('你已经登录了。邀请码 XM-7K2Q 要退出当前账号、注册新账号时才能用。')
+    expect(shown[0].text).toBe('您已登录。邀请码 XM-7K2Q 仅在退出当前账号并注册新账号时可用。')
     expect(shown[0].tone).toBe('neutral')
     expect(shown[0].action?.label).toBe('复制邀请码')
   })
@@ -42,7 +42,7 @@ describe('showSignedInInvite', () => {
       shown[0].action?.onSelect(() => { dismissed += 1 })
       await settle()
       expect(dismissed).toBe(0)
-      expect(shown.slice(1)).toEqual([{ text: '没复制上，请手动选中这行文字复制。', tone: 'warn', action: undefined }])
+      expect(shown.slice(1)).toEqual([{ text: '复制失败，请手动选中该行文字复制。', tone: 'warn', action: undefined }])
     }
   })
 })

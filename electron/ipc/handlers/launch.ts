@@ -39,7 +39,7 @@ import type { IpcHandlerContext } from './context'
 type LaunchAccountWork = ReturnType<AccountWorkGate['queue']>
 
 // 点「打开」时记下的账号，在试写、查记录这些等待以后换过或正在换（N5）：后面的提问框不再弹，跟排队时换了
-// 账号一样回「账号刚切换过，请再试一次」，让用户在现在这个账号下重新点。真正挡住打开的是队列里那道 run。
+// 账号一样回「账号刚刚切换，请重试」，让用户在现在这个账号下重新点。真正挡住打开的是队列里那道 run。
 function assertLaunchAccountCurrent(accountWork: LaunchAccountWork | undefined): void {
   if (accountWork && (accountWork.signal.aborted || !accountWork.isCurrent())) throw new Error(staleAccountMessage)
 }
@@ -122,7 +122,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
   function classifyLocalWorkspace(workspace: string): SensitiveWorkspaceKind | null {
     return classifyWorkspace(workspace, { platform: process.platform, home: os.homedir() })
   }
-  // 「新建一个项目文件夹」是默认按钮（#347）；续接对话时没有它，默认落在取消键上。
+  // 「新建项目文件夹」是默认按钮（#347）；续接对话时没有它，默认落在取消键上。
   async function askAboutSensitiveWorkspace(
     parentWindow: BrowserWindow | undefined,
     sensitivity: SensitiveWorkspaceKind,
@@ -151,8 +151,8 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
     })
     return 'continue'
   }
-  // 选到敏感目录时先说清楚风险。「换一个文件夹」直接把选择器再打开一次，用户点
-  // 一次「打开」仍然能走到底；「新建一个项目文件夹」（默认）替用户建好一个普通目录
+  // 选到敏感目录时先说清楚风险。「更换文件夹」直接把选择器再打开一次，用户点
+  // 一次「打开」仍然能走到底；「新建项目文件夹」（默认）替用户建好一个普通目录
   // 直接返回，信任写入与 AGENTS.md 都照常，建不成就回到选择器；「仍然打开」照常
   // 返回，打开时会跳过信任写入与 AGENTS.md 生成（workspace-guard.ts）。
   async function pickWorkspace(parentWindow: BrowserWindow | undefined): Promise<string | null> {
@@ -266,7 +266,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
     const target = parseWorkspace(workspace, stored.workspace, process.platform)
     const launchMode = parseCliLaunchMode(mode)
     const resumeRecordId = parseCodexResumeRecordId(provider, launchMode, recordId)
-    // 在问「这个文件夹不建议打开」之前拦：关着的工具不该先弹一个文件夹的问题。
+    // 在问「不建议在此文件夹中打开」之前拦：关着的工具不该先弹一个文件夹的问题。
     return launchForClickedAccount((accountWork) => runWhenOn(options.remoteFeatures, `launch:${provider}`, toolLaunchOffMessage(cliCatalog[provider].name), () => {
       if (resumeRecordId === null) return launchCliInWorkspace(event, provider, target, launchMode, null, accountWork)
       return (async () => {
@@ -293,8 +293,8 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
       return launchUnlessUnwritable(event, provider, target, launchMode, resumeSessionId, sensitivity, accountWork)
     }
     // 首页「打开」从记录推出来的目录、最近记录、记录页「接着上次对话」、老版本记住的目录都
-    // 不经过选择器，所以在这里再问一次。续接对话换了目录就接不上，那一问只给「先不打开」，
-    // 不给「新建」和「换一个文件夹」。
+    // 不经过选择器，所以在这里再问一次。续接对话换了目录就接不上，那一问只给「暂不打开」，
+    // 不给「新建」和「更换文件夹」。
     return (async () => {
       const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
       const allowChooseAnother = launchMode === 'new'

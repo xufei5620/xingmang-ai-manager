@@ -21,9 +21,9 @@ import { resolveRelaySite } from './relay-sites'
 import { ensureSafeDataDirectory, removeSafeDataFile, writeAtomicSafeBinaryFile } from './safe-local-data'
 
 export const invoicePortalWindowTitle = '开票中心 - 星芒AI'
-export const invoicePortalOpenFailedMessage = '没能打开开票中心，请稍后再试；还不行请找客服。'
+export const invoicePortalOpenFailedMessage = '开票中心打开失败，请稍后重试；如仍无法打开，请联系客服。'
 export const invoiceSaveDialogTitle = '保存发票'
-export const invoiceSaveFailedMessage = '发票没保存下来，请再点一次「下载发票」；还不行请找客服。'
+export const invoiceSaveFailedMessage = '发票保存失败，请再次点击「下载发票」；如仍无法保存，请联系客服。'
 export const invoiceSaveFailedButton = '知道了'
 // 开票那边只收 8MB 以内的 PDF、PNG、JPEG 作发票文件（modules/invoices 的发票文件一节），多出来的不是发票。
 export const invoiceDocumentMaxBytes = 8 * 1024 * 1024

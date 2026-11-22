@@ -142,9 +142,9 @@ export function accountSyncCandidates(
             : manual
               ? accountSyncManualReason
             : !config.hasApiKey
-              ? '还没有配置密钥'
+              ? '尚未配置密钥'
               : !config.matchesRelay
-                ? '用的是别处的配置'
+                ? '正在使用其他来源的配置'
                 : accountSyncAccountReason
       return [
         {
@@ -185,7 +185,7 @@ export async function switchAccountWithOptionalSync(
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
 ): Promise<AccountSwitchSyncResult> {
   if (!siteIdForOrigin(target.origin))
-    throw new Error('这个账号记录暂时无法使用，请重新登录。')
+    throw new Error('该账号记录暂时无法使用，请重新登录。')
   const requested = [...new Set(selected)]
   if (requested.length && !context)
     throw new Error('工具状态尚未读取，请重新检测后再选择同步。')
@@ -256,7 +256,7 @@ export async function switchAccountWithOptionalSync(
           writeManualSourceMarker(storage, fresh.configs[provider].baseUrl, provider, false)
         } else {
           result.failed.push(outcome.failed.find((entry) => entry.provider === provider)
-            ?? { provider, message: '没有收到配置完成结果，请重新检测' })
+            ?? { provider, message: '未收到配置完成结果，请重新检测' })
         }
       } catch (error) {
         result.failed.push({ provider, message: errorMessage(error) })

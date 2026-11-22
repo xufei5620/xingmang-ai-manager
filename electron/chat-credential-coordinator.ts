@@ -90,7 +90,7 @@ export class ChatKeyQuotaExhaustedError extends Error {
   }
 }
 
-export const chatKeyStatusUnknownMessage = '没查到这把聊天密钥现在的额度情况，先没换新的。请稍后再试。'
+export const chatKeyStatusUnknownMessage = '未能查询该聊天密钥的当前额度，暂未更换新密钥。请稍后重试。'
 
 const inFlightByService = new WeakMap<object, Map<string, Promise<ResolvedChatCredential>>>()
 
@@ -208,7 +208,7 @@ export function createChatCredentialCoordinator(options: {
         if (!saved) continue
       } catch (error) {
         if (error instanceof ChatAccountChangedError) throw error
-        storageWarning = error instanceof Error ? error.message : '本地分组 API Key 保存失败'
+        storageWarning = error instanceof Error ? error.message : '本地分组密钥保存失败'
       }
 
       return {
@@ -222,7 +222,7 @@ export function createChatCredentialCoordinator(options: {
         ...(storageWarning ? { storageWarning } : {}),
       }
     }
-    throw new Error('AI聊天分组 API Key 在初始化期间发生变更，请重试')
+    throw new Error('AI聊天分组密钥在初始化期间发生变更，请重试')
   }
 
   function resolveCredential(groupInput: string): Promise<ResolvedChatCredential> {

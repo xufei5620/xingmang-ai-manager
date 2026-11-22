@@ -60,10 +60,10 @@ describe('configuration key selection', () => {
     expect(listedAccountKeys(keys, 'automatic').map((entry) => entry.id)).toEqual([1, 2, 3, 4])
   })
   it('checks the sk- prefix only where the key format is known', () => {
-    expect(manualKeyIssue('  ', true)).toBe('请粘贴你在星芒创建的密钥')
-    expect(manualKeyIssue('', false)).toBe('请粘贴你在星芒创建的密钥')
+    expect(manualKeyIssue('  ', true)).toBe('请粘贴在星芒创建的密钥')
+    expect(manualKeyIssue('', false)).toBe('请粘贴在星芒创建的密钥')
     expect(manualKeyIssue('abc-12345678901234567890', true)).toContain('应以 sk- 开头')
-    expect(manualKeyIssue('sk-short', true)).toContain('20 位以上')
+    expect(manualKeyIssue('sk-short', true)).toContain('不少于 20 位')
     expect(manualKeyIssue(' sk-12345678901234567 ', true)).toBeNull()
     // 历史账号的密钥前缀没核实，只拦空的。
     expect(manualKeyIssue('abc', false)).toBeNull()
@@ -73,9 +73,9 @@ describe('configuration key selection', () => {
     expect(manualKeyIssue('\u200Bsk-12345678901234567', true)).toBeNull()
     expect(manualKeyIssue('\uFEFFsk-12345678901234567\u200B', true)).toBeNull()
     // 折成两行的密钥粘进来中间多一个空格，去掉后照样要 20 位以上。
-    expect(manualKeyIssue('sk-12345 67890', true)).toContain('20 位以上')
-    expect(manualKeyIssue('\u200B\u3000\u200D', true)).toBe('请粘贴你在星芒创建的密钥')
-    expect(manualKeyIssue('\u200B', false)).toBe('请粘贴你在星芒创建的密钥')
+    expect(manualKeyIssue('sk-12345 67890', true)).toContain('不少于 20 位')
+    expect(manualKeyIssue('\u200B\u3000\u200D', true)).toBe('请粘贴在星芒创建的密钥')
+    expect(manualKeyIssue('\u200B', false)).toBe('请粘贴在星芒创建的密钥')
   })
   it('says a masked key is the masked one before any other format check', () => {
     const hint = '这是打码后的密钥，请到「密钥」页点复制按钮，复制完整的那串'

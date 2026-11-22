@@ -5,19 +5,19 @@ import './tutorial-illustration.css'
 
 const illustrationDescriptions: Record<TutorialIllustrationId, { title: string; description: string; hint: string }> = {
   'desktop-home': { title: '点「打开」，进入 Codex 桌面端', description: '在星芒首页找到 Codex 桌面端这张卡片，点击打开。随后会出现独立的 Codex 桌面窗口，在新窗口里输入问题即可。', hint: '打开后，去新出现的 Codex 窗口里提问。' },
-  'desktop-install': { title: '认准「Codex 桌面端」这张卡片', description: '在星芒首页找到 Codex 桌面端，未安装时点击安装，Windows 和 Mac 都一样。已经安装过的用户先点击首页重新检测。', hint: '图示为 Windows 安装；Mac 上同样点「安装」，装好后在「应用程序」里叫 ChatGPT。' },
+  'desktop-install': { title: '认准「Codex 桌面端」这张卡片', description: '在星芒首页找到 Codex 桌面端，未安装时点击安装，Windows 和 Mac 都一样。已经安装过的用户先点击首页重新检测。', hint: '图示为 Windows 安装；Mac 上同样点击「安装」，安装后在「应用程序」中名为 ChatGPT。' },
   'desktop-config': { title: '用默认选择，保存配置', description: '在 Codex 桌面端配置中选择当前账号，密钥选择自动准备，默认模型保留自动选择的结果，然后点击保存并检测。', hint: '保存只改账号、密钥和模型，其他设置会留着。' },
-  'desktop-message': { title: '先发一句话，看看它的回复', description: '在独立的 Codex 桌面窗口里输入一个简单的中文问题，例如请用中文告诉我你能帮我做什么，再发送并等待回复。简单提问不用先选项目文件夹。图中回复仅为示意。', hint: '能收到回复，就可以开始问自己的问题了。' },
+  'desktop-message': { title: '发送一条消息，查看回复', description: '在独立的 Codex 桌面窗口里输入一个简单的中文问题，例如请用中文告诉我你能帮我做什么，再发送并等待回复。简单提问无需选择项目文件夹。图中回复仅为示意。', hint: '收到回复后，即可开始提出您的问题。' },
   'desktop-project': { title: '处理文件时，选择本地项目', description: '需要处理本地文件时，在 Codex 桌面端里选择项目文件夹，再输入具体任务，等待并阅读回复。简单提问可以直接新建对话。示例问题要求先说明项目内容，不修改文件；图中回复仅为示意。', hint: '先用练习项目熟悉操作；允许改文件前，先看清它准备做什么。' },
   home: { title: '先认识三个常用入口', description: '首页工具区用于安装、配置和打开工具；左侧创作可以直接提问；左下角账号入口用于登录和查看余额。', hint: '首页管工具，创作直接用，左下角管账号。' },
-  account: { title: '先登录自己的星芒账号', description: '点击星芒左下角的未登录账号区域，按提示登录。完成后，左下角会显示自己的账号昵称，先确认登录的是自己准备使用的账号。图中不包含真实账号。', hint: '左下角出现自己的账号昵称，就完成这一步了。' },
-  install: { title: '找到工具，点击安装', description: '在首页找到想使用的工具，点击卡片右下角的安装。缺的 Node.js 会自动准备好，首页「运行环境」那张卡里能看到装好了没有。', hint: '先装一个需要的工具，不必一次全部安装。' },
+  account: { title: '先登录自己的星芒账号', description: '点击星芒左下角的未登录账号区域，按提示登录。完成后，左下角会显示自己的账号昵称，先确认登录的是自己准备使用的账号。图中不包含真实账号。', hint: '左下角显示账号昵称，即表示此步骤已完成。' },
+  install: { title: '找到工具，点击安装', description: '在首页找到要使用的工具，点击卡片右下角的安装。所需的 Node.js 将自动准备，可在首页「运行环境」卡片中查看安装状态。', hint: '先装一个需要的工具，不必一次全部安装。' },
   config: { title: '确认来源、密钥和模型', description: '配置窗口内选择当前账号，确认密钥与默认模型，然后点击保存配置；其他自定义设置会保留。', hint: '点「保存配置」即可，其他自定义设置会保留。' },
-  launch: { title: '在自己的文件夹里开始', description: '点击工具卡片上的打开，按提示选择工作文件夹。工具会在这个文件夹打开，随后在工具窗口中输入自己的任务。', hint: '先用测试文件夹练习，再让 AI 处理正式项目。' },
-  chat: { title: '不打开终端，也能直接提问', description: '左侧选择创作，在输入框底部选择文本对话和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '先确认模型，再描述你希望完成的事。' },
+  launch: { title: '在自己的文件夹里开始', description: '点击工具卡片上的打开，按提示选择工作文件夹。工具将在该文件夹中打开，随后在工具窗口中输入任务。', hint: '先用测试文件夹练习，再让 AI 处理正式项目。' },
+  chat: { title: '不打开终端，也能直接提问', description: '左侧选择创作，在输入框底部选择文本对话和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '请先确认模型，再描述您希望完成的任务。' },
   canvas: { title: '把提示词连到图像节点', description: '在画布中添加提示词和图像节点，连接两个节点，检查生成配置，再运行此节点。图中未执行生成。', hint: '连接节点后再运行；保存工作流不等于生成图片。' },
   extensions: { title: '在「插件」页挑好，一次装进几家', description: '在插件页的推荐里找到要用的那一条，点右边的加号，在装到哪里勾上要用的几家再安装。服务方给了配置时，点右上角添加里的自定义连接。', hint: '装之前先看它要哪些权限，只装任务确实需要的。' },
-  skills: { title: '导入一次，给几家用', description: '在插件页左边点技能，再点右上角添加里的从文件夹导入，选好文件夹，勾上要给哪几家用。列表能看到技能装在哪几家；Codex 自带的只能查看。', hint: '已经装在一家的，点那一行的加号复制给另一家。' },
+  skills: { title: '导入一次，给几家用', description: '在插件页左侧点击技能，再点击右上角「添加」中的「从文件夹导入」，选择文件夹并勾选要使用的工具。列表中可查看技能已安装到哪些工具；Codex 自带的技能仅可查看。', hint: '已经装在一家的，点那一行的加号复制给另一家。' },
   plugins: { title: '官方插件只能装进自己那一家', description: '在插件页的推荐里往下翻，Claude 官方只能装进 Claude，GPT 官方只能装进 GPT。点标题展开看全部，点加号安装；作者给了来源时，点右上角添加里的添加插件。', hint: '先确认插件适用的工具，再按作者提供的来源添加。' },
   backup: { title: '改设置前，先留一份配置备份', description: '在「设置 › 备份迁移」点「立即备份」，选工具。随后核对列表中的工具和时间，通过预览确认包含的配置文件。图中未创建真实备份。', hint: '备份范围是工具配置；项目代码需要另外备份。' },
   health: { title: '有问题时，从检查开始', description: '进入检查页面运行检查，阅读异常项给出的处理建议，完成处理后重新检查；需要帮助时进入帮助与客服。', hint: '先看具体异常，再按建议处理，完成后重新检查。' },
@@ -59,7 +59,7 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
         <div className="tutorial-illustration-row"><Monitor size={19} /><strong>Codex 桌面端</strong><Control primary><Marker>1</Marker>当前账号</Control></div>
         <div className="tutorial-illustration-field"><span>密钥</span><span><KeyRound size={14} />自动准备（推荐）<ChevronDown size={14} /></span></div>
         <div className="tutorial-illustration-field"><span>默认模型</span><span>保留自动选择的模型<ChevronDown size={14} /></span></div>
-        <div className="tutorial-illustration-row tutorial-illustration-save"><span>不用自己填写密钥</span><Control primary><Marker>2</Marker>保存并检测<ArrowRight size={14} /></Control></div>
+        <div className="tutorial-illustration-row tutorial-illustration-save"><span>无需手动填写密钥</span><Control primary><Marker>2</Marker>保存并检测<ArrowRight size={14} /></Control></div>
       </div>
     case 'desktop-message':
       return <Pane title={<><Monitor size={17} />Codex 桌面端 · 新打开的窗口</>}>
@@ -98,7 +98,7 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
         </Pane>
         <ArrowRight className="tutorial-illustration-arrow" size={22} />
         <Pane title={<><Marker>2</Marker>登录后看这里</>}>
-          <div className="tutorial-illustration-person"><UserRound size={28} /><span><strong>自己的账号昵称</strong><small>这里会显示你的账号</small></span></div>
+          <div className="tutorial-illustration-person"><UserRound size={28} /><span><strong>自己的账号昵称</strong><small>此处将显示您的账号</small></span></div>
           <p className="tutorial-illustration-note">确认是自己要使用的账号</p>
         </Pane>
       </div>
@@ -153,7 +153,7 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
     case 'backup':
       return <div className="tutorial-illustration-backup">
         <Pane title={<><Archive size={17} />备份</>}><div className="tutorial-illustration-backup-details"><strong>核对工具与时间</strong><span>时间 · 以实际创建记录为准</span><span>配置文件 · 在预览中核对</span><Control><FileText size={14} />预览</Control></div></Pane>
-        <Pane title="马上备份"><div className="tutorial-illustration-backup-details"><div className="tutorial-illustration-row"><Marker>1</Marker><strong>Codex CLI</strong><ChevronDown size={14} /></div><Control primary><Marker>2</Marker><Archive size={15} />创建备份</Control><small>先选择准备调整的工具</small></div></Pane>
+        <Pane title="立即备份"><div className="tutorial-illustration-backup-details"><div className="tutorial-illustration-row"><Marker>1</Marker><strong>Codex CLI</strong><ChevronDown size={14} /></div><Control primary><Marker>2</Marker><Archive size={15} />创建备份</Control><small>先选择准备调整的工具</small></div></Pane>
       </div>
     case 'health':
       return <div className="tutorial-illustration-health">

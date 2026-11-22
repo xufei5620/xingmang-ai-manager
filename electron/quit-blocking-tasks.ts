@@ -65,9 +65,9 @@ export type UnfinishedRestartWork = RendererRestartWork | 'canvas'
 
 // 顺序和单子上那句一样；只列真在跑的那几样。
 const unfinishedRestartWorkPhrases: ReadonlyArray<readonly [UnfinishedRestartWork, string]> = [
-  ['chat', '对话还在回复或出图'],
-  ['video-compose', '视频剪辑还在拼接'],
-  ['canvas', '画布还在生成'],
+  ['chat', '对话仍在回复或生成图片'],
+  ['video-compose', '视频剪辑仍在合成'],
+  ['canvas', '画布仍在生成'],
 ]
 
 export interface UnfinishedRestartWorkPrompt {
@@ -86,12 +86,12 @@ export function buildUnfinishedRestartWorkPrompt(running: Iterable<UnfinishedRes
   if (listed.length === 0) return null
   const phrases = listed.map(([, phrase]) => phrase)
   const last = phrases[phrases.length - 1]
-  const sentence = phrases.length === 1 ? last : `${phrases.slice(0, -1).join('，')}，或者${last}`
+  const sentence = phrases.length === 1 ? last : `${phrases.slice(0, -1).join('，')}，或${last}`
   return {
     kinds: listed.map(([kind]) => kind),
-    message: '还有任务没做完',
-    detail: `${sentence}。现在重启会把它们停下，出到一半的图可能已经扣费。`,
-    buttons: ['等它做完', '仍然重启'],
+    message: '仍有任务未完成',
+    detail: `${sentence}。现在重启将停止这些任务，生成中的图片可能已产生扣费。`,
+    buttons: ['等待完成', '仍然重启'],
   }
 }
 
@@ -108,7 +108,7 @@ export interface UpdateRestartConfirmation {
 /**
  * 更新页「重启并安装」、托盘「重启并安装」、跳框里的「现在安装」都先过这里：true = 照常装。
  * 先问工具在装，再问聊天、视频剪辑、画布在做的事。两问说的是不同的东西会被停下，所以都问；
- * 哪一问点了「继续安装」「等它做完」，这次就不装，新版本留着（已知31、D10）。
+ * 哪一问点了「继续安装」「等待完成」，这次就不装，新版本留着（已知31、D10）。
  */
 export async function confirmUpdateRestart(steps: UpdateRestartConfirmation): Promise<boolean> {
   const task = steps.installTask()

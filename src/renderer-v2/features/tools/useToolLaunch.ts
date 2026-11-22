@@ -47,7 +47,7 @@ interface ToolLaunchOptions {
 }
 
 /**
- * 首页、托盘、快捷键、记录页「接着聊」打开工具的那一整条：打开前的几道关、要不要换默认模型、
+ * 首页、托盘、快捷键、记录页「继续对话」打开工具的那一整条：打开前的几道关、要不要换默认模型、
  * Codex 桌面端开着要不要重开、要不要中文。每一步都认点「打开」时的那个账号，中途换了账号就停下。
  */
 export function useToolLaunch(options: ToolLaunchOptions) {
@@ -101,10 +101,10 @@ export function useToolLaunch(options: ToolLaunchOptions) {
    */
   async function waitForAccountConnection(tool: { id: ToolId; source: ToolSource; provider: ProviderId }, epoch: () => boolean): Promise<'ready' | 'waited' | 'stop'> {
     if (tool.source !== 'account' || !accountConnectionPending(tool.provider)) return 'ready'
-    toast.show('正在连接账号，好了会自动打开。', 'neutral')
+    toast.show('正在关联账号，完成后将自动打开。', 'neutral')
     const outcome = await waitWhileAccountConnectionPending({ pending: () => accountConnectionPending(tool.provider), current: () => launchIsCurrent(epoch) })
     if (outcome === 'stopped') return 'stop'
-    if (outcome === 'timeout') { toast.show('正在同步这个工具的账号连接，请稍后再打开。', 'neutral'); return 'stop' }
+    if (outcome === 'timeout') { toast.show('正在同步该工具的账号连接，请稍后再打开。', 'neutral'); return 'stop' }
     const latest = accountBootstrapRef.current
     const failure = resolveToolKeySyncFailure(latest?.scope === scope ? latest : null, tool.provider, tool.id)
     if (failure) { toast.show(failure.text, 'warn'); return 'stop' }
@@ -112,7 +112,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
   }
   /**
    * 真打开之前那几道关：检测出没出错、装没装、Codex 老配置先修、没连好账号先去连、核对默认模型。
-   * 首页「打开」「接着聊」走 openTool()，记录页「接着聊」自己叫主进程打开，两边都先过这里
+   * 首页「打开」「继续对话」走 openTool()，记录页「继续对话」自己叫主进程打开，两边都先过这里
    * （第四十批 B：记录页以前一道都没过）。返回打开前读到的快照、配置和工具；null = 不往下走
    * （问话框里关掉了，或者中途换了账号），什么都不打开，也不报错。
    */
@@ -124,7 +124,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       let config = await toolsApi.readConfig()
       if (!launchIsCurrent(epoch)) return null
       let tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
-      if (!tool) throw new Error('这台电脑上打不开这个工具')
+      if (!tool) throw new Error('本机无法打开该工具')
       if (tool.error) throw new Error(tool.error)
       if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
       // Shortcuts, tray actions and the records page share this entry, including
@@ -138,17 +138,17 @@ export function useToolLaunch(options: ToolLaunchOptions) {
         tool = presentTools({ ...current, config }).find((entry) => entry.id === id) ?? tool
       }
       // Codex 老配置写在它不认的名字下，照原样打开必然报 Key 无效。修完就能用的，
-      // 先替用户修（和「修好它」同一条路：备份、写入、自检，失败会恢复原样）再打开。
+      // 先替用户修（和「立即修复」同一条路：备份、写入、自检，失败会恢复原样）再打开。
       if (!tool.configured && readyOnceRepaired(config.providers[tool.provider], tool.provider)) {
         const repaired = await switchToolAccount(id, 'account')
         if (!repaired || !launchIsCurrent(epoch)) return null
         const fresh = await toolsApi.readConfig()
         if (!launchIsCurrent(epoch)) return null
         tool = presentTools({ ...current, config: fresh }).find((entry) => entry.id === id) ?? tool
-        if (codexNeedsRepair(fresh.providers[tool.provider], tool.provider)) throw new Error('Codex 的连接设置没修好，已保持原样。请在首页点「修好它」再试一次。')
+        if (codexNeedsRepair(fresh.providers[tool.provider], tool.provider)) throw new Error('Codex 连接设置修复失败，已保持原样。请在首页点击「立即修复」后重试。')
       }
       // 工具自己都读不了的配置文件，在配置窗口里怎么选都修不好（只更新会被拒、密钥也读不准），不再弹它、
-      // 也不说「确认账号连接」：错误框直接给「修好它」，修完接着打开（broken-config-launch.ts）。
+      // 也不说「确认账号连接」：错误框直接给「立即修复」，修完接着打开（broken-config-launch.ts）。
       const broken = tool.configured ? null : brokenConfigOf(config.providers[tool.provider], tool.provider)
       if (broken) throw new Error(brokenConfigLaunchMessages[broken])
       if (!tool.configured) { openToolConfig(id); throw new Error('请先确认账号连接，再打开工具。') }
@@ -160,7 +160,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
         let answerCurrent: (choice: ModelSwapChoice) => void = () => undefined
         const choice = await new Promise<ModelSwapChoice>((answer) => {
           answerCurrent = answer
-          // 首页、托盘的「打开」一次只放一个（launchRequest），记录页「接着聊」不走那里：记录页这一问
+          // 首页、托盘的「打开」一次只放一个（launchRequest），记录页「继续对话」不走那里：记录页这一问
           // 还开着时从托盘打开工具，新的一问会顶掉它。旧的那一问替用户关掉（等于这次先不打开），
           // 不然它永远等不到回答，记录页一直转圈。
           pendingModelSwap.current?.('cancel')
@@ -182,13 +182,13 @@ export function useToolLaunch(options: ToolLaunchOptions) {
           }
           catch (cause) {
             if (!launchIsCurrent(epoch)) return null
-            toast.show(`模型没换成，先照旧打开：${errorMessage(cause)}`, 'warn')
+            toast.show(`模型更换失败，已按原设置打开：${errorMessage(cause)}`, 'warn')
           }
           if (!launchIsCurrent(epoch)) return null
           if (saved) {
             const refreshed = await toolbox.refreshSavedConfig(() => launchIsCurrent(epoch))
             if (!launchIsCurrent(epoch)) return null
-            if (!refreshed) toast.show('模型已保存，但最新配置没有读到；工具列表可能仍显示旧模型。请重新检测，无需重复保存。', 'warn')
+            if (!refreshed) toast.show('模型已保存，但最新配置尚未获取，工具列表可能仍显示旧模型。请重新检测，无需重复保存。', 'warn')
           }
         }
       }
@@ -251,7 +251,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
     // 从这里起是主进程在打开，换了账号也要等它做完，「打开中」不再提前放掉。
     preparingLaunches.current.delete(id)
     const result = await toolsApi.launch(id, workspace, mode)
-    // 「这个文件夹不建议打开」「文件夹不让写入」那两问里点了「先不打开」，工具没起来：不能报打开了。
+    // 「不建议在此文件夹中打开」「该文件夹禁止写入」那两问里点了「暂不打开」，工具没起来：不能报打开了。
     // 新手引导以前照样当这一步做完、把引导关掉（11-18 复核 N11）。
     if (launchDeclined(result)) return false
     const warning = launchWarning(result)
@@ -261,8 +261,11 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       const rememberedWorkspace = result.rememberedWorkspace ?? undefined
       // 那个文件夹还空不空跟着它一起换（D45）：刚替他建好的打开了，「试试第一条命令」那句话不跳回「介绍一下这个项目」。
       const rememberedWorkspaceFresh = rememberedWorkspace !== undefined && result.rememberedWorkspaceFresh === true ? true : undefined
-      toolbox.setSnapshot((current) => current && (current.config.rememberedWorkspace !== rememberedWorkspace || current.config.rememberedWorkspaceFresh !== rememberedWorkspaceFresh)
-        ? { ...current, config: { ...current.config, rememberedWorkspace, rememberedWorkspaceFresh } }
+      // 是不是设置页换的也一起换（Q1）：这里刚选了另一个文件夹，别的工具不能再当它是设置页换的先进它。
+      const rememberedWorkspaceChosenAt = rememberedWorkspace !== undefined ? result.rememberedWorkspaceChosenAt : undefined
+      toolbox.setSnapshot((current) => current && (current.config.rememberedWorkspace !== rememberedWorkspace || current.config.rememberedWorkspaceFresh !== rememberedWorkspaceFresh
+        || current.config.rememberedWorkspaceChosenAt !== rememberedWorkspaceChosenAt)
+        ? { ...current, config: { ...current.config, rememberedWorkspace, rememberedWorkspaceFresh, rememberedWorkspaceChosenAt } }
         : current)
       // 开机检测还没跑完就打开的（首页摆的还是上次的结果）：那一轮落地时带的是打开前读的配置，
       // 会把刚记下的目录盖回去。重读一次配置，落地时就用这份新的（见 useToolbox 的 configRevision）。
@@ -311,7 +314,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
     const inFlight = launchRequest.current
     if (inFlight?.epoch() && (inFlight.id === id || !launchParkedOnAccount(inFlight.id))) return
     launchRequest.current = request
-    // 记着是哪个工具：错误框里的「修好它」「复制路径」都要靠它找到修哪个、哪个目录。
+    // 记着是哪个工具：错误框里的「立即修复」「复制路径」都要靠它找到修哪个、哪个目录。
     void perform('打开工具', async () => {
       try {
         // Codex 桌面端先查在不在运行、问不问中文，也算在「正在打开工具」里；要弹框问的，
@@ -363,7 +366,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       if (!launchIsCurrent(epoch)) return false
       if (!isMissingWorkspace(cause)) throw cause
       // 目录没了就没有「上次那条对话」可接,退回选择器开新的,总比只甩一条错误强。
-      toast.show('上次用的目录已经找不到了，请重新选择。', 'warn')
+      toast.show('上次使用的目录已不存在，请重新选择。', 'warn')
       return openTool(id, 'open', undefined, 'choose', epoch)
     }
   }
@@ -379,7 +382,8 @@ export function useToolLaunch(options: ToolLaunchOptions) {
     const recent = await toolsApi.recent().catch(() => null)
     // 读记录的这一下换了账号：这次按下去是上一个账号的，不接着打开（同 launch 里的 epoch）。
     if (!launchIsCurrent(epoch)) return
-    requestLaunch(id, launchWorkspaces(recent?.items ?? [], providerFor(id), toolbox.snapshot?.config.rememberedWorkspace)[0]?.path)
+    const config = toolbox.snapshot?.config
+    requestLaunch(id, launchWorkspaces(recent?.items ?? [], providerFor(id), config?.rememberedWorkspace, config?.rememberedWorkspaceChosenAt)[0]?.path)
   }
   return {
     modelSwap, restartDialog, setRestartDialog, chineseDialog, setChineseDialog,

@@ -55,12 +55,12 @@ describe('platform window presentation', () => {
   })
 
   it('tells each system where to quit from after the window kept crashing', () => {
-    expect(rendererCrashRecoveryDetail('win32')).toBe('可以再试一次重新加载。如果还是空白，请从任务栏右下角的星芒图标退出软件后重新打开，并在「反馈与客服」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。')
-    expect(rendererCrashRecoveryDetail('darwin')).toBe('可以再试一次重新加载。如果还是空白，请从屏幕顶部菜单栏的星芒图标退出软件后重新打开，并在「反馈与客服」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。')
+    expect(rendererCrashRecoveryDetail('win32')).toBe('可再次尝试重新加载。如仍为空白，请通过任务栏右下角的星芒图标退出软件后重新打开，并在「反馈与客服」页提交问题。正在进行的安装、下载和已保存的设置均不受影响。')
+    expect(rendererCrashRecoveryDetail('darwin')).toBe('可再次尝试重新加载。如仍为空白，请通过屏幕顶部菜单栏的星芒图标退出软件后重新打开，并在「反馈与客服」页提交问题。正在进行的安装、下载和已保存的设置均不受影响。')
     const linux = rendererCrashRecoveryDetail('linux')
     expect(linux).not.toContain('右下角')
     expect(linux).toContain('从应用菜单重新打开')
-    expect(linux).toContain('点「退出」')
+    expect(linux).toContain('点击「退出」')
   })
 
   it('does not apply a titlebar overlay while changing the macOS window theme', () => {

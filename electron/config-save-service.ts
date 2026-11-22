@@ -195,7 +195,7 @@ export function grokCliHooksMissing(input: {
 
 /**
  * 开机发现的旧钩子要不要不等客户点就改掉（第十八批 1b，yoyo 2026-09-30 同意）：只改本账号写的、
- * 这次启动还没试过的那份。别处来的配置、被改过的配置不自动动，首页照旧给「修好它」；
+ * 这次启动还没试过的那份。别处来的配置、被改过的配置不自动动，首页照旧给「立即修复」；
  * 试过一次没修好的也不再反复试，免得每次读配置都去改文件。
  */
 export function shouldAutoRepairCliHooks(input: {
@@ -361,7 +361,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   /**
    * Windows 版 Grok 找得到 Git Bash 就改用它跑钩子，原来按 PowerShell 写的那几行会每一轮报红。
    * 所以星芒装好 Git 之后，把 Grok 配置里本软件那几条钩子按新的 shell 重写一遍（只动我们
-   * 写过的那几条，原来没有就不补，同「修好它」那条路）。失败只记日志，不影响装 Git。
+   * 写过的那几条，原来没有就不补，同「立即修复」那条路）。失败只记日志，不影响装 Git。
    */
   async function refreshGrokHooksForShellChange(): Promise<void> {
     try {
@@ -427,6 +427,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       workspace: stored.workspace,
       ...(rememberedWorkspace ? { rememberedWorkspace } : {}),
       ...(rememberedWorkspace && isUntouchedStarterWorkspace(rememberedWorkspace, platform) ? { rememberedWorkspaceFresh: true } : {}),
+      ...(rememberedWorkspace && stored.workspaceChosenAt !== undefined ? { rememberedWorkspaceChosenAt: stored.workspaceChosenAt } : {}),
       providers: Object.fromEntries(
         providerIds.map((id) => {
           const { current, hooks, ownership } = providers[id]
@@ -841,11 +842,11 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     const cliHook = await resolveCliHookInvocation()
     const claudeStatusLineCommand = await resolveClaudeStatusLineCommand(provider)
     return serializeConfigWrite(async () => {
-      // 首页「补上」也走这里：Grok 一条没写过的，这次一并补上。
+      // 首页「启用」也走这里：Grok 一条没写过的，这次一并补上。
       const result = rewriteManagedCliHooks(provider, providerRoots, { cliHook, claudeStatusLineCommand, addIfMissing: provider === 'grok' })
       const after = managedCliHooksState(provider)
       if (after.stale) throw new Error('提醒设置没修好，原来的设置已备份，可以在「设置 › 备份迁移」里找回')
-      if (cliHook && after.missing) throw new Error('做完提醒和防睡还没补上，先点首页的「补上」准备好运行环境再试')
+      if (cliHook && after.missing) throw new Error('「完成与出错通知」和「运行时防止休眠」尚未启用，请先点击首页的「启用」准备运行环境后重试')
       runtimeLog?.log('info', 'config', 'cli-hooks.repaired', '已把工具里的提醒设置改到这次安装的位置', {
         provider,
         rewritten: Boolean(cliHook),
@@ -927,8 +928,8 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
 
   /**
    * 开机后第一次读配置时，把本账号写的、指向旧位置的钩子和状态行直接改好（卸载后换文件夹重装、
-   * 挪了软件、换装了 Node.js 之后），不用客户去首页点「修好它」。每个账号只查一遍、每家只试一次；
-   * 修不好只记日志，首页照旧给「修好它」。串成一条队，同时来的几次读配置不会一起改同一份文件。
+   * 挪了软件、换装了 Node.js 之后），不用客户去首页点「立即修复」。每个账号只查一遍、每家只试一次；
+   * 修不好只记日志，首页照旧给「立即修复」。串成一条队，同时来的几次读配置不会一起改同一份文件。
    */
   function autoRepairStaleCliHooks(): Promise<ProviderId[]> {
     const run = autoRepairQueue.then(repairStaleAccountCliHooks, repairStaleAccountCliHooks)
@@ -937,7 +938,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   }
 
   async function repairStaleAccountCliHooks(): Promise<ProviderId[]> {
-    // 卸了重装回来，先把卸载时收回的补上，首页这次读到的就是补完的样子（Windows 上 Grok 不会先冒出「补上」）。
+    // 卸了重装回来，先把卸载时收回的补上，首页这次读到的就是补完的样子（Windows 上 Grok 不会先冒出「启用」）。
     await restoreCliHooksRemovedByUninstall()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     // 每个账号这次启动只查一遍：读配置很频繁，不能每次都去翻四家的文件（Windows 上还要读注册表）。
@@ -968,7 +969,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
         repaired.push(provider)
         runtimeLog?.log('info', 'config', 'cli-hooks.auto-repaired', '打开软件时把指向旧位置的提醒设置改好了', { provider })
       } catch (error) {
-        runtimeLog?.log('warn', 'config', 'cli-hooks.auto-repair-failed', '打开软件时没能改好提醒设置，首页留着「修好它」', {
+        runtimeLog?.log('warn', 'config', 'cli-hooks.auto-repair-failed', '打开软件时没能改好提醒设置，首页留着「立即修复」', {
           provider,
           reason: credentialFailureReason(error),
         })
@@ -1116,7 +1117,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   /**
    * 「保持当前」的重置碰上工具自己读不了的主配置：本机认得出这把 Key 是当前站这边的（来源记录对得上，见
    * recoverBrokenConfigOwnership），或者它正是当前账号签给这个工具、本机缓存着的那把，就照旧沿用。重置是坏文件
-   * 唯一的出路（首页「修好它」也走它），以前在这里一律报「属于其他账号」，一个字没写。认不出来的照旧拦，Key 不
+   * 唯一的出路（首页「立即修复」也走它），以前在这里一律报「属于其他账号」，一个字没写。认不出来的照旧拦，Key 不
    * 发出去。只更新（merge）要照着原文件改，读不了照旧走不通，不在此列。返回 cached = 只靠缓存认出来的，来源照旧
    * 按记录算（同读得懂的配置沿用这把时）。
    */

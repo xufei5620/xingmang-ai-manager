@@ -17,11 +17,11 @@ export const MAX_DATA_TRANSFER_BYTES = 64 * 1024 * 1024
 export const MAX_CONVERSATION_TEXT_BYTES = 16 * 1024 * 1024
 const MAX_TITLE_LENGTH = 200
 
-export const dataTransferInvalidMessage = '这个文件不是星芒导出的，或者已经损坏，没有导入任何内容。'
+export const dataTransferInvalidMessage = '该文件并非由星芒导出或已损坏，未导入任何内容。'
 // yoyo 2026-11-13 批的字（设置 X-7）。
-export const dataTransferBusyMessage = '这个文件现在读不了，可能正被别的程序占着。关掉它，再点一次「导入」。'
-const dataTransferNewerMessage = '这个文件是更新版本的星芒导出的，请先把软件更新到最新版再导入。'
-const dataTransferTooLargeMessage = '聊天记录太多，超过 64 MB，没法存成一个文件。'
+export const dataTransferBusyMessage = '该文件暂时无法读取，可能已被其他程序打开。请关闭相关程序后再次点击「导入」。'
+const dataTransferNewerMessage = '该文件由更高版本的星芒导出，请先将软件更新至最新版本后再导入。'
+const dataTransferTooLargeMessage = '聊天记录超过 64 MB，无法保存为单个文件。'
 
 /** 能带到新电脑上的设置，每项都是明确的值（缺省也写成「自动 / 每次询问」这样的值）。 */
 export interface PortableSettings {
@@ -254,7 +254,7 @@ export function dataTransferFileName(now: Date): string {
 
 export function parseChatConversationExport(value: unknown): ChatConversationExportInput {
   if (!isRecord(value) || typeof value.title !== 'string' || typeof value.text !== 'string') throw new Error('导出对话请求格式无效')
-  if (Buffer.byteLength(value.text, 'utf8') > MAX_CONVERSATION_TEXT_BYTES) throw new Error('这段对话太长，超过 16 MB，没法导出成一个文件')
+  if (Buffer.byteLength(value.text, 'utf8') > MAX_CONVERSATION_TEXT_BYTES) throw new Error('该对话超过 16 MB，无法导出为单个文件')
   return { title: value.title.slice(0, MAX_TITLE_LENGTH), text: value.text }
 }
 

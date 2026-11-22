@@ -74,11 +74,11 @@ export function useAppBoot({ native, app, noteStartupCheck, showRouteRestartHint
       showRouteRestartHint(result.settings)
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
         void app.startupUpdate().then((checked) => { if (current) setUpdate(checked) }).catch((cause) => {
-          if (current) noteStartupCheck(startupCheckFailure('update', errorMessage(cause, '更新检查没有完成')))
+          if (current) noteStartupCheck(startupCheckFailure('update', errorMessage(cause, '更新检查未完成')))
         })
       }
     }).catch((cause) => {
-      if (current) { setBootError(errorMessage(cause, '启动检查没有完成')); setBoot('failed') }
+      if (current) { setBootError(errorMessage(cause, '启动检查未完成')); setBoot('failed') }
     })
     return () => { current = false }
   }, [app, bootAttempt, noteStartupCheck, showRouteRestartHint, sessionEvents, setGuide, setLastFailure])

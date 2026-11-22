@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { ArrowLeft, Bell, ChevronRight, ExternalLink, Gift, X } from 'lucide-react'
 import { Button, Dialog } from '../../ui'
 import { userFacingErrorMessage } from '../../business-common'
 import { useLatestRequest } from '../../latest-request'
 import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../../external-link-fallback'
+import { MarkdownView, preloadMarkdown } from '../../markdown-view'
 import { writeLocalPreference } from '../app/preferences'
 import { useOnlineStatus } from './useOnlineStatus'
 import type { RelayNotice, RelayNoticeReadMode } from '../../../../electron/relay-backend'
@@ -44,7 +43,7 @@ interface Props {
   /** 充值活动卡片只挂在首页；别的页面仍是原来那条细横条。 */
   promoVisible?: boolean
   /**
-   * 当前账号能在软件里充值时才给：卡片和活动条上的「去充值」进「个人中心 › 充值与订阅」。
+   * 当前账号能在软件里充值时才给：卡片和活动条上的「前往充值」进「个人中心 › 充值与订阅」。
    * 带金额时充值页直接选好这一档。
    */
   onTopUp?(amount?: number): void
@@ -884,8 +883,9 @@ export function AnnouncementContent({
   const imageOrigin = announcementOrigin(noticeUrl)
   return (
     <div className="v2-announcement-content">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+      <MarkdownView
+        gfm
+        text={text}
         components={{
           img: ({ alt, src }) => {
             const safeSrc = safeAnnouncementImage(src ?? null, imageOrigin)
@@ -904,9 +904,7 @@ export function AnnouncementContent({
             ? <input type="checkbox" checked={Boolean(checked)} disabled readOnly aria-hidden="true" />
             : null,
         }}
-      >
-        {text}
-      </ReactMarkdown>
+      />
     </div>
   )
 }
@@ -937,7 +935,7 @@ export function formatAnnouncementError(cause: unknown): AnnouncementError {
   return responseTooLarge
     ? {
         responseTooLarge: true,
-        message: '这条公告里的图片或视频太大，这里显示不了，可以到官网看完整公告。',
+        message: '公告中的图片或视频过大，无法在此显示，请前往官网查看完整公告。',
       }
     : { responseTooLarge: false, message: message || '公告读取失败' }
 }
@@ -950,7 +948,7 @@ export function formatAnnouncementLoadError(cause: unknown): AnnouncementError {
   const formatted = formatAnnouncementError(cause)
   if (formatted.responseTooLarge) return formatted
   if (cause instanceof AnnouncementCollectionError) return { ...formatted, collectionUnreadable: true }
-  return { responseTooLarge: false, message: '公告暂时没读到，过一会儿点铃铛再看。' }
+  return { responseTooLarge: false, message: '公告加载失败，请稍后点击铃铛图标重试。' }
 }
 
 /** 这句报错指客户去官网时，旁边就得有「打开官网查看完整公告」；只说「暂时没读到」的不给。 */
@@ -959,7 +957,7 @@ export function announcementErrorOffersSite(error: AnnouncementError): boolean {
 }
 
 // 已读没记上时只说这一句，原因不上屏。
-const announcementReadFailedMessage = '没记上已读，下次打开可能还会提醒。'
+const announcementReadFailedMessage = '已读状态保存失败，下次打开时可能再次提醒。'
 
 interface PromoCardProps {
   title: string
@@ -990,12 +988,12 @@ export function PromoCard({ title, deadline, tiers, lines, others, onTopUp, onDe
       <p className="v2-promo-card-eyebrow">充值活动{deadline && <span data-testid="announcement-promo-deadline"> · {deadline}</span>}</p>
       <h2 className="v2-promo-card-title">{title}</h2>
       {tiers.length ? <>
-        <p className="v2-promo-card-text">每笔充值单独算，充得越多送得越多，送的额度和充值一起进当前账号余额。{onTopUp && '点一档直接去付款。'}</p>
+        <p className="v2-promo-card-text">每笔充值单独计算，充值越多赠送越多，赠送额度与充值金额一并计入当前账号余额。{onTopUp && '选择档位即可前往支付。'}</p>
         <ul className="v2-promo-tiers" data-testid="announcement-promo-tiers" aria-label="充值档位">
           {tiers.map((tier) => {
             const best = tier.amount === bestAmount
             const content = <>
-              {best && <span className="v2-promo-tier-badge">送得最多</span>}
+              {best && <span className="v2-promo-tier-badge">赠送最多</span>}
               <span className="v2-promo-tier-pay">充 {formatPromoAmount(tier.pay)}</span>
               <span className="v2-promo-tier-gift">送 {tier.percent}%</span>
               <span className="v2-promo-tier-get">到账 <strong>{formatPromoAmount(tier.amount)}</strong></span>
@@ -1003,7 +1001,7 @@ export function PromoCard({ title, deadline, tiers, lines, others, onTopUp, onDe
             return <li key={tier.amount} className={best ? 'is-best' : undefined}>
               {onTopUp
                 ? <button type="button" className="v2-promo-tier" data-testid={`announcement-promo-tier-${tier.amount}`} onClick={() => onTopUp(tier.amount)}
-                  aria-label={`充 ${formatPromoAmount(tier.pay)} 送 ${tier.percent}%，到账 ${formatPromoAmount(tier.amount)}，去充值`}>{content}</button>
+                  aria-label={`充 ${formatPromoAmount(tier.pay)} 送 ${tier.percent}%，到账 ${formatPromoAmount(tier.amount)}，前往充值`}>{content}</button>
                 : <div className="v2-promo-tier" data-testid={`announcement-promo-tier-${tier.amount}`}>{content}</div>}
             </li>
           })}
@@ -1012,11 +1010,11 @@ export function PromoCard({ title, deadline, tiers, lines, others, onTopUp, onDe
         {lines.map((line, index) => <p key={index}>{line}</p>)}
       </div>}
       <div className="v2-promo-card-actions">
-        {onTopUp && <Button size="sm" variant="primary" onClick={() => onTopUp()} testId="announcement-promo-topup">去充值</Button>}
+        {onTopUp && <Button size="sm" variant="primary" onClick={() => onTopUp()} testId="announcement-promo-topup">前往充值</Button>}
         <Button size="sm" onClick={onDetail} testId="announcement-promo-detail">活动详情</Button>
         <span className="v2-promo-card-spacer" />
-        <Button size="sm" variant="ghost" onClick={onSnooze} testId="announcement-promo-snooze" title="今天先收起，明天打开还会出现">今天不再提醒</Button>
-        <Button size="sm" variant="ghost" onClick={onDismiss} testId="announcement-promo-dismiss" title="这张大卡片以后不再出现，顶上的活动条留到活动结束">这个活动不再提醒</Button>
+        <Button size="sm" variant="ghost" onClick={onSnooze} testId="announcement-promo-snooze" title="今日不再显示，明日将再次显示">今天不再提醒</Button>
+        <Button size="sm" variant="ghost" onClick={onDismiss} testId="announcement-promo-dismiss" title="此卡片将不再显示，顶部活动条保留至活动结束">不再提醒此活动</Button>
       </div>
       {others.length > 0 && <div className="v2-promo-card-more" data-testid="announcement-promo-others">
         <Bell size={14} aria-hidden="true" />
@@ -1038,8 +1036,8 @@ export function PromoBar({ items, onTopUp, onHide }: { items: PromoBarItem[]; on
         {item.name}{item.deadline && <small>{item.deadline}</small>}
       </button>)}
     </span>
-    {onTopUp && <Button size="xs" variant="primary" onClick={onTopUp} testId="announcement-promo-bar-topup">去充值</Button>}
-    <Button size="xs" variant="ghost" icon={X} aria-label="今天先收起活动提醒" title="今天先收起，明天打开还会提醒" onClick={onHide} testId="announcement-promo-bar-close" />
+    {onTopUp && <Button size="xs" variant="primary" onClick={onTopUp} testId="announcement-promo-bar-topup">前往充值</Button>}
+    <Button size="xs" variant="ghost" icon={X} aria-label="今日不再显示活动提醒" title="今日不再显示，明日将再次提醒" onClick={onHide} testId="announcement-promo-bar-close" />
   </div>
 }
 
@@ -1122,6 +1120,8 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     setBlockedLink(null)
     returnToRow.current = null
     if (shown) setAttempt((value) => value + 1)
+    // 排公告正文的那份代码不在首屏包里（R9），框一打开就跟读公告并着读进来。
+    if (shown) void preloadMarkdown()
   }, [shown])
   // 公告里的链接多半不在可直接打开的名单里；被拦下时把地址复制给用户，
   // 其它失败仍走原来的错误提示。
@@ -1337,7 +1337,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
           await syncLocalReads(scope, [entry.id])
           // Keep a best-effort cache for older builds; only the host's durable write confirms success.
           markLocalAnnouncementRead(scope, entry.id)
-        } else if (!markLocalAnnouncementRead(scope, entry.id)) throw new Error('本机没有保存已读状态，下次打开时可能再次提醒。')
+        } else if (!markLocalAnnouncementRead(scope, entry.id)) throw new Error('已读状态保存失败，下次打开时可能再次提醒。')
       } else {
         if (!markRemoteRead) throw new Error('公告已读状态暂时无法保存，请稍后重试。')
         await markRemoteRead(announcement.id, entry.id)
@@ -1390,7 +1390,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
         await syncLocalReads(scope, [id])
         writeLocalPreference(`xingmang-v2-notice:${scope}`, announcement.id)
       } else if (!writeLocalPreference(`xingmang-v2-notice:${scope}`, announcement.id)) {
-        throw new Error('本机没有保存已读状态，下次打开时可能再次提醒。')
+        throw new Error('已读状态保存失败，下次打开时可能再次提醒。')
       }
     } catch (cause) {
       if (capturedRevision()) setError(formatAnnouncementError(cause))

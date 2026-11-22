@@ -28,37 +28,37 @@ describe('toolRouteHomeTexts', () => {
   })
 
   it('shows a quiet line while the server is switching', () => {
-    expect(toolRouteHomeTexts({ serverSwitching: true }, 0)).toEqual({ quiet: '服务端正在切换线路，稍等几分钟' })
+    expect(toolRouteHomeTexts({ serverSwitching: true }, 0)).toEqual({ quiet: '服务端正在切换线路，请稍候几分钟' })
   })
 
   it('explains an outage by its cause and says first when the app itself still connects', () => {
     expect(toolRouteHomeTexts({ outage: { id: 1, reason: 'certificate', appReachable: false } }, 0).outage)
-      .toBe('你所在的网络在拦截星芒的加密连接（把证书换成了别的），AI 工具这会儿连不上。可以换个网络（比如手机热点）再试；公司或学校的网络请找网络管理员。')
+      .toBe('当前网络正在拦截星芒的加密连接（证书已被替换），AI 工具暂时无法连接。请切换网络（如手机热点）后重试；公司或学校网络请联系网络管理员。')
     expect(toolRouteHomeTexts({ outage: { id: 1, reason: 'dns', appReachable: true } }, 0).outage)
-      .toBe('星芒本身能连上。这台电脑这会儿查不到星芒的地址，AI 工具连不上。可以换个网络再试。')
+      .toBe('星芒服务连接正常。本机暂时无法解析星芒的地址，AI 工具无法连接。请切换网络后重试。')
     for (const reason of ['reset', 'unreachable'] as const) {
       expect(toolRouteHomeTexts({ outage: { id: 1, reason, appReachable: false } }, 0).outage)
-        .toBe('你所在的网络掐断了星芒的地址，AI 工具这会儿连不上。可以换个网络（比如手机热点）再试。')
+        .toBe('当前网络阻断了星芒的连接，AI 工具暂时无法连接。请切换网络（如手机热点）后重试。')
     }
   })
 
   it('tells the customer to change DNS when the address itself was pointed elsewhere', () => {
     expect(toolRouteHomeTexts({ outage: { id: 1, reason: 'hijack', appReachable: false } }, 0).outage)
-      .toBe('你这台电脑用的 DNS（查网址用的服务）把星芒的地址查错了，AI 工具这会儿连不上。把电脑的 DNS 改成 223.5.5.5 和 119.29.29.29，或者换个网络（比如手机热点）再试。')
+      .toBe('本机使用的 DNS（域名解析服务）返回了错误的星芒地址，AI 工具暂时无法连接。请将 DNS 改为 223.5.5.5 和 119.29.29.29，或切换网络（如手机热点）后重试。')
   })
 
   it('keeps the hijack sentence for half an hour and never mentions DNS', () => {
     const shown = toolRouteHomeTexts({ hijack: { id: 1_000 } }, 1_000).hijack
-    expect(shown).toBe('你所在的网络把星芒线路2的地址指到了别处，已为你改用线路1，不影响使用。星芒不会改你电脑的任何设置。')
+    expect(shown).toBe('当前网络将星芒线路2的地址解析到了其他位置，已自动改用线路1，不影响使用。星芒不会修改本机的任何设置。')
     expect(shown).not.toMatch(/DNS|洛杉矶|CF/)
     expect(toolRouteHomeTexts({ hijack: { id: 1_000 } }, 1_000 + toolRouteHijackShownMs).hijack).toBeUndefined()
   })
 
   it('names the line that was actually pointed elsewhere', () => {
     expect(toolRouteHomeTexts({ hijack: { id: 1_000, line: 'direct' } }, 1_000).hijack)
-      .toBe('你所在的网络把星芒线路2的地址指到了别处，已为你改用线路1，不影响使用。星芒不会改你电脑的任何设置。')
+      .toBe('当前网络将星芒线路2的地址解析到了其他位置，已自动改用线路1，不影响使用。星芒不会修改本机的任何设置。')
     const shown = toolRouteHomeTexts({ hijack: { id: 1_000, line: 'primary' } }, 1_000).hijack
-    expect(shown).toBe('你所在的网络把星芒线路1的地址指到了别处，已为你改用线路2，不影响使用。星芒不会改你电脑的任何设置。')
+    expect(shown).toBe('当前网络将星芒线路1的地址解析到了其他位置，已自动改用线路2，不影响使用。星芒不会修改本机的任何设置。')
     expect(shown).not.toMatch(/DNS|洛杉矶|CF/)
   })
 })

@@ -190,17 +190,17 @@ describe('usage', () => {
   })
 
   it('words an empty list by what was filtered', () => {
-    expect(usageEmptyText(false, false)).toEqual({ title: '这段时间没有调用', description: '' })
-    expect(usageEmptyText(true, false)).toEqual({ title: '这段时间没有调用', description: '换个筛选条件看看。' })
-    expect(usageEmptyText(true, true)).toEqual({ title: '这段时间没有失败的调用', description: '换个筛选条件看看。' })
+    expect(usageEmptyText(false, false)).toEqual({ title: '该时间段暂无调用', description: '' })
+    expect(usageEmptyText(true, false)).toEqual({ title: '该时间段暂无调用', description: '请调整筛选条件。' })
+    expect(usageEmptyText(true, true)).toEqual({ title: '该时间段无失败的调用', description: '请调整筛选条件。' })
   })
 
   it('accepts only positive whole numbers for the Sub2API key and group filters', () => {
     expect(sub2ApiFilterId(undefined)).toBeUndefined()
     expect(sub2ApiFilterId('')).toBeUndefined()
     expect(sub2ApiFilterId('4')).toBe(4)
-    expect(() => sub2ApiFilterId('0')).toThrow('密钥编号和分组编号要填正整数。')
-    expect(() => sub2ApiFilterId('1.5')).toThrow('密钥编号和分组编号要填正整数。')
+    expect(() => sub2ApiFilterId('0')).toThrow('密钥编号和分组编号须为正整数。')
+    expect(() => sub2ApiFilterId('1.5')).toThrow('密钥编号和分组编号须为正整数。')
   })
 
   it('leaves the time zone out of the calendar note on a Beijing clock and says it follows this computer otherwise', () => {
@@ -209,10 +209,10 @@ describe('usage', () => {
     expect(usageCalendarNote('Asia/Shanghai', instant)).toBe(plain)
     // 跟北京同一个钟的时区也不提。
     expect(usageCalendarNote('Asia/Hong_Kong', instant)).toBe(plain)
-    expect(usageCalendarNote('Asia/Tokyo', instant)).toBe(`${plain}按这台电脑的时间算。`)
-    expect(usageCalendarNote('America/Los_Angeles', instant)).toBe(`${plain}按这台电脑的时间算。`)
-    expect(usageCalendarNote('UTC', instant)).toBe(`${plain}按这台电脑的时间算。`)
-    expect(usageCalendarNote('Not/A_Zone', instant)).toBe(`${plain}按这台电脑的时间算。`)
+    expect(usageCalendarNote('Asia/Tokyo', instant)).toBe(`${plain}按本机时间计算。`)
+    expect(usageCalendarNote('America/Los_Angeles', instant)).toBe(`${plain}按本机时间计算。`)
+    expect(usageCalendarNote('UTC', instant)).toBe(`${plain}按本机时间计算。`)
+    expect(usageCalendarNote('Not/A_Zone', instant)).toBe(`${plain}按本机时间计算。`)
     for (const note of [usageCalendarNote('Asia/Tokyo', instant), usageCalendarNote('Asia/Shanghai', instant)]) expect(note).not.toMatch(/[A-Za-z]/)
   })
 })

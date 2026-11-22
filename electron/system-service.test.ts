@@ -407,6 +407,31 @@ describe('createSystemService', () => {
     expect(touched.rememberedWorkspaceFresh).toBeUndefined()
   })
 
+  // 0.2.25 总单 Q1：设置页换的那一刻只跟着记得住的那个文件夹走，首页据此先进它。
+  it('tells the renderer when the remembered folder was chosen on the settings page', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-chosen-summary-')))
+    temporaryDirectories.push(root)
+    const userHome = path.join(root, 'home')
+    const workspace = path.join(userHome, 'Projects', 'shop')
+    fs.mkdirSync(workspace, { recursive: true })
+    const store = new AppSettingsStore(path.join(root, 'settings.json'), root)
+    await store.write({ ...defaultAppSettings(root), workspace, workspaceChosenAt: 1_700_000_000_000 })
+    const inspect = vi.fn((provider: ProviderId) => ({
+      baseUrl: providerBaseUrls[provider], actualBaseUrl: providerBaseUrls[provider], exists: false, apiKey: '', hasApiKey: false,
+      matchesRelay: false, model: '', dataDirectory: path.join(userHome, provider), dataDirectoryExists: false, files: [], updatedAt: null,
+    }))
+    const service = createSystemService(store, { providerRoots: { userHome, codexHome: path.join(userHome, '.codex') }, inspectProviderConfig: inspect })
+
+    expect(service.getConfig(false)).toMatchObject({ rememberedWorkspace: workspace, rememberedWorkspaceChosenAt: 1_700_000_000_000 })
+    await store.write({ ...defaultAppSettings(root), workspace })
+    expect(service.getConfig(false)).not.toHaveProperty('rememberedWorkspaceChosenAt')
+    // A time with no folder the home page may open (the home directory itself) is not passed on.
+    await store.write({ ...defaultAppSettings(root), workspace: userHome, workspaceChosenAt: 1_700_000_000_000 })
+    const home = service.getConfig(false)
+    expect(home).not.toHaveProperty('rememberedWorkspace')
+    expect(home).not.toHaveProperty('rememberedWorkspaceChosenAt')
+  })
+
   it('uses provider roots for config surfaces and codexEnv only for Codex CLI work', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-rooted-system-service-'))
     temporaryDirectories.push(root)
@@ -2072,7 +2097,7 @@ describe('createSystemService', () => {
   })
 
   // Mac 验收 R1：命令行里找到的 Codex / Grok 既不是 npm 装的、又核不出是官方安装器那一份，首页要能改给
-  // 「用星芒装一份」；一时没核成（起进程失败这类）的不算，照旧按原来的来源显示。
+  // 「使用星芒安装」；一时没核成（起进程失败这类）的不算，照旧按原来的来源显示。
   it('marks a Mac Codex and Grok that cannot be recognised as unrecognised installs found on the path', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-unrecognized-install-scan-'))
     temporaryDirectories.push(directory)
@@ -4756,7 +4781,7 @@ describe('Windows restart handoff', () => {
     expect(runCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         executable: expect.stringMatching(/System32[\\/]shutdown\.exe$/i),
-        argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', 'XingMang AI requires a restart to finish Windows updates'],
+        argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', '星芒AI管理工具将重启电脑，请保存未保存的文件。'],
       }),
       expect.objectContaining({ trustedOnly: true, timeoutMs: 10_000 }),
     )
@@ -7546,7 +7571,7 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
 
     const calledOff = accountWork.queue()
     accountWork.abortQueued()
-    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号刚切换过')
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号刚刚切换')
     expect(fs.existsSync(path.join(userHome, '.claude.json'))).toBe(false)
 
     const work = accountWork.queue()
@@ -7971,7 +7996,7 @@ describe('opening a CLI on macOS', () => {
     const failure: unknown = await launch().catch((error: unknown) => error)
     expect(failure instanceof Error && failure.message).toBe(
       '未能打开 Claude Code：终端窗口打开了，但工具没有跟着起来。先看一眼终端窗口里是不是在问什么（比如要不要更新），'
-      + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「找客服」，把这句话发给客服。',
+      + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「联系客服」，把这句话发给客服。',
     )
     expect(failure instanceof Error && failure.cause).toBeInstanceOf(MacosTerminalNotStartedError)
     const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')

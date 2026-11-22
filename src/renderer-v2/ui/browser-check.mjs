@@ -122,7 +122,7 @@ test('Dialog traps focus, protects dirty backdrop/escape, preserves draft and re
     // v4: a dirty close keeps the form in view and swaps the footer for a bar at the bottom.
     const bar = dialog.locator('.xm-leave-bar');
     await page.mouse.click(8, 8);
-    await bar.getByText('有修改还没保存，关掉会丢掉这些修改').waitFor();
+    await bar.getByText('有未保存的修改，关闭后修改将丢失').waitFor();
     assert.equal(await bar.getAttribute('role'), 'alert');
     assert.equal(await dialog.isVisible(), true);
     assert.equal(await page.getByLabel('配置草稿').isVisible(), true);
@@ -340,7 +340,7 @@ test('ToolRow uses six fixed columns, real brands and exact theme tokens across 
     try {
       const row = page.getByTestId('gallery-tool-row');
       assert.match(await row.innerText(), /Claude Code/);
-      assert.match(await row.innerText(), /已配好/);
+      assert.match(await row.innerText(), /已配置/);
       assert.doesNotMatch(await row.innerText(), /星芒中转|ready/);
       const columns = await row.evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' '));
       assert.equal(columns.length, 6); assert.deepEqual(columns.slice(-2), ['92px', '32px']);

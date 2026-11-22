@@ -68,7 +68,7 @@ import type { BusinessActions } from '../../business-actions'
 
 type AppSettings = Awaited<ReturnType<V2Bridge['getSettings']>>
 type SettingsUpdate = Parameters<V2Bridge['saveSettings']>[0]
-/** 检查结果里「星芒 AI 网络」那一项的代号；设置里「网络检查」的「去检查页」直接翻到这一项。 */
+/** 检查结果里「星芒 AI 网络」那一项的代号；设置里「网络检查」的「前往检查页」直接翻到这一项。 */
 const networkDiagnosticCode = 'XINGMANG_NETWORK'
 /** 主进程说的「代理路由」是技术词，界面上换成「连接路径」「通过转发连接」，不出现「代理」。 */
 function proxySummaryText(summary: string): string {
@@ -102,7 +102,7 @@ export const settingsPageLead = '改动会立即保存。'
 
 type ClaudeToggleNotice = { text: string; tone: 'ok' | 'warn' }
 /** later：现在不是星芒在管 Claude Code 的配置（官方账号、没登录、自己填的密钥、还没配过），等下次星芒替它保存配置时一起写。 */
-const claudeToggleLaterNotice: ClaudeToggleNotice = { text: '开关记下了，下次星芒替 Claude Code 保存配置时一起写进去。', tone: 'ok' }
+const claudeToggleLaterNotice: ClaudeToggleNotice = { text: '设置已记录，将在下次保存 Claude Code 配置时一并写入。', tone: 'ok' }
 
 /**
  * 「点关闭按钮时」里藏起窗口那一项。Mac 上没有「托盘」这个说法，星芒的图标在屏幕顶部的菜单栏里
@@ -131,11 +131,11 @@ export function launchAtLoginFallbackNote(isMac: boolean): string {
  * 「发测试通知」交给系统以后那句（决定单 D68、深查 NT-6）。系统里把星芒的通知关了，大多不会报错
  * （Mac 上一般静默），所以不能再说「已发送」，叫客户没看到时去系统的通知设置里看。
  */
-export const testNotificationHandedOffText = '已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。'
+export const testNotificationHandedOffText = '测试通知已提交给系统。如未收到，请在系统通知设置中确认星芒的通知已开启。'
 /** 那句旁边的按钮，打开哪一页由主进程定（electron/platform/system-service.ts 的 notificationSettingsTarget）。 */
 export const openNotificationSettingsLabel = '打开系统通知设置'
 /** 系统没让打开时补的那句，说法同检查页「没能打开网络设置」（network-settings-fix.ts）。 */
-export const notificationSettingsUnavailableText = '没能打开系统通知设置，请在系统设置里找「通知」。'
+export const notificationSettingsUnavailableText = '无法打开系统通知设置，请在系统设置中找到「通知」。'
 /** Windows、Mac 有能直接打开的系统通知设置页；Linux 各家桌面的设置程序不一样，不给按钮。 */
 export function canOpenNotificationSettings(platform: string): boolean {
   return platform === 'windows' || platform === 'macos'
@@ -145,16 +145,16 @@ export function canOpenNotificationSettings(platform: string): boolean {
  * 客户写过这一项（星芒没写过），星芒不替他改，开关照样记下。
  */
 export function claudeWriteBoundaryNotice(result: ClaudeToggleResult): ClaudeToggleNotice {
-  if (result.applied === 'kept') return { text: '开关记下了。Claude Code 自己的设置里你写过这一项，星芒没有改它。', tone: 'warn' }
+  if (result.applied === 'kept') return { text: '设置已记录。Claude Code 自身设置中已有此项，星芒未作修改。', tone: 'warn' }
   if (result.applied === 'later') return claudeToggleLaterNotice
-  return { text: result.enabled ? '已打开，新开的 Claude Code 会按这个来。' : '已关掉，新开的 Claude Code 不再拦。', tone: 'ok' }
+  return { text: result.enabled ? '已开启，新打开的 Claude Code 将按此设置运行。' : '已关闭，新打开的 Claude Code 将不再限制文件修改范围。', tone: 'ok' }
 }
 
 /** 「Claude Code 提交代码时不署名」拨完以后那句小提示（同类对比 备选 6），说法同上。 */
 export function claudeCommitAttributionNotice(result: ClaudeToggleResult): ClaudeToggleNotice {
-  if (result.applied === 'kept') return { text: '开关记下了。Claude Code 自己的设置里你写过署名这一项，星芒没有改它。', tone: 'warn' }
+  if (result.applied === 'kept') return { text: '设置已记录。Claude Code 自身设置中已有署名项，星芒未作修改。', tone: 'warn' }
   if (result.applied === 'later') return claudeToggleLaterNotice
-  return { text: result.enabled ? '已打开，新开的 Claude Code 提交代码时不再署名。' : '已关掉，新开的 Claude Code 提交代码时照常署名。', tone: 'ok' }
+  return { text: result.enabled ? '已开启，新打开的 Claude Code 提交代码时将不再署名。' : '已关闭，新打开的 Claude Code 提交代码时将照常署名。', tone: 'ok' }
 }
 
 /**
@@ -476,8 +476,8 @@ export function SettingsPage({
     const settingsFailed = () =>
       new Error(
         added
-          ? `导入了 ${added} 个对话，设置没有保存成功，可以再点一次「导入」`
-          : '设置没有保存成功，可以再点一次「导入」',
+          ? `已导入 ${added} 个对话，但设置保存失败，请再次点击「导入」`
+          : '设置保存失败，请再次点击「导入」',
       )
     if (patch && !(await update(patch, { quiet: true }))) throw settingsFailed()
     // 主题：有系统界面设置时，开机用哪套颜色看的是那边的主题偏好（platform-api.ts 的 bindPlatformAppearance），
@@ -594,12 +594,12 @@ export function SettingsPage({
     />
   )
   // 要先读一次系统状态的那几项：读的那一下照常画开关、灰着点不了，不写字；没读到写
-  // 「暂未读到」，页顶红条给「重新读取」；只有这台电脑真的没有这一项，才写「这台电脑上用不了」。
+  // 「暂未获取」，页顶红条给「重新读取」；只有这台电脑真的没有这一项，才写「本机不可用」。
   const systemPending = (label: string) =>
     !systemApi ? (
-      <Pill tone="neutral">这台电脑上用不了</Pill>
+      <Pill tone="neutral">本机不可用</Pill>
     ) : systemError ? (
-      <Pill tone="neutral">暂未读到</Pill>
+      <Pill tone="neutral">暂未获取</Pill>
     ) : (
       <Switch
         checked={false}
@@ -778,8 +778,8 @@ export function SettingsPage({
           {row(
             'hardware-acceleration',
             resource.data?.capabilities.displayCompat === 'auto'
-              ? '显卡驱动刚才接连出了几次问题，这次已临时改用兼容方式显示。界面出现黑屏、花屏、闪烁或打开就闪退时，关掉它'
-              : '界面出现黑屏、花屏、闪烁或打开就闪退时，关掉它',
+              ? '显卡驱动近期多次出现异常，本次已临时改用兼容显示模式。界面出现黑屏、花屏、闪烁或启动后闪退时，请关闭此项'
+              : '界面出现黑屏、花屏、闪烁或启动后闪退时，请关闭此项',
             <Switch
               checked={settings.hardwareAcceleration !== false}
               onChange={(hardwareAcceleration) =>
@@ -795,7 +795,7 @@ export function SettingsPage({
           {displayRelaunch && (
             <Notice
               tone="neutral"
-              title="显示方式已改好"
+              title="显示方式已更新"
               body="重开星芒后生效。"
               testId="settings-display-relaunch"
               actions={
@@ -855,7 +855,7 @@ export function SettingsPage({
             }
           />
         ) : systemState ? (
-          <Pill tone="neutral">这台电脑上用不了</Pill>
+          <Pill tone="neutral">本机不可用</Pill>
         ) : (
           systemPending('开机自动启动')
         ),
@@ -865,7 +865,7 @@ export function SettingsPage({
         // Linux 的任务栏不一定有放托盘图标的地方（主进程先问过），没有就只能退出。
         // 没有游戏加速的电脑（Linux）不说加速。
         isLinux && resource.data && !resource.data.capabilities.tray
-          ? '这台电脑的任务栏上没有放星芒图标的地方，点关闭会直接退出软件'
+          ? '本机任务栏不支持显示星芒图标，关闭窗口将直接退出软件'
           : closeToTrayNote(isMac, accelerationAvailable),
         <Segment
           options={[
@@ -901,7 +901,7 @@ export function SettingsPage({
       ),
       workspace: row(
         'workspace',
-        '打开工具时进入这个文件夹；工具会读写里面的文件，请选你信任的文件夹',
+        '打开工具时进入此文件夹；工具将读写其中的文件，请选择可信任的文件夹',
         <div className="v2-business-control">
           <span className="v2-business-path">{settings.workspace}</span>
           <Button
@@ -912,7 +912,8 @@ export function SettingsPage({
                 'workspace',
                 async () => {
                   const workspace = await api.chooseWorkspace()
-                  if (workspace) await update({ workspace })
+                  // 带上 workspaceChosen：首页「打开」据此先进这里换的文件夹（Q1）。
+                  if (workspace) await update({ workspace, workspaceChosen: true })
                 },
                 '',
               )
@@ -924,7 +925,7 @@ export function SettingsPage({
       ),
       'claude-write-boundary': row(
         'claude-write-boundary',
-        '开着时，Claude Code 写文件、改文件只在你打开的那个文件夹里做，要改外面的会被拒绝。它在终端里跑的命令不受这个限制。',
+        '开启后，Claude Code 仅能在当前打开的文件夹中写入和修改文件，修改其他位置将被拒绝。其在终端中执行的命令不受此限制。',
         <Switch
           checked={settings.claudeWritesInsideProject === true}
           aria-label="只让 Claude Code 改项目文件夹里的文件"
@@ -937,7 +938,7 @@ export function SettingsPage({
       ),
       'claude-commit-attribution': row(
         'claude-commit-attribution',
-        '开着时，Claude Code 替你提交代码（git commit）和发 PR 时，不再在末尾加上 Claude 的署名。',
+        '开启后，Claude Code 提交代码（git commit）和创建 PR 时，将不再在末尾添加 Claude 署名。',
         <Switch
           checked={settings.claudeHidesCommitAttribution === true}
           aria-label="Claude Code 提交代码时不署名"
@@ -979,7 +980,7 @@ export function SettingsPage({
       ),
       'latest-cli': row(
         'latest-cli',
-        '默认装星芒验证过的推荐版本；打开后跟随官方最新版，可能遇到还没验证过的问题',
+        '默认安装经星芒验证的推荐版本；开启后跟随官方最新版本，可能遇到尚未验证的问题',
         <Switch
           checked={settings.alwaysInstallLatestCli === true}
           aria-label="命令行工具总是装最新版"
@@ -1013,7 +1014,7 @@ export function SettingsPage({
       ),
       'tool-route-restart-hints': row(
         'tool-route-restart-hints',
-        '连接线路因为连不上换了以后，开着的工具要重开才会走新线路。关掉以后不再弹提示，只在首页工具卡上标「需重开生效」。',
+        '因连接失败切换线路后，已打开的工具需重新打开才会使用新线路。关闭后将不再弹出提示，仅在首页工具卡片上标注「需重开生效」。',
         <Switch
           checked={settings.toolRouteRestartHints !== false}
           aria-label="换线路后提醒我重开工具"
@@ -1056,7 +1057,7 @@ export function SettingsPage({
             查看
           </Button>
         ) : (
-          <Pill tone="neutral">这台电脑上用不了</Pill>
+          <Pill tone="neutral">本机不可用</Pill>
         ),
       ),
       'network-check': row(
@@ -1068,7 +1069,7 @@ export function SettingsPage({
           onClick={() => navigate?.('health', networkDiagnosticCode)}
           testId="settings-network-health"
         >
-          去检查
+          前往检查
         </Button>,
       ),
       certificate: row(
@@ -1080,7 +1081,7 @@ export function SettingsPage({
           onClick={() => navigate?.('health', certificateDiagnosticCode)}
           testId="settings-certificate-health"
         >
-          去检查
+          前往检查
         </Button>,
       ),
       // 「发测试通知」并进了桌面通知这一行：总开关关着时发不出去，按钮跟着灰。
@@ -1107,7 +1108,7 @@ export function SettingsPage({
                   if (result === 'disabled')
                     throw new Error('请先开启桌面通知。')
                   if (result === 'unsupported')
-                    throw new Error('这台电脑当前无法显示系统通知。')
+                    throw new Error('本机当前无法显示系统通知。')
                 },
                 testNotificationHandedOff,
               )
@@ -1167,7 +1168,7 @@ export function SettingsPage({
           key="transfer"
           anchor="transfer"
           title={chatTransfer ? settingsItemLabel('transfer') : '导出设置'}
-          description={chatTransfer ? '文件里没有密码和密钥，在新电脑上登录一下就行' : '登录后再导出，会连聊天记录一起带上'}
+          description={chatTransfer ? '文件中不含密码和密钥，在新电脑上登录即可' : '登录后再导出，会连聊天记录一起带上'}
           control={
             <Button
               size="sm"
@@ -1196,7 +1197,7 @@ export function SettingsPage({
       ),
       'crash-reporting': row(
         'crash-reporting',
-        '出错或卡住时把错误信息、版本和系统信息发到海外的错误收集服务；不含账号、密钥、文件路径和对话内容',
+        '出错或无响应时，将错误信息、版本和系统信息发送至海外错误收集服务；不包含账号、密钥、文件路径和对话内容',
         <Switch
           aria-label="自动发送错误报告"
           checked={settings.crashReporting !== false}
@@ -1206,7 +1207,7 @@ export function SettingsPage({
       // 没碰过 = 开（主进程 usage-stats.ts）；本机只有客户亲手点过才存值。
       'usage-stats': row(
         'usage-stats',
-        '每天最多发一次版本、系统、装了哪些工具、安装和更新是否成功；不含账号、密钥、文件路径和对话内容，也没有电脑编号',
+        '每天最多发送一次版本、操作系统、已安装工具及安装更新结果；不包含账号、密钥、文件路径、对话内容及设备标识',
         systemApi && systemState ? (
           <Switch
             aria-label="匿名使用统计偏好"
@@ -1371,7 +1372,7 @@ export function SettingsPage({
   }
   let content: ReactNode = (
     <Card padding="none">
-      <p role="status">{resource.error ? '设置暂时没有读到' : '正在读取设置…'}</p>
+      <p role="status">{resource.error ? '设置暂时无法获取' : '正在读取设置…'}</p>
     </Card>
   )
   if (settings && searching) {
@@ -1421,12 +1422,12 @@ export function SettingsPage({
       </div>
     ) : (
       <div className="v2-settings-empty" data-testid="settings-search-empty">
-        <h3>没有找到相关设置</h3>
-        <p>换个说法试试，比如「托盘」「镜像」「快捷键」。</p>
+        <h3>未找到相关设置</h3>
+        <p>请尝试其他关键词，如「托盘」「镜像」「快捷键」。</p>
       </div>
     )
   } else if (settings || resource.error) {
-    // 设置没读到时只摆这一组里的那张卡（如果有），上面照旧写「设置暂时没有读到」、给「重新读取」。
+    // 设置没读到时只摆这一组里的那张卡（如果有），上面照旧写「设置暂时无法获取」、给「重新读取」。
     const blocks = buildSettingsBlocks(group, settingsItems.filter((item) => shown(item) && (Boolean(settings) || item.card === true)))
     const groupContent = blocks.map((block, index) => (
       <section key={block.section?.value ?? `rows-${index}`} className="v2-settings-block">
@@ -1550,7 +1551,7 @@ export function SettingsPage({
       </div>
       <Dialog
         open={Boolean(importAsk)}
-        title="要换成文件里的设置吗？"
+        title="是否使用文件中的设置？"
         onClose={() => setImportAsk(null)}
         footer={
           <>
@@ -1559,23 +1560,23 @@ export function SettingsPage({
               onClick={() => finishImport(false)}
               testId="settings-transfer-keep"
             >
-              保留这台电脑的
+              保留本机设置
             </Button>
             <Button
               variant="primary"
               onClick={() => finishImport(true)}
               testId="settings-transfer-overwrite"
             >
-              换成文件里的
+              使用文件中的设置
             </Button>
           </>
         }
       >
         <p>
-          这台电脑上你已经改过这几项，和文件里的不一样：
+          以下设置在本机已修改，与文件中的不同：
           {importAsk?.preview.conflictLabels.join('、')}。
         </p>
-        <p>其他设置和聊天记录照常导入，不受这个选择影响。</p>
+        <p>其他设置和聊天记录将正常导入，不受此选择影响。</p>
       </Dialog>
       <Dialog
         open={Boolean(legal)}

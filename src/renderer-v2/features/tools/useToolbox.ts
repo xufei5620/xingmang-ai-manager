@@ -147,7 +147,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       // 手上只有开机先摆的上次结果（cachedAt）时没读到：撤下旧的，同以前开机没读到一样只留红条和「重新检测」。
       if (current) setExternalClients((rows) => rows.some((entry) => entry.cachedAt) ? [] : rows)
       if (options.quiet) return
-      if (current) setExternalError(errorMessage(cause, '客户端检测没有完成，请重试。'))
+      if (current) setExternalError(errorMessage(cause, '客户端检测未完成，请重试。'))
       throw cause
     } finally { if (active.current && id()) setExternalLoading(false) }
   }, [bridge, scope])
@@ -197,7 +197,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     void refreshExternal(false, { quiet: true })
   }, [refreshExternal, scope])
   // acceptCached 只在开机首屏那一次为真：主进程先回上次落盘的检测结果，这里先把它
-  // 画出来（loading 保持为真；首页这时只放开「打开」「接着聊」，见 Home 的
+  // 画出来（loading 保持为真；首页这时只放开「打开」「继续对话」，见 Home 的
   // launchReadyBeforeScan），紧接着在同一个请求号下再读一次真的——它接的是主进程
   // 开窗前就起好的那一轮，不会多扫一遍。
   const load = useCallback(async (force: boolean, acceptCached: boolean, recheckRoutes = false) => {
@@ -229,11 +229,11 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       if (isCurrent()) setFailures(partitions)
       // 工具列表整块没读到时仍然向调用方抛错：安装、保存配置等流程
       // 靠它提示「最新状态没有读到」。单块降级不算失败。
-      if (!next) throw new Error(partitions[0]?.message ?? '检测没有完成，请重试。')
+      if (!next) throw new Error(partitions[0]?.message ?? '检测未完成，请重试。')
       const settled = withLatest(next)
       if (isCurrent()) { snapshotRef.current = settled; setSnapshot(settled) }
     } catch (cause) {
-      if (isCurrent()) setError(errorMessage(cause, '检测没有完成，请重试。'))
+      if (isCurrent()) setError(errorMessage(cause, '检测未完成，请重试。'))
       throw cause
     } finally {
       scansInFlight.current--
@@ -362,7 +362,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   }, [])
   const cancel = useCallback(async (key: string): Promise<InstallCancelResult> => {
     const requestCancel = cancellers.current.get(key)
-    if (!requestCancel) return { cancelled: false, reason: '这一步已经不能取消了。' }
+    if (!requestCancel) return { cancelled: false, reason: '此步骤已无法取消。' }
     cancelRequests.current.add(key)
     markCancelling(key, true)
     let outcome: InstallCancelResult

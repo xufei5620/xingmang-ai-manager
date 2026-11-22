@@ -623,7 +623,7 @@ describe('AI image service', () => {
     })).rejects.toThrow(expected)
   })
 
-  // 历史账号站提交前计费复查没过（#1240）：英文原话不上屏，换成余额不足那句，聊天页据此给「去充值」。
+  // 历史账号站提交前计费复查没过（#1240）：英文原话不上屏，换成余额不足那句，聊天页据此给「前往充值」。
   it('points the history-account site to recharging when the billing re-check fails', async () => {
     const payload = { error: { message: 'insufficient balance', type: 'billing_error' } }
     const fetchImpl = vi.fn(async () => response(payload, 403)) as unknown as typeof fetch

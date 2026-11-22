@@ -553,7 +553,7 @@ describe('main process external links', () => {
     const { source } = mainSource()
     const entries = nonSiteAllowlistEntries(source)
     expect(entries).toContain('claudeDesktopOfflinePackagesUrl')
-    // 「去 Claude 官网」打开的 claude.com/download 经它收进来。
+    // 「前往 Claude 官网」打开的 claude.com/download 经它收进来。
     expect(entries).toContain('...Object.values(externalClientOfficialDownloadUrls)')
     expect(source.getText()).toContain("import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failure'")
   })

@@ -96,12 +96,12 @@ export function snapshotErrorMessage(value: string | null | undefined) {
 }
 
 const detectionFailureCopy = {
-  permission: '没有权限读取这个工具的文件，常见是安全软件拦了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。',
-  busy: '这个工具的文件正被别的程序占着。关掉正在用它的窗口，再点「重新检测」。',
-  missing: '检测时有个文件找不到了，可能被安全软件拦了或被删掉了。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。',
-  other: '检测这个工具时出了错，原因已经记进日志。点「重新检测」再试；还不行请在「反馈与客服」页导出报告发给客服。',
+  permission: '无权读取该工具的文件，通常是被安全软件拦截。请点击「重新检测」；如仍失败，请在「反馈与客服」页导出报告并发送给客服。',
+  busy: '该工具的文件正被其他程序占用。请关闭正在使用它的窗口后点击「重新检测」。',
+  missing: '检测时未找到所需文件，可能已被安全软件拦截或删除。请点击「重新检测」；如仍失败，请在「反馈与客服」页导出报告并发送给客服。',
+  other: '检测该工具时出错，原因已记录到日志。请点击「重新检测」；如仍失败，请在「反馈与客服」页导出报告并发送给客服。',
   // yoyo 11-18 批的字：Codex 桌面端查包那段答了看不懂的结果（推测是微软商店正在更新它）。
-  codexDesktopUnrecognized: '暂时没认出 Codex 桌面端，可能正在更新。等一两分钟点「重新检测」。',
+  codexDesktopUnrecognized: '暂未识别到 Codex 桌面端，可能正在更新。请等待一两分钟后点击「重新检测」。',
 }
 
 /**
@@ -142,7 +142,7 @@ export function detectionFailureMessage(value: string | null | undefined) {
 }
 
 // 只在说不出具体原因时用；指到「反馈与客服」页而不是让人自己去翻日志。
-const genericFailure = '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。'
+const genericFailure = '操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。'
 
 export function errorMessage(error: unknown, fallback = genericFailure) {
   // 服务端已经说清原因的（原密码错误、账号被封禁、注册关闭、数据库出错……）先走
@@ -224,14 +224,14 @@ export function quotaMoney(quota: number | null | undefined, balance: { quotaPer
 /**
  * 一次按钮操作失败后交给错误框的两样东西：上屏的那句（`message`，同 `errorMessage`），
  * 以及被兜底句换掉的原话（`detail`）。以前认不出的英文原话（`spawn EPERM`、`ENOSPC`
- * 这类）整句丢掉，错误框只剩「打开 Codex 桌面端没有完成」，客户和客服都不知道原因。
+ * 这类）整句丢掉，错误框只剩「打开 Codex 桌面端未完成」，客户和客服都不知道原因。
  *
  * 只有真的落到兜底句时才留 `detail`：401、限流、超时和账号服务那张表都已经换成了
  * 说清原因的中文，再附原话就成了两套说法。原话先脱路径（userFacingErrorMessage），
  * 再过日志和反馈报告同一张 Key 打码表（redaction-patterns.ts），只留前 160 字。
  */
 export function operationFailureFrom(error: unknown, action?: string): { message: string; detail?: string } {
-  return failureWithDetail(error, action ? `${action}没有完成` : '操作没有完成')
+  return failureWithDetail(error, action ? `${action}未完成` : '操作未完成')
 }
 /**
  * `errorMessage` 加上被兜底句换掉的原话：错误框（operationFailureFrom）和页头红条
@@ -444,7 +444,7 @@ function RevealExportedFile({
   )
 }
 /**
- * 失败的原因那一段，页顶红框和页面正中「…暂时没有读到」共用。
+ * 失败的原因那一段，页顶红框和页面正中「…暂时无法获取」共用。
  * A raw npm/OS failure is unreadable on its own; when the catalog can name it,
  * its wording leads and the backend sentence stays underneath, because support
  * still needs the original text.
@@ -519,7 +519,7 @@ export function ResultNotice({
     </div>
   ) : null
 }
-/** 列表读不到时卡片里那一块：「…暂时没有读到」、原因和「重新加载」（各页列表同一个样子）。 */
+/** 列表读不到时卡片里那一块：「…暂时无法获取」、原因和「重新加载」（各页列表同一个样子）。 */
 export function ListReadFailure({
   page,
   noun,
@@ -535,7 +535,7 @@ export function ListReadFailure({
     <Empty
       testId={`${page}-error`}
       icon={XCircle}
-      title={`${noun}暂时没有读到`}
+      title={`${noun}暂时无法获取`}
       description={description}
       action={
         <Button
@@ -595,10 +595,10 @@ export function ListState({
   retry: () => void
   clear?: () => void
   action?: ReactNode
-  /** 列表真的空着时这一页自己的标题和那句话；缺省「还没有{noun}」和通用的那句。 */
+  /** 列表真的空着时这一页自己的标题和那句话；缺省「暂无{noun}」和通用的那句。 */
   emptyTitle?: string
   emptyDescription?: string
-  /** 搜索词没搜到时这一页自己的标题和那句话；缺省「没有找到「{词}」」和「换个词试试。」。 */
+  /** 搜索词没搜到时这一页自己的标题和那句话；缺省「未找到「{词}」」和「请尝试其他关键词。」。 */
   searchTitle?: string
   searchDescription?: string
   /** 只用了筛选（没有搜索词）却一条都不剩时这一页自己的标题和那句话；缺省是通用的两句。 */
@@ -636,14 +636,14 @@ export function ListState({
       <Empty
         testId={`${page}-${filtered ? 'filter-empty' : 'empty'}`}
         icon={filtered ? Search : Archive}
-        title={searched ? searchTitle ?? `没有找到「${searched}」` : filtered ? filteredTitle ?? '没有符合条件的结果' : emptyTitle ?? `还没有${noun}`}
+        title={searched ? searchTitle ?? `未找到「${searched}」` : filtered ? filteredTitle ?? '没有符合条件的结果' : emptyTitle ?? `暂无${noun}`}
         description={
           searched
-            ? searchDescription ?? '换个词试试。'
+            ? searchDescription ?? '请尝试其他关键词。'
             : filtered
-              ? filteredDescription ?? '试试其他关键词，或清空筛选。'
+              ? filteredDescription ?? '请尝试其他关键词，或清空筛选条件。'
               : emptyDescription ?? (page === 'sessions'
-                ? '在 AI 工具里开始一次对话，记录就会出现在这里。'
+                ? '在 AI 工具中开始对话后，记录将显示在此处。'
                 : '从页面上的添加入口开始。')
         }
         action={

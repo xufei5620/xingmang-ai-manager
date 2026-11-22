@@ -11,7 +11,7 @@ describe('config link refusal', () => {
 
   it('finds the sentence again inside the wrapping a switch or a save adds', () => {
     const sentence = configLinkRefusalMessage('config.toml', 'file')
-    expect(configLinkRefusalIn(`改用当前账号没有完成：${sentence}已恢复到切换前的配置。`)).toBe(sentence)
+    expect(configLinkRefusalIn(`改用当前账号未完成：${sentence}已恢复到切换前的配置。`)).toBe(sentence)
     expect(configLinkRefusalIn(sentence)).toBe(sentence)
     expect(configLinkRefusalIn('配置路径不能经过符号链接或目录联接')).toBeNull()
   })

@@ -62,7 +62,7 @@ export function useAppOnlineStatus({ native, toast, authenticated, balanceStore,
     void Promise.resolve().then(() => native.openNetworkSettings(kind)).then((opened) => {
       if (!opened) throw new Error('not-opened')
     }).catch(() => {
-      toast.show(kind === 'proxy' ? '没能打开系统代理设置，请在系统设置里找「代理」。' : '没能打开认证页，请打开浏览器随便访问一个网页。', 'warn')
+      toast.show(kind === 'proxy' ? '无法打开系统代理设置，请在系统设置中查找「代理」。' : '无法打开认证页，请在浏览器中访问任意网页。', 'warn')
     })
   }, [native, toast])
   const dismissProxyBypassNotice = useCallback(() => setProxyBypassNotice(false), [])

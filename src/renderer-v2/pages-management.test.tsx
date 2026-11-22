@@ -94,7 +94,7 @@ describe('curated entry details', () => {
 
   it('says so plainly when an entry carries no particular risk', () => {
     const markup = renderToStaticMarkup(<CuratedDetails item={item('sequential-thinking')} />)
-    expect(markup).toContain('没有特别的风险')
+    expect(markup).toContain('无特殊风险')
     expect(markup).toContain('用掉的额度比平时多')
   })
 
@@ -128,7 +128,7 @@ describe('curated entry details', () => {
   it('says which version a plugin declares for itself when it declares one', () => {
     expect(curatedVersionText(item('claude-md-management'))).toContain('插件自己声明的版本是 1.0.0')
     expect(curatedVersionText(item('browser'))).toBe('固定在 0.0.82')
-    expect(curatedVersionText(item('github'))).toBe('由对方在线提供，没有本地版本')
+    expect(curatedVersionText(item('github'))).toBe('由服务方在线提供，无本地版本')
   })
 })
 
@@ -256,8 +256,8 @@ describe('MCP connection health pill', () => {
       { id: 'browser', state: 'failed', detail: '启动失败' },
       { id: 'memory', state: 'unknown', detail: '这条连接已在工具里停用，本次没有检测' },
     ])
-    expect(mcpHealthView(report, 'files')).toEqual({ tone: 'ok', label: '能连上', detail: null })
-    expect(mcpHealthView(report, 'browser')).toEqual({ tone: 'warn', label: '连不上', detail: '启动失败' })
+    expect(mcpHealthView(report, 'files')).toEqual({ tone: 'ok', label: '连接正常', detail: null })
+    expect(mcpHealthView(report, 'browser')).toEqual({ tone: 'warn', label: '无法连接', detail: '启动失败' })
     expect(mcpHealthView(report, 'memory')).toEqual({
       tone: 'neutral',
       label: '未检测',
@@ -306,8 +306,8 @@ describe('Python runtime notice before adding a connection', () => {
   it('offers the Python installer on the platform that installs it, and says it can still be added', () => {
     const notice = mcpRuntimeNotice('python3', { python: false, uv: false }, managed)
     expect(notice?.installPython).toBe(true)
-    expect(notice?.body).toContain('要靠 Python 运行')
-    expect(notice?.body).toContain('仍然可以直接添加')
+    expect(notice?.body).toContain('需 Python 运行')
+    expect(notice?.body).toContain('仍可直接添加')
   })
 
   it('gives the command instead of a button where the application does not install Python', () => {
@@ -319,8 +319,8 @@ describe('Python runtime notice before adding a connection', () => {
   // 装 Python 装不出 uv，所以缺 uv 时那颗按钮只在同时缺 Python 才有意义。
   it('does not pretend the Python installer fixes a missing uv', () => {
     const missingBoth = mcpRuntimeNotice('uvx', { python: false, uv: false }, managed)
-    expect(missingBoth?.body).toContain('没有找到 uv')
-    expect(missingBoth?.body).toContain('也没有找到 Python')
+    expect(missingBoth?.body).toContain('未找到 uv')
+    expect(missingBoth?.body).toContain('也未找到 Python')
     expect(missingBoth?.installPython).toBe(true)
     const pythonOnly = mcpRuntimeNotice('uvx', { python: true, uv: false }, managed)
     expect(pythonOnly?.installPython).toBe(false)
@@ -328,9 +328,9 @@ describe('Python runtime notice before adding a connection', () => {
     expect(pythonOnly?.body).not.toContain('Python 装好之后')
   })
 
-  // D20：客户不会开命令行敲 pip，缺 uv 时交给客服教，不管 Python 在不在都是同一句，并给「找客服」。
+  // D20：客户不会开命令行敲 pip，缺 uv 时交给客服教，不管 Python 在不在都是同一句，并给「联系客服」。
   it('sends a missing uv to customer support instead of a pip command', () => {
-    const sentence = '这个工具还要一个叫 uv 的小组件，点「找客服」，客服教你装。'
+    const sentence = '该工具还需安装 uv 组件，请点击「联系客服」获取安装指导。'
     for (const python of [true, false]) {
       for (const management of [managed, external]) {
         const notice = mcpRuntimeNotice('uvx', { python, uv: false }, management)
@@ -706,7 +706,7 @@ describe('the update state of a connection', () => {
       update,
     })
     expect(extensionUpdateStatus(npm)).toBe(
-      '有新版本 1.2.0。这一条不在这里更新：推荐里的用的是星芒核过的版本，不用管它；自己加的想换新版本，先移除，再按新版本号加一次。',
+      '有新版本 1.2.0。此项不在此处更新：推荐项使用经星芒核验的版本，无需处理；自行添加的如需更新，请先移除，再按新版本号重新添加。',
     )
     // Git 来源的「版本」是一串提交号，不往句子里放。
     const git = listItem({
@@ -715,7 +715,7 @@ describe('the update state of a connection', () => {
       source: { kind: 'git', locator: 'https://github.com/acme/mcp.git', reference: 'a'.repeat(40) },
       update,
     })
-    expect(extensionUpdateStatus(git)).toMatch(/^有新版本。这一条不在这里更新/)
+    expect(extensionUpdateStatus(git)).toMatch(/^有新版本。此项不在此处更新/)
   })
 
   it('keeps the main process wording everywhere else', () => {
@@ -770,12 +770,12 @@ describe('custom connection checks', () => {
     expect(customMcpProblem({ ...valid, transport: 'http', source: 'https://example.com/mcp' })).toBeNull()
   })
   it('reports the first problem from the top of the form', () => {
-    expect(customMcpProblem({ ...valid, name: '  ' })).toBe('请给这个连接起个名字')
+    expect(customMcpProblem({ ...valid, name: '  ' })).toBe('请为此连接命名')
     expect(customMcpProblem({ ...valid, name: '我的数据库' })).toBe('名称只能用字母、数字和 - _，最多 40 位')
     expect(customMcpProblem({ ...valid, name: 'a'.repeat(41) })).toBe('名称只能用字母、数字和 - _，最多 40 位')
-    expect(customMcpProblem({ ...valid, existing: ['my-database'] })).toBe('已经有叫「my-database」的连接了，换个名字')
+    expect(customMcpProblem({ ...valid, existing: ['my-database'] })).toBe('已存在名为「my-database」的连接，请更换名称')
     expect(customMcpProblem({ ...valid, source: ' ' })).toBe('请填写启动命令')
-    expect(customMcpProblem({ ...valid, transport: 'http', source: 'example.com/mcp' })).toBe('服务地址要以 http:// 或 https:// 开头')
+    expect(customMcpProblem({ ...valid, transport: 'http', source: 'example.com/mcp' })).toBe('服务地址需以 http:// 或 https:// 开头')
   })
 })
 
@@ -792,7 +792,7 @@ describe('curated folder placeholders', () => {
   })
   it('explains a pasted Windows path in Chinese instead of surfacing the JSON parser error', () => {
     expect(() => parseCommandArguments('["C:\\Users"]')).toThrow('选择文件夹')
-    expect(() => parseEnvironmentVariables('{"A": "C:\\x"}')).toThrow('附加设置的格式不对')
+    expect(() => parseEnvironmentVariables('{"A": "C:\\x"}')).toThrow('附加设置格式不正确')
   })
 })
 

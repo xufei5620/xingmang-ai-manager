@@ -202,7 +202,7 @@ describe('host activity notifications', () => {
     attachRendererDelivery(holdUntilReady)
     try {
       expect(hostNotifier()({ activity: 'balance', eventKey: 'balance:7:1' })).toBe('requested')
-      expect(notifications.created).toEqual([expect.objectContaining({ title: '余额需要留意' })])
+      expect(notifications.created).toEqual([expect.objectContaining({ title: '余额不足提醒' })])
       notifications.created[0]!.click!()
       expect(shown).toHaveBeenCalledOnce()
       expect(contents.send).not.toHaveBeenCalledWith(ipcEventChannels.onNavigate, 'topup')

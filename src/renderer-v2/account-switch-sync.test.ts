@@ -181,8 +181,8 @@ describe('saved account explicit CLI key sync', () => {
       })
       expect(result.configured).toEqual([])
       expect(result.skipped).toEqual([
-        { provider: 'claude', message: '用的是别处的配置，保持原配置' },
-        { provider: 'codex', message: '用的是别处的配置，保持原配置' },
+        { provider: 'claude', message: '正在使用其他来源的配置，保持原配置' },
+        { provider: 'codex', message: '正在使用其他来源的配置，保持原配置' },
       ])
       expect(h.api.configureManagedCliKeys).not.toHaveBeenCalled()
     })
@@ -268,7 +268,7 @@ describe('saved account explicit CLI key sync', () => {
     }))
     h.context.configs.claude.matchesRelay = false
     expect(accountSyncCandidates(h.context, null)).toContainEqual(expect.objectContaining({
-      provider: 'claude', eligible: false, reason: '用的是别处的配置',
+      provider: 'claude', eligible: false, reason: '正在使用其他来源的配置',
     }))
   })
   it('does not inspect or write CLI configs after switching fails', async () => {
@@ -471,7 +471,7 @@ describe('saved account switch restart hint', () => {
     const result = await switchAccountWithOptionalSync({ ...h.api, inspectRunningTools }, h.target, ['claude', 'grok'], h.context, h.context.origin, memoryStorage())
     expect(inspectRunningTools).toHaveBeenCalledWith(['claude', 'grok'])
     expect(h.calls.at(-1)).toBe('inspect')
-    expect(accountSwitchRestartHint(result)).toBe('Claude Code 还开着，要关掉重开才会用上当前账号。')
+    expect(accountSwitchRestartHint(result)).toBe('Claude Code 仍在运行，需关闭后重新打开才会使用当前账号。')
     expect(accountSwitchNeedsAttention(result)).toBe(true)
   })
 
@@ -510,7 +510,7 @@ describe('saved account switch restart hint', () => {
     const result = await switchAccountWithOptionalSync({ ...h.api, inspectRunningTools: async () => { throw new Error('denied') } }, h.target, ['codex'], h.context, h.context.origin, memoryStorage())
     expect(result.configured).toEqual(['codex'])
     expect(result.runningTools).toEqual(running({ unknown: ['codex'], codexDesktopRunning: null, canRestartCodexDesktop: false }))
-    expect(accountSwitchRestartHint(result)).toBe('如果 Codex CLI、Codex 桌面端 还开着，要关掉重开才会用上当前账号。')
+    expect(accountSwitchRestartHint(result)).toBe('如 Codex CLI、Codex 桌面端 仍在运行，需关闭后重新打开才会使用当前账号。')
   })
 })
 

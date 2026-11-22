@@ -49,8 +49,8 @@ export async function openExternalOrCopy(
 
 export function blockedLinkMessage(notice: BlockedLinkNotice): string {
   return notice.copied
-    ? '这个链接要在浏览器里打开，已经帮你复制好了，打开浏览器粘贴到地址栏就行。'
-    : '这个链接要在浏览器里打开，请选中下面的地址复制，再粘贴到浏览器地址栏。'
+    ? '该链接需在浏览器中打开，已自动复制，请粘贴到浏览器地址栏。'
+    : '该链接需在浏览器中打开，请选中下方地址复制，并粘贴到浏览器地址栏。'
 }
 
 export function BlockedLinkHint({ notice, testId }: { notice: BlockedLinkNotice; testId?: string }) {

@@ -295,7 +295,7 @@ test('explains which clip it cannot read', async () => {
   assert.deepEqual(errors, [])
   assert.deepEqual(summary.page, { name: 'VideoStudioError', message: '第 2 段不是能读的视频文件（支持 MP4、MOV、WebM）' })
   assert.equal(summary.worker.message, '第 2 段不是能读的视频文件（支持 MP4、MOV、WebM）')
-  assert.equal(summary.tooShort.message, '第 1 段剪掉首尾后不到 0.2 秒，没法用')
+  assert.equal(summary.tooShort.message, '第 1 段裁剪首尾后不足 0.2 秒，无法使用')
   await page.close()
 })
 
@@ -313,6 +313,14 @@ async function openStudio(search = '') {
   await page.locator('[data-testid="video-text-model"][data-model="gpt-5.6-sol"]').waitFor()
   await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
   return { page, errors }
+}
+
+// 点开一个下拉菜单选一项（同对话页的浏览器用例）。
+async function pickChoice(page, testId, label, name) {
+  await page.getByTestId(testId).click()
+  const menu = page.getByRole('menu', { name: label, exact: true })
+  await menu.getByRole('menuitemradio', { name, exact: true }).click()
+  await menu.waitFor({ state: 'detached' })
 }
 
 function studioCalls(page, method) {
@@ -384,7 +392,7 @@ test('writes a storyboard, generates every shot and joins them into one film', a
   assert.equal(inspected.bright[1], 0, 'the shot without a caption stays clean')
   assert.equal((await studioCalls(page, 'read')).length, 3)
   assert.equal((await studioCalls(page, 'store')).length, 1)
-  assert.match(await page.getByTestId('video-notice').textContent(), /拼好了/)
+  assert.match(await page.getByTestId('video-notice').textContent(), /合成完成/)
   // 这几段都没声音，提示说的是没声音、没提文件夹，提示上就不挂「打开文件夹」；成片那一行照样有。
   assert.equal(await page.getByTestId('video-notice-folder').count(), 0)
 
@@ -409,11 +417,11 @@ test('writes a storyboard, generates every shot and joins them into one film', a
 
   // 重写分镜的时候不能拼：拼完的成片会挂到换过的分镜上。
   await page.getByTestId('video-plan').click()
-  await page.getByTestId('video-confirm').getByRole('button', { name: '重新写' }).click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '重新编写' }).click()
   await page.getByTestId('video-plan-stop').waitFor()
   assert.equal(await page.getByTestId('video-compose').isDisabled(), true, 'no joining while the storyboard is being rewritten')
   assert.equal(await page.getByTestId('video-captions').getByRole('switch').isDisabled(), true, 'the caption switch waits for the storyboard too')
-  await page.getByTestId('video-export').getByText('等分镜写完再拼。').waitFor()
+  await page.getByTestId('video-export').getByText('请等待分镜编写完成后再合成。').waitFor()
   await page.evaluate(() => window.videoStudioPage.failPlan('这次 AI 没按格式写出分镜，把想法写具体一点或换个文字模型再试'))
   await page.getByTestId('video-error').waitFor()
   assert.equal(await page.getByTestId('video-compose').isDisabled(), false, 'the storyboard that is still there can be joined again')
@@ -442,7 +450,7 @@ test('picks shots that were still generating back up after the page reopens, wit
 
   // 这两单钱已经扣了，点「停止生成」也拿不回来：不去停，接着等，镜头不变回「还没生成」。
   await page.getByTestId('video-generate-stop').click()
-  await page.getByTestId('video-notice').getByText(/其中 2 段已经交给服务端/).waitFor()
+  await page.getByTestId('video-notice').getByText(/其中 2 段已提交至服务端/).waitFor()
   assert.deepEqual(await studioCalls(page, 'cancel'), [])
   for (const index of [0, 1]) await page.getByTestId(`video-shot-${index}`).getByText('生成中').waitFor()
   assert.equal(await page.getByTestId('video-generate-all').count(), 0)
@@ -451,7 +459,7 @@ test('picks shots that were still generating back up after the page reopens, wit
   await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
   // 主进程那边没有这一单（没交出去，或者服务端说失败了）：回到「还没生成」，可以再点生成。
   await page.evaluate((requestId) => window.videoStudioPage.dropResume(requestId), requests[1])
-  await page.getByTestId('video-shot-1').getByText('还没生成').waitFor()
+  await page.getByTestId('video-shot-1').getByText('尚未生成').waitFor()
   assert.equal(await page.getByTestId('video-generate-all').textContent(), '生成剩下的 1 段')
   assert.deepEqual(await studioCalls(page, 'generate'), [])
   assert.equal(await page.getByTestId('video-error').count(), 0)
@@ -459,7 +467,7 @@ test('picks shots that were still generating back up after the page reopens, wit
   // 再打开一次：接回来的那段已经记在镜头上，没有还要接的。
   await page.reload()
   await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
-  await page.getByTestId('video-shot-1').getByText('还没生成').waitFor()
+  await page.getByTestId('video-shot-1').getByText('尚未生成').waitFor()
   assert.deepEqual(await studioCalls(page, 'resume'), [])
   assert.deepEqual(errors, [])
   await page.close()
@@ -484,10 +492,10 @@ test('stops a storyboard and the clips not yet sent, and keeps waiting for the o
   await page.evaluate((requestId) => window.videoStudioPage.unsent(requestId), third.requestId)
   await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '这次的描述没通过安全审核，换个说法再试'), first.requestId)
   await page.getByTestId('video-shot-0').getByText('这次的描述没通过安全审核，换个说法再试').waitFor()
-  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-0').getByText('生成失败').waitFor()
 
   await page.getByTestId('video-generate-stop').click()
-  await page.getByTestId('video-notice').getByText('已经停下。其中 1 段已经交给服务端，钱已经扣了，停不下来；这里会接着等它生成好，好了自动放回对应的镜头。').waitFor()
+  await page.getByTestId('video-notice').getByText('已停止。其中 1 段已提交至服务端并完成扣费，无法中止；将继续等待生成完成，完成后自动放回对应镜头。').waitFor()
   // 提示里没说作品文件夹，旁边就不挂「打开文件夹」。
   assert.equal(await page.getByTestId('video-notice-folder').count(), 0)
   assert.deepEqual((await studioCalls(page, 'cancel')).slice(1).sort(), [second.requestId, third.requestId].sort())
@@ -495,14 +503,14 @@ test('stops a storyboard and the clips not yet sent, and keeps waiting for the o
   await page.waitForFunction(() => window.videoStudioPage.pendingResumes().length === 1)
   assert.deepEqual(await studioCalls(page, 'resume'), [second.requestId])
   await page.getByTestId('video-shot-1').getByText('生成中').waitFor()
-  await page.getByTestId('video-shot-2').getByText('还没生成').waitFor()
+  await page.getByTestId('video-shot-2').getByText('尚未生成').waitFor()
   assert.equal(await page.getByTestId('video-shot-2').getByRole('alert').count(), 0, 'a clip stopped on purpose shows no error')
   assert.equal(await page.getByTestId('video-generate-all').count(), 0, 'nothing to pay for again while the billed clip is still coming')
 
   // 再点一次停止：接着等的那段停不下来，不再去停它。
   await page.getByTestId('video-notice').getByRole('button', { name: '关闭' }).click()
   await page.getByTestId('video-generate-stop').click()
-  await page.getByTestId('video-notice').getByText(/其中 1 段已经交给服务端/).waitFor()
+  await page.getByTestId('video-notice').getByText(/其中 1 段已提交至服务端/).waitFor()
   assert.equal((await studioCalls(page, 'cancel')).length, 3)
 
   await page.evaluate((requestId) => window.videoStudioPage.finishResume(requestId, '#ff8800'), second.requestId)
@@ -515,7 +523,7 @@ test('stops a storyboard and the clips not yet sent, and keeps waiting for the o
   await page.getByTestId('video-shot-prompt-2').fill('  ')
   await page.getByTestId('video-generate-all').click()
   await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
-  await page.getByTestId('video-error').getByText('第 3 个镜头还没写画面描述').waitFor()
+  await page.getByTestId('video-error').getByText('第 3 个镜头尚未填写画面描述').waitFor()
   assert.equal((await studioCalls(page, 'generate')).length, 3)
   assert.deepEqual(errors, [])
   await page.close()
@@ -532,7 +540,7 @@ test('marks a clip stopped mid-submission as failed when nothing comes back', as
   await page.getByTestId('video-generate-stop').click()
   await page.waitForFunction(() => window.videoStudioPage.pendingResumes().length === 1)
   await page.evaluate((requestId) => window.videoStudioPage.dropResume(requestId), clip.requestId)
-  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-0').getByText('生成失败').waitFor()
   await page.getByTestId('video-shot-0').getByText('视频提交结果不明确，服务端可能已创建任务，请勿立即重复提交').waitFor()
   assert.equal((await studioCalls(page, 'generate')).length, 1)
   assert.deepEqual(errors, [])
@@ -559,7 +567,7 @@ test('keeps a clip whose submission went unanswered flagged after reopening, and
   await page.reload()
   await page.waitForFunction(() => window.videoStudioPage.pendingResumes().length === 1)
   assert.deepEqual([...new Set(await studioCalls(page, 'resume'))], [third.requestId])
-  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-0').getByText('生成失败').waitFor()
   await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
   // 主进程说第三段也是交出去了、没拿到任务号：同样提醒，不变回「还没生成」。
   await page.evaluate(([requestId, message]) => window.videoStudioPage.failResume(requestId, message), [third.requestId, unclear])
@@ -575,14 +583,14 @@ test('keeps a clip whose submission went unanswered flagged after reopening, and
   // 「生成剩下的 2 段」：确认框另外说清可能多扣一次，先勾「我已了解影响」才能点。
   await page.getByTestId('video-generate-all').click()
   const confirm = page.getByTestId('video-confirm')
-  await confirm.getByTestId('video-confirm-unconfirmed').getByText('这几段上次提交时没收到星芒的答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。').waitFor()
+  await confirm.getByTestId('video-confirm-unconfirmed').getByText('这几段上次提交时未收到星芒的响应：费用可能已扣除，但片段无法取回。重新生成将再次计费，可能产生重复扣费。').waitFor()
   assert.equal(await confirm.getByRole('button', { name: '开始生成' }).isDisabled(), true)
   await confirm.getByRole('button', { name: '取消' }).click()
   await confirm.waitFor({ state: 'detached' })
 
   // 单独重新生成第一段：确认后沿用原来的请求号重新提交（MiniMax 拿它去重），不去接。
   await page.getByTestId('video-shot-generate-0').click()
-  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^这一段上次提交时没收到星芒的答复/).waitFor()
+  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^这一段上次提交时未收到星芒的响应/).waitFor()
   await confirm.getByRole('checkbox').check()
   await confirm.getByRole('button', { name: '开始生成' }).click()
   await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
@@ -598,7 +606,7 @@ test('keeps a clip whose submission went unanswered flagged after reopening, and
   await page.getByTestId('video-shot-add').click()
   await page.getByTestId('video-shot-prompt-3').fill('日出')
   await page.getByTestId('video-generate-all').click()
-  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^其中第 3 段上次提交时没收到星芒的答复/).waitFor()
+  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^其中第 3 段上次提交时未收到星芒的响应/).waitFor()
   await confirm.getByRole('button', { name: '取消' }).click()
   // 生成好的那一段重开以后不再提醒。
   await page.reload()
@@ -618,7 +626,7 @@ test('stops and warns when picking a clip back up turns out the submission went 
   await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
   const [clip] = await page.evaluate(() => window.videoStudioPage.pendingClips())
   await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_1）。'), clip.requestId)
-  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-0').getByText('生成失败').waitFor()
   await page.getByTestId('video-shot-generate-0').click()
   assert.equal(await page.getByTestId('video-confirm-unconfirmed').count(), 0, 'nothing says it was unanswered yet')
   await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
@@ -656,7 +664,7 @@ test('keeps the warning when paying again for an unanswered clip does not go thr
   await page.evaluate((requestId) => window.videoStudioPage.unsent(requestId), clip.requestId)
   await page.getByTestId('video-generate-stop').click()
   await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
-  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-0').getByText('生成失败').waitFor()
 
   // 这回被服务端拒了：上屏的是这一回的原因，再生成时确认框照样提醒可能多扣。
   await payAgain()
@@ -693,9 +701,9 @@ test('keeps the may-have-been-charged warning after reopening when the main proc
   for (const clip of [first, second, third]) await page.evaluate((requestId) => window.videoStudioPage.dropResume(requestId), clip.requestId)
   // 第一段是主进程没记下的那一单：照结果不明提醒。第二段主进程记得下（查不到就是没交出去或被拒了），第三段页面等到过结果：都回到「还没生成」。
   await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
-  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
-  await page.getByTestId('video-shot-1').getByText('还没生成').waitFor()
-  await page.getByTestId('video-shot-2').getByText('还没生成').waitFor()
+  await page.getByTestId('video-shot-0').getByText('生成失败').waitFor()
+  await page.getByTestId('video-shot-1').getByText('尚未生成').waitFor()
+  await page.getByTestId('video-shot-2').getByText('尚未生成').waitFor()
   assert.deepEqual(await studioCalls(page, 'generate'), [])
 
   // 再打开一次：照样提醒，没有任务号可接，也不去接。
@@ -706,7 +714,7 @@ test('keeps the may-have-been-charged warning after reopening when the main proc
   // 重新生成第一段：确认框说清可能多扣一次，勾了「我已了解影响」才能点；确认后沿用原来的请求号（MiniMax 拿它去重）。
   await page.getByTestId('video-shot-generate-0').click()
   const confirm = page.getByTestId('video-confirm')
-  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^这一段上次提交时没收到星芒的答复/).waitFor()
+  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^这一段上次提交时未收到星芒的响应/).waitFor()
   assert.equal(await confirm.getByRole('button', { name: '开始生成' }).isDisabled(), true)
   await confirm.getByRole('checkbox').check()
   await confirm.getByRole('button', { name: '开始生成' }).click()
@@ -772,7 +780,6 @@ test('tells the current balance when confirming clips, and leaves it out when th
 // 视频标「估算」；画图不到一分写「不到 $0.01」；价目是页面打开时读好的，十分钟内再打开确认框不再多读。
 test('quotes the price of the chosen model and group before the balance, from one read of the price list', async () => {
   const { page, errors } = await openStudio('?balance=12.5&prices=1')
-  await page.locator('[data-testid="video-image-model"][data-model="gpt-image-2"]').waitFor()
   await page.waitForFunction(() => window.videoStudioPage.balance() === 12.5)
   await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'prices'))
   const reads = (await studioCalls(page, 'prices')).length
@@ -784,10 +791,16 @@ test('quotes the price of the chosen model and group before the balance, from on
   await confirm.getByRole('button', { name: '取消' }).click()
   await confirm.waitFor({ state: 'detached' })
 
+  // 画图的价在出图框左下角，按框里选的型号和它的分组算。
   await page.getByTestId('video-shot-draw-0').click()
-  await confirm.getByText('用「gpt-image-2」按第 1 个镜头的画面描述画一张图，单独计费，预计不到 $0.01。当前余额 $12.50。', { exact: true }).waitFor()
-  await confirm.getByRole('button', { name: '取消' }).click()
-  await confirm.waitFor({ state: 'detached' })
+  const drawDialog = page.getByTestId('video-draw-dialog')
+  await drawDialog.locator('[data-testid="video-image-model"][data-model="gpt-image-2"]').waitFor()
+  await drawDialog.getByTestId('video-draw-cost').getByText('按实际用量计费，预计不到 $0.01。当前余额 $12.50。', { exact: true }).waitFor()
+  // 换一个价目里没有的型号：不写「预计」那半句。
+  await pickChoice(page, 'video-image-model', '模型', 'gemini-3.1-flash-image')
+  await drawDialog.getByTestId('video-draw-cost').getByText('按实际用量计费。当前余额 $12.50。', { exact: true }).waitFor()
+  await drawDialog.getByTestId('video-draw-cancel').click()
+  await drawDialog.waitFor({ state: 'detached' })
 
   // 只生成第一段，生成好了再点重新生成：报的是一段的价。
   await page.getByTestId('video-shot-generate-0').click()
@@ -798,8 +811,8 @@ test('quotes the price of the chosen model and group before the balance, from on
   await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#00ff88'), first.requestId)
   await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
   await page.getByTestId('video-shot-generate-0').click()
-  await confirm.getByText('重新生成这一段？').waitFor()
-  await confirm.getByText('会再扣一次费，预计约 $0.80（估算）。新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。', { exact: true }).waitFor()
+  await confirm.getByText('是否重新生成此片段？').waitFor()
+  await confirm.getByText('将再次扣费，预计约 $0.80（估算）。新片段生成后将替换当前片段，原片段仍保留在 AI 作品文件夹中。', { exact: true }).waitFor()
   await confirm.getByRole('button', { name: '取消' }).click()
 
   assert.equal((await studioCalls(page, 'prices')).length, reads, 'opening the dialogs again within ten minutes does not read the price list again')
@@ -817,7 +830,7 @@ test('retrying a clip that failed while the server may still be working picks th
   const [first, second] = await page.evaluate(() => window.videoStudioPage.pendingClips())
   await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_1）。'), first.requestId)
   await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '这次的描述没通过安全审核，换个说法再试'), second.requestId)
-  for (const index of [0, 1]) await page.getByTestId(`video-shot-${index}`).getByText('没生成出来').waitFor()
+  for (const index of [0, 1]) await page.getByTestId(`video-shot-${index}`).getByText('生成失败').waitFor()
 
   // 第一镜：服务端其实出好了，接回来就是，不再提交。
   await page.getByTestId('video-shot-generate-0').click()
@@ -843,7 +856,7 @@ test('retrying a clip that failed while the server may still be working picks th
 
   // 这一单又没等到结果；再点重新生成，接回的时候点了停止，主进程又说没有这一单：停下了就不再花钱。
   await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_3）。'), third.requestId)
-  await page.getByTestId('video-shot-1').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-1').getByText('生成失败').waitFor()
   await page.getByTestId('video-shot-generate-1').click()
   await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
   await page.waitForFunction((requestId) => window.videoStudioPage.pendingResumes().includes(requestId), third.requestId)
@@ -851,7 +864,7 @@ test('retrying a clip that failed while the server may still be working picks th
   await page.getByTestId('video-notice').waitFor()
   assert.equal((await studioCalls(page, 'cancel')).length, 0)
   await page.evaluate((requestId) => window.videoStudioPage.dropResume(requestId), third.requestId)
-  await page.getByTestId('video-shot-1').getByText('还没生成').waitFor()
+  await page.getByTestId('video-shot-1').getByText('尚未生成').waitFor()
   assert.equal((await studioCalls(page, 'generate')).length, 3)
   assert.equal(await page.getByTestId('video-error').count(), 0)
   assert.deepEqual(errors, [])
@@ -885,7 +898,7 @@ test('opens the AI output folder from a notice that mentions it', async () => {
   await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
   await page.getByTestId('video-compose').click()
   await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
-  await page.getByTestId('video-notice').getByText('拼好了，成片已经存进 AI 作品文件夹。').waitFor()
+  await page.getByTestId('video-notice').getByText('合成完成，成片已保存至 AI 作品文件夹。').waitFor()
 
   await page.getByTestId('video-notice-folder').click()
   await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'folder'))
@@ -893,7 +906,7 @@ test('opens the AI output folder from a notice that mentions it', async () => {
   assert.equal(await page.getByTestId('video-error').count(), 0)
   await page.evaluate(() => window.videoStudioPage.folderOpens(false))
   await page.getByTestId('video-notice-folder').click()
-  await page.getByTestId('video-error').getByText('这个文件夹现在打不开，重开星芒后再试一次。').waitFor()
+  await page.getByTestId('video-error').getByText('无法打开该文件夹，请重新打开星芒后重试。').waitFor()
   assert.equal(await page.getByTestId('video-notice-folder').count(), 1, 'the notice stays so the folder can be tried again')
   assert.deepEqual(errors, [])
   await page.close()
@@ -904,7 +917,7 @@ test('starts shots from pictures picked on the computer and keeps them after reo
   const { page, errors } = await openStudio()
   await writeStoryboard(page, '新款水杯', { title: '水杯', shots: [{ prompt: '水杯在桌上' }, { prompt: '倒水' }, { prompt: '拿起水杯' }] })
   const [first, second] = ['m', 'n'].map((letter) => letter.repeat(43))
-  assert.equal(await page.getByTestId('video-shot-image-0').getAttribute('title'), '生成时从这张图动起来，适合商品图、人物照片')
+  assert.equal(await page.getByTestId('video-shot-image-0').getAttribute('title'), '生成时以此图作为首帧，适合商品图、人物照片')
 
   // 在对话框里点了取消：什么都不变。
   await page.getByTestId('video-shot-image-0').click()
@@ -920,8 +933,8 @@ test('starts shots from pictures picked on the computer and keeps them after reo
   assert.equal(await page.getByTestId('video-shot-image-2').textContent(), '用一张图开头')
   for (const index of [0, 1]) {
     const row = page.getByTestId(`video-shot-${index}`)
-    assert.equal(await row.getByTestId(`video-shot-image-change-${index}`).textContent(), '换一张')
-    assert.equal(await row.getByTestId(`video-shot-image-remove-${index}`).textContent(), '不用这张图')
+    assert.equal(await row.getByTestId(`video-shot-image-change-${index}`).textContent(), '更换图片')
+    assert.equal(await row.getByTestId(`video-shot-image-remove-${index}`).textContent(), '不使用此图')
   }
 
   // 第二镜不用了，回到「用一张图开头」。
@@ -951,46 +964,63 @@ test('starts shots from pictures picked on the computer and keeps them after reo
   await page.close()
 })
 
-// 「让 AI 画一张」：走对话页出图那条（这里是假的桥），画好的图和自己选的图一样当这一镜的开头；停下、没画出来、余额不够各有去处。
-test('draws a shot picture with AI before paying for the clip, and starts the clip from it', async () => {
+// 「AI 生成图片」：弹出来的是跟对话里「生成图片」同一个出图框（融合第 4 步），交出去走对话页出图那条（这里是假的桥）。
+// 画好的图和自己选的图一样当这一镜的开头；停下、没画出来、余额不够各有去处。
+test('draws a shot picture with AI in the shared picture dialog before paying for the clip, and starts the clip from it', async () => {
   const { page, errors } = await openStudio('?balance=12.5')
-  await page.locator('[data-testid="video-image-model"][data-model="gpt-image-2"]').waitFor()
   await page.waitForFunction(() => window.videoStudioPage.balance() === 12.5)
   await writeStoryboard(page, '新款水杯', { title: '水杯', shots: [{ prompt: '水杯在桌上' }, { prompt: '倒水' }] })
   const [first, second] = ['d', 'e'].map((letter) => letter.repeat(43))
+  // 画镜头图的型号不在「想法」卡里了，点了按钮在出图框里选。
+  assert.equal(await page.getByTestId('video-image-model').count(), 0)
+  assert.equal(await page.getByTestId('video-idea').getByText('画镜头图').count(), 0)
   const draw = page.getByTestId('video-shot-draw-0')
-  assert.equal(await draw.textContent(), '让 AI 画一张')
-  assert.equal(await draw.getAttribute('title'), '按这一镜的画面描述先画一张图，满意了再拿它生成视频；画图单独计费')
+  assert.equal(await draw.textContent(), 'AI 生成图片')
+  assert.equal(await draw.getAttribute('title'), '根据此镜头的画面描述先生成一张图片，确认后再用于生成视频；生成图片单独计费')
 
   await draw.click()
-  const confirm = page.getByTestId('video-confirm')
-  await confirm.getByText('画一张镜头图？').waitFor()
-  await confirm.getByText('用「gpt-image-2」按第 1 个镜头的画面描述画一张图，单独计费。当前余额 $12.50。', { exact: true }).waitFor()
-  await confirm.getByText('中途停下的话，已经交给服务端的这一张照样扣费。', { exact: true }).waitFor()
-  await confirm.getByRole('button', { name: '开始画' }).click()
+  const dialog = page.getByTestId('video-draw-dialog')
+  await dialog.getByRole('heading', { name: '为第 1 个镜头生成图片', exact: true }).waitFor()
+  await dialog.getByText('与对话中的「生成图片」共用同一设置，生成的图片将保存至作品库。', { exact: true }).waitFor()
+  await dialog.getByText('生成开始后如中途停止，服务端仍可能继续生成并计费。', { exact: true }).waitFor()
+  assert.equal(await dialog.getByTestId('video-draw-prompt').inputValue(), '水杯在桌上')
+  await dialog.locator('[data-testid="video-image-model"][data-model="gpt-image-2"][data-group="图片模型"]').waitFor()
+  // 竖屏 9:16 的视频：尺寸先按画面挑好（720p）；画质、分辨率同对话里的默认。
+  assert.equal(await dialog.getByTestId('video-draw-size').getAttribute('data-value'), '720x1280')
+  assert.equal(await dialog.getByTestId('video-draw-quality').textContent(), '画质：低')
+  assert.equal(await dialog.getByTestId('video-draw-resolution').textContent(), '分辨率：1K')
+  assert.equal(await dialog.getByTestId('video-draw-cost').textContent(), '按实际用量计费。当前余额 $12.50。')
+  assert.equal(await dialog.getByTestId('video-draw-ok').textContent(), '生成图片')
+  // 取消：什么都不交。
+  await dialog.getByTestId('video-draw-cancel').click()
+  await dialog.waitFor({ state: 'detached' })
+  assert.equal((await studioCalls(page, 'image')).length, 0)
+
+  await draw.click()
+  await dialog.getByTestId('video-draw-ok').click()
+  await dialog.waitFor({ state: 'detached' })
   await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
   const [request] = await studioCalls(page, 'image')
-  // 竖屏 9:16 按 720p 出图；画质不写，用模型缺省最便宜的那一档。
-  assert.deepEqual({ ...request, requestId: typeof request.requestId }, { requestId: 'string', group: '图片模型', model: 'gpt-image-2', prompt: '水杯在桌上', size: '720x1280' })
+  // 交出去的同对话里「生成图片」那一档：尺寸、画质、分辨率都带上。
+  assert.deepEqual({ ...request, requestId: typeof request.requestId }, { requestId: 'string', group: '图片模型', model: 'gpt-image-2', prompt: '水杯在桌上', size: '720x1280', quality: 'low', imageResolution: '1K' })
 
   // 画着的时候：这一镜的描述、出视频、删都不让动，也不能整批生成；别的镜头照样能画。
   const row = page.getByTestId('video-shot-0')
-  await row.getByText('正在画图').waitFor()
-  assert.equal(await page.getByTestId('video-shot-draw-stop-0').textContent(), '停止画图')
+  await row.getByText('正在生成图片').waitFor()
+  assert.equal(await page.getByTestId('video-shot-draw-stop-0').textContent(), '停止生成图片')
   for (const id of ['video-shot-prompt-0', 'video-shot-generate-0', 'video-shot-remove-0', 'video-generate-all', 'video-plan']) assert.equal(await page.getByTestId(id).isDisabled(), true, id)
   assert.equal(await page.getByTestId('video-shot-image-0').count(), 0)
 
   await page.evaluate(([requestId, assetId]) => window.videoStudioPage.finishDrawing(requestId, assetId), [request.requestId, first])
   // 假桥里的作品库地址打不开，缩略图会退成底色；换上的是哪一张，最后出视频时看请求。
   await page.getByTestId('video-shot-image-thumb-0').waitFor()
-  assert.equal(await row.getByText('正在画图').count(), 0)
-  assert.equal(await draw.textContent(), '再画一张')
+  assert.equal(await row.getByText('正在生成图片').count(), 0)
+  assert.equal(await draw.textContent(), '重新生成图片')
 
   // 再画一张，中途停下：已经画好的那张留着，不报错。
   await draw.click()
-  await confirm.getByText('再画一张？').waitFor()
-  await confirm.getByText('会再扣一次费，新图画好以后换掉现在这一张；旧的那张还在 AI 作品文件夹里。', { exact: true }).waitFor()
-  await confirm.getByRole('button', { name: '再画一张' }).click()
+  await dialog.getByText('与对话中的「生成图片」共用同一设置，生成的图片将保存至作品库。生成后将替换此镜头当前的图片，原图仍保留在作品库中。', { exact: true }).waitFor()
+  await dialog.getByTestId('video-draw-ok').click()
   await page.getByTestId('video-shot-draw-stop-0').click()
   await draw.waitFor()
   assert.equal((await studioCalls(page, 'cancel-image')).length, 1)
@@ -1000,25 +1030,26 @@ test('draws a shot picture with AI before paying for the clip, and starts the cl
 
   // 第二镜没画出来：原因写在这一镜下面，再画一次就清掉。
   await page.getByTestId('video-shot-draw-1').click()
-  await confirm.getByRole('button', { name: '开始画' }).click()
+  await dialog.getByRole('heading', { name: '为第 2 个镜头生成图片', exact: true }).waitFor()
+  await dialog.getByTestId('video-draw-ok').click()
   await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
   let [pending] = await page.evaluate(() => window.videoStudioPage.pendingDrawings())
   assert.equal(pending.prompt, '倒水')
   await page.evaluate((requestId) => window.videoStudioPage.failDrawing(requestId, '图片没画出来：描述里有不能画的内容'), pending.requestId)
   assert.equal(await page.getByTestId('video-shot-draw-error-1').textContent(), '图片没画出来：描述里有不能画的内容')
 
-  // 余额不够：照页面顶上那条说，带「去充值」，这一镜下面不另写。
+  // 余额不够：照页面顶上那条说，带「前往充值」，这一镜下面不另写。
   await page.getByTestId('video-shot-draw-1').click()
-  await confirm.getByRole('button', { name: '开始画' }).click()
+  await dialog.getByTestId('video-draw-ok').click()
   await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
   assert.equal(await page.getByTestId('video-shot-draw-error-1').count(), 0)
   pending = (await page.evaluate(() => window.videoStudioPage.pendingDrawings()))[0]
   await page.evaluate((requestId) => window.videoStudioPage.failDrawing(requestId, '当前账号余额不足，充值后再试就行，不用重新登录，也不用重写密钥'), pending.requestId)
-  await page.getByTestId('video-error').getByRole('button', { name: '去充值' }).waitFor()
+  await page.getByTestId('video-error').getByRole('button', { name: '前往充值' }).waitFor()
   assert.equal(await page.getByTestId('video-shot-draw-error-1').count(), 0)
 
   await page.getByTestId('video-shot-draw-1').click()
-  await confirm.getByRole('button', { name: '开始画' }).click()
+  await dialog.getByTestId('video-draw-ok').click()
   await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
   pending = (await page.evaluate(() => window.videoStudioPage.pendingDrawings()))[0]
   await page.evaluate(([requestId, assetId]) => window.videoStudioPage.finishDrawing(requestId, assetId), [pending.requestId, second])
@@ -1029,9 +1060,107 @@ test('draws a shot picture with AI before paying for the clip, and starts the cl
   await page.getByTestId('video-shot-image-thumb-0').waitFor()
   await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
   await page.getByTestId('video-generate-all').click()
-  await confirm.getByRole('button', { name: '开始生成' }).click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
   await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
   assert.deepEqual((await studioCalls(page, 'generate')).map((input) => input.imageAssetIds), [[first], [second]])
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 出图框里改的东西各归各处：画面只管这一张图，不写回镜头；型号、画质、分辨率和手选的尺寸记进跟对话共用的那一份，
+// 下次打开（别的镜头、重开页面）还是它；按视频画面自动挑的尺寸不记。参考图跟着请求走，换到不会改图的型号时拦住。
+test('remembers what the picture dialog chose in the settings shared with chat, sends reference pictures, and leaves the shot description alone', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '新款水杯', { title: '水杯', shots: [{ prompt: '水杯在桌上' }, { prompt: '倒水' }] })
+  const dialog = page.getByTestId('video-draw-dialog')
+  const sharedKey = 'xingmang-ui-v2:image-settings:xm-account:7'
+  const shared = () => page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? 'null'), sharedKey)
+  assert.equal(await shared(), null)
+
+  await page.getByTestId('video-shot-draw-0').click()
+  // 读不到余额：左下角只说怎么计费。
+  assert.equal(await dialog.getByTestId('video-draw-cost').textContent(), '按实际用量计费。')
+  await dialog.getByTestId('video-draw-prompt').fill('水杯在桌上，逆光')
+  await pickChoice(page, 'video-draw-quality', '画质', '高')
+  await pickChoice(page, 'video-draw-resolution', '分辨率', '2K')
+  assert.equal(await dialog.getByTestId('video-draw-quality').textContent(), '画质：高')
+  // 加两张参考图：缩略图排在画面下面，能拿掉。
+  const [one, two] = ['r', 's'].map((letter) => letter.repeat(43))
+  await page.evaluate((ids) => window.videoStudioPage.pickImages(ids), [one, two])
+  assert.equal(await dialog.getByTestId('video-draw-attach').getAttribute('title'), '添加参考图后，将参照该图片生成')
+  await dialog.getByTestId('video-draw-attach').click()
+  await dialog.getByTestId('video-draw-reference-remove').nth(1).waitFor()
+  assert.deepEqual(await studioCalls(page, 'pick-images'), [4])
+  // 带着参考图换到不会改图的型号：说清楚、点不了「生成图片」，换回来就好。
+  await pickChoice(page, 'video-image-model', '模型', 'gemini-3.1-flash-image')
+  await dialog.getByTestId('video-draw-references-blocked').getByText('当前模型不支持图片编辑，请更换支持图片编辑的模型，或先移除图片', { exact: true }).waitFor()
+  assert.equal(await dialog.getByTestId('video-draw-ok').isDisabled(), true)
+  assert.equal(await dialog.getByTestId('video-draw-attach').isDisabled(), true)
+  assert.equal(await dialog.getByTestId('video-draw-attach').getAttribute('title'), '当前模型不支持图片编辑，请更换支持图片编辑的模型后再添加图片')
+  // 这个型号没有画质档位，那一格不出来。
+  assert.equal(await dialog.getByTestId('video-draw-quality').count(), 0)
+  await pickChoice(page, 'video-image-model', '模型', 'gpt-image-2')
+  assert.equal(await dialog.getByTestId('video-draw-references-blocked').count(), 0)
+  assert.equal(await dialog.getByTestId('video-draw-quality').textContent(), '画质：高')
+  await dialog.getByTestId('video-draw-reference-remove').first().click()
+  assert.equal(await dialog.getByTestId('video-draw-reference-remove').count(), 1)
+  await dialog.getByTestId('video-draw-ok').click()
+  await dialog.waitFor({ state: 'detached' })
+  await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
+  let [request] = await studioCalls(page, 'image')
+  assert.deepEqual({ ...request, requestId: typeof request.requestId }, { requestId: 'string', group: '图片模型', model: 'gpt-image-2', prompt: '水杯在桌上，逆光', size: '720x1280', quality: 'high', imageResolution: '2K', sourceAssetIds: [two] })
+  // 框里改的画面只管这一张图：镜头自己的描述没变。
+  assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '水杯在桌上')
+  // 记下的那一份：型号、画质、分辨率照框里的；尺寸是按竖屏自动挑的，不记，还是对话里的默认。
+  assert.deepEqual(await shared(), { model: 'gpt-image-2', group: '图片模型', size: '1024x1024', quality: 'high', imageResolution: '2K' })
+  await page.evaluate(([requestId, assetId]) => window.videoStudioPage.finishDrawing(requestId, assetId), [request.requestId, 't'.repeat(43)])
+  await page.getByTestId('video-shot-image-thumb-0').waitFor()
+
+  // 另一个镜头打开：画质、分辨率跟着上一次；画面是它自己的，参考图不带过来。
+  await page.getByTestId('video-shot-draw-1').click()
+  assert.equal(await dialog.getByTestId('video-draw-prompt').inputValue(), '倒水')
+  assert.equal(await dialog.getByTestId('video-draw-quality').textContent(), '画质：高')
+  assert.equal(await dialog.getByTestId('video-draw-resolution').textContent(), '分辨率：2K')
+  assert.equal(await dialog.getByTestId('video-draw-size').getAttribute('data-value'), '720x1280')
+  assert.equal(await dialog.getByTestId('video-draw-reference-remove').count(), 0)
+  // 手选一个尺寸：这回记下来。
+  await pickChoice(page, 'video-draw-size', '尺寸', '1024 × 1536')
+  // 画面清空了点不了。
+  await dialog.getByTestId('video-draw-prompt').fill('  ')
+  assert.equal(await dialog.getByTestId('video-draw-ok').isDisabled(), true)
+  await dialog.getByTestId('video-draw-prompt').fill('倒水')
+  await dialog.getByTestId('video-draw-ok').click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
+  request = (await studioCalls(page, 'image'))[1]
+  assert.deepEqual({ ...request, requestId: typeof request.requestId }, { requestId: 'string', group: '图片模型', model: 'gpt-image-2', prompt: '倒水', size: '1024x1536', quality: 'high', imageResolution: '2K' })
+  assert.deepEqual(await shared(), { model: 'gpt-image-2', group: '图片模型', size: '1024x1536', quality: 'high', imageResolution: '2K' })
+  await page.evaluate(([requestId, assetId]) => window.videoStudioPage.finishDrawing(requestId, assetId), [request.requestId, 'u'.repeat(43)])
+  await page.getByTestId('video-shot-image-thumb-1').waitFor()
+
+  // 重开页面：记的那一份还在；这个尺寸本来就是竖的，跟竖屏视频对得上，原样用。
+  await page.reload()
+  await page.getByTestId('video-shot-image-thumb-1').waitFor()
+  await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
+  await page.getByTestId('video-shot-draw-0').click()
+  await dialog.locator('[data-testid="video-image-model"][data-model="gpt-image-2"]').waitFor()
+  assert.equal(await dialog.getByTestId('video-draw-size').getAttribute('data-value'), '1024x1536')
+  assert.equal(await dialog.getByTestId('video-draw-quality').textContent(), '画质：高')
+
+  // 手填尺寸：填得不合这个型号的规矩时不交，在下面说清规矩；改对了才交。
+  await pickChoice(page, 'video-draw-size', '尺寸', '自定义尺寸')
+  await dialog.getByTestId('video-draw-width').fill('1000')
+  await dialog.getByTestId('video-draw-ok').click()
+  await dialog.getByTestId('video-draw-size-rule').waitFor()
+  // 重开页面以后假桥从头记：这一回还没交过。
+  assert.equal((await studioCalls(page, 'image')).length, 0)
+  await dialog.getByTestId('video-draw-width').fill('1008')
+  await dialog.getByTestId('video-draw-height').fill('1792')
+  assert.equal(await dialog.getByTestId('video-draw-size-rule').count(), 0)
+  await dialog.getByTestId('video-draw-ok').click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
+  request = (await studioCalls(page, 'image'))[0]
+  assert.equal(request.size, '1008x1792')
+  assert.equal((await shared()).size, '1008x1792')
   assert.deepEqual(errors, [])
   await page.close()
 })
@@ -1195,7 +1324,7 @@ test('lays a picked song under the joined film, with the clip sound turned down 
   for (const index of [0, 1]) await page.getByTestId(`video-shot-${index}`).getByText('已生成').waitFor()
 
   const add = page.getByTestId('video-music-add')
-  assert.equal(await add.getAttribute('title'), '从电脑里选一首歌当背景音乐，支持 MP3、M4A、WAV、OGG')
+  assert.equal(await add.getAttribute('title'), '从本机选择一首歌曲作为背景音乐，支持 MP3、M4A、WAV、OGG')
   assert.equal(await add.textContent(), '加配乐')
   // 在对话框里点了取消：什么都不变。
   await add.click()
@@ -1209,8 +1338,8 @@ test('lays a picked song under the joined film, with the clip sound turned down 
   await page.evaluate(() => window.videoStudioPage.pickSong({ name: '海风', seconds: 0.8, frequency: 660 }))
   await add.click()
   await page.getByTestId('video-music-name').getByText('海风').waitFor()
-  assert.equal(await page.getByTestId('video-music-change').textContent(), '换一首')
-  assert.equal(await page.getByTestId('video-music-remove').textContent(), '不用配乐')
+  assert.equal(await page.getByTestId('video-music-change').textContent(), '更换配乐')
+  assert.equal(await page.getByTestId('video-music-remove').textContent(), '不使用配乐')
   assert.equal(await page.getByTestId('video-clip-sound').inputValue(), 'quiet')
   assert.deepEqual(await page.getByTestId('video-clip-sound').locator('option').allTextContents(), ['照常', '调小', '关掉'])
 
@@ -1257,7 +1386,7 @@ test('keeps several films side by side, switches between them and picks a waitin
   await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#884400'), first.requestId)
   await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_1）。'), second.requestId)
   await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
-  await page.getByTestId('video-shot-1').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-1').getByText('生成失败').waitFor()
   const [coffee] = await films()
   assert.deepEqual({ name: coffee.name, progress: coffee.progress, open: coffee.open }, { name: '咖啡', progress: '2 个镜头 · 已生成 1 段', open: true })
 
@@ -1319,7 +1448,7 @@ test('says so when a film cannot be saved on this computer, and saves it once wr
   const { page, errors } = await openStudio()
   await page.evaluate(() => window.videoStudioPage.failProjectWrites(true))
   await page.getByTestId('video-idea-input').fill('海边')
-  await page.getByTestId('video-storage-warning').getByText('这台电脑上存不下这份分镜，关掉软件以后要重新写。生成好的片段照样在作品库里。').waitFor()
+  await page.getByTestId('video-storage-warning').getByText('本机无法保存此分镜，关闭软件后需重新编写。已生成的片段仍保留在作品库中。').waitFor()
   await page.evaluate(() => window.videoStudioPage.failProjectWrites(false))
   await page.getByTestId('video-idea-input').fill('海边日落')
   await page.waitForFunction(() => !document.querySelector('[data-testid="video-storage-warning"]'))

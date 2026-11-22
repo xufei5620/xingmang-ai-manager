@@ -192,7 +192,7 @@ export interface ToolStatus {
   /**
    * 只在 Mac 上的 Codex / Grok 出现：找到的那份不是 npm 装的，又核不出是官方安装器那一份，星芒不替它跑
    * （tool-installation.ts 的 UnrecognizedDarwinCliError，Mac 验收 R1）。首页这时不给「打开」，给
-   * 「用星芒装一份」；主进程也不再拿「不会另装一份」拦这次安装。缺省 = 认得出或不适用。
+   * 「使用星芒安装」；主进程也不再拿「不会另装一份」拦这次安装。缺省 = 认得出或不适用。
    */
   unrecognizedInstall?: boolean
   /**
@@ -289,7 +289,7 @@ export interface SystemScanOptions {
 /** 卸载命令行工具的附加要求；缺省 = 只卸载（旧行为）。 */
 export interface CliUninstallOptions {
   /**
-   * 这次卸载是「换成星芒装的」的前一半，卸完渲染层马上用 npm 装回来（第三十一批 B）。
+   * 这次卸载是「改用星芒安装」的前一半，卸完渲染层马上用 npm 装回来（第三十一批 B）。
    * 先按安装那一道门槛看盘：装不下就一个文件都不动，免得客户卸完落得一份都没有。
    */
   reinstall?: boolean
@@ -326,6 +326,8 @@ export interface CliLaunchResult {
   rememberedWorkspace?: string | null
   /** 同 AppConfigSummary.rememberedWorkspaceFresh，跟着上面那个文件夹走。缺省 = 不是。 */
   rememberedWorkspaceFresh?: boolean
+  /** 同 AppConfigSummary.rememberedWorkspaceChosenAt，跟着上面那个文件夹走。缺省 = 不是设置页换的。 */
+  rememberedWorkspaceChosenAt?: number
 }
 
 export type ToolUninstallResult =
@@ -353,13 +355,13 @@ export type ToolUninstallResult =
         /**
          * true = the main process pinned exactly the files manualCommand names
          * and `cli:clean-uninstall-leftovers` may delete them after checking
-         * them again (已知48「帮我清理」). Omitted = the command is all there is.
+         * them again (已知48「一键清理」). Omitted = the command is all there is.
          */
         cleanUpAvailable?: boolean
       }
     }
 
-/** 「帮我清理」之后还剩几个文件（已知48）；0 = 删干净了。 */
+/** 「一键清理」之后还剩几个文件（已知48）；0 = 删干净了。 */
 export interface CliLeftoverCleanupResult {
   remaining: number
 }
@@ -378,7 +380,7 @@ export interface ConfigSavePayload {
   provider: ProviderId
   apiKey: string
   model: string
-  // repair 只有「修好它」「改用当前账号」那两条路用（NativeConfigWriteMode）；配置窗口的 config:save 只收合并和重置。
+  // repair 只有「立即修复」「改用当前账号」那两条路用（NativeConfigWriteMode）；配置窗口的 config:save 只收合并和重置。
   mode: NativeConfigWriteMode
 }
 
@@ -423,6 +425,11 @@ export interface AppConfigSummary {
    * （isUntouchedStarterWorkspace）。界面据此把第一句话换成让 AI 动手做点东西（D45）。缺省 = 不是。
    */
   rememberedWorkspaceFresh?: boolean
+  /**
+   * rememberedWorkspace 是设置页「更换」选定的，这是那一刻（AppSettings.workspaceChosenAt，毫秒）。首页「打开」
+   * 据此在它比这个工具最近一条对话还新时先进它（0.2.25 总单 Q1）。缺省 = 不是设置页换的，照旧先看对话记录。
+   */
+  rememberedWorkspaceChosenAt?: number
   providers: Record<ProviderId, NativeConfigSummary>
   /**
    * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，
@@ -468,7 +475,7 @@ export interface SystemService {
   /** 这台电脑上是否已有这个 CLI 的官方登录，null = 看不出来；可选 = 旧实现不提供。 */
   inspectOfficialLogin?(provider: ProviderId): boolean | null
   /**
-   * 首页「修好它」：把本软件写进这家配置、却指向旧位置的钩子与状态行改成这次的路径
+   * 首页「立即修复」：把本软件写进这家配置、却指向旧位置的钩子与状态行改成这次的路径
    * （这台电脑写不出来就收回），写完再查一遍；还是旧的就抛中文原因。可选 = 旧实现不提供。
    */
   repairCliHooks?(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>>
@@ -537,7 +544,7 @@ export interface SystemService {
   installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void>
   cancelCliInstall(provider: ProviderId): InstallCancellationOutcome
   uninstallCli(provider: ProviderId, options?: CliUninstallOptions): Promise<ToolUninstallResult>
-  /** 「帮我清理」：只删这个工具上次卸载时记下的那几个文件，删前再核对一遍（已知48）。 */
+  /** 「一键清理」：只删这个工具上次卸载时记下的那几个文件，删前再核对一遍（已知48）。 */
   cleanUninstallLeftovers(provider: ProviderId): Promise<CliLeftoverCleanupResult>
   inspectCliUpdate(provider: ProviderId, forceRefresh?: boolean): Promise<CliStatus>
   /** request 只有 Mac 上首页「可更新到 v…」那一下才传（见 DesktopAppUpdateRequest）。 */

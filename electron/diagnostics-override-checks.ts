@@ -469,7 +469,7 @@ function droppedByMacosLauncher(provider: ProviderId, relayProviders: ReadonlySe
 }
 
 /**
- * 检查页「删掉这几项设置」能替用户删的那几个名字：盖过当前账号的地址、密钥、模型。
+ * 检查页「删除这些设置」能替用户删的那几个名字：盖过当前账号的地址、密钥、模型。
  * 指向别的文件夹的那两个（CLAUDE_CONFIG_DIR、CODEX_HOME）不删：它们指着用户自己的
  * 一整份配置，删了等于把他原来的设置、记录换了个地方，这个得他自己决定。
  * 改走云厂商的开关也不删：设它的人多半自己在终端里用 Bedrock、Vertex，从星芒打开时已经不带了
@@ -489,7 +489,7 @@ export function clearableEnvironmentOverrides(
 export const environmentOverrideNames: readonly string[] = ENVIRONMENT_OVERRIDE_VARIABLES.map((variable) => variable.name)
 
 /**
- * Windows 上有能删的，就在结论里挂上「删掉这几项设置」（details.fix，详情抽屉不显示它）。只挂在「待处理」上：
+ * Windows 上有能删的，就在结论里挂上「删除这些设置」（details.fix，详情抽屉不显示它）。只挂在「待处理」上：
  * 那是进程环境里的变量判出来的，按钮删的正是它们；只在终端设置文件里找到的那几条是「需留意」，按钮删不到文件里，
  * 挂上去点了也不会好（深查 Shell差异 SH-5）。
  */
@@ -661,7 +661,7 @@ const homeFolderTrustNames: Readonly<Record<HomeFolderTrustProvider, string>> = 
 /**
  * 「个人文件夹里早先留下的设置」（已知36）。#321 以前客户选个人文件夹打开工具时，星芒往
  * 那里放过一份 AGENTS.md、替工具记过「信任整个个人文件夹」，之后不再放也不再记，已经留下
- * 的没有任何地方提一句。说明还是星芒那份、客户没改过的才提，并给「挪开这份说明」；信任只
+ * 的没有任何地方提一句。说明还是星芒那份、客户没改过的才提，并给「停用此说明」；信任只
  * 说一声、不给按钮，同「Claude 跑命令前要不要先问你」那项的口径。两样都有时两段连着说。
  * 「有的工具会连它一起读」「可能不会先问」是推测（只有 Gemini CLI 在不是 git 仓库的项目里
  * 一路往上读到个人文件夹这一点有把握），所以字里留着「有的」「可能」。
@@ -672,8 +672,8 @@ export function homeFolderLeftoversOutcome(input: {
 }): CheckOutcome {
   const parts: string[] = []
   if (input.untouchedInstructions) {
-    parts.push('个人文件夹里有一份星芒早先放的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
-      + '有的工具会连它一起读、照它办事，比如改代码前先等你确认。不需要的话点「挪开这份说明」。')
+    parts.push('个人文件夹中有一份星芒早期放置的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
+      + '部分工具会一并读取并遵照执行，例如修改代码前先等待您确认。如不需要，请点击「停用此说明」。')
   }
   if (input.trustedBy.length) {
     const names = input.trustedBy.map((provider) => homeFolderTrustNames[provider]).join('、')
@@ -684,7 +684,7 @@ export function homeFolderLeftoversOutcome(input: {
     untouchedInstructions: input.untouchedInstructions,
     trustedBy: input.trustedBy.join(',') || null,
   }
-  // 「挪开这份说明」：改个名留在原处，不删（diagnostic-fixes.ts）。信任那半不给按钮。
+  // 「停用此说明」：改个名留在原处，不删（diagnostic-fixes.ts）。信任那半不给按钮。
   if (input.untouchedInstructions) details.fix = 'set-aside-home-agents-md'
   return parts.length
     ? { state: 'warn', summary: parts.join(''), details }
@@ -779,7 +779,7 @@ export function buildOverrideChecks(context: DiagnosticsContext): CheckDefinitio
         const envPath = path.join(codexHome, '.env')
         const exists = fs.existsSync(envPath)
         const details: Record<string, boolean | number | string | null> = { exists, path: pathForDisplay(envPath, displayRoots) }
-        // 有这份文件时给「挪开这份设置」：改个名留在原处，不删（diagnostic-fixes.ts）。
+        // 有这份文件时给「停用此设置」：改个名留在原处，不删（diagnostic-fixes.ts）。
         if (exists) details.fix = 'set-aside-codex-dotenv'
         return {
           state: exists ? 'warn' : 'pass',

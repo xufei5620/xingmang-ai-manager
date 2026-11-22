@@ -12,17 +12,17 @@ describe('stale proxy clearing', () => {
   it('names the port and what stays untouched before clearing', () => {
     const body = staleProxyConfirmBody({ fix: 'clear-user-proxy', port: 7890 })
     expect(body).toContain('本机 7890 端口')
-    expect(body).toContain('整台电脑的设置不会动')
-    expect(body).toContain('再设一次')
+    expect(body).toContain('系统级设置不受影响')
+    expect(body).toContain('重新设置')
     expect(staleProxyConfirmBody(undefined)).toContain('指向本机')
   })
 
   it('says plainly what happened', () => {
     expect(staleProxyClearMessage({ cleared: ['HTTPS_PROXY'], machineRemaining: false }))
-      .toBe('已经清掉。以后新开的命令行窗口也不会再走这个代理。')
-    expect(staleProxyClearMessage({ cleared: ['HTTPS_PROXY'], machineRemaining: true })).toContain('要管理员才能改')
-    expect(staleProxyClearMessage({ cleared: [], machineRemaining: true })).toContain('给整台电脑设的')
-    expect(staleProxyClearMessage({ cleared: [], machineRemaining: false })).toContain('没有要清的了')
+      .toBe('已清除。之后新打开的命令行窗口将不再使用该代理。')
+    expect(staleProxyClearMessage({ cleared: ['HTTPS_PROXY'], machineRemaining: true })).toContain('需管理员权限修改')
+    expect(staleProxyClearMessage({ cleared: [], machineRemaining: true })).toContain('该设置为系统级设置')
+    expect(staleProxyClearMessage({ cleared: [], machineRemaining: false })).toContain('无需处理')
   })
 
   it('keeps technical words off the screen', () => {

@@ -246,7 +246,7 @@ export function createIpcHandlerContext(
    * 文件夹打开工具写一次信任就挤掉一份，备份页也看不到它（全面检测 Q18）。所以重置前
    * 在备份页那套存储里留一份；留不下就不重置，免得用户以为还找得回来。四个重置入口都
    * 走这里：config:save、选的账号 Key、自动准备的 Key、官方账号（以前只有第一个留）；
-   * 首页「配置文件坏了」的「修好它」走后两个。
+   * 首页「配置文件坏了」的「立即修复」走后两个。
    */
   async function backupBeforeReset(provider: ProviderId): Promise<void> {
     try {

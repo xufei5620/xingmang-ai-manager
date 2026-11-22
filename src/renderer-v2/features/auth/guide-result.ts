@@ -44,7 +44,7 @@ interface GuideSetupInput {
  * 新账号的余额本来就是 0，装好、连好以后发第一句话就会失败（主路卡点 F3）。
  * 跟首页那条提示（Home.tsx 的 lowBalanceText(0)）用同一句原话，测试钉住两处一致。
  */
-export const walletEmptyLead = '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。'
+export const walletEmptyLead = '当前账号余额为 $0，充值后方可使用 AI 工具。充值即时生效，无需重新设置。'
 
 // 和「改用 xxx」按钮用同一种截断，免得同一个名字在两处长短不一。
 function currentAccountLabel(accountName: string | null | undefined): string {
@@ -54,26 +54,26 @@ function currentAccountLabel(accountName: string | null | undefined): string {
 }
 
 function installationResult(route: GuideRoute, tool: GuideToolState | undefined, prepared: boolean): GuideResultRow {
-  if (route === 'chat') return { value: '不用另装', detail: '聊天就在星芒里，直接提问就行。', tone: 'ok' }
-  if (!tool || tool.detectionError) return { value: '暂时没读到', detail: '点「重新检测」再看一次。', tone: 'warn' }
-  if (!tool.installed) return { value: '还没装好', detail: '回到上一步把它装好。', tone: 'warn' }
+  if (route === 'chat') return { value: '无需安装', detail: '对话功能内置于星芒，可直接提问。', tone: 'ok' }
+  if (!tool || tool.detectionError) return { value: '暂未获取', detail: '请点击「重新检测」。', tone: 'warn' }
+  if (!tool.installed) return { value: '尚未安装', detail: '请返回上一步完成安装。', tone: 'warn' }
   const version = tool.version?.replace(/^v/i, '')
   const update = tool.update
   const how = update?.manualHint ? '用它原来的安装方式更新' : '更新'
-  const detail = !prepared ? '还差一点准备工作，回到上一步按提示补齐。'
-    : update?.knownIssue ? `这一版有已知问题，建议${how}到 ${update.target || update.version}。`
-      : update ? `有更新的版本 ${update.target || update.version}，可以以后再${how}，不影响现在用。`
-        : '可以直接用。'
-  return { value: version ? `已装好（版本 ${version}）` : '已装好', detail, tone: !prepared || update ? 'warn' : 'ok' }
+  const detail = !prepared ? '准备工作尚未完成，请返回上一步按提示补全。'
+    : update?.knownIssue ? `当前版本存在已知问题，建议${how}至 ${update.target || update.version}。`
+      : update ? `有新版本 ${update.target || update.version} 可用，可稍后${how}，不影响当前使用。`
+        : '可直接使用。'
+  return { value: version ? `已安装（版本 ${version}）` : '已安装', detail, tone: !prepared || update ? 'warn' : 'ok' }
 }
 
 function connectionResult(input: GuideSetupInput): { row: GuideResultRow; billing: string; usesAccountBalance?: boolean } {
   const { route, tool, signedIn, readiness, name, officialName, accountName, switched } = input
   const current = currentAccountLabel(accountName)
   if (route === 'chat') return signedIn
-    ? { row: { value: current, detail: '进聊天就能提问。', tone: 'ok' }, billing: '聊天花的是当前账号的余额。', usesAccountBalance: true }
-    : { row: { value: '还没登录', detail: '登录后就能聊天。', tone: 'warn' }, billing: '还没开始用，不花钱。' }
-  if (!tool || tool.detectionError) return { row: { value: '暂时没读到', detail: '点「重新检测」再看一次。', tone: 'warn' }, billing: '读到设置后才能说清。' }
+    ? { row: { value: current, detail: '进入对话即可提问。', tone: 'ok' }, billing: '从当前账号余额扣除。', usesAccountBalance: true }
+    : { row: { value: '未登录', detail: '登录后即可对话。', tone: 'warn' }, billing: '尚未使用，不产生费用。' }
+  if (!tool || tool.detectionError) return { row: { value: '暂未获取', detail: '请点击「重新检测」。', tone: 'warn' }, billing: '读取设置后显示。' }
   // 刚在引导里切过来源时，以这次切换的结果为准：检测快照可能还没跟上，
   // 不能让刚点完的人看不到任何回执。
   const source = switched ? switched.target : tool.source
@@ -81,38 +81,38 @@ function connectionResult(input: GuideSetupInput): { row: GuideResultRow; billin
     const loginRequired = switched?.target === 'official' ? switched.loginRequired : tool.officialLoginRequired
     return {
       row: loginRequired
-        ? { value: `${officialName}，还没登录`, detail: `打开 ${name}，用 ${officialName}登录一次。`, tone: 'warn' }
-        : { value: officialName, detail: `能用多少，在 ${name} 里看。`, tone: 'neutral' },
-      billing: `花的是 ${officialName}自己的额度，不扣当前账号的余额。`,
+        ? { value: `${officialName}，未登录`, detail: `请打开 ${name}，并使用 ${officialName}登录。`, tone: 'warn' }
+        : { value: officialName, detail: `可用额度请在 ${name} 中查看。`, tone: 'neutral' },
+      billing: `使用 ${officialName}自身的额度，不扣除当前账号余额。`,
     }
   }
   if (source === 'manual') return {
-    row: { value: '自己的密钥', detail: readiness.connected ? '设置已读到，打开工具试一次。' : '请检查填的密钥和模型。', tone: readiness.connected ? 'neutral' : 'warn' },
-    billing: '花的是这把密钥所在账号的余额，不一定是当前账号。',
+    row: { value: '自己的密钥', detail: readiness.connected ? '已读取设置，请打开工具验证。' : '请检查填写的密钥和模型。', tone: readiness.connected ? 'neutral' : 'warn' },
+    billing: '从该密钥所属账号扣除，不一定是当前账号。',
   }
   if (source === 'unknown') return {
     // 别家的站认不出来，只说是不是当前账号的，不说对方是谁（和第 3 步的提示一致）。
-    row: tool.keyState === 'otherAccount' ? { value: '可能不是当前账号的密钥', detail: '能用，但用量可能算到别的账号上。', tone: 'warn' }
-      : tool.keyState === 'changed' ? { value: '设置被改过', detail: '在星芒之外被改过，现在还能用。', tone: 'warn' }
-        : tool.keyState === 'otherSite' ? { value: '不是当前账号的密钥', detail: '换成当前账号就能接着用。', tone: 'warn' }
-          : { value: '别处的配置', detail: '原来的配置原样留着，先看看怎么处理。', tone: 'warn' },
-    billing: '可能不扣当前账号的余额。改用当前账号后，就花当前账号的。',
+    row: tool.keyState === 'otherAccount' ? { value: '可能不是当前账号的密钥', detail: '可以使用，但用量可能计入其他账号。', tone: 'warn' }
+      : tool.keyState === 'changed' ? { value: '设置被改过', detail: '已在星芒外被修改，当前仍可使用。', tone: 'warn' }
+        : tool.keyState === 'otherSite' ? { value: '不是当前账号的密钥', detail: '切换为当前账号后即可继续使用。', tone: 'warn' }
+          : { value: '其他来源的配置', detail: '原有配置已保留，请查看处理方式。', tone: 'warn' },
+    billing: '可能不从当前账号扣费。改用当前账号后，将从当前账号扣费。',
   }
   if (source === 'account') {
     // 余额是 $0 时打开了也用不了，「设置已读到」后面不再叫人去打开（D47，新手流程 N6）。
     const detail = switched?.target === 'account'
-      ? switched.verified ? '刚才改用时试连过，能连上。' : '已经改好，但这次没试通，原因看下面。'
-      : !readiness.connected ? '还没设好，点「去连好」保存一次。'
-        : signedIn ? input.walletEmpty ? '设置已读到。' : '设置已读到，打开工具试一次。' : '设置已读到，登录后能核对是不是你的账号。'
+      ? switched.verified ? '切换时已完成连接测试，连接正常。' : '已修改，但连接测试未通过，原因如下。'
+      : !readiness.connected ? '尚未设置，请点击「前往连接」保存。'
+        : signedIn ? input.walletEmpty ? '已读取设置。' : '已读取设置，请打开工具验证。' : '已读取设置，登录后可核对是否为当前账号。'
     const verified = switched?.target === 'account' && switched.verified
     return {
-      row: { value: signedIn ? current : '还没登录', detail, tone: !readiness.connected || (switched && !switched.verified) ? 'warn' : verified ? 'ok' : 'neutral' },
-      billing: !readiness.connected ? '设好之后才开始花当前账号的余额。'
-        : signedIn ? '花的是当前账号的余额。' : '花的是这把密钥所在账号的余额，登录后能核对。',
+      row: { value: signedIn ? current : '未登录', detail, tone: !readiness.connected || (switched && !switched.verified) ? 'warn' : verified ? 'ok' : 'neutral' },
+      billing: !readiness.connected ? '设置完成后开始从当前账号余额扣除。'
+        : signedIn ? '从当前账号余额扣除。' : '从该密钥所属账号扣除，登录后可核对。',
       usesAccountBalance: readiness.connected && signedIn,
     }
   }
-  return { row: { value: '还没设好', detail: '选好账号后保存一次。', tone: 'warn' }, billing: '设好之前不会花钱。' }
+  return { row: { value: '尚未设置', detail: '请选择账号并保存。', tone: 'warn' }, billing: '设置完成前不产生费用。' }
 }
 
 export function buildGuideSetupResult(input: GuideSetupInput): GuideSetupResult {
@@ -130,14 +130,14 @@ export function buildGuideSetupResult(input: GuideSetupInput): GuideSetupResult 
   // 不再一句说充值、两句说去打开（D47，新手流程 N6）。没试通的改用自己带着出口，和 walletFirst 一样不叠这一套。
   const topUpFirst = walletEmpty && !(input.switched?.target === 'account' && !input.switched.verified)
   const next: GuideResultRow = !readiness.prepared
-    ? { value: '先回上一步', detail: '把工具准备好后，点「重新检测」。', tone: 'warn' }
+    ? { value: '请返回上一步', detail: '工具准备就绪后，请点击「重新检测」。', tone: 'warn' }
     : !readiness.connected
-      ? { value: '先把账号设好', detail: '保存设置或在工具里登录后，点「重新检测」。', tone: 'warn' }
+      ? { value: '请先设置账号', detail: '保存设置或在工具中登录后，请点击「重新检测」。', tone: 'warn' }
       : route === 'chat'
-        ? { value: '可以开始聊天', detail: '把下面这句话发出去试试。', tone: 'neutral' }
+        ? { value: '可以开始聊天', detail: '请发送以下内容进行测试。', tone: 'neutral' }
         : topUpFirst
-          ? { value: '先充值', detail: '充值后回来点「打开」就能用。', tone: 'warn' }
-          : { value: '打开工具试一次', detail: keyedDesktop ? '打开后在左侧栏最上面把模式切到「Codex」，再把下面这句话发给它试试。' : prompt ? '打开后把下面这句话发给它试试。' : '打开后随便问它一个问题试试。', tone: 'neutral' }
+          ? { value: '请先充值', detail: '充值后点击「打开」即可使用。', tone: 'warn' }
+          : { value: '打开工具验证', detail: keyedDesktop ? '打开后请在左侧栏顶部将模式切换为「Codex」，然后发送以下内容进行测试。' : prompt ? '打开后请发送以下内容进行测试。' : '打开后可输入任意问题进行测试。', tone: 'neutral' }
   const install = installationResult(route, input.tool, readiness.prepared)
   return {
     install,

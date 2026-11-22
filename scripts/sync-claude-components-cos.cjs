@@ -6,6 +6,7 @@ const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const { performance } = require('node:perf_hooks')
 const { checkFailure, observedProcessFailure, safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { PART_BYTES } = require('./cos-multipart-upload.cjs')
 
 // Claude Desktop 自己要从官网下两样东西，国内下不动（加速 10-30 已下线）：Cowork 工作区（每个平台约 1.3 GB）
 // 和 Mac 上的 Claude Code 程序包（2.1.326 约 120 MB）。yoyo 11-03「如果能用这个方式就不要加速了」：这里把它们原样搬进
@@ -57,6 +58,11 @@ const MAX_COMPONENT_BYTES = 2 * 1024 * 1024 * 1024
 // GitHub 的机器往上海的桶分块传约 190~300 KB/s（#1082 和 11-01 Codex 桌面端那次），1.36 GB 要一个半小时上下，
 // 网断一阵还要等着重试；单个文件给四个小时，作业 330 分钟兜底。
 const MULTIPART_DEADLINE_MS = 240 * 60 * 1000
+// 1 MiB（一块）及以上的文件都分块传，不等到通用的 16 MiB。11-21 两次定时同步（运行 44876954420、44905338781）里，GitHub 的机器
+// 往上海的桶一条连接只有 10~18 KB/s：工作区里约 15 MB 的 vmlinuz 走一次性 PUT，要传 14~20 分钟，传完 COS 回 HTTP 400，或者
+// 20 分钟还没传完就超时、重传还是一样（一个文件耗了三个半小时），Windows 两部分连着红（#2069）；同一时段分块并行传的
+// 1.3 GB rootfs 和两个约 120 MB 的 Mac 程序包都传上去了。一块以内的文件分块也只有一条连接，照旧一次性 PUT。
+const MULTIPART_MIN_BYTES = PART_BYTES
 const WORK_PREFIX = 'xingmang-claude-components-cos-'
 // 每部分读哪个安装包：Windows 和 Mac 的 Claude 不同步出版（11-19 Windows MSIX 是 5.11492.5、Mac 是 6.6395.1，
 // 两边清单里的工作区版本也不一样），客户 Windows 上装的是 MSIX、Mac 上装的是通用版 zip，各部分只搬自己那边真在用的那一版。
@@ -423,11 +429,15 @@ function createRuntimeDependencies(common) {
   }
 }
 
+function createComponentsCosStore(common, config) {
+  return common.createCosStore(config, { multipartDeadlineMs: MULTIPART_DEADLINE_MS, multipartMinBytes: MULTIPART_MIN_BYTES })
+}
+
 async function main(argv = process.argv.slice(2)) {
   const part = parsePartArgument(argv)
   const common = require('./cos-sync-utils.cjs')
   const config = common.readCosConfiguration(process.env)
-  const result = await synchronizeClaudeComponents({ part, store: common.createCosStore(config, { multipartDeadlineMs: MULTIPART_DEADLINE_MS }),
+  const result = await synchronizeClaudeComponents({ part, store: createComponentsCosStore(common, config),
     dependencies: createRuntimeDependencies(common), components: loadComponents(),
     progress: function (event) { console.log(`[claude-components-sync] ${JSON.stringify(event)}`) } })
   console.log(JSON.stringify(result))
@@ -441,6 +451,6 @@ if (require.main === module) {
 }
 
 module.exports = { SOURCE_HOST, PREFIX, CONTENT_TYPE, CACHE_CONTROL, MSIX_REQUEST_URL, MSIX_ASAR_ENTRY, MAC_ZIP_REQUEST_URL, MAC_ASAR_ENTRY, INSTALLERS, INSTALLER_IDS,
-  MULTIPART_DEADLINE_MS, PARTS, PART_IDS, parsePart, parsePartArgument, componentSourceUrl, validateComponentSourceUrl, assertObjectKey, componentsFromModules,
+  MULTIPART_DEADLINE_MS, MULTIPART_MIN_BYTES, PARTS, PART_IDS, parsePart, parsePartArgument, componentSourceUrl, validateComponentSourceUrl, assertObjectKey, componentsFromModules,
   loadComponents, buildPlan, synchronizeClaudeComponents, safeComponentsSyncFailure, safeChildEnvironment, extractAsar, requestMacZipLocation, resolveInstaller,
-  createRuntimeDependencies, main }
+  createRuntimeDependencies, createComponentsCosStore, main }

@@ -383,7 +383,7 @@ describe('native CLI configuration files', () => {
       tokens: { id_token: 'id-token', access_token: 'access-token', refresh_token: 'refresh-token', account_id: 'acct' },
     }), 'utf8')
 
-    // 首页「修好它」对登录 ChatGPT 的客户走的就是这条：以前坏文件在这里直接报错，修不了。
+    // 首页「立即修复」对登录 ChatGPT 的客户走的就是这条：以前坏文件在这里直接报错，修不了。
     const saved = switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
 
     expect(fs.readFileSync(configPath, 'utf8')).toBe('approval_policy = "on-request"\nsandbox_mode = "workspace-write"\ncheck_for_update_on_startup = false\n')
@@ -551,7 +551,7 @@ describe('native CLI configuration files', () => {
     expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toMatchObject({ auth_mode: 'chatgpt', tokens: { access_token: 'saved' } })
   })
 
-  // 0.2.24 深查 X-1：只坏了 auth.json 时「修好它」以前整份重建 config.toml，客户自己加的连接、信任过的文件夹、
+  // 0.2.24 深查 X-1：只坏了 auth.json 时「立即修复」以前整份重建 config.toml，客户自己加的连接、信任过的文件夹、
   // 推理强度全没了；从修之前的备份找回又把坏的 auth.json 一起放回去。
   describe('repair over an auth.json Codex cannot read (X-1)', () => {
     const customized = [
@@ -633,7 +633,7 @@ describe('native CLI configuration files', () => {
     })
 
     // 2026-11-18 客户：中文用户名被 PowerShell 5.1 按 GBK 转了一圈，后面的反斜杠被吃掉，整份 Codex 读不了。
-    // 只坏了带用户名的那几行，「修好它」去掉它们照合并修，客户自己的设置照留；「重置为初始状态」照旧整份重建。
+    // 只坏了带用户名的那几行，「立即修复」去掉它们照合并修，客户自己的设置照留；「重置为初始状态」照旧整份重建。
     const mangledLines = [
       'notify = ["C:\\\\Users\\\\\u5BEE\u72B2\u76AC\u93C4\u5DBE\\AppData\\\\hook.cjs", "codex"]',
       '',

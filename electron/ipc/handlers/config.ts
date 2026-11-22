@@ -44,7 +44,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
       // create keys, call a model, or establish automatic overwrite consent.
       let keys: Awaited<ReturnType<ManagedCliKeyStoreLike['read']>> = []
       try { keys = await options.managedCliKeys!.read(userId) } catch { /* Unknown ownership stays protected. */ }
-      // 开机后第一次读到本账号的配置时，先把指向旧位置的提醒设置改好再报（修不好首页照旧给「修好它」）。
+      // 开机后第一次读到本账号的配置时，先把指向旧位置的提醒设置改好再报（修不好首页照旧给「立即修复」）。
       // 放在下面的会话复核之前：改的时候换了账号，这次读取照样作废。
       await service.autoRepairStaleCliHooks?.().catch(() => [])
       const current = accountService.getSessionState()
@@ -219,7 +219,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
       },
       writeAccountConfig: async (id) => {
         // 工具自己读不了的配置，只更新要照着原文件改，只会报「写错了」；来源没确认时配置窗口里
-        // 又只有这一颗按钮，点不到「重置为初始状态」（第三十批跟进项）。这时改走「修好它」那一种：读不了的
+        // 又只有这一颗按钮，点不到「重置为初始状态」（第三十批跟进项）。这时改走「立即修复」那一种：读不了的
         // 那份重建，Codex 只坏了 auth.json 时 config.toml 里客户自己的设置照留（X-1）。这次切换开头已经在
         //「备份」页留过一份，切不成照样从它恢复。
         const current = service.getConfig(options.previewOnboarding).providers[id]

@@ -49,7 +49,7 @@ export function createAccountStorage(options: AccountStorageOptions) {
       'account',
       'session.persist.unavailable',
       credentialPersistence === 'session-only'
-        ? '这台电脑没法安全保存登录，本次登录只留在内存里，关掉软件后要重新登录；已有账号文件不动'
+        ? '本机无法安全保存登录信息，本次登录仅保留在内存中，关闭软件后需重新登录；已有账号文件保持不变'
         : '系统未提供安全加密存储，请恢复系统凭据服务后登录；已有账号文件将保留',
       { backend: safeStorageBackend, persistence: credentialPersistence },
     )
