@@ -733,7 +733,7 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   // 候选 4：这两句以前一句落 unknown「操作没有成功」，一句被 timeout 的「网络」
-  // 一词吞掉成「连不上星芒服务器」，用户于是去检查一个本来就通的网络。
+  // 一词吞掉成「无法连接星芒服务器」，用户于是去检查一个本来就通的网络。
   it('names a full disk instead of sending the user to customer support', () => {
     for (const full of [
       'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write',
@@ -823,7 +823,7 @@ describe('renderer-v2 operation error classification', () => {
     const outdated = presentOperationError(`${raw}。${toolCertificateMessages.outdatedNode}`)
     expect(outdated?.key).toBe('toolCertOutdatedNode')
     expect(outdated?.body).toContain('Node.js')
-    expect(outdated?.body).not.toContain('换一个网络')
+    expect(outdated?.body).not.toMatch(/换一个网络|更换网络/)
     const elevated = presentOperationError(`${raw}。${toolCertificateMessages.elevated}`)
     expect(elevated?.key).toBe('toolCertElevated')
     expect(elevated?.body).toContain('正常打开')

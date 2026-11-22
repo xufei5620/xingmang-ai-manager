@@ -845,7 +845,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       // 首页「启用」也走这里：Grok 一条没写过的，这次一并补上。
       const result = rewriteManagedCliHooks(provider, providerRoots, { cliHook, claudeStatusLineCommand, addIfMissing: provider === 'grok' })
       const after = managedCliHooksState(provider)
-      if (after.stale) throw new Error('提醒设置没修好，原来的设置已备份，可以在「设置 › 备份迁移」里找回')
+      if (after.stale) throw new Error('提醒设置修复失败，原设置已备份，可在「设置 › 备份迁移」中找回')
       if (cliHook && after.missing) throw new Error('「完成与出错通知」和「运行时防止休眠」尚未启用，请先点击首页的「启用」准备运行环境后重试')
       runtimeLog?.log('info', 'config', 'cli-hooks.repaired', '已把工具里的提醒设置改到这次安装的位置', {
         provider,
@@ -1218,7 +1218,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
         try {
           result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels, cliHook, codexModelCatalog, seededFor(payload.provider))
         } catch (error) {
-          if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方密钥暂时收在一边，切回官方账号时会放回')
+          if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原登录留下的官方密钥已暂时移开，切回官方账号时将放回')
           throw error
         }
       } catch (error) {
@@ -1289,7 +1289,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     function assertOwner(): void {
       assertBeforeWrite()
-      if (!owner || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，这次不换')
+      if (!owner || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，本次不更换')
     }
     await serializeConfigWrite(async () => {
       assertOwner()
@@ -1304,10 +1304,10 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       // 要问一遍 Codex 命令行是哪一版，放在「校验没变」之前，同 saveConfig。
       const codexModelCatalog = provider === 'codex' ? await resolveCodexModelCatalog(availableModels, to) : undefined
       assertOwner()
-      if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，这次不换')
+      if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，本次不更换')
       if (!sameNativeConfigSnapshot(before, inspectNativeProviderConfig(provider))) throw new Error('工具配置在模型检测期间发生变化，已保留现有配置')
       const plan = planProviderModelReplace(provider, from, to, providerRoots, codexModelCatalog)
-      if (plan.status !== 'rewrite') throw new Error(plan.status === 'changed' ? '工具里的型号已经改了，这次不换' : '工具配置里找不到型号写在哪，这次不换')
+      if (plan.status !== 'rewrite') throw new Error(plan.status === 'changed' ? '工具中的型号已被修改，本次不更换' : '工具配置中未找到型号设置位置，本次不更换')
       applyProviderModelReplace(provider, plan, providerRoots)
     })
   }
@@ -1322,7 +1322,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     function assertOwner(): void {
       assertBeforeWrite()
-      if (!owner || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，这次不刷新')
+      if (!owner || (serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，本次不刷新')
     }
     await serializeConfigWrite(async () => {
       assertOwner()
@@ -1336,11 +1336,11 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       if (!availableModels.includes(model)) throw new Error(`当前密钥不支持模型 ${model}`)
       const codexModelCatalog = provider === 'codex' ? await resolveCodexModelCatalog(availableModels, model) : undefined
       assertOwner()
-      if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，这次不刷新')
+      if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，本次不刷新')
       if (!sameNativeConfigSnapshot(before, inspectNativeProviderConfig(provider))) throw new Error('工具配置在模型检测期间发生变化，已保留现有配置')
       const plan = planProviderPickerRefresh(provider, model, availableModels, providerRoots, codexModelCatalog, seededFor(provider))
       if (plan.status === 'current') return
-      if (plan.status !== 'rewrite') throw new Error(plan.status === 'changed' ? '工具里的型号已经改了，这次不刷新' : '工具配置里找不到型号菜单写在哪，这次不刷新')
+      if (plan.status !== 'rewrite') throw new Error(plan.status === 'changed' ? '工具中的型号已被修改，本次不刷新' : '工具配置中未找到型号菜单设置位置，本次不刷新')
       applyProviderPickerRefresh(provider, plan, providerRoots)
       await noteSeededToolDefaults(provider)
     })
@@ -1538,7 +1538,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       // 问中转、问 Codex 版本那几秒里客户可能刚打开了它：写之前再看一眼，规矩同下面 Claude Code、Grok 那条（#1154）。
       beforeRefresh: async () => {
         const latest = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['codex'])
-        if (latest.running.includes('codex') || latest.unknown.includes('codex') || latest.codexDesktopRunning !== false) throw new Error('Codex 可能正开着，这次先不写')
+        if (latest.running.includes('codex') || latest.unknown.includes('codex') || latest.codexDesktopRunning !== false) throw new Error('Codex 可能正在运行，本次暂不写入')
         backup?.('codex')
       },
     }).catch(() => undefined)
@@ -1588,7 +1588,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
         // 已经交了差，不再记成欠着；下次开机再换，从星芒打开的打开前那一问也会劝换。
         beforeReplace: async () => {
           const latest = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)([provider])
-          if (latest.running.includes(provider) || latest.unknown.includes(provider)) throw new Error('工具可能正开着，这次先不换')
+          if (latest.running.includes(provider) || latest.unknown.includes(provider)) throw new Error('工具可能正在运行，本次暂不更换')
           backup?.(provider)
         },
       }).catch(() => undefined)
@@ -1618,7 +1618,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     void toolModelChecker.syncPicker('claude', {
       beforeRefresh: async () => {
         const latest = await (serviceOptions.inspectRunningToolsForTemplateFill ?? inspectRunningTools)(['claude'])
-        if (latest.running.includes('claude') || latest.unknown.includes('claude')) throw new Error('Claude Code 可能正开着，这次先不写')
+        if (latest.running.includes('claude') || latest.unknown.includes('claude')) throw new Error('Claude Code 可能正在运行，本次暂不写入')
         backup?.('claude')
       },
     }).catch(() => undefined)

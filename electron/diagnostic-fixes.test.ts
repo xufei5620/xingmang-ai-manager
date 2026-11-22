@@ -178,7 +178,7 @@ describe('clearUserProviderOverrides', () => {
   })
 
   it('refuses outside Windows', async () => {
-    await expect(clearUserProviderOverrides({ names: ['ANTHROPIC_API_KEY'], platform: 'darwin' })).rejects.toThrow('只有 Windows')
+    await expect(clearUserProviderOverrides({ names: ['ANTHROPIC_API_KEY'], platform: 'darwin' })).rejects.toThrow('仅 Windows')
   })
 
   it('checks every name against the fixed allow-list inside the script as well', () => {
@@ -191,7 +191,7 @@ describe('clearUserProviderOverrides', () => {
   })
 
   it('rejects output it cannot read and ignores names outside the allow-list', () => {
-    expect(() => parseClearProviderOverridesOutput('')).toThrow('没能确认')
+    expect(() => parseClearProviderOverridesOutput('')).toThrow('无法确认')
     expect(parseClearProviderOverridesOutput('cleared:PATH;anthropic_api_key;gemini_api_key\nmachine:\n')).toEqual({ cleared: ['ANTHROPIC_API_KEY'], machine: [] })
   })
 })

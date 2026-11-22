@@ -121,25 +121,25 @@ describe('dnsCheckOutcome', () => {
   it('passes when only one line is wrong and automatic picks the other', () => {
     expect(outcome('wrong', 'ok', { automatic: true, line: 'primary' })).toEqual({
       state: 'pass',
-      summary: '你这台电脑用的 DNS 把星芒线路1的地址查错了，线路2是对的，星芒会自动用线路2，不影响使用。想彻底解决，把电脑的 DNS 改成 223.5.5.5 和 119.29.29.29。',
+      summary: '本机使用的 DNS 将星芒线路1的地址解析错误，线路2解析正确，星芒将自动使用线路2，不影响使用。如需彻底解决，请将电脑的 DNS 改为 223.5.5.5 和 119.29.29.29。',
       details: { siteId: 'solov', line1: 'wrong', line2: 'ok' },
     })
     expect(outcome('ok', 'missing').summary)
-      .toBe('你这台电脑用的 DNS 查不到星芒线路2的地址，线路1是对的，星芒会自动用线路1，不影响使用。想彻底解决，把电脑的 DNS 改成 223.5.5.5 和 119.29.29.29。')
+      .toBe('本机使用的 DNS 无法解析星芒线路2的地址，线路1解析正确，星芒将自动使用线路1，不影响使用。如需彻底解决，请将电脑的 DNS 改为 223.5.5.5 和 119.29.29.29。')
   })
 
   it('passes when the fixed line is the right one', () => {
     expect(outcome('wrong', 'ok', { automatic: false, line: 'direct' })).toMatchObject({
       state: 'pass',
-      summary: '你这台电脑用的 DNS 把星芒线路1的地址查错了，线路2是对的。你选的是「只用线路2」，不影响使用。',
+      summary: '本机使用的 DNS 将星芒线路1的地址解析错误，线路2解析正确。您选择了「只用线路2」，不影响使用。',
     })
   })
 
   it('warns and points at the line setting when the fixed line is the wrong one', () => {
     const result = outcome('ok', 'wrong', { automatic: false, line: 'direct' }, 'darwin')
     expect(result).toMatchObject({ state: 'warn', details: { line1: 'ok', line2: 'wrong', fix: 'open-dns-settings', reroute: 'auto' } })
-    expect(result.summary).toBe('你这台电脑用的 DNS 把星芒线路2的地址查错了，线路1是对的。你选的是「只用线路2」，AI 工具会连不上：'
-      + '点「去处理」改成「自动」，或者把电脑的 DNS 改成 223.5.5.5 和 119.29.29.29。' + dnsSettingsGuidance('darwin'))
+    expect(result.summary).toBe('本机使用的 DNS 将星芒线路2的地址解析错误，线路1解析正确。您选择了「只用线路2」，AI 工具将无法连接：'
+      + '请点击「去处理」改为「自动」，或将电脑的 DNS 改为 223.5.5.5 和 119.29.29.29。' + dnsSettingsGuidance('darwin'))
   })
 })
 
@@ -147,7 +147,7 @@ describe('dnsSettingsGuidance', () => {
   it('walks each system through its own settings page', () => {
     expect(dnsSettingsGuidance('win32')).toContain('DNS 服务器分配')
     expect(dnsSettingsGuidance('darwin')).toContain('详细信息')
-    expect(dnsSettingsGuidance('linux')).toContain('系统设置里的「网络」')
+    expect(dnsSettingsGuidance('linux')).toContain('系统设置中的「网络」')
   })
 })
 

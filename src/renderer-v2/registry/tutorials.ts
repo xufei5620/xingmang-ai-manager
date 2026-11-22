@@ -288,7 +288,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         detail: '如本机未登录过官方账号，切换回去后需在工具中登录一次。',
         bullets: ['Claude Code：打开后输入 /login，按提示登录 Claude 账号。', 'Codex：打开后按提示用 ChatGPT 账号登录。', 'Claude Desktop：重新打开后，在它的登录页用 Claude 账号登录。用星芒时的聊天记录不会删，切回当前账号还能看到。', '提示「refresh token has expired」时，在 Codex 里退出后重新登录。'],
         expected: '工具里显示已登录，能正常回复。',
-        extra: [{ title: '切换后仍提示 401 或「Please run /login」？', detail: '请前往「检查」页重新检查，查看「电脑里另外设过的工具地址或密钥」是否有提示：电脑中另行设置的密钥会覆盖当前账号的设置。' }],
+        extra: [{ title: '切换后仍提示 401 或「Please run /login」？', detail: '请前往「检查」页重新检查，查看「电脑中另行设置的工具地址或密钥」是否有提示：电脑中另行设置的密钥会覆盖当前账号的设置。' }],
         action: '前往检查页',
         page: 'health',
       },

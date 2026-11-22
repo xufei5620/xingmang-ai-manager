@@ -620,20 +620,20 @@ const methods = {
   checkProviderConnection: async (provider) => {
     const base = { provider, siteId: 'solov', detail: null as string | null, status: 200 as number | null, durationMs: 12, checkedAt: new Date().toISOString() }
     if (provider === 'grok') {
-      return { ...base, ok: false, layer: 'unconfigured' as const, summary: '还没有给 Grok CLI 写入星芒配置', nextStep: '在首页给这个工具写入星芒密钥，写完再回来自检', endpoint: null, model: null, status: null }
+      return { ...base, ok: false, layer: 'unconfigured' as const, summary: '还没有给 Grok CLI 写入星芒配置', nextStep: '请在首页为该工具写入星芒密钥，完成后再进行自检', endpoint: null, model: null, status: null }
     }
     // 密钥层失败一次，重写 Key 之后再测就该是正常的——这正是「重新写入密钥」
     // 按钮要证明的那条路。
     if (query.has('connectionCredential') && provider === 'claude' && !keyRewritten.has('claude')) {
-      return { ...base, ok: false, layer: 'credential' as const, summary: '密钥被拒绝（HTTP 401）', nextStep: '到「个人中心 › 密钥管理」看这个工具的密钥是否还有效，必要时重新写入', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: 'invalid_api_key', status: 401 }
+      return { ...base, ok: false, layer: 'credential' as const, summary: '密钥被拒绝（HTTP 401）', nextStep: '请在「个人中心 › 密钥管理」中确认该工具的密钥是否仍然有效，必要时重新写入', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: 'invalid_api_key', status: 401 }
     }
     if (query.has('connectionFailure') && provider === 'claude') {
-      return { ...base, ok: false, layer: 'group' as const, summary: '当前账号分组下没有可用渠道（HTTP 503）', nextStep: '到「个人中心」确认这个工具对应的套餐仍在有效期内，再点一次「重新写入密钥」重新签发', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: '当前分组下无可用渠道', status: 503 }
+      return { ...base, ok: false, layer: 'group' as const, summary: '当前账号分组下没有可用渠道（HTTP 503）', nextStep: '请在「个人中心」确认该工具对应的套餐仍在有效期内，再点击「重新写入密钥」重新签发', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: '当前分组下无可用渠道', status: 503 }
     }
     if (query.has('connectionUnavailable') && provider === 'codex') throw new Error('自检没能完成')
     return provider === 'codex'
       ? { ...base, ok: true, layer: 'network' as const, summary: '连接正常，gpt-6-astra 可以直接使用', nextStep: '无需处理', evidence: '已核对当前账号的可用模型清单，gpt-6-astra 在其中', endpoint: 'https://fixture.invalid/v1/models', model: 'gpt-6-astra' }
-      : { ...base, ok: true, layer: 'network' as const, summary: '连接正常，claude-opus-5 可以直接使用', nextStep: '无需处理', evidence: '已用 claude-opus-5 发过一次最小请求', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5' }
+      : { ...base, ok: true, layer: 'network' as const, summary: '连接正常，claude-opus-5 可以直接使用', nextStep: '无需处理', evidence: '已用 claude-opus-5 发送一次最小请求', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5' }
   },
   probeCodexResponses: async (acknowledgeBilling, expectedAccountScope) => {
     if (!acknowledgeBilling) throw new Error('请先勾选确认：这次检查会用当前账号的一点额度')
@@ -643,13 +643,13 @@ const methods = {
       await new Promise<void>((resolve) => { releaseResponses = resolve })
     }
     if (query.has('responsesFailure')) {
-      return { ok: false, layer: 'protocol' as const, summary: '模型没把测试工具的结果读回来',
-        nextStep: '稍后再试，一直这样请联系客服', endpoint: 'https://fixture.invalid/v1/responses',
+      return { ok: false, layer: 'protocol' as const, summary: '模型未能读取测试工具的结果',
+        nextStep: '请稍后重试；如持续出现，请联系客服', endpoint: 'https://fixture.invalid/v1/responses',
         model: 'gpt-6-astra', detail: null, status: 200, durationMs: 15, checkedAt: new Date().toISOString() }
     }
     return { ok: true, layer: 'network' as const, verificationLevel: 'responses-tool-json' as const,
       summary: 'gpt-6-astra 能正常调用工具', nextStep: '无需处理',
-      evidence: 'gpt-6-astra 调用了一次什么都不改的测试工具，并把结果正确读了回来；在 Codex 里实际干活时仍以实际使用为准',
+      evidence: 'gpt-6-astra 已调用一次不做任何修改的测试工具，并正确读取了结果；Codex 中的实际工作情况仍以实际使用为准',
       endpoint: 'https://fixture.invalid/v1/responses', model: 'gpt-6-astra',
       detail: null, status: 200, durationMs: 15, checkedAt: new Date().toISOString() }
   },
@@ -833,7 +833,7 @@ const methods = {
     }
     // ?launchReadOnly：打开前试写不进去（只读盘），主进程照样打开，带回 workspaceReadOnly（D17）。
     if (query.has('launchReadOnly')) return { workspaceReadOnly: true }
-    return query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {}
+    return query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '该项目文件夹中有独立的设置，将导致 Claude Code 不使用当前账号，余额与用量将无法对应。如非有意设置，请更换文件夹打开。' } : {}
   },
   launchCodexDesktop: async () => {
     // ?codexLaunchFailure=activation：Windows 不肯起已装好的 Codex（0x80270254）；=generic：等了 38 秒没起来。

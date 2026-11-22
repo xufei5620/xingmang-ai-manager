@@ -87,7 +87,7 @@ export function createOfficialCredentialService(context: ServiceContext) {
   } = context
 
   function officialKeyRestoreFailedMessage(error: unknown): string {
-    return `Claude Code 原来的官方密钥没能放回原处。关掉 Claude Code 后再点一次「切回官方账号」；还不行请找客服${errorCodeClause(error)}。`
+    return `Claude Code 原有的官方密钥未能放回原处。请关闭 Claude Code 后再次点击「切回官方账号」；如仍失败，请联系客服${errorCodeClause(error)}。`
   }
 
   /** 配置写入失败后撤回刚才对官方 Key 的挪动；撤不回来要让用户知道，不能只报配置那一半。 */
@@ -116,7 +116,7 @@ export function createOfficialCredentialService(context: ServiceContext) {
       const reason = credentialFailureReason(error)
       runtimeLog?.log('warn', 'config', 'official-credentials.move-failed', 'Claude Code 的官方 Console Key 没能挪开，本次配置没有写入', { provider: 'claude', reason })
       // 原话已经记进上面那条日志，上屏只说结果和下一步（#1100 第1条）。
-      throw new Error(`Claude Code 原来登录留下的官方密钥没能挪开，配置没有改动。关掉 Claude Code 后再试；还不行请找客服${errorCodeClause(error)}。`, { cause: error })
+      throw new Error(`Claude Code 原登录留下的官方密钥未能移开，配置未改动。请关闭 Claude Code 后重试；如仍失败，请联系客服${errorCodeClause(error)}。`, { cause: error })
     }
   }
 
@@ -222,7 +222,7 @@ export function createOfficialCredentialService(context: ServiceContext) {
         // 「无效令牌」留着：account-cli-provisioner.ts 的 isCredentialFailure 认它。
         throw new Error(official
           ? officialKeyRestoreFailedMessage(credentialFailure)
-          : `Claude Code 原来登录留下的官方密钥没能挪开，现在打开会报无效令牌。关掉 Claude Code 后再点一次「改用当前账号」；还不行请找客服${errorCodeClause(credentialFailure)}。`,
+          : `Claude Code 原登录留下的官方密钥未能移开，现在打开将提示无效令牌。请关闭 Claude Code 后再次点击「改用当前账号」；如仍失败，请联系客服${errorCodeClause(credentialFailure)}。`,
         { cause: credentialFailure })
       }
     })
@@ -239,7 +239,7 @@ export function createOfficialCredentialService(context: ServiceContext) {
       try {
         result = switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls, mode)
       } catch (error) {
-        if (restoredConsoleKey) throw withCredentialUndo(error, moveOfficialCredentialsAside, '原来登录留下的官方 Key 已经放回，可能会和当前账号的 Key 冲突，请再切一次')
+        if (restoredConsoleKey) throw withCredentialUndo(error, moveOfficialCredentialsAside, '原登录留下的官方密钥已放回，可能与当前账号的密钥冲突，请再次切换')
         throw error
       }
       await store.setOfficialProvider(provider, true)

@@ -820,7 +820,7 @@ describe('native CLI configuration files', () => {
     fs.writeFileSync(claudePath, '{ "env": { "ANTHROPIC_AUTH_TOKEN": "sk-relay" }, }\n', 'utf8')
     fs.writeFileSync(geminiPath, '{ "security": ', 'utf8')
 
-    // 以前这里说「当前已经在使用你自己的官方订阅账号，无需切换」，方向全错（已知44 ①）。
+    // 以前这里说「当前已在使用您自己的官方订阅账号，无需切换」，方向全错（已知44 ①）。
     expect(() => switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls, 'merge'))
       .toThrow(/^Claude Code 的配置文件里有写错的地方，星芒没有改动它。/)
     expect(() => switchProviderToOfficialAccount('gemini', roots, {}, providerBaseUrls, 'merge'))
@@ -844,7 +844,7 @@ describe('native CLI configuration files', () => {
       { provider: 'gemini', content: '{ "ui": { "theme": "GitHub", }, }\n', expected: advice('Gemini CLI', 'Gemini CLI 的配置文件里有写错的地方') },
       { provider: 'gemini', content: '[]\n', expected: advice('Gemini CLI', 'Gemini CLI 的配置文件里有写错的地方') },
       { provider: 'grok', content: '# 我的设置\ndefault = “grok-4.5”\n', expected: advice('Grok CLI', 'Grok CLI 的配置文件里有写错的地方（第 2 行附近）') },
-      { provider: 'grok', content: '[models]\ndefault = "missing"\n', expected: advice('Grok CLI', 'Grok CLI 的配置文件里默认模型那一段不对') },
+      { provider: 'grok', content: '[models]\ndefault = "missing"\n', expected: advice('Grok CLI', 'Grok CLI 配置文件中的默认模型部分有误') },
     ]
     for (const { provider, content, expected } of cases) {
       const configPath = providerConfigPaths(provider, roots)[0]
@@ -2046,7 +2046,7 @@ describe('native CLI configuration files', () => {
     fs.writeFileSync(configs.relay, brokenRelay, 'utf8')
 
     expect(() => saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls))
-      .toThrow('星芒替 Codex 存的那份配置读不出来了，星芒没有改动它。')
+      .toThrow('星芒为 Codex 保存的配置无法读取，星芒没有改动它。')
     expect(fs.readFileSync(configs.active, 'utf8')).toBe(official)
     const result = saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
 
@@ -4407,7 +4407,7 @@ describe('switching a provider back to the official subscription account', () =>
     switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls)
 
     expect(() => switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls))
-      .toThrow(/已经在使用/)
+      .toThrow(/已在使用/)
   })
 
   it('backs every touched file up before rewriting it, so the switch is reversible by hand too', () => {

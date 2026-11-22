@@ -525,7 +525,7 @@ function environmentOverrideOutcome(
   const labels = matches.map((match) => {
     const note = !match.overriding
       ? '，已指向当前账号'
-      : match.shellFile ? `，在 ${match.shellFile}` : match.breaking ? '，会绕开当前账号' : ''
+      : match.shellFile ? `，在 ${match.shellFile}` : match.breaking ? '，将绕开当前账号' : ''
     return `${match.name}（${cliCatalog[match.provider].name}${note}）`
   })
   const breaking = matches.filter((match) => match.breaking)
@@ -533,12 +533,12 @@ function environmentOverrideOutcome(
     // 都盖不过星芒替当前账号写的配置（见 breaksAccount），客户什么都不用做，所以是「正常」。名字只进导出报告
     // （reportOnlyVariables 在 diagnostic-details.ts 里没有中文名，检查页不上屏）：这一行不用他去找、去删，
     // 一串英文名只会让人以为出了事（yoyo 11-06「体检改」）。
-    if (!matches.length) return { state: 'pass', summary: '没有另外设过工具地址或密钥', details: { count: 0 } }
+    if (!matches.length) return { state: 'pass', summary: '未另行设置工具地址或密钥', details: { count: 0 } }
     return {
       state: 'pass',
       summary: matches.some((match) => match.overriding)
-        ? '电脑里另外设的工具地址或密钥盖不过当前账号的设置，不影响使用'
-        : '电脑里另外设的工具地址也指向当前账号，不影响使用',
+        ? '电脑中另行设置的工具地址或密钥不会覆盖当前账号的设置，不影响使用'
+        : '电脑中另行设置的工具地址同样指向当前账号，不影响使用',
       details: { reportOnlyVariables: labels.join('、') },
     }
   }
@@ -552,7 +552,7 @@ function environmentOverrideOutcome(
       // 这几个变量实测会让 CLI 绕开写入的配置（见 breaksAccount），用户在终端里
       // 跑就连不上当前账号，所以是「待处理」。本程序仍然不替他删。
       state: 'fail',
-      summary: `电脑里另外设了 ${namesOf(reachingTools)}，会让 ${toolsOf(reachingTools)} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服`,
+      summary: `电脑中另行设置了 ${namesOf(reachingTools)}，将导致 ${toolsOf(reachingTools)} 不使用当前账号的设置。请删除这些设置后重新打开工具；如不清楚如何删除，请在「反馈与客服」页导出报告并发送给客服`,
       details,
     }
   }
@@ -560,7 +560,7 @@ function environmentOverrideOutcome(
     // Mac 上从星芒打开工具时启动脚本已经去掉了这几个（已知45），只有客户自己开终端直接用工具时才绕开
     // 当前账号，所以是「需留意」，开机提示不数它。
     state: 'warn',
-    summary: `终端设置里另外设了 ${namesOf(breaking)}：从星芒打开的工具不受影响，自己开终端直接用 ${toolsOf(breaking)} 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉`,
+    summary: `终端设置中另行设置了 ${namesOf(breaking)}：从星芒打开的工具不受影响，自行在终端中直接使用 ${toolsOf(breaking)} 时将不使用当前账号的设置。如无需使用，请将这几项从终端设置中删除`,
     details,
   }
 }
@@ -606,16 +606,16 @@ function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFi
     count: labels.length + 1,
   }
   // 写错的原值可能带着用户名，和其它变量一样只有名字进报告。
-  const ordered = [`CODEX_HOME（${cliCatalog.codex.name}，写得不对，已忽略）`, ...labels]
+  const ordered = [`CODEX_HOME（${cliCatalog.codex.name}，设置有误，已忽略）`, ...labels]
   ordered.forEach((label, index) => {
     details[`variable${index + 1}`] = label
   })
-  const effect = finding.blocking ? '，但在软件外面打开 Codex 会连不上当前账号' : ''
+  const effect = finding.blocking ? '，但在软件外打开 Codex 将无法连接当前账号' : ''
   const others = outcome.state === 'pass' ? '' : `；${outcome.summary}`
   // 连不上当前账号才算「待处理」（开机横幅只数这一档）；软件里打开的 Codex 本来
   // 就不受影响，其余情况只是提醒。其它变量已经判出更重的一档时不往下拉。
   const state = finding.blocking || outcome.state === 'fail' ? 'fail' : 'warn'
-  return { state, summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`, details }
+  return { state, summary: `电脑中有一项 Codex 设置有误，软件已忽略该设置${effect}${others}`, details }
 }
 
 /**
@@ -628,7 +628,7 @@ function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFi
  */
 function readClaudeBypass(homeDirectory: string, ownership: ToolConfigOwnership | null): CheckOutcome {
   const configPath = path.join(homeDirectory, '.claude', 'settings.json')
-  if (!fs.existsSync(configPath)) return { state: 'pass', summary: '跑命令前会先问你' }
+  if (!fs.existsSync(configPath)) return { state: 'pass', summary: '执行命令前将先征求您的确认' }
   const parsed = JSON.parse(readBoundedUtf8FileSync(
     configPath,
     MAX_CLAUDE_SETTINGS_BYTES,
@@ -636,17 +636,17 @@ function readClaudeBypass(homeDirectory: string, ownership: ToolConfigOwnership 
   )) as unknown
   const permissions = isRecord(parsed) && isRecord(parsed.permissions) ? parsed.permissions : null
   const bypass = permissions?.defaultMode === 'bypassPermissions'
-  if (!bypass) return { state: 'pass', summary: '跑命令前会先问你', details: { bypass, managed: false } }
+  if (!bypass) return { state: 'pass', summary: '执行命令前将先征求您的确认', details: { bypass, managed: false } }
   if (ownership === 'account') {
     return {
       state: 'pass',
-      summary: '按当前账号的设置，跑命令前不再逐条问你',
+      summary: '按当前账号的设置，执行命令前不再逐条征求确认',
       details: { bypass, managed: true },
     }
   }
   return {
     state: 'warn',
-    summary: '被设成了跑命令前不问你，这个设置不是星芒写的。留意它会直接执行命令',
+    summary: '已被设置为执行命令前不征求确认，该设置并非星芒写入。请注意，它将直接执行命令',
     details: { bypass, managed: false },
   }
 }
@@ -678,7 +678,7 @@ export function homeFolderLeftoversOutcome(input: {
   if (input.trustedBy.length) {
     const names = input.trustedBy.map((provider) => homeFolderTrustNames[provider]).join('、')
     const pronoun = input.trustedBy.length > 1 ? '它们' : '它'
-    parts.push(`${names} 记着“信任整个个人文件夹”：个人文件夹下的项目，${pronoun}打开时可能不会先问一句信不信得过。`)
+    parts.push(`${names} 记录了“信任整个个人文件夹”：打开个人文件夹下的项目时，${pronoun}可能不会先确认是否信任。`)
   }
   const details: Record<string, boolean | number | string | null> = {
     untouchedInstructions: input.untouchedInstructions,
@@ -688,7 +688,7 @@ export function homeFolderLeftoversOutcome(input: {
   if (input.untouchedInstructions) details.fix = 'set-aside-home-agents-md'
   return parts.length
     ? { state: 'warn', summary: parts.join(''), details }
-    : { state: 'pass', summary: '没有早先留下的项目说明和信任设置', details }
+    : { state: 'pass', summary: '没有早期遗留的项目说明和信任设置', details }
 }
 
 export function buildOverrideChecks(context: DiagnosticsContext): CheckDefinition[] {
@@ -736,7 +736,7 @@ export function buildOverrideChecks(context: DiagnosticsContext): CheckDefinitio
   return [
     {
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
-      title: '电脑里另外设过的工具地址或密钥',
+      title: '电脑中另行设置的工具地址或密钥',
       run: async () => {
         const relayProviders = new Set(activeProviderIds.filter((provider) => {
           const inspection = providerInspections.get(provider)
@@ -769,12 +769,12 @@ export function buildOverrideChecks(context: DiagnosticsContext): CheckDefinitio
     },
     {
       code: 'WORKSPACE_CONFIG_OVERRIDE',
-      title: '项目文件夹里的设置',
+      title: '项目文件夹中的设置',
       run: () => workspaceOverrideOutcome(),
     },
     {
       code: 'CODEX_DOTENV',
-      title: 'Codex 文件夹里的额外设置',
+      title: 'Codex 文件夹中的额外设置',
       run: () => {
         const envPath = path.join(codexHome, '.env')
         const exists = fs.existsSync(envPath)
@@ -783,19 +783,19 @@ export function buildOverrideChecks(context: DiagnosticsContext): CheckDefinitio
         if (exists) details.fix = 'set-aside-codex-dotenv'
         return {
           state: exists ? 'warn' : 'pass',
-          summary: exists ? 'Codex 文件夹里有一份额外设置，可能盖过当前账号的连接' : 'Codex 文件夹里没有额外设置',
+          summary: exists ? 'Codex 文件夹中有一份额外设置，可能覆盖当前账号的连接' : 'Codex 文件夹中没有额外设置',
           details,
         }
       },
     },
     {
       code: 'CLAUDE_BYPASS_PERMISSIONS',
-      title: 'Claude Code 跑命令前要不要先问你',
+      title: 'Claude Code 执行命令前是否征求确认',
       run: () => readClaudeBypass(userHome, dependencies.readClaudeConfigOwnership?.() ?? null),
     },
     {
       code: 'HOME_FOLDER_LEFTOVERS',
-      title: '个人文件夹里早先留下的设置',
+      title: '个人文件夹中早期遗留的设置',
       run: () => homeFolderLeftoversOutcome({
         untouchedInstructions: hasUntouchedHomeProjectInstructions(userHome),
         // Gemini CLI 下线后星芒不再提它记着的信任：那是客户自己的工具设置，星芒也不再从这里打开它。

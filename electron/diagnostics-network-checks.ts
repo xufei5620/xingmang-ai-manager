@@ -1,7 +1,7 @@
 // 一键检测里「网络与代理」那几项（#1070 第 9 步，从 diagnostics.ts 的 runDiagnostics 原样搬来）：星芒 AI 网络（向当前站点
 // 的公开状态接口发一次请求，「自动」先走的那条没查通就改查备用那条，顺带比一次系统时间）、安全证书（用跑工具的那个
-// Node.js 握手两次）、代理软件的全局接管模式（Clash Verge Rev）、电脑里的代理设置（另外设的代理；系统设置里的代理归
-// diagnostics-proxy-software-check.ts 的「别的代理软件」）、Claude Code 自己设置里的代理（D35）。前两项挨着排在工具
+// Node.js 握手两次）、代理软件的全局接管模式（Clash Verge Rev）、电脑中的代理设置（另外设的代理；系统设置里的代理归
+// diagnostics-proxy-software-check.ts 的「其他代理软件」）、Claude Code 自身设置中的代理（D35）。前两项挨着排在工具
 // 那几项后面，后三项排在磁盘与文件夹那几项后面，所以分成 buildNetworkChecks、buildProxyChecks 两段。
 //
 // 各类检查共用的那份在 diagnostics-context.ts；这里只 import diagnostics.ts 的类型，免得两个文件互相 require。
@@ -62,7 +62,7 @@ const MAX_CLASH_CONFIG_BYTES = 2 * 1024 * 1024
 /** 两个站的状态接口都只回几 KB 的 JSON；门户页再大也用不着读完才认出来。 */
 const MAX_NETWORK_PROBE_BYTES = 256 * 1024
 const MAX_YAML_ALIAS_COUNT = 20
-/** 手写的 Claude Code 设置不会上百 KB；同「Claude Code 跑命令前要不要先问你」读同一份文件的上限。 */
+/** 手写的 Claude Code 设置不会上百 KB；同「Claude Code 执行命令前是否征求确认」读同一份文件的上限。 */
 const MAX_CLAUDE_SETTINGS_BYTES = 256 * 1024
 
 function clashCandidates(homeDirectory: string, env: NodeJS.ProcessEnv): string[] {
@@ -109,11 +109,11 @@ function proxyFindingDetails(findings: readonly ProxyVariableFinding[]): Record<
 }
 
 function closedProxyLead(port: number | null): string {
-  return `电脑里设了一个代理（本机 ${port} 端口），但它现在没开。`
+  return `电脑中设置了一个代理（本机 ${port} 端口），但该代理当前未运行。`
 }
 
 /**
- * 「电脑里的代理设置」说「从星芒打开的工具会自动绕开它」，可桌面端绕不开（D33，代理.md PX-10）：命令行工具是
+ * 「电脑中的代理设置」说「从星芒打开的工具会自动绕开它」，可桌面端绕不开（D33，代理.md PX-10）：命令行工具是
  * 星芒带着去掉了没开的代理的环境打开的，Codex 桌面端拿的是登录时那份，照样经这个没开的代理去连，连不上。
  * 同一次检查里「Codex 桌面端」装着、代理那一项又标了桌面端也看得见这条设置（reachesDesktopApps），才换这句；
  * 当前账号下的那一条「清掉这条旧设置」照旧给。两项是同时查的，所以放在全部查完以后对。
@@ -127,13 +127,13 @@ export function reconcileProxySettingsWithDesktop(items: DiagnosticItem[]): Diag
     if (typeof port !== 'number') return item
     return {
       ...item,
-      summary: `${closedProxyLead(port)}从星芒打开的命令行工具会自动绕开它；Codex 桌面端这类桌面软件绕不开，会连不上，要把这条旧设置清掉。`,
+      summary: `${closedProxyLead(port)}从星芒打开的命令行工具会自动绕开该代理；Codex 桌面端等桌面软件无法绕开，将无法连接，请清除这条旧设置。`,
     }
   })
 }
 
 /**
- * 「电脑里的代理设置」（第十六批 5）。看的是本软件自己的环境——从这里打开的工具
+ * 「电脑中的代理设置」（第十六批 5）。看的是本软件自己的环境——从这里打开的工具
  * 拿到的就是它——指向本机的先试连一下：开着的工具会经它联网，是正常的；没开的从星芒
  * 打开、安装工具时这一次不带它（system-service-context.ts 的 withoutDeadLoopbackProxies，
  * Mac 上打开工具时另由启动脚本里的 buildMacosClosedProxyGuard 去掉）。
@@ -155,7 +155,7 @@ export async function proxySettingsOutcome(
   platform?: NodeJS.Platform,
 ): Promise<Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'>> {
   const findings = await inspectProxyVariables(env, probe)
-  // 系统设置里的代理归「别的代理软件」那一项说（diagnostics-proxy-software-check.ts）：这里只管另外设的那几条，
+  // 系统设置里的代理归「其他代理软件」那一项说（diagnostics-proxy-software-check.ts）：这里只管另外设的那几条，
   // 免得系统代理开着时两行说法打架。
   // Mac 上从星芒打开的工具经客户的登录 shell 起，用的是 ~/.zshrc 这类终端设置里的代理，星芒自己的环境里没有，
   // 这里看不到，不能说成「没有」（D34，代理.md PX-9）。
@@ -163,8 +163,8 @@ export async function proxySettingsOutcome(
     return {
       state: 'pass',
       summary: platform === 'darwin'
-        ? '星芒这里没看到另外设的代理。你在终端设置里写的代理星芒看不到，从星芒打开的工具会用它。'
-        : '没有另外设过代理',
+        ? '星芒未检测到另行设置的代理。您在终端设置中填写的代理星芒无法检测，从星芒打开的工具将使用该代理。'
+        : '未另行设置代理',
     }
   }
   const closed = findings.filter((finding) => finding.reach === 'closed')
@@ -185,15 +185,15 @@ export async function proxySettingsOutcome(
     if (userClosed) {
       return {
         state: 'warn',
-        summary: `${lead}从星芒打开的工具会自动绕开它；你自己开的命令行窗口可能还是连不上。`,
+        summary: `${lead}从星芒打开的工具会自动绕开该代理；您自行打开的命令行窗口可能仍无法连接。`,
         details: { ...details, fix: 'clear-user-proxy', ...desktop, port },
       }
     }
     return {
       state: 'warn',
       summary: machineClosed
-        ? `${lead}这条设置是给整台电脑设的，要管理员才能改。从星芒打开的工具已经会自动绕开它。`
-        : `${lead}从星芒打开的工具会自动绕开它。`,
+        ? `${lead}该设置作用于整台电脑，需管理员才能修改。从星芒打开的工具已自动绕开该代理。`
+        : `${lead}从星芒打开的工具会自动绕开该代理。`,
       details: { ...details, ...desktop },
     }
   }
@@ -201,13 +201,13 @@ export async function proxySettingsOutcome(
   if (remote) {
     return {
       state: 'warn',
-      summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
+      summary: '电脑中设置了代理，工具将通过该代理联网。如工具无法连接，请先确认该代理可用。',
       details,
     }
   }
   return {
     state: 'pass',
-    summary: `电脑里设了代理（本机 ${findings[0].target?.port} 端口），工具会通过它联网。`,
+    summary: `电脑中设置了代理（本机 ${findings[0].target?.port} 端口），工具将通过该代理联网。`,
     details,
   }
 }
@@ -231,8 +231,8 @@ export function claudeSettingsProxyVariables(source: string): NodeJS.ProcessEnv 
 }
 
 /**
- * 「Claude Code 自己设置里的代理」（D35，代理.md PX-4）：代理软件一关 Claude Code 就连不上，别的检查项却全绿，
- * 客服也看不出来。照「电脑里的代理设置」同一套规则判（inspectProxyVariables），只有指向本机、试连连不上的才出
+ * 「Claude Code 自身设置中的代理」（D35，代理.md PX-4）：代理软件一关 Claude Code 就连不上，别的检查项却全绿，
+ * 客服也看不出来。照「电脑中的代理设置」同一套规则判（inspectProxyVariables），只有指向本机、试连连不上的才出
  * 这一项、亮黄灯；开着的、指向别的机器的、没写的、没有这份文件的都不出——决定单只给了发现时那一句。不给按钮
  * （yoyo 回的「决定单照推荐」= 「D35 改」不加按钮）：那是客户自己设的值，星芒只说一声。details 同样只写变量名
  * 和端口，不写原值：原值里可能带着代理的用户名和密码。
@@ -243,7 +243,7 @@ export async function claudeSettingsProxyOutcome(source: string | null, probe: L
   if (!findings.some((finding) => finding.reach === 'closed')) return { state: 'pass', summary: '', omit: true }
   return {
     state: 'warn',
-    summary: 'Claude Code 自己的设置里写了一个代理，它现在没开，Claude Code 会连不上。',
+    summary: 'Claude Code 自身的设置中填写了一个代理，该代理当前未运行，Claude Code 将无法连接。',
     details: proxyFindingDetails(findings),
   }
 }
@@ -283,15 +283,15 @@ function reportsRelayLineFailure(probe: RelayStatusProbe): boolean {
  * 备用线路2（yoyo 10-14）。线路名见下面的 relayLineNames。
  */
 export function relayNetworkPassSummary(route: { siteId: string; line: RelayEndpointId; fellBack: boolean } | null, accelerating: boolean): string {
-  if (!route) return accelerating ? '能连上星芒服务（开着加速时也直接连，不绕加速线路）' : '能连上星芒服务'
+  if (!route) return accelerating ? '可连接星芒服务（开启加速时也直接连接，不经过加速线路）' : '可连接星芒服务'
   const summary = route.siteId === 'solov'
     ? route.line === 'direct'
-      ? '能连上星芒服务，用的是线路2'
-      : route.fellBack ? '能连上星芒服务。线路2这会儿连不上，已自动改走线路1' : '能连上星芒服务，用的是线路1'
+      ? '可连接星芒服务，使用线路2'
+      : route.fellBack ? '可连接星芒服务。线路2暂时无法连接，已自动切换至线路1' : '可连接星芒服务，使用线路1'
     : route.fellBack
-      ? '能连上星芒服务。线路1这会儿连不上，已自动改走线路2'
-      : route.line === 'direct' ? '能连上星芒服务，用的是线路2' : '能连上星芒服务，用的是线路1'
-  return accelerating ? `${summary}（开着加速也不绕加速线路）` : summary
+      ? '可连接星芒服务。线路1暂时无法连接，已自动切换至线路2'
+      : route.line === 'direct' ? '可连接星芒服务，使用线路2' : '可连接星芒服务，使用线路1'
+  return accelerating ? `${summary}（开启加速时也不经过加速线路）` : summary
 }
 
 function parsesAsJson(body: string): boolean {
@@ -335,16 +335,16 @@ export function clockSkewSummary(skewMs: number, platform: NodeJS.Platform): str
   const hours = Math.round(distance / HOUR_MS)
   const amount = minutes < 60 ? `${minutes} 分钟` : hours < 48 ? `${hours} 小时` : `${Math.round(distance / DAY_MS)} 天`
   const timeZone = hours >= 1 && hours < 24 && Math.abs(distance - hours * HOUR_MS) <= MAX_CLOCK_SKEW_MS
-  return `能连上星芒服务，但这台电脑的系统时间比实际${skewMs > 0 ? '快' : '慢'}了约 ${amount}，`
-    + `${timeZone ? '多半是时区设错了，' : ''}可能让登录、安装、更新卡在证书校验这一步。${clockSyncGuidance(platform)}`
+  return `可连接星芒服务，但本机系统时间比实际时间${skewMs > 0 ? '快' : '慢'}约 ${amount}，`
+    + `${timeZone ? '可能是时区设置有误，' : ''}可能导致登录、安装、更新时证书校验不通过。${clockSyncGuidance(platform)}`
 }
 
 /** 对时入口每个系统都不一样，说不清具体在哪一页的提示等于没说。 */
 export function clockSyncGuidance(platform: NodeJS.Platform): string {
-  if (platform === 'win32') return '请在「设置 → 时间和语言 → 日期和时间」里打开「自动设置时间」，并确认时区正确。'
-  if (platform === 'darwin') return '请在「系统设置 → 通用 → 日期与时间」里打开「自动设置时间和日期」，并确认时区正确。'
+  if (platform === 'win32') return '请在「设置 → 时间和语言 → 日期和时间」中开启「自动设置时间」，并确认时区正确。'
+  if (platform === 'darwin') return '请在「系统设置 → 通用 → 日期与时间」中开启「自动设置时间和日期」，并确认时区正确。'
   // Linux 各家桌面的设置页叫法不一，Ubuntu、deepin、统信都有「日期和时间」这一页。
-  return '请打开系统设置里的「日期和时间」，把时间设为自动同步（有的系统叫「自动设置日期和时间」），并确认时区正确。'
+  return '请打开系统设置中的「日期和时间」，将时间设为自动同步（部分系统称为「自动设置日期和时间」），并确认时区正确。'
 }
 
 /**
@@ -358,18 +358,18 @@ export function describeRelayRouteChange(change: RelayRouteChange): string {
   const from = relayLineNames[change.from]
   const to = relayLineNames[change.to]
   const reason = change.reason === 'recovered'
-    ? `${to}连着 ${relayRouteRecoveryMs / 60_000} 分钟都能连上，换回${to}`
+    ? `${to}连续 ${relayRouteRecoveryMs / 60_000} 分钟可正常连接，已切换回${to}`
     : change.reason === 'line-down'
-      ? `查到${from}没连上、${to}能连上，当场改走${to}`
+      ? `检测到${from}无法连接、${to}可以连接，已立即切换至${to}`
       : change.reason === 'health-failed'
         ? change.trigger === firstLaunchTrigger
-          ? `第一次开机查到${from}没连上，改走${to}`
+          ? `首次启动时检测到${from}无法连接，已切换至${to}`
           : change.trigger === requestFailuresTrigger
-            ? `${from}上的请求接连断在半路、等不来回话，改走${to}`
-            : `${from}连着 ${relayRouteFailureThreshold} 次没连上，改走${to}`
+            ? `${from}上的请求连续中途中断、未收到响应，已切换至${to}`
+            : `${from}连续 ${relayRouteFailureThreshold} 次无法连接，已切换至${to}`
         : change.reason === 'payload-too-large'
-          ? `${from}上有个 Codex 对话太大、发不出去，改走${to}`
-          : `查到${to}能连上，走${to}`
+          ? `${from}上有 Codex 对话体积过大、无法发送，已切换至${to}`
+          : `检测到${to}可以连接，使用${to}`
   return `${time}，${reason}`
 }
 
@@ -577,7 +577,7 @@ export function buildNetworkChecks(context: DiagnosticsContext): CheckDefinition
           // 网络本身是通的，所以不该说「换个网络」：这是服务端那一侧的事。
           return {
             state: 'fail',
-            summary: `网络能连通，但星芒 AI 返回 HTTP ${response.status}，多半是服务端暂时的问题，请稍后再试。`,
+            summary: `网络已连通，但星芒 AI 返回 HTTP ${response.status}，通常是服务端的临时问题，请稍后重试。`,
             details: { endpoint, status: response.status, ...routeDetails() },
           }
         }
@@ -615,7 +615,7 @@ export function buildNetworkChecks(context: DiagnosticsContext): CheckDefinition
       title: '安全证书',
       timeoutOutcome: {
         state: 'pass',
-        summary: '电脑这会儿比较忙，安全证书这一项没来得及查完，稍后点「重新检测」再看一次。',
+        summary: '电脑当前较为繁忙，安全证书一项未能检查完成，请稍后点击「重新检测」。',
         details: { timedOut: true },
       },
       run: async (signal): Promise<CheckOutcome> => {
@@ -679,22 +679,22 @@ export function buildProxyChecks(context: DiagnosticsContext): CheckDefinition[]
           if (enabled) {
             return {
               state: 'warn',
-              summary: 'Clash Verge Rev 开着全局接管模式，可能让工具连不上。用不到时先把它关掉',
+              summary: 'Clash Verge Rev 已开启全局接管模式，可能导致工具无法连接。如无需使用，请先将其关闭',
               details: { enabled: true, path: pathForDisplay(candidate, displayRoots) },
             }
           }
         }
         return {
           state: 'pass',
-          summary: detectedPath ? 'Clash Verge Rev 没开全局接管模式' : '没发现 Clash Verge Rev',
+          summary: detectedPath ? 'Clash Verge Rev 未开启全局接管模式' : '未检测到 Clash Verge Rev',
           details: { enabled: false, path: pathForDisplay(detectedPath, displayRoots) },
         }
       },
     },
     {
       code: 'PROXY_ENVIRONMENT',
-      title: '电脑里的代理设置',
-      // 系统设置里的代理（别的代理软件）是下一项（diagnostics-proxy-software-check.ts），这里只看另外设的。
+      title: '电脑中的代理设置',
+      // 系统设置里的代理（其他代理软件）是下一项（diagnostics-proxy-software-check.ts），这里只看另外设的。
       run: () => proxySettingsOutcome(
         env,
         probeProxy,
@@ -704,7 +704,7 @@ export function buildProxyChecks(context: DiagnosticsContext): CheckDefinition[]
     },
     {
       code: 'CLAUDE_SETTINGS_PROXY',
-      title: 'Claude Code 自己设置里的代理',
+      title: 'Claude Code 自身设置中的代理',
       run: async () => {
         try {
           const settingsPath = path.join(providerConfigRoot('claude', providerRoots), 'settings.json')
@@ -713,7 +713,7 @@ export function buildProxyChecks(context: DiagnosticsContext): CheckDefinition[]
             probeProxy,
           )
         } catch (error) {
-          // 读不了（链接、太大、读的时候在改）或不是正经 JSON 的，「Claude Code 跑命令前要不要先问你」读的是同一份
+          // 读不了（链接、太大、读的时候在改）或不是正经 JSON 的，「Claude Code 执行命令前是否征求确认」读的是同一份
           // 文件，会在那一项报出来；这一项只是提醒，不再多出一条报错，原因只进日志（原文可能带用户名，先脱敏）。
           log?.('info', 'diagnostics.claude-settings-proxy.skipped', 'Claude Code 设置里的代理没查', { raw: sanitize(errorChainText(error)) })
           return { state: 'pass', summary: '', omit: true }

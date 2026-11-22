@@ -49,7 +49,7 @@ describe('renderer-v2 offline cause', () => {
 
   it('asks for the administrator or another network, not the proxy app, when the proxy wants a password', () => {
     // D32 单子上的原句，一字不改。
-    expect(offlineBannerTexts.proxyAuth).toBe('电脑设置的代理要账号密码，星芒现在用不了它，请联系管理员或换个网络。')
+    expect(offlineBannerTexts.proxyAuth).toBe('电脑设置的代理需要账号密码，星芒暂时无法使用该代理，请联系管理员或更换网络。')
     expect(offlineBannerTexts.proxyAuth).not.toContain('代理软件')
     expect(offlineBannerTexts.proxy).toBe('系统代理无法连接，导致无法上网。请重新打开代理软件，或关闭系统代理。')
   })

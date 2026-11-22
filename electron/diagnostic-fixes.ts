@@ -45,12 +45,12 @@ function timestamp(now: Date): string {
  */
 export function setAsideCodexDotenv(codexHome: string, now: Date = new Date()): DiagnosticFixResult {
   const source = path.join(codexHome, '.env')
-  const label = 'Codex 文件夹里的额外设置'
+  const label = 'Codex 文件夹中的额外设置'
   if (!assertSafeDataFile(source, label)) return { kind: 'set-aside-codex-dotenv', fixed: 0, machineRemaining: false }
   const base = `.env.xingmang-${timestamp(now)}.bak`
   let target = path.join(codexHome, base)
   for (let attempt = 2; fs.existsSync(target); attempt++) {
-    if (attempt > 20) throw new Error('这份额外设置没挪开：同名的旧文件太多，请把 Codex 文件夹里的旧备份删掉几份再试')
+    if (attempt > 20) throw new Error('该额外设置未能移开：同名旧文件过多，请删除 Codex 文件夹中的部分旧备份后重试')
     target = path.join(codexHome, `${base}.${attempt}`)
   }
   assertNoReparseComponents(path.dirname(target), label)
@@ -139,7 +139,7 @@ export function parseClearProviderOverridesOutput(stdout: string): { cleared: st
   const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
   const cleared = lines.find((line) => line.startsWith('cleared:'))
   const machine = lines.find((line) => line.startsWith('machine:'))
-  if (cleared === undefined || machine === undefined) throw new Error('没能确认这几项设置是否已经删掉')
+  if (cleared === undefined || machine === undefined) throw new Error('无法确认这几项设置是否已删除')
   const names = (line: string, prefix: string) => line.slice(prefix.length).split(';')
     .map((entry) => entry.trim().toUpperCase())
     .filter((entry) => environmentOverrideNames.includes(entry))
@@ -156,7 +156,7 @@ export interface ClearProviderOverridesOptions {
 }
 
 export async function clearUserProviderOverrides(options: ClearProviderOverridesOptions): Promise<DiagnosticFixResult> {
-  if ((options.platform ?? process.platform) !== 'win32') throw new Error('只有 Windows 上能在这里删掉这几项设置')
+  if ((options.platform ?? process.platform) !== 'win32') throw new Error('仅 Windows 支持在此删除这几项设置')
   const targets = options.names.filter((name) => environmentOverrideNames.includes(name))
   if (!targets.length) return { kind: 'clear-user-overrides', fixed: 0, machineRemaining: false }
   const run = options.run ?? runPowerShell

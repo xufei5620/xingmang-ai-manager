@@ -101,13 +101,13 @@ export function certificateTrustVerdict(input: {
 }
 
 export const certificateTrustSummaries: Readonly<Record<CertificateTrustVerdict, string>> = {
-  direct: '工具用自带的证书就能连上星芒服务，这台电脑没有换过网页证书。',
-  systemTrusted: '这台电脑装了公司或安全软件的证书。星芒已经让装工具和从星芒打开的工具信任它，可以正常用。',
-  outdatedNode: '这台电脑装了公司或安全软件的证书，电脑上的 Node.js 太旧，认不了它。点「去处理」换成新版。',
-  untrusted: '连星芒时收到的证书不是星芒的，多半是网络上有设备在拦截（运营商、公司或学校的网络常见）。换个网络（比如手机热点）再检查一次；公司或学校的网络请找网络管理员。',
-  elevated: '星芒现在是以管理员身份打开的，这时不让工具信任电脑上另外装的证书。请关掉星芒，直接双击正常打开。',
-  unknown: '这次没能直接连上星芒服务，证书的情况没判断出来。工具用着正常就不用管。',
+  direct: '工具使用自带的证书即可连接星芒服务，本机未更换网页证书。',
+  systemTrusted: '本机安装了公司或安全软件的证书。星芒已让安装工具的过程和从星芒打开的工具信任该证书，可正常使用。',
+  outdatedNode: '本机安装了公司或安全软件的证书，但电脑上的 Node.js 版本过旧，无法识别该证书。请点击「去处理」更新至新版本。',
+  untrusted: '连接星芒时收到的证书并非星芒的证书，通常是网络中有设备在拦截（常见于运营商、公司或学校网络）。请更换网络（如手机热点）后重新检查；如使用公司或学校网络，请联系网络管理员。',
+  elevated: '星芒当前以管理员身份运行，此时不允许工具信任电脑上另行安装的证书。请关闭星芒后直接双击正常打开。',
+  unknown: '本次未能直接连接星芒服务，无法判断证书情况。如工具使用正常，无需处理。',
 }
 
 /** 同一次检查里「星芒 AI 网络」也失败时，不重复怪罪证书，先让用户看网络那一项。 */
-export const certificateTrustNetworkFailedSummary = '工具连星芒服务时证书对不上，先看上面「星芒 AI 网络」那一项。'
+export const certificateTrustNetworkFailedSummary = '工具连接星芒服务时证书不匹配，请先查看上方「星芒 AI 网络」一项。'

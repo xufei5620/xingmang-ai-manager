@@ -1486,7 +1486,7 @@ function readStoredCodexConfig(filePath: string, label: string): string | null {
     TOML.parse(text)
   } catch {
     // 只在 merge 时读它（切回当前账号要用这份），读不懂就指去重置（第三十批 C）。
-    throw new Error(describeConfigReset('Codex', '星芒替 Codex 存的那份配置读不出来了'))
+    throw new Error(describeConfigReset('Codex', '星芒为 Codex 保存的配置无法读取'))
   }
   return withTrailingNewline(text)
 }
@@ -2432,7 +2432,7 @@ export function trustCodexWorkspaceInConfigText(
   workspace: string,
 ): { content: string; changed: boolean } {
   const trimmedWorkspace = workspace.trim()
-  if (!trimmedWorkspace) throw new Error('Codex 工作目录不能为空')
+  if (!trimmedWorkspace) throw new Error('请先为 Codex 选择项目文件夹')
   let parsed: Record<string, unknown> = {}
   if (content?.trim()) {
     try {
@@ -2546,7 +2546,7 @@ export function trustClaudeWorkspaceInRootConfigText(
   options: ManagedWorkspaceTrustOptions = {},
 ): { content: string; changed: boolean } {
   const trimmedWorkspace = workspace.trim()
-  if (!trimmedWorkspace) throw new Error('Claude Code 工作目录不能为空')
+  if (!trimmedWorkspace) throw new Error('请先为 Claude Code 选择项目文件夹')
   const label = '现有 Claude Code ~/.claude.json'
   const parsed = requireWorkspaceTrustJson(content, label)
   // ensureRecord 会把不是对象的值直接换成空对象。对一份只补一个布尔值的
@@ -2770,7 +2770,7 @@ export function trustManagedWorkspace(
 }
 
 /**
- * 检查页「个人文件夹里早先留下的设置」（已知36）看哪几个工具记着「信任整个个人文件夹」。
+ * 检查页「个人文件夹中早期遗留的设置」（已知36）看哪几个工具记着「信任整个个人文件夹」。
  * #321 以前客户选个人文件夹打开工具时，本软件替他写过 Claude Code 与 Gemini CLI 的信任；
  * Codex 的来自配置窗口那颗按钮，或者 Codex 自己问过之后写下的。只读不改：信任是客户的
  * 设置，这里只说一声。哪一家读不了、读不懂就当它没记着，那份配置坏没坏由那个工具自己
@@ -3086,7 +3086,7 @@ function createMergePlans(
       const models = ensureRecord(parsed, 'model')
       const target = models[defaultModel]
       if (!target || typeof target !== 'object' || Array.isArray(target)) {
-        throw new Error(describeConfigReset('Grok CLI', 'Grok CLI 的配置文件里默认模型那一段不对'))
+        throw new Error(describeConfigReset('Grok CLI', 'Grok CLI 配置文件中的默认模型部分有误'))
       }
       const targetModel = target as Record<string, unknown>
       targetModel.api_key = apiKey
@@ -3264,12 +3264,12 @@ export function applyProviderRouteFollow(
 ): void {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
-  if (!providerConfigPaths(provider, roots).includes(plan.file)) throw new Error('工具配置路径不对，已拒绝写入')
+  if (!providerConfigPaths(provider, roots).includes(plan.file)) throw new Error('工具配置路径有误，已拒绝写入')
   assertSafeConfigPath(plan.file, providerRoot, 'file')
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   executeFilePlans([{ path: plan.file, content: plan.content }], {
     beforeReplace: () => {
-      if (requireRawConfigText(plan.file, '工具配置') !== plan.original) throw new Error('工具配置在改线路时被别的程序改了，这次先不改')
+      if (requireRawConfigText(plan.file, '工具配置') !== plan.original) throw new Error('工具配置在切换线路时被其他程序修改，本次暂不修改')
     },
   }, providerRoot, 'discard')
 }
@@ -3375,7 +3375,7 @@ export function applyProviderModelReplace(
   plan: ProviderModelRewrite,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
 ): NativeConfigSaveResult {
-  return commitProviderRewrite(provider, plan, rootsInput, '工具配置在换型号时被别的程序改了，这次先不换')
+  return commitProviderRewrite(provider, plan, rootsInput, '工具配置在更换型号时被其他程序修改，本次暂不更换')
 }
 
 /**
@@ -3391,8 +3391,8 @@ function commitProviderRewrite(
 ): NativeConfigSaveResult {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
-  if (providerConfigPaths(provider, roots)[0] !== plan.file) throw new Error('工具配置路径不对，已拒绝写入')
-  if (plan.catalog && (provider !== 'codex' || plan.catalog.path !== codexModelCatalogPath(roots))) throw new Error('型号名单路径不对，已拒绝写入')
+  if (providerConfigPaths(provider, roots)[0] !== plan.file) throw new Error('工具配置路径有误，已拒绝写入')
+  if (plan.catalog && (provider !== 'codex' || plan.catalog.path !== codexModelCatalogPath(roots))) throw new Error('型号列表路径有误，已拒绝写入')
   assertSafeConfigPath(plan.file, providerRoot, 'file')
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   const plans: FilePlan[] = [
@@ -3482,7 +3482,7 @@ export function applyProviderPickerRefresh(
   plan: ProviderPickerRewrite,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
 ): NativeConfigSaveResult {
-  return commitProviderRewrite(provider, plan, rootsInput, '工具配置在刷新型号菜单时被别的程序改了，这次先不刷新')
+  return commitProviderRewrite(provider, plan, rootsInput, '工具配置在刷新型号菜单时被其他程序修改，本次暂不刷新')
 }
 
 /**
@@ -4099,13 +4099,13 @@ export function canLaunchManagedProvider(
 export function managedProviderLaunchBlockedMessage(provider: ProviderId): string {
   switch (provider) {
     case 'codex':
-      return 'Codex 当前用的是自定义接口，请先切到星芒中转或 ChatGPT 账号'
+      return 'Codex 当前使用自定义接口，请先切换至星芒中转或 ChatGPT 账号'
     case 'claude':
-      return 'Claude 当前用的是自定义接口，请先切到星芒中转或 Claude 账号'
+      return 'Claude 当前使用自定义接口，请先切换至星芒中转或 Claude 账号'
     case 'gemini':
       return 'Gemini 当前用的是自定义接口，请先切到星芒中转或 Google 账号'
     case 'grok':
-      return 'Grok 当前用的是自定义接口，请先切到星芒中转或 Grok 账号'
+      return 'Grok 当前使用自定义接口，请先切换至星芒中转或 Grok 账号'
   }
 }
 
@@ -4262,9 +4262,9 @@ export function switchProviderToOfficialAccount(
   if (mode !== 'relay' && saveMode !== 'reset' && (inspection.configBroken === true || inspection.codexAuthBroken === true)) {
     throw new Error(describeBrokenConfig(brokenConfigToolNames[provider]))
   }
-  if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
+  if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已在使用您自己的官方订阅账号，无需切换')
   if (mode === 'unknown') {
-    throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')
+    throw new Error('当前配置不是星芒中转（可能是您自行填写的第三方地址），为避免损坏配置，已取消切换')
   }
 
   const plans = codexAuthOnlyRepair
@@ -4508,7 +4508,7 @@ export function inspectClaudeOfficialSkipsConfirmation(rootsInput: ProviderConfi
   }
 }
 
-export const claudeNotOfficialMessage = 'Claude Code 现在没在用官方账号，这次没有改。'
+export const claudeNotOfficialMessage = 'Claude Code 当前未使用官方账号，本次未修改。'
 
 /**
  * 客户在「要不要让官方 Claude Code 先问再执行？」里点了「改回先问我」：撤掉 permissions.defaultMode = bypassPermissions

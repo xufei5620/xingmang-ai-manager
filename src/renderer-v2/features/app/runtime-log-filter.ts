@@ -98,7 +98,7 @@ export function runtimeLogAreaLabel(entry: Pick<RuntimeLogEntry, 'source' | 'eve
 
 /**
  * 网络类失败的文案是「一句大白话（排查用的现场）」，比如
- * 「连接账号服务超时，请检查网络后再试。（账号余额查询请求超时）」。括号里那半句
+ * 「连接账号服务超时，请检查网络后重试。（账号余额查询请求超时）」。括号里那半句
  * 跟前面说的是同一件事，列表上去掉，原文仍在「详情」里。
  */
 export function runtimeLogDisplayMessage(message: string): string {

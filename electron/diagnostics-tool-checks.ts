@@ -93,7 +93,7 @@ function providerRouteLine(siteId: string, provider: ProviderId, actual: string)
 const codexDaemonAutoStartNames: Readonly<Record<CodexDaemonAutoStart, string>> = {
   on: '开',
   off: '关',
-  default: '没写（0.157 起缺省开）',
+  default: '未设置（0.157 起默认开启）',
 }
 
 function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots, current?: ProviderRelayLine): CheckOutcome {
@@ -119,11 +119,11 @@ function providerOutcome(provider: ProviderId, inspection: NativeConfigInspectio
     const line = current ? providerRouteLine(current.siteId, provider, inspection.actualBaseUrl) : null
     if (current && line) details.routeLine = relayLineNames[line]
     if (current && !relayProviderBaseUrlEquals(inspection.actualBaseUrl, current.baseUrl)) details.currentRouteLine = relayLineNames[current.line]
-    return { state: 'pass', summary: '已连到当前账号', details }
+    return { state: 'pass', summary: '已连接当前账号', details }
   }
-  if (!inspection.exists) return { state: 'warn', summary: '还没有连接设置', details }
-  if (!inspection.hasApiKey) return { state: 'fail', summary: '连接设置里没有密钥', details }
-  return { state: 'fail', summary: '连接地址不是当前账号的', details }
+  if (!inspection.exists) return { state: 'warn', summary: '尚无连接设置', details }
+  if (!inspection.hasApiKey) return { state: 'fail', summary: '连接设置中没有密钥', details }
+  return { state: 'fail', summary: '连接地址不属于当前账号', details }
 }
 
 const cliCheckCodes: readonly string[] = activeProviderIds.map((provider) => `CLI_${provider.toUpperCase()}`)

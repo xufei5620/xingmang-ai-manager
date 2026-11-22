@@ -571,7 +571,7 @@ describe.runIf(process.platform !== 'win32')('checking the install manifest agai
     const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
 
     const message = (error as Error).message
-    expect(message).toBe('Codex CLI 安装失败：安装前需先在 npm 官方源核对安装清单，这一步没连上（错误码 ETIMEDOUT）。请更换网络（如手机热点）后重试。')
+    expect(message).toBe('Codex CLI 安装失败：安装前需先在 npm 官方源核对安装清单，此步骤连接失败（错误码 ETIMEDOUT）。请更换网络（如手机热点）后重试。')
     expect(classifyOperationError(message)).toBe('officialRegistryUnreachable')
     expect(((error as Error).cause as CommandRunnerError).stderr).toBe(registryTimeoutStderr)
     expect(fixture.installedVersion()).toBe(previousVersion)
@@ -586,7 +586,7 @@ describe.runIf(process.platform !== 'win32')('checking the install manifest agai
 
     const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
 
-    expect((error as Error).message).toBe('Codex CLI 安装失败：安装前需先在 npm 官方源核对安装清单，这一步没连上（错误码 ETIMEDOUT）。请更换网络（如手机热点）后重试。')
+    expect((error as Error).message).toBe('Codex CLI 安装失败：安装前需先在 npm 官方源核对安装清单，此步骤连接失败（错误码 ETIMEDOUT）。请更换网络（如手机热点）后重试。')
   })
 
   it('names a version the registry does not have in Chinese and says what to do', async () => {
