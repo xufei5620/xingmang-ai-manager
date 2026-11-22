@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { ArrowUpRight, Brush, Clapperboard, Download, Film, FolderOpen, Image as ImageIcon, Infinity as InfinityIcon, MessageSquare, Play, Plus, RefreshCw } from 'lucide-react'
 import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
 import type { AiChatAsset, AiLibraryEntry } from '../../../../electron/ipc-contract'
@@ -11,7 +11,7 @@ import type { VideoStudioItem } from '../video-studio/library'
 import type { VideoStudioClipSource } from '../video-studio/project'
 import {
   buildLibraryOrigins, libraryBadge, libraryCaption, libraryChatAsset, libraryClipMade, libraryClipSource, libraryDetailLine, libraryEntryOrigin, libraryFilmAssetIds, libraryImageUrl,
-  libraryKindCount, libraryKindNames, libraryKinds, libraryMatchedAssetIds, libraryThumbnailUrl, libraryTitle, type LibraryMeasured, type LibraryOrigin, type LibraryOrigins,
+  libraryKindCount, libraryKindNames, libraryKinds, libraryMatchedAssetIds, libraryPlayerRatio, libraryThumbnailUrl, libraryTitle, type LibraryMeasured, type LibraryOrigin, type LibraryOrigins,
 } from './library'
 import { useCreateLibrary, type CreateLibrary, type CreateLibraryBridge } from './useCreateLibrary'
 
@@ -180,6 +180,7 @@ export function LibraryDetail({ entry, origin, film, originLink = true, videoRea
     <div className="create-library-media" data-kind={entry.mediaType}>
       {missing ? <p role="alert">{video ? missingAiAssetMessages.video : missingAiAssetMessages.image}</p>
         : video ? <video src={videoClipPlayUrl(entry.assetId)} poster={libraryThumbnailUrl(entry)} controls playsInline
+          style={{ '--create-library-player-ratio': libraryPlayerRatio(measured, recorded) } as CSSProperties}
           onLoadedMetadata={(event) => setMeasured({ width: event.currentTarget.videoWidth, height: event.currentTarget.videoHeight, durationSeconds: event.currentTarget.duration })}
           onError={() => setMissing(true)} data-testid="create-library-player" />
           : <img src={libraryImageUrl(entry.assetId)} alt={title} onLoad={(event) => setMeasured({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} onError={() => setMissing(true)} data-testid="create-library-image" />}

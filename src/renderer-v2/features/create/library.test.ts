@@ -5,7 +5,7 @@ import type { VideoStudioItem } from '../video-studio/library'
 import { createVideoStudioProject, type VideoStudioShot } from '../video-studio/project'
 import {
   buildLibraryOrigins, cleanLibrarySearch, libraryBadge, libraryCaption, libraryChatAsset, libraryClipMade, libraryClipSource, libraryDetailLine, libraryEntryOrigin, libraryFilmAssetIds,
-  libraryKindCount, libraryMatchedAssetIds, libraryTitle, libraryVideoClip, maxLibraryMatchedIds, maxLibrarySearchLength,
+  libraryKindCount, libraryMatchedAssetIds, libraryPlayerRatio, libraryTitle, libraryVideoClip, maxLibraryMatchedIds, maxLibrarySearchLength,
 } from './library'
 
 const now = new Date(2026, 10, 21, 15, 0).getTime()
@@ -169,6 +169,21 @@ describe('the words on a library tile and on the opened item', () => {
     expect(libraryCaption(entry('poster', 'image'), { from: 'canvas', id: 'p1', title: '双十一主图', prompt: '' }, now)).toBe('画布 · 今天 14:02')
     expect(libraryCaption(entry('cat', 'image'), undefined, now)).toBe('今天 14:02')
     expect(libraryCaption(entry('cat', 'image', { createdAt: 'not a time' }), undefined, now)).toBe('')
+  })
+
+  it('gives the opened video its own shape, falling back to the recorded one and then to 16:9', () => {
+    // 页面量出来的排前面，其次是记着的。
+    expect(libraryPlayerRatio({ width: 720, height: 1280 }, { width: 1280, height: 720 })).toBe('720 / 1280')
+    expect(libraryPlayerRatio(null, { width: 1280, height: 720 })).toBe('1280 / 720')
+    expect(libraryPlayerRatio({ durationSeconds: 3 }, { width: 1024, height: 1024 })).toBe('1024 / 1024')
+    // 还没读到开头、也没记着：按 16:9，不让它跟着缩略图的大小走。
+    expect(libraryPlayerRatio(null, undefined)).toBe('16 / 9')
+    expect(libraryPlayerRatio()).toBe('16 / 9')
+    // 缺一边、是零、不是有限的数，都当没有。
+    for (const broken of [{ width: 1280 }, { height: 720 }, { width: 0, height: 720 }, { width: 1280, height: -1 }, { width: Number.NaN, height: 720 }, { width: 1280, height: Number.POSITIVE_INFINITY }]) {
+      expect(libraryPlayerRatio(broken)).toBe('16 / 9')
+      expect(libraryPlayerRatio(broken, { width: 640, height: 360 })).toBe('640 / 360')
+    }
   })
 
   it('writes the line under the opened item from what is known, leaving out what is not', () => {

@@ -230,6 +230,21 @@ export function libraryThumbnailUrl(entry: Pick<AiLibraryEntry, 'assetId' | 'med
 export interface LibraryMeasured { width?: number, height?: number, durationSeconds?: number }
 
 /**
+ * 点开的视频占的形状，写成 CSS 认的「宽 / 高」：排在前面的先用（页面量出来的，其次是记着的），都没有时按 16:9。
+ * 这个形状要由我们定：只限最宽最高的话，按播放之前 <video> 照缩略图的大小排（缩略图是小图，读不出来时只剩
+ * 300 × 150），画面只占一小块，按了播放才变回原来的大小。
+ */
+export function libraryPlayerRatio(...sizes: readonly (LibraryMeasured | null | undefined)[]): string {
+  for (const size of sizes) {
+    if (!size) continue
+    const { width, height } = size
+    // Number.isFinite 不认数字以外的东西，拼进样式的只会是两个正数。
+    if (Number.isFinite(width) && Number.isFinite(height) && Number(width) > 0 && Number(height) > 0) return `${width} / ${height}`
+  }
+  return '16 / 9'
+}
+
+/**
  * 作品库里的一段视频换成视频那边用的样子。尺寸和时长先用当时主进程量的（对话、视频里记着的），
  * 没记着的用页面上量出来的，都没有就不写（拼片时照样按文件本身来）。
  */
