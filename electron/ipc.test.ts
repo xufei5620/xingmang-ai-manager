@@ -5124,6 +5124,44 @@ describe('registerIpcHandlers', () => {
     }
   })
 
+  it('adds a picture to a canvas project for the signed-in account only, and only from a well-formed request', async () => {
+    const assetId = 'a'.repeat(43)
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const added = { projectId, projectName: '双十一主图', created: false }
+    const addImageToCanvasProject = vi.fn(async () => added)
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)
+    const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { addImageToCanvasProject })
+    try {
+      const add = electronMocks.handlers.get('canvas:add-project-image')!
+      expect(() => add(trustedEvent('https://attacker.example/'), { assetId, projectId })).toThrow('已拒绝来自非应用页面的操作请求')
+      // The page names one picture and one target by id. An account, a path or a second picture is refused before anything is read.
+      for (const input of [undefined, { assetId }, { assetId, projectId, userId: 8 }, { assetId, projectId, filePath: 'C:\\Users\\a.png' }, { assetId: '../../a.png', projectId }, { assetId, projectId: '../x' }, { assetId, projectId, newProjectName: '海报' }]) {
+        expect(() => add(trustedEvent(), input)).toThrow('添加到画布的请求格式错误')
+      }
+      expect(addImageToCanvasProject).not.toHaveBeenCalled()
+
+      await expect(add(trustedEvent(), { assetId, projectId })).resolves.toEqual(added)
+      expect(addImageToCanvasProject).toHaveBeenLastCalledWith(7, { assetId, projectId })
+      await expect(add(trustedEvent(), { assetId, newProjectName: ' 一只橘猫 ' })).resolves.toEqual(added)
+      expect(addImageToCanvasProject).toHaveBeenLastCalledWith(7, { assetId, newProjectName: '一只橘猫' })
+
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false } as never)
+      expect(() => add(trustedEvent(), { assetId, projectId })).toThrow('请先登录星芒账号')
+      expect(addImageToCanvasProject).toHaveBeenCalledTimes(2)
+    } finally {
+      dispose()
+    }
+
+    // A registration without it says so in words the page can show.
+    const bare = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub())
+    try {
+      expect(() => electronMocks.handlers.get('canvas:add-project-image')!(trustedEvent(), { assetId, projectId })).toThrow('暂时无法添加到画布，请稍后重试。')
+    } finally {
+      bare.dispose()
+    }
+  })
+
   it('hands the canvas project list and the open request straight to the canvas controller', async () => {
     const projects = [{ id: '11111111-1111-4111-8111-111111111111', name: '双十一主图', updatedAt: 1_700_000_000_000 }]
     const listCanvasProjects = vi.fn(async () => projects)
@@ -10523,6 +10561,8 @@ describe('IPC channel log and account policies', () => {
       .map(([channel]) => channel)
       .sort()
     expect(scoped).toEqual([
+      // 「添加到画布」：图片和项目都按当前账号认，抄进的是当前账号的项目。
+      'canvas:add-project-image',
       // 「创作」左边那一列里的画布项目：列的是当前账号的，打开时编号也在当前账号的项目里认。
       'canvas:list-projects',
       'canvas:open',

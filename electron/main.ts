@@ -53,6 +53,7 @@ import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, measureInstallLeftovers, sweepInstallLeftovers } from './install-leftovers'
 import { resolveRealmDataRoots } from './realm-data-roots'
 import { listCanvasProjectAssetDirectories } from './canvas-project-store'
+import { createCanvasProjectImageIntake } from './canvas-project-image-intake'
 import { createStorageUsageService } from './storage-usage-service'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
@@ -2319,6 +2320,8 @@ if (!hasSingleInstanceLock) {
       },
       readPricing: async () => accountService.getModelPricing ? accountService.getModelPricing() : null,
     })
+    // 新建画布项目默认放这里（Mac 的访达里叫「文稿」）；读到 Documents 要的系统授权说明在 electron-builder 的 NSDocumentsFolderUsageDescription。
+    const defaultCanvasProjectsDirectory = () => path.join(app.getPath('documents'), '星芒画布')
     const canvasController = createCanvasWindowController({
       accountWork,
       canvasDistRoot: canvasDistRoot(),
@@ -2338,8 +2341,7 @@ if (!hasSingleInstanceLock) {
       canvasRuns,
       projects: canvasProjects,
       projectAssets: canvasProjectAssets,
-      // 新建画布项目默认放这里（Mac 的访达里叫「文稿」）；读到 Documents 要的系统授权说明在 electron-builder 的 NSDocumentsFolderUsageDescription。
-      defaultProjectsDirectory: () => path.join(app.getPath('documents'), '星芒画布'),
+      defaultProjectsDirectory: defaultCanvasProjectsDirectory,
       trashProjectFolder: (directory) => shell.trashItem(directory),
       readAccountSummary: readCanvasAccountSummary,
       readPriceSnapshot: readCanvasPriceSnapshot,
@@ -2860,6 +2862,17 @@ if (!hasSingleInstanceLock) {
       openCanvasWindow: () => canvasController.open(),
       listCanvasProjects: () => canvasController.listProjects(),
       openCanvasProject: (projectId) => canvasController.openProject(projectId),
+      // 「添加到画布」：主窗口点的那一张图抄进他选的画布项目。项目表、各项目的素材库跟画布窗口用的是同一份，
+      // 画布窗口自己没有这个入口（canvas-project-image-intake.ts）。
+      addImageToCanvasProject: createCanvasProjectImageIntake({
+        projects: canvasProjects,
+        assets: canvasProjectAssets,
+        defaultProjectsDirectory: defaultCanvasProjectsDirectory,
+        onSourceError: (error, context) => runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '图片已添加到画布项目，但来源信息保存失败', {
+          assetId: context.assetId,
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }),
       xingmangAiSkill: {
         bundledRoot: bundledXingmangAiSkillRoot,
         userHome: os.homedir(),

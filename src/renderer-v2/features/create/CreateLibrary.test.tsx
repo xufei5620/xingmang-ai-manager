@@ -5,6 +5,7 @@ import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import type { VideoStudioItem } from '../video-studio/library'
 import { createVideoStudioProject } from '../video-studio/project'
 import { CanvasProjectWorksView, CreateLibraryPane, LibraryDetail, LibraryPicker, type CreateLibraryActions } from './CreateLibrary'
+import type { CanvasIntakeProject } from './canvas-intake'
 import type { LibraryOrigin } from './library'
 import type { CreateLibrary } from './useCreateLibrary'
 
@@ -33,7 +34,7 @@ function clip(seed: string, durationSeconds = 5): AiVideoClip {
 }
 
 const actions: CreateLibraryActions = {
-  openFolder: nothing, openConversation: nothing, openFilm: nothing, openCanvasProject: nothing, reuseImage: nothing, animateImage: nothing, saveImage: nothing, saveVideo: nothing, openVideo: nothing, addClip: nothing,
+  openFolder: nothing, openConversation: nothing, openFilm: nothing, openCanvasProject: nothing, reuseImage: nothing, animateImage: nothing, saveImage: nothing, saveVideo: nothing, openVideo: nothing, addClip: nothing, addToCanvas: nothing,
 }
 
 function library(more: Partial<CreateLibrary> = {}): CreateLibrary {
@@ -74,7 +75,7 @@ describe('the library on the create page', () => {
     expect(html).toMatch(new RegExp(`data-kind="video"[^>]*data-testid="create-library-item-${id('shot')}"[^]*?0:05`))
     expect(text(html)).toContain('对话、视频和画布中生成的图片、片段和成片均显示在此处。对话和视频的文件位于本机的 AI 作品文件夹，画布的文件位于各项目的工作文件夹。')
     expect(html).not.toContain('create-library-more')
-    // 「放进画布」没有做。
+    // 方案里的旧叫法「放进画布」不出现：按钮叫「添加到画布」，在点开一张图的小框里。
     expect(html).not.toContain('放进画布')
   })
 
@@ -123,9 +124,9 @@ describe('the library on the create page', () => {
 describe('one piece opened from the library', () => {
   const chatOrigin: LibraryOrigin = { from: 'chat', id: 'c1', title: '橘猫的一天', prompt: '一只橘猫坐在窗台上', width: 1024, height: 1024 }
 
-  function detail(entry: AiLibraryEntry, origin: LibraryOrigin | undefined, more: { film?: boolean, videoReady?: boolean, originLink?: boolean } = {}) {
+  function detail(entry: AiLibraryEntry, origin: LibraryOrigin | undefined, more: { film?: boolean, videoReady?: boolean, originLink?: boolean, canvasProjects?: readonly CanvasIntakeProject[] } = {}) {
     return renderToStaticMarkup(<LibraryDetail entry={entry} origin={origin} film={more.film ?? false} videoReady={more.videoReady ?? true} originLink={more.originLink}
-      videoFilms={[{ id: 'film-1', title: '橘猫回家', detail: '1 个镜头' }]} actions={actions} onClose={nothing} />)
+      videoFilms={[{ id: 'film-1', title: '橘猫回家', detail: '1 个镜头' }]} canvasProjects={more.canvasProjects} actions={actions} onClose={nothing} />)
   }
 
   it('shows a picture at full size with where it came from and what it can be used for', () => {
@@ -138,7 +139,22 @@ describe('one piece opened from the library', () => {
     expect(html).toMatch(/data-testid="create-library-reuse"[^>]*>[^]*?基于此图继续编辑/)
     expect(html).toMatch(/data-testid="create-library-animate"[^>]*>[^]*?用此图生成视频/)
     expect(html).toMatch(/data-testid="create-library-save-image"[^>]*>[^]*?另存图片/)
+    // 页面没给画布项目清单（预览、早先的用法）：没有「添加到画布」。方案里的旧叫法「放进画布」哪里都不出现。
+    expect(html).not.toContain('create-library-canvas')
     expect(html).not.toContain('放进画布')
+  })
+
+  it('offers to add a picture to a canvas project between making a video and saving, and never offers it for a video', () => {
+    const projects = [{ id: '11111111-1111-4111-8111-111111111111', title: '双十一主图', detail: '今天 10:00 修改' }]
+    const html = detail(image('cat'), chatOrigin, { canvasProjects: projects })
+    expect(html).toMatch(/data-testid="create-library-canvas"[^>]*>[^]*?添加到画布/)
+    expect(html).toMatch(/<button[^>]*title="将此图添加到画布项目的素材库"[^>]*data-testid="create-library-canvas"|<button[^>]*data-testid="create-library-canvas"[^>]*title="将此图添加到画布项目的素材库"/)
+    expect(html.indexOf('create-library-animate')).toBeLessThan(html.indexOf('create-library-canvas'))
+    expect(html.indexOf('create-library-canvas')).toBeLessThan(html.indexOf('create-library-save-image'))
+    // 一个项目都没有也有这个按钮：菜单里还有「新建画布项目」。没记着是哪来的图一样能加。
+    expect(detail(image('lost'), undefined, { canvasProjects: [] })).toContain('data-testid="create-library-canvas"')
+    const clipOrigin: LibraryOrigin = { from: 'video', id: 'film-1', title: '橘猫回家', prompt: '', clip: clip('film', 75) }
+    expect(detail(video('film'), clipOrigin, { film: true, canvasProjects: projects })).not.toContain('create-library-canvas')
   })
 
   it('leaves out making a video from a picture for an account that cannot make one now', () => {
@@ -190,7 +206,7 @@ describe('a canvas project\'s work opened from the library', () => {
     const clipHtml = detail(video('walk'), { ...made, title: '双十一主图' })
     expect(clipHtml).toMatch(new RegExp(`<video[^>]*src="xingmang-asset://video/${id('walk')}"`))
     for (const testId of ['create-library-compose', 'create-library-save-video', 'create-library-open-video']) expect(clipHtml).toContain(`data-testid="${testId}"`)
-    // 「放进画布」没有做，从这里也不直接开画布窗口。
+    // 从这里不直接开画布窗口。
     expect(html).not.toContain('放进画布')
     expect(text(html)).not.toContain('打开画布')
   })
