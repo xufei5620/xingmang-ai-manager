@@ -53,8 +53,18 @@ import { createHash } from 'node:crypto'
 // for a shard that is long run after run, not for one long run. A file that
 // holds its shard well past three minutes is worth splitting by describe, as
 // external-client-service was, so that a slow stretch lands on part of it.
+//
+// config-files.test.ts was next. On 2026-11-22 #2117's first shard ran out its
+// 15 minutes with every test passing, config-files 355 seconds of it (186 on
+// the main run before), so the 359 tests that table had at 200 now sit in six
+// files that keep the describe names and every full test name:
+// config-files.test.ts and its .merge, .official-codex, .official-switch,
+// .trust-hooks and .template siblings. Their weights below split the old 200
+// by the per-test times of main 9ea10fa's vitest-1 (run 45028626109, the file
+// at 191 seconds), counting each test vitest left off its slow list (under
+// 300 ms) at the 79 ms those averaged; re-measure them once main has run
+// them a few times.
 export const measuredSeconds = {
-  'electron/config-files.test.ts': 200,
   'electron/system-service.test.ts': 147,
   'electron/tool-config-ownership.test.ts': 114,
   'electron/claude-desktop-config.test.ts': 102,
@@ -65,7 +75,13 @@ export const measuredSeconds = {
   'electron/external-client-service.account-follow.test.ts': 58,
   'electron/xingmang-ai-skill.test.ts': 50,
   'electron/external-client-service.test.ts': 46,
+  'electron/config-files.template.test.ts': 45,
+  'electron/config-files.merge.test.ts': 38,
+  'electron/config-files.official-codex.test.ts': 38,
   'electron/backups.test.ts': 35,
+  'electron/config-files.official-switch.test.ts': 28,
+  'electron/config-files.test.ts': 27,
+  'electron/config-files.trust-hooks.test.ts': 24,
   'electron/config-save-service.test.ts': 23,
   'electron/codex-provider-isolation.test.ts': 19,
   'electron/canvas-project-store.test.ts': 15,
