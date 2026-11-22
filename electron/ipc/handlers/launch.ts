@@ -39,7 +39,7 @@ import type { IpcHandlerContext } from './context'
 type LaunchAccountWork = ReturnType<AccountWorkGate['queue']>
 
 // 点「打开」时记下的账号，在试写、查记录这些等待以后换过或正在换（N5）：后面的提问框不再弹，跟排队时换了
-// 账号一样回「账号刚切换过，请再试一次」，让用户在现在这个账号下重新点。真正挡住打开的是队列里那道 run。
+// 账号一样回「账号刚刚切换，请重试」，让用户在现在这个账号下重新点。真正挡住打开的是队列里那道 run。
 function assertLaunchAccountCurrent(accountWork: LaunchAccountWork | undefined): void {
   if (accountWork && (accountWork.signal.aborted || !accountWork.isCurrent())) throw new Error(staleAccountMessage)
 }

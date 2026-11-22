@@ -617,7 +617,7 @@ export function importLegacyHistory(storage: ChatStorage, scope: string, userId:
 }
 
 // ---- 搬到新电脑 ----
-const transferInvalidMessage = '这个文件不是星芒导出的，或者已经损坏，没有导入任何内容。'
+const transferInvalidMessage = '该文件并非由星芒导出或已损坏，未导入任何内容。'
 const imageLeftBehind = '[图片未随记录迁移]'
 const videoLeftBehind = '[视频未随记录迁移]'
 

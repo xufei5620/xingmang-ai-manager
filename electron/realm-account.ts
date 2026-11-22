@@ -49,15 +49,15 @@ export type RealmErrorCode = 'INVALID' | 'UNSUPPORTED' | 'DISABLED' | 'BUSY' | '
 
 const messages: Record<RealmErrorCode, string> = {
   INVALID: '账号参数无效', UNSUPPORTED: '当前账号暂不支持此功能', DISABLED: '当前账号服务尚未启用',
-  BUSY: '账号切换正在进行，请稍后重试', STALE: '账号刚切换过，请再试一次', SIGNED_OUT: '请先登录账号',
+  BUSY: '账号切换正在进行，请稍后重试', STALE: '账号刚刚切换，请重试', SIGNED_OUT: '请先登录账号',
   STORAGE: '账号安全存储不可用，原记录未修改',
   // 切到一个登录已失效的保存账号（全面检测 Q12）。以前报 UNAUTHORIZED，界面套上
   // 「登录已过期」的标题，看起来像当前账号掉线了；其实当前账号完好，一字没动。
   // 措辞刻意避开「登录已过期」「请重新登录」，免得又被渲染层归到当前账号过期那一类。
-  SAVED_EXPIRED: '这个保存的账号登录已失效，当前账号没有变化。点「重新登录该账号」再登一次就行。',
+  SAVED_EXPIRED: '该已保存账号的登录已失效，当前账号未变化。请点击「重新登录该账号」重新登录。',
   // 本机账号库满了不是存储坏了（全面检测 Q40）：以前也报 STORAGE，用户被叫去重启软件，
   // 重启一百次还是满的。渲染层按「保存的账号已满」原样上屏。
-  ACCOUNT_LIMIT: '这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。',
+  ACCOUNT_LIMIT: '本机保存的账号已满（最多 16 个）。请先在「切换账号」中移除一个不再使用的账号，再登录。',
   NETWORK: '账号服务请求失败，请重试',
   UNAVAILABLE: networkFailureMessages.serviceUnavailable,
   TIMEOUT: '账号服务请求超时', ABORTED: '操作已取消', UNAUTHORIZED: '登录已失效，请重新登录',

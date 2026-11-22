@@ -24,7 +24,7 @@ export function isSafeStorageUsable(storage: SafeStorageBackendLike): boolean {
 }
 
 export function safeStoragePlaintextMessage(subject: string): string {
-  return `这台电脑没法安全保存密码，已拒绝写入${subject}。`
+  return `本机不支持安全保存密码，已拒绝写入${subject}。`
 }
 
 export type CredentialPersistence = 'durable' | 'session-only'

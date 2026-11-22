@@ -305,7 +305,7 @@ describe('ChatKeyStore', () => {
 
     await expect(store.read(42)).resolves.toEqual([])
     await expect(store.upsert(chatKey(42, 'codex-pro', 3)))
-      .rejects.toThrow('本地 AI 聊天分组 API Key 配置已损坏或无法解密')
+      .rejects.toThrow('本地 AI 聊天分组密钥配置已损坏或无法解密')
 
     expect(fs.readFileSync(filePath, 'utf8')).toBe(intact)
     expect(quarantinedCopies(filePath)).toEqual([])
@@ -401,8 +401,8 @@ describe('ChatKeyStore', () => {
       getSelectedStorageBackend: () => 'basic_text',
     }))
 
-    await expect(store.read(42)).rejects.toThrow('已拒绝写入AI 聊天分组 API Key')
-    await expect(store.upsert(chatKey(42, 'codex-pro', 1))).rejects.toThrow('已拒绝写入AI 聊天分组 API Key')
+    await expect(store.read(42)).rejects.toThrow('已拒绝写入AI 聊天分组密钥')
+    await expect(store.upsert(chatKey(42, 'codex-pro', 1))).rejects.toThrow('已拒绝写入AI 聊天分组密钥')
     expect(fs.existsSync(filePath)).toBe(false)
   })
 

@@ -26,7 +26,7 @@ export function configWriteBlockerMessage(blocker: ConfigWriteBlocker, code: str
   return `${configWriteBlockerReasons[blocker]}${code ? `（错误码 ${code}）` : ''}`
 }
 
-/** 从包了几层的报错里（「改用当前账号没有完成：……已恢复到切换前的配置。」）认出是哪一种；都不是就是 null。 */
+/** 从包了几层的报错里（「改用当前账号未完成：……已恢复到切换前的配置。」）认出是哪一种；都不是就是 null。 */
 export function configWriteBlockerIn(message: string): ConfigWriteBlocker | null {
   return blockers.find((blocker) => message.includes(configWriteBlockerReasons[blocker])) ?? null
 }
