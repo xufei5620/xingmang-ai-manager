@@ -2811,6 +2811,31 @@ describe('codex-remote-service images', () => {
     expect(input.map((entry) => entry.type)).toEqual(['text', 'localImage'])
   })
 
+  // M04（11-18 手机遥控专项）：图和字一起发、这条的图一张都没收下，字不交给 Codex（它没看到图就开始做，客户以为
+  // 图跟着去了）；收下了几张的照常带着交出去，跟图一起发的指令照常回。
+  it('holds back the words sent with images when none of them was taken, but still answers a command', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.images.set('broken', { ok: false, reason: 'failed' })
+    channel.images.set('big', { ok: false, reason: 'too-large' })
+    channel.handlers?.onInbound(imageMessage(alice, ['broken', 'big'], '照这张图改按钮颜色'))
+    await channel.sentUntil(() => channel.texts().length >= 3)
+    expect(channel.texts()).toEqual([
+      '电脑未能获取此图片，请重新发送。',
+      '图片过大，未能接收。请发送较小的图片或截取部分内容。',
+      '图片均未接收成功，本条消息中的文字未发送给 Codex，请重新发送图片和文字。',
+    ])
+    channel.handlers?.onInbound(imageMessage(alice, ['broken'], '状态'))
+    await channel.sentUntil(() => channel.texts().length >= 5)
+    expect(channel.texts()[4]).toMatch(/^工作文件夹：/)
+    expect(s.codex.flatMap((codex) => codex.requests('turn/start'))).toEqual([])
+
+    channel.images.set('img-a', { ok: true, bytes: pngBytes })
+    channel.handlers?.onInbound(imageMessage(alice, ['img-a', 'broken'], '照这张图改按钮颜色'))
+    await turnStarted(s, 1)
+    expect(channel.texts().at(-1)).toBe('已收到（含 1 张图片），Codex 开始处理。')
+  })
+
   // M05（Codex 复核 11-18）：图和字一起发、赶上还在做上一条，回「还在处理上一条」时图也一起退回，
   // 不留给下一句不相干的话。
   it('turns away the images sent with a prompt while the last one is still running', async () => {
@@ -3193,6 +3218,59 @@ describe('codex-remote-service folders', () => {
     expect(codex.requests('thread/start')[0]).toMatchObject({ params: { cwd: blog } })
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+  })
+
+  // M18（11-18 手机遥控专项）：「文件夹 N」认手机上看到的那份单子，列过以后电脑上增删了也是他看到的那个。
+  it('picks 「文件夹 N」 from the list the phone was shown, and asks to look again once that folder is gone', async () => {
+    const s = await setup()
+    await s.service.addWorkspace(folder(s, 'blog'))
+    await s.service.addWorkspace(folder(s, 'shop'))
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '文件夹'))
+    await channel.sentUntil(() => channel.texts().at(-1) === `1. ${shown('demo')}（使用中）\n2. ${shown('blog')}\n3. ${shown('shop')}\n回复「文件夹 2」即可切换。`)
+    await s.service.removeWorkspace(shown('blog'))
+    channel.handlers?.onInbound(text(alice, '文件夹 3'))
+    await channel.sentUntil(() => channel.texts().at(-1) === `已切换至 ${shown('shop')}，将从新对话开始。`)
+    channel.handlers?.onInbound(text(alice, '文件夹 2'))
+    await channel.sentUntil(() => channel.texts().at(-1) === '电脑端的文件夹列表已变更，请发送「文件夹」重新查看。')
+    expect((await s.service.snapshot()).workspaceDirectory).toBe(shown('shop'))
+    channel.handlers?.onInbound(text(alice, '文件夹'))
+    await channel.sentUntil(() => channel.texts().at(-1) === `1. ${shown('demo')}\n2. ${shown('shop')}（使用中）\n回复「文件夹 1」即可切换。`)
+    channel.handlers?.onInbound(text(alice, '文件夹 1'))
+    await channel.sentUntil(() => channel.texts().at(-1) === `已切换至 ${shown('demo')}，将从新对话开始。`)
+  })
+
+  // M06（11-18 手机遥控专项）：换了文件夹跟「新对话」一样扔掉攒着没用的图，上一句也不在新文件夹里「重试」。
+  it('leaves waiting images and the last prompt behind when the folder changes, on the phone or the computer', async () => {
+    const s = await setup({ images: true })
+    await s.service.addWorkspace(folder(s, 'blog'))
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.images.set('img-a', { ok: true, bytes: pngBytes })
+    channel.images.set('img-b', { ok: true, bytes: pngBytes })
+    channel.handlers?.onInbound(imageMessage(alice, ['img-a']))
+    const codex = await prompted(s, channel, '看看这张')
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    channel.handlers?.onInbound(imageMessage(alice, ['img-b']))
+    await s.imagesSaved(2)
+
+    channel.handlers?.onInbound(text(alice, '文件夹 2'))
+    await channel.sentUntil(() => channel.texts().at(-1) === `已切换至 ${shown('blog')}，将从新对话开始。\n此前发送、尚未使用的图片已清除，如需使用请重新发送。`)
+    await s.imagesRemoved(2)
+    expect(storedImages(s.imageDirectory)).toEqual([])
+    channel.handlers?.onInbound(text(alice, '重试'))
+    await channel.sentUntil(() => channel.texts().at(-1) === '文件夹已切换，上一条消息不会在新文件夹中重新执行，如需执行请重新发送。')
+    expect(codex.requests('turn/start')).toHaveLength(1)
+
+    // A new prompt in the new folder can be retried again; switching back on the computer leaves it behind too.
+    channel.handlers?.onInbound(text(alice, '接着做'))
+    await codex.requestedUntil('turn/start', 2)
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-2', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    await s.service.useWorkspace(shown('demo'))
+    channel.handlers?.onInbound(text(alice, '重试'))
+    await channel.sentUntil(() => channel.texts().at(-1) === '文件夹已切换，上一条消息不会在新文件夹中重新执行，如需执行请重新发送。')
+    expect(codex.requests('turn/start')).toHaveLength(2)
   })
 
   it('does not switch folders while a turn is still going, and says so when the folder is gone', async () => {
@@ -4674,6 +4752,7 @@ async function conversationSetup(options: {
   list?: (folders: { workspace: string; other: string }) => Array<Record<string, unknown>>
   resume?: (params: Record<string, unknown>, folders: { workspace: string; other: string }) => Record<string, unknown>
   codexVersion?: string | null
+  images?: boolean
 } = {}): Promise<ConversationSetup> {
   const root = tempRoot()
   const workspace = path.join(root, 'home', 'projects', 'demo')
@@ -4689,6 +4768,7 @@ async function conversationSetup(options: {
   const s = await setup({
     root,
     platform: process.platform,
+    ...(options.images ? { images: true } : {}),
     ...(options.codexVersion === null ? {} : { codexVersion: options.codexVersion ?? '0.169.0' }),
     codexReplies: {
       'thread/list': () => ({ result: { data: list(folders), nextCursor: null, backwardsCursor: null } }),
@@ -4736,6 +4816,20 @@ describe('codex-remote-service continuing a Codex conversation from the phone', 
     expect(await phoneReply(channel, '对话')).toBe('当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。')
     expect(await phoneReply(channel, '对话 1')).toBe('当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。')
     expect(s.codex[0].requests('thread/resume')).toHaveLength(0)
+  })
+
+  // M06：「对话 N」接的是别的文件夹里的对话，也算换了文件夹，攒着没用的图清掉并说一声。
+  it('leaves waiting images behind when the chosen conversation is in another folder', async () => {
+    const { s } = await conversationSetup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.images.set('img-a', { ok: true, bytes: pngBytes })
+    channel.handlers?.onInbound(imageMessage(alice, ['img-a']))
+    await channel.sentUntil(() => channel.texts().length >= 1)
+    await s.imagesSaved(1)
+    await phoneReply(channel, '对话')
+    expect(await phoneReply(channel, '对话 2')).toBe(`${switchedToB}\n此前发送、尚未使用的图片已清除，如需使用请重新发送。`)
+    await s.imagesRemoved(1)
+    expect(storedImages(s.imageDirectory)).toEqual([])
   })
 
   it('continues the chosen conversation where it is, switching to its folder, and adds the remote rules on the next message only', async () => {
