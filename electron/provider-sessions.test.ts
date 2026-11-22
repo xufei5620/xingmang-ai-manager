@@ -596,7 +596,8 @@ describe('ProviderSessionsService', () => {
     const data = fixture()
     for (let index = 0; index < 101; index += 1) {
       const minute = String(index).padStart(3, '0')
-      writeJsonLines(path.join(data.claude, 'project-a', `s-${minute}.jsonl`), [
+      const filePath = path.join(data.claude, 'project-a', `s-${minute}.jsonl`)
+      writeJsonLines(filePath, [
         {
           type: 'user',
           sessionId: `s-${minute}`,
@@ -610,6 +611,11 @@ describe('ProviderSessionsService', () => {
           message: { role: 'assistant', content: [{ type: 'text', text: index === 0 ? '最早那段提过暗号' : index === 100 ? '最近那段提过口令' : '好的' }] },
         },
       ])
+      // 「最近」按文件修改时间和最后一条消息的时间里晚的那个算。Windows 上一口气写出的文件修改时间常常
+      // 一样，谁落在最近 100 条之外就看列目录的次序（CI 上红过：最早那条也被翻到了）。这里把修改时间
+      // 钉成这一段最后一条消息的时间，先后只由用例自己定。
+      const lastMessageAt = new Date(Date.UTC(2026, 6, 24, 0, index, 1))
+      fs.utimesSync(filePath, lastMessageAt, lastMessageAt)
     }
     const sessions = service(data, codexReader([]))
     expect((await sessions.list({ provider: 'claude', search: '暗号', searchContent: true })).total).toBe(0)
