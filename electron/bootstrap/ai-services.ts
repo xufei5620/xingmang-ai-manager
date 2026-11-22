@@ -439,8 +439,18 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         { assetId, reason },
       ),
     })
+    // 融合第 5 步: the library now lists what canvas projects made, and those files stay in the project's
+    // folder. Reading one back (to send it to a vision model, or to edit it) looks there too; what the
+    // chat itself stores still goes to the account library.
+    const readHeldImage = async (userId: number, assetId: string) => (
+      await canvasProjectAssets.holderOf(userId, 'image', assetId)
+    ).images.readOwned(userId, assetId)
     const chatAttachments = createChatAttachmentService({
-      store: assetStore,
+      store: {
+        readLocalFile: (filePath, maximumBytes) => assetStore.readLocalFile(filePath, maximumBytes),
+        storeLocalBytes: (userId, bytes) => assetStore.storeLocalBytes(userId, bytes),
+        readOwned: readHeldImage,
+      },
       codec: nativeChatImageCodec,
       pickFiles: async () => {
         const result = await dialog.showOpenDialog({
@@ -523,7 +533,12 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
       baseUrl: definition.aiBaseUrl,
       backend: definition.backend,
       credentials: chatCredentials,
-      assets: assetStore,
+      assets: {
+        assertWritable: (userId) => assetStore.assertWritable(userId),
+        storeBase64: (userId, value, metadata) => assetStore.storeBase64(userId, value, metadata),
+        storeRemoteUrl: (userId, url, metadata) => assetStore.storeRemoteUrl(userId, url, metadata),
+        readOwned: readHeldImage,
+      },
     })
     const canvasImageService = createAiImageService({
       onRequestStarted: onAiRequestStarted,

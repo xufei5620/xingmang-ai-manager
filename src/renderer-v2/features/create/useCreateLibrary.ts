@@ -36,8 +36,10 @@ const noMatches: readonly string[] = []
  * 当前账号的作品库（融合第 3 步）：主进程只列编号和时间，不读文件，所以这一页露面、窗口回到前台、
  * 对话里刚出完一张图时都可以再读一遍。filmAssetIds 是每条视频上一次拼好的成片，主进程拿它分出「成片」。
  * initialKind：只让挑图片、只让挑视频的选择框从那一类开始。
+ * canvasProjectId：只列这一个画布项目里做出来的（融合第 5 步，点开一个画布项目时用）；用它的那一块按项目编号做 key，
+ * 换一个项目就是换一份新的，这里不用管中途换编号。
  */
-export function useCreateLibrary(bridge: CreateLibraryBridge, active: boolean, filmAssetIds: readonly string[], initialKind: LibraryKind = 'all'): CreateLibrary {
+export function useCreateLibrary(bridge: CreateLibraryBridge, active: boolean, filmAssetIds: readonly string[], initialKind: LibraryKind = 'all', canvasProjectId?: string): CreateLibrary {
   const latest = useLatestRequest()
   const [query, setQuery] = useState<Query>({ kind: initialKind, search: '', matched: noMatches })
   const [status, setStatus] = useState<CreateLibrary['status']>('loading')
@@ -56,6 +58,7 @@ export function useCreateLibrary(bridge: CreateLibraryBridge, active: boolean, f
     offset, limit: libraryPageSize, kind: queryRef.current.kind,
     ...(queryRef.current.search ? { search: queryRef.current.search, matchedAssetIds: queryRef.current.matched.slice(0, maxLibraryMatchedIds) } : {}),
     ...(filmsRef.current.length ? { filmAssetIds: [...filmsRef.current] } : {}),
+    ...(canvasProjectId ? { canvasProjectId } : {}),
   })
   // replace：换了筛选或搜索，列表整个换掉；不是的话（再读一遍）只在第一页真的变了时才换。
   const load = (replace: boolean) => {

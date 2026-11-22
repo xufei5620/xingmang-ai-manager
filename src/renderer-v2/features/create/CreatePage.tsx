@@ -1,5 +1,6 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowUpRight, Clapperboard, Film, Infinity as InfinityIcon, Pencil, Trash2, type LucideIcon } from 'lucide-react'
+import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import type { CanvasProjectListEntry, XingmangApi } from '../../../../electron/ipc-contract'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { Button, Confirm, Dialog, Input, Notice, useToast } from '../../ui'
@@ -17,7 +18,7 @@ import { appendVideoStudioClip, canAddVideoStudioShot, createVideoStudioProjectF
 import { videoStudioErrorMessage } from '../video-studio/useVideoStudio'
 import { useVideoStudioLibrary, useVideoStudioSession } from '../video-studio/useVideoStudioLibrary'
 import type { VideoStudioAccess, VideoStudioLibraryPicker } from '../video-studio/VideoStudioPage'
-import { CreateLibraryPane, LibraryPicker, measureLibraryVideo, type CreateLibraryActions, type LibraryPicked } from './CreateLibrary'
+import { CanvasProjectWorks, CreateLibraryPane, LibraryPicker, measureLibraryVideo, type CreateLibraryActions, type LibraryPicked } from './CreateLibrary'
 import { libraryClipMade, libraryClipSource, libraryFilmAssetIds, libraryKindCount, type LibraryOrigin } from './library'
 import { createTimeText, type CreateExtraItem, type CreateExtraKind, type CreateSelection } from './list'
 import { useCreateLibrary } from './useCreateLibrary'
@@ -83,17 +84,25 @@ interface CanvasProjects {
 }
 
 /**
- * 当前账号的画布项目（名字和时间）。项目在画布窗口里新建、改名、删除，这边没有事件可听，
+ * 当前账号的画布项目（名字、时间和封面）。项目在画布窗口里新建、改名、删除，这边没有事件可听，
  * 所以这一页每次露面、窗口每次回到前台时重读一遍；读不出来时留着上一次读到的。
  */
 function useCanvasProjects(bridge: Pick<XingmangApi, 'listCanvasProjects'>, active: boolean) {
   const latest = useLatestRequest()
   const [state, setState] = useState<CanvasProjects>({ status: 'loading', projects: [] })
-  const refresh = () => {
+  // 回的是这一次读到、已经记下的清单；被更新的一次读顶掉了、或者没读出来，回 null。
+  const refresh = (): Promise<CanvasProjectListEntry[] | null> => {
     const current = latest.begin()
-    bridge.listCanvasProjects().then(
-      (projects) => { if (current()) setState({ status: 'ready', projects }) },
-      () => { if (current()) setState((previous) => previous.status === 'ready' ? previous : { status: 'unreadable', projects: [] }) },
+    return bridge.listCanvasProjects().then(
+      (projects) => {
+        if (!current()) return null
+        setState({ status: 'ready', projects })
+        return projects
+      },
+      () => {
+        if (current()) setState((previous) => previous.status === 'ready' ? previous : { status: 'unreadable', projects: [] })
+        return null
+      },
     )
   }
   const refreshRef = useRef(refresh)
@@ -113,6 +122,8 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const library = useVideoStudioLibrary(bridge, accountScope)
   const session = useVideoStudioSession(library)
   const canvas = useCanvasProjects(bridge, active)
+  const canvasProjectsRef = useRef(canvas.projects)
+  canvasProjectsRef.current = canvas.projects
   const owner = useLatestRequest()
   const [selected, setSelected] = useState<CreateSelection | null>(null)
   const [renaming, setRenaming] = useState<{ id: string, text: string } | null>(null)
@@ -160,6 +171,18 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   }
   // 每次点开都再读一遍：视频工作台里刚出的片段、刚拼好的成片要在里面。
   const showLibrary = () => { setSelected(null); setLibraryOpen(true); assets.refresh() }
+  // 作品库里点「查看画布项目」：右边换成那个项目。先重读一遍项目清单再看它还在不在：项目可能刚在画布窗口里归档、
+  // 删掉了，而把主窗口点回前台的往往正是这一下，手上的清单还是旧的，照它换过去会先闪出那个项目、接着又被收回起始页。
+  // 新的没读到（没读出来，或被更新的一次读顶掉）就照手上的。
+  const showCanvasProject = (id: string) => {
+    const ticket = owner.capture()
+    void canvas.refresh().then((fresh) => {
+      if (!ticket()) return
+      if (!(fresh ?? canvasProjectsRef.current).some((entry) => entry.id === id)) { toast.show('未找到该画布项目，可能已归档或删除。', 'warn'); return }
+      setLibraryOpen(false)
+      setSelected({ kind: 'canvas', id })
+    })
+  }
   const leave = () => { setSelected(null); setLibraryOpen(false) }
   // 对话里的一段视频「添加到视频」：接到选的那一条最后（null 是新建一条）。开着的正是那一条时，写完它按新的重新读
   // （library.replace 换版本号，下面工作台的 key 跟着换）；它手上有事（写分镜、生成、拼片）就先不加，等它停下。
@@ -288,7 +311,6 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
           source={library.source(openItem.id)} onBusyChange={session.setBusy} onOpenAccount={chat.onOpenAccount} library={studioLibrary} />
       </Suspense></div>
     </div>}
-    {project && <CanvasProjectPane project={project} opening={opening === project.id} onOpen={() => openCanvasProject(project.id)} />}
   </>
 
   const create: ChatPageCreate = {
@@ -324,12 +346,18 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
       count: assets.counts ? libraryKindCount(assets.counts, 'all') : null,
       onOpen: showLibrary,
       refresh: assets.refresh,
-      render: (context) => <>
-        {libraryOpen && <CreateLibraryPane library={assets} conversations={context.conversations} films={videos} videoReady={context.canAnimate} videoFilms={films}
-          actions={{ openFolder, openConversation: context.openConversation, openFilm: showVideo, reuseImage: context.reuseImage, animateImage: context.animateImage, saveImage, saveVideo, openVideo: openVideoFile, addClip: addLibraryClip }} />}
+      render: (context) => {
+        const actions: CreateLibraryActions = { openFolder, openConversation: context.openConversation, openFilm: showVideo, openCanvasProject: showCanvasProject, reuseImage: context.reuseImage, animateImage: context.animateImage, saveImage, saveVideo, openVideo: openVideoFile, addClip: addLibraryClip }
+        return <>
+        {/* 画布项目那一块也由这里摆：它下面「此项目中的作品」点开以后要用对话这边的东西（把图放进输入框）。 */}
+        {project && <CanvasProjectPane project={project} opening={opening === project.id} onOpen={() => openCanvasProject(project.id)}>
+          <CanvasProjectWorks key={project.id} bridge={bridge} active={active} projectId={project.id} conversations={context.conversations} films={videos} videoReady={context.canAnimate} videoFilms={films} actions={actions} />
+        </CanvasProjectPane>}
+        {libraryOpen && <CreateLibraryPane library={assets} conversations={context.conversations} films={videos} videoReady={context.canAnimate} videoFilms={films} actions={actions} />}
         {active && picking && <LibraryPicker key={picking.kind} bridge={bridge} kind={picking.kind === 'image' ? 'image' : 'video'} limit={picking.kind === 'film' ? videoStudioPlanLimits.maximumShots : 1}
           conversations={context.conversations} films={videos} onPick={finishPicking} onClose={closePicking} />}
-      </>,
+        </>
+      },
     },
   }
 
@@ -405,15 +433,15 @@ export function CreateStartCards({ video, clips = false, onVideo, onCanvas, onCl
 }
 
 /**
- * 点了一个画布项目：名字、什么时候改过、「打开画布」。封面和「这个项目里做出来的」等画布的东西进了作品库（融合第 5 步）再加。
- * 项目名是画布那边写的，这里只当一行字显示。
+ * 点了一个画布项目：封面、名字、什么时候改过、「打开画布」，下面是这个项目里做出来的（children，融合第 5 步）。
+ * 项目名是画布那边写的，这里只当一行字显示；封面只拿到一个作品编号，图由主进程按当前账号认过才给。
  */
-export function CanvasProjectPane({ project, opening, onOpen, now }: { project: CanvasProjectListEntry, opening: boolean, onOpen: () => void, now?: number }) {
+export function CanvasProjectPane({ project, opening, onOpen, now, children }: { project: CanvasProjectListEntry, opening: boolean, onOpen: () => void, now?: number, children?: ReactNode }) {
   return <div className="chat-conversation create-pane" data-testid="create-canvas-pane">
     <header className="chat-bar"><strong title={project.name}>{project.name}</strong></header>
     <div className="create-canvas">
       <div className="create-canvas-card">
-        <span className="create-canvas-icon" aria-hidden="true"><InfinityIcon size={30} /></span>
+        <CanvasProjectCover key={project.cover?.assetId ?? ''} cover={project.cover} />
         <div className="create-canvas-copy">
           <strong data-testid="create-canvas-name">{project.name}</strong>
           <span data-testid="create-canvas-time">{project.updatedAt > 0 ? `画布项目 · ${createTimeText(project.updatedAt, now)} 修改` : '画布项目'}</span>
@@ -421,9 +449,18 @@ export function CanvasProjectPane({ project, opening, onOpen, now }: { project: 
           <small>画布在独立窗口中打开，运行期间可返回此处继续其他操作。</small>
         </div>
       </div>
+      {children}
       <p className="create-quiet">重命名、复制、归档和删除请在画布窗口的「项目中心」中操作。</p>
     </div>
   </div>
+}
+
+/** 项目卡左边那一块：有封面就是封面的缩略图，没有、读不出来就是画布的图标。 */
+function CanvasProjectCover({ cover }: { cover: CanvasProjectListEntry['cover'] }) {
+  const [failed, setFailed] = useState(false)
+  return <span className="create-canvas-icon" aria-hidden="true" data-cover={cover && !failed ? 'true' : undefined} data-testid="create-canvas-cover">
+    {cover && !failed ? <img src={assetThumbnailUrl(cover.assetId, cover.mediaType)} alt="" decoding="async" onError={() => setFailed(true)} /> : <InfinityIcon size={30} />}
+  </span>
 }
 
 /**

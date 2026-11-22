@@ -144,6 +144,13 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     if (!options.videoAssets) throw new Error('视频作品库未就绪')
     return options.videoAssets
   }
+  // 这段视频在哪个库里（融合第 5 步）：视频里出的片段、拼的成片都在 AI 作品文件夹；从作品库拿来的片段可能是
+  // 画布项目文件夹里的。只有读（读片段、打开、另存）才这样找，存成片还是只存进 AI 作品文件夹。
+  // 两处都没有时还是问 AI 作品文件夹，报的还是它原来那句话。
+  const videoStoreOf = async (userId: number, assetId: string) => {
+    const global = videoAssets()
+    return options.accountAssets ? (await options.accountAssets.holderOf(userId, 'video', assetId)).videos : global
+  }
   const audioAssets = () => {
     if (!options.audioAssets) throw new Error('音频作品库未就绪')
     return options.audioAssets
@@ -235,10 +242,13 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
 
   registerTrustedHandler('video:read-clip', async (event, assetId: unknown) => {
     const id = parseAiVideoAssetId(assetId)
-    const store = videoAssets()
+    videoAssets()
     currentUserId()
     // 排到了再认一次账号：排队时换了号，不能把前一个号的片段读给新号的页面。
-    return transferClip(event.sender, async () => (await store.readOwned(currentUserId(), id)).bytes)
+    return transferClip(event.sender, async () => {
+      const userId = currentUserId()
+      return (await (await videoStoreOf(userId, id)).readOwned(userId, id)).bytes
+    })
   })
 
   registerTrustedHandler('video-studio:store-export', async (event, bytes: unknown) => {
@@ -295,7 +305,9 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
   // 交给系统按 .mp4 的默认程序打开（Windows 上经资源管理器转交，不从本进程直接起，system-shell.ts）。
   // 路径由作品库按编号找到，只会是这个账号自己作品目录里的 xingmang-<编号>.mp4。
   registerTrustedHandler('video:open', async (_event, assetId: unknown) => {
-    const filePath = await videoAssets().resolveOwnedFilePath(currentUserId(), parseAiVideoAssetId(assetId))
+    const userId = currentUserId()
+    const id = parseAiVideoAssetId(assetId)
+    const filePath = await (await videoStoreOf(userId, id)).resolveOwnedFilePath(userId, id)
     await externalShell.openPath(filePath)
   })
 
@@ -303,7 +315,7 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     const userId = currentUserId()
     const id = parseAiVideoAssetId(assetId)
     const fileName = parseVideoSaveName(suggestedName)
-    const saved = await videoAssets().saveAs(userId, id, () => {
+    const saved = await (await videoStoreOf(userId, id)).saveAs(userId, id, () => {
       if (currentUserId() !== userId) throw new Error('账号已切换，请重新另存')
     }, fileName)
     return { saved }

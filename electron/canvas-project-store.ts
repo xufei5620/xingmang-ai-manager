@@ -73,6 +73,28 @@ function normalizedProjectName(value: string): string {
   return name
 }
 
+/**
+ * A project name as the main window shows it (融合第 1 步、第 5 步): one line of text, no control characters,
+ * capped. The canvas page wrote the name; saving already refuses control characters and long names
+ * (normalizedProjectName), this is the second look before it leaves the canvas side.
+ */
+export function displayCanvasProjectName(name: string): string {
+  return name.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 128).trim() || '未命名项目'
+}
+
+/**
+ * What the main window's library needs to know about one unarchived project (融合第 5 步): where its media
+ * live and which assets its nodes hold. Main process only, never sent to the canvas page.
+ */
+export interface CanvasProjectLibrarySource {
+  id: string
+  name: string
+  /** ready: its own folder, reachable. missing: its own folder, not reachable now. legacy: no folder, its media sit in the account library. */
+  workspaceStatus: CanvasProjectWorkspaceStatus
+  /** The assets its nodes currently hold as results. */
+  assetIds: string[]
+}
+
 function assertRoomForNewProject(existing: readonly CanvasStoredProjectSummary[]): void {
   if (existing.length >= maximumStoredProjects) throw new Error(`画布项目连同已归档的最多 ${maximumStoredProjects} 个，请先在「已归档」里删掉一些`)
   if (existing.filter((project) => !project.archivedAt).length >= maximumActiveProjects) {
@@ -321,7 +343,8 @@ export class CanvasProjectStore {
     }
   }
 
-  async list(userId: number): Promise<CanvasStoredProjectSummary[]> {
+  /** Every readable project of the account, each turned into what the caller lists; an unreadable one is skipped. */
+  private async readEach<T>(userId: number, project: (stored: StoredCanvasProject) => T): Promise<T[]> {
     const root = this.accountRoot(userId)
     let names: string[]
     try {
@@ -335,11 +358,37 @@ export class CanvasProjectStore {
       .slice(0, maximumStoredProjects)
       .map(async (name) => {
         try {
-          return this.summary(await this.readProject(userId, path.basename(name, '.json')))
+          return { listed: project(await this.readProject(userId, path.basename(name, '.json'))) }
         } catch { return null }
       }))
-    return projects.filter((entry): entry is CanvasStoredProjectSummary => Boolean(entry))
+    return projects.flatMap((entry) => entry ? [entry.listed] : [])
+  }
+
+  async list(userId: number): Promise<CanvasStoredProjectSummary[]> {
+    return (await this.readEach(userId, (stored) => this.summary(stored)))
       .sort((left, right) => right.lastOpenedAt.localeCompare(left.lastOpenedAt) || right.updatedAt.localeCompare(left.updatedAt))
+  }
+
+  /**
+   * The unarchived projects as the main window's library reads them (融合第 5 步), most recently opened
+   * first. Archived projects are left out, as on the project centre's first page and in the main window's list.
+   */
+  async listLibrarySources(userId: number): Promise<CanvasProjectLibrarySource[]> {
+    return (await this.readEach(userId, (stored) => ({
+      archived: Boolean(stored.archivedAt),
+      lastOpenedAt: stored.lastOpenedAt,
+      updatedAt: stored.updatedAt,
+      source: {
+        id: stored.id,
+        name: displayCanvasProjectName(String(stored.workflow.name)),
+        workspaceStatus: workspaceStatus(stored.workspaceDirectory),
+        assetIds: [...workflowAssetProjection(stored.workflow).assetIds],
+      },
+    })))
+      .filter((entry) => !entry.archived)
+      .sort((left, right) => right.lastOpenedAt.localeCompare(left.lastOpenedAt) || right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, maximumActiveProjects)
+      .map((entry) => entry.source)
   }
 
   async create(userId: number, nameInput: string, workspaceInput: string): Promise<{ project: CanvasStoredProjectSummary; content: string }> {

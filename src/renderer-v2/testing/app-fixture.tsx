@@ -405,8 +405,22 @@ if (query.has('legacyVideoDrafts')) {
   if (!localStorage.getItem(videoStudioStorageKey(fixtureVideoScope))) localStorage.setItem(videoStudioStorageKey(fixtureVideoScope), JSON.stringify(serializeVideoStudioProject(fixtureFilms[0].project)))
   if (!localStorage.getItem(videoStudioDraftsStorageKey(fixtureVideoScope))) localStorage.setItem(videoStudioDraftsStorageKey(fixtureVideoScope), JSON.stringify({ version: 1, drafts: [{ id: 'fixture-draft-sea', savedAt: fixtureFilms[1].updatedAt, project: serializeVideoStudioProject(fixtureFilms[1].project) }] }))
 }
+// ?canvasWorks（融合第 5 步）：「双 11 主图」这个画布项目里生成过两张图、一段视频，都在作品库里，项目卡上有封面；
+// 「门店海报」什么都没做过。?canvasWorks=many 再加 30 张图，够翻一页。对话里那张起过名字的图也放在它的节点上（只是用过）。
+const fixtureCanvasProject = { projectId: 'fixture-canvas-poster', projectName: '双 11 主图' }
+const fixtureCanvasCoverId = fixtureLibraryId('canvas-img-banner-')
+if (query.has('canvasWorks')) {
+  fixtureLibrary.push(
+    { assetId: fixtureCanvasCoverId, mediaType: 'image', createdAt: fixtureLibraryTime(15), mimeType: 'image/png', fileName: 'xingmang-canvas-banner.png', prompt: '主图横幅，红金配色，留出标题位置', canvas: fixtureCanvasProject },
+    { assetId: fixtureLibraryId('canvas-vid-spin-'), mediaType: 'video', createdAt: fixtureLibraryTime(60), fileName: 'xingmang-canvas-spin.mp4', prompt: '产品缓慢旋转展示', canvas: fixtureCanvasProject },
+    { assetId: fixtureLibraryId('canvas-img-detail-'), mediaType: 'image', createdAt: fixtureLibraryTime(27 * 60), mimeType: 'image/png', fileName: 'xingmang-canvas-detail.png', canvas: fixtureCanvasProject },
+    ...(query.get('canvasWorks') === 'many' ? Array.from({ length: 30 }, (_, index): AiLibraryEntry => ({ assetId: fixtureLibraryId(`canvas-img-more-${index}-`), mediaType: 'image', createdAt: fixtureLibraryTime(6 * 24 * 60 + index), mimeType: 'image/png', fileName: `xingmang-canvas-more-${index}.png`, canvas: fixtureCanvasProject })) : []),
+  )
+  const held = fixtureLibrary.find((entry) => entry.assetId === fixtureLibraryId('libimg-poster-'))
+  if (held) held.canvas = { ...fixtureCanvasProject, used: true }
+}
 let canvasProjects: CanvasProjectListEntry[] = query.has('canvasProjects')
-  ? [{ id: 'fixture-canvas-poster', name: '双 11 主图', updatedAt: Date.now() - 2 * 3_600_000 }, { id: 'fixture-canvas-old', name: '门店海报', updatedAt: Date.now() - 9 * 86_400_000 }]
+  ? [{ id: 'fixture-canvas-poster', name: '双 11 主图', updatedAt: Date.now() - 2 * 3_600_000, ...(query.has('canvasWorks') ? { cover: { assetId: fixtureCanvasCoverId, mediaType: 'image' as const } } : {}) }, { id: 'fixture-canvas-old', name: '门店海报', updatedAt: Date.now() - 9 * 86_400_000 }]
   : []
 const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource', 'saveSettings'])
 window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdAccountKeys() { heldAccountKeys = heldAccountKeys ?? [] }, releaseAccountKeys() { const held = heldAccountKeys ?? []; heldAccountKeys = null; for (const resolve of held) resolve() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, addSpend(quota) { extraSpend += quota }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, holdConfiguredModels(provider) { heldConfiguredModels.set(provider, heldConfiguredModels.get(provider) ?? []) }, releaseConfiguredModels(provider) { const held = heldConfiguredModels.get(provider) ?? []; heldConfiguredModels.delete(provider); for (const resolve of held) resolve() }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, signOutAccountPageSessionReads() { accountPageSessionSignedOut = true }, accountPageSessionSignedOutServed() { return accountPageSessionSignedOutServed }, dropSessionSilently() { session = { authenticated: false, account: null } }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, holdNextNodeInstall() { nextNodeInstallHeld = true }, releaseNodeInstall() { releaseNodeInstall() }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) }, setRelayRoute(line) { autoRelayLine = line; reportRoutedConfig() }, setToolsRunning(running) { fixtureToolsRunning = running }, holdNextImport() { nextImportHeld = true }, releaseImport() { releaseImport() }, holdNextChatHistoryRead() { nextChatHistoryReadHeld = true }, releaseChatHistoryRead() { releaseChatHistoryRead() }, chatHistory() { const index = [...chatHistoryFiles.values()][0]?.index ?? ''; return { ids: index ? (JSON.parse(index) as { conversations: Array<{ id: string }> }).conversations.map((entry) => entry.id) : [], index } }, releaseChatImage() { releaseChatImage() }, releaseChatVideo() { releaseChatVideo() }, setCanvasProjects(projects) { canvasProjects = projects }, videoFilms(scope = fixtureVideoScope) { const stored = videoProjectFiles.get(scope); return { index: stored?.index ?? null, ids: [...(stored?.projects.keys() ?? [])] } } }
@@ -490,6 +504,16 @@ const methods = {
   setClaudeCommitAttribution: async (hidden: boolean) => {
     settings = { ...settings, claudeHidesCommitAttribution: hidden }
     return { enabled: hidden, applied: 'written' as const }
+  },
+  // ?standingMissed=grok：那一家的说明文件里星芒那一段的标记被改坏了，这次没写；?standingMissed=all 三家都没写上。
+  saveStandingInstructions: async (text: string) => {
+    const missed = query.get('standingMissed')
+    const instructions = text.replace(/\r\n?/g, '\n').trim()
+    const tools = (['claude', 'codex', 'grok'] as const).map((provider) => missed === 'all' || missed === provider
+      ? { provider, outcome: 'skipped' as const, reason: '文件中由星芒维护的段落标记已被修改，为避免改动您自行编写的内容，本次未写入。' }
+      : { provider, outcome: instructions ? 'written' as const : 'removed' as const })
+    if (missed !== 'all') settings = { ...settings, standingInstructions: instructions || undefined }
+    return { text: settings.standingInstructions ?? '', tools }
   },
   getPlatformCapabilities: async () => capabilities,
   // 「插件」页（0.2.25）一进来就三家一起读，装了 Codex 就另读它的登录状态和市场；默认什么都没有，要内容的用例自己换。
@@ -1067,23 +1091,25 @@ const methods = {
   refreshOfficialChatGptUsage: async () => ({ planLabel: 'Plus', renewsAt: null, resetCredits: null, windows: [{ id: 'weekly', label: '周限额', remainingPercent: 72, resetAt: null }], checkedAt: new Date().toISOString() }),
   listAiChatGroups: async () => [{ name: 'fixture-group', description: '本地测试分组', ratio: 1 }],
   openCanvasWindow: async () => undefined,
-  // 照主进程那份的规矩列：垃圾桶和音频不在这里；film 只认点名的那几段视频；搜索对名字、那句描述，或者页面先搜到的编号。
+  // 照主进程那份的规矩列：垃圾桶和音频不在这里；film 只认点名的那几段视频；搜索对名字、那句描述、画布项目的名字，或者页面先搜到的编号。
+  // 带了 canvasProjectId 就只列那个画布项目里生成的（只是放在它节点上的不算），各类的数也只数这一份。
   listAiLibrary: async (input) => {
     const films = new Set(input.filmAssetIds ?? [])
     const matched = new Set(input.matchedAssetIds ?? [])
     const search = (input.search ?? '').trim().toLocaleLowerCase('zh-CN')
     const kind = input.kind ?? 'all'
     const isFilm = (entry: AiLibraryEntry) => entry.mediaType === 'video' && films.has(entry.assetId)
-    const listed = fixtureLibrary
+    const scope = input.canvasProjectId ? fixtureLibrary.filter((entry) => entry.canvas?.projectId === input.canvasProjectId && !entry.canvas?.used) : fixtureLibrary
+    const listed = scope
       .filter((entry) => kind === 'all' || (kind === 'film' ? isFilm(entry) : kind === 'clip' ? entry.mediaType === 'video' && !isFilm(entry) : entry.mediaType === kind))
-      .filter((entry) => !search || matched.has(entry.assetId) || [entry.name ?? '', entry.prompt ?? ''].some((value) => value.toLocaleLowerCase('zh-CN').includes(search)))
+      .filter((entry) => !search || matched.has(entry.assetId) || [entry.name ?? '', entry.prompt ?? '', entry.canvas?.projectName ?? ''].some((value) => value.toLocaleLowerCase('zh-CN').includes(search)))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.assetId.localeCompare(left.assetId))
     const offset = input.offset ?? 0
     const limit = input.limit ?? 24
     const items = listed.slice(offset, offset + limit)
     return {
       items: structuredClone(items), offset, limit, total: listed.length, hasMore: offset + items.length < listed.length,
-      counts: { image: fixtureLibrary.filter((entry) => entry.mediaType === 'image').length, video: fixtureLibrary.filter((entry) => entry.mediaType === 'video').length, film: fixtureLibrary.filter(isFilm).length },
+      counts: { image: scope.filter((entry) => entry.mediaType === 'image').length, video: scope.filter((entry) => entry.mediaType === 'video').length, film: scope.filter(isFilm).length },
     }
   },
   saveAiChatAsset: async () => ({ saved: true }),

@@ -2739,6 +2739,7 @@ if (!hasSingleInstanceLock) {
       audioAssets,
       mediaAssets,
       worksTransfer,
+      accountAssets: canvasProjectAssets,
       chatHistory: chatHistoryStore,
       videoStudioProjects: videoStudioProjectStore,
       chatHistoryFlush,
