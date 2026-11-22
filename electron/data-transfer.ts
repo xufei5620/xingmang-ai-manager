@@ -1,18 +1,21 @@
 import path from 'node:path'
 import type { AppSettings, AppSettingsUpdate } from './app-settings'
-import type { ChatConversationExportInput, DataTransferExportInput, DataTransferImportPreview } from './ipc-contract'
+import type { ChatConversationExportInput, DataTransferExportInput, DataTransferImportPreview, DataTransferWorksSummary, VideoStudioProjectFile } from './ipc-contract'
 import { MAX_CHAT_HISTORY_CONVERSATIONS } from './ai-chat-history-store'
 import { AI_CHAT_PHRASE_LIMITS } from './ai-chat-protocol'
+import { MAX_VIDEO_STUDIO_PROJECT_FILE_BYTES, MAX_VIDEO_STUDIO_PROJECTS, videoStudioProjectKeyPattern } from './video-studio-project-store'
+import { MAX_TRANSFERRED_WORKS, WORKS_FOLDER_NAME } from './data-transfer-works'
 import { withoutByteOrderMark } from './config-files-context'
 import { isRecord } from './input-guards'
 
-// 「迁移到新电脑」的文件：当前账号的聊天对话 + 几项跟着人走的软件设置。刻意不放任何
+// 「迁移到新电脑」的文件：当前账号的聊天对话、「创作」里的视频（分镜）+ 几项跟着人走的软件设置。刻意不放任何
 // 能花钱或能登录的东西（Key、密码、登录状态、保存的账号），也不放命令行工具的配置、
 // 这台电脑自己的东西（工作文件夹、窗口位置、显卡加速、Codex 调试端口的同意）。新电脑
-// 上登录后，工具照常重新配好。
+// 上登录后，工具照常重新配好。作品库里的作品太大，不放进这份文件：选了带作品时放在旁边的「作品」文件夹里，
+// 这里只记一共多少（data-transfer-works.ts）。
 export const DATA_TRANSFER_FORMAT = 'xingmang-data-transfer'
 export const DATA_TRANSFER_VERSION = 1
-// 图片不随文件走，剩下的都是文字；200 个对话碰到这个上限已经远超正常使用。
+// 图片、视频不随文件走，剩下的都是文字；200 个对话、200 条视频碰到这个上限已经远超正常使用。
 export const MAX_DATA_TRANSFER_BYTES = 64 * 1024 * 1024
 export const MAX_CONVERSATION_TEXT_BYTES = 16 * 1024 * 1024
 const MAX_TITLE_LENGTH = 200
@@ -131,9 +134,48 @@ function parsePhrases(value: unknown, message: string): string[] {
   })
 }
 
+// 「创作」里的视频，一条一个文件（video-studio-project-store.ts）：内容主进程不看，由渲染层自己认；这里只卡
+// 编号、大小和条数，跟那边存的时候一样。没有这一项的旧文件、旧请求当作没有视频。
+function parseVideoProjects(value: unknown, message: string): VideoStudioProjectFile[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > MAX_VIDEO_STUDIO_PROJECTS) throw new Error(message)
+  const keys = new Set<string>()
+  return value.map((entry) => {
+    if (!isRecord(entry) || typeof entry.key !== 'string' || !videoStudioProjectKeyPattern.test(entry.key) || keys.has(entry.key)
+      || typeof entry.content !== 'string' || Buffer.byteLength(entry.content, 'utf8') > MAX_VIDEO_STUDIO_PROJECT_FILE_BYTES) {
+      throw new Error(message)
+    }
+    keys.add(entry.key)
+    return { key: entry.key, content: entry.content }
+  })
+}
+
+// 文件里记的作品一共多少：只拿来在导入前报数，真正导哪些看「作品」文件夹里的清单。文件夹名字写死，
+// 不照文件里写的去找（文件不能把导入指到这台电脑的别处）。
+function parseWorksSummary(value: unknown): DataTransferWorksSummary | undefined {
+  if (value === undefined) return undefined
+  const count = (field: unknown, maximum: number): number => {
+    if (typeof field !== 'number' || !Number.isSafeInteger(field) || field < 0 || field > maximum) throw new Error(dataTransferInvalidMessage)
+    return field
+  }
+  if (!isRecord(value) || value.folder !== WORKS_FOLDER_NAME) throw new Error(dataTransferInvalidMessage)
+  return {
+    images: count(value.images, MAX_TRANSFERRED_WORKS),
+    videos: count(value.videos, MAX_TRANSFERRED_WORKS),
+    audios: count(value.audios, MAX_TRANSFERRED_WORKS),
+    bytes: count(value.bytes, Number.MAX_SAFE_INTEGER),
+  }
+}
+
 export function parseDataTransferExportInput(value: unknown): DataTransferExportInput {
   if (!isRecord(value)) throw new Error('导出请求格式无效')
-  return { conversations: parseConversations(value.conversations, '导出的聊天对话格式无效'), phrases: parsePhrases(value.phrases, '导出的常用的话格式无效') }
+  if (value.includeWorks !== undefined && typeof value.includeWorks !== 'boolean') throw new Error('导出请求格式无效')
+  return {
+    conversations: parseConversations(value.conversations, '导出的聊天对话格式无效'),
+    phrases: parsePhrases(value.phrases, '导出的常用的话格式无效'),
+    videoProjects: parseVideoProjects(value.videoProjects, '导出的视频格式无效'),
+    ...(value.includeWorks ? { includeWorks: true } : {}),
+  }
 }
 
 // 「隐私数据」里的「匿名使用统计」不在 settings.json，存在系统界面设置那份文件里（privacy.anonymousUsage，
@@ -145,9 +187,16 @@ const anonymousUsageUntouched = true
 
 /**
  * anonymousUsage 是导出那台电脑上「匿名使用统计」存着的样子（没碰过 = 开）；系统界面设置读不出来时给 null，
- * 文件里就不写这一项：不知道客户选的是什么，不替客户定，新电脑那边照旧不动。
+ * 文件里就不写这一项：不知道客户选的是什么，不替客户定，新电脑那边照旧不动。works 是旁边「作品」文件夹里
+ * 一共多少，不带作品时不写。旧版本的星芒读这份文件时不认识的两项不管，对话和设置照样导。
  */
-export function buildDataTransferFile(settings: AppSettings, input: DataTransferExportInput, exportedAt: Date, anonymousUsage?: boolean | null): string {
+export function buildDataTransferFile(
+  settings: AppSettings,
+  input: DataTransferExportInput,
+  exportedAt: Date,
+  anonymousUsage?: boolean | null,
+  works?: DataTransferWorksSummary,
+): string {
   const content = JSON.stringify({
     format: DATA_TRANSFER_FORMAT,
     version: DATA_TRANSFER_VERSION,
@@ -155,6 +204,8 @@ export function buildDataTransferFile(settings: AppSettings, input: DataTransfer
     settings: { ...buildPortableSettings(settings), ...(typeof anonymousUsage === 'boolean' ? { anonymousUsage } : {}) },
     conversations: input.conversations,
     ...(input.phrases?.length ? { phrases: input.phrases } : {}),
+    ...(input.videoProjects?.length ? { videoProjects: input.videoProjects } : {}),
+    ...(works ? { works: { folder: WORKS_FOLDER_NAME, ...works } } : {}),
   })
   if (Buffer.byteLength(content, 'utf8') > MAX_DATA_TRANSFER_BYTES) throw new Error(dataTransferTooLargeMessage)
   return content
@@ -180,6 +231,9 @@ export function parseDataTransferFile(raw: string): {
   anonymousUsage?: boolean
   conversations: Record<string, unknown>[]
   phrases: string[]
+  videoProjects: VideoStudioProjectFile[]
+  /** 导出时带了作品才有。 */
+  works?: DataTransferWorksSummary
 } {
   let parsed: unknown
   // 老记事本「另存为 UTF-8」会在开头加一个看不见的字节顺序标记，客户打开看过又点了保存，整份就
@@ -199,11 +253,14 @@ export function parseDataTransferFile(raw: string): {
   }
   const anonymousUsage = parsed.settings.anonymousUsage
   if (anonymousUsage !== undefined && typeof anonymousUsage !== 'boolean') throw new Error(dataTransferInvalidMessage)
+  const works = parseWorksSummary(parsed.works)
   return {
     settings,
     ...(anonymousUsage === undefined ? {} : { anonymousUsage }),
     conversations: parseConversations(parsed.conversations, dataTransferInvalidMessage),
     phrases: parsePhrases(parsed.phrases, dataTransferInvalidMessage),
+    videoProjects: parseVideoProjects(parsed.videoProjects, dataTransferInvalidMessage),
+    ...(works ? { works } : {}),
   }
 }
 
@@ -247,9 +304,18 @@ export function planPortableSettingsImport(
   return { settings, conflictingSettings, conflictLabels: [...conflictLabels, anonymousUsageLabel], conflictingAnonymousUsage: usage }
 }
 
-export function dataTransferFileName(now: Date): string {
+function dateStamp(now: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0')
-  return `星芒聊天记录与设置-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.json`
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
+export function dataTransferFileName(now: Date): string {
+  return `星芒聊天记录与设置-${dateStamp(now)}.json`
+}
+
+/** 带作品导出时新建的那个文件夹（「搬作品改」批的名字）。 */
+export function dataTransferFolderName(now: Date): string {
+  return `星芒数据导出-${dateStamp(now)}`
 }
 
 export function parseChatConversationExport(value: unknown): ChatConversationExportInput {

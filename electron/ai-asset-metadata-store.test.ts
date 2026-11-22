@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AiAssetMetadataStore, aiAssetMetadataShardOf, mergeAiAssetMetadataItems } from './ai-asset-metadata-store'
+import { AiAssetMetadataStore, aiAssetMetadataShardOf, mergeAiAssetMetadataItems, parseTransferredAiAssetMetadataItems } from './ai-asset-metadata-store'
 
 const roots: string[] = []
 const assetId = 'a'.repeat(43)
@@ -549,6 +549,39 @@ describe('AiAssetMetadataStore', () => {
     const { store } = fixture()
     await expect(store.mergeLegacy(7, JSON.stringify({ version: 4, userId: 8, items: [] }))).rejects.toThrow()
     await expect(store.mergeLegacy(7, '{')).rejects.toThrow()
+  })
+})
+
+describe('AiAssetMetadataStore.importMissing', () => {
+  it('adds records this account does not have and leaves every local record as it is', async () => {
+    const { store } = fixture()
+    const other = idFor('imported-work')
+    await store.rename(7, assetId, '本机的名字')
+    await expect(store.importMissing(7, [
+      { assetId, displayName: '另一台电脑的名字', favorite: true, updatedAt: '2026-11-01T00:00:00.000Z' },
+      { assetId: other, displayName: '海报', tags: ['产品'], prompt: '猫', source: 'generated', updatedAt: '2026-11-01T00:00:00.000Z' },
+    ])).resolves.toBe(1)
+    const stored = await store.getMany(7, [assetId, other])
+    expect(stored[assetId]).toMatchObject({ displayName: '本机的名字' })
+    expect(stored[assetId]?.favorite).toBeUndefined()
+    expect(stored[other]).toMatchObject({ displayName: '海报', tags: ['产品'], prompt: '猫', source: 'generated' })
+  })
+
+  it('adds nothing on a second import of the same records', async () => {
+    const { store } = fixture()
+    const record = { assetId, displayName: '海报', updatedAt: '2026-11-01T00:00:00.000Z' }
+    await expect(store.importMissing(7, [record])).resolves.toBe(1)
+    await expect(store.importMissing(7, [record])).resolves.toBe(0)
+  })
+})
+
+describe('parseTransferredAiAssetMetadataItems', () => {
+  it('drops the recycle-bin mark and refuses records the store would not accept', () => {
+    expect(parseTransferredAiAssetMetadataItems([
+      { assetId, displayName: '海报', deletedAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-01T00:00:00.000Z' },
+    ])).toEqual([{ assetId, displayName: '海报', updatedAt: '2026-11-01T00:00:00.000Z' }])
+    expect(() => parseTransferredAiAssetMetadataItems({})).toThrow()
+    expect(() => parseTransferredAiAssetMetadataItems([{ assetId: '../escape', updatedAt: '2026-11-01T00:00:00.000Z' }])).toThrow()
   })
 })
 

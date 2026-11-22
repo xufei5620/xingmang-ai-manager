@@ -2270,6 +2270,7 @@ if (!hasSingleInstanceLock) {
     const videoAssets = createRealmServiceDispatch(() => currentBusiness().videoAssets)
     const audioAssets = createRealmServiceDispatch(() => currentBusiness().audioAssets)
     const mediaAssets = createRealmServiceDispatch(() => currentBusiness().mediaAssets)
+    const worksTransfer = createRealmServiceDispatch(() => currentBusiness().worksTransfer)
     const canvasPromptPresets = createRealmServiceDispatch(() => currentBusiness().canvasPromptPresets)
     const canvasProjects = createRealmServiceDispatch(() => currentBusiness().canvasProjects)
     const canvasProjectAssets = createRealmServiceDispatch(() => currentBusiness().canvasProjectAssets)
@@ -2738,6 +2739,7 @@ if (!hasSingleInstanceLock) {
       videoAssets,
       audioAssets,
       mediaAssets,
+      worksTransfer,
       accountAssets: canvasProjectAssets,
       chatHistory: chatHistoryStore,
       videoStudioProjects: videoStudioProjectStore,

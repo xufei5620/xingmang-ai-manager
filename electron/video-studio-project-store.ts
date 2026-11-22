@@ -21,7 +21,8 @@ export const MAX_VIDEO_STUDIO_PROJECT_SCOPES = 64
 const MAX_SCOPE_LENGTH = 256
 // 200 条视频 + 索引，外加原子写入残留的临时文件，留足余量。
 const MAX_DIRECTORY_ENTRIES = 1024
-const KEY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+export const videoStudioProjectKeyPattern = /^[A-Za-z0-9_-]{1,64}$/
+const KEY_PATTERN = videoStudioProjectKeyPattern
 const PROJECT_FILE = /^p-([A-Za-z0-9_-]{1,64})\.json$/
 const INDEX_FILE = 'index.json'
 const label = '视频草稿'
