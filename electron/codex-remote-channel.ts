@@ -258,6 +258,11 @@ export interface RemoteChannelAdapter {
   start(handlers: RemoteChannelHandlers): Promise<void>
   /** 停掉连接和所有定时器；可以重复调用。 */
   stop(): Promise<void>
+  /**
+   * 关遥控时先调（M14）：这一刻之前交给 send 的、还没发出去或者正等着重发的普通消息不再发，失败交回；
+   * 这之后交给它的照常发（道别那句）。已经发出去、还在等平台回应的那一次收不回来。没有自动重发的渠道可以不实现。
+   */
+  cancelPendingSends?(): void
   /** 发一条消息给这个人；replyContext 是这个人最近一条入站消息带来的那个。失败就抛，底座记日志。 */
   send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string): Promise<void>
   /**

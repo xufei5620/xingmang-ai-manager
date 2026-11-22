@@ -671,6 +671,8 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
   private reconnectTimer: NodeJS.Timeout | null = null
   private handshakeTimer: NodeJS.Timeout | null = null
   private abort: AbortController | null = null
+  /** cancelPendingSends 一次加一（M14）：发消息时记下，等完重发回来变了，就是关遥控时让停的，不再发。 */
+  private sendEpoch = 0
   private readonly fragments = new FeishuFragmentCache()
   private readonly seenEvents = new Set<string>()
   private readonly eventContext: FeishuEventContext = { p2pChats: new Map() }
@@ -728,6 +730,10 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     this.token = null
     this.tokenRequest = null
     if (this.lastStatus.state !== 'stopped') this.setStatus({ state: 'stopped' })
+  }
+
+  cancelPendingSends(): void {
+    this.sendEpoch += 1
   }
 
   async send(peer: RemotePeer, message: RemoteOutbound): Promise<void> {
@@ -842,9 +848,15 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     // 一条消息不管重发几次都带同一个 uuid：第一次其实已经发到了、只是回应在路上断了时，飞书一小时内
     // 只认一次，手机上不会出现两条一样的（尤其是审批卡，两张卡同一个编号会让人以为要点两次）。
     const body = { ...message, uuid: randomUUID() }
+    const epoch = this.sendEpoch
     let tokenRefreshed = false
     let retries = 0
     for (;;) {
+      // 电脑上关了遥控（M14）：等着重发、换完令牌要再发的这一条不再发。不然手机上先收到「已关闭」，过几秒又冒出一条。
+      if (epoch !== this.sendEpoch) {
+        this.deps.log('info', 'feishu.send-cancelled', { retry: retries })
+        throw new Error('飞书遥控已关闭，这条消息不再发送')
+      }
       let response: RemoteJsonResponse
       try {
         const token = await this.tenantToken()

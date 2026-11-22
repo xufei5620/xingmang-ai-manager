@@ -123,6 +123,8 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
   let loop: Promise<void> | null = null
   let credential: WeixinCredential | null = null
   let handlers: RemoteChannelHandlers | null = null
+  // 关遥控时换一个（M14）：等着重发的那一下当场醒来，醒来发现换过了就不再发。
+  let pendingSends = new AbortController()
   let lastStatus: RemoteChannelStatus | null = null
   const recentIds: string[] = []
   const recentIdSet = new Set<string>()
@@ -282,7 +284,13 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
       return { ok: false, reason: result.reason }
     },
 
+    cancelPendingSends() {
+      pendingSends.abort()
+      pendingSends = new AbortController()
+    },
+
     async send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string) {
+      const cancelled = pendingSends.signal
       const active = credential ?? await loadCredential()
       if (!active) throw new Error('尚未使用微信扫码登录')
       if (peer.channel !== 'weixin') throw new Error('该联系人不属于微信渠道')
@@ -297,7 +305,12 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
           throw error
         }
         if (!isTransientSendFailure(error)) throw error
-        await sleep(sendRetryDelayMs, new AbortController().signal)
+        await sleep(sendRetryDelayMs, cancelled)
+        // 电脑上关了遥控（M14）：手机已经收到「已关闭」，这条不再补发。
+        if (cancelled.aborted) {
+          dependencies.log('info', 'weixin-send-cancelled')
+          throw error
+        }
         await sendOnce(active, peer, message.text, contextToken)
       }
     },
