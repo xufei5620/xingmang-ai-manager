@@ -74,6 +74,7 @@
 - `codex-sessions.ts` — Codex 会话的权威源是 `CODEX_HOME/state_5.sqlite` 的 `threads` 表（只读打开）；认不出的 schema 写操作一律关掉，归档、删除带操作日志与备份
 - `codex-config-toml.ts` — 保存配置以外单改 Codex `config.toml`（和存着的那份星芒配置）的统一入口 `mutateCodexConfigToml`：从读到写整段同步，本进程里谁也插不进来；改前留 `.bak`；能只动几行就只动几行，解析回去对不上才整份重写。扩展页启停插件和技能（卸载、导入技能时清掉它的启停记录，#1093 第 9 条）、星芒画图技能开关、桌面端语言在用（#1068）
 - `codex-extensions.ts` — Codex 专用的 MCP / 插件 / 市场 / Skill 管理（经 Codex 自己的命令行）；DTO 只暴露 env **变量名**不暴露值（I3）
+- `skill-import-snapshot.ts` — 技能导入（Codex、Claude Code、Grok 三家和「从压缩包导入」共用）只复制当初核过的那一份：先记下整棵树，复制照记下的一项项拿、一项项对，落在受管目录的临时文件夹里，核完才改名成技能文件夹；对不上就整次停下，只删临时文件夹，来源只读（审查总表 O17）
 - `codex-plugin-catalog.ts` — 替 Codex 下官方插件目录快照（`$CODEX_HOME/.tmp/plugins`），国内它自己同步不下来；只在快照不存在时写，从不覆盖 Codex 自己的完整快照
 - `codex-plugin-catalog-bucket.ts` — 插件目录先从星芒腾讯云存储桶下（`scripts/sync-codex-plugins-cos.cjs` 定时同步），读不到、对不上、太慢就换回 GitHub
 - `codex-responses-probe.ts` — 检查页的 Codex 协议检查：用当前配置向中转发两次 Responses 请求，确认函数调用真的走得通；要花额度，所以先要用户勾选确认，同时点多次共用同一次，账号或配置中途变了就作废

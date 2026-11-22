@@ -24,6 +24,16 @@ import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
 import { renameWithTransientRetrySync } from './safe-local-data'
 import {
+  assertSkillImportStaging,
+  copySkillSnapshot,
+  createSkillImportStaging,
+  discardSkillImportStaging,
+  snapshotSkillTree,
+  type SkillImportStaging,
+  type SkillTreeLimits,
+  type SkillTreeSnapshot,
+} from './skill-import-snapshot'
+import {
   assertTrustedElevatedCliCommand,
   type WindowsCliExecutionMode,
 } from './windows-elevation'
@@ -988,53 +998,24 @@ function validateSkillTree(sourceDirectory: string): void {
   }
 }
 
-// validateSkillTree only inspects paths; each file is re-checked on its open
-// handle so a file swapped for a hard link or symlink after validation is
-// still refused, and writes use exclusive create so nothing is followed.
-function copySkillTree(sourceDirectory: string, targetDirectory: string): void {
-  fs.mkdirSync(targetDirectory)
-  const pending = [{ source: sourceDirectory, target: targetDirectory }]
-  let bytes = 0
-  while (pending.length) {
-    const { source, target } = pending.pop()!
-    const children = readDirectoryEntriesSync(source, MAX_SKILL_DISCOVERY_ENTRIES, 'Skill 导入目录')
-    for (const child of children) {
-      const childSource = path.join(source, child.name)
-      const childTarget = path.join(target, child.name)
-      const stats = fs.lstatSync(childSource)
-      if (stats.isDirectory()) {
-        fs.mkdirSync(childTarget)
-        pending.push({ source: childSource, target: childTarget })
-        continue
-      }
-      if (!stats.isFile()) throw new Error('Skill 导入只允许普通文件和目录')
-      const descriptor = fs.openSync(childSource, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
-      try {
-        const opened = fs.fstatSync(descriptor)
-        if (!opened.isFile() || opened.nlink !== 1) throw new Error('Skill 导入不允许包含硬链接文件')
-        if (opened.dev !== stats.dev || opened.ino !== stats.ino) throw new Error('Skill 导入文件在复制期间发生变化')
-        bytes += opened.size
-        if (bytes > MAX_SKILL_BYTES) throw new Error('Skill 导入内容超过安全限制')
-        const content = Buffer.alloc(opened.size)
-        let offset = 0
-        while (offset < content.length) {
-          const read = fs.readSync(descriptor, content, offset, content.length - offset, offset)
-          if (read === 0) throw new Error('Skill 导入文件在复制期间发生变化')
-          offset += read
-        }
-        fs.writeFileSync(childTarget, content, { flag: 'wx' })
-      } finally {
-        fs.closeSync(descriptor)
-      }
-    }
-  }
+const skillImportLimits: SkillTreeLimits = {
+  files: MAX_SKILL_FILES,
+  bytes: MAX_SKILL_BYTES,
+  entries: MAX_SKILL_DISCOVERY_ENTRIES,
+  depth: MAX_SKILL_IMPORT_DEPTH,
+}
+
+export interface SkillImportSource {
+  sourceDirectory: string
+  /** 核过的那一份；后面只照它复制（skill-import-snapshot.ts，O17）。 */
+  snapshot: SkillTreeSnapshot
 }
 
 /**
  * 导入技能的来源：一个技能文件夹，或者它根部的 SKILL.md。Claude Code、Grok CLI 的技能导入
- * （provider-extensions.ts）走的也是这三步，跟 Codex 同一套检查（I8）。
+ * （provider-extensions.ts）走的也是这几步，跟 Codex 同一套检查（I8）。
  */
-export function resolveSkillImportSource(sourcePath: string): string {
+export function resolveSkillImportSource(sourcePath: string): SkillImportSource {
   if (!path.isAbsolute(sourcePath)) throw new Error('Skill 导入路径必须是绝对路径')
   let sourceDirectory = path.resolve(sourcePath)
   assertNoSymlinkComponents(sourceDirectory, 'Skill 导入路径')
@@ -1046,8 +1027,7 @@ export function resolveSkillImportSource(sourcePath: string): string {
   } else if (!sourceStats.isDirectory()) {
     throw new Error('Skill 导入路径必须是目录或 SKILL.md')
   }
-  validateSkillTree(sourceDirectory)
-  return sourceDirectory
+  return { sourceDirectory, snapshot: snapshotSkillTree(sourceDirectory, skillImportLimits) }
 }
 
 function renamedSkillDirectorySlug(value: string): string {
@@ -1076,30 +1056,38 @@ export function buildRenamedSkillDirectoryName(folderName: string, declaredName:
   return `skill-${createHash('sha256').update(folderName.normalize('NFC')).digest('hex').slice(0, 8)}`
 }
 
-function declaredSkillName(sourceDirectory: string): unknown {
+function declaredSkillName(definitionDirectory: string): unknown {
   try {
     return frontmatter(readBoundedUtf8FileSync(
-      path.join(sourceDirectory, 'SKILL.md'),
+      path.join(definitionDirectory, 'SKILL.md'),
       MAX_SKILL_DEFINITION_BYTES,
       'Skill SKILL.md',
     )).name
   } catch {
-    // 读不出 name 只是少一个起名的依据，退回按文件夹名起；复制时每个文件还会再查一遍。
+    // 读不出 name 只是少一个起名的依据，退回按文件夹名起。
     return undefined
+  }
+}
+
+function pathEntryExists(filePath: string): boolean {
+  try {
+    fs.lstatSync(filePath)
+    return true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
   }
 }
 
 /**
  * 技能要落到的文件夹：技能目录下跟来源同名的一层，名字不合规就换一个（见
- * buildRenamedSkillDirectoryName），已经有了就不导。
+ * buildRenamedSkillDirectoryName），已经有了就不导。起名用的 SKILL.md 读的是临时文件夹里复制好、核过的那份。
  */
-export function skillImportTarget(sourceDirectory: string, root: string): string {
-  assertNoSymlinkComponents(root, 'Skill 受管目录')
-  const folderName = path.basename(sourceDirectory)
+function skillImportTarget(folderName: string, definitionDirectory: string, root: string): { target: string; label: string } {
   let directoryName = folderName
   let label = folderName
   if (!SKILL_DIRECTORY_PATTERN.test(folderName)) {
-    const declaredName = declaredSkillName(sourceDirectory)
+    const declaredName = declaredSkillName(definitionDirectory)
     directoryName = buildRenamedSkillDirectoryName(folderName, declaredName)
     // 列表里技能显示的是 SKILL.md 的 name，没写才显示文件夹名；「已存在」说的跟列表上的对得上。
     label = typeof declaredName === 'string' && declaredName.trim() ? declaredName.trim() : directoryName
@@ -1109,18 +1097,47 @@ export function skillImportTarget(sourceDirectory: string, root: string): string
   if (!isWithin(root, target) || normalizedPathKey(root) === normalizedPathKey(target)) {
     throw new Error('Skill 目标路径越界')
   }
-  if (fs.existsSync(target)) throw new Error(`Skill 已存在：${label}`)
-  return target
+  if (pathEntryExists(target)) throw new Error(`Skill 已存在：${label}`)
+  return { target, label }
 }
 
-export function copySkillImport(sourceDirectory: string, root: string, target: string): void {
-  fs.mkdirSync(root, { recursive: true })
+export interface StagedSkillImport {
+  staging: SkillImportStaging
+  target: string
+  label: string
+}
+
+/**
+ * 导入的前半段：照核过的那份复制进技能目录里的临时文件夹，全部核完，再按复制好的 SKILL.md 定落到哪、
+ * 有没有重名。出错只删这个临时文件夹。
+ */
+export function stageSkillImport(source: SkillImportSource, root: string): StagedSkillImport {
+  assertNoSymlinkComponents(root, 'Skill 受管目录')
+  const staging = createSkillImportStaging(root)
   try {
-    copySkillTree(sourceDirectory, target)
+    copySkillSnapshot(source.snapshot, staging.directory, skillImportLimits)
+    const { target, label } = skillImportTarget(path.basename(source.sourceDirectory), staging.directory, root)
+    return { staging, target, label }
   } catch (error) {
-    if (fs.existsSync(target) && isWithin(root, target)) fs.rmSync(target, { recursive: true, force: true })
+    discardSkillImportStaging(staging)
     throw error
   }
+}
+
+/** 导入的后半段：改名前一刻再看一次重名，临时文件夹整个改名成技能文件夹。没改成就删临时文件夹。 */
+export function commitSkillImport(staged: StagedSkillImport): void {
+  try {
+    if (pathEntryExists(staged.target)) throw new Error(`Skill 已存在：${staged.label}`)
+    renameWithTransientRetrySync(staged.staging.directory, staged.target, () => assertSkillImportStaging(staged.staging))
+  } catch (error) {
+    discardSkillImportStaging(staged.staging)
+    throw error
+  }
+}
+
+/** Claude Code、Grok CLI 的导入：两段连着做。Codex 要在中间清启停记录，自己分开调。 */
+export function copySkillImport(source: SkillImportSource, root: string): void {
+  commitSkillImport(stageSkillImport(source, root))
 }
 
 /** 移除技能是把它所在的文件夹挪进星芒自己的回收站，不直接删。source 是那份 SKILL.md。 */
@@ -1605,17 +1622,22 @@ export class CodexExtensionService {
   }
 
   async importSkill(input: ImportSkillInput): Promise<SkillDto[]> {
-    const sourceDirectory = resolveSkillImportSource(input.sourcePath)
+    const source = resolveSkillImportSource(input.sourcePath)
     const scope = input.scope ?? 'user'
     const root = scope === 'user'
       ? path.join(this.userHome, '.agents', 'skills')
       : this.repositoryRoot && path.join(this.repositoryRoot, '.agents', 'skills')
     if (!root) throw new Error('尚未选择项目文件夹，无法导入仓库范围的技能')
-    const target = skillImportTarget(sourceDirectory, root)
-    // 这里还没有这个技能，config.toml 里它的启停记录只会是以前卸载（旧版本卸载不删）或手删目录
-    // 留下的，不清掉的话新导入的一进来就是「已停用」（#1093 第 9 条）。
-    await this.forgetSkillEnablement(path.join(target, 'SKILL.md'))
-    copySkillImport(sourceDirectory, root, target)
+    const staged = stageSkillImport(source, root)
+    try {
+      // 这里还没有这个技能，config.toml 里它的启停记录只会是以前卸载（旧版本卸载不删）或手删目录
+      // 留下的，不清掉的话新导入的一进来就是「已停用」（#1093 第 9 条）。
+      await this.forgetSkillEnablement(path.join(staged.target, 'SKILL.md'))
+    } catch (error) {
+      discardSkillImportStaging(staged.staging)
+      throw error
+    }
+    commitSkillImport(staged)
     return this.listSkills()
   }
 
