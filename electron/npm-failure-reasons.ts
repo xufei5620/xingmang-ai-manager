@@ -80,7 +80,7 @@ function fromRow(row: NpmReasonRow, raw: string): NpmFailureReason {
 
 /**
  * 按 npm 报的码（或星芒自己写的超时那句）认出原因；认不出返回 null，交给调用方：原话本来是中文的照旧，
- * 其余说「npm 没有装成」。uninstall 时 EPERM、EACCES 说的是工具的文件删不掉，不是安装目录。
+ * 其余说「npm 安装失败」。uninstall 时 EPERM、EACCES 说的是工具的文件删不掉，不是安装目录。
  */
 export function npmFailureReasonFor(raw: string, options: { uninstall?: boolean } = {}): NpmFailureReason | null {
   for (const row of machineRows) {

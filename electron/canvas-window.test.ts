@@ -664,7 +664,7 @@ describe('createCanvasWindowController', () => {
       inspectRendererSandbox: async () => ({ kind: 'disabled', reason: 'no-sandbox' }),
     }))
 
-    await expect(controller.open()).rejects.toThrow('这层保护被关掉了')
+    await expect(controller.open()).rejects.toThrow('该保护已被关闭')
 
     expect(electronMocks.browserWindowOptions).toEqual([])
     expect(runtimeLog.log).toHaveBeenCalledWith('error', 'canvas', 'sandbox.refused', expect.any(String), {
@@ -679,7 +679,7 @@ describe('createCanvasWindowController', () => {
       .mockResolvedValue({ kind: 'sandboxed' })
     const controller = createCanvasWindowController(controllerOptions({ inspectRendererSandbox }))
 
-    await expect(controller.open()).rejects.toThrow('没能确认画布的安全保护')
+    await expect(controller.open()).rejects.toThrow('无法确认画布的安全保护')
     await controller.open()
 
     expect(inspectRendererSandbox).toHaveBeenCalledTimes(2)

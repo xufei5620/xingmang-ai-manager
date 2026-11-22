@@ -4,9 +4,9 @@ import { configLinkRefusalIn, configLinkRefusalMessage } from './config-link-ref
 describe('config link refusal', () => {
   it('says where the link is, that nothing changed and what to swap it for', () => {
     expect(configLinkRefusalMessage('用户文件夹里的 .claude/settings.json', 'file'))
-      .toBe('用户文件夹里的 .claude/settings.json 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。')
+      .toBe('用户文件夹里的 .claude/settings.json 是一个链接。为保障安全，星芒不会写入链接，原有设置未改动。请将其替换为普通文件后重试。')
     expect(configLinkRefusalMessage('用户文件夹里的 .codex', 'folder'))
-      .toBe('用户文件夹里的 .codex 这个文件夹是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件夹后再试。')
+      .toBe('用户文件夹里的 .codex 是一个链接文件夹。为保障安全，星芒不会写入链接，原有设置未改动。请将其替换为普通文件夹后重试。')
   })
 
   it('finds the sentence again inside the wrapping a switch or a save adds', () => {

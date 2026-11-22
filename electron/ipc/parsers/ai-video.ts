@@ -88,7 +88,7 @@ export function parseVideoStudioPlanInput(value: unknown): VideoStudioPlanInput 
 export function parseVideoStudioExportBytes(value: unknown): Buffer {
   const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : value
   if (!(bytes instanceof Uint8Array)) throw new Error('成片内容格式错误')
-  if (bytes.byteLength === 0) throw new Error('成片是空的，请重新导出')
-  if (bytes.byteLength > maximumVideoStudioExportBytes) throw new Error('成片超过 512 MB，存不进作品库；调低清晰度或少放几段再试')
+  if (bytes.byteLength === 0) throw new Error('成片内容为空，请重新导出')
+  if (bytes.byteLength > maximumVideoStudioExportBytes) throw new Error('成片超过 512 MB，无法存入作品库；请调低清晰度或减少片段后重试')
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
 }

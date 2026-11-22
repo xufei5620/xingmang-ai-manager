@@ -42,7 +42,7 @@ describe('parseAccountKeyCreateInput', () => {
     }
   })
 
-  const tooLong = '密钥名称太长了，中文最多 16 个字，英文和数字最多 50 个。'
+  const tooLong = '密钥名称过长，中文最多 16 个字，英文和数字最多 50 个。'
 
   it('applies the xm site name limit unless the key is for the legacy account site', () => {
     const name = 'n'.repeat(51)

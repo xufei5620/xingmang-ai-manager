@@ -595,7 +595,7 @@ describe('renderer-v2 home native install source', () => {
   })
 
   it('offers a known-problem official-installer Claude Code the recommended version', () => {
-    const blockedReason = '这个版本每次提问都会失败，换到推荐版本就好'
+    const blockedReason = '该版本每次提问均会失败，请更换为推荐版本'
     const markup = render({}, { claude: { ...nativeClaude, version: '2.1.276', latestVersion: '2.1.288',
       versionAdvice: { recommendedVersion: '2.1.277', blockedReason, onRecommended: false, pinned: true, rollbackAvailable: true, recommendedIsNewer: true } },
     codex: cliStatus, grok: cliStatus, gemini: cliStatus })
@@ -2005,7 +2005,7 @@ describe('renderer-v2 home runtime card when only the Codex desktop app is in us
   })
 
   describe('drawing notice that asks for the runtime', () => {
-    const drawing = 'images 还没装进 AI 工具：这台电脑还缺运行环境。到首页「运行环境」装好后，点「重新同步」就能用。'
+    const drawing = 'images 尚未安装到 AI 工具：本机缺少运行环境。请在首页「运行环境」中完成安装后，点击「重新同步」。'
     function bootstrap(overrides: Partial<AccountBootstrapResult> = {}): NonNullable<HomeProps['bootstrap']> {
       return {
         phase: 'verifying', label: 'Key 同步完成', percent: 100, scope: 'scope',

@@ -2082,7 +2082,7 @@ test('when the GPT official catalog fails to download the group says why and off
   const page = await fixture('page=extensions&installedProviders=claude,codex&codexCatalogOffline')
   try {
     // 第一次按国内常见的样子失败：说清楚原因，留一颗按钮让用户自己再点。
-    await page.getByText(/插件目录没有下载下来/).first().waitFor()
+    await page.getByText(/插件目录下载失败/).first().waitFor()
     const notice = page.getByTestId('hub-section-codex').getByTestId('hub-codex-marketplace')
     await notice.getByText('官方插件目录尚未下载').waitFor()
     assert.equal((await callsNamed(page, 'ensure-marketplace')).length, 1)
@@ -5048,7 +5048,7 @@ test('a zip with no skill in it says so inside the import form', async () => {
     await page.getByTestId('hub-add').click()
     await page.getByTestId('hub-add-skill-archive').click()
     await page.getByTestId('hub-skill-archive-choose').click()
-    await page.getByTestId('hub-skill-import').getByText('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。').waitFor()
+    await page.getByTestId('hub-skill-import').getByText('该压缩包中未找到技能（需包含一个 SKILL.md 文件）。').waitFor()
     await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('')
     assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), true)
   } finally {

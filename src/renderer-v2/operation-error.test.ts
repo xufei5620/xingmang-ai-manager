@@ -25,7 +25,7 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   featureSuspended: { sample: toolInstallOffMessage('Codex CLI') },
   toolNotEnabled: { sample: 'Codex CLI 改用当前账号未完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
   switchUndoFailed: { sample: '改用当前账号未完成：写入失败 EPERM。自动恢复也未完成（EPERM），请在「设置 › 备份迁移」中恢复切换前的备份。' },
-  pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
+  pluginCatalogStuck: { sample: 'Codex 插件目录中的旧备份无法清除，本次未作改动' },
   configBroken: { sample: brokenConfigLaunchMessages.codexConfig },
   // 主进程 extension-command-output.ts 的 withCommandOutput：原话后面接上命令自己说的那一行（Claude Code 2.1 的原话）。
   gitMissing: { sample: '命令执行失败（退出码 1）：claude（命令输出：Executable not found in $PATH: "git"）', target: 'config' },
@@ -56,7 +56,7 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   timeout: { sample: '模型查询超时，请检查网络后重试' },
   // 更新替换正在跑的 CLI 时文件被锁，主进程（cli-process-probe.ts）把话说清楚；
   // npm 自己吐的 EBUSY 原文也走这条。
-  toolRunning: { sample: 'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。' },
+  toolRunning: { sample: 'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关闭其窗口后重试。' },
   installBlocked: { sample: 'Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录' },
   downloadTimeout: { sample: 'Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT' },
   // 主进程按 npm 的错误码写好的中文原因，错误码留在句尾（#1100 第1、3条）。
@@ -125,11 +125,11 @@ describe('renderer-v2 operation error classification', () => {
     // 以前这几句都落在 installBlocked，标题是「安装被杀毒软件拦截」。
     for (const locked of [
       'Claude Code 安装失败：npm 官方源：EBUSY: resource busy or locked, rename',
-      'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。',
-      'Codex CLI 更新失败：文件被占用，Codex CLI 可能正在运行，请关掉正在使用它的窗口再试。',
+      'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关闭其窗口后重试。',
+      'Codex CLI 更新失败：文件被占用，Codex CLI 可能正在运行，请关闭正在使用它的窗口后重试。',
       '会话操作失败，会话文件正被其他程序占用；请关闭占用它的程序（如杀毒或备份软件）后重启本工具',
     ]) expect([locked, classifyOperationError(locked)]).toEqual([locked, 'toolRunning'])
-    const hint = presentOperationError('Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。')
+    const hint = presentOperationError('Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关闭其窗口后重试。')
     expect(hint?.title).toBe('工具正在运行')
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })
@@ -569,7 +569,7 @@ describe('renderer-v2 operation error classification', () => {
       'Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。重新点击安装即可再次授权。',
       `Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`,
       `Node.js 自动安装失败：未获得管理员权限，Node.js安装已停止。${standardAdvice}`,
-      'Node.js 自动安装失败：未获得管理员权限，Node.js安装已停止。请在弹出的授权窗口点击「是」；如果这台电脑用的是普通账号，需要输入一个管理员账号的密码。',
+      'Node.js 自动安装失败：未获得管理员权限，Node.js安装已停止。请在弹出的授权窗口中点击「是」；如本机使用的是普通账号，需输入管理员账号的密码。',
       // 装工具时先装 Node.js（runtime-readiness.ts 的 runtimeInstallFailureMessage）。
       `Node.js 运行环境安装失败，Claude Code 尚未开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`,
       // 主进程以前那句短的（msiexec 自己报 1602）。
@@ -868,7 +868,7 @@ describe('renderer-v2 operation error classification', () => {
         'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename',
         'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write',
         'Codex CLI 安装失败：self signed certificate in certificate chain',
-        'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。',
+        'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关闭其窗口后重试。',
         'Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT',
       ]) expect([message, operationLogSection({ message, tool: 'claude' })]).toEqual([message, 'log'])
     })

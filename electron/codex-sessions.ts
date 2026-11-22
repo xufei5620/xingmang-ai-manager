@@ -1173,12 +1173,12 @@ export class CodexSessionsService {
       }
     }
     if (this.journalUnreadable) {
-      throw new Error('Codex 会话操作日志无法安全读取，已暂停归档和恢复；请重启本工具后再试')
+      throw new Error('Codex 会话操作日志无法安全读取，已暂停归档和恢复，请重启本工具后重试')
     }
     try {
       assertSafeDataFile(this.operationJournalPath, OPERATION_JOURNAL_LABEL)
     } catch {
-      throw new Error('Codex 会话操作日志无法安全写入，已暂停归档和恢复；请重启本工具后再试')
+      throw new Error('Codex 会话操作日志无法安全写入，已暂停归档和恢复，请重启本工具后重试')
     }
   }
 
@@ -1434,10 +1434,10 @@ export class CodexSessionsService {
     try {
       interrupted = this.interruptedOperations()
     } catch {
-      throw new Error('Codex 会话操作日志无法安全读取，已暂停删除；请重启本工具后再试')
+      throw new Error('Codex 会话操作日志无法安全读取，已暂停删除，请重启本工具后重试')
     }
     if (interrupted.some((entry) => entry.sessionId === row.id)) {
-      throw new Error('这条记录上次的整理还没收尾，请重启本工具后再删')
+      throw new Error('该记录上次的整理尚未完成，请重启本工具后再删除')
     }
     const rolloutPath = await this.deletableRollout(row)
 
@@ -1466,7 +1466,7 @@ export class CodexSessionsService {
           const code = (error as NodeJS.ErrnoException).code
           if (code !== 'ENOENT') {
             throw new Error(code === 'EBUSY' || code === 'EPERM' || code === 'EACCES'
-              ? '这条记录正被别的程序占用，请先关掉 Codex 再删'
+              ? '该记录正被其他程序占用，请先关闭 Codex 后再删除'
               : `删除对话原文失败：${error instanceof Error ? error.message : String(error)}`)
           }
         }
@@ -1505,7 +1505,7 @@ export class CodexSessionsService {
     const { row, schema } = this.readThread(sessionId)
     if (!schema.status.mutationsAllowed) throw new Error(schema.status.reason)
     if (row.archived === archived) {
-      throw new Error(archived ? '会话已经归档' : '会话已经处于活动状态')
+      throw new Error(archived ? '会话已归档' : '会话已处于活动状态')
     }
     const sourcePath = await validateRollout(this.codexHome, row.rolloutPath, row.id)
     const targetPath = ensureInside(

@@ -27,10 +27,10 @@ export async function resolveOpenableSessionWorkspace(
   probe: SessionWorkspaceProbe = {},
 ): Promise<string> {
   const trimmed = workspace.trim()
-  if (trimmed === '') throw new Error('这条记录没有记下文件夹，没有可以打开的位置。')
+  if (trimmed === '') throw new Error('该记录未保存文件夹位置，无法打开。')
   // 相对路径会被 path.resolve 拼到本程序自己的工作目录上，打开的就不是用户
   // 以为的那个文件夹了；记录里本来也只会有绝对路径。
-  if (!path.isAbsolute(trimmed)) throw new Error('这条记录的文件夹位置不完整，打不开。')
+  if (!path.isAbsolute(trimmed)) throw new Error('该记录的文件夹位置不完整，无法打开。')
   const resolved = path.resolve(trimmed)
   let info: WorkspaceInfo
   try {
@@ -39,6 +39,6 @@ export async function resolveOpenableSessionWorkspace(
     // 目录被删、被搬走、盘符掉了、权限不足——用户的处境都是「这个文件夹打不开」。
     throw new Error('这条记录的文件夹已经不在了。')
   }
-  if (!info.isDirectory()) throw new Error('这条记录的位置不是文件夹，没有打开。')
+  if (!info.isDirectory()) throw new Error('该记录的位置不是文件夹，未打开。')
   return resolved
 }

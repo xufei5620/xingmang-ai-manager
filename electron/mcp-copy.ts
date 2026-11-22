@@ -84,7 +84,7 @@ function localConfig(entry: Record<string, unknown>): ProviderMcpInstallConfigur
  * 带着搬不过去的设置、格式不对时抛中文原因。搬出来的值照样还要过各工具添加时的那道检查（I1、I5）。
  */
 export function mcpCopyConfig(source: McpCopySource, entry: unknown): ProviderMcpInstallConfiguration {
-  if (entry === undefined) throw new Error('没有找到这个连接，请刷新列表后再试。')
+  if (entry === undefined) throw new Error('未找到该连接，请刷新列表后重试。')
   if (!isRecord(entry)) throw malformed()
   const uncarried = Object.keys(entry).filter((key) => !carriedKeys[source].includes(key))
   if (source === 'claude' && entry.type !== undefined && entry.type !== 'stdio' && entry.type !== 'http') uncarried.unshift(`type = ${String(entry.type)}`)
@@ -94,7 +94,7 @@ export function mcpCopyConfig(source: McpCopySource, entry: unknown): ProviderMc
   const remote = source === 'claude' ? entry.type === 'http' : entry.command === undefined
   const config = remote ? remoteConfig(source, entry) : localConfig(entry)
   if (source === 'claude' && usesClaudeExpansion(config)) {
-    throw new Error('这条连接里用了 ${…} 这种要 Claude Code 自己展开的写法，别的工具不认，请在要装的工具里手动添加。')
+    throw new Error('该连接使用了 ${…} 这类需由 Claude Code 自行展开的写法，其他工具无法识别，请在目标工具中手动添加。')
   }
   return config
 }

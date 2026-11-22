@@ -244,7 +244,7 @@ export function windowsElevationDeniedMessage(
   const head = `未获得管理员权限，${subject}安装已停止。`
   return capability === 'standard'
     ? `${head}${windowsStandardAccountAdvice(target)}`
-    : `${head}请在弹出的授权窗口点击「是」；如果这台电脑用的是普通账号，需要输入一个管理员账号的密码。`
+    : `${head}请在弹出的授权窗口中点击「是」；如本机使用的是普通账号，需输入管理员账号的密码。`
 }
 
 export function parseWindowsTokenElevationType(value: string): WindowsTokenElevationType | null {
@@ -495,7 +495,7 @@ export function classifyWindowsExecutionProbeFailure(error: unknown): WindowsExe
 
 const probeFailureDescriptions: Readonly<Record<WindowsExecutionProbeFailureReason, string>> = {
   timeout: '确认权限这一步超过 15 秒没做完，常见于电脑较慢或刚开机',
-  'powershell-unavailable': '系统自带的命令行组件找不到或打不开',
+  'powershell-unavailable': '系统自带的命令行组件缺失或无法打开',
   blocked: '确认权限这一步被安全软件或电脑的管控策略拦下了',
   'unexpected-output': '确认权限时系统给出的结果看不懂',
   failed: '确认权限这一步出错了',
@@ -821,7 +821,7 @@ export function describeWindowsCliLaunchError(error: unknown): string {
   // 什么都没说的，只说原因已经记进运行日志：原话在 system-service.ts 的 terminal.failed 那条里（#1100 第1、4条）。
   return detail && isChineseSentence(detail)
     ? `Windows 无法启动 PowerShell：${detail}`
-    : 'Windows 没能启动 PowerShell，原因已经记进运行日志。'
+    : 'Windows 未能启动 PowerShell，原因已记录到运行日志。'
 }
 
 /** What the broker and Node reported about a launch that failed, for the log only. */

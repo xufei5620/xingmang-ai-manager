@@ -63,6 +63,6 @@ describe('npm failure reasons', () => {
     expect(npmFailureExplainsItself('Codex CLI 安装失败：npm 官方源：下载源拒绝了本次下载（错误码 E403）。请更换网络后点击「重试」；如持续出现，请联系客服。')).toBe(true)
     expect(npmFailureExplainsItself('Codex CLI 安装失败：国内 npm 镜像：未找到要安装的版本；npm 官方源：要安装的版本与其依赖组件不匹配（错误码 E404、ERESOLVE）。')).toBe(true)
     expect(npmFailureExplainsItself('Codex CLI 安装失败：npm 官方源：下载长时间未完成，已超时中止；国内 npm 镜像：未找到要安装的版本（错误码 ETIMEDOUT、E404）。')).toBe(false)
-    expect(npmFailureExplainsItself('Codex CLI 安装失败：npm 官方源：npm 没有装成。')).toBe(false)
+    expect(npmFailureExplainsItself('Codex CLI 安装失败：npm 官方源：npm 安装失败。')).toBe(false)
   })
 })

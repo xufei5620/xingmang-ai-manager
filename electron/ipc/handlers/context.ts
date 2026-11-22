@@ -176,7 +176,7 @@ export function createIpcHandlerContext(
         // 分不清原来有没有上限：自动签发一律停下说清楚；用户看过密钥页、亲手再点一次，
         // 才清掉坏记录照常签，免得以后每次都卡在这里。
         if (!explicit) {
-          throw new Error('没读到这个工具原来的额度设置，这次没有自动签新密钥。到「个人中心 › 密钥管理」确认一下它的额度，再点「重新写入密钥」就会换上。')
+          throw new Error('未能读取该工具原有的额度设置，本次未自动签发新密钥。请前往「个人中心 › 密钥管理」确认其额度，再点击「重新写入密钥」完成更换。')
         }
         await keyReplacements.reset().catch(() => undefined)
         pending = null
@@ -253,7 +253,7 @@ export function createIpcHandlerContext(
       options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
-      throw new Error(`没能先备份当前配置，这次没有重置：${reason}`)
+      throw new Error(`未能先备份当前配置，本次未重置：${reason}`)
     }
   }
   const assertAccountSessionUser = (expectedUserId: number): void => {

@@ -63,10 +63,10 @@ export const CODEX_PLUGIN_CATALOG_TIMEOUT_MS = 5 * 60_000
 const unknownCatalogVersion = 'export-backup'
 
 export const codexPluginCatalogNetworkMessage =
-  '插件目录没有下载下来，当前网络连不上或太慢。请稍后再点一次「下载插件目录」，或者换个网络再试。'
-const incompleteCatalogMessage = '下载到的插件目录不完整，请再点一次「下载插件目录」。'
+  '插件目录下载失败，当前网络无法连接或速度过慢。请稍后再次点击「下载插件目录」，或更换网络后重试。'
+const incompleteCatalogMessage = '下载的插件目录不完整，请再次点击「下载插件目录」。'
 /** 渲染层 operation-error.ts 按这句归到「插件目录暂时改不动」，改字时两边一起改。 */
-export const codexPluginCatalogBackupStuckMessage = 'Codex 插件目录里的旧备份清不掉，这次没有改动'
+export const codexPluginCatalogBackupStuckMessage = 'Codex 插件目录中的旧备份无法清除，本次未作改动'
 
 const gunzip = promisify(zlib.gunzip)
 
@@ -557,7 +557,7 @@ async function publishCatalog(paths: CodexPluginCatalogPaths, staged: string, st
     if (failures.length) {
       const retained = entries.filter((entry) => entry.backedUp).map((entry) => entry.backup)
       throw new Error(retained.length
-        ? `插件目录更新没有完成，原文件已保留在 ${retained.join('、')}，请先保留这些文件再重试`
+        ? `插件目录更新未完成，原文件已保留在 ${retained.join('、')}，请先保留这些文件后重试`
         : '插件目录在更新期间发生变化，已保留现有文件，请刷新后重试')
     }
     const detail = error instanceof Error ? error.message : '未知错误'

@@ -676,13 +676,13 @@ describe('Windows CLI launch', () => {
       .toBe('系统 PowerShell 启动文件不存在或已被移除，请修复 Windows PowerShell 或安装 PowerShell 7')
     // 英文原话不上屏，只在 terminal.failed 那条日志里（#1100 第1条）。
     expect(describeWindowsCliLaunchError(spawnFailure('EMFILE')))
-      .toBe('Windows 没能启动 PowerShell，原因已经记进运行日志。')
+      .toBe('Windows 未能启动 PowerShell，原因已记录到运行日志。')
   })
 
   it('sends a launch that ended without a cause to the log, not to the command line', () => {
     // The broker ran past its limit and was stopped: nothing on stderr to quote.
     const timedOut = brokerFailure('', { code: null, killed: true, signal: 'SIGTERM' })
-    expect(describeWindowsCliLaunchError(timedOut)).toBe('Windows 没能启动 PowerShell，原因已经记进运行日志。')
+    expect(describeWindowsCliLaunchError(timedOut)).toBe('Windows 未能启动 PowerShell，原因已记录到运行日志。')
     // Raised by launchCliPowerShell itself, the reason is the message.
     expect(describeWindowsCliLaunchError(new Error('PowerShell 启动代理未返回有效的终端进程 ID')))
       .toBe('Windows 无法启动 PowerShell：PowerShell 启动代理未返回有效的终端进程 ID')
@@ -717,7 +717,7 @@ describe('Windows CLI launch', () => {
       ' ',
     ])
     expect(describeWindowsCliLaunchError(brokerFailure(wrapped)))
-      .toBe('Windows 没能启动 PowerShell，原因已经记进运行日志。')
+      .toBe('Windows 未能启动 PowerShell，原因已记录到运行日志。')
     expect(parseWindowsCliLaunchCause(wrapped)).toBe('Cannot perform operation because the wildcard path D:\\作业[1] did not resolve to a file.')
   })
 
@@ -737,7 +737,7 @@ describe('Windows CLI launch', () => {
       ' ',
     ])
     expect(parseWindowsCliLaunchCause(fromWindowsPowerShell)).toBe(blocked)
-    expect(describeWindowsCliLaunchError(brokerFailure(fromWindowsPowerShell))).toBe('Windows 没能启动 PowerShell，原因已经记进运行日志。')
+    expect(describeWindowsCliLaunchError(brokerFailure(fromWindowsPowerShell))).toBe('Windows 未能启动 PowerShell，原因已记录到运行日志。')
     // PowerShell 7: the reason alone, "Line |", the quote, then "~" and the cause behind a bar.
     const fromPowerShell7 = clixml([
       '_x001B_[31;1mParserError: ',
@@ -747,7 +747,7 @@ describe('Windows CLI launch', () => {
       `_x001B_[36;1m_x001B_[36;1m     | _x001B_[31;1m${blocked}_x001B_[0m`,
     ])
     expect(parseWindowsCliLaunchCause(fromPowerShell7)).toBe(blocked)
-    expect(describeWindowsCliLaunchError(brokerFailure(fromPowerShell7))).toBe('Windows 没能启动 PowerShell，原因已经记进运行日志。')
+    expect(describeWindowsCliLaunchError(brokerFailure(fromPowerShell7))).toBe('Windows 未能启动 PowerShell，原因已记录到运行日志。')
   })
 
   it.each([

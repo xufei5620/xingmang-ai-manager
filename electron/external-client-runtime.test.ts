@@ -1379,7 +1379,7 @@ describe('Windows Claude Desktop official package route', () => {
 
   it.each([
     '已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。',
-    '未获得管理员权限，Claude Desktop 安装已停止。请在弹出的授权窗口点击「是」；如果这台电脑用的是普通账号，需要输入一个管理员账号的密码。',
+    '未获得管理员权限，Claude Desktop 安装已停止。请在弹出的授权窗口中点击「是」；如本机使用的是普通账号，需输入管理员账号的密码。',
   ])('passes a sentence that already says what to do through unchanged: %s', async (message) => {
     const f = claudeFixture(noWinget)
     f.claudeOfficial.mockRejectedValue(new Error(message))
@@ -1880,7 +1880,7 @@ describe('macOS external desktop lifecycle', () => {
     const root = macFixture({ getuid: () => 0 })
     expect((await root.runtime.scan())[0].launchSupported).toBe(false)
     // Same words as the refusal at the entry point (D18); the old line still said 工具箱.
-    await expect(root.runtime.launch('workbuddy')).rejects.toThrow('星芒AI管理工具不能用管理员身份打开。用管理员身份打开，装好的工具和设置会归管理员所有，之后平时的账号反而用不了。请关掉这个提示，从应用菜单里直接打开。这次什么都没有改动。')
+    await expect(root.runtime.launch('workbuddy')).rejects.toThrow('星芒AI管理工具不支持以管理员身份打开。以管理员身份打开时，安装的工具和设置将归管理员所有，日常使用的账号将无法使用。请关闭此提示，从应用菜单中直接打开。本次未作任何改动。')
     const invalid = macFixture()
     invalid.execute.mockImplementation(async (spec) => {
       if (spec.executable === '/usr/bin/plutil') return commandResult(spec, '{"CFBundleIdentifier":"com.tencent.workbuddy.mac"}')

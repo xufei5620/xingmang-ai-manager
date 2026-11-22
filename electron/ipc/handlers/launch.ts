@@ -78,8 +78,8 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
       options.runtimeLog.exception('config', 'workspace.starter.failed', error)
       const errorBoxOptions = {
         type: 'error' as const,
-        title: '没能新建项目文件夹',
-        message: '没能替你新建项目文件夹。',
+        title: '无法新建项目文件夹',
+        message: '未能为您新建项目文件夹。',
         detail: `${error instanceof Error ? error.message : '未知错误'}\n\n${nextStep}`,
         buttons: ['知道了'],
         noLink: true,

@@ -56,7 +56,7 @@ describe('switchAccountSource', () => {
   })
 
   it('does not stack a second full stop after a reason that already ends a sentence', async () => {
-    const reason = 'config.toml 是个链接。为了安全，星芒不往链接里写，原来的设置没有动。把它换成普通文件后再试。'
+    const reason = 'config.toml 是一个链接。为保障安全，星芒不会写入链接，原有设置未改动。请将其替换为普通文件后重试。'
     const { deps } = dependencies({ writeAccountConfig: async () => { throw new Error(reason) } })
     await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow(`改用当前账号未完成：${reason}已恢复到切换前的配置。`)
     const official = dependencies({ writeOfficialConfig: async () => { throw new Error(reason) } })

@@ -417,10 +417,10 @@ export function buildLinuxTerminalScript(plan: LinuxTerminalScriptPlan): string 
  * system-service.ts 会在前面加上「未能打开 某某工具：」。
  */
 export const linuxTerminalFailureMessages = {
-  notFound: '这台电脑上没找到能打开命令窗口的程序（终端）。打开系统自带的应用商店，搜「终端」装一个，装好后回星芒再点「打开」。',
-  notStarted: '命令窗口没能打开。再点一次「打开」试试；还不行就点「联系客服」，把这句话发给客服。',
-  notShown: '命令窗口一直没有出现。再点一次「打开」试试；还不行就点「联系客服」，把这句话发给客服。',
-  noLauncherDirectory: '这台电脑的临时文件夹用不了，命令窗口没能打开。重启电脑后再试；还不行就点「联系客服」。',
+  notFound: '本机未找到可打开命令窗口的程序（终端）。请在系统自带的应用商店中搜索并安装「终端」，安装完成后返回星芒，再次点击「打开」。',
+  notStarted: '命令窗口未能打开。请再次点击「打开」；如仍失败，请点击「联系客服」并将此提示发送给客服。',
+  notShown: '命令窗口始终未出现。请再次点击「打开」；如仍失败，请点击「联系客服」并将此提示发送给客服。',
+  noLauncherDirectory: '本机的临时文件夹无法使用，命令窗口未能打开。请重启电脑后重试；如仍失败，请点击「联系客服」。',
 } as const
 
 export interface LinuxTerminalAttempt {

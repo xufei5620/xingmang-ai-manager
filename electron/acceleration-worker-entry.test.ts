@@ -166,7 +166,7 @@ describe('packaged acceleration worker entry', () => {
     expect(result.events).toContain('path:userData=/tmp/xingmang-refused-scratch')
     expect(result.showErrorBox).toHaveBeenCalledExactlyOnceWith(
       '请用平时登录电脑的账号打开',
-      '星芒AI管理工具不能用管理员身份打开。用管理员身份打开，装好的工具和设置会归管理员所有，之后平时的账号反而用不了。请关掉这个提示，从应用菜单里直接打开。这次什么都没有改动。',
+      '星芒AI管理工具不支持以管理员身份打开。以管理员身份打开时，安装的工具和设置将归管理员所有，日常使用的账号将无法使用。请关闭此提示，从应用菜单中直接打开。本次未作任何改动。',
     )
     expect(result.removed).toEqual(['/tmp/xingmang-refused-scratch'])
     expect(result.appExit).toHaveBeenCalledExactlyOnceWith(1)

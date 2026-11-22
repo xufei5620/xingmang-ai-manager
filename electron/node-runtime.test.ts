@@ -395,7 +395,7 @@ describe('Node.js installer routing and process plans', () => {
 
     // winget 那一步只进运行日志，上屏那句按备用源的原因说（#1100 第1条）。
     expect(failure instanceof Error ? failure.message : null)
-      .toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
+      .toBe('Node.js 自动安装失败：原因已记录到运行日志。请点击「重试」；如仍失败，请在「反馈与客服」中将报告发送给客服。')
     expect(failure instanceof Error ? (failure.cause as Error).message : null)
       .toContain('winget：安装后的 Node.js 版本 v18.20.0 低于最低要求 v20.0.0')
     expect(runProcess).toHaveBeenCalledTimes(1)
@@ -1334,8 +1334,8 @@ describe('the sentence a failed Node.js install leaves on screen', () => {
     expect(describeNodeInstallFailure([new Error('fetch failed'), new Error('命令执行失败（退出码 1618）：powershell.exe')]))
       .toBe('Node.js 自动安装失败：Windows 正在安装其他程序（错误 1618），Node.js 尚未安装。请待其安装完成后再点击一键安装；如持续出现，请先重启电脑后重试。')
     expect(describeNodeInstallFailure([new Error('something odd')]))
-      .toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
-    expect(describeNodeInstallFailure([])).toBe('Node.js 自动安装失败：原因已经记进运行日志。点「重试」；还不行到「反馈与客服」把报告发给客服。')
+      .toBe('Node.js 自动安装失败：原因已记录到运行日志。请点击「重试」；如仍失败，请在「反馈与客服」中将报告发送给客服。')
+    expect(describeNodeInstallFailure([])).toBe('Node.js 自动安装失败：原因已记录到运行日志。请点击「重试」；如仍失败，请在「反馈与客服」中将报告发送给客服。')
   })
 
   // 以前「取消」两个字一出现，整句就换成「已取消管理员授权，Node.js 尚未安装」，普通账号那句「输入管理员账号的密码 /

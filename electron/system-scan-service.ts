@@ -596,7 +596,7 @@ function containsComparableVersion(value: string | null): boolean {
 export const offlineLatestVersionBudgetMs = 3_000
 
 /** 预算到点仍未返回时，版本列上显示的那句话。 */
-export const latestVersionUncheckedMessage = '当前可能没有网络，这次没有检查最新版本'
+export const latestVersionUncheckedMessage = '当前可能未连接网络，本次未检查最新版本'
 
 /**
  * 网络位置探测没能给出结果 = 这会儿八成没网。离线时每家 CLI 的最新版探测都会各自

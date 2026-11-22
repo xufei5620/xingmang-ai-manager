@@ -102,7 +102,7 @@ describe('main window video request parsers', () => {
     expect(Buffer.isBuffer(parsed)).toBe(true)
     expect(parsed.buffer).toBe(bytes.buffer)
     expect([...parseVideoStudioExportBytes(bytes.buffer)]).toEqual([...bytes])
-    expect(() => parseVideoStudioExportBytes(new Uint8Array())).toThrow('成片是空的，请重新导出')
+    expect(() => parseVideoStudioExportBytes(new Uint8Array())).toThrow('成片内容为空，请重新导出')
     expect(() => parseVideoStudioExportBytes('ftyp')).toThrow('成片内容格式错误')
     expect(() => parseVideoStudioExportBytes([1, 2, 3])).toThrow('成片内容格式错误')
     // A real 512 MB buffer is too much for a unit test; only the length is read before refusing.

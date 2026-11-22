@@ -85,7 +85,7 @@ describe('Linux renderer sandbox', () => {
       linuxRendererSandboxRefusalMessage({ kind: 'disabled', reason: 'no-sandbox' }),
       linuxRendererSandboxRefusalMessage({ kind: 'unverified', reason: 'renderer status unreadable' }),
     ]
-    expect(messages[0]).toContain('从应用菜单里直接打开')
+    expect(messages[0]).toContain('从应用菜单中直接打开')
     for (const message of messages) expect(message).not.toMatch(/sandbox|seccomp|沙箱|参数/i)
   })
 

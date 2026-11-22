@@ -316,8 +316,8 @@ describe('the Claude Code write boundary toggle', () => {
     await saveForAccount(service)
     const before = fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')
 
-    await expect(service.setClaudeWriteBoundary(true, () => { throw new Error('没能先备份 Claude Code 的配置，这次没有改') }))
-      .rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
+    await expect(service.setClaudeWriteBoundary(true, () => { throw new Error('未能先备份 Claude Code 的配置，本次未修改') }))
+      .rejects.toThrow('未能先备份 Claude Code 的配置，本次未修改')
     expect(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')).toBe(before)
     expect(store.read().claudeWritesInsideProject).toBeUndefined()
   })
