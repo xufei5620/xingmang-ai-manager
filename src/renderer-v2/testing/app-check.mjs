@@ -756,6 +756,70 @@ test('the Claude Code commit attribution switch starts off and goes through its 
   } finally { await page.close() }
 })
 
+// 总单 Q4 C5：「给 AI 的长期嘱咐」在工具管理里，走自己那条通道，不走 saveSettings。
+test('the standing instructions for the AI save through their own channel and clear again', async () => {
+  const page = await open()
+  try {
+    const settings = await openSettingsGroup(page, '工具管理')
+    const row = settings.getByTestId('settings-standing-instructions')
+    await row.getByText('给 AI 的长期嘱咐', { exact: true }).waitFor()
+    await row.getByText('此处填写的要求将对 Claude Code、Codex、Grok 在所有文件夹中生效，例如：回答请尽量简洁；我从事外贸行业。', { exact: true }).waitFor()
+    const text = row.getByTestId('settings-standing-instructions-text')
+    const save = row.getByTestId('settings-standing-instructions-save')
+    assert.equal(await save.isDisabled(), true, '没改过的时候保存是灰的')
+    await text.fill('  回答简短一点\n我是做外贸的  ')
+    await row.getByText('13/2000', { exact: true }).waitFor()
+    await save.click()
+    await waitForToast(page, '已保存，下次打开工具时生效。')
+    await expect(text).toHaveValue('回答简短一点\n我是做外贸的')
+    assert.equal(await save.isDisabled(), true)
+    await text.fill('')
+    await save.click()
+    await waitForToast(page, '已清空，下次打开工具时生效。')
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'saveStandingInstructions').map((entry) => entry.args), [['  回答简短一点\n我是做外贸的  '], ['']])
+    assert.equal(calls.some((entry) => entry.method === 'saveSettings'), false, '长期嘱咐不走 saveSettings')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the standing instructions say which tool they could not go into, and why', async () => {
+  const page = await open('standingMissed=grok')
+  try {
+    const settings = await openSettingsGroup(page, '工具管理')
+    const row = settings.getByTestId('settings-standing-instructions')
+    await row.getByTestId('settings-standing-instructions-text').fill('回答简短一点')
+    await row.getByTestId('settings-standing-instructions-save').click()
+    await waitForToast(page, '已保存，下次打开工具时生效。')
+    const missed = row.getByTestId('settings-standing-instructions-missed')
+    await missed.getByText('部分工具未能写入', { exact: true }).waitFor()
+    await missed.getByText('Grok CLI 未能写入：文件中由星芒维护的段落标记已被修改，为避免改动您自行编写的内容，本次未写入。', { exact: true }).waitFor()
+    // 改一个字，那句提示就收起来，等下次保存再说。
+    await row.getByTestId('settings-standing-instructions-text').fill('回答简短一点。')
+    await missed.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the standing instructions stay unsaved when no tool could take them', async () => {
+  const page = await open('standingMissed=all')
+  try {
+    const settings = await openSettingsGroup(page, '工具管理')
+    const row = settings.getByTestId('settings-standing-instructions')
+    const text = row.getByTestId('settings-standing-instructions-text')
+    await text.fill('回答简短一点')
+    await row.getByTestId('settings-standing-instructions-save').click()
+    const missed = row.getByTestId('settings-standing-instructions-missed')
+    for (const name of ['Claude Code', 'Codex CLI', 'Grok CLI']) {
+      await missed.getByText(`${name} 未能写入：文件中由星芒维护的段落标记已被修改，为避免改动您自行编写的内容，本次未写入。`, { exact: true }).waitFor()
+    }
+    await assertNoToast(page, '已保存，下次打开工具时生效。')
+    await expect(text).toHaveValue('回答简短一点')
+    assert.equal(await row.getByTestId('settings-standing-instructions-save').isDisabled(), false, '框里的字没存下，保存还能再点')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the Claude Code write boundary switch says so when the customer\'s own Claude Code setting was left alone', async () => {
   const page = await open('writeBoundary=kept')
   try {
