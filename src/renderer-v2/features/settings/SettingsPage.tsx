@@ -59,9 +59,21 @@ import { useRowFocus } from '../app/row-focus'
 import { currentWindowOs, type WindowOs } from '../app/window-os'
 import { parseImportedConversations, readChatPhrases } from '../chat/storage'
 import type { Conversation } from '../chat/state'
-import { anonymousUsageFrom, dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from '../app/data-transfer'
+import {
+  anonymousUsageFrom,
+  dataTransferExportMessage,
+  dataTransferImportMessage,
+  settingsPatchFrom,
+  worksCount,
+  worksExportingText,
+  worksExportNote,
+  worksExportQuestion,
+  worksImportingText,
+  type DataTransferWorksOutcome,
+} from '../app/data-transfer'
+import { useBackgroundWork } from '../../background-work'
 import type { V2Bridge } from '../../types'
-import type { ClaudeToggleResult, DataTransferImportPreview } from '../../../../electron/ipc-contract'
+import type { ClaudeToggleResult, DataTransferImportPreview, DataTransferWorksSummary } from '../../../../electron/ipc-contract'
 import type { PlatformSystemState } from '../../../../electron/platform/contract'
 import { platformApi } from '../../platform-api'
 import type { BusinessActions } from '../../business-actions'
@@ -459,15 +471,19 @@ export function SettingsPage({
     preview: DataTransferImportPreview
     conversations: Conversation[]
   } | null>(null)
-  // 对话先导入：它更可能出错，出错时设置还没动。
+  // 「搬作品改」：作品可能要复制好几分钟，那一行下面写一句正在做什么；这期间界面不让主进程收掉（省内存那一下）。
+  const [worksBusy, setWorksBusy] = useState<'export' | 'import' | null>(null)
+  useBackgroundWork('data-transfer-works', worksBusy !== null)
+  // 对话先导入：它更可能出错，出错时设置还没动。作品最后导：最慢，也最可能缺空间，前面的不受它影响。
   const applyImport = async (
     preview: DataTransferImportPreview,
     conversations: Conversation[],
     overwrite: boolean,
   ) => {
-    const { added, updated, skipped } = chatTransfer
-      ? await chatTransfer.importConversations(conversations, readChatPhrases(preview.phrases))
-      : { added: 0, updated: 0, skipped: 0 }
+    const videoProjects = preview.videoProjects ?? []
+    const { added, updated, skipped, videosAdded, videosSkipped } = chatTransfer
+      ? await chatTransfer.importConversations(conversations, readChatPhrases(preview.phrases), videoProjects)
+      : { added: 0, updated: 0, skipped: 0, videosAdded: 0, videosSkipped: 0 }
     const patch = overwrite
       ? settingsPatchFrom(preview.settings, preview.conflictingSettings)
       : settingsPatchFrom(preview.settings)
@@ -493,14 +509,34 @@ export function SettingsPage({
         throw settingsFailed()
       }
     }
+    const works = chatTransfer ? await importWorks(preview.works) : undefined
+    if (works?.kind === 'done' && works.added) chatTransfer?.reloadCreate()
     return dataTransferImportMessage({
       fileConversations: conversations.length,
+      fileVideos: videoProjects.length,
+      fileWorks: preview.works ? worksCount(preview.works) : 0,
       added,
       updated,
       skipped,
+      videosAdded,
+      videosSkipped,
+      ...(works ? { works } : {}),
       signedIn: Boolean(chatTransfer),
       settingsChanged: Boolean(patch) || anonymousUsage !== undefined,
     })
+  }
+  const importWorks = async (works: DataTransferImportPreview['works']): Promise<DataTransferWorksOutcome | undefined> => {
+    if (!works) return undefined
+    if (works.state !== 'ready') return works.state === 'missing' ? { kind: 'missing' } : { kind: 'unreadable', count: worksCount(works) }
+    setWorksBusy('import')
+    try {
+      const result = await api.importAppWorks(works.token)
+      return result.status === 'no-space'
+        ? { kind: 'no-space', neededBytes: result.neededBytes, availableBytes: result.availableBytes }
+        : { kind: 'done', added: result.added, existing: result.existing, failed: result.failed }
+    } finally {
+      setWorksBusy(null)
+    }
   }
   const importDone = (message: string | null) => {
     if (message) showToast(message, 'ok')
@@ -534,23 +570,44 @@ export function SettingsPage({
     )
   }
   // 导出的结果带「打开所在位置」，要给人点，照旧留在页顶。
+  // 当前账号作品库里有作品时先问一句带不带（「搬作品改」）；量不出来就照旧只导聊天记录和设置，不拦导出。
+  const [exportAsk, setExportAsk] = useState<DataTransferWorksSummary | null>(null)
+  const exportData = async (includeWorks: boolean) => {
+    const chat = chatTransfer ? await chatTransfer.exportChat() : { conversations: [] }
+    if (!includeWorks) return api.exportAppData(chat)
+    setWorksBusy('export')
+    try {
+      return await api.exportAppData({ ...chat, includeWorks: true })
+    } finally {
+      setWorksBusy(null)
+    }
+  }
+  const exportDone = (result: Awaited<ReturnType<typeof api.exportAppData>>) =>
+    result
+      ? {
+          text: dataTransferExportMessage(result),
+          revealPath: result.outputPath,
+        }
+      : null
   const startExport = () =>
     void operation.execute(
       'transfer-export',
-      async () =>
-        api.exportAppData(
-          chatTransfer
-            ? await chatTransfer.exportChat()
-            : { conversations: [] },
-        ),
-      (result) =>
-        result
-          ? {
-              text: dataTransferExportMessage(result),
-              revealPath: result.outputPath,
-            }
-          : null,
+      async () => {
+        if (chatTransfer) {
+          const works = await api.inspectAppWorks().catch(() => null)
+          if (works && worksCount(works) > 0) {
+            setExportAsk(works)
+            return null
+          }
+        }
+        return exportData(false)
+      },
+      exportDone,
     )
+  const finishExport = (includeWorks: boolean) => {
+    setExportAsk(null)
+    void operation.execute('transfer-export', () => exportData(includeWorks), exportDone)
+  }
   // 设置里两个 Claude Code 开关不走 saveSettings：主进程先对齐 Claude Code 的配置（先做一份备份）再记开关，
   // 改配置失败就不记、页顶出红条；做成了按主进程实际做了什么弹一句。
   const switchClaudeToggle = (
@@ -1168,7 +1225,7 @@ export function SettingsPage({
           key="transfer"
           anchor="transfer"
           title={chatTransfer ? settingsItemLabel('transfer') : '导出设置'}
-          description={chatTransfer ? '文件中不含密码和密钥，在新电脑上登录即可' : '登录后再导出，会连聊天记录一起带上'}
+          description={worksBusy === 'export' ? worksExportingText : worksBusy === 'import' ? worksImportingText : chatTransfer ? '文件中不含密码和密钥，在新电脑上登录即可' : '登录后再导出，会连聊天记录一起带上'}
           control={
             <Button
               size="sm"
@@ -1577,6 +1634,32 @@ export function SettingsPage({
           {importAsk?.preview.conflictLabels.join('、')}。
         </p>
         <p>其他设置和聊天记录将正常导入，不受此选择影响。</p>
+      </Dialog>
+      <Dialog
+        open={Boolean(exportAsk)}
+        title="是否同时导出作品？"
+        onClose={() => setExportAsk(null)}
+        footer={
+          <>
+            <Button onClick={() => setExportAsk(null)} testId="settings-transfer-works-cancel">取消</Button>
+            <Button
+              onClick={() => finishExport(false)}
+              testId="settings-transfer-works-skip"
+            >
+              仅导出聊天记录和设置
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => finishExport(true)}
+              testId="settings-transfer-works-include"
+            >
+              导出全部
+            </Button>
+          </>
+        }
+      >
+        <p data-testid="settings-transfer-works-summary">{exportAsk ? worksExportQuestion(exportAsk) : ''}</p>
+        <p>{worksExportNote}</p>
       </Dialog>
       <Dialog
         open={Boolean(legal)}

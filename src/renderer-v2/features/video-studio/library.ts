@@ -146,6 +146,21 @@ export function verifyVideoStudioMigration(legacy: readonly VideoStudioItem[], s
 
 export type VideoStudioLibraryBridge = Pick<XingmangApi, 'readVideoStudioProjects' | 'writeVideoStudioProjects' | 'reportRendererError'>
 
+// 设置页「迁移到新电脑」往这个账号写视频的那一会儿（transfer.ts）：「创作」这时重新挂上、读文件，要等它写完，
+// 不然刚导进来的视频这一回列不出来（同聊天记录的 runHistoryImport）。
+const importsInFlight = new Map<string, Promise<unknown>>()
+
+export function runVideoStudioImport<T>(scope: string, work: () => Promise<T>): Promise<T> {
+  const run = (importsInFlight.get(scope) ?? Promise.resolve()).catch(() => undefined).then(work)
+  importsInFlight.set(scope, run)
+  void run.catch(() => undefined).then(() => { if (importsInFlight.get(scope) === run) importsInFlight.delete(scope) })
+  return run
+}
+
+async function settleVideoStudioImports(scope: string): Promise<void> {
+  for (let running = importsInFlight.get(scope); running; running = importsInFlight.get(scope)) await running.catch(() => undefined)
+}
+
 export interface LoadedVideoStudioLibrary {
   items: VideoStudioItem[]
   /** unreadable：这一次没读出来，文件原样没动，也不去抄老草稿。 */
@@ -158,6 +173,7 @@ export interface LoadedVideoStudioLibrary {
  * 已经抄过去的文件不会被再盖一遍，localStorage 里那份从头到尾不删不改。
  */
 export async function loadVideoStudioLibrary(bridge: VideoStudioLibraryBridge, scope: string, storage: Pick<Storage, 'getItem'> | null, now: number = Date.now()): Promise<LoadedVideoStudioLibrary> {
+  await settleVideoStudioImports(scope)
   let snapshot: VideoStudioProjectsSnapshot
   try { snapshot = await bridge.readVideoStudioProjects(scope) } catch { return { items: [], status: 'unreadable' } }
   if (snapshot.index !== null) return { items: restoreVideoStudioLibrary(snapshot.projects), status: 'ready' }

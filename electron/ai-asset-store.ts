@@ -21,7 +21,7 @@ import { readBoundedResponseBytes } from './bounded-response'
 import { describeInsufficientDiskSpace, paidGenerationMinimumFreeBytes, readDiskSpace, type DiskSpaceReading } from './disk-space'
 import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 
-const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
+export const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
 const MAXIMUM_VIDEO_INPUT_IMAGE_BYTES = 8 * 1024 * 1024
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 120_000
 const MAXIMUM_REMOTE_URL_LENGTH = 4_096

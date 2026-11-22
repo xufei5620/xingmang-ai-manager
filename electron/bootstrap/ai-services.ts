@@ -16,6 +16,7 @@ import { createChatAttachmentService, type ChatImageCodec } from '../ai-chat-att
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from '../ai-chat-service'
 import { createAiImageService } from '../ai-image-service'
 import { createAiMediaAssetService, type AiMediaAssetService } from '../ai-media-asset-service'
+import { createAccountWorksTransfer } from '../data-transfer-works'
 import { chooseAiOutputRoot, migrateLegacyAiOutput, resolveLegacyAiOutputRoot } from '../ai-output-location'
 import { AiUnsavedImageStash, unsavedImageLogEntry, type AiUnsavedImagePlace } from '../ai-unsaved-image-stash'
 import { AiVideoAssetStore } from '../ai-video-asset-store'
@@ -347,6 +348,9 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     // should not depend on this program being right.
     const trashItem = (filePath: string) => shell.trashItem(filePath)
     const mediaAssets = createAiMediaAssetService({ images: assetStore, videos: videoAssets, audios: audioAssets, metadata: assetMetadata, trashItem })
+    // 「迁移到新电脑」带上这个账号作品库里的作品（「搬作品改」）。元数据跟作品库共用这一个 store，导入时补记录和收藏、
+    // 改名排在同一个队里。
+    const worksTransfer = createAccountWorksTransfer({ outputRoot: aiOutputRoot, metadata: assetMetadata })
     const canvasProjects = new CanvasProjectStore(roots.canvasProjectsDirectory)
     const createProjectAssetContext = (outputRoot: string) => {
       const images = new AiAssetStore({
@@ -680,7 +684,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
       }),
     })
     return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
-      audioAssets, mediaAssets, canvasPromptPresets, canvasProjects, canvasProjectAssets,
+      audioAssets, mediaAssets, worksTransfer, canvasPromptPresets, canvasProjects, canvasProjectAssets,
       chatService, imageService, canvasImageService, videoService, chatVideoService, canvasRuns, assetProtocol, chatAttachments, aiOutputPlacement,
       // 两个站点共用的那一层作品文件夹（设置页量占用用，A08）：用到时才算，算不出来只让那一行没算出来，不拖垮整个账号的服务。
       aiOutputSharedRoot: () => roots.sharedAssetOutputDirectory(aiOutputRoot),
