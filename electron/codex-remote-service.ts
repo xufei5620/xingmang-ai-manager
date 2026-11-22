@@ -3,6 +3,7 @@ import path from 'node:path'
 import { randomBytes, randomInt as cryptoRandomInt } from 'node:crypto'
 import {
   AppServerMethodError,
+  AppServerRequestError,
   AppServerTimeoutError,
   CodexAppServerClient,
   type AppServerProcess,
@@ -86,6 +87,7 @@ import {
 } from './codex-remote-text'
 import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 import { isRecord } from './input-guards'
+import { compareVersionNumbers } from './versions'
 
 // 手机遥控的底座：谁能指挥（配对、只认绑定的那一个人）、Codex 每次要动手前问谁（审批）、
 // 发出电脑的字遮掉什么（脱敏），都只在这里决定。渠道（飞书、微信）只管收发。
@@ -451,10 +453,11 @@ export function sameRemoteFolder(left: string, right: string, platform: NodeJS.P
 }
 
 /**
- * 接已有对话只对核过的 Codex 版本开放（yoyo 2026-11-22「接对话接原的」）：遥控的规矩要靠 turn/start 的试验字段
- * collaborationMode 塞进去，Codex 升级可能改名或去掉，去掉时规矩会悄悄没了。核过的是 0.169。
+ * 接已有对话从哪一版 Codex 起开放（yoyo 2026-11-22「接对话接原的」）：0.169.0 是最早实测过的。更新的版本不按版本号挡，
+ * 每次接上时由 applyRemoteRules 当场问 Codex 规矩套上了没有，没套上就明说这一版不支持（0.2.25 第三轮复查第 4 条）；
+ * 以前只认 0.169.x，推荐版一抬，这个功能就对照做的客户悄悄关了。
  */
-const resumeVerifiedCodexMinor = '0.169'
+const resumeMinimumCodexVersion = [0, 169, 0] as const
 
 /** initialize 答回来的 userAgent 是「xingmang_remote/0.169.0 (…)」。 */
 export function readCodexVersion(initialize: unknown): string | null {
@@ -463,7 +466,26 @@ export function readCodexVersion(initialize: unknown): string | null {
 }
 
 export function codexSupportsResume(version: string | null): boolean {
-  return version !== null && version.startsWith(`${resumeVerifiedCodexMinor}.`)
+  const match = version ? /^(\d+)\.(\d+)\.(\d+)$/.exec(version) : null
+  if (!match) return false
+  return compareVersionNumbers([Number(match[1]), Number(match[2]), Number(match[3])], resumeMinimumCodexVersion) >= 0
+}
+
+/**
+ * thread/resume 答回来的 collaborationMode 里，这份对话现在套着的是不是遥控这一段规矩。Codex 自己报的才算数，
+ * 只认一字不差的；没有这一项、字段改了名、换成了别的字，都算没套上。
+ */
+export function remoteRulesInEffect(resumed: unknown): boolean {
+  if (!isRecord(resumed) || !isRecord(resumed.collaborationMode) || !isRecord(resumed.collaborationMode.settings)) return false
+  return resumed.collaborationMode.settings.developer_instructions === developerInstructions
+}
+
+/**
+ * Codex 明着说不认这个请求：-32600 是方法名、字段认不出或者试验功能没开（Codex 0.171 对不认识的方法回的也是它），
+ * -32602 是参数不对。这是这一版对不上，不是一时出错；等不到回执、Codex 停了这些不算（code 是 null）。
+ */
+export function codexRejectedRequest(error: unknown): boolean {
+  return error instanceof AppServerRequestError && (error.code === -32600 || error.code === -32602)
 }
 
 /** 一段能接着聊的对话（thread/list 里的一项）：cwd 是 Codex 记的原样，标题是一行、截短的。 */
@@ -502,9 +524,9 @@ function conversationTitle(value: unknown): string | null {
 }
 
 /**
- * 接着已有对话的第一句补上遥控的规矩：Codex 0.169 的试验字段 collaborationMode（initialize 要开 experimentalApi），
- * 规矩作为一段 developer 消息记在对话上，之后电脑上接着聊也还在（yoyo 2026-11-22 知道并同意，接对话第 10、20 句）。
- * mode 用 default（普通对话，不是计划模式）；型号、推理强度照这一句要用的，不另改。
+ * 接着已有对话时套上的遥控规矩：Codex 的试验字段 collaborationMode（initialize 要开 experimentalApi），由
+ * thread/settings/update 写进这份对话，之后每一句都作为一段 developer 消息带上，电脑上接着聊也还在（yoyo 2026-11-22
+ * 知道并同意，接对话第 10、20 句）。mode 用 default（普通对话，不是计划模式）；型号、推理强度照原对话的，不另改。
  */
 export function buildRemoteCollaborationMode(model: string, reasoningEffort: string | null): Record<string, unknown> {
   return { mode: 'default', settings: { model, reasoning_effort: reasoningEffort, developer_instructions: developerInstructions } }
@@ -1031,11 +1053,6 @@ interface ChannelRuntime {
    * exceeds：接着的是电脑上已有的对话，它原来的权限超出手机这一档，第一句就降下来（resumedPermissionFits）。
    */
   threadPermission: RemotePermission | 'exceeds'
-  /**
-   * 接着电脑上已有的对话以后，第一句要用 collaborationMode 补上的遥控规矩（resume 带的 developerInstructions 不生效，
-   * Codex 0.169 实测）；带的型号、推理强度照原对话的。补过一次 Codex 就记在对话上了，之后不再带。
-   */
-  threadRules: { model: string; reasoningEffort: string | null } | null
   /** 手机上最近一次发「对话」列出来的那几段，「对话 N」照这个次序认；还没列过是 null。 */
   conversationChoices: ListedConversation[] | null
   /** 手机上最近一次发「文件夹」列出来的那几个（M18），「文件夹 N」照这份认；还没列过是 null，照电脑上现在的单子认。 */
@@ -1127,7 +1144,6 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     threadId: null,
     threadModel: null,
     threadPermission: 'default',
-    threadRules: null,
     conversationChoices: null,
     folderChoices: null,
     threadLost: false,
@@ -1217,8 +1233,13 @@ export class CodexRemoteService {
   private readonly fileChanges = new Map<string, RemoteFileChangeLine[]>()
   /** 上一条审批的编号；null = 这次打开星芒还没从设置里读过。 */
   private lastApprovalNumber: number | null = null
-  /** 正在用的那份 Codex 是哪个版本（initialize 的 userAgent）；读不出是 null。接已有对话只对核过的版本开放。 */
+  /** 正在用的那份 Codex 是哪个版本（initialize 的 userAgent）；读不出是 null。接已有对话从 0.169 起开放。 */
   private codexVersion: string | null = null
+  /**
+   * 这次开着星芒时，哪一版 Codex 接对话时核出规矩套不上（applyRemoteRules）：之后列对话、选对话都直接说不支持，
+   * 不再一次次接上去试。只记在内存里，重开星芒或者换了版本再核一遍。
+   */
+  private resumeUnconfirmedVersion: string | null = null
   /** 电脑页「选择对话」最近一次列出来的那几段：选的时候只认这里有的，文件夹也从这里拿（渲染层只给编号，I5）。 */
   private listedConversations = new Map<string, ListedConversation>()
   /** 遥控关着时临时起的那份 Codex 是哪个版本（withListingCodex）。 */
@@ -1696,7 +1717,7 @@ export class CodexRemoteService {
   async listConversations(): Promise<CodexRemoteConversationList> {
     try {
       return await this.withListingCodex(async (client, version) => {
-        if (!codexSupportsResume(version)) {
+        if (!this.resumeAvailable(version)) {
           this.listedConversations.clear()
           return { supported: false }
         }
@@ -1744,7 +1765,7 @@ export class CodexRemoteService {
     if (current?.threadId === threadId) return null
     const entry = this.listedConversations.get(threadId)
     if (!entry) throw new Error(remoteConversationErrors.unreadable)
-    if (!codexSupportsResume(this.codexVersion ?? this.listedVersion)) throw new Error(remoteConversationErrors.unsupported)
+    if (!this.resumeAvailable(this.codexVersion ?? this.listedVersion)) throw new Error(remoteConversationErrors.unsupported)
     let folder: string
     try {
       folder = validateRemoteWorkspace(entry.cwd, this.options.homeDirectory, this.platform)
@@ -1782,7 +1803,6 @@ export class CodexRemoteService {
   /** 换了对话：这份不接着用了，下一句照新选的来；不是意外丢的，不用说「前面的记不得了」。 */
   private startOverThread(runtime: ChannelRuntime): void {
     runtime.threadId = null
-    runtime.threadRules = null
     runtime.threadLost = false
   }
 
@@ -2348,7 +2368,6 @@ export class CodexRemoteService {
   private dropThread(runtime: ChannelRuntime): void {
     if (runtime.threadId) runtime.threadLost = true
     runtime.threadId = null
-    runtime.threadRules = null
   }
 
   /**
@@ -2883,7 +2902,6 @@ export class CodexRemoteService {
         }
         await this.abandonTurn(runtime)
         runtime.threadId = null
-        runtime.threadRules = null
         // 是他自己要的新对话，下次不用再提醒「前面的记不得了」。
         runtime.threadLost = false
         // 「手机端的对话」也回到新对话：不然下一句又接回电脑上选的那段。
@@ -3246,7 +3264,7 @@ export class CodexRemoteService {
     } catch {
       return remoteMessages.codexUnavailable
     }
-    if (!codexSupportsResume(this.codexVersion)) return remoteMessages.conversationUnsupported
+    if (!this.resumeAvailable(this.codexVersion)) return remoteMessages.conversationUnsupported
     let choices: ListedConversation[]
     try {
       choices = await this.phoneConversations(client)
@@ -3292,7 +3310,7 @@ export class CodexRemoteService {
       await this.sendText(runtime, remoteMessages.codexUnavailable)
       return
     }
-    if (!codexSupportsResume(this.codexVersion)) {
+    if (!this.resumeAvailable(this.codexVersion)) {
       await this.sendText(runtime, remoteMessages.conversationUnsupported)
       return
     }
@@ -3323,7 +3341,12 @@ export class CodexRemoteService {
       if (!folder) throw new Error('folder no longer added')
       validateRemoteWorkspace(folder, this.options.homeDirectory, this.platform)
       lowered = await this.resumeConversation(client, runtime, target.threadId, folder, wantedPermission)
-    } catch {
+    } catch (error) {
+      // 规矩套不上（这一版 Codex 不支持）照实说，别让人「稍后重试」；别的接不上照旧。
+      if (error instanceof RemoteConversationError) {
+        await this.sendText(runtime, error.reply)
+        return
+      }
       this.options.log('warn', 'remote.conversation-resume-failed', { channel: runtime.id, from: 'phone' })
       await this.sendText(runtime, remoteMessages.conversationResumeFailed)
       return
@@ -3354,24 +3377,58 @@ export class CodexRemoteService {
   }
 
   /**
-   * 在这份 Codex 里接上电脑上已有的那段对话（thread/resume），记到这个渠道上：原对话的权限在手机这一档里面就照它的，
-   * 超出就记成 exceeds，下一句的 turn/start 降下来；遥控的规矩也在下一句补上（threadRules）。回的是降到的那一档，没降是 null。
-   * 接不上、Codex 答回来的对话不在这个文件夹里都抛错，这个渠道原来那份对话不动。
+   * 在这份 Codex 里接上电脑上已有的那段对话（thread/resume），套上遥控的规矩并核过（applyRemoteRules），记到这个渠道上：
+   * 原对话的权限在手机这一档里面就照它的，超出就记成 exceeds，下一句的 turn/start 降下来。回的是降到的那一档，没降是 null。
+   * 接不上、Codex 答回来的对话不在这个文件夹里都抛错，规矩套不上抛 RemoteConversationError；这个渠道原来那份对话都不动。
    */
   private async resumeConversation(client: CodexAppServerClient, runtime: ChannelRuntime, threadId: string, workspace: string, permission: RemotePermission): Promise<RemotePermission | null> {
     // 读不出配了哪些外部工具就不接：宁可这一条做不了，也不让手机用上没关掉的工具（同 thread/start）。
     const configRead = await client.request('config/read', { cwd: workspace, includeLayers: true })
-    const resumed = readResumedThread(await client.request('thread/resume', buildThreadResumeParams(threadId, buildRemoteMcpServerOverrides(configRead))))
+    const params = buildThreadResumeParams(threadId, buildRemoteMcpServerOverrides(configRead))
+    const resumed = readResumedThread(await client.request('thread/resume', params))
     if (!resumed || resumed.threadId !== threadId) throw new Error('Codex 没有接上这段对话')
     if (!sameRemoteFolder(resumed.cwd, workspace, this.platform)) throw new Error('这段对话不在这个文件夹里')
+    await this.applyRemoteRules(client, params, resumed)
     const fits = resumedPermissionFits(resumed, permission, workspace, this.platform)
     runtime.threadId = threadId
     // null = 不另选型号：照原对话的；「手机端使用的模型」单独选了的，下一句照常带上（turnModel）。
     runtime.threadModel = null
     runtime.threadPermission = fits ? permission : 'exceeds'
-    runtime.threadRules = { model: resumed.model, reasoningEffort: resumed.reasoningEffort }
     runtime.threadLost = false
     return fits ? null : permission
+  }
+
+  /**
+   * 给接上的对话套上遥控的规矩，再问 Codex 一遍真套上了没有（0.2.25 第三轮复查第 4 条）。规矩靠的是 Codex 的试验字段
+   * collaborationMode，哪一版把它改名、去掉了，Codex 不报错，只会悄悄不认，所以不按版本号放行，每次都当场核：
+   * 先用 thread/settings/update 写进这份对话，再接一次（同一份 Codex 里接的就是开着的这份，不重读记录），看 Codex
+   * 答回来的 collaborationMode 是不是这一段。不是，或者 Codex 明着不认这个请求，就是这一版接不了：手机上的话一句都
+   * 不交给它，记下这一版，之后列对话、选对话都直接说不支持。等不到回执、Codex 停了这类一时的错照原样抛，按「接不上」说。
+   * Codex 0.169.0 和 0.171.0 在沙箱里实测过：写进去以后再接答回来的就是这一段，下一句发给模型的请求里也带着它，
+   * 换了型号也还在；字段名写错时 Codex 照样回成功，再接答回来的没有这一段。
+   */
+  private async applyRemoteRules(client: CodexAppServerClient, params: Record<string, unknown>, resumed: ResumedThread): Promise<void> {
+    try {
+      await client.request('thread/settings/update', {
+        threadId: resumed.threadId,
+        collaborationMode: buildRemoteCollaborationMode(resumed.model, resumed.reasoningEffort),
+      })
+    } catch (error) {
+      if (codexRejectedRequest(error)) throw this.remoteRulesUnconfirmed('rejected')
+      throw error
+    }
+    if (!remoteRulesInEffect(await client.request('thread/resume', params))) throw this.remoteRulesUnconfirmed('not-in-effect')
+  }
+
+  private remoteRulesUnconfirmed(reason: 'rejected' | 'not-in-effect'): RemoteConversationError {
+    this.resumeUnconfirmedVersion = this.codexVersion
+    this.options.log('warn', 'remote.conversation-rules-unconfirmed', { version: this.codexVersion ?? 'unknown', reason })
+    return new RemoteConversationError(remoteMessages.conversationUnsupported)
+  }
+
+  /** 这一版 Codex 能不能接已有对话：不早于 0.169，而且这次开着星芒时没核出它套不上规矩（applyRemoteRules）。 */
+  private resumeAvailable(version: string | null): boolean {
+    return codexSupportsResume(version) && version !== this.resumeUnconfirmedVersion
   }
 
   /** 手机上发「状态」回的那几行（YF-18）。 */
@@ -3647,10 +3704,12 @@ export class CodexRemoteService {
       const chosen = runtime.threadId ? null : resolveChosenConversation(settings)
       if (chosen) {
         // 电脑页上选了接着已有的那段（或 Codex 停过、这份对话丢了）：先接上它，接不上这一条就不做，不悄悄换成新对话。
-        if (!codexSupportsResume(this.codexVersion)) throw new RemoteConversationError(remoteMessages.conversationUnsupported)
+        if (!this.resumeAvailable(this.codexVersion)) throw new RemoteConversationError(remoteMessages.conversationUnsupported)
         try {
           await this.resumeConversation(client, runtime, chosen.threadId, workspace, wantedPermission)
         } catch (error) {
+          // 规矩套不上：这一版不支持，照实说（applyRemoteRules 已记了日志）。
+          if (error instanceof RemoteConversationError) throw error
           if (runtime.turn === turn) this.options.log('warn', 'remote.conversation-resume-failed', { channel: runtime.id, from: 'message' })
           throw new RemoteConversationError(remoteMessages.conversationResumeFailed, error)
         }
@@ -3673,7 +3732,6 @@ export class CodexRemoteService {
       if (!this.turnStillWanted(runtime, turn)) return
       // 开着的对话中途换了「权限」、接着的已有对话原来超出这一档：这一句起照手机这档，Codex 会一直用到这份对话结束。
       const permissionChanged = wantedPermission !== runtime.threadPermission
-      const rules = runtime.threadRules
       awaitingTurnStart = threadId
       const result = await client.request('turn/start', {
         threadId,
@@ -3681,13 +3739,11 @@ export class CodexRemoteService {
         input: [{ type: 'text', text, text_elements: [] }, ...images.map((image) => ({ type: 'localImage', path: image }))],
         ...(model ? { model } : {}),
         ...(permissionChanged ? { approvalPolicy: remoteApprovalPolicy, approvalsReviewer: 'user', sandboxPolicy: buildRemoteSandboxPolicy(wantedPermission) } : {}),
-        ...(rules ? { collaborationMode: buildRemoteCollaborationMode(model ?? rules.model, rules.reasoningEffort) } : {}),
       })
       awaitingTurnStart = null
       if (runtime.threadId === threadId) {
         runtime.threadModel = wantedModel
         runtime.threadPermission = wantedPermission
-        runtime.threadRules = null
       }
       const turnId = isRecord(result) && isRecord(result.turn) ? stringField(result.turn.id) : null
       if (turnId && this.turnStillWanted(runtime, turn)) turn.id = turnId
