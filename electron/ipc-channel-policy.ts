@@ -323,6 +323,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'chat-history:export-text': { label: '聊天对话导出', log: 'normal', account: 'none' },
   'data-transfer:export': { label: '聊天记录与设置导出', log: 'normal', account: 'none' },
   'data-transfer:import': { label: '聊天记录与设置导入', log: 'normal', account: 'none' },
+  'data-transfer:inspect-works': { label: '作品大小统计', log: 'normal', account: 'scoped' },
+  'data-transfer:import-works': { label: '作品导入', log: 'normal', account: 'scoped' },
   'diagnostics:check-connection': { label: '连接自检', log: 'normal', account: 'none' },
   'diagnostics:probe-codex-responses': { label: 'Codex 干活检查', log: 'normal', account: 'none' },
   'diagnostics:check-external-connection': { label: '客户端连接自检', log: 'normal', account: 'none' },

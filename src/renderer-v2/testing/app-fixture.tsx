@@ -348,6 +348,8 @@ let nextChatHistoryReadHeld = false
 let releaseChatHistoryRead: () => void = () => undefined
 // ?chatImportContinued：第二次起导入的文件里，那个对话在旧电脑上又接着聊了一句（设置 X-4）。
 let importAppDataCount = 0
+// 约 3.2 GB，跟贴给 yoyo 的那句一样。
+const fixtureWorks = { images: 96, videos: 30, audios: 2, bytes: 3_435_973_837 }
 // ?chatImage：对话页能选出图的模型，出的图压着不回，releaseChatImage 才交出来（D44 换账号先问一句）。
 let releaseChatImage: () => void = () => undefined
 // ?chatVideo：对话页的「生成视频」能选到视频的模型，价目里有它按次的价；交出去的那一段压着不回，releaseChatVideo 才交出来（融合第 2 步）。
@@ -1171,7 +1173,19 @@ const methods = {
     const messages = [{ id: 'old-message', role: 'user' as const, content: '旧电脑上问过的话', reasoning: '', status: 'complete' as const, createdAt: 1 }]
     if (query.has('chatImportContinued') && importAppDataCount > 1) messages.push({ id: 'old-message-later', role: 'user' as const, content: '旧电脑上后来又问的', reasoning: '', status: 'complete' as const, createdAt: 2 })
     const conversation = { ...createConversation(undefined, 'from-old-computer'), title: '旧电脑上的对话', messages }
-    return { conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }), phrases: ['旧电脑上存的一句'], settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] }
+    return {
+      conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }), phrases: ['旧电脑上存的一句'], settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [],
+      ...(query.has('transferWorks') ? { works: { ...fixtureWorks, state: 'ready' as const, token: 'fixture-works-token' } } : {}),
+    }
+  },
+  // 「搬作品改」：?transferWorks 时当前账号作品库里有 128 件作品，导出前先问带不带。
+  inspectAppWorks: async () => query.has('transferWorks') ? { ...fixtureWorks } : { images: 0, videos: 0, audios: 0, bytes: 0 },
+  exportAppData: async (input) => input.includeWorks
+    ? { outputPath: 'C:\\Users\\fixture\\Downloads\\星芒数据导出-2026-11-22\\星芒聊天记录与设置.json', conversations: input.conversations.length, videoProjects: input.videoProjects?.length ?? 0, works: { folderName: '星芒数据导出-2026-11-22', count: 128 } }
+    : { outputPath: 'C:\\Users\\fixture\\Downloads\\星芒聊天记录与设置-2026-11-22.json', conversations: input.conversations.length, videoProjects: input.videoProjects?.length ?? 0 },
+  importAppWorks: async (token) => {
+    if (token !== 'fixture-works-token') throw new Error('请再次点击「导入」。')
+    return { status: 'done' as const, added: 120, existing: 8, failed: 0 }
   },
   getLegalDocument: async (kind) => ({ kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }),
   getAccountProfile: async () => ({ ...account, displayName: account.username, email: 'fixture@example.com', requestCount: 0, affCode: 'test', affCount: 0, affQuota: 0, affHistoryQuota: 0 }),

@@ -825,12 +825,47 @@ export interface DataTransferExportInput {
   conversations: unknown[]
   /** 聊天页「常用的话」（Fable 第二轮 Q7）。旧版本不带，当作没存过。 */
   phrases?: string[]
+  /** 「创作」里的视频，一条一个文件，原样带走（内容由渲染层自己认）。旧版本不带。 */
+  videoProjects?: VideoStudioProjectFile[]
+  /**
+   * 连当前账号作品库里的作品一起导出（「搬作品改」）：主进程让客户选一个位置，在那里新建一个文件夹放聊天记录
+   * 和「作品」文件夹。作品是哪些、在哪由主进程按当前账号自己找，渲染层只说要不要。
+   */
+  includeWorks?: boolean
+}
+
+/** 当前账号作品库里有多少作品（回收站里的不算）、一共多大。 */
+export interface DataTransferWorksSummary {
+  images: number
+  videos: number
+  audios: number
+  bytes: number
 }
 
 export interface DataTransferExportResult {
+  /** 聊天记录与设置那份文件；带作品时在新建的文件夹里（「打开所在位置」定位到它）。 */
   outputPath: string
   conversations: number
+  /** 带走了几条视频；旧版本不回。 */
+  videoProjects?: number
+  /** 带作品导出时才有：新建的文件夹叫什么、实际导出了几件作品。 */
+  works?: { folderName: string; count: number }
 }
+
+/**
+ * 导入的文件旁边「作品」文件夹的样子。ready：清单读得出来，token 交给 data-transfer:import-works 导入；
+ * missing：文件里说带了作品，旁边却没有这个文件夹；unreadable：有文件夹，但里面的清单读不出来或不对。
+ * 数目在 ready 时是清单里的，另两种是文件里记的。
+ */
+export type DataTransferWorksPreview = DataTransferWorksSummary & (
+  | { state: 'ready'; token: string }
+  | { state: 'missing' | 'unreadable' }
+)
+
+/** 导入作品的结果。no-space：空间不够，一件都没导，neededBytes 是要复制的那几件加起来多大。 */
+export type DataTransferWorksImportResult =
+  | { status: 'done'; added: number; existing: number; failed: number }
+  | { status: 'no-space'; neededBytes: number; availableBytes: number }
 
 /**
  * 「搬到新电脑」导入读出来的内容，还没有写进任何地方。对话由渲染层逐条严格校验后
@@ -853,6 +888,10 @@ export interface DataTransferImportPreview {
   anonymousUsage?: boolean
   /** 同上，这台电脑上关过、文件里是开的：和 conflictingSettings 一起先问，设置名已经在 conflictLabels 里。 */
   conflictingAnonymousUsage?: boolean
+  /** 文件里「创作」的视频，渲染层逐条认过再合并。旧文件没有这一项。 */
+  videoProjects?: VideoStudioProjectFile[]
+  /** 导出时带了作品才有。 */
+  works?: DataTransferWorksPreview
 }
 
 /**
@@ -1624,6 +1663,13 @@ export interface XingmangInvokeContract {
   exportAiChatConversation: IpcInvokeDefinition<'chat-history:export-text', [input: ChatConversationExportInput], { outputPath: string } | null>
   exportAppData: IpcInvokeDefinition<'data-transfer:export', [input: DataTransferExportInput], DataTransferExportResult | null>
   importAppData: IpcInvokeDefinition<'data-transfer:import', [], DataTransferImportPreview | null>
+  /** 导出前问一句带不带作品时报的数（「搬作品改」）；没登录是 null。 */
+  inspectAppWorks: IpcInvokeDefinition<'data-transfer:inspect-works', [], DataTransferWorksSummary | null>
+  /**
+   * 把刚才 data-transfer:import 选的那份文件旁边的作品导进当前账号的作品库。token 是那一次给的；文件路径
+   * 留在主进程，渲染层交不进别的位置。本机已有的同名作品不覆盖。
+   */
+  importAppWorks: IpcInvokeDefinition<'data-transfer:import-works', [token: string], DataTransferWorksImportResult>
   /**
    * 连接自检：用该工具配置文件里真正写着的 Key、服务地址和模型，向星芒服务
    * 发一次最小请求，把失败归到网络 / 密钥 / 额度 / 分组 / 模型 / 协议中的
@@ -2006,6 +2052,8 @@ export const ipcInvokeChannels = {
   exportAiChatConversation: 'chat-history:export-text',
   exportAppData: 'data-transfer:export',
   importAppData: 'data-transfer:import',
+  inspectAppWorks: 'data-transfer:inspect-works',
+  importAppWorks: 'data-transfer:import-works',
   checkProviderConnection: 'diagnostics:check-connection',
   probeCodexResponses: 'diagnostics:probe-codex-responses',
   checkExternalClientConnection: 'diagnostics:check-external-connection',
