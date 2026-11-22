@@ -1,4 +1,4 @@
-// 主窗口业务通道的处理器：「设置 › 备份迁移 › 星芒占用的空间」那张卡（决定单 D100）算大小、清理。
+// 主窗口业务通道的处理器：「设置 › 备份迁移 › 星芒占用空间」那张卡（决定单 D100）算大小、清理。
 // 入参只认是哪一行、清哪一样；文件夹的位置和删哪些文件全由主进程定（I5、I8）。
 import { isStorageCleanTarget, isStorageUsagePart } from '../../storage-usage'
 import type { IpcHandlerContext } from './context'

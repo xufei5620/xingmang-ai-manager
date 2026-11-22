@@ -120,16 +120,16 @@ export interface IpcRegistrationOptions {
   // 当前账号的 AI 作品实际存在哪（「文档」不让写时是主目录下的 XingmangAI）；检查页
   // 「打开文件夹」用。main.ts 传启动时定下的位置；省略 = 这颗按钮打不开 AI 作品那一个。
   aiOutputDirectory?: () => string
-  // 「搬到新电脑」和「导出这段对话」的保存框默认落在「下载」（D16）；main.ts 传 app.getPath('downloads')。
+  // 「迁移到新电脑」和「导出这段对话」的保存框默认落在「下载」（D16）；main.ts 传 app.getPath('downloads')。
   // 省略 = 主目录下的 Downloads。
   downloadsDirectory?: () => string
-  // 「搬到新电脑」带上的「匿名使用统计」（X-3）：这台电脑上存着的样子，没碰过 = 开；系统界面设置读不出来
+  // 「迁移到新电脑」带上的「匿名使用统计」（X-3）：这台电脑上存着的样子，没碰过 = 开；系统界面设置读不出来
   // 给 null。省略 = 导出不带、导入不碰这一项（测试与旧调用方）。
   readAnonymousUsagePreference?: () => boolean | null
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore
-  /** 「设置 › 备份迁移 › 星芒占用的空间」（storage-usage-service.ts）；省略 = 那两条通道报「还不能算」。 */
+  /** 「设置 › 备份迁移 › 星芒占用空间」（storage-usage-service.ts）；省略 = 那两条通道报「还不能算」。 */
   storageUsage?: StorageUsageService
   diagnosticsService: {
     run(options?: DiagnosticsRunOptions): Promise<DiagnosticsReport>

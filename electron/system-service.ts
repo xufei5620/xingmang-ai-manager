@@ -479,7 +479,7 @@ export interface SystemService {
    */
   repairCliHooks?(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>>
   /**
-   * 设置里「只让 Claude Code 改项目文件夹里的文件」：接着当前账号时当场改 Claude Code 的配置（backup 在真要写之前调），
+   * 设置里「仅允许 Claude Code 修改项目文件夹内的文件」：接着当前账号时当场改 Claude Code 的配置（backup 在真要写之前调），
    * 再记下开关。可选 = 旧实现不提供。
    */
   setClaudeWriteBoundary?(enabled: boolean, backup?: () => void): Promise<ClaudeToggleResult>
@@ -655,7 +655,7 @@ export interface SystemService {
    * 队列里，不会和正在进行的安装撞上；从不抛错。
    */
   cleanupInstallLeftovers(): Promise<InstallLeftoverSweepResult>
-  /** 「设置 › 备份迁移 › 星芒占用的空间」里「装工具时下载的文件」的大小：点「清理」能腾出来的那些。从不排队。 */
+  /** 「设置 › 备份迁移 › 星芒占用空间」里「装工具时下载的文件」的大小：点「清理」能腾出来的那些。从不排队。 */
   measureInstallLeftoversNow(): Promise<number>
   /** 那一行的「清理」：排进安装队列，正在装就等它装完；年龄规则见 install-leftovers.ts 的 manualInstallLeftoverMinimumAgeMs。 */
   cleanInstallLeftoversNow(): Promise<InstallLeftoverSweepResult>
@@ -902,7 +902,7 @@ export interface SystemServiceOptions {
    * 免得单测装一次工具就去扫开发机的临时目录。
    */
   sweepInstallLeftovers?: (locations: readonly InstallLeftoverLocation[], options?: InstallLeftoverSweepOptions) => Promise<InstallLeftoverSweepResult>
-  /** 只量不删，「星芒占用的空间」那一行用。缺省 = 量出来是 0（测试与旧行为），同上只有 main.ts 接真实现。 */
+  /** 只量不删，「星芒占用空间」那一行用。缺省 = 量出来是 0（测试与旧行为），同上只有 main.ts 接真实现。 */
   measureInstallLeftovers?: (locations: readonly InstallLeftoverLocation[], options?: InstallLeftoverSweepOptions) => Promise<number>
   /**
    * Windows 上装、卸 Codex 之前让手机遥控放开它那份 Codex（codex-remote-service.ts 的 releaseCodex，#1407 P3-3）：

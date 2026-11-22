@@ -26,8 +26,8 @@ export function RuntimeInstallHint({ runtime, guide }: { runtime: ManagedRuntime
       <code className="v2-business-code" data-testid={`home-runtime-command-${runtime}`}>{command}</code>
       <Button size="xs" variant="ghost" icon={Copy} testId={`home-runtime-copy-${runtime}`} onClick={() => copy(command)}>复制命令</Button>
     </div>}
-    {copied && <p className="v2-runtime-guide-note" role="status">命令已复制，粘到「终端」里回车即可</p>}
-    {failed && <p className="v2-runtime-guide-note" role="status">没能写进剪贴板，手动选中上面的命令复制就行</p>}
-    {!guide.noTutorial && <p className="v2-runtime-guide-note">装 {runtimeDisplayName(runtime)} 的完整步骤在教程里也有一份。</p>}
+    {copied && <p className="v2-runtime-guide-note" role="status">命令已复制，请粘贴到「终端」中并按回车</p>}
+    {failed && <p className="v2-runtime-guide-note" role="status">无法写入剪贴板，请手动选中上方命令复制</p>}
+    {!guide.noTutorial && <p className="v2-runtime-guide-note">安装 {runtimeDisplayName(runtime)} 的完整步骤另见教程。</p>}
   </div>
 }

@@ -2662,7 +2662,7 @@ if (!hasSingleInstanceLock) {
     })
     // 复制密钥、新密码用：60 秒自动清，退出前（prepareToQuit）再清一次。
     const sensitiveClipboard = createSensitiveClipboard({ clipboard })
-    // 「设置 › 备份迁移 › 星芒占用的空间」（决定单 D100）：只在客户打开那一组时问，不在后台算。
+    // 「设置 › 备份迁移 › 星芒占用空间」（决定单 D100）：只在客户打开那一组时问，不在后台算。
     const storageUsage = createStorageUsageService({
       worksDirectory: () => currentBusiness().aiOutputSharedRoot(),
       canvasProjectAssetDirectories: async () => (await Promise.all((['xm-account', 'api-account'] as const)
@@ -2693,7 +2693,7 @@ if (!hasSingleInstanceLock) {
       documentsDirectory: () => app.getPath('documents'),
       aiOutputDirectory: () => currentBusiness().aiOutputPlacement.root,
       downloadsDirectory: () => app.getPath('downloads'),
-      // 设置页那个开关同一份文件、同一种读法（没碰过 = 开）；读不出来交 null，「搬到新电脑」就不带也不碰它（X-3）。
+      // 设置页那个开关同一份文件、同一种读法（没碰过 = 开）；读不出来交 null，「迁移到新电脑」就不带也不碰它（X-3）。
       readAnonymousUsagePreference: () => {
         try {
           return new PlatformSettingsStore(platformPreferencesPath).read().privacy?.anonymousUsage !== false

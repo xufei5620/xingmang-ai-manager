@@ -1,4 +1,4 @@
-// 主窗口业务通道的处理器：导出这段对话、「搬到新电脑」的导出与导入。
+// 主窗口业务通道的处理器：导出这段对话、「迁移到新电脑」的导出与导入。
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
 import { dialog } from 'electron'
 import os from 'node:os'
@@ -50,7 +50,7 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
     rememberExportedFile(result.filePath)
     return { outputPath: result.filePath }
   })
-  // 「搬到新电脑」：设置由这里自己从 settings.json 和系统界面设置里挑，渲染层只交对话；文件里没有 Key、
+  // 「迁移到新电脑」：设置由这里自己从 settings.json 和系统界面设置里挑，渲染层只交对话；文件里没有 Key、
   // 密码和登录状态（data-transfer.ts）。
   registerTrustedHandler('data-transfer:export', async (_event, input: unknown) => {
     const exportInput = parseDataTransferExportInput(input)

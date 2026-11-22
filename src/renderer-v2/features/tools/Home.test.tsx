@@ -1022,7 +1022,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).toContain('前往官网下载 Python（可选环境）')
     expect(markup).toContain('data-testid="home-runtime-python"')
     expect(markup).toContain('data-testid="home-runtime-tutorial"')
-    expect(markup).toContain('装 Python 的完整步骤在教程里也有一份')
+    expect(markup).toContain('安装 Python 的完整步骤另见教程')
     // Node 没缺就不该多出一段 Node 的步骤。
     expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
   })

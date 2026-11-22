@@ -123,8 +123,8 @@ export const settingsSections = [
   { value: 'display', group: 'appearance', label: '辅助与显示' },
   { value: 'routes', group: 'network', label: '连接线路' },
   { value: 'download', group: 'network', label: '下载与连接' },
-  { value: 'reminders', group: 'notifications', label: '提醒哪些事' },
-  { value: 'transfer', group: 'backup', label: '搬到新电脑' },
+  { value: 'reminders', group: 'notifications', label: '提醒事项' },
+  { value: 'transfer', group: 'backup', label: '迁移到新电脑' },
 ] as const satisfies ReadonlyArray<{ value: string; group: SettingsGroupId; label: string }>
 export type SettingsSectionId = (typeof settingsSections)[number]['value']
 export const scopeOptions = [
@@ -470,24 +470,24 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'language', group: 'appearance', section: 'text-scale', label: '界面语言', keywords: ['中文'] },
   { id: 'high-contrast', group: 'appearance', section: 'display', label: '高对比度', keywords: ['看不清'] },
   { id: 'reduced-motion', group: 'appearance', section: 'display', label: '减少动画', keywords: ['动效'] },
-  { id: 'hardware-acceleration', group: 'appearance', section: 'display', label: '用显卡加速显示', keywords: ['黑屏', '花屏', '闪烁', '闪退', '显卡'] },
+  { id: 'hardware-acceleration', group: 'appearance', section: 'display', label: '使用显卡加速显示', keywords: ['用显卡加速显示', '黑屏', '花屏', '闪烁', '闪退', '显卡'] },
   { id: 'restore-appearance', group: 'appearance', section: 'display', label: '恢复默认外观', keywords: ['重置', '默认'] },
   { id: 'launch-at-login', group: 'startup', label: '开机自动启动', keywords: ['开机', '自启'] },
-  { id: 'close-behavior', group: 'startup', label: '点关闭按钮时', keywords: ['托盘', '最小化', '关闭'] },
+  { id: 'close-behavior', group: 'startup', label: '点击关闭按钮时', keywords: ['点关闭按钮时', '托盘', '最小化', '关闭'] },
   { id: 'startup-diagnostics', group: 'startup', label: '启动时检查环境', keywords: [] },
   { id: 'workspace', group: 'tools', label: '工作文件夹', keywords: ['工作文件夹', '项目文件夹', '默认文件夹'] },
   // Claude Code 的写文件、改文件只在打开的那个文件夹里做（Fable 第二轮 Q6），默认关。
-  { id: 'claude-write-boundary', group: 'tools', label: '只让 Claude Code 改项目文件夹里的文件', keywords: ['文件夹外面', '乱改文件', '改错文件', '写文件', '权限'] },
+  { id: 'claude-write-boundary', group: 'tools', label: '仅允许 Claude Code 修改项目文件夹内的文件', keywords: ['只让 Claude Code 改项目文件夹里的文件', '文件夹外面', '乱改文件', '改错文件', '写文件', '权限'] },
   // 提交代码、发 PR 时不带 Claude 的署名（同类对比 备选 6），默认关。
   { id: 'claude-commit-attribution', group: 'tools', label: 'Claude Code 提交代码时不署名', keywords: ['署名', 'Co-Authored-By', 'commit', 'git', 'PR', '提交记录'] },
-  { id: 'latest-cli', group: 'tools', label: '命令行工具总是装最新版', keywords: ['最新版', '推荐版本'] },
+  { id: 'latest-cli', group: 'tools', label: '命令行工具始终安装最新版本', keywords: ['总是装最新版', '最新版', '推荐版本'] },
   { id: 'install-location', group: 'tools', label: '安装位置', keywords: ['装在哪'] },
   { id: 'terminal', group: 'tools', label: '终端', keywords: ['命令行'] },
   // 在飞书或微信里私聊机器人让电脑上的 Codex 干活（features/settings/codex-remote）。
   { id: 'codex-remote', group: 'tools', label: '手机遥控 Codex', keywords: ['遥控', '手机', '飞书', '微信', 'ClawBot', '机器人', '远程', '配对'], card: true },
   { id: 'acceleration', group: 'network', label: '网络加速', keywords: ['加速', '游戏', '延迟', '卡顿', '免费时长', '加速线路'], when: 'acceleration', card: true },
   ...connectionRouteSettings.map((route): SettingsItem => ({ id: route.id, group: 'network', section: 'routes', label: route.label, keywords: ['线路', '线路1', '线路2', '直连', '洛杉矶', 'CF', '备用', '重启', '连不上'] })),
-  { id: 'tool-route-restart-hints', group: 'network', section: 'routes', label: '换线路后提醒我重开工具', keywords: ['线路', '重开', '需重开生效'] },
+  { id: 'tool-route-restart-hints', group: 'network', section: 'routes', label: '切换线路后提醒重新打开工具', keywords: ['换线路后提醒我重开工具', '线路', '重开', '需重开生效'] },
   { id: 'mirror', group: 'network', section: 'download', label: '下载来源', keywords: ['镜像', '下载慢', '国内', '官方源'] },
   { id: 'proxy', group: 'network', section: 'download', label: '连接方式', keywords: ['网络连接', '代理', 'VPN', '梯子'] },
   { id: 'network-check', group: 'network', section: 'download', label: '网络检查', keywords: [] },
@@ -508,7 +508,7 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'transfer-import', group: 'backup', section: 'transfer', label: '从文件导入', keywords: ['导入', '换电脑', '新电脑', '迁移', '搬到新电脑'] },
   // 星芒自己占了多少地方、能清哪些（决定单 D100，「空间页改」）。「C盘满了」是批过的「C 盘满了」不带空格的写法：
   // 搜索按空格拆词，客户多半不打那个空格。
-  { id: 'storage', group: 'backup', label: '星芒占用的空间', keywords: ['空间', '磁盘', '清理', '占用', 'C 盘满了', 'C盘满了', '内存不够'], card: true },
+  { id: 'storage', group: 'backup', label: '星芒占用空间', keywords: ['星芒占用的空间', '空间', '磁盘', '清理', '占用', 'C 盘满了', 'C盘满了', '内存不够'], card: true },
   { id: 'crash-reporting', group: 'privacy', label: '自动发送错误报告', keywords: [] },
   { id: 'usage-stats', group: 'privacy', label: '匿名使用统计', keywords: [] },
   { id: 'logs', group: 'privacy', label: '运行日志', keywords: ['日志', '报告'] },

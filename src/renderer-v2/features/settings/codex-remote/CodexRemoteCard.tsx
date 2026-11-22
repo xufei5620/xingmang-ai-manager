@@ -536,7 +536,7 @@ export function CodexRemoteCard({ api, navigate, onOpenHelp, isMac = false }: {
   api: V2Bridge
   navigate?: (page: V2Page, section?: string) => void
   onOpenHelp?: () => void
-  /** 设置页从主进程报的平台能力里取的（跟「点关闭按钮时」那一项同一份）。 */
+  /** 设置页从主进程报的平台能力里取的（跟「点击关闭按钮时」那一项同一份）。 */
   isMac?: boolean
 }) {
   const lowBalance = useRemoteLowBalance()

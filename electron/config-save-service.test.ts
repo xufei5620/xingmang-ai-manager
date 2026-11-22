@@ -271,7 +271,7 @@ describe('the environment the Windows Grok shell is worked out from', () => {
   })
 })
 
-// Fable 第二轮 Q6：设置里「只让 Claude Code 改项目文件夹里的文件」。
+// Fable 第二轮 Q6：设置里「仅允许 Claude Code 修改项目文件夹内的文件」。
 describe('the Claude Code write boundary toggle', () => {
   const settingsOf = (userHome: string) => JSON.parse(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')) as { permissions?: Record<string, unknown> }
   const saveForAccount = (service: ReturnType<typeof createService>['service'], apiKey = 'sk-fixture') => service.saveConfig(

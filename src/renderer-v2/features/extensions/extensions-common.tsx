@@ -70,7 +70,7 @@ export function officialMarketplaceNotice(
       ? {
           tone: 'neutral',
           title: '官方插件目录已就绪',
-          body: '下面是 Codex 可以安装的插件，安装前确认插件来源。要登录 ChatGPT 账号才能用的插件不在其中。',
+          body: '以下为 Codex 可安装的插件，安装前请确认插件来源。需登录 ChatGPT 账号才能使用的插件未列出。',
           needsAction: false,
           actionLabel: '下载插件目录',
         }
@@ -79,7 +79,7 @@ export function officialMarketplaceNotice(
           title: '官方插件目录尚未下载',
           body:
             marketplace.reason ||
-            '下载之后这里才会出现可以安装的插件，网络慢时要等一会儿。',
+            '下载完成后此处将显示可安装的插件，网络较慢时请稍候。',
           needsAction: true,
           actionLabel: '下载插件目录',
         }
@@ -88,7 +88,7 @@ export function officialMarketplaceNotice(
     return {
       tone: 'neutral',
       title: '官方插件市场已添加',
-      body: '下面是可以安装的插件，安装前确认插件来源。',
+      body: '以下为可安装的插件，安装前请确认插件来源。',
       needsAction: false,
       actionLabel: '添加官方市场',
     }
@@ -217,7 +217,7 @@ export function extensionUpdateStatus(item: ExtensionItem): string {
 }
 
 /**
- * scope 是 CLI 自己的英文叫法，「范围」筛选和详情按同一套归类：local 是只在这个项目里用的那一份，
+ * scope 是 CLI 自己的英文叫法，「范围」筛选和详情按同一套归类：local 是仅在当前项目中使用的那一份，
  * 归「当前项目」；扩展自带的技能装在用户目录里，哪个文件夹打开都能用，归「我的（全局）」。
  */
 function extensionShownScope(scope: ExtensionItem['scope'] | undefined) {
@@ -541,7 +541,7 @@ export function mcpRuntimeNotice(
   if (needs === 'uv') sentences.push('该工具还需安装 uv 组件，请点击「联系客服」获取安装指导。')
   sentences.push('仍可直接添加，但工具调用时将无法连接。')
   return {
-    title: '这条连接还差一样东西',
+    title: '该连接缺少必要组件',
     body: sentences.join(''),
     installPython: !runtimes.python && management === 'managed',
     support: needs === 'uv',
@@ -564,7 +564,7 @@ export function parseCommandArguments(value: string): string[] {
     !Array.isArray(result) ||
     !result.every((item): item is string => typeof item === 'string')
   )
-    throw new Error('附加参数照提供方说明原样粘贴，例如 ["-y", "工具包名称"]。')
+    throw new Error('附加参数请按提供方说明原样粘贴，例如 ["-y", "工具包名称"]。')
   return result
 }
 export function parseEnvironmentVariables(
@@ -580,7 +580,7 @@ export function parseEnvironmentVariables(
         /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && typeof entry === 'string',
     )
   )
-    throw new Error('附加设置照提供方说明原样粘贴，例如 {"名称": "值"}。')
+    throw new Error('附加设置请按提供方说明原样粘贴，例如 {"名称": "值"}。')
   return result as Record<string, string>
 }
 const headerFormatError = '请求头每行一个，格式为「名称: 值」，例如 Authorization: Bearer 您的密钥。'
@@ -722,9 +722,9 @@ export function fillCuratedPlaceholders(
 export function curatedVersionText(item: CuratedExtension): string {
   if (item.install.type !== 'plugin')
     return item.pinnedVersion ? `固定在 ${item.pinnedVersion}` : '由服务方在线提供，无本地版本'
-  const commit = item.marketplaceCommit ? `，我们复核过的是 ${item.marketplaceCommit.slice(0, 12)} 那一版` : ''
-  const declared = item.pinnedVersion ? `插件自己声明的版本是 ${item.pinnedVersion}。` : ''
-  return `${declared}安装的是官方市场当前的版本${commit}。`
+  const commit = item.marketplaceCommit ? `，星芒已复核的版本为 ${item.marketplaceCommit.slice(0, 12)}` : ''
+  const declared = item.pinnedVersion ? `插件声明的版本为 ${item.pinnedVersion}。` : ''
+  return `${declared}将安装官方市场的当前版本${commit}。`
 }
 
 /** hideScope：精选页的确认框下面另有「给这些工具用」，那里不再写「当前这个工具」装在哪一层。 */
@@ -734,7 +734,7 @@ export function CuratedDetails({ item, hideScope }: { item: CuratedExtension; hi
     <div data-testid={`curated-details-${item.id}`}>
       <p>{item.summary}</p>
       <div className="v2-curated-tags">
-        {item.requiresAccount && <Pill tone="accent">需要先登录</Pill>}
+        {item.requiresAccount && <Pill tone="accent">需先登录</Pill>}
         {item.risks.length === 0 ? <Pill tone="ok">无特殊风险</Pill> : item.risks.map(curatedRiskPill)}
       </div>
       <CuratedRiskDetails item={item} />
@@ -748,10 +748,10 @@ export function CuratedDetails({ item, hideScope }: { item: CuratedExtension; hi
         </dd>
         <dt>
           {item.install.type === 'http'
-            ? '将写进配置的服务地址'
+            ? '将写入配置的服务地址'
             : item.install.type === 'plugin'
               ? '将要执行的命令'
-              : '将写进配置、由工具启动时执行的命令'}
+              : '将写入配置、由工具启动时执行的命令'}
         </dt>
         <dd className="v2-business-path">
           {curatedCommandLines(item).map((line) => (
@@ -782,7 +782,7 @@ export function curatedTags(item: CuratedExtension) {
   if (!item.requiresAccount && item.risks.length === 0) return undefined
   return (
     <>
-      {item.requiresAccount && <Pill tone="accent">需要先登录</Pill>}
+      {item.requiresAccount && <Pill tone="accent">需先登录</Pill>}
       {item.risks.map(curatedRiskPill)}
     </>
   )

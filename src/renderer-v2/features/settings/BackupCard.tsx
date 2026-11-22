@@ -128,7 +128,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
    * （只装了 Codex 桌面端的也要能备份 Codex 那份配置），和原来的备份页一样。缺省 = 全部工具就是每一家。
    */
   installedProviders?: readonly string[]
-  /** 别处删了备份（「星芒占用的空间」的「清理旧备份」）就加一：变了就重读一次列表。缺省 = 不重读。 */
+  /** 别处删了备份（「星芒占用空间」的「清理旧备份」）就加一：变了就重读一次列表。缺省 = 不重读。 */
   reloadSignal?: number
 }) {
   const load = useCallback(() => api.listBackups(), [api])

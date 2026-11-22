@@ -6,7 +6,7 @@ import { AI_CHAT_PHRASE_LIMITS } from './ai-chat-protocol'
 import { withoutByteOrderMark } from './config-files-context'
 import { isRecord } from './input-guards'
 
-// 「搬到新电脑」的文件：当前账号的聊天对话 + 几项跟着人走的软件设置。刻意不放任何
+// 「迁移到新电脑」的文件：当前账号的聊天对话 + 几项跟着人走的软件设置。刻意不放任何
 // 能花钱或能登录的东西（Key、密码、登录状态、保存的账号），也不放命令行工具的配置、
 // 这台电脑自己的东西（工作文件夹、窗口位置、显卡加速、Codex 调试端口的同意）。新电脑
 // 上登录后，工具照常重新配好。
@@ -49,11 +49,11 @@ const portableLabels: Record<PortableKey, string | null> = {
   uiScale: '界面缩放',
   largeText: '大字',
   reducedMotion: '减少动画',
-  closeBehavior: '点关闭按钮时',
+  closeBehavior: '点击关闭按钮时',
   checkUpdatesOnStartup: '启动时检查新版本',
   autoUpdate: '自动更新',
   runDiagnosticsOnStartup: '启动时检查环境',
-  alwaysInstallLatestCli: '命令行工具总是装最新版',
+  alwaysInstallLatestCli: '命令行工具始终安装最新版本',
   mirrorPolicy: '下载来源',
   desktopNotifications: '桌面通知',
   crashReporting: '自动发送错误报告',

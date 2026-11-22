@@ -997,7 +997,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   }
 
   /**
-   * 设置里两个默认关的 Claude Code 开关：「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）、
+   * 设置里两个默认关的 Claude Code 开关：「仅允许 Claude Code 修改项目文件夹内的文件」（Fable 第二轮 Q6）、
    * 「Claude Code 提交代码时不署名」（同类对比 备选 6）。先对齐 Claude Code 现在的配置，再记下开关。
    * 只有接着当前账号、配置归当前账号（星芒写的）时才当场改，改之前 backup 做一份整套备份；官方账号、自己填的密钥、
    * 换了账号、还没配过的只记开关（later），以后接当前账号写配置时 merge / reset 按开关补或撤（seededFor 里那两项）。

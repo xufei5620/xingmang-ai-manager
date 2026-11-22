@@ -94,7 +94,7 @@ export type BusinessActions = {
    * 要跟着变；缺省 = 不同步，只用设置页自己读到的那份（旧行为）。
    */
   uiScale?: NonNullable<AppSettingsV2Update['uiScale']>
-  /** 设置页「搬到新电脑」里聊天记录那一半；没登录时没有（聊天记录按账号分开存）。 */
+  /** 设置页「迁移到新电脑」里聊天记录那一半；没登录时没有（聊天记录按账号分开存）。 */
   chatTransfer?: ChatTransfer
   /**
    * App 手里最新的设置。「启动时检查新版本」「自动更新」在设置页、版本更新卡（更新气泡里也有
