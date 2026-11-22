@@ -9606,6 +9606,28 @@ test('a Codex Desktop that Windows will not start offers a restart that asks onc
   } finally { await page.close() }
 })
 
+// 0.2.25 复查第 11 条：重启框的「立即重启」带 askIfWorking，「创作」里还有对话在回复、视频在合成、画布在出图时由主进程
+// 照重启装更新那样问一句（D10）。客户点了「等待完成」：框原样留着、按钮能再点，不报错，也不说电脑要重启了。
+test('the restart dialog stays open and says nothing when the user chooses to let creative work finish first', async () => {
+  const page = await open('codexLaunchFailure=activation&restartPostponed=1')
+  try {
+    await page.getByTestId('tool-codexDesktop-primary').click()
+    await page.getByTestId('operation-error').getByTestId('operation-error-restartComputer').click()
+    const restart = page.getByTestId('runtime-restart-dialog')
+    await restart.getByTestId('runtime-restart-now').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'restartWindows'))
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'restartWindows').map((call) => call.args)), [[{ askIfWorking: true }]])
+    await expect(restart.getByTestId('runtime-restart-now')).toBeEnabled()
+    await expect(restart).toHaveCount(1)
+    assert.equal(await restart.getByTestId('runtime-restart-error').count(), 0)
+    await assertNoToast(page, '电脑将在约 15 秒后重启。')
+    // 等做完了再点一次，照样能发出去。
+    await restart.getByTestId('runtime-restart-now').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'restartWindows').length === 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an unexplained Codex Desktop launch failure keeps retry first and adds the restart after 重置 Codex', async () => {
   const page = await open('codexLaunchFailure=generic')
   try {

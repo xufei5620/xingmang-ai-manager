@@ -31,6 +31,8 @@ const maximumBackoffMs = 60_000
 const sendRetryDelayMs = 1_000
 const recentIdLimit = 512
 const defaultLongPollMs = 35_000
+// 连着这么多次本机等到超时都没回音，就当连不上（M10）。一次可能只是哪一下慢了，两次就是一分半钟没有任何回应。
+const timeoutsBeforeError = 2
 
 export interface WeixinChannelOptions {
   botAgent: string
@@ -177,6 +179,7 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
     let cursor = ''
     let longPollMs = defaultLongPollMs
     let backoffMs = 0
+    let timeouts = 0
     // 电脑上的时间比微信快多少，每拉回一批就拿回应里的时间重估（RemoteInbound.clockAheadMs）。
     let clockAheadMs: number | undefined
     while (!signal.aborted) {
@@ -184,6 +187,15 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
         const fromStart = cursor === ''
         const updates = await fetchWeixinUpdates(context(signal, active.origin), active.token, cursor, longPollMs)
         if (signal.aborted) return
+        if (updates.timedOut) {
+          // 没等来回音不算连上，也不清掉已经报的错（M10）：不然从没收到过微信的回应，卡片照样变绿，
+          // 手机上还会收到「已打开」、补发没送到的回答。超时本身已经等了很久，不再另外退避。
+          timeouts += 1
+          dependencies.log('warn', 'weixin-poll-timeout', { count: timeouts })
+          if (timeouts >= timeoutsBeforeError) report({ state: 'error', message: pollRetryMessage })
+          continue
+        }
+        timeouts = 0
         cursor = updates.cursor
         longPollMs = updates.nextLongPollMs
         backoffMs = 0

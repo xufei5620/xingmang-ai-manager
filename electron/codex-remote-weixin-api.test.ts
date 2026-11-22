@@ -1,5 +1,5 @@
 import { createCipheriv } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildWeixinBotAgent,
   buildWeixinClientVersion,
@@ -20,6 +20,10 @@ import {
   weixinStatusNeedsVerifyCode,
   weixinVerifyPinBusinessData,
 } from './codex-remote-weixin-api'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 interface RecordedRequest {
   url: string
@@ -275,6 +279,16 @@ describe('fetchWeixinUpdates', () => {
   it('keeps the old cursor when the server leaves it out', async () => {
     const { fetch } = mockFetch([jsonResponse({ ret: 0, msgs: [] })])
     await expect(fetchWeixinUpdates(contextFor(fetch), 'tok', 'keep', 35_000)).resolves.toMatchObject({ cursor: 'keep', messages: [] })
+  })
+
+  // M10：本机等到超时交回的空批要认得出来，渠道不能拿它当连上了的证据；微信自己回的空批不带这个标记。
+  it('marks an empty batch that only came from waiting out the local timeout', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { fetch } = mockFetch([() => new Promise<Response>(() => undefined), jsonResponse({ ret: 0, msgs: [] })])
+    const waiting = fetchWeixinUpdates(contextFor(fetch), 'tok', 'keep', 5_000)
+    await vi.advanceTimersByTimeAsync(15_000)
+    await expect(waiting).resolves.toEqual({ messages: [], cursor: 'keep', nextLongPollMs: 5_000, timedOut: true })
+    await expect(fetchWeixinUpdates(contextFor(fetch), 'tok', 'keep', 5_000)).resolves.not.toHaveProperty('timedOut')
   })
 })
 

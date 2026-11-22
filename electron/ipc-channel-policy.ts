@@ -161,6 +161,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'skills:list': { label: 'Skills 列表读取', log: 'normal', account: 'none' },
   'skills:import': { label: 'Skill 导入', log: 'normal', account: 'none' },
   'skills:choose-archive': { label: 'Skill 从压缩包导入', log: 'normal', account: 'none' },
+  'skills:discard-archives': { label: 'Skill 压缩包临时文件清理', log: 'normal', account: 'none' },
   'skills:toggle': { label: 'Skill 启用状态修改', log: 'normal', account: 'none' },
   'skills:uninstall': { label: 'Skill 卸载', log: 'normal', account: 'none' },
   'plugins:list': { label: 'Plugins 列表读取', log: 'normal', account: 'none' },
@@ -270,7 +271,6 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:revoke-login-session': { log: 'normal', account: 'scoped-may-end-session' },
   'account:revoke-other-login-sessions': { log: 'normal', account: 'scoped' },
   'canvas:open': { label: '无限画布窗口打开', log: 'normal', account: 'scoped' },
-  'canvas:open-asset-library': { label: '无限画布素材库打开', log: 'normal', account: 'scoped' },
   // 「创作」左边那一列（融合第 1 步）：只回当前账号画布项目的编号、名字和时间；打开时编号先在这个账号的项目里认过。
   'canvas:list-projects': { label: '画布项目列表读取', log: 'quiet-success', account: 'scoped' },
   'canvas:open-project': { label: '画布项目打开', log: 'normal', account: 'scoped' },

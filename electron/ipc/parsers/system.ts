@@ -3,7 +3,7 @@ import type { DiagnosticsRunOptions } from '../../diagnostics'
 import type { ExternalClientScanOptions } from '../../external-client-contract'
 import { isFeedbackMessageType } from '../../feedback-message'
 import { isRecord } from '../../input-guards'
-import type { AppUninstallRequest, FeedbackMessageCopyRequest, NodeRuntimeInstallRequest, RendererActivity, RendererLogLevel, RendererRestartWork, UpdateInstallOptions } from '../../ipc-contract'
+import type { AppUninstallRequest, FeedbackMessageCopyRequest, NodeRuntimeInstallRequest, RendererActivity, RendererLogLevel, RendererRestartWork, UpdateInstallOptions, WindowsRestartOptions } from '../../ipc-contract'
 import type { SystemScanOptions } from '../../system-service'
 import type { UpdateDownloadOptions } from '../../updater'
 import { optionalBoolean, optionalString, requiredString } from './common'
@@ -50,6 +50,13 @@ export function parseUpdateInstallOptions(value: unknown): UpdateInstallOptions 
   if (!isRecord(value) || Object.keys(value).some((key) => key !== 'askIfInstalling')
     || (value.askIfInstalling !== undefined && typeof value.askIfInstalling !== 'boolean')) throw new Error('安装参数格式错误')
   return value.askIfInstalling === true ? { askIfInstalling: true } : {}
+}
+
+export function parseWindowsRestartOptions(value: unknown): WindowsRestartOptions {
+  if (value === undefined) return {}
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'askIfWorking')
+    || (value.askIfWorking !== undefined && typeof value.askIfWorking !== 'boolean')) throw new Error('重启参数格式错误')
+  return value.askIfWorking === true ? { askIfWorking: true } : {}
 }
 
 export function parseSystemScanOptions(value: unknown): SystemScanOptions {

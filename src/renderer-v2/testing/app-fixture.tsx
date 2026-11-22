@@ -819,7 +819,8 @@ const methods = {
     if (failure === 'generic') throw new Error('Codex 桌面端没有打开：等待 38 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex 命令行版；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
     return { restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。' } } : {}) }
   },
-  restartWindows: async () => undefined,
+  // ?restartPostponed：「创作」里还有事在做，客户在主进程那一问（D10）里点了「等待完成」，这次没发重启。
+  restartWindows: async () => query.has('restartPostponed') ? { postponed: true as const } : {},
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),
   setCodexDesktopLocale: async (locale) => {
     settings = { ...settings, codexDesktopChineseRuntimePatch: locale === 'zh-CN' ? 'enabled' : 'disabled' }
@@ -1066,7 +1067,6 @@ const methods = {
   refreshOfficialChatGptUsage: async () => ({ planLabel: 'Plus', renewsAt: null, resetCredits: null, windows: [{ id: 'weekly', label: '周限额', remainingPercent: 72, resetAt: null }], checkedAt: new Date().toISOString() }),
   listAiChatGroups: async () => [{ name: 'fixture-group', description: '本地测试分组', ratio: 1 }],
   openCanvasWindow: async () => undefined,
-  openCanvasAssetLibrary: async () => undefined,
   // 照主进程那份的规矩列：垃圾桶和音频不在这里；film 只认点名的那几段视频；搜索对名字、那句描述，或者页面先搜到的编号。
   listAiLibrary: async (input) => {
     const films = new Set(input.filmAssetIds ?? [])

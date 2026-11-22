@@ -38,6 +38,7 @@ import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings
 import { calculateUiZoom, resolveWindowPlacement, shouldDefaultToLargeText, shouldFollowSystemTextSize } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { createSensitiveClipboard } from './sensitive-clipboard'
+import { discardSkillArchiveExtractions } from './skill-archive'
 import { fitOversizedWindow, recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { createAccelerationHostLoader, createAccelerationRouting, createAccelerationServices, type AccelerationHostOptions } from './bootstrap/acceleration'
@@ -55,7 +56,7 @@ import { listCanvasProjectAssetDirectories } from './canvas-project-store'
 import { createStorageUsageService } from './storage-usage-service'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
+import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, confirmWindowsRestartWork, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoLaunchInstallAttempt, undoQuitInstallAttempt, type LaunchInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
@@ -1003,6 +1004,8 @@ if (!hasSingleInstanceLock) {
     // Windows 要等下面的管理员探测有了结论再定（relocated-folders.ts）。
     if (process.platform !== 'win32') configureRelocatedFolderAccess('same-user')
     const managerDataDirectory = app.getPath('userData')
+    // 技能「从压缩包导入」解开放在这里，导入框关掉、开机时都清（skill-archive.ts）。
+    const skillArchiveDirectory = path.join(managerDataDirectory, 'skill-archives')
     // 内置加速内核三十多兆，校验要整读一遍。它以前排在建窗口前面单独等，后来改成开机就读、建窗口不等（0.2.22
     // 性能体检第 4 条）；网络加速 2026-10-30 下线以后开机干脆不读（0.2.24 启动速度深查 S-3）：只有上次加速时崩了、
     // 系统代理没改回去（开机看一眼恢复记录就知道），或者真用到加速、检查页要报它坏没坏时才读，见下面
@@ -1567,6 +1570,8 @@ if (!hasSingleInstanceLock) {
     let requestRelaunch: (() => Promise<boolean>) | null = null
     // 更新页「确认重启安装」、托盘「重启并安装」前问那一句（主窗口建好后接上）；true = 照常装。
     let confirmUpdateInstall: (() => Promise<boolean>) | null = null
+    // 「立即重启」电脑前问「创作」里还有没有在做的事（D10 那一问，主窗口建好后接上）；true = 照常重启。
+    let confirmWindowsRestart: (() => Promise<boolean>) | null = null
     let requestMacUninstall: NonNullable<IpcRegistrationOptions['uninstallApp']> | null = null
     // 自动更新的落盘记录（见 auto-update-install.ts）。要在更新服务之前读好：下载完成
     // 那一刻就要用它认出「上次自动装过却没装上」的版本。
@@ -2489,6 +2494,10 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => new Promise<void>((resolve) => {
       setTimeout(resolve, installLeftoverStartupDelayMs).unref()
     })).then(() => systemService.cleanupInstallLeftovers()).catch(() => undefined)
+    // 技能压缩包解开的临时文件夹，导入框关掉时就删；星芒在导入框开着时被关掉或崩了，留下的那份开机后在后台删。
+    void startupQuiet.whenOver()
+      .then(() => discardSkillArchiveExtractions(skillArchiveDirectory))
+      .catch((error: unknown) => runtimeLog.exception('main', 'skill-archives.cleanup.failed', error))
     // 本软件写给 Codex 的型号名单读不进时 Codex 整个起不来（星芒关着的时候命令行或桌面端
     // 换成了旧版）：开机在本机看一眼，没登录的也看；登录状态下开机那轮按账号同步共用这一次。
     void startupQuiet.whenOver().then(() => systemService.guardCodexModelCatalogAtStartup?.()).catch(() => undefined)
@@ -2708,7 +2717,7 @@ if (!hasSingleInstanceLock) {
       accountSessionReady,
       accountStartupGate,
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
-      skillArchiveDirectory: path.join(managerDataDirectory, 'skill-archives'),
+      skillArchiveDirectory,
       announcementImages: createAnnouncementImageReader({ fetch: networkRoutes.announcementImageFetch }),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
@@ -2776,6 +2785,7 @@ if (!hasSingleInstanceLock) {
       onAccountNotice: (notice) => { lastRendererNotice = noticeFingerprint(notice) },
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
       confirmUpdateInstall: () => confirmUpdateInstall?.() ?? Promise.resolve(true),
+      confirmWindowsRestart: () => confirmWindowsRestart?.() ?? Promise.resolve(true),
       ...(process.platform === 'darwin'
         ? {
             uninstallApp: (request: AppUninstallRequest, backupCliConfigs: () => Promise<void>) => (
@@ -2846,7 +2856,6 @@ if (!hasSingleInstanceLock) {
         canvasController.setAppearance({ theme, reducedMotion: appearance.reducedMotion })
       },
       openCanvasWindow: () => canvasController.open(),
-      openCanvasAssetLibrary: () => canvasController.openAssetLibrary(),
       listCanvasProjects: () => canvasController.listProjects(),
       openCanvasProject: (projectId) => canvasController.openProject(projectId),
       xingmangAiSkill: {
@@ -3086,6 +3095,20 @@ if (!hasSingleInstanceLock) {
         // 头一问问着的时候主窗口没了（正在退出），跟上面一样照常装。
         confirmWork: async (prompt) => mainWindow.isDestroyed() || await confirmUnfinishedRestartWork(prompt),
         log: (event, message) => runtimeLog.log('info', 'updater', event, message),
+      })
+    }
+    // Node.js 装完、Codex 桌面端打不开那两个重启框的「立即重启」：重启电脑同样会停下聊天、视频剪辑、画布在做的事，
+    // 问的是同一句（D10）。点「等待完成」这次就不发重启，框留着，做完再点。
+    confirmWindowsRestart = async () => {
+      if (mainWindow.isDestroyed()) return true
+      return await confirmWindowsRestartWork({
+        queueBusy: () => {
+          const queue = systemService.inspectInstallationQueue()
+          return queue.activeKey !== null || queue.pendingKeys.length > 0
+        },
+        unfinishedWork: unfinishedRestartWork,
+        confirmWork: async (prompt) => mainWindow.isDestroyed() || await confirmUnfinishedRestartWork(prompt),
+        log: (event, message) => runtimeLog.log('info', 'maintenance', event, message),
       })
     }
     // 新版本在后台下好以后先跳框问要不要现在装，没装的 Mac 等电脑闲着时自己装（update-install-prompt.ts，#1380）。
