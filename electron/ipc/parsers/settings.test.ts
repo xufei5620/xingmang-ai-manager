@@ -38,6 +38,11 @@ describe('parseSettingsUpdate', () => {
     expect(parseSettingsUpdate({ version: 2, relayModelsBeforeOfficial: { codex: 'gpt-5.4-mini' } })).toEqual({ version: 2 })
   })
 
+  // 长期嘱咐只经 config:save-standing-instructions 改，那条通道同时写三家的说明文件；这里收了就会只记不写。
+  it('never lets the general settings save change the standing instructions', () => {
+    expect(parseSettingsUpdate({ version: 2, standingInstructions: '回答简短一点' })).toEqual({ version: 2 })
+  })
+
   it('rejects a workspace path with a NUL byte', () => {
     expect(() => parseSettingsUpdate({ version: 2, workspace: '/home/user\0/etc' }, 'linux')).toThrow('工作目录格式错误')
     expect(() => parseSettingsUpdate({ version: 2, workspace: 'C:\\Users\0\\peaker' }, 'win32')).toThrow('工作目录格式错误')

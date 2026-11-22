@@ -4,7 +4,7 @@ import { createConversation, type ChatMessage, type Conversation } from '../chat
 import type { VideoStudioItem } from '../video-studio/library'
 import { createVideoStudioProject, type VideoStudioShot } from '../video-studio/project'
 import {
-  buildLibraryOrigins, cleanLibrarySearch, libraryBadge, libraryCaption, libraryChatAsset, libraryClipMade, libraryClipSource, libraryDetailLine, libraryFilmAssetIds,
+  buildLibraryOrigins, cleanLibrarySearch, libraryBadge, libraryCaption, libraryChatAsset, libraryClipMade, libraryClipSource, libraryDetailLine, libraryEntryOrigin, libraryFilmAssetIds,
   libraryKindCount, libraryMatchedAssetIds, libraryTitle, libraryVideoClip, maxLibraryMatchedIds, maxLibrarySearchLength,
 } from './library'
 
@@ -99,6 +99,37 @@ describe('where a thing in the library came from', () => {
     expect(origins.get(id('walk'))).toMatchObject({ from: 'chat', id: 'first', prompt: '动起来' })
   })
 
+  // 融合第 5 步：是哪个画布项目的，主进程列的时候带在这一件上。
+  it('credits a canvas project for what it generated, after the chat and the films, and before any place that only used it', () => {
+    const project = { projectId: '11111111-1111-4111-8111-111111111111', projectName: '双十一主图' }
+    const origins = buildLibraryOrigins(
+      [conversation('c1', '橘猫', [message('user', '画一只猫'), message('assistant', '', { assets: [image('chat-made')] }), message('user', '看看这张', { assets: [image('sent', { width: 800, height: 600 })] })])],
+      [film('f1', '合集', [{ prompt: '口红特写', clip: clip('borrowed', { width: 1280, height: 720, durationSeconds: 6 }), borrowed: true }])],
+    )
+    // 画布项目里生成的，别处都没记着。
+    expect(libraryEntryOrigin(entry('canvas-made', 'image', { prompt: '一张主图', canvas: project }), origins)).toEqual({ from: 'canvas', id: project.projectId, title: '双十一主图', prompt: '一张主图' })
+    // 对话里做的图后来放到了画布节点上：出处还是那段对话。
+    expect(libraryEntryOrigin(entry('chat-made', 'image', { canvas: { ...project, used: true } }), origins)).toMatchObject({ from: 'chat', id: 'c1', prompt: '画一只猫' })
+    expect(libraryEntryOrigin(entry('chat-made', 'image', { canvas: project }), origins)).toMatchObject({ from: 'chat', id: 'c1' })
+    // 画布里生成的片段被一条视频拿去用了：出处是画布项目，尺寸和时长照那条视频记的。
+    expect(libraryEntryOrigin(entry('borrowed', 'video', { canvas: project }), origins)).toEqual({ from: 'canvas', id: project.projectId, title: '双十一主图', prompt: '', clip: clip('borrowed', { width: 1280, height: 720, durationSeconds: 6 }) })
+    // 两边都只是用过：对话和视频排在画布前面。
+    expect(libraryEntryOrigin(entry('sent', 'image', { canvas: { ...project, used: true } }), origins)).toMatchObject({ from: 'chat', used: true, id: 'c1' })
+    // 只有画布节点上放着：算在那个项目里用过，不拿别的话当它的描述。
+    expect(libraryEntryOrigin(entry('only-held', 'image', { prompt: '别处写的', canvas: { ...project, used: true } }), origins)).toEqual({ from: 'canvas', used: true, id: project.projectId, title: '双十一主图', prompt: '' })
+    expect(libraryEntryOrigin(entry('plain', 'image'), origins)).toBeUndefined()
+  })
+
+  it('hands back the same object for the same entry while what the chat and the films remember has not changed', () => {
+    const made = entry('canvas-made', 'image', { canvas: { projectId: '11111111-1111-4111-8111-111111111111', projectName: '双十一主图' } })
+    const origins = buildLibraryOrigins([], [])
+    expect(libraryEntryOrigin(made, origins)).toBe(libraryEntryOrigin(made, origins))
+    expect(libraryEntryOrigin(made, buildLibraryOrigins([], []))).toBe(libraryEntryOrigin(made, origins))
+    const used = buildLibraryOrigins([], [film('f1', '合集', [{ prompt: '', clip: clip('canvas-made', { durationSeconds: 4 }), borrowed: true }])])
+    expect(libraryEntryOrigin(made, used)).not.toBe(libraryEntryOrigin(made, origins))
+    expect(libraryEntryOrigin(made, used)).toMatchObject({ from: 'canvas', clip: { durationSeconds: 4 } })
+  })
+
   it('names each film\'s latest finished cut once, for the main process to count', () => {
     const cut = clip('final')
     expect(libraryFilmAssetIds([film('f1', 'a', [], cut), film('f2', 'b', []), film('f3', 'c', [], cut), film('f4', 'd', [], clip('other'))])).toEqual([id('final'), id('other')])
@@ -135,6 +166,7 @@ describe('the words on a library tile and on the opened item', () => {
   it('says where it came from and when under each tile, and only when if the source is unknown', () => {
     expect(libraryCaption(entry('cat', 'image'), chatOrigin, now)).toBe('对话 · 今天 14:02')
     expect(libraryCaption(entry('wave', 'video'), { from: 'video', id: 'f1', title: '海边', prompt: '' }, now)).toBe('视频 · 今天 14:02')
+    expect(libraryCaption(entry('poster', 'image'), { from: 'canvas', id: 'p1', title: '双十一主图', prompt: '' }, now)).toBe('画布 · 今天 14:02')
     expect(libraryCaption(entry('cat', 'image'), undefined, now)).toBe('今天 14:02')
     expect(libraryCaption(entry('cat', 'image', { createdAt: 'not a time' }), undefined, now)).toBe('')
   })
@@ -146,6 +178,9 @@ describe('the words on a library tile and on the opened item', () => {
     // 只是在那里用过的不说「出自」。
     expect(libraryDetailLine(entry('photo', 'image'), { from: 'chat', used: true, id: 'c1', title: '发过图', prompt: '' }, null, now)).toBe('用于对话「发过图」 · 今天 14:02')
     expect(libraryDetailLine(entry('still', 'image'), { from: 'video', used: true, id: 'f1', title: '新品', prompt: '口红特写' }, null, now)).toBe('用于视频「新品」 · 今天 14:02')
+    // 画布项目里生成的、只是放在画布节点上的。
+    expect(libraryDetailLine(entry('poster', 'image'), { from: 'canvas', id: 'p1', title: '双十一主图', prompt: '' }, { width: 1024, height: 1536 }, now)).toBe('出自画布项目「双十一主图」 · 今天 14:02 · 1024 × 1536')
+    expect(libraryDetailLine(entry('held', 'image'), { from: 'canvas', used: true, id: 'p1', title: '双十一主图', prompt: '' }, null, now)).toBe('用于画布项目「双十一主图」 · 今天 14:02')
   })
 
   it('titles the opened item with the name the customer gave it, else the sentence that asked for it, else its kind', () => {

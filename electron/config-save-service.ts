@@ -106,6 +106,7 @@ import type { WindowsCliExecutionMode } from './windows-elevation'
 import { withAppendedWindowsPath } from './windows-live-path'
 import { isUntouchedStarterWorkspace } from './starter-workspace'
 import { resolveRememberedWorkspace } from './workspace-guard'
+import { applyStandingInstructions, type StandingInstructionsSaveResult } from './standing-instructions'
 
 /**
  * 老版本写下的 Codex 配置把当前账号的服务放在 openai 这类内置名下，Codex 不认那张表，
@@ -1034,6 +1035,29 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     return result
   }
 
+  /**
+   * 设置里「给 AI 的长期嘱咐」（总单 Q4 C5）：三家各写各的全局说明（standing-instructions.ts），一家写不上不挡别家。
+   * 在配置写入锁里，跟保存配置、补模板不打架。跟用哪个账号无关：官方账号、自己填的密钥、还没装的工具一样写
+   * （还没装的先放好，装上就读得到）。至少一家写上了（或者本来就是这样）才记下这段话；三家都没写上就不记，
+   * 设置页照旧显示上次那段。
+   */
+  async function saveStandingInstructions(text: string): Promise<StandingInstructionsSaveResult> {
+    return serializeConfigWrite(async () => {
+      const tools = activeProviderIds.map((provider) => applyStandingInstructions(provider, text, providerRoots))
+      const settled = tools.some((tool) => tool.outcome !== 'skipped' && tool.outcome !== 'failed')
+      if (settled) await store.update({ version: 2, standingInstructions: text })
+      const missed = tools.filter((tool) => tool.outcome === 'skipped' || tool.outcome === 'failed')
+      runtimeLog?.log(
+        missed.length ? 'warn' : 'info',
+        'config',
+        'standing-instructions.saved',
+        missed.length ? '给 AI 的长期嘱咐有工具没写上' : text ? '已写好给 AI 的长期嘱咐' : '已清空给 AI 的长期嘱咐',
+        { length: [...text].length, tools: tools.map((tool) => ({ provider: tool.provider, outcome: tool.outcome })), remembered: settled },
+      )
+      return { text: settled ? text : store.read().standingInstructions ?? '', tools }
+    })
+  }
+
   // 记不下只少记一笔：客户删掉以后下次可能又补回去，不算这次保存失败。
   async function rememberSeededToolDefaults(entries: readonly SeededToolDefault[]): Promise<void> {
     const seeded = seededToolDefaults()
@@ -1633,5 +1657,5 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     return pending.length ? { filled: result.filled, pending } : { filled: result.filled }
   }
 
-  return { refreshGrokHooksForShellChange, addMissingGrokHooks, takeBackUnreadableCodexModelCatalog, forgetCodexModelCatalogReaders, rememberedWorkspaceFor, repairGrokHooksBeforeLaunch, buildConfigSummary, inspectCodexReadiness, revealApiKey, saveConfig, repairCliHooks, setClaudeWriteBoundary, setClaudeCommitAttribution, autoRepairStaleCliHooks, restoreCliHooksRemovedByUninstall, toolModelChecker, guardCodexModelCatalogAtStartup, reclaimRetiredToolIntegrations, fillToolTemplateDefaultsThenSyncPickers, stopTemplateFillWaits }
+  return { refreshGrokHooksForShellChange, addMissingGrokHooks, takeBackUnreadableCodexModelCatalog, forgetCodexModelCatalogReaders, rememberedWorkspaceFor, repairGrokHooksBeforeLaunch, buildConfigSummary, inspectCodexReadiness, revealApiKey, saveConfig, repairCliHooks, setClaudeWriteBoundary, setClaudeCommitAttribution, saveStandingInstructions, autoRepairStaleCliHooks, restoreCliHooksRemovedByUninstall, toolModelChecker, guardCodexModelCatalogAtStartup, reclaimRetiredToolIntegrations, fillToolTemplateDefaultsThenSyncPickers, stopTemplateFillWaits }
 }

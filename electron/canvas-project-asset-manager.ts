@@ -2,12 +2,21 @@ import path from 'node:path'
 import type { AiAssetMetadata, AiAssetStore, AiOwnedAssetRead, AiStoredAsset } from './ai-asset-store'
 import type { AiAudioAssetStore, AiAudioOwnedAssetRead } from './ai-audio-asset-store'
 import type { AiAssetMetadataStore } from './ai-asset-metadata-store'
-import { createAiMediaAssetService, type AiMediaAssetService } from './ai-media-asset-service'
+import {
+  assertAiMediaLibraryQuery, createAiMediaAssetService, pageAiMediaLibraryRows,
+  type AiMediaAssetService, type AiMediaLibraryPage, type AiMediaLibraryQuery, type AiMediaLibraryRow,
+} from './ai-media-asset-service'
 import type { AiStoredVideoAsset, AiVideoAssetStore, AiVideoOwnedAssetRead, AiVideoOwnedRangeRead } from './ai-video-asset-store'
 import type { ByteRange } from './byte-range'
-import type { CanvasProjectStore } from './canvas-project-store'
+import type { CanvasProjectLibrarySource, CanvasProjectStore } from './canvas-project-store'
 
 const projectIdPattern = /^[a-f0-9-]{36}$/
+// How long one look at the project list and at a project folder answers for the main window's library.
+// The page re-reads it whenever the window comes to the front, a picture arrives or a picker opens, and
+// each read would otherwise parse every project file and walk every project folder again. What a project
+// generates through this manager drops its folder's snapshot at once, so new work is not held back by it.
+const LIBRARY_SNAPSHOT_MS = 5_000
+const MAXIMUM_LIBRARY_SNAPSHOTS = 512
 
 export interface CanvasProjectAssetContext {
   images: AiAssetStore
@@ -20,10 +29,18 @@ export interface CanvasProjectAssetContext {
 export interface CanvasProjectAssetManagerOptions {
   /** Separate foreign-realm media even if a user explicitly selects the same workspace. */
   realmId?: 'xm-account' | 'api-account'
-  projects: Pick<CanvasProjectStore, 'list' | 'getUsableWorkspaceDirectory'>
+  /** Without listLibrarySources the account-wide library lists the account library alone. */
+  projects: Pick<CanvasProjectStore, 'list' | 'getUsableWorkspaceDirectory'> & Partial<Pick<CanvasProjectStore, 'listLibrarySources'>>
   global: CanvasProjectAssetContext
   create(outputRoot: string): CanvasProjectAssetContext
   onMetadataError?(error: unknown, context: { userId: number; assetId: string; source: 'generated' }): void
+  /** Milliseconds; injected so tests can age the library snapshots. */
+  now?: () => number
+}
+
+/** The main window's library query (融合第 5 步): one folder's query, optionally narrowed to one canvas project. */
+export interface CanvasAccountLibraryQuery extends AiMediaLibraryQuery {
+  canvasProjectId?: string
 }
 
 export interface CanvasProjectImageMetadata extends AiAssetMetadata {
@@ -52,6 +69,9 @@ export class CanvasProjectAssetManager {
   private readonly onMetadataError: CanvasProjectAssetManagerOptions['onMetadataError']
   private readonly contexts = new Map<string, Promise<CanvasProjectAssetContext>>()
   private readonly locations = new Map<string, string | null>()
+  private readonly now: () => number
+  private readonly librarySourceSnapshots = new Map<number, { at: number; listed: CanvasProjectLibrarySource[] }>()
+  private readonly libraryFolderSnapshots = new Map<string, { at: number; rows: AiMediaLibraryRow[] }>()
 
   constructor(options: CanvasProjectAssetManagerOptions) {
     this.realmId = options.realmId ?? 'xm-account'
@@ -59,6 +79,7 @@ export class CanvasProjectAssetManager {
     this.global = options.global
     this.createContext = options.create
     this.onMetadataError = options.onMetadataError
+    this.now = options.now ?? Date.now
   }
 
   async forProject(userId: number, projectId: string): Promise<CanvasProjectAssetContext> {
@@ -102,6 +123,8 @@ export class CanvasProjectAssetManager {
     assertUserId(userId)
     assertProjectId(projectId)
     this.contexts.delete(`${userId}:${projectId}`)
+    this.libraryFolderSnapshots.delete(`${userId}:${projectId}`)
+    this.librarySourceSnapshots.delete(userId)
   }
 
   async prepareProject(userId: number, projectId?: string): Promise<void> {
@@ -127,6 +150,7 @@ export class CanvasProjectAssetManager {
     const context = await this.forProject(userId, projectId)
     const asset = await context.images.storeBase64(userId, value, this.imageMetadata(metadata))
     await this.markGenerated(context, userId, asset.assetId, metadata?.prompt)
+    this.libraryFolderSnapshots.delete(`${userId}:${projectId}`)
     this.remember(userId, 'image', asset.assetId, projectId, context)
     return asset
   }
@@ -136,6 +160,7 @@ export class CanvasProjectAssetManager {
     const context = await this.forProject(userId, projectId)
     const asset = await context.images.storeRemoteUrl(userId, url, this.imageMetadata(metadata))
     await this.markGenerated(context, userId, asset.assetId, metadata?.prompt)
+    this.libraryFolderSnapshots.delete(`${userId}:${projectId}`)
     this.remember(userId, 'image', asset.assetId, projectId, context)
     return asset
   }
@@ -161,6 +186,7 @@ export class CanvasProjectAssetManager {
     const context = await this.forProject(userId, projectId)
     const asset = await context.videos.storeMp4(userId, bytes, { taskId: metadata.taskId })
     await this.markGenerated(context, userId, asset.assetId, metadata.prompt)
+    this.libraryFolderSnapshots.delete(`${userId}:${projectId}`)
     this.remember(userId, 'video', asset.assetId, projectId, context)
     return asset
   }
@@ -196,6 +222,123 @@ export class CanvasProjectAssetManager {
       }
     }
     return this.locate(userId, kind, assetId, (context) => this.readFromContext(context, userId, assetId, kind))
+  }
+
+  /**
+   * Where this account keeps a picture or video, for the main window's own reads (融合第 5 步: 另存、
+   * 用播放器打开、读片段、基于此图继续编辑). The account library answers first, then the project folders,
+   * each through its own store's ownership and file checks. When no place holds it the account library is
+   * returned, so the read that follows fails with that store's own words, as it did before project folders
+   * were looked at.
+   */
+  async holderOf(userId: number, kind: 'image' | 'video', assetId: string): Promise<CanvasProjectAssetContext> {
+    assertUserId(userId)
+    try {
+      return await this.locate(userId, kind, assetId, async (context) => {
+        await this.filePathFromContext(context, userId, assetId, kind)
+        return context
+      })
+    } catch {
+      return this.global
+    }
+  }
+
+  /**
+   * The main window's library across the whole account (融合第 5 步): the account library, plus what each
+   * unarchived canvas project keeps in its own folder, newest first. Only directories and metadata are
+   * read, never media.
+   *
+   * What a project folder contributes is what the project made: files the user imported there (reference
+   * pictures, masks, extracted frames) are materials, not works, and stay out. A project without a folder
+   * keeps its media in the account library, where they are listed anyway; the ones its nodes hold are
+   * marked as that project's. Archived projects and folders that cannot be reached right now contribute
+   * nothing, and a failure to read the project list leaves the account library on its own rather than
+   * failing the page.
+   */
+  async listLibrary(userId: number, query: CanvasAccountLibraryQuery = {}): Promise<AiMediaLibraryPage> {
+    assertUserId(userId)
+    const { canvasProjectId, ...paging } = query
+    assertAiMediaLibraryQuery(paging)
+    if (canvasProjectId !== undefined) assertProjectId(canvasProjectId)
+    const sources = await this.librarySources(userId)
+    if (canvasProjectId !== undefined) {
+      const project = sources.find((source) => source.id === canvasProjectId)
+      return pageAiMediaLibraryRows(project ? await this.projectWorks(userId, project) : [], paging)
+    }
+    const folderless = new Map<string, CanvasProjectLibrarySource>()
+    for (const source of sources) {
+      if (source.workspaceStatus !== 'legacy') continue
+      for (const assetId of source.assetIds) if (!folderless.has(assetId)) folderless.set(assetId, source)
+    }
+    const merged = new Map<string, AiMediaLibraryRow>()
+    for (const row of await this.global.media.listOwnedLibraryRows(userId)) {
+      const project = folderless.get(row.assetId)
+      // The account library also holds what the chat and the video editor made, and anything can sit on a
+      // node: only what the stores marked as generated is called the project's own work.
+      merged.set(row.assetId, project
+        ? { ...row, canvas: { projectId: project.id, projectName: project.name, ...(row.source === 'generated' ? {} : { used: true as const }) } }
+        : row)
+    }
+    const fromFolders = new Map<string, AiMediaLibraryRow>()
+    for (const source of sources) {
+      if (source.workspaceStatus !== 'ready') continue
+      for (const row of await this.folderWorks(userId, source)) {
+        if (merged.has(row.assetId)) continue
+        // A copied project keeps the ids of what it copied; the earliest file is the original.
+        const known = fromFolders.get(row.assetId)
+        if (!known || row.createdAt < known.createdAt) fromFolders.set(row.assetId, row)
+      }
+    }
+    return pageAiMediaLibraryRows([...merged.values(), ...fromFolders.values()], paging)
+  }
+
+  private async librarySources(userId: number): Promise<CanvasProjectLibrarySource[]> {
+    if (!this.projects.listLibrarySources) return []
+    const now = this.now()
+    const known = this.librarySourceSnapshots.get(userId)
+    if (known && now >= known.at && now - known.at < LIBRARY_SNAPSHOT_MS) return known.listed
+    let listed: CanvasProjectLibrarySource[]
+    try {
+      listed = await this.projects.listLibrarySources(userId)
+    } catch {
+      return []
+    }
+    if (this.librarySourceSnapshots.size >= MAXIMUM_LIBRARY_SNAPSHOTS) this.librarySourceSnapshots.clear()
+    this.librarySourceSnapshots.set(userId, { at: now, listed })
+    return listed
+  }
+
+  /** What one project made, as the main window lists it when a single project is opened. */
+  private async projectWorks(userId: number, source: CanvasProjectLibrarySource): Promise<AiMediaLibraryRow[]> {
+    if (source.workspaceStatus === 'ready') return this.folderWorks(userId, source)
+    if (source.workspaceStatus === 'missing') return []
+    const held = new Set(source.assetIds)
+    return (await this.global.media.listOwnedLibraryRows(userId))
+      .filter((row) => held.has(row.assetId) && row.source === 'generated')
+      .map((row) => ({ ...row, canvas: { projectId: source.id, projectName: source.name } }))
+  }
+
+  /** The works in a project's own folder. A folder that cannot be read lists nothing; it is not an error of the page. */
+  private async folderWorks(userId: number, source: CanvasProjectLibrarySource): Promise<AiMediaLibraryRow[]> {
+    const key = `${userId}:${source.id}`
+    const now = this.now()
+    const known = this.libraryFolderSnapshots.get(key)
+    let rows: AiMediaLibraryRow[]
+    if (known && now >= known.at && now - known.at < LIBRARY_SNAPSHOT_MS) {
+      rows = known.rows
+    } else {
+      try {
+        const context = await this.forProject(userId, source.id)
+        // forProject answers with the account library for a project whose folder record is gone; that is
+        // not this project's folder and its rows are already listed.
+        rows = context === this.global ? [] : (await context.media.listOwnedLibraryRows(userId)).filter((row) => row.source !== 'imported')
+      } catch {
+        rows = []
+      }
+      if (this.libraryFolderSnapshots.size >= MAXIMUM_LIBRARY_SNAPSHOTS) this.libraryFolderSnapshots.clear()
+      this.libraryFolderSnapshots.set(key, { at: now, rows })
+    }
+    return rows.map((row) => ({ ...row, canvas: { projectId: source.id, projectName: source.name } }))
   }
 
   /**

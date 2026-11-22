@@ -172,7 +172,7 @@ describe('renderer-v2 settings rows registry', () => {
       ['下载与连接', ['mirror', 'proxy', 'network-check', 'certificate']],
     ]);
     expect(shape('notifications').map(([label]) => label)).toEqual([null, '提醒事项']);
-    expect(shape('tools')).toEqual([[null, ['workspace', 'claude-write-boundary', 'claude-commit-attribution', 'latest-cli', 'install-location', 'terminal']], [null, ['codex-remote']]]);
+    expect(shape('tools')).toEqual([[null, ['workspace', 'claude-write-boundary', 'claude-commit-attribution', 'standing-instructions', 'latest-cli', 'install-location', 'terminal']], [null, ['codex-remote']]]);
     expect(shape('backup')).toEqual([
       [null, ['backups']],
       ['迁移到新电脑', ['transfer', 'transfer-import']],

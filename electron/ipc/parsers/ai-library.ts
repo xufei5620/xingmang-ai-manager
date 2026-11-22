@@ -1,10 +1,12 @@
 // 主窗口「创作 › 作品库」那一条通道的入参（I5）：字段只收认得的，编号逐个按格式核，数量和长度都有上限。
 import { isRecord } from '../../input-guards'
 import { MAXIMUM_INDEXED_ASSETS } from '../../ai-asset-index'
-import { MAXIMUM_LIBRARY_FILM_IDS, MAXIMUM_LIBRARY_MATCHED_IDS, MAXIMUM_LIBRARY_PAGE_SIZE, type AiMediaLibraryQuery } from '../../ai-media-asset-service'
+import { MAXIMUM_LIBRARY_FILM_IDS, MAXIMUM_LIBRARY_MATCHED_IDS, MAXIMUM_LIBRARY_PAGE_SIZE } from '../../ai-media-asset-service'
+import type { CanvasAccountLibraryQuery } from '../../canvas-project-asset-manager'
 
 const assetIdPattern = /^[A-Za-z0-9_-]{43}$/
-const listFields = new Set(['offset', 'limit', 'kind', 'search', 'filmAssetIds', 'matchedAssetIds'])
+const projectIdPattern = /^[a-f0-9-]{36}$/
+const listFields = new Set(['offset', 'limit', 'kind', 'search', 'filmAssetIds', 'matchedAssetIds', 'canvasProjectId'])
 const kinds = ['all', 'image', 'video', 'clip', 'film'] as const
 export const maximumLibrarySearchLength = 128
 
@@ -20,9 +22,9 @@ function parseAssetIds(value: unknown, maximum: number): string[] {
   return [...new Set(value as string[])]
 }
 
-export function parseAiLibraryListInput(value: unknown): AiMediaLibraryQuery {
+export function parseAiLibraryListInput(value: unknown): CanvasAccountLibraryQuery {
   if (!isRecord(value) || Object.keys(value).some((field) => !listFields.has(field))) throw new Error('作品库请求格式错误')
-  const query: AiMediaLibraryQuery = {}
+  const query: CanvasAccountLibraryQuery = {}
   if (value.offset !== undefined) {
     if (typeof value.offset !== 'number' || !Number.isSafeInteger(value.offset) || value.offset < 0 || value.offset > MAXIMUM_INDEXED_ASSETS) throw new Error('作品库请求格式错误')
     query.offset = value.offset
@@ -41,5 +43,10 @@ export function parseAiLibraryListInput(value: unknown): AiMediaLibraryQuery {
   }
   if (value.filmAssetIds !== undefined) query.filmAssetIds = parseAssetIds(value.filmAssetIds, MAXIMUM_LIBRARY_FILM_IDS)
   if (value.matchedAssetIds !== undefined) query.matchedAssetIds = parseAssetIds(value.matchedAssetIds, MAXIMUM_LIBRARY_MATCHED_IDS)
+  if (value.canvasProjectId !== undefined) {
+    // 只收编号的样子；是不是这个账号的项目由主进程拿它去自己的项目表里对（canvas-project-asset-manager.ts）。
+    if (typeof value.canvasProjectId !== 'string' || !projectIdPattern.test(value.canvasProjectId)) throw new Error('作品库请求格式错误')
+    query.canvasProjectId = value.canvasProjectId
+  }
   return query
 }
