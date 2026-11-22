@@ -672,6 +672,36 @@ test('disabled large files, enabled small files and latest JSON preserve the sin
   assert.equal(latest.calls[1].headers['x-cos-forbid-overwrite'], undefined)
 })
 
+test('a caller can lower where multipart starts, so a file under 16 MiB is split instead of sent in one PUT', async t => {
+  function lowered(transport, multipartMinBytes) {
+    return createCosStore({ ...config, multipart: { enabled: true, concurrency: 4 } }, { requestImpl: transport.requestImpl, now: () => 1000, sleep: transport.sleep, random: () => 0, multipartMinBytes })
+  }
+  // 11-21: a 15 MB workspace kernel sent in one PUT took 14 to 20 minutes and COS refused it (#2069).
+  const data = await fixture(t, 2 * PART_BYTES + 123)
+  const unchanged = memoryMultipart()
+  await store(unchanged).publishFile(key, data.filePath, data.input)
+  assert.deepEqual(unchanged.calls.map(call => call.method), ['HEAD', 'PUT', 'GET'])
+  const split = memoryMultipart()
+  assert.equal((await lowered(split, PART_BYTES).publishFile(key, data.filePath, data.input)).sha256, data.input.expectedSha256)
+  assert.deepEqual(split.calls.map(call => call.method), ['HEAD', 'POST', 'PUT', 'PUT', 'PUT', 'POST', 'GET'])
+  assert.deepEqual(split.calls.filter(call => call.method === 'PUT').map(call => call.body.length).sort((a, b) => a - b), [123, PART_BYTES, PART_BYTES])
+  // Below the lowered start, and for the overwritable latest pointer, the single PUT stays.
+  const smallData = await fixture(t, PART_BYTES - 1)
+  const small = memoryMultipart()
+  await lowered(small, PART_BYTES).publishFile(key, smallData.filePath, smallData.input)
+  assert.deepEqual(small.calls.map(call => call.method), ['HEAD', 'PUT', 'GET'])
+  const latest = memoryMultipart()
+  await lowered(latest, 1).publishJson('chatgpt/latest.json', { schemaVersion: 1 }, { overwrite: true })
+  assert.deepEqual(latest.calls.map(call => call.method), ['HEAD', 'PUT', 'GET'])
+  // With multipart switched off the lowered start changes nothing.
+  const disabled = memoryMultipart()
+  await createCosStore({ ...config, multipart: { enabled: false, concurrency: 4 } }, { requestImpl: disabled.requestImpl, now: () => 1000, sleep: disabled.sleep, random: () => 0, multipartMinBytes: PART_BYTES }).publishFile(key, data.filePath, data.input)
+  assert.deepEqual(disabled.calls.map(call => call.method), ['HEAD', 'PUT', 'GET'])
+  for (const invalid of [0, -1, THRESHOLD_BYTES + 1, PART_BYTES + 0.5, Number.NaN, String(PART_BYTES), null]) {
+    assert.throws(() => lowered(memoryMultipart(), invalid), /COS 分块上传起点配置不合法/, String(invalid))
+  }
+})
+
 test('dispatch can finish beyond thirty minutes but stops at the seventy-five minute boundary', async t => {
   const data = await fixture(t, PART_BYTES + 123)
   for (const elapsedMs of [31 * 60 * 1000, 75 * 60 * 1000 - 1, 75 * 60 * 1000]) {

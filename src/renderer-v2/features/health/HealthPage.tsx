@@ -176,23 +176,23 @@ function diagnosticRank(state: string) {
   return state === 'pass' ? 2 : state === 'warn' ? 1 : 0
 }
 
-/** 连接自检的结论：正常 / 有问题 / 没测成；未配置不是故障，照旧写「未配置」、灰色。行首图标按它画，读屏念这几个字。 */
+/** 连接自检的结论：正常 / 有问题 / 检测未完成；未配置不是故障，照旧写「未配置」、灰色。行首图标按它画，读屏念这几个字。 */
 export function connectionRowStatus(row: Pick<ConnectionRow, 'result'>): { label: string; tone: 'ok' | 'warn' | 'bad' | 'neutral' } {
-  if (!row.result) return { label: '没测成', tone: 'bad' }
+  if (!row.result) return { label: '检测未完成', tone: 'bad' }
   const view = connectionCheckView(row.result)
   if (view.tone === 'ok') return { label: '正常', tone: 'ok' }
   if (view.tone === 'neutral') return { label: view.statusLabel, tone: 'neutral' }
   return { label: '有问题', tone: view.tone }
 }
 
-/** 连接自检一行一个工具，有问题的排前：有问题、没测成、未配置、正常；同一档里照注册表的次序。 */
+/** 连接自检一行一个工具，有问题的排前：有问题、检测未完成、未配置、正常；同一档里照注册表的次序。 */
 export function sortConnectionRows<T extends Pick<ConnectionRow, 'result'>>(rows: readonly T[]): T[] {
   return [...rows].sort((left, right) => connectionRank(left) - connectionRank(right))
 }
 
 function connectionRank(row: Pick<ConnectionRow, 'result'>) {
   const { label, tone } = connectionRowStatus(row)
-  return label === '没测成' ? 1 : tone === 'ok' ? 3 : tone === 'neutral' ? 2 : 0
+  return label === '检测未完成' ? 1 : tone === 'ok' ? 3 : tone === 'neutral' ? 2 : 0
 }
 
 type StateTone = 'ok' | 'warn' | 'bad' | 'neutral'
@@ -239,7 +239,7 @@ function ConnectionRowItem({
     return (
       <div className="v2-health-line is-bad" data-testid={`health-connection-error-${row.id}`}>
         {icon}
-        <span className="v2-health-line-text">{row.name}：{row.error ?? '自检没能完成'}</span>
+        <span className="v2-health-line-text">{row.name}：{row.error ?? '自检未完成'}</span>
       </div>
     )
   }
@@ -645,7 +645,7 @@ export function HealthPage({
               onClick={() => setProxyClearItem(item)}
               testId="health-clear-stale-proxy"
             >
-              清掉这条旧设置
+              清除此旧设置
             </Button>
           )}
           {diagnosticFixKind(item) && (
@@ -795,7 +795,7 @@ export function HealthPage({
       noun="检查结果"
       loadingTitle="正在检查…"
       loadingDescription={null}
-      emptyTitle="还没有做过完整检查"
+      emptyTitle="尚未进行完整检查"
       emptyDescription="点右上角「开始检查」。"
       loading={resource.loading}
       error={resource.error}
@@ -806,7 +806,7 @@ export function HealthPage({
     </ListState>
   )
   const connectionsTested = connections !== null
-  // 页头那颗按钮跟着下面的空状态走（UI 字表 W33）：一项结果都还没有时下面写「还没有做过完整检查」，
+  // 页头那颗按钮跟着下面的空状态走（UI 字表 W33）：一项结果都还没有时下面写「尚未进行完整检查」，
   // 这里就叫「开始检查」，不叫「重新」；查出结果以后才叫「重新检查」。重查时上一轮的结果还摆着，名字不跟着跳。
   const checked = diagnostics.length > 0
   return (
@@ -852,7 +852,7 @@ export function HealthPage({
             <span className="v2-health-tile" aria-hidden="true"><Globe2 size={15} /></span>
             <div className="xm-row-main">
               <div className="xm-row-title">测试连接</div>
-              <div className="xm-row-desc">确认每个工具都能连上、账号有效；装好的桌面端也一起测</div>
+              <div className="xm-row-desc">确认各工具连接正常、账号有效；已安装的桌面端一并检测</div>
               {connections && (
                 <div className="v2-health-lines">
                   {sortConnectionRows(connections).map((row) => (
@@ -886,7 +886,7 @@ export function HealthPage({
               <span className="v2-health-tile" aria-hidden="true"><Terminal size={15} /></span>
               <div className="xm-row-main">
                 <div className="xm-row-title">Codex 干活检查</div>
-                <div className="xm-row-desc">让 Codex 真的做一件小事，确认它能正常干活，不会改你的文件</div>
+                <div className="xm-row-desc">让 Codex 执行一项简单任务，确认其运行正常，不会修改您的文件</div>
                 <label className="v2-health-consent" data-testid="health-codex-responses-consent">
                   <input
                     type="checkbox"
@@ -894,14 +894,14 @@ export function HealthPage({
                     disabled={responsesBusy}
                     onChange={(event) => setResponsesConsent(event.target.checked)}
                   />
-                  <span>我知道这会用掉当前账号的一点额度</span>
+                  <span>我已知晓此操作将消耗当前账号少量额度</span>
                 </label>
                 {responsesView && (
                   <div className="v2-health-lines" data-testid="health-codex-responses-result">
                     <div className={`v2-health-line is-${responsesView.tone}`}>
                       <StateIcon tone={responsesView.tone} label={responsesView.statusLabel} />
                       <div className="v2-health-line-main">
-                        <span className="v2-health-line-text">{responsesView.tone === 'ok' ? 'Codex 能正常干活' : responsesView.title}</span>
+                        <span className="v2-health-line-text">{responsesView.tone === 'ok' ? 'Codex 运行正常' : responsesView.title}</span>
                         {responsesView.tone !== 'ok' && <p className="v2-health-note">{responsesView.body}</p>}
                         {responsesView.detail && <p className="v2-health-note">{responsesView.detail}</p>}
                       </div>
@@ -911,8 +911,8 @@ export function HealthPage({
                 {responsesError && (
                   <div className="v2-health-lines" data-testid="health-codex-responses-error">
                     <div className="v2-health-line is-bad">
-                      <StateIcon tone="bad" label="没测成" />
-                      <span className="v2-health-line-text">Codex 没测成：{responsesError}</span>
+                      <StateIcon tone="bad" label="检测未完成" />
+                      <span className="v2-health-line-text">Codex 检测未完成：{responsesError}</span>
                     </div>
                   </div>
                 )}
@@ -945,9 +945,9 @@ export function HealthPage({
       />
       <Confirm
         open={Boolean(proxyClearItem)}
-        title="清掉这条旧的代理设置？"
+        title="是否清除此旧代理设置？"
         body={staleProxyConfirmBody(proxyClearItem?.details)}
-        okLabel="清掉"
+        okLabel="清除"
         loading={operation.busy === '清掉旧的代理设置'}
         onOk={() => void clearStaleProxy()}
         onClose={() => setProxyClearItem(null)}

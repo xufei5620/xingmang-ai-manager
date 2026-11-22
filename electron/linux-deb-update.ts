@@ -121,7 +121,7 @@ function installerError(code: SystemInstallerError['code'], message: string): Sy
   return Object.assign(new Error(message), { code })
 }
 
-const packageMissingMessage = '下载好的安装包找不到了，可能被清理软件删掉了。点「重新下载」再试一次。'
+const packageMissingMessage = '未找到已下载的安装包，可能已被清理软件删除。请点击「重新下载」重试。'
 
 /**
  * 没交出去时给客户的那句话。`revealed`＝已经替他打开了安装包所在的文件夹，这时给出
@@ -130,11 +130,11 @@ const packageMissingMessage = '下载好的安装包找不到了，可能被清�
 export function systemInstallerFailureMessage(code: SystemInstallerError['code'], revealed: boolean): string {
   if (code === 'UPDATE_PACKAGE_PATH_MISSING') return packageMissingMessage
   const reason = code === 'UPDATE_SYSTEM_INSTALLER_MISSING'
-    ? '这台电脑上没找到能装 .deb 安装包的程序。'
-    : '没能打开这台电脑的安装程序。'
+    ? '本机未找到可安装 .deb 安装包的程序。'
+    : '无法打开本机的安装程序。'
   return revealed
-    ? `${reason}已经替你打开了安装包所在的文件夹，双击里面的安装包就能装；还不行请找客服。`
-    : `${reason}点「重新安装」再试一次；还不行请找客服。`
+    ? `${reason}已为您打开安装包所在文件夹，请双击其中的安装包进行安装；如仍无法安装，请联系客服。`
+    : `${reason}请点击「重新安装」重试；如仍无法解决，请联系客服。`
 }
 
 /**

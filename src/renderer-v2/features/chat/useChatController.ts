@@ -3,12 +3,13 @@ import { platformApi } from '../../platform-api'
 import { chatTextFileFullMessage } from '../../../../electron/ai-chat-protocol'
 import type { AiChatAsset, AiChatGroupSummary, AiVideoClip, AiVideoGenerateInput } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMessage, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase, pastedNothingMessage, customImageSizeRule, imageSizeFits, videoStartImageLimitMessage } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMessage, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase, pastedNothingMessage, customImageSizeRule, videoStartImageLimitMessage } from './state'
 import { autosaveDelay, ChatStorageError, conversationLimitMessage, createHistoryWriter, MAX_CONVERSATIONS, registerHistoryFlusher, unreadableConversationsNotice, type LoadedChatHistory } from './storage'
 import { useLatestRequest } from '../../latest-request'
 import { videoStudioErrorMessage } from '../video-studio/useVideoStudio'
 import { buildChatVideoRequest, chatVideoBilledNotice, chatVideoBusyMessage, chatVideoFailedMessage, chatVideoRetry, chatVideoSecondsFor, completeChatVideo, maxParallelChatVideos, pendingChatVideos, settleChatVideo, type ChatVideoProgress } from './video'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
+import { applySharedImageSettings, fitImageOptions, readSharedImageSettings, sharedImageSettingsOf, subscribeSharedImageSettings, writeSharedImageSettings } from './image-settings'
 import { isWindowInFront } from '../tools/install-notice'
 
 export interface GroupPreparation { phase: 'loading' | 'ready' | 'error'; models: string[]; error?: string; warning?: string }
@@ -40,7 +41,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const [error, setError] = useState('')
   // 只有几段对话读不出来时其余照常读写，说一句就行（D40）；整份读不出来的走下面那条红条。
   const [notice, setNotice] = useState(initial.unreadable ? unreadableConversationsNotice(initial.unreadable) : '')
-  const [storageError, setStorageError] = useState(initial.warning ? `${initial.warning}。现在聊的内容不会保存，关掉软件就没了。` : '')
+  const [storageError, setStorageError] = useState(initial.warning ? `${initial.warning}。当前对话内容不会保存，关闭软件后将丢失。` : '')
   const [attaching, setAttaching] = useState(false)
   // 尺寸框下那句规矩等客户离开尺寸框、或者点了发送才露出来，免得一边打字它一边跳；填对了就收起（表单 F5）。
   const [sizeRuleRevealed, setSizeRuleRevealed] = useState(false)
@@ -95,7 +96,23 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       return { ...conversation, settings: normalizeModel({ ...conversation.settings, ...next }) }
     }
     commit((current) => ({ ...current, conversations: current.conversations.map(settle), draftConversation: settle(current.draftConversation) }))
-    if (moved.from && moved.to) setNotice(`原来的分组「${moved.from}」已不可用，已换成「${moved.to}」，之后按「${moved.to}」分组计费。`)
+    if (moved.from && moved.to) setNotice(`原分组「${moved.from}」已不可用，已切换为「${moved.to}」，此后按「${moved.to}」分组计费。`)
+    syncImageSettings()
+  }
+  // 出图设置对话里和视频工作台的出图框记的是同一份（image-settings.ts，融合第 4 步）。当前这段对话在「生成图片」
+  // 那一档时跟着那一份走：切到这一档、打开这段对话、那边改了、模型表读完时各对一次。正在回答的不动；只换设置，
+  // 不算客户动过这段对话（不改它的时间，左边那一列不重排）。
+  const syncImageSettings = () => {
+    const current = activeConversation(stateRef.current)
+    if (current.settings.mode !== 'image' || isGenerating(current)) return
+    const groups = groupsRef.current
+    const settings = applySharedImageSettings(current.settings, readSharedImageSettings(scope), buildChatCatalog(groups, preparationsRef.current, 'image'), { groups, site })
+    if (settings !== current.settings) commit((workspace) => changeConversation(workspace, current.id, (item) => ({ ...item, settings })))
+  }
+  // 客户在「生成图片」那一档改了型号、尺寸、画质、分辨率：记成那一份。
+  const rememberImageSettings = (settings: ChatSettings) => {
+    const shared = sharedImageSettingsOf(settings)
+    if (shared) writeSharedImageSettings(scope, shared)
   }
   // 交回准备好的模型；分组不可用、准备失败或被更新的准备盖掉时是 null。
   const prepareGroup = async (group: string, keepMissing = false): Promise<string[] | null> => {
@@ -327,7 +344,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     const timer = window.setTimeout(() => {
       unsavedSince.current = null
       writer.save(stateRef.current).then(() => { if (alive.current) setStorageError('') }, (reason: unknown) => {
-        if (alive.current) setStorageError(`${reason instanceof ChatStorageError ? reason.message : '聊天记录没有保存到本机'}。当前内容仍保留在窗口中，请勿关闭窗口。`)
+        if (alive.current) setStorageError(`${reason instanceof ChatStorageError ? reason.message : '聊天记录未能保存到本机'}。当前内容仍保留在窗口中，请勿关闭窗口。`)
       })
     }, autosaveDelay(since, now))
     return () => window.clearTimeout(timer)
@@ -343,23 +360,33 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const sizeRule = customImageSizeRule(conversation.settings)
   useEffect(() => { if (!sizeRule) setSizeRuleRevealed(false) }, [sizeRule])
   const updateActive = (change: (conversation: Conversation) => Conversation) => { const id = activeConversation(stateRef.current).id; commit((current) => changeConversation(current, id, change)) }
-  const changeSettings = (patch: Partial<ChatSettings>) => updateActive((item) => ({ ...item, settings: { ...item.settings, ...patch } }))
+  const changeSettings = (patch: Partial<ChatSettings>) => {
+    const next = { ...activeConversation(stateRef.current).settings, ...patch }
+    updateActive((item) => ({ ...item, settings: { ...item.settings, ...patch } }))
+    if (patch.size !== undefined || patch.quality !== undefined || patch.imageResolution !== undefined) rememberImageSettings(next)
+  }
   // 选了哪个模型，就用有它的那个分组计费（同一个模型几个分组都有时按 pickChatGroup 的次序挑）。
   const selectModel = (model: string) => {
     const current = activeConversation(stateRef.current).settings
     const entry = buildChatCatalog(groupsRef.current, preparationsRef.current, current.mode).find((item) => item.model === model)
     if (!entry) return
     const group = pickChatGroup(entry.groups, { current: current.group, mode: current.mode, groups: groupsRef.current, site })
+    const next = normalizeModel({ ...current, model, group })
     updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, model, group }) }))
+    rememberImageSettings(next)
   }
+  // 视频工作台的出图框那边改了（或者这边自己刚记下）：当前对话在「生成图片」那一档就跟上。
+  useEffect(() => subscribeSharedImageSettings((changed) => { if (changed === scope) syncImageSettings() }), [scope])
   const selectMode = (mode: ChatMode) => {
     const current = activeConversation(stateRef.current).settings
     const groups = groupsRef.current, prepared = preparationsRef.current
     const next = settleChatModel({ ...current, mode, model: '' }, buildChatCatalog(groups, prepared, mode), { pending: pendingChatGroups(groups, prepared), groups, site })
     updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, mode, ...next }) }))
+    syncImageSettings()
   }
   const openConversation = (id: string | null) => {
     commit((current) => ({ ...current, activeId: id }))
+    syncImageSettings()
     setError('')
     const group = activeConversation(stateRef.current).settings.group
     if (group && !preparations[group]) void prepareGroup(group)
@@ -381,6 +408,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       const untouched = !blank.draft.trim() && !blank.draftImages?.length && !blank.draftFiles?.length
       return { ...workspace, activeId: null, draftConversation: untouched ? createConversation(current.settings) : blank }
     })
+    syncImageSettings()
     setError('')
     const group = activeConversation(stateRef.current).settings.group
     if (group && !preparations[group]) void prepareGroup(group)
@@ -399,13 +427,13 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     const videoTurn = options.retryId ? retried?.settings?.mode === 'video' : current.settings.mode === 'video'
     const videoRetry = chatVideoRetry(videoTurn ? retried : undefined)
     if (videoTurn && !api.video) { setError('该模型当前不可用，请更换模型后发送'); return }
-    if (videoTurn ? videoRuns.current.size >= maxParallelChatVideos : requests.current.size >= 4) { setError(videoTurn ? chatVideoBusyMessage : '已有 4 个对话正在处理，请等待一个完成后再试'); return }
+    if (videoTurn ? videoRuns.current.size >= maxParallelChatVideos : requests.current.size >= 4) { setError(videoTurn ? chatVideoBusyMessage : '已有 4 个对话正在处理，请等待其中一个完成后再发送'); return }
     try {
       const plan = planTurn(current, { prompt: options.prompt ?? current.draft, images: current.draftImages, files: current.draftFiles, requestId: videoRetry.kind === 'fresh' ? createId() : videoRetry.requestId, assistantId: createId(), userMessageId: createId(), ...(videoRetry.kind === 'reuse' ? { videoUnconfirmed: true } : {}), ...options })
       // 发送按钮灰着时 Enter 也不发，走到这里的是「编辑后重新发送」「重新生成」和断网横幅上的「重试」：按卡在哪一步说。
-      if (!groupsRef.current.some((group) => group.name === plan.settings.group)) { setError(!groupsLoaded && groupLoading ? '正在读取模型，读完再发送' : '这个模型现在用不了，请换一个模型再发送'); return }
+      if (!groupsRef.current.some((group) => group.name === plan.settings.group)) { setError(!groupsLoaded && groupLoading ? '正在获取模型，请稍后发送' : '该模型当前不可用，请更换模型后发送'); return }
       const prepared = preparations[plan.settings.group]
-      if (prepared?.phase !== 'ready' || !prepared.models.includes(plan.settings.model)) { setError(!prepared || prepared.phase === 'loading' ? '正在准备模型，准备好再发送' : prepared.phase === 'error' ? '模型没准备好，请先点模型菜单里的「刷新模型」再发送' : '请先选择模型'); return }
+      if (prepared?.phase !== 'ready' || !prepared.models.includes(plan.settings.model)) { setError(!prepared || prepared.phase === 'loading' ? '模型准备中，请稍后发送' : prepared.phase === 'error' ? '模型尚未就绪，请先点击模型菜单中的「刷新模型」再发送' : '请先选择模型'); return }
       const textInput = { requestId: plan.requestId, group: plan.settings.group, model: plan.settings.model, messages: plan.messages, parameters: plan.settings.parameters }
       const capability = inspectModel(plan.settings.model)
       const imageInput = { requestId: plan.requestId, group: plan.settings.group, model: plan.settings.model, prompt: plan.prompt, size: plan.settings.size, quality: capability.kind === 'image' && capability.qualities.length ? plan.settings.quality : undefined, imageResolution: plan.settings.imageResolution, ...(plan.images.length ? { sourceAssetIds: plan.images.map((image) => image.assetId) } : {}) }
@@ -434,7 +462,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
         if (plan.settings.mode === 'image') {
           const assets = await api.generateImage(imageInput)
           if (alive.current && owner() && requests.current.has(plan.requestId)) {
-            if (!assets.length) throw new Error('没有收到生成的图片')
+            if (!assets.length) throw new Error('未收到生成的图片')
             commit((workspace) => completeImages(workspace, plan.requestId, assets))
             if (!isWindowInFront(typeof document === 'undefined' ? undefined : document)) void platformApi()?.notifyActivity('task', `image:${plan.requestId}`).catch(() => undefined)
             requests.current.delete(plan.requestId)
@@ -497,7 +525,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
           commit((workspace) => applyStreamEvent(workspace, { requestId, type: 'error', message: chatErrorMessage(request.failureDuringCancel) }))
           requests.current.delete(requestId)
         }
-        setError('停止请求没有成功，请检查任务的最后状态后再试')
+        setError('停止请求失败，请检查任务最终状态后重试')
       }
     }
   }
@@ -569,7 +597,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const removePhrase = (index: number) => commit((workspace) => ({ ...workspace, phrases: removeChatPhrase(workspace.phrases, index) }))
   const removeConversation = (id: string) => {
     const item = stateRef.current.conversations.find((candidate) => candidate.id === id)
-    if (item && isGenerating(item)) { setError('请先停止这个对话的请求，再删除记录'); return }
+    if (item && isGenerating(item)) { setError('请先停止该对话的请求，再删除记录'); return }
     commit((workspace) => ({ ...workspace, conversations: workspace.conversations.filter((candidate) => candidate.id !== id), activeId: workspace.activeId === id ? null : workspace.activeId }))
   }
   const renameSavedConversation = (id: string, title: string) => commit((workspace) => changeConversation(workspace, id, (item) => renameConversation(item, title)))
@@ -598,5 +626,5 @@ function normalizeModel(settings: ChatSettings): ChatSettings {
   // 换了视频模型：记着的时长挪到这个模型能出的、离原来最近的那一档（没设过的不写，用的时候再按型号算）。
   if (capability.kind === 'video') return settings.videoSeconds === undefined ? settings : { ...settings, videoSeconds: chatVideoSecondsFor(settings) }
   if (capability.kind !== 'image') return settings
-  return { ...settings, size: imageSizeFits(settings.size, capability.sizePolicy) ? settings.size : capability.sizePolicy.default, quality: capability.qualities.includes(settings.quality) ? settings.quality : capability.defaultQuality ?? 'auto', imageResolution: capability.resolutions.includes(settings.imageResolution) ? settings.imageResolution : capability.defaultResolution }
+  return fitImageOptions(settings.model, settings)
 }

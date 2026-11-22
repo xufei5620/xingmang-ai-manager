@@ -9,6 +9,7 @@ import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/too
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import { buildClaudeDesktopInstallFailureMessage } from '../../../electron/claude-desktop-install-failure'
+import { codexDesktopActivationBrokenSentence } from '../../../electron/codex-desktop-known-issues'
 import { accountScope } from '../account-context'
 import { createConversation, createWorkspace } from '../features/chat/state'
 import { exportableConversations } from '../features/chat/storage'
@@ -89,6 +90,13 @@ function fixtureRouteLines(): RelayRouteLines {
     return active === 'auto' ? autoRelayLine : { line: active, settled: true }
   }
   return { solov: lineOf('solov'), 'solov-api': lineOf('solov-api') }
+}
+// 同主进程（app-settings.ts 的合并、settings:save 处理器）：设置页「更换」带着 workspaceChosen 才记下那一刻；
+// 别处换成另一个文件夹，那一刻就不算数了（0.2.25 总单 Q1）。
+function fixtureRememberWorkspace(workspace: string, chosenOnSettingsPage: boolean) {
+  const { workspaceChosenAt, ...rest } = settings
+  const kept = chosenOnSettingsPage ? Date.now() : workspace === settings.workspace ? workspaceChosenAt : undefined
+  settings = { ...rest, workspace, ...(kept === undefined ? {} : { workspaceChosenAt: kept }) }
 }
 function settingsView(): AppSettingsV2 {
   return { ...settings, relayRouteLines: fixtureRouteLines() }
@@ -470,7 +478,7 @@ const methods = {
     return accelerationDemo.redeemAccelerationCode!(scope, code)
   },
   getSettings: async () => settingsView(),
-  saveSettings: async (patch) => { settings = { ...settings, relayEndpointIds: patch.relayEndpointIds ?? settings.relayEndpointIds, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown, checkUpdatesOnStartup: patch.checkUpdatesOnStartup ?? settings.checkUpdatesOnStartup, autoUpdate: patch.autoUpdate ?? settings.autoUpdate }; return settingsView() },
+  saveSettings: async (patch) => { if (patch.workspace !== undefined) fixtureRememberWorkspace(patch.workspace, patch.workspaceChosen === true); settings = { ...settings, relayEndpointIds: patch.relayEndpointIds ?? settings.relayEndpointIds, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown, checkUpdatesOnStartup: patch.checkUpdatesOnStartup ?? settings.checkUpdatesOnStartup, autoUpdate: patch.autoUpdate ?? settings.autoUpdate }; return settingsView() },
   // ?writeBoundary=kept|later：主进程没当场改 Claude Code 的配置（客户自己写过这一项 / 现在不是星芒在管它的配置），开关照样记下。
   setClaudeWriteBoundary: async (enabled: boolean) => {
     settings = { ...settings, claudeWritesInsideProject: enabled }
@@ -638,6 +646,11 @@ const methods = {
     if (launchedWorkspace) result.rememberedWorkspace = launchedWorkspace
     // 同主进程（isUntouchedStarterWorkspace）：夹具里替用户建的那个文件夹一直空着。
     if (launchedWorkspace === fixtureStarterWorkspace) result.rememberedWorkspaceFresh = true
+    // 同主进程：设置页换的那一个，首页据此先进它（Q1）。
+    if (settings.workspaceChosenAt !== undefined) {
+      result.rememberedWorkspace = settings.workspace
+      result.rememberedWorkspaceChosenAt = settings.workspaceChosenAt
+    }
     // 同主进程：恢复中没有账号可比，来源只会是 unknown，并带上「待定」标记。
     if (session.restoring) {
       result.ownershipPending = true
@@ -704,7 +717,7 @@ const methods = {
   chooseWorkspace: async (options) => {
     if (query.has('workspaceCancel')) return null
     const workspace = options?.createStarter ? fixtureStarterWorkspace : 'C:\\Selected Project'
-    settings = { ...settings, workspace }
+    fixtureRememberWorkspace(workspace, false)
     config.workspace = workspace
     return workspace
   },
@@ -786,7 +799,7 @@ const methods = {
   launchCli: async (_provider, workspace) => {
     // ?workspaceGone：记录里的 my-app 已经被删了，同主进程打开时报这一句（provider-launch-service.ts 的 launchProviderOperation）。
     if (query.has('workspaceGone') && workspace === 'C:\\work\\my-app') throw new Error('工作目录不存在，请重新选择')
-    // ?launchDeclined：头一次打开时在「这个文件夹不建议打开」那一问里点了「先不打开」，主进程回 declined（N11）。
+    // ?launchDeclined：头一次打开时在「不建议在此文件夹中打开」那一问里点了「暂不打开」，主进程回 declined（N11）。
     if (query.has('launchDeclined') && window.v2Test.calls.filter((call) => call.method === 'launchCli').length === 1) return { declined: true }
     if (query.has('launchRemembers')) {
       launchedWorkspace = config.workspace
@@ -796,7 +809,15 @@ const methods = {
     if (query.has('launchReadOnly')) return { workspaceReadOnly: true }
     return query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {}
   },
-  launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。' } } : {}) }),
+  launchCodexDesktop: async () => {
+    // ?codexLaunchFailure=activation：Windows 不肯起已装好的 Codex（0x80270254）；=generic：等了 38 秒没起来。
+    // 两句都是主进程 describeCodexDesktopLaunchFailure 写出来的原样。
+    const failure = query.get('codexLaunchFailure')
+    if (failure === 'activation') throw new Error(`Codex 桌面端没有打开：${codexDesktopActivationBrokenSentence(38)}`)
+    if (failure === 'generic') throw new Error('Codex 桌面端没有打开：等待 38 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex 命令行版；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
+    return { restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。' } } : {}) }
+  },
+  restartWindows: async () => undefined,
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),
   setCodexDesktopLocale: async (locale) => {
     settings = { ...settings, codexDesktopChineseRuntimePatch: locale === 'zh-CN' ? 'enabled' : 'disabled' }

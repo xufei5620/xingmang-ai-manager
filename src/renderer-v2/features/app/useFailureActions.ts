@@ -29,6 +29,8 @@ interface FailureActionsOptions {
   setHelp: Dispatch<SetStateAction<boolean>>
   /** 首页「配置文件坏了」那颗「立即修复」；修好了再跑 retry（错误框里那次没打开的打开）。 */
   repairBrokenConfig(tool: ToolId, retry?: () => void): void
+  /** 错误框里的「立即重启」：弹重启确认框（RuntimeRestartDialog 的 codexDesktop 那一版），不直接重启。 */
+  requestComputerRestart(): void
 }
 
 export const codexDesktopStoreUnavailableMessage = '无法打开微软商店，本机可能未安装。请返回星芒再次点击安装，将改用 OpenAI 官网离线安装包或国内线路安装；如仍失败，请联系客服。'
@@ -51,7 +53,7 @@ export async function openCodexDesktopStoreOrExplain(openExternal: (url: string)
 }
 
 /** 错误框和新手引导里那些「改用…」「去…」的出口按钮，各自通到哪（operation-error 的目录）。 */
-export function useFailureActions({ app, toolsApi, toast, perform, navigate, operationError, setOperationError, rewriteAccountKeys, install, snapshot, setConfirmation, setNodeReplace, setAuth, setHelp, repairBrokenConfig }: FailureActionsOptions) {
+export function useFailureActions({ app, toolsApi, toast, perform, navigate, operationError, setOperationError, rewriteAccountKeys, install, snapshot, setConfirmation, setNodeReplace, setAuth, setHelp, repairBrokenConfig, requestComputerRestart }: FailureActionsOptions) {
   const openCodexDesktopStore = useCallback(() => openCodexDesktopStoreOrExplain(app.openExternal), [app])
   // 错误框里的「重置 Codex」：清掉的是 Codex 桌面端自己的登录和缓存，先问一句再动手；
   // 重置完接着把刚才没打开的那一次再跑一遍，客户不用再回首页点「打开」。
@@ -78,13 +80,14 @@ export function useFailureActions({ app, toolsApi, toast, perform, navigate, ope
     else if (action === 'replaceNode') setNodeReplace(failure?.retry ? { retry: failure.retry } : {})
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(failure?.retry)
+    else if (action === 'restartComputer') requestComputerRestart()
     else if (action === 'useCodexCli') switchToCodexCli()
     else if (action === 'installGuide') navigate('tutorial', macDesktopTutorialTopic)
     // Windows 上 Claude Desktop 一键安装没装上时的两个出口（D64）；两个页面都在主进程外链白名单里（全等匹配）。
     else if (action === 'claudeDesktopOfflinePackages') void perform('打开下载页', () => app.openExternal(claudeDesktopOfflinePackagesUrl))
     else if (action === 'claudeDesktopDownload') void perform('打开下载页', () => app.openExternal(claudeDesktopDownloadPageUrl))
     else setHelp(true)
-  }, [app, navigate, openCodexDesktopStore, operationError, perform, repairBrokenConfig, requestCodexDesktopReset, rewriteAccountKeys, setAuth, setHelp, setNodeReplace, setOperationError])
+  }, [app, navigate, openCodexDesktopStore, operationError, perform, repairBrokenConfig, requestCodexDesktopReset, requestComputerRestart, rewriteAccountKeys, setAuth, setHelp, setNodeReplace, setOperationError])
   // 引导里「改用」或安装失败时的出口：和错误框同一张表，只是没有「重试」
   //（引导自己有）。去充值、去设置 › 备份迁移会离开引导，进度照旧留着；换 Node.js 不离开，
   // 换完接着重跑引导里失败的那一步。
@@ -98,12 +101,13 @@ export function useFailureActions({ app, toolsApi, toast, perform, navigate, ope
     else if (action === 'repair') void perform(rewriteKeyAction, () => rewriteAccountKeys())
     else if (action === 'openStore') void perform('打开微软商店', openCodexDesktopStore)
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(retry)
+    else if (action === 'restartComputer') requestComputerRestart()
     else if (action === 'useCodexCli') switchToCodexCli()
     else if (action === 'installGuide') navigate('tutorial', macDesktopTutorialTopic)
     else if (action === 'claudeDesktopOfflinePackages') void perform('打开下载页', () => app.openExternal(claudeDesktopOfflinePackagesUrl))
     else if (action === 'claudeDesktopDownload') void perform('打开下载页', () => app.openExternal(claudeDesktopDownloadPageUrl))
     else setHelp(true)
-  }, [app, navigate, openCodexDesktopStore, perform, requestCodexDesktopReset, rewriteAccountKeys, setAuth, setHelp, setNodeReplace])
+  }, [app, navigate, openCodexDesktopStore, perform, requestCodexDesktopReset, requestComputerRestart, rewriteAccountKeys, setAuth, setHelp, setNodeReplace])
   // Codex 桌面端这一版已知打不开时的「改用 Codex 命令行版」：回到首页 Codex 那一行；
   // 还没装就直接开始装，装好了由客户自己点「打开」（第十九批 7）。
   function switchToCodexCli() {

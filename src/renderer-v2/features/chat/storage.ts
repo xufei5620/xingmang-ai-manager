@@ -8,7 +8,7 @@ import { addChatPhrase, createConversation, createId, createWorkspace, defaultCh
 
 // 读不出来时那条红条的前半句；后半句「现在聊的内容不会保存……」在 useChatController 里接上。
 // 下面各处 ChatStorageError 的原文是给排查看的，只写进日志，上屏一律说这一句（W24）。
-const unreadableHistory = '以前的聊天记录暂时读不出来，原文件没动'
+const unreadableHistory = '历史聊天记录暂时无法读取，原文件未作修改'
 
 // localStorage 现在只是旧版本留下的迁移来源，新记录一律写到主进程的文件里。读迁移来源时只读；
 // 文件里有了这个账号的记录之后，才把旧副本删掉并记一个「已迁移」标记（forgetLegacyHistory）。
@@ -22,7 +22,7 @@ const FILE_KEY = /^[A-Za-z0-9_-]{1,64}$/
 export class ChatStorageError extends Error {}
 // 超过上限是唯一一种原文就是说给客户听的：读的时候、存的时候都照这句上屏（W24）。
 class ChatHistoryLimitError extends ChatStorageError {}
-const limitMessage = `聊天记录超过 ${MAX_CONVERSATIONS} 个，这台电脑存不下，原来的记录没动`
+const limitMessage = `聊天记录超过 ${MAX_CONVERSATIONS} 个，本机无法保存，原有记录未作修改`
 // 存满以后点「新建」、在草稿里发第一句时说的。
 export const conversationLimitMessage = `最多保存 ${MAX_CONVERSATIONS} 个对话，请先删除不再需要的对话`
 
@@ -219,7 +219,7 @@ export function chatHistoryLogger(bridge: Pick<XingmangApi, 'reportRendererError
 }
 /** 有几段对话读不出来、已经挪开时，页面上那句（D40）。 */
 export function unreadableConversationsNotice(count: number): string {
-  return `有 ${count} 段对话读不出来，已经单独留着，其余照常。`
+  return `有 ${count} 段对话无法读取，已单独保留，其余对话不受影响。`
 }
 // The history files sit unencrypted in the user profile, and chat text is the one
 // surface where a pasted key, an Authorization header or a whole base64 image
@@ -618,7 +618,7 @@ export function importLegacyHistory(storage: ChatStorage, scope: string, userId:
 
 // ---- 搬到新电脑 ----
 const transferInvalidMessage = '这个文件不是星芒导出的，或者已经损坏，没有导入任何内容。'
-const imageLeftBehind = '[图片没有一起搬过来]'
+const imageLeftBehind = '[图片未随记录迁移]'
 const videoLeftBehind = '[视频未随记录迁移]'
 
 function portableMessage(message: ReturnType<typeof persistedMessage>) {
@@ -818,7 +818,7 @@ export async function importConversationsIntoHistory(
 ): Promise<ChatImportResult> {
   // Not loadChatHistory: inside runHistoryImport that would wait on itself.
   const loaded = await readChatHistory(api, storage, scope)
-  if (loaded.warning) throw new ChatStorageError('这台电脑上的聊天记录现在读不出来，为了不弄丢它，这次没有导入对话')
+  if (loaded.warning) throw new ChatStorageError('本机聊天记录当前无法读取，为避免数据丢失，本次未导入对话')
   const { state: merged, added, updated, skipped } = mergeImportedConversations(loaded.state, imported)
   const phrases = mergeImportedPhrases(merged.phrases, importedPhrases)
   if (!added && !updated && !phrases) return { added, updated, skipped }
@@ -847,9 +847,9 @@ export function conversationPlainText(conversation: Conversation): string {
     const content = redactPersistentChatText(message.content)
     if (content) lines.push(content)
     for (const file of message.files ?? []) lines.push(`附件：${redactPersistentChatText(file.name)}`)
-    if (message.assets?.length) lines.push(`[${message.assets.length} 张图片，没有放进这个文件]`)
+    if (message.assets?.length) lines.push(`[${message.assets.length} 张图片，未包含在此文件中]`)
     if (message.video?.clip) lines.push('[1 段视频，未包含在此文件中]')
-    if (message.status === 'error' && message.error) lines.push(`[没有回复成功：${redactPersistentChatText(message.error)}]`)
+    if (message.status === 'error' && message.error) lines.push(`[回复失败：${redactPersistentChatText(message.error)}]`)
     lines.push('')
   }
   return lines.join('\n')

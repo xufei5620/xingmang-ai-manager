@@ -7,9 +7,11 @@ const path = require('node:path')
 const { EventEmitter } = require('node:events')
 const {
   SOURCE_HOST, PREFIX, CONTENT_TYPE, CACHE_CONTROL, MSIX_REQUEST_URL, MAC_ZIP_REQUEST_URL, INSTALLERS, INSTALLER_IDS, PARTS, PART_IDS,
-  parsePart, parsePartArgument, componentSourceUrl, validateComponentSourceUrl, assertObjectKey, componentsFromModules, loadComponents, buildPlan,
-  synchronizeClaudeComponents, safeComponentsSyncFailure, extractAsar, requestMacZipLocation, resolveInstaller, createRuntimeDependencies,
+  MULTIPART_DEADLINE_MS, MULTIPART_MIN_BYTES, parsePart, parsePartArgument, componentSourceUrl, validateComponentSourceUrl, assertObjectKey,
+  componentsFromModules, loadComponents, buildPlan, synchronizeClaudeComponents, safeComponentsSyncFailure, extractAsar, requestMacZipLocation,
+  resolveInstaller, createRuntimeDependencies, createComponentsCosStore,
 } = require('./sync-claude-components-cos.cjs')
+const { PART_BYTES, THRESHOLD_BYTES } = require('./cos-multipart-upload.cjs')
 const { OFFICIAL_HOSTS } = require('./sync-claude-official-cos.cjs')
 const { checkFailure } = require('./cos-sync-utils.cjs')
 
@@ -514,6 +516,18 @@ test('app.asar is unpacked alone with unzip into a fresh directory, and anything
   t.after(() => fs.rm(failed, { recursive: true, force: true }))
   await assert.rejects(extractAsar('/tmp/Claude.msix', failed, 'windows', async () => { throw Object.assign(new Error('unzip said C:\\Users\\me'), { code: 11 }) }, 'linux'), /解不出 app\.asar/)
   await assert.rejects(extractAsar('/tmp/Claude.msix', failed, 'windows', async () => ({}), 'win32'), /Linux 或 macOS/)
+})
+
+test('the bucket store splits every file from one part up, so the 15 MB workspace kernel is not sent in one slow PUT', () => {
+  // 11-21 (#2069): the Windows vmlinuz.zst files are 14809069 and 15111617 bytes, under the shared 16 MiB start.
+  assert.equal(MULTIPART_MIN_BYTES, PART_BYTES)
+  assert.ok(MULTIPART_MIN_BYTES < 14809069 && 14809069 < THRESHOLD_BYTES)
+  const created = []
+  const store = {}
+  const config = { bucket: 'bucket-1250000000' }
+  assert.equal(createComponentsCosStore({ createCosStore(value, options) { created.push([value, options]); return store } }, config), store)
+  assert.deepEqual(created, [[config, { multipartDeadlineMs: MULTIPART_DEADLINE_MS, multipartMinBytes: PART_BYTES }]])
+  assert.equal(MULTIPART_DEADLINE_MS, 240 * 60 * 1000)
 })
 
 test('the runtime only ever deletes its own temporary directory', async () => {

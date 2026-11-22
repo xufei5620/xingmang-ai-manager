@@ -19,6 +19,7 @@ import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { OfficialQuotaDialog } from './features/tools/OfficialQuotaDialog'
 import { Home, homeWalletEmpty } from './features/tools/Home'
 import { rescanFingerprint } from './features/tools/rescan-change'
+import { workspaceChoiceChanged } from './features/tools/recent-workspaces'
 import { externalClientReady, visibleExternalClients } from './features/tools/external-model'
 import { createToolsApi } from './features/tools/api'
 import { logoutJobsNote } from './features/tools/launch-notice'
@@ -182,6 +183,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [unread, setUnread] = useState(false)
   const [paymentReturn, setPaymentReturn] = useState<{ sequence: number; order: string | null }>()
   const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(null)
+  // Codex 桌面端打不开时错误框里那颗「立即重启」弹的确认框；Node.js 装完要重启的那个框另有一份状态。
+  const [codexRestart, setCodexRestart] = useState(false)
+  const requestComputerRestart = useCallback(() => setCodexRestart(true), [])
   const [confirmBusy, setConfirmBusy] = useState(false)
   const confirmationLock = useRef(false)
   // 首页一键切换账号来源之后 Codex 桌面端还开着：问一次要不要替用户重开，记下切到了哪边。
@@ -323,7 +327,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   const { openCodexDesktopStore, runOperationAction, runGuideFailureAction } = useFailureActions({
     app, toolsApi, toast, perform, navigate, operationError, setOperationError, rewriteAccountKeys, install, snapshot: toolbox.snapshot,
-    setConfirmation, setNodeReplace, setAuth, setHelp, repairBrokenConfig,
+    setConfirmation, setNodeReplace, setAuth, setHelp, repairBrokenConfig, requestComputerRestart,
   })
   // 确认过的事没做成时，错误框里的「重试」直接再做一遍，不再问一次。卸载时工具还开着，
   // 错误框说「先关掉……再重试」，以前框里却没有「重试」可点。确认框一直开在错误框后面，
@@ -341,7 +345,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     return () => { delete document.documentElement.dataset.rendererReady }
   }, [])
   // 引导最后一步那颗「打开」跟首页同一套（D46）：落在哪个文件夹按会话记录定，引导开着时读一份。
-  const guideLaunchTarget = useGuideLaunch(toolsApi, guide, recentRevision, toolbox.snapshot?.config.rememberedWorkspace)
+  const guideLaunchTarget = useGuideLaunch(toolsApi, guide, recentRevision, toolbox.snapshot?.config.rememberedWorkspace, toolbox.snapshot?.config.rememberedWorkspaceChosenAt)
   const guideTools: GuideToolState[] = toolbox.snapshot ? presentTools(toolbox.snapshot).map((tool) => ({
     id: tool.id, installed: tool.status.installed, configured: tool.configured, source: guideSource(tool.source),
     version: tool.currentVersion ?? undefined, model: tool.model, detectionError: Boolean(tool.error),
@@ -505,7 +509,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           installedProviders={installedProviders}
           codexDesktopInstalled={codexDesktopInstalled}
           onSystemChanged={() => { markDiagnosticsStale(); refreshRecent(); void toolbox.refresh(true).catch(() => undefined) }}
-          onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
+          onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={(next) => {
+            // 设置页换了项目文件夹：重读一次配置，首页「打开」马上换成新的（Q1）。
+            const workspaceChanged = workspaceChoiceChanged(settings, next)
+            setSettings(next)
+            if (workspaceChanged) void toolbox.refreshConfig().catch(() => undefined)
+          }} uiScale={settings ? settings.uiScale ?? 'auto' : undefined} openConfig={openToolConfig}
           openGuide={() => setGuide(true)} replayTour={replayTour} chatTransfer={chatTransfer}
           installTool={install} cancelToolInstall={(tool) => toolbox.cancel(tool)} toolJobs={toolbox.jobs}
           onRewriteKey={(provider) => rewriteAccountKeys([provider])} rewritableKeys={rewritableKeys}
@@ -711,6 +720,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button variant="primary" testId="model-swap-confirm" onClick={() => modelSwap.answer('swap')}>{modelSwapConfirmLabel(modelSwap.offer)}</Button>
     </>}><p data-testid="model-swap-question">{modelSwapQuestion(modelSwap.offer)}</p></Dialog>}
     {runtimeRestart && <RuntimeRestartDialog onClose={() => setRuntimeRestart(false)} restart={toolsApi.restartWindows} />}
+    {codexRestart && <RuntimeRestartDialog reason="codexDesktop" onClose={() => setCodexRestart(false)} restart={toolsApi.restartWindows} />}
     {/* 气泡、状态栏、侧栏的「重启并安装」在原地弹确认框，不先跳到版本更新页（11-10）。 */}
     {installConfirmOpen && <UpdateInstallConfirm api={native} update={update} open onClose={closeInstallConfirm} />}
     {/* 点「取消」或关掉框都是不换：install 收到 false，什么都不动。 */}

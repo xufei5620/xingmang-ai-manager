@@ -107,7 +107,7 @@ export interface IpcRegistrationOptions {
   // 解析各 CLI 配置目录用的根路径（Codex 认 CODEX_HOME）。省略 = 按当前进程
   // 环境推一份，和 system-service 默认拿到的那份一致（旧行为）。
   providerRoots?: ProviderConfigRoots
-  // Windows 上「新建一个项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到
+  // Windows 上「新建项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到
   // 主目录；macOS 一律建在主目录）；
   // main.ts 传系统「文档」目录（app.getPath('documents')）。省略 = 主目录下的 Documents。
   documentsDirectory?: () => string

@@ -751,12 +751,15 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
   ): Promise<CliLaunchResult> {
     async function launch(): Promise<CliLaunchResult> {
       const result = await launchProviderOperation(provider, workspace, mode, resumeSessionId)
-      const rememberedWorkspace = rememberedWorkspaceFor(store.read().workspace)
+      const stored = store.read()
+      const rememberedWorkspace = rememberedWorkspaceFor(stored.workspace)
       return {
         ...result,
         rememberedWorkspace,
         // 记着的文件夹换了，首页「试试第一条命令」那句话跟着它挑，不等下一轮读配置（D45）。
         ...(rememberedWorkspace && isUntouchedStarterWorkspace(rememberedWorkspace, platform) ? { rememberedWorkspaceFresh: true } : {}),
+        // 是不是设置页换的也跟着它走（Q1）：首页刚选了另一个文件夹，设置页那一刻就不再算数。
+        ...(rememberedWorkspace && stored.workspaceChosenAt !== undefined ? { rememberedWorkspaceChosenAt: stored.workspaceChosenAt } : {}),
       }
     }
     return installationQueue.enqueue(

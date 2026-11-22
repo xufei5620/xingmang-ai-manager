@@ -114,16 +114,16 @@ describe('video studio timeline', () => {
       }
       throw new Error('expected a failure')
     }
-    expect(failure(() => buildVideoStudioRenderPlan([], options))).toBe('至少要放一段片段才能拼成片')
+    expect(failure(() => buildVideoStudioRenderPlan([], options))).toBe('至少需要一段片段才能合成成片')
     expect(failure(() => buildVideoStudioRenderPlan(Array.from({ length: maxVideoStudioClips + 1 }, () => ({ start: 0, end: 1 })), options)))
       .toBe(`一次最多拼 ${maxVideoStudioClips} 段片段`)
     expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1 }, { start: 0, end: Number.NaN }], options))).toBe('第 2 段片段的时长读不出来')
     expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1, trimStart: -1 }], options))).toBe('第 1 段的剪切时间不能是负数')
-    expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1, trimStart: 0.5, trimEnd: 0.4 }], options))).toBe('第 1 段剪掉首尾后不到 0.2 秒，没法用')
-    expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1, caption: '字'.repeat(201) }], options))).toBe('第 1 段的字幕太长了，最多 200 个字')
+    expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1, trimStart: 0.5, trimEnd: 0.4 }], options))).toBe('第 1 段裁剪首尾后不足 0.2 秒，无法使用')
+    expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1, caption: '字'.repeat(201) }], options))).toBe('第 1 段的字幕过长，最多 200 个字')
     expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 400 }, { start: 0, end: 201.5 }], options))).toBe('成片最长 10 分钟，现在是 10 分 2 秒')
-    expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1 }], { ...options, aspect: '4:3' as never }))).toBe('不支持这个画面比例')
-    expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1 }], { ...options, frameRate: 60 as never }))).toBe('不支持这个帧率')
+    expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1 }], { ...options, aspect: '4:3' as never }))).toBe('不支持该画面比例')
+    expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1 }], { ...options, frameRate: 60 as never }))).toBe('不支持该帧率')
   })
 
   it('does not call a timeline a fraction of a second over the limit exactly ten minutes', () => {

@@ -4,6 +4,7 @@ import type { AiChatAsset, AiChatGroupSummary, AiChatHistoryFlushRequest, AiChat
 import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
 import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import type { ChatBridge, ChatVideoBridge } from './api'
+import { writeSharedImageSettings, type SharedImageSettings } from './image-settings'
 import { answerHistoryFlushRequests } from './storage'
 import { ChatPage, type ChatPageCreate, type ChatPageVideo } from './ChatPage'
 import { videoStudioQuoteText } from '../video-studio/prices'
@@ -196,7 +197,7 @@ function askBeforeQuit(requestId: string): Promise<void> {
   })
 }
 declare global {
-  interface Window { chatHarness: { calls: typeof calls; askBeforeQuit: typeof askBeforeQuit; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; failPreparation: (group: string | null) => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; breakConversation: typeof breakConversation; asideFiles: typeof asideFiles; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; releaseHistoryReads: () => void; openParameters: () => void; queueTextFiles: (files: AiChatTextFile[] | string) => void; videoProgress: (event: AiVideoProgressEvent) => void; completeVideo: (requestId: string) => void; failVideo: (requestId: string, message: string) => void; holdVideoUnsent: (requestId: string) => void; finishVideoResume: (requestId: string, outcome: string) => void; waitingVideos: () => { jobs: string[]; resumes: string[] } } }
+  interface Window { chatHarness: { shareImageSettings: (settings: SharedImageSettings) => void; calls: typeof calls; askBeforeQuit: typeof askBeforeQuit; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; failPreparation: (group: string | null) => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; breakConversation: typeof breakConversation; asideFiles: typeof asideFiles; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; releaseHistoryReads: () => void; openParameters: () => void; queueTextFiles: (files: AiChatTextFile[] | string) => void; videoProgress: (event: AiVideoProgressEvent) => void; completeVideo: (requestId: string) => void; failVideo: (requestId: string, message: string) => void; holdVideoUnsent: (requestId: string) => void; finishVideoResume: (requestId: string, outcome: string) => void; waitingVideos: () => { jobs: string[]; resumes: string[] } } }
 }
 function Fixture() {
   const [scope, setScope] = useState(query.has('sub2api') ? 'api-account:7' : 'xm-account:7')
@@ -229,6 +230,8 @@ function Fixture() {
       videoResumes.delete(id)
     },
     waitingVideos: () => ({ jobs: [...videoJobs.keys()], resumes: [...videoResumes.keys()] }),
+    // 视频工作台的出图框点了「生成图片」时做的那一下：往两边共用的那一份里记（融合第 4 步）。
+    shareImageSettings: (settings) => writeSharedImageSettings(scope, settings),
   }
   return <ToastProvider testId="chat-toasts"><OnlineStatusContext.Provider value={{ offline: !online, checking: false, recheck: noRecheck }}><ChatPage bridge={(videoFeature ? { ...bridge, ...videoBridge } : bridge) as XingmangApi} create={create} accountScope={scope} active={active} openParameters={openParameters} onParametersOpened={() => setOpenParameters(false)} /></OnlineStatusContext.Provider></ToastProvider>
 }

@@ -88,7 +88,7 @@ describe('lossless chat history files', () => {
     expect(restored.state.conversations).toHaveLength(200)
     expect(files.api.writeHistory.mock.calls[0][0].keys).toHaveLength(200)
     const over = workspace(scope, 201)
-    expect(() => planHistoryWrite(over, null)).toThrow('聊天记录超过 200 个，这台电脑存不下，原来的记录没动')
+    expect(() => planHistoryWrite(over, null)).toThrow('聊天记录超过 200 个，本机无法保存，原有记录未作修改')
   })
 
   it('keeps images waiting in the composer as references, and refuses a malformed list', async () => {
@@ -253,7 +253,7 @@ describe('lossless chat history files', () => {
     const before = files.raw()
     const restored = await loadChatHistory(files.api, memoryStorage(), scope)
     // 原因只进日志，上屏一律是同一句；超过上限那句照说（W24）。
-    expect(restored.warning).toBe(kind === 'conversations' ? '聊天记录超过 200 个，这台电脑存不下，原来的记录没动' : '以前的聊天记录暂时读不出来，原文件没动')
+    expect(restored.warning).toBe(kind === 'conversations' ? '聊天记录超过 200 个，本机无法保存，原有记录未作修改' : '历史聊天记录暂时无法读取，原文件未作修改')
     expect(files.api.logHistoryProblem).toHaveBeenCalledWith(expect.stringMatching(/^聊天记录读不出来，这一回不保存：.+/))
     expect(restored.exists).toBe(true)
     expect(restored.saved).toBeNull()
@@ -313,7 +313,7 @@ describe('lossless chat history files', () => {
     stored.conversations = stored.conversations.filter((file) => file.key !== 'conversation-0')
     const loaded = await loadChatHistory(files.api, memoryStorage(), scope)
     expect(loaded.warning).toBeUndefined()
-    // 文件已经没了，说「已经单独留着」就不对了；只记日志。
+    // 文件已经没了，说「已单独保留」就不对了；只记日志。
     expect(loaded.unreadable).toBeUndefined()
     expect(loaded.saved?.setAside).toBeUndefined()
     expect(files.api.logHistoryProblem).toHaveBeenCalledWith('聊天对话 c-conversation-0.json 不见了，已从记录里拿掉')
@@ -364,7 +364,7 @@ describe('lossless chat history files', () => {
     const storage = memoryStorage()
     storage.setItem(historyKey(scope), JSON.stringify(workspace()))
     const restored = await loadChatHistory({ readHistory: async () => { throw new Error('reparse point') } }, storage, scope)
-    expect(restored).toMatchObject({ exists: true, saved: null, warning: '以前的聊天记录暂时读不出来，原文件没动' })
+    expect(restored).toMatchObject({ exists: true, saved: null, warning: '历史聊天记录暂时无法读取，原文件未作修改' })
     expect(restored.state.conversations).toHaveLength(0)
   })
 
@@ -572,7 +572,7 @@ describe('localStorage history from earlier versions', () => {
     storage.setItem(historyKey(scope), '{not json')
     const files = memoryFiles()
     const loaded = await loadChatHistory(files.api, storage, scope)
-    expect(loaded.warning).toBe('以前的聊天记录暂时读不出来，原文件没动')
+    expect(loaded.warning).toBe('历史聊天记录暂时无法读取，原文件未作修改')
     expect(loaded).not.toHaveProperty('problem')
     expect(files.api.logHistoryProblem).toHaveBeenCalledWith(expect.stringMatching(/^以前存在本机的聊天记录读不出来，这一回不保存：.+/))
     expect(loaded.afterFirstSave).toBeUndefined()
@@ -590,7 +590,7 @@ describe('localStorage history from earlier versions', () => {
     storage.setItem(historyKey(scope), raw)
     storage.setItem.mockClear()
     const restored = readWorkspace(storage, scope)
-    expect(restored.warning).toBe(kind === 'conversations' ? '聊天记录超过 200 个，这台电脑存不下，原来的记录没动' : '以前的聊天记录暂时读不出来，原文件没动')
+    expect(restored.warning).toBe(kind === 'conversations' ? '聊天记录超过 200 个，本机无法保存，原有记录未作修改' : '历史聊天记录暂时无法读取，原文件未作修改')
     expect(restored.problem).toBeTruthy()
     expect(restored.exists).toBe(true)
     expect(storage.getItem(historyKey(scope))).toBe(raw)
@@ -911,7 +911,7 @@ describe('complete legacy and account-alias migration', () => {
     const restored = await loadChatHistory(files.api, storage, scope)
     expect(restored.warning).toBeUndefined()
     expect(restored.state.conversations).toHaveLength(202)
-    await expect(createHistoryWriter(files.api, restored.saved).save(restored.state)).rejects.toThrow('聊天记录超过 200 个，这台电脑存不下，原来的记录没动')
+    await expect(createHistoryWriter(files.api, restored.saved).save(restored.state)).rejects.toThrow('聊天记录超过 200 个，本机无法保存，原有记录未作修改')
     expect(files.raw()).toBeNull()
     expect(storage.getItem(historyKey('solov:7'))).not.toBeNull()
     expect(storage.getItem(historyKey('sub2api:7'))).not.toBeNull()
@@ -943,7 +943,7 @@ describe('moving history to another computer', () => {
     expect(exported).not.toContain('assetId')
     expect(exported).not.toContain('mayStillComplete')
     expect(exported).not.toContain('requestId')
-    expect(exported).toContain('[图片没有一起搬过来]')
+    expect(exported).toContain('[图片未随记录迁移]')
   })
 
   it('keeps the note that an answer was cut off, only on a finished answer and only with a known reason', () => {
@@ -1143,7 +1143,7 @@ describe('moving history to another computer', () => {
     expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, exported(oldComputer))).toEqual({ added: 0, updated: 1, skipped: 0 })
     const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
     expect(reopened.state.conversations).toHaveLength(1)
-    expect(reopened.state.conversations[0].messages.map((item) => item.content)).toEqual(['我的密钥 [密钥未保存] 用不了', 'content-1\n\n[图片没有一起搬过来]', '后来聊的', 'content-3'])
+    expect(reopened.state.conversations[0].messages.map((item) => item.content)).toEqual(['我的密钥 [密钥未保存] 用不了', 'content-1\n\n[图片未随记录迁移]', '后来聊的', 'content-3'])
     expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, exported(oldComputer))).toEqual({ added: 0, updated: 0, skipped: 0 })
   })
 
@@ -1181,7 +1181,7 @@ describe('moving history to another computer', () => {
   it('refuses to import over a record it cannot read', async () => {
     const files = memoryFiles()
     files.stores.set(scope, { index: 'not json', conversations: [] })
-    await expect(importConversationsIntoHistory(files.api, memoryStorage(), scope, [createConversation()])).rejects.toThrow('没有导入对话')
+    await expect(importConversationsIntoHistory(files.api, memoryStorage(), scope, [createConversation()])).rejects.toThrow('本次未导入对话')
     expect(files.api.writeHistory).not.toHaveBeenCalled()
   })
 
@@ -1248,8 +1248,8 @@ describe('moving history to another computer', () => {
     expect(text).toContain('我（')
     expect(text).toContain('AI（')
     expect(text).not.toContain('abcdef123456')
-    expect(text).toContain('[1 张图片，没有放进这个文件]')
-    expect(text).toContain('[没有回复成功：网络断了]')
+    expect(text).toContain('[1 张图片，未包含在此文件中]')
+    expect(text).toContain('[回复失败：网络断了]')
   })
   // 以前文件第一行和保存框里的文件名都是对话名原样（Mac 验收 R5）：自己改的名字、导进来的对话名都可能夹着密钥。
   it('masks keys in the exported title and in the suggested file name', () => {
@@ -1311,7 +1311,7 @@ describe('reading an unreadable record again', () => {
   it('keeps every conversation past the limit so saving asks to delete some rather than dropping any', () => {
     const merged = mergeSessionIntoHistory(workspace(scope, 200), session(['said-meanwhile'], 'said-meanwhile'))
     expect(merged.conversations).toHaveLength(201)
-    expect(() => planHistoryWrite(merged, null)).toThrow('聊天记录超过 200 个，这台电脑存不下，原来的记录没动')
+    expect(() => planHistoryWrite(merged, null)).toThrow('聊天记录超过 200 个，本机无法保存，原有记录未作修改')
   })
 })
 

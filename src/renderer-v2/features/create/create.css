@@ -10,7 +10,7 @@
 .create-card > span:not(.create-card-icon) { color: var(--text-2); font-size: 12px; line-height: 1.6; }
 .create-card > small { display: inline-flex; align-items: center; gap: 3px; color: var(--text-3); font-size: 11px; }
 
-/* 视频工作台：还是「想法」「分镜」「拼成一条视频」三张卡，在右边这一栏里自己滚。 */
+/* 视频工作台：还是「想法」「分镜」「合成视频」三张卡，在右边这一栏里自己滚。 */
 .create-studio { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 24px 24px; scrollbar-width: thin; }
 .create-studio > .v2-page { max-width: 1000px; margin: 0 auto; }
 

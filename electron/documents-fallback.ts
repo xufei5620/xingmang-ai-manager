@@ -151,16 +151,16 @@ export interface WorkspaceNotWritablePrompt {
 
 /** 打开前试写失败时的那一问。「照常打开」一直留着：只是提醒，不拦死。 */
 export function buildWorkspaceNotWritablePrompt(options: { allowCreate: boolean }): WorkspaceNotWritablePrompt {
-  const cause = '常见原因是 Windows 安全中心的「受控文件夹访问」或安全软件的「文档保护」开着。'
+  const cause = '常见原因是 Windows 安全中心的「受控文件夹访问」或安全软件的「文档保护」已开启。'
   const base = {
-    title: '这个文件夹不让写入',
-    message: '这个文件夹现在不让程序写入，AI 打开后改不了里面的文件。',
+    title: '该文件夹禁止写入',
+    message: '该文件夹当前禁止程序写入，AI 打开后无法修改其中的文件。',
   }
   if (!options.allowCreate) {
     return {
       ...base,
-      detail: `${cause}接着上次的对话只能在原来的文件夹里打开。`,
-      buttons: ['先不打开', '照常打开'],
+      detail: `${cause}继续上次的对话只能在原文件夹中打开。`,
+      buttons: ['暂不打开', '照常打开'],
       createIndex: null,
       continueIndex: 1,
       cancelIndex: 0,
@@ -169,8 +169,8 @@ export function buildWorkspaceNotWritablePrompt(options: { allowCreate: boolean 
   }
   return {
     ...base,
-    detail: `${cause}「换到能写的位置」会新建一个项目文件夹并在那里打开，原来的文件还在原来的位置。`,
-    buttons: ['换到能写的位置', '照常打开', '先不打开'],
+    detail: `${cause}「更换为可写入的位置」将新建一个项目文件夹并在其中打开，原有文件保留在原位置。`,
+    buttons: ['更换为可写入的位置', '照常打开', '暂不打开'],
     createIndex: 0,
     continueIndex: 1,
     cancelIndex: 2,

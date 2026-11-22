@@ -164,7 +164,7 @@ export function VersionCard({ api, navigate, autoUpdate }: {
       {diskShortfallText && (
         <Notice
           tone="warn"
-          title="磁盘空间不够，新版本先不下载"
+          title="磁盘空间不足，新版本暂不下载"
           body={<><p>{diskShortfallText}</p>{diskCleanupOpen && <p data-testid="updates-disk-cleanup">{updateDiskCleanupDetail}</p>}</>}
           testId="updates-disk-shortfall"
           actions={

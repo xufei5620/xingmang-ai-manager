@@ -62,12 +62,12 @@ export interface DesktopNotificationController {
  * 账号不在管理员组的 Windows 电脑上，下好的新版本不自动装（auto-update-install.ts），下好时说这一句。
  * 渲染层 registry/business.ts 的 standardAccountUpdateNotice 是同一句，两边字面量要一致。
  */
-export const standardAccountUpdateNotice = '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启并安装」，或者找客服。'
+export const standardAccountUpdateNotice = '当前系统账号不是管理员，安装更新时需要输入管理员密码。请由管理员账号点击「重启并安装」，或联系客服。'
 /**
  * Mac 上装的时候不弹窗口、下好的版本会趁电脑闲着自己装（update-install-prompt.ts）：「下好了」那条通知
  * 多说这一句。渲染层 registry/business.ts 的 idleInstallBubbleTail 是同一句，两边字面量要一致。
  */
-export const idleInstallNoticeTail = '你不用电脑时星芒也会自己装好。'
+export const idleInstallNoticeTail = '电脑空闲时星芒也会自动安装。'
 
 export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate = false): { key: string; version: string; stage: 'available' | 'downloaded' | 'disk'; title: string; body: string } | null {
   if ((snapshot.phase !== 'available' && snapshot.phase !== 'downloaded') || snapshot.error) return null
@@ -79,7 +79,7 @@ export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate =
       key: `${version}:disk`,
       version,
       stage: 'disk',
-      title: '星芒AI更新先不下载',
+      title: '星芒AI更新暂不下载',
       body: describeUpdateDiskShortfall(snapshot.diskShortfall, autoUpdate),
     }
   }
@@ -92,9 +92,9 @@ export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate =
       stage: snapshot.phase,
       title,
       body: snapshot.phase === 'downloaded'
-        ? `新版 ${version} 已经下好，到「设置 › 版本更新」点「安装新版本」就能装上。`
+        ? `新版 ${version} 已下载，请前往「设置 › 版本更新」点击「安装新版本」。`
         : autoUpdate
-          ? `新版 ${version} 正在后台下载，下好后到「设置 › 版本更新」点「安装新版本」。`
+          ? `新版 ${version} 正在后台下载，下载完成后请前往「设置 › 版本更新」点击「安装新版本」。`
           : `版本 ${version} 已可下载。`,
     }
   }
@@ -118,10 +118,10 @@ export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate =
     // 重启并安装」就是在让用户去点一个用不着点的按钮。
     body: autoUpdate
       ? snapshot.phase === 'downloaded'
-        ? `新版 ${version} 已经下好，可以现在装，也可以关掉软件或下次打开时再装。${snapshot.idleInstall ? idleInstallNoticeTail : ''}`
+        ? `新版 ${version} 已下载，可立即安装，也可在关闭软件或下次启动时安装。${snapshot.idleInstall ? idleInstallNoticeTail : ''}`
         : snapshot.installNeedsAdminPassword
-          ? `新版 ${version} 正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。`
-          : `新版 ${version} 正在后台下载，下好后关掉软件时自动装上。`
+          ? `新版 ${version} 正在后台下载；本机安装更新需要输入管理员密码，下载完成后不会自动安装。`
+          : `新版 ${version} 正在后台下载，下载完成后将在关闭软件时自动安装。`
       : snapshot.phase === 'downloaded' ? `版本 ${version} 已下载，可在「设置 › 版本更新」重启并安装。` : `版本 ${version} 已可下载。`,
   }
 }

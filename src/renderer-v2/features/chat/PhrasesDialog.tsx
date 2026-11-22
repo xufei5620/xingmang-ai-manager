@@ -21,7 +21,7 @@ export function PhrasesDialog({ phrases, draft, onUse, onSave, onRemove, onClose
       {phrases.length ? <ul className="chat-phrase-list" data-testid="chat-phrases-list">{phrases.map((phrase, index) => <li key={phrase} className="chat-phrase">
         <p className="chat-phrase-text" title={phrase}>{phrase}</p>
         <span className="chat-phrase-actions"><Button size="sm" onClick={() => onUse(phrase)} testId="chat-phrase-use">填进输入框</Button><Button variant="ghost" size="sm" icon={Trash2} aria-label="删除" title="删除" onClick={() => onRemove(index)} testId="chat-phrase-remove" /></span>
-      </li>)}</ul> : <p className="chat-phrases-empty" data-testid="chat-phrases-empty">还没有存过常用的话。把经常要说的话存在这里，下次一点就填好。</p>}
+      </li>)}</ul> : <p className="chat-phrases-empty" data-testid="chat-phrases-empty">暂无常用语。保存常用语后，点击即可填入。</p>}
       <Textarea label="存一条新的" value={text} rows={3} maxLength={MAX_CHAT_PHRASE_LENGTH} placeholder="比如：回答尽量简短，用大白话，不要用表格" hint={full ? `最多存 ${MAX_CHAT_PHRASES} 条，先删掉几条再存。` : undefined} onChange={(event) => setText(event.target.value)} testId="chat-phrase-input" />
       <span className="chat-phrase-save"><Button icon={Plus} disabled={!text.trim() || full} onClick={save} testId="chat-phrase-save">存一条</Button></span>
     </div>

@@ -69,7 +69,9 @@ export function OperationErrorDialog({ failure, installDirectory, canReplaceNode
   const hint = presentOperationFailure(failure)
   const actions = operationErrorActions(failure, installDirectory, canReplaceNode)
   // 有「更新 Node.js」「立即修复」时它才是出路，重试只会撞同一个错，所以它当主按钮。
-  const primary = actions.find((action) => action.id === 'replaceNode' || action.id === 'repairConfig')?.id ?? 'retry'
+  // 「立即重启」只在排第一时当主按钮（Windows 未能启动 Codex 那一类）；排在重置后面时仍是重试。
+  const primary = actions.find((action) => action.id === 'replaceNode' || action.id === 'repairConfig')?.id
+    ?? (actions[0]?.id === 'restartComputer' ? 'restartComputer' : 'retry')
   const showPath = actions.some((action) => action.id === 'copyPath')
   const copySupport = support && <Button key="copySupport" icon={Copy} testId="operation-error-copySupport" onClick={() => {
     const text = buildSupportBundle(support, supportFailureOf(failure, new Date()))

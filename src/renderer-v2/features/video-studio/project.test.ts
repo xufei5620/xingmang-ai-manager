@@ -40,6 +40,9 @@ import {
   videoStudioDraftName,
   videoStudioDraftProgress,
   videoStudioDraftsStorageKey,
+  videoStudioImageModelChoice,
+  videoStudioImageOptions,
+  videoStudioImageSettingsToShare,
   videoStudioImageSize,
   videoStudioPlainText,
   videoStudioReadyToCompose,
@@ -96,14 +99,14 @@ describe('video studio project', () => {
   })
 
   it('says which shot still needs a description before anything is sent', () => {
-    expect(videoStudioShotProblem({ id: 'a', prompt: '  ', caption: '', status: 'idle' }, 1)).toBe('第 2 个镜头还没写画面描述')
-    expect(videoStudioShotProblem({ id: 'a', prompt: '画'.repeat(1_501), caption: '', status: 'idle' }, 0)).toBe('第 1 个镜头的画面描述太长了，删到 1500 个字以内')
+    expect(videoStudioShotProblem({ id: 'a', prompt: '  ', caption: '', status: 'idle' }, 1)).toBe('第 2 个镜头尚未填写画面描述')
+    expect(videoStudioShotProblem({ id: 'a', prompt: '画'.repeat(1_501), caption: '', status: 'idle' }, 0)).toBe('第 1 个镜头的画面描述过长，请删减至 1500 个字以内')
     expect(videoStudioShotProblem({ id: 'a', prompt: '橘猫', caption: '', status: 'idle' }, 0)).toBeNull()
   })
 
   it('drops invisible control characters pasted into the text before it is sent, keeping line breaks and tabs', () => {
     expect(videoStudioPlainText(' 橘猫\u000b在雨里\u0000\n回家\t了\u007f ')).toBe('橘猫在雨里\n回家\t了')
-    expect(videoStudioShotProblem({ id: 'a', prompt: '\u0001\u0002', caption: '', status: 'idle' }, 0)).toBe('第 1 个镜头还没写画面描述')
+    expect(videoStudioShotProblem({ id: 'a', prompt: '\u0001\u0002', caption: '', status: 'idle' }, 0)).toBe('第 1 个镜头尚未填写画面描述')
     const settings = { ...defaultVideoStudioSettings(), videoModel: 'grok-imagine-video-1.5', videoGroup: '图片模型' }
     expect(buildVideoStudioClipRequest(settings, { id: 'a', prompt: '橘猫\u000c回家', caption: '', status: 'idle' }, 'r1').prompt).toBe('橘猫回家')
   })
@@ -182,25 +185,73 @@ describe('video studio project', () => {
     expect(settleVideoStudioModels({ ...defaultVideoStudioSettings(), textModel: 'claude-x', textGroup: 'Claude' }, catalogs, { ...context, settled: false })).toMatchObject({ textModel: 'claude-x', textGroup: 'Claude' })
   })
 
-  it('draws a shot picture in the frame the film uses, at the model default quality', () => {
-    const shot = { id: 'a', prompt: '橘猫\u0007在雨里', caption: '', status: 'idle' as const }
-    const request = (imageModel: string, aspect: '16:9' | '9:16' | '1:1') => buildVideoStudioImageRequest({ ...defaultVideoStudioSettings(), imageModel, imageGroup: '图片模型', aspect }, shot, 'd1')
-    expect(request('gpt-image-2', '9:16')).toEqual({ requestId: 'd1', group: '图片模型', model: 'gpt-image-2', prompt: '橘猫在雨里', size: '720x1280' })
-    expect(request('gpt-image-2', '16:9').size).toBe('1280x720')
-    expect(request('gpt-image-2', '1:1').size).toBe('720x720')
+  it('builds the picture request the way the chat composer does', () => {
+    const draft = { prompt: '橘猫\u0007在雨里', model: 'gpt-image-2', group: '图片模型', size: '720x1280', quality: 'medium' as const, imageResolution: '2K' as const }
+    expect(buildVideoStudioImageRequest(draft, 'd1')).toEqual({ requestId: 'd1', group: '图片模型', model: 'gpt-image-2', prompt: '橘猫在雨里', size: '720x1280', quality: 'medium', imageResolution: '2K' })
+    // A model with no quality tiers is sent without one.
+    expect(buildVideoStudioImageRequest({ ...draft, model: 'gemini-3.1-flash-image' }, 'd2')).not.toHaveProperty('quality')
+    // Reference pictures go along only when there are some.
+    expect(buildVideoStudioImageRequest(draft, 'd3')).not.toHaveProperty('sourceAssetIds')
+    expect(buildVideoStudioImageRequest({ ...draft, sourceAssetIds: ['asset-1', 'asset-2'] }, 'd4').sourceAssetIds).toEqual(['asset-1', 'asset-2'])
+    // A model the page cannot read is sent as typed and left to the main process to refuse.
+    expect(buildVideoStudioImageRequest({ ...draft, model: 'not-a-picture-model' }, 'd5')).toMatchObject({ model: 'not-a-picture-model', size: '720x1280' })
+  })
+
+  it('opens the picture dialog on the shared model, then the film model, then the default one', () => {
+    const catalog = [{ model: 'gpt-image-2', groups: ['图片模型', 'default'] }, { model: 'gemini-3.1-flash-image', groups: ['图片模型'] }, { model: 'grok-imagine-image', groups: ['default'] }]
+    const context = { groups: [{ name: 'default', recommended: true }, { name: '图片模型', recommended: false, image: true }] }
+    const film = { imageModel: 'grok-imagine-image', imageGroup: 'default' }
+    expect(videoStudioImageModelChoice({ model: 'gemini-3.1-flash-image', group: '图片模型' }, film, catalog, context)).toEqual({ model: 'gemini-3.1-flash-image', group: '图片模型' })
+    // The shared group no longer carries the model: another group that does is picked.
+    expect(videoStudioImageModelChoice({ model: 'gpt-image-2', group: '没了的分组' }, film, catalog, context)).toEqual({ model: 'gpt-image-2', group: '图片模型' })
+    // The shared model was taken down: what this film used before.
+    expect(videoStudioImageModelChoice({ model: 'gone-image-model', group: '图片模型' }, film, catalog, context)).toEqual({ model: 'grok-imagine-image', group: 'default' })
+    expect(videoStudioImageModelChoice(null, film, catalog, context)).toEqual({ model: 'grok-imagine-image', group: 'default' })
+    // Nothing remembered anywhere: the default picture model.
+    expect(videoStudioImageModelChoice(null, { imageModel: '', imageGroup: '' }, catalog, context)).toEqual({ model: 'gpt-image-2', group: '图片模型' })
+    expect(videoStudioImageModelChoice(null, { imageModel: 'gone-image-model', imageGroup: 'x' }, [], context)).toEqual({ model: '', group: '' })
+  })
+
+  it('sizes a shot picture to the frame the film uses unless the customer picked a size', () => {
+    const size = (model: string, aspect: '16:9' | '9:16' | '1:1', shared: Parameters<typeof videoStudioImageOptions>[2] = null) => videoStudioImageOptions(model, aspect, shared, {}).size
+    expect(size('gpt-image-2', '9:16')).toBe('720x1280')
+    expect(size('gpt-image-2', '16:9')).toBe('1280x720')
+    // Nothing remembered and a square film: the chat default already fits.
+    expect(size('gpt-image-2', '1:1')).toBe('1024x1024')
     // Jimeng stops at 1024 on the long side; both sides stay multiples of 16.
-    expect(request('jimeng_high_aes_general_v21_L', '9:16').size).toBe('576x1024')
+    expect(size('jimeng_high_aes_general_v21_L', '9:16')).toBe('576x1024')
     // Fixed-size models get the size whose shape is closest to the frame.
-    expect(request('gemini-3.1-flash-image', '9:16').size).toBe('720x1280')
-    expect(request('gemini-3.1-flash-image', '1:1').size).toBe('1024x1024')
-    expect(request('gpt-image-1', '9:16').size).toBe('1024x1536')
-    expect(request('gpt-image-1', '16:9').size).toBe('1536x1024')
-    expect(request('grok-imagine-image', '16:9').size).toBe('auto')
-    // A model the page cannot read is sent without a size and left to the main process to refuse.
-    expect(request('not-a-picture-model', '9:16')).not.toHaveProperty('size')
-    expect(request('gpt-image-2', '9:16')).not.toHaveProperty('quality')
+    expect(size('gemini-3.1-flash-image', '9:16')).toBe('720x1280')
+    expect(size('gpt-image-1', '9:16')).toBe('1024x1536')
+    expect(size('gpt-image-1', '16:9')).toBe('1536x1024')
+    expect(size('grok-imagine-image', '16:9')).toBe('auto')
+    // The remembered size already has the frame's shape: it is kept.
+    expect(size('gpt-image-2', '16:9', { size: '1536x1024', quality: 'high', imageResolution: '2K' })).toBe('1536x1024')
+    // It has the wrong shape: the frame wins, quality and resolution still follow what was remembered.
+    expect(videoStudioImageOptions('gpt-image-2', '9:16', { size: '1536x1024', quality: 'high', imageResolution: '2K' }, {})).toEqual({ size: '720x1280', quality: 'high', imageResolution: '2K' })
+    // What the model does not take falls back to its own default.
+    expect(videoStudioImageOptions('gemini-3.1-flash-image', '1:1', { size: '1040x1040', quality: 'high', imageResolution: '4K' }, {})).toEqual({ size: '1024x1024', quality: 'auto', imageResolution: '4K' })
+    expect(videoStudioImageOptions('gpt-image-1', '1:1', { size: '1024x1024', quality: 'medium', imageResolution: '4K' }, {})).toEqual({ size: '1024x1024', quality: 'medium', imageResolution: '1K' })
+    // What the customer changed in the dialog wins, even a size against the frame or one still being typed.
+    expect(videoStudioImageOptions('gpt-image-2', '9:16', { size: '1536x1024', quality: 'high', imageResolution: '2K' }, { size: '1024x1024', quality: 'low' })).toEqual({ size: '1024x1024', quality: 'low', imageResolution: '2K' })
+    expect(videoStudioImageOptions('gpt-image-2', '9:16', null, { size: '10x' }).size).toBe('10x')
+    // A model the page cannot read keeps what was remembered.
+    expect(videoStudioImageOptions('not-a-picture-model', '9:16', null, {})).toEqual({ size: '1024x1024', quality: 'low', imageResolution: '1K' })
     expect(videoStudioImageSize({ kind: 'allow-list', values: ['odd'], default: '512x512' }, '16:9')).toBe('512x512')
     expect(videoStudioImageSize({ kind: 'divisible', divisor: 64, min: 768, max: 4096, default: '1024x1024' }, '9:16')).toBe('768x1280')
+  })
+
+  it('remembers the dialog choice without letting a film frame change the shared size', () => {
+    const draft = { prompt: '橘猫', model: 'gpt-image-2', group: '图片模型', size: '720x1280', quality: 'high' as const, imageResolution: '2K' as const }
+    const shared = { size: '1536x1024', quality: 'low' as const, imageResolution: '1K' as const }
+    // The size was picked for the film: the shared one stays.
+    expect(videoStudioImageSettingsToShare(draft, shared, false)).toEqual({ model: 'gpt-image-2', group: '图片模型', size: '1536x1024', quality: 'high', imageResolution: '2K' })
+    // The customer picked it: it is remembered.
+    expect(videoStudioImageSettingsToShare(draft, shared, true)).toEqual({ model: 'gpt-image-2', group: '图片模型', size: '720x1280', quality: 'high', imageResolution: '2K' })
+    // Nothing remembered yet: the chat default.
+    expect(videoStudioImageSettingsToShare(draft, null, false).size).toBe('1024x1024')
+    // The remembered size is one the newly picked model does not take: that model's default.
+    expect(videoStudioImageSettingsToShare({ ...draft, model: 'grok-imagine-image', size: 'auto' }, shared, false).size).toBe('auto')
   })
 
   it('puts a drawn picture only on the shot still waiting for that drawing', () => {
@@ -223,8 +274,8 @@ describe('video studio project', () => {
     expect(drawn.shots[0]).not.toHaveProperty('drawing')
     expect(isVideoStudioShotDrawing(drawn.shots[0])).toBe(false)
 
-    const failed = finishVideoStudioShotDrawing(startVideoStudioShotDrawing(drawn, 'shot-1', 'd5'), 'shot-1', 'd5', { error: '没有收到生成的图片' })
-    expect(failed.shots[0]).toMatchObject({ image: drawn.shots[0].image, drawError: '没有收到生成的图片' })
+    const failed = finishVideoStudioShotDrawing(startVideoStudioShotDrawing(drawn, 'shot-1', 'd5'), 'shot-1', 'd5', { error: '未收到生成的图片' })
+    expect(failed.shots[0]).toMatchObject({ image: drawn.shots[0].image, drawError: '未收到生成的图片' })
     expect(failed.shots[0]).not.toHaveProperty('drawing')
     const stopped = finishVideoStudioShotDrawing(startVideoStudioShotDrawing(failed, 'shot-1', 'd6'), 'shot-1', 'd6', 'stopped')
     expect(stopped.shots[0].image).toEqual(drawn.shots[0].image)
@@ -233,7 +284,7 @@ describe('video studio project', () => {
 
     // Drawing state lives only while the page is open.
     const stored = serializeVideoStudioProject(startVideoStudioShotDrawing(failed, 'shot-1', 'd7'))
-    expect(JSON.stringify(stored)).not.toMatch(/d7|drawError|没有收到生成的图片/)
+    expect(JSON.stringify(stored)).not.toMatch(/d7|drawError|未收到生成的图片/)
   })
 
   it('gives a shot its own length, lets the rest follow the shot length and moves both to what a new video model can make', () => {
@@ -595,11 +646,11 @@ describe('video studio project', () => {
     const film = planned()
     expect(videoStudioDraftName(film)).toBe('回家的猫')
     expect(videoStudioDraftName({ ...film, title: '', settings: { ...film.settings, idea: '一只橘猫\n在下雨的东京街头找回家的路，温暖治愈，最后它在家门口被主人抱起来' } })).toBe('一只橘猫 在下雨的东京街头找回家的路，温暖治愈，…')
-    expect(videoStudioDraftName({ ...film, title: '', settings: { ...film.settings, idea: '' } })).toBe('没起名的视频')
-    expect(videoStudioDraftProgress(createVideoStudioProject())).toBe('还没写分镜')
+    expect(videoStudioDraftName({ ...film, title: '', settings: { ...film.settings, idea: '' } })).toBe('未命名视频')
+    expect(videoStudioDraftProgress(createVideoStudioProject())).toBe('尚未编写分镜')
     const made = { ...film, shots: film.shots.map((shot, index) => index ? shot : { ...shot, clip: clip('a'), status: 'done' as const }) }
     expect(videoStudioDraftProgress(made)).toBe('3 个镜头 · 已生成 1 段')
-    expect(videoStudioDraftProgress({ ...made, exported: clip('z') })).toBe('3 个镜头 · 已生成 1 段 · 已拼成片')
+    expect(videoStudioDraftProgress({ ...made, exported: clip('z') })).toBe('3 个镜头 · 已生成 1 段 · 已合成成片')
   })
 
   // 0.2.24 及以前草稿箱在 localStorage 里的写法（当时的 serializeVideoStudioDrafts）。新版不再写它，只在头一次打开时读一遍。
@@ -699,10 +750,10 @@ describe('a clip handed over from a conversation', () => {
   })
 
   it('words the pay-twice warning for one clip, for all of them and for some of them', () => {
-    expect(videoStudioUnconfirmedWarning([0], 1)).toMatch(/^这一段上次提交时没收到/)
-    expect(videoStudioUnconfirmedWarning([0, 1], 2)).toMatch(/^这几段上次提交时没收到/)
-    expect(videoStudioUnconfirmedWarning([1, 3], 4)).toMatch(/^其中第 2、4 段上次提交时没收到/)
-    expect(videoStudioUnconfirmedWarning([0], 1)).toContain('再生成会重新计费，可能多扣一次。')
+    expect(videoStudioUnconfirmedWarning([0], 1)).toMatch(/^这一段上次提交时未收到/)
+    expect(videoStudioUnconfirmedWarning([0, 1], 2)).toMatch(/^这几段上次提交时未收到/)
+    expect(videoStudioUnconfirmedWarning([1, 3], 4)).toMatch(/^其中第 2、4 段上次提交时未收到/)
+    expect(videoStudioUnconfirmedWarning([0], 1)).toContain('重新生成将再次计费，可能产生重复扣费。')
   })
 })
 

@@ -1,6 +1,6 @@
 import { isClaudeDesktopInstallFailureMessage } from '../../electron/claude-desktop-install-failure'
 import { isCodexDesktopFirewallOffInstallFailure, isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
-import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
+import { codexDesktopActivationBrokenMarker, codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalIn } from '../../electron/config-link-refusal'
 import { configWriteBlockerIn } from '../../electron/config-write-blocker'
 import { extensionCommandFailureInMessage } from '../../electron/extension-command-failure'
@@ -14,7 +14,7 @@ import { isBrokenConfigLaunchMessage } from './features/tools/broken-config-laun
 import { feedbackInstallLogSection } from './registry/business'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopOfflinePackages' | 'claudeDesktopDownload' | 'repairConfig'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopOfflinePackages' | 'claudeDesktopDownload' | 'repairConfig' | 'restartComputer'
 export interface OperationAction { id: OperationActionId; label: string }
 /**
  * 这次失败要写的是什么；缺省 = 只按原话认（旧行为）。
@@ -59,6 +59,9 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // permission）抢走、把客户送去看安装目录。
   // 同一句里带着「这一版已知打不开」（codex-desktop-known-issues.ts 的 marker）时，
   // 重试和找客服都救不了它，要多给一条「改用 Codex 命令行版」的路，所以排在它前面。
+  // 同一句里带着「Codex 已安装，但 Windows 未能启动它」时（Windows 激活接口说没装、包却装着），
+  // 重试、重置都救不了，出口是「立即重启」，所以排在这一类最前面。
+  { key: 'codexDesktopActivationBroken', match: (message) => /Codex 桌面端没有打开/.test(message) && message.includes(codexDesktopActivationBrokenMarker) },
   { key: 'codexDesktopKnownIssue', match: (message) => /Codex 桌面端没有打开/.test(message) && message.includes(codexDesktopKnownIssueMarker) },
   { key: 'codexDesktopNotStarted', match: (message) => /Codex 桌面端没有打开/.test(message) },
   // Codex 桌面端装不上 / 更新不了（主进程 codex-desktop-install-failure.ts 写好的整句，
@@ -289,6 +292,9 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   前往微软商店安装: 'openStore',
   // Codex 桌面端打不开时的出口，和 Windows 设置里「高级选项 → 重置」是同一件事。
   '重置 Codex': 'resetCodexDesktop',
+  // 只有 Codex 桌面端打不开那两类会出这颗，那条路只在 Windows 上走得到；走的是 Node.js 装完要重启的同一次重启
+  //（runtime:restart-windows），先弹确认框。
+  立即重启: 'restartComputer',
   // 只有 Codex 桌面端装着已知打不开的那一版时才出这颗（第十九批 7）。
   '改用 Codex 命令行版': 'useCodexCli',
   // 只有 Mac 上一键装桌面端没装成那一类会出这颗：打开教程里「Mac 上装桌面端」那一章。
