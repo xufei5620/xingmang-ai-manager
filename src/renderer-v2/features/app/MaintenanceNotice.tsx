@@ -10,7 +10,7 @@ type ServiceMaintenance = NonNullable<UpdateSnapshot['serviceMaintenance']>
  * 「不是你这边的问题、什么都不用改」。文案不提站点名（双站点对用户无感）。
  */
 export function maintenanceNoticeBody(maintenance: ServiceMaintenance): string {
-  const reassurance = '这不是你这边的问题，不用重新登录，也不用改任何设置，维护结束后会自动恢复。'
+  const reassurance = '此问题与本机无关，无需重新登录或修改设置，维护结束后将自动恢复。'
   return maintenance.message
     ? `${maintenance.message} ${reassurance}`
     : `维护期间登录、余额和工具连接可能会失败。${reassurance}`

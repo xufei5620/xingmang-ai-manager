@@ -130,7 +130,7 @@ import {
   type ExternalToolConfigOptions,
   type ExternalToolId,
 } from './external-tool-config'
-import { type DesktopAppUpdateRequest, type ExternalClientConfigResult, type ExternalClientSourceSwitchResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
+import { type DesktopAppUpdateRequest, type ExternalClientConfigResult, type ExternalClientLaunchResult, type ExternalClientSourceSwitchResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
 import { createExternalClientRuntime } from './external-client-runtime'
 import type { MacosDesktopLatestVersionLookup } from './macos-desktop-app-update'
 import { type ExternalClientCheckResult } from './external-client-connection'
@@ -188,6 +188,12 @@ export interface ToolStatus {
    * undefined，渲染层此时退回中性的「已安装」。
    */
   installSource?: CliInstallDisplaySource
+  /**
+   * 只在 Mac 上的 Codex / Grok 出现：找到的那份不是 npm 装的，又核不出是官方安装器那一份，星芒不替它跑
+   * （tool-installation.ts 的 UnrecognizedDarwinCliError，Mac 验收 R1）。首页这时不给「打开」，给
+   * 「使用星芒安装」；主进程也不再拿「不会另装一份」拦这次安装。缺省 = 认得出或不适用。
+   */
+  unrecognizedInstall?: boolean
   /**
    * 这个工具装上去会落在哪个目录。未装时 installDirectory 为 null，而用户要
    * 查写入权限或加杀毒白名单需要的正是这个路径；已装时两者指同一处。算不出
@@ -282,7 +288,7 @@ export interface SystemScanOptions {
 /** 卸载命令行工具的附加要求；缺省 = 只卸载（旧行为）。 */
 export interface CliUninstallOptions {
   /**
-   * 这次卸载是「换成星芒装的」的前一半，卸完渲染层马上用 npm 装回来（第三十一批 B）。
+   * 这次卸载是「改用星芒安装」的前一半，卸完渲染层马上用 npm 装回来（第三十一批 B）。
    * 先按安装那一道门槛看盘：装不下就一个文件都不动，免得客户卸完落得一份都没有。
    */
   reinstall?: boolean
@@ -319,6 +325,8 @@ export interface CliLaunchResult {
   rememberedWorkspace?: string | null
   /** 同 AppConfigSummary.rememberedWorkspaceFresh，跟着上面那个文件夹走。缺省 = 不是。 */
   rememberedWorkspaceFresh?: boolean
+  /** 同 AppConfigSummary.rememberedWorkspaceChosenAt，跟着上面那个文件夹走。缺省 = 不是设置页换的。 */
+  rememberedWorkspaceChosenAt?: number
 }
 
 export type ToolUninstallResult =
@@ -346,13 +354,13 @@ export type ToolUninstallResult =
         /**
          * true = the main process pinned exactly the files manualCommand names
          * and `cli:clean-uninstall-leftovers` may delete them after checking
-         * them again (已知48「帮我清理」). Omitted = the command is all there is.
+         * them again (已知48「一键清理」). Omitted = the command is all there is.
          */
         cleanUpAvailable?: boolean
       }
     }
 
-/** 「帮我清理」之后还剩几个文件（已知48）；0 = 删干净了。 */
+/** 「一键清理」之后还剩几个文件（已知48）；0 = 删干净了。 */
 export interface CliLeftoverCleanupResult {
   remaining: number
 }
@@ -371,7 +379,7 @@ export interface ConfigSavePayload {
   provider: ProviderId
   apiKey: string
   model: string
-  // repair 只有「修好它」「改用当前账号」那两条路用（NativeConfigWriteMode）；配置窗口的 config:save 只收合并和重置。
+  // repair 只有「立即修复」「改用当前账号」那两条路用（NativeConfigWriteMode）；配置窗口的 config:save 只收合并和重置。
   mode: NativeConfigWriteMode
 }
 
@@ -416,6 +424,11 @@ export interface AppConfigSummary {
    * （isUntouchedStarterWorkspace）。界面据此把第一句话换成让 AI 动手做点东西（D45）。缺省 = 不是。
    */
   rememberedWorkspaceFresh?: boolean
+  /**
+   * rememberedWorkspace 是设置页「更换」选定的，这是那一刻（AppSettings.workspaceChosenAt，毫秒）。首页「打开」
+   * 据此在它比这个工具最近一条对话还新时先进它（0.2.25 总单 Q1）。缺省 = 不是设置页换的，照旧先看对话记录。
+   */
+  rememberedWorkspaceChosenAt?: number
   providers: Record<ProviderId, NativeConfigSummary>
   /**
    * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，
@@ -461,7 +474,7 @@ export interface SystemService {
   /** 这台电脑上是否已有这个 CLI 的官方登录，null = 看不出来；可选 = 旧实现不提供。 */
   inspectOfficialLogin?(provider: ProviderId): boolean | null
   /**
-   * 首页「修好它」：把本软件写进这家配置、却指向旧位置的钩子与状态行改成这次的路径
+   * 首页「立即修复」：把本软件写进这家配置、却指向旧位置的钩子与状态行改成这次的路径
    * （这台电脑写不出来就收回），写完再查一遍；还是旧的就抛中文原因。可选 = 旧实现不提供。
    */
   repairCliHooks?(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>>
@@ -528,7 +541,7 @@ export interface SystemService {
   installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void>
   cancelCliInstall(provider: ProviderId): InstallCancellationOutcome
   uninstallCli(provider: ProviderId, options?: CliUninstallOptions): Promise<ToolUninstallResult>
-  /** 「帮我清理」：只删这个工具上次卸载时记下的那几个文件，删前再核对一遍（已知48）。 */
+  /** 「一键清理」：只删这个工具上次卸载时记下的那几个文件，删前再核对一遍（已知48）。 */
   cleanUninstallLeftovers(provider: ProviderId): Promise<CliLeftoverCleanupResult>
   inspectCliUpdate(provider: ProviderId, forceRefresh?: boolean): Promise<CliStatus>
   /** request 只有 Mac 上首页「可更新到 v…」那一下才传（见 DesktopAppUpdateRequest）。 */
@@ -618,7 +631,7 @@ export interface SystemService {
   installExternalClient(tool: ExternalToolId, target: RendererMessageTarget, request?: DesktopAppUpdateRequest): Promise<ExternalClientStatus>
   cancelExternalClientInstall(tool: ExternalToolId): InstallCancellationOutcome
   /** target：点「打开」的那个窗口，Claude Desktop 打开前替它放程序的进度发给它；缺省 = 不发。 */
-  launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<void>
+  launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<ExternalClientLaunchResult>
   /** 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择，星芒那份配置留着。 */
   switchExternalClientSource(tool: ExternalToolId, target: 'account' | 'official', assertBeforeWrite?: () => void): Promise<ExternalClientSourceSwitchResult>
   /**
@@ -626,6 +639,11 @@ export interface SystemService {
    * 默认那个不动，它开着就这次不补。从不抛错。可选 = 旧实现不提供。
    */
   topUpClaudeDesktopModels?(): Promise<void>
+  /**
+   * 开机后台替已经装着的 Claude Desktop 从星芒下载站放好 Cowork 工作区（claude-desktop-workspace-seed.ts）。
+   * 没装、放过了、盘不够、远程关了都不下；从不抛错。可选 = 旧实现不提供。
+   */
+  seedClaudeDesktopWorkspace?(): Promise<void>
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
   /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
@@ -669,25 +687,17 @@ export interface NpmPackageReleaseMetadata {
   integrity: string
 }
 
-export function assertNpmReleaseIntegrityMatches(
-  trusted: NpmPackageReleaseMetadata,
-  candidate: NpmPackageReleaseMetadata,
-): void {
-  if (
-    candidate.name !== trusted.name
-    || candidate.version !== trusted.version
-    || candidate.integrity !== trusted.integrity
-  ) {
-    throw new Error('国内 npm 镜像的包名、版本或 SHA-512 完整性元数据与 npm 官方源不一致')
-  }
-}
-
 export interface SystemServiceOptions {
   managerDataDirectory?: string
   /** 首页扫描结果落在哪；缺省不落盘（测试与旧行为）。 */
   systemSnapshotCacheFile?: string
   /** 外部客户端检测结果落在哪；缺省不落盘（测试与旧行为）。见 external-client-snapshot-cache.ts。 */
   externalClientSnapshotCacheFile?: string
+  /**
+   * config:get 读下的工具配置在几毫秒内接着用（config-read-cache.ts，0.2.24 深查 R3）。缺省 = 0，每次现读
+   * （测试与旧行为）：测试常在同一毫秒里原地改写同样长的文件，靠文件身份和修改时间分不出来。
+   */
+  configReadCacheMs?: number
   /** 记进落盘的旧结果；别的版本写的也认，但不带推荐版本这类判断（见 system-snapshot-cache.ts）。 */
   appVersion?: string
   /** Native profile roots and policy reads are isolated in tests. */
@@ -1136,6 +1146,7 @@ export function createSystemService(
     followManagedKeysNow,
     cancelPendingExternalRouteRecheck,
     topUpClaudeDesktopModels,
+    seedClaudeDesktopWorkspace,
   } = createExternalClientRouteService(context, {
     fetchAvailableModels,
   })
@@ -1459,6 +1470,7 @@ export function createSystemService(
     launchExternalClient,
     switchExternalClientSource,
     topUpClaudeDesktopModels,
+    seedClaudeDesktopWorkspace,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
     enqueueCodexRemoteLaunch: (launch) => installationQueue.enqueue(codexRemoteLaunchQueueKey, launch),

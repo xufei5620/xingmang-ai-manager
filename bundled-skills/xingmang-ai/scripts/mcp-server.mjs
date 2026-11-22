@@ -74,6 +74,22 @@ function redactUpstream(text) {
     .slice(0, 300)
 }
 
+// new-api 拿不到上游的原因时，拿错误类别名充当原因（relaykit/types/error.go 的 ToOpenAIError：
+// openai_error、upstream_error、new_api_error 这类），等于什么都没说。与生图技能脚本一致，测试钉住。
+const PLACEHOLDER_ERROR_MESSAGE_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*_error$/i
+
+function isUnexplainedUpstreamMessage(message) {
+  const text = typeof message === 'string' ? message.trim() : ''
+  return !text || PLACEHOLDER_ERROR_MESSAGE_PATTERN.test(text)
+}
+
+// 没说原因时给 AI 和客户的那句话。Nano Banana、Grok 是点名才用的，建议换回默认的 GPT 图片模型。
+function unexplainedFailureMessage(model, family, editing) {
+  const action = editing ? '改图' : '出图'
+  const next = family === 'openai' ? '可以稍后再试一次。' : '可以换回默认的 GPT 图片模型再试一次。'
+  return `${model} 这次没能${action}，图片服务没说原因。${next}`
+}
+
 function modelFamily(model) {
   if (OPENAI_IMAGE_MODEL_PATTERN.test(model)) return RETIRED_OPENAI_IMAGE_MODEL_PATTERN.test(model) ? null : 'openai'
   if (GEMINI_IMAGE_MODEL_PATTERN.test(model)) return 'gemini'
@@ -435,12 +451,16 @@ async function requestImage(origin, apiKey, input, images) {
   let payload
   try { payload = JSON.parse(bytes.toString('utf8')) } catch { payload = null }
   if (!response.ok) {
-    const message = payload?.error?.message || payload?.message
-    throw new ImageError(
-      typeof message === 'string' && message ? redactUpstream(message) : `图片服务返回 HTTP ${response.status}`,
-      RETRYABLE_STATUSES.has(response.status),
-      true,
-    )
+    // xAI 这类上游把原因直接写成字符串 error，也算说了原因。
+    const message = typeof payload?.error === 'string' ? payload.error : payload?.error?.message || payload?.message
+    const retryable = RETRYABLE_STATUSES.has(response.status)
+    if (typeof message !== 'string' || isUnexplainedUpstreamMessage(message)) {
+      // 原话只进日志（MCP 的 stderr 由宿主记进日志，不进对话），AI 和客户看到的是一句人话。
+      const said = typeof message === 'string' && message.trim() ? redactUpstream(message) : '没有内容'
+      process.stderr.write(`画图失败，图片服务回了 HTTP ${response.status}：${said}\n`)
+      throw new ImageError(unexplainedFailureMessage(input.model, input.family, images.length > 0), retryable, true)
+    }
+    throw new ImageError(redactUpstream(message), retryable, true)
   }
   const encoded = encodedImage(payload, input.family)
   if (typeof encoded !== 'string' || !encoded || encoded.length > MAX_RESPONSE_BYTES

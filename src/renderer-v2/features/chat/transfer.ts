@@ -1,13 +1,13 @@
 import type { XingmangApi } from '../../../../electron/ipc-contract'
 import { activeRestartWork } from '../../background-work'
 import type { Conversation } from './state'
-import { chatHistoryLogger, exportableConversations, exportablePhrases, importConversationsIntoHistory, loadChatHistory, runHistoryImport, settleHistoryWrites, type ChatImportResult, type ChatStorage } from './storage'
+import { chatHistoryLogger, exportableConversations, exportablePhrases, flushChatHistory, importConversationsIntoHistory, loadChatHistory, runHistoryImport, settleHistoryWrites, type ChatImportResult, type ChatStorage } from './storage'
 
 /**
  * D41：导入要先把聊天页卸下，卸下就把正在回复、出图的那条掐断（出图那条可能照样扣了费）。
  * 聊天在回复时先不动，说这一句。
  */
-export const chatReplyingImportMessage = '聊天正在回复，等它说完再导入。'
+export const chatReplyingImportMessage = '聊天正在回复，请待回复完成后再导入。'
 
 /**
  * 设置页「搬到新电脑」里聊天记录那一半，只在登录后才有（聊天记录按账号分开存）。
@@ -42,9 +42,13 @@ export function createChatTransfer(bridge: ChatTransferBridge, storage: ChatStor
   }
   return {
     async exportChat() {
+      // 导出读的是存到本机的那份。聊天页自动保存最多晚 2 秒（autosaveMaxWaitMs），回复刚说完就来导出，
+      // 以前只等正在写的那次，最后一问一答还在聊天页手上没存，导出的文件里就没有（0.2.24 Mac 验收 R6）。
+      // 所以先跟退出前一样让开着的聊天页马上存一次；存失败了原来的文件没动，照旧导出存着的那份。
+      await flushChatHistory()
       await settleHistoryWrites()
       const loaded = await loadChatHistory(api, storage, scope)
-      if (loaded.warning) throw new Error(`${loaded.warning}，这次没有导出`)
+      if (loaded.warning) throw new Error(`${loaded.warning}，本次未导出`)
       return { conversations: exportableConversations(loaded.state), phrases: exportablePhrases(loaded.state) }
     },
     assertChatIdle,

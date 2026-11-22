@@ -39,7 +39,7 @@ export function isRemoteIdleCloseHours(value: unknown): value is RemoteIdleClose
 }
 
 /**
- * 「手机上用的模型」单独选的型号（yoyo 2026-11-19「改」）。主进程只认长得像型号名的字串，免得渲染层塞进来的东西
+ * 「手机端使用的模型」单独选的型号（yoyo 2026-11-19「改」）。主进程只认长得像型号名的字串，免得渲染层塞进来的东西
  * 原样交给 Codex；能不能用由渲染层只列首页 Codex「默认模型」那张单来保证。不存 = 跟电脑上的 Codex 一样。
  */
 export const remoteModelMaxLength = 128
@@ -339,6 +339,11 @@ export interface CodexRemoteSnapshot {
   /** 这台电脑现在能不能开遥控；不能时 unavailableReason 是上屏的原因（比如星芒以管理员身份运行）。 */
   available: boolean
   unavailableReason?: string
+  /**
+   * 能开遥控，而且这台 Windows 电脑登录的账号本身就带管理员权限（自带 Administrator、关了授权弹窗）：
+   * Codex 在这里做的事也带管理员权限，卡片上提醒一句。不能开、不是这种账号时不带。
+   */
+  alwaysElevated?: boolean
   /** 凭据能不能存到下次打开（Linux 没有密钥环时只到这次关掉）。 */
   credentialPersistence: 'durable' | 'session-only' | 'unavailable'
   /** 主目录已换成 ~ 的工作文件夹（正在用的那个）；没选是 null。 */
@@ -366,7 +371,7 @@ export interface CodexRemoteSnapshot {
   codexStartFailed?: boolean
   /** 手机上最近一条（YF-13）；这次打开遥控以后还没发来过、或者遥控全关了就不带。 */
   lastRequest?: CodexRemoteLastRequestSnapshot
-  /** 「手机上用的模型」单独选的型号；缺省 = 跟电脑上的 Codex 一样。 */
+  /** 「手机端使用的模型」单独选的型号；缺省 = 跟电脑上的 Codex 一样。 */
   model?: string
   channels: Record<RemoteChannelId, CodexRemoteChannelSnapshot>
 }

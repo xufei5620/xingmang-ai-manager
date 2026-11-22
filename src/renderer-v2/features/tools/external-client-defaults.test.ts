@@ -58,6 +58,24 @@ describe('external client defaults', () => {
     expect(initialClientSource('claudeDesktop', 'claude', clientKeySources, null, [gptKey, claudeKey])).toBe('account:22')
   })
 
+  it('prefers the group Xingmang signs Claude Code keys in over a newer key in another Claude group', () => {
+    const codexOnly = providers({ codex: relay('gpt-6.1-sol') })
+    const claudeCode = { name: 'yoyo-Claude-MAX', group: 'Claude-MAX' }
+    // 列表按编号倒序：8 月 AI 对话在 Claude-ANTI 里签的那把排在最前，以前默认就落到它上面。
+    const chatKey = { id: 40, name: 'xingmang-chat-msu81uct-5e3c562e6de0', group: 'Claude-ANTI' }
+    const userKey = { id: 31, name: 'my-claude', group: 'Claude-MAX' }
+    const ownKey = { id: 30, name: 'yoyo-Claude-MAX', group: 'Claude-MAX' }
+    expect(initialClientSource('claudeDesktop', 'claude', clientKeySources, codexOnly, [chatKey, userKey, ownKey], claudeCode)).toBe('account:30')
+    expect(initialClientSource('claudeDesktop', 'claude', clientKeySources, codexOnly, [chatKey, userKey], claudeCode)).toBe('account:31')
+    // 那个分组里一把都没有：照旧挑别的分组名带 Claude 的，再轮到别的工具。
+    expect(initialClientSource('claudeDesktop', 'claude', clientKeySources, codexOnly, [gptKey, chatKey], claudeCode)).toBe('account:40')
+    expect(initialClientSource('claudeDesktop', 'claude', clientKeySources, codexOnly, [gptKey], claudeCode)).toBe('configured:codex')
+    // Claude Code 自己配着当前账号的密钥时，照旧用它那把。
+    expect(initialClientSource('claudeDesktop', 'claude', clientKeySources, both(), [chatKey, ownKey], claudeCode)).toBe('configured:claude')
+    // 只有 Claude Desktop 看 Claude Code 那个分组。
+    expect(initialClientSource('workbuddy', 'codex', clientKeySources, providers(), [chatKey, ownKey], claudeCode)).toBe('account:40')
+  })
+
   it('falls back to another tool key without carrying a model Claude Desktop cannot use', () => {
     const codexOnly = providers({ codex: relay('gpt-6.1-sol') })
     const source = initialClientSource('claudeDesktop', 'claude', clientKeySources, codexOnly, [gptKey])

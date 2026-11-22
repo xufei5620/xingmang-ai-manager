@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { releaseStagedDarwinCli, stageVerifiedDarwinCli } from './darwin-cli-staging'
-import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
+import { DarwinCliProvenanceError, darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 import { sameLocalPathIdentity } from './path-identity'
 import type {
   NativeCliDirectoryIdentity,
@@ -20,7 +20,12 @@ export interface DarwinGrokCanonicalSelection {
   executablePath: string
   linkIdentity: NativeCliSymbolicLinkIdentity
   linkTarget: string
-  version: string
+  /**
+   * The release the link names. null for xAI's install script layout since 2026-11
+   * (`../downloads/grok-macos-<arch>`, no version in the file name): only the
+   * verified binary itself can tell, see readDarwinGrokSelectionVersion.
+   */
+  version: string | null
   fileIdentity: DarwinGrokFileIdentity
 }
 
@@ -31,14 +36,15 @@ export type DarwinGrokCanonicalLinkSnapshot =
   | { canonicalLinkPath: string; existed: true; linkTarget: string }
 
 /**
- * Unlike the canonical grok link, ensureDarwinGrokAgentLink never modifies an
- * agent link that already exists (see its docstring below) — so whether it
- * existed before the transaction started is the entire snapshot a rollback
- * needs; there is no prior target to remember and restore.
+ * ensureDarwinGrokAgentLink may move an existing agent link onto the version
+ * `grok` was just switched to (see its docstring below), so a rollback has to
+ * put the previous target back, not only remove a link it created. linkTarget
+ * is null when the path held something other than a symlink: ensure never
+ * touches that, so there is nothing to restore.
  */
 export type DarwinGrokAgentLinkSnapshot =
   | { agentLinkPath: string; existed: false }
-  | { agentLinkPath: string; existed: true }
+  | { agentLinkPath: string; existed: true; linkTarget: string | null }
 
 export interface DarwinGrokCommandResult {
   stdout: string
@@ -53,14 +59,15 @@ export interface VerifyDarwinGrokCanonicalInstallationOptions {
 
 export interface VerifyDarwinGrokExecutableOptions {
   executablePath: string
-  expectedVersion: string
+  expectedVersion: string | null
   runCommand: VerifyDarwinGrokCanonicalInstallationOptions['runCommand']
 }
 
 export interface StageDarwinGrokCanonicalSelectionOptions {
   homeDirectory: string
   selection: DarwinGrokCanonicalSelection
-  expectedVersion: string
+  /** Must equal selection.version; null only for the unversioned layout, where any release xAI signed is accepted. */
+  expectedVersion: string | null
   runCommand: VerifyDarwinGrokCanonicalInstallationOptions['runCommand']
   retention?: 'ephemeral' | 'retained'
 }
@@ -150,29 +157,58 @@ function agentLinkPath(homeDirectory: string): string {
  * same way Windows does: point `agent` at the exact binary `grok` was just
  * codesign- and version-verified against.
  *
- * Idempotent and non-destructive by design — ensure* only fills an absence.
- * Whatever already occupies ~/.grok/bin/agent (a fuller official install, a
- * user's own file, a previous run of this same repair) is left completely
- * untouched; this never inspects or overwrites existing content there.
+ * 11-18 复核 D19：以前这里只补「没有」的情况，已经有的一概不动。可星芒每次更新或装回旧版，npm 只改
+ * `grok`，于是 `agent` 一直指着第一次装的那一版。现在 `agent` 已经是一条指向官方那几种布局
+ * （downloads 下带或不带版本号的 macOS 程序、npm 放在旁边的 `grok-<版本>`）的链接、又跟 `grok`
+ * 不一样时，原子地换成跟 `grok` 一样；xAI 自己的安装器本来就让两条指向同一个文件。
+ *
+ * Still idempotent and conservative: a regular file, or a link aimed anywhere
+ * outside those official shapes (something the customer made by hand), is
+ * left exactly as it is.
  */
 export async function ensureDarwinGrokAgentLink(
   homeDirectory: string,
   canonical: DarwinGrokCanonicalSelection,
 ): Promise<void> {
   const linkPath = agentLinkPath(homeDirectory)
+  let current: fs.Stats
   try {
-    await fs.promises.lstat(linkPath)
-    return
+    current = await fs.promises.lstat(linkPath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    try {
+      await fs.promises.symlink(canonical.linkTarget, linkPath)
+    } catch (symlinkError) {
+      // A concurrent creator (this same repair racing itself, or a fuller
+      // official install landing at the same moment) already won; either way
+      // something now exists at the path this function promises to ensure.
+      if ((symlinkError as NodeJS.ErrnoException).code === 'EEXIST') return
+      throw symlinkError
+    }
+    return
   }
+  if (!current.isSymbolicLink()) return
+  const currentTarget = await fs.promises.readlink(linkPath)
+  if (currentTarget === canonical.linkTarget || !isOfficialAgentLinkTarget(currentTarget)) return
+  await replaceGrokBinLink(linkPath, canonical.linkTarget, '.agent-retarget-')
+}
+
+/** The shapes xAI's installers, its npm postinstall, or this repair leave at ~/.grok/bin/agent. */
+function isOfficialAgentLinkTarget(linkTarget: string): boolean {
+  return isOfficialUninstallLinkTarget(linkTarget) || isUnversionedOfficialLinkTarget(linkTarget)
+}
+
+/**
+ * Swaps a ~/.grok/bin link in one rename so `agent` never disappears in
+ * between; rename(2) replaces the old link itself, it does not follow it.
+ */
+async function replaceGrokBinLink(linkPath: string, linkTarget: string, temporaryPrefix: string): Promise<void> {
+  const temporaryLink = path.join(path.dirname(linkPath), `${temporaryPrefix}${randomUUID()}`)
+  await fs.promises.symlink(linkTarget, temporaryLink)
   try {
-    await fs.promises.symlink(canonical.linkTarget, linkPath)
+    await fs.promises.rename(temporaryLink, linkPath)
   } catch (error) {
-    // A concurrent creator (this same repair racing itself, or a fuller
-    // official install landing at the same moment) already won; either way
-    // something now exists at the path this function promises to ensure.
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return
+    await fs.promises.unlink(temporaryLink).catch(() => undefined)
     throw error
   }
 }
@@ -230,6 +266,21 @@ function versionFromOfficialLinkTarget(linkTarget: string): string | null {
   const versionOnlyTarget = /^grok-(.+)$/.exec(fileName)?.[1]
   const version = platformTarget ?? versionOnlyTarget
   return version && grokReleaseVersionPattern.test(version) ? version : null
+}
+
+/**
+ * xAI's install script stopped putting the version in the downloaded file name
+ * (2026-11, `binary_path="$DOWNLOAD_DIR/grok-$platform"` in cli/install.sh): both
+ * `grok` and `agent` now point at `../downloads/grok-macos-<arch>`, and each update
+ * overwrites that same file. Exactly the default sibling layout the script builds
+ * is accepted; the Linux name (`grok-linux-…`) is not, Linux keeps its own rules.
+ */
+function isUnversionedOfficialLinkTarget(linkTarget: string): boolean {
+  const parts = linkTarget.split(path.sep)
+  return parts.length === 3
+    && parts[0] === '..'
+    && parts[1] === 'downloads'
+    && /^grok-macos-(?:aarch64|x86_64)$/.test(parts[2])
 }
 
 function isOfficialUninstallLinkTarget(linkTarget: string): boolean {
@@ -338,7 +389,9 @@ export function resolveDarwinGrokCanonicalSelection(
   const link = requiredRelativeLink(linkPath)
   const linkTarget = link.target
   const version = versionFromOfficialLinkTarget(linkTarget)
-  if (!version) throw new Error('Grok canonical link target is not an official versioned macOS binary')
+  if (!version && !isUnversionedOfficialLinkTarget(linkTarget)) {
+    throw new Error('Grok canonical link target is not an official versioned macOS binary')
+  }
 
   const grokRoot = fs.realpathSync(path.join(homeDirectory, '.grok'))
   const executablePathResolved = fs.realpathSync(path.resolve(path.dirname(linkPath), linkTarget))
@@ -402,6 +455,23 @@ export function captureDarwinGrokCanonicalLink(homeDirectory: string): DarwinGro
   }
 }
 
+/**
+ * ~/.grok/bin/grok 已经被别的东西占着、又不是能原样放回去的那几种（手做的链接、普通文件）时，npm 的
+ * 安装脚本一跑就盖掉它，装坏了也放不回去，所以一个字节都还没下就停，说一句客户照着能做的（同
+ * linux-grok.ts 的 runLinuxGrokPostInstallTransaction）。以前这一下在下载完才报，英文原话被说成两遍
+ * 「npm 没有装成」。首页对这种认不出的给的是「使用星芒安装」（Mac 验收 R1），所以句尾指回那颗按钮。
+ */
+export function assertDarwinGrokCanonicalLinkReplaceable(homeDirectory: string): void {
+  try {
+    captureDarwinGrokCanonicalLink(homeDirectory)
+  } catch (error) {
+    throw new Error(
+      '这台电脑上已经有一份 Grok CLI，不是用星芒装的。为了不弄坏它，已停止安装。请先用你原来装它的方式卸载，再回来点「使用星芒安装」。',
+      { cause: error },
+    )
+  }
+}
+
 /** Restores the old xAI link atomically, or removes only a link created by a failed first install. */
 export async function restoreDarwinGrokCanonicalLink(
   snapshot: DarwinGrokCanonicalLinkSnapshot,
@@ -433,15 +503,24 @@ export async function restoreDarwinGrokCanonicalLink(
   }
 }
 
-/** Captures only whether the agent link already existed, mirroring ensureDarwinGrokAgentLink's absence-only contract. */
-export function captureDarwinGrokAgentLinkPresence(homeDirectory: string): DarwinGrokAgentLinkSnapshot {
+/**
+ * Captures what ~/.grok/bin/agent was before the transaction: absent, a link
+ * (with its target, since ensureDarwinGrokAgentLink may move it), or something
+ * else that ensure never touches.
+ */
+export function captureDarwinGrokAgentLink(homeDirectory: string): DarwinGrokAgentLinkSnapshot {
   const linkPath = agentLinkPath(homeDirectory)
+  let stats: fs.Stats
   try {
-    fs.lstatSync(linkPath)
-    return { agentLinkPath: linkPath, existed: true }
+    stats = fs.lstatSync(linkPath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     return { agentLinkPath: linkPath, existed: false }
+  }
+  return {
+    agentLinkPath: linkPath,
+    existed: true,
+    linkTarget: stats.isSymbolicLink() ? fs.readlinkSync(linkPath) : null,
   }
 }
 
@@ -457,25 +536,30 @@ export function captureDarwinGrokAgentLinkPresence(homeDirectory: string): Darwi
  * agent.exe as an ordinary member of the same commitManagedReplacements
  * transaction as grok.exe, so one rollback undoes both there.
  *
- * Idempotent by construction, matching ensureDarwinGrokAgentLink's own
- * contract in reverse: a link that already existed before the transaction
- * started is never touched (nothing to roll back — same as calling this
- * after a rollback that already ran, or after a lifecycle that never reached
- * the ensure step at all). Anything other than a symlink now occupying the
- * path was not something ensureDarwinGrokAgentLink could have created (it
- * only ever calls fs.symlink), so it is left alone rather than treated as a
- * rollback failure.
+ * D19 后 ensure 会把旧的 `agent` 挪到新版上，所以这里也要把它挪回原来那一版：`grok` 退回旧版、
+ * `agent` 却留在没核过的新版上，两条又对不上了。
+ *
+ * Idempotent: restoring twice, or after a lifecycle that never reached the
+ * ensure step, changes nothing. Anything other than a symlink now occupying
+ * the path was not something ensureDarwinGrokAgentLink could have created (it
+ * only ever creates symlinks), so it is left alone rather than treated as a
+ * rollback failure; the same goes for a path that held a non-symlink before.
  */
 export async function restoreDarwinGrokAgentLink(snapshot: DarwinGrokAgentLinkSnapshot): Promise<void> {
-  if (snapshot.existed) return
   let current: fs.Stats | null = null
   try {
     current = await fs.promises.lstat(snapshot.agentLinkPath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  if (!current || !current.isSymbolicLink()) return
-  await fs.promises.unlink(snapshot.agentLinkPath)
+  if (current && !current.isSymbolicLink()) return
+  if (!snapshot.existed) {
+    if (current) await fs.promises.unlink(snapshot.agentLinkPath)
+    return
+  }
+  if (snapshot.linkTarget === null) return
+  if (current && await fs.promises.readlink(snapshot.agentLinkPath) === snapshot.linkTarget) return
+  await replaceGrokBinLink(snapshot.agentLinkPath, snapshot.linkTarget, '.agent-rollback-')
 }
 
 /** Keeps rollback active until lifecycle work and every caller-supplied service verification succeed. */
@@ -483,7 +567,7 @@ export async function runDarwinGrokPostInstallTransaction<T>(
   options: DarwinGrokPostInstallTransactionOptions<T>,
 ): Promise<T> {
   const snapshot = captureDarwinGrokCanonicalLink(options.homeDirectory)
-  const agentSnapshot = captureDarwinGrokAgentLinkPresence(options.homeDirectory)
+  const agentSnapshot = captureDarwinGrokAgentLink(options.homeDirectory)
   try {
     await options.lifecycle()
     return await options.verify()
@@ -499,26 +583,31 @@ export async function runDarwinGrokPostInstallTransaction<T>(
   }
 }
 
-/** Verifies xAI identity and the exact expected runtime version for one executable. */
+/**
+ * Verifies xAI identity and the runtime version for one executable, and returns
+ * that version. With an expected version it must match exactly; without one (the
+ * unversioned layout) it only has to be a well-formed release.
+ */
 async function verifyDarwinGrokExecutable(
   options: VerifyDarwinGrokExecutableOptions,
-): Promise<void> {
+): Promise<string> {
   try {
     await options.runCommand({
       executable: '/usr/bin/codesign',
       argv: darwinDeveloperIdVerificationArgv(xaiTeamId, options.executablePath),
     })
   } catch (error) {
-    throw new Error('Grok 可执行文件未通过 xAI Developer ID 签名校验', { cause: error })
+    throw new DarwinCliProvenanceError('Grok 可执行文件未通过 xAI Developer ID 签名校验', { cause: error })
   }
   const versionResult = await options.runCommand({
     executable: options.executablePath,
     argv: ['--version'],
   })
   const reportedVersion = grokVersionOutputPattern.exec(versionResult.stdout.trim())?.[1] ?? null
-  if (reportedVersion !== options.expectedVersion) {
-    throw new Error('Grok canonical executable reported a version different from the pinned release')
+  if (reportedVersion === null || (options.expectedVersion !== null && reportedVersion !== options.expectedVersion)) {
+    throw new DarwinCliProvenanceError('Grok canonical executable reported a version different from the pinned release')
   }
+  return reportedVersion
 }
 
 /** Copies the canonical source through a bound descriptor and verifies only the private copy. */
@@ -536,11 +625,13 @@ export async function stageDarwinGrokCanonicalSelection(
       sourcePath: options.selection.executablePath,
       sourceIdentity: options.selection.fileIdentity,
       retention: options.retention,
-      verify: (stagedExecutable) => verifyDarwinGrokExecutable({
-        executablePath: stagedExecutable,
-        expectedVersion: options.expectedVersion,
-        runCommand: options.runCommand,
-      }),
+      verify: async (stagedExecutable) => {
+        await verifyDarwinGrokExecutable({
+          executablePath: stagedExecutable,
+          expectedVersion: options.expectedVersion,
+          runCommand: options.runCommand,
+        })
+      },
     })
     assertDarwinGrokSelectionUnchanged(options.homeDirectory, options.selection)
     return executable
@@ -554,10 +645,11 @@ interface InspectStagedDarwinGrokExecutableOptions<T> {
   executableName: string
   sourcePath: string
   sourceIdentity: DarwinGrokFileIdentity
-  expectedVersion: string
+  expectedVersion: string | null
   runCommand: VerifyDarwinGrokCanonicalInstallationOptions['runCommand']
   assertSourceUnchanged: () => void
-  inspect: (executablePath: string) => Promise<T>
+  /** Gets the private staged copy and the version that copy reported. */
+  inspect: (executablePath: string, reportedVersion: string) => Promise<T>
 }
 
 async function inspectStagedDarwinGrokExecutable<T>(
@@ -574,12 +666,12 @@ async function inspectStagedDarwinGrokExecutable<T>(
       sourceIdentity: options.sourceIdentity,
       retention: 'ephemeral',
       verify: async (stagedExecutable) => {
-        await verifyDarwinGrokExecutable({
+        const reportedVersion = await verifyDarwinGrokExecutable({
           executablePath: stagedExecutable,
           expectedVersion: options.expectedVersion,
           runCommand: options.runCommand,
         })
-        result = await options.inspect(stagedExecutable)
+        result = await options.inspect(stagedExecutable, reportedVersion)
         inspected = true
       },
     })
@@ -610,6 +702,67 @@ export async function inspectDarwinGrokVerifiedSelection<T>(
     ),
     inspect: options.inspect,
   })
+}
+
+// 不带版本号的那份核过一次就记住它报的版本：键是程序文件的身份，更新过（换了文件、改了内容）就对不上，
+// 重新核。只为首页显示版本，打开时照旧每次核签名（stageDarwinGrokCanonicalSelection）。
+const verifiedUnversionedGrokVersions = new Map<string, string>()
+const maximumVerifiedUnversionedGrokVersions = 8
+
+function unversionedGrokVersionKey(selection: DarwinGrokCanonicalSelection): string {
+  const identity = selection.fileIdentity
+  return [
+    selection.executablePath,
+    identity.dev,
+    identity.ino,
+    identity.mode,
+    identity.size,
+    identity.ctimeNs,
+    identity.mtimeNs,
+  ].join('\0')
+}
+
+export interface ReadDarwinGrokSelectionVersionOptions {
+  homeDirectory: string
+  selection: DarwinGrokCanonicalSelection
+  runCommand: VerifyDarwinGrokCanonicalInstallationOptions['runCommand']
+}
+
+/**
+ * The version the home page shows for a canonical selection. A versioned link
+ * answers from its name, as before, without running anything. The unversioned
+ * layout (Mac acceptance R1: the xAI install script's own install showed no
+ * version and could not be opened) is asked only through a private staged copy
+ * that first passed xAI's codesign check, and the answer is remembered per file
+ * identity so a scan does not copy the 100+ MB binary every time.
+ */
+export async function readDarwinGrokSelectionVersion(
+  options: ReadDarwinGrokSelectionVersionOptions,
+): Promise<string> {
+  if (options.selection.version !== null) return options.selection.version
+  const key = unversionedGrokVersionKey(options.selection)
+  const known = verifiedUnversionedGrokVersions.get(key)
+  if (known) return known
+  const version = await inspectStagedDarwinGrokExecutable({
+    executableName: 'grok',
+    sourcePath: options.selection.executablePath,
+    sourceIdentity: options.selection.fileIdentity,
+    expectedVersion: null,
+    runCommand: options.runCommand,
+    assertSourceUnchanged: () => assertDarwinGrokSelectionUnchanged(
+      options.homeDirectory,
+      options.selection,
+    ),
+    inspect: async (_executablePath, reportedVersion) => reportedVersion,
+  })
+  verifiedUnversionedGrokVersions.delete(key)
+  verifiedUnversionedGrokVersions.set(key, version)
+  while (verifiedUnversionedGrokVersions.size > maximumVerifiedUnversionedGrokVersions) {
+    const oldest = verifiedUnversionedGrokVersions.keys().next().value
+    if (oldest === undefined) break
+    verifiedUnversionedGrokVersions.delete(oldest)
+  }
+  return version
 }
 
 /** Verifies the exact canonical xAI executable selected by the official versioned link. */

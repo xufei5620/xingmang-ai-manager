@@ -115,8 +115,8 @@
 
 ### R15 安装程序、卸载
 
-- 触发：文件 `build/installer.nsh` `electron/uninstall-cleanup*.ts` `electron/login-launch.ts` `electron-builder.config.cjs`
-- 查什么：卸载冒烟（quality 里按改动自动跑，作业名 `uninstall-smoke / …`）全绿才合；卸载永远不删密钥，分不清是不是星芒装的工具不删；开着加速卸载要先还原系统代理。
+- 触发：文件 `build/installer.nsh` `electron/uninstall-cleanup*.ts` `electron/login-launch.ts` `electron-builder.config.cjs` `scripts/windows-installer-package-entries.cjs`
+- 查什么：卸载冒烟（quality 里按改动自动跑，作业名 `uninstall-smoke / …`）全绿才合；卸载永远不删密钥，分不清是不是星芒装的工具不删；开着加速卸载要先还原系统代理。安装清单只记安装包自己带的顶层条目（打包时按 win-unpacked 现场列，别写死，也别改回「目录里看到的都记」），客户自己放进安装目录的文件升级、卸载都不动（D05）。
 - 出自：yoyo 定的卸载规矩（不删密钥）；`docs/WINDOWS-ACCELERATION-RECOVERY.md`；卸载冒烟每一段的来历写在 `.github/workflows/windows-uninstall-smoke.yml` 开头。
 
 ### R16 测试里等落盘、等时间

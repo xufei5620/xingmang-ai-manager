@@ -61,12 +61,12 @@ describe('renderer-v2 other apps card', () => {
   it('shows every address with its own copy button under the search landing', () => {
     const markup = renderToStaticMarkup(<OtherAppsCard siteId="solov" onRequestApp={() => undefined} />)
     expect(markup).toContain('data-anchor="other-apps"')
-    expect(markup).toContain('用在别的软件里')
+    expect(markup).toContain('在其他软件中使用')
     expect(markup).toContain(otherAppsLead)
     for (const id of ['host', 'v1', 'chat']) expect(markup).toContain(`data-testid="account-other-apps-copy-${id}"`)
     expect(markup).toContain('>https://xm.solov.cc/v1/chat/completions</code>')
     expect(markup).toContain(otherAppsFootnote)
-    expect(markup).toContain('想让星芒直接接入某个软件？')
+    expect(markup).toContain('希望星芒直接接入某个软件？')
     expect(markup).toContain('data-testid="account-other-apps-request"')
   })
 

@@ -7,7 +7,7 @@ import { AccountSessionStore } from '../account-session-store'
 import { relayStatusProbeUrl } from '../relay-status-probe'
 import { ipcEventChannels } from '../ipc-contract'
 import { createNewApiClient, type NewApiRetryOffProxyFailure } from '../new-api-client'
-import { parseRealmSavedAccount, type RealmSavedAccount } from '../realm-account'
+import { parseRealmSavedAccount, type RealmAccountOwner, type RealmCredential, type RealmSavedAccount } from '../realm-account'
 import type { RealmAccountClientHandle, RealmAccountSiteId } from '../realm-account-service'
 import { createSessionRealmAccountVault, type RealmAccountVault } from '../realm-account-vault'
 import { createFileRealmAccountVault } from '../realm-account-vault-file'
@@ -49,7 +49,7 @@ export function createAccountStorage(options: AccountStorageOptions) {
       'account',
       'session.persist.unavailable',
       credentialPersistence === 'session-only'
-        ? '这台电脑没法安全保存登录，本次登录只留在内存里，关掉软件后要重新登录；已有账号文件不动'
+        ? '本机无法安全保存登录信息，本次登录仅保留在内存中，关闭软件后需重新登录；已有账号文件保持不变'
         : '系统未提供安全加密存储，请恢复系统凭据服务后登录；已有账号文件将保留',
       { backend: safeStorageBackend, persistence: credentialPersistence },
     )
@@ -106,10 +106,35 @@ export function createAccountClientFactory(options: AccountClientFactoryOptions)
     }
     return retry
   }
+  // 续期换来的凭据只写在它出发时那份上面。开机恢复联不上、等自动重试的时候，客户自己又登了同一个号
+  // （0.2.25 总单第 19 项，11-18 复核 O08）：重试那次续期晚回来，本机记录已经是新登录的了，就以那次
+  // 为准、不写，不然重启后拿旧登录去恢复又被退出来。晚回来的那个候选随后被账号服务丢掉
+  // （realm-account-service.ts 的 retryStalled 只认那次登录）。
+  async function persistRotation(siteId: RealmAccountSiteId, owner: RealmAccountOwner, expected: RealmCredential, next: RealmCredential): Promise<void> {
+    if (await vault.rotateCredential(owner, expected, next) !== 'superseded') return
+    runtimeLog.log('info', 'account', 'session.rotation.superseded', '续期换来的登录凭据没有写进本机：这个账号刚又登录过一次，以那次为准', { siteId })
+  }
   function createClient(siteId: RealmAccountSiteId, onSessionChange: (account: RealmSavedAccount | null) => void): RealmAccountClientHandle {
     // 历史账号的客户端写死的是默认线路的地址（sub2api-relay-backend.ts 不改），走直连靠请求这一层换地址。
-    if (siteId === 'solov-api') return createSub2ApiRelayBackend({ fetchImpl: routedAccountRelayFetch, onSessionChange,
-      onCredentialRotation: (saved) => vault.updateSession(saved) })
+    if (siteId === 'solov-api') {
+      // 它不告诉我们续期前是哪一份，就在这里记着它手上那份：恢复时是交进去的那条记录，之后每换一次
+      // （登录、续期）它都先报一次 onSessionChange。
+      let held: RealmCredential | null = null
+      const backend = createSub2ApiRelayBackend({ fetchImpl: routedAccountRelayFetch,
+        onSessionChange: (account) => {
+          held = account?.credential ?? null
+          onSessionChange(account)
+        },
+        onCredentialRotation: async (rotated) => {
+          // 没登录、也不在恢复的客户端不会续期；真到了这里，不知道它出发时是哪份，就不往库里写。
+          if (!held) return
+          await persistRotation(siteId, rotated, held, rotated.credential)
+        } })
+      return { ...backend, restore: (record) => {
+        held = record.credential
+        return backend.restore(record)
+      } }
+    }
     let client: ReturnType<typeof createNewApiClient>
     function saved(): RealmSavedAccount | null {
       const persisted = client.getPersistableSession()
@@ -123,14 +148,8 @@ export function createAccountClientFactory(options: AccountClientFactoryOptions)
       retryOffProxy: (failure) => recoverAccountRequestOffProxy(siteId, failure),
       // 续期没等到回话、补续，和服务器不认这次登录：反馈报告里看得出客户为什么被退出来。
       log: (level, event, message, detail) => runtimeLog.log(level, 'account', event, message, { siteId, ...detail }),
-      onCredentialRotation: async (persisted) => {
-        const revision = client.getSessionRevision()
-        const owner = { realmId: 'xm-account' as const, userId: String(persisted.userId) }
-        const existing = await vault.get(owner)
-        if (client.getSessionRevision() !== revision) throw new Error('账号会话已变更')
-        if (existing) await vault.updateSession(parseRealmSavedAccount({ ...existing,
-          credential: { kind: 'new-api', cookies: persisted.cookies } }))
-      },
+      onCredentialRotation: (persisted, previous) => persistRotation(siteId, { realmId: 'xm-account', userId: String(persisted.userId) },
+        { kind: 'new-api', cookies: previous.cookies }, { kind: 'new-api', cookies: persisted.cookies }),
       onSessionChange: () => onSessionChange(saved()) })
     return { client, getSavedAccount: saved, restore: async (record) => {
       if (record.realmId !== 'xm-account' || record.credential.kind !== 'new-api') throw new Error('账号凭据与当前账号不匹配')

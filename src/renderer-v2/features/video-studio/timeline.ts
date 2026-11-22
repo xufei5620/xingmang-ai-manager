@@ -135,12 +135,12 @@ export function videoStudioSamplesPerFrame(frameRate: VideoStudioFrameRate): num
 }
 
 export function buildVideoStudioRenderPlan(clips: readonly VideoStudioClipSpec[], options: VideoStudioRenderOptions): VideoStudioRenderPlan {
-  if (!isVideoStudioAspect(options.aspect)) throw new VideoStudioError('不支持这个画面比例')
-  if (!isVideoStudioResolution(options.resolution)) throw new VideoStudioError('不支持这个清晰度')
+  if (!isVideoStudioAspect(options.aspect)) throw new VideoStudioError('不支持该画面比例')
+  if (!isVideoStudioResolution(options.resolution)) throw new VideoStudioError('不支持该清晰度')
   if (!isVideoStudioFit(options.fit)) throw new VideoStudioError('不支持这种画面填充方式')
-  if (!isVideoStudioFrameRate(options.frameRate)) throw new VideoStudioError('不支持这个帧率')
+  if (!isVideoStudioFrameRate(options.frameRate)) throw new VideoStudioError('不支持该帧率')
   if (options.transition !== undefined && !isVideoStudioTransition(options.transition)) throw new VideoStudioError('不支持这种转场')
-  if (clips.length === 0) throw new VideoStudioError('至少要放一段片段才能拼成片')
+  if (clips.length === 0) throw new VideoStudioError('至少需要一段片段才能合成成片')
   if (clips.length > maxVideoStudioClips) throw new VideoStudioError(`一次最多拼 ${maxVideoStudioClips} 段片段`)
 
   const segments: VideoStudioSegment[] = []
@@ -163,11 +163,11 @@ export function buildVideoStudioRenderPlan(clips: readonly VideoStudioClipSpec[]
     const sourceStart = origin + trimStart
     const length = clip.end - trimEnd - sourceStart
     if (length < minVideoStudioSegmentSeconds) {
-      throw new VideoStudioError(`${label}剪掉首尾后不到 ${minVideoStudioSegmentSeconds} 秒，没法用`)
+      throw new VideoStudioError(`${label}裁剪首尾后不足 ${minVideoStudioSegmentSeconds} 秒，无法使用`)
     }
     const caption = normalizeVideoStudioCaption(clip.caption)
     if (Array.from(caption).length > maxVideoStudioCaptionLength) {
-      throw new VideoStudioError(`${label}的字幕太长了，最多 ${maxVideoStudioCaptionLength} 个字`)
+      throw new VideoStudioError(`${label}的字幕过长，最多 ${maxVideoStudioCaptionLength} 个字`)
     }
     // 按帧四舍五入，误差不超过半帧，而且不会一段一段累加下去。
     const frameCount = Math.max(1, Math.round(length * options.frameRate))

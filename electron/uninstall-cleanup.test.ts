@@ -255,11 +255,13 @@ describe('uninstall cleanup', () => {
   it('names the chat history folders the desktop process writes', () => {
     const main = readMainWiringSource()
     expect(main).toContain("createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })")
-    // Chromium keeps the renderer's localStorage there, where earlier versions kept chats.
-    expect(chatHistoryDirectoryNames).toEqual(['chat-history', 'Local Storage'])
+    // The videos listed beside the chats; 0.2.24 kept them in localStorage, so ticking the box cleared them too.
+    expect(main).toContain("createVideoStudioProjectStore({ root: path.join(managerDataDirectory, 'video-projects') })")
+    // Chromium keeps the renderer's localStorage there, where earlier versions kept chats and videos.
+    expect(chatHistoryDirectoryNames).toEqual(['chat-history', 'Local Storage', 'video-projects'])
   })
 
-  it('clears both chat history folders and leaves everything else alone', async () => {
+  it('clears the chat history and video folders and leaves everything else alone', async () => {
     const dataDirectory = temporaryDataDirectory()
     const conversation = path.join(dataDirectory, 'chat-history', 'xm-account%3A7')
     fs.mkdirSync(conversation, { recursive: true })
@@ -267,6 +269,10 @@ describe('uninstall cleanup', () => {
     fs.writeFileSync(path.join(conversation, 'a.json'), '{}')
     fs.mkdirSync(path.join(dataDirectory, 'Local Storage', 'leveldb'), { recursive: true })
     fs.writeFileSync(path.join(dataDirectory, 'Local Storage', 'leveldb', '000003.log'), 'old chats')
+    const videos = path.join(dataDirectory, 'video-projects', '0123456789abcdef0123456789abcdef')
+    fs.mkdirSync(videos, { recursive: true })
+    fs.writeFileSync(path.join(videos, 'index.json'), '{}')
+    fs.writeFileSync(path.join(videos, 'p-rainy-cat.json'), '{}')
     fs.writeFileSync(path.join(dataDirectory, 'settings.json'), '{}')
     fs.mkdirSync(path.join(dataDirectory, 'logs'))
 

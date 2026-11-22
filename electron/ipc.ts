@@ -32,6 +32,7 @@ import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
 import type { AiAudioAssetStore } from './ai-audio-asset-store'
 import type { AiVideoAssetStore } from './ai-video-asset-store'
+import type { AiMediaAssetService } from './ai-media-asset-service'
 import type { AiVideoService } from './ai-video-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type {
@@ -41,6 +42,7 @@ import type {
   WindowCapabilities,
   AppUninstallRequest,
   AppUninstallResult,
+  CanvasProjectListEntry,
 } from './ipc-contract'
 import { ipcChannelPolicies, type IpcInvokeChannel } from './ipc-channel-policy'
 import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
@@ -55,6 +57,7 @@ import type { InvoicePortalWindowController } from './invoice-portal-window'
 import type { PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import type { AiChatHistoryStore } from './ai-chat-history-store'
+import type { VideoStudioProjectStore } from './video-studio-project-store'
 import type { ChatHistoryFlush } from './chat-history-flush'
 import type { ChatAttachmentService } from './ai-chat-attachments'
 import type { ChatTextFileService } from './ai-chat-text-files'
@@ -88,6 +91,7 @@ import { registerAccountBillingHandlers } from './ipc/handlers/account-billing'
 import { registerAccountUsageHandlers } from './ipc/handlers/account-usage'
 import { registerAccountKeyHandlers } from './ipc/handlers/account-keys'
 import { registerAiChatHandlers } from './ipc/handlers/ai-chat'
+import { registerAiLibraryHandlers } from './ipc/handlers/ai-library'
 import { registerAiVideoHandlers } from './ipc/handlers/ai-video'
 import { registerDataTransferHandlers } from './ipc/handlers/data-transfer'
 import { registerCodexRemoteHandlers } from './ipc/handlers/codex-remote'
@@ -103,7 +107,7 @@ export interface IpcRegistrationOptions {
   // 解析各 CLI 配置目录用的根路径（Codex 认 CODEX_HOME）。省略 = 按当前进程
   // 环境推一份，和 system-service 默认拿到的那份一致（旧行为）。
   providerRoots?: ProviderConfigRoots
-  // Windows 上「新建一个项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到
+  // Windows 上「新建项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到
   // 主目录；macOS 一律建在主目录）；
   // main.ts 传系统「文档」目录（app.getPath('documents')）。省略 = 主目录下的 Documents。
   documentsDirectory?: () => string
@@ -135,7 +139,7 @@ export interface IpcRegistrationOptions {
     exportLatest(): string
     /** 检查页「清掉这条旧设置」；缺省 = stale-proxy-environment.ts 的真实现。 */
     clearStaleProxy?(): Promise<StaleProxyClearResult>
-    /** 检查页「挪开这份设置」「删掉这几项设置」；缺省 = 不支持，点了报一句中文（旧行为无此按钮）。 */
+    /** 检查页「停用此设置」「删除这些设置」；缺省 = 不支持，点了报一句中文（旧行为无此按钮）。 */
     fix?(kind: DiagnosticFixKind): Promise<DiagnosticFixResult>
     /** 反馈报告「最近一次自检」那段有没有结果；缺省 = 不知道，预览报告时不提醒先去检查。 */
     hasSelfCheckResult?(): boolean
@@ -143,6 +147,8 @@ export interface IpcRegistrationOptions {
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
   providerExtensionService: ProviderExtensionService
+  /** 技能「从压缩包导入」解开放在哪（main.ts 传数据文件夹下的 skill-archives）；省略 = 那条通道报暂时不能用。 */
+  skillArchiveDirectory?: string
   // Defaults to a real client talking to the production New-Api instance
   // when the host app does not supply one; tests inject a stub the same way
   // they do for other services. Typed as the backend-agnostic
@@ -212,7 +218,7 @@ export interface IpcRegistrationOptions {
   confirmUpdateInstall?(): Promise<boolean>
   /**
    * Mac 上「卸载星芒」。backupCliConfigs 由这里给：备份要用本模块里的账号上下文，和
-   * 「修好它」同一份。不传 = 这台电脑不支持在星芒里卸载。
+   * 「立即修复」同一份。不传 = 这台电脑不支持在星芒里卸载。
    */
   uninstallApp?(request: AppUninstallRequest, backupCliConfigs: () => Promise<void>): Promise<AppUninstallResult>
   takeExternalDeepLink?(target: WebContents): ExternalDeepLink | null
@@ -247,6 +253,10 @@ export interface IpcRegistrationOptions {
   openCanvasWindow(): Promise<void>
   // Same delegation for the canvas home page's read-only library (「看全部作品」).
   openCanvasAssetLibrary(): Promise<void>
+  // 「创作」左边那一列里的画布项目（融合第 1 步）：列出当前账号的项目、把画布开在其中一个上。同样只是转交，
+  // 认账号、认编号、换项目前的关闭确认都在 canvas-window.ts。缺省（早于它的测试）= 报「未就绪」。
+  listCanvasProjects?(): Promise<CanvasProjectListEntry[]>
+  openCanvasProject?(projectId: unknown): Promise<boolean>
   // Backing store for the "记住密码" credential (account-credential-store.ts,
   // safeStorage-encrypted). Optional the same way accountService is: main.ts
   // always passes the real store; when absent (tests that predate it), the
@@ -284,6 +294,8 @@ export interface IpcRegistrationOptions {
   imageService?: AiImageService
   aiAssets?: AiAssetStore
   chatHistory?: AiChatHistoryStore
+  // 视频的分镜一条一个文件（总单 #79，video-studio-project-store.ts）。出片交给服务端之前先等它写完。
+  videoStudioProjects?: VideoStudioProjectStore
   // 退出前问聊天页要的那一次存盘，回执交给它（chat-history-flush.ts）。缺省 = 回执不理。
   chatHistoryFlush?: Pick<ChatHistoryFlush, 'acknowledge'>
   chatAttachments?: ChatAttachmentService
@@ -292,6 +304,8 @@ export interface IpcRegistrationOptions {
   // 视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
   videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
+  // 「创作 › 作品库」列当前账号做过的图片和视频（融合第 3 步）。只用它不读文件的那一个列法；改名、删除这些主窗口不碰。
+  mediaAssets?: Pick<AiMediaAssetService, 'listOwnedLibrary'>
   // 视频剪辑的配乐：客户选的歌存进这个作品库的音频那一格，拼片时再按编号读回来。
   audioAssets?: Pick<AiAudioAssetStore, 'storeLocalFile' | 'readOwned'>
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
@@ -386,7 +400,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       }
       try {
         const scoped = policy.account !== 'none' && !readsCachedExternalClientsOnly(channel, args)
-        // scoped-queued 的处理函数交给安装队列时自己拿 accountWork.queue()（#1085），这里不再包一层。
+        // scoped-queued 的处理函数一进来就自己拿 accountWork.queue()（#1085、N5），这里不再包一层。
         const invoke = () => scoped && options.accountWork && policy.account !== 'scoped-queued'
           ? options.accountWork.run(() => handler(event, ...args), { checkRevision: policy.account !== 'scoped-may-end-session' }) : handler(event, ...args)
         // Bootstrap requests config and session concurrently. The first
@@ -440,6 +454,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerAccountKeyHandlers(ctx)
   registerAiChatHandlers(ctx)
   registerAiVideoHandlers(ctx)
+  registerAiLibraryHandlers(ctx)
   registerDataTransferHandlers(ctx)
   registerCodexRemoteHandlers(ctx)
   registerCodexRemoteWeixinHandlers(ctx)

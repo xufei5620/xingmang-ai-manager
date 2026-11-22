@@ -47,6 +47,16 @@ export interface WeekSpend {
   days: Array<WeekSpendDay & { quota: number }>
 }
 
+/**
+ * 两次查回来的柱子画出来一样：同一个账号、同样几天、每天花的一样。今天那一根的 end 每次查都是「现在」，
+ * 不算在内。一样就留着手上那一份，首页不用跟着余额刷新重画（R8）。
+ */
+export function sameWeekSpend(a: WeekSpend | null, b: WeekSpend | null): boolean {
+  if (a === b) return true
+  if (!a || !b || a.scope !== b.scope || a.days.length !== b.days.length) return false
+  return a.days.every((day, index) => day.start === b.days[index].start && day.quota === b.days[index].quota)
+}
+
 /** 和余额卡上的用量同一个有效期：一分钟内回首页不再问后台。 */
 export const weekSpendTtlMs = 60_000
 
@@ -60,6 +70,12 @@ export const weekSpendSettleMs = 60 * 60_000
 export interface WeekSpendStorage { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void }
 
 export function weekSpendKey(scope: string): string { return `xingmang-ui-v2:week-spend:${encodeURIComponent(scope)}` }
+
+/**
+ * 记录格式的版本。2 起每次查看板都带着账号、主进程核对过（D11）；1 是那以前记的，可能混着换号那一下
+ * 另一个账号的数，读到就当没记过：每个账号升级后头一回多问六天，换来不再画着别人的柱子过一周。
+ */
+const weekSpendStorageVersion = 2
 
 export function getWeekSpendStorage(): WeekSpendStorage | null {
   try { return typeof window === 'undefined' ? null : window.localStorage } catch { return null }
@@ -79,7 +95,7 @@ export function readSettledWeekSpend(storage: WeekSpendStorage | null, scope: st
     const value = JSON.parse(raw) as unknown
     if (!value || typeof value !== 'object') return settled
     const entry = value as Record<string, unknown>
-    if (entry.version !== 1 || entry.owner !== scope || !Array.isArray(entry.days)) return settled
+    if (entry.version !== weekSpendStorageVersion || entry.owner !== scope || !Array.isArray(entry.days)) return settled
     for (const day of entry.days.slice(0, 7)) {
       if (!Array.isArray(day) || day.length !== 2) continue
       const [start, quota] = day as unknown[]
@@ -94,7 +110,7 @@ export function readSettledWeekSpend(storage: WeekSpendStorage | null, scope: st
 export function writeSettledWeekSpend(storage: WeekSpendStorage | null, scope: string, settled: ReadonlyMap<number, number>): void {
   if (!storage) return
   const days = [...settled].sort((left, right) => left[0] - right[0])
-  try { storage.setItem(weekSpendKey(scope), JSON.stringify({ version: 1, owner: scope, days })) } catch { /* 存不进去下次开机就多问几天，不值得打断用户。 */ }
+  try { storage.setItem(weekSpendKey(scope), JSON.stringify({ version: weekSpendStorageVersion, owner: scope, days })) } catch { /* 存不进去下次开机就多问几天，不值得打断用户。 */ }
 }
 
 export function createWeekSpendLoader(
@@ -128,9 +144,11 @@ export function createWeekSpendLoader(
       const today = index === days.length - 1
       const known = settled.get(day.start)
       if (!today && known !== undefined) return known
-      const data = await bridge.getAccountDashboard({ startTimestamp: Math.floor(day.start / 1000), endTimestamp: Math.floor(day.end / 1000) })
+      // 带上这一趟是替谁查的：读会话和查看板是两次调用，中间换了账号，主进程就拒掉，
+      // 不会把新账号的数交回来、再记到上一个账号名下（D11）。
+      const data = await bridge.getAccountDashboard({ startTimestamp: Math.floor(day.start / 1000), endTimestamp: Math.floor(day.end / 1000) }, scope)
       // 只给全部累计、不分时段的后台画不出每天一根柱子。
-      if (data.coverage === 'all-time-summary') throw new Error('这个账号读不出每天的花费')
+      if (data.coverage === 'all-time-summary') throw new Error('该账号无法获取每日花费')
       // 查到一天就存一天：同一趟里别的天没查成，查成的这几天下次也不用再问。
       if (!today && askedAt.getTime() - (day.end + 1000) >= weekSpendSettleMs) {
         settled.set(day.start, data.quota)

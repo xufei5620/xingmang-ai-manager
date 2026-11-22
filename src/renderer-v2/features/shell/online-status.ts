@@ -8,11 +8,11 @@ import { classifyNetworkFailure, isProxyAuthFailure, proxyAuthRequiredMessage, t
  * 不碰 React、不发请求，判断留在纯函数里才测得动（T3 同理）。
  */
 
-export const offlineBannerText = '现在连不上网。AI 工具、聊天、充值、安装和更新都要等网络恢复；装好的工具和设置都还在，不用重装。'
-export const offlineActionMessage = '现在没网，等网络恢复后再试。'
-export const offlineBalanceText = '没网，稍后自动刷新'
+export const offlineBannerText = '网络未连接。AI 工具、对话、充值、安装和更新需在网络恢复后使用；已安装的工具和设置均已保留，无需重新安装。'
+export const offlineActionMessage = '网络未连接，请在网络恢复后重试。'
+export const offlineBalanceText = '网络未连接，恢复后将自动刷新'
 /** 断网横条上点了「重试」还是不通：横条自己会在网回来时收起，不用一直点。 */
-export const stillOfflineText = '还是连不上网。网络恢复后这条提示会自己消失'
+export const stillOfflineText = '网络仍未连接，恢复后此提示将自动消失'
 
 /**
  * 只认「本机这一侧的网」出的问题。超时、连接被拒、证书不对、服务在维护，都可能只是
@@ -57,14 +57,14 @@ export type OfflineCause = 'offline' | 'proxy' | 'proxyAuth' | 'portal'
 
 export const offlineBannerTexts: Readonly<Record<OfflineCause, string>> = {
   offline: offlineBannerText,
-  proxy: '电脑里设置的代理连不上，所以现在上不了网。请重新打开你的代理软件，或者把系统代理关掉。',
+  proxy: '系统代理无法连接，导致无法上网。请重新打开代理软件，或关闭系统代理。',
   // 代理开着、是它要账号密码：叫人去开代理软件说错了。句子跟主进程报错那句是同一份。
   proxyAuth: proxyAuthRequiredMessage,
-  portal: '这个网络要先登录认证（校园网、酒店、公共 Wi-Fi 常见）。点「打开认证页」登录后，这里会自动恢复。',
+  portal: '当前网络需要登录认证（常见于校园网、酒店、公共 Wi-Fi）。请点击「打开认证页」完成登录，之后将自动恢复。',
 }
 
 /** 代理连不上、星芒已经替用户改成直连之后挂的那一条：网是通的，只是说明一下。 */
-export const proxyBypassedBannerText = '电脑里设置的代理连不上，星芒已经改为直接联网，可以照常使用。浏览器等其他软件可能还上不了网，可以点右边去关掉代理。'
+export const proxyBypassedBannerText = '系统代理无法连接，星芒已改为直连，可正常使用。浏览器等其他软件可能仍无法上网，可点击右侧按钮关闭代理。'
 
 /** navigator.onLine 说没网时就是真断网；否则看最近那次本机网络失败是哪一种。 */
 export function offlineCause({ browserOnline, networkFailureReason }: Pick<OnlineSignals, 'browserOnline' | 'networkFailureReason'>): OfflineCause {

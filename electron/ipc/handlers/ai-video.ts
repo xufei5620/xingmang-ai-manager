@@ -6,11 +6,14 @@ import { BrowserWindow, dialog, type OpenDialogOptions, type WebContents } from 
 import { assetThumbnailUrl } from '../../asset-thumbnail'
 import { BoundedOperationQueue } from '../../bounded-operation-queue'
 import { CanvasGenerationAdmission } from '../../canvas-generation-admission'
-import type { AiOperationProgressObserver, AiOperationProgressStage } from '../../ai-operation-progress'
+import { AiAnswerCutOffError } from '../../ai-answer-cut-off'
+import type { AiOperationProgressStage } from '../../ai-operation-progress'
 import type { AiStoredVideoAsset } from '../../ai-video-asset-store'
+import type { AiVideoProgressObserver } from '../../ai-video-service'
 import { ipcEventChannels, type AiVideoClip, type AiVideoProgressEvent, type VideoStudioMusic } from '../../ipc-contract'
 import { videoStudioOffMessage } from '../../remote-features'
-import { buildVideoStudioPlanMessages, parseVideoStudioPlanJson, videoStudioMusicUnreadableMessage } from '../../video-studio-plan'
+import { buildVideoStudioPlanMessages, parseVideoStudioPlanJson, videoStudioMusicUnreadableMessage, videoStudioPlanTooLongMessage } from '../../video-studio-plan'
+import { parseVideoStudioProjectsScope, parseVideoStudioProjectsWrite } from '../../video-studio-project-store'
 import { requiredString } from '../parsers/common'
 import {
   parseAiAudioAssetId,
@@ -27,6 +30,9 @@ const planTemperature = 0.7
 // 读片段、存成片一次搬一整段视频（最多 512 MB）。页面本来就一段一段读、拼完才存一次，主进程这边再按窗口排成
 // 一队、一次只搬一段：页面出错或被投毒时连发，也撑不爆主进程内存。排队的再多就直接拒，正常用碰不到。
 const maximumQueuedClipTransfers = 12
+// 主进程没记下那一单时，页面替它记的那一笔几时落盘（见 createAiVideoProgressForwarder）。页面收到消息到写进
+// localStorage 只要几毫秒，留够余量，又远短于 Chromium 自己攒着不落盘的那几秒。
+const unrecordedFlushDelayMs = 500
 
 // 写进作品库失败（磁盘满、没权限）时音频库那句原话照说；别的（格式不认、太大、读的时候文件变了）对客户来说
 // 都是「这首歌用不了」，换成页面上同一句。
@@ -70,12 +76,21 @@ function sendProgress(sender: WebContents, event: AiVideoProgressEvent): void {
   if (!sender.isDestroyed()) sender.send(ipcEventChannels.onAiVideoProgress, event)
 }
 
-export function createAiVideoProgressForwarder(sender: WebContents, requestId: string): AiOperationProgressObserver {
+export function createAiVideoProgressForwarder(sender: WebContents, requestId: string): AiVideoProgressObserver {
   let stage: AiOperationProgressStage = 'processing'
   return {
     onStage(next) {
       stage = next
       sendProgress(sender, { requestId, stage })
+    },
+    onSubmissionUnrecorded() {
+      sendProgress(sender, { requestId, stage, unrecorded: true })
+      // 页面收到就同步写进 localStorage，可 Chromium 要攒几秒才落盘；主进程这时已经记不下了，这几秒里强退，
+      // 重开以后两边都查不到这一单。过一会儿再让它落一次盘（同 flushPageStorage，只是尽力）。
+      const timer = setTimeout(() => {
+        if (!sender.isDestroyed()) flushPageStorage(sender)
+      }, unrecordedFlushDelayMs)
+      timer.unref?.()
     },
     onProgress(update) {
       sendProgress(sender, {
@@ -165,6 +180,8 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
       return parseVideoStudioPlanJson(await ask(), parsed)
     } catch (error) {
       if (controller.signal.aborted) throw new Error('已停止写分镜')
+      // 分镜写到一半被截断，再问一次多半照样截断，还多扣一次钱；不重发，直接说清怎么改（D10）。
+      if (error instanceof AiAnswerCutOffError && error.cutOff === 'length') throw new Error(videoStudioPlanTooLongMessage)
       throw error
     } finally {
       if (plans.get(key) === controller) plans.delete(key)
@@ -180,6 +197,10 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     await options.remoteFeatures?.assertOn('video-studio', videoStudioOffMessage)
     observeSender(event.sender)
     flushPageStorage(event.sender)
+    // 这一镜的请求号现在跟着分镜存在主进程的文件里（video-studio:write-projects，页面在发这一单之前先发那一次保存）：
+    // 等它写完再交给服务端，强退、断电以后重开才找得回已经付了钱的这一单（同上面 flushPageStorage 防的那件事）。
+    // 保存自己失败了不拦这一单（idle 不会抛），页面那边另有「存不下这份分镜」的提示。
+    await options.videoStudioProjects?.idle()
     const asset = await generation.run(event.sender.id, () => videoService.generate(
       event.sender.id,
       { ...parsed, expectedUserId },
@@ -258,6 +279,17 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     currentUserId()
     // 跟读片段同一队：歌也可能上百兆，排到了再认一次账号。
     return transferClip(event.sender, async () => (await store.readOwned(currentUserId(), id)).bytes)
+  })
+
+  // 视频的分镜一条一个文件（总单 #79）。同聊天记录那两条：不等账号（换账号途中，上一个账号最后那一次保存还要落下去），
+  // 归属由页面带的 scope 定，只经它的哈希当目录名；里面写什么主进程不看，大小和个数在 store 里卡。
+  registerTrustedHandler('video-studio:read-projects', (_event, scope: unknown) => {
+    if (!options.videoStudioProjects) throw new Error('视频草稿存储未就绪')
+    return options.videoStudioProjects.read(parseVideoStudioProjectsScope(scope))
+  })
+  registerTrustedHandler('video-studio:write-projects', (_event, input: unknown) => {
+    if (!options.videoStudioProjects) throw new Error('视频草稿存储未就绪')
+    return options.videoStudioProjects.write(parseVideoStudioProjectsWrite(input))
   })
 
   // 交给系统按 .mp4 的默认程序打开（Windows 上经资源管理器转交，不从本进程直接起，system-shell.ts）。

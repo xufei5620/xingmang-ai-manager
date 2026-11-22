@@ -52,18 +52,18 @@ describe('desktop update notification content', () => {
 
   it('asks Linux users to click install because nothing installs on its own there', () => {
     const linux = { installMethod: 'system-installer' as const }
-    expect(updateDesktopNotification(update({ ...linux, phase: 'downloaded' }), true)?.body).toBe('新版 0.2.0 已经下好，到「设置 › 版本更新」点「安装新版本」就能装上。')
-    expect(updateDesktopNotification(update({ ...linux, phase: 'downloaded' }), false)?.body).toBe('新版 0.2.0 已经下好，到「设置 › 版本更新」点「安装新版本」就能装上。')
-    expect(updateDesktopNotification(update(linux), true)?.body).toBe('新版 0.2.0 正在后台下载，下好后到「设置 › 版本更新」点「安装新版本」。')
+    expect(updateDesktopNotification(update({ ...linux, phase: 'downloaded' }), true)?.body).toBe('新版 0.2.0 已下载，请前往「设置 › 版本更新」点击「安装新版本」。')
+    expect(updateDesktopNotification(update({ ...linux, phase: 'downloaded' }), false)?.body).toBe('新版 0.2.0 已下载，请前往「设置 › 版本更新」点击「安装新版本」。')
+    expect(updateDesktopNotification(update(linux), true)?.body).toBe('新版 0.2.0 正在后台下载，下载完成后请前往「设置 › 版本更新」点击「安装新版本」。')
     expect(updateDesktopNotification(update(linux), false)?.body).toBe('版本 0.2.0 已可下载。')
-    expect(updateDesktopNotification(update({ phase: 'downloaded' }), true)?.body).toBe('新版 0.2.0 已经下好，可以现在装，也可以关掉软件或下次打开时再装。')
+    expect(updateDesktopNotification(update({ phase: 'downloaded' }), true)?.body).toBe('新版 0.2.0 已下载，可立即安装，也可在关闭软件或下次启动时安装。')
   })
 
   // 下好以后 3 秒就跳框问要不要装（update-install-prompt.ts），通知不能再说「不打断你现在用」；
   // 能闲时装的 Mac 多说一句，跟跳框里那句一个意思（0.2.22 发版前回归检查第 6 条）。
   it('mentions the idle install on a Mac that can install without a prompt', () => {
     expect(updateDesktopNotification(update({ phase: 'downloaded', idleInstall: true }), true)?.body)
-      .toBe('新版 0.2.0 已经下好，可以现在装，也可以关掉软件或下次打开时再装。你不用电脑时星芒也会自己装好。')
+      .toBe('新版 0.2.0 已下载，可立即安装，也可在关闭软件或下次启动时安装。电脑空闲时星芒也会自动安装。')
     expect(updateDesktopNotification(update({ phase: 'downloaded', idleInstall: true }), false)?.body).toBe('版本 0.2.0 已下载，可在「设置 › 版本更新」重启并安装。')
     expect(updateDesktopNotification(update({ idleInstall: true }), true)?.body).not.toContain('自己装好')
   })
@@ -178,9 +178,9 @@ describe('desktop notification lifecycle', () => {
 describe('auto-update wording', () => {
   it('tells the user the update installs itself when auto-update is on', () => {
     const available = updateDesktopNotification(update(), true)!
-    expect(available.body).toBe('新版 0.2.0 正在后台下载，下好后关掉软件时自动装上。')
+    expect(available.body).toBe('新版 0.2.0 正在后台下载，下载完成后将在关闭软件时自动安装。')
     const downloaded = updateDesktopNotification(update({ phase: 'downloaded' }), true)!
-    expect(downloaded.body).toContain('可以现在装')
+    expect(downloaded.body).toContain('可立即安装')
     expect(downloaded.body).not.toContain('重启并安装')
   })
 
@@ -188,9 +188,9 @@ describe('auto-update wording', () => {
     const MB = 1024 ** 2
     const shortfall = { neededBytes: 600 * MB, freeBytes: 380 * MB }
     const disk = updateDesktopNotification(update({ diskShortfall: shortfall }), true)!
-    expect(disk).toMatchObject({ key: '0.2.0:disk', stage: 'disk', title: '星芒AI更新先不下载' })
-    expect(disk.body).toBe('新版本先不下载：电脑磁盘只剩 380 MB，装更新大约要 600 MB，还要再清出 220 MB。清出来以后会自动下载，不用你再点。')
-    expect(updateDesktopNotification(update({ diskShortfall: shortfall }), false)!.body).toContain('现在下载多半会失败')
+    expect(disk).toMatchObject({ key: '0.2.0:disk', stage: 'disk', title: '星芒AI更新暂不下载' })
+    expect(disk.body).toBe('新版本暂不下载：磁盘仅剩 380 MB，安装更新约需 600 MB，还需清理出 220 MB。空间充足后将自动下载，无需再次操作。')
+    expect(updateDesktopNotification(update({ diskShortfall: shortfall }), false)!.body).toContain('现在下载很可能失败')
 
     const { controller, notifications } = fixture({ readAutoUpdate: () => true })
     expect(controller.handleUpdate(update())).toBe('requested')
@@ -211,13 +211,13 @@ describe('auto-update wording', () => {
   it('reads the auto-update switch through the controller', () => {
     const { controller, runtime } = fixture({ readAutoUpdate: () => true })
     controller.handleUpdate(update({ phase: 'downloaded' }))
-    expect(runtime.create).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining('可以现在装') }))
+    expect(runtime.create).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining('可立即安装') }))
   })
 })
 
 describe('Windows account outside the administrators group', () => {
   // yoyo 2026-10-06 批的原话（句末补了句号），v4 批09 按钮改叫「重启并安装」；渲染层 registry/business.ts 那一份也钉着同一句。
-  const approved = '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启并安装」，或者找客服。'
+  const approved = '当前系统账号不是管理员，安装更新时需要输入管理员密码。请由管理员账号点击「重启并安装」，或联系客服。'
 
   it('says an administrator has to install the downloaded version instead of promising it installs itself', () => {
     expect(standardAccountUpdateNotice).toBe(approved)
@@ -227,14 +227,14 @@ describe('Windows account outside the administrators group', () => {
       expect(downloaded.body).not.toContain('自动装上')
     }
     // 管理员账号照旧。
-    expect(updateDesktopNotification(update({ phase: 'downloaded', installNeedsAdminPassword: false }), true)!.body).toContain('可以现在装')
+    expect(updateDesktopNotification(update({ phase: 'downloaded', installNeedsAdminPassword: false }), true)!.body).toContain('可立即安装')
   })
 
   it('does not promise an install while the update is still downloading', () => {
     // 他 2026-10-06 回「改」批的原话。
-    expect(updateDesktopNotification(update({ installNeedsAdminPassword: true }), true)!.body).toBe('新版 0.2.0 正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。')
+    expect(updateDesktopNotification(update({ installNeedsAdminPassword: true }), true)!.body).toBe('新版 0.2.0 正在后台下载；本机安装更新需要输入管理员密码，下载完成后不会自动安装。')
     expect(updateDesktopNotification(update({ installNeedsAdminPassword: true }), false)!.body).toBe('版本 0.2.0 已可下载。')
-    expect(updateDesktopNotification(update(), true)!.body).toBe('新版 0.2.0 正在后台下载，下好后关掉软件时自动装上。')
+    expect(updateDesktopNotification(update(), true)!.body).toBe('新版 0.2.0 正在后台下载，下载完成后将在关闭软件时自动安装。')
   })
 
   it('replaces a downloaded notice shown before the account was known, once', () => {
@@ -252,7 +252,7 @@ describe('Windows account outside the administrators group', () => {
 describe('install announcement', () => {
   it('shows the pre-install notice even when update notifications are turned off', () => {
     const { controller, notifications } = fixture({ readEnabled: () => false })
-    expect(controller.announce({ title: '正在安装星芒AI新版本', body: '正在装新版 0.2.12' })).toBe('requested')
+    expect(controller.announce({ title: '正在安装星芒AI新版本', body: '正在安装新版 0.2.12' })).toBe('requested')
     expect(notifications[0].show).toHaveBeenCalledOnce()
   })
 

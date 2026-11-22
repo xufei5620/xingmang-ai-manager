@@ -9,6 +9,7 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  Power,
   RefreshCw,
   Trash2,
   UserRound,
@@ -58,15 +59,16 @@ import type { V2Bridge } from './types'
 import { accountOrigin, accountSiteId, accountSupports, visibleAccountTab, accountKeyQuota, type AccountSiteId } from './account-context'
 import type { AccountSessionState } from '../../electron/ipc-contract'
 import { isActiveProviderId, type ActiveProviderId } from '../../electron/catalog'
-import { accountKeyExpiredTime } from '../../electron/account-key-quota'
+import { findAccountKeyById } from '../../electron/account-key-quota'
 import { useLatestRequest } from './latest-request'
 import { resolveRelaySite } from '../../electron/ipc-contract'
 import { LocalAvatar } from './LocalAvatar'
 import { useSharedAccountBalance } from './features/app/balance-context'
+import { useAccountMoney } from './features/app/account-money'
 import { AccountUsagePage, type UsageView } from './features/account/AccountUsage'
 import { AccountOrders, AccountRecharge } from './features/account/AccountRecharge'
 import { ToolKeyLimits } from './features/account/ToolKeyLimits'
-import { AccountOverview, type AccountSummary } from './features/account/AccountOverview'
+import { AccountOverview } from './features/account/AccountOverview'
 import { AccountProfileDialog } from './features/account/AccountProfileDialog'
 import { AccountSecurity } from './features/account/AccountSecurity'
 import { OtherAppsCard } from './features/account/OtherApps'
@@ -75,6 +77,9 @@ import {
   affiliateTransferTitleQuota,
   currentExpiryText,
   inviteRuleText,
+  keyCanEnable,
+  keyEditChanges,
+  keyEditUpdate,
   keyExpiredTime,
   keyMetaParts,
   keyToolChoice,
@@ -168,7 +173,7 @@ export function accountTabNeeds(tab: AccountTab): { profile: boolean; balance: b
 
 /** 页头名字下面那句：邮箱和哪种账号（v4 字表批06）。资料没读到就直说，不拿别的话顶上。 */
 export function accountHeadLead(profile: Pick<Profile, 'username' | 'email'> | null, source: string): string {
-  if (!profile) return '当前账号的资料暂时没有读到'
+  if (!profile) return '当前账号资料获取失败'
   return `${profile.email || profile.username} · ${source}`
 }
 
@@ -263,7 +268,7 @@ function AccountReadFailure({
     <Empty
       testId="account-read-error"
       icon={XCircle}
-      title="当前账号的资料暂时没有读到"
+      title="当前账号资料获取失败"
       description={<FailureReason error={failure.message} detail={failure.detail} />}
       action={
         <>
@@ -288,7 +293,6 @@ export function AccountPage({
   rechargeAmount,
   paymentReturn,
   accountSession,
-  summary,
   keyTools,
   onLogin,
   onAccountChanged,
@@ -318,8 +322,6 @@ export function AccountPage({
   paymentReturn?: { sequence: number; order: string | null }
   /** 外壳手上的登录状态：页面自己读回来之前先拿它摆出页签。缺省 = 等页面自己读。 */
   accountSession?: AccountSessionState
-  /** 外壳和首页同源的那几样数（还能用几天、能扣的订阅、近 7 天花费）；缺省 = 概览不写这几行。 */
-  summary?: AccountSummary
   /** 「配置到工具」下拉里的工具，带装没装、是不是官方登录；缺省 = 只列名字，都能点。 */
   keyTools?: readonly KeyToolTarget[]
   onLogin?: (target?: LoginTarget) => void
@@ -341,15 +343,15 @@ export function AccountPage({
   onSubscriptionPurchased?: () => void
   /** 打开「联系客服」；缺省 = 不给这个按钮。 */
   onOpenHelp?: () => void
-  /** 去「检查」页；缺省 = 订阅开通后工具没换过去时，不给「去检查页」。 */
+  /** 去「检查」页；缺省 = 订阅开通后工具没换过去时，不给「前往检查页」。 */
   onOpenHealth?: () => void
-  /** 「用在别的软件里」最底下的「告诉我们」，去反馈表单；缺省 = 不出那一行。 */
+  /** 「在其他软件中使用」最底下的「告诉我们」，去反馈表单；缺省 = 不出那一行。 */
   onRequestApp?: () => void
   /** 现在摆出来的是哪个页签，顶栏的「个人中心 / 页签名」跟着它；缺省 = 不报。 */
   onTabChange?: (tab: AccountTab) => void
   /** 概览「退出登录」交给外壳退，外壳才不把自己退出说成「登录已结束」（#1098）；缺省 = 直接让主进程退出。 */
   onLogout?: () => Promise<void>
-  /** 概览退出登录确认框里另起一段说的话（有工具正在装、卸时，#1097）；缺省 = 只说「已配好的工具会保留。」。 */
+  /** 概览退出登录确认框里另起一段说的话（有工具正在装、卸时，#1097）；缺省 = 只说「已配置的工具将保留。」。 */
   logoutNote?: string
   /** 外壳说的「现在显示的是不是这一页」；缺省 = 只按页签算（旧行为）。 */
   active?: boolean
@@ -375,6 +377,9 @@ export function AccountPage({
     openLanding('orders')
   }
   const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
+  // 外壳和首页同源的那几样数（还能用几天、能扣的订阅、近 7 天花费）：外面没套时概览不写这几行。
+  // 直接读外壳算好的那份，不经外壳一层层传进来：外壳不再跟着余额刷新重画（R8）。
+  const summary = useAccountMoney()?.accountSummary
   const [visited, setVisited] = useState<AccountTab[]>([tab])
   useEffect(() => {
     setVisited((values) => (values.includes(tab) ? values : [...values, tab]))
@@ -425,7 +430,7 @@ export function AccountPage({
       api.getAccountProfile(),
       balanceStore ? balanceStore.refresh('foreground').then(() => {
         const state = balanceStore.getSnapshot()
-        if (!state.balance) throw new Error(state.error || '余额暂时没有读到，请稍后重试。')
+        if (!state.balance) throw new Error(state.error || '余额获取失败，请稍后重试。')
         return state.balance
       }) : api.getAccountBalance(),
     ])
@@ -691,7 +696,7 @@ export function AccountPage({
         <Empty
           icon={UserRound}
           title="登录后查看个人中心"
-          description="工具里已经写入的配置会继续保留。"
+          description="已写入工具的配置将继续保留。"
           action={
             <Button variant="primary" icon={UserRound} onClick={() => onLogin?.()}>
               登录账号
@@ -817,6 +822,15 @@ function AccountKeys({
   )
   const resource = useResource(load)
   useRefreshRequest(refreshRequest, () => void resource.reload())
+  // 列表和上面「每个工具的额度上限」读的是同一批密钥，各读各的：一边写过，另一边跟着重读，
+  // 免得一处显示刚设的上限、另一处还是旧的（F01）。
+  const [keysWritten, setKeysWritten] = useState(0)
+  const reloadAfterWrite = () => {
+    setKeysWritten((count) => count + 1)
+    return resource.reload()
+  }
+  // 保存前要先读一次这把密钥现在的样子；读的这会儿换了账号（这一页会整个换掉），旧的编辑不再发出去。
+  const keyEdit = useLatestRequest()
   const operation = useOperation()
   // 「配置到工具」写的是工具的配置文件，没权限时说「写不进配置文件」（已知29）。
   const configureFailureTarget = operation.failed === 'configure' ? 'config' : undefined
@@ -841,14 +855,16 @@ function AccountKeys({
   const groupsRequestedAt = useRef(0)
   const [quota, setQuota] = useState('10')
   const [unlimited, setUnlimited] = useState(false)
+  // 编辑已有密钥时，「额度」那两格动过没有：没动就照这把密钥保存那一刻的额度写回去（F01）。
+  const [quotaEdited, setQuotaEdited] = useState(false)
   const [expiry, setExpiry] = useState<KeyExpiryChoice>('never')
   const [customExpiry, setCustomExpiry] = useState('')
   const [removing, setRemoving] = useState<AccountKey | null>(null)
-  // 撤销了工具在用的 Key、自动换新却没成：记下是哪个工具，好给一颗「再换一次」。
+  // 撤销了工具在用的 Key、自动换新却没成：记下是哪个工具，好给一颗「重新更换」。
   // skipped = 这个工具的配置不归自动流程管（手填、来源没确认等），再换一次也还是跳过，
-  // 要给的是「去配置」（#478）。
+  // 要给的是「前往配置」（#478）。
   const [replaceFailed, setReplaceFailed] = useState<{ provider: Provider; skipped: boolean } | null>(null)
-  // 点「去配置」只是打开了设置窗口，用户可能取消，也可能保存失败，工具手里还是那把撤销掉的
+  // 点「前往配置」只是打开了设置窗口，用户可能取消，也可能保存失败，工具手里还是那把撤销掉的
   // Key。所以警告要等那个工具的设置真的保存、并读回之后才收起（#546）。只认点开之后
   // 新来的信号，之前留下的那次不算。
   const confirmedSequence = useRef(toolConfigConfirmed?.sequence ?? 0)
@@ -935,6 +951,7 @@ function AccountKeys({
     setQuota(
       key === 'new' ? '10' : String(key.remainQuota / balance.quotaPerUnit),
     )
+    setQuotaEdited(false)
     setExpiry(key === 'new' ? 'never' : 'keep')
     setCustomExpiry(key === 'new' ? '' : toDateTimeLocalValue(key.expiredAt))
     operation.clear()
@@ -960,36 +977,44 @@ function AccountKeys({
     void operation.execute(
       'save-key',
       async () => {
-        const amount = Number(quota)
         if (groupsLoading || groupsError || groupsPending.current?.request()) throw new Error('请先获取最新的可用分组。')
         if (!name.trim()) throw new Error('请给密钥起个名字')
         if (!group.trim() || !selectedGroupAvailable)
           throw new Error('当前没有可用分组，暂时无法保存密钥。')
+        if (editing && editing !== 'new') {
+          const changes = keyEditChanges(
+            { name: name.trim(), group, quotaEdited, unlimited, quota, expiry, customExpiry },
+            editing,
+            { quotaPerUnit: balance.quotaPerUnit, siteId, now: Date.now() },
+          )
+          // 列表是打开这页时读的，上面「每个工具的额度上限」、别的设备都可能刚改过这把。没改的几项照它
+          // 现在的样子写回去，不拿编辑框打开那一刻的旧数整条盖上去（F01）。整张列表翻完都没有这把，
+          // 就照框里的发，后台自己会说找不到。
+          const live = keyEdit.capture()
+          const latest = await findAccountKeyById((query) => api.getAccountKeys(query), editing.id)
+          if (!live()) return null
+          const input = keyEditUpdate(editing.id, changes, latest ?? editing)
+          await api.updateAccountKey(input)
+          closeEditor()
+          await reloadAfterWrite()
+          return input.name
+        }
+        const amount = Number(quota)
         if (!unlimited && !(amount > 0)) throw new Error('请填写大于 0 的可用额度')
-        const expiredTime = keyExpiredTime(expiry, {
-          custom: customExpiry,
-          current: editing && editing !== 'new' && expiry === 'keep' ? accountKeyExpiredTime(editing.expiredAt) : -1,
-          now: Date.now(),
-        })
         const input = {
           name: name.trim(),
           group,
           remainQuota: accountKeyQuota(amount, balance.quotaPerUnit, siteId, unlimited),
           unlimitedQuota: unlimited,
-          expiredTime,
+          expiredTime: keyExpiredTime(expiry, { custom: customExpiry, current: -1, now: Date.now() }),
         }
-        if (editing && editing !== 'new') {
-          await api.updateAccountKey({ ...input, id: editing.id })
-          closeEditor()
-        } else {
-          await api.createAccountKey(input)
-          groupsRequest.invalidate()
-          setCreated(input.name)
-        }
-        await resource.reload()
+        await api.createAccountKey(input)
+        groupsRequest.invalidate()
+        setCreated(input.name)
+        await reloadAfterWrite()
         return input.name
       },
-      (saved) => editing && editing !== 'new' ? `已保存「${saved}」` : '',
+      (saved) => saved && editing && editing !== 'new' ? `已保存「${saved}」` : '',
     )
   // 失败只记下工具，不把主进程的原话摆出来：这里要告诉用户的只有「点哪里」。
   const replaceKey = async (provider: Provider): Promise<boolean> => {
@@ -1005,11 +1030,24 @@ function AccountKeys({
     operation.execute(
       'replace',
       async () => {
-        if (!(await replaceKey(provider))) throw new Error(`${keyToolName(provider)} 还是没换上新密钥，请检查网络后再点一次。`)
-        await resource.reload()
+        if (!(await replaceKey(provider))) throw new Error(`${keyToolName(provider)} 仍未更换为新密钥，请检查网络后重试。`)
+        await reloadAfterWrite()
       },
-      `${keyToolName(provider)} 已换上新密钥`,
+      `${keyToolName(provider)} 已更换为新密钥`,
     )
+  // 一页可能好几把都停着：记下点的是哪一把，转圈只转那一颗。
+  const enabling = useRef<number | null>(null)
+  function enableKey(key: AccountKey) {
+    enabling.current = key.id
+    void operation.execute(
+      'enable',
+      async () => {
+        await api.enableAccountKey(key.id)
+        await reloadAfterWrite()
+      },
+      `已启用「${key.name}」`,
+    )
+  }
   function copyKey(key: AccountKey) {
     void operation.execute('copy', () => api.copyAccountKey(key.id), `已复制「${key.name}」的密钥，1 分钟后从剪贴板清除`)
   }
@@ -1057,7 +1095,7 @@ function AccountKeys({
         onChange={setGroup}
         testId="account-key-group-choices"
       />
-      <small className="v2-acct-field-hint">{groupDescription || '分组决定这把密钥能用哪些模型、按什么价格算；拿不准就用已经选好的。'}</small>
+      <small className="v2-acct-field-hint">{groupDescription || '分组决定该密钥可用的模型及计价方式；如不确定，请保留默认选择。'}</small>
     </div>
   ) : (
     <Select
@@ -1082,7 +1120,7 @@ function AccountKeys({
         ]
       }
       value={group}
-      hint={groupDescription || '分组决定这把密钥能用哪些模型、按什么价格算；拿不准就用已经选好的。'}
+      hint={groupDescription || '分组决定该密钥可用的模型及计价方式；如不确定，请保留默认选择。'}
       onChange={(event) => setGroup(event.target.value)}
     />
   )
@@ -1091,7 +1129,7 @@ function AccountKeys({
       {/* 工具用的密钥在首页配置工具时会自动准备好，新手不该从这页手动建一把
           （新手引导梳理 9-25 第 5 条）。v4 收成最上面一行小字。 */}
       <div className="v2-acct-keys-top">
-        <p className="v2-acct-muted" data-testid="account-keys-auto-hint">登录后每个工具会自动配好密钥，一般不用管。</p>
+        <p className="v2-acct-muted" data-testid="account-keys-auto-hint">登录后将自动为各工具配置密钥，通常无需手动操作。</p>
         <SearchInput
           value={query}
           onChange={setQuery}
@@ -1108,13 +1146,21 @@ function AccountKeys({
           新建密钥
         </Button>
       </div>
-      <ToolKeyLimits api={api} balance={balance} siteId={siteId} username={username} refreshRequest={refreshRequest} />
+      <ToolKeyLimits
+        api={api}
+        balance={balance}
+        siteId={siteId}
+        username={username}
+        refreshRequest={refreshRequest}
+        keysWritten={keysWritten}
+        onSaved={() => void resource.reload()}
+      />
       <ResultNotice {...operation} target={configureFailureTarget} />
       {replaceFailed && onRewriteKey && (replaceFailed.skipped ? (
         <Notice
           tone="warn"
-          title={`${keyToolName(replaceFailed.provider)} 还在用刚撤销的密钥`}
-          body={`${keyToolName(replaceFailed.provider)} 的配置不是按当前账号自动写的，这次没有替你改，它现在会连不上。${onConfigureTool ? '点「去配置」改用当前账号就好。' :'到首页打开它的设置，改用当前账号就好。'}`}
+          title={`${keyToolName(replaceFailed.provider)} 仍在使用已撤销的密钥`}
+          body={`${keyToolName(replaceFailed.provider)} 的配置并非由当前账号自动写入，本次未作修改，当前将无法连接。${onConfigureTool ? '请点击「前往配置」改用当前账号。' : '请在首页打开其设置并改用当前账号。'}`}
           testId="account-key-replace-skipped"
           actions={onConfigureTool && (
             <Button
@@ -1123,15 +1169,15 @@ function AccountKeys({
               testId="account-key-replace-configure"
               onClick={() => onConfigureTool(replaceFailed.provider)}
             >
-              去配置
+              前往配置
             </Button>
           )}
         />
       ) : (
         <Notice
           tone="warn"
-          title={`${keyToolName(replaceFailed.provider)} 暂时用不了`}
-          body={`刚撤销的是 ${keyToolName(replaceFailed.provider)} 正在用的密钥，新密钥没有换上。点「再换一次」就好。`}
+          title={`${keyToolName(replaceFailed.provider)} 暂时无法使用`}
+          body={`已撤销的密钥正被 ${keyToolName(replaceFailed.provider)} 使用，新密钥未能更换。请点击「重新更换」。`}
           testId="account-key-replace-failed"
           actions={
             <Button
@@ -1142,7 +1188,7 @@ function AccountKeys({
               testId="account-key-replace-retry"
               onClick={() => void retryReplaceKey(replaceFailed.provider)}
             >
-              再换一次
+              重新更换
             </Button>
           }
         />
@@ -1158,10 +1204,10 @@ function AccountKeys({
           filtered={Boolean(query)}
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
-          emptyTitle="还没有密钥"
-          emptyDescription="新建一把，或者在工具配置里选「自动准备」。"
-          searchTitle="没有找到相关密钥"
-          searchDescription="换个名称或分组试试。"
+          emptyTitle="暂无密钥"
+          emptyDescription="请新建密钥，或在工具配置中选择「自动准备」。"
+          searchTitle="未找到相关密钥"
+          searchDescription="请尝试其他名称或分组。"
           action={
             <Button size="sm" icon={Plus} onClick={() => edit('new')} testId="keys-empty-add">
               新建密钥
@@ -1206,7 +1252,7 @@ function AccountKeys({
                         size="xs"
                         icon={shown ? EyeOff : Eye}
                         aria-label={shown ? '隐藏密钥' : '显示密钥'}
-                        title={shown ? '隐藏密钥' : '不要把完整密钥发给别人'}
+                        title={shown ? '隐藏密钥' : '请勿将完整密钥提供给他人'}
                         loading={operation.busy === 'reveal' && revealing.current === key.id}
                         disabled={Boolean(operation.busy) && operation.busy !== 'reveal'}
                         onClick={() => toggleReveal(key)}
@@ -1229,11 +1275,25 @@ function AccountKeys({
                 }
                 actions={
                   <>
+                    {keyCanEnable(key, siteId) && (
+                      <Button
+                        size="sm"
+                        icon={Power}
+                        // 跟「配置到工具」一样，读屏要念出是哪一把的。
+                        aria-label={`启用密钥 ${key.name}`}
+                        loading={operation.busy === 'enable' && enabling.current === key.id}
+                        disabled={Boolean(operation.busy)}
+                        testId={`account-key-enable-${key.id}`}
+                        onClick={() => enableKey(key)}
+                      >
+                        启用
+                      </Button>
+                    )}
                     <Menu
-                      label={`把密钥 ${key.name} 配置到工具`}
-                      heading="把这把密钥写进"
+                      label={`将密钥 ${key.name} 配置到工具`}
+                      heading="将此密钥写入"
                       // 一页好几把密钥，每行都有一颗「配置到工具」：读屏要念出是哪一把的。
-                      anchor={<Button size="sm" iconRight={ChevronDown} disabled={Boolean(operation.busy)} aria-label={`把密钥 ${key.name} 配置到工具`}>配置到工具</Button>}
+                      anchor={<Button size="sm" iconRight={ChevronDown} disabled={Boolean(operation.busy)} aria-label={`将密钥 ${key.name} 配置到工具`}>配置到工具</Button>}
                       items={toolTargets.map((target) => {
                         const choice = keyToolChoice(target, inUse === target.provider)
                         return {
@@ -1308,7 +1368,7 @@ function AccountKeys({
         {created ? (
           <div className="v2-acct-created" role="status" data-testid="account-key-created">
             <strong>「{created}」已创建</strong>
-            <p>想让某个工具用它，在列表里点「配置到工具」。</p>
+            <p>如需在工具中使用，请在列表中点击「配置到工具」。</p>
           </div>
         ) : (
           <>
@@ -1318,7 +1378,7 @@ function AccountKeys({
               label="名称"
               value={name}
               maxLength={50}
-              hint="方便你认出它"
+              hint="便于识别"
               onCompositionStart={(event) => {
                 nameCompositionBase.current = event.currentTarget.value
               }}
@@ -1369,7 +1429,10 @@ function AccountKeys({
                 label="额度"
                 options={keyQuotaChoices}
                 value={unlimited ? 'unlimited' : 'limited'}
-                onChange={(value) => setUnlimited(value === 'unlimited')}
+                onChange={(value) => {
+                  setUnlimited(value === 'unlimited')
+                  setQuotaEdited(true)
+                }}
                 testId="account-key-quota-mode"
               />
             </div>
@@ -1379,9 +1442,12 @@ function AccountKeys({
                 type="number"
                 min="0"
                 step="0.01"
-                hint="美元，用完后这把密钥会暂停，不影响账号余额"
+                hint="美元，用尽后该密钥将暂停使用，不影响账号余额"
                 value={quota}
-                onChange={(event) => setQuota(event.target.value)}
+                onChange={(event) => {
+                  setQuota(event.target.value)
+                  setQuotaEdited(true)
+                }}
               />
             )}
           </>
@@ -1411,11 +1477,11 @@ function AccountKeys({
                       const provider = onRewriteKey && isProvider(removing.managedProvider) ? removing.managedProvider : undefined
                       const replaced = provider ? await replaceKey(provider) : false
                       setRemoving(null)
-                      await resource.reload()
+                      await reloadAfterWrite()
                       return { name: removing.name, provider: provider && replaced ? provider : null }
                     },
                     (result) => result.provider
-                      ? `已撤销「${result.name}」，${keyToolName(result.provider)} 已换用新的密钥`
+                      ? `已撤销「${result.name}」，${keyToolName(result.provider)} 已更换为新密钥`
                       : `已撤销「${result.name}」`,
                   )
               }}
@@ -1425,19 +1491,19 @@ function AccountKeys({
           </>
         }
       >
-        <p>撤销后这把密钥马上失效，找不回来。</p>
+        <p>撤销后该密钥将立即失效且无法恢复。</p>
         {isProvider(removing?.managedProvider) && (
           <p>
             {onRewriteKey
-              ? `${keyToolName(removing.managedProvider)} 正在用它，会马上换一把新的写进去，不影响使用。`
-              : `${keyToolName(removing.managedProvider)} 正在用它，撤销后它会连不上。`}
+              ? `${keyToolName(removing.managedProvider)} 正在使用该密钥，将立即写入新密钥，不影响使用。`
+              : `${keyToolName(removing.managedProvider)} 正在使用该密钥，撤销后将无法连接。`}
           </p>
         )}
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
       <Dialog
         open={Boolean(selected)}
-        title={selected ? `把「${selected.key.name}」写进 ${toolTargets.find((target) => target.provider === selected.provider)?.name ?? keyToolName(selected.provider)}？` : ''}
+        title={selected ? `是否将「${selected.key.name}」写入 ${toolTargets.find((target) => target.provider === selected.provider)?.name ?? keyToolName(selected.provider)}？` : ''}
         onClose={closeConfigure}
         footer={
           <>
@@ -1482,7 +1548,7 @@ function AccountKeys({
         }
       >
         <ResultNotice error={operation.error} detail={operation.detail} target={configureFailureTarget} />
-        <p>写入后会改用当前账号，用量从余额里扣。原来的配置会先备份。{selected?.provider === 'codex' && 'Codex CLI 与桌面端共用同一份配置。'}</p>
+        <p>写入后将改用当前账号，用量从余额中扣除。原配置将自动备份。{selected?.provider === 'codex' && 'Codex CLI 与桌面端共用同一份配置。'}</p>
         <Select
           aria-label="选择模型"
           options={models.map((value) => ({ value, label: value }))}
@@ -1492,7 +1558,7 @@ function AccountKeys({
             operation.busy === 'models'
               ? '正在读取可用模型…'
               : modelsLoaded && models.length === 0
-                ? '这把密钥没有可用模型，请换一把密钥，或编辑它换个分组。'
+                ? '该密钥无可用模型，请更换密钥，或编辑密钥更换分组。'
                 : undefined
           }
           testId="account-key-configure-model"
@@ -1569,7 +1635,7 @@ function AccountInvite({
               testId="account-invite-transfer"
             >
               {/* 没有可转的分两种：赚过、都转完了，和从来没赚过（后者写「已全部转入」像是转过了）。 */}
-              {profile.affQuota > 0 ? '转入余额' : profile.affHistoryQuota > 0 ? '已全部转入' : '还没有返利'}
+              {profile.affQuota > 0 ? '转入余额' : profile.affHistoryQuota > 0 ? '已全部转入' : '暂无返利'}
             </Button>
           </div>
         </section>
@@ -1597,7 +1663,7 @@ function AccountInvite({
       <Dialog
         open={transfer}
         // 标题写这次要转的数：星芒账号可以只转一部分，以前填了 $3 这里还写全部可转的数（余额 F8-1）。
-        title={`把 ${quotaMoney(affiliateTransferTitleQuota({
+        title={`是否将 ${quotaMoney(affiliateTransferTitleQuota({
           wholeOnly,
           amount,
           available: profile.affQuota,
@@ -1636,7 +1702,7 @@ function AccountInvite({
           </>
         }
       >
-        <p>转入后可以直接用来调用模型，不能再转回返利。</p>
+        <p>转入后可直接用于调用模型，且不可转回返利。</p>
         <Input
           label="转入金额（美元）"
           type="number"

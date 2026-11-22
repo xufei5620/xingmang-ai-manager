@@ -54,3 +54,33 @@ export function canvasEdgeClassName(options: {
 export function canvasEdgeIsFlowing(data: unknown): boolean {
   return Boolean(data && typeof data === 'object' && (data as { flowing?: unknown }).flowing === true)
 }
+
+/**
+ * The edges React Flow draws: selection highlighting, the drop target and the
+ * "hide connections" preference layered over the document's edges. Returns the
+ * same array, and the same edge objects, when nothing changed. React Flow
+ * replaces its whole edge store whenever the array it is handed is new, and the
+ * editor re-renders on every drag frame, so a fresh array per frame redrew
+ * every edge (#1368 item 5).
+ */
+export function canvasRenderedEdges<E extends { id: string; source: string; target: string; className?: string; hidden?: boolean; data?: Record<string, unknown> }>(
+  edges: E[],
+  options: { selectedNodeIds: ReadonlySet<string>; dropTargetId?: string | null; hidden: boolean },
+): E[] {
+  let changed = false
+  const rendered = edges.map((edge) => {
+    const flowing = canvasEdgeTouchesSelection(edge, options.selectedNodeIds)
+    const className = canvasEdgeClassName({ dropTarget: edge.id === options.dropTargetId, flowing })
+    // Document edges carry no `hidden` at all; React Flow reads a missing flag
+    // as visible, so it equals `false` here rather than forcing a copy.
+    if (className === edge.className && canvasEdgeIsFlowing(edge.data) === flowing && Boolean(edge.hidden) === options.hidden) return edge
+    changed = true
+    return {
+      ...edge,
+      hidden: options.hidden,
+      className,
+      data: { ...(edge.data && typeof edge.data === 'object' ? edge.data : {}), flowing },
+    }
+  })
+  return changed ? rendered : edges
+}

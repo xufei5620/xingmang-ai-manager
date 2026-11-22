@@ -1,17 +1,23 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createAssetThumbnailService } from './asset-thumbnail-service'
+import { assetThumbnailLargeMaxEdge, assetThumbnailMaxEdge, type AssetThumbnailSizeName } from './asset-thumbnail'
 
 const imageId = 'a'.repeat(43)
 const videoId = 'b'.repeat(43)
+
+// The tile keeps its original key so the existing cached-map fixtures still read as tile entries.
+function cacheKey(userId: number, assetId: string, size: AssetThumbnailSizeName): string {
+  return size === 'tile' ? `${userId}:${assetId}` : `${userId}:${assetId}:${size}`
+}
 
 function fixture(overrides: {
   cached?: Map<string, { bytes: Buffer; mimeType: 'image/png' | 'image/jpeg' }>
 } = {}) {
   const cached = overrides.cached ?? new Map<string, { bytes: Buffer; mimeType: 'image/png' | 'image/jpeg' }>()
   const store = {
-    read: vi.fn(async (userId: number, assetId: string) => cached.get(`${userId}:${assetId}`) ?? null),
-    write: vi.fn(async (userId: number, assetId: string, thumbnail: { bytes: Buffer; mimeType: 'image/png' | 'image/jpeg' }) => {
-      cached.set(`${userId}:${assetId}`, thumbnail)
+    read: vi.fn(async (userId: number, assetId: string, size: AssetThumbnailSizeName = 'tile') => cached.get(cacheKey(userId, assetId, size)) ?? null),
+    write: vi.fn(async (userId: number, assetId: string, thumbnail: { bytes: Buffer; mimeType: 'image/png' | 'image/jpeg' }, size: AssetThumbnailSizeName = 'tile') => {
+      cached.set(cacheKey(userId, assetId, size), thumbnail)
     }),
     clear: vi.fn(async () => { cached.clear() }),
   }
@@ -20,7 +26,7 @@ function fixture(overrides: {
     resolveVideoPath: vi.fn(async () => 'C:/library/2026-08-14/clip.mp4'),
   }
   const renderer = {
-    fromImageBytes: vi.fn(async (): Promise<Buffer | null> => Buffer.from('derived')),
+    fromImageBytes: vi.fn(async (_bytes: Buffer, _mimeType: string, _maxEdge: number): Promise<Buffer | null> => Buffer.from('derived')),
     fromMediaFile: vi.fn(async (): Promise<Buffer | null> => Buffer.from('cover-frame')),
   }
   const onFailure = vi.fn()
@@ -41,7 +47,35 @@ describe('createAssetThumbnailService', () => {
     const { service, sources, renderer } = fixture()
     sources.readImage.mockResolvedValue({ bytes: Buffer.from('original-image'), mimeType: 'image/webp' })
     await expect(service.resolve(7, imageId, 'image')).resolves.toMatchObject({ mimeType: 'image/png' })
-    expect(renderer.fromImageBytes).toHaveBeenCalledWith(Buffer.from('original-image'), 'image/png')
+    expect(renderer.fromImageBytes).toHaveBeenCalledWith(Buffer.from('original-image'), 'image/png', assetThumbnailMaxEdge)
+  })
+
+  it('derives and caches the chat sized still image apart from the grid tile', async () => {
+    const { service, renderer, store } = fixture()
+    renderer.fromImageBytes.mockImplementation(async (_bytes, _mimeType, maxEdge) => Buffer.from(`edge-${maxEdge}`))
+    await expect(service.resolve(7, imageId, 'image', 'large')).resolves.toEqual({ bytes: Buffer.from(`edge-${assetThumbnailLargeMaxEdge}`), mimeType: 'image/jpeg' })
+    await expect(service.resolve(7, imageId, 'image')).resolves.toEqual({ bytes: Buffer.from(`edge-${assetThumbnailMaxEdge}`), mimeType: 'image/jpeg' })
+    await expect(service.resolve(7, imageId, 'image', 'large')).resolves.toEqual({ bytes: Buffer.from(`edge-${assetThumbnailLargeMaxEdge}`), mimeType: 'image/jpeg' })
+    expect(renderer.fromImageBytes).toHaveBeenCalledTimes(2)
+    expect(store.write).toHaveBeenNthCalledWith(1, 7, imageId, expect.anything(), 'large')
+    expect(store.write).toHaveBeenNthCalledWith(2, 7, imageId, expect.anything(), 'tile')
+  })
+
+  it('shares one generation per size, not across sizes', async () => {
+    const { service, renderer } = fixture()
+    await Promise.all([
+      service.resolve(7, imageId, 'image', 'large'), service.resolve(7, imageId, 'image', 'large'),
+      service.resolve(7, imageId, 'image'), service.resolve(7, imageId, 'image'),
+    ])
+    expect(renderer.fromImageBytes).toHaveBeenCalledTimes(2)
+  })
+
+  it('has no larger video cover to offer', async () => {
+    const { service, store, renderer, sources } = fixture()
+    await expect(service.resolve(7, videoId, 'video', 'large')).resolves.toBeNull()
+    expect(store.read).not.toHaveBeenCalled()
+    expect(sources.resolveVideoPath).not.toHaveBeenCalled()
+    expect(renderer.fromMediaFile).not.toHaveBeenCalled()
   })
 
   it('takes a video cover frame from the file rather than decoding the container', async () => {

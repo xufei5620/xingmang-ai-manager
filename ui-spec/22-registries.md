@@ -7,15 +7,17 @@
 | id | 标签 | Lucide 图标 | 分组 | 模板 | 命令面板 | testid |
 |---|---|---|---|---|---|---|
 | home | 首页 | home | daily | T5 | 跳转 | page-home |
-| chat | 聊天 | message-square | daily | 专用 | 跳转 | page-chat |
+| chat | 创作（2026-11-20 前叫聊天；聊天、画布、视频剪辑合成的一页） | wand-sparkles | daily | 专用 | 跳转（老名字「聊天」「画布」「视频剪辑」都搜得到） | page-chat |
 | sessions | 记录 | clock | daily | T3 | 跳转 | page-sessions |
-| canvas | 画布 ↗ | infinity | daily | 独立窗口 | 跳转 | nav-canvas |
-| video | 视频剪辑（2026-10-25 新增，历史账号登录时不出） | clapperboard | daily | T1 | 跳转 | page-video |
+| canvas | 画布 ↗（2026-11-20 并进「创作」，侧栏不出；`navigate('canvas')` 照旧开画布窗口） | infinity | daily | 独立窗口 | 不出页面结果；常用操作里有「打开画布窗口」 | —（`nav-canvas` 随侧栏那一项撤了） |
+| video | 视频剪辑（2026-10-25 新增；2026-11-20 并进「创作」，侧栏不出；`navigate('video')` 落到「创作」并接着最近那条视频，没有就新开一条） | clapperboard | daily | T1 | 不出 | —（工作台在 `create-video-pane` 里） |
 | acceleration | 网络加速（2026-10-21 前叫游戏加速） | globe-2 | daily | T5 | 跳转 | page-acceleration |
-| remote | 手机遥控（2026-11-19 新增，原来是设置 › 工具管理的整卡） | smartphone | daily | T1 | 跳转 | page-remote |
-| mcp | 外接工具 | plug | extend | T1 | 跳转 | page-mcp |
-| skills | 技能 | sparkles | extend | T1 | 跳转 | page-skills |
-| plugins | 插件 | package | extend | T1 | 跳转 | page-plugins |
+| remote | 手机遥控（0.2.25 新增，原来是设置 › 工具管理的整卡；侧栏排在「插件」前面） | smartphone | daily | T1 | 跳转 | page-remote |
+| extensions | 插件（0.2.25 起精选、外接工具、技能、插件四页合成这一页，侧栏接在第一组最后） | puzzle | extend | 专用 | 跳转 | page-extensions |
+| featured | 精选（0.2.25 起别名，落「插件」那一栏） | star | — | — | 不出 | page-featured |
+| mcp | 外接工具（0.2.25 起别名，落「插件」那一栏） | plug | — | — | 不出 | page-mcp |
+| skills | 技能（0.2.25 起别名，落「技能」那一栏；顶部搜索还出一条） | sparkles | — | — | 跳转 | page-skills |
+| plugins | 插件（0.2.25 起别名，落「插件」那一栏） | package | — | — | 不出 | page-plugins |
 | tutorial | 教程 | book-open | maintain | 专用 | 跳转 | page-tutorial |
 | health | 检查 | zap | maintain | 专用 | 跳转 | page-health |
 | maintenance | 安装卸载（v4 批10 拆掉，别名落首页） | wrench | — | — | 不出 | page-maintenance |

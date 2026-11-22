@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createCanvasNodeExecutors } from './canvas-node-executors'
+import { createCanvasNodeExecutors, dramaParseTooLongMessage, selectCanvasRouterInputs } from './canvas-node-executors'
+import { AiAnswerCutOffError, aiAnswerCutOffMessages } from './ai-answer-cut-off'
 import { executeCanvasRun } from './canvas-run-engine'
 import type { CanvasImageTransformRecipe, CanvasRunAsset, CanvasRunGraph } from './canvas-run-contract'
 import type { AiRelayBillingObserver } from './ai-operation-progress'
@@ -542,6 +543,46 @@ describe('createCanvasNodeExecutors', () => {
     expect(result?.assets).toEqual([video])
   })
 
+  it('selects router inputs by the kernel strategies (D06)', () => {
+    const image = (id: string) => ({ kind: 'image' as const, assetId: id.repeat(43), localUrl: `xingmang-asset://image/${id.repeat(43)}` })
+    const video = { kind: 'video' as const, assetId: 'v'.repeat(43), localUrl: `xingmang-asset://video/${'v'.repeat(43)}` }
+    const audio = { kind: 'audio' as const, assetId: 'm'.repeat(43), localUrl: `xingmang-asset://audio/${'m'.repeat(43)}` }
+    const inputs = { texts: [' ', '第二段', '第三段'], images: [image('a'), image('b'), image('a')], videos: [video], audios: [audio] }
+    expect(selectCanvasRouterInputs({ version: 1, strategy: 'all' }, inputs)).toEqual({
+      text: ' \n第二段\n第三段',
+      assets: [image('a'), image('b'), video, audio],
+    })
+    expect(selectCanvasRouterInputs({ version: 1, strategy: 'first-available' }, inputs)).toEqual({
+      text: '第二段',
+      assets: [image('a'), video, audio],
+    })
+    // Blank texts still came: first-available hands an empty text, as the kernel does.
+    expect(selectCanvasRouterInputs({ version: 1, strategy: 'first-available' }, { texts: ['', ' '] })).toEqual({ text: '', assets: [] })
+    // No text connection, no text: a picture-only router writes no prompt downstream.
+    expect(selectCanvasRouterInputs({ version: 1, strategy: 'all' }, { image: image('a') })).toEqual({ assets: [image('a')] })
+  })
+
+  it('hands every picture on from a router that keeps all inputs and falls back to the historical router without a strategy', async () => {
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+    })
+    const images = ['a', 'b'].map((id) => ({ kind: 'image' as const, assetId: id.repeat(43), localUrl: `xingmang-asset://image/${id.repeat(43)}` }))
+    const video = { kind: 'video' as const, assetId: 'v'.repeat(43), localUrl: `xingmang-asset://video/${'v'.repeat(43)}` }
+    const base = { runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7, signal: new AbortController().signal }
+    const all = await executors.router?.({
+      ...base,
+      node: { id: 'router', kind: 'router', definitionVersion: 1, data: { prompt: '', model: '', routerStrategy: { version: 1, strategy: 'all' } } },
+      inputs: { text: '甲\n乙', texts: ['甲', '乙'], images, videos: [video] },
+    })
+    expect(all).toEqual({ outputText: '甲\n乙', assets: [...images, video] })
+    const historical = await executors.router?.({
+      ...base,
+      node: { id: 'router', kind: 'router', definitionVersion: 1, data: { prompt: '', model: '' } },
+      inputs: { text: '甲\n乙', images, videos: [video] },
+    })
+    expect(historical).toEqual({ outputText: '甲\n乙', assets: images })
+  })
+
   it('aggregates all ordered gallery inputs from the highest-priority media family', async () => {
     const executors = createCanvasNodeExecutors({
       imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
@@ -799,6 +840,51 @@ describe('createCanvasNodeExecutors', () => {
       inputs: { text: '虞晚斜倚锦榻' },
       signal: new AbortController().signal,
     })).rejects.toThrow('剧本解析失败：无法连接 AI 服务，请检查网络后重试')
+    expect(completeOnce).toHaveBeenCalledOnce()
+  })
+
+  it('does not pay for a second drama parse when the first answer was cut off at the output cap', async () => {
+    const completeOnce = vi.fn().mockRejectedValue(new AiAnswerCutOffError('length'))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['drama-parse']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'parse', kind: 'drama-parse', definitionVersion: 1, data: { prompt: '', model: 'gemini-3.7-flash', group: 'Gemini' } },
+      inputs: { text: '虞晚斜倚锦榻' },
+      signal: new AbortController().signal,
+    })).rejects.toThrow(dramaParseTooLongMessage)
+    expect(completeOnce).toHaveBeenCalledOnce()
+  })
+
+  it('says a filtered drama parse answer was stopped by the content check, without retrying', async () => {
+    const completeOnce = vi.fn().mockRejectedValue(new AiAnswerCutOffError('filtered'))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['drama-parse']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'parse', kind: 'drama-parse', definitionVersion: 1, data: { prompt: '', model: 'gemini-3.7-flash', group: 'Gemini' } },
+      inputs: { text: '虞晚斜倚锦榻' },
+      signal: new AbortController().signal,
+    })).rejects.toThrow(`剧本解析失败：${aiAnswerCutOffMessages.filtered}`)
+    expect(completeOnce).toHaveBeenCalledOnce()
+  })
+
+  it('fails a text node whose answer was cut off instead of keeping half of it as the result', async () => {
+    const completeOnce = vi.fn().mockRejectedValue(new AiAnswerCutOffError('length'))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['text-generate']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'write', kind: 'text-generate', definitionVersion: 1, data: { prompt: '写长文', model: 'gpt-5.5', group: 'GPT' } },
+      inputs: {},
+      signal: new AbortController().signal,
+    })).rejects.toThrow(aiAnswerCutOffMessages.length)
     expect(completeOnce).toHaveBeenCalledOnce()
   })
 

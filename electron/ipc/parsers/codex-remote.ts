@@ -1,6 +1,6 @@
 // 手机遥控那几条通道的入参（I5）：渠道只认 remoteChannelIds 里的，开关只认布尔，自动关时长只认 remoteIdleCloseHours 里的数或 null，
 // 飞书凭据只认两个限长字符串，「用这个」「移除」的文件夹只认一个限长字符串（主进程再到单子里找，YF-19），
-// 手机上用的模型只认长得像型号名的字串或 null。
+// 手机端使用的模型只认长得像型号名的字串或 null。
 import { isRemoteChannelId, isRemoteIdleCloseHours, isRemoteModel, type RemoteChannelId, type RemoteIdleCloseHours } from '../../codex-remote-channel'
 import { isRecord } from '../../input-guards'
 import type { CodexRemoteFeishuCredentialRequest } from '../../ipc-contract'
@@ -25,7 +25,7 @@ export function parseRemoteIdleClose(value: unknown): RemoteIdleCloseHours | nul
 /** null = 跟电脑上的 Codex 一样。 */
 export function parseRemoteModel(value: unknown): string | null {
   if (value === null) return null
-  if (!isRemoteModel(value)) throw new Error('手机上用的模型参数无效')
+  if (!isRemoteModel(value)) throw new Error('手机端模型参数无效')
   return value
 }
 

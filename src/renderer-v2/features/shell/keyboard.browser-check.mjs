@@ -105,7 +105,7 @@ test('the command palette finds tutorials by the problem and hands unmatched tex
     await page.keyboard.press('Control+k')
     await search.fill('qqqq')
     assert.equal(await page.getByTestId('command-palette').getByRole('option').count(), 0)
-    await page.getByText('没有找到「qqqq」相关的内容').waitFor()
+    await page.getByText('未找到与「qqqq」相关的内容').waitFor()
     await page.getByTestId('command-search-tutorial').click()
     await page.getByTestId('page-tutorial').waitFor()
     // 教程页上一步已经开着，页面出现时新的搜索词可能还没落进输入框，要等它落进去。
@@ -140,7 +140,10 @@ test('on a short screen 充值 and Settings stay pinned in view and the list abo
       ['nav-recharge', 'nav-settings'], '充值 and 设置 sit in the pinned part, nothing else does')
     for (const id of ['nav-more', 'nav-maintenance', 'nav-acceleration', 'nav-backups', 'nav-updates'])
       assert.equal(await page.getByTestId(id).count(), 0, `${id} is gone from the sidebar`)
-    // 上面那段放不下了自己滚，下沿渐隐，看得出还有。
+    // 上面那段放不下了自己滚，下沿渐隐，看得出还有。0.2.25 精选、外接工具、技能、插件合成一行「插件」以后，
+    // 这一列在 672 高里整列放得下、不用滚。同一版里「聊天」「画布」「视频剪辑」又并成一行「创作」，再少两行：
+    // 量过是 500 以下才滚（Mac 顶上让三个点，520 就滚），滚动这一半在 440 高里核。
+    await page.setViewportSize({ width: 1280, height: 440 })
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'bottom')
     await page.getByTestId('sidebar-scroll').evaluate((element) => { element.scrollTop = element.scrollHeight })
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'top')
@@ -158,7 +161,9 @@ test('the 充值 entry stays in view on a short window on both systems', async (
     const page = await open(os === 'mac' ? 'os=mac' : '')
     try {
       await page.setViewportSize({ width: 1280, height: 586 })
-      await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'bottom')
+      // 0.2.25 侧栏少了四行以后，586 高里 Windows 那边整列放得下、不再渐隐，只等钉住的那段落到窗口里。
+      await page.waitForFunction((height) => window.innerHeight === height
+        && (document.querySelector('[data-testid="sidebar-pinned"]')?.getBoundingClientRect().bottom ?? Infinity) <= height, 586)
       assert.equal(await visibleInSidebar(page, 'nav-recharge'), true, `${os}: nav-recharge is in view and not covered`)
       assert.equal(await visibleInSidebar(page, 'nav-settings'), true, `${os}: nav-settings is in view and not covered`)
       await clean(page)
@@ -187,7 +192,7 @@ test('the command palette has no title bar, stays put while the results change a
     await palette.getByRole('option').first().waitFor()
     assert.equal((await palette.boundingBox()).y, top, 'more results grow the box downwards only')
     await search.fill('qqqq')
-    await page.getByText('没有找到「qqqq」相关的内容').waitFor()
+    await page.getByText('未找到与「qqqq」相关的内容').waitFor()
     assert.equal((await palette.boundingBox()).y, top, 'fewer results do not move the box either')
     // 搜索框里有字时第一下 Esc 先清空（浏览器自带的），第二下关框，和原来一样。
     await page.keyboard.press('Escape')
@@ -274,7 +279,7 @@ test('switch account found from the command palette lands on the current-login b
   } finally { await page.close() }
 })
 
-// KB-5：聊天页去过一次就藏着挂在正文最前面，它的「搜索对话」永远排第一；原来按「/」取的是它，
+// KB-5：「创作」页去过一次就藏着挂在正文最前面，它的「搜索做过的东西」永远排第一；原来按「/」取的是它，
 // 聚焦不上又把「/」吞了，别的页按「/」都没反应。
 async function pressSlashFromPage(page) {
   await page.getByTestId('page-viewport').focus()
@@ -297,7 +302,7 @@ test('pressing / focuses the search box of the page in front, also after the cha
   try {
     await page.getByTestId('nav-chat').click()
     await page.getByTestId('chat-conversation-search').waitFor()
-    assert.deepEqual(await pressSlashFromPage(page), { testId: 'chat-conversation-search', label: '搜索对话', id: '', value: '', prevented: true })
+    assert.deepEqual(await pressSlashFromPage(page), { testId: 'chat-conversation-search', label: '搜索做过的东西', id: '', value: '', prevented: true })
 
     await page.getByTestId('nav-tutorial').click()
     await page.getByTestId('page-tutorial').waitFor()

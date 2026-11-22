@@ -23,7 +23,7 @@
 - `renderer-release.ts` — 主窗口缩在托盘里满 10 分钟就关掉界面进程省内存（`forcefullyCrashRenderer`，窗口本身留着），点托盘或别的入口叫出来时按原地址重新加载。界面没报告过忙闲（legacy 回滚版）、报告手上有事（聊天在生成、视频在做、工具在装、开着对话框）、主进程在退出 / 装东西 / 付款窗口开着时都不关；关着和重新加载那一会儿，托盘、系统通知、深链要的跳页先存着，新界面第一次报告时再发（`platform/renderer-delivery-bridge.ts` 给 platform 那边的「打开某页」用同一条路）。那一声「界面进程没了」由 `main.ts` 的崩溃处理认出来不当崩溃
 - `released-renderer-watch.ts` — 界面关着时替它做两件后台事：每 10 分钟读一次余额（托盘、余额与花费提醒照旧），看缓存的公告，有界面没见过的新公告或者有充值活动（每天一次）就把界面叫醒，让它照旧弹公告
 - `balance-alerts.ts` / `spend-spike.ts` — 「余额低于 5 美元」和「花费突然变多」两个系统通知（原来在界面里，搬到主进程界面关着也照常提醒）：每次读回余额都过一遍，花费突增掉够了再读一次用量核账；同一账号 6 小时内只提醒一次的记录写在 userData 的 `spend-spike-notified.json`
-- `empty-balance-alert.ts` — 「当前账号余额是 $0」那条通知的判断和记录（主路卡点 F2，Codex 没有出错钩子，只能看余额）：钱包 ≤ 0 且确定没有能扣的订阅才算用完，订阅还没读到不下结论；同一账号同一次用完只说一次，记在 userData 的 `balance-empty-notified.json`，读到有钱就抹掉
+- `empty-balance-alert.ts` — 「当前账号余额为 $0」那条通知的判断和记录（主路卡点 F2，Codex 没有出错钩子，只能看余额）：钱包 ≤ 0 且确定没有能扣的订阅才算用完，订阅还没读到不下结论；同一账号同一次用完只说一次，记在 userData 的 `balance-empty-notified.json`，读到有钱就抹掉
 - `display-compat.ts` — 显卡进程短时间内连崩几次（老集显、远程桌面、虚拟机）就记进 `display-crashes.log`，下次启动这一次自动改用不走显卡的兼容模式并告诉用户；必须在 app ready 之前决定
 - `context-menu.ts` — 主窗口的编辑右键菜单（剪切/复制/粘贴/全选，照 Chromium 的 editFlags 置灰）；链接只给「复制链接」不给「打开」，免得绕开 `will-navigate` / `setWindowOpenHandler` 白名单（I12）
 - `process-stream-errors.ts` — 吞掉 stdout/stderr 的 EPIPE：开发时关掉控制台后 Electron 往断管写日志不该把主进程打崩，其他错误照抛
@@ -33,7 +33,9 @@
 - `startup-failure.ts` — 启动出错时给小白看的弹框：按 errno 链分成磁盘满 / 被杀毒软件占着 / 安装不完整 / 其他，原文只在点「复制错误信息」时出去且先抹用户目录与密钥（I13）
 - `unexpected-exit.ts` — 主进程未捕获异常时不弹 Electron 的英文框：记一笔、自动重开一次，下次打开用中文说明并给「复制给客服」；10 分钟内已重开过就不再重开，避免窗口一闪一闪
 - `crash-report.ts` / `crash-reporter.ts` — 崩溃自动上报 Sentry。前者全是纯函数（DSN 校验只认 `*.ingest.sentry.io`、脱敏、事件与 envelope 构造、开关判定），后者负责发送（按会话去重限量、超时、拒绝重定向、读回包限量，I10）。没用 `@sentry/electron`；开关是 `AppSettings.crashReporting`，缺省开，环境变量可关；本机快包和 CI 里起的打包版不报（同每天打卡），测试包记在 `testing` 环境（`xingmangTestingBuild`）。报错带 release 和 dist（平台-芯片），帧地址改写成 `app:///dist-electron/…`、`app:///dist/…`，和发版后传给 Sentry 的对照表对上（`docs/RELEASING.md` §9）
+- `hang-report.ts` / `main-hang-watchdog.ts` / `main-hang-watchdog-worker.ts` — 卡住时上报卡在哪段代码（2026-11-20 yoyo「卡顿做」）。走崩溃上报同一套（同一个开关、打码、帧地址改写），级别是 `warning`，只在抽中的两成打开里报，一次打开主进程、界面各最多一回（护住 Sentry 免费版每月 5000 条，别让崩溃被挤掉）。主进程那半：匿名统计的卡住计时器这次打开第一次报卡住 2 秒以上才起后台线程（约 10 MB），窗口在前台时每秒收一次心跳，5 秒没心跳就用进程内调试会话（`Session.connectToMainThread`，**不开端口**）让主线程停一下、抄下调用栈立刻放行，抓一次就关线程；worker 只许依赖 Node 自带模块（要能单独从 app.asar 里加载），由测试钉住。界面那半：窗口「没响应」时问 `collectJavaScriptCallStack`，要 `--enable-features=DocumentPolicyIncludeJSCallStacksInCrashReports` 加上协议回包里的 `Document-Policy` 头（`app-protocol.ts` 的 `applicationResponseHeaders`），最多等 3 秒
 - `usage-stats.ts` / `usage-stats-reporter.ts` — 匿名使用统计（每天打卡，2026-10-26 yoyo 选的推荐档）。前者是纯函数：一天那条地址的每一段都从固定缩写表或版本号样式来，报错原文只在内存里归成五类之一，开关判定、计数文件的解析；后者负责本机计数文件（`safe-local-data` 原子写）和发送（两个固定地址、一天最多成功一次最多试三次、不带 cookie、拒绝重定向、超时、读回包限量，I10），另有主进程卡顿计时。开关是系统界面设置里的 `privacy.anonymousUsage`，没碰过 = 开；工作流解码在 `scripts/update-feed-stats.cjs`
+- `client-version-report.ts` / `client-version-reporter.ts` — 客户端版本上报（2026-11-20 yoyo 选的「软件主动报给控制台」）：登录着才报，每天最多一次，同一天换账号或升版本再报一次，一天最多试三次。前者是纯函数：正文只有站点、这个站的用户编号、版本、系统大类、芯片五样，每样都从固定取值或版本号样式来，对不上整份不报；本机记录只存发过那份的摘要（不存用户编号）。后者 POST 到固定地址 `https://console.solov.cc/api/public/client-versions`（xingmang-console 的接收口），只认 2xx、不带 cookie、拒绝重定向、超时、读回包限量（I10），登录态变了只往前提、不往后推。跟匿名使用统计是两路，不受那个开关管；开发版、本机编的版本、CI 不报，`XINGMANG_DISABLE_CLIENT_VERSION_REPORT=1` 临时关
 
 ## 诊断、日志与反馈
 - `diagnostics.ts` — **「检查」页的总入口**：`runDiagnostics` 先建一份共用上下文（`diagnostics-context.ts`），再按固定次序把下面几类检查排起来同时跑（每项单独限时，超时或出错只算这一项，报告里的文字一律再脱敏一遍），收尾时做两处跨项调和（证书那项跟着网络那项、Node.js 那两项跟着有没有装命令行工具），再数各档多少项。报告的类型、`DiagnosticsDependencies`（缺省实现和测试替身的注入口）、检查页「打开文件夹」的名字也在这里。#1070 第 9 步把各类检查按类别拆进了下面几个 `diagnostics-*.ts`，它们只 import 这里的类型；原来从这里导出的名字照旧从这里转出，调用方不用改
@@ -98,7 +100,7 @@
 - `network-location-cache.ts` — 合并并缓存「网络位置」（境内/境外，决定安装源顺序）的探测：显式刷新会让旧的在途结果作废重读；`system-service.ts` 用
 
 ## 托盘
-- `application-tray.ts` — 系统托盘与右键菜单：账号、余额与订阅剩余、已装工具一键打开、加速一行、更新一项、「暂不让电脑自动睡眠」提示（已知35）、手机遥控开着时的「关掉手机遥控」一项、都关着但齐了时的「打开手机遥控」一项（打不开弹系统通知说原因）；打开菜单时现读一次会过期的状态，不定时轮询；Linux 上有没有托盘由 `linux-tray-host.ts` 先问；Windows 用多尺寸 ICO（`tray.ico` / `tray-dark.ico`，`scripts/generate-tray-icons.mjs` 生成），任务栏深色时换浅色外圈那份
+- `application-tray.ts` — 系统托盘与右键菜单：账号、余额与订阅剩余、已装工具一键打开、加速一行、更新一项、「暂不让电脑自动睡眠」提示（已知35）、手机遥控开着时的「关闭手机遥控」一项、都关着但齐了时的「开启手机遥控」一项（打不开弹系统通知说原因）；打开菜单时现读一次会过期的状态，不定时轮询；Linux 上有没有托盘由 `linux-tray-host.ts` 先问；Windows 用多尺寸 ICO（`tray.ico` / `tray-dark.ico`，`scripts/generate-tray-icons.mjs` 生成），任务栏深色时换浅色外圈那份
 - `tray-acceleration.ts` — 托盘里加速那一行状态与连接/断开动作的纯逻辑：不新增第二条连接逻辑（走加速页同一条路、用落了盘的线路偏好）、不新增轮询（剩余时长只按读到的时刻往前推算来显示）、失败不弹窗只换一句短原因
 
 ## 更新与发布

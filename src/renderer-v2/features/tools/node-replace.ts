@@ -3,7 +3,7 @@ import { nodeReadsSystemCertificates } from '../../../../electron/system-certifi
 import type { RuntimeInstallOutcome } from './runtime-install-outcome'
 
 /**
- * 「换成新版 Node.js」（第十八批 4）。公司电脑和安全软件会换掉网上的安全证书，
+ * 「更新 Node.js」（第十八批 4）。公司电脑和安全软件会换掉网上的安全证书，
  * Node.js 要 22.19 / 24.6 以上才认这台电脑装的证书；更旧的那些照样够装工具，所以
  * 「安装」一直回「无需重复安装」，客户照提示走进了死胡同。
  *
@@ -29,8 +29,8 @@ export function nodeReplaceOffered(input: {
 /** 确认框第一段：读得出版本就说出来，读不出就只说「版本较旧」。 */
 export function nodeReplaceReason(version: string | null | undefined): string {
   const current = version?.trim()
-  const lead = current ? `这台电脑上的 Node.js 是 ${current.startsWith('v') ? current : `v${current}`}。` : '这台电脑上的 Node.js 版本较旧。'
-  return `${lead}公司电脑和一些安全软件会换掉网上的安全证书，这一版认不了，工具就装不上；v22.19 以上的新版才认。`
+  const lead = current ? `本机的 Node.js 版本为 ${current.startsWith('v') ? current : `v${current}`}。` : '本机的 Node.js 版本较旧。'
+  return `${lead}公司电脑和部分安全软件会替换网络安全证书，当前版本无法识别，导致工具无法安装；v22.19 及以上版本可正常识别。`
 }
 
 /**
@@ -39,12 +39,12 @@ export function nodeReplaceReason(version: string | null | undefined): string {
  */
 export function describeNodeReplaceOutcome(result: NodeRuntimeInstallResult, continuing = false): RuntimeInstallOutcome {
   if (result.systemRestartRequired) {
-    return { message: 'Node.js 换好了，重启电脑后就能用。', tone: 'warn', restartRequired: true }
+    return { message: 'Node.js 已更新，重启电脑后生效。', tone: 'warn', restartRequired: true }
   }
-  const next = continuing ? '正在接着重试。' : '再点一次工具的「安装」就行。'
+  const next = continuing ? '正在继续重试。' : '请再次点击工具的「安装」。'
   if (result.action === 'unchanged') {
-    return { message: `Node.js 已经是新版了，${next}`, tone: 'ok', restartRequired: false }
+    return { message: `Node.js 已是新版，${next}`, tone: 'ok', restartRequired: false }
   }
   const version = result.version?.trim()
-  return { message: `Node.js 已换成 ${version || '新版'}，${next}`, tone: 'ok', restartRequired: false }
+  return { message: `Node.js 已更新至 ${version || '新版'}，${next}`, tone: 'ok', restartRequired: false }
 }

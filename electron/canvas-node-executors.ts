@@ -12,7 +12,7 @@ import {
   parseCanvasImageTransformRecipe,
   selectCanvasTileSource,
 } from './canvas-image-tools'
-import { canvasRunImageToolNodeLabels, type CanvasImagePreparation, type CanvasRunAsset, type CanvasRunGraphNode } from './canvas-run-contract'
+import { canvasRunImageToolNodeLabels, type CanvasImagePreparation, type CanvasRouterStrategy, type CanvasRunAsset, type CanvasRunGraphNode } from './canvas-run-contract'
 import { canvasImageReferenceRolePrompt } from './canvas-reference-order'
 import {
   assertCanvasCommerceOutputSize,
@@ -26,10 +26,47 @@ import type {
   CanvasNodeExecutionContext,
   CanvasNodeExecutionResult,
   CanvasNodeExecutors,
+  CanvasNodeInputs,
 } from './canvas-run-engine'
 import type { AiOperationProgressObserver, AiOperationProgressUpdate, AiRelayBillingObserver } from './ai-operation-progress'
+import { AiAnswerCutOffError } from './ai-answer-cut-off'
 import { parseDramaTablesJson } from './drama-parse'
 import { dramaParseSystemPrompt } from './drama-parse-prompt'
+
+/**
+ * The kernel's selectCanvasRouterInputs (xingmang-canvas
+ * runtime/router-strategy.ts) over what the engine collected: 「保留全部输入」
+ * keeps every text joined and every distinct item, first-available the first
+ * text that is not blank and the first image, video and sound. It picks among
+ * finished results only; it neither schedules nor skips upstream work, and is
+ * never a retry or failover between providers. Text is left out when nothing
+ * came over a text connection, as the plain router does.
+ */
+export function selectCanvasRouterInputs(strategy: CanvasRouterStrategy, inputs: CanvasNodeInputs): { text?: string; assets: CanvasRunAsset[] } {
+  const texts = inputs.texts ?? []
+  const seen = new Set<string>()
+  const distinct = [
+    ...(inputs.images ?? (inputs.image ? [inputs.image] : [])),
+    ...(inputs.videos ?? (inputs.video ? [inputs.video] : [])),
+    ...(inputs.audios ?? (inputs.audio ? [inputs.audio] : [])),
+  ].filter((asset) => {
+    if (seen.has(asset.assetId)) return false
+    seen.add(asset.assetId)
+    return true
+  })
+  if (strategy.strategy === 'all') {
+    return { ...(texts.length > 0 ? { text: texts.join('\n') } : {}), assets: distinct }
+  }
+  const kinds = new Set<string>()
+  return {
+    ...(texts.length > 0 ? { text: texts.find((text) => text.trim().length > 0) ?? '' } : {}),
+    assets: distinct.filter((asset) => {
+      if (kinds.has(asset.kind)) return false
+      kinds.add(asset.kind)
+      return true
+    }),
+  }
+}
 
 export interface CanvasTextCompletionInput {
   group: string
@@ -191,6 +228,9 @@ function throwIfCancelled(signal: AbortSignal): void {
 /** What a canvas project can hold as a node's text result (canvas-project-package.ts). */
 export const maximumCanvasTextOutputLength = 32_000
 
+/** 剧本解析的表格到了单次输出上限、没写完（D10）。带「剧本」二字，failure() 不再加前缀。 */
+export const dramaParseTooLongMessage = '剧本内容超出单次解析上限。请将剧本分段后分别解析。'
+
 export function createCanvasNodeExecutors(options: {
   imageService: CanvasImageOperationService
   videoService?: CanvasVideoOperationService
@@ -333,6 +373,17 @@ export function createCanvasNodeExecutors(options: {
     return {
       ...(inputs.text !== undefined ? { outputText: inputs.text } : {}),
       ...(assets.length > 0 ? { assets: assets.map((asset) => structuredClone(asset)) } : {}),
+    }
+  }
+  // A router without a strategy keeps the historical hand-on: one kind, the
+  // way it always ran on the desktop.
+  const router: CanvasNodeExecutors['router'] = async (context) => {
+    const strategy = context.node.data.routerStrategy
+    if (!strategy) return passThrough(context)
+    const selected = selectCanvasRouterInputs(strategy, context.inputs)
+    return {
+      ...(selected.text !== undefined ? { outputText: selected.text } : {}),
+      ...(selected.assets.length > 0 ? { assets: selected.assets.map((asset) => structuredClone(asset)) } : {}),
     }
   }
   const imageInput: CanvasNodeExecutors['image-input'] = async ({ userId, node, inputs }) => {
@@ -525,6 +576,8 @@ export function createCanvasNodeExecutors(options: {
         })
       } catch (error) {
         if (signal.aborted) throw error
+        // 表格写到一半被截断，再问一次多半照样截断，还多扣一次钱；直接说清是剧本太长（D10）。
+        if (error instanceof AiAnswerCutOffError && error.cutOff === 'length') throw new Error(dramaParseTooLongMessage)
         throw failure(error)
       }
     }
@@ -589,7 +642,7 @@ export function createCanvasNodeExecutors(options: {
     text, prompt: text, image: imageOrEdit, 'image-generate': imageOrEdit,
     video, 'video-generate': video, 'image-edit': imageEdit,
     'frame-extract': options.frames ? frameExtract : unsupported, 'video-input': videoInput,
-    'image-input': imageInput, 'audio-input': audioInput, router: passThrough, gallery: passThrough, output: passThrough,
+    'image-input': imageInput, 'audio-input': audioInput, router, gallery: passThrough, output: passThrough,
     group: passThrough, note: text,
     'drama-bible': dramaText, 'drama-script': dramaText, 'drama-parse': dramaParse, 'drama-shot': dramaText,
     'drama-character': dramaAsset, 'drama-scene': dramaAsset, 'drama-prop': dramaAsset,

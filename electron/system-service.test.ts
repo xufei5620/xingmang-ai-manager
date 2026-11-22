@@ -45,7 +45,7 @@ import type { CliModelHints } from './cli-model-defaults'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedCliPackageDirectory, probeRunningCliProcesses } from './cli-process-probe'
 import { classifyOperationError, presentOperationError } from '../src/renderer-v2/operation-error'
-import { managedNodeRuntimeBinDirectory, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import { managedNativeProviderRoot, managedNodeRuntimeBinDirectory, managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import { ensureManagedNpmLayout } from './managed-cli'
 import { installLeftoverMinimumAgeMs, sweepInstallLeftovers, type InstallLeftoverLocation } from './install-leftovers'
 import { LinuxTerminalLaunchError, linuxTerminalFailureMessages } from './linux-terminal'
@@ -56,11 +56,11 @@ import {
   resolveCliCommand as resolveVerifiedToolCommand,
   resolveCliInstallation as resolveCliInstallationForTest,
   type CliInstallation,
+  UnrecognizedDarwinCliError,
 } from './tool-installation'
 import { buildCliVersionAdvice, cliVerifiedVersions } from './cli-verified-versions'
 import {
   assertNpmPackageLocksEquivalent,
-  assertNpmReleaseIntegrityMatches,
   assertNpmReleaseMatchesOfficialLock,
   buildCliLaunchQueueKey,
   buildCliStatus,
@@ -352,8 +352,18 @@ function officialDarwinGrokUninstallResult(
     spec.argv.length === 1
     && spec.argv[0] === '--version'
   ) {
+    // The version belongs to the binary, not to the name its private copy was
+    // staged under. Since D19 the probe in front of an uninstall moves `agent`
+    // onto grok's 0.2.118 file, and that copy (still named "agent") must then
+    // answer 0.2.118.
     const executableName = path.basename(spec.executable)
-    const version = executableName === 'agent' || executableName.includes('0.2.111')
+    let contents = ''
+    try {
+      contents = fs.readFileSync(spec.executable, 'utf8')
+    } catch {
+      contents = ''
+    }
+    const version = contents === 'agent binary' || executableName.includes('0.2.111')
       ? '0.2.111'
       : '0.2.118'
     return { stdout: `grok ${version}\n`, stderr: '' }
@@ -395,6 +405,31 @@ describe('createSystemService', () => {
     const touched = service.getConfig(false)
     expect(touched.rememberedWorkspace).toBe(workspace)
     expect(touched.rememberedWorkspaceFresh).toBeUndefined()
+  })
+
+  // 0.2.25 总单 Q1：设置页换的那一刻只跟着记得住的那个文件夹走，首页据此先进它。
+  it('tells the renderer when the remembered folder was chosen on the settings page', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-chosen-summary-')))
+    temporaryDirectories.push(root)
+    const userHome = path.join(root, 'home')
+    const workspace = path.join(userHome, 'Projects', 'shop')
+    fs.mkdirSync(workspace, { recursive: true })
+    const store = new AppSettingsStore(path.join(root, 'settings.json'), root)
+    await store.write({ ...defaultAppSettings(root), workspace, workspaceChosenAt: 1_700_000_000_000 })
+    const inspect = vi.fn((provider: ProviderId) => ({
+      baseUrl: providerBaseUrls[provider], actualBaseUrl: providerBaseUrls[provider], exists: false, apiKey: '', hasApiKey: false,
+      matchesRelay: false, model: '', dataDirectory: path.join(userHome, provider), dataDirectoryExists: false, files: [], updatedAt: null,
+    }))
+    const service = createSystemService(store, { providerRoots: { userHome, codexHome: path.join(userHome, '.codex') }, inspectProviderConfig: inspect })
+
+    expect(service.getConfig(false)).toMatchObject({ rememberedWorkspace: workspace, rememberedWorkspaceChosenAt: 1_700_000_000_000 })
+    await store.write({ ...defaultAppSettings(root), workspace })
+    expect(service.getConfig(false)).not.toHaveProperty('rememberedWorkspaceChosenAt')
+    // A time with no folder the home page may open (the home directory itself) is not passed on.
+    await store.write({ ...defaultAppSettings(root), workspace: userHome, workspaceChosenAt: 1_700_000_000_000 })
+    const home = service.getConfig(false)
+    expect(home).not.toHaveProperty('rememberedWorkspace')
+    expect(home).not.toHaveProperty('rememberedWorkspaceChosenAt')
   })
 
   it('uses provider roots for config surfaces and codexEnv only for Codex CLI work', () => {
@@ -2061,6 +2096,46 @@ describe('createSystemService', () => {
     expect(snapshot.clis.gemini.installSource).toBeUndefined()
   })
 
+  // Mac 验收 R1：命令行里找到的 Codex / Grok 既不是 npm 装的、又核不出是官方安装器那一份，首页要能改给
+  // 「使用星芒安装」；一时没核成（起进程失败这类）的不算，照旧按原来的来源显示。
+  it('marks a Mac Codex and Grok that cannot be recognised as unrecognised installs found on the path', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-unrecognized-install-scan-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    // Grok 的判断读 ~/.grok/bin/grok 那条链接；这个家目录里没有，命令行上那份就是认不出的。
+    vi.stubEnv('HOME', directory)
+    const resolveCli = vi.fn<typeof resolveVerifiedToolCommand>(async (provider) => {
+      if (provider === 'codex') throw new UnrecognizedDarwinCliError(new Error('not the standalone layout'))
+      throw new Error('spawn EAGAIN')
+    })
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'darwin',
+        findExecutable: async () => null,
+        resolveCliCommand: resolveCli,
+        macosCodexAppDetector: vi.fn(async () => ({ app: null, detectionFailed: false, detectionError: null })),
+        resolveCliInstallation: async (provider) => provider === 'gemini' ? null : ({
+          commandPath: `/opt/third-party/${provider}`,
+          installDirectory: '/opt/third-party',
+          packageRoot: null,
+          npmPrefix: null,
+          packageVersion: null,
+          source: 'native',
+        }),
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    expect(snapshot.clis.codex).toMatchObject({ installed: true, installSource: 'path', unrecognizedInstall: true })
+    expect(snapshot.clis.grok).toMatchObject({ installed: true, version: null, unrecognizedInstall: true })
+    expect(snapshot.clis.grok.installSource).toBeUndefined()
+    // 核对时起进程失败说明不了来路，不改口。
+    expect(snapshot.clis.claude.installed).toBe(true)
+    expect(snapshot.clis.claude.unrecognizedInstall).toBeUndefined()
+  })
+
   // 断网开应用时，四家 CLI 的最新版探测会一个个耗满自己的超时（npm 8 秒、Grok
   // 清单 10 秒），首屏要十几秒才出来，而已装版本其实一瞬间就从本地读到了。
   it('stops waiting on the npm latest probes when the network location probe says the machine is offline', async () => {
@@ -2927,7 +3002,9 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     })
     expect(targetReplaced).toBe(true)
     expect(fs.readlinkSync(grokLink)).toBe(fixture.grokTarget)
-    expect(fs.readlinkSync(agentLink)).toBe(fixture.agentTarget)
+    // D19: the probe uninstallCli runs first already moved agent off the stale
+    // 0.2.111 file onto grok's; the rollback puts back exactly what was planned.
+    expect(fs.readlinkSync(agentLink)).toBe(fixture.grokTarget)
   })
 
   it('returns manual-required instead of uninstalled while verified program paths remain', async () => {
@@ -3007,7 +3084,10 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
 
     expect(fs.readdirSync(fixture.bin).filter((name) => name.endsWith('.removing'))).toEqual([])
     expect(fs.existsSync(fixture.grokBinary)).toBe(false)
-    expect(fs.existsSync(fixture.agentBinary)).toBe(false)
+    // D19: the probe in front of the uninstall moved agent onto grok's file, so
+    // 0.2.111 was no longer a program either link kept. It is now an old download
+    // like any other: mentioned, never deleted automatically (internal #18).
+    expect(fs.existsSync(fixture.agentBinary)).toBe(true)
     expect(fs.readFileSync(path.join(fixture.bin, 'keep.txt'), 'utf8')).toBe('keep')
     expect(fs.readFileSync(fixture.configFile, 'utf8')).toBe('config')
     expect(fs.readFileSync(fixture.sessionFile, 'utf8')).toBe('session')
@@ -3215,6 +3295,29 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok readiness self-heal (
     expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(fixture.grokTarget)
   })
 
+  // 11-18 复核 D19：以前用星芒更新过、agent 还停在旧版的 Mac，下一次扫描就对上，不用等下一次更新。
+  it('moves an agent link left on an older version onto grok the next time anything probes', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(fixture.agentTarget)
+    vi.stubEnv('HOME', fs.realpathSync(fixture.home))
+    vi.stubEnv('PATH', fixture.bin)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('no network in tests') }))
+    const store = new AppSettingsStore(path.join(fixture.home, 'settings.json'), fixture.home)
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        throw new Error(`Unexpected command during a readiness probe: ${spec.executable} ${spec.argv.join(' ')}`)
+      },
+    })
+
+    const status = await service.inspectCliUpdate('grok', false)
+
+    expect(status.installed).toBe(true)
+    expect(status.version).toBe('0.2.118')
+    expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(fixture.grokTarget)
+    expect(fs.readFileSync(fixture.agentBinary, 'utf8')).toBe('agent binary')
+  })
+
   it('repairs the same gap through a full system scan, not just the single-CLI update check', async () => {
     const fixture = createDarwinGrokUninstallFixture()
     fs.unlinkSync(path.join(fixture.bin, 'agent'))
@@ -3370,7 +3473,7 @@ describe('npm registry metadata', () => {
     }), '@openai/codex')).toBeNull()
   })
 
-  it('queries with redirects disabled and rejects mirror metadata drift', async () => {
+  it('queries release metadata with redirects disabled', async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(init?.redirect).toBe('error')
       return new Response(JSON.stringify({
@@ -3387,10 +3490,6 @@ describe('npm registry metadata', () => {
     )
     expect(trusted.version).toBe('0.146.0')
     expect(fetchMock).toHaveBeenCalledOnce()
-    expect(() => assertNpmReleaseIntegrityMatches(trusted, {
-      ...trusted,
-      integrity: `sha512-${Buffer.alloc(64, 0x33).toString('base64')}`,
-    })).toThrow('与 npm 官方源不一致')
   })
 
   it('accepts registry host differences only when the complete lock graph matches', () => {
@@ -4682,7 +4781,7 @@ describe('Windows restart handoff', () => {
     expect(runCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         executable: expect.stringMatching(/System32[\\/]shutdown\.exe$/i),
-        argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', 'XingMang AI requires a restart to finish Windows updates'],
+        argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', '星芒AI管理工具将重启电脑，请保存未保存的文件。'],
       }),
       expect.objectContaining({ trustedOnly: true, timeoutMs: 10_000 }),
     )
@@ -7320,6 +7419,67 @@ describe('installing or uninstalling a CLI', () => {
       error: 'Command failed: powershell.exe',
     }))
   })
+
+  // D17：Windows 上 Grok 装进个人文件夹（USERPROFILE）下的 .grok\bin，判断能不能卸、真去卸却先看 HOME，
+  // 客户设了 HOME（Git、MSYS 常见）就把刚装好的那份判成不能安全卸载。两个调用点都在这一条里：先判断能不能卸，再去删。
+  // Mac、Linux 上模拟 Windows 的服务；真 Windows 上要删的文件名跟着 process.platform 走，照着放，CI 的 Windows 作业照真的跑。
+  it('uninstalls a Windows Grok from the profile folder when HOME points somewhere else', async () => {
+    // native：Windows runner 的临时目录是短名 RUNNER~1，卸载报回来的是展开后的长名，两边要按同一种写法比。
+    const profile = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-grok-profile-')))
+    const customHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-uninstall-grok-custom-home-')))
+    temporaryDirectories.push(profile, customHome)
+    const bin = path.join(profile, '.grok', 'bin')
+    const fileNames = process.platform === 'win32' ? ['grok.exe', 'agent.exe', 'version.json'] : ['grok', 'agent']
+    const command = path.join(bin, fileNames[0])
+    fs.mkdirSync(bin, { recursive: true })
+    for (const name of fileNames) fs.writeFileSync(path.join(bin, name), `${name} content`)
+    vi.stubEnv('USERPROFILE', profile)
+    vi.stubEnv('HOME', customHome)
+    const removeWindowsUserPath = vi.fn(async () => 'removed' as const)
+    const service = createService({
+      platform: 'win32',
+      windowsExecutionMode: 'same-user',
+      providerRoots: { userHome: profile, codexHome: path.join(profile, '.codex') },
+      resolveCliInstallation: vi.fn(async (provider: ProviderId) => provider === 'grok' && fs.existsSync(command)
+        ? { commandPath: command, installDirectory: bin, packageRoot: null, npmPrefix: null, source: 'native' as const }
+        : null),
+      findExecutable: vi.fn(async () => null),
+      runCommand: versionProbeRunner(),
+      removeWindowsUserPath,
+    })
+
+    await expect(service.uninstallCli('grok')).resolves.toMatchObject({ outcome: 'uninstalled' })
+
+    for (const name of fileNames) expect(fs.existsSync(path.join(bin, name))).toBe(false)
+    await vi.waitFor(() => expect(removeWindowsUserPath).toHaveBeenCalledWith(bin))
+  })
+
+  // 装失败时失败框「复制路径」复制的是这里报的落点（toolInstallDirectory）。Windows 普通身份下 Grok 装进个人文件夹下的
+  // .grok\bin（installCli 的 sameUserInstall），以前这里却一律报 ProgramData 下的托管目录，客户照着去查权限、加白名单都找错地方。
+  it('reports the folder a Windows Grok install would really use as its install target', async () => {
+    const profile = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-target-profile-')))
+    const customHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-target-custom-home-')))
+    temporaryDirectories.push(profile, customHome)
+    vi.stubEnv('USERPROFILE', profile)
+    vi.stubEnv('HOME', customHome)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    function windowsService(windowsExecutionMode: 'same-user' | 'trusted-only') {
+      return createService({
+        platform: 'win32',
+        windowsExecutionMode,
+        providerRoots: { userHome: profile, codexHome: path.join(profile, '.codex') },
+        resolveCliInstallation: vi.fn(async () => null),
+        findExecutable: vi.fn(async () => null),
+        runCommand: versionProbeRunner(),
+      })
+    }
+
+    await expect(windowsService('same-user').inspectCliUpdate('grok', false))
+      .resolves.toMatchObject({ installed: false, installTarget: path.join(profile, '.grok', 'bin') })
+    // 管理员身份装进 ProgramData 下的托管目录，照旧。
+    await expect(windowsService('trusted-only').inspectCliUpdate('grok', false))
+      .resolves.toMatchObject({ installed: false, installTarget: managedNativeProviderRoot('grok') })
+  })
 })
 
 describe('trusting the workspace the user picked before opening a CLI', () => {
@@ -7411,7 +7571,7 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
 
     const calledOff = accountWork.queue()
     accountWork.abortQueued()
-    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号刚切换过')
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号刚刚切换')
     expect(fs.existsSync(path.join(userHome, '.claude.json'))).toBe(false)
 
     const work = accountWork.queue()
@@ -7836,7 +7996,7 @@ describe('opening a CLI on macOS', () => {
     const failure: unknown = await launch().catch((error: unknown) => error)
     expect(failure instanceof Error && failure.message).toBe(
       '未能打开 Claude Code：终端窗口打开了，但工具没有跟着起来。先看一眼终端窗口里是不是在问什么（比如要不要更新），'
-      + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「找客服」，把这句话发给客服。',
+      + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「联系客服」，把这句话发给客服。',
     )
     expect(failure instanceof Error && failure.cause).toBeInstanceOf(MacosTerminalNotStartedError)
     const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')

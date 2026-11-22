@@ -95,6 +95,7 @@ import {
   activateCodexDesktopWithCdp as activateCodexDesktopWithCdpDefault,
   getAvailableLoopbackPort as getAvailableLoopbackPortDefault,
   injectCodexDesktopChineseLocale as injectCodexDesktopChineseLocaleDefault,
+  isCodexDesktopActivationNotRegistered,
 } from './codex-desktop-cdp'
 import type {
   CodexDesktopLaunchMode,
@@ -124,7 +125,7 @@ import {
   isPlainCodexDesktopInstallMessage,
   type CodexDesktopInstallFailureReason,
 } from './codex-desktop-install-failure'
-import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
+import { codexDesktopActivationBrokenSentence, codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
 import { codexDesktopChineseOffMessage } from './remote-features'
 import { inspectWindowsStoreAvailability } from './windows-store-availability'
 import { assertWorkspaceDirectory } from './workspace-access'
@@ -234,10 +235,29 @@ export interface CodexDesktopLaunchWaitOutcome {
   processSeen: boolean
 }
 
+/**
+ * 开始菜单里 Codex 那一项叫什么（Get-StartApps 的 Name）。新版在开始菜单里叫「ChatGPT」，
+ * 客户照「搜 Codex」去找会以为没装上（2026-11-21 那份排查记录）。名字是 Windows 给的原样，
+ * 只在看着像一个应用名时才上屏，查不到或看着不对时写「Codex」。
+ */
+export function resolveCodexDesktopStartMenuName(name?: string | null): string {
+  const trimmed = name?.trim() ?? ''
+  if (!trimmed || trimmed.length > 40 || /[\p{Cc}「」]/u.test(trimmed)) return 'Codex'
+  return trimmed
+}
+
 export function describeCodexDesktopLaunchFailure(
   outcome?: CodexDesktopLaunchWaitOutcome,
   knownIssueVersion?: string | null,
+  windowsActivationBroken = false,
+  startMenuName?: string | null,
 ): string {
+  // Windows 的激活接口说「没装」、包却明明装着：重启以外的办法都试过没用（见
+  // codexDesktopActivationBrokenMarker），先说这一条。排在已知坏版本前面，是因为那一版
+  // 的毛病是起来以后超时，回的不是这个码，这里只看到 Windows 自己没把它起来。
+  if (windowsActivationBroken) {
+    return `${codexDesktopNotStartedPrefix}：${codexDesktopActivationBrokenSentence(outcome?.waitedSeconds)}`
+  }
   // 这里不再按账户类型下结论（自带 Administrator、关了用户账户控制），原因见
   // windows-store-availability.ts 开头：Codex 桌面端不归 Windows 那条规矩管。
   // 装着的正是已知打不开的那一版：不用再叫客户去开始菜单自己分辨是谁的问题，
@@ -254,13 +274,35 @@ export function describeCodexDesktopLaunchFailure(
   }
   // 客户自己分不清是 Codex 起不来还是星芒没叫动它，只会一直点重试或找客服。
   // 从开始菜单直接开一次就能分清：那边也起不来，就是 Codex 这一版自己的问题。
+  // Windows 交回过进程号、到头却一个进程都没有，是它起来以后自己退了（yoyo 2026-11-21 批的字，「开始菜单改」）。
   const what = outcome.processSeen
-    ? 'Codex 已经启动，但它的窗口一直没出来'
-    : 'Codex 没有启动起来'
-  return `${codexDesktopNotStartedPrefix}：等了 ${outcome.waitedSeconds} 秒，${what}。`
-    + '先关掉所有 Codex 窗口，再点「重试」。想知道是不是 Codex 自己的问题：在开始菜单里搜「Codex」直接点开，'
-    + '也起不来的话就是 Codex 这一版自己的问题，不是星芒，可以等微软商店更新它，或先用 Codex CLI；'
-    + '开始菜单里能打开、从星芒打不开，请联系客服。'
+    ? 'Codex 启动后随即退出，未出现窗口'
+    : 'Codex 未能启动'
+  return `${codexDesktopNotStartedPrefix}：等待 ${outcome.waitedSeconds} 秒，${what}。`
+    + '请关闭所有 Codex 窗口后点击「重试」。'
+    + `如需确认是否为 Codex 自身问题，可在开始菜单中搜索「${resolveCodexDesktopStartMenuName(startMenuName)}」并直接打开：`
+    + '如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex 命令行版；'
+    + '如开始菜单中可以打开而星芒中无法打开，请联系客服。'
+}
+
+export interface CodexDesktopActivationFailureSummary {
+  /** Windows 的激活接口说「没装」，而且一次进程号都没给过：失败框换成先重启的那一版。 */
+  windowsActivationBroken: boolean
+  /** 挂在打开失败那条报错上的原因（最后一次激活报的错），只进运行日志；一次都没报错时没有这一项。 */
+  cause?: unknown
+}
+
+/**
+ * 打开没成功时，把这一路上激活接口报过的错归一下。调用前包已经查过是当前用户装着的
+ * （没装会在更早一步报「未检测到 Codex 桌面端」），所以这里只看 Windows 说了什么：
+ * 给过进程号就是起来过，不算 Windows 不肯起。
+ */
+export function buildCodexDesktopActivationFailureSummary(
+  failures: readonly unknown[],
+  activationProcessId: number | null,
+): CodexDesktopActivationFailureSummary {
+  const windowsActivationBroken = activationProcessId === null && failures.some(isCodexDesktopActivationNotRegistered)
+  return failures.length ? { windowsActivationBroken, cause: failures[failures.length - 1] } : { windowsActivationBroken }
 }
 
 // 一键重置做不成时，客户自己在系统设置里点的是同一个按钮。
@@ -2519,7 +2561,7 @@ export function shouldRetryCodexDesktopBucketWhenStale(error: unknown): boolean 
 /**
  * Mac 上装不成时的那句话。macos-desktop-app-installer.ts 抛的已经是大白话，磁盘不够、
  * 别重复点这类本来就是写给客户看的也原样交出；其余一律说「没装好」，原话进 detail。
- * 不能走上面那个：「Codex 桌面端没装上：…」在渲染层配的是「去微软商店装」。
+ * 不能走上面那个：「Codex 桌面端没装上：…」在渲染层配的是「前往微软商店安装」。
  */
 export function toCodexDesktopMacInstallFailure(error: unknown): Error {
   if (error instanceof MacosDesktopInstallError) return error
@@ -2872,7 +2914,7 @@ function runWithoutDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
 /**
  * 打开 Codex 桌面端分两段（#1085）：start 做到发出启动请求为止，算账号工作；它交回来的那段只等本机的
  * Codex 进程起来、给它换中文，Windows 上最长一分多钟，换账号、退出不陪它等。start 跑的时候开始换账号，
- * 照旧报「账号刚切换过，请再试一次」，但启动请求已经发出去了：先把窗口等完再报，安装队列不能趁 Codex
+ * 照旧报「账号刚刚切换，请重试」，但启动请求已经发出去了：先把窗口等完再报，安装队列不能趁 Codex
  * 还在起来就放别的安装、卸载进来换同一个包（I11）。
  */
 export async function launchThenWaitOutsideAccountWork<T>(
@@ -3036,6 +3078,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     return (await inspectCodexDesktopManifestBundle()).mirror
   }
 
+  // 这次查出来的开始菜单名字，只给打不开时那句「在开始菜单中搜索…」用，跟着查出来的那份状态走，
+  // 每次打开都是新查的。不放进 DesktopAppStatus：那份要跨进程交给渲染层，渲染层用不上它。
+  const codexDesktopStartMenuNames = new WeakMap<DesktopAppStatus, string>()
+
   async function inspectCodexDesktop(): Promise<DesktopAppStatus> {
     if (platform === 'darwin') {
       // A local application inspection failure must not block the system
@@ -3143,7 +3189,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         : '检测到开始菜单入口，但无法读取 Codex Desktop 的 Appx 已安装版本',
           'windows-appx',
         )
-    return {
+    const status: DesktopAppStatus = {
       installed: true,
       version: installedPackage?.version ?? null,
       appVersion,
@@ -3160,6 +3206,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       detectionError,
       ...update,
     }
+    if (match) codexDesktopStartMenuNames.set(status, match.name)
+    return status
   }
 
   function sendCodexDesktopInstallProgress(
@@ -3633,10 +3681,13 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           bundle: app.path,
           name: 'Codex 桌面端',
           closeRunning: request.closeRunning,
+          ...(signal ? { signal } : {}),
           runProcess,
           uid: getuid(),
           ...quitMacosDesktopApp,
         }),
+        // 从挪开旧版起不再接受取消（11-18 F03）：接受了也停不下，界面会说「已取消」，装着的却是新版。
+        onReplaceStarting: () => cancellation?.seal(codexDesktopInstallSealReason),
       },
     }).catch((error: unknown) => {
       // 安装模块已经把更新没成说成「旧版还在」那几句；别的（没从它那儿出来的）同样没动旧版，不说成「没装好」。
@@ -3795,7 +3846,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           : null
         // 没有商店的电脑上不提「去微软商店更新」：那颗按钮在这里打不开。
         const storeNewerVersion = !attempt.storeUnavailable && latestComparison === -1 && latest.version ? latest.version : null
-        // 渲染层看到 storeNewerVersion 会给一颗「去微软商店装」按钮，这里只说清楚现状。
+        // 渲染层看到 storeNewerVersion 会给一颗「前往微软商店安装」按钮，这里只说清楚现状。
         const mirrorLagNotice = storeNewerVersion
           ? `；微软商店里已经有 ${storeNewerVersion}，国内下载线路还没跟上，可以去微软商店更新`
           : ''
@@ -4261,6 +4312,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (mode !== 'restart') await repairPermissionState()
 
     let activationProcessId: number | null = null
+    // 每一次激活接口自己报的错。打开不成功时靠它分清是不是 Windows 那边激活坏了
+    // （isCodexDesktopActivationNotRegistered），最后一条挂在报错的 cause 上进运行日志：
+    // 普通那一路以前只打到控制台，打包版不留。
+    const activationFailures: unknown[] = []
     const launchWithExplorer = async (): Promise<void> => {
       const launchPlan = buildCodexDesktopLaunchPlan(desktopAppPath)
       await spawnDetached(launchPlan.executable, launchPlan.args, {
@@ -4289,6 +4344,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         await launchWithWorkspace()
       } catch (error) {
         if (!workspaceUrl) throw error
+        activationFailures.push(error)
         const message = error instanceof Error ? error.message : String(error)
         // Damaged or older Store registrations may reject arguments through
         // the AppModel activation manager even though plain AppsFolder
@@ -4327,6 +4383,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         }
         activatedViaAppModel = shouldInjectChinese || Boolean(startupArguments)
       } catch (error) {
+        activationFailures.push(error)
         const message = error instanceof Error ? error.message : String(error)
         // CDP activation may be unavailable on a damaged Store registration
         // or an older Windows build. The ordinary AppModel/AppsFolder route
@@ -4399,10 +4456,13 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         // 先停心跳：失败框弹出之前工具行不该再冒一句「还在等」。
         const waitedSeconds = heartbeat?.elapsedSeconds()
         heartbeat?.stop()
+        const activation = buildCodexDesktopActivationFailureSummary(activationFailures, activationProcessId)
         throw new Error(describeCodexDesktopLaunchFailure(
           waitedSeconds === undefined ? undefined : { waitedSeconds, processSeen: activationProcessId !== null },
           resolveCodexDesktopKnownIssue([desktopApp.version, desktopApp.appVersion]),
-        ))
+          activation.windowsActivationBroken,
+          codexDesktopStartMenuNames.get(desktopApp),
+        ), 'cause' in activation ? { cause: activation.cause } : undefined)
       }
       if (cdpPort !== null) {
         // Codex 已经起来了：下面等的是给它换中文（等调试端口、核对端口归属），不是等窗口。

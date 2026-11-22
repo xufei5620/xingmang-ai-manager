@@ -16,14 +16,14 @@ import { offlineActionMessage } from '../shell/online-status'
 import type { ToolInstallIntent } from './Home'
 import { manualUninstallState, type ManualUninstallState } from './ManualUninstall'
 import { managedSwitchVersion } from './managed-switch'
-import { canSwitchToManagedInstall, presentTools, providerFor, recommendedVersionVerb, spacedName, type ToolId } from './model'
+import { canSwitchToManagedInstall, isUnrecognizedInstall, presentTools, providerFor, recommendedVersionVerb, spacedName, type ToolId } from './model'
 import { describeNodeReplaceOutcome } from './node-replace'
 import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './runtime-install-outcome'
 import { cliInstallStageLabel, cliNeedsNodeRuntime, planCliInstall, prepareSharedRuntime, runtimeStageFailureMessage, type InstallRuntimeId } from './runtime-readiness'
 import { jobToolName, withoutTool } from './tool-jobs'
 import { rememberRevertedToolUpdate } from './update-notice'
 import { uninstallHandOffNotice } from './uninstall-handoff'
-import { clientLaunchWaitLabel } from './launch-notice'
+import { clientLaunchWaitLabel, externalLaunchWarning } from './launch-notice'
 import { externalAutoConnectAttemptKey, externalAutoConnectEligible, externalDetectedAutoConnectTarget, type ExternalAutoConnectOutcome } from './external-client-auto-connect'
 import { externalClientConnectedText } from './external-client-notice'
 import { installedToolSyncLabel } from './useToolbox'
@@ -78,8 +78,8 @@ export function useToolInstall(options: ToolInstallOptions) {
     // 这不是一次失败：macOS 上这几个桌面端本来就要客户自己下载。以前当错误抛出来，
     // 用户会同时看到红色错误框和一个跳到教程首页、又没有对应章节的页面（第七批 3）。
     // Linux 的教程里没有 Mac 那一章，跳过去只会落到第一章：只说一句，不跳。
-    if (management === 'external' && state.platform.platform === 'linux') { toast.show(`${tools.find((tool) => tool.id === id)?.name ?? '这个工具'}在这台电脑上暂时不能一键安装。`, 'neutral'); return 'skipped' }
-    if (management === 'external') { navigate('tutorial', macDesktopTutorialTopic); toast.show('这个系统要你自己下载安装，教程里是完整步骤。', 'neutral'); return 'skipped' }
+    if (management === 'external' && state.platform.platform === 'linux') { toast.show(`${tools.find((tool) => tool.id === id)?.name ?? '该工具'}暂不支持在本机一键安装。`, 'neutral'); return 'skipped' }
+    if (management === 'external') { navigate('tutorial', macDesktopTutorialTopic); toast.show('当前系统需手动下载安装，教程中提供完整步骤。', 'neutral'); return 'skipped' }
     if (offline) { toast.show(offlineActionMessage, 'warn'); return 'skipped' }
     const definition = tools.find((tool) => tool.id === id)
     const toolName = definition?.name ?? '工具'
@@ -107,7 +107,8 @@ export function useToolInstall(options: ToolInstallOptions) {
     let uninstalling = false
     let finishing = false
     let outcome: ToolInstallOutcome = 'installed'
-    const updating = Boolean(current?.status.installed)
+    // 认不出来路的那份旁边另装一份（R1）是第一次装星芒自己的，不说成「已更新」。
+    const updating = Boolean(current?.status.installed) && !isUnrecognizedInstall(current?.status)
     // 收尾必须留在同一个安装任务里。任务一结束工具行就回落到安装前的快照：
     // 同步 Key 和重新检测还没跑完，版本号已经退回旧值、「更新」按钮跟着回弹，
     // 用户看到的是「装完了又要装一次」（yoyo 2026-09-20 真机反馈①）。
@@ -161,11 +162,11 @@ export function useToolInstall(options: ToolInstallOptions) {
       report(installedToolSyncLabel)
       const keyWritten = await syncAfterToolInstalled(id)
       if (done) done.keyWritten = keyWritten
-    }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，这一步不能取消；准备好后会接着安装工具。' } : uninstalling || finishing ? { cancelled: false, reason: '这一步已经不能取消了。' } : toolsApi.cancelInstall(id), notice: { updating, unfinished: () => outcome !== 'installed' } })
+    }, { cancel: async () => preparing ? { cancelled: false, reason: '正在准备运行环境，此步骤无法取消；准备完成后将继续安装工具。' } : uninstalling || finishing ? { cancelled: false, reason: '此步骤已无法取消。' } : toolsApi.cancelInstall(id), notice: { updating, unfinished: () => outcome !== 'installed' } })
     // run 返回 false 只有两种：用户取消了，或同一个工具已经有一次安装在跑。
     return finished ? outcome : 'skipped'
   }
-  /** 弹「换成星芒装的」确认框，等客户点；关掉框和点「取消」一样算不换。 */
+  /** 弹「改用星芒安装」确认框，等客户点；关掉框和点「取消」一样算不换。 */
   function confirmManagedSwitch(version: string): Promise<boolean> {
     pendingManagedSwitch.current?.(false)
     return new Promise<boolean>((resolve) => {
@@ -180,7 +181,7 @@ export function useToolInstall(options: ToolInstallOptions) {
     })
   }
   /**
-   * 「换成星芒装的」的前一半：和「卸载」走同一条路、同一套结果处理，只多带 reinstall，
+   * 「改用星芒安装」的前一半：和「卸载」走同一条路、同一套结果处理，只多带 reinstall，
    * 主进程先看盘够不够装回来再动手。返回 false = 卸载转交给了别的窗口，这次先不装。
    */
   async function uninstallBeforeSwitch(id: ToolId, name: string): Promise<boolean> {
@@ -243,10 +244,10 @@ export function useToolInstall(options: ToolInstallOptions) {
       const outcome: { message?: string } = {}
       const done = await toolbox.run('git', '正在准备安装 Git', async () => {
         const result = await toolsApi.installGit()
-        if (!result.installed) outcome.message = result.message ?? '没有装 Git。需要时再点一次「安装 Git」就行。'
+        if (!result.installed) outcome.message = result.message ?? '未安装 Git。如有需要，请再次点击「安装 Git」。'
       }, { notice: { unfinished: () => Boolean(outcome.message) } })
       await toolbox.refresh(true)
-      if (done && mounted.current) toast.show(outcome.message ?? 'Git 装好了。', outcome.message ? 'warn' : 'ok')
+      if (done && mounted.current) toast.show(outcome.message ?? 'Git 已安装。', outcome.message ? 'warn' : 'ok')
       return
     }
     const mode = runtime === 'node' ? platform?.nodeRuntimeInstall : platform?.pythonRuntimeInstall
@@ -264,7 +265,7 @@ export function useToolInstall(options: ToolInstallOptions) {
   async function replaceNode(retry?: () => void) {
     if (offline) { toast.show(offlineActionMessage, 'warn'); return }
     const done: { outcome?: RuntimeInstallOutcome } = {}
-    await toolbox.run('node', '正在换成新版 Node.js', async () => {
+    await toolbox.run('node', '正在更新 Node.js', async () => {
       done.outcome = describeNodeReplaceOutcome(await toolsApi.replaceNode(), Boolean(retry))
     }, { notice: { unfinished: () => Boolean(done.outcome?.restartRequired) } })
     await toolbox.refresh(true)
@@ -286,15 +287,15 @@ export function useToolInstall(options: ToolInstallOptions) {
         connecting = true
         report(installedToolSyncLabel)
         connect.outcome = await toolsApi.autoConnectExternal(status, 'install', epoch)
-      }, { cancel: async () => connecting ? { cancelled: false, reason: '这一步已经不能取消了。' } : toolsApi.cancelExternalInstall(id), notice: {} })
+      }, { cancel: async () => connecting ? { cancelled: false, reason: '此步骤已无法取消。' } : toolsApi.cancelExternalInstall(id), notice: {} })
       if (!completed || !mounted.current || !epoch()) return
       await toolbox.refreshExternal()
       if (!mounted.current || !epoch()) return
       const outcome = connect.outcome
       const name = spacedName(jobToolName(id) ?? id)
       // 连好了用配置窗口保存成功时那句；写进去了但自检没过，同命令行工具装完没配好时只说装好了；没连就照旧。
-      if (outcome?.kind === 'connected') toast.show(outcome.verified ? externalClientConnectedText(id, outcome.model) : `${name}已装好`, 'ok')
-      else toast.show(`${name}已装好，点「确认连接」用上当前账号`, 'ok')
+      if (outcome?.kind === 'connected') toast.show(outcome.verified ? externalClientConnectedText(id, outcome.model) : `${name}已安装`, 'ok')
+      else toast.show(`${name}已安装，请点击「确认连接」以使用当前账号`, 'ok')
     } catch (cause) { if (mounted.current && epoch()) throw cause }
   }
   // 自动连同一份安装只试一次（externalAutoConnectAttemptKey）；登录后那一轮和认出 WorkBuddy 后那一次不同时跑，
@@ -364,9 +365,13 @@ export function useToolInstall(options: ToolInstallOptions) {
     try {
       // 只等这一家自己正在装的那一次，别的工具在装不等（I11 的登记例外）。
       const waitLabel = clientLaunchWaitLabel(toolbox.jobs, id, jobToolName)
-      const launched = await toolbox.run(`launch:${id}`, waitLabel, () => toolsApi.launchExternal(id))
+      const outcome: { result?: Awaited<ReturnType<typeof toolsApi.launchExternal>> } = {}
+      const launched = await toolbox.run(`launch:${id}`, waitLabel, async () => { outcome.result = await toolsApi.launchExternal(id) })
+      if (!launched || !mounted.current || !epoch()) return
       // 打开以后变的只有这一行的「运行中」：不再整轮重扫，那会让三行按钮一起变灰（第三十一批 C）。
-      if (launched && mounted.current && epoch()) toolbox.noteExternalLaunched(id)
+      toolbox.noteExternalLaunched(id)
+      const warning = externalLaunchWarning(outcome.result)
+      if (warning) toast.show(warning, 'warn')
     } catch (cause) { if (mounted.current && epoch()) throw cause }
   }
   // Claude Desktop 卡上的「切回官方账号 / 改用当前账号」：只改它登录页那个选择。星芒那份配置用不上了
@@ -389,19 +394,19 @@ export function useToolInstall(options: ToolInstallOptions) {
     if (result.outcome === 'reconnect') {
       // 弹框前先说一句为什么弹（#1111 第 1 条）：客户点的是「改用当前账号」，看到的却是一个配置框。
       // 不点按钮名：配置框的主按钮会跟着检测结果在「保存并检测」「保存配置」之间变。
-      toast.show('原来那份连接用不上了，在弹出的窗口里保存一次，就改用当前账号', 'neutral')
+      toast.show('原连接已不可用，请在弹出的窗口中保存一次，即可改用当前账号', 'neutral')
       setExternalClient(id)
     } else toast.show(result.message, 'ok')
   }
   function finishExternalConfigSave() {
     const epoch = accountEpoch.capture()
     void toolbox.refreshExternal().catch(() => {
-      if (mounted.current && epoch()) toast.show('配置已保存，但还没读到它现在的状态，点「重新检测」再看一次。', 'warn')
+      if (mounted.current && epoch()) toast.show('配置已保存，但尚未获取其当前状态，请点击「重新检测」。', 'warn')
     })
   }
   function requestUninstall(id: ToolId) {
     const definition = tools.find((tool) => tool.id === id)!
-    setConfirmation({ title: `卸载 ${definition.name}？`, body: `会删掉 ${spacedName(definition.name)}程序，配置和历史会话都保留，重装后直接能用。`, label: `卸载 ${definition.name}`, danger: true, tool: id, work: async () => {
+    setConfirmation({ title: `卸载 ${definition.name}？`, body: `将删除 ${spacedName(definition.name)}程序，配置和历史会话均会保留，重新安装后可直接使用。`, label: `卸载 ${definition.name}`, danger: true, tool: id, work: async () => {
       let uninstalled = false
       await toolbox.run(id, '正在卸载', async () => {
         const result = await toolsApi.uninstall(id)
@@ -419,7 +424,7 @@ export function useToolInstall(options: ToolInstallOptions) {
       // 命令窗口的、要自己手动卸的，照旧当没做完。
       const refreshed = await toolbox.refresh(true).then(() => true, (cause: unknown) => {
         if (!uninstalled) throw cause
-        if (mounted.current) toast.show(`${definition.name} 已卸载，但最新状态没有读到。请重新检测，无需重复卸载。`, 'warn')
+        if (mounted.current) toast.show(`${definition.name} 已卸载，但最新状态尚未获取。请重新检测，无需重复卸载。`, 'warn')
         return false
       })
       // 转交给命令窗口的、要自己手动卸的不说这句（照字表）：那时程序还没卸掉。
@@ -430,7 +435,7 @@ export function useToolInstall(options: ToolInstallOptions) {
     const name = tools.find((tool) => tool.id === id)?.name ?? '工具'
     const latestVersion = toolbox.snapshot ? presentTools(toolbox.snapshot).find((tool) => tool.id === id)?.latestVersion ?? null : null
     const shown = version.replace(/^v/, '')
-    setConfirmation({ title: `退回 v${shown}？`, body: `会把 ${spacedName(name)}换回更新前的 v${shown}，配置和历史会话都保留。退回后还会显示有新版本，等下次更新写明修好了再更新。`, label: `退回 v${shown}`, tool: id, work: async () => {
+    setConfirmation({ title: `退回 v${shown}？`, body: `将把 ${spacedName(name)}回退到更新前的 v${shown}，配置和历史会话均会保留。回退后仍会提示有新版本，建议待更新说明注明已修复后再更新。`, label: `退回 v${shown}`, tool: id, work: async () => {
       // 确认框马上关掉，进度交给工具卡片，和「更新」一样可以看进度、可以取消。
       void perform('退回工具版本', async () => {
         rememberRevertedToolUpdate(id, latestVersion)
@@ -455,7 +460,7 @@ export function useToolInstall(options: ToolInstallOptions) {
     if (goingBack && target && current?.currentVersion) {
       const installed = current.currentVersion.replace(/^v/, '')
       setConfirmation({ title: `回到推荐版本 v${target}？`, label: `回到 v${target}`, tool: id,
-        body: <><p>{`现在装的是 v${installed}，比星芒验证过的版本新。遇到问题时可以回到 v${target}。`}</p><p>配置和历史会话都会保留。</p></>,
+        body: <><p>{`现在装的是 v${installed}，比星芒验证过的版本新。遇到问题时可以回到 v${target}。`}</p><p>配置和历史会话均会保留。</p></>,
         // 确认框马上关掉，进度交给工具卡片，同「退回」。
         work: async () => { void runHomeInstall(id, name, version, 'rollback', true) } })
       return
@@ -473,7 +478,7 @@ export function useToolInstall(options: ToolInstallOptions) {
     try {
       const outcome = await install(id, version, done)
       if (outcome !== 'installed' || !mounted.current) return
-      if (!wasInstalled) toast.show(done.keyWritten ? `${spacedName(name)}已装好，并配好了你的账号` : `${spacedName(name)}已装好`, 'ok')
+      if (!wasInstalled) toast.show(done.keyWritten ? `${spacedName(name)}已安装，并已关联您的账号` : `${spacedName(name)}已安装`, 'ok')
       else if (shownKind === 'rollback' && target) toast.show(`${spacedName(name)}已回到推荐版本 v${target}`, 'ok')
       else if (shownKind === 'update' && target) toast.show(`${spacedName(name)}已更新到 v${target}，有问题可以在右边「…」里退回`, 'ok')
     } catch (cause) {
@@ -499,8 +504,8 @@ export function useToolInstall(options: ToolInstallOptions) {
     const outcome = await toolbox.cancel(id)
     if (!outcome.cancelled) { if (outcome.reason) toast.show(outcome.reason, 'warn'); return }
     if (!mounted.current) return
-    if (!current?.status.installed) toast.show(`已取消安装 ${name}，没有留下文件`, 'neutral')
-    else if (current.currentVersion) toast.show(`已取消，${spacedName(name)}还是 v${current.currentVersion.replace(/^v/, '')}`, 'neutral')
+    if (!current?.status.installed) toast.show(`已取消安装 ${name}，未残留文件`, 'neutral')
+    else if (current.currentVersion) toast.show(`已取消，${spacedName(name)}仍为 v${current.currentVersion.replace(/^v/, '')}`, 'neutral')
   }
   return {
     installIntents, installFailures, storeNewerVersion, setStoreNewerVersion, manualUninstall, setManualUninstall, runtimeRestart, setRuntimeRestart, managedSwitch,

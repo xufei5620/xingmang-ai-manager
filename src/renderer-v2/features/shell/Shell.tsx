@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type MouseEvent, type ReactNode } from 'react'
-import { ArrowRight, ArrowUpRight, Bell, CircleHelp, CreditCard, Download, Gauge, LogOut, Moon, PanelLeft, Play, RefreshCw, Search, SlidersHorizontal, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, Bell, CircleHelp, CreditCard, Download, Gauge, Images, LogOut, Moon, PanelLeft, Play, RefreshCw, Search, SlidersHorizontal, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
 import { Button, Coachmark, Dialog, Input, Logo, Tooltip, focusable } from '../../ui'
 import { shellNavigation, shellTour, type ShellNavigationEntry } from '../../registry/shell'
 import { pageRegistry, type PageId } from '../../registry/pages'
@@ -121,12 +121,12 @@ const navEdge = 16
 const commandTitle = '搜索或跳转'
 const commandPlaceholder = '输入页面、工具或操作，比如「充值」'
 const actionIcons: Partial<Record<string, LucideIcon>> = {
-  'action:recharge': CreditCard, 'action:usage': Gauge, 'action:check': Zap, 'action:help': CircleHelp, 'action:chat-parameters': SlidersHorizontal, 'account:logout': LogOut,
+  'action:recharge': CreditCard, 'action:usage': Gauge, 'action:check': Zap, 'action:help': CircleHelp, 'action:chat-parameters': SlidersHorizontal, 'action:create-library': Images, 'account:logout': LogOut,
 }
 const toolActionIcons: Partial<Record<CommandAction, LucideIcon>> = { openTool: Play, installTool: Download, configureTool: SlidersHorizontal }
 
-// 按「/」跳到的搜索框：只找正文里看得见、点得着的那个。聊天页去过一次就一直挂在正文最前面、只是藏起来，
-// 它的「搜索对话」排第一；取第一个就永远是它，focus() 一个藏起来的框不起作用，别的页按「/」也就没反应了。
+// 按「/」跳到的搜索框：只找正文里看得见、点得着的那个。「创作」页去过一次就一直挂在正文最前面、只是藏起来，
+// 它的「搜索做过的东西」排第一；取第一个就永远是它，focus() 一个藏起来的框不起作用，别的页按「/」也就没反应了。
 function pageSearchField(main: HTMLElement | null) {
   if (!main) return null
   return focusable(main).find((element): element is HTMLInputElement => element instanceof HTMLInputElement && element.matches('input[type="search"], input[aria-label*="搜索"]')) ?? null
@@ -271,13 +271,13 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     }
   }
   const balanceStatus = balanceStatusText({ ...account, offline })
-  const balanceTitle = `${account.balance ?? '余额暂时没有读到'}；${balanceStatus}`
+  const balanceTitle = `${account.balance ?? '余额获取失败'}；${balanceStatus}`
   // 还在恢复登录、头一回读余额：放灰色占位条；读过了没读到写「—」，不写「暂未读到」那么长一串。
   const balanceAmount = account.restoring || (account.signedIn && !account.balance && account.balanceLoading)
     ? <span className="v2-account-balance-placeholder" aria-hidden="true" data-testid="sidebar-balance-placeholder" />
     : account.balance
       ? <strong>{account.balance}</strong>
-      : <strong title={account.signedIn ? '余额暂时没有读到，点刷新再试' : undefined} data-testid="sidebar-balance-unread">—</strong>
+      : <strong title={account.signedIn ? '余额获取失败，请点击刷新重试' : undefined} data-testid="sidebar-balance-unread">—</strong>
   const accountName = account.displayName ?? '未登录'
   const accountNote = account.email ?? (account.signedIn ? undefined : '登录后自动配密钥')
   const runway = account.signedIn ? account.runway ?? null : null
@@ -446,12 +446,12 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
   }
   const pageLabel = pageRegistry.find((page) => page.id === activePage)?.label
   const accountTabLabel = activePage === 'account' ? accountTabs.find((tab) => tab.value === accountTab)?.label : undefined
-  const environmentLabel = offline ? '没网' : environment?.label ?? '环境待检测'
+  const environmentLabel = offline ? '网络未连接' : environment?.label ?? '环境待检测'
   const environmentDot = offline ? ' is-bad' : environment?.tone === 'ok' ? ' is-ok' : environment?.tone === 'warn' ? ' is-warn' : ''
   // 历史账号没有用户名时是邮箱，状态栏放不下会省略，悬停看全文（#1133 第 3 条）。
   const userLine = account.signedIn ? `已登录 ${account.displayName}` : account.displayName ?? '未登录'
   // 下好了不写「重启后更新」：缩在托盘的人关掉窗口不算重启，照着做了也装不上（「侧栏改」第 3 条）。
-  const versionLabel = version ? `v${version}${update === 'available' ? ' · 有新版本' : update === 'ready' ? ' · 新版已下好，点这里安装' : ''}` : '版本读取中'
+  const versionLabel = version ? `v${version}${update === 'available' ? ' · 有新版本' : update === 'ready' ? ' · 新版本已下载，点击安装' : ''}` : '版本读取中'
   const tour = shellTour[tourStep]
   return <div className="v2-root" data-os={platform} data-testid="app-frame">
     <div className={`v2-shell${rail ? ' sidebar-collapsed' : ''}${floating ? ' sidebar-floating' : ''}`} data-narrow={narrow || undefined}>
@@ -513,7 +513,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
         </header>
         <OfflineBanner />
         {banner}
-        <main ref={viewport} id="v2-main" tabIndex={-1} className={`v2-content${activePage === 'chat' ? ' v2-content-chat' : ''}`} data-testid="page-viewport">{children}</main>
+        <main ref={viewport} id="v2-main" tabIndex={-1} className={`v2-content${activePage === 'chat' ? ' v2-content-chat' : activePage === 'extensions' ? ' v2-content-extensions' : ''}`} data-testid="page-viewport">{children}</main>
         <p className="v2-visually-hidden" role="status" aria-live="polite" data-testid="shell-page-announcement">{pageAnnouncement}</p>
         <footer className="v2-statusbar" data-testid="shell-statusbar">
           <button type="button" onClick={adapter.openHealth} title={environment?.detail} data-testid="statusbar-environment"><i className={`v2-dot${environmentDot}`} />{environmentLabel}</button>
@@ -529,7 +529,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
             onClick={accelerationLine ? () => adapter.navigate?.('acceleration') : adapter.refreshNetwork}>
             <span aria-live="polite">{networkRefreshing ? '正在检测网络位置…' : accelerationLine ? `加速中 · ${accelerationLine}` : networkStatusLabel(network)}</span>
           </button>}
-          {remoteActive && <button type="button" className="v2-status-remote" onClick={() => adapter.navigate?.('remote')} disabled={!adapter.navigate} title="手机遥控 Codex 开着，点击查看或关闭" data-testid="statusbar-remote"><i className="v2-dot is-accent" />手机遥控中</button>}
+          {remoteActive && <button type="button" className="v2-status-remote" onClick={() => adapter.navigate?.('remote')} disabled={!adapter.navigate} title="手机遥控 Codex 已开启，点击查看或关闭" data-testid="statusbar-remote"><i className="v2-dot is-accent" />手机遥控中</button>}
           <span className="v2-status-spacer" />
           {installedCount !== undefined && <button type="button" onClick={() => adapter.navigate?.('home')} data-testid="statusbar-tools">已装 {installedCount} 个工具</button>}
           <button type="button" className={`v2-status-version${update ? ' has-update' : ''}`} onClick={update === 'ready' ? adapter.installUpdate ?? adapter.openUpdates : adapter.openUpdates} data-testid="statusbar-version">{versionLabel}</button>
@@ -561,13 +561,13 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
         })}</div>
       {bonusFeedback && <p role={bonusFeedback.error ? 'alert' : 'status'} data-testid="command-acceleration-feedback">{bonusFeedback.text}</p>}
       {!resultCount && <div className="v2-command-empty">
-        <p role="status">{`没有找到「${query.trim().slice(0, 40)}」相关的内容`}</p>
-        {adapter.searchTutorial && query.trim() && <Button size="sm" icon={Search} onClick={searchTutorial} testId="command-search-tutorial">{`去教程里搜「${query.trim().slice(0, 40)}」`}</Button>}
+        <p role="status">{`未找到与「${query.trim().slice(0, 40)}」相关的内容`}</p>
+        {adapter.searchTutorial && query.trim() && <Button size="sm" icon={Search} onClick={searchTutorial} testId="command-search-tutorial">{`在教程中搜索「${query.trim().slice(0, 40)}」`}</Button>}
       </div>}
       <p className="v2-command-hint" data-testid="command-hint"><span><kbd>↑↓</kbd>选择</span><span><kbd>Enter</kbd>打开</span><span><kbd>Esc</kbd>关闭</span></p>
     </Dialog>}
     {/* 导览只在首页放（#1104 第 12 条）：第二步讲的是首页的工具卡片，开在别的页上只能指着侧栏的「首页」念卡片的说明。
-        引导里点了「去聊天」「去充值」就先不出来，等回到首页再放，不把人从刚选的那一页拽走；放到一半去了别的页也先收起，回首页接着放。 */}
+        引导里点了「前往对话」「前往充值」就先不出来，等回到首页再放，不把人从刚选的那一页拽走；放到一半去了别的页也先收起，回首页接着放。 */}
     <Coachmark open={Boolean(tourOpen && !command && activePage === 'home')} target={tour.target} placement={'placement' in tour ? tour.placement : undefined}
       body={typeof tour.body === 'string' ? tour.body : platform === 'mac' ? tour.body.mac : tour.body.win} label={`界面导览，第 ${tourStep + 1} 步`}
       step={tourStep + 1} count={shellTour.length} onNext={() => tourStep + 1 === shellTour.length ? onTourClose?.() : setTourStep((value) => value + 1)} onClose={() => onTourClose?.()} testId="shell-guide-tip" />

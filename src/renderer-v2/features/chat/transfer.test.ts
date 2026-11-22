@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { markBackgroundWork } from '../../background-work'
 import { createConversation, createWorkspace, type ChatWorkspace } from './state'
-import { createHistoryWriter, loadChatHistory, type LoadedChatHistory } from './storage'
+import { createHistoryWriter, loadChatHistory, registerHistoryFlusher, type LoadedChatHistory } from './storage'
 import { chatReplyingImportMessage, createChatTransfer } from './transfer'
 
 const scope = 'xm-account:7'
@@ -90,6 +90,39 @@ describe('moving to a new computer with one broken conversation file', () => {
   })
 })
 
+// 0.2.24 Mac 验收 R6：聊天页自动保存最多晚 2 秒，回复刚说完就去设置里导出，以前导出的是上一次存的那份，少了最后一问一答。
+describe('exporting right after a reply finished', () => {
+  const unregister: (() => void)[] = []
+  afterEach(() => {
+    for (const remove of unregister.splice(0)) remove()
+  })
+  function answered(id: string) {
+    const asked = conversation(id)
+    return { ...asked, messages: [...asked.messages, { id: `${id}-answer`, role: 'assistant' as const, content: '刚说完的回答', reasoning: '', status: 'complete' as const, createdAt: 2 }] }
+  }
+
+  it('has the open chat page save what it holds before reading the files', async () => {
+    const files = memoryFiles()
+    const writer = createHistoryWriter(files.api, null)
+    await writer.save({ ...createWorkspace(scope), conversations: [conversation('earlier'), conversation('asking')] })
+    // The autosave timer has not fired yet: the page holds the answer, the files do not.
+    const onPage: ChatWorkspace = { ...createWorkspace(scope), conversations: [conversation('earlier'), answered('asking')] }
+    unregister.push(registerHistoryFlusher(() => writer.save(onPage)))
+    const exported = await createChatTransfer(files.bridge, memoryStorage(), scope, () => undefined).exportChat()
+    expect(exported.conversations).toHaveLength(2)
+    expect(exported.conversations[1]).toMatchObject({ id: 'asking', messages: [{ id: 'asking-message' }, { id: 'asking-answer', content: '刚说完的回答' }] })
+  })
+
+  it('still exports what is saved when the chat page cannot save right now', async () => {
+    const files = memoryFiles()
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [conversation('earlier')] })
+    unregister.push(registerHistoryFlusher(async () => { throw new Error('disk full') }))
+    const exported = await createChatTransfer(files.bridge, memoryStorage(), scope, () => undefined).exportChat()
+    expect(exported.conversations).toHaveLength(1)
+    expect(exported.conversations[0]).toMatchObject({ id: 'earlier' })
+  })
+})
+
 // D41：聊天页藏在设置页后面照样收回复。以前「导入」一点就把聊天页卸下，正在回复、出图的那条被掐断，出图那条可能照样扣了费。
 describe('importing conversations while the chat is replying', () => {
   const tokens: symbol[] = []
@@ -128,8 +161,8 @@ describe('importing conversations while the chat is replying', () => {
     expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, updated: 0, skipped: 0 })
   })
 
-  it('says it in the exact words the decision sheet gave', () => {
-    expect(chatReplyingImportMessage).toBe('聊天正在回复，等它说完再导入。')
+  it('says it in the exact words the formal wording list gave', () => {
+    expect(chatReplyingImportMessage).toBe('聊天正在回复，请待回复完成后再导入。')
   })
 })
 

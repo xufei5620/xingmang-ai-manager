@@ -56,10 +56,10 @@ describe('weixin login view helpers', () => {
   })
 
   it('points a first login at the switch before pairing, and tells a rescan that kept its person not to pair again', () => {
-    expect(weixinLoginHeadline('confirmed', false)).toBe('微信登录好了。下一步打开下面的「打开遥控」，再点「开始配对」，在微信的 ClawBot 对话里发配对码。')
-    expect(weixinLoginHeadline('confirmed', true)).toBe('微信登录好了，绑定的人没变，不用重新配对。')
+    expect(weixinLoginHeadline('confirmed', false)).toBe('微信已登录。请开启下方「打开遥控」，再点击「开始配对」，在微信 ClawBot 对话中发送配对码。')
+    expect(weixinLoginHeadline('confirmed', true)).toBe('微信已登录，绑定用户未变更，无需重新配对。')
     // YF-5：这次扫码过了手机上那串数字，扫码的人直接绑上，不用配对码；快照里这时也绑着人，不能说成「没变」。
-    expect(weixinLoginHeadline('confirmed', true, true)).toBe('微信登录好了，已经绑定你这个微信。下一步打开下面的「打开遥控」。')
+    expect(weixinLoginHeadline('confirmed', true, true)).toBe('微信已登录并已绑定当前微信。请开启下方「打开遥控」。')
     // 还在扫码时绑没绑人都一样。
     expect(weixinLoginHeadline('scanned', true)).toBe('已扫码，请在手机上点确认')
   })
@@ -69,7 +69,7 @@ describe('WeixinRemoteSection', () => {
   it('warns that the channel is experimental and offers a scan before login', () => {
     const markup = renderToStaticMarkup(<WeixinRemoteSection snapshot={channel()} api={{} as V2Bridge} disabled={false} busy="" run={run} />)
     expect(markup).toContain('实验功能，随时可能断')
-    expect(markup).toContain('腾讯随时可能限流或关掉它')
+    expect(markup).toContain('腾讯可能随时限流或关闭')
     expect(markup).toMatch(/data-testid="settings-remote-weixin-login-start"[^>]*><span>扫码登录<\/span>/)
     expect(markup).not.toContain('settings-remote-weixin-dialog')
   })
@@ -110,8 +110,8 @@ describe('WeixinLoginDialogBody', () => {
 
   it('uses the card snapshot to word the login that just finished', () => {
     const view = { loginId: 'a', phase: 'confirmed' as const, retryAfterMs: 0 }
-    expect(renderToStaticMarkup(<WeixinLoginDialogBody hasBoundPeer={false} view={view} code="" onCodeChange={noop} onSubmitCode={noop} busy={false} />)).toContain('<p>微信登录好了。下一步打开下面的「打开遥控」，再点「开始配对」，在微信的 ClawBot 对话里发配对码。</p>')
-    expect(renderToStaticMarkup(<WeixinLoginDialogBody hasBoundPeer view={view} code="" onCodeChange={noop} onSubmitCode={noop} busy={false} />)).toContain('<p>微信登录好了，绑定的人没变，不用重新配对。</p>')
+    expect(renderToStaticMarkup(<WeixinLoginDialogBody hasBoundPeer={false} view={view} code="" onCodeChange={noop} onSubmitCode={noop} busy={false} />)).toContain('<p>微信已登录。请开启下方「打开遥控」，再点击「开始配对」，在微信 ClawBot 对话中发送配对码。</p>')
+    expect(renderToStaticMarkup(<WeixinLoginDialogBody hasBoundPeer view={view} code="" onCodeChange={noop} onSubmitCode={noop} busy={false} />)).toContain('<p>微信已登录，绑定用户未变更，无需重新配对。</p>')
   })
 
   it('shows the main-process failure message as an alert', () => {

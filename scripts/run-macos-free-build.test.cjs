@@ -370,9 +370,10 @@ function validOptions(t, overrides = {}) {
       CSC_NAME: 'XingMang Free Update Identity',
       XINGMANG_MAC_SIGNING_SHA256: fingerprint,
     },
-    // 这些用例喂的是假的 commandRunner，目录里没有真产物可改名；改名本身由
-    // 「renames the artifacts to their chip names before verification」单测覆盖。
+    // 这些用例喂的是假的 commandRunner，目录里没有真产物可改名、可转格式；改名和转格式
+    // 本身由「renames … then compresses … before verification」和 compress-macos-dmg.test.cjs 覆盖。
     renameArtifacts: async () => {},
+    compressDmgs: async () => {},
     ...overrides,
   }
 }
@@ -1002,6 +1003,7 @@ test('a failed build removes the output directory it created so the next run is 
     },
     verifySigning: () => ({ identityName: 'XingMang Free Update Identity', fingerprint }),
     renameArtifacts: async () => {},
+    compressDmgs: async () => {},
   }
 
   await assert.rejects(() => runFreeMacBuild({
@@ -1023,10 +1025,11 @@ test('a failed build removes the output directory it created so the next run is 
   assert.equal(fs.existsSync(outputDirectory), true)
 })
 
-test('renames the artifacts to their chip names before verification, with and without acceleration', async (t) => {
+test('renames the artifacts to their chip names, then compresses the DMGs, before verification, with and without acceleration', async (t) => {
   for (const withAcceleration of [false, true]) {
     const order = []
     const renames = []
+    const compressions = []
     const overrides = {
       skipChecks: true,
       verifySigning: () => ({ identityName: 'XingMang Free Update Identity', fingerprint }),
@@ -1035,6 +1038,10 @@ test('renames the artifacts to their chip names before verification, with and wi
       renameArtifacts: async (value) => {
         order.push('rename')
         renames.push(value)
+      },
+      compressDmgs: async (value) => {
+        order.push('compress')
+        compressions.push(value)
       },
       verifyArtifacts: async (value) => {
         order.push('verify')
@@ -1053,14 +1060,20 @@ test('renames the artifacts to their chip names before verification, with and wi
 
     // 改名要在合并之后、校验之前：产物校验、SHA256SUMS 和更新清单核对认的都是
     // 带芯片名的发行名，改名跑晚一步就等于把构建名发出去。
+    // 转格式跟在改名后面（它认的是发行名），也要在校验之前：校验挂载、检查的必须是真正
+    // 发出去的那一份 DMG。
     assert.deepEqual(
       order,
-      withAcceleration ? ['build', 'build', 'merge', 'rename', 'verify'] : ['build', 'rename', 'verify'],
+      withAcceleration ? ['build', 'build', 'merge', 'rename', 'compress', 'verify'] : ['build', 'rename', 'compress', 'verify'],
     )
     assert.deepEqual(renames, [{
       outputDirectory: path.join(options.projectRoot, 'release-free-1.2.3'),
       version: '1.2.3',
     }])
+    assert.equal(compressions.length, 1)
+    assert.equal(compressions[0].outputDirectory, path.join(options.projectRoot, 'release-free-1.2.3'))
+    assert.equal(compressions[0].version, '1.2.3')
+    assert.equal(compressions[0].env.CSC_NAME, 'XingMang Free Update Identity')
   }
 })
 

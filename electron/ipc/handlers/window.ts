@@ -15,8 +15,18 @@ export function registerWindowHandlers(ctx: IpcHandlerContext): void {
   })
   registerTrustedHandler('window:set-theme', async (event, theme: unknown) => {
     if (theme !== 'light' && theme !== 'dark') throw new Error('未知的主题')
-    await service.updateStoredConfig({ version: 2, theme })
+    // 先换窗口颜色，再记进设置文件。这份记录只管下次开窗头一帧的底色，界面每次开机都按系统外观再发
+    // 一遍；C 盘满或杀毒锁住文件写不进去时，不该让这次标题栏和页面停在旧颜色上、再弹一张「系统外观
+    // 没有同步」，记一条日志，下次开机照旧再记（0.2.24 性能深查 R4）。
     options.setWindowTheme(event.sender, theme)
+    try {
+      await service.updateStoredConfig({ version: 2, theme })
+    } catch (error) {
+      options.runtimeLog.log('warn', 'window', 'window.theme.save-failed', '深浅色已经换上，没能记进设置文件', {
+        theme,
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
   })
   registerTrustedHandler('window:get-capabilities', () => options.getWindowCapabilities?.() ?? { tray: false, notifications: false })
   registerTrustedHandler('window:report-activity', (event, raw: unknown) => {
@@ -55,4 +65,14 @@ export function registerWindowHandlers(ctx: IpcHandlerContext): void {
   })
   registerTrustedHandler('canvas:open', () => options.openCanvasWindow())
   registerTrustedHandler('canvas:open-asset-library', () => options.openCanvasAssetLibrary())
+  // 「创作」左边那一列里的画布项目（融合第 1 步）。这两条只在主窗口这一侧，画布窗口够不着（I4），画布那边一个能力都没加：
+  // 列出来的只有编号、名字和时间；打开时编号原样交给 canvas-window.ts，由它在当前账号的项目里认过才用（I5）。
+  registerTrustedHandler('canvas:list-projects', () => {
+    if (!options.listCanvasProjects) throw new Error('画布项目暂时读不出来')
+    return options.listCanvasProjects()
+  })
+  registerTrustedHandler('canvas:open-project', (_event, projectId: unknown) => {
+    if (!options.openCanvasProject) throw new Error('画布项目暂时打不开')
+    return options.openCanvasProject(projectId)
+  })
 }

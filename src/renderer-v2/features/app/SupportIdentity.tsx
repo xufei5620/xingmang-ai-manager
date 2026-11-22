@@ -94,7 +94,7 @@ function supportOutcome(failure: SupportFailure): string | undefined {
 }
 
 function supportReason(failure: SupportFailure): string | undefined {
-  return failure.reason ?? (failure.detail ? '没认出是哪一类问题，原话在下面' : undefined)
+  return failure.reason ?? (failure.detail ? '未能识别问题类型，原始信息如下' : undefined)
 }
 
 /**
@@ -111,12 +111,12 @@ export function buildLastFailureLine(failure: SupportFailure, now = Date.now()):
 }
 
 /**
- * testIdPrefix：反馈与客服页的「找客服」卡上也有这一行，帮助与客服弹窗叠在那一页上面时两份同时在，
+ * testIdPrefix：反馈与客服页的「联系客服」卡上也有这一行，帮助与客服弹窗叠在那一页上面时两份同时在，
  * 测试按前缀分开认。缺省 = 帮助弹窗那一份（support）。
  */
 export function SupportIdentity({ line, lastFailure, onCopy, testIdPrefix = 'support' }: { line: string; lastFailure?: string | undefined; onCopy: () => void; testIdPrefix?: string }) {
   return <div className="v2-support-identity" data-testid={`${testIdPrefix}-identity`}>
-    <p>找客服时把这行一起发过去：</p>
+    <p>联系客服时请一并提供：</p>
     <div><code data-testid={`${testIdPrefix}-identity-line`}>{line}</code><Button size="sm" onClick={onCopy}>复制</Button></div>
     {lastFailure && <p data-testid={`${testIdPrefix}-last-failure`}>{lastFailure}</p>}
   </div>

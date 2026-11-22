@@ -90,7 +90,7 @@ export interface CodexRemoteSettings {
    */
   idleCloseHours?: RemoteIdleCloseHours
   /**
-   * 「手机上用的模型」单独选的型号（yoyo 2026-11-19「改」）。缺省 = 跟电脑上的 Codex 一样：只有客户在电脑上选了
+   * 「手机端使用的模型」单独选的型号（yoyo 2026-11-19「改」）。缺省 = 跟电脑上的 Codex 一样：只有客户在电脑上选了
    * 别的才存，读回来也只认长得像型号名的（isRemoteModel）。
    */
   model?: string

@@ -51,6 +51,23 @@ export function backupDescription(backup: Pick<Backup, 'provider' | 'reason' | '
   return `${providerName(backup.provider)} 配置，${backupDetail(backup)}`
 }
 
+/**
+ * 校验没过的那一行（R2-2）：大小和原因都说不准了，只说是哪个工具的、用不了、可以删。
+ * 主进程给的原因是写给程序看的（带路径、文件名），不上屏。清单都读不出来的认不出工具，只说后半句。
+ */
+export function brokenBackupDescription(provider: string | null | undefined): string {
+  return isActiveProviderId(provider) ? `${providerName(provider)} 配置，此备份不可用，可删除` : '此备份不可用，可删除'
+}
+
+/**
+ * 列表上摆哪几份：还在用的工具的，加上校验没过、连工具都认不出来的（R2-2，原来一并被筛掉，坏的那份
+ * 看不见也删不掉）。已下线的工具（Gemini）照旧不列；认不出工具的只在「全部工具」里。
+ */
+export function visibleBackups<T extends Pick<Backup, 'provider' | 'valid'>>(items: readonly T[], provider: Provider | 'all'): T[] {
+  const shown = items.filter((item) => isActiveProviderId(item.provider) || (!item.valid && item.provider === null))
+  return provider === 'all' ? shown : shown.filter((item) => item.provider === provider)
+}
+
 function backupTime(createdAt: string | null | undefined, now: number): string {
   const time = createdAt ? Date.parse(createdAt) : Number.NaN
   return formatClockTime(time, now) ?? displayDate(createdAt)
@@ -67,7 +84,7 @@ function RestoreCheckNotice({ check, navigate }: { check: RestoreCheck; navigate
     return (
       <Notice
         tone={check.error ? 'bad' : 'neutral'}
-        title={check.error ? `${name} · 没测成` : `正在测 ${name} 的连接`}
+        title={check.error ? `${name} · 检测未完成` : `正在测 ${name} 的连接`}
         body={check.error ?? '配置已恢复，正在用它试连一次。'}
         testId="backups-restore-check"
       />
@@ -143,8 +160,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
     }
     if (sequence()) setRestoreCheck(next)
   }
-  const all = resource.data?.filter((item) => isActiveProviderId(item.provider)) ?? []
-  const list = provider === 'all' ? all : all.filter((item) => item.provider === provider)
+  const list = visibleBackups(resource.data ?? [], provider)
   const installedTools = backupTools.filter((tool) => !installedProviders || installedProviders.includes(tool.id))
   function create(targets: readonly Provider[]) {
     void operation.execute(
@@ -213,8 +229,8 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
         error={resource.error}
         count={list.length}
         retry={() => void resource.reload()}
-        emptyTitle={provider === 'all' ? '还没有备份' : `${providerName(provider)} 还没有备份`}
-        emptyDescription="点「立即备份」存一份当前的工具配置。"
+        emptyTitle={provider === 'all' ? '暂无备份' : `${providerName(provider)} 暂无备份`}
+        emptyDescription="请点击「立即备份」保存当前的工具配置。"
       >
         {list.map((backup) => (
           <ListRow
@@ -222,10 +238,11 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
             leading={<BrandIcon tool={backup.provider ?? ''} size={18} />}
             title={backupTime(backup.createdAt, now)}
             badge={<><Pill tone={backup.valid ? 'neutral' : 'bad'}>{backupReasonTag(backup)}</Pill><BackupKeyPill backup={backup} /></>}
-            desc={backupDescription(backup)}
+            desc={backup.valid ? backupDescription(backup) : brokenBackupDescription(backup.provider)}
             actions={
               <>
-                <Button size="sm" variant="ghost" icon={FileText} onClick={() => inspect(backup)}>预览</Button>
+                {/* 坏的那份打不开，不给「预览」；「恢复」照旧灰着，删除照常。 */}
+                {backup.valid && <Button size="sm" variant="ghost" icon={FileText} onClick={() => inspect(backup)}>预览</Button>}
                 <Button size="sm" disabled={!backup.valid} onClick={() => setRestoring(backup)} testId={`backups-restore-${backup.id}`}>恢复</Button>
                 <Button size="sm" variant="ghost" icon={Trash2} aria-label="删除这份备份" onClick={() => setDeletion(backup)} testId={`backups-delete-${backup.id}`} />
               </>
@@ -258,7 +275,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
             <p className={preview.valid ? 'v2-backup-preview-check' : 'v2-backup-preview-check is-bad'}>{preview.valid ? '已校验，文件完整' : preview.error}</p>
             <dl className="v2-business-kv">
               <dt>密钥</dt>
-              <dd data-testid="backup-preview-key">{previewKey?.label ?? '这份备份没有记下密钥属于哪个账号'}</dd>
+              <dd data-testid="backup-preview-key">{previewKey?.label ?? '此备份未记录密钥所属账号'}</dd>
             </dl>
             {preview.files.map((file) => (
               <ListRow
@@ -269,7 +286,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
               />
             ))}
             <p className="v2-backup-preview-note">恢复前会先把当前配置另存一份，恢复后需要重新打开工具。</p>
-            <p className="v2-backup-preview-note">备份在这台电脑上，里面可能有密钥，别随便发给别人。</p>
+            <p className="v2-backup-preview-note">备份保存在本机，其中可能包含密钥，请勿随意提供给他人。</p>
           </>
         )}
       </Dialog>
@@ -299,7 +316,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
                         void checkRestored(result.provider)
                       }
                       await resource.reload()
-                      if (!result.preRestoreBackupId) throw new Error('恢复好了，但没找到恢复前存的那一份。请到「反馈与客服 › 运行日志」导出发给客服。')
+                      if (!result.preRestoreBackupId) throw new Error('已恢复，但未找到恢复前的备份。请在「反馈与客服 › 运行日志」中导出并发送给客服。')
                     },
                     `已恢复到 ${restoringTime} 的配置，原来的配置已另存`,
                   )
@@ -318,7 +335,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
       </Dialog>
       <Dialog
         open={Boolean(deletion)}
-        title={`删除 ${deletion ? backupTime(deletion.createdAt, now) : ''} 的备份？`}
+        title={deletion?.createdAt ? `删除 ${backupTime(deletion.createdAt, now)} 的备份？` : '删除这份备份？'}
         onClose={() => setDeletion(null)}
         footer={
           <>
@@ -345,7 +362,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
           </>
         }
       >
-        <p>删除后就不能用它恢复配置了。</p>
+        <p>删除后将无法使用此备份恢复配置。</p>
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </Card>

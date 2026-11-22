@@ -32,7 +32,7 @@ function snapshot(patch: Partial<CodexRemoteSnapshot> = {}): CodexRemoteSnapshot
   }
 }
 
-const quiet = '机器人还没收到任何消息。'
+const quiet = '机器人尚未收到任何消息。'
 
 describe('codex remote view', () => {
   it('keeps the newer snapshot whichever of the reply and the push arrives last', () => {
@@ -44,7 +44,7 @@ describe('codex remote view', () => {
   })
 
   it('says what Codex is doing only while a channel is on', () => {
-    expect(remoteTaskLabel({ task: 'waiting-approval', pendingApprovals: 2 })).toBe('等你同意 2 条')
+    expect(remoteTaskLabel({ task: 'waiting-approval', pendingApprovals: 2 })).toBe('待确认 2 条')
     expect(remoteTaskLabel({ task: 'starting', pendingApprovals: 0 })).toBe('正在处理')
     expect(remoteCardMeta(snapshot())).toBeNull()
     expect(remoteCardMeta(snapshot({ task: 'running', channels: { ...snapshot().channels, feishu: channel({ enabled: true }) } }))).toBe('Codex 正在处理')
@@ -89,7 +89,7 @@ describe('codex remote view', () => {
     expect(pairingAttemptText(channel(), quiet)).toBeNull()
     expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1 } }), quiet)).toBeNull()
     expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, failures: 1 } }), quiet)).toBe('配对码错了 1 次')
-    expect(pairingAttemptText(channel({ pairingLocked: true }), quiet)).toBe('这个码已经作废，请重新开始配对。')
+    expect(pairingAttemptText(channel({ pairingLocked: true }), quiet)).toBe('此配对码已失效，请重新开始配对。')
     // A new code replaces the voided one.
     expect(pairingAttemptText(channel({ pairing: { code: '000043', expiresAt: 1 }, pairingLocked: true }), quiet)).toBeNull()
   })
@@ -121,14 +121,14 @@ describe('last phone request (YF-13)', () => {
 
   it('says when it came in and how far it got, never what was asked', () => {
     expect(lastRequestText({ receivedAt: at, state: 'running' }, now)).toBe('14:05 发来一条，正在处理，已经 3 分钟')
-    expect(lastRequestText({ receivedAt: at, state: 'done' }, now)).toBe('14:05 那一条做完了')
-    expect(lastRequestText({ receivedAt: at, state: 'stopped' }, now)).toBe('14:05 那一条停下了')
-    expect(lastRequestText({ receivedAt: at, state: 'failed', reason: '余额不够了，充值后再发一次。' }, now)).toBe('14:05 那一条没做完：余额不够了，充值后再发一次。')
-    expect(lastRequestText({ receivedAt: at, state: 'failed' }, now)).toBe('14:05 那一条没做完。')
+    expect(lastRequestText({ receivedAt: at, state: 'done' }, now)).toBe('14:05 已完成')
+    expect(lastRequestText({ receivedAt: at, state: 'stopped' }, now)).toBe('14:05 已停止')
+    expect(lastRequestText({ receivedAt: at, state: 'failed', reason: '余额不够了，充值后再发一次。' }, now)).toBe('14:05 未完成：余额不够了，充值后再发一次。')
+    expect(lastRequestText({ receivedAt: at, state: 'failed' }, now)).toBe('14:05 未完成。')
   })
 
   it('mentions waiting approvals only when there are some', () => {
     expect(pendingApprovalsText(0)).toBeNull()
-    expect(pendingApprovalsText(2)).toBe('等你同意 2 条，要在手机上回。')
+    expect(pendingApprovalsText(2)).toBe('待确认 2 条，请在手机上回复。')
   })
 })

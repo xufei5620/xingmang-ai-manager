@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import QRCode from 'qrcode'
-import { ipcEventChannels, type AppSettingsV2, type AppConfigSummary, type AccountSessionState, type ExternalClientStatus, type ExternalToolId, type MultiProviderSessionPage, type ProviderId, type RelayRouteLine, type RelayRouteLines, type RelayRoutePreferences, type SystemSnapshot, type XingmangApi, type AiChatHistorySnapshot } from '../../../electron/ipc-contract'
+import { ipcEventChannels, type AiLibraryEntry, type AppSettingsV2, type AppConfigSummary, type AccountSessionState, type ExternalClientStatus, type ExternalToolId, type MultiProviderSessionPage, type ProviderId, type RelayRouteLine, type RelayRouteLines, type RelayRoutePreferences, type SystemSnapshot, type XingmangApi, type AiChatHistorySnapshot, type CanvasProjectListEntry } from '../../../electron/ipc-contract'
 import RendererV2App from '../App'
 import { createPreviewAccelerationApi } from './acceleration-fixture'
 import { accelerationTrialSeconds } from '../../../electron/acceleration-contract'
@@ -9,9 +9,13 @@ import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/too
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import { buildClaudeDesktopInstallFailureMessage } from '../../../electron/claude-desktop-install-failure'
+import { codexDesktopActivationBrokenSentence } from '../../../electron/codex-desktop-known-issues'
 import { accountScope } from '../account-context'
 import { createConversation, createWorkspace } from '../features/chat/state'
 import { exportableConversations } from '../features/chat/storage'
+import { assetThumbnailUrl } from '../../../electron/asset-thumbnail'
+import { serializeVideoStudioItem, type VideoStudioItem } from '../features/video-studio/library'
+import { createVideoStudioProject, defaultVideoStudioSettings, serializeVideoStudioProject, videoStudioDraftsStorageKey, videoStudioStorageKey, type VideoStudioProject } from '../features/video-studio/project'
 import { relayProviderBaseUrlMatches, relayProviderBaseUrls } from '../../../electron/relay-sites'
 import '../styles/tokens.css'
 import '../styles/components.css'
@@ -86,6 +90,13 @@ function fixtureRouteLines(): RelayRouteLines {
     return active === 'auto' ? autoRelayLine : { line: active, settled: true }
   }
   return { solov: lineOf('solov'), 'solov-api': lineOf('solov-api') }
+}
+// 同主进程（app-settings.ts 的合并、settings:save 处理器）：设置页「更换」带着 workspaceChosen 才记下那一刻；
+// 别处换成另一个文件夹，那一刻就不算数了（0.2.25 总单 Q1）。
+function fixtureRememberWorkspace(workspace: string, chosenOnSettingsPage: boolean) {
+  const { workspaceChosenAt, ...rest } = settings
+  const kept = chosenOnSettingsPage ? Date.now() : workspace === settings.workspace ? workspaceChosenAt : undefined
+  settings = { ...rest, workspace, ...(kept === undefined ? {} : { workspaceChosenAt: kept }) }
 }
 function settingsView(): AppSettingsV2 {
   return { ...settings, relayRouteLines: fixtureRouteLines() }
@@ -248,6 +259,12 @@ if (query.has('cliUpdateFailed')) {
   system.clis.claude = { ...system.clis.claude, updateAvailable: false, updateCheck: 'failed',
     updateError: '已安装 CLI 的版本号无法解析，不能判断是否有更新' }
 }
+// ?codexMacUpdate（配 os=mac）：Codex 桌面端开着，存储桶里有 1.3.0，首页那一行给「可更新到 v1.3.0」。
+// 点了更新，holdNextInstall 能把它压在半路，releaseInstall 才换上新版；同主进程，换的时候星芒把它关掉了。
+if (query.has('codexMacUpdate')) {
+  system.desktopApps.codex = { ...system.desktopApps.codex, running: true, latestVersion: '1.3.0', updateAvailable: true,
+    updateCheck: 'checked', updateState: 'available', mirrorVersion: '1.3.0', mirrorUpdateAvailable: true }
+}
 if (query.has('desktopDetectionFailed')) {
   system.desktopApps.codex = { ...system.desktopApps.codex, installed: false, version: null, path: null, appVersion: null,
     detectionFailed: true, detectionError: '已找到 Codex 应用，但签名验证未完成，请重新检测' }
@@ -270,7 +287,7 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdAccountKeys(): void; releaseAccountKeys(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; addSpend(quota: number): void; releaseKeyMetadata(provider: ProviderId): void; holdConfiguredModels(provider: ProviderId): void; releaseConfiguredModels(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; signOutAccountPageSessionReads(): void; accountPageSessionSignedOutServed(): number; dropSessionSilently(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void; holdNextNodeInstall(): void; releaseNodeInstall(): void; addRecentSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): void; setRelayRoute(line: RelayRouteLine): void; setToolsRunning(running: boolean): void; holdNextImport(): void; releaseImport(): void; holdNextChatHistoryRead(): void; releaseChatHistoryRead(): void; chatHistory(): { ids: string[]; index: string }; releaseChatImage(): void } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdAccountKeys(): void; releaseAccountKeys(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; addSpend(quota: number): void; releaseKeyMetadata(provider: ProviderId): void; holdConfiguredModels(provider: ProviderId): void; releaseConfiguredModels(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; signOutAccountPageSessionReads(): void; accountPageSessionSignedOutServed(): number; dropSessionSilently(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void; holdNextNodeInstall(): void; releaseNodeInstall(): void; addRecentSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): void; setRelayRoute(line: RelayRouteLine): void; setToolsRunning(running: boolean): void; holdNextImport(): void; releaseImport(): void; holdNextChatHistoryRead(): void; releaseChatHistoryRead(): void; chatHistory(): { ids: string[]; index: string }; releaseChatImage(): void; releaseChatVideo(): void; setCanvasProjects(projects: CanvasProjectListEntry[]): void; videoFilms(scope?: string): { index: string | null; ids: string[] } } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
@@ -300,7 +317,7 @@ const fixtureStarterWorkspace = 'C:\\Users\\fixture\\Documents\\XingmangProjects
 let releaseBalance: (error?: string) => void = () => undefined
 let balanceReads = 0
 let nextBalanceHeld = false
-// emptyWallet：当前账号余额是 $0（新账号还没充值），首页工具卡换「去充值」。
+// emptyWallet：当前账号余额是 $0（新账号还没充值），首页工具卡换「前往充值」。
 let balanceOverride: number | null = query.has('emptyWallet') ? 0 : null
 // 今天又花了多少（额度单位）：本月、最近 7 天的合计和今天那根柱子都加上它（F3，停在首页时用量跟着余额刷新）。
 let extraSpend = 0
@@ -333,9 +350,64 @@ let releaseChatHistoryRead: () => void = () => undefined
 let importAppDataCount = 0
 // ?chatImage：对话页能选出图的模型，出的图压着不回，releaseChatImage 才交出来（D44 换账号先问一句）。
 let releaseChatImage: () => void = () => undefined
+// ?chatVideo：对话页的「生成视频」能选到视频的模型，价目里有它按次的价；交出去的那一段压着不回，releaseChatVideo 才交出来（融合第 2 步）。
+let releaseChatVideo: () => void = () => undefined
 const chatHistoryFiles = new Map<string, AiChatHistorySnapshot>()
+// 「创作」左边那一列。视频存在内存里，读写同主进程那份的规矩：只重写交来的、只删点名的，记号只在带了的那一次动。
+// ?videoFilms：这个账号存着两条视频（一条今天动过、写了两个镜头，一条三天前只写了想法）。
+// ?legacyVideoDrafts：0.2.24 留在本机存储里的草稿，手头一条、草稿箱一条，还没抄成文件。
+// ?canvasProjects：画布里做过两个项目；不带就是一个都没有。v2Test.setCanvasProjects 换成别的（在画布窗口里改了名、删了）。
+const videoProjectFiles = new Map<string, { index: string | null, projects: Map<string, string> }>()
+const fixtureVideoScope = 'xm-account:17'
+function fixtureFilm(idea: string, title: string, shots: Array<{ prompt: string, caption: string }>): VideoStudioProject {
+  return { ...createVideoStudioProject({ ...defaultVideoStudioSettings(), idea }), title, shots: shots.map((shot, index) => ({ id: `fixture-shot-${index + 1}`, ...shot, status: 'idle' as const })) }
+}
+const fixtureFilms: VideoStudioItem[] = [
+  { id: 'fixture-film-cat', updatedAt: Date.now() - 20 * 60_000, project: fixtureFilm('一只橘猫在下雨的街头找回家的路', '橘猫回家', [{ prompt: '雨夜街头的橘猫', caption: '下雨了' }, { prompt: '橘猫跳上台阶', caption: '到家了' }]) },
+  { id: 'fixture-film-sea', name: '海边那条', updatedAt: Date.now() - 3 * 86_400_000, project: fixtureFilm('海边日落，镜头慢慢拉远', '', []) },
+]
+// 主窗口的作品库（融合第 3 步）。编号照主进程那种 43 个字符；时间跟着页面上的钟算，「30 分钟前」「昨天」不随跑的时刻变。
+// ?library：作品库里已经有三张图（最新那张在画布里起过名字、记着当时那句话）和两段视频。?library=many 再加 30 张图，够翻一页。
+// ?videoFilms=library：「橘猫回家」第一镜用的就是作品库里那段视频，上一次拼好的成片也在里面，作品库说得出它们哪来的。
+// 对话里出的图、出的视频（?chatImage、?chatVideo）交出来时排进最前面，同主进程把新作品存进作品库。
+function fixtureLibraryId(label: string): string {
+  return label.padEnd(43, '0')
+}
+function fixtureLibraryTime(minutesAgo: number): string {
+  return new Date(Date.now() - minutesAgo * 60_000).toISOString()
+}
+const fixtureLibraryClipId = fixtureLibraryId('libvid-cat-')
+const fixtureLibraryFilmId = fixtureLibraryId('libvid-film-')
+const fixtureLibrary: AiLibraryEntry[] = query.has('library') ? [
+  { assetId: fixtureLibraryId('libimg-poster-'), mediaType: 'image', createdAt: fixtureLibraryTime(30), mimeType: 'image/png', fileName: 'xingmang-image-poster.png', name: '双 11 主图', prompt: '双 11 促销海报，红金配色' },
+  { assetId: fixtureLibraryFilmId, mediaType: 'video', createdAt: fixtureLibraryTime(45), fileName: 'xingmang-video-film.mp4' },
+  { assetId: fixtureLibraryClipId, mediaType: 'video', createdAt: fixtureLibraryTime(120), fileName: 'xingmang-video-cat.mp4' },
+  { assetId: fixtureLibraryId('libimg-cat-'), mediaType: 'image', createdAt: fixtureLibraryTime(26 * 60), mimeType: 'image/png', fileName: 'xingmang-image-cat.png' },
+  { assetId: fixtureLibraryId('libimg-sea-'), mediaType: 'image', createdAt: fixtureLibraryTime(3 * 24 * 60), mimeType: 'image/jpeg', fileName: 'xingmang-image-sea.jpg' },
+  ...(query.get('library') === 'many' ? Array.from({ length: 30 }, (_, index): AiLibraryEntry => ({ assetId: fixtureLibraryId(`libimg-more-${index}-`), mediaType: 'image', createdAt: fixtureLibraryTime(5 * 24 * 60 + index), mimeType: 'image/png', fileName: `xingmang-image-more-${index}.png` })) : []),
+] : []
+function addFixtureLibraryEntry(entry: AiLibraryEntry) {
+  if (!fixtureLibrary.some((item) => item.assetId === entry.assetId)) fixtureLibrary.unshift(entry)
+}
+if (query.get('videoFilms') === 'library') {
+  const cat = fixtureFilms[0].project
+  fixtureFilms[0] = { ...fixtureFilms[0], project: {
+    ...cat,
+    shots: cat.shots.map((shot, index) => index === 0 ? { ...shot, status: 'done' as const, clip: { assetId: fixtureLibraryClipId, thumbnailUrl: assetThumbnailUrl(fixtureLibraryClipId, 'video'), width: 1280, height: 720, durationSeconds: 5 } } : shot),
+    exported: { assetId: fixtureLibraryFilmId, thumbnailUrl: assetThumbnailUrl(fixtureLibraryFilmId, 'video'), width: 1280, height: 720, durationSeconds: 10 },
+  } }
+}
+if (query.has('videoFilms')) videoProjectFiles.set(fixtureVideoScope, { index: null, projects: new Map(fixtureFilms.map((film) => { const file = serializeVideoStudioItem(film); return [file.key, file.content] })) })
+if (query.has('legacyVideoDrafts')) {
+  // 照 0.2.24 的两格写：手头那一条没有时间，草稿箱里的带 savedAt。刷新页面时已经有了就不重写，同真机上「老版本留下的」。
+  if (!localStorage.getItem(videoStudioStorageKey(fixtureVideoScope))) localStorage.setItem(videoStudioStorageKey(fixtureVideoScope), JSON.stringify(serializeVideoStudioProject(fixtureFilms[0].project)))
+  if (!localStorage.getItem(videoStudioDraftsStorageKey(fixtureVideoScope))) localStorage.setItem(videoStudioDraftsStorageKey(fixtureVideoScope), JSON.stringify({ version: 1, drafts: [{ id: 'fixture-draft-sea', savedAt: fixtureFilms[1].updatedAt, project: serializeVideoStudioProject(fixtureFilms[1].project) }] }))
+}
+let canvasProjects: CanvasProjectListEntry[] = query.has('canvasProjects')
+  ? [{ id: 'fixture-canvas-poster', name: '双 11 主图', updatedAt: Date.now() - 2 * 3_600_000 }, { id: 'fixture-canvas-old', name: '门店海报', updatedAt: Date.now() - 9 * 86_400_000 }]
+  : []
 const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource', 'saveSettings'])
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdAccountKeys() { heldAccountKeys = heldAccountKeys ?? [] }, releaseAccountKeys() { const held = heldAccountKeys ?? []; heldAccountKeys = null; for (const resolve of held) resolve() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, addSpend(quota) { extraSpend += quota }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, holdConfiguredModels(provider) { heldConfiguredModels.set(provider, heldConfiguredModels.get(provider) ?? []) }, releaseConfiguredModels(provider) { const held = heldConfiguredModels.get(provider) ?? []; heldConfiguredModels.delete(provider); for (const resolve of held) resolve() }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, signOutAccountPageSessionReads() { accountPageSessionSignedOut = true }, accountPageSessionSignedOutServed() { return accountPageSessionSignedOutServed }, dropSessionSilently() { session = { authenticated: false, account: null } }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, holdNextNodeInstall() { nextNodeInstallHeld = true }, releaseNodeInstall() { releaseNodeInstall() }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) }, setRelayRoute(line) { autoRelayLine = line; reportRoutedConfig() }, setToolsRunning(running) { fixtureToolsRunning = running }, holdNextImport() { nextImportHeld = true }, releaseImport() { releaseImport() }, holdNextChatHistoryRead() { nextChatHistoryReadHeld = true }, releaseChatHistoryRead() { releaseChatHistoryRead() }, chatHistory() { const index = [...chatHistoryFiles.values()][0]?.index ?? ''; return { ids: index ? (JSON.parse(index) as { conversations: Array<{ id: string }> }).conversations.map((entry) => entry.id) : [], index } }, releaseChatImage() { releaseChatImage() } }
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdAccountKeys() { heldAccountKeys = heldAccountKeys ?? [] }, releaseAccountKeys() { const held = heldAccountKeys ?? []; heldAccountKeys = null; for (const resolve of held) resolve() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, addSpend(quota) { extraSpend += quota }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, holdConfiguredModels(provider) { heldConfiguredModels.set(provider, heldConfiguredModels.get(provider) ?? []) }, releaseConfiguredModels(provider) { const held = heldConfiguredModels.get(provider) ?? []; heldConfiguredModels.delete(provider); for (const resolve of held) resolve() }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, signOutAccountPageSessionReads() { accountPageSessionSignedOut = true }, accountPageSessionSignedOutServed() { return accountPageSessionSignedOutServed }, dropSessionSilently() { session = { authenticated: false, account: null } }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, holdNextNodeInstall() { nextNodeInstallHeld = true }, releaseNodeInstall() { releaseNodeInstall() }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) }, setRelayRoute(line) { autoRelayLine = line; reportRoutedConfig() }, setToolsRunning(running) { fixtureToolsRunning = running }, holdNextImport() { nextImportHeld = true }, releaseImport() { releaseImport() }, holdNextChatHistoryRead() { nextChatHistoryReadHeld = true }, releaseChatHistoryRead() { releaseChatHistoryRead() }, chatHistory() { const index = [...chatHistoryFiles.values()][0]?.index ?? ''; return { ids: index ? (JSON.parse(index) as { conversations: Array<{ id: string }> }).conversations.map((entry) => entry.id) : [], index } }, releaseChatImage() { releaseChatImage() }, releaseChatVideo() { releaseChatVideo() }, setCanvasProjects(projects) { canvasProjects = projects }, videoFilms(scope = fixtureVideoScope) { const stored = videoProjectFiles.get(scope); return { index: stored?.index ?? null, ids: [...(stored?.projects.keys() ?? [])] } } }
 if (query.has('startupConfigFail')) window.v2Test.fail = 'getConfig'
 // subscriptionReadFail：订阅一直读不到（网络抖、服务端慢），不知道这个账号有没有订阅（F1）。
 if (query.has('subscriptionReadFail')) window.v2Test.fail = 'getAccountSubscriptionSelf'
@@ -363,7 +435,7 @@ function recentWorkspaceSession(id: string, provider: ProviderId, cwd: string, u
 }
 const recentWorkspaceSessions = [
   recentWorkspaceSession('1', 'claude', 'C:\\work\\my-app', 400),
-  // older-app 的目录已经被删掉了:卡片上这一行的「接着聊」该按不动（候选 7）。
+  // older-app 的目录已经被删掉了:卡片上这一行的「继续对话」该按不动（候选 7）。
   recentWorkspaceSession('2', 'claude', 'C:\\work\\older-app', 300, false),
   recentWorkspaceSession('3', 'claude', 'C:\\work\\my-app', 200),
   // 这条 Codex 记录只剩摘要（rollout 文件不在了）：记录页照样能点开，详情里说明只有摘要、不能导出。
@@ -406,7 +478,7 @@ const methods = {
     return accelerationDemo.redeemAccelerationCode!(scope, code)
   },
   getSettings: async () => settingsView(),
-  saveSettings: async (patch) => { settings = { ...settings, relayEndpointIds: patch.relayEndpointIds ?? settings.relayEndpointIds, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown, checkUpdatesOnStartup: patch.checkUpdatesOnStartup ?? settings.checkUpdatesOnStartup, autoUpdate: patch.autoUpdate ?? settings.autoUpdate }; return settingsView() },
+  saveSettings: async (patch) => { if (patch.workspace !== undefined) fixtureRememberWorkspace(patch.workspace, patch.workspaceChosen === true); settings = { ...settings, relayEndpointIds: patch.relayEndpointIds ?? settings.relayEndpointIds, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown, checkUpdatesOnStartup: patch.checkUpdatesOnStartup ?? settings.checkUpdatesOnStartup, autoUpdate: patch.autoUpdate ?? settings.autoUpdate }; return settingsView() },
   // ?writeBoundary=kept|later：主进程没当场改 Claude Code 的配置（客户自己写过这一项 / 现在不是星芒在管它的配置），开关照样记下。
   setClaudeWriteBoundary: async (enabled: boolean) => {
     settings = { ...settings, claudeWritesInsideProject: enabled }
@@ -418,6 +490,10 @@ const methods = {
     return { enabled: hidden, applied: 'written' as const }
   },
   getPlatformCapabilities: async () => capabilities,
+  // 「插件」页（0.2.25）一进来就三家一起读，装了 Codex 就另读它的登录状态和市场；默认什么都没有，要内容的用例自己换。
+  listMcpServers: async () => [],
+  listSkills: async () => [],
+  listPlugins: async () => ({ plugins: [], marketplaces: [] }),
   getAccountSession: async () => {
     if (nextAccountSessionHeld) {
       nextAccountSessionHeld = false
@@ -570,6 +646,11 @@ const methods = {
     if (launchedWorkspace) result.rememberedWorkspace = launchedWorkspace
     // 同主进程（isUntouchedStarterWorkspace）：夹具里替用户建的那个文件夹一直空着。
     if (launchedWorkspace === fixtureStarterWorkspace) result.rememberedWorkspaceFresh = true
+    // 同主进程：设置页换的那一个，首页据此先进它（Q1）。
+    if (settings.workspaceChosenAt !== undefined) {
+      result.rememberedWorkspace = settings.workspace
+      result.rememberedWorkspaceChosenAt = settings.workspaceChosenAt
+    }
     // 同主进程：恢复中没有账号可比，来源只会是 unknown，并带上「待定」标记。
     if (session.restoring) {
       result.ownershipPending = true
@@ -618,9 +699,11 @@ const methods = {
     cancelExternalInstall?.(new Error(`${tool} 安装已取消`))
     return { cancelled: true, reason: null }
   },
+  // ?externalLaunchElevated：同主进程在「星芒是右键以管理员身份运行的」时打开 Claude Desktop 的回法。
   launchExternalClient: async (tool) => {
     if (query.has('externalLaunchPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
     externalStatuses.find((entry) => entry.tool === tool)!.running = true
+    return tool === 'claudeDesktop' && query.has('externalLaunchElevated') ? { preparationSkipped: 'elevated' } : {}
   },
   // 同主进程：只改 Claude Desktop 登录页那个选择，星芒那份留着；?externalReconnect 时那份已经用不上。
   switchExternalClientSource: async (tool, target) => {
@@ -634,7 +717,7 @@ const methods = {
   chooseWorkspace: async (options) => {
     if (query.has('workspaceCancel')) return null
     const workspace = options?.createStarter ? fixtureStarterWorkspace : 'C:\\Selected Project'
-    settings = { ...settings, workspace }
+    fixtureRememberWorkspace(workspace, false)
     config.workspace = workspace
     return workspace
   },
@@ -716,6 +799,8 @@ const methods = {
   launchCli: async (_provider, workspace) => {
     // ?workspaceGone：记录里的 my-app 已经被删了，同主进程打开时报这一句（provider-launch-service.ts 的 launchProviderOperation）。
     if (query.has('workspaceGone') && workspace === 'C:\\work\\my-app') throw new Error('工作目录不存在，请重新选择')
+    // ?launchDeclined：头一次打开时在「不建议在此文件夹中打开」那一问里点了「暂不打开」，主进程回 declined（N11）。
+    if (query.has('launchDeclined') && window.v2Test.calls.filter((call) => call.method === 'launchCli').length === 1) return { declined: true }
     if (query.has('launchRemembers')) {
       launchedWorkspace = config.workspace
       return { rememberedWorkspace: launchedWorkspace, ...(launchedWorkspace === fixtureStarterWorkspace ? { rememberedWorkspaceFresh: true } : {}) }
@@ -724,7 +809,15 @@ const methods = {
     if (query.has('launchReadOnly')) return { workspaceReadOnly: true }
     return query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {}
   },
-  launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。' } } : {}) }),
+  launchCodexDesktop: async () => {
+    // ?codexLaunchFailure=activation：Windows 不肯起已装好的 Codex（0x80270254）；=generic：等了 38 秒没起来。
+    // 两句都是主进程 describeCodexDesktopLaunchFailure 写出来的原样。
+    const failure = query.get('codexLaunchFailure')
+    if (failure === 'activation') throw new Error(`Codex 桌面端没有打开：${codexDesktopActivationBrokenSentence(38)}`)
+    if (failure === 'generic') throw new Error('Codex 桌面端没有打开：等待 38 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex 命令行版；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
+    return { restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。' } } : {}) }
+  },
+  restartWindows: async () => undefined,
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),
   setCodexDesktopLocale: async (locale) => {
     settings = { ...settings, codexDesktopChineseRuntimePatch: locale === 'zh-CN' ? 'enabled' : 'disabled' }
@@ -792,15 +885,30 @@ const methods = {
     }
     return { outcome: 'uninstalled' as const, previousVersion }
   },
-  // 「帮我清理」：第一次那个文件还被占着，第二次删掉了。
+  // 「一键清理」：第一次那个文件还被占着，第二次删掉了。
   cleanUninstallLeftovers: async () => {
     leftoverCleanups += 1
     return { remaining: leftoverCleanups === 1 ? 1 : 0 }
   },
-  installCodexDesktop: async () => ({ action: 'unchanged', previousVersion: '1.2.3', installedVersion: '1.2.3' }),
+  installCodexDesktop: async () => {
+    if (!query.has('codexMacUpdate')) return { action: 'unchanged' as const, previousVersion: '1.2.3', installedVersion: '1.2.3' }
+    if (nextInstallHeld) {
+      nextInstallHeld = false
+      await new Promise<void>((resolve, reject) => { releaseInstall = (error) => error ? reject(new Error(error)) : resolve() })
+    }
+    system.desktopApps.codex = { ...system.desktopApps.codex, version: '1.3.0', appVersion: '1.3.0', latestVersion: '1.3.0', running: false,
+      updateAvailable: false, updateState: 'latest', mirrorUpdateAvailable: false }
+    return { action: 'updated' as const, previousVersion: '1.2.3', installedVersion: '1.3.0' }
+  },
   getAccountKeys: async () => {
     const held = heldAccountKeys
     if (held) await new Promise<void>((resolve) => held.push(resolve))
+    // clientKeyGroups：编号倒序，最新那把是 8 月 AI 对话在 Claude-ANTI 里签的，那个分组账号现在用不了（见 getAccountUsableGroups）。
+    if (query.has('clientKeyGroups')) return { keys: [
+      { id: 403, name: 'xingmang-chat-msu81uct-5e3c562e6de0', group: 'Claude-ANTI', maskedKey: 'sk-u7••••dtsW', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
+      { id: 402, name: 'my-claude', group: 'Claude AWS-B', maskedKey: 'sk-66••••gPdO', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
+      { id: 401, name: 'xingmang-desktop-claude', group: 'Claude-MAX', maskedKey: 'sk-cl••••5678', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
+    ], total: 3, page: 1, pageSize: 100 }
     return { keys: query.has('keyOptions') ? [
     { id: 201, name: 'coding-key', group: 'Codex_pro', maskedKey: 'sk-se••••9012', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
     { id: 202, name: 'custom-key', group: 'Custom group', maskedKey: 'sk-ot••••1234', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
@@ -809,7 +917,7 @@ const methods = {
   getAccountKeyOptions: async (provider: ProviderId) => {
     const reads = (keyMetadataReads.get(provider) ?? 0) + 1
     keyMetadataReads.set(provider, reads)
-    if (query.get('keyMetadataFail') === provider) throw new Error('当前密钥信息暂时没有读到')
+    if (query.get('keyMetadataFail') === provider) throw new Error('当前密钥信息暂时无法获取')
     if (query.get('keyMetadataPending') === provider && reads === 1) await new Promise<void>((resolve) => pendingKeyMetadata.set(provider, resolve))
     const automatic = resolveManagedCliKeyProfiles(session.siteId)[provider]
     const keyId = selectedKeyIds.get(provider)
@@ -864,7 +972,13 @@ const methods = {
   fillToolTemplateDefaults: async (retry?: boolean) => query.has('templateDeferred')
     ? retry ? { filled: ['codex'] as ProviderId[] } : { filled: [] as ProviderId[], pending: ['codex'] as ProviderId[] }
     : { filled: query.has('templateFilled') ? ['codex', 'claude'] as ProviderId[] : [] },
-  getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT', description: 'Codex', ratio: 1 }],
+  // keyOptions、clientKeyGroups 列出的密钥所在的分组账号都还能用，只有 Claude-ANTI 那把不行。
+  getAccountUsableGroups: async () => [
+    { name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT', description: 'Codex', ratio: 1 },
+    ...(query.has('keyOptions') && session.siteId !== 'solov-api' ? [{ name: 'Codex_pro', description: 'Codex', ratio: 1 }] : []),
+    ...(query.has('keyOptions') ? [{ name: 'Custom group', description: 'Custom', ratio: 1 }] : []),
+    ...(query.has('clientKeyGroups') ? [{ name: 'Claude-MAX', description: 'Claude', ratio: 1 }, { name: 'Claude AWS-B', description: 'Claude', ratio: 1 }] : []),
+  ],
   createAccountKey: async () => undefined,
   changeAccountPassword: async () => {
     session = { ...session, authenticated: false, account: null }
@@ -949,12 +1063,61 @@ const methods = {
   },
   refreshOfficialChatGptUsage: async () => ({ planLabel: 'Plus', renewsAt: null, resetCredits: null, windows: [{ id: 'weekly', label: '周限额', remainingPercent: 72, resetAt: null }], checkedAt: new Date().toISOString() }),
   listAiChatGroups: async () => [{ name: 'fixture-group', description: '本地测试分组', ratio: 1 }],
+  openCanvasWindow: async () => undefined,
   openCanvasAssetLibrary: async () => undefined,
-  prepareAiChatGroup: async (group: string) => ({ group, models: query.has('chatImage') ? ['gpt-test', 'gpt-image-2'] : ['gpt-test'], keyCreated: false }),
+  // 照主进程那份的规矩列：垃圾桶和音频不在这里；film 只认点名的那几段视频；搜索对名字、那句描述，或者页面先搜到的编号。
+  listAiLibrary: async (input) => {
+    const films = new Set(input.filmAssetIds ?? [])
+    const matched = new Set(input.matchedAssetIds ?? [])
+    const search = (input.search ?? '').trim().toLocaleLowerCase('zh-CN')
+    const kind = input.kind ?? 'all'
+    const isFilm = (entry: AiLibraryEntry) => entry.mediaType === 'video' && films.has(entry.assetId)
+    const listed = fixtureLibrary
+      .filter((entry) => kind === 'all' || (kind === 'film' ? isFilm(entry) : kind === 'clip' ? entry.mediaType === 'video' && !isFilm(entry) : entry.mediaType === kind))
+      .filter((entry) => !search || matched.has(entry.assetId) || [entry.name ?? '', entry.prompt ?? ''].some((value) => value.toLocaleLowerCase('zh-CN').includes(search)))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.assetId.localeCompare(left.assetId))
+    const offset = input.offset ?? 0
+    const limit = input.limit ?? 24
+    const items = listed.slice(offset, offset + limit)
+    return {
+      items: structuredClone(items), offset, limit, total: listed.length, hasMore: offset + items.length < listed.length,
+      counts: { image: fixtureLibrary.filter((entry) => entry.mediaType === 'image').length, video: fixtureLibrary.filter((entry) => entry.mediaType === 'video').length, film: fixtureLibrary.filter(isFilm).length },
+    }
+  },
+  saveAiChatAsset: async () => ({ saved: true }),
+  saveAiVideo: async () => ({ saved: true }),
+  openAiVideo: async () => undefined,
+  openDiagnosticFolder: async () => true,
+  // 视频工作台一打开就读一次价格表（确认框里那句「预计约」）；这里一行都没有，确认框照旧只报余额。?chatVideo 时有那个视频模型按次的价。
+  getAccountPriceList: async () => ({ rows: query.has('chatVideo') ? [{ model: 'grok-imagine-video-1.5', group: 'fixture-group', kind: 'call' as const, perCall: 0.25 }] : [] }),
+  listCanvasProjects: async () => structuredClone(canvasProjects),
+  openCanvasProject: async () => true,
+  readVideoStudioProjects: async (scope) => {
+    const stored = videoProjectFiles.get(scope)
+    return { index: stored?.index ?? null, projects: [...(stored?.projects ?? [])].map(([key, content]) => ({ key, content })) }
+  },
+  writeVideoStudioProjects: async (input) => {
+    const stored = videoProjectFiles.get(input.scope) ?? { index: null, projects: new Map<string, string>() }
+    for (const file of input.put) stored.projects.set(file.key, file.content)
+    for (const key of input.remove) stored.projects.delete(key)
+    if (input.index !== undefined) stored.index = input.index
+    videoProjectFiles.set(input.scope, stored)
+  },
+  prepareAiChatGroup: async (group: string) => ({ group, models: ['gpt-test', ...(query.has('chatImage') ? ['gpt-image-2'] : []), ...(query.has('chatVideo') ? ['grok-imagine-video-1.5'] : [])], keyCreated: false }),
+  generateAiVideo: async (input) => {
+    // 没开 ?chatVideo 的用例不该出视频：照旧记成没 mock 的调用，clean() 会报出来。
+    if (!query.has('chatVideo')) { window.v2Test.unexpected.push('generateAiVideo'); throw new Error('Missing mock: generateAiVideo') }
+    await new Promise<void>((resolve) => { releaseChatVideo = resolve })
+    // 一单一段：编号跟着请求号走，两段不会撞成同一个。缩略图地址是主进程给的那种：视频工作台读回一条视频时只认这种，别的当这一段没有。
+    const assetId = input.requestId.replace(/[^A-Za-z0-9_-]/g, '').padEnd(43, 'c').slice(0, 43)
+    addFixtureLibraryEntry({ assetId, mediaType: 'video', createdAt: new Date().toISOString(), fileName: `${assetId}.mp4` })
+    return { assetId, thumbnailUrl: assetThumbnailUrl(assetId, 'video'), width: 1280, height: 720, durationSeconds: 5 }
+  },
   generateAiImage: async (input) => {
     // 没开 ?chatImage 的用例不该出图：照旧记成没 mock 的调用，clean() 会报出来。
     if (!query.has('chatImage')) { window.v2Test.unexpected.push('generateAiImage'); throw new Error('Missing mock: generateAiImage') }
     await new Promise<void>((resolve) => { releaseChatImage = resolve })
+    addFixtureLibraryEntry({ assetId: 'b'.repeat(43), mediaType: 'image', createdAt: new Date().toISOString(), mimeType: 'image/png', fileName: `${input.requestId}.png` })
     return [{ assetId: 'b'.repeat(43), localUrl: '/assets/brand/v3/symbol-standard.svg', mimeType: 'image/png' as const, fileName: `${input.requestId}.png`, width: 288, height: 256 }]
   },
   startAiChat: async (input) => ({ requestId: input.requestId, accepted: true }),

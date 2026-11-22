@@ -28,7 +28,7 @@ export function UsageDetails({ record, balance, onClose }: { record: AccountUsag
   const exclusiveRatio = details.userGroupRatio !== null && details.userGroupRatio >= 0 ? details.userGroupRatio : null
   const groupRatio = exclusiveRatio ?? details.groupRatio
   function copyRequestId() {
-    void operation.execute('copy-request-id', () => navigator.clipboard.writeText(record.requestId), '请求 ID 已复制，发给客服就能查到这次调用')
+    void operation.execute('copy-request-id', () => navigator.clipboard.writeText(record.requestId), '请求 ID 已复制，发送给客服即可查询此次调用')
   }
   const info: Array<[string, ReactNode]> = [
     ['请求 ID', record.requestId ? <span className="v2-usage-detail-copy"><span className="v2-usage-detail-mono">{record.requestId}</span><Button variant="ghost" size="xs" icon={Copy} aria-label="复制请求 ID" title="复制请求 ID" onClick={copyRequestId} /></span> : '未提供'],
@@ -85,7 +85,7 @@ export function UsageDetails({ record, balance, onClose }: { record: AccountUsag
   </>}>
     <div className="v2-usage-detail-summary" ref={initialFocus} tabIndex={-1}><Pill tone={status.tone}>{status.label}</Pill><Pill><span title={record.modelName || '未知模型'}>{record.modelName || '未知模型'}</span></Pill></div>
     <DetailRows rows={info} />
-    {usageFailedFree(record) && <p className="v2-usage-detail-warn"><Info size={15} aria-hidden="true" />这次调用没有完成，没有扣费。工具一般会自动重试。</p>}
+    {usageFailedFree(record) && <p className="v2-usage-detail-warn"><Info size={15} aria-hidden="true" />此次调用未完成，未产生扣费。工具通常会自动重试。</p>}
     <section className="v2-usage-detail-section" aria-label="计费明细"><h3>计费明细</h3>
       <DetailRows rows={billing} />
       <div className="v2-usage-bill">
@@ -105,8 +105,8 @@ export function UsageDetails({ record, balance, onClose }: { record: AccountUsag
             </tr>
           })}</tbody></table>
       </div>
-      {!prices && <p className="v2-usage-detail-note">这一条没给出单价，以上面的总费用为准。</p>}
-    </> : <p className="v2-usage-detail-note">这一条没给出单价，以上面的总费用为准。</p>}</section>}
+      {!prices && <p className="v2-usage-detail-note">此记录未提供单价，以上方总费用为准。</p>}
+    </> : <p className="v2-usage-detail-note">此记录未提供单价，以上方总费用为准。</p>}</section>}
     {details.streamStatus && <section className="v2-usage-detail-section" aria-label="流式响应详情"><h3>流式响应详情</h3><DetailRows rows={[
       ['状态', details.streamStatus.status || '未提供'], ['结束原因', details.streamStatus.endReason || '未提供'], ['错误次数', usageNumber(details.streamStatus.errorCount)],
       ...(details.streamStatus.endError ? [['结束错误', details.streamStatus.endError] as [string, ReactNode]] : []),

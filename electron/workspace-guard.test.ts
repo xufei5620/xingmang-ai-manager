@@ -174,7 +174,7 @@ describe('buildSensitiveWorkspacePrompt', () => {
     expect(prompt.message).toContain(sensitiveWorkspaceLabel('home'))
     expect(prompt.detail).toContain('AGENTS.md')
     expect(prompt.buttons[prompt.continueIndex]).toBe('仍然打开')
-    expect(prompt.buttons[prompt.cancelIndex]).toBe('换一个文件夹')
+    expect(prompt.buttons[prompt.cancelIndex]).toBe('更换文件夹')
     expect(prompt.continueIndex).not.toBe(prompt.cancelIndex)
   })
 
@@ -182,9 +182,9 @@ describe('buildSensitiveWorkspacePrompt', () => {
     const prompt = buildSensitiveWorkspacePrompt('desktop')
 
     expect(prompt.createIndex).toBe(0)
-    expect(prompt.buttons[0]).toBe('新建一个项目文件夹')
+    expect(prompt.buttons[0]).toBe('新建项目文件夹')
     expect(new Set([prompt.createIndex, prompt.continueIndex, prompt.cancelIndex]).size).toBe(3)
-    expect(prompt.detail).toContain('新建一个项目文件夹')
+    expect(prompt.detail).toContain('新建项目文件夹')
   })
 
   it('describes every kind in Chinese', () => {
@@ -205,21 +205,21 @@ describe('buildSensitiveWorkspacePrompt', () => {
     expect(allKinds.filter((kind) => sensitiveWorkspacePolicy(kind) === 'every-time')).toEqual(['system', 'provider-config'])
     for (const kind of ['system', 'provider-config'] as const) {
       const prompt = buildSensitiveWorkspacePrompt(kind)
-      expect(prompt.title).toBe('不建议在这个文件夹里打开')
+      expect(prompt.title).toBe('不建议在此文件夹中打开')
       expect(prompt.detail).toContain('不会记住')
-      expect(prompt.buttons[prompt.cancelIndex]).toBe('换一个文件夹')
+      expect(prompt.buttons[prompt.cancelIndex]).toBe('更换文件夹')
     }
     expect(buildSensitiveWorkspacePrompt('provider-config').detail).toContain('密钥')
-    expect(buildSensitiveWorkspacePrompt('onedrive-root').title).toBe('这个文件夹范围太大')
+    expect(buildSensitiveWorkspacePrompt('onedrive-root').title).toBe('该文件夹范围过大')
   })
 
   it('offers 先不打开 instead of another folder when a conversation is being resumed', () => {
     const prompt = buildSensitiveWorkspacePrompt('system', { allowChooseAnother: false })
-    expect(prompt.buttons).toEqual(['先不打开', '仍然打开'])
-    expect(prompt.buttons[prompt.cancelIndex]).toBe('先不打开')
+    expect(prompt.buttons).toEqual(['暂不打开', '仍然打开'])
+    expect(prompt.buttons[prompt.cancelIndex]).toBe('暂不打开')
     expect(prompt.buttons[prompt.continueIndex]).toBe('仍然打开')
     expect(prompt.createIndex).toBeNull()
-    expect(prompt.detail).not.toContain('新建一个项目文件夹')
+    expect(prompt.detail).not.toContain('新建项目文件夹')
   })
 })
 

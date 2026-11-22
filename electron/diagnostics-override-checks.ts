@@ -6,6 +6,7 @@
 // 各类检查共用的那份在 diagnostics-context.ts；这里只 import diagnostics.ts 的类型，免得两个文件互相 require。
 import fs from 'node:fs'
 import path from 'node:path'
+import { mapWithConcurrency } from './async-map'
 import { readBoundedFile, readBoundedUtf8FileSync } from './bounded-file'
 import { activeProviderIds, cliCatalog, isRetiredProviderId, providerConfigDirectoryNames, type ProviderId } from './catalog'
 import type { IgnoredCodexHome, ProviderConfigRoots } from './codex-home'
@@ -247,6 +248,10 @@ const maximumFishConfFiles = 32
 // 手写的启动文件不会有几百 KB（同 macos-shell-profile.ts）；再大就不是该去读的文件了。
 const maximumShellSettingsBytes = 512 * 1024
 
+// 同时最多读几个终端设置文件（读盘用 async-map.ts 限流）。Mac、Linux 上候选有十来个，一个等一个的话，
+// 这一项总是整份检查里最后跑完的。
+const shellSettingsReadConcurrency = 4
+
 interface ShellSettingsSource {
   filePath: string
   format: ShellSettingsFormat
@@ -327,9 +332,27 @@ export function decodeShellSettingsBytes(bytes: Buffer): string {
   return bytes.toString('utf8')
 }
 
+/**
+ * 这个位置上有没有东西，只问一次、不在主线程上等：最后一级是链接也算有（不跟随它），没把握的（没权限之类）
+ * 一律当有，交给 readSafeUtf8File 去拒绝、去报。
+ */
+async function shellSettingsFilePresent(filePath: string): Promise<boolean> {
+  try {
+    await fs.promises.lstat(filePath)
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code !== 'ENOENT' && code !== 'ENOTDIR'
+  }
+}
+
 /** 没有这个文件返回 null；读不了（链接、多个硬链接、太大）照抛，由调用方记一笔跳过。 */
 async function readShellSettingsText(source: ShellSettingsSource): Promise<string | null> {
   if (source.format !== 'powershell') {
+    // 这些文件一台电脑上多半只有一两个，而 readSafeUtf8File 每读一个都先在主线程上把整条路径逐级同步核一遍
+    // （I8），同一个主目录要核十来遍；Windows 上每一级都慢，检查页的这一项就压着超时线跑完。不在的先排除掉，
+    // 在的（包括是个链接的）照旧整套核过再读，一道检查不少。
+    if (!await shellSettingsFilePresent(source.filePath)) return null
     return readSafeUtf8File(source.filePath, '终端设置文件', maximumShellSettingsBytes)
   }
   try {
@@ -354,8 +377,8 @@ async function readShellSettings(
   names: readonly string[],
   skipped: (file: string, error: unknown) => void,
 ): Promise<ShellSettingsExports[]> {
-  const found: ShellSettingsExports[] = []
-  for (const source of sources) {
+  // 结果照 sources 的次序排（同一个名字在几个文件里都有时，报告里按这个次序列）。
+  const found = await mapWithConcurrency(sources, shellSettingsReadConcurrency, async (source) => {
     const file = pathForDisplay(source.filePath, displayRoots) ?? path.basename(source.filePath)
     let text: string | null
     try {
@@ -363,13 +386,13 @@ async function readShellSettings(
     } catch (error) {
       // dotfiles 仓库常把 ~/.zshrc 做成指向别处的链接。I8 只放行单链接普通文件，这一项只是提醒，不为它放宽。
       skipped(file, error)
-      continue
+      return null
     }
-    if (text === null) continue
+    if (text === null) return null
     const exports = parseShellSettings(text, source.format, names, userHome)
-    if (exports.length) found.push({ file, exports })
-  }
-  return found
+    return exports.length ? { file, exports } : null
+  })
+  return found.filter((settings): settings is ShellSettingsExports => settings !== null)
 }
 
 /**
@@ -446,7 +469,7 @@ function droppedByMacosLauncher(provider: ProviderId, relayProviders: ReadonlySe
 }
 
 /**
- * 检查页「删掉这几项设置」能替用户删的那几个名字：盖过当前账号的地址、密钥、模型。
+ * 检查页「删除这些设置」能替用户删的那几个名字：盖过当前账号的地址、密钥、模型。
  * 指向别的文件夹的那两个（CLAUDE_CONFIG_DIR、CODEX_HOME）不删：它们指着用户自己的
  * 一整份配置，删了等于把他原来的设置、记录换了个地方，这个得他自己决定。
  * 改走云厂商的开关也不删：设它的人多半自己在终端里用 Bedrock、Vertex，从星芒打开时已经不带了
@@ -466,7 +489,7 @@ export function clearableEnvironmentOverrides(
 export const environmentOverrideNames: readonly string[] = ENVIRONMENT_OVERRIDE_VARIABLES.map((variable) => variable.name)
 
 /**
- * Windows 上有能删的，就在结论里挂上「删掉这几项设置」（details.fix，详情抽屉不显示它）。只挂在「待处理」上：
+ * Windows 上有能删的，就在结论里挂上「删除这些设置」（details.fix，详情抽屉不显示它）。只挂在「待处理」上：
  * 那是进程环境里的变量判出来的，按钮删的正是它们；只在终端设置文件里找到的那几条是「需留意」，按钮删不到文件里，
  * 挂上去点了也不会好（深查 Shell差异 SH-5）。
  */
@@ -638,7 +661,7 @@ const homeFolderTrustNames: Readonly<Record<HomeFolderTrustProvider, string>> = 
 /**
  * 「个人文件夹里早先留下的设置」（已知36）。#321 以前客户选个人文件夹打开工具时，星芒往
  * 那里放过一份 AGENTS.md、替工具记过「信任整个个人文件夹」，之后不再放也不再记，已经留下
- * 的没有任何地方提一句。说明还是星芒那份、客户没改过的才提，并给「挪开这份说明」；信任只
+ * 的没有任何地方提一句。说明还是星芒那份、客户没改过的才提，并给「停用此说明」；信任只
  * 说一声、不给按钮，同「Claude 跑命令前要不要先问你」那项的口径。两样都有时两段连着说。
  * 「有的工具会连它一起读」「可能不会先问」是推测（只有 Gemini CLI 在不是 git 仓库的项目里
  * 一路往上读到个人文件夹这一点有把握），所以字里留着「有的」「可能」。
@@ -649,8 +672,8 @@ export function homeFolderLeftoversOutcome(input: {
 }): CheckOutcome {
   const parts: string[] = []
   if (input.untouchedInstructions) {
-    parts.push('个人文件夹里有一份星芒早先放的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
-      + '有的工具会连它一起读、照它办事，比如改代码前先等你确认。不需要的话点「挪开这份说明」。')
+    parts.push('个人文件夹中有一份星芒早期放置的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
+      + '部分工具会一并读取并遵照执行，例如修改代码前先等待您确认。如不需要，请点击「停用此说明」。')
   }
   if (input.trustedBy.length) {
     const names = input.trustedBy.map((provider) => homeFolderTrustNames[provider]).join('、')
@@ -661,7 +684,7 @@ export function homeFolderLeftoversOutcome(input: {
     untouchedInstructions: input.untouchedInstructions,
     trustedBy: input.trustedBy.join(',') || null,
   }
-  // 「挪开这份说明」：改个名留在原处，不删（diagnostic-fixes.ts）。信任那半不给按钮。
+  // 「停用此说明」：改个名留在原处，不删（diagnostic-fixes.ts）。信任那半不给按钮。
   if (input.untouchedInstructions) details.fix = 'set-aside-home-agents-md'
   return parts.length
     ? { state: 'warn', summary: parts.join(''), details }
@@ -756,7 +779,7 @@ export function buildOverrideChecks(context: DiagnosticsContext): CheckDefinitio
         const envPath = path.join(codexHome, '.env')
         const exists = fs.existsSync(envPath)
         const details: Record<string, boolean | number | string | null> = { exists, path: pathForDisplay(envPath, displayRoots) }
-        // 有这份文件时给「挪开这份设置」：改个名留在原处，不删（diagnostic-fixes.ts）。
+        // 有这份文件时给「停用此设置」：改个名留在原处，不删（diagnostic-fixes.ts）。
         if (exists) details.fix = 'set-aside-codex-dotenv'
         return {
           state: exists ? 'warn' : 'pass',

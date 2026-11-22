@@ -32,11 +32,11 @@ export type IpcLogPolicy = 'normal' | 'quiet-success' | 'secret-input' | 'silent
  *
  * - none：跟账号无关；或者是登录、注册、退出、读登录态、切换已存账号这类本身就在管登录的通道，
  *   不进账号工作，要不要等开机恢复由处理函数自己定。
- * - scoped：在账号工作里跑，换账号要等它跑完才动手；跑完时账号已经换了，结果作废，报「账号刚切换过，请再试一次」。
+ * - scoped：在账号工作里跑，换账号要等它跑完才动手；跑完时账号已经换了，结果作废，报「账号刚刚切换，请重试」。
  * - scoped-may-end-session：同上，但这一下自己就可能结束或换掉登录（改密码、踢掉当前这台设备），
  *   跑完不核对账号换没换。
- * - scoped-queued：要在安装队列里排在别的安装后面（I11）。排着队那段不算账号工作，处理函数交给队列时
- *   才拿 accountWork.queue()，轮到它执行才算进去（#1085）；开机照旧先等账号恢复完。
+ * - scoped-queued：要在安装队列里排在别的安装后面（I11）。排着队那段不算账号工作：处理函数一进来就拿
+ *   accountWork.queue() 记下点的时候是哪个账号（N5），轮到它执行才算进去（#1085）；开机照旧先等账号恢复完。
  */
 export type IpcAccountPolicy = 'none' | 'scoped' | 'scoped-may-end-session' | 'scoped-queued'
 
@@ -120,9 +120,6 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'update:check': { label: '主程序更新检查', log: 'normal', account: 'none' },
   'update:download': { label: '主程序更新下载', log: 'normal', account: 'none' },
   'update:install': { label: '主程序更新安装', log: 'normal', account: 'none' },
-  'sessions:list': { label: 'Codex 会话列表读取', log: 'normal', account: 'none' },
-  'sessions:detail': { label: 'Codex 会话详情读取', log: 'normal', account: 'none' },
-  'sessions:export': { label: 'Codex 会话导出', log: 'normal', account: 'none' },
   'sessions:archive': { label: 'Codex 会话归档', log: 'normal', account: 'none' },
   'sessions:restore': { label: 'Codex 会话恢复', log: 'normal', account: 'none' },
   'provider-sessions:list': { label: 'AI 工具会话列表读取', log: 'normal', account: 'none' },
@@ -163,6 +160,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'mcp:logout': { label: 'MCP 退出登录', log: 'normal', account: 'none' },
   'skills:list': { label: 'Skills 列表读取', log: 'normal', account: 'none' },
   'skills:import': { label: 'Skill 导入', log: 'normal', account: 'none' },
+  'skills:choose-archive': { label: 'Skill 从压缩包导入', log: 'normal', account: 'none' },
   'skills:toggle': { label: 'Skill 启用状态修改', log: 'normal', account: 'none' },
   'skills:uninstall': { label: 'Skill 卸载', log: 'normal', account: 'none' },
   'plugins:list': { label: 'Plugins 列表读取', log: 'normal', account: 'none' },
@@ -173,7 +171,6 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'marketplaces:upgrade': { label: '扩展市场更新', log: 'normal', account: 'none' },
   'marketplaces:remove': { label: '扩展市场删除', log: 'normal', account: 'none' },
   'extensions:list': { label: 'AI 工具扩展列表读取', log: 'normal', account: 'none' },
-  'extensions:list-all': { label: '全部 AI 工具扩展读取', log: 'normal', account: 'none' },
   'extensions:mutate': { label: 'AI 工具扩展操作', log: 'normal', account: 'none' },
   'extensions:ensure-marketplace': { label: '官方插件市场添加', log: 'normal', account: 'none' },
   'extensions:check-mcp-health': { label: 'MCP 连接状态检测', log: 'normal', account: 'none' },
@@ -255,6 +252,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:list-groups': { label: '星芒账号可用分组读取', log: 'quiet-success', account: 'scoped' },
   'account:get-price-list': { label: '星芒账号价格表读取', log: 'quiet-success', account: 'scoped' },
   'account:revoke-key': { label: '星芒账号 Key 撤销', log: 'normal', account: 'scoped' },
+  'account:enable-key': { label: '星芒账号 Key 启用', log: 'normal', account: 'scoped' },
   'account:copy-key': { label: '星芒账号 Key 复制', log: 'quiet-success', account: 'scoped' },
   // The input is the plaintext password the reset just produced.
   'account:copy-reset-password': { label: '找回密码后的新密码复制', log: 'quiet-success', account: 'none' },
@@ -273,6 +271,11 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:revoke-other-login-sessions': { log: 'normal', account: 'scoped' },
   'canvas:open': { label: '无限画布窗口打开', log: 'normal', account: 'scoped' },
   'canvas:open-asset-library': { label: '无限画布素材库打开', log: 'normal', account: 'scoped' },
+  // 「创作」左边那一列（融合第 1 步）：只回当前账号画布项目的编号、名字和时间；打开时编号先在这个账号的项目里认过。
+  'canvas:list-projects': { label: '画布项目列表读取', log: 'quiet-success', account: 'scoped' },
+  'canvas:open-project': { label: '画布项目打开', log: 'normal', account: 'scoped' },
+  // 「创作 › 作品库」（融合第 3 步）：只回当前账号作品的编号、时间、名字和描述。翻页、搜索时一次次调，成功不记。
+  'library:list': { label: '作品库读取', log: 'quiet-success', account: 'scoped' },
   // get-remembered-login's result and set-remembered-login's input both carry
   // a plaintext password (the 「记住密码」 credential) -- the same dedicated
   // reveal-channel pattern as config:reveal-api-key, and the same I3/I13
@@ -308,6 +311,9 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // Chat history carries whole conversations and autosaves after every edit:
   // a success line would flood the log, and the payload must never reach it
   // (I13). Failures still log, with the Chinese reason only.
+  // 同聊天记录：换账号途中，上一个账号最后那一次保存还要落下去，所以不等账号；归属由页面带的 scope 定。
+  'video-studio:read-projects': { label: '视频草稿读取', log: 'quiet-success', account: 'none' },
+  'video-studio:write-projects': { label: '视频草稿保存', log: 'quiet-success', account: 'none' },
   'chat-history:read': { label: '聊天记录读取', log: 'quiet-success', account: 'none' },
   'chat-history:write': { label: '聊天记录保存', log: 'quiet-success', account: 'none' },
   // 每次退出都有一条，成功了不值得进反馈报告；没回话的那次主进程等满时限照样退，这里也看不到。

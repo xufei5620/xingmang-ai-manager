@@ -102,8 +102,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
-    # The longest shard is ~9 minutes. This is a backstop for a wedged runner,
-    # not a bound anything is expected to approach.
+    # The longest shards take ~11 minutes. This is a backstop for a wedged
+    # runner, not a bound anything is expected to approach.
     timeout-minutes: 25
     strategy:
       # A failing shard must not cancel its siblings. Splitting the job is only
@@ -133,9 +133,12 @@ jobs:
           # every test passing. A fourth slice by count would have moved that
           # cluster to --shard=2/4 whole, so vitest.config.ts deals the
           # measured-slow files apart first (scripts/vitest-shards.mjs) and the
-          # rest after them. Each quarter should land near 6 minutes. When one
-          # drifts well past its siblings, re-measure the table; when they all
-          # near 15 together, deal to a fifth instead of raising this.
+          # rest after them. Each quarter was planned near 6 minutes; re-measured
+          # on 2026-11-19, when the suite had grown to some 38 runner-minutes
+          # and one quarter ran 12.9 against 7.7 to 8.9, each should land near
+          # 10. When one drifts well past its siblings, re-measure the table;
+          # when they all near 15 together, deal to a fifth instead of raising
+          # this.
           - shard: vitest-1
             command: npm run test:vitest:1
             timeout: 15
@@ -272,6 +275,18 @@ jobs:
         # which one, instead of cancelling the job at its cap with no verdict.
         timeout-minutes: ${{ matrix.timeout }}
         run: ${{ matrix.command }}
+      # A browser click that stalls after its mouse events went out appends what
+      # the page and the browser were doing to its own error, and saves a
+      # screenshot of the stuck page here (e2e/click-stall.mjs). The error text
+      # is already in the log; this keeps the picture of the page next to it.
+      - name: Upload screenshots of stalled clicks
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: click-stall-${{ matrix.shard }}
+          path: artifacts/click-stall/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Fail if the test run left files in the working tree
         shell: bash
         run: |
@@ -298,6 +313,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 这个作业要真开星芒（装好的包或 electron .）。正式环境的域名先在这台 runner 上指回本机、逐个核过，
+      # 冒烟和测试一个请求也到不了账号站和更新目录，服务端不再把 CI 数成客户的电脑
+      # （2026-11-21，scripts/ci-block-production-hosts.cjs）。
+      - name: Keep the launched client off the production servers
+        run: node scripts/ci-block-production-hosts.cjs
       # The same three Electron steps as windows-test, for the smokes below.
       - name: Restore the Electron download for this version
         id: electron-cache
@@ -410,23 +430,24 @@ jobs:
         # fifteen seconds.
         timeout-minutes: 5
         run: node e2e/renderer-v2-native-close-race.mjs
-      # npm run verify:app with no steps: the compiled client signed in against
-      # the local account-site fixture, every sidebar page opened and kept as a
-      # screenshot plus its text. It is the same walk a thread runs in its Linux
-      # container, so a real-device note can point at this commit's Windows
-      # screens instead of asking someone to click (docs/COLLABORATION.md §7.6).
-      # A page that throws or no longer opens fails it.
-      - name: Walk every page of the real client and keep the screenshots
-        # The script budgets itself to about 7 minutes for this walk; a healthy
-        # one is well under a minute. This is the backstop.
-        timeout-minutes: 9
-        run: node e2e/verify-app.mjs --out output/verify-app
       # The one place the main process's PowerShell probes run for real. They
       # used to run inside the vitest shards, where a cold PowerShell start on a
       # busy runner could use up the whole budget, return nothing and fail an
       # unrelated pull request. The unit tests now check the generated scripts
       # and the parsers without starting a process; this step proves the
       # compiled scripts still run and still print what the parsers read.
+      #
+      # It runs before the walk of the real client below, not after it (#2041).
+      # While the walk sat directly in front of it (#1887 to #2041), the first
+      # check here that loads the Appx module, the ConstrainedLanguage Codex
+      # one, took over 10 s on about half the runs and ran out its 90 s budget
+      # twice (#1897, #2000). Both times the Appx checks right after it stalled
+      # as well, while the ones in between that never load Appx kept their
+      # usual half second, which points at something the walk's client leaves
+      # behind when it exits holding Appx up for a minute or two (what, the log
+      # cannot show). In 16 runs sampled before
+      # #1887, with this step right after the close race smoke, the same check
+      # took 6 to 8 s every time.
       - name: Run the PowerShell probes against this runner once
         # Each probe carries its own bound and the script prints how long each
         # took; this is the backstop for a hang that outlives them. Raised from
@@ -434,6 +455,18 @@ jobs:
         # PowerShell starts, each a few seconds cold on this runner.
         timeout-minutes: 12
         run: node e2e/windows-powershell-probes-smoke.mjs
+      # npm run verify:app with no steps: the compiled client signed in against
+      # the local account-site fixture, every sidebar page opened and kept as a
+      # screenshot plus its text. It is the same walk a thread runs in its Linux
+      # container, so a real-device note can point at this commit's Windows
+      # screens instead of asking someone to click (docs/COLLABORATION.md §7.6).
+      # A page that throws or no longer opens fails it. It stays after the
+      # PowerShell probes above, for the reason written there.
+      - name: Walk every page of the real client and keep the screenshots
+        # The script budgets itself to about 7 minutes for this walk; a healthy
+        # one is well under a minute. This is the backstop.
+        timeout-minutes: 9
+        run: node e2e/verify-app.mjs --out output/verify-app
       - run: npm run build:win:ci
       - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked
       - run: node e2e/packaged-hardening-smoke.mjs "release/win-unpacked/星芒AI管理工具.exe"
@@ -505,6 +538,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 这个作业要真开星芒（装好的包或 electron .）。正式环境的域名先在这台 runner 上指回本机、逐个核过，
+      # 冒烟和测试一个请求也到不了账号站和更新目录，服务端不再把 CI 数成客户的电脑
+      # （2026-11-21，scripts/ci-block-production-hosts.cjs）。
+      - name: Keep the launched client off the production servers
+        run: node scripts/ci-block-production-hosts.cjs
       # The same three Electron steps as windows-test, plus one: the cache here
       # holds both architectures' zips. This job packages both, and
       # macos-release-rehearsal and macos-intel read the same entry, so none of
@@ -634,6 +672,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 这个作业要真开星芒（装好的包或 electron .）。正式环境的域名先在这台 runner 上指回本机、逐个核过，
+      # 冒烟和测试一个请求也到不了账号站和更新目录，服务端不再把 CI 数成客户的电脑
+      # （2026-11-21，scripts/ci-block-production-hosts.cjs）。
+      - name: Keep the launched client off the production servers
+        run: node scripts/ci-block-production-hosts.cjs
       # 读 macos-test 在 main 上存下的那份 Electron 压缩包（M 芯片版和 Intel 版都在，见
       # CI-1）。只读不写：这个作业不装测试用的二进制，electron-builder 用缓存里的包之前
       # 照样按锁文件钉住的 checksums.json 核对；没命中（main 还没存过的新 Electron）时
@@ -701,6 +744,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 这个作业要真开星芒（装好的包或 electron .）。正式环境的域名先在这台 runner 上指回本机、逐个核过，
+      # 冒烟和测试一个请求也到不了账号站和更新目录，服务端不再把 CI 数成客户的电脑
+      # （2026-11-21，scripts/ci-block-production-hosts.cjs）。
+      - name: Keep the launched client off the production servers
+        run: node scripts/ci-block-production-hosts.cjs
       # 同 macos-release-rehearsal：读 macos-test 存下的两个架构的 Electron 压缩包，只读。
       # #1600 上这个作业没有缓存，GitHub 对 darwin-arm64 压缩包连着回了四分多钟 504，
       # 打包器重试六次全被挡（CI-1）。键里写的是架构名，不是 runner.arch，所以 Intel
@@ -971,6 +1019,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 这个作业要真开星芒（装好的包或 electron .）。正式环境的域名先在这台 runner 上指回本机、逐个核过，
+      # 冒烟和测试一个请求也到不了账号站和更新目录，服务端不再把 CI 数成客户的电脑
+      # （2026-11-21，scripts/ci-block-production-hosts.cjs）。
+      - name: Keep the launched client off the production servers
+        run: node scripts/ci-block-production-hosts.cjs
       # The Electron zips linux-test keeps for this version, both
       # architectures (CI-1). Read only: this job never installs the binary the
       # tests load, so it has nothing of its own to write back, and

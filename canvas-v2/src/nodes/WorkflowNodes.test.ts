@@ -92,7 +92,10 @@ describe('workflow node feedback', () => {
     expect(renderNode('router', { settings: { routerStrategy: { version: 1, strategy: 'all' } } }, false, {}, v2)).toContain('aria-label="路由策略"')
   })
   it('renders legacy router execution honestly and locks strategy edits with the surrounding node state', () => {
-    expect(renderNode('router', { settings: { strategy: 'first-available' } })).toContain('旧配置实际保留全部输入')
+    expect(renderNode('router', { settings: { strategy: 'first-available' } })).toContain('图片、视频、音频各只交出一个')
+    expect(renderNode('router', { settings: { strategy: 'first-available' } })).not.toContain('旧配置：保留全部输入')
+    // The old explicit 「保留全部输入」 shows as the choice it now runs with (D06).
+    expect(renderNode('router', { settings: { strategy: 'all' } })).toMatch(/<option value="all" selected="">保留全部输入<\/option>/)
     for (const data of [{ status: 'running' as const }, { status: 'queued' as const }, { __canvasDisabled: true }, { __canvasLocked: true }]) {
       expect(renderNode('router', { settings: { routerStrategy: { version: 1, strategy: 'all' } }, ...data })).toMatch(/aria-label="路由策略"[^>]*disabled=""/)
     }

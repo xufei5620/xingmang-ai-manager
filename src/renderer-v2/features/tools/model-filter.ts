@@ -53,8 +53,8 @@ export function otherModelSaveIssue(input: {
   selectedModel: string
   detected: boolean
 }): string | null {
-  if (!input.detected) return '请先检测当前密钥的可用模型，再选择别家模型。'
-  if (!input.models.some((model) => model && isOtherVendorChoice(model))) return '当前密钥没有别家模型可用。请更换有相应模型权限的密钥后重新检测。'
-  if (!otherModelChoices(input.models, input.defaultModel).includes(input.selectedModel)) return '请选择本次检测到的别家模型后再保存。'
+  if (!input.detected) return '请先检测当前密钥的可用模型，再选择其他厂商的模型。'
+  if (!input.models.some((model) => model && isOtherVendorChoice(model))) return '当前密钥无其他厂商的模型可用。请更换具备相应模型权限的密钥后重新检测。'
+  if (!otherModelChoices(input.models, input.defaultModel).includes(input.selectedModel)) return '请选择本次检测到的其他厂商模型后再保存。'
   return null
 }

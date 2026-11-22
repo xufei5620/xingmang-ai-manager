@@ -31,13 +31,13 @@ interface DeepLinkOptions {
  * 没复制上就留着这条，邀请码就在字里，能手动选中。
  */
 export function showSignedInInvite(toast: AppToast, code: string, clipboard: () => Pick<Clipboard, 'writeText'> | undefined) {
-  toast.show(`你已经登录了。邀请码 ${code} 要退出当前账号、注册新账号时才能用。`, 'neutral', {
+  toast.show(`您已登录。邀请码 ${code} 仅在退出当前账号并注册新账号时可用。`, 'neutral', {
     label: '复制邀请码',
     onSelect(dismiss) {
       // 点的那一刻再取剪贴板：提示条能挂很久，不拿弹出来那一刻的。
       const target = clipboard()
       const copied = target ? target.writeText(code) : Promise.reject(new Error('clipboard unavailable'))
-      void copied.then(() => { dismiss(); toast.show('邀请码已复制', 'ok') }, () => toast.show('没复制上，请手动选中这行文字复制。', 'warn'))
+      void copied.then(() => { dismiss(); toast.show('邀请码已复制', 'ok') }, () => toast.show('复制失败，请手动选中该行文字复制。', 'warn'))
     },
   })
 }

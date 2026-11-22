@@ -11,9 +11,10 @@ import type {
   PlatformSystemState,
   XingmangPlatformApi,
 } from '../electron/platform/contract'
-import type { AccountPaymentWindowTerminalEvent, FeedbackMessageCopyRequest, ProviderId } from '../electron/ipc-contract'
+import type { AccountPaymentWindowTerminalEvent, AccountSubscriptionPlan, FeedbackMessageCopyRequest, ProviderId } from '../electron/ipc-contract'
 import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
+import { accountKeyEnableExpiredMessage } from '../electron/account-key-quota'
 import { KeyRewriteSkippedError } from '../src/renderer-v2/features/tools/account-bootstrap'
 import { settingsPageAlias } from '../src/renderer-v2/registry/pages'
 import { settingsItems } from '../src/renderer-v2/registry/business'
@@ -37,6 +38,13 @@ declare global {
       release(): void
       fail(message: string): void
     }
+    // 后台改了 subscriptionExternal 那个套餐（patch）、下架了它（remove）或者又上架了（restore）：
+    // 只改夹具里存着的，页面下一次读套餐列表才看得到（N3）。
+    subscriptionPlanHarness: {
+      set(patch: Partial<AccountSubscriptionPlan>): void
+      remove(): void
+      restore(): void
+    }
     // 读到过以后、下一次再读没读到（刷新、付完款再读时网断了一下）。
     // toolKeyLimits：下一次按 100 一页读密钥（「每个工具的额度上限」那张卡）没读到。
     failNextRead: (read: 'profile' | 'subscriptions' | 'toolKeyLimits') => void
@@ -49,6 +57,8 @@ declare global {
       deferNext(): void
       release(): void
     }
+    // 别处（另一台电脑、网页）改了 managedKeys 里的一把：只改夹具里存着的，页面不知道、不重读（F01）。
+    changeKeyElsewhere: (id: number, patch: { name?: string; remainQuota?: number; unlimitedQuota?: boolean; expiredAt?: string | null }) => void
     keyGroupsHarness: {
       requests: number
       setGroups(names: string[]): void
@@ -114,6 +124,16 @@ const record = (name: string, args?: unknown) => {
 }
 const failOnce = new Set<string>()
 window.failNextRead = (read) => { failOnce.add(read) }
+// planBalancePay：那个套餐按美元标价、能用余额买（$5，余额 $10 够付）。
+let externalPlanPatch: Partial<AccountSubscriptionPlan> = query.has('planBalancePay')
+  ? { currency: 'USD', priceAmount: 5, allowBalancePay: true }
+  : {}
+let externalPlanRemoved = false
+window.subscriptionPlanHarness = {
+  set(patch) { externalPlanPatch = { ...externalPlanPatch, ...patch } },
+  remove() { externalPlanRemoved = true },
+  restore() { externalPlanRemoved = false },
+}
 let releaseHeldExtension: (() => void) | undefined
 window.releaseExtension = () => { releaseHeldExtension?.(); releaseHeldExtension = undefined }
 function failingOnce(read: string) {
@@ -207,7 +227,7 @@ const remoteState: {
 const feishuProblemStatuses = {
   credential: { state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' },
   'connection-limit': { state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' },
-  other: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other' },
+  other: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「联系客服」。', problem: 'other' },
 } as const
 // 微信那一块只测扫码登录：手机上要输数字，输 2580 才对，对了以后再查一次就登录好了。过了数字，主进程直接把扫码人
 // 记成绑定的人（YF-5），这里也跟着绑上。
@@ -229,6 +249,8 @@ function remoteSnapshot(): RemoteSnapshot {
     revision: remoteRevision,
     available: !elevated,
     ...(elevated ? { unavailableReason: '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。' } : {}),
+    // 登录的 Windows 账号本身就带管理员权限（自带 Administrator、关了授权弹窗）：能开，卡上多一句提醒。
+    ...(!elevated && query.has('remoteAdminAccount') ? { alwaysElevated: true } : {}),
     credentialPersistence: query.has('remoteSessionOnly') ? 'session-only' : 'durable',
     workspaceDirectory: remoteState.workspaceDirectory,
     ...(remoteState.workspaces.length > 1 ? { workspaces: [...remoteState.workspaces] } : {}),
@@ -328,7 +350,7 @@ const codexRemoteMethods = {
     remoteState.model = model
     return remoteSnapshot()
   },
-  // 「手机上用的模型」那张单，跟首页 Codex「配置」读的是同一个接口。
+  // 「手机端使用的模型」那张单，跟首页 Codex「配置」读的是同一个接口。
   listConfiguredModels: async () => ['fixture-model', 'gpt-6.3-sol', 'gpt-6.1-mini'],
   chooseCodexRemoteWorkspace: async () => {
     record('remote-workspace')
@@ -475,24 +497,6 @@ const codexCatalogPlugin = {
   update: { state: 'unsupported' as const, reason: '扩展尚未安装', checkedAt: null },
   operations: { install: true, uninstall: true, enable: false, disable: false, update: false },
 }
-// scopedExtensions：Claude 只在这个项目里用的插件（local），验证「范围」筛选把它放在详情写的那一档里。
-function scopedExtension(kind: 'plugin', id: string, name: string, scope: 'local') {
-  return {
-    provider: 'claude' as const,
-    kind,
-    id,
-    name,
-    description: '只在这一档里出现',
-    installed: true,
-    enabled: true,
-    scope,
-    currentVersion: '1.0.0',
-    latestVersion: '1.0.0',
-    source: { kind: 'native' as const, locator: null, reference: null },
-    update: { state: 'unsupported' as const, reason: '不支持检查更新', checkedAt: null },
-    operations: { install: true, uninstall: true, enable: true, disable: true, update: false },
-  }
-}
 let nextKeyGroupsRequest: 'ready' | 'deferred' | 'failed' = 'ready'
 // 主进程按原因抛不同的错误（NewApiAuthenticationError 的中文、限流的英文原文……），
 // 夹具让用例自己指定原文，才能验证 R-G5 之后这些原因不再被抹成同一句。
@@ -557,7 +561,7 @@ const balance = {
 // remoteLowBalance：外壳那份共享余额只剩 $0.80（手机遥控卡上的余额提醒，YF-12）。别的页不读它，照旧读 getAccountBalance。
 const lowBalanceStore: AccountBalanceStore | null = query.has('remoteLowBalance')
   ? (() => {
-      const snapshot = { scope: 'fixture', balance: { ...balance, quota: 80 }, loading: false, updatedAt: 1, error: null, networkFailures: 0 }
+      const snapshot = { scope: 'fixture', balance: { ...balance, quota: 80 }, loading: false, updatedAt: 1, error: null, reads: 0, networkFailures: 0 }
       return {
         getSnapshot: () => snapshot,
         subscribe: () => () => undefined,
@@ -616,7 +620,7 @@ const missingFolderSession = {
   ...session,
   cwdExists: false,
 }
-// 同一个工具、同一个目录的第二条(更旧的)记录:「接着聊」是按目录接最近一条,
+// 同一个工具、同一个目录的第二条(更旧的)记录:「继续对话」是按目录接最近一条,
 // 所以只有最近那条该有按钮。默认不出现,免得改动现有用例看到的行数。
 const olderSameFolderSession = {
   ...session,
@@ -640,6 +644,13 @@ const backup = {
     ? { keyOwnership: 'other' as const, keyAccountName: 'old-user' }
     : { keyOwnership: 'current' as const, keyAccountName: null }),
 }
+// brokenBackup：再加两份校验没过的（R2-2）。一份清单还读得出来，知道是 Codex 的、哪天存的；一份清单读不出来，时间也没有。
+type BackupRow = Awaited<ReturnType<V2Bridge['listBackups']>>[number]
+const brokenBackups: BackupRow[] = [
+  { id: 'backup-torn', provider: 'codex', reason: 'pre-save', createdAt: '2026-09-06T01:00:00Z', fileCount: 0, existingFileCount: 0, totalSize: 0, valid: false, error: '备份文件必须是普通文件' },
+  { id: 'backup-unreadable', provider: null, reason: null, createdAt: null, fileCount: 0, existingFileCount: 0, totalSize: 0, valid: false, error: '备份清单不是有效 JSON' },
+]
+let backupRows: BackupRow[] = empty ? [] : query.has('brokenBackup') ? [backup, ...brokenBackups] : [backup]
 // longNames：后台给出不能断行的超长分组名、支付方式名、模型名，看它们撑不撑出卡片（#1133 第 7 条）。
 const longName = query.has('longNames') ? 'SuperLongIdentifierWithoutAnySpacesOrBreakOpportunities_20261017_ABCDEFGHIJKLMNOPQRSTUVWXYZ' : ''
 const key = {
@@ -652,13 +663,13 @@ const key = {
   unlimitedQuota: false,
   usedQuota: 10,
   createdAt: time,
-  expiredAt: null,
+  expiredAt: null as string | null,
   accessedAt: time,
 }
 // 「按工具分账」按托管 Key 的固定名称认工具，夹具照搬真实命名：一把有上限、
 // 一把不限额，另外两个工具还没签发过，这样四种格子在一张表里都能看到。
 // 撤销工具在用的 Key：keyInUse 让那把 Test key 标成 Claude Code 在用；
-// replaceFails=N 让自动换新的前 N 次失败，好看到「再换一次」那条出路。
+// replaceFails=N 让自动换新的前 N 次失败，好看到「重新更换」那条出路。
 const keyInUse = query.has('keyInUse')
 let replaceFailures = Number(query.get('replaceFails') ?? 0)
 // replaceSkipped：那个工具的配置是手填的，自动换新把它跳过（#478）。
@@ -683,6 +694,19 @@ const managedKeys = query.has('managedKeys')
       { ...key, id: 12, name: 'xingmang-desktop-codex', group: 'GPT', unlimitedQuota: true, remainQuota: 0, usedQuota: 200 },
     ]
   : null
+// stoppedKeys：一把网页上停用的、一把过了到期时间的、一把正常的，看「启用」摆在哪几行、点了怎样（总单 Q2）。
+// 到期那把照主进程 enableKey 的规矩不给开，回同一句话。
+const stoppedKeys = query.has('stoppedKeys')
+  ? [
+      { ...key, id: 21, name: 'disabled-key', status: 2, unlimitedQuota: true, remainQuota: 0 },
+      { ...key, id: 22, name: 'expired-key', status: 3, expiredAt: '2026-01-01T00:00:00.000Z' },
+      { ...key },
+    ]
+  : null
+window.changeKeyElsewhere = (id, patch) => {
+  const stored = managedKeys?.find((entry) => entry.id === id)
+  if (stored) Object.assign(stored, patch)
+}
 let activeUserId = 7
 let taskReads = 0
 let detailReads = 0
@@ -751,7 +775,89 @@ const systemSnapshot: Awaited<ReturnType<V2Bridge['scanSystem']>> = {
     },
   },
 }
-// 扩展三页共用的列表；listProviderExtensions 先记一笔再交给它，用例数得出读了几次。
+// 「插件」页（page=extensions）一次读齐三种：每家装了哪些、官方市场里还能装哪些。
+// hubRemoved 记下「从所有工具里移除」卸掉的，下一次读列表就不再有它（extensionOk 时）。
+const hubRemoved = new Set<string>()
+function hubItem(
+  provider: 'claude' | 'codex' | 'grok',
+  kind: 'mcp' | 'skill' | 'plugin',
+  id: string,
+  name: string,
+  description: string,
+  installed: boolean,
+) {
+  return {
+    provider,
+    kind,
+    id,
+    name,
+    description,
+    installed,
+    enabled: installed,
+    scope: installed ? ('user' as const) : null,
+    currentVersion: installed ? '1.0.0' : null,
+    latestVersion: '1.0.0',
+    source: { kind: kind === 'skill' ? ('local' as const) : ('native' as const), locator: kind === 'skill' ? `C:/skills/${id}/SKILL.md` : null, reference: null },
+    update: installed ? { state: 'up-to-date' as const, reason: '已是最新', checkedAt: time } : { state: 'unsupported' as const, reason: '扩展尚未安装', checkedAt: null },
+    operations: { install: true, uninstall: true, enable: installed, disable: installed, update: false },
+  }
+}
+function hubItems(provider: Parameters<V2Bridge['listProviderExtensions']>[0]) {
+  if (empty) return provider === 'codex' && codexCatalogReady ? [codexCatalogPlugin] : []
+  const claudeMarket = [
+    ['supabase', 'Supabase', 'Database operations, auth, storage and realtime'],
+    ['vercel', 'Vercel', 'Manage deployments, check build status'],
+    ['stripe', 'Stripe', 'Stripe development plugin for Claude'],
+    ['cloudflare', 'Cloudflare', 'Build and deploy on Cloudflare Workers'],
+    ['datadog', 'Datadog', 'Query logs, metrics and traces'],
+  ] as const
+  const codexMarket = [
+    ['linear', 'Linear', 'Plan and build products'],
+    ['figma', 'Figma', 'Figma design-to-code workflows'],
+    ['twilio-developer-kit', 'Twilio Developer Kit', 'Build, debug and ship on Twilio'],
+    ['temporal', 'Temporal', 'Develop with Temporal'],
+  ] as const
+  // 下面几个开关各给某一家多放一条，用例拿它看某一种情况：
+  // claudeMcp=名字 / codexMcp=名字 / grokMcp=名字：那一家「我的（全局）」里自己加的一条连接（看「装到别的工具」、同名不换掉）；
+  // mcpAuth：Codex 里也有「测试连接」，要登录授权；scopedExtensions：Claude 只在这个项目里用的插件（local）；
+  // pluginUpdate：Claude 的 code-review 有新版本。
+  const extra = (target: 'claude' | 'codex' | 'grok', key: string) => {
+    const name = query.get(key)
+    return name ? [hubItem(target, 'mcp', name, name, '', true)] : []
+  }
+  const codeReview = hubItem('claude', 'plugin', 'code-review@claude-plugins-official', 'code-review', '', true)
+  const items =
+    provider === 'claude'
+      ? [
+          hubItem('claude', 'mcp', 'browser', 'browser', '', true),
+          hubItem('claude', 'mcp', 'files', 'files', '', true),
+          hubItem('claude', 'mcp', 'test-extension', '测试连接', '本机测试连接', true),
+          ...extra('claude', 'claudeMcp'),
+          query.has('pluginUpdate')
+            ? {
+                ...codeReview,
+                latestVersion: '1.1.0',
+                update: { state: 'update-available' as const, reason: '发现新版本', checkedAt: time },
+                operations: { ...codeReview.operations, update: true },
+              }
+            : codeReview,
+          ...(query.has('scopedExtensions') ? [{ ...hubItem('claude', 'plugin', 'local-plugin', '本项目插件', '只在这一档里出现', true), scope: 'local' as const }] : []),
+          hubItem('claude', 'skill', 'test-skill', '测试技能', '本机测试技能', true),
+          ...claudeMarket.map(([id, name, line]) => hubItem('claude', 'plugin', `${id}@claude-plugins-official`, name, line, false)),
+        ]
+      : provider === 'codex'
+        ? [
+            hubItem('codex', 'mcp', 'browser', 'browser', '', true),
+            ...(query.has('mcpAuth') ? [hubItem('codex', 'mcp', 'test-extension', '测试连接', '本机测试连接', true)] : []),
+            ...extra('codex', 'codexMcp'),
+            hubItem('codex', 'plugin', 'sentry@openai-api-curated', 'Sentry', 'Inspect recent Sentry issues and events', true),
+            ...codexMarket.map(([id, name, line]) => hubItem('codex', 'plugin', `${id}@openai-api-curated`, name, line, false)),
+            ...(codexCatalogReady ? [codexCatalogPlugin] : []),
+          ]
+        : extra('grok', 'grokMcp')
+  return items.filter((item) => !hubRemoved.has(`${provider}:${item.kind}:${item.id}`))
+}
+// 「插件」页读的列表；listProviderExtensions 先记一笔再交给它，用例数得出读了几次。
 function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[0]) {
   return {
     provider,
@@ -767,57 +873,7 @@ function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[
     ...(provider === 'codex'
       ? { marketplace: { name: 'openai-api-curated', registered: codexCatalogReady, reason: null } }
       : {}),
-    items: [
-      ...(provider === 'codex' && page === 'plugins' && codexCatalogReady ? [codexCatalogPlugin] : []),
-      ...(query.has('scopedExtensions') && provider === 'claude' && page === 'plugins'
-        ? [scopedExtension('plugin', 'local-plugin', '本项目插件', 'local')]
-        : []),
-      // codexMcp=名字：Codex 那边已经有这条连接，用来看「别的工具里已有同名的，不去换掉它」。
-      ...(query.has('codexMcp') && provider === 'codex' && page === 'mcp'
-        ? [{ ...scopedExtension('plugin', query.get('codexMcp') ?? '', 'Codex 自己的连接', 'local'), provider, kind: 'mcp' as const, scope: 'user' as const }]
-        : []),
-      // claudeMcp=名字：只有 Claude Code「我的（全局）」里有的连接，用来看「也装到别的工具」。
-      ...(query.has('claudeMcp') && provider === 'claude' && page === 'mcp'
-        ? [{ ...scopedExtension('plugin', query.get('claudeMcp') ?? '', query.get('claudeMcp') ?? '', 'local'), kind: 'mcp' as const, scope: 'user' as const }]
-        : []),
-      ...(empty
-      ? []
-      : [
-          {
-            provider,
-            kind: (page === 'skills'
-              ? 'skill'
-              : page === 'plugins'
-                ? 'plugin'
-                : 'mcp') as 'mcp' | 'skill' | 'plugin',
-            id: 'test-extension',
-            name: '测试扩展',
-            description: '本机测试连接',
-            installed: true,
-            enabled: true,
-            scope: 'user' as const,
-            currentVersion: '1.0.0',
-            latestVersion: '1.0.1',
-            source: {
-              kind: 'npm' as const,
-              locator: 'test-package',
-              reference: null,
-            },
-            update: {
-              state: 'update-available' as const,
-              reason: '发现新版本',
-              checkedAt: time,
-            },
-            operations: {
-              install: true,
-              uninstall: true,
-              enable: true,
-              disable: true,
-              update: true,
-            },
-          },
-        ]),
-    ],
+    items: hubItems(provider),
   }
 }
 const apiMethods = {
@@ -829,7 +885,7 @@ const apiMethods = {
   // 「开发票」只叫主进程开开票窗口，不带参数；invoiceFail 时与主进程那条通道抛错一样。
   openAccountInvoicePortal: async (...args: unknown[]) => {
     record('open-invoice-portal', args)
-    if (query.has('invoiceFail')) throw new Error("Error invoking remote method 'account:open-invoice-portal': Error: 没能打开开票中心，请稍后再试；还不行请找客服。")
+    if (query.has('invoiceFail')) throw new Error("Error invoking remote method 'account:open-invoice-portal': Error: 开票中心打开失败，请稍后重试；如仍无法打开，请联系客服。")
   },
   onExternalClientLaunchProgress: () => () => undefined,
   getAccountSession: async () => ({
@@ -902,7 +958,7 @@ const apiMethods = {
   switchSavedAccount: async (id: string) => {
     record('switch-account', id)
     // 与主进程 SAVED_EXPIRED 同一句（electron/realm-account.ts）。
-    if (fail === 'switch') throw new Error('这个保存的账号登录已失效，当前账号没有变化。点「重新登录这个账号」再登一次就行。')
+    if (fail === 'switch') throw new Error('该已保存账号的登录已失效，当前账号未变化。请点击「重新登录该账号」重新登录。')
     activeUserId = 8
     for (const config of Object.values(configs.providers)) {
       if (config.configurationOwnership === 'account') config.configurationOwnership = 'unknown'
@@ -955,12 +1011,28 @@ const apiMethods = {
     return {
       page: 1,
       pageSize: 20,
-      total: empty ? 0 : managedKeys ? managedKeys.length : 1,
-      keys: empty ? [] : managedKeys ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
+      total: empty ? 0 : (stoppedKeys ?? managedKeys)?.length ?? 1,
+      // 每次读都给一份新的，跟真的跨进程一样：页面手里那份不会跟着夹具里存的悄悄变。
+      keys: empty ? [] : (stoppedKeys ?? managedKeys)?.map((entry) => ({ ...entry })) ?? [keyInUse ? { ...key, managedProvider: 'claude' as const } : key],
     }
   },
   updateAccountKey: async (input: Parameters<V2Bridge['updateAccountKey']>[0]) => {
     record('updateAccountKey', input)
+    // managedKeys 那几把照真后台整条覆盖，下一次读就是写进去的样子；不限额时后台留着原来的剩余额度。
+    const stored = managedKeys?.find((entry) => entry.id === input.id)
+    if (stored) Object.assign(stored, {
+      name: input.name,
+      group: input.group,
+      unlimitedQuota: input.unlimitedQuota,
+      remainQuota: input.unlimitedQuota ? stored.remainQuota : input.remainQuota,
+      expiredAt: input.expiredTime === -1 ? null : new Date(input.expiredTime * 1000).toISOString(),
+    })
+  },
+  enableAccountKey: async (id: number) => {
+    record('enableAccountKey', id)
+    const stored = stoppedKeys?.find((entry) => entry.id === id)
+    if (stored?.expiredAt) throw new Error(accountKeyEnableExpiredMessage)
+    if (stored) stored.status = 1
   },
   revokeAccountKey: async (id: number) => {
     record('revokeAccountKey', id)
@@ -1161,7 +1233,7 @@ const apiMethods = {
     if (type === 'subscription' || type === 'concurrency') return { type, quotaAdded: 0 }
     return { quotaAdded: 5 }
   },
-  getAccountSubscriptionPlans: async () => query.has('subscriptionExternal') ? [{
+  getAccountSubscriptionPlans: async () => query.has('subscriptionExternal') && !externalPlanRemoved ? [{
     id: 1,
     title: '外部订阅',
     subtitle: '测试外部支付状态',
@@ -1181,6 +1253,7 @@ const apiMethods = {
     stripePriceId: 'stripe-price',
     creemProductId: null,
     waffoPancakeProductId: null,
+    ...externalPlanPatch,
   }] : [],
   createAccountSubscriptionPayment: async (
     input: Parameters<V2Bridge['createAccountSubscriptionPayment']>[0],
@@ -1285,6 +1358,23 @@ const apiMethods = {
     detailReads += 1
     if (query.has('detailFailure') && detailReads === 1)
       throw new Error('会话详情暂时不可读')
+    if (query.has('turnActivity')) {
+      return {
+        session,
+        messages: [
+          { role: 'user', text: '帮我把测试修好', timestamp: time },
+          {
+            role: 'assistant',
+            text: '测试已经修好了',
+            timestamp: time,
+            activity: { commands: 3, commandNames: ['npm', 'git'], fileCount: 2, files: ['sum.ts', 'sum.test.ts'], failedSteps: 1 },
+          },
+        ],
+        messageStats: { total: 2, user: 1, assistant: 1, system: 0, other: 0, invalidLines: 0 },
+        messagesTruncated: false,
+        sourceTruncated: false,
+      }
+    }
     return {
       session,
       messages: [{ role: 'user', text: '这是一条测试消息', timestamp: time }],
@@ -1361,7 +1451,10 @@ const apiMethods = {
     record('extension', input)
     if (query.has('extensionHold') && input.action !== 'uninstall') await new Promise<void>((resolve) => { releaseHeldExtension = resolve })
     // extensionOk：改动照常成功，用来看成功以后那句提示。
-    if (query.has('extensionOk')) return extensionList(input.provider)
+    if (query.has('extensionOk')) {
+      if (input.action === 'uninstall') hubRemoved.add(`${input.provider}:${input.kind}:${input.id}`)
+      return extensionList(input.provider)
+    }
     throw new Error('扩展操作失败，已有配置保留')
   },
   // Codex 插件的开关走它自己的接口（主进程改 config.toml），不走上面那条通用的扩展改动。
@@ -1380,10 +1473,25 @@ const apiMethods = {
     record('copy-mcp', input)
     if (query.get('copyMcpFail') === input.to) throw new Error('扩展操作失败，已有配置保留')
   },
+  // 技能「从压缩包导入」：选文件窗口和解压都在主进程，夹具直接交回一个解好的技能文件夹；
+  // skillArchive=empty 时照主进程原话报没找到技能。
+  chooseSkillArchive: async () => {
+    record('choose-skill-archive')
+    if (query.get('skillArchive') === 'empty') throw new Error('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。')
+    return { archiveName: 'pdf-helper.zip', directory: 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper' }
+  },
+  importSkill: async (input: Parameters<V2Bridge['importSkill']>[0]) => {
+    record('import-skill', input)
+    return []
+  },
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   ...(query.has('customMarket') ? customMarketMethods : {}),
   ...codexRemoteMethods,
-  listBackups: async () => (empty ? [] : [backup]),
+  listBackups: async () => backupRows,
+  deleteBackup: async (id: string) => {
+    record('deleteBackup', id)
+    backupRows = backupRows.filter((row) => row.id !== id)
+  },
   createBackup: async (provider: Parameters<V2Bridge['createBackup']>[0]) => {
     record('create-backup', provider)
     return { ...backup, id: `backup-${provider}`, provider }
@@ -1444,9 +1552,13 @@ const apiMethods = {
   getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('largeTextByDefault') ? { largeTextByDefault: true as const } : {}) }),
   // transfer=usage-off：「搬到新电脑」的文件里「匿名使用统计」是关，这台还是新装的开，主进程交来「直接关」；
   // transfer=usage-on：文件里是开，这台关过（配 usageOff），只进询问框（X-3）。没有对话，不用登录。
+  // transfer=theme-dark：文件里是深色，这台还是新装的浅色，主进程交来「直接换」（D24）。
   importAppData: async () => {
     record('import-app-data')
     const transfer = query.get('transfer')
+    if (transfer === 'theme-dark') {
+      return { conversations: [], settings: { version: 2, theme: 'dark' }, conflictingSettings: { version: 2 }, conflictLabels: [] }
+    }
     if (transfer !== 'usage-off' && transfer !== 'usage-on') throw new Error('未提供测试方法 importAppData')
     return {
       conversations: [],

@@ -41,16 +41,16 @@ describe('node replacement for company certificates', () => {
   })
 
   it('names the current version when it knows it', () => {
-    expect(nodeReplaceReason('v20.11.1')).toMatch(/^这台电脑上的 Node\.js 是 v20\.11\.1。/)
-    expect(nodeReplaceReason('20.11.1')).toContain('是 v20.11.1。')
-    expect(nodeReplaceReason(null)).toMatch(/^这台电脑上的 Node\.js 版本较旧。/)
-    expect(nodeReplaceReason(null)).toContain('v22.19 以上')
+    expect(nodeReplaceReason('v20.11.1')).toMatch(/^本机的 Node\.js 版本为 v20\.11\.1。/)
+    expect(nodeReplaceReason('20.11.1')).toContain('版本为 v20.11.1。')
+    expect(nodeReplaceReason(null)).toMatch(/^本机的 Node\.js 版本较旧。/)
+    expect(nodeReplaceReason(null)).toContain('v22.19 及以上')
   })
 
   it('says what happened after the replacement and what to do next', () => {
-    expect(describeNodeReplaceOutcome(result())).toEqual({ message: 'Node.js 已换成 v24.19.0，再点一次工具的「安装」就行。', tone: 'ok', restartRequired: false })
-    expect(describeNodeReplaceOutcome(result(), true).message).toBe('Node.js 已换成 v24.19.0，正在接着重试。')
-    expect(describeNodeReplaceOutcome(result({ action: 'unchanged' })).message).toBe('Node.js 已经是新版了，再点一次工具的「安装」就行。')
+    expect(describeNodeReplaceOutcome(result())).toEqual({ message: 'Node.js 已更新至 v24.19.0，请再次点击工具的「安装」。', tone: 'ok', restartRequired: false })
+    expect(describeNodeReplaceOutcome(result(), true).message).toBe('Node.js 已更新至 v24.19.0，正在继续重试。')
+    expect(describeNodeReplaceOutcome(result({ action: 'unchanged' })).message).toBe('Node.js 已是新版，请再次点击工具的「安装」。')
     expect(describeNodeReplaceOutcome(result({ systemRestartRequired: true }), true)).toMatchObject({ restartRequired: true, tone: 'warn' })
   })
 })

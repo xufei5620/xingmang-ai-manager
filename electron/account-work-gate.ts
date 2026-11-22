@@ -15,7 +15,7 @@ export interface QueuedAccountWork {
   isCurrent(): boolean
 }
 
-const staleAccountMessage = '账号刚切换过，请再试一次'
+export const staleAccountMessage = '账号刚刚切换，请重试'
 
 /** Track complete host handlers, including their final local writes, while an account changes. */
 export function createAccountWorkGate(options: { assertReady(): void; revision(): number }) {

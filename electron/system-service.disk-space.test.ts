@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import type { DiskSpaceReading } from './disk-space'
 import { createSystemService } from './system-service'
+import { UnrecognizedDarwinCliError } from './tool-installation'
 
 const temporaryDirectories: string[] = []
 
@@ -137,6 +138,80 @@ describe('refusing an npm install over a CLI installed another way', () => {
     expect(String(error)).toContain('不是通过本工具安装的，这里不会再另装一份')
     expect(target.send).not.toHaveBeenCalled()
     expect(readDiskSpace).not.toHaveBeenCalled()
+  })
+})
+
+// Mac 验收 R1：首页对认不出来路的 Codex / Grok 给的是「使用星芒安装」，点下去不能再被「不会另装一份」拦回来。
+describe('installing over a Mac CLI that cannot be recognised', () => {
+  function createDarwinFixture(provider: 'codex' | 'grok', resolveCliCommand: () => Promise<never>) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-unrecognized-cli-')))
+    temporaryDirectories.push(root)
+    const home = path.join(root, 'home')
+    fs.mkdirSync(home)
+    vi.stubEnv('HOME', home)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const readDiskSpace = vi.fn(async () => diskWith(420 * 1024 ** 2))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(root, 'settings.json'), root),
+      {
+        platform: 'darwin',
+        findExecutable: vi.fn(async () => null),
+        readDiskSpace,
+        resolveCliCommand,
+        macosCodexAppDetector: vi.fn(async () => ({ app: null, detectionFailed: false, detectionError: null })),
+        resolveCliInstallation: async (requested) => requested === provider
+          ? {
+              commandPath: path.join(root, 'third-party', 'bin', provider),
+              installDirectory: path.join(root, 'third-party'),
+              packageRoot: null,
+              npmPrefix: null,
+              source: 'native',
+            }
+          : null,
+      },
+    )
+    return { home, readDiskSpace, service, target }
+  }
+
+  // 磁盘预检排在「不会另装一份」后面：走到磁盘那一步，说明认不出的那份没有拦住这次安装。
+  it.runIf(process.platform !== 'win32')('lets the install go ahead next to an unrecognised Codex', async () => {
+    const fixture = createDarwinFixture('codex', async () => {
+      throw new UnrecognizedDarwinCliError(new Error('not the standalone layout'))
+    })
+
+    const error = await fixture.service.installCli('codex', fixture.target).catch((reason: unknown) => reason)
+
+    expect(String(error)).toContain('磁盘空间不足')
+    expect(String(error)).not.toContain('不会再另装一份')
+    expect(fixture.readDiskSpace).toHaveBeenCalled()
+  })
+
+  it.runIf(process.platform !== 'win32')('lets the install go ahead when nothing occupies the Grok link', async () => {
+    const fixture = createDarwinFixture('grok', async () => {
+      throw new Error('Grok launch is not resolved while installing')
+    })
+
+    const error = await fixture.service.installCli('grok', fixture.target).catch((reason: unknown) => reason)
+
+    expect(String(error)).toContain('磁盘空间不足')
+    expect(fixture.readDiskSpace).toHaveBeenCalled()
+  })
+
+  // npm 的安装脚本会盖掉 ~/.grok/bin/grok：放不回去的那几种（手做的绝对链接、普通文件）一个字节都不下就停。
+  it.runIf(process.platform !== 'win32')('stops before downloading when the Grok link is one the install could not put back', async () => {
+    const fixture = createDarwinFixture('grok', async () => {
+      throw new Error('Grok launch is not resolved while installing')
+    })
+    const bin = path.join(fixture.home, '.grok', 'bin')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.symlinkSync(path.join(fixture.home, 'elsewhere', 'grok'), path.join(bin, 'grok'))
+
+    const error = await fixture.service.installCli('grok', fixture.target).catch((reason: unknown) => reason)
+
+    expect(String(error)).toContain('这台电脑上已经有一份 Grok CLI，不是用星芒装的。为了不弄坏它，已停止安装。')
+    expect(String(error)).toContain('使用星芒安装')
+    expect(fixture.readDiskSpace).not.toHaveBeenCalled()
+    expect(fixture.target.send).not.toHaveBeenCalled()
   })
 })
 

@@ -31,7 +31,7 @@ export function cliRuntimeBlockMessage(runtime: RuntimeSnapshot): string | null 
   if (runtime.node.tooOld === true || runtime.node.versionStatus === 'too-old') {
     return `Node.js 版本过低（当前 ${runtime.node.version ?? '未知'}），请升级到 v${minimumSupportedNodeVersion.major} 或更高版本，再安装命令行工具。`
   }
-  return '已检测到 Node.js，但版本无法识别。请按首页运行环境卡里的步骤重新装一遍，再安装命令行工具。'
+  return '已检测到 Node.js，但版本无法识别。请按首页运行环境卡片中的步骤重新安装后，再安装命令行工具。'
 }
 
 // 命令行工具装之前要先代装的只有 Node.js：要 Python 的只有已下线的 Gemini CLI。
@@ -84,8 +84,8 @@ export function cliInstallStageLabel(stage: InstallRuntimeId | 'tool', index: nu
 
 /**
  * 装工具前那一段运行环境准备。claim 是「占住运行环境那一行再跑」（首页的 toolbox.run），
- * 占不到说明先点的另一个工具、运行环境卡或「换成新版 Node.js」正在装同一份。以前这里
- * 直接报「运行环境正在准备」，外面再包成「Node.js 运行环境没装上，Codex CLI 还没开始安装」，
+ * 占不到说明先点的另一个工具、运行环境卡或「更新 Node.js」正在装同一份。以前这里
+ * 直接报「运行环境正在准备」，外面再包成「Node.js 运行环境安装失败，Codex CLI 尚未开始安装」，
  * 新电脑上挨个点两个工具的「安装」，第二个立刻变红，说的跟事实正好相反（并发竞态 BF3）。
  * 主进程按 runtime:node 一个键排队，同一个键复用同一次安装（installation-queue.ts），
  * 所以占不到时再要一次，等到的就是那一次的结果，不会装两遍；那一次刚好已经装完，
@@ -108,5 +108,5 @@ export async function prepareSharedRuntime<T>(
  * 拼进句子中间以后，上屏前的 errorMessage 只剥开头，这串英文就原样进了错误框。
  */
 export function runtimeStageFailureMessage(runtime: InstallRuntimeId, toolName: string, cause: unknown): string {
-  return `${installRuntimeNames[runtime]} 运行环境没装上，${toolName} 还没开始安装。${rawErrorMessage(cause)}`.trim()
+  return `${installRuntimeNames[runtime]} 运行环境安装失败，${toolName} 尚未开始安装。${rawErrorMessage(cause)}`.trim()
 }

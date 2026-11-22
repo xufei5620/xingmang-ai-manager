@@ -11,17 +11,17 @@ describe('backupKeyView', () => {
   it('names the account that issued another key and warns before restoring it', () => {
     const view = backupKeyView({ keyOwnership: 'other', keyAccountName: 'old-user' })
     expect(view?.label).toBe('账号 old-user 的密钥')
-    expect(view?.restoreWarning).toMatch(/^这份备份里是账号 old-user 的密钥。/)
+    expect(view?.restoreWarning).toMatch(/^此备份中为账号 old-user 的密钥。/)
   })
 
   it('warns about an unnamed foreign key without inventing an owner', () => {
     const view = backupKeyView({ keyOwnership: 'other', keyAccountName: null })
     expect(view?.label).toBe('不是当前账号的密钥')
-    expect(view?.restoreWarning).toMatch(/^这份备份里的密钥不是当前账号的。/)
+    expect(view?.restoreWarning).toMatch(/^此备份中的密钥不属于当前账号。/)
   })
 
   it('reports a backup without a key', () => {
-    expect(backupKeyView({ keyOwnership: 'none', keyAccountName: null })?.label).toBe('没有密钥')
+    expect(backupKeyView({ keyOwnership: 'none', keyAccountName: null })?.label).toBe('无密钥')
   })
 
   it('leaves legacy backups unlabelled', () => {

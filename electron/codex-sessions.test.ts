@@ -413,6 +413,31 @@ describe('CodexSessionsService', () => {
     expect(fs.readFileSync(notesPath, 'utf8')).toBe('用户原有内容')
   })
 
+  it('hangs the commands a Codex turn ran and the files it patched on its last reply', async () => {
+    const data = fixture('session-1')
+    const lines = [
+      { type: 'response_item', payload: { type: 'function_call', name: 'shell', call_id: 'c1', arguments: JSON.stringify({ command: ['bash', '-lc', 'npm test'] }) } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'c1', output: JSON.stringify({ output: 'ok', metadata: { exit_code: 0 } }) } },
+      { type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', call_id: 'c2', input: '*** Begin Patch\n*** Update File: src/app.ts\n*** End Patch' } },
+      { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'c2', output: 'apply_patch verification failed: no match' } },
+      { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '测试过了' }] } },
+    ].map((line) => JSON.stringify(line))
+    fs.appendFileSync(data.rolloutPath, `${lines.join('\n')}\n`, 'utf8')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+
+    const detail = await service(data).detail('session-1')
+
+    expect(detail.messages.map((message) => message.text)).toEqual(['请检查项目', '检查完成', '测试过了'])
+    expect(detail.messages.map((message) => message.activity)).toEqual([
+      undefined,
+      undefined,
+      { commands: 1, commandNames: ['npm'], fileCount: 0, files: [], failedSteps: 1 },
+    ])
+    expect(detail.messageStats.total).toBe(3)
+  })
+
   it('drops an oversized JSONL record while preserving later valid messages', async () => {
     const data = fixture('session-1')
     const laterMessage = JSON.stringify({
@@ -631,6 +656,78 @@ describe('CodexSessionsService', () => {
 
     expect(archived.rolloutPath).not.toBe(directTarget)
     expect(fs.readFileSync(directTarget, 'utf8')).toBe('existing archive')
+  })
+
+  // D13: reads only accept a rollout that really lives inside CODEX_HOME, so a
+  // move into a folder linked out of it used to succeed and then leave the
+  // session impossible to open or restore from the app.
+  it('refuses to archive into an archived_sessions folder linked outside CODEX_HOME before touching anything', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const outside = path.join(data.root, 'outside-archive')
+    fs.mkdirSync(outside)
+    // Junctions need no privilege on Windows; POSIX ignores the type argument.
+    fs.symlinkSync(outside, path.join(data.codexHome, 'archived_sessions'), 'junction')
+    const sessions = service(data)
+
+    await expect(sessions.archive('session-1')).rejects.toThrow('归档目录不在 CODEX_HOME 内')
+
+    expect(fs.readdirSync(outside)).toEqual([])
+    expect(fs.existsSync(data.rolloutPath)).toBe(true)
+    expect(fs.existsSync(sessions.operationJournalPath)).toBe(false)
+    const live = new DatabaseSync(data.databasePath, { readOnly: true })
+    expect(live.prepare('SELECT archived, rollout_path FROM threads WHERE id = ?').get('session-1'))
+      .toMatchObject({ archived: 0, rollout_path: data.rolloutPath })
+    live.close()
+    await expect(sessions.detail('session-1')).resolves.toMatchObject({ session: { id: 'session-1', rolloutAvailable: true } })
+  })
+
+  it('restores into sessions/recovered when the original folder now links outside CODEX_HOME', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const sessions = service(data)
+    await sessions.archive('session-1')
+    const originalDirectory = path.dirname(data.rolloutPath)
+    const outside = path.join(data.root, 'outside-sessions')
+    fs.mkdirSync(outside)
+    fs.rmdirSync(originalDirectory)
+    fs.symlinkSync(outside, originalDirectory, 'junction')
+
+    const restored = await sessions.restore('session-1')
+
+    expect(restored.archived).toBe(false)
+    expect(restored.rolloutPath).toBe(path.join(data.codexHome, 'sessions', 'recovered', path.basename(data.rolloutPath)))
+    expect(fs.readdirSync(outside)).toEqual([])
+    await expect(sessions.detail('session-1')).resolves.toMatchObject({
+      session: { id: 'session-1', archived: false, rolloutAvailable: true },
+    })
+  })
+
+  it('keeps an archived session readable when every restore folder links outside CODEX_HOME', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const sessions = service(data)
+    const archived = await sessions.archive('session-1')
+    const sessionsDirectory = path.join(data.codexHome, 'sessions')
+    const outside = path.join(data.root, 'outside-sessions')
+    fs.renameSync(sessionsDirectory, outside)
+    fs.symlinkSync(outside, sessionsDirectory, 'junction')
+    const before = fs.readFileSync(sessions.operationJournalPath, 'utf8')
+
+    await expect(sessions.restore('session-1')).rejects.toThrow('恢复目录不在 CODEX_HOME 内')
+
+    expect(fs.existsSync(archived.rolloutPath)).toBe(true)
+    expect(fs.existsSync(path.join(outside, 'recovered'))).toBe(false)
+    expect(fs.readFileSync(sessions.operationJournalPath, 'utf8')).toBe(before)
+    await expect(sessions.detail('session-1')).resolves.toMatchObject({
+      session: { id: 'session-1', archived: true, rolloutAvailable: true },
+    })
   })
 
   it('recovers a JSONL move when the process stopped before the SQLite transaction committed', async () => {

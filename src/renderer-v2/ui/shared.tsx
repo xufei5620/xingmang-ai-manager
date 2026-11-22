@@ -12,7 +12,7 @@ const copy = {
   close: '关闭', cancel: '取消', expand: '展开', collapse: '收起', show: '显示密码', hide: '隐藏密码',
   search: '搜索', more: '更多操作', open: '打开', archived: '已归档', brand: '星芒 AI',
   capsLock: '大写锁定已开启',
-  discardTitle: '有修改还没保存，关掉会丢掉这些修改',
+  discardTitle: '有未保存的修改，关闭后修改将丢失',
   keepEditing: '继续编辑', discard: '不保存', acknowledge: '我已了解影响',
   loading: '正在加载', progress: '进度', notifications: '通知', unknownTool: '其他工具',
   dialog: '详情', popover: '说明',

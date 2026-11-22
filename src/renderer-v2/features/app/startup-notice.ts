@@ -52,9 +52,9 @@ export interface StartupNotice {
 }
 
 const failureTitles: Record<StartupCheckFailureId, string> = {
-  update: '更新检查没有完成',
-  diagnostics: '环境检查没有完成',
-  appearance: '系统外观没有同步',
+  update: '更新检查未完成',
+  diagnostics: '环境检查未完成',
+  appearance: '系统外观同步失败',
 }
 
 /** 后端原话留在正文里：客服排查时要的是它，不是被归类后的标题（同失败对话框）。 */
@@ -102,10 +102,10 @@ export function startupDiagnosticsIssues(counts: StartupDiagnosticsCounts): Star
     tone: 'warn',
     title: `环境检查发现 ${issues} 项需要处理`,
     body: warnings
-      ? `不影响继续使用，有空时到「检查」页看一下就行。另有 ${warnings} 项可留意。`
-      : '不影响继续使用，有空时到「检查」页看一下就行。',
+      ? `不影响使用，建议前往「检查」页查看。另有 ${warnings} 项建议关注。`
+      : '不影响使用，建议前往「检查」页查看。',
     // 检查页把有问题的排在最前；从这里点进去再翻到第一项问题，免得落在上次看到的位置。
-    action: { label: '去看看', page: 'health', section: firstProblemAnchor },
+    action: { label: '立即查看', page: 'health', section: firstProblemAnchor },
   }
 }
 
@@ -120,8 +120,8 @@ export function vaultRecoveredNotice(): StartupNotice {
     failure: false,
     tone: 'warn',
     title: '本机保存的登录信息已重置，请重新登录',
-    body: '这台电脑上保存的登录信息已经读不出来，星芒已重新建了一份。之前记住的账号需要各自重新登录一次，已经写进各个工具的配置不受影响。',
-    action: { label: '去登录', login: true },
+    body: '本机保存的登录信息无法读取，已重新创建。之前保存的账号需重新登录，已写入各工具的配置不受影响。',
+    action: { label: '前往登录', login: true },
   }
 }
 
@@ -140,26 +140,24 @@ export function releaseNoteHeadline(note: string): string {
 
 /**
  * 更新装完后的第一次启动：软件消失又出现，界面和之前一模一样，不说一句用户就只能
- * 再去点一次「检查更新」确认自己在不在新版上。挂在角落、不挡操作，只有一颗「知道了」，
- * 不让用户做任何选择；列最前面几项改动的开头那句，完整清单在「设置 › 版本更新」（随包带的，断网
- * 也在）。不是更新后第一次启动时返回 null。
+ * 再去点一次「检查更新」确认自己在不在新版上。挂在角落、不挡操作，不让用户做任何选择；
+ * 只列最前面几项改动的开头那句，不再加一句引导语（字越少卡片越矮，越不挡首页）。没列全时
+ * 旁边多一颗「看全部改动」去「设置 › 版本更新」（随包带的，断网也在）。不是更新后第一次启动时返回 null。
  */
 export function updatedNotice(currentVersion: string, release: InstalledRelease | null | undefined): StartupNotice | null {
   if (!release?.justUpdated || !currentVersion) return null
   const notes = release.notes ?? []
   const items = notes.slice(0, UPDATED_NOTICE_ITEMS).map(releaseNoteHeadline).filter(Boolean)
   const rest = notes.length - items.length
-  const body = items.length === 0
-    ? '已经在用新版本了，可以照常使用。'
-    : rest > 0 ? `这一版的主要改动如下，另外 ${rest} 项在「设置 › 版本更新」里可以看到。` : '这一版的改动：'
   return {
     id: 'updated',
     failure: false,
     tone: 'ok',
     title: `已更新到 ${currentVersion}`,
-    body,
+    body: items.length === 0 ? '已更新至新版本。' : '',
     ...(items.length > 0 ? { items } : {}),
     action: { label: '知道了', dismiss: true },
+    ...(items.length > 0 && rest > 0 ? { secondaryAction: { label: '查看全部改动', page: 'settings', section: 'version' } } : {}),
   }
 }
 
@@ -169,18 +167,18 @@ export function updatedNotice(currentVersion: string, release: InstalledRelease 
  */
 export function settingsSaveNotice(issue: SettingsSaveIssue | null | undefined): StartupNotice | null {
   if (!issue) return null
-  // 盘符是字母，前后跟汉字隔一个空格（「电脑上的 C 盘」）；没有盘符写「磁盘」，不加空格。
+  // 盘符是字母，前后跟汉字隔一个空格（「请清理 C 盘」）；句首那处去掉前导空格。没有盘符写「磁盘」，不加空格。
   const drive = issue.drive && /^[A-Z]$/.test(issue.drive) ? ` ${issue.drive} 盘` : '磁盘'
   const body = issue.kind === 'disk-full'
-    ? `电脑上的${drive}空间快满了，部分设置可能保存不上。清理一下${drive}（比如清空回收站、删掉不用的大文件）后重开软件就好。`
+    ? `${drive.trimStart()}空间即将不足，部分设置可能无法保存。请清理${drive}（如清空回收站、删除不需要的大文件）后重新打开软件。`
     : issue.kind === 'blocked'
-      ? '软件的设置文件被别的程序（常见是杀毒软件）拦住了，部分设置可能保存不上。把星芒AI管理工具加进杀毒软件的信任名单后重开软件就好。'
-      : '这次打开时设置没保存上，部分设置可能要重新选一次。重开软件一般就好了。'
+      ? '设置文件被其他程序（通常为杀毒软件）拦截，部分设置可能无法保存。请将星芒AI管理工具加入杀毒软件信任名单后重新打开软件。'
+      : '本次启动时设置保存失败，部分设置可能需重新选择。重新打开软件通常可以解决。'
   return {
     id: 'settings-save',
     failure: false,
     tone: 'warn',
-    title: '部分设置可能保存不上',
+    title: '部分设置可能无法保存',
     body,
     action: { label: '知道了', dismiss: true },
   }
@@ -197,7 +195,7 @@ export function displayCompatNotice(capabilities: Pick<WindowCapabilities, 'disp
     failure: false,
     tone: 'warn',
     title: '已改用兼容方式显示界面',
-    body: '这台电脑的显卡驱动好像不太稳定，刚才接连出了几次问题，这次星芒换了一种更稳的方式显示界面，个别动画可能慢一点。以后想怎么显示？',
+    body: '检测到显卡驱动不稳定，已多次出现异常。星芒已切换为兼容显示模式，部分动画可能变慢。请选择今后的显示方式：',
     action: { label: '一直用兼容方式', displayCompat: 'keep' },
     secondaryAction: { label: '恢复原来的方式', displayCompat: 'restore' },
   }
@@ -210,14 +208,14 @@ export function displayRelaunchNotice(): StartupNotice {
     failure: false,
     tone: 'neutral',
     title: '重开软件后生效',
-    body: '显示方式已经改好，重开一次星芒就会用上。',
+    body: '显示方式已修改，重新打开星芒后生效。',
     action: { label: '现在重开', relaunch: true },
     secondaryAction: { label: '稍后', dismiss: true },
   }
 }
 
 /**
- * 出错时会自动把错误报告发到海外，这件事以前只写在设置页的一行开关旁边，没人主动
+ * 出错或卡住时（卡住是 #1971 起）会自动把错误报告发到海外，这件事以前只写在设置页的一行开关旁边，没人主动
  * 说过。登录进来后说一次：缺省照旧开着（告知不等于改缺省），给一颗「不想发送」当场
  * 关掉。不写服务名，用户要知道的是「发去海外、能关」。已经关掉的人不用再告诉他。
  */
@@ -227,8 +225,8 @@ export function crashReportingNotice(settings: Pick<AppSettingsV2, 'crashReporti
     id: 'crash-reporting',
     failure: false,
     tone: 'neutral',
-    title: '软件出错时会发送错误报告',
-    body: '软件出错时，会自动把一份错误报告发到海外的错误收集服务，帮我们更快修好问题。报告里不含你的账号、密钥、文件路径和聊天内容。以后想改，可以在「设置」的「隐私数据」里关掉。',
+    title: '软件出错或无响应时将发送错误报告',
+    body: '软件出错或无响应时，将自动向海外错误收集服务发送错误报告，以便尽快修复问题。报告不包含账号、密钥、文件路径和聊天内容。可随时在「设置 › 隐私数据」中关闭。',
     action: { label: '知道了', crashReporting: 'keep' },
     secondaryAction: { label: '不想发送', crashReporting: 'off' },
     waitsForOnboarding: true,
@@ -252,8 +250,8 @@ export function usageStatsNotice(
     id: 'usage-stats',
     failure: false,
     tone: 'neutral',
-    title: '软件会发送匿名使用情况',
-    body: '为了知道新版本有没有顺利装上、哪里容易出错，星芒每天最多发一次匿名使用情况：版本、电脑系统、装了哪些工具、安装和更新是否成功。不含你的账号、密钥、文件路径和聊天内容，也没有能认出这台电脑的编号。以后想改，可以在「设置」的「隐私数据」里关掉。',
+    title: '软件将发送匿名使用数据',
+    body: '每天最多发送一次，用于发现易出错的环节。仅发送版本、操作系统、已安装的工具及安装更新是否成功，不发送账号、密钥、文件和聊天内容，也无法识别具体设备。可在「设置 › 隐私数据」中关闭。',
     action: { label: '知道了', usageStats: 'keep' },
     secondaryAction: { label: '不想发送', usageStats: 'off' },
     waitsForOnboarding: true,
@@ -277,17 +275,17 @@ export function unexpectedExitNotice(capabilities: Pick<WindowCapabilities, 'une
   const supportFailure: SupportFailure = {
     at: latest,
     action: '星芒自己意外退出',
-    message: notice.relaunched ? '已自动重新打开' : '10 分钟内又退出了一次，没有自动重开',
+    message: notice.relaunched ? '已自动重新打开' : '10 分钟内再次退出，未自动重新打开',
     detail: exits.map((exit) => `${clockTime(new Date(exit.at))} ${exit.error}`).join('；'),
   }
   return {
     id: 'unexpected-exit',
     failure: false,
     tone: 'warn',
-    title: notice.relaunched ? '星芒刚才意外退出了' : '星芒刚才又意外退出了',
+    title: notice.relaunched ? '星芒意外退出' : '星芒再次意外退出',
     body: notice.relaunched
-      ? '星芒刚才意外退出了，已经重新打开。错误信息已经记下来，点「复制给客服」发给客服就行。'
-      : '星芒刚才又意外退出了一次，这次没有自动重开。点「复制给客服」，把这几次的信息发给客服。',
+      ? '星芒意外退出，已自动重新打开。错误信息已记录，请点击「复制给客服」并发送给客服。'
+      : '星芒再次意外退出，未自动重新打开。请点击「复制给客服」，将相关信息发送给客服。',
     action: { label: '复制给客服', supportFailure },
     secondaryAction: { label: '知道了', dismiss: true },
   }
@@ -307,8 +305,8 @@ export function toolTemplateFilledNotice(filled: readonly ProviderId[]): Startup
     id: 'template-filled',
     failure: false,
     tone: 'ok',
-    title: '已把工具设置补齐到最新',
-    body: `已按新版本补上了 ${names.join('、')} 的几项设置，用起来更顺、更少卡顿。你的账号、密钥、对话和自己改过的设置都没动，改之前的样子在「设置 › 备份迁移」里可以找回。`,
+    title: '工具设置已更新至最新',
+    body: `已按新版本补全 ${names.join('、')} 的部分设置，运行更流畅。账号、密钥、对话及自定义设置均未改动，修改前的设置可在「设置 › 备份迁移」中恢复。`,
     action: { label: '知道了', dismiss: true },
   }
 }
@@ -325,14 +323,14 @@ export function claudeDesktopRepairedNotice(
 ): StartupNotice | null {
   if (capabilities?.claudeDesktopRepaired !== true) return null
   const quit = platform === 'macos'
-    ? '只关窗口不算，要按 ⌘Q'
-    : platform === 'windows' ? '只关窗口不算，还要退出屏幕右下角托盘里的 Claude 图标' : '只关窗口不算'
+    ? '关闭窗口不等于退出，请按 ⌘Q'
+    : platform === 'windows' ? '关闭窗口不等于退出，请同时退出屏幕右下角托盘中的 Claude 图标' : '关闭窗口不等于退出'
   return {
     id: 'claude-desktop-repaired',
     failure: false,
     tone: 'ok',
-    title: 'Claude Desktop 的设置已经改好了',
-    body: `之前版本保存的设置可能让 Claude Desktop 发消息没有回复，星芒已经改回你当时选的那一个型号，别的设置都没动。Claude Desktop 现在开着的话，完全退出再重新打开就好（${quit}）。`,
+    title: 'Claude Desktop 设置已修复',
+    body: `旧版本保存的设置可能导致 Claude Desktop 发送消息后无回复，现已恢复为您选择的模型，其他设置未改动。如 Claude Desktop 正在运行，请完全退出后重新打开（${quit}）。`,
     action: { label: '知道了', dismiss: true },
   }
 }
@@ -357,10 +355,10 @@ export function toolRouteRestartNotice(hint: ToolRouteRestartHint): StartupNotic
   }
 }
 
-const codexPayloadNewConversation = '请新开一个对话继续；对话里的截图和大文件会让体积变大很快。这时让 Codex 压缩对话也不管用，压缩同样要先把整段对话发上去。'
+const codexPayloadNewConversation = '请新建对话继续。截图和大文件会使对话体积快速增大；此时压缩对话同样无效，因为压缩也需上传完整对话。'
 const codexPayloadReasons: Partial<Record<CodexPayloadNoticeKind, string>> = {
-  locked: '你在设置里选了只用线路1，所以没有自动换线路。',
-  unreachable: '线路2 这会儿也连不上，所以没能帮你换过去。',
+  locked: '设置中已选择仅使用线路1，因此未自动切换线路。',
+  unreachable: '线路2 当前同样无法连接，未能自动切换。',
 }
 
 /**
@@ -374,8 +372,8 @@ export function codexPayloadNotice(notice: CodexPayloadNotice): StartupNotice {
       id: 'codex-payload',
       failure: false,
       tone: 'neutral',
-      title: 'Codex 里有个对话快到线路1 的上限了',
-      body: '对话越聊越大，超过 100MB 后线路1 就发不出去了。建议手上这件事做完就新开一个对话；截图和大文件会让体积变大很快。',
+      title: 'Codex 中有对话即将达到线路1 的上限',
+      body: '对话超过 100MB 后将无法通过线路1 发送。建议完成当前任务后新建对话；截图和大文件会使体积快速增大。',
       action,
     }
   }
@@ -384,8 +382,8 @@ export function codexPayloadNotice(notice: CodexPayloadNotice): StartupNotice {
       id: 'codex-payload',
       failure: false,
       tone: 'warn',
-      title: 'Codex 里这个对话太大，发不出去了',
-      body: `这个对话已经超过线路2 的上限，在这个对话里发什么都会失败。${codexPayloadNewConversation}`,
+      title: 'Codex 对话体积过大，无法发送',
+      body: `该对话已超过线路2 的上限，继续发送将失败。${codexPayloadNewConversation}`,
       action,
     }
   }
@@ -393,8 +391,8 @@ export function codexPayloadNotice(notice: CodexPayloadNotice): StartupNotice {
     id: 'codex-payload',
     failure: false,
     tone: 'warn',
-    title: 'Codex 里这个对话太大，线路1 发不出去',
-    body: `这个对话已经超过 100MB，线路1 发不出去，在这个对话里发什么都会失败。${codexPayloadNewConversation}${codexPayloadReasons[notice.kind] ?? ''}`,
+    title: 'Codex 对话体积过大，无法通过线路1 发送',
+    body: `该对话已超过 100MB，无法通过线路1 发送，继续发送将失败。${codexPayloadNewConversation}${codexPayloadReasons[notice.kind] ?? ''}`,
     action,
   }
 }

@@ -12,6 +12,7 @@ import {
   resumeStillLatest,
   startsInNewFolder,
   workspaceButtonLabel,
+  workspaceChoiceChanged,
   workspaceName,
 } from './recent-workspaces'
 
@@ -46,6 +47,62 @@ describe('launchWorkspaces', () => {
     expect(launchWorkspaces([], 'claude')).toEqual([])
     expect(launchWorkspaces([], 'claude', '   ')).toEqual([])
     expect(launchWorkspaces([], 'claude', null)).toEqual([])
+    expect(launchWorkspaces([], 'claude', null, 5000)).toEqual([])
+  })
+
+  // 0.2.25 总单 Q1：设置页换了项目文件夹，「打开」先进刚换的那个，以后以最近一次为准。
+  it('puts the folder chosen on the settings page first when it is newer than the tool\'s last session', () => {
+    const sessions = [
+      session({ id: 'a', provider: 'claude', cwd: 'C:\\work\\alpha', updatedAt: 2000 }),
+      session({ id: 'b', provider: 'claude', cwd: 'C:\\work\\gamma', updatedAt: 1500 }),
+      // Another tool used later does not count against this one.
+      session({ id: 'c', provider: 'codex', cwd: 'C:\\work\\delta', updatedAt: 9000 }),
+    ]
+    expect(launchWorkspaces(sessions, 'claude', 'D:\\picked\\beta', 3000)).toEqual([
+      { path: 'D:\\picked\\beta', name: 'beta' },
+      { path: 'C:\\work\\alpha', name: 'alpha' },
+      { path: 'C:\\work\\gamma', name: 'gamma' },
+    ])
+  })
+
+  it('goes back to the tool\'s own history once the tool was used after the settings change', () => {
+    const sessions = [session({ id: 'a', provider: 'claude', cwd: 'C:\\work\\alpha', updatedAt: 4000 })]
+    expect(launchWorkspaces(sessions, 'claude', 'D:\\picked\\beta', 3000)).toEqual([{ path: 'C:\\work\\alpha', name: 'alpha' }])
+    // Same moment: the session wins, as before this change.
+    expect(launchWorkspaces(sessions, 'claude', 'D:\\picked\\beta', 4000)).toEqual([{ path: 'C:\\work\\alpha', name: 'alpha' }])
+    // A remembered folder that did not come from the settings page never jumps ahead of the history.
+    expect(launchWorkspaces(sessions, 'claude', 'D:\\picked\\beta')).toEqual([{ path: 'C:\\work\\alpha', name: 'alpha' }])
+  })
+
+  it('falls back to createdAt and keeps one entry when the chosen folder is also in the history', () => {
+    const sessions = [
+      session({ id: 'a', provider: 'claude', cwd: 'C:\\Work\\Alpha', updatedAt: null, createdAt: 1000 }),
+      session({ id: 'b', provider: 'claude', cwd: 'C:\\work\\gamma', updatedAt: null, createdAt: 900 }),
+    ]
+    expect(launchWorkspaces(sessions, 'claude', 'c:\\work\\alpha', 2000)).toEqual([
+      { path: 'c:\\work\\alpha', name: 'alpha' },
+      { path: 'C:\\work\\gamma', name: 'gamma' },
+    ])
+    expect(launchWorkspaces(sessions, 'claude', 'c:\\work\\alpha', 1000)[0]).toEqual({ path: 'C:\\Work\\Alpha', name: 'Alpha' })
+  })
+
+  it('keeps POSIX folders that differ only in case apart', () => {
+    const sessions = [session({ id: 'a', provider: 'claude', cwd: '/work/Foo', updatedAt: 1000 })]
+    expect(launchWorkspaces(sessions, 'claude', '/work/foo', 2000)).toEqual([
+      { path: '/work/foo', name: 'foo' },
+      { path: '/work/Foo', name: 'Foo' },
+    ])
+  })
+})
+
+describe('workspaceChoiceChanged', () => {
+  it('asks for a config reread only when the settings page chose a folder again', () => {
+    expect(workspaceChoiceChanged(null, { workspaceChosenAt: 1000 })).toBe(true)
+    expect(workspaceChoiceChanged({}, { workspaceChosenAt: 1000 })).toBe(true)
+    expect(workspaceChoiceChanged({ workspaceChosenAt: 1000 }, { workspaceChosenAt: 2000 })).toBe(true)
+    expect(workspaceChoiceChanged({ workspaceChosenAt: 1000 }, { workspaceChosenAt: 1000 })).toBe(false)
+    expect(workspaceChoiceChanged({ workspaceChosenAt: 1000 }, {})).toBe(false)
+    expect(workspaceChoiceChanged(undefined, {})).toBe(false)
   })
 })
 
@@ -124,6 +181,15 @@ describe('recentWorkspaces', () => {
     expect(items).toEqual([{ path: 'C:\\Work\\Alpha', name: 'Alpha' }])
   })
 
+  // D27
+  it('lists two Mac or Linux folders that differ only in case as two entries', () => {
+    const items = recentWorkspaces([
+      session({ id: 'a', cwd: '/home/u/Foo', updatedAt: 40 }),
+      session({ id: 'b', cwd: '/home/u/foo', updatedAt: 20 }),
+    ], 'claude')
+    expect(items).toEqual([{ path: '/home/u/Foo', name: 'Foo' }, { path: '/home/u/foo', name: 'foo' }])
+  })
+
   it('falls back to the creation time when a session has no update time', () => {
     const items = recentWorkspaces([
       session({ id: 'a', cwd: '/home/u/alpha', updatedAt: null, createdAt: 50 }),
@@ -174,7 +240,7 @@ describe('workspaceName', () => {
 })
 
 describe('folderConversations', () => {
-  // 一个文件夹一行，放它最近的那条：「接着聊」只接得上那一条。
+  // 一个文件夹一行，放它最近的那条：「继续对话」只接得上那一条。
   it('keeps one row per folder, the newest chat in it, in the order the list gave', () => {
     const rows = folderConversations([
       session({ id: 'codex:3', provider: 'codex', cwd: 'C:\\work\\alpha', updatedAt: 30 }),
@@ -248,6 +314,30 @@ describe('latestSessionIdsByWorkspace', () => {
     const ids = latestSessionIdsByWorkspace([
       session({ id: 'claude:new', cwd: 'C:\\Work\\Alpha' }),
       session({ id: 'claude:old', cwd: 'c:\\work\\alpha' }),
+    ])
+
+    expect([...ids]).toEqual(['claude:new'])
+  })
+
+  // D27：Mac 和 Linux 上大小写不同的是两个文件夹，各有各的「继续对话」。
+  it('keeps two folders that differ only in case apart on Mac and Linux', () => {
+    const ids = latestSessionIdsByWorkspace([
+      session({ id: 'claude:upper', cwd: '/work/Foo' }),
+      session({ id: 'claude:lower', cwd: '/work/foo' }),
+      session({ id: 'claude:older-upper', cwd: '/work/Foo' }),
+    ])
+
+    expect([...ids]).toEqual(['claude:upper', 'claude:lower'])
+    expect(folderConversations([
+      session({ id: 'grok:upper', provider: 'grok', cwd: '/Users/u/Project' }),
+      session({ id: 'grok:lower', provider: 'grok', cwd: '/Users/u/project' }),
+    ], 'grok').map((item) => item.id)).toEqual(['grok:upper', 'grok:lower'])
+  })
+
+  it('still treats two spellings of one Windows network path as the same folder', () => {
+    const ids = latestSessionIdsByWorkspace([
+      session({ id: 'claude:new', cwd: '\\\\NAS\\Share\\Alpha' }),
+      session({ id: 'claude:old', cwd: '\\\\nas\\share\\alpha' }),
     ])
 
     expect([...ids]).toEqual(['claude:new'])

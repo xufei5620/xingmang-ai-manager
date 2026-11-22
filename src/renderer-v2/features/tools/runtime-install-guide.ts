@@ -45,7 +45,7 @@ export function runtimeHomebrewCommand(runtime: ManagedRuntimeId): string {
  */
 export function runtimeButtonLabel(runtime: ManagedRuntimeId, management: InstallManagement | undefined): string {
   const optional = runtime === 'python' ? '（可选环境）' : ''
-  if (management === 'external') return `去官网下载 ${runtimeDisplayName(runtime)}${optional}`
+  if (management === 'external') return `前往官网下载 ${runtimeDisplayName(runtime)}${optional}`
   return runtime === 'node' ? '准备 Node.js' : '装 Python（可选环境）'
 }
 
@@ -67,19 +67,19 @@ export const linuxPythonInstallCommand = 'sudo apt install python3'
 
 // Python 命令行工具都用不到了（要它的只有已下线的 Gemini CLI），
 // 只剩外接工具里个别连接要它（添加时那一页会提示，features/extensions/extensions-common 的 mcpRuntimeNotice），
-// 所以说成「要装的话」，别让客户以为非装不可。
+// 所以说成「如需使用」，别让客户以为非装不可。
 function whyNeeded(runtime: ManagedRuntimeId): string {
   return runtime === 'node'
     ? '命令行工具都靠它来安装和启动'
-    : '命令行工具都用不到它，外接工具里个别要用它的才需要'
+    : '命令行工具均不依赖它，仅个别插件需要'
 }
 
 function ifWanted(runtime: ManagedRuntimeId): string {
-  return runtime === 'python' ? '要装的话' : ''
+  return runtime === 'python' ? '如需使用，' : ''
 }
 
 function verifyStep(runtime: ManagedRuntimeId): string {
-  return `装完回到首页点右上角「重新检测」，这张卡的 ${runtimeDisplayName(runtime)} 一行显示出版本号就算好了。`
+  return `安装完成后回到首页点击右上角「重新检测」，此卡片的 ${runtimeDisplayName(runtime)} 一行显示版本号即表示安装成功。`
 }
 
 /**
@@ -96,9 +96,9 @@ export function managedRuntimeNotice(
   management: InstallManagement | undefined,
 ): string | null {
   if (runtime !== 'node' || management !== 'managed') return null
-  const after = `点「${runtimeButtonLabel('node', 'managed')}」，星芒会下载官方版本放在自己的文件夹里，不用输开机密码，也不影响电脑上别的软件。`
-  if (platform === 'macos') return `这台 Mac 上还没有 Node.js，${whyNeeded('node')}。${after}`
-  if (platform === 'linux') return `这台电脑上还没有能用的 Node.js，${whyNeeded('node')}。${after}`
+  const after = `点击「${runtimeButtonLabel('node', 'managed')}」，星芒将下载官方版本并放在专用文件夹中，无需输入开机密码，也不影响本机其他软件。`
+  if (platform === 'macos') return `此 Mac 尚未安装 Node.js，${whyNeeded('node')}。${after}`
+  if (platform === 'linux') return `本机尚无可用的 Node.js，${whyNeeded('node')}。${after}`
   return null
 }
 
@@ -115,10 +115,10 @@ export function runtimeInstallGuide(
   const name = runtimeDisplayName(runtime)
   if (platform === 'macos') {
     return {
-      summary: `这台 Mac 上没有找到 ${name}（${whyNeeded(runtime)}）。星芒不会替你装它，${ifWanted(runtime)}下面两种装法选一种就行。`,
+      summary: `此 Mac 未找到 ${name}（${whyNeeded(runtime)}）。星芒不会自动安装，${ifWanted(runtime)}请任选以下一种方式安装。`,
       steps: [
-        '装过 Homebrew 的：打开「终端」，粘贴下面这条命令回车，等它跑完。',
-        `没装过 Homebrew 的：点下面的「${runtimeButtonLabel(runtime, 'external')}」，在网页上选 macOS 的安装包（.pkg），下载后双击一路下一步。`,
+        '已安装 Homebrew：打开「终端」，粘贴下方命令并回车，等待执行完成。',
+        `未安装 Homebrew：点击下方「${runtimeButtonLabel(runtime, 'external')}」，在网页中选择 macOS 安装包（.pkg），下载后双击并按提示完成安装。`,
         verifyStep(runtime),
       ],
       command: runtimeHomebrewCommand(runtime),
@@ -126,9 +126,9 @@ export function runtimeInstallGuide(
   }
   if (platform === 'linux' && runtime === 'python') {
     return {
-      summary: '这台电脑上没有找到 Python。命令行工具都用不到它，不装也没关系。',
+      summary: '本机未找到 Python。命令行工具均不依赖它，可不安装。',
       steps: [
-        '要装的话：打开「终端」，粘贴下面这条命令回车，按提示输入开机密码，等它跑完。',
+        '如需安装：打开「终端」，粘贴下方命令并回车，按提示输入开机密码，等待执行完成。',
         verifyStep(runtime),
       ],
       command: linuxPythonInstallCommand,
@@ -136,9 +136,9 @@ export function runtimeInstallGuide(
     }
   }
   return {
-    summary: `这台电脑上没有找到 ${name}（${whyNeeded(runtime)}）。星芒不会替你装它，${ifWanted(runtime)}请自己装上。`,
+    summary: `本机未找到 ${name}（${whyNeeded(runtime)}）。星芒不会自动安装，${ifWanted(runtime)}请自行安装。`,
     steps: [
-      `用系统自带的包管理器装上 ${name}，或者点下面的「${runtimeButtonLabel(runtime, 'external')}」。`,
+      `请使用系统自带的包管理器安装 ${name}，或点击下方「${runtimeButtonLabel(runtime, 'external')}」。`,
       verifyStep(runtime),
     ],
     command: null,

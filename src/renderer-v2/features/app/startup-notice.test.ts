@@ -4,15 +4,15 @@ import { claudeDesktopRepairedNotice, codexPayloadNotice, toolTemplateFilledNoti
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
     const notice = startupCheckFailure('update', '本地更新源暂时不可用')
-    expect(notice.title).toBe('更新检查没有完成')
+    expect(notice.title).toBe('更新检查未完成')
     expect(notice.body).toBe('本地更新源暂时不可用')
     expect(notice.failure).toBe(true)
     expect(notice.action).toEqual({ label: '查看更新', page: 'settings', section: 'version' })
   })
 
   it('offers no destination for checks whose page would not help', () => {
-    expect(startupCheckFailure('appearance', '系统外观没有同步').action).toBeUndefined()
-    expect(startupCheckFailure('diagnostics', '启动环境检查没有完成').action).toBeUndefined()
+    expect(startupCheckFailure('appearance', '系统外观同步失败').action).toBeUndefined()
+    expect(startupCheckFailure('diagnostics', '启动环境检查未完成').action).toBeUndefined()
   })
 
   it('stays silent when the environment check found nothing to handle', () => {
@@ -29,15 +29,15 @@ describe('startup check notices', () => {
   it('reports environment findings as a result rather than a failure', () => {
     const notice = startupDiagnosticsIssues({ warn: 0, fail: 2, error: 1 })
     expect(notice?.title).toBe('环境检查发现 3 项需要处理')
-    expect(notice?.body).toBe('不影响继续使用，有空时到「检查」页看一下就行。')
+    expect(notice?.body).toBe('不影响使用，建议前往「检查」页查看。')
     expect(notice?.failure).toBe(false)
-    expect(notice?.action).toEqual({ label: '去看看', page: 'health', section: 'first-problem' })
+    expect(notice?.action).toEqual({ label: '立即查看', page: 'health', section: 'first-problem' })
   })
 
   it('leaves warnings out of the count and only mentions them lightly in the body', () => {
     const notice = startupDiagnosticsIssues({ warn: 4, fail: 1, error: 0 })
     expect(notice?.title).toBe('环境检查发现 1 项需要处理')
-    expect(notice?.body).toBe('不影响继续使用，有空时到「检查」页看一下就行。另有 4 项可留意。')
+    expect(notice?.body).toBe('不影响使用，建议前往「检查」页查看。另有 4 项建议关注。')
   })
 
   it('explains a rebuilt account store as a fact with a way back in, not as a failed check', () => {
@@ -46,8 +46,8 @@ describe('startup check notices', () => {
     // 主进程已经把这件事记进运行日志了，界面再报一条错误日志只是重复。
     expect(notice.failure).toBe(false)
     expect(notice.title).toBe('本机保存的登录信息已重置，请重新登录')
-    expect(notice.body).toBe('这台电脑上保存的登录信息已经读不出来，星芒已重新建了一份。之前记住的账号需要各自重新登录一次，已经写进各个工具的配置不受影响。')
-    expect(notice.action).toEqual({ label: '去登录', login: true })
+    expect(notice.body).toBe('本机保存的登录信息无法读取，已重新创建。之前保存的账号需重新登录，已写入各工具的配置不受影响。')
+    expect(notice.action).toEqual({ label: '前往登录', login: true })
   })
 
   it('keeps the rebuilt-store wording free of site names, file names and blame', () => {
@@ -76,27 +76,37 @@ describe('startup check notices', () => {
     expect(startupCheckLogContext('diagnostics')).toBe('renderer-v2 startup check: diagnostics')
   })
 
-  it('announces the first launch after an update with its first changes and only an acknowledgement', () => {
-    // yoyo 定的原则：用户是小白，这张卡片不让人做选择，只有一颗「知道了」。
+  it('announces the first launch after an update with its first changes, an acknowledgement and a way to the rest', () => {
+    // yoyo 定的原则：用户是小白，这张卡片不让人做选择。「查看全部改动」只是带他去看，不算选择。
+    // 正文那句引导语去掉了（yoyo 11-18 嫌卡片太高、挡首页），只留标题和几条改动。
     const notice = updatedNotice('0.2.9', { justUpdated: true, previousVersion: '0.2.8', notes: ['第一件事：细节', '第二件事。更多', '第三件事', '第四件事'] })
     expect(notice).toEqual({
       id: 'updated',
       failure: false,
       tone: 'ok',
       title: '已更新到 0.2.9',
-      body: '这一版的主要改动如下，另外 1 项在「设置 › 版本更新」里可以看到。',
+      body: '',
       items: ['第一件事', '第二件事', '第三件事'],
       action: { label: '知道了', dismiss: true },
+      secondaryAction: { label: '查看全部改动', page: 'settings', section: 'version' },
     })
-    expect(updatedNotice('0.2.9', { justUpdated: true, previousVersion: '0.2.8', notes: ['唯一一件'] })?.body).toBe('这一版的改动：')
+  })
+
+  it('leaves out the way to the rest when every change already fits on the card', () => {
+    const notice = updatedNotice('0.2.9', { justUpdated: true, previousVersion: '0.2.8', notes: ['第一件事', '第二件事', '第三件事'] })
+    expect(notice?.body).toBe('')
+    expect(notice?.items).toEqual(['第一件事', '第二件事', '第三件事'])
+    expect(notice?.action).toEqual({ label: '知道了', dismiss: true })
+    expect(notice?.secondaryAction).toBeUndefined()
   })
 
   it('still confirms the update when the build carried no notes', () => {
     const notice = updatedNotice('0.2.9', { justUpdated: true, previousVersion: null, notes: null })
     expect(notice?.title).toBe('已更新到 0.2.9')
-    expect(notice?.body).toBe('已经在用新版本了，可以照常使用。')
+    expect(notice?.body).toBe('已更新至新版本。')
     expect(notice?.items).toBeUndefined()
     expect(notice?.action).toEqual({ label: '知道了', dismiss: true })
+    expect(notice?.secondaryAction).toBeUndefined()
   })
 
   it('keeps only the leading clause of a change and trims it to fit the corner card', () => {
@@ -117,10 +127,10 @@ describe('startup check notices', () => {
     const notice = settingsSaveNotice({ kind: 'disk-full', drive: 'C' })
     expect(notice?.id).toBe('settings-save')
     expect(notice?.failure).toBe(false)
-    expect(notice?.title).toBe('部分设置可能保存不上')
-    expect(notice?.body).toBe('电脑上的 C 盘空间快满了，部分设置可能保存不上。清理一下 C 盘（比如清空回收站、删掉不用的大文件）后重开软件就好。')
+    expect(notice?.title).toBe('部分设置可能无法保存')
+    expect(notice?.body).toBe('C 盘空间即将不足，部分设置可能无法保存。请清理 C 盘（如清空回收站、删除不需要的大文件）后重新打开软件。')
     expect(notice?.action).toEqual({ label: '知道了', dismiss: true })
-    expect(settingsSaveNotice({ kind: 'disk-full' })?.body).toBe('电脑上的磁盘空间快满了，部分设置可能保存不上。清理一下磁盘（比如清空回收站、删掉不用的大文件）后重开软件就好。')
+    expect(settingsSaveNotice({ kind: 'disk-full' })?.body).toBe('磁盘空间即将不足，部分设置可能无法保存。请清理磁盘（如清空回收站、删除不需要的大文件）后重新打开软件。')
     expect(settingsSaveNotice({ kind: 'disk-full', drive: 'C:\\Users' })?.body).toContain('磁盘空间')
   })
 
@@ -175,8 +185,8 @@ describe('crashReportingNotice', () => {
       action: { label: '知道了', crashReporting: 'keep' },
       secondaryAction: { label: '不想发送', crashReporting: 'off' },
     })
-    expect(notice?.body).toContain('海外的错误收集服务')
-    expect(notice?.body).toContain('不含你的账号、密钥、文件路径和聊天内容')
+    expect(notice?.body).toContain('海外错误收集服务')
+    expect(notice?.body).toContain('不包含账号、密钥、文件路径和聊天内容')
     expect(`${notice?.title}${notice?.body}`).not.toMatch(/sentry/i)
   })
 
@@ -225,8 +235,8 @@ describe('usageStatsNotice', () => {
       id: 'usage-stats',
       failure: false,
       tone: 'neutral',
-      title: '软件会发送匿名使用情况',
-      body: '为了知道新版本有没有顺利装上、哪里容易出错，星芒每天最多发一次匿名使用情况：版本、电脑系统、装了哪些工具、安装和更新是否成功。不含你的账号、密钥、文件路径和聊天内容，也没有能认出这台电脑的编号。以后想改，可以在「设置」的「隐私数据」里关掉。',
+      title: '软件将发送匿名使用数据',
+      body: '每天最多发送一次，用于发现易出错的环节。仅发送版本、操作系统、已安装的工具及安装更新是否成功，不发送账号、密钥、文件和聊天内容，也无法识别具体设备。可在「设置 › 隐私数据」中关闭。',
       action: { label: '知道了', usageStats: 'keep' },
       secondaryAction: { label: '不想发送', usageStats: 'off' },
       waitsForOnboarding: true,
@@ -257,7 +267,7 @@ describe('unexpectedExitNotice', () => {
     const notice = unexpectedExitNotice({ unexpectedExit: { relaunched: true, exits: [{ at, error: 'TypeError: x is undefined' }] } })
     expect(notice?.id).toBe('unexpected-exit')
     expect(notice?.failure).toBe(false)
-    expect(notice?.body).toBe('星芒刚才意外退出了，已经重新打开。错误信息已经记下来，点「复制给客服」发给客服就行。')
+    expect(notice?.body).toBe('星芒意外退出，已自动重新打开。错误信息已记录，请点击「复制给客服」并发送给客服。')
     expect(notice?.secondaryAction).toEqual({ label: '知道了', dismiss: true })
     const action = notice?.action
     if (!action || !('supportFailure' in action)) throw new Error('expected a support copy action')
@@ -275,8 +285,8 @@ describe('unexpectedExitNotice', () => {
       { at, error: 'Error: first' },
       { at: at + 3 * 60_000, error: 'Error: second' },
     ] } })
-    expect(notice?.title).toBe('星芒刚才又意外退出了')
-    expect(notice?.body).toBe('星芒刚才又意外退出了一次，这次没有自动重开。点「复制给客服」，把这几次的信息发给客服。')
+    expect(notice?.title).toBe('星芒再次意外退出')
+    expect(notice?.body).toBe('星芒再次意外退出，未自动重新打开。请点击「复制给客服」，将相关信息发送给客服。')
     const action = notice?.action
     if (!action || !('supportFailure' in action)) throw new Error('expected a support copy action')
     expect(action.supportFailure.detail).toBe('14:37 Error: first；14:40 Error: second')
@@ -315,9 +325,9 @@ describe('claudeDesktopRepairedNotice', () => {
     const mac = claudeDesktopRepairedNotice({ claudeDesktopRepaired: true }, 'macos')
     expect(mac).toMatchObject({ id: 'claude-desktop-repaired', failure: false, tone: 'ok', action: { label: '知道了', dismiss: true } })
     expect(mac?.secondaryAction).toBeUndefined()
-    expect(mac?.body).toContain('别的设置都没动')
+    expect(mac?.body).toContain('其他设置未改动')
     expect(mac?.body).toContain('⌘Q')
-    expect(claudeDesktopRepairedNotice({ claudeDesktopRepaired: true }, 'windows')?.body).toContain('托盘里的 Claude 图标')
+    expect(claudeDesktopRepairedNotice({ claudeDesktopRepaired: true }, 'windows')?.body).toContain('托盘中的 Claude 图标')
   })
 
   it('uses no technical words in what the customer reads', () => {
@@ -334,11 +344,11 @@ describe('toolRouteRestartNotice', () => {
       id: 'route-restart',
       failure: false,
       tone: 'neutral',
-      title: '刚才那条连接线路连不上，已经换到另一条。',
+      title: '当前线路无法连接，已切换至另一条线路。',
       body: '',
       items: [
-        'Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要完全退出再打开。',
-        '如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。',
+        'Codex 桌面端仍在运行：新建的对话将使用新线路，已打开的对话需完全退出后重新打开。',
+        '如在 VS Code 等编辑器中使用 Codex，新建的对话将使用新线路，已打开的对话需重新加载窗口。',
       ],
       action: { label: '帮我重开', restartCodexDesktop: true },
     })
@@ -351,44 +361,44 @@ describe('toolRouteRestartNotice', () => {
 
   it('says why Codex moved when a conversation was too large for line 1, with the same steps below', () => {
     const notice = toolRouteRestartNotice({ id: 1, cause: 'payload-too-large', codex: { cli: true, desktop: null, canRestartDesktop: false } })
-    expect(notice?.title).toBe('Codex 里这个对话超过了线路1 的 100MB 上限，已为你切到线路2，请重开 Codex 后继续。')
+    expect(notice?.title).toBe('Codex 中该对话已超过线路1 的 100MB 上限，已为您切换至线路2，请重新打开 Codex 后继续。')
     expect(notice?.items).toEqual([
-      'Codex 还开着：新建对话就走新线路，已经打开的对话要退出 Codex 再打开。',
-      '如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。',
+      'Codex 仍在运行：新建的对话将使用新线路，已打开的对话需退出 Codex 后重新打开。',
+      '如在 VS Code 等编辑器中使用 Codex，新建的对话将使用新线路，已打开的对话需重新加载窗口。',
     ])
   })
 })
 
 describe('codexPayloadNotice', () => {
-  const newConversation = '请新开一个对话继续；对话里的截图和大文件会让体积变大很快。这时让 Codex 压缩对话也不管用，压缩同样要先把整段对话发上去。'
+  const newConversation = '请新建对话继续。截图和大文件会使对话体积快速增大；此时压缩对话同样无效，因为压缩也需上传完整对话。'
 
   it('asks for a new conversation on line 1 and says why the line was not changed', () => {
-    const base = '这个对话已经超过 100MB，线路1 发不出去，在这个对话里发什么都会失败。'
+    const base = '该对话已超过 100MB，无法通过线路1 发送，继续发送将失败。'
     expect(codexPayloadNotice({ id: 1, kind: 'locked' })).toEqual({
       id: 'codex-payload',
       failure: false,
       tone: 'warn',
-      title: 'Codex 里这个对话太大，线路1 发不出去',
-      body: `${base}${newConversation}你在设置里选了只用线路1，所以没有自动换线路。`,
+      title: 'Codex 对话体积过大，无法通过线路1 发送',
+      body: `${base}${newConversation}设置中已选择仅使用线路1，因此未自动切换线路。`,
       action: { label: '知道了', dismiss: true },
     })
-    expect(codexPayloadNotice({ id: 1, kind: 'unreachable' }).body).toBe(`${base}${newConversation}线路2 这会儿也连不上，所以没能帮你换过去。`)
+    expect(codexPayloadNotice({ id: 1, kind: 'unreachable' }).body).toBe(`${base}${newConversation}线路2 当前同样无法连接，未能自动切换。`)
     expect(codexPayloadNotice({ id: 1, kind: 'unfollowed' }).body).toBe(`${base}${newConversation}`)
   })
 
   it('asks for a new conversation when it is too large for line 2 as well', () => {
     expect(codexPayloadNotice({ id: 1, kind: 'too-large' })).toMatchObject({
       tone: 'warn',
-      title: 'Codex 里这个对话太大，发不出去了',
-      body: `这个对话已经超过线路2 的上限，在这个对话里发什么都会失败。${newConversation}`,
+      title: 'Codex 对话体积过大，无法发送',
+      body: `该对话已超过线路2 的上限，继续发送将失败。${newConversation}`,
     })
   })
 
   it('warns early in a neutral tone', () => {
     expect(codexPayloadNotice({ id: 1, kind: 'nearing' })).toMatchObject({
       tone: 'neutral',
-      title: 'Codex 里有个对话快到线路1 的上限了',
-      body: '对话越聊越大，超过 100MB 后线路1 就发不出去了。建议手上这件事做完就新开一个对话；截图和大文件会让体积变大很快。',
+      title: 'Codex 中有对话即将达到线路1 的上限',
+      body: '对话超过 100MB 后将无法通过线路1 发送。建议完成当前任务后新建对话；截图和大文件会使体积快速增大。',
     })
   })
 

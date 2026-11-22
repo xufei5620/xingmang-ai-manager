@@ -32,7 +32,7 @@ export function useAppearance({ native, app, boot, settings, setSettings, os, no
     const system = platformApi()
     if (!system || boot !== 'ready') return
     return bindPlatformAppearance(system, native, (theme) => setSettings((current) => current ? { ...current, theme } : current),
-      (cause) => noteStartupCheck(startupCheckFailure('appearance', errorMessage(cause, '系统外观没有同步'))))
+      (cause) => noteStartupCheck(startupCheckFailure('appearance', errorMessage(cause, '系统外观同步失败'))))
   }, [boot, native, noteStartupCheck, setSettings])
   useLayoutEffect(() => { document.documentElement.dataset.os = os }, [os])
   // 连按几下 Ctrl 加号时，保存还没回来，下一下要接着上一下算，不能都从旧设置起步。

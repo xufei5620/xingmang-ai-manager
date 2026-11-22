@@ -8,6 +8,9 @@
 const fs = require('node:fs')
 // 只用它的版本比较；它顶层只引 node 自带模块和两份同目录脚本，preview 那段不装依赖也能跑。
 const { compareReleaseVersions } = require('./update-release-utils.cjs')
+// 撤回名单那几项的发布者签名（D85）。也只引 node 自带模块和同目录脚本，预览照样不装依赖。
+const { SIGNATURE_FIELD, describeLiveSignatureWarning } = require('./service-status-signature.cjs')
+const { readPinnedPublicKeys } = require('./update-manifest-signature.cjs')
 
 const MAX_MESSAGE_LENGTH = 200
 const MAX_STATUS_BYTES = 16 * 1024
@@ -57,7 +60,7 @@ const PLATFORM_AWARE_CLIENT = '0.2.20'
 const REMOTE_SWITCH_CLIENT = '0.2.23'
 // 挂在哪一页、按钮去哪，与客户端 knownIssuePages / knownIssueActions 一致；条数上限与它的 maxKnownIssues 等一致。
 const KNOWN_ISSUE_PAGES = ['all', 'home', 'chat', 'recharge', 'settings']
-const KNOWN_ISSUE_PAGE_LABELS = { all: '每一页', home: '首页', chat: '聊天', recharge: '充值页', settings: '设置' }
+const KNOWN_ISSUE_PAGE_LABELS = { all: '每一页', home: '首页', chat: '创作（0.2.24 及以前叫聊天）', recharge: '充值页', settings: '设置' }
 const KNOWN_ISSUE_ACTIONS = ['update', 'support']
 const KNOWN_ISSUE_ACTION_LABELS = { update: '「查看更新」', support: '「找客服」' }
 const MAX_KNOWN_ISSUES = 8
@@ -75,6 +78,7 @@ const FEATURE_LABELS = {
   acceleration: '网络加速（新连接）',
   'codex-desktop-chinese': 'Codex 桌面端中文补丁',
   'claude-desktop-code-seed': '替 Claude Desktop 放程序',
+  'claude-desktop-workspace-seed': '替 Claude Desktop 放 Cowork 工作区',
 }
 const FEATURE_TOOL_LABELS = {
   claude: 'Claude Code', codex: 'Codex CLI', grok: 'Grok CLI', codexDesktop: 'Codex 桌面端',
@@ -86,8 +90,8 @@ const FEATURE_IDS = [
   ...Object.keys(FEATURE_TOOL_LABELS).map((tool) => `launch:${tool}`),
 ]
 const MAX_FEATURES_OFF = 32
-// 提示里不许带链接（docs/SERVICE-STATUS.md）：客户端照纯文字摆，点不开；状态文件没有签名，带网址的提示
-// 正是被人改了文件以后最想塞进来的东西。客户端用同一个写法，碰到就整条不显示。
+// 提示里不许带链接（docs/SERVICE-STATUS.md）：客户端照纯文字摆，点不开；提示不在发布者签名里（签名只管撤回名单
+// 那几项），带网址的提示正是被人改了文件以后最想塞进来的东西。客户端用同一个写法，碰到就整条不显示。
 const LINK_LIKE = /[a-z][a-z0-9+.-]*:\/\/|www\.|[a-z0-9-]+\.(?:com|cn|cc|net|org|top|xyz|fun|io|me|vip|shop|site|link|info|biz)\b/i
 
 class StatusInputError extends Error {}
@@ -719,6 +723,8 @@ function applyStatusChanges(current, changes, now = new Date()) {
   if (featuresOff === undefined) delete next.featuresOff
   else next.featuresOff = featuresOff
   next.updatedAt = now.toISOString()
+  // updatedAt 每次都换，线上那个签名到这里一定对不上了：拿掉，上传前由 service-status-signature.cjs 重新签。
+  delete next[SIGNATURE_FIELD]
   const text = `${JSON.stringify(next, null, 2)}\n`
   if (Buffer.byteLength(text) > MAX_STATUS_BYTES) throw new StatusInputError('状态文件超过 16 KB，客户端会拒绝读取')
   return next
@@ -910,6 +916,9 @@ function main(argv) {
   const lines = describeStatus(next)
   for (const line of lines) console.log(line)
   const warnings = describeStatusWarnings(current, next, options, now)
+  // 线上那份撤回名单那几项没签名或签名对不上：这次签上就等于替它们背书，批之前要知道（D85）。
+  const signatureWarning = describeLiveSignatureWarning(currentText === null ? null : current, readPinnedPublicKeys())
+  if (signatureWarning) warnings.push(signatureWarning)
   for (const warning of warnings) console.log(`::warning::${escapeWorkflowCommand(warning)}`)
   if (options.summary) fs.appendFileSync(options.summary, buildApprovalSummary(lines, warnings))
 }

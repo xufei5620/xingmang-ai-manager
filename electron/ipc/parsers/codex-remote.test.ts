@@ -25,7 +25,7 @@ describe('codex-remote parsers', () => {
     expect(parseRemoteModel('gpt-6.1-mini')).toBe('gpt-6.1-mini')
     expect(parseRemoteModel(null)).toBeNull()
     for (const value of ['', 'gpt 6', '-c', '--model=x', 'gpt-6\n', '../gpt', 'x'.repeat(129), undefined, 6, ['gpt-6.2'], { model: 'gpt-6.2' }]) {
-      expect(() => parseRemoteModel(value)).toThrow('手机上用的模型')
+      expect(() => parseRemoteModel(value)).toThrow('手机端模型参数无效')
     }
   })
 

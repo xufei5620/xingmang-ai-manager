@@ -61,7 +61,7 @@ function fixture(reads: Array<AccelerationState | Error> = [], scope: string | n
 
 describe('acceleration interruption notice', () => {
   it('reads once after the core exits and says the network is back only when the session really stopped', async () => {
-    const h = fixture([state('error', { error: '加速意外断开了，网络已恢复正常，可以重新连接。' })])
+    const h = fixture([state('error', { error: '加速意外断开，网络已恢复正常，可以重新连接。' })])
     h.notice.observe(state('active'))
     h.notice.runtimeExited()
     expect(h.live().map((timer) => timer.delay)).toEqual([0])
@@ -199,7 +199,7 @@ describe('acceleration interruption notice', () => {
   it('does not let a failing notifier or logger break the flow', async () => {
     const readState = vi.fn(async (_scope: string) => state('idle'))
     const notice = createAccelerationInterruptionNotice({
-      notify: () => { throw new Error('系统通知没有显示。') },
+      notify: () => { throw new Error('系统通知未能显示。') },
       readState: async (scope) => {
         const value = await readState(scope)
         notice.observe(value)

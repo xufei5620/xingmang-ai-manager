@@ -1,6 +1,9 @@
-import type { AccountLoginSession, AccountSubscriptionBillingPreference, AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
+import type { AccountKey, AccountKeyUpdateInput, AccountLoginSession, AccountSubscriptionBillingPreference, AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
+import { accountKeyExpiredTime, accountKeyQuota, type AccountKeyQuotaSite } from '../../../../electron/account-key-quota'
 import { subscriptionExpiringDays, subscriptionLowUsd } from '../../../../electron/subscription-summary'
 import { accountKeyNameMaxBytes, truncateUtf8, utf8Length } from '../../../../electron/catalog'
+import { passwordChangeUnconfirmedMessage } from '../../../../electron/password-change-unconfirmed'
+import { stripIpcErrorPrefix } from '../../ipc-error-prefix'
 
 /**
  * 个人中心 v4（账号概览、账号安全、密钥管理、邀请返利）上那些由数据拼出来的话。都是纯函数，
@@ -72,9 +75,9 @@ export function spendBarHeights(amounts: readonly number[]): number[] {
 
 /** 余额下面那行「还能用多久」，和首页同一个算法（balance-runway），这里只管怎么说。 */
 export function runwayDaysText(days: number): string {
-  if (days > 365) return '按最近用量够用一年以上'
-  if (days < 1) return '按最近用量不到 1 天就会用完'
-  return `按最近用量约还能用 ${days} 天`
+  if (days > 365) return '按近期用量可用一年以上'
+  if (days < 1) return '按近期用量预计不足 1 天'
+  return `按近期用量预计可用 ${days} 天`
 }
 
 export interface SubscriptionOverview {
@@ -138,19 +141,19 @@ export function subscriptionOverviewText(subscription: Pick<SubscriptionOverview
   return subscription.name ? `${subscription.name}，${ends}` : ends
 }
 
-/** 账号概览「密钥与设备」那一行：「3 把，1 把正在被工具使用」；没有工具在用时只写把数。 */
+/** 账号概览「密钥与设备」那一行：「3 个，其中 1 个正在被工具使用」；没有工具在用时只写个数。 */
 export function keyCountText(total: number, inUse: number): string {
-  return inUse > 0 ? `${total} 把，${inUse} 把正在被工具使用` : `${total} 把`
+  return inUse > 0 ? `${total} 个，其中 ${inUse} 个正在被工具使用` : `${total} 个`
 }
 
 /** 邀请卡、邀请页的那句比例；后台没给比例就不写数。 */
 export function inviteRateText(rate: number | null | undefined): string {
-  return typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? `好友充值后返你 ${rate}%` : '好友充值后你能拿返利'
+  return typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? `好友充值后返利 ${rate}%` : '好友充值后可获得返利'
 }
 export function inviteRuleText(rate: number | null | undefined): string {
   return typeof rate === 'number' && Number.isFinite(rate) && rate > 0
-    ? `好友用你的链接注册并充值，你得到充值金额的 ${rate}%。`
-    : '好友用你的链接注册并充值后，你能拿到返利。'
+    ? `好友通过您的链接注册并充值，您将获得充值金额的 ${rate}%。`
+    : '好友通过您的链接注册并充值后，您将获得返利。'
 }
 
 /**
@@ -214,6 +217,18 @@ export function validatePasswordChange(input: { originalPassword: string; passwo
   if (input.password !== input.confirmPassword) throw new Error('两次密码不一致')
 }
 
+/**
+ * 改密码那一下发出去了却没等到准话（N6，主进程那句是 passwordChangeUnconfirmedMessage）：新密码可能已经改好了。
+ * 再改一次的话，原密码那格填旧的会被说成「原密码错误」，所以先叫人别改，下次登录先试新的。
+ */
+export const passwordChangeUnconfirmedNotice = '未收到账号服务的响应，新密码可能已生效。请勿重复修改：下次登录时请先使用新密码，如无法登录再使用原密码。'
+
+/** 修改密码弹窗失败时交给错误框的东西：没等到准话的换成上面那句，别的原样交出去。 */
+export function passwordChangeFailure(error: unknown): unknown {
+  const message = error instanceof Error ? stripIpcErrorPrefix(error.message).trim() : ''
+  return message === passwordChangeUnconfirmedMessage ? new Error(passwordChangeUnconfirmedNotice) : error
+}
+
 export type KeyExpiryChoice = 'keep' | 'never' | '30' | '90' | 'custom'
 
 /**
@@ -228,6 +243,69 @@ export function keyExpiredTime(choice: KeyExpiryChoice, { custom, current, now }
   const at = new Date(custom).getTime()
   if (!Number.isFinite(at) || at <= now) throw new Error('到期时间必须晚于现在。')
   return Math.floor(at / 1000)
+}
+
+/** 编辑一把已有密钥时，框里填着的样子。 */
+export interface KeyEditForm {
+  name: string
+  group: string
+  /** 客户在「额度」那两格（不限 / 限额、可用额度）里动过没有：没动 = 照这把密钥现在的额度写回去。 */
+  quotaEdited: boolean
+  unlimited: boolean
+  quota: string
+  expiry: KeyExpiryChoice
+  customExpiry: string
+}
+
+/** 客户这次真改了的几项；没改的不在里面，留给 keyEditUpdate 照这把密钥现在的样子补。 */
+export interface KeyEditChanges {
+  name?: string
+  group?: string
+  quota?: { remainQuota: number; unlimitedQuota: boolean }
+  expiredTime?: number
+}
+
+/**
+ * 编辑已有密钥：只挑出客户这次真改了的几项（F01）。名称、分组跟打开时一样就算没改；额度看那两格动没动过；
+ * 到期时间选了「不改」就没改。额度改了才查「大于 0」，在读最新那条之前就拦下，填错了不用等一趟网络。
+ */
+export function keyEditChanges(
+  form: KeyEditForm,
+  opened: { name: string; group: string },
+  { quotaPerUnit, siteId, now }: { quotaPerUnit: number; siteId: AccountKeyQuotaSite; now: number },
+): KeyEditChanges {
+  const changes: KeyEditChanges = {}
+  if (form.name !== opened.name) changes.name = form.name
+  if (form.group !== opened.group) changes.group = form.group
+  if (form.quotaEdited) {
+    const amount = Number(form.quota)
+    if (!form.unlimited && !(amount > 0)) throw new Error('请填写大于 0 的可用额度')
+    changes.quota = { remainQuota: accountKeyQuota(amount, quotaPerUnit, siteId, form.unlimited), unlimitedQuota: form.unlimited }
+  }
+  if (form.expiry !== 'keep') changes.expiredTime = keyExpiredTime(form.expiry, { custom: form.customExpiry, current: -1, now })
+  return changes
+}
+
+/**
+ * 把客户改的几项落到这把密钥「现在」的样子上，拼成一次更新（F01）。两个后端的更新都是整条覆盖，没改的几项
+ * 得照现在写回去，不能照编辑框打开那一刻：在「每个工具的额度上限」里刚设了上限、再到列表里只改个名，
+ * 列表那份旧的「不限额度」会把刚设的上限冲掉。latest 是保存前现读的那一条。
+ */
+export function keyEditUpdate(
+  id: number,
+  changes: KeyEditChanges,
+  latest: Pick<AccountKey, 'name' | 'group' | 'remainQuota' | 'unlimitedQuota' | 'expiredAt'>,
+): AccountKeyUpdateInput {
+  // 额度没动、这把的上限又已经用完：跟以前一样请客户自己填一个数，不替他把 0 写回去（历史账号收不下 0）。
+  if (!changes.quota && !latest.unlimitedQuota && !(latest.remainQuota > 0)) throw new Error('请填写大于 0 的可用额度')
+  return {
+    id,
+    name: changes.name ?? latest.name,
+    group: changes.group ?? latest.group,
+    remainQuota: changes.quota ? changes.quota.remainQuota : latest.unlimitedQuota ? 0 : latest.remainQuota,
+    unlimitedQuota: changes.quota ? changes.quota.unlimitedQuota : latest.unlimitedQuota,
+    expiredTime: changes.expiredTime ?? accountKeyExpiredTime(latest.expiredAt),
+  }
 }
 
 /**
@@ -274,6 +352,14 @@ export function keyMetaParts(
     currentExpiryText(key.expiredAt, now),
     ...(created ? [`${created}创建`] : []),
   ]
+}
+
+/**
+ * 这一行要不要摆「启用」（总单 Q2）：网页上停用的、到期的、额度用完的都摆。到期和用完的，点了以后主进程
+ * 先看到期时间和额度是不是已经改过，没改就说先改什么。只有星芒账号有；历史账号的后台这里接不上，不摆。
+ */
+export function keyCanEnable(key: Pick<AccountKey, 'status'>, siteId: 'solov' | 'solov-api'): boolean {
+  return siteId !== 'solov-api' && (key.status === 2 || key.status === 3 || key.status === 4)
 }
 
 /**

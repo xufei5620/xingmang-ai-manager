@@ -114,30 +114,76 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 它没换成上面那个共用驱动：两边判断「该拨了」的条件不一样（这边看收到的字节数，那边看响应体在不在等下一块），
 这条的断言又是正好 30 分钟，换驱动是另一件事，这里只改计数。
 
-### MCP 页点「自定义连接」超时：没坐实
+### 点击停在 `performing click action`：卡住时自己留现场（根因待下一次现场）
 
 | 项 | 内容 |
 |---|---|
-| 用例 | `e2e/v2-business.test.mjs` 里 adding a uvx connection without Python… 和 a uvx connection missing uv… 两条，连着红 |
-| 指纹 | `windows-test (renderer-v2-e2e)`，都是 `locator.click: Timeout 5000ms exceeded`，等的是 `getByTestId('mcp-add')`，调用日志停在最后一行 `performing click action`（quality run 42992280184 第一轮，PR #1756） |
-| 结论 | 根因没坐实，没改代码 |
+| 第一次 | 11-11 PR #1756，quality run 42992280184：`e2e/v2-business.test.mjs` 的 adding a uvx connection without Python… 和 a uvx connection missing uv… 连着红，点 `getByTestId('mcp-add')` 超时 5 秒 |
+| 第二次 | 11-20 PR #2003，quality run 44742552348：`e2e/v2-local-avatar.test.mjs` 第一条 crops a local image to a 256px PNG…，点「更换头像」超时 7 秒 |
+| 第三次 | 11-20 PR #1949，quality run 44741601202：同一条头像用例，同样点「更换头像」超时 7 秒，比 #2003 早 5 分钟（13:24 对 13:29 UTC），不同的 runner |
+| 第四次 | 11-20 PR #2011（只改主进程），quality run 44753304773：还是这条头像用例、同样超时 7 秒，14:31 UTC |
+| 指纹 | 都在 `windows-test (renderer-v2-e2e)`；调用日志里按钮已找到、可见、可点、位置稳定、滚动完，最后一行停在 `performing click action` |
+| 结论 | 四次日志都分不出是哪一半停了，根因没坐实；`e2e/click-stall.mjs` 让下一次自己留下分得清的现场 |
+
+四次的共同形状：**一段大约 10 秒的卡顿，不只卡这一条**。11-11 两条用例各开各的页面，从 09:08:59.6 到 09:09:10.5
+都点不动，过后同一颗 `mcp-add` 又点得动；11-20 #2003 那条卡满 7 秒，紧接着下一条（新开的页面）用了 5.1 秒，
+同一套用例绿跑时是 1.0 秒，再往后三条都正常（0.8 秒左右）；#1949 那条整条 14.0 秒（打开页面就比平时慢，
+再卡满 7 秒），下一条 2.2 秒；#2011 那条整条 12.0 秒，下一条 3.6 秒。
+
+11-20 三次都是头像套件的第一条（新起的浏览器、冷的 Vite 缓存），都是点下去要开弹框的那一下，打开页面都比平时慢
+（5–7 秒，平时 3 秒上下）。前两次合并出来的提交都在 main 65350f7（#1996）上，runner 镜像和 Chromium 版本跟
+12:55 那次绿跑一样；同一个底子上的重跑和别的 PR 都绿过（#2003 重跑 44744907491、#1949 44748220311、main c83d18a
+44742755802），#2011 只改了主进程，碰不到这个页面。所以不是哪一次合并必然带出来的，但 13:00 到 14:30 UTC 之间
+跑完的 PR 里三次红在同一处，频率明显比之前高。
 
 已经排除的：
 
-- **不是页面没挂上**：两条都在 0.9 秒内挂好，按钮已经找到、可见、可点、位置稳定，日志里也没有
-  `[fixture] … lost navigation`。
-- **不是被别的东西挡住**：被挡住时 Playwright 会写「intercepts pointer events」并自己重试。这里是卡在点击
-  本身：鼠标事件发出去以后，那一页一直没回应。
-- **不是这一步本来就慢**：抽了 14 轮绿的 Windows 记录，这两条每次 0.9–2.7 秒，跟整套用例的中位数同比例，
-  没有一次接近 5 秒；本机把 CPU 降到八分之一速度点这颗按钮也只要约 0.5 秒（开弹框那一下最长 0.4 秒），
-  要再慢几十倍才撞得到 5 秒。
-- **不是这颗按钮或这一页固定会卡**：同一轮里紧接着的 curated MCP install（同一页，也开弹框）1.7 秒过；
-  9 秒后 the add dialogs name the tool they add to… 点的正是同一颗 `mcp-add`，也过了。
+- **不是页面没挂上、不是被挡住**：按钮找到、可见、可点、稳定，日志里没有 `[fixture] … lost navigation`；
+  被挡住时 Playwright 会写「intercepts pointer events」并自己重试，这里没有。
+- **不是这一步本来就慢**：抽 14 轮绿的 Windows 记录，MCP 那两条每次 0.9–2.7 秒；本机把 CPU 降到八分之一
+  速度点 `mcp-add` 约 0.5 秒。头像那条绿跑整条 4.5 秒（含冷启动打开页面）。
+- **不是整个浏览器停了**：11-11 第二条用例的页面恰好在卡顿中间打开，0.9 秒挂好，挂载等待一直在
+  `page.evaluate`，「位置稳定」那一步还要页面连着出两帧，都过了，然后点击才卡住。浏览器接命令、页面跑脚本、
+  出帧都还在。
+- **不是 Vite 冷启动中途整页重载**：本机（Linux）清掉缓存冷启动连跑头像那条，挂载后没有收到过 full-reload，
+  点击 70–90 毫秒。
 
-推测（没坐实）：两条用例各自新开的页面，在同一段大约 12 秒里点击都没回应，过后又好了，更像那台 runner
-上浏览器的输入通路卡了一阵，不像页面代码的问题。再见同样指纹先按规矩重跑一次；如果同一处再红，或者别的
-用例也停在 `performing click action`，就不是偶发，那时要抓现场：失败时截图，并在页面里跑一句
-`page.evaluate(() => 1)` 看它还回不回应，分清是这一页卡住还是整个浏览器卡住。
+剩下两种可能，指向不同的地方，只有卡顿当时取的东西分得开：
+
+1. **鼠标事件没送到页面**：Playwright 点击先发一次鼠标移动，Chromium 要等页面处理完这次移动才回话。
+   浏览器的输入通路或者出帧在那 10 秒里停了，就是这一种。
+2. **点下去了，页面之后不回话**：点击打开弹框，弹框那一路在等某个整机共用的东西，页面主线程被占住，
+   Playwright 收尾时问页面的那一句就一直等。
+
+本机把这个指纹做出来过：页面在鼠标移到按钮上时占住主线程 4.5 秒，点击就停在同一行（`e2e/click-stall.test.mjs`）。
+
+**现在卡住时会留下什么**：经 `e2e/harness.mjs` 开的页面（两个 e2e 套件都是），点击超时且调用日志停在
+`performing click action` 时，`e2e/click-stall.mjs` 当场并排探一遍（每项最多等 3 秒），结果接在这条报错后面，
+截图放进 `artifacts/click-stall/`，Windows 作业红了会以 `click-stall-<分片>` 上传：
+
+```
+click stall evidence, taken 7004ms after the click started (each probe waits at most 3000ms):
+- page.evaluate on the stuck page: answered in 3ms (open dialogs 1, focused yes, visible, active element button)
+- next animation frame on the stuck page: drawn in 17ms
+- a new mouse move sent to the stuck page: acknowledged in 21ms
+- screenshot of the stuck page: artifacts/click-stall/1763645354000-4321.png (40ms)
+- a fresh page in the same browser: opened in 120ms, clicked in 15ms, click landed
+- Node event loop: longest delay 22ms while the click waited
+- runner CPU: 41% busy over 500ms
+```
+
+怎么读：
+
+| 看到的 | 说明 | 往哪查 |
+|---|---|---|
+| `page.evaluate` 没回话，同一浏览器新开页点得动 | 这一页的主线程被占住，别的页面没事（第 2 种）：点下去以后弹框那一路在等东西 | 截图、`open dialogs` 看点击到没到；查弹框打开时同步等的东西（字体、剪贴板、焦点） |
+| `page.evaluate` 回话、`open dialogs 0`，新鼠标移动或新开页的点击也没回话 | 页面活着，鼠标事件送不进去，而且整个浏览器都这样（第 1 种） | 浏览器输入通路；再看 `next animation frame`，没出帧就是出帧停了 |
+| `page.evaluate` 回话、新开页点得动，只有卡住那次没回话 | 那一次的鼠标事件丢了，之后又好了 | 记下来，攒够几次再看规律 |
+| 整机 CPU 接近 100%，或 Node 事件循环延迟上秒 | runner 自己被占满，或者测试进程自己卡了，先别怪浏览器 | runner 上同时在跑什么 |
+
+再见这个指纹：先把报错后面这几行和截图贴进 `docs/CI-RERUN-LEDGER.md` 那一行（照规矩只重跑一次），按上表查，
+查清后把这一节改成结论。别的套件（`src/renderer-v2/**/browser-check.mjs`、`app-check.mjs` 自己起浏览器，
+不经 harness）想要同样的现场，给它开出来的任意一个页面调一次 `watchClickStalls(page)` 即可，一个进程装一次就够。
 
 > 云端/CI 容器提示：`test:browser`、`test:v2:browser` 里的 Playwright 套件要真浏览器，若容器预装的 Chromium 版本号与 `@playwright/test` 期望不符会报 "Executable doesn't exist"——环境问题不是回归，但也不算跑过：按 `AGENTS.md` 第 3 节设 `XINGMANG_E2E_CHROMIUM` 指向容器那份 Chromium 重跑，照样要 0 失败（scripts 套件不受影响；vitest 里只有 `electron/codex-desktop-cdp.browser.test.ts` 起浏览器，它也认这个变量）。Claude Code 云端容器里是 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm test`（`npm run selfcheck` 会自己设上，容器里别的坑见 `docs/CLOUD-SANDBOX.md`）；只复跑一条用例时用 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium node --test --test-name-pattern=<用例名> <套件文件>`。
 
@@ -148,6 +194,7 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 云端容器和 Mac 上都过、到 Windows `vitest-*` 才红的，多半是下面两种写法，写用例时就避开：
 
 - **把显示出来的路径写死成斜杠**。手机遥控、诊断这类按本机分隔符显示路径（`remoteDisplayPath`、`redactHomeDirectory`），Windows 上是 `~\projects\demo`。期望值用 `path.join('~', 'projects', name)` 拼，别写 `'~/projects/demo'`。
+- **临时目录用 `fs.realpathSync` 取，又跟被测代码报回来的路径比**。Windows runner 的 `os.tmpdir()` 是短名 `C:\Users\RUNNER~1\…`，`fs.realpathSync`（JS 实现）不展开，卸载这类按真实路径核过目录的代码报回来的是长名 `C:\Users\runneradmin\…`，`toHaveBeenCalledWith` 就对不上（#1975）。要比路径的用 `fs.realpathSync.native`，Mac、Linux 上两者一样。
 - **服务里写死了 `platform: 'darwin'`，又拿真文件夹去撞路径规矩**。`codex-remote-service.test.ts` 的 `setup()` 缺省按 darwin 起服务；Windows 上真文件夹是 `C:\…`，按 darwin 的规矩不算绝对路径，「主目录不能当干活的文件夹」这类拦截根本不触发，用例期望的报错就不来。要验拦截的那条传 `setup({ platform: process.platform })`，跟直接测 `validateRemoteWorkspace` 那条一样按本机规矩。
 
 ## 看落盘的文件，要等写盘本身（2026-11-12）
@@ -155,7 +202,11 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 `safe-local-data` 的原子写先写 `.<文件名>.<uuid>.tmp`，写完、刷盘再换名。用例要是等的是写盘之前的某一步（比如手机遥控的假渠道「取过图」`FakeImageChannel.fetched`），接着就去数目录，Windows 上写得慢时会数到临时文件：`codex-remote-service.test.ts`「holds images until the next prompt…」就这样红过（长度 2 对得上，「有 .jpg」那句 `expected false to be true`）。按长度等（`toHaveLength(1)`）也会被临时文件凑上。
 
 - 写法：等存好本身。手机遥控的图用 `setup()` 返回的 `imagesSaved(count)`（第 count 张存好时 resolve），别的存放处照这个办法包一层 `save`。
+- 等的东西前面排着几次原子写的，也别用 `vi.waitFor`：它默认只等 1 秒，每次写一两百毫秒，凑上五六次就过了。手机遥控每处理一句话都先把消息编号记进设置、每张图都存一次，「keeps at most five images waiting for the next prompt」等第二句回话前要写 7 次，11-18 #1929、11-20 main 和 #1940 在 Windows `vitest-2` 上各红一次（指纹：只等到「收到图片……」，「一次最多带 5 张图片，这张没收。」没到；慢的时候一句都没等到，`expected [] to deeply equal`）。手机上收到的话用假渠道的 `sentUntil(done)` 等发送本身，再照常断言全部内容。
+- 被测代码自己不等落盘的（返回之后才写），等那次原子写本身。`scanExternalClients` 返回时上次检测结果还没写，`external-client-service.test.ts`「shows the next start the last whole detection…」原来用 `vi.waitFor` 读文件等，#2000 在 Windows `vitest-2` 上跑道慢一阵时就红了（指纹：1 秒出头 `ENOENT … external-client-snapshot.json`，#2006）。现在那个文件 `vi.mock('./safe-local-data')` 原样转给真的 `writeAtomicSafeUtf8File`，写完告诉一声：注册在触发之前，`const saved = atomicWrites.next(path.resolve(file), '要写进去的内容')`，触发后 `await saved`。本地复现：在 `external-client-snapshot-cache.ts` 的 `write` 里写盘前临时等 1.1 秒，旧写法当场红。
 - 本地复现：在 `writeAtomicSafeFile` 的 `handle.writeFile` 后面临时加一句 `await new Promise((resolve) => setTimeout(resolve, 150))`，旧写法当场红。别提交这句。
+- 手机遥控整个用例文件按这条清过一遍（2026-11-20）。起因是帮手 `prompted()` 用 `vi.waitFor` 等 `turn/start`，每句话交给 Codex 前要先原子写一次消息编号，#1949（「drops waiting images on a new conversation…」，`vitest-3`）、#2038（「reports how long the turn has run…」，`vitest-4`）在 Windows 上各红一次（指纹：`expected 0 to be greater than 0`，指着 `prompted()` 那行）。找法：临时给 `writeAtomicSafeFile` 计数，把用例里的 `vi.waitFor` 包一层，等到时看这段里写完过几次盘，有写盘的记下行号（不提交）；当时 74 处，全换成等事件本身：`prompted()` / `turnStarted(s, count)`（起 Codex、交出第 count 个 `turn/start`）、`s.codexSpawned`、`s.spawnAsked`、`codex.requestedUntil`、`channel.sentUntil`、`channel.fetchedUntil`、`s.stateUntil`（推给电脑窗口的状态）、`s.imagesRemoved`、`approvalCardsSent`。剩下的 `vi.waitFor` 等的那段里不写盘。每次写盘拖慢 1.1 秒对比：旧写法 85 条红，新写法 0 条。拖慢用的是 `setTimeout`，用了假时钟的那 31 条两边都会卡到 30 秒超时，那是拖慢办法的毛病，不算。往这个文件加用例时，手机发了话以后要等的，一律用这些。
+- 换成等事件以后少了轮询白送的那几十毫秒，用例要是悄悄靠过它，本地当场就红，把它真正依赖的那件事也等上，别加 `setTimeout`。这次碰到三种：等到第二个 `thread/start` 就 notify 第三轮做完，那时第三个 `turn/start` 还没交出去，对不上编号（先 `requestedUntil('turn/start', 3)`）；等到「收到」就去点卸载，那时还没开始起 Codex（先 `s.spawnAsked(1)`）；假时钟下 `vi.waitFor` 每轮会把假时钟拨前 50 毫秒，三条十分钟自动拒绝的用例原来靠它让审批晚于这一轮开始，等事件后两者落在同一刻，第二次五分钟进度跟十分钟期限撞在同一下、排到「已自动拒绝」后面（用例里显式 `advanceTimersByTimeAsync(1_000)`，写明 Codex 过一会儿才问）。
 
 ## 刚过零点那几分钟才红的时间写法（2026-11-12，#1809）
 
@@ -182,6 +233,78 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 - 写法：上限前那些条按 store 写的格式和顺序直接写进文件，只让要测的那几次保存经过 store；store 对每个没重写的文件做的检查（多一个硬链接、文件没了）照样走得到。「一次存满 N 条能不能收下」用解析函数单独断言，不用真写 N 次。
 - 复现：在 `writeAtomicSafeFile` 的 `handle.writeFile` 后面临时加 `await new Promise((resolve) => setTimeout(resolve, 150))`，旧写法当场撞 30 秒。11-18 验：聊天记录那条旧写法 30091ms 超时，改完 399ms。别提交这句。
 - 不是产品慢：客户用的时候一次保存只重写改过的那一两个对话加索引，一次写上百个只在「搬到新电脑」导入、头一回从旧的存法搬过来时各有一回。
+
+## 一键检测的用例报「检查超时」：时限管的是同一个主线程（2026-11-21）
+
+`diagnostics.test.ts` 的夹具给每一项 `timeoutMs: 100`，从这一项开始跑算起。可所有检查挤在同一个主线程上，一项的时间里也算着别的项的同步读盘：Windows runner 上单跑一次整份检查就要 70~90 毫秒（日志里只跑一次 `runDiagnostics` 的用例都是这个数，Mac 上 6~20、云端容器 4 左右），哪一项最后跑完，哪一项就贴着线。「电脑里另外设过的工具地址或密钥」（`PROVIDER_ENVIRONMENT_OVERRIDE`）以前把八到十一个终端设置文件一个接一个交给 `readSafeUtf8File`，不在的也要先在主线程上把主目录整条逐级同步核一遍（每一级 `lstatSync` 加 `realpathSync`，后者又逐级 lstat），runner 的临时目录有六七级深。它于是总是最后一个，「passes %s because the written configuration still wins」那几条一次跑三个平台，11-11 在 macos-test、11-20 在 windows-test (vitest-2) 各红一次（指纹：`summary: 检查超时`、`reason: 单项检查超过 100ms`，红在哪个平台不固定）。
+
+- 修法（不调时限）：先用 `fs.promises.lstat` 排除不在的文件，在的（是个链接也算在）照旧整套核过再读；候选按 `async-map.ts` 的 `mapWithConcurrency` 同时读，结果照原来的次序。`diagnostics-override-checks.test.ts` 钉住只有在的文件才走 `readSafeUtf8File`。
+- 给检查页加新项时：别一个接一个地把一串候选文件交给 `readSafeUtf8File`。多半不在的先异步排除，读盘按 `mapWithConcurrency` 限流。
+- 复现（别提交）：写一个 `.mjs`，把 `fs.lstatSync` / `statSync` / `existsSync` 包一层、每次空转 250 微秒，`realpathSync` 按路径级数空转，用 `NODE_OPTIONS="--import <它>"` 加载；再把 `TMPDIR` 指到一个六级深的目录（照 runner 的 `C:\Users\RUNNER~1\AppData\Local\Temp`），单跑 `diagnostics.test.ts`。11-21 验：250 微秒时旧写法红 3 条（含这一条），400 微秒红 30 条、几乎全是这一项；改完 250 微秒全过，400 微秒只剩一条整条 5 秒的测试级超时（直接跑 vitest 用的默认时限，`npm test` 是 30 秒）。
+
+## Mac 开发版首屏那条欢迎页没出来：#2025 把客服二维码改成按需加载，页面多出一个 1 秒多的长任务（2026-11-21）
+
+| 项 | 内容 |
+|---|---|
+| 用例 | `e2e/macos-dev-origin.test.mjs` › the configured macOS development origin renders the real Electron app（`macos-test` 的 `npm run test:mac:dev-origin`） |
+| 11-20 两次 | PR #2025，run 44770306041（整条 12.8 秒）、44780691705（13.2 秒）：页面加载完以后欢迎页 5 秒没被看到，报错只有 `failedRequests=[]` |
+| 这两次的根因 | #2025 把 `src/renderer-v2/features/app/useSupportContact.ts` 的 `import QRCode from 'qrcode'` 改成首屏画出来以后再 `import('qrcode')`。Mac runner 上页面主线程因此在首屏前后多出一个长任务，每轮 1.1~1.6 秒，编译后第一次 4.4 秒。Playwright 判断「看得见」要在页面主线程里跑一段脚本，长任务没完它就问不进去；有几轮长任务落在欢迎页画出来之前，欢迎页本身也跟着晚。冷的第一次再碰上机器忙，就过了 5 秒。#2025 已在它自己的 PR 里把这一处改回静态导入，Markdown 照样按需加载 |
+| 11-18 那次 | PR #1896，quality run 44301446616：`test timed out after 30000ms`，各步自己的超时一个都没报。早于 #2025，跟它无关。当时用例还连生产、各步不打点，没有现场，根因没坐实；现在再出现，看最后打出的是哪一步就知道卡在哪 |
+
+**怎么查出来的**（Mac 上的数字都来自 macos-15 runner 上的一次性探测工作流，照 `macos-test` 的顺序先跑 `test:browser`、`test:mac:release-keychain`、`test:mac:proxy`，每份代码先「编译再跑」几轮、再「直接跑」几轮）：
+
+- Playwright 看到页面加载完，到它看到欢迎页，隔了多久（run 44880468302、44883260566）：
+  - main：33~225 毫秒，编译后第一次 0.8 秒。
+  - #2025 的底座 0b99e0c：27~198 毫秒，编译后第一次 0.7 秒。
+  - #2025 原样：每轮 1.0~1.6 秒，编译后第一次 3.9~4.9 秒。更早一轮探测里真复现过一次 5 秒没看到（run 44877870419）。
+  - #2025 只把 `useSupportContact.ts` 改回静态导入：39~486 毫秒，编译后第一次 0.8 秒，跟 main 一样。
+- 页面自己记的时刻：四份代码都是加载完 0.1~0.4 秒就把欢迎页放进 DOM、有了尺寸。慢的是测试那头看到它。
+- 三处卡顿一起记：主进程（每 50 毫秒打一次点）、测试进程（Vite 开发服务器和 Playwright 的轮询都在这个 node 进程里）、页面长任务。前两处每份代码都一样，都在 0.4 秒以内。只有 #2025 每轮多出一个 1.09~1.61 秒（冷的 4.39 秒）的页面长任务，Playwright 看到欢迎页的时刻就是这个长任务结束的时刻。
+- 长任务里在干什么（run 44887090187）：抓到的那一轮，JS 采样里 qrcode.js 的 `renderToDataURL` 自己占了 1229 毫秒，`clearCanvas` 47 毫秒，也就是 `QRCode.toDataURL` 把二维码画到画布上、再 `canvas.toDataURL()` 编成图片那一步。别的几轮长任务早于采样开始，没抓到：开始采样的命令本身也要等页面主线程空出来。
+- 为什么静态导入时同一步不慢：推测是时机不同，没核。静态导入时它在首屏第一次绘制之前就跑完，画布还是软件画布；按需加载时它落在首屏画出来之后，画布已经交给 GPU，`toDataURL` 要同步从 GPU 读回像素，CI 的 Mac 虚拟机没有真显卡，这一步就要一秒多。真机上大概不会这么慢，也没演过。
+- Linux 上两份代码没差别（加载完到欢迎页都是 150~220 毫秒），本地复现不了。
+
+**排除了什么**（都实测过）：
+
+- 开机那五条读取慢（设置、平台能力、账号会话、更新状态、窗口能力）：Linux 上 0~2 毫秒回，Mac 上 0~14 毫秒。账号会话那条最多等账号恢复 3 秒（`account-startup-gate.ts`），新用户没有要恢复的账号，不用等。
+- Vite 预构建缓存对不上、中途补预构建、整页重载：同一份缓存（14 个依赖），0 次重载。
+- 生产网络慢、连不上、答得慢（以前这条用例真连 `xm.solov.cc` 两条线路）：Linux 上让请求 4 秒才被拒、或 0~1.5 秒才答，欢迎页照样在加载完后 16~180 毫秒出来。
+- 主进程或测试进程卡住：见上，三份代码一样。
+
+**改了什么**（不调超时、不跳过）：
+
+- 用例不再连生产：改用 `e2e/signed-out-smoke-isolation.mjs` 的 `withSignedOutSmokeIsolation` 启动，两个账号站点的公开状态由夹具答，别的请求一律拒绝，只放行这次用例自己的本机开发服务器（新加的 `rendererOrigins`，只认 `http://127.0.0.1:端口`），用例最后用 `verifySignedOutSmokeIsolation` 核一遍。网络从此不是变量。
+- 每一步完成时打一行 `# <步骤> at N ms`（`dev server ready`、`electron launched`、`first window`、`document loaded`、`welcome visible`、`electron closed`），撞上 30 秒总时限也照样打出来。
+- 绿的时候也打一行 `# timeline: {…}`，时刻都是从用例开始算的毫秒：`renderer.welcome`（欢迎页进 DOM）、`renderer.welcomeShown`（有尺寸且 `checkVisibility()` 通过，就是 Playwright 说的看得见）、`renderer.lateRequests`（加载完之后页面又拉了哪些模块、各用多久）、`renderer.longTasks`（`[开始, 毫秒]`）、`mainProcessStalls`、`testProcessStalls`。攒几次就知道离 5 秒多远。
+- 欢迎页 5 秒没被看到时，报错后面接一段 JSON：上面这些，再加 `visibleAfterMore`（再等 3 秒看是晚到还是根本没出来）、`screen`（页面上有哪些 `data-testid`、前 200 个字）、`mainProcess`（主进程多久回话）、`bootstrapReads`（开机那五条读取从页面再问一遍各自多久回）、`fixture`（`e2e/harness.mjs` 的 `observeFixtureBootstrap`：Vite 整页重载、补预构建、没回的脚本）、`failedRequests`、`mainOutput`（主进程最后 20 行输出）。
+
+**下次再红怎么读**：
+
+- `visibleAfterMore` 是「N ms later」，`renderer.longTasks` 里有一条结束时刻跟 Playwright 看到的时刻对得上：页面主线程被占住了，看那段时间拉了什么（`lateRequests`），再比一下这个 PR 改了首屏哪些导入。
+- `renderer.welcome` 没有、`screen` 停在启动页（「正在准备星芒 AI」）、`bootstrapReads` 里有 `unanswered`：那一条读取卡在主进程。
+- `mainProcess` 是 `unanswered`，或 `mainProcessStalls` 里有秒级的：主进程整个卡住。
+- `testProcessStalls` 里有秒级的：测试进程自己卡住（Vite 转换或 Playwright 本身）。
+- `fixture.fullReloads` 大于 0 或 `pendingScripts` 有东西：Vite。
+- 打出了 `welcome visible`、没打出 `electron closed` 就撞了 30 秒：关窗卡住。
+
+**给改首屏导入的人**：把首屏要用的东西挪到首屏画出来以后再做，Mac runner 上可能多出秒级的页面长任务，Linux 上看不出来；画布上的 `toDataURL` 这一类同步读像素的调用最明显。改了首屏的导入方式或先后，就在 PR 的 `macos-test` 日志里看一眼这条用例的 `# timeline`：`longTasks` 有没有多出秒级的一条。
+
+**探测时踩到的**（以后要在 Mac 上临时探测 Electron，照这几条）：
+
+- 用脚本入口起 Electron（`electron.launch({ args: ['some-entry.cjs'] })`）却不调 `app.setAppPath`，应用名会变成 `Electron`，首窗一直不出来（Mac 上第一轮探测 9 次全是这样）。要包一层又要应用名照旧，照 `withSignedOutSmokeIsolation` 写一个带同名 `package.json` 的启动目录。
+- Playwright 起的 Electron 不认 `NODE_OPTIONS=--require`，要预加载就放进启动参数：`['-r', hook, '.']`。
+- 往 `bootstrap.cjs` 前面拼代码时自己补分号：下一行是 `(function …)(…)`，不补就被当成上一行的调用，整段不执行，症状也是首窗不出来。
+- `ElectronApplication.evaluate(fn, arg)` 调 `fn` 时第一个参数是 electron 模块，`arg` 是第二个。
+- 开发版首屏拉的模块超过资源计时缓冲的 250 条，晚到的进不去 `performance.getEntriesByType('resource')`，要用 `PerformanceObserver` 记。
+- 要在用例里录性能追踪：Electron 的 `contentTracing.stopRecording()` 写出的是 protobuf，不是 JSON；用页面的 CDP 会话 `Tracing.start({ transferMode: 'ReturnAsStream', streamFormat: 'json' })`，再用 `IO.read` 读回来。
+- 在 Mac 上连跑用一次性探测工作流（`docs/COLLABORATION.md` §3）。一次推送只认最后那个提交，探测提交要单独推；跑起来以后再推别的提交不影响它，它跑的是自己那个提交。用完删掉分支上的工作流文件。
+
+## 按时间戳认「又来了一次」：快机器上同一毫秒落两次（2026-11-21）
+
+`balance-store.ts` 的 `subscribeBalanceReads` 以前看 `snapshot.updatedAt`（`Date.now()` 毫秒）变没变来认「余额又读到一次」。`balance-store.test.ts`「tells read listeners once per landed read…」用真时钟、假 `read` 立刻回，前后两次读在快 runner 上落进同一毫秒，第二次就漏了（指纹：`expected "vi.fn()" to be called 2 times, but got 1 times`，指着「失败一次后再读一次」那行；11-21 在 linux-test 上 #1994、#2062 各红一次）。客户电脑上每次读余额都要过网络，两次落在同一毫秒几乎不会，但「每次都告诉一声」的约定确实没守住。
+
+- 修法：store 在快照里记 `reads`（读到过几次，只增不减，换账号也不归零），`subscribeBalanceReads` 认它不认时间戳。`updatedAt` 照旧只管「多久以前读的」。
+- 写法：要认「又发生了一次」的，数次数或给每次一个编号，别拿时间戳当编号；用例里的 store 能注入 `now` 的，钉成一个常数，同一毫秒就成了唯一情况，按时间戳认的写法每次都红。那个用例所在的分组现在就是这样钉的。
 
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 

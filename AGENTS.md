@@ -190,7 +190,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 直接 `await` 后 `setState` 会让慢响应覆盖新数据，切 tab 时 100% 复现。renderer-v2 的写法：组件或 hook 里用 `src/renderer-v2/latest-request.ts` 的 `useLatestRequest()`——每发一次请求先 `const current = latest.begin()`，响应回来 `if (!current()) return`；换了账号或参数、不发新请求时 `latest.invalidate()`；卸载时它自己作废。几件事各自记下发起时的那一刻、互不作废，换账号或关窗时才一起作废的，用 `latest.capture()`：它不开始新请求，只记下这一刻。只在一个 effect 里发、随 effect 清理的请求，也可以用 effect 里的 `let current = true` 取消标记；纯逻辑的控制器里用 revision / epoch（`createLatestRequest()` 是同一套的非 hook 版）。v2 里原来手写的 `useRef(0)` 计数器已在 #1070 第 8 步全部换成这个 hook，剩下的几处 `useRef(0)` 是时间戳、编号或计数，不是竞态守卫；**新代码别再手抄计数器**。冻结的 legacy 树里另有 `src/scan-coordinator.ts` / `src/latest-request.ts` / `src/provider-extension-coordinator.ts` 三个工具（`src/latest-request.ts` 跟 v2 这份同名不同物），v2 不 import 它们。
 
 **T7. 给 `src/` 加组件测试 → 用 `renderToStaticMarkup`，不要加 DOM 环境。**
-仓库**有 `vitest.config.ts`**（三个 project：`legacy` 覆盖 `src/**` 与 `electron/**`、`renderer-v2`、`canvas`，都挂了 `@vitejs/plugin-react`，legacy 另把 React 别名指向 `tooling/legacy-renderer/`）。但三个 project **都没设 `environment`，跑的仍是默认的 `node`**，依赖里也没有 jsdom / happy-dom / @testing-library。现有 `src/**/*.test.tsx` 绝大多数走 `react-dom/server` 的 `renderToStaticMarkup`，断言渲染出的 HTML（`data-testid`、role、class），**零处 `render()`**。新组件测试照这个写法走。
+仓库**有 `vitest.config.ts`**（三个 project：`legacy` 覆盖 `src/**` 与 `electron/**`、`renderer-v2`、`canvas`，都挂了 `@vitejs/plugin-react`，legacy 另把 React 别名指向 `tooling/legacy-renderer/`）。但三个 project **都没设 `environment`，跑的仍是默认的 `node`**，依赖里也没有 jsdom / happy-dom / @testing-library。现有 `src/**/*.test.tsx` 绝大多数走 `react-dom/server` 的 `renderToStaticMarkup`，断言渲染出的 HTML（`data-testid`、role、class），**零处 `render()`**。新组件测试照这个写法走。组件里有 `React.lazy` 的，同步渲染只拿到 Suspense 的占位：改用 `react-dom/static` 的 `prerender` 等它读完，再去掉它插的注释标记（写法见 `src/renderer-v2/markdown-view.test.tsx` 的 `renderSettled`），同样不要 DOM 环境。
 
 **T8. electron 测试已纳入 typecheck，但 `tsconfig.electron.json` 的测试 exclude 千万别删。**
 `npm run typecheck` 跑四段：根 tsconfig（src）、`tsconfig.electron.json`（主进程**产物**配置，仍 exclude 测试）、`tsconfig.electron.test.json`（纳入全部 electron 测试，自带 `noEmit: true`）、`tsconfig.renderer-v2.json`。**基础配置的 exclude 是 dist-electron 不含测试产物的承重墙**——`npm run compile` 用的就是它，删掉 exclude = 测试代码进发布包。测试配置的 `rootDir: "."` 专为孤儿测试 `electron/onboarding-runtime.test.ts`（测的是 `src/onboarding-runtime.ts`）的跨目录 import 而设。
@@ -199,7 +199,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 `tsconfig.electron.json` 与 `tsconfig.electron.test.json`（include 覆盖全部 electron 源码）必查；被 `ipc-contract.ts` 通过 `import type` 引用的还会进渲染 tsconfig 的程序图。四段都串在 `npm run typecheck` 里，跑这一条即可。
 
 **T10. 改配置位置或配置格式 → 同时影响读写、备份、恢复、诊断。**
-配置根目录由 `codex-home.ts` 的 `providerConfigRoot` 给出，消费者：`config-files-context.ts`（`providerConfigPaths`，`config-files.ts` 照旧导出）、`backups.ts`、`diagnostics.ts`（各类检查拆在 `diagnostics-*.ts`）、`ipc/handlers/config.ts`（打开配置文件夹）、`workspace-guard.ts`，以及渲染层的 `src/renderer-v2/registry/tools.ts`（展示给用户看的配置位置）。目录名这一层已收口到 `catalog.ts` 的 `providerConfigDirectoryNames`，主进程的 `providerConfigRoot` 与渲染层注册表都读它，改目录名只改这一处（R-S11）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
+配置根目录由 `codex-home.ts` 的 `providerConfigRoot` 给出，消费者：`config-files-context.ts`（`providerConfigPaths`，`config-files.ts` 照旧导出）、`backups.ts`、`diagnostics.ts`（各类检查拆在 `diagnostics-*.ts`）、`ipc/handlers/config.ts`（打开配置文件夹）、`workspace-guard.ts`，以及渲染层的 `src/renderer-v2/registry/tools.ts`（展示给用户看的配置位置）。目录名这一层已收口到 `catalog.ts` 的 `providerConfigDirectoryNames`，主进程的 `providerConfigRoot` 与渲染层注册表都读它，改目录名只改这一处（R-S11）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。`config:get` 读下的那份会留 3 秒（`config-read-cache.ts`）：新加写工具配置、来源记录、线路跟随记录的地方要调 `noteToolConfigWrite` / `trackToolConfigWrite`，不然首页最多晚 3 秒才看见。
 
 **T11. 看到根目录出现 `\tmp\xingmang-managed-cli-*` 目录 → 删掉，不要提交，当回归排查。**
 泄漏源 `managed-cli.test.ts` 已改用 `os.tmpdir()` 并在 `afterEach` 清理，正常不会再出现。
@@ -210,7 +210,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 **T13. 画布相关改动 → 分清源码与产物，且认清"执行发生在主进程"。**
 画布**源码**在 `canvas-v2/`；`dist-canvas/` 是 `npm run canvas:prepare` 生成的**构建产物**，不入 git，**不要**改产物文件。
 
-`canvas-v2/src/` 和 `canvas-v2/shared/` 是 xingmang-canvas 内核的同步副本：`scripts/sync-canvas-kernel.mjs <xingmang-canvas 克隆> <tag>` 写入，`canvas-v2/KERNEL_SOURCE.json` 记下 tag、提交号和每个文件的哈希，`scripts/verify-canvas-kernel-source.test.cjs` 逐个文件核对。**要改画布行为，先在 xingmang-canvas 改、打 tag，再同步进来。** 桌面自有的只有 `canvas-v2/index.html`（CSP）、`vite.config.ts`（配色接回 UI v4、宿主类型）、`tsconfig.json`、`package.json` 和锁文件、`README.md`，同步脚本不碰它们。紧急修复才许本地打补丁：登记进 `KERNEL_SOURCE.json` 的 `localPatches`（理由、xingmang-canvas 那边的 issue 或 PR、14 天内到期），当天在 xingmang-canvas 开对应 PR，两周内回到那边，再同步一次把补丁清掉；不这样做就会重演 xingmang-canvas 漏掉 #1004 的那种分叉。xingmang-canvas 的 CI 每天反过来拉本仓核对 `canvas-v2/` 是不是某个 tag 的原样，过期的补丁在那边变红。
+`canvas-v2/src/` 和 `canvas-v2/shared/` 是 xingmang-canvas 内核的同步副本：`scripts/sync-canvas-kernel.mjs <xingmang-canvas 克隆> <tag>` 写入，`canvas-v2/KERNEL_SOURCE.json` 记下 tag、提交号和每个文件的哈希，`scripts/verify-canvas-kernel-source.test.cjs` 逐个文件核对。**要改画布行为，先在 xingmang-canvas 改、打 tag，再同步进来。** tag 不用人建：那边的「Kernel tag」工作流在内核改动合进 main 后自动打 `kernel-vX.Y.Z`（补丁位加一），只有契约或工程格式版本变了才要人手动触发并填版本号。 桌面自有的只有 `canvas-v2/index.html`（CSP）、`vite.config.ts`（配色接回 UI v4、宿主类型）、`tsconfig.json`、`package.json` 和锁文件、`README.md`，同步脚本不碰它们。紧急修复才许本地打补丁：登记进 `KERNEL_SOURCE.json` 的 `localPatches`（理由、xingmang-canvas 那边的 issue 或 PR、14 天内到期），当天在 xingmang-canvas 开对应 PR，两周内回到那边，再同步一次把补丁清掉；不这样做就会重演 xingmang-canvas 漏掉 #1004 的那种分叉。xingmang-canvas 的 CI 每天反过来拉本仓核对 `canvas-v2/` 是不是某个 tag 的原样，过期的补丁在那边变红。
 
 另一半同样容易踩错：**`canvas-v2/` 里除了登记过的 OpenCV 抠图运行时，没有任何出网代码**（那份是 Emscripten 的通用加载代码，不读外部文件，CSP 也不放行它连网，见 `docs/CANVAS-THIRD-PARTY.md`）。渲染层的执行器（`canvas-v2/src/engine/executors.ts`）只是把请求交给宿主桥，真正的 HTTP、凭据解析、产物落盘全在主进程（`ai-image-service.ts` / `ai-chat-service.ts` / `chat-credential-coordinator.ts`）。想加一种新的生成能力，**主进程那侧才是要动的地方**；在渲染层直接 `fetch` relay 会绕开 I15 的全部边界，PR #85 已经把那条老路径删掉了，不要重新长出来。
 
@@ -227,6 +227,9 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 - **例外要回去问**：如果 legacy 连构建或启动都不成立（`R-F1` 那一类「回滚版事实上不可用」），那是「冻结还有没有意义」的问题，回到 yoyo 那里重新拍板，不要自己在 legacy 上做功能性修复。
 
 改到冻结范围内的文件时 `.claude/rules/legacy-renderer.md` 会自动加载，内容与本条一致。
+
+**T15. 新加一个会真开星芒的 CI 作业 → 真开之前先跑 `node scripts/ci-block-production-hosts.cjs`。**
+星芒一打开就查账号站、读更新目录，服务端按 UA 和来源 IP 数装机量，没断网的真开会被数成客户的电脑（2026-11-21 一天 275 台）。这一步把客户端源码里 `solov.cc`、`shenfengwl.fun` 下的全部域名在 runner 上指回本机并逐个核过；要读线上更新目录的步骤（发版门禁的前置检查）得排在它前面。`scripts/ci-block-production-hosts.test.cjs` 扫全部工作流，漏了就红，实在加不了的写进它的例外表并写明原因。漏网的请求靠 CI 里 UA 末尾的「 ci」认（`electron/ci-user-agent.ts`），别删。
 
 ---
 
@@ -284,7 +287,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 - ❌ **不要用 zod / valibot / ajv 替换 `ipc.ts` 用的手写 parse 函数（在 `electron/ipc/parsers/`）** — 它们产出的是能直接上屏的中文错误文案
 - ❌ **不要开 `noUncheckedIndexedAccess` / `exactOptionalPropertyTypes`** — 实测前者会新增近百条错误，抽查全是已被前置校验保护的下标访问，**零个真 bug**。现在的 `strict: true` 已经足够
 - ❌ **不要顺手加 jsdom / happy-dom** — 组件测试已经有 `renderToStaticMarkup` 这条不需要 DOM 环境的路子（见 T7），换 DOM 环境是需要跨 agent 对齐的基础设施改动。`e2e/` 的套件已经是更高性价比的替代
-- ❌ **不要把路由级 code-splitting / React.lazy 铺开** — JS 从本地磁盘加载且开了 `codeCache`，一般页面拆了收益为负。已有的例外：renderer-v2 `App.tsx` 对聊天、业务页、加速页三个重页面按需加载，首屏 JS 实测少约两成（README「启动性能状态」）；再加要拿同样的实测说话
+- ❌ **不要把路由级 code-splitting / React.lazy 铺开** — JS 从本地磁盘加载且开了 `codeCache`，一般页面拆了收益为负。已有的例外：renderer-v2 `App.tsx` 对聊天、业务页、加速页三个重页面按需加载，首屏 JS 实测少约两成；公告、协议的 Markdown 排版点开才读（总单 77 R9，首屏 JS 再少 11.7%），两次都记在 README「启动性能状态」。客服二维码库 R9 也试过改成 `import()`，Mac 开发版开机看见欢迎页慢了 1 秒多、首屏用例越过 5 秒门槛，已改回静态引入：欢迎页首屏就要用的东西别拆；再加要拿同样的实测说话
 - ❌ **不要引入 react-window / react-virtualized** — 最长的会话列表已在 SQL 层分页到每页 ≤100
 - ❌ **不要给主进程上 bundler** — 会模糊信任链模块的边界，那是本项目的核心可审计资产
 - ❌ **不要为了让测试在非 Windows 通过而改断言** — 用平台门控，否则会弱化对 Windows 行为的验证；画布边界门禁脚本同理，不要为了让它过而改断言

@@ -10,19 +10,22 @@
 // Pages reachable from the sidebar, in sidebar order. `account` has no sidebar
 // row of its own; the account card at the bottom of the sidebar opens it.
 // `canvas` opens a separate window. The settings aliases (acceleration, backups,
-// updates) and the retired maintenance page are not listed: they land on other
+// updates), the retired maintenance page and the four pages merged into 插件 in
+// 0.2.25 (featured, mcp, skills, plugins) are not listed: they land on other
 // pages, so a step naming them would screenshot something it did not ask for.
+//
+// `canvas` and `video` lost their sidebar rows when chat, canvas and the video
+// studio became one page (「创作」, page id still `chat`). They stay here so a
+// step naming them keeps working: `via` is the page to go to first, `opener`
+// the card on its start page that opens the canvas window or a new film.
 export const verifyPages = Object.freeze([
   { id: 'home', label: '首页' },
-  { id: 'chat', label: '聊天' },
+  { id: 'chat', label: '创作' },
   { id: 'sessions', label: '记录' },
-  { id: 'canvas', label: '画布', window: 'canvas' },
-  { id: 'video', label: '视频剪辑' },
+  { id: 'canvas', label: '画布', window: 'canvas', via: 'chat', opener: 'create-card-canvas' },
+  { id: 'video', label: '视频剪辑', via: 'chat', opener: 'create-card-video' },
   { id: 'remote', label: '手机遥控' },
-  { id: 'featured', label: '精选' },
-  { id: 'mcp', label: '外接工具' },
-  { id: 'skills', label: '技能' },
-  { id: 'plugins', label: '插件' },
+  { id: 'extensions', label: '插件' },
   { id: 'tutorial', label: '教程' },
   { id: 'health', label: '检查' },
   { id: 'feedback', label: '反馈与客服' },

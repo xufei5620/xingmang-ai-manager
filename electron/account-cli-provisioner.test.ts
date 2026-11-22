@@ -23,8 +23,8 @@ import {
 import type { AccountGroupHints } from './managed-cli-groups'
 import { ManagedCliKeyStore, managedKeyDigest, type StoredManagedCliKey } from './managed-cli-key-store'
 import type { SafeStorageLike } from './account-session-store'
-import { managedKeyStoppedMessage } from './account-key-quota'
-import { NewApiNetworkError } from './new-api-client'
+import { managedKeyQuotaExhaustedMessage, managedKeyStoppedMessage, sub2ApiManagedKeyStoppedMessage } from './account-key-quota'
+import { NewApiNetworkError, type NewApiAccountKey } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
@@ -195,7 +195,7 @@ describe('syncManagedCliKeySummary', () => {
 
   it('continues after a damaged local cache and rebuilds it without a false warning', async () => {
     const store: ManagedCliKeyStoreLike = {
-      read: vi.fn(async () => { throw new Error('本地托管 API Key 配置已损坏或无法解密') }),
+      read: vi.fn(async () => { throw new Error('本地托管密钥配置已损坏或无法解密') }),
       save: vi.fn(async () => undefined),
       remove: vi.fn(async () => undefined),
     }
@@ -975,7 +975,7 @@ describe('relay-site-specific managed CLI key groups', () => {
     )
 
     expect(result.configured).toEqual([])
-    expect(result.failed).toEqual([{ provider: 'claude', message: expect.stringContaining('这个工具的额度用完了') }])
+    expect(result.failed).toEqual([{ provider: 'claude', message: expect.stringContaining('该工具的额度已用完') }])
     expect(store.remove).not.toHaveBeenCalled()
     // The other three tools were never cached, so the sync signs those; the
     // capped one is the only key that must not be re-signed.
@@ -1073,8 +1073,8 @@ describe('relay-site-specific managed CLI key groups', () => {
   it('still writes the replacement key into the config when the local cache cannot be updated', async () => {
     const stale = { ...siteManagedKey('solov', 'codex'), id: 20, key: 'sk-solov-codex-revoked-123456' }
     const store = recordingKeyStore([siteManagedKey('solov', 'claude'), stale, siteManagedKey('solov', 'grok')])
-    vi.mocked(store.remove).mockRejectedValue(new Error('系统安全存储不可用，无法持久化托管 API Key'))
-    vi.mocked(store.save).mockRejectedValue(new Error('系统安全存储不可用，无法持久化托管 API Key'))
+    vi.mocked(store.remove).mockRejectedValue(new Error('系统安全存储不可用，无法保存托管密钥'))
+    vi.mocked(store.save).mockRejectedValue(new Error('系统安全存储不可用，无法保存托管密钥'))
     const provisionCliKey = siteAwareProvisioner('solov')
     const fetchAvailableModels = vi.fn(async (key: string) => {
       if (key === stale.key) throw new Error('模型查询失败，服务返回 401')
@@ -1264,7 +1264,14 @@ describe('history-account subscriptions decide the managed key group', () => {
   const sub2Api = profilesBySite['solov-api']
   const platforms: Record<ProviderId, string> = { claude: 'anthropic', codex: 'openai', gemini: 'gemini', grok: 'grok' }
 
-  function subscriptionAccountService(state: { subscribed: string[]; groupsFail?: boolean; listed?: string[]; withoutUsual?: ProviderId[] }) {
+  function subscriptionAccountService(state: {
+    subscribed: string[]
+    groupsFail?: boolean
+    listed?: string[]
+    withoutUsual?: ProviderId[]
+    /** 账号的密钥列表（查旧那把的限制用）；缺省 = 不给，跟以前的替身一样。 */
+    listKeys?: ReturnType<typeof vi.fn>
+  }) {
     const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => ({
       id: input.group === 'Claude 包月' ? 900 : 100,
       name: input.name ?? 'xingmang-desktop',
@@ -1292,6 +1299,7 @@ describe('history-account subscriptions decide the managed key group', () => {
       provisionCliKey,
       listUsableGroups,
       getSubscriptionSelf,
+      ...(state.listKeys ? { listKeys: state.listKeys } : {}),
     } as unknown as AccountService
     return { accountService, provisionCliKey, listUsableGroups }
   }
@@ -1376,6 +1384,134 @@ describe('history-account subscriptions decide the managed key group', () => {
     // Only the daily group check, which cannot read this list and keeps the cache.
     expect(listUsableGroups).toHaveBeenCalledTimes(1)
     expect(provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  describe('the regrouped key keeps the limits of the key it replaces (O03)', () => {
+    const usualClaude = siteManagedKey('solov-api', 'claude')
+    const subscriptionClaude = { ...usualClaude, id: 900, group: 'Claude 包月', key: 'sk-subscription-plaintext-secret-123456' }
+    const inAMonth = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60
+
+    function serverKey(stored: StoredManagedCliKey, limits: Partial<NewApiAccountKey> = {}): NewApiAccountKey {
+      return {
+        id: stored.id, name: stored.name, maskedKey: 'sk-****', group: stored.group, status: 1,
+        remainQuota: 0, unlimitedQuota: true, usedQuota: 0, createdAt: '', expiredAt: null, accessedAt: null,
+        ...limits,
+      }
+    }
+
+    function keyList(...keys: NewApiAccountKey[]) {
+      return vi.fn(async () => ({ page: 1, pageSize: 100, total: keys.length, keys }))
+    }
+
+    function cacheWith(claude: StoredManagedCliKey, others: ProviderId[] = ['codex', 'grok']) {
+      return recordingKeyStore([claude, ...others.map((provider) => siteManagedKey('solov-api', provider))], 'solov-api')
+    }
+
+    it('carries the remaining cap and the expiry into the subscription group key', async () => {
+      // 原来给 Claude Code 设了 5 块的上限、用掉 2 块，下个月到期。
+      const listKeys = keyList(serverKey(usualClaude, {
+        unlimitedQuota: false, remainQuota: 3, usedQuota: 2, expiredAt: new Date(inAMonth * 1000).toISOString(),
+      }))
+      const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: ['Claude 包月'], listKeys })
+
+      const summary = await syncManagedCliKeySummary(accountService, cacheWith(usualClaude))
+
+      expect(summary.failed).toEqual([])
+      expect(summary.regrouped).toEqual(['claude'])
+      expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{
+        name: sub2Api.claude.keyName,
+        group: 'Claude 包月',
+        remainQuota: 3,
+        unlimitedQuota: false,
+        expiredTime: inAMonth,
+        // 同组里一把不限额的同名 Key 不能拿来顶替。
+        fresh: true,
+      }])
+    })
+
+    it('carries what is left back into the usual group once the subscription ends', async () => {
+      const listKeys = keyList(serverKey(subscriptionClaude, { unlimitedQuota: false, remainQuota: 1, usedQuota: 4 }))
+      const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: [], listKeys })
+
+      const summary = await syncManagedCliKeySummary(accountService, cacheWith(subscriptionClaude))
+
+      expect(summary.regrouped).toEqual(['claude'])
+      expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{
+        name: sub2Api.claude.keyName, group: sub2Api.claude.group, remainQuota: 1, unlimitedQuota: false, expiredTime: -1, fresh: true,
+      }])
+    })
+
+    it('keeps an expiry on an otherwise unlimited key', async () => {
+      const listKeys = keyList(serverKey(usualClaude, { expiredAt: new Date(inAMonth * 1000).toISOString() }))
+      const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: ['Claude 包月'], listKeys })
+
+      await syncManagedCliKeySummary(accountService, cacheWith(usualClaude))
+
+      expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{
+        name: sub2Api.claude.keyName, group: 'Claude 包月', remainQuota: 0, unlimitedQuota: true, expiredTime: inAMonth, fresh: true,
+      }])
+    })
+
+    it('signs as before when the old key had no limits or is already gone from the account', async () => {
+      for (const listKeys of [keyList(serverKey(usualClaude)), keyList()]) {
+        const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: ['Claude 包月'], listKeys })
+
+        const summary = await syncManagedCliKeySummary(accountService, cacheWith(usualClaude))
+
+        expect(summary.regrouped).toEqual(['claude'])
+        expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{ name: sub2Api.claude.keyName, group: 'Claude 包月' }])
+      }
+    })
+
+    it('does not lift a used-up cap and keeps the old key on record for the next round', async () => {
+      const listKeys = keyList(serverKey(usualClaude, { unlimitedQuota: false, remainQuota: 0, usedQuota: 5, status: 4 }))
+      const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: ['Claude 包月'], listKeys })
+      // grok 不在缓存里，这一轮会签一把、存一次缓存：旧那把不能跟着这次保存丢掉，不然下一轮认不出是换组。
+      const store = cacheWith(usualClaude, ['codex'])
+
+      const first = await syncManagedCliKeySummary(accountService, store)
+      const second = await syncManagedCliKeySummary(accountService, store)
+
+      for (const summary of [first, second]) {
+        expect(summary.failed).toEqual([{ provider: 'claude', group: 'Claude 包月', message: managedKeyQuotaExhaustedMessage }])
+        expect(summary.ready.map((entry) => entry.provider)).not.toContain('claude')
+      }
+      expect(provisionCliKey.mock.calls.map(([input]) => input?.group)).toEqual([sub2Api.grok.group])
+      expect(store.save).toHaveBeenCalledTimes(1)
+      expect(store.cached.find((entry) => entry.provider === 'claude')).toEqual(usualClaude)
+    })
+
+    it('does not bring an expired key back to life in the new group', async () => {
+      const listKeys = keyList(serverKey(usualClaude, { expiredAt: new Date(Date.now() - 60_000).toISOString(), status: 3 }))
+      const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: ['Claude 包月'], listKeys })
+
+      const summary = await syncManagedCliKeySummary(accountService, cacheWith(usualClaude))
+
+      expect(summary.failed).toEqual([{ provider: 'claude', group: 'Claude 包月', message: sub2ApiManagedKeyStoppedMessage }])
+      expect(provisionCliKey).not.toHaveBeenCalled()
+    })
+
+    it('does not fall back to an unlimited key when the old key cannot be read, and carries the limits once it can', async () => {
+      const listKeys = keyList(serverKey(usualClaude, { unlimitedQuota: false, remainQuota: 3, usedQuota: 2 }))
+      listKeys.mockRejectedValueOnce(new Error('连接服务器失败'))
+      const { accountService, provisionCliKey } = subscriptionAccountService({ subscribed: ['Claude 包月'], listKeys })
+      const store = cacheWith(usualClaude, ['codex'])
+
+      const first = await syncManagedCliKeySummary(accountService, store)
+
+      expect(first.failed).toEqual([{ provider: 'claude', group: 'Claude 包月', message: '连接服务器失败' }])
+      expect(provisionCliKey.mock.calls.map(([input]) => input?.group)).toEqual([sub2Api.grok.group])
+      expect(store.cached.find((entry) => entry.provider === 'claude')).toEqual(usualClaude)
+
+      provisionCliKey.mockClear()
+      const second = await syncManagedCliKeySummary(accountService, store)
+
+      expect(second.failed).toEqual([])
+      expect(second.regrouped).toEqual(['claude'])
+      expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{
+        name: sub2Api.claude.keyName, group: 'Claude 包月', remainQuota: 3, unlimitedQuota: false, expiredTime: -1, fresh: true,
+      }])
+    })
   })
 })
 
@@ -1688,6 +1824,9 @@ describe('dynamic groups with the encrypted managed key store', () => {
   })
 })
 
+type ServerKey = Pick<StoredManagedCliKey, 'id' | 'name' | 'group'>
+  & Partial<Pick<NewApiAccountKey, 'remainQuota' | 'unlimitedQuota' | 'expiredAt'>>
+
 describe('groups deleted or remapped while every key is cached (#1074)', () => {
   const xm = profilesBySite.solov
   const day = 24 * 60 * 60 * 1000
@@ -1699,14 +1838,14 @@ describe('groups deleted or remapped while every key is cached (#1074)', () => {
     hints?: AccountGroupHints | null
     username?: string
     revokeKey?: ReturnType<typeof vi.fn>
-    /** 服务端此刻的 Key 列表里旧那几把的样子；缺省 = 跟本机缓存一样。 */
-    serverKeys?: Array<Pick<StoredManagedCliKey, 'id' | 'name' | 'group'>>
+    /** 服务端此刻的 Key 列表里旧那几把的样子；缺省 = 跟本机缓存一样、都不限额也不到期。 */
+    serverKeys?: ServerKey[]
   }) {
     let nextId = 500
     const state = {
       listed: options.listed,
       hints: options.hints ?? null,
-      serverKeys: options.serverKeys ?? activeProviderIds.map((provider) => siteManagedKey('solov', provider)),
+      serverKeys: options.serverKeys ?? activeProviderIds.map((provider): ServerKey => siteManagedKey('solov', provider)),
     }
     const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => ({
       id: nextId++,
@@ -1728,7 +1867,9 @@ describe('groups deleted or remapped while every key is cached (#1074)', () => {
         page: 1,
         pageSize: 100,
         total: state.serverKeys.length,
-        keys: state.serverKeys.map(({ id, name, group }) => ({ id, name, group })),
+        keys: state.serverKeys.map(({ id, name, group, remainQuota = 0, unlimitedQuota = true, expiredAt = null }) => (
+          { id, name, group, remainQuota, unlimitedQuota, expiredAt }
+        )),
       })),
       getAccountGroupHints: vi.fn(async () => state.hints),
     } as unknown as AccountService
@@ -2080,6 +2221,88 @@ describe('groups deleted or remapped while every key is cached (#1074)', () => {
     expect(provisionCliKey).not.toHaveBeenCalled()
     expect(saveConfig).not.toHaveBeenCalled()
     expect(revokeKey).not.toHaveBeenCalled()
+  })
+
+  it('carries the old key limits when it moves a cached key out of a deleted group (O03)', async () => {
+    const { accountService, provisionCliKey } = xmAccountService({
+      listed: afterGptDeleted,
+      serverKeys: [...activeProviderIds.map((provider) => siteManagedKey('solov', provider)).filter((entry) => entry.id !== oldCodex.id),
+        { ...oldCodex, unlimitedQuota: false, remainQuota: 1500 }],
+    })
+
+    const summary = await syncManagedCliKeySummary(accountService, xmCache())
+
+    expect(summary.regrouped).toEqual(['codex'])
+    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{
+      name: xm.codex.keyName, group: 'GPT-Plus', remainQuota: 1500, unlimitedQuota: false, expiredTime: -1, fresh: true,
+    }])
+  })
+
+  it('keeps a used-up key out of a deleted group on record and checks again soon instead of lifting its cap', async () => {
+    const { accountService, provisionCliKey, listUsableGroups } = xmAccountService({
+      listed: afterGptDeleted,
+      serverKeys: [{ ...oldCodex, unlimitedQuota: false, remainQuota: 0 }],
+    })
+    const store = xmCache()
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      const first = await syncManagedCliKeySummary(accountService, store)
+
+      expect(first.failed).toEqual([{ provider: 'codex', group: 'GPT-Plus', message: managedKeyQuotaExhaustedMessage }])
+      expect(provisionCliKey).not.toHaveBeenCalled()
+      // 拿掉了下一轮就认不出这是换组，会照常签一把不限额的。
+      expect(store.cached.find((entry) => entry.provider === 'codex')).toEqual(oldCodex)
+
+      clock.mockReturnValue(now + 10 * 60_000)
+      const second = await syncManagedCliKeySummary(accountService, store)
+
+      expect(listUsableGroups).toHaveBeenCalledTimes(2)
+      expect(second.failed).toEqual(first.failed)
+      expect(provisionCliKey).not.toHaveBeenCalled()
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('carries the old key limits when a key rejected for its group is moved (O03)', async () => {
+    const { accountService, provisionCliKey, state } = xmAccountService({
+      listed: [xm.claude.group, xm.codex.group, xm.grok.group],
+    })
+    const store = xmCache()
+    await syncManagedCliKeySummary(accountService, store)
+    state.listed = afterGptDeleted
+    const inAMonth = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60
+    state.serverKeys = [{ ...oldCodex, unlimitedQuota: false, remainQuota: 1500, expiredAt: new Date(inAMonth * 1000).toISOString() }]
+
+    const { service } = configService({ rejected: { key: oldCodex.key, message: deletedGroupRejection } })
+    const result = await configureManagedClis(accountService, service, ['codex'], {}, false, store)
+
+    expect(result).toEqual({ configured: ['codex'], failed: [] })
+    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual([{
+      name: xm.codex.keyName, group: 'GPT-Plus', remainQuota: 1500, unlimitedQuota: false, expiredTime: inAMonth, fresh: true,
+    }])
+    expect(store.cached.find((entry) => entry.provider === 'codex')).toMatchObject({ id: 500, group: 'GPT-Plus' })
+  })
+
+  it('stops moving a rejected key whose cap is used up and keeps it on record', async () => {
+    const { accountService, provisionCliKey, revokeKey, state } = xmAccountService({
+      listed: [xm.claude.group, xm.codex.group, xm.grok.group],
+    })
+    const store = xmCache()
+    await syncManagedCliKeySummary(accountService, store)
+    state.listed = afterGptDeleted
+    state.serverKeys = [{ ...oldCodex, unlimitedQuota: false, remainQuota: 0 }]
+
+    const { service, saveConfig } = configService({ rejected: { key: oldCodex.key, message: deletedGroupRejection } })
+    const result = await configureManagedClis(accountService, service, ['codex'], {}, false, store)
+
+    expect(result.failed).toEqual([{ provider: 'codex', message: managedKeyQuotaExhaustedMessage }])
+    expect(provisionCliKey).not.toHaveBeenCalled()
+    expect(saveConfig).not.toHaveBeenCalled()
+    expect(revokeKey).not.toHaveBeenCalled()
+    expect(store.remove).not.toHaveBeenCalled()
+    expect(store.cached.find((entry) => entry.provider === 'codex')).toEqual(oldCodex)
   })
 
   it('times the cached group check by day, by a short retry after a failure, and by the mapping', () => {

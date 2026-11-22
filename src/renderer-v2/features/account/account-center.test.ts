@@ -1,3 +1,4 @@
+import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import {
   affiliateTransferQuota,
@@ -8,12 +9,18 @@ import {
   inviteRateText,
   inviteRuleText,
   keyCountText,
+  keyEditChanges,
+  keyEditUpdate,
   keyExpiredTime,
+  type KeyEditForm,
+  keyCanEnable,
   keyMetaParts,
   keyToolChoice,
   keyToolInstalled,
   limitKeyNameEdit,
   localSpendDays,
+  passwordChangeFailure,
+  passwordChangeUnconfirmedNotice,
   passwordRules,
   runwayDaysText,
   shortDate,
@@ -23,6 +30,8 @@ import {
   subscriptionOverviewText,
   validatePasswordChange,
 } from './account-center'
+import { passwordChangeUnconfirmedMessage } from '../../../../electron/password-change-unconfirmed'
+import { errorMessage } from '../../business-common'
 
 const now = new Date(2026, 9, 15, 9, 30)
 
@@ -50,9 +59,9 @@ describe('account center spend bars', () => {
 
 describe('account center wording', () => {
   it('says how long the balance lasts the way the home page does', () => {
-    expect(runwayDaysText(12)).toBe('按最近用量约还能用 12 天')
-    expect(runwayDaysText(0)).toBe('按最近用量不到 1 天就会用完')
-    expect(runwayDaysText(400)).toBe('按最近用量够用一年以上')
+    expect(runwayDaysText(12)).toBe('按近期用量预计可用 12 天')
+    expect(runwayDaysText(0)).toBe('按近期用量预计不足 1 天')
+    expect(runwayDaysText(400)).toBe('按近期用量可用一年以上')
   })
 
   it('adds the year only to dates outside this year', () => {
@@ -62,16 +71,16 @@ describe('account center wording', () => {
   })
 
   it('counts keys and the ones tools are using', () => {
-    expect(keyCountText(3, 1)).toBe('3 把，1 把正在被工具使用')
-    expect(keyCountText(2, 0)).toBe('2 把')
+    expect(keyCountText(3, 1)).toBe('3 个，其中 1 个正在被工具使用')
+    expect(keyCountText(2, 0)).toBe('2 个')
   })
 
   it('names the invite rebate rate only when the server gave one', () => {
-    expect(inviteRateText(10)).toBe('好友充值后返你 10%')
-    expect(inviteRateText(undefined)).toBe('好友充值后你能拿返利')
-    expect(inviteRateText(0)).toBe('好友充值后你能拿返利')
-    expect(inviteRuleText(10)).toBe('好友用你的链接注册并充值，你得到充值金额的 10%。')
-    expect(inviteRuleText(null)).toBe('好友用你的链接注册并充值后，你能拿到返利。')
+    expect(inviteRateText(10)).toBe('好友充值后返利 10%')
+    expect(inviteRateText(undefined)).toBe('好友充值后可获得返利')
+    expect(inviteRateText(0)).toBe('好友充值后可获得返利')
+    expect(inviteRuleText(10)).toBe('好友通过您的链接注册并充值，您将获得充值金额的 10%。')
+    expect(inviteRuleText(null)).toBe('好友通过您的链接注册并充值后，您将获得返利。')
   })
 
   it('describes each login device by how long ago it was active and its address', () => {
@@ -189,6 +198,102 @@ describe('account center keys', () => {
     expect(keyExpiredTime('custom', { custom: '2026-12-01T08:00', current: -1, now: at })).toBe(Math.floor(new Date('2026-12-01T08:00').getTime() / 1000))
   })
 
+  describe('editing an existing key (F01)', () => {
+    const opened = { name: 'my key', group: 'default' }
+    const untouched: KeyEditForm = { ...opened, quotaEdited: false, unlimited: true, quota: '0', expiry: 'keep', customExpiry: '' }
+    const context = { quotaPerUnit: 500_000, siteId: 'solov' as const, now: now.getTime() }
+    // What the key looks like when the editor saves: a $5 cap set a moment ago from the tool limits card,
+    // while the list the editor was opened from still said "unlimited".
+    const latest = { name: 'my key', group: 'default', remainQuota: 2_500_000, unlimitedQuota: false, expiredAt: '2026-12-31T00:00:00.000Z' }
+
+    it('keeps a cap set elsewhere when only the name changes', () => {
+      const changes = keyEditChanges({ ...untouched, name: 'renamed' }, opened, context)
+      expect(changes).toEqual({ name: 'renamed' })
+      expect(keyEditUpdate(7, changes, latest)).toEqual({
+        id: 7,
+        name: 'renamed',
+        group: 'default',
+        remainQuota: 2_500_000,
+        unlimitedQuota: false,
+        expiredTime: Math.floor(Date.parse('2026-12-31T00:00:00.000Z') / 1000),
+      })
+    })
+
+    it('takes the name, group and expiry from the latest record when they were not edited', () => {
+      const changes = keyEditChanges({ ...untouched, quotaEdited: true, unlimited: false, quota: '3' }, opened, context)
+      expect(changes).toEqual({ quota: { remainQuota: 1_500_000, unlimitedQuota: false } })
+      expect(keyEditUpdate(7, changes, { ...latest, name: 'renamed elsewhere', group: 'vip', unlimitedQuota: true, remainQuota: 0 })).toEqual({
+        id: 7,
+        name: 'renamed elsewhere',
+        group: 'vip',
+        remainQuota: 1_500_000,
+        unlimitedQuota: false,
+        expiredTime: Math.floor(Date.parse('2026-12-31T00:00:00.000Z') / 1000),
+      })
+    })
+
+    it('still lifts a cap when the customer picks unlimited on purpose', () => {
+      const changes = keyEditChanges({ ...untouched, quotaEdited: true, unlimited: true }, opened, context)
+      expect(keyEditUpdate(7, changes, latest)).toMatchObject({ remainQuota: 0, unlimitedQuota: true })
+    })
+
+    it('uses the chosen group and expiry when they were edited', () => {
+      const changes = keyEditChanges({ ...untouched, group: 'vip', expiry: 'never' }, opened, context)
+      expect(changes).toEqual({ group: 'vip', expiredTime: -1 })
+      expect(keyEditUpdate(7, changes, latest)).toMatchObject({ group: 'vip', expiredTime: -1, remainQuota: 2_500_000, unlimitedQuota: false })
+    })
+
+    it('writes an unlimited key back as unlimited without a quota', () => {
+      expect(keyEditUpdate(7, {}, { ...latest, unlimitedQuota: true, remainQuota: 123, expiredAt: null })).toEqual({
+        id: 7, name: 'my key', group: 'default', remainQuota: 0, unlimitedQuota: true, expiredTime: -1,
+      })
+    })
+
+    it('refuses an edited cap that is not above zero before reading anything', () => {
+      expect(() => keyEditChanges({ ...untouched, quotaEdited: true, unlimited: false, quota: '0' }, opened, context)).toThrow('请填写大于 0 的可用额度')
+      expect(() => keyEditChanges({ ...untouched, quotaEdited: true, unlimited: false, quota: '' }, opened, context)).toThrow('请填写大于 0 的可用额度')
+    })
+
+    it('asks for a cap again, as before, when the untouched key has used its cap up', () => {
+      expect(() => keyEditUpdate(7, { name: 'renamed' }, { ...latest, remainQuota: 0 })).toThrow('请填写大于 0 的可用额度')
+    })
+
+    it('keeps the cap in dollars for the other account backend', () => {
+      const changes = keyEditChanges({ ...untouched, quotaEdited: true, unlimited: false, quota: '2.5' }, opened, { ...context, quotaPerUnit: 1, siteId: 'solov-api' })
+      expect(changes.quota).toEqual({ remainQuota: 2.5, unlimitedQuota: false })
+      expect(keyEditUpdate(7, { name: 'renamed' }, { ...latest, remainQuota: 4.75 })).toMatchObject({ remainQuota: 4.75, unlimitedQuota: false })
+    })
+
+    it('never lets a field the customer did not edit come from the stale form, with random inputs', () => {
+      const key = fc.record({
+        name: fc.string({ minLength: 1, maxLength: 20 }),
+        group: fc.string({ minLength: 1, maxLength: 20 }),
+        remainQuota: fc.integer({ min: 1, max: 1e12 }),
+        unlimitedQuota: fc.boolean(),
+        expiredAt: fc.option(fc.integer({ min: 1, max: 4_000_000_000 }).map((seconds) => new Date(seconds * 1000).toISOString()), { nil: null }),
+      })
+      fc.assert(fc.property(key, key, fc.string({ maxLength: 20 }), fc.string({ maxLength: 20 }), (stale, current, typedName, typedGroup) => {
+        // The editor was opened from `stale`; the customer may have typed a name and a group but left the cap
+        // and the expiry alone. Whatever was in the stale form, cap and expiry follow the current record.
+        const form: KeyEditForm = {
+          name: typedName || stale.name,
+          group: typedGroup || stale.group,
+          quotaEdited: false,
+          unlimited: stale.unlimitedQuota,
+          quota: String(stale.remainQuota / context.quotaPerUnit),
+          expiry: 'keep',
+          customExpiry: '',
+        }
+        const input = keyEditUpdate(9, keyEditChanges(form, stale, context), current)
+        expect(input.unlimitedQuota).toBe(current.unlimitedQuota)
+        expect(input.remainQuota).toBe(current.unlimitedQuota ? 0 : current.remainQuota)
+        expect(input.expiredTime).toBe(current.expiredAt ? Math.floor(Date.parse(current.expiredAt) / 1000) : -1)
+        expect(input.name).toBe(form.name === stale.name ? current.name : form.name)
+        expect(input.group).toBe(form.group === stale.group ? current.group : form.group)
+      }))
+    })
+  })
+
   it('describes a key by what it used, what is left, when it ends and when it was made', () => {
     const money = (quota: number) => `$${(quota / 100).toFixed(2)}`
     const key = { usedQuota: 150, remainQuota: 850, unlimitedQuota: false, expiredAt: new Date(2026, 11, 31).toISOString(), createdAt: new Date(2026, 8, 1).toISOString() }
@@ -203,6 +308,12 @@ describe('account center keys', () => {
     expect(keyToolChoice({ ...claude, installed: false }, false)).toEqual({ hint: '未安装', disabled: true })
     expect(keyToolChoice({ ...claude, official: true }, false)).toEqual({ hint: '官方账号', disabled: false })
     expect(keyToolChoice({ ...claude, installed: null }, false)).toEqual({ hint: '', disabled: false })
+  })
+
+  it('offers 启用 on a disabled, expired or used-up key of the current account only (Q2)', () => {
+    expect([1, 2, 3, 4, 0, 5].map((status) => keyCanEnable({ status }, 'solov'))).toEqual([false, true, true, true, false, false])
+    // 历史账号的后台没有接「启用」，那边一把都不摆。
+    expect([1, 2, 3, 4].map((status) => keyCanEnable({ status }, 'solov-api'))).toEqual([false, false, false, false])
   })
 
   it('counts a tool as installed when either Codex client is, and does not block on a failed detection', () => {
@@ -288,5 +399,24 @@ describe('affiliateTransferTitleQuota', () => {
     for (const amount of ['', '1', '3.456']) {
       expect(affiliateTransferTitleQuota({ wholeOnly: true, amount, available: 3.456, quotaPerUnit: 1 })).toBe(3.456)
     }
+  })
+})
+
+describe('passwordChangeFailure', () => {
+  it('turns the main process\'s "no answer" sentence into the advice the password dialog shows (N6)', () => {
+    const unconfirmed = new Error(`Error invoking remote method 'account:change-password': Error: ${passwordChangeUnconfirmedMessage}`)
+    const shown = passwordChangeFailure(unconfirmed)
+    expect(shown).toBeInstanceOf(Error)
+    expect(errorMessage(shown)).toBe(passwordChangeUnconfirmedNotice)
+    expect(passwordChangeUnconfirmedNotice).toBe('未收到账号服务的响应，新密码可能已生效。请勿重复修改：下次登录时请先使用新密码，如无法登录再使用原密码。')
+  })
+
+  it('hands every other failure on untouched', () => {
+    const wrong = new Error("Error invoking remote method 'account:change-password': Error: 原密码错误")
+    const timeout = new Error('连接账号服务超时，请检查网络后再试。')
+    expect(passwordChangeFailure(wrong)).toBe(wrong)
+    expect(passwordChangeFailure(timeout)).toBe(timeout)
+    const longer = new Error(`前面还有话${passwordChangeUnconfirmedMessage}`)
+    expect(passwordChangeFailure(longer)).toBe(longer)
   })
 })

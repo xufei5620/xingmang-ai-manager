@@ -1,0 +1,52 @@
+/* 「创作」页（融合第 1 步）：起始页上「从这里开始」的卡，和右边换上去的那一块（一条视频的工作台、一个画布项目的卡）。
+   左边那一列和对话那一半的样式在 features/chat/chat.css。颜色全用令牌，深浅两套自己跟着换。 */
+.create-start { display: grid; gap: 10px; }
+.create-start-label { color: var(--text-3); font-size: 12px; text-align: center; }
+.create-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.create-card { display: grid; align-content: start; gap: 6px; min-width: 0; padding: 14px; border: 0; border-radius: 12px; corner-shape: squircle; background: var(--panel-solid); box-shadow: inset 0 0 0 1px var(--line); color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: background var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard); }
+.create-card:hover { background: var(--panel-hover); box-shadow: inset 0 0 0 1px var(--soft-line); }
+.create-card-icon { display: grid; place-items: center; width: 32px; height: 32px; margin-bottom: 2px; border-radius: 9px; corner-shape: squircle; background: var(--soft); box-shadow: inset 0 0 0 1px var(--soft-line); color: var(--gold); }
+.create-card > strong { font-size: 13.5px; font-weight: 600; }
+.create-card > span:not(.create-card-icon) { color: var(--text-2); font-size: 12px; line-height: 1.6; }
+.create-card > small { display: inline-flex; align-items: center; gap: 3px; color: var(--text-3); font-size: 11px; }
+
+/* 视频工作台：还是「想法」「分镜」「合成视频」三张卡，在右边这一栏里自己滚。 */
+.create-studio { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 24px 24px; scrollbar-width: thin; }
+.create-studio > .v2-page { max-width: 1000px; margin: 0 auto; }
+
+/* 画布项目：一张说明卡。 */
+.create-canvas { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 16px; padding: 28px max(28px, calc((100% - 720px) / 2)); scrollbar-width: thin; }
+.create-canvas-card { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 20px; align-items: center; padding: 20px; border-radius: 14px; corner-shape: squircle; background: var(--panel-solid); box-shadow: inset 0 0 0 1px var(--line); }
+.create-canvas-icon { display: grid; place-items: center; width: 72px; height: 72px; border-radius: 16px; corner-shape: squircle; background: var(--soft); box-shadow: inset 0 0 0 1px var(--soft-line); color: var(--accent); }
+.create-canvas-copy { display: grid; gap: 6px; min-width: 0; }
+.create-canvas-copy > strong { overflow: hidden; font-size: 17px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.create-canvas-copy > span { color: var(--text-2); font-size: 13px; }
+.create-canvas-copy > small { color: var(--text-3); font-size: 12px; line-height: 1.6; }
+.create-canvas-actions { display: flex; gap: 8px; margin: 8px 0 4px; }
+.create-quiet { margin: 0; color: var(--text-3); font-size: 12px; line-height: 1.6; }
+
+/* 作品库（融合第 3 步）：筛选和搜索一排，下面一格一格的缩略图，自己滚。 */
+.create-library { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 14px; padding: 16px 24px 24px; scrollbar-width: thin; }
+.create-library-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+.create-library-tools .xm-search { flex: 1; min-width: 180px; max-width: 280px; margin-left: auto; }
+.create-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 14px 12px; }
+.create-library-tile { display: grid; gap: 6px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.create-library-thumb { position: relative; display: grid; place-items: center; aspect-ratio: 1; overflow: hidden; border-radius: 10px; corner-shape: squircle; background: var(--panel-hover); box-shadow: inset 0 0 0 1px var(--line); color: var(--text-3); transition: box-shadow var(--duration-fast) var(--ease-standard); }
+.create-library-thumb > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.create-library-thumb > b { position: absolute; left: 6px; bottom: 6px; display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; border-radius: 6px; background: rgb(0 0 0 / .62); color: #fff; font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.create-library-thumb > i { position: absolute; top: 6px; right: 6px; display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--text); color: var(--bg); font-size: 11px; font-style: normal; font-weight: 600; }
+.create-library-tile:hover .create-library-thumb, .create-library-tile:focus-visible .create-library-thumb { box-shadow: inset 0 0 0 1px var(--soft-line), 0 0 0 2px var(--soft); }
+.create-library-tile:focus-visible { outline: none; }
+.create-library-tile[aria-pressed='true'] .create-library-thumb { box-shadow: 0 0 0 2px var(--gold); }
+.create-library-tile > small { overflow: hidden; color: var(--text-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.create-library-more { display: flex; justify-content: center; }
+.create-library-empty { display: grid; justify-items: center; gap: 10px; padding: 48px 16px; color: var(--text-3); font-size: 13px; text-align: center; }
+.create-library-empty > p { margin: 0; }
+/* 点开一件：大图或能直接放的视频。 */
+.create-library-media { display: grid; place-items: center; min-height: 160px; border-radius: 10px; background: var(--panel-hover); overflow: hidden; }
+.create-library-media > img, .create-library-media > video { display: block; max-width: 100%; max-height: min(56vh, 480px); }
+.create-library-media > p { margin: 0; padding: 24px; color: var(--text-3); font-size: 13px; text-align: center; }
+.create-library-origin { display: flex; margin-top: 10px; }
+/* 选择框里的那一份：框自己滚。 */
+.create-library-picker { display: grid; align-content: start; gap: 14px; min-height: 240px; }
+.create-library-picker .create-library-grid { grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); }

@@ -74,17 +74,17 @@ export interface InstallPromptCopyOptions {
  * 退回旧版时那句换成「建议退回」，跟设置页的说法一致（D11，11-10 批）。
  */
 export function buildInstallPrompt(version: string, platform: NodeJS.Platform, options: InstallPromptCopyOptions): InstallPrompt {
-  const consent = platform === 'win32' && !options.elevated ? 'Windows 弹出授权窗口时请点「是」。' : ''
+  const consent = platform === 'win32' && !options.elevated ? 'Windows 弹出授权窗口时，请点击「是」。' : ''
   const keychain = platform === 'darwin' ? macKeychainUpdateHint : ''
   const later = platform !== 'darwin'
-    ? '关掉软件或下次打开时自动装上。'
+    ? '将在关闭软件或下次启动时自动安装。'
     : options.unattended
-      ? '你不用电脑时星芒会自己装好，装完照旧待在菜单栏。'
-      : '退出星芒或下次打开时自动装上。'
+      ? '电脑空闲时星芒将自动安装，安装完成后仍保留在菜单栏。'
+      : '将在退出星芒或下次启动时自动安装。'
   return {
     title: '星芒AI管理工具',
-    message: options.rollback ? `建议退回的 ${version} 版已经下好，现在装上吗？` : `新版 ${version} 已经下好，现在装上吗？`,
-    detail: `装的时候星芒会先关掉，装好自动打开。${consent}${keychain}现在不装也行：${later}`,
+    message: options.rollback ? `建议回退的 ${version} 版已下载，是否立即安装？` : `新版 ${version} 已下载，是否立即安装？`,
+    detail: `安装时星芒将先关闭，完成后自动打开。${consent}${keychain}如暂不安装，${later}`,
     buttons: ['稍后再说', '现在安装'],
   }
 }

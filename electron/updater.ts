@@ -984,7 +984,7 @@ export const updateSignatureRejectedCode = 'UPDATE_SIGNATURE_REJECTED'
 /** 安装看门狗等不到安装器退出时报的错误代码：说的是「还没退」，不是「装不上」。 */
 export const updateInstallLaunchTimeoutCode = 'UPDATE_INSTALL_LAUNCH_TIMEOUT'
 
-const updateSignatureRejectedMessage = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
+const updateSignatureRejectedMessage = '新版本已下载，但未通过本机系统校验，无法自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'
 
 /** Squirrel.Mac 的原话是「Code signature at URL … did not pass validation: <系统给的原因>」，原因按系统语言走。 */
 export function isMacUpdateSignatureRejection(source: string): boolean {
@@ -1026,9 +1026,9 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
     )
   // 这两种是发布那头的事，客户什么也改不了；清单文件名只进 detail 给客服看。
   const message = missingChannelManifest
-    ? '更新服务器上这一版的更新文件还没放好，不是你这边的问题。稍后再试；急着用请找客服。'
+    ? '更新服务器上该版本的更新文件尚未就绪，并非本机问题。请稍后重试；如急需使用，请联系客服。'
     : /<!doctype\s+html|<html|text\/html|unexpected\s+token\s+["']?</i.test(source)
-      ? '更新服务器这会儿返回的内容不对，不是你这边的问题。稍后再试；还不行请找客服。'
+      ? '更新服务器当前返回的内容异常，并非本机问题。请稍后重试；如仍无法解决，请联系客服。'
       : null
   if (message) {
     const detail = missingChannelManifest
@@ -1051,16 +1051,16 @@ function safeError(error: unknown, platform: NodeJS.Platform): { code: string; m
  */
 export function describeUnrecognizedUpdateFailure(source: string): string {
   if (!source || isChineseSentence(source)) return source
-  if (/\bENOSPC\b|no space left/i.test(source)) return '电脑的磁盘空间不够了，清出一些空间后再试。'
+  if (/\bENOSPC\b|no space left/i.test(source)) return '磁盘空间不足，请清理部分空间后重试。'
   if (/\b(?:EPERM|EACCES|EBUSY)\b|operation not permitted|permission denied|resource busy/i.test(source)) {
-    return '新版本的安装包写不进去或被占用了，常见是安全软件拦了。重开软件再试；还不行请找客服。'
+    return '新版本安装包无法写入或已被占用，通常是被安全软件拦截。请重新打开软件后重试；如仍无法解决，请联系客服。'
   }
   if (/\bENOENT\b|no such file|sha512|checksum/i.test(source)) {
-    return '下载好的安装包不完整或被删掉了，常见是安全软件拦了。重新下载一次就好。'
+    return '已下载的安装包不完整或已被删除，通常是被安全软件拦截。请重新下载。'
   }
   // 这句会出现在更新页、首页气泡和强制更新那道门三处，三处的按钮不一样（门里没有
   // 「查看日志」，气泡里也没有），所以只说发生了什么、哪三处都做得到的下一步。
-  return '更新没有完成，没认出是哪一类问题，原因已经记下来了。再试一次；还不行请找客服。'
+  return '更新未完成，未能识别问题类型，原因已记录。请重试；如仍无法解决，请联系客服。'
 }
 
 function cloneInstalledRelease(release: InstalledRelease | null | undefined): InstalledRelease | null {
@@ -1338,7 +1338,9 @@ export function createUpdaterService(
   }
 
   const applyServiceStatus = (status: ServiceStatus | null) => {
-    if (status) {
+    // 撤回名单、放量、最低版本没签名或签名不对（D85）：这几项照「这一次没读到」办，别的项照常用这一份。
+    const guardRead = status !== null && !status.releaseGuardRejected
+    if (status && guardRead) {
       adoptReleaseGuard({
         badVersions: status.badVersions ?? [],
         ...(status.badVersionPlatforms ? { badVersionPlatforms: status.badVersionPlatforms } : {}),
@@ -1362,7 +1364,7 @@ export function createUpdaterService(
     // 最低版本同样只认读成功的那份：下载新版本时这一次读超时，那层「必须更新」就整层收起，下一次读到又盖回来，
     // 客户以为没事了接着用（RC-01）。只在读到了、文件里确实撤掉了才放人。这份只在这次运行里沿用、不记到本地：
     // 撤掉强制更新以后，重开软件还读不到文件的电脑不能一直被拦着。开发态装不了更新，拦下来只会把人困住。
-    const required = !status
+    const required = !guardRead
       ? minimumRequired
       : enabled && !development
         ? resolveRequiredVersion(runtime.currentVersion, resolveMinimumVersionFor(status, releasePlatforms))
@@ -1498,7 +1500,7 @@ export function createUpdaterService(
       try { runtime.installQuitAborted?.() } catch { /* The rejection below is what the user needs to see. */ }
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_PATH_MISSING',
-        '下载好的安装包找不到了，可能被清理软件删掉了。点「重新下载」再试一次。',
+        '未找到已下载的安装包，可能已被清理软件删除。请点击「重新下载」重试。',
       )
     }
     if (!packagePath) {
@@ -1506,7 +1508,7 @@ export function createUpdaterService(
       return false
     }
     if (!runtime.openSystemInstaller) {
-      reportInstallFailure({ code: 'UPDATE_SYSTEM_INSTALLER_MISSING', message: '这台电脑上没法打开安装程序。请找客服。' })
+      reportInstallFailure({ code: 'UPDATE_SYSTEM_INSTALLER_MISSING', message: '本机无法打开安装程序，请联系客服。' })
       return false
     }
     const failed = (error: unknown) => {
@@ -1522,7 +1524,7 @@ export function createUpdaterService(
     }
     void opening.then(() => {
       if (disposed || !installRequested) return
-      startInstallWatchdog('安装窗口已经打开了，可星芒没能自己关掉。在安装窗口里点「安装」、输入开机密码；装好后关掉星芒再重新打开。')
+      startInstallWatchdog('安装窗口已打开，但星芒未能自动关闭。请在安装窗口中点击「安装」并输入开机密码；安装完成后，请关闭星芒并重新打开。')
       runtime.quitAfterSystemInstaller?.()
     }, (error: unknown) => {
       if (disposed || !installRequested) return
@@ -1556,8 +1558,8 @@ export function createUpdaterService(
       return false
     }
     startInstallWatchdog(platform === 'win32'
-      ? '新版本没装上：安装程序没起来，可能是 Windows 的授权窗口被关掉了。点「重新安装」再试一次，授权窗口弹出来时点「是」。'
-      : '新版本没装上：安装程序没起来。点「重新安装」再试一次。')
+      ? '新版本安装失败：安装程序未能启动，可能是 Windows 授权窗口被关闭。请点击「重新安装」重试，授权窗口弹出时请点击「是」。'
+      : '新版本安装失败：安装程序未能启动。请点击「重新安装」重试。')
     return true
   }
 
@@ -1606,7 +1608,7 @@ export function createUpdaterService(
     if (!downloadedFile) {
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_PATH_MISSING',
-        '下载好的安装包找不到了，为了安全没有安装。点「重新下载」再试一次。',
+        '未找到已下载的安装包，为确保安全已停止安装。请点击「重新下载」重试。',
       )
       return
     }
@@ -1617,7 +1619,7 @@ export function createUpdaterService(
     if (!expected) {
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_DIGEST_MISSING',
-        '更新服务器没给这个安装包的核对信息，为了安全没有安装。不是你这边的问题，稍后再试；急着用请找客服。',
+        '更新服务器未提供该安装包的校验信息，为确保安全已停止安装。此问题并非本机原因，请稍后重试；如急需使用，请联系客服。',
         '更新清单没有提供本安装包的 SHA-512 校验值',
       )
       return
@@ -1629,7 +1631,7 @@ export function createUpdaterService(
       if (disposed) return
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_DIGEST_FAILED',
-        '下载好的安装包没能核对完，为了安全没有安装。点「重新下载」再试一次。',
+        '已下载的安装包未能完成校验，为确保安全已停止安装。请点击「重新下载」重试。',
         `安装包完整性校验没有完成：${digestFailureDetail(error)}`,
       )
       return
@@ -1638,7 +1640,7 @@ export function createUpdaterService(
     if (!matched) {
       rejectDownloadedUpdate(
         'UPDATE_PACKAGE_DIGEST_MISMATCH',
-        '下载好的安装包和服务器上的对不上，可能是没下完整，为了安全没有安装。点「重新下载」再试一次；还不对请找客服。',
+        '已下载的安装包与服务器上的版本不一致，可能下载不完整，为确保安全已停止安装。请点击「重新下载」重试；如仍不一致，请联系客服。',
         '安装包与更新清单的 SHA-512 不一致',
       )
       return
@@ -1650,7 +1652,7 @@ export function createUpdaterService(
       const entry = manifestPackageEntry(manifest, downloadedFile)
       const verdict = entry
         ? verifyPackageSignature(String(event.version ?? ''), { ...entry })
-        : { ok: false as const, code: 'UPDATE_SIGNATURE_MISSING' as const, message: '更新清单里没有发布者签名，已阻止安装。请稍后再试，若一直这样请联系客服。' }
+        : { ok: false as const, code: 'UPDATE_SIGNATURE_MISSING' as const, message: '更新清单中缺少发布者签名，已阻止安装。请稍后重试，如持续出现请联系客服。' }
       if (!verdict.ok) {
         rejectDownloadedUpdate(verdict.code, verdict.message)
         return
@@ -1753,7 +1755,7 @@ export function createUpdaterService(
     error: (error: unknown) => {
       // 看门狗掐断请求用的那个错误：接下来重下还是报「下载更新失败」由看门狗定。宿主没给取消
       // 令牌时，electron-updater 才会把它当成下载出错发出来。掐断挂住的检查时它每次都发，报什么
-      // 由 check() 定（开机那次「网络有点慢」那句要留着）。
+      // 由 check() 定（开机那次「网络较慢」那句要留着）。
       if (error instanceof UpdateDownloadAborted || error instanceof UpdateCheckAborted) return
       if (
         snapshot.phase === 'downloaded'
@@ -1917,7 +1919,7 @@ export function createUpdaterService(
   // 挂住和连接超时对客户是一回事：那头没动静了。沿用更新那张表里「超时」那句，界面不多一句新话；
   // code 另记，日志里分得清是看门狗停的。挂住的那次被掐断时只让最新那一次检查说话：之后又开始了
   // 一次的，那一次接回了同一个请求就和它一起报，还没发出请求就会重新发，这里再报只会让「检查更新
-  // 失败」在它查的时候闪一下。开机那次已经说过「网络有点慢…在后台接着查」、之后没人再点过检查的，
+  // 失败」在它查的时候闪一下。开机那次已经说过「网络较慢…在后台继续检查」、之后没人再点过检查的，
   // 那句留着：掐掉挂住的那次只是为了让之后的「重试」和三小时那次能重新发请求。
   const reportCheckFailure = (error: unknown, failedCheck: number, manual: boolean) => {
     const stalledCheck = error instanceof UpdateCheckAborted
@@ -1973,7 +1975,7 @@ export function createUpdaterService(
         phase: 'error',
         error: {
           code: 'UPDATE_INACTIVE',
-          message: '这台电脑上的星芒没法自己更新。到下载页下载新版本的安装包，装好后打开就行；不会装请找客服。',
+          message: '本机的星芒无法自动更新。请前往下载页下载新版本安装包，安装后打开即可；如需协助，请联系客服。',
         },
         failedStep: 'check',
         progress: null,
@@ -2351,18 +2353,18 @@ export function createUpdaterService(
           }
           // The timeout only releases the startup UI. Keep the updater request
           // alive so a slow network can still download the discovered release.
-          if (autoDownload()) {
-            void checkPromise.then((lateSnapshot) => {
-              if (lateSnapshot.phase === 'available') downloadInBackground()
-            }, (error: unknown) => runtime.reportBackgroundError?.(error))
-          }
+          // 下不下按查完那一刻的设置定（D23）：超时到查完之间客户关掉了自动更新，这次就不下，停在「有新版本」
+          // 等客户自己点；反过来这段时间里刚打开的，autoUpdateChanged 那时还没有可下的版本，这里接着下。
+          void checkPromise.then((lateSnapshot) => {
+            if (lateSnapshot.phase === 'available' && autoDownload()) downloadInBackground()
+          }, (error: unknown) => runtime.reportBackgroundError?.(error))
           emit({
             phase: 'error',
             checkedAt: now().toISOString(),
             progress: null,
             error: {
               code: 'STARTUP_UPDATE_TIMEOUT',
-              message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。',
+              message: '网络较慢，本次未能完成新版本检查。星芒将在后台继续检查，不影响当前使用。',
               automatic: true,
             },
             failedStep: 'check',
@@ -2390,7 +2392,7 @@ export function createUpdaterService(
       requireEnabled()
       if (development) throw new Error('开发环境禁止执行安装更新')
       if (snapshot.phase !== 'downloaded') throw new Error('更新尚未下载并校验完成')
-      if (isWithdrawn(snapshot.availableVersion)) throw new Error('这个版本已被撤回，请重新检查更新')
+      if (isWithdrawn(snapshot.availableVersion)) throw new Error('该版本已被撤回，请重新检查更新')
       if (!installRequested && !requestInstall()) {
         throw new Error(snapshot.error?.message || '更新程序未能启动')
       }

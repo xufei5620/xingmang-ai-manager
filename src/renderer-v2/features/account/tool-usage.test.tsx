@@ -76,15 +76,15 @@ describe('per-tool usage summary', () => {
 
   it('says who spent the most, and says so as the current account', () => {
     expect(toolUsageHeadline(summary)).toBe('当前账号累计已用 $8.00，其中 Claude Code 最多（75%）。')
-    expect(toolUsageHeadline(summaryOf([]))).toBe('当前账号还没给任何工具配过密钥，在首页配一次工具就会自动准备好。')
-    expect(toolUsageHeadline(summaryOf([key({ id: 1, name: 'xingmang-desktop-claude' })]))).toContain('还没有产生用量')
+    expect(toolUsageHeadline(summaryOf([]))).toBe('当前账号尚未为任何工具配置密钥，在首页配置工具后将自动创建。')
+    expect(toolUsageHeadline(summaryOf([key({ id: 1, name: 'xingmang-desktop-claude' })]))).toContain('均暂无用量')
   })
 
   it('reads the usage as not yet available when the account gives no usable quota unit', () => {
     const unusable = summaryOf([key({ id: 1, name: 'xingmang-desktop-claude', usedQuota: 3_000_000 })], 0)
     expect(unusable.used).toBeNull()
     expect(toolUsageUsed(unusable.rows[0])).toBe('—')
-    expect(toolUsageHeadline(unusable)).toBe('当前账号的用量暂未读到。')
+    expect(toolUsageHeadline(unusable)).toBe('当前账号用量暂未获取。')
   })
 })
 

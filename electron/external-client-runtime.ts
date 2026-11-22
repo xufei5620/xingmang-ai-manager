@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { inspectAppxVolumeLink } from './appx-volume-link'
-import type { ClaudeDesktopSeedClient } from './claude-desktop-code-seed'
+import type { ClaudeDesktopCodeSeedOutcome, ClaudeDesktopSeedClient } from './claude-desktop-code-seed'
 import {
   buildClaudeDesktopInstallFailureMessage, classifyClaudeDesktopInstallFailure, isPlainClaudeDesktopInstallMessage,
 } from './claude-desktop-install-failure'
@@ -15,7 +15,7 @@ import {
 } from './command-runner'
 import {
   externalClientOfficialDownloadUrls, isExternalToolId,
-  type DesktopAppUpdateRequest, type ExternalClientInstallProgress, type ExternalClientRuntimeStatus,
+  type DesktopAppUpdateRequest, type ExternalClientInstallProgress, type ExternalClientLaunchResult, type ExternalClientRuntimeStatus,
 } from './external-client-contract'
 import type { ExternalToolId, WorkBuddyEdition } from './external-tool-config'
 import {
@@ -104,6 +104,11 @@ interface InspectionScope {
   reuseVerifiedSignatures?: boolean
   /** 只看这一个客户端（打开它之前）：没点的那几家跟这次打开无关，不该让人多等。 */
   only?: ExternalToolId
+  /**
+   * 打开之前那次：Mac 上同一个应用名认到第一份就停，打开的就是它；另一份开没开跟这次打开无关，不该让人多等它的签名核对。
+   * 别的检测不传：开没开要几份一起算（总单 #35）。Windows 上不看它。
+   */
+  firstCopy?: boolean
 }
 /** 判断应用包变没变要看的那几项；fs.Stats 本身就满足。 */
 interface BundleEntryStats { dev: number; ino: number; mtimeMs: number; size: number; isFile(): boolean }
@@ -171,11 +176,12 @@ export interface ExternalClientRuntimeOptions {
    */
   onLaunched?: (tool: ExternalToolId, clientPath: string) => void
   /**
-   * Windows 上打开 Claude Desktop、交给资源管理器之前那一步：替它把 Claude Code 程序放好
-   * （claude-desktop-code-seed.ts）。在这一家的打开里跑（等它自己正在装的那次装完、打开前那次检测之后），
-   * 所以同一家的安装照旧等它；抛错也照常打开。缺省 = 不做。
+   * 打开 Claude Desktop、交出去之前那一步：替它把 Claude Code 程序放好（Windows 从 npm 镜像，
+   * claude-desktop-code-seed.ts；Mac 从星芒的下载站，claude-desktop-mac-code-seed.ts）。在这一家的打开里跑
+   * （等它自己正在装的那次装完、打开前那次检测之后），所以同一家的安装照旧等它；抛错也照常打开。
+   * 只有 Windows 那一半的结果会变成界面提醒（buildExternalClientLaunchResult），Mac 那一半回 void。缺省 = 不做。
    */
-  prepareClaudeDesktopLaunch?: (client: ClaudeDesktopSeedClient) => Promise<unknown>
+  prepareClaudeDesktopLaunch?: (client: ClaudeDesktopSeedClient) => Promise<ClaudeDesktopCodeSeedOutcome | void>
   /**
    * Mac 上查星芒存储桶里这几家的最新版，首页据此提醒「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）。
    * 缺省 = 不查、不提醒（测试与旧调用方照旧），生产由 system-service 打开。
@@ -239,7 +245,7 @@ export interface ExternalClientLaunchTiming extends ExternalClientInventoryTimin
   inventoryMs: number
   /** 交给资源管理器（Mac 上是 open）用了多久，含下面的 prepareMs。 */
   launchMs: number
-  /** 交出去之前替 Claude Desktop 放程序用了多久（只有 Windows 上的 Claude Desktop 有）。 */
+  /** 交出去之前替 Claude Desktop 放程序用了多久（只有 Windows 和 Mac 上的 Claude Desktop 有）。 */
   prepareMs?: number
 }
 
@@ -329,6 +335,14 @@ function wingetFailureMessage(error: unknown): string {
 function installationError(message: string, originalError: unknown): Error {
   return Object.assign(new Error(message), { originalError })
 }
+/**
+ * 放程序那一步的结果里，哪些要客户自己动手、随打开结果带回界面。只有「星芒是以管理员身份运行的」这一种：
+ * 别的跳过（开着、远程关了、没网、盘满）要么本来就不该放，要么下次打开会再试，说了客户也做不了什么。
+ */
+export function buildExternalClientLaunchResult(outcome: ClaudeDesktopCodeSeedOutcome | void): ExternalClientLaunchResult {
+  return outcome?.status === 'skipped' && outcome.reason === 'not-same-user' ? { preparationSkipped: 'elevated' } : {}
+}
+
 function installKey(tool: ExternalToolId): string {
   return `external-client:install:${tool}`
 }
@@ -734,7 +748,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   const resolveMachinePaths = options.resolveMachinePaths ?? resolveWindowsMachinePaths
   const jobs = new Map<ExternalToolId, { promise: Promise<ExternalClientRuntimeStatus>; observers: Set<(event: ExternalClientInstallProgress) => void>; last: ExternalClientInstallProgress | null }>()
   // 正在打开的那几家：连点两下合成一次；同一家的安装要等它打开完再动手（见 install）。
-  const launches = new Map<ExternalToolId, Promise<void>>()
+  const launches = new Map<ExternalToolId, Promise<ExternalClientLaunchResult>>()
   const installCancellations = new InstallCancellationRegistry()
   let inFlightScan: { promise: Promise<ExternalClientRuntimeStatus[]>; generation: number } | null = null
   const now = options.now ?? Date.now
@@ -923,6 +937,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     const errors: Inspection['errors'] = {}
     for (const tool of scope.only ? [scope.only] : tools) {
       // WorkBuddy 两版各找一遍（国内版在前），两版都装着就都认；别的客户端只有一种应用名。
+      // 「应用程序」和家目录下的「应用程序」各有一份的，两份都认：显示、打开用前面那份，开没开两份一起算（status），
+      // 开着的是后一份也不改它们共用的那份配置（总单 #35，以前认到第一份就不往下看）。打开之前那次只认前面那份（firstCopy）。
       const programs = tool === 'workbuddy' ? workBuddyPrograms : [{ edition: undefined, bundle: definitions[tool].bundle, bundleId: definitions[tool].bundleId }]
       for (const definition of programs) for (const directory of ['/Applications', path.posix.join(userHome, 'Applications')]) {
         const candidate = path.posix.join(directory, definition.bundle)
@@ -964,7 +980,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
           const running = processes.stdout.split(/\r?\n/).some((line) => line.trim().startsWith(`${canonical}/Contents/MacOS/`))
           clients.push({ tool, path: canonical, version: versionValue(data.CFBundleShortVersionString), running, ...(definition.edition ? { edition: definition.edition } : {}) })
           delete errors[tool]
-          break
+          if (scope.firstCopy) break
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') errors[tool] = errorText(error)
         }
@@ -989,7 +1005,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     return {
       tool, installed: Boolean(client), version: client?.version ?? null, path: client?.path ?? null,
       installDirectory: client ? (platform === 'win32' ? path.win32.dirname(client.path) : client.path) : null,
-      // 两版 WorkBuddy 有一版开着就算开着：换线路、换 Key 照旧等它退出。
+      // 同一家认出来几份（两版 WorkBuddy、几条卸载登记、Mac 上两个「应用程序」）有一份开着就算开着：换线路、换 Key 照旧等它退出。
       running: located.some((item) => item.running),
       installSupported: tool !== 'workbuddy' && platformHint === null && (platform === 'darwin' || Boolean(route?.oneClick)),
       launchSupported: Boolean(client) && (platform === 'win32' || (platform === 'darwin' && !runningAsRoot())),
@@ -1084,7 +1100,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
    * Mac 上换掉装着的那一份（yoyo 2026-10-27「桌面端更新改」）：和安装同一套下载、核对，装着的那份要是官方原版，
    * 换之前它开着就按客户的意思关掉（prepareMacosDesktopReplacement），换不成旧版原样留着。
    */
-  async function updateOnMac(tool: ExternalToolId, current: ExternalClientRuntimeStatus, request: DesktopAppUpdateRequest, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void, signal: AbortSignal): Promise<{ unchanged: boolean }> {
+  async function updateOnMac(tool: ExternalToolId, current: ExternalClientRuntimeStatus, request: DesktopAppUpdateRequest, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void, cancellation: InstallCancellationHandle): Promise<{ unchanged: boolean }> {
+    const signal = cancellation.signal
     if (!current.path || !current.version) throw new Error(`${definitions[tool].name} 的版本号读不出来，没法比新旧`)
     const clientPath = current.path
     await options.assertDiskSpace?.(`${definitions[tool].name} 更新失败`)
@@ -1099,13 +1116,16 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       replace: {
         installedPath: clientPath,
         installedVersion: current.version,
-        // 关掉它这一步不跟取消走：已经开始关了，半路停下只会留下一个关了一半的客户端。
+        // 关掉它这一步只在请它退出之前看取消：已经开始关了，半路停下只会留下一个关了一半的客户端。
+        // 关完要不要换，安装模块会再看一次取消。
         beforeReplace: () => prepareMacosDesktopReplacement({
-          bundle: clientPath, name: definitions[tool].name, closeRunning: request.closeRunning,
+          bundle: clientPath, name: definitions[tool].name, closeRunning: request.closeRunning, signal,
           runProcess: (plan) => execute({ executable: plan.executable, argv: [...plan.argv] }, { env: environment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 8 * 1024 * 1024 }),
           uid: options.getuid?.() ?? process.getuid?.() ?? -1,
           ...options.quitMacosDesktopApp,
         }),
+        // 从挪开旧版起不再接受取消（11-18 F03）：接受了也停不下，界面会说「已取消」，装着的却是新版。
+        onReplaceStarting: () => cancellation.seal(installSealReason(tool)),
       },
     })
     return { unchanged: result.unchanged === true }
@@ -1211,7 +1231,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         const current = status(tool, before, winget)
         // 更新只在 Mac 上有：Windows 上点不到「可更新到 v…」，照旧当安装。
         if (current.installed && request?.update && platform === 'darwin') {
-          const { unchanged } = await updateOnMac(tool, current, request, report, cancellation.signal)
+          const { unchanged } = await updateOnMac(tool, current, request, report, cancellation)
           report('checking', '正在验证安装结果')
           const after = (await withUpdateOffers([status(tool, await inspect(), winget)]))[0]
           if (!after.installed) throw new Error(after.detectionError || '安装命令已结束，但未检测到客户端，请检查安装器结果后重试检测')
@@ -1288,7 +1308,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
   function cancelInstall(tool: ExternalToolId): InstallCancellationOutcome {
     return installCancellations.cancel(installKey(tool))
   }
-  function launch(tool: ExternalToolId): Promise<void> {
+  function launch(tool: ExternalToolId): Promise<ExternalClientLaunchResult> {
     if (!isExternalToolId(tool)) return Promise.reject(new Error('未知客户端'))
     const existing = launches.get(tool)
     if (existing) return existing
@@ -1301,18 +1321,20 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       const startedAt = now()
       // 只看要打开的这一个：没点的那几家跟这次打开无关，不该让人多等它们的检测和签名核对。
       // Windows 上验过并且通过、文件和版本都没变的不再现验（已知68，理由见 windowsExternalClientInventoryScript 上面）。
-      const inspection = await inspect({ only: tool, reuseVerifiedSignatures: platform === 'win32' })
+      const inspection = await inspect({ only: tool, reuseVerifiedSignatures: platform === 'win32', firstCopy: true })
       const inspectedAt = now()
       const client = inspection.clients.find((item) => item.tool === tool)
       if (!client) throw new Error(inspection.errors[tool] || '尚未检测到客户端，请先安装并重新检测')
       let prepareMs: number | undefined
-      if (platform === 'win32' && tool === 'claudeDesktop' && options.prepareClaudeDesktopLaunch) {
-        // 它要的 Claude Code 程序国内从官网下不动：先替它从 npm 镜像放好。放不成照常打开。
+      let result: ExternalClientLaunchResult = {}
+      if ((platform === 'win32' || platform === 'darwin') && tool === 'claudeDesktop' && options.prepareClaudeDesktopLaunch) {
+        // 它要的 Claude Code 程序国内从官网下不动：先替它放好（Windows 从 npm 镜像，Mac 从星芒的下载站）。放不成照常打开。
         const preparing = now()
-        await options.prepareClaudeDesktopLaunch({
+        const outcome = await options.prepareClaudeDesktopLaunch({
           path: client.path, running: client.running, isRunning: () => stillRunning(tool, client.path),
         }).catch(() => undefined)
         prepareMs = now() - preparing
+        result = buildExternalClientLaunchResult(outcome)
       }
       if (platform === 'win32') {
         const machinePaths = resolveMachinePaths()
@@ -1330,6 +1352,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       catch { /* 客户端已经交出去了：用时记不下也不能让这次打开报失败，不然客户再点一次就开出第二个窗口。 */ }
       try { options.onLaunched?.(tool, client.path) }
       catch { /* 同上：已经交出去了。 */ }
+      return result
     })
     launches.set(tool, launched)
     const settle = () => {

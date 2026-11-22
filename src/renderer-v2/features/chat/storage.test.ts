@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
+import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
+import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import { createConversation, createWorkspace, type ChatMessage, type ChatWorkspace } from './state'
-import { answerHistoryFlushRequests, autosaveDelay, autosaveMaxWaitMs, autosaveQuietMs, ChatStorageError, conversationLimitMessage, conversationPlainText, createHistoryWriter, flushChatHistory, registerHistoryFlusher, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, MAX_CONVERSATIONS, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText, runHistoryImport } from './storage'
+import { answerHistoryFlushRequests, autosaveDelay, autosaveMaxWaitMs, autosaveQuietMs, ChatStorageError, conversationLimitMessage, conversationExport, conversationPlainText, createHistoryWriter, flushChatHistory, registerHistoryFlusher, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, MAX_CONVERSATIONS, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText, runHistoryImport } from './storage'
 
 const scope = 'xm-account:7'
 const legacyKey = 'xingmang-ai-chat:v1:7'
@@ -86,7 +88,7 @@ describe('lossless chat history files', () => {
     expect(restored.state.conversations).toHaveLength(200)
     expect(files.api.writeHistory.mock.calls[0][0].keys).toHaveLength(200)
     const over = workspace(scope, 201)
-    expect(() => planHistoryWrite(over, null)).toThrow('聊天记录超过 200 个，这台电脑存不下，原来的记录没动')
+    expect(() => planHistoryWrite(over, null)).toThrow('聊天记录超过 200 个，本机无法保存，原有记录未作修改')
   })
 
   it('keeps images waiting in the composer as references, and refuses a malformed list', async () => {
@@ -97,6 +99,12 @@ describe('lossless chat history files', () => {
     const restored = await saveAndReopen(state, files)
     expect(restored.state.conversations[0].draftImages).toEqual(state.conversations[0].draftImages)
     expect(files.raw()).not.toContain('xingmang-asset://')
+    // 旧版本把同一张图的两份一起放进了输入框（R28-6），读回来只留一份，不然这条还是发不出去。
+    const copies = workspace()
+    const kept = state.conversations[0].draftImages ?? []
+    copies.conversations[0].draftImages = [...kept, ...kept]
+    const healed = await saveAndReopen(copies, memoryFiles())
+    expect(healed.state.conversations[0].draftImages).toEqual(state.conversations[0].draftImages)
     const broken = workspace()
     Object.assign(broken.conversations[0], { draftImages: 'not a list' })
     // Only that conversation is refused (and kept aside); the record as a whole still reads.
@@ -245,7 +253,7 @@ describe('lossless chat history files', () => {
     const before = files.raw()
     const restored = await loadChatHistory(files.api, memoryStorage(), scope)
     // 原因只进日志，上屏一律是同一句；超过上限那句照说（W24）。
-    expect(restored.warning).toBe(kind === 'conversations' ? '聊天记录超过 200 个，这台电脑存不下，原来的记录没动' : '以前的聊天记录暂时读不出来，原文件没动')
+    expect(restored.warning).toBe(kind === 'conversations' ? '聊天记录超过 200 个，本机无法保存，原有记录未作修改' : '历史聊天记录暂时无法读取，原文件未作修改')
     expect(files.api.logHistoryProblem).toHaveBeenCalledWith(expect.stringMatching(/^聊天记录读不出来，这一回不保存：.+/))
     expect(restored.exists).toBe(true)
     expect(restored.saved).toBeNull()
@@ -305,7 +313,7 @@ describe('lossless chat history files', () => {
     stored.conversations = stored.conversations.filter((file) => file.key !== 'conversation-0')
     const loaded = await loadChatHistory(files.api, memoryStorage(), scope)
     expect(loaded.warning).toBeUndefined()
-    // 文件已经没了，说「已经单独留着」就不对了；只记日志。
+    // 文件已经没了，说「已单独保留」就不对了；只记日志。
     expect(loaded.unreadable).toBeUndefined()
     expect(loaded.saved?.setAside).toBeUndefined()
     expect(files.api.logHistoryProblem).toHaveBeenCalledWith('聊天对话 c-conversation-0.json 不见了，已从记录里拿掉')
@@ -356,7 +364,7 @@ describe('lossless chat history files', () => {
     const storage = memoryStorage()
     storage.setItem(historyKey(scope), JSON.stringify(workspace()))
     const restored = await loadChatHistory({ readHistory: async () => { throw new Error('reparse point') } }, storage, scope)
-    expect(restored).toMatchObject({ exists: true, saved: null, warning: '以前的聊天记录暂时读不出来，原文件没动' })
+    expect(restored).toMatchObject({ exists: true, saved: null, warning: '历史聊天记录暂时无法读取，原文件未作修改' })
     expect(restored.state.conversations).toHaveLength(0)
   })
 
@@ -564,7 +572,7 @@ describe('localStorage history from earlier versions', () => {
     storage.setItem(historyKey(scope), '{not json')
     const files = memoryFiles()
     const loaded = await loadChatHistory(files.api, storage, scope)
-    expect(loaded.warning).toBe('以前的聊天记录暂时读不出来，原文件没动')
+    expect(loaded.warning).toBe('历史聊天记录暂时无法读取，原文件未作修改')
     expect(loaded).not.toHaveProperty('problem')
     expect(files.api.logHistoryProblem).toHaveBeenCalledWith(expect.stringMatching(/^以前存在本机的聊天记录读不出来，这一回不保存：.+/))
     expect(loaded.afterFirstSave).toBeUndefined()
@@ -582,7 +590,7 @@ describe('localStorage history from earlier versions', () => {
     storage.setItem(historyKey(scope), raw)
     storage.setItem.mockClear()
     const restored = readWorkspace(storage, scope)
-    expect(restored.warning).toBe(kind === 'conversations' ? '聊天记录超过 200 个，这台电脑存不下，原来的记录没动' : '以前的聊天记录暂时读不出来，原文件没动')
+    expect(restored.warning).toBe(kind === 'conversations' ? '聊天记录超过 200 个，本机无法保存，原有记录未作修改' : '历史聊天记录暂时无法读取，原文件未作修改')
     expect(restored.problem).toBeTruthy()
     expect(restored.exists).toBe(true)
     expect(storage.getItem(historyKey(scope))).toBe(raw)
@@ -903,7 +911,7 @@ describe('complete legacy and account-alias migration', () => {
     const restored = await loadChatHistory(files.api, storage, scope)
     expect(restored.warning).toBeUndefined()
     expect(restored.state.conversations).toHaveLength(202)
-    await expect(createHistoryWriter(files.api, restored.saved).save(restored.state)).rejects.toThrow('聊天记录超过 200 个，这台电脑存不下，原来的记录没动')
+    await expect(createHistoryWriter(files.api, restored.saved).save(restored.state)).rejects.toThrow('聊天记录超过 200 个，本机无法保存，原有记录未作修改')
     expect(files.raw()).toBeNull()
     expect(storage.getItem(historyKey('solov:7'))).not.toBeNull()
     expect(storage.getItem(historyKey('sub2api:7'))).not.toBeNull()
@@ -935,7 +943,20 @@ describe('moving history to another computer', () => {
     expect(exported).not.toContain('assetId')
     expect(exported).not.toContain('mayStillComplete')
     expect(exported).not.toContain('requestId')
-    expect(exported).toContain('[图片没有一起搬过来]')
+    expect(exported).toContain('[图片未随记录迁移]')
+  })
+
+  it('keeps the note that an answer was cut off, only on a finished answer and only with a known reason', () => {
+    const state = workspace(scope, 1)
+    state.conversations[0].messages = [
+      message(0),
+      message(1, { cutOff: 'length' }),
+      message(3, { cutOff: 'filtered' }),
+      message(5, { status: 'canceled', cutOff: 'length' }),
+      message(7, { cutOff: 'whatever' } as unknown as Partial<ChatMessage>),
+    ]
+    const [imported] = parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(state))))
+    expect(imported.messages.map((item) => item.cutOff)).toEqual([undefined, 'length', 'filtered', undefined, undefined])
   })
 
   it('leaves unsent draft images behind but keeps the typed draft and attached text files', () => {
@@ -969,8 +990,8 @@ describe('moving history to another computer', () => {
   it('rejects the whole import when one conversation is malformed', () => {
     const exported = JSON.parse(JSON.stringify(exportableConversations(workspace(scope, 2))))
     exported[1].messages[0].role = 'system'
-    expect(() => parseImportedConversations(exported)).toThrow('没有导入任何内容')
-    expect(() => parseImportedConversations([exported[0], exported[0]])).toThrow('没有导入任何内容')
+    expect(() => parseImportedConversations(exported)).toThrow('未导入任何内容')
+    expect(() => parseImportedConversations([exported[0], exported[0]])).toThrow('未导入任何内容')
     expect(() => parseImportedConversations(Array.from({ length: 201 }, () => exported[0]))).toThrow(ChatStorageError)
   })
 
@@ -1031,6 +1052,29 @@ describe('moving history to another computer', () => {
     expect(merged).toMatchObject({ added: 0, updated: 0, skipped: 0 })
     expect(merged.state.conversations).toEqual(expect.arrayContaining(state.conversations))
     expect(merged.state.conversations).toHaveLength(2)
+  })
+
+  // A09：旧电脑导出前在输入框里又打了几句、带了文件，消息没变。
+  it('brings in an unsent draft from the file when the messages match and this computer has none', () => {
+    const state = workspace(scope, 2)
+    state.conversations[0].messages = [message(0), message(1)]
+    const file = { name: '需求.md', size: 15, text: '第一版需求', truncated: false }
+    const drafted = { ...state.conversations[0], draft: '旧电脑上没发的那句', draftFiles: [file], updatedAt: state.conversations[0].updatedAt + 5000 }
+    const merged = mergeImportedConversations(state, [drafted])
+    expect(merged).toMatchObject({ added: 0, updated: 1, skipped: 0 })
+    const local = merged.state.conversations.find((conversation) => conversation.id === state.conversations[0].id)
+    expect(local).toMatchObject({ draft: '旧电脑上没发的那句', draftFiles: [file], updatedAt: state.conversations[0].updatedAt })
+    expect(local?.messages).toEqual(state.conversations[0].messages)
+    expect(merged.state.conversations).toHaveLength(2)
+    // The same file imported again changes nothing and adds no copy.
+    expect(mergeImportedConversations(merged.state, [drafted])).toMatchObject({ added: 0, updated: 0, skipped: 0 })
+    // A draft this computer already has wins; the file's draft does not overwrite it.
+    const typedHere = { ...state, conversations: state.conversations.map((conversation, index) => index === 0 ? { ...conversation, draft: '这台电脑上打的' } : conversation) }
+    const kept = mergeImportedConversations(typedHere, [drafted])
+    expect(kept).toMatchObject({ added: 0, updated: 0, skipped: 0 })
+    expect(kept.state.conversations.find((conversation) => conversation.id === state.conversations[0].id)?.draft).toBe('这台电脑上打的')
+    // A blank draft in the file brings nothing.
+    expect(mergeImportedConversations(state, [{ ...state.conversations[0], draft: '   ' }])).toMatchObject({ added: 0, updated: 0, skipped: 0 })
   })
 
   it('saves a diverged file copy beside this computer copy, once, and keeps updating that copy', () => {
@@ -1099,7 +1143,7 @@ describe('moving history to another computer', () => {
     expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, exported(oldComputer))).toEqual({ added: 0, updated: 1, skipped: 0 })
     const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
     expect(reopened.state.conversations).toHaveLength(1)
-    expect(reopened.state.conversations[0].messages.map((item) => item.content)).toEqual(['我的密钥 [密钥未保存] 用不了', 'content-1\n\n[图片没有一起搬过来]', '后来聊的', 'content-3'])
+    expect(reopened.state.conversations[0].messages.map((item) => item.content)).toEqual(['我的密钥 [密钥未保存] 用不了', 'content-1\n\n[图片未随记录迁移]', '后来聊的', 'content-3'])
     expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, exported(oldComputer))).toEqual({ added: 0, updated: 0, skipped: 0 })
   })
 
@@ -1137,7 +1181,7 @@ describe('moving history to another computer', () => {
   it('refuses to import over a record it cannot read', async () => {
     const files = memoryFiles()
     files.stores.set(scope, { index: 'not json', conversations: [] })
-    await expect(importConversationsIntoHistory(files.api, memoryStorage(), scope, [createConversation()])).rejects.toThrow('没有导入对话')
+    await expect(importConversationsIntoHistory(files.api, memoryStorage(), scope, [createConversation()])).rejects.toThrow('本次未导入对话')
     expect(files.api.writeHistory).not.toHaveBeenCalled()
   })
 
@@ -1204,8 +1248,19 @@ describe('moving history to another computer', () => {
     expect(text).toContain('我（')
     expect(text).toContain('AI（')
     expect(text).not.toContain('abcdef123456')
-    expect(text).toContain('[1 张图片，没有放进这个文件]')
-    expect(text).toContain('[没有回复成功：网络断了]')
+    expect(text).toContain('[1 张图片，未包含在此文件中]')
+    expect(text).toContain('[回复失败：网络断了]')
+  })
+  // 以前文件第一行和保存框里的文件名都是对话名原样（Mac 验收 R5）：自己改的名字、导进来的对话名都可能夹着密钥。
+  it('masks keys in the exported title and in the suggested file name', () => {
+    const relayKey = `sk-${'fake-relay-'.repeat(3)}value`
+    const conversation = { ...createConversation(undefined, 'c'), title: `测试 ${relayKey}`, renamed: true, messages: [message(0, { content: '好的', createdAt: 0 })] }
+    expect(conversationPlainText(conversation).startsWith('测试 [密钥未保存]\n')).toBe(true)
+    const exported = conversationExport(conversation)
+    expect(exported.title).toBe('测试 [密钥未保存]')
+    expect(exported.text).toBe(conversationPlainText(conversation))
+    expect(JSON.stringify(exported)).not.toContain('fake-relay')
+    expect(conversationPlainText({ ...conversation, title: '' }).startsWith('新对话\n')).toBe(true)
   })
 })
 
@@ -1256,7 +1311,7 @@ describe('reading an unreadable record again', () => {
   it('keeps every conversation past the limit so saving asks to delete some rather than dropping any', () => {
     const merged = mergeSessionIntoHistory(workspace(scope, 200), session(['said-meanwhile'], 'said-meanwhile'))
     expect(merged.conversations).toHaveLength(201)
-    expect(() => planHistoryWrite(merged, null)).toThrow('聊天记录超过 200 个，这台电脑存不下，原来的记录没动')
+    expect(() => planHistoryWrite(merged, null)).toThrow('聊天记录超过 200 个，本机无法保存，原有记录未作修改')
   })
 })
 
@@ -1344,5 +1399,128 @@ describe('saved phrases in chat history', () => {
     const loaded = { ...workspace(scope, 1), phrases: ['原来的一句', '两边都有'] }
     const session = { ...createWorkspace(scope), phrases: ['新存的一句', '两边都有'] }
     expect(mergeSessionIntoHistory(loaded, session).phrases).toEqual(['新存的一句', '两边都有', '原来的一句'])
+  })
+})
+
+describe('videos made in a conversation', () => {
+  const assetId = 'v'.repeat(43)
+  const clip = { assetId, thumbnailUrl: assetThumbnailUrl(assetId, 'video'), width: 1280, height: 720, durationSeconds: 5 }
+  function withReply(patch: Partial<ChatMessage>): ChatWorkspace {
+    const state = workspace()
+    state.conversations[0].messages = [message(0), message(1, { content: '', reasoning: '', ...patch })]
+    return state
+  }
+  async function reopenedReply(state: ChatWorkspace) { return (await saveAndReopen(state)).state.conversations[0].messages[1] }
+
+  it('keeps a finished clip across a reload and points its thumbnail at the current thumbnail version', async () => {
+    const reply = await reopenedReply(withReply({ video: { clip: { ...clip, thumbnailUrl: `xingmang-asset://thumb/v1/video/${assetId}` } } }))
+    expect(reply.video).toEqual({ clip })
+    expect(reply.status).toBe('complete')
+    expect(reply.requestId).toBeUndefined()
+  })
+
+  it('reopens a video that was still being made as pending with its request id, so the paid job can be picked back up', async () => {
+    const files = memoryFiles()
+    const state = withReply({ status: 'pending', requestId: 'runtime-request', video: { requestId: 'request-video-1', unrecorded: true } })
+    await createHistoryWriter(files.api, null).save(state)
+    // The runtime id is never stored; the one inside video is what survives.
+    expect(files.raw()).toContain('request-video-1')
+    expect(files.raw()).not.toContain('runtime-request')
+    const reply = (await loadChatHistory(files.api, memoryStorage(), scope)).state.conversations[0].messages[1]
+    expect(reply.status).toBe('pending')
+    expect(reply.requestId).toBe('request-video-1')
+    expect(reply.video).toEqual({ requestId: 'request-video-1', unrecorded: true })
+  })
+
+  it('keeps the request id of a failed video so regenerating can ask the main process for it first', async () => {
+    const reply = await reopenedReply(withReply({ status: 'error', error: '暂时查不到进度', video: { requestId: 'request-video-2' } }))
+    // The id is still there, so the page treats it as waiting and resumes it on open instead of leaving a paid clip behind.
+    expect(reply.status).toBe('pending')
+    expect(reply.requestId).toBe('request-video-2')
+  })
+
+  it('does not treat an unconfirmed submission as still running and keeps its warning', async () => {
+    const settled = await reopenedReply(withReply({ status: 'error', error: '没出成', video: { requestId: 'request-video-3', unconfirmed: true } }))
+    expect(settled.status).toBe('error')
+    expect(settled.error).toBe('没出成')
+    expect(settled.requestId).toBeUndefined()
+    expect(settled.video).toEqual({ requestId: 'request-video-3', unconfirmed: true })
+    // The app closed before the reply was settled: say why instead of the generic unfinished-request line.
+    const interrupted = await reopenedReply(withReply({ status: 'pending', video: { requestId: 'request-video-3', unconfirmed: true } }))
+    expect(interrupted.status).toBe('error')
+    expect(interrupted.error).toBe(aiVideoUnconfirmedSubmissionMessage)
+  })
+
+  it('drops a video it cannot read without losing the conversation', () => {
+    const cases: Array<[unknown, unknown, string]> = [
+      [{ clip: { assetId: 'short', thumbnailUrl: clip.thumbnailUrl } }, {}, 'complete'],
+      [{ clip: { ...clip, thumbnailUrl: 'https://example.invalid/poster.png' } }, {}, 'complete'],
+      [{ clip: { ...clip, thumbnailUrl: assetThumbnailUrl('w'.repeat(43), 'video') } }, {}, 'complete'],
+      [{ requestId: '../../other-account' }, {}, 'complete'],
+      [{ requestId: 'r'.repeat(65) }, {}, 'complete'],
+      ['not-an-object', undefined, 'complete'],
+    ]
+    for (const [stored, expected, status] of cases) {
+      const state = withReply({})
+      Object.assign(state.conversations[0].messages[1], { video: stored })
+      const parsed = parseHistorySnapshot(snapshotOf(state), scope)
+      expect(parsed.unreadable).toHaveLength(0)
+      const reply = parsed.state.conversations[0].messages[1]
+      expect(reply.video).toEqual(expected)
+      expect(reply.status).toBe(status)
+      expect(reply.requestId).toBeUndefined()
+    }
+  })
+
+  it('ignores a video on a message the user sent', () => {
+    const state = workspace()
+    Object.assign(state.conversations[0].messages[0], { video: { requestId: 'request-video-4' } })
+    const sent = parseHistorySnapshot(snapshotOf(state), scope).state.conversations[0].messages[0]
+    expect(sent.video).toBeUndefined()
+    expect(sent.status).toBe('complete')
+  })
+
+  it('remembers the video mode with its shape and length, and drops values the composer cannot offer', async () => {
+    const state = workspace()
+    state.conversations[0].settings = { ...state.conversations[0].settings, mode: 'video', model: 'grok-imagine-video-1.5', videoAspect: '9:16', videoSeconds: 8 }
+    expect((await saveAndReopen(state)).state.conversations[0].settings).toMatchObject({ mode: 'video', model: 'grok-imagine-video-1.5', videoAspect: '9:16', videoSeconds: 8 })
+    for (const bad of [{ videoAspect: '4:3' }, { videoSeconds: 99 }, { videoSeconds: 2.5 }, { videoSeconds: '5' }, { videoSeconds: 0 }]) {
+      const odd = workspace()
+      Object.assign(odd.conversations[0].settings, { mode: 'video' }, bad)
+      const settings = parseHistorySnapshot(snapshotOf(odd), scope).state.conversations[0].settings
+      expect(settings.mode).toBe('video')
+      expect(settings.videoAspect).toBeUndefined()
+      expect(settings.videoSeconds).toBeUndefined()
+    }
+  })
+
+  it('leaves videos and their request ids behind when moving to another computer, and says a clip stayed', () => {
+    const state = withReply({ video: { clip } })
+    state.conversations[0].messages.push(message(2), message(3, { content: '', status: 'pending', requestId: 'request-video-5', video: { requestId: 'request-video-5' } }))
+    const exported = JSON.parse(JSON.stringify(exportableConversations(state)))
+    const text = JSON.stringify(exported)
+    expect(text).not.toContain(assetId)
+    expect(text).not.toContain('request-video-5')
+    expect(text).not.toContain('"video"')
+    expect(exported[0].messages[1].content).toBe('[视频未随记录迁移]')
+    // A job that was still running has nothing to show on the other computer: no note, and it arrives as stopped.
+    expect(exported[0].messages[3].content).toBe('')
+    const [imported] = parseImportedConversations(exported)
+    expect(imported.messages.map((item) => item.status)).toEqual(['complete', 'complete', 'complete', 'canceled'])
+    expect(imported.messages.some((item) => item.video || item.requestId)).toBe(false)
+  })
+
+  it('does not accept a video or a request id from an imported file', () => {
+    const exported = JSON.parse(JSON.stringify(exportableConversations(withReply({}))))
+    exported[0].messages[1].video = { requestId: 'someone-elses-request' }
+    const [imported] = parseImportedConversations(exported)
+    expect(imported.messages[1].video).toBeUndefined()
+    expect(imported.messages[1].requestId).toBeUndefined()
+    expect(imported.messages[1].status).toBe('canceled')
+  })
+
+  it('mentions the video in the exported text file', () => {
+    const conversation = { ...createConversation(), title: '橘猫', messages: [message(0, { content: '一只橘猫在雨里走' }), message(1, { content: '', video: { clip } })] }
+    expect(conversationPlainText(conversation)).toContain('[1 段视频，未包含在此文件中]')
   })
 })

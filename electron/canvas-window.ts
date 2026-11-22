@@ -69,7 +69,8 @@ import type { AiMediaAssetService } from './ai-media-asset-service'
 import type { CanvasRunService } from './canvas-run-service'
 import { parseCanvasRunPreparationCompletion } from './canvas-run-preparations'
 import type { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
-import { findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore } from './canvas-project-store'
+import { findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore, type CanvasStoredProjectSummary } from './canvas-project-store'
+import type { CanvasProjectListEntry } from './ipc-contract'
 import { claimCanvasDefaultProjectFolder, describeCanvasDefaultProjectFolderFailure, releaseCanvasDefaultProjectFolder, releaseCanvasDefaultProjectFolderTree } from './canvas-default-project-folder'
 import { findCanvasRunAssetReferences } from './canvas-asset-references'
 import type { CanvasProjectAssetContext, CanvasProjectAssetManager } from './canvas-project-asset-manager'
@@ -137,6 +138,7 @@ export const canvasHostSaveProjectChannel = canvasHostChannels.saveProject
 export const canvasHostRenameProjectChannel = canvasHostChannels.renameProject
 export const canvasHostDuplicateProjectChannel = canvasHostChannels.duplicateProject
 export const canvasHostSetProjectArchivedChannel = canvasHostChannels.setProjectArchived
+export const canvasHostCloseProjectChannel = canvasHostChannels.closeProject
 export const canvasHostCreateProjectInDefaultFolderChannel = canvasHostChannels.createProjectInDefaultFolder
 export const canvasHostRelinkProjectFolderChannel = canvasHostChannels.relinkProjectFolder
 export const canvasHostDeleteProjectChannel = canvasHostChannels.deleteProject
@@ -202,6 +204,33 @@ export function importedCanvasProjectName(workflowName: unknown, filePath: strin
   const named = typeof workflowName === 'string' ? cleaned(workflowName) : ''
   if (named) return named
   return cleaned(path.basename(filePath).replace(/\.xingcanvas$/i, '')) || '导入的项目'
+}
+
+// 主窗口「创作」那一列最多列这么多个画布项目：没归档的项目本来就封顶 100 个（canvas-project-store.ts）。
+const maximumListedCanvasProjects = 100
+
+/**
+ * What the main window's 「创作」 list gets for the canvas projects: id, name
+ * and last-changed time, newest first, archived ones left out. Project files
+ * are written on the canvas page's behalf, so the name is cut down to one
+ * line of plain text again here and a time that does not parse sorts last
+ * instead of failing the whole list.
+ */
+export function toCanvasProjectList(projects: readonly Pick<CanvasStoredProjectSummary, 'id' | 'name' | 'updatedAt' | 'archivedAt'>[]): CanvasProjectListEntry[] {
+  const listed: CanvasProjectListEntry[] = []
+  for (const project of projects) {
+    if (project.archivedAt || !/^[a-f0-9-]{36}$/.test(project.id)) continue
+    const name = project.name.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 128).trim()
+    const updatedAt = Date.parse(project.updatedAt)
+    listed.push({ id: project.id, name: name || '未命名项目', updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : 0 })
+  }
+  return listed.sort((left, right) => right.updatedAt - left.updatedAt).slice(0, maximumListedCanvasProjects)
+}
+
+/** The project id the main window names when it asks for a project to be opened (I5). */
+export function parseCanvasProjectListId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[a-f0-9-]{36}$/.test(value)) throw new Error('画布项目标识格式错误')
+  return value
 }
 
 export interface CanvasWindowControllerOptions {
@@ -278,6 +307,22 @@ export interface CanvasWindowController {
    * project is open.
    */
   openAssetLibrary(): Promise<void>
+  /**
+   * The current account's projects for the main window's 「创作」 list: id, name
+   * and last-changed time of the ones not archived, newest first. Nothing a
+   * project contains leaves this process, and the canvas page learns nothing
+   * from the call.
+   */
+  listProjects(): Promise<CanvasProjectListEntry[]>
+  /**
+   * Shows the canvas on one of the current account's projects (the main
+   * window's 「打开画布」). The id comes from the main window and is only used
+   * once it names a project of this account that is not archived. A canvas
+   * already on that project is focused; one on anything else goes through its
+   * own close confirmation first, and the call resolves false when the user
+   * stayed there. Calls run one at a time, in line with openProjectFile().
+   */
+  openProject(projectId: unknown): Promise<boolean>
   /** Applies the global application theme without exposing the settings record to the canvas renderer. */
   setTheme(theme: AppTheme): void
   setAppearance(appearance: CanvasAppearance): void
@@ -292,6 +337,16 @@ export interface CanvasWindowController {
   requestCloseForQuit(): Promise<boolean>
   /** Closes the canvas window if one is open; a no-op otherwise. */
   closeIfOpen(): void
+  /**
+   * Destroys the canvas window for an update installer that is about to end
+   * the process, but keeps the host: the installer may still fail to start
+   * (UAC declined, the package gone, the macOS handoff failing) and leave the
+   * app running. Until resumeAfterAbortedQuit() the canvas cannot be opened
+   * and a window opened in flight does not hold the installer's quit.
+   */
+  suspendForQuit(): void
+  /** The quit suspendForQuit() stood aside for did not happen: the canvas opens again. */
+  resumeAfterAbortedQuit(): void
   /** Removes every IPC handler this controller registered. */
   dispose(): void
 }
@@ -414,6 +469,9 @@ export function createCanvasWindowController(
   }
   let currentAccountUserId: number | null | undefined
   let disposed = false
+  // 更新安装前关掉画布用的（suspendForQuit）。不能像 dispose 那样拆掉宿主：安装程序没起来时星芒照常开着，
+  // 拆掉了画布就再也打不开，只能重启星芒（11-18 复核 U02）。
+  let suspendedForQuit = false
   // A renderer without its host preload, a failed main-frame load, or a gone
   // renderer process cannot answer the close handshake. Keep this separate
   // from `disposed`: disposal is an intentional app shutdown, while this flag
@@ -427,9 +485,15 @@ export function createCanvasWindowController(
   } | null = null
   const pendingProjects = new Map<number, PendingCanvasProjectImport>()
   const activeProjects = new Map<number, { userId: number; projectId: string }>()
+  // 画布窗口每换上一张新页面（崩溃或卡死后的重新加载等）就加一，见 createWindow 里的 did-navigate。
+  let canvasPageLoads = 0
   const generationAdmission = new CanvasGenerationAdmission()
   const byteUploadAdmission = new CanvasByteUploadAdmission()
   let lastCanvasNotificationAt = Number.NEGATIVE_INFINITY
+
+  function hostClosed(): boolean {
+    return disposed || suspendedForQuit
+  }
 
   function assertCanvasAccountId(userId: number | null): number | null {
     if (userId !== null && (!Number.isSafeInteger(userId) || userId <= 0)) {
@@ -482,7 +546,7 @@ export function createCanvasWindowController(
     if (!pending) return
     pendingClose = null
     clearTimeout(pending.timer)
-    if (!result && !disposed && !pending.window.isDestroyed()) {
+    if (!result && !hostClosed() && !pending.window.isDestroyed()) {
       try {
         pending.window.webContents.send(canvasHostChannels.closeCancelled, { requestId: pending.requestId })
         pending.window.show()
@@ -551,6 +615,12 @@ export function createCanvasWindowController(
     const active = activeProjects.get(ownerId)
     if (!active || active.userId !== userId) throw new Error('请先选择或新建一个画布项目')
     return active.projectId
+  }
+
+  // 打开、新建项目要等读盘或选文件夹，这中间画布崩了、换上了新页面的话，新页面停在项目中心，
+  // 不能把旧页面开的项目记到它头上：只在发起时那张页面还在时才记。
+  function rememberOpenProject(ownerId: number, pageLoad: number, userId: number, projectId: string): void {
+    if (pageLoad === canvasPageLoads) activeProjects.set(ownerId, { userId, projectId })
   }
 
   async function activeAssetContext(ownerId: number, userId: number) {
@@ -718,6 +788,7 @@ export function createCanvasWindowController(
   registerCanvasHandler(canvasHostCreateProjectChannel, async (event, nameInput, contentInput, optionsInput) => {
     if (!options.projects) throw new Error('项目自动保存能力不可用')
     const userId = authenticatedCanvasUserId()
+    const pageLoad = canvasPageLoads
     // Checked before the folder dialog, so a malformed copy request does not
     // make the user pick a folder first and then fail.
     const initial = parseCanvasCreateProjectContent(contentInput, optionsInput)
@@ -737,16 +808,17 @@ export function createCanvasWindowController(
       ? await options.projects.createWithContent(userId, name, result.filePaths[0], initial.workflowContent, initial.sourceProjectId)
       : await options.projects.create(userId, name, result.filePaths[0])
     assertCanvasUserUnchanged(userId)
-    activeProjects.set(event.sender.id, { userId, projectId: created.project.id })
+    rememberOpenProject(event.sender.id, pageLoad, userId, created.project.id)
     return created
   })
 
   registerCanvasHandler(canvasHostOpenProjectChannel, async (event, projectIdInput) => {
     if (!options.projects) throw new Error('项目自动保存能力不可用')
     const userId = authenticatedCanvasUserId()
+    const pageLoad = canvasPageLoads
     const opened = await options.projects.open(userId, requiredCanvasString(projectIdInput, '画布项目标识', 64))
     assertCanvasUserUnchanged(userId)
-    activeProjects.set(event.sender.id, { userId, projectId: opened.project.id })
+    rememberOpenProject(event.sender.id, pageLoad, userId, opened.project.id)
     return opened
   })
 
@@ -800,6 +872,7 @@ export function createCanvasWindowController(
     if (!options.projects) throw new Error('项目自动保存能力不可用')
     if (!options.defaultProjectsDirectory) throw new Error('默认项目文件夹不可用，请点「换个位置创建…」自己选文件夹')
     const userId = authenticatedCanvasUserId()
+    const pageLoad = canvasPageLoads
     const name = requiredCanvasString(nameInput, '画布项目名称', 128)
     let directory: string
     try {
@@ -815,7 +888,7 @@ export function createCanvasWindowController(
       throw error
     }
     assertCanvasUserUnchanged(userId)
-    activeProjects.set(event.sender.id, { userId, projectId: created.project.id })
+    rememberOpenProject(event.sender.id, pageLoad, userId, created.project.id)
     return created
   })
 
@@ -919,6 +992,20 @@ export function createCanvasWindowController(
     const active = activeProjects.get(event.sender.id)
     if (archivedInput && active?.userId === userId && active.projectId === projectId) activeProjects.delete(event.sender.id)
     return updated
+  })
+
+  // 画布回到项目中心（Mac 验收 R3）：内核存完最后一次、项目中心出来之前说一声，这里就不再记着这个窗口开着那个项目。
+  // 不清的话 projectCenterAssetLibrary 还当项目开着，主窗口「看做过的图」叫出来的素材库列的是刚离开那个项目的素材。
+  // 只收项目标识，只清这个窗口自己记着的、正是当前账号这个项目的那一条，别的一律不动、回 false；清之前不 await，
+  // 紧跟着发来的打开项目一定排在它后面。被投毒的画布拿它只能让主进程忘掉自己开着的项目：之后项目里的素材、运行、
+  // 保存都要先重新打开项目；没开项目时那份只读图片，刚打开画布时本来就能看（「素材库放开」），没多给任何东西。
+  registerCanvasHandler(canvasHostCloseProjectChannel, (event, projectIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
+    const active = activeProjects.get(event.sender.id)
+    if (!active || active.userId !== userId || active.projectId !== projectId) return false
+    activeProjects.delete(event.sender.id)
+    return true
   })
 
   registerCanvasHandler(canvasHostPrepareGroupChannel, async (_event, groupInput) => {
@@ -1355,10 +1442,8 @@ export function createCanvasWindowController(
     const workflowContent = requiredCanvasText(contentInput, '画布项目工作流', maximumSavedFileBytes)
     const parsed = parseCanvasProjectWorkflow(workflowContent)
     const context = await activeAssetContext(event.sender.id, userId)
-    const imageStore = context?.images ?? options.aiAssets
-    const sources = await readCanvasProjectAssetSources(parsed.assetIds, (assetId) => imageStore.readOwned(userId, assetId))
-    assertCanvasUserUnchanged(userId)
-    const projectContent = buildCanvasProjectPackage(workflowContent, sources)
+    // #1368 第 14 条：先问存到哪里再读图。原来先把项目里的图全读进内存、打成包才弹保存框，
+    // 图多的项目点了「导出」要干等一会儿才有反应，点了取消也白读一遍。
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: SaveDialogOptions = {
       title: '画布：导出项目', defaultPath: withCanvasProjectExtension(suggestedName),
@@ -1367,6 +1452,10 @@ export function createCanvasWindowController(
     const result = parentWindow ? await dialog.showSaveDialog(parentWindow, dialogOptions) : await dialog.showSaveDialog(dialogOptions)
     if (result.canceled || !result.filePath) return null
     assertCanvasUserUnchanged(userId)
+    const imageStore = context?.images ?? options.aiAssets
+    const sources = await readCanvasProjectAssetSources(parsed.assetIds, (assetId) => imageStore.readOwned(userId, assetId))
+    assertCanvasUserUnchanged(userId)
+    const projectContent = buildCanvasProjectPackage(workflowContent, sources)
     await writeAtomicSafeUtf8File(result.filePath, projectContent, '画布项目导出文件')
     return { savedPath: result.filePath }
   })
@@ -1501,7 +1590,7 @@ export function createCanvasWindowController(
   // 文件先读、先查，坏文件不会让开着的画布关掉。画布开着就先走它自己的关闭确认：有任务在跑会问，
   // 没有就存好直接关，换项目不丢正在画的东西；用户在那里点了取消，就留在原来的项目上，这个文件不导入。
   async function openLaunchedProjectFile(filePath: string): Promise<boolean> {
-    if (disposed) throw new Error('画布宿主已关闭')
+    if (hostClosed()) throw new Error('画布宿主已关闭')
     const userId = authenticatedCanvasUserId()
     if (!options.projects || !options.projectAssets || !options.defaultProjectsDirectory) throw new Error('导入成新项目暂时不可用，请重新选择文件')
     const parsed = await readLaunchedCanvasProjectFile(filePath)
@@ -1511,13 +1600,13 @@ export function createCanvasWindowController(
       if (canvasWindow && !canvasWindow.isDestroyed()) await open()
       return false
     }
-    if (disposed) return false
+    if (hostClosed()) return false
     assertCanvasUserUnchanged(userId)
     const pending = { parsed, projectName: importedCanvasProjectName(parsed.workflow.name, filePath) }
     const imported = options.accountWork
       ? await options.accountWork.run(() => importAsNewProject(userId, pending))
       : await importAsNewProject(userId, pending)
-    if (disposed) return false
+    if (hostClosed()) return false
     if (pendingOpen) await pendingOpen.catch(() => undefined)
     if (canvasWindow && !canvasWindow.isDestroyed()) {
       // 导入这一会儿里又从主窗口打开了画布：不再关它，新项目就在项目中心里。
@@ -1535,6 +1624,61 @@ export function createCanvasWindowController(
 
   function openProjectFile(filePath: string): Promise<boolean> {
     const next = projectFileQueue.then(() => openLaunchedProjectFile(filePath))
+    projectFileQueue = next.catch(() => undefined)
+    return next
+  }
+
+  // 主窗口「创作」左边那一列（融合第 1 步）。只交出编号、名字和最后改动的时间：名字是画布页面写的，
+  // 存的时候已经卡过长度、不许有控制字符（canvas-project-store.ts 的 normalizedProjectName），这里再收一遍，
+  // 主窗口只把它当文字显示。归档的不列，跟项目中心首页一样；条数照没归档项目的上限封顶。
+  async function listProjects(): Promise<CanvasProjectListEntry[]> {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const projects = await options.projects.list(userId)
+    assertCanvasUserUnchanged(userId)
+    return toCanvasProjectList(projects)
+  }
+
+  // 主窗口点了某个项目的「打开画布」。画布这边一个新能力都不加：没开着就带 ?project= 开（双击项目文件走的同一条），
+  // 开着的正是这个项目就把窗口拿到前面，开着别的（或者停在项目中心）先走它自己的关闭确认再重新开。
+  // 编号是主窗口给的，先在这个账号的项目表里找到、而且没归档才用（I5）；找不到就报错，不带着它去开窗口。
+  async function openStoredProject(projectIdInput: unknown): Promise<boolean> {
+    if (hostClosed()) throw new Error('画布宿主已关闭')
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const projectId = parseCanvasProjectListId(projectIdInput)
+    const userId = authenticatedCanvasUserId()
+    const known = (await options.projects.list(userId)).some((project) => project.id === projectId && !project.archivedAt)
+    assertCanvasUserUnchanged(userId)
+    if (!known) throw new Error('这个画布项目找不到了，可能已经在画布里删掉或归档')
+    if (pendingOpen) await pendingOpen.catch(() => undefined)
+    if (canvasWindow && !canvasWindow.isDestroyed()) {
+      const active = activeProjects.get(canvasWindow.webContents.id)
+      if (active?.userId === userId && active.projectId === projectId) {
+        await open()
+        return true
+      }
+      if (!await requestClose()) {
+        if (canvasWindow && !canvasWindow.isDestroyed()) await open()
+        return false
+      }
+    }
+    if (hostClosed()) return false
+    assertCanvasUserUnchanged(userId)
+    if (pendingOpen) await pendingOpen.catch(() => undefined)
+    if (canvasWindow && !canvasWindow.isDestroyed()) {
+      // 关掉那一会儿里又从别处打开了画布：不再关它一次，项目就在项目中心里。
+      await open()
+      return true
+    }
+    pendingOpen = createWindow({ projectId }).finally(() => {
+      pendingOpen = null
+    })
+    await pendingOpen
+    return true
+  }
+
+  function openProject(projectId: unknown): Promise<boolean> {
+    const next = projectFileQueue.then(() => openStoredProject(projectId))
     projectFileQueue = next.catch(() => undefined)
     return next
   }
@@ -1624,7 +1768,7 @@ export function createCanvasWindowController(
     })
     canvasCrashRecovery = crashRecovery
     // 画布卡死（页面死循环、长任务）不会崩，render-process-gone 不来，窗口只是不动，点 × 也只是白等关闭确认。
-    // 跟主窗口一样弹「界面没有响应」，字是 yoyo 2026-11-11 照决定单第六节批的（崩溃恢复.md KR-2）。
+    // 跟主窗口一样弹「界面无响应」，字是 yoyo 2026-11-11 照决定单第六节批的（崩溃恢复.md KR-2）。
     // 选「重新加载」先结束卡住的进程：只换地址的话，新页面还得那个卡住的进程来接（Electron 文档
     // forcefullyCrashRenderer 一节）。进程没了走下面的 render-process-gone，在那里重新加载，
     // 不记成画布崩了一次，也不占自动重载的次数。
@@ -1632,8 +1776,8 @@ export function createCanvasWindowController(
     const responsiveness = createWindowResponsivenessGuard({
       prompt: async (signal) => {
         const result = await dialog.showMessageBox(window, {
-          type: 'warning', title: '界面没有响应', message: '无限画布暂时没有响应。',
-          detail: '可以再等一会儿，画布通常会自己恢复。重新加载只会重启画布，正在进行的安装、下载和已保存的设置都不受影响，但画布上还没保存的改动会丢失。',
+          type: 'warning', title: '界面无响应', message: '无限画布暂时无响应。',
+          detail: '可稍候片刻，画布通常会自动恢复。重新加载仅会重启画布，正在进行的安装、下载和已保存的设置均不受影响，但画布上尚未保存的改动将丢失。',
           buttons: ['继续等待', '重新加载'], defaultId: 0, cancelId: 0, signal,
         })
         return result.response === 1 ? 'reload' : 'wait'
@@ -1692,7 +1836,7 @@ export function createCanvasWindowController(
       // There is no bridge available to verify/save state after a preload
       // failure. Let Electron close the isolated window instead of trapping
       // the user behind a timeout and an unusable browser-demo surface.
-      if (disposed || rendererUnavailable || !rendererReady || (pendingClose?.window === window && pendingClose.authorized)) return
+      if (hostClosed() || rendererUnavailable || !rendererReady || (pendingClose?.window === window && pendingClose.authorized)) return
       event.preventDefault()
       void requestClose()
     })
@@ -1783,7 +1927,7 @@ export function createCanvasWindowController(
       rendererUnavailable = true
       if (pendingClose?.window === window) finishPendingClose(false, '画布渲染进程已退出，无法确认项目保存')
       if (endedForHangReload) {
-        // 用户在「界面没有响应」里点了重新加载，进程是这边结束的，不是崩溃。
+        // 用户在「界面无响应」里点了重新加载，进程是这边结束的，不是崩溃。
         endedForHangReload = false
         options.runtimeLog.log('warn', 'canvas', 'process.ended-for-reload', '已结束卡住的画布界面进程，重新加载', {
           reason: details.reason,
@@ -1811,6 +1955,19 @@ export function createCanvasWindowController(
       rendererUnavailable = false
       if (pendingClose?.window === window) finishPendingClose(false, '画布页面已重新加载，请重新确认关闭')
     })
+    // 画布崩溃或卡死后重新加载出来的是一张新页面，停在项目中心，还没开任何项目。不清这个窗口记着的项目的话，
+    // projectCenterAssetLibrary 还当旧页面那个项目开着，主窗口「看做过的图」叫出来的素材库列的是旧项目的素材。
+    // did-navigate fires only once a new document has committed in the main
+    // frame; same-document route changes (the kernel's history router) do not
+    // emit it, and a custom-scheme page never comes back from the back/forward
+    // cache. did-start-loading would be wrong here: it fires as a navigation
+    // begins (and for subframe loads), while the page that opened the project
+    // may still be the one that stays, and forgetting its project would make
+    // every autosave after that refused.
+    window.webContents.on('did-navigate', () => {
+      canvasPageLoads += 1
+      activeProjects.delete(senderId)
+    })
 
     try {
       // Only the first load opens the project; a crash reload above rebuilds the URL without it.
@@ -1824,7 +1981,7 @@ export function createCanvasWindowController(
   }
 
   async function open(): Promise<void> {
-    if (disposed) throw new Error('画布宿主已关闭')
+    if (hostClosed()) throw new Error('画布宿主已关闭')
     if (canvasWindow && !canvasWindow.isDestroyed()) {
       if (canvasWindow.isMinimized()) canvasWindow.restore()
       canvasWindow.show()
@@ -1841,7 +1998,7 @@ export function createCanvasWindowController(
   }
 
   async function openAssetLibrary(): Promise<void> {
-    if (disposed) throw new Error('画布宿主已关闭')
+    if (hostClosed()) throw new Error('画布宿主已关闭')
     if (pendingOpen) await pendingOpen.catch(() => undefined)
     if (canvasWindow && !canvasWindow.isDestroyed()) {
       await open()
@@ -1858,6 +2015,8 @@ export function createCanvasWindowController(
     open,
     openProjectFile,
     openAssetLibrary,
+    listProjects,
+    openProject,
     setTheme(theme) {
       currentTheme = theme
       currentAppearance = { ...currentAppearance, theme }
@@ -1877,6 +2036,16 @@ export function createCanvasWindowController(
     requestCloseForQuit,
     closeIfOpen() {
       void requestClose()
+    },
+    suspendForQuit() {
+      if (disposed) return
+      suspendedForQuit = true
+      finishPendingClose(false)
+      if (canvasWindow && !canvasWindow.isDestroyed()) canvasWindow.destroy()
+      canvasWindow = null
+    },
+    resumeAfterAbortedQuit() {
+      suspendedForQuit = false
     },
     dispose() {
       disposed = true

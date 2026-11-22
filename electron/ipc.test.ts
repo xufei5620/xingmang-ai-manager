@@ -8,7 +8,7 @@ import { mergeAppSettings, type AppSettings, type AppSettingsUpdate } from './ap
 import type { NativeConfigSaveResult } from './config-files'
 import type { ConnectionCheckResult } from './connection-check'
 import type { DiagnosticFixKind } from './diagnostic-fixes'
-import type { NewApiClientService } from './new-api-client'
+import type { NewApiClientService, NewApiPasswordChangeOutcome } from './new-api-client'
 import { ipcInvokeChannels, type AccountKeysPage } from './ipc-contract'
 import { ipcChannelPolicies } from './ipc-channel-policy'
 import { listedProviderSessionProviders, providerSessionProviders } from './provider-sessions'
@@ -22,10 +22,14 @@ import { DEFAULT_CODEX_MODEL } from './cli-model-defaults'
 import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { XINGMANG_AI_SKILL_KEY_NAME, XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
-import { noteRequestDiagnostics } from './request-diagnostics'
+import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
+import { passwordChangeUnconfirmedMessage } from './password-change-unconfirmed'
 import { PaymentCheckoutRejected } from './payment-window'
 import { assetThumbnailUrl } from './asset-thumbnail'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
+import { AiAnswerCutOffError, aiAnswerCutOffMessages } from './ai-answer-cut-off'
+import { videoStudioPlanTooLongMessage } from './video-studio-plan'
+import type { AiVideoProgressObserver } from './ai-video-service'
 import type { AiStoredAudioAsset } from './ai-audio-asset-store'
 
 const electronMocks = vi.hoisted(() => ({
@@ -142,7 +146,7 @@ function serviceStub(): SystemService {
     cleanInstallLeftoversNow: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
     cancelExternalClientInstall: vi.fn(() => ({ cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' })),
-    launchExternalClient: vi.fn(async () => undefined),
+    launchExternalClient: vi.fn(async () => ({})),
     switchExternalClientSource: vi.fn(async (tool, target) => ({ tool, target, outcome: 'switched' as const, backups: [], message: '已切回官方账号' })),
   }
 }
@@ -208,6 +212,7 @@ function accountServiceStub(): NewApiClientService {
     revealKey: vi.fn() as never,
     createKey: vi.fn(async () => undefined),
     updateKey: vi.fn(async () => undefined),
+    enableKey: vi.fn(async () => undefined),
     changePassword: vi.fn() as never,
     listLoginSessions: vi.fn() as never,
     revokeLoginSession: vi.fn() as never,
@@ -316,7 +321,6 @@ function register(
   const providerExtensionService = {
     setRepositoryRoot: vi.fn(),
     list: vi.fn(),
-    listAll: vi.fn(),
     mutate: vi.fn(),
     readUserMcpConnection: vi.fn(),
   }
@@ -332,6 +336,7 @@ function register(
     detail: vi.fn(),
     exportMarkdown: vi.fn(),
     resolveWorkspace: vi.fn(),
+    invalidateListCache: vi.fn(),
   }
   const runtimeLog = {
     directory: runtimeLogDirectory,
@@ -1315,6 +1320,38 @@ describe('registerIpcHandlers', () => {
     dispose()
   })
 
+  it('validates video draft requests, forwards them to the file store and keeps their content out of the log', async () => {
+    const videoStudioProjects = {
+      read: vi.fn(async () => ({ index: '{"version":1}', projects: [{ key: 'a', content: 'storyboard body' }] })),
+      write: vi.fn(async () => undefined),
+      idle: vi.fn(async () => undefined),
+    }
+    const { runtimeLog, dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { videoStudioProjects })
+    const read = electronMocks.handlers.get('video-studio:read-projects')!
+    const write = electronMocks.handlers.get('video-studio:write-projects')!
+    const input = { scope: 'xm-account:7', put: [{ key: 'a', content: 'storyboard body' }], remove: ['b'] }
+
+    expect(() => write(trustedEvent('https://attacker.example/', 9), input)).toThrow('已拒绝来自非应用页面的操作请求')
+    expect(() => write(trustedEvent(), { ...input, put: [{ key: '../a', content: 'x' }] })).toThrow('视频草稿写入列表无效')
+    expect(() => write(trustedEvent(), { ...input, remove: ['a'] })).toThrow('视频草稿写入和删除列表冲突')
+    expect(() => read(trustedEvent(), 7)).toThrow('视频草稿归属无效')
+    expect(videoStudioProjects.write).not.toHaveBeenCalled()
+    expect(videoStudioProjects.read).not.toHaveBeenCalled()
+
+    // Like the chat record, it is not tied to the live session: the old account's last save lands while a switch is under way.
+    await expect(write(trustedEvent(), input)).resolves.toBeUndefined()
+    expect(videoStudioProjects.write).toHaveBeenCalledWith(input)
+    await expect(read(trustedEvent(), 'xm-account:7')).resolves.toMatchObject({ projects: [{ key: 'a' }] })
+    expect(videoStudioProjects.read).toHaveBeenCalledWith('xm-account:7')
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('storyboard body')
+    dispose()
+
+    const bare = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub())
+    expect(() => electronMocks.handlers.get('video-studio:read-projects')!(trustedEvent(), 'xm-account:7')).toThrow('视频草稿存储未就绪')
+    expect(() => electronMocks.handlers.get('video-studio:write-projects')!(trustedEvent(), input)).toThrow('视频草稿存储未就绪')
+    bare.dispose()
+  })
+
   it('hands the chat page answer to a quit that asked for one, and only from the app itself', () => {
     const chatHistoryFlush = { acknowledge: vi.fn() }
     const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { chatHistoryFlush })
@@ -1396,6 +1433,19 @@ describe('registerIpcHandlers', () => {
         ['video:progress', { requestId: 'video-1', stage: 'downloading' }],
       ])
 
+      // The request id now lives in the storyboard file the main process writes: the save the page sent just before
+      // has to land before the paid request leaves, for the same reason.
+      let landed = false
+      const videoStudioProjects = { read: vi.fn(), write: vi.fn(), idle: vi.fn(async () => { await Promise.resolve(); landed = true }) }
+      const waiting = videoServiceStub()
+      const landedAtSubmit: boolean[] = []
+      waiting.generate.mockImplementation(async () => { landedAtSubmit.push(landed); return storedClip })
+      const third = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { videoService: waiting, videoStudioProjects })
+      await expect(electronMocks.handlers.get('video:generate')!(trustedEvent(undefined, 17), input)).resolves.toEqual(clip)
+      expect(landedAtSubmit).toEqual([true])
+      third.dispose()
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { videoService })
+
       const cancel = electronMocks.handlers.get('video:cancel')!
       expect(cancel(trustedEvent(undefined, 17), 'video-1')).toEqual({ canceled: true, mayStillComplete: true })
       expect(videoService.cancel).toHaveBeenCalledWith(17, 'video-1', 7)
@@ -1411,6 +1461,31 @@ describe('registerIpcHandlers', () => {
       await expect(electronMocks.handlers.get('video:generate')!(trustedEvent(), input)).rejects.toThrow('请先登录星芒账号')
       expect(signedOut.generate).not.toHaveBeenCalled()
       second.dispose()
+    })
+
+    it('tells the page to keep a submission the main process could not write down, then gets that copy onto disk', async () => {
+      const videoService = videoServiceStub()
+      videoService.generate.mockImplementationOnce(async (_senderId: number, _input: unknown, progress?: AiVideoProgressObserver) => {
+        progress?.onSubmissionUnrecorded?.()
+        await progress?.onStage('downloading')
+        return storedClip
+      })
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { videoService })
+      const flushStorageData = vi.fn()
+      const base = trustedEvent(undefined, 17)
+      const event = { ...base, sender: { ...base.sender, session: { flushStorageData } } }
+      await expect(electronMocks.handlers.get('video:generate')!(event, {
+        requestId: 'shot-unrecorded', group: '视频分组', model: 'grok-video', prompt: '海浪', seconds: '6',
+      })).resolves.toEqual(clip)
+      expect(event.sender.send.mock.calls).toEqual([
+        ['video:progress', { requestId: 'shot-unrecorded', stage: 'processing', unrecorded: true }],
+        ['video:progress', { requestId: 'shot-unrecorded', stage: 'downloading' }],
+      ])
+      // Once before the request went out (the page's request id), and once more shortly after the page wrote this down:
+      // the main process holds no copy of its own, so a crash in Chromium's few seconds of write delay would lose both.
+      expect(flushStorageData).toHaveBeenCalledTimes(1)
+      await vi.waitFor(() => expect(flushStorageData).toHaveBeenCalledTimes(2), { timeout: 5_000 })
+      dispose()
     })
 
     it('refuses a new storyboard or clip while video studio is switched off but still collects one already paid for', async () => {
@@ -1491,6 +1566,14 @@ describe('registerIpcHandlers', () => {
       await expect(planHandler(trustedEvent(), input)).rejects.toThrow('当前余额不足')
       expect(chatService.completeOnce).toHaveBeenCalledOnce()
 
+      // An answer cut off at the output cap would be cut off again: no second paid request, and say what to change.
+      chatService.completeOnce.mockReset().mockRejectedValueOnce(new AiAnswerCutOffError('length'))
+      await expect(planHandler(trustedEvent(), input)).rejects.toThrow(videoStudioPlanTooLongMessage)
+      expect(chatService.completeOnce).toHaveBeenCalledOnce()
+      chatService.completeOnce.mockReset().mockRejectedValueOnce(new AiAnswerCutOffError('filtered'))
+      await expect(planHandler(trustedEvent(), input)).rejects.toThrow(aiAnswerCutOffMessages.filtered)
+      expect(chatService.completeOnce).toHaveBeenCalledOnce()
+
       chatService.completeOnce.mockReset().mockImplementation(({ signal }) => new Promise((_resolve, reject) => {
         signal?.addEventListener('abort', () => reject(new Error('已取消')), { once: true })
       }))
@@ -1539,6 +1622,34 @@ describe('registerIpcHandlers', () => {
       await expect(electronMocks.handlers.get('video:save-as')!(trustedEvent(), clipId, { path: 'C:\\Windows' })).rejects.toThrow('另存的文件名格式错误')
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('XingmangAI')
       dispose()
+    })
+
+    it('lists the library for the signed-in account only, and only from a well-formed request', async () => {
+      const page = { items: [{ assetId: clipId, mediaType: 'video' as const, createdAt: '2026-11-20T04:00:00.000Z', fileName: 'xingmang-clip.mp4' }], offset: 0, limit: 24, total: 1, hasMore: false, counts: { image: 0, video: 1, film: 1 } }
+      const mediaAssets = { listOwnedLibrary: vi.fn(async () => page) }
+      const accountService = signedIn()
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { mediaAssets })
+      const list = electronMocks.handlers.get('library:list')!
+
+      expect(() => list(trustedEvent('https://attacker.example/'), {})).toThrow('已拒绝来自非应用页面的操作请求')
+      // The renderer names no account and no path: anything beyond the known fields is refused before the store is asked.
+      for (const input of [undefined, { userId: 8 }, { kind: 'trash' }, { filmAssetIds: ['../../secret'] }, { limit: 500 }]) {
+        expect(() => list(trustedEvent(), input)).toThrow('作品库请求格式错误')
+      }
+      expect(mediaAssets.listOwnedLibrary).not.toHaveBeenCalled()
+
+      await expect(list(trustedEvent(), { kind: 'film', search: '橘猫', filmAssetIds: [clipId], matchedAssetIds: [clipId] })).resolves.toEqual(page)
+      expect(mediaAssets.listOwnedLibrary).toHaveBeenCalledWith(7, { kind: 'film', search: '橘猫', filmAssetIds: [clipId], matchedAssetIds: [clipId] })
+
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false } as never)
+      expect(() => list(trustedEvent(), {})).toThrow('请先登录星芒账号')
+      expect(mediaAssets.listOwnedLibrary).toHaveBeenCalledOnce()
+      dispose()
+
+      // A registration without the library says so instead of failing somewhere deeper.
+      const bare = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn())
+      expect(() => electronMocks.handlers.get('library:list')!(trustedEvent(), {})).toThrow('作品库未就绪')
+      bare.dispose()
     })
 
     it('stores a song picked in the system dialog for the signed-in account and hands back only its id, name and length', async () => {
@@ -1710,7 +1821,7 @@ describe('registerIpcHandlers', () => {
       const bad = path.join(directory, 'bad.json')
       fs.writeFileSync(bad, '{"format":"something-else"}')
       electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [bad] })
-      await expect(importData(trustedEvent())).rejects.toThrow('不是星芒导出的')
+      await expect(importData(trustedEvent())).rejects.toThrow('并非由星芒导出')
 
       const good = path.join(directory, 'good.json')
       fs.writeFileSync(good, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: { theme: 'light', desktopNotifications: false }, conversations: [{ id: 'c1' }], phrases: ['回答尽量简短'] }))
@@ -1728,7 +1839,7 @@ describe('registerIpcHandlers', () => {
   })
 
   it('says the import file is busy rather than broken when it cannot be read right now', async () => {
-    // X-7：文件正被别的程序占着、没权限读，以前也说「不是星芒导出的，或者已经损坏」。
+    // X-7：文件正被别的程序占着、没权限读，以前也说「并非由星芒导出，或者已经损坏」。
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
     const busy = Object.assign(new Error('EBUSY: resource busy or locked, open'), { code: 'EBUSY' })
     const open = vi.spyOn(fs.promises, 'open')
@@ -1741,7 +1852,7 @@ describe('registerIpcHandlers', () => {
       open.mockRejectedValueOnce(busy)
       const failure = await Promise.resolve(importData(trustedEvent())).then(() => null, (error: unknown) => error)
       expect(failure).toBeInstanceOf(Error)
-      expect((failure as Error).message).toBe('这个文件现在读不了，可能正被别的程序占着。关掉它，再点一次「导入」。')
+      expect((failure as Error).message).toBe('该文件暂时无法读取，可能已被其他程序打开。请关闭相关程序后再次点击「导入」。')
       expect((failure as Error).cause).toBe(busy)
 
       // 记事本存过的（开头带 BOM）照常导进来。
@@ -2225,7 +2336,7 @@ describe('registerIpcHandlers', () => {
     }))
   })
 
-  it('reopens the picker when the warning is answered with 换一个文件夹', async () => {
+  it('reopens the picker when the warning is answered with 更换文件夹', async () => {
     const home = os.homedir()
     electronMocks.showOpenDialog
       .mockResolvedValueOnce({ canceled: false, filePaths: [home] })
@@ -2252,7 +2363,7 @@ describe('registerIpcHandlers', () => {
 
       await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(expected)
       expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
-        buttons: ['新建一个项目文件夹', '换一个文件夹', '仍然打开'],
+        buttons: ['新建项目文件夹', '更换文件夹', '仍然打开'],
         defaultId: 0,
         cancelId: 1,
       }))
@@ -2455,7 +2566,7 @@ describe('registerIpcHandlers', () => {
     await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe(configFolder)
     expect(service.updateStoredConfig).not.toHaveBeenCalled()
     expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
-      title: '不建议在这个文件夹里打开',
+      title: '不建议在此文件夹中打开',
       detail: expect.stringContaining('密钥'),
     }))
   })
@@ -2528,7 +2639,7 @@ describe('registerIpcHandlers', () => {
     expect(service.launchProvider).not.toHaveBeenCalled()
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
     expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
-      buttons: ['先不打开', '仍然打开'],
+      buttons: ['暂不打开', '仍然打开'],
     }))
   })
 
@@ -2542,8 +2653,8 @@ describe('registerIpcHandlers', () => {
     await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', home)
     expect(electronMocks.showMessageBox).toHaveBeenCalledTimes(1)
     expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
-      title: '这个文件夹范围太大',
-      buttons: ['新建一个项目文件夹', '换一个文件夹', '仍然打开'],
+      title: '该文件夹范围过大',
+      buttons: ['新建项目文件夹', '更换文件夹', '仍然打开'],
       defaultId: 0,
       cancelId: 1,
     }))
@@ -2686,8 +2797,8 @@ describe('registerIpcHandlers', () => {
 
       await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'))
       expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
-        title: '这个文件夹不让写入',
-        buttons: ['换到能写的位置', '照常打开', '先不打开'],
+        title: '该文件夹禁止写入',
+        buttons: ['更换为可写入的位置', '照常打开', '暂不打开'],
         defaultId: 0,
         cancelId: 2,
       }))
@@ -2736,7 +2847,7 @@ describe('registerIpcHandlers', () => {
 
       await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'), 'resumeLast')
       expect(electronMocks.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
-        buttons: ['先不打开', '照常打开'],
+        buttons: ['暂不打开', '照常打开'],
         defaultId: 1,
         cancelId: 0,
       }))
@@ -3364,7 +3475,7 @@ describe('registerIpcHandlers', () => {
     expect(service.saveConfig).not.toHaveBeenCalled()
   })
 
-  // 首页「配置文件坏了」的「修好它」和配置里「重置为初始状态」选官方账号都走这条：
+  // 首页「配置文件坏了」的「立即修复」和配置里「重置为初始状态」选官方账号都走这条：
   // 答应过先备份，备份页里就得找得回来（以前只留配置旁边会被挤掉的 .bak）。
   it('keeps a restorable backup before an official reset and refuses to reset without one', async () => {
     const service = serviceStub()
@@ -3388,7 +3499,7 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), 'codex', 'reset')).rejects.toThrow('没能先备份当前配置，这次没有重置')
     expect(service.switchToOfficialAccount).not.toHaveBeenCalled()
 
-    // 「修好它」（repair）同样先备份，备份不成就不动手。
+    // 「立即修复」（repair）同样先备份，备份不成就不动手。
     create.mockClear()
     await handler(trustedEvent(), 'codex', 'repair')
     expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
@@ -3443,7 +3554,7 @@ describe('registerIpcHandlers', () => {
     // A switch that fails and rolls back never asks.
     vi.mocked(service.claudeCommandConfirmationQuestionPending!).mockClear().mockReturnValue(true)
     vi.mocked(service.switchToOfficialAccount).mockRejectedValue(new Error('配置文件被占用'))
-    await expect(oneClick(trustedEvent(), 'claude', 'official')).rejects.toThrow('切回官方账号没有完成：配置文件被占用。')
+    await expect(oneClick(trustedEvent(), 'claude', 'official')).rejects.toThrow('切回官方账号未完成：配置文件被占用。')
     await expect(official(trustedEvent(), 'claude', 'merge')).rejects.toThrow('配置文件被占用')
     expect(service.claudeCommandConfirmationQuestionPending).not.toHaveBeenCalled()
   })
@@ -4078,6 +4189,135 @@ describe('registerIpcHandlers', () => {
     expect(handedOver.map((work) => work.signal.aborted)).toEqual([true, true])
   })
 
+  // N5：上一个账号点的「打开」，在查续聊记录、打开前试写、问文件夹这些等待期间换了账号，不能按新账号的配置打开。
+  describe('launch keeps the account it was clicked under', () => {
+    function pending<T>() {
+      let resolve!: (value: T) => void
+      const promise = new Promise<T>((settle) => { resolve = settle })
+      return { promise, resolve }
+    }
+    // 跟真的启动服务一样：轮到它时由 run 核对点的时候那个账号，叫停了的不进队列。
+    function launchThroughQueue(service: SystemService): string[] {
+      const launched: string[] = []
+      vi.mocked(service.launchProvider).mockImplementation(async (provider, _workspace, _mode, _resume, work) => {
+        if (work?.signal.aborted) throw work.signal.reason
+        async function launch() {
+          launched.push(provider)
+          return {}
+        }
+        return work ? work.run(launch) : launch()
+      })
+      return launched
+    }
+
+    it('does not open under the account switched to while the folder write check was running', async () => {
+      let revision = 0
+      const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+      const probing = pending<undefined>()
+      const probe = vi.fn(() => probing.promise)
+      const service = serviceStub()
+      const launched = launchThroughQueue(service)
+      register(service, undefined, undefined, undefined, undefined, undefined, { accountWork }, {
+        workspaceWriteCheck: { platform: 'win32', probe },
+      })
+
+      const result = electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'))
+      await vi.waitFor(() => expect(probe).toHaveBeenCalled())
+      revision = 1
+      probing.resolve(undefined)
+
+      await expect(result).rejects.toThrow('账号刚刚切换，请重试')
+      expect(service.launchProvider).not.toHaveBeenCalled()
+      expect(launched).toEqual([])
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+    })
+
+    // 换账号一开始就叫停还没轮到的「打开」（quiesce → abortQueued）；点下去就记下的这一次也在里面，
+    // 不靠前后两个账号的编号对不对得上。
+    it('does not resume a conversation once an account change has started during the record lookup', async () => {
+      const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
+      const lookup = pending<string>()
+      const service = serviceStub()
+      const launched = launchThroughQueue(service)
+      const { providerSessionsService } = register(service, undefined, undefined, undefined, undefined, undefined, { accountWork })
+      providerSessionsService.resolveWorkspace.mockReturnValueOnce(lookup.promise)
+
+      const result = electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      accountWork.abortQueued()
+      lookup.resolve(nativeFolder('C:\\projects\\demo'))
+
+      await expect(result).rejects.toThrow('账号刚刚切换，请重试')
+      expect(service.launchProvider).not.toHaveBeenCalled()
+      expect(launched).toEqual([])
+    })
+
+    it('lets the queue refuse a launch whose folder question was answered after the account changed', async () => {
+      let revision = 0
+      const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+      const answer = pending<{ response: number }>()
+      electronMocks.showMessageBox.mockReturnValueOnce(answer.promise)
+      const service = serviceStub()
+      const launched = launchThroughQueue(service)
+      register(service, undefined, undefined, undefined, undefined, undefined, { accountWork })
+
+      const result = electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'grok', path.join(os.homedir(), 'Desktop'))
+      await vi.waitFor(() => expect(electronMocks.showMessageBox).toHaveBeenCalled())
+      revision = 1
+      answer.resolve({ response: 2 })
+
+      await expect(result).rejects.toThrow('账号刚刚切换，请重试')
+      expect(launched).toEqual([])
+    })
+
+    it('keeps the Codex Desktop click on its account while the status file is still being read at startup', async () => {
+      let revision = 0
+      const accountWork = createAccountWorkGate({ revision: () => revision, assertReady: () => undefined })
+      const statusRead = pending<undefined>()
+      const remoteFeatures = createRemoteFeatureGate({ settled: () => statusRead.promise })
+      const service = serviceStub()
+      const launched: string[] = []
+      vi.mocked(service.launchCodexDesktop).mockImplementation(async (_mode, _target, launchOptions) => {
+        async function launch() {
+          launched.push('codexDesktop')
+          return {} as never
+        }
+        return launchOptions?.accountWork ? launchOptions.accountWork.run(launch) : launch()
+      })
+      register(service, undefined, undefined, undefined, undefined, undefined, { accountWork }, { remoteFeatures })
+
+      const result = electronMocks.handlers.get('desktop:launch-codex')!(trustedEvent(), 'open')
+      revision = 1
+      statusRead.resolve(undefined)
+
+      await expect(result).rejects.toThrow('账号刚刚切换，请重试')
+      expect(launched).toEqual([])
+    })
+
+    it('still opens when the account stays the same, and gives the click record back however the request ends', async () => {
+      const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
+      const taken = vi.spyOn(accountWork, 'queue')
+      const service = serviceStub()
+      const launched = launchThroughQueue(service)
+      register(service, undefined, undefined, undefined, undefined, undefined, { accountWork }, {
+        workspaceWriteCheck: { platform: 'win32', probe: async () => undefined },
+      })
+      const launch = electronMocks.handlers.get('cli:launch')!
+
+      await expect(launch(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'))).resolves.toEqual({})
+      expect(launched).toEqual(['claude'])
+      // 主目录那一问点了「更换文件夹」，选择器里又取消：没打开。
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 })
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+      await expect(launch(trustedEvent(), 'codex', os.homedir())).resolves.toEqual({ declined: true })
+      vi.mocked(service.launchProvider).mockRejectedValueOnce(new Error('终端没起来'))
+      await expect(launch(trustedEvent(), 'grok', nativeFolder('C:\\projects\\demo'))).rejects.toThrow('终端没起来')
+
+      // 三次都已经结束，之后再换账号叫停的名单里没有它们，不会一直挂着。
+      accountWork.abortQueued()
+      expect(taken.mock.results.map((entry) => (entry.value as QueuedAccountWork).signal.aborted)).toEqual([false, false, false])
+    })
+  })
+
   // 已知13：开机先摆上次落盘的客户端结果。那一读只读文件，不盘点、不记检测失败，也不陪账号恢复等。
   it('answers the startup read of the last saved client rows without scanning or waiting for the account, and logs it as that read', async () => {
     const restored = new Promise<void>(() => undefined)
@@ -4552,6 +4792,40 @@ describe('registerIpcHandlers', () => {
     expect(electronMocks.writeText).toHaveBeenCalledWith('sanitized report\n')
   })
 
+  // 0.2.24 性能深查 R4：开机界面每次都把深浅色发一遍。先换窗口颜色再记；记不进去（C 盘满、杀毒锁住
+  // 文件）只记一条日志，标题栏和页面照样换上，不再弹「系统外观没有同步」。
+  it('applies window:set-theme before saving it, and keeps the applied theme when the save fails', async () => {
+    const service = serviceStub()
+    const order: string[] = []
+    const setWindowTheme = vi.fn(() => { order.push('apply') })
+    vi.mocked(service.updateStoredConfig).mockImplementation(async (update) => {
+      order.push('save')
+      return mergeAppSettings(stubStoredConfig, update)
+    })
+    const { dispose, runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, {}, { setWindowTheme })
+    try {
+      const handler = electronMocks.handlers.get('window:set-theme')!
+      const event = trustedEvent()
+      await expect(handler(event, 'dark')).resolves.toBeUndefined()
+      expect(order).toEqual(['apply', 'save'])
+      expect(setWindowTheme).toHaveBeenCalledWith(event.sender, 'dark')
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, theme: 'dark' })
+
+      vi.mocked(service.updateStoredConfig).mockRejectedValueOnce(new Error('ENOSPC: no space left on device'))
+      await expect(handler(event, 'light')).resolves.toBeUndefined()
+      expect(setWindowTheme).toHaveBeenLastCalledWith(event.sender, 'light')
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'window', 'window.theme.save-failed', expect.any(String), {
+        theme: 'light',
+        reason: 'ENOSPC: no space left on device',
+      })
+
+      await expect(handler(event, 'sepia')).rejects.toThrow('未知的主题')
+      expect(setWindowTheme).toHaveBeenCalledTimes(2)
+    } finally {
+      dispose()
+    }
+  })
+
   it('delegates canvas:open to the injected openCanvasWindow callback, and rejects untrusted senders the same as every other channel', async () => {
     const openCanvasWindow = vi.fn(async () => undefined)
     const openCanvasAssetLibrary = vi.fn(async () => undefined)
@@ -4589,6 +4863,32 @@ describe('registerIpcHandlers', () => {
       expect(openCanvasAssetLibrary).toHaveBeenCalledTimes(1)
       expect(openCanvasWindow).toHaveBeenCalledTimes(1)
       expect(() => library(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
+
+      // Registrations that predate the project list say so instead of failing somewhere deeper.
+      expect(() => electronMocks.handlers.get('canvas:list-projects')!(trustedEvent())).toThrow('画布项目暂时读不出来')
+      expect(() => electronMocks.handlers.get('canvas:open-project')!(trustedEvent(), 'p')).toThrow('画布项目暂时打不开')
+    } finally {
+      dispose()
+    }
+  })
+
+  it('hands the canvas project list and the open request straight to the canvas controller', async () => {
+    const projects = [{ id: '11111111-1111-4111-8111-111111111111', name: '双十一主图', updatedAt: 1_700_000_000_000 }]
+    const listCanvasProjects = vi.fn(async () => projects)
+    const openCanvasProject = vi.fn(async () => true)
+    const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { listCanvasProjects, openCanvasProject })
+    try {
+      const list = electronMocks.handlers.get('canvas:list-projects')!
+      const open = electronMocks.handlers.get('canvas:open-project')!
+      expect(() => list(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
+      expect(() => open(trustedEvent('https://attacker.example/'), projects[0].id)).toThrow('已拒绝来自非应用页面的操作请求')
+      expect(listCanvasProjects).not.toHaveBeenCalled()
+      expect(openCanvasProject).not.toHaveBeenCalled()
+
+      await expect(list(trustedEvent())).resolves.toEqual(projects)
+      // The id goes on untouched: the controller checks it against this account's projects before using it.
+      await expect(open(trustedEvent(), '../not-an-id')).resolves.toBe(true)
+      expect(openCanvasProject).toHaveBeenCalledWith('../not-an-id')
     } finally {
       dispose()
     }
@@ -5122,6 +5422,46 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), { version: 2, workspace: desktop })).resolves.toMatchObject({ workspace: desktop })
       expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: desktop })
+    })
+
+    // 0.2.25 总单 Q1：设置页「更换」只能说「是设置页换的」，是哪一刻由主进程记。
+    it('stamps a folder the settings page chose with the host clock, never the renderer\'s', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+      const desktop = path.join(os.homedir(), 'Desktop')
+      const now = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
+      try {
+        await expect(handler(trustedEvent(), { version: 2, workspace: desktop, workspaceChosen: true, workspaceChosenAt: 42 }))
+          .resolves.toMatchObject({ workspace: desktop, workspaceChosenAt: 1_700_000_000_000 })
+        expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: desktop, workspaceChosenAt: 1_700_000_000_000 })
+      } finally {
+        now.mockRestore()
+      }
+    })
+
+    it('does not stamp a folder save that did not come from the settings page choice', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+      const desktop = path.join(os.homedir(), 'Desktop')
+
+      // The frozen legacy renderer echoes the whole record, workspace and stored time included.
+      await handler(trustedEvent(), { version: 2, workspace: desktop, workspaceChosenAt: 42, theme: 'light' })
+      expect(service.updateStoredConfig).toHaveBeenLastCalledWith({ version: 2, workspace: desktop, theme: 'light' })
+      // The marker alone, without a folder, means nothing.
+      await handler(trustedEvent(), { version: 2, workspaceChosen: true, theme: 'light' })
+      expect(service.updateStoredConfig).toHaveBeenLastCalledWith({ version: 2, theme: 'light' })
+      await handler(trustedEvent(), { version: 2, workspace: desktop, workspaceChosen: false })
+      expect(service.updateStoredConfig).toHaveBeenLastCalledWith({ version: 2, workspace: desktop })
+      await expect(handler(trustedEvent(), { version: 2, workspace: desktop, workspaceChosen: 'yes' })).rejects.toThrow('项目文件夹设置')
+    })
+
+    it('does not stamp a chosen folder that is not remembered, like the picker does', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, workspace: path.join(os.homedir(), '.codex'), workspaceChosen: true }))
+        .resolves.toMatchObject({ workspace: stubStoredConfig.workspace })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2 })
     })
 
     it('accepts a narrow single-field update and merges it over the stored record (①栏11)', async () => {
@@ -6272,15 +6612,15 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
-  describe('parseSessionId (sessions:detail/export/archive/restore)', () => {
+  describe('parseSessionId (sessions:archive/restore)', () => {
     const validId = 'a1b2c3d4-e5f6-47a8-89ab-cdef01234567'
 
     it('accepts a well-formed 36-character UUID', () => {
       const { sessionsService } = register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       expect(() => handler(trustedEvent(), validId)).not.toThrow()
-      expect(sessionsService.detail).toHaveBeenCalledWith(validId)
+      expect(sessionsService.archive).toHaveBeenCalledWith(validId)
     })
 
     it('accepts uppercase hex characters', () => {
@@ -6294,7 +6634,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
     it('rejects non-string values', () => {
       register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       for (const bad of [42, null, undefined, {}, []]) {
         expect(() => handler(trustedEvent(), bad)).toThrow('会话 ID 格式错误')
@@ -6303,7 +6643,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
     it('rejects values with the wrong length', () => {
       register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       expect(() => handler(trustedEvent(), validId.slice(0, 35))).toThrow('会话 ID 格式错误')
       expect(() => handler(trustedEvent(), `${validId}0`)).toThrow('会话 ID 格式错误')
@@ -6311,7 +6651,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
     it('rejects relative path traversal payloads', () => {
       register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       expect(() => handler(trustedEvent(), '../../../../../../etc/passwd')).toThrow('会话 ID 格式错误')
       expect(() => handler(trustedEvent(), '..%2f..%2f..%2fetc%2fpasswd')).toThrow('会话 ID 格式错误')
@@ -6319,14 +6659,14 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
     it('rejects backslash-based traversal payloads', () => {
       register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       expect(() => handler(trustedEvent(), '..\\..\\..\\windows\\system32')).toThrow('会话 ID 格式错误')
     })
 
     it('rejects absolute path payloads', () => {
       register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       expect(() => handler(trustedEvent(), '/etc/passwd')).toThrow('会话 ID 格式错误')
       expect(() => handler(trustedEvent(), 'C:\\Windows\\System32\\config')).toThrow('会话 ID 格式错误')
@@ -6334,7 +6674,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
     it('rejects a payload containing a null byte', () => {
       register()
-      const handler = electronMocks.handlers.get('sessions:detail')!
+      const handler = electronMocks.handlers.get('sessions:archive')!
 
       expect(() => handler(trustedEvent(), `${'a'.repeat(35)}\0`)).toThrow('会话 ID 格式错误')
     })
@@ -6351,94 +6691,45 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(sessionsService.restore).toHaveBeenCalledWith(allHyphens)
     })
 
-    it('applies the same rejection to sessions:export, sessions:archive and sessions:restore', async () => {
+    it('applies the same rejection to sessions:archive and sessions:restore', () => {
       register()
       const badId = 'not-a-valid-session-id'
 
-      await expect(electronMocks.handlers.get('sessions:export')!(trustedEvent(), badId)).rejects.toThrow('会话 ID 格式错误')
       expect(() => electronMocks.handlers.get('sessions:archive')!(trustedEvent(), badId)).toThrow('会话 ID 格式错误')
       expect(() => electronMocks.handlers.get('sessions:restore')!(trustedEvent(), badId)).toThrow('会话 ID 格式错误')
     })
   })
 
-  describe('parseSessionListQuery (sessions:list)', () => {
-    it('defaults to an empty query when the argument is undefined', () => {
-      const { sessionsService } = register()
-      const handler = electronMocks.handlers.get('sessions:list')!
+  describe('sessions:archive and sessions:restore (R-3)', () => {
+    const validId = 'a1b2c3d4-e5f6-47a8-89ab-cdef01234567'
 
-      expect(() => handler(trustedEvent(), undefined)).not.toThrow()
-      expect(sessionsService.list).toHaveBeenCalledWith({})
+    it('drops the reusable session listing only after the archive has landed', async () => {
+      const { sessionsService, providerSessionsService } = register()
+      let finish: (value: unknown) => void = () => undefined
+      sessionsService.archive.mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+
+      const pending = electronMocks.handlers.get('sessions:archive')!(trustedEvent(), validId)
+      await Promise.resolve()
+      expect(providerSessionsService.invalidateListCache).not.toHaveBeenCalled()
+      finish({ sessionId: validId })
+
+      await expect(pending).resolves.toEqual({ sessionId: validId })
+      expect(providerSessionsService.invalidateListCache).toHaveBeenCalledTimes(1)
     })
 
-    it('rejects a null, array, or non-object query', () => {
-      register()
-      const handler = electronMocks.handlers.get('sessions:list')!
+    it('drops the reusable session listing even when a restore fails halfway', async () => {
+      const { sessionsService, providerSessionsService } = register()
+      sessionsService.restore.mockRejectedValueOnce(new Error('恢复失败'))
 
-      expect(() => handler(trustedEvent(), null)).toThrow('会话查询格式错误')
-      expect(() => handler(trustedEvent(), [])).toThrow('会话查询格式错误')
-      expect(() => handler(trustedEvent(), 'active')).toThrow('会话查询格式错误')
+      await expect(electronMocks.handlers.get('sessions:restore')!(trustedEvent(), validId)).rejects.toThrow('恢复失败')
+      expect(providerSessionsService.invalidateListCache).toHaveBeenCalledTimes(1)
     })
 
-    it('rejects an invalid archive filter', () => {
-      register()
-      const handler = electronMocks.handlers.get('sessions:list')!
+    it('leaves the listing alone when the session id is rejected up front', () => {
+      const { providerSessionsService } = register()
 
-      expect(() => handler(trustedEvent(), { archive: 'deleted' })).toThrow('会话归档筛选格式错误')
-    })
-
-    it('accepts every valid archive filter value', () => {
-      const { sessionsService } = register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      for (const archive of ['all', 'active', 'archived'] as const) {
-        expect(() => handler(trustedEvent(), { archive })).not.toThrow()
-        expect(sessionsService.list).toHaveBeenCalledWith(expect.objectContaining({ archive }))
-      }
-    })
-
-    it('rejects a search string exceeding the maximum length', () => {
-      register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      expect(() => handler(trustedEvent(), { search: 'x'.repeat(257) })).toThrow('会话搜索内容过长')
-    })
-
-    it('rejects a non-string search value with a distinct type error', () => {
-      register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      for (const bad of [42, true, null, {}, []]) {
-        expect(() => handler(trustedEvent(), { search: bad })).toThrow('会话搜索内容格式错误')
-      }
-    })
-
-    it('rejects a non-integer or sub-1 page number', () => {
-      register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      for (const bad of [0, -1, 1.5, '2', Number.NaN]) {
-        expect(() => handler(trustedEvent(), { page: bad })).toThrow('页码格式错误')
-      }
-    })
-
-    it('rejects a non-integer or sub-1 pageSize', () => {
-      register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      expect(() => handler(trustedEvent(), { pageSize: 0 })).toThrow('分页大小格式错误')
-      expect(() => handler(trustedEvent(), { pageSize: '20' })).toThrow('分页大小格式错误')
-    })
-
-    it('accepts valid search, page and pageSize values together', () => {
-      const { sessionsService } = register()
-      const handler = electronMocks.handlers.get('sessions:list')!
-
-      expect(() => handler(trustedEvent(), {
-        search: 'refactor', archive: 'active', page: 2, pageSize: 20,
-      })).not.toThrow()
-      expect(sessionsService.list).toHaveBeenCalledWith({
-        search: 'refactor', archive: 'active', page: 2, pageSize: 20,
-      })
+      expect(() => electronMocks.handlers.get('sessions:archive')!(trustedEvent(), '../x')).toThrow('会话 ID 格式错误')
+      expect(providerSessionsService.invalidateListCache).not.toHaveBeenCalled()
     })
   })
 
@@ -7120,6 +7411,60 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(() => handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2, userId: 9 })).toThrow('未知字段')
       expect(accountService.getDashboard).not.toHaveBeenCalled()
     })
+
+    // 11-18 D11: the home week-spend loader reads the session, then queries the
+    // dashboard in separate calls. A switch in between used to return the new
+    // account's spend, which the renderer then filed under the old account.
+    it('refuses a query made for an account that is no longer the current one', () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 8 } as never })
+      register(undefined, undefined, undefined, accountService)
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      const range = { startTimestamp: 1_700_000_000, endTimestamp: 1_700_086_400 }
+      expect(() => handler(trustedEvent(), range, 'xm-account:7')).toThrow('账号刚刚切换，请重试')
+      // Same user id on the other site is a different account.
+      expect(() => handler(trustedEvent(), range, 'api-account:8')).toThrow('账号刚刚切换，请重试')
+      expect(() => handler(trustedEvent(), range, 'xm-account:guest')).toThrow('账号刚刚切换，请重试')
+      expect(accountService.getDashboard).not.toHaveBeenCalled()
+    })
+
+    it('checks the expected account in the same tick that starts the request', async () => {
+      const accountService = accountServiceStub()
+      let userId = 7
+      vi.mocked(accountService.getSessionState).mockImplementation(() => ({ authenticated: true, account: { userId } as never }))
+      vi.mocked(accountService.getDashboard).mockImplementation(async () => {
+        // The request is already bound to account 7 by the time anything else runs.
+        userId = 8
+        return { startTimestamp: 1, endTimestamp: 2, buckets: [], models: [], quota: 100, count: 1, tokens: 1, discardedCount: 0 }
+      })
+      register(undefined, undefined, undefined, accountService)
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      const pending = handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2 }, 'xm-account:7')
+      expect(accountService.getDashboard).toHaveBeenCalledTimes(1)
+      await expect(pending).resolves.toMatchObject({ quota: 100 })
+      expect(() => handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2 }, 'xm-account:7')).toThrow('账号刚刚切换')
+      expect(accountService.getDashboard).toHaveBeenCalledTimes(1)
+    })
+
+    it('tells the two account sites apart by the active site', async () => {
+      const accountService = { ...accountServiceStub(), getActiveSiteId: vi.fn(() => 'solov-api' as const) }
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } as never })
+      vi.mocked(accountService.getDashboard).mockResolvedValue({ startTimestamp: 1, endTimestamp: 2, buckets: [], models: [], quota: 0, count: 0, tokens: 0, discardedCount: 0 })
+      register(undefined, undefined, undefined, accountService)
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      expect(() => handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2 }, 'xm-account:7')).toThrow('账号刚刚切换')
+      await expect(handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2 }, 'api-account:7')).resolves.toMatchObject({ quota: 0 })
+    })
+
+    it('rejects a malformed expected account before calling the service', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      const range = { startTimestamp: 1, endTimestamp: 2 }
+      for (const scope of [7, '', 'xm-account:', 'xm-account:0', 'other:7', 'xm-account:7 ', 'xm-account:../7', null]) {
+        expect(() => handler(trustedEvent(), range, scope)).toThrow('数据看板查询的账号格式错误')
+      }
+      expect(accountService.getDashboard).not.toHaveBeenCalled()
+    })
   })
 
   describe('parseAccountTaskQuery (account:get-tasks)', () => {
@@ -7678,7 +8023,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         )
       })
 
-      // 来源没确认时配置窗口里只有「改用当前账号」：工具读不了的配置照原文件改只会报错，改走「修好它」那一种：
+      // 来源没确认时配置窗口里只有「改用当前账号」：工具读不了的配置照原文件改只会报错，改走「立即修复」那一种：
       // 读不了的那份重建，Codex 只坏了 auth.json 时 config.toml 里客户自己的设置照留（X-1）。
       it('repairs a config the tool cannot read when switching it to the current account', async () => {
         for (const [current, mode] of [
@@ -7741,7 +8086,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         const { accountService, service } = setup(accountKey({ expiredAt: '2020-01-01T00:00:00.000Z' }), undefined, true, sourceSwitchOptions())
         await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
 
-        await expect(switchCodexToAccount()).rejects.toThrow('原来那把密钥已经到期了')
+        await expect(switchCodexToAccount()).rejects.toThrow('原密钥已到期')
 
         expect(accountService.provisionCliKey).not.toHaveBeenCalledWith(expect.objectContaining({ name: codex.keyName }))
         expect(service.saveConfig).not.toHaveBeenCalled()
@@ -7906,7 +8251,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         const { accountService } = setup(accountKey({ id: 8, name: 'someone-else' }))
 
         await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7))
-          .rejects.toThrow('没在账号的密钥列表里找到这把密钥，先没撤销')
+          .rejects.toThrow('账号的密钥列表中未找到该密钥，暂未撤销')
         expect(accountService.revokeKey).not.toHaveBeenCalled()
       })
 
@@ -7915,7 +8260,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         vi.mocked(managedCliKeys.read).mockRejectedValueOnce(new Error('cache unreadable'))
 
         await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7))
-          .rejects.toThrow('没读到本机记着的工具密钥')
+          .rejects.toThrow('未能读取本机记录的工具密钥')
         expect(accountService.revokeKey).not.toHaveBeenCalled()
       })
 
@@ -7971,7 +8316,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         const { accountService } = setup(new Error('network down'))
 
         await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7))
-          .rejects.toThrow('没读到这把密钥的额度设置，先没撤销')
+          .rejects.toThrow('未能获取该密钥的额度设置，暂未撤销')
         expect(accountService.revokeKey).not.toHaveBeenCalled()
       })
     })
@@ -7994,6 +8339,55 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), -5)).rejects.toThrow()
       expect(accountService.revokeKey).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('account:enable-key', () => {
+    it('forwards a valid id to the account service and leaves the cached tool keys alone', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: { userId: 101, username: 'yoyo', group: 'default', role: 1, quota: 1_000, usedQuota: 0 },
+      })
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => []),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      const chatKeyStore = { removeByKeyId: vi.fn(async () => undefined) }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys, { chatKeyStore })
+
+      await expect(electronMocks.handlers.get('account:enable-key')!(trustedEvent(), 42)).resolves.toBeUndefined()
+
+      expect(accountService.enableKey).toHaveBeenCalledWith(42)
+      // Enabling changes neither the secret, the name nor the group, so the tool
+      // that holds this key still matches its cached entry.
+      expect(managedCliKeys.remove).not.toHaveBeenCalled()
+      expect(chatKeyStore.removeByKeyId).not.toHaveBeenCalled()
+    })
+
+    it('passes the account service refusal through unchanged', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.enableKey).mockRejectedValue(new Error('这把密钥已经过了到期时间'))
+
+      await expect(electronMocks.handlers.get('account:enable-key')!(trustedEvent(), 7)).rejects.toThrow('这把密钥已经过了到期时间')
+    })
+
+    it('says so when the signed-in account backend cannot enable keys', async () => {
+      const accountService: NewApiClientService = { ...accountServiceStub(), enableKey: undefined } as unknown as NewApiClientService
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+
+      await expect(electronMocks.handlers.get('account:enable-key')!(trustedEvent(), 7)).rejects.toThrow('当前账号暂不支持在此启用密钥')
+    })
+
+    it('rejects a malformed id before reaching the account service -- it lands in a URL path segment (I5)', async () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:enable-key')!
+
+      for (const id of ['7', 1.5, 0, -1, null, undefined, Number.MAX_SAFE_INTEGER + 1]) {
+        await expect(handler(trustedEvent(), id)).rejects.toThrow('密钥 ID 格式错误')
+      }
+      expect(accountService.enableKey).not.toHaveBeenCalled()
     })
   })
 
@@ -8289,7 +8683,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { invoicePortalWindow })
       const openInvoicePortal = electronMocks.handlers.get('account:open-invoice-portal')!
 
-      await expect(openInvoicePortal(trustedEvent())).rejects.toThrow('没能打开开票中心，请稍后再试；还不行请找客服。')
+      await expect(openInvoicePortal(trustedEvent())).rejects.toThrow('开票中心打开失败，请稍后重试；如仍无法打开，请联系客服。')
       expect(invoicePortalWindow.open).not.toHaveBeenCalled()
 
       vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 42 } } as never)
@@ -8318,7 +8712,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub())
 
       await expect(electronMocks.handlers.get('account:get-notice-image')!(trustedEvent(), 'https://xm.solov.cc/qr.png'))
-        .rejects.toThrow('公告图片暂时显示不了，请更新或重启软件')
+        .rejects.toThrow('公告图片暂时无法显示，请更新或重启软件')
     })
 
     it('says the approved line when this host has no invoice window', async () => {
@@ -8327,7 +8721,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
 
       await expect(electronMocks.handlers.get('account:open-invoice-portal')!(trustedEvent()))
-        .rejects.toThrow('没能打开开票中心，请稍后再试；还不行请找客服。')
+        .rejects.toThrow('开票中心打开失败，请稍后重试；如仍无法打开，请联系客服。')
     })
 
     it('validates the backend payment form before opening the window or returning its trade number', async () => {
@@ -8347,7 +8741,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         paymentMethod: 'alipay',
       })).catch((error: unknown) => error)
       expect(failure).toMatchObject({
-        message: '支付通道暂时异常，没有扣款，请联系客服。',
+        message: '支付通道暂时异常，未产生扣款，请联系客服。',
         cause: { message: '支付来源与支付地址不匹配' },
       })
       expect(paymentWindow.open).not.toHaveBeenCalled()
@@ -8362,13 +8756,13 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       vi.mocked(paymentWindow.openUrl).mockRejectedValueOnce(new PaymentCheckoutRejected('支付地址必须是不含账号密码和片段的 HTTPS 地址'))
       await expect(electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
         planId: 3, provider: 'stripe',
-      })).rejects.toThrow(/^支付通道暂时异常，没有扣款，请联系客服。$/)
+      })).rejects.toThrow(/^支付通道暂时异常，未产生扣款，请联系客服。$/)
 
       // 网络打不开支付页、账号中途变了，各有各的下一步，不能一起吞成「联系客服」。
-      vi.mocked(paymentWindow.openUrl).mockRejectedValueOnce(new Error('支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。'))
+      vi.mocked(paymentWindow.openUrl).mockRejectedValueOnce(new Error('支付页面打开失败，请稍后重试。本次未产生扣款，「我的订单」中新增的订单无需处理。'))
       await expect(electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
         planId: 3, provider: 'stripe',
-      })).rejects.toThrow(/^支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。$/)
+      })).rejects.toThrow(/^支付页面打开失败，请稍后重试。本次未产生扣款，「我的订单」中新增的订单无需处理。$/)
     })
 
     it('hides switched-off payment methods from the recharge page and refuses them if the page still shows one', async () => {
@@ -8391,10 +8785,10 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       // 页面是开关打开之前读的，还摆着支付宝：点下去在这里拦住，不走进那条坏掉的路。
       await expect(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
         amount: 10, paymentMethod: 'alipay',
-      })).rejects.toThrow(/^这种付款方式暂时停用了，请换一种付款方式。$/)
+      })).rejects.toThrow(/^该付款方式已暂停使用，请更换其他付款方式。$/)
       await expect(electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
         planId: 3, provider: 'stripe',
-      })).rejects.toThrow(/^这种付款方式暂时停用了，请换一种付款方式。$/)
+      })).rejects.toThrow(/^该付款方式已暂停使用，请更换其他付款方式。$/)
       expect(accountService.createTopupPayment).not.toHaveBeenCalled()
       expect(accountService.createSubscriptionPayment).not.toHaveBeenCalled()
       expect(paymentWindow.open).not.toHaveBeenCalled()
@@ -8588,7 +8982,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.changePassword).toHaveBeenCalledWith({
         originalPassword: 'current-password-1',
         newPassword: 'new-password-2',
-      })
+      }, expect.any(Function))
     })
 
     it('rejects a non-record payload', () => {
@@ -8628,7 +9022,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.changePassword).toHaveBeenCalledWith({
         originalPassword: ' old-password-1 ',
         newPassword: ' new-password-2 ',
-      })
+      }, expect.any(Function))
     })
 
     it('never reaches the account service -- and never the real production client -- when validation fails', () => {
@@ -8726,6 +9120,84 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toThrow('原密码错误')
       expect(store.read).not.toHaveBeenCalled()
       expect(store.save).not.toHaveBeenCalled()
+    })
+
+    // N6: the change went out, then the call failed. Where the change stood
+    // decides what 记住密码 keeps.
+    function failingAfter(accountService: ReturnType<typeof accountServiceStub>, outcomes: NewApiPasswordChangeOutcome[], error: Error) {
+      vi.mocked(accountService.changePassword).mockImplementation(async (_input, onOutcome) => {
+        for (const outcome of outcomes) onOutcome?.(outcome)
+        throw error
+      })
+    }
+
+    it('drops this account\'s remembered password when the change went out and no answer came back', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'Alice')
+      const lost = new Error('连接账号服务超时，请检查网络后再试。')
+      noteRequestDiagnostics(lost, { line: 'direct', status: 504, cfRay: 'test-ray' })
+      failingAfter(accountService, ['unconfirmed'], lost)
+      const store = rememberedStore('Alice')
+      const { runtimeLog } = register(undefined, undefined, undefined, accountService, store)
+
+      const failure = await Promise.resolve(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change))
+        .then(() => null, (error: unknown) => error)
+
+      // Says what is known instead of "check the network and retry", keeping
+      // the original failure -- and so its route and status -- for the log.
+      expect(failure).toBeInstanceOf(Error)
+      expect((failure as Error).message).toBe(passwordChangeUnconfirmedMessage)
+      expect((failure as Error).cause).toBe(lost)
+      expect(requestDiagnosticsOf(failure)).toEqual({ line: 'direct', status: 504, cfRay: 'test-ray' })
+      expect(store.clear).toHaveBeenCalledTimes(1)
+      expect(store.save).not.toHaveBeenCalled()
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('new-password-2')
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('old-password-1')
+    })
+
+    it('remembers the new password when the server stored it but the call still failed afterwards', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'Alice')
+      failingAfter(accountService, ['unconfirmed', 'changed'], new Error('账号刚刚切换，请重试'))
+      const store = rememberedStore('Alice')
+      register(undefined, undefined, undefined, accountService, store)
+
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toThrow('账号刚刚切换')
+
+      expect(store.save).toHaveBeenCalledExactlyOnceWith('Alice', 'new-password-2')
+      expect(store.clear).not.toHaveBeenCalled()
+    })
+
+    it('keeps the remembered password when the server refused the change', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'Alice')
+      failingAfter(accountService, ['unconfirmed', 'refused'], new Error('原密码错误'))
+      const store = rememberedStore('Alice')
+      register(undefined, undefined, undefined, accountService, store)
+
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toThrow('原密码错误')
+
+      expect(store.save).not.toHaveBeenCalled()
+      expect(store.clear).not.toHaveBeenCalled()
+    })
+
+    it('leaves another account\'s remembered login alone when the change is unconfirmed', async () => {
+      const accountService = accountServiceStub()
+      signedInAs(accountService, 'alice', 7)
+      failingAfter(accountService, ['unconfirmed'], new Error('连接账号服务超时，请检查网络后再试。'))
+      const other = rememberedStore('bob@example.test')
+      register(undefined, undefined, undefined, accountService, undefined, undefined, {
+        realmAccounts: {
+          getSiteId: () => 'solov',
+          loginHintOwner: async () => ({ realmId: 'xm-account', userId: '8' }),
+        } as never,
+        accountCredentialsForSite: () => other,
+      })
+
+      await expect(electronMocks.handlers.get('account:change-password')!(trustedEvent(), change)).rejects.toThrow(passwordChangeUnconfirmedMessage)
+
+      expect(other.clear).not.toHaveBeenCalled()
+      expect(other.save).not.toHaveBeenCalled()
     })
   })
 
@@ -9013,16 +9485,16 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         },
       })
       const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
-        read: vi.fn(async () => { throw new Error('本地托管 API Key 配置已损坏或无法解密') }),
+        read: vi.fn(async () => { throw new Error('本地托管密钥配置已损坏或无法解密') }),
         save: vi.fn(async () => undefined),
         remove: vi.fn(async () => undefined),
       }
       register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys)
 
       await expect(electronMocks.handlers.get('account:reveal-key')!(trustedEvent(), 77))
-        .rejects.toThrow('本地托管 API Key 配置已损坏或无法解密')
+        .rejects.toThrow('本地托管密钥配置已损坏或无法解密')
       await expect(electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 77))
-        .rejects.toThrow('本地托管 API Key 配置已损坏或无法解密')
+        .rejects.toThrow('本地托管密钥配置已损坏或无法解密')
 
       expect(accountService.revealKey).not.toHaveBeenCalled()
       expect(electronMocks.writeText).not.toHaveBeenCalled()
@@ -9274,7 +9746,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.provisionCliKey).not.toHaveBeenCalled()
       expect(service.saveConfig).not.toHaveBeenCalled()
 
-      // 首页「修好它」（repair）也是先备份再写，模式原样交给保存。
+      // 首页「立即修复」（repair）也是先备份再写，模式原样交给保存。
       create.mockClear()
       await expect(handler(trustedEvent(), { ...input, mode: 'repair' })).resolves.toEqual({ configured: ['codex'], failed: [] })
       expect(create).toHaveBeenCalledWith('codex', 'pre-save', undefined, null)
@@ -9739,7 +10211,7 @@ describe('IPC channel log and account policies', () => {
     await expect(invoke('account:change-password', { originalPassword: 'current-password-1', newPassword: 'new-password-2' }))
       .resolves.toEqual({ changed: true })
     await expect(invoke('account:revoke-login-session', sid)).resolves.toEqual({ revokedSid: sid, current: false })
-    await expect(invoke('account:revoke-other-login-sessions')).rejects.toThrow('账号刚切换过，请再试一次')
+    await expect(invoke('account:revoke-other-login-sessions')).rejects.toThrow('账号刚刚切换，请重试')
   })
 
   // 以前 account:、chat:、config:、models: 开头的通道默认都等账号，只有本身就在管登录的这些除外。改成每条通道
@@ -9778,13 +10250,18 @@ describe('IPC channel log and account policies', () => {
       .map(([channel]) => channel)
       .sort()
     expect(scoped).toEqual([
+      // 「创作」左边那一列里的画布项目：列的是当前账号的，打开时编号也在当前账号的项目里认。
+      'canvas:list-projects',
       'canvas:open',
       'canvas:open-asset-library',
+      'canvas:open-project',
       'cli:launch',
       'desktop:launch-codex',
       'external-clients:launch',
       'external-clients:scan',
       'external-clients:switch-source',
+      // 「创作 › 作品库」：列的是当前账号做过的图片和视频。
+      'library:list',
       'tools:check-models',
       // 出视频、分镜和作品库：凭据和作品都按当前账号找。
       'video-studio:pick-music',
@@ -9838,6 +10315,7 @@ describe('IPC channel log and account policies', () => {
         'account:reveal-key',
         'account:set-remembered-login',
         'account:sync-managed-cli-keys',
+        'canvas:list-projects',
         'chat-history:flushed',
         'chat-history:read',
         'chat-history:write',
@@ -9858,6 +10336,7 @@ describe('IPC channel log and account policies', () => {
         'desktop:codex-locale-status',
         'desktop:codex-permissions-status',
         'desktop:codex-status',
+        'library:list',
         'repository:get-context',
         'runtime-logs:list',
         'runtime-logs:renderer-error',
@@ -9870,6 +10349,8 @@ describe('IPC channel log and account policies', () => {
         'update:get-state',
         'update:startup',
         'video-studio:read-music',
+        'video-studio:read-projects',
+        'video-studio:write-projects',
         'video:cancel',
         'video:read-clip',
         'window:report-activity',

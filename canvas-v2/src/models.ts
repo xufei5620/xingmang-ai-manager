@@ -1,9 +1,11 @@
 import { canvasImageModelResolutions, type CanvasCapabilityProfile } from './host-capabilities'
 import { supportedImageRequestResolutions } from './runtime/image-request-parameters'
+import { imageModelFamily, listedImageModelFamily, singleResolutionGeminiImageModel } from './runtime/image-model-family'
 import { arkSeedanceVideoDefaults, arkSeedanceVideoDurationRange, arkSeedanceVideoModels } from './lib/video-request-protocol'
 
 // 图像模型能力预设 —— UI 最终只显示当前分组 /v1/models 返回值与本表
-// 的交集，因此预设存在不等于当前账号一定可用。事实来源:
+// 的交集（再加上按名字认得出的同家型号，见 runtime/image-model-family.ts），
+// 因此预设存在不等于当前账号一定可用。事实来源:
 // docs/RECON-image-generation.md(2026-08-12, xm.solov.cc 生产全链路实测,
 // 含与 OpenAI 账单逐笔对账)。要点:
 // - gpt-image-1.5(项目权限 403)与快照版刻意隐藏
@@ -35,6 +37,8 @@ export type ImageResolution = '1K' | '2K' | '4K'
 const gptImage2ResolutionNote = 'GPT Image 2 的 4K 为实验性输出，仅部分比例可用；大于 3,686,400 像素的输出可能更不稳定'
 const geminiResolutionNote = 'Gemini 支持原生 2K/4K，但当前接入通道尚未实现对应参数，暂仅开放 1K'
 const unknownModelResolutionNote = '当前接入通道尚未实现此模型的 2K/4K 参数，暂仅开放 1K；其他参数兼容性请以服务实际支持为准'
+const singleResolutionModelNote = '这个型号只出 1K'
+const providerSizedModelNote = '这个型号的输出尺寸由服务决定'
 // These describe what this kernel's request builder does with the model. A
 // host that works out image sizes itself does something else (#4).
 const requestBuilderResolutionNotes: ReadonlySet<string> = new Set([gptImage2ResolutionNote, geminiResolutionNote, unknownModelResolutionNote])
@@ -59,9 +63,9 @@ const gptImage2Preset: ImageModelPreset = {
   supportsEdits: true,
 }
 
-// gpt-image-2.5 两个型号 xm 站的图片分组开着。尺寸、画质、改图的规矩跟 gpt-image-2 一样（桌面主进程同样按它处理），
-// 但这个内核自己的请求构造器还没接它们的 2K/4K，所以跟别的没接的型号一样只开 1K；桌面按它声明的清晰度来。
-function gptImage25Preset(id: string, label: string): ImageModelPreset {
+// gpt-image-2.5、2.6 的 Flare、Sunburst xm 站的图片分组开着。尺寸、画质、改图的规矩跟 gpt-image-2 一样（桌面主进程同样
+// 按它处理），但这个内核自己的请求构造器还没接它们的 2K/4K，所以跟别的没接的型号一样只开 1K；桌面按它声明的清晰度来。
+function laterGptImagePreset(id: string, label: string): ImageModelPreset {
   return {
     ...gptImage2Preset,
     id,
@@ -71,25 +75,52 @@ function gptImage25Preset(id: string, label: string): ImageModelPreset {
   }
 }
 
-// 次序就是下拉的次序，排第一的是分组里有它时的默认型号。跟桌面对话页、星芒AI生图（#999）一样：
-// 有 2.5 Flare 默认用它，没有照旧 GPT Image 2；2.5 Sunburst 慢、偏精修，不当默认。
+const geminiImagePreset: ImageModelPreset = {
+  id: 'gemini-3.1-flash-image',
+  label: 'Gemini 3.1 Flash Image',
+  sizes: [
+    '1024x1024', '1536x1152', '1152x1536', '1280x720', '720x1280',
+    '1536x1024', '1024x1536', '1280x1024', '1024x1280', '1792x768',
+  ],
+  supportsSize: true,
+  supportsQuality: false,
+  resolutions: supportedImageRequestResolutions('gemini-3.1-flash-image'),
+  resolutionNote: geminiResolutionNote,
+  supportsEdits: false,
+}
+
+const jimengImagePreset: ImageModelPreset = {
+  id: 'jimeng_high_aes_general_v21_L',
+  label: '即梦(快·中文强)',
+  sizes: [],
+  supportsSize: false,
+  supportsQuality: false,
+  resolutions: ['1K'],
+  resolutionNote: '即梦当前接口没有 2K/4K 原生档位',
+  supportsEdits: false,
+  ephemeralUrl: true,
+}
+
+const grokImagePreset: ImageModelPreset = {
+  id: 'grok-imagine-image',
+  label: 'Grok Imagine',
+  sizes: [],
+  supportsSize: false,
+  supportsQuality: false,
+  resolutions: ['1K'],
+  resolutionNote: 'Grok 当前接口由上游决定输出尺寸',
+  supportsEdits: true,
+}
+
+// 次序就是下拉的次序，排第一的是分组里有它时的默认型号。跟桌面对话页、星芒AI生图（#1803）一样：
+// 有 2.6 Flare 默认用它，没有依次 2.5 Flare、GPT Image 2；Sunburst 慢、偏精修，不当默认。
 export const imageModelPresets: readonly ImageModelPreset[] = [
-  gptImage25Preset('gpt-image-2.5-flare', 'GPT Image 2.5 Flare(推荐)'),
+  laterGptImagePreset('gpt-image-2.6-flare', 'GPT Image 2.6 Flare(推荐)'),
+  laterGptImagePreset('gpt-image-2.5-flare', 'GPT Image 2.5 Flare'),
   gptImage2Preset,
-  gptImage25Preset('gpt-image-2.5-sunburst', 'GPT Image 2.5 Sunburst'),
-  {
-    id: 'gemini-3.1-flash-image',
-    label: 'Gemini 3.1 Flash Image',
-    sizes: [
-      '1024x1024', '1536x1152', '1152x1536', '1280x720', '720x1280',
-      '1536x1024', '1024x1536', '1280x1024', '1024x1280', '1792x768',
-    ],
-    supportsSize: true,
-    supportsQuality: false,
-    resolutions: supportedImageRequestResolutions('gemini-3.1-flash-image'),
-    resolutionNote: geminiResolutionNote,
-    supportsEdits: false,
-  },
+  laterGptImagePreset('gpt-image-2.6-sunburst', 'GPT Image 2.6 Sunburst'),
+  laterGptImagePreset('gpt-image-2.5-sunburst', 'GPT Image 2.5 Sunburst'),
+  geminiImagePreset,
   {
     id: 'gpt-image-1',
     label: 'GPT Image 1',
@@ -100,27 +131,8 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
     resolutionNote: 'GPT Image 1 接口最高只支持 1024/1536 固定尺寸',
     supportsEdits: true,
   },
-  {
-    id: 'jimeng_high_aes_general_v21_L',
-    label: '即梦(快·中文强)',
-    sizes: [],
-    supportsSize: false,
-    supportsQuality: false,
-    resolutions: ['1K'],
-    resolutionNote: '即梦当前接口没有 2K/4K 原生档位',
-    supportsEdits: false,
-    ephemeralUrl: true,
-  },
-  {
-    id: 'grok-imagine-image',
-    label: 'Grok Imagine',
-    sizes: [],
-    supportsSize: false,
-    supportsQuality: false,
-    resolutions: ['1K'],
-    resolutionNote: 'Grok 当前接口由上游决定输出尺寸',
-    supportsEdits: true,
-  },
+  jimengImagePreset,
+  grokImagePreset,
   {
     id: 'grok-imagine-image-2.0',
     label: 'Grok Imagine 2.0',
@@ -143,17 +155,31 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
   },
 ]
 
-// 还不知道账号有哪些型号时（没连上、型号表还没读到）先按 GPT Image 2 摆：历史账号的图片分组未必有 2.5。
-// 读到型号表以后按上面预设的次序挑（library/media-groups.ts 的 withResolvedMediaModels），有 2.5 Flare 就是它。
+// 还不知道账号有哪些型号时（没连上、型号表还没读到）先按 GPT Image 2 摆：历史账号的图片分组未必有 2.5、2.6。
+// 读到型号表以后按上面预设的次序挑（library/media-groups.ts 的 withResolvedMediaModels），有 2.6 Flare 就是它。
 export const defaultImageModel: string = gptImage2Preset.id
 export const defaultImageSize = '1024x1024'
 export const defaultImageQuality = 'low'
 export const defaultImageResolution: ImageResolution = '1K'
 
+/**
+ * The image models an account's list offers: the presets in preset order,
+ * then the models recognised by family in the account's order (桌面分组不声明
+ * 用途，没有这一段 Nano Banana、2.6 这类新型号就进不了下拉), then — only
+ * with includeUnknown — every other name that is not a known text or video model.
+ */
 export function availableImageModelPresets(models: readonly string[], includeUnknown = false): ImageModelPreset[] {
   const available = new Set(models.filter((model) => !knownNonImageModel(model)))
   const known = imageModelPresets.filter((preset) => available.has(preset.id))
-  return includeUnknown ? [...known, ...[...available].filter((id) => !imageModelPresets.some((preset) => preset.id === id)).map((id) => imageModelPreset(id))] : known
+  const unlisted = [...available].filter((id) => !imageModelPresets.some((preset) => preset.id === id))
+  const recognised = unlisted.filter((id) => listedImageModelFamily(id) !== null)
+  const unknown = includeUnknown ? unlisted.filter((id) => listedImageModelFamily(id) === null) : []
+  return [...known, ...[...recognised, ...unknown].map((id) => imageModelPreset(id))]
+}
+
+/** A preset model, or one whose family the desktop main process recognises by name. */
+export function recognisedImageModel(model: string): boolean {
+  return imageModelPresets.some((preset) => preset.id === model) || imageModelFamily(model) !== null
 }
 
 /** Provider purpose covers a catalog, not each entry in a mixed model list. */
@@ -164,7 +190,7 @@ export function knownVideoModel(model: string): boolean {
 
 export function knownNonImageModel(model: string): boolean {
   const name = model.split('/').at(-1)!.toLowerCase()
-  if (imageModelPresets.some((preset) => preset.id.toLowerCase() === name)) return false
+  if (imageModelPresets.some((preset) => preset.id.toLowerCase() === name) || imageModelFamily(model) !== null) return false
   if (knownVideoModel(model)) return true
   if (/(?:^|[-_.])image(?:[-_.]|$)/.test(name)) return false
   return /^(?:gpt-(?:3[.-]|4(?:[.o-]|$)|5(?:[.-]|$)|6(?:[.-]|$))|o[134](?:-|$)|claude-|gemini-|deepseek-|grok-(?:[234](?:[.-]|$)|code)|text-embedding-|whisper-)/.test(name)
@@ -174,8 +200,14 @@ export function knownNonImageModel(model: string): boolean {
 export function knownNonTextModel(model: string): boolean {
   const name = model.split('/').at(-1)!.toLowerCase()
   return imageModelPresets.some((preset) => preset.id.toLowerCase() === name)
+    || imageModelFamily(model) !== null
     || knownVideoModel(model)
     || /^(?:gpt-image(?:-|$)|grok-imagine-image(?:[.-]|$))/.test(name)
+}
+
+function familyImageModelLabel(id: string): string {
+  // nano-banana-pro → Nano Banana Pro；别的照型号名写。
+  return /^nano-banana(?:-|$)/i.test(id) ? id.split('-').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') : id
 }
 
 /** Unknown models keep legacy size compatibility without advertising unimplemented resolution tiers. */
@@ -183,6 +215,22 @@ function requestBuilderImageModelPreset(id: string): ImageModelPreset {
   const known = imageModelPresets.find((preset) => preset.id === id)
   if (known) return known
   if (supportedImageRequestResolutions(id).includes('2K')) return { ...gptImage2Preset, id, label: id }
+  // 按名字认出来的同家型号照这一家的规矩（桌面主进程也这样接）：Gemini 系照 gemini-3.1-flash-image，
+  // 即梦、Grok 照它们的预设，走 Images 接口的别家由服务定尺寸、不发画质、不能照着图改。
+  // 别的 gpt-image-* 走下面的通用模板，跟 gpt-image-2 一样能选尺寸、画质、能改图。
+  const family = imageModelFamily(id)
+  const label = familyImageModelLabel(id)
+  if (family === 'gemini-image') {
+    return {
+      ...geminiImagePreset, id, label, resolutions: supportedImageRequestResolutions(id),
+      resolutionNote: singleResolutionGeminiImageModel(id) ? singleResolutionModelNote : geminiResolutionNote,
+    }
+  }
+  if (family === 'jimeng') return { ...jimengImagePreset, id, label }
+  if (family === 'grok-image') return { ...grokImagePreset, id, label }
+  if (family === 'images-api') {
+    return { id, label, sizes: [], supportsSize: false, supportsQuality: false, resolutions: ['1K'], resolutionNote: providerSizedModelNote, supportsEdits: false }
+  }
   return {
     id,
     label: id,

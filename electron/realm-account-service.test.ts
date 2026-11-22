@@ -89,7 +89,7 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
         return { account: state().account!, accessExpiresAt: null }
       }),
       completeTwoFactorLogin: vi.fn(async ({ code }: { flowToken: string; code: string }) => {
-        if (code === 'wrong') throw new Error('验证码不对或已过期，请看验证器里最新的数字再试')
+        if (code === 'wrong') throw new Error('验证码错误或已过期，请输入验证器中的最新验证码后重试')
         if (code === 'expired') throw new NewApiTwoFactorExpiredError()
         emit(saved(siteId, '7', loginToken))
         return { account: state().account!, accessExpiresAt: null }
@@ -198,7 +198,7 @@ describe('realm account service', () => {
     const f = fixture()
     await expect(f.service.login({ ...login, password: 'needs-2fa' })).rejects.toBeInstanceOf(NewApiTwoFactorRequiredError)
     expect(await f.vault.active()).toBeNull()
-    await expect(f.service.completeTwoFactorLogin('wrong')).rejects.toThrow('验证码不对')
+    await expect(f.service.completeTwoFactorLogin('wrong')).rejects.toThrow('验证码错误')
     const result = await f.service.completeTwoFactorLogin('123456')
     expect(result).toMatchObject({ siteId: 'solov', realmId: 'xm-account', account: { userId: 7 } })
     const second = f.clients[f.clients.length - 1]
@@ -297,6 +297,50 @@ describe('realm account service', () => {
     expect(f.clients).toHaveLength(1)
     expect(f.service.client.getSessionState().authenticated).toBe(false)
     expect(await f.vault.active()).toBeNull()
+  })
+  // 0.2.25 总单第 72 项（11-18 复核 D25）：收尾等了 27 秒，登录 5 秒回话。
+  function withSlowLogin(f: ReturnType<typeof fixture>, answered: Promise<void>, overrides: Partial<RealmAccountServiceOptions>) {
+    return createRealmAccountService({ ...f.options, ...overrides, createClient: (siteId, callback) => {
+      const result = f.options.createClient(siteId, callback)
+      const original = vi.mocked(result.client.login).getMockImplementation()!
+      vi.mocked(result.client.login).mockImplementation(async (input) => { await answered; return original(input) })
+      return result
+    } })
+  }
+  it('gives the login request a budget of its own after a slow quiesce', async () => {
+    vi.useFakeTimers()
+    try {
+      const drained = deferred<void>()
+      const answered = deferred<void>()
+      const f = fixture()
+      const service = withSlowLogin(f, answered.promise, { quiesce: () => drained.promise, prepareTimeoutMs: 30000 })
+      const outcome = service.login(login).then((result) => result, (error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(27000)
+      drained.resolve()
+      await vi.advanceTimersByTimeAsync(5000)
+      answered.resolve()
+      expect(await outcome).toMatchObject({ siteId: 'solov', account: { userId: 7 } })
+      expect(service.client.getSessionState().account?.userId).toBe(7)
+      expect((await f.vault.active())?.userId).toBe('7')
+    } finally { vi.useRealTimers() }
+  })
+  it('still times out a login request that outlives its own budget and keeps nothing it answers late', async () => {
+    vi.useFakeTimers()
+    try {
+      const answered = deferred<void>()
+      const f = fixture()
+      const service = withSlowLogin(f, answered.promise, { prepareTimeoutMs: 30000 })
+      const outcome = service.login(login).then((result) => result, (error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(await outcome).toMatchObject({ code: 'TIMEOUT' })
+      const candidate = f.clients[f.clients.length - 1]
+      expect(candidate.client.logout).toHaveBeenCalledOnce()
+      answered.resolve()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(service.client.getSessionState().authenticated).toBe(false)
+      expect(await f.vault.active()).toBeNull()
+      expect(() => service.assertReady()).not.toThrow()
+    } finally { vi.useRealTimers() }
   })
   for (const reject of [false, true]) it(`rejects stale ${reject ? 'errors' : 'values'} after a backend switch`, async () => {
     const f = fixture()
@@ -781,6 +825,22 @@ describe('realm account service', () => {
     await f.service.login(login)
     gate.resolve({ changed: true })
     await expect(pending).rejects.toMatchObject({ code: 'STALE' })
+  })
+  it('still lets the caller hear that the password changed when the result is rejected after a switch (N6)', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    const gate = deferred<{ changed: true }>()
+    f.clients[1].client.changePassword = async (_input, onOutcome) => {
+      onOutcome?.('unconfirmed')
+      onOutcome?.('changed')
+      return gate.promise
+    }
+    const outcomes: string[] = []
+    const pending = f.service.client.changePassword({ originalPassword: 'test-old', newPassword: 'test-new' }, (outcome) => outcomes.push(outcome))
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    gate.resolve({ changed: true })
+    await expect(pending).rejects.toMatchObject({ code: 'STALE' })
+    expect(outcomes).toEqual(['unconfirmed', 'changed'])
   })
   it('returns success when new-api revokes the current device session', async () => {
     const f = fixture()

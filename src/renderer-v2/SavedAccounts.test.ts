@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accountSwitchDesktopClientsHint, accountSwitchedTitle, defaultSyncSelection, savedAccountLoginTarget, savedAccountSourceLabel } from './SavedAccounts'
+import { accountSwitchDesktopClientsHint, accountSwitchedTitle, defaultSyncSelection, savedAccountExpired, savedAccountLoginTarget, savedAccountSourceLabel } from './SavedAccounts'
 
 describe('saved account list labels', () => {
   it('names the account source with the login page tab names instead of a hash fragment', () => {
@@ -52,14 +52,25 @@ describe('saved account switch desktop clients', () => {
   it('tells Windows and Mac users which desktop clients follow the ticked tool and where to change the rest', () => {
     for (const os of ['win', 'mac'] as const) {
       const hint = accountSwitchDesktopClientsHint(os)
-      expect(hint).toContain('勾上那个工具就跟着换')
-      expect(hint).toContain('星芒账号和历史账号互切时不换')
-      expect(hint).toContain('自己填的密钥不会换')
+      expect(hint).toContain('勾选该工具即同步更换')
+      expect(hint).toContain('星芒账号与历史账号互切时除外')
+      expect(hint).toContain('自行填写的密钥不会更换')
       expect(hint).toContain('「配置…」')
       expect(hint).toContain('「保存并检测」')
     }
   })
   it('says nothing on Linux, where the home page does not list those clients', () => {
     expect(accountSwitchDesktopClientsHint('linux')).toBeNull()
+  })
+})
+
+describe('saved account expiry detection', () => {
+  // 只靠这一句认出「保存的账号过期」、给出「重新登录该账号」那颗按钮（主进程 realm-account.ts 的 SAVED_EXPIRED）；那边改了说法这里要跟着认。
+  it('recognises the main process saved-account expiry sentence, old and new wording alike', () => {
+    expect(savedAccountExpired(new Error('该已保存账号的登录已失效，当前账号未变化。请点击「重新登录该账号」重新登录。'))).toBe(true)
+    expect(savedAccountExpired(new Error('这个保存的账号登录已失效，当前账号没有变化。点「重新登录该账号」再登一次就行。'))).toBe(true)
+  })
+  it('does not mistake the current account expiring for a saved account', () => {
+    expect(savedAccountExpired(new Error('登录已过期，请重新登录'))).toBe(false)
   })
 })

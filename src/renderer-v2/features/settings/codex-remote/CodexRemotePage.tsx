@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { FolderOpen, FolderPlus, Headset, Home, RefreshCw, Zap } from 'lucide-react'
+import { FolderOpen, FolderPlus, Headset, Home, RefreshCw, TriangleAlert, Zap } from 'lucide-react'
 import { Button, Card, Confirm, Notice, PageHead, Pill, Segment, Select, SettingRow, Switch, useBalanceTier } from '../../../ui'
 import { dollars, ResultNotice, useOperation, useResource } from '../../../business-common'
-import { useSharedAccountBalance } from '../../app/balance-context'
+import { useSharedBalanceSelector } from '../../app/balance-context'
 import { isRemoteIdleCloseHours, remoteChannelIds, remoteIdleCloseHours } from '../../../../../electron/codex-remote-channel'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot, RemoteChannelId } from '../../../../../electron/ipc-contract'
 import type { V2Bridge, V2Page } from '../../../types'
@@ -25,28 +25,36 @@ import {
 } from './remote-view'
 
 /**
- * 左侧栏「手机遥控」那一页的字（0.2.25，yoyo 2026-11-19「改」）。原来是设置 › 工具管理最下面一张卡，挪出来单独一页，
- * 两种连接方式并排摆、点哪个下面摆哪个的设置，两种都要的设置另起一块。
- * 最底下那句提醒：同意也是在同一个聊天里点的，绑定的飞书或微信账号落到谁手里，谁就能指挥这台电脑（#1407）。
+ * 左侧栏「手机遥控」那一页的字（0.2.25，yoyo 2026-11-19「改」批了版面；11-21 起新字按正式书面口吻写）。原来是设置 › 工具管理
+ * 最下面一张卡，挪出来单独一页，两种连接方式并排摆、点哪个下面摆哪个的设置，两种都要的设置另起一块。
+ * 最底下那句提醒：同意也是在同一个聊天里点的，绑定的飞书或微信账号落到谁手里，谁就能指挥这台电脑（#1407）；
+ * 用的是原来卡片说明末尾那两句（第五批已定的正式说法）。
  */
 export const codexRemotePageText = {
   title: '手机遥控',
-  lead: '人不在电脑前，也能在手机上私聊你自己的机器人，让这台电脑上的 Codex 干活，用的是当前账号的额度。',
+  lead: '不在电脑前时，在手机上私聊您的机器人，即可远程操作本机的 Codex，使用当前账号的额度。',
   methodsTitle: '连接方式',
-  methodsMeta: '只开一种就够，也可以两种都开',
+  methodsMeta: '开启一种即可，也可同时开启两种',
   methods: {
-    feishu: { tag: '长期用选它', body: '先在飞书开放平台建一个你自己的机器人，步骤多一点；走飞书官方的接口，连得稳。' },
-    weixin: { tag: '实验功能', body: '用手机微信扫码登录就能用，最省事；通道是借来的，随时可能断。' },
+    feishu: { tag: '推荐长期使用', body: '需先在飞书开放平台创建您的机器人，步骤稍多；使用飞书官方接口，连接稳定。' },
+    weixin: { tag: '实验功能', body: '使用手机微信扫码登录即可，设置最简便；该通道为借用通道，可能随时中断。' },
   } satisfies Record<RemoteChannelId, { tag: string; body: string }>,
-  channelSettings: (title: string) => `${title}的设置`,
-  sharedTitle: '两种方式共用的设置',
-  safety: '只认配对过的那一个人。谁能用你绑定的飞书或微信发消息，谁就能指挥这台电脑，账号别借给别人。',
+  channelSettings: (title: string) => `${title}设置`,
+  sharedTitle: '通用设置',
+  safety: '仅响应已配对的用户。任何能使用您绑定的飞书或微信发送消息的人，均可操作本机，请勿将账号借予他人。',
 } as const
+
+/**
+ * 登录的 Windows 账号本身就带管理员权限（自带 Administrator、关了授权弹窗）时说明下面那句（yoyo 2026-11-20 亲手打字同意放宽，
+ * 这句是同意的一部分）。这种电脑上怎么打开星芒都是管理员身份，遥控照常能开，但 Codex 改文件、跑命令也都带着管理员权限，
+ * 手机上点头前要多看一眼。只在主进程判定是这种账号（快照 alwaysElevated）时摆出来。
+ */
+export const codexRemoteAdminAccountNotice = '本机登录的 Windows 账号自带管理员权限，Codex 在此修改文件、执行命令时同样具有管理员权限。在手机上回复「同意」前，请确认其将执行的操作。'
 
 /** 凭据存不到下次打开时卡上那条（Linux 没有系统钥匙串时只记在内存里，见 codex-remote-store.ts）。 */
 export const codexRemotePersistenceNotices = {
-  'session-only': { tone: 'neutral', title: '凭据只记到这次关掉星芒', body: '这台电脑没有系统钥匙串，下次打开星芒要重新填。' },
-  unavailable: { tone: 'warn', title: '凭据存不下', body: '这台电脑没法安全保存凭据，手机遥控暂时用不了。' },
+  'session-only': { tone: 'neutral', title: '凭据仅在本次运行期间保存', body: '本机没有系统钥匙串，下次打开星芒时需重新填写。' },
+  unavailable: { tone: 'warn', title: '凭据无法保存', body: '本机无法安全保存凭据，手机遥控暂不可用。' },
 } as const
 
 /**
@@ -54,22 +62,22 @@ export const codexRemotePersistenceNotices = {
  * 坐回电脑前得一眼看出是哪儿坏了、去哪儿修。Codex 下次起来了、或者遥控全关了就收起（主进程清掉 codexStartFailed）。
  */
 export const codexStartFailedNotice = {
-  title: 'Codex 没能启动',
-  body: '手机上刚发来的那条没有做。去首页看一下 Codex，好了以后在手机上再发一次。',
+  title: 'Codex 启动失败',
+  body: '手机刚发送的指令未执行。请前往首页检查 Codex，恢复后在手机上重新发送。',
   action: '去首页看 Codex',
 } as const
 
 /**
  * 「干活的文件夹」那一行（YF-19）：电脑上能加几个，手机上发「文件夹」看、发「文件夹 2」换。只加了一个时跟以前一样
- * 只写路径；不止一个时一个一行，正在用的标出来，别的能「用这个」「移除」。
+ * 只写路径；不止一个时一个一行，正在用的标出来，别的能「使用此文件夹」「移除」。
  */
 export const codexRemoteWorkspaceText = {
   title: '干活的文件夹',
-  empty: '还没选。Codex 只在这个文件夹里干活，选一个具体的项目文件夹。',
+  empty: '尚未选择。Codex 仅在此文件夹中运行，请选择具体的项目文件夹。',
   choose: '选择文件夹',
   add: '添加一个',
   inUse: '正在用',
-  use: '用这个',
+  use: '使用此文件夹',
   remove: '移除',
   phoneHint: '手机上发「文件夹」也能换。',
   full: (max: number) => `最多 ${max} 个，先移除一个再添加。`,
@@ -82,20 +90,20 @@ export const codexRemoteWorkspaceText = {
  */
 export const codexRemoteAutoStartText = {
   title: '打开星芒时自动打开遥控',
-  description: '开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。',
-  failed: (reason: string) => `上次打开星芒时没能自动打开：${reason}`,
+  description: '开启后，每次打开星芒将自动连接，无需在此手动开启。如星芒设为开机自启，即使无人在电脑前，也可通过手机操作。如有顾虑，请勿开启。',
+  failed: (reason: string) => `上次打开星芒时未能自动开启：${reason}`,
 } as const
 
 /**
- * 「多久没消息就自动关」那一行（YF-10，yoyo 2026-11-11 亲手打字「不自动关」「默认不关」）。缺省是「不自动关」，
+ * 「无消息自动关闭时间」那一行（YF-10，yoyo 2026-11-11 亲手打字「不自动关」「默认不关」）。缺省是「不自动关」，
  * 选它时下面那句小字说清楚还有哪几种办法关；选了时长不写小字，「打开遥控」那行的说明会带上时长。
  */
 export const codexRemoteIdleCloseText = {
-  title: '多久没消息就自动关',
+  title: '无消息自动关闭时间',
   never: '不自动关',
-  neverHint: '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。',
+  neverHint: '仅在电脑端、托盘中关闭，或在手机上发送「关闭遥控」时才会关闭。',
   // Mac 上没有托盘，星芒的图标在屏幕顶部的菜单栏里（#1745，yoyo 2026-11-11「菜单栏改」）。
-  neverHintMac: '只有你在电脑上、菜单栏里关，或者手机上发「关闭遥控」才会关。',
+  neverHintMac: '仅在电脑端、菜单栏中关闭，或在手机上发送「关闭遥控」时才会关闭。',
 } as const
 
 /**
@@ -116,18 +124,18 @@ export const codexRemoteLastRequestText = {
 export const codexRemoteLowBalanceNotice = {
   title: (amount: string) => `余额只剩 ${amount}`,
   body: '人不在电脑前时充不了值，建议先充一点再出门。',
-  action: '去充值',
+  action: '前往充值',
 } as const
 
 /**
- * 「手机上用的模型」那一行（yoyo 2026-11-19「改」）。选项跟首页 Codex「配置」里「默认模型」是同一张单，
- * 第一项「跟电脑上一样」是缺省，括号里写电脑上现在用的那个；读不到电脑上的就不写括号。
+ * 「手机端使用的模型」那一行（yoyo 2026-11-19「改」）。选项跟首页 Codex「配置」里「默认模型」是同一张单，
+ * 第一项「与电脑端相同」是缺省，括号里写电脑上现在用的那个；读不到电脑上的就不写括号。
  */
 export const codexRemoteModelText = {
-  title: '手机上用的模型',
-  follow: (model?: string) => model ? `跟电脑上一样（${model}）` : '跟电脑上一样',
-  followHint: '要换就去首页 Codex 的「配置」里改，电脑和手机一起换。',
-  ownHint: '只在手机上用这个，电脑上的 Codex 不变。',
+  title: '手机端使用的模型',
+  follow: (model?: string) => model ? `与电脑端相同（${model}）` : '与电脑端相同',
+  followHint: '如需更换，请前往首页 Codex 的「配置」修改，电脑端与手机端同时生效。',
+  ownHint: '仅手机端使用此模型，电脑端的 Codex 不受影响。',
 } as const
 
 const idleCloseOptions = [
@@ -141,7 +149,7 @@ const idleCloseOptions = [
  * （飞书重新填凭据、微信重新扫码），放在 remoteChannelSections 的 logoutHint。
  */
 export const codexRemoteConfirmText = {
-  unbind: { title: '解绑？', body: '解绑后，这个人就不能再用手机遥控这台电脑了，要用得重新配对。', ok: '解绑' },
+  unbind: { title: '解绑？', body: '解绑后，该用户将无法通过手机遥控本机，如需使用需重新配对。', ok: '解绑' },
   logout: { title: (channelTitle: string) => `退出${channelTitle}登录？`, ok: '退出登录' },
 } as const
 
@@ -154,7 +162,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navig
   isMac: boolean
 } & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run' | 'navigate'>) {
   const disabled = !snapshot.available || Boolean(busy)
-  // 那句话旁边配的按钮（D23）：同一个应用在别处连着、别的原因没连上，给「重新连接」；后一种再给「找客服」。
+  // 那句话旁边配的按钮（D23）：同一个应用在别处连着、别的原因没连上，给「重新连接」；后一种再给「联系客服」。
   // 凭据不对时就是下面「飞书应用」那一行的「重新填写」，不再摆第二颗。只在开着时给：关着的渠道没什么可重连的。
   const problem = channel.status.state === 'connected' ? undefined : channel.status.problem
   const canReconnect = channel.enabled && (problem === 'connection-limit' || problem === 'other')
@@ -190,7 +198,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navig
     binding = (
       <SettingRow
         title="绑定的人"
-        description={peer ? boundPeerText(peer) : channel.enabled ? '还没配对。点「开始配对」，把配对码私聊发给机器人。' : '还没配对。打开遥控后才能配对。'}
+        description={peer ? boundPeerText(peer) : channel.enabled ? '尚未配对。请点击「开始配对」，将配对码私聊发送给机器人。' : '尚未配对。开启遥控后方可配对。'}
         control={
           <>
             <Button
@@ -258,7 +266,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navig
           </Button>
           {problem === 'other' && onOpenHelp && (
             <Button size="sm" variant="ghost" icon={Headset} onClick={onOpenHelp} testId={`settings-remote-${id}-support`}>
-              找客服
+              联系客服
             </Button>
           )}
         </div>
@@ -414,7 +422,7 @@ function MethodPicker({ snapshot, method, onSelect }: { snapshot: CodexRemoteSna
   )
 }
 
-/** 「手机上用的模型」要列的东西：电脑上的 Codex 现在用哪个、这个账号能选哪些（首页 Codex「配置」里那张单）。 */
+/** 「手机端使用的模型」要列的东西：电脑上的 Codex 现在用哪个、这个账号能选哪些（首页 Codex「配置」里那张单）。 */
 export interface RemoteModelChoices {
   /** 电脑上 Codex 配置里的模型；读不到是空串。 */
   computerModel: string
@@ -457,7 +465,7 @@ export function CodexRemotePageView({ snapshot, api, busy, run, error, navigate,
   /** 页上那条红条；没有失败时是空的。 */
   error: ReactNode
   navigate?: (page: V2Page, section?: string) => void
-  /** 渠道没连上时「找客服」打开的帮助框；没给就不摆这颗按钮。 */
+  /** 渠道没连上时「联系客服」打开的帮助框；没给就不摆这颗按钮。 */
   onOpenHelp?: () => void
   /** 余额不到 remoteLowBalanceDollars、又没有能用的订阅时是余额（美元），否则 null（YF-12）。 */
   lowBalance?: number | null
@@ -478,9 +486,15 @@ export function CodexRemotePageView({ snapshot, api, busy, run, error, navigate,
     <section className="v2-page v2-remote-page" data-page-id="remote" data-testid="page-remote">
       <PageHead title={text.title} lead={text.lead} actions={meta && <Pill dot tone="ok" testId="settings-remote-meta">{meta}</Pill>} />
       <div className="v2-remote-body" data-testid="settings-remote-card">
+        {snapshot.alwaysElevated && (
+          <p className="v2-remote-admin-account" data-testid="settings-remote-admin-account">
+            <TriangleAlert size={15} aria-hidden="true" />
+            <span>{codexRemoteAdminAccountNotice}</span>
+          </p>
+        )}
         <div className="v2-remote-notices">
           {!snapshot.available && snapshot.unavailableReason && (
-            <Notice tone="warn" title="这台电脑现在不能打开手机遥控" body={snapshot.unavailableReason} testId="settings-remote-unavailable" />
+            <Notice tone="warn" title="本机当前无法开启手机遥控" body={snapshot.unavailableReason} testId="settings-remote-unavailable" />
           )}
           {snapshot.codexStartFailed && (
             <Notice
@@ -626,8 +640,8 @@ function WorkspaceRow({ snapshot, api, busy, run }: { snapshot: CodexRemoteSnaps
 }
 
 /**
- * 「手机上用的模型」那张单：电脑上 Codex 配置里的模型，和首页 Codex「配置」里「默认模型」一样读当前账号能用的
- * （不列 isHiddenCodexModel 挡掉的）。读不到就只剩「跟电脑上一样」，不报错：这一行不是非选不可。
+ * 「手机端使用的模型」那张单：电脑上 Codex 配置里的模型，和首页 Codex「配置」里「默认模型」一样读当前账号能用的
+ * （不列 isHiddenCodexModel 挡掉的）。读不到就只剩「与电脑端相同」，不报错：这一行不是非选不可。
  */
 function useRemoteModelChoices(api: V2Bridge): RemoteModelChoices {
   const [choices, setChoices] = useState<RemoteModelChoices>({ computerModel: '', models: [] })
@@ -726,6 +740,7 @@ export function remoteLowBalanceAmount(tier: ReturnType<typeof useBalanceTier>, 
 
 function useRemoteLowBalance(): number | null {
   const tier = useBalanceTier()
-  const { snapshot } = useSharedAccountBalance()
-  return remoteLowBalanceAmount(tier, snapshot.balance)
+  // 只挑余额本身，页面藏着时不跟着每次刷新重画（R8）。
+  const balance = useSharedBalanceSelector((state) => state.balance)
+  return remoteLowBalanceAmount(tier, balance)
 }

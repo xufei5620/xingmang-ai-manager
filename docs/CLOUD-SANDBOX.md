@@ -51,15 +51,21 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 - **在新开的 worktree 里把主目录的 `node_modules` 软链过来省安装，有两个坑。**（沿用 11-09；`.gitignore` 那一行 11-11 验）
   1. 根 `.gitignore` 写的是 `node_modules/`（带斜杠），只挡目录、不挡软链，`git add -A` 会把这个链接提交进去。先往 `.git/info/exclude` 加一行 `/node_modules`，提交前 `git show --stat` 扫一眼。已经提交进去的那个提交别再挑回（`cherry-pick`、`merge`）主目录：git 会把主目录里真的 `node_modules` 删掉，换成一个指向它自己的坏链接，整个依赖就没了（11-11 踩过）。要挑，先在 worktree 里 `git rm --cached node_modules` 补一个提交，再连它一起挑；挑的时候加 `-n`、事后再 `git reset -- node_modules` 来不及，目录在挑的那一下就删了。真删了：从另一个装好的 worktree 把 `node_modules` 搬回来（锁文件一样才行），不然重新 `npm ci`。
   2. `tooling/legacy-renderer/node_modules` 也要链（它是 npm workspace，装着 React 18 的类型）。漏了 `npm run typecheck` 会在 legacy 的 `src/components/ui/*` 报一串类型错，不是代码问题。
+  3. 链过来的依赖在 `npm test` 里会让 `scripts/renderer-single-copy.test.cjs` 红两条（`the root dev server resolves the shared packages…`、`every browser fixture server resolves the shared packages…`），报 `react resolved to <主目录>/node_modules/react/index.js`：这两条要求 React 从本目录那份解析，链接解析到了主目录，也不是代码问题。要四道全绿的结论，回主目录（或真装过依赖的目录）重跑 `npm test`。（11-21）
+- **改界面字，`npm run selfcheck` 过了还要另跑一次 `npm run test:ui`**（11-21 踩过，#2063）。四道自查不含它，CI 的 linux-test 跑。`e2e/` 下除 `v2-business`、`v2-local-avatar`、`announcement-native-visual`、`canvas-close` 以外的 `*-fixture.tsx` 渲染的都是冻结的旧界面（`src/components/`、`src/App`），断言的是旧界面的字：改新界面的字时别跟着改这些用例，旧界面那边的字照旧。命令是 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm run test:ui`，两三分钟。
 - **别用 `pkill -f <脚本名>` 收拾卡住的命令。** 命令行里带这串字的 shell 自己也会被杀掉。用进程号杀。（沿用 10-03）
+- **停 `npm run selfcheck` 要停 `scripts/self-check.cjs` 那个进程，停外面那层没用**（11-21 踩过）。后台命令到时被收掉、或者杀掉 `npm run selfcheck` 那一层，里面的 `node scripts/self-check.cjs` 照样跑完四道，还往原来那个日志文件里写；这时再开一遍，两遍的输出搅在同一个文件里，汇总看不出是哪一遍的，三遍同时跑浏览器套件还冒出过跟改动无关的红（`ui/browser-check.mjs` 那条 busy Dialog 就这样红过一次，单跑是绿的）。重开之前先 `pgrep -fa scripts/self-check.cjs` 看有没有剩下的，按进程号杀掉它和它下面的 `vitest`、`node --test`。后台跑要给够时间：四道一遍在 4 核容器里一个多小时，后台命令的时限给满两小时，不然跑到第四道就被收掉。
+- **要截整个新界面（首页、工具卡、错误框）**（11-21 验）：`src/renderer-v2/testing/app.html` 渲染的是完整的 `App`（首页也在），`app-check.mjs` 用的就是它。在草稿目录写个 Playwright 脚本，照 `app-check.mjs` 的 `before` 用 `e2e/harness.mjs` 的 `createFixtureServer` 起服务、打开 `…/src/renderer-v2/testing/app.html?<夹具参数>`，参数的意思在 `app-fixture.tsx` 里找 `query.get` / `query.has`。比上一条临时造夹具省事，要的状态夹具里没有，就给 `app-fixture.tsx` 加一个参数，连同一条用例一起提交。
 - **`npm test` 和 `npm run test:v2` 可以在同一个目录里同时后台跑**，没冒过假红。（沿用 11-09）
 - **容器里没有 zsh**（11-11 验），`electron/macos-platform.test.ts` 里真跑 zsh 的那批用例会自动跳过，不算失败。想让它们在容器里真跑，`apt-get install -y zsh`。（沿用 11-10）
+- **只在 Mac 上跑的用例（`it.runIf(process.platform === 'darwin')`）可以先在容器里粗跑一遍**（11-19 验）。写一个 setup 文件，里面只有 `Object.defineProperty(process, 'platform', { value: 'darwin' })`；再写一个 vitest 配置，`root` 指向仓库、`include` 列要跑的测试文件、`setupFiles` 指向它。两个文件都放仓库外面（草稿目录），配置里别 `import 'vitest/config'`（仓库外解析不到），直接 `export default ({ root, test: { … } })`，再 `npx vitest run --config <那个配置>`。`electron/macos-grok.test.ts`、`tool-installation.test.ts`、`macos-codex.test.ts` 这样跑 134 条全过。它只对注入了假 `codesign` 的用例有意义，真去调 `/usr/bin/codesign`、`open` 的过不了也不该当真；结论以 PR 上 Mac 作业为准，PR 里写明是这样跑的。
+- **首页卡片要配图时，现成的夹具截不到**（11-19 验）。`scripts/audit/v2-page-screenshot.mjs` 只收 `e2e/` 下的 `*-fixture.html`，而 `e2e/v2-business-fixture` 只渲染业务页，不渲染首页。临时在 `e2e/` 下放一对 `*-fixture.html` / `.tsx`：照 `src/renderer-v2/main.tsx` 引那几份样式（再加 `business.css`），用 `Shell` 包 `Home`，假数据照 `Home.test.tsx` 的 `render()` 写，`api` 用一个所有方法都回 `null` 的 `Proxy`。截完把这对文件删掉，别提交。
 - **容器里你是 root**（11-11 验）。Linux 版客户端拒绝以 root 启动，真开客户端要先处理这个（见第 7 节）。
 - **容器自带的 Claude Code（`/opt/node22/bin/claude`）以前让 `npm test` 红 29 条装工具的用例，已修**（11-18 验）：`electron/system-service.{certificate-trust,disk-space,download-stall,install-cancel}.test.ts` 的夹具现在把 PATH 换成夹具自己的目录，不再读容器的 PATH。直接跑 `npm test` / `npm run selfcheck` 就是 0 失败，不用再把那份挪出 PATH。自己写装 CLI 的用例时照同样写，见 `docs/TEST-BASELINE.md`「装命令行工具的用例：夹具要连 PATH 一起换掉」。
 
 ## 4. Electron 二进制装不上时
 
-11-11 `node scripts/ci-ensure-electron-binary.cjs` 一次成功。它以前在容器里经代理失败过（报 undici 的 `AssertionError: assert(!this.paused)`，重试也一样）。再碰到时，用 curl 把压缩包下到 Electron 的缓存里，再让安装脚本接着装（沿用 10-03，11-11 没重演）：
+11-11 `node scripts/ci-ensure-electron-binary.cjs` 一次成功。它以前在容器里经代理失败过（报 undici 的 `AssertionError: assert(!this.paused)`，重试也一样）。再碰到时，用 curl 把压缩包下到 Electron 的缓存里，再让安装脚本接着装（沿用 10-03，11-11 没重演；11-21 又报了两次，脚本自己的第 3 次重试成功，先等它重试完再走下面这条）：
 
 ```bash
 V=$(node -p "require('./node_modules/electron/package.json').version")
@@ -71,6 +77,12 @@ node node_modules/electron/install.js
 ```
 
 缓存子目录名是「下载目录网址」的 sha256。安装脚本照常按包里的校验和核对后才解压，这条退路没有绕过校验。
+
+**在容器里打 Windows 目录包**（比对打包前后的文件清单时用，11-20 验）：`npm run compile` 之后，
+`XINGMANG_LOCAL_BUILD=1 CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --config electron-builder.config.cjs --win --x64 --dir --publish never`
+能出 `release/win-unpacked`，不用装 wine。打包器自己下 win32 压缩包时经代理断在一成多（同一个 `assert(!this.paused)`），
+照上面的办法把 `electron-v$V-win32-x64.zip` 用 curl 下进同一个缓存目录再打，打包器照样按 `checksums.json` 核对。
+Linux 目录包把 `--win` 换成 `--linux dir`、加 `XINGMANG_LINUX_PACKAGE=1`。Mac 包不在容器里打（项目规矩）。
 
 ## 5. 容器能连哪些网站
 
@@ -135,6 +147,25 @@ CI 的 Windows（`windows-package`）和 Mac（`macos-test`）作业每个 PR �
 只写一个 `settings.json` 种子时要带 `workspace`（非空字符串）和 `uiSkin`：缺 `workspace` 整份会被换成默认值，你种的「提示已看过」一起丢；缺 `uiSkin` 会被当成老文件、主题强制改成浅色。有了 `settings.json` 客户端就当这台机器跑过，没有 `last-run-version.json` 又会弹「已更新到…」（11-17 验）。
 
 容器没设 `LANG`。起 Electron 时带上 `LANG=C.UTF-8`，否则碰到中文文件名会整个崩掉，只打一行 `Trace/breakpoint trap`，看着像产品的毛病。11-12 验：同一个剪贴板探针粘贴复制的 `截图.png`，不带 `LANG` 每次都崩，带上就正常；英文文件名两种都正常。
+
+### 7.1 验证崩溃、卡住上报真发得出去（11-20 验）
+
+`verify:app` 起的是开发态，`app.isPackaged` 是 false，崩溃上报不发。要看一条报错真从客户端发到 Sentry 那个地址、格式对不对，用一个本机假的 Sentry 接收端：
+
+1. 给 Electron 二进制做一个**硬链接**，名字不叫 `electron`（比如 `ln -f node_modules/electron/dist/electron node_modules/electron/dist/xingmang-ai-manager`），用它起，`app.isPackaged` 就是 true。软链接不行，读到的还是原名。
+2. 入口指向一个只有 `package.json`（name 写 `xingmang-ai-manager`，version 写要冒充的版本）的目录，里面的 main 再 require 夹具。直接给一个 .js 文件，`app.getVersion()` 是 Electron 自己的版本号，release 就不对。
+3. 夹具在 require `dist-electron/platform/entry.js` 之前：`app.commandLine.appendSwitch('host-resolver-rules', 'MAP o4512110916009984.ingest.us.sentry.io 127.0.0.1:<端口>')` 只把 Sentry 地址指到本机，加 `no-proxy-server`；`setCertificateVerifyProc` 只给这一个地址放行自签证书；`webRequest.onBeforeRequest` 拦掉别的网址；`process.geteuid = () => 1000`（同上面第 1 条）。
+4. 假接收端就是一个 `https.createServer`，把收到的每个请求体存下来。envelope 第三行是事件 JSON，看 release、environment、level、mechanism 和帧。
+5. 触发：`XINGMANG_CRASH_REPORT_TEST=1` 发一条自检；`webContents.forcefullyCrashRenderer()` 是界面进程崩；卡住上报只在抽中的两成打开里发，夹具里 require 入口那一刻临时把 `Math.random` 换成返回 0 的，require 完换回来。
+
+### 7.2 在容器里编一遍 Windows 安装程序（11-20 验）
+
+改了 `build/installer.nsh`，容器里能用 electron-builder 的真模板把安装、卸载两半都带 `-WX` 编一遍，语法错、没人调用的函数当场红；装、卸、升级的行为容器里跑不了（没有 wine），只能靠 PR 上的 `uninstall-smoke`。
+
+1. `node -e "require('app-builder-lib/out/toolsets/windows.js').getMakeNsisPath().then(r=>console.log(r))"` 先把 makensis 下到缓存（第一次可能断，再跑一次）。
+2. 摆一个假的 `win-unpacked`：主程序 `星芒AI管理工具.exe`（随便一个 exe）、`resources/`、`locales/` 和几个文件就行。
+3. 安装程序要 `!include` 打包时写出的名单 `build/installer-package-entries.nsh`（D05），`--prepackaged` 不跑 afterPack，先手动写：`node -e "require('./scripts/windows-installer-package-entries.cjs').writePackageEntriesInclude({appOutDir:'<假目录>',buildResourcesDir:'build',executableName:'星芒AI管理工具.exe'})"`。这份文件不进仓库，编完删掉。
+4. 写一个小脚本：先 `require('electron-builder')`（先引 `app-builder-lib` 里的单个文件会报循环依赖），把 `app-builder-lib/out/vm/WineVm` 的 `WineVmManager.prototype.exec` 换成「往 `<安装包名>__uninstaller.exe` 拷一个随便的 exe」，再调 `build({ config: require('./electron-builder.config.cjs'), targets: Platform.WINDOWS.createTarget(['nsis'], Arch.x64), prepackaged: '<假目录>', publish: 'never' })`，环境带 `XINGMANG_LOCAL_BUILD=1 CSC_IDENTITY_AUTO_DISCOVERY=false XINGMANG_OUTPUT_DIR=<临时目录>`。卸载程序那一遍先编，假装 wine 跑完以后接着编安装程序那一遍。想看生成的整份脚本，同样换掉 `NsisTarget.prototype.executeMakensis` 把第三个参数存下来。
 
 ## 8. 仓库里的规则，云端线程读到哪些
 

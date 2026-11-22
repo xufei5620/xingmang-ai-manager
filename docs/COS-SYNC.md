@@ -18,6 +18,7 @@ COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude �
 | Codex 官方插件目录（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-codex-plugins-cos` | `xingmang/offline/codex-plugins/latest.json` |
 | Grok CLI Windows 版（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-grok-cos` | `xingmang/offline/grok/latest.json` |
 | OpenCode 桌面端 Mac 版（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-opencode-cos` | `xingmang/offline/opencode/latest.json` |
+| Claude 桌面端的 Cowork 工作区、Mac 上的 Claude Code 程序包（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-claude-components-cos` | 没有索引：位置由客户端自己装的 Claude 里写的版本和校验值算出 |
 
 星芒用 `GITHUB_TOKEN` 创建 GitHub Release，不能依赖这个事件再触发一个 `release: published` 工作流，所以同步写在 `publish-release` 里，是排在 publish 后面的单独作业 `cos-sync`：publish 作业（`release` 环境批准、`update-feed` 串行）成功后才开始；它挂 `cos-sync` 环境，不多一次批准；和手动导入 `sync-published-manager-cos` 共用 `cos-manager-publish` 并发组，因为两边都会写 `xingmang/latest.json`。2026-10-04 以前同步接在 publish 作业末尾，为什么拆出来见下文「网络不稳时」。
 
@@ -104,7 +105,7 @@ Bucket/Region 可省略并使用上述默认值。首次上线前应先检查 `c
 
 真实运行中，官方源下载正常而 COS 单连接 PUT 约为 50 KiB/s，大包可能超过既有上传期限。实现提供分块上传，而不是增加原 PUT 超时：`XINGMANG_COS_MULTIPART_ENABLED` 缺省或 `false` 保持原流程。负责人现场确认权限及存储桶版本控制关闭后，才在受保护环境设置为 `true`；本改动不修改线上变量、凭据或权限。
 
-启用后，16 MiB 及以上的不可变文件使用 1 MiB（1,048,576 字节）分块；并发数 `XINGMANG_COS_MULTIPART_CONCURRENCY` 限定 4–8，默认 8，分块缓冲最多 8 MiB。2 GiB 文件上限对应最多 2048 块，低于 COS 的 10000 块限制；最大 Complete 请求 XML 为 181216 字节，64 KiB 上限仅用于响应读取。小文件、JSON 和三个固定可覆盖的 latest 指针继续使用既有单次 PUT。上传先在同一个可信已打开文件句柄上核对完整 SHA-256，逐块 SHA-256 绑定实际发送内容，按 COS 协议签入查询参数与 Content-MD5。每块响应头等待至多六分钟，显式设置的更短调用方超时仍优先；分块调度总期限默认七十五分钟（已发出的请求收拢后退出，重试前的等待也算在里面），合并正文至多十分钟，Claude 官方包等平台作业仍限九十分钟。Codex 桌面端（官方 ChatGPT 包）的分块期限是一百二十分钟、平台作业限 150 分钟：Windows ARM64 包约 1 GB，实测传到 COS 只有 190~290 KB/s，七十五分钟传到约 850 MB 就会中止，一出新版就失败（#1082）。星芒正式发布和手动导入的作业限 330 分钟，单个安装包的分块期限同样放宽到一百二十分钟。每次请求重新生成有效期三十分钟的签名，覆盖单块请求；整体调度不会复用一份过期签名。
+启用后，16 MiB 及以上的不可变文件使用 1 MiB（1,048,576 字节）分块；并发数 `XINGMANG_COS_MULTIPART_CONCURRENCY` 限定 4–8，默认 8，分块缓冲最多 8 MiB。2 GiB 文件上限对应最多 2048 块，低于 COS 的 10000 块限制；最大 Complete 请求 XML 为 181216 字节，64 KiB 上限仅用于响应读取。小文件、JSON 和三个固定可覆盖的 latest 指针继续使用既有单次 PUT。调用方可以把这个起点调低（`createCosStore` 的 `multipartMinBytes`，1 字节到 16 MiB，只能调低）：Claude 桌面端组件同步调到 1 MiB，原因见下文那一节。上传先在同一个可信已打开文件句柄上核对完整 SHA-256，逐块 SHA-256 绑定实际发送内容，按 COS 协议签入查询参数与 Content-MD5。每块响应头等待至多六分钟，显式设置的更短调用方超时仍优先；分块调度总期限默认七十五分钟（已发出的请求收拢后退出，重试前的等待也算在里面），合并正文至多十分钟，Claude 官方包等平台作业仍限九十分钟。Codex 桌面端（官方 ChatGPT 包）的分块期限是一百二十分钟、平台作业限 150 分钟：Windows ARM64 包约 1 GB，实测传到 COS 只有 190~290 KB/s，七十五分钟传到约 850 MB 就会中止，一出新版就失败（#1082）。星芒正式发布和手动导入的作业限 330 分钟，单个安装包的分块期限同样放宽到一百二十分钟。每次请求重新生成有效期三十分钟的签名，覆盖单块请求；整体调度不会复用一份过期签名。
 
 2026-10-03 的两个真实运行均在 4 MiB 单块等待响应头三分钟后失败：八并发运行 `37103271602` 在约 244 秒提交 58,720,256 字节，四并发对照 `37119586459` 在约 611 秒提交 96,468,992 字节，两次均未开始 Complete 且公共 GET 为 404。减并发未解决单块超时，因此提高这两项时间上限，以容纳近期约 900 MB 包的较慢传输。七十五分钟是分块调度上限，并非整个同步的保证耗时；源下载、在途请求收拢、合并及完整公共回读仍受各自预算和九十分钟作业硬期限约束，实际吞吐与成功率须继续用真实运行验收。
 
@@ -191,11 +192,26 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 
 打开 **Actions → sync-opencode-cos → Run workflow**，分支选 `main` 即可手动跑一次。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/opencode/latest.json`。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。
 
+### Claude 桌面端的工作区和 Mac 程序
+
+Claude Desktop 自己要从官网下两样东西，国内下不动：点进 Cowork 时下的工作区（每个平台一个 1.3 GB 左右的系统盘外加内核等小文件），Mac 上聊天和 Code 要用的 Claude Code 程序包（`claude.app.tar.zst`，一百来 MB）。网络加速 2026-10-30 下线后，yoyo 11-03 定：这两样搬进桶里，由星芒放进 Claude 自己的文件夹，不用加速。11-19 他要先把桶搬起来，所以同步先合进 main；客户端去桶里取、放进 Claude 文件夹的那部分 0.2.25 起有（`claude-desktop-workspace-seed.ts` 放工作区、`claude-desktop-mac-code-seed.ts` 放 Mac 程序，Cowork 虚拟机里那份 Linux 版 Claude Code 由 `claude-desktop-vm-code-seed.ts` 从 npm 国内镜像放，不走桶）。`sync-claude-components-cos`（`scripts/sync-claude-components-cos.cjs`）负责搬：
+
+- 每一部分先下一份最新的 Claude 安装包，只解出里面的 `app.asar`，读出这一版 Claude 要的工作区和 Claude Code 版本、Mac 程序包的校验值。Windows 和 Mac 不同步换版（11-19 Windows 商店版是 5.11492.5，Mac 是 6.6395.1，两边要的工作区不是同一版），所以 Windows 工作区那两部分读 Windows 商店版 x64（`win32/x64/msix/latest/redirect`，星芒在 Windows 上装的就是它），Mac 工作区和 Mac 程序那三部分读 Mac 通用版 zip（`api.anthropic.com/api/desktop/darwin/universal/zip/latest/redirect`，只读响应头里那一跳，必须跳到 `downloads.claude.ai/releases/darwin/universal/` 下的 zip；claude.ai 上同一个入口在 GitHub 的机器上被人机验证挡着）。自己从官网下了 Windows 6.x 安装版的客户，要的工作区桶里可能没有，客户端照旧交还 Claude 自己去官网下。
+- 读法和桶里的位置用的是客户端同一套代码：作业先 `npm ci --ignore-scripts`、编译主进程，脚本再加载 `dist-electron/` 里的 `claude-desktop-component-manifest.js`（读清单）和 `claude-desktop-component-keys.js`（算位置），所以同步传的位置和客户端去取的位置是同一个函数算的（`electron/claude-desktop-components-sync.test.ts` 也钉着）。
+- 五部分（`vm-win32-x64`、`vm-win32-arm64`、`vm-unix-x64`、`vm-unix-arm64` 四份工作区，`code-mac` 两种芯片的程序包）各一台 Ubuntu 机器同时跑。每个文件先 HEAD 桶里的位置：大小和 `x-cos-meta-sha256` 都对得上就跳过，所以没出新版时几分钟就结束；位置上有东西但对不上就停下报警，不覆盖。
+- 缺的才从 `downloads.claude.ai` 的两个固定目录下（`/vms/linux/<x64|arm64>/<工作区版本>/<文件>.zst`、`/claude-code-releases/<版本>/darwin-<芯片>/claude.app.tar.zst`，不跟跳转），大小和 SHA-256 必须和清单一字不差，再原样传到 `xingmang/offline/claude-components/vm/<工作区版本>/<win32|unix>-<x64|arm64>/<SHA-256>/<文件>.zst` 或 `…/code/<版本>/darwin-<芯片>/<SHA-256>/claude.app.tar.zst`（`application/zstd`，不可覆盖），完整回读、HEAD 核过才算完。下下来的东西不运行、不解开。
+- 不核安装包签名：安装包在这里只用来知道该搬哪几个官网文件。客户电脑上放之前还要拿它**自己装的那份** Claude 里写的校验值再核一遍，桶里的东西对不上就丢掉不放，所以桶出了问题最多是客户白下一次。
+- 没有 `latest.json`：客户端按自己的 Claude 版本算位置，桶里只增不改。一版工作区四个平台约 5.2 GB、换一版传一次（往上海分块约 190~300 KB/s，每份一个半小时上下，单个文件分块期限 4 小时，作业限 330 分钟）；程序包跟 Claude Code 版本走，大约一周一次。旧版不删，要清可以在桶上设生命周期规则（桶设置，负责人决定）。
+- 大文件要走分块上传，所以 `cos-sync` 环境的 `XINGMANG_COS_MULTIPART_ENABLED` 得是 `true`（Codex 桌面端那条同步已经靠它传 700 MB 以上的包）；关着时工作区那四部分会在上传那一步失败报警，程序包那部分照常。这条同步 1 MiB 及以上的文件都分块传，不等通用的 16 MiB：11-21 GitHub 的机器往上海一条连接只有 10~18 KB/s，工作区里约 15 MB 的 `vmlinuz.zst` 一次性 PUT 要传 14~20 分钟，传完 COS 回 HTTP 400（单次 PUT 不读错误正文，看不到是哪个错误码），或者 20 分钟还没传完就超时，Windows 两部分连着红（#2069）；同一时段分块并行传的 rootfs 和 Mac 程序包都传上去了。
+- 客户端那部分（0.2.25 起）带远程开关：`claude-desktop-workspace-seed` 关工作区，`claude-desktop-code-seed` 关 Mac 程序（跟 Windows 放程序共用），见 `docs/SERVICE-STATUS.md`。账单不对先关开关，同步可以照跑。客户端在装好或更新好 Claude Desktop、开机、从星芒点「打开」时就下工作区，不等客户点进 Cowork（yoyo 11-20 定），每台约 1.3 GB；同一版每台电脑 7 天内最多下一次。
+
+打开 **Actions → sync-claude-components-cos → Run workflow**，分支选 `main` 即可手动跑一次（五部分都跑，已经在桶里的跳过）。日志里搜 `"event":"plan"` 看这次读到的工作区版本、Claude Code 版本和要搬的文件，搜 `stage-failed` 看卡在哪一步。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。
+
 ### 同步失败报警
 
-五条官方定时同步（Claude、Codex 桌面端离线包，Codex 插件目录，Windows 版 Grok，Mac 版 OpenCode）各带一个 `alert` 作业（`scripts/cos-sync-alert.cjs`），等其它作业结束后看这次定时同步有没有失败（作业失败、取消或超时都算）：
+六条官方定时同步（Claude、Codex 桌面端离线包，Codex 插件目录，Windows 版 Grok，Mac 版 OpenCode，Claude 桌面端的工作区和 Mac 程序）各带一个 `alert` 作业（`scripts/cos-sync-alert.cjs`），等其它作业结束后看这次定时同步有没有失败（作业失败、取消或超时都算）：
 
-- 第 1 次失败不出声；**连续第 2 次**失败就开一条 issue「离线包同步连续失败：Claude 桌面端 / Codex 桌面端 / Codex 插件目录 / Grok CLI（Windows） / OpenCode 桌面端（Mac）」，指派给仓库负责人，写明连续几次、最早从什么时候、最近一次运行的链接和红的是哪个作业（离线包是哪个平台）。
+- 第 1 次失败不出声；**连续第 2 次**失败就开一条 issue「离线包同步连续失败：Claude 桌面端 / Codex 桌面端 / Codex 插件目录 / Grok CLI（Windows） / OpenCode 桌面端（Mac） / Claude 桌面端的工作区和 Mac 程序」，指派给仓库负责人，写明连续几次、最早从什么时候、最近一次运行的链接和红的是哪个作业（离线包是哪个平台）。
 - 之后再失败只更新这条 issue 的正文，不另开；下一次定时同步成功就自动留言「恢复正常更新」并关闭。
 - 手动运行（Run workflow）不计数，也不开关 issue；重跑以前的某次定时运行也不改 issue，以最新一次定时同步为准。只有 `alert` 作业自己红（比如 GitHub 接口临时出错）的那次不算同步失败。
 - 看原因：打开 issue 里的运行链接，点红色作业，日志里搜 `stage-failed`，`stage` 是卡在哪一步，`failure.code` 是原因。

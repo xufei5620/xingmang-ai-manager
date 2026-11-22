@@ -80,6 +80,22 @@ describe('main process window events', () => {
     expect(assignments[0].value).toBe("(target) => { showMainWindow(); deliverToMainWindow('onNavigate', target) }")
   })
 
+  it('hands the tray restore load result back to the release controller, so a failed load is retried on the next show', () => {
+    // 11-18 复核 U05：缩到托盘关掉的界面重新加载失败时，这里原先只记一行日志、不交回去，
+    // 控制器一直停在「正在重新加载」，再怎么叫出窗口都不再加载。
+    const { source } = mainSource()
+    const reloads: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isPropertyAssignment(node) && node.name.getText(source) === 'reload'
+        && ts.isCallExpression(node.parent.parent) && node.parent.parent.expression.getText(source) === 'createRendererRelease') {
+        reloads.push(node.initializer.getText(source))
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(reloads).toEqual(['() => mainWindow.loadURL(resolveMainWindowUrl(systemService.readStoredConfig().theme))'])
+  })
+
   it('passes the macOS View zoom commands to the main window interface only while it is the focused window', () => {
     // 深查 TR-3：画布窗口在前时 ⌘- / ⌘= 不再把整个画布界面缩放；付款、开票窗口同样不管，跟 Windows 上一样。
     const { source } = mainSource()
@@ -222,9 +238,12 @@ describe('main process quit cleanup', () => {
         "app.off('browser-window-focus', resumeStallMonitor)",
         "app.off('browser-window-blur', pauseStallMonitor)",
         'mainStallMonitor.stop()',
+        'mainHangWatchdog.stop()',
         'detachPrivacyListener()',
         'usageStats.stop()',
         'noteUsageEvent = null',
+        'clientVersionReporter?.stop()',
+        'noteAccountChangedForVersionReport = null',
       ],
       'acceleration-power': ["powerMonitor.off('suspend', onSuspend)", "powerMonitor.off('resume', onResume)"],
       'cli-hook-events': ['cliHookEvents.dispose()'],
@@ -379,6 +398,89 @@ describe('main process quit cleanup', () => {
   })
 })
 
+describe('main process launch install', () => {
+  function variableInitializer(name: string): string {
+    const { source } = mainSource()
+    const found: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === name && node.initializer) found.push(node.initializer.getText(source))
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(found).toHaveLength(1)
+    return found[0]
+  }
+
+  it('looks at the same work before deciding and again right before installing', () => {
+    // 打开时装会把软件关掉重开（O07）：决定装之前、预告完真去装之前，都要看重启装更新前要问的那几样（D10）和付款窗口。
+    const { source } = mainSource()
+    const working: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && ['decideLaunchInstall', 'shouldStillInstallAtLaunch'].includes(node.expression.text)) {
+        const [argument] = node.arguments
+        if (argument && ts.isObjectLiteralExpression(argument)) {
+          for (const property of argument.properties) {
+            if (ts.isPropertyAssignment(property) && property.name.getText(source) === 'working') {
+              working.push(`${node.expression.text}: ${property.initializer.getText(source)}`)
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(working.sort()).toEqual([
+      'decideLaunchInstall: launchInstallWork().length > 0',
+      'shouldStillInstallAtLaunch: launchInstallWork().length > 0',
+    ])
+    const launchWork = variableInitializer('launchInstallWork')
+    expect(launchWork).toContain('runningRestartWork()')
+    expect(launchWork).toContain('paymentWindow.isOpen()')
+    // 重启装更新前那一问读的也是这一份，两边说的「在忙」不会走样。
+    expect(variableInitializer('unfinishedRestartWork')).toContain('buildUnfinishedRestartWorkPrompt(runningRestartWork())')
+  })
+
+  it('takes back the attempt before clearing the notice when it backs off after the notice', () => {
+    // 跳框看到预告卡收了就会再看这一版算不算打开时装接手的：要先撤「试过了」，它才会等聊天、画布做完接着问。
+    const start = variableInitializer('startLaunchInstall')
+    const backOff = start.slice(start.indexOf('if (!stillInstallable()) {\n'))
+    const undo = backOff.indexOf('undoLaunchInstallAttempt(pendingUpdateRecord, attempt)')
+    expect(undo).toBeGreaterThan(0)
+    expect(undo).toBeLessThan(backOff.indexOf('updaterService.setLaunchInstallNotice(null)'))
+    expect(backOff.indexOf('updaterService.setLaunchInstallNotice(null)')).toBeLessThan(backOff.indexOf('updaterService.install()'))
+  })
+})
+
+describe('main process update install handoff', () => {
+  // The object main.ts hands the updater as its quit handoff, keyed by property name.
+  function updateQuitHandoff(): Record<string, string> {
+    const { source } = mainSource()
+    const handoffs: Array<Record<string, string>> = []
+    function visit(node: ts.Node): void {
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && node.left.getText(source) === 'updateQuitHandoff' && ts.isObjectLiteralExpression(node.right)) {
+        const properties: Record<string, string> = {}
+        for (const property of node.right.properties) {
+          if (ts.isPropertyAssignment(property)) properties[property.name.getText(source)] = property.initializer.getText(source)
+        }
+        handoffs.push(properties)
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(handoffs).toHaveLength(1)
+    return handoffs[0]
+  }
+
+  it('closes the canvas for the installer without tearing it down, and lets it open again when the installer never starts', () => {
+    // 更新安装前把画布拆掉（dispose），安装程序没起来时星芒还开着，画布却再也打不开，只能重启星芒（11-18 复核 U02）。
+    const handoff = updateQuitHandoff()
+    expect(handoff.prepare).toContain('canvasController.suspendForQuit()')
+    expect(handoff.prepare).not.toContain('canvasController.dispose()')
+    expect(handoff.abort).toContain('canvasController.resumeAfterAbortedQuit()')
+  })
+})
+
 describe('main process unexpected exit', () => {
   it('only honours the simulated main process crash in development builds', () => {
     // 模拟开关走的是真的未捕获异常那条路，打包版认了，真机演示就混进崩溃上报的统计（D101）。
@@ -405,8 +507,30 @@ describe('main process application protocol', () => {
     const { source } = mainSource()
     const body = moduleFunction(source, 'registerApplicationProtocol').getText(source)
     expect(body).toContain("registerFileProtocol('xingmang'")
-    expect(body).toContain('callback({ path: target, headers: applicationSecurityResponseHeaders() })')
+    // applicationResponseHeaders 是安全头再加一个 Document-Policy，app-protocol.test.ts 钉着安全头一条不少。
+    expect(body).toContain('callback({ path: target, headers: applicationResponseHeaders() })')
     expect(body).not.toMatch(/callback\(\{ path: target \}\)/)
+  })
+})
+
+describe('main process hang reports', () => {
+  // 卡住时上报卡在哪（hang-report.ts）：跟着「自动发送错误报告」开关走、只在抽中的那部分打开里抓、一次打开各报一回。
+  it('asks the renderer where it is stuck only when sampled, switched on and not asked yet', () => {
+    const { source } = mainSource()
+    const body = moduleFunction(source, 'reportRendererHang').getText(source)
+    expect(body).toContain('if (rendererHangReported || !hangReportsSampled || !crashReportingEnabled()) return')
+    expect(body.indexOf('rendererHangReported = true')).toBeLessThan(body.indexOf('collectRendererCallStack('))
+    expect(readMainWiringSource()).toContain("    reportRendererHang(window, runtimeLog)\n")
+  })
+
+  it('arms the main-process watchdog only from a counted stall, only when sampled and switched on', () => {
+    const sourceText = readMainWiringSource()
+    expect(sourceText).toContain('if (hangReportsSampled && crashReportingEnabled()) mainHangWatchdog.arm()')
+    expect(sourceText).toContain('if (update.crashReporting === false) mainHangWatchdog.stop()')
+  })
+
+  it('switches the call stack feature on without dropping an --enable-features someone else passed', () => {
+    expect(readMainWiringSource()).toContain("app.commandLine.appendSwitch('enable-features', [app.commandLine.getSwitchValue('enable-features'), rendererCallStackFeature].filter(Boolean).join(','))")
   })
 })
 
@@ -429,7 +553,7 @@ describe('main process external links', () => {
     const { source } = mainSource()
     const entries = nonSiteAllowlistEntries(source)
     expect(entries).toContain('claudeDesktopOfflinePackagesUrl')
-    // 「去 Claude 官网」打开的 claude.com/download 经它收进来。
+    // 「前往 Claude 官网」打开的 claude.com/download 经它收进来。
     expect(entries).toContain('...Object.values(externalClientOfficialDownloadUrls)')
     expect(source.getText()).toContain("import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failure'")
   })

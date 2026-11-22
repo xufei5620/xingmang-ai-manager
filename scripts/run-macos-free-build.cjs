@@ -15,6 +15,7 @@ const { verifyEphemeralMacSigningIdentity } = require('./macos-ephemeral-signing
 const { validateManifest } = require('./stage-acceleration-bundle.cjs')
 const { mergeMacosFreeArchitectureOutputs } = require('./merge-macos-free-artifacts.cjs')
 const { renameMacosChipArtifacts } = require('./rename-macos-chip-artifacts.cjs')
+const { compressMacosDmgArtifacts } = require('./compress-macos-dmg.cjs')
 const { createRehearsalSigningLedger } = require('./macos-published-signing-identity.cjs')
 
 const SECURITY_PATH = '/usr/bin/security'
@@ -393,6 +394,7 @@ function resolveFreeMacBuildOptions(options = {}) {
     verifyArtifacts: options.verifyArtifacts || verifyMacosFreeArtifacts,
     mergeArtifacts: options.mergeArtifacts || mergeMacosFreeArchitectureOutputs,
     renameArtifacts: options.renameArtifacts || renameMacosChipArtifacts,
+    compressDmgs: options.compressDmgs || compressMacosDmgArtifacts,
   }
 }
 
@@ -503,6 +505,14 @@ async function runFreeMacBuild(options = {}) {
     await build.renameArtifacts({
       outputDirectory: build.outputDirectory,
       version: build.packageVersion,
+    })
+
+    // 两个 DMG 换成 LZMA 压缩，客户第一次下载小三成左右（原因见 compress-macos-dmg.cjs）。
+    // 必须在校验之前：校验要挂载、检查的是真正发出去的那一份。
+    await build.compressDmgs({
+      outputDirectory: build.outputDirectory,
+      version: build.packageVersion,
+      env: build.baseEnvironment,
     })
 
     const artifacts = await build.verifyArtifacts({

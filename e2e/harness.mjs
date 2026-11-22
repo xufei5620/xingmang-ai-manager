@@ -3,6 +3,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { rendererSingleCopyPackages } from '../scripts/renderer-single-copy.mjs'
+import { watchClickStalls } from './click-stall.mjs'
 import { createPageErrorCollector } from './page-errors.mjs'
 
 // T-B1: 十四个浏览器套件各自抄了一遍「起 Vite dev server + 起 Chromium + 开一个记录
@@ -82,6 +84,11 @@ export async function createFixtureServer(inlineConfig = {}) {
     const port = await reserveFreePort()
     const server = await createServer({
       ...inlineConfig,
+      // U06: 多数 renderer-v2 夹具传 configFile:false，吃不到 vite.config.ts 里的同一条规则；
+      // 画布目录单独装过依赖时，依赖扫描会从 canvas-v2/index.html 摸到那里的第二份 React，
+      // 谁先被扫到用谁。所有夹具 server 都从这里起，在这里统一只认仓库根目录那一份
+      // （scripts/renderer-single-copy.mjs）。跟配置文件里的那份合并时重复项无害。
+      resolve: { ...inlineConfig.resolve, dedupe: [...rendererSingleCopyPackages, ...(inlineConfig.resolve?.dedupe ?? [])] },
       // strictPort:true 是这件事的重点：钉住预约到的号，不许 Vite 再自己往上探，
       // 否则它又会从某个别人可能也在用的端口开始。
       server: { host: '127.0.0.1', ...inlineConfig.server, port, strictPort: true },
@@ -204,32 +211,67 @@ function launchFixtureBrowser() {
 }
 
 /**
+ * 依次跑完每一步收尾，前面哪步抛错也不跳过后面的；返回该抛的那个错，全都顺利时返回 undefined。
+ *
+ * `failure` 是收尾之前就已经发生的那个错（比如浏览器没起来）：它排第一个，收尾再出错
+ * 也不会把它盖掉。只有一个错时原样返回；不止一个时用 AggregateError 全部带上。
+ */
+async function runCleanup(steps, failure) {
+  const errors = failure === undefined ? [] : [failure]
+  for (const step of steps) {
+    try {
+      await step()
+    } catch (error) {
+      errors.push(error)
+    }
+  }
+  if (errors.length > 1) return new AggregateError(errors, 'Browser fixture cleanup failed')
+  return errors[0]
+}
+
+/**
  * 一个 Vite dev server + 一个 Chromium + 一份 pageerror 记录。
  * `before`/`after` 型套件调 start/stop；每个用例自带一套的套件用 withBrowserFixture。
+ *
+ * 第二个参数只给 harness 自己的测试换掉起 server、起浏览器这两步，套件不传。
  */
-export function createBrowserFixture(options = {}) {
+export function createBrowserFixture(options = {}, { startServer = startFixtureServer, launchBrowser = launchFixtureBrowser } = {}) {
   let server
   let browser
   let baseUrl
   const pageErrors = createPageErrorCollector()
 
   async function start() {
-    const started = await startFixtureServer(options)
+    // 上一套还没 stop 就再 start，旧的 server 和浏览器就没人关了。
+    if (server || browser) throw new Error('Browser fixture is already started')
+    const started = await startServer(options)
+    let launched
+    try {
+      launched = await launchBrowser()
+    } catch (error) {
+      // U03: server 这时已经在监听。start 抛错时调用方手里没有任何能关它的东西，
+      // 不在这里关掉，这个监听句柄会让 node --test 的子进程一直不退出，只能等外面的超时。
+      throw await runCleanup([() => started.server.close()], error)
+    }
     server = started.server
     baseUrl = started.baseUrl
-    browser = await launchFixtureBrowser()
+    browser = launched
     return baseUrl
   }
 
   async function stop() {
-    await browser?.close()
-    await server?.close()
+    // 先把引用摘下来：浏览器关失败时 server 照样关，再调一次 stop 也不会重复关。
+    const closing = { browser, server }
     browser = undefined
     server = undefined
+    const error = await runCleanup([() => closing.browser?.close(), () => closing.server?.close()])
+    if (error) throw error
   }
 
   async function newPage({ viewport = options.viewport ?? defaultViewport, sameOriginOnly = options.sameOriginOnly, ...rest } = {}) {
-    const page = pageErrors.watch(await browser.newPage({ viewport, ...rest }))
+    // A click that stalls after its mouse events went out reports what the page
+    // and the browser were doing at that moment (e2e/click-stall.mjs).
+    const page = watchClickStalls(pageErrors.watch(await browser.newPage({ viewport, ...rest })), options.clickStall)
     if (options.actionTimeoutMs) page.setDefaultTimeout(options.actionTimeoutMs)
     if (options.navigationTimeoutMs) page.setDefaultNavigationTimeout(options.navigationTimeoutMs)
     // 夹具只该向自己的 dev server 取东西。放行外部请求会让一次意外的真实出网变成
@@ -252,10 +294,11 @@ export function createBrowserFixture(options = {}) {
 }
 
 /** 每个用例起一套自己的 server / 浏览器时用它：跑完先断言 pageerror，再无条件拆掉。 */
-export async function withBrowserFixture(options, run) {
-  const fixture = createBrowserFixture(options)
-  await fixture.start()
+export async function withBrowserFixture(options, run, dependencies) {
+  const fixture = createBrowserFixture(options, dependencies)
   try {
+    // start 放进 try：哪天 start 又只起了一半就抛错，finally 里的 stop 也会把已经起来的那部分关掉。
+    await fixture.start()
     const result = await run(fixture)
     // 断言放在 finally 之前：run 自己失败时要让它的错误原样冒上去，而不是被这里的
     // pageerror 断言盖掉。

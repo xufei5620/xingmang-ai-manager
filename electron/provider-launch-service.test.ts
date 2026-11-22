@@ -12,6 +12,7 @@ import {
 } from './provider-launch-service'
 import type { DesktopAppStatus, SystemServiceOptions, ToolStatus } from './system-service'
 import { createServiceContext } from './system-service-context'
+import { type CliInstallation, UnrecognizedDarwinCliError } from './tool-installation'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 
 // #1070 第 3 步把打开工具那一段搬成了 createProviderLaunchService。真正开终端的各条路仍由 system-service 的测试经
@@ -48,7 +49,7 @@ function createService(options: SystemServiceOptions = {}) {
     findExecutable: async () => null,
     ...options,
   })
-  const inspectCliTool = vi.fn(async () => ({ status: absent, installation: null }))
+  const inspectCliTool = vi.fn(async (): Promise<{ status: ToolStatus; installation: CliInstallation | null }> => ({ status: absent, installation: null }))
   const repairGrokHooksBeforeLaunch = vi.fn(async () => undefined)
   const service = createProviderLaunchService(context, {
     providerEnvironment: () => ({}),
@@ -81,6 +82,29 @@ describe('provider launch service', () => {
     await expect(service.launchProvider('claude', workspace)).rejects.toThrow('Mac 没允许星芒打开这个文件夹。打开「系统设置 › 隐私与安全性 › 文件和文件夹」，把「星芒AI管理工具」和「终端」两项都打开，再点一次「打开」。')
     expect(context.toolLaunchedAt.has('claude')).toBe(false)
     expect(inspectCliTool).not.toHaveBeenCalled()
+  })
+
+  // Mac 验收 R1：认不出来路的那份打不开时，客户看到的是能照着做的一句，而不是只说没打开成。
+  it('tells a Mac user to install the app copy when the Codex found cannot be recognised', async () => {
+    const resolveCliCommand = vi.fn(async () => {
+      throw new UnrecognizedDarwinCliError(new Error('not the standalone layout'))
+    })
+    const { service, workspace, inspectCliTool } = createService({ platform: 'darwin', resolveCliCommand })
+    inspectCliTool.mockResolvedValue({
+      status: { installed: true, version: null, path: '/opt/third-party/bin/codex', installDirectory: '/opt/third-party/bin', unrecognizedInstall: true },
+      installation: {
+        commandPath: '/opt/third-party/bin/codex',
+        installDirectory: '/opt/third-party/bin',
+        packageRoot: null,
+        npmPrefix: null,
+        source: 'native',
+      },
+    })
+
+    await expect(service.launchProvider('codex', workspace)).rejects.toThrow(
+      '未能打开 Codex CLI：这一份不是星芒装的，星芒核对不了它是不是官方原版，为了安全没有打开。到首页点「使用星芒安装」，装好就能打开。',
+    )
+    expect(resolveCliCommand).toHaveBeenCalledOnce()
   })
 
   it('records the launch in the shared records and repairs the Grok hooks first', async () => {

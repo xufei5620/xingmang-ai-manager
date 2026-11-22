@@ -14,6 +14,11 @@ import {
   assertSafeDataFile,
   ensureSafeDataDirectory,
 } from './safe-local-data'
+import {
+  createSessionActivityTracker,
+  observeCodexActivity,
+  type SessionTurnActivity,
+} from './session-activity'
 import { exportSessionMarkdown, sessionMarkdownFileName } from './session-markdown-export'
 
 const MAX_OPERATION_JOURNAL_BYTES = 64 * 1024 * 1024
@@ -74,6 +79,8 @@ export interface CodexSessionMessage {
   role: string
   text: string
   timestamp: string | null
+  /** 只挂在一轮里最后一条 AI 回复上：这一轮跑了哪些命令、改了哪些文件。缺省 = 这一轮没有（旧行为）。 */
+  activity?: SessionTurnActivity
 }
 
 export interface CodexSessionMessageStats {
@@ -278,10 +285,46 @@ function isInside(parentPath: string, childPath: string): boolean {
   return isLexicallyInside(resolveRelocatedPath(stripWindowsNamespace(parentPath)), resolveRelocatedPath(stripWindowsNamespace(childPath)))
 }
 
+function outsideCodexHome(label: string): Error {
+  return new Error(`${label}不在 CODEX_HOME 内，已拒绝操作`)
+}
+
 function ensureInside(parentPath: string, childPath: string, label: string): string {
   const resolved = resolveFilePath(childPath)
-  if (!isInside(parentPath, resolved)) throw new Error(`${label}不在 CODEX_HOME 内，已拒绝操作`)
+  if (!isInside(parentPath, resolved)) throw outsideCodexHome(label)
   return resolved
+}
+
+/**
+ * validateRollout only accepts a rollout whose real location is inside the real
+ * CODEX_HOME. A destination folder that is a link out of it (archived_sessions
+ * junctioned to another drive, say) passes the lexical check, so the move and
+ * the database update used to succeed while every later detail, export and
+ * restore refused the file: the session could never be brought back from the
+ * app (D13). Archive and restore ask this same question before anything moves.
+ * A folder that does not exist yet is judged by its nearest existing ancestor,
+ * because mkdir creates the rest as plain directories under it; a dangling link
+ * cannot be shown to stay inside and is refused.
+ */
+async function isReadableRolloutDirectory(codexHome: string, directory: string): Promise<boolean> {
+  const homeRealPath = await fsPromises.realpath(codexHome)
+  const missing: string[] = []
+  let current = resolveFilePath(directory)
+  for (;;) {
+    let realPath: string
+    try {
+      realPath = await fsPromises.realpath(current)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      const dangling = await fsPromises.lstat(current).then(() => true, () => false)
+      const parent = path.dirname(current)
+      if (dangling || parent === current) return false
+      missing.unshift(path.basename(current))
+      current = parent
+      continue
+    }
+    return isInside(homeRealPath, path.join(realPath, ...missing))
+  }
 }
 
 function databaseExists(databasePath: string): boolean {
@@ -578,6 +621,7 @@ async function streamMessages(
   rolloutPath: string,
   maximumLineBytes: number,
   onMessage: (message: CodexSessionMessage) => void | Promise<void>,
+  onEntry?: (value: unknown) => void,
 ): Promise<CodexSessionMessageStats> {
   const stats: CodexSessionMessageStats = {
     total: 0,
@@ -597,6 +641,7 @@ async function streamMessages(
       stats.invalidLines += 1
       return
     }
+    onEntry?.(parsed)
     const message = extractMessage(parsed)
     if (!message) return
     stats.total += 1
@@ -923,16 +968,19 @@ export class CodexSessionsService {
     const rolloutPath = await validateRollout(this.codexHome, row.rolloutPath, row.id)
     const messages: CodexSessionMessage[] = []
     let textTruncated = false
+    const activity = createSessionActivityTracker()
     const messageStats = await streamMessages(rolloutPath, this.maxJsonLineBytes, (message) => {
       // 预览上限只约束 IPC 返回内容；导出复用解析器，不能在解析阶段丢掉正文（#600）。
+      let retained = message
       if (message.text.length > DETAIL_TEXT_LIMIT) {
         textTruncated = true
-        messages.push({ ...message, text: `${message.text.slice(0, DETAIL_TEXT_LIMIT)}\n…` })
-      } else {
-        messages.push(message)
+        retained = { ...message, text: `${message.text.slice(0, DETAIL_TEXT_LIMIT)}\n…` }
       }
+      messages.push(retained)
+      activity.message(message.role, retained)
       if (messages.length > DETAIL_MESSAGE_LIMIT) messages.shift()
-    })
+    }, (value) => observeCodexActivity(activity, value))
+    activity.finish()
     return {
       session: await toSummary(row, this.codexHome),
       messages,
@@ -1316,6 +1364,7 @@ export class CodexSessionsService {
   private async archiveTarget(row: ThreadRow, sourcePath: string, archived: boolean): Promise<string> {
     if (archived) {
       const directory = ensureInside(this.codexHome, path.join(this.codexHome, 'archived_sessions'), '归档目录')
+      if (!await isReadableRolloutDirectory(this.codexHome, directory)) throw outsideCodexHome('归档目录')
       await fsPromises.mkdir(directory, { recursive: true })
       return availableTarget(directory, path.basename(sourcePath), row.id)
     }
@@ -1324,7 +1373,12 @@ export class CodexSessionsService {
       try {
         await fsPromises.access(recorded)
       } catch {
-        return ensureInside(this.codexHome, recorded, '恢复目录')
+        // The original folder may have been linked elsewhere since archiving;
+        // putting the rollout back there would strand it, so it goes to
+        // recovered instead.
+        if (await isReadableRolloutDirectory(this.codexHome, path.dirname(recorded))) {
+          return ensureInside(this.codexHome, recorded, '恢复目录')
+        }
       }
     }
     const recoveredDirectory = ensureInside(
@@ -1332,6 +1386,7 @@ export class CodexSessionsService {
       path.join(this.codexHome, 'sessions', 'recovered'),
       '恢复目录',
     )
+    if (!await isReadableRolloutDirectory(this.codexHome, recoveredDirectory)) throw outsideCodexHome('恢复目录')
     await fsPromises.mkdir(recoveredDirectory, { recursive: true })
     return availableTarget(recoveredDirectory, path.basename(sourcePath), row.id)
   }

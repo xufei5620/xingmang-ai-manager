@@ -1,7 +1,17 @@
 import { createHash } from 'node:crypto'
 import { activeProviderIds, buildAccountKeyName, resolveManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 import { resolveDefaultCliModel, type CliModelHints } from './cli-model-defaults'
-import { findAccountKeyById, isKeyQuotaExhaustedMessage, managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import {
+  accountKeyExpiredTime,
+  findAccountKeyById,
+  inheritedKeySettings,
+  isKeyQuotaExhaustedMessage,
+  isUsedUpKeyLimit,
+  managedKeyQuotaExhaustedMessage,
+  managedKeyStoppedMessage,
+  sub2ApiManagedKeyStoppedMessage,
+  type InheritedKeySettings,
+} from './account-key-quota'
 import {
   loadAccountGroupHints,
   loadManagedCliGroupListing,
@@ -104,7 +114,7 @@ type ManagedKeyAccountService = Pick<RelayBackendClient,
 
 class AccountSessionChangedError extends Error {
   constructor() {
-    super('星芒账号已切换，已停止本次 API Key 初始化')
+    super('星芒账号已切换，已停止本次密钥初始化')
     this.name = 'AccountSessionChangedError'
   }
 }
@@ -331,6 +341,34 @@ async function retireReplacedKey(
   }
 }
 
+// 换了分组签的新 Key 照抄旧那把此刻的限制（11-18 复核 O03）：设了上限只给剩下的，设了到期日照旧到期。
+// 历史账号买订阅、订阅到期，分组改名、被删，都会让工具换一个分组签 Key；以前新的一律不限额、永不过期，
+// 客户给这个工具设的上限就悄悄没了。上限用完了、已经到期了的不换（换过去就等于放开，同 D3 那两道）；
+// 读不到旧那把也不换，照实报错、下一轮再试，不退成不限额。网页上已经删掉的没有限制可抄，照旧签。
+async function regroupedKeyLimits(
+  accountService: ManagedKeyAccountService,
+  previous: Pick<StoredManagedCliKey, 'id'>,
+  siteId: string | undefined,
+): Promise<InheritedKeySettings | null> {
+  const { listKeys } = accountService
+  // 正式的两套包装（ipc/handlers/context.ts）都带着密钥列表，缺它的只有只测分组的替身。
+  if (typeof listKeys !== 'function') return null
+  const current = await findAccountKeyById((query) => listKeys.call(accountService, query), previous.id)
+  if (!current) return null
+  const expiredTime = accountKeyExpiredTime(current.expiredAt)
+  if (expiredTime !== -1 && expiredTime * 1000 <= Date.now()) {
+    throw new Error(siteId === 'solov-api' ? sub2ApiManagedKeyStoppedMessage : managedKeyStoppedMessage)
+  }
+  if (isUsedUpKeyLimit(current)) throw new Error(managedKeyQuotaExhaustedMessage)
+  // Sub2API 的额度是金额、new-api 的是整数额度单位，各取后端允许的最小正数（同撤销后换新那条）。
+  return inheritedKeySettings(current, siteId === 'solov-api' ? 0.01 : 1)
+}
+
+// 照抄了限制就一定新签：同组里一把不限额的同名 Key 会被直接拿来用，限制又丢了。
+function regroupedKeyInput(limits: InheritedKeySettings | null): Partial<InheritedKeySettings> & { fresh?: true } {
+  return limits ? { ...limits, fresh: true } : {}
+}
+
 async function resolveManagedCliKeys(
   accountService: ManagedKeyAccountService,
   capture: AccountSessionCapture,
@@ -424,6 +462,9 @@ async function resolveManagedCliKeys(
     }))
     const failed: ManagedCliKeyFailure[] = []
     const regrouped: ProviderId[] = []
+    // 换组没换成、旧那把又带着限制（或者还没读清带没带）的几家：旧那把这一轮不交出去，但缓存里得留着它，
+    // 拿掉了下一轮就认不出这是换组，会照常签一把不限额的。
+    const retained = new Map<ProviderId, StoredManagedCliKey>()
     let fetchedFromServer = false
     let droppedDeadKey = false
 
@@ -434,11 +475,20 @@ async function resolveManagedCliKeys(
       const group = groupFor(provider)
       const previous = usableCache.find((entry) => entry.provider === provider)
       const previousGroup = previous?.group
+      let guardsLimits = false
       try {
         assertSameAuthenticatedUser(accountService, capture)
+        let limits: InheritedKeySettings | null = null
+        if (previous && previousGroup !== group) {
+          guardsLimits = true
+          limits = await regroupedKeyLimits(accountService, previous, activeSiteId)
+          guardsLimits = limits !== null
+          assertSameAuthenticatedUser(accountService, capture)
+        }
         const result = await accountService.provisionCliKey({
           name: profiles[provider].keyName,
           group,
+          ...regroupedKeyInput(limits),
         })
         assertSameAuthenticatedUser(accountService, capture)
         keys.set(provider, {
@@ -455,6 +505,7 @@ async function resolveManagedCliKeys(
         fetchedFromServer = true
       } catch (error) {
         rethrowAccountSessionChange(error)
+        if (guardsLimits && previous) retained.set(provider, previous)
         if (groupCheck && listing && previous) {
           if (listing.names.includes(previous.group)) {
             // 三把都缓存、对照改了却没换过去：旧那把的分组还在、照样能用，接着用它，过一会儿再试。
@@ -462,8 +513,13 @@ async function resolveManagedCliKeys(
             if (keyStore) await rememberGroupCheck(keyStore, groupCheck.checks, groupCheck.scope, userId, { ...groupCheck.record, succeeded: false })
             continue
           }
-          // 分组没了，旧那把已经用不了：从缓存里拿掉，下一轮照常重签、照实报失败，不再拿它当「已连好」。
-          droppedDeadKey = true
+          if (retained.has(provider)) {
+            // 分组没了，旧那把却得留着（见 retained）：缓存还是全的，过一会儿就再查一次、照实报，不等到明天。
+            if (keyStore) await rememberGroupCheck(keyStore, groupCheck.checks, groupCheck.scope, userId, { ...groupCheck.record, succeeded: false })
+          } else {
+            // 分组没了，旧那把已经用不了：从缓存里拿掉，下一轮照常重签、照实报失败，不再拿它当「已连好」。
+            droppedDeadKey = true
+          }
         }
         // 签 Key 那次请求走的线路、状态码、请求编号跟着这条失败走，写 Key 失败的日志要用（request-diagnostics.ts）。
         failed.push(carryRequestDiagnostics(error, {
@@ -481,17 +537,17 @@ async function resolveManagedCliKeys(
         assertSameAuthenticatedUser(accountService, capture)
         // 下线工具以前签的那把还留在缓存里，不因为这次保存丢掉；只是不再交出去写配置。
         const cachedKeys = providerIds.flatMap((provider) => {
-          const entry = keys.get(provider)
+          const entry = keys.get(provider) ?? retained.get(provider)
           return entry ? [entry] : []
         })
         const saved = cacheRevision === undefined
           ? await keyStore.save(userId, cachedKeys)
           : await keyStore.save(userId, cachedKeys, cacheRevision)
         assertSameAuthenticatedUser(accountService, capture)
-        if (saved === false) storageWarning = '本地 API Key 缓存已被其他操作更新，本次保留新缓存'
+        if (saved === false) storageWarning = '本地密钥缓存已被其他操作更新，本次保留新缓存'
       } catch (error) {
         rethrowAccountSessionChange(error)
-        storageWarning = error instanceof Error ? error.message : '本地 API Key 保存失败'
+        storageWarning = error instanceof Error ? error.message : '本地密钥保存失败'
       }
     }
 
@@ -635,9 +691,6 @@ export async function configureManagedClis(
         }
         const groupRejected = isGroupRejection(error)
         if (!groupRejected && !isCredentialFailure(error)) throw error
-        // 先从缓存拿掉失效的那把，下面重签没成也不会下次再拿它去试；拿不掉只是多试一次，不挡重签。
-        if (keyStore) await keyStore.remove(userId, managedKey.id).catch(() => undefined)
-        assertSameAuthenticatedUser(accountService, capture)
         const siteId = accountService.getActiveSiteId?.()
         const profile = resolveManagedCliKeyProfiles(siteId)[provider]
         // 失效也可能是分组改名；重签前先问服务端。组列表暂不可用时沿用
@@ -646,9 +699,16 @@ export async function configureManagedClis(
         assertSameAuthenticatedUser(accountService, capture)
         const resolved = listing?.resolved[provider]
         const group = (resolved?.source !== 'fallback' ? resolved?.group : undefined) ?? managedKey.group
+        // 换到别的分组重签同样照抄旧那把的限制（O03）；上限用完、已经到期、读不到就停在这里。
+        const limits = group === managedKey.group ? null : await regroupedKeyLimits(accountService, managedKey, siteId)
+        assertSameAuthenticatedUser(accountService, capture)
+        // 先从缓存拿掉失效的那把，下面重签没成也不会下次再拿它去试；拿不掉只是多试一次，不挡重签。
+        // 照抄了限制的、上面停下的都不拿：下一轮还要靠它认出这是换组，签成了下面会整条换掉。
+        if (keyStore && !limits) await keyStore.remove(userId, managedKey.id).catch(() => undefined)
+        assertSameAuthenticatedUser(accountService, capture)
         // 分组被拒、又认不出别的分组可换：同一个分组里重签只会拿回同一把，照服务端原话报。
         if (groupRejected && group === managedKey.group) throw error
-        const replacement = await accountService.provisionCliKey({ name: profile.keyName, group })
+        const replacement = await accountService.provisionCliKey({ name: profile.keyName, group, ...regroupedKeyInput(limits) })
         assertSameAuthenticatedUser(accountService, capture)
         if (keyStore && listing) {
           noteKeyRetirement(keyStore, retirementSlot(siteId, userId, provider), managedKey, { id: replacement.id, group }, listing, siteId,

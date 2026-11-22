@@ -35,7 +35,7 @@ const usernameTakenPattern = /username\s+already\s+exists|用户名已存在/i
 const accountErrorPatterns: readonly AccountErrorPattern[] = [
   {
     test: usernameTakenPattern,
-    friendly: '这个用户名已经有人用了，换一个；如果是你自己的，点下面「去登录」',
+    friendly: '该用户名已被占用，请更换；如为您本人的账号，请点击下方「前往登录」',
     kind: 'taken',
   },
   {
@@ -51,7 +51,7 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
     // a restricted mailbox falls through to the generic "try again later",
     // which a retry never fixes.
     test: /(email|邮箱).*(whitelist|白名单|alias|别名)|not allowed by the administrator.s email policy|不符合管理员设置的邮箱规则/i,
-    friendly: '这个邮箱暂时不能用来注册，请换一个常用邮箱（如 QQ 邮箱）再试',
+    friendly: '该邮箱暂不支持注册，请更换常用邮箱（如 QQ 邮箱）后重试',
   },
   {
     // i18n key user.email_already_taken -- register-time email collision.
@@ -113,20 +113,20 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
     // in Chinese; the bare code is matched too in case another path forwards it.
     // Not a "try again later": retries never help, and the website login hits
     // the same limit, so the way out is a device that is still signed in.
-    test: /AUTH_SESSION_LIMIT\b|同时登录的设备太多/,
-    friendly: '这个账号同时登录的设备太多了，暂时登不上。如果别的电脑或浏览器上还登着这个账号，请在那里的个人中心「账号安全」里让几台不用的设备下线，再回来登录；都登不上的话请联系客服。',
+    test: /AUTH_SESSION_LIMIT\b|同时登录的设备(?:太多|过多)/,
+    friendly: '该账号同时登录的设备过多，暂时无法登录。如其他电脑或浏览器上仍登录着该账号，请在其个人中心「账号安全」中将不再使用的设备下线后重新登录；如均无法登录，请联系客服。',
     kind: 'support',
   },
   {
     // rc.24 login: 429 AUTH_SESSION_ISSUANCE_LIMIT, 100 new sessions per 24 hours.
-    test: /AUTH_SESSION_ISSUANCE_LIMIT|登录的次数太多/,
-    friendly: '这个账号最近一天里登录的次数太多了，请过几个小时再试。',
+    test: /AUTH_SESSION_ISSUANCE_LIMIT|登录的次数太多|登录次数过多/,
+    friendly: '该账号近 24 小时内登录次数过多，请数小时后重试。',
     kind: 'wait',
   },
   {
     // rc.24 login: bare 429 from the route's CriticalRateLimit (keyed by IP).
-    test: /登录太频繁/,
-    friendly: '登录太频繁了，请过一会儿再试。',
+    test: /登录(?:太|过于)频繁/,
+    friendly: '登录过于频繁，请稍后重试。',
     kind: 'wait',
   },
   {
@@ -146,7 +146,7 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
     // OAuth-only account that never had a password to verify against. 这条尤其
     // 不能退化：用户该去走“找回密码”，而不是反复确认自己的密码。
     test: /this account has no password set|当前账号未设置密码/i,
-    friendly: '这个账号还没设过密码，先点「找回密码」设一个',
+    friendly: '该账号尚未设置密码，请点击「找回密码」进行设置',
   },
 ]
 

@@ -1,9 +1,10 @@
 import { useCallback, useState, type Dispatch, type SetStateAction } from 'react'
 import type { AuthMode } from '../auth'
-import { chatParametersSection } from '../shell/command-search'
+import { chatParametersSection, createLibrarySection } from '../shell/command-search'
 import type { FeedbackRequest } from '../../pages-maintenance'
 import { accountTabs, resolveAccountLanding, resolveFeedbackLanding, settingsGroups, settingsItems, type SettingsGroupId } from '../../registry/business'
-import { retiredPageAlias, settingsPageAlias, type PageId } from '../../registry/pages'
+import { createPageAlias, extensionPageAlias, retiredPageAlias, settingsPageAlias, type PageId } from '../../registry/pages'
+import { requestExtensionsView } from './extension-tool-intent'
 import { hasPendingSettingsGroup, requestSettingsGroup } from './settings-group-intent'
 import { requestRowFocus } from './row-focus'
 import type { AppApi, AppToast, Perform } from './runtime-context'
@@ -31,6 +32,10 @@ export function useAppNavigation({ app, perform, toast, accelerationAvailable, r
   const [page, setPage] = useState<PageId>('home')
   const [chatScope, setChatScope] = useState<string | null>(null)
   const [chatParametersPending, setChatParametersPending] = useState(false)
+  // 教程、引导里的「打开视频剪辑」：落到「创作」，由它接着最近那一条视频（没有就新开一条），接住以后放下。
+  const [createVideoPending, setCreateVideoPending] = useState(false)
+  // 顶部搜索的「作品库」：落到「创作」，右边换成作品库，接住以后放下。
+  const [createLibraryPending, setCreateLibraryPending] = useState(false)
   const [visitedPages, setVisitedPages] = useState<Partial<Record<PageId, string>>>({})
   // 设置页现在摆出来的是哪一组（搜索时为空）：人在「版本更新」那组时，更新气泡不再重复说卡上那件事。
   const [settingsGroup, setSettingsGroup] = useState<SettingsGroupId | null>(null)
@@ -55,13 +60,17 @@ export function useAppNavigation({ app, perform, toast, accelerationAvailable, r
     if (requested === 'acceleration' && !accelerationAvailable) return
     // 加速、备份、更新并进了设置（v4 批09）：托盘、系统通知、教程、错误框还叫老页面名，这里换成设置里那张卡。
     // 「安装卸载」页拆掉了（第 10 批）：还叫它的跳转落到首页，工具卡片上装、卸、重装。
+    // 精选、外接工具、技能、插件合成了一页「插件」（0.2.25）：还叫老页面名的落到新页对应那一栏。
     const alias = settingsPageAlias(requested)
-    const target: PageId = alias ? 'settings' : retiredPageAlias(requested) ?? requested
+    const extensionsView = extensionPageAlias(requested)
+    if (extensionsView) requestExtensionsView(extensionsView)
+    // 视频剪辑并进了「创作」（融合第 1 步）：还叫它的跳转落到「创作」里。画布在上面已经直接开窗口了。
+    const target: PageId = alias ? 'settings' : extensionsView ? 'extensions' : retiredPageAlias(requested) ?? createPageAlias(requested) ?? requested
     const section = alias ?? requestedSection
-    // 视频剪辑同聊天：花的是账号额度，没登录先登录。
-    const needsAccount = target === 'account' || target === 'chat' || target === 'video'
+    // 「创作」花的是账号额度，没登录先登录。
+    const needsAccount = target === 'account' || target === 'chat'
     if (needsAccount && restoring) {
-      toast.show(restoreRetrying ? '暂时连不上服务，登录还在，连上后会自动恢复，不用重新登录。' : '正在恢复上次的登录，稍等一下再试。')
+      toast.show(restoreRetrying ? '暂时无法连接服务，登录状态已保留，连接恢复后将自动恢复，无需重新登录。' : '正在恢复上次登录，请稍后重试。')
       return
     }
     if (needsAccount && !authenticated) { setAuth('login'); return }
@@ -95,6 +104,8 @@ export function useAppNavigation({ app, perform, toast, accelerationAvailable, r
     if (target === 'chat') setChatScope(scope)
     // 只有从顶部搜索点「聊天参数设置」进来才打开参数对话框；去别处就放下，免得下次进聊天页突然弹出来。
     setChatParametersPending(target === 'chat' && section === chatParametersSection)
+    setCreateVideoPending(requested === 'video')
+    setCreateLibraryPending(target === 'chat' && section === createLibrarySection)
     if (target !== 'home' && target !== 'chat') setVisitedPages((current) => ({ ...current, [target]: scope }))
     setGuide(false); setPage(target)
   }, [accelerationAvailable, app, perform, restoring, restoreRetrying, authenticated, scope, toast, setAuth, setGuide])
@@ -106,7 +117,7 @@ export function useAppNavigation({ app, perform, toast, accelerationAvailable, r
   // 顶部搜索的「开始检查」和帮助弹窗的「跑一遍检查」：人已经在检查页上时换个 key 重挂一次，挂上就重查。
   const startCheck = () => { if (page === 'health') setHealthRequest((current) => current + 1); navigate('health') }
   return {
-    page, setPage, chatScope, setChatScope, chatParametersPending, setChatParametersPending, visitedPages,
+    page, setPage, chatScope, setChatScope, chatParametersPending, setChatParametersPending, createVideoPending, setCreateVideoPending, createLibraryPending, setCreateLibraryPending, visitedPages,
     settingsGroup, setSettingsGroup, accountTab, shownAccountTab, setShownAccountTab, tutorialTopic, settingsRequest, healthRequest, feedbackRequest,
     navigate, searchTutorial, startCheck,
   }

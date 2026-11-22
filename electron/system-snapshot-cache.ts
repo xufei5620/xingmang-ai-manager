@@ -11,7 +11,7 @@ import type { CliUninstallCapability } from './tool-installation'
  * 机器上一轮扫描要起十来个探测子进程，首页以前要空着等它们全部回来。
  *
  * 这份文件只用来「先画个样子」：界面拿到它时仍当作正在检测（不报「配置被改过」，
- * 只放开「打开」「接着聊」：点下去配置现读、工具由这边现找，用不上这份文件），真的
+ * 只放开「打开」「继续对话」：点下去配置现读、工具由这边现找，用不上这份文件），真的
  * 扫描结果一回来就整份替换。工具行上的「更新」「更新到推荐版本」和菜单里的「退回」本来
  * 就不等检测，点下去会把这份文件里的版本号交给主进程，所以别的版本写的文件不带这类判断
  * （见 withoutVersionVerdicts）。主进程里任何要回答「装没装」的地方（Key 同步、开机检查、
@@ -229,7 +229,7 @@ function withoutVersionVerdicts(snapshot: SystemSnapshot): SystemSnapshot {
  * 按自己的推荐版本名单算出来的、会不会被按钮当成要装的版本交给主进程，是就在
  * withoutVersionVerdicts 里一起去掉，再把它记进这份清单。这一道只为分类，不用加格式版本号。
  */
-type CliOptionalFields = 'tooOld' | 'versionStatus' | 'detectionFailed' | 'detectionError' | 'installSource' | 'installTarget'
+type CliOptionalFields = 'tooOld' | 'versionStatus' | 'detectionFailed' | 'detectionError' | 'installSource' | 'unrecognizedInstall' | 'installTarget'
   | 'updateSource' | 'updateCheck' | 'updateState' | 'updateCheckedAt' | 'updateError' | 'versionAdvice' | 'revertVersion'
   | 'retired'
 

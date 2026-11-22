@@ -221,6 +221,11 @@ export interface CodexRemoteServiceOptions {
   readCodexSecrets(): Promise<readonly string[]>
   /** 这台电脑现在能不能开遥控；不能就给上屏的原因（比如星芒以管理员身份运行）。 */
   inspectAvailability(): string | null
+  /**
+   * 这台 Windows 电脑登录的账号本身就带管理员权限（自带 Administrator、关了授权弹窗），能开遥控，卡片上多一句提醒。
+   * 一次运行里不会变。缺省 = 不是。
+   */
+  alwaysElevatedAccount?: boolean
   /** 打开渠道前看一眼 Codex 命令行工具在不在；不在就给上屏的原因。缺省 = 不看，等真用到时再报。 */
   checkCodexReady?(): Promise<string | null>
   /**
@@ -312,7 +317,7 @@ function imageOnly(message: RemoteInbound): boolean {
 export function buildThreadStartParams(workspace: string, mcpServers: Record<string, Record<string, unknown>> = {}, model: string | null = null): Record<string, unknown> {
   return {
     cwd: workspace,
-    // 「手机上用的模型」单独选了才带；不带 = Codex 照 config.toml，跟电脑上一样。
+    // 「手机端使用的模型」单独选了才带；不带 = Codex 照 config.toml，与电脑端相同。
     ...(model ? { model } : {}),
     approvalPolicy: 'untrusted',
     // auto_review / guardian 会让另一个模型替人点同意；遥控只许人自己点。
@@ -815,7 +820,7 @@ interface ChannelRuntime {
   outbox: Promise<void>
   threadId: string | null
   /**
-   * 这份对话现在用的是「手机上用的模型」单独选的哪个；null = 跟电脑上的 Codex 一样。只在 threadId 有值时算数：
+   * 这份对话现在用的是「手机端使用的模型」单独选的哪个；null = 跟电脑上的 Codex 一样。只在 threadId 有值时算数：
    * 开对话时记下，手机上下一句交给 Codex 前跟设置比一比，不一样才在 turn/start 里改（handTurnToCodex）。
    */
   threadModel: string | null
@@ -1153,6 +1158,7 @@ export class CodexRemoteService {
       revision: this.revision,
       available: unavailableReason === null,
       ...(unavailableReason ? { unavailableReason } : {}),
+      ...(this.options.alwaysElevatedAccount && unavailableReason === null ? { alwaysElevated: true } : {}),
       credentialPersistence: this.options.store.credentialPersistence(),
       workspaceDirectory: settings.workspaceDirectory
         ? remoteDisplayPath(settings.workspaceDirectory, this.options.homeDirectory, this.platform)
@@ -1366,7 +1372,7 @@ export class CodexRemoteService {
   }
 
   /**
-   * 「手机上用的模型」（yoyo 2026-11-19「改」）：null = 跟电脑上的 Codex 一样。只记下来，手机上下一句交给 Codex 时
+   * 「手机端使用的模型」（yoyo 2026-11-19「改」）：null = 跟电脑上的 Codex 一样。只记下来，手机上下一句交给 Codex 时
    * 才用上（handTurnToCodex），正在做的那一轮不打断，开着的对话也接着用，不丢前面说过的。
    */
   async setModel(model: string | null): Promise<CodexRemoteSnapshot> {
@@ -2924,8 +2930,8 @@ export class CodexRemoteService {
   }
 
   /**
-   * 开着的对话中途改了「手机上用的模型」：这一句的 turn/start 要带的 model；不用改是 null。
-   * Codex 把 turn/start 里的 model 一直用到这份对话结束，所以改回「跟电脑上一样」时也得明着带上电脑上那个
+   * 开着的对话中途改了「手机端使用的模型」：这一句的 turn/start 要带的 model；不用改是 null。
+   * Codex 把 turn/start 里的 model 一直用到这份对话结束，所以改回「与电脑端相同」时也得明着带上电脑上那个
    * （config/read 读生效配置），不然还用着之前单独选的。读不出来就先接着用，记一笔，下次开新对话时自然回到电脑上的。
    */
   private async turnModel(client: CodexAppServerClient, runtime: ChannelRuntime, workspace: string, wanted: string | null): Promise<string | null> {

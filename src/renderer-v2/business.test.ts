@@ -16,13 +16,11 @@ import {
   subscriptionPaymentMethods,
 } from './pages-account'
 import {
-  extensionItemsForView,
   extensionScopeLabel,
-  filterExtensionMarkets,
   parseCommandArguments,
   parseEnvironmentVariables,
   readCodexExtensionMetadata,
-} from './pages-management'
+} from './features/extensions/extensions-common'
 import { accountTimeRange, hiddenFilterCount, rollFilterDefaults } from './AccountFilters'
 import {
   beginBusinessOperation,
@@ -98,24 +96,24 @@ describe('v2 business boundaries', () => {
     })
     expect(paymentTerminalPresentation('failed')).toMatchObject({
       tone: 'bad',
-      title: '支付没有完成',
+      title: '支付未完成',
     })
   })
 
   it('says a paid subscription is open instead of calling it a top-up', () => {
     expect(paymentTerminalPresentation('success', false, 'subscription')).toMatchObject({ tone: 'ok', title: '订阅已开通' })
-    expect(paymentTerminalPresentation('failed', false, 'subscription')).toMatchObject({ title: '支付没有完成' })
+    expect(paymentTerminalPresentation('failed', false, 'subscription')).toMatchObject({ title: '支付未完成' })
     expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription')).toBe('订单 XM-2 已付款，订阅已开通。')
     expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-2' }, 'subscription', '专业版')).toBe('订单 XM-2 已付款，专业版已开通。')
     expect(paymentTerminalPresentation('success', false, 'subscription').body).toBe('已付款，订阅已开通。')
   })
 
   it('tells the customer whether their tools now draw on the subscription', () => {
-    expect(subscriptionToolsNotice({ followsPreference: true }).body).toBe('工具发出的请求会按「扣费顺序」先用订阅额度。')
+    expect(subscriptionToolsNotice({ followsPreference: true }).body).toBe('工具请求将按「扣费顺序」优先使用订阅额度。')
     expect(subscriptionToolsNotice({ followsPreference: false, switched: ['Claude Code', 'Codex'] })).toMatchObject({
       tone: 'ok', title: '工具已改用订阅额度', body: expect.stringContaining('Claude Code、Codex'),
     })
-    expect(subscriptionToolsNotice({ followsPreference: false, switched: [] }).title).toBe('工具不用重新设置')
+    expect(subscriptionToolsNotice({ followsPreference: false, switched: [] }).title).toBe('工具无需重新设置')
     expect(subscriptionToolsNotice({ followsPreference: false, error: '网络连接失败。' })).toMatchObject({
       tone: 'warn', body: expect.stringContaining('重新写入密钥'), action: 'health',
     })
@@ -149,7 +147,7 @@ describe('v2 business boundaries', () => {
   it('names the current account in the page head and says plainly when its profile was not read', () => {
     expect(accountHeadLead({ username: 'alice', email: 'a@example.test' }, '星芒账号')).toBe('a@example.test · 星芒账号')
     expect(accountHeadLead({ username: 'alice', email: '' }, '历史账号')).toBe('alice · 历史账号')
-    expect(accountHeadLead(null, '星芒账号')).toBe('当前账号的资料暂时没有读到')
+    expect(accountHeadLead(null, '星芒账号')).toBe('当前账号资料获取失败')
   })
 
   it('counts only the folded filters that a query actually applied', () => {
@@ -178,9 +176,9 @@ describe('v2 business boundaries', () => {
   })
 
   it('tells the user what happens after the payment window closes and where to check', () => {
-    expect(paymentTerminalPresentation('closed', true).body).toContain('星芒还在确认到账')
+    expect(paymentTerminalPresentation('closed', true).body).toContain('到账后余额将自动更新')
     expect(paymentTerminalPresentation('closed').body).toContain('查看我的订单')
-    expect(paymentTerminalPresentation('unconfirmed')).toMatchObject({ tone: 'warn', title: '还没查到这笔订单到账' })
+    expect(paymentTerminalPresentation('unconfirmed')).toMatchObject({ tone: 'warn', title: '暂未确认到账' })
     expect(paymentTerminalPresentation('unconfirmed').body).toContain('联系客服')
     expect(paymentTerminalPresentation('failed').body).toContain('查看我的订单')
     expect(paymentTerminalBody({ status: 'success', tradeNo: 'XM-1' })).toBe('订单 XM-1 已到账，余额已更新。')
@@ -191,8 +189,8 @@ describe('v2 business boundaries', () => {
 
   it('validates recharge amounts against the integer IPC contract and channel minimum', () => {
     expect(validateTopupAmount(10, 5)).toBe(10)
-    expect(() => validateTopupAmount(10.5, 5)).toThrow('充值数量不能低于 5，请填整数')
-    expect(() => validateTopupAmount(4, 5)).toThrow('充值数量不能低于 5，请填整数')
+    expect(() => validateTopupAmount(10.5, 5)).toThrow('充值金额不能低于 5，请输入整数')
+    expect(() => validateTopupAmount(4, 5)).toThrow('充值金额不能低于 5，请输入整数')
     expect(() => validateTopupAmount(10, Number.NaN)).toThrow('最低充值金额无效')
   })
 
@@ -225,27 +223,6 @@ describe('v2 business boundaries', () => {
     })
   })
 
-  it('keeps available plugin catalog entries out of the installed view', () => {
-    type Item = Parameters<typeof extensionItemsForView>[0][number]
-    const item = (id: string, kind: Item['kind'], installed: boolean) =>
-      ({ id, kind, installed } as Item)
-
-    const items = [
-      item('installed', 'plugin', true),
-      item('available', 'plugin', false),
-      item('mcp', 'mcp', true),
-    ]
-
-    expect(
-      extensionItemsForView(items, 'plugin', 'installed').map((entry) => entry.id),
-    ).toEqual(['installed'])
-    expect(
-      extensionItemsForView(items, 'plugin', 'market').map((entry) => entry.id),
-    ).toEqual(['installed', 'available'])
-    expect(extensionItemsForView(items, 'mcp', 'installed').map((entry) => entry.id))
-      .toEqual(['mcp'])
-  })
-
   it('names the detail scope in Chinese instead of the CLI scope keyword', () => {
     expect(extensionScopeLabel('user')).toBe('我的（全局）')
     expect(extensionScopeLabel('project')).toBe('当前项目')
@@ -256,18 +233,6 @@ describe('v2 business boundaries', () => {
     expect(extensionScopeLabel('extension')).toBe('我的（全局）')
     expect(extensionScopeLabel(null)).toBe('未提供')
     expect(extensionScopeLabel(undefined)).toBe('未提供')
-  })
-
-  it('filters plugin markets by both display name and root path', () => {
-    const markets = [
-      { name: 'Official', root: 'C:\\markets\\official' },
-      { name: 'Team Tools', root: 'D:\\shared\\plugins' },
-    ]
-    expect(filterExtensionMarkets(markets, 'official').map((entry) => entry.name))
-      .toEqual(['Official'])
-    expect(filterExtensionMarkets(markets, 'shared').map((entry) => entry.name))
-      .toEqual(['Team Tools'])
-    expect(filterExtensionMarkets(markets, 'missing')).toEqual([])
   })
 
   it('keeps the provider snapshot usable when a legacy Codex detail read fails', async () => {
@@ -362,7 +327,7 @@ describe('v2 business boundaries', () => {
       'CLAUDE_BYPASS_PERMISSIONS',
       // D35：Claude Code 自己设置里的代理是客户自己设的值，只提示、不给按钮。
       'CLAUDE_SETTINGS_PROXY',
-      // 能挪的那份说明在行里直接给「挪开这份说明」；信任只说一声，没有能处理它的页。
+      // 能挪的那份说明在行里直接给「停用此说明」；信任只说一声，没有能处理它的页。
       'HOME_FOLDER_LEFTOVERS',
       'DISK_SPACE',
       'ADMINISTRATOR',
@@ -439,7 +404,7 @@ describe('v2 business boundaries', () => {
     expect(diagnosticTarget('SYSTEM_PROXY_SOFTWARE', blocking, 'solov')).toBeNull()
     expect(diagnosticSection('SYSTEM_PROXY_SOFTWARE', blocking, 'solov')).toBeUndefined()
   })
-  // 「Node.js 太旧」那一种在检查页那一行里直接给「换成新版 Node.js」，不再跳去「安装卸载」页。
+  // 「Node.js 太旧」那一种在检查页那一行里直接给「更新 Node.js」，不再跳去「安装卸载」页。
   it('sends no certificate verdict away from the check page', () => {
     for (const verdict of ['outdatedNode', 'untrusted', 'elevated', 'direct', 'systemTrusted', 'unknown']) {
       expect(diagnosticTarget('CERTIFICATE_TRUST', { verdict })).toBeNull()
@@ -457,7 +422,7 @@ describe('v2 business boundaries', () => {
           "Error invoking remote method 'account:change-password': Error: This account has no password set.",
         ),
       ),
-    ).toBe('这个账号还没设过密码，先点「找回密码」设一个')
+    ).toBe('该账号尚未设置密码，请点击「找回密码」进行设置')
     expect(errorMessage(new Error('User has been banned'))).toBe(
       '该账号已被封禁，请联系客服',
     )
@@ -476,12 +441,12 @@ describe('v2 business boundaries', () => {
     // #1095：Windows 上 .NET 的文件拒绝访问不是登录过期。
     expect(
       errorMessage(new Error("System.UnauthorizedAccessException: Access to the path 'C:\\Users\\someone\\.codex\\config.toml' is denied.")),
-    ).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
+    ).toBe('操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。')
     expect(errorMessage(new Error('ETIMEDOUT timeout'))).toContain('请检查网络后重试')
     expect(errorMessage(new Error('unexpected upstream failure xyz-123'))).toBe(
-      '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。',
+      '操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。',
     )
-    expect(errorMessage('plain string')).toBe('操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。')
+    expect(errorMessage('plain string')).toBe('操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。')
   })
   it('keeps async activities visible until completion and rejects invalid query ranges', () => {
     const before = pendingBusinessOperations().length

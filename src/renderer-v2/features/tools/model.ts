@@ -82,12 +82,12 @@ export function toolAvailability(
 ): ToolAvailability {
   if (status?.detectionFailed === true) {
     return {
-      state: 'detectionFailed', label: '检测失败', tone: 'bad', versionFallback: '版本未读到',
-      reason: detectionFailureMessage(status.detectionError) ?? '检测没有完成，装没装无法确认',
+      state: 'detectionFailed', label: '检测失败', tone: 'bad', versionFallback: '版本未获取',
+      reason: detectionFailureMessage(status.detectionError) ?? '检测未完成，无法确认是否已安装',
     }
   }
   if (statusUnknown) {
-    return { state: 'unknown', label: '状态未读到', tone: 'warn', versionFallback: '版本未读到', reason: null }
+    return { state: 'unknown', label: '状态未获取', tone: 'warn', versionFallback: '版本未获取', reason: null }
   }
   return status?.installed === true
     ? { state: 'installed', label: installedLabel(status.installSource), tone: 'ok', versionFallback: '未找到版本', reason: null }
@@ -169,10 +169,18 @@ export function updatesOutsideApp(
   return isExternallyManagedInstall(status) && !canSwitchToManagedInstall(id, status)
 }
 
+/**
+ * Mac 上找到的 Codex / Grok 星芒认不出来路，也不替它跑（主进程的 unrecognizedInstall，Mac 验收 R1）。
+ * 首页对它不给「打开」，给「使用星芒安装」；装好以后星芒先找到自己那份。
+ */
+export function isUnrecognizedInstall(status: Pick<ToolStatus, 'installed' | 'unrecognizedInstall'> | null | undefined): boolean {
+  return status?.installed === true && status.unrecognizedInstall === true
+}
+
 /** 外部来源安装时那句被动提示；npm 装的或来源未知的返回 null。 */
 export function externalInstallHint(installSource: ToolStatus['installSource']): string | null {
   if (installSource === 'native') return '该版本由官方安装器管理，请用它自己的方式更新'
-  if (installSource === 'path') return '这一份不是星芒装的，要更新请用它原来的安装方式'
+  if (installSource === 'path') return '此版本并非由星芒安装，如需更新请使用原安装方式'
   return null
 }
 
@@ -185,7 +193,7 @@ export function updateCheckFailure(
   status: Pick<CliStatus, 'updateCheck' | 'updateError'> | null | undefined,
 ): string | null {
   if (!status || status.updateCheck !== 'failed') return null
-  return snapshotErrorMessage(status.updateError) ?? '这次更新检查没有完成，无法判断是否有新版本'
+  return snapshotErrorMessage(status.updateError) ?? '本次更新检查未完成，无法判断是否有新版本'
 }
 
 /** Whether the native status advertises a safe in-app uninstall operation. */
@@ -301,13 +309,13 @@ export function brokenConfigOf(config: Pick<ProviderConfigSummary, 'configBroken
 
 /** 「配置文件坏了」那一行的小字；修的过程中行上照旧是这句（yoyo 2026-10-06 定的原话）。 */
 export const brokenConfigDetails: Record<BrokenConfig, string> = {
-  codexConfig: 'Codex 读不了这份配置，打开会报错。修之前会先备份，历史会话保留',
-  codexAuth: 'Codex 读不了登录信息，打开会要你重新登录。修之前会先备份，历史会话保留',
-  claudeSettings: 'Claude Code 读不了这份配置，打开会报错。修之前会先备份，历史会话保留',
+  codexConfig: 'Codex 无法读取此配置，打开时将报错。修复前将先备份，历史会话保留',
+  codexAuth: 'Codex 无法读取登录信息，打开时将要求重新登录。修复前将先备份，历史会话保留',
+  claudeSettings: 'Claude Code 无法读取此配置，打开时将报错。修复前将先备份，历史会话保留',
 }
 
 /**
- * 「配置文件坏了」的「修好它」按哪边重新生成，等于配置里「高级」的「重置为初始状态」。
+ * 「配置文件坏了」的「立即修复」按哪边重新生成，等于配置里「高级」的「重置为初始状态」。
  * 看得出原来用的是官方登录就照旧用官方账号，不顺手换成当前账号：Codex 登录的是 ChatGPT，
  * 或者只坏了 auth.json、config.toml 里又没有别的服务地址。
  * 其余按当前账号（Claude Code 的官方登录不记在 settings.json 里，看不出来）。
@@ -344,7 +352,7 @@ export function cliHooksWereAutoRepaired(config: Pick<ProviderConfigSummary, 'cl
 
 /**
  * Windows 上只装 Grok 时电脑上还没有运行环境，做完提醒和防睡那几条写不出来（主进程 cliHooksMissing）。
- * Grok 照样能用，首页只说一句缺什么、给「补上」。
+ * Grok 照样能用，首页只说一句缺什么、给「启用」。
  */
 export function cliHooksMissing(config: Pick<ProviderConfigSummary, 'cliHooksMissing'>): boolean {
   return config.cliHooksMissing === true
@@ -442,14 +450,14 @@ export function presentTools(
       updateAvailable, currentVersion: version,
       latestVersion: status.latestVersion ?? null, versionAdvice, revertVersion,
       ...(id === 'codexDesktop' && snapshot.platform.isMac ? { updateTargetExact: true } : {}),
-      error: status.detectionFailed ? detectionFailureMessage(status.detectionError) ?? '工具检测没有完成' : null })
+      error: status.detectionFailed ? detectionFailureMessage(status.detectionError) ?? '工具检测未完成' : null })
   }
   return result
 }
 
 /**
  * 工具行「…」菜单里「打开配置文件夹」那一项。点不动时置灰而不是藏起来:
- * 用户要找的就是这一项,藏了只会让人以为这个工具压根没有配置文件(「接着聊」
+ * 用户要找的就是这一项,藏了只会让人以为这个工具压根没有配置文件(「继续对话」
  * 在目录已经不在时也是置灰,#319)。原因写进 label,是因为菜单项没有 title 可挂。
  */
 export function configDirectoryMenuItem(
@@ -458,10 +466,10 @@ export function configDirectoryMenuItem(
 ): { label: string; disabled: boolean } {
   // 配置整块没读到时目录状态也是不知道的,不能说成「还没生成」——它多半就在那儿,
   // 只是这一遍没读着。
-  if (configUnavailable) return { label: '打开配置文件夹（配置暂未读到）', disabled: true }
+  if (configUnavailable) return { label: '打开配置文件夹（配置暂未获取）', disabled: true }
   return tool.configDirectoryReady
     ? { label: '打开配置文件夹', disabled: false }
-    : { label: '打开配置文件夹（还没生成）', disabled: true }
+    : { label: '打开配置文件夹（尚未生成）', disabled: true }
 }
 
 /**
@@ -495,7 +503,7 @@ export function officialAccountSubtitle(
 
 // 与旧界面 formatOfficialRelative 的分档一致，客户在两个版本之间看到的说法不变。
 function renewalDistance(ms: number): string {
-  if (ms < 90_000) return '马上'
+  if (ms < 90_000) return '即将'
   const minutes = Math.round(ms / 60_000)
   if (minutes < 60) return `${minutes}分钟后`
   const hours = Math.round(ms / 3_600_000)
@@ -606,10 +614,10 @@ export function balanceTier(dollars: number): 'ok' | 'warn' | 'bad' {
  */
 export function subscriptionWarning(subscription: UsableSubscription, walletDollars: number | null): string | null {
   if (!subscription.subscriptionOnly && (walletDollars === null || walletDollars >= 5)) return null
-  const after = subscription.subscriptionOnly ? '工具就用不了了，续费后可继续使用' : '会从余额扣费'
+  const after = subscription.subscriptionOnly ? '工具将无法使用，续费后可继续使用' : '将从余额扣费'
   if (subscription.expiringSoon) return `订阅 ${subscriptionEndDate(subscription.endsAt)}到期，到期后${after}。`
   // 会按期恢复的额度剩得少只是这一期快用完，到点自己回来，不是「快用完了要续费」（F2）。
-  if (subscription.lowRemaining && subscription.remainingUsd !== null && !subscription.resetsAt) return `订阅只剩 ${dollars(subscription.remainingUsd)}，用完后${after}。`
+  if (subscription.lowRemaining && subscription.remainingUsd !== null && !subscription.resetsAt) return `订阅仅剩 ${dollars(subscription.remainingUsd)}，用尽后${after}。`
   return null
 }
 

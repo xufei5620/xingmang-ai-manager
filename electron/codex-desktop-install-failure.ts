@@ -10,7 +10,7 @@
  * 看得到，界面不出现。
  *
  * 这个模块同时给主进程和渲染层用（渲染层靠 codexDesktopInstallFailedPrefix 认出
- * 这一类、配上「去微软商店装」按钮），所以和 network-failure.ts 一样不许引 Node。
+ * 这一类、配上「前往微软商店安装」按钮），所以和 network-failure.ts 一样不许引 Node。
  */
 
 /** 微软商店里 Codex 桌面端的页面。main.ts 的外链白名单按全等匹配收的就是这一条（I12）。 */
@@ -29,7 +29,7 @@ export type CodexDesktopInstallFailureReason = 'unsupported' | 'firewallOff' | '
 
 /**
  * 这台电脑根本没有微软商店（LTSC、精简版、公司策略关掉了）时，失败句里代替
- *「微软商店这次没装上」的那半句。渲染层按它认出这一类、不再给「去微软商店装」。
+ *「微软商店这次没装上」的那半句。渲染层按它认出这一类、不再给「前往微软商店安装」。
  */
 export const codexDesktopNoStoreNotice = '这台电脑没有微软商店'
 
@@ -122,7 +122,7 @@ export function isCodexDesktopInstallFailureMessage(message: string): boolean {
   return message.includes(`${codexDesktopInstallFailedPrefix}：`)
 }
 
-/** 没有微软商店的电脑上装不上：那颗「去微软商店装」按了也打不开。 */
+/** 没有微软商店的电脑上装不上：那颗「前往微软商店安装」按了也打不开。 */
 export function isCodexDesktopNoStoreInstallFailure(message: string): boolean {
   return isCodexDesktopInstallFailureMessage(message) && message.includes(`${codexDesktopNoStoreNotice}，`)
 }

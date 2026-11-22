@@ -38,12 +38,12 @@ describe('renderer-v2 sidebar update entry and settings dot', () => {
   }
 
   it('puts the gold entry right above 设置 and dots 设置 while a new version is around', () => {
-    const markup = sidebar({ update: 'ready', updateEntry: { label: '重启并安装新版', title: '新版 v0.2.23 已经下好，点一下装上，装好自动打开', install: true } })
+    const markup = sidebar({ update: 'ready', updateEntry: { label: '重启并安装新版', title: '新版 v0.2.23 已下载，点击即可安装，安装完成后自动打开', install: true } })
     expect(markup).toMatch(/data-testid="nav-update"[^>]*>.*<span>重启并安装新版<\/span><\/button>.*data-testid="nav-settings"/)
     // 钉住的那段从上到下：充值、更新、设置；更新仍紧挨「设置」上面。
     expect([...markup.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])).toEqual(['recharge', 'update', 'settings'])
     expect(markup).toContain('class="v2-nav-item v2-nav-update"')
-    expect(markup).toContain('title="新版 v0.2.23 已经下好，点一下装上，装好自动打开"')
+    expect(markup).toContain('title="新版 v0.2.23 已下载，点击即可安装，安装完成后自动打开"')
     expect(markup).toContain('aria-label="设置，有新版本"')
     expect(markup).toContain('<i class="v2-nav-dot" title="有新版本" aria-hidden="true" data-testid="nav-settings-update"></i>')
   })
@@ -102,11 +102,11 @@ describe('renderer-v2 sidebar account card', () => {
     expect(plenty).toContain('data-testid="sidebar-account-plan"')
     expect(plenty).toContain('<span>按量付费</span>')
     expect(plenty).toContain('style="width:67%"')
-    expect(plenty).toContain('data-testid="sidebar-account-days">按最近用量，约还能用 20 天</span>')
+    expect(plenty).toContain('data-testid="sidebar-account-days">按近期用量，预计可用 20 天</span>')
     expect(plenty).not.toContain('is-low')
     const low = renderShell({ account: { signedIn: true, displayName: '星芒用户', balance: '$3.00', runway: { usableUsd: 3, days: 2, low: true } } })
     expect(low).toContain('v2-account-entry is-low')
-    expect(low).toContain('余额不多了，约还能用 2 天')
+    expect(low).toContain('余额不足，预计可用 2 天')
     // 算不出天数（订阅不限额、最近没用量）就不画进度条和那行小字。
     const unknown = renderAccount({ signedIn: true, displayName: '星芒用户', balance: '$3.00', runway: { usableUsd: 3, days: null, low: true } })
     expect(unknown).not.toContain('v2-account-meter')
@@ -121,20 +121,20 @@ describe('renderer-v2 sidebar account card', () => {
 
   it('writes a dash with a hint when the balance could not be read, and a placeholder while it is first read', () => {
     const unread = renderAccount({ signedIn: true, displayName: '星芒用户' })
-    expect(unread).toContain('title="余额暂时没有读到，点刷新再试"')
+    expect(unread).toContain('title="余额获取失败，请点击刷新重试"')
     expect(unread).toContain('>—</strong>')
     expect(unread).not.toContain('暂未读到</strong>')
     expect(renderAccount({ signedIn: true, displayName: '星芒用户', balanceLoading: true })).toContain('sidebar-balance-placeholder')
   })
 
   it('shows a blank spinning avatar and a placeholder amount while the saved login is restored', () => {
-    const restoring = renderAccount({ signedIn: false, displayName: '正在恢复登录', email: '网络慢时要多等一会儿', restoring: 'pending' })
+    const restoring = renderAccount({ signedIn: false, displayName: '正在恢复登录', email: '网络较慢时需稍候', restoring: 'pending' })
     expect(restoring).toContain('data-testid="sidebar-account-placeholder"')
     expect(restoring).toContain('xm-spin')
     expect(restoring).not.toContain('v2-local-avatar')
-    expect(restoring).toContain('网络慢时要多等一会儿')
+    expect(restoring).toContain('网络较慢时需稍候')
     expect(restoring).toContain('sidebar-balance-placeholder')
-    const retrying = renderAccount({ signedIn: false, displayName: '暂时连不上，登录还在', email: '稍后自动重试，不用重新登录', restoring: 'retrying' })
+    const retrying = renderAccount({ signedIn: false, displayName: '暂时无法连接，登录状态已保留', email: '将自动重试，无需重新登录', restoring: 'retrying' })
     expect(retrying).toContain('data-testid="sidebar-account-placeholder"')
     expect(retrying).not.toContain('xm-spin')
   })
@@ -171,15 +171,19 @@ function renderShell(props: Partial<Parameters<typeof Shell>[0]> = {}): string {
 }
 
 describe('renderer-v2 v4 sidebar', () => {
-  it('lists the pages in v4 order, with the 扩展 group named and the last group set off by a line', () => {
+  // 0.2.25 起精选、外接工具、技能、插件合成一页「插件」，接在第一组最后，「扩展」小标题跟着没了（扩展合并方案第二版）。
+  it('lists the pages in v4 order, with 插件 closing the first group and the last group set off by a line', () => {
     const markup = renderShell()
     const scroll = markup.slice(markup.indexOf('data-testid="sidebar-scroll"'), markup.indexOf('data-testid="sidebar-pinned"'))
     const order = [...scroll.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])
-    expect(order).toEqual(['home', 'chat', 'sessions', 'canvas', 'video', 'remote', 'featured', 'mcp', 'skills', 'plugins', 'tutorial', 'health', 'feedback'])
-    expect(scroll).toContain('role="group" aria-label="扩展"><p class="v2-nav-group-label" aria-hidden="true">扩展</p>')
+    expect(order).toEqual(['home', 'chat', 'sessions', 'remote', 'extensions', 'tutorial', 'health', 'feedback'])
+    expect(scroll).toContain('<span>插件</span>')
+    expect(scroll).not.toContain('v2-nav-group-label')
     expect(scroll).toContain('<hr class="v2-nav-separator" aria-hidden="true"/>')
     expect(scroll).toContain('<span>反馈与客服</span>')
-    expect(scroll).toContain('<span>画布</span><svg')
+    // 聊天、画布、视频剪辑并成一项（融合第 1 步，yoyo 回「融合改」）：侧栏上没有往外开窗口的那一行了。
+    expect(scroll).toContain('<span>创作</span>')
+    expect(scroll).not.toContain('v2-nav-external')
     expect(scroll).not.toContain('↗')
   })
 
@@ -195,7 +199,7 @@ describe('renderer-v2 v4 sidebar', () => {
     const empty = renderShell({ account: { signedIn: true, displayName: '星芒用户', runway: { usableUsd: 0, days: 0, low: true, empty: true } } })
     expect(empty).toContain('aria-label="充值，余额为零"')
     expect(empty).toContain('data-testid="nav-recharge-low">余额为零</small>')
-    expect(empty).toContain('余额已经用完，充值后才能用')
+    expect(empty).toContain('余额已用尽，请充值后使用')
     const recharge = renderShell({ activePage: 'account', accountTab: 'recharge' })
     expect(recharge).toMatch(/class="v2-nav-item is-active"[^>]*data-testid="nav-recharge"/)
     expect(recharge).not.toContain('v2-account-entry is-active')
@@ -252,7 +256,7 @@ describe('renderer-v2 v4 status bar', () => {
     expect(markup).toContain('data-testid="statusbar-tools">已装 3 个工具</button>')
     expect(markup).toContain('data-testid="statusbar-version">v0.2.19 · 有新版本</button>')
     // 下好了不说「重启后更新」：缩在托盘的人关窗口不算重启（「侧栏改」第 3 条）。
-    expect(bar({ version: '0.2.19', update: 'ready' })).toContain('v0.2.19 · 新版已下好，点这里安装')
+    expect(bar({ version: '0.2.19', update: 'ready' })).toContain('v0.2.19 · 新版本已下载，点击安装')
     expect(bar({ version: '0.2.19' })).toContain('>v0.2.19</button>')
   })
 
@@ -274,9 +278,9 @@ describe('renderer-v2 status bar account label', () => {
   }
 
   it('says the same thing as the sidebar card while a saved login waits for a retry', () => {
-    // 开机恢复联不上时左下角写「暂时连不上，登录还在」，状态栏不能同时写「未登录」。
-    const markup = statusbar({ signedIn: false, displayName: '暂时连不上，登录还在', email: '稍后自动重试，不用重新登录' })
-    expect(markup).toContain('暂时连不上，登录还在')
+    // 开机恢复联不上时左下角写「暂时无法连接，登录状态已保留」，状态栏不能同时写「未登录」。
+    const markup = statusbar({ signedIn: false, displayName: '暂时无法连接，登录状态已保留', email: '将自动重试，无需重新登录' })
+    expect(markup).toContain('暂时无法连接，登录状态已保留')
     expect(markup).not.toContain('未登录')
   })
 
@@ -303,14 +307,17 @@ describe('renderer-v2 sidebar pages per computer', () => {
 
   it('keeps every page when nothing says otherwise', () => {
     const markup = renderShell()
-    for (const id of ['home', 'chat', 'sessions', 'canvas', 'video', 'remote', 'featured', 'mcp', 'skills', 'plugins', 'recharge', 'tutorial', 'health', 'feedback', 'settings']) expect(markup).toContain(`data-testid="nav-${id}"`)
+    for (const id of ['home', 'chat', 'sessions', 'remote', 'extensions', 'recharge', 'tutorial', 'health', 'feedback', 'settings']) expect(markup).toContain(`data-testid="nav-${id}"`)
+    for (const id of ['featured', 'mcp', 'skills', 'plugins']) expect(markup).not.toContain(`data-testid="nav-${id}"`)
   })
 
-  // 视频剪辑只有星芒账号的视频模型能出，历史账号登着时侧栏不列它（App 的 pageVisible）。
-  it('drops the video studio when the adapter says this account cannot use it', () => {
-    const markup = renderShell({ adapter: { pageVisible: (id) => id !== 'video' } })
+  // 融合第 1 步：「聊天」「画布 ↗」「视频剪辑」三项换成「创作」一项，画布项目和视频都在那一页左边那一列里。
+  it('has one 创作 entry where chat, the canvas and the video studio used to be', () => {
+    const markup = renderShell()
+    expect(markup).toMatch(/data-testid="nav-chat"[^>]*>[^]*?<span>创作<\/span>/)
+    expect(markup).not.toContain('data-testid="nav-canvas"')
     expect(markup).not.toContain('data-testid="nav-video"')
-    expect(markup).toContain('data-testid="nav-canvas"')
+    for (const gone of ['<span>聊天</span>', '<span>画布</span>', '<span>视频剪辑</span>']) expect(markup).not.toContain(gone)
   })
 
   // 游戏加速、备份、更新并进了设置（v4 批09），安装卸载拆到首页和检查页（第 10 批）。

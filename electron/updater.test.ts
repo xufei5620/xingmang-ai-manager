@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import type { UpdateInfo } from 'builder-util-runtime'
 import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
-import type { ServiceStatus } from './service-status'
+import { parseServiceStatus, type ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
 import { buildIntelMacUpdateInfo, createSharedDirectRetry, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
@@ -190,7 +190,7 @@ describe('updater service', () => {
       phase: 'error',
       error: {
         code: 'STARTUP_UPDATE_TIMEOUT',
-        message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。',
+        message: '网络较慢，本次未能完成新版本检查。星芒将在后台继续检查，不影响当前使用。',
         automatic: true,
       },
     })
@@ -221,6 +221,62 @@ describe('updater service', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(client.downloadUpdate).toHaveBeenCalledTimes(1)
     expect(service.getState().phase).toBe('downloaded')
+  })
+
+  // D23：超时那一刻自动更新还开着，查完前客户把它关了，迟到的结果不能再替客户下。
+  it('does not download a late-discovered release after the user turned auto-update off', async () => {
+    const client = new FakeUpdater()
+    const check: { resolve: (() => void) | null } = { resolve: null }
+    client.checkForUpdates.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      check.resolve = resolve
+    }))
+    let autoUpdate = true
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      startupCheckTimeoutMs: 10,
+      readAutoUpdate: () => autoUpdate,
+    })
+
+    await expect(service.startup()).resolves.toMatchObject({ error: { code: 'STARTUP_UPDATE_TIMEOUT' } })
+    autoUpdate = false
+    await service.autoUpdateChanged()
+    client.emit('update-available', updateInfo('1.2.0'))
+    check.resolve?.()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(client.downloadUpdate).not.toHaveBeenCalled()
+    expect(service.getState()).toMatchObject({ phase: 'available', availableVersion: '1.2.0' })
+    service.dispose()
+  })
+
+  // 反过来：超时那一刻关着、查完前刚打开。打开那一下还没有可下的版本，迟到的结果按打开后的设置接着下。
+  it('downloads a late-discovered release when auto-update was turned on before the check finished', async () => {
+    const client = new FakeUpdater()
+    const check: { resolve: (() => void) | null } = { resolve: null }
+    client.checkForUpdates.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      check.resolve = resolve
+    }))
+    client.downloadUpdate.mockImplementationOnce(async () => {
+      client.emit('update-downloaded', updateInfo('1.2.0'))
+    })
+    let autoUpdate = false
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      startupCheckTimeoutMs: 10,
+      readAutoUpdate: () => autoUpdate,
+    })
+
+    await expect(service.startup()).resolves.toMatchObject({ error: { code: 'STARTUP_UPDATE_TIMEOUT' } })
+    autoUpdate = true
+    await service.autoUpdateChanged()
+    expect(client.downloadUpdate).not.toHaveBeenCalled()
+    client.emit('update-available', updateInfo('1.2.0'))
+    check.resolve?.()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(client.downloadUpdate).toHaveBeenCalledTimes(1)
+    expect(service.getState().phase).toBe('downloaded')
+    service.dispose()
   })
 
   it('hands a late background download failure to the host instead of leaving it unhandled', async () => {
@@ -674,7 +730,7 @@ describe('updater service', () => {
       phase: 'error',
       error: {
         code: 'UPDATE_ERROR',
-        message: '更新服务器这会儿返回的内容不对，不是你这边的问题。稍后再试；还不行请找客服。',
+        message: '更新服务器当前返回的内容异常，并非本机问题。请稍后重试；如仍无法解决，请联系客服。',
         detail: '更新服务器返回了网页而不是 latest.yml',
       },
     })
@@ -716,7 +772,7 @@ describe('updater service', () => {
       phase: 'error',
       error: {
         code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
-        message: '更新服务器上这一版的更新文件还没放好，不是你这边的问题。稍后再试；急着用请找客服。',
+        message: '更新服务器上该版本的更新文件尚未就绪，并非本机问题。请稍后重试；如急需使用，请联系客服。',
         detail: '更新服务器缺少更新清单 latest-mac.yml',
       },
     })
@@ -739,7 +795,7 @@ describe('updater service', () => {
       phase: 'error',
       error: {
         code: 'UPDATE_ERROR',
-        message: '更新服务器上这一版的更新文件还没放好，不是你这边的问题。稍后再试；急着用请找客服。',
+        message: '更新服务器上该版本的更新文件尚未就绪，并非本机问题。请稍后重试；如急需使用，请联系客服。',
         detail: '更新服务器缺少更新清单 latest-mac.yml',
       },
     })
@@ -894,7 +950,7 @@ describe('updater service', () => {
       expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
-        error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT', message: expect.stringContaining('点「重新安装」') },
+        error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT', message: expect.stringContaining('点击「重新安装」') },
       })
       // 强制更新那道门里软件用不了、也没有更新页，这句不许再把人往那儿指。
       expect(service.getState().error?.message).not.toMatch(/照常能用|「更新」页/)
@@ -2080,6 +2136,39 @@ describe('withdrawn versions and staged rollout', () => {
     service.dispose()
   })
 
+  it('keeps the remembered withdrawals and the minimum when the status file guard is unsigned or tampered (D85)', async () => {
+    const client = new FakeUpdater()
+    const rememberReleaseGuard = vi.fn(async () => undefined)
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      releaseGuardAtLaunch: { badVersions: ['1.1.0'], rollout: null },
+      rememberReleaseGuard,
+    })
+    const flush = () => new Promise((resolve) => { setTimeout(resolve, 0) })
+    // 这次运行读成功（签名验过）过一份，里面有最低版本。
+    service.setServiceStatus({ maintenance: null, badVersions: ['1.1.0'], rollout: null, minimumVersion: '1.1.0' })
+    expect(service.getState().requiredVersion).toBe('1.1.0')
+
+    // 深查 Z-4：没有私钥的人把正在跑的版本写进撤回名单、撤掉最低版本。不管这一份里写着什么，这几项照「没读到」办；
+    // 维护提示照常跟着它走。
+    for (const releaseGuardRejected of ['unsigned', 'signature'] as const) {
+      service.setServiceStatus({ maintenance: { message: '升级中' }, badVersions: ['1.0.0'], rollout: { version: '1.2.0', percent: 0 }, minimumVersion: null, releaseGuardRejected })
+      await flush()
+      expect(rememberReleaseGuard).not.toHaveBeenCalled()
+      expect(service.getState()).toMatchObject({ requiredVersion: '1.1.0', currentVersionWithdrawn: false, serviceMaintenance: { message: '升级中' } })
+    }
+    // 真的解析一份没签名的文件也是这样（内置的是发版那把公钥，这份谁也没签）。
+    service.setServiceStatus(parseServiceStatus(JSON.stringify({ badVersions: ['1.0.0'], minimumVersion: null }), new Date()))
+    await flush()
+    expect(rememberReleaseGuard).not.toHaveBeenCalled()
+    expect(service.getState()).toMatchObject({ requiredVersion: '1.1.0', currentVersionWithdrawn: false })
+    // 记着的撤回名单照旧挡着 1.1.0。
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    expect(service.getState()).toMatchObject({ phase: 'idle', availableVersion: null })
+    service.dispose()
+  })
+
   it('takes back an offer that is withdrawn after it was found or downloaded', async () => {
     const client = new FakeUpdater()
     const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'darwin' })
@@ -2443,7 +2532,7 @@ describe('downloaded package digest verification', () => {
     }))
     expect(service.getState()).toMatchObject({
       failedStep: 'check',
-      error: { message: expect.stringContaining('更新文件还没放好'), detail: '更新服务器缺少更新清单 latest.yml' },
+      error: { message: expect.stringContaining('更新文件尚未就绪'), detail: '更新服务器缺少更新清单 latest.yml' },
     })
     service.dispose()
   })
@@ -2750,14 +2839,14 @@ describe('plain-language install failures', () => {
   })
 
   it('tells the previous-failure check when the version that failed is the older one the publisher rolled back to', () => {
-    // D11：退回旧版时那句要说「建议退回的 X 版上次没装上」，跟快照的 rollback 同一个算法。
+    // D11：退回旧版时那句要说「建议回退的 X 版上次没装上」，跟快照的 rollback 同一个算法。
     const client = new FakeUpdater()
     const asked: [string, boolean][] = []
     const service = createUpdaterService(client, {
       currentVersion: '1.2.0',
       isPackaged: true,
       platform: 'win32',
-      previousAutoInstallFailure: (version, rollback) => { asked.push([version, rollback]); return '建议退回的 1.1.0 版上次没装上' },
+      previousAutoInstallFailure: (version, rollback) => { asked.push([version, rollback]); return '建议回退的 1.1.0 版上次没装上' },
     })
     client.emit('update-downloaded', updateInfo('1.1.0'))
     expect(asked).toEqual([['1.1.0', true]])
@@ -2784,7 +2873,7 @@ describe('plain-language install failures', () => {
     await service.check({ manual: true })
     expect(service.getState().error).toEqual({
       code: 'ENOENT',
-      message: '下载好的安装包不完整或被删掉了，常见是安全软件拦了。重新下载一次就好。',
+      message: '已下载的安装包不完整或已被删除，通常是被安全软件拦截。请重新下载。',
       detail: raw,
     })
   })
@@ -2792,12 +2881,12 @@ describe('plain-language install failures', () => {
 
 describe('describeUnrecognizedUpdateFailure', () => {
   it('sorts common English failures into plain words', () => {
-    expect(describeUnrecognizedUpdateFailure('ENOSPC: no space left on device, write')).toContain('磁盘空间不够')
+    expect(describeUnrecognizedUpdateFailure('ENOSPC: no space left on device, write')).toContain('磁盘空间不足')
     expect(describeUnrecognizedUpdateFailure('EPERM: operation not permitted, rename')).toContain('安全软件')
     expect(describeUnrecognizedUpdateFailure('EBUSY: resource busy or locked')).toContain('被占用')
     expect(describeUnrecognizedUpdateFailure('sha512 checksum mismatch')).toContain('重新下载')
     // 更新页、首页气泡、强制更新门三处都会显示这句；门和气泡里没有「查看日志」按钮。
-    expect(describeUnrecognizedUpdateFailure('Something odd happened')).toContain('找客服')
+    expect(describeUnrecognizedUpdateFailure('Something odd happened')).toContain('联系客服')
     expect(describeUnrecognizedUpdateFailure('Something odd happened')).not.toContain('查看日志')
   })
 
@@ -2810,11 +2899,11 @@ describe('describeUnrecognizedUpdateFailure', () => {
     // Windows 的中文用户名、Mac 上的「星芒AI管理工具」都在路径里。以前这几句被当成中文整句交给界面，
     // 脱敏后客户看到的是「EPERM: operation not permitted, open '本机路径」（第三十批跟进项）。
     expect(describeUnrecognizedUpdateFailure("EPERM: operation not permitted, open 'C:\\Users\\张三\\AppData\\Local\\xingmang-ai-manager-updater\\pending\\temp-XingMang-AI-Manager-0.2.15-Setup.exe'"))
-      .toBe('新版本的安装包写不进去或被占用了，常见是安全软件拦了。重开软件再试；还不行请找客服。')
+      .toBe('新版本安装包无法写入或已被占用，通常是被安全软件拦截。请重新打开软件后重试；如仍无法解决，请联系客服。')
     expect(describeUnrecognizedUpdateFailure('EBUSY: resource busy or locked, unlink C:\\Users\\张 三\\AppData\\Local\\xingmang-ai-manager-updater\\pending\\update.exe'))
-      .toBe('新版本的安装包写不进去或被占用了，常见是安全软件拦了。重开软件再试；还不行请找客服。')
+      .toBe('新版本安装包无法写入或已被占用，通常是被安全软件拦截。请重新打开软件后重试；如仍无法解决，请联系客服。')
     expect(describeUnrecognizedUpdateFailure("ENOENT: no such file or directory, open '/Users/张三/Library/Caches/xingmang-ai-manager-updater/pending/星芒AI管理工具-0.2.15-mac.zip'"))
-      .toBe('下载好的安装包不完整或被删掉了，常见是安全软件拦了。重新下载一次就好。')
+      .toBe('已下载的安装包不完整或已被删除，通常是被安全软件拦截。请重新下载。')
   })
 
   it('still keeps a Chinese sentence that names a path', () => {
@@ -2853,7 +2942,7 @@ describe('Mac update signature rejection', () => {
     client.emit('error', new Error(rejection))
     const state = service.getState()
     expect(state).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { code: updateSignatureRejectedCode } })
-    expect(state.error?.message).toBe('新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。')
+    expect(state.error?.message).toBe('新版本已下载，但未通过本机系统校验，无法自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。')
     expect(state.error?.detail).toContain('did not pass validation')
     service.dispose()
   })
@@ -4164,7 +4253,7 @@ describe('stalled update checks', () => {
         failedStep: 'check',
         error: {
           code: 'STARTUP_UPDATE_TIMEOUT',
-          message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。',
+          message: '网络较慢，本次未能完成新版本检查。星芒将在后台继续检查，不影响当前使用。',
         },
       })
       expect(f.errors).toEqual(['STARTUP_UPDATE_TIMEOUT'])
@@ -4375,7 +4464,7 @@ describe('stalled update checks', () => {
 })
 
 describe('launch install notice', () => {
-  const notice = { version: '1.1.0', title: '星芒AI马上更新', body: '几秒后开始安装', installAt: 5_000 }
+  const notice = { version: '1.1.0', title: '星芒AI即将更新', body: '几秒后开始安装', installAt: 5_000 }
 
   it('carries the notice only while that version waits downloaded', () => {
     const client = new FakeUpdater()
@@ -4604,7 +4693,7 @@ describe('system installer channel (Linux .deb)', () => {
     const quitAfterSystemInstaller = vi.fn()
     const installQuitAborted = vi.fn()
     const openSystemInstaller = vi.fn(async (_packagePath: string): Promise<void> => {
-      throw Object.assign(new Error('没能打开这台电脑的安装程序。点「重新安装」再试一次；还不行请找客服。'), { code: 'UPDATE_SYSTEM_INSTALLER_FAILED' })
+      throw Object.assign(new Error('无法打开本机的安装程序。请点击「重新安装」重试；如仍无法解决，请联系客服。'), { code: 'UPDATE_SYSTEM_INSTALLER_FAILED' })
     })
     const service = createUpdaterService(client, linuxRuntime({ openSystemInstaller, quitAfterSystemInstaller, installQuitAborted, prepareInstallQuit: async () => undefined }))
     client.emit('update-downloaded', debInfo())
@@ -4613,7 +4702,7 @@ describe('system installer channel (Linux .deb)', () => {
     await vi.waitFor(() => expect(service.getState().failedStep).toBe('install'))
     expect(service.getState()).toMatchObject({
       phase: 'downloaded',
-      error: { code: 'UPDATE_SYSTEM_INSTALLER_FAILED', message: '没能打开这台电脑的安装程序。点「重新安装」再试一次；还不行请找客服。' },
+      error: { code: 'UPDATE_SYSTEM_INSTALLER_FAILED', message: '无法打开本机的安装程序。请点击「重新安装」重试；如仍无法解决，请联系客服。' },
     })
     expect(installQuitAborted).toHaveBeenCalledOnce()
     expect(quitAfterSystemInstaller).not.toHaveBeenCalled()
@@ -4670,7 +4759,7 @@ describe('system installer channel (Linux .deb)', () => {
         failedStep: 'install',
         error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT' },
       })
-      expect(service.getState().error?.message).toContain('安装窗口已经打开')
+      expect(service.getState().error?.message).toContain('安装窗口已打开')
       service.dispose()
     } finally {
       vi.useRealTimers()
@@ -4921,7 +5010,7 @@ describe('a downloaded version the feed has moved past', () => {
     const countingService = createUpdaterService(counting, { currentVersion: '1.0.0', isPackaged: true, readAutoUpdate: () => true })
     await countingService.scheduledCheck()
     countingFeed.version = '1.2.0'
-    countingService.setLaunchInstallNotice({ version: '1.1.0', title: '星芒AI马上更新', body: '几秒后开始安装', installAt: 5_000 })
+    countingService.setLaunchInstallNotice({ version: '1.1.0', title: '星芒AI即将更新', body: '几秒后开始安装', installAt: 5_000 })
     await expect(countingService.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
     expect(counting.checkForUpdates).toHaveBeenCalledOnce()
     countingService.dispose()

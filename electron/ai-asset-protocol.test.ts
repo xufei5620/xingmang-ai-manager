@@ -1,8 +1,8 @@
 import { strict as assert } from 'node:assert'
 import { describe, it } from 'vitest'
 import { createActiveIdentityReader } from './active-identity'
-import { createAiAssetProtocolHandler, maximumVideoRangeBytes, type AiAssetProtocolOptions } from './ai-asset-protocol'
-import { assetThumbnailUrl, assetThumbnailVersion } from './asset-thumbnail'
+import { createAiAssetProtocolHandler, type AiAssetProtocolOptions } from './ai-asset-protocol'
+import { assetLargeImageThumbnailUrl, assetThumbnailUrl, assetThumbnailVersion } from './asset-thumbnail'
 
 const assetId = 'a'.repeat(43)
 const mediaUrl = `xingmang-asset://image/${assetId}`
@@ -41,7 +41,7 @@ function fixture() {
         return { bytes, totalBytes: media.bytes.byteLength, asset: { mimeType: 'video/mp4' } }
       },
     },
-    thumbnails: { async resolve(owner, id, kind) { calls.push({ kind: `thumb:${kind}`, userId: owner, assetId: id }); return thumbnail } },
+    thumbnails: { async resolve(owner, id, kind, size) { calls.push({ kind: `thumb:${kind}:${size}`, userId: owner, assetId: id }); return thumbnail } },
   }
   return {
     options, media, thumbnail, calls, videoReads, handler: createAiAssetProtocolHandler(options),
@@ -78,7 +78,16 @@ describe('account-owned asset protocol', () => {
     assert.equal(response.headers.get('cache-control'), 'no-store')
     assert.equal(response.headers.get('content-type'), 'image/png')
     assert.equal(await response.text(), 'thumbnail')
-    assert.deepEqual(example.calls, [{ kind: 'thumb:image', userId: 7, assetId }])
+    assert.deepEqual(example.calls, [{ kind: 'thumb:image:tile', userId: 7, assetId }])
+  })
+
+  it('asks for the larger still image the chat shows under its own kind', async () => {
+    const example = fixture()
+    const response = await example.handler(new Request(assetLargeImageThumbnailUrl(assetId)))
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('cache-control'), 'no-store')
+    assert.equal(await response.text(), 'thumbnail')
+    assert.deepEqual(example.calls, [{ kind: 'thumb:image:large', userId: 7, assetId }])
   })
 
   it('versions URLs to avoid reusing previously cacheable v1 responses', async () => {
@@ -149,20 +158,25 @@ describe('account-owned asset protocol', () => {
     })
   }
 
-  it('answers a seek through a long video with one bounded chunk, not the rest of the file', async () => {
-    const example = fixture()
-    const total = maximumVideoRangeBytes + 1_000_000
-    example.media.bytes = Buffer.alloc(total, 7)
-    const response = await example.handler(new Request(videoUrl, { headers: { Range: 'bytes=100-' } }))
-    assert.equal(response.status, 206)
-    assert.equal(response.headers.get('content-range'), `bytes 100-${100 + maximumVideoRangeBytes - 1}/${total}`)
-    assert.equal(response.headers.get('content-length'), String(maximumVideoRangeBytes))
-    assert.equal((await response.arrayBuffer()).byteLength, maximumVideoRangeBytes)
-    assert.deepEqual(example.videoReads, [maximumVideoRangeBytes])
-    // A range that already fits is served as asked.
-    const tail = await example.handler(new Request(videoUrl, { headers: { Range: `bytes=${total - 5}-` } }))
-    assert.equal(tail.headers.get('content-range'), `bytes ${total - 5}-${total - 1}/${total}`)
-  })
+  // Electron's player does not ask for the next piece after a short 206, so a
+  // capped open-ended range stopped playback partway (Mac acceptance B1).
+  for (const start of [0, 100, 9 * 1024 * 1024]) {
+    it(`serves an open-ended range of a large video through the end of the file: bytes=${start}-`, async () => {
+      const example = fixture()
+      const total = 21 * 1024 * 1024
+      example.media.bytes = Buffer.alloc(total, 7)
+      example.media.bytes[total - 1] = 9
+      const response = await example.handler(new Request(videoUrl, { headers: { Range: `bytes=${start}-` } }))
+      assert.equal(response.status, 206)
+      assert.equal(response.headers.get('content-range'), `bytes ${start}-${total - 1}/${total}`)
+      assert.equal(response.headers.get('content-length'), String(total - start))
+      const body = Buffer.from(await response.arrayBuffer())
+      assert.equal(body.byteLength, total - start)
+      assert.equal(body[body.byteLength - 1], 9)
+      // Still only the requested part comes off disk, never the bytes before it.
+      assert.deepEqual(example.videoReads, [total - start])
+    })
+  }
 
   it('serves a whole video without a Range header and reads nothing for HEAD', async () => {
     const example = fixture()
@@ -214,7 +228,8 @@ describe('account-owned asset protocol', () => {
     `xingmang-asset://image:81/${assetId}`, `${mediaUrl}?x=1`, `${mediaUrl}#x`,
     'xingmang-asset://image/%ZZ', `xingmang-asset://image/${'a'.repeat(42)}`,
     `${mediaUrl}/extra`, `xingmang-asset://thumb/v2/audio/${assetId}`,
-    `xingmang-asset://thumb/v2/image/${assetId}/extra`,
+    `xingmang-asset://thumb/v2/image/${assetId}/extra`, `xingmang-asset://thumb/v2/video-large/${assetId}`,
+    `xingmang-asset://thumb/v2/constructor/${assetId}`, `xingmang-asset://thumb/v1/image-large/${assetId}`,
   ]) {
     it(`rejects unsupported URL shapes before reading storage: ${url}`, async () => {
       const example = fixture()

@@ -8,8 +8,11 @@ const node = { kind: 'image-edit', prompt: '', model: 'gpt-image-2', size: '1280
 describe('inspector router execution semantics', () => {
   it('distinguishes actual historical all behavior from explicitly saved first-per-media execution', () => {
     const legacy = canvasInspectorParameterRows({ ...node, kind: 'router', settings: { strategy: 'first-available' } })
-    expect(legacy).toContainEqual({ label: '路由策略', value: '旧配置：保留全部输入' })
-    expect(legacy.find((row) => row.label === '输入选择')?.value).toContain('明确选择')
+    expect(legacy).toContainEqual({ label: '路由策略', value: '旧配置：每种素材只交出一个' })
+    expect(legacy.find((row) => row.label === '输入选择')?.value).toContain('请选择「保留全部输入」')
+    const legacyAll = canvasInspectorParameterRows({ ...node, kind: 'router', settings: { strategy: 'all' } })
+    expect(legacyAll).toContainEqual({ label: '路由策略', value: '保留全部输入' })
+    expect(legacyAll.find((row) => row.label === '输入选择')?.value).toContain('全部文本及媒体输入')
     const first = canvasInspectorParameterRows({ ...node, kind: 'router', settings: { routerStrategy: { version: 1, strategy: 'first-available' } } })
     expect(first).toContainEqual({ label: '路由策略', value: '每种媒体保留首个输入' })
     expect(first.find((row) => row.label === '输入选择')?.value).toContain('按保存的连线顺序')

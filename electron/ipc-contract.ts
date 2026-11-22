@@ -1,7 +1,7 @@
 // @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
 
 import type { AppSettings, AppSettingsUpdate, AppTheme as StoredAppTheme } from './app-settings'
-import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
+import type { AiAnswerCutOff, AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
 import type { MiniMaxVideoAspectRatio, MiniMaxVideoMode, MiniMaxVideoResolution } from './ai-chat-protocol'
 import type { VideoStudioPlan, VideoStudioPlanRequest } from './video-studio-plan'
 export type { VideoStudioPlan, VideoStudioPlanAspect, VideoStudioPlanShot } from './video-studio-plan'
@@ -39,10 +39,10 @@ import type {
   ExternalToolId,
 } from './external-tool-config'
 export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
-import type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress } from './external-client-contract'
+import type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress, ExternalClientLaunchResult } from './external-client-contract'
 import type { ExternalClientCheckResult } from './external-client-connection'
 export type { ExternalClientCheckResult } from './external-client-connection'
-export type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress } from './external-client-contract'
+export type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress, ExternalClientLaunchResult } from './external-client-contract'
 import type {
   ManagedCliConfigurationOutcome,
   ManagedCliKeySyncSummary,
@@ -58,17 +58,14 @@ import type {
   RepositoryContext as CodexRepositoryContext,
   SkillDto,
 } from './codex-extensions'
+import type { SkillArchiveExtraction } from './skill-archive'
 import type {
   ProviderExtensionMutation,
   ProviderExtensionsSnapshot,
   ProviderMcpHealthReport,
 } from './provider-extensions'
 import type {
-  CodexSessionDetail,
-  CodexSessionExportResult,
-  CodexSessionListQuery,
   CodexSessionMutationResult,
-  CodexSessionPage,
   CodexSessionSummary,
   SessionArchiveFilter as CodexSessionArchiveFilter,
 } from './codex-sessions'
@@ -343,12 +340,8 @@ export interface UpdateInstallOptions {
 export type InstalledRelease = MainInstalledRelease
 export type UpdateSnapshot = MainUpdateSnapshot
 export type SessionArchiveFilter = CodexSessionArchiveFilter
-export type SessionListQuery = CodexSessionListQuery
 export type SessionSummary = CodexSessionSummary
-export type SessionPageResult = CodexSessionPage
-export type SessionDetailResult = CodexSessionDetail
 export type SessionMutationResult = CodexSessionMutationResult
-export type SessionExportResult = CodexSessionExportResult
 export type MultiProviderSessionProvider = ProviderSessionProvider
 export type MultiProviderSessionListQuery = ProviderSessionListQuery
 export type MultiProviderSessionSummary = ProviderSessionSummary
@@ -689,11 +682,13 @@ export interface AiChatTextFile {
 }
 
 export type AiChatErrorCode = MainAiChatStreamErrorCode
+export type AiChatCutOff = AiAnswerCutOff
 
 export type AiChatStreamEvent =
   | { requestId: string; type: 'content'; content: string }
   | { requestId: string; type: 'reasoning'; content: string }
-  | { requestId: string; type: 'complete' }
+  /** cutOff：回答没写完就停了（到了长度上限 / 被内容审核拦下），已经出来的字照留；缺省 = 正常说完。 */
+  | { requestId: string; type: 'complete'; cutOff?: AiChatCutOff }
   | { requestId: string; type: 'canceled'; mayStillComplete?: boolean }
   | { requestId: string; type: 'error'; code?: AiChatErrorCode; message: string }
 
@@ -726,6 +721,82 @@ export interface AiChatHistoryWrite {
 /** 退出前主进程问聊天页要一次存盘（electron/chat-history-flush.ts）；编号每次随机，原样回给 chat-history:flushed。 */
 export interface AiChatHistoryFlushRequest {
   requestId: string
+}
+
+/** 一条视频（分镜、设置、片段编号）一份文件；key 由渲染层分配，只含字母、数字、_ 和 -。 */
+export interface VideoStudioProjectFile {
+  key: string
+  content: string
+}
+
+export interface VideoStudioProjectsSnapshot {
+  /** null = 这个账号的视频草稿还没从旧的本机存储（localStorage）抄过来，或者从没做过视频。 */
+  index: string | null
+  /** 这个账号存着的每一条视频。内容主进程不看，渲染层自己认；认不出的那一条它自己跳过。 */
+  projects: VideoStudioProjectFile[]
+}
+
+export interface VideoStudioProjectsWrite {
+  scope: string
+  /** 只在把旧草稿抄过来的那一次带：写在这一次的每一条视频之后。缺省 = 不动索引。 */
+  index?: string
+  /** 这次改过、要重写的那几条。 */
+  put: VideoStudioProjectFile[]
+  /** 客户删掉的那几条。不在这里的文件一个都不删。 */
+  remove: string[]
+}
+
+/** 主窗口「创作」左边那一列里的一个画布项目：只有编号、名字和时间，项目里的东西不出主进程。 */
+export interface CanvasProjectListEntry {
+  id: string
+  name: string
+  /** 最后改动的时间（毫秒）。 */
+  updatedAt: number
+}
+
+/**
+ * 主窗口「创作 › 作品库」要的一页（融合第 3 步）：当前账号做过的图片和视频，新的在前。视频剪辑的配乐、
+ * 画布回收站里的不列。主进程只列目录和名字，不读图片和视频本身。
+ */
+export interface AiLibraryListInput {
+  offset?: number
+  limit?: number
+  /** film：只看 filmAssetIds 里点名的那几段视频；clip：视频里除了它们以外的；video：两样都算。 */
+  kind?: 'all' | 'image' | 'video' | 'clip' | 'film'
+  /** 按客户给作品起的名字、记着的那句描述和标签找。 */
+  search?: string
+  /** 哪几段视频是成片。作品库的文件上没有这个记号，由记着每条视频的页面点名；不是这个账号的编号对不上任何东西。 */
+  filmAssetIds?: string[]
+  /**
+   * 页面自己先搜到的那几个编号：对话和视频里写的那句话记在它们各自的记录里，不在作品库里。只在带了 search 时有用，
+   * 只拿来跟这个账号自己的目录比，多列不出别人的东西。
+   */
+  matchedAssetIds?: string[]
+}
+
+export interface AiLibraryEntry {
+  assetId: string
+  mediaType: 'image' | 'video'
+  /** 存进作品库的时间（ISO 8601）。 */
+  createdAt: string
+  /** 只有图片有。 */
+  mimeType?: 'image/png' | 'image/jpeg' | 'image/webp'
+  fileName: string
+  /** 客户在画布素材库里给它起的名字；没起过就没有。 */
+  name?: string
+  /** 画布里生成时记下的那句描述；对话和视频里做的没有这一项，页面按自己的记录补。 */
+  prompt?: string
+}
+
+export interface AiLibraryPage {
+  items: AiLibraryEntry[]
+  offset: number
+  limit: number
+  /** 这一类、这次搜索一共多少个。 */
+  total: number
+  hasMore: boolean
+  /** 整个作品库各有多少个（不管搜的是什么），筛选那一排用。 */
+  counts: { image: number; video: number; film: number }
 }
 
 /**
@@ -850,6 +921,11 @@ export interface AiVideoProgressEvent {
   value?: number
   /** 服务端说这单排得比平时慢。 */
   delayed?: boolean
+  /**
+   * 这一单交出去前，主进程没能在本机记下「交出去了、还没回音」。页面替它记着：重开以后主进程查不到这一单时，
+   * 照「提交结果不明」提醒可能已扣费，不能当它没发过（总单 #42，N2）。
+   */
+  unrecorded?: boolean
 }
 
 export interface VideoStudioPlanInput extends VideoStudioPlanRequest {
@@ -986,7 +1062,8 @@ export interface XingmangInvokeContract {
   installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId, request?: DesktopAppUpdateRequest], ExternalClientStatus>
   /** 中止正在进行的客户端安装;Windows 上已经交给系统去装的那一步会被拒绝并给出原因。 */
   cancelExternalClientInstall: IpcInvokeDefinition<'external-clients:cancel-install', [tool: ExternalToolId], InstallCancelResult>
-  launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], void>
+  /** 回打开以后还要客户知道的事（ExternalClientLaunchResult），没有就是空对象。 */
+  launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], ExternalClientLaunchResult>
   /**
    * 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择（官方登录 / 第三方），星芒那份配置留着。
    * 只有 Claude Desktop 支持；切回当前账号时那份用不上了回 reconnect，界面接着打开配置窗口。
@@ -1166,13 +1243,6 @@ export interface XingmangInvokeContract {
    * 缺省 = 已经交给安装程序（旧行为）。
    */
   installUpdate: IpcInvokeDefinition<'update:install', [options?: UpdateInstallOptions], { accepted: true; postponed?: true }>
-  listSessions: IpcInvokeDefinition<'sessions:list', [query: SessionListQuery], SessionPageResult>
-  getSessionDetail: IpcInvokeDefinition<'sessions:detail', [sessionId: string], SessionDetailResult>
-  exportSession: IpcInvokeDefinition<
-    'sessions:export',
-    [sessionId: string],
-    SessionExportResult | null
-  >
   archiveSession: IpcInvokeDefinition<
     'sessions:archive',
     [sessionId: string],
@@ -1255,6 +1325,12 @@ export interface XingmangInvokeContract {
   logoutMcpServer: IpcInvokeDefinition<'mcp:logout', [name: string], McpServer[]>
   listSkills: IpcInvokeDefinition<'skills:list', [], SkillItem[]>
   importSkill: IpcInvokeDefinition<'skills:import', [input: ImportSkillInput], SkillItem[]>
+  /**
+   * 技能「从压缩包导入」的「选择压缩包」：主进程弹原生选择框，把选中的 .zip 查完解到星芒自己的数据
+   * 文件夹，交回技能那一层的位置，再照「从文件夹导入」那样逐家导入（那边的检查照旧再做一遍）。
+   * 不收渲染层给的路径；取消返回 null，压缩包打不开、不安全、没有技能时报中文原因。
+   */
+  chooseSkillArchive: IpcInvokeDefinition<'skills:choose-archive', [], SkillArchiveExtraction | null>
   toggleSkill: IpcInvokeDefinition<
     'skills:toggle',
     [skillPath: string, enabled: boolean],
@@ -1284,11 +1360,6 @@ export interface XingmangInvokeContract {
     'extensions:list',
     [provider: ProviderId],
     ProviderExtensionsSnapshot
-  >
-  listAllProviderExtensions: IpcInvokeDefinition<
-    'extensions:list-all',
-    [],
-    ProviderExtensionsSnapshot[]
   >
   mutateProviderExtension: IpcInvokeDefinition<
     'extensions:mutate',
@@ -1413,9 +1484,13 @@ export interface XingmangInvokeContract {
     [input: AccountUsageQuery],
     AccountUsagePage
   >
+  /**
+   * 第二个参数是「替哪个账号查的」（写法同 accountScope）：给了，主进程先核对当前账号就是它，
+   * 不是就报「账号刚切换过」。首页近 7 天的柱子按账号记在本机，靠它保证记下的是这个账号的数（D11）。
+   */
   getAccountDashboard: IpcInvokeDefinition<
     'account:get-dashboard',
-    [input: AccountDashboardQuery],
+    [input: AccountDashboardQuery, expectedAccountScope?: string],
     AccountDashboardData
   >
   getAccountTasks: IpcInvokeDefinition<
@@ -1428,6 +1503,8 @@ export interface XingmangInvokeContract {
   /** 用量账单的价格表；没有按型号价目的账号（历史账号）回 null。 */
   getAccountPriceList: IpcInvokeDefinition<'account:get-price-list', [], AccountPriceList | null>
   revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
+  /** 密钥管理的「启用」：把停用、到期、额度用完的那把重新打开。只有星芒账号有，历史账号不显示这颗按钮。 */
+  enableAccountKey: IpcInvokeDefinition<'account:enable-key', [id: number], void>
   copyAccountKey: IpcInvokeDefinition<'account:copy-key', [id: number], void>
   /** 找回密码后复制新密码：走主进程写剪贴板，60 秒后自动清掉。 */
   copyResetPassword: IpcInvokeDefinition<'account:copy-reset-password', [password: string], void>
@@ -1460,6 +1537,15 @@ export interface XingmangInvokeContract {
   >
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
   openCanvasAssetLibrary: IpcInvokeDefinition<'canvas:open-asset-library', [], void>
+  /** 「创作」左边那一列要的画布项目：当前账号没归档的那些，只回编号、名字和最后改动的时间。 */
+  listCanvasProjects: IpcInvokeDefinition<'canvas:list-projects', [], CanvasProjectListEntry[]>
+  /** 「创作 › 作品库」的一页：当前账号做过的图片和视频（融合第 3 步）。只回编号、时间、名字和描述，不回文件内容和路径。 */
+  listAiLibrary: IpcInvokeDefinition<'library:list', [input: AiLibraryListInput], AiLibraryPage>
+  /**
+   * 把画布窗口开在这个项目上。编号先在当前账号的项目里认过才用；画布开着别的项目时先走它自己的关闭确认，
+   * 客户在那里选了留下就回 false。
+   */
+  openCanvasProject: IpcInvokeDefinition<'canvas:open-project', [projectId: string], boolean>
   getRememberedAccountLogin: IpcInvokeDefinition<'account:get-remembered-login', [siteId?: AccountSiteId], RememberedAccountLogin | null>
   setRememberedAccountLogin: IpcInvokeDefinition<'account:set-remembered-login', [input: RememberedAccountLogin | null, siteId?: AccountSiteId], void>
   createAccountKey: IpcInvokeDefinition<'account:create-key', [input: AccountKeyCreateInput], void>
@@ -1500,6 +1586,9 @@ export interface XingmangInvokeContract {
   openAiVideo: IpcInvokeDefinition<'video:open', [assetId: string], void>
   /** suggestedName：系统对话框里默认的文件名（视频剪辑页传片名），主进程洗成干净的文件名再用。 */
   saveAiVideo: IpcInvokeDefinition<'video:save-as', [assetId: string, suggestedName?: string], { saved: boolean }>
+  /** 这个账号存着的视频（分镜、设置、片段编号），一条一个文件（总单 #79）。 */
+  readVideoStudioProjects: IpcInvokeDefinition<'video-studio:read-projects', [scope: string], VideoStudioProjectsSnapshot>
+  writeVideoStudioProjects: IpcInvokeDefinition<'video-studio:write-projects', [input: VideoStudioProjectsWrite], void>
   readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
   writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
   /** 聊天页把退出前那一次存完了（不管存没存成），回 onAiChatHistoryFlushRequested 给的编号。 */
@@ -1570,7 +1659,7 @@ export interface XingmangInvokeContract {
   setCodexRemoteAutoStart: IpcInvokeDefinition<'codex-remote:set-auto-start', [enabled: boolean], CodexRemoteSnapshot>
   /** 「多久没消息就自动关」（YF-10）：4 / 12 小时，null = 不自动关（缺省）。开着的渠道当场按新时长重新起算。 */
   setCodexRemoteIdleClose: IpcInvokeDefinition<'codex-remote:set-idle-close', [hours: RemoteIdleCloseHours | null], CodexRemoteSnapshot>
-  /** 「手机上用的模型」：null = 跟电脑上的 Codex 一样。 */
+  /** 「手机端使用的模型」：null = 跟电脑上的 Codex 一样。 */
   setCodexRemoteModel: IpcInvokeDefinition<'codex-remote:set-model', [model: string | null], CodexRemoteSnapshot>
   /** 卡片「最近一次」的「停下这一轮」（YF-13）：跟手机上发「停止」一样，手机上也收到「已停止。」。 */
   stopCodexRemoteTurn: IpcInvokeDefinition<'codex-remote:stop-turn', [], CodexRemoteSnapshot>
@@ -1737,9 +1826,6 @@ export const ipcInvokeChannels = {
   checkForUpdates: 'update:check',
   downloadUpdate: 'update:download',
   installUpdate: 'update:install',
-  listSessions: 'sessions:list',
-  getSessionDetail: 'sessions:detail',
-  exportSession: 'sessions:export',
   archiveSession: 'sessions:archive',
   restoreSession: 'sessions:restore',
   listProviderSessions: 'provider-sessions:list',
@@ -1777,6 +1863,7 @@ export const ipcInvokeChannels = {
   logoutMcpServer: 'mcp:logout',
   listSkills: 'skills:list',
   importSkill: 'skills:import',
+  chooseSkillArchive: 'skills:choose-archive',
   toggleSkill: 'skills:toggle',
   uninstallSkill: 'skills:uninstall',
   listPlugins: 'plugins:list',
@@ -1787,7 +1874,6 @@ export const ipcInvokeChannels = {
   upgradeMarketplace: 'marketplaces:upgrade',
   removeMarketplace: 'marketplaces:remove',
   listProviderExtensions: 'extensions:list',
-  listAllProviderExtensions: 'extensions:list-all',
   mutateProviderExtension: 'extensions:mutate',
   ensureProviderMarketplace: 'extensions:ensure-marketplace',
   checkProviderMcpHealth: 'extensions:check-mcp-health',
@@ -1843,6 +1929,7 @@ export const ipcInvokeChannels = {
   getAccountUsableGroups: 'account:list-groups',
   getAccountPriceList: 'account:get-price-list',
   revokeAccountKey: 'account:revoke-key',
+  enableAccountKey: 'account:enable-key',
   copyAccountKey: 'account:copy-key',
   copyResetPassword: 'account:copy-reset-password',
   revealAccountKey: 'account:reveal-key',
@@ -1854,6 +1941,9 @@ export const ipcInvokeChannels = {
   revokeOtherAccountLoginSessions: 'account:revoke-other-login-sessions',
   openCanvasWindow: 'canvas:open',
   openCanvasAssetLibrary: 'canvas:open-asset-library',
+  listCanvasProjects: 'canvas:list-projects',
+  listAiLibrary: 'library:list',
+  openCanvasProject: 'canvas:open-project',
   getRememberedAccountLogin: 'account:get-remembered-login',
   setRememberedAccountLogin: 'account:set-remembered-login',
   createAccountKey: 'account:create-key',
@@ -1879,6 +1969,8 @@ export const ipcInvokeChannels = {
   readVideoStudioMusic: 'video-studio:read-music',
   openAiVideo: 'video:open',
   saveAiVideo: 'video:save-as',
+  readVideoStudioProjects: 'video-studio:read-projects',
+  writeVideoStudioProjects: 'video-studio:write-projects',
   readAiChatHistory: 'chat-history:read',
   writeAiChatHistory: 'chat-history:write',
   confirmAiChatHistoryFlushed: 'chat-history:flushed',

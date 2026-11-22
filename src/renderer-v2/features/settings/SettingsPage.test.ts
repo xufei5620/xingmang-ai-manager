@@ -29,10 +29,10 @@ describe('settings close and startup wording', () => {
 // 决定单 D68：系统里把星芒的通知关了，测试通知照样「发得出去」，界面不能再说「已发送」。
 describe('settings test notification wording', () => {
   it('says the notification was handed to the system and where to look when it does not show', () => {
-    expect(testNotificationHandedOffText).toBe('已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。')
+    expect(testNotificationHandedOffText).toBe('测试通知已提交给系统。如未收到，请在系统通知设置中确认星芒的通知已开启。')
     expect(testNotificationHandedOffText).not.toContain('已发送')
     expect(openNotificationSettingsLabel).toBe('打开系统通知设置')
-    expect(notificationSettingsUnavailableText).toBe('没能打开系统通知设置，请在系统设置里找「通知」。')
+    expect(notificationSettingsUnavailableText).toBe('无法打开系统通知设置，请在系统设置中找到「通知」。')
   })
 
   it('offers to open the system notification settings only on Windows and macOS', () => {

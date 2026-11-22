@@ -1,4 +1,4 @@
-import { parseCanvasRouterStrategy } from '../runtime/router-strategy'
+import { nodeHasRouterStrategySetting, resolveNodeRouterStrategy } from '../runtime/router-strategy'
 import type { CanvasAssetSummary } from '../host'
 import type { AssetRef, PortKind, WorkflowNodeData } from '../model'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
@@ -89,8 +89,8 @@ export function buildCanvasUpstreamReferences(
     const title = source.data.settings?.title
     const sourceTitle = typeof title === 'string' && title.trim() && title.length <= 160 && !/[\u0000-\u001f\u007f]/.test(title) ? title.trim() : definition.title
     let routed: 'all' | 'first-available' | 'invalid' | undefined
-    if (source.type === 'router' && Object.hasOwn(source.data.settings ?? {}, 'routerStrategy')) {
-      try { routed = parseCanvasRouterStrategy(source.data.settings?.routerStrategy).strategy } catch { routed = 'invalid' }
+    if (source.type === 'router' && nodeHasRouterStrategySetting(source.type, source.data.settings)) {
+      try { routed = resolveNodeRouterStrategy(source.type, source.data.settings)?.strategy ?? 'invalid' } catch { routed = 'invalid' }
     }
     // Router candidate order is its normalized per-media output order. The
     // adopted candidate is only a preview and must not hide the other slots.

@@ -262,7 +262,9 @@ describe('desktop package bucket addresses', () => {
   it('accepts only object paths under the synced folders on the fixed bucket host', () => {
     for (const key of ['chatgpt/latest.json', `chatgpt/windows-x64/${windowsVersion}/ChatGPT-x64.msix`, 'xingmang/offline/claude/latest.json',
       'xingmang/offline/codex-plugins/latest.json', 'xingmang/offline/grok/latest.json', `xingmang/offline/grok/windows-x64/sha256-${sha}/grok-1.0.52-windows-x86_64.exe`,
-      'xingmang/offline/opencode/latest.json']) {
+      'xingmang/offline/opencode/latest.json',
+      `xingmang/offline/claude-components/vm/072b6cbfe74f428a98bd86035f83b322b369d1f1/win32-x64/${'a'.repeat(64)}/rootfs.vhdx.zst`,
+      `xingmang/offline/claude-components/code/2.1.326/darwin-arm64/${'b'.repeat(64)}/claude.app.tar.zst`]) {
       expect(validateDesktopBucketUrl(objectUrl(key)).href).toBe(objectUrl(key))
     }
     for (const value of [
@@ -275,6 +277,7 @@ describe('desktop package bucket addresses', () => {
       objectUrl('xingmang/offline/other/latest.json'),
       objectUrl('xingmang/offline/grokx/latest.json'),
       objectUrl('xingmang/offline/grok'),
+      objectUrl('xingmang/offline/claude-componentsx/vm/a.zst'),
       objectUrl('chatgpt/%2e%2e/secret.json'),
       objectUrl('chatgpt/a b.json'),
       'https://xingmang-downloads-1342302199.cos.ap-beijing.myqcloud.com/chatgpt/latest.json',

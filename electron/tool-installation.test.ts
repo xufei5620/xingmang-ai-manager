@@ -4,6 +4,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { disposeStagedDarwinCliRecords } from './darwin-cli-staging'
+import { DarwinCliProvenanceError } from './macos-code-signing'
 import type { DarwinCodexStandaloneSelection } from './macos-codex'
 import {
   classifyCliInstallDisplaySource,
@@ -18,6 +19,7 @@ import {
   resolveCliInstallation,
   resolveNpmGlobalRoot,
   runDarwinNativeVerificationCommand,
+  UnrecognizedDarwinCliError,
   verifiedPackageRoot,
 } from './tool-installation'
 
@@ -349,7 +351,7 @@ describe('CLI installation resolution', () => {
     const executable = write(path.join(bin, 'grok-0.2.118'), '#!/bin/sh\n')
     fs.symlinkSync(path.basename(executable), path.join(bin, 'grok'))
 
-    await expect(resolveCliCommand('grok', {
+    const command = resolveCliCommand('grok', {
       HOME: home,
       PATH: bin,
     }, 'trusted-only', {
@@ -357,10 +359,100 @@ describe('CLI installation resolution', () => {
       runCommand: async () => {
         throw new Error('invalid signature')
       },
-      // The codesign failure is wrapped so the reported reason names the trust
-      // decision rather than leaking a bare command error, with the original kept
-      // as the cause.
-    })).rejects.toThrow('Developer ID')
+    })
+    // Mac 验收 R1：签名没过的那一份和认不出的布局说同一句客户看得懂的话，
+    // 原先点名 Developer ID 的那一层原样留在 cause 里，排查时还看得到。
+    const error = await command.catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(UnrecognizedDarwinCliError)
+    expect((error as Error).message).toContain('使用星芒安装')
+    expect((error as Error).cause).toBeInstanceOf(DarwinCliProvenanceError)
+    expect(((error as Error).cause as Error).message).toContain('Developer ID')
+  })
+
+  it.runIf(process.platform === 'darwin')('reports an OpenAI signature failure on the standalone Codex as an unrecognized copy', async () => {
+    const fixture = codexStandaloneFixture()
+    const env = { HOME: fixture.home, PATH: path.dirname(fixture.visibleCommand) }
+
+    const error = await resolveCliCommand('codex', env, 'trusted-only', {
+      arch: process.arch,
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        if (spec.executable === '/usr/bin/codesign') throw new Error('invalid signature')
+        return officialCodexResult(fixture, spec)
+      },
+    }).catch((reason: unknown) => reason)
+
+    expect(error).toBeInstanceOf(UnrecognizedDarwinCliError)
+    expect(((error as Error).cause as Error).message).toContain('OpenAI Developer ID')
+  })
+
+  it.runIf(process.platform === 'darwin')('reports a standalone Codex whose version disagrees with its manifest as an unrecognized copy', async () => {
+    const fixture = codexStandaloneFixture()
+    const env = { HOME: fixture.home, PATH: path.dirname(fixture.visibleCommand) }
+
+    const error = await resolveCliCommand('codex', env, 'trusted-only', {
+      arch: process.arch,
+      platform: 'darwin',
+      runCommand: async (spec) => (spec.argv[0] === '--version'
+        ? { stdout: 'codex-cli 9.9.9\n', stderr: '' }
+        : officialCodexResult(fixture, spec)),
+    }).catch((reason: unknown) => reason)
+
+    expect(error).toBeInstanceOf(UnrecognizedDarwinCliError)
+  })
+
+  it.runIf(process.platform === 'darwin')('keeps a version command that cannot start as its own error instead of calling the copy unrecognized', async () => {
+    const fixture = codexStandaloneFixture()
+    const env = { HOME: fixture.home, PATH: path.dirname(fixture.visibleCommand) }
+
+    const error = await resolveCliCommand('codex', env, 'trusted-only', {
+      arch: process.arch,
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        if (spec.argv[0] === '--version') throw new Error('spawn EAGAIN')
+        return officialCodexResult(fixture, spec)
+      },
+    }).catch((reason: unknown) => reason)
+
+    expect(error).not.toBeInstanceOf(UnrecognizedDarwinCliError)
+    expect((error as Error).message).toContain('spawn EAGAIN')
+  })
+
+  // 布局认不出的那一步发生在核签名、抄盘之前，Linux 上传 platform: 'darwin' 也走得到。
+  it.runIf(process.platform !== 'win32')('refuses a Codex outside the official standalone layout as unrecognized without running anything', async () => {
+    const home = temporaryDirectory()
+    const bin = path.join(home, 'third-party', 'bin')
+    write(path.join(bin, 'codex'), '#!/bin/sh\necho third-party\n')
+    const runCommand = vi.fn(async () => ({ stdout: '', stderr: '' }))
+
+    const error = await resolveCliCommand('codex', { HOME: home, PATH: bin }, 'trusted-only', {
+      arch: process.arch,
+      platform: 'darwin',
+      npmGlobalRoot: path.join(home, 'missing-node-modules'),
+      runCommand,
+    }).catch((reason: unknown) => reason)
+
+    expect(error).toBeInstanceOf(UnrecognizedDarwinCliError)
+    expect((error as Error).message).toBe('这一份不是星芒装的，星芒核对不了它是不是官方原版，为了安全没有打开。到首页点「使用星芒安装」，装好就能打开。')
+    expect(runCommand).not.toHaveBeenCalled()
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses a Grok link outside the official layouts as unrecognized without running anything', async () => {
+    const home = temporaryDirectory()
+    const bin = path.join(home, '.grok', 'bin')
+    const elsewhere = write(path.join(home, 'third-party', 'grok'), '#!/bin/sh\necho third-party\n')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.symlinkSync(elsewhere, path.join(bin, 'grok'))
+    const runCommand = vi.fn(async () => ({ stdout: '', stderr: '' }))
+
+    const error = await resolveCliCommand('grok', { HOME: home, PATH: bin }, 'trusted-only', {
+      platform: 'darwin',
+      npmGlobalRoot: path.join(home, 'missing-node-modules'),
+      runCommand,
+    }).catch((reason: unknown) => reason)
+
+    expect(error).toBeInstanceOf(UnrecognizedDarwinCliError)
+    expect(runCommand).not.toHaveBeenCalled()
   })
 
   // resolveCliCommand's darwin cases above all inject a runCommand stub, since no

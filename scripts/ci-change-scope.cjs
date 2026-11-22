@@ -54,11 +54,15 @@ const macPackagingFiles = new Set([
   'scripts/patch-builder-fetch-compat.cjs',
   'scripts/builder-fetch-compat.cjs',
   'e2e/macos-launch-smoke.mjs',
+  // 两个作业真开打好的包之前先把正式环境的域名指回本机（2026-11-21），改了它要在这两个作业上再跑一遍。
+  'scripts/ci-block-production-hosts.cjs',
   'scripts/update-release-utils.cjs',
   'scripts/release-copyright.cjs',
   'scripts/extract-release-notes.cjs',
   'scripts/linux-artifact-names.cjs',
   'scripts/linux-payload-modes.cjs',
+  // 配置的 afterPack 从这里取 Windows 安装包顶层条目名单的写法（D05），Mac 那一支不调用它，但配置要加载它。
+  'scripts/windows-installer-package-entries.cjs',
   'scripts/electron-fuse-hardening.cjs',
   // 第三方许可清单：配置从这里取文件名和 Mac 补许可文件的钩子，出包校验也读它（D97）。
   'scripts/third-party-notices.cjs',
@@ -122,6 +126,7 @@ const upgradeSmokeFiles = new Set([
   'electron/app-settings.ts',
   'electron-builder.config.cjs',
   'build/installer.nsh',
+  'scripts/windows-installer-package-entries.cjs',
   'package.json',
   'package-lock.json',
   'scripts/upgrade-smoke.cjs',
@@ -148,6 +153,8 @@ const uninstallSmokeFiles = new Set([
   'scripts/windows-install-directory-acl-smoke.ps1',
   'scripts/windows-file-association-smoke.ps1',
   'scripts/windows-upgrade-blocked-smoke.ps1',
+  'scripts/windows-upgrade-user-files-smoke.ps1',
+  'scripts/windows-installer-package-entries.cjs',
   '.github/workflows/windows-uninstall-smoke.yml',
 ])
 

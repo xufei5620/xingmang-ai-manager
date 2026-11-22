@@ -216,7 +216,7 @@ describe('ManagedCliKeyStore', () => {
     fs.writeFileSync(filePath, 'broken encrypted payload', 'utf8')
     const store = new ManagedCliKeyStore(filePath, fakeSafeStorage())
 
-    await expect(store.read(42)).rejects.toThrow('本地托管 API Key 配置已损坏或无法解密')
+    await expect(store.read(42)).rejects.toThrow('本地托管密钥配置已损坏或无法解密')
   })
 
   it('quarantines a corrupted cache and rebuilds it on the next save', async () => {
@@ -273,8 +273,8 @@ describe('ManagedCliKeyStore', () => {
       getSelectedStorageBackend: () => 'basic_text',
     }))
 
-    await expect(store.save(42, [managedKey('codex')])).rejects.toThrow('已拒绝写入托管 API Key')
-    await expect(store.read(42)).rejects.toThrow('已拒绝写入托管 API Key')
+    await expect(store.save(42, [managedKey('codex')])).rejects.toThrow('已拒绝写入托管密钥')
+    await expect(store.read(42)).rejects.toThrow('已拒绝写入托管密钥')
     expect(fs.existsSync(filePath)).toBe(false)
   })
 
@@ -299,10 +299,10 @@ describe('ManagedCliKeyStore', () => {
     }))
 
     await expect(store.save(42, [managedKey('codex')]))
-      .rejects.toThrow('系统安全存储不可用，无法持久化托管 API Key')
+      .rejects.toThrow('系统安全存储不可用，无法保存托管密钥')
 
     expect(fs.existsSync(filePath)).toBe(false)
-    await expect(store.read(42)).rejects.toThrow('系统安全存储不可用，无法持久化托管 API Key')
+    await expect(store.read(42)).rejects.toThrow('系统安全存储不可用，无法保存托管密钥')
   })
 })
 
