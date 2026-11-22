@@ -1336,13 +1336,15 @@ export class CodexRemoteService {
       const stored = settings.channels[id]
       const now = this.now()
       if (runtime.pairing && runtime.pairing.expiresAt <= now) this.clearPairing(runtime)
+      const hasCredential = (await this.options.store.readCredential(id)) !== null
       channels[id] = {
         channel: id,
-        hasCredential: (await this.options.store.readCredential(id)) !== null,
+        hasCredential,
         accountLabel: stored?.accountLabel ?? null,
         enabled: runtime.enabled,
         status: runtime.status,
-        boundPeer: stored?.boundPeer
+        // 没有凭据就没有绑着的人：退出登录时设置没写进去（M21），盘上留着的那个也不显示。
+        boundPeer: hasCredential && stored?.boundPeer
           ? {
               userIdTail: stored.boundPeer.userId.slice(-4),
               boundAt: stored.boundPeer.boundAt,
@@ -1914,7 +1916,9 @@ export class CodexRemoteService {
   ): Promise<CodexRemoteSnapshot> {
     const runtime = this.runtimes[channel]
     const before = (await this.options.store.readSettings()).channels[channel]
-    const sameAccount = value !== null && accountLabel !== null && before?.accountLabel === accountLabel
+    // 退出登录以后凭据是空的：这时再登同一个账号是重新登录，不接着用盘上可能没清掉的那个绑定（M21）。
+    const loggedIn = (await this.options.store.readCredential(channel)) !== null
+    const sameAccount = value !== null && accountLabel !== null && loggedIn && before?.accountLabel === accountLabel
     const verifiedPeer = value !== null ? options.verifiedPeerUserId ?? null : null
     const keepsPeer = sameAccount && (verifiedPeer === null || !before?.boundPeer || before.boundPeer.userId === verifiedPeer)
     // 换了机器人重新扫码、过了数字的还是原来绑着的那个人（YR-9）：账号字样变了，这次连接里的对话照旧清掉，
@@ -1935,13 +1939,22 @@ export class CodexRemoteService {
       removeFailure = error
       this.options.log('warn', 'remote.credential-remove-failed', { channel })
     }
-    await this.options.store.updateSettings((settings) => {
-      const stored = settings.channels[channel] ?? emptyChannelSettings()
-      if (!removeFailure) stored.accountLabel = value === null ? null : accountLabel
-      if (!keepsPeer && !rebindsSamePeer) stored.boundPeer = null
-      if (verifiedPeer && stored.boundPeer?.userId !== verifiedPeer) stored.boundPeer = { userId: verifiedPeer, boundAt: this.now() }
-      settings.channels[channel] = stored
-    })
+    // 退出登录时设置写不进去（盘满、文件一时被占，M21）：跟凭据删不掉一样，停渠道照做再报错。不然渠道带着
+    // 内存里的凭据照样开着，手机发来的话还会执行。
+    let settingsFailure: unknown = null
+    try {
+      await this.options.store.updateSettings((settings) => {
+        const stored = settings.channels[channel] ?? emptyChannelSettings()
+        if (!removeFailure) stored.accountLabel = value === null ? null : accountLabel
+        if (!keepsPeer && !rebindsSamePeer) stored.boundPeer = null
+        if (verifiedPeer && stored.boundPeer?.userId !== verifiedPeer) stored.boundPeer = { userId: verifiedPeer, boundAt: this.now() }
+        settings.channels[channel] = stored
+      })
+    } catch (error) {
+      if (value !== null) throw error
+      settingsFailure = error
+      this.options.log('warn', 'remote.logout-settings-failed', { channel })
+    }
     if (verifiedPeer) {
       // 已经绑好了人：电脑上挂着的配对码作废，免得别人再拿它换掉。
       this.clearPairing(runtime)
@@ -1956,10 +1969,11 @@ export class CodexRemoteService {
         await this.startChannel(runtime)
       }
     }
-    if (removeFailure) {
+    const failure = removeFailure ?? settingsFailure
+    if (failure) {
       // 报错的调用拿不到返回的快照，界面靠 state-changed 跟上已经解绑、停掉的样子。
       await this.emit()
-      throw removeFailure
+      throw failure
     }
     return this.emit()
   }

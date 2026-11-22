@@ -4215,6 +4215,22 @@ describe('codex-remote-service lifecycle', () => {
     expect((await s.service.snapshot()).channels.feishu).toMatchObject({ hasCredential: false, accountLabel: null, enabled: false, boundPeer: null })
   })
 
+  // M21：退出登录时凭据删掉了、设置却没写进去，原来在停渠道之前就抛了，渠道带着内存里的凭据照样收消息。
+  it('still stops the channel and shows nobody bound when logging out cannot save the settings', async () => {
+    const s = await setup()
+    await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'x'.repeat(16) }), 'cli_abcdef')
+    const channel = await enabledAndPaired(s)
+    vi.spyOn(s.store, 'updateSettings').mockRejectedValueOnce(new Error('disk full'))
+    await expect(s.service.saveChannelCredential('feishu', null, null)).rejects.toThrow('disk full')
+    expect(s.logs).toContain('remote.logout-settings-failed')
+    expect(channel.stopped).toBe(1)
+    expect(s.snapshots.at(-1)?.channels.feishu).toMatchObject({ enabled: false, hasCredential: false, boundPeer: null })
+    // The binding left on disk does not come back when the same app logs in again: that is a new login.
+    await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'y'.repeat(16) }), 'cli_abcdef')
+    expect((await s.service.snapshot()).channels.feishu).toMatchObject({ hasCredential: true, boundPeer: null })
+    expect((await s.store.readSettings()).channels.feishu?.boundPeer).toBeNull()
+  })
+
   it('does not swallow a failure to save a new credential as a logout failure', async () => {
     const s = await setup()
     vi.spyOn(s.store, 'writeCredential').mockRejectedValueOnce(new Error('本机不支持安全保存密码，凭据未保存。'))
