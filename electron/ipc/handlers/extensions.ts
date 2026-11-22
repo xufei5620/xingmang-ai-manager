@@ -3,7 +3,7 @@
 import { BrowserWindow, dialog, type OpenDialogOptions } from 'electron'
 import { cliCatalog, isActiveProviderId } from '../../catalog'
 import type { ProviderExtensionsSnapshot } from '../../provider-extensions'
-import { extractSkillArchive } from '../../skill-archive'
+import { discardSkillArchiveExtractions, extractSkillArchive } from '../../skill-archive'
 import { optionalString, requiredString } from '../parsers/common'
 import { parseMarketplaceInput, parseMcpCopyInput, parseMcpInput, parseProviderExtensionMutation, parseSkillInput } from '../parsers/extensions'
 import type { IpcHandlerContext } from './context'
@@ -46,6 +46,10 @@ export function registerExtensionHandlers(ctx: IpcHandlerContext): void {
       : await dialog.showOpenDialog(dialogOptions)
     if (result.canceled || !result.filePaths[0]) return null
     return extractSkillArchive(result.filePaths[0], baseDirectory)
+  })
+  // 导入框关掉时删解开的那份。同样不收渲染层的路径，只删主进程自己定的那个文件夹里星芒起名的几份。
+  registerTrustedHandler('skills:discard-archives', async () => {
+    if (options.skillArchiveDirectory) await discardSkillArchiveExtractions(options.skillArchiveDirectory)
   })
   registerTrustedHandler('skills:toggle', (_event, skillPath: unknown, enabled: unknown) => {
     if (typeof enabled !== 'boolean') throw new Error('Skill 状态格式错误')

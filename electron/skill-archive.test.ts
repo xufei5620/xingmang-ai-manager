@@ -11,6 +11,7 @@ import {
   SKILL_ARCHIVE_UNREADABLE,
   SKILL_ARCHIVE_UNSAFE,
   buildSkillArchivePlan,
+  discardSkillArchiveExtractions,
   extractSkillArchive,
   readSkillArchiveEntries,
 } from './skill-archive'
@@ -141,6 +142,68 @@ describe('skill-archive', () => {
     expect(fs.existsSync(first.directory)).toBe(false)
     expect(fs.existsSync(second.directory)).toBe(true)
     expect(fs.readdirSync(base)).toHaveLength(1)
+  })
+
+  it('discards every unpacked copy once the import form is done and leaves files it did not name alone', async () => {
+    const root = temporaryRoot()
+    const base = path.join(root, 'extracted')
+    const extraction = await extractSkillArchive(writeArchive(root, 'a.zip', buildZip([{ name: 'a/SKILL.md', data: skillText }])), base)
+    fs.writeFileSync(path.join(base, 'not-ours.txt'), 'keep')
+
+    await discardSkillArchiveExtractions(base)
+
+    expect(fs.existsSync(extraction.directory)).toBe(false)
+    expect(fs.readdirSync(base)).toEqual(['not-ours.txt'])
+  })
+
+  it('creates nothing when there was never anything unpacked', async () => {
+    const root = temporaryRoot()
+    const base = path.join(root, 'extracted')
+
+    await discardSkillArchiveExtractions(base)
+
+    expect(fs.existsSync(base)).toBe(false)
+  })
+
+  it('waits for an unpack already under way, so the copy it makes is not left behind', async () => {
+    const root = temporaryRoot()
+    const base = path.join(root, 'extracted')
+    const unpacking = extractSkillArchive(writeArchive(root, 'a.zip', buildZip([{ name: 'a/SKILL.md', data: skillText }])), base)
+    const discarding = discardSkillArchiveExtractions(base)
+
+    const extraction = await unpacking
+    await discarding
+
+    expect(fs.existsSync(extraction.directory)).toBe(false)
+    expect(fs.readdirSync(base)).toEqual([])
+  })
+
+  it('still discards after an unpack that failed', async () => {
+    const root = temporaryRoot()
+    const base = path.join(root, 'extracted')
+    const earlier = await extractSkillArchive(writeArchive(root, 'a.zip', buildZip([{ name: 'a/SKILL.md', data: skillText }])), base)
+    const failing = extractSkillArchive(writeArchive(root, 'broken.zip', Buffer.from('not a zip at all')), base)
+    const discarding = discardSkillArchiveExtractions(base)
+
+    await expect(failing).rejects.toThrow(SKILL_ARCHIVE_UNREADABLE)
+    await expect(discarding).resolves.toBeUndefined()
+    expect(fs.existsSync(earlier.directory)).toBe(false)
+  })
+
+  it('refuses to clean through a temporary folder that was swapped for a link', async () => {
+    const root = temporaryRoot()
+    const elsewhere = path.join(root, 'elsewhere')
+    const bystander = path.join(elsewhere, '0b5f7c8e-1d2a-4c3b-9e8f-7a6b5c4d3e2f')
+    fs.mkdirSync(bystander, { recursive: true })
+    const base = path.join(root, 'extracted')
+    try {
+      fs.symlinkSync(elsewhere, base, 'junction')
+    } catch {
+      return
+    }
+
+    await expect(discardSkillArchiveExtractions(base)).rejects.toThrow()
+    expect(fs.existsSync(bystander)).toBe(true)
   })
 
   it('picks the shallowest SKILL.md and treats deeper ones as part of that skill', () => {
