@@ -515,7 +515,7 @@ test('a custom image size the model cannot draw is held back with its rule under
     await width.fill('1000')
     assert.equal(await rule.count(), 0)
     await page.getByTestId('chat-composer-input').fill('A test scene')
-    assert.equal(await rule.textContent(), '这个型号的宽和高都要是 16 的倍数，并在 256 到 4096 之间')
+    assert.equal(await rule.textContent(), '该型号的宽和高均须为 16 的倍数，且在 256 到 4096 之间')
     assert.equal(await width.getAttribute('aria-describedby'), 'chatImageSizeRule')
     // Enter 和发送按钮都不发。
     await page.getByTestId('chat-composer-input').press('Enter')
@@ -540,7 +540,7 @@ test('a custom image size the model cannot draw is held back with its rule under
 
 // 图片文件在外面被删了（D37）：预览、复制、另存都照实说图不在电脑上了，不再叫客户重试——怎么重试都不会成。
 test('says the picture is gone from the computer, instead of asking to retry, when its file was removed outside the app', async () => {
-  const gone = '这张图已经不在电脑上了，可能被移走或删掉了。'
+  const gone = '该图片已不在本机，可能已被移动或删除。'
   const page = await open('assetGone=1')
   try {
     await ready(page)
@@ -554,7 +554,7 @@ test('says the picture is gone from the computer, instead of asking to retry, wh
     // 格子里放的是缩好的那张（总单 78 R-2），原图没了格子可能还显示得出来；点开大图读的是原图，得照实说不在了。
     await page.locator('.chat-asset-preview').click()
     const enlarged = page.getByTestId('chat-image-preview').locator('.chat-preview-image')
-    await page.waitForFunction(() => document.querySelector('.chat-preview-image')?.getAttribute('alt') === '这张图已经不在电脑上了，可能被移走或删掉了。')
+    await page.waitForFunction(() => document.querySelector('.chat-preview-image')?.getAttribute('alt') === '该图片已不在本机，可能已被移动或删除。')
     assert.equal(await enlarged.getAttribute('alt'), gone)
     await page.keyboard.press('Escape')
     await page.getByTestId('chat-image-preview').waitFor({ state: 'detached' })
@@ -1190,9 +1190,9 @@ test('text files picked in a text conversation go out with the message and stay 
     await page.getByText('「big.log」太长，只读了前 12,000 个字。').waitFor()
     // Removing the long one and picking again asks only for what is left.
     await page.getByTestId('chat-draft-file-remove').nth(1).click()
-    await page.evaluate(() => window.chatHarness.queueTextFiles('Error: 这个文件读不出来，可能正被别的软件占着，关掉它再试。'))
+    await page.evaluate(() => window.chatHarness.queueTextFiles('Error: 该文件无法读取，可能已被其他软件打开，请关闭相关软件后重试。'))
     await page.getByTestId('chat-attach-file').click()
-    await page.getByText('这个文件读不出来，可能正被别的软件占着，关掉它再试。').waitFor()
+    await page.getByText('该文件无法读取，可能已被其他软件打开，请关闭相关软件后重试。').waitFor()
     assert.deepEqual((await calls(page, 'pick-text-files')).at(-1).input, { remainingFiles: 2, remainingChars: 30_000 - 'Error: boom'.length })
     assert.equal(await page.locator('[data-testid=chat-draft-files] .chat-file').count(), 1)
 
@@ -1741,7 +1741,7 @@ test('the parameters dialog starts every slider at the model default, explains b
 
 // —— 输入框的第三档「生成视频」（融合第 2 步）——
 // 夹具带 ?video 时对话页拿到「创作」页给的那一份（价目、余额、做过的视频），视频那几条通道由测试放行（browser-fixture.tsx）。
-const videoGoneText = '这段视频已经不在电脑上了，可能被移走或删掉了。'
+const videoGoneText = '该视频已不在本机，可能已被移动或删除。'
 const videoBilledText = '该片段已提交至服务端并完成扣费，无法中止；将继续等待生成完成，完成后保留在此处。'
 const videoUnconfirmedText = '视频提交结果不明确，服务端可能已创建任务，请勿立即重复提交'
 async function enterVideoMode(page) {

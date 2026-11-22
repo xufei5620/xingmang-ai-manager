@@ -1521,12 +1521,12 @@ describe('executeCanvasRun frame preparations', () => {
           wrongNode = await reportFramePreparation!({ ...framePreparation('other'), operationId: attemptId, attemptId }, true).catch((error: Error) => error.message)
           // Left waiting on purpose: the run's end still clears it.
           await reportFramePreparation!({ ...framePreparation(), operationId: attemptId, attemptId }, true)
-          throw new Error('视频帧没有交回来（画布关了或处理超时），请重新运行这个节点')
+          throw new Error('未收到视频帧（画布已关闭或处理超时），请重新运行该节点')
         },
       }),
     }))
     expect(wrongNode).toBe('视频帧不属于这个节点')
-    expect(record.nodes[0]).toMatchObject({ state: 'failed', errorMessage: '视频帧没有交回来（画布关了或处理超时），请重新运行这个节点' })
+    expect(record.nodes[0]).toMatchObject({ state: 'failed', errorMessage: '未收到视频帧（画布已关闭或处理超时），请重新运行该节点' })
     expect(record).not.toHaveProperty('framePreparations')
   })
 
@@ -1590,7 +1590,7 @@ describe('executeCanvasRun image preparations', () => {
         'image-crop': async ({ attemptId, reportImagePreparation }) => {
           refusals.push(await reportImagePreparation!(imagePreparation(attemptId, 'other'), true).then(() => 'sent', (error: Error) => error.message))
           refusals.push(await reportImagePreparation!({ ...imagePreparation(attemptId), runId: 'run-2' }, true).then(() => 'sent', (error: Error) => error.message))
-          throw new Error('图片处理结果没有交回来（画布关了或处理超时），请重新运行这个节点')
+          throw new Error('未收到图片处理结果（画布已关闭或处理超时），请重新运行该节点')
         },
       }),
     }))

@@ -131,7 +131,7 @@ export function createVideoStudioProjectStore(options: { root: string; maxTotalB
     const directory = directoryOf(input.scope)
     if (!fs.existsSync(directory) && fs.existsSync(options.root)) {
       const scopes = await readDirectoryEntries(options.root, MAX_DIRECTORY_ENTRIES, label)
-      if (scopes.length >= MAX_VIDEO_STUDIO_PROJECT_SCOPES) throw new Error('这台电脑上保存视频草稿的账号过多，本次没有保存')
+      if (scopes.length >= MAX_VIDEO_STUDIO_PROJECT_SCOPES) throw new Error('本机保存视频草稿的账号过多，本次未保存')
     }
     ensureSafeDataDirectory(directory, label)
     // Refuse up front anything that would leave the folder over its bounds: a
@@ -139,10 +139,10 @@ export function createVideoStudioProjectStore(options: { root: string; maxTotalB
     const written = new Set(input.put.map((entry) => entry.key))
     const removed = new Set(input.remove)
     const kept = (await projectKeysOnDisk(directory)).filter((key) => !written.has(key) && !removed.has(key))
-    if (kept.length + written.size > MAX_VIDEO_STUDIO_PROJECTS) throw new Error(`视频草稿最多 ${MAX_VIDEO_STUDIO_PROJECTS} 条，本次没有保存`)
+    if (kept.length + written.size > MAX_VIDEO_STUDIO_PROJECTS) throw new Error(`视频草稿最多 ${MAX_VIDEO_STUDIO_PROJECTS} 条，本次未保存`)
     let total = (input.index === undefined ? 0 : utf8Bytes(input.index)) + input.put.reduce((sum, entry) => sum + utf8Bytes(entry.content), 0)
     for (const size of assertSafeDataFiles(directory, kept.map(projectFile), label)) total += size ?? 0
-    if (total > maxTotalBytes) throw new Error(`视频草稿超过 ${Math.floor(maxTotalBytes / 1024 / 1024)} MB 安全上限，本次没有保存`)
+    if (total > maxTotalBytes) throw new Error(`视频草稿超过 ${Math.floor(maxTotalBytes / 1024 / 1024)} MB 安全上限，本次未保存`)
     // Projects first, index last: the index only says "the old drafts were
     // copied over", so it must not land before the copies it vouches for.
     // Deletions come last of all and only for the keys the page named: a file

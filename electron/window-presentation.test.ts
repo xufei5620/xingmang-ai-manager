@@ -306,8 +306,8 @@ describe('asset menu failure presentation', () => {
       expect(assetMenuFailureDialog('image', new Error(message))).toEqual({ title: '图片操作失败', message })
     }
     // 文件在外面被删了时作品库说的那句（D37），右键菜单里点了也原样说。
-    expect(assetMenuFailureDialog('video', new Error('这段视频已经不在电脑上了，可能被移走或删掉了。')).message).toBe('这段视频已经不在电脑上了，可能被移走或删掉了。')
-    expect(assetMenuFailureDialog('image', new Error('这张图已经不在电脑上了，可能被移走或删掉了。')).message).toBe('这张图已经不在电脑上了，可能被移走或删掉了。')
+    expect(assetMenuFailureDialog('video', new Error('该视频已不在本机，可能已被移动或删除。')).message).toBe('该视频已不在本机，可能已被移动或删除。')
+    expect(assetMenuFailureDialog('image', new Error('该图片已不在本机，可能已被移动或删除。')).message).toBe('该图片已不在本机，可能已被移动或删除。')
     expect(assetMenuFailureDialog('audio', new Error('音频另存失败，请检查目标目录写入权限')).message).toBe('音频另存失败，请检查目标目录写入权限')
   })
 

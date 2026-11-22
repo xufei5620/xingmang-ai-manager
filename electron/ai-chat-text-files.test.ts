@@ -117,7 +117,7 @@ describe('chat text files', () => {
 
   it('refuses more files than the message has room for, before reading any', async () => {
     const { service, readPrefix } = serviceFor({ '/a.txt': whole('a'), '/b.txt': whole('b') })
-    await expect(service.pick(1, 100)).rejects.toThrow('这条消息还能加 1 个文件，这次选了 2 个，请少选几个')
+    await expect(service.pick(1, 100)).rejects.toThrow('该消息还可添加 1 个文件，本次选择了 2 个，请减少选择数量')
     expect(readPrefix).not.toHaveBeenCalled()
   })
 
@@ -128,7 +128,7 @@ describe('chat text files', () => {
 
   it('rejects counts and budgets outside the limits without opening the picker', async () => {
     const { service, pickFiles } = serviceFor({ '/a.txt': whole('a') })
-    await expect(service.pick(0, 100)).rejects.toThrow(`最多带 ${AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage} 个文件`)
+    await expect(service.pick(0, 100)).rejects.toThrow(`最多附带 ${AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage} 个文件`)
     await expect(service.pick(AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage + 1, 100)).rejects.toThrow('个文件')
     await expect(service.pick(1.5, 100)).rejects.toThrow('个文件')
     await expect(service.pick(1, 0)).rejects.toThrow(chatTextFileFullMessage)

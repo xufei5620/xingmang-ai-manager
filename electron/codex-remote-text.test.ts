@@ -320,7 +320,7 @@ describe('codex-remote-text', () => {
     expect(staleMessageNotice(25)).toBe('此消息发送于 25 分钟前，当时电脑未连接，因此未执行。如仍需执行，请重新发送。')
     expect(remoteTurnFailureMessages).toEqual({
       balance: '余额不足，请充值后重新发送。',
-      keyLimit: '本轮未完成：这把密钥设置的额度上限用完了，到「个人中心 › 密钥管理」调高上限后再试',
+      keyLimit: '本轮未完成：该密钥设置的额度上限已用完，请在「个人中心 › 密钥管理」中调高上限后重试',
       login: '电脑端登录已失效，请在电脑端的星芒中重新登录。',
       context: '当前对话过长，请发送「新对话」重新开始。',
       connection: '电脑暂时无法连接星芒线路，请稍后重新发送。',

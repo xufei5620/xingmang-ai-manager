@@ -105,7 +105,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
   const composing = studio.composeState.phase !== 'idle'
   const missing = shots.filter((shot) => !shot.clip).length
   const quotaAction = /余额|额度/.test(studio.error) && onOpenAccount
-  const folderAction = /AI 作品文件夹/.test(studio.notice)
+  const folderAction = /作品库|AI 作品文件夹/.test(studio.notice)
   const confirmGenerate = (ids: string[]) => { prices.refresh(); setConfirmation({ kind: 'generate', ids }) }
   const openDraw = (id: string) => { prices.refresh(); setDrawTarget(id) }
   const runConfirmation = () => {
@@ -216,7 +216,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
         </button>
         <div className="video-studio-result-copy">
           <strong>{project.title || '成片'}</strong>
-          <small>{[exported.durationSeconds ? formatVideoStudioDuration(exported.durationSeconds) : '', exported.width && exported.height ? `${exported.width} × ${exported.height}` : ''].filter(Boolean).join(' · ') || '已存进 AI 作品文件夹'}</small>
+          <small>{[exported.durationSeconds ? formatVideoStudioDuration(exported.durationSeconds) : '', exported.width && exported.height ? `${exported.width} × ${exported.height}` : ''].filter(Boolean).join(' · ') || '已存入作品库'}</small>
           <div className="video-studio-result-actions">
             <Button size="sm" icon={Play} onClick={() => void studio.openClip(exported.assetId)} testId="video-result-open">用播放器打开</Button>
             <Button size="sm" icon={Download} onClick={() => void studio.saveClip(exported.assetId, project.title)} testId="video-result-save">另存为</Button>
@@ -229,9 +229,9 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
     {active && confirmation && <Confirm testId="video-confirm"
       title={confirmation.kind === 'generate' ? regenerating ? '是否重新生成此片段？' : `是否生成 ${confirmCount} 段视频？` : confirmation.kind === 'plan' ? '是否重新编写分镜？' : '是否删除此镜头？'}
       body={confirmation.kind === 'generate'
-        ? <><p>{regenerating ? `将再次扣费，${quote ? `${quote}。` : ''}新片段生成后将替换当前片段，原片段仍保留在 AI 作品文件夹中。` : `用「${settings.videoModel}」生成 ${confirmCount} 段、${confirmSeconds === null ? `共 ${confirmShots.reduce((total, shot) => total + videoStudioShotSeconds(shot, settings), 0)} 秒` : `每段 ${confirmSeconds} 秒`}，每段单独计费${quote ? `，${quote}` : ''}。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{videoStudioUnconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>每段约需几分钟。如中途停止，已提交至服务端的片段仍将生成并扣费。</p></>
-        : confirmation.kind === 'plan' ? <p>当前镜头和片段将替换为新编写的分镜。已生成的片段仍保留在 AI 作品文件夹中，此处不再列出。</p>
-        : <p>此镜头及其片段将从分镜中移除，片段仍保留在 AI 作品文件夹中。</p>}
+        ? <><p>{regenerating ? `将再次扣费，${quote ? `${quote}。` : ''}新片段生成后将替换当前片段，原片段仍保留在作品库中。` : `用「${settings.videoModel}」生成 ${confirmCount} 段、${confirmSeconds === null ? `共 ${confirmShots.reduce((total, shot) => total + videoStudioShotSeconds(shot, settings), 0)} 秒` : `每段 ${confirmSeconds} 秒`}，每段单独计费${quote ? `，${quote}` : ''}。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{videoStudioUnconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>每段约需几分钟。如中途停止，已提交至服务端的片段仍将生成并扣费。</p></>
+        : confirmation.kind === 'plan' ? <p>当前镜头和片段将替换为新编写的分镜。已生成的片段仍保留在作品库中，此处不再列出。</p>
+        : <p>此镜头及其片段将从分镜中移除，片段仍保留在作品库中。</p>}
       okLabel={confirmation.kind === 'generate' ? regenerating ? '重新生成' : '开始生成' : confirmation.kind === 'plan' ? '重新编写' : '删除'}
       danger={confirmation.kind === 'remove' || unconfirmed.length > 0}
       // 同聊天页重新生成「上次请求可能仍在服务端处理」那一下：先勾「我已了解影响」才能点。
@@ -398,7 +398,7 @@ function ComposeProgress({ studio }: { studio: VideoStudioController }) {
   const state = studio.composeState
   if (state.phase === 'idle') return null
   const label = state.phase === 'reading' ? `正在读取第 ${state.done + 1} / ${state.total} 段`
-    : state.phase === 'storing' ? '正在存进 AI 作品文件夹'
+    : state.phase === 'storing' ? '正在存入作品库'
     : state.progress.stage === 'reading' ? '正在读取片段' : state.progress.stage === 'rendering' ? '正在合成画面' : '正在写入文件'
   const value = state.phase === 'reading' ? 0 : state.phase === 'storing' ? 100 : Math.round(state.progress.ratio * 100)
   return <div className="video-studio-progress" data-testid="video-compose-progress"><Progress value={value} label={label} /></div>

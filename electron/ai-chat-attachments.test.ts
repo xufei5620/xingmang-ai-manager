@@ -58,10 +58,10 @@ describe('prepareChatImage', () => {
 
   it('explains when nothing fits, when the file is not an image, and when it is far too big', () => {
     const tooBig = CHAT_ATTACHMENT_LIMITS.storedBytes + 1
-    expect(() => prepareChatImage(png(5000, 2500), codec(tooBig))).toThrow('截小一点')
+    expect(() => prepareChatImage(png(5000, 2500), codec(tooBig))).toThrow('缩小截图范围')
     expect(() => prepareChatImage(Buffer.from('not an image at all, just text'), codec(10))).toThrow('PNG、JPG 和 WebP')
     expect(() => prepareChatImage(Buffer.alloc(CHAT_ATTACHMENT_LIMITS.sourceBytes + 1), codec(10))).toThrow('20 MB')
-    expect(() => prepareChatImage(png(5000, 2500), { decode: () => null })).toThrow('打不开')
+    expect(() => prepareChatImage(png(5000, 2500), { decode: () => null })).toThrow('无法打开')
   })
 })
 
@@ -94,12 +94,12 @@ describe('chat attachment service', () => {
 
     const crowded = store()
     await expect(createChatAttachmentService({ store: crowded, codec: codec(10), pickFiles: async () => ['/a', '/b', '/c'], readClipboardImage: async () => null, readClipboardFiles: async () => [] }).pick(7, 2))
-      .rejects.toThrow('还能加 2 张')
+      .rejects.toThrow('还可添加 2 张')
 
     let calls = 0
     const mixed = store({ readLocalFile: vi.fn(async () => (++calls === 2 ? Buffer.from('text file contents here!!') : png(10, 10))) })
     await expect(createChatAttachmentService({ store: mixed, codec: codec(10), pickFiles: async () => ['/a', '/b'], readClipboardImage: async () => null, readClipboardFiles: async () => [] }).pick(7, 4))
-      .rejects.toThrow('不是能用的图片')
+      .rejects.toThrow('不是可用的图片')
 
     for (const files of [canceled, crowded, mixed]) expect(files.storeLocalBytes).not.toHaveBeenCalled()
   })
@@ -107,7 +107,7 @@ describe('chat attachment service', () => {
   it('rejects an out-of-range remaining count before opening the picker', async () => {
     const pickFiles = vi.fn(async () => ['/a'])
     const service = createChatAttachmentService({ store: store(), codec: codec(10), pickFiles, readClipboardImage: async () => null, readClipboardFiles: async () => [] })
-    for (const remaining of [0, 5, 1.5, Number.NaN]) await expect(service.pick(7, remaining)).rejects.toThrow('最多带 4 张')
+    for (const remaining of [0, 5, 1.5, Number.NaN]) await expect(service.pick(7, remaining)).rejects.toThrow('最多附带 4 张')
     expect(pickFiles).not.toHaveBeenCalled()
   })
 
@@ -141,16 +141,16 @@ describe('chat attachment service', () => {
   it('stores no copied file when too many are copied, one cannot be read, or one is not a usable image', async () => {
     const crowded = store()
     await expect(createChatAttachmentService({ store: crowded, codec: codec(10), pickFiles: async () => [], readClipboardImage: async () => null, readClipboardFiles: async () => ['/a.png', '/b.png', '/c.png'] }).paste(7, 2))
-      .rejects.toThrow('还能加 2 张')
+      .rejects.toThrow('还可添加 2 张')
     expect(crowded.readLocalFile).not.toHaveBeenCalled()
 
     const unreadable = store({ readLocalFile: vi.fn(async (filePath: string) => { if (filePath === '/b.png') throw new Error('AI 图片资产文件无效或超过安全上限'); return png(10, 10) }) })
     await expect(createChatAttachmentService({ store: unreadable, codec: codec(10), pickFiles: async () => [], readClipboardImage: async () => null, readClipboardFiles: async () => ['/a.png', '/b.png'] }).paste(7, 4))
-      .rejects.toThrow('有一张图片读不出来，或者超过 20 MB')
+      .rejects.toThrow('有图片无法读取或超过 20 MB')
 
     const notAnImage = store({ readLocalFile: vi.fn(async () => Buffer.from('GIF89a and then some bytes')) })
     await expect(createChatAttachmentService({ store: notAnImage, codec: codec(10), pickFiles: async () => [], readClipboardImage: async () => null, readClipboardFiles: async () => ['/moving.gif'] }).paste(7, 4))
-      .rejects.toThrow('只支持 PNG、JPG 和 WebP')
+      .rejects.toThrow('仅支持 PNG、JPG 和 WebP')
 
     for (const files of [crowded, unreadable, notAnImage]) expect(files.storeLocalBytes).not.toHaveBeenCalled()
   })
@@ -159,7 +159,7 @@ describe('chat attachment service', () => {
     const readClipboardImage = vi.fn(async () => png(10, 10))
     const readClipboardFiles = vi.fn(async () => ['/a.png'])
     const service = createChatAttachmentService({ store: store(), codec: codec(10), pickFiles: async () => [], readClipboardImage, readClipboardFiles })
-    for (const remaining of [0, 5, 1.5, Number.NaN]) await expect(service.paste(7, remaining)).rejects.toThrow('最多带 4 张')
+    for (const remaining of [0, 5, 1.5, Number.NaN]) await expect(service.paste(7, remaining)).rejects.toThrow('最多附带 4 张')
     expect(readClipboardImage).not.toHaveBeenCalled()
     expect(readClipboardFiles).not.toHaveBeenCalled()
   })

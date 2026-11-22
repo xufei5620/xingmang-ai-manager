@@ -1581,7 +1581,7 @@ describe('registerIpcHandlers', () => {
       const cancel = electronMocks.handlers.get('video:cancel')!
       expect(cancel(trustedEvent(undefined, 32), 'plan-1')).toEqual({ canceled: false, mayStillComplete: false })
       expect(cancel(trustedEvent(undefined, 31), 'plan-1')).toEqual({ canceled: true, mayStillComplete: false })
-      await expect(pending).rejects.toThrow('已停止写分镜')
+      await expect(pending).rejects.toThrow('已停止生成分镜')
       dispose()
     })
 
@@ -1792,10 +1792,10 @@ describe('registerIpcHandlers', () => {
       // only a full or locked disk keeps its own words.
       audioAssets.storeLocalFile.mockRejectedValueOnce(new Error('不支持的音频格式'))
       electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [songPath] })
-      await expect(pick(trustedEvent())).rejects.toThrow('这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）')
-      audioAssets.storeLocalFile.mockRejectedValueOnce(new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服'))
+      await expect(pick(trustedEvent())).rejects.toThrow('该歌曲无法读取，请更换配乐后重试（支持 MP3、M4A、WAV、OGG）')
+      audioAssets.storeLocalFile.mockRejectedValueOnce(new Error('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服'))
       electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [songPath] })
-      await expect(pick(trustedEvent())).rejects.toThrow('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+      await expect(pick(trustedEvent())).rejects.toThrow('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服')
 
       await expect(read(trustedEvent(), '../../secret')).rejects.toThrow('音频编号格式错误')
       expect(audioAssets.readOwned).not.toHaveBeenCalled()
@@ -5117,8 +5117,8 @@ describe('registerIpcHandlers', () => {
       expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
 
       // Registrations that predate the project list say so instead of failing somewhere deeper.
-      expect(() => electronMocks.handlers.get('canvas:list-projects')!(trustedEvent())).toThrow('画布项目暂时读不出来')
-      expect(() => electronMocks.handlers.get('canvas:open-project')!(trustedEvent(), 'p')).toThrow('画布项目暂时打不开')
+      expect(() => electronMocks.handlers.get('canvas:list-projects')!(trustedEvent())).toThrow('画布项目读取失败')
+      expect(() => electronMocks.handlers.get('canvas:open-project')!(trustedEvent(), 'p')).toThrow('画布项目暂时无法打开')
     } finally {
       dispose()
     }

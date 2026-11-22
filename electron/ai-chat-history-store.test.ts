@@ -112,7 +112,7 @@ describe('ai chat history store', () => {
   it('applies the total size bound on both write and read', async () => {
     const root = temporaryRoot()
     const small = createAiChatHistoryStore({ root, maxTotalBytes: 1024 * 1024 })
-    await expect(small.write(write({ put: [{ key: 'a', content: 'x'.repeat(1024 * 1024) }] }))).rejects.toThrow('本次没有保存')
+    await expect(small.write(write({ put: [{ key: 'a', content: 'x'.repeat(1024 * 1024) }] }))).rejects.toThrow('本次未保存')
     await expect(small.read(scope)).resolves.toEqual({ index: null, conversations: [] })
     await createAiChatHistoryStore({ root }).write(write({ put: [{ key: 'a', content: 'x'.repeat(1024 * 1024) }] }))
     await expect(small.read(scope)).rejects.toThrow('原始记录已保留')
@@ -248,7 +248,7 @@ describe('ai chat history store: conversations that could not be read', () => {
     const aside = path.join(root, chatHistoryDirectoryName(scope), UNREADABLE_CHAT_DIRECTORY)
     fs.mkdirSync(aside)
     for (let index = 0; index < MAX_UNREADABLE_CHAT_FILES; index += 1) fs.writeFileSync(path.join(aside, `c-old${index}.1.json`), 'x')
-    await expect(store.write(write({ index: 'second', keys: ['a'], put: [{ key: 'a', content: 'A2' }], setAside: ['b'] }))).rejects.toThrow('本次没有保存')
+    await expect(store.write(write({ index: 'second', keys: ['a'], put: [{ key: 'a', content: 'A2' }], setAside: ['b'] }))).rejects.toThrow('本次未保存')
     expect(await store.read(scope)).toEqual({ index: '{"version":3}', conversations: expect.arrayContaining([{ key: 'a', content: 'A' }, { key: 'b', content: 'B' }]) })
   })
 

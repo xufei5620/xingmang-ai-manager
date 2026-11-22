@@ -81,7 +81,7 @@ function fakeStore() {
     }),
     writeVideoStudioProjects: vi.fn(async (input: VideoStudioProjectsWrite) => {
       writes.push(input)
-      if (failWrites > 0) { failWrites -= 1; throw new Error("Error invoking remote method 'video-studio:write-projects': Error: 视频草稿超过 64 MB 安全上限，本次没有保存") }
+      if (failWrites > 0) { failWrites -= 1; throw new Error("Error invoking remote method 'video-studio:write-projects': Error: 视频草稿超过 64 MB 安全上限，本次未保存") }
       const stored = of(input.scope)
       for (const file of input.put) stored.files.set(file.key, file.key === corrupt ? '{"version":1,"project":{"version":1,"settings":{},"title":"","shots":[]}}' : file.content)
       if (input.index !== undefined) stored.index = input.index

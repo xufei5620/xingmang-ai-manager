@@ -168,10 +168,10 @@ const referenceTooLargePattern = /\bfile\b[^.]{0,40}\b(?:size|large|limit)|\d+(?
 function imageRequestFailure(status: number, detail: string, evidence = detail): Error {
   const normalized = detail.toLowerCase()
   if (status >= 400 && status < 500 && imageModerationPattern.test(`${detail} ${evidence}`)) {
-    return new Error('这次的描述或参考图没通过安全审核，没有生成图片。改一改描述或换一张图再试。')
+    return new Error('本次描述或参考图未通过安全审核，未生成图片。请调整描述或更换图片后重试。')
   }
   if (status === 400 && referenceTooLargePattern.test(detail)) {
-    return new Error('参考图太大了，服务端收不下。换一张小一点的图，或者压缩一下再试。')
+    return new Error('参考图过大，服务端无法接收。请更换较小的图片或压缩后重试。')
   }
   if (status === 400 && normalized.includes('size')) {
     return new Error('当前模型不支持这个图片尺寸，请更换尺寸后重试')
@@ -184,7 +184,7 @@ function imageRequestFailure(status: number, detail: string, evidence = detail):
   if (status === 403 && /access to model|permission|forbidden|无权限/.test(normalized)) {
     return new Error('当前账号暂无该生图模型权限，请切换其他模型')
   }
-  if (status === 429) return new Error('生图服务繁忙或上游限流，请稍后重试')
+  if (status === 429) return new Error('生图服务繁忙，请稍后重试')
   if (status >= 500) return new Error('生图服务暂时不可用，请稍后重试')
   return new Error(detail || `生图失败，服务返回 ${status}`)
 }
@@ -192,15 +192,15 @@ function imageRequestFailure(status: number, detail: string, evidence = detail):
 /**
  * 图已经生成、扣过费，写不进作品库，但已经先暂存好了（深查 S-1，yoyo 2026-11-17 回「暂存改」）。之后登录时、
  * 软件开着时隔一阵会自动补存进作品库（ai-unsaved-image-stash.ts），所以要说清别重新生成：再点一次就是再扣一次钱。
- * 对话页认「先别重新生成」原样上屏（renderer-v2 的 chatErrorMessage）。
+ * 对话页认「请勿重新生成」原样上屏（renderer-v2 的 chatErrorMessage）。
  */
-export const aiImageKeptUnsavedMessage = '图片已经生成、也已经扣费了，但没能存进作品库，已经先替你收着。先别重新生成，清出一些空间后会自动存进作品库。'
+export const aiImageKeptUnsavedMessage = '图片已生成并已扣费，但未能存入作品库，已为您临时保存。请勿重新生成，释放部分空间后将自动存入作品库。'
 
 /**
  * 同一种情形，但暂存文件夹也写不进、只留在内存里（11-18 复核 A02，总单 #61）：一退出就没了，上面那句没提这个，
- * 客户以为收好了就退出。补存照旧会自己再试，所以仍说「会自动存进作品库」。对话页认的「先别重新生成」要留着。
+ * 客户以为收好了就退出。补存照旧会自己再试，所以仍说「将自动存入作品库」。对话页认的「请勿重新生成」要留着。
  */
-export const aiImageKeptInMemoryMessage = '图片已经生成、也已经扣费了，但电脑上暂时存不下，先替你收在星芒里，一退出就没了。先别重新生成，也先别退出星芒，清出一些空间后会自动存进作品库。'
+export const aiImageKeptInMemoryMessage = '图片已生成并已扣费，但本机暂时无法保存，已临时保存在星芒中，退出后将丢失。请勿重新生成，也请暂勿退出星芒，释放部分空间后将自动存入作品库。'
 
 function ambiguousImageSubmission(): Error {
   return new Error('生图提交结果不明确，服务端可能仍在生成图片，请勿立即重复提交')
@@ -421,7 +421,7 @@ export function createAiImageService(options: {
           } catch (error) {
             if (signal.aborted) throw signal.reason
             if (!entry.b64Json && isAssetDownloadError(error)) {
-              throw new Error('图片已生成但下载失败，这次可能已经扣费，请勿立即重复提交；先检查网络，稍后再重新生成', { cause: error })
+              throw new Error('图片已生成但下载失败，本次可能已扣费，请勿立即重复提交；请先检查网络，稍后再重新生成', { cause: error })
             }
             if ((error as { code?: unknown } | null)?.code === AI_IMAGE_KEPT_UNSAVED_ERROR_CODE) {
               throw new Error(aiImageKeptUnsavedMessage, { cause: error })
@@ -430,7 +430,7 @@ export function createAiImageService(options: {
               throw new Error(aiImageKeptInMemoryMessage, { cause: error })
             }
             // 原因挂在 cause 上：界面只说这一句，运行日志（ipc.ts 记失败时连 cause 一起写）里要看得到是盘满、没权限还是被占用（深查 S-1）。
-            throw new Error('图片已生成但本地保存失败，这次可能已经扣费，请勿立即重复提交；先看看保存位置所在的磁盘空间够不够', { cause: error })
+            throw new Error('图片已生成但本地保存失败，本次可能已扣费，请勿立即重复提交；请先检查保存位置所在磁盘的可用空间', { cause: error })
           }
         }
         return results

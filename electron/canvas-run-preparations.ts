@@ -159,20 +159,20 @@ type CanvasRunPreparationKind = CanvasRunPreparationCompletion['kind']
 // The words for each kind: the node shows these, never the page's.
 const preparationWords: Record<CanvasRunPreparationKind, { duplicate: string; missing: string; claimed: string; failed: string; timeout: string; unsaved: string }> = {
   frame: {
-    duplicate: '这一帧已经在等待中',
-    missing: '这一帧不在等待中，可能已经超时或运行已停止',
-    claimed: '这一帧已经交过了',
-    failed: '视频帧没有抽出来：视频读不出来，或者时间点不在视频里',
-    timeout: '视频帧没有交回来（画布关了或处理超时），请重新运行这个节点',
-    unsaved: '视频帧没有保存',
+    duplicate: '该帧已在等待中',
+    missing: '该帧不在等待中，可能已超时或运行已停止',
+    claimed: '该帧已提交',
+    failed: '视频帧提取失败：视频无法读取，或时间点超出视频范围',
+    timeout: '未收到视频帧（画布已关闭或处理超时），请重新运行该节点',
+    unsaved: '视频帧未保存',
   },
   image: {
-    duplicate: '这次图片处理已经在等待中',
-    missing: '这次图片处理不在等待中，可能已经超时或运行已停止',
-    claimed: '这次图片处理的结果已经交过了',
-    failed: '图片处理没有完成：来源图片读不出来，或者这组参数处理不了',
-    timeout: '图片处理结果没有交回来（画布关了或处理超时），请重新运行这个节点',
-    unsaved: '图片处理结果没有保存',
+    duplicate: '本次图片处理已在等待中',
+    missing: '本次图片处理不在等待中，可能已超时或运行已停止',
+    claimed: '本次图片处理的结果已提交',
+    failed: '图片处理未完成：来源图片无法读取，或当前参数无法处理',
+    timeout: '未收到图片处理结果（画布已关闭或处理超时），请重新运行该节点',
+    unsaved: '图片处理结果未保存',
   },
 }
 

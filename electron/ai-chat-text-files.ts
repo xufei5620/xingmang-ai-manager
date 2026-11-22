@@ -18,10 +18,10 @@ export const chatTextFileExtensions: readonly string[] = [
 ]
 const textFileExtensionSet = new Set(chatTextFileExtensions)
 
-export const chatTextFileUnsupportedMessage = '现在只能读文字类的文件（txt、md、csv、json、代码、日志）。PDF 和 Word 请先把文字复制出来再粘贴。'
-export const chatTextFileUnreadableMessage = '这个文件读不出来，可能正被别的软件占着，关掉它再试。'
+export const chatTextFileUnsupportedMessage = '目前仅支持读取文本类文件（txt、md、csv、json、代码、日志）。PDF 和 Word 文件请先复制其中的文字再粘贴。'
+export const chatTextFileUnreadableMessage = '该文件无法读取，可能已被其他软件打开，请关闭相关软件后重试。'
 export { chatTextFileFullMessage }
-export function chatTextFileCountMessage(): string { return `一条消息最多带 ${AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage} 个文件` }
+export function chatTextFileCountMessage(): string { return `每条消息最多附带 ${AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage} 个文件` }
 
 export function isChatTextFileName(fileName: string): boolean {
   const extension = path.extname(fileName).slice(1).toLowerCase()
@@ -105,7 +105,7 @@ export function createChatTextFileService(options: ChatTextFileServiceOptions): 
     }
     const paths = await options.pickFiles()
     if (!paths.length) return []
-    if (paths.length > remainingFiles) throw new Error(`这条消息还能加 ${remainingFiles} 个文件，这次选了 ${paths.length} 个，请少选几个`)
+    if (paths.length > remainingFiles) throw new Error(`该消息还可添加 ${remainingFiles} 个文件，本次选择了 ${paths.length} 个，请减少选择数量`)
     // 先全部读完、查完再交回去，一个读不出来就整批不加，不会加上一半。
     const decoded: { name: string; size: number; text: string; complete: boolean }[] = []
     for (const filePath of paths) {

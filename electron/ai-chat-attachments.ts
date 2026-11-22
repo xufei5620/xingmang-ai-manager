@@ -47,7 +47,7 @@ export interface ChatAttachmentService {
   readDataUri(userId: number, assetId: string): Promise<string>
 }
 
-const tooLargeMessage = `图片太大了，压缩后还是超过 ${CHAT_ATTACHMENT_LIMITS.storedBytes / 1024 / 1024} MB，请截小一点再试`
+const tooLargeMessage = `图片过大，压缩后仍超过 ${CHAT_ATTACHMENT_LIMITS.storedBytes / 1024 / 1024} MB，请缩小截图范围后重试`
 
 /**
  * Keeps an image that is already small enough byte-for-byte, and otherwise
@@ -57,13 +57,13 @@ const tooLargeMessage = `图片太大了，压缩后还是超过 ${CHAT_ATTACHME
 export function prepareChatImage(bytes: Buffer, codec: ChatImageCodec): Buffer {
   const { storedBytes, maxEdge } = CHAT_ATTACHMENT_LIMITS
   if (bytes.length > CHAT_ATTACHMENT_LIMITS.sourceBytes) {
-    throw new Error(`图片太大了，一张不能超过 ${CHAT_ATTACHMENT_LIMITS.sourceBytes / 1024 / 1024} MB`)
+    throw new Error(`图片过大，单张不能超过 ${CHAT_ATTACHMENT_LIMITS.sourceBytes / 1024 / 1024} MB`)
   }
   let inspection: ReturnType<typeof inspectAiImage>
   try {
     inspection = inspectAiImage(bytes)
   } catch {
-    throw new Error('这个文件不是能用的图片，只支持 PNG、JPG 和 WebP')
+    throw new Error('该文件不是可用的图片，仅支持 PNG、JPG 和 WebP')
   }
   const longest = Math.max(inspection.width ?? 0, inspection.height ?? 0)
   if (bytes.length <= storedBytes && longest > 0 && longest <= maxEdge) return bytes
@@ -71,8 +71,8 @@ export function prepareChatImage(bytes: Buffer, codec: ChatImageCodec): Buffer {
   if (!image) {
     // WebP 在部分系统上解不开，只能原样用；原样又太大就只能请用户换一张。
     throw new Error(inspection.mimeType === 'image/webp'
-      ? '这张图片太大了，请换成 PNG 或 JPG 格式，或者截小一点再试'
-      : '这张图片打不开，请换一张再试')
+      ? '该图片过大，请转换为 PNG 或 JPG 格式，或缩小截图范围后重试'
+      : '该图片无法打开，请更换图片后重试')
   }
   const png = image.png()
   if (png.length > 0 && png.length <= storedBytes) return png
@@ -86,12 +86,12 @@ export function prepareChatImage(bytes: Buffer, codec: ChatImageCodec): Buffer {
 export function createChatAttachmentService(options: ChatAttachmentServiceOptions): ChatAttachmentService {
   function assertRemaining(remaining: number): void {
     if (!Number.isSafeInteger(remaining) || remaining < 1 || remaining > AI_CHAT_LIMITS.imagesPerMessage) {
-      throw new Error(`一条消息最多带 ${AI_CHAT_LIMITS.imagesPerMessage} 张图片`)
+      throw new Error(`每条消息最多附带 ${AI_CHAT_LIMITS.imagesPerMessage} 张图片`)
     }
   }
 
   async function storeFiles(userId: number, remaining: number, paths: readonly string[]): Promise<AiStoredAsset[]> {
-    if (paths.length > remaining) throw new Error(`这条消息还能加 ${remaining} 张图片，这次选了 ${paths.length} 张，请少选几张`)
+    if (paths.length > remaining) throw new Error(`该消息还可添加 ${remaining} 张图片，本次选择了 ${paths.length} 张，请减少选择数量`)
     // Everything is read and checked before anything is stored, so one bad
     // file leaves no half-added batch behind.
     const prepared: Buffer[] = []
@@ -100,7 +100,7 @@ export function createChatAttachmentService(options: ChatAttachmentServiceOption
       try {
         bytes = await options.store.readLocalFile(filePath, CHAT_ATTACHMENT_LIMITS.sourceBytes)
       } catch {
-        throw new Error(`有一张图片读不出来，或者超过 ${CHAT_ATTACHMENT_LIMITS.sourceBytes / 1024 / 1024} MB，请换一张再试`)
+        throw new Error(`有图片无法读取或超过 ${CHAT_ATTACHMENT_LIMITS.sourceBytes / 1024 / 1024} MB，请更换后重试`)
       }
       prepared.push(prepareChatImage(bytes, options.codec))
     }

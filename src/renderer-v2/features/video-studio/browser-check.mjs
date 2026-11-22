@@ -232,7 +232,7 @@ test('lays a song under the film, starts it over when it runs out and fades it o
   assert.ok(last < first / 5, `the song has all but faded out by the very end (${first} → ${last})`)
   assert.equal(summary.muted.audioCodec, null, 'with the clip sound off and no song there is nothing to hear')
   assert.ok(summary.quiet > 0.05 && summary.quiet < summary.loud * 0.5, `turning the clip sound down keeps it, quieter (${summary.quiet} vs ${summary.loud})`)
-  assert.equal(summary.unreadable.message, '这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）')
+  assert.equal(summary.unreadable.message, '该歌曲无法读取，请更换配乐后重试（支持 MP3、M4A、WAV、OGG）')
   await page.close()
 })
 
@@ -422,7 +422,7 @@ test('writes a storyboard, generates every shot and joins them into one film', a
   assert.equal(await page.getByTestId('video-compose').isDisabled(), true, 'no joining while the storyboard is being rewritten')
   assert.equal(await page.getByTestId('video-captions').getByRole('switch').isDisabled(), true, 'the caption switch waits for the storyboard too')
   await page.getByTestId('video-export').getByText('请等待分镜编写完成后再合成。').waitFor()
-  await page.evaluate(() => window.videoStudioPage.failPlan('这次 AI 没按格式写出分镜，把想法写具体一点或换个文字模型再试'))
+  await page.evaluate(() => window.videoStudioPage.failPlan('本次 AI 未按格式生成分镜，请将想法描述得更具体，或更换文字模型后重试'))
   await page.getByTestId('video-error').waitFor()
   assert.equal(await page.getByTestId('video-compose').isDisabled(), false, 'the storyboard that is still there can be joined again')
   await page.getByTestId('video-result').waitFor()
@@ -625,7 +625,7 @@ test('stops and warns when picking a clip back up turns out the submission went 
   await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
   await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
   const [clip] = await page.evaluate(() => window.videoStudioPage.pendingClips())
-  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_1）。'), clip.requestId)
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时无法查询视频进度，服务端可能仍在生成，请勿重复提交；下次启动时将继续查询（任务 task_1）。'), clip.requestId)
   await page.getByTestId('video-shot-0').getByText('生成失败').waitFor()
   await page.getByTestId('video-shot-generate-0').click()
   assert.equal(await page.getByTestId('video-confirm-unconfirmed').count(), 0, 'nothing says it was unanswered yet')
@@ -812,7 +812,7 @@ test('quotes the price of the chosen model and group before the balance, from on
   await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
   await page.getByTestId('video-shot-generate-0').click()
   await confirm.getByText('是否重新生成此片段？').waitFor()
-  await confirm.getByText('将再次扣费，预计约 $0.80（估算）。新片段生成后将替换当前片段，原片段仍保留在 AI 作品文件夹中。', { exact: true }).waitFor()
+  await confirm.getByText('将再次扣费，预计约 $0.80（估算）。新片段生成后将替换当前片段，原片段仍保留在作品库中。', { exact: true }).waitFor()
   await confirm.getByRole('button', { name: '取消' }).click()
 
   assert.equal((await studioCalls(page, 'prices')).length, reads, 'opening the dialogs again within ten minutes does not read the price list again')
@@ -828,7 +828,7 @@ test('retrying a clip that failed while the server may still be working picks th
   await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
   await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
   const [first, second] = await page.evaluate(() => window.videoStudioPage.pendingClips())
-  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_1）。'), first.requestId)
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时无法查询视频进度，服务端可能仍在生成，请勿重复提交；下次启动时将继续查询（任务 task_1）。'), first.requestId)
   await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '这次的描述没通过安全审核，换个说法再试'), second.requestId)
   for (const index of [0, 1]) await page.getByTestId(`video-shot-${index}`).getByText('生成失败').waitFor()
 
@@ -855,7 +855,7 @@ test('retrying a clip that failed while the server may still be working picks th
   assert.equal((await studioCalls(page, 'generate')).length, 3)
 
   // 这一单又没等到结果；再点重新生成，接回的时候点了停止，主进程又说没有这一单：停下了就不再花钱。
-  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_3）。'), third.requestId)
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时无法查询视频进度，服务端可能仍在生成，请勿重复提交；下次启动时将继续查询（任务 task_3）。'), third.requestId)
   await page.getByTestId('video-shot-1').getByText('生成失败').waitFor()
   await page.getByTestId('video-shot-generate-1').click()
   await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
@@ -871,7 +871,7 @@ test('retrying a clip that failed while the server may still be working picks th
   await page.close()
 })
 
-// 提示里说到「AI 作品文件夹」，旁边就能直接打开它；主进程说打不开时按失败说一句，提示留着好再试。
+// 提示里说到「作品库」（旧说法「AI 作品文件夹」），旁边就能直接打开它；主进程说打不开时按失败说一句，提示留着好再试。
 // #1406 小项：粘进看不见的控制字符，主进程会拒掉整句、报对不上原因的「想法要写 1 到 2000 个字」。发之前先去掉。
 test('drops invisible control characters pasted into the idea before asking for a storyboard', async () => {
   const { page, errors } = await openStudio()
@@ -880,7 +880,7 @@ test('drops invisible control characters pasted into the idea before asking for 
   await page.getByTestId('video-plan-stop').waitFor()
   const [plan] = await studioCalls(page, 'plan')
   assert.equal(plan.idea, '一只橘猫在雨夜找回家的路\n最后到家')
-  await page.evaluate(() => window.videoStudioPage.failPlan('已停止写分镜'))
+  await page.evaluate(() => window.videoStudioPage.failPlan('已停止生成分镜'))
   await page.getByTestId('video-plan').waitFor()
   assert.equal(await page.getByTestId('video-error').count(), 0)
   assert.deepEqual(errors, [])
@@ -898,7 +898,7 @@ test('opens the AI output folder from a notice that mentions it', async () => {
   await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
   await page.getByTestId('video-compose').click()
   await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
-  await page.getByTestId('video-notice').getByText('合成完成，成片已保存至 AI 作品文件夹。').waitFor()
+  await page.getByTestId('video-notice').getByText('合成完成，成片已保存至作品库。').waitFor()
 
   await page.getByTestId('video-notice-folder').click()
   await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'folder'))
@@ -1044,7 +1044,7 @@ test('draws a shot picture with AI in the shared picture dialog before paying fo
   await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
   assert.equal(await page.getByTestId('video-shot-draw-error-1').count(), 0)
   pending = (await page.evaluate(() => window.videoStudioPage.pendingDrawings()))[0]
-  await page.evaluate((requestId) => window.videoStudioPage.failDrawing(requestId, '当前账号余额不足，充值后再试就行，不用重新登录，也不用重写密钥'), pending.requestId)
+  await page.evaluate((requestId) => window.videoStudioPage.failDrawing(requestId, '当前账号余额不足，请充值后重试，无需重新登录或重新填写密钥'), pending.requestId)
   await page.getByTestId('video-error').getByRole('button', { name: '前往充值' }).waitFor()
   assert.equal(await page.getByTestId('video-shot-draw-error-1').count(), 0)
 
@@ -1333,7 +1333,7 @@ test('lays a picked song under the joined film, with the clip sound turned down 
   // 主进程认不出这个文件：页面上照那一句说。
   await page.evaluate(() => window.videoStudioPage.pickSong('unreadable'))
   await add.click()
-  await page.getByTestId('video-error').getByText('这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）').waitFor()
+  await page.getByTestId('video-error').getByText('该歌曲无法读取，请更换配乐后重试（支持 MP3、M4A、WAV、OGG）').waitFor()
 
   await page.evaluate(() => window.videoStudioPage.pickSong({ name: '海风', seconds: 0.8, frequency: 660 }))
   await add.click()
@@ -1384,7 +1384,7 @@ test('keeps several films side by side, switches between them and picks a waitin
   assert.equal(await page.evaluate(() => window.videoStudioPage.newFilm()), 'busy', 'no new film while clips are on their way')
   assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '拉花')
   await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#884400'), first.requestId)
-  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_1）。'), second.requestId)
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时无法查询视频进度，服务端可能仍在生成，请勿重复提交；下次启动时将继续查询（任务 task_1）。'), second.requestId)
   await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
   await page.getByTestId('video-shot-1').getByText('生成失败').waitFor()
   const [coffee] = await films()

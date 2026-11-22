@@ -538,7 +538,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     // 「生成视频」带的是开头图，只收一张。
     const video = current.settings.mode === 'video'
     const remaining = (video ? 1 : chatLimits.imagesPerMessage) - (current.draftImages?.length ?? 0)
-    if (remaining <= 0) { setError(video ? videoStartImageLimitMessage : `一条消息最多带 ${chatLimits.imagesPerMessage} 张图片`); return }
+    if (remaining <= 0) { setError(video ? videoStartImageLimitMessage : `每条消息最多附带 ${chatLimits.imagesPerMessage} 张图片`); return }
     if (attachingRef.current) return
     attachingRef.current = true; setAttaching(true)
     try {

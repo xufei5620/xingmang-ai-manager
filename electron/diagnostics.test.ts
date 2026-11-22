@@ -3201,7 +3201,7 @@ describe('runDiagnostics AI output location', () => {
     const report = await runDiagnostics({
       ...dependencies(home),
       log,
-      probeAiOutput: async () => { throw new Error('保存位置写不进去，这次没有扣费。', { cause }) },
+      probeAiOutput: async () => { throw new Error('保存位置无法写入，本次未扣费。', { cause }) },
     })
 
     const item = report.items.find((entry) => entry.code === 'AI_OUTPUT')

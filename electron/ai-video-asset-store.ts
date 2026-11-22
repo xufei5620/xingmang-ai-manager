@@ -252,7 +252,7 @@ export class AiVideoAssetStore {
       }
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('AI 视频资产标识冲突，请重试')
       // 原因挂在 cause 上：出片那边要靠它认出是盘满了（D38），换一句「已经扣费、别重新生成」。
-      throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: error })
+      throw new Error('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服', { cause: error })
     }
     this.locator.remember(userId, assetId, filePath)
     return {

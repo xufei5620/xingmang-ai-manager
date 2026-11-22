@@ -717,7 +717,7 @@ describe('createCanvasNodeExecutors', () => {
     // A size the desktop would not send exactly, or a source without its pixel size, costs nothing.
     edit.mockClear()
     await expect(executors['image-edit']!({ ...base, inputs: { images: [{ ...source, width: 1000, height: 1000 }] }, node: node({ commerceTask: { ...materialB, upscale: 1 } }) }))
-      .rejects.toThrow('当前模型无法精确输出派生尺寸 1000x1000；请更换原图、请求倍率或模型。这个型号的宽和高都要是 16 的倍数，并在 256 到 4096 之间')
+      .rejects.toThrow('当前模型无法精确输出派生尺寸 1000x1000；请更换原图、请求倍率或模型。该型号的宽和高均须为 16 的倍数，且在 256 到 4096 之间')
     await expect(executors['image-edit']!({ ...base, inputs: { images: [{ kind: 'image', assetId: source.assetId, localUrl: source.localUrl }] }, node: node({ commerceTask: materialB }) }))
       .rejects.toThrow('材质优化 B 需要核对原图的实际像素尺寸')
     expect(edit).not.toHaveBeenCalled()
@@ -1025,8 +1025,8 @@ describe('canvas frame-extract executor', () => {
     const failing = executor({ ...base, node: { ...frameNode, data: { prompt: '', model: '' } }, inputs: { video: videoAsset }, signal: new AbortController().signal, reportFramePreparation: report })
     await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(3))
     expect(report.mock.calls[2]).toEqual([{ ...preparation, timestampSeconds: 0 }, true])
-    refuse(new Error('视频帧没有抽出来：视频读不出来，或者时间点不在视频里'))
-    await expect(failing).rejects.toThrow('视频帧没有抽出来')
+    refuse(new Error('视频帧提取失败：视频无法读取，或时间点超出视频范围'))
+    await expect(failing).rejects.toThrow('视频帧提取失败')
     expect(report.mock.calls[3]).toEqual([{ ...preparation, timestampSeconds: 0 }, false])
   })
 

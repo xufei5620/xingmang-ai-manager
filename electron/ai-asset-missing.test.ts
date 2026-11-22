@@ -4,9 +4,9 @@ import { missingAiAssetMessages, resolveMissingAiAssetMessage } from './ai-asset
 describe('ai-asset-missing', () => {
   it('names each kind of work in plain words, without asking for a retry', () => {
     expect(missingAiAssetMessages).toEqual({
-      image: '这张图已经不在电脑上了，可能被移走或删掉了。',
-      video: '这段视频已经不在电脑上了，可能被移走或删掉了。',
-      audio: '这段音频已经不在电脑上了，可能被移走或删掉了。',
+      image: '该图片已不在本机，可能已被移动或删除。',
+      video: '该视频已不在本机，可能已被移动或删除。',
+      audio: '该音频已不在本机，可能已被移动或删除。',
     })
     for (const sentence of Object.values(missingAiAssetMessages)) expect(sentence).not.toMatch(/重试|资产|无权访问/)
   })
