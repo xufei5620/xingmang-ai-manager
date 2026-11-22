@@ -503,7 +503,7 @@ function nativeOperations(provider: ProviderId, kind: ProviderExtensionKind): Pr
   if (kind === 'mcp') {
     // Grok 有 `mcp enable / disable`（1.0.52、1.0.70 实测）；Codex 没有命令，启停在 mutate 里改 config.toml。
     // Claude Code 没有命令，它自己的「停用」只记在 ~/.claude.json 里当前项目那一份（2.1.310），换个文件夹照样启用，
-    // 跟列表上「所有项目都能用」那组对不上，这里不给。
+    // 跟列表上「适用于所有项目」那组对不上，这里不给。
     const toggle = provider !== 'claude'
     return {
       install: true,

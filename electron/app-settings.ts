@@ -111,7 +111,7 @@ export interface AppSettings {
   /** IPC runtime snapshot only: 工具线路这会儿要给客户看的状态。 */
   readonly relayToolRouteStatus?: RelayToolRouteStatus
   /**
-   * 「换线路后提醒我重开工具」。缺省 = 开，和 crashReporting 一样只把客户亲手关掉的 false 落盘。
+   * 「切换线路后提醒重新打开工具」。缺省 = 开，和 crashReporting 一样只把客户亲手关掉的 false 落盘。
    * 关掉以后只在首页标「需重开生效」（xm 三线路 C10）。
    */
   toolRouteRestartHints?: boolean
@@ -143,7 +143,7 @@ export interface AppSettings {
    */
   alwaysInstallLatestCli?: boolean
   /**
-   * 设置里「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）。缺省 = 关，不改老客户的习惯。
+   * 设置里「仅允许 Claude Code 修改项目文件夹内的文件」（Fable 第二轮 Q6）。缺省 = 关，不改老客户的习惯。
    * 只经 config:set-claude-write-boundary 改（它同时对齐 Claude Code 的配置），settings:save 不收这一项。
    */
   claudeWritesInsideProject?: boolean
@@ -205,7 +205,7 @@ export interface AppSettings {
    */
   autoUpdate?: boolean
   /**
-   * 「用显卡加速显示」。缺省 = 开启，和 crashReporting 一样只把用户亲手关掉的 false
+   * 「使用显卡加速显示」。缺省 = 开启，和 crashReporting 一样只把用户亲手关掉的 false
    * 落盘。主进程在 ready 之前读它，改了要重开软件才生效。
    */
   hardwareAcceleration?: boolean

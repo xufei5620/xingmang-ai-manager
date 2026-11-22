@@ -10,7 +10,7 @@ import { chatHistoryLogger, exportableConversations, exportablePhrases, flushCha
 export const chatReplyingImportMessage = '聊天正在回复，请待回复完成后再导入。'
 
 /**
- * 设置页「搬到新电脑」里聊天记录那一半，只在登录后才有（聊天记录按账号分开存）。
+ * 设置页「迁移到新电脑」里聊天记录那一半，只在登录后才有（聊天记录按账号分开存）。
  * 聊天页「常用的话」跟聊天记录存在一起，也跟着走。
  */
 export interface ChatTransfer {

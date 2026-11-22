@@ -228,7 +228,7 @@ describe('v2 business boundaries', () => {
     expect(extensionScopeLabel('project')).toBe('当前项目')
     expect(extensionScopeLabel('workspace')).toBe('当前工作区')
     expect(extensionScopeLabel('builtin')).toBe('系统内置')
-    // Claude 的 local 只在这个项目里用；Gemini 扩展自带的技能装在用户目录里。
+    // Claude 的 local 仅在当前项目中使用；Gemini 扩展自带的技能装在用户目录里。
     expect(extensionScopeLabel('local')).toBe('当前项目')
     expect(extensionScopeLabel('extension')).toBe('我的（全局）')
     expect(extensionScopeLabel(null)).toBe('未提供')
@@ -293,8 +293,8 @@ describe('v2 business boundaries', () => {
     expect(
       parseCommandArguments('["-y", "C:\\\\Program Files\\\\tool"]'),
     ).toEqual(['-y', 'C:\\Program Files\\tool'])
-    expect(() => parseCommandArguments('[true]')).toThrow('附加参数照提供方说明原样粘贴')
-    expect(() => parseCommandArguments('"-y"')).toThrow('附加参数照提供方说明原样粘贴')
+    expect(() => parseCommandArguments('[true]')).toThrow('附加参数请按提供方说明原样粘贴')
+    expect(() => parseCommandArguments('"-y"')).toThrow('附加参数请按提供方说明原样粘贴')
   })
   it('routes actionable diagnostic categories to their owning page', () => {
     expect(diagnosticTarget('PROVIDER_CODEX')).toBe('home')

@@ -105,13 +105,13 @@ type ClaudeToggleNotice = { text: string; tone: 'ok' | 'warn' }
 const claudeToggleLaterNotice: ClaudeToggleNotice = { text: '设置已记录，将在下次保存 Claude Code 配置时一并写入。', tone: 'ok' }
 
 /**
- * 「点关闭按钮时」里藏起窗口那一项。Mac 上没有「托盘」这个说法，星芒的图标在屏幕顶部的菜单栏里
+ * 「点击关闭按钮时」里藏起窗口那一项。Mac 上没有「托盘」这个说法，星芒的图标在屏幕顶部的菜单栏里
  * （深查 TR-5、决定单 D30）；Windows、Linux 照旧。主进程关窗询问框那颗按钮是同一句（window-presentation.ts）。
  */
 export function closeToTrayLabel(isMac: boolean): string {
   return isMac ? '收到菜单栏' : '缩到托盘'
 }
-/** 「点关闭按钮时」下面那句说明（有地方放星芒图标时）。 */
+/** 「点击关闭按钮时」下面那句说明（有地方放星芒图标时）。 */
 export function closeToTrayNote(isMac: boolean, accelerationAvailable: boolean): string {
   if (isMac) return '收到菜单栏后，正在进行的安装会继续在后台运行'
   return accelerationAvailable
@@ -141,7 +141,7 @@ export function canOpenNotificationSettings(platform: string): boolean {
   return platform === 'windows' || platform === 'macos'
 }
 /**
- * 「只让 Claude Code 改项目文件夹里的文件」拨完以后那句小提示（Fable 第二轮 Q6）。kept：Claude Code 自己的设置里
+ * 「仅允许 Claude Code 修改项目文件夹内的文件」拨完以后那句小提示（Fable 第二轮 Q6）。kept：Claude Code 自己的设置里
  * 客户写过这一项（星芒没写过），星芒不替他改，开关照样记下。
  */
 export function claudeWriteBoundaryNotice(result: ClaudeToggleResult): ClaudeToggleNotice {
@@ -259,7 +259,7 @@ export function SettingsPage({
   }), [api, setResourceData])
   const operation = useOperation()
   const showToast = useToast().show
-  // 「星芒占用的空间」清掉旧备份就加一，「工具配置备份」那张卡跟着重读。
+  // 「星芒占用空间」清掉旧备份就加一，「工具配置备份」那张卡跟着重读。
   const [backupsRevision, setBackupsRevision] = useState(0)
   const systemApi = platformApi()
   const [systemState, setSystemState] = useState<PlatformSystemState | null>(
@@ -454,7 +454,7 @@ export function SettingsPage({
       setPending((value) => value - 1)
     }
   }
-  // 「搬到新电脑」导入：先整份校验，再在这台电脑上改过的设置要被换掉时问一句。
+  // 「迁移到新电脑」导入：先整份校验，再在这台电脑上改过的设置要被换掉时问一句。
   const [importAsk, setImportAsk] = useState<{
     preview: DataTransferImportPreview
     conversations: Conversation[]
@@ -662,7 +662,7 @@ export function SettingsPage({
         reloadSignal={backupsRevision}
       />
     ),
-    // 星芒占用的空间（D100）：切到这一组时新挂上、算一次；清掉旧备份后叫上面那张备份卡重读。
+    // 星芒占用空间（D100）：切到这一组时新挂上、算一次；清掉旧备份后叫上面那张备份卡重读。
     storage: <StorageCard key="storage" api={api} active={active} onBackupsCleaned={() => setBackupsRevision((value) => value + 1)} />,
     // 手机遥控 Codex：不读设置，自己向主进程要状态。
     'codex-remote': <CodexRemoteCard key="codex-remote" api={api} navigate={navigate} onOpenHelp={openHelp} isMac={isMac} />,
@@ -787,7 +787,7 @@ export function SettingsPage({
                   if (saved) setDisplayRelaunch(true)
                 })
               }
-              aria-label="用显卡加速显示"
+              aria-label="使用显卡加速显示"
               testId="settings-hardware-acceleration"
             />,
             { badge: '重开后生效' },
@@ -928,7 +928,7 @@ export function SettingsPage({
         '开启后，Claude Code 仅能在当前打开的文件夹中写入和修改文件，修改其他位置将被拒绝。其在终端中执行的命令不受此限制。',
         <Switch
           checked={settings.claudeWritesInsideProject === true}
-          aria-label="只让 Claude Code 改项目文件夹里的文件"
+          aria-label="仅允许 Claude Code 修改项目文件夹内的文件"
           testId="settings-claude-write-boundary"
           disabled={Boolean(operation.busy)}
           onChange={(enabled) =>
@@ -983,7 +983,7 @@ export function SettingsPage({
         '默认安装经星芒验证的推荐版本；开启后跟随官方最新版本，可能遇到尚未验证的问题',
         <Switch
           checked={settings.alwaysInstallLatestCli === true}
-          aria-label="命令行工具总是装最新版"
+          aria-label="命令行工具始终安装最新版本"
           onChange={(alwaysInstallLatestCli) =>
             void update({ alwaysInstallLatestCli })
           }
@@ -1017,7 +1017,7 @@ export function SettingsPage({
         '因连接失败切换线路后，已打开的工具需重新打开才会使用新线路。关闭后将不再弹出提示，仅在首页工具卡片上标注「需重开生效」。',
         <Switch
           checked={settings.toolRouteRestartHints !== false}
-          aria-label="换线路后提醒我重开工具"
+          aria-label="切换线路后提醒重新打开工具"
           testId="settings-tool-route-restart-hints"
           onChange={(toolRouteRestartHints) =>
             void update({ toolRouteRestartHints })

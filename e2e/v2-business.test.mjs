@@ -1790,9 +1790,9 @@ test('session detail shows what each AI turn ran and changed, folded to names on
     await page.getByTestId('sessions-view-codex:session-1').click()
     const drawer = page.getByTestId('session-detail-drawer')
     const line = drawer.getByTestId('session-detail-turn-activity')
-    await line.getByText('这一轮：跑了 3 条命令，改了 2 个文件，有 1 步没成功', { exact: true }).waitFor()
+    await line.getByText('本轮：运行了 3 条命令，修改了 2 个文件，有 1 步未成功', { exact: true }).waitFor()
     assert.equal(await line.getByText('sum.ts、sum.test.ts', { exact: true }).isVisible(), false)
-    await line.getByText('这一轮：跑了 3 条命令，改了 2 个文件，有 1 步没成功', { exact: true }).click()
+    await line.getByText('本轮：运行了 3 条命令，修改了 2 个文件，有 1 步未成功', { exact: true }).click()
     await line.getByText('sum.ts、sum.test.ts', { exact: true }).waitFor()
     await line.getByText('npm、git', { exact: true }).waitFor()
   } finally {
@@ -2021,7 +2021,7 @@ test('a recommended Claude plugin lists both commands, says which version lands 
     await dialog.getByText('claude plugin marketplace add anthropics/claude-plugins-official', { exact: true }).waitFor()
     await dialog.getByText('claude plugin install feature-dev@claude-plugins-official', { exact: true }).waitFor()
     // 官方市场装到的是它当下那一份，钉不住版本这件事要在点「安装」之前说出来。
-    await dialog.getByText(/安装的是官方市场当前的版本/).waitFor()
+    await dialog.getByText(/将安装官方市场的当前版本/).waitFor()
     await dialog.getByText(/第三方软件/).first().waitFor()
     // 插件各家格式不通用：另两家灰着说为什么。
     await expect(dialog.getByTestId('hub-install-tools-codex')).toBeDisabled()
@@ -2236,12 +2236,12 @@ test('an entry with a newer version offers 更新 in its menu and on the tool it
   }
 })
 
-// 已知2 跟进：只在这个项目里用的（local）那一份，详情里写清楚只在当前项目。
+// 已知2 跟进：仅在当前项目中使用的（local）那一份，详情里写清楚只在当前项目。
 test('an entry installed only in this project says so in its details', async () => {
   const page = await fixture(`${hubClaudeOnly}&scopedExtensions`)
   try {
     const detail = await openInstalled(page, '本项目插件')
-    await expect(detail.getByTestId('hub-where-claude')).toContainText('只在当前项目、只给你自己')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('仅限当前项目、仅本人可用')
   } finally {
     await page.close()
   }
@@ -2546,8 +2546,8 @@ test('a curated entry spells out what its risk tag means under the tags in its d
   try {
     await page.getByTestId('hub-open-mcp-files').click()
     const detail = page.getByTestId('hub-detail')
-    await expect(detail.getByTestId('curated-risk-details-files')).toHaveText('能在你指定的位置新建、修改和删除文件。')
-    await expect(detail.getByTitle('能在你指定的位置新建、修改和删除文件。')).toHaveText('会修改本地文件')
+    await expect(detail.getByTestId('curated-risk-details-files')).toHaveText('可在您指定的位置新建、修改和删除文件。')
+    await expect(detail.getByTitle('可在您指定的位置新建、修改和删除文件。')).toHaveText('会修改本地文件')
   } finally {
     await page.close()
   }
@@ -2653,7 +2653,7 @@ test('an empty backup list says where backups come from and backs up the tool pi
   }
 })
 
-// 决定单 D100：「备份迁移」最下面那张「星芒占用的空间」。清旧备份要先确认，清缩略图直接清；聊天记录和日志只列大小。
+// 决定单 D100：「备份迁移」最下面那张「星芒占用空间」。清旧备份要先确认，清缩略图直接清；聊天记录和日志只列大小。
 test('the storage card lists six sizes and only cleans old backups after a confirmation', async () => {
   const page = await fixture('page=backups')
   try {
@@ -3816,7 +3816,7 @@ test('the notification kinds sit under their own heading and say when the master
   try {
     await page.getByRole('tab', { name: '消息通知', exact: true }).click()
     const kinds = page.getByTestId('settings-notification-kinds')
-    await kinds.getByRole('heading', { name: '提醒哪些事', exact: true }).waitFor()
+    await kinds.getByRole('heading', { name: '提醒事项', exact: true }).waitFor()
     assert.equal(await kinds.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).count(), 0)
     await page.getByRole('switch', { name: '桌面通知', exact: true }).click()
     await kinds.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).waitFor()
@@ -4627,7 +4627,7 @@ test('desktop notifications start on, the master switch gates test notifications
   }
 })
 
-// X-3：「搬到新电脑」以前带走「自动发送错误报告：关」，却不带「匿名使用统计：关」。新电脑没动过的直接关上；
+// X-3：「迁移到新电脑」以前带走「自动发送错误报告：关」，却不带「匿名使用统计：关」。新电脑没动过的直接关上；
 // 这台关过、文件里是开的先问，点「保留本机设置」照旧关着，只有点了「使用文件中的设置」才打开。
 test('importing a moved computer carries the usage-stats switch and asks before turning it back on', async () => {
   const privacyCalls = async (page) => (await calls(page)).filter((call) => call.name === 'platform-privacy').map((call) => call.args)
@@ -4664,7 +4664,7 @@ test('importing a moved computer carries the usage-stats switch and asks before 
   }
 })
 
-// D24：导入「搬到新电脑」的文件，主题当下变了色，重开又变回原来的：只写了 settings.json，开机看的系统界面设置里那份主题偏好没动。
+// D24：导入「迁移到新电脑」的文件，主题当下变了色，重开又变回原来的：只写了 settings.json，开机看的系统界面设置里那份主题偏好没动。
 test('importing a moved computer keeps its theme after a restart by saving the system theme preference too', async () => {
   const page = await fixture('page=settings&system=1&transfer=theme-dark')
   try {
@@ -4828,7 +4828,7 @@ test('the plugins page groups the recommended entries and folds each official gr
     const installed = page.getByTestId('hub-installed')
     await expect(page.locator('.v2-hub-side-label')).toContainText('5')
     await expect(installed.getByRole('button', { name: /测试连接/ }).locator('.v2-hub-warn')).toHaveAttribute('title', '无法连接')
-    await expect(page.getByText('这些都是第三方软件，由它们各自的作者维护和更新，不随星芒一起发布。装之前请先看清它要哪些权限。', { exact: true }).first()).toBeVisible()
+    await expect(page.getByText('以下均为第三方软件，由各自作者维护和更新，不随星芒发布。安装前请确认其所需权限。', { exact: true }).first()).toBeVisible()
     // 「自己加的」只放自己加的那条连接。
     await page.getByTestId('hub-tab-custom').click()
     await list.getByTestId('hub-row-mcp-test-extension').waitFor()

@@ -58,7 +58,7 @@ describe('plugins hub', () => {
     expect(html).toMatch(/aria-pressed="true" data-testid="picker-codex"/)
     expect(html).toMatch(/aria-pressed="false" disabled="" data-testid="picker-grok"/)
     expect(html).toContain('Claude Code，以及 Claude 桌面端里的 Claude Code')
-    expect(html).toContain('Codex CLI 和 Codex 桌面端，两边都能用')
+    expect(html).toContain('Codex CLI 和 Codex 桌面端均可使用')
     expect(html).toContain('已安装')
     expect(html).toContain('本机尚未安装 Grok CLI')
     expect(html).toContain('data-testid="picker-grok-home"')

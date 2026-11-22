@@ -721,7 +721,7 @@ test('the Claude Code write boundary switch starts off and goes through its own 
   const page = await open()
   try {
     const settings = await openSettingsGroup(page, '工具管理')
-    const row = settings.getByTestId('settings-claude-write-boundary').getByRole('switch', { name: '只让 Claude Code 改项目文件夹里的文件', exact: true })
+    const row = settings.getByTestId('settings-claude-write-boundary').getByRole('switch', { name: '仅允许 Claude Code 修改项目文件夹内的文件', exact: true })
     await expect(row).toHaveAttribute('aria-checked', 'false')
     await settings.getByText('开启后，Claude Code 仅能在当前打开的文件夹中写入和修改文件，修改其他位置将被拒绝。其在终端中执行的命令不受此限制。', { exact: true }).waitFor()
     await row.click()
@@ -2389,7 +2389,7 @@ test('with both the Codex CLI and the desktop app, the GPT row says both of them
     await page.getByTestId('nav-extensions').click()
     await page.getByTestId('hub-add-mcp-browser').click()
     const install = page.getByTestId('hub-install-dialog')
-    await expect(install.getByTestId('hub-install-tools-codex')).toContainText('Codex CLI 和 Codex 桌面端，两边都能用')
+    await expect(install.getByTestId('hub-install-tools-codex')).toContainText('Codex CLI 和 Codex 桌面端均可使用')
     await expect(install.getByTestId('hub-install-tools-claude')).toContainText('Claude Code，以及 Claude 桌面端里的 Claude Code')
     await clean(page)
   } finally { await page.close() }
@@ -3507,7 +3507,7 @@ test('a switch stops before uninstalling when the uninstall is handed to another
   const handOff = await open('cliUpdate=1&nativeInstall=1&uninstallHandOff=1')
   try {
     const { row, switched } = await startManagedSwitch(handOff)
-    await waitForToast(handOff, '已打开卸载窗口，在那个窗口里卸载完，再回来点「重新检测」。')
+    await waitForToast(handOff, '已打开卸载窗口，请在该窗口中完成卸载后，返回点击「重新检测」。')
     assert.deepEqual(await switched(), [{ method: 'uninstallCli', args: ['claude', { reinstall: true }] }])
     // 官方那份在转交之前已经卸掉了：刷新一次，这一行不再挂着它的「更新」。
     await row.getByRole('button', { name: '安装', exact: true }).waitFor()
@@ -6146,7 +6146,7 @@ test('turning the display switch off in settings asks for a relaunch, and later 
     await page.getByTestId('nav-settings').click()
     const settings = page.getByTestId('page-settings')
     await settings.waitFor()
-    await settings.getByRole('switch', { name: '用显卡加速显示' }).click()
+    await settings.getByRole('switch', { name: '使用显卡加速显示' }).click()
     const hint = page.getByTestId('settings-display-relaunch')
     await hint.waitFor()
     await hint.getByText('重开星芒后生效。', { exact: true }).waitFor()
@@ -6362,8 +6362,8 @@ test('relay route settings read nothing stored as auto and offer it first with t
     await expectRoute(route, 'auto')
     assert.deepEqual(await route.getByRole('button').allTextContents(), ['自动（推荐）', '只用线路1', '只用线路2'])
     assert.deepEqual(await page.getByTestId('settings-relay-route-solov-api').getByRole('button').allTextContents(), ['自动（推荐）', '只用线路1', '只用线路2'])
-    await page.getByText('自动会先走线路2，连不上时改走线路1。重开星芒后生效，不会切换账号。', { exact: true }).waitFor()
-    await page.getByText('自动会先走线路1，线路1连不上时改走线路2。重开星芒后生效，不会切换账号。', { exact: true }).waitFor()
+    await page.getByText('选择「自动」时优先使用线路2，无法连接时改用线路1。重新打开星芒后生效，不会切换账号。', { exact: true }).waitFor()
+    await page.getByText('选择「自动」时优先使用线路1，线路1无法连接时改用线路2。重新打开星芒后生效，不会切换账号。', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
     await chooseRoute(route, 'primary')
     await page.getByTestId('settings-relay-relaunch').waitFor()
@@ -10778,9 +10778,9 @@ test('tutorial pins the step being read on top and puts help at the end of the a
     assert.ok(stepTitle.top >= bar.bottom, '吸顶条不压住这一步的标题')
 
     // 点圆点跳到最后一步：最后一步滚不到顶，也亮第 4 颗。
-    await progress.getByRole('button', { name: '第 4 步：打开 Codex，发出第一条消息', exact: true }).click()
-    await expect(progress).toContainText('第 4 步，共 4 步 · 打开 Codex，发出第一条消息')
-    await expect(progress.getByRole('button', { name: '第 4 步：打开 Codex，发出第一条消息', exact: true })).toHaveAttribute('aria-current', 'step')
+    await progress.getByRole('button', { name: '第 4 步：打开 Codex 并发送第一条消息', exact: true }).click()
+    await expect(progress).toContainText('第 4 步，共 4 步 · 打开 Codex 并发送第一条消息')
+    await expect(progress.getByRole('button', { name: '第 4 步：打开 Codex 并发送第一条消息', exact: true })).toHaveAttribute('aria-current', 'step')
     // 自己滚回去，读到哪一步就写哪一步。
     await article.locator('#tutorial-start-step-1').evaluate((element) => element.scrollIntoView({ block: 'start' }))
     await expect(progress).toContainText('第 2 步，共 4 步 · 安装 Codex 桌面端')
@@ -12196,7 +12196,7 @@ test('sections on the check page sit 16 apart, the rows in a card reach its edge
   } finally { await page.close() }
 })
 
-// R28-2：「搬到新电脑」导入还没写完就点进聊天页，聊天页以前读到的是导入前那一份，
+// R28-2：「迁移到新电脑」导入还没写完就点进聊天页，聊天页以前读到的是导入前那一份，
 // 打一个字自动保存就把刚导入的对话又删了。现在聊天页等导入写完再读。
 async function chatHistoryCalls(page, method) {
   return page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).length, method)

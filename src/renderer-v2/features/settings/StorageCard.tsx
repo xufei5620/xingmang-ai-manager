@@ -131,7 +131,7 @@ function rowActions(part: StorageUsagePart, report: StorageUsagePartReport | und
 export function StorageCardView(props: StorageCardViewProps) {
   return (
     <Card
-      title="星芒占用的空间"
+      title="星芒占用空间"
       meta="星芒在本机保存的内容及占用空间。清理仅删除可重新生成或重新下载的内容，作品和聊天记录不受影响。"
       padding="none"
       testId="settings-storage"
@@ -157,7 +157,7 @@ export function StorageCardView(props: StorageCardViewProps) {
 }
 
 /**
- * 设置 › 备份迁移最下面的「星芒占用的空间」（决定单 D100）。挂上时（客户点开这一组）六行各问一次主进程，
+ * 设置 › 备份迁移最下面的「星芒占用空间」（决定单 D100）。挂上时（客户点开这一组）六行各问一次主进程，
  * 快的先出来；不在后台常驻算。从别的页回来时再算一次。清理完只重算那一行。
  */
 export function StorageCard({ api, active, onBackupsCleaned }: {

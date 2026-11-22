@@ -2020,7 +2020,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
   }
 
   /**
-   * 「星芒占用的空间」里「装工具时下载的文件」那一行右边的数：和下面的手动清理同一套选法、同一个年龄，
+   * 「星芒占用空间」里「装工具时下载的文件」那一行右边的数：和下面的手动清理同一套选法、同一个年龄，
    * 写的就是点「清理」能腾出来的。只读，不排队：量的时候正在装也不碍事，最多少算正在下的那份。
    */
   function measureInstallLeftoversNow(): Promise<number> {

@@ -1,6 +1,6 @@
 import type { ToolUninstallResult } from '../../../../electron/ipc-contract'
 
-export const uninstallHandOffMessage = '已打开卸载窗口，在那个窗口里卸载完，再回来点「重新检测」。'
+export const uninstallHandOffMessage = '已打开卸载窗口，请在该窗口中完成卸载后，返回点击「重新检测」。'
 
 /**
  * 本软件以管理员身份运行时，卸载会转交给一个普通权限的窗口去做（主进程回
