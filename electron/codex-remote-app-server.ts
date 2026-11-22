@@ -53,6 +53,14 @@ export class AppServerRequestError extends Error {
   }
 }
 
+/** 到点没等到回执（M02）：Codex 可能根本没收到，也可能已经照做、只是回执还在路上，跟它明着拒绝不是一回事。 */
+export class AppServerTimeoutError extends AppServerRequestError {
+  constructor(message: string) {
+    super(message, null)
+    this.name = 'AppServerTimeoutError'
+  }
+}
+
 export interface AppServerClientOptions {
   spawn(): Promise<AppServerProcess>
   clientVersion: string
@@ -158,7 +166,7 @@ export class CodexAppServerClient {
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
-        reject(new AppServerRequestError(`Codex 未响应（${method}）`, null))
+        reject(new AppServerTimeoutError(`Codex 未响应（${method}）`))
       }, timeoutMs)
       timer.unref?.()
       this.pending.set(id, { resolve, reject, timer, method })

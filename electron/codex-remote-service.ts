@@ -3,6 +3,7 @@ import path from 'node:path'
 import { randomBytes, randomInt as cryptoRandomInt } from 'node:crypto'
 import {
   AppServerMethodError,
+  AppServerTimeoutError,
   CodexAppServerClient,
   type AppServerProcess,
 } from './codex-remote-app-server'
@@ -194,6 +195,8 @@ const phoneConversationLimit = 10
 const phoneConversationScan = 100
 /** 每个渠道记住最近结束的这么多轮的编号，它们迟到的审批和通知都不认（belongsToOtherTurn）。 */
 const maxRetiredTurns = 16
+/** 最多记这么多份「turn/start 没等到回执就放弃了」的对话（M02）。 */
+const maxAbandonedTurnThreads = 8
 /** Codex 起不来、半路退出时，stderr 最后这么多字进日志。 */
 const maxStderrLogLength = 1000
 const quittingMessage = '星芒正在退出。'
@@ -1216,6 +1219,11 @@ export class CodexRemoteService {
   private listedVersion: string | null = null
   private revision = 0
   private emittedRevision = 0
+  /**
+   * turn/start 等满 60 秒没回执、这边已经放弃了的对话（M02）。Codex 可能已经照做、回执只是晚了：这份对话再冒出哪一轮
+   * 的动静，就补一次打断，不让它在手机看不见的地方接着跑、接着扣钱。
+   */
+  private readonly abandonedTurnThreads = new Set<string>()
   /** 正在换文件夹、换对话的那几次（M07）：手机上这时发来的话等它们换完再开这一轮。 */
   private readonly folderSwitches = new Set<Promise<void>>()
   private codex: CodexAppServerClient | null = null
@@ -2394,6 +2402,31 @@ export class CodexRemoteService {
     }
   }
 
+  private abandonTurnStart(runtime: ChannelRuntime, threadId: string): void {
+    this.options.log('warn', 'remote.turn-start-timeout', { channel: runtime.id })
+    this.abandonedTurnThreads.add(threadId)
+    if (this.abandonedTurnThreads.size > maxAbandonedTurnThreads) {
+      const oldest = this.abandonedTurnThreads.values().next().value
+      if (oldest !== undefined) this.abandonedTurnThreads.delete(oldest)
+    }
+  }
+
+  /**
+   * 放弃了的那份对话里冒出来的一轮（M02）：拿通知里的编号补一次打断，只补一次；成不成都不再管这份对话。
+   * 这份对话已经没有哪个渠道接着用（dropThread），它的通知本来就没人认。
+   */
+  private interruptAbandonedTurn(params: Record<string, unknown>): void {
+    const threadId = stringField(params.threadId)
+    if (!threadId || !this.abandonedTurnThreads.has(threadId) || this.runtimeByThread(threadId)) return
+    const turnId = stringField(params.turnId) ?? (isRecord(params.turn) ? stringField(params.turn.id) : null)
+    if (!turnId) return
+    this.abandonedTurnThreads.delete(threadId)
+    this.options.log('warn', 'remote.late-turn-interrupted')
+    void this.codex?.request('turn/interrupt', { threadId, turnId }, 10_000).catch(() => {
+      this.options.log('warn', 'remote.interrupt-failed')
+    })
+  }
+
   /** 停掉、做完的这一轮记下编号：它迟到的审批、通知都不认（belongsToOtherTurn）。 */
   private retireTurn(runtime: ChannelRuntime, turnId: string): void {
     if (runtime.retiredTurnIds.includes(turnId)) return
@@ -3548,6 +3581,8 @@ export class CodexRemoteService {
     // 起 Codex、开对话都要等，每等完一次都看看这一轮还要不要（#1407 P3-1）：话一交给 Codex 就开始扣钱，
     // 只读命令也会先跑，事后再补一次打断已经晚了。
     if (!this.turnStillWanted(runtime, turn)) return
+    // 交了 turn/start 还没等到回执的那份对话（M02）：没等到就放弃时要记下它。
+    let awaitingTurnStart: string | null = null
     try {
       const settings = await this.options.store.readSettings()
       const wantedModel = settings.model ?? null
@@ -3582,6 +3617,7 @@ export class CodexRemoteService {
       // 开着的对话中途换了「权限」、接着的已有对话原来超出这一档：这一句起照手机这档，Codex 会一直用到这份对话结束。
       const permissionChanged = wantedPermission !== runtime.threadPermission
       const rules = runtime.threadRules
+      awaitingTurnStart = threadId
       const result = await client.request('turn/start', {
         threadId,
         // 图只给这里存的路径（YF-14），Codex 的 localImage 自己读文件。
@@ -3590,6 +3626,7 @@ export class CodexRemoteService {
         ...(permissionChanged ? { approvalPolicy: remoteApprovalPolicy, approvalsReviewer: 'user', sandboxPolicy: buildRemoteSandboxPolicy(wantedPermission) } : {}),
         ...(rules ? { collaborationMode: buildRemoteCollaborationMode(model ?? rules.model, rules.reasoningEffort) } : {}),
       })
+      awaitingTurnStart = null
       if (runtime.threadId === threadId) {
         runtime.threadModel = wantedModel
         runtime.threadPermission = wantedPermission
@@ -3604,6 +3641,7 @@ export class CodexRemoteService {
       }
       this.emitSoon()
     } catch (error) {
+      if (awaitingTurnStart && error instanceof AppServerTimeoutError) this.abandonTurnStart(runtime, awaitingTurnStart)
       if (runtime.turn !== turn) return
       this.clearTurn(runtime)
       this.dropThread(runtime)
@@ -3746,6 +3784,7 @@ export class CodexRemoteService {
   private onNotification(method: string, params: unknown): void {
     if (!isRecord(params)) return
     const runtime = this.runtimeByThread(params.threadId)
+    if (!runtime && this.abandonedTurnThreads.size > 0) this.interruptAbandonedTurn(params)
     // 停掉的上一轮迟到的通知：不算这一轮的动静，它的回答、报错、结束也都不往这一轮上记。
     if (runtime?.turn && belongsToOtherTurn(runtime.turn.id, runtime.retiredTurnIds, params.turnId)) return
     // 这一轮的任何通知都算有动静（item/agentMessage/delta 这类不另处理的也算）。
