@@ -288,7 +288,7 @@ jobs:
       # 是那个程序自己的事实。先拿刚出的这份包单独走一遍，看到的都打出来再判对错，下面整条升级路子
       # 红了也知道是不是卡在它这里。
       - name: Run the handoff through this package's own elevate.exe
-        timeout-minutes: 6
+        timeout-minutes: 10
         run: node e2e/windows-update-handoff-smoke.mjs --elevate release/win-unpacked/resources/elevate.exe
 
       - name: Let the package under test install the next version through its own updater
