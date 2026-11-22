@@ -163,7 +163,7 @@ describe('createCanvasRunService', () => {
       service = openService()
       const switchedBack = imageOf(await run(service, projectId, project(first)))
       expect(switchedBack?.state).toBe('failed')
-      expect(switchedBack?.errorMessage).toContain('找不到你选中的这张图当初的生成记录')
+      expect(switchedBack?.errorMessage).toContain('未找到所选图片的生成记录')
       expect(switchedBack?.attempts).toEqual([])
       expect(image).toHaveBeenCalledTimes(2)
 
@@ -596,11 +596,11 @@ describe('createCanvasRunService', () => {
       const graphRevision = computeCanvasGraphRevision(graph)
 
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'all' } }))
-        .rejects.toThrow('桌面版暂不支持，本次没有提交任何付费请求')
+        .rejects.toThrow('桌面版暂不支持，本次未提交任何付费请求')
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'to-node', nodeId: 'image' } }))
-        .rejects.toThrow('「联网搜索」桌面版暂不支持，本次没有提交任何付费请求')
+        .rejects.toThrow('「联网搜索」桌面版暂不支持，本次未提交任何付费请求')
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'selection', nodeIds: ['audio'] } }))
-        .rejects.toThrow('「生成音频设置」桌面版暂不支持，本次没有提交任何付费请求')
+        .rejects.toThrow('「生成音频设置」桌面版暂不支持，本次未提交任何付费请求')
       expect(text).not.toHaveBeenCalled()
       expect(image).not.toHaveBeenCalled()
       expect(video).not.toHaveBeenCalled()

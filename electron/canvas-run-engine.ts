@@ -88,8 +88,8 @@ type ImageBatchPlan =
 
 function unprovenAdoptedAssetMessage(kind: CanvasRunNodeKind): string {
   return kind === 'video' || kind === 'video-generate'
-    ? '找不到你选中的这段视频当初的生成记录，没法确认它跟现在的设置对得上，所以这个节点先停下了，没有扣费。想接着用，请换选这个节点最新生成的那段；想要新视频，在这个节点上点「运行到此」重新生成（会扣费）。'
-    : '找不到你选中的这张图当初的生成记录，没法确认它跟现在的设置对得上，所以这个节点先停下了，没有扣费。想接着用，请换选这个节点最新生成的那张；想要新图，在这个节点上点「运行到此」重新生成（会扣费）。'
+    ? '未找到所选视频的生成记录，无法确认其与当前设置一致，该节点已暂停，未产生扣费。如需继续使用，请改选该节点最新生成的视频；如需生成新视频，请在该节点上点击「运行到此」重新生成（将产生扣费）。'
+    : '未找到所选图片的生成记录，无法确认其与当前设置一致，该节点已暂停，未产生扣费。如需继续使用，请改选该节点最新生成的图片；如需生成新图片，请在该节点上点击「运行到此」重新生成（将产生扣费）。'
 }
 
 /**
@@ -198,13 +198,13 @@ function timelineEvent(event: CanvasRunEvent): CanvasRunEvent {
 function executorFor(executors: CanvasNodeExecutors, kind: CanvasRunNodeKind): CanvasNodeExecutor {
   if (kind === 'frame-extract') {
     const executor = executors['frame-extract']
-    if (!executor) throw new Error('「视频抽帧」节点桌面版暂不支持，本次没有提交任何付费请求')
+    if (!executor) throw new Error('「视频抽帧」节点桌面版暂不支持，本次未提交任何付费请求')
     return executor
   }
   // Same for image tools: a crop is made on the page, never by a paid video request.
   if (isCanvasRunImageToolNodeKind(kind)) {
     const executor = executors[kind]
-    if (!executor) throw new Error(`「${canvasRunImageToolNodeLabels[kind]}」节点桌面版暂不支持，本次没有提交任何付费请求`)
+    if (!executor) throw new Error(`「${canvasRunImageToolNodeLabels[kind]}」节点桌面版暂不支持，本次未提交任何付费请求`)
     return executor
   }
   return executors[kind] ?? executors[fallbackExecutorKind(kind)]
@@ -523,8 +523,8 @@ function imageCandidateIndexes(count: CanvasRunImageCandidateCount): CanvasRunIm
 // 这里只带第一条，免得一句话太长。
 export function canvasImageBatchFailureMessage(count: number, succeeded: number, reason: string): string {
   const message = succeeded === 0
-    ? `这次要出 ${count} 张，一张都没出来：${reason}`
-    : `这次要出 ${count} 张，出来 ${succeeded} 张，${count - succeeded} 张没出来：${reason}`
+    ? `本次需生成 ${count} 张，均未生成：${reason}`
+    : `本次需生成 ${count} 张，已生成 ${succeeded} 张，${count - succeeded} 张未生成：${reason}`
   return message.slice(0, MAXIMUM_ERROR_LENGTH)
 }
 
@@ -949,7 +949,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     }
   }
   async function reportFramePreparation(nodeId: string, preparation: CanvasFramePreparation, waiting: boolean): Promise<void> {
-    if (preparation.nodeId !== nodeId) throw new Error('视频帧不属于这个节点')
+    if (preparation.nodeId !== nodeId) throw new Error('该视频帧不属于此节点')
     if (waiting) {
       if (isTerminalState(nodeRecords.get(nodeId)!.state)) return
       framePreparations.set(preparation.operationId, structuredClone(preparation))
@@ -959,7 +959,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     await emit(waitingEvent())
   }
   async function reportImagePreparation(nodeId: string, preparation: CanvasImagePreparation, waiting: boolean): Promise<void> {
-    if (preparation.nodeId !== nodeId || preparation.runId !== options.runId) throw new Error('图片处理不属于这个节点')
+    if (preparation.nodeId !== nodeId || preparation.runId !== options.runId) throw new Error('该图片处理结果不属于此节点')
     if (waiting) {
       if (isTerminalState(nodeRecords.get(nodeId)!.state)) return
       imagePreparations.set(preparation.operationId, structuredClone(preparation))
@@ -1220,7 +1220,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           ...(result.model ? { model: result.model } : {}),
           ...(result.costQuota !== undefined ? { costQuota: result.costQuota } : {}),
         }))
-        if (candidates.length === 0) throw new Error('这一张没有拿到图片')
+        if (candidates.length === 0) throw new Error('本张未获取到图片')
         keep(withRelayBilling({
           attemptId,
           fingerprint,
@@ -1322,7 +1322,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       // line in case a caller skips that check: a kernel-only kind would
       // otherwise fall back to the video executor and spend money.
       if (node.desktopUnsupported || isCanvasRunKernelOnlyNodeKind(node.kind)) {
-        await updateNode(nodeId, 'failed', { errorMessage: sanitizeRunError(node.desktopUnsupported ?? '该节点桌面版暂不支持，本次没有提交任何付费请求') })
+        await updateNode(nodeId, 'failed', { errorMessage: sanitizeRunError(node.desktopUnsupported ?? '该节点桌面版暂不支持，本次未提交任何付费请求') })
         return
       }
 

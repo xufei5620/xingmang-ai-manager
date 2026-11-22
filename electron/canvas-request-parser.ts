@@ -577,10 +577,10 @@ function kernelFieldsUnsupported(
     assertBoundedKernelValue(data[field], label, budget)
     reasons.push(reason)
   }
-  if (isKernelOnlyNodeKind(kind)) return `「${canvasRunKernelOnlyNodeLabels[kind]}」节点桌面版暂不支持，本次没有提交任何付费请求`
-  if (isImageToolNodeKind(kind) && !imageToolsRun) return `「${canvasRunImageToolNodeLabels[kind]}」节点桌面版暂不支持，本次没有提交任何付费请求`
+  if (isKernelOnlyNodeKind(kind)) return `「${canvasRunKernelOnlyNodeLabels[kind]}」节点桌面版暂不支持，本次未提交任何付费请求`
+  if (isImageToolNodeKind(kind) && !imageToolsRun) return `「${canvasRunImageToolNodeLabels[kind]}」节点桌面版暂不支持，本次未提交任何付费请求`
   if (reasons.length === 0) return undefined
-  return `「${[...new Set(reasons)].join('、')}」桌面版暂不支持，本次没有提交任何付费请求`
+  return `「${[...new Set(reasons)].join('、')}」桌面版暂不支持，本次未提交任何付费请求`
 }
 
 /**

@@ -160,7 +160,7 @@ describe('CanvasProjectStore', () => {
     const created = await store.create(36, '好好的项目', workspace)
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-relink-elsewhere-'))
     roots.push(elsewhere)
-    await expect(store.relinkWorkspace(36, created.project.id, elsewhere)).rejects.toThrow('项目的工作文件夹还在')
+    await expect(store.relinkWorkspace(36, created.project.id, elsewhere)).rejects.toThrow('项目的工作文件夹仍然存在')
     await expect(store.relinkWorkspace(37, created.project.id, elsewhere)).rejects.toThrow()
     fs.rmSync(workspace, { recursive: true, force: true })
     await store.setArchived(36, created.project.id, true)
@@ -178,7 +178,7 @@ describe('CanvasProjectStore', () => {
     await store.create(36, '另一个项目', other)
     fs.rmSync(workspace, { recursive: true, force: true })
     await expect(store.relinkWorkspace(36, created.project.id, other)).rejects.toThrow('该工作文件夹已绑定项目「另一个项目」')
-    await expect(store.relinkWorkspace(36, created.project.id, empty)).rejects.toThrow('所选文件夹里没有这个项目的素材')
+    await expect(store.relinkWorkspace(36, created.project.id, empty)).rejects.toThrow('所选文件夹中没有此项目的素材')
     expect(fs.readdirSync(empty)).toEqual([])
     await expect(store.relinkWorkspace(36, created.project.id, path.join(empty, 'nowhere'))).rejects.toThrow('工作文件夹不存在')
     await expect(store.list(36)).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: created.project.id, workspaceStatus: 'missing' })]))
@@ -293,28 +293,28 @@ describe('CanvasProjectStore', () => {
     expect((await store.list(36)).filter((project) => !project.archivedAt)).toHaveLength(100)
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-limit-other-'))
     roots.push(other)
-    await expect(store.create(36, '第一百零一个', other)).rejects.toThrow('画布项目最多 100 个（已归档的不算），请先归档一些不用的项目')
-    await expect(store.createImported(36, '导入的', other, workflow('包'))).rejects.toThrow('已归档的不算')
+    await expect(store.create(36, '第一百零一个', other)).rejects.toThrow('画布项目最多 100 个（不含已归档），请先归档部分不再使用的项目')
+    await expect(store.createImported(36, '导入的', other, workflow('包'))).rejects.toThrow('不含已归档')
     const archived = (await store.list(36)).find((project) => project.archivedAt)!
     await expect(store.setArchived(36, archived.id, false)).rejects.toThrow('请先归档一个再恢复')
 
     await store.setArchived(36, hundredth.project.id, true)
     await expect(store.setArchived(36, archived.id, false)).resolves.not.toHaveProperty('archivedAt')
-    await expect(store.create(36, '第一百零一个', other)).rejects.toThrow('已归档的不算')
+    await expect(store.create(36, '第一百零一个', other)).rejects.toThrow('不含已归档')
   })
 
   it('stops at five hundred projects counting the archived ones', async () => {
     const { root, workspace, store } = createFixture('stored-limit')
     seedProjects(root, 36, 500, true)
     await expect(store.list(36)).resolves.toHaveLength(500)
-    await expect(store.create(36, '新项目', workspace)).rejects.toThrow('画布项目连同已归档的最多 500 个，请先在「已归档」里删掉一些')
+    await expect(store.create(36, '新项目', workspace)).rejects.toThrow('画布项目（含已归档）最多 500 个，请先在「已归档」中删除部分项目')
   })
 
   it('removes only an archived project and only its record', async () => {
     const { workspace, store } = createFixture('remove')
     const created = await store.create(36, '旧海报', workspace)
     fs.writeFileSync(path.join(workspace, 'assets', 'image.png'), 'png')
-    await expect(store.remove(36, created.project.id)).rejects.toThrow('请先归档这个项目再删除')
+    await expect(store.remove(36, created.project.id)).rejects.toThrow('请先归档此项目，再进行删除')
     await store.setArchived(36, created.project.id, true)
     await expect(store.remove(37, created.project.id)).rejects.toThrow()
 
@@ -347,7 +347,7 @@ describe('CanvasProjectStore', () => {
     }), 'utf8')
     const emptyTarget = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-legacy-target-'))
     roots.push(emptyTarget)
-    await expect(store.duplicate(36, legacyId, '旧项目副本', emptyTarget)).rejects.toThrow('没有独立工作文件夹')
+    await expect(store.duplicate(36, legacyId, '旧项目副本', emptyTarget)).rejects.toThrow('没有独立的工作文件夹')
     expect(fs.readdirSync(emptyTarget)).toEqual([])
   })
 

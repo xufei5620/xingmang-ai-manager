@@ -731,9 +731,9 @@ describe('AI chat streaming service', () => {
     const reports: unknown[] = []
     await expect(service.completeOnce({
       group: 'GPT', model: 'gpt-5.4', messages: [{ role: 'user', content: '描述', images: ['a'.repeat(43)] }],
-      readImages: async () => { throw new Error('视觉图片单张不能超过 4 MB，当前没有提交文字生成；请换小一点的图再试') },
+      readImages: async () => { throw new Error('视觉图片单张不能超过 4 MB，当前未提交文字生成；请更换较小的图片后重试') },
       billing: { onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) }, onRelayAnswer: (id) => { reports.push(['answer', id]) } },
-    })).rejects.toThrow('视觉图片单张不能超过 4 MB，当前没有提交文字生成；请换小一点的图再试')
+    })).rejects.toThrow('视觉图片单张不能超过 4 MB，当前未提交文字生成；请更换较小的图片后重试')
     // An image id nobody resolved never goes out as a literal id either.
     await expect(service.completeOnce({
       group: 'GPT', model: 'gpt-5.4', messages: [{ role: 'user', content: '描述', images: ['a'.repeat(43)] }],

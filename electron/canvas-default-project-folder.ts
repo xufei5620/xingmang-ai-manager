@@ -40,7 +40,7 @@ export function claimCanvasDefaultProjectFolder(rootDirectory: string, projectNa
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     }
   }
-  throw new Error('「星芒画布」文件夹里同名的项目太多，请换个名字')
+  throw new Error('「星芒画布」文件夹中同名项目过多，请更换名称')
 }
 
 /**
@@ -50,11 +50,11 @@ export function claimCanvasDefaultProjectFolder(rootDirectory: string, projectNa
  */
 export function describeCanvasDefaultProjectFolderFailure(error: unknown): string {
   const code = (error as NodeJS.ErrnoException | undefined)?.code
-  if (code === 'EPERM' || code === 'EACCES') return '没有权限写入'
+  if (code === 'EPERM' || code === 'EACCES') return '没有写入权限'
   if (code === 'ENOSPC') return '磁盘空间不够'
-  if (code === 'EROFS') return '磁盘是只读的'
+  if (code === 'EROFS') return '磁盘为只读'
   if (!code && error instanceof Error && error.message) return error.message
-  return '文件夹建不出来'
+  return '无法创建文件夹'
 }
 
 /**
