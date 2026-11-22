@@ -57,6 +57,7 @@ import {
   resumedPermissionFits,
   sameRemoteFolder,
   sentWhileOpen,
+  startedSandboxExceeds,
   validateRemoteWorkspace,
 } from './codex-remote-service'
 import type { RemoteFileChangeLine } from './codex-remote-text'
@@ -772,12 +773,55 @@ describe('codex-remote-service helpers', () => {
     expect(buildRemoteSandboxPolicy('readOnly')).toEqual({ type: 'readOnly', networkAccess: false })
   })
 
+  // 第三轮复查第 5 条：新开的对话跟中途换档一样不开网、可写的只有这个文件夹，不照客户 config.toml 里开过的联网和加过的文件夹。
+  // Codex 0.169 实测：config.toml 开了联网、加了可写文件夹，不压住时 thread/start 回报 networkAccess: true 和那个文件夹，压住后两样都没有。
+  it('starts threads without network access or extra writable folders whatever config.toml allows', () => {
+    for (const permission of ['default', 'readOnly'] as const) {
+      expect(buildThreadStartParams('/p', {}, null, permission).config).toMatchObject({
+        'sandbox_workspace_write.network_access': false,
+        'sandbox_workspace_write.writable_roots': [],
+      })
+    }
+    expect(JSON.stringify(buildThreadStartParams('/p'))).not.toContain('exclude_')
+  })
+
+  it('treats a started thread as wider than the phone level only on clear evidence', () => {
+    const workspace = '/Users/a/projects/demo'
+    const pinned = { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+    expect(startedSandboxExceeds(pinned, 'default', workspace, 'darwin')).toBe(false)
+    expect(startedSandboxExceeds({ ...pinned, writableRoots: [`${workspace}/`] }, 'default', workspace, 'darwin')).toBe(false)
+    expect(startedSandboxExceeds({ type: 'readOnly', networkAccess: false }, 'readOnly', workspace, 'darwin')).toBe(false)
+    // Windows 没开沙箱时 Codex 把可写降成只读：比这一档严，不去抬。
+    expect(startedSandboxExceeds({ type: 'readOnly', networkAccess: false }, 'default', 'C:\\Users\\a\\demo', 'win32')).toBe(false)
+    expect(startedSandboxExceeds({ ...pinned, writableRoots: ['c:\\users\\a\\demo\\'] }, 'default', 'C:\\Users\\a\\demo', 'win32')).toBe(false)
+    // 认不出的照开对话时带的那一档，不算宽。
+    expect(startedSandboxExceeds(undefined, 'default', workspace, 'darwin')).toBe(false)
+    expect(startedSandboxExceeds('workspace-write', 'default', workspace, 'darwin')).toBe(false)
+    expect(startedSandboxExceeds({ type: 'workspaceWrite' }, 'default', workspace, 'darwin')).toBe(false)
+
+    expect(startedSandboxExceeds({ ...pinned, networkAccess: true }, 'default', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds({ type: 'readOnly', networkAccess: true }, 'readOnly', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds({ ...pinned, writableRoots: ['/tmp/extra-root'] }, 'default', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds({ ...pinned, writableRoots: [workspace, '/Users/a'] }, 'default', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds({ ...pinned, writableRoots: [42] }, 'default', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds(pinned, 'readOnly', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds({ type: 'dangerFullAccess' }, 'default', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds({ type: 'externalSandbox', networkAccess: 'restricted' }, 'default', workspace, 'darwin')).toBe(true)
+  })
+
   // #1407 P2-4：客户自己接的外部工具调用不一定先问人，遥控开的对话里一律关掉；联网搜索不动。
   it('starts threads without plugins, apps or the configured MCP servers, and leaves web search alone', () => {
-    expect(buildThreadStartParams('/p').config).toEqual({ 'features.apps': false, 'features.plugins': false })
+    expect(buildThreadStartParams('/p').config).toEqual({
+      'features.apps': false,
+      'features.plugins': false,
+      'sandbox_workspace_write.network_access': false,
+      'sandbox_workspace_write.writable_roots': [],
+    })
     expect(buildThreadStartParams('/p', { docs: { enabled: false } }).config).toEqual({
       'features.apps': false,
       'features.plugins': false,
+      'sandbox_workspace_write.network_access': false,
+      'sandbox_workspace_write.writable_roots': [],
       mcp_servers: { docs: { enabled: false } },
     })
     expect(JSON.stringify(buildThreadStartParams('/p'))).not.toContain('web_search')
@@ -1900,6 +1944,56 @@ describe('codex-remote-service turns', () => {
     expect(await nextTurn(5)).not.toHaveProperty('sandboxPolicy')
     expect(codex.requests('thread/start')).toHaveLength(1)
     expect(s.logs).toContain('remote.permission-set')
+  })
+
+  // 第三轮复查第 5 条：新开的对话照 Codex 回报的看，比手机这一档宽（哪个版本没认压住的那两项）就跟接已有对话一样第一句降下来。
+  it('lowers a new thread on its first message when Codex reports a wider sandbox than the phone level', async () => {
+    const s = await setup({
+      now: () => Date.UTC(2026, 10, 11, 6, 0, 0),
+      codexReplies: {
+        'thread/start': () => ({
+          result: {
+            thread: { id: 'th-1' },
+            approvalPolicy: 'on-request',
+            approvalsReviewer: 'user',
+            sandbox: { type: 'workspaceWrite', writableRoots: ['/tmp/extra-root'], networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+          },
+        }),
+      },
+    })
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect(codex.requests('turn/start')[0].params).toMatchObject({
+      threadId: 'th-1',
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
+      sandboxPolicy: { type: 'workspaceWrite', writableRoots: [], networkAccess: false },
+    })
+    expect(s.logs).toContain('remote.thread-start-sandbox-wider')
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    channel.handlers?.onInbound(text(alice, '再来一个'))
+    await codex.requestedUntil('turn/start', 2)
+    expect(codex.requests('turn/start')[1].params).not.toHaveProperty('sandboxPolicy')
+  })
+
+  it('leaves a new thread alone when Codex reports the pinned sandbox', async () => {
+    const s = await setup({
+      codexReplies: {
+        'thread/start': () => ({
+          result: {
+            thread: { id: 'th-1' },
+            approvalPolicy: 'on-request',
+            approvalsReviewer: 'user',
+            sandbox: { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+          },
+        }),
+      },
+    })
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect(codex.requests('turn/start')[0].params).not.toHaveProperty('sandboxPolicy')
+    expect(s.logs).not.toContain('remote.thread-start-sandbox-wider')
   })
 
   it('opens the thread without a model when the phone follows the computer', async () => {

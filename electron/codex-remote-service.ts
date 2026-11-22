@@ -356,9 +356,29 @@ export function buildThreadStartParams(
     config: {
       'features.apps': false,
       'features.plugins': false,
+      // 跟中途换档（buildRemoteSandboxPolicy）一样不开网、可写的只有这个文件夹（第三轮复查第 5 条）：不压住，Codex 照客户
+      // config.toml 的 [sandbox_workspace_write] 来，客户开过联网的，手机上不问就能联网，加过的可写文件夹也能改。
+      // 只压这两项：不写 /tmp 那两项是客户自己收的，照客户的。只读档用不上这张表，带着也不碍事。
+      'sandbox_workspace_write.network_access': false,
+      'sandbox_workspace_write.writable_roots': [],
       ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServers } : {}),
     },
   }
+}
+
+/**
+ * 新开的对话 Codex 回报的沙箱是不是比手机这一档宽：联网、能改文件夹以外的地方、只读档却能写。宽了第一句的 turn/start 再降下来，
+ * 跟接已有对话超出这一档时一样（resumedPermissionFits）。buildThreadStartParams 已经压住了，Codex 0.169 实测回报的就是压住后的；
+ * 这一道防的是哪个版本不认那两项。回报认不出的不算宽，照开对话时带的那一档：Windows 没开沙箱时 Codex 会把可写降成只读，
+ * 不能因为认不出反倒用 turn/start 抬上去。
+ */
+export function startedSandboxExceeds(sandbox: unknown, permission: RemotePermission, workspace: string, platform: NodeJS.Platform): boolean {
+  if (!isRecord(sandbox)) return false
+  if (sandbox.networkAccess === true) return true
+  if (sandbox.type === 'dangerFullAccess' || sandbox.type === 'externalSandbox') return true
+  if (sandbox.type !== 'workspaceWrite') return false
+  if (permission === 'readOnly') return true
+  return Array.isArray(sandbox.writableRoots) && sandbox.writableRoots.some((root) => typeof root !== 'string' || !sameRemoteFolder(root, workspace, platform))
 }
 
 /**
@@ -1028,7 +1048,8 @@ interface ChannelRuntime {
   threadModel: string | null
   /**
    * 这份对话现在用的是「权限」哪一档；跟 threadModel 一样，只在 threadId 有值时算数，不一样才在 turn/start 里改。
-   * exceeds：接着的是电脑上已有的对话，它原来的权限超出手机这一档，第一句就降下来（resumedPermissionFits）。
+   * exceeds：接着的是电脑上已有的对话，它原来的权限超出手机这一档（resumedPermissionFits），或者新开的对话 Codex 回报的
+   * 比这一档宽（startedSandboxExceeds），第一句就降下来。
    */
   threadPermission: RemotePermission | 'exceeds'
   /**
@@ -3663,15 +3684,17 @@ export class CodexRemoteService {
         const thread = isRecord(started) && isRecord(started.thread) ? stringField(started.thread.id) : null
         if (!thread) throw new Error('Codex 未能开启新对话')
         if (!this.turnStillWanted(runtime, turn)) return
+        const exceeds = isRecord(started) && startedSandboxExceeds(started.sandbox, wantedPermission, workspace, this.platform)
+        if (exceeds) this.options.log('warn', 'remote.thread-start-sandbox-wider', { channel: runtime.id })
         runtime.threadId = thread
         runtime.threadModel = wantedModel
-        runtime.threadPermission = wantedPermission
+        runtime.threadPermission = exceeds ? 'exceeds' : wantedPermission
         runtime.threadLost = false
       }
       const threadId = runtime.threadId
       const model = await this.turnModel(client, runtime, workspace, wantedModel)
       if (!this.turnStillWanted(runtime, turn)) return
-      // 开着的对话中途换了「权限」、接着的已有对话原来超出这一档：这一句起照手机这档，Codex 会一直用到这份对话结束。
+      // 开着的对话中途换了「权限」、接着的已有对话原来超出这一档、新开的对话比这一档宽：这一句起照手机这档，Codex 会一直用到这份对话结束。
       const permissionChanged = wantedPermission !== runtime.threadPermission
       const rules = runtime.threadRules
       awaitingTurnStart = threadId
