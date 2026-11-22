@@ -47,7 +47,6 @@ import { AppUninstallRow } from '../app/AppUninstall'
 import { BackupCard } from './BackupCard'
 import { StorageCard } from './StorageCard'
 import { StandingInstructionsField } from './StandingInstructions'
-import { CodexRemoteCard } from './codex-remote/CodexRemoteCard'
 import { VersionCard } from './VersionCard'
 import { RelayRouteRestartNotice, RelayRouteRow } from '../app/RelayRouteSettings'
 import { ThemeCards, type ThemeCardValue } from '../app/ThemeCards'
@@ -229,7 +228,6 @@ export function SettingsPage({
   onSettingsGroupChange,
   onBackupRestored,
   installedProviders,
-  openHelp,
 }: { api: V2Bridge } & BusinessActions & Pick<Parameters<typeof BackupCard>[0], 'installedProviders'> & {
   /** 备份卡恢复成功后回调，用来让首页重读配置。 */
   onBackupRestored?: Parameters<typeof BackupCard>[0]['onRestored']
@@ -550,7 +548,8 @@ export function SettingsPage({
         chatTransfer?.assertChatIdle()
         const preview = await api.importAppData()
         if (!preview) return null
-        const conversations = parseImportedConversations(preview.conversations)
+        // 作品这次能一起导进来，对话里的图片、视频才原样留着；否则换成一句说明，不留打不开的空格。
+        const conversations = parseImportedConversations(preview.conversations, { withWorks: preview.works?.state === 'ready' })
         if (preview.conflictLabels.length) {
           setImportAsk({ preview, conversations })
           return null
@@ -573,7 +572,7 @@ export function SettingsPage({
   // 当前账号作品库里有作品时先问一句带不带（「搬作品改」）；量不出来就照旧只导聊天记录和设置，不拦导出。
   const [exportAsk, setExportAsk] = useState<DataTransferWorksSummary | null>(null)
   const exportData = async (includeWorks: boolean) => {
-    const chat = chatTransfer ? await chatTransfer.exportChat() : { conversations: [] }
+    const chat = chatTransfer ? await chatTransfer.exportChat({ withWorks: includeWorks }) : { conversations: [] }
     if (!includeWorks) return api.exportAppData(chat)
     setWorksBusy('export')
     try {
@@ -722,7 +721,6 @@ export function SettingsPage({
     // 星芒占用空间（D100）：切到这一组时新挂上、算一次；清掉旧备份后叫上面那张备份卡重读。
     storage: <StorageCard key="storage" api={api} active={active} onBackupsCleaned={() => setBackupsRevision((value) => value + 1)} />,
     // 手机遥控 Codex：不读设置，自己向主进程要状态。
-    'codex-remote': <CodexRemoteCard key="codex-remote" api={api} navigate={navigate} onOpenHelp={openHelp} isMac={isMac} />,
     // 原来的更新页。两个开关不在卡上再摆一份，就是下面那两行。
     version: (
       <VersionCard

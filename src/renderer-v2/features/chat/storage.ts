@@ -621,17 +621,30 @@ const transferInvalidMessage = '该文件并非由星芒导出或已损坏，未
 const imageLeftBehind = '[图片未随记录迁移]'
 const videoLeftBehind = '[视频未随记录迁移]'
 
-function portableMessage(message: ReturnType<typeof persistedMessage>) {
-  // 图片文件只在这台电脑上，带过去也打不开；留一句说明代替。还在等的请求到了新电脑上
-  // 也不会再回来，不带「可能还会完成」。
-  // 视频同理：片段只在这台电脑的作品库里；还在等的那一单按请求号只在这台电脑上查得到。
-  const { assets, video, requestId: _requestId, mayStillComplete: _pending, ...rest } = message
+/**
+ * 「迁移到新电脑」的对话带不带作品。withWorks：作品库跟着一起导出、导入（「搬作品改」），作品编号、日期、
+ * 文件名都不变，对话里的图片、视频按编号在新电脑的作品库里照样找得到，就原样带上。
+ * 缺省 = 不带作品，跟以前一样换成一句说明。
+ */
+export interface ChatTransferOptions { withWorks?: boolean }
+
+// 不带作品时，图片、视频在新电脑上打不开：去掉，在正文后面接一句说明。
+function leaveMediaBehind<T extends { content: string; assets?: unknown[]; video?: ChatVideo }>(message: T) {
+  const { assets, video, ...rest } = message
   const notes = [...(assets?.length ? [imageLeftBehind] : []), ...(video?.clip ? [videoLeftBehind] : [])]
   if (!notes.length) return rest
   return { ...rest, content: [...(rest.content ? [rest.content] : []), ...notes].join('\n\n') }
 }
 
-/** 导出给新电脑的对话：和存盘时一样去掉密钥样的文字，再去掉图片和运行时字段。 */
+function portableMessage(message: ReturnType<typeof persistedMessage>, withWorks: boolean) {
+  // 还在等的请求到了新电脑上也不会再回来，不带「可能还会完成」；还在等的那一单视频按请求号只在这台电脑上
+  // 查得到，带作品时也只带出好的片段。
+  const { requestId: _requestId, mayStillComplete: _pending, ...rest } = message
+  if (!withWorks) return leaveMediaBehind(rest)
+  const { video, ...kept } = rest
+  return video?.clip ? { ...kept, video: { clip: video.clip } } : kept
+}
+
 /** 「迁移到新电脑」带走的常用的话：本机记录里存的就是脱敏过的，原样带上。 */
 export function exportablePhrases(state: ChatWorkspace): string[] {
   return [...(state.phrases ?? [])]
@@ -650,25 +663,37 @@ export function mergeImportedPhrases(present: readonly string[] | undefined, imp
   return list.length === (present?.length ?? 0) ? null : list
 }
 
-export function exportableConversations(state: ChatWorkspace): unknown[] {
+/** 导出给新电脑的对话：和存盘时一样去掉密钥样的文字，再去掉运行时字段；不带作品时图片、视频换成一句说明。 */
+export function exportableConversations(state: ChatWorkspace, options: ChatTransferOptions = {}): unknown[] {
   return state.conversations.map((conversation) => {
     // 输入框里加了还没发的图片也只在这台电脑上：带过去是一个空白方块，点发送还会说图片找不到了（设置 X-6）。
-    // 打了的字和加的文字文件照带。
+    // 打了的字和加的文字文件照带。带作品时也不带：导入那边认不出文件是不是 0.2.24 以前的，一律去掉。
     const { draftImages: _localOnly, ...persisted } = persistedConversation(conversation)
-    return { ...persisted, messages: persisted.messages.map(portableMessage) }
+    return { ...persisted, messages: persisted.messages.map((message) => portableMessage(message, options.withWorks === true)) }
   })
+}
+
+// 导进来的一条消息：还在等的请求接不回来，停在「已停止」。视频只认出好的片段，请求号、结果不明那些
+// 是别的电脑、别的账号的，在这里接不回来。
+function importedMessage({ mayStillComplete: _pending, requestId: _requestId, ...message }: ChatMessage, withWorks: boolean): ChatMessage {
+  const settled = message.status === 'pending' ? { ...message, status: 'canceled' as const } : message
+  if (!withWorks) return leaveMediaBehind(settled)
+  const { video, ...rest } = settled
+  return video?.clip ? { ...rest, video: { clip: video.clip } } : rest
 }
 
 // 文件是用户随便选来的：每个对话都按读本机记录的同一套规则严格校验，有一个不对就
 // 整份不导入，不写一半（I5）。
-export function parseImportedConversations(values: unknown[]): Conversation[] {
+// withWorks = 文件旁边的作品这次会一起导进来：对话里的图片、视频原样留着。作品没跟过来（只拷了那一份文件、
+// 「作品」文件夹读不出来）就跟不带作品的导出一样换成那句说明，不留一格打不开的图；以后带着作品再导一次，
+// mergeImportedConversations 会把图换回来。
+export function parseImportedConversations(values: unknown[], options: ChatTransferOptions = {}): Conversation[] {
   if (values.length > MAX_CONVERSATIONS) throw new ChatStorageError(transferInvalidMessage)
   try {
     // 0.2.24 以前导出的文件里还带着输入框里没发的图片，到这台电脑上打不开，导入时也去掉（设置 X-6）。
     const conversations = values.map(readConversation).map(({ draftImages: _localOnly, ...conversation }) => ({
       ...conversation,
-      // 文件里不该有视频（导出时已经换成一句说明）；真有也不认：别的电脑、别的账号的请求号在这里接不回来。
-      messages: conversation.messages.map(({ mayStillComplete: _pending, video: _video, requestId: _requestId, ...message }) => message.status === 'pending' ? { ...message, status: 'canceled' as const } : message),
+      messages: conversation.messages.map((message) => importedMessage(message, options.withWorks === true)),
     }))
     assertUniqueIds(conversations)
     return conversations
@@ -681,9 +706,33 @@ export function parseImportedConversations(values: unknown[]): Conversation[] {
  */
 export interface ChatImportResult { added: number; updated: number; skipped: number }
 
-// 两边比的是说了什么：图片、请求编号这些只在本机，导出时已经去掉或换成一句说明，两边按同一套规则存过。
+// 不带作品的导出（0.2.25 以前每一次都是）把图片、视频换成了接在正文后面的那一两句说明。比两边是不是同一条时
+// 去掉它：那样导过一次、现在带着作品再导，同一条消息一边是说明、一边是图，不去掉就被当成两边各聊各的，另存一份。
+function withoutLeftBehindNotes(content: string): string {
+  let rest = content
+  for (const note of [videoLeftBehind, imageLeftBehind]) {
+    if (rest === note) return ''
+    if (rest.endsWith(`\n\n${note}`)) rest = rest.slice(0, -(note.length + 2))
+  }
+  return rest
+}
+
+// 两边比的是说了什么：图片、视频、请求编号不比，两边按同一套规则存过。
 function messageFingerprint(message: ChatMessage): string {
-  return JSON.stringify([message.id, message.role, message.status, message.content, message.reasoning, message.error ?? '', (message.files ?? []).map((file) => [file.name, file.text])])
+  return JSON.stringify([message.id, message.role, message.status, withoutLeftBehindNotes(message.content), message.reasoning, message.error ?? '', (message.files ?? []).map((file) => [file.name, file.text])])
+}
+
+// 同一条消息（指纹一样）一边只剩那句说明、另一边带着图片或视频：换成带着的那份，作品跟着导过来了，对话里照常显示。
+// target 里已经有图片、视频（含还在等的那一单）的不动。返回 null 表示没有要换的。
+function withMediaFrom(target: readonly ChatMessage[], donor: readonly ChatMessage[]): ChatMessage[] | null {
+  let changed = false
+  const messages = target.map((message, index) => {
+    const other = donor[index]
+    if (!other || message.assets?.length || message.video || (!other.assets?.length && !other.video?.clip)) return message
+    changed = true
+    return { ...message, content: other.content, ...(other.assets?.length ? { assets: other.assets } : {}), ...(other.video?.clip ? { video: { clip: other.video.clip } } : {}) }
+  })
+  return changed ? messages : null
 }
 
 type ImportedRelation = 'same' | 'local-newer' | 'file-newer' | 'diverged'
@@ -741,6 +790,7 @@ function draftFromFile(local: Conversation, incoming: Conversation): Conversatio
  * 换成文件里的；两边各自又聊过，文件里那份另存一份、标题加「（导入）」，两边的都留着（设置 X-4：
  * 以前同号的一律跳过，先导一次、旧电脑接着聊几天再导，后来聊的一条都过不来）。同一个文件导两次不会多出一份。
  * 新对话还有几个空位就导几个，先导最近改过的，放不下的数进 skipped，删掉一些后再导一次就能补上。
+ * 比的时候不看图片、视频换成的那句说明：同一条消息一边是说明、一边带着图，留带着图的那份，算一个「更新」。
  */
 export function mergeImportedConversations(state: ChatWorkspace, imported: Conversation[]): { state: ChatWorkspace } & ChatImportResult {
   const present = new Map(state.conversations.map((conversation) => [conversation.id, conversation]))
@@ -756,13 +806,19 @@ export function mergeImportedConversations(state: ChatWorkspace, imported: Conve
       const local = present.get(incoming.id)
       if (!local) { fresh.push(incoming); claimed.add(incoming.id); break }
       const relation = relationOf(local.messages, incoming.messages)
-      if (relation === 'same') {
-        const drafted = draftFromFile(local, incoming)
-        if (drafted) { replaced.set(local.id, drafted); claimed.add(local.id) }
+      if (relation === 'same' || relation === 'local-newer') {
+        // 以前不带作品导过一次的，这次带着作品：这台电脑上那几条说明换回图片、视频。
+        const restored = withMediaFrom(local.messages, incoming.messages)
+        const base = restored ? { ...local, messages: restored } : local
+        const next = (relation === 'same' ? draftFromFile(base, incoming) : null) ?? (restored ? base : null)
+        if (next) { replaced.set(local.id, next); claimed.add(local.id) }
         break
       }
-      if (relation === 'local-newer') break
-      if (relation === 'file-newer') { replaced.set(local.id, updatedFromFile(local, incoming)); claimed.add(local.id); break }
+      if (relation === 'file-newer') {
+        // 反过来，这台电脑上带着图、文件里是不带作品导出的那句说明：图留着。
+        const kept = withMediaFrom(incoming.messages, local.messages)
+        replaced.set(local.id, updatedFromFile(local, kept ? { ...incoming, messages: kept } : incoming)); claimed.add(local.id); break
+      }
       let copyId = importedCopyId(conversation.id, attempt)
       while (fileIds.has(copyId) || claimed.has(copyId) || copyId === state.draftConversation.id) copyId = importedCopyId(conversation.id, ++attempt)
       incoming = importedCopy(conversation, copyId)

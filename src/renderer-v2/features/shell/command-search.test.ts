@@ -108,6 +108,14 @@ describe('searchCommands', () => {
     for (const word of ['网络加速', '备份', '更新']) expect(searchCommands(word).some((item) => item.group === 'page' && settingsPageAlias(item.page) !== null), word).toBe(false)
   })
 
+  // 手机遥控 0.2.25 从设置 › 工具管理挪到左侧栏单独一页：老说法搜到的是这一页，设置里不再有那一行。
+  it('finds the phone remote page by the words the old settings card answered to', () => {
+    for (const word of ['飞书', '微信', '遥控', '手机遥控 Codex', 'ClawBot', '配对']) {
+      expect(searchCommands(word)[0], word).toMatchObject({ group: 'page', page: 'remote', label: '手机遥控' })
+      expect(searchCommands(word).some((item) => item.section === 'codex-remote'), word).toBe(false)
+    }
+  })
+
   // 网络加速 2026-10-30 下线（yoyo 回「下线改」）：那一组改叫「网络连接」，加速卡和「加速提醒」不在任何电脑上，
   // 搜「加速」「网络加速」都落不到它们身上。
   it('finds the network group by its new name and nothing of the retired acceleration', () => {

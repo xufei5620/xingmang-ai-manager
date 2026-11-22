@@ -176,7 +176,7 @@ describe('renderer-v2 v4 sidebar', () => {
     const markup = renderShell()
     const scroll = markup.slice(markup.indexOf('data-testid="sidebar-scroll"'), markup.indexOf('data-testid="sidebar-pinned"'))
     const order = [...scroll.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])
-    expect(order).toEqual(['home', 'chat', 'sessions', 'extensions', 'tutorial', 'health', 'feedback'])
+    expect(order).toEqual(['home', 'chat', 'sessions', 'remote', 'extensions', 'tutorial', 'health', 'feedback'])
     expect(scroll).toContain('<span>插件</span>')
     expect(scroll).not.toContain('v2-nav-group-label')
     expect(scroll).toContain('<hr class="v2-nav-separator" aria-hidden="true"/>')
@@ -307,7 +307,7 @@ describe('renderer-v2 sidebar pages per computer', () => {
 
   it('keeps every page when nothing says otherwise', () => {
     const markup = renderShell()
-    for (const id of ['home', 'chat', 'sessions', 'extensions', 'recharge', 'tutorial', 'health', 'feedback', 'settings']) expect(markup).toContain(`data-testid="nav-${id}"`)
+    for (const id of ['home', 'chat', 'sessions', 'remote', 'extensions', 'recharge', 'tutorial', 'health', 'feedback', 'settings']) expect(markup).toContain(`data-testid="nav-${id}"`)
     for (const id of ['featured', 'mcp', 'skills', 'plugins']) expect(markup).not.toContain(`data-testid="nav-${id}"`)
   })
 

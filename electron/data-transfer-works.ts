@@ -21,7 +21,8 @@ import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local
 //
 // 布局和作品库一样，编号也不变：视频分镜里存的是作品编号（xingmang-asset://<类型>/<编号> 按编号在作品库里找），
 // 放回新电脑同样的位置，分镜里的片段、镜头图、配乐就都接上了，作品库里也照样列出来（同 ai-output-location.ts
-// 搬老作品那一套）。对话里的图片、视频导出时仍换成一句说明（renderer-v2 chat/storage.ts 的 portableMessage），这次没动。
+// 搬老作品那一套）。对话里的图片、视频也一样：带作品导出时原样带着，导过来就照常显示（renderer-v2 chat/storage.ts 的
+// exportableConversations）；不带作品时才换成一句说明。
 //
 // 文件一个一个复制，一次 1 MB，不整个读进内存；导出、导入之前先看空间够不够。
 
