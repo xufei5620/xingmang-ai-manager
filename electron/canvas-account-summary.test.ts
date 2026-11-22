@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildCanvasAccountSummary, canvasAccountSummaryFreshMs, createCanvasAccountSummaryReader, maskCanvasAccountLabel } from './canvas-account-summary'
+import { buildCanvasAccountSummary, canvasAccountSummaryFreshMs, createCanvasAccountSummaryReader, freshCanvasBalanceUsd, maskCanvasAccountLabel } from './canvas-account-summary'
 
 const at = Date.parse('2026-11-10T03:00:00.000Z')
 
@@ -138,5 +138,31 @@ describe('canvas account summary reader', () => {
     const { read, readBalance, state } = fixture()
     readBalance.mockImplementation(async () => { state.account = null })
     await expect(read()).resolves.toBeNull()
+  })
+
+  // M19：手机上的「状态」只写金额、不写时间，读失败交回的旧数不能当成现在的余额给出去。
+  it('passes a balance read just now and drops one left over from a failed read', async () => {
+    const { read, readBalance, state } = fixture({ readAt: at - 60 * 60_000 })
+    readBalance.mockRejectedValueOnce(new Error('offline'))
+    const stale = await read()
+    expect(stale).toMatchObject({ balanceUsd: 12.4 })
+    expect(freshCanvasBalanceUsd(stale, state.clock)).toBeNull()
+    state.clock += canvasAccountSummaryFreshMs
+    const fresh = await read()
+    expect(fresh).toMatchObject({ balanceUsd: 12 })
+    expect(freshCanvasBalanceUsd(fresh, state.clock)).toBe(12)
+  })
+})
+
+// M19：手机上的「状态」只写金额、不写时间，读失败交回的旧数不能当成现在的余额给出去。
+describe('fresh canvas balance for the phone', () => {
+  it('gives nothing when there is no balance, no read time or a read time from the future', () => {
+    const summary = buildCanvasAccountSummary({ siteId: 'solov', username: 'yoyo123', balance: { quota: 6_200_000, quotaPerUnit: 500_000 }, balanceReadAt: at, subscriptionLabel: null })
+    expect(freshCanvasBalanceUsd(summary, at + 2 * canvasAccountSummaryFreshMs - 1)).toBe(12.4)
+    expect(freshCanvasBalanceUsd(summary, at + 2 * canvasAccountSummaryFreshMs)).toBeNull()
+    expect(freshCanvasBalanceUsd(summary, at - 1)).toBeNull()
+    expect(freshCanvasBalanceUsd({ ...summary, balanceUsd: null }, at)).toBeNull()
+    expect(freshCanvasBalanceUsd({ ...summary, readAt: null }, at)).toBeNull()
+    expect(freshCanvasBalanceUsd(null, at)).toBeNull()
   })
 })

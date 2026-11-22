@@ -54,6 +54,19 @@ export function buildCanvasAccountSummary(input: CanvasAccountSummaryInput): Can
   }
 }
 
+/**
+ * 手机遥控「状态」里那行余额（M19）：只给刚读到的。读失败时 summary 照旧交回上次读到的数，画布余额条旁边写着
+ * 读取时间，手机上却只有金额，一小时前的数看着就像现在的余额，所以超过 maxAgeMs 的不给，那一行不显示。
+ * 缺省比 reader 认的「不用再读」宽一倍：reader 刚判断完够新，交到这里再看钟已经过去一点了。
+ */
+export function freshCanvasBalanceUsd(summary: CanvasAccountSummary | null, now: number, maxAgeMs = 2 * canvasAccountSummaryFreshMs): number | null {
+  if (!summary || summary.balanceUsd === null || summary.readAt === null) return null
+  const readAt = Date.parse(summary.readAt)
+  if (!Number.isFinite(readAt)) return null
+  const age = now - readAt
+  return age >= 0 && age < maxAgeMs ? summary.balanceUsd : null
+}
+
 export interface CanvasAccountSummaryReaderOptions {
   /** Who is signed in now; null when nobody is. The key changes whenever the account does. */
   current(): { key: string; siteId: 'solov' | 'solov-api'; username: string | null } | null
