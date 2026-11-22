@@ -6011,6 +6011,29 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  describe('skills:discard-archives', () => {
+    it('removes the unpacked copies in the folder main chose and ignores whatever the renderer sends', async () => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-skill-archives-ipc-'))
+      try {
+        const unpacked = path.join(directory, '0b5f7c8e-1d2a-4c3b-9e8f-7a6b5c4d3e2f')
+        fs.mkdirSync(path.join(unpacked, 'pdf-helper'), { recursive: true })
+        fs.writeFileSync(path.join(unpacked, 'pdf-helper', 'SKILL.md'), '---\nname: pdf-helper\n---\n')
+        fs.writeFileSync(path.join(directory, 'keep.txt'), 'not ours')
+        register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { skillArchiveDirectory: directory })
+
+        await electronMocks.handlers.get('skills:discard-archives')!(trustedEvent(), '../../', os.homedir())
+
+        expect(fs.readdirSync(directory)).toEqual(['keep.txt'])
+      } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+    })
+
+    it('does nothing when archive import has no folder to unpack into', async () => {
+      register()
+
+      await expect(electronMocks.handlers.get('skills:discard-archives')!(trustedEvent())).resolves.toBeUndefined()
+    })
+  })
+
   // 同类对比 备选 5：「也装到别的工具」。界面只给名字，连接原样由主进程读出来，再走跟手填添加同一条路。
   describe('extensions:copy-mcp', () => {
     it('hands the connection read in the main process to Codex through the same add path, secrets included', async () => {

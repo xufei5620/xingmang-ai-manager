@@ -290,11 +290,26 @@ export function readSkillArchiveEntryData(archive: Buffer, entry: SkillArchiveEn
   return data
 }
 
+// 解压和清理在同一个临时文件夹上排队，一次只做一件：客户在解压的那一下关掉导入框，清理要等这次解完再删，
+// 不然清理先看了一眼空文件夹就走，刚解开的那份就一直留到下次开机。
+const archiveFolderQueues = new Map<string, Promise<void>>()
+
+function runInArchiveFolderOrder<T>(baseDirectory: string, work: () => Promise<T>): Promise<T> {
+  const key = path.resolve(baseDirectory)
+  const result = (archiveFolderQueues.get(key) ?? Promise.resolve()).then(work)
+  const settled = result.then(() => undefined, () => undefined)
+  archiveFolderQueues.set(key, settled)
+  void settled.then(() => {
+    if (archiveFolderQueues.get(key) === settled) archiveFolderQueues.delete(key)
+  })
+  return result
+}
+
 function centralDirectoryOffset(archive: Buffer): number {
   return archive.readUInt32LE(findEndOfCentralDirectory(archive) + 16)
 }
 
-// 上一次解开的只留到下一次：客户选了新的压缩包，旧的那份就不会再被导入了。只删星芒自己起名的那几个。
+// 只删星芒自己起名的那几个（randomUUID 的样子），文件夹里别的东西不碰。删不掉的留着，下次开机再删。
 async function removeEarlierExtractions(baseDirectory: string): Promise<void> {
   let children: string[]
   try {
@@ -309,10 +324,32 @@ async function removeEarlierExtractions(baseDirectory: string): Promise<void> {
 }
 
 /**
+ * 导入框用完了（导入成功关掉、取消、换了页面），或者开机时：把解开的临时文件夹全删掉。各家导入都是复制一份
+ * 进自己的技能文件夹，删了不影响已经导入的技能。还没有这个文件夹就什么都不做，不替它建一个。
+ */
+export async function discardSkillArchiveExtractions(baseDirectory: string): Promise<void> {
+  return runInArchiveFolderOrder(baseDirectory, async () => {
+    try {
+      await fs.promises.lstat(baseDirectory)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    ensureSafeDataDirectory(baseDirectory, '技能压缩包临时文件夹')
+    await removeEarlierExtractions(baseDirectory)
+  })
+}
+
+/**
  * 读客户选的压缩包（最多 50 MB，单链接普通文件），查完、解到 baseDirectory 下新起的一个文件夹里，
- * 交出技能那一层的位置。解到一半出错就把这次的整个文件夹删掉。
+ * 交出技能那一层的位置。解到一半出错就把这次的整个文件夹删掉；之前解开的那份先删掉，客户换了压缩包，
+ * 旧的不会再被导入。这一份等导入框用完，由 discardSkillArchiveExtractions 删。
  */
 export async function extractSkillArchive(archivePath: string, baseDirectory: string): Promise<SkillArchiveExtraction> {
+  return runInArchiveFolderOrder(baseDirectory, () => unpackSkillArchive(archivePath, baseDirectory))
+}
+
+async function unpackSkillArchive(archivePath: string, baseDirectory: string): Promise<SkillArchiveExtraction> {
   const label = '技能压缩包'
   const archiveName = path.basename(archivePath)
   let archiveStats: fs.Stats
