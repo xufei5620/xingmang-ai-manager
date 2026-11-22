@@ -749,6 +749,39 @@ describe('codex-remote-feishu send retries', () => {
     await channel.stop()
   })
 
+  // M14：电脑上关了遥控，正等着重发的那条不再发（手机上已经收到「已关闭」）；之后交给它的（道别那句）照常发。
+  it('drops a message that is waiting to be sent again once the remote is being closed, and still sends the next one', async () => {
+    let sends = 0
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/im/v1/messages')) {
+        sends += 1
+        if (sends === 1) throw new TypeError('fetch failed')
+      }
+      return defaultRespond(url)
+    })
+    let wake!: () => void
+    const sleeping = new Promise<void>((resolve) => { wake = resolve })
+    let asleep!: () => void
+    const sleepStarted = new Promise<void>((resolve) => { asleep = resolve })
+    const channel = await startChannel(h, {
+      sleep: async () => {
+        asleep()
+        await sleeping
+      },
+    })
+    const pending = channel.send(peer, { kind: 'text', text: '做完了' })
+    await sleepStarted
+    channel.cancelPendingSends?.()
+    await channel.send(peer, { kind: 'text', text: '手机遥控已在电脑上关闭。' })
+    wake()
+    await expect(pending).rejects.toThrow('飞书遥控已关闭')
+    const bodies = sendBodies(h)
+    expect(bodies).toHaveLength(2)
+    expect(bodies[1]).toMatchObject({ receive_id: 'ou_alice', content: '{"text":"手机遥控已在电脑上关闭。"}' })
+    expect(h.logs).toContain('feishu.send-cancelled')
+    await channel.stop()
+  })
+
   it('gives up after two more tries and says it could not reach Feishu', async () => {
     const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
       if (url.includes('/im/v1/messages')) throw new TypeError('fetch failed')

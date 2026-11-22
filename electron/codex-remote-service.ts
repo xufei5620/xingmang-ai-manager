@@ -1007,6 +1007,11 @@ interface ChannelRuntime {
    */
   handoff: Promise<void>
   outbox: Promise<void>
+  /**
+   * 关遥控时加一（M14）：排进发件队时记下的这个数跟轮到它时不一样，就是关之前排的，不再发。不加这一道，
+   * 电脑上已经关了、手机也收到「已关闭」，前面排着的回答、进度卡还会一条条发出去。
+   */
+  outboxEpoch: number
   threadId: string | null
   /**
    * 这份对话现在用的是「手机端使用的模型」单独选的哪个；null = 跟电脑上的 Codex 一样。只在 threadId 有值时算数：
@@ -1106,6 +1111,7 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     inboxExceptImages: Promise.resolve(),
     handoff: Promise.resolve(),
     outbox: Promise.resolve(),
+    outboxEpoch: 0,
     threadId: null,
     threadModel: null,
     threadPermission: 'default',
@@ -1182,6 +1188,13 @@ export function remoteChannelsReadyToEnable(snapshot: Pick<CodexRemoteSnapshot, 
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
+}
+
+/** 排在发件队里、轮到时遥控已经关过的那条（M14）：不发，按没发出去交回。 */
+class RemoteSendDroppedError extends Error {
+  constructor() {
+    super('remote channel closed before this message was sent')
+  }
 }
 
 export class CodexRemoteService {
@@ -2160,11 +2173,14 @@ export class CodexRemoteService {
     const adapter = runtime.adapter
     runtime.adapter = null
     runtime.status = { state: 'stopped' }
-    if (!adapter) return
+    if (adapter) await this.stopDetachedAdapter(runtime.id, adapter)
+  }
+
+  private async stopDetachedAdapter(channel: RemoteChannelId, adapter: RemoteChannelAdapter): Promise<void> {
     try {
       await adapter.stop()
     } catch {
-      this.options.log('warn', 'remote.channel-stop-failed', { channel: runtime.id })
+      this.options.log('warn', 'remote.channel-stop-failed', { channel })
     }
   }
 
@@ -2180,20 +2196,30 @@ export class CodexRemoteService {
     if (runtime.idleTimer) clearTimeout(runtime.idleTimer)
     runtime.idleTimer = null
     await this.abandonTurn(runtime)
-    if (wasEnabled && farewell && runtime.adapter) {
-      const peer = runtime.peer ?? (await this.boundPeer(runtime.id))
-      if (peer) {
-        const sent = Promise.resolve(farewell).then((text) => this.sendText(runtime, text, peer))
-        await Promise.race([sent, new Promise((resolve) => setTimeout(resolve, shutdownSendTimeoutMs).unref?.())])
-      }
-    }
-    await this.stopAdapter(runtime)
+    // 关了就一条普通消息都不再发（M14）：连接当场摘下，之后谁想发都找不到它；排在发件队里还没轮到的作废；
+    // 已经交给连接、正等着重发的也不再发。道别那句不进发件队，不用等前面那些，直接交给要关的这份连接。
+    // 道别发完或者到点以后再停连接；这一会儿电脑上又打开了，开的是新的一份，这里只停旧的、不碰新的。
+    const adapter = runtime.adapter
+    runtime.adapter = null
+    runtime.status = { state: 'stopped' }
+    runtime.outboxEpoch += 1
+    runtime.outbox = Promise.resolve()
+    adapter?.cancelPendingSends?.()
+    const peer = wasEnabled && farewell && adapter ? runtime.peer ?? (await this.boundPeer(runtime.id)) : null
+    const replyContext = runtime.replyContext
     runtime.peer = null
     runtime.replyContext = undefined
     runtime.undeliveredAnswer = null
     runtime.answerResend = null
     this.dropThread(runtime)
     this.dropImages(runtime)
+    if (adapter && farewell && peer) {
+      const sent = Promise.resolve(farewell).then((text) => this.sendFarewell(runtime.id, adapter, text, peer, replyContext))
+      await Promise.race([sent, new Promise((resolve) => setTimeout(resolve, shutdownSendTimeoutMs).unref?.())])
+      // 到点还没发出去的道别也到此为止：不然它晚几秒补发出去，排在这之后又打开时那句「已打开」后面，手机上看着像又关了。
+      adapter.cancelPendingSends?.()
+    }
+    if (adapter) await this.stopDetachedAdapter(runtime.id, adapter)
     if (wasEnabled) this.options.log('info', 'remote.channel-stopped', { channel: runtime.id })
     if (!remoteChannelIds.some((id) => this.runtimes[id].enabled)) {
       this.codexStartFailed = false
@@ -2481,6 +2507,25 @@ export class CodexRemoteService {
     return { secrets: this.secrets, homeDirectory: this.options.homeDirectory, platform: this.platform }
   }
 
+  /**
+   * 排进这个渠道的发件队，一条发完（或失败）才轮到下一条。轮到时遥控已经关过（M14），就不发了，按失败交回。
+   */
+  private enqueueOutbound<T>(runtime: ChannelRuntime, send: () => Promise<T>): Promise<T> {
+    const epoch = runtime.outboxEpoch
+    const next = runtime.outbox.then(() => {
+      if (runtime.outboxEpoch !== epoch) throw new RemoteSendDroppedError()
+      return send()
+    })
+    runtime.outbox = next.then(() => undefined, () => undefined)
+    return next
+  }
+
+  private noteSendFailed(channel: RemoteChannelId, kind: RemoteOutbound['kind'], error: unknown): never {
+    if (error instanceof RemoteSendDroppedError) this.options.log('info', 'remote.send-dropped', { channel, kind })
+    else this.options.log('warn', 'remote.send-failed', { channel, kind })
+    throw new Error('send failed')
+  }
+
   /** replyContext 传 null 是不带平台句柄：回的不是绑定的人时，不能把他的句柄拿给别人用。 */
   private deliver(
     runtime: ChannelRuntime,
@@ -2490,12 +2535,8 @@ export class CodexRemoteService {
   ): Promise<void> {
     const adapter = runtime.adapter
     if (!adapter) return Promise.resolve()
-    const next = runtime.outbox.then(() => adapter.send(peer, message, replyContext ?? undefined))
-    runtime.outbox = next.catch(() => undefined)
-    return next.catch(() => {
-      this.options.log('warn', 'remote.send-failed', { channel: runtime.id, kind: message.kind })
-      throw new Error('send failed')
-    })
+    return this.enqueueOutbound(runtime, () => adapter.send(peer, message, replyContext ?? undefined))
+      .catch((error: unknown) => this.noteSendFailed(runtime.id, message.kind, error))
   }
 
   /** 审批卡走能改样子的那条路（YK-8），跟文字排在同一条发件队里，交回卡片编号。 */
@@ -2505,12 +2546,8 @@ export class CodexRemoteService {
     peer: RemotePeer,
     message: RemoteOutboundApproval,
   ): Promise<string> {
-    const next = runtime.outbox.then(() => adapter.sendApproval(peer, message))
-    runtime.outbox = next.then(() => undefined, () => undefined)
-    return next.catch(() => {
-      this.options.log('warn', 'remote.send-failed', { channel: runtime.id, kind: message.kind })
-      throw new Error('send failed')
-    })
+    return this.enqueueOutbound(runtime, () => adapter.sendApproval(peer, message))
+      .catch((error: unknown) => this.noteSendFailed(runtime.id, message.kind, error))
   }
 
   /**
@@ -2553,6 +2590,28 @@ export class CodexRemoteService {
       }
     }
     return true
+  }
+
+  /**
+   * 关遥控那句道别（M14）：这时连接已经从渠道上摘下，发件队也清过，直接交给要关的这份连接，不排在关之前那些后面。
+   */
+  private async sendFarewell(
+    channel: RemoteChannelId,
+    adapter: RemoteChannelAdapter,
+    text: string,
+    peer: RemotePeer,
+    replyContext: string | undefined,
+  ): Promise<void> {
+    await this.refreshSecrets()
+    const chunks = splitRemoteText(redactRemoteText(text, this.redaction()), adapter.capabilities.maxTextLength, maxReplyChunks)
+    for (const chunk of chunks) {
+      try {
+        await adapter.send(peer, { kind: 'text', text: chunk }, replyContext)
+      } catch {
+        this.options.log('warn', 'remote.send-failed', { channel, kind: 'text' })
+        return
+      }
+    }
   }
 
   /**
@@ -3293,9 +3352,7 @@ export class CodexRemoteService {
         return
       }
       // 第一张卡跟文字排在同一条发件队里：排在「收到」后面、最后的回答前面。
-      const sent = runtime.outbox.then(() => adapter.sendProgress(peer, card))
-      runtime.outbox = sent.then(() => undefined, () => undefined)
-      progress.handle = await sent
+      progress.handle = await this.enqueueOutbound(runtime, () => adapter.sendProgress(peer, card))
     })
   }
 

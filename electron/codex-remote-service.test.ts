@@ -229,6 +229,10 @@ class FakeChannel implements RemoteChannelAdapter {
   readonly failed: RemoteOutbound[] = []
   /** 设了就每一条都等它好了才发：模拟发到一半的那一会儿。 */
   gate: Promise<void> | null = null
+  /** 接下来的几次发送各等一道：第一次等 holds[0]，第二次等 holds[1]……没配到的照常发（M14）。 */
+  readonly holds: Array<Promise<void>> = []
+  /** 停连接、让还没发出去的别发了、发出去一条，按先后记下（M14）。 */
+  readonly events: string[] = []
   private readonly waiters: Array<{ done: () => boolean; resolve: () => void }> = []
 
   async start(handlers: RemoteChannelHandlers): Promise<void> {
@@ -238,9 +242,16 @@ class FakeChannel implements RemoteChannelAdapter {
 
   async stop(): Promise<void> {
     this.stopped += 1
+    this.events.push('stop')
+  }
+
+  cancelPendingSends(): void {
+    this.events.push('cancel')
   }
 
   async send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string): Promise<void> {
+    const hold = this.holds.shift()
+    if (hold) await hold
     if (this.gate) await this.gate
     if (this.offline) {
       this.failed.push(message)
@@ -248,6 +259,7 @@ class FakeChannel implements RemoteChannelAdapter {
       throw new Error('无法连接飞书，请检查网络')
     }
     this.sent.push({ peer, message, replyContext })
+    this.events.push(`send:${message.text}`)
     this.wakeWaiters()
   }
 
@@ -3564,6 +3576,87 @@ describe('codex-remote-service permission approvals', () => {
       permissions: { network: { enabled: true }, fileSystem: { read: null, write: [out] } },
       scope: 'turn',
     })
+  })
+})
+
+// M14：电脑上关了遥控，手机上收到「已关闭」以后不能再冒出别的消息；道别那句不排在它们后面；关了马上再开也不等它们。
+describe('codex-remote-service closing while messages are still waiting to go out', () => {
+  const closed = '手机遥控已在电脑上关闭。'
+
+  /**
+   * 手机上发「状态」，那句回复卡在发的半路（第一道闸）；Codex 这时做完了，回答排在它后面。交回放行那道闸的函数。
+   */
+  async function answerQueuedBehindStatus(s: Setup, channel: FakeChannel): Promise<() => void> {
+    const codex = await prompted(s, channel)
+    await channel.sentUntil(() => channel.texts().includes('已收到，Codex 开始处理。'))
+    channel.sent.length = 0
+    let release!: () => void
+    channel.holds.push(new Promise((resolve) => { release = resolve }))
+    channel.handlers?.onInbound(text(alice, '状态'))
+    await vi.waitFor(() => expect(channel.holds).toHaveLength(0))
+    codex.notify('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'a1', text: '测试都过了。', phase: 'final_answer' } })
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    expect((await s.service.snapshot()).lastRequest?.state).toBe('done')
+    // 回答交进发件队前要先等一下密钥（refreshSecrets），让它排进去。
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    return release
+  }
+
+  it('drops what was still queued, and says goodbye without waiting behind the message being sent', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const release = await answerQueuedBehindStatus(s, channel)
+    await s.service.setChannelEnabled('feishu', false)
+    // 道别没等卡住的那条：关的时候它已经发出去了。
+    expect(channel.texts()).toEqual([closed])
+    release()
+    await statusReplied(channel)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(channel.texts().some((line) => line.startsWith('测试都过了。'))).toBe(false)
+    expect(s.logs).toContain('remote.send-dropped')
+  })
+
+  it('tells the connection to give up on retries before saying goodbye, and again before stopping it', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    channel.events.length = 0
+    await s.service.setChannelEnabled('feishu', false)
+    expect(channel.events).toEqual(['cancel', `send:${closed}`, 'cancel', 'stop'])
+  })
+
+  it('opens again right away after closing, and never sends what was left from before', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const release = await answerQueuedBehindStatus(s, channel)
+    await s.service.setChannelEnabled('feishu', false)
+    await s.service.setChannelEnabled('feishu', true)
+    const reopened = s.channels[1]
+    // 新的这份连接不排在旧的那条卡住的后面。
+    await reopened.sentUntil(() => reopened.texts().some((line) => line.startsWith('电脑端已开启手机遥控')))
+    release()
+    await statusReplied(channel)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    for (const each of [channel, reopened]) {
+      expect(each.texts().some((line) => line.startsWith('测试都过了。'))).toBe(false)
+    }
+  })
+
+  it('leaves the connection opened again while saying goodbye alone, and only stops the old one', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    let release!: () => void
+    channel.holds.push(new Promise((resolve) => { release = resolve }))
+    const closing = s.service.setChannelEnabled('feishu', false)
+    await vi.waitFor(() => expect(channel.holds).toHaveLength(0))
+    await s.service.setChannelEnabled('feishu', true)
+    const reopened = s.channels[1]
+    release()
+    await closing
+    expect(channel.stopped).toBe(1)
+    expect(reopened.stopped).toBe(0)
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu.enabled).toBe(true)
+    expect(snapshot.channels.feishu.status.state).toBe('connected')
   })
 })
 

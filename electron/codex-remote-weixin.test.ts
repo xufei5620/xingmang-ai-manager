@@ -352,6 +352,32 @@ describe('createWeixinRemoteChannel', () => {
     expect(requests).toHaveLength(2)
   })
 
+  // M14：电脑上关了遥控，正等着重发的那条不再发；之后交给它的（道别那句）照常发。
+  it('drops a send that is waiting to retry once the remote is being closed, and still sends the next one', async () => {
+    const { dependencies, requests, logs } = harness(credentialText(), (_url, _body, index) => {
+      if (index === 0) throw new TypeError('fetch failed')
+      return jsonResponse({ ret: 0 })
+    })
+    let asleep!: () => void
+    const sleepStarted = new Promise<void>((resolve) => { asleep = resolve })
+    const channel = createWeixinRemoteChannel(dependencies, {
+      botAgent: 'XingmangAI/test',
+      sleep: (_milliseconds, signal) => new Promise((resolve) => {
+        asleep()
+        signal.addEventListener('abort', () => resolve(), { once: true })
+      }),
+    })
+    const pending = channel.send({ channel: 'weixin', userId: owner }, { kind: 'text', text: '做完了' }, 'ctx')
+    await sleepStarted
+    channel.cancelPendingSends?.()
+    await expect(pending).rejects.toThrow()
+    await channel.send({ channel: 'weixin', userId: owner }, { kind: 'text', text: '手机遥控已在电脑上关闭。' }, 'ctx')
+    expect(requests).toHaveLength(2)
+    const msg = requests[1].body.msg as { item_list: Array<{ text_item: { text: string } }> }
+    expect(msg.item_list[0].text_item.text).toBe('手机遥控已在电脑上关闭。')
+    expect(logs).toContain('weixin-send-cancelled')
+  })
+
   it('can be stopped repeatedly and before it ever started', async () => {
     const { dependencies } = harness(credentialText(), () => jsonResponse({ ret: 0 }))
     const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test' })
