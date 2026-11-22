@@ -55,7 +55,7 @@ import { listCanvasProjectAssetDirectories } from './canvas-project-store'
 import { createStorageUsageService } from './storage-usage-service'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
+import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, confirmWindowsRestartWork, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoLaunchInstallAttempt, undoQuitInstallAttempt, type LaunchInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
@@ -1567,6 +1567,8 @@ if (!hasSingleInstanceLock) {
     let requestRelaunch: (() => Promise<boolean>) | null = null
     // 更新页「确认重启安装」、托盘「重启并安装」前问那一句（主窗口建好后接上）；true = 照常装。
     let confirmUpdateInstall: (() => Promise<boolean>) | null = null
+    // 「立即重启」电脑前问「创作」里还有没有在做的事（D10 那一问，主窗口建好后接上）；true = 照常重启。
+    let confirmWindowsRestart: (() => Promise<boolean>) | null = null
     let requestMacUninstall: NonNullable<IpcRegistrationOptions['uninstallApp']> | null = null
     // 自动更新的落盘记录（见 auto-update-install.ts）。要在更新服务之前读好：下载完成
     // 那一刻就要用它认出「上次自动装过却没装上」的版本。
@@ -2774,6 +2776,7 @@ if (!hasSingleInstanceLock) {
       onAccountNotice: (notice) => { lastRendererNotice = noticeFingerprint(notice) },
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
       confirmUpdateInstall: () => confirmUpdateInstall?.() ?? Promise.resolve(true),
+      confirmWindowsRestart: () => confirmWindowsRestart?.() ?? Promise.resolve(true),
       ...(process.platform === 'darwin'
         ? {
             uninstallApp: (request: AppUninstallRequest, backupCliConfigs: () => Promise<void>) => (
@@ -3083,6 +3086,20 @@ if (!hasSingleInstanceLock) {
         // 头一问问着的时候主窗口没了（正在退出），跟上面一样照常装。
         confirmWork: async (prompt) => mainWindow.isDestroyed() || await confirmUnfinishedRestartWork(prompt),
         log: (event, message) => runtimeLog.log('info', 'updater', event, message),
+      })
+    }
+    // Node.js 装完、Codex 桌面端打不开那两个重启框的「立即重启」：重启电脑同样会停下聊天、视频剪辑、画布在做的事，
+    // 问的是同一句（D10）。点「等待完成」这次就不发重启，框留着，做完再点。
+    confirmWindowsRestart = async () => {
+      if (mainWindow.isDestroyed()) return true
+      return await confirmWindowsRestartWork({
+        queueBusy: () => {
+          const queue = systemService.inspectInstallationQueue()
+          return queue.activeKey !== null || queue.pendingKeys.length > 0
+        },
+        unfinishedWork: unfinishedRestartWork,
+        confirmWork: async (prompt) => mainWindow.isDestroyed() || await confirmUnfinishedRestartWork(prompt),
+        log: (event, message) => runtimeLog.log('info', 'maintenance', event, message),
       })
     }
     // 新版本在后台下好以后先跳框问要不要现在装，没装的 Mac 等电脑闲着时自己装（update-install-prompt.ts，#1380）。

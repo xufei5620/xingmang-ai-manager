@@ -338,7 +338,7 @@ const xingmangApi: XingmangApi = {
   chooseWorkspace: (options) => options === undefined ? invoke('chooseWorkspace') : invoke('chooseWorkspace', options),
   getRepositoryContext: () => invoke('getRepositoryContext'),
   installNodeRuntime: (request) => request === undefined ? invoke('installNodeRuntime') : invoke('installNodeRuntime', request),
-  restartWindows: () => invoke('restartWindows'),
+  restartWindows: (options) => options === undefined ? invoke('restartWindows') : invoke('restartWindows', options),
   installPythonRuntime: () => invoke('installPythonRuntime'),
   installGitRuntime: () => invoke('installGitRuntime'),
   installCli: (provider, version) => invoke('installCli', provider, version),

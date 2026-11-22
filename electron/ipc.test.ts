@@ -3105,6 +3105,37 @@ describe('registerIpcHandlers', () => {
     expect(updaterService.install).toHaveBeenCalledTimes(1)
   })
 
+  it('asks about running creative work before restarting the computer and keeps the dialog when the user waits', async () => {
+    // 0.2.25 复查第 11 条：重启框带 askIfWorking 来，「创作」里还有事在做时先问 D10 那一句，点了「等待完成」就这次不发重启。
+    const service = serviceStub()
+    const confirmWindowsRestart = vi.fn(async () => false)
+    const { runtimeLog } = register(service, undefined, undefined, undefined, undefined, undefined, undefined, { confirmWindowsRestart })
+    const restart = electronMocks.handlers.get('runtime:restart-windows')!
+    await expect(Promise.resolve(restart(trustedEvent(), { askIfWorking: true }))).resolves.toEqual({ postponed: true })
+    expect(service.restartWindows).not.toHaveBeenCalled()
+    const logged = vi.mocked(runtimeLog.log).mock.calls.filter(([, , event]) => event === 'runtime:restart-windows')
+    expect(logged).toEqual([['info', 'ipc', 'runtime:restart-windows', '还有任务没做完，这次没发重启', expect.any(Object)]])
+    // 点了「仍然重启」（或者根本没在做什么）照常发重启。
+    confirmWindowsRestart.mockResolvedValueOnce(true)
+    await expect(Promise.resolve(restart(trustedEvent(), { askIfWorking: true }))).resolves.toEqual({})
+    expect(service.restartWindows).toHaveBeenCalledTimes(1)
+  })
+
+  it('restarts the computer without asking when the caller does not ask, as the rollback UI does', async () => {
+    const service = serviceStub()
+    const confirmWindowsRestart = vi.fn(async () => false)
+    register(service, undefined, undefined, undefined, undefined, undefined, undefined, { confirmWindowsRestart })
+    const restart = electronMocks.handlers.get('runtime:restart-windows')!
+    await expect(Promise.resolve(restart(trustedEvent()))).resolves.toEqual({})
+    expect(confirmWindowsRestart).not.toHaveBeenCalled()
+    expect(service.restartWindows).toHaveBeenCalledTimes(1)
+    await expect(Promise.resolve(restart(trustedEvent(), { askIfWorking: 'yes' }))).rejects.toThrow('重启参数格式错误')
+    await expect(Promise.resolve(restart(trustedEvent(), { askIfWorking: true, force: true }))).rejects.toThrow('重启参数格式错误')
+    await expect(Promise.resolve(restart(trustedEvent(), 'now'))).rejects.toThrow('重启参数格式错误')
+    expect(confirmWindowsRestart).not.toHaveBeenCalled()
+    expect(service.restartWindows).toHaveBeenCalledTimes(1)
+  })
+
   it('refreshes only the network location through trusted IPC', async () => {
     const service = serviceStub()
     const location = {

@@ -217,6 +217,11 @@ export interface IpcRegistrationOptions {
    */
   confirmUpdateInstall?(): Promise<boolean>
   /**
+   * 「立即重启」电脑（带 askIfWorking）前问一句「创作」里还有没有会被停下的事（D10 那一问）：false = 客户点了
+   * 「等待完成」，这次不重启。不传 = 不问（测试与旧调用方）。
+   */
+  confirmWindowsRestart?(): Promise<boolean>
+  /**
    * Mac 上「卸载星芒」。backupCliConfigs 由这里给：备份要用本模块里的账号上下文，和
    * 「立即修复」同一份。不传 = 这台电脑不支持在星芒里卸载。
    */

@@ -60,6 +60,7 @@ export function ipcSuccessMessage(channel: IpcInvokeChannel, args: unknown[], re
   // 以为已经装好了，紧跟着的失败反而像是另一回事。
   if (channel === 'update:install' && isRecord(result) && result.postponed === true) return '还有工具在装，这次没装新版本'
   if (channel === 'update:install') return '已把新版本交给安装程序，装没装上看下一条更新状态'
+  if (channel === 'runtime:restart-windows' && isRecord(result) && result.postponed === true) return '还有任务没做完，这次没发重启'
   // 开机先摆的上次结果（已知13）只读了本机一个文件，没检测；写「检测完成」会让客服看反馈报告时
   // 以为这次已经检测过了，真的那轮卡住或没跑完就分不出来。
   if (readsCachedExternalClientsOnly(channel, args)) {
