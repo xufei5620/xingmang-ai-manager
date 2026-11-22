@@ -2371,13 +2371,13 @@ describe('diagnostics', () => {
     const git = report.items.find((item) => item.code === 'RUNTIME_GIT')
     const python = report.items.find((item) => item.code === 'RUNTIME_PYTHON')
     expect(git).toMatchObject({ state: 'warn', details: { installed: false } })
-    expect(git?.summary).toContain('macOS 自带的 git 只是个空壳')
+    expect(git?.summary).toContain('macOS 自带的 git 需先安装苹果的「命令行开发者工具」才能使用')
     expect(git?.summary).toContain('「安装 Git」')
     expect(git?.summary).not.toContain('终端')
     // PowerShell 那句只在 Windows 成立。
     expect(git?.summary).not.toContain('PowerShell')
     expect(python).toMatchObject({ state: 'warn' })
-    expect(python?.summary).toContain('macOS 自带的 python3 只是个空壳')
+    expect(python?.summary).toContain('macOS 自带的 python3 需先安装「命令行开发者工具」才能使用')
   })
 
   it('explains a pending Xcode license on the Git and Python rows without leaking the raw message', async () => {
@@ -2394,10 +2394,10 @@ describe('diagnostics', () => {
     const git = report.items.find((item) => item.code === 'RUNTIME_GIT')
     const python = report.items.find((item) => item.code === 'RUNTIME_PYTHON')
     expect(git).toMatchObject({ state: 'warn', details: { installed: false } })
-    expect(git?.summary).toContain('Xcode 装好后还没点过「同意」')
+    expect(git?.summary).toContain('Xcode 安装后尚未点击「同意」')
     expect(git?.summary).not.toContain('空壳')
     expect(python).toMatchObject({ state: 'warn' })
-    expect(python?.summary).toContain('Xcode 装好后还没点过「同意」')
+    expect(python?.summary).toContain('Xcode 安装后尚未点击「同意」')
     for (const summary of [git?.summary, python?.summary]) {
       expect(summary).not.toMatch(/sudo|xcodebuild|xcode-select/)
     }

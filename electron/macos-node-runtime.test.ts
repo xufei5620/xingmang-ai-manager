@@ -139,11 +139,11 @@ describe('macOS managed Node.js runtime', () => {
 
   it('says the network is the likely cause only when every source failed before the download finished', () => {
     expect(darwinNodeRuntimeFailureMessage([{ stage: 'network', detail: '国内镜像：fetch failed' }]))
-      .toMatch(/^Node\.js 没有下载成功，可能是网络不稳/)
+      .toMatch(/^Node\.js 下载失败，可能是网络不稳定/)
     expect(darwinNodeRuntimeFailureMessage([
       { stage: 'network', detail: '国内镜像：fetch failed' },
       { stage: 'verify', detail: 'Node.js 官方源：签名不对' },
-    ])).toMatch(/^Node\.js 没有准备好/)
+    ])).toMatch(/^Node\.js 准备失败/)
   })
 
   it.skipIf(process.platform === 'win32')('downloads, verifies and extracts into the product folder', async () => {
@@ -241,7 +241,7 @@ describe('macOS managed Node.js runtime', () => {
       environment: { HOME: home },
       dependencies: { fetch: network.fetch },
       darwin: { runProcess: processes.runProcess },
-    })).rejects.toThrow(/^Node\.js 没有准备好.*和官方校验值对不上/)
+    })).rejects.toThrow(/^Node\.js 准备失败.*与官方校验值不一致/)
     expect(network.requested).toEqual([
       `https://npmmirror.com/mirrors/node/${archiveFile}`,
       `https://nodejs.org/dist/${archiveFile}`,
@@ -264,7 +264,7 @@ describe('macOS managed Node.js runtime', () => {
       environment: { HOME: home },
       dependencies: { fetch: fakeNetwork().fetch },
       darwin: { runProcess: fakeProcesses({ signatureExitCode: 3 }).runProcess, pinnedRelease: () => pinned },
-    })).rejects.toThrow(/^Node\.js 没有准备好.*没有通过官方签名核对/)
+    })).rejects.toThrow(/^Node\.js 准备失败.*未通过官方签名核对/)
     expect(fs.readFileSync(path.join(target, 'bin', 'node'), 'utf8')).toBe('old')
     expect(fs.readdirSync(path.dirname(target))).toEqual(['node'])
   })
@@ -277,7 +277,7 @@ describe('macOS managed Node.js runtime', () => {
       environment: { HOME: home },
       dependencies: { fetch: fakeNetwork().fetch },
       darwin: { runProcess: fakeProcesses({ reportedVersion: 'v18.0.0' }).runProcess, pinnedRelease: () => pinned },
-    })).rejects.toThrow('版本和下载的不一致')
+    })).rejects.toThrow('版本与下载版本不一致')
     expect(fs.existsSync(managedNodeRuntimeRoot({ HOME: home }, 'darwin'))).toBe(false)
   })
 

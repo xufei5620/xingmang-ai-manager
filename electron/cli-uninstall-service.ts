@@ -479,9 +479,9 @@ export function createCliUninstallService(context: ServiceContext, dependencies:
             // 窗口里的字说中文（已知33）；中间卸载程序自己吐的几行还是英文。
             text: {
               title: `星芒：卸载 ${name}`,
-              running: `正在卸载 ${name}，请稍等，别关这个窗口。`,
-              succeeded: '卸载完成。现在可以关掉这个窗口，回星芒点「重新检测」。',
-              failed: '卸载没有完成（错误代码 {code}）。关掉这个窗口，回星芒点「重新检测」看看；还不行请找客服。',
+              running: `正在卸载 ${name}，请稍候，请勿关闭此窗口。`,
+              succeeded: '卸载完成。现在可以关闭此窗口，返回星芒点击「重新检测」。',
+              failed: '卸载未完成（错误代码 {code}）。请关闭此窗口，返回星芒点击「重新检测」；如仍未卸载，请联系客服。',
             },
             machinePaths: resolveWindowsMachinePaths(),
           })

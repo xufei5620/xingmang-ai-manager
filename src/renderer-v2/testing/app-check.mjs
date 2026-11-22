@@ -3592,7 +3592,7 @@ test('the home runtime card installs a missing Git on Windows instead of sending
     await page.getByTestId('page-home').waitFor()
     const hint = page.getByTestId('home-runtime-git-hint')
     await hint.waitFor()
-    assert.equal(await hint.innerText(), '没有 Git 的话，Claude Code 的部分功能和一些技能、插件会用不了。点「安装 Git」自动装好，不用管理员权限。')
+    assert.equal(await hint.innerText(), '缺少 Git 时，Claude Code 的部分功能及部分技能、插件将无法使用。请点击「安装 Git」自动安装，无需管理员权限。')
     assert.doesNotMatch(await hint.innerText(), /PowerShell|bash|PATH|git-scm/)
     const button = page.getByTestId('home-runtime-git')
     assert.equal((await button.innerText()).trim(), '安装 Git')
@@ -3623,10 +3623,10 @@ test('a Mac customer who cancels the Apple installer is told so and can press In
     await page.getByTestId('page-home').waitFor()
     const hint = page.getByTestId('home-runtime-git-hint')
     await hint.waitFor()
-    assert.equal(await hint.innerText(), '没有 Git 的话，装官方插件市场和部分技能、插件会用不了。点「安装 Git」，在苹果弹出的窗口里点“安装”。')
+    assert.equal(await hint.innerText(), '缺少 Git 时，将无法安装官方插件市场，部分技能、插件也将无法使用。请点击「安装 Git」，并在系统弹出的窗口中点击“安装”。')
     assert.doesNotMatch(await hint.innerText(), /终端|xcode-select|brew/)
     await page.getByTestId('home-runtime-git').click()
-    await page.getByText('没有装 Git。需要时再点一次「安装 Git」就行。').first().waitFor()
+    await page.getByText('未安装 Git。如有需要，请再次点击「安装 Git」。').first().waitFor()
     await page.getByTestId('home-runtime-git').waitFor()
     assert.equal(await page.getByTestId('home-runtime-git').isEnabled(), true)
     await clean(page)
@@ -5477,7 +5477,7 @@ test('an updated tool row stays on the running install until the rescan lands', 
 })
 
 // 第四十批 C：装完以后同步 Key、重新检测那几秒，那一行的「取消」还亮着。主进程这时已经不登记这次安装了，
-// 再去问它只会回「这个工具当前没有正在进行的安装。」，可这一行明明还在走：直接说这一步停不下来。
+// 再去问它只会回「该工具当前没有正在进行的安装。」，可这一行明明还在走：直接说这一步停不下来。
 test('cancelling during the key sync after an install says the step can no longer be cancelled', async () => {
   const page = await open('cliUpdate=1')
   try {

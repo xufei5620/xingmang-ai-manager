@@ -102,7 +102,7 @@ describe('provider launch service', () => {
     })
 
     await expect(service.launchProvider('codex', workspace)).rejects.toThrow(
-      '未能打开 Codex CLI：这一份不是星芒装的，星芒核对不了它是不是官方原版，为了安全没有打开。到首页点「使用星芒安装」，装好就能打开。',
+      '未能打开 Codex CLI：该工具并非由星芒安装，星芒无法核对其是否为官方原版，为安全起见未打开。请在首页点击「使用星芒安装」，安装完成后即可打开。',
     )
     expect(resolveCliCommand).toHaveBeenCalledOnce()
   })

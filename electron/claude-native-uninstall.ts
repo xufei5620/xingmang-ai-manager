@@ -408,7 +408,7 @@ export function buildClaudeRetainedVersionFilesReason(
   if (retainedCommandFiles.length > 0) {
     // 改名后的文件名是一串乱码，路径也在下面的命令里，这里只说几个、为什么、先做什么。
     const count = retainedCommandFiles.length + retainedVersionFiles.length
-    return `Claude Code 已卸载，但还有 ${count} 个程序文件没能删掉，多半是 Claude Code 还开着。先关掉所有 Claude Code 窗口，再清理这些文件；你的 Claude Code 设置和会话记录不受影响。`
+    return `Claude Code 已卸载，但仍有 ${count} 个程序文件未能删除，可能是 Claude Code 仍在运行。请先关闭所有 Claude Code 窗口，再清理这些文件；您的 Claude Code 设置和会话记录不受影响。`
   }
   if (retainedVersionFiles.length === 0) return null
   const location = platform === 'win32'
@@ -416,5 +416,5 @@ export function buildClaudeRetainedVersionFilesReason(
     : '~/.local/share/claude/versions'
   const names = retainedVersionFiles.slice(0, 5).map((filePath) => path.basename(filePath))
   const listed = retainedVersionFiles.length > 5 ? `${names.join('、')} 等` : names.join('、')
-  return `Claude Code 已卸载，但 ${location} 里有 ${retainedVersionFiles.length} 个旧版本程序文件没能自动删除（${listed}），可能还有 Claude Code 在运行。关闭所有 Claude Code 窗口后，可以用下方命令删除它们；你的 Claude Code 设置和会话记录不受影响。`
+  return `Claude Code 已卸载，但 ${location} 里有 ${retainedVersionFiles.length} 个旧版本程序文件未能自动删除（${listed}），可能仍有 Claude Code 在运行。关闭所有 Claude Code 窗口后，可使用下方命令删除；您的 Claude Code 设置和会话记录不受影响。`
 }

@@ -135,7 +135,7 @@ describe('refusing an npm install over a CLI installed another way', () => {
 
     const error = await service.installCli('claude', target).catch((reason: unknown) => reason)
 
-    expect(String(error)).toContain('不是通过本工具安装的，这里不会再另装一份')
+    expect(String(error)).toContain('并非通过本工具安装，此处不会重复安装')
     expect(target.send).not.toHaveBeenCalled()
     expect(readDiskSpace).not.toHaveBeenCalled()
   })

@@ -134,16 +134,16 @@ export async function isCommandLineToolsShimBacked(
 }
 
 /**
- * 检查页那一行的原因句，句末不带标点（同 git-runtime.ts 的口径）。「空壳」是
- * 说给客户听的：他在访达里能看见 /usr/bin/git，却被告知没装，得说清为什么。
+ * 检查页那一行的原因句，句末不带标点（同 git-runtime.ts 的口径）。要说清为什么得先装
+ * 「命令行开发者工具」：客户在访达里能看见 /usr/bin/git，却被告知没装。
  */
 export function commandLineToolsShimNotice(command: 'git' | 'python3'): string {
   // git 那一句指向首页的「安装 Git」按钮：点了由本软件弹出苹果的安装窗口（第十六批 2），
   // 不用再叫客户开终端。python3 没有按钮，装法照旧。
   if (command === 'git') {
-    return 'macOS 自带的 git 只是个空壳，要先装苹果的「命令行开发者工具」才能用：点首页「运行环境」里的「安装 Git」，Mac 会弹出苹果自己的安装窗口'
+    return 'macOS 自带的 git 需先安装苹果的「命令行开发者工具」才能使用：请点击首页「运行环境」中的「安装 Git」，Mac 将弹出苹果的安装窗口'
   }
-  return `macOS 自带的 ${command} 只是个空壳，要先装「命令行开发者工具」才能用：在「终端」里运行 xcode-select --install，或者用 Homebrew 另装一份`
+  return `macOS 自带的 ${command} 需先安装「命令行开发者工具」才能使用：请在「终端」中运行 xcode-select --install，或通过 Homebrew 另行安装`
 }
 
 /**
@@ -153,5 +153,5 @@ export function commandLineToolsShimNotice(command: 'git' | 'python3'): string {
  */
 export function xcodeLicensePendingNotice(command: 'git' | 'python3'): string {
   const name = command === 'git' ? 'Git' : 'Python'
-  return `这台 Mac 上的 Xcode 装好后还没点过「同意」，系统自带的 ${name} 暂时用不了：打开一次 Xcode，在弹出的窗口里点「同意」，或者另装一份 ${name}`
+  return `本机的 Xcode 安装后尚未点击「同意」，系统自带的 ${name} 暂时无法使用：请打开一次 Xcode，在弹出的窗口中点击「同意」，或另行安装 ${name}`
 }

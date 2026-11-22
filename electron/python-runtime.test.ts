@@ -326,7 +326,7 @@ describe.runIf(process.platform === 'win32')('Python 3.12 installation flow', ()
       },
     })).resolves.toMatchObject({ method: 'exe', source: 'python-org' })
     expect(ranges).toEqual([null, `bytes=${cut}-`])
-    expect(messages).toContain('网络断了一下，正在接着下载 Python 3.12.9 官方安装包')
+    expect(messages).toContain('网络曾短暂中断，正在继续下载 Python 3.12.9 官方安装包')
   })
 
   // winget 自己下载、不走下载专用线路，退到 python.org 时才借，下完就还（第二十八批 D）。

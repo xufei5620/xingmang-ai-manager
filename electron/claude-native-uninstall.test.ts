@@ -401,10 +401,10 @@ describe('Claude Code native uninstall', () => {
     const renamed = 'C:\\Users\\a\\.local\\bin\\.claude.exe-0f0e0d0c-0000-4000-8000-000000000000.removing'
     const version = 'C:\\Users\\a\\.local\\share\\claude\\versions\\2.1.3'
     expect(buildClaudeRetainedVersionFilesReason([], 'win32', [renamed])).toBe(
-      'Claude Code 已卸载，但还有 1 个程序文件没能删掉，多半是 Claude Code 还开着。先关掉所有 Claude Code 窗口，再清理这些文件；你的 Claude Code 设置和会话记录不受影响。',
+      'Claude Code 已卸载，但仍有 1 个程序文件未能删除，可能是 Claude Code 仍在运行。请先关闭所有 Claude Code 窗口，再清理这些文件；您的 Claude Code 设置和会话记录不受影响。',
     )
     const both = buildClaudeRetainedVersionFilesReason([version], 'win32', [renamed])
-    expect(both).toContain('还有 2 个程序文件没能删掉')
+    expect(both).toContain('仍有 2 个程序文件未能删除')
     expect(both).not.toContain('.removing')
     expect(buildClaudeRetainedVersionFilesCommand([renamed, version], 'win32')).toBe(
       `Remove-Item -LiteralPath '${renamed}' -Force; Remove-Item -LiteralPath '${version}' -Force`,

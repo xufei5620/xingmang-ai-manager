@@ -872,7 +872,7 @@ const methods = {
   installGitRuntime: async () => {
     if (query.has('gitInstallFail')) throw new Error('Git 没装上。国内镜像：HTTP 404；Git 官方源：下载超时')
     // Mac 上客户在苹果的安装窗口里点了「取消」（第十六批 2）。
-    if (query.has('gitCancel')) return { installed: false, action: 'cancelled' as const, source: null, version: null, architecture: 'arm64' as const, pathRefreshRequired: false, message: '没有装 Git。需要时再点一次「安装 Git」就行。' }
+    if (query.has('gitCancel')) return { installed: false, action: 'cancelled' as const, source: null, version: null, architecture: 'arm64' as const, pathRefreshRequired: false, message: '未安装 Git。如有需要，请再次点击「安装 Git」。' }
     system.runtime.git = { ...system.runtime.git, installed: true, version: '2.55.0', path: 'C:\\Users\\Fixture\\AppData\\Local\\Programs\\Git\\cmd\\git.exe' }
     return { installed: true as const, action: 'installed' as const, source: 'npmmirror' as const, version: '2.55.0.5', architecture: 'x64' as const, pathRefreshRequired: true }
   },

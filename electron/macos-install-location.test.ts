@@ -105,7 +105,7 @@ describe('buildMacosInstallLocationNotice', () => {
       expect(notice.choices).toEqual(['move', 'continue', 'quit'])
       expect(notice.choices[notice.defaultId]).toBe('move')
       expect(notice.choices[notice.cancelId]).toBe('quit')
-      expect(notice.detail).toContain('星芒会自己搬过去并重新打开')
+      expect(notice.detail).toContain('星芒将自动移动并重新打开')
     }
   })
 
@@ -149,8 +149,8 @@ describe('moveMacosAppToApplications', () => {
 describe('buildMacosMoveFailureNotice', () => {
   it('explains a cancelled password prompt and falls back to dragging by hand', () => {
     const notice = buildMacosMoveFailureNotice('translocated', { kind: 'cancelled', conflict: null })
-    expect(notice.message).toBe('没能自动移动（输入电脑密码的窗口被取消了）。')
-    expect(notice.detail).toContain('请把「星芒AI管理工具」拖到「应用程序」文件夹后再打开。')
+    expect(notice.message).toBe('自动移动失败（已取消输入电脑密码）。')
+    expect(notice.detail).toContain('请将「星芒AI管理工具」拖到「应用程序」文件夹后再打开。')
   })
 
   it('never puts the English diagnostic on screen', () => {
@@ -158,7 +158,7 @@ describe('buildMacosMoveFailureNotice', () => {
     for (const location of ['mounted-volume', 'translocated'] as const) {
       const notice = buildMacosMoveFailureNotice(location, outcome)
       expect(`${notice.message}${notice.detail}`).not.toContain('Failed')
-      expect(notice.message).toContain('没能自动移动')
+      expect(notice.message).toContain('自动移动失败')
     }
   })
 

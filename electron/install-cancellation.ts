@@ -48,7 +48,7 @@ export interface InstallCancellationHandle {
   release(): void
 }
 
-const noActiveInstallReason = '这个工具当前没有正在进行的安装。'
+const noActiveInstallReason = '该工具当前没有正在进行的安装。'
 
 class RegisteredCancellation implements InstallCancellationHandle {
   private readonly controller = new AbortController()

@@ -333,7 +333,7 @@ describe('the Git step that follows a Claude Code install on Windows', () => {
     await gitStarted.promise
 
     // 那一行还在写「正在安装 Git」：不能回「没有正在进行的安装」，也不能真把 Git 停掉。
-    expect(registry.cancel(key)).toEqual({ cancelled: false, reason: '这一步已经不能取消了。' })
+    expect(registry.cancel(key)).toEqual({ cancelled: false, reason: '此步骤已无法取消。' })
     expect(cancellation.cancelled).toBe(false)
 
     git.resolve()

@@ -74,7 +74,7 @@ describe('runtime install service', () => {
     let release!: () => void
     const held = context.installationQueue.enqueue('cli:install:claude', () => new Promise<void>((resolve) => { release = resolve }))
 
-    await expect(service.restartWindows()).rejects.toThrow('还有安装、卸载或打开工具的任务在进行')
+    await expect(service.restartWindows()).rejects.toThrow('仍有安装、卸载或打开工具的任务正在进行')
     expect(executeCommand).not.toHaveBeenCalled()
     release()
     await held

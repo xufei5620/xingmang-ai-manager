@@ -26,7 +26,7 @@ describe('npm failure sentences', () => {
     const official = npmSourceFailure('命令执行失败（退出码 1）：npm-cli.js（ETIMEDOUT；request to https://registry.npmjs.org/x failed）', { commandFailed: true })
     const mirror = npmSourceFailure('命令执行失败（退出码 1）：npm-cli.js（E404；404 Not Found - GET https://registry.npmmirror.com/x）', { commandFailed: true })
     expect(npmFailureSentence('Claude Code 安装失败：', [{ label: 'npm 官方源', reason: official }, { label: '国内 npm 镜像', reason: mirror }]))
-      .toBe('Claude Code 安装失败：npm 官方源：下载太久没有完成，超时中止；国内 npm 镜像：找不到要装的版本（错误码 ETIMEDOUT、E404）。过一会儿再点「重试」；一直这样请找客服。')
+      .toBe('Claude Code 安装失败：npm 官方源：下载长时间未完成，已超时中止；国内 npm 镜像：未找到要安装的版本（错误码 ETIMEDOUT、E404）。请稍后点击「重试」；如持续出现，请联系客服。')
   })
 
   it('keeps a reason that is already Chinese and does not take npm exit text for one', () => {
@@ -41,7 +41,7 @@ describe('npm failure sentences', () => {
 
   it('says an uninstall in its own words', () => {
     const denied = npmSourceFailure('命令执行失败（退出码 1）：npm（EPERM；Error: EPERM: operation not permitted）', { commandFailed: true, uninstall: true })
-    expect(npmFailureSentence('Codex CLI 卸载失败：', [{ reason: denied }])).toBe('Codex CLI 卸载失败：工具的文件删不掉（拒绝访问）（错误码 EPERM）。')
+    expect(npmFailureSentence('Codex CLI 卸载失败：', [{ reason: denied }])).toBe('Codex CLI 卸载失败：工具文件无法删除（拒绝访问）（错误码 EPERM）。')
     const unknown = npmSourceFailure('命令执行失败（退出码 1）：npm', { commandFailed: true, uninstall: true })
     expect(npmFailureSentence('Codex CLI 卸载失败：', [{ reason: unknown }])).toBe(`Codex CLI 卸载失败：卸载命令没有成功。${loggedFailureNextStep}`)
   })

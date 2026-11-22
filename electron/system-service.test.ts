@@ -3689,7 +3689,7 @@ describe('managed npm transaction', () => {
     ).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(ManagedNpmRollbackError)
     // 上屏只说结果和下一步，「回滚失败」留着；英文原话和新版没装上的原因都在 cause 里（#1100 第1条）。
-    expect((failure as Error).message).toBe('这次更新没装上，旧版本回滚失败，工具现在可能打不开。到首页再装一次；还不行请找客服（错误码 EPERM）。')
+    expect((failure as Error).message).toBe('本次更新未能完成，且旧版本回滚失败，工具当前可能无法打开。请在首页重新安装；如仍失败，请联系客服（错误码 EPERM）。')
     const cause = (failure as Error).cause as Error
     expect(cause.message).toBe('托管 npm 更新失败，且旧版本回滚失败：EPERM: rollback destination is locked')
     expect((cause.cause as Error).message).toBe('verification failed')
@@ -4143,7 +4143,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
 
     expect(failure).toBeInstanceOf(Error)
     expect(failure).toMatchObject({
-      message: 'Codex CLI 卸载失败：工具的文件删不掉（拒绝访问）（错误码 EPERM）。',
+      message: 'Codex CLI 卸载失败：工具文件无法删除（拒绝访问）（错误码 EPERM）。',
       cause: expect.any(CommandRunnerError),
     })
     // EPERM by itself reads the same as a folder the user cannot write to, so it
@@ -4229,7 +4229,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
 
     const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
 
-    const message = 'Codex CLI 卸载失败：工具的文件删不掉（拒绝访问）（错误码 EACCES）。'
+    const message = 'Codex CLI 卸载失败：工具文件无法删除（拒绝访问）（错误码 EACCES）。'
     expect(failure).toMatchObject({ message })
     expect(probeRunningCliProcesses).not.toHaveBeenCalled()
     expect(classifyOperationError(message)).toBe('permission')
@@ -4697,7 +4697,7 @@ describe('Git runtime installation', () => {
     expect(installGitRuntime).not.toHaveBeenCalled()
     expect(target.send).toHaveBeenCalledWith(
       'runtime:git-install-progress',
-      expect.objectContaining({ phase: 'complete', message: expect.stringContaining('不用重复安装') }),
+      expect.objectContaining({ phase: 'complete', message: expect.stringContaining('无需重复安装') }),
     )
   })
 
@@ -4705,7 +4705,7 @@ describe('Git runtime installation', () => {
     const notes: string[] = []
     await installGitAlongsideClaude(async () => ({ action: 'installed' }), (message) => notes.push(message))
     await installGitAlongsideClaude(async () => ({ action: 'unchanged' }), (message) => notes.push(message))
-    expect(notes).toEqual(['Git 也顺带装好了'])
+    expect(notes).toEqual(['Git 已一并安装'])
   })
 
   it('never lets a failed Git install fail the Claude Code install', async () => {
@@ -4822,7 +4822,7 @@ describe('Windows restart handoff', () => {
 
     const install = service.installPythonRuntime({ isDestroyed: () => false, send: vi.fn() })
     await started
-    await expect(service.restartWindows()).rejects.toThrow('等它做完再重启电脑')
+    await expect(service.restartWindows()).rejects.toThrow('请待其完成后再重启电脑')
     expect(runCommand).not.toHaveBeenCalled()
     finishInstall()
     await expect(install).resolves.toMatchObject({ action: 'installed' })
@@ -5276,7 +5276,7 @@ describe('npm install progress reporting', () => {
       durationMs: npmDownloadTimeoutMs,
     })
 
-    expect(describeNpmCommandFailure(failure)).toBe('下载太久没有完成，超时中止')
+    expect(describeNpmCommandFailure(failure)).toBe('下载长时间未完成，已超时中止')
     expect(describeNpmCommandFailure(new Error('plain'))).toBe('plain')
   })
 
@@ -5359,7 +5359,7 @@ describe('npm install progress reporting', () => {
     expect(message).toContain('45 秒')
     // The percentage stays where it stopped, so the heartbeat has to carry the
     // one fact the progress line cannot: nothing arrived.
-    expect(message).toContain('没有新数据')
+    expect(message).toContain('未收到新数据')
     expect(message).not.toMatch(/%|预计|剩余/)
   })
 
@@ -5489,8 +5489,8 @@ describe('CLI launch queue key', () => {
 
 describe('externalCliInstallRefusal', () => {
   it('refuses the npm channel only for CLIs installed some other way', () => {
-    expect(externalCliInstallRefusal('claude', 'native')).toMatch(/官方安装器管理，这里不会再另装一份/)
-    expect(externalCliInstallRefusal('codex', 'path')).toMatch(/不是通过本工具安装的/)
+    expect(externalCliInstallRefusal('claude', 'native')).toMatch(/官方安装器管理，此处不会重复安装/)
+    expect(externalCliInstallRefusal('codex', 'path')).toMatch(/并非通过本工具安装/)
     expect(externalCliInstallRefusal('gemini', 'npm')).toBeNull()
     expect(externalCliInstallRefusal('claude', undefined)).toBeNull()
     expect(externalCliInstallRefusal('grok', 'native')).toBeNull()
@@ -7334,7 +7334,7 @@ describe('installing or uninstalling a CLI', () => {
     })
     const target = { isDestroyed: () => false, send: vi.fn() }
 
-    await expect(service.installCli('codex', target)).rejects.toThrow('不是通过本工具安装的')
+    await expect(service.installCli('codex', target)).rejects.toThrow('并非通过本工具安装')
 
     expect(resolveCliInstallation).toHaveBeenCalledWith('codex', expect.objectContaining({ npmExecutable: npmPath }))
     expect(runCommand).not.toHaveBeenCalledWith(

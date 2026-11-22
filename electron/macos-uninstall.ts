@@ -89,10 +89,10 @@ export async function runMacUninstall(
   dependencies: MacUninstallDependencies,
   request: AppUninstallRequest,
 ): Promise<AppUninstallResult> {
-  if (dependencies.platform !== 'darwin') throw new Error('这台电脑上请用系统自带的方式卸载星芒')
+  if (dependencies.platform !== 'darwin') throw new Error('请在本机使用系统自带的方式卸载星芒')
   // 开发时的 execPath 是 node_modules 里的 Electron.app，移进废纸篓的就是它。
-  if (!dependencies.packaged) throw new Error('开发模式不能在这里卸载')
-  if (dependencies.installationBusy()) throw new Error('还有安装、卸载或打开工具的任务在进行，等它做完再卸载')
+  if (!dependencies.packaged) throw new Error('开发模式下无法在此卸载')
+  if (dependencies.installationBusy()) throw new Error('仍有安装、卸载或打开工具的任务正在进行，请待其完成后再卸载')
   const leftovers: AppUninstallLeftover[] = []
   try {
     await dependencies.backupCliConfigs()

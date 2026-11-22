@@ -1069,7 +1069,7 @@ async function unpackFromBucket(
       ...(options.wait ? { resumeOptions: { wait: options.wait } } : {}),
       onProgress: ({ percent, resuming }) => report(
         'downloading',
-        resuming ? `网络断了一下，正在接着下载 ${source.name} ${release.version}` : downloading,
+        resuming ? `网络曾短暂中断，正在继续下载 ${source.name} ${release.version}` : downloading,
         Math.min(99, percent),
       ),
       probeAlternative: allowStale
@@ -1078,7 +1078,7 @@ async function unpackFromBucket(
         // 桶太慢时先比一比官方那一路，确实更快才换（#1061 第 6 条）。
         : (probeSignal) => measureMacosDesktopVendorSpeed(options.tool, context, options.fetch, probeSignal),
     })
-    report('checking', '正在检查下载下来的安装包是不是完整的官方版')
+    report('checking', '正在校验下载的安装包是否为完整的官方版本')
     options.signal?.throwIfAborted()
     const extractDirectory = path.posix.join(workDirectory, 'extract')
     await fs.promises.mkdir(extractDirectory, { mode: 0o700 })
@@ -1157,14 +1157,14 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
       },
       onResume: (transferred, total) => {
         reported = Math.min(99, Math.floor(transferred / total * 100))
-        report('downloading', `网络断了一下，正在接着下载 ${source.name} ${release.version}`, reported)
+        report('downloading', `网络曾短暂中断，正在继续下载 ${source.name} ${release.version}`, reported)
       },
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.wait ? { wait: options.wait } : {}),
     })
 
     stage = 'verify'
-    report('checking', '正在检查下载下来的安装包是不是完整的官方版')
+    report('checking', '正在校验下载的安装包是否为完整的官方版本')
     // 短了说明没下完（服务器没给长度时下载那一步看不出来），照网络问题说。
     if (release.bytes !== undefined && downloaded.size !== release.bytes) {
       throw new MacosDesktopInstallError(macosDesktopDownloadFailedMessage(source.name), `安装包是 ${downloaded.size} 字节，官方版本信息写的是 ${release.bytes}`)
@@ -1246,13 +1246,13 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
       if (compareMacosDesktopVersions(unpacked.version, replace.installedVersion) !== 1) {
         return { version: replace.installedVersion, path: destination, unchanged: true }
       }
-      report('installing', '正在放进「应用程序」')
+      report('installing', '正在放入「应用程序」')
       // 下载期间它自己升到了不比这版低的版本：同样什么都不动，报它现在的版本。
       const current = await replaceBundle(source, unpacked.bundle, unpacked.version, destination, options.runProcess, replace, options.signal)
       if (current) return { version: current, path: destination, unchanged: true }
       return { version: unpacked.version, path: destination }
     }
-    report('installing', '正在放进「应用程序」')
+    report('installing', '正在放入「应用程序」')
     await placeBundle(source, unpacked.bundle, destination, options.runProcess)
     return { version: unpacked.version, path: destination }
   } catch (error) {
