@@ -115,7 +115,7 @@ function failureReason(error: unknown): string {
 }
 
 // 收消息失败后都会自己重试，界面上只说批过的那一句（微信-界面文字.md 第 20 条），原因进日志。
-const pollRetryMessage = '连不上微信，正在重试'
+const pollRetryMessage = '无法连接微信，正在重试'
 
 export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencies, options: WeixinChannelOptions): RemoteChannelAdapter {
   const sleep = options.sleep ?? abortableSleep
@@ -206,7 +206,7 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
         if (signal.aborted) return
         if (error instanceof WeixinIlinkError && (error.reason === 'session-expired' || error.reason === 'refused')) {
           dependencies.log('warn', 'weixin-login-expired', { reason: error.reason, code: error.code ?? null })
-          report({ state: 'needs-login', message: '微信这边的登录已经过期，请在电脑上重新扫码' })
+          report({ state: 'needs-login', message: '微信登录已失效，请在电脑端重新扫码' })
           return
         }
         backoffMs = nextWeixinBackoffMs(backoffMs)
@@ -246,7 +246,7 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
       lastStatus = null
       const active = await loadCredential()
       if (!active) {
-        report({ state: 'needs-login', message: '还没用微信扫码登录' })
+        report({ state: 'needs-login', message: '尚未使用微信扫码登录' })
         return
       }
       const current = new AbortController()
@@ -284,16 +284,16 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
 
     async send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string) {
       const active = credential ?? await loadCredential()
-      if (!active) throw new Error('还没用微信扫码登录')
-      if (peer.channel !== 'weixin') throw new Error('不是微信渠道的联系人')
+      if (!active) throw new Error('尚未使用微信扫码登录')
+      if (peer.channel !== 'weixin') throw new Error('该联系人不属于微信渠道')
       // 底座只往绑定的人发；这里再挡一道，令牌只给扫码的那个人发消息。
-      if (active.ownerUserId && peer.userId !== active.ownerUserId) throw new Error('只能发给扫码登录的那个微信')
+      if (active.ownerUserId && peer.userId !== active.ownerUserId) throw new Error('仅可发送给扫码登录的微信账号')
       const contextToken = replyContext ?? null
       try {
         await sendOnce(active, peer, message.text, contextToken)
       } catch (error) {
         if (error instanceof WeixinIlinkError && (error.reason === 'session-expired' || error.reason === 'refused')) {
-          report({ state: 'needs-login', message: '微信这边的登录已经过期，请在电脑上重新扫码' })
+          report({ state: 'needs-login', message: '微信登录已失效，请在电脑端重新扫码' })
           throw error
         }
         if (!isTransientSendFailure(error)) throw error

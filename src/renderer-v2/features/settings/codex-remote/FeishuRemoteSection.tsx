@@ -8,11 +8,11 @@ import type { RemoteChannelSectionProps } from './channel-sections'
 
 /** 怎么在飞书开放平台建一个能私聊的机器人。只写字，不放链接：外链要过白名单（I12）。 */
 export const feishuSetupSteps = [
-  '打开飞书开放平台（open.feishu.cn），进「开发者后台」，创建一个「企业自建应用」。',
-  '在「添加应用能力」里加上「机器人」。',
-  '在「权限管理」里开通「读取用户发给机器人的单聊消息」「获取单聊、群组消息」和「以应用的身份发消息」。',
-  '在「凭证与基础信息」里复制 App ID 和 App Secret，填到下面保存。',
-  '在这里打开遥控后，回到开放平台的「事件与回调」：事件订阅方式选「使用长连接接收事件」，添加事件「接收消息」；回调订阅方式也选长连接，添加「卡片回传交互」。',
+  '打开飞书开放平台（open.feishu.cn），进入「开发者后台」，创建一个「企业自建应用」。',
+  '在「添加应用能力」中添加「机器人」。',
+  '在「权限管理」中开通「读取用户发给机器人的单聊消息」「获取单聊、群组消息」和「以应用的身份发消息」。',
+  '在「凭证与基础信息」中复制 App ID 和 App Secret，填写到下方并保存。',
+  '在此处开启遥控后，返回开放平台的「事件与回调」：事件订阅方式选择「使用长连接接收事件」，添加事件「接收消息」；回调订阅方式同样选择长连接，添加「卡片回传交互」。',
   '在「版本管理与发布」中发布一个版本。发布后在飞书中搜索该机器人名称并发起私聊。',
 ] as const
 
@@ -23,9 +23,9 @@ export const feishuSetupSteps = [
 export const feishuNextSteps = {
   title: '已保存。请完成以下步骤，手机端方可接收消息',
   steps: [
-    '先打开下面的「打开遥控」，等它显示「已连上」。',
-    '回飞书开放平台的「事件与回调」：事件订阅方式选「使用长连接接收事件」，添加事件「接收消息」；回调订阅方式也选长连接，添加「卡片回传交互」。',
-    '在「版本管理与发布」里发布一个版本。',
+    '开启下方的「打开遥控」，待其显示「已连接」。',
+    '返回飞书开放平台的「事件与回调」：事件订阅方式选择「使用长连接接收事件」，添加事件「接收消息」；回调订阅方式同样选择长连接，添加「卡片回传交互」。',
+    '在「版本管理与发布」中发布一个版本。',
     '在飞书中搜索该机器人名称并发起私聊，然后返回此处点击「开始配对」，将 6 位数字发送给机器人。',
   ],
   note: '第 2 步需先开启遥控，飞书后台才能保存。',
@@ -35,7 +35,7 @@ export const feishuNextSteps = {
  * 「还差这几步」下面那个二维码底下的字（YF-3）：手机飞书一扫直接打开和这个机器人的对话，不用搜名字。
  * 用的是飞书官方 AppLink「打开机器人会话」（飞书 3.40.0 起支持；用不了这个机器人的人，飞书自己会给引导）。
  */
-export const feishuBotQrText = '用手机飞书扫一扫，直接打开和机器人的对话'
+export const feishuBotQrText = '使用手机飞书扫码，直接打开与机器人的对话'
 
 /** 「打开机器人会话」的链接；App ID 跟保存时的检查不一样（不是 cli_ 开头的字母数字）就不给，不往二维码里塞看不懂的东西。 */
 export function feishuBotChatLink(appId: string | null): string | null {
@@ -69,13 +69,13 @@ function FeishuBotQr({ appId }: { appId: string | null }) {
 /** 六步下面那两颗（YF-4）：飞书开发者后台交给浏览器，教程是星芒自己的那一章、不出星芒。 */
 export const feishuGuideActions = {
   console: '打开飞书开放平台',
-  tutorial: '看教程',
+  tutorial: '查看教程',
 } as const
 
 function FeishuSetupGuide({ api, run, navigate }: Pick<RemoteChannelSectionProps, 'api' | 'run' | 'navigate'>) {
   return (
     <details className="v2-remote-guide">
-      <summary>怎么建飞书机器人</summary>
+      <summary>如何创建飞书机器人</summary>
       <ol>
         {feishuSetupSteps.map((step) => <li key={step}>{step}</li>)}
       </ol>
@@ -148,7 +148,7 @@ export function FeishuRemoteSection({ snapshot, api, disabled, busy, run, naviga
   const saving = busy === 'feishu-save'
   return (
     <div className="v2-remote-form" data-testid="settings-remote-feishu-form">
-      <p className="v2-remote-note">先在飞书开放平台建一个企业自建应用（机器人），把它的 App ID 和 App Secret 填在这里。</p>
+      <p className="v2-remote-note">请先在飞书开放平台创建一个企业自建应用（机器人），并将其 App ID 和 App Secret 填写在此处。</p>
       <FeishuSetupGuide api={api} run={run} navigate={navigate} />
       <div className="v2-remote-fields">
         <Input label="App ID" mono value={appId} onChange={(event) => setAppId(event.target.value)} placeholder="cli_ 开头" autoComplete="off" spellCheck={false} testId="settings-remote-feishu-app-id" />

@@ -125,7 +125,7 @@ export class CodexAppServerClient {
   }
 
   async start(handlers: AppServerHandlers): Promise<unknown> {
-    if (this.child) throw new Error('Codex 已经在运行')
+    if (this.child) throw new Error('Codex 已在运行')
     this.handlers = handlers
     this.exited = false
     this.stopping = false
@@ -149,13 +149,13 @@ export class CodexAppServerClient {
   }
 
   request(method: string, params: unknown, timeoutMs = this.options.requestTimeoutMs ?? defaultRequestTimeoutMs): Promise<unknown> {
-    if (!this.child || this.exited) return Promise.reject(new AppServerRequestError('Codex 没有在运行', null))
+    if (!this.child || this.exited) return Promise.reject(new AppServerRequestError('Codex 未运行', null))
     const id = `xm-${this.nextId}`
     this.nextId += 1
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
-        reject(new AppServerRequestError(`Codex 没有回应（${method}）`, null))
+        reject(new AppServerRequestError(`Codex 未响应（${method}）`, null))
       }, timeoutMs)
       timer.unref?.()
       this.pending.set(id, { resolve, reject, timer, method })
@@ -197,7 +197,7 @@ export class CodexAppServerClient {
   }
 
   private write(message: Record<string, unknown>): void {
-    if (!this.child || this.exited) throw new AppServerRequestError('Codex 没有在运行', null)
+    if (!this.child || this.exited) throw new AppServerRequestError('Codex 未运行', null)
     this.child.stdin.write(`${JSON.stringify(message)}\n`)
   }
 

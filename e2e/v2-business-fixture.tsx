@@ -191,7 +191,7 @@ function codexMcpServers(authStatus: string) {
 }
 // 手机遥控 Codex：一份可变的状态，操作改它、回整份快照（revision 每次加一），和主进程一个样子。
 // remoteReady：已经选好文件夹、填好飞书应用；remoteElevated：星芒以管理员身份在跑；
-// remoteFolders：电脑上已经加了三个干活的文件夹（YF-19）。
+// remoteFolders：电脑上已经加了三个工作文件夹（YF-19）。
 type RemoteSnapshot = Awaited<ReturnType<V2Bridge['getCodexRemoteState']>>
 const remoteReady = query.has('remoteReady')
 const remoteState: {
@@ -225,9 +225,9 @@ const remoteState: {
 }
 // 和主进程 codex-remote-feishu.ts 的 feishuProblemMessages 同三句。
 const feishuProblemStatuses = {
-  credential: { state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' },
-  'connection-limit': { state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' },
-  other: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「联系客服」。', problem: 'other' },
+  credential: { state: 'needs-login', message: '飞书应用的 App ID 或 App Secret 不正确，请在飞书开放平台核对后重新填写。', problem: 'credential' },
+  'connection-limit': { state: 'error', message: '该飞书应用已在其他位置连接，请先断开其他连接后重试。', problem: 'connection-limit' },
+  other: { state: 'error', message: '未能建立连接，请点击「重新连接」重试；如问题仍存在，请点击「联系客服」。', problem: 'other' },
 } as const
 // 微信那一块只测扫码登录：手机上要输数字，输 2580 才对，对了以后再查一次就登录好了。过了数字，主进程直接把扫码人
 // 记成绑定的人（YF-5），这里也跟着绑上。
@@ -248,7 +248,7 @@ function remoteSnapshot(): RemoteSnapshot {
   return {
     revision: remoteRevision,
     available: !elevated,
-    ...(elevated ? { unavailableReason: '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。' } : {}),
+    ...(elevated ? { unavailableReason: '星芒正以管理员身份运行，为保障安全，此时无法开启手机遥控。请以普通方式重新打开星芒。' } : {}),
     // 登录的 Windows 账号本身就带管理员权限（自带 Administrator、关了授权弹窗）：能开，卡上多一句提醒。
     ...(!elevated && query.has('remoteAdminAccount') ? { alwaysElevated: true } : {}),
     credentialPersistence: query.has('remoteSessionOnly') ? 'session-only' : 'durable',
@@ -362,20 +362,20 @@ const codexRemoteMethods = {
   },
   useCodexRemoteWorkspace: async (folder: string) => {
     record('remote-workspace-use', folder)
-    if (!remoteState.workspaces.includes(folder)) throw new Error('这个文件夹已经不在单子上了。')
+    if (!remoteState.workspaces.includes(folder)) throw new Error('该文件夹已不在列表中。')
     remoteState.workspaceDirectory = folder
     return remoteSnapshot()
   },
   removeCodexRemoteWorkspace: async (folder: string) => {
     record('remote-workspace-remove', folder)
-    if (folder === remoteState.workspaceDirectory) throw new Error('正在用的文件夹不能移除，先换到别的再移除。')
+    if (folder === remoteState.workspaceDirectory) throw new Error('使用中的文件夹无法移除，请先切换至其他文件夹。')
     remoteState.workspaces = remoteState.workspaces.filter((entry) => entry !== folder)
     return remoteSnapshot()
   },
   saveCodexRemoteFeishuCredentials: async (request: Parameters<V2Bridge['saveCodexRemoteFeishuCredentials']>[0]) => {
     // App Secret 不记：测试只看主进程收到的是哪个应用。
     record('remote-feishu-save', request.appId)
-    if (request.appSecret === 'wrong-secret') throw new Error('飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。')
+    if (request.appSecret === 'wrong-secret') throw new Error('飞书应用的 App ID 或 App Secret 不正确，请在飞书开放平台核对后重新填写。')
     remoteState.accountLabel = request.appId
     // 主进程存好新凭据会重启渠道，原来停着的那种毛病跟着没了。
     remoteState.problem = null

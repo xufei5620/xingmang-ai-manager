@@ -97,7 +97,7 @@ export async function spawnCodexAppServer(options: CodexAppServerSpawnOptions): 
       child.off('spawn', onSpawn)
       void command.release?.()
       // 原话带着可执行文件的完整路径，不往外带。
-      reject(new Error('电脑上的 Codex 没能启动'))
+      reject(new Error('电脑端的 Codex 启动失败'))
     }
     const onSpawn = () => {
       child.off('error', onError)

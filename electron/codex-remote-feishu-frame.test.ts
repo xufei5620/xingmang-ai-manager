@@ -66,6 +66,6 @@ describe('codex-remote-feishu-frame', () => {
   it('caps the number of headers', () => {
     const headers = Array.from({ length: 65 }, (_, index) => ({ key: `k${index}`, value: 'v' }))
     const bytes = encodeFeishuFrame({ seqId: 0n, logId: 0n, service: 0, method: 1, headers })
-    expect(() => decodeFeishuFrame(bytes)).toThrow('头太多')
+    expect(() => decodeFeishuFrame(bytes)).toThrow('头部字段过多')
   })
 })

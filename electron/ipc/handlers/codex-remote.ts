@@ -25,7 +25,7 @@ export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
     const service = codexRemote()
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: OpenDialogOptions = {
-      title: '选择手机遥控时 Codex 干活的文件夹',
+      title: '选择手机遥控 Codex 的工作文件夹',
       properties: ['openDirectory', 'createDirectory'],
     }
     const result = parentWindow ? await dialog.showOpenDialog(parentWindow, dialogOptions) : await dialog.showOpenDialog(dialogOptions)

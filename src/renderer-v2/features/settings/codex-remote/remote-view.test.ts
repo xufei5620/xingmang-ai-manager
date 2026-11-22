@@ -51,7 +51,7 @@ describe('codex remote view', () => {
   })
 
   it('labels every channel state and only colours the ones that need attention', () => {
-    expect(remoteChannelStateLabel({ state: 'needs-login' })).toBe('要重新登录')
+    expect(remoteChannelStateLabel({ state: 'needs-login' })).toBe('需重新登录')
     expect(remoteChannelStateTone({ state: 'connected' })).toBe('ok')
     expect(remoteChannelStateTone({ state: 'needs-login' })).toBe('warn')
     expect(remoteChannelStateTone({ state: 'error' })).toBe('bad')
@@ -59,24 +59,24 @@ describe('codex remote view', () => {
   })
 
   it('names the missing step before the switch can be turned on', () => {
-    expect(remoteSwitchHint(snapshot(), channel({ hasCredential: false }), '先在上面填好飞书应用。')).toBe('先在上面填好飞书应用。')
-    expect(remoteSwitchHint(snapshot({ workspaceDirectory: null }), channel(), '先在上面填好飞书应用。')).toBe('先在上面选好干活的文件夹。')
+    expect(remoteSwitchHint(snapshot(), channel({ hasCredential: false }), '请先在上方填写飞书应用信息。')).toBe('请先在上方填写飞书应用信息。')
+    expect(remoteSwitchHint(snapshot({ workspaceDirectory: null }), channel(), '请先在上方填写飞书应用信息。')).toBe('请先在上方选择工作文件夹。')
     // 缺省「不自动关」（YF-10）：不说闲着几小时断开。
-    expect(remoteSwitchHint(snapshot(), channel(), '先在上面填好飞书应用。')).toBe('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次。')
-    expect(remoteSwitchHint(snapshot({ idleCloseHours: 4 }), channel(), '先在上面填好飞书应用。')).toBe('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次；闲着 4 小时也会自动断开。')
-    expect(remoteSwitchHint(snapshot({ idleCloseHours: 12 }), channel(), '先在上面填好飞书应用。')).toBe('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次；闲着 12 小时也会自动断开。')
-    expect(remoteSwitchHint(snapshot({ autoStart: true, idleCloseHours: 4 }), channel(), '先在上面填好飞书应用。')).toBe('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开；闲着 4 小时也会自动断开。')
-    expect(remoteSwitchHint(snapshot({ autoStart: true }), channel(), '先在上面填好飞书应用。')).toBe('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开。')
+    expect(remoteSwitchHint(snapshot(), channel(), '请先在上方填写飞书应用信息。')).toBe('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开，下次打开星芒需重新开启。')
+    expect(remoteSwitchHint(snapshot({ idleCloseHours: 4 }), channel(), '请先在上方填写飞书应用信息。')).toBe('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开，下次打开星芒需重新开启；无消息 4 小时后也会自动断开。')
+    expect(remoteSwitchHint(snapshot({ idleCloseHours: 12 }), channel(), '请先在上方填写飞书应用信息。')).toBe('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开，下次打开星芒需重新开启；无消息 12 小时后也会自动断开。')
+    expect(remoteSwitchHint(snapshot({ autoStart: true, idleCloseHours: 4 }), channel(), '请先在上方填写飞书应用信息。')).toBe('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开；无消息 4 小时后也会自动断开。')
+    expect(remoteSwitchHint(snapshot({ autoStart: true }), channel(), '请先在上方填写飞书应用信息。')).toBe('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开。')
     // 开着的时候不再说「先填」：关掉的说法要一直看得到。
-    expect(remoteSwitchHint(snapshot({ workspaceDirectory: null }), channel({ enabled: true }), '先在上面填好飞书应用。')).toContain('退出星芒才断开')
+    expect(remoteSwitchHint(snapshot({ workspaceDirectory: null }), channel({ enabled: true }), '请先在上方填写飞书应用信息。')).toContain('退出星芒后才会断开')
   })
 
   // Mac 上没有托盘（「菜单栏改」）：只换中间那截，前后跟着设置走的照旧。
   it('says the menu bar instead of the tray on a Mac', () => {
-    expect(remoteSwitchHint(snapshot(), channel(), '先在上面填好飞书应用。', true)).toBe('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口收到菜单栏也照样开着，退出星芒才断开，下次打开星芒要再打开一次。')
-    expect(remoteSwitchHint(snapshot({ autoStart: true, idleCloseHours: 4 }), channel(), '先在上面填好飞书应用。', true)).toBe('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口收到菜单栏也照样开着，退出星芒才断开；闲着 4 小时也会自动断开。')
-    expect(remoteSwitchHint(snapshot(), channel({ hasCredential: false }), '先在上面填好飞书应用。', true)).toBe('先在上面填好飞书应用。')
-    expect(remoteSwitchHint(snapshot(), channel(), '先在上面填好飞书应用。', false)).toContain('窗口缩到托盘也照样开着')
+    expect(remoteSwitchHint(snapshot(), channel(), '请先在上方填写飞书应用信息。', true)).toBe('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口收到菜单栏后仍保持开启，退出星芒后才会断开，下次打开星芒需重新开启。')
+    expect(remoteSwitchHint(snapshot({ autoStart: true, idleCloseHours: 4 }), channel(), '请先在上方填写飞书应用信息。', true)).toBe('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口收到菜单栏后仍保持开启，退出星芒后才会断开；无消息 4 小时后也会自动断开。')
+    expect(remoteSwitchHint(snapshot(), channel({ hasCredential: false }), '请先在上方填写飞书应用信息。', true)).toBe('请先在上方填写飞书应用信息。')
+    expect(remoteSwitchHint(snapshot(), channel(), '请先在上方填写飞书应用信息。', false)).toContain('窗口缩到托盘后仍保持开启')
   })
 
   it('names the bound person by nickname and id tail, or by the tail alone', () => {
@@ -88,7 +88,7 @@ describe('codex remote view', () => {
   it('says how many wrong pairing codes came in, and that the code was voided once they ran out', () => {
     expect(pairingAttemptText(channel(), quiet)).toBeNull()
     expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1 } }), quiet)).toBeNull()
-    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, failures: 1 } }), quiet)).toBe('配对码错了 1 次')
+    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, failures: 1 } }), quiet)).toBe('配对码已输错 1 次')
     expect(pairingAttemptText(channel({ pairingLocked: true }), quiet)).toBe('此配对码已失效，请重新开始配对。')
     // A new code replaces the voided one.
     expect(pairingAttemptText(channel({ pairing: { code: '000043', expiresAt: 1 }, pairingLocked: true }), quiet)).toBeNull()
@@ -97,8 +97,8 @@ describe('codex remote view', () => {
   // YF-2：码挂了 1 分钟还没收到私聊，说可能是哪儿没配好；错码那句优先。
   it('says why a pairing code got no answer: nothing arrived at all, or only group messages did', () => {
     expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, quiet: 'nothing' } }), quiet)).toBe(quiet)
-    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, quiet: 'group-only' } }), quiet)).toBe('收到的是群里的消息，不算。要点开机器人单独私聊它。')
-    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, quiet: 'nothing', failures: 2 } }), quiet)).toBe('配对码错了 2 次')
+    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, quiet: 'group-only' } }), quiet)).toBe('收到的是群聊消息，无法用于配对。请打开机器人，单独私聊发送。')
+    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, quiet: 'nothing', failures: 2 } }), quiet)).toBe('配对码已输错 2 次')
   })
 })
 
@@ -120,10 +120,10 @@ describe('last phone request (YF-13)', () => {
   })
 
   it('says when it came in and how far it got, never what was asked', () => {
-    expect(lastRequestText({ receivedAt: at, state: 'running' }, now)).toBe('14:05 发来一条，正在处理，已经 3 分钟')
+    expect(lastRequestText({ receivedAt: at, state: 'running' }, now)).toBe('14:05 收到指令，正在处理，已用时 3 分钟')
     expect(lastRequestText({ receivedAt: at, state: 'done' }, now)).toBe('14:05 已完成')
     expect(lastRequestText({ receivedAt: at, state: 'stopped' }, now)).toBe('14:05 已停止')
-    expect(lastRequestText({ receivedAt: at, state: 'failed', reason: '余额不够了，充值后再发一次。' }, now)).toBe('14:05 未完成：余额不够了，充值后再发一次。')
+    expect(lastRequestText({ receivedAt: at, state: 'failed', reason: '余额不足，请充值后重新发送。' }, now)).toBe('14:05 未完成：余额不足，请充值后重新发送。')
     expect(lastRequestText({ receivedAt: at, state: 'failed' }, now)).toBe('14:05 未完成。')
   })
 

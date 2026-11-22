@@ -220,7 +220,7 @@ describe('codex-remote-store', () => {
   })
 
   it('words the refused change for the customer', () => {
-    expect(settingsUnreadableMessage).toBe('这次没改成：电脑上保存的手机遥控设置这会儿读不出来，为了不弄丢原来的设置，先没动。请过一会儿再试一次。')
+    expect(settingsUnreadableMessage).toBe('本次修改未生效：暂时无法读取本机保存的手机遥控设置，为避免原有设置丢失，未做任何改动。请稍后重试。')
   })
 
   it('encrypts credentials at rest and clears them', async () => {
@@ -246,7 +246,7 @@ describe('codex-remote-store', () => {
     await expect(clearing).rejects.toThrow(new Error(credentialRemoveFailedMessage))
     // The original failure rides along as the cause so the runtime log keeps it.
     await expect(clearing).rejects.toHaveProperty('cause', expect.any(Error))
-    expect(credentialRemoveFailedMessage).toBe('没能删掉保存的登录信息，请重启星芒后再点一次退出登录。')
+    expect(credentialRemoveFailedMessage).toBe('未能删除已保存的登录信息，请重启星芒后再次点击「退出登录」。')
     expect(fs.existsSync(credentialPath)).toBe(true)
     fs.rmSync(path.join(directory, 'credential-feishu.link'))
     await store.writeCredential('feishu', null)
@@ -269,7 +269,7 @@ describe('codex-remote-store', () => {
 
   it('refuses to store credentials where encryption is unavailable', async () => {
     const store = new CodexRemoteStore(tempDirectory(), fakeStorage('keychain', false), 'darwin')
-    await expect(store.writeCredential('feishu', 'value')).rejects.toThrow('没法安全保存')
+    await expect(store.writeCredential('feishu', 'value')).rejects.toThrow('不支持安全保存')
   })
 
   it('treats an undecryptable credential file as missing', async () => {

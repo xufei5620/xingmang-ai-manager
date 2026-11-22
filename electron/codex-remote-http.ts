@@ -144,7 +144,7 @@ async function performRemoteRequest<T>(
       signal: controller.signal,
     }), controller.signal)
     if (response.url && new URL(response.url).origin !== url.origin) {
-      throw new RemoteHttpError(`${request.label}请求被重定向到别的地址，已拒绝`, 'redirected')
+      throw new RemoteHttpError(`${request.label}请求被重定向至其他地址，已拒绝`, 'redirected')
     }
     if (response.type === 'opaqueredirect' || redirectStatuses.has(response.status)) {
       await response.body?.cancel().catch(() => undefined)
@@ -163,7 +163,7 @@ async function performRemoteRequest<T>(
     if (timedOut) throw new RemoteHttpError(`${request.label}请求超时`, 'timeout')
     if (request.signal?.aborted) throw new RemoteHttpError(`${request.label}请求已取消`, 'aborted')
     // 上游原文可能带着地址里的参数，不往外抛原文，只给一句中文。
-    throw new RemoteHttpError(`连不上${request.label}，请检查网络`, 'network')
+    throw new RemoteHttpError(`无法连接${request.label}，请检查网络`, 'network')
   } finally {
     clearTimeout(timeout)
     request.signal?.removeEventListener('abort', onOuterAbort)
