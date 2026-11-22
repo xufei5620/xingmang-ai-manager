@@ -598,25 +598,30 @@ describe('ConfigBackupStore', () => {
       fs.readFileSync(path.join(templateDirectory, 'manifest.json'), 'utf8'),
     ) as { id: string }
 
-    // 克隆出 200 份时间戳更早的备份，让被恢复的那份恰好落在 prune 的删除窗口内。
-    const cloneIds: string[] = []
-    for (let index = 0; index < 200; index += 1) {
-      const cloneId = `199901010000${String(index).padStart(5, '0')}-${randomUUID()}`
-      const cloneDirectory = path.join(userData, 'backups', cloneId)
-      fs.cpSync(templateDirectory, cloneDirectory, { recursive: true })
-      fs.writeFileSync(
-        path.join(cloneDirectory, 'manifest.json'),
-        JSON.stringify({ ...templateManifest, id: cloneId }),
-        'utf8',
-      )
-      cloneIds.push(cloneId)
-    }
+    // 再放 200 份时间戳更早的备份，让被恢复的那份恰好落在 prune 的删除窗口内。只有要恢复的最旧那份
+    // 是整份复制的；prune 只按文件夹名数配额，其余 199 份建成空文件夹就够了。以前 200 份都整份复制
+    // （连同收尾删掉，文件系统调用是现在的五倍），Windows runner 上这一段偶尔慢十几倍，11-22 撞了 30 秒（#2084）。
+    const cloneIds = Array.from(
+      { length: 200 },
+      (_, index) => `199901010000${String(index).padStart(5, '0')}-${randomUUID()}`,
+    )
+    const oldestDirectory = path.join(userData, 'backups', cloneIds[0])
+    fs.cpSync(templateDirectory, oldestDirectory, { recursive: true })
+    fs.writeFileSync(
+      path.join(oldestDirectory, 'manifest.json'),
+      JSON.stringify({ ...templateManifest, id: cloneIds[0] }),
+      'utf8',
+    )
+    for (const cloneId of cloneIds.slice(1)) fs.mkdirSync(path.join(userData, 'backups', cloneId))
 
     writeConfig(configPath, 'current-config')
     const restored = store.restore(cloneIds[0])
     expect(restored.restoredBackupId).toBe(cloneIds[0])
     expect(fs.readFileSync(configPath, 'utf8')).toBe('oldest-config')
     expect(fs.existsSync(path.join(userData, 'backups', cloneIds[0]))).toBe(true)
+    // 恢复前存的那份让总数到 202，比上限多两份：最旧的正被恢复、留下，第二旧的清掉。这一句
+    // 证明空文件夹确实算进了配额、清理真的跑到了上限，不然上面几句不清理也照样过。
+    expect(fs.existsSync(path.join(userData, 'backups', cloneIds[1]))).toBe(false)
   })
 
   it('preserves the rollback copy when restoring it back also fails', () => {
