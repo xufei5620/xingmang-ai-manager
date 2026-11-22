@@ -1,6 +1,6 @@
 // 「插件」页的几个对话框：点「+」弹的安装框（精选、官方目录、自己加的连接复制、技能复制都走它）、技能「从文件夹导入」、
 // 「添加插件」时先问装到哪一家。字照扩展合并方案第二版逐字写（yoyo 11-20 回「改」），装的路子全是现有那几条。
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Check, Download, FileArchive, FolderOpen, Headset, Plus } from 'lucide-react'
 import { BrandIcon, Button, Dialog, Input, Notice, Select } from '../../ui'
 import { ResultNotice, useOperation } from '../../business-common'
@@ -366,7 +366,7 @@ export function HubInstallDialog({
  * 技能「从文件夹导入」：选一个技能文件夹，一次导进勾上的几家。Codex 走它自己的导入（importSkill），
  * Claude Code、Grok CLI 由主进程照 Codex 那套复制进它们自己的技能文件夹；一家一家导，中途失败只留没导上的。
  * 「从压缩包导入」（总单 Q4 C4）是同一张表单：压缩包只能从系统的选文件窗口选，主进程查完解开，
- * 交回解开的那个技能文件夹，后面照「从文件夹导入」一家一家导。
+ * 交回解开的那个技能文件夹，后面照「从文件夹导入」一家一家导。表单关掉时让主进程删掉解开的那份。
  */
 export function HubSkillImportDialog({
   api,
@@ -394,6 +394,12 @@ export function HubSkillImportDialog({
   const [selected, setSelected] = useState<Provider[]>([...tools])
   const targets = activeProviderIds.filter((id) => selected.includes(id) && importable[id] === 'ready')
   const busy = operation.busy === 'hub-import'
+  // 解开的临时文件夹只给这张表单用：表单关掉（导入完、取消、换页面）就删。导入失败时表单还开着，留着给客户再点
+  // 一次「添加」。不看有没有拿到压缩包：解压到一半点了取消，这一刻还没拿到，主进程那边排在这次解压后面删。
+  // 表单每次打开都重新挂上（key），from 和 api 在这一次里不会变。
+  useEffect(() => () => {
+    if (from === 'archive') void api.discardSkillArchives().catch(() => undefined)
+  }, [])
   const submit = () =>
     void operation.execute(
       'hub-import',

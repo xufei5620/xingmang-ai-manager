@@ -38,6 +38,7 @@ import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings
 import { calculateUiZoom, resolveWindowPlacement, shouldDefaultToLargeText, shouldFollowSystemTextSize } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { createSensitiveClipboard } from './sensitive-clipboard'
+import { discardSkillArchiveExtractions } from './skill-archive'
 import { fitOversizedWindow, recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { createAccelerationHostLoader, createAccelerationRouting, createAccelerationServices, type AccelerationHostOptions } from './bootstrap/acceleration'
@@ -1003,6 +1004,8 @@ if (!hasSingleInstanceLock) {
     // Windows 要等下面的管理员探测有了结论再定（relocated-folders.ts）。
     if (process.platform !== 'win32') configureRelocatedFolderAccess('same-user')
     const managerDataDirectory = app.getPath('userData')
+    // 技能「从压缩包导入」解开放在这里，导入框关掉、开机时都清（skill-archive.ts）。
+    const skillArchiveDirectory = path.join(managerDataDirectory, 'skill-archives')
     // 内置加速内核三十多兆，校验要整读一遍。它以前排在建窗口前面单独等，后来改成开机就读、建窗口不等（0.2.22
     // 性能体检第 4 条）；网络加速 2026-10-30 下线以后开机干脆不读（0.2.24 启动速度深查 S-3）：只有上次加速时崩了、
     // 系统代理没改回去（开机看一眼恢复记录就知道），或者真用到加速、检查页要报它坏没坏时才读，见下面
@@ -2490,6 +2493,10 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => new Promise<void>((resolve) => {
       setTimeout(resolve, installLeftoverStartupDelayMs).unref()
     })).then(() => systemService.cleanupInstallLeftovers()).catch(() => undefined)
+    // 技能压缩包解开的临时文件夹，导入框关掉时就删；星芒在导入框开着时被关掉或崩了，留下的那份开机后在后台删。
+    void startupQuiet.whenOver()
+      .then(() => discardSkillArchiveExtractions(skillArchiveDirectory))
+      .catch((error: unknown) => runtimeLog.exception('main', 'skill-archives.cleanup.failed', error))
     // 本软件写给 Codex 的型号名单读不进时 Codex 整个起不来（星芒关着的时候命令行或桌面端
     // 换成了旧版）：开机在本机看一眼，没登录的也看；登录状态下开机那轮按账号同步共用这一次。
     void startupQuiet.whenOver().then(() => systemService.guardCodexModelCatalogAtStartup?.()).catch(() => undefined)
@@ -2709,7 +2716,7 @@ if (!hasSingleInstanceLock) {
       accountSessionReady,
       accountStartupGate,
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
-      skillArchiveDirectory: path.join(managerDataDirectory, 'skill-archives'),
+      skillArchiveDirectory,
       announcementImages: createAnnouncementImageReader({ fetch: networkRoutes.announcementImageFetch }),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,

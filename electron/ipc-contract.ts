@@ -1341,6 +1341,11 @@ export interface XingmangInvokeContract {
    * 不收渲染层给的路径；取消返回 null，压缩包打不开、不安全、没有技能时报中文原因。
    */
   chooseSkillArchive: IpcInvokeDefinition<'skills:choose-archive', [], SkillArchiveExtraction | null>
+  /**
+   * 「从压缩包导入」的框关掉时（导入完、取消、换页面）：把解开的临时文件夹删掉。不收参数，只删星芒
+   * 自己在那个文件夹里起名的那几份；各家导入都是复制，删了不影响已导入的技能。
+   */
+  discardSkillArchives: IpcInvokeDefinition<'skills:discard-archives', [], void>
   toggleSkill: IpcInvokeDefinition<
     'skills:toggle',
     [skillPath: string, enabled: boolean],
@@ -1871,6 +1876,7 @@ export const ipcInvokeChannels = {
   listSkills: 'skills:list',
   importSkill: 'skills:import',
   chooseSkillArchive: 'skills:choose-archive',
+  discardSkillArchives: 'skills:discard-archives',
   toggleSkill: 'skills:toggle',
   uninstallSkill: 'skills:uninstall',
   listPlugins: 'plugins:list',

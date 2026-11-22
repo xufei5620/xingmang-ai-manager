@@ -1475,6 +1475,10 @@ const apiMethods = {
     if (query.get('skillArchive') === 'empty') throw new Error('这个压缩包里没找到技能（要有一个 SKILL.md 文件）。')
     return { archiveName: 'pdf-helper.zip', directory: 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper' }
   },
+  // 导入框关掉时让主进程删解开的那份；夹具只记下来。
+  discardSkillArchives: async () => {
+    record('discard-skill-archives')
+  },
   importSkill: async (input: Parameters<V2Bridge['importSkill']>[0]) => {
     record('import-skill', input)
     return []

@@ -4957,12 +4957,45 @@ test('a skill can come from a zip picked in the system window, then goes into ea
     await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('pdf-helper.zip')
     await page.getByTestId('hub-skill-import-submit').click()
     await page.getByText(/^已添加「pdf-helper」，给 .+ 使用，下次打开工具时生效$/).waitFor()
+    // 导入完表单关掉，解开的那份随即让主进程删掉，排在各家导入之后。
+    await page.waitForFunction(() => {
+      const recorded = JSON.parse(document.documentElement.dataset.calls || '[]').map((call) => call.name)
+      return recorded.lastIndexOf('discard-skill-archives') > recorded.lastIndexOf('extension')
+    })
     const recorded = await calls(page)
     assert.deepEqual(recorded.find((call) => call.name === 'import-skill').args, { sourcePath: directory, scope: 'user' })
     assert.deepEqual(
       recorded.filter((call) => call.name === 'extension').map((call) => call.args),
       [{ provider: 'claude', kind: 'skill', action: 'install', source: directory, scope: 'user' }],
     )
+  } finally {
+    await page.close()
+  }
+})
+
+test('an unpacked zip stays while the form is open after a failed import and is discarded once the form closes', async () => {
+  const page = await fixture(hub)
+  const namesAfterChoosing = async () => {
+    const names = (await calls(page)).map((call) => call.name)
+    return names.slice(names.lastIndexOf('choose-skill-archive') + 1)
+  }
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill-archive').click()
+    await page.getByTestId('hub-skill-archive-choose').click()
+    await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('pdf-helper.zip')
+    await page.getByTestId('hub-skill-import-submit').click()
+    await page.getByTestId('hub-skill-import').getByText('扩展操作失败，已有配置保留').first().waitFor()
+    // 失败了表单还开着，客户可以直接再点一次「添加」，解开的那份不能先删。
+    assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), false)
+    assert.equal((await namesAfterChoosing()).includes('discard-skill-archives'), false)
+    await page.getByTestId('hub-skill-import').getByRole('button', { name: '取消' }).click()
+    await page.getByTestId('hub-skill-import').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => {
+      const names = JSON.parse(document.documentElement.dataset.calls || '[]').map((call) => call.name)
+      return names.lastIndexOf('discard-skill-archives') > names.lastIndexOf('choose-skill-archive')
+    })
   } finally {
     await page.close()
   }
