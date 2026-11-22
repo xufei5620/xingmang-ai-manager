@@ -114,7 +114,7 @@ import { runCodexContextLimitsMigration } from './codex-config-migration'
 import { runClaudeDesktopModelRepair } from './claude-desktop-model-repair'
 import { claudeDesktopModelTopUpStartupDelayMs } from './claude-desktop-model-topup'
 import { findExecutable, isTrustedHighIntegrityExecutable, trustedCommandEnvironment } from './command-runner'
-import { CodexExtensionService, isCodexCliInstalled } from './codex-extensions'
+import { CodexExtensionService, isCodexCliInstalled, sumSkillImportLeftoverSweeps } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
 import type { NewApiCodexStartupTicket } from './new-api-client'
 import { buildAccountIdentity, createAccountIdentityTracker } from './account-identity-tracker'
@@ -2500,6 +2500,19 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver()
       .then(() => discardSkillArchiveExtractions(skillArchiveDirectory))
       .catch((error: unknown) => runtimeLog.exception('main', 'skill-archives.cleanup.failed', error))
+    // 技能导入到一半星芒被关掉或崩了，或者导入出错时临时文件夹没删掉，留在各家技能文件夹里的那份开机后在后台删。
+    void startupQuiet.whenOver()
+      .then(() => Promise.all([
+        extensionService.discardSkillImportLeftovers(),
+        providerExtensionService.discardSkillImportLeftovers(),
+      ]))
+      .then((sweeps) => {
+        const { removed, remaining } = sumSkillImportLeftoverSweeps(sweeps)
+        if (removed || remaining) {
+          runtimeLog.log(remaining ? 'warn' : 'info', 'main', 'skill-import-leftovers.cleanup', '已清理技能导入留下的临时文件夹', { removed, remaining })
+        }
+      })
+      .catch((error: unknown) => runtimeLog.exception('main', 'skill-import-leftovers.cleanup.failed', error))
     // 本软件写给 Codex 的型号名单读不进时 Codex 整个起不来（星芒关着的时候命令行或桌面端
     // 换成了旧版）：开机在本机看一眼，没登录的也看；登录状态下开机那轮按账号同步共用这一次。
     void startupQuiet.whenOver().then(() => systemService.guardCodexModelCatalogAtStartup?.()).catch(() => undefined)
@@ -3627,7 +3640,9 @@ if (!hasSingleInstanceLock) {
         })
       },
       abort: () => {
-        lifecycle.abortUpdateQuit()
+        // 关窗时选了「安装更新并退出」的，退出是客户自己选的：安装器没起来也照样退完，退出前跟手机说的「星芒关了」
+        // 是对的，这里不放回什么，也不补「未退出」。只有更新页「重启并安装」这类由安装发起的退出才真撤回。
+        if (!lifecycle.abortUpdateQuit()) return
         canvasController.resumeAfterAbortedQuit()
         // 安装器没启动起来（Windows 提权框点了「否」、包不在了）：星芒还开着，退出前跟手机说的「星芒关了」要补一句（打磨 B8）。
         void codexRemote.quitAborted().catch(() => undefined)

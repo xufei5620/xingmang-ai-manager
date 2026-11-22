@@ -976,6 +976,7 @@ bundle：`DEFAULT_MODEL_CONFIGS` 整个对象逐字相同，出网前改名的 `
 - **它做什么**：三家各取 npm `latest`（Grok 再和 xAI stable 取小），和名单比。都一样就只回一句「本周三家无新版」；有新版的逐个读上游变更记录——Claude Code 读仓库的 `CHANGELOG.md`，Codex 读 GitHub Releases 的 `rust-v*`（仓库里的 CHANGELOG 只是占位），Grok 没有可读的变更记录、只能装上新版在本地假接口重核配置。没有回归就抬推荐版本，有回归就加 `blocked`；一次巡检只开**一个草稿 PR**，含文档与 `changes/unreleased/` 分片。某个工具已经有别的 PR 在抬，就不再为它开，改为把评估结论交给那条线程。
 - **它不做什么**：不自己合并。抬版本的 PR 一律留给人复核——中转实测没跑过、或者跑红了，都不许合。
 - **抬 Codex 推荐版本时顺手换随包型号名单**（`bundled-catalog/codex-models/models.json`，步骤见同目录 README）：桌面端菜单靠它列出中转开着的新 GPT 型号，名单停在旧 tag 上，新型号就进不了菜单。
+- **抬 Codex 推荐版本前在沙箱里重核手机遥控的「接对话」**：接着电脑上已有的对话时，遥控的规矩（不发密钥和密码、回复简洁、别出这个文件夹）靠 Codex 的试验字段 `collaborationMode` 写进去。客户端不按版本号放行，每次接上都当场核一遍（`codex-remote-service.ts` 的 `applyRemoteRules`）：核不上就对手机和电脑页说「当前 Codex 版本暂不支持继续已有对话」，不会悄悄没了规矩，但客户也就用不上这个功能了。所以抬之前先照它的做法跑一遍，免得推荐版一抬这个功能就关了：起新版的 `codex app-server --listen stdio://`（`initialize` 带 `experimentalApi: true`，模型指本机假接口），开一段对话聊一句；换一个进程 `thread/resume` 它，发 `thread/settings/update` 带 `collaborationMode.settings.developer_instructions`；再 `thread/resume` 一次，答回来的 `collaborationMode.settings.developer_instructions` 应当一字不差；再发一句，假接口收到的请求里应当有这段话（developer 消息）。哪一步对不上就先别抬，在 PR 里写清楚变了什么。2026-11-23 在 0.169.0 和 0.171.0 上照这个跑过，两版结果一样（换型号后规矩也还在，重开进程再接也还在）；把 `collaborationMode` 写错名字时 Codex 照样回成功，再接答回来的就没有这段话，客户端就是靠这一点认出来的。
 
 npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指向 `2.1.267`，而那个版本正落在名单里 2.1.265–2.1.268 那条不兼容区间内。只看 `latest`。
 

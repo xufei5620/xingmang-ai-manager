@@ -330,6 +330,26 @@ describe('verified-install.ps1', () => {
     expect(block).toContain('-File \' + (ConvertTo-QuotedArgument $self)')
   })
 
+  it('gives the installer a temp folder inside the protected staging directory', () => {
+    // The installer unpacks and runs things from under TEMP while elevated, so
+    // the user's own temp folder must not reach it.
+    const created = script.indexOf('[void][IO.Directory]::CreateDirectory($installTemp, $directorySecurity)')
+    const started = script.indexOf('$installer = [Diagnostics.Process]::Start($start)')
+    expect(script).toContain("$installTemp = [IO.Path]::Combine($staging, 'temp')")
+    expect(created).toBeGreaterThan(script.indexOf('$start = [Diagnostics.ProcessStartInfo]::new($payload'))
+    for (const name of ['TEMP', 'TMP']) {
+      const assigned = script.indexOf(`$start.EnvironmentVariables['${name}'] = $installTemp`)
+      expect(assigned).toBeGreaterThan(created)
+      expect(assigned).toBeLessThan(started)
+    }
+    // Removed on the way out, before the staging directory that cannot go while
+    // it is still there.
+    const cleanup = script.slice(script.indexOf('} finally {'))
+    const removed = cleanup.indexOf('[IO.Directory]::Delete($installTemp, $false)')
+    expect(removed).toBeGreaterThan(-1)
+    expect(removed).toBeLessThan(cleanup.indexOf('[IO.Directory]::Delete($staging, $false)'))
+  })
+
   it('writes its status under the Windows directory it resolves itself, never a path the app passes in', () => {
     expect(script).toContain("'xingmang-update-status-' + $Nonce + '.json'")
     expect(script).toContain('[IO.FileMode]::CreateNew')
