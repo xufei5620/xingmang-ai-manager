@@ -71,7 +71,7 @@ describe('cli uninstall service', () => {
 
   // #1407 P3-3：Windows 上手机遥控开着的那份 Codex 锁着包目录，正在干活时不卸、原句告诉客户，什么都没动。
   it('leaves Codex installed when the remote control is still using it', async () => {
-    const busy = '手机遥控里的 Codex 正在干活，等它做完再卸载，或者先在设置里关掉手机遥控。'
+    const busy = '手机遥控中的 Codex 正在处理任务，请待其完成后再卸载，或先在设置中关闭手机遥控。'
     const releaseCodexRemote = vi.fn(async () => { throw new Error(busy) })
     const packageRoot = path.join(os.tmpdir(), 'npm', 'node_modules', '@openai', 'codex')
     const inspectCliTool = vi.fn(async () => ({

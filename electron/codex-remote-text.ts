@@ -8,68 +8,68 @@ import type { RemoteApprovalKind, RemoteApprovalOutcome, RemoteApprovalRequest }
 // 手机遥控发到聊天里的字、从聊天里认的指令，飞书、微信共用。字都在这一张表里，改字只改这里。
 
 export const remoteMessages = {
-  paired: '配对成功。这台电脑上的 Codex 现在只听你的。直接发消息就能让它干活，发「帮助」看能用的指令。',
-  received: '收到，Codex 开始处理。',
-  busy: 'Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。',
-  emptyAnswer: '这一轮做完了，Codex 没有留下文字回复。',
+  paired: '配对成功，本机的 Codex 现仅响应您的消息。直接发送消息即可下达任务，发送「帮助」可查看可用指令。',
+  received: '已收到，Codex 开始处理。',
+  busy: 'Codex 正在处理上一条消息，请待其完成后再发送，或发送「停止」中断。',
+  emptyAnswer: '本轮已完成，Codex 未返回文字回复。',
   interrupted: '已停止。',
   // 请 Codex 停、它没答应（回了错、10 秒没回）时（M01）：这一轮照旧算在做，后来停下了再说「已停止。」。
-  stopPending: '还没停下来，Codex 还在处理上一条。停下以后会告诉你，也可以过一会儿再发一次「停止」。',
-  newThreadStopPending: '上一条还没停下来，新对话没开。Codex 停下以后会告诉你，到时再发「新对话」。',
-  nothingToStop: '现在没有在处理的任务。',
+  stopPending: 'Codex 仍在处理上一条消息，尚未停止。停止后将通知您，您也可稍后再次发送「停止」。',
+  newThreadStopPending: '上一条消息尚未停止，新对话未开启。Codex 停止后将通知您，届时请再次发送「新对话」。',
+  nothingToStop: '当前没有正在处理的任务。',
   newThread: '已开始新对话。',
   // 语音、文件这些（YF-14，yoyo 2026-11-11「图片改」）：图片能发了，这句跟着改。
-  unsupported: '暂时只支持文字和图片。语音、文件发不过来，请打成字。',
+  unsupported: '目前仅支持文字和图片，暂不支持语音和文件，请改用文字发送。',
   help: '直接发送消息即可让 Codex 执行任务。\n可用指令：新对话、停止、状态、文件夹、关闭遥控、重试、帮助。\nCodex 执行需要您确认的操作前会先询问，请回复「同意」或「拒绝」。',
   closedOnComputer: '手机遥控已在电脑上关闭。',
   // 手机上发「关闭遥控」（Fable 手机遥控 YF-17，yoyo 2026-11-11「第三批改」）：开着的渠道都收到这一句。
-  closedFromPhone: '手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。',
-  quitting: '电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。',
+  closedFromPhone: '手机遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。',
+  quitting: '电脑端的星芒已退出，遥控已停止。请重新打开星芒并开启遥控后继续使用。',
   // 开了「打开星芒时自动打开遥控」（YF-9）时退出说的这句（手机遥控深查 YR-8，yoyo 2026-11-18「这些都按照你的推荐」）：
   // 再打开星芒就会自己连上，不用再去设置里开。
-  quittingAutoStart: '电脑上的星芒关了，遥控已停。星芒再打开时会自动连上。',
-  quitAborted: '电脑上的星芒没关成，遥控还开着，可以接着用。',
-  stalled: '这件事 1 小时没有任何进展，已经停下。可以重新说一遍要做什么。',
-  codexUnavailable: '电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。',
-  commandRefused: 'Codex 想运行的命令太长，手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。',
-  permissionsRefused: 'Codex 想多要一些权限，但要的范围手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。',
-  staleApprovalCard: '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。',
-  clockAhead: '电脑上的时间和手机差得太多，这条消息没有执行。请把电脑时间调准后再发。',
+  quittingAutoStart: '电脑端的星芒已退出，遥控已停止。星芒再次打开时将自动连接。',
+  quitAborted: '电脑端的星芒未退出，遥控仍保持开启，可继续使用。',
+  stalled: '该任务 1 小时内无任何进展，已停止。请重新描述需要执行的任务。',
+  codexUnavailable: '电脑端的 Codex 启动失败，请在电脑端的星芒中查看。',
+  commandRefused: 'Codex 请求运行的命令过长，无法在手机上完整显示，已自动拒绝。如确有需要，请在电脑端直接使用 Codex 完成此操作。',
+  permissionsRefused: 'Codex 请求了额外权限，但请求范围无法在手机上完整显示，已自动拒绝。如确有需要，请在电脑端直接使用 Codex 完成此操作。',
+  staleApprovalCard: '此卡片已失效（已处理、已超时，或电脑端的星芒已重启），本次操作未生效。如有需要您确认的操作，将另发新卡片。',
+  clockAhead: '电脑与手机的时间相差过大，此消息未执行。请校准电脑时间后重新发送。',
   // 以下四句是 0.2.24 深查 D66（手机遥控.md YKS-3、16、18、19），yoyo 11-10「决定单照推荐」。
-  codexStarting: '电脑正在准备 Codex，稍等一下；想取消就发「停止」。',
-  threadReset: '这是新对话，前面的记不得了。',
-  unbound: '电脑上已经把你解绑了，之后发的消息不会再执行。',
-  idleClosingSoon: '手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。',
+  codexStarting: '电脑正在启动 Codex，请稍候；如需取消，请发送「停止」。',
+  threadReset: '当前为新对话，Codex 无法读取此前的对话内容。',
+  unbound: '您已在电脑端被解绑，此后发送的消息将不再执行。',
+  idleClosingSoon: '手机遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。',
   // 手机上发「重试」、这次打开以后还没交给 Codex 过一句时（Fable 手机遥控 YF-22，yoyo 2026-11-11「状态重试改」）。
-  nothingToRetry: '还没有可以重发的上一条。直接发要做的事就行。',
+  nothingToRetry: '暂无可重新发送的上一条消息，请直接发送需要执行的任务。',
   // 点的是上一轮留下的进度卡上的「停止」（YF-15，yoyo 2026-11-11「进度改」）：这一轮不停。
-  staleProgressCard: '这张卡片是上一轮的，现在这一轮没有停。要停请发「停止」。',
+  staleProgressCard: '此卡片属于上一轮，当前任务未停止。如需停止，请发送「停止」。',
   // 手机上换文件夹（YF-19）：这一轮还没做完（含等你同意）时不换，免得改到一半换了地方。
-  workspaceBusy: 'Codex 还在处理上一条，等它做完再换文件夹。',
+  workspaceBusy: 'Codex 正在处理上一条消息，请待其完成后再切换文件夹。',
   // 手机上发图片（YF-14，yoyo 2026-11-11「图片改」）。图和字在聊天里是分开的两条，只有图时先攒着等下一句话。
-  imageReceived: '收到图片。再发一句要 Codex 做什么，会跟图片一起交给它。',
-  imagesFull: '一次最多带 5 张图片，这张没收。',
-  imageTooLarge: '这张图片太大了，电脑没收。请发小一点的，或者截一部分。',
-  imagePermissionFeishu: '这张图片电脑没取到。飞书后台要多开一个权限「获取单聊、群组消息」，再发布一个版本。',
-  imageFailed: '这张图片电脑没取到，请再发一次。',
+  imageReceived: '已收到图片。请再发送一条消息说明需要 Codex 执行的任务，图片将一并提交。',
+  imagesFull: '每次最多附带 5 张图片，此图片未接收。',
+  imageTooLarge: '图片过大，未能接收。请发送较小的图片或截取部分内容。',
+  imagePermissionFeishu: '电脑未能获取此图片。请在飞书后台开通「获取单聊、群组消息」权限，并重新发布一个版本。',
+  imageFailed: '电脑未能获取此图片，请重新发送。',
   // 以下两句是 Codex 复核 M03，yoyo 2026-11-18「这些都按照你的推荐」。
   // 做完了、回答当时没送到手机，手机那头通了补发：放在原回答前面。
-  answerResent: '之前有一条回答没发到你手机上，这里补发：',
+  answerResent: '此前有一条回复未能送达，现补发如下：',
   // 发「重试」时碰上补发：上一条其实做完了，这次不让 Codex 再做一遍。
-  retryAfterAnswerResent: '上一条已经做完了，回答就是上面那条，所以这次没有重做。确实要重做，请再发一次「重试」。',
+  retryAfterAnswerResent: '上一条消息已处理完成，回复即为上方内容，因此本次未重新执行。如确需重新执行，请再次发送「重试」。',
 } as const
 
 /** 「收到」那句（YF-14）：带着图的说几张，没带图的照旧。 */
 export function receivedMessage(imageCount: number): string {
-  return imageCount > 0 ? `收到，带着 ${imageCount} 张图片，Codex 开始处理。` : remoteMessages.received
+  return imageCount > 0 ? `已收到（含 ${imageCount} 张图片），Codex 开始处理。` : remoteMessages.received
 }
 
 /** 飞书进度卡的标题（YF-15，yoyo 2026-11-11「进度改」）：做着的时候、做完、停了、没做完。 */
 export const progressCardTitles = {
   running: 'Codex 正在处理',
-  done: '做完了',
+  done: '已完成',
   stopped: '已停止',
-  failed: '没做完',
+  failed: '未完成',
 } as const
 
 /** 进度卡上每一步前面的记号（YF-15）：做完、正在做、还没做。 */
@@ -88,7 +88,7 @@ const retryPreviewLength = 20
 export function retryMessage(text: string): string {
   const characters = [...text.trim().replace(/\s+/g, ' ')]
   const head = characters.slice(0, retryPreviewLength).join('')
-  return `再发一次上一条：「${characters.length > retryPreviewLength ? `${head}…` : head}」`
+  return `重新发送上一条：「${characters.length > retryPreviewLength ? `${head}…` : head}」`
 }
 
 /**
@@ -97,17 +97,17 @@ export function retryMessage(text: string): string {
  */
 export function idleClosedMessage(hours: number, autoStart = false): string {
   return autoStart
-    ? `${hours} 小时没有新消息，手机遥控已自动关闭。星芒下次打开时会自动连上，现在要用请在电脑上重新打开。`
-    : `${hours} 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。`
+    ? `${hours} 小时内无新消息，手机遥控已自动关闭。星芒下次打开时将自动连接；如需立即使用，请在电脑端重新开启。`
+    : `${hours} 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。`
 }
 
 /** 遥控开着时发的、到电脑时已超过 10 分钟的消息照旧不执行，只给绑定的人回这一句（D66 / YKS-9）。 */
 export function staleMessageNotice(minutes: number): string {
-  return `这条是 ${minutes} 分钟前发的，那会儿电脑没连上，没有执行。还要做的话请再发一次。`
+  return `此消息发送于 ${minutes} 分钟前，当时电脑未连接，因此未执行。如仍需执行，请重新发送。`
 }
 
 export function turnFailedMessage(reason: string): string {
-  return reason ? `这一轮没做完：${reason}` : '这一轮没做完。'
+  return reason ? `本轮未完成：${reason}` : '本轮未完成。'
 }
 
 /**
@@ -118,12 +118,12 @@ export function turnFailedMessage(reason: string): string {
 export type RemoteTurnFailure = 'balance' | 'keyLimit' | 'login' | 'context' | 'connection'
 
 export const remoteTurnFailureMessages: Readonly<Record<RemoteTurnFailure, string>> = {
-  balance: '余额不够了，充值后再发一次。',
+  balance: '余额不足，请充值后重新发送。',
   // 单子上的四句里没有这一种（密钥自己设的上限用完了，充值也没用），用软件里已有的那句。
   keyLimit: turnFailedMessage(relayQuotaFailureMessages.keyLimit),
-  login: '电脑上的登录失效了，请在电脑上的星芒里重新登录。',
-  context: '这段对话太长了，发「新对话」重新开始。',
-  connection: '电脑这会儿连不上星芒的线路，过一会儿再发。',
+  login: '电脑端登录已失效，请在电脑端的星芒中重新登录。',
+  context: '当前对话过长，请发送「新对话」重新开始。',
+  connection: '电脑暂时无法连接星芒线路，请稍后重新发送。',
 }
 
 interface CodexErrorInfoSummary {
@@ -192,20 +192,20 @@ export function approvalDeclinedMessage(id: string): string {
 }
 
 export function approvalExpiredMessage(id: string, minutes: number): string {
-  return `第 ${id} 条等了 ${minutes} 分钟没回，已自动拒绝。`
+  return `第 ${id} 条在 ${minutes} 分钟内未获回复，已自动拒绝。`
 }
 
 /** 等你同意的快过期时提醒一次（Fable 手机遥控 YF-20，yoyo 2026-11-11「第三批改」）。 */
 export function approvalExpiringMessage(id: string, minutesLeft: number): string {
-  return `第 ${id} 条还在等你，${minutesLeft} 分钟后自动拒绝。回「同意 ${id}」或「拒绝 ${id}」。`
+  return `第 ${id} 条仍在等待您的确认，将于 ${minutesLeft} 分钟后自动拒绝。请回复「同意 ${id}」或「拒绝 ${id}」。`
 }
 
 export function unknownApprovalMessage(id: string): string {
-  return `没有第 ${id} 条等你同意的操作。`
+  return `不存在第 ${id} 条待确认的操作。`
 }
 
 export function whichApprovalMessage(ids: readonly string[]): string {
-  return `现在有 ${ids.length} 条等你同意（${ids.join('、')}），请回「同意 编号」或「拒绝 编号」。`
+  return `当前有 ${ids.length} 条待确认（${ids.join('、')}），请回复「同意 编号」或「拒绝 编号」。`
 }
 
 export interface RemoteStatusSummary {
@@ -227,16 +227,16 @@ export interface RemoteStatusSummary {
  * workspace 是已换成 ~ 的工作文件夹，跟「状态」里那行同一种写法。
  */
 export function remoteOpenedMessage(workspace: string): string {
-  return `电脑上的手机遥控打开了，可以发消息了。工作文件夹：${workspace}`
+  return `电脑端已开启手机遥控，现在可以发送消息。工作文件夹：${workspace}`
 }
 
 /** 「状态」里「已经多久」那种写法（YF-18）：已经不到 1 分钟、已经 6 分钟、已经 1 小时 5 分钟。 */
 export function remoteRunningForText(ms: number): string {
   const minutes = Math.floor(Math.max(0, ms) / 60_000)
-  if (minutes < 1) return '已经不到 1 分钟'
-  if (minutes < 60) return `已经 ${minutes} 分钟`
+  if (minutes < 1) return '已用时不到 1 分钟'
+  if (minutes < 60) return `已用时 ${minutes} 分钟`
   const rest = minutes % 60
-  return rest ? `已经 ${Math.floor(minutes / 60)} 小时 ${rest} 分钟` : `已经 ${Math.floor(minutes / 60)} 小时`
+  return rest ? `已用时 ${Math.floor(minutes / 60)} 小时 ${rest} 分钟` : `已用时 ${Math.floor(minutes / 60)} 小时`
 }
 
 /**
@@ -257,15 +257,15 @@ const maxStatusStepLength = 30
  */
 export function statusMessage(status: RemoteStatusSummary): string {
   let now = '空闲'
-  if (status.pendingApprovals > 0) now = `等你同意 ${status.pendingApprovals} 条`
+  if (status.pendingApprovals > 0) now = `待确认 ${status.pendingApprovals} 条`
   else if (status.running) {
     const step = status.step ? status.step.replace(/\s+/g, ' ').trim() : ''
     now = `正在处理，${remoteRunningForText(status.runningForMs ?? 0)}`
-    if (step) now += `，做到「${truncateRemoteText(step, maxStatusStepLength)}」`
+    if (step) now += `，当前步骤「${truncateRemoteText(step, maxStatusStepLength)}」`
   }
-  const lines = [`工作文件夹：${status.workspace}`, `现在：${now}`]
+  const lines = [`工作文件夹：${status.workspace}`, `当前状态：${now}`]
   if (typeof status.balanceUsd === 'number' && Number.isFinite(status.balanceUsd)) lines.push(`余额：${remoteDollars(status.balanceUsd)}`)
-  if (status.idleCloseHours) lines.push(`再过 ${status.idleCloseHours} 小时没新消息就自动关`)
+  if (status.idleCloseHours) lines.push(`${status.idleCloseHours} 小时内无新消息将自动关闭`)
   return lines.join('\n')
 }
 
@@ -275,8 +275,8 @@ export function statusMessage(status: RemoteStatusSummary): string {
  */
 export function progressTextMessage(runningForMs: number, step: string | null): string {
   const shown = step ? step.replace(/\s+/g, ' ').trim() : ''
-  const head = `还在做，${remoteRunningForText(runningForMs)}。`
-  return shown ? `${head}现在这一步：${truncateRemoteText(shown, maxStatusStepLength)}` : head
+  const head = `仍在处理，${remoteRunningForText(runningForMs)}。`
+  return shown ? `${head}当前步骤：${truncateRemoteText(shown, maxStatusStepLength)}` : head
 }
 
 /**
@@ -284,31 +284,31 @@ export function progressTextMessage(runningForMs: number, step: string | null): 
  * 举的例子是第一个没在用的。只有一个时说去电脑上加。
  */
 export function workspaceListMessage(folders: readonly string[], current: string | null): string {
-  const lines = folders.map((folder, index) => `${index + 1}. ${folder}${folder === current ? '（正在用）' : ''}`)
+  const lines = folders.map((folder, index) => `${index + 1}. ${folder}${folder === current ? '（使用中）' : ''}`)
   const other = folders.findIndex((folder) => folder !== current)
-  if (folders.length > 1 && other >= 0) lines.push(`回「文件夹 ${other + 1}」切过去。`)
-  else lines.push('要换别的，先在电脑上「干活的文件夹」那里添加。')
+  if (folders.length > 1 && other >= 0) lines.push(`回复「文件夹 ${other + 1}」即可切换。`)
+  else lines.push('如需使用其他文件夹，请先在电脑端的「工作文件夹」中添加。')
   return lines.join('\n')
 }
 
 /** 手机上切好了文件夹（YF-19）：新文件夹从新对话开始，前面说的 Codex 不记得。 */
 export function workspaceSwitchedMessage(folder: string): string {
-  return `已切到 ${folder}，从新对话开始。`
+  return `已切换至 ${folder}，将从新对话开始。`
 }
 
 /** 切的就是正在用的那个（YF-19）。 */
 export function workspaceAlreadyInUseMessage(folder: string): string {
-  return `现在用的就是 ${folder}。`
+  return `当前已在使用 ${folder}。`
 }
 
 /** 「文件夹 N」没有第 N 个（YF-19）。 */
 export function workspaceMissingMessage(index: number): string {
-  return `没有第 ${index} 个文件夹。发「文件夹」看有哪些。`
+  return `不存在第 ${index} 个文件夹，请发送「文件夹」查看列表。`
 }
 
 /** 要切过去的文件夹被移走、删掉了（YF-19）：手机上没法重新选，让他回电脑上看。 */
 export function workspaceUnusableMessage(folder: string): string {
-  return `${folder} 现在打不开了，可能被移走或删掉了。先在电脑上看一下。`
+  return `${folder} 当前无法打开，可能已被移动或删除，请在电脑端检查。`
 }
 
 /** 做完小结里「用时」那种写法（YF-16）：45 秒、3 分 20 秒、1 小时 5 分。 */
@@ -330,16 +330,16 @@ export function turnSummaryLine(tookMs: number, fileNames: readonly string[]): s
   const took = `用时 ${remoteTookText(tookMs)}`
   if (!fileNames.length) return `${took}。`
   const shown = fileNames.slice(0, maxSummaryFileNames).join('、')
-  const more = fileNames.length > maxSummaryFileNames ? `，另外 ${fileNames.length - maxSummaryFileNames} 个` : ''
-  return `${took}，改了 ${fileNames.length} 个文件：${shown}${more}。`
+  const more = fileNames.length > maxSummaryFileNames ? `，另有 ${fileNames.length - maxSummaryFileNames} 个` : ''
+  return `${took}，修改了 ${fileNames.length} 个文件：${shown}${more}。`
 }
 
 const approvalTitles: Record<RemoteApprovalKind, string> = {
-  command: 'Codex 想运行命令',
-  'terminal-input': 'Codex 想往正在运行的程序里输入',
-  network: 'Codex 想连网站',
-  'file-change': 'Codex 想改文件',
-  other: 'Codex 想做一件需要你同意的事',
+  command: 'Codex 请求运行命令',
+  'terminal-input': 'Codex 请求向运行中的程序输入内容',
+  network: 'Codex 请求访问网站',
+  'file-change': 'Codex 请求修改文件',
+  other: 'Codex 请求执行一项需要您确认的操作',
 }
 
 export function approvalTitle(kind: RemoteApprovalKind): string {
@@ -348,7 +348,7 @@ export function approvalTitle(kind: RemoteApprovalKind): string {
 
 /** 没有按钮的渠道发这一段；有按钮的渠道也把它当卡片正文。 */
 export function formatApprovalText(request: RemoteApprovalRequest): string {
-  return `${formatApprovalBody(request)}\n回「同意 ${request.approvalId}」或「拒绝 ${request.approvalId}」。`
+  return `${formatApprovalBody(request)}\n请回复「同意 ${request.approvalId}」或「拒绝 ${request.approvalId}」。`
 }
 
 /**
@@ -368,7 +368,7 @@ export function formatApprovalBody(request: RemoteApprovalRequest): string {
 /** 处理过的审批卡的标题（YK-8，yoyo 2026-11-11「同意卡改」）。 */
 export function approvalOutcomeTitle(outcome: RemoteApprovalOutcome, id: string): string {
   if (outcome === 'accepted') return `已同意（第 ${id} 条）`
-  if (outcome === 'expired') return `没回，已自动拒绝（第 ${id} 条）`
+  if (outcome === 'expired') return `未回复，已自动拒绝（第 ${id} 条）`
   return `已拒绝（第 ${id} 条）`
 }
 
@@ -392,7 +392,7 @@ export function formatFileChangeLine(change: RemoteFileChangeLine): string {
   let line = change.path
   if (change.kind === 'add') line = `新建 ${change.path}`
   else if (change.kind === 'delete') line = `删除 ${change.path}`
-  else if (change.kind === 'update') line = change.movePath ? `${change.path} 挪到 ${change.movePath}` : `改 ${change.path}`
+  else if (change.kind === 'update') line = change.movePath ? `${change.path} 移动到 ${change.movePath}` : `修改 ${change.path}`
   return change.added === undefined || change.removed === undefined ? line : `${line} +${change.added} -${change.removed} 行`
 }
 
@@ -491,7 +491,7 @@ export function truncateRemoteText(text: string, maxLength: number): string {
 export function splitRemoteText(text: string, maxLength: number, maxChunks: number): string[] {
   const chunks: string[] = []
   let rest = text.trim()
-  const notice = '\n…（后面太长，没有发完，请到电脑上看）'
+  const notice = '\n…（内容过长，其余部分未发送，请在电脑端查看）'
   while (rest && chunks.length < maxChunks) {
     if (rest.length <= maxLength) {
       chunks.push(rest)

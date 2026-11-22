@@ -41,11 +41,11 @@ export function remoteSwitchHint(
   isMac = false,
 ): string {
   if (!channel.enabled && !channel.hasCredential) return credentialHint
-  if (!channel.enabled && !snapshot.workspaceDirectory) return '先在上面选好干活的文件夹。'
-  const reopen = snapshot.autoStart ? '' : '，下次打开星芒要再打开一次'
-  const idle = snapshot.idleCloseHours ? `；闲着 ${snapshot.idleCloseHours} 小时也会自动断开` : ''
-  const hidden = isMac ? '窗口收到菜单栏也照样开着' : '窗口缩到托盘也照样开着'
-  return `开着时电脑不会自己睡着，合上笔记本盖子还是会睡。${hidden}，退出星芒才断开${reopen}${idle}。`
+  if (!channel.enabled && !snapshot.workspaceDirectory) return '请先在上方选择工作文件夹。'
+  const reopen = snapshot.autoStart ? '' : '，下次打开星芒需重新开启'
+  const idle = snapshot.idleCloseHours ? `；无消息 ${snapshot.idleCloseHours} 小时后也会自动断开` : ''
+  const hidden = isMac ? '窗口收到菜单栏后仍保持开启' : '窗口缩到托盘后仍保持开启'
+  return `开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。${hidden}，退出星芒后才会断开${reopen}${idle}。`
 }
 
 export function remoteChannelStateLabel(status: RemoteChannelStatus): string {
@@ -55,9 +55,9 @@ export function remoteChannelStateLabel(status: RemoteChannelStatus): string {
     case 'connecting':
       return '正在连接'
     case 'connected':
-      return '已连上'
+      return '已连接'
     case 'needs-login':
-      return '要重新登录'
+      return '需重新登录'
     case 'error':
       return '出错'
   }
@@ -71,7 +71,7 @@ export function remoteChannelStateTone(status: RemoteChannelStatus): 'neutral' |
 }
 
 /** 码挂了 1 分钟只收到群里的消息时，数字下面那句（YF-2）。两个渠道一样。 */
-export const pairingGroupOnlyText = '收到的是群里的消息，不算。要点开机器人单独私聊它。'
+export const pairingGroupOnlyText = '收到的是群聊消息，无法用于配对。请打开机器人，单独私聊发送。'
 
 /**
  * 配对那一行下面的小字（D66 / YKS-21）：手机上发来过错的码就说错了几次，错满作废了说要重新开始配对。
@@ -81,7 +81,7 @@ export const pairingGroupOnlyText = '收到的是群里的消息，不算。要�
 export function pairingAttemptText(channel: Pick<CodexRemoteChannelSnapshot, 'pairing' | 'pairingLocked'>, quietHint: string): string | null {
   const pairing = channel.pairing
   if (!pairing) return channel.pairingLocked ? '此配对码已失效，请重新开始配对。' : null
-  if (pairing.failures) return `配对码错了 ${pairing.failures} 次`
+  if (pairing.failures) return `配对码已输错 ${pairing.failures} 次`
   if (pairing.quiet === 'group-only') return pairingGroupOnlyText
   if (pairing.quiet === 'nothing') return quietHint
   return null
@@ -126,7 +126,7 @@ export function lastRequestText(request: CodexRemoteLastRequestSnapshot, now: nu
   const at = remoteClockText(request.receivedAt, now)
   switch (request.state) {
     case 'running':
-      return `${at} 发来一条，正在处理，已经 ${remoteElapsedText(now - request.receivedAt)}`
+      return `${at} 收到指令，正在处理，已用时 ${remoteElapsedText(now - request.receivedAt)}`
     case 'done':
       return `${at} 已完成`
     case 'stopped':

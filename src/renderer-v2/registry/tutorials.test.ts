@@ -189,7 +189,7 @@ describe('tutorial wording that follows the current app', () => {
       expect(entry, entry.action).not.toHaveProperty('section');
       expect(entry.where, entry.action).toContain(`左侧栏 › ${pageRegistry.find((page) => page.id === 'remote')?.label}`);
     }
-    expect(JSON.stringify(remote)).toContain('长期用建议选飞书');
+    expect(JSON.stringify(remote)).toContain('长期使用建议选择飞书');
   });
 
   it('teaches the Claude Code rewind and warns that terminal commands cannot be undone', () => {

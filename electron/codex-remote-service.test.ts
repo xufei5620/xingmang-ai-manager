@@ -227,7 +227,7 @@ class FakeChannel implements RemoteChannelAdapter {
     if (this.offline) {
       this.failed.push(message)
       this.wakeWaiters()
-      throw new Error('连不上飞书，请检查网络')
+      throw new Error('无法连接飞书，请检查网络')
     }
     this.sent.push({ peer, message, replyContext })
     this.wakeWaiters()
@@ -523,7 +523,7 @@ async function enabledAndPaired(s: Setup): Promise<FakeChannel> {
   const channel = s.channels[0]
   await s.service.startPairing('feishu')
   channel.handlers?.onInbound(text(alice, '000042'))
-  await channel.sentUntil(() => channel.texts().includes('配对成功。这台电脑上的 Codex 现在只听你的。直接发消息就能让它干活，发「帮助」看能用的指令。'))
+  await channel.sentUntil(() => channel.texts().includes('配对成功，本机的 Codex 现仅响应您的消息。直接发送消息即可下达任务，发送「帮助」可查看可用指令。'))
   channel.sent.length = 0
   return channel
 }
@@ -590,18 +590,18 @@ const wholeDiskWrite = {
   fileSystem: { read: null, write: null, entries: [{ path: { type: 'special', value: { kind: 'root' } }, access: 'write' }] },
 }
 
-const permissionsRefusedText = 'Codex 想多要一些权限，但要的范围手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。'
+const permissionsRefusedText = 'Codex 请求了额外权限，但请求范围无法在手机上完整显示，已自动拒绝。如确有需要，请在电脑端直接使用 Codex 完成此操作。'
 
-const commandRefusedText = 'Codex 想运行的命令太长，手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。'
+const commandRefusedText = 'Codex 请求运行的命令过长，无法在手机上完整显示，已自动拒绝。如确有需要，请在电脑端直接使用 Codex 完成此操作。'
 
 const npmRegistry = { host: 'registry.npmjs.org', protocol: 'https' }
 
-const staleCardText = '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。'
+const staleCardText = '此卡片已失效（已处理、已超时，或电脑端的星芒已重启），本次操作未生效。如有需要您确认的操作，将另发新卡片。'
 
-const clockAheadText = '电脑上的时间和手机差得太多，这条消息没有执行。请把电脑时间调准后再发。'
+const clockAheadText = '电脑与手机的时间相差过大，此消息未执行。请校准电脑时间后重新发送。'
 
 function staleNotice(minutes: number): string {
-  return `这条是 ${minutes} 分钟前发的，那会儿电脑没连上，没有执行。还要做的话请再发一次。`
+  return `此消息发送于 ${minutes} 分钟前，当时电脑未连接，因此未执行。如仍需执行，请重新发送。`
 }
 
 /** 老版本 Codex 只给路径时卡片上列的样子：不带新建、删除这些字，也不带行数。 */
@@ -799,7 +799,7 @@ describe('codex-remote-service helpers', () => {
     const files = Array.from({ length: 25 }, (_, index) => `/Users/alice/projects/demo/f${index}.ts`)
     const change = buildApprovalRequest('8', 'nonce-eight', 'file-change', {}, pathsOnly(files), { homeDirectory: '/Users/alice', platform: 'darwin', secrets: [] })
     expect(change.summary.split('\n')).toHaveLength(21)
-    expect(change.summary).toContain('另外还有 5 个文件')
+    expect(change.summary).toContain('另有 5 个文件')
   })
 
   it('tells running a command, typing into a running program and reaching a website apart', () => {
@@ -848,9 +848,9 @@ describe('codex-remote-service helpers', () => {
     const summary = buildApprovalRequest('8', 'nonce-eight', 'file-change', { grantRoot: '/Volumes/Work/customer-portal' }, pathsOnly(files), display).summary
     expect(summary.length).toBeLessThanOrEqual(1500)
     expect(summary).not.toContain('…')
-    expect(summary.split('\n')).toEqual([...files.slice(0, 17), '另外还有 8 个文件', '可写范围：/Volumes/Work/customer-portal'])
+    expect(summary.split('\n')).toEqual([...files.slice(0, 17), '另有 8 个文件', '可写范围：/Volumes/Work/customer-portal'])
     // Without a write scope the whole budget goes to the file list.
-    expect(buildFileChangeSummary({}, pathsOnly(files), display)?.split('\n')).toEqual([...files.slice(0, 18), '另外还有 7 个文件'])
+    expect(buildFileChangeSummary({}, pathsOnly(files), display)?.split('\n')).toEqual([...files.slice(0, 18), '另有 7 个文件'])
     expect(buildFileChangeSummary({}, [], display)).toBe('')
     // A write scope that cannot be shown whole leaves nothing to put to the person.
     expect(buildFileChangeSummary({ grantRoot: `/${'deep/'.repeat(300)}` }, pathsOnly(files), display)).toBeNull()
@@ -875,8 +875,8 @@ describe('codex-remote-service helpers', () => {
     expect(buildFileChangeSummary({}, changes.filter((change): change is RemoteFileChangeLine => change !== null), display)?.split('\n')).toEqual([
       '新建 ~/projects/demo/new.ts +3 -0 行',
       '删除 ~/projects/demo/old.ts +0 -2 行',
-      '改 ~/projects/demo/app.ts +2 -1 行',
-      '~/projects/demo/a.ts 挪到 ~/projects/demo/b.ts +1 -1 行',
+      '修改 ~/projects/demo/app.ts +2 -1 行',
+      '~/projects/demo/a.ts 移动到 ~/projects/demo/b.ts +1 -1 行',
       '~/projects/demo/legacy.ts',
     ])
     expect(readFileChange({ kind: { type: 'add' } })).toBeNull()
@@ -985,8 +985,8 @@ describe('codex-remote-service enabling', () => {
   })
 
   it('refuses to start when Codex is not installed on this computer', async () => {
-    const s = await setup({ codexProblem: '这台电脑还没装 Codex 命令行工具，先在首页把它装好。' })
-    await expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('这台电脑还没装 Codex 命令行工具')
+    const s = await setup({ codexProblem: '本机尚未安装 Codex CLI，请先在首页完成安装。' })
+    await expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('本机尚未安装 Codex CLI')
     expect(s.channels).toHaveLength(0)
   })
 
@@ -1012,7 +1012,7 @@ describe('codex-remote-service enabling', () => {
   it('reconnects a stuck channel in place without telling the phone it was closed or forgetting the bound person', async () => {
     const s = await setup()
     const first = await enabledAndPaired(s)
-    first.handlers?.onStatus({ state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' })
+    first.handlers?.onStatus({ state: 'error', message: '该飞书应用已在其他位置连接，请先断开其他连接后重试。', problem: 'connection-limit' })
     expect((await s.service.snapshot()).channels.feishu.status.problem).toBe('connection-limit')
 
     const snapshot = await s.service.reconnectChannel('feishu')
@@ -1094,7 +1094,7 @@ describe('codex-remote-service enabling', () => {
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
   })
 
-  // YKS-6：微信重新扫码、服务端认出是原来那份登录时凭据没换；渠道停在「需要重新登录」就重连一次，连着的、关着的不动。
+  // YKS-6：微信重新扫码、服务端认出是原来那份登录时凭据没换；渠道停在「需需重新登录」就重连一次，连着的、关着的不动。
   it('reconnects a channel stuck on signing in again once the old login is recognised, and leaves a working or closed one alone', async () => {
     const s = await setup()
     await s.service.reconnectIfLoggedOut('feishu')
@@ -1104,7 +1104,7 @@ describe('codex-remote-service enabling', () => {
     expect(first.stopped).toBe(0)
     expect(s.channels).toHaveLength(1)
 
-    first.handlers?.onStatus({ state: 'needs-login', message: '微信这边的登录已经过期，请在电脑上重新扫码' })
+    first.handlers?.onStatus({ state: 'needs-login', message: '微信登录已失效，请在电脑端重新扫码' })
     await s.service.reconnectIfLoggedOut('feishu')
     expect(first.stopped).toBe(1)
     expect(first.sent).toHaveLength(0)
@@ -1118,7 +1118,7 @@ describe('codex-remote-service enabling', () => {
   it('does not throw when remote control may no longer run at the moment the old login is recognised', async () => {
     const s = await setup()
     const first = await enabledAndPaired(s)
-    first.handlers?.onStatus({ state: 'needs-login', message: '微信这边的登录已经过期，请在电脑上重新扫码' })
+    first.handlers?.onStatus({ state: 'needs-login', message: '微信登录已失效，请在电脑端重新扫码' })
     s.unavailable.reason = '星芒正以管理员身份运行'
     await expect(s.service.reconnectIfLoggedOut('feishu')).resolves.toBeUndefined()
     expect(first.stopped).toBe(1)
@@ -1162,9 +1162,9 @@ describe('codex-remote-service switching on from the tray', () => {
     const s = await setup(options)
     await enabledAndPaired(s)
     await s.service.setChannelEnabled('feishu', false)
-    options.codexProblem = '这台电脑还没装 Codex 命令行工具，先在首页把它装好。'
+    options.codexProblem = '本机尚未安装 Codex CLI，请先在首页完成安装。'
     s.snapshots.length = 0
-    expect(await s.service.enableReadyChannels()).toEqual({ opened: [], failure: '这台电脑还没装 Codex 命令行工具，先在首页把它装好。' })
+    expect(await s.service.enableReadyChannels()).toEqual({ opened: [], failure: '本机尚未安装 Codex CLI，请先在首页完成安装。' })
     expect(s.service.hasEnabledChannel()).toBe(false)
     expect(s.logs).toContain('remote.tray-enable-failed')
     // 托盘那一项留着：没打开，下次修好了还能从这里开。
@@ -1221,7 +1221,7 @@ describe('codex-remote-service switching on when Xingmang opens', () => {
     expect(s.channels).toHaveLength(1)
     expect(s.logDetails.find((entry) => entry.event === 'remote.auto-started')?.detail).toEqual({ opened: 1, failed: false })
     // 自己连上的也跟手动打开一样，给配对过的人说一声（YF-11），他在外面才知道能用了。
-    await s.channels[0].sentUntil(() => s.channels[0].texts().some((line) => line.startsWith('电脑上的手机遥控打开了')))
+    await s.channels[0].sentUntil(() => s.channels[0].texts().some((line) => line.startsWith('电脑端已开启手机遥控')))
     expect(s.channels[0].sent[0].peer).toMatchObject({ userId: alice.userId })
   })
 
@@ -1242,14 +1242,14 @@ describe('codex-remote-service switching on when Xingmang opens', () => {
   // YR-7：打不开时卡片上说原因（原句就是在设置里点开时那句），开关照旧开着等下次。
   it('tells the card why it could not open, leaving the switch on for next time', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const s = await relaunchedWithAutoStart({ codexProblem: '这台电脑还没装 Codex 命令行工具，先在首页把它装好。' })
+    const s = await relaunchedWithAutoStart({ codexProblem: '本机尚未安装 Codex CLI，请先在首页完成安装。' })
     await s.service.startOnLaunch()
     expect(s.service.hasEnabledChannel()).toBe(false)
     expect(autoStartLogs(s, 'remote.auto-started')).toEqual([{ opened: 0, failed: true }])
     const snapshot = await s.service.snapshot()
     expect(snapshot.autoStart).toBe(true)
-    expect(snapshot.autoStartFailure).toBe('这台电脑还没装 Codex 命令行工具，先在首页把它装好。')
-    expect(s.snapshots.at(-1)?.autoStartFailure).toBe('这台电脑还没装 Codex 命令行工具，先在首页把它装好。')
+    expect(snapshot.autoStartFailure).toBe('本机尚未安装 Codex CLI，请先在首页完成安装。')
+    expect(s.snapshots.at(-1)?.autoStartFailure).toBe('本机尚未安装 Codex CLI，请先在首页完成安装。')
     s.service.dispose()
   })
 
@@ -1259,7 +1259,7 @@ describe('codex-remote-service switching on when Xingmang opens', () => {
     const s = await relaunchedWithAutoStart()
     fs.rmSync(s.workspace, { recursive: true, force: true })
     await s.service.startOnLaunch()
-    expect((await s.service.snapshot()).autoStartFailure).toBe('这个文件夹不存在了，请重新选。')
+    expect((await s.service.snapshot()).autoStartFailure).toBe('该文件夹已不存在，请重新选择。')
     expect(s.channels).toHaveLength(0)
 
     fs.mkdirSync(s.workspace, { recursive: true })
@@ -1573,7 +1573,7 @@ describe('codex-remote-service pairing', () => {
     expect(s.logs).not.toContain('remote.pairing-mismatch')
     // Once the clock is right the same code pairs as usual.
     channel.handlers?.onInbound(text(alice, '000042'))
-    await channel.sentUntil(() => channel.texts().includes('配对成功。这台电脑上的 Codex 现在只听你的。直接发消息就能让它干活，发「帮助」看能用的指令。'))
+    await channel.sentUntil(() => channel.texts().includes('配对成功，本机的 Codex 现仅响应您的消息。直接发送消息即可下达任务，发送「帮助」可查看可用指令。'))
     expect((await s.service.snapshot()).channels.feishu.boundPeer?.userIdTail).toBe('1234')
   })
 })
@@ -1605,11 +1605,11 @@ describe('codex-remote-service clock running fast', () => {
     channel.handlers?.onInbound(text(alice, '跑一下测试', { sentAt: Date.now(), clockAheadMs: 0 }))
     await turnStarted(s, 1)
     expect(s.codex[0].requests('turn/start')).toHaveLength(1)
-    expect(channel.texts()).toEqual([clockAheadText, '收到，Codex 开始处理。'])
+    expect(channel.texts()).toEqual([clockAheadText, '已收到，Codex 开始处理。'])
     // Something sent before the clock was set right is still too old to run.
     channel.handlers?.onInbound(text(alice, '调钟以前发的', { sentAt: Date.now() - 2 * 60_000, clockAheadMs: 0 }))
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(channel.texts()).toEqual([clockAheadText, '收到，Codex 开始处理。'])
+    expect(channel.texts()).toEqual([clockAheadText, '已收到，Codex 开始处理。'])
   })
 
   it('stays silent for really old messages, unknown clocks and strangers', async () => {
@@ -1667,7 +1667,7 @@ describe('codex-remote-service turns', () => {
     const s = await setup({ now: () => Date.UTC(2026, 10, 11, 6, 0, 0) })
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
-    expect(channel.texts()[0]).toBe('收到，Codex 开始处理。')
+    expect(channel.texts()[0]).toBe('已收到，Codex 开始处理。')
     expect(codex.requests('config/read')[0].params).toEqual({ cwd: s.workspace, includeLayers: true })
     expect(codex.requests('thread/start')[0].params).toMatchObject({
       cwd: s.workspace,
@@ -1721,7 +1721,7 @@ describe('codex-remote-service turns', () => {
     const s = await setup({ configRead: { error: { code: -32603, message: 'failed to read configuration layers' } } })
     const channel = await enabledAndPaired(s)
     channel.handlers?.onInbound(text(alice, '跑一下测试'))
-    await channel.sentUntil(() => channel.texts().includes('这一轮没做完：failed to read configuration layers'))
+    await channel.sentUntil(() => channel.texts().includes('本轮未完成：failed to read configuration layers'))
     expect(s.codex[0].requests('thread/start')).toHaveLength(0)
     expect(s.codex[0].requests('turn/start')).toHaveLength(0)
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
@@ -1732,9 +1732,9 @@ describe('codex-remote-service turns', () => {
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     channel.handlers?.onInbound(text(alice, '再来一个'))
-    await channel.sentUntil(() => channel.texts().includes('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
+    await channel.sentUntil(() => channel.texts().includes('Codex 正在处理上一条消息，请待其完成后再发送，或发送「停止」中断。'))
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
-    await vi.waitFor(() => expect(channel.texts()).toContain('这一轮做完了，Codex 没有留下文字回复。\n\n用时 1 秒。'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('本轮已完成，Codex 未返回文字回复。\n\n用时 1 秒。'))
     channel.handlers?.onInbound(text(alice, '再来一个'))
     await codex.requestedUntil('turn/start', 2)
     expect(codex.requests('turn/start')).toHaveLength(2)
@@ -1787,7 +1787,7 @@ describe('codex-remote-service turns', () => {
     await vi.waitFor(() => expect(channel.texts()).toContain('已停止。'))
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'interrupted' } })
     channel.handlers?.onInbound(text(alice, '停止'))
-    await channel.sentUntil(() => channel.texts().includes('现在没有在处理的任务。'))
+    await channel.sentUntil(() => channel.texts().includes('当前没有正在处理的任务。'))
   })
 
   // M01：Codex 不答应停（回了错、10 秒没回）时不说「已停止。」，这一轮照旧算在做，不让下一句叠一轮上去。
@@ -1797,12 +1797,12 @@ describe('codex-remote-service turns', () => {
     const codex = await prompted(s, channel)
     codex.interruptError = { code: -32600, message: 'thread runtime is no longer accepting interrupts' }
     channel.handlers?.onInbound(text(alice, '停止'))
-    await channel.sentUntil(() => channel.texts().includes('还没停下来，Codex 还在处理上一条。停下以后会告诉你，也可以过一会儿再发一次「停止」。'))
+    await channel.sentUntil(() => channel.texts().includes('Codex 仍在处理上一条消息，尚未停止。停止后将通知您，您也可稍后再次发送「停止」。'))
     expect(channel.texts()).not.toContain('已停止。')
     expect(s.logs).toContain('remote.interrupt-failed')
     expect(await s.service.snapshot()).toMatchObject({ task: 'running', lastRequest: { state: 'running' } })
     channel.handlers?.onInbound(text(alice, '换个做法'))
-    await channel.sentUntil(() => channel.texts().includes('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
+    await channel.sentUntil(() => channel.texts().includes('Codex 正在处理上一条消息，请待其完成后再发送，或发送「停止」中断。'))
     expect(codex.requests('turn/start')).toHaveLength(1)
     // 没停成的这一轮照旧能问审批，手机上照常收到卡片。
     const asked = codex.ask('item/commandExecution/requestApproval', commandRequest)
@@ -1829,7 +1829,7 @@ describe('codex-remote-service turns', () => {
     await expect(codex.ask('item/commandExecution/requestApproval', commandRequest)).resolves.toMatchObject({ result: { decision: 'decline' } })
     expect(approvalsSent(channel)).toHaveLength(0)
     await vi.advanceTimersByTimeAsync(10_000)
-    await channel.sentUntil(() => channel.texts().includes('还没停下来，Codex 还在处理上一条。停下以后会告诉你，也可以过一会儿再发一次「停止」。'))
+    await channel.sentUntil(() => channel.texts().includes('Codex 仍在处理上一条消息，尚未停止。停止后将通知您，您也可稍后再次发送「停止」。'))
     expect((await s.service.snapshot()).task).toBe('running')
     codex.notify('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'a1', text: '测试都过了。', phase: 'final_answer' } })
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
@@ -1846,7 +1846,7 @@ describe('codex-remote-service turns', () => {
     codex.replyGates.set('turn/interrupt', new Promise<void>((resolve) => { release = resolve }))
     channel.handlers?.onInbound(text(alice, '停止'))
     await codex.requestedUntil('turn/interrupt')
-    // 电脑上也点了「停下这一轮」：等同一次打断，不再请 Codex 停第二次。
+    // 电脑上也点了「停止本轮」：等同一次打断，不再请 Codex 停第二次。
     const fromComputer = s.service.stopTurnFromComputer()
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'interrupted' } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
@@ -1864,10 +1864,10 @@ describe('codex-remote-service turns', () => {
     const codex = await prompted(s, channel)
     codex.interruptError = { code: -32603, message: 'failed to interrupt turn' }
     channel.handlers?.onInbound(text(alice, '新对话'))
-    await channel.sentUntil(() => channel.texts().includes('上一条还没停下来，新对话没开。Codex 停下以后会告诉你，到时再发「新对话」。'))
+    await channel.sentUntil(() => channel.texts().includes('上一条消息尚未停止，新对话未开启。Codex 停止后将通知您，届时请再次发送「新对话」。'))
     expect(channel.texts()).not.toContain('已开始新对话。')
     channel.handlers?.onInbound(text(alice, '换个做法'))
-    await channel.sentUntil(() => channel.texts().includes('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
+    await channel.sentUntil(() => channel.texts().includes('Codex 正在处理上一条消息，请待其完成后再发送，或发送「停止」中断。'))
     codex.interruptError = null
     channel.handlers?.onInbound(text(alice, '新对话'))
     await channel.sentUntil(() => channel.texts().includes('已开始新对话。'))
@@ -1880,10 +1880,10 @@ describe('codex-remote-service turns', () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
-    await channel.sentUntil(() => channel.texts().includes('收到，Codex 开始处理。'))
+    await channel.sentUntil(() => channel.texts().includes('已收到，Codex 开始处理。'))
     const sentBefore = channel.sent.length
     codex.interruptError = { code: -32600, message: 'no active turn to interrupt' }
-    await expect(s.service.stopTurnFromComputer()).rejects.toThrow('还没停下来，Codex 还在处理。可以过一会儿再点一次「停下这一轮」。')
+    await expect(s.service.stopTurnFromComputer()).rejects.toThrow('Codex 仍在处理，尚未停止。请稍后再次点击「停止本轮」。')
     expect(channel.sent.length).toBe(sentBefore)
     expect(s.logs).not.toContain('remote.turn-stopped-on-computer')
     expect((await s.service.snapshot())).toMatchObject({ task: 'running', lastRequest: { state: 'running' } })
@@ -1900,7 +1900,7 @@ describe('codex-remote-service turns', () => {
     await vi.waitFor(() => expect(channel.progress).toHaveLength(1))
     codex.interruptError = { code: -32600, message: 'thread runtime is no longer accepting interrupts' }
     channel.handlers?.onInbound({ kind: 'stop', peer: alice, direct: true, nonce: channel.progress[0].card.stopNonce ?? '' })
-    await channel.sentUntil(() => channel.texts().includes('还没停下来，Codex 还在处理上一条。停下以后会告诉你，也可以过一会儿再发一次「停止」。'))
+    await channel.sentUntil(() => channel.texts().includes('Codex 仍在处理上一条消息，尚未停止。停止后将通知您，您也可稍后再次发送「停止」。'))
     expect(channel.progress.at(-1)?.card.state).toBe('running')
     expect((await s.service.snapshot()).task).toBe('running')
   })
@@ -1918,7 +1918,7 @@ describe('codex-remote-service turns', () => {
     expect(codex.requests('turn/interrupt')).toHaveLength(0)
     await vi.advanceTimersByTimeAsync(10 * 60_000)
     await vi.waitFor(() => expect(codex.requests('turn/interrupt')).toHaveLength(1))
-    await vi.waitFor(() => expect(channel.texts()).toContain('这件事 1 小时没有任何进展，已经停下。可以重新说一遍要做什么。'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('该任务 1 小时内无任何进展，已停止。请重新描述需要执行的任务。'))
     expect(s.logs).toContain('remote.turn-stalled')
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'interrupted' } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
@@ -1939,14 +1939,14 @@ describe('codex-remote-service turns', () => {
     // 审批十分钟没人回先按原有规则自己过期（第 65 分钟），这一轮照旧跑着、不算卡死。
     await vi.advanceTimersByTimeAsync(10 * 60_000)
     await expect(asked).resolves.toMatchObject({ result: { decision: 'decline' } })
-    await vi.waitFor(() => expect(channel.texts()).toContain('第 1 条等了 10 分钟没回，已自动拒绝。'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('第 1 条在 10 分钟内未获回复，已自动拒绝。'))
     expect(codex.requests('turn/interrupt')).toHaveLength(0)
     // 问审批算一次动静：卡死从第 55 分钟再数一小时（第 115 分钟），不是从开始数的第 60 分钟。
     await vi.advanceTimersByTimeAsync(49 * 60_000)
     expect(codex.requests('turn/interrupt')).toHaveLength(0)
     await vi.advanceTimersByTimeAsync(60_000)
     await vi.waitFor(() => expect(codex.requests('turn/interrupt')).toHaveLength(1))
-    await vi.waitFor(() => expect(channel.texts()).toContain('这件事 1 小时没有任何进展，已经停下。可以重新说一遍要做什么。'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('该任务 1 小时内无任何进展，已停止。请重新描述需要执行的任务。'))
   })
 
   // YF-13：电脑卡片上「最近一次」——几点发来的、做到哪儿了；手机上发来的原话不上卡片。
@@ -1973,13 +1973,13 @@ describe('codex-remote-service turns', () => {
     const s = await setup({ failSpawns: { remaining: 1 } })
     const channel = await enabledAndPaired(s)
     channel.handlers?.onInbound(text(alice, '跑一下测试'))
-    await channel.sentUntil(() => channel.texts().includes('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。'))
+    await channel.sentUntil(() => channel.texts().includes('电脑端的 Codex 启动失败，请在电脑端的星芒中查看。'))
     await vi.waitFor(async () => expect((await s.service.snapshot()).lastRequest?.state).toBe('failed'))
     expect((await s.service.snapshot()).lastRequest?.reason).toBeUndefined()
     const codex = await prompted(s, channel, '再跑一次')
     const quota = 'unexpected status 403 Forbidden: {"error":{"message":"用户额度不足, 剩余额度: $0.01","code":"insufficient_user_quota"}}'
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'failed', error: { message: quota, codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 403 } } } } })
-    await vi.waitFor(async () => expect((await s.service.snapshot()).lastRequest).toMatchObject({ state: 'failed', reason: '余额不够了，充值后再发一次。' }))
+    await vi.waitFor(async () => expect((await s.service.snapshot()).lastRequest).toMatchObject({ state: 'failed', reason: '余额不足，请充值后重新发送。' }))
   })
 
   it('marks the last request stopped when the phone says stop, and forgets it once every channel is off', async () => {
@@ -2041,7 +2041,7 @@ describe('codex-remote-service turns', () => {
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'failed', error: { message: `401 for key ${apiKey}` } } })
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('这一轮没做完：401 for key [已隐去]'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('本轮未完成：401 for key [已隐去]'))
   })
 
   // D66 / YKS-8：余额不够、登录失效这类原话（英文、JSON）不再原样发到手机，原话进日志。
@@ -2052,7 +2052,7 @@ describe('codex-remote-service turns', () => {
     const quota = 'unexpected status 403 Forbidden: {"error":{"message":"用户额度不足, 剩余额度: $0.01","code":"insufficient_user_quota"}}, url: https://relay.example.test/v1/responses'
     codex.notify('error', { threadId: 'th-1', turnId: 'tu-1', willRetry: false, error: { message: quota, codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 403 } }, additionalDetails: null } })
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'failed', error: null } })
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('余额不够了，充值后再发一次。'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('余额不足，请充值后重新发送。'))
     expect(channel.texts().join('\n')).not.toContain('insufficient_user_quota')
     const logged = s.logDetails.find((entry) => entry.event === 'remote.turn-failed')?.detail
     expect(logged).toMatchObject({ channel: 'feishu', kind: 'balance' })
@@ -2062,13 +2062,13 @@ describe('codex-remote-service turns', () => {
     await codex.requestedUntil('turn/start', 2)
     expect(codex.requests('turn/start')).toHaveLength(2)
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-2', status: 'failed', error: { message: 'Codex ran out of room in the model\'s context window.', codexErrorInfo: 'contextWindowExceeded' } } })
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('这段对话太长了，发「新对话」重新开始。'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('当前对话过长，请发送「新对话」重新开始。'))
 
     channel.handlers?.onInbound(text(alice, '再来'))
     await codex.requestedUntil('turn/start', 3)
     expect(codex.requests('turn/start')).toHaveLength(3)
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-3', status: 'failed', error: { message: `unexpected status 401 Unauthorized: {"error":{"message":"无效的令牌 ${apiKey}"}}`, codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } } } } })
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('电脑上的登录失效了，请在电脑上的星芒里重新登录。'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('电脑端登录已失效，请在电脑端的星芒中重新登录。'))
     const loginLog = s.logDetails.filter((entry) => entry.event === 'remote.turn-failed').at(-1)?.detail
     expect(String(loginLog?.reason)).not.toContain(apiKey)
 
@@ -2076,7 +2076,7 @@ describe('codex-remote-service turns', () => {
     await codex.requestedUntil('turn/start', 4)
     expect(codex.requests('turn/start')).toHaveLength(4)
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-4', status: 'failed', error: { message: 'stream disconnected before completion: error sending request', codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } } } } })
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('电脑这会儿连不上星芒的线路，过一会儿再发。'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('电脑暂时无法连接星芒线路，请稍后重新发送。'))
   })
 
   // YF-18（「状态重试」那批）：「状态」带上跑了多久、做到哪一步、余额、还有多久自动关。
@@ -2093,22 +2093,22 @@ describe('codex-remote-service turns', () => {
     })
     now += 6 * 60_000 + 30_000
     channel.handlers?.onInbound(text(alice, '状态'))
-    await channel.sentUntil(() => channel.texts().at(-1) === `工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：正在处理，已经 6 分钟，做到「运行测试」\n余额：$12.40\n再过 4 小时没新消息就自动关`)
+    await channel.sentUntil(() => channel.texts().at(-1) === `工作文件夹：${path.join('~', 'projects', 'demo')}\n当前状态：正在处理，已用时 6 分钟，当前步骤「运行测试」\n余额：$12.40\n4 小时内无新消息将自动关闭`)
     // 计划里一条正在做的都没有了（都做完了），就不写「做到…」。
     codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-1', explanation: null, plan: [{ step: '读代码', status: 'completed' }] })
     channel.handlers?.onInbound(text(alice, '状态'))
-    await channel.sentUntil(() => channel.texts().at(-1) === `工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：正在处理，已经 6 分钟\n余额：$12.40\n再过 4 小时没新消息就自动关`)
+    await channel.sentUntil(() => channel.texts().at(-1) === `工作文件夹：${path.join('~', 'projects', 'demo')}\n当前状态：正在处理，已用时 6 分钟\n余额：$12.40\n4 小时内无新消息将自动关闭`)
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
     channel.handlers?.onInbound(text(alice, '状态'))
-    await channel.sentUntil(() => channel.texts().at(-1) === `工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：空闲\n余额：$12.40\n再过 4 小时没新消息就自动关`)
+    await channel.sentUntil(() => channel.texts().at(-1) === `工作文件夹：${path.join('~', 'projects', 'demo')}\n当前状态：空闲\n余额：$12.40\n4 小时内无新消息将自动关闭`)
   })
 
   it('leaves the balance and idle close lines out when the balance cannot be read and the remote never closes by itself', async () => {
     const s = await setup({ readBalanceUsd: async () => { throw new Error('network down') } })
     const channel = await enabledAndPaired(s)
     channel.handlers?.onInbound(text(alice, '状态'))
-    await channel.sentUntil(() => channel.texts().at(-1) === `工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：空闲`)
+    await channel.sentUntil(() => channel.texts().at(-1) === `工作文件夹：${path.join('~', 'projects', 'demo')}\n当前状态：空闲`)
   })
 
   // YF-16：做完以后在回答后面接一行，用了多久、真改成了哪些文件；停下、没做完的不接。
@@ -2128,14 +2128,14 @@ describe('codex-remote-service turns', () => {
     codex.notify('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'a1', text: '改好了。', phase: 'final_answer' } })
     now += 200_000
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('改好了。\n\n用时 3 分 20 秒，改了 2 个文件：a.ts、b.css。'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('改好了。\n\n用时 3 分 20 秒，修改了 2 个文件：a.ts、b.css。'))
 
     channel.handlers?.onInbound(text(alice, '再来一个'))
     await codex.requestedUntil('turn/start', 2)
     expect(codex.requests('turn/start')).toHaveLength(2)
     now += 45_000
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-2', status: 'failed', error: { message: 'boom' } } })
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('这一轮没做完：boom'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('本轮未完成：boom'))
   })
 
   // YF-22：「重试」把这次打开以后最后一句交给 Codex 的话再发一次；关了再开就没有「上一条」了。
@@ -2143,31 +2143,31 @@ describe('codex-remote-service turns', () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
     channel.handlers?.onInbound(text(alice, '重试'))
-    await channel.sentUntil(() => channel.texts().at(-1) === '还没有可以重发的上一条。直接发要做的事就行。')
+    await channel.sentUntil(() => channel.texts().at(-1) === '暂无可重新发送的上一条消息，请直接发送需要执行的任务。')
     const prompt = '把登录页的表单校验全部改成新的写法，再补上测试'
     const codex = await prompted(s, channel, prompt)
     channel.handlers?.onInbound(text(alice, '重试'))
-    await channel.sentUntil(() => channel.texts().at(-1) === 'Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。')
+    await channel.sentUntil(() => channel.texts().at(-1) === 'Codex 正在处理上一条消息，请待其完成后再发送，或发送「停止」中断。')
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'failed', error: { message: 'boom' } } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
     channel.handlers?.onInbound(text(alice, '重试'))
     await codex.requestedUntil('turn/start', 2)
     expect(codex.requests('turn/start')).toHaveLength(2)
-    expect(channel.texts()).toContain('再发一次上一条：「把登录页的表单校验全部改成新的写法，再补…」\n收到，Codex 开始处理。')
+    expect(channel.texts()).toContain('重新发送上一条：「把登录页的表单校验全部改成新的写法，再补…」\n已收到，Codex 开始处理。')
     expect(codex.requests('turn/start')[1].params).toEqual({ threadId: 'th-1', input: [{ type: 'text', text: prompt, text_elements: [] }] })
 
     await s.service.setChannelEnabled('feishu', false)
     await s.service.setChannelEnabled('feishu', true)
     const reopened = s.channels.at(-1) as FakeChannel
     reopened.handlers?.onInbound(text(alice, '重试'))
-    await reopened.sentUntil(() => reopened.texts().includes('还没有可以重发的上一条。直接发要做的事就行。'))
+    await reopened.sentUntil(() => reopened.texts().includes('暂无可重新发送的上一条消息，请直接发送需要执行的任务。'))
   })
 
   // M03：做完了，回答刚好没送到手机。手机那头通了补发，「重试」不让 Codex 再做一遍。
   describe('answers that never reached the phone', () => {
-    const resentPrefix = '之前有一条回答没发到你手机上，这里补发：'
-    const idleStatus = `工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：空闲`
-    const retryNote = '上一条已经做完了，回答就是上面那条，所以这次没有重做。确实要重做，请再发一次「重试」。'
+    const resentPrefix = '此前有一条回复未能送达，现补发如下：'
+    const idleStatus = `工作文件夹：${path.join('~', 'projects', 'demo')}\n当前状态：空闲`
+    const retryNote = '上一条消息已处理完成，回复即为上方内容，因此本次未重新执行。如确需重新执行，请再次发送「重试」。'
 
     /** 交一句、Codex 做完，回答发的那一下网断了；返回时手机那头已经又通了。 */
     async function finishedWhileOffline(s: Setup, channel: FakeChannel, codex: FakeCodex, answer: string): Promise<void> {
@@ -2212,7 +2212,7 @@ describe('codex-remote-service turns', () => {
       expect(codex.requests('turn/start')).toHaveLength(1)
 
       channel.handlers?.onInbound(text(alice, '重试'))
-      await channel.sentUntil(() => channel.texts().includes('再发一次上一条：「跑一下测试」\n收到，Codex 开始处理。'))
+      await channel.sentUntil(() => channel.texts().includes('重新发送上一条：「跑一下测试」\n已收到，Codex 开始处理。'))
       await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
     })
 
@@ -2221,7 +2221,7 @@ describe('codex-remote-service turns', () => {
       const channel = await enabledAndPaired(s)
       const codex = await prompted(s, channel)
       await finishedWhileOffline(s, channel, codex, '做完了。')
-      channel.handlers?.onStatus({ state: 'connecting', message: '连不上飞书，正在重试。' })
+      channel.handlers?.onStatus({ state: 'connecting', message: '无法连接飞书，正在重试。' })
       channel.handlers?.onStatus({ state: 'connected' })
       await channel.sentUntil(() => channel.texts().some((entry) => entry.startsWith(`${resentPrefix}\n\n做完了。`)))
       // 已经连着时再报一次「连上了」不算又连上，送到了的也不会再发。
@@ -2286,10 +2286,10 @@ describe('codex-remote-service turns', () => {
       await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
       channel.offline = false
       codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-2', status: 'failed', error: { message: 'boom' } } })
-      await channel.sentUntil(() => channel.texts().at(-1) === '这一轮没做完：boom')
+      await channel.sentUntil(() => channel.texts().at(-1) === '本轮未完成：boom')
 
       channel.handlers?.onInbound(text(alice, '重试'))
-      await channel.sentUntil(() => channel.texts().includes('再发一次上一条：「第二件事」\n收到，Codex 开始处理。'))
+      await channel.sentUntil(() => channel.texts().includes('重新发送上一条：「第二件事」\n已收到，Codex 开始处理。'))
       await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(3))
       expect(channel.texts().filter((entry) => entry.startsWith(`${resentPrefix}\n\n第一件做完了。`))).toHaveLength(1)
       expect(channel.texts()).not.toContain(retryNote)
@@ -2303,7 +2303,7 @@ describe('codex-remote-service turns', () => {
       await finishedWhileOffline(s, channel, codex, '做完了。')
       now += 24 * 60 * 60_000 + 1
       channel.handlers?.onInbound(text(alice, '重试'))
-      await channel.sentUntil(() => channel.texts().some((entry) => entry.startsWith('再发一次上一条：')))
+      await channel.sentUntil(() => channel.texts().some((entry) => entry.startsWith('重新发送上一条：')))
       await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
       expect(channel.texts().some((entry) => entry.startsWith(resentPrefix))).toBe(false)
     })
@@ -2329,7 +2329,7 @@ describe('codex-remote-service turns', () => {
     codex.emit('exit', 1, null)
     await vi.waitFor(() => expect(channel.texts().at(-1)).toContain('意外退出'))
     // 卡片「最近一次」跟着说没做完，不会一直停在「正在处理」（YF-13）。
-    expect((await s.service.snapshot()).lastRequest).toMatchObject({ state: 'failed', reason: '电脑上的 Codex 意外退出了，再发一次试试。' })
+    expect((await s.service.snapshot()).lastRequest).toMatchObject({ state: 'failed', reason: '电脑端的 Codex 意外退出，请重新发送。' })
     channel.handlers?.onInbound(text(alice, '再试一次'))
     await s.codexSpawned(2)
     expect(s.codex).toHaveLength(2)
@@ -2355,11 +2355,11 @@ describe('codex-remote-service turns', () => {
     const channel = await enabledAndPaired(s)
     channel.handlers?.onInbound(text(alice, '跑一下测试'))
     await channel.sentUntil(() => channel.sent.length >= 1)
-    expect(channel.texts()).toEqual(['收到，Codex 开始处理。'])
+    expect(channel.texts()).toEqual(['已收到，Codex 开始处理。'])
     channel.handlers?.onInbound(text(alice, '状态'))
-    await channel.sentUntil(() => channel.texts().at(-1)?.includes('现在：正在处理') === true)
+    await channel.sentUntil(() => channel.texts().at(-1)?.includes('当前状态：正在处理') === true)
     channel.handlers?.onInbound(text(alice, '再来一个'))
-    await channel.sentUntil(() => channel.texts().at(-1) === 'Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。')
+    await channel.sentUntil(() => channel.texts().at(-1) === 'Codex 正在处理上一条消息，请待其完成后再发送，或发送「停止」中断。')
     channel.handlers?.onInbound(text(alice, '停止'))
     await channel.sentUntil(() => channel.texts().at(-1) === '已停止。')
     release()
@@ -2381,7 +2381,7 @@ describe('codex-remote-service turns', () => {
     channel.handlers?.onInbound(text(alice, '停止'))
     await channel.sentUntil(() => channel.texts().at(-1) === '已停止。')
     channel.handlers?.onInbound(text(alice, '换个做法'))
-    await channel.sentUntil(() => channel.texts().at(-1) === '收到，Codex 开始处理。')
+    await channel.sentUntil(() => channel.texts().at(-1) === '已收到，Codex 开始处理。')
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(codex.requests('turn/start')).toHaveLength(1)
     release()
@@ -2400,10 +2400,10 @@ describe('codex-remote-service turns', () => {
     channel.handlers?.onInbound(text(alice, '跑一下测试'))
     await channel.sentUntil(() => channel.texts().length === 1)
     await vi.advanceTimersByTimeAsync(14_000)
-    expect(channel.texts()).toEqual(['收到，Codex 开始处理。'])
+    expect(channel.texts()).toEqual(['已收到，Codex 开始处理。'])
     await vi.advanceTimersByTimeAsync(1_000)
     await channel.sentUntil(() => channel.texts().length === 2)
-    expect(channel.texts()[1]).toBe('电脑正在准备 Codex，稍等一下；想取消就发「停止」。')
+    expect(channel.texts()[1]).toBe('电脑正在启动 Codex，请稍候；如需取消，请发送「停止」。')
     release()
     await vi.waitFor(() => expect(s.codex[0]?.requests('turn/start').length ?? 0).toBe(1))
     // A Codex that is already running answers at once: no such line on the next turn.
@@ -2413,7 +2413,7 @@ describe('codex-remote-service turns', () => {
     await s.codex[0].requestedUntil('turn/start', 2)
     expect(s.codex[0].requests('turn/start')).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(20_000)
-    expect(channel.texts().filter((line) => line.startsWith('电脑正在准备 Codex'))).toHaveLength(1)
+    expect(channel.texts().filter((line) => line.startsWith('电脑正在启动 Codex'))).toHaveLength(1)
   })
 
   // D66 / YKS-16：对话不是他自己发「新对话」丢的，下一次回复前说一声。
@@ -2421,14 +2421,14 @@ describe('codex-remote-service turns', () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
-    expect(channel.texts()[0]).toBe('收到，Codex 开始处理。')
+    expect(channel.texts()[0]).toBe('已收到，Codex 开始处理。')
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
     // The same thread goes on: nothing to warn about.
     channel.handlers?.onInbound(text(alice, '接着改'))
     await codex.requestedUntil('turn/start', 2)
     expect(codex.requests('turn/start')).toHaveLength(2)
-    expect(channel.texts().filter((line) => line.includes('这是新对话'))).toHaveLength(0)
+    expect(channel.texts().filter((line) => line.includes('当前为新对话'))).toHaveLength(0)
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-2', status: 'completed' } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
     // The folder changed on the computer: the old conversation is gone.
@@ -2440,7 +2440,7 @@ describe('codex-remote-service turns', () => {
     channel.handlers?.onInbound(text(alice, '再改一下'))
     await codex.requestedUntil('thread/start', 2)
     expect(codex.requests('thread/start')).toHaveLength(2)
-    expect(channel.texts()[0]).toBe('这是新对话，前面的记不得了。\n收到，Codex 开始处理。')
+    expect(channel.texts()[0]).toBe('当前为新对话，Codex 无法读取此前的对话内容。\n已收到，Codex 开始处理。')
     await codex.requestedUntil('turn/start', 3)
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-3', status: 'completed' } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
@@ -2451,7 +2451,7 @@ describe('codex-remote-service turns', () => {
     channel.handlers?.onInbound(text(alice, '从头来'))
     await codex.requestedUntil('thread/start', 3)
     expect(codex.requests('thread/start')).toHaveLength(3)
-    expect(channel.texts()[0]).toBe('收到，Codex 开始处理。')
+    expect(channel.texts()[0]).toBe('已收到，Codex 开始处理。')
   })
 
   // #1407 P3-1：起 Codex 要一会儿，这期间电脑上关了遥控。话不能再交给 Codex（交了就扣钱、只读命令先跑），
@@ -2461,7 +2461,7 @@ describe('codex-remote-service turns', () => {
     const s = await setup({ spawnGate: new Promise<void>((resolve) => { release = resolve }) })
     const channel = await enabledAndPaired(s)
     channel.handlers?.onInbound(text(alice, '跑一下测试'))
-    await channel.sentUntil(() => channel.texts().includes('收到，Codex 开始处理。'))
+    await channel.sentUntil(() => channel.texts().includes('已收到，Codex 开始处理。'))
     await s.service.setChannelEnabled('feishu', false)
     release()
     await vi.waitFor(() => expect(s.codex[0]?.kills.length ?? 0).toBeGreaterThan(0))
@@ -2469,7 +2469,7 @@ describe('codex-remote-service turns', () => {
     expect(s.codex[0].requests('turn/start')).toHaveLength(0)
     expect(s.logs).toContain('remote.codex-start-abandoned')
     expect(s.logs).not.toContain('remote.codex-start-failed')
-    expect(channel.texts()).not.toContain('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。')
+    expect(channel.texts()).not.toContain('电脑端的 Codex 启动失败，请在电脑端的星芒中查看。')
     expect((await s.service.snapshot()).codexStartFailed).toBeUndefined()
   })
 
@@ -2479,7 +2479,7 @@ describe('codex-remote-service turns', () => {
     const channel = await enabledAndPaired(s)
     expect((await s.service.snapshot()).codexStartFailed).toBeUndefined()
     channel.handlers?.onInbound(text(alice, '跑一下测试'))
-    await channel.sentUntil(() => channel.texts().includes('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。'))
+    await channel.sentUntil(() => channel.texts().includes('电脑端的 Codex 启动失败，请在电脑端的星芒中查看。'))
     await vi.waitFor(() => expect(s.snapshots.at(-1)?.codexStartFailed).toBe(true))
     expect(s.logs).toContain('remote.codex-start-failed')
     expect((await s.service.snapshot()).task).toBe('idle')
@@ -2497,7 +2497,7 @@ describe('codex-remote-service turns', () => {
     await s.store.writeCredential('weixin', 'weixin-credential-value')
     const channel = await enabledAndPaired(s)
     channel.handlers?.onInbound(text(alice, '跑一下测试'))
-    await channel.sentUntil(() => channel.texts().includes('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。'))
+    await channel.sentUntil(() => channel.texts().includes('电脑端的 Codex 启动失败，请在电脑端的星芒中查看。'))
     await vi.waitFor(async () => expect((await s.service.snapshot()).codexStartFailed).toBe(true))
     await s.service.setChannelEnabled('weixin', true)
     await s.service.setChannelEnabled('weixin', false)
@@ -2513,7 +2513,7 @@ describe('codex-remote-service turns', () => {
     const s = await setup({ spawnGate: new Promise<void>((resolve) => { release = resolve }) })
     const channel = await enabledAndPaired(s)
     channel.handlers?.onInbound(text(alice, '跑一下测试'))
-    await channel.sentUntil(() => channel.texts().includes('收到，Codex 开始处理。'))
+    await channel.sentUntil(() => channel.texts().includes('已收到，Codex 开始处理。'))
     s.service.dispose()
     release()
     await vi.waitFor(() => expect(s.codex[0]?.kills.length ?? 0).toBeGreaterThan(0))
@@ -2592,7 +2592,7 @@ function storedImages(directory: string): string[] {
 }
 
 describe('codex-remote-service images', () => {
-  const receivedImage = '收到图片。再发一句要 Codex 做什么，会跟图片一起交给它。'
+  const receivedImage = '已收到图片。请再发送一条消息说明需要 Codex 执行的任务，图片将一并提交。'
 
   // YF-14：只发图时先攒着、回一句；下一句话交给 Codex 时带上，「收到」那句说几张。
   it('holds images until the next prompt, then hands them to Codex as local images', async () => {
@@ -2611,7 +2611,7 @@ describe('codex-remote-service images', () => {
     expect(stored.some((name) => name.endsWith('.png')) && stored.some((name) => name.endsWith('.jpg'))).toBe(true)
 
     const codex = await prompted(s, channel, '这两张图里的报错是什么')
-    expect(channel.texts()).toEqual([receivedImage, '收到，带着 2 张图片，Codex 开始处理。'])
+    expect(channel.texts()).toEqual([receivedImage, '已收到（含 2 张图片），Codex 开始处理。'])
     const input = (codex.requests('turn/start')[0].params as { input: Array<Record<string, unknown>> }).input
     expect(input[0]).toEqual({ type: 'text', text: '这两张图里的报错是什么', text_elements: [] })
     expect(input.slice(1).map((entry) => entry.type)).toEqual(['localImage', 'localImage'])
@@ -2638,7 +2638,7 @@ describe('codex-remote-service images', () => {
     channel.handlers?.onInbound(imageMessage(alice, ['img-a'], '照这张图改按钮颜色'))
     await turnStarted(s, 1)
     expect(s.codex[0].requests('turn/start')).toHaveLength(1)
-    expect(channel.texts()).toEqual(['收到，带着 1 张图片，Codex 开始处理。'])
+    expect(channel.texts()).toEqual(['已收到（含 1 张图片），Codex 开始处理。'])
     const input = (s.codex[0].requests('turn/start')[0].params as { input: Array<Record<string, unknown>> }).input
     expect(input.map((entry) => entry.type)).toEqual(['text', 'localImage'])
   })
@@ -2651,7 +2651,7 @@ describe('codex-remote-service images', () => {
     channel.images.set('img-a', { ok: true, bytes: pngBytes })
     const codex = await prompted(s, channel, '先跑一下测试')
     channel.handlers?.onInbound(imageMessage(alice, ['img-a'], '照这张图改按钮颜色'))
-    await channel.sentUntil(() => channel.texts().at(-1) === 'Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。')
+    await channel.sentUntil(() => channel.texts().at(-1) === 'Codex 正在处理上一条消息，请待其完成后再发送，或发送「停止」中断。')
     expect(channel.fetched).toEqual(['img-a'])
     await s.imagesRemoved(1)
     expect(storedImages(s.imageDirectory)).toEqual([])
@@ -2661,7 +2661,7 @@ describe('codex-remote-service images', () => {
     channel.handlers?.onInbound(text(alice, '把标题改大一点'))
     await codex.requestedUntil('turn/start', 2)
     expect(codex.requests('turn/start')).toHaveLength(2)
-    expect(channel.texts().at(-1)).toBe('收到，Codex 开始处理。')
+    expect(channel.texts().at(-1)).toBe('已收到，Codex 开始处理。')
     expect((codex.requests('turn/start')[1].params as { input: unknown[] }).input).toEqual([{ type: 'text', text: '把标题改大一点', text_elements: [] }])
   })
 
@@ -2677,7 +2677,7 @@ describe('codex-remote-service images', () => {
     const kept = storedImages(s.imageDirectory)
     expect(kept).toHaveLength(1)
     channel.handlers?.onInbound(imageMessage(alice, ['img-b'], '照这张图改'))
-    await channel.sentUntil(() => channel.texts().at(-1) === 'Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。')
+    await channel.sentUntil(() => channel.texts().at(-1) === 'Codex 正在处理上一条消息，请待其完成后再发送，或发送「停止」中断。')
     await s.imagesRemoved(1)
     expect(storedImages(s.imageDirectory)).toEqual(kept)
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
@@ -2686,7 +2686,7 @@ describe('codex-remote-service images', () => {
     channel.handlers?.onInbound(text(alice, '看看这张图'))
     await codex.requestedUntil('turn/start', 2)
     expect(codex.requests('turn/start')).toHaveLength(2)
-    expect(channel.texts().at(-1)).toBe('收到，带着 1 张图片，Codex 开始处理。')
+    expect(channel.texts().at(-1)).toBe('已收到（含 1 张图片），Codex 开始处理。')
     const input = (codex.requests('turn/start')[1].params as { input: Array<Record<string, unknown>> }).input
     expect(input.map((entry) => entry.type)).toEqual(['text', 'localImage'])
     expect(path.basename(String(input[1].path))).toBe(kept[0])
@@ -2699,14 +2699,14 @@ describe('codex-remote-service images', () => {
     channel.images.set('img-a', { ok: true, bytes: pngBytes })
     await s.store.updateSettings((settings) => { settings.workspaceDirectory = null })
     channel.handlers?.onInbound(imageMessage(alice, ['img-a'], '照这张图改按钮颜色'))
-    await channel.sentUntil(() => channel.texts().at(-1) === '电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。')
+    await channel.sentUntil(() => channel.texts().at(-1) === '电脑端的 Codex 启动失败，请在电脑端的星芒中查看。')
     expect(channel.fetched).toEqual(['img-a'])
     await s.imagesRemoved(1)
     expect(storedImages(s.imageDirectory)).toEqual([])
 
     await s.store.updateSettings((settings) => { settings.workspaceDirectory = s.workspace })
     const codex = await prompted(s, channel, '把标题改大一点')
-    expect(channel.texts().at(-1)).toBe('收到，Codex 开始处理。')
+    expect(channel.texts().at(-1)).toBe('已收到，Codex 开始处理。')
     expect((codex.requests('turn/start')[0].params as { input: unknown[] }).input).toHaveLength(1)
   })
 
@@ -2720,9 +2720,9 @@ describe('codex-remote-service images', () => {
     channel.handlers?.onInbound(imageMessage(alice, ['big', 'denied', 'broken', 'not-image', 'big']))
     await channel.sentUntil(() => channel.sent.length >= 3)
     expect(channel.texts()).toEqual([
-      '这张图片太大了，电脑没收。请发小一点的，或者截一部分。',
-      '这张图片电脑没取到。飞书后台要多开一个权限「获取单聊、群组消息」，再发布一个版本。',
-      '这张图片电脑没取到，请再发一次。',
+      '图片过大，未能接收。请发送较小的图片或截取部分内容。',
+      '电脑未能获取此图片。请在飞书后台开通「获取单聊、群组消息」权限，并重新发布一个版本。',
+      '电脑未能获取此图片，请重新发送。',
     ])
     expect(storedImages(s.imageDirectory)).toEqual([])
     expect(s.logs).toContain('remote.image-not-recognized')
@@ -2738,7 +2738,7 @@ describe('codex-remote-service images', () => {
     // 等发送本身，不用 vi.waitFor 的 1 秒：第二句之前要原子写 7 次（两条消息各记一次编号进设置、存 5 张图），
     // Windows CI 上一次一两百毫秒，凑满 1 秒就等不全（11-18 #1929、11-20 main 和 #1940 各红一次）。
     await channel.sentUntil(() => channel.texts().length >= 2)
-    expect(channel.texts()).toEqual([receivedImage, '一次最多带 5 张图片，这张没收。'])
+    expect(channel.texts()).toEqual([receivedImage, '每次最多附带 5 张图片，此图片未接收。'])
     expect(channel.fetched).toEqual(refs.slice(0, 5))
     expect(storedImages(s.imageDirectory)).toHaveLength(5)
   })
@@ -2762,7 +2762,7 @@ describe('codex-remote-service images', () => {
     channel.handlers?.onInbound(text(alice, '重试'))
     await codex.requestedUntil('turn/start', 2)
     expect(codex.requests('turn/start')).toHaveLength(2)
-    expect(channel.texts().at(-1)).toBe('再发一次上一条：「看看这张」\n收到，带着 1 张图片，Codex 开始处理。')
+    expect(channel.texts().at(-1)).toBe('重新发送上一条：「看看这张」\n已收到（含 1 张图片），Codex 开始处理。')
     const first = (codex.requests('turn/start')[0].params as { input: unknown[] }).input
     const again = (codex.requests('turn/start')[1].params as { input: unknown[] }).input
     expect(again).toEqual(first)
@@ -2807,8 +2807,8 @@ describe('codex-remote-service images', () => {
     channel.handlers?.onInbound({ kind: 'unsupported', peer: alice, direct: true, messageId: 'voice-1' })
     await channel.sentUntil(() => channel.sent.length >= 2)
     expect(channel.texts()).toEqual([
-      '暂时只支持文字和图片。语音、文件发不过来，请打成字。',
-      '暂时只支持文字和图片。语音、文件发不过来，请打成字。',
+      '目前仅支持文字和图片，暂不支持语音和文件，请改用文字发送。',
+      '目前仅支持文字和图片，暂不支持语音和文件，请改用文字发送。',
     ])
     expect(channel.fetched).toEqual([])
   })
@@ -2831,7 +2831,7 @@ describe('codex-remote-service images', () => {
     release()
     await s.imagesSaved(1)
     await channel.sentUntil(() => channel.texts().includes(receivedImage))
-    expect(channel.texts()).toEqual(['收到，Codex 开始处理。', '已停止。', receivedImage])
+    expect(channel.texts()).toEqual(['已收到，Codex 开始处理。', '已停止。', receivedImage])
   })
 
   it('answers approvals at once, typed or tapped, while an image sent before them is still being fetched', async () => {
@@ -2878,7 +2878,7 @@ describe('codex-remote-service images', () => {
     release()
     await s.imagesSaved(1)
     await channel.sentUntil(() => channel.texts().includes('已停止。'))
-    expect(channel.texts()).toEqual([receivedImage, '收到，带着 1 张图片，Codex 开始处理。', '已停止。'])
+    expect(channel.texts()).toEqual([receivedImage, '已收到（含 1 张图片），Codex 开始处理。', '已停止。'])
   })
 
   it('puts an approval answer back in line when nothing is waiting for it by the time its turn comes', async () => {
@@ -2900,20 +2900,20 @@ describe('codex-remote-service images', () => {
     await s.service.stopTurnFromComputer()
     releaseFirst()
     await s.imagesSaved(1)
-    await channel.sentUntil(() => channel.texts().at(-1)?.includes('现在：空闲') === true)
+    await channel.sentUntil(() => channel.texts().at(-1)?.includes('当前状态：空闲') === true)
     // The approval is gone, so 「同意 1」 is now words for Codex: they go out only with the second image too.
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(codex.requests('turn/start')).toHaveLength(1)
     releaseSecond()
     await s.imagesSaved(2)
-    await channel.sentUntil(() => channel.texts().at(-1) === '收到，带着 2 张图片，Codex 开始处理。')
+    await channel.sentUntil(() => channel.texts().at(-1) === '已收到（含 2 张图片），Codex 开始处理。')
     await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
     const input = (codex.requests('turn/start')[1].params as { input: Array<Record<string, unknown>> }).input
     expect(input.map((entry) => entry.type)).toEqual(['text', 'localImage', 'localImage'])
   })
 })
 
-// YF-19（yoyo 2026-11-11「文件夹改」）：电脑上加几个干活的文件夹，手机上发「文件夹」看、发「文件夹 2」换。
+// YF-19（yoyo 2026-11-11「文件夹改」）：电脑上加几个工作文件夹，手机上发「文件夹」看、发「文件夹 2」换。
 describe('codex-remote-service folders', () => {
   // 界面和手机上显示的路径按本机分隔符写（Windows 上是反斜杠）。
   function shown(name: string): string {
@@ -2937,13 +2937,13 @@ describe('codex-remote-service folders', () => {
     expect((await s.service.snapshot()).workspaces).toEqual([shown('demo'), shown('blog')])
     snapshot = await s.service.useWorkspace(shown('blog'))
     expect(snapshot.workspaceDirectory).toBe(shown('blog'))
-    await expect(s.service.removeWorkspace(shown('blog'))).rejects.toThrow('正在用的文件夹不能移除，先换到别的再移除。')
+    await expect(s.service.removeWorkspace(shown('blog'))).rejects.toThrow('使用中的文件夹无法移除，请先切换至其他文件夹。')
     snapshot = await s.service.removeWorkspace(shown('demo'))
     expect(snapshot.workspaceDirectory).toBe(shown('blog'))
     expect(snapshot).not.toHaveProperty('workspaces')
     // Only folders on the list: the renderer cannot name another one.
-    await expect(s.service.useWorkspace(shown('demo'))).rejects.toThrow('这个文件夹已经不在单子上了。')
-    await expect(s.service.useWorkspace('/etc')).rejects.toThrow('这个文件夹已经不在单子上了。')
+    await expect(s.service.useWorkspace(shown('demo'))).rejects.toThrow('该文件夹已不在列表中。')
+    await expect(s.service.useWorkspace('/etc')).rejects.toThrow('该文件夹已不在列表中。')
   })
 
   it('keeps at most five folders and still refuses a folder too broad to work in', async () => {
@@ -2952,9 +2952,9 @@ describe('codex-remote-service folders', () => {
     const s = await setup({ platform: process.platform })
     for (const name of ['b', 'c', 'd', 'e']) await s.service.addWorkspace(folder(s, name))
     expect((await s.service.snapshot()).workspaces).toHaveLength(5)
-    await expect(s.service.addWorkspace(folder(s, 'f'))).rejects.toThrow('最多加 5 个文件夹，先移除一个再添加。')
+    await expect(s.service.addWorkspace(folder(s, 'f'))).rejects.toThrow('最多添加 5 个文件夹，请先移除一个再添加。')
     await s.service.removeWorkspace(shown('e'))
-    await expect(s.service.addWorkspace(path.dirname(path.dirname(s.workspace)))).rejects.toThrow('手机遥控不能在这里用')
+    await expect(s.service.addWorkspace(path.dirname(path.dirname(s.workspace)))).rejects.toThrow('无法用于手机遥控')
     expect((await s.service.snapshot()).workspaces).toHaveLength(4)
   })
 
@@ -2970,20 +2970,20 @@ describe('codex-remote-service folders', () => {
     await s.service.addWorkspace(folder(s, 'blog'))
     const channel = await enabledAndPaired(s)
     channel.handlers?.onInbound(text(alice, '文件夹'))
-    await channel.sentUntil(() => channel.texts().at(-1) === `1. ${shown('demo')}（正在用）\n2. ${shown('blog')}\n回「文件夹 2」切过去。`)
+    await channel.sentUntil(() => channel.texts().at(-1) === `1. ${shown('demo')}（使用中）\n2. ${shown('blog')}\n回复「文件夹 2」即可切换。`)
     channel.handlers?.onInbound(text(alice, '文件夹 1'))
-    await channel.sentUntil(() => channel.texts().at(-1) === `现在用的就是 ${shown('demo')}。`)
+    await channel.sentUntil(() => channel.texts().at(-1) === `当前已在使用 ${shown('demo')}。`)
     channel.handlers?.onInbound(text(alice, '文件夹 3'))
-    await channel.sentUntil(() => channel.texts().at(-1) === '没有第 3 个文件夹。发「文件夹」看有哪些。')
+    await channel.sentUntil(() => channel.texts().at(-1) === '不存在第 3 个文件夹，请发送「文件夹」查看列表。')
     channel.handlers?.onInbound(text(alice, '文件夹 2'))
-    await channel.sentUntil(() => channel.texts().at(-1) === `已切到 ${shown('blog')}，从新对话开始。`)
+    await channel.sentUntil(() => channel.texts().at(-1) === `已切换至 ${shown('blog')}，将从新对话开始。`)
     expect((await s.service.snapshot()).workspaceDirectory).toBe(shown('blog'))
     expect(s.logs).toContain('remote.workspace-switched')
     channel.sent.length = 0
     const codex = await prompted(s, channel)
     expect(codex.requests('thread/start')[0]).toMatchObject({ params: { cwd: path.join(path.dirname(s.workspace), 'blog') } })
     // The phone already heard it starts afresh: no second warning.
-    expect(channel.texts()[0]).toBe('收到，Codex 开始处理。')
+    expect(channel.texts()[0]).toBe('已收到，Codex 开始处理。')
   })
 
   it('does not switch folders while a turn is still going, and says so when the folder is gone', async () => {
@@ -2993,13 +2993,13 @@ describe('codex-remote-service folders', () => {
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     channel.handlers?.onInbound(text(alice, '文件夹 2'))
-    await channel.sentUntil(() => channel.texts().at(-1) === 'Codex 还在处理上一条，等它做完再换文件夹。')
-    await expect(s.service.useWorkspace(shown('blog'))).rejects.toThrow('Codex 正在处理手机上发来的任务，等它做完再换文件夹。')
+    await channel.sentUntil(() => channel.texts().at(-1) === 'Codex 正在处理上一条消息，请待其完成后再切换文件夹。')
+    await expect(s.service.useWorkspace(shown('blog'))).rejects.toThrow('Codex 正在处理手机发来的任务，请待其完成后再切换文件夹。')
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
     fs.rmSync(blog, { recursive: true })
     channel.handlers?.onInbound(text(alice, '文件夹 2'))
-    await channel.sentUntil(() => channel.texts().at(-1) === `${shown('blog')} 现在打不开了，可能被移走或删掉了。先在电脑上看一下。`)
+    await channel.sentUntil(() => channel.texts().at(-1) === `${shown('blog')} 当前无法打开，可能已被移动或删除，请在电脑端检查。`)
     expect((await s.service.snapshot()).workspaceDirectory).toBe(shown('demo'))
   })
 })
@@ -3023,7 +3023,7 @@ describe('codex-remote-service answered approval cards', () => {
     const [update] = channel.approvalUpdates
     expect(update).toMatchObject({ handle: 'om_approval_1', outcome: 'accepted', message: { kind: 'approval', request: { approvalId: '1' } } })
     expect(update.message.text).toContain('npm test')
-    expect(update.message.text).not.toContain('回「同意')
+    expect(update.message.text).not.toContain('请回复「同意')
     await vi.waitFor(() => expect(channel.texts()).toContain('已同意第 1 条。'))
 
     const second = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i2' })
@@ -3046,7 +3046,7 @@ describe('codex-remote-service answered approval cards', () => {
     await vi.advanceTimersByTimeAsync(10 * 60_000)
     expect((await answer).result).toEqual({ decision: 'decline' })
     await vi.waitFor(() => expect(channel.approvalUpdates.map((entry) => entry.outcome)).toEqual(['expired']))
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条等了 10 分钟没回，已自动拒绝。'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条在 10 分钟内未获回复，已自动拒绝。'))
   })
 
   it('marks cards as declined when declined from the computer or swept up by 「停止」', async () => {
@@ -3092,7 +3092,7 @@ describe('codex-remote-service progress', () => {
     await vi.waitFor(() => expect(channel.progress).toHaveLength(1))
     expect(channel.progress[0]).toMatchObject({
       op: 'send',
-      card: { state: 'running', steps: [{ text: '读登录页的代码', status: 'inProgress' }, { text: '改登录页', status: 'pending' }], elapsed: '已经不到 1 分钟' },
+      card: { state: 'running', steps: [{ text: '读登录页的代码', status: 'inProgress' }, { text: '改登录页', status: 'pending' }], elapsed: '已用时不到 1 分钟' },
     })
     expect(channel.progress[0].card.stopNonce).toMatch(/^[A-Za-z0-9_-]{16}$/)
     // The same plan sent again changes nothing on the card.
@@ -3131,11 +3131,11 @@ describe('codex-remote-service progress', () => {
     clock += 1_000
     await vi.advanceTimersByTimeAsync(1_000)
     await vi.waitFor(() => expect(channel.progress).toHaveLength(1))
-    expect(channel.progress[0]).toMatchObject({ op: 'send', card: { state: 'running', steps: [], elapsed: '已经 2 分钟' } })
+    expect(channel.progress[0]).toMatchObject({ op: 'send', card: { state: 'running', steps: [], elapsed: '已用时 2 分钟' } })
     clock += 5 * 60_000
     await vi.advanceTimersByTimeAsync(5 * 60_000)
     await vi.waitFor(() => expect(channel.progress).toHaveLength(2))
-    expect(channel.progress[1]).toMatchObject({ op: 'update', card: { elapsed: '已经 7 分钟' } })
+    expect(channel.progress[1]).toMatchObject({ op: 'update', card: { elapsed: '已用时 7 分钟' } })
     // The card goes out after 「收到」 in the same queue as the text messages.
     expect(channel.texts()[0]).toContain('收到')
   })
@@ -3148,7 +3148,7 @@ describe('codex-remote-service progress', () => {
     await vi.waitFor(() => expect(channel.progress).toHaveLength(1))
     const nonce = channel.progress[0].card.stopNonce ?? ''
     channel.handlers?.onInbound({ kind: 'stop', peer: alice, direct: true, nonce: 'an-earlier-turn-1' })
-    await vi.waitFor(() => expect(channel.texts()).toContain('这张卡片是上一轮的，现在这一轮没有停。要停请发「停止」。'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('此卡片属于上一轮，当前任务未停止。如需停止，请发送「停止」。'))
     expect(codex.requests('turn/interrupt')).toHaveLength(0)
     // Someone else pressing a card the bot sent is not the bound person.
     channel.handlers?.onInbound({ kind: 'stop', peer: mallory, direct: true, nonce })
@@ -3158,7 +3158,7 @@ describe('codex-remote-service progress', () => {
     await vi.waitFor(() => expect(channel.progress.at(-1)?.card.state).toBe('stopped'))
     expect(s.logs).toContain('remote.turn-stopped-from-card')
     channel.handlers?.onInbound({ kind: 'stop', peer: alice, direct: true, nonce })
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('现在没有在处理的任务。'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('当前没有正在处理的任务。'))
   })
 
   it('says it is still working every five minutes on a channel without cards, and keeps quiet while waiting for approval', async () => {
@@ -3169,17 +3169,17 @@ describe('codex-remote-service progress', () => {
     const codex = await prompted(s, channel)
     clock += 5 * 60_000
     await vi.advanceTimersByTimeAsync(5 * 60_000)
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('还在做，已经 5 分钟。'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('仍在处理，已用时 5 分钟。'))
     codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-1', plan: [{ step: '读登录页的代码', status: 'completed' }, { step: '改登录页', status: 'inProgress' }] })
     clock += 5 * 60_000
     await vi.advanceTimersByTimeAsync(5 * 60_000)
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('还在做，已经 10 分钟。现在这一步：改登录页'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('仍在处理，已用时 10 分钟。当前步骤：改登录页'))
     void codex.ask('item/commandExecution/requestApproval', commandRequest)
     await approvalCardsSent(channel, 1)
     const sent = channel.sent.length
     clock += 5 * 60_000
     await vi.advanceTimersByTimeAsync(5 * 60_000)
-    expect(channel.texts().slice(sent).filter((line) => line.startsWith('还在做'))).toHaveLength(0)
+    expect(channel.texts().slice(sent).filter((line) => line.startsWith('仍在处理'))).toHaveLength(0)
   })
 })
 
@@ -3249,7 +3249,7 @@ describe('codex-remote-service approvals', () => {
     channel.handlers?.onInbound(cardClick(alice, oldCard, 'accept'))
     await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(staleCardText))
     channel.handlers?.onInbound(text(alice, '同意 1'))
-    await channel.sentUntil(() => channel.texts().at(-1) === '没有第 1 条等你同意的操作。')
+    await channel.sentUntil(() => channel.texts().at(-1) === '不存在第 1 条待确认的操作。')
     expect((await after.service.snapshot()).pendingApprovals).toBe(1)
     channel.handlers?.onInbound(text(alice, '拒绝 2'))
     expect((await answer).result).toEqual({ decision: 'decline' })
@@ -3287,9 +3287,9 @@ describe('codex-remote-service approvals', () => {
     const second = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i2' }, 'b')
     await approvalCardsSent(channel, 2)
     channel.handlers?.onInbound(text(alice, '同意'))
-    await channel.sentUntil(() => channel.texts().at(-1)?.includes('现在有 2 条等你同意（1、2）') === true)
+    await channel.sentUntil(() => channel.texts().at(-1)?.includes('当前有 2 条待确认（1、2）') === true)
     channel.handlers?.onInbound(text(alice, '同意 9'))
-    await channel.sentUntil(() => channel.texts().at(-1) === '没有第 9 条等你同意的操作。')
+    await channel.sentUntil(() => channel.texts().at(-1) === '不存在第 9 条待确认的操作。')
     channel.handlers?.onInbound(text(alice, '拒绝 2'))
     channel.handlers?.onInbound(text(alice, '同意 1'))
     expect((await first).result).toEqual({ decision: 'accept' })
@@ -3322,7 +3322,7 @@ describe('codex-remote-service approvals', () => {
     await approvalCardsSent(channel, 1)
     await vi.advanceTimersByTimeAsync(10 * 60_000)
     expect((await answer).result).toEqual({ decision: 'decline' })
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条等了 10 分钟没回，已自动拒绝。'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条在 10 分钟内未获回复，已自动拒绝。'))
   })
 
   // YF-20：还剩 3 分钟时提醒一次，人在路上没看到也还来得及回；回过了就不再提醒。
@@ -3334,7 +3334,7 @@ describe('codex-remote-service approvals', () => {
     // Codex asks a moment after the turn started, as it really does. Asked on the very tick the turn started, the
     // ten-minute deadline would fall on the same tick as the second five-minute progress line, which then follows it.
     await vi.advanceTimersByTimeAsync(1_000)
-    const reminder = '第 1 条还在等你，3 分钟后自动拒绝。回「同意 1」或「拒绝 1」。'
+    const reminder = '第 1 条仍在等待您的确认，将于 3 分钟后自动拒绝。请回复「同意 1」或「拒绝 1」。'
     const first = codex.ask('item/commandExecution/requestApproval', commandRequest)
     await approvalCardsSent(channel, 1)
     await vi.advanceTimersByTimeAsync(7 * 60_000 - 1_000)
@@ -3344,7 +3344,7 @@ describe('codex-remote-service approvals', () => {
     expect(s.logs).toContain('remote.approval-reminded')
     await vi.advanceTimersByTimeAsync(3 * 60_000)
     expect((await first).result).toEqual({ decision: 'decline' })
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条等了 10 分钟没回，已自动拒绝。'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条在 10 分钟内未获回复，已自动拒绝。'))
     expect(channel.texts().filter((line) => line === reminder)).toHaveLength(1)
 
     const second = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i2' })
@@ -3401,8 +3401,8 @@ describe('codex-remote-service approvals', () => {
     await approvalCardsSent(channel, 1)
     expect(approvalsSent(channel)[0]).toMatchObject({ approvalId: '1', kind: 'file-change' })
     const lines = approvalsSent(channel)[0].summary.split('\n')
-    expect(lines[0]).toBe(`改 ${files[0]} +0 -0 行`)
-    expect(lines.slice(-2)).toEqual(['另外还有 10 个文件', '可写范围：/Volumes/Work/customer-portal'])
+    expect(lines[0]).toBe(`修改 ${files[0]} +0 -0 行`)
+    expect(lines.slice(-2)).toEqual(['另有 10 个文件', '可写范围：/Volumes/Work/customer-portal'])
     channel.handlers?.onInbound(text(alice, '拒绝'))
     expect((await asked).result).toEqual({ decision: 'decline' })
   })
@@ -3420,7 +3420,7 @@ describe('codex-remote-service approvals', () => {
     }, 'a')
     await approvalCardsSent(channel, 1)
     expect(approvalsSent(channel)[0]).toMatchObject({ kind: 'network', summary: 'registry.npmjs.org' })
-    expect(channel.texts()).toContain('[approval] Codex 想连网站（第 1 条）：\nCodex 说明：要下载依赖\nregistry.npmjs.org\n回「同意 1」或「拒绝 1」。')
+    expect(channel.texts()).toContain('[approval] Codex 请求访问网站（第 1 条）：\nCodex 说明：要下载依赖\nregistry.npmjs.org\n请回复「同意 1」或「拒绝 1」。')
     channel.handlers?.onInbound(text(alice, '同意'))
     expect((await site).result).toEqual({ decision: 'accept' })
 
@@ -3432,7 +3432,7 @@ describe('codex-remote-service approvals', () => {
     }, 'b')
     await approvalCardsSent(channel, 2)
     expect(approvalsSent(channel)[1]).toMatchObject({ kind: 'terminal-input', summary: 'write_stdin --session-id 3 yes' })
-    expect(channel.texts().some((line) => line.startsWith('[approval] Codex 想往正在运行的程序里输入（第 2 条）：\n') && line.includes('\nwrite_stdin --session-id 3 yes\n回「同意 2」'))).toBe(true)
+    expect(channel.texts().some((line) => line.startsWith('[approval] Codex 请求向运行中的程序输入内容（第 2 条）：\n') && line.includes('\nwrite_stdin --session-id 3 yes\n请回复「同意 2」'))).toBe(true)
     channel.handlers?.onInbound(text(alice, '拒绝'))
     expect((await input).result).toEqual({ decision: 'decline' })
   })
@@ -3549,7 +3549,7 @@ describe('codex-remote-service lifecycle', () => {
     await s.stateUntil((snapshot) => !snapshot.channels.feishu.enabled && !snapshot.channels.weixin.enabled)
     expect(s.service.hasEnabledChannel()).toBe(false)
     expect(s.snapshots.at(-1)).toMatchObject({ channels: { feishu: { enabled: false }, weixin: { enabled: false } } })
-    expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
+    expect(channel.texts()).toEqual(['手机遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。'])
     expect(channel.sent[0].replyContext).toMatch(/^ctx-/)
     expect(channel.stopped).toBe(1)
     expect(weixin.stopped).toBe(1)
@@ -3572,7 +3572,7 @@ describe('codex-remote-service lifecycle', () => {
     channel.handlers?.onInbound(text(alice, '关闭遥控'))
     // 先把关掉的开关原子写进盘才断渠道、发「已关闭」：直接等发送本身，不靠 vi.waitFor 的 1 秒（R16）。
     await channel.sentUntil(() => channel.texts().length > 0)
-    expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
+    expect(channel.texts()).toEqual(['手机遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。'])
     await vi.waitFor(() => expect(first.snapshots.at(-1)).toMatchObject({ channels: { feishu: { enabled: false } } }))
     // 卡片上的开关跟着显示关着，客户回到电脑前一看就明白。
     expect(first.snapshots.at(-1)).not.toHaveProperty('autoStart')
@@ -3606,7 +3606,7 @@ describe('codex-remote-service lifecycle', () => {
     await channel.sentUntil(() => channel.texts().length > 0)
     expect(s.service.hasEnabledChannel()).toBe(false)
     await vi.waitFor(() => expect(channel.stopped).toBe(1))
-    expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
+    expect(channel.texts()).toEqual(['手机遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。'])
     expect(s.logs).not.toContain('remote.message-id-unsaved')
     expect((await s.store.readSettings()).autoStart).toBe(true)
     expect(s.logs).toContain('remote.auto-start-unsaved')
@@ -3635,13 +3635,13 @@ describe('codex-remote-service lifecycle', () => {
     await s.service.startPairing('feishu')
     first.handlers?.onInbound(text(alice, '000042'))
     await first.sentUntil(() => first.texts().some((line) => line.startsWith('配对成功')))
-    expect(first.texts().some((line) => line.startsWith('电脑上的手机遥控打开了'))).toBe(false)
+    expect(first.texts().some((line) => line.startsWith('电脑端已开启手机遥控'))).toBe(false)
     await s.service.setChannelEnabled('feishu', false)
 
     await s.service.setChannelEnabled('feishu', true)
     const second = s.channels[1]
     // The folder is real (path.join), so on Windows it reads ~\projects\demo.
-    const opened = `电脑上的手机遥控打开了，可以发消息了。工作文件夹：${path.join('~', 'projects', 'demo')}`
+    const opened = `电脑端已开启手机遥控，现在可以发送消息。工作文件夹：${path.join('~', 'projects', 'demo')}`
     await second.sentUntil(() => second.texts().includes(opened))
     expect(second.sent).toHaveLength(1)
     expect(second.sent[0].peer).toMatchObject({ channel: 'feishu', userId: alice.userId })
@@ -3753,7 +3753,7 @@ describe('codex-remote-service lifecycle', () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
     await s.service.farewell()
-    expect(channel.texts()).toEqual(['电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。'])
+    expect(channel.texts()).toEqual(['电脑端的星芒已退出，遥控已停止。请重新打开星芒并开启遥控后继续使用。'])
     expect(channel.stopped).toBe(0)
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(true)
     s.service.dispose()
@@ -3768,7 +3768,7 @@ describe('codex-remote-service lifecycle', () => {
     await s.service.farewell()
     // 换了道别那句，退出没退成时照旧补「没关成」。
     await s.service.quitAborted()
-    expect(channel.texts()).toEqual(['电脑上的星芒关了，遥控已停。星芒再打开时会自动连上。', '电脑上的星芒没关成，遥控还开着，可以接着用。'])
+    expect(channel.texts()).toEqual(['电脑端的星芒已退出，遥控已停止。星芒再次打开时将自动连接。', '电脑端的星芒未退出，遥控仍保持开启，可继续使用。'])
   })
 
   it('falls back to the plain goodbye when the switch cannot be read, rather than promising a reconnect', async () => {
@@ -3777,7 +3777,7 @@ describe('codex-remote-service lifecycle', () => {
     await s.service.setAutoStart(true)
     vi.spyOn(s.store, 'readSettings').mockRejectedValueOnce(new Error('disk'))
     await s.service.farewell()
-    expect(channel.texts()).toEqual(['电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。'])
+    expect(channel.texts()).toEqual(['电脑端的星芒已退出，遥控已停止。请重新打开星芒并开启遥控后继续使用。'])
   })
 
   it('keeps the goodbye inside one and a half seconds when reading the switch hangs', async () => {
@@ -3816,7 +3816,7 @@ describe('codex-remote-service lifecycle', () => {
     const channel = await enabledAndPaired(s)
     await s.service.farewell()
     await s.service.quitAborted()
-    expect(channel.texts()).toEqual(['电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。', '电脑上的星芒没关成，遥控还开着，可以接着用。'])
+    expect(channel.texts()).toEqual(['电脑端的星芒已退出，遥控已停止。请重新打开星芒并开启遥控后继续使用。', '电脑端的星芒未退出，遥控仍保持开启，可继续使用。'])
     // 补过一次就清账：下一次没说「关了」的退出被撤回，不再补。
     await s.service.quitAborted()
     expect(channel.texts()).toHaveLength(2)
@@ -3854,7 +3854,7 @@ describe('codex-remote-service lifecycle', () => {
     const s = await setup({ idleCloseHours: 4 })
     const channel = await enabledAndPaired(s)
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
-    await vi.waitFor(() => expect(channel.texts()).toContain('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('4 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。'))
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
   })
 
@@ -3865,8 +3865,8 @@ describe('codex-remote-service lifecycle', () => {
     const channel = await enabledAndPaired(s)
     await s.service.setAutoStart(true)
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
-    await channel.sentUntil(() => channel.texts().includes('4 小时没有新消息，手机遥控已自动关闭。星芒下次打开时会自动连上，现在要用请在电脑上重新打开。'))
-    expect(channel.texts()).not.toContain('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。')
+    await channel.sentUntil(() => channel.texts().includes('4 小时内无新消息，手机遥控已自动关闭。星芒下次打开时将自动连接；如需立即使用，请在电脑端重新开启。'))
+    expect(channel.texts()).not.toContain('4 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。')
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
   })
 
@@ -3875,7 +3875,7 @@ describe('codex-remote-service lifecycle', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const s = await setup({ idleCloseHours: 4 })
     const channel = await enabledAndPaired(s)
-    const warning = '手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。'
+    const warning = '手机遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。'
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000 - 1)
     await channel.sentUntil(() => channel.texts().includes(warning))
     vi.spyOn(s.store, 'readSettings').mockImplementationOnce(() => new Promise(() => undefined))
@@ -3891,7 +3891,7 @@ describe('codex-remote-service lifecycle', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const s = await setup({ idleCloseHours: 4 })
     const channel = await enabledAndPaired(s)
-    const warning = '手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。'
+    const warning = '手机遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。'
     await vi.advanceTimersByTimeAsync(3 * 60 * 60_000 + 49 * 60_000)
     expect(channel.texts()).toEqual([])
     await vi.advanceTimersByTimeAsync(60_000)
@@ -3924,9 +3924,9 @@ describe('codex-remote-service lifecycle', () => {
     await vi.advanceTimersByTimeAsync(11 * 60 * 60_000 + 49 * 60_000)
     expect(channel.texts()).toEqual([])
     await vi.advanceTimersByTimeAsync(60_000)
-    await channel.sentUntil(() => channel.texts().includes('手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。'))
+    await channel.sentUntil(() => channel.texts().includes('手机遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。'))
     await vi.advanceTimersByTimeAsync(10 * 60_000)
-    await vi.waitFor(() => expect(channel.texts()).toContain('12 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('12 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。'))
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
   })
 
@@ -3963,12 +3963,12 @@ describe('codex-remote-service lifecycle', () => {
     const s = await setup({ root })
     const channel = await enabledAndPaired(s)
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
-    await vi.waitFor(() => expect(channel.texts()).toContain('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('4 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。'))
   })
 
   // D66 / YKS-18：解绑、换人、退出登录，原来那个人要知道之后发的话不会再执行。
   it('tells the bound person before unbinding, handing over to someone else, or logging out', async () => {
-    const unboundText = '电脑上已经把你解绑了，之后发的消息不会再执行。'
+    const unboundText = '您已在电脑端被解绑，此后发送的消息将不再执行。'
     const s = await setup()
     await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'x'.repeat(16) }), 'cli_abcdef')
     let channel = await enabledAndPaired(s)
@@ -4077,7 +4077,7 @@ describe('codex-remote-service lifecycle', () => {
   // YR-9：换了机器人重新扫码、过了数字的还是原来绑着的那个人：绑定照旧，手机上不先收一句「已经把你解绑了」。
   // 换成别人扫，原来那个人照旧先收到那句。
   it('keeps the binding quietly when the person bound before passes the number on a new bot', async () => {
-    const unboundText = '电脑上已经把你解绑了，之后发的消息不会再执行。'
+    const unboundText = '您已在电脑端被解绑，此后发送的消息将不再执行。'
     const s = await setup()
     function weixinCredential(botId: string): string {
       return encodeWeixinCredential({ version: 1, token: `tok-${botId}`, botId, origin: 'https://ilinkai.weixin.qq.com', ownerUserId: 'owner@im.wechat' })
@@ -4145,8 +4145,8 @@ describe('codex-remote-service lifecycle', () => {
 
   it('does not swallow a failure to save a new credential as a logout failure', async () => {
     const s = await setup()
-    vi.spyOn(s.store, 'writeCredential').mockRejectedValueOnce(new Error('这台电脑没法安全保存密码，凭据没有保存。'))
-    await expect(s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_other1', appSecret: 'z'.repeat(16) }), 'cli_other1')).rejects.toThrow('没法安全保存')
+    vi.spyOn(s.store, 'writeCredential').mockRejectedValueOnce(new Error('本机不支持安全保存密码，凭据未保存。'))
+    await expect(s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_other1', appSecret: 'z'.repeat(16) }), 'cli_other1')).rejects.toThrow('不支持安全保存')
     expect(s.logs).not.toContain('remote.credential-remove-failed')
   })
 
@@ -4191,8 +4191,8 @@ describe('codex-remote-service releasing Codex for an update or uninstall', () =
 
   it('says what the customer sees in so many words', () => {
     expect(codexRemoteBusyMessages).toEqual({
-      update: '手机遥控里的 Codex 正在干活，等它做完再更新，或者先在设置里关掉手机遥控。',
-      uninstall: '手机遥控里的 Codex 正在干活，等它做完再卸载，或者先在设置里关掉手机遥控。',
+      update: '手机遥控中的 Codex 正在处理任务，请待其完成后再更新，或先在设置中关闭手机遥控。',
+      uninstall: '手机遥控中的 Codex 正在处理任务，请待其完成后再卸载，或先在设置中关闭手机遥控。',
     })
   })
 
@@ -4240,7 +4240,7 @@ describe('codex-remote-service releasing Codex for an update or uninstall', () =
     const s = await setup({ spawnGate: new Promise<void>((resolve) => { release = resolve }) })
     const channel = await enabledAndPaired(s)
     channel.handlers?.onInbound(text(alice, '跑一下测试'))
-    await channel.sentUntil(() => channel.texts().includes('收到，Codex 开始处理。'))
+    await channel.sentUntil(() => channel.texts().includes('已收到，Codex 开始处理。'))
     await s.spawnAsked(1)
     // 起 Codex 也排在安装队列里：这时它可能排在这次安装后面，在这里等它就互相等死。
     await expect(s.service.releaseCodex('uninstall')).rejects.toThrow(codexRemoteBusyMessages.uninstall)
