@@ -89,7 +89,7 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
         return { account: state().account!, accessExpiresAt: null }
       }),
       completeTwoFactorLogin: vi.fn(async ({ code }: { flowToken: string; code: string }) => {
-        if (code === 'wrong') throw new Error('验证码不对或已过期，请看验证器里最新的数字再试')
+        if (code === 'wrong') throw new Error('验证码错误或已过期，请输入验证器中的最新验证码后重试')
         if (code === 'expired') throw new NewApiTwoFactorExpiredError()
         emit(saved(siteId, '7', loginToken))
         return { account: state().account!, accessExpiresAt: null }
@@ -198,7 +198,7 @@ describe('realm account service', () => {
     const f = fixture()
     await expect(f.service.login({ ...login, password: 'needs-2fa' })).rejects.toBeInstanceOf(NewApiTwoFactorRequiredError)
     expect(await f.vault.active()).toBeNull()
-    await expect(f.service.completeTwoFactorLogin('wrong')).rejects.toThrow('验证码不对')
+    await expect(f.service.completeTwoFactorLogin('wrong')).rejects.toThrow('验证码错误')
     const result = await f.service.completeTwoFactorLogin('123456')
     expect(result).toMatchObject({ siteId: 'solov', realmId: 'xm-account', account: { userId: 7 } })
     const second = f.clients[f.clients.length - 1]

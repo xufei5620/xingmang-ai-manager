@@ -114,7 +114,7 @@ type ManagedKeyAccountService = Pick<RelayBackendClient,
 
 class AccountSessionChangedError extends Error {
   constructor() {
-    super('星芒账号已切换，已停止本次 API Key 初始化')
+    super('星芒账号已切换，已停止本次密钥初始化')
     this.name = 'AccountSessionChangedError'
   }
 }
@@ -544,10 +544,10 @@ async function resolveManagedCliKeys(
           ? await keyStore.save(userId, cachedKeys)
           : await keyStore.save(userId, cachedKeys, cacheRevision)
         assertSameAuthenticatedUser(accountService, capture)
-        if (saved === false) storageWarning = '本地 API Key 缓存已被其他操作更新，本次保留新缓存'
+        if (saved === false) storageWarning = '本地密钥缓存已被其他操作更新，本次保留新缓存'
       } catch (error) {
         rethrowAccountSessionChange(error)
-        storageWarning = error instanceof Error ? error.message : '本地 API Key 保存失败'
+        storageWarning = error instanceof Error ? error.message : '本地密钥保存失败'
       }
     }
 

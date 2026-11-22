@@ -1042,7 +1042,7 @@ test('a half-typed tool key limit is refused instead of being saved as no limit'
     const card = page.getByTestId('tool-key-limits')
     const field = card.getByTestId('tool-key-limit-input-claude')
     const save = card.getByTestId('tool-key-limit-save-claude')
-    const refused = card.getByRole('alert').getByText('请填写大于 0 的上限金额，留空表示不限额。', { exact: true })
+    const refused = card.getByRole('alert').getByText('请填写大于 0 的上限金额，留空表示不限额度。', { exact: true })
     await field.waitFor()
     // 「1e」「-」这种半截数，数字框交出来的值是空的，跟留空一样；不能当成不限额存下去（表单 F10-b）。
     // 「-」是先清空再打的：从空到「-」值没变，框的 onChange 根本不来。
@@ -1424,7 +1424,7 @@ test('enabling a key past its expiry says to change the expiry first and keeps t
   try {
     await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
     await page.getByRole('button', { name: '启用密钥 expired-key', exact: true }).click()
-    await page.getByText('这把密钥已经过了到期时间，先点这一行右边的「⋯」，选「编辑」把到期时间往后改，再点「启用」。', { exact: true }).waitFor()
+    await page.getByText('该密钥已过到期时间。请先点击该行右侧的「⋯」，选择「编辑」延后到期时间，再点击「启用」。', { exact: true }).waitFor()
     await page.getByTestId('account-key-row-22').getByText('已过期', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('account-key-enable-22').isEnabled(), true)
   } finally { await page.close() }
@@ -4463,7 +4463,7 @@ test('failed saved-account verification never writes selected CLI config', async
       .getByRole('button', { name: '切换', exact: true, disabled: false })
       .click()
     await page
-      .getByText('这个保存的账号登录已失效，当前账号没有变化。', { exact: false })
+      .getByText('该已保存账号的登录已失效，当前账号未变化。', { exact: false })
       .first()
       .waitFor()
     // 全面检测 Q12：不能套上「登录已过期」的标题，那读起来像当前账号掉线了。

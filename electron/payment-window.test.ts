@@ -632,7 +632,7 @@ describe('createPaymentWindowController', () => {
     const harness = createHarness(new Error('network down'))
 
     await expect(harness.controller.open(paymentForm())).rejects.toThrow(
-      '支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。',
+      '支付页面打开失败，请稍后重试。本次未产生扣款，「我的订单」中新增的订单无需处理。',
     )
     expect(harness.window.destroy).toHaveBeenCalledOnce()
     expect(harness.controller.isOpen()).toBe(false)
@@ -649,7 +649,7 @@ describe('createPaymentWindowController', () => {
 
     const failure: unknown = await harness.controller.open(paymentForm()).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(Error)
-    expect(failure instanceof Error && failure.message).toBe('支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。')
+    expect(failure instanceof Error && failure.message).toBe('支付页面打开失败，请稍后重试。本次未产生扣款，「我的订单」中新增的订单无需处理。')
     expect(failure instanceof Error && failure.cause).toEqual({ code: 'ERR_CONNECTION_RESET' })
     // The failure log still tells a cut connection apart from a certificate or a lookup.
     expect(classifyNetworkFailure(failure)).toBe('refused')
@@ -969,7 +969,7 @@ describe('payment page opening', () => {
     const failure = harness.controller.openUrl('https://pay.example.com/cashier').catch((error: unknown) => error)
     await vi.advanceTimersByTimeAsync(paymentPageOpenTimeoutMs)
     const error = await failure
-    expect(error instanceof Error && error.message).toBe('支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。')
+    expect(error instanceof Error && error.message).toBe('支付页面打开失败，请稍后重试。本次未产生扣款，「我的订单」中新增的订单无需处理。')
     expect(error instanceof Error && error.cause).toEqual({ code: 'ERR_TIMED_OUT' })
     expect(classifyNetworkFailure(error)).toBe('timeout')
     expect(harness.window.destroy).toHaveBeenCalledOnce()

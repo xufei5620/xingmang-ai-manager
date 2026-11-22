@@ -875,7 +875,7 @@ const apiMethods = {
   // 「开发票」只叫主进程开开票窗口，不带参数；invoiceFail 时与主进程那条通道抛错一样。
   openAccountInvoicePortal: async (...args: unknown[]) => {
     record('open-invoice-portal', args)
-    if (query.has('invoiceFail')) throw new Error("Error invoking remote method 'account:open-invoice-portal': Error: 没能打开开票中心，请稍后再试；还不行请找客服。")
+    if (query.has('invoiceFail')) throw new Error("Error invoking remote method 'account:open-invoice-portal': Error: 开票中心打开失败，请稍后重试；如仍无法打开，请联系客服。")
   },
   onExternalClientLaunchProgress: () => () => undefined,
   getAccountSession: async () => ({
@@ -948,7 +948,7 @@ const apiMethods = {
   switchSavedAccount: async (id: string) => {
     record('switch-account', id)
     // 与主进程 SAVED_EXPIRED 同一句（electron/realm-account.ts）。
-    if (fail === 'switch') throw new Error('这个保存的账号登录已失效，当前账号没有变化。点「重新登录该账号」再登一次就行。')
+    if (fail === 'switch') throw new Error('该已保存账号的登录已失效，当前账号未变化。请点击「重新登录该账号」重新登录。')
     activeUserId = 8
     for (const config of Object.values(configs.providers)) {
       if (config.configurationOwnership === 'account') config.configurationOwnership = 'unknown'

@@ -23,8 +23,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   sessionExpired: { sample: '账号接口返回 401 Unauthorized' },
   // 主进程 remote-features.ts 拼的那几句：状态文件关掉了这一样（G04）。
   featureSuspended: { sample: toolInstallOffMessage('Codex CLI') },
-  toolNotEnabled: { sample: 'Codex CLI 改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
-  switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。' },
+  toolNotEnabled: { sample: 'Codex CLI 改用当前账号未完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
+  switchUndoFailed: { sample: '改用当前账号未完成：写入失败 EPERM。自动恢复也未完成（EPERM），请在「设置 › 备份迁移」中恢复切换前的备份。' },
   pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
   configBroken: { sample: brokenConfigLaunchMessages.codexConfig },
   // 主进程 extension-command-output.ts 的 withCommandOutput：原话后面接上命令自己说的那一行（Claude Code 2.1 的原话）。
@@ -74,8 +74,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   // 同一句 EPERM，调用方说明写的是工具的配置文件时（已知29）。
   configPermission: { sample: "重新写入密钥 没有完成：EPERM: operation not permitted, rename '本机路径'", target: 'config' },
   // 主进程查出没权限是哪一种时那半句（config-files-context.ts 的 explainConfigWriteFailure，D15），经 account-source-switch 包一层。
-  configAdminOwned: { sample: `Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`, target: 'config' },
-  configReadOnly: { sample: `Codex CLI 改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`, target: 'config' },
+  configAdminOwned: { sample: `Claude Code 改用当前账号未完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`, target: 'config' },
+  configReadOnly: { sample: `Codex CLI 改用当前账号未完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`, target: 'config' },
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
   // 同一句磁盘满，写的是工具的配置文件时（#1100 第6条）。
   configDiskFull: { sample: "重新写入密钥 没有完成：ENOSPC: no space left on device, write '本机路径'", target: 'config' },
@@ -89,7 +89,7 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   toolCertElevated: { sample: `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.elevated}` },
   updateIntegrity: { sample: 'Claude Code 更新失败：SHA-512 完整性校验不一致' },
   backupIntegrity: { sample: '备份文件已损坏或被篡改' },
-  unsafeStorage: { sample: '这台电脑没法安全保存密码，已拒绝写入托管 API Key。' },
+  unsafeStorage: { sample: '本机不支持安全保存密码，已拒绝写入托管密钥。' },
   // 支付的两个终态不走这条路：pages-account.tsx 的 paymentTerminalPresentation
   // 已经按回跳结果给出更具体的说法，再用目录文案盖一层只会更含糊。
   paymentClosed: { unreachable: 'paymentTerminalPresentation 直接给终态文案' },
@@ -153,7 +153,7 @@ describe('renderer-v2 operation error classification', () => {
 
   it('names the history account backend running out of balance instead of showing the English sentence alone', () => {
     // 客户装着 CC Switch、点「改用当前账号」时撞上的原话：历史账号余额用完，查模型那一步就被拒了。
-    const switchFailure = '改用当前账号没有完成：模型查询失败，服务返回 403：Insufficient account balance。已恢复到切换前的配置。'
+    const switchFailure = '改用当前账号未完成：模型查询失败，服务返回 403：Insufficient account balance。已恢复到切换前的配置。'
     expect(classifyOperationError(switchFailure, 'config')).toBe('noBalance')
     const hint = presentOperationError(switchFailure, 'config')
     expect(hint?.title).toBe('余额已用尽')
@@ -196,8 +196,8 @@ describe('renderer-v2 operation error classification', () => {
 
   it('leaves the import file sentences alone instead of sending the user to close a tool', () => {
     // X-7：导入文件被占着时主进程那句已经说清下一步；配上「工具正在运行」的标题会叫人去关命令行工具。
-    expect(presentOperationError('这个文件现在读不了，可能正被别的程序占着。关掉它，再点一次「导入」。')).toBeNull()
-    expect(presentOperationError('这个文件不是星芒导出的，或者已经损坏，没有导入任何内容。')).toBeNull()
+    expect(presentOperationError('该文件暂时无法读取，可能已被其他程序打开。请关闭相关程序后再次点击「导入」。')).toBeNull()
+    expect(presentOperationError('该文件并非由星芒导出或已损坏，未导入任何内容。')).toBeNull()
   })
 
   it('does not repeat wording the message already carries', () => {
@@ -261,7 +261,7 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('points a full disk at the config file, not the install folder, when a config write fails', () => {
-    const hint = presentOperationError("改用当前账号没有完成：ENOSPC: no space left on device, write '本机路径'", 'config')
+    const hint = presentOperationError("改用当前账号未完成：ENOSPC: no space left on device, write '本机路径'", 'config')
     expect(hint).toMatchObject({
       key: 'configDiskFull',
       title: '磁盘可用空间不足',
@@ -295,7 +295,7 @@ describe('renderer-v2 operation error classification', () => {
     for (const raw of [
       '模型查询失败，服务返回 401：无效的令牌',
       '模型查询失败，服务返回 401',
-      'Claude Code 改用当前账号没有完成：模型查询失败，服务返回 401：无效的令牌。已恢复到切换前的配置。',
+      'Claude Code 改用当前账号未完成：模型查询失败，服务返回 401：无效的令牌。已恢复到切换前的配置。',
       'Codex CLI 的 Key 没配上：模型查询失败，服务返回 401：无效的令牌 (request id: 2)',
       '模型查询失败，服务返回 403：API key 已过期',
     ]) {
@@ -349,7 +349,7 @@ describe('renderer-v2 operation error classification', () => {
 
   it('says the config file could not be written when the caller writes one, never the install directory', () => {
     // 已知29：改用当前账号、重新写入密钥 这些写的是配置文件，以前也叫人去看安装目录、复制安装目录的路径。
-    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本机路径'"
+    const raw = "Claude Code 改用当前账号未完成：EPERM: operation not permitted, open '本机路径'"
     const hint = presentOperationError(raw, 'config')
     expect(hint?.key).toBe('configPermission')
     expect(hint?.title).toBe('无法写入配置文件')
@@ -402,8 +402,8 @@ describe('renderer-v2 operation error classification', () => {
 
   it('says which of the two known config write refusals it is instead of blaming security software (D15)', () => {
     // 权限和写失败.md PW-3、PW-4：设置文件夹归管理员、文件被设成只读，重试多少次都一样，以前也叫人关窗口重试。
-    const adminOwned = `Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`
-    const readOnly = `Codex CLI 切回官方账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`
+    const adminOwned = `Claude Code 改用当前账号未完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`
+    const readOnly = `Codex CLI 切回官方账号未完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`
     const actions = [{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }, { id: 'support', label: '联系客服' }]
     expect(presentOperationError(adminOwned, 'config')).toEqual({
       key: 'configAdminOwned',
@@ -423,7 +423,7 @@ describe('renderer-v2 operation error classification', () => {
     expect(presentOperationFailure({ message: '重新写入密钥没有完成', detail: configWriteBlockerMessage('adminOwned', 'EACCES'), target: 'config' })?.key).toBe('configAdminOwned')
     // 没查出是哪一种的照旧是原来那句；自动恢复也没做成的照旧先叫人去备份迁移。
     expect(classifyOperationError("重新写入密钥 没有完成：EACCES: permission denied, open '本机路径'", 'config')).toBe('configPermission')
-    expect(classifyOperationError(`改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。`, 'config')).toBe('switchUndoFailed')
+    expect(classifyOperationError(`改用当前账号未完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。自动恢复也未完成（EPERM），请在「设置 › 备份迁移」中恢复切换前的备份。`, 'config')).toBe('switchUndoFailed')
   })
 
   it('treats exactly the home actions that rewrite a tool config as config writes', () => {
@@ -677,9 +677,14 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError('配置路径不能经过符号链接或目录联接', 'config')).toBe('folderRelocated')
   })
 
-  it('sends a failed undo to the backups action whether the message names the new or the old place', () => {
-    for (const where of ['「设置 › 备份迁移」', '「备份」']) {
-      const hint = presentOperationError(`改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到${where}里恢复切换前那一份。`)
+  it('sends a failed undo to the backups action whether the message is current or left by an older version', () => {
+    // 现在的说法，加上旧版和旧日志里的两种（「没有完成」、叫人去「备份」）。
+    for (const message of [
+      '改用当前账号未完成：写入失败 EPERM。自动恢复也未完成（EPERM），请在「设置 › 备份迁移」中恢复切换前的备份。',
+      '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。',
+      '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。',
+    ]) {
+      const hint = presentOperationError(message)
       expect(hint?.key).toBe('switchUndoFailed')
       expect(hint?.actions).toEqual([{ id: 'backups', label: '前往备份迁移' }, { id: 'support', label: '联系客服' }])
     }
@@ -708,6 +713,7 @@ describe('renderer-v2 operation error classification', () => {
   it('tells the user this machine has no keyring rather than blaming permissions', () => {
     // safe-storage-backend.ts 现在的说法，和老版本主进程的说法都要认得。
     for (const message of [
+      '本机不支持安全保存密码，已拒绝写入已保存的账号。',
       '这台电脑没法安全保存密码，已拒绝写入已保存的账号。',
       '当前系统没有可用的密钥环，安全存储只能以明文保存，已拒绝写入已保存的账号。请先启用系统凭据服务后重试。',
     ]) {
