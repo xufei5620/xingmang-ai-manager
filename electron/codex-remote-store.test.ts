@@ -97,6 +97,14 @@ describe('codex-remote-store', () => {
     }
   })
 
+  // 权限两档：盘上只认「只读」，别的（含有人手改成的完全访问）一律当缺省「默认」，不会读出比默认更宽的。
+  it('reads back read-only permission and treats anything else as the default level', () => {
+    expect(parseCodexRemoteSettings({ version: 1, permission: 'readOnly' }).permission).toBe('readOnly')
+    for (const value of ['default', 'fullAccess', 'danger-full-access', 'never', '', null, 1, ['readOnly']]) {
+      expect(parseCodexRemoteSettings({ version: 1, permission: value })).not.toHaveProperty('permission')
+    }
+  })
+
   // YF-19：电脑上加过的几个文件夹。正在用的那个一定在单子上，单子最多 5 个、不重复、只要绝对路径。
   it('keeps at most five distinct absolute folders and always the one in use', () => {
     const a = path.resolve('/w/a')

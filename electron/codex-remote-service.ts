@@ -34,6 +34,7 @@ import {
   type RemoteOutboundApproval,
   type RemoteIdleCloseHours,
   type RemotePeer,
+  type RemotePermission,
   type RemoteProgressCard,
   type RemoteProgressStep,
 } from './codex-remote-channel'
@@ -85,9 +86,12 @@ import { isRecord } from './input-guards'
 // - Whoever controls the bound chat account can make Codex act on this
 //   computer, so binding needs a fresh 6-digit code shown only on this screen,
 //   attempts are capped, and messages from anyone else are dropped silently.
-// - Codex runs with approvalPolicy "untrusted", sandbox "workspace-write" and
-//   approvals routed to the user (never to an auto reviewer). Every request is
-//   answered with plain accept or decline; there is no "accept for session",
+// - Codex runs with approvalPolicy "on-request" and either sandbox
+//   "workspace-write" (the default, same as Codex on the computer: work inside
+//   the folder without asking, ask before network or writes outside it) or
+//   "read-only" (yoyo typed consent to this widening on 2026-11-22).
+//   Approvals are routed to the user (never to an auto reviewer). Every request
+//   is answered with plain accept or decline; there is no "accept for session",
 //   no full-access mode and no way to run a shell command directly.
 // - Threads started from the phone get no MCP servers, plugins or apps: their
 //   tool calls do not all go through an approval, so nothing the phone cannot
@@ -314,15 +318,20 @@ function imageOnly(message: RemoteInbound): boolean {
  * 调用不一定先问人，手机上看不到也拦不住。只关这一份对话，电脑上直接用 Codex 照旧，联网搜索也不动。
  * mcpServers 是 buildRemoteMcpServerOverrides 算出来的那份。
  */
-export function buildThreadStartParams(workspace: string, mcpServers: Record<string, Record<string, unknown>> = {}, model: string | null = null): Record<string, unknown> {
+export function buildThreadStartParams(
+  workspace: string,
+  mcpServers: Record<string, Record<string, unknown>> = {},
+  model: string | null = null,
+  permission: RemotePermission = 'default',
+): Record<string, unknown> {
   return {
     cwd: workspace,
     // 「手机端使用的模型」单独选了才带；不带 = Codex 照 config.toml，与电脑端相同。
     ...(model ? { model } : {}),
-    approvalPolicy: 'untrusted',
+    approvalPolicy: remoteApprovalPolicy,
     // auto_review / guardian 会让另一个模型替人点同意；遥控只许人自己点。
     approvalsReviewer: 'user',
-    sandbox: 'workspace-write',
+    sandbox: permission === 'readOnly' ? 'read-only' : 'workspace-write',
     developerInstructions,
     config: {
       'features.apps': false,
@@ -330,6 +339,21 @@ export function buildThreadStartParams(workspace: string, mcpServers: Record<str
       ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServers } : {}),
     },
   }
+}
+
+/**
+ * 两档都是 on-request（跟 Codex 自己的「默认」「只读」两档一样）：沙箱里能做的不问，要出沙箱（连网、改文件夹外面、
+ * 只读档里改文件）才问手机上的人。以前是 untrusted，改文件和大多数命令都要先点同意（11-19 yoyo 嫌要同意的太多）。
+ */
+const remoteApprovalPolicy = 'on-request'
+
+/**
+ * 开着的对话中途换了「权限」：下一句的 turn/start 带上的沙箱（Codex 0.169 的 SandboxPolicy）。工作区可写那档 Codex 自己会把
+ * 对话的文件夹算进可写范围，这里不另加；两档都不开网，要连网得先问。
+ */
+export function buildRemoteSandboxPolicy(permission: RemotePermission): Record<string, unknown> {
+  if (permission === 'readOnly') return { type: 'readOnly', networkAccess: false }
+  return { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }
 }
 
 /** Codex `config/read` 答回来的生效配置里的 model（就是电脑上 Codex 现在用的那个）；没配、读不出是 null。 */
@@ -824,6 +848,8 @@ interface ChannelRuntime {
    * 开对话时记下，手机上下一句交给 Codex 前跟设置比一比，不一样才在 turn/start 里改（handTurnToCodex）。
    */
   threadModel: string | null
+  /** 这份对话现在用的是「权限」哪一档；跟 threadModel 一样，只在 threadId 有值时算数，不一样才在 turn/start 里改。 */
+  threadPermission: RemotePermission
   /** 原来的对话不是手机上发「新对话」丢的（dropThread）：下次开新对话时先说一声（D66 / YKS-16）。 */
   threadLost: boolean
   /** 上一次回「这条是 N 分钟前发的」的时间（noticeStale），0 = 还没回过；收到一条照常处理的消息就清零。 */
@@ -907,6 +933,7 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     outbox: Promise.resolve(),
     threadId: null,
     threadModel: null,
+    threadPermission: 'default',
     threadLost: false,
     staleNoticeAt: 0,
     turn: null,
@@ -1172,6 +1199,7 @@ export class CodexRemoteService {
       ...(settings.autoStart && this.autoStartFailure ? { autoStartFailure: this.autoStartFailure } : {}),
       ...(settings.idleCloseHours ? { idleCloseHours: settings.idleCloseHours } : {}),
       ...(settings.model ? { model: settings.model } : {}),
+      ...(settings.permission ? { permission: settings.permission } : {}),
       ...(this.codexStartFailed ? { codexStartFailed: true } : {}),
       ...(this.lastRequest ? { lastRequest: lastRequestSnapshot(this.lastRequest) } : {}),
       channels: channels as Record<RemoteChannelId, CodexRemoteChannelSnapshot>,
@@ -1381,6 +1409,19 @@ export class CodexRemoteService {
       else settings.model = model
     })
     this.options.log('info', 'remote.model-set', { follow: model === null })
+    return this.emit()
+  }
+
+  /**
+   * 「权限」两档（yoyo 2026-11-22 亲手打字同意）。跟模型一样只记下来，手机上下一句交给 Codex 时才用上（handTurnToCodex），
+   * 正在做的那一轮不打断，开着的对话也接着用。
+   */
+  async setPermission(permission: RemotePermission): Promise<CodexRemoteSnapshot> {
+    await this.options.store.updateSettings((settings) => {
+      if (permission === 'readOnly') settings.permission = 'readOnly'
+      else delete settings.permission
+    })
+    this.options.log('info', 'remote.permission-set', { permission })
     return this.emit()
   }
 
@@ -2887,29 +2928,38 @@ export class CodexRemoteService {
     // 只读命令也会先跑，事后再补一次打断已经晚了。
     if (!this.turnStillWanted(runtime, turn)) return
     try {
-      const wantedModel = (await this.options.store.readSettings()).model ?? null
+      const settings = await this.options.store.readSettings()
+      const wantedModel = settings.model ?? null
+      const wantedPermission: RemotePermission = settings.permission ?? 'default'
       if (!runtime.threadId) {
         // 读不出配了哪些外部工具就不开对话：宁可这一条做不了，也不让手机用上没关掉的工具。
         const configRead = await client.request('config/read', { cwd: workspace, includeLayers: true })
         if (!this.turnStillWanted(runtime, turn)) return
-        const started = await client.request('thread/start', buildThreadStartParams(workspace, buildRemoteMcpServerOverrides(configRead), wantedModel))
+        const started = await client.request('thread/start', buildThreadStartParams(workspace, buildRemoteMcpServerOverrides(configRead), wantedModel, wantedPermission))
         const thread = isRecord(started) && isRecord(started.thread) ? stringField(started.thread.id) : null
         if (!thread) throw new Error('Codex 未能开启新对话')
         if (!this.turnStillWanted(runtime, turn)) return
         runtime.threadId = thread
         runtime.threadModel = wantedModel
+        runtime.threadPermission = wantedPermission
         runtime.threadLost = false
       }
       const threadId = runtime.threadId
       const model = await this.turnModel(client, runtime, workspace, wantedModel)
       if (!this.turnStillWanted(runtime, turn)) return
+      // 开着的对话中途换了「权限」：这一句起照新的那档，Codex 会一直用到这份对话结束。
+      const permissionChanged = wantedPermission !== runtime.threadPermission
       const result = await client.request('turn/start', {
         threadId,
         // 图只给这里存的路径（YF-14），Codex 的 localImage 自己读文件。
         input: [{ type: 'text', text, text_elements: [] }, ...images.map((image) => ({ type: 'localImage', path: image }))],
         ...(model ? { model } : {}),
+        ...(permissionChanged ? { approvalPolicy: remoteApprovalPolicy, approvalsReviewer: 'user', sandboxPolicy: buildRemoteSandboxPolicy(wantedPermission) } : {}),
       })
-      if (runtime.threadId === threadId) runtime.threadModel = wantedModel
+      if (runtime.threadId === threadId) {
+        runtime.threadModel = wantedModel
+        runtime.threadPermission = wantedPermission
+      }
       const turnId = isRecord(result) && isRecord(result.turn) ? stringField(result.turn.id) : null
       if (turnId && this.turnStillWanted(runtime, turn)) turn.id = turnId
       else if (turnId) {

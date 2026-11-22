@@ -3,8 +3,8 @@ import { FolderOpen, FolderPlus, Headset, Home, RefreshCw, TriangleAlert, Zap } 
 import { Button, Card, Confirm, Notice, PageHead, Pill, Segment, Select, SettingRow, Switch, useBalanceTier } from '../../../ui'
 import { dollars, ResultNotice, useOperation, useResource } from '../../../business-common'
 import { useSharedBalanceSelector } from '../../app/balance-context'
-import { isRemoteIdleCloseHours, remoteChannelIds, remoteIdleCloseHours } from '../../../../../electron/codex-remote-channel'
-import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot, RemoteChannelId } from '../../../../../electron/ipc-contract'
+import { isRemoteIdleCloseHours, isRemotePermission, remoteChannelIds, remoteIdleCloseHours } from '../../../../../electron/codex-remote-channel'
+import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot, RemoteChannelId, RemotePermission } from '../../../../../electron/ipc-contract'
 import type { V2Bridge, V2Page } from '../../../types'
 import { codexModelChoices, isHiddenCodexModel } from '../../tools/model-filter'
 import { remoteChannelSections, type RemoteChannelSectionDefinition, type RemoteChannelSectionProps } from './channel-sections'
@@ -137,6 +137,21 @@ export const codexRemoteModelText = {
   followHint: '如需更换，请前往首页 Codex 的「配置」修改，电脑端与手机端同时生效。',
   ownHint: '仅手机端使用此模型，电脑端的 Codex 不受影响。',
 } as const
+
+/**
+ * 「权限」那一行（yoyo 2026-11-22 亲手打字同意放宽：「默认在干活的文件夹里看、改、跑命令都不问我，连网和改文件夹外面的才问」）。
+ * 两档照 Codex 自己的「默认」「只读」，缺省「默认」；没有「完全访问」。说明跟着选中的那一档换。
+ */
+export const codexRemotePermissionText = {
+  title: '权限',
+  options: { default: '默认', readOnly: '只读' },
+  hints: {
+    default: '与电脑端 Codex 一致：在所选文件夹内查看、修改文件和执行命令无需确认；联网或修改该文件夹以外的内容前，将先在手机上征求您的同意。',
+    readOnly: '仅查看：查看文件、获取本机信息无需确认；修改文件、执行会产生改动的命令或联网前，均将先在手机上征求您的同意。',
+  },
+} as const satisfies { title: string; options: Record<RemotePermission, string>; hints: Record<RemotePermission, string> }
+
+const permissionOptions = (['default', 'readOnly'] as const).map((value) => ({ value, label: codexRemotePermissionText.options[value] }))
 
 const idleCloseOptions = [
   ...remoteIdleCloseHours.map((hours) => ({ value: String(hours), label: `${hours} 小时` })),
@@ -429,6 +444,30 @@ export interface RemoteModelChoices {
   models: readonly string[]
 }
 
+function PermissionRow({ snapshot, api, busy, run }: { snapshot: CodexRemoteSnapshot } & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
+  const text = codexRemotePermissionText
+  const permission: RemotePermission = snapshot.permission ?? 'default'
+  return (
+    <SettingRow
+      title={text.title}
+      description={text.hints[permission]}
+      control={
+        <Segment
+          label={text.title}
+          options={permissionOptions.map((option) => ({ ...option, disabled: !snapshot.available || Boolean(busy) }))}
+          value={permission}
+          activation="manual"
+          onChange={(value) => {
+            if (isRemotePermission(value)) void run('permission', () => api.setCodexRemotePermission(value))
+          }}
+          testId="settings-remote-permission-choice"
+        />
+      }
+      testId="settings-remote-permission"
+    />
+  )
+}
+
 function ModelRow({ snapshot, choices, api, busy, run }: { snapshot: CodexRemoteSnapshot; choices: RemoteModelChoices } & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
   const text = codexRemoteModelText
   const selected = snapshot.model ?? ''
@@ -542,6 +581,7 @@ export function CodexRemotePageView({ snapshot, api, busy, run, error, navigate,
         </Card>
         <Card title={text.sharedTitle} padding="none" testId="remote-shared">
           <WorkspaceRow snapshot={snapshot} api={api} busy={busy} run={run} />
+          <PermissionRow snapshot={snapshot} api={api} busy={busy} run={run} />
           <ModelRow snapshot={snapshot} choices={modelChoices} api={api} busy={busy} run={run} />
           <SettingRow
             title={codexRemoteAutoStartText.title}

@@ -28,6 +28,7 @@ import {
   buildApprovalRequest,
   buildFileChangeSummary,
   buildRemoteMcpServerOverrides,
+  buildRemoteSandboxPolicy,
   buildThreadStartParams,
   configuredCodexModel,
   collectCredentialSecrets,
@@ -701,14 +702,30 @@ describe('codex-remote-service helpers', () => {
     expect(jumpsImageFetch({ kind: 'unsupported', peer: alice, direct: true, messageId: 'voice-1' }, true)).toBe(false)
   })
 
-  it('starts threads that ask the user before anything outside the safe list runs', () => {
+  // 权限两档（yoyo 2026-11-22 亲手打字同意）：「默认」跟电脑上的 Codex 一样，文件夹里不问、出沙箱才问；「只读」改东西也问。
+  // 两档都只许人自己点同意，没有完全访问。
+  it('starts threads that work inside the folder by default and ask before leaving the sandbox', () => {
     expect(buildThreadStartParams('/p')).toMatchObject({
       cwd: '/p',
-      approvalPolicy: 'untrusted',
+      approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
       sandbox: 'workspace-write',
     })
-    expect(JSON.stringify(buildThreadStartParams('/p'))).not.toContain('danger-full-access')
+    expect(buildThreadStartParams('/p', {}, null, 'readOnly')).toMatchObject({
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
+      sandbox: 'read-only',
+    })
+    for (const permission of ['default', 'readOnly'] as const) {
+      const params = buildThreadStartParams('/p', {}, null, permission)
+      expect(params.sandbox).not.toBe('danger-full-access')
+      expect(params.approvalPolicy).not.toBe('never')
+      expect(params.approvalsReviewer).toBe('user')
+      expect(JSON.stringify(buildRemoteSandboxPolicy(permission))).not.toContain('dangerFullAccess')
+      expect(buildRemoteSandboxPolicy(permission)).toMatchObject({ networkAccess: false })
+    }
+    expect(buildRemoteSandboxPolicy('default')).toEqual({ type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false })
+    expect(buildRemoteSandboxPolicy('readOnly')).toEqual({ type: 'readOnly', networkAccess: false })
   })
 
   // #1407 P2-4：客户自己接的外部工具调用不一定先问人，遥控开的对话里一律关掉；联网搜索不动。
@@ -1671,7 +1688,7 @@ describe('codex-remote-service turns', () => {
     expect(codex.requests('config/read')[0].params).toEqual({ cwd: s.workspace, includeLayers: true })
     expect(codex.requests('thread/start')[0].params).toMatchObject({
       cwd: s.workspace,
-      approvalPolicy: 'untrusted',
+      approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
       sandbox: 'workspace-write',
       config: { 'features.apps': false, 'features.plugins': false },
@@ -1766,6 +1783,38 @@ describe('codex-remote-service turns', () => {
     expect(await nextTurn(5)).not.toHaveProperty('model')
     expect(codex.requests('thread/start')).toHaveLength(1)
     expect((await s.store.readSettings()).model).toBe('gpt-6.1-mini')
+  })
+
+  // 权限两档：选了「只读」开对话就是只读；开着的对话中途换档，下一句的 turn/start 带上新沙箱，之后不再重复带。
+  it('opens the thread with the chosen permission and switches an open thread on its next message', async () => {
+    const s = await setup({ now: () => Date.UTC(2026, 10, 11, 6, 0, 0) })
+    expect((await s.service.setPermission('readOnly')).permission).toBe('readOnly')
+    expect((await s.store.readSettings()).permission).toBe('readOnly')
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect(codex.requests('thread/start')[0].params).toMatchObject({ approvalPolicy: 'on-request', sandbox: 'read-only' })
+    expect(codex.requests('turn/start')[0].params).not.toHaveProperty('sandboxPolicy')
+    async function nextTurn(count: number) {
+      codex.notify('turn/completed', { threadId: 'th-1', turn: { id: `tu-${count - 1}`, status: 'completed' } })
+      await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+      channel.handlers?.onInbound(text(alice, `第 ${count} 句`))
+      await codex.requestedUntil('turn/start', count)
+      return codex.requests('turn/start')[count - 1].params
+    }
+    expect(await s.service.setPermission('default')).not.toHaveProperty('permission')
+    expect((await s.store.readSettings()).permission).toBeUndefined()
+    expect(await nextTurn(2)).toMatchObject({
+      threadId: 'th-1',
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
+      sandboxPolicy: { type: 'workspaceWrite', networkAccess: false },
+    })
+    expect(await nextTurn(3)).not.toHaveProperty('sandboxPolicy')
+    await s.service.setPermission('readOnly')
+    expect(await nextTurn(4)).toMatchObject({ sandboxPolicy: { type: 'readOnly', networkAccess: false } })
+    expect(await nextTurn(5)).not.toHaveProperty('sandboxPolicy')
+    expect(codex.requests('thread/start')).toHaveLength(1)
+    expect(s.logs).toContain('remote.permission-set')
   })
 
   it('opens the thread without a model when the phone follows the computer', async () => {

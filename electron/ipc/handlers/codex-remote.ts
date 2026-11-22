@@ -6,7 +6,15 @@ import {
   validateFeishuCredentialInput,
   verifyFeishuCredential,
 } from '../../codex-remote-feishu'
-import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled, parseRemoteIdleClose, parseRemoteModel, parseRemoteWorkspaceChoice } from '../parsers/codex-remote'
+import {
+  parseFeishuCredentialRequest,
+  parseRemoteChannel,
+  parseRemoteEnabled,
+  parseRemoteIdleClose,
+  parseRemoteModel,
+  parseRemotePermission,
+  parseRemoteWorkspaceChoice,
+} from '../parsers/codex-remote'
 import type { IpcHandlerContext } from './context'
 
 export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
@@ -19,6 +27,7 @@ export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('codex-remote:set-auto-start', (_event, enabled: unknown) => codexRemote().setAutoStart(parseRemoteEnabled(enabled)))
   registerTrustedHandler('codex-remote:set-idle-close', (_event, hours: unknown) => codexRemote().setIdleClose(parseRemoteIdleClose(hours)))
   registerTrustedHandler('codex-remote:set-model', (_event, model: unknown) => codexRemote().setModel(parseRemoteModel(model)))
+  registerTrustedHandler('codex-remote:set-permission', (_event, permission: unknown) => codexRemote().setPermission(parseRemotePermission(permission)))
   registerTrustedHandler('codex-remote:stop-turn', () => codexRemote().stopTurnFromComputer())
   registerTrustedHandler('codex-remote:decline-approvals', () => codexRemote().declineApprovalsFromComputer())
   registerTrustedHandler('codex-remote:choose-workspace', async (event) => {

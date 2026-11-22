@@ -208,6 +208,7 @@ const remoteState: {
   lastRequest: RemoteSnapshot['lastRequest'] | null
   pendingApprovals: number
   model: string | null
+  permission: 'default' | 'readOnly'
 } = {
   workspaceDirectory: remoteReady ? '~/projects/demo' : null,
   workspaces: query.has('remoteFolders') ? ['~/projects/demo', '~/projects/blog', '~/projects/shop'] : remoteReady ? ['~/projects/demo'] : [],
@@ -222,6 +223,7 @@ const remoteState: {
   lastRequest: null,
   pendingApprovals: 0,
   model: query.get('remoteModel'),
+  permission: query.has('remoteReadOnly') ? 'readOnly' : 'default',
 }
 // 和主进程 codex-remote-feishu.ts 的 feishuProblemMessages 同三句。
 const feishuProblemStatuses = {
@@ -261,6 +263,7 @@ function remoteSnapshot(): RemoteSnapshot {
     ...(remoteState.idleCloseHours ? { idleCloseHours: remoteState.idleCloseHours } : {}),
     ...(remoteState.codexStartFailed ? { codexStartFailed: true } : {}),
     ...(remoteState.model ? { model: remoteState.model } : {}),
+    ...(remoteState.permission === 'readOnly' ? { permission: 'readOnly' as const } : {}),
     channels: {
       feishu: {
         channel: 'feishu',
@@ -348,6 +351,11 @@ const codexRemoteMethods = {
   setCodexRemoteModel: async (model: string | null) => {
     record('remote-model', model)
     remoteState.model = model
+    return remoteSnapshot()
+  },
+  setCodexRemotePermission: async (permission: 'default' | 'readOnly') => {
+    record('remote-permission', permission)
+    remoteState.permission = permission
     return remoteSnapshot()
   },
   // 「手机端使用的模型」那张单，跟首页 Codex「配置」读的是同一个接口。

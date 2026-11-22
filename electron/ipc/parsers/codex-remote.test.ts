@@ -1,6 +1,6 @@
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
-import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled, parseRemoteIdleClose, parseRemoteModel, parseRemoteWorkspaceChoice } from './codex-remote'
+import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled, parseRemoteIdleClose, parseRemoteModel, parseRemotePermission, parseRemoteWorkspaceChoice } from './codex-remote'
 
 describe('codex-remote parsers', () => {
   it('accepts only known channels and real booleans', () => {
@@ -38,6 +38,23 @@ describe('codex-remote parsers', () => {
       expect(value.length).toBeLessThanOrEqual(128)
       expect(value).not.toMatch(/[\s\0-\x1f\x7f]/)
       expect(value.startsWith('-')).toBe(false)
+    }))
+  })
+
+  // 权限两档（yoyo 2026-11-22 同意的范围就到「默认」）：完全访问、Codex 自己的档位名一律不收。
+  it('takes only the two permission levels and never full access', () => {
+    expect(parseRemotePermission('default')).toBe('default')
+    expect(parseRemotePermission('readOnly')).toBe('readOnly')
+    for (const value of ['fullAccess', 'danger-full-access', 'workspace-write', 'read-only', 'never', 'on-request', '', null, undefined, 1, ['default'], { permission: 'default' }]) {
+      expect(() => parseRemotePermission(value)).toThrow('手机遥控权限参数无效')
+    }
+  })
+
+  it('never lets through anything but the two permission levels, with random inputs', () => {
+    fc.assert(fc.property(fc.oneof(fc.string({ maxLength: 40 }), fc.anything()), (value) => {
+      let parsed: string
+      try { parsed = parseRemotePermission(value) } catch { return }
+      expect(['default', 'readOnly']).toContain(parsed)
     }))
   })
 
