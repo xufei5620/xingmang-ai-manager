@@ -13,12 +13,13 @@
 
 ```
 提出 → 原型模块改动（work/modules/）→ 重建 HTML → 截图 → 改 md → PR「spec:」前缀
-     → 产品负责人看截图确认 → 合并 → CHANGELOG.md 记一行 → 代码 PR 引用该 spec PR
+     → 产品负责人看截图确认 → 合并 → 记一行改动记录 → 代码 PR 引用该 spec PR
 ```
 - v4.0 起（2026-10-14）原型是单文件 `v4/星芒AI管理工具-v4原型.html`，改原型就直接改这一个文件；`work/modules/` 只用来重建 v3.1.1 的旧原型。
 - 代码 PR 不得包含规格未覆盖的 UI；发现规格缺口，先发 `spec:` PR。
 - 一个 `spec:` PR 只改一件事。
 - `CHANGELOG.md` 格式：`日期 · 版本 · 层级（冻结/受控/自由）· 改了什么 · 为什么 · 影响的页面`。
+- 2026-11-22 起这一行不直接加进 `CHANGELOG.md`：每个 PR 在 `changes/` 下放一个自己的文件写它（写法见 `changes/README.md`），发版时 `npm run changelog:collect` 按日期汇总进 `CHANGELOG.md`。并行的 PR 都往 `CHANGELOG.md` 最上面加行会互相冲突，`npm run changelog:check` 会拦。
 
 ## 3. 一个 UI 改动的「完成定义」（Definition of Done）
 
@@ -31,7 +32,7 @@
 - [ ] 文案过 06 检查（动词按钮、状态词表、无禁用词）
 - [ ] 保留 / 新增 `data-testid`；e2e 通过
 - [ ] golden 截图基线更新并经审阅
-- [ ] CHANGELOG 记录
+- [ ] 改动记录（`changes/` 下这个 PR 的分片）
 
 ## 4. PR 模板（`.github/PULL_REQUEST_TEMPLATE.md`）
 
