@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 临时：核 Antigravity CLI 能不能接自定义 Gemini 地址，核完就删。（第九轮重跑，grep 改快：查「自定义型号」设置怎么写、不给菜单时它会不会自己去中转查型号）
+# 临时：核 Antigravity CLI 能不能接自定义 Gemini 地址，核完就删。（第十轮：试 settings.json 里的自定义型号能不能把带后缀的名字原样发出）
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="$RUNNER_TEMP/agy-probe"
@@ -18,64 +18,66 @@ tar xzf "$WORK/agy.tar.gz" -C "$WORK/bin"
 AGY="$WORK/bin/antigravity"
 "$AGY" --version
 
-section "help"
-export HOME="$WORK/home-help"
-mkdir -p "$HOME"
-timeout -k 5 30 "$AGY" --help </dev/null 2>&1 | head -80
-section "models help"
-timeout -k 5 30 "$AGY" models --help </dev/null 2>&1 | head -40
-
-strings -n 6 "$AGY" > "$WORK/strings.txt"
-wc -l "$WORK/strings.txt"
-# around <needle> <before> <after> <max hits>: print the bytes around literal hits, fast (no regex over the binary)
-around() {
-  python3 -I -c '
-import mmap, re, sys
-path, needle, before, after, limit = sys.argv[1], sys.argv[2].encode(), int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
-with open(path, "rb") as handle:
-    data = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
-    start, hits = 0, 0
-    while hits < limit:
-        index = data.find(needle, start)
-        if index < 0:
-            break
-        chunk = data[max(0, index - before):index + len(needle) + after]
-        print("@%d: %s" % (index, re.sub(rb"[^\x20-\x7e]", b".", chunk).decode()))
-        start, hits = index + len(needle), hits + 1
-' "$AGY" "$1" "$2" "$3" "$4"
-}
-section "embedded text about custom models"
-around "customModels" 300 600 12
-around "custom model" 300 600 12
-section "embedded text about settings files"
-around "settings.json" 160 240 12
-section "json field tags that look like model settings"
-grep -E 'json:"' "$WORK/strings.txt" | grep -v 'protobuf:' | grep -i -E 'model|url|endpoint|apikey|api_key|thinking|display|protocol|override|header|provider|effort' | awk 'length($0) < 200' | sort -u | head -200
-section "text around model_name_override"
-around "model_name_override" 600 600 4
-section "custom model resolver symbols"
-grep -E 'customModels|CustomModel|adHocCustom|resolveGatewayModel|findKnownModelInfo|withFamilyDefaults|ensureConfiguredModels|fetchGatewayDiscovered|buildResponseFromAdminModelList' "$WORK/strings.txt" | awk 'length($0) < 200' | sort -u | head -80
-
 cd "$WORK/ws"
 python3 "$HERE/fake_gemini.py" 18080 "$WORK/fake.log" &
 sleep 1
 
-section "no menu given: does it discover models from the gateway?"
-export HOME="$WORK/home-discover"
-mkdir -p "$HOME"
-echo "### discover" >> "$WORK/fake.log"
-env AGY_LLM_GATEWAY_URL=http://127.0.0.1:18080 AGY_LLM_GATEWAY_API_KEY=probe-fake-key AGY_LLM_GATEWAY_WIRE_PROTOCOL=genai \
-  timeout -k 5 60 "$AGY" models </dev/null 2>&1 | head -40
-echo "-- prompt with gemini-3.1-pro-preview (listed by the fake)"
-env AGY_LLM_GATEWAY_URL=http://127.0.0.1:18080 AGY_LLM_GATEWAY_API_KEY=probe-fake-key AGY_LLM_GATEWAY_WIRE_PROTOCOL=genai \
-  timeout -k 5 60 "$AGY" -p "Reply with the single word pong" --model gemini-3.1-pro-preview </dev/null 2>&1 | head -5 | cut -c1-300
-echo "-- prompt with the default"
-env AGY_LLM_GATEWAY_URL=http://127.0.0.1:18080 AGY_LLM_GATEWAY_API_KEY=probe-fake-key AGY_LLM_GATEWAY_WIRE_PROTOCOL=genai \
-  timeout -k 5 60 "$AGY" -p "Reply with the single word pong" </dev/null 2>&1 | head -5 | cut -c1-300
-echo "-- files agy wrote under HOME"
-find "$HOME" -maxdepth 4 -type f | head -40
-for f in $(find "$HOME" -maxdepth 4 -type f -name '*.json' | head -10); do echo "== $f"; head -c 1500 "$f" | printable; echo; done
+SENT_PY='
+import json, sys
+marker = "### " + sys.argv[2] + "\n"
+text = open(sys.argv[1], encoding="utf-8").read()
+rows = text.split(marker, 1)[-1].split("\n### ", 1)[0].splitlines() if marker in text else []
+seen = []
+for row in rows:
+    try:
+        r = json.loads(row)
+    except Exception:
+        continue
+    path = r.get("path", "")
+    body = r.get("body") or {}
+    level = ((body.get("generationConfig") or {}).get("thinkingConfig") or {})
+    level = level.get("thinkingLevel") or level.get("thinkingBudget")
+    auth = "bearer" if r.get("authBearerMatches") else ("goog-key" if r.get("googKeyMatches") else ("query-key" if r.get("queryKey") else "none"))
+    method = r.get("method")
+    seen.append(f"{method} {path} [{level}] auth={auth}")
+print(" ; ".join(dict.fromkeys(seen)) or "(nothing sent)")
+'
+
+# custom <label> <gateway on|off> <settings json> <models to prompt, comma separated>
+custom() {
+  local label="$1" gateway="$2" settings="$3" picks_csv="$4"
+  section "$label (gateway=$gateway)"
+  export HOME="$WORK/home-$label"
+  mkdir -p "$HOME/.gemini/antigravity-cli"
+  printf '%s\n' "$settings" > "$HOME/.gemini/antigravity-cli/settings.json"
+  cat "$HOME/.gemini/antigravity-cli/settings.json"
+  local -a envs=()
+  if [ "$gateway" = on ]; then
+    envs=(AGY_LLM_GATEWAY_URL=http://127.0.0.1:18080 AGY_LLM_GATEWAY_API_KEY=probe-fake-key AGY_LLM_GATEWAY_WIRE_PROTOCOL=genai AGY_LLM_GATEWAY_MODELS=gemini-3.8-flash)
+  fi
+  echo "-- menu"
+  echo "### $label/menu" >> "$WORK/fake.log"
+  env "${envs[@]}" timeout -k 5 40 "$AGY" models </dev/null 2>&1 | head -30 | cut -c1-300
+  local IFS_SAVE="$IFS"
+  IFS=',' read -r -a picks <<< "$picks_csv"
+  IFS="$IFS_SAVE"
+  for m in "${picks[@]}"; do
+    local tag="$label/$m"
+    echo "### $tag" >> "$WORK/fake.log"
+    local out
+    out="$(env "${envs[@]}" timeout -k 5 40 "$AGY" -p "Reply with the single word pong" --model "$m" </dev/null 2>&1 | tr '\n' ' ' | cut -c1-300)"
+    printf '%-24s -> %s | %s\n' "$m" "$(python3 -c "$SENT_PY" "$WORK/fake.log" "$tag")" "$out"
+  done
+  echo "-- cli log lines about custom models"
+  cat "$HOME"/.gemini/antigravity-cli/log/*.log 2>/dev/null | grep -a -i -E 'custom|model' | head -15 | cut -c1-300
+}
+
+custom map-gemini-api on '{"customModels":{"argon-high-raw":{"modelName":"gemini-api://http://127.0.0.1:18080/models/gemini-4-argon-high","apiKey":"probe-fake-key"},"flash37-high-raw":{"modelName":"gemini-api://http://127.0.0.1:18080/models/gemini-3.7-flash-high","apiKey":"probe-fake-key"}}}' "argon-high-raw,flash37-high-raw"
+custom map-gemini-api-nogw off '{"customModels":{"argon-high-raw":{"modelName":"gemini-api://http://127.0.0.1:18080/models/gemini-4-argon-high","apiKey":"probe-fake-key"}}}' "argon-high-raw"
+custom map-beyond on '{"customModels":{"argon-high-raw":{"modelName":"beyond-api://http://127.0.0.1:18080/gemini-4-argon-high","apiKey":"probe-fake-key"}}}' "argon-high-raw"
+custom map-plain-name on '{"customModels":{"argon-high-raw":{"modelName":"gemini-4-argon-high"}}}' "argon-high-raw"
+custom list-form on '{"customModels":[{"name":"argon-high-raw","modelName":"gemini-api://http://127.0.0.1:18080/models/gemini-4-argon-high","apiKey":"probe-fake-key"}]}' "argon-high-raw"
 
 section "what the fake endpoint received"
-cat "$WORK/fake.log" | cut -c1-600
+cut -c1-500 "$WORK/fake.log"
 exit 0
