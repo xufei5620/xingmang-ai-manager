@@ -115,6 +115,20 @@ function versionsOf(index) {
   return index.releases.map((release) => release.version)
 }
 
+// The client checks agy.exe against its own copy of this signer (electron/trusted-native-cli.ts);
+// the two must name the same certificate, or the bucket would carry files every client refuses.
+test('the sync and the client pin the same Windows signer', async () => {
+  function nameComponents(text) {
+    return [...text.matchAll(/nameComponent\('([^']+)', '([^']+)'\)/g)].map(function (match) { return `${match[1]}=${match[2]}` })
+  }
+  const script = await fs.readFile(path.join(__dirname, 'sync-antigravity-cli-cos.cjs'), 'utf8')
+  const client = await fs.readFile(path.join(__dirname, '..', 'electron', 'trusted-native-cli.ts'), 'utf8')
+  const scriptSigner = script.slice(script.indexOf('const WINDOWS_SIGNER'), script.indexOf('const PLATFORMS'))
+  const clientSigner = client.slice(client.indexOf('  antigravity: ['), client.indexOf('\n}\n', client.indexOf('  antigravity: [')))
+  assert.ok(nameComponents(scriptSigner).length >= 7)
+  assert.deepEqual(nameComponents(clientSigner), nameComponents(scriptSigner))
+})
+
 test('each runner syncs only its own system\'s half', () => {
   assert.equal(familyForRunner('win32'), 'windows')
   assert.equal(familyForRunner('darwin'), 'macos')

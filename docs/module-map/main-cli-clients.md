@@ -117,7 +117,7 @@
 - `external-client-ownership.ts` — 记「这份客户端配置是替哪个账号写的」：只存地址加密钥的 sha256，是本机证据不是凭据库（I3）
 - `external-client-snapshot-cache.ts` — 上一次三家的检测结果留在本机，下次启动先拿它画首页那几行；只用来「先画个样子」，主进程里要回答装没装、配给谁的地方都不读它
 - `external-client-service.test-support.ts` — 测试专用：`external-client-service*.test.ts` 四个文件共用的夹具（经 `createSystemService` 接三家客户端真的配置读写，客户端运行时、中转请求、换线路的定时器是假的）。原来一个 138 条的文件在 Windows 上占几分钟、分片拆不开，按 describe 拆开了（#2006）；`tsconfig.electron.json` 排除 `*.test-support.ts`，不进发布包
-- `desktop-package-bucket.ts` — **星芒腾讯云存储桶的共用下载器**：Codex / Claude 桌面端和 Mac 版 OpenCode 的官方离线包都从这里先下，插件目录和 Grok 也借它的取法。桶地址是常量、对象 key 形状固定、拒一切重定向（I10），清单里的大小与 SHA-256 绑住下载，调用方照样核官方签名，桶被改了最多白下一次、装不进东西；同步脚本是 `scripts/sync-*-cos.cjs`
+- `desktop-package-bucket.ts` — **星芒腾讯云存储桶的共用下载器**：Codex / Claude 桌面端和 Mac 版 OpenCode 的官方离线包都从这里先下，插件目录、Grok 和 Antigravity 命令行也借它的取法。桶地址是常量、对象 key 形状固定、拒一切重定向（I10），清单里的大小与 SHA-256 绑住下载，调用方照样核官方签名，桶被改了最多白下一次、装不进东西；同步脚本是 `scripts/sync-*-cos.cjs`
 - `claude-desktop-config.ts` — Claude Desktop 的第三方推理（网关）配置：写 `configLibrary` 与 `claude_desktop_config.json`，「切回官方账号」只把 `deploymentMode` 改成 `1p`；输入里有 Key，绝不回传渲染层（I3）
 - `claude-desktop-local-transaction.ts` — 上面那几份文件的事务写入：先写临时文件、留 `.bak.<随机>` 备份（每个文件只留最近 5 份）、失败回滚（I9），只清自己起名的备份
 - `claude-desktop-paths.ts` — 定 Claude Desktop 的配置目录：由当前装着的那一份（和它的 MSIX 虚拟化设置）决定，不看遗留目录；测试用的主目录绝不继承真实 AppData
@@ -139,7 +139,10 @@
 - `antigravity-gateway.ts` — 算出写给 Antigravity 的四个「企业网关」变量（地址、密钥、`genai` 协议、型号菜单）：地址只收中转某条线路自己的 https 裸域，密钥不许带空白、引号、`%`、`$` 和控制字符，菜单是这把密钥当时列出的全部型号（照 `isCliModelName` 收窄），默认 `gemini-3.8-flash` 排第一；有一样不对整份不给。实测过的行为（它会改写认得的型号名、只认环境变量）写在文件开头
 - `antigravity-windows-environment.ts` — Windows 上把那四个变量写进当前用户的环境变量（`HKCU\Environment`，一律 REG_SZ，不提权）并通知系统；值经子进程环境交给 PowerShell（I1），四个都没变就不写也不通知，别的 `AGY_*` 不碰；受限语言模式走注册表命令和 setx。本进程的环境不跟着改，免得密钥带进星芒之后起的每个子进程
 - `antigravity-macos-environment.ts` — Mac 上的对应：四个值放进产品目录 `Antigravity/` 下只有本人能读的 `gateway.sh` / `gateway.fish`（0600，内容没变不重写），登录 shell 的启动文件末尾只追加一段读它的标记（和「终端里敲 claude」那段分开标，选哪个文件、fish 的 conf.d 照 `macos-shell-profile.ts`），密钥不进 `~/.zprofile`；同一段还把 agy 的位置 `$HOME/.local/bin` 加在 PATH 最后（已有就不加）。文件都走 safe-local-data（I8），dotfiles 链接过来的启动文件拒绝不跟。从程序坞打开的桌面端不读这些，由星芒打开时交给它
-- `antigravity-cli-release.ts` — agy 官方版本清单的读法：按平台和架构挑清单（Windows x64/arm64、Mac x64/arm64），只收 16 KB 以内、版本号和构建号形状对、下载地址与按版本拼出来的谷歌存储地址一字不差、SHA-512 是 128 位十六进制的清单。只是纯函数，下载、核签名、放进 `%LOCALAPPDATA%\agy\bin` / `~/.local/bin` 在下一步。`scripts/sync-antigravity-cli-cos.cjs` 定时把同一批谷歌签名的原件放进存储桶，读清单的规矩照抄这里（两处一起改）
+- `antigravity-cli-release.ts` — agy 官方版本清单的读法：按平台和架构挑清单（Windows x64/arm64、Mac x64/arm64），只收 16 KB 以内、版本号和构建号形状对、下载地址与按版本拼出来的谷歌存储地址一字不差、SHA-512 是 128 位十六进制的清单。只是纯函数，下载、核签名、放进去在 `antigravity-cli-installer.ts`。`scripts/sync-antigravity-cli-cos.cjs` 定时把同一批谷歌签名的原件放进存储桶，读清单的规矩照抄这里（两处一起改）
+- `antigravity-cli-bucket.ts` — 读存储桶里的 agy 清单（`windows.json` / `macos.json`，同步脚本写的那份）：只看最新那一版里这台电脑那一个文件，对象地址、来源地址（必须是按版本和构建号拼出的谷歌原址）、大小、SHA-256/512 有一处对不上、或清单 24 小时没和谷歌核过，就悄悄换回谷歌那一路
+- `antigravity-cli-macos.ts` — Mac 上的 agy：在 Node 里读谷歌的 tar.gz，只写出唯一一个 `antigravity`（链接、文件夹、第二个文件、超大、结尾后还有东西一律整包拒绝；Mac 自带 tar 加的 `._` 元数据和 pax 头认得），再看 Mach-O 头是不是这台 Mac 的芯片（不用 lipo，没装命令行工具的 Mac 上它是个占位），最后按退出码问 codesign 是不是谷歌的 Developer ID（团队 EQHXZ8M8AV、标识 `cli`）
+- `antigravity-cli-installer.ts` — 一键装 agy：先从存储桶下、没走通再按谷歌清单从谷歌下（只有这一路借加速线路），下回来先对摘要，再核谷歌签名（Windows 是 `trusted-native-cli.ts` 里钉住的 Google LLC + DigiCert，Mac 见上一条），核过的才复制到 `%LOCALAPPDATA%\agy\bin\agy.exe` / `~/.local/bin/agy` 旁边、对一遍 SHA-256、改名替换（I8；那里原来是链接或文件夹就不动）。Windows 把目录加在用户 PATH 最后；管理员身份打开的星芒不往用户文件夹里装。不跑 `agy install`
 
 ## 托管密钥的分组与换新
 - `managed-cli-groups.ts` — 给每个工具和画图挑账号里用哪个分组：xm 站分组只按名字认（没有编号），服务状态文件里的分组对照让站上改名时不用等发版；订阅分组、历史账号那套后端的平台字段也在这里判。签 Key、对话凭据、账号页都用它
