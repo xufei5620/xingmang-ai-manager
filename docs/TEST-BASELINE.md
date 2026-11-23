@@ -317,6 +317,13 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 - 复现：在 Linux 上把这批文件的修改时间设成同一刻，就是同一个红。
 - 写法：用例要靠「谁新谁旧」的，别指望连着写出来的文件修改时间不同，自己用 `utimesSync` 设好；同理别拿 `Date.now()` 当先后（见上一节）。
 
+## 真开登录 shell 核 PATH：macOS 会先把 PATH 重排一遍（2026-11-23，#2142）
+
+`antigravity-macos-environment.test.ts` 起登录 bash 时把 `~/.local/bin` 放在 PATH 最前，想核「已经在的原位不动」。Linux 上绿，macOS runner 上红（指纹：`expected { count: 1, last: true } to deeply equal { count: 1, last: false }`）：macOS 的 `/etc/profile`、`/etc/zprofile` 先跑 `path_helper`，把 `/etc/paths` 里的系统目录排到最前，继承来的目录挪到后面，轮不到我们那一段说话。
+
+- 修法：登录 shell 里只核「有几个、最后一个是不是」这类重排改不了的；「原位不动」改成单独 `. 那一段` 核，不经过系统的启动文件。
+- 写法：真开登录 shell 的用例别断言继承来的 PATH 的先后，系统启动文件（还有 runner 镜像自己加的目录）会动它；要断言我们写的那一段怎么改 PATH，就在 `/bin/sh` 里直接读那一段。
+
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 
 `fast-check` 写的随机输入测试（各测试文件末尾 `… with random inputs` 那几节：打码、外链白名单、会话编号、换线路改配置、粘贴密钥整理、PowerShell 单引号和通配符转义）每次跑用不同的随机种子，同一条这次绿、下次红是可能的。红的那次是库碰巧造出了一个打破规矩的输入，**代码真有这个缺口**：不按「重跑就过」放过，也不许把生成器改窄躲过去。
