@@ -103,7 +103,7 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { codexDesktopInstallFailureReasons } from './codex-desktop-install-failure'
-import { codexDesktopActivationBrokenMarker, codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
+import { codexDesktopActivationBrokenMarker, codexDesktopActivationOfflineMarker, codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
 import {
   desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketIndexStaleError, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
 } from './desktop-package-bucket'
@@ -272,12 +272,35 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     const refused = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80270254)')
     const timedOut = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x8027025A)')
 
-    expect(buildCodexDesktopActivationFailureSummary([timedOut, refused], null)).toEqual({ windowsActivationBroken: true, cause: refused })
+    expect(buildCodexDesktopActivationFailureSummary([timedOut, refused], null)).toEqual({ windowsActivationBroken: true, windowsActivationOffline: false, cause: refused })
     // A process id means Windows did start it: that is the 「启动后随即退出」 case, not this one.
-    expect(buildCodexDesktopActivationFailureSummary([refused], 18420)).toEqual({ windowsActivationBroken: false, cause: refused })
-    expect(buildCodexDesktopActivationFailureSummary([timedOut], null)).toEqual({ windowsActivationBroken: false, cause: timedOut })
+    expect(buildCodexDesktopActivationFailureSummary([refused], 18420)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, cause: refused })
+    expect(buildCodexDesktopActivationFailureSummary([timedOut], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, cause: timedOut })
     // Nothing failed (plain Explorer launch, nothing came up): no cause to attach.
-    expect(buildCodexDesktopActivationFailureSummary([], null)).toEqual({ windowsActivationBroken: false })
+    expect(buildCodexDesktopActivationFailureSummary([], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false })
+  })
+
+  it('calls it a failed online check only when the activation hit a network code and never handed back a process', () => {
+    const offline = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80072EE2)')
+    const refused = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80270254)')
+
+    expect(buildCodexDesktopActivationFailureSummary([offline], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: true, cause: offline })
+    // The Chinese launch failed offline, the plain activation then said not installed: both are reported, the message picks.
+    expect(buildCodexDesktopActivationFailureSummary([offline, refused], null)).toEqual({ windowsActivationBroken: true, windowsActivationOffline: true, cause: refused })
+    // One of the attempts did start a process: the online check went through after all.
+    expect(buildCodexDesktopActivationFailureSummary([offline], 18420)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, cause: offline })
+  })
+
+  it('sends the customer to the network, ahead of a restart, when Windows could not verify Codex online', () => {
+    const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 58, processSeen: false }, null, false, 'ChatGPT', true)
+    expect(message).toBe('Codex 桌面端未能打开：Windows 打开 Codex 前需要联网向微软验证，本次验证超时，等待 58 秒仍未检测到 Codex 运行。网络恢复后重新打开即可。')
+    expect(message).toContain(codexDesktopActivationOfflineMarker)
+    expect(message).not.toMatch(/0x[0-9A-F]{8}|AppModel|AppX|Appx|开始菜单|重启/i)
+    // Both codes seen: the network comes first, a later attempt with a working network falls to the restart card on its own.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 58, processSeen: false }, '26.924.2738.0', true, 'ChatGPT', true)).toBe(message)
+    expect(describeCodexDesktopLaunchFailure(undefined, null, false, null, true)).toBe('Codex 桌面端未能打开：Windows 打开 Codex 前需要联网向微软验证，本次验证超时，未检测到 Codex 运行。网络恢复后重新打开即可。')
+    // Without the flag nothing changes.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }, null, true)).not.toContain(codexDesktopActivationOfflineMarker)
   })
 
   it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {
