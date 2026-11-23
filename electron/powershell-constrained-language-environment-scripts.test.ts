@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import {
+  buildReadWindowsAntigravityEnvironmentScript,
+  buildWriteWindowsAntigravityEnvironmentScript,
+} from './antigravity-windows-environment'
 import { buildClearProviderOverridesScript } from './diagnostic-fixes'
 import {
   buildPowerShellConstrainedLanguageBranch,
@@ -22,8 +26,10 @@ const scripts: Array<[string, string]> = [
   ['proxy settings reader', buildReadProxyScopesScript()],
   ['user proxy clean-up', buildClearUserProxyScript()],
   ['provider override clean-up', buildClearProviderOverridesScript()],
+  ['Antigravity settings writer', buildWriteWindowsAntigravityEnvironmentScript()],
+  ['Antigravity settings reader', buildReadWindowsAntigravityEnvironmentScript()],
 ]
-const writingScripts = scripts.filter(([name]) => name !== 'proxy settings reader')
+const writingScripts = scripts.filter(([name]) => !name.endsWith(' reader'))
 
 // Reading an enum value off StringComparison and passing it to a string method
 // is allowed there (checked on the runner); calling into the type is not.

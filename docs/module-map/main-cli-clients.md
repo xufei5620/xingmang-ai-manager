@@ -135,6 +135,10 @@
 - `claude-desktop-vm-code-seed.ts` — Cowork 虚拟机里那份 Linux 版 Claude Code，从国内 npm 镜像放进 `claude-code-vm/<版本>/`
 - `claude-desktop-mac-code-seed.ts` — Mac 上打开 Claude Desktop 前从星芒存储桶放好带签名的 `claude.app` 程序包（核 SHA-256、自写 tar 解析、核 Mach-O 芯片）
 
+## Antigravity（谷歌的 agy 命令行与桌面端）接中转
+- `antigravity-gateway.ts` — 算出写给 Antigravity 的四个「企业网关」变量（地址、密钥、`genai` 协议、型号菜单）：地址只收中转某条线路自己的 https 裸域，密钥不许带空白、引号、`%`、`$` 和控制字符，菜单是这把密钥当时列出的全部型号（照 `isCliModelName` 收窄），默认 `gemini-3.8-flash` 排第一；有一样不对整份不给。实测过的行为（它会改写认得的型号名、只认环境变量）写在文件开头
+- `antigravity-windows-environment.ts` — Windows 上把那四个变量写进当前用户的环境变量（`HKCU\Environment`，一律 REG_SZ，不提权）并通知系统；值经子进程环境交给 PowerShell（I1），四个都没变就不写也不通知，别的 `AGY_*` 不碰；受限语言模式走注册表命令和 setx。本进程的环境不跟着改，免得密钥带进星芒之后起的每个子进程
+
 ## 托管密钥的分组与换新
 - `managed-cli-groups.ts` — 给每个工具和画图挑账号里用哪个分组：xm 站分组只按名字认（没有编号），服务状态文件里的分组对照让站上改名时不用等发版；订阅分组、历史账号那套后端的平台字段也在这里判。签 Key、对话凭据、账号页都用它
 - `managed-key-replacement-store.ts` — 撤销一把带额度上限或到期时间的 Key 之前，先把这些限制落盘，换上新 Key 再删；只记限制不记密钥，读坏了抛错停下（当没记过就会签出一把不限额的 Key）

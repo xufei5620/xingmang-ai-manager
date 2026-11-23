@@ -890,6 +890,11 @@ try { Get-ItemProperty -LiteralPath 'Registry::${key}' | Out-Null; 'read' } catc
 const { buildEnsureUserPathScript, buildRemoveUserPathScript } = compiled('windows-cli-shell-access')
 const { buildClearUserProxyScript } = compiled('stale-proxy-environment')
 const { buildClearProviderOverridesScript } = compiled('diagnostic-fixes')
+const {
+  antigravityEnvironmentValueVariable,
+  buildReadWindowsAntigravityEnvironmentScript,
+  buildWriteWindowsAntigravityEnvironmentScript,
+} = compiled('antigravity-windows-environment')
 
 // reg export writes UTF-16LE whatever the console code page is, so what comes
 // back is what is stored: the kind, and the text with %VAR% left as written.
@@ -945,6 +950,15 @@ checks.push(['the user environment scripts leave the same registry values behind
   const stored = 'C:\\xingmang-smoke-keep;%USERPROFILE%\\xingmang-smoke-ref;C:\\中文工具\\bin;%XINGMANG_SMOKE_UNSET%\\x'
   const watchedProxies = ['HTTP_PROXY', 'ALL_PROXY', 'HTTPS_PROXY', 'NO_PROXY']
   const watchedOverrides = ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'CODEX_HOME']
+  // Antigravity's gateway settings: the four it writes, plus one of the user's
+  // own gateway variables that must be left exactly as it was.
+  const watchedAntigravity = ['AGY_LLM_GATEWAY_URL', 'AGY_LLM_GATEWAY_API_KEY', 'AGY_LLM_GATEWAY_WIRE_PROTOCOL', 'AGY_LLM_GATEWAY_MODELS', 'AGY_LLM_GATEWAY_HEADERS']
+  const antigravityValues = (models) => Object.fromEntries(Object.entries({
+    AGY_LLM_GATEWAY_URL: 'https://xm.solov.cc',
+    AGY_LLM_GATEWAY_API_KEY: 'sk-smoke0123456789',
+    AGY_LLM_GATEWAY_WIRE_PROTOCOL: 'genai',
+    AGY_LLM_GATEWAY_MODELS: models,
+  }).map(([name, value]) => [antigravityEnvironmentValueVariable(name), value]))
   fs.mkdirSync(target, { recursive: true })
   // [label, setup, script, extra environment, watched values]
   const steps = [
@@ -971,6 +985,16 @@ checks.push(['the user environment scripts leave the same registry values behind
       await setUserEnvironmentValue('OPENAI_BASE_URL', 'REG_EXPAND_SZ', 'http://%XINGMANG_SMOKE_HOST%:9')
       await setUserEnvironmentValue('CODEX_HOME', 'REG_DWORD', '1')
     }, buildClearProviderOverridesScript(), { XINGMANG_CLEAR_OVERRIDES: 'ANTHROPIC_BASE_URL;OPENAI_BASE_URL;CODEX_HOME;NOT_AN_OVERRIDE' }, watchedOverrides],
+    ['write the Antigravity settings', async () => {
+      await setUserEnvironmentValue('AGY_LLM_GATEWAY_URL', 'REG_EXPAND_SZ', 'https://%XINGMANG_SMOKE_HOST%')
+      await setUserEnvironmentValue('AGY_LLM_GATEWAY_API_KEY', 'REG_DWORD', '1')
+      await deleteUserEnvironmentValue('AGY_LLM_GATEWAY_WIRE_PROTOCOL')
+      await setUserEnvironmentValue('AGY_LLM_GATEWAY_MODELS', 'REG_SZ', 'gemini-3.8-flash')
+      await setUserEnvironmentValue('AGY_LLM_GATEWAY_HEADERS', 'REG_SZ', 'X-Team: 中文')
+    }, buildWriteWindowsAntigravityEnvironmentScript(), antigravityValues('gemini-3.8-flash,gemini-4-argon-high'), watchedAntigravity],
+    ['write the same Antigravity settings again', null, buildWriteWindowsAntigravityEnvironmentScript(), antigravityValues('gemini-3.8-flash,gemini-4-argon-high'), watchedAntigravity],
+    ['change the Antigravity menu', null, buildWriteWindowsAntigravityEnvironmentScript(), antigravityValues('gemini-3.8-flash'), watchedAntigravity],
+    ['read the Antigravity settings', null, buildReadWindowsAntigravityEnvironmentScript(), {}, []],
   ]
   const original = await readUserEnvironment()
   const outcomes = { full: [], constrained: [] }
@@ -985,14 +1009,16 @@ checks.push(['the user environment scripts leave the same registry values behind
         if (mode === 'constrained') assert.match(stdout, /^[\x00-\x7F]*$/, `${label}: ${stdout}`)
         const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
         // The proxy reader answers in UTF-8 in FullLanguage and with \uXXXX escapes otherwise.
-        const answer = script === buildReadProxyScopesScript() ? JSON.parse(lines.at(-1)).user : lines
+        const answer = script === buildReadProxyScopesScript()
+          ? JSON.parse(lines.at(-1)).user
+          : script === buildReadWindowsAntigravityEnvironmentScript() ? JSON.parse(lines.at(-1)) : lines
         const values = await readUserEnvironment()
         assert.equal(values.has('xingmang_environment_refresh') || values.has('xingmang_path_refresh'), false, `${mode} ${label} left its refresh value behind`)
         outcomes[mode].push({ label, answer, state: Object.fromEntries(watched.map((name) => [name, values.get(name.toLowerCase()) ?? null])) })
       }
     }
   } finally {
-    for (const name of [...watchedProxies, ...watchedOverrides]) {
+    for (const name of [...watchedProxies, ...watchedOverrides, ...watchedAntigravity]) {
       const entry = original.get(name.toLowerCase())
       if (entry) await setUserEnvironmentValue(name, entry.kind, entry.value)
       else await deleteUserEnvironmentValue(name)
@@ -1017,6 +1043,26 @@ checks.push(['the user environment scripts leave the same registry values behind
     label: 'clear the proxy settings',
     answer: ['cleared:HTTP_PROXY;ALL_PROXY;HTTPS_PROXY'],
     state: { HTTP_PROXY: null, ALL_PROXY: null, HTTPS_PROXY: null, NO_PROXY: { kind: 'REG_SZ', value: 'localhost' } },
+  })
+  const written = (models) => ({
+    AGY_LLM_GATEWAY_URL: { kind: 'REG_SZ', value: 'https://xm.solov.cc' },
+    AGY_LLM_GATEWAY_API_KEY: { kind: 'REG_SZ', value: 'sk-smoke0123456789' },
+    AGY_LLM_GATEWAY_WIRE_PROTOCOL: { kind: 'REG_SZ', value: 'genai' },
+    AGY_LLM_GATEWAY_MODELS: { kind: 'REG_SZ', value: models },
+    AGY_LLM_GATEWAY_HEADERS: { kind: 'REG_SZ', value: 'X-Team: 中文' },
+  })
+  assert.deepEqual(byLabel.get('write the Antigravity settings'), {
+    label: 'write the Antigravity settings', answer: ['written'], state: written('gemini-3.8-flash,gemini-4-argon-high'),
+  })
+  assert.deepEqual(byLabel.get('write the same Antigravity settings again').answer, ['unchanged'])
+  assert.deepEqual(byLabel.get('change the Antigravity menu'), {
+    label: 'change the Antigravity menu', answer: ['written'], state: written('gemini-3.8-flash'),
+  })
+  assert.deepEqual(byLabel.get('read the Antigravity settings').answer, {
+    AGY_LLM_GATEWAY_URL: 'https://xm.solov.cc',
+    AGY_LLM_GATEWAY_API_KEY: 'sk-smoke0123456789',
+    AGY_LLM_GATEWAY_WIRE_PROTOCOL: 'genai',
+    AGY_LLM_GATEWAY_MODELS: 'gemini-3.8-flash',
   })
   assert.deepEqual(byLabel.get('clear the provider overrides'), {
     label: 'clear the provider overrides',
