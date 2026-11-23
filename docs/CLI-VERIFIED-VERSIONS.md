@@ -378,13 +378,14 @@ Key 走的型号菜单）不用抬。
 
 | 工具 | `recommended` | `blocked` | 依据 |
 |---|---|---|---|
-| Claude Code | `2.1.326`（2026-11-17） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)`、`[2.1.304, 2.1.305)` | 上游 changelog 三条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296、2.1.302、2.1.310、2.1.319、2.1.326 的依据见下文（2.1.303、2.1.316 那两次核过、没合，分别并进 2.1.310、2.1.319） |
-| Codex CLI | `0.169.0`（2026-11-17） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1、0.164.0、0.167.0、0.169.0 的依据见下文（0.163.0、0.166.0 核过、没合） |
+| Claude Code | `2.1.330`（2026-11-23） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)`、`[2.1.304, 2.1.305)` | 上游 changelog 三条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296、2.1.302、2.1.310、2.1.319、2.1.326、2.1.330 的依据见下文（2.1.303、2.1.316 那两次核过、没合，分别并进 2.1.310、2.1.319） |
+| Codex CLI | `0.171.0`（2026-11-23） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1、0.164.0、0.167.0、0.169.0、0.171.0 的依据见下文（0.163.0、0.166.0 核过、没合） |
 | Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文。**2026-10-14 下线**：星芒不再装、不再显示它，这一条留着只因为名单要覆盖全部 `ProviderId`（`catalog.ts` 的退役名单），不再抬 |
-| Grok CLI | `1.0.77`（2026-11-09） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52、1.0.62、1.0.70、1.0.77 各一遍，见下文；1.0.62 核过、没合） |
+| Grok CLI | `1.0.92`（2026-11-23） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52、1.0.62、1.0.70、1.0.77、1.0.92 各一遍，见下文；1.0.62 核过、没合） |
 
 仓库 secret `XINGMANG_CLI_PATROL_KEY` 2026-11-09 配上了。那天真跑的结果：Codex 0.167.0、Claude Code 2.1.319 都在 `solov` 上通过，当时这两条的 `verifiedSites` 是 `['solov']`；Grok、Gemini 两条还是空数组。
 - 2026-11-17 抬到 Claude Code 2.1.326、Codex 0.169.0：`cli-relay-probe` 在 `solov` 上两家都通过（Claude 用 `XINGMANG_CLI_PATROL_KEY_CLAUDE`），`verifiedSites` 照旧是 `['solov']`；`solov-api` 照旧不测。
+- 2026-11-23 抬到 Claude Code 2.1.330、Codex 0.171.0、Grok 1.0.92：三条的 `verifiedSites` 先留空数组，等这次 PR 上的 `cli-relay-probe` 跑完再按结果填（Grok 不在探测范围里，照旧空）。
 - Claude Code 第一次用共用那把 Key（GPT 分组），中转答「分组 GPT 下模型 claude-opus-5-5 无可用渠道」；换成 Claude 分组的 `XINGMANG_CLI_PATROL_KEY_CLAUDE` 后通过。
 - `solov-api` 上两家都是 401（Codex 看到的是 `INVALID_API_KEY`）。那是历史账号站 `api.solov.cc`，星芒账号签的 Key 在那边本来就认不了。yoyo 同日定「历史站不测」：探测跳过它（`scripts/probe-cli-relay.cjs` 的 `UNPROBED_SITES`），summary 里写明「未在中转实测」。
 - Grok 不在探测范围里。
@@ -676,6 +677,29 @@ npm `latest` 是 2.1.326；2.1.320 没发到 npm，2.1.324 发了但变更记录
 `claude-fable-5-1` 原样发出（设不设 `ANTHROPIC_DEFAULT_MODEL` 都一样）；`/context` 是 `28.7k / 1m`；主型号回 503 时换到备用的 Sonnet 5.5。
 中转实测：2026-11-17 `cli-relay-probe` 在 `solov` 上真跑通过，`solov-api` 照 11-09 的决定不测。
 
+**2.1.326 → 2.1.330（2026-11-23 每周巡检）：没有网关回归，又补了几处。**
+npm `latest` 是 2.1.330；2.1.327～2.1.330 逐条读过（`CHANGELOG.md`）。和接中转有关的：
+
+- 2.1.327：*Fixed `claude -p` hanging before its first request when the fetch of a model's settings stalled, such as at a proxy;
+  it now goes on without them after 10 seconds*。
+- 2.1.327：项目的 `.claude/settings.json` 把 `ANTHROPIC_BASE_URL` 设成网关时 `/model` 列错型号。我们把地址写进用户级
+  `settings.json` 的 `env`，不写项目级，修好了也碰不到。
+- 2.1.328：*Fixed MCP tools whose input schema starts with `anyOf`, `oneOf` or `allOf` going missing on third-party providers*；
+  schema 写错的 MCP 工具在第三方接口上不再让整个请求失败，改为不带它并告诉 Claude 原因。
+- 2.1.328：`CLAUDE_STREAM_IDLE_TIMEOUT_MS` 在网关和自定义地址上不能把 5 分钟的连接上限拉长，修好了。我们不写这个变量。
+- 2.1.329 去掉了 2.1.326 加的「`max_tokens` 超过型号或网关上限时按报错里的上限自动重试」，2.1.330 又恢复（*Reverted 2.1.329's
+  removal…*）。目标版本 2.1.330 与 2.1.326 一样会重试。
+- 2.1.328 修的那条 2.1.327 回归（子代理进度摘要的 effort 被拒后整场关掉）只在 Bedrock / Agent Platform / Foundry 上。
+
+没碰我们写的配置：`permissions`、`skipWebFetchPreflight`、`effortLevel`、`statusLine`、`DISABLE_AUTOUPDATER`、`fallbackModel`、
+`ANTHROPIC_DEFAULT_MODEL`、`modelPicker` 都没有相关条目。`install.cjs` 与 2.1.326 逐字相同。
+
+沙箱（做法同上，2.1.326 一起重跑当对照，逐项相同）：`claude -p "hi"` 拿到回复、只带 `Authorization`，请求体字段与 beta 头一样；
+假接口对工具搜索一律回 400 时被拒三次、第四次不带它拿到回复，退出码 0；`--model haiku` 仍发 `claude-haiku-5-5`；
+`claude-fable-5-1` 原样发出；`/context` 是 `28.7k / 1m`，数的工具一样；主型号回 503 时换到备用的 Sonnet 5.5。
+tmux 里开交互模式看第一屏：两版一样，都是早就有的那道「Make auto mode your default permission mode?」，没有新弹窗或英文提醒。
+中转实测：等这次 PR 上的 `cli-relay-probe`。
+
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
 每个模型用哪套系统提示词、哪些工具、支持哪些推理档位，`/model` 菜单也只列这份目录；这两个模型
@@ -914,6 +938,40 @@ Bedrock / Vertex。这次只换名单、不抬推荐版本：两个新型号官�
 见 `docs/CODEX-ACCOUNT-CONFIG.md`「型号名单」）。沙箱里拿 `gpt-6.3-sol`（借 `gpt-6.2-sol`）、`gpt-6.2-terra`（借 `gpt-6.1-terra`）
 写的名单：0.159.0-alpha.12.1、0.169.0、0.170.0 的 `model/list` 都列出 `GPT-6.3-Sol`，`codex exec` 不报 `Model metadata ... not found`，
 请求字段跟官方那项一样。
+
+**Codex 0.169.0 → 0.171.0、Grok 1.0.77 → 1.0.92（2026-11-23 每周巡检）。**
+
+Codex 区间内是 0.169.1、0.170.0、0.171.0。release note 照旧从 tag 指向的发布提交里读（0.169.1 的正文只写了「No verified release
+highlights」），另把区间内的提交标题按 provider / auth / catalog / config / exec / app-server 筛了一遍。
+
+- 0.169.1：GPT-6.2 Sol / Astra 进名单（#62106，随包名单 11-18 已经单独换过，见上一段），其余是 Bedrock / Vertex 的增量工具声明。
+- 0.170.0：超大的 WebSocket 请求直接退回 HTTP、不再白重试（#60840、#60841）；改权限和开子对话时不再丢掉原来的沙箱限制
+  （#60936、#61134）；MCP 登录的几处竞态。
+- 0.171.0：终端默认开 TUI workspace（#61352 等）；切换或恢复对话时草稿、排队的追问跟着原对话（#61216）；换工作目录时权限配置保持
+  （#61195）；`codex exec --remote` 可以接已有的 app server（#61707）；终端里加了 `/rc`、`/remote` 管遥控配对（#62121）。
+  新加的 `request_country`（#61535）默认不带，沙箱里请求字段两版一样。
+
+都没有改自定义 `model_providers` 的 `base_url` / `wire_api` / `requires_openai_auth` / `auth.json` 的读法。
+
+随包型号名单：`rust-v0.171.0` 的 `models.json` 与 11-18 换上的 `rust-v0.169.1`、以及 `rust-v0.170.0` 逐字相同（sha256 `d50b6749…3068`
+不变），`LICENSE`、`NOTICE` 也一样，只换 tag 与提交号（`ccf9be8cc458bd6b8336fe84d68d8893f2691a5e`）。`openai_models.rs` 加了可选的
+`multi_agent_tools_in_code_mode`，必填字段与枚举不变。
+
+沙箱（做法同上，0.169.0 一起重跑当对照，只测 HTTP 一路）：两版 `codex debug models` 都列出 14 个型号；`codex exec` 与
+`codex --no-daemon exec` 用 `gpt-6.1-sol`、`gpt-6.2-sol` 都拿到回复，假接口只收到一次 `POST /v1/responses`（带 `Authorization`，
+请求字段两版一样）；手机遥控那一路（`app-server`）的 `initialize` → `config/read` → `thread/start` → `turn/start` 两版都走到
+`turn/completed`；「接对话」那条规矩的核对也在两版上跑过（见「谁来跑：每周巡检」）。
+tmux 里开交互模式看第一屏：两版一样，先问信任文件夹，进去后右下角「⚠ 1 warning」是容器里没装 bubblewrap（Linux 才有），默认开的 TUI workspace 没让第一屏多出东西。
+
+Grok：没有可读的变更记录。npm 上 1.0.78～1.0.93 都发了（1.0.93 只挂在 `alpha`），`latest` 与 xAI stable 都在 1.0.92，所以选它。
+在 1.0.92 上重跑四项，和 1.0.77 逐条相同：有 `allowed_models` 时 `grok models` 只列 `grok`、去掉后多出 `grok-4.6`、`grok-4.5`（K3）；
+起标题那次请求是 `relay-x`、去掉 `session_summary` 变回 `grok-4.6`（K4）；`--always-approve` 下 `image_gen` 打到本地
+`POST /v1/images/generations`，去掉 `[endpoints] xai_api_base_url` 后会话里记的是「no xAI credential available」、不连外网（K1）；
+一轮 `-p` 触发 `UserPromptSubmit`、`Stop`×2、`SessionEnd`（钩子）。装插件：不带 `--trust` 退出码 1、什么都不写，带上一次装好并记进
+`[plugins] enabled`。
+
+中转实测：等这次 PR 上的 `cli-relay-probe`（只测 Claude、Codex）。没做的：Grok 没有中转上的真实请求；Grok 1.0.92 的 Windows 包在沙箱里
+核不了（`x.ai` 被代理拦），Windows 版挑哪个 shell 也没重读二进制字符串。
 
 **Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
 上游只有 8 个提交，和中转有关的是两条：
