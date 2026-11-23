@@ -7,14 +7,6 @@ $updater = 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.ap
 
 function Section($text) { Write-Output ''; Write-Output "================ $text ================" }
 
-Section 'install.ps1 (printed, not run)'
-$script = Invoke-WebRequest -UseBasicParsing -Uri 'https://antigravity.google/cli/install.ps1'
-$bytes = $script.RawContentStream.ToArray()
-[System.Text.Encoding]::UTF8.GetString($bytes)
-
-Section 'install.cmd (printed, not run)'
-try { [System.Text.Encoding]::UTF8.GetString((Invoke-WebRequest -UseBasicParsing -Uri 'https://antigravity.google/cli/install.cmd').RawContentStream.ToArray()) } catch { $_.Exception.Message }
-
 Section 'download windows_amd64'
 $manifest = Invoke-RestMethod -Uri "$updater/manifests/windows_amd64.json"
 $manifest | ConvertTo-Json
@@ -43,15 +35,28 @@ $env:LOCALAPPDATA = Join-Path $homeDir 'AppData\Local'
 New-Item -ItemType Directory -Force -Path $env:APPDATA, $env:LOCALAPPDATA | Out-Null
 Set-Location (Join-Path $work 'ws')
 
-function Run($label, [string[]]$argv) {
+function Run($label, [string[]]$argv, [hashtable]$extraEnv = @{}) {
   Section $label
-  $out = Join-Path $work 'out.txt'
+  $info = New-Object System.Diagnostics.ProcessStartInfo
+  $info.FileName = $exe
+  foreach ($a in $argv) { [void]$info.ArgumentList.Add($a) }
+  $info.UseShellExecute = $false
+  $info.RedirectStandardInput = $true
+  $info.RedirectStandardOutput = $true
+  $info.RedirectStandardError = $true
+  $info.WorkingDirectory = (Get-Location).Path
+  foreach ($k in $extraEnv.Keys) { $info.Environment[$k] = $extraEnv[$k] }
   $watch = [System.Diagnostics.Stopwatch]::StartNew()
-  $process = Start-Process -FilePath $exe -ArgumentList $argv -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err" -RedirectStandardInput 'NUL'
-  if (-not $process.WaitForExit(120000)) { $process.Kill(); Write-Output '[timed out after 120s]' }
+  $process = [System.Diagnostics.Process]::Start($info)
+  $process.StandardInput.Close()
+  $stdout = $process.StandardOutput.ReadToEndAsync()
+  $stderr = $process.StandardError.ReadToEndAsync()
+  if (-not $process.WaitForExit(90000)) { $process.Kill($true); Write-Output '[timed out after 90s]' }
   $watch.Stop()
-  Get-Content -Raw $out -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { if ($_.Length -gt 6000) { $_.Substring(0, 6000) } else { $_ } }
-  Get-Content -Raw "$out.err" -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Length -gt 3000) { $_.Substring(0, 3000) } else { $_ } }
+  $o = $stdout.Result; $e = $stderr.Result
+  if ($o.Length -gt 4000) { $o = $o.Substring(0, 4000) }
+  if ($e.Length -gt 2000) { $e = $e.Substring(0, 2000) }
+  $o; $e
   "[exit=$($process.ExitCode) seconds=$([math]::Round($watch.Elapsed.TotalSeconds, 2))]"
 }
 
@@ -68,8 +73,17 @@ New-Item -ItemType Directory -Force -Path $settingsDir | Out-Null
 $env:GEMINI_API_KEY = 'probe-fake-key'
 $env:GOOGLE_GEMINI_BASE_URL = 'http://127.0.0.1:18080'
 
-Run 'models json' @('models', '--output-format', 'json')
-Run 'print default' @('-p', '"Reply with the single word pong"')
+Run 'key: agy models' @('models')
+Run 'key: print default' @('-p', 'Reply with the single word pong')
+Run 'key: print Gemini 3.8 Flash (High)' @('-p', 'Reply with the single word pong', '--model', 'Gemini 3.8 Flash (High)')
+
+Remove-Item Env:GEMINI_API_KEY, Env:GOOGLE_GEMINI_BASE_URL
+[System.IO.File]::WriteAllText((Join-Path $settingsDir 'settings.json'), '{}', (New-Object System.Text.UTF8Encoding $false))
+$gw = @{ AGY_LLM_GATEWAY_URL = 'http://127.0.0.1:18080'; AGY_LLM_GATEWAY_API_KEY = 'probe-fake-key'; AGY_LLM_GATEWAY_WIRE_PROTOCOL = 'genai'; AGY_LLM_GATEWAY_MODELS = 'gemini-3.8-flash-high,claude-opus-5-5' }
+Run 'gw genai: agy models' @('models') $gw
+Run 'gw genai: default' @('-p', 'Reply with the single word pong') $gw
+Run 'gw genai: --model gemini-3.8-flash-high' @('-p', 'Reply with the single word pong', '--model', 'gemini-3.8-flash-high') $gw
+Run 'gw genai: --model claude-opus-5-5' @('-p', 'Reply with the single word pong', '--model', 'claude-opus-5-5') $gw
 
 Section 'fake endpoint log'
 Get-Content -Raw $fakeLog -ErrorAction SilentlyContinue

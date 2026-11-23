@@ -100,6 +100,7 @@ class Handler(BaseHTTPRequestHandler):
             'hasGoogKey': bool(self.headers.get('x-goog-api-key')),
             'googKeyMatches': self.headers.get('x-goog-api-key') == 'probe-fake-key',
             'hasAuthorization': bool(self.headers.get('Authorization')),
+            'authBearerMatches': self.headers.get('Authorization') == 'Bearer probe-fake-key',
             'queryKey': 'key' in query,
             'headerNames': sorted(self.headers.keys()),
         }
@@ -119,11 +120,27 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(200, chunk.encode('utf-8'), 'text/event-stream')
                 return self.reply(200, [candidate(model)])
             return self.reply(200, candidate(model))
+        if parts.path.endswith('/chat/completions'):
+            model = 'unknown'
+            try:
+                model = json.loads(body.decode('utf-8')).get('model', 'unknown')
+            except Exception:
+                pass
+            chunk = {'id': 'c1', 'object': 'chat.completion.chunk', 'created': 1, 'model': model,
+                     'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': 'pong'}, 'finish_reason': None}]}
+            done = {'id': 'c1', 'object': 'chat.completion.chunk', 'created': 1, 'model': model,
+                    'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}],
+                    'usage': {'prompt_tokens': 5, 'completion_tokens': 1, 'total_tokens': 6}}
+            stream = ('data: ' + json.dumps(chunk) + '\n\n' + 'data: ' + json.dumps(done) + '\n\n' + 'data: [DONE]\n\n').encode('utf-8')
+            return self.reply(200, stream, 'text/event-stream')
         if parts.path.rstrip('/').endswith('/models'):
-            return self.reply(200, {'models': [
-                {'name': 'models/gemini-3.8-flash-high', 'displayName': 'Relay Flash High',
-                 'supportedGenerationMethods': ['generateContent', 'streamGenerateContent', 'countTokens']},
-            ]})
+            names = ['gemini-3.8-flash-high', 'gemini-3.1-pro-preview', 'claude-opus-5-5']
+            return self.reply(200, {
+                'object': 'list',
+                'data': [{'id': name, 'object': 'model', 'owned_by': 'relay'} for name in names],
+                'models': [{'name': 'models/' + name, 'displayName': name,
+                            'supportedGenerationMethods': ['generateContent', 'streamGenerateContent', 'countTokens']} for name in names],
+            })
         return self.reply(404, {'error': {'code': 404, 'message': 'not found in fake', 'status': 'NOT_FOUND'}})
 
     do_GET = handle_any
