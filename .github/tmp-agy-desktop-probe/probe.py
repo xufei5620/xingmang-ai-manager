@@ -1,71 +1,73 @@
-# One-off probe (docs/COLLABORATION.md §3): what the Antigravity desktop app's own updater
-# (electron-updater, generic provider) is told, and what the files it names look like. Reads
-# feeds and archive listings only; nothing is extracted to disk or run. Delete after use.
-import io
-import plistlib
+# One-off probe (docs/COLLABORATION.md §3): how the Antigravity desktop app asks for updates.
+# Reads dist/*.js out of app.asar in the official Linux archive (as data, never run) and prints
+# the code around its update requests, then tries the paths it builds. Delete after use.
+import json
 import re
+import struct
+import tarfile
 import urllib.error
 import urllib.request
-import zipfile
 
-FEED = 'https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/'
+ARCHIVE = 'https://storage.googleapis.com/antigravity-public/antigravity-hub/2.34.0-5887025308631040/linux-x64/Antigravity.tar.gz'
+FEED = 'https://antigravity-hub-auto-updater-974169037036.us-central1.run.app'
 
 
-def get(url, limit=8192, method='GET', headers=None):
-    request = urllib.request.Request(url, method=method, headers={'User-Agent': 'electron-builder', **(headers or {})})
+def get(url, limit=8192):
+    request = urllib.request.Request(url, headers={'User-Agent': 'probe'})
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            body = response.read(limit) if method == 'GET' else b''
-            return response.status, response.geturl(), dict(response.headers), body
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return response.status, dict(response.headers), response.read(limit)
     except urllib.error.HTTPError as error:
-        return error.code, url, dict(error.headers or {}), error.read(limit)
+        return error.code, dict(error.headers or {}), error.read(limit)
     except Exception as error:  # noqa: BLE001
-        return None, url, {}, repr(error).encode()
+        return None, {}, repr(error).encode()
 
 
-def show(label, url, limit=8192, method='GET', headers=None):
-    status, final, response_headers, body = get(url, limit, method, headers)
-    print(f'== {label}: {url}\n   status={status} final={final}')
-    for key in ('Content-Type', 'Content-Length', 'Location', 'ETag', 'Last-Modified', 'Cache-Control', 'x-goog-hash', 'Accept-Ranges'):
-        if key in response_headers:
-            print(f'   {key}: {response_headers[key]}')
-    if body:
-        print('   body:\n' + body[:limit].decode('utf-8', 'replace'))
-    return status, body
+path = '/tmp/antigravity-linux.tar.gz'
+urllib.request.urlretrieve(ARCHIVE, path)
+with tarfile.open(path, 'r:gz') as archive:
+    member = archive.getmember('Antigravity-x64/resources/app.asar')
+    data = archive.extractfile(member).read()
+_, header_size, _, json_size = struct.unpack('<IIII', data[:16])
+header = json.loads(data[16:16 + json_size])
+base = 8 + header_size
 
 
-feeds = {}
-for name in ('latest.yml', 'latest-arm64.yml', 'latest-mac.yml', 'latest-mac-arm64.yml', 'latest-linux.yml', 'latest-linux-arm64.yml', 'beta.yml', 'stable.yml'):
-    status, body = show(name, FEED + name)
-    if status == 200:
-        feeds[name] = body.decode('utf-8', 'replace')
-show('feed root', FEED, 2000)
-show('feed without trailing slash', FEED.rstrip('/') + '/latest.yml?noCache=1')
+def walk(node, prefix=''):
+    for name, entry in node.get('files', {}).items():
+        full = f'{prefix}{name}'
+        if 'files' in entry:
+            if name != 'node_modules':
+                yield from walk(entry, full + '/')
+        else:
+            yield full, entry
 
-urls = set()
-for name, text in feeds.items():
-    version = re.search(r'^version:\s*(\S+)', text, re.M)
-    for match in re.findall(r'^\s*-?\s*(?:url|path):\s*(\S+)', text, re.M):
-        url = match if match.startswith('http') else FEED + match
-        urls.add(url)
-for url in sorted(urls):
-    show('HEAD listed file', url, method='HEAD')
 
-# The Mac zip electron-updater installs from: list its top level and read Info.plist.
-for url in sorted(u for u in urls if u.endswith('.zip')):
-    status, _, _, body = get(url, 600 * 1024 * 1024)
-    if status != 200:
+files = dict(walk(header))
+print('dist files:', [name for name in files if name.startswith('dist/')][:80])
+patterns = re.compile(r'manifest|auto-updater|run\.app|latest|\.yml|setFeedURL|autoUpdater|checkForUpdates|storage\.googleapis|antigravity-hub|feed|channel', re.I)
+for name, entry in files.items():
+    if not name.endswith('.js') or 'offset' not in entry:
         continue
-    print(f'== zip {url} bytes={len(body)}')
-    with zipfile.ZipFile(io.BytesIO(body)) as archive:
-        names = archive.namelist()
-        print('   entries', len(names))
-        tops = sorted({n.split('/')[0] for n in names})
-        print('   top level', tops)
-        symlinks = [i.filename for i in archive.infolist() if (i.external_attr >> 16) & 0o170000 == 0o120000]
-        print('   symlink entries', len(symlinks), symlinks[:5])
-        plist_name = next((n for n in names if re.fullmatch(r'[^/]+\.app/Contents/Info\.plist', n)), None)
-        if plist_name:
-            info = plistlib.loads(archive.read(plist_name))
-            for key in ('CFBundleIdentifier', 'CFBundleShortVersionString', 'CFBundleVersion', 'LSMinimumSystemVersion', 'CFBundleExecutable', 'LSArchitecturePriority'):
-                print('  ', key, '=', info.get(key))
+    start = base + int(entry['offset'])
+    text = data[start:start + entry['size']].decode('utf-8', 'replace')
+    hits = [m.start() for m in re.finditer(r'auto-updater|run\.app|/manifest|setFeedURL|antigravity-hub', text)]
+    if not hits:
+        continue
+    print(f'===== {name} ({entry["size"]} bytes) hits={len(hits)}')
+    shown = 0
+    last = -10_000
+    for position in hits:
+        if position - last < 400:
+            continue
+        last = position
+        print('---', position)
+        print(text[max(0, position - 500):position + 700].replace('\n', ' '))
+        shown += 1
+        if shown >= 12:
+            break
+
+for candidate in ('/manifest/windows_amd64.json', '/manifest/win32-x64.json', '/manifest/windows-x64.json', '/manifest/darwin_arm64.json',
+                  '/manifest/darwin-arm64.json', '/manifest/linux_amd64.json', '/manifests/windows_amd64.json', '/manifest/latest.json', '/manifest/stable.json'):
+    status, headers, body = get(FEED + candidate, 3000)
+    print('try', candidate, status, headers.get('Content-Type'), body[:600].decode('utf-8', 'replace'))
