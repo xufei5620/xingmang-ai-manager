@@ -54,8 +54,24 @@ launch() {
   fi
 }
 
-launch nogateway 9222 look
-launch gateway 9223 chat AGY_LLM_GATEWAY_URL=http://127.0.0.1:18080 AGY_LLM_GATEWAY_API_KEY=probe-fake-key AGY_LLM_GATEWAY_WIRE_PROTOCOL=genai AGY_LLM_GATEWAY_MODELS=gemini-3.8-flash,claude-opus-5-5
+section "single instance: open without settings first, then launch again with settings"
+echo "### single-instance" >> "$WORK/fake.log"
+export HOME="$WORK/home-single"
+export XDG_CONFIG_HOME="$HOME/.config"
+mkdir -p "$HOME"
+xvfb-run -a -n 91 "$EXE" --no-sandbox --disable-gpu --remote-debugging-port=9224 > "$WORK/app-first.txt" 2>&1 &
+FIRST_PID=$!
+sleep 15
+START=$(date +%s)
+env AGY_LLM_GATEWAY_URL=http://127.0.0.1:18080 AGY_LLM_GATEWAY_API_KEY=probe-fake-key AGY_LLM_GATEWAY_WIRE_PROTOCOL=genai AGY_LLM_GATEWAY_MODELS=gemini-3.8-flash,claude-opus-5-5 \
+  DISPLAY=:91 timeout -k 5 40 "$EXE" --no-sandbox --disable-gpu --remote-debugging-port=9225 > "$WORK/app-second.txt" 2>&1
+echo "[second launch exit=$? after $(( $(date +%s) - START ))s]"
+echo "-- second launch output"
+grep -a -v -i -E 'dbus|gles|vaapi|viz_main|gpu_init|egl' "$WORK/app-second.txt" | head -15 | cut -c1-300
+echo "-- first window after the second launch"
+timeout 120 node "$HERE/cdp-drive.cjs" 9224 chat
+pkill -f "remote-debugging-port=922" || true
+wait "$FIRST_PID" 2>/dev/null
 
 section "what the fake endpoint received"
 cat "$WORK/fake.log"
