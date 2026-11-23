@@ -1822,10 +1822,25 @@ export async function listCodexDesktopProcesses(
  * "some process of this package runs in my session": the session boundary
  * already keeps other signed-in users out, and the result is reduced to PIDs
  * so it cannot be handed to a close path by mistake.
+ *
+ * Where an application-control policy holds PowerShell to ConstrainedLanguage,
+ * the .NET call that names this session and the [pscustomobject] result were
+ * both refused, so this probe never found a window there and 打开 waited out
+ * its whole budget to say Codex had not started while it sat on screen. As in
+ * the close paths' probe, WMI names the session of this very PowerShell
+ * process instead, FullLanguage keeps the .NET line, and the result is an
+ * [ordered] hashtable that ConvertTo-Json writes as the same JSON. A session
+ * WMI cannot name fails the probe rather than run a filter that names none.
  */
 function codexDesktopSessionProcessQuery(): string {
   return String.raw`& {
-    $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {
+      $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    } else {
+      $selfProcess = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop
+      $currentSessionId = $selfProcess.SessionId
+      if ($null -eq $currentSessionId) { throw 'Codex desktop launch probe: WMI did not name the session of this PowerShell process' }
+    }
     @(Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId" | ForEach-Object {
       $path = [string]$_.ExecutablePath
       if (-not $path -and @('ChatGPT.exe', 'Codex.exe') -contains ([string]$_.Name)) {
@@ -1834,7 +1849,7 @@ function codexDesktopSessionProcessQuery(): string {
         if ($candidate.Success) { $path = $candidate.Groups['path'].Value }
       }
       if ($null -ne $_.SessionId -and $_.SessionId -eq $currentSessionId -and $path -match '(?i)\\WindowsApps\\OpenAI\.Codex(?:Beta)?_\d+(?:\.\d+){3}_(?:x64|arm64|neutral)__[A-Za-z0-9.]+\\') {
-        [pscustomobject]@{ ProcessId = $_.ProcessId; ExecutablePath = $path }
+        [ordered]@{ ProcessId = $_.ProcessId; ExecutablePath = $path }
       }
     })
   }`
@@ -1845,7 +1860,7 @@ export function buildCodexDesktopSessionProcessProbeScript(): string {
     codexDesktopProbeScriptHeader,
     buildPowerShellModuleImportStatement(codexDesktopProcessProbeModules),
     `$items = ${codexDesktopSessionProcessQuery()}`,
-    '$items | ConvertTo-Json -Compress',
+    ...buildPowerShellJsonOutputStatements('$items | ConvertTo-Json -Compress'),
   ].join('; ')
 }
 

@@ -235,6 +235,18 @@ const checks = [
       }
       const closing = await runConstrained(buildCodexDesktopProcessProbeScript('all'))
       assert.deepEqual(parseWindowsProcessesJson(closing).map((entry) => entry.processId), [standIn.pid], closing)
+      // The probe 打开 waits on asked for this session through .NET and wrote
+      // [pscustomobject] results, so under ConstrainedLanguage it found nothing
+      // and 打开 said Codex had not started while it ran. It has to find the
+      // same window from both language modes, with the same JSON.
+      const launchScript = buildCodexDesktopSessionProcessProbeScript()
+      const launchFull = await runPowerShell(['-Command', launchScript], trustedCommandEnvironment())
+      const launchConstrained = await runConstrained(launchScript)
+      assert.match(launchConstrained.trim(), /^[\x00-\x7F]+$/, launchConstrained)
+      assert.deepEqual(JSON.parse(launchConstrained.trim()), JSON.parse(launchFull.trim()), `${launchFull}\n${launchConstrained}`)
+      for (const output of [launchFull, launchConstrained]) {
+        assert.deepEqual(parseCodexDesktopSessionProcessIds(output, 'OpenAI.Codex_2p2nqsd0c76g0'), [standIn.pid], output)
+      }
     } finally {
       standIn.kill()
       await gone
