@@ -1,6 +1,6 @@
 ## 用户
 
-- Windows 普通账号安装 Node.js、Codex 桌面端时，安装前后的提示均改为说明需使用管理员账号登录 Windows 安装，不再要求输入管理员密码。
+- Windows 普通账号安装 Node.js 或 Codex 桌面端时，将提示使用管理员账号登录 Windows 后安装，不再要求输入管理员密码。
 
 ## 开发
 

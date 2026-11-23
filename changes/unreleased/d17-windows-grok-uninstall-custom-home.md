@@ -1,6 +1,6 @@
 ## 用户
 
-- 部分 Windows 电脑上，刚装好的 Grok 和用官方方式装的 Claude Code 被说成不能卸载，现在能直接卸了。
+- 修复了部分 Windows 电脑上新安装的 Grok CLI 和以官方方式安装的 Claude Code 被误判为无法卸载的问题。
 
 ## 开发
 

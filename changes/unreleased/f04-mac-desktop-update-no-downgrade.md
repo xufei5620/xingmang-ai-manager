@@ -1,9 +1,6 @@
-## 用户
-
-- Mac 上更新桌面端时，它要是自己已经升到了更新的版本，星芒不会再把它换回旧版。
-
 ## 开发
 
+- 给客户看的那句并进了 `f03-mac-desktop-update-cancel.md`（0.2.25 更新说明统一改为正式书面口吻、同类并条，复查第三轮第 8 条）。
 - 0.2.25 总单第 37 项（11-18 复核 F04，全面检查 D-3）：Mac 上更新 Claude Desktop、OpenCode、Codex 桌面端，要不要换只拿开始时检测读到的版本比
   （`electron/macos-desktop-app-installer.ts` 的 `installMacosDesktopApp`），换之前那一步只关进程、不再读装着的版本。下载那几分钟里它自己升到了
   比星芒下的那版还高的版本，星芒照样把它换回低版。
