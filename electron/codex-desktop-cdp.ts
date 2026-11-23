@@ -561,21 +561,43 @@ public static class XingMangCodexAppActivation {
 const codexDesktopActivationNotRegisteredPattern = /0x80270254(?![0-9a-f])/i
 
 /**
- * Did any layer of this activation failure carry 0x80270254? The wrappers
- * above cut their own message to 500 characters, and PowerShell may put a
- * CLIXML preamble in front of the error, so the code can sit only on the
- * execFile error's stderr further down the cause chain.
+ * WinINet timeout, name resolution, connection and connection-reset failures
+ * (0x80072EE2 / EE7 / EFD / EFE / EFF) from ActivateApplication. A Store-signed
+ * package has its licence checked online before Windows creates the process;
+ * when that check cannot reach Microsoft, AppModel-Runtime logs event 203
+ * ("[LaunchProcess]") and the Start menu fails the same way. 2026-11-23, a
+ * Win11 Home 26H2 26300.10075 machine: activation returned 0x80072EE2 while the
+ * network was down and the same package opened once it came back. Only EE2 has
+ * been seen on a real machine; the other four mirror the list the Store
+ * install path already treats as "cannot reach Microsoft".
  */
-export function isCodexDesktopActivationNotRegistered(error: unknown): boolean {
+const codexDesktopActivationNetworkPattern = /0x80072E(?:E2|E7|FD|FE|FF)(?![0-9a-f])/i
+
+/**
+ * Did any layer of this activation failure carry the code? The wrappers above
+ * cut their own message to 500 characters, and PowerShell may put a CLIXML
+ * preamble in front of the error, so the code can sit only on the execFile
+ * error's stderr further down the cause chain.
+ */
+function activationFailureCarries(error: unknown, pattern: RegExp): boolean {
   let current: unknown = error
   for (let depth = 0; depth < 6 && current && typeof current === 'object'; depth += 1) {
     const record = current as { message?: unknown; stderr?: unknown; cause?: unknown }
     for (const text of [record.message, record.stderr]) {
-      if (typeof text === 'string' && codexDesktopActivationNotRegisteredPattern.test(text)) return true
+      if (typeof text === 'string' && pattern.test(text)) return true
     }
     current = record.cause
   }
   return false
+}
+
+export function isCodexDesktopActivationNotRegistered(error: unknown): boolean {
+  return activationFailureCarries(error, codexDesktopActivationNotRegisteredPattern)
+}
+
+/** Windows refused to start the package because its online licence check timed out or could not connect. */
+export function isCodexDesktopActivationNetworkFailure(error: unknown): boolean {
+  return activationFailureCarries(error, codexDesktopActivationNetworkPattern)
 }
 
 export function parseCodexDesktopActivationProcessId(output: string): number | null {

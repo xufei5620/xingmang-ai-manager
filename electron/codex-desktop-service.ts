@@ -95,6 +95,7 @@ import {
   activateCodexDesktopWithCdp as activateCodexDesktopWithCdpDefault,
   getAvailableLoopbackPort as getAvailableLoopbackPortDefault,
   injectCodexDesktopChineseLocale as injectCodexDesktopChineseLocaleDefault,
+  isCodexDesktopActivationNetworkFailure,
   isCodexDesktopActivationNotRegistered,
 } from './codex-desktop-cdp'
 import type {
@@ -125,7 +126,12 @@ import {
   isPlainCodexDesktopInstallMessage,
   type CodexDesktopInstallFailureReason,
 } from './codex-desktop-install-failure'
-import { codexDesktopActivationBrokenSentence, codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
+import {
+  codexDesktopActivationBrokenSentence,
+  codexDesktopActivationOfflineSentence,
+  codexDesktopKnownIssueLaunchSentence,
+  resolveCodexDesktopKnownIssue,
+} from './codex-desktop-known-issues'
 import { codexDesktopChineseOffMessage } from './remote-features'
 import { inspectWindowsStoreAvailability } from './windows-store-availability'
 import { assertWorkspaceDirectory } from './workspace-access'
@@ -251,7 +257,14 @@ export function describeCodexDesktopLaunchFailure(
   knownIssueVersion?: string | null,
   windowsActivationBroken = false,
   startMenuName?: string | null,
+  windowsActivationOffline = false,
 ): string {
+  // Windows 联网核对许可没做成，进程根本没建（见 codexDesktopActivationOfflineMarker）：重启、
+  // 重置都没用，等网络好了再开就行。排在「激活坏了」前面：两种码同时出现时先叫客户查网络，
+  // 网络好了还打不开，下一次就只剩 0x80270254，自然落到重启那一版。
+  if (windowsActivationOffline) {
+    return `${codexDesktopNotStartedPrefix}：${codexDesktopActivationOfflineSentence(outcome?.waitedSeconds)}`
+  }
   // Windows 的激活接口说「没装」、包却明明装着：重启以外的办法都试过没用（见
   // codexDesktopActivationBrokenMarker），先说这一条。排在已知坏版本前面，是因为那一版
   // 的毛病是起来以后超时，回的不是这个码，这里只看到 Windows 自己没把它起来。
@@ -288,6 +301,8 @@ export function describeCodexDesktopLaunchFailure(
 export interface CodexDesktopActivationFailureSummary {
   /** Windows 的激活接口说「没装」，而且一次进程号都没给过：失败框换成先重启的那一版。 */
   windowsActivationBroken: boolean
+  /** Windows 联网核对许可超时或连不上（WinINet 网络码），而且一次进程号都没给过：失败框换成查网络那一版。 */
+  windowsActivationOffline: boolean
   /** 挂在打开失败那条报错上的原因（最后一次激活报的错），只进运行日志；一次都没报错时没有这一项。 */
   cause?: unknown
 }
@@ -301,8 +316,12 @@ export function buildCodexDesktopActivationFailureSummary(
   failures: readonly unknown[],
   activationProcessId: number | null,
 ): CodexDesktopActivationFailureSummary {
-  const windowsActivationBroken = activationProcessId === null && failures.some(isCodexDesktopActivationNotRegistered)
-  return failures.length ? { windowsActivationBroken, cause: failures[failures.length - 1] } : { windowsActivationBroken }
+  const neverStarted = activationProcessId === null
+  const summary = {
+    windowsActivationBroken: neverStarted && failures.some(isCodexDesktopActivationNotRegistered),
+    windowsActivationOffline: neverStarted && failures.some(isCodexDesktopActivationNetworkFailure),
+  }
+  return failures.length ? { ...summary, cause: failures[failures.length - 1] } : summary
 }
 
 // 一键重置做不成时，客户自己在系统设置里点的是同一个按钮。
@@ -4313,7 +4332,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
 
     let activationProcessId: number | null = null
     // 每一次激活接口自己报的错。打开不成功时靠它分清是不是 Windows 那边激活坏了
-    // （isCodexDesktopActivationNotRegistered），最后一条挂在报错的 cause 上进运行日志：
+    // （isCodexDesktopActivationNotRegistered）或联网核对许可没做成（isCodexDesktopActivationNetworkFailure），
+    // 最后一条挂在报错的 cause 上进运行日志：
     // 普通那一路以前只打到控制台，打包版不留。
     const activationFailures: unknown[] = []
     const launchWithExplorer = async (): Promise<void> => {
@@ -4462,6 +4482,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           resolveCodexDesktopKnownIssue([desktopApp.version, desktopApp.appVersion]),
           activation.windowsActivationBroken,
           codexDesktopStartMenuNames.get(desktopApp),
+          activation.windowsActivationOffline,
         ), 'cause' in activation ? { cause: activation.cause } : undefined)
       }
       if (cdpPort !== null) {
