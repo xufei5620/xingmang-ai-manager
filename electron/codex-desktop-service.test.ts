@@ -1570,6 +1570,36 @@ describe('Codex Desktop Appx probe script', () => {
     expect(script).not.toContain("Name='ChatGPT.exe'")
   })
 
+  it('finds a launched window where PowerShell is held to ConstrainedLanguage', () => {
+    // 应用控制策略开着的电脑上，等窗口这条查进程脚本以前用 Process 这句 .NET 调用问会话、
+    // 用 [pscustomobject] 出结果，两句都被拒，Codex 已经开在屏幕上，星芒等满时间还说没启动。
+    // 受限模式下改问 WMI 这个 PowerShell 进程自己在哪个会话；FullLanguage 照旧走原来那句。
+    const script = buildCodexDesktopSessionProcessProbeScript()
+    const scan = scanPowerShell(script)
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    expect(script.startsWith(powerShellUtf8OutputStatement)).toBe(true)
+    const fullLanguageBranch = /if \(\$ExecutionContext\.SessionState\.LanguageMode -eq 'FullLanguage'\) \{[^}]*\}/g
+    const branches = script.match(fullLanguageBranch) ?? []
+    expect(branches.some((branch) => (
+      branch.includes('$currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId')
+    ))).toBe(true)
+    const constrained = script.replace(fullLanguageBranch, '')
+    expect(constrained).toContain('Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop')
+    expect(constrained).toContain('$currentSessionId = $selfProcess.SessionId')
+    // An unknown session must fail the probe, not run a filter that names no session.
+    expect(constrained).toContain('if ($null -eq $currentSessionId) { throw ')
+    // Same two fields in the same order as before, so FullLanguage writes the same JSON.
+    expect(constrained).toContain('[ordered]@{ ProcessId = $_.ProcessId; ExecutablePath = $path }')
+    // What ConstrainedLanguage refuses is left only inside the FullLanguage branches.
+    expect(constrained).not.toContain('[pscustomobject]')
+    expect(constrained).not.toContain('[System.')
+    expect(constrained.replace(/\[regex\]::Match\(/g, '')).not.toContain('::')
+    // Outside FullLanguage the output stays in the console code page, so anything past ASCII is escaped.
+    expect(script).toContain(buildPowerShellJsonOutputStatements('$items | ConvertTo-Json -Compress')[1])
+    expect(script.trimEnd().endsWith('$xingmangJson')).toBe(true)
+  })
+
   it('reduces the launch probe to PIDs of the expected package only', () => {
     const stable = String.raw`C:\Program Files\WindowsApps\OpenAI.Codex_26.715.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
     const beta = String.raw`C:\Program Files\WindowsApps\OpenAI.CodexBeta_26.716.0.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe`
