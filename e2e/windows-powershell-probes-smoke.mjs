@@ -209,7 +209,8 @@ const checks = [
   // PowerShell process instead. The stand-in window is node.exe copied under a
   // WindowsApps-shaped folder as Codex.exe: the real query, WMI owner check
   // included, has to find it from both language modes as the same entry, the
-  // parser has to keep it, and the close path's probe has to see it too.
+  // parser has to keep it, and the close path's probe and the one 打开 waits on
+  // have to see it too.
   ['Codex process probes find a running window in ConstrainedLanguage as in FullLanguage', async () => {
     const standInRoot = path.join(scratch, 'running-codex')
     const appDir = path.join(standInRoot, 'WindowsApps', 'OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0', 'app')
