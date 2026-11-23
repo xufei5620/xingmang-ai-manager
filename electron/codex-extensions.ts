@@ -28,6 +28,9 @@ import {
   copySkillSnapshot,
   createSkillImportStaging,
   discardSkillImportStaging,
+  isLiveSkillImportStaging,
+  isSkillImportStagingName,
+  releaseSkillImportStaging,
   snapshotSkillTree,
   type SkillImportStaging,
   type SkillTreeLimits,
@@ -945,6 +948,8 @@ async function collectSkillFiles(
     if (error instanceof DirectoryEntryLimitError) throw error
     return []
   }
+  // 导入用的临时文件夹只建在技能文件夹这一层（skill-import-snapshot.ts），里面那份 SKILL.md 不是装好的技能。
+  if (depth === 0) entries = entries.filter((entry) => !isSkillImportStagingName(entry.name))
   const infos = await mapWithConcurrency(entries, SKILL_SCAN_CONCURRENCY, (entry) => (
     fs.promises.lstat(path.join(root, entry.name)).catch(() => null)
   ))
@@ -1133,6 +1138,49 @@ export function commitSkillImport(staged: StagedSkillImport): void {
     discardSkillImportStaging(staged.staging)
     throw error
   }
+  releaseSkillImportStaging(staged.staging)
+}
+
+export interface SkillImportLeftoverSweep {
+  removed: number
+  remaining: number
+}
+
+/**
+ * 导入到一半星芒被关掉或崩了，或者导入出错时临时文件夹删不掉（比如安全软件正扫着），技能文件夹里会留下
+ * 一个临时文件夹。开机后在后台清：技能文件夹照导入时的规矩查（不经过链接），查不过就不碰；只删星芒起名的
+ * 那种、确实是个文件夹（不跟链接）、这会儿没有导入在用的。删不掉的留到下次。
+ */
+export async function discardSkillImportLeftovers(root: string): Promise<SkillImportLeftoverSweep> {
+  const sweep: SkillImportLeftoverSweep = { removed: 0, remaining: 0 }
+  let entries: fs.Dirent[]
+  try {
+    assertNoSymlinkComponents(root, 'Skill 受管目录')
+    entries = await readDirectoryEntries(root, MAX_SKILL_DISCOVERY_ENTRIES, 'Skill 受管目录')
+  } catch {
+    return sweep
+  }
+  for (const entry of entries) {
+    if (!isSkillImportStagingName(entry.name)) continue
+    const directory = path.join(root, entry.name)
+    if (isLiveSkillImportStaging(directory)) continue
+    try {
+      const info = await fs.promises.lstat(directory)
+      if (!info.isDirectory() || info.isSymbolicLink()) continue
+      await fs.promises.rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+      sweep.removed += 1
+    } catch {
+      sweep.remaining += 1
+    }
+  }
+  return sweep
+}
+
+export function sumSkillImportLeftoverSweeps(sweeps: readonly SkillImportLeftoverSweep[]): SkillImportLeftoverSweep {
+  return sweeps.reduce((total, sweep) => ({
+    removed: total.removed + sweep.removed,
+    remaining: total.remaining + sweep.remaining,
+  }), { removed: 0, remaining: 0 })
 }
 
 /** Claude Code、Grok CLI 的导入：两段连着做。Codex 要在中间清启停记录，自己分开调。 */
@@ -1639,6 +1687,13 @@ export class CodexExtensionService {
     }
     commitSkillImport(staged)
     return this.listSkills()
+  }
+
+  /** Codex 的技能导入到的两处（自己的、当前项目的），清掉以前导入留下的临时文件夹。 */
+  async discardSkillImportLeftovers(): Promise<SkillImportLeftoverSweep> {
+    const roots = [path.join(this.userHome, '.agents', 'skills')]
+    if (this.repositoryRoot) roots.push(path.join(this.repositoryRoot, '.agents', 'skills'))
+    return sumSkillImportLeftoverSweeps(await Promise.all(roots.map((root) => discardSkillImportLeftovers(root))))
   }
 
   async uninstallSkill(skillPath: string): Promise<{ skills: SkillDto[]; trashPath: string }> {
