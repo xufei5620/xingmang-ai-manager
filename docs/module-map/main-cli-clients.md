@@ -143,6 +143,8 @@
 - `antigravity-cli-bucket.ts` — 读存储桶里的 agy 清单（`windows.json` / `macos.json`，同步脚本写的那份）：只看最新那一版里这台电脑那一个文件，对象地址、来源地址（必须是按版本和构建号拼出的谷歌原址）、大小、SHA-256/512 有一处对不上、或清单 24 小时没和谷歌核过，就悄悄换回谷歌那一路
 - `antigravity-cli-macos.ts` — Mac 上的 agy：在 Node 里读谷歌的 tar.gz，只写出唯一一个 `antigravity`（链接、文件夹、第二个文件、超大、结尾后还有东西一律整包拒绝；Mac 自带 tar 加的 `._` 元数据和 pax 头认得），再看 Mach-O 头是不是这台 Mac 的芯片（不用 lipo，没装命令行工具的 Mac 上它是个占位），最后按退出码问 codesign 是不是谷歌的 Developer ID（团队 EQHXZ8M8AV、标识 `cli`）
 - `antigravity-cli-installer.ts` — 一键装 agy：先从存储桶下、没走通再按谷歌清单从谷歌下（只有这一路借加速线路），下回来先对摘要，再核谷歌签名（Windows 是 `trusted-native-cli.ts` 里钉住的 Google LLC + DigiCert，Mac 见上一条），核过的才复制到 `%LOCALAPPDATA%\agy\bin\agy.exe` / `~/.local/bin/agy` 旁边、对一遍 SHA-256、改名替换（I8；那里原来是链接或文件夹就不动）。Windows 把目录加在用户 PATH 最后；管理员身份打开的星芒不往用户文件夹里装。不跑 `agy install`
+- `antigravity-desktop-release.ts` — Antigravity 桌面端自己更新时读的版本信息（`<更新站>/manifest/latest-<x64|arm64>-<win|mac>.yml`，electron-updater 的格式）的读法：逐行读那一小段固定形状，不交给 YAML 库；只列一个文件、地址与按版本和构建号拼出的谷歌存储地址一字不差（Windows 是谷歌签名的 NSIS 安装包，Mac 是装着 Antigravity.app 的 zip），大小在 16 MiB 到 1 GiB 之间，SHA-512 换成十六进制。纯函数
+- `antigravity-desktop-windows.ts` — Windows 上一键装 Antigravity 桌面端：按上一条读谷歌的版本信息、下安装包（不跟跳转），对大小和 SHA-512，再按 `trusted-native-cli.ts` 里 agy 那条核谷歌签名，运行前再对一遍 SHA-256，静默装（`/S`，一键式按用户装到 `%LOCALAPPDATA%\Programs\antigravity`，不要管理员；开着时它会先关掉再装）。管理员身份打开的星芒不装。Mac 上的桌面端在 `macos-desktop-app-installer.ts` 的来源表里（`antigravityDesktop`）
 
 ## 托管密钥的分组与换新
 - `managed-cli-groups.ts` — 给每个工具和画图挑账号里用哪个分组：xm 站分组只按名字认（没有编号），服务状态文件里的分组对照让站上改名时不用等发版；订阅分组、历史账号那套后端的平台字段也在这里判。签 Key、对话凭据、账号页都用它
@@ -173,7 +175,7 @@
 - `macos-git-install.ts` — 「安装 Git」在 Mac 上就是跑一次 `xcode-select --install`，下载与授权全交给苹果的窗口；之后定时看 Git 能不能用、安装程序还在不在，推断装好、取消还是超时
 - `macos-shell-profile.ts` — 让客户自己开的终端也能直接敲 claude / codex / grok：往 `~/.zprofile`（或 bash 登录文件、fish 的 conf.d）末尾追加标记段，只追加不前置，客户自己装的照旧优先；客户删了那几行，开机不再补
 - `shell-startup-exports.ts` — 认 `~/.zshrc` 这类终端设置文件导出了哪些变量（zsh、bash、fish 的写法），只解析、不执行、不跟 `source`；检查页在 Mac 上用它找会让工具绕开当前账号的那几个（已知45）
-- `macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装桌面端（OpenCode、Claude Desktop，以及 Codex 桌面端的官方包 ChatGPT）：先从星芒存储桶（`desktop-package-bucket.ts`）下同一个官方包，没走通才问官方 feed（逐跳限定的重定向，feed 只能指向本模块自己会拼出的那个地址）；codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」（不是管理员就放 `~/Applications`）；失败的那几句话主进程与渲染层共用（I6）
+- `macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装桌面端（OpenCode、Claude Desktop、Antigravity，以及 Codex 桌面端的官方包 ChatGPT）：先从星芒存储桶（`desktop-package-bucket.ts`）下同一个官方包，没走通才问官方 feed（逐跳限定的重定向，feed 只能指向本模块自己会拼出的那个地址）；codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」（不是管理员就放 `~/Applications`）；失败的那几句话主进程与渲染层共用（I6）
 - `macos-launch-guard.ts` — 拒绝以 root 运行（D18；Mac 上本软件从不提权，没有「管理员模式」可退），字和 Linux 那句一样；零 import，`platform/entry.ts` 里跟 `linux-launch-guard.ts` 一起最先判。打开桌面客户端那处的 root 检查只剩兜底
 - `macos-install-location.ts` — 认出是不是直接从磁盘映像或系统的随机隔离副本（App Translocation）里运行：那样加速内核一推出就被杀，提示搬进「应用程序」；纯路径判断，不用挂盘就能单测
 - `macos-uninstall.ts` — 设置里「卸载星芒」的 Mac 版：先收回工具配置里指向 .app 的钩子与状态行，删开机项、托管工具和更新缓存，再把自己移进废纸篓并退出；安装队列有活时不卸（I11），Key 和工具设置照 Windows 的口径保留
