@@ -33,22 +33,28 @@ launch() {
   section "launch: $label"
   echo "### $label" >> "$WORK/fake.log"
   export HOME="$WORK/home-$label"
+  export XDG_CONFIG_HOME="$HOME/.config"
   mkdir -p "$HOME"
-  env "$@" timeout -k 5 75 xvfb-run -a "$EXE" --no-sandbox --disable-gpu > "$WORK/app-$label.txt" 2>&1
+  env "$@" timeout -k 5 60 xvfb-run -a "$EXE" --no-sandbox --disable-gpu > "$WORK/app-$label.txt" 2>&1
   echo "[exit=$?]"
-  tr -cd '[:print:]\n' < "$WORK/app-$label.txt" | grep -v -i -E 'dbus|gpu|libva|vaapi' | tail -60 | cut -c1-300
-  section "files and logs for $label"
-  find "$HOME" -maxdepth 4 -iname '*.log' | head -20
-  find "$HOME" -iname '*.log' -size -5M -print0 2>/dev/null | xargs -0 grep -h -i -E 'gateway|AGY_LLM|wire|tier|model' 2>/dev/null | head -60 | cut -c1-400
+  section "language server log for $label (auth, gateway, models)"
+  for f in "$HOME/.config/Antigravity/logs/language_server.log" /home/runner/.config/Antigravity/logs/language_server.log; do
+    [ -f "$f" ] || continue
+    echo "-- $f ($(wc -l < "$f") lines)"
+    grep -a -i -E 'gateway|ChainedAuth|authMethod|applyAuthResult|ModelConfig|Tier |sign.?in|oauth|login|error|fatal|panic' "$f" | head -60 | cut -c1-400
+  done
+  section "main log for $label"
+  for f in "$HOME/.config/Antigravity/logs/main.log" /home/runner/.config/Antigravity/logs/main.log; do
+    [ -f "$f" ] || continue
+    echo "-- $f"; grep -a -i -E 'gateway|auth|sign|login|error' "$f" | head -30 | cut -c1-300
+  done
+  section "crash logs for $label"
+  find "$HOME" -path '*crashes*' -name '*.log' | head -3 | while read -r c; do echo "-- $c"; head -c 2500 "$c"; echo; done
+  rm -rf /home/runner/.config/Antigravity/logs
 }
 
-launch gateway AGY_LLM_GATEWAY_URL=http://127.0.0.1:18080 AGY_LLM_GATEWAY_API_KEY=probe-fake-key AGY_LLM_GATEWAY_WIRE_PROTOCOL=genai AGY_LLM_GATEWAY_MODELS=gemini-3.8-flash-high,claude-opus-5-5
-launch plain DUMMY=1
+launch gateway AGY_LLM_GATEWAY_URL=http://127.0.0.1:18080 AGY_LLM_GATEWAY_API_KEY=probe-fake-key AGY_LLM_GATEWAY_WIRE_PROTOCOL=genai AGY_LLM_GATEWAY_MODELS=gemini-3.8-flash,claude-opus-5-5
 
-if [ -n "$LS" ]; then
-  section "language server help"
-  timeout 20 "$LS" --help 2>&1 | head -80 | cut -c1-200
-fi
 
 section "what the fake endpoint received"
 cat "$WORK/fake.log"
