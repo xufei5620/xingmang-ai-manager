@@ -45,29 +45,14 @@ def walk(node, prefix=''):
 
 files = dict(walk(header))
 print('dist files:', [name for name in files if name.startswith('dist/')][:80])
-patterns = re.compile(r'manifest|auto-updater|run\.app|latest|\.yml|setFeedURL|autoUpdater|checkForUpdates|storage\.googleapis|antigravity-hub|feed|channel', re.I)
-for name, entry in files.items():
-    if not name.endswith('.js') or 'offset' not in entry:
-        continue
-    start = base + int(entry['offset'])
-    text = data[start:start + entry['size']].decode('utf-8', 'replace')
-    hits = [m.start() for m in re.finditer(r'auto-updater|run\.app|/manifest|setFeedURL|antigravity-hub', text)]
-    if not hits:
-        continue
-    print(f'===== {name} ({entry["size"]} bytes) hits={len(hits)}')
-    shown = 0
-    last = -10_000
-    for position in hits:
-        if position - last < 400:
-            continue
-        last = position
-        print('---', position)
-        print(text[max(0, position - 500):position + 700].replace('\n', ' '))
-        shown += 1
-        if shown >= 12:
-            break
+entry = files['dist/updater.js']
+start = base + int(entry['offset'])
+print('===== dist/updater.js')
+print(data[start:start + entry['size']].decode('utf-8', 'replace'))
 
-for candidate in ('/manifest/windows_amd64.json', '/manifest/win32-x64.json', '/manifest/windows-x64.json', '/manifest/darwin_arm64.json',
+status, headers, body = get(FEED + '/releases', 20000)
+print('releases', status, headers.get('Content-Type'), body[:20000].decode('utf-8', 'replace'))
+for candidate in ('/manifest/latest-x64-win.yml', '/manifest/latest-x64-windows.yml', '/manifest/latest-arm64-mac.yml', '/manifest/latest-x64-linux.yml', '/manifest/windows_amd64.json', '/manifest/win32-x64.json', '/manifest/windows-x64.json', '/manifest/darwin_arm64.json',
                   '/manifest/darwin-arm64.json', '/manifest/linux_amd64.json', '/manifests/windows_amd64.json', '/manifest/latest.json', '/manifest/stable.json'):
     status, headers, body = get(FEED + candidate, 3000)
     print('try', candidate, status, headers.get('Content-Type'), body[:600].decode('utf-8', 'replace'))
