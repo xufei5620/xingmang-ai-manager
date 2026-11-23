@@ -1,6 +1,13 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import {
+  antigravityDesktopArtifactOrigin,
+  antigravityDesktopFeedOrigin,
+  buildAntigravityDesktopFeedUrl,
+  maximumAntigravityDesktopArtifactBytes,
+  parseAntigravityDesktopFeed,
+} from './antigravity-desktop-release'
 import { readBoundedResponseText } from './bounded-response'
 import { CommandRunnerError, type CommandResult } from './command-runner'
 import {
@@ -70,8 +77,8 @@ import { ensureTrustedDirectory } from './trusted-temp'
 
 export type MacosDesktopArchitecture = 'arm64' | 'x64'
 
-/** 能一键装的：首页「桌面客户端」那几行，加上 Codex 桌面端。 */
-export type MacosDesktopAppId = ExternalToolId | 'codexDesktop'
+/** 能一键装的：首页「桌面客户端」那几行，加上 Codex 桌面端和 Antigravity 桌面端。 */
+export type MacosDesktopAppId = ExternalToolId | 'codexDesktop' | 'antigravityDesktop'
 
 export interface MacosDesktopRelease {
   version: string
@@ -349,6 +356,24 @@ function allowsChatgptUrl(url: URL): boolean {
 
 const openCodeFeedUrl = 'https://github.com/anomalyco/opencode/releases/latest/download/latest-mac.yml'
 
+/**
+ * Antigravity 桌面端自己更新时读的那份（antigravity-desktop-release.ts）：按芯片一份，只列一个 zip，
+ * 地址必须正好是按它写的版本和构建号拼出来的那一个，大小也写着。SHA-512 不在这里对：这条路下载时
+ * 只算 SHA-256，Mac 上认的是解开以后的 Developer ID 签名和 Gatekeeper，同 OpenCode、Codex 桌面端。
+ */
+function selectAntigravityRelease(feed: unknown, context: MacosDesktopFeedContext): MacosDesktopRelease | null {
+  if (typeof feed !== 'string') return null
+  const release = parseAntigravityDesktopFeed(feed, context.architecture === 'arm64' ? 'macos-arm64' : 'macos-x64')
+  return release ? { version: release.version, url: release.url, bytes: release.bytes } : null
+}
+
+/** 版本信息和安装包各在一个固定的主机上，2026-11-23 实测两边都不跳转、不带查询串。 */
+function allowsAntigravityUrl(url: URL): boolean {
+  if (url.search) return false
+  if (url.origin === antigravityDesktopFeedOrigin) return /^\/manifest\/latest-(?:x64|arm64)-mac\.yml$/.test(url.pathname)
+  return url.origin === antigravityDesktopArtifactOrigin && url.pathname.startsWith('/antigravity-public/antigravity-hub/')
+}
+
 const sources: Partial<Record<MacosDesktopAppId, MacosDesktopAppSource>> = {
   // Checked 2026-10-02 by downloading v1.18.34 for both architectures: the feed below
   // and the package names it lists, the redirect to release-assets.githubusercontent.com,
@@ -414,6 +439,28 @@ const sources: Partial<Record<MacosDesktopAppId, MacosDesktopAppSource>> = {
     allowsUrl: allowsChatgptUrl,
     // OpenAI 旧版的聊天程序也叫 ChatGPT.app（Homebrew 的 chatgpt 已改指这个新包）。
     legacyApplication: { bundleIdentifiers: ['com.openai.chat'], message: macosLegacyChatgptMessage },
+  },
+  // Checked 2026-11-23 on a GitHub macOS runner with 2.34.0 (build 5887025308631040) for both
+  // chips: each feed answers without a redirect and lists one zip on storage.googleapis.com, served
+  // as application/zip without a redirect and matching the feed's size and SHA-512. /usr/bin/tar
+  // unpacks it to exactly Antigravity.app (thin x86_64 or thin arm64, 14 framework symlinks, no
+  // hard links), bundle com.google.antigravity with LSMinimumSystemVersion 13.0; the pinned
+  // requirement below accepts it and Gatekeeper reports "Notarized Developer ID", Google LLC
+  // (EQHXZ8M8AV).
+  antigravityDesktop: {
+    name: 'Antigravity',
+    applicationName: 'Antigravity',
+    bundleIdentifier: 'com.google.antigravity',
+    teamIdentifier: 'EQHXZ8M8AV',
+    feedUrl: (context) => buildAntigravityDesktopFeedUrl(context.architecture === 'arm64' ? 'macos-arm64' : 'macos-x64'),
+    feedFormat: 'yaml',
+    archiveFormat: 'zip',
+    // 2.34.0 is 212 MB on Apple silicon and 223 MB on Intel.
+    maximumArchiveBytes: maximumAntigravityDesktopArtifactBytes,
+    selectRelease: selectAntigravityRelease,
+    allowsUrl: allowsAntigravityUrl,
+    // 星芒的 x64 版靠 Rosetta 跑在 Apple 芯片上时，照样装 arm64 那个。
+    packageForHardware: true,
   },
 }
 
