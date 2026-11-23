@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# 临时：核 Antigravity CLI 能不能接自定义 Gemini 地址，核完就删。（第九轮：查「自定义型号」设置怎么写、不给菜单时它会不会自己去中转查型号）
+# 临时：核 Antigravity CLI 能不能接自定义 Gemini 地址，核完就删。（第九轮重跑，grep 改快：查「自定义型号」设置怎么写、不给菜单时它会不会自己去中转查型号）
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="$RUNNER_TEMP/agy-probe"
 mkdir -p "$WORK/bin" "$WORK/ws"
 UPDATER=https://antigravity-cli-auto-updater-974169037036.us-central1.run.app
 
-section() { echo; echo "================ $* ================"; }
+section() { echo; echo "================ $* ($(date +%T)) ================"; }
 printable() { tr -c '[:print:]\n' '.'; }
 
 MANIFEST="$(curl -fsS --max-time 30 "$UPDATER/manifests/linux_amd64.json")"
@@ -25,16 +25,36 @@ timeout -k 5 30 "$AGY" --help </dev/null 2>&1 | head -80
 section "models help"
 timeout -k 5 30 "$AGY" models --help </dev/null 2>&1 | head -40
 
+strings -n 6 "$AGY" > "$WORK/strings.txt"
+wc -l "$WORK/strings.txt"
+# around <needle> <before> <after> <max hits>: print the bytes around literal hits, fast (no regex over the binary)
+around() {
+  python3 -I -c '
+import mmap, re, sys
+path, needle, before, after, limit = sys.argv[1], sys.argv[2].encode(), int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
+with open(path, "rb") as handle:
+    data = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+    start, hits = 0, 0
+    while hits < limit:
+        index = data.find(needle, start)
+        if index < 0:
+            break
+        chunk = data[max(0, index - before):index + len(needle) + after]
+        print("@%d: %s" % (index, re.sub(rb"[^\x20-\x7e]", b".", chunk).decode()))
+        start, hits = index + len(needle), hits + 1
+' "$AGY" "$1" "$2" "$3" "$4"
+}
 section "embedded text about custom models"
-grep -a -o -E '.{0,300}[Cc]ustom[ _]?[Mm]odels?.{0,500}' "$AGY" | printable | grep -v -E 'protobuf:|\*func|\*map' | awk 'length($0) > 80' | sort -u | head -30 | cut -c1-900
+around "customModels" 300 600 12
+around "custom model" 300 600 12
 section "embedded text about settings files"
-grep -a -o -E '.{0,160}settings\.json.{0,200}' "$AGY" | printable | sort -u | head -30 | cut -c1-400
+around "settings.json" 160 240 12
 section "json field tags that look like model settings"
-strings -n 6 "$AGY" | grep -E 'json:"' | grep -v 'protobuf:' | grep -i -E 'model|url|endpoint|apikey|api_key|thinking|display|protocol|override|header|provider|effort' | awk 'length($0) < 200' | sort -u | head -200
+grep -E 'json:"' "$WORK/strings.txt" | grep -v 'protobuf:' | grep -i -E 'model|url|endpoint|apikey|api_key|thinking|display|protocol|override|header|provider|effort' | awk 'length($0) < 200' | sort -u | head -200
 section "text around model_name_override"
-grep -a -o -E '.{0,500}model_name_override.{0,500}' "$AGY" | printable | head -6 | cut -c1-1100
+around "model_name_override" 600 600 4
 section "custom model resolver symbols"
-strings -n 6 "$AGY" | grep -E 'customModels|CustomModel|adHocCustom|resolveGatewayModel|findKnownModelInfo|withFamilyDefaults|ensureConfiguredModels|fetchGatewayDiscovered|buildResponseFromAdminModelList' | awk 'length($0) < 200' | sort -u | head -80
+grep -E 'customModels|CustomModel|adHocCustom|resolveGatewayModel|findKnownModelInfo|withFamilyDefaults|ensureConfiguredModels|fetchGatewayDiscovered|buildResponseFromAdminModelList' "$WORK/strings.txt" | awk 'length($0) < 200' | sort -u | head -80
 
 cd "$WORK/ws"
 python3 "$HERE/fake_gemini.py" 18080 "$WORK/fake.log" &
