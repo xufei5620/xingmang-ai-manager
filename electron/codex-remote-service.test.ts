@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AppServerProcess } from './codex-remote-app-server'
+import { AppServerRequestError, AppServerTimeoutError, type AppServerProcess } from './codex-remote-app-server'
 import type {
   CodexRemoteSnapshot,
   RemoteApprovalRequest,
@@ -49,14 +49,17 @@ import {
   readRequestedPermissions,
   remoteChannelsReadyToEnable,
   remoteIdleInstallQuietMs,
+  codexRejectedRequest,
   codexSupportsResume,
   readCodexVersion,
   readListedConversations,
   readResumedThread,
+  remoteRulesInEffect,
   resolveChosenConversation,
   resumedPermissionFits,
   sameRemoteFolder,
   sentWhileOpen,
+  startedSandboxExceeds,
   validateRemoteWorkspace,
 } from './codex-remote-service'
 import type { RemoteFileChangeLine } from './codex-remote-text'
@@ -772,12 +775,55 @@ describe('codex-remote-service helpers', () => {
     expect(buildRemoteSandboxPolicy('readOnly')).toEqual({ type: 'readOnly', networkAccess: false })
   })
 
+  // 第三轮复查第 5 条：新开的对话跟中途换档一样不开网、可写的只有这个文件夹，不照客户 config.toml 里开过的联网和加过的文件夹。
+  // Codex 0.169 实测：config.toml 开了联网、加了可写文件夹，不压住时 thread/start 回报 networkAccess: true 和那个文件夹，压住后两样都没有。
+  it('starts threads without network access or extra writable folders whatever config.toml allows', () => {
+    for (const permission of ['default', 'readOnly'] as const) {
+      expect(buildThreadStartParams('/p', {}, null, permission).config).toMatchObject({
+        'sandbox_workspace_write.network_access': false,
+        'sandbox_workspace_write.writable_roots': [],
+      })
+    }
+    expect(JSON.stringify(buildThreadStartParams('/p'))).not.toContain('exclude_')
+  })
+
+  it('treats a started thread as wider than the phone level only on clear evidence', () => {
+    const workspace = '/Users/a/projects/demo'
+    const pinned = { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+    expect(startedSandboxExceeds(pinned, 'default', workspace, 'darwin')).toBe(false)
+    expect(startedSandboxExceeds({ ...pinned, writableRoots: [`${workspace}/`] }, 'default', workspace, 'darwin')).toBe(false)
+    expect(startedSandboxExceeds({ type: 'readOnly', networkAccess: false }, 'readOnly', workspace, 'darwin')).toBe(false)
+    // Windows 没开沙箱时 Codex 把可写降成只读：比这一档严，不去抬。
+    expect(startedSandboxExceeds({ type: 'readOnly', networkAccess: false }, 'default', 'C:\\Users\\a\\demo', 'win32')).toBe(false)
+    expect(startedSandboxExceeds({ ...pinned, writableRoots: ['c:\\users\\a\\demo\\'] }, 'default', 'C:\\Users\\a\\demo', 'win32')).toBe(false)
+    // 认不出的照开对话时带的那一档，不算宽。
+    expect(startedSandboxExceeds(undefined, 'default', workspace, 'darwin')).toBe(false)
+    expect(startedSandboxExceeds('workspace-write', 'default', workspace, 'darwin')).toBe(false)
+    expect(startedSandboxExceeds({ type: 'workspaceWrite' }, 'default', workspace, 'darwin')).toBe(false)
+
+    expect(startedSandboxExceeds({ ...pinned, networkAccess: true }, 'default', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds({ type: 'readOnly', networkAccess: true }, 'readOnly', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds({ ...pinned, writableRoots: ['/tmp/extra-root'] }, 'default', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds({ ...pinned, writableRoots: [workspace, '/Users/a'] }, 'default', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds({ ...pinned, writableRoots: [42] }, 'default', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds(pinned, 'readOnly', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds({ type: 'dangerFullAccess' }, 'default', workspace, 'darwin')).toBe(true)
+    expect(startedSandboxExceeds({ type: 'externalSandbox', networkAccess: 'restricted' }, 'default', workspace, 'darwin')).toBe(true)
+  })
+
   // #1407 P2-4：客户自己接的外部工具调用不一定先问人，遥控开的对话里一律关掉；联网搜索不动。
   it('starts threads without plugins, apps or the configured MCP servers, and leaves web search alone', () => {
-    expect(buildThreadStartParams('/p').config).toEqual({ 'features.apps': false, 'features.plugins': false })
+    expect(buildThreadStartParams('/p').config).toEqual({
+      'features.apps': false,
+      'features.plugins': false,
+      'sandbox_workspace_write.network_access': false,
+      'sandbox_workspace_write.writable_roots': [],
+    })
     expect(buildThreadStartParams('/p', { docs: { enabled: false } }).config).toEqual({
       'features.apps': false,
       'features.plugins': false,
+      'sandbox_workspace_write.network_access': false,
+      'sandbox_workspace_write.writable_roots': [],
       mcp_servers: { docs: { enabled: false } },
     })
     expect(JSON.stringify(buildThreadStartParams('/p'))).not.toContain('web_search')
@@ -1900,6 +1946,56 @@ describe('codex-remote-service turns', () => {
     expect(await nextTurn(5)).not.toHaveProperty('sandboxPolicy')
     expect(codex.requests('thread/start')).toHaveLength(1)
     expect(s.logs).toContain('remote.permission-set')
+  })
+
+  // 第三轮复查第 5 条：新开的对话照 Codex 回报的看，比手机这一档宽（哪个版本没认压住的那两项）就跟接已有对话一样第一句降下来。
+  it('lowers a new thread on its first message when Codex reports a wider sandbox than the phone level', async () => {
+    const s = await setup({
+      now: () => Date.UTC(2026, 10, 11, 6, 0, 0),
+      codexReplies: {
+        'thread/start': () => ({
+          result: {
+            thread: { id: 'th-1' },
+            approvalPolicy: 'on-request',
+            approvalsReviewer: 'user',
+            sandbox: { type: 'workspaceWrite', writableRoots: ['/tmp/extra-root'], networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+          },
+        }),
+      },
+    })
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect(codex.requests('turn/start')[0].params).toMatchObject({
+      threadId: 'th-1',
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
+      sandboxPolicy: { type: 'workspaceWrite', writableRoots: [], networkAccess: false },
+    })
+    expect(s.logs).toContain('remote.thread-start-sandbox-wider')
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    channel.handlers?.onInbound(text(alice, '再来一个'))
+    await codex.requestedUntil('turn/start', 2)
+    expect(codex.requests('turn/start')[1].params).not.toHaveProperty('sandboxPolicy')
+  })
+
+  it('leaves a new thread alone when Codex reports the pinned sandbox', async () => {
+    const s = await setup({
+      codexReplies: {
+        'thread/start': () => ({
+          result: {
+            thread: { id: 'th-1' },
+            approvalPolicy: 'on-request',
+            approvalsReviewer: 'user',
+            sandbox: { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+          },
+        }),
+      },
+    })
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect(codex.requests('turn/start')[0].params).not.toHaveProperty('sandboxPolicy')
+    expect(s.logs).not.toContain('remote.thread-start-sandbox-wider')
   })
 
   it('opens the thread without a model when the phone follows the computer', async () => {
@@ -4738,8 +4834,31 @@ function codexThread(id: string, cwd: string, preview: string, updatedAt: number
   return { id, cwd, preview, name: null, updatedAt, ephemeral: false, parentThreadId: null, source: 'vscode', ...extra }
 }
 
-function resumeReply(threadId: string, cwd: string, permission: Record<string, unknown> = fitsDefault): Record<string, unknown> {
-  return { result: { thread: { id: threadId, cwd }, cwd, model: 'gpt-5.5', reasoningEffort: 'medium', ...permission } }
+/**
+ * rules 是 Codex 报的这份对话现在套着的规矩（collaborationMode 的 developer_instructions），跟 Codex 0.169、0.171 一样：
+ * 没写过是 null，thread/settings/update 写过以后再接，答回来的就是写进去的那段。
+ */
+function resumeReply(threadId: string, cwd: string, permission: Record<string, unknown> = fitsDefault, rules: string | null = null): Record<string, unknown> {
+  return {
+    result: {
+      thread: { id: threadId, cwd },
+      cwd,
+      model: 'gpt-5.5',
+      reasoningEffort: 'medium',
+      ...permission,
+      collaborationMode: { mode: 'default', settings: { model: 'gpt-5.5', reasoning_effort: 'medium', developer_instructions: rules } },
+    },
+  }
+}
+
+/** thread/settings/update 写进去的规矩（collaborationMode.settings.developer_instructions）；没带是 null。 */
+function sentRules(params: Record<string, unknown>): string | null {
+  const mode = params.collaborationMode
+  if (!mode || typeof mode !== 'object') return null
+  const settings = (mode as { settings?: unknown }).settings
+  if (!settings || typeof settings !== 'object') return null
+  const rules = (settings as { developer_instructions?: unknown }).developer_instructions
+  return typeof rules === 'string' ? rules : null
 }
 
 interface ConversationSetup {
@@ -4750,7 +4869,10 @@ interface ConversationSetup {
 
 async function conversationSetup(options: {
   list?: (folders: { workspace: string; other: string }) => Array<Record<string, unknown>>
-  resume?: (params: Record<string, unknown>, folders: { workspace: string; other: string }) => Record<string, unknown>
+  /** rules：这份对话现在套着的规矩，由下面 thread/settings/update 记下（跟真 Codex 一样）。 */
+  resume?: (params: Record<string, unknown>, folders: { workspace: string; other: string }, rules: string | null) => Record<string, unknown>
+  /** 缺省照真 Codex：记下写进去的规矩，回 {}。给了就照它回，回了 result 也不记（模拟字段改了名，Codex 照样回成功）。 */
+  settingsUpdate?: (params: Record<string, unknown>) => Record<string, unknown>
   codexVersion?: string | null
   images?: boolean
 } = {}): Promise<ConversationSetup> {
@@ -4764,6 +4886,7 @@ async function conversationSetup(options: {
     codexThread(threadC, path.join(root, 'home', 'elsewhere'), '别处的对话', codexSeconds(21, 12, 0)),
     codexThread(threadB, `${other}/`, '整理接口文档', codexSeconds(20, 9, 12)),
   ])
+  const rulesByThread = new Map<string, string | null>()
   // 按本机的路径规矩起服务：文件夹是真建出来的，Windows 上是 C:\…，按 darwin 的规矩会认不出主目录、取不对文件夹名。
   const s = await setup({
     root,
@@ -4772,7 +4895,15 @@ async function conversationSetup(options: {
     ...(options.codexVersion === null ? {} : { codexVersion: options.codexVersion ?? '0.169.0' }),
     codexReplies: {
       'thread/list': () => ({ result: { data: list(folders), nextCursor: null, backwardsCursor: null } }),
-      'thread/resume': (params) => (options.resume ? options.resume(params, folders) : resumeReply(String(params.threadId), params.threadId === threadB ? other : workspace)),
+      'thread/resume': (params) => {
+        const rules = rulesByThread.get(String(params.threadId)) ?? null
+        return options.resume ? options.resume(params, folders, rules) : resumeReply(String(params.threadId), params.threadId === threadB ? other : workspace, fitsDefault, rules)
+      },
+      'thread/settings/update': (params) => {
+        if (options.settingsUpdate) return options.settingsUpdate(params)
+        rulesByThread.set(String(params.threadId), sentRules(params))
+        return { result: {} }
+      },
     },
   })
   await s.store.updateSettings((settings) => { settings.workspaceDirectories = [workspace, other] })
@@ -4810,8 +4941,8 @@ describe('codex-remote-service continuing a Codex conversation from the phone', 
     expect(await phoneReply(channel, '对话')).toBe('电脑端已添加的文件夹中暂无 Codex 对话，发送消息即可开始新对话。')
   })
 
-  it('does not offer existing conversations on a Codex version that was not checked', async () => {
-    const { s } = await conversationSetup({ codexVersion: '0.170.0' })
+  it('does not offer existing conversations on a Codex older than the first version it was tried on', async () => {
+    const { s } = await conversationSetup({ codexVersion: '0.168.0' })
     const channel = await enabledAndPaired(s)
     expect(await phoneReply(channel, '对话')).toBe('当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。')
     expect(await phoneReply(channel, '对话 1')).toBe('当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。')
@@ -4832,17 +4963,25 @@ describe('codex-remote-service continuing a Codex conversation from the phone', 
     expect(storedImages(s.imageDirectory)).toEqual([])
   })
 
-  it('continues the chosen conversation where it is, switching to its folder, and adds the remote rules on the next message only', async () => {
+  it('continues the chosen conversation where it is, switching to its folder, with the remote rules set once and checked before any message', async () => {
     const { s, other } = await conversationSetup()
     const channel = await enabledAndPaired(s)
     await phoneReply(channel, '对话')
     expect(await phoneReply(channel, '对话 2')).toBe(switchedToB)
     const codex = s.codex[0]
-    expect(codex.requests('thread/resume')[0].params).toEqual({
+    const resumeParams = {
       threadId: threadB,
       excludeTurns: true,
       config: { 'features.apps': false, 'features.plugins': false },
-    })
+    }
+    // 接上、写进规矩、再接一次看 Codex 报的是不是这段规矩：一句话都还没交给 Codex。
+    expect(codex.requests('thread/resume').map((request) => request.params)).toEqual([resumeParams, resumeParams])
+    const update = codex.requests('thread/settings/update')
+    expect(update).toHaveLength(1)
+    expect(update[0].params).toMatchObject({ threadId: threadB, collaborationMode: { mode: 'default', settings: { model: 'gpt-5.5', reasoning_effort: 'medium' } } })
+    expect(sentRules(update[0].params as Record<string, unknown>)).toContain('Never print, copy or summarise API keys')
+    expect(codex.written.map((message) => message.method).filter((method) => method === 'thread/settings/update' || method === 'thread/resume' || method === 'turn/start'))
+      .toEqual(['thread/resume', 'thread/settings/update', 'thread/resume'])
     const settings = await s.store.readSettings()
     expect(settings.workspaceDirectory).toBe(other)
     expect(settings.conversation).toMatchObject({ threadId: threadB, title: '整理接口文档', folder: other })
@@ -4854,18 +4993,67 @@ describe('codex-remote-service continuing a Codex conversation from the phone', 
     expect(first.threadId).toBe(threadB)
     expect(first).not.toHaveProperty('approvalPolicy')
     expect(first).not.toHaveProperty('sandboxPolicy')
-    expect(first.collaborationMode).toMatchObject({ mode: 'default', settings: { model: 'gpt-5.5', reasoning_effort: 'medium' } })
-    expect(String((first.collaborationMode as { settings: { developer_instructions: string } }).settings.developer_instructions)).toContain('Never print, copy or summarise API keys')
+    expect(first).not.toHaveProperty('collaborationMode')
     codex.notify('turn/completed', { threadId: threadB, turn: { id: 'tu-1', status: 'completed', error: null } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
     channel.handlers?.onInbound(text(alice, '再看一下'))
     await codex.requestedUntil('turn/start', 2)
     expect(codex.requests('turn/start')[1].params).not.toHaveProperty('collaborationMode')
+    expect(codex.requests('thread/settings/update')).toHaveLength(1)
     expect(channel.texts().filter((line) => line.includes('当前为新对话'))).toHaveLength(0)
   })
 
+  // 0.2.25 第三轮复查第 4 条：以前只认 0.169.x，推荐版一抬到 0.170，照着「更新」的客户就接不了对话。
+  it('continues a conversation on a Codex newer than the one it was first tried on', async () => {
+    const { s } = await conversationSetup({ codexVersion: '0.171.0' })
+    const channel = await enabledAndPaired(s)
+    expect(await phoneReply(channel, '对话')).toContain('2. 整理接口文档（other，11-20 09:12）')
+    expect(await phoneReply(channel, '对话 2')).toBe(switchedToB)
+    channel.handlers?.onInbound(text(alice, '再改一下'))
+    await s.codex[0].requestedUntil('turn/start', 1)
+    expect(s.codex[0].requests('turn/start')[0].params).toMatchObject({ threadId: threadB })
+  })
+
+  it('says this Codex cannot continue conversations when it does not report the remote rules back, and changes nothing', async () => {
+    // 字段改了名的那种 Codex：照样回成功，再接答回来的没有这段规矩。
+    const { s, workspace } = await conversationSetup({ codexVersion: '0.180.0', settingsUpdate: () => ({ result: {} }) })
+    const channel = await enabledAndPaired(s)
+    await phoneReply(channel, '对话')
+    expect(await phoneReply(channel, '对话 2')).toBe('当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。')
+    const settings = await s.store.readSettings()
+    expect(settings.workspaceDirectory).toBe(workspace)
+    expect(settings.conversation).toBeUndefined()
+    expect(s.logDetails.find((entry) => entry.event === 'remote.conversation-rules-unconfirmed')?.detail).toEqual({ version: '0.180.0', reason: 'not-in-effect' })
+    // 这一版记下了：再列、再选、电脑上打开列表都直接说不支持，不再接上去试。
+    expect(await phoneReply(channel, '对话')).toBe('当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。')
+    expect(await phoneReply(channel, '对话 1')).toBe('当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。')
+    expect(await s.service.listConversations()).toEqual({ supported: false })
+    expect(s.codex[0].requests('thread/resume')).toHaveLength(2)
+    // 手机上照常能用新对话。
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await s.codex[0].requestedUntil('turn/start', 1)
+    expect(s.codex[0].requests('thread/start')).toHaveLength(1)
+  })
+
+  it('treats a settings update Codex refuses as unsupported, and one that fails for another reason as a failed resume', async () => {
+    const refused = await conversationSetup({ settingsUpdate: () => ({ error: { code: -32600, message: 'Invalid request: unknown variant `thread/settings/update`' } }) })
+    const refusedChannel = await enabledAndPaired(refused.s)
+    await phoneReply(refusedChannel, '对话')
+    expect(await phoneReply(refusedChannel, '对话 2')).toBe('当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。')
+    expect(refused.s.logDetails.find((entry) => entry.event === 'remote.conversation-rules-unconfirmed')?.detail).toEqual({ version: '0.169.0', reason: 'rejected' })
+    expect(refused.s.codex[0].requests('thread/resume')).toHaveLength(1)
+
+    const failed = await conversationSetup({ settingsUpdate: () => ({ error: { code: -32603, message: 'failed to update thread settings: channel closed' } }) })
+    const failedChannel = await enabledAndPaired(failed.s)
+    await phoneReply(failedChannel, '对话')
+    expect(await phoneReply(failedChannel, '对话 2')).toBe('无法继续该对话，请稍后重试，或发送「新对话」开始新对话。')
+    expect(failed.s.logs).not.toContain('remote.conversation-rules-unconfirmed')
+    // 一时出错不记这一版：再发「对话」照常列。
+    expect(await phoneReply(failedChannel, '对话')).toContain('1. 修复登录页报错（demo，11-21 18:30）')
+  })
+
   it('lowers a conversation that had more access than the phone level and says so', async () => {
-    const { s } = await conversationSetup({ resume: (params, folders) => resumeReply(String(params.threadId), folders.other, fullAccess) })
+    const { s } = await conversationSetup({ resume: (params, folders, rules) => resumeReply(String(params.threadId), folders.other, fullAccess, rules) })
     const channel = await enabledAndPaired(s)
     await phoneReply(channel, '对话')
     expect(await phoneReply(channel, '对话 2')).toBe([
@@ -4885,7 +5073,7 @@ describe('codex-remote-service continuing a Codex conversation from the phone', 
   })
 
   it('names the read-only level when the phone is set to read-only', async () => {
-    const { s } = await conversationSetup({ resume: (params, folders) => resumeReply(String(params.threadId), folders.other) })
+    const { s } = await conversationSetup({ resume: (params, folders, rules) => resumeReply(String(params.threadId), folders.other, fitsDefault, rules) })
     await s.service.setPermission('readOnly')
     const channel = await enabledAndPaired(s)
     await phoneReply(channel, '对话')
@@ -4967,7 +5155,9 @@ describe('codex-remote-service choosing the phone conversation on the computer',
     expect(codex.requests('thread/start')).toHaveLength(0)
     expect(codex.requests('thread/resume')[0].params).toMatchObject({ threadId: threadB })
     expect(codex.requests('config/read').at(-1)?.params).toEqual({ cwd: other, includeLayers: true })
-    expect(codex.requests('turn/start')[0].params).toMatchObject({ threadId: threadB, collaborationMode: { mode: 'default' } })
+    expect(codex.requests('thread/settings/update')[0].params).toMatchObject({ threadId: threadB, collaborationMode: { mode: 'default' } })
+    expect(codex.requests('turn/start')[0].params).toMatchObject({ threadId: threadB })
+    expect(codex.requests('turn/start')[0].params).not.toHaveProperty('collaborationMode')
     expect(channel.texts()).toContain('已收到，Codex 开始处理。')
   })
 
@@ -5027,6 +5217,22 @@ describe('codex-remote-service choosing the phone conversation on the computer',
     expect((await s.store.readSettings()).conversation).toBeUndefined()
   })
 
+  it('tells the phone this Codex cannot continue conversations when it does not take the remote rules, without sending the message', async () => {
+    const { s } = await conversationSetup({ codexVersion: '0.180.0', settingsUpdate: () => ({ result: {} }) })
+    const channel = await enabledAndPaired(s)
+    expect((await s.service.listConversations()).supported).toBe(true)
+    await s.service.chooseConversation(threadB)
+    channel.handlers?.onInbound(text(alice, '接着做'))
+    const unsupported = '当前 Codex 版本暂不支持继续已有对话，请发送「新对话」开始新对话。'
+    await channel.sentUntil(() => channel.texts().includes(unsupported))
+    expect(s.codex[0].requests('thread/start')).toHaveLength(0)
+    expect(s.codex[0].requests('turn/start')).toHaveLength(0)
+    await vi.waitFor(async () => expect((await s.service.snapshot()).lastRequest).toMatchObject({ state: 'failed', reason: unsupported }))
+    // 这一版记下了：电脑上再选别的对话、再打开列表，都直接说不支持。
+    await expect(s.service.chooseConversation(threadA)).rejects.toThrow('当前 Codex 版本暂不支持继续已有对话，请选择新对话。')
+    expect(await s.service.listConversations()).toEqual({ supported: false })
+  })
+
   it('tells the phone it cannot continue when the chosen conversation is gone, without starting a new one', async () => {
     const { s } = await conversationSetup({ resume: () => ({ error: { code: -32600, message: 'thread not found' } }) })
     const channel = await enabledAndPaired(s)
@@ -5065,15 +5271,41 @@ describe('codex-remote-service conversation helpers', () => {
     expect(sameRemoteFolder('c:\\Users\\a\\demo\\', 'C:\\Users\\a\\Demo', 'win32')).toBe(true)
   })
 
-  it('only offers the conversation helpers on the Codex version they were checked on', () => {
+  it('offers continuing conversations from the first Codex version it was tried on, newer ones included', () => {
     expect(readCodexVersion({ userAgent: 'xingmang_remote/0.169.0 (Ubuntu 24.4.0; x86_64) linux (xingmang_remote; 0.2.25)' })).toBe('0.169.0')
     expect(readCodexVersion({ userAgent: 'codex' })).toBeNull()
     expect(readCodexVersion(null)).toBeNull()
     expect(codexSupportsResume('0.169.0')).toBe(true)
     expect(codexSupportsResume('0.169.3')).toBe(true)
-    expect(codexSupportsResume('0.170.0')).toBe(false)
+    expect(codexSupportsResume('0.170.0')).toBe(true)
+    expect(codexSupportsResume('0.171.0')).toBe(true)
+    expect(codexSupportsResume('1.0.0')).toBe(true)
+    expect(codexSupportsResume('0.168.9')).toBe(false)
     expect(codexSupportsResume('0.16.9')).toBe(false)
+    expect(codexSupportsResume('0.1690.0x')).toBe(false)
     expect(codexSupportsResume(null)).toBe(false)
+  })
+
+  it('counts the remote rules as set only when Codex reports exactly them back', () => {
+    const rules = String(buildThreadStartParams(workspace).developerInstructions)
+    const reported = (developerInstructions: unknown) => ({ ...resumeReply(threadA, workspace).result as Record<string, unknown>, collaborationMode: { mode: 'default', settings: { model: 'gpt-5.5', reasoning_effort: null, developer_instructions: developerInstructions } } })
+    expect(remoteRulesInEffect(reported(rules))).toBe(true)
+    expect(remoteRulesInEffect(resumeReply(threadA, workspace, fitsDefault, rules).result)).toBe(true)
+    expect(remoteRulesInEffect(reported(`${rules} `))).toBe(false)
+    expect(remoteRulesInEffect(reported(null))).toBe(false)
+    expect(remoteRulesInEffect(reported('Be brief.'))).toBe(false)
+    expect(remoteRulesInEffect(resumeReply(threadA, workspace).result)).toBe(false)
+    expect(remoteRulesInEffect({ thread: { id: threadA } })).toBe(false)
+    expect(remoteRulesInEffect(null)).toBe(false)
+  })
+
+  it('tells a request Codex refuses apart from one it never answered', () => {
+    expect(codexRejectedRequest(new AppServerRequestError('Invalid request: unknown variant', -32600))).toBe(true)
+    expect(codexRejectedRequest(new AppServerRequestError('Invalid params', -32602))).toBe(true)
+    expect(codexRejectedRequest(new AppServerRequestError('failed to update thread settings', -32603))).toBe(false)
+    expect(codexRejectedRequest(new AppServerTimeoutError('Codex 未响应（thread/settings/update）'))).toBe(false)
+    expect(codexRejectedRequest(new AppServerRequestError('Codex 未运行', null))).toBe(false)
+    expect(codexRejectedRequest(new Error('nope'))).toBe(false)
   })
 
   it('lists conversations people had, with one short title line, and leaves out sub-agents, throwaway ones and empty ones', () => {

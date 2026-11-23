@@ -32,6 +32,7 @@ import {
   type SourceUpdateInspector,
 } from './provider-extensions'
 import { setRelocatedFolderPolicy } from './relocated-folders'
+import { isSkillImportStagingName } from './skill-import-snapshot'
 
 const temporaryDirectories: string[] = []
 
@@ -2713,6 +2714,46 @@ describe('Claude Code and Grok CLI skills managed in the app', () => {
       .rejects.toThrow('当前 Provider 不支持该原生操作')
     await expect(service.mutate({ provider: 'claude', kind: 'skill', action: 'enable', id: source }))
       .rejects.toThrow('当前 Provider 不支持该原生操作')
+  })
+
+  // 0.2.25 复查第三轮第 3 条：跟 Codex 同一套，临时文件夹删不掉时照旧报原来的原因，留下的那份不列、开机清掉。
+  it('keeps the real reason when the staging folder cannot be removed, and sweeps it later', async () => {
+    for (const provider of ['claude', 'grok'] as const) {
+      const home = temporaryDirectory()
+      const { service } = managedService(home)
+      const source = skillSource('taken')
+      const skillsRoot = path.resolve(home, `.${provider}`, 'skills')
+      write(path.join(skillsRoot, 'taken', 'SKILL.md'), '---\nname: taken\ndescription: mine\n---\n')
+      const originalRm = fs.rmSync.bind(fs)
+      const spy = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+        if (isSkillImportStagingName(path.basename(String(target)))) {
+          throw Object.assign(new Error('EBUSY: resource busy or locked, rmdir'), { code: 'EBUSY' })
+        }
+        originalRm(target, options)
+      })
+
+      try {
+        await expect(service.mutate({ provider, kind: 'skill', action: 'install', source, scope: 'user' }))
+          .rejects.toThrow('Skill 已存在：taken')
+      } finally {
+        spy.mockRestore()
+      }
+
+      expect(fs.readdirSync(skillsRoot).filter(isSkillImportStagingName)).toHaveLength(1)
+      const listed = (await service.list(provider)).items.filter((item) => item.kind === 'skill')
+      expect(listed.map((item) => item.id)).toEqual([path.join(skillsRoot, 'taken', 'SKILL.md')])
+      expect(await service.discardSkillImportLeftovers()).toEqual({ removed: 1, remaining: 0 })
+      expect(fs.readdirSync(skillsRoot)).toEqual(['taken'])
+    }
+  })
+
+  it('sweeps a skills folder once when the chosen project is the home folder itself', async () => {
+    const home = temporaryDirectory()
+    const leftover = path.join(home, '.claude', 'skills', '.xingmang-import-0b6f3c2e-4a1d-4c8e-9f00-123456789abc')
+    write(path.join(leftover, 'SKILL.md'), '---\nname: Copy\n---\n')
+
+    expect(await managedService(home, home).service.discardSkillImportLeftovers()).toEqual({ removed: 1, remaining: 0 })
+    expect(fs.existsSync(leftover)).toBe(false)
   })
 
   // O17: Claude Code and Grok share Codex's import, so a folder swapped during

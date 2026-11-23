@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url'
 // prompt never shows and Windows starts the elevated copy straight away, as it
 // does on a customer's machine once they click Yes. A small
 // setup.exe compiled here stands in for the installer: it records the arguments
-// it got, where it ran from and that directory's security descriptor. The unit
+// it got, where it ran from, the temp folder it was given and the security
+// descriptors of both. The unit
 // tests cover the command and the status parser without starting PowerShell;
 // this proves the script still does what they assume. It runs after
 // `npm run compile` and drives the compiled modules the app ships.
@@ -113,11 +114,21 @@ public static class FakeSetup {
   public static int Main(string[] args) {
     string directory = Path.GetDirectoryName(System.Reflection.Assembly.GetEntryAssembly().Location);
     string sddl = Directory.GetAccessControl(directory).GetSecurityDescriptorSddlForm(AccessControlSections.Owner | AccessControlSections.Access);
+    // Where an NSIS installer would unpack: Windows resolves it from TMP, then TEMP.
+    string temp = Path.GetTempPath();
+    string tempSddl = Directory.GetAccessControl(temp).GetSecurityDescriptorSddlForm(AccessControlSections.Owner | AccessControlSections.Access);
+    string probe = Path.Combine(temp, "probe.tmp");
+    File.WriteAllText(probe, "probe");
+    File.Delete(probe);
     File.WriteAllLines(@"${report.replace(/"/g, '""')}", new string[] {
       "ARGS=" + string.Join("|", args),
       "DIR=" + directory,
       "CWD=" + Environment.CurrentDirectory,
       "SDDL=" + sddl,
+      "TEMP=" + Environment.GetEnvironmentVariable("TEMP"),
+      "TMP=" + Environment.GetEnvironmentVariable("TMP"),
+      "TEMPPATH=" + temp,
+      "TEMPSDDL=" + tempSddl,
     });
     return ${exitCode};
   }
@@ -347,6 +358,17 @@ async function main() {
     const allowed = aces(report.SDDL).filter((ace) => ace[0] === 'A').map((ace) => ace[5])
     assert.ok(allowed.length > 0)
     assert.deepEqual([...new Set(allowed)].sort(), ['BA', 'SY'])
+    // Its temp folder is a folder of its own inside that directory, locked down the
+    // same way, not the user's temp folder the script was started with.
+    const installTemp = path.join(report.DIR, 'temp')
+    assert.equal(report.TEMP.toLowerCase(), installTemp.toLowerCase())
+    assert.equal(report.TMP.toLowerCase(), installTemp.toLowerCase())
+    assert.equal(path.resolve(report.TEMPPATH).toLowerCase(), installTemp.toLowerCase())
+    assert.match(report.TEMPSDDL, /^O:BA/)
+    assert.match(report.TEMPSDDL, /D:P/)
+    const tempAllowed = aces(report.TEMPSDDL).filter((ace) => ace[0] === 'A').map((ace) => ace[5])
+    assert.ok(tempAllowed.length > 0)
+    assert.deepEqual([...new Set(tempAllowed)].sort(), ['BA', 'SY'])
     // The installer started only after the process it waited for had exited.
     assert.ok(fs.statSync(passing.report).mtimeMs >= parentExitedAt - 1_000, 'the installer must not start before the app has quit')
     const statusAcl = await powershellCommand(`[IO.File]::GetAccessControl(${literal(result.statusPath)}).GetSecurityDescriptorSddlForm('Owner, Access')`)

@@ -410,7 +410,8 @@ export interface CodexRemoteConversationItem {
 }
 
 /**
- * 「选择对话」读出来的列表。supported = false：本机的 Codex 不是核过的版本，接不了已有对话，只能选新对话。
+ * 「选择对话」读出来的列表。supported = false：本机的 Codex 早于 0.169，或者这次接对话时核出它套不上遥控的规矩，
+ * 接不了已有对话，只能选新对话。
  * 读不出来时通道直接报错，不在这里。
  */
 export type CodexRemoteConversationList =

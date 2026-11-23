@@ -1,12 +1,15 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   SKILL_IMPORT_CHANGED_MESSAGE,
   copySkillSnapshot,
   createSkillImportStaging,
   discardSkillImportStaging,
+  isLiveSkillImportStaging,
+  isSkillImportStagingName,
+  releaseSkillImportStaging,
   snapshotSkillTree,
   type SkillTreeLimits,
 } from './skill-import-snapshot'
@@ -59,6 +62,7 @@ function stagingFor(): { root: string; staging: ReturnType<typeof createSkillImp
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
@@ -212,5 +216,47 @@ describe('skill import snapshot', () => {
     write(path.join(second.directory, 'keep.txt'), 'keep')
     discardSkillImportStaging(second)
     expect(fs.readFileSync(path.join(second.directory, 'keep.txt'), 'utf8')).toBe('keep')
+  })
+
+  // Discarding runs inside the import's catch block: a folder that cannot be
+  // removed must not replace the error the customer needs to see.
+  it('does not throw when the staging folder cannot be removed', () => {
+    const { staging } = stagingFor()
+    write(path.join(staging.directory, 'SKILL.md'), '---\nname: Held\n---\n')
+    const spy = vi.spyOn(fs, 'rmSync').mockImplementation(() => {
+      throw Object.assign(new Error('EBUSY: resource busy or locked, rmdir'), { code: 'EBUSY' })
+    })
+
+    expect(() => discardSkillImportStaging(staging)).not.toThrow()
+    expect(spy).toHaveBeenCalledTimes(1)
+    spy.mockRestore()
+
+    expect(fs.existsSync(path.join(staging.directory, 'SKILL.md'))).toBe(true)
+    // What is left is now a leftover for the sweep, no longer owned by an import.
+    expect(isLiveSkillImportStaging(staging.directory)).toBe(false)
+  })
+
+  it('names staging folders so that only they are recognised, and tracks the ones still in use', () => {
+    const { staging } = stagingFor()
+    expect(isSkillImportStagingName(path.basename(staging.directory))).toBe(true)
+    for (const name of [
+      '.xingmang-import-',
+      '.xingmang-import-notes',
+      'xingmang-import-0b6f3c2e-4a1d-4c8e-9f00-123456789abc',
+      '.xingmang-import-0B6F3C2E-4A1D-4C8E-9F00-123456789ABC',
+      '.xingmang-import-0b6f3c2e-4a1d-4c8e-9f00-123456789abc-copy',
+      'my-skill',
+    ]) {
+      expect(isSkillImportStagingName(name)).toBe(false)
+    }
+
+    expect(isLiveSkillImportStaging(staging.directory)).toBe(true)
+    releaseSkillImportStaging(staging)
+    expect(isLiveSkillImportStaging(staging.directory)).toBe(false)
+
+    const discarded = createSkillImportStaging(path.dirname(staging.directory))
+    expect(isLiveSkillImportStaging(discarded.directory)).toBe(true)
+    discardSkillImportStaging(discarded)
+    expect(isLiveSkillImportStaging(discarded.directory)).toBe(false)
   })
 })
