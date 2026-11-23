@@ -52,7 +52,8 @@ const USER_AGENT = 'xingmang-antigravity-cli-cos-sync/1'
 function nameComponent(attribute, value) {
   return new RegExp(`(?:^|,\\s*)(?:${attribute})="?${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"?(?:,|$)`, 'i')
 }
-// 11-23 第十一轮在 Windows 机器上读到的 agy.exe 签名（桌面端安装包也是这一张）。
+// 11-23 第十一轮在 Windows 机器上读到的 agy.exe 签名（桌面端安装包也是这一张）。客户端装 agy 时核的是
+// electron/trusted-native-cli.ts 里 antigravity 那一条，同一份名单，改一处要改两处。
 const WINDOWS_SIGNER = Object.freeze({
   subject: Object.freeze([nameComponent('CN', 'Google LLC'), nameComponent('O', 'Google LLC'), nameComponent('L', 'Mountain View'), nameComponent('S|ST', 'California'), nameComponent('C', 'US')]),
   issuer: Object.freeze([nameComponent('CN', 'DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1'), nameComponent('O', 'DigiCert, Inc.')]),
