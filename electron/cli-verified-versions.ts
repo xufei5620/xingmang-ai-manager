@@ -67,8 +67,8 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
     recommended: {
       version: '2.1.330',
       verifiedAt: '2026-11-23',
-      verifiedSites: [],
-      note: '当前 npm latest;2.1.327～2.1.330 逐条读过,没有一条写成网关回归,补了几处:-p 在取型号设置卡住时 10 秒后照常发请求(2.1.327)、项目里设了 ANTHROPIC_BASE_URL 时 /model 列错型号(2.1.327)、第三方接口上 input schema 以 anyOf/oneOf/allOf 开头的 MCP 工具丢失或让请求失败(2.1.328)、CLAUDE_STREAM_IDLE_TIMEOUT_MS 在自定义地址上不生效(2.1.328);2.1.329 去掉了 max_tokens 超限时的自动重试,2.1.330 又恢复,目标版本不受影响;2.1.328 修好的那条 2.1.327 回归只在 Bedrock / Agent Platform / Foundry 上;沙箱本地假接口(2.1.326 一起重跑当对照,逐项相同):-p hi 拿到回复、只带 Authorization,请求体字段与 beta 头一样,假接口对工具搜索回 400 时试三次后重发一次不带它的请求照常回复,haiku 别名仍发 claude-haiku-5-5,claude-fable-5-1 原样发出,/context 仍是 1M,主型号回 503 时换到备用型号;install.cjs 与 2.1.326 逐字相同',
+      verifiedSites: ['solov'],
+      note: '当前 npm latest;2.1.327～2.1.330 逐条读过,没有一条写成网关回归,补了几处:-p 在取型号设置卡住时 10 秒后照常发请求(2.1.327)、项目里设了 ANTHROPIC_BASE_URL 时 /model 列错型号(2.1.327)、第三方接口上 input schema 以 anyOf/oneOf/allOf 开头的 MCP 工具丢失或让请求失败(2.1.328)、CLAUDE_STREAM_IDLE_TIMEOUT_MS 在自定义地址上不生效(2.1.328);2.1.329 去掉了 max_tokens 超限时的自动重试,2.1.330 又恢复,目标版本不受影响;2.1.328 修好的那条 2.1.327 回归只在 Bedrock / Agent Platform / Foundry 上;沙箱本地假接口(2.1.326 一起重跑当对照,逐项相同):-p hi 拿到回复、只带 Authorization,请求体字段与 beta 头一样,假接口对工具搜索回 400 时试三次后重发一次不带它的请求照常回复,haiku 别名仍发 claude-haiku-5-5,claude-fable-5-1 原样发出,/context 仍是 1M,主型号回 503 时换到备用型号;install.cjs 与 2.1.326 逐字相同;2026-11-23 cli-relay-probe 用 Claude 分组的巡检 Key 在 solov(xm.solov.cc)上真跑通过,solov-api 按 11-09 的决定不测',
       userNote: '已修复部分扩展工具无法使用或导致提问失败的问题，以及偶发的启动卡住问题',
     },
     blocked: [
@@ -93,8 +93,8 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
     recommended: {
       version: '0.171.0',
       verifiedAt: '2026-11-23',
-      verifiedSites: [],
-      note: '当前 npm latest,随包型号名单的 tag 换成 rust-v0.171.0(models.json 与 #1916 换上的 rust-v0.169.1、rust-v0.170.0 逐字相同,含 GPT-6.2 Sol / Astra,sha256 不变;openai_models.rs 只加了可选字段 multi_agent_tools_in_code_mode);0.169.1 是补丁(GPT-6.2 进名单、Bedrock 增量工具),0.170.0、0.171.0 的 release note 与区间内提交没有一条改自定义 model_providers 的 base_url / wire_api / requires_openai_auth / auth.json 的读法:超大的 WebSocket 请求直接退回 HTTP(#60840)、改权限时子对话不再丢沙箱限制、切换或恢复对话时草稿跟着原对话、换工作目录时权限配置保持;新加的 request_country(#61535)默认不带;终端默认开 TUI workspace;沙箱(0.169.0 一起重跑当对照):debug models 列出全部 14 个型号,gpt-6.2-sol 与 gpt-6.1-sol 的 exec、--no-daemon exec 只发一次 POST /v1/responses、带 Authorization、请求字段一样,手机遥控用的 app-server 一轮对话走到 turn/completed',
+      verifiedSites: ['solov'],
+      note: '当前 npm latest,随包型号名单的 tag 换成 rust-v0.171.0(models.json 与 #1916 换上的 rust-v0.169.1、rust-v0.170.0 逐字相同,含 GPT-6.2 Sol / Astra,sha256 不变;openai_models.rs 只加了可选字段 multi_agent_tools_in_code_mode);0.169.1 是补丁(GPT-6.2 进名单、Bedrock 增量工具),0.170.0、0.171.0 的 release note 与区间内提交没有一条改自定义 model_providers 的 base_url / wire_api / requires_openai_auth / auth.json 的读法:超大的 WebSocket 请求直接退回 HTTP(#60840)、改权限时子对话不再丢沙箱限制、切换或恢复对话时草稿跟着原对话、换工作目录时权限配置保持;新加的 request_country(#61535)默认不带;终端默认开 TUI workspace;沙箱(0.169.0 一起重跑当对照):debug models 列出全部 14 个型号,gpt-6.2-sol 与 gpt-6.1-sol 的 exec、--no-daemon exec 只发一次 POST /v1/responses、带 Authorization、请求字段一样,手机遥控用的 app-server 一轮对话走到 turn/completed;2026-11-23 cli-relay-probe 在 solov(xm.solov.cc)上用默认型号真跑通过,solov-api 按 11-09 的决定不测',
       userNote: '已修复切换对话时草稿丢失、更换工作文件夹后权限设置失效等问题',
     },
     blocked: [

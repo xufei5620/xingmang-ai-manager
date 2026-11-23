@@ -385,7 +385,7 @@ Key 走的型号菜单）不用抬。
 
 仓库 secret `XINGMANG_CLI_PATROL_KEY` 2026-11-09 配上了。那天真跑的结果：Codex 0.167.0、Claude Code 2.1.319 都在 `solov` 上通过，当时这两条的 `verifiedSites` 是 `['solov']`；Grok、Gemini 两条还是空数组。
 - 2026-11-17 抬到 Claude Code 2.1.326、Codex 0.169.0：`cli-relay-probe` 在 `solov` 上两家都通过（Claude 用 `XINGMANG_CLI_PATROL_KEY_CLAUDE`），`verifiedSites` 照旧是 `['solov']`；`solov-api` 照旧不测。
-- 2026-11-23 抬到 Claude Code 2.1.330、Codex 0.171.0、Grok 1.0.92：三条的 `verifiedSites` 先留空数组，等这次 PR 上的 `cli-relay-probe` 跑完再按结果填（Grok 不在探测范围里，照旧空）。
+- 2026-11-23 抬到 Claude Code 2.1.330、Codex 0.171.0、Grok 1.0.92：`cli-relay-probe` 在 `solov` 上 Claude、Codex 都通过，这两条的 `verifiedSites` 是 `['solov']`；Grok 不在探测范围里，照旧空数组；`solov-api` 照旧不测。同一次的「中转收不收结构化输出」报了「没测出」：2.1.326 之后的版本调试日志不再写钩子回答的原文（2.1.330 上核过，只写「Hooks: Prompt hook condition was met」这类判定），探测脚本认的那一行没了，这次 PR 一起让它也认判定那几行。
 - Claude Code 第一次用共用那把 Key（GPT 分组），中转答「分组 GPT 下模型 claude-opus-5-5 无可用渠道」；换成 Claude 分组的 `XINGMANG_CLI_PATROL_KEY_CLAUDE` 后通过。
 - `solov-api` 上两家都是 401（Codex 看到的是 `INVALID_API_KEY`）。那是历史账号站 `api.solov.cc`，星芒账号签的 Key 在那边本来就认不了。yoyo 同日定「历史站不测」：探测跳过它（`scripts/probe-cli-relay.cjs` 的 `UNPROBED_SITES`），summary 里写明「未在中转实测」。
 - Grok 不在探测范围里。
@@ -698,7 +698,7 @@ npm `latest` 是 2.1.330；2.1.327～2.1.330 逐条读过（`CHANGELOG.md`）。
 假接口对工具搜索一律回 400 时被拒三次、第四次不带它拿到回复，退出码 0；`--model haiku` 仍发 `claude-haiku-5-5`；
 `claude-fable-5-1` 原样发出；`/context` 是 `28.7k / 1m`，数的工具一样；主型号回 503 时换到备用的 Sonnet 5.5。
 tmux 里开交互模式看第一屏：两版一样，都是早就有的那道「Make auto mode your default permission mode?」，没有新弹窗或英文提醒。
-中转实测：等这次 PR 上的 `cli-relay-probe`。
+中转实测：2026-11-23 `cli-relay-probe` 在 `solov` 上真跑通过，`solov-api` 照 11-09 的决定不测。
 
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
@@ -970,7 +970,7 @@ Grok：没有可读的变更记录。npm 上 1.0.78～1.0.93 都发了（1.0.93 
 一轮 `-p` 触发 `UserPromptSubmit`、`Stop`×2、`SessionEnd`（钩子）。装插件：不带 `--trust` 退出码 1、什么都不写，带上一次装好并记进
 `[plugins] enabled`。
 
-中转实测：等这次 PR 上的 `cli-relay-probe`（只测 Claude、Codex）。没做的：Grok 没有中转上的真实请求；Grok 1.0.92 的 Windows 包在沙箱里
+中转实测：Codex 0.171.0 2026-11-23 `cli-relay-probe` 在 `solov` 上用默认型号真跑通过，`solov-api` 照 11-09 的决定不测。没做的：Grok 没有中转上的真实请求；Grok 1.0.92 的 Windows 包在沙箱里
 核不了（`x.ai` 被代理拦），Windows 版挑哪个 shell 也没重读二进制字符串。
 
 **Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
@@ -1049,7 +1049,7 @@ npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指�
   - Claude Code：`claude -p --output-format stream-json --verbose`，凭据走 `ANTHROPIC_AUTH_TOKEN`。输出格式只改本地打印、不改请求体；用它是因为纯 `-p` 在重试期间什么都不打，被超时杀掉时只剩退出码 143，stream-json 会把每次重试的 HTTP 状态打出来，脚本据此归类。
   - Codex：`codex exec`，配置是一份与 `config-files.ts` 的 `buildCodexRelayConfigTemplate` 同形的 `config.toml`（`wire_api = "responses"`、`model_reasoning_effort = "xhigh"`）。
   - Claude Code 另跑一次「中转收不收结构化输出」（2026-11-17 加）：Claude Code 起对话标题、找记忆、跑提示钩子时发的是带 `structured-outputs-2025-12-15` beta 和 `output_config.format` 的请求，中转不收时这几样**静默失败**，客户只看到首页「最近对话」没有标题、显示第一句话（本地假接口上对 2.1.319 实测过，`CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS` 能让标题回来）。
-    - 起标题只在交互模式里发，`-p --json-schema` 走的是一个工具，都测不到；能让 `-p` 发出同一种请求的是提示钩子（`type: "prompt"`，同一个型号、同一个 beta）。所以这一次在临时 HOME 的 `~/.claude/settings.json` 里放一个放行的 `UserPromptSubmit` 提示钩子，加 `--debug-file`，看 CLI 自己的调试日志：有「Hooks: Model response:」算收，「prompt-hook evaluator API error」带 400 算不收，别的算没测出。这一次多花两次很小的请求（钩子一次、提示本身一次）。
+    - 起标题只在交互模式里发，`-p --json-schema` 走的是一个工具，都测不到；能让 `-p` 发出同一种请求的是提示钩子（`type: "prompt"`，同一个型号、同一个 beta）。所以这一次在临时 HOME 的 `~/.claude/settings.json` 里放一个放行的 `UserPromptSubmit` 提示钩子，加 `--debug-file`，看 CLI 自己的调试日志：有「Hooks: Model response:」（2.1.326 之后的版本改记「Hooks: Prompt hook condition was met / was not met / judged impossible」或「error parsing response as JSON」，都说明拿到了回答）算收，「prompt-hook evaluator API error」带 400 算不收，别的算没测出。这一次多花两次很小的请求（钩子一次、提示本身一次）。
     - **它不让作业变红**：收不收是中转的能力，不是推荐版本的回归，不该挡住抬版本。结论单独写在 summary 的「中转收不收结构化输出」一节；看到「不收」，就在 `config-files.ts` 写 Claude Code 配置的地方加上 `CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS`。
     - 调试日志的写法是 CLI 自己的，哪天改了这一节会变成「没测出」，那时照新写法改 `classifyStructuredOutputProbe`。
 - **为什么连接自检不能代替它**：自检只读模型清单，而 CLI 真正打的端点各不相同（Claude 的 `/v1/messages`、Codex 的 `/responses`），请求体更是天差地别。0.155.0 那类回归改的正是请求体。
