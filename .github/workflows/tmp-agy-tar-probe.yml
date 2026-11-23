@@ -1,0 +1,20 @@
+# 一次性探测（docs/COLLABORATION.md §3）：列出谷歌 agy Mac 包里每一条的类型、名字、大小和 pax 头，用完就删。
+name: tmp-agy-tar-probe
+
+on:
+  push:
+    branches: [claude/project-thread-gwf95j]
+    paths: ['.github/tmp-agy-tar-probe/**', '.github/workflows/tmp-agy-tar-probe.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -I .github/tmp-agy-tar-probe/probe.py
