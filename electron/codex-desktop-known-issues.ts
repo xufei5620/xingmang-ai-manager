@@ -76,3 +76,22 @@ export function codexDesktopActivationBrokenSentence(waitedSeconds?: number): st
     : `等待 ${waitedSeconds} 秒仍未检测到 Codex 运行`
   return `${codexDesktopActivationBrokenMarker}，${waited}。重启电脑后通常可以恢复。`
 }
+
+/**
+ * 第三种：Windows 打开商店签名的 Codex 前要联网向微软核对使用许可，网络不通或超时，激活接口回
+ * WinINet 的网络错误码（0x80072EE2 等，见 codex-desktop-cdp.ts 的 isCodexDesktopActivationNetworkFailure），
+ * 进程根本没建出来，开始菜单直接点也一样。2026-11-23 一台 Win11 家庭版 26H2 26300.10075：网络断着时
+ * 回 0x80072EE2，网络一好同一个包就能开。重置、重启、重装都救不了它，所以这一类的失败框只给「重试」
+ * 「检查网络」「联系客服」。
+ *
+ * 渲染层按这半句归到 codexDesktopActivationOffline，所以字面量只在这里写一次。
+ */
+export const codexDesktopActivationOfflineMarker = 'Windows 打开 Codex 前需要联网向微软验证'
+
+/** 跟在「Codex 桌面端未能打开：」后面的那句。 */
+export function codexDesktopActivationOfflineSentence(waitedSeconds?: number): string {
+  const waited = waitedSeconds === undefined
+    ? '未检测到 Codex 运行'
+    : `等待 ${waitedSeconds} 秒仍未检测到 Codex 运行`
+  return `${codexDesktopActivationOfflineMarker}，本次验证超时，${waited}。网络恢复后重新打开即可。`
+}

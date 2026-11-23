@@ -9997,6 +9997,28 @@ test('the restart dialog stays open and says nothing when the user chooses to le
   } finally { await page.close() }
 })
 
+// 2026-11-23（「联网框改」）：Windows 打开商店版 Codex 前联网核对许可超时（0x80072EE2），进程没建出来。
+// 重置、重启都换不来网络，框里只有重试、检查网络、联系客服；「检查网络」去首页旁边那张网络检测页。
+test('a Codex Desktop that Windows could not verify online sends the customer to the network, not to a reset or restart', async () => {
+  const page = await open('codexLaunchFailure=offline')
+  try {
+    await page.getByTestId('tool-codexDesktop-primary').click()
+    const dialog = page.getByTestId('operation-error')
+    await dialog.getByText('网络不稳定，Codex 未能启动', { exact: true }).waitFor()
+    const labels = (await dialog.locator('footer button').allTextContents()).map((text) => text.trim())
+    assert.deepEqual(labels, ['返回', '重试', '检查网络', '复制给客服', '联系客服'])
+    await expect(dialog.getByTestId('operation-error-retry')).toHaveClass(/xm-btn-primary/)
+    await expect(dialog.getByTestId('operation-error-detail')).toContainText('Windows 打开 Codex 前需要联网向微软验证，本次验证超时，等待 58 秒仍未检测到 Codex 运行。')
+    const footer = await dialog.locator('footer').evaluate((element) => ({ scroll: element.scrollWidth, client: element.clientWidth }))
+    assert.ok(footer.scroll <= footer.client, `错误框底部按钮溢出：${JSON.stringify(footer)}`)
+    await page.screenshot({ path: path.join(artifacts, 'codex-desktop-activation-offline.png') })
+    await dialog.getByTestId('operation-error-network').click()
+    await page.getByTestId('page-health').waitFor()
+    await expect(dialog).toHaveCount(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an unexplained Codex Desktop launch failure keeps retry first and adds the restart after 重置 Codex', async () => {
   const page = await open('codexLaunchFailure=generic')
   try {
