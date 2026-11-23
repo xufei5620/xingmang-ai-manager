@@ -1,6 +1,6 @@
 # 安装包自动同步到腾讯云 COS
 
-COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude 桌面端的官方离线包有两个用处：教程站下载页的备用下载；星芒一键安装这两个桌面端时先从这里下（yoyo 2026-10-10 定），读不到、对不上、太慢就照旧走原来的路，见下文「星芒客户端怎么用这两份清单」。Codex 官方插件目录也放在这个桶里，只给星芒用：替 Codex 下第一份插件目录时先从这里下（yoyo 2026-10-13 定），见下文「Codex 插件目录」。Windows 版 Grok CLI（xAI 签名的 `grok.exe`）和 Mac 版 OpenCode 桌面端（官方 `.app.tar.gz`）同样只给星芒用：一键安装时先从这里下（yoyo 2026-10-14 定），见下文「Grok CLI（Windows）」「OpenCode 桌面端（Mac）」。
+COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude 桌面端的官方离线包有两个用处：教程站下载页的备用下载；星芒一键安装这两个桌面端时先从这里下（yoyo 2026-10-10 定），读不到、对不上、太慢就照旧走原来的路，见下文「星芒客户端怎么用这两份清单」。Codex 官方插件目录也放在这个桶里，只给星芒用：替 Codex 下第一份插件目录时先从这里下（yoyo 2026-10-13 定），见下文「Codex 插件目录」。Windows 版 Grok CLI（xAI 签名的 `grok.exe`）和 Mac 版 OpenCode 桌面端（官方 `.app.tar.gz`）同样只给星芒用：一键安装时先从这里下（yoyo 2026-10-14 定），见下文「Grok CLI（Windows）」「OpenCode 桌面端（Mac）」。Antigravity 命令行（谷歌签名的 `agy`，Windows 和 Mac 都有）也只给星芒用，一键安装时先从这里下（2026-11-23 起，yoyo 选了「两个一起做」），见下文「Antigravity 命令行（agy）」。
 
 教程可见名称使用「Codex 桌面端」，OpenAI 官方包的内部 `chatgpt` 目录、文件名和产品清单标识保持兼容。
 
@@ -18,6 +18,7 @@ COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude �
 | Codex 官方插件目录（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-codex-plugins-cos` | `xingmang/offline/codex-plugins/latest.json` |
 | Grok CLI Windows 版（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-grok-cos` | `xingmang/offline/grok/latest.json` |
 | OpenCode 桌面端 Mac 版（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-opencode-cos` | `xingmang/offline/opencode/latest.json` |
+| Antigravity 命令行 agy，Windows 和 Mac 版（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-antigravity-cli-cos` | `xingmang/offline/antigravity-cli/windows.json`、`xingmang/offline/antigravity-cli/macos.json` |
 | Claude 桌面端的 Cowork 工作区、Mac 上的 Claude Code 程序包（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-claude-components-cos` | 没有索引：位置由客户端自己装的 Claude 里写的版本和校验值算出 |
 
 星芒用 `GITHUB_TOKEN` 创建 GitHub Release，不能依赖这个事件再触发一个 `release: published` 工作流，所以同步写在 `publish-release` 里，是排在 publish 后面的单独作业 `cos-sync`：publish 作业（`release` 环境批准、`update-feed` 串行）成功后才开始；它挂 `cos-sync` 环境，不多一次批准；和手动导入 `sync-published-manager-cos` 共用 `cos-manager-publish` 并发组，因为两边都会写 `xingmang/latest.json`。2026-10-04 以前同步接在 publish 作业末尾，为什么拆出来见下文「网络不稳时」。
@@ -56,7 +57,7 @@ Claude 备用文件保存在 `xingmang/offline/claude/<平台>/sha256-<摘要>/`
 ## 1. 准备 COS 上传身份
 
 1. 在腾讯云 CAM 创建专用于安装包同步的子账号，并为其准备 API 访问凭据。
-2. 创建自定义策略，使用 [cos-sync-policy.json](cos-sync-policy.json)。这份策略仅允许当前桶的 `xingmang/*` 和 `chatgpt/*` 两个前缀执行 GetObject、HeadObject、PutObject，Claude 备用包属于 `xingmang/offline/claude/`，Codex 插件目录属于 `xingmang/offline/codex-plugins/`，Grok 属于 `xingmang/offline/grok/`，OpenCode 属于 `xingmang/offline/opencode/`。
+2. 创建自定义策略，使用 [cos-sync-policy.json](cos-sync-policy.json)。这份策略仅允许当前桶的 `xingmang/*` 和 `chatgpt/*` 两个前缀执行 GetObject、HeadObject、PutObject，Claude 备用包属于 `xingmang/offline/claude/`，Codex 插件目录属于 `xingmang/offline/codex-plugins/`，Grok 属于 `xingmang/offline/grok/`，OpenCode 属于 `xingmang/offline/opencode/`，Antigravity 命令行属于 `xingmang/offline/antigravity-cli/`。
 3. 把策略关联给该子账号。同步脚本不需要删除文件、修改 ACL、管理存储桶或操作其它云产品的权限。
 4. 存储桶使用标准存储、公有读私有写，版本控制保持关闭。不可变版本目录和 `x-cos-forbid-overwrite` 用于防止包被覆盖；COS 的这项防覆盖头在开启桶版本控制后无效。
 
@@ -192,6 +193,19 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 
 打开 **Actions → sync-opencode-cos → Run workflow**，分支选 `main` 即可手动跑一次。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/opencode/latest.json`。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。
 
+### Antigravity 命令行（agy）
+
+星芒一键装 agy 要问谷歌的版本清单（`antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/<windows_amd64|windows_arm64|darwin_amd64|darwin_arm64>.json`，客户端读它的写法在 `electron/antigravity-cli-release.ts`），再从 `storage.googleapis.com/antigravity-public/antigravity-cli/<版本>-<构建号>/…` 下文件，国内都连不上。`sync-antigravity-cli-cos`（`scripts/sync-antigravity-cli-cos.cjs`）把同一个文件原样放进桶里：
+
+- 同一个作业在 Windows、Mac 两台机器上各跑一次（`runs-on` 按矩阵，脚本按机器自己的系统决定做哪一半，不收参数）。Windows 那次只管两种芯片的 `agy.exe`，写 `windows.json`；Mac 那次只管两种芯片的 tar.gz，写 `macos.json`。两边写的东西不重叠，所以同时跑。
+- 每次问这台机器那两份清单。清单要 16 KB 以内、版本号和构建号形状对、`url` 正好是按版本和构建号拼出来的谷歌存储地址、`sha512` 是 128 位十六进制，跟客户端同一条规矩。两种芯片的版本或构建号不一样时这一轮不发（`source-changed`），比桶里最新的还旧也不发（`version-regressed`），都停在 `source-compare`。
+- 已经在桶里、SHA-512 一样、对象大小和 ETag 没变的不再下；要下的不跟跳转（1 MB～512 MB），按清单的 SHA-512 核。Windows 的在 Windows 机器上核 Authenticode：有效、主体是 Google LLC（Mountain View, California, US）、签发机构是 DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1，PE 头里的芯片对得上。Mac 的在 Mac 机器上解开：必须正好是一个普通文件 `antigravity`，`codesign --verify --strict` 满足谷歌的 Developer ID 要求（identifier `cli`、团队 `EQHXZ8M8AV`），`lipo` 看到的芯片里有这个平台的。核不过不传，下来的东西一律不运行。
+- 传到 `xingmang/offline/antigravity-cli/<windows-x64|windows-arm64|macos-arm64|macos-x64>/sha256-<SHA-256>/agy-<版本>-<平台>.<exe|tar.gz>`（`application/octet-stream` 或 `application/gzip`，不可覆盖），完整回读核过，最后才改清单。清单留最近 4 版，旧版文件不删；1.5.15 的 Windows 程序一个两百三四十 MB，Mac 的包九十 MB 上下。
+- 清单的字段：`schemaVersion` 1、`product` `antigravity-cli`、`family`（`windows` 或 `macos`）、`generatedAt`、`checkedAt`（这次问过谷歌的时间，没变也刷新它）、`releases[]` 从新到旧，每版 `version`、`build` 和 `files[]`；每个文件 `platformId`、`platform`、`architecture`、`manifest`、`key`、`url`（桶地址加 `key`）、`bytes`、`sha256`、`sha512`（十六进制，和谷歌清单一致）、`contentType`、`verification`（`windows-authenticode-google` 或 `macos-developer-id-google`）、`sourceUrl`、`cosEtag`。
+- agy 是谷歌的闭源程序，跟 Claude、Codex 桌面端一样原件转发，不另带许可文件（D98 只管开源的 Grok、OpenCode）。
+
+打开 **Actions → sync-antigravity-cli-cos → Run workflow**，分支选 `main` 即可手动跑一次。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/antigravity-cli/windows.json` 和同目录的 `macos.json`。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。客户端读这两份清单是下一步（Antigravity 接中转第五步），接上之前没人读。
+
 ### Claude 桌面端的工作区和 Mac 程序
 
 Claude Desktop 自己要从官网下两样东西，国内下不动：点进 Cowork 时下的工作区（每个平台一个 1.3 GB 左右的系统盘外加内核等小文件），Mac 上聊天和 Code 要用的 Claude Code 程序包（`claude.app.tar.zst`，一百来 MB）。网络加速 2026-10-30 下线后，yoyo 11-03 定：这两样搬进桶里，由星芒放进 Claude 自己的文件夹，不用加速。11-19 他要先把桶搬起来，所以同步先合进 main；客户端去桶里取、放进 Claude 文件夹的那部分 0.2.25 起有（`claude-desktop-workspace-seed.ts` 放工作区、`claude-desktop-mac-code-seed.ts` 放 Mac 程序，Cowork 虚拟机里那份 Linux 版 Claude Code 由 `claude-desktop-vm-code-seed.ts` 从 npm 国内镜像放，不走桶）。`sync-claude-components-cos`（`scripts/sync-claude-components-cos.cjs`）负责搬：
@@ -209,9 +223,9 @@ Claude Desktop 自己要从官网下两样东西，国内下不动：点进 Cowo
 
 ### 同步失败报警
 
-六条官方定时同步（Claude、Codex 桌面端离线包，Codex 插件目录，Windows 版 Grok，Mac 版 OpenCode，Claude 桌面端的工作区和 Mac 程序）各带一个 `alert` 作业（`scripts/cos-sync-alert.cjs`），等其它作业结束后看这次定时同步有没有失败（作业失败、取消或超时都算）：
+七条官方定时同步（Claude、Codex 桌面端离线包，Codex 插件目录，Windows 版 Grok，Mac 版 OpenCode，Claude 桌面端的工作区和 Mac 程序，Antigravity 命令行）各带一个 `alert` 作业（`scripts/cos-sync-alert.cjs`），等其它作业结束后看这次定时同步有没有失败（作业失败、取消或超时都算）：
 
-- 第 1 次失败不出声；**连续第 2 次**失败就开一条 issue「离线包同步连续失败：Claude 桌面端 / Codex 桌面端 / Codex 插件目录 / Grok CLI（Windows） / OpenCode 桌面端（Mac） / Claude 桌面端的工作区和 Mac 程序」，指派给仓库负责人，写明连续几次、最早从什么时候、最近一次运行的链接和红的是哪个作业（离线包是哪个平台）。
+- 第 1 次失败不出声；**连续第 2 次**失败就开一条 issue「离线包同步连续失败：Claude 桌面端 / Codex 桌面端 / Codex 插件目录 / Grok CLI（Windows） / OpenCode 桌面端（Mac） / Claude 桌面端的工作区和 Mac 程序 / Antigravity 命令行」，指派给仓库负责人，写明连续几次、最早从什么时候、最近一次运行的链接和红的是哪个作业（离线包是哪个平台）。
 - 之后再失败只更新这条 issue 的正文，不另开；下一次定时同步成功就自动留言「恢复正常更新」并关闭。
 - 手动运行（Run workflow）不计数，也不开关 issue；重跑以前的某次定时运行也不改 issue，以最新一次定时同步为准。只有 `alert` 作业自己红（比如 GitHub 接口临时出错）的那次不算同步失败。
 - 看原因：打开 issue 里的运行链接，点红色作业，日志里搜 `stage-failed`，`stage` 是卡在哪一步，`failure.code` 是原因。
