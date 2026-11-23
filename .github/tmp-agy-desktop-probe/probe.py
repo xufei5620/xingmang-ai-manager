@@ -37,22 +37,59 @@ path = '/tmp/antigravity-linux.tar.gz'
 urllib.request.urlretrieve(ARCHIVE, path)
 product = None
 package = None
+asar_member = None
+import io
+import os
+import struct
+print('archive bytes', os.path.getsize(path))
 with tarfile.open(path, 'r:gz') as archive:
-    for member in archive:
+    members = archive.getmembers()
+    print('members', len(members))
+    for member in members[:30]:
+        print('  ', member.type, member.size, member.name)
+    for member in members:
         name = member.name
-        if name.endswith('resources/app/product.json') and member.isfile():
+        if re.search(r'(product|package)\.json$|app-update\.ya?ml$|update.*\.(json|ya?ml)$|\.asar$', name) and 'node_modules' not in name:
+            print('candidate', member.size, name)
+        if not member.isfile():
+            continue
+        if name.endswith('product.json') and 'node_modules' not in name and product is None:
             product = json.load(archive.extractfile(member))
             print('product.json at', name)
-        elif name.endswith('resources/app/package.json') and member.isfile():
+        elif name.endswith('resources/app/package.json'):
             package = json.load(archive.extractfile(member))
             print('package.json at', name)
-        if product and package:
-            break
+        elif re.search(r'app-update\.ya?ml$', name):
+            print('--- app-update.yml ---')
+            print(archive.extractfile(member).read(4000).decode('utf-8', 'replace'))
+        elif name.endswith('resources/app.asar'):
+            asar_member = member
+    if asar_member is not None:
+        data = archive.extractfile(asar_member).read()
+        _, header_size, _, json_size = struct.unpack('<IIII', data[:16])
+        header = json.loads(data[16:16 + json_size])
+        base = 8 + header_size
+        for wanted in ('package.json', 'product.json'):
+            entry = header.get('files', {}).get(wanted)
+            if entry and 'offset' in entry:
+                start = base + int(entry['offset'])
+                content = json.loads(data[start:start + entry['size']])
+                print('asar', wanted, 'found')
+                if wanted == 'package.json':
+                    package = package or content
+                else:
+                    product = product or content
+        print('asar top-level entries:', sorted(header.get('files', {}).keys())[:60])
 
 if package:
     print('package version:', package.get('version'), 'name:', package.get('name'))
+    print('package keys:', sorted(package.keys()))
+    for key, value in package.items():
+        if re.search(r'url|update|publish|build|repository|homepage|main', key, re.I):
+            print('package', key, '=', json.dumps(value, ensure_ascii=False)[:1500])
 if not product:
-    raise SystemExit('no product.json')
+    print('no product.json')
+    product = {}
 
 interesting = {}
 for key, value in product.items():
