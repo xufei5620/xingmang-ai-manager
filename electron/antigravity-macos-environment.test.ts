@@ -138,6 +138,22 @@ describe('the Antigravity startup file block', () => {
     expect(fish).not.toContain('AGY_')
   })
 
+  // The block alone, without a login shell's system profile in between (macOS's path_helper reorders PATH).
+  it.runIf(fs.existsSync('/bin/sh'))('appends agy\'s folder once and leaves a PATH that already has it as it is', () => {
+    const home = homeDirectory()
+    const profile = path.join(home, 'block.sh')
+    fs.writeFileSync(profile, buildAntigravityShellProfileBlock())
+    function pathAfter(initial: string, times: number): string {
+      const script = `${Array.from({ length: times }, () => '. "$1"').join('; ')}; printenv PATH`
+      const result = spawnSync('/bin/sh', ['-c', script, 'sh', profile], { env: { HOME: home, PATH: initial }, timeout: 10_000 })
+      return result.stdout.toString().trim()
+    }
+    expect(pathAfter('/usr/bin:/bin', 1)).toBe(`/usr/bin:/bin:${home}/.local/bin`)
+    expect(pathAfter('/usr/bin:/bin', 2)).toBe(`/usr/bin:/bin:${home}/.local/bin`)
+    expect(pathAfter(`${home}/.local/bin:/usr/bin:/bin`, 1)).toBe(`${home}/.local/bin:/usr/bin:/bin`)
+    expect(pathAfter(`/usr/bin:${home}/.local/bin:/bin`, 2)).toBe(`/usr/bin:${home}/.local/bin:/bin`)
+  })
+
   it('is appended once, on a line of its own', () => {
     const block = buildAntigravityShellProfileBlock()
     expect(planAntigravityShellProfileAppend(null)).toBe(block)
@@ -330,20 +346,22 @@ describe.runIf(process.platform !== 'win32')('a new login shell after the write'
     expect(gone.stderr).toBe('')
   })
 
-  it.runIf(bash !== null)('bash puts agy\'s folder last on PATH, and leaves a PATH that already has it alone', async () => {
+  it.runIf(bash !== null)('bash puts agy\'s folder last on PATH, and never lists it twice', async () => {
     const home = homeDirectory()
     await write(home, '/bin/bash')
     const added = runLoginShell(bash ?? '', home, 'printenv PATH')
     expect(agyFolderEntries(added.stdout, home), added.stderr).toEqual({ count: 1, last: true })
     const nested = runLoginShell(bash ?? '', home, `${bash} -l -c 'printenv PATH'`)
     expect(agyFolderEntries(nested.stdout, home), nested.stderr).toEqual({ count: 1, last: true })
+    // Where an inherited entry ends up is the system's call: macOS's /etc/profile runs path_helper, which puts
+    // its own folders first. Ours only must not add it again; that the block leaves it in place is checked
+    // on the block alone, above.
     const already = spawnSync(bash ?? '', ['-l', '-c', 'printenv PATH'], {
       env: { HOME: home, PATH: `${home}/.local/bin:/usr/bin:/bin`, TERM: 'dumb' },
       cwd: home,
       timeout: 10_000,
     })
-    // Already there (the official installer puts it first): left where the user has it, not added again.
-    expect(agyFolderEntries(already.stdout.toString(), home), already.stderr.toString()).toEqual({ count: 1, last: false })
+    expect(agyFolderEntries(already.stdout.toString(), home).count, already.stderr.toString()).toBe(1)
   })
 
   it.runIf(fish !== null)('fish sees the four values and agy\'s folder last on PATH', async () => {
