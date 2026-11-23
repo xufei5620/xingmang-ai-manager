@@ -1,0 +1,28 @@
+# 临时：核 Antigravity CLI（agy）能不能接自定义 Gemini 地址、发什么型号名、连不上谷歌时还能不能用，核完就删。
+name: tmp-agy-probe
+
+on:
+  push:
+    branches:
+      - claude/project-thread-gwf95j
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Probe agy on Linux
+        run: bash .github/tmp-agy-probe/run-linux.sh
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Probe agy on Windows
+        shell: pwsh
+        run: ./.github/tmp-agy-probe/run-windows.ps1
