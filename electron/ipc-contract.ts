@@ -860,7 +860,12 @@ export interface DataTransferWorksSummary {
   images: number
   videos: number
   audios: number
+  /** 一共多大：作品，带画布项目时连同项目里的文件。 */
   bytes: number
+  /** 跟着导出的画布项目几个（第三轮复查第 6 条）；没有就不带。 */
+  canvasProjects?: number
+  /** 文件夹现在找不到、导不出去的画布项目几个；只在导出前报数时有。 */
+  canvasProjectsUnreachable?: number
 }
 
 export interface DataTransferExportResult {
@@ -869,8 +874,8 @@ export interface DataTransferExportResult {
   conversations: number
   /** 带走了几条视频；旧版本不回。 */
   videoProjects?: number
-  /** 带作品导出时才有：新建的文件夹叫什么、实际导出了几件作品。 */
-  works?: { folderName: string; count: number }
+  /** 带作品导出时才有：新建的文件夹叫什么、实际导出了几件作品、几个画布项目（没有项目不带）。 */
+  works?: { folderName: string; count: number; canvasProjects?: number }
 }
 
 /**
@@ -883,10 +888,30 @@ export type DataTransferWorksPreview = DataTransferWorksSummary & (
   | { state: 'missing' | 'unreadable' }
 )
 
-/** 导入作品的结果。no-space：空间不够，一件都没导，neededBytes 是要复制的那几件加起来多大。 */
+/**
+ * 导入的文件旁边「画布项目」文件夹的样子，文件里说带了画布项目才有。ready 时跟作品用同一个 token 导；
+ * 「作品」文件夹不在或读不出来时，画布项目也导不了，跟它报同一个样子。count 在 ready 时是清单里的，另两种是文件里记的。
+ */
+export interface DataTransferCanvasProjectsPreview {
+  count: number
+  state: 'ready' | 'missing' | 'unreadable'
+}
+
+/** 画布项目导进来几个；existing：本机已有同一个项目；full：本机项目数到了上限；failed：读不出来或没放成。 */
+export interface DataTransferCanvasProjectsImportResult {
+  added: number
+  existing: number
+  full: number
+  failed: number
+}
+
+/**
+ * 导入作品的结果。no-space：空间不够，一件都没导，neededBytes 是要复制的那几件（带画布项目时连同项目）加起来多大。
+ * canvasProjects：带了画布项目才有。
+ */
 export type DataTransferWorksImportResult =
-  | { status: 'done'; added: number; existing: number; failed: number }
-  | { status: 'no-space'; neededBytes: number; availableBytes: number }
+  | { status: 'done'; added: number; existing: number; failed: number; canvasProjects?: DataTransferCanvasProjectsImportResult }
+  | { status: 'no-space'; neededBytes: number; availableBytes: number; canvasProjects?: DataTransferCanvasProjectsImportResult }
 
 /**
  * 「搬到新电脑」导入读出来的内容，还没有写进任何地方。对话由渲染层逐条严格校验后
@@ -913,6 +938,8 @@ export interface DataTransferImportPreview {
   videoProjects?: VideoStudioProjectFile[]
   /** 导出时带了作品才有。 */
   works?: DataTransferWorksPreview
+  /** 导出时带了画布项目才有。 */
+  canvasProjects?: DataTransferCanvasProjectsPreview
 }
 
 /**

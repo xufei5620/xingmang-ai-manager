@@ -5,6 +5,7 @@ import { MAX_CHAT_HISTORY_CONVERSATIONS } from './ai-chat-history-store'
 import { AI_CHAT_PHRASE_LIMITS } from './ai-chat-protocol'
 import { MAX_VIDEO_STUDIO_PROJECT_FILE_BYTES, MAX_VIDEO_STUDIO_PROJECTS, videoStudioProjectKeyPattern } from './video-studio-project-store'
 import { MAX_TRANSFERRED_WORKS, WORKS_FOLDER_NAME } from './data-transfer-works'
+import { MAX_TRANSFERRED_CANVAS_PROJECTS } from './data-transfer-canvas'
 import { withoutByteOrderMark } from './config-files-context'
 import { isRecord } from './input-guards'
 
@@ -12,7 +13,7 @@ import { isRecord } from './input-guards'
 // 能花钱或能登录的东西（Key、密码、登录状态、保存的账号），也不放命令行工具的配置、
 // 这台电脑自己的东西（工作文件夹、窗口位置、显卡加速、Codex 调试端口的同意）。新电脑
 // 上登录后，工具照常重新配好。作品库里的作品太大，不放进这份文件：选了带作品时放在旁边的「作品」文件夹里，
-// 这里只记一共多少（data-transfer-works.ts）。
+// 画布项目放在旁边的「画布项目」文件夹里，这里只记一共多少（data-transfer-works.ts、data-transfer-canvas.ts）。
 export const DATA_TRANSFER_FORMAT = 'xingmang-data-transfer'
 export const DATA_TRANSFER_VERSION = 1
 // 图片、视频不随文件走，剩下的都是文字；200 个对话、200 条视频碰到这个上限已经远超正常使用。
@@ -150,7 +151,7 @@ function parseVideoProjects(value: unknown, message: string): VideoStudioProject
   })
 }
 
-// 文件里记的作品一共多少：只拿来在导入前报数，真正导哪些看「作品」文件夹里的清单。文件夹名字写死，
+// 文件里记的作品一共多少（带画布项目时连同项目几个）：只拿来在导入前报数，真正导哪些看「作品」「画布项目」文件夹里的清单。文件夹名字写死，
 // 不照文件里写的去找（文件不能把导入指到这台电脑的别处）。
 function parseWorksSummary(value: unknown): DataTransferWorksSummary | undefined {
   if (value === undefined) return undefined
@@ -159,11 +160,13 @@ function parseWorksSummary(value: unknown): DataTransferWorksSummary | undefined
     return field
   }
   if (!isRecord(value) || value.folder !== WORKS_FOLDER_NAME) throw new Error(dataTransferInvalidMessage)
+  const canvasProjects = value.canvasProjects === undefined ? 0 : count(value.canvasProjects, MAX_TRANSFERRED_CANVAS_PROJECTS)
   return {
     images: count(value.images, MAX_TRANSFERRED_WORKS),
     videos: count(value.videos, MAX_TRANSFERRED_WORKS),
     audios: count(value.audios, MAX_TRANSFERRED_WORKS),
     bytes: count(value.bytes, Number.MAX_SAFE_INTEGER),
+    ...(canvasProjects ? { canvasProjects } : {}),
   }
 }
 

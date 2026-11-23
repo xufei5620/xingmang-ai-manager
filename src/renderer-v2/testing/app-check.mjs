@@ -12461,6 +12461,40 @@ test('moving to a new computer asks whether to bring the works, and brings them 
   } finally { await page.close() }
 })
 
+// 第三轮复查第 6 条：画布项目（节点和连线、项目里的素材）跟作品一起搬。导出前那一问连同项目一起问，找不到文件夹的另说一句。
+test('moving to a new computer brings the canvas projects along with the works', async () => {
+  const page = await open('chatImport&transferWorks&transferCanvasProjects')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    const ask = page.getByRole('dialog', { name: '是否同时导出作品和画布项目？', exact: true })
+    await settings.getByTestId('settings-transfer-export').click()
+    await ask.waitFor()
+    await expect(ask.getByTestId('settings-transfer-works-summary')).toHaveText('当前账号的作品库中共有 128 件作品（图片 96 张、视频片段与成片 30 个、配乐 2 首），另有画布项目 4 个，共约 3.2 GB。其中 1 个画布项目的文件夹当前无法访问，将不会导出；如需一并导出，请先连接其所在的磁盘。')
+    await expect(ask).toContainText('选择「导出全部」时，将在所选位置新建一个文件夹，存放聊天记录、设置、作品和画布项目。作品较多时需要几分钟，导出期间请勿关闭星芒。')
+    assert.deepEqual(await ask.locator('button[data-testid^="settings-transfer-works-"]').allInnerTexts(), ['取消', '仅导出聊天记录和设置', '导出全部'])
+    await ask.getByTestId('settings-transfer-works-include').click()
+    await settings.getByText('已保存至「星芒数据导出-2026-11-22」文件夹，包含 128 件作品、3 个画布项目及设置。请将整个文件夹复制到新电脑，在此点击「导入」并选择其中的「星芒聊天记录与设置」文件。', { exact: true }).waitFor()
+
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '已导入 1 个对话。已导入 120 件作品，另有 8 件已存在于本机。已导入 3 个画布项目，另有 1 个已存在于本机。')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'importAppWorks').map((entry) => entry.args)), [['fixture-works-token']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a moved file without its works and canvas projects folders says both stayed behind in one sentence', async () => {
+  const page = await open('chatImport&transferWorks&transferWorksMissing&transferCanvasProjects')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '已导入 1 个对话。未在文件所在位置找到「作品」和「画布项目」文件夹，作品和画布项目未导入。请将导出的整个文件夹复制到本机后再次导入。')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'importAppWorks').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 作品跟着搬过来了，对话里的图也照常显示：以前导出时一律换成「[图片未随记录迁移]」，作品库里有图、对话里却没有。
 // 再从这台电脑导出时，选「导出全部」图原样带着，只导聊天记录和设置时照旧换成那句说明。
 test('pictures in a moved conversation show again when the works came along, and travel on with them', async () => {

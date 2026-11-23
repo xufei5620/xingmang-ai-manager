@@ -2218,6 +2218,8 @@ if (!hasSingleInstanceLock) {
     })
     let lastUpdateForUsage: UsageUpdateView | null = null
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
+    // 新建画布项目默认放这里（Mac 的访达里叫「文稿」）；读到 Documents 要的系统授权说明在 electron-builder 的 NSDocumentsFolderUsageDescription。
+    const defaultCanvasProjectsDirectory = () => path.join(app.getPath('documents'), '星芒画布')
     const { businesses, ensureBusiness, subscribeCanvasRuns } = createRealmBusinesses({
       managerDataDirectory,
       projectRoot: path.join(__dirname, '..'),
@@ -2227,6 +2229,7 @@ if (!hasSingleInstanceLock) {
       systemService,
       readAccountGroupHints,
       readDocumentsDirectory,
+      canvasProjectsDirectory: defaultCanvasProjectsDirectory,
       runtimeLog,
       sessionFetch,
       routedRelayFetch,
@@ -2320,8 +2323,6 @@ if (!hasSingleInstanceLock) {
       },
       readPricing: async () => accountService.getModelPricing ? accountService.getModelPricing() : null,
     })
-    // 新建画布项目默认放这里（Mac 的访达里叫「文稿」）；读到 Documents 要的系统授权说明在 electron-builder 的 NSDocumentsFolderUsageDescription。
-    const defaultCanvasProjectsDirectory = () => path.join(app.getPath('documents'), '星芒画布')
     const canvasController = createCanvasWindowController({
       accountWork,
       canvasDistRoot: canvasDistRoot(),

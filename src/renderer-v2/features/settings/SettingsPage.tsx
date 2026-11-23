@@ -65,9 +65,12 @@ import {
   settingsPatchFrom,
   worksCount,
   worksExportingText,
-  worksExportNote,
+  worksExportNoteFor,
   worksExportQuestion,
+  worksExportTitle,
+  worksExportWorthAsking,
   worksImportingText,
+  type DataTransferCanvasProjectsOutcome,
   type DataTransferWorksOutcome,
 } from '../app/data-transfer'
 import { useBackgroundWork } from '../../background-work'
@@ -507,31 +510,49 @@ export function SettingsPage({
         throw settingsFailed()
       }
     }
-    const works = chatTransfer ? await importWorks(preview.works) : undefined
-    if (works?.kind === 'done' && works.added) chatTransfer?.reloadCreate()
+    const { works, canvasProjects } = chatTransfer ? await importWorks(preview) : {}
+    // 导进来的画布项目里生成的作品也进了作品库，创作页同样要重读。
+    if ((works?.kind === 'done' && works.added) || (canvasProjects?.kind === 'done' && canvasProjects.added)) chatTransfer?.reloadCreate()
     return dataTransferImportMessage({
       fileConversations: conversations.length,
       fileVideos: videoProjects.length,
       fileWorks: preview.works ? worksCount(preview.works) : 0,
+      fileCanvasProjects: preview.canvasProjects?.count ?? 0,
       added,
       updated,
       skipped,
       videosAdded,
       videosSkipped,
       ...(works ? { works } : {}),
+      ...(canvasProjects ? { canvasProjects } : {}),
       signedIn: Boolean(chatTransfer),
       settingsChanged: Boolean(patch) || anonymousUsage !== undefined,
     })
   }
-  const importWorks = async (works: DataTransferImportPreview['works']): Promise<DataTransferWorksOutcome | undefined> => {
-    if (!works) return undefined
-    if (works.state !== 'ready') return works.state === 'missing' ? { kind: 'missing' } : { kind: 'unreadable', count: worksCount(works) }
+  // 画布项目跟作品走同一次导入：要从「作品」里拿回项目生成的作品，空间也是一起估的。
+  const importWorks = async (
+    preview: DataTransferImportPreview,
+  ): Promise<{ works?: DataTransferWorksOutcome; canvasProjects?: DataTransferCanvasProjectsOutcome }> => {
+    const { works, canvasProjects: projects } = preview
+    if (!works) return {}
+    // 「画布项目」文件夹没有或读不出来：作品照导，项目那句单说。
+    const projectsNotReady: DataTransferCanvasProjectsOutcome | undefined = projects && projects.state !== 'ready'
+      ? projects.state === 'missing' ? { kind: 'missing' } : { kind: 'unreadable', count: projects.count }
+      : undefined
+    if (works.state !== 'ready') {
+      const outcome: DataTransferWorksOutcome = works.state === 'missing' ? { kind: 'missing' } : { kind: 'unreadable', count: worksCount(works) }
+      return { works: outcome, ...(projectsNotReady ? { canvasProjects: projectsNotReady } : {}) }
+    }
     setWorksBusy('import')
     try {
       const result = await api.importAppWorks(works.token)
-      return result.status === 'no-space'
+      // 空间是跟作品一起估的：不够时项目一个没导（主进程不回项目的数）；项目导完以后作品才缺空间的，照报项目的数。
+      const canvasProjects: DataTransferCanvasProjectsOutcome | undefined = projectsNotReady
+        ?? (result.canvasProjects ? { kind: 'done', ...result.canvasProjects } : result.status === 'no-space' && projects ? { kind: 'no-space' } : undefined)
+      const outcome: DataTransferWorksOutcome = result.status === 'no-space'
         ? { kind: 'no-space', neededBytes: result.neededBytes, availableBytes: result.availableBytes }
         : { kind: 'done', added: result.added, existing: result.existing, failed: result.failed }
+      return { works: outcome, ...(canvasProjects ? { canvasProjects } : {}) }
     } finally {
       setWorksBusy(null)
     }
@@ -594,7 +615,7 @@ export function SettingsPage({
       async () => {
         if (chatTransfer) {
           const works = await api.inspectAppWorks().catch(() => null)
-          if (works && worksCount(works) > 0) {
+          if (works && worksExportWorthAsking(works)) {
             setExportAsk(works)
             return null
           }
@@ -1635,7 +1656,7 @@ export function SettingsPage({
       </Dialog>
       <Dialog
         open={Boolean(exportAsk)}
-        title="是否同时导出作品？"
+        title={exportAsk ? worksExportTitle(exportAsk) : ''}
         onClose={() => setExportAsk(null)}
         footer={
           <>
@@ -1657,7 +1678,7 @@ export function SettingsPage({
         }
       >
         <p data-testid="settings-transfer-works-summary">{exportAsk ? worksExportQuestion(exportAsk) : ''}</p>
-        <p>{worksExportNote}</p>
+        <p>{exportAsk ? worksExportNoteFor(exportAsk) : ''}</p>
       </Dialog>
       <Dialog
         open={Boolean(legal)}

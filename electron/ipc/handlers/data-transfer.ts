@@ -19,7 +19,8 @@ import {
   planPortableSettingsImport,
 } from '../../data-transfer'
 import { inspectWorksFolder, summarizeAccountWorks, type ParsedWorksManifest } from '../../data-transfer-works'
-import type { DataTransferWorksImportResult, DataTransferWorksPreview } from '../../ipc-contract'
+import { inspectCanvasProjectsFolder, type CanvasProjectsImportSource } from '../../data-transfer-canvas'
+import type { DataTransferCanvasProjectsPreview, DataTransferWorksImportResult, DataTransferWorksPreview } from '../../ipc-contract'
 import type { IpcHandlerContext } from './context'
 
 export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
@@ -53,9 +54,9 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
     if (!options.worksTransfer) throw new Error('作品库未就绪')
     return options.worksTransfer
   }
-  // 最近一次「导入」选的那份文件旁边的作品：路径只留在这里，渲染层拿 token 来导，交不进别的位置。
+  // 最近一次「导入」选的那份文件旁边的作品和画布项目：路径只留在这里，渲染层拿 token 来导，交不进别的位置。
   // 只认最近一次，导一次就作废。
-  let pendingWorks: { token: string; folder: string; manifest: ParsedWorksManifest } | null = null
+  let pendingWorks: { token: string; folder: string; manifest: ParsedWorksManifest; canvas?: CanvasProjectsImportSource } | null = null
   registerTrustedHandler('chat-history:export-text', async (_event, input: unknown) => {
     const { title, text } = parseChatConversationExport(input)
     const result = await dialog.showSaveDialog({
@@ -104,7 +105,11 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
       // 读不了、没导出的那几件（被别的程序占着、导出途中被改过）客户那句不说，客服看日志知道。
       if (written.skipped) options.runtimeLog.log('warn', 'data-transfer', 'works.export.skipped', '有几件作品读不了，没有导出', { skipped: written.skipped })
       rememberExportedFile(written.dataFilePath)
-      return { outputPath: written.dataFilePath, ...counts, works: { folderName: path.basename(written.folderPath), count: written.works } }
+      return {
+        outputPath: written.dataFilePath,
+        ...counts,
+        works: { folderName: path.basename(written.folderPath), count: written.works, ...(written.canvasProjects ? { canvasProjects: written.canvasProjects } : {}) },
+      }
     }
     const content = buildDataTransferFile(settings, exportInput, now, anonymousUsage)
     const result = await dialog.showSaveDialog({
@@ -138,13 +143,21 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
     }
     const parsed = parseDataTransferFile(raw)
     let works: DataTransferWorksPreview | undefined
+    let canvasProjects: DataTransferCanvasProjectsPreview | undefined
     if (parsed.works) {
+      // 画布项目要从「作品」里拿回项目生成的作品，「作品」不在时项目也导不了，报跟它一样的样子。
+      const expectedProjects = parsed.works.canvasProjects ?? 0
       const inspection = await inspectWorksFolder(filePath)
       if (inspection.state === 'ready') {
-        pendingWorks = { token: randomUUID(), folder: inspection.folder, manifest: inspection.manifest }
+        const projects = expectedProjects ? await inspectCanvasProjectsFolder(filePath) : undefined
+        const canvas = projects?.state === 'ready' ? { folder: projects.folder, manifest: projects.manifest } : undefined
+        pendingWorks = { token: randomUUID(), folder: inspection.folder, manifest: inspection.manifest, ...(canvas ? { canvas } : {}) }
         works = { ...summarizeAccountWorks(inspection.manifest.files), state: 'ready', token: pendingWorks.token }
+        if (canvas) canvasProjects = { count: canvas.manifest.projects.length, state: 'ready' }
+        else if (projects && projects.state !== 'ready') canvasProjects = { count: expectedProjects, state: projects.state }
       } else {
         works = { ...parsed.works, state: inspection.state }
+        if (expectedProjects) canvasProjects = { count: expectedProjects, state: inspection.state }
       }
     }
     return {
@@ -153,6 +166,7 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
       ...planPortableSettingsImport(service.readStoredConfig(), parsed.settings, { here: anonymousUsageHere(), incoming: parsed.anonymousUsage }),
       ...(parsed.videoProjects.length ? { videoProjects: parsed.videoProjects } : {}),
       ...(works ? { works } : {}),
+      ...(canvasProjects ? { canvasProjects } : {}),
     }
   })
   // 本机已有的同名作品不覆盖（「搬作品改」）；空间不够一件都不导，告诉渲染层差多少。
@@ -161,9 +175,19 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
     if (typeof token !== 'string' || !pending || pending.token !== token) throw new Error('请再次点击「导入」。')
     const userId = currentUserId()
     pendingWorks = null
-    const result = await worksTransfer().importFrom(userId, pending.folder, pending.manifest)
+    const result = await worksTransfer().importFrom(userId, pending.folder, pending.manifest, pending.canvas)
+    // 画布项目几个没进来、为什么，客户那句只说个数，客服看日志知道是哪一类。
+    if (result.canvasProjects && (result.canvasProjects.full || result.canvasProjects.failed)) {
+      options.runtimeLog.log('warn', 'data-transfer', 'works.import.canvas-projects', '有几个画布项目没有导入', { ...result.canvasProjects })
+    }
     if (result.status === 'no-space') return result
     if (result.metadataFailed) options.runtimeLog.log('warn', 'data-transfer', 'works.import.metadata-failed', '作品已导入，名字、标签没带上')
-    return { status: 'done', added: result.added, existing: result.existing, failed: result.failed }
+    return {
+      status: 'done',
+      added: result.added,
+      existing: result.existing,
+      failed: result.failed,
+      ...(result.canvasProjects ? { canvasProjects: result.canvasProjects } : {}),
+    }
   })
 }
