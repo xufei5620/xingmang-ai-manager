@@ -1,9 +1,6 @@
-## 用户
-
-- 视频剪辑提交片段到一半关掉软件，就算电脑上没能记下这一单，重开以后那一段照样提醒可能已经扣费，不会显示成还没生成。
-
 ## 开发
 
+- 给客户看的那句并进了 `video-studio-caption-fade-black.md`（0.2.25 更新说明统一改为正式书面口吻、同类并条，复查第三轮第 8 条）。
 - 视频片段交给服务端前，主进程那条「交出去了、还没回音」的记录（`AiVideoTaskStore.markUnconfirmed`）写不进去时，照旧不拦这一单，
   但不再只丢提醒（11-18 复核 N2 的残余，0.2.25 总单第 42 项）：`generate` 在 POST 前通过新的可选回调
   `AiVideoProgressObserver.onSubmissionUnrecorded` 告诉页面，`video:progress` 事件多一个可选字段 `unrecorded`（不加通道）；
