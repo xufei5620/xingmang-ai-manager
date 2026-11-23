@@ -74,6 +74,8 @@ import { parseAppUninstallRequest, parseDiagnosticsRunOptions, parseExternalClie
 import { parseRunningToolsProviders } from './ipc/parsers/tools'
 import { videoStudioMusicName } from './ipc/handlers/ai-video'
 import { createRemoteFeatureGate } from './remote-feature-gate'
+import type { AntigravityKeyResolver, AntigravityService } from './antigravity-service'
+import { parseAntigravityTarget } from './ipc/handlers/antigravity'
 
 // cli:launch、settings:save 只收这台电脑认得的完整路径。用例沿用 Windows 的写法；在 Windows 上原样不动，照样按
 // Windows 的规矩验，在别的平台上换成 / 开头的同一个路径，不然那里会被当成相对路径拒掉。
@@ -10636,6 +10638,10 @@ describe('IPC channel log and account policies', () => {
       .map(([channel]) => channel)
       .sort()
     expect(scoped).toEqual([
+      // Antigravity：设置是不是当前账号这条线路的；打开前按点的时候那个账号签密钥、写设置。
+      'antigravity:inspect',
+      'antigravity:open-cli',
+      'antigravity:open-desktop',
       // 「添加到画布」：图片和项目都按当前账号认，抄进的是当前账号的项目。
       'canvas:add-project-image',
       // 「创作」左边那一列里的画布项目：列的是当前账号的，打开时编号也在当前账号的项目里认。
@@ -10705,6 +10711,7 @@ describe('IPC channel log and account policies', () => {
         'account:reveal-key',
         'account:set-remembered-login',
         'account:sync-managed-cli-keys',
+        'antigravity:inspect',
         'canvas:list-projects',
         'chat-history:flushed',
         'chat-history:read',
@@ -10764,6 +10771,8 @@ describe('IPC channel log and account policies', () => {
         'chat:start',
       ],
       'account: scoped-queued': [
+        'antigravity:open-cli',
+        'antigravity:open-desktop',
         'cli:launch',
         'desktop:launch-codex',
       ],
@@ -10955,5 +10964,133 @@ describe('parseRunningToolsProviders', () => {
     ['an oversized list', [...providerIds, 'claude']],
   ])('rejects %s', (_label, value) => {
     expect(() => parseRunningToolsProviders(value)).toThrow()
+  })
+})
+
+describe('Antigravity channels', () => {
+  function antigravityStub() {
+    const stub: AntigravityService = {
+      inspect: vi.fn(async () => ({ supported: true, cliInstalled: false, desktopInstalled: true, configured: false })),
+      install: vi.fn(async () => ({ status: { supported: true, cliInstalled: true, desktopInstalled: false, configured: true } })),
+      configure: vi.fn(async () => ({ supported: true, cliInstalled: true, desktopInstalled: false, configured: true })),
+      openDesktop: vi.fn(async () => ({ opened: true })),
+      openCli: vi.fn(async () => undefined),
+    }
+    return stub
+  }
+
+  function withAntigravity(antigravity = antigravityStub()) {
+    const service = serviceStub()
+    service.antigravity = antigravity
+    return { service, antigravity }
+  }
+
+  it('accepts only the two install targets', () => {
+    expect(parseAntigravityTarget('cli')).toBe('cli')
+    expect(parseAntigravityTarget('desktop')).toBe('desktop')
+    for (const input of [undefined, null, {}, ['cli'], 'CLI', 'gemini', 'C:\\agy.exe', 'cli --shell']) {
+      expect(() => parseAntigravityTarget(input)).toThrow('未知的 Antigravity 安装项')
+    }
+  })
+
+  it('refuses an unknown target before the service hears of it', () => {
+    const { service, antigravity } = withAntigravity()
+    register(service)
+    expect(() => electronMocks.handlers.get('antigravity:install')!(trustedEvent(), 'gemini')).toThrow('未知的 Antigravity 安装项')
+    expect(antigravity.install).not.toHaveBeenCalled()
+  })
+
+  it.each(['antigravity:inspect', 'antigravity:install', 'antigravity:open-desktop', 'antigravity:open-cli'])('rejects an untrusted sender for %s', (channel) => {
+    const { service, antigravity } = withAntigravity()
+    register(service)
+    expect(() => electronMocks.handlers.get(channel)!(trustedEvent('https://untrusted.example/'), 'cli')).toThrow('已拒绝')
+    expect(antigravity.inspect).not.toHaveBeenCalled()
+    expect(antigravity.install).not.toHaveBeenCalled()
+    expect(antigravity.openDesktop).not.toHaveBeenCalled()
+    expect(antigravity.openCli).not.toHaveBeenCalled()
+  })
+
+  it('says so when the service has no Antigravity cluster', async () => {
+    register(serviceStub())
+    await expect(async () => electronMocks.handlers.get('antigravity:inspect')!(trustedEvent())).rejects.toThrow('当前版本不支持 Antigravity')
+  })
+
+  it('sends install progress only to the window that asked, and stops once it is gone', async () => {
+    const { service, antigravity } = withAntigravity()
+    let report: ((progress: { target: 'cli', phase: 'downloading', percent: number }) => void) | undefined
+    vi.mocked(antigravity.install).mockImplementation(async (_target, _resolveKey, onProgress) => {
+      report = onProgress
+      return { status: { supported: true, cliInstalled: true, desktopInstalled: false, configured: true } }
+    })
+    register(service)
+    const event = trustedEvent()
+    await electronMocks.handlers.get('antigravity:install')!(event, 'cli')
+    expect(antigravity.install).toHaveBeenCalledWith('cli', expect.any(Function), expect.any(Function))
+    report?.({ target: 'cli', phase: 'downloading', percent: 40 })
+    expect(event.sender.send).toHaveBeenCalledWith('antigravity:install-progress', { target: 'cli', phase: 'downloading', percent: 40 })
+    event.sender.isDestroyed = () => true
+    report?.({ target: 'cli', phase: 'downloading', percent: 80 })
+    expect(event.sender.send).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks for sign-in before signing a key', async () => {
+    const { service, antigravity } = withAntigravity()
+    let resolver: AntigravityKeyResolver | undefined
+    vi.mocked(antigravity.openDesktop).mockImplementation(async (resolveKey) => {
+      resolver = resolveKey
+      return { opened: true }
+    })
+    const accountService = accountServiceStub()
+    register(service, undefined, undefined, accountService)
+    await electronMocks.handlers.get('antigravity:open-desktop')!(trustedEvent())
+    await expect(resolver?.()).rejects.toThrow('请先登录账号，再设置 Antigravity')
+    expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  it('opens agy in the chosen folder, or the remembered one, and refuses a folder that is not a string', async () => {
+    const { service, antigravity } = withAntigravity()
+    register(service)
+    const folder = path.join(os.homedir(), 'project')
+    await electronMocks.handlers.get('antigravity:open-cli')!(trustedEvent(), folder)
+    expect(antigravity.openCli).toHaveBeenLastCalledWith(folder, expect.any(Function), undefined)
+    await electronMocks.handlers.get('antigravity:open-cli')!(trustedEvent())
+    expect(antigravity.openCli).toHaveBeenLastCalledWith(service.readStoredConfig().workspace, expect.any(Function), undefined)
+    expect(() => electronMocks.handlers.get('antigravity:open-cli')!(trustedEvent(), { path: folder })).toThrow('项目文件夹路径格式错误')
+    expect(antigravity.openCli).toHaveBeenCalledTimes(2)
+  })
+
+  it('hands both opens queued account work instead of holding an account change while they wait', async () => {
+    const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
+    const { service, antigravity } = withAntigravity()
+    const handedOver: Array<QueuedAccountWork | undefined> = []
+    vi.mocked(antigravity.openDesktop).mockImplementation((_resolveKey, work) => {
+      handedOver.push(work)
+      return new Promise(() => undefined)
+    })
+    vi.mocked(antigravity.openCli).mockImplementation((_workspace, _resolveKey, work) => {
+      handedOver.push(work)
+      return new Promise(() => undefined)
+    })
+    register(service, undefined, undefined, undefined, undefined, undefined, { realmAccounts: {} as never, accountWork, accountSessionReady: Promise.resolve() })
+    void electronMocks.handlers.get('antigravity:open-desktop')!(trustedEvent())
+    void electronMocks.handlers.get('antigravity:open-cli')!(trustedEvent(), path.join(os.homedir(), 'project'))
+    for (let tick = 0; tick < 5; tick++) await Promise.resolve()
+    expect(handedOver).toHaveLength(2)
+    expect(handedOver.every((work) => work !== undefined && typeof work.run === 'function')).toBe(true)
+  })
+
+  it('refuses the installs and opens the status file switched off before the service hears of them', async () => {
+    const { service, antigravity } = withAntigravity()
+    const remoteFeatures = createRemoteFeatureGate()
+    remoteFeatures.update(['install:antigravityCli', 'install:antigravityDesktop', 'launch:antigravityCli', 'launch:antigravityDesktop'])
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, { remoteFeatures })
+    const event = trustedEvent()
+    await expect(async () => electronMocks.handlers.get('antigravity:install')!(event, 'cli')).rejects.toThrow(/^Antigravity 命令行的安装和更新暂时停用了，修好以后会自动恢复。$/)
+    await expect(async () => electronMocks.handlers.get('antigravity:install')!(event, 'desktop')).rejects.toThrow(/^Antigravity 的安装和更新暂时停用了/)
+    await expect(async () => electronMocks.handlers.get('antigravity:open-desktop')!(event)).rejects.toThrow(/^暂时不能从星芒打开 Antigravity，/)
+    await expect(async () => electronMocks.handlers.get('antigravity:open-cli')!(event, os.homedir())).rejects.toThrow(/^暂时不能从星芒打开 Antigravity 命令行，/)
+    expect(antigravity.install).not.toHaveBeenCalled()
+    expect(antigravity.openDesktop).not.toHaveBeenCalled()
+    expect(antigravity.openCli).not.toHaveBeenCalled()
   })
 })

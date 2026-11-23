@@ -75,6 +75,7 @@ import { createIpcHandlerContext, type TrustedIpcHandler } from './ipc/handlers/
 import { registerSystemHandlers } from './ipc/handlers/system'
 import { registerConfigHandlers } from './ipc/handlers/config'
 import { registerExternalClientHandlers } from './ipc/handlers/external-clients'
+import { registerAntigravityHandlers } from './ipc/handlers/antigravity'
 import { registerLaunchHandlers } from './ipc/handlers/launch'
 import { registerToolHandlers } from './ipc/handlers/tools'
 import { registerWindowHandlers } from './ipc/handlers/window'
@@ -463,6 +464,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerSystemHandlers(ctx)
   const disposeConfig = registerConfigHandlers(ctx)
   registerExternalClientHandlers(ctx)
+  registerAntigravityHandlers(ctx)
   registerLaunchHandlers(ctx)
   registerToolHandlers(ctx)
   registerWindowHandlers(ctx)

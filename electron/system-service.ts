@@ -148,7 +148,8 @@ import type { StandingInstructionsSaveResult } from './standing-instructions'
 import { createOfficialCredentialService } from './official-credential-service'
 import { createToolRouteFollowService } from './tool-route-follow-service'
 import { createExternalClientRouteService } from './external-client-route-service'
-import { codexRemoteLaunchQueueKey, createProviderLaunchService, providerCommandEnvironment } from './provider-launch-service'
+import { createAntigravityService, type AntigravityService } from './antigravity-service'
+import { codexRemoteLaunchQueueKey, createProviderLaunchService, interactiveTerminalEnvironment, providerCommandEnvironment, sameUserTerminalEnvironment } from './provider-launch-service'
 import { createSystemScanService } from './system-scan-service'
 import { createRuntimeInstallService } from './runtime-install-service'
 import { createCliUninstallService } from './cli-uninstall-service'
@@ -647,6 +648,11 @@ export interface SystemService {
    * 没装、放过了、盘不够、远程关了都不下；从不抛错。可选 = 旧实现不提供。
    */
   seedClaudeDesktopWorkspace?(): Promise<void>
+  /**
+   * Antigravity（命令行 agy 和桌面端）那一簇：检测、一键装、写网关设置、带着设置打开（antigravity-service.ts）。
+   * 密钥由调用方按需签了交进来，这里不碰账号。可选 = 旧实现不提供。
+   */
+  antigravity?: AntigravityService
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
   /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
@@ -1115,6 +1121,13 @@ export function withCodexDesktopProgressLog(
   }
 }
 
+/** Antigravity 那一簇的日志归到哪一类：设置算配置，装算安装，其余（打开、看开没开着）算系统。 */
+export function antigravityLogSource(event: string): 'config' | 'install' | 'system' {
+  if (event.startsWith('antigravity.settings.')) return 'config'
+  if (event.endsWith('.installed') || event.endsWith('.bucket-fallback')) return 'install'
+  return 'system'
+}
+
 export function createSystemService(
   store: AppSettingsStore,
   serviceOptions: SystemServiceOptions = {},
@@ -1152,6 +1165,25 @@ export function createSystemService(
     seedClaudeDesktopWorkspace,
   } = createExternalClientRouteService(context, {
     fetchAvailableModels,
+  })
+  // Antigravity 那一簇：装和打开排同一个安装队列（I11），写设置和别的工具配置排同一队。
+  const antigravity = createAntigravityService({
+    platform,
+    architecture: process.arch,
+    env: process.env,
+    userHome: providerRoots.userHome,
+    executionMode: context.windowsExecutionMode,
+    enqueue: (key, task, options) => installationQueue.enqueue(key, task, options),
+    serializeSettingsWrite: serializeConfigWrite,
+    gatewayBaseUrl: () => context.activeRelaySite().providerBaseUrls.gemini,
+    terminalEnvironment: (env) => interactiveTerminalEnvironment(env, sameUserTerminalEnvironment),
+    fetch: downloadFetch,
+    runCommand: executeCommand,
+    // 谷歌那一路在海外，同 OpenCode 临时接上下载线路；存储桶那一路国内直连，安装器自己不包。
+    withVendorDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
+    launchWindowsTerminal: context.launchCliPowerShellForService,
+    launchMacosTerminal: context.launchMacosTerminalForService,
+    log: (level, event, message, detail) => runtimeLog?.log(level, antigravityLogSource(event), event, message, detail),
   })
   // Owns the Codex Desktop version-probe caches and the install/uninstall/
   // launch busy lock in its own closure; only the pieces that cross the
@@ -1476,6 +1508,7 @@ export function createSystemService(
     switchExternalClientSource,
     topUpClaudeDesktopModels,
     seedClaudeDesktopWorkspace,
+    antigravity,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
     enqueueCodexRemoteLaunch: (launch) => installationQueue.enqueue(codexRemoteLaunchQueueKey, launch),

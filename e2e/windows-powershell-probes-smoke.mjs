@@ -1209,6 +1209,41 @@ function runLaunchBroker(shell, script, cwd) {
   })
 }
 
+const { buildAntigravityDesktopWindowsProcessScript, parseAntigravityDesktopWindowsProcesses } = compiled('antigravity-service')
+
+// Before opening the Antigravity desktop app the main process asks whether this
+// very Antigravity.exe is already running: a second copy exits at once and the
+// new settings never reach the running one, so the customer is asked to quit it
+// first. The question runs under trustedCommandEnvironment and, where an
+// application-control policy is enforced, in ConstrainedLanguage. A copy of
+// node.exe named Antigravity.exe under a Chinese folder name has to be found in
+// both modes, so the \uXXXX escaping is exercised on a real path too.
+checks.push(['the Antigravity running check finds the app in ConstrainedLanguage as in FullLanguage', async () => {
+  const executable = path.join(fs.realpathSync.native(scratch), '星芒 程序', 'Antigravity.exe')
+  fs.mkdirSync(path.dirname(executable), { recursive: true })
+  fs.copyFileSync(process.execPath, executable)
+  const script = buildAntigravityDesktopWindowsProcessScript()
+  const idle = await runConstrained(script)
+  assert.equal(parseAntigravityDesktopWindowsProcesses(idle, executable), false, idle)
+  const app = spawn(executable, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore', windowsHide: true })
+  try {
+    const started = Date.now()
+    const full = await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(script)], trustedEnv())
+    console.log(`info Antigravity running check in FullLanguage took ${Date.now() - started} ms`)
+    const constrained = await runConstrained(script)
+    assert.match(constrained.trim(), /^[\x00-\x7F]+$/, constrained)
+    for (const output of [full, constrained]) assert.equal(parseAntigravityDesktopWindowsProcesses(output, executable), true, output)
+  } finally {
+    // The copy stays locked until it has exited, and the scratch folder is removed at the end.
+    if (app.exitCode === null && app.signalCode === null) {
+      await new Promise((resolve) => {
+        app.once('exit', resolve)
+        app.kill()
+      })
+    }
+  }
+}])
+
 checks.push(['the CLI launch broker opens a folder whose name has brackets, and reports a failure by its cause', async () => {
   const folder = path.join(scratch, '作业[1]', 'a`[b]')
   fs.mkdirSync(folder, { recursive: true })

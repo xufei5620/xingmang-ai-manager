@@ -466,7 +466,8 @@ alipay@0.2.23|0.2.24@windows wxpay
 | `launch:工具` | 从星芒打开某个工具 | 点打开被拦下，弹同一个框 |
 
 工具写 `claude`（Claude Code）、`codex`（Codex CLI）、`grok`（Grok CLI）、`codexDesktop`（Codex 桌面端）、
-`claudeDesktop`（Claude Desktop）、`workbuddy`（WorkBuddy）、`opencode`（OpenCode），大小写不分。安装、打开的按钮本身
+`claudeDesktop`（Claude Desktop）、`workbuddy`（WorkBuddy）、`opencode`（OpenCode）、`antigravityCli`（Antigravity 命令行）、
+`antigravityDesktop`（Antigravity 桌面端，后两样只有带 Antigravity 的版本认），大小写不分。安装、打开的按钮本身
 不变灰（入口太多：首页、工具页、托盘、搜索、最近对话），点了才弹框。客户看到的每一句都是 yoyo 2026-10-28 回「停用改」批的，
 逐字见 `/mnt/project-files/商业级差距/G04-第二批开关-界面字.md`。
 

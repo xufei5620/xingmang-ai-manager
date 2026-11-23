@@ -18,7 +18,7 @@ import {
 
 describe('remote features', () => {
   it('can switch off the install and launch of every tool the app still manages and nothing it retired', () => {
-    expect([...remoteFeatureTools].sort()).toEqual([...activeProviderIds, 'codexDesktop', ...externalToolIds].sort())
+    expect([...remoteFeatureTools].sort()).toEqual([...activeProviderIds, 'codexDesktop', ...externalToolIds, 'antigravityCli', 'antigravityDesktop'].sort())
     expect(remoteFeatureIds).not.toContain('install:gemini')
     expect(new Set(remoteFeatureIds).size).toBe(remoteFeatureIds.length)
   })
@@ -26,6 +26,7 @@ describe('remote features', () => {
   it('recognizes a listed name whatever its case and nothing else', () => {
     expect(resolveRemoteFeatureId(' Video-Studio ')).toBe('video-studio')
     expect(resolveRemoteFeatureId('install:codexdesktop')).toBe('install:codexDesktop')
+    expect(resolveRemoteFeatureId('launch:antigravitydesktop')).toBe('launch:antigravityDesktop')
     for (const value of ['teleport', 'install:gemini', 'install', 'install:', 'video studio', '', null, 7, { feature: 'video-studio' }]) {
       expect(resolveRemoteFeatureId(value)).toBeNull()
     }

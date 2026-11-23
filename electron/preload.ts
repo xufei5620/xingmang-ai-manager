@@ -25,6 +25,10 @@ const ipcInvokeChannels = {
   installExternalClient: 'external-clients:install',
   cancelExternalClientInstall: 'external-clients:cancel-install',
   launchExternalClient: 'external-clients:launch',
+  inspectAntigravity: 'antigravity:inspect',
+  installAntigravity: 'antigravity:install',
+  openAntigravityDesktop: 'antigravity:open-desktop',
+  openAntigravityCli: 'antigravity:open-cli',
   switchExternalClientSource: 'external-clients:switch-source',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
@@ -267,6 +271,7 @@ const ipcInvokeChannels = {
 const ipcEventChannels = {
   onExternalClientInstallProgress: 'external-clients:install-progress',
   onExternalClientLaunchProgress: 'external-clients:launch-progress',
+  onAntigravityInstallProgress: 'antigravity:install-progress',
   onAccountSessionChanged: 'account:session-changed',
   onAccountUsageChanged: 'account:usage-changed',
   onAccountVaultRecovered: 'account:vault-recovered',
@@ -329,6 +334,10 @@ const xingmangApi: XingmangApi = {
   installExternalClient: (tool, request) => request === undefined ? invoke('installExternalClient', tool) : invoke('installExternalClient', tool, request),
   cancelExternalClientInstall: (tool) => invoke('cancelExternalClientInstall', tool),
   launchExternalClient: (tool) => invoke('launchExternalClient', tool),
+  inspectAntigravity: () => invoke('inspectAntigravity'),
+  installAntigravity: (target) => invoke('installAntigravity', target),
+  openAntigravityDesktop: () => invoke('openAntigravityDesktop'),
+  openAntigravityCli: (workspace) => workspace === undefined ? invoke('openAntigravityCli') : invoke('openAntigravityCli', workspace),
   switchExternalClientSource: (tool, target) => invoke('switchExternalClientSource', tool, target),
   switchToOfficialAccount: (provider, mode) => mode === undefined
     ? invoke('switchToOfficialAccount', provider)
@@ -574,6 +583,7 @@ const xingmangApi: XingmangApi = {
   saveCodexRemoteFeishuCredentials: (request) => invoke('saveCodexRemoteFeishuCredentials', request),
   onAccountSessionChanged: (listener) => subscribe('onAccountSessionChanged', listener),
   onExternalClientInstallProgress: (listener) => subscribe('onExternalClientInstallProgress', listener),
+  onAntigravityInstallProgress: (listener) => subscribe('onAntigravityInstallProgress', listener),
   onExternalClientLaunchProgress: (listener) => subscribe('onExternalClientLaunchProgress', listener),
   onAccountUsageChanged: (listener) => subscribe('onAccountUsageChanged', listener),
   onAccountVaultRecovered: (listener) => subscribe('onAccountVaultRecovered', listener),
