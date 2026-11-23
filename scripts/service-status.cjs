@@ -83,6 +83,7 @@ const FEATURE_LABELS = {
 const FEATURE_TOOL_LABELS = {
   claude: 'Claude Code', codex: 'Codex CLI', grok: 'Grok CLI', codexDesktop: 'Codex 桌面端',
   claudeDesktop: 'Claude Desktop', workbuddy: 'WorkBuddy', opencode: 'OpenCode',
+  antigravityCli: 'Antigravity 命令行', antigravityDesktop: 'Antigravity 桌面端',
 }
 const FEATURE_IDS = [
   ...Object.keys(FEATURE_LABELS),

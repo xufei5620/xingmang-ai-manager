@@ -44,6 +44,8 @@ import type {
 export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
 import type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress, ExternalClientLaunchResult } from './external-client-contract'
 import type { ExternalClientCheckResult } from './external-client-connection'
+import type { AntigravityDesktopLaunchResult, AntigravityInstallResult, AntigravityProgress, AntigravityStatus, AntigravityTarget } from './antigravity-service'
+export type { AntigravityDesktopLaunchResult, AntigravityInstallResult, AntigravityProgress, AntigravityStatus, AntigravityTarget } from './antigravity-service'
 export type { ExternalClientCheckResult } from './external-client-connection'
 export type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress, ExternalClientLaunchResult } from './external-client-contract'
 import type {
@@ -1176,6 +1178,14 @@ export interface XingmangInvokeContract {
   cancelExternalClientInstall: IpcInvokeDefinition<'external-clients:cancel-install', [tool: ExternalToolId], InstallCancelResult>
   /** 回打开以后还要客户知道的事（ExternalClientLaunchResult），没有就是空对象。 */
   launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], ExternalClientLaunchResult>
+  /** Antigravity 命令行和桌面端装没装、设置是不是当前账号这条线路的（只看本机，不带密钥，I3）。 */
+  inspectAntigravity: IpcInvokeDefinition<'antigravity:inspect', [], AntigravityStatus>
+  /** 一键装命令行或桌面端，装好接着按需签密钥写设置；进度走 antigravity:install-progress。 */
+  installAntigravity: IpcInvokeDefinition<'antigravity:install', [target: AntigravityTarget], AntigravityInstallResult>
+  /** 写好设置再打开桌面端；开着的那一份拿不到这次的设置时不打开，回 closeFirst 请客户先关掉。 */
+  openAntigravityDesktop: IpcInvokeDefinition<'antigravity:open-desktop', [], AntigravityDesktopLaunchResult>
+  /** 写好设置，在选的文件夹里开一个终端跑 agy；workspace 缺省用记住的那个工作目录。 */
+  openAntigravityCli: IpcInvokeDefinition<'antigravity:open-cli', [workspace?: string], void>
   /**
    * 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择（官方登录 / 第三方），星芒那份配置留着。
    * 只有 Claude Desktop 支持；切回当前账号时那份用不上了回 reconnect，界面接着打开配置窗口。
@@ -1828,6 +1838,8 @@ export interface XingmangEventContract {
   onExternalClientInstallProgress: IpcEventDefinition<'external-clients:install-progress', ExternalClientInstallProgress>
   /** 点「打开」以后替它准备的进度（Windows 上替 Claude Desktop 放 Claude Code 程序），只发给点了「打开」的那个窗口。 */
   onExternalClientLaunchProgress: IpcEventDefinition<'external-clients:launch-progress', ExternalClientLaunchProgress>
+  /** Antigravity 一键安装的进度，只发给点了安装的那个窗口。 */
+  onAntigravityInstallProgress: IpcEventDefinition<'antigravity:install-progress', AntigravityProgress>
   onAccountSessionChanged: IpcEventDefinition<'account:session-changed', AccountSessionState>
   onAccountUsageChanged: IpcEventDefinition<'account:usage-changed', AccountUsageChangedEvent>
   /** 本机账号存储被重建。载荷为空：备份文件名与账号内容都不跨 IPC。 */
@@ -1913,6 +1925,10 @@ export const ipcInvokeChannels = {
   installExternalClient: 'external-clients:install',
   cancelExternalClientInstall: 'external-clients:cancel-install',
   launchExternalClient: 'external-clients:launch',
+  inspectAntigravity: 'antigravity:inspect',
+  installAntigravity: 'antigravity:install',
+  openAntigravityDesktop: 'antigravity:open-desktop',
+  openAntigravityCli: 'antigravity:open-cli',
   switchExternalClientSource: 'external-clients:switch-source',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
@@ -2155,6 +2171,7 @@ export const ipcInvokeChannels = {
 export const ipcEventChannels = {
   onExternalClientInstallProgress: 'external-clients:install-progress',
   onExternalClientLaunchProgress: 'external-clients:launch-progress',
+  onAntigravityInstallProgress: 'antigravity:install-progress',
   onAccountSessionChanged: 'account:session-changed',
   onAccountUsageChanged: 'account:usage-changed',
   onAccountVaultRecovered: 'account:vault-recovered',
