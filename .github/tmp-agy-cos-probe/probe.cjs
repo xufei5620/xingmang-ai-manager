@@ -49,8 +49,8 @@ async function refusesForeignBinary(family, dependencies) {
       const archive = path.join(workDirectory, 'foreign.tar.gz')
       await run('/usr/bin/tar', ['-czf', archive, '-C', folder, 'antigravity'])
       await assert.rejects(dependencies.inspectMacArchive(archive, workDirectory, 'arm64'), (error) => {
-        console.log('[probe] foreign archive refused', JSON.stringify(sync.safeAntigravitySyncFailure(error)))
-        return true
+        console.log('[probe] foreign archive refused:', error.message)
+        return /签名不是谷歌/.test(error.message)
       })
     }
   } finally {
