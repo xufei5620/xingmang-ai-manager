@@ -4,6 +4,7 @@ import {
   dataTransferExportMessage,
   dataTransferImportMessage,
   settingsPatchFrom,
+  standingInstructionsFrom,
   worksCount,
   worksExportNote,
   worksExportNoteFor,
@@ -163,6 +164,26 @@ describe('data transfer wording', () => {
       .toBe('文件中的 3 个对话、128 件作品和 4 个画布项目需登录后再次点击「导入」。')
     expect(dataTransferImportMessage({ fileConversations: 0, fileCanvasProjects: 4, added: 0, updated: 0, skipped: 0, signedIn: false, settingsChanged: true }))
       .toBe('设置已导入。文件中的 4 个画布项目需登录后再次点击「导入」。')
+  })
+
+  // 第三轮复查第 7 条贴给 yoyo 的字。
+  it('says where to save the standing instructions again when a tool could not take them', () => {
+    const missed = '给 AI 的长期嘱咐已导入，但部分工具未能写入，请在「设置 › 工具管理」中再次保存。'
+    const base = { fileConversations: 3, added: 3, updated: 0, skipped: 0, signedIn: true, settingsChanged: true }
+    expect(dataTransferImportMessage({ ...base, standingInstructionsMissed: true, fileVideos: 2, videosAdded: 2 }))
+      .toBe(`已导入 3 个对话及设置。${missed}已导入 2 条视频。`)
+    expect(dataTransferImportMessage({ ...base, fileConversations: 0, added: 0, standingInstructionsMissed: true })).toBe(`已导入设置。${missed}`)
+    expect(dataTransferImportMessage({ ...base, signedIn: false, added: 0, standingInstructionsMissed: true }))
+      .toBe(`设置已导入。${missed}文件中的 3 个对话需登录后再次点击「导入」。`)
+    expect(dataTransferImportMessage(base)).toBe('已导入 3 个对话及设置。')
+  })
+
+  it('writes the standing instructions from the file only when this computer had none or the user chose the file', () => {
+    expect(standingInstructionsFrom({ standingInstructions: '回答请尽量简洁。' }, false)).toBe('回答请尽量简洁。')
+    expect(standingInstructionsFrom({ standingInstructions: '回答请尽量简洁。' }, true)).toBe('回答请尽量简洁。')
+    expect(standingInstructionsFrom({ conflictingStandingInstructions: '回答请尽量简洁。' }, false)).toBeUndefined()
+    expect(standingInstructionsFrom({ conflictingStandingInstructions: '回答请尽量简洁。' }, true)).toBe('回答请尽量简洁。')
+    expect(standingInstructionsFrom({}, true)).toBeUndefined()
   })
 
   it('merges settings updates and drops the version marker', () => {

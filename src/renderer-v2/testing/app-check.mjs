@@ -12545,6 +12545,47 @@ test('a moved conversation says its picture stayed behind when the works folder 
   } finally { await page.close() }
 })
 
+// 第三轮复查第 7 条：「给 AI 的长期嘱咐」跟着搬。这台没写过的直接写进三家工具；有工具没写上时导入那句说一声，
+// 「工具管理」那一格下面列出是哪家、为什么，字没改也能再点保存。
+test('moving to a new computer brings the standing instructions along and says where to save again when a tool missed them', async () => {
+  const page = await open('chatImport&transferInstructions&standingMissed=grok')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    let settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '已导入 1 个对话及设置。给 AI 的长期嘱咐已导入，但部分工具未能写入，请在「设置 › 工具管理」中再次保存。')
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'saveStandingInstructions').map((entry) => entry.args), [['回答请尽量简洁。']])
+    settings = await openSettingsGroup(page, '工具管理')
+    const row = settings.getByTestId('settings-standing-instructions')
+    await expect(row.getByTestId('settings-standing-instructions-text')).toHaveValue('回答请尽量简洁。')
+    await row.getByTestId('settings-standing-instructions-missed')
+      .getByText('Grok CLI 未能写入：文件中由星芒维护的段落标记已被修改，为避免改动您自行编写的内容，本次未写入。', { exact: true }).waitFor()
+    assert.equal(await row.getByTestId('settings-standing-instructions-save').isDisabled(), false, '有工具没写上，字没改也能再存')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('moving to a new computer asks before replacing standing instructions written here', async () => {
+  const page = await open('chatImport&transferInstructions=conflict')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    const ask = page.getByRole('dialog', { name: '是否使用文件中的设置？', exact: true })
+    const saved = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveStandingInstructions').map((entry) => entry.args))
+    await settings.getByTestId('settings-transfer-import').click()
+    await expect(ask).toContainText('以下设置在本机已修改，与文件中的不同：给 AI 的长期嘱咐。')
+    await ask.getByTestId('settings-transfer-keep').click()
+    await waitForToast(page, '已导入 1 个对话。')
+    assert.deepEqual(await saved(), [])
+    await settings.getByTestId('settings-transfer-import').click()
+    await ask.getByTestId('settings-transfer-overwrite').click()
+    await waitForToast(page, '文件中的对话均已存在于本机，设置已导入。')
+    assert.deepEqual(await saved(), [['回答请尽量简洁。']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // D41：聊天页藏在设置页后面照样收回复。以前「导入」一点就把聊天页卸下，正在回复的那条被掐断，页面上什么也不说。
 test('importing while the chat is still replying waits for the reply instead of cutting it off', async () => {
   const page = await open('chatImport')

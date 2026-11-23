@@ -1190,10 +1190,14 @@ const methods = {
     const works = query.has('transferWorksMissing') ? { ...fixtureWorks, state: 'missing' as const } : { ...fixtureWorks, state: 'ready' as const, token: 'fixture-works-token' }
     // ?transferCanvasProjects：文件里还带了 4 个画布项目，跟作品同一处（「作品」不在时它也不在）。
     const canvasProjects = { count: 4, state: query.has('transferWorksMissing') ? 'missing' as const : 'ready' as const }
+    // ?transferInstructions：文件里带了「给 AI 的长期嘱咐」，这台电脑上没写过；=conflict 时这台写过另一段，要先问。
+    const instructions = query.get('transferInstructions')
+    const conflictLabels = instructions === 'conflict' ? ['给 AI 的长期嘱咐'] : []
     return {
-      conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }, { withWorks: query.has('transferWorks') }), phrases: ['旧电脑上存的一句'], settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [],
+      conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }, { withWorks: query.has('transferWorks') }), phrases: ['旧电脑上存的一句'], settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels,
       ...(query.has('transferWorks') ? { works } : {}),
       ...(query.has('transferWorks') && query.has('transferCanvasProjects') ? { canvasProjects } : {}),
+      ...(instructions === null ? {} : instructions === 'conflict' ? { conflictingStandingInstructions: '回答请尽量简洁。' } : { standingInstructions: '回答请尽量简洁。' }),
     }
   },
   // 「搬作品改」：?transferWorks 时当前账号作品库里有 128 件作品，导出前先问带不带。
