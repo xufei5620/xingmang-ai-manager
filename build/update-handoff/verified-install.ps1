@@ -196,6 +196,7 @@ $result = $exitFailed
 $finalState = 'failed'
 $installerExit = 0
 $staging = $null
+$installTemp = $null
 $payload = $null
 $source = $null
 $copy = $null
@@ -281,6 +282,18 @@ try {
           if ($name -match '^(?:NODE_|ELECTRON_|NPM_|COR_|COMPLUS_|CORECLR_|DOTNET_|PYTHON|PERL|RUBY|PSModulePath$)') { $start.EnvironmentVariables.Remove($name) }
         }
         $start.EnvironmentVariables['PATH'] = $system32 + ';' + $windows + ';' + [IO.Path]::Combine($system32, 'Wbem') + ';' + [IO.Path]::Combine($system32, 'WindowsPowerShell\v1.0')
+        # The installer and the old version's uninstaller it runs work out of a
+        # folder under TEMP while elevated: their plug-ins load from there, the
+        # uninstaller runs from a copy there, the old files are moved aside there
+        # and the new ones wait there before they go into the install directory.
+        # Left alone, TEMP is the user's own temp folder, which anything running
+        # as that user can change, so it points into the staging directory
+        # instead. Created inside staging with the same DACL; nobody else can
+        # create anything there first.
+        $installTemp = [IO.Path]::Combine($staging, 'temp')
+        [void][IO.Directory]::CreateDirectory($installTemp, $directorySecurity)
+        $start.EnvironmentVariables['TEMP'] = $installTemp
+        $start.EnvironmentVariables['TMP'] = $installTemp
         $installer = [Diagnostics.Process]::Start($start)
         $installer.WaitForExit()
         $installerExit = $installer.ExitCode
@@ -302,11 +315,14 @@ try {
   if ($null -ne $source) { try { $source.Dispose() } catch { } }
   if ($null -ne $copy) { try { $copy.Dispose() } catch { } }
   if ($null -ne $held) { try { $held.Dispose() } catch { } }
-  # Only the file and the directory created above, never a recursive walk.
+  # Only the file and the directories created above, never a recursive walk. The
+  # installer empties its temp folder when it exits; if it left something behind,
+  # staging stays until the sweep at the top of a later run.
   if ($null -ne $staging) {
     for ($attempt = 0; $attempt -lt 10; $attempt++) {
       try {
         if ($null -ne $payload -and [IO.File]::Exists($payload)) { [IO.File]::Delete($payload) }
+        if ($null -ne $installTemp -and [IO.Directory]::Exists($installTemp)) { [IO.Directory]::Delete($installTemp, $false) }
         if ([IO.Directory]::Exists($staging)) { [IO.Directory]::Delete($staging, $false) }
         break
       } catch {

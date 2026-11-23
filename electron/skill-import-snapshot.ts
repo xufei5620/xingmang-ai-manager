@@ -58,6 +58,23 @@ export interface SkillImportStaging {
 
 const definitionFileName = 'SKILL.md'
 const changedCodes = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'EISDIR'])
+const stagingNamePattern = /^\.xingmang-import-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+// A scanner holding a freshly copied file makes the removal fail for a moment
+// (EBUSY / EPERM on Windows). Node retries those itself; the budget matches the
+// rename retries elsewhere so a failed import does not hold the window longer.
+const stagingRemoveOptions: fs.RmOptions = { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }
+
+// Staging folders an import in this process still owns. Codex awaits a config
+// write between staging and the final rename, so a leftover sweep can run in
+// that gap and must leave the live one alone. Names are random, so a folder the
+// sweep judged a leftover can never become live afterwards.
+const liveStagings = new Set<string>()
+
+function stagingKey(directory: string): string {
+  const resolved = path.resolve(directory)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
 
 function errorCode(error: unknown): string | undefined {
   const code = (error as NodeJS.ErrnoException | null)?.code
@@ -218,11 +235,32 @@ export function createSkillImportStaging(root: string): SkillImportStaging {
   fs.mkdirSync(directory)
   const stats = fs.lstatSync(directory, { bigint: true })
   if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error('Skill 导入临时文件夹创建失败')
+  liveStagings.add(stagingKey(directory))
   return { directory, dev: stats.dev, ino: stats.ino }
 }
 
-/** 临时文件夹还是当初建的那一个才删；已经没了、或被换成别的东西就不碰。 */
+/** 这个名字是不是 createSkillImportStaging 起的那种：列技能时跳过它，清理残留时只认它。 */
+export function isSkillImportStagingName(name: string): boolean {
+  return stagingNamePattern.test(name)
+}
+
+/** 这个临时文件夹是不是这会儿还有一次导入在用（还没改名、也还没删）。 */
+export function isLiveSkillImportStaging(directory: string): boolean {
+  return liveStagings.has(stagingKey(directory))
+}
+
+/** 临时文件夹已经改名成技能文件夹：不再归这次导入。 */
+export function releaseSkillImportStaging(staging: SkillImportStaging): void {
+  liveStagings.delete(stagingKey(staging.directory))
+}
+
+/**
+ * 临时文件夹还是当初建的那一个才删；已经没了、或被换成别的东西就不碰。导入出错时在 catch 里调，
+ * 所以这里删不掉也不抛：抛了就盖住了真正的原因。删不掉的那份列技能时不列，开机后清掉
+ * （codex-extensions.ts 的 discardSkillImportLeftovers）。
+ */
 export function discardSkillImportStaging(staging: SkillImportStaging): void {
+  liveStagings.delete(stagingKey(staging.directory))
   let stats: fs.BigIntStats
   try {
     stats = fs.lstatSync(staging.directory, { bigint: true })
@@ -230,7 +268,11 @@ export function discardSkillImportStaging(staging: SkillImportStaging): void {
     return
   }
   if (!stats.isDirectory() || stats.isSymbolicLink() || !sameObject(stats, staging)) return
-  fs.rmSync(staging.directory, { recursive: true, force: true })
+  try {
+    fs.rmSync(staging.directory, stagingRemoveOptions)
+  } catch {
+    // Left for the leftover sweep; the caller rethrows the error that matters.
+  }
 }
 
 /** 临时文件夹改名前再对一次：被换掉的不搬。 */

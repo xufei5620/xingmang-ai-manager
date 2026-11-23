@@ -53,7 +53,7 @@ describe('codex-remote-app-server', () => {
   it('initializes with the experimental API on, opts out of delta notifications and sends initialized', async () => {
     const fake = new FakeProcess()
     await started(fake)
-    // collaborationMode (the remote rules on a resumed conversation) is an experimental turn/start field.
+    // collaborationMode (the remote rules on a resumed conversation) goes through the experimental thread/settings/update.
     expect(fake.written[0]).toMatchObject({ method: 'initialize', params: { capabilities: { experimentalApi: true } } })
     const capabilities = (fake.written[0].params as { capabilities: { optOutNotificationMethods: string[] } }).capabilities
     expect(capabilities.optOutNotificationMethods).toContain('item/agentMessage/delta')

@@ -192,6 +192,27 @@ describe('client version reporter', () => {
     expect(calls).toHaveLength(1)
   })
 
+  it('settles idle() only after a run already under way has written down what it sent', async () => {
+    let release: (response: Response) => void = () => undefined
+    let markStarted: () => void = () => undefined
+    const started = new Promise<void>((resolve) => { markStarted = resolve })
+    function fetchImpl(): Promise<Response> {
+      markStarted()
+      return new Promise((resolve) => { release = resolve })
+    }
+    const { reporter, filePath } = reporterWith({ fetchImpl })
+
+    const run = reporter.runOnce()
+    await started
+    // The run queues its second write only once the answer is back, after idle() was asked.
+    const idle = reporter.idle()
+    release(new Response(null, { status: 204 }))
+    await idle
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toMatchObject({ sentDay: '20261120' })
+    expect(fs.readdirSync(directory)).toEqual(['client-version-report.json'])
+    await expect(run).resolves.toBe('sent')
+  })
+
   it('waits before the first report and pulls it forward after a sign-in without ever pushing it back', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-11-20T03:00:00Z'))
