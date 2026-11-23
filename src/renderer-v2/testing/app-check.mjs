@@ -607,6 +607,33 @@ test('opening a desktop client while another tool installs neither claims to wai
   } finally { await page.close() }
 })
 
+// Antigravity 两张卡（11-23）：装完在同一个任务里写好设置，卡片换成「打开」；命令行在选的文件夹里开；
+// 桌面端开着、拿不到这次的设置时不打开，请客户先退出。
+test('installing the Antigravity command line connects it, opens it in a chosen folder, and asks to quit a running desktop app first', async () => {
+  const page = await open('antigravity=missing')
+  try {
+    const cli = page.getByTestId('tool-row-antigravityCli')
+    await cli.getByText('未安装').waitFor()
+    await page.getByTestId('tool-antigravityCli-primary').click()
+    await waitForToast(page, 'Antigravity 命令行已安装，并已关联当前账号')
+    await cli.getByTestId('tool-antigravityCli-source').waitFor()
+    await expect(page.getByTestId('tool-antigravityCli-primary')).toHaveText('打开')
+    await page.getByTestId('tool-antigravityCli-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openAntigravityCli'))
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openAntigravityCli').map((entry) => entry.args)), [['C:\\Selected Project']])
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installAntigravity').map((entry) => entry.args)), [['cli']])
+    await clean(page)
+  } finally { await page.close() }
+  const running = await open('antigravity=closeFirst')
+  try {
+    const desktop = running.getByTestId('tool-row-antigravity')
+    await desktop.getByTestId('tool-antigravity-source').waitFor()
+    await running.getByTestId('tool-antigravity-primary').click()
+    await waitForToast(running, 'Antigravity 正在运行，新的连接设置需重新启动后生效。请先完全退出 Antigravity，再点击「打开」。')
+    await clean(running)
+  } finally { await running.close() }
+})
+
 test('opening Claude Desktop says it is preparing the program while it downloads, then opens', async () => {
   const page = await open('externalInstalled=1&externalReady=claudeDesktop&externalLaunchPending=1')
   try {

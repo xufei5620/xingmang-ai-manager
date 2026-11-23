@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { AppConfigSummary, DesktopAppStatus, ExternalClientStatus, ExternalToolId, InstallCancelResult, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AntigravityStatus, AppConfigSummary, DesktopAppStatus, ExternalClientStatus, ExternalToolId, InstallCancelResult, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
 import { createToolsApi, withConfigFailure, withToolboxConfig, type ToolboxPartitionFailure } from './api'
 import type { ToolboxSnapshot } from './model'
 import { platformApi } from '../../platform-api'
@@ -8,6 +8,7 @@ import { useLatestRequest } from '../../latest-request'
 import { isWindowInFront, resolveInstallNoticeOutcome, type InstallNoticePlan } from './install-notice'
 import { installProgressLabel } from './install-stage-text'
 import { clientLaunchProgressLabel } from './launch-notice'
+import { antigravityJobKey, antigravityProgressLabel } from './antigravity'
 
 export interface ToolJob {
   label: string
@@ -101,6 +102,8 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   // 上次真检测回来的时刻，回到窗口时据此决定要不要再看一眼 WorkBuddy；换账号重来。
   const externalScannedAt = useRef<number | null>(null)
   const workBuddyRecheck = useRef(false)
+  const [antigravity, setAntigravity] = useState<AntigravityStatus | null>(null)
+  const antigravityRequest = useLatestRequest()
   const [jobs, setJobs] = useState<Record<string, ToolJob>>({})
   const request = useLatestRequest()
   const active = useRef(true)
@@ -127,6 +130,8 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     externalRequest.invalidate()
     externalScannedAt.current = null
     setExternalClients([]); setExternalError(''); setExternalLoading(false)
+    antigravityRequest.invalidate()
+    setAntigravity(null)
   }, [scope])
   // quiet 只给打开客户端之后那一次：重扫换来的只是那一行的「运行中」，不该让三行按钮一起变灰、
   // 右上角转圈。没读到就留着上次的结果，不出红条（第三十一批 C）。
@@ -151,6 +156,20 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       throw cause
     } finally { if (active.current && id()) setExternalLoading(false) }
   }, [bridge, scope])
+  // Antigravity 两张卡只看本机：程序在不在、写下的设置是不是当前这条线路的。没读到就留着上次的结果，
+  // 一次都没读到就不摆这两张卡，不出红条：它们不是首页必须有的东西。
+  const refreshAntigravity = useCallback(async () => {
+    if (!bridge || currentScope.current !== scope) return
+    const id = antigravityRequest.begin()
+    const status = await createToolsApi(bridge).inspectAntigravity().catch(() => null)
+    if (status && active.current && currentScope.current === scope && id()) setAntigravity(status)
+  }, [bridge, scope])
+  // 装完时主进程顺手回的那一份：比再查一次早，换了账号的就不要了。
+  const noteAntigravityStatus = useCallback((status: AntigravityStatus) => {
+    if (currentScope.current !== scope) return
+    antigravityRequest.invalidate()
+    setAntigravity(status)
+  }, [scope])
   // 开机首屏那一次：先摆上次落盘的客户端检测结果（cachedAt），主进程只读文件、不起盘点（已知13）。
   // 真的那轮照旧排在首屏扫描之后。读的这一下里真的那轮已经开始、或手上已经有结果，就不拿旧的盖它。
   const showCachedExternal = useCallback(async () => {
@@ -277,10 +296,14 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     // 老电脑上两边的子进程同时冷启动，首页那几张工具卡反而出得更慢。等的这阵先摆上次的结果。
     if (enabled) {
       void showCachedExternal()
-      void load(false, true).catch(() => undefined).finally(() => { if (current) void refreshExternal().catch(() => undefined) })
+      void load(false, true).catch(() => undefined).finally(() => {
+        if (!current) return
+        void refreshExternal().catch(() => undefined)
+        void refreshAntigravity()
+      })
     }
-    return () => { current = false; active.current = false; request.invalidate(); externalRequest.invalidate() }
-  }, [enabled, load, refreshExternal, showCachedExternal])
+    return () => { current = false; active.current = false; request.invalidate(); externalRequest.invalidate(); antigravityRequest.invalidate() }
+  }, [enabled, load, refreshExternal, refreshAntigravity, showCachedExternal])
   useEffect(() => {
     if (!bridge) return
     const update = (key: string, label: string, percent?: number, logLine = label) => setJobs((current) => {
@@ -311,6 +334,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       bridge.onExternalClientInstallProgress((event) => update(event.tool, event.message, event.percent ?? undefined)),
       // Windows 上打开 Claude Desktop 前先替它放程序，下载那段替掉工具行上的「正在打开客户端」。
       bridge.onExternalClientLaunchProgress((event) => update(`launch:${event.tool}`, clientLaunchProgressLabel(event))),
+      bridge.onAntigravityInstallProgress((event) => update(antigravityJobKey(event.target), antigravityProgressLabel(event), event.percent ?? undefined)),
       bridge.onCodexDesktopStatus((event) => {
         desktopRevision.invalidate()
         latestDesktop.current = event.status
@@ -380,5 +404,5 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     }
     return outcome
   }, [markCancelling])
-  return { snapshot, loading, error, failures, refresh, refreshConfig, refreshSavedConfig, externalClients, externalLoading, externalError, refreshExternal, noteExternalLaunched, jobs, run, cancel, setSnapshot }
+  return { snapshot, loading, error, failures, refresh, refreshConfig, refreshSavedConfig, externalClients, externalLoading, externalError, refreshExternal, noteExternalLaunched, antigravity, refreshAntigravity, noteAntigravityStatus, jobs, run, cancel, setSnapshot }
 }

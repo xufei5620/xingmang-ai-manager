@@ -103,7 +103,7 @@ export function assertCompleteAntigravityEnvironment(environment: AntigravityGat
   for (const name of antigravityGatewayVariableNames) {
     const value: unknown = environment[name]
     if (typeof value !== 'string' || !value || /[\0\r\n]/.test(value)) {
-      throw new Error('Antigravity 的设置不完整，未修改当前用户的环境变量')
+      throw new Error('Antigravity 的连接设置不完整，未作任何修改')
     }
   }
 }
