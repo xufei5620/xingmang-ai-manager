@@ -139,7 +139,7 @@
 - `antigravity-gateway.ts` — 算出写给 Antigravity 的四个「企业网关」变量（地址、密钥、`genai` 协议、型号菜单）：地址只收中转某条线路自己的 https 裸域，密钥不许带空白、引号、`%`、`$` 和控制字符，菜单是这把密钥当时列出的全部型号（照 `isCliModelName` 收窄），默认 `gemini-3.8-flash` 排第一；有一样不对整份不给。实测过的行为（它会改写认得的型号名、只认环境变量）写在文件开头
 - `antigravity-windows-environment.ts` — Windows 上把那四个变量写进当前用户的环境变量（`HKCU\Environment`，一律 REG_SZ，不提权）并通知系统；值经子进程环境交给 PowerShell（I1），四个都没变就不写也不通知，别的 `AGY_*` 不碰；受限语言模式走注册表命令和 setx。本进程的环境不跟着改，免得密钥带进星芒之后起的每个子进程
 - `antigravity-macos-environment.ts` — Mac 上的对应：四个值放进产品目录 `Antigravity/` 下只有本人能读的 `gateway.sh` / `gateway.fish`（0600，内容没变不重写），登录 shell 的启动文件末尾只追加一段读它的标记（和「终端里敲 claude」那段分开标，选哪个文件、fish 的 conf.d 照 `macos-shell-profile.ts`），密钥不进 `~/.zprofile`；同一段还把 agy 的位置 `$HOME/.local/bin` 加在 PATH 最后（已有就不加）。文件都走 safe-local-data（I8），dotfiles 链接过来的启动文件拒绝不跟。从程序坞打开的桌面端不读这些，由星芒打开时交给它
-- `antigravity-cli-release.ts` — agy 官方版本清单的读法：按平台和架构挑清单（Windows x64/arm64、Mac x64/arm64），只收 16 KB 以内、版本号和构建号形状对、下载地址与按版本拼出来的谷歌存储地址一字不差、SHA-512 是 128 位十六进制的清单。只是纯函数，下载、核签名、放进 `%LOCALAPPDATA%\agy\bin` / `~/.local/bin` 在下一步
+- `antigravity-cli-release.ts` — agy 官方版本清单的读法：按平台和架构挑清单（Windows x64/arm64、Mac x64/arm64），只收 16 KB 以内、版本号和构建号形状对、下载地址与按版本拼出来的谷歌存储地址一字不差、SHA-512 是 128 位十六进制的清单。只是纯函数，下载、核签名、放进 `%LOCALAPPDATA%\agy\bin` / `~/.local/bin` 在下一步。`scripts/sync-antigravity-cli-cos.cjs` 定时把同一批谷歌签名的原件放进存储桶，读清单的规矩照抄这里（两处一起改）
 
 ## 托管密钥的分组与换新
 - `managed-cli-groups.ts` — 给每个工具和画图挑账号里用哪个分组：xm 站分组只按名字认（没有编号），服务状态文件里的分组对照让站上改名时不用等发版；订阅分组、历史账号那套后端的平台字段也在这里判。签 Key、对话凭据、账号页都用它
