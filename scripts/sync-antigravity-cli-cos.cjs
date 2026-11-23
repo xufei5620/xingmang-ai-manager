@@ -34,7 +34,7 @@ const OFFICIAL_HOSTS = Object.freeze([new URL(MANIFEST_ORIGIN).hostname, new URL
 // Keep the binaries inside the already authorized manager prefix (docs/cos-sync-policy.json).
 const PREFIX = 'xingmang/offline/antigravity-cli'
 const PRODUCT = 'antigravity-cli'
-// 1.5.15 的 agy.exe、tar.gz 都是几十 MB；再小就不是程序，再大就不是这个程序。
+// 11-23 真机试跑：1.5.15 的 agy.exe 两百三四十 MB，Mac 的 tar.gz 九十 MB 上下；再小就不是程序，再大就不是这个程序。
 const MIN_ARTIFACT_BYTES = 1024 * 1024
 const MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
 const MAX_MANIFEST_BYTES = 16 * 1024
