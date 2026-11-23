@@ -29,6 +29,9 @@ def summarize(body):
     summary = {'keys': sorted(parsed.keys())}
     if 'model' in parsed:
         summary['model'] = parsed['model']
+    for key in ('reasoning_effort', 'reasoning', 'thinking', 'extra_body'):
+        if key in parsed:
+            summary[key] = parsed[key]
     if isinstance(parsed.get('generationConfig'), dict):
         summary['generationConfig'] = parsed['generationConfig']
     tools = parsed.get('tools')
