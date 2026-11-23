@@ -1,6 +1,7 @@
 import fc from 'fast-check'
 import { describe, expect, it, vi } from 'vitest'
 import type { AntigravityManagedKey } from './account-cli-provisioner'
+import { staleAccountMessage, type QueuedAccountWork } from './account-work-gate'
 import type { AntigravityEnvironmentValues, AntigravityGatewayEnvironment } from './antigravity-gateway'
 import {
   antigravityCliLaunchQueueKey,
@@ -442,6 +443,20 @@ describe('createAntigravityService openDesktop on Windows', () => {
     const h = harness({ files: [windowsDesktop] })
     await expect(h.service.openDesktop(() => Promise.reject(new Error('服务暂时不可用')))).rejects.toThrow('服务暂时不可用')
     expect(h.launches).toEqual([])
+  })
+
+  it('neither writes settings nor opens anything once the account the click was queued for has changed', async () => {
+    const enqueued: Array<{ signal?: AbortSignal } | undefined> = []
+    const h = harness({ files: [windowsDesktop, windowsCli], overrides: { enqueue: (_key, task, options) => { enqueued.push(options); return task() } } })
+    const controller = new AbortController()
+    const changed: QueuedAccountWork = { signal: controller.signal, run: async () => { throw new Error(staleAccountMessage) }, isCurrent: () => false }
+    await expect(h.service.openDesktop(resolveKey, changed)).rejects.toThrow(staleAccountMessage)
+    await expect(h.service.openCli(windowsWorkspace, resolveKey, changed)).rejects.toThrow(staleAccountMessage)
+    // The queue drops a waiting open as soon as the account starts changing.
+    expect(enqueued).toEqual([{ signal: controller.signal }, { signal: controller.signal }])
+    expect(h.writes).toEqual([])
+    expect(h.launches).toEqual([])
+    expect(h.windowsTerminals).toEqual([])
   })
 })
 
