@@ -2,6 +2,9 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
   antigravityGatewayVariableNames,
+  assertCompleteAntigravityEnvironment,
+  type AntigravityEnvironmentValues,
+  type AntigravityEnvironmentWriteOutcome,
   type AntigravityGatewayEnvironment,
   type AntigravityGatewayVariableName,
 } from './antigravity-gateway'
@@ -24,10 +27,6 @@ const execFileAsync = promisify(execFile)
 //
 // 本进程的环境不跟着改：改了，星芒之后起的每个子进程（npm、别的命令行工具）都会带上这把 Gemini 密钥。
 // 星芒自己打开 Antigravity 时由打开的那一步把设置交给它。
-
-export type AntigravityEnvironmentWriteOutcome = 'written' | 'unchanged'
-
-export type AntigravityEnvironmentValues = Partial<Record<AntigravityGatewayVariableName, string>>
 
 export type PowerShellRunner = (script: string, env: NodeJS.ProcessEnv) => Promise<string>
 
@@ -198,14 +197,9 @@ export async function writeWindowsAntigravityEnvironment(
   options: WindowsAntigravityEnvironmentOptions = {},
 ): Promise<AntigravityEnvironmentWriteOutcome> {
   assertWindows(options.platform ?? process.platform)
+  assertCompleteAntigravityEnvironment(environment)
   const values: NodeJS.ProcessEnv = {}
-  for (const name of antigravityGatewayVariableNames) {
-    const value = environment[name]
-    if (typeof value !== 'string' || !value || /[\0\r\n]/.test(value)) {
-      throw new Error('Antigravity 的设置不完整，未修改当前用户的环境变量')
-    }
-    values[antigravityEnvironmentValueVariable(name)] = value
-  }
+  for (const name of antigravityGatewayVariableNames) values[antigravityEnvironmentValueVariable(name)] = environment[name]
   const run = options.run ?? runPowerShell
   return parseWriteAntigravityEnvironmentOutput(await run(buildWriteWindowsAntigravityEnvironmentScript(), {
     ...trustedCommandEnvironment(),

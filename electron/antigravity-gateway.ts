@@ -19,6 +19,12 @@ export type AntigravityGatewayVariableName = typeof antigravityGatewayVariableNa
 
 export type AntigravityGatewayEnvironment = Readonly<Record<AntigravityGatewayVariableName, string>>
 
+/** 写设置那一步的结果：四个都已经是这个值时什么都不写、也不通知系统，答 unchanged。 */
+export type AntigravityEnvironmentWriteOutcome = 'written' | 'unchanged'
+
+/** 读回来的设置：只有是字符串的那几个，没有的不出现。值里有密钥，只在主进程里用，不进日志、不过 IPC（I3）。 */
+export type AntigravityEnvironmentValues = Partial<Record<AntigravityGatewayVariableName, string>>
+
 /** yoyo 11-23 定的默认型号：菜单里有它就排第一，Antigravity 拿第一个当默认。 */
 export const antigravityDefaultModel = 'gemini-3.8-flash'
 
@@ -86,5 +92,18 @@ export function buildAntigravityGatewayEnvironment(input: AntigravityGatewayInpu
     AGY_LLM_GATEWAY_API_KEY: apiKey,
     AGY_LLM_GATEWAY_WIRE_PROTOCOL: antigravityWireProtocol,
     AGY_LLM_GATEWAY_MODELS: menu.join(','),
+  }
+}
+
+/**
+ * 写之前再核一遍整份：四个都在、都不空、都不跨行。调用方本该只拿 buildAntigravityGatewayEnvironment 的结果来，
+ * 这里挡的是别的路子拼出来的半份，免得留下一半新一半旧的设置。
+ */
+export function assertCompleteAntigravityEnvironment(environment: AntigravityGatewayEnvironment): void {
+  for (const name of antigravityGatewayVariableNames) {
+    const value: unknown = environment[name]
+    if (typeof value !== 'string' || !value || /[\0\r\n]/.test(value)) {
+      throw new Error('Antigravity 的设置不完整，未修改当前用户的环境变量')
+    }
   }
 }

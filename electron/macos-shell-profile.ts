@@ -157,7 +157,7 @@ export interface EnsureMacosShellProfileOptions {
   skipped?: (displayPath: string, error: unknown) => void
 }
 
-function defaultLoginShell(): string | null {
+export function defaultLoginShell(): string | null {
   try {
     return os.userInfo().shell
   } catch {
@@ -171,7 +171,7 @@ function defaultLoginShell(): string | null {
  * else, a live link, a folder or a file it cannot read included, ends the
  * search for bash, so it ends it here too.
  */
-function loginFileExists(filePath: string): boolean {
+export function loginFileExists(filePath: string): boolean {
   try {
     fs.statSync(filePath)
     return true
@@ -183,7 +183,7 @@ function loginFileExists(filePath: string): boolean {
 }
 
 /** Whether anything, a link included, is at this path; the way Linux decides it (linux-shell-profile.ts). */
-function pathExists(filePath: string): boolean {
+export function pathExists(filePath: string): boolean {
   try {
     fs.lstatSync(filePath)
     return true
@@ -192,7 +192,7 @@ function pathExists(filePath: string): boolean {
   }
 }
 
-function fishConfigDirectory(env: NodeJS.ProcessEnv, homeDirectory: string): string {
+export function fishConfigDirectory(env: NodeJS.ProcessEnv, homeDirectory: string): string {
   const configHome = env.XDG_CONFIG_HOME?.trim()
   const base = configHome && !configHome.includes('\0') && path.posix.isAbsolute(configHome)
     ? configHome
