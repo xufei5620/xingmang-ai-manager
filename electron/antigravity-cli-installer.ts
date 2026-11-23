@@ -65,15 +65,27 @@ export interface AntigravityCliDownloadProgress {
 /** 管理员身份打开的星芒不往用户自己的文件夹里放程序（见文件头）。 */
 export class AntigravityCliElevatedSessionError extends Error {
   constructor() {
-    super('星芒正以管理员身份运行，不能把 Antigravity 命令行装进你的用户文件夹。请用普通方式重新打开星芒再装。')
+    super('星芒正以管理员身份运行，无法安装、设置或打开 Antigravity。请以普通方式重新打开星芒。')
     this.name = 'AntigravityCliElevatedSessionError'
+  }
+}
+
+/**
+ * 从谷歌原址下回来的也不是谷歌签的。还是 NativeCliPublisherMismatchError（调用方和测试按它认「别人的程序」），
+ * 只是换成客户看得懂的那句：共用的那句里有「原生 CLI」这类技术词。
+ */
+export class AntigravityCliNotOfficialError extends NativeCliPublisherMismatchError {
+  constructor() {
+    super()
+    this.name = 'AntigravityCliNotOfficialError'
+    this.message = '下载的 Antigravity 命令行不是 Google 官方签名版本，已删除，未进行安装'
   }
 }
 
 /** Windows 上 agy.exe 正开着，替换不了。 */
 export class AntigravityCliInUseError extends Error {
   constructor() {
-    super('Antigravity 命令行正在运行，请先关掉它再装。')
+    super('Antigravity 命令行正在运行，请先关闭后再安装')
     this.name = 'AntigravityCliInUseError'
   }
 }
@@ -144,9 +156,11 @@ export function resolveAntigravityCliInstallTarget(
   return null
 }
 
+const downloadTimeoutText = '连接或下载超时'
+
 function compactError(error: unknown): string {
   const candidate = error as { name?: unknown; message?: unknown }
-  if (candidate?.name === 'AbortError' || candidate?.name === 'TimeoutError' || error instanceof DownloadStalledError) return '连接或下载超时'
+  if (candidate?.name === 'AbortError' || candidate?.name === 'TimeoutError' || error instanceof DownloadStalledError) return downloadTimeoutText
   const message = typeof candidate?.message === 'string' ? candidate.message : String(error)
   return message.replace(/\s+/g, ' ').trim().slice(0, 300) || '下载失败'
 }
@@ -279,8 +293,10 @@ async function downloadFromGoogle(context: InstallContext): Promise<StagedAntigr
     await fs.promises.rm(filePath, { force: true }).catch(() => undefined)
     options.signal?.throwIfAborted()
     // Somebody else's build is reported as such, not as a download problem worth retrying.
-    if (error instanceof NativeCliPublisherMismatchError || error instanceof DarwinCliProvenanceError) throw error
-    throw new Error(`Antigravity 命令行下载或签名校验失败：${compactError(error)}`, { cause: error })
+    if (error instanceof NativeCliPublisherMismatchError) throw new AntigravityCliNotOfficialError()
+    if (error instanceof DarwinCliProvenanceError) throw error
+    // 原因（摘要不符、跳转）留在 cause 里，随错误一起进运行日志；客户只看这一句，超时的另说一句检查网络。
+    throw new Error(compactError(error) === downloadTimeoutText ? 'Antigravity 命令行下载超时，请检查网络后重试' : 'Antigravity 命令行下载未完成或校验未通过，请稍后重试', { cause: error })
   }
 }
 
@@ -306,7 +322,7 @@ async function placeVerifiedExecutable(staged: StagedAntigravityCli, target: Ant
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
       throw error
     }
-    if (!stats.isFile() || stats.isSymbolicLink()) throw new Error(`${target.executablePath} 已经被别的东西占用，星芒不覆盖它`)
+    if (!stats.isFile() || stats.isSymbolicLink()) throw new Error('Antigravity 命令行的安装位置已被其他文件占用，星芒不会覆盖')
   }
   assertDestinationReplaceable()
   const extension = platform === 'win32' ? '.exe' : ''
@@ -332,12 +348,12 @@ export async function installAntigravityCli(options: InstallAntigravityCliOption
   const architecture = options.architecture ?? process.arch
   const antigravityPlatform = resolveAntigravityCliPlatform(platform, architecture)
   if (!antigravityPlatform || (architecture !== 'x64' && architecture !== 'arm64')) {
-    throw new Error('这台电脑的系统或芯片不支持 Antigravity 命令行')
+    throw new Error('当前电脑的系统或处理器不支持 Antigravity')
   }
   if (platform === 'win32' && options.executionMode !== 'same-user') throw new AntigravityCliElevatedSessionError()
   const env = options.env ?? process.env
   const target = options.target ?? resolveAntigravityCliInstallTarget(platform, env, options.homeDirectory ?? os.homedir())
-  if (!target) throw new Error('这台电脑的系统或芯片不支持 Antigravity 命令行')
+  if (!target) throw new Error('当前电脑的系统或处理器不支持 Antigravity')
   const directory = await (options.createTemporaryDirectory ? options.createTemporaryDirectory() : createTrustedTemporaryDirectory('antigravity-cli'))
   try {
     const context: InstallContext = { platform: antigravityPlatform, architecture, directory, fetchImpl: options.fetchImpl ?? fetch, options }

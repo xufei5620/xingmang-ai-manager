@@ -320,7 +320,7 @@ describe('Antigravity CLI Developer ID check', () => {
     const runProcess = vi.fn<(plan: AntigravityCliDarwinProcess) => Promise<CommandResult>>(async () => success)
     const failure = await verifyDarwinAntigravityCli(writeExecutable(header), architecture, runProcess).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(DarwinCliProvenanceError)
-    expect((failure as Error).message).toBe('Antigravity 命令行的芯片和这台 Mac 对不上')
+    expect((failure as Error).message).toBe('下载的 Antigravity 命令行与这台 Mac 的处理器不匹配，未进行安装')
     expect(runProcess).not.toHaveBeenCalled()
   })
 
@@ -329,7 +329,7 @@ describe('Antigravity CLI Developer ID check', () => {
     const failure = await verifyDarwinAntigravityCli(writeExecutable(thin(arm64)), 'arm64', async () => { throw refusedBy })
       .catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(DarwinCliProvenanceError)
-    expect((failure as Error).message).toBe('Antigravity 命令行的签名不是谷歌（EQHXZ8M8AV）的 Developer ID')
+    expect((failure as Error).message).toBe('下载的 Antigravity 命令行不是 Google 官方签名版本，已删除，未进行安装')
     expect((failure as Error).cause).toBe(refusedBy)
   })
 

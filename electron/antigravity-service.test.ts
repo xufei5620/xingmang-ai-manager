@@ -476,7 +476,7 @@ describe('createAntigravityService openDesktop on macOS', () => {
   it('refuses a bundle that is not Google\'s and writes nothing', async () => {
     for (const exitCode of [1, 3]) {
       const h = harness({ platform: 'darwin', directories: [macBundle], files: [macExecutable], codesignExit: exitCode })
-      await expect(h.service.openDesktop(resolveKey)).rejects.toThrow('不是谷歌官方签名的原版')
+      await expect(h.service.openDesktop(resolveKey)).rejects.toThrow('不是 Google 官方签名版本，星芒不会打开它')
       expect(h.writes).toEqual([])
       expect(h.launches).toEqual([])
     }
@@ -484,7 +484,7 @@ describe('createAntigravityService openDesktop on macOS', () => {
 
   it('refuses a bundle executable name that leaves Contents/MacOS', async () => {
     const h = harness({ platform: 'darwin', directories: [macBundle], files: [macExecutable], bundleExecutable: '../../../../bin/sh' })
-    await expect(h.service.openDesktop(resolveKey)).rejects.toThrow('不是谷歌官方签名的原版')
+    await expect(h.service.openDesktop(resolveKey)).rejects.toThrow('不是 Google 官方签名版本，星芒不会打开它')
     expect(h.launches).toEqual([])
   })
 
@@ -517,7 +517,7 @@ describe('createAntigravityService openCli', () => {
 
   it('refuses an agy that is not Google\'s before writing settings', async () => {
     const h = harness({ files: [windowsCli], overrides: { verifyWindowsCli: async () => { throw new Error('签名发布者不一致') } } })
-    await expect(h.service.openCli(windowsWorkspace, resolveKey)).rejects.toThrow('不是谷歌官方签名的原版')
+    await expect(h.service.openCli(windowsWorkspace, resolveKey)).rejects.toThrow('不是 Google 官方签名版本，星芒不会打开它')
     expect(h.writes).toEqual([])
     expect(h.windowsTerminals).toEqual([])
   })
