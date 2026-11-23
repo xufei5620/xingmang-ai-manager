@@ -33,7 +33,7 @@ export const antigravityDefaultModel = 'gemini-3.8-flash'
 const antigravityWireProtocol = 'genai'
 
 // 远程地址 Antigravity 只认 https（http 只许本机），后面的 /v1beta 它自己接，所以这里只收站点的裸域。
-const invalidGatewayUrlMessage = '中转地址无效，未修改 Antigravity 的设置'
+const invalidGatewayUrlMessage = '连接地址无效，未修改 Antigravity 的设置'
 
 /**
  * 型号菜单就是 AGY_LLM_GATEWAY_MODELS：逗号隔开，整份就是菜单，第一个是默认。yoyo 11-23 定：这把密钥当时能用的

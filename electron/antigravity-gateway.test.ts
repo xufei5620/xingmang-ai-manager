@@ -49,7 +49,7 @@ describe('normalizeAntigravityGatewayUrl', () => {
     ['a retired alias', 'https://38.147.105.28:8443'],
     ['no URL at all', 'xm.solov.cc'],
   ])('refuses %s', (_name, value) => {
-    expect(() => normalizeAntigravityGatewayUrl(value)).toThrow('中转地址无效，未修改 Antigravity 的设置')
+    expect(() => normalizeAntigravityGatewayUrl(value)).toThrow('连接地址无效，未修改 Antigravity 的设置')
   })
 })
 
@@ -89,7 +89,7 @@ describe('buildAntigravityGatewayEnvironment', () => {
 
   it('refuses an address that is not a relay line before looking at the key', () => {
     expect(() => buildAntigravityGatewayEnvironment({ baseUrl: 'https://example.com', apiKey: '', models: [] }))
-      .toThrow('中转地址无效')
+      .toThrow('连接地址无效')
   })
 })
 
