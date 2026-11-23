@@ -22,6 +22,7 @@ import {
   type AntigravityServiceDependencies,
 } from './antigravity-service'
 import { CommandRunnerError, type CommandResult, type CommandSpec, type RunCommandOptions } from './command-runner'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import type { WindowsCliLaunchRequest } from './windows-elevation'
 import type { MacosTerminalLaunchPlan } from './macos-platform'
 
@@ -235,6 +236,25 @@ describe('antigravity-service pure helpers', () => {
 
   it('looks for the app in /Applications first, then ~/Applications', () => {
     expect(antigravityDesktopMacCandidates(macHome)).toEqual([macBundle, '/Users/yoyo/Applications/Antigravity.app'])
+  })
+
+  it('lists running Windows apps in a way constrained language mode and a narrowed module path still run', () => {
+    const script = buildAntigravityDesktopWindowsProcessScript()
+    const lines = script.split('\n')
+    const imports = lines.findIndex((line) => line.startsWith('Import-Module'))
+    const stop = lines.findIndex((line) => line.includes('$ErrorActionPreference'))
+    const listing = lines.findIndex((line) => line.includes('Get-Process'))
+    // The UTF-8 line is refused in ConstrainedLanguage, so it runs only in FullLanguage.
+    expect(lines[0]).toBe(powerShellUtf8OutputStatement)
+    // Get-Process lives in Management; under trustedCommandEnvironment autoloading it costs seconds.
+    expect(lines[imports]).toMatch(/^Import-Module -Name 'Microsoft\.PowerShell\.Utility', 'Microsoft\.PowerShell\.Management'/)
+    expect(imports).toBeLessThan(listing)
+    expect(stop).toBeLessThan(listing)
+    // A Chinese user name in the path stays readable where the output is left in the console code page.
+    expect(script.endsWith(buildPowerShellJsonOutputStatements('ConvertTo-Json -InputObject @($paths) -Compress').join('\n'))).toBe(true)
+    expect(script).not.toMatch(/pscustomobject|Add-Type|\[Environment\]::/i)
+    const escaped = JSON.stringify(['C:\\Users\\\u5f20\u4e09\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe']).replace(/[^\x00-\x7f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+    expect(parseAntigravityDesktopWindowsProcesses(escaped, 'C:\\Users\\张三\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe')).toBe(true)
   })
 
   it('reads the running Windows app paths case-insensitively', () => {

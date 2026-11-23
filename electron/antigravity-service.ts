@@ -38,6 +38,8 @@ import { readWindowsAntigravityEnvironment, writeWindowsAntigravityEnvironment }
 import { CommandRunnerError, commandEnvironment, runCommand, trustedCommandEnvironment, type CommandResult, type CommandSpec } from './command-runner'
 import { darwinDeepVerificationTimeoutMs, darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 import { installMacosDesktopApp } from './macos-desktop-app-installer'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsExplorerExecutable } from './system-shell'
 import { verifyOfficialNativeCliFile } from './trusted-native-cli'
 import { encodeWindowsPowerShellCommand, launchCliPowerShell, resolveWindowsPowerShellExecutable, type WindowsCliExecutionMode, type WindowsCliLaunchRequest } from './windows-elevation'
@@ -218,13 +220,19 @@ export function antigravityDesktopMacCandidates(userHome: string, systemApplicat
   ]
 }
 
-/** Windows 上开着的 Antigravity.exe 各在哪里：只列路径，交给调用方比。 */
+/**
+ * Windows 上开着的 Antigravity.exe 各在哪里：只列路径，交给调用方比。开着应用控制策略的电脑上 PowerShell 跑在
+ * 受限语言模式里：设 UTF-8 那句只在完整模式下做，路径里的中文（用户名）在受限模式下转成 \uXXXX 再输出，
+ * 主进程读回来是同一个路径（powershell-constrained-language.ts）。模块按名字先导入：收窄过的环境里自动加载
+ * 一次要十几秒，比打开前这一问的时限还长。
+ */
 export function buildAntigravityDesktopWindowsProcessScript(): string {
   return [
-    '$ErrorActionPreference = "Stop"',
-    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    powerShellUtf8OutputStatement,
+    buildPowerShellModuleImportStatement(['Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management']),
+    "$ErrorActionPreference = 'Stop'",
     '$paths = @(Get-Process -Name Antigravity -ErrorAction SilentlyContinue | ForEach-Object { try { [string]$_.Path } catch {} } | Where-Object { $_ })',
-    'ConvertTo-Json -InputObject @($paths) -Compress',
+    ...buildPowerShellJsonOutputStatements('ConvertTo-Json -InputObject @($paths) -Compress'),
   ].join('\n')
 }
 
