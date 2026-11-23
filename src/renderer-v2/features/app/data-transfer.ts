@@ -95,6 +95,18 @@ export function anonymousUsageFrom(
   return preview.anonymousUsage
 }
 
+/** 这次要写的长期嘱咐：这台电脑上没写过的照文件换；写过另一段的，客户在询问框里选了用文件中的才换。 */
+export function standingInstructionsFrom(
+  preview: Pick<DataTransferImportPreview, 'standingInstructions' | 'conflictingStandingInstructions'>,
+  overwrite: boolean,
+): string | undefined {
+  if (overwrite && preview.conflictingStandingInstructions !== undefined) return preview.conflictingStandingInstructions
+  return preview.standingInstructions
+}
+
+// 第三轮复查第 7 条贴给 yoyo 的字：三家里有的写上了、有的没写上（标记被改坏、编码认不出）时接在设置那句后面。
+const standingInstructionsMissedText = '给 AI 的长期嘱咐已导入，但部分工具未能写入，请在「设置 › 工具管理」中再次保存。'
+
 /** 导入作品那一步怎么样了。missing / unreadable：文件里说带了作品，旁边的「作品」文件夹没有或读不出来。 */
 export type DataTransferWorksOutcome =
   | { kind: 'done'; added: number; existing: number; failed: number }
@@ -134,6 +146,8 @@ export interface DataTransferImportOutcome {
   skipped: number
   signedIn: boolean
   settingsChanged: boolean
+  /** 长期嘱咐导进来了，但三家里有的没写上。 */
+  standingInstructionsMissed?: boolean
 }
 
 const deleteThenRetry = '请在「创作」中删除部分不需要的记录，再次点击「导入」。'
@@ -184,6 +198,7 @@ function canvasProjectsImportMessage(projects: DataTransferCanvasProjectsOutcome
 
 export function dataTransferImportMessage(outcome: DataTransferImportOutcome): string {
   const { fileConversations, fileVideos = 0, fileWorks = 0, fileCanvasProjects = 0, signedIn, settingsChanged } = outcome
+  const instructionsNote = outcome.standingInstructionsMissed ? standingInstructionsMissedText : ''
   if (!signedIn && (fileConversations || fileVideos || fileWorks || fileCanvasProjects)) {
     const parts = [
       fileConversations ? `${fileConversations} 个对话` : '',
@@ -191,7 +206,7 @@ export function dataTransferImportMessage(outcome: DataTransferImportOutcome): s
       fileWorks ? `${fileWorks} 件作品` : '',
       fileCanvasProjects ? `${fileCanvasProjects} 个画布项目` : '',
     ].filter(Boolean)
-    return `${settingsChanged ? '设置已导入。' : ''}文件中的 ${joinWithAnd(parts)}需登录后再次点击「导入」。`
+    return `${settingsChanged ? '设置已导入。' : ''}${instructionsNote}文件中的 ${joinWithAnd(parts)}需登录后再次点击「导入」。`
   }
   const rest = [
     videosImportMessage(outcome.videosAdded ?? 0, outcome.videosSkipped ?? 0),
@@ -200,7 +215,7 @@ export function dataTransferImportMessage(outcome: DataTransferImportOutcome): s
   ].join('')
   // 文件里只有视频、作品、画布项目，设置又跟本机一样：不说「无需修改」，只说它们怎么样了。
   if (!fileConversations && !settingsChanged && (fileVideos || outcome.works || outcome.canvasProjects)) return rest || '文件中的设置与本机一致，无需修改。'
-  return `${conversationsImportMessage(outcome)}${rest}`
+  return `${conversationsImportMessage(outcome)}${instructionsNote}${rest}`
 }
 
 function conversationsImportMessage(outcome: DataTransferImportOutcome): string {

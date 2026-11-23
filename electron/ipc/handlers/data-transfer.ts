@@ -123,7 +123,7 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
     return { outputPath: result.filePath, ...counts }
   })
   // 只读、只解析，什么都不写：对话、视频交给渲染层逐条校验后合并，设置由渲染层走 settings:save（匿名使用统计
-  // 走系统界面设置那条），改过的那几项先问用户。作品在这里只看旁边有没有「作品」文件夹、清单读不读得出来，
+  // 走系统界面设置那条，长期嘱咐走保存嘱咐那条），改过的那几项先问用户。作品在这里只看旁边有没有「作品」文件夹、清单读不读得出来，
   // 导不导等渲染层把对话和设置弄完再走 data-transfer:import-works。
   registerTrustedHandler('data-transfer:import', async () => {
     pendingWorks = null
@@ -160,10 +160,14 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
         if (expectedProjects) canvasProjects = { count: expectedProjects, state: inspection.state }
       }
     }
+    const stored = service.readStoredConfig()
     return {
       conversations: parsed.conversations,
       phrases: parsed.phrases,
-      ...planPortableSettingsImport(service.readStoredConfig(), parsed.settings, { here: anonymousUsageHere(), incoming: parsed.anonymousUsage }),
+      ...planPortableSettingsImport(stored, parsed.settings, { here: anonymousUsageHere(), incoming: parsed.anonymousUsage }, {
+        here: stored.standingInstructions ?? '',
+        ...(parsed.standingInstructions ? { incoming: parsed.standingInstructions } : {}),
+      }),
       ...(parsed.videoProjects.length ? { videoProjects: parsed.videoProjects } : {}),
       ...(works ? { works } : {}),
       ...(canvasProjects ? { canvasProjects } : {}),

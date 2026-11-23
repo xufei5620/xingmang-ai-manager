@@ -2025,6 +2025,35 @@ describe('registerIpcHandlers', () => {
     } finally { fs.rmSync(directory, { recursive: true, force: true }) }
   })
 
+  it('carries the standing instructions across computers and asks before replacing ones written here', async () => {
+    // 第三轮复查第 7 条：「给 AI 的长期嘱咐」以前「迁移到新电脑」不带它。
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
+    try {
+      const service = serviceStub()
+      const { dispose } = register(service, 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { downloadsDirectory: () => directory })
+      const exportData = electronMocks.handlers.get('data-transfer:export')!
+      const importData = electronMocks.handlers.get('data-transfer:import')!
+      const exported = path.join(directory, 'instructions.json')
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, standingInstructions: '回答请尽量简洁。' })
+      electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: exported })
+      await exportData(trustedEvent(), { conversations: [] })
+      expect(JSON.parse(fs.readFileSync(exported, 'utf8')).settings.standingInstructions).toBe('回答请尽量简洁。')
+
+      // 新电脑上没写过：直接换，不问。
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig })
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [exported] })
+      await expect(importData(trustedEvent())).resolves.toMatchObject({ standingInstructions: '回答请尽量简洁。', conflictLabels: [] })
+
+      // 写过另一段：只进询问框。
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, standingInstructions: '用中文回答。' })
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [exported] })
+      const asked = await importData(trustedEvent())
+      expect(asked).toMatchObject({ conflictingStandingInstructions: '回答请尽量简洁。', conflictLabels: ['给 AI 的长期嘱咐'] })
+      expect(asked).not.toHaveProperty('standingInstructions')
+      dispose()
+    } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  })
+
   describe('works in the data transfer', () => {
     const summary = { images: 96, videos: 30, audios: 2, bytes: 3_400_000_000 }
     function signedInAccount(userId = 7) {

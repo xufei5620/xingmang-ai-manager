@@ -934,6 +934,13 @@ export interface DataTransferImportPreview {
   anonymousUsage?: boolean
   /** 同上，这台电脑上关过、文件里是开的：和 conflictingSettings 一起先问，设置名已经在 conflictLabels 里。 */
   conflictingAnonymousUsage?: boolean
+  /**
+   * 文件里「给 AI 的长期嘱咐」，这台电脑上还没写过、可以直接换的（第三轮复查第 7 条）。它要写进三家工具的说明文件，
+   * 设置页走 config:save-standing-instructions 写，不进 settings:save。旧文件没有、和这台一样的都没有这一项。
+   */
+  standingInstructions?: string
+  /** 同上，这台电脑上写过另一段：和 conflictingSettings 一起先问，设置名已经在 conflictLabels 里。 */
+  conflictingStandingInstructions?: string
   /** 文件里「创作」的视频，渲染层逐条认过再合并。旧文件没有这一项。 */
   videoProjects?: VideoStudioProjectFile[]
   /** 导出时带了作品才有。 */

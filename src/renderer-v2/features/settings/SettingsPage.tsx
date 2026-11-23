@@ -46,7 +46,7 @@ import { shortcutTools } from '../../registry/tools'
 import { AppUninstallRow } from '../app/AppUninstall'
 import { BackupCard } from './BackupCard'
 import { StorageCard } from './StorageCard'
-import { StandingInstructionsField } from './StandingInstructions'
+import { StandingInstructionsField, standingInstructionsMissedLines } from './StandingInstructions'
 import { VersionCard } from './VersionCard'
 import { RelayRouteRestartNotice, RelayRouteRow } from '../app/RelayRouteSettings'
 import { ThemeCards, type ThemeCardValue } from '../app/ThemeCards'
@@ -63,6 +63,7 @@ import {
   dataTransferExportMessage,
   dataTransferImportMessage,
   settingsPatchFrom,
+  standingInstructionsFrom,
   worksCount,
   worksExportingText,
   worksExportNoteFor,
@@ -475,6 +476,8 @@ export function SettingsPage({
   // 「搬作品改」：作品可能要复制好几分钟，那一行下面写一句正在做什么；这期间界面不让主进程收掉（省内存那一下）。
   const [worksBusy, setWorksBusy] = useState<'export' | 'import' | null>(null)
   useBackgroundWork('data-transfer-works', worksBusy !== null)
+  // 导入的长期嘱咐有工具没写上：「工具管理」那一格下面照样列出是哪家、为什么，保存按钮可以直接再点（第三轮复查第 7 条）。
+  const [standingInstructionsMissed, setStandingInstructionsMissed] = useState<{ lines: string[] } | null>(null)
   // 对话先导入：它更可能出错，出错时设置还没动。作品最后导：最慢，也最可能缺空间，前面的不受它影响。
   const applyImport = async (
     preview: DataTransferImportPreview,
@@ -510,6 +513,26 @@ export function SettingsPage({
         throw settingsFailed()
       }
     }
+    // 「给 AI 的长期嘱咐」也不在 settings.json：走设置页保存嘱咐那一条，写进三家工具的说明文件。
+    const instructions = standingInstructionsFrom(preview, overwrite)
+    let instructionsMissed = false
+    if (instructions !== undefined) {
+      const saved = await api.saveStandingInstructions(instructions).catch((error: unknown) => {
+        setSaveError(errorMessage(error))
+        throw settingsFailed()
+      })
+      const missed = standingInstructionsMissedLines(saved)
+      // 三家都没写上时这段话没记下：跟设置没存上一样说，页顶红条说是哪家、为什么。
+      if (!saved.tools.some((tool) => tool.outcome !== 'skipped' && tool.outcome !== 'failed')) {
+        setSaveError(missed.join(' '))
+        throw settingsFailed()
+      }
+      resource.setData((previous) =>
+        previous ? { ...previous, settings: { ...previous.settings, standingInstructions: saved.text || undefined } } : previous,
+      )
+      instructionsMissed = missed.length > 0
+      setStandingInstructionsMissed(instructionsMissed ? { lines: missed } : null)
+    }
     const { works, canvasProjects } = chatTransfer ? await importWorks(preview) : {}
     // 导进来的画布项目里生成的作品也进了作品库，创作页同样要重读。
     if ((works?.kind === 'done' && works.added) || (canvasProjects?.kind === 'done' && canvasProjects.added)) chatTransfer?.reloadCreate()
@@ -526,7 +549,8 @@ export function SettingsPage({
       ...(works ? { works } : {}),
       ...(canvasProjects ? { canvasProjects } : {}),
       signedIn: Boolean(chatTransfer),
-      settingsChanged: Boolean(patch) || anonymousUsage !== undefined,
+      settingsChanged: Boolean(patch) || anonymousUsage !== undefined || instructions !== undefined,
+      ...(instructionsMissed ? { standingInstructionsMissed: true } : {}),
     })
   }
   // 画布项目跟作品走同一次导入：要从「作品」里拿回项目生成的作品，空间也是一起估的。
@@ -1032,11 +1056,13 @@ export function SettingsPage({
           api={api}
           saved={settings.standingInstructions ?? ''}
           busy={Boolean(operation.busy)}
+          missedAfterImport={standingInstructionsMissed}
           save={(run, done) =>
             void operation.execute(
               'standing-instructions',
               async () => {
                 const result = await run()
+                setStandingInstructionsMissed(null)
                 resource.setData((previous) =>
                   previous
                     ? { ...previous, settings: { ...previous.settings, standingInstructions: result.text || undefined } }
