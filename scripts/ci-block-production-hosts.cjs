@@ -25,6 +25,7 @@ const path = require('node:path')
 
 const root = path.resolve(__dirname, '..')
 // 星芒自己的线上服务都在这两个域名下：账号站和线路是 solov.cc，更新目录是 shenfengwl.fun。
+// electron/third-party-user-agent.ts 只对这两个域名（和自家存储桶）带完整的 UA，两边由它的测试核对一致。
 const productionDomains = Object.freeze(['solov.cc', 'shenfengwl.fun'])
 // 客户端自己的源码：主进程、出货的渲染层，加上打包时写进 app-update.yml 的更新地址。
 const clientSourceDirectories = Object.freeze(['electron', path.join('src', 'renderer-v2')])
