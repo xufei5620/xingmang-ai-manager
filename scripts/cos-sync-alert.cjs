@@ -28,6 +28,8 @@ const WORKFLOWS = Object.freeze({
     impact: '星芒在 Mac 上装 OpenCode 时，桶里还是上一次同步成功的那一版：OpenCode 出了新版、桶里没跟上时，客户端照旧去 GitHub 下，国内时好时坏。' }),
   'sync-antigravity-cli-cos.yml': Object.freeze({ product: 'Antigravity 命令行',
     impact: '星芒替客户装 Antigravity 命令行（agy）时先从桶里下，桶里还是上一次同步成功的那一版：谷歌出了新版、桶里没跟上时，客户装到的是桶里那一版；某个平台在桶里一份都没有时，客户端照旧去谷歌下，国内多半下不动。' }),
+  'sync-antigravity-desktop-cos.yml': Object.freeze({ product: 'Antigravity 桌面端',
+    impact: '星芒替客户装 Antigravity 桌面端时先从桶里下，桶里还是上一次同步成功的那一版：谷歌出了新版、桶里没跟上超过 24 小时时，客户端先去谷歌下，谷歌下不动再回头装桶里那一版；某个平台在桶里一份都没有时，客户端照旧去谷歌下，国内多半下不动。' }),
   'sync-claude-components-cos.yml': Object.freeze({ product: 'Claude 桌面端的工作区和 Mac 程序',
     impact: '星芒（0.2.25 起）替客户放 Claude 桌面端的 Cowork 工作区、Mac 上的 Claude Code 程序时只从桶里下，桶里还是上一次同步成功的那几版：Claude 换了新的工作区或 Claude Code 版本、桶里没跟上时，星芒什么都不放，客户的 Claude 照旧自己去官网下，国内多半下不动（Cowork 卡在下载工作区，Mac 上聊天和 Code 用不了）。' }),
 })

@@ -572,6 +572,8 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
   }
 
   async function installDesktopNow(onProgress?: (progress: AntigravityProgress) => void): Promise<void> {
+    // 两个平台都先从存储桶下；为什么没走通只进运行日志（detail 开头是桶里那个包的名字）。
+    const bucket = { onFallback: (detail: string) => log('warn', 'antigravity.desktop.bucket-fallback', 'Antigravity 桌面端存储桶这一路没走通，改去谷歌下载', { detail }) }
     if (platform === 'win32') {
       const installed = await (deps.installDesktopWindows ?? installAntigravityDesktopWindows)({
         executionMode: deps.executionMode,
@@ -581,6 +583,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
         homeDirectory: userHome,
         fetchImpl: deps.fetch,
         onProgress: (progress) => onProgress?.({ target: 'desktop', phase: progress.phase, percent: progress.percent }),
+        bucket,
         ...(deps.withVendorDownloadRoute ? { withVendorDownloadRoute: deps.withVendorDownloadRoute } : {}),
       })
       log('info', 'antigravity.desktop.installed', 'Antigravity 已装好', { version: installed.version })
@@ -601,6 +604,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
         percent: event.percent,
       }),
       ...(deps.systemApplicationsDirectory ? { systemApplicationsDirectory: deps.systemApplicationsDirectory } : {}),
+      bucket,
       ...(deps.withVendorDownloadRoute ? { withVendorDownloadRoute: deps.withVendorDownloadRoute } : {}),
     })
     log('info', 'antigravity.desktop.installed', 'Antigravity 已装好', { version: installed.version })
@@ -870,7 +874,8 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
         throw new Error(cliNotOfficialMessage, { cause: error })
       }
       const { environment } = await configureNow(resolveKey, writeOptionsFor('cli'))
-      // 星芒自己的环境没跟着用户环境变量改（改了，之后起的每个子进程都会带上这把密钥），所以这次的设置直接交给终端。
+      // 星芒自己的环境是它启动那一刻从资源管理器继承的，刚写下（或刚换过）的用户环境变量这次运行看不到，
+      // 所以这次的设置直接交给终端，同名的旧值整组换掉（antigravity-windows-environment.ts 开头）。
       await (deps.launchWindowsTerminal ?? launchCliPowerShell)({
         executable: target.executablePath,
         argv: [],

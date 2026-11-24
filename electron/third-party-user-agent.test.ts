@@ -198,6 +198,7 @@ describe('third-party-user-agent', () => {
       expect(rewriteRequestUserAgent('xingmang://app/index.html', { 'User-Agent': linuxUserAgent }, policy)).toBeNull()
       expect(rewriteRequestUserAgent('not a url', { 'User-Agent': policy.generic }, policy)).toBeNull()
       expect(rewriteRequestUserAgent('not a url', { 'User-Agent': linuxUserAgent }, policy)).toEqual({ 'User-Agent': policy.generic })
+      expect(rewriteRequestUserAgent('http://XN--A.SOLOV.CC/', { 'User-Agent': linuxUserAgent }, policy)).toEqual({ 'User-Agent': policy.generic })
     })
   })
 
@@ -294,7 +295,11 @@ describe('third-party-user-agent', () => {
     const outsiderHost = fc.array(label, { minLength: 1, maxLength: 4 })
       .chain((labels) => fc.constantFrom('com', 'cn', 'io', 'cc', 'fun', 'example').map((tld) => [...labels, tld].join('.')))
       .filter((host) => !isOwnServiceHost(host))
-    const ownHost = fc.tuple(fc.array(label, { maxLength: 3 }), fc.constantFrom(...ownServiceDomains))
+    // 「xn--」开头的一节得能按国际化域名解出来，随手造的 xn--a、xn--abc 解不出，new URL 直接报错；
+    // 认不出的网址按外人看是有意的（上面「unreadable address」那条钉着 XN--A.SOLOV.CC）。
+    // 这条只管认得出的自家地址，不然偶尔造出 xn--a 就红（PR #2153 的 macos-test）。别的标签都认得出。
+    const ownLabel = label.filter((value) => !value.startsWith('xn--'))
+    const ownHost = fc.tuple(fc.array(ownLabel, { maxLength: 3 }), fc.constantFrom(...ownServiceDomains))
       .map(([labels, domain]) => [...labels, domain].join('.'))
     const scheme = fc.constantFrom('http', 'https', 'ws', 'wss')
     const pathPart = fc.stringMatching(/^[a-zA-Z0-9/._~-]{0,30}$/)

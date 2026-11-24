@@ -70,8 +70,8 @@ import { ensureTrustedDirectory } from './trusted-temp'
  * on first launch is the one step 3 has already made, and keeping it would put the
  * "downloaded from the Internet" prompt in front of an app the toolbox just verified.
  *
- * Codex 桌面端、Claude Desktop 和 OpenCode 先从星芒自己的存储桶下同一个官方包（desktop-package-bucket.ts，
- * yoyo 2026-10-10；OpenCode 是 2026-10-14）。那一路换掉的只是第 1 步：清单里的大小和 SHA-256 绑住下载（Claude 的 PKG 展开前
+ * Codex 桌面端、Claude Desktop、OpenCode 和 Antigravity 先从星芒自己的存储桶下同一个官方包（desktop-package-bucket.ts，
+ * yoyo 2026-10-10；OpenCode 是 2026-10-14，Antigravity 是 0.2.25 复查第 1 轮第 2 条）。那一路换掉的只是第 1 步：清单里的大小和 SHA-256 绑住下载（Claude 的 PKG 展开前
  * 还要先核安装包签名），解开以后照样过第 2、3 步才放进「应用程序」；哪一步没过都删掉，照旧问官方。
  */
 
@@ -162,7 +162,7 @@ export interface InstallMacosDesktopAppOptions {
    * 官方原版。只换说法，照样不装、不动它。
    */
   detectionUnfinished?: { message: string, rejectedPaths: readonly string[] }
-  /** 先从星芒自己的存储桶下（只有 Codex 桌面端、Claude Desktop 和 OpenCode 有）。缺省 = 不走桶，直接问官方。 */
+  /** 先从星芒自己的存储桶下（只有 Codex 桌面端、Claude Desktop、OpenCode 和 Antigravity 有）。缺省 = 不走桶，直接问官方。 */
   bucket?: DesktopBucketOptions
   /**
    * 问官方那一路（版本信息加安装包）包进临时加速线路；存储桶那一路国内直连，不包。缺省直接下。
@@ -971,12 +971,13 @@ function runDirectly<T>(operation: () => Promise<T>): Promise<T> {
 
 /**
  * 存储桶里有这台 Mac 能用的那个官方包时，它在桶里叫什么。Codex 按芯片各一个 zip，Claude 是通用 PKG，
- * OpenCode 按芯片各一个 GitHub 上那个 .app.tar.gz。
+ * OpenCode 按芯片各一个 GitHub 上那个 .app.tar.gz，Antigravity 按芯片各一个谷歌那个 zip。
  */
 export function macosDesktopBucketPackageId(tool: MacosDesktopAppId, architecture: MacosDesktopArchitecture): DesktopBucketPackageId | null {
   if (tool === 'codexDesktop') return architecture === 'arm64' ? 'codex-macos-arm64' : 'codex-macos-x64'
   if (tool === 'claudeDesktop') return 'claude-macos-universal'
   if (tool === 'opencode') return architecture === 'arm64' ? 'opencode-macos-arm64' : 'opencode-macos-x64'
+  if (tool === 'antigravityDesktop') return architecture === 'arm64' ? 'antigravity-macos-arm64' : 'antigravity-macos-x64'
   return null
 }
 
@@ -1268,8 +1269,9 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
     }
     stage = 'download'
     const stagingDirectory = staging
-    // 先从星芒自己的存储桶下；没走通再问官方，只有问官方那一路接加速线路。
-    const fromBucket = await unpackFromBucket(source, architecture, context, stagingDirectory, options, readSystemVersion, report, false)
+    // 先从星芒自己的存储桶下；没走通再问官方，只有问官方那一路接加速线路。桶里按芯片分的包和官方那一路一样按
+    // 这台 Mac 的芯片挑（context.architecture，packageForHardware），没设它的那几家这就是星芒自己的芯片。
+    const fromBucket = await unpackFromBucket(source, context.architecture, context, stagingDirectory, options, readSystemVersion, report, false)
     let unpacked: { version: string, bundle: string }
     if (fromBucket !== null && fromBucket !== 'stale') {
       unpacked = fromBucket
@@ -1280,7 +1282,7 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
         // 桶只是清单过期才没用上的：官方那一路也没走通（国内多半连不上），回头用桶里那一版，不进下载线路。
         // 它也没装成就照旧报官方那一路的错。客户点的取消、盘写满了不回头：换一路也一样。
         if (fromBucket !== 'stale' || options.signal?.aborted || isDiskFull(error)) throw error
-        const fromStaleBucket = await unpackFromBucket(source, architecture, context, stagingDirectory, options, readSystemVersion, report, true)
+        const fromStaleBucket = await unpackFromBucket(source, context.architecture, context, stagingDirectory, options, readSystemVersion, report, true)
         if (fromStaleBucket === null || fromStaleBucket === 'stale') throw error
         unpacked = fromStaleBucket
       }
