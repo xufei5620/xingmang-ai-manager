@@ -1,7 +1,7 @@
 import { forwardRef, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { Archive, ChevronDown, FolderOpen, MoreHorizontal, RefreshCw } from 'lucide-react';
 import { toolKindLabels, tools } from '../registry/tools';
-import { clientConnections } from '../registry/clients';
+import { antigravityTools, clientConnections } from '../registry/clients';
 import { statuses } from '../registry/status';
 import { BrandIcon, Kbd, type ToolId } from './brand';
 import { Menu, type MenuItem, type MenuNote } from './floating';
@@ -43,7 +43,7 @@ export function ToolRow({ tool, status, version, route, model, modelHint, detail
 // v4 首页的工具卡片：上面图标、名字和「厂商 · 种类」，中间一两行说明，底下左边一块牌子（来源、状态），右边按钮和「…」。
 // 底下那一行是弹性排开的：牌子可以缩、超长就省略号，按钮排在它后面，两者永远不叠（批 04 修的就是工具行里这个叠字）。
 export function ToolCard({ tool, meta, metaTone, metaTitle, link, badge, actions, menu, menuLabel, progress, off, testId }: BaseProps & { tool: ToolId; meta: ReactNode; metaTone?: 'warn' | 'bad'; metaTitle?: string; link?: ReactNode; badge?: ReactNode; actions?: ReactNode; menu?: Array<MenuItem | MenuNote | 'divider'>; menuLabel?: string; progress?: number; off?: boolean }) {
-  const definition = tools.find(item => item.id === tool) ?? clientConnections.find(item => item.id === tool); const t = useUiText(); const name = definition?.name ?? tool; const moreLabel = menuLabel ?? (/[\u4e00-\u9fff]$/.test(name) ? name : name + ' ') + t('more');
+  const definition = tools.find(item => item.id === tool) ?? clientConnections.find(item => item.id === tool) ?? antigravityTools.find(item => item.id === tool); const t = useUiText(); const name = definition?.name ?? tool; const moreLabel = menuLabel ?? (/[\u4e00-\u9fff]$/.test(name) ? name : name + ' ') + t('more');
   return <section className={cx('xm-tool-card', off && 'is-off')} data-testid={testId} data-installed={off ? 'false' : 'true'}>
     <div className="xm-tool-card-head"><BrandIcon tool={tool} size={40} variant="tile" /><div><strong>{name}</strong>{definition && <small>{definition.vendor + ' · ' + toolKindLabels[definition.kind]}</small>}</div></div>
     <div className="xm-tool-card-meta"><span className={cx('xm-tool-card-text', metaTone && 'xm-tone-' + metaTone)} title={metaTitle}>{meta}</span>{link}</div>

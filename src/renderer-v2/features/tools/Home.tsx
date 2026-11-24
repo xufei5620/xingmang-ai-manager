@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowRight, BookOpen, Check, ChevronRight, Download, FolderOpen, Info, MessageSquare, Play, Plug, Plus, RefreshCw, RotateCcw, TriangleAlert, X, Zap } from 'lucide-react'
-import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId, WindowsRestartResult } from '../../../../electron/ipc-contract'
+import type { AccountBalance, AccountProfile, AccountSourceTarget, AntigravityStatus, AntigravityTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId, WindowsRestartResult } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
+import { presentAntigravity, type AntigravityPresentation } from './antigravity'
 import { desktopUpdateFailedLine, externalUpdateTarget, type DesktopUpdateTool } from './desktop-update'
 import { useSharedBalanceSelector, useSharedBalanceStore } from '../app/balance-context'
 import { sameFlatRecord, subscribeBalanceReads } from '../app/balance-store'
@@ -130,6 +131,11 @@ export interface HomeProps {
    * 缺省 = 来源牌照旧不可点（旧行为）。
    */
   onSwitchExternalSource?(tool: ExternalToolId, target: AccountSourceTarget): void
+  /** Antigravity 命令行和桌面端的检测结果；缺省 / null = 首页不摆这两张卡（旧行为）。 */
+  antigravity?: AntigravityStatus | null
+  onInstallAntigravity?(target: AntigravityTarget): void
+  /** chooseFolder：命令行那张卡「…」里的「选择其他文件夹…」，不用记住的那个文件夹。 */
+  onOpenAntigravity?(target: AntigravityTarget, chooseFolder?: boolean): void
   /** 一键安装用不了时打开客户端官网下载页；缺省 = 不给这颗按钮，仍是「暂不支持」（旧行为）。 */
   onOpenExternalDownload?(url: string): void
   onCodexModels(): void
@@ -648,7 +654,8 @@ export function Home(props: HomeProps) {
   const externalBusy = props.externalLoading || externalCached
   const undetectedExternal = (tool: ExternalPresentation) => !tool.status.installed && !jobs[tool.id] && Boolean(tool.status.detectionError)
   const installedExternal = external.filter((tool) => tool.status.installed || jobs[tool.id])
-  const installedCount = installed.length + installedExternal.length
+  const antigravityCards = presentAntigravity(props.antigravity ?? null)
+  const installedCount = installed.length + installedExternal.length + antigravityCards.filter((card) => card.installed || jobs[card.id]).length
   const undetectedCount = tools.filter(undetected).length + external.filter(undetectedExternal).length
   // 第一次检测还没回来：工具区只放灰色占位。
   const firstScan = loading && !snapshot
@@ -1136,12 +1143,36 @@ export function Home(props: HomeProps) {
       ] : undefined} menuLabel={`${spacedName(tool.name)}更多操作`} testId={`tool-row-${tool.id}`} />
   }
 
+  /**
+   * Antigravity 两张卡只有「安装」「打开」两件事。打开时主进程现签密钥、现写设置，所以没关联当前账号的
+   * 照样给「打开」，角标写「待连接」；关联上了写「当前账号」，同外接客户端那块。
+   */
+  function renderAntigravity(card: AntigravityPresentation) {
+    const installJob = jobs[card.id], launchJob = jobs[`launch:${card.id}`], job = launchJob ?? installJob
+    const meta = job?.label ?? homeToolBlurbs[card.id]
+    const remembered = card.target === 'cli' ? snapshot?.config.rememberedWorkspace : undefined
+    const badge = installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
+      : !card.installed ? <span className="v2-tool-card-off">{statuses.tool.missing[0]}</span>
+      : card.configured ? <span className="v2-source-chip is-static" title="费用从当前账号余额中扣除" data-testid={`tool-${card.id}-source`}>{sourceChipLabels.account}</span>
+        : <Pill tone={statuses.tool.unconfigured[1]} dot><span title={statuses.tool.unconfigured[0]}>{statuses.tool.unconfigured[0]}</span></Pill>
+    const actions = installJob ? null
+      : <Button size="sm" variant={card.installed ? 'primary' : 'secondary'} loading={Boolean(launchJob)} disabled={Boolean(job)}
+        title={card.installed && remembered ? `在 ${remembered} 打开` : undefined} icon={card.installed ? undefined : Download}
+        onClick={() => card.installed ? props.onOpenAntigravity?.(card.target) : props.onInstallAntigravity?.(card.target)} testId={`tool-${card.id}-primary`}>{launchJob ? '打开中' : card.installed ? '打开' : '安装'}</Button>
+    const menu = card.target === 'cli' && card.installed && !job
+      ? [{ label: chooseWorkspaceLabel, testId: `tool-${card.id}-choose-workspace`, onSelect: () => props.onOpenAntigravity?.(card.target, true) }] : undefined
+    return <ToolCard key={card.id} tool={card.id} off={!card.installed && !installJob} meta={meta} metaTitle={meta} badge={badge} actions={actions}
+      progress={typeof installJob?.percent === 'number' ? installJob.percent : undefined} menu={menu} menuLabel={`${spacedName(card.name)}更多操作`} testId={`tool-row-${card.id}`} />
+  }
+
   // 工具区按厂商排（v4）：命令行工具和外接客户端混在一起。Linux 上没有 Codex 桌面端、也没有外接客户端，跳过。
   const cards = homeToolOrder.flatMap((id) => {
     const cli = tools.find((tool) => tool.id === id)
     if (cli) return [renderTool(cli)]
     const client = external.find((tool) => tool.id === id)
-    return client ? [renderExternal(client)] : []
+    if (client) return [renderExternal(client)]
+    const antigravityCard = antigravityCards.find((card) => card.id === id)
+    return antigravityCard ? [renderAntigravity(antigravityCard)] : []
   })
 
   // 顶部大卡：第一个装好的命令行工具（按厂商顺序）。一个都没装时放 Claude Code 的「还没装」。

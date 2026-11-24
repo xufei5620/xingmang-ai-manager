@@ -1,6 +1,7 @@
 import {
   providerIds,
   type AccountSourceTarget,
+  type AntigravityTarget,
   type AppConfigSummary,
   type ChooseWorkspaceOptions,
   type ClaudeCommandConfirmationChoice,
@@ -249,6 +250,11 @@ export function createToolsApi(bridge: XingmangApi) {
     installGit: () => bridge.installGitRuntime(),
     // 带上 askIfWorking：「创作」里还有对话在回复、视频在合成、画布在出图时，主进程先问一句再重启（D10 那一问）。
     restartWindows: () => bridge.restartWindows({ askIfWorking: true }),
+    // Antigravity 命令行和桌面端：渲染层只说装哪个、开哪个，密钥由主进程现签现写，不经过这里（I3）。
+    inspectAntigravity: () => bridge.inspectAntigravity(),
+    installAntigravity: (target: AntigravityTarget) => bridge.installAntigravity(target),
+    openAntigravityDesktop: () => bridge.openAntigravityDesktop(),
+    openAntigravityCli: (workspace: string) => bridge.openAntigravityCli(workspace),
     chooseWorkspace: (options?: ChooseWorkspaceOptions) => options === undefined ? bridge.chooseWorkspace() : bridge.chooseWorkspace(options),
     // 首页「最近」卡只显示 3 条,但同一份记录还要推出每个工具最近用过的目录(N7),
     // 一页 3 条不够铺开几个工具。主进程本来就把全部会话读出来再切片,页大一点不多花钱。

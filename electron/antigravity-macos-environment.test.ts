@@ -95,9 +95,9 @@ describe('the Antigravity settings files', () => {
 
   it('refuse a missing or multi-line value', () => {
     expect(() => buildAntigravityPosixSettingsFile({ ...environment, AGY_LLM_GATEWAY_MODELS: '' }))
-      .toThrow('Antigravity 的设置不完整')
+      .toThrow('Antigravity 的连接设置不完整')
     expect(() => buildAntigravityFishSettingsFile({ ...environment, AGY_LLM_GATEWAY_URL: 'https://xm.solov.cc\nset -gx X 1' }))
-      .toThrow('Antigravity 的设置不完整')
+      .toThrow('Antigravity 的连接设置不完整')
   })
 
   it('read back only the lines written in that shape', () => {
@@ -266,7 +266,7 @@ describe.runIf(process.platform !== 'win32')('writeMacosAntigravityEnvironment',
   it('writes nothing at all for an incomplete environment', async () => {
     const home = homeDirectory()
     await expect(write(home, '/bin/zsh', { ...environment, AGY_LLM_GATEWAY_API_KEY: '' }))
-      .rejects.toThrow('Antigravity 的设置不完整，未修改当前用户的环境变量')
+      .rejects.toThrow('Antigravity 的连接设置不完整，未作任何修改')
     expect(fs.readdirSync(home)).toEqual([])
   })
 

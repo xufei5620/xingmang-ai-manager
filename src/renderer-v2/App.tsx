@@ -98,6 +98,7 @@ import { useToolLaunch } from './features/tools/useToolLaunch'
 import { useDesktopAppUpdate } from './features/tools/useDesktopAppUpdate'
 import { isMacDesktopUpdate } from './features/tools/desktop-update'
 import { useToolInstall } from './features/tools/useToolInstall'
+import { useAntigravityActions } from './features/tools/useAntigravityActions'
 import { jobToolName } from './features/tools/tool-jobs'
 import { resolveToolKeySyncFailure } from './features/tools/key-sync-failure'
 import './business.css'
@@ -311,6 +312,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     accountKeysReady: accountBootstrap?.scope === scope && accountBootstrap.result !== undefined,
     runAccountBootstrap, refreshRecent, navigate, setAuth, setConfirmation, setOperationError, setExternalClient,
   })
+  const { installAntigravity, openAntigravity } = useAntigravityActions({ toolsApi, toolbox, toast, session, mounted, accountEpoch, setAuth })
   // Mac 上桌面端的「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）：星芒关掉的那一份更新完走首页同一个「打开」。
   const { desktopUpdateTargets, desktopUpdateFailures, requestDesktopUpdate, showDesktopUpdateFailure } = useDesktopAppUpdate({
     toolsApi, toolbox, toast, offline, mounted, accountEpoch, setConfirmation, setOperationError,
@@ -465,6 +467,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       onScan={() => {
         setRescanBefore(rescanFingerprint(toolbox.snapshot, toolbox.externalClients))
         refreshRecent(); void toolbox.refresh(true, { recheckRoutes: true }).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined)
+        void toolbox.refreshAntigravity()
       }} onInstall={(id, version, intent) => {
         if (isMacDesktopUpdate(toolbox.snapshot, id, intent) && version) { void requestDesktopUpdate(id, version); return }
         installFromHome(id, version, intent)
@@ -481,6 +484,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       onRepairHooks={(id) => void perform('修提醒设置', () => repairToolHooks(id), id)}
       onRepairConfig={(id) => repairBrokenConfig(id)}
       onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}
+      antigravity={toolbox.antigravity} onInstallAntigravity={(target) => void perform(target === 'cli' ? '安装工具' : '安装客户端', () => installAntigravity(target))}
+      onOpenAntigravity={(target, chooseFolder) => void perform(target === 'cli' ? '打开工具' : '打开客户端', () => openAntigravity(target, chooseFolder))}
       onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onCancelInstallExternal={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
       onSwitchExternalSource={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', () => switchExternalSource(id, target))} onOpenExternalDownload={(url) => void perform('打开下载页', () => app.openExternal(url))}
       onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}

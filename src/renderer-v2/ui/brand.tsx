@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BriefcaseBusiness, CircleHelp, type LucideIcon } from 'lucide-react';
-import { ChatGLMIcon, ClaudeIcon, DeepSeekIcon, GeminiIcon, GrokIcon, MiniMaxIcon, MoonshotIcon, OpenAIIcon, OpenCodeIcon, QwenIcon, ZhipuIcon } from './vendor-icons';
+import { AntigravityIcon, ChatGLMIcon, ClaudeIcon, DeepSeekIcon, GeminiIcon, GrokIcon, MiniMaxIcon, MoonshotIcon, OpenAIIcon, OpenCodeIcon, QwenIcon, ZhipuIcon } from './vendor-icons';
 import { siAlipay, siGit, siNodedotjs, siNpm, siPython, siStripe, siWechat } from 'simple-icons';
 import microLight from '../../../assets/brand/v3/micro32-standard.svg';
 import microDark from '../../../assets/brand/v3/micro32-dark.svg';
@@ -11,7 +11,7 @@ import horizontalDark from '../../../assets/brand/v3/horizontal-dark.svg';
 import wordmarkLight from '../../../assets/brand/v3/wordmark-navy.svg';
 import wordmarkDark from '../../../assets/brand/v3/wordmark-dark.svg';
 import { tools } from '../registry/tools';
-import { clientConnections } from '../registry/clients';
+import { antigravityTools, clientConnections } from '../registry/clients';
 import type { PluginIconSource } from '../registry/plugin-icons';
 import { useUiText, type BaseProps } from './shared';
 import type { CSSProperties } from 'react';
@@ -24,9 +24,9 @@ const environmentBrands = { node: siNodedotjs, npm: siNpm, python: siPython, git
 function modelBrand(model: string) { return /^claude/i.test(model) ? 'Claude' : /^(gpt|o\d|chatgpt|codex|dall-e|sora)/i.test(model) ? 'OpenAI' : /^(gemini|imagen|veo|nano-banana)/i.test(model) ? 'Gemini' : /^grok/i.test(model) ? 'Grok' : /^deepseek/i.test(model) ? 'DeepSeek' : /^(qwen|qwq|qvq)/i.test(model) ? 'Qwen' : /^(chatglm|glm)/i.test(model) ? 'ChatGLM' : /^(kimi|moonshot)/i.test(model) ? 'Moonshot' : /^(minimax|abab|hailuo)/i.test(model) ? 'MiniMax' : /^(zhipu|智谱|cogview)/i.test(model) ? 'Zhipu' : ''; }
 export function BrandIcon({ tool, model, size = 24, variant = 'inline', testId }: BaseProps & { tool?: ToolId; model?: string; size?: number; variant?: 'tile' | 'inline' | 'xs' }) {
   const t = useUiText();
-  const definition = tools.find(item => item.id === tool || item.name === tool) ?? clientConnections.find(item => item.id === tool || item.name === tool);
+  const definition = tools.find(item => item.id === tool || item.name === tool) ?? clientConnections.find(item => item.id === tool || item.name === tool) ?? antigravityTools.find(item => item.id === tool || item.name === tool);
   const key = definition?.brandIcon ?? modelBrand(model ?? tool ?? '');
-  const Icon = key === 'WorkBuddy' ? BriefcaseBusiness : key === 'OpenCode' ? OpenCodeIcon : brandComponents[key as keyof typeof brandComponents];
+  const Icon = key === 'WorkBuddy' ? BriefcaseBusiness : key === 'OpenCode' ? OpenCodeIcon : key === 'Antigravity' ? AntigravityIcon : brandComponents[key as keyof typeof brandComponents];
   const environment = environmentBrands[tool as keyof typeof environmentBrands];
   const imageSize = variant === 'tile' ? Math.round(size * .6) : size;
   return <span className={'xm-brand xm-brand-' + variant} style={{ width: size, height: size }} data-testid={testId}>

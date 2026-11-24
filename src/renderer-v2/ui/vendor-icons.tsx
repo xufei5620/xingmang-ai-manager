@@ -1,4 +1,4 @@
-// The eleven AI vendor marks BrandIcon draws, copied from @lobehub/icons 5.18.0
+// The twelve vendor marks BrandIcon draws, copied from @lobehub/icons 5.18.0
 // (https://github.com/lobehub/lobe-icons). That package lists antd and @lobehub/ui as peer
 // dependencies, so installing it for these marks alone put 443 of the 970 entries in the
 // lockfile (G4). Paths, colours, titles and gradient ids are its own, so each mark renders
@@ -122,5 +122,34 @@ export function ZhipuIcon(props: VendorIconProps) {
 export function OpenCodeIcon(props: VendorIconProps) {
   return vendorSvg('opencode', true, props, <>
     <path d="M16 6H8v12h8V6zm4 16H4V2h16v20z" />
+  </>);
+}
+
+// Antigravity's colour mark is eleven blurred blobs clipped to its arch. Each row is one blob:
+// path, colour, then the blur filter's region (x, y, width, height) and its stdDeviation.
+const antigravityArch = 'M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z';
+const antigravityBlobs: ReadonlyArray<readonly [string, string, string, string, string, string, string]> = [
+  ['M-1.018-3.992c-.408 3.591 2.686 6.89 6.91 7.37 4.225.48 7.98-2.043 8.387-5.633.408-3.59-2.686-6.89-6.91-7.37-4.225-.479-7.98 2.043-8.387 5.633z', '#FFE432', '-3.288', '-11.917', '19.838', '17.587', '1.117'],
+  ['M15.269 7.747c1.058 4.557 5.691 7.374 10.348 6.293 4.657-1.082 7.575-5.653 6.516-10.21-1.058-4.556-5.691-7.374-10.348-6.292-4.657 1.082-7.575 5.653-6.516 10.21z', '#FC413D', '4.251', '-13.493', '38.9', '38.565', '5.4'],
+  ['M-12.443 10.804c1.338 4.703 7.36 7.11 13.453 5.378 6.092-1.733 9.947-6.95 8.61-11.652C8.282-.173 2.26-2.58-3.833-.848-9.925.884-13.78 6.1-12.443 10.804z', '#00B95C', '-21.889', '-10.592', '40.955', '36.517', '4.591'],
+  ['M-12.443 10.804c1.338 4.703 7.36 7.11 13.453 5.378 6.092-1.733 9.947-6.95 8.61-11.652C8.282-.173 2.26-2.58-3.833-.848-9.925.884-13.78 6.1-12.443 10.804z', '#00B95C', '-21.889', '-10.592', '40.955', '36.517', '4.591'],
+  ['M-7.608 14.703c3.352 3.424 9.126 3.208 12.896-.483 3.77-3.69 4.108-9.459.756-12.883C2.69-2.087-3.083-1.871-6.853 1.82c-3.77 3.69-4.108 9.458-.755 12.883z', '#00B95C', '-19.099', '-10.278', '36.632', '36.595', '4.591'],
+  ['M9.932 27.617c1.04 4.482 5.384 7.303 9.7 6.3 4.316-1.002 6.971-5.448 5.93-9.93-1.04-4.483-5.384-7.304-9.7-6.301-4.316 1.002-6.971 5.448-5.93 9.93z', '#3186FF', '.981', '8.758', '33.533', '34.087', '4.363'],
+  ['M2.572-8.185C.392-3.329 2.778 2.472 7.9 4.771c5.122 2.3 11.042.227 13.222-4.63 2.18-4.855-.205-10.656-5.327-12.955-5.122-2.3-11.042-.227-13.222 4.63z', '#FBBC04', '-6.143', '-21.659', '35.978', '35.276', '3.954'],
+  ['M-3.267 38.686c-5.277-2.072 3.742-19.117 5.984-24.83 2.243-5.712 8.34-8.664 13.616-6.592 5.278 2.071 11.533 13.482 9.29 19.195-2.242 5.713-23.613 14.298-28.89 12.227z', '#3186FF', '-11.96', '-.46', '45.114', '46.523', '3.531'],
+  ['M28.71 17.471c-1.413 1.649-5.1.808-8.236-1.878-3.135-2.687-4.531-6.201-3.118-7.85 1.412-1.649 5.1-.808 8.235 1.878s4.532 6.2 3.119 7.85z', '#749BFF', '10.485', '.58', '25.094', '24.054', '3.159'],
+  ['M18.163 9.077c5.81 3.93 12.502 4.19 14.946.577 2.443-3.612-.287-9.727-6.098-13.658-5.81-3.931-12.502-4.19-14.946-.577-2.443 3.612.287 9.727 6.098 13.658z', '#FC413D', '5.833', '-12.467', '33.508', '30.007', '2.669'],
+  ['M-.915 2.684c-1.44 3.473-.97 6.967 1.05 7.804 2.02.837 4.824-1.3 6.264-4.772 1.44-3.473.97-6.967-1.05-7.804-2.02-.837-4.824 1.3-6.264 4.772z', '#FFEE48', '-8.355', '-8.876', '22.194', '26.151', '3.303'],
+];
+
+export function AntigravityIcon(props: VendorIconProps) {
+  const instance = useId();
+  const id = (index: number) => gradientId('antigravity', instance, index);
+  return vendorSvg('Antigravity', false, props, <>
+    <mask height="23" id={id(0)} maskUnits="userSpaceOnUse" width="24" x="0" y="1"><path d={antigravityArch} fill="#fff" /></mask>
+    <g mask={`url(#${id(0)})`}>{antigravityBlobs.map(([d, fill], index) => <g filter={`url(#${id(index + 1)})`} key={index}><path d={d} fill={fill} /></g>)}</g>
+    <defs>{antigravityBlobs.map(([, , x, y, width, height, deviation], index) => <filter colorInterpolationFilters="sRGB" filterUnits="userSpaceOnUse" height={height} id={id(index + 1)} key={index} width={width} x={x} y={y}>
+      <feFlood floodOpacity="0" result="BackgroundImageFix" /><feBlend in="SourceGraphic" in2="BackgroundImageFix" result="shape" /><feGaussianBlur result="effect1_foregroundBlur_977_115" stdDeviation={deviation} />
+    </filter>)}</defs>
   </>);
 }
