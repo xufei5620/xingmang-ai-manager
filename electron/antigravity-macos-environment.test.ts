@@ -263,6 +263,40 @@ describe.runIf(process.platform !== 'win32')('writeMacosAntigravityEnvironment',
     expect(fs.readFileSync(dotfiles, 'utf8')).toBe('export A=1\n')
   })
 
+  it.runIf(process.platform !== 'win32')('writes the settings and reports a linked startup file it may do without, leaving the link and its target alone', async () => {
+    const home = homeDirectory()
+    const dotfiles = path.join(home, 'dotfiles-zprofile')
+    fs.writeFileSync(dotfiles, 'export A=1\n')
+    fs.symlinkSync(dotfiles, path.join(home, '.zprofile'))
+    fs.mkdirSync(path.join(home, '.config', 'fish'), { recursive: true })
+    const skipped: string[] = []
+
+    await expect(writeMacosAntigravityEnvironment(environment, {
+      platform: 'darwin', homeDirectory: home, loginShell: '/bin/zsh', env: {}, startupFileOptional: true,
+      skipped: (displayPath, error) => skipped.push(`${displayPath}: ${error instanceof Error ? error.message : String(error)}`),
+    })).resolves.toEqual({ outcome: 'written', profile: 'skipped' })
+
+    expect(skipped).toEqual([expect.stringMatching(/^~\/\.zprofile: 终端启动设置（~\/\.zprofile）/)])
+    expect(parseAntigravityPosixSettingsFile(fs.readFileSync(settingsPath(home, 'gateway.sh'), 'utf8'))).toEqual(environment)
+    expect(fs.lstatSync(path.join(home, '.zprofile')).isSymbolicLink()).toBe(true)
+    expect(fs.readFileSync(dotfiles, 'utf8')).toBe('export A=1\n')
+    // The fish courtesy file waits too: the next command-line open asks for both again.
+    expect(fs.existsSync(fishProfilePath(home))).toBe(false)
+  })
+
+  it.runIf(process.platform !== 'win32')('leaves a hard-linked startup file alone the same way when it may do without it', async () => {
+    const home = homeDirectory()
+    const other = path.join(home, 'shared-zprofile')
+    fs.writeFileSync(other, 'export A=1\n')
+    fs.linkSync(other, path.join(home, '.zprofile'))
+
+    await expect(write(home, '/bin/zsh')).rejects.toThrow('终端启动设置（~/.zprofile）')
+    await expect(writeMacosAntigravityEnvironment(environment, {
+      platform: 'darwin', homeDirectory: home, loginShell: '/bin/zsh', env: {}, startupFileOptional: true,
+    })).resolves.toEqual({ outcome: 'unchanged', profile: 'skipped' })
+    expect(fs.readFileSync(other, 'utf8')).toBe('export A=1\n')
+  })
+
   it('writes nothing at all for an incomplete environment', async () => {
     const home = homeDirectory()
     await expect(write(home, '/bin/zsh', { ...environment, AGY_LLM_GATEWAY_API_KEY: '' }))

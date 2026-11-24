@@ -7,7 +7,7 @@ import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 import { createBrowserFixture, projectRoot, withBrowserFixture } from './harness.mjs'
 
-// U03（docs/audits/2026-10-28/domains/release.md）：浏览器起不来时，start 已经起好的
+// U03（2026-10-28 审计）：浏览器起不来时，start 已经起好的
 // Vite server 没人关，监听句柄让 node --test 的子进程一直不退出。前几条用假的 server 和
 // 浏览器数每样各关了几次；最后一条起真的 Vite，看进程自己能不能退出，那才是客户（这里是
 // CI）真正撞上的症状。

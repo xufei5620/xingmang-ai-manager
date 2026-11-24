@@ -1,8 +1,12 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import fc from 'fast-check'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AntigravityManagedKey } from './account-cli-provisioner'
 import { staleAccountMessage, type QueuedAccountWork } from './account-work-gate'
 import type { AntigravityEnvironmentValues, AntigravityGatewayEnvironment } from './antigravity-gateway'
+import { readMacosAntigravityEnvironment, writeMacosAntigravityEnvironment } from './antigravity-macos-environment'
 import {
   antigravityCliLaunchQueueKey,
   antigravityDesktopLaunchQueueKey,
@@ -501,6 +505,64 @@ describe('createAntigravityService openDesktop on macOS', () => {
     expect(ours.commands.some((entry) => entry.spec.executable === '/usr/bin/open' && entry.spec.argv.join(' ') === `-a ${macBundle}`)).toBe(true)
 
     await expect(ours.service.openDesktop(() => Promise.resolve({ ...managedKey, models: ['gemini-4-argon'] }))).resolves.toEqual({ opened: false, closeFirst: true })
+  })
+})
+
+// 复查 A 第 1 轮第 4 条：~/.zprofile 是 dotfiles 的链接时，写设置用真的那一步（只把用户目录换成临时文件夹）。
+describe.runIf(process.platform !== 'win32')('createAntigravityService with a linked ~/.zprofile on macOS', () => {
+  const homes: string[] = []
+
+  afterEach(() => {
+    for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  function linkedProfileHarness(): { h: Harness, home: string, dotfiles: string } {
+    // macOS puts the temp folder behind /var -> /private/var, which the reparse-point guard would refuse.
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-agy-service-')))
+    homes.push(home)
+    const dotfiles = path.join(home, 'dotfiles-zprofile')
+    fs.writeFileSync(dotfiles, 'export A=1\n')
+    fs.symlinkSync(dotfiles, path.join(home, '.zprofile'))
+    const h = harness({
+      platform: 'darwin',
+      directories: [macBundle],
+      files: [macExecutable, macCli],
+      overrides: {
+        writeMacosEnvironment: (environment, options) => writeMacosAntigravityEnvironment(environment, { ...options, homeDirectory: home, loginShell: '/bin/zsh', env: {} }),
+        readMacosEnvironment: (options) => readMacosAntigravityEnvironment({ ...options, homeDirectory: home }),
+      },
+    })
+    return { h, home, dotfiles }
+  }
+
+  it('still opens the desktop app with its settings, leaving the link and its target alone', async () => {
+    const { h, home, dotfiles } = linkedProfileHarness()
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
+
+    expect(h.launches).toHaveLength(1)
+    expect(h.launches[0].env).toEqual(expect.objectContaining(writtenEnvironment))
+    expect(fs.lstatSync(path.join(home, '.zprofile')).isSymbolicLink()).toBe(true)
+    expect(fs.readFileSync(dotfiles, 'utf8')).toBe('export A=1\n')
+    const skipped = h.logs.find((entry) => entry.event === 'antigravity.settings.profile-skipped')
+    expect(skipped).toEqual(expect.objectContaining({ level: 'warn', detail: expect.objectContaining({ file: '~/.zprofile' }) }))
+    expect(JSON.stringify(h.logs)).not.toContain(managedKey.key)
+  })
+
+  it('finishes a desktop install without a settings error and counts the settings as written', async () => {
+    const { h } = linkedProfileHarness()
+    await expect(h.service.install('desktop', resolveKey)).resolves.toEqual({
+      status: { supported: true, cliInstalled: true, desktopInstalled: true, configured: true },
+    })
+  })
+
+  it('still refuses to open the command line, whose Terminal reads the settings through that file', async () => {
+    const { h, dotfiles } = linkedProfileHarness()
+    await expect(h.service.openCli(macWorkspace, resolveKey)).rejects.toThrow('终端启动设置（~/.zprofile）')
+    expect(h.macTerminals).toEqual([])
+    expect(fs.readFileSync(dotfiles, 'utf8')).toBe('export A=1\n')
+
+    const install = await h.service.install('cli', resolveKey)
+    expect(install.configureError).toEqual(expect.stringContaining('终端启动设置（~/.zprofile）'))
   })
 })
 
