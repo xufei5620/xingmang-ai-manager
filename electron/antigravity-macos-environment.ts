@@ -30,7 +30,8 @@ import { quotePosixArgument } from './terminal-launcher-files'
 // 密钥不进 ~/.zprofile，那个文件常被客户放进 dotfiles 仓库同步出去。fish 不认 sh 的写法，另有一份。
 //
 // 从程序坞、启动台打开的 Antigravity 桌面端不读这些文件，星芒自己打开它时由打开的那一步把设置交给它。
-// 本进程的环境不跟着改，理由同 antigravity-windows-environment.ts。
+// 本进程的环境不跟着改。从程序坞、访达打开的星芒同样不读这些文件，自己的环境里没有这四个变量；客户从终端里起的
+// 星芒才会带着（那时是这个终端读到的那一份），所以打开 Antigravity 时都不靠本进程的环境。
 
 const settingsDirectoryName = 'Antigravity'
 const posixSettingsFileName = 'gateway.sh'

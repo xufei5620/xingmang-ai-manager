@@ -54,6 +54,7 @@
 - `features/tools/model.ts` — 工具的展示模型：哪些工具上界面（注册表里的，不含下线的 Gemini）、装没装、来源是当前账号/官方/手填/被改过/未确认、能不能卸、能不能换成星芒装的；首页、配置框、引导的判定都从这里出。
 - `features/tools/ConfigDialog.tsx` — 工具配置弹窗（v4 第 5 批）：三张来源卡、带说明的密钥下拉、模型行、两段折叠与行内重置；保存失败先说认得出的原因、原话跟在后面。
 - `features/tools/OtherModelsDialog.tsx` — Codex「换用别家模型」小弹窗：沿用工具里现成那把当前账号密钥（主进程的沿用通道，不读出、不换 Key，I3），只问用哪个型号；来源不对时先一键改用当前账号（备份、写入、自检都在主进程）。
+- `features/tools/antigravity.ts` / `features/tools/useAntigravityActions.ts` — 首页 Antigravity 两张卡（命令行、桌面端，0.2.25 起）：这台电脑用不了（Linux，或主进程说 `supported` 为假）就一张不摆；安装进度挂在卡片上、装完那一句（设置没写成时接上主进程那句原因、用提醒色），打开时桌面端开着且拿不到这次设置就请客户先退出。两张卡不是外接客户端，不借哪个工具的密钥、不进配置弹窗，卡片定义在 `registry/clients.ts` 的 `antigravityTools`；主进程那一簇见 `main-cli-clients.md` 的 Antigravity 一节。
 - `features/tools/ExternalClientDialog.tsx` — 接入外部桌面客户端（Claude Desktop、WorkBuddy、OpenCode）的配置弹窗：借哪个工具的密钥、选哪个型号，保存后跑一次可连接自检。
 - `features/tools/OptionPicker.tsx` / `features/tools/dialog-parts.tsx` — 弹窗里的小零件：一项两行（名字 + 灰字）的下拉，让同名密钥分得开；单选卡片组；有未保存修改时先亮离开条的「取消」和离开链接。
 - `features/tools/ToolConversationsDialog.tsx` — 卡片「…」里「接着之前的对话」：这个工具每个文件夹一行，每次打开现读，不用首页那份一分钟缓存。
@@ -271,7 +272,7 @@
 - `registry/connection-routes.ts` — 连接线路的选项与保存补丁：只叫线路1/线路2，星芒账号「自动」先走线路2、历史账号先走线路1，按账号分开存，存下的值（direct / primary）不变。
 - `registry/curated-extensions.ts` — 「星芒精选」：把随包 `bundled-catalog/curated-extensions.json`（构建期内联，不要服务端、不加 IPC）收窄成类型并按页面、工具筛；安装不另开通道，免得绕过主进程对命令与参数的校验。
 - `registry/extensions.ts` — 扩展三页与精选页共用的字：这一类叫什么、各家官方怎么叫、已装列表按范围分组。
-- `registry/clients.ts` — 外接客户端的种类标签与能借用哪个工具的 Key（不含下线的 Gemini）。
+- `registry/clients.ts` — 外接客户端的种类标签与能借用哪个工具的 Key（不含下线的 Gemini）；另有首页 Antigravity 两张卡的定义 `antigravityTools`。
 - `registry/status.ts` — 各类状态牌的字和语气色（工具、运行环境、密钥、订单、任务）。
 - `registry/icons.ts` — 常用动作（打开、安装、刷新、配置……）的图标映射。
 
