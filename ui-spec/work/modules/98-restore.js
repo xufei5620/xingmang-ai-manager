@@ -32,7 +32,7 @@
       <div class="xm-welcome-links">${btn('先看看使用步骤', "A.guideHelp('steps')", 'welcome-steps', 'ghost')}${btn(S.settings.reduceMotion ? '开启动画' : '减少动画', 'A.guideMotion()', 'welcome-motion', 'ghost')}</div>
       <div class="legal">${btn('用户协议', "A.dialog('legal',{kind:'terms'})", 'welcome-terms', 'ghost')}${btn('隐私政策', "A.dialog('legal',{kind:'privacy'})", 'welcome-privacy', 'ghost')}</div></div>
       <div class="preview xm-orbit-preview"><div class="xm-orbits" aria-hidden="true"><i></i><i></i><i></i><b></b></div><div class="frame"><div class="prail"><span class="plogo">${logo('micro', 22)}</span><i class="on"></i><i></i><i></i><i></i><i></i></div>
-        <div class="pmain"><div class="ph"><strong>${greetingText()}，徐飞</strong>${pill('ok', '环境正常')}</div>
+        <div class="pmain"><div class="ph"><strong>${greetingText()}，李华</strong>${pill('ok', '环境正常')}</div>
           <div class="pt">${pt('claude', 'Claude Code', 'v2.1.4 · 已配好', true)}${pt('codex', 'Codex CLI', 'v0.49.0 · 已配好', true)}${pt('gemini', 'Gemini CLI', '未安装', false)}${pt('grok', 'Grok CLI', '未安装', false)}</div>
           <div class="prow">${ic('key')}星芒 Key 已自动写入 2 个工具<b style="margin-left:auto">${money(12.4)}</b></div>
           <div class="prow">${ic('clock')}修复登录接口的 token 过期问题<b style="margin-left:auto">今天 14:32</b></div></div></div></div></div>
