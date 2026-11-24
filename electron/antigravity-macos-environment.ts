@@ -55,11 +55,14 @@ const settingsFileHeader = '# 星芒AI管理工具写的 Antigravity 中转设�
 // 这里加在最后，客户自己排在前面的目录照旧优先。
 const agyDirectoryWords = '$HOME/.local/bin'
 
-export type AntigravityShellProfileOutcome = 'added' | 'present' | 'unsupported-shell'
+export type AntigravityShellProfileOutcome = 'added' | 'present' | 'unsupported-shell' | 'skipped'
 
 export interface MacosAntigravityEnvironmentResult {
   outcome: AntigravityEnvironmentWriteOutcome
-  /** 登录 shell 的启动文件里那一段：这次加上的、本来就在的，或者账号用的 shell 不归这里管。 */
+  /**
+   * 登录 shell 的启动文件里那一段：这次加上的、本来就在的，账号用的 shell 不归这里管，
+   * 或者那个文件写不进、这次又用不上它（startupFileOptional），原因交给了 skipped。
+   */
   profile: AntigravityShellProfileOutcome
 }
 
@@ -164,11 +167,21 @@ export interface MacosAntigravityEnvironmentOptions {
   /** XDG_CONFIG_HOME is read from here, for fish. */
   env?: NodeJS.ProcessEnv
   /**
-   * The fish file a zsh or bash account also gets when its fish config folder exists could not be
-   * written: `fish/conf.d/…` for the log, and why. That file is a courtesy, so its failure is reported
-   * here instead of failing the call, as in macos-shell-profile.ts.
+   * A startup file that could not be written and is not needed this time: `~/.zprofile`,
+   * `fish/conf.d/…` and the like for the log, and why. Always the fish file a zsh or bash account
+   * also gets when its fish config folder exists, which is a courtesy (as in macos-shell-profile.ts);
+   * with startupFileOptional, the login shell's own startup file as well.
    */
   skipped?: (displayPath: string, error: unknown) => void
+  /**
+   * The login shell's startup file may be left without the block: when it cannot be written (a
+   * dotfiles-managed ~/.zprofile that is a symlink, say, which I8 refuses rather than follows), the
+   * settings files stay written, the reason goes to `skipped`, and the call answers `profile:
+   * 'skipped'` instead of failing. Opening the desktop app sets this, since it gets its settings from
+   * the launch itself and never reads that file. Left out, the failure fails the call: opening the
+   * command line needs the block, because the Terminal it opens reads the settings through it.
+   */
+  startupFileOptional?: boolean
 }
 
 function assertMacos(platform: NodeJS.Platform): void {
@@ -232,9 +245,17 @@ async function ensureAntigravityShellProfile(
     : planMacosShellProfileTarget({ shell, homeDirectory, fishConfigDirectory: fishDirectory, exists: loginFileExists })
   // bash 可能落在三个文件里的任何一个，出错时日志得说清是哪一个。
   const label = `终端启动设置（${target.displayPath}）`
-  const added = target.kind === 'fish'
-    ? await writeFishProfile(target, label)
-    : await appendShellProfileBlock(target, label)
+  let added: boolean
+  try {
+    added = target.kind === 'fish'
+      ? await writeFishProfile(target, label)
+      : await appendShellProfileBlock(target, label)
+  } catch (error) {
+    if (!options.startupFileOptional) throw error
+    // 这次用不上这一段（打开桌面端）：原因交给调用方记下，顺带的 fish 那份也不再试，下次打开命令行时会再要一次。
+    options.skipped?.(target.displayPath, error)
+    return 'skipped'
+  }
   // 登录 shell 是 zsh、bash 但 fish 的设置文件夹在：他也用 fish，顺带给一份，写不进去只报给 skipped
   // （同 macos-shell-profile.ts 的 ensureMacosShellProfile）。
   let fishAdded = false
@@ -257,7 +278,9 @@ async function ensureAntigravityShellProfile(
  * gets the block appended (never rewritten), so whatever the user wrote there,
  * their own AGY_* variables included, stays as it is. Every file goes through
  * safe-local-data (I8): a dotfiles-managed startup file that is a symlink is
- * refused, not followed. Answers only words, never values, for the log.
+ * refused, not followed, and that refusal fails the call unless
+ * startupFileOptional says the startup file is not needed this time. Answers
+ * only words, never values, for the log.
  */
 export async function writeMacosAntigravityEnvironment(
   environment: AntigravityGatewayEnvironment,

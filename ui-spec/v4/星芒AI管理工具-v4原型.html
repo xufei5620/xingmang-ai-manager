@@ -1492,7 +1492,7 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
   function logo(kind, h, dark) { var d = dark === undefined ? S.theme === 'dark' : dark; return '<img class="logo" src="' + LOGO[kind][d ? 'd' : 'l'] + '" alt="星芒 AI" style="height:' + h + 'px">'; }
   function esc(v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   function money(n) { return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
-  function ME() { var m = { name: S.who === 'long' ? '徐飞的超长昵称工作室 Studio' : ACCTS[S.acctId].name, plan: S.sub ? S.sub.name : '按量付费' }; if (S.nick) m.name = S.nick; return m; }
+  function ME() { var m = { name: S.who === 'long' ? '李华的超长昵称工作室 Studio' : ACCTS[S.acctId].name, plan: S.sub ? S.sub.name : '按量付费' }; if (S.nick) m.name = S.nick; return m; }
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
   var mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
@@ -1616,7 +1616,7 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
   function yuan(n) { return '¥' + n.toFixed(2); }
   function payName(k) { var m = topup().methods.filter(function (x) { return x[0] === k; })[0]; return m ? m[1] : k === 'balance' ? '余额支付' : k; }
   /* 保存过的账号。历史账号是另一个站点（老用户的账号），能力比星芒账号少几样 */
-  var ACCTS = { xm: { name: '徐飞', email: 'xufei@qq.com', site: 'xm' }, xm2: { name: '工作号', email: 'work@xufei.cn', site: 'xm' }, api: { name: 'xufei', email: 'xufei@163.com', site: 'api' } };
+  var ACCTS = { xm: { name: '李华', email: 'lihua@example.com', site: 'xm' }, xm2: { name: '工作号', email: 'lihua.work@example.com', site: 'xm' }, api: { name: 'lihua', email: 'lihua@example.net', site: 'api' } };
   var SITE_NAME = { xm: '星芒账号', api: '历史账号' };
   /* 换账号（登录、切换、原型顶栏）：站点跟着变，充值页按新站点的档位和渠道重来 */
   function setAcct(id) {
@@ -1796,7 +1796,7 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
   ];
   /* 各家官方账号的叫法与 registry/tools.ts 的 officialAccountNames 一致 */
   var OFFICIAL = { claude: 'Claude 账号', codex: 'ChatGPT 账号', grok: 'Grok 账号' };
-  var OFF_ACCT = { claude: null, codex: { email: 'xufei.dev@gmail.com', plan: 'ChatGPT Plus' }, grok: null };
+  var OFF_ACCT = { claude: null, codex: { email: 'lihua.dev@example.com', plan: 'ChatGPT Plus' }, grok: null };
   var CFG_TOOLS = ['claude', 'codex', 'codexDesktop', 'grok'];
   function tdef(id) { return TOOL_DEFS.filter(function (t) { return t.id === id; })[0]; }
   function cgrp(id) { return id === 'codexDesktop' ? 'codex' : id; }
@@ -2391,7 +2391,7 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
   function Health() {
     var N = CHECKS.length, rows = CHECKS.map(function (c, i) { return [c, i, chk(c).lv]; }), nIss = issueCount(), body = '';
     var bad = rows.filter(function (x) { return x[2] === 'warn' || x[2] === 'bad'; }), opt = rows.filter(function (x) { return x[2] === 'opt'; }), ok = rows.filter(function (x) { return x[2] === 'ok'; });
-    var acts = S.check === 'done' ? '<button class="btn sm sec" data-act="toast" data-arg="检查报告已导出：C:\\Users\\xufei\\Desktop\\星芒检查报告-1014.txt">' + ic('export', 14) + '导出检查报告</button><button class="btn sm sec" data-act="check">重新检查</button>' : '';
+    var acts = S.check === 'done' ? '<button class="btn sm sec" data-act="toast" data-arg="检查报告已导出：C:\\Users\\lihua\\Desktop\\星芒检查报告-1014.txt">' + ic('export', 14) + '导出检查报告</button><button class="btn sm sec" data-act="check">重新检查</button>' : '';
     function list(x) { return '<section class="card">' + x.map(function (y) { return chkRow(y[0], y[1], true); }).join('') + '</section>'; }
     if (S.check === 'idle') body = '<section class="card focus p-l hrow" style="gap:16px"><div class="tile gold lg">' + ic('zap', 22) + '</div><div class="grow-min"><b style="font-size:15px">' + (nIss ? '启动时发现 ' + nIss + ' 项需要处理' : '还没有做过完整检查') + '</b>' + (nIss ? '<div class="mut" style="margin-top:3px">跑一遍完整检查，看看怎么处理。</div>' : '') + '</div><button class="btn pri" data-act="check">开始检查</button></section>' +
       '<div class="hrow"><h2 class="h-sm grow">会检查这些</h2><span class="mut">共 ' + N + ' 项</span></div><section class="well pend-grid">' + CHECKS.map(function (c) { return '<div class="pend-i"><span class="ring-ic"></span><div class="grow-min"><div class="pend-n">' + c.n + (c.opt ? '<span class="mut">（可选）</span>' : '') + '</div><div class="mut">' + c.what + '</div></div></div>'; }).join('') + '</section>';
@@ -2439,7 +2439,7 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
       '<label class="field" for="fbContact">联系方式（可选）<input class="input" id="fbContact" data-in="fbContact" placeholder="微信号或邮箱，方便我们回复你" value="' + esc(S.fbContact) + '"></label>' +
       '<div class="hrow"><div class="grow-min"><div style="font-size:13.5px">附带诊断报告</div><div class="mut">已自动隐去密钥和个人路径<button class="link" style="margin-left:8px;font-size:12.5px" data-act="dlgOpen" data-arg="report">预览报告</button></div></div>' + sw('fbDiag', '', S.fbDiag, '附带诊断报告') + '</div>' +
       '<div class="hrow"><span class="grow"></span><button class="btn pri" data-act="fbSend"' + (S.fbBusy ? ' disabled' : '') + '>' + (S.fbBusy ? '<span class="spinner sm"></span>正在复制' : ic('copy', 14) + '复制给客服') + '</button></div></section>' +
-      '<div class="stack" style="gap:14px"><section class="card focus p-l stack" style="gap:12px"><h2 class="h-sm">找客服</h2><div class="hrow" style="gap:14px;align-items:flex-start"><span class="qr" style="width:76px;height:76px" aria-label="客服二维码（示例）"></span><div class="stack" style="gap:4px"><b style="font-size:13.5px">微信扫码添加客服</b><span class="mut">装不上、付了没到账，都可以问。</span><button class="link" style="align-self:flex-start" data-act="supportOpen">在浏览器打开</button></div></div>' + '<div class="sup-id"><span class="mut">找客服时把这行一起发过去：</span><div class="hrow" style="gap:6px"><code class="sel grow-min">' + (S.loggedIn ? '账号 xufei（ID 1024）' : '未登录') + ' · 星芒AI管理工具 ' + S.ver + ' · ' + (S.os === 'mac' ? 'macOS 15' : 'Windows 11') + ' · 64 位</code><button type="button" class="btn xs ghost" data-act="toast" data-arg="已复制">' + ic('copy', 13) + '复制</button></div><span class="mut sup-fail">最近一次出错：20:58 安装 Grok CLI：没有写入权限，已撤回</span></div>' + '<button class="link" style="align-self:flex-start" data-act="dlgOpen" data-arg="report">预览反馈报告</button></section>' +
+      '<div class="stack" style="gap:14px"><section class="card focus p-l stack" style="gap:12px"><h2 class="h-sm">找客服</h2><div class="hrow" style="gap:14px;align-items:flex-start"><span class="qr" style="width:76px;height:76px" aria-label="客服二维码（示例）"></span><div class="stack" style="gap:4px"><b style="font-size:13.5px">微信扫码添加客服</b><span class="mut">装不上、付了没到账，都可以问。</span><button class="link" style="align-self:flex-start" data-act="supportOpen">在浏览器打开</button></div></div>' + '<div class="sup-id"><span class="mut">找客服时把这行一起发过去：</span><div class="hrow" style="gap:6px"><code class="sel grow-min">' + (S.loggedIn ? '账号 lihua（ID 1024）' : '未登录') + ' · 星芒AI管理工具 ' + S.ver + ' · ' + (S.os === 'mac' ? 'macOS 15' : 'Windows 11') + ' · 64 位</code><button type="button" class="btn xs ghost" data-act="toast" data-arg="已复制">' + ic('copy', 13) + '复制</button></div><span class="mut sup-fail">最近一次出错：20:58 安装 Grok CLI：没有写入权限，已撤回</span></div>' + '<button class="link" style="align-self:flex-start" data-act="dlgOpen" data-arg="report">预览反馈报告</button></section>' +
       '<section class="well" style="padding:12px 8px"><h2 class="h-sm" style="padding:0 10px 6px">先试试这些</h2>' + faq.filter(function (f) { return S.site !== 'api' || f[2] !== 'recharge'; }).map(function (f) { return '<button class="try" data-act="' + f[1] + '" data-arg="' + f[2] + '"><span class="grow-min"><span style="display:block">' + f[0] + '</span><span class="mut">' + f[3] + '</span></span>' + ic('chevR', 14, 'color:var(--tx3)') + '</button>'; }).join('') + '</section></div></div>';
     return head('反馈与客服', '') + tabs + body;
   }
@@ -2871,7 +2871,7 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
     ['chat', '先在星芒里聊天', '什么都不用装，直接问问题', false]
   ];
   var DLG_INIT = {
-    login: function () { return { title: '登录星芒账号', step: 1, src: 'xm', srcOpen: false, f: S.remPwd ? { acc: 'xufei@qq.com', pwd: 'xingmang2026', rem: true, agree: true } : { acc: 'xufei@qq.com', rem: false, agree: true } }; },
+    login: function () { return { title: '登录星芒账号', step: 1, src: 'xm', srcOpen: false, f: S.remPwd ? { acc: 'lihua@example.com', pwd: 'demo-pass-1', rem: true, agree: true } : { acc: 'lihua@example.com', rem: false, agree: true } }; },
     register: function () { return { title: '注册星芒账号', f: { agree: false } }; },
     forgot: function () { return { title: '找回星芒账号密码', step: 1, src: 'xm', srcOpen: false, f: { rem: true } }; },
     guide: function () { return { title: '新手引导', step: 1, pick: 'codexDesktop', wide: true, f: {} }; },
@@ -3122,11 +3122,11 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
   };
 
   var DLG_FILL = {
-    register: { email: 'xiaoming@qq.com', code: '284913', user: 'xiaoming', pwd: 'xingmang2026', pwd2: 'xingmang2026', agree: true },
-    forgot: { email: 'xufei@qq.com', rcode: 'RST-7Q2K-9M4X', pwd: 'xingmang2027', pwd2: 'xingmang2027' },
-    pwd: { old: 'xingmang2026', pwd: 'xingmang2027', pwd2: 'xingmang2027' },
+    register: { email: 'xiaoming@qq.com', code: '284913', user: 'xiaoming', pwd: 'demo-pass-1', pwd2: 'demo-pass-1', agree: true },
+    forgot: { email: 'lihua@example.com', rcode: 'RST-7Q2K-9M4X', pwd: 'demo-pass-2', pwd2: 'demo-pass-2' },
+    pwd: { old: 'demo-pass-1', pwd: 'demo-pass-2', pwd2: 'demo-pass-2' },
     redeem: { rc: 'XM-2026-GIFT' },
-    login: { acc: 'xufei@qq.com', pwd: 'xingmang2026', agree: true, otp: '582047', bcode: '7KQ2-9MXD' }
+    login: { acc: 'lihua@example.com', pwd: 'demo-pass-1', agree: true, otp: '582047', bcode: '7KQ2-9MXD' }
   };
 
   DLG_INIT.addMcp = function () { return { title: '自定义连接', type: 'local', scope: 'user', open: {}, f: {} }; };
@@ -3362,7 +3362,7 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
   DLG.profile = function (d) {
     return '<div class="hrow" style="gap:14px"><span class="avatar lg">' + esc(((d.f.nick || '').trim() || ME().name).charAt(0)) + '</span><div class="grow-min"><b style="font-size:13.5px">头像</b><div class="mut">只存在这台电脑上，支持 JPG、PNG、WebP，选好后可以裁剪</div></div><button type="button" class="btn sm sec" data-act="toast" data-arg="会弹出图片选择框，选好后可以裁剪">更换头像</button></div>' +
       fld('显示名称', 'nick', { hint: '最多 20 个字', ph: '别人看到的名字' }) +
-      '<div class="field"><span class="fl">邮箱</span><div class="ro-f"><span class="grow-min">xufei@qq.com</span><span class="mut">改邮箱请联系客服</span></div></div>' + msgs(d) +
+      '<div class="field"><span class="fl">邮箱</span><div class="ro-f"><span class="grow-min">lihua@example.com</span><span class="mut">改邮箱请联系客服</span></div></div>' + msgs(d) +
       '<div class="dlg-acts"><button class="btn sec" data-act="dlgClose">取消</button><button class="btn pri" data-act="dlgOk">保存</button></div>';
   };
   DLG_OK.profile = function (d) {
@@ -3373,7 +3373,7 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
   };
   DLG_INIT.help = function () { return { title: '帮助与客服', f: {} }; };
   DLG.help = function () {
-    return '<div class="help-top"><span class="qr" style="width:84px;height:84px" aria-label="客服二维码（示例）"></span><div class="stack" style="gap:5px"><b style="font-size:14px">微信扫码找客服</b><span class="mut">装不上、付了没到账，都可以问。</span><button class="btn sm sec" style="align-self:flex-start;margin-top:4px" data-act="supportOpen">在浏览器打开</button></div></div>' + '<div class="sup-id"><span class="mut">找客服时把这行一起发过去：</span><div class="hrow" style="gap:6px"><code class="sel grow-min">' + (S.loggedIn ? '账号 xufei（ID 1024）' : '未登录') + ' · 星芒AI管理工具 ' + S.ver + ' · ' + (S.os === 'mac' ? 'macOS 15' : 'Windows 11') + ' · 64 位</code><button type="button" class="btn xs ghost" data-act="toast" data-arg="已复制">' + ic('copy', 13) + '复制</button></div><span class="mut sup-fail">最近一次出错：20:58 安装 Grok CLI：没有写入权限，已撤回</span></div>' +
+    return '<div class="help-top"><span class="qr" style="width:84px;height:84px" aria-label="客服二维码（示例）"></span><div class="stack" style="gap:5px"><b style="font-size:14px">微信扫码找客服</b><span class="mut">装不上、付了没到账，都可以问。</span><button class="btn sm sec" style="align-self:flex-start;margin-top:4px" data-act="supportOpen">在浏览器打开</button></div></div>' + '<div class="sup-id"><span class="mut">找客服时把这行一起发过去：</span><div class="hrow" style="gap:6px"><code class="sel grow-min">' + (S.loggedIn ? '账号 lihua（ID 1024）' : '未登录') + ' · 星芒AI管理工具 ' + S.ver + ' · ' + (S.os === 'mac' ? 'macOS 15' : 'Windows 11') + ' · 64 位</code><button type="button" class="btn xs ghost" data-act="toast" data-arg="已复制">' + ic('copy', 13) + '复制</button></div><span class="mut sup-fail">最近一次出错：20:58 安装 Grok CLI：没有写入权限，已撤回</span></div>' +
       '<div class="help-grid">' + [['book', '使用教程', 'go|tutorial'], ['msg', '留言反馈', 'go|feedback'], ['zap', '跑一遍检查', 'checkGo|'], ['list', '运行日志', 'fbLog|'], ['download', '打开下载页', 'toast|已在浏览器打开下载页'], ['refresh', '重开软件', 'toast|星芒会在 3 秒后重新打开']].map(function (x) {
         return '<button type="button" class="help-i" data-act="helpGo" data-arg="' + x[2] + '">' + ic(x[0], 16) + '<span>' + x[1] + '</span></button>';
       }).join('') + '</div>';
@@ -3472,7 +3472,7 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
         return '<div class="tok-r"><code class="tok-n">' + t[0] + '</code>' + cell('dark') + cell('light') + '<span class="tx2">' + t[1] + '</span></div>';
       }).join('') + '</div>' + spRules(['正文与背景的对比度不低于 4.5:1，辅助文字不低于 4.5:1（--tx3 已按此调整）。', '状态色只表达状态：绿色＝正常，橙色＝需要留意，红色＝出错或危险操作。不要拿来装饰。', '高对比度模式只加深 --tx2、--tx3 和各类描边，不改品牌色。']));
     out += spSec('type', '文字', '界面字体：Windows 用 Segoe UI Variable，macOS 用苹方；代码与路径用 Cascadia Mono / SF Mono。',
-      '<div class="sp-type">' + [['页面标题', '22px · 600 · 行高 1.3', 'font-family:var(--ui-d);font-size:22px;font-weight:600;line-height:1.3', '晚上好，徐飞'], ['区块标题', '15px · 600（卡片里 14px）', 'font-family:var(--ui-d);font-size:15px;font-weight:600', '工具'], ['卡片标题', '14.5px · 600', 'font-size:14.5px;font-weight:600', 'Claude Code'], ['正文', '14px · 400 · 行高 1.5', 'font-size:14px', '一个账号，用上多款 AI 编程工具。'], ['说明', '13px · --tx2', 'font-size:13px;color:var(--tx2)', '改动会立即保存。'], ['辅助', '12px · --tx3', 'font-size:12px;color:var(--tx3)', 'OpenAI · 命令行工具'], ['金额', '30px · 600 · 等宽数字', '', '<span class="num-xl">$12.40</span>'], ['代码与路径', '12px · 等宽', '', '<span class="mono">%USERPROFILE%\\.claude\\settings.json</span>']].map(function (r) {
+      '<div class="sp-type">' + [['页面标题', '22px · 600 · 行高 1.3', 'font-family:var(--ui-d);font-size:22px;font-weight:600;line-height:1.3', '晚上好，李华'], ['区块标题', '15px · 600（卡片里 14px）', 'font-family:var(--ui-d);font-size:15px;font-weight:600', '工具'], ['卡片标题', '14.5px · 600', 'font-size:14.5px;font-weight:600', 'Claude Code'], ['正文', '14px · 400 · 行高 1.5', 'font-size:14px', '一个账号，用上多款 AI 编程工具。'], ['说明', '13px · --tx2', 'font-size:13px;color:var(--tx2)', '改动会立即保存。'], ['辅助', '12px · --tx3', 'font-size:12px;color:var(--tx3)', 'OpenAI · 命令行工具'], ['金额', '30px · 600 · 等宽数字', '', '<span class="num-xl">$12.40</span>'], ['代码与路径', '12px · 等宽', '', '<span class="mono">%USERPROFILE%\\.claude\\settings.json</span>']].map(function (r) {
         return '<div class="sp-tr"><div class="sp-tl"><b>' + r[0] + '</b><span>' + r[1] + '</span></div><div class="grow-min" style="' + r[2] + '">' + r[3] + '</div></div>';
       }).join('') + '</div>' + spRules(['正文 14px，任何文字不小于 11.5px。开了「大字」后，说明和辅助文字各放大一号。', '中文和英文、数字之间留一个空格：「Claude Code 已装好」「余额 $12.40」。', '标题和按钮不加句号；提示句末尾加句号。', '会变动的数字用等宽数字（tabular-nums），列表里对得齐。']));
     out += spSec('radius', '圆角', '圆角分 5 级，按元素大小取用。支持连续曲率的系统上，半径乘以 1.68 并使用 superellipse(1.9)，看起来和 macOS 原生圆角一致；不支持时退回普通圆角。',
@@ -3492,12 +3492,12 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
       spDemo(spItem('lg 40', '<button class="btn lg pri">登录</button>') + spItem('md 32', '<button class="btn pri">打开 Claude Code</button>') + spItem('sm 28', '<button class="btn sm sec">打开</button>') + spItem('xs 24', '<button class="btn xs soft">' + ic('refresh', 12) + '更新</button>') + spItem('禁用', '<button class="btn pri" disabled>去支付 $0.00</button>') + spItem('进行中', '<button class="btn pri" disabled><span class="spinner sm"></span>正在保存</button>') + spItem('链接', '<button class="link">管理密钥</button>') + spItem('更多', '<button class="more">全部记录' + ic('chevR', 13, 'stroke-width:2.2') + '</button>') + spItem('图标按钮', '<button class="ib" aria-label="更多">' + ic('more', 16, 'stroke-width:3') + '</button>'), 'sd-row') +
       spRules(['每个区域最多一个主按钮。弹窗里主按钮放最右，取消在它左边。', '按钮文字写动作和对象：「保存配置」「卸载 Grok CLI」，不写「确定」「提交」。完成后的提示用同一个词：「配置已保存」。', '会删东西、断开连接的操作用危险按钮，并先确认。', '操作要等几秒时，按钮换成转圈并改写成「正在…」，同时禁用防止重复点击。']));
     out += spSec('c-input', '输入框', '标签在上、说明在标签右侧或输入框下方。错误时描边变红，错误原因写在表单底部。',
-      spDemo('<label class="field sp-w"><span class="fl">用户名或邮箱</span><span class="inwrap"><input class="input" value="xufei@qq.com"></span></label>' +
+      spDemo('<label class="field sp-w"><span class="fl">用户名或邮箱</span><span class="inwrap"><input class="input" value="lihua@example.com"></span></label>' +
         '<label class="field sp-w"><span class="fl">密码<span class="mut">8 至 20 位</span></span><span class="inwrap has-eye"><input class="input" type="password" value="xingmang"><button class="in-eye" type="button" aria-label="显示密码">' + ic('eye', 15) + '</button></span></label>' +
         '<label class="field sp-w"><span class="fl">邮箱</span><span class="inwrap has-btn"><input class="input" placeholder="比如 QQ 邮箱"><button class="in-btn" type="button">获取验证码</button></span></label>' +
         '<label class="field sp-w"><span class="fl">星芒密钥</span><span class="inwrap bad"><input class="input mono" value="abc123" aria-invalid="true"></span></label>' +
         '<div class="field sp-w"><span class="fl">搜索</span><div class="mini-search" style="width:auto">' + ic('search', 14) + '<input class="input" placeholder="搜索标题、文件夹或模型"></div></div>' +
-        '<div class="field sp-w"><span class="fl">只读</span><div class="ro-f"><span class="grow-min">xufei@qq.com</span><span class="mut">改邮箱请联系客服</span></div></div>', 'sd-grid3') +
+        '<div class="field sp-w"><span class="fl">只读</span><div class="ro-f"><span class="grow-min">lihua@example.com</span><span class="mut">改邮箱请联系客服</span></div></div>', 'sd-grid3') +
       spRules(['占位符写示例（「比如：公司电脑上的 Claude Code」），不要把说明写进占位符。', '错误信息说清楚错在哪、怎么改：「这不像星芒的密钥：应以 sk- 开头，20 位以上」。', '按 Enter 等同于点主按钮。']));
     out += spSec('c-select', '下拉选择', '选项超过 3 个、或每个选项需要一句说明时用下拉；3 个以内用分段。',
       spDemo('<div class="sp-w"><span class="dd"><button type="button" class="dd-btn" aria-expanded="false"><span class="grow-min ell">自动准备（推荐）</span>' + ic('chev', 14) + '</button></span>' + spCap('收起') + '</div>' +
@@ -3536,7 +3536,7 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
       spRules(['标题写成问题或动作：「卸载 Grok CLI？」「Claude Code 配置」。', '确认类弹窗只有两个按钮：取消 + 动作；危险动作用红色。', '表单弹窗有未保存修改时，关闭前先在底部确认，不另弹一层。', '从哪个工具点开的配置，弹窗就只管这一个工具，不在弹窗里切换别的工具；两个入口共用一份配置的（Codex CLI 和 Codex 桌面端），在标题下写明。', '按 Esc、点遮罩都等于「取消」。', '打开时光标先落在第一个要填的地方（没有要填的就落在主按钮；危险确认落在「取消」）；关掉后回到打开它的那个按钮。Tab 只在弹窗里转。', '只是看信息的弹窗（调用详情、额度、报告）没有主按钮：「关闭」用次按钮，附带的小操作用幽灵按钮放左边。']));
     out += spSec('c-msg', '提示与反馈', '',
       spDemo('<div class="form-err" role="alert">' + ic('alert', 15, 'stroke-width:2.1') + '<span>账号或密码不正确，请检查后重试</span></div>' +
-        '<div class="form-note">' + ic('check', 15, 'stroke-width:2.2') + '<span>验证码已发到 xufei@qq.com。几分钟内没收到的话，看看垃圾邮件。</span></div>' +
+        '<div class="form-note">' + ic('check', 15, 'stroke-width:2.2') + '<span>验证码已发到 lihua@example.com。几分钟内没收到的话，看看垃圾邮件。</span></div>' +
         '<div class="form-note warn">' + ic('info', 15) + '<span>Codex 现在用的是 ChatGPT 账号。换别家模型要先改用当前账号。</span></div>' +
         '<div class="form-note neutral">' + ic('shield', 15) + '<span>保存前会重新校验模型权限并备份已有配置。</span></div>' +
         '<div class="notice warn" role="status">' + ic('alert', 15, 'stroke-width:2.1;flex:none') + '<span class="grow-min ell">余额只剩 $3.20，按最近用量约还能用 2 天。用完后工具会暂停</span><button class="btn xs soft">去充值</button></div>' +
@@ -3701,7 +3701,7 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
       var d = S.dialog; if (!d) return; d.srcOpen = true;
       if (d.src !== src) {
         d.src = src; d.err = null; d.note = null;
-        if (d.kind === 'login') { d.title = '登录' + SITE_NAME[src]; d.f.acc = src === 'xm' && S.remPwd ? 'xufei@qq.com' : ''; d.f.pwd = src === 'xm' && S.remPwd ? 'xingmang2026' : ''; }
+        if (d.kind === 'login') { d.title = '登录' + SITE_NAME[src]; d.f.acc = src === 'xm' && S.remPwd ? 'lihua@example.com' : ''; d.f.pwd = src === 'xm' && S.remPwd ? 'demo-pass-1' : ''; }
         else { d.title = '找回' + SITE_NAME[src] + '密码'; d.step = 1; }
       }
       render();
@@ -3991,7 +3991,7 @@ textarea.input.bad{box-shadow:inset 0 0 0 1.5px var(--bad)}
         if (!(S.dialog.f.path || '').trim()) { S.dialog.err = { msg: '请先点「选择文件夹」选一个文件夹', field: 'path' }; render(); return; }
       }
       var d = S.dialog; S.dialog = null;
-      if (d.kind === 'login') { S.loggedIn = true; S.page = 'home'; render(); toast('欢迎回来，徐飞'); return; }
+      if (d.kind === 'login') { S.loggedIn = true; S.page = 'home'; render(); toast('欢迎回来，李华'); return; }
       if (d.kind === 'addOff' || d.kind === 'addFeat') {
         var x = d.item, tools = EXT_TOOLS.filter(function (t) { return d.tg[t]; });
         if (d.ext === 'plugin') tools.forEach(function (t) { S.ext.plugin.push({ id: x.id, tool: t, name: x.name, pub: x.pub || x.repo, scope: t === d.tool ? d.scope : 'user', on: true, risks: x.risks || [], sum: x.sum }); });

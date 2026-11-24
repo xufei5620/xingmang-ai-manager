@@ -377,8 +377,16 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     return { supported: true, cliInstalled: cliInstalled(), desktopInstalled: desktopInstalled(), configured }
   }
 
-  /** 签一把密钥、按当时的型号算出设置、写下去。地址只读一次，整次只用这一个（线路「自动」时可能半路换）。 */
-  async function configureNow(resolveKey: AntigravityKeyResolver): Promise<{ environment: AntigravityGatewayEnvironment, outcome: AntigravityEnvironmentWriteOutcome }> {
+  /**
+   * 签一把密钥、按当时的型号算出设置、写下去。地址只读一次，整次只用这一个（线路「自动」时可能半路换）。
+   * 为桌面端写（target 'desktop'）时，Mac 上终端启动文件那一段写不进只记一笔、照常往下走：桌面端的设置由打开的
+   * 那一步放进它的环境里，用不上那个文件（复查 A 第 1 轮第 4 条，~/.zprofile 是 dotfiles 的链接时桌面端打不开）。
+   * 命令行要那一段：Mac 的「终端」从那里读设置，写不进照旧报错。
+   */
+  async function configureNow(
+    resolveKey: AntigravityKeyResolver,
+    target?: AntigravityTarget,
+  ): Promise<{ environment: AntigravityGatewayEnvironment, outcome: AntigravityEnvironmentWriteOutcome }> {
     const baseUrl = deps.gatewayBaseUrl()
     const key = await resolveKey()
     const environment = buildAntigravityGatewayEnvironment({ baseUrl, apiKey: key.key, models: key.models })
@@ -388,7 +396,8 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
         platform,
         homeDirectory: userHome,
         env,
-        skipped: (displayPath, error) => log('warn', 'antigravity.settings.fish-skipped', '没写进 fish 的启动设置', { file: displayPath, error: errorText(error) }),
+        startupFileOptional: target === 'desktop',
+        skipped: (displayPath, error) => log('warn', 'antigravity.settings.profile-skipped', '没写进终端的启动设置', { file: displayPath, error: errorText(error) }),
       })
       if (result.profile === 'unsupported-shell') {
         log('warn', 'antigravity.settings.unsupported-shell', '登录 shell 不是 zsh、bash、fish，自己开的终端里读不到 Antigravity 的设置')
@@ -478,7 +487,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     let configureError: string | undefined
     try {
       assertSameUser()
-      await configureNow(resolveKey)
+      await configureNow(resolveKey, target)
     } catch (error) {
       configureError = errorText(error)
       log('warn', 'antigravity.settings.failed', 'Antigravity 已装好，设置没写成', { target, error: configureError })
@@ -556,7 +565,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     const executable = windowsDesktopExecutable()
     if (!executable) throw new Error(desktopNotInstalledMessage)
     // 先写设置再看开没开着：写完系统通知资源管理器换上新环境，之后它开的 Antigravity 带着新设置。
-    const { outcome } = await configureNow(resolveKey)
+    const { outcome } = await configureNow(resolveKey, 'desktop')
     const running = await windowsDesktopRunning(executable)
     // 开着、设置这次又改了：开着的那一份拿的是旧的（或没有），请客户先关掉。看不出开没开着就照常打开：
     // 开着的话第二个自己退出、把原来的叫到前面，最坏是客户看到的还是旧设置，不会开出两个。
@@ -573,7 +582,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     const bundle = macDesktopBundle()
     if (!bundle) throw new Error(desktopNotInstalledMessage)
     const executable = await verifyMacDesktop(bundle)
-    const { environment } = await configureNow(resolveKey)
+    const { environment } = await configureNow(resolveKey, 'desktop')
     const fingerprint = antigravityEnvironmentFingerprint(environment)
     const running = await macDesktopProcesses(bundle)
     if (running?.length) {
@@ -631,7 +640,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
         log('warn', 'antigravity.cli.signature-refused', 'Antigravity 命令行的签名没核过，不打开', { error: errorText(error) })
         throw new Error(cliNotOfficialMessage, { cause: error })
       }
-      const { environment } = await configureNow(resolveKey)
+      const { environment } = await configureNow(resolveKey, 'cli')
       // 星芒自己的环境没跟着用户环境变量改（改了，之后起的每个子进程都会带上这把密钥），所以这次的设置直接交给终端。
       await (deps.launchWindowsTerminal ?? launchCliPowerShell)({
         executable: target.executablePath,
@@ -653,7 +662,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
       log('warn', 'antigravity.cli.signature-refused', 'Antigravity 命令行的签名没核过，不打开', { error: errorText(error) })
       throw new Error(cliNotOfficialMessage, { cause: error })
     }
-    await configureNow(resolveKey)
+    await configureNow(resolveKey, 'cli')
     // 「终端」先起客户的登录 shell，读启动文件里星芒加的那一段，设置就在环境里了；启动脚本里不另写密钥。
     await (deps.launchMacosTerminal ?? launchMacosTerminal)({ executable: target.executablePath, argv: [], workspace, env: deps.terminalEnvironment(env) })
     log('info', 'antigravity.cli.opened', '已打开 Antigravity 命令行')
