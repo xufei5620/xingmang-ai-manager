@@ -1,4 +1,4 @@
-// U06（审计 docs/audits/2026-10-28/domains/dev-react.md）：画布目录 canvas-v2/ 可以单独
+// U06（2026-10-28 审计）：画布目录 canvas-v2/ 可以单独
 // `npm install`（它的 README 这么写，老机器上也可能还留着更早装的那份），装过以后那里有自己的
 // react / react-dom / lucide-react / @xyflow/react。根目录的 Vite 依赖扫描默认把仓库里所有 .html
 // 当入口，canvas-v2/index.html 也在内；从画布源码出发解析裸包名，Node 的规则先找到画布那份，
