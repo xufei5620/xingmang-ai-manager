@@ -355,6 +355,23 @@ describe('createAntigravityService install', () => {
     expect(h.writes).toEqual([writtenEnvironment])
   })
 
+  it('hands both desktop installers the bucket and logs why it was passed over', async () => {
+    const reason = 'antigravity-windows-x64：存储桶清单返回 HTTP 404'
+    const installDesktopWindows = vi.fn(async (install: Parameters<NonNullable<AntigravityServiceDependencies['installDesktopWindows']>>[0]) => {
+      install.bucket?.onFallback?.(reason)
+      return { version: '2.34.0', executablePath: windowsDesktop }
+    })
+    const windows = harness({ files: [windowsDesktop], overrides: { installDesktopWindows } })
+    await windows.service.install('desktop', resolveKey)
+    expect(windows.logs).toContainEqual({
+      level: 'warn', event: 'antigravity.desktop.bucket-fallback', message: 'Antigravity 桌面端存储桶这一路没走通，改去谷歌下载', detail: { detail: reason },
+    })
+
+    const mac = harness({ platform: 'darwin', directories: [macBundle] })
+    await mac.service.install('desktop', resolveKey)
+    expect(mac.deps.installDesktopMac).toHaveBeenCalledWith(expect.objectContaining({ bucket: { onFallback: expect.any(Function) } }))
+  })
+
   it('refuses an unknown target and an unsupported computer', async () => {
     const h = harness()
     // @ts-expect-error the IPC parser only lets cli and desktop through

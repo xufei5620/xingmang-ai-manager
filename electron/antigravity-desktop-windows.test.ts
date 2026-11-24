@@ -14,10 +14,11 @@ import {
   type AntigravityDesktopWindowsProgress,
   type InstallAntigravityDesktopWindowsOptions,
 } from './antigravity-desktop-windows'
+import { desktopPackageBucketOrigin } from './desktop-package-bucket'
 import { NativeCliPublisherMismatchError } from './trusted-native-cli'
 
-// Nothing here reaches Google or runs an installer: the feed and the download come from a fake
-// fetch, the signature check and the installer are injected.
+// Nothing here reaches Google, the bucket or runs an installer: the feed, the bucket index and the
+// downloads come from a fake fetch, the signature check and the installer are injected.
 const build = '5887025308631040'
 // The feed parser refuses anything under 16 MiB, so the fake installer is a little over that.
 const installer = Buffer.concat([Buffer.from('MZ'), randomBytes(16 * 1024 * 1024 + 4094)])
@@ -57,11 +58,36 @@ function withUrl(response: Response, url: string): Response {
   return response
 }
 
-function fakeFetch(platform: WindowsPlatform, routes: { feed?: Route, installer?: Route } = {}) {
+const bucketPrefix = 'xingmang/offline/antigravity-desktop'
+const bucketIndexUrl = `${desktopPackageBucketOrigin}/${bucketPrefix}/windows.json`
+
+/** One file entry in the shape scripts/sync-antigravity-desktop-cos.cjs writes. */
+function bucketFile(platform: WindowsPlatform, data = installer, extra: Record<string, unknown> = {}) {
+  const sha256 = sha('sha256', data)
+  const fileName = platform === 'windows-x64' ? 'Antigravity-x64.exe' : 'Antigravity-arm64.exe'
+  const key = `${bucketPrefix}/${platform}/sha256-${sha256}/${fileName}`
+  return {
+    platformId: platform, platform: 'windows', architecture: platform === 'windows-x64' ? 'x64' : 'arm64', kind: 'installer', format: 'exe', fileName,
+    type: 'application/octet-stream', verification: 'windows-authenticode-google', version: '2.34.0', key, url: `${desktopPackageBucketOrigin}/${key}`,
+    size: data.length, sha256, sha512: sha('sha512', data), sourceUrl: buildAntigravityDesktopArtifactUrl(platform, '2.34.0', build), cosEtag: '"etag"', ...extra,
+  }
+}
+
+function bucketIndex(checkedAt = new Date().toISOString(), files: unknown[] = [bucketFile('windows-x64'), bucketFile('windows-arm64')]): string {
+  return JSON.stringify({ schemaVersion: 1, product: 'antigravity-desktop', family: 'windows', generatedAt: checkedAt, checkedAt, version: '2.34.0', build, files })
+}
+
+function bucketObjectUrl(platform: WindowsPlatform, data = installer): string {
+  return bucketFile(platform, data).url
+}
+
+function fakeFetch(platform: WindowsPlatform, routes: { feed?: Route, installer?: Route, bucketIndex?: Route, bucketObject?: Route } = {}) {
   const table = new Map<string, Route>([
     [buildAntigravityDesktopFeedUrl(platform), routes.feed ?? (() => text(feed(platform)))],
     [buildAntigravityDesktopArtifactUrl(platform, '2.34.0', build), routes.installer ?? (() => binary(installer))],
   ])
+  if (routes.bucketIndex) table.set(bucketIndexUrl, routes.bucketIndex)
+  table.set(bucketObjectUrl(platform), routes.bucketObject ?? (() => binary(installer)))
   return vi.fn<typeof globalThis.fetch>(async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     const route = table.get(url)
@@ -344,6 +370,137 @@ describe('installAntigravityDesktopWindows', () => {
     }
     await installAntigravityDesktopWindows(h.options)
     expect(order).toEqual(['route:start', 'route:end', 'install'])
+  })
+})
+
+describe('installAntigravityDesktopWindows from the bucket', () => {
+  function bucketHarness(platform: WindowsPlatform = 'windows-x64', overrides: Partial<InstallAntigravityDesktopWindowsOptions> = {}, routes: Parameters<typeof fakeFetch>[1] = {}) {
+    const fallbacks: string[] = []
+    const routed: string[] = []
+    const h = harness(platform, {
+      bucket: { onFallback: (detail) => fallbacks.push(detail) },
+      withVendorDownloadRoute: async (operation) => {
+        routed.push('google')
+        return operation()
+      },
+      ...overrides,
+    }, { bucketIndex: () => text(bucketIndex()), ...routes })
+    return { ...h, fallbacks, routed }
+  }
+
+  it('installs the Google-signed installer from the bucket without asking Google', async () => {
+    const h = bucketHarness()
+    await expect(installAntigravityDesktopWindows(h.options)).resolves.toEqual({ version: '2.34.0', executablePath })
+    expect(requested(h.fetch)).toEqual([bucketIndexUrl, bucketObjectUrl('windows-x64')])
+    for (const [, init] of h.fetch.mock.calls) expect(init).toMatchObject({ redirect: 'manual', credentials: 'omit' })
+    // The bucket copy gets the same signature check and the same last look before it runs.
+    expect(h.verified).toEqual([path.join(cache, 'antigravity-setup.exe')])
+    expect(h.ran).toEqual([path.join(cache, 'antigravity-setup.exe')])
+    expect(h.routed).toEqual([])
+    expect(h.fallbacks).toEqual([])
+    expect(h.progress[0]).toEqual({ phase: 'downloading', percent: 0 })
+    expect(h.progress.slice(-2)).toEqual([{ phase: 'verifying', percent: null }, { phase: 'installing', percent: null }])
+    expect(fs.existsSync(cache)).toBe(false)
+  })
+
+  it('reads the Arm entry on Arm Windows', async () => {
+    const h = bucketHarness('windows-arm64')
+    await installAntigravityDesktopWindows(h.options)
+    expect(requested(h.fetch)).toEqual([bucketIndexUrl, bucketObjectUrl('windows-arm64')])
+  })
+
+  it.each([
+    ['no index', () => text('missing', 404), '存储桶清单返回 HTTP 404'],
+    ['an index without this chip', () => text(bucketIndex(undefined, [bucketFile('windows-arm64')])), '清单格式对不上'],
+    ['an entry outside the Antigravity folder', () => text(bucketIndex(undefined, [bucketFile('windows-x64', installer, { key: `xingmang/offline/claude/windows-x64/sha256-${sha('sha256', installer)}/Antigravity-x64.exe` }), bucketFile('windows-arm64')])), '清单格式对不上'],
+    ['an index that was redirected', () => new Response(null, { status: 302, headers: { location: 'https://evil.example/' } }), '跳转'],
+  ])('goes to Google when the bucket has %s, and only logs why', async (_label, route, reason) => {
+    const h = bucketHarness('windows-x64', {}, { bucketIndex: route })
+    await expect(installAntigravityDesktopWindows(h.options)).resolves.toEqual({ version: '2.34.0', executablePath })
+    expect(requested(h.fetch)).toEqual([bucketIndexUrl, buildAntigravityDesktopFeedUrl('windows-x64'), buildAntigravityDesktopArtifactUrl('windows-x64', '2.34.0', build)])
+    expect(h.routed).toEqual(['google'])
+    expect(h.fallbacks).toHaveLength(1)
+    expect(h.fallbacks[0]).toMatch(/^antigravity-windows-x64：/)
+    expect(h.fallbacks[0]).toContain(reason)
+  })
+
+  it('goes to Google when the bucket serves other bytes than its index names', async () => {
+    const h = bucketHarness('windows-x64', {}, { bucketObject: () => binary(Buffer.alloc(installer.length, 3)) })
+    await installAntigravityDesktopWindows(h.options)
+    expect(h.fallbacks[0]).toContain('SHA-256')
+    expect(h.verified).toEqual([path.join(cache, 'antigravity-setup.exe')])
+    expect(requested(h.fetch).slice(-1)).toEqual([buildAntigravityDesktopArtifactUrl('windows-x64', '2.34.0', build)])
+  })
+
+  it('deletes a bucket installer Google did not sign and fetches Google\'s own', async () => {
+    let checks = 0
+    const verify = harness().options.verifyInstaller
+    const h = bucketHarness('windows-x64', {
+      verifyInstaller: async (filePath) => {
+        checks += 1
+        if (checks === 1) throw new NativeCliPublisherMismatchError()
+        return verify!(filePath)
+      },
+    })
+    await expect(installAntigravityDesktopWindows(h.options)).resolves.toEqual({ version: '2.34.0', executablePath })
+    expect(checks).toBe(2)
+    expect(h.fallbacks).toHaveLength(1)
+    expect(requested(h.fetch)).toEqual([bucketIndexUrl, bucketObjectUrl('windows-x64'), buildAntigravityDesktopFeedUrl('windows-x64'), buildAntigravityDesktopArtifactUrl('windows-x64', '2.34.0', build)])
+  })
+
+  it('asks Google first when the bucket index is over a day old, and does not use the bucket when Google works', async () => {
+    const stale = new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString()
+    const h = bucketHarness('windows-x64', {}, { bucketIndex: () => text(bucketIndex(stale)) })
+    await installAntigravityDesktopWindows(h.options)
+    expect(requested(h.fetch)).toEqual([bucketIndexUrl, buildAntigravityDesktopFeedUrl('windows-x64'), buildAntigravityDesktopArtifactUrl('windows-x64', '2.34.0', build)])
+    expect(h.fallbacks[0]).toContain('超过 24 小时')
+  })
+
+  it('falls back to a day-old bucket copy when Google cannot be reached either', async () => {
+    const stale = new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString()
+    const h = bucketHarness('windows-x64', {}, {
+      bucketIndex: () => text(bucketIndex(stale)),
+      feed: () => {
+        throw new TypeError('fetch failed')
+      },
+    })
+    await expect(installAntigravityDesktopWindows(h.options)).resolves.toEqual({ version: '2.34.0', executablePath })
+    expect(requested(h.fetch)).toEqual([bucketIndexUrl, buildAntigravityDesktopFeedUrl('windows-x64'), bucketIndexUrl, bucketObjectUrl('windows-x64')])
+    // The second bucket attempt is not routed and not wrapped in the Google route.
+    expect(h.routed).toEqual(['google'])
+    expect(h.ran).toEqual([path.join(cache, 'antigravity-setup.exe')])
+  })
+
+  it('reports Google\'s failure when neither Google nor a fresh bucket works', async () => {
+    const h = bucketHarness('windows-x64', {}, {
+      bucketIndex: () => text('missing', 404),
+      feed: () => {
+        throw new TypeError('fetch failed')
+      },
+    })
+    const error = await failureOf(installAntigravityDesktopWindows(h.options))
+    expect(error.message).toBe('Antigravity 下载未完成或校验未通过，请稍后重试')
+    // A bucket that is simply missing is not tried a second time.
+    expect(requested(h.fetch)).toEqual([bucketIndexUrl, buildAntigravityDesktopFeedUrl('windows-x64')])
+    expect(h.ran).toEqual([])
+    expect(fs.existsSync(cache)).toBe(false)
+  })
+
+  it('stops at a cancel during the bucket download without falling back to Google', async () => {
+    const controller = new AbortController()
+    const h = bucketHarness('windows-x64', { signal: controller.signal }, {
+      bucketObject: (init) => {
+        controller.abort()
+        init?.signal?.throwIfAborted()
+        return binary(installer)
+      },
+    })
+    const error = await failureOf(installAntigravityDesktopWindows(h.options))
+    expect(error.name).toBe('AbortError')
+    expect(requested(h.fetch)).toEqual([bucketIndexUrl, bucketObjectUrl('windows-x64')])
+    expect(h.fallbacks).toEqual([])
+    expect(h.ran).toEqual([])
+    expect(fs.existsSync(cache)).toBe(false)
   })
 })
 

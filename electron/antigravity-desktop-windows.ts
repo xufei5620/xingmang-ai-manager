@@ -13,6 +13,16 @@ import {
 } from './antigravity-desktop-release'
 import { readBoundedResponseText } from './bounded-response'
 import { commandEnvironment, runCommand } from './command-runner'
+import {
+  describeDesktopBucketFallback,
+  DesktopBucketIndexStaleError,
+  downloadDesktopBucketPackage,
+  measureDesktopDownloadSpeed,
+  readDesktopBucketPackage,
+  type DesktopAlternativeSpeed,
+  type DesktopBucketOptions,
+  type DesktopBucketPackageId,
+} from './desktop-package-bucket'
 import { downloadWithResume, DownloadStalledError } from './download-retry'
 import { NativeCliPublisherMismatchError, verifyOfficialNativeCliFile } from './trusted-native-cli'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
@@ -24,11 +34,14 @@ import type { WindowsCliExecutionMode } from './windows-elevation'
  * 按用户安装，不问目录，固定装到 %LOCALAPPDATA%\Programs\antigravity\Antigravity.exe，卸载项在 HKCU，不要管理员；
  * 装完不自己打开。Antigravity 正开着时再装，安装程序会先把它关掉（实测 6 个进程全没了），再照常装完、返回 0。
  *
- * 还没有星芒存储桶那一路（桌面端的包还没同步进桶），只问谷歌；整段借加速线路。
+ * 先从星芒存储桶下同一个谷歌签名的安装包（scripts/sync-antigravity-desktop-cos.cjs 每 6 小时同步一次，0.2.25 复查
+ * 第 1 轮第 2 条：谷歌两个站国内连不上，下载加速也下线了），没走通再问谷歌；只有谷歌那一路借加速线路。桶里的清单
+ * 超过 24 小时没和谷歌核过时先问谷歌，谷歌也没下成再回头装桶里那一版（同 Mac 上的 Codex 桌面端）。
  *
  * Trust: the feed and the installer come only from Google's two fixed hosts, redirects refused
  * (I10), and the feed must name exactly the installer URL antigravity-desktop-release.ts builds.
- * The download must be the size and SHA-512 the feed declares, and then carry Google's
+ * The download must be the size and SHA-512 the feed declares (from the bucket: the size and
+ * SHA-256 its index declares, desktop-package-bucket.ts pinning host and path), and then carry Google's
  * Authenticode signature: the same pin as the agy CLI in trusted-native-cli.ts (Google LLC under
  * DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1; both 2.34.0 installers checked). The
  * file is hashed again right before it runs so that what runs is what was checked. Only then is it
@@ -86,7 +99,9 @@ export interface InstallAntigravityDesktopWindowsOptions {
   /** 只在开始装之前有用：安装程序一旦开始就等它装完，半截停下会留下装了一半的程序。 */
   signal?: AbortSignal
   onProgress?(progress: AntigravityDesktopWindowsProgress): void
-  /** 整段问谷歌的过程（加速线路）。 */
+  /** 有这一项才先试存储桶；没走通时把原因交给它（只进运行日志，不上屏）。 */
+  bucket?: DesktopBucketOptions
+  /** 只包谷歌那一路（加速线路）；存储桶那一路国内直连，不包。 */
   withVendorDownloadRoute?<T>(operation: () => Promise<T>): Promise<T>
   createTemporaryDirectory?(): Promise<string>
   verifyInstaller?(filePath: string): Promise<{ size: number; sha256Hex: string }>
@@ -150,6 +165,29 @@ async function readFeed(platform: AntigravityDesktopRelease['platform'], fetchIm
   return release
 }
 
+/** 向谷歌要安装包，拿到响应头就交回；地址只认版本信息里那一个，不跟跳转。 */
+async function openGoogleInstaller(release: AntigravityDesktopRelease, headers: Record<string, string>, signal: AbortSignal, fetchImpl: typeof fetch): Promise<Response> {
+  const response = await fetchImpl(release.url, { method: 'GET', headers: { Accept: 'application/octet-stream', ...headers }, redirect: 'error', credentials: 'omit', signal })
+  if (response.url && (response.url !== release.url || new URL(response.url).host !== allowedArtifactHost)) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error('谷歌的下载被转到了别的地址')
+  }
+  return response
+}
+
+/**
+ * 存储桶那一路太慢时，测一下谷歌那一路有多快：先读谷歌的版本信息，再只读几秒安装包、不落盘（见 desktop-package-bucket.ts
+ * 的 probeAlternative）。读版本信息的时间也算在测的那几秒里，读不到就当测不出来，接着下桶。没接加速线路，接上只会
+ * 更快，测得偏慢就偏向接着下桶。
+ */
+export function measureAntigravityDesktopGoogleSpeed(
+  platform: AntigravityDesktopRelease['platform'],
+  fetchImpl: typeof fetch,
+  signal: AbortSignal,
+): Promise<DesktopAlternativeSpeed | null> {
+  return measureDesktopDownloadSpeed(async (probeSignal) => openGoogleInstaller(await readFeed(platform, fetchImpl, probeSignal), {}, probeSignal, fetchImpl), signal)
+}
+
 async function downloadInstaller(release: AntigravityDesktopRelease, filePath: string, options: InstallAntigravityDesktopWindowsOptions, fetchImpl: typeof fetch): Promise<void> {
   let lastPercent = -1
   const download = await downloadWithResume({
@@ -161,15 +199,8 @@ async function downloadInstaller(release: AntigravityDesktopRelease, filePath: s
     ...(options.signal ? { signal: options.signal } : {}),
     responseTimeoutMs: connectionTimeoutMs,
     idleTimeoutMs,
-    request: async (headers, signal) => {
-      const response = await fetchImpl(release.url, { method: 'GET', headers: { Accept: 'application/octet-stream', ...headers }, redirect: 'error', credentials: 'omit', signal })
-      // Checked on every request, resumes included.
-      if (response.url && (response.url !== release.url || new URL(response.url).host !== allowedArtifactHost)) {
-        await response.body?.cancel().catch(() => undefined)
-        throw new Error('谷歌的下载被转到了别的地址')
-      }
-      return response
-    },
+    // Checked on every request, resumes included.
+    request: (headers, signal) => openGoogleInstaller(release, headers, signal, fetchImpl),
     acceptResponse: (response) => {
       if (!response.ok) throw new Error(`返回 HTTP ${response.status}`)
       const declared = Number(response.headers.get('content-length'))
@@ -213,21 +244,55 @@ export async function installAntigravityDesktopWindows(options: InstallAntigravi
   const directory = await (options.createTemporaryDirectory ? options.createTemporaryDirectory() : createTrustedTemporaryDirectory('antigravity-desktop'))
   try {
     const installerPath = path.join(directory, 'antigravity-setup.exe')
-    async function fetchAndVerify(): Promise<{ release: AntigravityDesktopRelease; sha256Hex: string }> {
+    /** 核谷歌签名；返回核过的那份的 SHA-256，运行前再对一遍。 */
+    async function verifyDownloaded(bytes: number): Promise<string> {
+      options.onProgress?.({ phase: 'verifying', percent: null })
+      let verified: { size: number; sha256Hex: string }
+      try {
+        verified = await (options.verifyInstaller ?? ((filePath: string) => verifyOfficialNativeCliFile('antigravity', filePath)))(installerPath)
+      } catch (error) {
+        if (error instanceof NativeCliPublisherMismatchError) throw new AntigravityDesktopNotOfficialError(error)
+        throw error
+      }
+      if (verified.size !== bytes) throw new Error('安装包在核对签名时变了')
+      return verified.sha256Hex
+    }
+    /**
+     * 存储桶那一路：清单里的大小、SHA-256 绑住下载，下完照样核谷歌签名。读不到、对不上、核不过都删掉、返回 null，
+     * 照旧去谷歌，原因只进日志；只因清单过期没用上时返回 'stale'（谷歌也没下成再带 allowStale 回头用它）。
+     * 客户点的取消原样抛出。
+     */
+    async function fetchFromBucket(allowStale: boolean): Promise<{ version: string; sha256Hex: string } | 'stale' | null> {
+      const bucket = options.bucket
+      if (!bucket) return null
+      const id: DesktopBucketPackageId = feedPlatform === 'windows-arm64' ? 'antigravity-windows-arm64' : 'antigravity-windows-x64'
+      try {
+        const release = await readDesktopBucketPackage(id, fetchImpl, options.signal, { allowStale })
+        options.onProgress?.({ phase: 'downloading', percent: 0 })
+        await downloadDesktopBucketPackage(release, installerPath, {
+          fetch: fetchImpl,
+          ...(options.signal ? { signal: options.signal } : {}),
+          onProgress: ({ percent }) => options.onProgress?.({ phase: 'downloading', percent: Math.min(99, percent) }),
+          probeAlternative: allowStale
+            // 谷歌那一路刚没走通，没有别的路可换：桶再慢也接着下，断得接不上才停。
+            ? async () => null
+            // 桶太慢时先比一比谷歌那一路，确实更快才换（同 Mac 上的桌面端）。
+            : (probeSignal) => measureAntigravityDesktopGoogleSpeed(feedPlatform, fetchImpl, probeSignal),
+        })
+        return { version: release.version, sha256Hex: await verifyDownloaded(release.bytes) }
+      } catch (error) {
+        await fs.promises.rm(installerPath, { force: true }).catch(() => undefined)
+        options.signal?.throwIfAborted()
+        bucket.onFallback?.(describeDesktopBucketFallback(id, error instanceof AntigravityDesktopNotOfficialError ? error.cause : error))
+        return !allowStale && error instanceof DesktopBucketIndexStaleError ? 'stale' : null
+      }
+    }
+    async function fetchAndVerify(): Promise<{ version: string; sha256Hex: string }> {
       try {
         options.onProgress?.({ phase: 'downloading', percent: 0 })
         const release = await readFeed(feedPlatform, fetchImpl, options.signal)
         await downloadInstaller(release, installerPath, options, fetchImpl)
-        options.onProgress?.({ phase: 'verifying', percent: null })
-        let verified: { size: number; sha256Hex: string }
-        try {
-          verified = await (options.verifyInstaller ?? ((filePath: string) => verifyOfficialNativeCliFile('antigravity', filePath)))(installerPath)
-        } catch (error) {
-          if (error instanceof NativeCliPublisherMismatchError) throw new AntigravityDesktopNotOfficialError(error)
-          throw error
-        }
-        if (verified.size !== release.bytes) throw new Error('安装包在核对签名时变了')
-        return { release, sha256Hex: verified.sha256Hex }
+        return { version: release.version, sha256Hex: await verifyDownloaded(release.bytes) }
       } catch (error) {
         await fs.promises.rm(installerPath, { force: true }).catch(() => undefined)
         options.signal?.throwIfAborted()
@@ -236,7 +301,23 @@ export async function installAntigravityDesktopWindows(options: InstallAntigravi
         throw new Error(isDownloadTimeout(error) ? 'Antigravity 下载超时，请检查网络后重试' : 'Antigravity 下载未完成或校验未通过，请稍后重试', { cause: error })
       }
     }
-    const { release, sha256Hex } = await (options.withVendorDownloadRoute ? options.withVendorDownloadRoute(fetchAndVerify) : fetchAndVerify())
+    const fromBucket = await fetchFromBucket(false)
+    let fetched: { version: string; sha256Hex: string }
+    if (fromBucket !== null && fromBucket !== 'stale') {
+      fetched = fromBucket
+    } else {
+      try {
+        fetched = await (options.withVendorDownloadRoute ? options.withVendorDownloadRoute(fetchAndVerify) : fetchAndVerify())
+      } catch (error) {
+        // 桶只是清单过期才没用上的：谷歌那一路也没走通（国内多半连不上），回头装桶里那一版，不进下载线路。
+        // 它也没装成就照旧报谷歌那一路的错。客户点的取消、谷歌给的不是官方签名的包不回头。
+        if (fromBucket !== 'stale' || options.signal?.aborted || error instanceof AntigravityDesktopNotOfficialError) throw error
+        const fromStaleBucket = await fetchFromBucket(true)
+        if (fromStaleBucket === null || fromStaleBucket === 'stale') throw error
+        fetched = fromStaleBucket
+      }
+    }
+    const { sha256Hex } = fetched
     options.signal?.throwIfAborted()
     // What runs must be the bytes whose signature was just checked.
     if (await hashFile(installerPath, 'sha256') !== sha256Hex) throw new Error('Antigravity 安装包在校验后被修改，未进行安装')
@@ -249,7 +330,7 @@ export async function installAntigravityDesktopWindows(options: InstallAntigravi
     if (!inspectAntigravityDesktopWindowsInstallation(executablePath).installed) {
       throw new Error('Antigravity 安装程序已运行完毕，但未找到安装好的 Antigravity，请稍后重试')
     }
-    return { version: release.version, executablePath }
+    return { version: fetched.version, executablePath }
   } finally {
     await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => undefined)
   }

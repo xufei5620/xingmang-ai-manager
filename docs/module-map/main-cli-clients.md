@@ -117,7 +117,7 @@
 - `external-client-ownership.ts` — 记「这份客户端配置是替哪个账号写的」：只存地址加密钥的 sha256，是本机证据不是凭据库（I3）
 - `external-client-snapshot-cache.ts` — 上一次三家的检测结果留在本机，下次启动先拿它画首页那几行；只用来「先画个样子」，主进程里要回答装没装、配给谁的地方都不读它
 - `external-client-service.test-support.ts` — 测试专用：`external-client-service*.test.ts` 四个文件共用的夹具（经 `createSystemService` 接三家客户端真的配置读写，客户端运行时、中转请求、换线路的定时器是假的）。原来一个 138 条的文件在 Windows 上占几分钟、分片拆不开，按 describe 拆开了（#2006）；`tsconfig.electron.json` 排除 `*.test-support.ts`，不进发布包
-- `desktop-package-bucket.ts` — **星芒腾讯云存储桶的共用下载器**：Codex / Claude 桌面端和 Mac 版 OpenCode 的官方离线包都从这里先下，插件目录、Grok 和 Antigravity 命令行也借它的取法。桶地址是常量、对象 key 形状固定、拒一切重定向（I10），清单里的大小与 SHA-256 绑住下载，调用方照样核官方签名，桶被改了最多白下一次、装不进东西；同步脚本是 `scripts/sync-*-cos.cjs`
+- `desktop-package-bucket.ts` — **星芒腾讯云存储桶的共用下载器**：Codex / Claude 桌面端、Mac 版 OpenCode 和 Antigravity 桌面端的官方包都从这里先下，插件目录、Grok 和 Antigravity 命令行也借它的取法。桶地址是常量、对象 key 形状固定、拒一切重定向（I10），清单里的大小与 SHA-256 绑住下载，调用方照样核官方签名，桶被改了最多白下一次、装不进东西；同步脚本是 `scripts/sync-*-cos.cjs`
 - `claude-desktop-config.ts` — Claude Desktop 的第三方推理（网关）配置：写 `configLibrary` 与 `claude_desktop_config.json`，「切回官方账号」只把 `deploymentMode` 改成 `1p`；输入里有 Key，绝不回传渲染层（I3）
 - `claude-desktop-local-transaction.ts` — 上面那几份文件的事务写入：先写临时文件、留 `.bak.<随机>` 备份（每个文件只留最近 5 份）、失败回滚（I9），只清自己起名的备份
 - `claude-desktop-paths.ts` — 定 Claude Desktop 的配置目录：由当前装着的那一份（和它的 MSIX 虚拟化设置）决定，不看遗留目录；测试用的主目录绝不继承真实 AppData
@@ -145,7 +145,7 @@
 - `antigravity-cli-installer.ts` — 一键装 agy：先从存储桶下、没走通再按谷歌清单从谷歌下（只有这一路借加速线路），下回来先对摘要，再核谷歌签名（Windows 是 `trusted-native-cli.ts` 里钉住的 Google LLC + DigiCert，Mac 见上一条），核过的才复制到 `%LOCALAPPDATA%\agy\bin\agy.exe` / `~/.local/bin/agy` 旁边、对一遍 SHA-256、改名替换（I8；那里原来是链接或文件夹就不动）。Windows 把目录加在用户 PATH 最后；管理员身份打开的星芒不往用户文件夹里装。不跑 `agy install`
 - `antigravity-desktop-release.ts` — Antigravity 桌面端自己更新时读的版本信息（`<更新站>/manifest/latest-<x64|arm64>-<win|mac>.yml`，electron-updater 的格式）的读法：逐行读那一小段固定形状，不交给 YAML 库；只列一个文件、地址与按版本和构建号拼出的谷歌存储地址一字不差（Windows 是谷歌签名的 NSIS 安装包，Mac 是装着 Antigravity.app 的 zip），大小在 16 MiB 到 1 GiB 之间，SHA-512 换成十六进制。纯函数
 - `antigravity-service.ts` — Antigravity 这一簇（门面上是 `SystemService.antigravity`）：检测两样装没装、设置是不是当前账号这条线路的（只看本机）；一键装（排安装队列，装好在队列外按需签密钥写设置，写不成不算装失败，交回那句话）；打开桌面端（Windows 写好设置交给资源管理器、按 yoyo 11-23「Antigravity 免核签名」不核程序签名；Mac 核谷歌 Developer ID 后直接起主程序，设置只放在环境里、不进参数；开着的那一份拿不到这次的设置时回 `closeFirst`，Mac 上靠星芒自己起的那个进程号认）；打开命令行（核谷歌签名后在选的文件夹开终端，Windows 把设置交给终端，Mac 靠登录 shell 读启动文件那一段）。两个打开都排安装队列（I11），带点的时候那个账号（scoped-queued）。Windows 上管理员身份打开的星芒只检测、别的都不做。通道在 `ipc/handlers/antigravity.ts`（`antigravity:inspect` / `install` / `open-desktop` / `open-cli`，进度 `antigravity:install-progress`），密钥在那里按需签（`resolveAntigravityManagedKey`），远程开关是 `install:` / `launch:` 加 `antigravityCli`、`antigravityDesktop`
-- `antigravity-desktop-windows.ts` — Windows 上一键装 Antigravity 桌面端：按上一条读谷歌的版本信息、下安装包（不跟跳转），对大小和 SHA-512，再按 `trusted-native-cli.ts` 里 agy 那条核谷歌签名，运行前再对一遍 SHA-256，静默装（`/S`，一键式按用户装到 `%LOCALAPPDATA%\Programs\antigravity`，不要管理员；开着时它会先关掉再装）。管理员身份打开的星芒不装。Mac 上的桌面端在 `macos-desktop-app-installer.ts` 的来源表里（`antigravityDesktop`）
+- `antigravity-desktop-windows.ts` — Windows 上一键装 Antigravity 桌面端：先从星芒存储桶（`desktop-package-bucket.ts`，`scripts/sync-antigravity-desktop-cos.cjs` 同步）下同一个谷歌安装包，桶不通、对不上、清单超过一天没核对时按上一条读谷歌的版本信息、下安装包（不跟跳转；谷歌也不通时才用超期的桶），对大小和 SHA-512，再按 `trusted-native-cli.ts` 里 agy 那条核谷歌签名，运行前再对一遍 SHA-256，静默装（`/S`，一键式按用户装到 `%LOCALAPPDATA%\Programs\antigravity`，不要管理员；开着时它会先关掉再装）。管理员身份打开的星芒不装。Mac 上的桌面端在 `macos-desktop-app-installer.ts` 的来源表里（`antigravityDesktop`）
 
 ## 托管密钥的分组与换新
 - `managed-cli-groups.ts` — 给每个工具和画图挑账号里用哪个分组：xm 站分组只按名字认（没有编号），服务状态文件里的分组对照让站上改名时不用等发版；订阅分组、历史账号那套后端的平台字段也在这里判。签 Key、对话凭据、账号页都用它
