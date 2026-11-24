@@ -4,6 +4,7 @@ import {
   codexDesktopActivationBrokenMarker,
   codexDesktopActivationOfflineMarker,
   codexDesktopKnownIssueMarker,
+  codexDesktopWindowsUpdateBlockedMarker,
 } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalIn } from '../../electron/config-link-refusal'
 import { configWriteBlockerIn } from '../../electron/config-write-blocker'
@@ -67,8 +68,11 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // 重试、重置都救不了，出口是「立即重启」，所以排在这一类前面。
   // 同一句里带着「Windows 打开 Codex 前需要联网向微软验证」时（联网核对许可超时，进程没建出来），
   // 重置、重启都救不了，等网络好了重试就行，出口是「重试」「检查网络」，排在这一类最前面，跟主进程的先后一致。
+  // 同一句里带着「本机的 Windows 更新服务无法启动」时（客户关了更新，Codex 第一次启动验证不了），重置、重启
+  // 都救不了，出口是临时开一下更新，只给「重试」「联系客服」；主进程排在上面两种后面，这里跟着。
   { key: 'codexDesktopActivationOffline', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) && message.includes(codexDesktopActivationOfflineMarker) },
   { key: 'codexDesktopActivationBroken', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) && message.includes(codexDesktopActivationBrokenMarker) },
+  { key: 'codexDesktopWindowsUpdateBlocked', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) && message.includes(codexDesktopWindowsUpdateBlockedMarker) },
   { key: 'codexDesktopKnownIssue', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) && message.includes(codexDesktopKnownIssueMarker) },
   { key: 'codexDesktopNotStarted', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) },
   // Codex 桌面端装不上 / 更新不了（主进程 codex-desktop-install-failure.ts 写好的整句，

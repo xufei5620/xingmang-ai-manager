@@ -99,6 +99,7 @@ import {
   type InstallLeftoverSweepResult,
 } from './install-leftovers'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
+import { inspectWindowsUpdateServiceBlocked } from './windows-update-service-state'
 import {
   inspectWindowsExecutableMachine,
   type WindowsProcessorArchitecture,
@@ -1216,6 +1217,8 @@ export function createSystemService(
     // 一样临时接上下载线路。Windows 的国内镜像那一路用不着它。
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     bucketDownloads: desktopBucketDownloads,
+    // Codex 第一次启动要借 Windows 更新服务向微软完成验证，客户把更新关了就起不来（2026-11-23 那台）。
+    inspectWindowsUpdateBlocked: () => inspectWindowsUpdateServiceBlocked(),
     userHome: providerRoots.userHome,
     ...(latestMacosDesktopVersions ? { latestMacosDesktopVersions } : {}),
     // 中文增强没开起来时，启动那边改走普通启动，只往控制台打一句，打包版不留控制台；原错误（连同 PowerShell 那层）记在这一条里。

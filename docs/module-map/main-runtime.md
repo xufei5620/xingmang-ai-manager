@@ -68,6 +68,7 @@
 - `windows-taskbar-theme.ts` — 读当前账号的任务栏是不是深色（异步 reg.exe 读 `SystemUsesLightTheme`），给托盘换浅色外圈图标用（D94）；Electron 的 `shouldUseDarkColorsForSystemIntegratedUI` 开机时答的是应用模式、只换任务栏深浅时也不通知，所以自己读
 - `windows-processor.ts` — 认出 ARM 版 Windows：x64 星芒在 ARM 上被模拟时 `process.arch` 和本进程环境变量都报 x64，只有注册表里机器级的那份说真话；另读 PE 头判断某个 exe 是哪种架构，据此选 Node.js 安装包架构；诊断与 `system-service.ts` 用
 - `windows-store-availability.ts` — 问「这台电脑有没有微软商店」（LTSC、精简版、组策略关掉的都没有），只有确定没有时才跳过商店那条安装路；`codex-desktop-service.ts` 用。原名 `windows-store-app-launch.ts`，原先的「内置 Administrator / 关了 UAC 可能打不开」判断已于 2026-10-02 撤掉，文件头写了恢复它的前提
+- `windows-update-service-state.ts` — 问「这台电脑的 Windows 更新服务是不是被关了」（被禁用，或系统日志里最近一小时一直拒绝访问），只读、读不到当没被拦；Codex 桌面端第一次启动要借它向微软完成验证，打开失败时 `codex-desktop-service.ts` 用它换成「Windows 更新已关闭」那一版提示
 
 ## 加速（Windows 与 macOS；只接管系统代理、不开 TUN。文件名里的 `development` 是历史名字，正式包也走这一套，链路见总述）
 - `acceleration-service.ts` — **主进程里加速的唯一门面**：把后端包成按账号 scope 排队的服务，记住「这次是谁连的」（用户点的 vs 打开 Codex 桌面端时软件替他连的 `autoStartedBy`，后者不进 `AccelerationApi`，渲染层冒充不了），状态变化推给托盘与提醒；`createUserAccelerationApi` 是给 IPC 的那半边，看不见软件替他连的会话；Windows 关机时据 `hasPossibleSession` 推迟关机先还原代理

@@ -97,6 +97,7 @@ import {
   injectCodexDesktopChineseLocale as injectCodexDesktopChineseLocaleDefault,
   isCodexDesktopActivationNetworkFailure,
   isCodexDesktopActivationNotRegistered,
+  isCodexDesktopActivationTimeout,
 } from './codex-desktop-cdp'
 import type {
   CodexDesktopLaunchMode,
@@ -130,6 +131,7 @@ import {
   codexDesktopActivationBrokenSentence,
   codexDesktopActivationOfflineSentence,
   codexDesktopKnownIssueLaunchSentence,
+  codexDesktopWindowsUpdateBlockedSentence,
   resolveCodexDesktopKnownIssue,
 } from './codex-desktop-known-issues'
 import { codexDesktopChineseOffMessage } from './remote-features'
@@ -258,6 +260,7 @@ export function describeCodexDesktopLaunchFailure(
   windowsActivationBroken = false,
   startMenuName?: string | null,
   windowsActivationOffline = false,
+  windowsUpdateBlocked = false,
 ): string {
   // Windows 联网核对许可没做成，进程根本没建（见 codexDesktopActivationOfflineMarker）：重启、
   // 重置都没用，等网络好了再开就行。排在「激活坏了」前面：两种码同时出现时先叫客户查网络，
@@ -270,6 +273,13 @@ export function describeCodexDesktopLaunchFailure(
   // 的毛病是起来以后超时，回的不是这个码，这里只看到 Windows 自己没把它起来。
   if (windowsActivationBroken) {
     return `${codexDesktopNotStartedPrefix}：${codexDesktopActivationBrokenSentence(outcome?.waitedSeconds)}`
+  }
+  // Windows 更新服务起不来，Codex 第一次启动要借它向微软完成验证（见 codexDesktopWindowsUpdateBlockedMarker）：
+  // 重置、重启都没用，临时开一下更新、打开一次就好。只在 Windows 自己没给原因或只说了超时时才去查
+  // （windowsUpdateSuspect），所以排在两种认得出码的后面；排在已知坏版本前面，是因为更新起不来时
+  // 哪一版都开不了，开了更新还打不开，下一次自然落到那一版的提示。
+  if (windowsUpdateBlocked) {
+    return `${codexDesktopNotStartedPrefix}：${codexDesktopWindowsUpdateBlockedSentence(outcome?.waitedSeconds)}`
   }
   // 这里不再按账户类型下结论（自带 Administrator、关了用户账户控制），原因见
   // windows-store-availability.ts 开头：Codex 桌面端不归 Windows 那条规矩管。
@@ -303,6 +313,11 @@ export interface CodexDesktopActivationFailureSummary {
   windowsActivationBroken: boolean
   /** Windows 联网核对许可超时或连不上（WinINet 网络码），而且一次进程号都没给过：失败框换成查网络那一版。 */
   windowsActivationOffline: boolean
+  /**
+   * 一次进程号都没给过，Windows 要么只说了超时（0x800705B4），要么什么都没说（只走了开始菜单那一路），
+   * 也不是上面两种：值得再查一下 Windows 更新服务是不是被关了（windows-update-service-state.ts）。
+   */
+  windowsUpdateSuspect: boolean
   /** 挂在打开失败那条报错上的原因（最后一次激活报的错），只进运行日志；一次都没报错时没有这一项。 */
   cause?: unknown
 }
@@ -317,9 +332,13 @@ export function buildCodexDesktopActivationFailureSummary(
   activationProcessId: number | null,
 ): CodexDesktopActivationFailureSummary {
   const neverStarted = activationProcessId === null
+  const windowsActivationBroken = neverStarted && failures.some(isCodexDesktopActivationNotRegistered)
+  const windowsActivationOffline = neverStarted && failures.some(isCodexDesktopActivationNetworkFailure)
   const summary = {
-    windowsActivationBroken: neverStarted && failures.some(isCodexDesktopActivationNotRegistered),
-    windowsActivationOffline: neverStarted && failures.some(isCodexDesktopActivationNetworkFailure),
+    windowsActivationBroken,
+    windowsActivationOffline,
+    windowsUpdateSuspect: neverStarted && !windowsActivationBroken && !windowsActivationOffline
+      && (failures.length === 0 || failures.some(isCodexDesktopActivationTimeout)),
   }
   return failures.length ? { ...summary, cause: failures[failures.length - 1] } : summary
 }
@@ -2858,6 +2877,12 @@ export interface CodexDesktopServiceOptions {
    */
   inspectStoreAvailability?: (signal?: AbortSignal) => Promise<boolean | null>
   /**
+   * Codex 没起来、Windows 只说了超时或什么都没说时，查一下这台的 Windows 更新服务是不是被关了
+   * （windows-update-service-state.ts）。永不抛错，读不到答 false。缺省 = 不查（测试与旧调用方照旧，
+   * 也免得 Windows 上的单测去读跑测试那台机器自己的更新服务），生产由 system-service 注入。
+   */
+  inspectWindowsUpdateBlocked?: () => Promise<boolean>
+  /**
    * Mac 上装 Codex 桌面端（官方包现在叫 ChatGPT）：下载、核签名、放进「应用程序」都在
    * macos-desktop-app-installer.ts，和 OpenCode、Claude Desktop 同一套。测试换成假的。
    */
@@ -3000,6 +3025,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     resolveStoreInstaller = resolveSystemWingetExecutable,
     bucketDownloads,
     inspectStoreAvailability = (signal?: AbortSignal) => inspectWindowsStoreAvailability(signal ? { signal } : {}),
+    inspectWindowsUpdateBlocked = async () => false,
     activateCodexDesktop = activateCodexDesktopDefault,
     activateCodexDesktopWithCdp = activateCodexDesktopWithCdpDefault,
     getAvailableLoopbackPort = getAvailableLoopbackPortDefault,
@@ -4492,12 +4518,16 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         const waitedSeconds = heartbeat?.elapsedSeconds()
         heartbeat?.stop()
         const activation = buildCodexDesktopActivationFailureSummary(activationFailures, activationProcessId)
+        // 只读，读不到当没被拦；起两个系统小程序，一两秒的事，只在已经打不开的这一刻才查。
+        const windowsUpdateBlocked = activation.windowsUpdateSuspect
+          && await inspectWindowsUpdateBlocked().catch(() => false)
         throw new Error(describeCodexDesktopLaunchFailure(
           waitedSeconds === undefined ? undefined : { waitedSeconds, processSeen: activationProcessId !== null },
           resolveCodexDesktopKnownIssue([desktopApp.version, desktopApp.appVersion]),
           activation.windowsActivationBroken,
           codexDesktopStartMenuNames.get(desktopApp),
           activation.windowsActivationOffline,
+          windowsUpdateBlocked,
         ), 'cause' in activation ? { cause: activation.cause } : undefined)
       }
       if (cdpPort !== null) {

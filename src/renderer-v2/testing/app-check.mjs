@@ -10046,6 +10046,28 @@ test('a Codex Desktop that Windows could not verify online sends the customer to
   } finally { await page.close() }
 })
 
+// 2026-11-24（「更新框改」）：客户把 Windows 更新关了，Codex 第一次启动借不到它向微软验证，进程没建出来。
+// 重置、重启都救不了，临时开一下更新就好；框里只有重试、联系客服，不给重置、重启，也不给去系统设置的按钮。
+test('a Codex Desktop blocked by a disabled Windows Update offers only retry and support', async () => {
+  const page = await open('codexLaunchFailure=windows-update')
+  try {
+    await page.getByTestId('tool-codexDesktop-primary').click()
+    const dialog = page.getByTestId('operation-error')
+    await dialog.getByText('Windows 更新已关闭，Codex 未能启动', { exact: true }).waitFor()
+    const labels = (await dialog.locator('footer button').allTextContents()).map((text) => text.trim())
+    assert.deepEqual(labels, ['返回', '重试', '复制给客服', '联系客服'])
+    await expect(dialog.getByTestId('operation-error-retry')).toHaveClass(/xm-btn-primary/)
+    await expect(dialog).toContainText('请临时开启 Windows 更新，成功打开一次 Codex 后即可重新关闭。')
+    await expect(dialog.getByTestId('operation-error-detail')).toContainText('本机的 Windows 更新服务无法启动，Codex 首次启动所需的验证未能完成，等待 62 秒仍未检测到 Codex 运行。')
+    const footer = await dialog.locator('footer').evaluate((element) => ({ scroll: element.scrollWidth, client: element.clientWidth }))
+    assert.ok(footer.scroll <= footer.client, `错误框底部按钮溢出：${JSON.stringify(footer)}`)
+    await page.screenshot({ path: path.join(artifacts, 'codex-desktop-windows-update-blocked.png') })
+    await dialog.getByTestId('operation-error-retry').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').length === 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an unexplained Codex Desktop launch failure keeps retry first and adds the restart after 重置 Codex', async () => {
   const page = await open('codexLaunchFailure=generic')
   try {
