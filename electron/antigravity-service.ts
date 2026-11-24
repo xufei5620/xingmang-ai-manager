@@ -641,7 +641,8 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
         throw new Error(cliNotOfficialMessage, { cause: error })
       }
       const { environment } = await configureNow(resolveKey, 'cli')
-      // 星芒自己的环境没跟着用户环境变量改（改了，之后起的每个子进程都会带上这把密钥），所以这次的设置直接交给终端。
+      // 星芒自己的环境是它启动那一刻从资源管理器继承的，刚写下（或刚换过）的用户环境变量这次运行看不到，
+      // 所以这次的设置直接交给终端，同名的旧值整组换掉（antigravity-windows-environment.ts 开头）。
       await (deps.launchWindowsTerminal ?? launchCliPowerShell)({
         executable: target.executablePath,
         argv: [],

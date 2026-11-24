@@ -57,13 +57,13 @@ export const errors = {
   // 主进程 codex-desktop-known-issues.ts 的 codexDesktopActivationOfflineMarker：Windows 联网核对使用许可超时或连不上，
   // Codex 进程没建出来。重置、重启都救不了，网络好了重试就行，所以不给「重置 Codex」「立即重启」。yoyo 2026-11-23 批的字（「联网框改」）。
   codexDesktopActivationOffline: { title: '网络不稳定，Codex 未能启动', body: 'Windows 打开 Codex 前需要联网向微软验证，当前网络未能完成验证，无需重新安装或重置 Codex。请检查网络或切换网络（如手机热点）后点击「重试」；如仍失败，请点击「联系客服」并将下方提示发送给客服。', actions: ['重试', '检查网络', '联系客服'] },
-  // 主进程 codex-desktop-known-issues.ts 的 codexDesktopActivationBrokenMarker：Windows 激活接口说没装、包却装着。
-  // 重装、重置都救不了，重启才好，所以「立即重启」排第一、不给「重置 Codex」。yoyo 2026-11-21 批的字（「重启框改」）。
   // 主进程 codex-desktop-known-issues.ts 的 codexDesktopWindowsUpdateBlockedMarker：Windows 更新服务被关了，
   // Codex 第一次启动验证不了。重置、重启都救不了，临时开一下更新、打开一次就好，所以不给「重置 Codex」「立即重启」；
   // 更新是怎么关的各家不一样（那台是改文件夹权限，设置里开不了），不放「打开 Windows 更新设置」，免得误导。
   // yoyo 2026-11-24 批的字（「更新框改」）。
   codexDesktopWindowsUpdateBlocked: { title: 'Windows 更新已关闭，Codex 未能启动', body: 'Codex 首次启动时需要借助 Windows 更新服务向微软完成验证。本机的 Windows 更新服务当前无法启动，因此 Codex 未能打开，无需重新安装或重置 Codex。请临时开启 Windows 更新，成功打开一次 Codex 后即可重新关闭。如 Windows 更新由技术人员关闭，请联系相关人员协助开启；也可点击「联系客服」并将下方提示发送给客服。', actions: ['重试', '联系客服'] },
+  // 主进程 codex-desktop-known-issues.ts 的 codexDesktopActivationBrokenMarker：Windows 激活接口说没装、包却装着。
+  // 重装、重置都救不了，重启才好，所以「立即重启」排第一、不给「重置 Codex」。yoyo 2026-11-21 批的字（「重启框改」）。
   codexDesktopActivationBroken: { title: 'Codex 未能启动', body: 'Codex 桌面端已安装，但 Windows 未能启动它。请保存当前工作后点击「立即重启」，重启后返回星芒重新打开；重新安装或重置通常无法解决此问题。如重启后仍无法打开，请点击「联系客服」并将下方提示发送给客服。', actions: ['立即重启', '重试', '联系客服'] },
   // 认不出原因的那一类：重启放在重置后面，不抢第一位。yoyo 2026-11-21 批的字（「加重启」）。
   codexDesktopNotStarted: { title: 'Codex 打开失败', body: '请先点击「重试」；如仍失败，请点击「重置 Codex」，重置后将自动重新打开；如仍无法打开，请点击「立即重启」，重启电脑后再试；如问题依旧，请点击「联系客服」并将下方提示发送给客服。', actions: ['重试', '重置 Codex', '立即重启', '联系客服'] },

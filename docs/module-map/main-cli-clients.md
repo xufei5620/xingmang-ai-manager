@@ -137,7 +137,7 @@
 
 ## Antigravity（谷歌的 agy 命令行与桌面端）接中转
 - `antigravity-gateway.ts` — 算出写给 Antigravity 的四个「企业网关」变量（地址、密钥、`genai` 协议、型号菜单）：地址只收中转某条线路自己的 https 裸域，密钥不许带空白、引号、`%`、`$` 和控制字符，菜单是这把密钥当时列出的全部型号（照 `isCliModelName` 收窄），默认 `gemini-3.8-flash` 排第一；有一样不对整份不给。实测过的行为（它会改写认得的型号名、只认环境变量）写在文件开头
-- `antigravity-windows-environment.ts` — Windows 上把那四个变量写进当前用户的环境变量（`HKCU\Environment`，一律 REG_SZ，不提权）并通知系统；值经子进程环境交给 PowerShell（I1），四个都没变就不写也不通知，别的 `AGY_*` 不碰；受限语言模式走注册表命令和 setx。本进程的环境不跟着改，免得密钥带进星芒之后起的每个子进程
+- `antigravity-windows-environment.ts` — Windows 上把那四个变量写进当前用户的环境变量（`HKCU\Environment`，一律 REG_SZ，不提权）并通知系统；值经子进程环境交给 PowerShell（I1），四个都没变就不写也不通知，别的 `AGY_*` 不碰；受限语言模式走注册表命令和 setx。本进程的环境不跟着改，只管这一次运行：客户下次从开始菜单打开的星芒和别的程序一样从资源管理器继承到这几个变量，所以星芒打开 Antigravity 时总把这次的设置另外交给它，不靠自己的环境
 - `antigravity-macos-environment.ts` — Mac 上的对应：四个值放进产品目录 `Antigravity/` 下只有本人能读的 `gateway.sh` / `gateway.fish`（0600，内容没变不重写），登录 shell 的启动文件末尾只追加一段读它的标记（和「终端里敲 claude」那段分开标，选哪个文件、fish 的 conf.d 照 `macos-shell-profile.ts`），密钥不进 `~/.zprofile`；同一段还把 agy 的位置 `$HOME/.local/bin` 加在 PATH 最后（已有就不加）。文件都走 safe-local-data（I8），dotfiles 链接过来的启动文件拒绝不跟：打开命令行时整步报错（「终端」要从那里读设置），打开、安装桌面端时只记一笔照常往下走（`startupFileOptional`）。从程序坞打开的桌面端不读这些，由星芒打开时交给它
 - `antigravity-cli-release.ts` — agy 官方版本清单的读法：按平台和架构挑清单（Windows x64/arm64、Mac x64/arm64），只收 16 KB 以内、版本号和构建号形状对、下载地址与按版本拼出来的谷歌存储地址一字不差、SHA-512 是 128 位十六进制的清单。只是纯函数，下载、核签名、放进去在 `antigravity-cli-installer.ts`。`scripts/sync-antigravity-cli-cos.cjs` 定时把同一批谷歌签名的原件放进存储桶，读清单的规矩照抄这里（两处一起改）
 - `antigravity-cli-bucket.ts` — 读存储桶里的 agy 清单（`windows.json` / `macos.json`，同步脚本写的那份）：只看最新那一版里这台电脑那一个文件，对象地址、来源地址（必须是按版本和构建号拼出的谷歌原址）、大小、SHA-256/512 有一处对不上、或清单 24 小时没和谷歌核过，就悄悄换回谷歌那一路

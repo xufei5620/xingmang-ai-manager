@@ -25,8 +25,10 @@ const execFileAsync = promisify(execFile)
 // 这样客户自己开的终端里敲 agy，和从开始菜单、桌面快捷方式打开的 Antigravity 桌面端都带着它
 // （写完通知系统，资源管理器换上新环境，之后它开的程序都看得到）。只写当前用户那一份，不提权。
 //
-// 本进程的环境不跟着改：改了，星芒之后起的每个子进程（npm、别的命令行工具）都会带上这把 Gemini 密钥。
-// 星芒自己打开 Antigravity 时由打开的那一步把设置交给它。
+// 本进程的环境不跟着改，这只管这一次运行：客户下次从开始菜单、桌面图标打开的星芒，和别的程序一样从资源管理器
+// 继承到这四个变量，之后它起的子进程（npm、别的命令行工具）也都带着。这把密钥本来就是写给客户自己开的每个程序用的，
+// 星芒带着它不比别的程序多知道什么。所以星芒打开 Antigravity 时不靠自己的环境（可能是旧的，或者还没有），
+// 由打开的那一步把这次写下的设置另外交给它（antigravity-service.ts 的 withAntigravityEnvironment，同名的整组换掉）。
 
 export type PowerShellRunner = (script: string, env: NodeJS.ProcessEnv) => Promise<string>
 
