@@ -264,7 +264,7 @@ export async function verifyDarwinAntigravityCli(
   }
   const wanted: MachOArchitecture = architecture === 'arm64' ? 'arm64' : 'x86_64'
   if (!readMachOArchitectures(header).includes(wanted)) {
-    throw new DarwinCliProvenanceError('Antigravity 命令行的芯片和这台 Mac 对不上')
+    throw new DarwinCliProvenanceError('下载的 Antigravity 命令行与这台 Mac 的处理器不匹配，未进行安装')
   }
   try {
     await runProcess({
@@ -274,7 +274,7 @@ export async function verifyDarwinAntigravityCli(
     })
   } catch (error) {
     if (error instanceof CommandRunnerError && error.code === 'EXIT_NON_ZERO') {
-      throw new DarwinCliProvenanceError(`Antigravity 命令行的签名不是谷歌（${antigravityCliTeamIdentifier}）的 Developer ID`, { cause: error })
+      throw new DarwinCliProvenanceError('下载的 Antigravity 命令行不是 Google 官方签名版本，已删除，未进行安装', { cause: error })
     }
     throw error
   }

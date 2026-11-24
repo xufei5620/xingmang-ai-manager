@@ -2395,3 +2395,45 @@ describe('renderer-v2 home desktop app updates on macOS', () => {
     }
   })
 })
+
+describe('renderer-v2 home Antigravity cards', () => {
+  const noop = () => undefined
+  function row(markup: string, id: string): string {
+    const start = markup.indexOf(`data-testid="tool-row-${id}"`)
+    const next = markup.indexOf('data-testid="tool-row-', start + 1)
+    expect(start, `没有渲染出 ${id} 那一行`).toBeGreaterThan(-1)
+    return markup.slice(start, next < 0 ? undefined : next)
+  }
+
+  it('leaves the cards out until the check says this computer can run Antigravity', () => {
+    expect(render({})).not.toContain('tool-row-antigravity')
+    expect(render({}, undefined, { antigravity: { supported: false, cliInstalled: false, desktopInstalled: false, configured: false } })).not.toContain('tool-row-antigravity')
+  })
+
+  it('offers install on a missing program and open on an installed one, next to the other vendors', () => {
+    const markup = render({}, undefined, { antigravity: { supported: true, cliInstalled: false, desktopInstalled: true, configured: true }, onInstallAntigravity: noop, onOpenAntigravity: noop })
+    const cli = row(markup, 'antigravityCli')
+    expect(cli).toContain('Antigravity 命令行')
+    expect(cli).toContain('未安装')
+    expect(cli).toContain('<span>安装</span></button>')
+    const desktop = row(markup, 'antigravity')
+    expect(desktop).toContain('<span>打开</span></button>')
+    expect(desktop).toContain('data-testid="tool-antigravity-source"')
+    expect(markup.indexOf('tool-row-codexDesktop')).toBeLessThan(markup.indexOf('tool-row-antigravityCli'))
+    expect(markup.indexOf('tool-row-antigravity"')).toBeLessThan(markup.indexOf('tool-row-grok'))
+  })
+
+  it('still offers open when the settings are not the current account, since opening writes them', () => {
+    const desktop = row(render({}, undefined, { antigravity: { supported: true, cliInstalled: true, desktopInstalled: true, configured: false } }), 'antigravity')
+    expect(desktop).toContain('待连接')
+    expect(desktop).toContain('<span>打开</span></button>')
+  })
+
+  it('shows the install progress on the card that is installing', () => {
+    const label = '正在校验下载文件的完整性…'
+    const cli = row(render({ antigravityCli: { label, percent: 42, log: [label] } }, undefined, { antigravity: { supported: true, cliInstalled: false, desktopInstalled: false, configured: false } }), 'antigravityCli')
+    expect(cli).toContain(label)
+    expect(cli).toContain('42%')
+    expect(cli).not.toContain('tool-antigravityCli-primary')
+  })
+})

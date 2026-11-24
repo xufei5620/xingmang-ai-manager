@@ -209,7 +209,7 @@ describe('installAntigravityDesktopWindows', () => {
     ['win32', 'ia32'],
   ] as const)('does not install on %s/%s', async (platform, architecture) => {
     const h = harness('windows-x64', { platform, architecture })
-    expect((await failureOf(installAntigravityDesktopWindows(h.options))).message).toBe('这台电脑的系统或芯片不支持一键安装 Antigravity')
+    expect((await failureOf(installAntigravityDesktopWindows(h.options))).message).toBe('当前电脑的系统或处理器不支持 Antigravity')
     expect(h.fetch).not.toHaveBeenCalled()
   })
 
@@ -222,7 +222,7 @@ describe('installAntigravityDesktopWindows', () => {
   ])('downloads nothing from %s', async (_label, route) => {
     const h = harness('windows-x64', {}, { feed: route })
     const error = await failureOf(installAntigravityDesktopWindows(h.options))
-    expect(error.message).toMatch(/^Antigravity 安装包下载或签名校验失败：/)
+    expect(error.message).toBe('Antigravity 下载未完成或校验未通过，请稍后重试')
     expect(requested(h.fetch)).toEqual([buildAntigravityDesktopFeedUrl('windows-x64')])
     expect(h.ran).toEqual([])
     expect(fs.existsSync(cache)).toBe(false)
@@ -237,8 +237,9 @@ describe('installAntigravityDesktopWindows', () => {
   ])('neither checks nor runs an installer that %s', async (_label, route, reason) => {
     const h = harness('windows-x64', {}, { installer: route })
     const error = await failureOf(installAntigravityDesktopWindows(h.options))
-    expect(error.message).toMatch(/^Antigravity 安装包下载或签名校验失败：/)
-    expect(error.message).toContain(reason)
+    // 客户只看到一句；哪里不对留在 cause 里，随错误进运行日志。
+    expect(error.message).toBe('Antigravity 下载未完成或校验未通过，请稍后重试')
+    expect((error.cause as Error).message).toContain(reason)
     expect(h.verified).toEqual([])
     expect(h.ran).toEqual([])
     expect(fs.existsSync(cache)).toBe(false)
@@ -252,7 +253,7 @@ describe('installAntigravityDesktopWindows', () => {
     })
     const error = await failureOf(installAntigravityDesktopWindows(h.options))
     expect(error).toBeInstanceOf(AntigravityDesktopNotOfficialError)
-    expect(error.message).toBe('下载的 Antigravity 安装包不是谷歌官方签名的，已删除，没有安装。')
+    expect(error.message).toBe('下载的 Antigravity 安装包不是 Google 官方签名版本，已删除，未进行安装')
     expect(h.ran).toEqual([])
     expect(fs.existsSync(cache)).toBe(false)
   })
@@ -265,7 +266,8 @@ describe('installAntigravityDesktopWindows', () => {
     })
     const error = await failureOf(installAntigravityDesktopWindows(h.options))
     expect(error).not.toBeInstanceOf(AntigravityDesktopNotOfficialError)
-    expect(error.message).toBe('Antigravity 安装包下载或签名校验失败：原生 CLI 没有有效的 Authenticode 签名')
+    expect(error.message).toBe('Antigravity 下载未完成或校验未通过，请稍后重试')
+    expect((error.cause as Error).message).toBe('原生 CLI 没有有效的 Authenticode 签名')
     expect(h.ran).toEqual([])
   })
 
@@ -277,7 +279,7 @@ describe('installAntigravityDesktopWindows', () => {
         return result
       },
     })
-    expect((await failureOf(installAntigravityDesktopWindows(h.options))).message).toBe('Antigravity 安装包在校验后被修改，没有安装')
+    expect((await failureOf(installAntigravityDesktopWindows(h.options))).message).toBe('Antigravity 安装包在校验后被修改，未进行安装')
     expect(h.ran).toEqual([])
     expect(fs.existsSync(cache)).toBe(false)
   })
@@ -289,13 +291,14 @@ describe('installAntigravityDesktopWindows', () => {
       },
     })
     const error = await failureOf(installAntigravityDesktopWindows(h.options))
-    expect(error.message).toBe('Antigravity 安装程序没有装完：exit code 2')
+    expect(error.message).toBe('Antigravity 安装未完成，请稍后重试')
+    expect((error.cause as Error).message).toBe('exit code 2')
     expect(fs.existsSync(cache)).toBe(false)
   })
 
   it('does not call it installed when the installer left no program behind', async () => {
     const h = harness('windows-x64', { runInstaller: async () => undefined })
-    expect((await failureOf(installAntigravityDesktopWindows(h.options))).message).toBe('Antigravity 安装程序已运行完，但没有在它的安装位置找到 Antigravity')
+    expect((await failureOf(installAntigravityDesktopWindows(h.options))).message).toBe('Antigravity 安装程序已运行完毕，但未找到安装好的 Antigravity，请稍后重试')
   })
 
   it('stops at a cancel during the download and never starts the installer', async () => {
@@ -352,7 +355,8 @@ describe('installAntigravityDesktopWindows with random inputs', () => {
       tampered[offset] ^= flip
       const h = harness('windows-x64', {}, { installer: () => binary(tampered) })
       const error = await failureOf(installAntigravityDesktopWindows(h.options))
-      expect(error.message).toContain('SHA-512')
+      expect(error.message).toBe('Antigravity 下载未完成或校验未通过，请稍后重试')
+      expect((error.cause as Error).message).toContain('SHA-512')
       expect(h.ran).toEqual([])
     }), { numRuns: 8 })
   })

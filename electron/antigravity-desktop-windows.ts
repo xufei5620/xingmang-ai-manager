@@ -60,7 +60,7 @@ export interface AntigravityDesktopWindowsProgress {
 /** 管理员身份打开的星芒不替客户装进用户自己的文件夹（见文件头）。 */
 export class AntigravityDesktopElevatedSessionError extends Error {
   constructor() {
-    super('星芒正以管理员身份运行，不能替你安装 Antigravity。请用普通方式重新打开星芒再装。')
+    super('星芒正以管理员身份运行，无法安装、设置或打开 Antigravity。请以普通方式重新打开星芒。')
     this.name = 'AntigravityDesktopElevatedSessionError'
   }
 }
@@ -68,7 +68,7 @@ export class AntigravityDesktopElevatedSessionError extends Error {
 /** 下回来的安装包不是谷歌签名的：删掉，不装。 */
 export class AntigravityDesktopNotOfficialError extends Error {
   constructor(cause: unknown) {
-    super('下载的 Antigravity 安装包不是谷歌官方签名的，已删除，没有安装。', { cause })
+    super('下载的 Antigravity 安装包不是 Google 官方签名版本，已删除，未进行安装', { cause })
     this.name = 'AntigravityDesktopNotOfficialError'
   }
 }
@@ -118,11 +118,9 @@ export function inspectAntigravityDesktopWindowsInstallation(executablePath: str
   }
 }
 
-function compactError(error: unknown): string {
-  const candidate = error as { name?: unknown; message?: unknown }
-  if (candidate?.name === 'AbortError' || candidate?.name === 'TimeoutError' || error instanceof DownloadStalledError) return '连接或下载超时'
-  const message = typeof candidate?.message === 'string' ? candidate.message : String(error)
-  return message.replace(/\s+/g, ' ').trim().slice(0, 300) || '下载失败'
+function isDownloadTimeout(error: unknown): boolean {
+  const candidate = error as { name?: unknown }
+  return candidate?.name === 'AbortError' || candidate?.name === 'TimeoutError' || error instanceof DownloadStalledError
 }
 
 async function hashFile(filePath: string, algorithm: 'sha256' | 'sha512'): Promise<string> {
@@ -206,11 +204,11 @@ function defaultRunInstaller(installerPath: string): Promise<void> {
 export async function installAntigravityDesktopWindows(options: InstallAntigravityDesktopWindowsOptions): Promise<InstalledAntigravityDesktop> {
   const platform = options.platform ?? process.platform
   const desktopPlatform = resolveAntigravityDesktopPlatform(platform, options.architecture ?? process.arch)
-  if (platform !== 'win32' || !desktopPlatform) throw new Error('这台电脑的系统或芯片不支持一键安装 Antigravity')
+  if (platform !== 'win32' || !desktopPlatform) throw new Error('当前电脑的系统或处理器不支持 Antigravity')
   const feedPlatform = desktopPlatform
   if (options.executionMode !== 'same-user') throw new AntigravityDesktopElevatedSessionError()
   const executablePath = options.executablePath ?? resolveAntigravityDesktopWindowsExecutable(platform, options.env ?? process.env, options.homeDirectory ?? os.homedir())
-  if (!executablePath) throw new Error('这台电脑的系统或芯片不支持一键安装 Antigravity')
+  if (!executablePath) throw new Error('当前电脑的系统或处理器不支持 Antigravity')
   const fetchImpl = options.fetchImpl ?? fetch
   const directory = await (options.createTemporaryDirectory ? options.createTemporaryDirectory() : createTrustedTemporaryDirectory('antigravity-desktop'))
   try {
@@ -234,21 +232,22 @@ export async function installAntigravityDesktopWindows(options: InstallAntigravi
         await fs.promises.rm(installerPath, { force: true }).catch(() => undefined)
         options.signal?.throwIfAborted()
         if (error instanceof AntigravityDesktopNotOfficialError) throw error
-        throw new Error(`Antigravity 安装包下载或签名校验失败：${compactError(error)}`, { cause: error })
+        // 原因留在 cause 里，随错误一起进运行日志；客户只看这一句，超时的另说一句检查网络。
+        throw new Error(isDownloadTimeout(error) ? 'Antigravity 下载超时，请检查网络后重试' : 'Antigravity 下载未完成或校验未通过，请稍后重试', { cause: error })
       }
     }
     const { release, sha256Hex } = await (options.withVendorDownloadRoute ? options.withVendorDownloadRoute(fetchAndVerify) : fetchAndVerify())
     options.signal?.throwIfAborted()
     // What runs must be the bytes whose signature was just checked.
-    if (await hashFile(installerPath, 'sha256') !== sha256Hex) throw new Error('Antigravity 安装包在校验后被修改，没有安装')
+    if (await hashFile(installerPath, 'sha256') !== sha256Hex) throw new Error('Antigravity 安装包在校验后被修改，未进行安装')
     options.onProgress?.({ phase: 'installing', percent: null })
     try {
       await (options.runInstaller ?? defaultRunInstaller)(installerPath)
     } catch (error) {
-      throw new Error(`Antigravity 安装程序没有装完：${compactError(error)}`, { cause: error })
+      throw new Error('Antigravity 安装未完成，请稍后重试', { cause: error })
     }
     if (!inspectAntigravityDesktopWindowsInstallation(executablePath).installed) {
-      throw new Error('Antigravity 安装程序已运行完，但没有在它的安装位置找到 Antigravity')
+      throw new Error('Antigravity 安装程序已运行完毕，但未找到安装好的 Antigravity，请稍后重试')
     }
     return { version: release.version, executablePath }
   } finally {

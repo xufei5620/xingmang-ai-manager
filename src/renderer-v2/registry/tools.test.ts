@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { activeProviderIds, cliCatalog, isActiveProviderId, isProviderId, isRetiredProviderId, providerConfigDirectoryNames, retiredProviderIds } from '../../../electron/catalog';
-import { clientConnections } from './clients';
+import { antigravityTools, clientConnections } from './clients';
 import { firstRunHints, guideRecommendedTool, guideRecommendedToolFor, homeToolBlurbs, homeToolOrder, officialAccountNames, officialAccountNotes, shortcutTools, toolKindLabels, tools, welcomeOrbitItems } from './tools';
 
 describe('renderer-v2 tool registry', () => {
@@ -140,17 +140,17 @@ describe('renderer-v2 tool registry', () => {
 
   // v4 首页的卡片次序（批 04）：每个命令行工具、桌面端和外接客户端各一张，按厂商排，不漏不重。
   it('puts every tool and desktop client on the home page exactly once, grouped by vendor', () => {
-    const everything = [...tools.map(tool => tool.id), ...clientConnections.map(client => client.id)];
+    const everything = [...tools.map(tool => tool.id), ...clientConnections.map(client => client.id), ...antigravityTools.map(tool => tool.id)];
     expect([...homeToolOrder].sort()).toEqual([...everything].sort());
     expect(new Set(homeToolOrder).size).toBe(homeToolOrder.length);
-    expect(homeToolOrder).toEqual(['claude', 'claudeDesktop', 'codex', 'codexDesktop', 'grok', 'opencode', 'workbuddy']);
-    const vendors = homeToolOrder.map(id => (tools.find(tool => tool.id === id) ?? clientConnections.find(client => client.id === id))?.vendor);
+    expect(homeToolOrder).toEqual(['claude', 'claudeDesktop', 'codex', 'codexDesktop', 'antigravityCli', 'antigravity', 'grok', 'opencode', 'workbuddy']);
+    const vendors = homeToolOrder.map(id => (tools.find(tool => tool.id === id) ?? clientConnections.find(client => client.id === id) ?? antigravityTools.find(tool => tool.id === id))?.vendor);
     // 同一家的挨在一起：厂商一换就不会再回来。
     expect(vendors.filter((vendor, index) => vendors.indexOf(vendor) !== index && vendors[index - 1] !== vendor)).toEqual([]);
   });
 
   it('gives every home card a one-line introduction and a kind label', () => {
     for (const id of homeToolOrder) expect(homeToolBlurbs[id].length, id).toBeGreaterThan(0);
-    for (const definition of [...tools, ...clientConnections]) expect(toolKindLabels[definition.kind], definition.id).toMatch(/命令行工具|桌面应用/);
+    for (const definition of [...tools, ...clientConnections, ...antigravityTools]) expect(toolKindLabels[definition.kind], definition.id).toMatch(/命令行工具|桌面应用/);
   });
 });

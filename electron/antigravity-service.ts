@@ -87,7 +87,7 @@ export type AntigravityKeyResolver = () => Promise<AntigravityManagedKey>
 
 export class AntigravityElevatedSessionError extends Error {
   constructor() {
-    super('星芒正以管理员身份运行，不能替你设置和打开 Antigravity。请用普通方式重新打开星芒。')
+    super('星芒正以管理员身份运行，无法安装、设置或打开 Antigravity。请以普通方式重新打开星芒。')
     this.name = 'AntigravityElevatedSessionError'
   }
 }
@@ -153,9 +153,9 @@ export const antigravityDesktopMacBundleIdentifier = 'com.google.antigravity'
 
 const desktopNotInstalledMessage = '未检测到 Antigravity，请先安装'
 const cliNotInstalledMessage = '未检测到 Antigravity 命令行，请先安装'
-const unsupportedMessage = '这台电脑的系统或芯片不支持 Antigravity'
-const desktopNotOfficialMessage = '装着的 Antigravity 不是谷歌官方签名的原版，星芒不替你打开它'
-const cliNotOfficialMessage = '装着的 Antigravity 命令行不是谷歌官方签名的原版，星芒不替你打开它'
+const unsupportedMessage = '当前电脑的系统或处理器不支持 Antigravity'
+const desktopNotOfficialMessage = '已安装的 Antigravity 不是 Google 官方签名版本，星芒不会打开它'
+const cliNotOfficialMessage = '已安装的 Antigravity 命令行不是 Google 官方签名版本，星芒不会打开它'
 const probeTimeoutMs = 15_000
 const maximumProbeBytes = 256 * 1024
 

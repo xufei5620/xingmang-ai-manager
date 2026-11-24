@@ -342,8 +342,9 @@ describe('Antigravity CLI install on Windows', () => {
   it('reports a Google signature refusal as it is and installs nothing', async () => {
     const item = artifact('windows_amd64')
     const verify = vi.fn(async () => { throw new NativeCliPublisherMismatchError() })
-    await expect(installAntigravityCli(windowsOptions(item, { bucket: undefined, verifyWindowsExecutable: verify })))
-      .rejects.toBeInstanceOf(NativeCliPublisherMismatchError)
+    const failure = await failureOf(installAntigravityCli(windowsOptions(item, { bucket: undefined, verifyWindowsExecutable: verify })))
+    expect(failure).toBeInstanceOf(NativeCliPublisherMismatchError)
+    expect(failure.message).toBe('下载的 Antigravity 命令行不是 Google 官方签名版本，已删除，未进行安装')
     expect(fs.existsSync(target.executablePath)).toBe(false)
     expect(fs.existsSync(temporaryDirectory)).toBe(false)
   })
@@ -360,8 +361,9 @@ describe('Antigravity CLI install on Windows', () => {
     const item = artifact('windows_amd64')
     const verify = windowsSignatureAccepts()
     const failure = await failureOf(installAntigravityCli(windowsOptions(item, { fetchImpl: fakeFetch(item, routes), bucket: undefined, verifyWindowsExecutable: verify })))
-    expect(failure.message).toMatch(/^Antigravity 命令行下载或签名校验失败：/)
-    expect(failure.message).toContain(message)
+    // 客户只看到一句；哪里不对留在 cause 里，随错误进运行日志。
+    expect(failure.message).toBe('Antigravity 命令行下载未完成或校验未通过，请稍后重试')
+    expect((failure.cause as Error).message).toContain(message)
     expect(verify).not.toHaveBeenCalled()
     expect(fs.existsSync(target.executablePath)).toBe(false)
     expect(fs.existsSync(temporaryDirectory)).toBe(false)
@@ -413,8 +415,8 @@ describe('Antigravity CLI install on Windows', () => {
       tampered[offset] = (tampered[offset] + delta) % 256
       fs.mkdirSync(temporaryDirectory, { recursive: true })
       const verify = windowsSignatureAccepts()
-      await expect(installAntigravityCli(windowsOptions(item, { fetchImpl: fakeFetch(item, { google: () => binary(tampered) }), bucket: undefined, verifyWindowsExecutable: verify })))
-        .rejects.toThrow('SHA-512 不一致')
+      const failure = await failureOf(installAntigravityCli(windowsOptions(item, { fetchImpl: fakeFetch(item, { google: () => binary(tampered) }), bucket: undefined, verifyWindowsExecutable: verify })))
+      expect((failure.cause as Error).message).toContain('SHA-512 不一致')
       expect(verify).not.toHaveBeenCalled()
       expect(fs.existsSync(target.executablePath)).toBe(false)
     }), { numRuns: 12 })
@@ -451,7 +453,7 @@ describe('Antigravity CLI install on a Mac', () => {
     })
     await expect(installAntigravityCli(macOptions(item, { runDarwinProcess, bucket: { onFallback: (why) => fallbacks.push(why) } })))
       .resolves.toMatchObject({ source: 'google' })
-    expect(fallbacks[0]).toContain('Developer ID')
+    expect(fallbacks[0]).toContain('不是 Google 官方签名版本')
     expect(fs.readFileSync(target.executablePath).equals(item.installed)).toBe(true)
   })
 
@@ -467,7 +469,7 @@ describe('Antigravity CLI install on a Mac', () => {
     const intel = { ...artifact('darwin_arm64'), platform: 'darwin_amd64' as const }
     const failure = await failureOf(installAntigravityCli(macOptions(intel, { bucket: undefined })))
     expect(failure).toBeInstanceOf(DarwinCliProvenanceError)
-    expect(failure.message).toBe('Antigravity 命令行的芯片和这台 Mac 对不上')
+    expect(failure.message).toBe('下载的 Antigravity 命令行与这台 Mac 的处理器不匹配，未进行安装')
     expect(fs.existsSync(target.executablePath)).toBe(false)
   })
 
@@ -476,7 +478,8 @@ describe('Antigravity CLI install on a Mac', () => {
     const notTar = randomBytes(1024 * 1024 + 10)
     const crafted = { ...item, download: notTar }
     const failure = await failureOf(installAntigravityCli(macOptions(crafted, { bucket: undefined, fetchImpl: fakeFetch(crafted) })))
-    expect(failure.message).toBe('Antigravity 命令行下载或签名校验失败：Antigravity 命令行安装包格式不对：解压失败')
+    expect(failure.message).toBe('Antigravity 命令行下载未完成或校验未通过，请稍后重试')
+    expect((failure.cause as Error).message).toBe('Antigravity 命令行安装包格式不对：解压失败')
     expect(fs.existsSync(target.executablePath)).toBe(false)
   })
 })
@@ -495,7 +498,7 @@ describe('Antigravity CLI placement', () => {
   it('leaves a folder in agy\'s place alone', async () => {
     const item = artifact('darwin_arm64')
     fs.mkdirSync(target.executablePath, { recursive: true })
-    await expect(installAntigravityCli(macOptions(item))).rejects.toThrow('已经被别的东西占用，星芒不覆盖它')
+    await expect(installAntigravityCli(macOptions(item))).rejects.toThrow('Antigravity 命令行的安装位置已被其他文件占用，星芒不会覆盖')
     expect(fs.statSync(target.executablePath).isDirectory()).toBe(true)
   })
 
@@ -505,7 +508,7 @@ describe('Antigravity CLI placement', () => {
     const elsewhere = path.join(workspace, 'elsewhere')
     fs.writeFileSync(elsewhere, 'theirs')
     fs.symlinkSync(elsewhere, target.executablePath)
-    await expect(installAntigravityCli(macOptions(item))).rejects.toThrow('已经被别的东西占用，星芒不覆盖它')
+    await expect(installAntigravityCli(macOptions(item))).rejects.toThrow('Antigravity 命令行的安装位置已被其他文件占用，星芒不会覆盖')
     expect(fs.readFileSync(elsewhere, 'utf8')).toBe('theirs')
     expect(fs.lstatSync(target.executablePath).isSymbolicLink()).toBe(true)
   })
@@ -534,7 +537,7 @@ describe('Antigravity CLI placement', () => {
     const item = artifact('windows_amd64')
     for (const [platform, architecture] of [['linux', 'x64'], ['win32', 'ia32'], ['darwin', 'ppc64']] as const) {
       const options = windowsOptions(item, { platform, architecture })
-      await expect(installAntigravityCli(options)).rejects.toThrow('这台电脑的系统或芯片不支持 Antigravity 命令行')
+      await expect(installAntigravityCli(options)).rejects.toThrow('当前电脑的系统或处理器不支持 Antigravity')
       expect(options.fetchImpl).not.toHaveBeenCalled()
     }
   })

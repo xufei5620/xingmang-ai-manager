@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import QRCode from 'qrcode'
-import { ipcEventChannels, type AiLibraryEntry, type AppSettingsV2, type AppConfigSummary, type AccountSessionState, type ExternalClientStatus, type ExternalToolId, type MultiProviderSessionPage, type ProviderId, type RelayRouteLine, type RelayRouteLines, type RelayRoutePreferences, type SystemSnapshot, type XingmangApi, type AiChatHistorySnapshot, type CanvasProjectListEntry } from '../../../electron/ipc-contract'
+import { ipcEventChannels, type AntigravityStatus, type AiLibraryEntry, type AppSettingsV2, type AppConfigSummary, type AccountSessionState, type ExternalClientStatus, type ExternalToolId, type MultiProviderSessionPage, type ProviderId, type RelayRouteLine, type RelayRouteLines, type RelayRoutePreferences, type SystemSnapshot, type XingmangApi, type AiChatHistorySnapshot, type CanvasProjectListEntry } from '../../../electron/ipc-contract'
 import RendererV2App from '../App'
 import { createPreviewAccelerationApi } from './acceleration-fixture'
 import { accelerationTrialSeconds } from '../../../electron/acceleration-contract'
@@ -116,6 +116,12 @@ const externalStatuses: ExternalClientStatus[] = (['workbuddy', 'claudeDesktop',
   ...(query.get('externalPristine') === tool ? { pristine: true } : {}),
 }))
 const externalOwnerSite = session.siteId ?? 'solov'
+// ?antigravity=missing|installed|unconfigured|closeFirst：首页 Antigravity 两张卡（同主进程 antigravity-service.ts）。
+// 没带就同 Linux：这台电脑不摆这两张卡，别的用例的首页照旧。closeFirst = 都装着、桌面端开着拿不到新设置。
+const antigravityMode = query.get('antigravity')
+const antigravityStatus: AntigravityStatus = { supported: antigravityMode !== null,
+  cliInstalled: antigravityMode !== null && antigravityMode !== 'missing', desktopInstalled: antigravityMode !== null && antigravityMode !== 'missing',
+  configured: antigravityMode === 'installed' || antigravityMode === 'closeFirst' }
 const configValue = { exists: true, hasApiKey: true, matchesRelay: true, configurationOwnership: 'account' as const, baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1', model: 'fixture-model', apiKeyPreview: 'sk-***', dataDirectory: 'C:\\Fixture', dataDirectoryExists: true, files: [], updatedAt: null }
 const config: AppConfigSummary = { workspace: settings.workspace, providers: { claude: { ...configValue }, codex: { ...configValue }, gemini: { ...configValue }, grok: { ...configValue } } }
 if (query.has('restoreDirectRoute')) {
@@ -708,6 +714,22 @@ const methods = {
     if (holdExternalScan) { holdExternalScan = false; await new Promise<void>((resolve) => { releaseExternalScan = resolve }) }
     return result
   },
+  inspectAntigravity: async () => structuredClone(antigravityStatus),
+  installAntigravity: async (target) => {
+    window.v2Test.emit('onAntigravityInstallProgress', { target, phase: 'downloading', percent: 42 })
+    if (target === 'cli') antigravityStatus.cliInstalled = true
+    else antigravityStatus.desktopInstalled = true
+    window.v2Test.emit('onAntigravityInstallProgress', { target, phase: 'configuring', percent: null })
+    // 同主进程：没登录照样装好，设置没写成的那句随结果回来。
+    if (!session.authenticated) return { status: structuredClone(antigravityStatus), configureError: '请先登录账号，再设置 Antigravity' }
+    antigravityStatus.configured = true
+    return { status: structuredClone(antigravityStatus) }
+  },
+  openAntigravityDesktop: async () => {
+    antigravityStatus.configured = true
+    return antigravityMode === 'closeFirst' ? { opened: false, closeFirst: true as const } : { opened: true }
+  },
+  openAntigravityCli: async () => { antigravityStatus.configured = true },
   installExternalClient: async (tool) => {
     window.v2Test.emit('onExternalClientInstallProgress', { tool, phase: 'downloading', message: '正在下载安装包', percent: 36 })
     if (query.has('externalInstallPending')) await new Promise<void>((resolve, reject) => { releaseLaunch = resolve; cancelExternalInstall = reject })

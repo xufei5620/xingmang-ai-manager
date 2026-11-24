@@ -71,7 +71,7 @@ describe('parseWriteAntigravityEnvironmentOutput', () => {
   })
 
   it('refuses anything else', () => {
-    expect(() => parseWriteAntigravityEnvironmentOutput('')).toThrow('无法确认 Antigravity 的设置是否已写入当前用户的环境变量')
+    expect(() => parseWriteAntigravityEnvironmentOutput('')).toThrow('无法确认 Antigravity 的连接设置是否已写入，请重试')
     expect(() => parseWriteAntigravityEnvironmentOutput('written\nsomething else')).toThrow()
   })
 })
@@ -118,15 +118,15 @@ describe('writeWindowsAntigravityEnvironment', () => {
       return 'written'
     }
     await expect(writeWindowsAntigravityEnvironment({ ...environment, AGY_LLM_GATEWAY_MODELS: '' }, { platform: 'win32', run }))
-      .rejects.toThrow('Antigravity 的设置不完整，未修改当前用户的环境变量')
+      .rejects.toThrow('Antigravity 的连接设置不完整，未作任何修改')
     await expect(writeWindowsAntigravityEnvironment({ ...environment, AGY_LLM_GATEWAY_URL: 'https://xm.solov.cc\r\nX=1' }, { platform: 'win32', run }))
-      .rejects.toThrow('Antigravity 的设置不完整')
+      .rejects.toThrow('Antigravity 的连接设置不完整')
     expect(ran).toBe(false)
   })
 
   it('runs only on Windows', async () => {
     await expect(writeWindowsAntigravityEnvironment(environment, { platform: 'darwin', run: async () => 'written' }))
-      .rejects.toThrow('只有 Windows 上')
+      .rejects.toThrow('当前系统不支持此项设置')
   })
 })
 

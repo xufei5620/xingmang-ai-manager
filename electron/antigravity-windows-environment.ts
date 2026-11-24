@@ -139,7 +139,7 @@ function lastLine(stdout: string): string | undefined {
 export function parseWriteAntigravityEnvironmentOutput(stdout: string): AntigravityEnvironmentWriteOutcome {
   const last = lastLine(stdout)
   if (last === 'written' || last === 'unchanged') return last
-  throw new Error('无法确认 Antigravity 的设置是否已写入当前用户的环境变量')
+  throw new Error('无法确认 Antigravity 的连接设置是否已写入，请重试')
 }
 
 export function parseReadAntigravityEnvironmentOutput(stdout: string): AntigravityEnvironmentValues {
@@ -185,7 +185,7 @@ export interface WindowsAntigravityEnvironmentOptions {
 }
 
 function assertWindows(platform: NodeJS.Platform): void {
-  if (platform !== 'win32') throw new Error('只有 Windows 上把 Antigravity 的设置写进当前用户的环境变量')
+  if (platform !== 'win32') throw new Error('当前系统不支持此项设置')
 }
 
 /**
