@@ -199,7 +199,7 @@ async function synchronizeOpenCode({ store, dependencies, progress, now = functi
   })
   const version = await stage('source-feed', {}, async function () {
     const feedUrl = await resolveAssetUrl(FEED_URL, dependencies)
-    return parseFeed(await dependencies.fetchText({ url: feedUrl, allowedHosts: ASSET_HOSTS, maxBytes: MAX_FEED_BYTES, headers: { accept: '*/*', 'user-agent': 'xingmang-opencode-cos-sync/1' } }))
+    return parseFeed(await dependencies.fetchText({ url: feedUrl, allowedHosts: ASSET_HOSTS, maxBytes: MAX_FEED_BYTES, headers: { accept: '*/*', 'user-agent': 'offline-package-sync/1' } }))
   })
   // Read before any download so a broken checkout fails fast; uploaded only once the packages are in.
   const licenseFiles = await stage('read-license', {}, function () { return dependencies.readLicenseFiles() })
@@ -241,7 +241,7 @@ async function synchronizeOpenCode({ store, dependencies, progress, now = functi
       const sourceUrl = packageSourceUrl(version, platformId)
       const downloaded = await stage('source-download', context, async function (onProgress) {
         const assetUrl = await resolveAssetUrl(sourceUrl, dependencies)
-        const result = await dependencies.downloadResource({ url: assetUrl, filePath, allowedHosts: ASSET_HOSTS, maxBytes: MAX_PACKAGE_BYTES, headers: { accept: 'application/octet-stream', 'user-agent': 'xingmang-opencode-cos-sync/1' }, onProgress })
+        const result = await dependencies.downloadResource({ url: assetUrl, filePath, allowedHosts: ASSET_HOSTS, maxBytes: MAX_PACKAGE_BYTES, headers: { accept: 'application/octet-stream', 'user-agent': 'offline-package-sync/1' }, onProgress })
         if (!result || !Number.isSafeInteger(result.bytes) || result.bytes < MIN_PACKAGE_BYTES || result.bytes > MAX_PACKAGE_BYTES || !SHA256_PATTERN.test(result.sha256 || '')) throw checkFailure('download-mismatch', 'OpenCode 安装包大小或摘要无效')
         return { bytes: result.bytes, sha256: result.sha256 }
       })
@@ -292,7 +292,7 @@ function requestHead(url, requestImpl = https.request) {
       if (request) request.destroy()
     }
     try {
-      request = requestImpl(target, { method: 'HEAD', headers: { 'accept-encoding': 'identity', 'user-agent': 'xingmang-opencode-cos-sync/1' }, agent: false, maxHeaderSize: 16 * 1024 }, function (response) {
+      request = requestImpl(target, { method: 'HEAD', headers: { 'accept-encoding': 'identity', 'user-agent': 'offline-package-sync/1' }, agent: false, maxHeaderSize: 16 * 1024 }, function (response) {
         if (settled) { response.destroy(); return }
         settled = true
         clearTimeout(timer)

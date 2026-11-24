@@ -104,7 +104,7 @@ async function requestHeadersOnly(url, method, options = {}) {
       if (request) request.destroy()
     }
     try {
-      request = (options.requestImpl || https.request)(new URL(url), { method, headers: { 'accept-encoding': 'identity', 'user-agent': 'xingmang-official-offline-sync/1' }, agent: false, maxHeaderSize: 16 * 1024 }, function (response) {
+      request = (options.requestImpl || https.request)(new URL(url), { method, headers: { 'accept-encoding': 'identity', 'user-agent': 'offline-package-sync/1' }, agent: false, maxHeaderSize: 16 * 1024 }, function (response) {
         if (settled) { response.destroy(); return }
         settled = true
         clearTimeout(timer)

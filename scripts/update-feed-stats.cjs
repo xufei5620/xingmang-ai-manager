@@ -4,7 +4,8 @@
 //
 // 数据从哪来：0.2.10 起客户端打开时和开着的每 15 分钟读一次更新目录上的
 // service-status.json。这个请求走 electron-updater 的会话，User-Agent 是 Electron
-// 默认那一串，里面带着「星芒AI管理工具/0.2.15 Chrome/… Electron/…」；latest.yml 的
+// 默认那一串，里面带着「xingmang-ai-manager/0.2.15 Chrome/… Electron/…」（package.json 的 name；
+// 发给自家站点的请求才带这一段，见 electron/third-party-user-agent.ts）；latest.yml 的
 // 请求 UA 是 electron-builder，不带版本，所以版本只能数状态文件，更新清单只拿来按来源 IP
 // 看一台电脑新版出来以后查过更新没有。更新目录挂在 Cloudflare
 // 上，这里拿只读的 Analytics 令牌查 GraphQL Analytics API，按 UA 和来源 IP 分组。
@@ -367,8 +368,8 @@ function platformOf(userAgent) {
   return 'other'
 }
 
-// 匹配 Electron 默认 UA 里「产品名/版本 Chrome/… Electron/…」那一段。产品名是中文，
-// 经过 Cloudflare 记录后编码不一定原样，所以只认它后面的版本号和 Chrome、Electron。
+// 匹配 Electron 默认 UA 里「程序名/版本 Chrome/… Electron/…」那一段。只认它后面的版本号和
+// Chrome、Electron，不认程序名：程序名哪天换了（比如加上中文的 productName），这里照样数得出来。
 function classifyUserAgent(userAgent) {
   const match = /\/(\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.-]{1,40})?) Chrome\/[\d.]+ Electron\/[\d.]+/.exec(userAgent)
   return match ? { version: match[1], platform: platformOf(userAgent) } : null

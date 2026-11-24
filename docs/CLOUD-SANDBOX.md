@@ -44,6 +44,7 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 - `/opt/pw-browsers/chromium` 是容器自己放的链接，指向当前那个带版本号的目录（11-11 验）。**不要把带版本号的路径写进脚本或存好的指令里**，镜像一换就过期。
 - 不要跑 `npx playwright install`（容器设了 `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`），也不要自己在 `/opt/pw-browsers` 下造软链去凑版本号。
 - 不要为了让它过而改测试。门槛和别处一样：0 失败。
+- **11-24 的容器带的是 Chrome for Testing 158.0.8127.36，有三条浏览器用例在 main（`69455f4`）上同样红**，不是改动弄的：`e2e/maintenance-layout.test.mjs` 的 `Maintenance actions use the content column and wrap at narrow widths` 和 `src/renderer-v2/testing/app-check.mjs` 的 `full App preserves the fixed desktop columns…`（都是取到的对齐值是 `flow-start`、断言要 `flex-start`），以及 app-check 的 `a video opened from the library is laid out at its own shape…`（放视频时页面崩了，`Target crashed`）。拿 main 的 worktree 单跑同样三条红就是这个环境问题，PR 里注明、以 CI 上 Playwright 自己那份 Chromium 的结果为准；别的用例红照旧当回归查。
 
 ## 3. 跑测试时别踩的
 

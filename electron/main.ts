@@ -131,6 +131,7 @@ import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { guardProcessOutputStreams } from './process-stream-errors'
 import { ensureCiUserAgentMarker } from './ci-user-agent'
+import { installThirdPartyUserAgentPolicy } from './third-party-user-agent'
 import { configureRelocatedFolderAccess } from './relocated-folders'
 import { createRemoteFeatureGate } from './remote-feature-gate'
 import { RuntimeLogStore } from './runtime-log'
@@ -227,6 +228,9 @@ guardProcessOutputStreams()
 // GitHub Actions 里起的星芒，请求的 UA 末尾带「 ci」，服务端数装机量时剔掉（ci-user-agent.ts）。
 // 要赶在任何会话、任何请求之前，所以放在这里。
 ensureCiUserAgentMarker(app, process.env)
+// 发给自家站点以外的请求，UA 里不带「xingmang-ai-manager/版本」，外人从访问记录查不到仓库；自家站点照旧
+// （third-party-user-agent.ts）。改的是默认 UA，同样要赶在任何会话之前，并且在 CI 记号之后。
+const applyThirdPartyUserAgentPolicy = installThirdPartyUserAgentPolicy(app)
 
 const applicationPackage = require('../package.json') as {
   xingmangAccelerationBundle?: unknown
@@ -995,6 +999,8 @@ if (!hasSingleInstanceLock) {
       allowedPermissions.has(permission),
     )
     session.defaultSession.setDevicePermissionHandler(() => false)
+    // 默认会话建出来时 session-created 已经挂过了，这里只是保底，同一个会话不会挂两遍。
+    applyThirdPartyUserAgentPolicy(session.defaultSession)
     session.defaultSession.webRequest.onHeadersReceived(
       { urls: [`${canvasProtocolScheme}://*/*`] },
       (details, callback) => callback({

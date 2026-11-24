@@ -47,7 +47,8 @@ const SHA512_PATTERN = /^[a-f0-9]{128}$/
 const MAC_EXECUTABLE = 'antigravity'
 const TEAM_IDENTIFIER = 'EQHXZ8M8AV'
 const CODE_IDENTIFIER = 'cli'
-const USER_AGENT = 'xingmang-antigravity-cli-cos-sync/1'
+// 发给官方下载站的标识不带我们的名字和仓库名，对方从访问记录查不到我们（安全清单 安-1）。
+const USER_AGENT = 'offline-package-sync/1'
 
 function nameComponent(attribute, value) {
   return new RegExp(`(?:^|,\\s*)(?:${attribute})="?${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"?(?:,|$)`, 'i')

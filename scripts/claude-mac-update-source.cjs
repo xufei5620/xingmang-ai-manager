@@ -210,7 +210,7 @@ function requestMetadata(url, requestImpl, timeoutMs) {
     function fail(message) { finish(new Error(message)) }
     const headerTimer = setTimeout(function () { fail('Claude Mac 官方更新响应头超时') }, timeoutMs)
     try {
-      request = requestImpl(url, { method: 'GET', headers: { accept: 'application/json', 'accept-encoding': 'identity', 'user-agent': 'xingmang-official-offline-sync/1' }, agent: false, maxHeaderSize: 16384 }, function (incoming) {
+      request = requestImpl(url, { method: 'GET', headers: { accept: 'application/json', 'accept-encoding': 'identity', 'user-agent': 'offline-package-sync/1' }, agent: false, maxHeaderSize: 16384 }, function (incoming) {
         response = incoming
         clearTimeout(headerTimer)
         const headers = Object.fromEntries(Object.entries(response.headers || {}).map(function ([key, value]) { return [key.toLowerCase(), value] }))

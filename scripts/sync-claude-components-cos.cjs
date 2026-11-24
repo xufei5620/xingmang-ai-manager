@@ -39,7 +39,8 @@ const SOURCE_HOST = 'downloads.claude.ai'
 const PREFIX = 'xingmang/offline/claude-components'
 const CONTENT_TYPE = 'application/zstd'
 const CACHE_CONTROL = 'public, max-age=31536000, immutable'
-const USER_AGENT = 'xingmang-claude-components-cos-sync/1'
+// 发给官方下载站的标识不带我们的名字和仓库名，对方从访问记录查不到我们（安全清单 安-1）。
+const USER_AGENT = 'offline-package-sync/1'
 const MSIX_REQUEST_URL = official.SOURCES['windows-x64'].requestUrl
 const MSIX_ASAR_ENTRY = 'app/resources/app.asar'
 // claude.ai 那个 Mac 入口在 GitHub 的机器上被人机验证挡着（11-19 探测 44558371619 拿到空跳转），api.anthropic.com
