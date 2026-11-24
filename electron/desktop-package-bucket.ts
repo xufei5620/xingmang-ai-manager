@@ -115,9 +115,9 @@ export class DesktopBucketIndexStaleError extends DesktopBucketUnavailableError 
 
 export interface ReadDesktopBucketPackageOptions {
   /**
-   * 清单过期了也照样交出这一条。缺省 = 过期就抛 DesktopBucketIndexStaleError，只有装 Codex 桌面端时后面那几路
-   * 都没装上才会传 true：Windows 是商店、官网之后（桶里那一版只要比本机新，就比第三方的国内镜像可靠），
-   * Mac 是官方之后（再往后没有别的路了）。
+   * 清单过期了也照样交出这一条。缺省 = 过期就抛 DesktopBucketIndexStaleError。装 Codex 桌面端时后面那几路
+   * 都没装上才会传 true：Windows 是商店、官网之后，Mac 是官方之后（两边再往后都没有别的路了）。Windows 首页
+   * 查「可更新」也传 true：过期的桶是装的时候的最后一路，比本机新就一定拿得到这个包。
    */
   allowStale?: boolean
 }

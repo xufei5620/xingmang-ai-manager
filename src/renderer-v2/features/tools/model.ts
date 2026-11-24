@@ -395,12 +395,14 @@ export type CodexDesktopUpdateKind = 'latest' | 'installable' | 'store-current' 
 
 /**
  * OpenAI's official MSIX feed can sit ahead of both the Microsoft Store
- * rollout and the domestic sideload mirror this app installs from, so
- * `updateAvailable` on its own does not mean anything can be installed.
- * After a Store update it reads as a stale nag on a row whose update button
- * has no package to fetch. Only a mirror build newer than the installed one
- * is actionable; an official version the mirror has not synced yet is
- * `store-current`, and a mirror probe that said nothing is `unknown`.
+ * rollout and the domestic download line this app installs from (Xingmang's
+ * own bucket, synced from that feed), so `updateAvailable` on its own does not
+ * mean anything can be installed. After a Store update it reads as a stale nag
+ * on a row whose update button has no package to fetch. Only a bucket build
+ * newer than the installed one is actionable (`mirrorUpdateAvailable` keeps
+ * the name it had while a third-party mirror filled it, until 2026-11-24); an
+ * official version the bucket has not synced yet is `store-current`, and a
+ * bucket probe that said nothing is `unknown`.
  */
 export function codexDesktopUpdateKind(
   status: Pick<DesktopAppStatus, 'updateState' | 'mirrorUpdateAvailable'>,
@@ -437,10 +439,10 @@ export function presentTools(
     const status = id === 'codexDesktop' ? snapshot.system.desktopApps.codex : snapshot.system.clis[id]
     const source = sourceFor(config, provider, storage)
     const version = id === 'codexDesktop' ? (status as DesktopAppStatus).appVersion ?? status.version : status.version
-    // 桌面端走的是商店 / 镜像分发而不是 npm,名单管不到它的安装,只查已知问题表。
+    // 桌面端走的是商店 / 存储桶分发而不是 npm,名单管不到它的安装,只查已知问题表。
     const versionAdvice = id === 'codexDesktop' ? codexDesktopVersionAdvice(status as DesktopAppStatus) : snapshot.system.clis[id].versionAdvice ?? null
     const revertVersion = id === 'codexDesktop' ? null : snapshot.system.clis[id].revertVersion ?? null
-    // 桌面端只有镜像真的有新包才算「可更新」;官方清单领先商店时按下「更新」什么也装不上。
+    // 桌面端只有国内下载线路(存储桶)真的有新包才算「可更新」;官方清单领先商店时按下「更新」什么也装不上。
     const updateAvailable = id === 'codexDesktop'
       ? codexDesktopUpdateKind(status as DesktopAppStatus) === 'installable'
       : status.updateAvailable === true

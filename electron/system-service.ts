@@ -233,6 +233,10 @@ export interface CliStatus extends ToolStatus {
 
 export interface DesktopAppStatus extends ToolStatus, Partial<VersionUpdateStatus> {
   appVersion: string | null
+  /**
+   * 国内下载线路（星芒自己的存储桶）上那一版、它比本机新不新、读它时出的错。首页「可更新」只认
+   * mirrorUpdateAvailable。名字是 2026-11-24 以前读第三方国内镜像时起的，渲染层和快照缓存都认它，没改。
+   */
   mirrorVersion: string | null
   mirrorUpdateAvailable: boolean | null
   mirrorError: string | null
@@ -1214,7 +1218,7 @@ export function createSystemService(
     prepareStartupRoute: serviceOptions.prepareCodexDesktopStartupRoute,
     assertInstallDiskSpace,
     // 官方包在海外：Mac 上那次下载、Windows 上商店没走通后的官网离线安装包，都和 OpenCode
-    // 一样临时接上下载线路。Windows 的国内镜像那一路用不着它。
+    // 一样临时接上下载线路。Windows 的存储桶那一路在国内，用不着它。
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     bucketDownloads: desktopBucketDownloads,
     // Codex 第一次启动要借 Windows 更新服务向微软完成验证，客户把更新关了就起不来（2026-11-23 那台）。
