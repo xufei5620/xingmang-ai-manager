@@ -95,3 +95,21 @@ export function codexDesktopActivationOfflineSentence(waitedSeconds?: number): s
     : `等待 ${waitedSeconds} 秒仍未检测到 Codex 运行`
   return `${codexDesktopActivationOfflineMarker}，本次验证超时，${waited}。网络恢复后重新打开即可。`
 }
+
+/**
+ * 第四种：Codex 第一次在这台电脑上启动，要借 Windows 更新服务向微软完成验证，而客户（或替他装机的人）
+ * 把 Windows 更新关了，服务起不来。2026-11-23 一台 Win11 家庭版 21H2 22000.2245：激活回 0x800705B4，
+ * 放开更新 5 秒内 Codex 就起来了，再关回去、重启以后照样能开（见 windows-update-service-state.ts）。
+ * 重置、重启、重装都救不了，出口是临时开一下更新，所以这一类的失败框只给「重试」「联系客服」。
+ *
+ * 渲染层按这半句归到 codexDesktopWindowsUpdateBlocked，所以字面量只在这里写一次。
+ */
+export const codexDesktopWindowsUpdateBlockedMarker = '本机的 Windows 更新服务无法启动'
+
+/** 跟在「Codex 桌面端未能打开：」后面的那句（yoyo 2026-11-24 批的字，「更新框改」）。 */
+export function codexDesktopWindowsUpdateBlockedSentence(waitedSeconds?: number): string {
+  const waited = waitedSeconds === undefined
+    ? '未检测到 Codex 运行'
+    : `等待 ${waitedSeconds} 秒仍未检测到 Codex 运行`
+  return `${codexDesktopWindowsUpdateBlockedMarker}，Codex 首次启动所需的验证未能完成，${waited}。临时开启 Windows 更新并成功打开一次 Codex 后，可重新关闭更新。`
+}

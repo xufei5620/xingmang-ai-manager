@@ -574,6 +574,20 @@ const codexDesktopActivationNotRegisteredPattern = /0x80270254(?![0-9a-f])/i
 const codexDesktopActivationNetworkPattern = /0x80072E(?:E2|E7|FD|FE|FF)(?![0-9a-f])/i
 
 /**
+ * 0x800705B4 (ERROR_TIMEOUT) from ActivateApplication: Windows gave up waiting
+ * before it created the process. AppModel-Runtime logs event 203 with the same
+ * code and "[LaunchProcess]". 2026-11-23, a Win11 Home 21H2 22000.2245 machine
+ * whose Windows Update service had been blocked on purpose (a deny-Everyone ACE
+ * on SoftwareDistribution\Download, so wuauserv quit with access denied every
+ * two minutes): activation returned this code and the package's own service sat
+ * in START_PENDING with no process. Within five seconds of lifting the block
+ * both came up; after the block went back and Windows restarted, Codex still
+ * opened. The code alone does not say why, so the launch path only uses it as
+ * the cue to look at the Windows Update service (windows-update-service-state.ts).
+ */
+const codexDesktopActivationTimeoutPattern = /0x800705B4(?![0-9a-f])/i
+
+/**
  * Did any layer of this activation failure carry the code? The wrappers above
  * cut their own message to 500 characters, and PowerShell may put a CLIXML
  * preamble in front of the error, so the code can sit only on the execFile
@@ -598,6 +612,11 @@ export function isCodexDesktopActivationNotRegistered(error: unknown): boolean {
 /** Windows refused to start the package because its online licence check timed out or could not connect. */
 export function isCodexDesktopActivationNetworkFailure(error: unknown): boolean {
   return activationFailureCarries(error, codexDesktopActivationNetworkPattern)
+}
+
+/** Windows timed out before it created the package's process (see codexDesktopActivationTimeoutPattern). */
+export function isCodexDesktopActivationTimeout(error: unknown): boolean {
+  return activationFailureCarries(error, codexDesktopActivationTimeoutPattern)
 }
 
 export function parseCodexDesktopActivationProcessId(output: string): number | null {

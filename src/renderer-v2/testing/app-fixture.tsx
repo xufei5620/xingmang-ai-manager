@@ -9,7 +9,7 @@ import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/too
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import { buildClaudeDesktopInstallFailureMessage } from '../../../electron/claude-desktop-install-failure'
-import { codexDesktopActivationBrokenSentence, codexDesktopActivationOfflineSentence } from '../../../electron/codex-desktop-known-issues'
+import { codexDesktopActivationBrokenSentence, codexDesktopActivationOfflineSentence, codexDesktopWindowsUpdateBlockedSentence } from '../../../electron/codex-desktop-known-issues'
 import { accountScope } from '../account-context'
 import { createConversation, createWorkspace, type ChatMessage } from '../features/chat/state'
 import { exportableConversations } from '../features/chat/storage'
@@ -837,10 +837,12 @@ const methods = {
   },
   launchCodexDesktop: async () => {
     // ?codexLaunchFailure=activation：Windows 不肯起已装好的 Codex（0x80270254）；=offline：Windows 联网核对许可超时
-    // （0x80072EE2）；=generic：等了 38 秒没起来。几句都是主进程 describeCodexDesktopLaunchFailure 写出来的原样。
+    // （0x80072EE2）；=windows-update：Windows 更新服务被关了，第一次启动验证不了；=generic：等了 38 秒没起来。
+    // 几句都是主进程 describeCodexDesktopLaunchFailure 写出来的原样。
     const failure = query.get('codexLaunchFailure')
     if (failure === 'activation') throw new Error(`Codex 桌面端未能打开：${codexDesktopActivationBrokenSentence(38)}`)
     if (failure === 'offline') throw new Error(`Codex 桌面端未能打开：${codexDesktopActivationOfflineSentence(58)}`)
+    if (failure === 'windows-update') throw new Error(`Codex 桌面端未能打开：${codexDesktopWindowsUpdateBlockedSentence(62)}`)
     if (failure === 'generic') throw new Error('Codex 桌面端未能打开：等待 38 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex CLI；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
     return { restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但本次未能切换为中文界面。请先保存当前工作，再在首页点击「打开」，选择「重开 Codex」重试。' } } : {}) }
   },

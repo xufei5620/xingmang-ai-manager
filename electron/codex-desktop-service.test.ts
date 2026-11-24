@@ -103,7 +103,7 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { codexDesktopInstallFailureReasons } from './codex-desktop-install-failure'
-import { codexDesktopActivationBrokenMarker, codexDesktopActivationOfflineMarker, codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
+import { codexDesktopActivationBrokenMarker, codexDesktopActivationOfflineMarker, codexDesktopKnownIssueMarker, codexDesktopWindowsUpdateBlockedMarker } from './codex-desktop-known-issues'
 import {
   desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketIndexStaleError, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
 } from './desktop-package-bucket'
@@ -272,23 +272,23 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     const refused = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80270254)')
     const timedOut = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x8027025A)')
 
-    expect(buildCodexDesktopActivationFailureSummary([timedOut, refused], null)).toEqual({ windowsActivationBroken: true, windowsActivationOffline: false, cause: refused })
+    expect(buildCodexDesktopActivationFailureSummary([timedOut, refused], null)).toEqual({ windowsActivationBroken: true, windowsActivationOffline: false, windowsUpdateSuspect: false, cause: refused })
     // A process id means Windows did start it: that is the 「启动后随即退出」 case, not this one.
-    expect(buildCodexDesktopActivationFailureSummary([refused], 18420)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, cause: refused })
-    expect(buildCodexDesktopActivationFailureSummary([timedOut], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, cause: timedOut })
-    // Nothing failed (plain Explorer launch, nothing came up): no cause to attach.
-    expect(buildCodexDesktopActivationFailureSummary([], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false })
+    expect(buildCodexDesktopActivationFailureSummary([refused], 18420)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, windowsUpdateSuspect: false, cause: refused })
+    expect(buildCodexDesktopActivationFailureSummary([timedOut], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, windowsUpdateSuspect: false, cause: timedOut })
+    // Nothing failed (plain Explorer launch, nothing came up): no cause to attach, and Windows gave no reason, so the update service is worth a look.
+    expect(buildCodexDesktopActivationFailureSummary([], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, windowsUpdateSuspect: true })
   })
 
   it('calls it a failed online check only when the activation hit a network code and never handed back a process', () => {
     const offline = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80072EE2)')
     const refused = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80270254)')
 
-    expect(buildCodexDesktopActivationFailureSummary([offline], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: true, cause: offline })
+    expect(buildCodexDesktopActivationFailureSummary([offline], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: true, windowsUpdateSuspect: false, cause: offline })
     // The Chinese launch failed offline, the plain activation then said not installed: both are reported, the message picks.
-    expect(buildCodexDesktopActivationFailureSummary([offline, refused], null)).toEqual({ windowsActivationBroken: true, windowsActivationOffline: true, cause: refused })
+    expect(buildCodexDesktopActivationFailureSummary([offline, refused], null)).toEqual({ windowsActivationBroken: true, windowsActivationOffline: true, windowsUpdateSuspect: false, cause: refused })
     // One of the attempts did start a process: the online check went through after all.
-    expect(buildCodexDesktopActivationFailureSummary([offline], 18420)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, cause: offline })
+    expect(buildCodexDesktopActivationFailureSummary([offline], 18420)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, windowsUpdateSuspect: false, cause: offline })
   })
 
   it('sends the customer to the network, ahead of a restart, when Windows could not verify Codex online', () => {
@@ -301,6 +301,39 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
     expect(describeCodexDesktopLaunchFailure(undefined, null, false, null, true)).toBe('Codex 桌面端未能打开：Windows 打开 Codex 前需要联网向微软验证，本次验证超时，未检测到 Codex 运行。网络恢复后重新打开即可。')
     // Without the flag nothing changes.
     expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }, null, true)).not.toContain(codexDesktopActivationOfflineMarker)
+  })
+
+  it('looks at the Windows Update service only when Windows timed out or said nothing, and never started Codex', () => {
+    const timedOut = new Error('Codex Desktop AppX 激活失败：(异常来自 HRESULT:0x800705B4)')
+    const refused = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80270254)')
+    const offline = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80072EE2)')
+    const other = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80004005)')
+
+    // The 21H2 machine whose Windows Update had been blocked: activation timed out and no process ever came.
+    expect(buildCodexDesktopActivationFailureSummary([timedOut], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, windowsUpdateSuspect: true, cause: timedOut })
+    expect(buildCodexDesktopActivationFailureSummary([other, timedOut], null).windowsUpdateSuspect).toBe(true)
+    // Windows started it after all, or named a reason that already has its own card.
+    expect(buildCodexDesktopActivationFailureSummary([timedOut], 18420).windowsUpdateSuspect).toBe(false)
+    expect(buildCodexDesktopActivationFailureSummary([timedOut, refused], null).windowsUpdateSuspect).toBe(false)
+    expect(buildCodexDesktopActivationFailureSummary([offline, timedOut], null).windowsUpdateSuspect).toBe(false)
+    // Some other code: not this case, keep the generic card without spending the probe.
+    expect(buildCodexDesktopActivationFailureSummary([other], null).windowsUpdateSuspect).toBe(false)
+  })
+
+  it('sends the customer to turn Windows Update on once, after the network and restart cases and ahead of a known-broken version', () => {
+    const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 62, processSeen: false }, null, false, 'ChatGPT', false, true)
+    // yoyo 2026-11-24（「更新框改」）批的原文。
+    expect(message).toBe('Codex 桌面端未能打开：本机的 Windows 更新服务无法启动，Codex 首次启动所需的验证未能完成，等待 62 秒仍未检测到 Codex 运行。临时开启 Windows 更新并成功打开一次 Codex 后，可重新关闭更新。')
+    expect(message).toContain(codexDesktopWindowsUpdateBlockedMarker)
+    expect(message).not.toMatch(/0x[0-9A-F]{8}|AppModel|AppX|Appx|wuauserv|开始菜单|重启|重置/i)
+    expect(describeCodexDesktopLaunchFailure(undefined, null, false, null, false, true)).toBe('Codex 桌面端未能打开：本机的 Windows 更新服务无法启动，Codex 首次启动所需的验证未能完成，未检测到 Codex 运行。临时开启 Windows 更新并成功打开一次 Codex 后，可重新关闭更新。')
+    // With updates blocked no version opens, so this comes before the known-broken one.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 62, processSeen: false }, '26.924.2738.0', false, 'ChatGPT', false, true)).toBe(message)
+    // The two cases Windows names by code keep their own sentence.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 62, processSeen: false }, null, false, 'ChatGPT', true, true)).toContain(codexDesktopActivationOfflineMarker)
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 62, processSeen: false }, null, true, 'ChatGPT', false, true)).toContain(codexDesktopActivationBrokenMarker)
+    // Without the flag nothing changes.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 62, processSeen: false }, null, false, 'ChatGPT', false)).not.toContain(codexDesktopWindowsUpdateBlockedMarker)
   })
 
   it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {

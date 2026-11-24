@@ -9,6 +9,7 @@ import {
   filterCodexDesktopCdpTargets,
   injectCodexDesktopChineseLocale,
   isCodexDesktopActivationNetworkFailure,
+  isCodexDesktopActivationTimeout,
   isCodexDesktopActivationNotRegistered,
   parseCodexDesktopCdpPortOwners,
   parseCodexDesktopActivationProcessId,
@@ -1184,5 +1185,32 @@ describe('Codex Desktop activation refused because Windows could not verify it o
     expect(isCodexDesktopActivationNetworkFailure(activationFailure('HRESULT: 0x80072EE21'))).toBe(false)
     expect(isCodexDesktopActivationNetworkFailure('0x80072EE2')).toBe(false)
     expect(isCodexDesktopActivationNetworkFailure(null)).toBe(false)
+  })
+})
+
+describe('Codex Desktop activation that timed out before Windows created the process', () => {
+  function activationFailure(stderr: string): Error {
+    const execError = Object.assign(new Error(`Command failed: powershell.exe -EncodedCommand …\n${stderr}`), { code: 1, stderr })
+    return new Error(`Codex Desktop AppX 激活失败：${stderr.trim().slice(0, 500)}`, { cause: execError })
+  }
+
+  it('recognises ERROR_TIMEOUT in English and Chinese Windows wording, on stderr and through the Chinese-launch wrapper', () => {
+    const english = 'Exception calling "Activate" with "2" argument(s): "This operation returned because the timeout period expired. (Exception from HRESULT: 0x800705B4)"'
+    const chinese = '使用“2”个参数调用“Activate”时发生异常:“由于超时时间已过，该操作返回。 (异常来自 HRESULT:0x800705B4)”'
+    expect(isCodexDesktopActivationTimeout(activationFailure(english))).toBe(true)
+    expect(isCodexDesktopActivationTimeout(activationFailure(chinese))).toBe(true)
+    const outer = new Error('Codex Desktop 中文增强启动失败：…', { cause: activationFailure(chinese.toLowerCase()) })
+    expect(isCodexDesktopActivationTimeout(outer)).toBe(true)
+    // A timeout is neither of the two codes that already have their own card.
+    expect(isCodexDesktopActivationNetworkFailure(activationFailure(english))).toBe(false)
+    expect(isCodexDesktopActivationNotRegistered(activationFailure(english))).toBe(false)
+  })
+
+  it('leaves other activation failures alone', () => {
+    expect(isCodexDesktopActivationTimeout(activationFailure('Exception from HRESULT: 0x80072EE2'))).toBe(false)
+    expect(isCodexDesktopActivationTimeout(activationFailure('Exception from HRESULT: 0x80270254'))).toBe(false)
+    expect(isCodexDesktopActivationTimeout(activationFailure('HRESULT: 0x800705B41'))).toBe(false)
+    expect(isCodexDesktopActivationTimeout('0x800705B4')).toBe(false)
+    expect(isCodexDesktopActivationTimeout(null)).toBe(false)
   })
 })

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyOperationError, exportFailureSentence, operationFallbackActions, operationLogSection, operationTargetOf, presentOperationError, presentOperationFailure, type OperationErrorKey, type OperationTarget } from './operation-error'
 import { networkFailureMessages, officialRegistryUnreachableMarker, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
-import { codexDesktopActivationBrokenSentence, codexDesktopActivationOfflineSentence, codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
+import { codexDesktopActivationBrokenSentence, codexDesktopActivationOfflineSentence, codexDesktopKnownIssueLaunchSentence, codexDesktopWindowsUpdateBlockedSentence } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalMessage } from '../../electron/config-link-refusal'
 import { brokenConfigLaunchMessages } from './features/tools/broken-config-launch'
 import { configWriteBlockerMessage } from '../../electron/config-write-blocker'
@@ -37,6 +37,8 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   codexDesktopActivationBroken: { sample: `Codex 桌面端未能打开：${codexDesktopActivationBrokenSentence(38)}` },
   // 同一个函数在 Windows 联网核对许可超时、进程没建出来时（codex-desktop-known-issues.ts）。
   codexDesktopActivationOffline: { sample: `Codex 桌面端未能打开：${codexDesktopActivationOfflineSentence(58)}` },
+  // 同一个函数在 Windows 更新服务被关了、Codex 第一次启动验证不了时（codex-desktop-known-issues.ts）。
+  codexDesktopWindowsUpdateBlocked: { sample: `Codex 桌面端未能打开：${codexDesktopWindowsUpdateBlockedSentence(62)}` },
   // 同一个函数在装着已知打不开的那一版时（codex-desktop-known-issues.ts）。
   codexDesktopKnownIssue: { sample: `Codex 桌面端未能打开：等待 51 秒，Codex 未成功启动。${codexDesktopKnownIssueLaunchSentence('26.924.2738.0')}` },
   // 主进程 codex-desktop-install-failure.ts 的 buildCodexDesktopInstallFailureMessage。
@@ -487,6 +489,22 @@ describe('renderer-v2 operation error classification', () => {
     // 重置清掉的是 Codex 的登录，重启要客户放下手里的活，两样都换不来网络。
     expect(hint?.actions.some((action) => action.id === 'resetCodexDesktop' || action.id === 'restartComputer')).toBe(false)
     expect(presentOperationError(`Codex 桌面端未能打开：${codexDesktopActivationOfflineSentence()}`)?.key).toBe('codexDesktopActivationOffline')
+  })
+
+  it('asks for Windows Update to be turned on once, with only retry and support, when it blocked the first launch', () => {
+    const message = `Codex 桌面端未能打开：${codexDesktopWindowsUpdateBlockedSentence(62)}`
+    expect(message).toBe('Codex 桌面端未能打开：本机的 Windows 更新服务无法启动，Codex 首次启动所需的验证未能完成，等待 62 秒仍未检测到 Codex 运行。临时开启 Windows 更新并成功打开一次 Codex 后，可重新关闭更新。')
+    const hint = presentOperationError(message)
+    expect(hint?.key).toBe('codexDesktopWindowsUpdateBlocked')
+    expect(hint?.title).toBe('Windows 更新已关闭，Codex 未能启动')
+    expect(hint?.body).toBe('Codex 首次启动时需要借助 Windows 更新服务向微软完成验证。本机的 Windows 更新服务当前无法启动，因此 Codex 未能打开，无需重新安装或重置 Codex。请临时开启 Windows 更新，成功打开一次 Codex 后即可重新关闭。如 Windows 更新由技术人员关闭，请联系相关人员协助开启；也可点击「联系客服」并将下方提示发送给客服。')
+    expect(hint?.actions).toEqual([
+      { id: 'retry', label: '重试' },
+      { id: 'support', label: '联系客服' },
+    ])
+    // 重置只会清掉 Codex 的登录，重启换不来更新服务，系统设置里也不一定开得了（那台是改了文件夹权限）。
+    expect(hint?.actions.some((action) => action.id === 'resetCodexDesktop' || action.id === 'restartComputer')).toBe(false)
+    expect(presentOperationError(`Codex 桌面端未能打开：${codexDesktopWindowsUpdateBlockedSentence()}`)?.key).toBe('codexDesktopWindowsUpdateBlocked')
   })
 
   it('offers the command-line Codex when the installed desktop version is known not to start', () => {
