@@ -1,8 +1,12 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import fc from 'fast-check'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AntigravityManagedKey } from './account-cli-provisioner'
 import { staleAccountMessage, type QueuedAccountWork } from './account-work-gate'
 import type { AntigravityEnvironmentValues, AntigravityGatewayEnvironment } from './antigravity-gateway'
+import { readMacosAntigravityEnvironment, writeMacosAntigravityEnvironment } from './antigravity-macos-environment'
 import {
   antigravityCliLaunchQueueKey,
   antigravityDesktopLaunchQueueKey,
@@ -20,6 +24,7 @@ import {
   parseAntigravityDesktopWindowsProcesses,
   planAntigravityFollow,
   withAntigravityEnvironment,
+  writeOptionsFor,
   type AntigravityDetachedLaunchPlan,
   type AntigravityProgress,
   type AntigravityServiceDependencies,
@@ -536,6 +541,81 @@ describe('createAntigravityService openDesktop on macOS', () => {
   })
 })
 
+// 复查 A 第 1 轮第 4 条：~/.zprofile 是 dotfiles 的链接时，写设置用真的那一步（只把用户目录换成临时文件夹）。
+describe.runIf(process.platform !== 'win32')('createAntigravityService with a linked ~/.zprofile on macOS', () => {
+  const homes: string[] = []
+
+  afterEach(() => {
+    for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  function linkedProfileHarness(extra: Partial<AntigravityServiceDependencies> = {}): { h: Harness, home: string, dotfiles: string } {
+    // macOS puts the temp folder behind /var -> /private/var, which the reparse-point guard would refuse.
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-agy-service-')))
+    homes.push(home)
+    const dotfiles = path.join(home, 'dotfiles-zprofile')
+    fs.writeFileSync(dotfiles, 'export A=1\n')
+    fs.symlinkSync(dotfiles, path.join(home, '.zprofile'))
+    const h = harness({
+      platform: 'darwin',
+      directories: [macBundle],
+      files: [macExecutable, macCli],
+      overrides: {
+        writeMacosEnvironment: (environment, options) => writeMacosAntigravityEnvironment(environment, { ...options, homeDirectory: home, loginShell: '/bin/zsh', env: {} }),
+        readMacosEnvironment: (options) => readMacosAntigravityEnvironment({ ...options, homeDirectory: home }),
+        ...extra,
+      },
+    })
+    return { h, home, dotfiles }
+  }
+
+  it('follows an account switch in the background without needing the startup file', async () => {
+    const { h, home, dotfiles } = linkedProfileHarness({ accountOwner: () => 'solov:7', cachedAccountKeys: async () => [managedKey.key] })
+    // 上一个账号打开桌面端时留下的那份：启动文件那一段当时就加不进。
+    const previous = { ...writtenEnvironment, AGY_LLM_GATEWAY_API_KEY: 'sk-previous-account-0123456789' }
+    await writeMacosAntigravityEnvironment(previous, { platform: 'darwin', homeDirectory: home, loginShell: '/bin/zsh', env: {}, startupFileOptional: true })
+    h.service.bindFollowKey(resolveKey)
+
+    await h.service.follow('account-changed')
+
+    await expect(readMacosAntigravityEnvironment({ platform: 'darwin', homeDirectory: home })).resolves.toEqual(writtenEnvironment)
+    expect(h.logs.find((entry) => entry.event === 'antigravity.settings.followed')?.detail).toEqual(expect.objectContaining({ kind: 'switch-account', outcome: 'written' }))
+    expect(h.logs.some((entry) => entry.event === 'antigravity.settings.follow-failed')).toBe(false)
+    expect(fs.lstatSync(path.join(home, '.zprofile')).isSymbolicLink()).toBe(true)
+    expect(fs.readFileSync(dotfiles, 'utf8')).toBe('export A=1\n')
+  })
+
+  it('still opens the desktop app with its settings, leaving the link and its target alone', async () => {
+    const { h, home, dotfiles } = linkedProfileHarness()
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
+
+    expect(h.launches).toHaveLength(1)
+    expect(h.launches[0].env).toEqual(expect.objectContaining(writtenEnvironment))
+    expect(fs.lstatSync(path.join(home, '.zprofile')).isSymbolicLink()).toBe(true)
+    expect(fs.readFileSync(dotfiles, 'utf8')).toBe('export A=1\n')
+    const skipped = h.logs.find((entry) => entry.event === 'antigravity.settings.profile-skipped')
+    expect(skipped).toEqual(expect.objectContaining({ level: 'warn', detail: expect.objectContaining({ file: '~/.zprofile' }) }))
+    expect(JSON.stringify(h.logs)).not.toContain(managedKey.key)
+  })
+
+  it('finishes a desktop install without a settings error and counts the settings as written', async () => {
+    const { h } = linkedProfileHarness()
+    await expect(h.service.install('desktop', resolveKey)).resolves.toEqual({
+      status: { supported: true, cliInstalled: true, desktopInstalled: true, configured: true },
+    })
+  })
+
+  it('still refuses to open the command line, whose Terminal reads the settings through that file', async () => {
+    const { h, dotfiles } = linkedProfileHarness()
+    await expect(h.service.openCli(macWorkspace, resolveKey)).rejects.toThrow('终端启动设置（~/.zprofile）')
+    expect(h.macTerminals).toEqual([])
+    expect(fs.readFileSync(dotfiles, 'utf8')).toBe('export A=1\n')
+
+    const install = await h.service.install('cli', resolveKey)
+    expect(install.configureError).toEqual(expect.stringContaining('终端启动设置（~/.zprofile）'))
+  })
+})
+
 describe('createAntigravityService openCli', () => {
   it('verifies agy, then opens PowerShell in the folder with this write\'s settings', async () => {
     const h = harness({ files: [windowsCli] })
@@ -573,6 +653,13 @@ describe('createAntigravityService openCli', () => {
     expect(h.macTerminals).toHaveLength(1)
     expect(h.macTerminals[0]).toEqual(expect.objectContaining({ executable: macCli, argv: [], workspace: macWorkspace }))
     expect(JSON.stringify(h.macTerminals[0].env)).not.toContain(managedKey.key)
+  })
+})
+
+describe('writeOptionsFor', () => {
+  it('lets only the desktop app go without the macOS startup file block', () => {
+    expect(writeOptionsFor('desktop')).toEqual({ startupFileOptional: true })
+    expect(writeOptionsFor('cli')).toEqual({ startupFileOptional: false })
   })
 })
 

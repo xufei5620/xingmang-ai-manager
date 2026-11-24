@@ -107,6 +107,14 @@ export type AntigravityFollowPlan =
   | { action: 'move-route', environment: AntigravityGatewayEnvironment, from: AntigravityGatewayLine, to: AntigravityGatewayLine }
   | { action: 'switch-account', from: AntigravityGatewayLine, to: AntigravityGatewayLine | null }
 
+/** 写一次设置时的两样讲究，缺省都是旧行为（启动文件那一段写不进就报错、不另外核账号）。 */
+export interface AntigravityEnvironmentWriteOptions {
+  /** Mac：终端启动文件那一段写不进只记一笔、照常往下走。打开桌面端、后台跟着改时用不上那个文件。 */
+  startupFileOptional?: boolean
+  /** 轮到这一笔、动手之前调，抛错就不写。 */
+  assertBeforeWrite?: () => void
+}
+
 export class AntigravityElevatedSessionError extends Error {
   constructor() {
     super('星芒正以管理员身份运行，无法安装、设置或打开 Antigravity。请以普通方式重新打开星芒。')
@@ -194,6 +202,14 @@ const desktopNotOfficialMessage = '已安装的 Antigravity 不是 Google 官方
 const cliNotOfficialMessage = '已安装的 Antigravity 命令行不是 Google 官方签名版本，星芒不会打开它'
 const probeTimeoutMs = 15_000
 const maximumProbeBytes = 256 * 1024
+
+/**
+ * 为哪一样写设置：桌面端不强求 Mac 终端启动文件那一段（打开时设置直接放进它的环境）；命令行要那一段，
+ * Mac 的「终端」从那里读设置（复查 A 第 1 轮第 4 条）。
+ */
+export function writeOptionsFor(target: AntigravityTarget): AntigravityEnvironmentWriteOptions {
+  return { startupFileOptional: target === 'desktop' }
+}
 
 /** 安装队列里这一项的名字。前缀不是 cli:launch:，退出拦截按安装算它（quit-blocking-tasks.ts）。 */
 export function antigravityInstallQueueKey(target: AntigravityTarget): string {
@@ -492,18 +508,19 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
   }
 
   /**
-   * 写下整份设置，和别的工具配置排同一队。assertBeforeWrite 在轮到这一笔、动手之前调：后台跟的那一步排队时
-   * 换了账号就不写。
+   * 写下整份设置，和别的工具配置排同一队。startupFileOptional：Mac 上终端启动文件那一段写不进只记一笔、照常往下走
+   * （见 configureNow）。assertBeforeWrite 在轮到这一笔、动手之前调：后台跟的那一步排队时换了账号就不写。
    */
-  function writeEnvironment(environment: AntigravityGatewayEnvironment, assertBeforeWrite?: () => void): Promise<AntigravityEnvironmentWriteOutcome> {
+  function writeEnvironment(environment: AntigravityGatewayEnvironment, options: AntigravityEnvironmentWriteOptions = {}): Promise<AntigravityEnvironmentWriteOutcome> {
     return deps.serializeSettingsWrite(async (): Promise<AntigravityEnvironmentWriteOutcome> => {
-      assertBeforeWrite?.()
+      options.assertBeforeWrite?.()
       if (platform === 'win32') return (deps.writeWindowsEnvironment ?? writeWindowsAntigravityEnvironment)(environment, { platform })
       const result = await (deps.writeMacosEnvironment ?? writeMacosAntigravityEnvironment)(environment, {
         platform,
         homeDirectory: userHome,
         env,
-        skipped: (displayPath, error) => log('warn', 'antigravity.settings.fish-skipped', '没写进 fish 的启动设置', { file: displayPath, error: errorText(error) }),
+        startupFileOptional: options.startupFileOptional === true,
+        skipped: (displayPath, error) => log('warn', 'antigravity.settings.profile-skipped', '没写进终端的启动设置', { file: displayPath, error: errorText(error) }),
       })
       if (result.profile === 'unsupported-shell') {
         log('warn', 'antigravity.settings.unsupported-shell', '登录 shell 不是 zsh、bash、fish，自己开的终端里读不到 Antigravity 的设置')
@@ -512,15 +529,20 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     })
   }
 
-  /** 签一把密钥、按当时的型号算出设置、写下去。地址只读一次，整次只用这一个（线路「自动」时可能半路换）。 */
+  /**
+   * 签一把密钥、按当时的型号算出设置、写下去。地址只读一次，整次只用这一个（线路「自动」时可能半路换）。
+   * 为桌面端写（writeOptionsFor('desktop')）时，Mac 上终端启动文件那一段写不进只记一笔、照常往下走：桌面端的设置
+   * 由打开的那一步放进它的环境里，用不上那个文件（复查 A 第 1 轮第 4 条，~/.zprofile 是 dotfiles 的链接时桌面端打不开）。
+   * 命令行要那一段：Mac 的「终端」从那里读设置，写不进照旧报错。
+   */
   async function configureNow(
     resolveKey: AntigravityKeyResolver,
-    assertBeforeWrite?: () => void,
+    options: AntigravityEnvironmentWriteOptions = {},
   ): Promise<{ environment: AntigravityGatewayEnvironment, outcome: AntigravityEnvironmentWriteOutcome }> {
     const baseUrl = deps.gatewayBaseUrl()
     const key = await resolveKey()
     const environment = buildAntigravityGatewayEnvironment({ baseUrl, apiKey: key.key, models: key.models })
-    const outcome = await writeEnvironment(environment, assertBeforeWrite)
+    const outcome = await writeEnvironment(environment, options)
     // 只记词和个数，不记密钥、不记地址（I13）。
     log('info', 'antigravity.settings.saved', 'Antigravity 的设置已写好', {
       outcome,
@@ -600,7 +622,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     let configureError: string | undefined
     try {
       assertSameUser()
-      await configureNow(resolveKey)
+      await configureNow(resolveKey, writeOptionsFor(target))
     } catch (error) {
       configureError = errorText(error)
       log('warn', 'antigravity.settings.failed', 'Antigravity 已装好，设置没写成', { target, error: configureError })
@@ -684,9 +706,12 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     try {
       assertOwner()
       let outcome: AntigravityEnvironmentWriteOutcome
-      if (plan.action === 'move-route') outcome = await writeEnvironment(plan.environment, assertOwner)
+      // Mac 上终端启动文件那一段跟打开桌面端一样不强求：设置文件照写，那一段之前已经加过（或者这次加不进），
+      // 客户下次从星芒打开命令行时会再要一次。
+      const write: AntigravityEnvironmentWriteOptions = { startupFileOptional: true, assertBeforeWrite: assertOwner }
+      if (plan.action === 'move-route') outcome = await writeEnvironment(plan.environment, write)
       // 还没接上账号（通道还没注册、或者已经撤了）：要签密钥的这次不做，下次换账号、换线路再看。
-      else if (resolveKey) outcome = (await configureNow(resolveKey, assertOwner)).outcome
+      else if (resolveKey) outcome = (await configureNow(resolveKey, write)).outcome
       else return
       if (outcome === 'written') await noteWindowsInstanceStale()
       log('info', 'antigravity.settings.followed', plan.action === 'move-route' ? 'Antigravity 的设置已换到当前连接线路' : 'Antigravity 的设置已换成当前账号', { ...detail, outcome })
@@ -765,7 +790,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     const executable = windowsDesktopExecutable()
     if (!executable) throw new Error(desktopNotInstalledMessage)
     // 先写设置再看开没开着：写完系统通知资源管理器换上新环境，之后它开的 Antigravity 带着新设置。
-    const { outcome } = await configureNow(resolveKey)
+    const { outcome } = await configureNow(resolveKey, writeOptionsFor('desktop'))
     const running = await windowsDesktopRunning(executable)
     // 开着、设置这次又改了，或者开着的那一份早于后台跟的那次改写：它拿的是旧的（或没有），请客户先关掉。
     // 看不出开没开着就照常打开：开着的话第二个自己退出、把原来的叫到前面，最坏是客户看到的还是旧设置，不会开出两个。
@@ -786,7 +811,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     const bundle = macDesktopBundle()
     if (!bundle) throw new Error(desktopNotInstalledMessage)
     const executable = await verifyMacDesktop(bundle)
-    const { environment } = await configureNow(resolveKey)
+    const { environment } = await configureNow(resolveKey, writeOptionsFor('desktop'))
     const fingerprint = antigravityEnvironmentFingerprint(environment)
     const running = await macDesktopProcesses(bundle)
     if (running?.length) {
@@ -844,7 +869,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
         log('warn', 'antigravity.cli.signature-refused', 'Antigravity 命令行的签名没核过，不打开', { error: errorText(error) })
         throw new Error(cliNotOfficialMessage, { cause: error })
       }
-      const { environment } = await configureNow(resolveKey)
+      const { environment } = await configureNow(resolveKey, writeOptionsFor('cli'))
       // 星芒自己的环境没跟着用户环境变量改（改了，之后起的每个子进程都会带上这把密钥），所以这次的设置直接交给终端。
       await (deps.launchWindowsTerminal ?? launchCliPowerShell)({
         executable: target.executablePath,
@@ -866,7 +891,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
       log('warn', 'antigravity.cli.signature-refused', 'Antigravity 命令行的签名没核过，不打开', { error: errorText(error) })
       throw new Error(cliNotOfficialMessage, { cause: error })
     }
-    await configureNow(resolveKey)
+    await configureNow(resolveKey, writeOptionsFor('cli'))
     // 「终端」先起客户的登录 shell，读启动文件里星芒加的那一段，设置就在环境里了；启动脚本里不另写密钥。
     await (deps.launchMacosTerminal ?? launchMacosTerminal)({ executable: target.executablePath, argv: [], workspace, env: deps.terminalEnvironment(env) })
     log('info', 'antigravity.cli.opened', '已打开 Antigravity 命令行')
