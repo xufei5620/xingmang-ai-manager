@@ -16,8 +16,8 @@ export function parseAntigravityTarget(value: unknown): AntigravityTarget {
   return value
 }
 
-export function registerAntigravityHandlers(ctx: IpcHandlerContext): void {
-  const { options, registerTrustedHandler, service, accountService, explicitProvisioning } = ctx
+export function registerAntigravityHandlers(ctx: IpcHandlerContext): () => void {
+  const { options, registerTrustedHandler, service, accountService, automaticProvisioning, explicitProvisioning } = ctx
 
   function antigravity(): AntigravityService {
     if (!service.antigravity) throw new Error('当前版本不支持 Antigravity')
@@ -29,6 +29,13 @@ export function registerAntigravityHandlers(ctx: IpcHandlerContext): void {
     if (!accountService.getSessionState().account?.userId) return Promise.reject(new Error(signInFirstMessage))
     return resolveAntigravityManagedKey(explicitProvisioning, service, options.managedCliKeys)
   }
+
+  // 换了账号、换了线路以后主进程自己跟（antigravity-service.ts 的 follow）：不是客户点的，走自动签发那一档，
+  // 读坏的额度记录照旧停下、不清（同登录后那一轮同步）。撤通道时收回。
+  service.antigravity?.bindFollowKey(() => {
+    if (!accountService.getSessionState().account?.userId) return Promise.reject(new Error(signInFirstMessage))
+    return resolveAntigravityManagedKey(automaticProvisioning, service, options.managedCliKeys)
+  })
 
   // 点的时候是哪个账号先记下（scoped-queued，同 cli:launch）：排着队换了账号就不替上一个账号打开。
   async function forClickedAccount<T>(open: (accountWork: QueuedAccountWork | undefined) => Promise<T>): Promise<T> {
@@ -63,4 +70,8 @@ export function registerAntigravityHandlers(ctx: IpcHandlerContext): void {
       runWhenOn(options.remoteFeatures, 'launch:antigravityCli', toolLaunchOffMessage(antigravityNames.cli), () => antigravity().openCli(target, resolveKey, accountWork))
     ))
   })
+
+  return () => {
+    service.antigravity?.bindFollowKey(null)
+  }
 }

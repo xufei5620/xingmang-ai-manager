@@ -10975,6 +10975,8 @@ describe('Antigravity channels', () => {
       configure: vi.fn(async () => ({ supported: true, cliInstalled: true, desktopInstalled: false, configured: true })),
       openDesktop: vi.fn(async () => ({ opened: true })),
       openCli: vi.fn(async () => undefined),
+      bindFollowKey: vi.fn(),
+      follow: vi.fn(async () => undefined),
     }
     return stub
   }
@@ -11045,6 +11047,18 @@ describe('Antigravity channels', () => {
     await electronMocks.handlers.get('antigravity:open-desktop')!(trustedEvent())
     await expect(resolver?.()).rejects.toThrow('请先登录账号，再设置 Antigravity')
     expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  it('hands the follow-up after an account or line change a key resolver that asks for sign-in, and takes it back on dispose', async () => {
+    const { service, antigravity } = withAntigravity()
+    const accountService = accountServiceStub()
+    const { dispose } = register(service, undefined, undefined, accountService)
+    expect(antigravity.bindFollowKey).toHaveBeenCalledTimes(1)
+    const resolver = vi.mocked(antigravity.bindFollowKey).mock.calls[0][0]
+    await expect(resolver?.()).rejects.toThrow('请先登录账号，再设置 Antigravity')
+    expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+    dispose()
+    expect(antigravity.bindFollowKey).toHaveBeenLastCalledWith(null)
   })
 
   it('opens agy in the chosen folder, or the remembered one, and refuses a folder that is not a string', async () => {
