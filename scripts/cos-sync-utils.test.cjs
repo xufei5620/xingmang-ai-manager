@@ -520,15 +520,15 @@ test('reports unknown write state without blindly retrying or logging injected c
   assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 1)
 })
 
-test('publishes each of the eight fixed latest pointers with complete public readback', async () => {
+test('publishes each of the ten fixed latest pointers with complete public readback', async () => {
   const mock = memoryCos()
   const store = createCosStore(config, mock)
-  for (const key of ['xingmang/latest.json', 'chatgpt/latest.json', 'xingmang/offline/claude/latest.json', 'xingmang/offline/codex-plugins/latest.json', 'xingmang/offline/grok/latest.json', 'xingmang/offline/opencode/latest.json', 'xingmang/offline/antigravity-cli/windows.json', 'xingmang/offline/antigravity-cli/macos.json']) {
+  for (const key of ['xingmang/latest.json', 'chatgpt/latest.json', 'xingmang/offline/claude/latest.json', 'xingmang/offline/codex-plugins/latest.json', 'xingmang/offline/grok/latest.json', 'xingmang/offline/opencode/latest.json', 'xingmang/offline/antigravity-cli/windows.json', 'xingmang/offline/antigravity-cli/macos.json', 'xingmang/offline/antigravity-desktop/windows.json', 'xingmang/offline/antigravity-desktop/macos.json']) {
     const manifest = { version: '1', key }
     await store.publishJson(key, manifest, { overwrite: true })
     assert.deepEqual(await store.readJson(key), manifest)
   }
-  assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 8)
+  assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 10)
   await assert.rejects(store.publishJson('claude/latest.json', {}, { overwrite: true }), /固定/)
   await assert.rejects(store.publishJson('xingmang/offline/other/latest.json', {}, { overwrite: true }), /固定/)
   await assert.rejects(store.publishJson('xingmang/offline/codex-plugins/v1/latest.json', {}, { overwrite: true }), /固定/)
@@ -537,9 +537,11 @@ test('publishes each of the eight fixed latest pointers with complete public rea
   await assert.rejects(store.publishJson('xingmang/offline/antigravity-cli/linux.json', {}, { overwrite: true }), /固定/)
   await assert.rejects(store.publishJson('xingmang/offline/antigravity-cli/windows-x64/windows.json', {}, { overwrite: true }), /固定/)
   await assert.rejects(store.publishJson(`xingmang/offline/antigravity-cli/windows-x64/sha256-${'a'.repeat(64)}/agy-1.5.15-windows-x64.exe`, {}, { overwrite: true }), /固定/)
+  await assert.rejects(store.publishJson('xingmang/offline/antigravity-desktop/latest.json', {}, { overwrite: true }), /固定/)
+  await assert.rejects(store.publishJson(`xingmang/offline/antigravity-desktop/macos-arm64/sha256-${'a'.repeat(64)}/Antigravity-darwin-arm64.zip`, {}, { overwrite: true }), /固定/)
   await assert.rejects(store.publishJson('claude/v1/latest.json', {}, { overwrite: true }), /固定/)
   await assert.rejects(store.publishJson('other/latest.json', {}, { overwrite: true }), /固定/)
-  assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 8)
+  assert.equal(mock.calls.filter(call => call.method === 'PUT').length, 10)
 })
 
 // Each sync script's own tests inject a fake store that never reaches validatePublicationOptions,
@@ -548,6 +550,7 @@ test('publishes each of the eight fixed latest pointers with complete public rea
 // tie every script that overwrites a COS object to the real allow-list.
 const POINTER_KEYS_BY_SYNC_SCRIPT = {
   'sync-antigravity-cli-cos.cjs': exports => Object.values(exports.FAMILIES).map(family => family.indexKey),
+  'sync-antigravity-desktop-cos.cjs': exports => Object.values(exports.FAMILIES).map(family => family.indexKey),
   'sync-chatgpt-official-cos.cjs': exports => [exports.LATEST_KEY],
   'sync-claude-official-cos.cjs': exports => [exports.LATEST_KEY],
   'sync-codex-plugins-cos.cjs': exports => [exports.LATEST_KEY],
