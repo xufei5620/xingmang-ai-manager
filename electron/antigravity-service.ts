@@ -433,6 +433,8 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
   }
 
   async function installDesktopNow(onProgress?: (progress: AntigravityProgress) => void): Promise<void> {
+    // 两个平台都先从存储桶下；为什么没走通只进运行日志（detail 开头是桶里那个包的名字）。
+    const bucket = { onFallback: (detail: string) => log('warn', 'antigravity.desktop.bucket-fallback', 'Antigravity 桌面端存储桶这一路没走通，改去谷歌下载', { detail }) }
     if (platform === 'win32') {
       const installed = await (deps.installDesktopWindows ?? installAntigravityDesktopWindows)({
         executionMode: deps.executionMode,
@@ -442,6 +444,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
         homeDirectory: userHome,
         fetchImpl: deps.fetch,
         onProgress: (progress) => onProgress?.({ target: 'desktop', phase: progress.phase, percent: progress.percent }),
+        bucket,
         ...(deps.withVendorDownloadRoute ? { withVendorDownloadRoute: deps.withVendorDownloadRoute } : {}),
       })
       log('info', 'antigravity.desktop.installed', 'Antigravity 已装好', { version: installed.version })
@@ -462,6 +465,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
         percent: event.percent,
       }),
       ...(deps.systemApplicationsDirectory ? { systemApplicationsDirectory: deps.systemApplicationsDirectory } : {}),
+      bucket,
       ...(deps.withVendorDownloadRoute ? { withVendorDownloadRoute: deps.withVendorDownloadRoute } : {}),
     })
     log('info', 'antigravity.desktop.installed', 'Antigravity 已装好', { version: installed.version })

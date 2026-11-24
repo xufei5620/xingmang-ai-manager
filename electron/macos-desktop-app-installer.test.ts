@@ -1469,10 +1469,125 @@ describe('macOS installer for the Antigravity desktop app', () => {
     }
   })
 
-  it('has no Xingmang bucket package yet, so updates are not offered from one', () => {
-    expect(macosDesktopBucketPackageId('antigravityDesktop', 'arm64')).toBeNull()
+  it('takes the Xingmang bucket package for the chip asked for', () => {
+    expect(macosDesktopBucketPackageId('antigravityDesktop', 'arm64')).toBe('antigravity-macos-arm64')
+    expect(macosDesktopBucketPackageId('antigravityDesktop', 'x64')).toBe('antigravity-macos-x64')
     expect(macosDesktopAppInstallable('antigravityDesktop', 'arm64')).toBe(true)
     expect(macosDesktopAppInstallable('antigravityDesktop', 'ia32')).toBe(false)
+  })
+
+  // scripts/sync-antigravity-desktop-cos.cjs writes one index for both Mac chips. The bucket holds 2.35.0 and
+  // Google's feed 2.34.0, so each test can tell which one was installed.
+  const bucketAntigravityVersion = '2.35.0'
+  const bucketAntigravityKey = (architecture: string) =>
+    `xingmang/offline/antigravity-desktop/macos-${architecture}/sha256-${bucketDigest}/Antigravity-darwin-${architecture}.zip`
+  const antigravityIndexUrl = `${desktopPackageBucketOrigin}/xingmang/offline/antigravity-desktop/macos.json`
+
+  function antigravityBucketIndex(checkedAt: string): string {
+    return JSON.stringify({
+      schemaVersion: 1, product: 'antigravity-desktop', family: 'macos', generatedAt: checkedAt, checkedAt,
+      version: bucketAntigravityVersion, build: antigravityBuild,
+      files: ['arm64', 'x64'].map((architecture) => ({
+        platformId: `macos-${architecture}`, platform: 'macos', architecture, kind: 'app-archive', format: 'zip',
+        fileName: `Antigravity-darwin-${architecture}.zip`, type: 'application/zip', verification: 'macos-developer-id-notarized',
+        version: bucketAntigravityVersion, key: bucketAntigravityKey(architecture),
+        url: `${desktopPackageBucketOrigin}/${bucketAntigravityKey(architecture)}`, size: bucketBytes.byteLength, sha256: bucketDigest,
+        sha512: 'ef'.repeat(64), sourceUrl: antigravityPackageUrl(architecture, bucketAntigravityVersion), cosEtag: '"etag"',
+      })),
+    })
+  }
+
+  function antigravityBucketSetup(
+    bucketOptions: { checkedAt?: string, vendorOffline?: boolean, packageBody?: Buffer } = {},
+    extra: Partial<InstallMacosDesktopAppOptions> = {},
+    processes: FakeProcessOptions = {},
+  ) {
+    const f = vendorSetup('antigravityDesktop', {}, extra, processes)
+    const vendorFetch = f.options.fetch
+    const routed: string[] = []
+    const fallbacks: string[] = []
+    const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (!url.startsWith(desktopPackageBucketOrigin)) {
+        if (!bucketOptions.vendorOffline) return vendorFetch(input, init)
+        f.requested.push(url)
+        throw new TypeError('fetch failed')
+      }
+      f.requested.push(url)
+      expect(init).toMatchObject({ redirect: 'manual', credentials: 'omit' })
+      if (url === antigravityIndexUrl) {
+        return new Response(antigravityBucketIndex(bucketOptions.checkedAt ?? new Date().toISOString()), { headers: { 'content-type': 'application/json' } })
+      }
+      const body = bucketOptions.packageBody ?? bucketBytes
+      return new Response(body, { headers: { 'content-type': 'application/zip', 'content-length': String(body.byteLength) } })
+    }) as typeof globalThis.fetch
+    f.options = {
+      ...f.options,
+      fetch,
+      bucket: { onFallback: (detail) => fallbacks.push(detail) },
+      withVendorDownloadRoute: async (operation) => {
+        routed.push('start')
+        try { return await operation() } finally { routed.push('end') }
+      },
+    }
+    return { ...f, routed, fallbacks }
+  }
+
+  it.skipIf(process.platform === 'win32')('installs Antigravity from the bucket, outside the download route, after the same Google checks', async () => {
+    const f = antigravityBucketSetup()
+
+    await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: bucketAntigravityVersion, path: path.posix.join(f.applications, 'Antigravity.app') })
+
+    expect(f.requested).toEqual([antigravityIndexUrl, `${desktopPackageBucketOrigin}/${bucketAntigravityKey('arm64')}`])
+    expect(f.routed).toEqual([])
+    expect(f.fallbacks).toEqual([])
+    const tar = f.plans.find((plan) => plan.executable === '/usr/bin/tar')
+    expect(tar?.argv[1]).toMatch(/\/bucket\/package\.zip$/)
+    expect(signingRequirement(f.plans)).toContain('identifier "com.google.antigravity"')
+    expect(signingRequirement(f.plans)).toContain('certificate leaf[subject.OU] = "EQHXZ8M8AV"')
+    expect(f.plans.some((plan) => plan.executable === '/usr/sbin/spctl')).toBe(true)
+    // Same words as the Google route: the customer cannot tell which way it came.
+    expect(f.progress[0]).toBe(`正在下载 Antigravity ${bucketAntigravityVersion}`)
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('picks the bucket package by the Mac\'s own chip, so Rosetta still gets the Apple silicon one', async () => {
+    const intel = antigravityBucketSetup({}, { architecture: 'x64' })
+    await installMacosDesktopApp(intel.options)
+    expect(intel.requested).toEqual([antigravityIndexUrl, `${desktopPackageBucketOrigin}/${bucketAntigravityKey('x64')}`])
+
+    const rosetta = antigravityBucketSetup({}, { architecture: 'x64' }, { hardwareArm64: '1' })
+    await installMacosDesktopApp(rosetta.options)
+    expect(rosetta.requested).toEqual([antigravityIndexUrl, `${desktopPackageBucketOrigin}/${bucketAntigravityKey('arm64')}`])
+  })
+
+  it.skipIf(process.platform === 'win32')('asks Google inside the download route when the bucket bytes do not match the index', async () => {
+    const f = antigravityBucketSetup({ packageBody: Buffer.alloc(bucketBytes.byteLength, 1) })
+    await expect(installMacosDesktopApp(f.options)).resolves.toMatchObject({ version: '2.34.0' })
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.fallbacks).toEqual(['antigravity-macos-arm64：存储桶的安装包 SHA-256 和清单不一致'])
+    expect(f.requested.slice(2)).toEqual([feedFor('arm64'), antigravityPackageUrl('arm64')])
+    expect(f.plans.filter((plan) => plan.executable === '/usr/bin/tar')).toHaveLength(1)
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('prefers Google over an index the sync has not refreshed for a day, and falls back to that index when Google is out of reach', async () => {
+    const checkedAt = new Date(Date.now() - 48 * 60 * 60_000).toISOString()
+    const reachable = antigravityBucketSetup({ checkedAt })
+    await expect(installMacosDesktopApp(reachable.options)).resolves.toMatchObject({ version: '2.34.0' })
+    expect(reachable.requested).toEqual([antigravityIndexUrl, feedFor('arm64'), antigravityPackageUrl('arm64')])
+    expect(reachable.fallbacks).toEqual([`antigravity-macos-arm64：存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt}），桶里的可能不是最新版`])
+
+    const offline = antigravityBucketSetup({ checkedAt, vendorOffline: true })
+    await expect(installMacosDesktopApp(offline.options)).resolves.toMatchObject({ version: bucketAntigravityVersion })
+    expect(offline.requested).toEqual([
+      antigravityIndexUrl,
+      feedFor('arm64'),
+      antigravityIndexUrl,
+      `${desktopPackageBucketOrigin}/${bucketAntigravityKey('arm64')}`,
+    ])
+    expect(fs.readdirSync(offline.applications)).toEqual(['Antigravity.app'])
+    expect(stagingLeftovers(offline.home)).toEqual([])
   })
 })
 

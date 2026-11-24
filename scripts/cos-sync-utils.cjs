@@ -649,6 +649,9 @@ const OVERWRITABLE_POINTER_KEYS = Object.freeze([
   // Antigravity 命令行在 Windows、Mac 两台机器上各写各的，所以是两份。
   'xingmang/offline/antigravity-cli/windows.json',
   'xingmang/offline/antigravity-cli/macos.json',
+  // Antigravity 桌面端同样两台机器各写一份。
+  'xingmang/offline/antigravity-desktop/windows.json',
+  'xingmang/offline/antigravity-desktop/macos.json',
 ])
 
 function validatePublicationOptions(key, input) {
