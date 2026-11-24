@@ -1122,6 +1122,11 @@ export function withCodexDesktopProgressLog(
   }
 }
 
+/** 当前账号缓存里 Antigravity 用的那几把：Gemini 那一格（和下线的 Gemini CLI 同一把）。明文只在主进程里比（I3）。 */
+export function antigravityAccountKeys(cachedKeys: readonly StoredManagedCliKey[]): string[] {
+  return cachedKeys.filter((entry) => entry.provider === 'gemini').map((entry) => entry.key)
+}
+
 /** Antigravity 那一簇的日志归到哪一类：设置算配置，装算安装，其余（打开、看开没开着）算系统。 */
 export function antigravityLogSource(event: string): 'config' | 'install' | 'system' {
   if (event.startsWith('antigravity.settings.')) return 'config'
@@ -1168,6 +1173,7 @@ export function createSystemService(
     fetchAvailableModels,
   })
   // Antigravity 那一簇：装和打开排同一个安装队列（I11），写设置和别的工具配置排同一队。
+  const readCurrentManagedCliKeys = serviceOptions.readCurrentManagedCliKeys
   const antigravity = createAntigravityService({
     platform,
     architecture: process.arch,
@@ -1177,6 +1183,12 @@ export function createSystemService(
     enqueue: (key, task, options) => installationQueue.enqueue(key, task, options),
     serializeSettingsWrite: serializeConfigWrite,
     gatewayBaseUrl: () => context.activeRelaySite().providerBaseUrls.gemini,
+    // 换账号、换线路以后跟上（复查 A 第 1 轮第 3 条）：线路定没定、是哪个账号、当前账号缓存的 Gemini 那把，
+    // 都是外部客户端跟 Key、跟线路用的同一份。跟上了照样叫界面重读。
+    gatewayRouteSettled: () => relayRouting.selection(context.activeRelaySite().id) !== undefined,
+    accountOwner: () => serviceOptions.getExternalClientAccountId?.() ?? null,
+    ...(readCurrentManagedCliKeys ? { cachedAccountKeys: async () => antigravityAccountKeys(await readCurrentManagedCliKeys()) } : {}),
+    onFollowed: () => serviceOptions.onToolRouteFollowed?.(),
     terminalEnvironment: (env) => interactiveTerminalEnvironment(env, sameUserTerminalEnvironment),
     fetch: downloadFetch,
     runCommand: executeCommand,

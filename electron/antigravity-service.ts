@@ -40,6 +40,7 @@ import { darwinDeepVerificationTimeoutMs, darwinDeveloperIdVerificationArgv } fr
 import { installMacosDesktopApp } from './macos-desktop-app-installer'
 import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
+import { relayRouteSiteIds, relaySiteEndpointIdForBaseUrl, type RelayEndpointId, type RelayRouteSiteId } from './relay-sites'
 import { resolveWindowsExplorerExecutable } from './system-shell'
 import { verifyOfficialNativeCliFile } from './trusted-native-cli'
 import { encodeWindowsPowerShellCommand, launchCliPowerShell, resolveWindowsPowerShellExecutable, type WindowsCliExecutionMode, type WindowsCliLaunchRequest } from './windows-elevation'
@@ -55,8 +56,8 @@ export interface AntigravityStatus {
   cliInstalled: boolean
   desktopInstalled: boolean
   /**
-   * 写下的四个设置都在，地址是当前账号此刻这条线路的 Gemini 地址。只看本机，不问服务端：密钥还能不能用、
-   * 型号菜单是不是最新，每次打开时都会重新签、重新写一遍。
+   * 写下的四个设置都在，地址是当前账号此刻这条线路的 Gemini 地址，密钥是这台电脑上缓存的当前账号那一把。
+   * 只看本机，不问服务端：密钥还能不能用、型号菜单是不是最新，每次打开时都会重新签、重新写一遍。
    */
   configured: boolean
 }
@@ -84,6 +85,35 @@ export interface AntigravityDesktopLaunchResult {
 
 /** 调用方交来的取密钥那一步：只在要写设置时才调，签不到时抛它自己那句（AntigravityServiceUnavailableError）。 */
 export type AntigravityKeyResolver = () => Promise<AntigravityManagedKey>
+
+/** 什么时候回头看一眼 Antigravity 的设置跟没跟上：换了账号（含开机恢复登录），或者这个站换了线路。 */
+export type AntigravityFollowReason = 'account-changed' | 'route-changed'
+
+/** 设置里的地址是哪个站的哪条线路（日志里只记这两样，不记地址）。 */
+export interface AntigravityGatewayLine {
+  site: RelayRouteSiteId
+  line: RelayEndpointId
+}
+
+/**
+ * 回头看那一眼要做什么：
+ * - keep：不动。不是星芒写的（not-managed）、已经是当前账号当前线路的（current）、只差线路但线路还没定下来
+ *   （route-unsettled）、看不出当前账号的密钥又不在同一个站（unknown-account）。
+ * - move-route：密钥就是当前账号那把，只是地址在同一个站的另一条线路上：密钥和菜单原样，只换地址，不联网。
+ * - switch-account：密钥不是当前账号的（换了账号、换了站）：照点「打开」那样按当前账号取一把重写。
+ */
+export type AntigravityFollowPlan =
+  | { action: 'keep', reason: 'not-managed' | 'current' | 'route-unsettled' | 'unknown-account' }
+  | { action: 'move-route', environment: AntigravityGatewayEnvironment, from: AntigravityGatewayLine, to: AntigravityGatewayLine }
+  | { action: 'switch-account', from: AntigravityGatewayLine, to: AntigravityGatewayLine | null }
+
+/** 写一次设置时的两样讲究，缺省都是旧行为（启动文件那一段写不进就报错、不另外核账号）。 */
+export interface AntigravityEnvironmentWriteOptions {
+  /** Mac：终端启动文件那一段写不进只记一笔、照常往下走。打开桌面端、后台跟着改时用不上那个文件。 */
+  startupFileOptional?: boolean
+  /** 轮到这一笔、动手之前调，抛错就不写。 */
+  assertBeforeWrite?: () => void
+}
 
 export class AntigravityElevatedSessionError extends Error {
   constructor() {
@@ -114,6 +144,20 @@ export interface AntigravityServiceDependencies {
   serializeSettingsWrite<T>(operation: () => Promise<T>): Promise<T>
   /** 当前账号站点、此刻这条线路上 Gemini 那一项的地址；每次写设置时读一次，整次只用这一个。 */
   gatewayBaseUrl(): string
+  /**
+   * 「自动」线路这会儿定下来没有（历史账号开机还没查出结论时先走线路1，没定下来）。没定下来不替它挪线路，
+   * 同命令行工具的配置（relayRouting.selection）。缺省 = 定下来了。
+   */
+  gatewayRouteSettled?(): boolean
+  /** 现在登录的是哪个账号（站点加用户，同外部客户端的归属），没登录 null。跟到一半换了账号就不写。缺省 = 不跟。 */
+  accountOwner?(): string | null
+  /**
+   * 当前账号在这台电脑上缓存的 Gemini 那几把（Antigravity 用的就是它，和下线的 Gemini CLI 同一格），没登录、
+   * 没签过交空的。首页「当前账号」和换账号后跟不跟都靠它比；明文只在主进程里比（I3）。缺省 = 只比地址（旧行为）。
+   */
+  cachedAccountKeys?(): Promise<readonly string[]>
+  /** 换账号、换线路以后替它跟上了：叫一声，界面重读首页（main.ts 发 network:relay-route-changed）。 */
+  onFollowed?(): void
   /** 打开命令行时交给终端的环境（Windows 上用；Mac 的终端读登录 shell 的启动文件）。 */
   terminalEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv
   fetch: typeof fetch
@@ -159,6 +203,14 @@ const cliNotOfficialMessage = '已安装的 Antigravity 命令行不是 Google �
 const probeTimeoutMs = 15_000
 const maximumProbeBytes = 256 * 1024
 
+/**
+ * 为哪一样写设置：桌面端不强求 Mac 终端启动文件那一段（打开时设置直接放进它的环境）；命令行要那一段，
+ * Mac 的「终端」从那里读设置（复查 A 第 1 轮第 4 条）。
+ */
+export function writeOptionsFor(target: AntigravityTarget): AntigravityEnvironmentWriteOptions {
+  return { startupFileOptional: target === 'desktop' }
+}
+
 /** 安装队列里这一项的名字。前缀不是 cli:launch:，退出拦截按安装算它（quit-blocking-tasks.ts）。 */
 export function antigravityInstallQueueKey(target: AntigravityTarget): string {
   return `antigravity:install:${target}`
@@ -180,9 +232,11 @@ export function isAntigravitySupported(platform: NodeJS.Platform, architecture: 
 
 /**
  * 读回来的设置是不是星芒为当前站点、当前线路写的那一份：四个都在、不空，地址就是这条线路的 Gemini 地址，
- * 接口是 genai。地址收不成 Antigravity 要的样子（站点表里没有它）也算不是。只比地址和接口，不比密钥和菜单。
+ * 接口是 genai。地址收不成 Antigravity 要的样子（站点表里没有它）也算不是。菜单不比。
+ * accountKeys 给了就连密钥一起比：得是当前账号缓存的那几把之一（同一个站换了账号，地址一样、密钥不一样）；
+ * 没给只比地址和接口（旧行为）。
  */
-export function isAntigravityEnvironmentCurrent(values: AntigravityEnvironmentValues, gatewayBaseUrl: string): boolean {
+export function isAntigravityEnvironmentCurrent(values: AntigravityEnvironmentValues, gatewayBaseUrl: string, accountKeys?: readonly string[]): boolean {
   for (const name of antigravityGatewayVariableNames) {
     if (!values[name]?.trim()) return false
   }
@@ -192,7 +246,61 @@ export function isAntigravityEnvironmentCurrent(values: AntigravityEnvironmentVa
   } catch {
     return false
   }
-  return values.AGY_LLM_GATEWAY_URL === expected && values.AGY_LLM_GATEWAY_WIRE_PROTOCOL === 'genai'
+  if (values.AGY_LLM_GATEWAY_URL !== expected || values.AGY_LLM_GATEWAY_WIRE_PROTOCOL !== 'genai') return false
+  return accountKeys === undefined || accountKeys.includes(values.AGY_LLM_GATEWAY_API_KEY ?? '')
+}
+
+/**
+ * 读回来的设置是不是星芒写的那种、写的是哪个站哪条线路：四个都在、接口是 genai，地址是某个站 Gemini 那一项
+ * 登记过的地址（退役的别名也认）。Antigravity 的网关模式文档里没写，这四个变量又只有星芒写，地址认得出是
+ * 中转的就是星芒写的；认不出（客户自己接的别的网关、没写过）回 null，跟账号、跟线路都不碰它。
+ */
+export function antigravityEnvironmentLine(values: AntigravityEnvironmentValues): AntigravityGatewayLine | null {
+  for (const name of antigravityGatewayVariableNames) {
+    if (!values[name]?.trim()) return null
+  }
+  if (values.AGY_LLM_GATEWAY_WIRE_PROTOCOL !== 'genai') return null
+  const url = values.AGY_LLM_GATEWAY_URL ?? ''
+  for (const site of relayRouteSiteIds) {
+    const line = relaySiteEndpointIdForBaseUrl(site, 'gemini', url)
+    if (line) return { site, line }
+  }
+  return null
+}
+
+/**
+ * 换了账号、换了线路以后，Antigravity 那份设置要怎么跟（复查 A 第 1 轮第 3 条）。只看本机：
+ * accountKeys 是当前账号缓存的 Gemini 那几把；undefined 是看不出（没接上账号缓存），这时只挪同一个站的线路。
+ * routeSettled 为假（线路还没定下来）时不挪线路，换账号照样换：那一步写的就是点「打开」会写的那一份。
+ */
+export function planAntigravityFollow(values: AntigravityEnvironmentValues, input: {
+  gatewayBaseUrl: string
+  routeSettled: boolean
+  accountKeys: readonly string[] | undefined
+}): AntigravityFollowPlan {
+  const from = antigravityEnvironmentLine(values)
+  if (!from) return { action: 'keep', reason: 'not-managed' }
+  let expected: string
+  try {
+    expected = normalizeAntigravityGatewayUrl(input.gatewayBaseUrl)
+  } catch {
+    return { action: 'keep', reason: 'not-managed' }
+  }
+  const to = antigravityEnvironmentLine({ ...values, AGY_LLM_GATEWAY_URL: expected })
+  const key = values.AGY_LLM_GATEWAY_API_KEY ?? ''
+  const accountKey = input.accountKeys === undefined ? null : input.accountKeys.includes(key)
+  if (accountKey === false) return { action: 'switch-account', from, to }
+  if (values.AGY_LLM_GATEWAY_URL === expected) return { action: 'keep', reason: 'current' }
+  // 密钥对得上（或看不出）、地址不是这条线路的：同一个站只换地址；别的站的地址配不上这个站的密钥。
+  if (!to || to.site !== from.site) return accountKey === null ? { action: 'keep', reason: 'unknown-account' } : { action: 'switch-account', from, to }
+  if (!input.routeSettled) return { action: 'keep', reason: 'route-unsettled' }
+  try {
+    const environment = buildAntigravityGatewayEnvironment({ baseUrl: expected, apiKey: key, models: (values.AGY_LLM_GATEWAY_MODELS ?? '').split(',') })
+    return { action: 'move-route', environment, from, to }
+  } catch {
+    // 菜单被改坏了、一个型号都不剩：原样搬不过去，照点「打开」那样重取一份。
+    return { action: 'switch-account', from, to }
+  }
 }
 
 /**
@@ -317,6 +425,15 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
   const launchProcess = deps.launchProcess ?? defaultLaunchProcess
   // Mac 上星芒带着设置起的那一份：开着的主进程就是它、设置也没变，再点打开只把它叫到前面。
   let macSpawn: { bundle: string, pid: number, fingerprint: string } | null = null
+  // Windows 上开着的那一份是不是早于现在这份设置：后台跟账号、跟线路改写时它开着（或看不出开没开），或者上次点
+  // 「打开」已经请客户先关掉它。它只认启动时的设置，这时再点「打开」照样请客户先关掉，不能只看这一次点击写没写
+  // （后台已经写过，这次是 unchanged）。看到它没开着、由星芒重新打开以后清掉。
+  let windowsInstanceStale = false
+  // 换账号、换线路以后自己跟的那一步取密钥用的：IPC 那一层注册通道时交来（手里有账号的只有那一层），撤通道时收回。
+  let followKey: AntigravityKeyResolver | null = null
+  // 跟的那一轮同一时刻只跑一轮；跑着时又叫的记下最后那个原因，跑完再看一遍（同 followManagedKeysNow）。
+  let followRound: Promise<void> | null = null
+  let followAgain: AntigravityFollowReason | null = null
 
   function log(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void {
     try { deps.log?.(level, event, message, detail) } catch { /* 日志记不下不挡安装和打开。 */ }
@@ -363,13 +480,26 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     return (deps.readMacosEnvironment ?? readMacosAntigravityEnvironment)({ platform, homeDirectory: userHome })
   }
 
+  /** 当前账号缓存的 Gemini 那几把；没接上账号缓存回 undefined（只比地址），读不出来当作一把都没有。 */
+  async function accountKeys(): Promise<readonly string[] | undefined> {
+    if (!deps.cachedAccountKeys) return undefined
+    try {
+      return await deps.cachedAccountKeys()
+    } catch {
+      return []
+    }
+  }
+
   async function inspect(): Promise<AntigravityStatus> {
     if (!isAntigravitySupported(platform, architecture)) {
       return { supported: false, cliInstalled: false, desktopInstalled: false, configured: false }
     }
     let configured = false
     try {
-      configured = isAntigravityEnvironmentCurrent(await readEnvironment(), deps.gatewayBaseUrl())
+      const values = await readEnvironment()
+      const baseUrl = deps.gatewayBaseUrl()
+      // 地址对上了才去读账号缓存：没写过、写的是别的线路的，用不着解一遍缓存。
+      configured = isAntigravityEnvironmentCurrent(values, baseUrl) && isAntigravityEnvironmentCurrent(values, baseUrl, await accountKeys())
     } catch (error) {
       // 读不出来只当没写过：打开时会重新写一遍，不为一次读失败挡住检测。
       log('warn', 'antigravity.settings.read-failed', '没读出 Antigravity 的设置', { error: errorText(error) })
@@ -378,25 +508,18 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
   }
 
   /**
-   * 签一把密钥、按当时的型号算出设置、写下去。地址只读一次，整次只用这一个（线路「自动」时可能半路换）。
-   * 为桌面端写（target 'desktop'）时，Mac 上终端启动文件那一段写不进只记一笔、照常往下走：桌面端的设置由打开的
-   * 那一步放进它的环境里，用不上那个文件（复查 A 第 1 轮第 4 条，~/.zprofile 是 dotfiles 的链接时桌面端打不开）。
-   * 命令行要那一段：Mac 的「终端」从那里读设置，写不进照旧报错。
+   * 写下整份设置，和别的工具配置排同一队。startupFileOptional：Mac 上终端启动文件那一段写不进只记一笔、照常往下走
+   * （见 configureNow）。assertBeforeWrite 在轮到这一笔、动手之前调：后台跟的那一步排队时换了账号就不写。
    */
-  async function configureNow(
-    resolveKey: AntigravityKeyResolver,
-    target?: AntigravityTarget,
-  ): Promise<{ environment: AntigravityGatewayEnvironment, outcome: AntigravityEnvironmentWriteOutcome }> {
-    const baseUrl = deps.gatewayBaseUrl()
-    const key = await resolveKey()
-    const environment = buildAntigravityGatewayEnvironment({ baseUrl, apiKey: key.key, models: key.models })
-    const outcome = await deps.serializeSettingsWrite(async (): Promise<AntigravityEnvironmentWriteOutcome> => {
+  function writeEnvironment(environment: AntigravityGatewayEnvironment, options: AntigravityEnvironmentWriteOptions = {}): Promise<AntigravityEnvironmentWriteOutcome> {
+    return deps.serializeSettingsWrite(async (): Promise<AntigravityEnvironmentWriteOutcome> => {
+      options.assertBeforeWrite?.()
       if (platform === 'win32') return (deps.writeWindowsEnvironment ?? writeWindowsAntigravityEnvironment)(environment, { platform })
       const result = await (deps.writeMacosEnvironment ?? writeMacosAntigravityEnvironment)(environment, {
         platform,
         homeDirectory: userHome,
         env,
-        startupFileOptional: target === 'desktop',
+        startupFileOptional: options.startupFileOptional === true,
         skipped: (displayPath, error) => log('warn', 'antigravity.settings.profile-skipped', '没写进终端的启动设置', { file: displayPath, error: errorText(error) }),
       })
       if (result.profile === 'unsupported-shell') {
@@ -404,6 +527,22 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
       }
       return result.outcome
     })
+  }
+
+  /**
+   * 签一把密钥、按当时的型号算出设置、写下去。地址只读一次，整次只用这一个（线路「自动」时可能半路换）。
+   * 为桌面端写（writeOptionsFor('desktop')）时，Mac 上终端启动文件那一段写不进只记一笔、照常往下走：桌面端的设置
+   * 由打开的那一步放进它的环境里，用不上那个文件（复查 A 第 1 轮第 4 条，~/.zprofile 是 dotfiles 的链接时桌面端打不开）。
+   * 命令行要那一段：Mac 的「终端」从那里读设置，写不进照旧报错。
+   */
+  async function configureNow(
+    resolveKey: AntigravityKeyResolver,
+    options: AntigravityEnvironmentWriteOptions = {},
+  ): Promise<{ environment: AntigravityGatewayEnvironment, outcome: AntigravityEnvironmentWriteOutcome }> {
+    const baseUrl = deps.gatewayBaseUrl()
+    const key = await resolveKey()
+    const environment = buildAntigravityGatewayEnvironment({ baseUrl, apiKey: key.key, models: key.models })
+    const outcome = await writeEnvironment(environment, options)
     // 只记词和个数，不记密钥、不记地址（I13）。
     log('info', 'antigravity.settings.saved', 'Antigravity 的设置已写好', {
       outcome,
@@ -487,7 +626,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     let configureError: string | undefined
     try {
       assertSameUser()
-      await configureNow(resolveKey, target)
+      await configureNow(resolveKey, writeOptionsFor(target))
     } catch (error) {
       configureError = errorText(error)
       log('warn', 'antigravity.settings.failed', 'Antigravity 已装好，设置没写成', { target, error: configureError })
@@ -502,6 +641,96 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     assertSameUser()
     await configureNow(resolveKey)
     return inspect()
+  }
+
+  /** IPC 那一层注册通道时交来自动签发那一档的取密钥，撤通道时交 null（同 bindToolRouteAccount）。 */
+  function bindFollowKey(resolveKey: AntigravityKeyResolver | null): void {
+    followKey = resolveKey
+  }
+
+  /**
+   * 换了账号、换了线路以后回头看一眼（复查 A 第 1 轮第 3 条）。设置写进了用户环境变量（Mac 是终端启动文件读的
+   * 那份），客户以后从开始菜单、程序坞、自己开的终端打开 Antigravity 都用它，所以不能只在点「打开」时写：
+   * 换了账号还扣上一个账号的钱，「自动」换了线路它还连旧线路。
+   *
+   * 只跟星芒写的那份（antigravityEnvironmentLine 认得出地址是中转的），客户自己接的别的网关不碰；两样都没装、
+   * 没登录、管理员身份打开的星芒都不看。密钥按需签的原则不变：只有这台电脑上已经写过星芒的设置才可能替新账号
+   * 签一把，没用过 Antigravity 的客户不会因此多签。跟不上（签不到、写不进）只记日志，不挡别的工具，首页那张卡
+   * 显示「待连接」，客户点「打开」时再写。
+   */
+  function follow(reason: AntigravityFollowReason): Promise<void> {
+    if (followRound) {
+      followAgain = reason
+      return followRound
+    }
+    const round = (async () => {
+      let next: AntigravityFollowReason | null = reason
+      try {
+        while (next) {
+          followAgain = null
+          await followOnce(next)
+          next = followAgain
+        }
+      } finally {
+        // 最后一次看完和这里之间没有 await：之后再叫的另起一轮，不会挂在一个已经不再回头看的轮次上。
+        followRound = null
+      }
+    })()
+    followRound = round
+    return round
+  }
+
+  async function followOnce(reason: AntigravityFollowReason): Promise<void> {
+    if (!isAntigravitySupported(platform, architecture)) return
+    // 管理员身份打开的星芒不碰当前用户的设置（同 assertSameUser）。
+    if (platform === 'win32' && deps.executionMode !== 'same-user') return
+    // 两样都没装的不看：Windows 上读一次设置要起一次 PowerShell，没用 Antigravity 的客户换账号、换线路不该多起。
+    if (!cliInstalled() && !desktopInstalled()) return
+    const owner = deps.accountOwner?.() ?? null
+    if (owner === null) return
+    let plan: AntigravityFollowPlan
+    try {
+      const values = await readEnvironment()
+      plan = planAntigravityFollow(values, {
+        gatewayBaseUrl: deps.gatewayBaseUrl(),
+        routeSettled: deps.gatewayRouteSettled?.() ?? true,
+        accountKeys: await accountKeys(),
+      })
+    } catch (error) {
+      log('warn', 'antigravity.settings.follow-failed', 'Antigravity 的设置这次没读出来，打开时会重新写', { reason, error: errorText(error) })
+      return
+    }
+    if (plan.action === 'keep') return
+    const assertOwner = () => {
+      if ((deps.accountOwner?.() ?? null) !== owner) throw new Error('账号已变化，这次不改 Antigravity 的设置')
+    }
+    const resolveKey = followKey
+    // 只记站点和线路，不记地址、不记密钥（I13）。
+    const detail = { reason, kind: plan.action, from: plan.from, to: plan.to }
+    try {
+      assertOwner()
+      let outcome: AntigravityEnvironmentWriteOutcome
+      // Mac 上终端启动文件那一段跟打开桌面端一样不强求：设置文件照写，那一段之前已经加过（或者这次加不进），
+      // 客户下次从星芒打开命令行时会再要一次。
+      const write: AntigravityEnvironmentWriteOptions = { startupFileOptional: true, assertBeforeWrite: assertOwner }
+      if (plan.action === 'move-route') outcome = await writeEnvironment(plan.environment, write)
+      // 还没接上账号（通道还没注册、或者已经撤了）：要签密钥的这次不做，下次换账号、换线路再看。
+      else if (resolveKey) outcome = (await configureNow(resolveKey, write)).outcome
+      else return
+      if (outcome === 'written') await noteWindowsInstanceStale()
+      log('info', 'antigravity.settings.followed', plan.action === 'move-route' ? 'Antigravity 的设置已换到当前连接线路' : 'Antigravity 的设置已换成当前账号', { ...detail, outcome })
+      deps.onFollowed?.()
+    } catch (error) {
+      log('warn', 'antigravity.settings.follow-failed', 'Antigravity 的设置这次没跟上，打开时会重新写', { ...detail, error: errorText(error) })
+    }
+  }
+
+  // 后台改写时 Windows 上开着的那一份拿不到新设置：记下来，客户再点「打开」时请他先关掉。看不出开没开也记。
+  // Mac 上不用记：星芒起的那一份认设置的指纹（macSpawn），别处打开的本来就带不上设置。
+  async function noteWindowsInstanceStale(): Promise<void> {
+    if (platform !== 'win32') return
+    const executable = windowsDesktopExecutable()
+    if (executable && await windowsDesktopRunning(executable) !== false) windowsInstanceStale = true
   }
 
   function windowsShell(): { explorer: string, systemRoot: string } {
@@ -565,15 +794,19 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     const executable = windowsDesktopExecutable()
     if (!executable) throw new Error(desktopNotInstalledMessage)
     // 先写设置再看开没开着：写完系统通知资源管理器换上新环境，之后它开的 Antigravity 带着新设置。
-    const { outcome } = await configureNow(resolveKey, 'desktop')
+    const { outcome } = await configureNow(resolveKey, writeOptionsFor('desktop'))
     const running = await windowsDesktopRunning(executable)
-    // 开着、设置这次又改了：开着的那一份拿的是旧的（或没有），请客户先关掉。看不出开没开着就照常打开：
-    // 开着的话第二个自己退出、把原来的叫到前面，最坏是客户看到的还是旧设置，不会开出两个。
-    if (running === true && outcome === 'written') return { opened: false, closeFirst: true }
+    // 开着、设置这次又改了，或者开着的那一份早于后台跟的那次改写：它拿的是旧的（或没有），请客户先关掉。
+    // 看不出开没开着就照常打开：开着的话第二个自己退出、把原来的叫到前面，最坏是客户看到的还是旧设置，不会开出两个。
+    if (running === true && (outcome === 'written' || windowsInstanceStale)) {
+      windowsInstanceStale = true
+      return { opened: false, closeFirst: true }
+    }
     // yoyo 11-23「Antigravity 免核签名」：装好的 Antigravity.exe 本身没有签名（只有安装包有），打开前不核
     // 程序签名；装的时候安装包照核。交给资源管理器打开（不带星芒的权限），其余校验不动。
     const shell = windowsShell()
     await launchProcess({ executable: shell.explorer, argv: [executable], cwd: shell.systemRoot, env: commandEnvironment(env), windowsHide: true })
+    if (running === false) windowsInstanceStale = false
     log('info', 'antigravity.desktop.opened', '已打开 Antigravity', { running, outcome })
     return { opened: true }
   }
@@ -582,7 +815,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     const bundle = macDesktopBundle()
     if (!bundle) throw new Error(desktopNotInstalledMessage)
     const executable = await verifyMacDesktop(bundle)
-    const { environment } = await configureNow(resolveKey, 'desktop')
+    const { environment } = await configureNow(resolveKey, writeOptionsFor('desktop'))
     const fingerprint = antigravityEnvironmentFingerprint(environment)
     const running = await macDesktopProcesses(bundle)
     if (running?.length) {
@@ -640,7 +873,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
         log('warn', 'antigravity.cli.signature-refused', 'Antigravity 命令行的签名没核过，不打开', { error: errorText(error) })
         throw new Error(cliNotOfficialMessage, { cause: error })
       }
-      const { environment } = await configureNow(resolveKey, 'cli')
+      const { environment } = await configureNow(resolveKey, writeOptionsFor('cli'))
       // 星芒自己的环境是它启动那一刻从资源管理器继承的，刚写下（或刚换过）的用户环境变量这次运行看不到，
       // 所以这次的设置直接交给终端，同名的旧值整组换掉（antigravity-windows-environment.ts 开头）。
       await (deps.launchWindowsTerminal ?? launchCliPowerShell)({
@@ -663,7 +896,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
       log('warn', 'antigravity.cli.signature-refused', 'Antigravity 命令行的签名没核过，不打开', { error: errorText(error) })
       throw new Error(cliNotOfficialMessage, { cause: error })
     }
-    await configureNow(resolveKey, 'cli')
+    await configureNow(resolveKey, writeOptionsFor('cli'))
     // 「终端」先起客户的登录 shell，读启动文件里星芒加的那一段，设置就在环境里了；启动脚本里不另写密钥。
     await (deps.launchMacosTerminal ?? launchMacosTerminal)({ executable: target.executablePath, argv: [], workspace, env: deps.terminalEnvironment(env) })
     log('info', 'antigravity.cli.opened', '已打开 Antigravity 命令行')
@@ -682,7 +915,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     return enqueueForAccount(antigravityCliLaunchQueueKey(workspace, platform), () => openCliNow(workspace, resolveKey), accountWork)
   }
 
-  return { inspect, install, configure, openDesktop, openCli }
+  return { inspect, install, configure, openDesktop, openCli, bindFollowKey, follow }
 }
 
 export type AntigravityService = ReturnType<typeof createAntigravityService>

@@ -2043,6 +2043,10 @@ if (!hasSingleInstanceLock) {
           }
           // 没登录时双击的画布项目文件，登录好了接着打开。
           openPendingCanvasProjectFile()
+          // Antigravity 的设置写在用户环境变量（Mac 是终端启动文件读的那份）里，客户从开始菜单打开它也用：星芒替
+          // 上一个账号写的那份换成这个账号的（复查 A 第 1 轮第 3 条）。开机恢复登录那一次等安静期过了再看。
+          void startupQuiet.whenOver().then(() => systemService.antigravity?.follow('account-changed'))
+            .catch((error) => runtimeLog.exception('config', 'antigravity.follow.failed', error))
         }
       },
     })

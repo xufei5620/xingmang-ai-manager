@@ -464,7 +464,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerSystemHandlers(ctx)
   const disposeConfig = registerConfigHandlers(ctx)
   registerExternalClientHandlers(ctx)
-  registerAntigravityHandlers(ctx)
+  const disposeAntigravity = registerAntigravityHandlers(ctx)
   registerLaunchHandlers(ctx)
   registerToolHandlers(ctx)
   registerWindowHandlers(ctx)
@@ -490,6 +490,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
 
   return () => {
     disposeConfig()
+    disposeAntigravity()
     disposeRuntimeLog()
     ctx.sensitiveClipboard.dispose()
     unsubscribeUpdates()

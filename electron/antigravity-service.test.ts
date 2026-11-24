@@ -12,6 +12,7 @@ import {
   antigravityDesktopLaunchQueueKey,
   antigravityDesktopMacCandidates,
   antigravityEnvironmentFingerprint,
+  antigravityEnvironmentLine,
   AntigravityElevatedSessionError,
   antigravityInstallQueueKey,
   buildAntigravityDesktopWindowsProcessScript,
@@ -21,7 +22,9 @@ import {
   isPlainBundleExecutableName,
   parseAntigravityDesktopMacProcesses,
   parseAntigravityDesktopWindowsProcesses,
+  planAntigravityFollow,
   withAntigravityEnvironment,
+  writeOptionsFor,
   type AntigravityDetachedLaunchPlan,
   type AntigravityProgress,
   type AntigravityServiceDependencies,
@@ -221,6 +224,28 @@ describe('antigravity-service pure helpers', () => {
     expect(isAntigravityEnvironmentCurrent(withoutKey, gatewayBaseUrl)).toBe(false)
     expect(isAntigravityEnvironmentCurrent(writtenEnvironment, 'https://xm-direct.solov.cc.evil.com')).toBe(false)
     expect(isAntigravityEnvironmentCurrent({}, gatewayBaseUrl)).toBe(false)
+  })
+
+  it('also wants the key to be one the current account cached, when it is told which those are', () => {
+    // 同一个站换了账号：地址一样，密钥是上一个账号的。
+    expect(isAntigravityEnvironmentCurrent(writtenEnvironment, gatewayBaseUrl, [managedKey.key])).toBe(true)
+    expect(isAntigravityEnvironmentCurrent(writtenEnvironment, gatewayBaseUrl, ['sk-another-account-0123456789'])).toBe(false)
+    expect(isAntigravityEnvironmentCurrent(writtenEnvironment, gatewayBaseUrl, [])).toBe(false)
+    expect(isAntigravityEnvironmentCurrent(writtenEnvironment, gatewayBaseUrl, undefined)).toBe(true)
+    expect(isAntigravityEnvironmentCurrent(writtenEnvironment, 'https://xm.solov.cc', [managedKey.key])).toBe(false)
+  })
+
+  it('recognizes settings written for a relay line, and nothing else', () => {
+    expect(antigravityEnvironmentLine(writtenEnvironment)).toEqual({ site: 'solov', line: 'direct' })
+    expect(antigravityEnvironmentLine({ ...writtenEnvironment, AGY_LLM_GATEWAY_URL: 'https://xm.solov.cc' })).toEqual({ site: 'solov', line: 'primary' })
+    expect(antigravityEnvironmentLine({ ...writtenEnvironment, AGY_LLM_GATEWAY_URL: 'https://api.solov.cc' })).toEqual({ site: 'solov-api', line: 'primary' })
+    for (const url of ['https://gateway.example.com', 'https://xm-direct.solov.cc.evil.com', 'http://localhost:8080', '']) {
+      expect(antigravityEnvironmentLine({ ...writtenEnvironment, AGY_LLM_GATEWAY_URL: url })).toBeNull()
+    }
+    expect(antigravityEnvironmentLine({ ...writtenEnvironment, AGY_LLM_GATEWAY_WIRE_PROTOCOL: 'openai' })).toBeNull()
+    const { AGY_LLM_GATEWAY_MODELS: _models, ...withoutMenu } = writtenEnvironment
+    expect(antigravityEnvironmentLine(withoutMenu)).toBeNull()
+    expect(antigravityEnvironmentLine({})).toBeNull()
   })
 
   it('replaces gateway variables whatever their case and keeps everything else', () => {
@@ -448,6 +473,14 @@ describe('createAntigravityService openDesktop on Windows', () => {
     expect(h.launches).toEqual([])
   })
 
+  it('keeps asking to close a running app it already asked about, even once the settings stop changing', async () => {
+    const h = harness({ files: [windowsDesktop], runningWindows: [windowsDesktop], writeOutcome: 'written' })
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: false, closeFirst: true })
+    h.deps.writeWindowsEnvironment = async () => 'unchanged'
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: false, closeFirst: true })
+    expect(h.launches).toEqual([])
+  })
+
   it('brings a running app forward when the settings did not change', async () => {
     const h = harness({ files: [windowsDesktop], runningWindows: [windowsDesktop], writeOutcome: 'unchanged' })
     await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
@@ -533,7 +566,7 @@ describe.runIf(process.platform !== 'win32')('createAntigravityService with a li
     for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true })
   })
 
-  function linkedProfileHarness(): { h: Harness, home: string, dotfiles: string } {
+  function linkedProfileHarness(extra: Partial<AntigravityServiceDependencies> = {}): { h: Harness, home: string, dotfiles: string } {
     // macOS puts the temp folder behind /var -> /private/var, which the reparse-point guard would refuse.
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-agy-service-')))
     homes.push(home)
@@ -547,10 +580,27 @@ describe.runIf(process.platform !== 'win32')('createAntigravityService with a li
       overrides: {
         writeMacosEnvironment: (environment, options) => writeMacosAntigravityEnvironment(environment, { ...options, homeDirectory: home, loginShell: '/bin/zsh', env: {} }),
         readMacosEnvironment: (options) => readMacosAntigravityEnvironment({ ...options, homeDirectory: home }),
+        ...extra,
       },
     })
     return { h, home, dotfiles }
   }
+
+  it('follows an account switch in the background without needing the startup file', async () => {
+    const { h, home, dotfiles } = linkedProfileHarness({ accountOwner: () => 'solov:7', cachedAccountKeys: async () => [managedKey.key] })
+    // 上一个账号打开桌面端时留下的那份：启动文件那一段当时就加不进。
+    const previous = { ...writtenEnvironment, AGY_LLM_GATEWAY_API_KEY: 'sk-previous-account-0123456789' }
+    await writeMacosAntigravityEnvironment(previous, { platform: 'darwin', homeDirectory: home, loginShell: '/bin/zsh', env: {}, startupFileOptional: true })
+    h.service.bindFollowKey(resolveKey)
+
+    await h.service.follow('account-changed')
+
+    await expect(readMacosAntigravityEnvironment({ platform: 'darwin', homeDirectory: home })).resolves.toEqual(writtenEnvironment)
+    expect(h.logs.find((entry) => entry.event === 'antigravity.settings.followed')?.detail).toEqual(expect.objectContaining({ kind: 'switch-account', outcome: 'written' }))
+    expect(h.logs.some((entry) => entry.event === 'antigravity.settings.follow-failed')).toBe(false)
+    expect(fs.lstatSync(path.join(home, '.zprofile')).isSymbolicLink()).toBe(true)
+    expect(fs.readFileSync(dotfiles, 'utf8')).toBe('export A=1\n')
+  })
 
   it('still opens the desktop app with its settings, leaving the link and its target alone', async () => {
     const { h, home, dotfiles } = linkedProfileHarness()
@@ -620,5 +670,272 @@ describe('createAntigravityService openCli', () => {
     expect(h.macTerminals).toHaveLength(1)
     expect(h.macTerminals[0]).toEqual(expect.objectContaining({ executable: macCli, argv: [], workspace: macWorkspace }))
     expect(JSON.stringify(h.macTerminals[0].env)).not.toContain(managedKey.key)
+  })
+})
+
+describe('writeOptionsFor', () => {
+  it('lets only the desktop app go without the macOS startup file block', () => {
+    expect(writeOptionsFor('desktop')).toEqual({ startupFileOptional: true })
+    expect(writeOptionsFor('cli')).toEqual({ startupFileOptional: false })
+  })
+})
+
+describe('planAntigravityFollow', () => {
+  const previousKey = 'sk-previous-account-0123456789'
+  const onPrimary = { ...writtenEnvironment, AGY_LLM_GATEWAY_URL: 'https://xm.solov.cc' }
+
+  it('leaves settings alone that the app did not write', () => {
+    const foreign = { ...writtenEnvironment, AGY_LLM_GATEWAY_URL: 'https://gateway.example.com' }
+    expect(planAntigravityFollow(foreign, { gatewayBaseUrl, routeSettled: true, accountKeys: [managedKey.key] })).toEqual({ action: 'keep', reason: 'not-managed' })
+    expect(planAntigravityFollow({}, { gatewayBaseUrl, routeSettled: true, accountKeys: [] })).toEqual({ action: 'keep', reason: 'not-managed' })
+  })
+
+  it('keeps settings that already are this account\'s on this line', () => {
+    expect(planAntigravityFollow(writtenEnvironment, { gatewayBaseUrl, routeSettled: true, accountKeys: [managedKey.key] })).toEqual({ action: 'keep', reason: 'current' })
+  })
+
+  it('switches a key left from the previous account on the same site, line unchanged', () => {
+    const stale = { ...writtenEnvironment, AGY_LLM_GATEWAY_API_KEY: previousKey }
+    expect(planAntigravityFollow(stale, { gatewayBaseUrl, routeSettled: true, accountKeys: [managedKey.key] })).toEqual({
+      action: 'switch-account', from: { site: 'solov', line: 'direct' }, to: { site: 'solov', line: 'direct' },
+    })
+    // 当前账号还没签过 Gemini 那把：一样要换。
+    expect(planAntigravityFollow(stale, { gatewayBaseUrl, routeSettled: true, accountKeys: [] })).toMatchObject({ action: 'switch-account' })
+  })
+
+  it('switches settings written for the other site after an account change across sites', () => {
+    const history = { ...writtenEnvironment, AGY_LLM_GATEWAY_URL: 'https://api.solov.cc', AGY_LLM_GATEWAY_API_KEY: previousKey }
+    expect(planAntigravityFollow(history, { gatewayBaseUrl, routeSettled: true, accountKeys: [managedKey.key] })).toEqual({
+      action: 'switch-account', from: { site: 'solov-api', line: 'primary' }, to: { site: 'solov', line: 'direct' },
+    })
+  })
+
+  it('moves only the address when the key is this account\'s and the line changed, keeping key and menu', () => {
+    const plan = planAntigravityFollow(onPrimary, { gatewayBaseUrl, routeSettled: true, accountKeys: [managedKey.key] })
+    expect(plan).toEqual({ action: 'move-route', environment: writtenEnvironment, from: { site: 'solov', line: 'primary' }, to: { site: 'solov', line: 'direct' } })
+  })
+
+  it('does not move to a line that is not settled yet', () => {
+    expect(planAntigravityFollow(onPrimary, { gatewayBaseUrl, routeSettled: false, accountKeys: [managedKey.key] })).toEqual({ action: 'keep', reason: 'route-unsettled' })
+  })
+
+  it('without the account cache, moves lines on one site but never crosses sites', () => {
+    expect(planAntigravityFollow(onPrimary, { gatewayBaseUrl, routeSettled: true, accountKeys: undefined })).toMatchObject({ action: 'move-route' })
+    const history = { ...writtenEnvironment, AGY_LLM_GATEWAY_URL: 'https://api.solov.cc' }
+    expect(planAntigravityFollow(history, { gatewayBaseUrl, routeSettled: true, accountKeys: undefined })).toEqual({ action: 'keep', reason: 'unknown-account' })
+  })
+
+  it('takes a fresh menu when the stored one is broken', () => {
+    const broken = { ...onPrimary, AGY_LLM_GATEWAY_MODELS: ',,' }
+    expect(planAntigravityFollow(broken, { gatewayBaseUrl, routeSettled: true, accountKeys: [managedKey.key] })).toMatchObject({ action: 'switch-account' })
+  })
+
+  it('never touches a gateway it does not recognize, and a move never changes the key, with random inputs', () => {
+    fc.assert(fc.property(
+      fc.record({
+        url: fc.oneof(fc.webUrl(), fc.constantFrom('https://xm.solov.cc', 'https://xm-direct.solov.cc', 'https://api.solov.cc', 'https://xm.solov.cc.evil.com')),
+        key: fc.stringMatching(/^[A-Za-z0-9-]{8,40}$/),
+        models: fc.array(fc.stringMatching(/^[a-z0-9.-]{1,20}$/), { maxLength: 5 }),
+        accountKeys: fc.option(fc.array(fc.stringMatching(/^[A-Za-z0-9-]{8,40}$/), { maxLength: 2 }), { nil: undefined }),
+        settled: fc.boolean(),
+      }),
+      ({ url, key, models, accountKeys, settled }) => {
+        const values = { AGY_LLM_GATEWAY_URL: url, AGY_LLM_GATEWAY_API_KEY: key, AGY_LLM_GATEWAY_WIRE_PROTOCOL: 'genai', AGY_LLM_GATEWAY_MODELS: models.join(',') }
+        const plan = planAntigravityFollow(values, { gatewayBaseUrl, routeSettled: settled, accountKeys })
+        if (antigravityEnvironmentLine(values) === null) expect(plan).toEqual({ action: 'keep', reason: 'not-managed' })
+        if (plan.action === 'move-route') {
+          expect(plan.environment.AGY_LLM_GATEWAY_API_KEY).toBe(key)
+          expect(plan.environment.AGY_LLM_GATEWAY_URL).toBe(gatewayBaseUrl)
+          expect(plan.from.site).toBe(plan.to.site)
+          expect(settled).toBe(true)
+        }
+        // 密钥是当前账号的那把、地址也对：什么都不做。
+        if (accountKeys?.includes(key) && url === gatewayBaseUrl && antigravityEnvironmentLine(values)) expect(plan.action).toBe('keep')
+      },
+    ))
+  })
+})
+
+describe('createAntigravityService follow', () => {
+  const previousKey = 'sk-previous-account-0123456789'
+  const previousEnvironment = { ...writtenEnvironment, AGY_LLM_GATEWAY_API_KEY: previousKey }
+
+  interface FollowHarnessOptions extends HarnessOptions {
+    owner?: () => string | null
+    accountKeys?: () => Promise<readonly string[]>
+    routeSettled?: boolean
+    bind?: boolean
+  }
+
+  function followHarness(options: FollowHarnessOptions = {}) {
+    const onFollowed = vi.fn()
+    const readWindowsEnvironment = vi.fn(async () => {
+      if (options.readFails) throw new Error('PowerShell 没跑起来')
+      return options.stored ?? {}
+    })
+    const h = harness({
+      files: [windowsCli, windowsDesktop],
+      ...options,
+      overrides: {
+        readWindowsEnvironment,
+        accountOwner: options.owner ?? (() => 'solov:7'),
+        cachedAccountKeys: options.accountKeys ?? (async () => [managedKey.key]),
+        gatewayRouteSettled: () => options.routeSettled ?? true,
+        onFollowed,
+        ...options.overrides,
+      },
+    })
+    const resolver = vi.fn(resolveKey)
+    if (options.bind !== false) h.service.bindFollowKey(resolver)
+    return { ...h, onFollowed, resolver, readWindowsEnvironment }
+  }
+
+  it('rewrites settings the previous account left with this account\'s key, then tells the window', async () => {
+    const h = followHarness({ stored: previousEnvironment })
+    await h.service.follow('account-changed')
+    expect(h.resolver).toHaveBeenCalledTimes(1)
+    expect(h.writes).toEqual([writtenEnvironment])
+    expect(h.onFollowed).toHaveBeenCalledTimes(1)
+    const followed = h.logs.find((entry) => entry.event === 'antigravity.settings.followed')
+    expect(followed?.detail).toEqual(expect.objectContaining({ reason: 'account-changed', kind: 'switch-account', outcome: 'written' }))
+    expect(JSON.stringify(h.logs)).not.toContain(managedKey.key)
+    expect(JSON.stringify(h.logs)).not.toContain(previousKey)
+    expect(JSON.stringify(h.logs)).not.toContain(gatewayBaseUrl)
+  })
+
+  it('moves to the new line without signing anything when the key is already this account\'s', async () => {
+    const h = followHarness({ stored: { ...writtenEnvironment, AGY_LLM_GATEWAY_URL: 'https://xm.solov.cc' } })
+    await h.service.follow('route-changed')
+    expect(h.resolver).not.toHaveBeenCalled()
+    expect(h.writes).toEqual([writtenEnvironment])
+    expect(h.onFollowed).toHaveBeenCalledTimes(1)
+  })
+
+  it('does nothing when the settings are current, foreign, or on a line that is not settled yet', async () => {
+    for (const options of [
+      { stored: writtenEnvironment },
+      { stored: { ...previousEnvironment, AGY_LLM_GATEWAY_URL: 'https://gateway.example.com' } },
+      { stored: { ...writtenEnvironment, AGY_LLM_GATEWAY_URL: 'https://xm.solov.cc' }, routeSettled: false },
+    ]) {
+      const h = followHarness(options)
+      await h.service.follow('account-changed')
+      expect(h.resolver).not.toHaveBeenCalled()
+      expect(h.writes).toEqual([])
+      expect(h.onFollowed).not.toHaveBeenCalled()
+    }
+  })
+
+  it('does not even read the settings when neither app is installed, nobody is signed in, or the app runs elevated', async () => {
+    for (const options of [
+      { files: [] },
+      { owner: () => null },
+      { executionMode: 'trusted-only' as const },
+      { platform: 'linux' as const, architecture: 'x64' as const },
+    ]) {
+      const h = followHarness({ stored: previousEnvironment, ...options })
+      await h.service.follow('account-changed')
+      expect(h.readWindowsEnvironment).not.toHaveBeenCalled()
+      expect(h.writes).toEqual([])
+    }
+  })
+
+  it('waits for the account hook before signing for a new account, but still moves lines without it', async () => {
+    const unbound = followHarness({ stored: previousEnvironment, bind: false })
+    await unbound.service.follow('account-changed')
+    expect(unbound.writes).toEqual([])
+    const moved = followHarness({ stored: { ...writtenEnvironment, AGY_LLM_GATEWAY_URL: 'https://xm.solov.cc' }, bind: false })
+    await moved.service.follow('route-changed')
+    expect(moved.writes).toEqual([writtenEnvironment])
+    // 撤了通道以后照样不签。
+    const revoked = followHarness({ stored: previousEnvironment })
+    revoked.service.bindFollowKey(null)
+    await revoked.service.follow('account-changed')
+    expect(revoked.resolver).not.toHaveBeenCalled()
+    expect(revoked.writes).toEqual([])
+  })
+
+  it('writes nothing for an account that changed while the key was being resolved, and only logs why', async () => {
+    let owner = 'solov:7'
+    const h = followHarness({ stored: previousEnvironment, owner: () => owner })
+    h.resolver.mockImplementation(async () => {
+      owner = 'solov:8'
+      return managedKey
+    })
+    await expect(h.service.follow('account-changed')).resolves.toBeUndefined()
+    expect(h.writes).toEqual([])
+    expect(h.onFollowed).not.toHaveBeenCalled()
+    expect(h.logs.find((entry) => entry.event === 'antigravity.settings.follow-failed')?.level).toBe('warn')
+  })
+
+  it('only logs when the settings cannot be read, the key cannot be signed, or the write fails', async () => {
+    const unreadable = followHarness({ stored: previousEnvironment, readFails: true })
+    await expect(unreadable.service.follow('account-changed')).resolves.toBeUndefined()
+    const unsigned = followHarness({ stored: previousEnvironment })
+    unsigned.resolver.mockRejectedValue(new Error('服务暂时不可用'))
+    await expect(unsigned.service.follow('account-changed')).resolves.toBeUndefined()
+    const unwritten = followHarness({ stored: previousEnvironment, overrides: { writeWindowsEnvironment: async () => { throw new Error('写不进去') } } })
+    await expect(unwritten.service.follow('account-changed')).resolves.toBeUndefined()
+    for (const h of [unreadable, unsigned, unwritten]) {
+      expect(h.logs.map((entry) => entry.event)).toContain('antigravity.settings.follow-failed')
+      expect(h.onFollowed).not.toHaveBeenCalled()
+    }
+  })
+
+  it('treats an unreadable account cache as no key, so the previous account\'s key still gets replaced', async () => {
+    const h = followHarness({ stored: previousEnvironment, accountKeys: async () => { throw new Error('缓存坏了') } })
+    await h.service.follow('account-changed')
+    expect(h.writes).toEqual([writtenEnvironment])
+  })
+
+  it('runs one round at a time and looks once more for calls that came in meanwhile', async () => {
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const h = followHarness({ stored: previousEnvironment })
+    h.resolver.mockImplementation(async () => {
+      await gate
+      return managedKey
+    })
+    const first = h.service.follow('account-changed')
+    const second = h.service.follow('route-changed')
+    const third = h.service.follow('route-changed')
+    release()
+    await Promise.all([first, second, third])
+    // 第一轮读一次，跑着时又叫的两次合成一轮再读一次。
+    expect(h.readWindowsEnvironment).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks to close a Windows app that was running when the settings changed behind its back, until it is closed', async () => {
+    const h = followHarness({ stored: previousEnvironment, runningWindows: [windowsDesktop], writeOutcome: 'written' })
+    await h.service.follow('account-changed')
+    // 点「打开」时设置已经是这一份（unchanged），开着的那一份却早于它；没关掉之前再点也一样。
+    h.deps.writeWindowsEnvironment = async () => 'unchanged'
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: false, closeFirst: true })
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: false, closeFirst: true })
+    expect(h.launches).toEqual([])
+  })
+
+  it('opens as usual when the Windows app was not running when the settings changed', async () => {
+    const h = followHarness({ stored: previousEnvironment, runningWindows: [], writeOutcome: 'written' })
+    await h.service.follow('account-changed')
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
+  })
+})
+
+describe('createAntigravityService inspect with the account cache', () => {
+  it('shows the current account only when the key is the one it cached', async () => {
+    const accountKeys = vi.fn(async () => [managedKey.key])
+    const current = harness({ files: [windowsDesktop], stored: writtenEnvironment, overrides: { cachedAccountKeys: accountKeys } })
+    await expect(current.service.inspect()).resolves.toMatchObject({ configured: true })
+    const switched = harness({ files: [windowsDesktop], stored: { ...writtenEnvironment, AGY_LLM_GATEWAY_API_KEY: 'sk-previous-account-0123456789' }, overrides: { cachedAccountKeys: accountKeys } })
+    await expect(switched.service.inspect()).resolves.toMatchObject({ configured: false })
+    const unreadable = harness({ files: [windowsDesktop], stored: writtenEnvironment, overrides: { cachedAccountKeys: async () => { throw new Error('缓存坏了') } } })
+    await expect(unreadable.service.inspect()).resolves.toMatchObject({ configured: false })
+  })
+
+  it('does not open the account cache for settings on another line', async () => {
+    const accountKeys = vi.fn(async () => [managedKey.key])
+    const h = harness({ files: [windowsDesktop], stored: { ...writtenEnvironment, AGY_LLM_GATEWAY_URL: 'https://xm.solov.cc' }, overrides: { cachedAccountKeys: accountKeys } })
+    await expect(h.service.inspect()).resolves.toMatchObject({ configured: false })
+    expect(accountKeys).not.toHaveBeenCalled()
   })
 })

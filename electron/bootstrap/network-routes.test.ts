@@ -130,8 +130,13 @@ describe('network routes', () => {
 describe('tool route following', () => {
   function follow(siteId = 'solov') {
     let listener: ((snapshot: { line: string, lastChange?: { reason: string } }) => void) | undefined
+    let applicationListener: ((siteId: string) => void) | undefined
     const unsubscribe = vi.fn()
+    const unsubscribeApplication = vi.fn()
     const routes = {
+      relayRouteController: {
+        subscribe: vi.fn((next: typeof applicationListener) => { applicationListener = next; return unsubscribeApplication }),
+      },
       toolRouteController: {
         line: vi.fn(() => 'direct'),
         subscribe: vi.fn((next: typeof listener) => { listener = next; return unsubscribe }),
@@ -142,21 +147,50 @@ describe('tool route following', () => {
       recheckRoutes: vi.fn(),
     }
     const followToolRoutes = vi.fn(async () => undefined)
-    const handles = startToolRouteFollowing(routes as unknown as Pick<NetworkRoutes, 'toolRouteController' | 'toolRouteStatusBoard' | 'notifyRelayRouteChanged' | 'recheckRoutes'>, {
-      systemService: { followToolRoutes } as never,
+    const followAntigravity = vi.fn(async () => undefined)
+    const handles = startToolRouteFollowing(routes as unknown as Pick<NetworkRoutes, 'relayRouteController' | 'toolRouteController' | 'toolRouteStatusBoard' | 'notifyRelayRouteChanged' | 'recheckRoutes'>, {
+      systemService: { followToolRoutes, antigravity: { follow: followAntigravity } } as never,
       readAccountSiteId: () => siteId,
     })
     disposers.push(() => clearInterval(handles.routeOnlineTimer))
-    return { routes, handles, followToolRoutes, unsubscribe, emit: (snapshot: { line: string, lastChange?: { reason: string } }) => listener?.(snapshot) }
+    return {
+      routes, handles, followToolRoutes, followAntigravity, unsubscribe, unsubscribeApplication,
+      emit: (snapshot: { line: string, lastChange?: { reason: string } }) => listener?.(snapshot),
+      emitApplication: (changed: string) => applicationListener?.(changed),
+    }
   }
 
   it('listens for line changes before it starts checking tool routes', () => {
-    const { routes, handles, unsubscribe } = follow()
+    const { routes, handles, unsubscribe, unsubscribeApplication } = follow()
     const [subscribed] = routes.toolRouteController.subscribe.mock.invocationCallOrder
     const [started] = routes.toolRouteController.start.mock.invocationCallOrder
+    const [applicationSubscribed] = routes.relayRouteController.subscribe.mock.invocationCallOrder
     expect(subscribed).toBeLessThan(started)
+    expect(applicationSubscribed).toBeLessThan(started)
     handles.unsubscribeToolRoutes()
     expect(unsubscribe).toHaveBeenCalledTimes(1)
+    expect(unsubscribeApplication).toHaveBeenCalledTimes(1)
+  })
+
+  it('has Antigravity follow the tool line for an xm account, only when the line changes', () => {
+    const { followAntigravity, emit, emitApplication } = follow()
+    emit({ line: 'direct' })
+    expect(followAntigravity).not.toHaveBeenCalled()
+    emit({ line: 'primary', lastChange: { reason: 'unreachable' } })
+    expect(followAntigravity.mock.calls).toEqual([['route-changed']])
+    // xm 账号的 Antigravity 跟的是工具线路，应用线路换了不算。
+    emitApplication('solov')
+    expect(followAntigravity).toHaveBeenCalledTimes(1)
+  })
+
+  it('has Antigravity follow the application line for a history account, and only for its own site', () => {
+    const { followAntigravity, emit, emitApplication } = follow('solov-api')
+    // 历史账号不走工具线路。
+    emit({ line: 'primary', lastChange: { reason: 'unreachable' } })
+    emitApplication('solov')
+    expect(followAntigravity).not.toHaveBeenCalled()
+    emitApplication('solov-api')
+    expect(followAntigravity.mock.calls).toEqual([['route-changed']])
   })
 
   it('rewrites tool configs only when the line changes, and says whether it changed because of a fault', () => {
