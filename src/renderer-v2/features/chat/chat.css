@@ -72,6 +72,10 @@
 .chat-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 90px 24px 48px; text-align: center; }.chat-empty h2 { margin: 4px 0 0; font-size: 16px; font-weight: 600; text-wrap: balance; }.chat-empty p { max-width: 380px; margin: 0; color: var(--text-3); font-size: 13px; line-height: 1.6; }.chat-empty-examples { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
 /* 起始页下面还有「从这里开始」的卡时，上面少留点空。 */
 .chat-empty[data-start='true'] { padding: 28px 24px 4px; }.chat-empty[data-start='true'] p { max-width: 460px; }
+/* 窗口矮时下面那几张卡会落到输入框后面，只露出上半截，客户想不到往下滚。逻辑高不到 820 时，起始页上下的留白、
+   间距和标志按差了多少一起收紧（随窗口高度连续变，不是断点），差到 200 为止；820 及以上和原来一模一样。 */
+.chat-messages:has(> .chat-empty[data-start='true']) { --chat-start-squeeze: clamp(0px, calc(820px - 100vh), 200px); padding-block: calc(24px - var(--chat-start-squeeze) / 16); gap: calc(22px - var(--chat-start-squeeze) / 20); }
+.chat-empty[data-start='true'] { padding-top: max(0px, calc(28px - var(--chat-start-squeeze, 0px) / 7)); gap: calc(10px - var(--chat-start-squeeze, 0px) / 50); }.chat-empty[data-start='true'] .xm-logo { height: calc(44px - var(--chat-start-squeeze, 0px) / 16); }.chat-empty[data-start='true'] .chat-empty-examples { margin-top: calc(6px - var(--chat-start-squeeze, 0px) / 50); }
 .chat-page button:focus-visible, .chat-page summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 @keyframes chat-spin { to { transform: rotate(360deg); } }
 [data-reduce-motion='1'] .chat-generating > svg, [data-reduced-motion='true'] .chat-generating > svg, [data-system-reduced-motion='true'] .chat-generating > svg { animation: none; }
