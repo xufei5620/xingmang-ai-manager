@@ -16,6 +16,7 @@ import {
   resolvePreviousWindowsHandoffFailure,
   resolveWindowsUpdateHandoffStatusPath,
   runHiddenWindowsProcess,
+  windowsHandoffBlockedExitCode,
   windowsUpdateHandoffParentWaitMs,
   type WindowsUpdateHandoffDependencies,
 } from './windows-update-handoff'
@@ -134,7 +135,9 @@ describe('windows update handoff status', () => {
   it('maps the exit code of the unelevated relaunch', () => {
     expect(classifyWindowsHandoffLaunchExit(0)).toBe('launched')
     expect(classifyWindowsHandoffLaunchExit(1223)).toBe('cancelled')
-    expect(classifyWindowsHandoffLaunchExit(1)).toBe('failed')
+    // PowerShell itself stopped the script: ConstrainedLanguage or an execution policy from Group Policy.
+    expect(classifyWindowsHandoffLaunchExit(windowsHandoffBlockedExitCode)).toBe('blocked')
+    expect(classifyWindowsHandoffLaunchExit(1)).toBe('blocked')
     expect(classifyWindowsHandoffLaunchExit(2)).toBe('failed')
     expect(classifyWindowsHandoffLaunchExit(null)).toBe('failed')
   })
@@ -181,6 +184,20 @@ describe('windows update handoff', () => {
     const { dependencies, handoff } = harness([null], { launch: vi.fn(async () => 1223) })
     await expect(handoff.start(updatePackage)).resolves.toEqual({ kind: 'cancelled' })
     expect(dependencies.readStatus).not.toHaveBeenCalled()
+  })
+
+  it('reports a relaunch PowerShell refused to run as blocked, remembers that for next launch, and waits for no status', async () => {
+    const { dependencies, handoff } = harness([null], { launch: vi.fn(async () => 1) })
+    await expect(handoff.start(updatePackage)).resolves.toEqual({ kind: 'blocked', reason: 'PowerShell 未运行安装脚本（退出码 1）' })
+    expect(dependencies.rememberAttempt).toHaveBeenNthCalledWith(1, { nonce, version: '1.1.0' })
+    expect(dependencies.rememberAttempt).toHaveBeenNthCalledWith(2, { nonce, version: '1.1.0', blocked: true })
+    expect(dependencies.readStatus).not.toHaveBeenCalled()
+  })
+
+  it('still reports blocked when that could not be remembered', async () => {
+    const remember = vi.fn(async (attempt: { blocked?: true }) => { if (attempt.blocked) throw new Error('disk full') })
+    const { handoff } = harness([null], { launch: vi.fn(async () => 1), rememberAttempt: remember })
+    await expect(handoff.start(updatePackage)).resolves.toMatchObject({ kind: 'blocked' })
   })
 
   it('reports every other way the handoff can stop as a failure', async () => {
@@ -273,6 +290,12 @@ describe('windows update handoff record', () => {
     expect(store.read()).toBeNull()
     await store.write({ nonce, version: '1.1.0' })
     expect(store.read()).toEqual({ nonce, version: '1.1.0' })
+    await store.write({ nonce, version: '1.1.0', blocked: true })
+    expect(store.read()).toEqual({ nonce, version: '1.1.0', blocked: true })
+    // The next attempt starts from a record without the flag.
+    await store.write({ nonce, version: '1.1.0' })
+    expect(store.read()).toEqual({ nonce, version: '1.1.0' })
+    expect(parseWindowsUpdateHandoffRecord(`{"nonce":"${nonce}","targetVersion":"1.1.0","blocked":"yes"}`)).toEqual({ nonce, version: '1.1.0' })
     expect(parseWindowsUpdateHandoffRecord('{"nonce":"x","targetVersion":"1.1.0"}')).toBeNull()
     expect(parseWindowsUpdateHandoffRecord(`{"nonce":"${nonce}","targetVersion":"../1"}`)).toBeNull()
     expect(parseWindowsUpdateHandoffRecord('not json')).toBeNull()
@@ -281,15 +304,24 @@ describe('windows update handoff record', () => {
   it('reports last run\'s installer failure only for the same version still not installed', () => {
     const record = { nonce, version: '1.1.0' }
     const failed = () => status('install-failed', { exitCode: 2 })
-    expect(resolvePreviousWindowsHandoffFailure(record, '1.1.0', '1.0.0', failed)).toBe(true)
-    expect(resolvePreviousWindowsHandoffFailure(record, '1.2.0', '1.0.0', failed)).toBe(false)
-    expect(resolvePreviousWindowsHandoffFailure(record, '1.1.0', '1.1.0', failed)).toBe(false)
-    expect(resolvePreviousWindowsHandoffFailure(null, '1.1.0', '1.0.0', failed)).toBe(false)
+    expect(resolvePreviousWindowsHandoffFailure(record, '1.1.0', '1.0.0', failed)).toBe('install-failed')
+    expect(resolvePreviousWindowsHandoffFailure(record, '1.2.0', '1.0.0', failed)).toBeNull()
+    expect(resolvePreviousWindowsHandoffFailure(record, '1.1.0', '1.1.0', failed)).toBeNull()
+    expect(resolvePreviousWindowsHandoffFailure(null, '1.1.0', '1.0.0', failed)).toBeNull()
     for (const state of ['started', 'verified', 'mismatch', 'aborted', 'installed', 'failed']) {
-      expect(resolvePreviousWindowsHandoffFailure(record, '1.1.0', '1.0.0', () => status(state)), state).toBe(false)
+      expect(resolvePreviousWindowsHandoffFailure(record, '1.1.0', '1.0.0', () => status(state)), state).toBeNull()
     }
-    expect(resolvePreviousWindowsHandoffFailure(record, '1.1.0', '1.0.0', () => null)).toBe(false)
-    expect(resolvePreviousWindowsHandoffFailure(record, '1.1.0', '1.0.0', () => { throw new Error('EACCES') })).toBe(false)
+    expect(resolvePreviousWindowsHandoffFailure(record, '1.1.0', '1.0.0', () => null)).toBeNull()
+    expect(resolvePreviousWindowsHandoffFailure(record, '1.1.0', '1.0.0', () => { throw new Error('EACCES') })).toBeNull()
+  })
+
+  it('reports last run\'s blocked relaunch for the same version still not installed, without reading a status', () => {
+    const record = { nonce, version: '1.1.0', blocked: true as const }
+    const readStatus = vi.fn(() => null)
+    expect(resolvePreviousWindowsHandoffFailure(record, '1.1.0', '1.0.0', readStatus)).toBe('blocked')
+    expect(readStatus).not.toHaveBeenCalled()
+    expect(resolvePreviousWindowsHandoffFailure(record, '1.2.0', '1.0.0', readStatus)).toBeNull()
+    expect(resolvePreviousWindowsHandoffFailure(record, '1.1.0', '1.1.0', readStatus)).toBeNull()
   })
 })
 
@@ -298,6 +330,19 @@ describe('verified-install.ps1', () => {
 
   it('stays ASCII, because Windows PowerShell 5.1 reads a script without a BOM in the system code page', () => {
     expect([...script].filter((character) => character.charCodeAt(0) > 0x7f)).toEqual([])
+  })
+
+  it('never exits with the code the app reads as PowerShell refusing to run it', () => {
+    const code = script.split('\n').filter((line) => !line.trimStart().startsWith('#')).join('\n')
+    const literal = [...code.matchAll(/\bexit\s+(-?\d+)/g)].map((match) => Number(match[1]))
+    const named = [...code.matchAll(/^\$(exit\w+)\s*=\s*(-?\d+)/gm)]
+    const results = [...code.matchAll(/\$result\s*=\s*(-?\d+)/g)].map((match) => Number(match[1]))
+    expect(named.length).toBeGreaterThan(5)
+    expect([...literal, ...results, ...named.map((match) => Number(match[2]))]).not.toContain(windowsHandoffBlockedExitCode)
+    // Every exit through a variable goes through one of the named codes, or $result, which only ever holds them or 0.
+    const names = ['result', ...named.map((match) => match[1])]
+    for (const match of code.matchAll(/\bexit\s+\$(\w+)/g)) expect(names, match[1]).toContain(match[1])
+    for (const match of code.matchAll(/\$result\s*=\s*\$(\w+)/g)) expect(names, match[1]).toContain(match[1])
   })
 
   it('waits for the app exactly as long as the app expects', () => {

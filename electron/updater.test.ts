@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
 import { parseServiceStatus, type ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
-import { buildIntelMacUpdateInfo, createSharedDirectRetry, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateHandoffQuitTimeoutCode, updateInstallCancelledMessage, updateInstallNotQuitMessage, updatePackageChangedMessage, updatePreviousInstallFailedMessage, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
+import { buildIntelMacUpdateInfo, createSharedDirectRetry, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateHandoffBlockedCode, updateHandoffBlockedMessage, updateHandoffQuitTimeoutCode, updateInstallCancelledMessage, updateInstallNotQuitMessage, updatePackageChangedMessage, updatePreviousInstallFailedMessage, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
 // What electron-updater's Provider.resolveFiles hands MacUpdater.filterFilesForArch.
 interface ResolvedUpdateFile {
@@ -5585,6 +5585,25 @@ describe('Windows install handoff (S01)', () => {
     service.dispose()
   })
 
+  it('sends a machine whose PowerShell refused the handoff script to the download page instead of the consent prompt', async () => {
+    const runtime = windowsRuntime({ windowsInstallHandoff: vi.fn<Handoff>(async () => ({ kind: 'blocked', reason: 'PowerShell 未运行安装脚本（退出码 1）' })) })
+    const { client, service } = await downloaded(runtime)
+    clickInstall(service)
+    await vi.waitFor(() => expect(service.getState().error?.code).toBe(updateHandoffBlockedCode))
+    expect(service.getState()).toMatchObject({
+      phase: 'downloaded',
+      failedStep: 'install',
+      error: { code: 'UPDATE_HANDOFF_BLOCKED', message: updateHandoffBlockedMessage, detail: 'PowerShell 未运行安装脚本（退出码 1）' },
+    })
+    expect(updateHandoffBlockedMessage).toContain('「打开下载页」')
+    expect(updateHandoffBlockedMessage).not.toMatch(/授权窗口|重新安装/)
+    // No fallback to another way of installing: the checks the handoff adds stay in force.
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+    expect(runtime.quitForInstall).not.toHaveBeenCalled()
+    expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
   it('says the app did not close once the script has stopped waiting for it', async () => {
     const runtime = windowsRuntime({ windowsHandoffQuitTimeoutMs: 20 })
     const { service } = await downloaded(runtime)
@@ -5616,6 +5635,13 @@ describe('Windows install handoff (S01)', () => {
     expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { message: updatePreviousInstallFailedMessage } })
     expect(service.install()).toEqual({ accepted: true })
     await vi.waitFor(() => expect(runtime.quitForInstall).toHaveBeenCalledOnce())
+    service.dispose()
+  })
+
+  it('shows last run\'s blocked handoff with its own code, so the download page is offered right away', async () => {
+    const runtime = windowsRuntime({ previousAutoInstallFailure: () => ({ code: updateHandoffBlockedCode, message: updateHandoffBlockedMessage }) })
+    const { service } = await downloaded(runtime)
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_HANDOFF_BLOCKED', message: updateHandoffBlockedMessage } })
     service.dispose()
   })
 

@@ -4,6 +4,7 @@ import { Button, Logo, Notice, Pill, Progress, useToast } from '../../ui'
 import { ResultNotice, relativeTimeText, useOperation, useResource, userFacingErrorMessage } from '../../business-common'
 import {
   standardAccountUpdateNotice,
+  updateCardTitle,
   updateDiskShortfallText,
   updateDownloadDetail,
   updateFailureLabel,
@@ -86,7 +87,9 @@ export function VersionCard({ api, navigate, autoUpdate }: {
   // 「刚刚检查过」「今天 14:20 检查过」：钟点和后面的字隔一个空格。
   const checkedAt = update?.checkedAt ? relativeTimeText(update.checkedAt, Date.now()) : ''
   const checkedText = checkedAt ? `${checkedAt}${/\d$/.test(checkedAt) ? ' ' : ''}检查过` : ''
-  const statusTone = update?.phase === 'available' || update?.phase === 'downloading' ? 'accent' : update?.phase === 'downloaded' || update?.phase === 'not-available' ? (update.currentVersionWithdrawn ? 'warn' : 'ok') : update?.error ? 'warn' : 'neutral'
+  // 只能去下载页手动装的那两种（Mac 验签不过、Windows 上 PowerShell 不让安装脚本运行）重启也装不上：
+  // 右上角不说「重启后生效」，退回按阶段的那句，用提醒色。
+  const statusTone = manualReinstall ? 'warn' : update?.phase === 'available' || update?.phase === 'downloading' ? 'accent' : update?.phase === 'downloaded' || update?.phase === 'not-available' ? (update.currentVersionWithdrawn ? 'warn' : 'ok') : update?.error ? 'warn' : 'neutral'
   const newVersion = updateNewVersion(update)
   const action =
     update?.phase === 'available' || update?.phase === 'cancelled' ? (
@@ -123,7 +126,7 @@ export function VersionCard({ api, navigate, autoUpdate }: {
         </div>
         {update && (
           <span data-testid={newVersion && update.phase === 'available' ? 'updates-new-version' : undefined}>
-            <Pill tone={statusTone}>{updateStatusLabel(update)}</Pill>
+            <Pill tone={statusTone}>{manualReinstall ? updateCardTitle(update) : updateStatusLabel(update)}</Pill>
           </span>
         )}
       </div>

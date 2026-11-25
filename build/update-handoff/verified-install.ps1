@@ -24,7 +24,10 @@
 # Exit codes: 0 installed (with -Relaunch: the elevated copy started), 2 invalid
 # arguments, 3 package mismatch, 4 the app did not quit, 5 any other failure, 6 the
 # installer itself failed, 740 not elevated, 1223 (-Relaunch only) the consent prompt
-# was declined.
+# was declined. Never 1: that is what PowerShell itself exits with when it stops this
+# script before it gets anywhere (ConstrainedLanguage refusing the first .NET call, an
+# execution policy set by Group Policy refusing an unsigned file), and the app reads a
+# relaunch exit of 1 as exactly that (windowsHandoffBlockedExitCode).
 param(
   [string]$Package = '',
   [string]$Sha512 = '',
