@@ -4616,6 +4616,29 @@ test('the start cards sit fully above the composer in a short window without cha
   } finally { await page.close() }
 })
 
+// 升级上来的客户头一次进来，起始页上面多一条「已合并至此页」的提示，三张卡都在时最挤：820 高露不全，740、680 挡掉一截。
+test('the start cards stay above the composer in a short window while the merge notice sits on top', async () => {
+  const page = await openCreate('library=1&videoFilms=library&chatVideo=1&canvasProjects=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-intro').waitFor()
+    await page.getByTestId('create-card-clips').waitFor()
+    await page.getByTestId('chat-example-1').waitFor()
+    const layout = () => page.getByTestId('chat-empty').evaluate((empty) => {
+      const messages = empty.closest('.chat-messages')
+      const bottom = messages.getBoundingClientRect().bottom
+      const cards = [...messages.querySelectorAll('.create-card')]
+      return { scrolled: messages.scrollTop, cards: cards.length, hidden: cards.filter((card) => card.getBoundingClientRect().bottom > bottom + 0.5).map((card) => card.dataset.testid) }
+    })
+    // 宽留在 1280，理由同上一条（侧栏收窄要等一拍）。
+    for (const height of [820, 740, 680]) {
+      await page.setViewportSize({ width: 1280, height })
+      assert.deepEqual(await layout(), { scrolled: 0, cards: 3, hidden: [] }, `${height}px tall`)
+    }
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an account with nothing made before is not told about the merge, now or after it has made something', async () => {
   const page = await openCreate()
   try {
