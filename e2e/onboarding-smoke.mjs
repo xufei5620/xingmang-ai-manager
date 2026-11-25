@@ -63,7 +63,7 @@ try {
   recordPass('guide-preselects-recommended-route')
   await screenshot('onboarding-dark.png')
 
-  await page.getByRole('radio', { name: /先在星芒里聊天/ }).check()
+  await page.getByRole('radio', { name: /在星芒中直接提问/ }).check()
   await page.getByRole('button', { name: '下一步', exact: true }).click()
   await page.locator('[data-guide-step="prepare"]').waitFor()
   assert.equal(await page.getByTestId('guide-install').count(), 0)
@@ -80,7 +80,7 @@ try {
   await page.getByRole('button', { name: '上一步', exact: true }).click()
   await page.getByRole('button', { name: '上一步', exact: true }).click()
   await page.locator('[data-guide-step="choose"]').waitFor()
-  assert.equal(await page.getByRole('radio', { name: /先在星芒里聊天/ }).isChecked(), true)
+  assert.equal(await page.getByRole('radio', { name: /在星芒中直接提问/ }).isChecked(), true)
   recordPass('selection-survives-stepping-back')
 
   await page.evaluate(() => window.xingmang.saveSettings({ version: 2, theme: 'light' }))

@@ -1457,7 +1457,7 @@ export function Home(props: HomeProps) {
       <section className="v2-home-well v2-home-try" data-testid="home-suggestions">
         <div className="v2-home-well-head"><h2>推荐功能</h2></div>
         <ListRow icon={Plug} title="为 AI 连接浏览器和文件夹" onOpen={() => props.onNavigate('mcp')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-mcp" />
-        <ListRow icon={MessageSquare} title="无需终端，直接在星芒中对话" onOpen={() => props.onNavigate('chat')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-chat" />
+        <ListRow icon={MessageSquare} title="无需终端，在「创作」中直接提问" onOpen={() => props.onNavigate('chat')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-chat" />
         {!codexInUse && <ListRow icon={BookOpen} title="Codex 入门：4 步快速上手" onOpen={() => props.onNavigate('tutorial')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-codex" />}
       </section>
     </div>
