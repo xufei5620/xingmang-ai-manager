@@ -448,10 +448,11 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
   const launchProcess = deps.launchProcess ?? defaultLaunchProcess
   // Mac 上星芒带着设置起的那一份：开着的主进程就是它、设置也没变，再点打开只把它叫到前面。
   let macSpawn: { bundle: string, pid: number, fingerprint: string } | null = null
-  // Windows 上最近一次改写设置是什么时候（毫秒）：后台跟账号、跟线路改的，或者点「打开」时改的。它只认启动时的
-  // 设置，起得比这早的那一份拿的是旧的，点「打开」时请客户先关掉，不能只看这一次点击写没写（后台已经写过，这次是
-  // unchanged）。按进程启动时间判、不记「请关掉过」：客户自己关了、从开始菜单或桌面重新打开的，起得比改写晚，
+  // Windows 上最近一次改写设置是什么时候（毫秒）：装、打开命令行或桌面端时改的，后台跟账号、跟线路改的，都算。它只认
+  // 启动时的设置，起得比这早的那一份拿的是旧的，点「打开」时请客户先关掉，不能只看这一次点击写没写（别处已经写过，这次
+  // 是 unchanged）。按进程启动时间判、不记「请关掉过」：客户自己关了、从开始菜单或桌面重新打开的，起得比改写晚，
   // 资源管理器已经换上新设置，不再请他关（复查 A 第 2 轮第 2 条）。开着的都比它晚（或都没开）以后清掉。
+  // 只记在这次运行里：星芒重启后没有这一笔，改写时开着、一直没关的那一份点「打开」会被直接叫到前面（同 #2156 以前）。
   let windowsSettingsWrittenAt: number | null = null
   // 换账号、换线路以后自己跟的那一步取密钥用的：IPC 那一层注册通道时交来（手里有账号的只有那一层），撤通道时收回。
   let followKey: AntigravityKeyResolver | null = null
