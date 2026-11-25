@@ -3,6 +3,7 @@ import { promises as fsPromises } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import fc from 'fast-check'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CodexSessionsService } from './codex-sessions'
 import type {
@@ -1339,5 +1340,63 @@ describe('codexSessionTitle', () => {
 
   it('falls back to the session id when the title is blank', () => {
     expect(codexSessionTitle(' \n ', 'id-1')).toBe('id-1')
+  })
+
+  it('shows only the request the user typed when the desktop app prefixed the files they attached', () => {
+    const prompt = [
+      '# Files mentioned by the user:',
+      '',
+      '## 截图.png: C:\\Users\\a\\Desktop\\截图.png',
+      '',
+      '## My request for Codex:',
+      '帮我看看这个报错',
+      '',
+    ].join('\n')
+    expect(codexSessionTitle(prompt, 'id-1')).toBe('帮我看看这个报错')
+  })
+
+  it('shows only the request after the IDE context and after a title already folded onto one line', () => {
+    const ide = '# Context from my IDE setup:\n\n## Active file: src/lib.rs\n\n## My request for Codex:\n解释一下\n这段代码'
+    expect(codexSessionTitle(ide, 'id-1')).toBe('解释一下 这段代码')
+    const folded = '# Files mentioned by the user: ## a.png: /Users/a/a.png ## My request for Codex: 改一下配色'
+    expect(codexSessionTitle(folded, 'id-1')).toBe('改一下配色')
+  })
+
+  it('cuts at the first delimiter like Codex does, so a request quoting it stays whole', () => {
+    const prompt = '# Files mentioned by the user:\n\n## a.md: /tmp/a.md\n\n## My request for Codex:\n删掉 ## My request for Codex: 这一行'
+    expect(codexSessionTitle(prompt, 'id-1')).toBe('删掉 ## My request for Codex: 这一行')
+  })
+
+  it('names the attached files when the user sent them without typing anything', () => {
+    const onlyFiles = [
+      '# Files mentioned by the user:',
+      '',
+      '## 截图.png: C:\\Users\\a\\Desktop\\截图.png',
+      '',
+      '## Pasted text.txt: /Users/a/Library/Pasted text.txt',
+      '',
+    ].join('\n')
+    expect(codexSessionTitle(onlyFiles, 'id-1')).toBe('截图.png、Pasted text.txt')
+    expect(codexSessionTitle(`${onlyFiles}\n## My request for Codex:\n  \n`, 'id-1')).toBe('截图.png、Pasted text.txt')
+  })
+
+  it('keeps the old folded title when the prefix carries nothing it can use', () => {
+    expect(codexSessionTitle('# Files mentioned by the user:\n', 'id-1')).toBe('# Files mentioned by the user:')
+    expect(codexSessionTitle('# Context from my IDE setup:\n## My request for Codex:\n', 'id-1'))
+      .toBe('# Context from my IDE setup: ## My request for Codex:')
+  })
+
+  it('leaves every other title exactly as before with random inputs', () => {
+    function previousTitle(title: string, sessionId: string): string {
+      const cleaned = title.replace(/\s+/g, ' ').trim()
+      return (cleaned.length > 160 ? `${cleaned.slice(0, 160)}…` : cleaned) || sessionId
+    }
+    const ordinary = fc.string({ unit: 'grapheme', maxLength: 300 }).filter((title) =>
+      !title.includes('## My request for Codex:')
+      && !title.trimStart().startsWith('# Files mentioned by the user:')
+      && !/^\s*Automation:/.test(title))
+    fc.assert(fc.property(ordinary, (title) => {
+      expect(codexSessionTitle(title, 'id-1')).toBe(previousTitle(title, 'id-1'))
+    }))
   })
 })
