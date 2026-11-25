@@ -4579,8 +4579,11 @@ test('the start cards sit fully above the composer in a short window without cha
       }
     })
     assert.deepEqual(await layout(), { top: '28px', scrolled: 0, cards: 2, hidden: [] })
+    // 只改高、宽留在 1280：宽不到 1272 时侧栏要等 matchMedia 回调、React 重画才收成窄条，改完尺寸立刻量会量到
+    // 「窗口已经窄了、侧栏还是 224」的那一瞬，正文窄、卡高，慢 runner 上 680 那一下就量成被挡（#2166、#2168 各红一次）。
+    // 1366 × 768 的笔记本侧栏本来就是展开的，量这种才是要守的情形。
     for (const height of [740, 680]) {
-      await page.setViewportSize({ width: 1100, height })
+      await page.setViewportSize({ width: 1280, height })
       const shown = await layout()
       assert.deepEqual({ ...shown, top: undefined }, { top: undefined, scrolled: 0, cards: 2, hidden: [] }, `${height}px tall`)
     }
