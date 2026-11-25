@@ -136,7 +136,7 @@ import {
 } from './codex-desktop-known-issues'
 import { codexDesktopChineseOffMessage } from './remote-features'
 import { inspectWindowsStoreAvailability } from './windows-store-availability'
-import { assertWorkspaceDirectory } from './workspace-access'
+import { existingWorkspaceDirectory } from './workspace-access'
 
 const execFileAsync = promisify(execFile)
 
@@ -4271,14 +4271,15 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       if (!desktopApp.installed || !desktopApp.path) {
         throw new Error('未检测到 Codex 桌面端，请先安装 Codex App 后重新检测')
       }
-      const workspace = store.read().workspace
-      assertWorkspaceDirectory(workspace, platform, '项目文件夹不存在，请重新选择')
+      // 记着的文件夹被删了或挪走了：跟 Windows 一样不带文件夹打开，Codex 回到它自己上次的项目。
+      // 以前报「项目文件夹不存在，请重新选择」，这张卡上没有地方选，点「重试」还是同一句（0.2.24 Mac）。
+      const workspace = existingWorkspaceDirectory(store.read().workspace, platform)
       // 已经开着的 Codex 收不到启动参数（LaunchServices 只把链接交过去），那时只照旧连加速。
       const startupRoute = await prepareStartupBeforeLaunch(!desktopApp.running)
       const appArguments = startupRoute.kind === 'none' ? [] : [formatCodexStartupMacArgument(startupRoute.hostResolverRules)]
       try {
         await executeCommand(buildMacosCodexAppLaunchPlan(desktopApp.path, workspace, codexEnv.CODEX_HOME, appArguments), {
-          cwd: workspace,
+          ...(workspace === null ? {} : { cwd: workspace }),
           env: trustedCommandEnvironment(codexEnv),
           timeoutMs: 10_000,
           maxOutputBytes: 64 * 1024,
