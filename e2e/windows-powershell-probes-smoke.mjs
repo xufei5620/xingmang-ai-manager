@@ -1217,22 +1217,33 @@ const { buildAntigravityDesktopWindowsProcessScript, parseAntigravityDesktopWind
 // first. The question runs under trustedCommandEnvironment and, where an
 // application-control policy is enforced, in ConstrainedLanguage. A copy of
 // node.exe named Antigravity.exe under a Chinese folder name has to be found in
-// both modes, so the \uXXXX escaping is exercised on a real path too.
-checks.push(['the Antigravity running check finds the app in ConstrainedLanguage as in FullLanguage', async () => {
+// both modes, so the \uXXXX escaping is exercised on a real path too. Only a
+// copy that started before the settings last changed is asked to quit (复查 A
+// 第 2 轮第 2 条), so each entry also carries its start time: a hashtable and
+// DateTime's own method, both allowed in ConstrainedLanguage, and both modes
+// have to give the same time, between the spawn and the answer.
+checks.push(['the Antigravity running check finds the app and when it started in ConstrainedLanguage as in FullLanguage', async () => {
   const executable = path.join(fs.realpathSync.native(scratch), '星芒 程序', 'Antigravity.exe')
   fs.mkdirSync(path.dirname(executable), { recursive: true })
   fs.copyFileSync(process.execPath, executable)
   const script = buildAntigravityDesktopWindowsProcessScript()
   const idle = await runConstrained(script)
-  assert.equal(parseAntigravityDesktopWindowsProcesses(idle, executable), false, idle)
+  assert.deepEqual(parseAntigravityDesktopWindowsProcesses(idle, executable), [], idle)
+  const spawnedAt = Date.now()
   const app = spawn(executable, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore', windowsHide: true })
   try {
     const started = Date.now()
     const full = await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(script)], trustedEnv())
     console.log(`info Antigravity running check in FullLanguage took ${Date.now() - started} ms`)
     const constrained = await runConstrained(script)
+    const answeredAt = Date.now()
     assert.match(constrained.trim(), /^[\x00-\x7F]+$/, constrained)
-    for (const output of [full, constrained]) assert.equal(parseAntigravityDesktopWindowsProcesses(output, executable), true, output)
+    const fullStarts = parseAntigravityDesktopWindowsProcesses(full, executable)
+    assert.deepEqual(parseAntigravityDesktopWindowsProcesses(constrained, executable), fullStarts, `${full}\n${constrained}`)
+    assert.equal(fullStarts?.length, 1, full)
+    // Same clock on both sides; a second of slack for FILETIME against Date.now() rounding.
+    const startedAt = fullStarts[0]
+    assert.ok(startedAt !== null && startedAt >= spawnedAt - 1_000 && startedAt <= answeredAt, `${full} (spawned ${spawnedAt}, answered ${answeredAt})`)
   } finally {
     // The copy stays locked until it has exited, and the scratch folder is removed at the end.
     if (app.exitCode === null && app.signalCode === null) {

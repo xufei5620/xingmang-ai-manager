@@ -156,7 +156,10 @@ export interface AntigravityServiceDependencies {
    * 没签过交空的。首页「当前账号」和换账号后跟不跟都靠它比；明文只在主进程里比（I3）。缺省 = 只比地址（旧行为）。
    */
   cachedAccountKeys?(): Promise<readonly string[]>
-  /** 换账号、换线路以后替它跟上了：叫一声，界面重读首页（main.ts 发 network:relay-route-changed）。 */
+  /**
+   * 换账号、换线路以后替它跟上了：叫一声，界面只重读 Antigravity 两张卡（main.ts 发 antigravity:settings-followed）。
+   * 不借线路那一声：那一声还会让界面把三个外部客户端重新检测一遍（复查 A 第 2 轮第 2 条）。
+   */
   onFollowed?(): void
   /** 打开命令行时交给终端的环境（Windows 上用；Mac 的终端读登录 shell 的启动文件）。 */
   terminalEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv
@@ -189,6 +192,8 @@ export interface AntigravityServiceDependencies {
   isPlainDirectory?(directoryPath: string): boolean
   /** 系统的「应用程序」目录；只给测试换成临时目录。 */
   systemApplicationsDirectory?: string
+  /** 只给测试换掉：现在的时间（毫秒），跟 Windows 上开着的那一份是什么时候起的比。 */
+  now?(): number
 }
 
 /** Antigravity 桌面端在 Mac 上的身份：谷歌的 Developer ID 团队和 bundle id（11-23 两种芯片实测）。 */
@@ -329,9 +334,11 @@ export function antigravityDesktopMacCandidates(userHome: string, systemApplicat
 }
 
 /**
- * Windows 上开着的 Antigravity.exe 各在哪里：只列路径，交给调用方比。开着应用控制策略的电脑上 PowerShell 跑在
- * 受限语言模式里：设 UTF-8 那句只在完整模式下做，路径里的中文（用户名）在受限模式下转成 \uXXXX 再输出，
- * 主进程读回来是同一个路径（powershell-constrained-language.ts）。模块按名字先导入：收窄过的环境里自动加载
+ * Windows 上开着的 Antigravity.exe 各在哪里、什么时候起的：列路径和启动时间（FILETIME，UTC），交给调用方比。
+ * 开着应用控制策略的电脑上 PowerShell 跑在受限语言模式里：设 UTF-8 那句只在完整模式下做，路径里的中文（用户名）
+ * 在受限模式下转成 \uXXXX 再输出，主进程读回来是同一个路径（powershell-constrained-language.ts）；每一项是
+ * 哈希表（受限模式不许 [pscustomobject]），启动时间只调 DateTime 自己的方法、转成字符串，两样受限模式都放行。
+ * 启动时间读不出来的照样列出来、留空，调用方按「早于设置」算。模块按名字先导入：收窄过的环境里自动加载
  * 一次要十几秒，比打开前这一问的时限还长。
  */
 export function buildAntigravityDesktopWindowsProcessScript(): string {
@@ -339,13 +346,20 @@ export function buildAntigravityDesktopWindowsProcessScript(): string {
     powerShellUtf8OutputStatement,
     buildPowerShellModuleImportStatement(['Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management']),
     "$ErrorActionPreference = 'Stop'",
-    '$paths = @(Get-Process -Name Antigravity -ErrorAction SilentlyContinue | ForEach-Object { try { [string]$_.Path } catch {} } | Where-Object { $_ })',
-    ...buildPowerShellJsonOutputStatements('ConvertTo-Json -InputObject @($paths) -Compress'),
+    "$found = @(Get-Process -Name Antigravity -ErrorAction SilentlyContinue | ForEach-Object { $path = $null; $started = ''; try { $path = [string]$_.Path } catch {}; try { $started = [string]$_.StartTime.ToFileTimeUtc() } catch {}; if ($path) { @{ path = $path; started = $started } } })",
+    ...buildPowerShellJsonOutputStatements('ConvertTo-Json -InputObject @($found) -Compress'),
   ].join('\n')
 }
 
-/** 上面那段脚本的输出里有没有这一份；读不懂的一律当作没开着之外的「看不出来」，交 null。 */
-export function parseAntigravityDesktopWindowsProcesses(stdout: string, executablePath: string): boolean | null {
+// FILETIME 从 1601-01-01 起、以 100 纳秒计；减掉到 1970-01-01 的这段换成毫秒，跟 Date.now() 比。
+const fileTimeTicksPerMillisecond = 10_000
+const fileTimeEpochOffsetMilliseconds = 11_644_473_600_000
+
+/**
+ * 上面那段脚本的输出里这一份开着的各个进程什么时候起的（毫秒；读不出来的是 null）。没开着交空数组；
+ * 读不懂的一律当作没开着之外的「看不出来」，交 null。
+ */
+export function parseAntigravityDesktopWindowsProcesses(stdout: string, executablePath: string): Array<number | null> | null {
   let parsed: unknown
   try {
     parsed = JSON.parse(stdout.trim() || '[]')
@@ -354,7 +368,16 @@ export function parseAntigravityDesktopWindowsProcesses(stdout: string, executab
   }
   if (!Array.isArray(parsed)) return null
   const expected = path.win32.normalize(executablePath).toLowerCase()
-  return parsed.some((entry) => typeof entry === 'string' && path.win32.normalize(entry).toLowerCase() === expected)
+  const started: Array<number | null> = []
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const { path: entryPath, started: fileTime } = entry as { path?: unknown, started?: unknown }
+    if (typeof entryPath !== 'string' || path.win32.normalize(entryPath).toLowerCase() !== expected) continue
+    started.push(typeof fileTime === 'string' && /^\d{1,20}$/.test(fileTime)
+      ? Number(fileTime) / fileTimeTicksPerMillisecond - fileTimeEpochOffsetMilliseconds
+      : null)
+  }
+  return started
 }
 
 /**
@@ -425,10 +448,11 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
   const launchProcess = deps.launchProcess ?? defaultLaunchProcess
   // Mac 上星芒带着设置起的那一份：开着的主进程就是它、设置也没变，再点打开只把它叫到前面。
   let macSpawn: { bundle: string, pid: number, fingerprint: string } | null = null
-  // Windows 上开着的那一份是不是早于现在这份设置：后台跟账号、跟线路改写时它开着（或看不出开没开），或者上次点
-  // 「打开」已经请客户先关掉它。它只认启动时的设置，这时再点「打开」照样请客户先关掉，不能只看这一次点击写没写
-  // （后台已经写过，这次是 unchanged）。看到它没开着、由星芒重新打开以后清掉。
-  let windowsInstanceStale = false
+  // Windows 上最近一次改写设置是什么时候（毫秒）：后台跟账号、跟线路改的，或者点「打开」时改的。它只认启动时的
+  // 设置，起得比这早的那一份拿的是旧的，点「打开」时请客户先关掉，不能只看这一次点击写没写（后台已经写过，这次是
+  // unchanged）。按进程启动时间判、不记「请关掉过」：客户自己关了、从开始菜单或桌面重新打开的，起得比改写晚，
+  // 资源管理器已经换上新设置，不再请他关（复查 A 第 2 轮第 2 条）。开着的都比它晚（或都没开）以后清掉。
+  let windowsSettingsWrittenAt: number | null = null
   // 换账号、换线路以后自己跟的那一步取密钥用的：IPC 那一层注册通道时交来（手里有账号的只有那一层），撤通道时收回。
   let followKey: AntigravityKeyResolver | null = null
   // 跟的那一轮同一时刻只跑一轮；跑着时又叫的记下最后那个原因，跑完再看一遍（同 followManagedKeysNow）。
@@ -717,7 +741,7 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
       // 还没接上账号（通道还没注册、或者已经撤了）：要签密钥的这次不做，下次换账号、换线路再看。
       else if (resolveKey) outcome = (await configureNow(resolveKey, write)).outcome
       else return
-      if (outcome === 'written') await noteWindowsInstanceStale()
+      if (outcome === 'written') noteWindowsSettingsWritten()
       log('info', 'antigravity.settings.followed', plan.action === 'move-route' ? 'Antigravity 的设置已换到当前连接线路' : 'Antigravity 的设置已换成当前账号', { ...detail, outcome })
       deps.onFollowed?.()
     } catch (error) {
@@ -725,12 +749,11 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     }
   }
 
-  // 后台改写时 Windows 上开着的那一份拿不到新设置：记下来，客户再点「打开」时请他先关掉。看不出开没开也记。
+  // 改写那一刻记下来，开没开着到点「打开」时再看：那时开着的、起得比这早的拿不到新设置。写完才记，写的时候
+  // 系统已经通知完资源管理器（antigravity-windows-environment.ts），之后它开的都带着新设置。
   // Mac 上不用记：星芒起的那一份认设置的指纹（macSpawn），别处打开的本来就带不上设置。
-  async function noteWindowsInstanceStale(): Promise<void> {
-    if (platform !== 'win32') return
-    const executable = windowsDesktopExecutable()
-    if (executable && await windowsDesktopRunning(executable) !== false) windowsInstanceStale = true
+  function noteWindowsSettingsWritten(): void {
+    if (platform === 'win32') windowsSettingsWrittenAt = (deps.now ?? Date.now)()
   }
 
   function windowsShell(): { explorer: string, systemRoot: string } {
@@ -739,7 +762,8 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     return { explorer: resolveWindowsExplorerExecutable({ platform, machinePaths }), systemRoot: machinePaths.systemRoot }
   }
 
-  async function windowsDesktopRunning(executable: string): Promise<boolean | null> {
+  /** 开着的这一份各个进程什么时候起的；没开着是空数组，看不出来是 null。 */
+  async function windowsDesktopProcesses(executable: string): Promise<Array<number | null> | null> {
     try {
       const powershell = deps.resolvePowerShellExecutable?.() ?? resolveWindowsPowerShellExecutable()
       const result = await execute({
@@ -795,18 +819,21 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     if (!executable) throw new Error(desktopNotInstalledMessage)
     // 先写设置再看开没开着：写完系统通知资源管理器换上新环境，之后它开的 Antigravity 带着新设置。
     const { outcome } = await configureNow(resolveKey, writeOptionsFor('desktop'))
-    const running = await windowsDesktopRunning(executable)
-    // 开着、设置这次又改了，或者开着的那一份早于后台跟的那次改写：它拿的是旧的（或没有），请客户先关掉。
+    if (outcome === 'written') noteWindowsSettingsWritten()
+    const processes = await windowsDesktopProcesses(executable)
+    const running = processes === null ? null : processes.length > 0
+    // 开着的里头有起得比最近一次改写早的（这次刚改的，或者后台跟的那次）：它拿的是旧的（或没有），请客户先关掉。
+    // 启动时间读不出来的也算早。主程序和它的辅助进程同名同路径，只要主程序早就算早。
     // 看不出开没开着就照常打开：开着的话第二个自己退出、把原来的叫到前面，最坏是客户看到的还是旧设置，不会开出两个。
-    if (running === true && (outcome === 'written' || windowsInstanceStale)) {
-      windowsInstanceStale = true
+    const writtenAt = windowsSettingsWrittenAt
+    if (writtenAt !== null && processes?.some((startedAt) => startedAt === null || startedAt <= writtenAt)) {
       return { opened: false, closeFirst: true }
     }
     // yoyo 11-23「Antigravity 免核签名」：装好的 Antigravity.exe 本身没有签名（只有安装包有），打开前不核
     // 程序签名；装的时候安装包照核。交给资源管理器打开（不带星芒的权限），其余校验不动。
     const shell = windowsShell()
     await launchProcess({ executable: shell.explorer, argv: [executable], cwd: shell.systemRoot, env: commandEnvironment(env), windowsHide: true })
-    if (running === false) windowsInstanceStale = false
+    if (processes !== null) windowsSettingsWrittenAt = null
     log('info', 'antigravity.desktop.opened', '已打开 Antigravity', { running, outcome })
     return { opened: true }
   }

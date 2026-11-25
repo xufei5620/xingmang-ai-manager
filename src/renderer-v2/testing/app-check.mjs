@@ -634,6 +634,31 @@ test('installing the Antigravity command line connects it, opens it in a chosen 
   } finally { await running.close() }
 })
 
+// 换账号、换线路以后主进程替 Antigravity 改完设置叫的那一声：只重读这两张卡，三个外部客户端不跟着重新检测、
+// 设置和配置也不重读（复查 A 第 2 轮第 2 条；原来借的是线路那一声）。
+test('when the main process moves Antigravity onto the new account, home rereads only its two cards', async () => {
+  const page = await open('antigravity=unconfigured')
+  try {
+    const desktop = page.getByTestId('tool-row-antigravity')
+    await desktop.waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'inspectAntigravity') && window.v2Test.calls.some((entry) => entry.method === 'scanExternalClients'))
+    await settleStartupBootstrap(page)
+    assert.equal(await desktop.getByTestId('tool-antigravity-source').count(), 0)
+    const count = (method) => page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).length, method)
+    const before = { scans: await count('scanExternalClients'), settings: await count('getSettings'), config: await count('getConfig'), inspects: await count('inspectAntigravity') }
+    await page.evaluate(() => {
+      window.v2Test.setAntigravityConfigured(true)
+      window.v2Test.emit('onAntigravitySettingsFollowed', undefined)
+    })
+    await desktop.getByTestId('tool-antigravity-source').waitFor()
+    assert.ok(await count('inspectAntigravity') > before.inspects)
+    assert.equal(await count('scanExternalClients'), before.scans, '外部客户端不重新检测')
+    assert.equal(await count('getSettings'), before.settings, '设置不重读')
+    assert.equal(await count('getConfig'), before.config, '配置不重读')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('opening Claude Desktop says it is preparing the program while it downloads, then opens', async () => {
   const page = await open('externalInstalled=1&externalReady=claudeDesktop&externalLaunchPending=1')
   try {
