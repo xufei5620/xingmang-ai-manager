@@ -1246,7 +1246,11 @@ const methods = {
     if (token !== 'fixture-works-token') throw new Error('请再次点击「导入」。')
     return { status: 'done' as const, added: 120, existing: 8, failed: 0, ...(query.has('transferCanvasProjects') ? { canvasProjects: { added: 3, existing: 1, full: 0, failed: 0 } } : {}) }
   },
-  getLegalDocument: async (kind) => ({ kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }),
+  // 不带账号来源时主进程按当前账号读；历史账号那边没有协议，跟真的一样报「当前账号暂不支持此功能」。
+  getLegalDocument: async (kind, siteId) => {
+    if ((siteId ?? (session.authenticated && query.has('sub2api') ? 'solov-api' : 'solov')) !== 'solov') throw new Error('当前账号暂不支持此功能')
+    return { kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }
+  },
   getAccountProfile: async () => ({ ...account, displayName: account.username, email: 'fixture@example.com', requestCount: 0, affCode: 'test', affCount: 0, affQuota: 0, affHistoryQuota: 0 }),
   getAccountLoginSessions: async () => [],
   listSavedAccounts: async () => query.has('crossSite') ? [{ id: 'saved-aa0017', origin: 'https://api.solov.cc', userId: 17, username: 'fixture-user', updatedAt: '2026-09-07T00:00:00Z' }] : query.has('savedAccount') ? [{ id: 'saved-18', origin: 'https://xm.solov.cc', userId: 18, username: 'saved-user', updatedAt: '2026-09-07T00:00:00Z' }] : [],

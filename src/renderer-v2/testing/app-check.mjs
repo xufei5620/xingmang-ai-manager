@@ -6455,6 +6455,27 @@ test('restoring the normal display offers a relaunch from the same corner', asyn
   } finally { await page.close() }
 })
 
+// 设置 › 隐私数据的协议跟欢迎页、登录框是同一个弹窗：固定读星芒账号那一份（两个账号共用），按排版显示。
+// 以前设置页自己按当前账号读：历史账号报「当前账号暂不支持此功能」，星芒账号显示的是带 # 的源码。
+for (const [label, query] of [['NewAPI', ''], ['Sub2API', 'sub2api=1']]) test(`settings opens the agreement and privacy policy in the shared legal dialog for signed-in ${label}`, async () => {
+  const page = await open(query)
+  try {
+    const settings = await openSettingsGroup(page, '隐私数据')
+    for (const [testId, title] of [['settings-legal-user-agreement', '用户协议'], ['settings-legal-privacy-policy', '隐私政策']]) {
+      await settings.getByTestId(testId).click()
+      const dialog = page.getByRole('dialog', { name: title, exact: true })
+      await dialog.getByRole('heading', { name: '本地协议', exact: true }).waitFor()
+      assert.equal(await dialog.getByText('# 本地协议').count(), 0)
+      await dialog.getByTestId('legal-document-close').click()
+      await dialog.waitFor({ state: 'detached' })
+    }
+    // 开发版的 StrictMode 会把读协议的 effect 跑两遍：只看读了哪几份、是不是都读的星芒账号那一份。
+    const legalCalls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getLegalDocument').map((entry) => entry.args.join(' ')))
+    assert.deepEqual([...new Set(legalCalls)], ['user-agreement solov', 'privacy-policy solov'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('turning the display switch off in settings asks for a relaunch, and later just hides the hint', async () => {
   const page = await open()
   try {

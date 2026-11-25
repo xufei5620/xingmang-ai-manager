@@ -2008,6 +2008,8 @@ const renderFixture = (paymentReturn?: {
           openLogin={() => record('login')}
           switchAccount={openSwitcher}
           openHelp={query.has('help') ? () => record('open-help') : undefined}
+          // 设置 › 隐私数据的协议交给外壳那个弹窗：这里只记下要开哪一份。
+          openLegal={(kind) => record('open-legal', kind)}
           onRewriteKey={rewriteKey}
           openConfig={(provider) => record('openConfig', provider)}
           toolConfigConfirmed={toolConfigConfirmed}
