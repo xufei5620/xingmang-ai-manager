@@ -840,6 +840,9 @@ describe('sessions table', () => {
     const markup = renderToStaticMarkup(<SessionsPage api={{} as V2Bridge} />)
     expect(markup).toContain('aria-label="按工具筛选"')
     expect(markup).toContain('data-testid="sessions-tool-all"')
+    // 0.2.25 S2：记录里是本机各命令行工具的对话，不只是从首页打开的那些。
+    expect(markup).toContain('本机各命令行工具的对话均在此处，可查看并继续对话。')
+    expect(markup).not.toContain('通过首页打开工具产生的对话')
     expect(markup).toContain('placeholder="搜索标题、文件夹或模型"')
     expect(markup).toContain('aria-label="重新加载"')
     expect(markup).not.toContain('本软件已把保留期放长到一年')
