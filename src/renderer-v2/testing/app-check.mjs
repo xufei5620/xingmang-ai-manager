@@ -1801,6 +1801,8 @@ test('the records table puts each record on one row with tool chips that count',
     await page.waitForFunction(() => document.querySelector('[data-testid="sessions-tool-all"] .xm-chip-count')?.textContent === '4')
     assert.equal(await sessions.getByTestId('sessions-tool-claude').locator('.xm-chip-count').innerText(), '3')
     assert.equal(await sessions.getByTestId('sessions-tool-gemini').count(), 0)
+    // 装着的工具一条记录都没有也照旧有按钮（没装又没记录的才不出）。
+    assert.equal(await sessions.getByTestId('sessions-tool-grok').locator('.xm-chip-count').innerText(), '0')
     assert.equal(await sessions.getByTestId('sessions-tool-all').getAttribute('aria-pressed'), 'true')
     await sessions.getByTestId('sessions-tool-codex').click()
     assert.equal(await sessions.getByTestId('sessions-tool-codex').getAttribute('aria-pressed'), 'true')
