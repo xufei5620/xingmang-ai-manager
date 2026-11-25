@@ -555,7 +555,7 @@ export interface SystemService {
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   resetCodexDesktop(): Promise<void>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
-  /** resumeSessionId 只在 Codex 续接时由 ipc.ts 核对过后传入，见 cliLaunchArgv。 */
+  /** resumeSessionId 只在按记录续接（Codex、Claude Code、Grok CLI）时由 ipc.ts 核对过后传入，见 cliLaunchArgv。 */
   /** accountWork：排在安装后面的这段不算账号工作，轮到它执行时才算（#1085）。 */
   launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode, resumeSessionId?: string | null, accountWork?: QueuedAccountWork): Promise<CliLaunchResult>
   inspectCodexDesktop(): Promise<DesktopAppStatus>

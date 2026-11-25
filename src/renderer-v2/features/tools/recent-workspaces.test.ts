@@ -7,6 +7,8 @@ import {
   launchWorkspaces,
   opensUntouchedStarterWorkspace,
   recentWorkspaces,
+  recordResumable,
+  recordResumeChoice,
   resumeLaunchChoice,
   resumeNeedsRecheck,
   resumeStillLatest,
@@ -385,6 +387,33 @@ describe('resumeLaunchChoice', () => {
     expect(resumeLaunchChoice({ id: 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', provider: 'codex' })).toEqual({ resumeSessionId: 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
     expect(resumeLaunchChoice({ id: 'claude:1', provider: 'claude' })).toBe('resumeLast')
     expect(resumeLaunchChoice({ id: 'grok:1', provider: 'grok' })).toBe('resumeLast')
+  })
+})
+
+// 0.2.25 S1：记录页上三家都按记录 id 接，点哪条接哪条；首页照旧（上面那条）。
+describe('recordResumeChoice', () => {
+  it('resumes every tool on the records page by the record id', () => {
+    expect(recordResumeChoice({ id: 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', provider: 'codex' })).toEqual({ resumeSessionId: 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
+    expect(recordResumeChoice({ id: 'claude:1', provider: 'claude' })).toEqual({ resumeSessionId: 'claude:1' })
+    expect(recordResumeChoice({ id: 'grok:1', provider: 'grok' })).toEqual({ resumeSessionId: 'grok:1' })
+    expect(recordResumeChoice({ id: 'gemini:1', provider: 'gemini' })).toBe('resumeLast')
+  })
+})
+
+describe('recordResumable', () => {
+  it('offers to resume every record that is not archived and knows its folder, older ones of a folder included', () => {
+    const records = [
+      session({ id: 'claude:new', provider: 'claude', cwd: 'C:\\work\\app' }),
+      session({ id: 'claude:old', provider: 'claude', cwd: 'C:\\work\\app' }),
+      session({ id: 'codex:gone', provider: 'codex', cwd: 'C:\\work\\gone', cwdExists: false }),
+    ]
+    expect(records.map(recordResumable)).toEqual([true, true, true])
+  })
+
+  it('offers nothing for an archived record or one without a folder', () => {
+    expect(recordResumable(session({ archived: true, cwd: 'C:\\work\\app' }))).toBe(false)
+    expect(recordResumable(session({ cwd: '' }))).toBe(false)
+    expect(recordResumable(session({ cwd: '   ' }))).toBe(false)
   })
 })
 

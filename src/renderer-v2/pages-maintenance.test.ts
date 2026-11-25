@@ -248,12 +248,15 @@ describe('tutorial topics', () => {
     }
   })
 
-  it('states the three rules that decide whether 「继续对话」 is available', () => {
-    // 这三条都是命令行工具本身的限制（只能按文件夹找回最近一条），用户看不出来，
-    // 写错了会让人以为按钮坏了。
+  it('states the rules that decide whether 「继续对话」 is available', () => {
+    // 用户看不出来哪条能接、哪条不能，写错了会让人以为按钮坏了。0.2.25 S1 起每条都按编号接，
+    // 不再是「只能接这个文件夹最近的一条」，那句话不能再出现。
     const text = tutorialText('sessions')
-    expect(text).toContain('最近一次对话')
+    expect(text).toContain('继续这次对话')
+    expect(text).not.toContain('最近一次对话')
+    expect(text).not.toContain('最近一条')
     expect(text).toContain('已归档')
+    expect(text).toContain('未记录文件夹')
     expect(text).toContain('文件夹已不存在')
     // 记录只在本机、保留期放长到一年，与记录页页头同一口径。
     expect(text).toContain('仅保存在本机')

@@ -231,6 +231,26 @@ export function resumeLaunchChoice(session: Pick<SessionSummary, 'id' | 'provide
 }
 
 /**
+ * 记录页的「继续对话」（0.2.25 S1）：三家命令行都能按对话编号接上任意一条（Codex 的 `resume <编号>`、
+ * Claude Code 和 Grok CLI 的 `--resume <编号>`），所以都带上这条记录的 id，由主进程从记录里读出编号、
+ * 核对过文件夹再按编号接，点哪条接哪条，同一文件夹里更早的那几条也能接。首页只放每个文件夹最近的
+ * 那一条，照旧用 resumeLaunchChoice。
+ */
+export function recordResumeChoice(session: Pick<SessionSummary, 'id' | 'provider'>): CliLaunchChoice {
+  return session.provider === 'codex' || session.provider === 'claude' || session.provider === 'grok'
+    ? { resumeSessionId: session.id }
+    : 'resumeLast'
+}
+
+/**
+ * 记录页上这一条能不能「继续对话」：没归档、记了文件夹就能（文件夹不在了的按钮照旧在，只是灰着）。
+ * 归档的已经被移出命令行自己的目录，它找不到；没记文件夹的不知道该在哪里打开。
+ */
+export function recordResumable(session: Pick<SessionSummary, 'archived' | 'cwd'>): boolean {
+  return !session.archived && session.cwd.trim() !== ''
+}
+
+/**
  * 「继续对话」点下去之前要不要先读一份最新的记录再对一次（已知4）。按文件夹接最近一条的那三家要：
  * 手上的列表可能是在终端里聊之前读的，刚聊的那条不在，按钮还挂在同一文件夹更早那条上。
  * Codex 带着记录 id 接，点哪条接哪条，不用对。

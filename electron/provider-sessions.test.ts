@@ -331,6 +331,71 @@ describe('ProviderSessionsService.resolveWorkspace', () => {
   })
 })
 
+// 0.2.25 S1：记录页上点哪条接哪条，交给命令行的编号从记录本身读出来。
+describe('ProviderSessionsService.resolveResumeTarget', () => {
+  const claudeUuid = '6b1f3c2a-0d4e-4f5a-9b8c-7d6e5f4a3b2c'
+  const olderClaudeUuid = '11111111-2222-4333-8444-555555555555'
+  const grokUuid = '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'
+  const codexUuid = '019a0000-0000-7000-8000-000000000001'
+
+  function seedResumable(data: Fixture): void {
+    // Claude Code 按文件名找对话；老版本续聊另起的文件里，开头几行还是上一段的 sessionId。
+    writeJsonLines(path.join(data.claude, 'project-a', `${claudeUuid}.jsonl`), [
+      { type: 'user', sessionId: olderClaudeUuid, cwd: 'C:/claude', message: { role: 'user', content: '接着上次' } },
+      { type: 'user', sessionId: claudeUuid, cwd: 'C:/claude', message: { role: 'user', content: '再问一句' } },
+    ])
+    writeJsonLines(path.join(data.claude, 'project-b', 'not-a-uuid.jsonl'), [
+      { type: 'user', sessionId: claudeUuid.replace('6b1f', '7c2e'), cwd: 'C:/claude-b', message: { role: 'user', content: '文件名认不出' } },
+    ])
+    writeJsonLines(path.join(data.claude, 'project-c', 'neither.jsonl'), [
+      { type: 'user', sessionId: '--dangerously-skip-permissions', cwd: 'C:/claude-c', message: { role: 'user', content: '都认不出' } },
+    ])
+    const grokDirectory = path.join(data.grok, 'encoded-cwd', grokUuid)
+    fs.mkdirSync(grokDirectory, { recursive: true })
+    fs.writeFileSync(path.join(grokDirectory, 'summary.json'), JSON.stringify({ info: { id: grokUuid, cwd: 'C:/grok' } }), 'utf8')
+    const strangeGrok = path.join(data.grok, 'encoded-cwd', 'strange')
+    fs.mkdirSync(strangeGrok, { recursive: true })
+    fs.writeFileSync(path.join(strangeGrok, 'summary.json'), JSON.stringify({ info: { id: 'my title --yolo', cwd: 'C:/grok-b' } }), 'utf8')
+  }
+
+  async function idsByFolder(sessions: ProviderSessionsService): Promise<Record<string, string>> {
+    const page = await sessions.list({ pageSize: 100 })
+    return Object.fromEntries(page.items.map((item) => [item.cwd, item.id]))
+  }
+
+  it('gives the folder and the id each tool resumes by, taking the Claude Code file name first', async () => {
+    const data = fixture()
+    seedResumable(data)
+    const sessions = service(data, codexReader([{ ...codexSummary(codexUuid), cwd: 'C:/codex' }]))
+    const ids = await idsByFolder(sessions)
+
+    await expect(sessions.resolveResumeTarget(ids['C:/claude']!)).resolves.toEqual({ workspace: 'C:/claude', sessionId: claudeUuid })
+    await expect(sessions.resolveResumeTarget(ids['C:/claude-b']!)).resolves.toEqual({ workspace: 'C:/claude-b', sessionId: claudeUuid.replace('6b1f', '7c2e') })
+    await expect(sessions.resolveResumeTarget(ids['C:/grok']!)).resolves.toEqual({ workspace: 'C:/grok', sessionId: grokUuid })
+    await expect(sessions.resolveResumeTarget(ids['C:/codex']!)).resolves.toEqual({ workspace: 'C:/codex', sessionId: codexUuid })
+  })
+
+  it('gives no id when the record holds nothing shaped like one, so the launch falls back to the latest in the folder', async () => {
+    const data = fixture()
+    seedResumable(data)
+    const sessions = service(data)
+    const ids = await idsByFolder(sessions)
+
+    await expect(sessions.resolveResumeTarget(ids['C:/claude-c']!)).resolves.toEqual({ workspace: 'C:/claude-c', sessionId: null })
+    await expect(sessions.resolveResumeTarget(ids['C:/grok-b']!)).resolves.toEqual({ workspace: 'C:/grok-b', sessionId: null })
+  })
+
+  it('refuses an id that belongs to no record', async () => {
+    const data = fixture()
+    seedResumable(data)
+    const sessions = service(data, codexReader([codexSummary(codexUuid)]))
+
+    await expect(sessions.resolveResumeTarget(`codex:${grokUuid}`)).rejects.toThrow('未找到这条记录')
+    await expect(sessions.resolveResumeTarget(`claude:${'0'.repeat(64)}`)).rejects.toThrow('未找到 claude 会话')
+    await expect(sessions.resolveResumeTarget(`grok:${'0'.repeat(64)}`)).rejects.toThrow('未找到 grok 会话')
+  })
+})
+
 describe('ProviderSessionsService', () => {
   it('passes the Codex export incompleteness through the unified result, defaulting to complete (#491)', async () => {
     const data = fixture()
