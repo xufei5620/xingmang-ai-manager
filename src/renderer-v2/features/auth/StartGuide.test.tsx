@@ -172,8 +172,22 @@ describe('renderer-v2 start guide first run', () => {
   it('opens the chat route with 星芒 as the name of the app', () => {
     stubResumedGuide('chat', 'ready')
     const markup = render([guideTool()])
-    expect(markup).toContain('从一个问题开始，慢慢熟悉星芒。')
+    expect(markup).toContain('请从一个问题开始，逐步熟悉星芒。')
     expect(markup).not.toContain('AI 工作台')
+  })
+
+  // 0.2.25 侧栏的「聊天」已是「创作」，提问不用密钥（yoyo 2026-11-26「引导跟创作走」）。
+  it('points the chat route at 创作 and promises no key on the way', () => {
+    stubResumedGuide('chat', 'prepare')
+    expect(render([guideTool()])).toContain('在「创作」中直接提问，费用从当前账号余额扣除。')
+    stubResumedGuide('chat', 'connect')
+    expect(render([guideTool()])).toContain('创作与各工具共用当前账号的余额。')
+    const guest = render([guideTool()], { signedIn: false, accountName: null })
+    expect(guest).toContain('登录后即可使用')
+    expect(guest).toContain('登录后即可在「创作」中提问，无需任何配置。')
+    expect(guest).not.toContain('密钥')
+    stubResumedGuide('chat', 'ready')
+    expect(render([guideTool()])).toMatch(/data-testid="guide-chat"[^>]*>(?:(?!<\/button>).)*前往创作/)
   })
 
   it('keeps the ready wording when the empty wallet is not what the tool spends', () => {
@@ -621,7 +635,7 @@ describe('guide choose step descriptions', () => {
   it('describes each start option by what it does', () => {
     stubResumedGuide('claude', 'choose')
     const markup = render(['claude', 'codex', 'codexDesktop', 'grok'].map((id) => guideTool({ id: id as GuideToolState['id'] })), { platform: 'win' })
-    for (const text of ['在终端中由 AI 阅读项目、修改代码', '终端版，和桌面端共用配置', '无需终端，安装后即可编写代码', '在终端里用 Grok 读项目、改代码', '无需安装，直接提问', '请选择一项，之后可随时安装其他工具。']) expect(markup).toContain(text)
+    for (const text of ['在终端中由 AI 阅读项目、修改代码', '终端版，与桌面端共用配置', '无需终端，安装后即可编写代码', '在终端中由 Grok 阅读项目、修改代码', '无需安装，在「创作」中提问', '请选择一项，之后可随时安装其他工具。']) expect(markup).toContain(text)
     expect(markup).not.toContain('运行环境')
   })
 
@@ -653,8 +667,8 @@ describe('guide routes that install nothing', () => {
   it('lists images-and-videos last, after chat, unless the account cannot use the video page', () => {
     // 不接上一条用例留下的进度：要看的是第一步。
     const html = render([guideTool()], { resumeKey: undefined })
-    expect(html.indexOf('先在星芒里聊天')).toBeLessThan(html.indexOf('做图、做视频'))
-    expect(html).toContain('无需安装，使用画布和视频剪辑')
+    expect(html.indexOf('在星芒中直接提问')).toBeLessThan(html.indexOf('生成图片和视频'))
+    expect(html).toContain('无需安装，在「创作」中使用画布和视频')
     expect(html).toContain('data-testid="guide-route-create"')
     expect(render([guideTool()], { resumeKey: undefined, createAvailable: false })).not.toContain('guide-route-create')
   })

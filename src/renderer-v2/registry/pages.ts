@@ -7,7 +7,7 @@ export const pages = [
   { id: 'sessions', label: '记录', icon: 'clock', group: 'daily', template: 'T3', testId: 'page-sessions' },
   { id: 'canvas', label: '画布', icon: 'infinity', group: 'daily', template: '独立窗口', testId: 'nav-canvas' },
   { id: 'video', label: '视频剪辑', icon: 'clapperboard', group: 'daily', template: 'T1', testId: 'page-video' },
-  { id: 'remote', label: '手机遥控', icon: 'smartphone', group: 'daily', template: 'T1', testId: 'page-remote' },
+  { id: 'remote', label: '遥控', icon: 'smartphone', group: 'daily', template: 'T1', testId: 'page-remote' },
   { id: 'acceleration', label: '网络加速', icon: 'globe-2', group: 'daily', template: 'T5', testId: 'page-acceleration' },
   { id: 'extensions', label: '插件', icon: 'puzzle', group: 'extend', template: '专用', testId: 'page-extensions' },
   { id: 'featured', label: '精选', icon: 'star', group: 'extend', template: 'T1', testId: 'page-featured' },
@@ -77,7 +77,7 @@ export const pageSearchKeywords: Record<Exclude<PageId, SettingsPageAlias | Reti
   // 老名字「聊天」「画布」「视频剪辑」和它们原来的说法都落到这一页。
   chat: ['聊天', '对话', '问答', '提问', '生图', '画图', '分组', '模型', '画布', '工作流', '视频剪辑', '视频', '剪视频', '剪辑', '生成视频', '一句话出片', '分镜', '短视频', '拼视频', '字幕'],
   sessions: ['历史', '会话', '聊天记录', '接着聊', '继续对话'],
-  remote: ['遥控', '手机', '飞书', '微信', 'ClawBot', '机器人', '远程', '配对', '手机遥控 Codex'],
+  remote: ['遥控', '手机遥控', '手机', '飞书', '微信', 'ClawBot', '机器人', '远程', '配对', '手机遥控 Codex'],
   // 四页合成一页以后，旧页名和它们的说法都落到这里（搜「技能」另有「技能」那一条）。
   extensions: ['精选', '星芒精选', '推荐', '好用的', '扩展推荐', '外接工具', 'MCP', '外部工具', '自定义连接', '添加连接', '连接', 'Plugin', '扩展', '市场', '插件市场', '官方市场', '添加插件市场'],
   skills: ['Skill', '从文件夹导入', '从压缩包导入', '压缩包', 'zip', '导入技能'],

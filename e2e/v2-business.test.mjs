@@ -4001,7 +4001,7 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     // 退出登录也先问：确认后凭据清掉、遥控关掉，回到填应用的框。
     await card.getByRole('button', { name: '退出飞书登录', exact: true }).click()
     await confirm.getByRole('heading', { name: '退出飞书登录？', exact: true }).waitFor()
-    await confirm.getByText('退出后需重新填写机器人凭据，方可继续使用手机遥控。', { exact: true }).waitFor()
+    await confirm.getByText('退出后需重新填写机器人凭据，方可继续使用遥控。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '退出登录', exact: true }).click()
     await confirm.waitFor({ state: 'detached' })
     await card.getByTestId('settings-remote-feishu-form').waitFor()
@@ -4104,7 +4104,7 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
     await card.getByRole('button', { name: '退出微信登录', exact: true }).click()
     const logoutConfirm = card.getByTestId('settings-remote-weixin-confirm')
     await logoutConfirm.getByRole('heading', { name: '退出微信登录？', exact: true }).waitFor()
-    await logoutConfirm.getByText('退出后需重新使用微信扫码登录，方可继续使用手机遥控。', { exact: true }).waitFor()
+    await logoutConfirm.getByText('退出后需重新使用微信扫码登录，方可继续使用遥控。', { exact: true }).waitFor()
     await logoutConfirm.getByRole('button', { name: '取消', exact: true }).click()
     await logoutConfirm.waitFor({ state: 'detached' })
     assert.equal((await calls(page)).some((call) => call.name === 'remote-clear'), false)
@@ -4365,7 +4365,7 @@ test('the phone remote card says why it cannot be turned on while the manager ru
   const page = await fixture('page=remote&remoteElevated=1&remoteReady=1')
   try {
     const card = page.getByTestId('settings-remote-card')
-    await card.getByTestId('settings-remote-unavailable').getByText('星芒正以管理员身份运行，为保障安全，此时无法开启手机遥控。请以普通方式重新打开星芒。').waitFor()
+    await card.getByTestId('settings-remote-unavailable').getByText('星芒正以管理员身份运行，为保障安全，此时无法开启遥控。请以普通方式重新打开星芒。').waitFor()
     assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).isDisabled(), true)
     assert.equal(await card.getByTestId('settings-remote-workspace').isDisabled(), true)
     assert.equal(await card.getByTestId('settings-remote-feishu-edit').isDisabled(), true)
@@ -5144,7 +5144,7 @@ test('the phone remote page continues an existing Codex conversation or goes bac
       '整理接口文档~/projects/api · 11-20 09:12',
     ])
     assert.equal(await list.getByRole('radio', { name: /^新对话/ }).getAttribute('aria-checked'), 'true')
-    await dialog.getByText('继续已有对话时，如对话原有权限超出手机遥控允许的范围，将调整为「默认」，在电脑端继续时也将保持。手机遥控的规则（不发送密钥和密码、回复简洁等）也将保留在该对话中。请勿在电脑端和手机端同时向同一对话发送消息。', { exact: true }).waitFor()
+    await dialog.getByText('继续已有对话时，如对话原有权限超出遥控允许的范围，将调整为「默认」，在电脑端继续时也将保持。遥控的规则（不发送密钥和密码、回复简洁等）也将保留在该对话中。请勿在电脑端和手机端同时向同一对话发送消息。', { exact: true }).waitFor()
     await list.getByRole('radio', { name: /整理接口文档/ }).click()
     await dialog.getByRole('button', { name: '确定', exact: true }).click()
     await dialog.waitFor({ state: 'detached' })
@@ -5183,7 +5183,7 @@ test('the phone remote conversation list explains an empty list, an unchecked Co
     const dialog = page.getByTestId('settings-remote-conversation-dialog')
     await dialog.getByRole('radio', { name: /整理接口文档/ }).click()
     await dialog.getByRole('button', { name: '确定', exact: true }).click()
-    await dialog.getByRole('alert').getByText('该对话所在的文件夹不允许用于手机遥控，请选择其他对话。', { exact: true }).waitFor()
+    await dialog.getByRole('alert').getByText('该对话所在的文件夹不允许用于遥控，请选择其他对话。', { exact: true }).waitFor()
     await page.getByTestId('settings-remote-conversation-row').getByText('新对话，将在上方文件夹中开始。', { exact: true }).waitFor()
   } finally {
     await page.close()
