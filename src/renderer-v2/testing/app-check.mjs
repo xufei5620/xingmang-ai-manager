@@ -4349,6 +4349,35 @@ test('a clip still generating at the last quit is picked up when the page opens,
   } finally { await page.close() }
 })
 
+// 创作页复查第 3 条：换着开几条视频，模型表和价目只在开第一条时读；「刷新模型」照样重读。
+test('switching films reuses the models and prices read for the first one, and refreshing models still reads again', async () => {
+  const page = await openCreate('videoFilms=1&chatVideo=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    // 对话那边自己读的分组不算在里面：等它读完再数。
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.preparing === 'false')
+    const reads = async () => ({ groups: (await fixtureCalls(page, 'listAiChatGroups')).length, prepares: (await fixtureCalls(page, 'prepareAiChatGroup')).length, prices: (await fixtureCalls(page, 'getAccountPriceList')).length })
+    const textModelSettled = () => page.waitForFunction(() => document.querySelector('[data-testid=create-video-pane]:not([hidden]) [data-testid=video-text-model]')?.dataset.model === 'gpt-test')
+    const before = await reads()
+    await page.getByTestId('create-item-video-fixture-film-cat').click()
+    await textModelSettled()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'getAccountPriceList'))
+    const first = await reads()
+    // 开第一条时读（开发版 StrictMode 挂上时把这一下跑两遍，所以只看读了没有）。
+    assert.ok(first.groups > before.groups && first.prepares > before.prepares && first.prices > before.prices)
+    for (const id of ['fixture-film-sea', 'fixture-film-cat', 'fixture-film-sea']) {
+      await page.getByTestId(`create-item-video-${id}`).click()
+      await page.waitForFunction((key) => document.querySelector('[data-testid=create-video-pane]:not([hidden])') && document.querySelector('[data-testid=create-item-video-' + key + ']')?.getAttribute('aria-current') !== null, id)
+      await textModelSettled()
+    }
+    assert.deepEqual(await reads(), first)
+    await page.getByTestId('video-text-model').click()
+    await page.getByTestId('video-text-model-refresh').click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'listAiChatGroups').length > count, first.groups)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a film opens from the column into its workbench on the right, and is renamed and deleted from there', async () => {
   const page = await openCreate('videoFilms=1')
   try {

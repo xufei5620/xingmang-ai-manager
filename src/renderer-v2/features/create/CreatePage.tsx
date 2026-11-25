@@ -12,6 +12,7 @@ import { PageLoading } from '../app/PageLoading'
 import { ChatPage, type ChatPageCreate, type ChatPageProps, type ChatPageVideo } from '../chat/ChatPage'
 import type { ChatVideoFilm } from '../chat/ChatVideo'
 import { chatAssetSaveErrorMessage, type ChatSite } from '../chat/state'
+import { createVideoStudioCatalogCache } from '../video-studio/catalog-cache'
 import { cleanVideoStudioItemName, maxVideoStudioItemNameLength, maxVideoStudioProjects, videoStudioItemName, type VideoStudioItem } from '../video-studio/library'
 import { useVideoStudioPriceList, videoStudioPerCallUsd, videoStudioQuoteText } from '../video-studio/prices'
 import { appendVideoStudioClip, canAddVideoStudioShot, createVideoStudioProjectFromClip, createVideoStudioProjectFromClips, videoStudioDraftProgress, type VideoStudioClipSource } from '../video-studio/project'
@@ -122,6 +123,8 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const toast = useToast()
   const library = useVideoStudioLibrary(bridge, accountScope)
   const session = useVideoStudioSession(library)
+  // 换着开几条视频时共用一份模型表；这一层按账号挂（CreatePage 的 key），换账号自然丢掉。
+  const [studioOptions] = useState(() => ({ catalog: createVideoStudioCatalogCache() }))
   const canvas = useCanvasProjects(bridge, active)
   const canvasProjectsRef = useRef(canvas.projects)
   canvasProjectsRef.current = canvas.projects
@@ -340,7 +343,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
       </div></header>
       <div className="create-studio"><Suspense fallback={<PageLoading />}>
         <VideoStudioPage key={`${openItem.id}:${library.revision(openItem.id)}`} bridge={bridge} accountScope={accountScope} site={site} access={videoAccess} active={active && videoShown}
-          source={library.source(openItem.id)} onBusyChange={session.setBusy} onOpenAccount={chat.onOpenAccount} library={studioLibrary} />
+          source={library.source(openItem.id)} onBusyChange={session.setBusy} onOpenAccount={chat.onOpenAccount} library={studioLibrary} options={studioOptions} />
       </Suspense></div>
     </div>}
   </>
