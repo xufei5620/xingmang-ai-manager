@@ -592,17 +592,13 @@
 :is([data-reduce-motion='1'], [data-reduced-motion='true'], [data-system-reduced-motion='true']) .v2-business-placeholder {
   animation: none;
 }
-.v2-business-code,
-.v2-business-legal {
+.v2-business-code {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 420px;
   overflow: auto;
   font: 12px/1.65 var(--mono);
   color: var(--text-2);
-}
-.v2-business-legal {
-  font: 14px/1.75 var(--font);
 }
 /* 卸载没删干净的框：「帮我清理」放在「复制命令」前面，连同「命令已复制」排一行。 */
 .v2-manual-uninstall-actions {

@@ -285,7 +285,7 @@ describe('codex-remote-store', () => {
   })
 
   it('words the refused change for the customer', () => {
-    expect(settingsUnreadableMessage).toBe('本次修改未生效：暂时无法读取本机保存的手机遥控设置，为避免原有设置丢失，未做任何改动。请稍后重试。')
+    expect(settingsUnreadableMessage).toBe('本次修改未生效：暂时无法读取本机保存的遥控设置，为避免原有设置丢失，未做任何改动。请稍后重试。')
   })
 
   it('encrypts credentials at rest and clears them', async () => {

@@ -307,6 +307,15 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
     else if (library.items[0]) showVideo(library.items[0].id)
     else if (videoAccess === 'ready') startVideo()
   }, [active, openVideo, library.status])
+  // 上次关软件、重启装更新时还在出的片段：工作台挂上才去接回，以前要客户点开那条视频才挂。读完列表、右边没开着视频时，
+  // 把有片段在出的那一条悄悄挂上（不切过去），同对话里出视频一开页面就接。只在读完的那一次看。
+  const resumeChecked = useRef(false)
+  useEffect(() => {
+    if (resumeChecked.current || library.status !== 'ready' || videoAccess !== 'ready') return
+    resumeChecked.current = true
+    const pending = session.openId ? null : library.items.find((item) => item.project.shots.some((shot) => shot.status === 'generating' && shot.requestId))
+    if (pending) session.open(pending.id)
+  }, [library.status, videoAccess])
   // 顶部搜索的「作品库」。
   useEffect(() => {
     if (!active || !openLibrary) return

@@ -24,7 +24,7 @@ export const verifyPages = Object.freeze([
   { id: 'sessions', label: '记录' },
   { id: 'canvas', label: '画布', window: 'canvas', via: 'chat', opener: 'create-card-canvas' },
   { id: 'video', label: '视频剪辑', via: 'chat', opener: 'create-card-video' },
-  { id: 'remote', label: '手机遥控' },
+  { id: 'remote', label: '遥控' },
   { id: 'extensions', label: '插件' },
   { id: 'tutorial', label: '教程' },
   { id: 'health', label: '检查' },

@@ -1262,12 +1262,12 @@ test('a replaced manual client key cannot save the previous key first detected m
   } finally { await page.close() }
 })
 
-// YF-6：首页 Codex CLI 的「…」里有一项直接去手机遥控，桌面端不给；0.2.25 起去的是左侧栏「手机遥控」那一页。
+// YF-6：首页 Codex CLI 的「…」里有一项直接去手机遥控，桌面端不给；0.2.25 起去的是左侧栏「遥控」那一页（原名「手机遥控」）。
 test('the home Codex CLI menu leads to the phone remote page', async () => {
   const page = await open()
   try {
     await page.getByRole('button', { name: 'Codex CLI 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '手机遥控', exact: true }).click()
+    await page.getByRole('menuitem', { name: '遥控', exact: true }).click()
     const remote = page.getByTestId('page-remote')
     await remote.waitFor()
     await remote.getByTestId('settings-remote-card').waitFor()
@@ -4326,6 +4326,29 @@ test('the column lists what it could read and names the kind it could not', asyn
   }
 })
 
+// 创作页复查第 2 条：上次关软件时还在出的那一段，重开后不用点开那条视频就去接回；右边照旧是起始页。
+test('a clip still generating at the last quit is picked up when the page opens, without opening its film', async () => {
+  const page = await openCreate('videoFilms=pending&chatVideo=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    const row = page.getByTestId('create-item-video-fixture-film-cat')
+    await row.waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'resumeAiVideo'))
+    assert.deepEqual([...new Set((await fixtureCalls(page, 'resumeAiVideo')).map(([id]) => id))], ['fixture-pending-clip'])
+    assert.equal(await fixtureCalls(page, 'generateAiVideo').then((calls) => calls.length), 0)
+    await page.getByTestId('create-start').waitFor()
+    assert.equal(await page.getByTestId('create-video-pane').isHidden(), true)
+    await page.evaluate(() => window.v2Test.releaseChatVideo())
+    await expect(row).toContainText('已生成 1 段')
+    await page.getByTestId('create-start').waitFor()
+    // 点开它：接回来的那一段已经在第一镜上。
+    await row.click()
+    await page.getByTestId('create-video-pane').waitFor()
+    await expect(page.locator('.video-studio-shot').first()).toHaveAttribute('data-status', 'done')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a film opens from the column into its workbench on the right, and is renamed and deleted from there', async () => {
   const page = await openCreate('videoFilms=1')
   try {
@@ -4612,6 +4635,55 @@ test('the start cards sit fully above the composer in a short window without cha
       const shown = await layout()
       assert.deepEqual({ ...shown, top: undefined }, { top: undefined, scrolled: 0, cards: 2, hidden: [] }, `${height}px tall`)
     }
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 升级上来的客户头一次进来，起始页上面多一条「已合并至此页」的提示，三张卡都在时最挤：820 高露不全，740、680 挡掉一截。
+test('the start cards stay above the composer in a short window while the merge notice sits on top', async () => {
+  const page = await openCreate('library=1&videoFilms=library&chatVideo=1&canvasProjects=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-intro').waitFor()
+    await page.getByTestId('create-card-clips').waitFor()
+    await page.getByTestId('chat-example-1').waitFor()
+    const layout = () => page.getByTestId('chat-empty').evaluate((empty) => {
+      const messages = empty.closest('.chat-messages')
+      const bottom = messages.getBoundingClientRect().bottom
+      const cards = [...messages.querySelectorAll('.create-card')]
+      const lowest = Math.max(...cards.map((card) => card.getBoundingClientRect().bottom))
+      return { scrolled: messages.scrollTop, cards: cards.length, hidden: cards.filter((card) => card.getBoundingClientRect().bottom > bottom + 0.5).map((card) => card.dataset.testid), spare: Math.round(bottom - lowest) }
+    })
+    // 宽留在 1280，理由同上一条（侧栏收窄要等一拍）。余量随字体差十几二十像素（CI 的 Chromium 上提示那句话会多折一行），
+    // 红了先看报出来的 spare 差多少。
+    for (const height of [820, 740, 680]) {
+      await page.setViewportSize({ width: 1280, height })
+      const { spare, ...seen } = await layout()
+      assert.deepEqual(seen, { scrolled: 0, cards: 3, hidden: [] }, `${height}px tall, ${spare}px left under the cards`)
+    }
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 起始页那句说明原来宽度上限 460，正好差一点放不下，最后「账号。」两个字掉到第二行（yoyo 2026-11-26「说明排一行」）。
+// 常用的 1280 × 820 和 1100 × 680 小窗口里都要排成一行；1100 宽时侧栏收成窄条，等它收好了再量。
+test('the start page line stays on one line at the design size and in the small window', async () => {
+  const page = await openCreate()
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-start').waitFor()
+    const lead = page.getByTestId('chat-empty').locator('p').first()
+    await lead.waitFor()
+    assert.equal(await lead.innerText(), '提问、写作、绘图、制作视频均可在下方输入框中完成，额度与工具共用同一账号。')
+    const lines = () => lead.evaluate((paragraph) => {
+      const range = document.createRange()
+      range.selectNodeContents(paragraph)
+      return new Set([...range.getClientRects()].filter((rect) => rect.width > 0).map((rect) => Math.round(rect.top))).size
+    })
+    assert.equal(await lines(), 1, '1280 × 820')
+    await page.setViewportSize({ width: 1100, height: 680 })
+    await page.waitForFunction(() => document.querySelector('.v2-shell')?.dataset.narrow === 'true')
+    assert.equal(await lines(), 1, '1100 × 680')
     await clean(page)
   } finally { await page.close() }
 })
@@ -6451,6 +6523,27 @@ test('restoring the normal display offers a relaunch from the same corner', asyn
     await page.getByTestId('startup-notice-display-relaunch-primary').click()
     await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length)).toBe(1)
     await expect.poll(() => page.getByTestId('startup-notice-display-relaunch').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 设置 › 隐私数据的协议跟欢迎页、登录框是同一个弹窗：固定读星芒账号那一份（两个账号共用），按排版显示。
+// 以前设置页自己按当前账号读：历史账号报「当前账号暂不支持此功能」，星芒账号显示的是带 # 的源码。
+for (const [label, query] of [['NewAPI', ''], ['Sub2API', 'sub2api=1']]) test(`settings opens the agreement and privacy policy in the shared legal dialog for signed-in ${label}`, async () => {
+  const page = await open(query)
+  try {
+    const settings = await openSettingsGroup(page, '隐私数据')
+    for (const [testId, title] of [['settings-legal-user-agreement', '用户协议'], ['settings-legal-privacy-policy', '隐私政策']]) {
+      await settings.getByTestId(testId).click()
+      const dialog = page.getByRole('dialog', { name: title, exact: true })
+      await dialog.getByRole('heading', { name: '本地协议', exact: true }).waitFor()
+      assert.equal(await dialog.getByText('# 本地协议').count(), 0)
+      await dialog.getByTestId('legal-document-close').click()
+      await dialog.waitFor({ state: 'detached' })
+    }
+    // 开发版的 StrictMode 会把读协议的 effect 跑两遍：只看读了哪几份、是不是都读的星芒账号那一份。
+    const legalCalls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getLegalDocument').map((entry) => entry.args.join(' ')))
+    assert.deepEqual([...new Set(legalCalls)], ['user-agreement solov', 'privacy-policy solov'])
     await clean(page)
   } finally { await page.close() }
 })
@@ -11475,7 +11568,7 @@ test('every settings row the search can name is on the settings page, in the reg
   } finally { await page.close() }
 })
 
-// 手机遥控开着时坐在电脑前的人要看得到：状态栏亮「手机遥控中」，点了落到左侧栏那一页（0.2.25）。
+// 手机遥控开着时坐在电脑前的人要看得到：状态栏亮「遥控中」，点了落到左侧栏那一页（0.2.25）。
 test('the status bar says the phone remote is on and leads to its page', async () => {
   const page = await open()
   try {

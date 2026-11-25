@@ -33,7 +33,7 @@ import {
  * 用的是原来卡片说明末尾那两句（第五批已定的正式说法）。
  */
 export const codexRemotePageText = {
-  title: '手机遥控',
+  title: '遥控',
   lead: '不在电脑前时，在手机上私聊您的机器人，即可远程操作本机的 Codex，使用当前账号的额度。',
   methodsTitle: '连接方式',
   methodsMeta: '开启一种即可，也可同时开启两种',
@@ -56,7 +56,7 @@ export const codexRemoteAdminAccountNotice = '本机登录的 Windows 账号自�
 /** 凭据存不到下次打开时卡上那条（Linux 没有系统钥匙串时只记在内存里，见 codex-remote-store.ts）。 */
 export const codexRemotePersistenceNotices = {
   'session-only': { tone: 'neutral', title: '凭据仅在本次运行期间保存', body: '本机没有系统钥匙串，下次打开星芒时需重新填写。' },
-  unavailable: { tone: 'warn', title: '凭据无法保存', body: '本机无法安全保存凭据，手机遥控暂不可用。' },
+  unavailable: { tone: 'warn', title: '凭据无法保存', body: '本机无法安全保存凭据，遥控暂不可用。' },
 } as const
 
 /**
@@ -550,7 +550,7 @@ export function CodexRemotePageView({ snapshot, api, busy, run, error, navigate,
         )}
         <div className="v2-remote-notices">
           {!snapshot.available && snapshot.unavailableReason && (
-            <Notice tone="warn" title="本机当前无法开启手机遥控" body={snapshot.unavailableReason} testId="settings-remote-unavailable" />
+            <Notice tone="warn" title="本机当前无法开启遥控" body={snapshot.unavailableReason} testId="settings-remote-unavailable" />
           )}
           {snapshot.codexStartFailed && (
             <Notice

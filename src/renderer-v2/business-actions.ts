@@ -7,7 +7,7 @@ import type { ActiveProviderId } from '../../electron/catalog'
 import type { ToolJob } from './features/tools/useToolbox'
 import type { ChatTransfer } from './features/chat/transfer'
 import type { V2Bridge, V2Page } from './types'
-import type { AppSettingsV2Update, InstallCancelResult } from '../../electron/ipc-contract'
+import type { AppSettingsV2Update, InstallCancelResult, LegalDocumentKind } from '../../electron/ipc-contract'
 import type { LoginTarget } from './features/auth/api'
 
 type AppSettings = Awaited<ReturnType<V2Bridge['getSettings']>>
@@ -42,6 +42,12 @@ export type BusinessActions = {
   /** 个人中心「当前登录」里的「切换账号」：弹出切换账号框；缺省 = 按钮点不了。 */
   switchAccount?: () => void
   openHelp?: () => void
+  /**
+   * 设置 › 隐私数据的「用户协议」「隐私政策」：打开欢迎页、登录框用的那个协议弹窗（固定读星芒账号那一份、
+   * 按排版显示）。设置页以前自己按当前账号去读，历史账号那边没有协议，点了报「当前账号暂不支持此功能」；
+   * 读到的也原样显示成 Markdown 源码。缺省 = 这两颗按钮不出现。
+   */
+  openLegal?: (kind: LegalDocumentKind) => void
   onAccountChanged?: () => void
   onSettingsChanged?: (settings: AppSettings) => void
   openConfig?: (provider: Provider) => void
