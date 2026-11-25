@@ -46,7 +46,7 @@ describe('codex-remote parsers', () => {
     expect(parseRemotePermission('default')).toBe('default')
     expect(parseRemotePermission('readOnly')).toBe('readOnly')
     for (const value of ['fullAccess', 'danger-full-access', 'workspace-write', 'read-only', 'never', 'on-request', '', null, undefined, 1, ['default'], { permission: 'default' }]) {
-      expect(() => parseRemotePermission(value)).toThrow('手机遥控权限参数无效')
+      expect(() => parseRemotePermission(value)).toThrow('遥控权限参数无效')
     }
   })
 

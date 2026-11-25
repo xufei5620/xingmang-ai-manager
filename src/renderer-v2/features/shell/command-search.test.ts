@@ -110,8 +110,8 @@ describe('searchCommands', () => {
 
   // 手机遥控 0.2.25 从设置 › 工具管理挪到左侧栏单独一页：老说法搜到的是这一页，设置里不再有那一行。
   it('finds the phone remote page by the words the old settings card answered to', () => {
-    for (const word of ['飞书', '微信', '遥控', '手机遥控 Codex', 'ClawBot', '配对']) {
-      expect(searchCommands(word)[0], word).toMatchObject({ group: 'page', page: 'remote', label: '手机遥控' })
+    for (const word of ['飞书', '微信', '遥控', '手机遥控', '手机遥控 Codex', 'ClawBot', '配对']) {
+      expect(searchCommands(word)[0], word).toMatchObject({ group: 'page', page: 'remote', label: '遥控' })
       expect(searchCommands(word).some((item) => item.section === 'codex-remote'), word).toBe(false)
     }
   })

@@ -218,8 +218,8 @@ export type CodexRemoteReleaseAction = 'update' | 'uninstall'
 
 /** 遥控里的 Codex 正在干活，不替客户停它（#1407 P3-3，yoyo 10-29「按推荐」）。 */
 export const codexRemoteBusyMessages: Readonly<Record<CodexRemoteReleaseAction, string>> = {
-  update: '手机遥控中的 Codex 正在处理任务，请待其完成后再更新，或先在设置中关闭手机遥控。',
-  uninstall: '手机遥控中的 Codex 正在处理任务，请待其完成后再卸载，或先在设置中关闭手机遥控。',
+  update: '遥控中的 Codex 正在处理任务，请待其完成后再更新，或先在「遥控」页关闭遥控。',
+  uninstall: '遥控中的 Codex 正在处理任务，请待其完成后再卸载，或先在「遥控」页关闭遥控。',
 }
 
 const developerInstructions = [
@@ -655,7 +655,7 @@ export function validateRemoteWorkspace(directory: unknown, homeDirectory: strin
     throw new Error('请选择一个文件夹。')
   }
   const kind = classifyWorkspace(directory, { platform, home: homeDirectory })
-  if (kind) throw new Error(`该文件夹是${sensitiveWorkspaceLabel(kind)}，无法用于手机遥控，请选择具体的项目文件夹。`)
+  if (kind) throw new Error(`该文件夹是${sensitiveWorkspaceLabel(kind)}，无法用于遥控，请选择具体的项目文件夹。`)
   let info: fs.Stats
   try {
     info = fs.statSync(directory)
@@ -1663,7 +1663,7 @@ export class CodexRemoteService {
         await this.setChannelEnabled(id, true)
         opened.push(id)
       } catch (error) {
-        failure ??= errorMessage(error, '手机遥控未能开启。')
+        failure ??= errorMessage(error, '遥控未能开启。')
         this.options.log('warn', 'remote.tray-enable-failed', { channel: id })
       }
     }
@@ -3851,7 +3851,7 @@ export class CodexRemoteService {
         if (this.disposed || !this.hasEnabledChannel()) {
           this.options.log('info', 'remote.codex-start-abandoned')
           await this.retireClient(client)
-          throw new Error('手机遥控已关闭')
+          throw new Error('遥控已关闭')
         }
         this.codex = client
         this.codexVersion = readCodexVersion(initialize)
