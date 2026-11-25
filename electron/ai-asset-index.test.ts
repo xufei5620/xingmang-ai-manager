@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { indexOwnedAssetFiles } from './ai-asset-index'
 
 const imagePattern = /^xingmang-([A-Za-z0-9_-]{43})\.(png|jpg|webp)$/
@@ -24,6 +24,7 @@ function assetId(seed: string): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   while (roots.length > 0) fs.rmSync(roots.pop() as string, { recursive: true, force: true })
 })
 
@@ -68,6 +69,45 @@ describe('indexOwnedAssetFiles', () => {
       accountRoot: root, mediaType: 'image', filePattern: imagePattern, label: 'AI 图片资产', maximum: 3,
     })
     expect(index).toHaveLength(3)
+  })
+
+  it('reads the creation times of many files at once and still lists them newest first up to the ceiling', async () => {
+    const root = temporaryRoot()
+    for (let position = 0; position < 150; position += 1) writeAsset(root, '2026-08-14', assetId(`m${String(position).padStart(3, '0')}`))
+    const lstat = fs.promises.lstat.bind(fs.promises)
+    let inFlight = 0
+    let most = 0
+    vi.spyOn(fs.promises, 'lstat').mockImplementation(async (target, options) => {
+      inFlight += 1
+      most = Math.max(most, inFlight)
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      inFlight -= 1
+      return lstat(target, options)
+    })
+    const index = await indexOwnedAssetFiles({
+      accountRoot: root, mediaType: 'image', filePattern: imagePattern, label: 'AI 图片资产', maximum: 100,
+    })
+    expect(most).toBeGreaterThan(1)
+    expect(most).toBeLessThanOrEqual(8)
+    expect(index.map((entry) => entry.assetId)).toEqual(Array.from({ length: 100 }, (_, position) => assetId(`m${String(149 - position).padStart(3, '0')}`)))
+    // At the ceiling at most one window of 64 files is looked at past what is listed.
+    expect(vi.mocked(fs.promises.lstat).mock.calls.length).toBeLessThanOrEqual(128)
+  })
+
+  it('leaves out a file removed after the listing and takes the next copy of that identifier in the same folder', async () => {
+    const root = temporaryRoot()
+    writeAsset(root, '2026-08-14', assetId('gone'), 'webp')
+    writeAsset(root, '2026-08-14', assetId('gone'), 'png')
+    writeAsset(root, '2026-08-14', assetId('kept'))
+    const lstat = fs.promises.lstat.bind(fs.promises)
+    vi.spyOn(fs.promises, 'lstat').mockImplementation(async (target, options) => {
+      if (String(target).endsWith('.webp')) throw Object.assign(new Error('gone'), { code: 'ENOENT' })
+      return lstat(target, options)
+    })
+    const index = await indexOwnedAssetFiles({
+      accountRoot: root, mediaType: 'image', filePattern: imagePattern, label: 'AI 图片资产',
+    })
+    expect(index.map((entry) => [entry.assetId, entry.extension])).toEqual([[assetId('kept'), 'png'], [assetId('gone'), 'png']])
   })
 
   it('tells the owning store where each indexed file lives, newest copy only', async () => {
