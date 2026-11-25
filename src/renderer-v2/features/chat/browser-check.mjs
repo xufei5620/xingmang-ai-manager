@@ -264,6 +264,7 @@ test('one menu lists the models of every group by vendor, each naming the group 
     // 计费提示只留输入框下面那一句，右上角那个「自动 · 费用不可预测」去掉了。
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，回复越长花得越多。')
     assert.equal(await page.getByText('回答由模型生成，可能有误，重要内容请核对。', { exact: false }).count(), 1)
+    assert.equal(await page.getByTestId('chat-compose-note').textContent(), '回答由模型生成，可能有误，重要内容请核对。按实际用量计费，回复越长花得越多。')
     assert.equal(await page.getByText('自动 · 费用不可预测', { exact: true }).count(), 0)
   } finally { await page.close() }
 })
@@ -421,6 +422,9 @@ test('image controls use real model capabilities and asset actions use opaque id
     await pickChoice(page, 'chat-image-resolution', '分辨率', '2K')
     assert.equal(await page.getByTestId('chat-image-resolution').textContent(), '分辨率：2K')
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费。')
+    // 0.2.25 C3：出图没有「回答」可核对，「生成图片」这一档换成说图片的那一句；文本对话那句照旧（见上面模型菜单那条）。
+    assert.equal(await page.getByTestId('chat-compose-note').textContent(), '图片由模型生成，按实际用量计费。')
+    assert.equal(await page.getByText('回答由模型生成', { exact: false }).count(), 0)
     const request = await send(page, 'A test scene')
     assert.equal(request.quality, 'high')
     assert.equal(request.imageResolution, '2K')
@@ -1079,6 +1083,7 @@ test('generating an image takes reference pictures and a generated one to keep e
     await attach.click()
     await page.locator('.chat-draft-image').first().waitFor()
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，带参考图的会更贵一些。')
+    assert.equal(await page.getByTestId('chat-compose-note').textContent(), '图片由模型生成，按实际用量计费，带参考图的会更贵一些。')
     // 光有参考图不够，要写上怎么改。
     assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
     await page.getByTestId('chat-composer-input').fill('把背景换成海边')
