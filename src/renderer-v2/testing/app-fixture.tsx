@@ -410,6 +410,11 @@ if (query.get('videoFilms') === 'library') {
     exported: { assetId: fixtureLibraryFilmId, thumbnailUrl: assetThumbnailUrl(fixtureLibraryFilmId, 'video'), width: 1280, height: 720, durationSeconds: 10 },
   } }
 }
+// ?videoFilms=pending：上次关软件时「橘猫回家」第一镜还在出，记着请求号；重开后去接回（resumeAiVideo），releaseChatVideo 才交出来。
+if (query.get('videoFilms') === 'pending') {
+  const cat = fixtureFilms[0].project
+  fixtureFilms[0] = { ...fixtureFilms[0], project: { ...cat, shots: cat.shots.map((shot, index) => index === 0 ? { ...shot, requestId: 'fixture-pending-clip' } : shot) } }
+}
 if (query.has('videoFilms')) videoProjectFiles.set(fixtureVideoScope, { index: null, projects: new Map(fixtureFilms.map((film) => { const file = serializeVideoStudioItem(film); return [file.key, file.content] })) })
 if (query.has('legacyVideoDrafts')) {
   // 照 0.2.24 的两格写：手头那一条没有时间，草稿箱里的带 savedAt。刷新页面时已经有了就不重写，同真机上「老版本留下的」。
@@ -1183,6 +1188,14 @@ const methods = {
     await new Promise<void>((resolve) => { releaseChatVideo = resolve })
     // 一单一段：编号跟着请求号走，两段不会撞成同一个。缩略图地址是主进程给的那种：视频工作台读回一条视频时只认这种，别的当这一段没有。
     const assetId = input.requestId.replace(/[^A-Za-z0-9_-]/g, '').padEnd(43, 'c').slice(0, 43)
+    addFixtureLibraryEntry({ assetId, mediaType: 'video', createdAt: new Date().toISOString(), fileName: `${assetId}.mp4` })
+    return { assetId, thumbnailUrl: assetThumbnailUrl(assetId, 'video'), width: 1280, height: 720, durationSeconds: 5 }
+  },
+  resumeAiVideo: async (requestId) => {
+    if (query.get('videoFilms') !== 'pending') { window.v2Test.unexpected.push('resumeAiVideo'); throw new Error('Missing mock: resumeAiVideo') }
+    // StrictMode 把挂上时那一下跑两遍，同一个请求号会问两遍（主进程两遍接的是同一份）：一次放行两边都交。
+    await new Promise<void>((resolve) => { const earlier = releaseChatVideo; releaseChatVideo = () => { earlier(); resolve() } })
+    const assetId = requestId.replace(/[^A-Za-z0-9_-]/g, '').padEnd(43, 'c').slice(0, 43)
     addFixtureLibraryEntry({ assetId, mediaType: 'video', createdAt: new Date().toISOString(), fileName: `${assetId}.mp4` })
     return { assetId, thumbnailUrl: assetThumbnailUrl(assetId, 'video'), width: 1280, height: 720, durationSeconds: 5 }
   },
