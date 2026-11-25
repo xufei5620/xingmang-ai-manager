@@ -1325,6 +1325,13 @@ if (!hasSingleInstanceLock) {
         runtimeLog.exception('network', 'codex-payload.notify-failed', cause)
       }
     }
+    // 替 Antigravity 跟上了账号、线路：界面只重读那两张卡。主窗口建得比这里晚，用到时才读；没有窗口时不用叫，
+    // 首屏读那两张卡时读到的就是新设置。
+    function notifyAntigravitySettingsFollowed(): void {
+      const main = managedMainWindow
+      if (!main || main.isDestroyed() || main.webContents.isDestroyed()) return
+      main.webContents.send(ipcEventChannels.onAntigravitySettingsFollowed, undefined)
+    }
     let readCurrentManagedCliKeys: () => Promise<readonly StoredManagedCliKey[]> = async () => []
     let readOtherManagedCliKeyAccounts: () => Promise<readonly { owner: string; keys: readonly StoredManagedCliKey[] }[]> = async () => []
     let readBillingAccountScope: () => string = () => 'xm-account:guest'
@@ -1379,6 +1386,7 @@ if (!hasSingleInstanceLock) {
       cliModelHints: readCliModelHints,
       // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
       onToolRouteFollowed: () => notifyRelayRouteChanged(),
+      onAntigravityFollowed: () => notifyAntigravitySettingsFollowed(),
       onCodexPayloadRestart: () => notifyCodexPayload('codexPayloadSwitched', String(Date.now())),
       codexPayloadNotice: () => codexPayloadNotices.current(),
       windowsExecutionMode: windowsCliExecutionMode,

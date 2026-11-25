@@ -69,6 +69,16 @@ function codesignRefusal(spec: CommandSpec, exitCode: number): CommandRunnerErro
   })
 }
 
+interface WindowsProcessEntry {
+  path: string
+  started: string
+}
+
+// 进程探测那段脚本列出的一项：启动时间是 FILETIME（1601 年起、100 纳秒一格）的十进制字符串。
+function windowsProcess(executablePath: string, startedAtMs: number): WindowsProcessEntry {
+  return { path: executablePath, started: String((startedAtMs + 11_644_473_600_000) * 10_000) }
+}
+
 interface Harness {
   service: ReturnType<typeof createAntigravityService>
   queueKeys: string[]
@@ -93,7 +103,8 @@ interface HarnessOptions {
   stored?: AntigravityEnvironmentValues
   readFails?: boolean
   writeOutcome?: 'written' | 'unchanged'
-  runningWindows?: string[] | 'probe-fails'
+  // 字符串是早就开着的那一份（启动时间是 1970 年）；要定启动时间的用 windowsProcess()。
+  runningWindows?: Array<string | WindowsProcessEntry> | 'probe-fails'
   macProcesses?: string
   codesignExit?: number
   bundleExecutable?: string
@@ -172,7 +183,8 @@ function harness(options: HarnessOptions = {}): Harness {
       state.commands.push({ spec, options: runOptions })
       if (spec.executable.endsWith('powershell.exe')) {
         if (options.runningWindows === 'probe-fails') throw new Error('PowerShell 超时')
-        return commandResult(spec, JSON.stringify(options.runningWindows ?? []))
+        const listed = (options.runningWindows ?? []).map((entry) => typeof entry === 'string' ? windowsProcess(entry, 0) : entry)
+        return commandResult(spec, JSON.stringify(listed))
       }
       if (spec.executable === '/usr/bin/codesign') {
         if (options.codesignExit) throw codesignRefusal(spec, options.codesignExit)
@@ -281,20 +293,30 @@ describe('antigravity-service pure helpers', () => {
     expect(imports).toBeLessThan(listing)
     expect(stop).toBeLessThan(listing)
     // A Chinese user name in the path stays readable where the output is left in the console code page.
-    expect(script.endsWith(buildPowerShellJsonOutputStatements('ConvertTo-Json -InputObject @($paths) -Compress').join('\n'))).toBe(true)
+    expect(script.endsWith(buildPowerShellJsonOutputStatements('ConvertTo-Json -InputObject @($found) -Compress').join('\n'))).toBe(true)
     expect(script).not.toMatch(/pscustomobject|Add-Type|\[Environment\]::/i)
-    const escaped = JSON.stringify(['C:\\Users\\\u5f20\u4e09\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe']).replace(/[^\x00-\x7f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
-    expect(parseAntigravityDesktopWindowsProcesses(escaped, 'C:\\Users\\张三\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe')).toBe(true)
+    const escaped = JSON.stringify([windowsProcess('C:\\Users\\\u5f20\u4e09\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe', 1_700_000_000_000)]).replace(/[^\x00-\x7f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+    expect(parseAntigravityDesktopWindowsProcesses(escaped, 'C:\\Users\\张三\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe')).toEqual([1_700_000_000_000])
+    // Each entry is a hashtable and the start time comes from DateTime's own method: both run in ConstrainedLanguage.
+    expect(script).toContain('[string]$_.StartTime.ToFileTimeUtc()')
+    expect(script).toContain('@{ path = $path; started = $started }')
   })
 
-  it('reads the running Windows app paths case-insensitively', () => {
+  it('reads the running Windows app paths case-insensitively, with when each process started', () => {
     expect(buildAntigravityDesktopWindowsProcessScript()).toContain('Get-Process -Name Antigravity')
-    expect(parseAntigravityDesktopWindowsProcesses(JSON.stringify([windowsDesktop.toUpperCase()]), windowsDesktop)).toBe(true)
-    expect(parseAntigravityDesktopWindowsProcesses('[]', windowsDesktop)).toBe(false)
-    expect(parseAntigravityDesktopWindowsProcesses('', windowsDesktop)).toBe(false)
-    expect(parseAntigravityDesktopWindowsProcesses(JSON.stringify(['D:\\Other\\Antigravity.exe']), windowsDesktop)).toBe(false)
+    expect(parseAntigravityDesktopWindowsProcesses(JSON.stringify([windowsProcess(windowsDesktop.toUpperCase(), 1_764_000_000_000)]), windowsDesktop)).toEqual([1_764_000_000_000])
+    expect(parseAntigravityDesktopWindowsProcesses('[]', windowsDesktop)).toEqual([])
+    expect(parseAntigravityDesktopWindowsProcesses('', windowsDesktop)).toEqual([])
+    expect(parseAntigravityDesktopWindowsProcesses(JSON.stringify([windowsProcess('D:\\Other\\Antigravity.exe', 1)]), windowsDesktop)).toEqual([])
     expect(parseAntigravityDesktopWindowsProcesses('not json', windowsDesktop)).toBeNull()
     expect(parseAntigravityDesktopWindowsProcesses('{"a":1}', windowsDesktop)).toBeNull()
+  })
+
+  it('keeps a running Windows process whose start time it cannot read, so the caller counts it as older', () => {
+    const listed = [{ path: windowsDesktop, started: '' }, { path: windowsDesktop }, { path: windowsDesktop, started: '-5' }, { path: windowsDesktop, started: 133 }]
+    expect(parseAntigravityDesktopWindowsProcesses(JSON.stringify(listed), windowsDesktop)).toEqual([null, null, null, null])
+    // Bare strings (a probe from before start times were listed) and other shapes are not this app.
+    expect(parseAntigravityDesktopWindowsProcesses(JSON.stringify([windowsDesktop, null, 7]), windowsDesktop)).toEqual([])
   })
 
   it('takes only main processes of this bundle on macOS', () => {
@@ -491,6 +513,18 @@ describe('createAntigravityService openDesktop on Windows', () => {
     const h = harness({ files: [windowsDesktop], runningWindows: 'probe-fails' })
     await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
     expect(h.logs.map((entry) => entry.event)).toContain('antigravity.desktop.process-probe-failed')
+  })
+
+  it('asks to close a running app when installing or opening the command line changed the settings behind it', async () => {
+    for (const change of ['install', 'open-cli'] as const) {
+      const h = harness({ files: [windowsCli, windowsDesktop], runningWindows: [windowsDesktop], writeOutcome: 'written' })
+      if (change === 'install') await h.service.install('cli', resolveKey)
+      else await h.service.openCli(windowsWorkspace, resolveKey)
+      // 点「打开」时设置已经是这一份（unchanged），开着的桌面端却早于命令行那一步的改写（复查 A 第 3 轮）。
+      h.deps.writeWindowsEnvironment = async () => 'unchanged'
+      await expect(h.service.openDesktop(resolveKey), change).resolves.toEqual({ opened: false, closeFirst: true })
+      expect(h.launches, change).toEqual([])
+    }
   })
 
   it('does not open when the key cannot be resolved', async () => {
@@ -918,6 +952,48 @@ describe('createAntigravityService follow', () => {
     const h = followHarness({ stored: previousEnvironment, runningWindows: [], writeOutcome: 'written' })
     await h.service.follow('account-changed')
     await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
+  })
+
+  it('stops asking once the customer has reopened the Windows app themselves after the settings changed', async () => {
+    let clock = 1_764_000_000_000
+    const running: WindowsProcessEntry[] = [windowsProcess(windowsDesktop, clock - 60_000)]
+    const h = followHarness({ stored: previousEnvironment, runningWindows: running, writeOutcome: 'written', overrides: { now: () => clock } })
+    await h.service.follow('account-changed')
+    h.deps.writeWindowsEnvironment = async () => 'unchanged'
+    clock += 1_000
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: false, closeFirst: true })
+    // 客户自己关掉、从开始菜单重新打开：资源管理器给的已经是新设置，再点「打开」只把它叫到前面。
+    running.splice(0, running.length, windowsProcess(windowsDesktop, clock + 5_000))
+    clock += 10_000
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
+    expect(h.launches).toHaveLength(1)
+  })
+
+  it('counts the Windows app as older when its main process predates the settings, whatever its helpers say', async () => {
+    const clock = 1_764_000_000_000
+    const h = followHarness({
+      stored: previousEnvironment,
+      runningWindows: [windowsProcess(windowsDesktop, clock + 30_000), windowsProcess(windowsDesktop, clock - 1), windowsProcess(windowsDesktop, clock + 31_000)],
+      writeOutcome: 'written',
+      overrides: { now: () => clock },
+    })
+    await h.service.follow('account-changed')
+    h.deps.writeWindowsEnvironment = async () => 'unchanged'
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: false, closeFirst: true })
+  })
+
+  it('counts a running Windows app whose start time cannot be read as older than the settings', async () => {
+    const h = followHarness({ stored: previousEnvironment, runningWindows: [{ path: windowsDesktop, started: '' }], writeOutcome: 'written', overrides: { now: () => 1_764_000_000_000 } })
+    await h.service.follow('account-changed')
+    h.deps.writeWindowsEnvironment = async () => 'unchanged'
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: false, closeFirst: true })
+  })
+
+  it('does not look for running Windows apps while following in the background', async () => {
+    const h = followHarness({ stored: previousEnvironment, runningWindows: [windowsDesktop], writeOutcome: 'written' })
+    await h.service.follow('account-changed')
+    // 开没开着到点「打开」时再看；后台跟的那一轮不再多起一次 PowerShell。
+    expect(h.commands.filter((entry) => entry.spec.executable.endsWith('powershell.exe'))).toEqual([])
   })
 })
 
