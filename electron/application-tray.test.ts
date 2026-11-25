@@ -645,7 +645,7 @@ describe('application tray keep-awake line', () => {
     expect(trayKeepAwakeLabel({ tools: ['Grok CLI'], installing: true, downloadingUpdate: true })).toBe('Grok CLI 正在运行，已暂停系统自动睡眠')
     expect(trayKeepAwakeLabel({ ...idle, tools: ['Claude Code', 'Gemini CLI'], installing: true })).toBe('AI 工具正在运行，已暂停系统自动睡眠')
     expect(trayKeepAwakeLabel({ ...idle, tools: ['Claude Code'], remoteControl: true })).toBe('Claude Code 正在运行，已暂停系统自动睡眠')
-    expect(trayKeepAwakeLabel({ ...idle, remoteControl: true, installing: true, downloadingUpdate: true })).toBe('手机遥控已开启，已暂停系统自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, remoteControl: true, installing: true, downloadingUpdate: true })).toBe('遥控已开启，已暂停系统自动睡眠')
     expect(trayKeepAwakeLabel({ ...idle, installing: true, downloadingUpdate: true })).toBe('正在安装，已暂停系统自动睡眠')
     expect(trayKeepAwakeLabel({ ...idle, downloadingUpdate: true })).toBe('正在下载星芒新版本，已暂停系统自动睡眠')
   })
@@ -671,11 +671,11 @@ describe('application tray remote-control switch', () => {
   it('offers a clickable way to switch phone remote control off right under the keep-awake line while a channel is on', () => {
     const off = vi.fn()
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onRemoteControlOff: off }
-    const menu = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: '手机遥控已开启，已暂停系统自动睡眠', remoteControlOn: true }, actions, (action) => { void action() })
+    const menu = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: '遥控已开启，已暂停系统自动睡眠', remoteControlOn: true }, actions, (action) => { void action() })
     expect(menu.slice(0, 4).map((entry) => entry.label ?? entry.type))
-      .toEqual(['打开星芒AI管理工具', '手机遥控已开启，已暂停系统自动睡眠', '关闭手机遥控', 'separator'])
+      .toEqual(['打开星芒AI管理工具', '遥控已开启，已暂停系统自动睡眠', '关闭遥控', 'separator'])
     expect(menu[2].enabled).not.toBe(false)
-    click(menu, '关闭手机遥控')
+    click(menu, '关闭遥控')
     expect(off).toHaveBeenCalledOnce()
   })
 
@@ -683,17 +683,17 @@ describe('application tray remote-control switch', () => {
   it('keeps the switch while the keep-awake line is talking about something else', () => {
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onRemoteControlOff: vi.fn() }
     const busy = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: 'Claude Code 正在运行，已暂停系统自动睡眠', remoteControlOn: true }, actions, () => undefined)
-    expect(busy.map((entry) => entry.label)).toContain('关闭手机遥控')
+    expect(busy.map((entry) => entry.label)).toContain('关闭遥控')
     const needsLogin = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: null, remoteControlOn: true }, actions, () => undefined)
-    expect(needsLogin.slice(0, 3).map((entry) => entry.label ?? entry.type)).toEqual(['打开星芒AI管理工具', '关闭手机遥控', 'separator'])
+    expect(needsLogin.slice(0, 3).map((entry) => entry.label ?? entry.type)).toEqual(['打开星芒AI管理工具', '关闭遥控', 'separator'])
   })
 
   it('leaves the switch out when nothing is on or nothing is wired to switch it off', () => {
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }
     const labels = (snapshot: ApplicationTraySnapshot, wired: boolean) => buildApplicationTrayMenu(snapshot, wired ? { ...actions, onRemoteControlOff: vi.fn() } : actions, () => undefined).map((entry) => entry.label)
-    expect(labels({ installedTools: [] }, true)).not.toContain('关闭手机遥控')
-    expect(labels({ installedTools: [], remoteControlOn: false }, true)).not.toContain('关闭手机遥控')
-    expect(labels({ installedTools: [], remoteControlOn: true }, false)).not.toContain('关闭手机遥控')
+    expect(labels({ installedTools: [] }, true)).not.toContain('关闭遥控')
+    expect(labels({ installedTools: [], remoteControlOn: false }, true)).not.toContain('关闭遥控')
+    expect(labels({ installedTools: [], remoteControlOn: true }, false)).not.toContain('关闭遥控')
   })
 
   // YF-8：都关着、文件夹和配对过的人都齐了时，托盘里能直接打开，不用进设置翻到最底下。
@@ -701,32 +701,32 @@ describe('application tray remote-control switch', () => {
     const on = vi.fn()
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onRemoteControlOff: vi.fn(), onRemoteControlOn: on }
     const menu = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: null, remoteControlReady: true }, actions, (action) => { void action() })
-    expect(menu.slice(0, 3).map((entry) => entry.label ?? entry.type)).toEqual(['打开星芒AI管理工具', '开启手机遥控', 'separator'])
+    expect(menu.slice(0, 3).map((entry) => entry.label ?? entry.type)).toEqual(['打开星芒AI管理工具', '开启遥控', 'separator'])
     expect(menu[1].enabled).not.toBe(false)
-    expect(menu.map((entry) => entry.label)).not.toContain('关闭手机遥控')
-    click(menu, '开启手机遥控')
+    expect(menu.map((entry) => entry.label)).not.toContain('关闭遥控')
+    click(menu, '开启遥控')
     expect(on).toHaveBeenCalledOnce()
     // 开着时只给关的那一项，齐不齐都一样。
     const running = buildApplicationTrayMenu({ installedTools: [], remoteControlOn: true, remoteControlReady: true }, actions, () => undefined).map((entry) => entry.label)
-    expect(running).toContain('关闭手机遥控')
-    expect(running).not.toContain('开启手机遥控')
+    expect(running).toContain('关闭遥控')
+    expect(running).not.toContain('开启遥控')
   })
 
   it('leaves the switch-on item out until everything is set up, or when nothing is wired to it', () => {
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }
     const labels = (snapshot: ApplicationTraySnapshot, wired: boolean) => buildApplicationTrayMenu(snapshot, wired ? { ...actions, onRemoteControlOn: vi.fn() } : actions, () => undefined).map((entry) => entry.label)
-    expect(labels({ installedTools: [] }, true)).not.toContain('开启手机遥控')
-    expect(labels({ installedTools: [], remoteControlReady: false }, true)).not.toContain('开启手机遥控')
-    expect(labels({ installedTools: [], remoteControlReady: true }, false)).not.toContain('开启手机遥控')
+    expect(labels({ installedTools: [] }, true)).not.toContain('开启遥控')
+    expect(labels({ installedTools: [], remoteControlReady: false }, true)).not.toContain('开启遥控')
+    expect(labels({ installedTools: [], remoteControlReady: true }, false)).not.toContain('开启遥控')
   })
 
   it('reports a failed switch-off through the tray error path and drops the item once the tray snapshot says it is off', async () => {
     const failure = new Error('飞书断开失败')
     const { controller, runtime, options } = fixture({ onRemoteControlOff: vi.fn(async () => { throw failure }) })
     controller.updateSnapshot({ installedTools: [], remoteControlOn: true })
-    click(vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0], '关闭手机遥控')
+    click(vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0], '关闭遥控')
     await vi.waitFor(() => expect(options.onError).toHaveBeenCalledWith(failure))
     controller.updateSnapshot({ installedTools: [], remoteControlOn: false })
-    expect(vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0].map((entry) => entry.label)).not.toContain('关闭手机遥控')
+    expect(vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0].map((entry) => entry.label)).not.toContain('关闭遥控')
   })
 })

@@ -1262,12 +1262,12 @@ test('a replaced manual client key cannot save the previous key first detected m
   } finally { await page.close() }
 })
 
-// YF-6：首页 Codex CLI 的「…」里有一项直接去手机遥控，桌面端不给；0.2.25 起去的是左侧栏「手机遥控」那一页。
+// YF-6：首页 Codex CLI 的「…」里有一项直接去手机遥控，桌面端不给；0.2.25 起去的是左侧栏「遥控」那一页（原名「手机遥控」）。
 test('the home Codex CLI menu leads to the phone remote page', async () => {
   const page = await open()
   try {
     await page.getByRole('button', { name: 'Codex CLI 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '手机遥控', exact: true }).click()
+    await page.getByRole('menuitem', { name: '遥控', exact: true }).click()
     const remote = page.getByTestId('page-remote')
     await remote.waitFor()
     await remote.getByTestId('settings-remote-card').waitFor()
@@ -11475,7 +11475,7 @@ test('every settings row the search can name is on the settings page, in the reg
   } finally { await page.close() }
 })
 
-// 手机遥控开着时坐在电脑前的人要看得到：状态栏亮「手机遥控中」，点了落到左侧栏那一页（0.2.25）。
+// 手机遥控开着时坐在电脑前的人要看得到：状态栏亮「遥控中」，点了落到左侧栏那一页（0.2.25）。
 test('the status bar says the phone remote is on and leads to its page', async () => {
   const page = await open()
   try {

@@ -44,7 +44,7 @@ describe('codex remote conversation row', () => {
     expect(text.newOption).toBe('新对话')
     expect(text.newOptionHint).toBe('在上方选择的文件夹中开始新对话。')
     expect(text.itemHint('~/projects/demo', '11-21 18:30')).toBe('~/projects/demo · 11-21 18:30')
-    expect(text.note('默认')).toBe('继续已有对话时，如对话原有权限超出手机遥控允许的范围，将调整为「默认」，在电脑端继续时也将保持。手机遥控的规则（不发送密钥和密码、回复简洁等）也将保留在该对话中。请勿在电脑端和手机端同时向同一对话发送消息。')
+    expect(text.note('默认')).toBe('继续已有对话时，如对话原有权限超出遥控允许的范围，将调整为「默认」，在电脑端继续时也将保持。遥控的规则（不发送密钥和密码、回复简洁等）也将保留在该对话中。请勿在电脑端和手机端同时向同一对话发送消息。')
     expect([text.ok, text.cancel, text.loading, text.unreadable, text.empty]).toEqual(['确定', '取消', '正在读取对话…', '无法读取对话列表，请稍后重试。', '本机暂无 Codex 对话。'])
     expect(text.unsupported).toBe('当前 Codex 版本暂不支持继续已有对话，请选择新对话。')
   })
