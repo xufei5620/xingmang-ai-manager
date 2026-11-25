@@ -324,6 +324,13 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 - 修法：登录 shell 里只核「有几个、最后一个是不是」这类重排改不了的；「原位不动」改成单独 `. 那一段` 核，不经过系统的启动文件。
 - 写法：真开登录 shell 的用例别断言继承来的 PATH 的先后，系统启动文件（还有 runner 镜像自己加的目录）会动它；要断言我们写的那一段怎么改 PATH，就在 `/bin/sh` 里直接读那一段。
 
+## 改了窗口尺寸立刻量版面：侧栏自动收起要等一拍（2026-11-25，#2168）
+
+`src/renderer-v2/testing/app-check.mjs`「the start cards sit fully above the composer in a short window…」（#2164 加的）把窗口从 1280 × 820 改成 1100 × 740、1100 × 680，每改一次立刻量起始页两张卡有没有落到输入框后面。宽不到 1272 时侧栏自动收成 60 宽，那是 `Shell.tsx` 的 `useNarrowWindow` 收到 `matchMedia` 回调再让 React 重画，比 `setViewportSize` 晚一拍；这一拍里窗口已经窄了、侧栏还是 224，正文窄约 160、卡高出约 20（容器里 740 高时量到卡底离输入框只剩 3 像素，侧栏收好以后是 63）。快机器上 680 那一下量的时候侧栏早收好了，慢 runner 上没收好，就量成两张卡都被挡（指纹：`680px tall`，`hidden` 实际 `[ 'create-card-video', 'create-card-canvas' ]`；11-25 在 #2166 的 linux-renderer-v2-browser (2)、#2168 的 windows-test (renderer-v2-browser-1) 各红一次）。
+
+- 修法：只改高、宽留在 1280，侧栏不动，量到的就是纯 CSS 排出来的那一版。1366 × 768 的笔记本侧栏本来就是展开的，这也正是那条改动要守的情形。
+- 写法：用例改窗口尺寸后要量版面的，别让尺寸跨过 1272 这条宽（或 660 这条高）；非跨不可的，先等侧栏到了该有的宽（`.v2-sidebar` 的宽是 60 或 224）再量，不要拿固定的毫秒数去等。
+
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 
 `fast-check` 写的随机输入测试（各测试文件末尾 `… with random inputs` 那几节：打码、外链白名单、会话编号、换线路改配置、粘贴密钥整理、PowerShell 单引号和通配符转义）每次跑用不同的随机种子，同一条这次绿、下次红是可能的。红的那次是库碰巧造出了一个打破规矩的输入，**代码真有这个缺口**：不按「重跑就过」放过，也不许把生成器改窄躲过去。
