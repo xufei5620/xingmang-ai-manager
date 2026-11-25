@@ -1840,6 +1840,11 @@ export interface XingmangEventContract {
   onExternalClientLaunchProgress: IpcEventDefinition<'external-clients:launch-progress', ExternalClientLaunchProgress>
   /** Antigravity 一键安装的进度，只发给点了安装的那个窗口。 */
   onAntigravityInstallProgress: IpcEventDefinition<'antigravity:install-progress', AntigravityProgress>
+  /**
+   * 换账号、换线路以后主进程替 Antigravity 改完了设置（antigravity-service.ts 的 follow）。载荷为空：界面只重读
+   * 那两张卡，不借线路那一声，免得把三个外部客户端再检测一遍（复查 A 第 2 轮第 2 条）。
+   */
+  onAntigravitySettingsFollowed: IpcEventDefinition<'antigravity:settings-followed', undefined>
   onAccountSessionChanged: IpcEventDefinition<'account:session-changed', AccountSessionState>
   onAccountUsageChanged: IpcEventDefinition<'account:usage-changed', AccountUsageChangedEvent>
   /** 本机账号存储被重建。载荷为空：备份文件名与账号内容都不跨 IPC。 */
@@ -2172,6 +2177,7 @@ export const ipcEventChannels = {
   onExternalClientInstallProgress: 'external-clients:install-progress',
   onExternalClientLaunchProgress: 'external-clients:launch-progress',
   onAntigravityInstallProgress: 'antigravity:install-progress',
+  onAntigravitySettingsFollowed: 'antigravity:settings-followed',
   onAccountSessionChanged: 'account:session-changed',
   onAccountUsageChanged: 'account:usage-changed',
   onAccountVaultRecovered: 'account:vault-recovered',

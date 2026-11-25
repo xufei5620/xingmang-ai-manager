@@ -343,6 +343,9 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     ]
     return () => callbacks.forEach((unsubscribe) => unsubscribe())
   }, [bridge])
+  // 主进程换账号、换线路以后替 Antigravity 改完了设置（antigravity-service.ts 的 follow）：只重读这两张卡，
+  // 外部客户端不跟着重新检测（复查 A 第 2 轮第 2 条）。
+  useEffect(() => bridge?.onAntigravitySettingsFollowed?.(() => { void refreshAntigravity() }), [bridge, refreshAntigravity])
   const run = useCallback(async (key: string, label: string, operation: (report: ToolJobReport) => Promise<unknown>, options?: ToolJobOptions) => {
     if (locks.current.has(key)) return false
     locks.current.add(key)

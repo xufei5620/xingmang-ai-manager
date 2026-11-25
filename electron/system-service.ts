@@ -762,6 +762,8 @@ export interface SystemServiceOptions {
   cliModelHints?: () => Promise<CliModelHints | null>
   /** 换线路自动改了工具配置、出了重开提示、外部客户端换成了：叫一声，界面重读（main.ts 发 network:relay-route-changed）。 */
   onToolRouteFollowed?: () => void
+  /** 换账号、换线路以后替 Antigravity 改完了设置：叫一声，界面只重读那两张卡（main.ts 发 antigravity:settings-followed）。 */
+  onAntigravityFollowed?: () => void
   /** Codex 有个对话太大、换到线路 2 的重开提示出了：叫一声，main.ts 再发一条系统通知（客户这会儿多半在 Codex 里）。 */
   onCodexPayloadRestart?: () => void
   /** 设置快照里那条「新开 Codex 对话」的提示（codex-payload-limit.ts）；没有给 undefined。缺省 = 没有。 */
@@ -1184,11 +1186,11 @@ export function createSystemService(
     serializeSettingsWrite: serializeConfigWrite,
     gatewayBaseUrl: () => context.activeRelaySite().providerBaseUrls.gemini,
     // 换账号、换线路以后跟上（复查 A 第 1 轮第 3 条）：线路定没定、是哪个账号、当前账号缓存的 Gemini 那把，
-    // 都是外部客户端跟 Key、跟线路用的同一份。跟上了照样叫界面重读。
+    // 都是外部客户端跟 Key、跟线路用的同一份。跟上了叫界面只重读那两张卡（复查 A 第 2 轮第 2 条）。
     gatewayRouteSettled: () => relayRouting.selection(context.activeRelaySite().id) !== undefined,
     accountOwner: () => serviceOptions.getExternalClientAccountId?.() ?? null,
     ...(readCurrentManagedCliKeys ? { cachedAccountKeys: async () => antigravityAccountKeys(await readCurrentManagedCliKeys()) } : {}),
-    onFollowed: () => serviceOptions.onToolRouteFollowed?.(),
+    onFollowed: () => serviceOptions.onAntigravityFollowed?.(),
     terminalEnvironment: (env) => interactiveTerminalEnvironment(env, sameUserTerminalEnvironment),
     fetch: downloadFetch,
     runCommand: executeCommand,
