@@ -35,3 +35,26 @@ export function assertWorkspaceDirectory(
   }
   if (!stats.isDirectory()) throw new Error(missingMessage)
 }
+
+/**
+ * 给自己管项目的 Codex 桌面端用：记着的文件夹不在、不是文件夹，返回 null，调用方不带文件夹打开，
+ * Codex 回到它自己上次的项目（Windows 那边一直是这样）。照 assertWorkspaceDirectory 报「项目文件夹不存在，
+ * 请重新选择」行不通：桌面端那张卡上没有地方选，点「重试」还是同一句（0.2.24 Mac 真机）。
+ * Mac 上不让看照旧报上面那句授权：文件夹还在，不带它打开会让人以为项目丢了。
+ */
+export function existingWorkspaceDirectory(
+  workspace: string,
+  platform: NodeJS.Platform,
+  statSync: (target: string) => fs.Stats = fs.statSync,
+): string | null {
+  let stats: fs.Stats
+  try {
+    stats = statSync(workspace)
+  } catch (error) {
+    if (platform === 'darwin' && isAccessDenied(error)) {
+      throw new Error(macosWorkspaceAccessDeniedMessage, { cause: error })
+    }
+    return null
+  }
+  return stats.isDirectory() ? workspace : null
+}
