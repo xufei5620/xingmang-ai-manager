@@ -85,3 +85,5 @@
 .chat-phrase { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 8px 8px 12px; }.chat-phrase + .chat-phrase { border-top: 1px solid var(--line); }
 .chat-phrase-text { flex: 1; min-width: 0; margin: 0; color: var(--text); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-phrase-actions { display: flex; flex: none; align-items: center; gap: 4px; }.chat-phrases-empty { margin: 0; color: var(--text-3); }.chat-phrase-save { display: flex; justify-content: flex-end; }
+.chat-list-note { display: flex; align-items: center; gap: 4px; }
+.chat-list-note > .chat-conversation-empty { flex: 0 1 auto; }

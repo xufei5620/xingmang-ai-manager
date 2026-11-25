@@ -371,7 +371,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
     intro: (conversationCount) => <CreateIntro state={intro} ready={active && library.status !== 'loading' && canvas.status !== 'loading'}
       hasEarlierWork={conversationCount > 0 || library.items.length > 0 || canvas.projects.length > 0}
       onDecide={(show) => { rememberIntroSeen(); setIntro(show ? 'shown' : 'gone') }} onDismiss={() => setIntro('gone')} />,
-    notes: [...(videosListed && library.status === 'unreadable' ? ['历史视频读取失败'] : []), ...(canvas.status === 'unreadable' ? ['画布项目读取失败'] : [])],
+    notes: [...(videosListed && library.status === 'unreadable' ? [{ text: '历史视频读取失败', retry: library.reload }] : []), ...(canvas.status === 'unreadable' ? [{ text: '画布项目读取失败' }] : [])],
     video: {
       access: videoAccess,
       quote: (model, group) => videoStudioQuoteText(videoStudioPerCallUsd(prices.list, model, group), 1, true),

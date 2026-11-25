@@ -68,14 +68,19 @@ export interface ChatPageCreate {
   cards?: ReactNode
   /** 起始页最上面那条只出现一次的提示；拿到现在存着几段对话。 */
   intro?: (conversationCount: number) => ReactNode
-  /** 列表最下面的小字：哪一类这一次没读出来。 */
-  notes?: readonly string[]
+  /** 列表最下面的小字：哪一类这一次没读出来；给了 retry 的后面跟一个「重新读取」。 */
+  notes?: readonly ChatPageNote[]
   /** 输入框的第三档「生成视频」（融合第 2 步）。不给就没有这一档。 */
   video?: ChatPageVideo
   /** 生成的图下面的「添加到画布」（融合第 5 步）。不给就没有这个按钮。 */
   canvas?: ChatPageCanvas
   /** 左下角的「作品库」和右边换上去的那一块（融合第 3 步）。不给就没有。 */
   library?: ChatPageLibrary
+}
+export interface ChatPageNote {
+  text: string
+  /** 给了就在小字后面放一个「重新读取」：不然这一类要等换账号或重开软件才会再读（同对话红条上那个）。 */
+  retry?: () => void
 }
 /** 主窗口的作品库：这一页只管左下角那一行和把右边让出来，里面的东西由「创作」页给。 */
 export interface ChatPageLibrary {
@@ -268,7 +273,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const library = create?.library
   const paneCovered = Boolean(extraSelected) || Boolean(library?.open)
   // 列表最下面的小字：哪一类这一次没读出来。对话读不出来、列表里又有视频或画布项目时也说在这里（一行都没有时照旧说在空状态里）。
-  const listNotes = [...(chat.historyUnreadable && listGroups.length > 0 && filter !== 'video' && filter !== 'canvas' ? [unreadableHistoryNote] : []), ...(create?.notes ?? [])]
+  const listNotes: ChatPageNote[] = [...(chat.historyUnreadable && listGroups.length > 0 && filter !== 'video' && filter !== 'canvas' ? [{ text: unreadableHistoryNote }] : []), ...(create?.notes ?? [])]
   const task = async (work: () => Promise<unknown>, done: string) => {
     const ticket = owner.capture()
     try { await work(); if (ticket()) chat.setNotice(done) }
@@ -489,7 +494,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
         ? <ConversationListItem key={`chat:${row.conversation.id}`} item={row.conversation} current={!paneCovered && row.conversation.id === chat.state.activeId} pageActive={active} actions={conversationActions} />
         : <ExtraListItem key={`${row.kind}:${row.item.id}`} item={row.item} current={extraSelected?.kind === row.kind && extraSelected.id === row.item.id} locked={row.kind === 'video' && create?.lockedVideoId === row.item.id} pageActive={active} actions={extraActions} />)}</Fragment>)}{listGroups.length === 0 && (searchText
         ? <p className="chat-conversation-empty" data-testid="chat-conversation-search-empty">未找到「{searchText}」相关的内容</p>
-        : <p className="chat-conversation-empty" data-testid="chat-conversation-empty">{chat.historyUnreadable && (filter === 'all' || filter === 'chat') ? unreadableHistoryNote : filter !== 'all' ? '该分类下暂无内容。' : '暂无内容。请在右侧输入框中输入您的需求。'}</p>)}{listNotes.map((note) => <p key={note} className="chat-conversation-empty" data-testid="create-list-note">{note}</p>)}</nav>
+        : <p className="chat-conversation-empty" data-testid="chat-conversation-empty">{chat.historyUnreadable && (filter === 'all' || filter === 'chat') ? unreadableHistoryNote : filter !== 'all' ? '该分类下暂无内容。' : '暂无内容。请在右侧输入框中输入您的需求。'}</p>)}{listNotes.map((note) => <div key={note.text} className="chat-list-note"><p className="chat-conversation-empty" data-testid="create-list-note">{note.text}</p>{note.retry && <Button variant="ghost" size="xs" icon={RefreshCw} onClick={note.retry} testId="create-list-note-retry">重新读取</Button>}</div>)}</nav>
       {library && <div className="chat-library-foot"><button type="button" className="chat-library-entry" data-active={library.open} aria-current={library.open ? 'page' : undefined} onClick={library.onOpen} data-testid="create-library-open"><span className="chat-conversation-kind" data-kind="library"><Images size={15} aria-hidden="true" /></span><strong>作品库</strong>{library.count ? <b data-testid="create-library-count">{library.count}</b> : null}</button></div>}
       {chat.state.conversations.length > 1 && <div className="chat-conversations-foot"><Button variant="ghost" size="xs" icon={Trash2} disabled={anyGenerating} onClick={() => setConfirmation({ kind: 'clear-all' })} testId="chat-conversations-clear">清空全部对话</Button></div>}
     </aside>

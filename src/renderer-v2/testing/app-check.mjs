@@ -4326,6 +4326,41 @@ test('the column lists what it could read and names the kind it could not', asyn
   }
 })
 
+// 创作页复查第 9 条：视频列表这一次没读出来，小字后面有「重新读取」，点了再读一遍；读出来那行字就没了。画布那一类没有这个按钮。
+test('the unread films note offers a reread that lists them once they can be read', async () => {
+  const page = await openCreate('videoFilms=1&canvasProjects=1')
+  try {
+    await page.evaluate(() => { window.v2Test.fail = 'readVideoStudioProjects' })
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-item-canvas-fixture-canvas-poster').waitFor()
+    const retry = page.getByTestId('create-list-note-retry')
+    await retry.waitFor()
+    assert.equal(await retry.textContent(), '重新读取')
+    // 还读不出来：照旧那一行字，按钮还在。
+    const before = await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'readVideoStudioProjects').length)
+    await retry.click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((call) => call.method === 'readVideoStudioProjects').length > count && document.querySelector('[data-testid="create-list-note-retry"]'), before)
+    assert.deepEqual(await page.getByTestId('create-list-note').allTextContents(), ['历史视频读取失败'])
+    assert.equal(await page.getByTestId('create-item-video-fixture-film-cat').count(), 0)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await page.getByTestId('create-list-note-retry').click()
+    await page.getByTestId('create-item-video-fixture-film-cat').waitFor()
+    await page.getByTestId('create-list-note').waitFor({ state: 'detached' })
+    await page.getByTestId('create-start').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+  const canvas = await openCreate('videoFilms=1&canvasProjects=1')
+  try {
+    await canvas.evaluate(() => { window.v2Test.fail = 'listCanvasProjects' })
+    await canvas.getByTestId('nav-chat').click()
+    await canvas.getByTestId('create-item-video-fixture-film-cat').waitFor()
+    await canvas.getByTestId('create-list-note').waitFor()
+    assert.equal(await canvas.getByTestId('create-list-note-retry').count(), 0)
+    await canvas.evaluate(() => { window.v2Test.fail = '' })
+    await clean(canvas)
+  } finally { await canvas.close() }
+})
+
 // 创作页复查第 2 条：上次关软件时还在出的那一段，重开后不用点开那条视频就去接回；右边照旧是起始页。
 test('a clip still generating at the last quit is picked up when the page opens, without opening its film', async () => {
   const page = await openCreate('videoFilms=pending&chatVideo=1')
