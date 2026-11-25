@@ -4665,6 +4665,29 @@ test('the start cards stay above the composer in a short window while the merge 
   } finally { await page.close() }
 })
 
+// 起始页那句说明原来宽度上限 460，正好差一点放不下，最后「账号。」两个字掉到第二行（yoyo 2026-11-26「说明排一行」）。
+// 常用的 1280 × 820 和 1100 × 680 小窗口里都要排成一行；1100 宽时侧栏收成窄条，等它收好了再量。
+test('the start page line stays on one line at the design size and in the small window', async () => {
+  const page = await openCreate()
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-start').waitFor()
+    const lead = page.getByTestId('chat-empty').locator('p').first()
+    await lead.waitFor()
+    assert.equal(await lead.innerText(), '提问、写作、绘图、制作视频均可在下方输入框中完成，额度与工具共用同一账号。')
+    const lines = () => lead.evaluate((paragraph) => {
+      const range = document.createRange()
+      range.selectNodeContents(paragraph)
+      return new Set([...range.getClientRects()].filter((rect) => rect.width > 0).map((rect) => Math.round(rect.top))).size
+    })
+    assert.equal(await lines(), 1, '1280 × 820')
+    await page.setViewportSize({ width: 1100, height: 680 })
+    await page.waitForFunction(() => document.querySelector('.v2-shell')?.dataset.narrow === 'true')
+    assert.equal(await lines(), 1, '1100 × 680')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an account with nothing made before is not told about the merge, now or after it has made something', async () => {
   const page = await openCreate()
   try {
